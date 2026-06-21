@@ -26,6 +26,27 @@ SEEDS = ["Physics", "Electromagnetism", "Thermodynamics", "Optics", "Mechanics",
          "Geology", "Biology", "Waves", "Electricity", "Light", "Motion_(physics)"]
 
 
+def build_children_adj(path=GRAPH):
+    """Children-only (DOWNWARD) adjacency: parent -> [children], from `child<TAB>parent` edges.
+
+    A downward walk over this adjacency stays inside the seed's subtree, so it **cannot drift up into
+    other domains** the way the undirected walk does (the first real run wandered `Physics → Tamils /
+    Shinto_shrines` — see the sampler-drift finding in WAM_RUST_BRIDGE_DETECTOR_PHILOSOPHY.md use case 6;
+    bridge-guided seeding is the heavier principled fix, child-only walks are the lightweight one)."""
+    children = {}
+    with open(path) as f:
+        for i, line in enumerate(f):
+            if i == 0 and line.startswith("child"):
+                continue
+            p = line.rstrip("\n").split("\t")
+            if len(p) < 2:
+                continue
+            c, par = p[0], p[1]
+            children.setdefault(par, set()).add(c)
+            children.setdefault(c, children.get(c, set()))
+    return {k: sorted(v) for k, v in children.items()}
+
+
 def load_existing_keys(path):
     keys = set()
     if not os.path.exists(path):
@@ -48,18 +69,25 @@ def main():
     ap.add_argument("--hub-beta", type=float, default=1.0)
     ap.add_argument("--restart-alpha", type=float, default=0.3)
     ap.add_argument("--max-frontier", type=int, default=4000)
+    ap.add_argument("--child-only", action="store_true",
+                    help="DOWNWARD walks over a children-only adjacency (no cross-domain drift)")
+    ap.add_argument("--seeds", default=None, help="comma-separated seeds (default: the 20 SEEDS)")
+    ap.add_argument("--dedup-against", default=SCORED, help="scored TSV whose pairs to exclude")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--out", default=os.path.join(ROOT, "mu_pairs_more.tsv"))
     args = ap.parse_args()
     rng = random.Random(args.seed)
 
-    adj = load_graph(GRAPH)
-    deg = {n: max(1, len(adj.get(n, ()))) for n in adj}
-    universe = list(adj.keys())
-    seeds = [s for s in SEEDS if s in adj]
-    existing = load_existing_keys(SCORED)
-    print(f"{len(universe)} categories, {len(seeds)} seeds; deduping against {len(existing)} "
-          f"existing pairs in {os.path.basename(SCORED)}")
+    full = load_graph(GRAPH)
+    deg = {n: max(1, len(full.get(n, ()))) for n in full}     # total degree for hub down-weighting
+    adj = build_children_adj(GRAPH) if args.child_only else full
+    universe = list(full.keys())
+    seed_list = args.seeds.split(",") if args.seeds else SEEDS
+    seeds = [s for s in seed_list if s in full]
+    existing = load_existing_keys(args.dedup_against)
+    print(f"{len(universe)} categories, {len(seeds)} seeds, "
+          f"{'CHILD-ONLY (downward)' if args.child_only else 'undirected'} walks; deduping against "
+          f"{len(existing)} pairs in {os.path.basename(args.dedup_against)}")
 
     pairs = set(existing)          # canonical keys already used (existing + this run)
     rows = []
@@ -91,7 +119,7 @@ def main():
     while sum(1 for r in rows if r[2] == "neg") < n_neg_target and tries < n_neg_target * 80:
         tries += 1
         a, b = rng.choice(frontier), rng.choice(universe)
-        if a == b or b in adj.get(a, ()):
+        if a == b or b in full.get(a, ()):       # exclude undirected neighbours (not negatives)
             continue
         key = tuple(sorted((a, b)))
         if key in pairs:

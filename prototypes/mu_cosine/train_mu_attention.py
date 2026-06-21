@@ -66,7 +66,8 @@ def load_pairs(path=PAIRS):
             p = line.rstrip("\n").split("\t")
             if len(p) < 5 or p[4].strip() == "":
                 continue
-            (pos if p[2] == "pos" else neg).append((p[0], p[1], float(p[4])))
+            # any non-neg stratum (pos / pos_phys / pos_chem / cross) is a graded positive; neg is μ=0
+            (neg if p[2] == "neg" else pos).append((p[0], p[1], float(p[4])))
     return pos, neg
 
 
@@ -245,6 +246,9 @@ def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args):
         print(f"[{op}] gate-leak 5-probe (non-physics μ(·|Physics)≥0.3): {leak}/5  " +
               "  ".join(f"{n.split('_')[0]}={v:.2f}" for n, v in zip(NONPHYS, pr.tolist())))
 
+    # --- Physics-vs-Chemistry DISCRIMINATION: μ(node|Physics) vs μ(node|Chemistry), check ordering ---
+    discrimination_probe(model, tok, idx)
+
     if args.quick_val:
         print("(quick-val: skipping dense-map emission / check_feeds / lin-agreement)")
         return
@@ -266,6 +270,44 @@ def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args):
 
     # --- SECONDARY: lin-agreement on NODE-gated IC (#3296), not path-gated ---
     node_gated_lin_agreement(model, tok, idx)
+
+
+PHYS_PROBE = ["Thermodynamics", "Optics", "Mechanics", "Electromagnetism", "Motion_(physics)"]
+CHEM_PROBE = ["Periodic_table", "Acids", "Chemical_compounds", "Oxygen", "Chemical_reactions"]
+BORDER_PROBE = ["Atoms", "States_of_matter", "Materials", "Energy", "Chemical_elements"]
+
+
+def discrimination_probe(model, tok, idx):
+    """For clear-physics / clear-chemistry / borderline nodes, emit μ(node|Physics) and μ(node|Chemistry)
+    (SYM operator, symmetric relatedness) and check the ordering: a physics node should score higher to
+    Physics, a chemistry node higher to Chemistry, a borderline node moderate on both."""
+    if "Chemistry" not in idx or "Physics" not in idx:
+        print("[DISCRIM] Physics/Chemistry not in graph — skipped")
+        return
+    print("\n[DISCRIM] Physics-vs-Chemistry (μ via SYM operator):")
+    correct = 0
+    total = 0
+    for label, nodes, expect in [("physics", PHYS_PROBE, "P>C"), ("chemistry", CHEM_PROBE, "C>P"),
+                                 ("borderline", BORDER_PROBE, "~")]:
+        nodes = [n for n in nodes if n in idx]
+        muP = mu_batch(model, tok, [(n, "Physics", OPS["SYM"]) for n in nodes])
+        muC = mu_batch(model, tok, [(n, "Chemistry", OPS["SYM"]) for n in nodes])
+        for i, n in enumerate(nodes):
+            p, c = float(muP[i]), float(muC[i])
+            mark = ""
+            if expect == "P>C":
+                ok = p > c
+                correct += ok
+                total += 1
+                mark = "✓" if ok else "✗"
+            elif expect == "C>P":
+                ok = c > p
+                correct += ok
+                total += 1
+                mark = "✓" if ok else "✗"
+            print(f"    [{label:10}] {n:22} μ|Physics={p:.2f}  μ|Chemistry={c:.2f}  {mark}")
+    print(f"  directional ordering correct: {correct}/{total} "
+          f"(physics→P>C, chemistry→C>P; borderline not scored)")
 
 
 def node_gated_lin_agreement(model, tok, idx):

@@ -2,6 +2,7 @@ mu_pairs.tsv
 # unscored candidate pairs are regenerable (gen_mu_pairs.py / gen_more_sym_pairs.py); the EXPENSIVE
 # Haiku-scored sets (mu_pairs_scored*.tsv) are committed — bought once.
 mu_pairs_more.tsv
+mu_pairs_multidomain.tsv
 # generated dense μ maps (regenerate with emit_dense_mu.py / dense_mu_direct.py); the committed
 # dense_mu_e5.sample.tsv is the illustrative sample. *.sample.tsv is kept (negated below).
 dense_mu*.tsv
