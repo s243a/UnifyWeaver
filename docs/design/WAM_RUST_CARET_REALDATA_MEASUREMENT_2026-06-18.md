@@ -471,3 +471,62 @@ implements exactly the primary candidate (`path_gated_cone(P).len() / raw_cone_s
 increment-5 validation picked the fraction as the cleaner separator as the spec directs. Full suite stays
 green (**97/97**). The gated-purity-as-*average-μ* idea from the previous addendum's #3 is the variant that
 was tried and rejected here; the gated-*fraction* is the read that actually fixes the mislabel.
+
+## Addendum (2026-06-21) — self-calibrating `τ_pure`: the classifier ports to any graph
+
+The previous addendum fixed *which* purity to use, but left the cut `τ_pure` hand-tuned to `0.01` —
+correct only for the physics-exploded 10k slice, where in-domain fractions are tiny (`~0.002–0.04`). On a
+graph of a different scale (a clean tree has hub purities near `1`) a fixed `0.01` labels everything a
+bridge. This addendum makes `τ_pure` **derived per graph**, so the same code ports anywhere.
+
+**The distribution is log-bimodal, so a log-gap finds the split.** The in-domain fraction of a leak
+conduit (cone reaches the whole graph) is *orders of magnitude* below a coherent hub's, so the candidate
+purities form a low **leak cluster** and a higher **hub cluster** separated by a gap on the log scale.
+`calibrate_tau_pure` sorts the purities, takes consecutive `ln`-gaps, and picks the **largest gap whose
+low side is a minority** — `τ_pure` = the geometric mean of the two bracketing purities. A bimodality
+test (`split gap ≥ 2× median gap`) falls back to a low percentile for the unimodal (no-leak) case.
+
+**Why the minority-low constraint is load-bearing on real data.** The 10k candidate purities, sorted:
+
+```
+Physical_objects 0.00154 | Matter 0.00230 ‖ Electricity 0.00742  Electromagnetism 0.01032
+Classical_mechanics 0.01702  Energy 0.01724  Subfields_of_physics 0.01843  Groups 0.02927
+Gases 0.03015  Chemical_elements 0.03810  Mechanics 0.03953 ‖ Temperature 0.12500  Waves 0.31250
+```
+
+The two largest `ln`-gaps are almost tied: **0.508** at `Matter → Electricity` (the true leak/hub
+boundary, `‖` left) and **0.500** at `Mechanics → Temperature` (a couple of tiny-cone outlier hubs above
+the main cluster, `‖` right). A naive "largest gap" picks the leak/hub split here only by a **2 % margin**
+— fragile. But the outlier gap has the *majority* (11 of 13) below it: taking it would label 11 candidates
+leaks and 2 bridges, absurd for a physics graph. The **minority-low constraint** (`#below ≤ n/2`) rejects
+it outright and robustly selects the leak/hub boundary, which has just 2 nodes (the minority) below.
+
+**Result — 10k graph: auto-derived `τ_pure = 0.00413`** (geometric mean of `0.00230` and `0.00742`),
+vs the old hand-tuned `0.01`. Both land in the valid window `(0.0023, 0.0103]`, so the labels are
+identical — but `0.00413` is *computed from the graph*, not a constant:
+
+| node | purity | class (auto `τ_pure = 0.00413`) |
+|---|---:|---|
+| `Subfields_of_physics` | 0.0184 | Bridge |
+| `Energy` | 0.0172 | Bridge |
+| `Electromagnetism` | 0.0103 | Bridge |
+| `Mechanics` | 0.0395 | Bridge |
+| `Matter` | 0.0023 | LeakConduit |
+| `Physical_objects` | 0.0015 | LeakConduit |
+
+**Portability proven on a different scale.** A synthetic test
+(`rank_bridges_auto_tau_ports_to_a_different_purity_scale`) plants two clusters at purities `~0.3` and
+`~0.9` (built from gadgets with tuned in-domain/out-of-domain descendant counts). The auto-calibration
+derives `τ_pure ≈ 0.53` there — two orders of magnitude above the 10k value — and labels the `0.9`
+gadgets `Bridge`, the `0.3` gadgets `LeakConduit`, with no constant changed.
+`calibrate_tau_pure_is_scale_invariant_and_robust` additionally checks scale-invariance (scaling all
+purities by `100×` scales `τ_pure` by `100×`), the minority-low rejection of high outliers, and the
+unimodal percentile fallback.
+
+**Implementation & spec.** `BridgeParams.tau_pure` is now `Option<f64>` — `None` (default)
+self-calibrates in `rank_bridges`, `Some(x)` pins an explicit cut (tests, hand-tuning). Additive:
+`bridge_classify` is unchanged for the explicit path (and uses `0.5` for the no-distribution single-node
+`None` case), `descendant_mu_mass_gated` / `gated_ic` / the similarity functions are untouched. The
+SPECIFICATION's "Classification" section now documents `τ_pure` as derived. Full suite **99/99** (97 +
+the two new self-calibration tests); the gated 10k validation passes with the auto threshold and no
+hard-coded `0.01`.

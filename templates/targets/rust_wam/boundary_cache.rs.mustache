@@ -2470,16 +2470,21 @@ pub struct BridgeParams {
     /// effectively-distinct branch."
     pub tau_div: f64,
     /// Purity cut between *in-domain* (`≥ τ_pure` ⇒ Bridge) and *out-of-domain* (`< τ_pure` ⇒
-    /// LeakConduit), applied only once `n_eff ≥ τ_div`.
-    pub tau_pure: f64,
+    /// LeakConduit), applied only once `n_eff ≥ τ_div`. **`None` = self-calibrating** (the default):
+    /// `rank_bridges` derives `τ_pure` from the candidate purity distribution (`calibrate_tau_pure`)
+    /// so the classifier ports to any graph without a hard-coded scale. **`Some(x)` = explicit
+    /// override** (deterministic — for tests, or a hand-tuned cut). Single-node `bridge_classify`
+    /// cannot self-calibrate (it sees no distribution); with `None` it falls back to `0.5`, so use
+    /// `rank_bridges` for the auto-calibrated path.
+    pub tau_pure: Option<f64>,
 }
 
 impl Default for BridgeParams {
     /// `φ_min = 2` (any real branch point), `τ_div = 1.5` (clearly more than one effective branch),
-    /// `τ_pure = 0.5` (in-domain *fraction* ≥ ½ — a majority-in-domain cone). All three are domain
-    /// knobs — tune on real data (on the associative Wikipedia graph the in-domain fraction is small
-    /// even for genuine hubs, so `τ_pure ≈ 0.01`; see the bridge-detector measurement addendum).
-    fn default() -> Self { BridgeParams { phi_min: 2, tau_div: 1.5, tau_pure: 0.5 } }
+    /// `τ_pure = None` (**self-calibrating** — derived per graph by `rank_bridges` from the candidate
+    /// purity distribution, so the cut ports across graphs of any absolute purity scale). Pass
+    /// `Some(x)` to pin an explicit cut.
+    fn default() -> Self { BridgeParams { phi_min: 2, tau_div: 1.5, tau_pure: None } }
 }
 
 /// The per-node bridge read-out: the continuous signals plus the quadrant label. Rank on
@@ -2516,6 +2521,12 @@ pub struct BridgeScore {
 /// - `n_eff ≥ τ_div` **and** `purity ≥ τ_pure` ⇒ `Bridge` (distinct in-domain subfields).
 /// - `n_eff ≥ τ_div` **and** `purity < τ_pure` ⇒ `LeakConduit` (distinct but unrelated — prune).
 ///
+/// **`τ_pure` resolution.** This is the *per-node* form; it cannot self-calibrate (no distribution to
+/// read), so it uses `params.tau_pure.unwrap_or(0.5)` — an explicit `Some(x)`, else the conservative
+/// `0.5` (majority-in-domain). For the self-calibrating cut (`τ_pure = None` derives the threshold from
+/// the candidate purity distribution) use `rank_bridges`, which re-applies the Bridge/LeakConduit split
+/// with the calibrated value.
+///
 /// Additive: reuses `fanout_diversity`, `path_gated_cone`, `raw_cone_set`; the raw-cone `cone_purity`
 /// stays available to callers but is no longer the classifier input. `mu` is an input map. Exact (the
 /// correctness path).
@@ -2547,11 +2558,12 @@ pub fn bridge_classify(
 
     let (diversity, n_eff) = fanout_diversity(p, parents, mu, threshold).unwrap_or((0.0, 0.0));
     let phi_min = params.phi_min.max(2); // a branch point needs ≥ 2 children by definition
+    let tau_pure = params.tau_pure.unwrap_or(0.5); // single-node: no distribution ⇒ conservative 0.5
     let class = if fan_out < phi_min || muv(p) < threshold || n_eff <= 0.0 {
         BridgeClass::NotCandidate
     } else if n_eff < params.tau_div {
         BridgeClass::RedundantHub
-    } else if purity >= params.tau_pure {
+    } else if purity >= tau_pure {
         BridgeClass::Bridge
     } else {
         BridgeClass::LeakConduit
@@ -2559,13 +2571,77 @@ pub fn bridge_classify(
     BridgeScore { n_eff, diversity, purity, fan_out, class }
 }
 
-/// **Rank all bridge candidates** (increment 3) — the fan-out-filter candidate generation plus the
-/// ranking step. The default candidate set (the cheap MICA / upward step) is every node with in-domain
-/// fan-out `φ(P) ≥ φ_min`; each is scored by `bridge_classify` and the non-`NotCandidate` results are
-/// returned sorted by `n_eff · purity` **descending** (node id as the deterministic tie-break). That
-/// key puts genuine bridges (high `n_eff`, high purity) on top, redundant hubs (low `n_eff`) and leak
-/// conduits (low purity) below — the full ranked map, *labels included*, so the caller sees leaks and
-/// hubs as well as bridges, not just the winners.
+/// **Self-calibrate the purity cut `τ_pure`** from a candidate purity distribution (the leak/hub split)
+/// — so the classifier ports to any graph instead of a hard-coded scale. The in-domain-fraction purity
+/// of a leak conduit (cone reaches the whole graph) is *orders of magnitude* below a coherent hub's, so
+/// the distribution is bimodal **on a log scale**: a low **leak cluster** and a higher **hub cluster**.
+/// This finds the boundary between them and returns the geometric mean of the two bracketing purities.
+///
+/// **Method — largest log-gap with a minority-low constraint.** Sort the (positive) purities, take
+/// consecutive gaps in `ln` space (purities span decades, so the *ratio* gap is the natural scale), and
+/// pick the **largest gap whose low side is a minority** (`#below ≤ n/2`). The minority constraint is
+/// what makes it robust on a real graph that is *not* cleanly two-cluster: e.g. the physics-exploded
+/// 10k slice has a few tiny-cone outlier hubs (`Temperature`, `Waves`) whose gap *above* the main hub
+/// cluster nearly ties the true leak/hub gap — but that gap has the *majority* below it (it would label
+/// most candidates leaks), so the constraint rejects it. Leaks are by assumption the minority low tail
+/// (a domain where most branch points are leaks is pathological — pass an explicit `τ_pure` there).
+///
+/// **Bimodality / fallback.** The chosen gap must be clearly larger than the typical gap
+/// (`≥ 2× median` consecutive gap) to count as a real split; otherwise the distribution is treated as
+/// unimodal (no distinct leak cluster) and the function falls back to a low **percentile** (the 10th),
+/// labeling only the lowest-coherence tail as leaks. `< 2` purities ⇒ `0.0` (no calibration possible ⇒
+/// no leaks). Pure helper (no graph access); `rank_bridges` feeds it the diverse candidates' purities.
+pub fn calibrate_tau_pure(purities: &[f64]) -> f64 {
+    let mut ps: Vec<f64> = purities.iter().copied().filter(|&p| p > 0.0).collect();
+    ps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = ps.len();
+    let percentile = |q: f64| -> f64 {
+        if n == 0 { return 0.0; }
+        ps[((q * (n as f64 - 1.0)).round() as usize).min(n - 1)]
+    };
+    if n < 2 { return 0.0; } // no distribution ⇒ cannot find a leak cluster ⇒ no leaks
+    let logs: Vec<f64> = ps.iter().map(|p| p.ln()).collect();
+    let gaps: Vec<f64> = (1..n).map(|i| logs[i] - logs[i - 1]).collect();
+    // Largest log-gap whose LOW side is a minority (leaks are the minority low tail).
+    let mut best_i: Option<usize> = None;
+    let mut best_gap = f64::NEG_INFINITY;
+    for i in 0..gaps.len() {
+        let low_count = i + 1; // ps[0..=i] are below this split
+        if low_count * 2 <= n && gaps[i] > best_gap {
+            best_gap = gaps[i];
+            best_i = Some(i);
+        }
+    }
+    // Bimodality test: the split gap must clearly exceed the typical (median) gap.
+    let mut sorted_gaps = gaps.clone();
+    sorted_gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median_gap = sorted_gaps[sorted_gaps.len() / 2];
+    const BIMODAL_FACTOR: f64 = 2.0;
+    match best_i {
+        Some(i) if best_gap.is_finite() && best_gap >= BIMODAL_FACTOR * median_gap.max(1e-12) => {
+            // geometric mean of the two purities bracketing the leak/hub boundary
+            ((logs[i] + logs[i + 1]) / 2.0).exp()
+        }
+        _ => percentile(0.10), // unimodal ⇒ no distinct leak cluster ⇒ low-percentile fallback
+    }
+}
+
+/// **Rank all bridge candidates** (increment 3; self-calibrating `τ_pure` since #3313) — the
+/// fan-out-filter candidate generation plus the ranking step. The default candidate set (the cheap
+/// MICA / upward step) is every node with in-domain fan-out `φ(P) ≥ φ_min`; each is scored by
+/// `bridge_classify` and the non-`NotCandidate` results are returned sorted by `n_eff · purity`
+/// **descending** (node id as the deterministic tie-break). That key puts genuine bridges (high
+/// `n_eff`, high purity) on top, redundant hubs (low `n_eff`) and leak conduits (low purity) below —
+/// the full ranked map, *labels included*.
+///
+/// **Self-calibration.** When `params.tau_pure == None` (the default), the Bridge/LeakConduit split is
+/// *not* a hard-coded constant: this computes the purity of every **diverse** candidate (`n_eff ≥
+/// τ_div` — the population the cut actually partitions), derives `τ_pure` from that distribution via
+/// `calibrate_tau_pure` (the leak/hub log-gap), and re-applies the split — so the same code ports from
+/// the physics-exploded 10k slice (purities `~0.002–0.04`, calibrated `τ_pure ≈ 0.004`) to any graph
+/// at any absolute purity scale. `Some(x)` pins an explicit cut instead (the per-node `bridge_classify`
+/// value, deterministic). `RedundantHub` / `NotCandidate` labels do not depend on `τ_pure` and are
+/// untouched.
 ///
 /// The heavier **MICA-frequency** candidate generation (`resnik_from_ic` over sampled distant pairs)
 /// is the optional, layered alternative the spec leaves for when the fan-out filter over-generates;
@@ -2586,6 +2662,20 @@ pub fn rank_bridges(
         .map(|&p| (p, bridge_classify(p, parents, mu, threshold, params)))
         .filter(|(_, s)| s.class != BridgeClass::NotCandidate) // fan-out filter: φ ≥ φ_min kept
         .collect();
+    // Self-calibrate the purity cut when not explicitly pinned, then re-apply the Bridge/LeakConduit
+    // split to the diverse candidates with the derived τ_pure (RedundantHub / NotCandidate untouched).
+    if params.tau_pure.is_none() {
+        let diverse_purities: Vec<f64> = out.iter()
+            .filter(|(_, s)| s.n_eff >= params.tau_div)
+            .map(|(_, s)| s.purity)
+            .collect();
+        let tau = calibrate_tau_pure(&diverse_purities);
+        for (_, s) in out.iter_mut() {
+            if s.n_eff >= params.tau_div {
+                s.class = if s.purity >= tau { BridgeClass::Bridge } else { BridgeClass::LeakConduit };
+            }
+        }
+    }
     // Sort by n_eff·purity descending; node id breaks ties so the comparator is total (rank keys are
     // finite — n_eff and purity are both finite by construction).
     out.sort_unstable_by(|a, b| {
@@ -7015,7 +7105,7 @@ mod tests {
     // Params: φ_min=2, τ_div=1.8 (between the redundant n_eff≈1 and the diverse n_eff≈3), τ_pure=0.5.
     #[test]
     fn bridge_classify_lands_each_node_in_its_quadrant() {
-        let params = BridgeParams { phi_min: 2, tau_div: 1.8, tau_pure: 0.5 };
+        let params = BridgeParams { phi_min: 2, tau_div: 1.8, tau_pure: Some(0.5) };
         let th = 0.3;
 
         // BRIDGE: 3 in-domain children, each with its own in-domain private subtree (distinct +
@@ -7078,7 +7168,7 @@ mod tests {
     // labeled LeakConduit, not Bridge.
     #[test]
     fn rank_bridges_orders_bridge_above_hub_and_labels_the_leak() {
-        let params = BridgeParams { phi_min: 3, tau_div: 1.8, tau_pure: 0.5 };
+        let params = BridgeParams { phi_min: 3, tau_div: 1.8, tau_pure: Some(0.5) };
         let th = 0.3;
         let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
         let mut mu: HashMap<u32, f64> = HashMap::new();
@@ -7192,22 +7282,103 @@ mod tests {
         assert!(sketched.0 <= 1.0 + 1e-9, "diversity clamped ≤ 1: {}", sketched.0);
     }
 
-    // ── Fan-out bridge detector — increment 5 + purity refinement (#3307): real-data validation (gated) ──
+    // ── Fan-out bridge detector — self-calibrating τ_pure (#3313) ──
+
+    // calibrate_tau_pure finds the leak/hub log-gap and is SCALE-INVARIANT: scaling every purity by a
+    // constant shifts the derived τ_pure by the same constant (log-gaps are unchanged). Also exercises
+    // the minority-low constraint (a high outlier above the hub cluster must NOT move the split) and
+    // the unimodal fallback.
+    #[test]
+    fn calibrate_tau_pure_is_scale_invariant_and_robust() {
+        // Bimodal: leak cluster {0.002, 0.003}, hub cluster {0.02, 0.025, 0.03}. Split between 0.003
+        // and 0.02 ⇒ τ = geomean(0.003, 0.02) = 0.00775.
+        let purs = vec![0.002, 0.003, 0.02, 0.025, 0.03];
+        let tau = calibrate_tau_pure(&purs);
+        assert!((tau - (0.003f64 * 0.02).sqrt()).abs() < 1e-6, "leak/hub geomean split: {tau}");
+        assert!(tau > 0.003 && tau < 0.02, "between the clusters: {tau}");
+
+        // Scale every purity by 100×: the derived τ scales by 100× too (log-gaps invariant).
+        let scaled: Vec<f64> = purs.iter().map(|p| p * 100.0).collect();
+        let tau_scaled = calibrate_tau_pure(&scaled);
+        assert!((tau_scaled - tau * 100.0).abs() < 1e-4, "scale-invariant: {tau_scaled} vs {}", tau * 100.0);
+
+        // Minority-low: add two HIGH outliers far above the hub cluster (like Temperature/Waves on the
+        // 10k graph). Their gap is large but its low side is the majority ⇒ rejected; the split stays
+        // at the leak/hub boundary.
+        let mut with_outliers = purs.clone();
+        with_outliers.push(0.5); with_outliers.push(0.9);
+        let tau_out = calibrate_tau_pure(&with_outliers);
+        assert!(tau_out > 0.003 && tau_out < 0.02,
+            "high outliers must not move the leak/hub split: {tau_out}");
+
+        // Unimodal (no leak cluster): tightly-clustered purities ⇒ fallback to a low percentile, not a
+        // spurious large split.
+        let tight = vec![0.80, 0.82, 0.84, 0.86, 0.88, 0.90];
+        let tau_uni = calibrate_tau_pure(&tight);
+        assert!(tau_uni <= 0.84, "unimodal ⇒ low-percentile fallback, not a mid-cluster split: {tau_uni}");
+    }
+
+    // PORTABILITY: two clusters at a DIFFERENT absolute scale than the 10k graph (purities ~0.3 and
+    // ~0.9, not ~0.002 and ~0.02). rank_bridges with τ_pure = None must still split them correctly —
+    // proving the classifier ports across graphs without a hard-coded threshold. Built from independent
+    // P-rooted gadgets: each P has 2 disjoint in-domain children (⇒ n_eff = 2, diverse) plus tunable
+    // in-domain / out-of-domain descendants giving a target in-domain fraction (1+x_in)/(1+x_in+x_out).
+    #[test]
+    fn rank_bridges_auto_tau_ports_to_a_different_purity_scale() {
+        let th = 0.3;
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut mu: HashMap<u32, f64> = HashMap::new();
+        let mut next: u32 = 1;
+        // Build a gadget rooted at `root`; returns nothing, mutates g/mu. `x_in` extra in-domain nodes
+        // under child A, `x_out` out-of-domain nodes under child A; child B is a bare in-domain leaf.
+        // gated cone = {root, A, B} ∪ x_in  (size 3 + x_in); raw cone adds x_out (size 3 + x_in + x_out)
+        // ⇒ in-domain fraction = (3 + x_in) / (3 + x_in + x_out). n_eff = 2 (A's subtree disjoint from B).
+        let gadget = |g: &mut HashMap<u32, Vec<u32>>, mu: &mut HashMap<u32, f64>,
+                      next: &mut u32, x_in: u32, x_out: u32| -> u32 {
+            let root = *next; *next += 1; mu.insert(root, 1.0);
+            let a = *next; *next += 1; g.insert(a, vec![root]); mu.insert(a, 1.0);
+            let b = *next; *next += 1; g.insert(b, vec![root]); mu.insert(b, 1.0);
+            for _ in 0..x_in { let v = *next; *next += 1; g.insert(v, vec![a]); mu.insert(v, 1.0); }
+            for _ in 0..x_out { let v = *next; *next += 1; g.insert(v, vec![a]); mu.insert(v, 0.0); }
+            root
+        };
+        // HUB cluster (high fraction ~0.8–0.9): x_in large, x_out small.
+        //   (3+12)/(3+12+2) = 15/17 ≈ 0.882 ;  (3+15)/(3+15+2)=18/20=0.90 ; (3+10)/(3+10+2)=13/15≈0.867
+        let hubs: Vec<u32> = [(12u32, 2u32), (15, 2), (10, 2)].iter()
+            .map(|&(xi, xo)| gadget(&mut g, &mut mu, &mut next, xi, xo)).collect();
+        // LEAK cluster (low fraction ~0.3): x_in small, x_out large.
+        //   (3+0)/(3+0+7)=3/10=0.30 ;  (3+1)/(3+1+8)=4/12≈0.333
+        let leaks: Vec<u32> = [(0u32, 7u32), (1, 8)].iter()
+            .map(|&(xi, xo)| gadget(&mut g, &mut mu, &mut next, xi, xo)).collect();
+
+        let params = BridgeParams { phi_min: 2, tau_div: 1.5, tau_pure: None };
+        let ranked = rank_bridges(&g, &mu, th, &params);
+        let class_of = |n: u32| ranked.iter().find(|(x, _)| *x == n).map(|(_, s)| *s).unwrap();
+
+        // The auto-derived split lands between the two clusters at THIS scale (~0.3 vs ~0.9), nowhere
+        // near the 10k graph's ~0.004 — that is the portability.
+        let diverse: Vec<f64> = ranked.iter().filter(|(_, s)| s.n_eff >= params.tau_div).map(|(_, s)| s.purity).collect();
+        let tau = calibrate_tau_pure(&diverse);
+        eprintln!("portability: auto τ_pure = {:.4} at the 0.3/0.9 scale (10k graph derives ~0.004)", tau);
+        assert!(tau > 0.34 && tau < 0.86, "τ_pure self-calibrated between the 0.3 and 0.9 clusters: {tau}");
+
+        for h in hubs { assert_eq!(class_of(h).class, BridgeClass::Bridge, "high-fraction gadget ⇒ Bridge: {:?}", class_of(h)); }
+        for l in leaks { assert_eq!(class_of(l).class, BridgeClass::LeakConduit, "low-fraction gadget ⇒ LeakConduit: {:?}", class_of(l)); }
+    }
+
+    // ── Fan-out bridge detector — real-data validation with SELF-CALIBRATING τ_pure (#3313, gated) ──
 
     // Run the detector on the REAL (raw, cyclic) Wikipedia physics graph with the LLM μ fixture and
-    // ASSERT the CORRECTED labels the in-domain-frame purity (`|gated_desc|/|desc|`) now produces.
-    // #3306 classified on raw-cone purity, which mislabeled the genuine in-domain hubs
-    // Subfields_of_physics and Energy as LeakConduit (a big raw cone dilutes the average regardless of
-    // coherence). The in-domain fraction fixes it: the giant-cone leak conduit Matter reads low, the
-    // hubs read an order of magnitude higher. The exact path is cycle-safe (BFS `seen` dedup), so no
-    // SCC condensation is needed. Gated on UW_CATEGORY_TSV + UW_FUZZY_NODES (skips in CI).
+    // ASSERT the corrected labels — now with τ_pure DERIVED from the candidate purity distribution
+    // (`tau_pure: None`), no hard-coded 0.01. The in-domain-fraction purity (`|gated_desc|/|desc|`) of
+    // a leak conduit is orders of magnitude below a hub's, so the distribution is log-bimodal;
+    // `calibrate_tau_pure` finds the leak/hub gap. The exact path is cycle-safe (BFS `seen` dedup), so
+    // no SCC condensation is needed. Gated on UW_CATEGORY_TSV + UW_FUZZY_NODES (skips in CI).
     //
-    // Measured in-domain fractions (10k graph, θ=0.3): Subfields_of_physics 0.0184, Energy 0.0172,
-    // Electromagnetism 0.0103 vs leak conduits Matter 0.0023, Physical_objects 0.0015 — so τ_pure is
-    // tuned to that scale (0.01). (The fraction is small even for hubs because the associative graph's
-    // raw cones reach the whole encyclopedia; the *ratio* of in-domain frontier to raw cone is what
-    // separates a hub from a leak. Variant comparison — fraction vs gated average-μ — is in the
-    // measurement-doc addendum; the fraction is the cleaner separator.)
+    // Measured in-domain fractions (10k graph, θ=0.3): leak conduits Matter 0.0023, Physical_objects
+    // 0.0015 vs hubs Electromagnetism 0.0103, Energy 0.0172, Subfields_of_physics 0.0184 — the
+    // auto-derived τ_pure ≈ 0.0041 (geometric mean of the 0.0023→0.0074 leak/hub gap), close to but
+    // NOT the old hand-tuned 0.01, and reproducing the same labels with no constant baked in.
     #[test]
     fn wikipedia_bridge_detector_classifies_apexes() {
         let tsv = match std::env::var("UW_CATEGORY_TSV") {
@@ -7239,59 +7410,59 @@ mod tests {
         eprintln!("bridge: {} nodes, {} scored", names.len(), mu.len());
 
         let th = 0.3;
-        // τ_pure on the in-domain *fraction*, tuned to the associative-graph scale (hubs ~0.018, leak
-        // conduits ~0.002): 0.01 sits cleanly between them.
-        let params = BridgeParams { phi_min: 2, tau_div: 1.5, tau_pure: 0.01 };
-        let id = |s: &str| ids.get(s).copied();
-        let cls = |s: &str| -> Option<BridgeScore> { id(s).map(|n| bridge_classify(n, &parents, &mu, th, &params)) };
-        let report = |label: &str| { if let Some(s) = cls(label) {
-            eprintln!("  {:<24} n_eff={:>5.2} purity(in-dom frac)={:>7.4} fan={:>2} {:?}",
-                label, s.n_eff, s.purity, s.fan_out, s.class); } };
-        eprintln!("bridge: documented leak conduits —");
-        for nm in ["Matter", "Physical_objects", "Time", "Astronomical_objects"] { report(nm); }
-        eprintln!("bridge: genuine in-domain hubs —");
-        for nm in ["Subfields_of_physics", "Energy", "Electromagnetism", "Mechanics"] { report(nm); }
+        // SELF-CALIBRATING: τ_pure = None ⇒ rank_bridges derives the cut from the candidate purity
+        // distribution. NO hard-coded threshold anywhere in this test.
+        let params = BridgeParams { phi_min: 2, tau_div: 1.5, tau_pure: None };
+        let ranked = rank_bridges(&parents, &mu, th, &params);
+        let class_of = |nm: &str| ids.get(nm).and_then(|n| ranked.iter().find(|(x, _)| x == n).map(|(_, s)| *s));
 
-        // CORRECTED LABELS (the point of #3307). Raw-cone purity put Subfields_of_physics (0.019) and
-        // Energy (0.014) in LeakConduit; the in-domain frame lifts them to their true Bridge quadrant,
-        // while the giant-cone leak conduit Matter stays a LeakConduit.
-        if let Some(s) = cls("Subfields_of_physics") {
-            assert_eq!(s.class, BridgeClass::Bridge, "Subfields_of_physics ⇒ Bridge (was mislabeled LeakConduit): {s:?}");
+        // Report what the auto-calibration derived (for the addendum), recomputed here independently
+        // from the diverse candidates' purities — same input rank_bridges uses internally.
+        let diverse_purities: Vec<f64> = ranked.iter()
+            .filter(|(_, s)| s.n_eff >= params.tau_div).map(|(_, s)| s.purity).collect();
+        let tau_auto = calibrate_tau_pure(&diverse_purities);
+        eprintln!("bridge: AUTO-derived τ_pure = {:.5} (old hand-tuned constant was 0.01)", tau_auto);
+        for (n, s) in ranked.iter() {
+            eprintln!("  {:<24} n_eff={:>5.2} purity={:>7.4} {:?}", names[*n as usize], s.n_eff, s.purity, s.class);
         }
-        if let Some(s) = cls("Energy") {
-            assert_eq!(s.class, BridgeClass::Bridge, "Energy ⇒ Bridge (was mislabeled LeakConduit): {s:?}");
+
+        // The auto-derived τ_pure must sit between the leak cluster (Matter/Physical_objects, ~0.002)
+        // and the hub cluster (Electromagnetism 0.0103 and up) — proving it found the real split with
+        // no constant. It need NOT equal 0.01; it should land in (0.0023, 0.0103].
+        if let (Some(m), Some(em)) = (class_of("Matter"), class_of("Electromagnetism")) {
+            assert!(m.purity < tau_auto && tau_auto <= em.purity,
+                "auto τ_pure {tau_auto} must split Matter {} | Electromagnetism {}", m.purity, em.purity);
         }
-        if let Some(s) = cls("Matter") {
-            assert_eq!(s.class, BridgeClass::LeakConduit, "Matter ⇒ LeakConduit (giant cone, tiny in-domain frontier): {s:?}");
+        assert!(tau_auto > 0.0, "a bimodal physics graph must yield a positive auto τ_pure: {tau_auto}");
+
+        // CORRECTED LABELS, produced by the AUTO threshold (no 0.01). The genuine in-domain hubs are
+        // Bridges; the giant-cone leak conduits stay LeakConduit.
+        for nm in ["Subfields_of_physics", "Energy", "Electromagnetism", "Mechanics"] {
+            if let Some(s) = class_of(nm) {
+                assert_eq!(s.class, BridgeClass::Bridge, "{nm} ⇒ Bridge under auto τ_pure: {s:?}");
+            }
         }
-        // The in-domain fraction now ORDERS a hub above the leak conduit (the raw read did not — it put
-        // Subfields 0.019 below Thermodynamics but mislabeled it all the same).
-        if let (Some(m), Some(e)) = (cls("Matter"), cls("Energy")) {
-            assert!(m.purity < e.purity, "leak conduit Matter purity {} < hub Energy purity {}", m.purity, e.purity);
+        for nm in ["Matter", "Physical_objects"] {
+            if let Some(s) = class_of(nm) {
+                assert_eq!(s.class, BridgeClass::LeakConduit, "{nm} ⇒ LeakConduit under auto τ_pure: {s:?}");
+            }
         }
 
         // REDUNDANT HUB — asserted on a grounded synthetic reconverging fan-out, because the physics
         // fixture contains no in-domain redundant hub: the X_by_country apexes (Physicists_by_nationality
-        // etc.) are out-of-domain (μ=0 ⇒ NotCandidate), and — correcting #3306's framing — a by-country
-        // fan-out is *diverse* (disjoint per-country cones ⇒ high n_eff), not redundant. A true
-        // RedundantHub needs *overlapping* child cones: 3 in-domain children all funnelling into one
-        // shared in-domain subtree ⇒ low n_eff.
+        // etc.) are out-of-domain (μ=0 ⇒ NotCandidate), and a by-country fan-out is *diverse* (disjoint
+        // per-country cones ⇒ high n_eff), not redundant. A true RedundantHub needs *overlapping* child
+        // cones: 3 in-domain children all funnelling into one shared in-domain subtree ⇒ low n_eff.
+        // (RedundantHub does not depend on τ_pure, so an explicit Some(_) keeps it deterministic.)
         let mut hub: HashMap<u32, Vec<u32>> = HashMap::new();
         let mut mu_h: HashMap<u32, f64> = HashMap::new();
         mu_h.insert(0, 1.0);
         for c in 1u32..=3 { hub.insert(c, vec![0]); mu_h.insert(c, 1.0); }
         hub.insert(100, vec![1, 2, 3]); mu_h.insert(100, 1.0); // shared under all three children
         for d in 101u32..=200 { hub.insert(d, vec![100]); mu_h.insert(d, 1.0); }
-        let sh = bridge_classify(0, &hub, &mu_h, th, &params);
+        let sh = bridge_classify(0, &hub, &mu_h, th, &BridgeParams { phi_min: 2, tau_div: 1.5, tau_pure: Some(0.5) });
         assert_eq!(sh.class, BridgeClass::RedundantHub, "reconverging fan-out ⇒ RedundantHub: {sh:?}");
 
-        // The full ranking exists and is finite; report the top bridges by n_eff·purity.
-        let ranked = rank_bridges(&parents, &mu, th, &params);
-        eprintln!("bridge: {} candidates; top 8 by n_eff·purity —", ranked.len());
-        for (n, s) in ranked.iter().take(8) {
-            eprintln!("  {:<26} n_eff={:>6.2} purity={:>8.5} {:?}", names[*n as usize], s.n_eff, s.purity, s.class);
-        }
-        assert!(ranked.iter().all(|(_, s)| s.n_eff.is_finite() && s.purity.is_finite()),
-            "all scores finite");
+        assert!(ranked.iter().all(|(_, s)| s.n_eff.is_finite() && s.purity.is_finite()), "all scores finite");
     }
 }
