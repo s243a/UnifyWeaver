@@ -16,10 +16,12 @@ The first implementation step is intentionally conservative:
   compound body arguments with default args-first `set_*` ordering, and
   conjunctions of those simple shapes directly as items. The same native path
   also emits non-indexed linear multi-clause predicates when every clause has one
-  of those supported simple shapes. It falls back to the existing text generator
-  plus `wam_text_to_items/2` for indexed multi-clause predicates, aggregates,
-  lowered builtins, control flow, legacy interleaved compound-argument emission
-  via `args_first_emission(false)`, and other complex shapes.
+  of those supported simple shapes, plus the simplest A1 `switch_on_constant`
+  indexed variant when no extra dispatch chains are needed. It falls back to the
+  existing text generator plus `wam_text_to_items/2` for A2 indexing,
+  fallthrough indexes, dispatch-chain indexes, aggregates, lowered builtins,
+  control flow, legacy interleaved compound-argument emission via
+  `args_first_emission(false)`, and other complex shapes.
 - `compile_predicate_to_wam/3` still returns text by default for compatibility
   with the existing targets. The default-output flip described below remains a
   later migration step after more callers consume items directly.
