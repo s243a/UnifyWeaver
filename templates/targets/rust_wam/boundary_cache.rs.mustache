@@ -2582,6 +2582,90 @@ pub fn rank_bridges(
     out
 }
 
+/// **μ-mass of a cone sketch restricted to a node subset** (the subset read behind the *sketched*
+/// bridge diversity, increment 4). Estimates `Σ_{d∈cone, d∈U_P} μ_d` from the cone's bottom-`k` sketch
+/// `s`, gating `sketch_mu_mass`'s plug-in subset-sum by the `U_P`-membership indicator — `within` is
+/// the hash set `{mix64(x) : x ∈ U_P}`. Same estimator as `sketch_mu_mass`/`sketch_mu_overlap`: the
+/// cardinality `D̂ = (k−1)/ĥ_k` (capped) times the **gated** sample mean `(Σ μ·𝟙[h∈within]) / |sample|`,
+/// so `D̂(cone) · E[μ·𝟙_{U_P}] = μ(cone ∩ U_P)`, unbiased to `O(1/k)`. Unsaturated (`|s| < k`) ⇒ the
+/// gated sum is exact. Additive — does **not** modify `sketch_mu_mass`.
+fn sketch_mu_mass_within(
+    s: &[(u64, f64)],
+    within: &std::collections::HashSet<u64>,
+    k: usize,
+    cap: CardCap,
+) -> f64 {
+    if s.is_empty() { return 0.0; }
+    let gated_sum: f64 = s.iter().filter(|(h, _)| within.contains(h)).map(|&(_, w)| w).sum();
+    if s.len() < k { return gated_sum; } // unsaturated ⇒ exact gated sum
+    let hk = s[k - 1].0 as f64 / (u64::MAX as f64 + 1.0);
+    let raw_card = if hk <= 0.0 { s.len() as f64 } else { (k as f64 - 1.0) / hk };
+    cap.apply(raw_card) * (gated_sum / s.len() as f64)
+}
+
+/// **Sketched fan-out diversity** (increment 4) — the scale path of `fanout_diversity`: the exact
+/// per-`P` cone walk is swapped for the **KMV sketch-union read** the spec calls out. Same `(diversity,
+/// n_eff)`, same `None` conditions, but the masses are read off the precomputed weighted descendant
+/// sketches (`descendant_minhash_weighted`) instead of walked:
+///
+/// - `U_P` is still computed exactly (`path_gated_cone`, cheap, in-domain) and turned into the hash set
+///   `H_P = {mix64(x) : x ∈ U_P}`;
+/// - `μ(E_i^P) = μ(desc(c_i) ∩ U_P)` ← `sketch_mu_mass_within(sketches[c_i], H_P)` per in-domain child;
+/// - `μ(⋃E_i^P) = μ((⋃desc(c_i)) ∩ U_P)` ← `sketch_mu_mass_within(union, H_P)`, where `union` is the
+///   bottom-`k` of the merged child sketches. KMV union is exact for the union's bottom-`k`
+///   (`bottomk(⋃ bottomk(A_i)) = bottomk(⋃A_i)`), so the merge is sound.
+///
+/// `diversity = μ(⋃)/Σμ(E_i)` (clamped at `1.0` against KMV noise), `n_eff = n·diversity`. In the
+/// unsaturated regime (`k ≥` every child cone) it reduces to `fanout_diversity` *exactly*; saturated it
+/// carries the KMV `∝ 1/√k` error. All child sketches must share the same `k` (the union merge needs
+/// it). `cap` is the [`CardCap`] policy (`Universe(N)` recommended). `mu`/`sketches` are inputs.
+pub fn fanout_diversity_sketched(
+    p: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    mu: &std::collections::HashMap<u32, f64>,
+    threshold: f64,
+    sketches: &std::collections::HashMap<u32, Vec<(u64, f64)>>,
+    k: usize,
+    cap: impl Into<CardCap>,
+) -> Option<(f64, f64)> {
+    use std::collections::{HashMap, HashSet};
+    debug_assert!(mu.values().all(|&w| w >= 0.0), "weights must be ≥ 0");
+    let cap = cap.into();
+    let muv = |u: u32| mu.get(&u).copied().unwrap_or(0.0);
+    if muv(p) < threshold { return None; } // P out-of-domain ⇒ empty U_P
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&c, ps) in parents {
+        for &pp in ps { children.entry(pp).or_default().push(c); }
+    }
+    let mut in_dom: Vec<u32> = Vec::new();
+    if let Some(cs) = children.get(&p) {
+        let mut seen_c: HashSet<u32> = HashSet::new();
+        for &c in cs {
+            if muv(c) >= threshold && seen_c.insert(c) { in_dom.push(c); }
+        }
+    }
+    let n = in_dom.len();
+    if n < 2 { return None; }
+    let universe = path_gated_cone(p, &children, mu, threshold);
+    let hp: HashSet<u64> = universe.iter().map(|&x| mix64(x as u64)).collect();
+    // Denominator Σ μ(E_i) and the bottom-k union of the child sketches (KMV-mergeable).
+    let mut sum_region_mass = 0.0f64;
+    let mut union: Vec<(u64, f64)> = Vec::new();
+    for &c in &in_dom {
+        if let Some(s) = sketches.get(&c) {
+            sum_region_mass += sketch_mu_mass_within(s, &hp, k, cap);
+            union.extend_from_slice(s);
+        }
+    }
+    if sum_region_mass <= 0.0 { return None; }
+    union.sort_unstable_by_key(|&(h, _)| h);
+    union.dedup_by_key(|&mut (h, _)| h);
+    union.truncate(k); // bottom-k of ⋃ desc(c_i) (exact KMV union)
+    let union_mass = sketch_mu_mass_within(&union, &hp, k, cap);
+    let diversity = (union_mass / sum_region_mass).min(1.0);
+    Some((diversity, n as f64 * diversity))
+}
+
 /// **Fuzzy admission curve**: an S-shaped (logistic) transfer from the raw membership `μ` to an
 /// admission weight in `[0,1]`, `w(μ) = 1/(1 + e^{−k(μ−c)})`. Shapes *how* `μ` translates to
 /// admission — nearly-full weight well above the boundary, nearly-zero well below, a smooth knee
@@ -7020,5 +7104,78 @@ mod tests {
         assert_eq!(ranked[0].0, 1, "bridge ranks first: {ranked:?}");
         let pos = |n: u32| ranked.iter().position(|(x, _)| *x == n).unwrap();
         assert!(pos(1) < pos(3), "bridge ranks above hub");
+    }
+
+    // ── Fan-out bridge detector — increment 4: sketch path (exact-vs-sketch agreement) ──
+
+    // UNSATURATED (k ≫ every child cone): the sketched n_eff reduces to the exact n_eff bit-for-bit on
+    // the three increment-1 graphs — the strict-generalization check (mirrors
+    // mu_weighted_ic_reduces_to_sketch_ic_at_mu_one).
+    #[test]
+    fn fanout_diversity_sketched_matches_exact_unsaturated() {
+        const K: usize = 256;
+        let th = 0.3;
+
+        // (a) disjoint fan-out (exact n_eff = 3)
+        let mut disjoint: HashMap<u32, Vec<u32>> = HashMap::new();
+        disjoint.insert(1, vec![0]); disjoint.insert(2, vec![0]); disjoint.insert(3, vec![0]);
+        disjoint.insert(11, vec![1]); disjoint.insert(12, vec![1]);
+        disjoint.insert(21, vec![2]); disjoint.insert(22, vec![2]);
+        disjoint.insert(31, vec![3]); disjoint.insert(32, vec![3]);
+        let mu_d: HashMap<u32, f64> =
+            [0u32, 1, 2, 3, 11, 12, 21, 22, 31, 32].into_iter().map(|i| (i, 1.0)).collect();
+
+        // (b) identical / reconverging (exact n_eff ≈ 1) — shared D=100 + tail under all 4 children
+        let mut ident: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut mu_i: HashMap<u32, f64> = HashMap::new();
+        mu_i.insert(0, 1.0);
+        for c in 1u32..=4 { ident.insert(c, vec![0]); mu_i.insert(c, 1.0); }
+        ident.insert(100, vec![1, 2, 3, 4]); mu_i.insert(100, 1.0);
+        for d in 101u32..=200 { ident.insert(d, vec![100]); mu_i.insert(d, 1.0); }
+
+        // (c) partial overlap (exact n_eff = 5/3)
+        let mut partial: HashMap<u32, Vec<u32>> = HashMap::new();
+        partial.insert(1, vec![0]); partial.insert(2, vec![0]);
+        partial.insert(10, vec![1]); partial.insert(20, vec![2]); partial.insert(50, vec![1, 2]);
+        let mu_p: HashMap<u32, f64> =
+            [0u32, 1, 2, 10, 20, 50].into_iter().map(|i| (i, 1.0)).collect();
+
+        for (g, mu) in [(&disjoint, &mu_d), (&ident, &mu_i), (&partial, &mu_p)] {
+            let n_nodes = {
+                let mut s: std::collections::HashSet<u32> = std::collections::HashSet::new();
+                for (&c, ps) in g.iter() { s.insert(c); for &p in ps { s.insert(p); } }
+                s.len()
+            };
+            let sk = descendant_minhash_weighted(g, mu, K).expect("acyclic ⇒ Some");
+            let exact = fanout_diversity(0, g, mu, th).unwrap();
+            let sketched = fanout_diversity_sketched(0, g, mu, th, &sk, K, n_nodes).unwrap();
+            assert!((exact.0 - sketched.0).abs() < 1e-9 && (exact.1 - sketched.1).abs() < 1e-9,
+                "unsaturated sketch must equal exact: exact {exact:?} vs sketch {sketched:?}");
+        }
+    }
+
+    // SATURATED (k ≪ cone): the sketched n_eff tracks the exact within KMV tolerance. A disjoint
+    // fan-out with 100 private leaves per child (cone 101 ≫ k=32) ⇒ exact n_eff = 3; the sketch
+    // estimate stays close.
+    #[test]
+    fn fanout_diversity_sketched_tracks_exact_saturated() {
+        const K: usize = 32;
+        let th = 0.3;
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut mu: HashMap<u32, f64> = HashMap::new();
+        mu.insert(0, 1.0);
+        let mut next = 1000u32;
+        for c in 1u32..=3 {
+            g.insert(c, vec![0]); mu.insert(c, 1.0);
+            for _ in 0..100 { g.insert(next, vec![c]); mu.insert(next, 1.0); next += 1; }
+        }
+        let n_nodes = next as usize; // 0..next, a safe Universe cap
+        let sk = descendant_minhash_weighted(&g, &mu, K).expect("acyclic ⇒ Some");
+        let exact = fanout_diversity(0, &g, &mu, th).unwrap();
+        let sketched = fanout_diversity_sketched(0, &g, &mu, th, &sk, K, n_nodes).unwrap();
+        assert!((exact.1 - 3.0).abs() < 1e-9, "disjoint ⇒ exact n_eff = 3, got {}", exact.1);
+        assert!((sketched.1 - exact.1).abs() < 0.5,
+            "saturated sketch n_eff {} within KMV tol of exact {}", sketched.1, exact.1);
+        assert!(sketched.0 <= 1.0 + 1e-9, "diversity clamped ≤ 1: {}", sketched.0);
     }
 }
