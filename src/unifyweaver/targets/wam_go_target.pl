@@ -597,6 +597,9 @@ wam_go_direct_builtin("close/1", 1, 'close/1').
 wam_go_direct_builtin(read_line_to_string/2, 2, 'read_line_to_string/2').
 wam_go_direct_builtin('read_line_to_string/2', 2, 'read_line_to_string/2').
 wam_go_direct_builtin("read_line_to_string/2", 2, 'read_line_to_string/2').
+wam_go_direct_builtin(read_string/5, 5, 'read_string/5').
+wam_go_direct_builtin('read_string/5', 5, 'read_string/5').
+wam_go_direct_builtin("read_string/5", 5, 'read_string/5').
 wam_go_direct_builtin(format/1, 1, 'format/1').
 wam_go_direct_builtin('format/1', 1, 'format/1').
 wam_go_direct_builtin("format/1", 1, 'format/1').
