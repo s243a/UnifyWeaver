@@ -7,7 +7,9 @@
 
 %% Test data (facts) - MUST BE DYNAMIC for clause/2 to work across modules
 :- dynamic test_parent/2, test_grandparent/2, test_ancestor/2, test_wrap/2,
-           test_alias/2, test_len/2, test_list_check/1, test_list_wrap/1.
+           test_alias/2, test_len/2, test_list_check/1, test_list_wrap/1,
+           test_linear_fact/1, test_linear_three/1, test_linear_a/1,
+           test_linear_b/1, test_linear_c/1.
 
 test_parent(alice, bob).
 test_parent(bob, charlie).
@@ -20,6 +22,18 @@ test_alias(X, Y) :- test_parent(X, Y).
 
 %% Simple builtin rule — exercises native items for generic builtin_call.
 test_len(L, N) :- length(L, N).
+
+%% Non-indexed multi-clause shapes — exercises native items for linear
+%  try/retry/trust chains without going through the WAM text parser.
+test_linear_fact(_).
+test_linear_fact(_).
+
+test_linear_a(_).
+test_linear_b(_).
+test_linear_c(_).
+test_linear_three(X) :- test_linear_a(X).
+test_linear_three(X) :- test_linear_b(X).
+test_linear_three(X) :- test_linear_c(X).
 
 %% Recursive ancestor rule
 test_ancestor(X, Y) :- test_parent(X, Y).
@@ -499,6 +513,80 @@ test_wam_items_compound_arg_legacy_order_fallback :-
     ;   fail_test(Test, 'Compound body arg legacy-order fallback does not match canonical WAM text shape')
     ).
 
+test_wam_items_native_linear_fact_clauses :-
+    Test = 'WAM: native items API for linear multi-clause facts',
+    ExpectedItems = [
+        label("test_linear_fact/1"),
+        try_me_else("L_test_linear_fact_1_2"),
+        get_variable("X1", "A1"),
+        proceed,
+        label("L_test_linear_fact_1_2"),
+        trust_me,
+        label("L_test_linear_fact_1_2_body"),
+        get_variable("X1", "A1"),
+        proceed
+    ],
+    (   wam_target:compile_predicate_to_wam_text(user:test_linear_fact/1, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_linear_fact/1, [], Items),
+        Items == ExpectedItems,
+        Items == BridgeItems,
+        \+ member(switch_on_constant(_), Items),
+        member(try_me_else("L_test_linear_fact_1_2"), Items),
+        member(trust_me, Items)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Native linear fact items do not match canonical WAM text shape')
+    ).
+
+test_wam_items_native_linear_rule_clauses :-
+    Test = 'WAM: native items API for linear multi-clause rules',
+    ExpectedItems = [
+        label("test_linear_three/1"),
+        try_me_else("L_test_linear_three_1_2"),
+        allocate,
+        get_variable("X1", "A1"),
+        put_value("X1", "A1"),
+        deallocate,
+        execute("test_linear_a/1"),
+        label("L_test_linear_three_1_2"),
+        retry_me_else("L_test_linear_three_1_3"),
+        label("L_test_linear_three_1_2_body"),
+        allocate,
+        get_variable("X1", "A1"),
+        put_value("X1", "A1"),
+        deallocate,
+        execute("test_linear_b/1"),
+        label("L_test_linear_three_1_3"),
+        trust_me,
+        label("L_test_linear_three_1_3_body"),
+        allocate,
+        deallocate,
+        execute("test_linear_c/1")
+    ],
+    (   wam_target:compile_predicate_to_wam_text(user:test_linear_three/1, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_linear_three/1, [], Items),
+        Items == ExpectedItems,
+        Items == BridgeItems,
+        \+ member(switch_on_constant(_), Items),
+        member(retry_me_else("L_test_linear_three_1_3"), Items),
+        member(execute("test_linear_c/1"), Items)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Native linear rule items do not match canonical WAM text shape')
+    ).
+
+test_wam_items_indexed_multi_clause_still_bridges :-
+    Test = 'WAM: indexed multi-clause items still use bridge',
+    (   wam_target:compile_predicate_to_wam_text(user:test_parent/2, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_parent/2, [], Items),
+        Items == BridgeItems,
+        member(switch_on_constant(_), Items),
+        member(label("test_parent/2"), Items)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Indexed multi-clause predicate did not match bridge items')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -520,6 +608,9 @@ run_tests :-
     test_wam_items_native_nested_compound_body_arg,
     test_wam_items_native_list_body_arg,
     test_wam_items_compound_arg_legacy_order_fallback,
+    test_wam_items_native_linear_fact_clauses,
+    test_wam_items_native_linear_rule_clauses,
+    test_wam_items_indexed_multi_clause_still_bridges,
     test_wam_multi_clause_findall_emits_allocate,
     test_wam_a2_indexing,
     test_wam_mixed_mode_a1_indexing,
