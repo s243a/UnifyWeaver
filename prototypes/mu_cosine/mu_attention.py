@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""`MuAttention` — directional, multi-relational μ over FROZEN e5 + learned tags.
+
+Implements `DESIGN_directional_attention.md`: a tiny permutation-invariant transformer over a short
+**set** of tagged tokens
+
+    { operator(op), anchor(root), node(X)@gen0, {ancestors(X)}@gen_d (min-hop on the DAG), ⌀@gen=noise }
+
+with a sigmoid μ-readout ∈ [0,1]. e5 embeddings are **frozen**; the only learned parameters are the tags
+(`op_emb` codebook, `anchor_tag`, per-generation `gen_emb`), the 1–2-layer attention block, and a
+per-operator linear readout. Every node = frozen e5 + shared tags ⇒ all 8,247 categories covered
+(cold-start safe; no per-node table).
+
+Key design points enforced here (see the doc):
+  * **asymmetry is structural** — the `anchor`(root) and `node`(X) tokens carry different tags AND
+    different e5 *roles* (root = e5 `query:`, candidate/ancestors = e5 `passage:`), so μ(X|root)≠μ(root|X).
+  * **absent / dropped lineage = OFF-MANIFOLD NOISE** (random unit vector matched to the unit-normed e5
+    magnitude) + its `gen_emb` tag — never a learned token or a zero. Same noise is the dropout
+    regulariser (replace present ancestors p≈0.2 each, whole lineage p≈0.1). No dropout at inference;
+    a per-node seed fixes the (rare) empty-lineage noise so the dense map is deterministic.
+  * **keep the explicit anchor(root) token** — lineage-only can't score a root that isn't an ancestor
+    (Music vs Physics, the gate-leak), which is exactly the case we care about.
+"""
+from __future__ import annotations
+
+import hashlib
+import math
+import os
+from collections import deque
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.abspath(os.path.join(ROOT, "..", ".."))
+GRAPH = os.path.join(REPO, "data", "benchmark", "10k", "category_parent.tsv")
+E5_MODEL = "intfloat/e5-small-v2"
+
+# operator codebook (the relation axis). Judge axis is deliberately deferred (one implicit judge).
+OPS = {"SYM": 0, "WIKI": 1, "LLM": 2}
+
+
+# --------------------------------------------------------------------------------------------------
+# graph: directed parent map (child -> parents) for min-hop ancestry; undirected degree for hubs
+# --------------------------------------------------------------------------------------------------
+def load_dag(path=GRAPH):
+    parents, children, deg = {}, {}, {}
+    with open(path) as f:
+        for i, line in enumerate(f):
+            if i == 0 and line.startswith("child"):
+                continue
+            p = line.rstrip("\n").split("\t")
+            if len(p) < 2:
+                continue
+            c, par = p[0], p[1]
+            parents.setdefault(c, set()).add(par)
+            children.setdefault(par, set()).add(c)
+            parents.setdefault(par, parents.get(par, set()))
+            children.setdefault(c, children.get(c, set()))
+            deg[c] = deg.get(c, 0) + 1
+            deg[par] = deg.get(par, 0) + 1
+    return parents, children, deg
+
+
+def all_names(parents, children):
+    return sorted(set(parents) | set(children))
+
+
+def _seed_of(name, salt=0):
+    h = hashlib.blake2b(f"{salt}:{name}".encode(), digest_size=8).digest()
+    return int.from_bytes(h, "big")
+
+
+# --------------------------------------------------------------------------------------------------
+# ancestor sampling — direct parents always; gen-2+ via hub-down-weighted walk (1/deg^β), min-hop tag
+# --------------------------------------------------------------------------------------------------
+def sample_ancestors(node, parents, deg, k=1, beta=1.0, stop=0.33, depth_cap=5, max_anc=8,
+                     rng=None):
+    """Return [(ancestor_name, min_hop_d)] for `node`, tagged by min-hop distance d∈[1,k].
+
+    gen-1 = ALL direct parents (always included). gen-2+ (only if k≥2): a hub-down-weighted random walk
+    UP (step to a parent with prob ∝ 1/deg^β, per-step stop, depth ≤ depth_cap), so the walk avoids the
+    generic apex hubs (Main_topic_classifications, …) that carry no membership signal. Deduped, min-hop."""
+    import random as _r
+    rng = rng or _r.Random()
+    min_hop = {}
+    for p in parents.get(node, ()):                       # gen-1: always all parents
+        min_hop[p] = 1
+    if k >= 2:
+        frontier = list(parents.get(node, ()))
+        d = 1
+        while frontier and d < k and d < depth_cap:
+            nxt = []
+            for x in frontier:
+                ps = list(parents.get(x, ()))
+                if not ps or rng.random() < stop:
+                    continue
+                w = [1.0 / (deg.get(p, 1) ** beta) for p in ps]
+                tot = sum(w) or 1.0
+                r, acc, chosen = rng.random() * tot, 0.0, ps[-1]
+                for p, wi in zip(ps, w):
+                    acc += wi
+                    if r <= acc:
+                        chosen = p
+                        break
+                if chosen not in min_hop:
+                    min_hop[chosen] = d + 1
+                nxt.append(chosen)
+            frontier = nxt
+            d += 1
+    anc = sorted(min_hop.items(), key=lambda kv: (kv[1], kv[0]))
+    if len(anc) > max_anc:                                # keep the closest (smallest min-hop) ancestors
+        anc = anc[:max_anc]
+    return anc
+
+
+# --------------------------------------------------------------------------------------------------
+# e5 embedding cache (frozen) — query: for the root/anchor, passage: for candidate + ancestors
+# --------------------------------------------------------------------------------------------------
+def build_e5_tables(names, cache_path=None, model_name=E5_MODEL, batch_size=512, device=None):
+    """Return (query_tbl, passage_tbl, idx) — two [N,384] unit-normed frozen e5 tables. Cached to disk
+    (regenerable, git-ignored). `query:`/`passage:` are e5's asymmetric prefixes — the directional
+    motivation for choosing e5 (the root is the query, the candidate/ancestors are passages)."""
+    idx = {n: i for i, n in enumerate(names)}
+    if cache_path and os.path.exists(cache_path):
+        d = torch.load(cache_path, weights_only=False)
+        if d["names"] == list(names):
+            return d["query"], d["passage"], idx
+    from sentence_transformers import SentenceTransformer
+    model = SentenceTransformer(model_name, device=device)
+    human = [n.replace("_", " ") for n in names]
+    q = model.encode(["query: " + h for h in human], batch_size=batch_size,
+                     convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False)
+    p = model.encode(["passage: " + h for h in human], batch_size=batch_size,
+                     convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False)
+    qt, pt = torch.tensor(q, dtype=torch.float32), torch.tensor(p, dtype=torch.float32)
+    if cache_path:
+        torch.save({"names": list(names), "query": qt, "passage": pt}, cache_path)
+    return qt, pt, idx
+
+
+def unit_noise(n, d, generator=None):
+    v = torch.randn(n, d, generator=generator)
+    return v / v.norm(dim=-1, keepdim=True).clamp_min(1e-9)
+
+
+# --------------------------------------------------------------------------------------------------
+# tokenizer: turn (node, root, op) examples into padded token tensors for the model
+# --------------------------------------------------------------------------------------------------
+class Tokenizer:
+    """Builds the token set per example and pads a batch. Holds the frozen e5 tables + the DAG."""
+
+    def __init__(self, query_tbl, passage_tbl, idx, parents, deg, k=1, beta=1.0, max_anc=8):
+        self.q, self.p, self.idx = query_tbl, passage_tbl, idx
+        self.parents, self.deg = parents, deg
+        self.k, self.beta, self.max_anc = k, beta, max_anc
+        self.d = query_tbl.shape[1]
+
+    def _anc_for(self, node, train, rng):
+        import random as _r
+        if rng is None:
+            rng = _r.Random(_seed_of(node, salt=7))        # inference: deterministic per node
+        return sample_ancestors(node, self.parents, self.deg, k=self.k, beta=self.beta,
+                                max_anc=self.max_anc, rng=rng)
+
+    def build(self, items, train=False, rng=None, p_drop_anc=0.2, p_drop_lineage=0.1):
+        """items: list of (node, root, op_id). Returns dict of padded tensors for MuAttention.forward."""
+        B = len(items)
+        rows = []          # per-example list of token dicts
+        for (node, root, op) in items:
+            toks = []
+            toks.append(("op", None, op, 0))                              # operator token
+            toks.append(("anchor", root, None, 0))                       # anchor(root) — e5 query:
+            toks.append(("node", node, None, 0))                         # node(X)@gen0 — e5 passage:
+            anc = self._anc_for(node, train, rng)
+            drop_lineage = train and rng is not None and rng.random() < p_drop_lineage
+            if anc and not drop_lineage:
+                for (a, d) in anc:
+                    if train and rng is not None and rng.random() < p_drop_anc:
+                        toks.append(("noise", node, None, d))            # present ancestor → noise
+                    else:
+                        toks.append(("anc", a, None, d))
+            else:
+                toks.append(("noise", node, None, 1))                    # absent lineage → one noise@gen1
+            rows.append(toks)
+
+        T = max(len(r) for r in rows)
+        content = torch.zeros(B, T, self.d)
+        gen_id = torch.full((B, T), -1, dtype=torch.long)
+        is_anchor = torch.zeros(B, T, dtype=torch.bool)
+        op_pos = torch.full((B, T), -1, dtype=torch.long)
+        pad = torch.ones(B, T, dtype=torch.bool)                          # True = pad (ignored)
+        op_of = torch.tensor([it[2] for it in items], dtype=torch.long)
+
+        for bi, toks in enumerate(rows):
+            for ti, (kind, name, op, d) in enumerate(toks):
+                pad[bi, ti] = False
+                if kind == "op":
+                    op_pos[bi, ti] = op
+                elif kind == "anchor":
+                    content[bi, ti] = self.q[self.idx[name]]
+                    is_anchor[bi, ti] = True
+                elif kind == "node":
+                    content[bi, ti] = self.p[self.idx[name]]
+                    gen_id[bi, ti] = 0
+                elif kind == "anc":
+                    content[bi, ti] = self.p[self.idx[name]]
+                    gen_id[bi, ti] = d
+                elif kind == "noise":
+                    if train:                                 # fast path: fresh noise, no per-seed RNG
+                        v = torch.randn(self.d)
+                    else:                                     # inference: per-node seed ⇒ deterministic map
+                        g = torch.Generator().manual_seed(_seed_of(name, salt=100 + d))
+                        v = torch.randn(self.d, generator=g)
+                    content[bi, ti] = v / v.norm().clamp_min(1e-9)
+                    gen_id[bi, ti] = d
+        return {"content": content, "gen_id": gen_id, "is_anchor": is_anchor,
+                "op_pos": op_pos, "op_of": op_of, "pad": pad}
+
+
+# --------------------------------------------------------------------------------------------------
+# the model
+# --------------------------------------------------------------------------------------------------
+class MuAttention(nn.Module):
+    def __init__(self, d_model=384, n_ops=len(OPS), n_heads=4, n_layers=1, max_gen=5,
+                 dim_ff=None, dropout=0.0):
+        super().__init__()
+        self.d = d_model
+        self.op_emb = nn.Embedding(n_ops, d_model)
+        self.gen_emb = nn.Embedding(max_gen + 1, d_model)                 # gen 0..max_gen
+        self.anchor_tag = nn.Parameter(torch.randn(d_model) * 0.02)
+        layer = nn.TransformerEncoderLayer(d_model, n_heads, dim_feedforward=dim_ff or 2 * d_model,
+                                           dropout=dropout, batch_first=True, activation="gelu",
+                                           norm_first=True)
+        self.encoder = nn.TransformerEncoder(layer, n_layers)
+        self.readout_w = nn.Parameter(torch.randn(n_ops, d_model) * (1.0 / math.sqrt(d_model)))
+        self.readout_b = nn.Parameter(torch.zeros(n_ops))
+        for emb in (self.op_emb, self.gen_emb):
+            nn.init.normal_(emb.weight, std=0.02)
+
+    def forward(self, content, gen_id, is_anchor, op_pos, op_of, pad):
+        emb = content.clone()
+        gmask = (gen_id >= 0).unsqueeze(-1)
+        emb = emb + self.gen_emb(gen_id.clamp(min=0)) * gmask
+        emb = emb + self.anchor_tag * is_anchor.unsqueeze(-1)
+        omask = (op_pos >= 0).unsqueeze(-1)
+        emb = emb + self.op_emb(op_pos.clamp(min=0)) * omask
+        h = self.encoder(emb, src_key_padding_mask=pad)
+        # CLS-style readout: the operator token (always position 0, never padded) attends over the whole
+        # set, giving a relation-conditioned summary. Cleaner than mean-pool, which dilutes the input
+        # signal with the large learned op-embedding and collapses each operator's readout to a constant.
+        pooled = h[:, 0, :]
+        w = self.readout_w[op_of]
+        logit = (pooled * w).sum(-1) + self.readout_b[op_of]
+        return torch.sigmoid(logit)
+
+
+if __name__ == "__main__":
+    parents, children, deg = load_dag()
+    names = all_names(parents, children)
+    print(f"DAG: {len(names)} nodes")
+    print("sample ancestors of Optics (k=1):", sample_ancestors("Optics", parents, deg, k=1))
+    print("sample ancestors of Optics (k=3):", sample_ancestors("Optics", parents, deg, k=3,
+          rng=__import__("random").Random(1)))
