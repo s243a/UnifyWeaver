@@ -20,7 +20,8 @@ torch 2.x + sentence-transformers (ML pieces).
 | encoder architecture (MLP/MoE, not a transformer) | ✅ **forward pass** only — `mu_encoder.py`, runs at 384-dim |
 | MiniLM init | ✅ **done** — `mu_encoder_torch.py` `build_minilm_init` + `embed()` (ML env w/ HF egress) |
 | training the full encoder | ✅ **done** — `train_cosine_mu_torch.py` (torch port; objective + held-out generalisation) |
-| **scoring the pairs (μ labels)** | ✅ **sampler labels done** — `mu_pairs_scored.tsv` (200 Haiku-scored positives + 1000 free μ=0 negatives); cutoff-band rescore (Prompt C) still pending |
+| **scoring the pairs (μ labels)** | ✅ **sampler labels done** — `mu_pairs_scored.tsv` (200 Haiku-scored positives + 1000 free μ=0 negatives) |
+| **cutoff-band rescore (Prompt C / stream V)** | ✅ **done** — `tests/fixtures/wikipedia_physics_boundary_haiku.tsv` (654 Haiku membership labels over the e5 decision band); **42.7% decision-flip**, node-vs-root Lin confirmed degenerate, calibration stable (~34k Haiku tokens). `boundary_band.py` + `fuse_and_validate.py` |
 | training on the scored pairs | ✅ **done** — `train_cosine_mu_torch.py --mode pairs --minilm` on `mu_pairs_scored.tsv`; held-out pos corr **+0.726**, lin-agreement moved **−0.13 → +0.10** |
 | wiring dense μ back to the Rust core | 🟡 **emitter done** — `emit_dense_mu.py` / `dense_mu_direct.py` (clamped, verbatim names, 100% coverage); Rust consumption verified by `check_feeds_rust.py`, not run end-to-end in CI |
 | control baseline + theory questions | ✅ **done** — `validate_control_baseline.py` → `REPORT_control_baseline.md` (the #3287 control arm the directional model must beat; lin-saturation, decision-flip, cold-start all resolved) |
@@ -424,6 +425,38 @@ training labels for Prompt B — so **C feeds B** — and small/expensive, so **
 > `name<TAB>μ`) — it's small, expensive, and the reusable boundary training data for Prompt B. **Spends
 > LLM budget, bounded to the decision band — report the band size and confirm with me before scoring.**
 > Branch off `main`, open a PR.
+
+### Progress — stream V: cutoff-band boundary labels (Prompt C, realized)
+
+The decision-band Haiku rescore is done and **validates the μ/gating theory on real data**. Tools:
+`boundary_band.py` (selects the band + surfaces ambiguous pairs), `fuse_and_validate.py` (geometric-mean
+fusion + the three validations). Pipeline:
+
+```
+python3 dense_mu_direct.py --model e5 --out dense_mu_e5.tsv     # the calibrated prior (git-ignored)
+python3 boundary_band.py   --mu-file dense_mu_e5.tsv           # decision band μ∈[0.2,0.45] → 654 cats
+#   → ONE inline Haiku subagent scores MEMBERSHIP for the 654 band names (no file I/O); parent writes:
+#     tests/fixtures/wikipedia_physics_boundary_haiku.tsv  (name<TAB>μ, committed — bought once)
+python3 fuse_and_validate.py                                    # √(prior·haiku) fuse + validate
+python3 check_feeds_rust.py --mu-file dense_mu_e5_fused.tsv     # fused map still feeds the Rust core
+```
+
+| result | value |
+|---|---|
+| decision band μ∈[0.2,0.45] | **654 cats** (360 below-gate, 294 above-gate "leak" side) |
+| **decision-flip rate** | **279/654 = 42.7%** flipped across the 0.3 gate (278 IN→OUT leaks vetoed, 1 OUT→IN: `Geological_periods`) |
+| just-above-cutoff false-positives removed | **278/294 = 94.6%** (e.g. `Sociology`, `Sex`, `Occupations`, `Team_sports`, `Soccsksargen`, `Internet` → μ=0) |
+| node-vs-root Lin | **degenerate** — IC(Physics)≈0.05, all 51 in-domain fixture nodes saturate Lin≥0.999, Pearson(μ, Lin)=0.000 (it tracks specificity, not membership) |
+| cosine→μ calibration vs 90-node fixture | **stable** — Pearson **+0.669** / Spearman +0.682 (≈ the +0.665 at emission) |
+| Haiku spend | **~34k tokens** (2 inline subagent spawns, 0 tool calls), well under the ~82k/window cap |
+
+This **confirms the active-learning premise**: rescoring only the band (not the whole graph) moved 42.7%
+of those labels across the gate, concentrated on the leak side — labels far from the cutoff couldn't
+flip and were correctly left on the prior (free). The fusion `√(prior·haiku)` hard-vetoes loose links
+(`Fashion` 0.40→0). **Known residual:** the literal ceiling 0.45 excludes ~119 cats in (0.45,0.55]
+including the named `Music` (0.523) / `Politics` (0.500) — a hard-veto rescore *can* flip those too, so
+0.45 is a budget heuristic, not a correctness bound. A cheap follow-up window can raise the ceiling to
+~0.55 (one more batch) to catch them; left out here to honour the [0.2,0.45] band + 2-spawn discipline.
 
 ## Current streams (T and V) + Haiku budget discipline
 

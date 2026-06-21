@@ -3,4 +3,10 @@ mu_pairs.tsv
 # dense_mu_e5.sample.tsv is the illustrative sample. *.sample.tsv is kept (negated below).
 dense_mu*.tsv
 !dense_mu*.sample.tsv
+# generated decision-band worklist / fused map / pairs (regenerate with boundary_band.py +
+# fuse_and_validate.py from the prior); only the *.sample.tsv illustrative slices are committed.
+# The EXPENSIVE Haiku rescores live in tests/fixtures/wikipedia_physics_boundary_haiku.tsv (committed).
+boundary_band_e5.tsv
+boundary_pairs_e5.tsv
+!boundary_*.sample.tsv
 *.pt
