@@ -55,6 +55,16 @@ pinned at 50%); matches on the gate-leak probe; **behind on pure symmetric corr*
 SYM shares the backbone with WIKI+LLM). Every operator's dense map feeds `gated_ic`/`lin_from_ic`. The
 SECONDARY node-gated-IC (#3296) lin check confirms the saturation fix (0.1% vs 96.7% path-gated).
 
+**Provenance token** (`REPORT_provenance.md`) — the deferred judge axis, realized. One **maskable**
+token with a **factored** embedding `corpus_emb[corpus] + judge_emb[judge] + prov_tag` records each
+label's source (corpus `simplewiki`/`enwiki`; judge `haiku` for bought SYM/LLM labels, `graph` for WIKI
+edges + free μ=0 negatives). **Masked by default** (off-manifold noise → provenance-agnostic μ,
+marginalizing over sources — the default inference path). Single-corpus so validated **structurally**:
+the slot is read (revealing `judge=graph` collapses μ by 0.66 — it learned graph-judged SYM = the μ=0
+non-edges; `judge=haiku` near-constant 0.027), and a `--prov-mask 1.0` ablation confirms it does **not
+regress** Part A (`pos_phys` +0.831 vs +0.838). Ready to carry real signal once `enwiki`/a 2nd judge
+arrives — no architecture change.
+
 ### Progress — ML-environment port (folded in from #3283)
 
 The handoff's "take it into the real ML environment" steps are implemented in torch (the steps that

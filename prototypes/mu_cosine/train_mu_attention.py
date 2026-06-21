@@ -30,7 +30,14 @@ from collections import deque
 import torch
 import torch.nn.functional as F
 
-from mu_attention import (OPS, GRAPH, load_dag, all_names, build_e5_tables, Tokenizer, MuAttention)
+from mu_attention import (OPS, CORPORA, JUDGES, GRAPH, load_dag, all_names, build_e5_tables,
+                          Tokenizer, MuAttention)
+
+# PART B provenance tags for the current single-corpus data. corpus = simplewiki (the 10k graph);
+# judge = haiku for bought LLM labels (SYM positives, LLM fixture), graph for the free graph-derived
+# labels (WIKI edges, and the μ=0 SYM negatives = non-edges). Threaded as the 4th/5th item fields so the
+# provenance token can be masked (default) or revealed during training.
+SW, HAIKU, GRAPHJ = CORPORA["simplewiki"], JUDGES["haiku"], JUDGES["graph"]
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(ROOT, "..", ".."))
@@ -176,10 +183,10 @@ def train(args):
             # (no bce(·,1) ceiling on μ(child|parent) — that creates a "predict the mean (1/3)" collapse).
             eb = [edges_tr[rng.randrange(len(edges_tr))] for _ in range(args.bs)]
             negpar = [eb[(i + 1) % len(eb)][1] for i in range(len(eb))]
-            wiki_items = ([(c, par, OPS["WIKI"]) for c, par in eb]
-                          + [(par, c, OPS["WIKI"]) for c, par in eb]
-                          + [(c, negpar[i], OPS["WIKI"]) for i, (c, par) in enumerate(eb)])
-            mu_w = model(**tok.build(wiki_items, train=True, rng=rng))
+            wiki_items = ([(c, par, OPS["WIKI"], SW, GRAPHJ) for c, par in eb]
+                          + [(par, c, OPS["WIKI"], SW, GRAPHJ) for c, par in eb]
+                          + [(c, negpar[i], OPS["WIKI"], SW, GRAPHJ) for i, (c, par) in enumerate(eb)])
+            mu_w = model(**tok.build(wiki_items, train=True, rng=rng, p_mask_prov=args.prov_mask))
             mu_cp, mu_pc, mu_cpn = mu_w[:args.bs], mu_w[args.bs:2 * args.bs], mu_w[2 * args.bs:]
             L_wiki = (bce(mu_pc, 0) + bce(mu_cpn, 0)
                       + args.wiki_abs * bce(mu_cp, 0.9)
@@ -189,9 +196,11 @@ def train(args):
         half = args.bs // 2
         sb = ([pos_tr[rng.randrange(len(pos_tr))] for _ in range(half)] +
               [neg[rng.randrange(len(neg))] for _ in range(args.bs - half)])
-        sym_items = ([(a, b, OPS["SYM"]) for a, b, _ in sb] + [(b, a, OPS["SYM"]) for a, b, _ in sb])
+        sb_j = [HAIKU] * half + [GRAPHJ] * (args.bs - half)             # pos=bought, neg=free non-edge
+        sym_items = ([(a, b, OPS["SYM"], SW, j) for (a, b, _), j in zip(sb, sb_j)] +
+                     [(b, a, OPS["SYM"], SW, j) for (a, b, _), j in zip(sb, sb_j)])
         tgt = torch.tensor([mu for _, _, mu in sb])
-        mu_s = model(**tok.build(sym_items, train=True, rng=rng))
+        mu_s = model(**tok.build(sym_items, train=True, rng=rng, p_mask_prov=args.prov_mask))
         mu_ab, mu_ba = mu_s[:len(sb)], mu_s[len(sb):]
         L_sym = F.mse_loss(mu_ab, tgt) + F.mse_loss(mu_ba, tgt)
         loss = args.sym_weight * L_sym + (0.0 if args.sym_only else args.wiki_weight * L_wiki)
@@ -199,9 +208,9 @@ def train(args):
         L_llm = torch.zeros(())
         if llm and not args.sym_only:
             lb = [llm[rng.randrange(len(llm))] for _ in range(args.bs)]
-            li = [(n, r, OPS["LLM"]) for n, r, _ in lb]
+            li = [(n, r, OPS["LLM"], SW, HAIKU) for n, r, _ in lb]
             lt = torch.tensor([mu for _, _, mu in lb])
-            L_llm = F.mse_loss(model(**tok.build(li, train=True, rng=rng)), lt)
+            L_llm = F.mse_loss(model(**tok.build(li, train=True, rng=rng, p_mask_prov=args.prov_mask)), lt)
             loss = loss + args.llm_weight * L_llm
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -248,6 +257,9 @@ def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args):
 
     # --- Physics-vs-Chemistry DISCRIMINATION: μ(node|Physics) vs μ(node|Chemistry), check ordering ---
     discrimination_probe(model, tok, idx)
+
+    # --- PART B: provenance-token structural probe (masked-default vs revealed source) ---
+    provenance_probe(model, tok, idx)
 
     if args.quick_val:
         print("(quick-val: skipping dense-map emission / check_feeds / lin-agreement)")
@@ -326,6 +338,32 @@ def discrimination_probe(model, tok, idx):
           f"({100*correct/max(total,1):.0f}%)")
 
 
+def provenance_probe(model, tok, idx):
+    """PART B structural validation. For a fixed set of (node, root) SYM queries, compare μ with the
+    provenance token MASKED (3-tuple → the default agnostic inference path) against μ with the source
+    REVEALED (5-tuple → corpus_emb+judge_emb added). Confirms (1) the slot exists and is wired, (2)
+    masking flips the input and is read by the model, (3) HONESTLY how much the (near-constant, single-
+    corpus) provenance token shifts μ — small Δ is expected and is the point: masking marginalizes it out."""
+    probe = [("Optics", "Physics"), ("Mechanics", "Physics"), ("Calculus", "Mathematics"),
+             ("Acids", "Chemistry"), ("Software", "Computer_science"), ("Machines", "Engineering")]
+    probe = [(n, r) for n, r in probe if n in idx and r in idx]
+    if not probe:
+        print("[PROV] no probe nodes in graph — skipped")
+        return
+    SW, HK, GR = CORPORA["simplewiki"], JUDGES["haiku"], JUDGES["graph"]
+    masked = mu_batch(model, tok, [(n, r, OPS["SYM"]) for n, r in probe])
+    rev_hk = mu_batch(model, tok, [(n, r, OPS["SYM"], SW, HK) for n, r in probe])
+    rev_gr = mu_batch(model, tok, [(n, r, OPS["SYM"], SW, GR) for n, r in probe])
+    d_hk = float((rev_hk - masked).abs().mean())
+    d_gr = float((rev_gr - masked).abs().mean())
+    print(f"\n[PROV] provenance token (corpus=simplewiki; judge=haiku|graph) — masked-default vs revealed:")
+    for i, (n, r) in enumerate(probe):
+        print(f"    {n:22} ({r[:4]})  masked={float(masked[i]):.3f}  "
+              f"haiku={float(rev_hk[i]):.3f}  graph={float(rev_gr[i]):.3f}")
+    print(f"  mean |Δμ| revealing source: haiku {d_hk:.3f}  graph {d_gr:.3f}  "
+          f"(small ⇒ near-constant token, single-corpus; masking marginalizes it — the default path)")
+
+
 def node_gated_lin_agreement(model, tok, idx):
     from itertools import combinations
     from node_gated_ic import (load_graph as ng_load, load_mu as ng_mu, node_gated_mass, ic_map,
@@ -375,6 +413,8 @@ def main():
     ap.add_argument("--sym-weight", type=float, default=1.0, help="SYM loss weight (ablation lever b)")
     ap.add_argument("--sym-only", action="store_true", help="single-task SYM head (ablation lever c)")
     ap.add_argument("--quick-val", action="store_true", help="skip dense-map emission/lin-agreement")
+    ap.add_argument("--prov-mask", type=float, default=0.5, help="PART B: prob of masking the provenance "
+                    "token during training (1.0 = always-masked = the provenance-OFF ablation control)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--save", default=None)
     args = ap.parse_args()

@@ -37,8 +37,17 @@ REPO = os.path.abspath(os.path.join(ROOT, "..", ".."))
 GRAPH = os.path.join(REPO, "data", "benchmark", "10k", "category_parent.tsv")
 E5_MODEL = "intfloat/e5-small-v2"
 
-# operator codebook (the relation axis). Judge axis is deliberately deferred (one implicit judge).
+# operator codebook (the relation axis).
 OPS = {"SYM": 0, "WIKI": 1, "LLM": 2}
+
+# PROVENANCE codebooks (PART B) — the judge axis, generalized into "where did this label come from".
+# A single provenance TOKEN carries a FACTORED embedding corpus_emb[corpus] + judge_emb[judge], so the
+# corpus⊗judge product is representable while it presents to the set as one input. The token is MASKABLE
+# (off-manifold noise, exactly like an absent ancestor slot); masking ⇒ provenance-AGNOSTIC μ, which is
+# the DEFAULT inference path (marginalize over sources). Reserved entries (enwiki) are for later corpora.
+CORPORA = {"simplewiki": 0, "enwiki": 1}
+JUDGES = {"haiku": 0, "graph": 1}        # haiku = a bought LLM judgment (SYM/LLM); graph = a Wikipedia
+                                         # edge / non-edge (WIKI, and the free μ=0 SYM negatives)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -164,11 +173,20 @@ class Tokenizer:
         return sample_ancestors(node, self.parents, self.deg, k=self.k, beta=self.beta,
                                 max_anc=self.max_anc, rng=rng)
 
-    def build(self, items, train=False, rng=None, p_drop_anc=0.2, p_drop_lineage=0.1):
-        """items: list of (node, root, op_id). Returns dict of padded tensors for MuAttention.forward."""
+    def build(self, items, train=False, rng=None, p_drop_anc=0.2, p_drop_lineage=0.1,
+              p_mask_prov=0.5):
+        """items: list of (node, root, op_id) OR (node, root, op_id, corpus_id, judge_id). Returns a dict
+        of padded tensors for MuAttention.forward.
+
+        Every example also gets ONE provenance token (PART B). With a 3-tuple the provenance is MASKED
+        (off-manifold noise ⇒ provenance-agnostic μ — the default inference path). With a 5-tuple the
+        token carries (corpus_id, judge_id); during training it is still masked with prob `p_mask_prov`
+        so the model learns BOTH provenance-conditioned and provenance-agnostic μ."""
         B = len(items)
         rows = []          # per-example list of token dicts
-        for (node, root, op) in items:
+        for it in items:
+            node, root, op = it[0], it[1], it[2]
+            corpus_id, judge_id = (it[3], it[4]) if len(it) >= 5 else (None, None)
             toks = []
             toks.append(("op", None, op, 0))                              # operator token
             toks.append(("anchor", root, None, 0))                       # anchor(root) — e5 query:
@@ -183,6 +201,12 @@ class Tokenizer:
                         toks.append(("anc", a, None, d))
             else:
                 toks.append(("noise", node, None, 1))                    # absent lineage → one noise@gen1
+            # provenance token — masked (agnostic) for 3-tuples, or for tagged items with prob p_mask_prov
+            masked = corpus_id is None or (train and rng is not None and rng.random() < p_mask_prov)
+            if masked:
+                toks.append(("prov_mask", node, None, 0))                # off-manifold noise ⇒ agnostic
+            else:
+                toks.append(("prov", None, (corpus_id, judge_id), 0))    # corpus_emb + judge_emb
             rows.append(toks)
 
         T = max(len(r) for r in rows)
@@ -190,6 +214,9 @@ class Tokenizer:
         gen_id = torch.full((B, T), -1, dtype=torch.long)
         is_anchor = torch.zeros(B, T, dtype=torch.bool)
         op_pos = torch.full((B, T), -1, dtype=torch.long)
+        is_prov = torch.zeros(B, T, dtype=torch.bool)                     # the provenance slot (any state)
+        corpus_of = torch.full((B, T), -1, dtype=torch.long)
+        judge_of = torch.full((B, T), -1, dtype=torch.long)
         pad = torch.ones(B, T, dtype=torch.bool)                          # True = pad (ignored)
         op_of = torch.tensor([it[2] for it in items], dtype=torch.long)
 
@@ -207,16 +234,24 @@ class Tokenizer:
                 elif kind == "anc":
                     content[bi, ti] = self.p[self.idx[name]]
                     gen_id[bi, ti] = d
-                elif kind == "noise":
+                elif kind == "prov":
+                    is_prov[bi, ti] = True                                # content stays 0; forward adds
+                    corpus_of[bi, ti], judge_of[bi, ti] = op              # corpus_emb + judge_emb + prov_tag
+                elif kind in ("noise", "prov_mask"):
                     if train:                                 # fast path: fresh noise, no per-seed RNG
                         v = torch.randn(self.d)
                     else:                                     # inference: per-node seed ⇒ deterministic map
-                        g = torch.Generator().manual_seed(_seed_of(name, salt=100 + d))
+                        salt = (200 if kind == "prov_mask" else 100) + d
+                        g = torch.Generator().manual_seed(_seed_of(name, salt=salt))
                         v = torch.randn(self.d, generator=g)
                     content[bi, ti] = v / v.norm().clamp_min(1e-9)
-                    gen_id[bi, ti] = d
-        return {"content": content, "gen_id": gen_id, "is_anchor": is_anchor,
-                "op_pos": op_pos, "op_of": op_of, "pad": pad}
+                    if kind == "prov_mask":
+                        is_prov[bi, ti] = True                            # masked provenance slot (agnostic)
+                    else:
+                        gen_id[bi, ti] = d
+        return {"content": content, "gen_id": gen_id, "is_anchor": is_anchor, "op_pos": op_pos,
+                "is_prov": is_prov, "corpus_of": corpus_of, "judge_of": judge_of,
+                "op_of": op_of, "pad": pad}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -224,28 +259,41 @@ class Tokenizer:
 # --------------------------------------------------------------------------------------------------
 class MuAttention(nn.Module):
     def __init__(self, d_model=384, n_ops=len(OPS), n_heads=4, n_layers=1, max_gen=5,
-                 dim_ff=None, dropout=0.0):
+                 dim_ff=None, dropout=0.0, n_corpus=len(CORPORA), n_judge=len(JUDGES)):
         super().__init__()
         self.d = d_model
         self.op_emb = nn.Embedding(n_ops, d_model)
         self.gen_emb = nn.Embedding(max_gen + 1, d_model)                 # gen 0..max_gen
         self.anchor_tag = nn.Parameter(torch.randn(d_model) * 0.02)
+        # PROVENANCE (PART B): factored corpus_emb + judge_emb on a single maskable token. `prov_tag`
+        # marks the slot itself (present in BOTH the tagged and the masked/agnostic state), so the model
+        # can locate "the provenance input" regardless of whether its source is revealed.
+        self.corpus_emb = nn.Embedding(n_corpus, d_model)
+        self.judge_emb = nn.Embedding(n_judge, d_model)
+        self.prov_tag = nn.Parameter(torch.randn(d_model) * 0.02)
         layer = nn.TransformerEncoderLayer(d_model, n_heads, dim_feedforward=dim_ff or 2 * d_model,
                                            dropout=dropout, batch_first=True, activation="gelu",
                                            norm_first=True)
         self.encoder = nn.TransformerEncoder(layer, n_layers)
         self.readout_w = nn.Parameter(torch.randn(n_ops, d_model) * (1.0 / math.sqrt(d_model)))
         self.readout_b = nn.Parameter(torch.zeros(n_ops))
-        for emb in (self.op_emb, self.gen_emb):
+        for emb in (self.op_emb, self.gen_emb, self.corpus_emb, self.judge_emb):
             nn.init.normal_(emb.weight, std=0.02)
 
-    def forward(self, content, gen_id, is_anchor, op_pos, op_of, pad):
+    def forward(self, content, gen_id, is_anchor, op_pos, op_of, pad,
+                is_prov=None, corpus_of=None, judge_of=None):
         emb = content.clone()
         gmask = (gen_id >= 0).unsqueeze(-1)
         emb = emb + self.gen_emb(gen_id.clamp(min=0)) * gmask
         emb = emb + self.anchor_tag * is_anchor.unsqueeze(-1)
         omask = (op_pos >= 0).unsqueeze(-1)
         emb = emb + self.op_emb(op_pos.clamp(min=0)) * omask
+        if is_prov is not None:
+            emb = emb + self.prov_tag * is_prov.unsqueeze(-1)            # mark the provenance slot
+            if corpus_of is not None:                                    # add factored source (if revealed)
+                cmask = (corpus_of >= 0).unsqueeze(-1)
+                emb = emb + self.corpus_emb(corpus_of.clamp(min=0)) * cmask
+                emb = emb + self.judge_emb(judge_of.clamp(min=0)) * cmask
         h = self.encoder(emb, src_key_padding_mask=pad)
         # CLS-style readout: the operator token (always position 0, never padded) attends over the whole
         # set, giving a relation-conditioned summary. Cleaner than mean-pool, which dilutes the input
