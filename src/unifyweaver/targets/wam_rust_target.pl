@@ -2492,6 +2492,86 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 }).collect();
                 self.finish_foreign_results(&pred_key, vec![node_reg, class_reg, neff_reg], results)
             }
+            "category_cluster" => {
+                // category_cluster(Node, ClusterId): Node atom in (A1), cluster id integer out (A2).
+                // Builds the clusters on first use from edge_pred + mu_pred + threshold (leak-removal
+                // components + a bridge-split level). See WAM_RUST_BRIDGE_CLUSTERING.md increment 2.
+                let node = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(node)) => node,
+                    _ => return false,
+                };
+                let id_reg = match self.get_reg_raw("A2") {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let edge_pred = match self.foreign_string_config(&pred_key, "edge_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let mu_pred = match self.foreign_string_config(&pred_key, "mu_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let threshold = self.foreign_f64_config(&pred_key, "threshold").unwrap_or(0.3);
+                // Optional tau_pure config pins the leak/bridge purity cut; absent => self-calibrating.
+                let tau_pure = self.foreign_f64_config(&pred_key, "tau_pure");
+                if self.clusters.is_empty() {
+                    let params = crate::boundary_cache::BridgeParams { phi_min: 2, tau_div: 1.5, tau_pure };
+                    self.build_clusters_named(&edge_pred, &mu_pred, threshold, &params);
+                }
+                if self.clusters.is_empty() {
+                    return false;
+                }
+                let node_id = self.intern_atom(&node);
+                let cluster = match self.category_cluster(node_id) {
+                    Some(c) => c,
+                    None => return false,
+                };
+                self.finish_foreign_results(&pred_key, vec![id_reg], vec![
+                    Value::Str("__tuple__".to_string(), vec![Value::Integer(cluster as i64)])
+                ])
+            }
+            "cluster_members" => {
+                // cluster_members(ClusterId, Member): cluster id integer in (A1), Member atom out (A2),
+                // streamed one solution per member node. Same build-on-first-use as category_cluster.
+                let cluster = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
+                    Some(Value::Integer(c)) => c,
+                    _ => return false,
+                };
+                let member_reg = match self.get_reg_raw("A2") {
+                    Some(val) => val,
+                    None => return false,
+                };
+                let edge_pred = match self.foreign_string_config(&pred_key, "edge_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let mu_pred = match self.foreign_string_config(&pred_key, "mu_pred") {
+                    Some(pred) => pred.to_string(),
+                    None => return false,
+                };
+                let threshold = self.foreign_f64_config(&pred_key, "threshold").unwrap_or(0.3);
+                let tau_pure = self.foreign_f64_config(&pred_key, "tau_pure");
+                if self.clusters.is_empty() {
+                    let params = crate::boundary_cache::BridgeParams { phi_min: 2, tau_div: 1.5, tau_pure };
+                    self.build_clusters_named(&edge_pred, &mu_pred, threshold, &params);
+                }
+                if self.clusters.is_empty() {
+                    return false;
+                }
+                if cluster < 0 {
+                    return false;
+                }
+                let members = self.cluster_members(cluster as u32);
+                if members.is_empty() {
+                    return false;
+                }
+                let results: Vec<Value> = members.into_iter().map(|id| {
+                    let name = self.atom_name(id).unwrap_or("").to_string();
+                    Value::Str("__tuple__".to_string(), vec![Value::Atom(name)])
+                }).collect();
+                self.finish_foreign_results(&pred_key, vec![member_reg], results)
+            }
             _ => false,
         }
     }'.

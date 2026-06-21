@@ -162,3 +162,72 @@ fold this boilerplate into the single `graph_analysis/4` macro.)
 path: `Subfields_of_physics ⇒ bridge`, `Matter ⇒ leak_conduit`) — both render + `cargo test` at edition
 2021 with no swipl. `tests/test_wam_rust_bridge_foreign_dispatch.pl` exercises the full
 transpile→dispatch path (swipl + cargo, CI-gated).
+
+## Increment 2 — implemented: bridge-informed clustering, exposed
+
+The clustering primitive and its two query predicates, wired the same 4 sites as increment 1, additive.
+
+- **(A) core** (`boundary_cache.rs`): `cluster_by_bridges(parents, bridge_scores) -> HashMap<u32,
+  ClusterId>`. Stage 1 — **top-level clusters** = weakly-connected components of the graph with every
+  `LeakConduit` node and its edges removed (BFS over the undirected non-leak adjacency; each leak is its
+  own singleton cut point). Stage 2 — **bridge split (one level, v1)** = within a component each `Bridge`
+  node's child-branches become distinct sub-clusters, bridges processed by `n_eff` descending (strongest
+  wins; a higher bridge claims shared nodes first), the bridge node itself staying in its component as
+  the boundary. RedundantHubs are neither cut nor split ⇒ kept whole. Cycle-safe (all BFS dedup).
+- **(A) glue** (`state.rs`): `clusters` (node→id) + `cluster_index` (id→members) fields;
+  `build_clusters_named` (ensures bridge scores, then `cluster_by_bridges`), `ensure_clusters`
+  (build-on-first-use), `category_cluster(node) -> ClusterId`, `cluster_members(id) -> Vec<node>`.
+- **(C) dispatch arms**: `"category_cluster"` (Node atom → cluster id `Integer`) and `"cluster_members"`
+  (cluster id `Integer` → member atoms, streamed). Build-on-first-use; both honor an optional `tau_pure`
+  f64 config (pins the leak/bridge purity cut; absent ⇒ self-calibrating).
+- **(B)/(D)** as increment 1, with the extra `tau_pure` config.
+
+**The declaration an author writes** (clustering):
+
+```prolog
+:- write_wam_rust_project([user:my_query/2],
+     [ module_name(physics),
+       foreign_lowering(
+         foreign_predicate(category_cluster/2,
+           [ register_foreign_native_kind(category_cluster/2, category_cluster),
+             register_foreign_result_mode(category_cluster/2, deterministic),
+             register_foreign_result_layout(category_cluster/2, tuple(1)),
+             register_foreign_string_config(category_cluster/2, edge_pred, category_parent),
+             register_foreign_string_config(category_cluster/2, mu_pred, category_mu),
+             register_foreign_f64_config(category_cluster/2, threshold, 0.3),
+             register_ffi_mu(category_cluster/2, category_mu, Mu) ],
+           [])),
+       foreign_lowering(
+         foreign_predicate(cluster_members/2,
+           [ register_foreign_native_kind(cluster_members/2, cluster_members),
+             register_foreign_result_mode(cluster_members/2, stream),
+             register_foreign_result_layout(cluster_members/2, tuple(1)),
+             register_foreign_string_config(cluster_members/2, edge_pred, category_parent),
+             register_foreign_string_config(cluster_members/2, mu_pred, category_mu),
+             register_foreign_f64_config(cluster_members/2, threshold, 0.3),
+             register_ffi_mu(cluster_members/2, category_mu, Mu) ],
+           [])) ],
+     'output/physics').
+```
+
+The author then queries `category_cluster(Node, ClusterId)` (the node's cluster) and
+`cluster_members(ClusterId, Member)` (enumerate its members). Add
+`register_foreign_f64_config(.../2, tau_pure, 0.3)` to pin the cut on a small/sparse graph. (Increment 3
+folds this into the single `graph_analysis/4` macro.)
+
+**Real-data finding (honest — the widening motivation).** On the 10k physics slice
+(`wikipedia_bridge_clustering_10k`, gated): the detector flags exactly **two** leak conduits, `Matter`
+and `Physical_objects`. Removing them does **not** disconnect the slice — `desc(Physics)` is densely
+cross-linked, so the largest non-leak component is **8244 of 8247** nodes (top-level leak-cut leaves one
+giant blob). The **bridge-split** is what provides structure: `cluster_by_bridges` yields **12 clusters**
+with sizes `[6828, 1142, 235, 18, 11, 4, 3, 2, 1, 1, …]` — the strongest bridges carve sizable
+sub-clusters out of the blob. So on this slice the *hierarchy within* (bridge-split) is the usable
+signal, not the *top-level separation* (leak-cut) — a concrete argument for a less-exploded edge set
+(scoped cone / denser μ on the connectors) if clean top-level domains are wanted.
+
+**Tests.** `boundary_cache.rs.mustache`: `cluster_by_bridges_leak_removal_separates_domains`,
+`cluster_by_bridges_bridge_splits_into_subclusters`, `cluster_by_bridges_keeps_unmarked_graph_whole`
+(synthetic, render + `cargo test`), and the gated `wikipedia_bridge_clustering_10k` (the finding above).
+`state.rs`: `cluster_foreign_glue_partitions_via_named_facts`.
+`tests/test_wam_rust_cluster_foreign_dispatch.pl` exercises the full transpile→dispatch path (swipl +
+cargo): `category_cluster(d1)=category_cluster(x1) ≠ category_cluster(d2)` once the leak conduit is cut.
