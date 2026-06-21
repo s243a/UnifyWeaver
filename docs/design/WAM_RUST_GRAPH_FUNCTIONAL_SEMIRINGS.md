@@ -1149,7 +1149,8 @@ fan-in hub work already uses. Plain Jaccard for `P`-local branch diversity; lift
   (high-μ) branches, a leak conduit into low-μ junk (the leak-conduit structure of the real-data doc's
   cone-purity addendum). Pair the fan-out score with μ; don't read it alone.
 
-Deferred until the bridge detector is built; documented here so its gate choice is settled.
+Deferred until the bridge detector is built; documented here so its gate choice is settled. The detector
+itself is specified in `WAM_RUST_BRIDGE_DETECTOR_{PHILOSOPHY,SPECIFICATION,IMPLEMENTATION_PLAN}.md`.
 
 ## 6. Aside: the kernel-trick analogy
 
