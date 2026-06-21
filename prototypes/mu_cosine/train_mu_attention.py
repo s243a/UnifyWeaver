@@ -272,7 +272,7 @@ def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args):
     node_gated_lin_agreement(model, tok, idx)
 
 
-DOMAIN_ROOTS = ["Physics", "Chemistry", "Mathematics", "Computer_science"]
+DOMAIN_ROOTS = ["Physics", "Chemistry", "Mathematics", "Computer_science", "Engineering"]
 DOMAIN_PROBE = {
     "Physics": ["Thermodynamics", "Optics", "Mechanics", "Electromagnetism", "Motion_(physics)"],
     "Chemistry": ["Periodic_table", "Acids", "Chemical_compounds", "Oxygen", "Chemical_reactions"],
@@ -280,14 +280,16 @@ DOMAIN_PROBE = {
                     "Fields_of_mathematics"],
     "Computer_science": ["Software", "Computer_hardware", "Operating_systems", "Computer_networking",
                          "Computer_architecture"],
+    "Engineering": ["Mechanical_engineering", "Civil_engineering", "Engineering_disciplines",
+                    "Machines", "Infrastructure"],
 }
 BORDER_PROBE = ["Atoms", "Electronics", "Measurement", "Materials", "Energy"]
 
 
 def discrimination_probe(model, tok, idx):
     """MULTI-domain discrimination: for clear nodes of each domain, μ(node|own-root) should be the ARGMAX
-    over all four roots {Physics, Chemistry, Mathematics, Computer_science} (SYM operator). Reports the
-    per-domain accuracy and the full confusion (true domain × argmax root)."""
+    over all DOMAIN_ROOTS {Physics, Chemistry, Mathematics, Computer_science, Engineering} (SYM operator).
+    Reports the per-domain accuracy and the full confusion (true domain × argmax root)."""
     roots = [r for r in DOMAIN_ROOTS if r in idx]
     if len(roots) < 2:
         print("[DISCRIM] <2 domain roots in graph — skipped")
