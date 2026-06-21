@@ -2291,6 +2291,140 @@ pub fn rank_mu_fanin_hubs(
     scored
 }
 
+// ============================================================================================
+// Fan-out bridge detector (additive read-out; see WAM_RUST_BRIDGE_DETECTOR_*.md, theory §5f–§5g).
+// A bridge needs three signals, each from a primitive that already exists: fan-out (child count),
+// diversity of branching (`n_eff`, below), and domain coherence (`cone_purity`). No new math — pure
+// assembly on the shipped cones/sketches; the μ map is an INPUT (any dense name→μ map), never a
+// producer this detector couples to. Increment 1 here is the exact `n_eff` core.
+// ============================================================================================
+
+/// **Path-gated cone set of a single node** — the explicit node set `U_P` behind
+/// `descendant_mu_mass_gated`'s per-node `(mass, size)` read. Same traversal: start at `p` (always
+/// included), descend only into children with `μ ≥ threshold` (prune the frontier at the μ-boundary),
+/// so every non-`p` member is in-domain. This is the bridge detector's universe `U_P` (the membership
+/// frontier — "what `P` organizes" while staying in-domain). Factored out additively; the original
+/// `descendant_mu_mass_gated` is untouched. `children` is the derived child→… map (parents inverted).
+fn path_gated_cone(
+    p: u32,
+    children: &std::collections::HashMap<u32, Vec<u32>>,
+    mu: &std::collections::HashMap<u32, f64>,
+    threshold: f64,
+) -> std::collections::HashSet<u32> {
+    use std::collections::{HashSet, VecDeque};
+    let muv = |u: u32| mu.get(&u).copied().unwrap_or(0.0);
+    let mut seen: HashSet<u32> = HashSet::new();
+    seen.insert(p);
+    let mut q: VecDeque<u32> = VecDeque::new();
+    q.push_back(p);
+    while let Some(x) = q.pop_front() {
+        if let Some(cs) = children.get(&x) {
+            for &c in cs {
+                if muv(c) >= threshold && seen.insert(c) { q.push_back(c); }
+            }
+        }
+    }
+    seen
+}
+
+/// **Child region** `E_i^P = desc(start) ∩ universe` — the nodes of `universe` (`= U_P`) that lie
+/// under the in-domain child `start`. The walk follows the **full** child map (every path, no gating)
+/// because a `U_P` node may be reachable from `start` only via an out-of-domain hop, but records only
+/// `universe` members. Reflexive (includes `start` itself when it is in `universe`). Exact (the
+/// correctness path); the scale path (increment 4) reads the same region mass off the per-child sketch.
+fn desc_within(
+    start: u32,
+    children: &std::collections::HashMap<u32, Vec<u32>>,
+    universe: &std::collections::HashSet<u32>,
+) -> std::collections::HashSet<u32> {
+    use std::collections::{HashSet, VecDeque};
+    let mut walked: HashSet<u32> = HashSet::new();
+    walked.insert(start);
+    let mut region: HashSet<u32> = HashSet::new();
+    if universe.contains(&start) { region.insert(start); }
+    let mut q: VecDeque<u32> = VecDeque::new();
+    q.push_back(start);
+    while let Some(x) = q.pop_front() {
+        if let Some(cs) = children.get(&x) {
+            for &c in cs {
+                if walked.insert(c) {
+                    if universe.contains(&c) { region.insert(c); }
+                    q.push_back(c);
+                }
+            }
+        }
+    }
+    region
+}
+
+/// **Fan-out diversity / effective branch count** — the `n_eff` core of the bridge detector (§5g).
+/// For a candidate `P` with in-domain children `c_1 … c_n` (`μ(c_i) ≥ threshold`), reads the
+/// diversity of its branching off the **union** of child regions inside `P`'s own path-gated universe
+/// `U_P`:
+///
+/// ```text
+/// U_P          = path-gated cone of P (descendant_mu_mass_gated's reachable set)
+/// E_i^P        = desc(c_i) ∩ U_P                         (child c_i's contribution within P's frame)
+/// diversity(P) = μ(⋃_i E_i^P) / Σ_i μ(E_i^P)   ∈ [1/n, 1]
+/// n_eff(P)     = n · diversity(P)                        (effective number of DISTINCT branches)
+/// ```
+///
+/// By inclusion–exclusion the union ≤ the sum, with equality iff the child regions are disjoint; the
+/// shortfall is exactly the **reconvergence** (mass shared across sibling subtrees). So `diversity = 1`
+/// (⇒ `n_eff = n`) for disjoint branches — a clean fan-out — and `diversity → 1/n` (⇒ `n_eff → 1`) for
+/// `n` redundant copies that reconverge on a shared subtree. *That single number is "diversity of
+/// branching, not just branching."*
+///
+/// Returns `None` when `P` is not a branch point — `< 2` in-domain children — or `P` is itself
+/// out-of-domain (`μ(P) < threshold`, an empty in-domain `U_P`), or the regions carry no mass (a
+/// degenerate `Σ μ(E_i) = 0`, e.g. `threshold ≤ 0` with `μ ≡ 0`).
+///
+/// **Tree-triviality (§5g caution).** In a pure tree, siblings have disjoint subtrees, so
+/// `diversity ≡ 1` and *every* node looks like a perfect fan-out; the measure only discriminates on a
+/// **DAG**, where it detects reconvergence. (Wikipedia categories are a DAG, so this is fine here.)
+///
+/// Exact (per-`P` cone walk) — the correctness path; the scale path swaps the walk for the KMV
+/// sketch-union read (increment 4). `mu` is an input map; absent ⇒ `μ = 0`.
+pub fn fanout_diversity(
+    p: u32,
+    parents: &std::collections::HashMap<u32, Vec<u32>>,
+    mu: &std::collections::HashMap<u32, f64>,
+    threshold: f64,
+) -> Option<(f64, f64)> {
+    use std::collections::{HashMap, HashSet};
+    debug_assert!(mu.values().all(|&w| w >= 0.0), "weights must be ≥ 0");
+    let muv = |u: u32| mu.get(&u).copied().unwrap_or(0.0);
+    // P must itself be in-domain to organize an in-domain universe (empty U_P ⇒ None).
+    if muv(p) < threshold { return None; }
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&c, ps) in parents {
+        for &pp in ps { children.entry(pp).or_default().push(c); }
+    }
+    // In-domain children of P (deduped — a repeated edge must not double-count a branch).
+    let mut in_dom: Vec<u32> = Vec::new();
+    if let Some(cs) = children.get(&p) {
+        let mut seen_c: HashSet<u32> = HashSet::new();
+        for &c in cs {
+            if muv(c) >= threshold && seen_c.insert(c) { in_dom.push(c); }
+        }
+    }
+    let n = in_dom.len();
+    if n < 2 { return None; } // not a branch point
+    let universe = path_gated_cone(p, &children, mu, threshold);
+    // child regions E_i = desc(c_i) ∩ U_P; accumulate Σ μ(E_i) and the union set.
+    let mut union: HashSet<u32> = HashSet::new();
+    let mut sum_region_mass = 0.0f64;
+    for &c in &in_dom {
+        let region = desc_within(c, &children, &universe);
+        sum_region_mass += region.iter().map(|&x| muv(x)).sum::<f64>();
+        union.extend(region);
+    }
+    if sum_region_mass <= 0.0 { return None; } // degenerate: no in-domain branch mass
+    let union_mass: f64 = union.iter().map(|&x| muv(x)).sum();
+    let diversity = union_mass / sum_region_mass;
+    Some((diversity, n as f64 * diversity))
+}
+
 /// **Fuzzy admission curve**: an S-shaped (logistic) transfer from the raw membership `μ` to an
 /// admission weight in `[0,1]`, `w(μ) = 1/(1 + e^{−k(μ−c)})`. Shapes *how* `μ` translates to
 /// admission — nearly-full weight well above the boundary, nearly-zero well below, a smooth knee
@@ -6543,5 +6677,81 @@ mod tests {
             assert!(d_eff >= scale * iv.min as f64 - 1e-9 && d_eff <= scale * iv.max as f64 + 1e-9,
                 "d_eff {} must lie in M^(-1/N)·[{}, {}] for N={}", d_eff, iv.min, iv.max, n);
         }
+    }
+
+    // ── Fan-out bridge detector — increment 1: fanout_diversity / n_eff (exact, hand DAGs) ──
+
+    // DISJOINT branches (a tree fan-out): P=0 has 3 in-domain children, each with its own private
+    // subtree. The child regions never reconverge, so diversity = 1 and n_eff = n = 3.
+    #[test]
+    fn fanout_diversity_disjoint_branches_score_full_n() {
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![0]); g.insert(3, vec![0]);
+        g.insert(11, vec![1]); g.insert(12, vec![1]); // private to child 1
+        g.insert(21, vec![2]); g.insert(22, vec![2]); // private to child 2
+        g.insert(31, vec![3]); g.insert(32, vec![3]); // private to child 3
+        let mu: HashMap<u32, f64> =
+            [0u32, 1, 2, 3, 11, 12, 21, 22, 31, 32].into_iter().map(|i| (i, 1.0)).collect();
+        let (div, neff) = fanout_diversity(0, &g, &mu, 0.3).expect("3 in-domain children ⇒ Some");
+        assert!((div - 1.0).abs() < 1e-9, "disjoint ⇒ diversity 1, got {div}");
+        assert!((neff - 3.0).abs() < 1e-9, "disjoint ⇒ n_eff = n = 3, got {neff}");
+    }
+
+    // IDENTICAL branches: P=0 has n=4 children that ALL point at one heavy shared subtree (D=100 plus
+    // a 200-node tail). The regions reconverge almost completely, so diversity ≈ 1/n and n_eff ≈ 1 —
+    // a redundant hub, not a bridge. (Exactly 1/n only in the limit of a zero-mass child singleton;
+    // here the shared mass dominates, so n_eff sits just above 1.)
+    #[test]
+    fn fanout_diversity_identical_branches_collapse_to_one() {
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut mu: HashMap<u32, f64> = HashMap::new();
+        mu.insert(0, 1.0);
+        for c in 1u32..=4 { g.insert(c, vec![0]); mu.insert(c, 1.0); }
+        g.insert(100, vec![1, 2, 3, 4]); mu.insert(100, 1.0); // shared node D under ALL four children
+        for d in 101u32..=300 { g.insert(d, vec![100]); mu.insert(d, 1.0); } // heavy shared tail
+        let (div, neff) = fanout_diversity(0, &g, &mu, 0.3).expect("4 in-domain children ⇒ Some");
+        // Each region mass = 1 (the child) + 201 (D + tail) = 202; Σ = 4·202 = 808; union mass =
+        // 4 (children) + 201 (shared) = 205; diversity = 205/808 ≈ 0.2537, n_eff ≈ 1.015.
+        assert!(div > 0.25 && div < 0.30, "near 1/n=0.25, got {div}");
+        assert!((neff - 1.0).abs() < 0.1, "identical branches collapse to n_eff ≈ 1, got {neff}");
+    }
+
+    // PARTIAL overlap: P=0 has 2 children that share ONE descendant (50) and each has a private one.
+    // Diversity is strictly between 1/n and 1. E_1={1,10,50}, E_2={2,20,50}; Σμ=6, union={1,2,10,20,50}
+    // μ=5 ⇒ diversity = 5/6, n_eff = 2·5/6 = 5/3.
+    #[test]
+    fn fanout_diversity_partial_overlap_is_strictly_between() {
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); g.insert(2, vec![0]);
+        g.insert(10, vec![1]); g.insert(20, vec![2]); // private to each child
+        g.insert(50, vec![1, 2]);                      // shared descendant of both children
+        let mu: HashMap<u32, f64> =
+            [0u32, 1, 2, 10, 20, 50].into_iter().map(|i| (i, 1.0)).collect();
+        let (div, neff) = fanout_diversity(0, &g, &mu, 0.3).expect("2 in-domain children ⇒ Some");
+        assert!((div - 5.0 / 6.0).abs() < 1e-9, "partial ⇒ diversity 5/6, got {div}");
+        assert!(div > 0.5 && div < 1.0, "strictly between 1/n=0.5 and 1, got {div}");
+        assert!((neff - 5.0 / 3.0).abs() < 1e-9, "n_eff = 2·5/6 = 5/3, got {neff}");
+    }
+
+    // FEWER than two in-domain children ⇒ None: a single child, a leaf, and a 2-child node with only
+    // one child in-domain all fail the branch-point test.
+    #[test]
+    fn fanout_diversity_needs_two_in_domain_children() {
+        let mut g: HashMap<u32, Vec<u32>> = HashMap::new();
+        g.insert(1, vec![0]); // P=0 has a single child
+        g.insert(2, vec![1]); // leaf 2 under child 1
+        let mu: HashMap<u32, f64> = [(0u32, 1.0), (1, 1.0), (2, 1.0)].into_iter().collect();
+        assert!(fanout_diversity(0, &g, &mu, 0.3).is_none(), "single child ⇒ None");
+        assert!(fanout_diversity(2, &g, &mu, 0.3).is_none(), "leaf ⇒ None");
+
+        // Two children but only ONE in-domain (μ(2)=0 < θ) ⇒ still None.
+        let mut g2: HashMap<u32, Vec<u32>> = HashMap::new();
+        g2.insert(1, vec![0]); g2.insert(2, vec![0]);
+        let mu2: HashMap<u32, f64> = [(0u32, 1.0), (1, 1.0), (2, 0.0)].into_iter().collect();
+        assert!(fanout_diversity(0, &g2, &mu2, 0.3).is_none(), "<2 in-domain children ⇒ None");
+
+        // P itself out-of-domain (μ(P) < θ) ⇒ None even with two in-domain children.
+        let mu3: HashMap<u32, f64> = [(0u32, 0.0), (1, 1.0), (2, 1.0)].into_iter().collect();
+        assert!(fanout_diversity(0, &g2, &mu3, 0.3).is_none(), "P out-of-domain ⇒ None");
     }
 }
