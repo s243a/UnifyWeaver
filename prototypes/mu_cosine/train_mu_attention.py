@@ -142,7 +142,7 @@ def train(args):
     rng.shuffle(edges)
     n_eh = int(0.1 * len(edges))
     edges_hold, edges_tr = edges[:n_eh], edges[n_eh:]
-    pos, neg = load_pairs()
+    pos, neg = load_pairs(args.pairs)
     pos = [r for r in pos if r[0] in idx and r[1] in idx]
     neg = [r for r in neg if r[0] in idx and r[1] in idx]
     rng.shuffle(pos)
@@ -163,30 +163,28 @@ def train(args):
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     m = args.margin
 
+    eps = 1e-6
+    bce = lambda x, t: F.binary_cross_entropy(x.clamp(eps, 1 - eps), torch.full_like(x, float(t)))
     for step in range(args.steps):
         model.train()
         opt.zero_grad()
-        # WIKI — one build+forward for [child|parent ; parent|child ; child|random], then split
-        eb = [edges_tr[rng.randrange(len(edges_tr))] for _ in range(args.bs)]
-        negpar = [eb[(i + 1) % len(eb)][1] for i in range(len(eb))]
-        wiki_items = ([(c, par, OPS["WIKI"]) for c, par in eb]
-                      + [(par, c, OPS["WIKI"]) for c, par in eb]
-                      + [(c, negpar[i], OPS["WIKI"]) for i, (c, par) in enumerate(eb)])
-        mu_w = model(**tok.build(wiki_items, train=True, rng=rng))
-        mu_cp, mu_pc, mu_cpn = mu_w[:args.bs], mu_w[args.bs:2 * args.bs], mu_w[2 * args.bs:]
-        # Directional preference: PIN the negatives low with BCE (reversed edge + random root are NOT
-        # memberships → 0) and PUSH μ(child|parent) above them with weighted margins. No absolute ceiling
-        # target on μ(child|parent): a bce(·,1) on it creates an input-agnostic "predict the mean (1/3)"
-        # attractor the model falls into before it learns the swap; margins reward the *ordering* directly
-        # (μ(child|parent) − μ(parent|child) ≥ m, and ≥ a random root) without that trap.
-        eps = 1e-6
-        bce = lambda x, t: F.binary_cross_entropy(x.clamp(eps, 1 - eps),
-                                                  torch.full_like(x, float(t)))
-        L_wiki = (bce(mu_pc, 0) + bce(mu_cpn, 0)
-                  + args.wiki_abs * bce(mu_cp, 0.9)        # light absolute anchor: a child IS in its parent
-                  + args.margin_weight * (F.relu(m - (mu_cp - mu_pc)).mean()
-                                          + F.relu(m - (mu_cp - mu_cpn)).mean()))
-        # SYM (order-invariant) — BALANCED pos/neg so the 1000 μ=0 negatives can't collapse μ→0
+        L_wiki = torch.zeros(())
+        if not args.sym_only:
+            # WIKI — one build+forward for [child|parent ; parent|child ; child|random], then split.
+            # PIN the negatives low with BCE and PUSH μ(child|parent) above them with weighted margins
+            # (no bce(·,1) ceiling on μ(child|parent) — that creates a "predict the mean (1/3)" collapse).
+            eb = [edges_tr[rng.randrange(len(edges_tr))] for _ in range(args.bs)]
+            negpar = [eb[(i + 1) % len(eb)][1] for i in range(len(eb))]
+            wiki_items = ([(c, par, OPS["WIKI"]) for c, par in eb]
+                          + [(par, c, OPS["WIKI"]) for c, par in eb]
+                          + [(c, negpar[i], OPS["WIKI"]) for i, (c, par) in enumerate(eb)])
+            mu_w = model(**tok.build(wiki_items, train=True, rng=rng))
+            mu_cp, mu_pc, mu_cpn = mu_w[:args.bs], mu_w[args.bs:2 * args.bs], mu_w[2 * args.bs:]
+            L_wiki = (bce(mu_pc, 0) + bce(mu_cpn, 0)
+                      + args.wiki_abs * bce(mu_cp, 0.9)
+                      + args.margin_weight * (F.relu(m - (mu_cp - mu_pc)).mean()
+                                              + F.relu(m - (mu_cp - mu_cpn)).mean()))
+        # SYM (order-invariant) — BALANCED pos/neg so the μ=0 negatives can't collapse μ→0
         half = args.bs // 2
         sb = ([pos_tr[rng.randrange(len(pos_tr))] for _ in range(half)] +
               [neg[rng.randrange(len(neg))] for _ in range(args.bs - half)])
@@ -195,9 +193,10 @@ def train(args):
         mu_s = model(**tok.build(sym_items, train=True, rng=rng))
         mu_ab, mu_ba = mu_s[:len(sb)], mu_s[len(sb):]
         L_sym = F.mse_loss(mu_ab, tgt) + F.mse_loss(mu_ba, tgt)
-        loss = L_sym + args.wiki_weight * L_wiki
-        # LLM (optional, already-bought)
-        if llm:
+        loss = args.sym_weight * L_sym + (0.0 if args.sym_only else args.wiki_weight * L_wiki)
+        # LLM (optional, already-bought) — skipped in single-task SYM mode
+        L_llm = torch.zeros(())
+        if llm and not args.sym_only:
             lb = [llm[rng.randrange(len(llm))] for _ in range(args.bs)]
             li = [(n, r, OPS["LLM"]) for n, r, _ in lb]
             lt = torch.tensor([mu for _, _, mu in lb])
@@ -208,7 +207,7 @@ def train(args):
         opt.step()
         if (step + 1) % max(1, args.steps // 6) == 0:
             print(f"  step {step+1:5d}  L_sym {float(L_sym):.4f}  L_wiki {float(L_wiki):.4f}"
-                  + (f"  L_llm {float(L_llm):.4f}" if llm else ""))
+                  + (f"  L_llm {float(L_llm):.4f}" if (llm and not args.sym_only) else ""))
 
     model.eval()
     validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args)
@@ -220,35 +219,40 @@ def train(args):
 
 def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args):
     print("\n=== PER-OPERATOR VALIDATION ===")
+    ops = ["SYM"] if args.sym_only else (["SYM", "WIKI"] + (["LLM"] if llm else []))
 
     # --- WIKI: held-out edge order-accuracy ---
-    cp = mu_batch(model, tok, [(c, p, OPS["WIKI"]) for c, p in edges_hold])
-    pc = mu_batch(model, tok, [(p, c, OPS["WIKI"]) for c, p in edges_hold])
-    acc = float((cp > pc).float().mean())
-    print(f"[WIKI] held-out edge ORDER-accuracy μ(child|parent)>μ(parent|child): {acc*100:.1f}% "
-          f"({len(edges_hold)} edges)  mean μ(c|p)={float(cp.mean()):.3f} μ(p|c)={float(pc.mean()):.3f}")
+    if not args.sym_only:
+        cp = mu_batch(model, tok, [(c, p, OPS["WIKI"]) for c, p in edges_hold])
+        pc = mu_batch(model, tok, [(p, c, OPS["WIKI"]) for c, p in edges_hold])
+        acc = float((cp > pc).float().mean())
+        print(f"[WIKI] held-out edge ORDER-accuracy μ(child|parent)>μ(parent|child): {acc*100:.1f}% "
+              f"({len(edges_hold)} edges)  mean μ(c|p)={float(cp.mean()):.3f} μ(p|c)={float(pc.mean()):.3f}")
 
-    # --- SYM: held-out corr + symmetry ---
+    # --- SYM: held-out corr + symmetry (the headline metric for this work) ---
     ab = mu_batch(model, tok, [(a, b, OPS["SYM"]) for a, b, _ in pos_hold])
     ba = mu_batch(model, tok, [(b, a, OPS["SYM"]) for a, b, _ in pos_hold])
     tgt = [mu for _, _, mu in pos_hold]
-    sym_pred = ((ab + ba) / 2).tolist()
-    corr = pearson(sym_pred, tgt)
+    corr = pearson(((ab + ba) / 2).tolist(), tgt)
     sym_gap = float((ab - ba).abs().mean())
-    print(f"[SYM]  held-out μ corr (vs control +0.726): {corr:+.3f}  ({len(pos_hold)} positives, "
-          f"MSE {F.mse_loss((ab+ba)/2, torch.tensor(tgt)):.3f})   symmetry |μ(a|b)−μ(b|a)| mean {sym_gap:.3f}")
+    print(f"[SYM]  held-out μ corr (control +0.726, #3302 +0.335): {corr:+.3f}  ({len(pos_hold)} "
+          f"positives, MSE {F.mse_loss((ab+ba)/2, torch.tensor(tgt)):.3f})  symmetry gap {sym_gap:.3f}")
 
     # --- gate-leak 5-probe (control 0/5), per operator ---
-    for op in (["SYM", "WIKI"] + (["LLM"] if llm else [])):
+    for op in ops:
         pr = mu_batch(model, tok, [(n, "Physics", OPS[op]) for n in NONPHYS])
         leak = int((pr >= 0.3).sum())
         print(f"[{op}] gate-leak 5-probe (non-physics μ(·|Physics)≥0.3): {leak}/5  " +
               "  ".join(f"{n.split('_')[0]}={v:.2f}" for n, v in zip(NONPHYS, pr.tolist())))
 
+    if args.quick_val:
+        print("(quick-val: skipping dense-map emission / check_feeds / lin-agreement)")
+        return
+
     # --- dense maps per operator → check_feeds_rust + OOD gate-leak (control 1.1%) ---
     dist = bfs_dist(adj, "Physics")
     far = [n for n in names if dist.get(n, 99) >= 5]
-    for op in (["SYM", "WIKI"] + (["LLM"] if llm else [])):
+    for op in ops:
         dm = emit_dense(model, tok, names, op)
         path = os.path.join(ROOT, f"dense_mu_attn_{op.lower()}.tsv")
         write_map(dm, path, f"MuAttention {op} μ(X|Physics) — frozen e5 + learned tags (regenerable)")
@@ -309,6 +313,10 @@ def main():
     ap.add_argument("--heads", type=int, default=4)
     ap.add_argument("--layers", type=int, default=2)
     ap.add_argument("--llm", action="store_true", help="add the LLM operator (already-bought fixture)")
+    ap.add_argument("--pairs", default=PAIRS, help="scored SYM pairs file (use mu_pairs_scored_large.tsv)")
+    ap.add_argument("--sym-weight", type=float, default=1.0, help="SYM loss weight (ablation lever b)")
+    ap.add_argument("--sym-only", action="store_true", help="single-task SYM head (ablation lever c)")
+    ap.add_argument("--quick-val", action="store_true", help="skip dense-map emission/lin-agreement")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--save", default=None)
     args = ap.parse_args()
