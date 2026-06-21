@@ -405,3 +405,69 @@ flagged. Cost note: `rank_bridges` here is the exact `O(V·(V+E))` per-node cone
 nodes) — fine for a gated one-off; the sketch path (`fanout_diversity_sketched`) is the scale answer, and
 its real-data run is left to a follow-up (the μ fixture is 1 %-dense, the same sketch-underflow caveat as
 the cone-purity addendum applies, so the exact path is the right tool at this density).
+
+## Addendum (2026-06-21) — the purity refinement: in-domain-frame purity fixes the mislabel
+
+The previous addendum's finding #3 (raw-cone purity mislabels genuine in-domain hubs as `LeakConduit`)
+prompted the spec to change the classifier's purity definition (`WAM_RUST_BRIDGE_DETECTOR_SPECIFICATION.md`,
+"Purity" — *in the same frame as `n_eff`*, **not** the raw cone). This addendum reports the implementation
+and its real-data result. `bridge_classify` now reads purity **in the in-domain frame**; `cone_purity`
+(raw) stays available but is no longer the classifier input. Additive — `descendant_mu_mass_gated`,
+`gated_ic`, the similarity functions, and `cone_purity` are untouched.
+
+**Two variants tried; the in-domain *fraction* won.** Both candidates from the spec were measured on the
+raw 10k graph (`θ=0.3`), per node `P`:
+
+| node (class) | `n_eff` | **fraction** `\|gated_desc\|/\|desc\|` | gated **avg-μ** `m_μ(gated)/\|gated\|` | (old) raw purity |
+|---|---:|---:|---:|---:|
+| `Subfields_of_physics` (hub) | 3.68 | **0.0184** | 0.846 | 0.0189 |
+| `Energy` (hub) | 3.42 | **0.0172** | 0.717 | 0.0135 |
+| `Electromagnetism` (hub) | 3.00 | **0.0103** | 0.725 | 0.0119 |
+| `Mechanics` (hub) | 1.78 | **0.0395** | 0.900 | 0.0356 |
+| `Matter` (leak) | 1.58 | **0.0023** | 0.583 | 0.0049 |
+| `Physical_objects` (leak) | 2.00 | **0.0015** | 0.533 | 0.0049 |
+| `Chemical_elements` (chem-adjacent) | 2.00 | 0.0381 | 0.462 | 0.0243 |
+
+- **The in-domain fraction separates cleanly.** Leak conduits `Matter`/`Physical_objects` read
+  `0.0015–0.0023`; every genuine physics hub reads `≥ 0.010` — a ~5–17× gap, so a single `τ_pure = 0.01`
+  isolates the leaks while admitting the hubs. The fraction measures exactly "what fraction of `P`'s
+  reachable cone stays in-domain": a leak conduit reaches the whole encyclopedia (tiny in-domain
+  frontier ⇒ tiny fraction), a coherent hub's cone is contained.
+- **The gated average-μ does *not* separate.** Because the gated cone is in-domain *by construction*, its
+  average μ is high (`0.5–0.9`) for everyone, and it inverts on the chemistry boundary: `Matter` (leak)
+  reads `0.583` **above** `Chemical_elements` (`0.462`), so no threshold separates leak from hub. The
+  gated cone *size relative to the raw cone* is the signal, not its average membership. The fraction is
+  the cleaner separator, so it is the implementation; the average-μ is recorded here and rejected.
+
+**Before → after (the corrected labels, asserted by `wikipedia_bridge_detector_classifies_apexes`).** With
+`τ_pure` on the in-domain fraction (`0.01`):
+
+| node | #3306 raw-cone purity → class | #3307 in-domain fraction → class |
+|---|---|---|
+| `Subfields_of_physics` | 0.019 → **LeakConduit** (wrong) | 0.0184 → **Bridge** ✓ |
+| `Energy` | 0.014 → **LeakConduit** (wrong) | 0.0172 → **Bridge** ✓ |
+| `Electromagnetism` | 0.012 → **LeakConduit** (wrong) | 0.0103 → **Bridge** ✓ |
+| `Mechanics` | 0.036 → **LeakConduit** (wrong) | 0.0395 → **Bridge** ✓ |
+| `Matter` | 0.0049 → **LeakConduit** | 0.0023 → **LeakConduit** ✓ (still a leak) |
+| `Physical_objects` | 0.0049 → **LeakConduit** | 0.0015 → **LeakConduit** ✓ |
+
+The test now **asserts** these labels (the prior test could only assert qualitative ordering because raw
+purity mislabeled). `Matter`/`Physical_objects` correctly stay leak conduits — the refinement promotes the
+genuine hubs without dragging the real leaks along. The top of the `n_eff·purity` ranking is now physics
+(`Waves`, `Temperature`, `Chemical_elements`, `Mechanics`, `Subfields_of_physics`, `Energy`, …), all
+labeled `Bridge`, instead of the raw read's "everything but the two smallest cones is a leak."
+
+**`RedundantHub` is asserted on a grounded synthetic fan-out, and the earlier "X_by_country → RedundantHub"
+framing is corrected.** The physics fixture has *no* in-domain redundant hub: the `X_by_country` apexes
+(`Physicists_by_nationality` and friends) are out-of-domain (`μ = 0` ⇒ `NotCandidate`), and — correcting
+the first addendum — a by-country fan-out is **diverse**, not redundant (each nationality's cone is
+disjoint ⇒ high `n_eff`), so it would be a `LeakConduit`/`NotCandidate`, never a `RedundantHub`. A true
+redundant hub needs *overlapping* child cones, so that quadrant is asserted on a synthetic reconverging
+fan-out (3 in-domain children funnelling into one shared in-domain subtree ⇒ low `n_eff`).
+
+**Spec ↔ implementation match confirmed.** The SPECIFICATION's "Purity" is the in-domain fraction
+`|gated_desc(P)| / |desc(P)|` (primary candidate; gated average-μ the alternative); `bridge_classify`
+implements exactly the primary candidate (`path_gated_cone(P).len() / raw_cone_set(P).len()`), and the
+increment-5 validation picked the fraction as the cleaner separator as the spec directs. Full suite stays
+green (**97/97**). The gated-purity-as-*average-μ* idea from the previous addendum's #3 is the variant that
+was tried and rejected here; the gated-*fraction* is the read that actually fixes the mislabel.
