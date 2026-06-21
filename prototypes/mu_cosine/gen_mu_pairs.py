@@ -24,9 +24,17 @@ Design (from the discussion):
     category (`b`). On an 8k-node graph where only ~dozens are in-domain, a random `b` is reliably
     unrelated, and uniform sampling is naturally diverse (no hub domination).
 
+  * WALK DIRECTION (depth drift). The baseline positive walk is **undirected** (steps to any
+    neighbour) — it drifts deep (children outnumber parents in the tail). `--bidir` switches to a
+    **depth-balanced** mix: bidirectional walks (reach siblings/cousins at a representative depth, no
+    deep/apex drift) blended with `--child-only` downward walks (in-domain ancestor→descendant), via
+    `--bidir-frac`. Depth balance (up vs down) is orthogonal to the hub-down-weighting (1/deg^β within
+    a direction); both are kept. See DESIGN_bidirectional_walk.md and REPORT_bidir_walk.md.
+
 Pure stdlib. Output: `name_a<TAB>name_b<TAB>stratum<TAB>walk_len<TAB>mu` (mu blank, for the scorer).
 
     python3 gen_mu_pairs.py --seeds Physics --n-positives 200 --neg-ratio 5 --out mu_pairs.tsv
+    python3 gen_mu_pairs.py --seeds Physics --bidir --bidir-mode coinflip --bidir-frac 0.5 ...
 """
 import argparse, math, os, random
 from collections import deque
@@ -49,6 +57,101 @@ def load_graph(path):
             adj.setdefault(c, set()).add(p)
             adj.setdefault(p, set()).add(c)
     return {k: sorted(v) for k, v in adj.items()}
+
+
+def load_directed(path):
+    """Load the child→parent DAG into separate down (children) and up (parents) adjacency.
+
+    Returns (children, parents): children[n] = nodes one step DOWN (toward leaves), parents[n] =
+    nodes one step UP (toward the apex/root). The undirected `load_graph` stays the baseline; the
+    bidirectional/child-only walks need the direction split to balance (or restrict) depth drift.
+    """
+    children, parents = {}, {}
+    with open(path) as f:
+        for i, line in enumerate(f):
+            if i == 0 and line.startswith("child"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 2:
+                continue
+            c, p = parts[0], parts[1]
+            parents.setdefault(c, set()).add(p)   # p is UP from c
+            children.setdefault(p, set()).add(c)  # c is DOWN from p
+            children.setdefault(c, set())
+            parents.setdefault(p, set())
+    return ({k: sorted(v) for k, v in children.items()},
+            {k: sorted(v) for k, v in parents.items()})
+
+
+def estimate_global_beta(children, parents):
+    """The global up-edge weight β = E[c²]/E[p²] (handshake lemma: E[c]=E[p], so the size-biased
+    branching ratio reduces to the raw second-moment ratio). A single weight on parent edges that
+    balances the depth drift the walk *experiences on average* (Lyons–Pemantle–Peres λ-biased walk at
+    criticality). Cheaper than the per-node c/p coin-flip; exact only in aggregate."""
+    nodes = set(children) | set(parents)
+    n = max(1, len(nodes))
+    ec2 = sum(len(children.get(x, ())) ** 2 for x in nodes) / n
+    ep2 = sum(len(parents.get(x, ())) ** 2 for x in nodes) / n
+    return (ec2 / ep2) if ep2 else 1.0
+
+
+def hub_pick(nbrs, deg, beta, prev, rng):
+    """Hub-down-weighted pick (prob ∝ 1/deg^β) from a candidate set, avoiding immediate backtrack.
+    This is the within-direction domain-drift guard, orthogonal to up/down depth balance."""
+    cand = [n for n in nbrs if n != prev] or list(nbrs)
+    if not cand:
+        return None
+    w = [1.0 / (deg[n] ** beta) for n in cand]
+    return weighted_choice(cand, w, rng)
+
+
+def walk_child_only(start, children, deg, stop_prob, beta, rng, max_len=8):
+    """Downward (child-only) walk: stays in the seed's subtree → depth(endpoint) ≥ depth(seed),
+    in-domain ancestor→descendant pairs, zero domain drift. Hub-down-weighted within the down step."""
+    node, prev, path = start, None, [start]
+    while len(path) <= max_len and rng.random() > stop_prob:
+        nxt = hub_pick(children.get(node, ()), deg, beta, prev, rng)
+        if nxt is None:
+            break
+        prev, node = node, nxt
+        path.append(node)
+    return node, path
+
+
+def walk_bidir(start, children, parents, deg, stop_prob, beta, rng, mode="coinflip",
+               global_beta=1.0, max_len=8):
+    """Depth-balanced bidirectional walk (reaches siblings/cousins at a representative depth).
+
+      * coinflip: at each step flip a fair coin for up-vs-down (P(up)=P(down)=½ when both exist),
+        then hub-down-weighted pick within that direction. Equivalent to the per-node up-weight
+        β=c/p ⇒ E[Δdepth]=0 at every interior node (depth is a martingale), exact zero-drift.
+      * global: one up-weight β=E[c²]/E[p²] on parent edges. P(down)=c/(c+βp), P(up)=βp/(c+βp);
+        balances depth drift on average (cheaper single-weight approximation).
+
+    Boundary: at a leaf (no children) it must go up; at a root (no parents) it must go down —
+    reflecting-ish boundaries, fine for short walks from interior seeds. Hub-down-weighting is kept
+    WITHIN the chosen direction (orthogonal domain-drift guard)."""
+    node, prev, path = start, None, [start]
+    while len(path) <= max_len and rng.random() > stop_prob:
+        ch, pa = children.get(node, ()), parents.get(node, ())
+        if not ch and not pa:
+            break
+        if not ch:
+            go_down = False
+        elif not pa:
+            go_down = True
+        elif mode == "global":
+            c, p = len(ch), len(pa)
+            p_down = c / (c + global_beta * p)
+            go_down = rng.random() < p_down
+        else:  # coinflip: per-node exact zero-drift
+            go_down = rng.random() < 0.5
+        nxt = hub_pick(ch if go_down else pa, deg, beta, prev, rng)
+        if nxt is None:
+            break
+        prev, node = node, nxt
+        path.append(node)
+    return node, path
 
 
 def weighted_choice(items, weights, rng):
@@ -85,6 +188,15 @@ def main():
     ap.add_argument("--hub-beta", type=float, default=1.0, help="step down-weight exponent on degree")
     ap.add_argument("--restart-alpha", type=float, default=0.3, help="prob a positive restarts at a seed")
     ap.add_argument("--max-frontier", type=int, default=3000, help="cap the mesh so it stays around the seeds")
+    ap.add_argument("--bidir", action="store_true",
+                    help="enable depth-balanced directed walks (mix of bidirectional + child-only); "
+                         "without it the baseline undirected hub-walk is used")
+    ap.add_argument("--bidir-mode", choices=["coinflip", "global"], default="coinflip",
+                    help="coinflip: per-node fair up/down coin (β=c/p, exact zero-drift); "
+                         "global: single up-weight β=E[c²]/E[p²] (cheaper average approximation)")
+    ap.add_argument("--bidir-frac", type=float, default=0.5,
+                    help="fraction of positive walks that are bidirectional; the rest are child-only "
+                         "(downward). 0.0 = pure child-only, 1.0 = pure bidirectional")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--out", default=os.path.join(ROOT, "mu_pairs.tsv"))
     args = ap.parse_args()
@@ -93,6 +205,23 @@ def main():
     adj = load_graph(GRAPH)
     deg = {n: max(1, len(adj.get(n, ()))) for n in adj}
     universe = list(adj.keys())
+    children = parents = None
+    global_beta = 1.0
+    if args.bidir:
+        children, parents = load_directed(GRAPH)
+        global_beta = estimate_global_beta(children, parents)
+        print(f"directed walks: bidir-mode={args.bidir_mode}, bidir-frac={args.bidir_frac} "
+              f"(global up-weight β=E[c²]/E[p²]={global_beta:.2f})")
+
+    def do_walk(start):
+        """Dispatch one positive walk per the selected mode (baseline undirected, or the
+        bidir-frac mix of depth-balanced bidirectional + child-only downward walks)."""
+        if not args.bidir:
+            return walk(start, adj, deg, args.stop_prob, args.hub_beta, rng)
+        if rng.random() < args.bidir_frac:
+            return walk_bidir(start, children, parents, deg, args.stop_prob, args.hub_beta, rng,
+                              mode=args.bidir_mode, global_beta=global_beta)
+        return walk_child_only(start, children, deg, args.stop_prob, args.hub_beta, rng)
     seeds = [s for s in args.seeds.split(",") if s in adj]
     missing = [s for s in args.seeds.split(",") if s not in adj]
     if missing:
@@ -110,7 +239,7 @@ def main():
     while sum(1 for r in rows if r[2] == "pos") < args.n_positives and tries < args.n_positives * 50:
         tries += 1
         start = rng.choice(seeds) if rng.random() < args.restart_alpha else rng.choice(frontier)
-        end, path = walk(start, adj, deg, args.stop_prob, args.hub_beta, rng)
+        end, path = do_walk(start)
         if end == start:
             continue
         key = tuple(sorted((start, end)))
