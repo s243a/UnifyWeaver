@@ -347,6 +347,28 @@ Once the encoder produces dense `μ` for *all* categories (not just the scored 9
 density caveat on `descendant_mu_mass_gated` (gating no longer prunes through unscored connectors) and
 feeds `gated_ic` / `lin_from_ic` directly — the same `μ` map, just dense and domain-swappable.
 
+### Realized (no training): `gen_dense_mu.py` + `sanity_check_rust.py`
+
+Kickoff prompt **A** below is now implemented as the *fastest path to unblock the graph work*:
+
+- `gen_dense_mu.py` MiniLM-encodes every category name (`all-MiniLM-L6-v2`), cosines it to the
+  `Physics` anchor, clamps via `to_membership`, and emits `dense_mu_physics.tsv` (`name<TAB>μ`, the
+  fixture format, names verbatim). It is a **raw pretrained-embedding prior** — coarse semantic
+  proximity, NOT the trained cosine-μ encoder and NOT authoritative (e.g. untrained MiniLM scores
+  `Music ≈ 0.34`, where the curated fixture has it at `0`). Its job is *density*.
+- `sanity_check_rust.py` renders this very template into a throwaway crate and runs the **real**
+  `condense_scc → lift_mu_to_components → gated_ic → lin_from_ic` on the dense map (the loader is
+  copied verbatim from `wikipedia_gated_similarity_tracks_physics_relatedness`). It checks the
+  integration *contract* (coverage, finite/`+∞` IC, `lin ∈ [0,1]`), not the training-dependent physics
+  ordering. Last run: **8247/8247 names resolve (100% coverage)**, `gated_ic` (threshold `0.3`) →
+  7429 finite IC + 775 out-of-domain, `lin_from_ic(Electromagnetism, Optics) = 0.85`.
+
+```
+pip install -r requirements.txt          # torch, sentence-transformers (+ HF egress)
+python3 gen_dense_mu.py --anchor Physics --out dense_mu_physics.tsv
+python3 sanity_check_rust.py --fuzzy dense_mu_physics.tsv   # needs cargo
+```
+
 **Two things that will silently corrupt the integration if missed (review-flagged):**
 1. **Clamp the cosine to `[0,1]` before emitting** (`to_membership` in `mu_encoder.py`). Cosine is in
    `[-1,1]`, but the Rust mass functions assume `μ ≥ 0`: `descendant_mu_mass` and `sketch_mu_mass` *sum*
