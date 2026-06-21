@@ -25,6 +25,30 @@ torch 2.x + sentence-transformers (ML pieces).
 | training on the scored pairs | ✅ **done** — `train_cosine_mu_torch.py --mode pairs --minilm` on `mu_pairs_scored.tsv`; held-out pos corr **+0.726**, lin-agreement moved **−0.13 → +0.10** |
 | wiring dense μ back to the Rust core | 🟡 **emitter done** — `emit_dense_mu.py` / `dense_mu_direct.py` (clamped, verbatim names, 100% coverage); Rust consumption verified by `check_feeds_rust.py`, not run end-to-end in CI |
 | control baseline + theory questions | ✅ **done** — `validate_control_baseline.py` → `REPORT_control_baseline.md` (the #3287 control arm the directional model must beat; lin-saturation, decision-flip, cold-start all resolved) |
+| **directional multi-relational μ** | ✅ **done** — `mu_attention.py` + `train_mu_attention.py` → `REPORT_directional.md`. Frozen e5 + learned tags + 2-layer attention, multi-task over operators. **WIKI directional edge order-accuracy 99.1%** (control structurally 50%), gate-leak 0/5 all operators, every map feeds `check_feeds_rust`. SYM held-out corr +0.335 (< control +0.726 — the multi-task trade-off). No new LLM budget. |
+
+### Progress — directional, multi-relational μ (`MuAttention`, DESIGN_directional_attention.md realized)
+
+The symmetric encoder computes `μ(a,b)=cos(f(a),f(b))`, which **cannot** represent order
+(`μ(Optics|Physics) ≫ μ(Physics|Optics)`). `MuAttention` (`mu_attention.py`) is a tiny
+permutation-invariant transformer over a **set** of tagged tokens — `operator`, `anchor(root)`,
+`node@gen0`, `{ancestors}@gen_d` (min-hop on the DAG), off-manifold-noise absent slots — on **frozen e5**
+inputs, learning only the tags (`op_emb`/`anchor_tag`/`gen_emb`), a 2-layer attention block, and a
+per-operator sigmoid readout. `train_mu_attention.py` trains it multi-task over operators (WIKI margin +
+SYM order-invariant MSE + an optional LLM operator from the already-bought boundary fixture, no new
+spend). All 8,247 nodes covered (frozen e5 + shared tags). Results (`REPORT_directional.md`):
+
+| operator | metric | value | control |
+|---|---|---|---|
+| **WIKI** | held-out edge order-accuracy `μ(child\|parent)>μ(parent\|child)` | **99.1%** | 50% (symmetric ceiling) |
+| **SYM** | held-out μ corr / symmetry gap | +0.335 / 0.159 | +0.726 |
+| **LLM** | in-sample directional-μ corr (654 band) | +0.963 | — |
+| all | gate-leak 5-probe / OOD | **0/5** / 0.2–1.5% | 0/5 / 1.1% |
+
+**Wins decisively on the directional task** (the design's reason to exist; the symmetric control is
+pinned at 50%); matches on the gate-leak probe; **behind on pure symmetric corr** (multi-task trade-off —
+SYM shares the backbone with WIKI+LLM). Every operator's dense map feeds `gated_ic`/`lin_from_ic`. The
+SECONDARY node-gated-IC (#3296) lin check confirms the saturation fix (0.1% vs 96.7% path-gated).
 
 ### Progress — ML-environment port (folded in from #3283)
 

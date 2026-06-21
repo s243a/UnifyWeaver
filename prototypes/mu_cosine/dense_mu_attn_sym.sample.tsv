@@ -1,0 +1,25 @@
+# SAMPLE of the MuAttention SYM dense map μ(X|Physics) (regenerate full with
+# train_mu_attention.py). name<TAB>μ. Physics topics ≈0.9, non-physics ≈0 — the membership map.
+Physics	0.9672
+Subfields_of_physics	0.9582
+Wave_mechanics	0.9551
+Matter	0.9511
+Electromagnetism	0.9479
+States_of_matter	0.9385
+Partial_differential_equations	0.9304
+Differential_equations	0.9274
+Periodic_table	0.9271
+Energy	0.9210
+Applied_sciences	0.9154
+Scientific_disciplines	0.9133
+Optics	0.8756
+Thermodynamics	0.8760
+Acoustics	0.3389
+Mechanics	0.9027
+Music	0.0046
+Cooking	0.0560
+Sociology	0.0926
+Football	0.0001
+Politics	0.0312
+Fashion	0.0008
+Religious_buildings	0.0118
