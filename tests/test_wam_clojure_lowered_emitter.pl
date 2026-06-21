@@ -13,6 +13,8 @@ multi_clause_wam("test_choice/1:\ntry_me_else test_choice_alt\nget_constant a, A
 
 unsupported_wam("test_switch/1:\nswitch_on_constant a:test_a, default:test_default\nproceed\n").
 
+aggregate_wam("test_findall/1:\nallocate\nget_variable X2, A1\nput_variable Y1, Y1\nbegin_aggregate collect, Y1, X2\nput_value Y1, A1\ncall fact/1, 1\nend_aggregate Y1\ndeallocate\nproceed\n").
+
 test(deterministic_predicate_is_lowerable) :-
     simple_fact_wam(WamCode),
     wam_clojure_lowerable(test_fact/1, WamCode, Reason),
@@ -25,6 +27,10 @@ test(multi_clause_all_clauses_lowerable) :-
     multi_clause_wam(WamCode),
     wam_clojure_lowerable(test_choice/1, WamCode, Reason),
     assertion(Reason == multi_clause_n).
+
+test(aggregate_predicates_remain_runtime_mediated) :-
+    aggregate_wam(WamCode),
+    assertion(\+ wam_clojure_lowerable(test_findall/1, WamCode, _)).
 
 test(multi_clause_emits_empty_lowered_prefix) :-
     once((

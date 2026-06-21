@@ -99,6 +99,8 @@ instr_from_parts(["allocate"], allocate).
 instr_from_parts(["deallocate"], deallocate).
 instr_from_parts(["builtin_call", Op, Ar], builtin_call(Op, Ar)).
 instr_from_parts(["call_foreign", Pred, Ar], call_foreign(Pred, Ar)).
+instr_from_parts(["begin_aggregate", Kind, Template, Bag], begin_aggregate(Kind, Template, Bag)).
+instr_from_parts(["end_aggregate", Template], end_aggregate(Template)).
 instr_from_parts(["switch_on_constant"|Cases], switch_on_constant(Cases)).
 instr_from_parts(["try_me_else", L], try_me_else(L)).
 instr_from_parts(["retry_me_else", L], retry_me_else(L)).

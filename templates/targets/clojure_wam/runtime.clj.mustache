@@ -225,7 +225,7 @@
 (defn restore-choice-regs [state saved-regs]
   (assoc state :regs saved-regs))
 
-(declare activate-choice)
+(declare activate-choice copy-term list->term reg-get-raw)
 
 (defn choice-snapshot [state target-pc]
   {:kind :wam
@@ -256,6 +256,51 @@
          :kind :member
          :member-elem elem
          :member-rest rest-list))
+
+(defn aggregate-choice-snapshot [state instr end-pc]
+  (assoc (choice-snapshot state (inc (:pc state)))
+         :kind :aggregate
+         :aggregate-kind (:kind instr)
+         :aggregate-template-reg (:template instr)
+         :aggregate-bag-reg (:bag instr)
+         :aggregate-next-pc (inc end-pc)
+         :aggregate-collected []))
+
+(defn find-matching-end-aggregate [code start-pc]
+  (loop [idx (inc start-pc)
+         depth 1]
+    (if (>= idx (count code))
+      nil
+      (let [op (:op (get code idx))]
+        (cond
+          (= op :begin-aggregate)
+          (recur (inc idx) (inc depth))
+
+          (= op :end-aggregate)
+          (if (= depth 1)
+            idx
+            (recur (inc idx) (dec depth)))
+
+          :else
+          (recur (inc idx) depth))))))
+
+(defn aggregate-result-term [state kind collected]
+  (case kind
+    "count" (count collected)
+    "collect" (list->term (:intern-context state) collected)
+    (list->term (:intern-context state) collected)))
+
+(defn aggregate-choice-index [choice-points]
+  (some (fn [[idx cp]]
+          (when (= :aggregate (:kind cp)) idx))
+        (reverse (map-indexed vector choice-points))))
+
+(defn collect-aggregate-template [state template-reg]
+  (when-let [idx (aggregate-choice-index (:choice-points state))]
+    (let [[copied copy-state] (copy-term state (reg-get-raw state template-reg))]
+      (-> copy-state
+          (update-in [:choice-points idx :aggregate-collected] conj copied)
+          (assoc-in [:choice-points idx :next-var-id] (:next-var-id copy-state))))))
 
 (defn push-choice-point [state target-pc]
   (update state :choice-points conj (choice-snapshot state target-pc)))
@@ -2427,6 +2472,18 @@
     :member
     (apply-member-solution state (:pc cp) (:member-elem cp) (:member-rest cp))
 
+    :aggregate
+    (let [bag (aggregate-result-term state (:aggregate-kind cp) (:aggregate-collected cp))
+          bag-reg (:aggregate-bag-reg cp)
+          current (or (reg-get-raw state bag-reg) ::unbound)
+          resumed-state (assoc state :pc (:aggregate-next-pc cp))
+          [ok next-state] (if (= current ::unbound)
+                            [true (reg-set-raw resumed-state bag-reg bag)]
+                            (unify-values resumed-state current bag))]
+      (if ok
+        next-state
+        (backtrack resumed-state)))
+
     (assoc state :status :running)))
 
 (defn execute-foreign [state instr]
@@ -2597,6 +2654,18 @@
 
         :jump-pc
         (assoc state :pc (:target-pc instr))
+
+        :begin-aggregate
+        (if-let [end-pc (find-matching-end-aggregate (:code state) (:pc state))]
+          (-> state
+              (update :choice-points conj (aggregate-choice-snapshot state instr end-pc))
+              advance)
+          (backtrack state))
+
+        :end-aggregate
+        (if-let [collected-state (collect-aggregate-template state (:template instr))]
+          (backtrack collected-state)
+          (backtrack state))
 
         :allocate
         (-> state

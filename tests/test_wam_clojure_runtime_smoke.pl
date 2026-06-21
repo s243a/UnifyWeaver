@@ -15,6 +15,9 @@
 :- dynamic user:wam_t4_pair/2.
 :- dynamic user:wam_choice_caller/1.
 :- dynamic user:wam_choice_or_z/1.
+:- dynamic user:wam_findall_choice/1.
+:- dynamic user:wam_findall_member/1.
+:- dynamic user:wam_findall_empty/1.
 :- dynamic user:wam_bind_then_fact/1.
 :- dynamic user:wam_bind_after_call/1.
 :- dynamic user:wam_bind_before_execute/1.
@@ -409,6 +412,9 @@ user:wam_t4_pair(b, z).
 user:wam_choice_caller(X) :- user:wam_choice_fact(X).
 user:wam_choice_or_z(X) :- user:wam_choice_fact(X).
 user:wam_choice_or_z(z).
+user:wam_findall_choice(L) :- findall(X, user:wam_choice_fact(X), L).
+user:wam_findall_member(L) :- findall(X, member(X, [a,b,c]), L).
+user:wam_findall_empty(L) :- findall(X, member(X, []), L).
 user:wam_bind_then_fact(X) :- Y = X, user:wam_fact(Y).
 user:wam_bind_after_call(X) :- user:wam_fact(X), X = a.
 user:wam_bind_before_execute(X) :- X = a, user:wam_fact(X).
@@ -804,6 +810,9 @@ run_smoke :-
           user:wam_t4_pair/2,
           user:wam_choice_caller/1,
           user:wam_choice_or_z/1,
+          user:wam_findall_choice/1,
+          user:wam_findall_member/1,
+          user:wam_findall_empty/1,
           user:wam_bind_then_fact/1,
           user:wam_bind_after_call/1,
           user:wam_bind_before_execute/1,
@@ -1268,6 +1277,10 @@ smoke_cases([
     case('wam_t4_pair/2', args(a, z), "false"),
     case('wam_t4_pair/2', args(c, x), "false"),
     case('wam_choice_or_z/1', 'z', "true"),
+    case('wam_findall_choice/1', '[a,b,c]', "true"),
+    case('wam_findall_choice/1', '[a,b]', "false"),
+    case('wam_findall_member/1', '[a,b,c]', "true"),
+    case('wam_findall_empty/1', '[]', "true"),
     case('wam_bind_then_fact/1', 'a', "true"),
     case('wam_bind_then_fact/1', 'b', "false"),
     case('wam_bind_after_call/1', 'a', "true"),
