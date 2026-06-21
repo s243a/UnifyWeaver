@@ -160,6 +160,18 @@ def train(args):
     print(f"WIKI edges: {len(edges_tr)} train / {len(edges_hold)} held-out")
     print(f"SYM pairs: {len(pos_tr)} pos + {len(neg)} neg train / {len(pos_hold)} held-out positives")
 
+    # FINE-TUNE-WITH-REPLAY (continual learning): when --replay-pairs is given, --pairs is the NEW data
+    # (e.g. the engineering build-out) and the replay file is the cumulative scored set. Each SYM batch
+    # mixes a `--replay-frac` fraction of OLD (replay) examples with the new ones, so the warm-started
+    # head does not catastrophically forget the existing domains while it learns the new one.
+    replay_pos, replay_neg = [], []
+    if args.replay_pairs:
+        rp, rn = load_pairs(args.replay_pairs)
+        replay_pos = [r for r in rp if r[0] in idx and r[1] in idx]
+        replay_neg = [r for r in rn if r[0] in idx and r[1] in idx]
+        print(f"REPLAY: {len(replay_pos)} pos + {len(replay_neg)} neg from {os.path.basename(args.replay_pairs)} "
+              f"(replay-frac {args.replay_frac:.2f} of each SYM batch)")
+
     llm = []
     if args.llm:
         bmu = load_mu(BOUNDARY)
@@ -168,8 +180,22 @@ def train(args):
 
     torch.manual_seed(args.seed)
     model = MuAttention(d_model=q.shape[1], n_heads=args.heads, n_layers=args.layers)
+    if args.init_from:                                    # warm start — DON'T reinit the head (fine-tune)
+        ck = torch.load(args.init_from, weights_only=False)
+        model.load_state_dict(ck["state"])
+        print(f"WARM START from {os.path.basename(args.init_from)} (fine-tune, head NOT reinitialised) "
+              f"@ lr {args.lr:g}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     m = args.margin
+
+    def draw_sym(pool, replay, k):
+        """Draw k SYM examples, mixing replay-frac OLD (replay) with new (pool) when replay is active."""
+        if replay and args.replay_frac > 0:
+            n_old = int(round(k * args.replay_frac))
+            old = [replay[rng.randrange(len(replay))] for _ in range(n_old)]
+            new = [pool[rng.randrange(len(pool))] for _ in range(k - n_old)] if pool else []
+            return old + new
+        return [pool[rng.randrange(len(pool))] for _ in range(k)]
 
     eps = 1e-6
     bce = lambda x, t: F.binary_cross_entropy(x.clamp(eps, 1 - eps), torch.full_like(x, float(t)))
@@ -194,8 +220,8 @@ def train(args):
                                               + F.relu(m - (mu_cp - mu_cpn)).mean()))
         # SYM (order-invariant) — BALANCED pos/neg so the μ=0 negatives can't collapse μ→0
         half = args.bs // 2
-        sb = ([pos_tr[rng.randrange(len(pos_tr))] for _ in range(half)] +
-              [neg[rng.randrange(len(neg))] for _ in range(args.bs - half)])
+        sb = (draw_sym(pos_tr, replay_pos, half) +
+              draw_sym(neg, replay_neg, args.bs - half))
         sb_j = [HAIKU] * half + [GRAPHJ] * (args.bs - half)             # pos=bought, neg=free non-edge
         sym_items = ([(a, b, OPS["SYM"], SW, j) for (a, b, _), j in zip(sb, sb_j)] +
                      [(b, a, OPS["SYM"], SW, j) for (a, b, _), j in zip(sb, sb_j)])
@@ -299,9 +325,13 @@ BORDER_PROBE = ["Atoms", "Electronics", "Measurement", "Materials", "Energy"]
 
 
 def discrimination_probe(model, tok, idx):
-    """MULTI-domain discrimination: for clear nodes of each domain, μ(node|own-root) should be the ARGMAX
-    over all DOMAIN_ROOTS {Physics, Chemistry, Mathematics, Computer_science, Engineering} (SYM operator).
-    Reports the per-domain accuracy and the full confusion (true domain × argmax root)."""
+    """MULTI-domain discrimination: for clear nodes of each domain, μ(node|own-root) over all DOMAIN_ROOTS
+    {Physics, Chemistry, Mathematics, Computer_science, Engineering} (SYM operator). Reports BOTH metrics:
+      * hard ARGMAX accuracy + confusion (is the true root strictly the top-1?) — brittle for a node that
+        is genuinely high-μ to several roots (multi-membership), and
+      * a RANKING/MARGIN view: the true root's RANK among the 5, the signed margin μ(true) − max-other
+        (>0 ⇔ argmax-correct), and top-1 / top-2 rates. If ranking is strong even where argmax flips, the
+        "brittleness" is largely a metric artifact (correct multi-membership of a connective domain)."""
     roots = [r for r in DOMAIN_ROOTS if r in idx]
     if len(roots) < 2:
         print("[DISCRIM] <2 domain roots in graph — skipped")
@@ -309,6 +339,7 @@ def discrimination_probe(model, tok, idx):
     ab = {r: r[:4] for r in roots}
     print(f"\n[DISCRIM] {len(roots)}-domain (argmax μ over {', '.join(roots)}):")
     confusion = {d: {r: 0 for r in roots} for d in roots}
+    rankrows = {d: [] for d in roots}            # per-domain list of (rank, signed_margin)
     correct = total = 0
     for dom in roots:
         nodes = [n for n in DOMAIN_PROBE[dom] if n in idx]
@@ -320,8 +351,12 @@ def discrimination_probe(model, tok, idx):
             ok = pred == dom
             correct += ok
             total += 1
+            rank = 1 + sum(1 for r in roots if r != dom and vals[r] > vals[dom])
+            best_other = max(vals[r] for r in roots if r != dom)
+            rankrows[dom].append((rank, vals[dom] - best_other))
             scores = "  ".join(f"{ab[r]}={vals[r]:.2f}" for r in roots)
-            print(f"    [{ab[dom]}] {n:22} {scores}  →{ab[pred]} {'✓' if ok else '✗'}")
+            print(f"    [{ab[dom]}] {n:22} {scores}  →{ab[pred]} {'✓' if ok else '✗'}  "
+                  f"rank{rank} m{vals[dom]-best_other:+.2f}")
     # borderline (no ground truth — just show the argmax)
     bnodes = [n for n in BORDER_PROBE if n in idx]
     if bnodes:
@@ -334,8 +369,23 @@ def discrimination_probe(model, tok, idx):
     print("            " + "".join(f"{ab[r]:>7}" for r in roots))
     for d in roots:
         print(f"    {ab[d]:>7} " + "".join(f"{confusion[d][r]:>7}" for r in roots))
-    print(f"  multi-domain discrimination accuracy: {correct}/{total} "
+    print(f"  multi-domain discrimination accuracy (hard argmax): {correct}/{total} "
           f"({100*correct/max(total,1):.0f}%)")
+    # --- ranking / margin view (robust to multi-membership) ---
+    print("  ranking/margin (true-root rank among the 5; signed margin μ(true)−max-other; top-1/top-2):")
+    print(f"    {'domain':>7}  {'meanRank':>8}  {'meanMargin':>10}  {'top1':>5}  {'top2':>5}")
+    allr = []
+    for d in roots:
+        rs = rankrows[d]
+        allr += rs
+        mr = sum(x[0] for x in rs) / max(len(rs), 1)
+        mm = sum(x[1] for x in rs) / max(len(rs), 1)
+        t1 = sum(1 for x in rs if x[0] == 1) / max(len(rs), 1)
+        t2 = sum(1 for x in rs if x[0] <= 2) / max(len(rs), 1)
+        print(f"    {ab[d]:>7}  {mr:>8.2f}  {mm:>+10.2f}  {100*t1:>4.0f}%  {100*t2:>4.0f}%")
+    mr = sum(x[0] for x in allr) / max(len(allr), 1)
+    t2 = sum(1 for x in allr if x[0] <= 2) / max(len(allr), 1)
+    print(f"    {'ALL':>7}  {mr:>8.2f}  {'':>10}  {100*correct/max(total,1):>4.0f}%  {100*t2:>4.0f}%")
 
 
 def provenance_probe(model, tok, idx):
@@ -415,6 +465,12 @@ def main():
     ap.add_argument("--quick-val", action="store_true", help="skip dense-map emission/lin-agreement")
     ap.add_argument("--prov-mask", type=float, default=0.5, help="PART B: prob of masking the provenance "
                     "token during training (1.0 = always-masked = the provenance-OFF ablation control)")
+    ap.add_argument("--init-from", default=None, help="warm-start checkpoint for FINE-TUNING (head NOT "
+                    "reinitialised); pair with a LOWER --lr (~1/3–1/5 of from-scratch)")
+    ap.add_argument("--replay-pairs", default=None, help="cumulative scored set to REPLAY while fine-tuning "
+                    "on --pairs (the new data); prevents catastrophic forgetting")
+    ap.add_argument("--replay-frac", type=float, default=0.4, help="fraction of each SYM batch drawn from "
+                    "the replay set (0.3–0.5 typical)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--save", default=None)
     args = ap.parse_args()
