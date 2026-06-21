@@ -1087,6 +1087,14 @@ do its child branches carve out *distinct* sub-regions (a genuine fan-out across
 *overlapping* ones (redundant branches)? That question fixes how to gate — and, crucially, it is **not**
 §5f's monotonicity repair.
 
+**MICA proposes, overlap disposes — the two measures compose.** §5e/§5f's MICA is the *upward* primitive:
+it finds the merge points where otherwise-separate branches join, so a node that serves as the MICA for
+many *distant* pairs is a **candidate** bridge. But being a merge point (high fan-out) is necessary, not
+sufficient — a node with a hundred near-identical children is a redundant hub, not a bridge. The
+parent-relative overlap is the **qualifier**: a good bridge has high *diversity* of branching, not just
+high branching. So MICA generates candidates (look up), overlap-diversity keeps the ones whose branches
+are genuinely distinct, and μ (below) keeps the ones whose branches are in-domain — a three-signal test.
+
 **Gate relative to the parent, not the children.** Jaccard/Dice compare two sets, and the comparison is
 only well-posed inside a **common universe**. For the bridge question that universe is `P`'s own evidence
 — what `P` is responsible for organizing — so gate by `P`, not by each child's private gate:
@@ -1107,6 +1115,23 @@ membership frontier is the natural reading of "the evidence `P` organizes.")
 different regions); `J_P(u,v) ≈ 1` ⇒ they reconverge (`P`'s children are redundant). Aggregate the
 pairwise `J_P` over `P`'s children (e.g. mean) for a single **fan-out score** per candidate `P` — low mean
 = clean fan-out / strong bridge.
+
+**A whole-node diversity score (cheaper than averaging pairs).** Rather than aggregate the `O(children²)`
+pairwise `J_P`, read the diversity off the **union** directly:
+
+```
+diversity(P) = μ(⋃_i E_{c_i}^P) / Σ_i μ(E_{c_i}^P)   ∈ [1/n, 1]
+n_eff(P)     = n · diversity(P)                        # effective number of DISTINCT branches
+```
+
+`diversity(P)` is `1` when the children are disjoint (every branch covers new ground) and `1/n` when they
+fully overlap (`n` redundant copies); `n_eff` then equals the child count `n` for disjoint branches and
+**collapses to `1` for identical ones**. That single number *is* "diversity of branching, not just
+branching": a 100-child apex of near-duplicates scores `n_eff ≈ 1` (not a bridge), a 100-child node with
+distinct branches scores `n_eff ≈ 100` (strong bridge). Union mass and per-child masses are both direct
+KMV-sketch reads, so it is cheap. This is an effective-count / entropy reading of the branching — the same
+effective-number idea the hierarchy objective uses for `H`, applied to cone overlap instead of a label
+histogram. (Mass-weight by `Σμ` rather than count `n` if you want branch *importance* over branch *count*.)
 
 **Reuses the existing sketches.** `μ(E_u^P ∩ E_v^P)` is exactly the carry-weight KMV overlap
 (`sketch_mu_overlap`) restricted to `U_P`. For *ranking* bridges across different parents — whose universes
