@@ -29,8 +29,19 @@ For a candidate node `P` with in-domain children `c_1 … c_n` (children with `�
 - **Effective branches** `n_eff(P)` = `n · diversity(P)` — equals `n` for disjoint branches, collapses to
   `1` for `n` identical ones. *(Mass-weighted variant: replace the count `n` by the in-domain child-mass
   share if branch* importance *matters more than branch* count.)*
-- **Purity** `purity(P)` = `cone_purity(P)` = `m_μ(desc(P)) / |desc(P)|` (the existing leak-detector
-  read — in-domain mass per node of the raw cone).
+- **Purity** `purity(P)` — domain coherence of `P`'s cone, measured **in the same frame as `n_eff`** (the
+  in-domain cone), **not** the raw cone.
+  - *The original raw-cone read* `cone_purity(P) = m_μ(desc(P)) / |desc(P)|` *conflates leaky with
+    big/general* and must **not** be used as the classifier's purity: #3306's real-data run showed it
+    mislabels genuine in-domain hubs (`Subfields_of_physics` 0.019, `Energy` 0.014) as `LeakConduit`,
+    because a large raw cone accumulates out-of-domain nodes that dilute the average regardless of
+    coherence.
+  - *Use an in-domain-frame read.* Primary candidate — the **in-domain fraction**
+    `purity(P) = |gated_desc(P)| / |desc(P)|`: high when most of the cone is in-domain (a coherent hub),
+    low for a leak conduit whose cone reaches out-of-domain junk. Alternative — the gated average-μ
+    `m_μ(gated_desc(P)) / |gated_desc(P)|`. **Pick the cleaner separator by the increment-5 validation**
+    (the requirement: `Subfields_of_physics`/`Energy` → high, `Matter` → low). `descendant_mu_mass_gated`
+    supplies the gated cone; `cone_purity` (raw) remains available but is *not* the classifier input.
 - **Fan-out** `φ(P)` = the in-domain child count `n`.
 
 ## Classification

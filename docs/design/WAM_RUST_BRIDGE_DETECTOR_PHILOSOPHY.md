@@ -71,6 +71,19 @@ That single table is why the bridge detector and the earlier cone-purity leak de
    nodes to index for "how do I get from here to there."
 5. **Feeding the directional-μ model.** The bridge structure marks the meaningful merge points (the MICA
    candidates) the directional model should care about — a structural prior for where order matters.
+6. **Bridge-guided sampler seeding (a virtuous loop).** The training sampler (`gen_mu_pairs.py`) seeds
+   random walks from a root and grows a *mesh* by adding walk endpoints — but raw endpoints **drift out of
+   the domain** (the first real run wandered from `Physics` into `Tamils` / `Shinto_shrines`). A better
+   frontier: take a couple of *short* walks from the root to nearby points, find the **good bridge** that
+   joins their regions (their MICA, qualified by `n_eff` + purity), and seed the next walks from *that* — a
+   structurally-important, in-domain node, close to the root when the walks are short (walk length is the
+   locality knob). This replaces "add every endpoint" with "add good bridges," which (a) **keeps the mesh
+   in-domain** — a leak conduit or redundant hub is rejected as a seed, the principled fix for the drift —
+   and (b) covers the domain's real branch structure, yielding the *varied-anchor* pairs the directional
+   model was starved for. It closes a loop: the μ map drives bridge detection, and the bridges seed the
+   training data that sharpens the next μ map — a self-expanding, **drift-controlled** frontier. (Bound the
+   loop: keep discovered seeds within a μ-coherent neighbourhood of the root so the frontier expands
+   without wandering.)
 
 ## Where it sits
 
