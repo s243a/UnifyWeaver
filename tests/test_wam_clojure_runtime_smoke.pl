@@ -18,6 +18,13 @@
 :- dynamic user:wam_findall_choice/1.
 :- dynamic user:wam_findall_member/1.
 :- dynamic user:wam_findall_empty/1.
+:- dynamic user:wam_agg_count/1.
+:- dynamic user:wam_agg_sum/1.
+:- dynamic user:wam_agg_bag/1.
+:- dynamic user:wam_agg_set/1.
+:- dynamic user:wam_agg_min/1.
+:- dynamic user:wam_agg_max/1.
+:- dynamic user:wam_agg_min_empty/1.
 :- dynamic user:wam_bind_then_fact/1.
 :- dynamic user:wam_bind_after_call/1.
 :- dynamic user:wam_bind_before_execute/1.
@@ -415,6 +422,13 @@ user:wam_choice_or_z(z).
 user:wam_findall_choice(L) :- findall(X, user:wam_choice_fact(X), L).
 user:wam_findall_member(L) :- findall(X, member(X, [a,b,c]), L).
 user:wam_findall_empty(L) :- findall(X, member(X, []), L).
+user:wam_agg_count(N) :- aggregate_all(count, member(_, [a,b,c]), N).
+user:wam_agg_sum(S) :- aggregate_all(sum(X), member(X, [1,2,3]), S).
+user:wam_agg_bag(L) :- aggregate_all(bag(X), member(X, [a,b,a]), L).
+user:wam_agg_set(L) :- aggregate_all(set(X), member(X, [b,a,b]), L).
+user:wam_agg_min(M) :- aggregate_all(min(X), member(X, [3,1,2]), M).
+user:wam_agg_max(M) :- aggregate_all(max(X), member(X, [3,1,2]), M).
+user:wam_agg_min_empty(M) :- aggregate_all(min(X), member(X, []), M).
 user:wam_bind_then_fact(X) :- Y = X, user:wam_fact(Y).
 user:wam_bind_after_call(X) :- user:wam_fact(X), X = a.
 user:wam_bind_before_execute(X) :- X = a, user:wam_fact(X).
@@ -813,6 +827,13 @@ run_smoke :-
           user:wam_findall_choice/1,
           user:wam_findall_member/1,
           user:wam_findall_empty/1,
+          user:wam_agg_count/1,
+          user:wam_agg_sum/1,
+          user:wam_agg_bag/1,
+          user:wam_agg_set/1,
+          user:wam_agg_min/1,
+          user:wam_agg_max/1,
+          user:wam_agg_min_empty/1,
           user:wam_bind_then_fact/1,
           user:wam_bind_after_call/1,
           user:wam_bind_before_execute/1,
@@ -1281,6 +1302,19 @@ smoke_cases([
     case('wam_findall_choice/1', '[a,b]', "false"),
     case('wam_findall_member/1', '[a,b,c]', "true"),
     case('wam_findall_empty/1', '[]', "true"),
+    case('wam_agg_count/1', 3, "true"),
+    case('wam_agg_count/1', 2, "false"),
+    case('wam_agg_sum/1', 6, "true"),
+    case('wam_agg_sum/1', 5, "false"),
+    case('wam_agg_bag/1', '[a,b,a]', "true"),
+    case('wam_agg_bag/1', '[a,b]', "false"),
+    case('wam_agg_set/1', '[a,b]', "true"),
+    case('wam_agg_set/1', '[b,a]', "false"),
+    case('wam_agg_min/1', 1, "true"),
+    case('wam_agg_min/1', 2, "false"),
+    case('wam_agg_max/1', 3, "true"),
+    case('wam_agg_max/1', 2, "false"),
+    case('wam_agg_min_empty/1', 0, "false"),
     case('wam_bind_then_fact/1', 'a', "true"),
     case('wam_bind_then_fact/1', 'b', "false"),
     case('wam_bind_after_call/1', 'a', "true"),
@@ -2556,6 +2590,7 @@ prolog_term_string_to_edn('[''4'']', "{:tag :struct :functor \"[|]/2\" :args [\"
 prolog_term_string_to_edn('[''4'',''2'']', "{:tag :struct :functor \"[|]/2\" :args [\"4\" {:tag :struct :functor \"[|]/2\" :args [\"2\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[f,a,b]', "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[a,b]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}") :- !.
+prolog_term_string_to_edn('[a,b,a]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[b,c]', "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[c]', "{:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}") :- !.
 prolog_term_string_to_edn('[a,c]', "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
@@ -2596,6 +2631,7 @@ prolog_term_string_to_edn("['4']", "{:tag :struct :functor \"[|]/2\" :args [\"4\
 prolog_term_string_to_edn("['4','2']", "{:tag :struct :functor \"[|]/2\" :args [\"4\" {:tag :struct :functor \"[|]/2\" :args [\"2\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[f,a,b]", "{:tag :struct :functor \"[|]/2\" :args [\"f\" {:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[a,b]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" \"[]\"]}]}") :- !.
+prolog_term_string_to_edn("[a,b,a]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"a\" \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[b,c]", "{:tag :struct :functor \"[|]/2\" :args [\"b\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[c]", "{:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}") :- !.
 prolog_term_string_to_edn("[a,c]", "{:tag :struct :functor \"[|]/2\" :args [\"a\" {:tag :struct :functor \"[|]/2\" :args [\"c\" \"[]\"]}]}") :- !.
