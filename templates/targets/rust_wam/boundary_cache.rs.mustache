@@ -2459,6 +2459,19 @@ pub enum BridgeClass {
     NotCandidate,
 }
 
+/// **The canonical `BridgeClass` → Prolog-atom name.** The foreign predicate `category_bridge_score/2`
+/// (and `bridge/3`) exposes the class to Prolog as one of these lowercase atoms; the dispatch arm in
+/// `execute_foreign_predicate` packs `Value::Atom(bridge_class_atom(score.class))`. Kept here (next to
+/// the enum) so the wire name is defined once and the Rust side and the transpiler agree.
+pub fn bridge_class_atom(class: BridgeClass) -> &'static str {
+    match class {
+        BridgeClass::Bridge => "bridge",
+        BridgeClass::LeakConduit => "leak_conduit",
+        BridgeClass::RedundantHub => "redundant_hub",
+        BridgeClass::NotCandidate => "not_candidate",
+    }
+}
+
 /// Classification thresholds for `bridge_classify` / `rank_bridges`. The continuous `(n_eff, purity)`
 /// is the real read for ranking; these cut it into the convenience labels.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -7464,5 +7477,70 @@ mod tests {
         assert_eq!(sh.class, BridgeClass::RedundantHub, "reconverging fan-out ⇒ RedundantHub: {sh:?}");
 
         assert!(ranked.iter().all(|(_, s)| s.n_eff.is_finite() && s.purity.is_finite()), "all scores finite");
+    }
+
+    // ── Bridge detector as a FOREIGN PREDICATE: the class→atom wire the Prolog side reads (#3317) ──
+
+    // The foreign predicate `category_bridge_score(Node, Class)` returns `bridge_class_atom(class)` as a
+    // Prolog atom. This is the cargo-testable proxy for the gated Prolog program in
+    // tests/test_wam_rust_bridge_foreign_dispatch.pl (which needs swipl+cargo to run the full
+    // transpile): it drives the SAME path the dispatch arm uses — rank_bridges (auto-τ_pure) → look up a
+    // node's BridgeScore → bridge_class_atom — directly on the 10k fixture and asserts the atom strings a
+    // Prolog author sees. Subfields_of_physics ⇒ 'bridge', Matter ⇒ 'leak_conduit'. Gated on
+    // UW_CATEGORY_TSV + UW_FUZZY_NODES (skips in CI).
+    #[test]
+    fn wikipedia_bridge_foreign_predicate_atoms() {
+        let tsv = match std::env::var("UW_CATEGORY_TSV") {
+            Ok(p) => p, Err(_) => { eprintln!("bridge-atom: skip (UW_CATEGORY_TSV)"); return; } };
+        let fuzz = match std::env::var("UW_FUZZY_NODES") {
+            Ok(p) => p, Err(_) => { eprintln!("bridge-atom: skip (UW_FUZZY_NODES)"); return; } };
+        let text = std::fs::read_to_string(&tsv).expect("read UW_CATEGORY_TSV");
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        let mut parents: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (ln, line) in text.lines().enumerate() {
+            if ln == 0 && line.starts_with("child") { continue; }
+            let mut it = line.split('\t');
+            let (c, p) = match (it.next(), it.next()) { (Some(c), Some(p)) => (c, p), _ => continue };
+            let intern = |s: &str, ids: &mut HashMap<String, u32>, names: &mut Vec<String>| {
+                *ids.entry(s.to_string()).or_insert_with(|| { names.push(s.to_string()); (names.len() - 1) as u32 }) };
+            let ci = intern(c, &mut ids, &mut names);
+            let pi = intern(p, &mut ids, &mut names);
+            parents.entry(ci).or_default().push(pi);
+        }
+        let mu: HashMap<u32, f64> = std::fs::read_to_string(&fuzz).expect("read UW_FUZZY_NODES")
+            .lines().filter(|l| !l.trim_start().starts_with('#'))
+            .filter_map(|l| { let mut it = l.split('\t');
+                match (it.next(), it.next().and_then(|s| s.trim().parse::<f64>().ok())) {
+                    (Some(n), Some(m)) => ids.get(n.trim()).map(|&id| (id, m)),
+                    _ => None,
+                }
+            }).collect();
+
+        // Same call the WamState foreign-predicate path makes: rank_bridges (auto τ_pure) → per-node
+        // BridgeScore map → class atom. (The live path caches this as `bridge_scores`.)
+        let params = BridgeParams::default(); // φ_min=2, τ_div=1.5, τ_pure=None (self-calibrating)
+        let scores: HashMap<u32, BridgeScore> =
+            rank_bridges(&parents, &mu, 0.3, &params).into_iter().collect();
+        let class_atom = |nm: &str| ids.get(nm)
+            .and_then(|n| scores.get(n))
+            .map(|s| bridge_class_atom(s.class));
+
+        assert_eq!(class_atom("Subfields_of_physics"), Some("bridge"),
+            "category_bridge_score(Subfields_of_physics, Class) ⇒ Class = bridge");
+        assert_eq!(class_atom("Matter"), Some("leak_conduit"),
+            "category_bridge_score(Matter, Class) ⇒ Class = leak_conduit");
+        eprintln!("bridge-atom: Subfields_of_physics ⇒ {:?}, Matter ⇒ {:?}",
+            class_atom("Subfields_of_physics"), class_atom("Matter"));
+    }
+
+    // The class→atom wire names are stable and total (every BridgeClass maps to a distinct lowercase
+    // atom the Prolog side matches on).
+    #[test]
+    fn bridge_class_atom_wire_names() {
+        assert_eq!(bridge_class_atom(BridgeClass::Bridge), "bridge");
+        assert_eq!(bridge_class_atom(BridgeClass::LeakConduit), "leak_conduit");
+        assert_eq!(bridge_class_atom(BridgeClass::RedundantHub), "redundant_hub");
+        assert_eq!(bridge_class_atom(BridgeClass::NotCandidate), "not_candidate");
     }
 }
