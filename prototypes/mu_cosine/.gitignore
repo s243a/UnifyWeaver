@@ -19,3 +19,6 @@ boundary_pairs_e5.tsv
 *.pt
 mu_pairs_eng.tsv
 mu_pairs_enwiki.tsv
+mu_pairs_mathfields.tsv
+mu_pairs_scored_cumulative.tsv
+mu_pairs_scored_prior.tsv
