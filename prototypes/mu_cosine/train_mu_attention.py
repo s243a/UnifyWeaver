@@ -142,7 +142,7 @@ def train(args):
         for p in ps:
             adj.setdefault(c, set()).add(p)
             adj.setdefault(p, set()).add(c)
-    q, p, idx = build_e5_tables(names, cache_path=os.path.join(ROOT, "e5_tables.pt"))
+    q, p, idx = build_e5_tables(names, cache_path=os.environ.get("UW_E5_CACHE", os.path.join(ROOT, "e5_tables.pt")))
     tok = Tokenizer(q, p, idx, parents, deg, k=args.k, beta=1.0, max_anc=args.max_anc)
 
     rng = random.Random(args.seed)
