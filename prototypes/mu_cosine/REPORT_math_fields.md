@@ -74,6 +74,25 @@ so there *is* headroom here; **(b)** the math data helps (54%→62%, top-2 64%�
 contribution *beyond churn* is real but modest (+3 pts argmax, +5 pts top-2, mean-rank −0.18). So the
 deepening data does add a little genuine subfield-separation signal, just not a lot.
 
+### (5) Worked example — `Algebraic_geometry`, the algebra∩geometry boundary
+A focused micro-round on `Category:Algebraic_geometry` (real parents: `Fields_of_abstract_algebra` **and**
+`Fields_of_geometry`) demonstrates the two sampling modes and the boundary structure (`gen` →
+`mu_pairs_scored_alggeom.tsv`, 80 Haiku pairs ~16k tok):
+
+- **Downward** (depth-≤2 closure, within-AG): mean μ **0.75** — tight subfield relatedness
+  (`AG`↔`Scheme_theory`/`Moduli_theory`/`Morphisms_of_schemes` = 1.0, `Algebraic_curves`↔`Elliptic_curves`
+  0.92).
+- **Bidirectional-coinflip** (up to the two parents, across to siblings; e5-math-coherence-filtered to
+  stop apex drift into Oceanography/Alchemy): mean μ **0.36** — the *graded* boundary
+  (`Elliptic_curves`↔`Commutative_algebra` 0.65 = algebra side, `AG`↔`Conic_sections` 0.70 = geometry
+  side, `Curves`↔`Classical_geometry` 0.75; junk ~0).
+
+On the trained model `Algebraic_geometry` reads high-to-**both** its parents (top anchors Topology 0.80,
+Geometry 0.77, + Linear 0.76, Group 0.51) — correct multi-membership, the intra-math analogue of
+`Mechanics×Engineering` / `AI⊂CS`. The over-attraction of the generic `Topology`/`Linear_algebra` anchors
+(why AG argmaxes Topology, not "algebraic geometry") is exactly the subfield-anchor mis-calibration that
+the 62%/79% subfield separation leaves on the table.
+
 ## Honest verdict — the saturation pattern, confirmed
 This round sharpens the meta-finding across the whole arc:
 
