@@ -32,7 +32,7 @@ def main(pairs=os.path.join(ROOT, "mu_pairs_scored_multidomain.tsv"),
          model_path=os.path.join(ROOT, "model_multidomain.pt"), seed=1):
     parents, children, deg = load_dag()
     names = all_names(parents, children)
-    q, p, idx = build_e5_tables(names, cache_path=os.path.join(ROOT, "e5_tables.pt"))
+    q, p, idx = build_e5_tables(names, cache_path=os.environ.get("UW_E5_CACHE", os.path.join(ROOT, "e5_tables.pt")))
     tok = Tokenizer(q, p, idx, parents, deg, k=1)
     ck = torch.load(model_path, weights_only=False)
     model = MuAttention(d_model=ck["cfg"]["d_model"], n_heads=ck["cfg"]["heads"],

@@ -27,7 +27,7 @@ def main():
                                                   "model_eng_finetune"])[:3]
     parents, children, deg = load_dag()
     names = all_names(parents, children)
-    q, p, idx = build_e5_tables(names, cache_path="e5_tables.pt")
+    q, p, idx = build_e5_tables(names, cache_path=os.environ.get("UW_E5_CACHE","e5_tables.pt"))
     tok = Tokenizer(q, p, idx, parents, deg, k=1)
     roots = [r for r in T.DOMAIN_ROOTS if r in idx]
     probe = [(n, dom) for dom in roots for n in T.DOMAIN_PROBE[dom] if n in idx]

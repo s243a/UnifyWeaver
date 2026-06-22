@@ -41,7 +41,7 @@ from collections import deque
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(ROOT, "..", ".."))
-GRAPH = os.path.join(REPO, "data", "benchmark", "10k", "category_parent.tsv")
+GRAPH = os.environ.get("UW_MU_GRAPH", os.path.join(REPO, "data", "benchmark", "10k", "category_parent.tsv"))
 
 
 def load_graph(path):

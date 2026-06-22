@@ -142,7 +142,7 @@ def train(args):
         for p in ps:
             adj.setdefault(c, set()).add(p)
             adj.setdefault(p, set()).add(c)
-    q, p, idx = build_e5_tables(names, cache_path=os.path.join(ROOT, "e5_tables.pt"))
+    q, p, idx = build_e5_tables(names, cache_path=os.environ.get("UW_E5_CACHE", os.path.join(ROOT, "e5_tables.pt")))
     tok = Tokenizer(q, p, idx, parents, deg, k=args.k, beta=1.0, max_anc=args.max_anc)
 
     rng = random.Random(args.seed)
@@ -188,14 +188,16 @@ def train(args):
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     m = args.margin
 
+    new_corpus = CORPORA.get(args.pairs_corpus, SW)        # corpus tag for the --pairs (new) data
     def draw_sym(pool, replay, k):
-        """Draw k SYM examples, mixing replay-frac OLD (replay) with new (pool) when replay is active."""
+        """Draw k SYM examples as (item, corpus_id): replay-frac OLD (replay, corpus=simplewiki) mixed with
+        new (pool, corpus=--pairs-corpus) when replay is active."""
         if replay and args.replay_frac > 0:
             n_old = int(round(k * args.replay_frac))
-            old = [replay[rng.randrange(len(replay))] for _ in range(n_old)]
-            new = [pool[rng.randrange(len(pool))] for _ in range(k - n_old)] if pool else []
+            old = [(replay[rng.randrange(len(replay))], SW) for _ in range(n_old)]
+            new = [(pool[rng.randrange(len(pool))], new_corpus) for _ in range(k - n_old)] if pool else []
             return old + new
-        return [pool[rng.randrange(len(pool))] for _ in range(k)]
+        return [(pool[rng.randrange(len(pool))], new_corpus) for _ in range(k)]
 
     eps = 1e-6
     bce = lambda x, t: F.binary_cross_entropy(x.clamp(eps, 1 - eps), torch.full_like(x, float(t)))
@@ -221,11 +223,11 @@ def train(args):
         # SYM (order-invariant) — BALANCED pos/neg so the μ=0 negatives can't collapse μ→0
         half = args.bs // 2
         sb = (draw_sym(pos_tr, replay_pos, half) +
-              draw_sym(neg, replay_neg, args.bs - half))
+              draw_sym(neg, replay_neg, args.bs - half))     # list of ((a,b,mu), corpus_id)
         sb_j = [HAIKU] * half + [GRAPHJ] * (args.bs - half)             # pos=bought, neg=free non-edge
-        sym_items = ([(a, b, OPS["SYM"], SW, j) for (a, b, _), j in zip(sb, sb_j)] +
-                     [(b, a, OPS["SYM"], SW, j) for (a, b, _), j in zip(sb, sb_j)])
-        tgt = torch.tensor([mu for _, _, mu in sb])
+        sym_items = ([(it[0], it[1], OPS["SYM"], cid, j) for (it, cid), j in zip(sb, sb_j)] +
+                     [(it[1], it[0], OPS["SYM"], cid, j) for (it, cid), j in zip(sb, sb_j)])
+        tgt = torch.tensor([it[2] for it, _ in sb])
         mu_s = model(**tok.build(sym_items, train=True, rng=rng, p_mask_prov=args.prov_mask))
         mu_ab, mu_ba = mu_s[:len(sb)], mu_s[len(sb):]
         L_sym = F.mse_loss(mu_ab, tgt) + F.mse_loss(mu_ba, tgt)
@@ -274,12 +276,16 @@ def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args):
     print(f"[SYM]  held-out μ corr (control +0.726, #3302 +0.335): {corr:+.3f}  ({len(pos_hold)} "
           f"positives, MSE {F.mse_loss((ab+ba)/2, torch.tensor(tgt)):.3f})  symmetry gap {sym_gap:.3f}")
 
-    # --- gate-leak 5-probe (control 0/5), per operator ---
-    for op in ops:
-        pr = mu_batch(model, tok, [(n, "Physics", OPS[op]) for n in NONPHYS])
+    # --- gate-leak 5-probe (control 0/5), per operator --- (filter to nodes present in this graph;
+    # science-only slices like wide_enwiki won't contain Music/Cooking/etc.)
+    nonphys = [n for n in NONPHYS if n in idx]
+    for op in (ops if nonphys else []):
+        pr = mu_batch(model, tok, [(n, "Physics", OPS[op]) for n in nonphys])
         leak = int((pr >= 0.3).sum())
-        print(f"[{op}] gate-leak 5-probe (non-physics μ(·|Physics)≥0.3): {leak}/5  " +
-              "  ".join(f"{n.split('_')[0]}={v:.2f}" for n, v in zip(NONPHYS, pr.tolist())))
+        print(f"[{op}] gate-leak probe (non-physics μ(·|Physics)≥0.3): {leak}/{len(nonphys)}  " +
+              "  ".join(f"{n.split('_')[0]}={v:.2f}" for n, v in zip(nonphys, pr.tolist())))
+    if not nonphys:
+        print("[gate-leak] none of the NONPHYS probe nodes are in this graph — skipped")
 
     # --- Physics-vs-Chemistry DISCRIMINATION: μ(node|Physics) vs μ(node|Chemistry), check ordering ---
     discrimination_probe(model, tok, idx)
@@ -310,9 +316,15 @@ def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args):
     node_gated_lin_agreement(model, tok, idx)
 
 
-DOMAIN_ROOTS = ["Physics", "Chemistry", "Mathematics", "Computer_science", "Engineering"]
+# Artificial_intelligence is a candidate 6th root (the enwiki widening round). The probe filters to roots
+# present in the loaded graph, so on the 10k/simplewiki graphs (no AI) it stays 5-way automatically.
+DOMAIN_ROOTS = ["Physics", "Chemistry", "Mathematics", "Computer_science", "Engineering",
+                "Artificial_intelligence"]
 DOMAIN_PROBE = {
-    "Physics": ["Thermodynamics", "Optics", "Mechanics", "Electromagnetism", "Motion_(physics)"],
+    # Physics probe carries CLASSICAL nodes (comparable to prior rounds) + MODERN nodes (the enwiki
+    # widening — tests whether the now-present modern-physics subfields read as Physics).
+    "Physics": ["Thermodynamics", "Optics", "Mechanics", "Electromagnetism", "Motion_(physics)",
+                "Quantum_field_theory", "Particle_physics", "General_relativity", "Condensed_matter_physics"],
     "Chemistry": ["Periodic_table", "Acids", "Chemical_compounds", "Oxygen", "Chemical_reactions"],
     "Mathematics": ["Calculus", "Differential_equations", "Mathematical_analysis", "Logic",
                     "Fields_of_mathematics"],
@@ -320,6 +332,8 @@ DOMAIN_PROBE = {
                          "Computer_architecture"],
     "Engineering": ["Mechanical_engineering", "Civil_engineering", "Engineering_disciplines",
                     "Machines", "Infrastructure"],
+    "Artificial_intelligence": ["Machine_learning", "Neural_networks", "Deep_learning",
+                                "Computer_vision", "Natural_language_processing"],
 }
 BORDER_PROBE = ["Atoms", "Electronics", "Measurement", "Materials", "Energy"]
 
@@ -471,6 +485,8 @@ def main():
                     "on --pairs (the new data); prevents catastrophic forgetting")
     ap.add_argument("--replay-frac", type=float, default=0.4, help="fraction of each SYM batch drawn from "
                     "the replay set (0.3–0.5 typical)")
+    ap.add_argument("--pairs-corpus", default="simplewiki", choices=list(CORPORA),
+                    help="provenance corpus tag for the --pairs (new) data; replay stays simplewiki")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--save", default=None)
     args = ap.parse_args()

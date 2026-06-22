@@ -18,3 +18,4 @@ boundary_pairs_e5.tsv
 !boundary_*.sample.tsv
 *.pt
 mu_pairs_eng.tsv
+mu_pairs_enwiki.tsv

@@ -34,7 +34,7 @@ import torch.nn.functional as F
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(ROOT, "..", ".."))
-GRAPH = os.path.join(REPO, "data", "benchmark", "10k", "category_parent.tsv")
+GRAPH = os.environ.get("UW_MU_GRAPH", os.path.join(REPO, "data", "benchmark", "10k", "category_parent.tsv"))
 E5_MODEL = "intfloat/e5-small-v2"
 
 # operator codebook (the relation axis).
