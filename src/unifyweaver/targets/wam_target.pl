@@ -2709,6 +2709,9 @@ is_builtin_pred(path_join, 3).          % path_join(+Base, +Rel, -Full).
 is_builtin_pred(system_to_atom, 2).     % system_to_atom(+Cmd, -Output) -- capture stdout.
 is_builtin_pred(atom_to_system, 2).     % atom_to_system(+Cmd, +Content) -- write to stdin.
 is_builtin_pred(atom_split, 3).         % atom_split(+Atom, +Sep, -Parts) -- split on single char.
+is_builtin_pred(atom_starts_with, 2).   % atom_starts_with(+Atom, +Prefix).
+is_builtin_pred(atom_ends_with, 2).     % atom_ends_with(+Atom, +Suffix).
+is_builtin_pred(atom_contains, 2).      % atom_contains(+Atom, +Needle).
 is_builtin_pred(sleep, 1).              % sleep(+Seconds).
 is_builtin_pred(gethostname, 1).        % gethostname(-Name).
 is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).

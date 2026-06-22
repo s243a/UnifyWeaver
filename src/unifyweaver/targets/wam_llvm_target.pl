@@ -1600,6 +1600,8 @@ declare i8* @popen(i8*, i8*)
 declare i32 @pclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
 declare i64 @fwrite(i8*, i64, i64, i8*)
+declare i32 @memcmp(i8*, i8*, i64)
+declare i8* @strstr(i8*, i8*)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -5562,6 +5564,9 @@ entry:
     i32 166, label %builtin_stream_open
     i32 167, label %builtin_read_line
     i32 168, label %builtin_stream_close
+    i32 169, label %builtin_atom_starts_with
+    i32 170, label %builtin_atom_ends_with
+    i32 171, label %builtin_atom_contains
   ]
 
 builtin_is:
@@ -9733,6 +9738,112 @@ as.unify_empty:
   %as.raw3_e = call %Value @wam_get_reg(%WamState* %vm, i32 2)
   %as.ok_e = call i1 @wam_unify_value(%WamState* %vm, %Value %as.raw3_e, %Value %as.efin_v)
   ret i1 %as.ok_e
+
+builtin_atom_starts_with:
+  ; M142: atom_starts_with(+Atom, +Prefix) -- succeeds iff Atom''s
+  ; first Prefix-length bytes equal Prefix. Both args must be Atom.
+  ; Empty Prefix succeeds for any Atom (consistent with str::starts_with
+  ; in major languages). Prefix longer than Atom fails fast.
+  %asw.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %asw.t1 = call i32 @value_tag(%Value %asw.a1)
+  %asw.is_atom1 = icmp eq i32 %asw.t1, 0
+  br i1 %asw.is_atom1, label %asw.check2, label %asw.fail
+asw.fail:
+  ret i1 false
+asw.check2:
+  %asw.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %asw.t2 = call i32 @value_tag(%Value %asw.a2)
+  %asw.is_atom2 = icmp eq i32 %asw.t2, 0
+  br i1 %asw.is_atom2, label %asw.have_args, label %asw.fail
+asw.have_args:
+  %asw.aid1 = call i64 @value_payload(%Value %asw.a1)
+  %asw.s1 = call i8* @wam_atom_to_string(i64 %asw.aid1)
+  %asw.s1_null = icmp eq i8* %asw.s1, null
+  br i1 %asw.s1_null, label %asw.fail, label %asw.have_s1
+asw.have_s1:
+  %asw.aid2 = call i64 @value_payload(%Value %asw.a2)
+  %asw.s2 = call i8* @wam_atom_to_string(i64 %asw.aid2)
+  %asw.s2_null = icmp eq i8* %asw.s2, null
+  br i1 %asw.s2_null, label %asw.fail, label %asw.measure
+asw.measure:
+  %asw.alen = call i64 @strlen(i8* %asw.s1)
+  %asw.plen = call i64 @strlen(i8* %asw.s2)
+  ; Prefix longer than atom -> false.
+  %asw.fits = icmp sle i64 %asw.plen, %asw.alen
+  br i1 %asw.fits, label %asw.compare, label %asw.fail
+asw.compare:
+  ; Empty prefix is a valid prefix of anything (memcmp with len 0 returns 0).
+  %asw.cmp = call i32 @memcmp(i8* %asw.s1, i8* %asw.s2, i64 %asw.plen)
+  %asw.eq = icmp eq i32 %asw.cmp, 0
+  ret i1 %asw.eq
+
+builtin_atom_ends_with:
+  ; M142: atom_ends_with(+Atom, +Suffix) -- succeeds iff Atom''s
+  ; last Suffix-length bytes equal Suffix. Both args must be Atom.
+  ; Empty Suffix succeeds for any Atom. Suffix longer than Atom fails.
+  %aew.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %aew.t1 = call i32 @value_tag(%Value %aew.a1)
+  %aew.is_atom1 = icmp eq i32 %aew.t1, 0
+  br i1 %aew.is_atom1, label %aew.check2, label %aew.fail
+aew.fail:
+  ret i1 false
+aew.check2:
+  %aew.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %aew.t2 = call i32 @value_tag(%Value %aew.a2)
+  %aew.is_atom2 = icmp eq i32 %aew.t2, 0
+  br i1 %aew.is_atom2, label %aew.have_args, label %aew.fail
+aew.have_args:
+  %aew.aid1 = call i64 @value_payload(%Value %aew.a1)
+  %aew.s1 = call i8* @wam_atom_to_string(i64 %aew.aid1)
+  %aew.s1_null = icmp eq i8* %aew.s1, null
+  br i1 %aew.s1_null, label %aew.fail, label %aew.have_s1
+aew.have_s1:
+  %aew.aid2 = call i64 @value_payload(%Value %aew.a2)
+  %aew.s2 = call i8* @wam_atom_to_string(i64 %aew.aid2)
+  %aew.s2_null = icmp eq i8* %aew.s2, null
+  br i1 %aew.s2_null, label %aew.fail, label %aew.measure
+aew.measure:
+  %aew.alen = call i64 @strlen(i8* %aew.s1)
+  %aew.slen = call i64 @strlen(i8* %aew.s2)
+  %aew.fits = icmp sle i64 %aew.slen, %aew.alen
+  br i1 %aew.fits, label %aew.compare, label %aew.fail
+aew.compare:
+  %aew.off = sub i64 %aew.alen, %aew.slen
+  %aew.tail = getelementptr i8, i8* %aew.s1, i64 %aew.off
+  %aew.cmp = call i32 @memcmp(i8* %aew.tail, i8* %aew.s2, i64 %aew.slen)
+  %aew.eq = icmp eq i32 %aew.cmp, 0
+  ret i1 %aew.eq
+
+builtin_atom_contains:
+  ; M142: atom_contains(+Atom, +Needle) -- succeeds iff Needle
+  ; appears anywhere in Atom. Wraps libc strstr which returns
+  ; the first match pointer or NULL. Both args must be Atom.
+  ; Empty Needle matches any Atom (strstr semantics).
+  %acn.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %acn.t1 = call i32 @value_tag(%Value %acn.a1)
+  %acn.is_atom1 = icmp eq i32 %acn.t1, 0
+  br i1 %acn.is_atom1, label %acn.check2, label %acn.fail
+acn.fail:
+  ret i1 false
+acn.check2:
+  %acn.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %acn.t2 = call i32 @value_tag(%Value %acn.a2)
+  %acn.is_atom2 = icmp eq i32 %acn.t2, 0
+  br i1 %acn.is_atom2, label %acn.have_args, label %acn.fail
+acn.have_args:
+  %acn.aid1 = call i64 @value_payload(%Value %acn.a1)
+  %acn.s1 = call i8* @wam_atom_to_string(i64 %acn.aid1)
+  %acn.s1_null = icmp eq i8* %acn.s1, null
+  br i1 %acn.s1_null, label %acn.fail, label %acn.have_s1
+acn.have_s1:
+  %acn.aid2 = call i64 @value_payload(%Value %acn.a2)
+  %acn.s2 = call i8* @wam_atom_to_string(i64 %acn.aid2)
+  %acn.s2_null = icmp eq i8* %acn.s2, null
+  br i1 %acn.s2_null, label %acn.fail, label %acn.do
+acn.do:
+  %acn.found = call i8* @strstr(i8* %acn.s1, i8* %acn.s2)
+  %acn.found_ok = icmp ne i8* %acn.found, null
+  ret i1 %acn.found_ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -17555,6 +17666,9 @@ builtin_op_to_id('atom_split/3', 165).        % split atom on single-char sep ->
 builtin_op_to_id('stream_open/2', 166).       % open + table-backed buffered line-reader handle.
 builtin_op_to_id('read_line/2', 167).         % buffered line read; EOF unifies end_of_file.
 builtin_op_to_id('stream_close/1', 168).      % close + free line-reader handle.
+builtin_op_to_id('atom_starts_with/2', 169).  % prefix check via memcmp.
+builtin_op_to_id('atom_ends_with/2', 170).    % suffix check via memcmp.
+builtin_op_to_id('atom_contains/2', 171).     % substring check via strstr.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the

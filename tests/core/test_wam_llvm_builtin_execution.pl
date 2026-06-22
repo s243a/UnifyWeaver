@@ -3835,6 +3835,74 @@ test_m141_is_list_partial_rejects(_, R) :-
 test_m141_is_list_var_rejects(_, R) :-
     ( is_list(_) -> R is 0 ; R is 1 ).   % 1
 
+% M142: atom_starts_with/2 + atom_ends_with/2 + atom_contains/2.
+% Renumbered from M138 -- main grew M138..M141 (==/2 audit + put_value
+% correctness fixes) while this PR was in flight.
+
+:- dynamic test_asw_basic/2.
+test_asw_basic(_, R) :-
+    ( atom_starts_with('/usr/bin/swipl', '/usr') -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_asw_full_match/2.
+test_asw_full_match(_, R) :-
+    ( atom_starts_with(hello, hello) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_asw_empty_prefix/2.
+test_asw_empty_prefix(_, R) :-
+    ( atom_starts_with(hello, '') -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_asw_mismatch/2.
+test_asw_mismatch(_, R) :-
+    ( atom_starts_with('/usr/bin', '/etc') -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_asw_too_long/2.
+test_asw_too_long(_, R) :-
+    % Prefix longer than atom must fail.
+    ( atom_starts_with(short, 'much_longer_prefix') -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_aew_basic/2.
+test_aew_basic(_, R) :-
+    ( atom_ends_with('/usr/bin/swipl', swipl) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_aew_extension/2.
+test_aew_extension(_, R) :-
+    ( atom_ends_with('config.json', '.json') -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_aew_empty_suffix/2.
+test_aew_empty_suffix(_, R) :-
+    ( atom_ends_with(hello, '') -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_aew_mismatch/2.
+test_aew_mismatch(_, R) :-
+    ( atom_ends_with('file.txt', '.json') -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_acn_basic/2.
+test_acn_basic(_, R) :-
+    ( atom_contains('the quick brown fox', quick) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_acn_at_start/2.
+test_acn_at_start(_, R) :-
+    ( atom_contains(hello, hel) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_acn_at_end/2.
+test_acn_at_end(_, R) :-
+    ( atom_contains(hello, llo) -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_acn_empty_needle/2.
+test_acn_empty_needle(_, R) :-
+    ( atom_contains(hello, '') -> R is 1 ; R is 0 ).   % 1
+
+:- dynamic test_acn_mismatch/2.
+test_acn_mismatch(_, R) :-
+    ( atom_contains(hello, xyz) -> R is 0 ; R is 1 ).   % 1
+
+:- dynamic test_asw_bad_args/2.
+test_asw_bad_args(_, R) :-
+    ( atom_starts_with(42, foo) -> R is 0
+    ; atom_starts_with(hello, 99) -> R is 0
+    ; R is 1
+    ).   % 1
+
 % M112: truncate/2 -- libc truncate wrapper for file resizing.
 
 :- dynamic test_truncate_grow/2.
@@ -7143,6 +7211,37 @@ test_all :-
                    test_m141_is_list_partial_rejects, 0, 1),
        run_test_r0('is_list(_) var rejects -> 1',
                    test_m141_is_list_var_rejects, 0, 1),
+       format('--- M142 atom_starts_with/ends_with/contains ---~n'),
+       run_test_r0('starts_with /usr/bin/swipl + /usr -> 1',
+                   test_asw_basic, 0, 1),
+       run_test_r0('starts_with full match -> 1',
+                   test_asw_full_match, 0, 1),
+       run_test_r0('starts_with empty prefix -> 1',
+                   test_asw_empty_prefix, 0, 1),
+       run_test_r0('starts_with mismatch -> 1',
+                   test_asw_mismatch, 0, 1),
+       run_test_r0('starts_with too-long prefix -> 1',
+                   test_asw_too_long, 0, 1),
+       run_test_r0('ends_with /usr/bin/swipl + swipl -> 1',
+                   test_aew_basic, 0, 1),
+       run_test_r0('ends_with file.json + .json -> 1',
+                   test_aew_extension, 0, 1),
+       run_test_r0('ends_with empty suffix -> 1',
+                   test_aew_empty_suffix, 0, 1),
+       run_test_r0('ends_with mismatch -> 1',
+                   test_aew_mismatch, 0, 1),
+       run_test_r0('contains middle word -> 1',
+                   test_acn_basic, 0, 1),
+       run_test_r0('contains at start -> 1',
+                   test_acn_at_start, 0, 1),
+       run_test_r0('contains at end -> 1',
+                   test_acn_at_end, 0, 1),
+       run_test_r0('contains empty needle -> 1',
+                   test_acn_empty_needle, 0, 1),
+       run_test_r0('contains mismatch -> 1',
+                   test_acn_mismatch, 0, 1),
+       run_test_r0('starts_with non-atom args fail -> 1',
+                   test_asw_bad_args, 0, 1),
        format('--- M112 truncate/2 ---~n'),
        run_test_r0('touch + truncate 100 + size_file -> 1',
                    test_truncate_grow, 0, 1),
