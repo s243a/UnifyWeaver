@@ -30,6 +30,23 @@ data/benchmark/50k_cats/
 data/benchmark/100k_cats/
 data/benchmark/500k_cats/
 data/benchmark/1m_cats/
+# Regenerable benchmark corpora (databases + extracted TSVs, built from Wikipedia dumps via the ingest
+# pipeline — ~13 GB; the curated 1k/10k/10x corpora stay tracked). Same convention as the dirs above.
+data/benchmark/100k_cats_resident_run/
+data/benchmark/simplewiki_cats/
+data/benchmark/simplewiki_articles/
+data/benchmark/enwiki_cats/
+data/benchmark/enwiki_cats_correct/
+data/benchmark/enwiki_articles/
+data/benchmark/enwiki_articles_hs/
+# LMDB databases + CSR build outputs anywhere (e.g. inside the tracked 10k/ corpus)
+*.mdb
+data/benchmark/**/lmdb/
+data/benchmark/**/lmdb_resident/
+data/benchmark/**/lmdb_scoped/
+data/benchmark/**/csr/
+# Playwright-MCP page-snapshot cache
+.playwright-mcp/
 test_input/
 output_*/
 
