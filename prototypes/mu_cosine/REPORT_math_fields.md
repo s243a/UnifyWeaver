@@ -55,6 +55,25 @@ genuine contribution, not a discrimination gain.
 SYM corr held at **+0.827** (= baseline), Physics discrimination even ticked up (6/9 → 7/9), AI held
 (2/5). Replay did its job.
 
+### (4) Intra-math SUBFIELD discrimination — the non-saturated axis (the right test)
+The cross-domain probe (μ(node|Mathematics) vs the *other domains*) only asks "is this more math than
+physics" — which e5 nails 100%. The sharper question is whether the subfields discriminate **against each
+other**: μ(node | Real_analysis) vs μ(node | Algebra / Topology / Set_theory / …). Probing clear member
+nodes of 10 subfields, argmax over the **subfield** roots:
+
+| | subfield argmax | mean-rank /10 | top-2 |
+|---|---|---|---|
+| baseline (no math data) | 21/39 (54%) | 2.72 | 64% |
+| placebo (churn, no new math) | 23/39 (59%) | 2.46 | 74% |
+| fine-tune (math data) | 24/39 (62%) | 2.28 | 79% |
+
+Two things this reveals that the cross-domain probe hid: **(a)** subfield discrimination is genuinely
+**not saturated** — frozen e5 separates the math subfields only 54% (vs 100% for math-vs-other-domains),
+so there *is* headroom here; **(b)** the math data helps (54%→62%, top-2 64%→79%), but the placebo shows
+**most of the gain is churn** from re-optimising on the denser math graph — the data's marginal
+contribution *beyond churn* is real but modest (+3 pts argmax, +5 pts top-2, mean-rank −0.18). So the
+deepening data does add a little genuine subfield-separation signal, just not a lot.
+
 ## Honest verdict — the saturation pattern, confirmed
 This round sharpens the meta-finding across the whole arc:
 
@@ -64,11 +83,16 @@ This round sharpens the meta-finding across the whole arc:
   → new data only refines the **ranking**, never the (saturated) discrimination. **Refinement, not
   capability.**
 
-**The μ-method's discrimination is bounded by what frozen e5 already knows.** Adding data helps
-discrimination only where e5 is blind (novel/absent domains like AI); for standard academic fields it
-already covers, the data buys within-field ranking, not separation. The right place to spend future
-labeling budget is therefore **e5's blind spots** (emerging/niche domains, fine intra-field distinctions),
-not deepening fields e5 already nails.
+**Frozen e5 saturates COARSE (cross-domain) discrimination but NOT FINE (intra-field subfield)
+discrimination.** Math-vs-other-domains is 100% out of the box, so deepening can't move it; but
+subfield-vs-subfield is only 54% on e5 alone, and there fine-tuning helps (→62%, top-2 →79%) — though
+the placebo shows churn drives most of it, with the data adding a modest real increment. So the bound is
+not "what e5 knows" flatly, but **at what granularity** e5 resolves: it confidently places fields under
+their domain, but blurs sibling subfields. The right place to spend future labeling budget is therefore
+**e5's blind spots and its blur** — genuinely novel/absent domains (AI: new capability) and *fine
+intra-field distinctions* (subfields: a modest but real gain) — not re-confirming the coarse cross-domain
+separations e5 already nails. (Credit: the subfield axis was surfaced by a reviewer asking whether nodes
+were tested relative to *Real_analysis*, not just *Mathematics*.)
 
 Reproduce: build `wide_enwiki_math` (closures ∩ e5-coherence) → `gen_math_fields_pairs.py` → score the
 535 non-neg pairs → `mu_pairs_scored_mathfields.tsv`; `UW_MU_GRAPH=…/wide_enwiki_math/…
