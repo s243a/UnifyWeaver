@@ -93,6 +93,21 @@ Geometry 0.77, + Linear 0.76, Group 0.51) — correct multi-membership, the intr
 (why AG argmaxes Topology, not "algebraic geometry") is exactly the subfield-anchor mis-calibration that
 the 62%/79% subfield separation leaves on the table.
 
+### (6) Reusable boundary sampler + more worked examples
+`gen_boundary_pairs.py` generalises the AG round (`--down` / `--bidir` seeds, e5-coherence-filtered).
+Three more samples (`mu_pairs_scored_boundary.tsv`, 120 pairs ~17.5k tok) reproduce the
+downward > bidir gradient and show the bidir-μ tracks how *central* a seed's neighbourhood is:
+
+| seed | mode | mean μ | reads as |
+|---|---|---|---|
+| `Algebraic_topology` | downward | **0.76** | tight within-AT (Homology/K-theory/Knot_operations = 1.0) |
+| `Topological_methods_of_algebraic_geometry` | bidir | **0.47** | a narrow boundary — all neighbours are tight AG/topology/homotopy siblings |
+| `Tensors` | bidir | **0.36** | a wider boundary — reaches linear-algebra, differential-geometry AND mathematical physics |
+
+**Coverage gap flagged:** Probability is well-covered (`pos_discrete` +0.922), but **Statistics** is only
+spillover (`Mathematical_statistics`/`Statistical_inference`/`Sampling` unseeded) and **Estimation_theory**
+is absent from every slice/scored set — a dedicated stats/estimation seeding round is the natural next gap.
+
 ## Honest verdict — the saturation pattern, confirmed
 This round sharpens the meta-finding across the whole arc:
 
