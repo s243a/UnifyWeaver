@@ -147,6 +147,30 @@ theory, social systems, economics, even astronomy tangle in via broad parents) �
 that junk ~0, but it's a reminder that engineering/applied categories need stricter coherence filtering
 than pure-math ones.
 
+### (9) Cybernetics / Systems-theory round
+Both modes from `Cybernetics` + `Systems_theory`, plus downward from `Systems_science` /
+`Operations_research` / `Dynamical_systems` (`mu_pairs_scored_cyber.tsv`, 280 non-neg pairs ~37k tok;
+slice `wide_enwiki_cyber`, 1,467 nodes / 2,369 edges; `--coh-keep Mathematics,Computer_science,Engineering`).
+
+| seed | mode | mean μ |
+|---|---|---|
+| `Cybernetics` | downward | **0.79** (tight — the automation/biocybernetics subtree is coherent) |
+| `Systems_science` | downward | **0.77** |
+| `Operations_research` | downward | 0.70 |
+| `Dynamical_systems` | downward | 0.66 |
+| `Systems_theory` | downward | **0.50** (diffuse — social/economic/psychology "systems" bleed in) |
+| `Cybernetics` | bidir | 0.39 |
+| `Systems_theory` | bidir | 0.26 (messiest reach — game theory, social systems, politics) |
+
+**On the user's "I'd have thought cybernetics would hit *more*":** it does score the *cleanest* of any
+seed here downward (0.79) — but it is **thin**, not broad. Today's `Category:Cybernetics` has only **4
+direct children** (Automation, Cyberneticists, Biomedical_cybernetics, Organizational_cybernetics; ~34-node
+depth-2 pool). The concept's historical breadth has been *redistributed* by decades of Wikipedia
+recategorization into Systems_science / Control_theory / Dynamical_systems / AI — so the breadth shows up
+in the **bidirectional reach** (232 math-coherent endpoints) and in cybernetics' role as a *connective*
+node, not in a deep downward subtree. Same saturation shape as rounds 7–8: focused cores score tight
+(~0.79), umbrella categories diffuse (~0.26–0.50), and the bidir-μ ranks boundary cleanliness.
+
 ## Honest verdict — the saturation pattern, confirmed
 This round sharpens the meta-finding across the whole arc:
 
