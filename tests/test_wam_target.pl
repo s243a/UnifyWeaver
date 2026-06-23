@@ -605,15 +605,58 @@ test_wam_items_native_switch_on_constant_index :-
     ;   fail_test(Test, 'Native switch_on_constant items do not match canonical WAM text shape')
     ).
 
+test_wam_items_native_switch_on_constant_fallthrough_index :-
+    Test = 'WAM: native items API for switch_on_constant_fallthrough indexed clauses',
+    ExpectedItems = [
+        label("test_mma_middle/2"),
+        switch_on_constant_fallthrough(["a:default"]),
+        try_me_else("L_test_mma_middle_2_2"),
+        get_constant("a", "A1"),
+        get_constant("1", "A2"),
+        proceed,
+        label("L_test_mma_middle_2_2"),
+        retry_me_else("L_test_mma_middle_2_3"),
+        label("L_test_mma_middle_2_2_body"),
+        get_variable("X1", "A1"),
+        get_constant("99", "A2"),
+        proceed,
+        label("L_test_mma_middle_2_3"),
+        trust_me,
+        label("L_test_mma_middle_2_3_body"),
+        get_constant("b", "A1"),
+        get_constant("2", "A2"),
+        proceed
+    ],
+    (   wam_target:compile_predicate_to_wam_text(user:test_mma_middle/2, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_mma_middle/2, [], Items),
+        wam_target:wam_predicate_clauses(user:test_mma_middle/2, [], Pred, Arity, Clauses),
+        wam_target:compile_clauses_to_wam_items_native(Pred, Arity, Clauses, [], NativeItems),
+        NativeItems == ExpectedItems,
+        Items == ExpectedItems,
+        Items == BridgeItems,
+        member(switch_on_constant_fallthrough(["a:default"]), Items),
+        member(label("test_mma_middle/2"), Items)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Native switch_on_constant_fallthrough items do not match canonical WAM text shape')
+    ).
+
 test_wam_items_a2_indexed_multi_clause_still_bridges :-
     Test = 'WAM: A2 indexed multi-clause items still use bridge',
-    (   wam_target:wam_predicate_clauses(user:test_a2_const/2, [], Pred, Arity, Clauses),
-        \+ wam_target:compile_clauses_to_wam_items_native(Pred, Arity, Clauses, [], _NativeItems),
+    (   wam_target:wam_predicate_clauses(user:test_a2_const/2, [], Pred1, Arity1, Clauses1),
+        \+ wam_target:compile_clauses_to_wam_items_native(Pred1, Arity1, Clauses1, [], _NativeItems1),
         wam_target:compile_predicate_to_wam_text(user:test_a2_const/2, [], TextCode),
         wam_text_to_items(TextCode, BridgeItems),
         wam_target:compile_predicate_to_wam_items(user:test_a2_const/2, [], Items),
         Items == BridgeItems,
-        member(switch_on_constant_a2(_), Items)
+        member(switch_on_constant_a2(_), Items),
+        wam_target:wam_predicate_clauses(user:test_mma2_trailing/3, [], Pred2, Arity2, Clauses2),
+        \+ wam_target:compile_clauses_to_wam_items_native(Pred2, Arity2, Clauses2, [], _NativeItems2),
+        wam_target:compile_predicate_to_wam_text(user:test_mma2_trailing/3, [], TextCode2),
+        wam_text_to_items(TextCode2, BridgeItems2),
+        wam_target:compile_predicate_to_wam_items(user:test_mma2_trailing/3, [], Items2),
+        Items2 == BridgeItems2,
+        member(switch_on_constant_a2_fallthrough(_), Items2)
     ->  pass(Test)
     ;   fail_test(Test, 'A2 indexed multi-clause predicate did not remain on bridge')
     ).
@@ -642,6 +685,7 @@ run_tests :-
     test_wam_items_native_linear_fact_clauses,
     test_wam_items_native_linear_rule_clauses,
     test_wam_items_native_switch_on_constant_index,
+    test_wam_items_native_switch_on_constant_fallthrough_index,
     test_wam_items_a2_indexed_multi_clause_still_bridges,
     test_wam_multi_clause_findall_emits_allocate,
     test_wam_a2_indexing,
