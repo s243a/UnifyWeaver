@@ -32,6 +32,11 @@ def main(pairs=os.path.join(ROOT, "mu_pairs_scored_multidomain_260620-235025.tsv
          model_path=os.path.join(ROOT, "model_multidomain.pt"), seed=1):
     parents, children, deg = load_dag()
     names = all_names(parents, children)
+    # union pair nodes so cold-start (cross-slice / page / pearltrees) endpoints aren't dropped — and so
+    # the names list matches the training run's unioned e5 cache (cache hit, no re-encode).
+    _pp, _nn = load_pairs_strat(pairs)
+    _extra = {x for r in (_pp + _nn) for x in (r[0], r[1])}
+    names = list(dict.fromkeys(list(names) + sorted(_extra - set(names))))
     q, p, idx = build_e5_tables(names, cache_path=os.environ.get("UW_E5_CACHE", os.path.join(ROOT, "e5_tables.pt")))
     tok = Tokenizer(q, p, idx, parents, deg, k=1)
     ck = torch.load(model_path, weights_only=False)
