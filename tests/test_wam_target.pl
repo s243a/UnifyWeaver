@@ -641,24 +641,106 @@ test_wam_items_native_switch_on_constant_fallthrough_index :-
     ;   fail_test(Test, 'Native switch_on_constant_fallthrough items do not match canonical WAM text shape')
     ).
 
-test_wam_items_a2_indexed_multi_clause_still_bridges :-
-    Test = 'WAM: A2 indexed multi-clause items still use bridge',
-    (   wam_target:wam_predicate_clauses(user:test_a2_const/2, [], Pred1, Arity1, Clauses1),
-        \+ wam_target:compile_clauses_to_wam_items_native(Pred1, Arity1, Clauses1, [], _NativeItems1),
-        wam_target:compile_predicate_to_wam_text(user:test_a2_const/2, [], TextCode),
+test_wam_items_native_switch_on_constant_a2_index :-
+    Test = 'WAM: native items API for switch_on_constant_a2 indexed clauses',
+    ExpectedItems = [
+        label("test_a2_const/2"),
+        switch_on_constant_a2(["alpha:default", "beta:L_test_a2_const_2_2", "gamma:L_test_a2_const_2_3"]),
+        try_me_else("L_test_a2_const_2_2"),
+        get_variable("X1", "A1"),
+        get_constant("alpha", "A2"),
+        proceed,
+        label("L_test_a2_const_2_2"),
+        retry_me_else("L_test_a2_const_2_3"),
+        label("L_test_a2_const_2_2_body"),
+        get_variable("X1", "A1"),
+        get_constant("beta", "A2"),
+        proceed,
+        label("L_test_a2_const_2_3"),
+        trust_me,
+        label("L_test_a2_const_2_3_body"),
+        get_variable("X1", "A1"),
+        get_constant("gamma", "A2"),
+        proceed
+    ],
+    (   wam_target:compile_predicate_to_wam_text(user:test_a2_const/2, [], TextCode),
         wam_text_to_items(TextCode, BridgeItems),
         wam_target:compile_predicate_to_wam_items(user:test_a2_const/2, [], Items),
+        wam_target:wam_predicate_clauses(user:test_a2_const/2, [], Pred, Arity, Clauses),
+        wam_target:compile_clauses_to_wam_items_native(Pred, Arity, Clauses, [], NativeItems),
+        NativeItems == ExpectedItems,
+        Items == ExpectedItems,
         Items == BridgeItems,
         member(switch_on_constant_a2(_), Items),
-        wam_target:wam_predicate_clauses(user:test_mma2_trailing/3, [], Pred2, Arity2, Clauses2),
-        \+ wam_target:compile_clauses_to_wam_items_native(Pred2, Arity2, Clauses2, [], _NativeItems2),
-        wam_target:compile_predicate_to_wam_text(user:test_mma2_trailing/3, [], TextCode2),
-        wam_text_to_items(TextCode2, BridgeItems2),
-        wam_target:compile_predicate_to_wam_items(user:test_mma2_trailing/3, [], Items2),
-        Items2 == BridgeItems2,
-        member(switch_on_constant_a2_fallthrough(_), Items2)
+        member(label("test_a2_const/2"), Items)
     ->  pass(Test)
-    ;   fail_test(Test, 'A2 indexed multi-clause predicate did not remain on bridge')
+    ;   fail_test(Test, 'Native switch_on_constant_a2 items do not match canonical WAM text shape')
+    ).
+
+test_wam_items_native_switch_on_constant_a2_fallthrough_index :-
+    Test = 'WAM: native items API for switch_on_constant_a2_fallthrough indexed clauses',
+    ExpectedItems = [
+        label("test_mma2_trailing/3"),
+        switch_on_constant_a2_fallthrough(["error:default", "warn:L_test_mma2_trailing_3_2", "ok:L_test_mma2_trailing_3_3"]),
+        try_me_else("L_test_mma2_trailing_3_2"),
+        get_variable("X1", "A1"),
+        get_constant("error", "A2"),
+        get_constant("red", "A3"),
+        proceed,
+        label("L_test_mma2_trailing_3_2"),
+        retry_me_else("L_test_mma2_trailing_3_3"),
+        label("L_test_mma2_trailing_3_2_body"),
+        get_variable("X1", "A1"),
+        get_constant("warn", "A2"),
+        get_constant("yellow", "A3"),
+        proceed,
+        label("L_test_mma2_trailing_3_3"),
+        retry_me_else("L_test_mma2_trailing_3_4"),
+        label("L_test_mma2_trailing_3_3_body"),
+        get_variable("X1", "A1"),
+        get_constant("ok", "A2"),
+        get_constant("green", "A3"),
+        proceed,
+        label("L_test_mma2_trailing_3_4"),
+        trust_me,
+        label("L_test_mma2_trailing_3_4_body"),
+        get_variable("X1", "A1"),
+        get_variable("X2", "A2"),
+        get_constant("gray", "A3"),
+        proceed
+    ],
+    (   wam_target:compile_predicate_to_wam_text(user:test_mma2_trailing/3, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_mma2_trailing/3, [], Items),
+        wam_target:wam_predicate_clauses(user:test_mma2_trailing/3, [], Pred, Arity, Clauses),
+        wam_target:compile_clauses_to_wam_items_native(Pred, Arity, Clauses, [], NativeItems),
+        NativeItems == ExpectedItems,
+        Items == ExpectedItems,
+        Items == BridgeItems,
+        member(switch_on_constant_a2_fallthrough(_), Items),
+        member(label("test_mma2_trailing/3"), Items)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Native switch_on_constant_a2_fallthrough items do not match canonical WAM text shape')
+    ).
+
+test_wam_items_a2_structure_term_indexes_still_bridge :-
+    Test = 'WAM: A2 structure/term indexed multi-clause items still use bridge',
+    (   wam_target:wam_predicate_clauses(user:test_a2_struct/2, [], Pred1, Arity1, Clauses1),
+        \+ wam_target:compile_clauses_to_wam_items_native(Pred1, Arity1, Clauses1, [], _NativeItems1),
+        wam_target:compile_predicate_to_wam_text(user:test_a2_struct/2, [], TextCode1),
+        wam_text_to_items(TextCode1, BridgeItems1),
+        wam_target:compile_predicate_to_wam_items(user:test_a2_struct/2, [], Items1),
+        Items1 == BridgeItems1,
+        member(switch_on_structure_a2(_), Items1),
+        wam_target:wam_predicate_clauses(user:test_a2_term/2, [], Pred2, Arity2, Clauses2),
+        \+ wam_target:compile_clauses_to_wam_items_native(Pred2, Arity2, Clauses2, [], _NativeItems2),
+        wam_target:compile_predicate_to_wam_text(user:test_a2_term/2, [], TextCode2),
+        wam_text_to_items(TextCode2, BridgeItems2),
+        wam_target:compile_predicate_to_wam_items(user:test_a2_term/2, [], Items2),
+        Items2 == BridgeItems2,
+        member(switch_on_term_a2(_), Items2)
+    ->  pass(Test)
+    ;   fail_test(Test, 'A2 structure/term indexed predicates did not remain on bridge')
     ).
 
 %% Run all tests
@@ -686,7 +768,9 @@ run_tests :-
     test_wam_items_native_linear_rule_clauses,
     test_wam_items_native_switch_on_constant_index,
     test_wam_items_native_switch_on_constant_fallthrough_index,
-    test_wam_items_a2_indexed_multi_clause_still_bridges,
+    test_wam_items_native_switch_on_constant_a2_index,
+    test_wam_items_native_switch_on_constant_a2_fallthrough_index,
+    test_wam_items_a2_structure_term_indexes_still_bridge,
     test_wam_multi_clause_findall_emits_allocate,
     test_wam_a2_indexing,
     test_wam_mixed_mode_a1_indexing,

@@ -207,7 +207,7 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
 %  slice covers facts, simple user calls, generic builtin calls, compound body
 %  arguments using the default args-first set_* ordering, conjunctions of those
 %  shapes, non-indexed linear multi-clause predicates composed of the same
-%  clause shapes, and the simplest A1 switch_on_constant / fallthrough indexed
+%  clause shapes, and the simplest A1/A2 switch_on_constant / fallthrough indexed
 %  variants. Aggregates, dispatch-chain indexing, lowered builtins, control flow, legacy
 %  interleaved compound-arg emission, and other peephole-sensitive shapes
 %  intentionally fall back to the text bridge.
@@ -227,6 +227,22 @@ compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, Items) :-
 compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, Items) :-
     Clauses = [_,_|_],
     native_first_arg_constant_fallthrough_index_item(Pred, Arity, Clauses, SwitchItem),
+    length(Clauses, N),
+    compile_multi_clause_items_linear(Clauses, 1, N, Pred, Arity, Options, ClauseItems),
+    !,
+    format(string(Label), "~w/~w", [Pred, Arity]),
+    Items = [label(Label), SwitchItem|ClauseItems].
+compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, Items) :-
+    Clauses = [_,_|_],
+    native_second_arg_constant_index_item(Pred, Arity, Clauses, SwitchItem),
+    length(Clauses, N),
+    compile_multi_clause_items_linear(Clauses, 1, N, Pred, Arity, Options, ClauseItems),
+    !,
+    format(string(Label), "~w/~w", [Pred, Arity]),
+    Items = [label(Label), SwitchItem|ClauseItems].
+compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, Items) :-
+    Clauses = [_,_|_],
+    native_second_arg_constant_fallthrough_index_item(Pred, Arity, Clauses, SwitchItem),
     length(Clauses, N),
     compile_multi_clause_items_linear(Clauses, 1, N, Pred, Arity, Options, ClauseItems),
     !,
@@ -289,6 +305,29 @@ native_first_arg_constant_fallthrough_index_item(Pred, Arity, Clauses,
     PrefixClauses = [_|_],
     forall(member(Type, PrefixTypes), Type = constant),
     build_constant_index(PrefixClauses, 1, Pred, Arity, Entries),
+    Entries = [_|_],
+    index_entries_to_item_entries(Entries, ItemEntries).
+
+native_second_arg_constant_index_item(Pred, Arity, Clauses, switch_on_constant_a2(ItemEntries)) :-
+    Arity >= 2,
+    \+ build_first_arg_index(Pred, Arity, Clauses, _IndexHeader, _DispatchChains),
+    classify_second_args(Clauses, Types),
+    Types = [_|_],
+    forall(member(Type, Types), Type = constant),
+    build_constant_index_on(Clauses, 2, 1, Pred, Arity, Entries),
+    Entries = [_|_],
+    index_entries_to_item_entries(Entries, ItemEntries).
+
+native_second_arg_constant_fallthrough_index_item(Pred, Arity, Clauses,
+                                                 switch_on_constant_a2_fallthrough(ItemEntries)) :-
+    Arity >= 2,
+    \+ build_first_arg_index(Pred, Arity, Clauses, _IndexHeader, _DispatchChains),
+    classify_second_args(Clauses, Types),
+    member(variable, Types),
+    indexed_prefix(Types, Clauses, PrefixTypes, PrefixClauses),
+    PrefixClauses = [_|_],
+    forall(member(Type, PrefixTypes), Type = constant),
+    build_constant_index_on(PrefixClauses, 2, 1, Pred, Arity, Entries),
     Entries = [_|_],
     index_entries_to_item_entries(Entries, ItemEntries).
 
