@@ -10,7 +10,7 @@ CLASSICAL physics subfields actually present in the 10k slice — {Electromagnet
 Mechanics, Optics, Thermodynamics, Acoustics} — collecting a μ-coherent core-physics neighbourhood
 (argmax over the 5 roots == Physics, cos|Physics ≥ floor). Then within-physics-subfield positives
 (subfield×subfield = both physics, high) + a few core×{Math,Chemistry,Engineering} cross pairs. Dedup vs
-mu_pairs_scored_matheng.tsv; negatives free.
+mu_pairs_scored_matheng_260621-100230.tsv; negatives free.
 
 DATA CEILING (flagged for the widening spec #3313): the modern subfields — Quantum_mechanics,
 Statistical_mechanics, Fluid_dynamics, Mathematical_physics, Relativity (and QFT / condensed-matter) —
@@ -29,7 +29,7 @@ from gen_more_sym_pairs import build_children_adj, load_existing_keys
 from gen_mu_pairs import load_graph, walk_bidir, GRAPH
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-SCORED_MATHENG = os.path.join(ROOT, "mu_pairs_scored_matheng.tsv")
+SCORED_MATHENG = os.path.join(ROOT, "mu_pairs_scored_matheng_260621-100230.tsv")
 ALL_ROOTS = ["Physics", "Chemistry", "Mathematics", "Computer_science", "Engineering"]
 PHYS_SEEDS = ["Electromagnetism", "Classical_mechanics", "Mechanics", "Optics", "Thermodynamics",
               "Acoustics"]
@@ -161,7 +161,7 @@ def main():
 
     with open(args.out, "w") as f:
         f.write("# Core-physics targeted candidates (gen_core_physics_pairs.py; deduped vs "
-                "mu_pairs_scored_matheng.tsv). strata: pos_corephys (within-subfield, high),\n")
+                "mu_pairs_scored_matheng_260621-100230.tsv). strata: pos_corephys (within-subfield, high),\n")
         f.write("# cross_PM/PC/PE = core-physics × {Math,Chem,Eng}, neg=μ0. BLANK μ to Haiku-score. "
                 "cols: a\tb\tstratum\twl\tmu\n")
         for aa, bb, st, wl in rows:

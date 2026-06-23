@@ -28,7 +28,7 @@ def load_pairs_strat(path):
     return pos, neg
 
 
-def main(pairs=os.path.join(ROOT, "mu_pairs_scored_multidomain.tsv"),
+def main(pairs=os.path.join(ROOT, "mu_pairs_scored_multidomain_260620-235025.tsv"),
          model_path=os.path.join(ROOT, "model_multidomain.pt"), seed=1):
     parents, children, deg = load_dag()
     names = all_names(parents, children)
@@ -73,7 +73,7 @@ def main(pairs=os.path.join(ROOT, "mu_pairs_scored_multidomain.tsv"),
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pairs", default=os.path.join(ROOT, "mu_pairs_scored_multidomain.tsv"))
+    ap.add_argument("--pairs", default=os.path.join(ROOT, "mu_pairs_scored_multidomain_260620-235025.tsv"))
     ap.add_argument("--model", default=os.path.join(ROOT, "model_multidomain.pt"))
     a = ap.parse_args()
     main(pairs=a.pairs, model_path=a.model)

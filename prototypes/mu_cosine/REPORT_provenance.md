@@ -65,6 +65,6 @@ results intact** — `pos_phys` stays recovered (+0.831), Math/cross_MP hold. Th
 in place and ready to carry real signal the moment a second corpus (`enwiki`) or a second judge arrives
 — no architecture change, just new codebook entries.
 
-Reproduce: `train_mu_attention.py --pairs mu_pairs_scored_matheng.tsv --llm --steps 900 --bs 64
+Reproduce: `train_mu_attention.py --pairs mu_pairs_scored_matheng_260621-100230.tsv --llm --steps 900 --bs 64
 --lr 5e-4 --wiki-weight 0.5 --margin-weight 1.0 --wiki-abs 0.5 --prov-mask {0.5|1.0}` — the `[PROV]`
 probe and the ablation print in the per-operator validation block.

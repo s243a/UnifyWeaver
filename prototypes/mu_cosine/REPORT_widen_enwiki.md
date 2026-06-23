@@ -23,14 +23,14 @@ Statistical_mechanics) and **82% replay continuity** with the cumulative scored 
 
 640 candidate pairs → **637 Haiku-scored** (3 parallel subagents, ~59k tokens, 0 tool calls, graded
 rubric). Strata: within-AI / within-modern-physics / within-Math, cross AI×CS / modern×classical-physics /
-Math×{Physics,CS} / AI×Math. Committed in `mu_pairs_scored_enwiki.tsv` (corpus tagged via the new
+Math×{Physics,CS} / AI×Math. Committed in `mu_pairs_scored_enwiki_260622-085608.tsv` (corpus tagged via the new
 `--pairs-corpus enwiki`). Within-domain means: `pos_ai` 0.61, `pos_modphys` 0.64, `pos_math` 0.55;
 random cross-strata low (correct).
 
 ## Fine-tune-with-replay + controls (enwiki slice, seed 1)
 
-Warm-start the cumulative baseline; `--pairs mu_pairs_scored_enwiki.tsv --pairs-corpus enwiki
---replay-pairs mu_pairs_scored_eng.tsv --replay-frac 0.4 --lr 1.5e-4 --steps 500`. **6-way** discrimination
+Warm-start the cumulative baseline; `--pairs mu_pairs_scored_enwiki_260622-085608.tsv --pairs-corpus enwiki
+--replay-pairs mu_pairs_scored_eng_260621-174251.tsv --replay-frac 0.4 --lr 1.5e-4 --steps 500`. **6-way** discrimination
 (Artificial_intelligence added as a candidate 6th root; the Physics probe carries classical + modern nodes):
 
 | model | overall argmax | **AI** rank / top-2 | Physics (9 nodes) | ALL top-2 |
@@ -77,7 +77,7 @@ Gate-leak 0/3 (every operator), `pos_math` held **+0.783**, overall SYM corr **+
   that two corpora exist.
 
 Reproduce: `scripts/ingest_enwiki_categories.py` (3-dump join) → build the `wide_enwiki` slice →
-`gen_enwiki_widen_pairs.py` → score the 640 non-neg pairs → `mu_pairs_scored_enwiki.tsv`; then
+`gen_enwiki_widen_pairs.py` → score the 640 non-neg pairs → `mu_pairs_scored_enwiki_260622-085608.tsv`; then
 `UW_MU_GRAPH=…/wide_enwiki/category_parent.tsv UW_E5_CACHE=e5_tables_enwiki.pt train_mu_attention.py
---pairs mu_pairs_scored_enwiki.tsv --pairs-corpus enwiki --replay-pairs mu_pairs_scored_eng.tsv
---init-from <baseline> --lr 1.5e-4 --steps 500` (+ the placebo with `--pairs mu_pairs_scored_eng.tsv`).
+--pairs mu_pairs_scored_enwiki_260622-085608.tsv --pairs-corpus enwiki --replay-pairs mu_pairs_scored_eng_260621-174251.tsv
+--init-from <baseline> --lr 1.5e-4 --steps 500` (+ the placebo with `--pairs mu_pairs_scored_eng_260621-174251.tsv`).

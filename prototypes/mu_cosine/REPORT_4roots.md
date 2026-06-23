@@ -27,11 +27,11 @@ All six pairwise pool overlaps **0** — disjoint by argmax. Math is thin (9 nod
 885 new pairs Haiku-scored (**two inline subagents, ~43.7k tokens, 0 tool calls**; graded rubric):
 within-domain (Physics 300, Chemistry 100, Math 25, CS 100), all six cross strata (50 each), and a
 bidirectional-coinflip batch (60, seeded at Physics) for lateral diversity. Committed in
-`mu_pairs_scored_4roots.tsv`. Stratum mean μ: pos_phys 0.40, pos_chem 0.84, pos_math 0.64, pos_cs 0.66.
+`mu_pairs_scored_4roots_260621-004105.tsv`. Stratum mean μ: pos_phys 0.40, pos_chem 0.84, pos_math 0.64, pos_cs 0.66.
 
 ## Retrain (multi-task, keep WIKI/LLM)
 
-`train_mu_attention.py --pairs mu_pairs_scored_4roots.tsv --llm --steps 900`. WIKI held-out order-acc
+`train_mu_attention.py --pairs mu_pairs_scored_4roots_260621-004105.tsv --llm --steps 900`. WIKI held-out order-acc
 **98.6%** (target ~99% — preserved). Gate-leak 0/5 every operator; every dense map feeds
 `check_feeds_rust`. SECONDARY node-gated lin-agreement **+0.237** (#3310 +0.183, control +0.124).
 

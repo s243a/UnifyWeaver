@@ -6,7 +6,7 @@ AND the strict argmax pool (9) *excluded* the math-of-physics core (`Calculus`, 
 `Partial_differential_equations`) — those go argmax→Physics because they ARE the maths of physics. The
 fix is more DATA in Math (helps a domain) — NOT more breadth (which regressed physics SYM +0.695→+0.570).
 
-So, deduping vs `mu_pairs_scored_4roots.tsv`:
+So, deduping vs `mu_pairs_scored_4roots_260621-004105.tsv`:
   * **Math pool — DEEPENED & INCLUSIVE**: closure(Mathematics, depth) ∩ (cos|Math ≥ floor), *without* the
     argmax subtraction, so Calculus/Diff-eq/PDE are now trained AS maths (they were never in the Math
     pool before). Within-Math pairs (priority) + the discrimination-critical **Math×Physics** stratum on
@@ -33,7 +33,7 @@ from gen_more_sym_pairs import build_children_adj, load_existing_keys
 from gen_mu_pairs import load_graph, walk_bidir, GRAPH
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-SCORED_4ROOTS = os.path.join(ROOT, "mu_pairs_scored_4roots.tsv")
+SCORED_4ROOTS = os.path.join(ROOT, "mu_pairs_scored_4roots_260621-004105.tsv")
 ALL_ROOTS = ["Physics", "Chemistry", "Mathematics", "Computer_science", "Engineering"]
 SPINE = "Branches_of_science"
 # curated clean-physics core for the cross strata (the #3312 Physics pool carries Time/Death leaks; for
@@ -155,7 +155,7 @@ def main():
 
     with open(args.out, "w") as f:
         f.write("# Part-A Math-deepening + Engineering candidates (gen_math_eng_pairs.py; deduped vs "
-                "mu_pairs_scored_4roots.tsv). strata: pos_math (deepened, incl. math-of-physics), pos_eng,\n")
+                "mu_pairs_scored_4roots_260621-004105.tsv). strata: pos_math (deepened, incl. math-of-physics), pos_eng,\n")
         f.write("# cross_MP=Math×Physics (math-of-physics), cross_EP/ES=Eng×{Phys,CS}, cross_spine="
                 "science×science, bidir. all BLANK μ. neg=μ0. cols: a\tb\tstratum\twl\tmu\n")
         for aa, bb, st, wl in rows:

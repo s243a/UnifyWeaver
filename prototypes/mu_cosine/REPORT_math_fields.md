@@ -12,7 +12,7 @@ over the domain roots is Mathematics) → **15,181 nodes (+813 new math nodes)**
 geometry, Banach spaces, functors, etc. Subfields grouped into **areas** (analysis / algebra /
 geometry-topology / foundations / discrete) so within-area positives are coherent.
 
-**533 Haiku pairs** scored (~56k tokens, 3 parallel subagents, graded rubric) → `mu_pairs_scored_mathfields.tsv`.
+**533 Haiku pairs** scored (~56k tokens, 3 parallel subagents, graded rubric) → `mu_pairs_scored_mathfields_260622-123223.tsv`.
 Stratum mean μ shows a clean **within-area > cross-area > cross-domain** gradient — evidence the areas have
 real internal structure:
 
@@ -77,7 +77,7 @@ deepening data does add a little genuine subfield-separation signal, just not a 
 ### (5) Worked example — `Algebraic_geometry`, the algebra∩geometry boundary
 A focused micro-round on `Category:Algebraic_geometry` (real parents: `Fields_of_abstract_algebra` **and**
 `Fields_of_geometry`) demonstrates the two sampling modes and the boundary structure (`gen` →
-`mu_pairs_scored_alggeom.tsv`, 80 Haiku pairs ~16k tok):
+`mu_pairs_scored_alggeom_260622-162338.tsv`, 80 Haiku pairs ~16k tok):
 
 - **Downward** (depth-≤2 closure, within-AG): mean μ **0.75** — tight subfield relatedness
   (`AG`↔`Scheme_theory`/`Moduli_theory`/`Morphisms_of_schemes` = 1.0, `Algebraic_curves`↔`Elliptic_curves`
@@ -95,7 +95,7 @@ the 62%/79% subfield separation leaves on the table.
 
 ### (6) Reusable boundary sampler + more worked examples
 `gen_boundary_pairs.py` generalises the AG round (`--down` / `--bidir` seeds, e5-coherence-filtered).
-Three more samples (`mu_pairs_scored_boundary.tsv`, 120 pairs ~17.5k tok) reproduce the
+Three more samples (`mu_pairs_scored_boundary_260622-171513.tsv`, 120 pairs ~17.5k tok) reproduce the
 downward > bidir gradient and show the bidir-μ tracks how *central* a seed's neighbourhood is:
 
 | seed | mode | mean μ | reads as |
@@ -106,7 +106,7 @@ downward > bidir gradient and show the bidir-μ tracks how *central* a seed's ne
 
 ### (7) Statistics + Estimation Theory round (the flagged gap, now filled)
 The coverage gap — Probability solid but **Statistics** only spillover and **Estimation_theory** absent —
-is closed with a dedicated round (`mu_pairs_scored_stats.tsv`, 200 pairs ~32k tok). These categories live
+is closed with a dedicated round (`mu_pairs_scored_stats_260622-182510.tsv`, 200 pairs ~32k tok). These categories live
 *outside* the math slice, so the neighbourhood was pulled from the full 9.9M-edge enwiki graph by a
 **streaming BFS** (downward closures of the seeds + one level up + siblings; the naive full-graph load
 OOMs). Downward from `Statistics`/`Estimation_theory`/`Statistical_theory`; bidirectional from
@@ -127,7 +127,7 @@ math-only.
 *focus* (Estimation 0.77 tight ≫ Statistics 0.47 diffuse).
 
 ### (8) Signals / Systems / Information / Control round
-The math↔EE↔CS interface (`mu_pairs_scored_sysinfo.tsv`, 280 pairs ~34.5k tok; streaming-BFS slice,
+The math↔EE↔CS interface (`mu_pairs_scored_sysinfo_260622-184444.tsv`, 280 pairs ~34.5k tok; streaming-BFS slice,
 `--coh-keep Mathematics,Computer_science,Engineering,Physics`). Note `Linear_systems`/`Linear_system_theory`
 are not populated enwiki categories — linear-systems theory lives under `Control_theory`/`Systems_theory`
 (Classical/Nonlinear/Optimal control, Stability_theory), which is what was seeded.
@@ -146,6 +146,55 @@ and the bidir-μ ranks how clean the boundary is. These domains' enwiki neighbou
 theory, social systems, economics, even astronomy tangle in via broad parents) — the graded rubric scored
 that junk ~0, but it's a reminder that engineering/applied categories need stricter coherence filtering
 than pure-math ones.
+
+### (9) Cybernetics / Systems-theory round
+Both modes from `Cybernetics` + `Systems_theory`, plus downward from `Systems_science` /
+`Operations_research` / `Dynamical_systems` (`mu_pairs_scored_cyber_260622-223014.tsv`, 280 non-neg pairs ~37k tok;
+slice `wide_enwiki_cyber`, 1,467 nodes / 2,369 edges; `--coh-keep Mathematics,Computer_science,Engineering`).
+
+| seed | mode | mean μ |
+|---|---|---|
+| `Cybernetics` | downward | **0.79** (tight — the automation/biocybernetics subtree is coherent) |
+| `Systems_science` | downward | **0.77** |
+| `Operations_research` | downward | 0.70 |
+| `Dynamical_systems` | downward | 0.66 |
+| `Systems_theory` | downward | **0.50** (diffuse — social/economic/psychology "systems" bleed in) |
+| `Cybernetics` | bidir | 0.39 |
+| `Systems_theory` | bidir | 0.26 (messiest reach — game theory, social systems, politics) |
+
+**On the user's "I'd have thought cybernetics would hit *more*":** it does score the *cleanest* of any
+seed here downward (0.79) — but it is **thin**, not broad. Today's `Category:Cybernetics` has only **4
+direct children** (Automation, Cyberneticists, Biomedical_cybernetics, Organizational_cybernetics; ~34-node
+depth-2 pool). The concept's historical breadth has been *redistributed* by decades of Wikipedia
+recategorization into Systems_science / Control_theory / Dynamical_systems / AI — so the breadth shows up
+in the **bidirectional reach** (232 math-coherent endpoints) and in cybernetics' role as a *connective*
+node, not in a deep downward subtree. Same saturation shape as rounds 7–8: focused cores score tight
+(~0.79), umbrella categories diffuse (~0.26–0.50), and the bidir-μ ranks boundary cleanliness.
+
+### (10) System-theory round (mindmap-aligned roots)
+Downward from the direct roots of the user's SimpleMind *System Theory* map — `Network_theory`,
+`Dynamical_systems`, `Complex_systems_theory`, `Systems_analysis` — plus bidirectional on the broad
+`Networks` hub (`mu_pairs_scored_systheory_260622-231618.tsv`, 195 non-neg ~35k tok; slice
+`wide_enwiki_systheory`, 599 nodes / 967 edges via the new reusable `build_slice.py`; `--coh-keep
+Mathematics,Computer_science,Engineering`). Sampling the *same* roots that anchor the mindmap is
+deliberate: it maximises the enwiki∩mindmap node overlap, which is the cheap "bootstrap-from-overlap"
+calibration path for the eventual SimpleMind/Pearltrees tie-in (see `DESIGN_calibrated_judges.md` §5).
+
+| seed | mode | mean μ |
+|---|---|---|
+| `Network_theory` | downward | **0.77** (tight; its 6 enwiki subcats map ~1:1 onto the mindmap's "Network theory" branch) |
+| `Complex_systems_theory` | downward | **0.73** (thin pool, n=9) |
+| `Systems_analysis` | downward | 0.65 |
+| `Dynamical_systems` | downward | 0.62 |
+| `Networks` | bidir | **0.075** (≈ hard negatives) |
+
+**Key finding — separate the hub from the theory.** `Networks` is a generic enwiki hub dominated by
+telecom / transport / broadcasting / gaming / social-media subcategories with no tie to mathematical
+network theory, so its bidirectional boundary walk is almost pure junk (0.075 — it functions as *hard
+negatives*, not positives). `Network_theory`, the tight sibling the user's map actually points at, scores
+0.77. The down-`Network_theory` / bidir-`Networks` split (the user's call) cleanly isolated the signal from
+the hub — confirming that **broad container categories make poor positive seeds; their tight theory-named
+children are the ones to sample.**
 
 ## Honest verdict — the saturation pattern, confirmed
 This round sharpens the meta-finding across the whole arc:
@@ -168,7 +217,7 @@ separations e5 already nails. (Credit: the subfield axis was surfaced by a revie
 were tested relative to *Real_analysis*, not just *Mathematics*.)
 
 Reproduce: build `wide_enwiki_math` (closures ∩ e5-coherence) → `gen_math_fields_pairs.py` → score the
-535 non-neg pairs → `mu_pairs_scored_mathfields.tsv`; `UW_MU_GRAPH=…/wide_enwiki_math/…
-UW_E5_CACHE=e5_tables_enwiki_math.pt train_mu_attention.py --pairs mu_pairs_scored_mathfields.tsv
+535 non-neg pairs → `mu_pairs_scored_mathfields_260622-123223.tsv`; `UW_MU_GRAPH=…/wide_enwiki_math/…
+UW_E5_CACHE=e5_tables_enwiki_math.pt train_mu_attention.py --pairs mu_pairs_scored_mathfields_260622-123223.tsv
 --pairs-corpus enwiki --replay-pairs mu_pairs_scored_prior.tsv --init-from <baseline> --lr 1.5e-4
 --steps 500` (+ placebo with `--pairs mu_pairs_scored_prior.tsv`).

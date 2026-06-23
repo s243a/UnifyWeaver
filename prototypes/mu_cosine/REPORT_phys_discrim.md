@@ -9,7 +9,7 @@ targeted core-physics sampling run (budget-bounded, user-approved). Builds on
 
 `discrimination_probe` now reports, alongside hard argmax: the true root's **rank** among the 5, the
 **signed margin** μ(true) − max-other (>0 ⇔ argmax-correct), and **top-1/top-2** rates. Re-run on the
-merged math-eng set (`mu_pairs_scored_matheng.tsv`) across the same 3 seeds as #3314:
+merged math-eng set (`mu_pairs_scored_matheng_260621-100230.tsv`) across the same 3 seeds as #3314:
 
 | seed | argmax acc | Phys mean-rank | Phys margin | Phys top-2 | ALL mean-rank | ALL top-2 | SYM corr |
 |---|---|---|---|---|---|---|---|
@@ -42,12 +42,12 @@ Bidirectional-coinflip walks seeded at the **classical** physics subfields prese
 
 **152 non-neg pairs** scored (one inline Haiku subagent, ~15.6k tokens, 0 tool calls, graded rubric):
 80 within-core-physics + 24 each core×{Math, Chemistry, Engineering}. Committed in
-`mu_pairs_scored_corephys.tsv`. Haiku honestly graded the ambiguous nodes low (e.g. `Vision`×`Sound`
+`mu_pairs_scored_corephys_260621-125413.tsv`. Haiku honestly graded the ambiguous nodes low (e.g. `Vision`×`Sound`
 0.15 — "Vision" is perception, not acoustics), so the within-physics stratum mean μ is only ~0.50.
 
 ## Step 2 — retrain + verdict: it did NOT help (slightly regressed)
 
-`train_mu_attention.py --pairs mu_pairs_scored_corephys.tsv` (same 3 seeds):
+`train_mu_attention.py --pairs mu_pairs_scored_corephys_260621-125413.tsv` (same 3 seeds):
 
 | seed | argmax acc | Phys top-2 | ALL top-2 | SYM corr |
 |---|---|---|---|---|
@@ -75,5 +75,5 @@ Quantum/Statistical/Fluid/Relativity; the margin metric added here is the right 
 against once that data exists.
 
 Reproduce: `gen_core_physics_pairs.py` → score the 152 non-neg pairs → merge into
-`mu_pairs_scored_corephys.tsv`; `train_mu_attention.py --pairs mu_pairs_scored_{matheng,corephys}.tsv
+`mu_pairs_scored_corephys_260621-125413.tsv`; `train_mu_attention.py --pairs mu_pairs_scored_{matheng,corephys}.tsv
 --llm --steps 900 ... --seed {1,7,23} --quick-val` (the `[DISCRIM]` block prints both metrics).

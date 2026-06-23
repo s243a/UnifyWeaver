@@ -3,7 +3,7 @@
 domain in the math-eng work (#3314, ~13 nodes); here we grow a real Engineering pool from the present
 roots and add the discrimination-critical **physics-AND-engineering boundary** (Mechanics/Thermodynamics ×
 Engineering — the same high-to-both case as math-of-physics). Built on gen_multidomain_pairs.py /
-gen_math_eng_pairs.py; deduped vs the cumulative mu_pairs_scored_matheng.tsv. Negatives free.
+gen_math_eng_pairs.py; deduped vs the cumulative mu_pairs_scored_matheng_260621-100230.tsv. Negatives free.
 
 Pool: closure(Engineering ∪ Mechanical_engineering ∪ Civil_engineering ∪ Applied_sciences, depth≤3),
 μ-coherent to Engineering (argmax over the 5 roots == Engineering, OR within a small margin of it so the
@@ -25,7 +25,7 @@ from gen_more_sym_pairs import build_children_adj, load_existing_keys
 from gen_mu_pairs import load_graph, walk_bidir, GRAPH
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-SCORED_CUMULATIVE = os.path.join(ROOT, "mu_pairs_scored_matheng.tsv")
+SCORED_CUMULATIVE = os.path.join(ROOT, "mu_pairs_scored_matheng_260621-100230.tsv")
 ALL_ROOTS = ["Physics", "Chemistry", "Mathematics", "Computer_science", "Engineering"]
 # Engineering closure seeds — NOT Applied_sciences (it reaches Medicine→Physiology/Psychiatry, polluting
 # the pool); the engineering-proper roots stay clean.
@@ -152,7 +152,7 @@ def main():
 
     with open(args.out, "w") as f:
         f.write("# Engineering build-out candidates (gen_engineering_pairs.py; deduped vs "
-                "mu_pairs_scored_matheng.tsv). strata: pos_eng (within-Engineering),\n")
+                "mu_pairs_scored_matheng_260621-100230.tsv). strata: pos_eng (within-Engineering),\n")
         f.write("# cross_EP=Eng×Physics (Mech/Thermo high-to-both), cross_ES/EM/EC=Eng×{CS,Math,Chem}, "
                 "neg=μ0. BLANK μ to Haiku-score. cols: a\tb\tstratum\twl\tmu\n")
         for aa, bb, st, wl in rows:

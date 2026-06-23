@@ -31,7 +31,7 @@ from gen_mu_pairs import load_graph, walk_bidir, GRAPH
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(ROOT, "..", ".."))
-SCORED_MULTI = os.path.join(ROOT, "mu_pairs_scored_multidomain.tsv")
+SCORED_MULTI = os.path.join(ROOT, "mu_pairs_scored_multidomain_260620-235025.tsv")
 FIXTURE = os.path.join(REPO, "tests", "fixtures", "wikipedia_physics_fuzzy_nodes.tsv")
 E5 = "intfloat/e5-small-v2"
 
@@ -259,7 +259,7 @@ def main():
 
     with open(args.out, "w") as f:
         f.write("# Four-root multi-domain candidates (gen_multidomain_pairs.py; depth-bounded child-only "
-                "closures ∩ μ-coherence; deduped vs mu_pairs_scored_multidomain.tsv).\n")
+                "closures ∩ μ-coherence; deduped vs mu_pairs_scored_multidomain_260620-235025.tsv).\n")
         f.write("# strata: pos_phys/pos_chem/pos_math/pos_cs=within-domain, cross_XY=cross-domain "
                 "(P/C/M/S), bidir=coinflip(Physics); all BLANK μ. neg=noise μ=0. cols: a\tb\tstratum\twl\tmu\n")
         for aa, bb, st, wl in rows:
