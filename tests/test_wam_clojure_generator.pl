@@ -187,8 +187,10 @@ test(numeric_wam_constants_preserve_number_vs_atom_tokens) :-
 test(aggregate_instructions_emit_runtime_ops) :-
     once((
         wam_clojure_target:wam_op_to_clojure_literal("begin_aggregate", ["collect", "Y1", "X2"], _, BeginLiteral),
+        wam_clojure_target:wam_op_to_clojure_literal("begin_aggregate", ["bagof", "Y1", "X2", "'Y3;Y4'"], _, BeginWitnessLiteral),
         wam_clojure_target:wam_op_to_clojure_literal("end_aggregate", ["Y1"], _, EndLiteral),
-        assertion(BeginLiteral == '{:op :begin-aggregate :kind "collect" :template "Y1" :bag "X2"}'),
+        assertion(BeginLiteral == '{:op :begin-aggregate :kind "collect" :template "Y1" :bag "X2" :witnesses []}'),
+        assertion(BeginWitnessLiteral == '{:op :begin-aggregate :kind "bagof" :template "Y1" :bag "X2" :witnesses ["Y3" "Y4"]}'),
         assertion(EndLiteral == '{:op :end-aggregate :template "Y1"}')
     )).
 

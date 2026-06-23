@@ -25,6 +25,12 @@
 :- dynamic user:wam_agg_min/1.
 :- dynamic user:wam_agg_max/1.
 :- dynamic user:wam_agg_min_empty/1.
+:- dynamic user:wam_bagof_pair/2.
+:- dynamic user:wam_bagof_inline/1.
+:- dynamic user:wam_setof_inline/1.
+:- dynamic user:wam_bagof_empty/1.
+:- dynamic user:wam_bagof_group/1.
+:- dynamic user:wam_setof_group/1.
 :- dynamic user:wam_bind_then_fact/1.
 :- dynamic user:wam_bind_after_call/1.
 :- dynamic user:wam_bind_before_execute/1.
@@ -429,6 +435,15 @@ user:wam_agg_set(L) :- aggregate_all(set(X), member(X, [b,a,b]), L).
 user:wam_agg_min(M) :- aggregate_all(min(X), member(X, [3,1,2]), M).
 user:wam_agg_max(M) :- aggregate_all(max(X), member(X, [3,1,2]), M).
 user:wam_agg_min_empty(M) :- aggregate_all(min(X), member(X, []), M).
+user:wam_bagof_pair(b, 3).
+user:wam_bagof_pair(a, 2).
+user:wam_bagof_pair(a, 1).
+user:wam_bagof_pair(a, 2).
+user:wam_bagof_inline(L) :- bagof(X, member(X, [a,b,a]), L).
+user:wam_setof_inline(L) :- setof(X, member(X, [b,a,b]), L).
+user:wam_bagof_empty(L) :- bagof(X, member(X, []), L).
+user:wam_bagof_group(L) :- bagof(X, user:wam_bagof_pair(_Y, X), L).
+user:wam_setof_group(L) :- setof(X, user:wam_bagof_pair(_Y, X), L).
 user:wam_bind_then_fact(X) :- Y = X, user:wam_fact(Y).
 user:wam_bind_after_call(X) :- user:wam_fact(X), X = a.
 user:wam_bind_before_execute(X) :- X = a, user:wam_fact(X).
@@ -834,6 +849,12 @@ run_smoke :-
           user:wam_agg_min/1,
           user:wam_agg_max/1,
           user:wam_agg_min_empty/1,
+          user:wam_bagof_pair/2,
+          user:wam_bagof_inline/1,
+          user:wam_setof_inline/1,
+          user:wam_bagof_empty/1,
+          user:wam_bagof_group/1,
+          user:wam_setof_group/1,
           user:wam_bind_then_fact/1,
           user:wam_bind_after_call/1,
           user:wam_bind_before_execute/1,
@@ -1210,6 +1231,7 @@ run_smoke :-
         ],
         [ namespace('generated.wam_exec_test'),
           module_name('wam-clojure-exec-test'),
+          inline_bagof_setof(true),
           foreign_predicates([wam_fact/1, wam_foreign_pair/2, wam_foreign_stream_pair/2]),
           clojure_foreign_handlers([
               handler(wam_fact/1, "(fn [args] (= (first args) \"a\"))"),
@@ -1315,6 +1337,17 @@ smoke_cases([
     case('wam_agg_max/1', 3, "true"),
     case('wam_agg_max/1', 2, "false"),
     case('wam_agg_min_empty/1', 0, "false"),
+    case('wam_bagof_inline/1', '[a,b,a]', "true"),
+    case('wam_bagof_inline/1', '[a,b]', "false"),
+    case('wam_setof_inline/1', '[a,b]', "true"),
+    case('wam_setof_inline/1', '[b,a]', "false"),
+    case('wam_bagof_empty/1', '[]', "false"),
+    case('wam_bagof_group/1', '[2,1,2]', "true"),
+    case('wam_bagof_group/1', '[3]', "true"),
+    case('wam_bagof_group/1', '[1,2,3]', "false"),
+    case('wam_setof_group/1', '[1,2]', "true"),
+    case('wam_setof_group/1', '[3]', "true"),
+    case('wam_setof_group/1', '[2,1]', "false"),
     case('wam_bind_then_fact/1', 'a', "true"),
     case('wam_bind_then_fact/1', 'b', "false"),
     case('wam_bind_after_call/1', 'a', "true"),
@@ -2578,9 +2611,12 @@ prolog_term_string_to_edn('[52,50]', "{:tag :struct :functor \"[|]/2\" :args [52
 prolog_term_string_to_edn('[102,111]', "{:tag :struct :functor \"[|]/2\" :args [102 {:tag :struct :functor \"[|]/2\" :args [111 \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[102,111,111]', "{:tag :struct :functor \"[|]/2\" :args [102 {:tag :struct :functor \"[|]/2\" :args [111 {:tag :struct :functor \"[|]/2\" :args [111 \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[1,2,3]', "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [2 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn('[1,2]', "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [2 \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[1,3]', "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}") :- !.
 prolog_term_string_to_edn('[2,3]', "{:tag :struct :functor \"[|]/2\" :args [2 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}") :- !.
+prolog_term_string_to_edn('[3]', "{:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}") :- !.
 prolog_term_string_to_edn('[2]', "{:tag :struct :functor \"[|]/2\" :args [2 \"[]\"]}") :- !.
+prolog_term_string_to_edn('[2,1,2]', "{:tag :struct :functor \"[|]/2\" :args [2 {:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [2 \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[3-a,1-b,2-c]', "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [3 \"a\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [1 \"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [2 \"c\"]} \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[1-b,2-c,3-a]', "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [1 \"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [2 \"c\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [3 \"a\"]} \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn('[1-b,3-a,2-c]', "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [1 \"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [3 \"a\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [2 \"c\"]} \"[]\"]}]}]}") :- !.
@@ -2620,8 +2656,11 @@ prolog_term_string_to_edn("[52,50]", "{:tag :struct :functor \"[|]/2\" :args [52
 prolog_term_string_to_edn("[102,111]", "{:tag :struct :functor \"[|]/2\" :args [102 {:tag :struct :functor \"[|]/2\" :args [111 \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[102,111,111]", "{:tag :struct :functor \"[|]/2\" :args [102 {:tag :struct :functor \"[|]/2\" :args [111 {:tag :struct :functor \"[|]/2\" :args [111 \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[1,2,3]", "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [2 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}]}") :- !.
+prolog_term_string_to_edn("[1,2]", "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [2 \"[]\"]}]}") :- !.
 prolog_term_string_to_edn("[1,3]", "{:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}]}") :- !.
+prolog_term_string_to_edn("[3]", "{:tag :struct :functor \"[|]/2\" :args [3 \"[]\"]}") :- !.
 prolog_term_string_to_edn("[2]", "{:tag :struct :functor \"[|]/2\" :args [2 \"[]\"]}") :- !.
+prolog_term_string_to_edn("[2,1,2]", "{:tag :struct :functor \"[|]/2\" :args [2 {:tag :struct :functor \"[|]/2\" :args [1 {:tag :struct :functor \"[|]/2\" :args [2 \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[3-a,1-b,2-c]", "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [3 \"a\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [1 \"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [2 \"c\"]} \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[1-b,2-c,3-a]", "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [1 \"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [2 \"c\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [3 \"a\"]} \"[]\"]}]}]}") :- !.
 prolog_term_string_to_edn("[1-b,3-a,2-c]", "{:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [1 \"b\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [3 \"a\"]} {:tag :struct :functor \"[|]/2\" :args [{:tag :struct :functor \"-/2\" :args [2 \"c\"]} \"[]\"]}]}]}") :- !.
