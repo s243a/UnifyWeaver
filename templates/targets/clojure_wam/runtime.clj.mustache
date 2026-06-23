@@ -225,7 +225,13 @@
 (defn restore-choice-regs [state saved-regs]
   (assoc state :regs saved-regs))
 
-(declare activate-choice copy-term list->term reg-get-raw)
+(declare activate-choice
+         copy-term
+         deref-value
+         list->term
+         parse-number-text
+         reg-get-raw
+         sorted-unique-terms)
 
 (defn choice-snapshot [state target-pc]
   {:kind :wam
@@ -284,11 +290,54 @@
           :else
           (recur (inc idx) depth))))))
 
+(defn aggregate-number-value [state value]
+  (let [value* (deref-value (:bindings state) value)]
+    (cond
+      (number? value*) value*
+      (string? value*) (parse-number-text value*)
+      (atom-term? value*) (parse-number-text (deintern-atom (:intern-context state) (:id value*)))
+      :else nil)))
+
+(defn aggregate-sum-term [state collected]
+  (loop [remaining (seq collected)
+         total 0]
+    (if remaining
+      (if-let [n (aggregate-number-value state (first remaining))]
+        (recur (next remaining) (+ total n))
+        ::aggregate-failure)
+      total)))
+
+(defn aggregate-extreme-term [state collected better?]
+  (if-let [items (seq collected)]
+    (if-let [first-number (aggregate-number-value state (first items))]
+      (loop [best first-number
+             remaining (next items)]
+        (if remaining
+          (if-let [n (aggregate-number-value state (first remaining))]
+            (recur (if (better? n best) n best) (next remaining))
+            ::aggregate-failure)
+          best))
+      ::aggregate-failure)
+    ::aggregate-failure))
+
+(defn aggregate-list-term [state collected]
+  (list->term (:intern-context state) collected))
+
+(defn aggregate-set-term [state collected]
+  (list->term (:intern-context state) (sorted-unique-terms state collected)))
+
 (defn aggregate-result-term [state kind collected]
   (case kind
     "count" (count collected)
-    "collect" (list->term (:intern-context state) collected)
-    (list->term (:intern-context state) collected)))
+    "sum" (aggregate-sum-term state collected)
+    "min" (aggregate-extreme-term state collected <)
+    "max" (aggregate-extreme-term state collected >)
+    "collect" (aggregate-list-term state collected)
+    "bag" (aggregate-list-term state collected)
+    "set" (aggregate-set-term state collected)
+    "bagof" (if (seq collected) (aggregate-list-term state collected) ::aggregate-failure)
+    "setof" (if (seq collected) (aggregate-set-term state collected) ::aggregate-failure)
+    (aggregate-list-term state collected)))
 
 (defn aggregate-choice-index [choice-points]
   (some (fn [[idx cp]]
@@ -2473,16 +2522,18 @@
     (apply-member-solution state (:pc cp) (:member-elem cp) (:member-rest cp))
 
     :aggregate
-    (let [bag (aggregate-result-term state (:aggregate-kind cp) (:aggregate-collected cp))
-          bag-reg (:aggregate-bag-reg cp)
-          current (or (reg-get-raw state bag-reg) ::unbound)
-          resumed-state (assoc state :pc (:aggregate-next-pc cp))
-          [ok next-state] (if (= current ::unbound)
-                            [true (reg-set-raw resumed-state bag-reg bag)]
-                            (unify-values resumed-state current bag))]
-      (if ok
-        next-state
-        (backtrack resumed-state)))
+    (let [bag (aggregate-result-term state (:aggregate-kind cp) (:aggregate-collected cp))]
+      (if (= bag ::aggregate-failure)
+        (backtrack state)
+        (let [bag-reg (:aggregate-bag-reg cp)
+              current (or (reg-get-raw state bag-reg) ::unbound)
+              resumed-state (assoc state :pc (:aggregate-next-pc cp))
+              [ok next-state] (if (= current ::unbound)
+                                [true (reg-set-raw resumed-state bag-reg bag)]
+                                (unify-values resumed-state current bag))]
+          (if ok
+            next-state
+            (backtrack resumed-state)))))
 
     (assoc state :status :running)))
 
