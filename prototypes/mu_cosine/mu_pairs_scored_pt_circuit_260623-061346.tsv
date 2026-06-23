@@ -1,0 +1,59 @@
+# pearltrees Circuit-Theory gap-fill (fetch_pearltrees_tree.py + gen_pearltrees_pairs.py; corpus=pearltrees; Haiku-graded centrality). enwiki anchors in url col are the join keys. assoc_pt=shortcut cross-refs (ungraded). cols: a	b	stratum	wl	mu	relation	a_type	b_type	corpus	url
+RLC_Circuit_(Electronics)	RLC_circuit	pos_pt_rlc_circuit_(e	-1	1.0	element_of	collection	page	pearltrees	http://en.wikipedia.org/wiki/RLC_circuit
+1st_Order_Linear_Circuits_(electronics)	RC_Circuits	pos_pt_1st_order_line	-1	0.8	collection_of	collection	collection	pearltrees	
+Circuit_Theory_(Linear_Systems)	Phasors	pos_pt_circuit_theory	-1	1.0	collection_of	collection	collection	pearltrees	
+Feudalism	Cuttoff_Frequency_RC_Circuit	neg	-1	0.0	element_of	collection	page	pearltrees	
+RC_Circuits	Bode_Plot_and_RC_Circuits	assoc_pt	-1		association	collection	shortcut	pearltrees	
+Comedians	RLC_Circuit_(Electronics)	neg	-1	0.0	element_of	collection	page	pearltrees	
+1978_albums	Phasors	neg	-1	0.0	element_of	collection	page	pearltrees	
+Circuit_Theory_(Linear_Systems)	Basic_Concepts_(Electrical_Engineering)	assoc_pt	-1		association	collection	shortcut	pearltrees	
+Galaxies	Mechanical-electric_analogs	neg	-1	0.0	element_of	collection	page	pearltrees	
+Mechanical-electric_analogs	Mechanical-electrical_analogies	pos_pt_mechanical-ele	-1	1.0	element_of	collection	page	pearltrees	http://en.wikipedia.org/wiki/Mechanical-electrical_analogies
+Galaxies	Inductor_(Mechanical_Analog)	neg	-1	0.0	element_of	collection	page	pearltrees	
+Circuit_Theory_(Linear_Systems)	Mechanical-electric_analogs	pos_pt_circuit_theory	-1	0.8	collection_of	collection	collection	pearltrees	
+Feudalism	RLC_circuit	neg	-1	0.0	element_of	collection	page	pearltrees	
+1978_albums	Phasor	neg	-1	0.0	element_of	collection	page	pearltrees	
+Chess_openings	RC_Circuits	neg	-1	0.0	element_of	collection	page	pearltrees	
+1978_albums	Cuttoff_Frequency_RC_Circuit	neg	-1	0.0	element_of	collection	page	pearltrees	
+Mechanical-electric_analogs	System_Isomorphism	assoc_pt	-1		association	collection	shortcut	pearltrees	
+Comedians	laplace_ckts.pdf	neg	-1	0.0	element_of	collection	page	pearltrees	
+1978_albums	1st_Order_Linear_Circuits_(electronics)	neg	-1	0.0	element_of	collection	page	pearltrees	
+Comedians	Phasor	neg	-1	0.0	element_of	collection	page	pearltrees	
+Galaxies	Phasors	neg	-1	0.0	element_of	collection	page	pearltrees	
+Mechanical-electric_analogs	Lumped_Element_Model	assoc_pt	-1		association	collection	shortcut	pearltrees	
+Mechanical-electric_analogs	Inductor_(Mechanical_Analog)	pos_pt_mechanical-ele	-1	0.8	collection_of	collection	collection	pearltrees	
+1978_albums	Circuit_Theory_(Linear_Systems)	neg	-1	0.0	element_of	collection	page	pearltrees	
+Feudalism	Phasors	neg	-1	0.0	element_of	collection	page	pearltrees	
+Feudalism	Mechanical-electrical_analogies	neg	-1	0.0	element_of	collection	page	pearltrees	
+RC_Circuits	RC_circuit	pos_pt_rc_circuits	-1	1.0	element_of	collection	page	pearltrees	http://en.wikipedia.org/wiki/RC_circuit
+1978_albums	2nd_Order_Linear_Circuits	neg	-1	0.0	element_of	collection	page	pearltrees	
+Inductor_(Mechanical_Analog)	Inductors_|_Water_Analogy_to_Circuits_|_Douglas_Wilhelm_Harder_|_University_of_Waterloo	pos_pt_inductor_(mech	-1	0.4	element_of	collection	page	pearltrees	https://ece.uwaterloo.ca/~dwharder/Analogy/Inductors/
+Laplace_Transform_Circuits	laplace_ckts.pdf	pos_pt_laplace_transf	-1	0.4	element_of	collection	page	pearltrees	https://web.stanford.edu/~boyd/ee102/laplace_ckts.pdf
+Feudalism	laplace_ckts.pdf	neg	-1	0.0	element_of	collection	page	pearltrees	
+1978_albums	RC_Time_Constant	neg	-1	0.0	element_of	collection	page	pearltrees	
+Comedians	Circuit_Theory_(Linear_Systems)	neg	-1	0.0	element_of	collection	page	pearltrees	
+Cooking	laplace_ckts.pdf	neg	-1	0.0	element_of	collection	page	pearltrees	
+Feudalism	Circuit_Theory_(Linear_Systems)	neg	-1	0.0	element_of	collection	page	pearltrees	
+Circuit_Theory_(Linear_Systems)	Passive_Components_(Electronics)	assoc_pt	-1		association	collection	shortcut	pearltrees	
+1978_albums	RLC_Circuit_(Electronics)	neg	-1	0.0	element_of	collection	page	pearltrees	
+1978_albums	Mechanical-electrical_analogies	neg	-1	0.0	element_of	collection	page	pearltrees	
+Galaxies	Circuit_Theory_(Linear_Systems)	neg	-1	0.0	element_of	collection	page	pearltrees	
+Galaxies	Inductors_|_Water_Analogy_to_Circuits_|_Douglas_Wilhelm_Harder_|_University_of_Waterloo	neg	-1	0.0	element_of	collection	page	pearltrees	
+Circuit_Theory_(Linear_Systems)	1st_Order_Linear_Circuits_(electronics)	pos_pt_circuit_theory	-1	0.8	collection_of	collection	collection	pearltrees	
+Circuit_Theory_(Linear_Systems)	Laplace_Transform_Circuits	pos_pt_circuit_theory	-1	0.8	collection_of	collection	collection	pearltrees	
+Cooking	Inductor_(Mechanical_Analog)	neg	-1	0.0	element_of	collection	page	pearltrees	
+2nd_Order_Linear_Circuits	RLC_Circuit_(Electronics)	pos_pt_2nd_order_line	-1	1.0	collection_of	collection	collection	pearltrees	
+RC_Circuits	Electromagnetism:_RC_Circuits	assoc_pt	-1		association	collection	shortcut	pearltrees	
+Chess_openings	Inductors_|_Water_Analogy_to_Circuits_|_Douglas_Wilhelm_Harder_|_University_of_Waterloo	neg	-1	0.0	element_of	collection	page	pearltrees	
+Galaxies	RLC_circuit	neg	-1	0.0	element_of	collection	page	pearltrees	
+Phasors	Phasor	pos_pt_phasors	-1	1.0	element_of	collection	page	pearltrees	http://en.wikipedia.org/wiki/Phasor
+2nd_Order_Linear_Circuits	RC_Circuits	assoc_pt	-1		association	collection	shortcut	pearltrees	
+RC_Circuits	Cuttoff_Frequency_RC_Circuit	pos_pt_rc_circuits	-1	0.6	collection_of	collection	collection	pearltrees	
+RC_Circuits	Linear_low_Pass_Filter	assoc_pt	-1		association	collection	shortcut	pearltrees	
+1978_albums	Inductor_(Mechanical_Analog)	neg	-1	0.0	element_of	collection	page	pearltrees	
+Circuit_Theory_(Linear_Systems)	2nd_Order_Linear_Circuits	pos_pt_circuit_theory	-1	0.8	collection_of	collection	collection	pearltrees	
+1978_albums	Mechanical-electric_analogs	neg	-1	0.0	element_of	collection	page	pearltrees	
+RC_Circuits	RC_Time_Constant	pos_pt_rc_circuits	-1	0.6	collection_of	collection	collection	pearltrees	
+Chess_openings	RLC_circuit	neg	-1	0.0	element_of	collection	page	pearltrees	
+Laplace_Transform_Circuits	Laplace_transform	assoc_pt	-1		association	collection	shortcut	pearltrees	
+RLC_Circuit_(Electronics)	1st_&amp;_2nd_Order_ODEs	assoc_pt	-1		association	collection	shortcut	pearltrees	

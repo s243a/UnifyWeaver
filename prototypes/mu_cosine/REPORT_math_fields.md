@@ -226,6 +226,22 @@ at the page level** — exactly the proof case for the page node-type + element-
 in the model, the rows ride as graded positives but stay tagged for re-routing. Tooling: `fetch_category_
 pages.py` (API, backoff) + `gen_page_pairs.py`, both reusable.
 
+### (12) Pearltrees gap-fill — Circuit Theory (a topic enwiki has no category for)
+First **pearltrees-corpus** round. `Circuit_theory` is not an enwiki category at all (it lives scattered
+under Electronic/Analog circuits), but it's a coherent topic in the user's curated Pearltrees tree. Harvested
+it via the getTreeAndPearls API (`fetch_pearltrees_tree.py`, cookie session, recurse depth 3 → 31 edges /
+9 trees) and graded membership centrality with Haiku (`mu_pairs_scored_pt_circuit_*.tsv`, 16 graded,
+mean **0.80**; tagged `corpus=pearltrees`, `relation` ∈ {collection_of, element_of, association}). Tooling:
+`fetch_pearltrees_tree.py` + `gen_pearltrees_pairs.py`, both reusable.
+
+Two payoffs: (a) it supplies a clean topic hierarchy (`Circuit_Theory → {Phasors, Laplace_Transform_
+Circuits, 1st/2nd-Order_Linear_Circuits, Mechanical-electric_analogs}`) for a gap enwiki categories can't
+cover; (b) the harvested PagePearls carry **enwiki page anchors** — `Phasor`, `RC_circuit`, `RLC_circuit`,
+`Mechanical-electrical_analogies` are all real enwiki *pages* — so this round is also the first concrete
+**pearltrees↔enwiki bridge**: the `url` column holds the join key back into the category/page graph. This
+is the "add pearltrees data where enwiki has important gaps" policy in action — narrow, targeted, and it
+arrives pre-bridged to enwiki.
+
 ## Honest verdict — the saturation pattern, confirmed
 This round sharpens the meta-finding across the whole arc:
 
