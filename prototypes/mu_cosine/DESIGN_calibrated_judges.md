@@ -201,7 +201,99 @@ Haiku grade on.
 
 ---
 
-## 7. Implementation notes
+## 7. Node types, relation operators & per-function templates
+
+So far "membership" has been one undifferentiated thing. It isn't — and pulling it apart cleanly is what
+lets one model carry enwiki categories, enwiki pages, mindmap nodes and Pearltrees collections without any
+of them contaminating the others. Two **orthogonal** axes do the work:
+
+- **Node-type token — what each *endpoint* is.** `NODETYPE = {category, page, mindmap_node,
+  pearltrees_collection}`, a factored, maskable token exactly like `corpus_emb`/`judge_emb`. It tells the
+  model the *structural role* of a node — a `category`/`mindmap_node` is an internal node that can have
+  children; a `page` is a **leaf**. e5 still encodes the *title text* either way ("Hopf bifurcation" and
+  "Bifurcation theory" both embed fine), so cold-start is unaffected; the node-type token only adds the
+  role the title can't convey.
+- **Relation operator — what the *edge* is.** Conditions the shared transformer trunk, exactly as the
+  existing `OPS = {SYM, WIKI, LLM}` already do. Today's operators *conflate* membership: `WIKI` is
+  structurally the subcategory-directional relation, and `SYM`'s graded template says "belong under /
+  relate to" **without** distinguishing a subcategory from a page. The clean split is one operator per
+  *relation function*:
+
+| relation function | edge | node-types | shape |
+|---|---|---|---|
+| **subcategory-of** | `subcat ⊂ cat` | category→category | transitive, internal-node, directional |
+| **element-of (page)** | `page ∈ cat` | page→category | terminal, **leaf**, directional |
+| **association** | `A ↔ B` (See Also) | any | **symmetric**, order-invariant |
+
+### Per-function Haiku templates ↔ operator embeddings
+
+The key coupling: **the Haiku prompt template is the human-readable *definition* of a relation; the
+operator embedding is the model's learned, compressed version of that same definition.** One template ↔ one
+embedding. To add a relation you write a template that *defines* it — e.g.
+
+- *subcategory* template: "B is a **subcategory** of A — a narrower field wholly contained in A's topic."
+- *element/page* template: "B is a **direct member page** of A — an article that belongs in A's topic."
+
+— and the labels each template produces train *its own* function token. The model then triangulates the
+shared "membership" manifold **from the differences between the templates**.
+
+### Why per-function embeddings (not one, not N models)
+
+Giving each function its own token on a **shared trunk** is the sweet spot between two worse designs:
+
+- **one merged operator** → loses the distinction (can't tell "is a subfield of" from "is an article
+  about"), and
+- **a separate model per relation** → loses all transfer; each relation relearns "membership" from
+  scratch.
+
+Shared body + per-function token = the trunk learns the common membership geometry **once** (the part
+that's the same whether B is a subcat or a page), while each operator embedding only has to encode the
+**delta** (subcat: transitive / has-its-own-children; page: terminal / leaf). That is multi-task learning,
+and the function tokens are *where the differences live* so the weights can stay shared — **"let the model
+find what generalizes between the functions."**
+
+This composes with the rest:
+- **Calibration is per function** (§3–4): each operator gets its *own* target band, because a direct
+  subcat and a listed page genuinely sit in different μ-ranges. "Different embeddings per function" and
+  "calibrated range targets per function" are the same axis.
+- **Operator ⟂ node-type**: the operator says what the *relation* is; the node-type token says what each
+  *endpoint* is. Together they express enwiki subcats, enwiki page-memberships, and mindmap edges in one
+  model, each tagged so none bleeds into another.
+
+### The page frontier (why this matters *now*)
+
+Page membership isn't a new data source — it's the **same dump, filtered wider**: our ingest kept only
+ns14→ns14 (category→category) edges; the page→category memberships are the *same* `categorylinks` table
+with an ns0 (article) child. Bulk-ingesting all of it is tens of millions of rows ("a lot of data"), so the
+pragmatic path is **scrape-on-demand**: pull the pages of *one* category only when filling a specific gap.
+
+The gaps that need it are the **thin-or-absent categories**: `Bifurcation_theory` (0 subcats, 20 pages),
+`Nonlinear_systems` (1 subcat), `Circuit_theory` (not an enwiki category at all). These are exactly the
+nodes that are *unlearnable at the category level but rich at the page level* — so the page node-type and
+the element-of operator are the **proof case** for this whole axis, not a someday-nicety.
+
+The **Pearltrees harvester** (`.local/tools/browser-automation/`, `getTreeAndPearls?treeId=…`) is the page
+on-ramp for nodes enwiki lacks. Its `contentType` maps straight onto the schema: `2`=Collection (a
+`pearltrees_collection` node), `1`=PagePearl (a `page` node — **and it carries the pearl's `url`, usually
+the Wikipedia article**), `5`=Shortcut (cross-tree alias = a `cloudmapref`-like edge), `7`=Section
+(scaffolding — skip). So harvesting one collection (e.g. *Circuit Theory* `id13580844` →
+{Mechanical-electric analogs, Phasors, Laplace Transform Circuits, 1st/2nd-Order Linear Circuits}) yields,
+in one shot: **collection→page membership edges** (Haiku-judgable now under the element-of template) **and
+each page's Wikipedia anchor** (the join key back into the enwiki page→category graph) — the exact tie-in
+surface, for a topic enwiki has no category for.
+
+### Current Haiku template (for reference)
+
+The grading prompt has an **invariant skeleton** — directional framing ("grade B relative to A's topic"),
+the six bands (1.0 nested → 0.0 unrelated/junk), a strictness paragraph naming the junk to zero, and a
+no-tools / exact-TSV-output contract — and **per-round variables**: the region label, the in-band
+examples, and the named junk. It runs as 2 parallel Haiku subagents (~17k tok each). A **per-function**
+variant adds exactly one clause to the skeleton naming the relation ("B is a *subcategory* of A" vs "B is a
+*member page* of A"); everything else stays, which is what keeps the function tokens comparable.
+
+---
+
+## 8. Implementation notes
 
 **Files & hooks**
 
@@ -240,6 +332,23 @@ L = w * (F.relu(mu_hat_lo - mu_cp) + F.relu(mu_cp - mu_hat_hi)).mean()   # zero 
   `WIKI`.
 - Calibrate via overlap bootstrap + the small per-type Haiku fixture.
 
+**Operators, node-types & the page frontier (follow-on)**
+
+- `OPS` / `NODETYPE` codebooks (`mu_attention.py`) — additive, like `CORPORA`/`JUDGES`. Split membership:
+  keep `WIKI` as **subcategory-of**, add an **element-of (page)** operator μ(page|category); add
+  `NODETYPE = {category, page, mindmap_node, pearltrees_collection}` as a factored, maskable token. The
+  e5 path is unchanged (title text still embeds); the new token only adds structural role.
+- Per-function Haiku templates — one template *defines* each relation (the human spec); its labels train
+  that operator's token. Keep the invariant skeleton (§7) and vary only the one relation clause + examples
+  so the function tokens stay comparable.
+- Page-membership ingest — same `categorylinks` dump, widen the filter to ns0 children
+  (`scripts/ingest_enwiki_categories.py`); bulk = tens of millions of rows, so prefer **scrape-on-demand**
+  for thin-category gaps (`Bifurcation_theory`, `Nonlinear_systems`).
+- Pearltrees on-ramp — `getTreeAndPearls?treeId=…` via `.local/tools/browser-automation/`; map
+  `contentType` 2→collection, 1→page (`url` = Wikipedia anchor / join key), 5→shortcut edge, 7→section
+  (skip). One harvest yields collection→page membership edges (element-of, Haiku-judgable) **plus** each
+  page's enwiki anchor (the corpus bridge) — for topics enwiki has no category for (e.g. *Circuit Theory*).
+
 **Validation**
 
 - WIKI-only (`--sym-weight 0`) vs held-out Haiku correlation, per stratum = drift sanity check.
@@ -254,7 +363,7 @@ parser + a small fixture). Everything stays in `prototypes/mu_cosine/`; nothing 
 
 ---
 
-## 8. Open questions
+## 9. Open questions
 
 - Best feature set beyond `{depth, degree, #parents, e5-cos}`? (branching distribution, parent's own μ,
   cross-domain-argmax-boundary indicator.)
@@ -263,3 +372,14 @@ parser + a small fixture). Everything stays in `prototypes/mu_cosine/`; nothing 
 - Does precision-weighting by `1/σ̂²` need a floor to stop ultra-confident depth-1 edges from dominating?
 - For mindmap fusion: intersect bands, or treat each judge as an independent likelihood and multiply? The
   latter is cleaner probabilistically but assumes conditional independence the two graphs may violate.
+- **Operator granularity** — how many relation operators before they stop helping? (subcat-of / element-of
+  / association is the obvious split; does "near-equivalence" / "cross-map shortcut" deserve its own, or
+  fold into subcat-of?)
+- **Shared vs per-operator readout** — should each operator share the sigmoid head (max transfer) or get
+  its own (max separation)? The shared-trunk argument says share the body; the head is the open part.
+- **Does page↔subcat membership actually transfer?** The whole per-function bet assumes a common
+  "membership" geometry. Measure it: train element-of with subcat-of frozen-in vs from scratch — does the
+  shared trunk help or do the relations want different features?
+- **Node-type as a token vs separate embedding tables** — one factored `NODETYPE` token (cheap, lets the
+  model interpolate) vs a per-type encoder (more capacity, no cold-start sharing). Token first; revisit if
+  pages and categories turn out to need different encoders.
