@@ -38,7 +38,11 @@ GRAPH = os.environ.get("UW_MU_GRAPH", os.path.join(REPO, "data", "benchmark", "1
 E5_MODEL = "intfloat/e5-small-v2"
 
 # operator codebook (the relation axis).
-OPS = {"SYM": 0, "WIKI": 1, "LLM": 2}
+OPS = {"SYM": 0, "WIKI": 1, "LLM": 2, "ELEM": 3}
+# ELEM = element-of (page-in-category / collection-membership): directional like WIKI (μ(page|category)
+# high, reverse low) but graded like SYM. Its own operator token + readout row on the shared trunk, so
+# page-membership trains as a DISTINCT relation instead of being conflated into SYM (see
+# DESIGN_calibrated_judges.md §7 and REPORT_train_consolidation.md — the empirical motivation).
 
 # PROVENANCE codebooks (PART B) — the judge axis, generalized into "where did this label come from".
 # A single provenance TOKEN carries a FACTORED embedding corpus_emb[corpus] + judge_emb[judge], so the
