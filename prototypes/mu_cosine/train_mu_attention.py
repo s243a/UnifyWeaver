@@ -474,7 +474,7 @@ def main():
     ap.add_argument("--heads", type=int, default=4)
     ap.add_argument("--layers", type=int, default=2)
     ap.add_argument("--llm", action="store_true", help="add the LLM operator (already-bought fixture)")
-    ap.add_argument("--pairs", default=PAIRS, help="scored SYM pairs file (use mu_pairs_scored_large.tsv)")
+    ap.add_argument("--pairs", default=PAIRS, help="scored SYM pairs file (use mu_pairs_scored_large_260620-223001.tsv)")
     ap.add_argument("--sym-weight", type=float, default=1.0, help="SYM loss weight (ablation lever b)")
     ap.add_argument("--sym-only", action="store_true", help="single-task SYM head (ablation lever c)")
     ap.add_argument("--quick-val", action="store_true", help="skip dense-map emission/lin-agreement")

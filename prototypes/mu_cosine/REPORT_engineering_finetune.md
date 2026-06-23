@@ -13,8 +13,8 @@ Mechanical_engineering ∪ Civil_engineering, d≤3)` ∩ μ-coherent, **36 node
 which reaches Medicine→Physiology, and blocks the physics-primary boundary + medical leaks). Strata:
 within-Engineering + cross Engineering×{Physics (the **Mechanics/Thermodynamics high-to-both** boundary),
 CS, Math, Chemistry}. **300 non-neg pairs Haiku-scored** (two inline subagents, ~33k tokens, 0 tool
-calls, graded rubric); committed in `mu_pairs_scored_engonly.tsv` (the new slice) and folded into the
-cumulative `mu_pairs_scored_eng.tsv` (14,406 rows; `pos_eng` 70→210, `cross_EP` 50→110).
+calls, graded rubric); committed in `mu_pairs_scored_engonly_260621-174251.tsv` (the new slice) and folded into the
+cumulative `mu_pairs_scored_eng_260621-174251.tsv` (14,406 rows; `pos_eng` 70→210, `cross_EP` 50→110).
 
 **DATA CEILING (flag for the widening spec #3313):** the engineering tree is shallow here — `Electrical`,
 `Process`, `Chemical`, `Software`, `Aerospace`, `Systems`, `Industrial` engineering are all **ABSENT**.
@@ -22,7 +22,7 @@ cumulative `mu_pairs_scored_eng.tsv` (14,406 rows; `pos_eng` 70→210, `cross_EP
 ## Fine-tune-with-replay (step 4)
 
 `--init-from model_cumulative.pt` (warm start, head NOT reinitialised), `--pairs
-mu_pairs_scored_engonly.tsv` (the new data), `--replay-pairs mu_pairs_scored_matheng.tsv`
+mu_pairs_scored_engonly_260621-174251.tsv` (the new data), `--replay-pairs mu_pairs_scored_matheng_260621-100230.tsv`
 `--replay-frac 0.4`, `--lr 1.5e-4` (≈1/3 of from-scratch), **400 steps** (vs 900 from scratch).
 Ablation baseline: full retrain on the cumulative set from scratch (`--lr 5e-4`, 900 steps). Seed 1.
 
@@ -109,8 +109,8 @@ data's genuine, non-churn contribution is the held-out **relatedness ranking** (
 retention eval is on a replayed set (optimistic), but the proper-holdout full retrain corroborates physics
 stays strong (+0.855).
 
-Reproduce: `gen_engineering_pairs.py` → score the 300 non-neg pairs → `mu_pairs_scored_engonly.tsv` +
-cumulative `mu_pairs_scored_eng.tsv`; then
-`train_mu_attention.py --pairs mu_pairs_scored_engonly.tsv --replay-pairs mu_pairs_scored_matheng.tsv
+Reproduce: `gen_engineering_pairs.py` → score the 300 non-neg pairs → `mu_pairs_scored_engonly_260621-174251.tsv` +
+cumulative `mu_pairs_scored_eng_260621-174251.tsv`; then
+`train_mu_attention.py --pairs mu_pairs_scored_engonly_260621-174251.tsv --replay-pairs mu_pairs_scored_matheng_260621-100230.tsv
 --replay-frac 0.4 --init-from <ckpt> --lr 1.5e-4 --steps 400 --llm ...` and the full-retrain ablation
-`--pairs mu_pairs_scored_eng.tsv --lr 5e-4 --steps 900`.
+`--pairs mu_pairs_scored_eng_260621-174251.tsv --lr 5e-4 --steps 900`.

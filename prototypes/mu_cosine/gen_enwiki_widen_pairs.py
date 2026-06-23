@@ -2,7 +2,7 @@
 """Graph-widening round (#3313) — sample the AI + modern-physics subtrees that enwiki finally provides
 (scripts/ingest_enwiki_categories.py → data/benchmark/wide_enwiki/). Pools are depth-bounded downward
 closures from clean subfield roots (topically coherent by construction; apex/admin cats filtered), so no
-e5 is needed at generation time. Deduped vs the cumulative mu_pairs_scored_eng.tsv; negatives free.
+e5 is needed at generation time. Deduped vs the cumulative mu_pairs_scored_eng_260621-174251.tsv; negatives free.
 
 Strata: within-AI, within-modern-physics, within-Math(depth); cross AI×CS (expect high-to-both, like
 Mechanics×Engineering), modern-physics×classical-physics (intra-physics continuity), Math×{Physics,CS},
@@ -20,7 +20,7 @@ from gen_more_sym_pairs import build_children_adj, load_existing_keys
 from gen_mu_pairs import load_graph, walk_bidir, GRAPH
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-SCORED_CUMULATIVE = os.path.join(ROOT, "mu_pairs_scored_eng.tsv")
+SCORED_CUMULATIVE = os.path.join(ROOT, "mu_pairs_scored_eng_260621-174251.tsv")
 SLICE = os.environ.get("UW_MU_GRAPH", os.path.join(
     os.path.abspath(os.path.join(ROOT, "..", "..")), "data", "benchmark", "wide_enwiki", "category_parent.tsv"))
 
@@ -133,7 +133,7 @@ def main():
 
     with open(args.out, "w") as f:
         f.write("# enwiki graph-widening candidates (gen_enwiki_widen_pairs.py; corpus=enwiki; deduped vs "
-                "mu_pairs_scored_eng.tsv). strata: pos_ai, pos_modphys, pos_math, cross_AICS (high-to-both),\n")
+                "mu_pairs_scored_eng_260621-174251.tsv). strata: pos_ai, pos_modphys, pos_math, cross_AICS (high-to-both),\n")
         f.write("# cross_MPCP (modern×classical physics), cross_MP/MS (Math×{Phys,CS}), cross_AIMath, "
                 "neg=μ0. BLANK μ to Haiku-score. cols: a\tb\tstratum\twl\tmu\n")
         for aa, bb, st, wl in rows:

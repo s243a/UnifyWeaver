@@ -1,4 +1,4 @@
-# Part A — more Math DATA + a new Engineering domain (`mu_pairs_scored_matheng.tsv`)
+# Part A — more Math DATA + a new Engineering domain (`mu_pairs_scored_matheng_260621-100230.tsv`)
 
 Builds on the four-root work (#3310/#3312, `REPORT_4roots.md`). #3312 found Mathematics discriminates
 only **3/5** because Math is data-**starved** — its depth-≤3 closure is ~12 nodes, and the strict
@@ -7,7 +7,7 @@ argmax pool (9) *excluded* the math-of-physics core (`Calculus`, `Differential_e
 physics. The remedy is **more DATA in Math** (deepen a domain), not more breadth — #3312 had already
 shown breadth alone regressed physics SYM (+0.695→+0.570).
 
-## Generation (`gen_math_eng_pairs.py`, deduped vs `mu_pairs_scored_4roots.tsv`)
+## Generation (`gen_math_eng_pairs.py`, deduped vs `mu_pairs_scored_4roots_260621-004105.tsv`)
 
 - **Mathematics — DEEPENED & INCLUSIVE.** `closure(Mathematics, d≤4) ∩ cos|Math ≥ 0.74 ∩
   {cos|Math − cos|Phys ≥ −0.01}`. The *margin* (not strict argmax) **keeps** the math-of-physics core
@@ -24,13 +24,13 @@ Strata (Haiku-scored, **one inline subagent, ~24.8k tokens, batch-inline**, grad
 0.6–0.8 same domain, 0.3–0.5 cross-related, 0.0–0.2 unrelated): `pos_math` +34 (now 59 total),
 `pos_eng` 70, `cross_MP` 80 (Math×curated-core-Physics — the discrimination-critical stratum),
 `cross_EP` 50, `cross_ES` 50, `cross_spine` 60, `bidir` 60. **404 new positives**, free negatives.
-Committed in `mu_pairs_scored_matheng.tsv` (13 206 rows). Stratum mean μ: `pos_math` 0.63,
+Committed in `mu_pairs_scored_matheng_260621-100230.tsv` (13 206 rows). Stratum mean μ: `pos_math` 0.63,
 `pos_eng` 0.76, `cross_MP` 0.58 (with `Calculus×Classical_mechanics`=0.85,
 `Differential_equations×Mechanics`=0.85 — the **high-to-BOTH** signal we wanted), `cross_spine` 0.22.
 
 ## Retrain (multi-task, keep WIKI/LLM)
 
-`train_mu_attention.py --pairs mu_pairs_scored_matheng.tsv --llm --steps 900 --bs 64 --lr 5e-4
+`train_mu_attention.py --pairs mu_pairs_scored_matheng_260621-100230.tsv --llm --steps 900 --bs 64 --lr 5e-4
 --wiki-weight 0.5 --margin-weight 1.0 --wiki-abs 0.5`. WIKI held-out order-acc **99.2%** (preserved).
 Gate-leak 0/5 every operator; OOD gate-leak ≤1.2%; every dense map feeds `check_feeds_rust`.
 
@@ -96,5 +96,5 @@ Confusion (seed 1, the saved model):
   Engineering 4–5/5 — their vocabularies barely overlap the spine.
 
 Reproduce: `python3 gen_math_eng_pairs.py` → score the 404 non-neg pairs → merge into
-`mu_pairs_scored_matheng.tsv`; then the train command above (+ `--seed {1,7,23}` for the table) and
-`eval_per_stratum.py --pairs mu_pairs_scored_matheng.tsv --model model_matheng.pt`.
+`mu_pairs_scored_matheng_260621-100230.tsv`; then the train command above (+ `--seed {1,7,23}` for the table) and
+`eval_per_stratum.py --pairs mu_pairs_scored_matheng_260621-100230.tsv --model model_matheng.pt`.

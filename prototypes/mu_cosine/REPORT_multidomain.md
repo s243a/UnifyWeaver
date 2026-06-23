@@ -15,12 +15,12 @@ whether the model can *discriminate* Physics from Chemistry (μ(node|Physics) vs
   bridge-guided "μ-coherent neighbourhood" seeding. Physics pool 44, Chemistry pool 47, overlap 0.
 - **650 new pairs Haiku-scored** (graded sameness; within-domain high, physics×chemistry moderate,
   unrelated ~0) under the budget discipline: **one inline subagent, ~26k Haiku tokens, 0 tool calls**.
-  Strata means: pos_phys 0.36, pos_chem 0.67, cross 0.29. Committed in `mu_pairs_scored_multidomain.tsv`
+  Strata means: pos_phys 0.36, pos_chem 0.67, cross 0.29. Committed in `mu_pairs_scored_multidomain_260620-235025.tsv`
   (= the 800-pos large set + 350 pos_phys + 150 pos_chem + 150 cross + 2600 free negatives).
 
 ## Retrain (multi-task, keep WIKI/LLM)
 
-`train_mu_attention.py --pairs mu_pairs_scored_multidomain.tsv --llm --steps 900` (same recipe as #3305).
+`train_mu_attention.py --pairs mu_pairs_scored_multidomain_260620-235025.tsv --llm --steps 900` (same recipe as #3305).
 
 ### (a) SYM held-out corr — did more Physics close the gap further? **Yes.**
 

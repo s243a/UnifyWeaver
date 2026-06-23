@@ -14,7 +14,7 @@ SYM data and ablates the lever to attribute the gap.
 - **600 new positives** scored by Haiku (graded sameness rubric: 1.0 nested / 0.5–0.7 same domain /
   0.2–0.4 loose / 0.0 unrelated), under the budget discipline: **2 inline subagent spawns, ~38.5k Haiku
   tokens, 0 tool calls** (one 596-pair batch + a 4-pair cleanup). 3000 new negatives are free (μ=0).
-- Committed as `mu_pairs_scored_large.tsv`: **800 pos + 4000 neg** (original 200/1000 + new 600/3000).
+- Committed as `mu_pairs_scored_large_260620-223001.tsv`: **800 pos + 4000 neg** (original 200/1000 + new 600/3000).
   New-positive μ: mean 0.69, full range. Labels bought once, committed.
 
 ## Retrain + ablation (steps 3–4)
