@@ -539,7 +539,9 @@ def main():
     ap.add_argument("--k", type=int, default=1, help="ancestor depth (1 = node+parents)")
     ap.add_argument("--max-anc", type=int, default=8)
     ap.add_argument("--heads", type=int, default=4)
-    ap.add_argument("--layers", type=int, default=2)
+    ap.add_argument("--layers", type=int, default=3, help="transformer depth — bumped 2→3 once the ELEM "
+                    "operator landed: 2 layers couldn't co-serve discrimination + page-centrality at full "
+                    "strength (REPORT_element_operator.md); 3 resolves the interference. ~3.6M params.")
     ap.add_argument("--llm", action="store_true", help="add the LLM operator (already-bought fixture)")
     ap.add_argument("--pairs", default=PAIRS, help="scored SYM pairs file (use mu_pairs_scored_large_260620-223001.tsv)")
     ap.add_argument("--sym-weight", type=float, default=1.0, help="SYM loss weight (ablation lever b)")
