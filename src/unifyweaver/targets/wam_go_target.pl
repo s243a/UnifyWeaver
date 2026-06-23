@@ -600,6 +600,15 @@ wam_go_direct_builtin("read_line_to_string/2", 2, 'read_line_to_string/2').
 wam_go_direct_builtin(read_string/5, 5, 'read_string/5').
 wam_go_direct_builtin('read_string/5', 5, 'read_string/5').
 wam_go_direct_builtin("read_string/5", 5, 'read_string/5').
+wam_go_direct_builtin(at_end_of_stream/1, 1, 'at_end_of_stream/1').
+wam_go_direct_builtin('at_end_of_stream/1', 1, 'at_end_of_stream/1').
+wam_go_direct_builtin("at_end_of_stream/1", 1, 'at_end_of_stream/1').
+wam_go_direct_builtin(write_to_stream/2, 2, 'write_to_stream/2').
+wam_go_direct_builtin('write_to_stream/2', 2, 'write_to_stream/2').
+wam_go_direct_builtin("write_to_stream/2", 2, 'write_to_stream/2').
+wam_go_direct_builtin(nl_to_stream/1, 1, 'nl_to_stream/1').
+wam_go_direct_builtin('nl_to_stream/1', 1, 'nl_to_stream/1').
+wam_go_direct_builtin("nl_to_stream/1", 1, 'nl_to_stream/1').
 wam_go_direct_builtin(format/1, 1, 'format/1').
 wam_go_direct_builtin('format/1', 1, 'format/1').
 wam_go_direct_builtin("format/1", 1, 'format/1').

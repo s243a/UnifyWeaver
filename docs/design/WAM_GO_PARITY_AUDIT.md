@@ -21,7 +21,7 @@ current cross-target builtin/runtime baseline.
 | Univ | `=../2` compose/decompose | `=../2` compose/decompose | Present |
 | Copying | `copy_term/2` with fresh variables and preserved sharing | `copy_term/2` with fresh variables and preserved sharing | Present |
 | Control | `true/0`, `fail/0`, `!/0`, `\+/1`, `CutIte` | Same baseline, with broader isolated-goal NAF in Haskell/Python | Present for current baseline, including isolated user-goal NAF and race-to-true over multi-clause WAM targets |
-| IO | `write/1`, `display/1`, `writeln/1`, `print/1`, `write_canonical/1`, `put_char/1`, `put_char/2`, `put_code/1`, `put_code/2`, `get_char/1`, `get_char/2`, `peek_char/1`, `peek_char/2`, `get_code/1`, `get_code/2`, `open/3`, `close/1`, `read_line_to_string/2`, `read_string/5`, `format/1`, `format/2`, `nl/0`, `tab/1`, `getenv/2`, `setenv/2` | `write/1`, `display/1`, `nl/0`; Python/C++ also cover `write_canonical/1`; Python/C++/LLVM also cover `put_char/1` and `put_code/1`; Python also covers default-stream `get_char/1`, `peek_char/1`, and `get_code/1` plus file-backed stream char IO, line reads, and bounded chunk reads; R/C++/Python also cover `format/N`; R/C++ also cover `writeln/1`, `print/1`, and `tab/1`; LLVM covers `getenv/2` and `setenv/2` | Present for current baseline plus simple output aliases, bounded canonical output, single-character output, default and file-backed stream character IO, bounded line/chunk reads, bounded format output, tab output, and bounded environment access |
+| IO | `write/1`, `display/1`, `writeln/1`, `print/1`, `write_canonical/1`, `put_char/1`, `put_char/2`, `put_code/1`, `put_code/2`, `get_char/1`, `get_char/2`, `peek_char/1`, `peek_char/2`, `get_code/1`, `get_code/2`, `open/3`, `close/1`, `read_line_to_string/2`, `read_string/5`, `at_end_of_stream/1`, `write_to_stream/2`, `nl_to_stream/1`, `format/1`, `format/2`, `nl/0`, `tab/1`, `getenv/2`, `setenv/2` | `write/1`, `display/1`, `nl/0`; Python/C++ also cover `write_canonical/1`; Python/C++/LLVM also cover `put_char/1` and `put_code/1`; Python also covers default-stream `get_char/1`, `peek_char/1`, and `get_code/1` plus file-backed stream char IO, line reads, bounded chunk reads, EOF checks, and stream output helpers; C++ also covers stream EOF checks and helper output; R/C++/Python also cover `format/N`; R/C++ also cover `writeln/1`, `print/1`, and `tab/1`; LLVM covers `getenv/2` and `setenv/2` | Present for current baseline plus simple output aliases, bounded canonical output, single-character output, default and file-backed stream character IO, bounded line/chunk reads, stream EOF checks, helper stream output, bounded format output, tab output, and bounded environment access |
 
 ## Immediate Findings
 
@@ -91,6 +91,11 @@ current cross-target builtin/runtime baseline.
   the generated builtin E2E test for bounded chunk reads, short EOF reads, and
   zero-count EOF reads, matching the bounded Python chunk-reader surface while
   leaving separator output behavior outside this slice.
+- File-backed `at_end_of_stream/1`, `write_to_stream/2`, and `nl_to_stream/1`
+  are now direct Go WAM builtins and are covered by the generated builtin E2E
+  test for non-consuming EOF checks, EOF after bounded reads, closed-stream
+  failure, simple helper output, and read-stream output failure, matching the
+  bounded Python/C++ stream EOF and helper-output surface.
 - Bounded `format/1` and `format/2` are now direct Go WAM builtins and are
   covered by the generated builtin E2E test for literal `~~`, newline `~n`,
   `~w`, `~a`, `~d`, `~p`, `~q`, and `~s` argument substitution, and

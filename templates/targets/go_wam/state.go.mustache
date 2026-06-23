@@ -1920,6 +1920,13 @@ func (vm *WamState) executeBuiltin(op string, arity int) bool {
 			return false
 		}
 		return vm.Unify(arg5, internAtom(text))
+	case "at_end_of_stream/1":
+		_, eof, ok := peekStreamRune(vm.deref(arg1))
+		return ok && eof
+	case "write_to_stream/2":
+		return writeStreamText(vm.deref(arg1), vm.deref(arg2).String())
+	case "nl_to_stream/1":
+		return writeStreamText(vm.deref(arg1), "\n")
 	case "writeln/1":
 		fmt.Println(vm.deref(arg1).String())
 		return true
