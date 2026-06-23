@@ -33,3 +33,6 @@ page_members.tsv
 pt_circuit.tsv
 mu_pairs_pt_circuit.tsv
 data_gaps.tsv
+page_members_gaps.tsv
+mu_pairs_pages_gaps.tsv
+mu_pairs_scored_pages_gaps_*_div.tsv
