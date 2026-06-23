@@ -142,6 +142,18 @@ def train(args):
         for p in ps:
             adj.setdefault(c, set()).add(p)
             adj.setdefault(p, set()).add(c)
+    # union in every node referenced by --pairs/--replay-pairs/LLM so cold-start nodes (pairs whose
+    # endpoints aren't in the GRAPH — e.g. cross-slice, page, or pearltrees nodes) still get a frozen e5
+    # embedding instead of being silently dropped by the `in idx` filters below.
+    extra = set()
+    for _pth in (args.pairs, args.replay_pairs):
+        if _pth and os.path.exists(_pth):
+            _pp, _nn = load_pairs(_pth)
+            for _r in _pp + _nn:
+                extra.add(_r[0]); extra.add(_r[1])
+    if args.llm and os.path.exists(BOUNDARY):
+        extra.update(load_mu(BOUNDARY).keys())
+    names = list(dict.fromkeys(list(names) + sorted(extra - set(names))))
     q, p, idx = build_e5_tables(names, cache_path=os.environ.get("UW_E5_CACHE", os.path.join(ROOT, "e5_tables.pt")))
     tok = Tokenizer(q, p, idx, parents, deg, k=args.k, beta=1.0, max_anc=args.max_anc)
 
