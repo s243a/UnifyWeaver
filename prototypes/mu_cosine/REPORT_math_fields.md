@@ -126,6 +126,27 @@ math-only.
 (stats / signal processing / econometrics / decision theory), and the downward-μ ranks subfield
 *focus* (Estimation 0.77 tight ≫ Statistics 0.47 diffuse).
 
+### (8) Signals / Systems / Information / Control round
+The math↔EE↔CS interface (`mu_pairs_scored_sysinfo.tsv`, 280 pairs ~34.5k tok; streaming-BFS slice,
+`--coh-keep Mathematics,Computer_science,Engineering,Physics`). Note `Linear_systems`/`Linear_system_theory`
+are not populated enwiki categories — linear-systems theory lives under `Control_theory`/`Systems_theory`
+(Classical/Nonlinear/Optimal control, Stability_theory), which is what was seeded.
+
+| seed | mode | mean μ |
+|---|---|---|
+| `Control_theory` / `Signal_processing` | downward | **0.67** (tight cores) |
+| `Information_theory` | downward | 0.60 (some CS-networking spillover) |
+| `Systems_theory` | downward | **0.42** (diffuse — bleeds into social/economic/psychology "systems") |
+| `Control_theory` bidir | bidir | 0.40 |
+| `Information_theory` bidir | bidir | 0.33 |
+| `Signal_processing` bidir | bidir | 0.29 (messy EE/imaging/audio reach) |
+
+Same shape as the stats round: focused subfields score tight (~0.67), umbrella categories diffuse (~0.42),
+and the bidir-μ ranks how clean the boundary is. These domains' enwiki neighbourhoods are *noisier* (game
+theory, social systems, economics, even astronomy tangle in via broad parents) — the graded rubric scored
+that junk ~0, but it's a reminder that engineering/applied categories need stricter coherence filtering
+than pure-math ones.
+
 ## Honest verdict — the saturation pattern, confirmed
 This round sharpens the meta-finding across the whole arc:
 
