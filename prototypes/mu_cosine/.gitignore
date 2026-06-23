@@ -19,3 +19,10 @@ boundary_pairs_e5.tsv
 *.pt
 mu_pairs_eng.tsv
 mu_pairs_enwiki.tsv
+mu_pairs_mathfields.tsv
+mu_pairs_scored_cumulative.tsv
+mu_pairs_scored_prior.tsv
+mu_pairs_alggeom.tsv
+mu_pairs_boundary.tsv
+mu_pairs_stats.tsv
+mu_pairs_sysinfo.tsv
