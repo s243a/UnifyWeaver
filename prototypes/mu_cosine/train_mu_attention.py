@@ -73,8 +73,10 @@ def load_pairs(path=PAIRS):
             p = line.rstrip("\n").split("\t")
             if len(p) < 5 or p[4].strip() == "":
                 continue
-            # any non-neg stratum (pos / pos_phys / pos_chem / cross) is a graded positive; neg is μ=0
-            (neg if p[2] == "neg" else pos).append((p[0], p[1], float(p[4])))
+            # any non-neg stratum (pos / pos_phys / pos_chem / cross) is a graded positive; neg is μ=0.
+            # 4th field = relation (extended page/pearltrees rows carry it; default subcat_of/SYM-style).
+            rel = p[5].strip() if len(p) > 5 and p[5].strip() else "subcat_of"
+            (neg if p[2] == "neg" else pos).append((p[0], p[1], float(p[4]), rel))
     return pos, neg
 
 
@@ -165,12 +167,22 @@ def train(args):
     pos, neg = load_pairs(args.pairs)
     pos = [r for r in pos if r[0] in idx and r[1] in idx]
     neg = [r for r in neg if r[0] in idx and r[1] in idx]
+    # split by RELATION: element-of (page / collection membership) trains on the ELEM operator; everything
+    # else (subcat_of / association / default) on SYM. a=category/topic (root), b=page/member (node).
+    elem_pos = [r for r in pos if r[3] == "element_of"]
+    elem_neg = [r for r in neg if r[3] == "element_of"]
+    pos = [r for r in pos if r[3] != "element_of"]
+    neg = [r for r in neg if r[3] != "element_of"]
     rng.shuffle(pos)
     n_ph = int(0.2 * len(pos))
     pos_hold, pos_tr = pos[:n_ph], pos[n_ph:]
-    sym_tr = pos_tr + neg
+    rng.shuffle(elem_pos)
+    n_eh2 = int(0.2 * len(elem_pos))
+    elem_hold, elem_tr_pos = elem_pos[:n_eh2], elem_pos[n_eh2:]
+    elem_tr = elem_tr_pos + elem_neg
     print(f"WIKI edges: {len(edges_tr)} train / {len(edges_hold)} held-out")
     print(f"SYM pairs: {len(pos_tr)} pos + {len(neg)} neg train / {len(pos_hold)} held-out positives")
+    print(f"ELEM pairs: {len(elem_tr_pos)} pos + {len(elem_neg)} neg train / {len(elem_hold)} held-out positives")
 
     # FINE-TUNE-WITH-REPLAY (continual learning): when --replay-pairs is given, --pairs is the NEW data
     # (e.g. the engineering build-out) and the replay file is the cumulative scored set. Each SYM batch
@@ -194,9 +206,24 @@ def train(args):
     model = MuAttention(d_model=q.shape[1], n_heads=args.heads, n_layers=args.layers)
     if args.init_from:                                    # warm start — DON'T reinit the head (fine-tune)
         ck = torch.load(args.init_from, weights_only=False)
-        model.load_state_dict(ck["state"])
+        sd, own = ck["state"], model.state_dict()
+        grown = []
+        for k, v in sd.items():
+            if k not in own:
+                continue
+            if own[k].shape == v.shape:
+                own[k] = v
+            elif own[k].dim() >= 1 and own[k].shape[0] > v.shape[0] and own[k].shape[1:] == v.shape[1:]:
+                # op-indexed tensor grew (new ELEM operator). Copy the old rows; seed each NEW row from
+                # the SYM row (op 0) so ELEM starts SYM-like (membership) and specialises during fine-tune.
+                t = own[k].clone()
+                t[:v.shape[0]] = v
+                t[v.shape[0]:] = v[OPS["SYM"]]
+                own[k] = t
+                grown.append(k)
+        model.load_state_dict(own)
         print(f"WARM START from {os.path.basename(args.init_from)} (fine-tune, head NOT reinitialised) "
-              f"@ lr {args.lr:g}")
+              f"@ lr {args.lr:g}" + (f"; grew {grown} for new op(s), ELEM seeded from SYM" if grown else ""))
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     m = args.margin
 
@@ -243,7 +270,23 @@ def train(args):
         mu_s = model(**tok.build(sym_items, train=True, rng=rng, p_mask_prov=args.prov_mask))
         mu_ab, mu_ba = mu_s[:len(sb)], mu_s[len(sb):]
         L_sym = F.mse_loss(mu_ab, tgt) + F.mse_loss(mu_ba, tgt)
-        loss = args.sym_weight * L_sym + (0.0 if args.sym_only else args.wiki_weight * L_wiki)
+        # ELEM (element-of: directional + graded) — μ(page|category) toward the graded centrality target,
+        # plus a directional margin pushing it above the reverse μ(category|page) on positives. a=category
+        # (root), b=page (node). Its own operator token + readout row → page-membership as a distinct function.
+        L_elem = torch.zeros(())
+        if elem_tr and not args.sym_only:
+            eb2 = [elem_tr[rng.randrange(len(elem_tr))] for _ in range(args.bs)]
+            fwd = [(r[1], r[0], OPS["ELEM"], new_corpus, HAIKU) for r in eb2]   # μ(page | category)
+            rev = [(r[0], r[1], OPS["ELEM"], new_corpus, HAIKU) for r in eb2]   # μ(category | page)
+            mu_e = model(**tok.build(fwd + rev, train=True, rng=rng, p_mask_prov=args.prov_mask))
+            mu_ef, mu_er = mu_e[:args.bs], mu_e[args.bs:]
+            tgt_e = torch.tensor([r[2] for r in eb2])
+            posmask = (tgt_e > 0).float()
+            L_elem = (F.mse_loss(mu_ef, tgt_e)
+                      + args.margin_weight * (F.relu(m - (mu_ef - mu_er)) * posmask).sum()
+                      / posmask.sum().clamp_min(1.0))
+        loss = (args.sym_weight * L_sym + (0.0 if args.sym_only else args.wiki_weight * L_wiki)
+                + (args.elem_weight * L_elem if (elem_tr and not args.sym_only) else 0.0))
         # LLM (optional, already-bought) — skipped in single-task SYM mode
         L_llm = torch.zeros(())
         if llm and not args.sym_only:
@@ -257,17 +300,18 @@ def train(args):
         opt.step()
         if (step + 1) % max(1, args.steps // 6) == 0:
             print(f"  step {step+1:5d}  L_sym {float(L_sym):.4f}  L_wiki {float(L_wiki):.4f}"
+                  + (f"  L_elem {float(L_elem):.4f}" if (elem_tr and not args.sym_only) else "")
                   + (f"  L_llm {float(L_llm):.4f}" if (llm and not args.sym_only) else ""))
 
     model.eval()
-    validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args)
+    validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_hold=elem_hold)
     if args.save:
         torch.save({"state": model.state_dict(), "cfg": {"d_model": q.shape[1], "heads": args.heads,
                     "layers": args.layers}}, args.save)
         print(f"\nsaved model → {args.save}")
 
 
-def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args):
+def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_hold=None):
     print("\n=== PER-OPERATOR VALIDATION ===")
     ops = ["SYM"] if args.sym_only else (["SYM", "WIKI"] + (["LLM"] if llm else []))
 
@@ -280,13 +324,23 @@ def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args):
               f"({len(edges_hold)} edges)  mean μ(c|p)={float(cp.mean()):.3f} μ(p|c)={float(pc.mean()):.3f}")
 
     # --- SYM: held-out corr + symmetry (the headline metric for this work) ---
-    ab = mu_batch(model, tok, [(a, b, OPS["SYM"]) for a, b, _ in pos_hold])
-    ba = mu_batch(model, tok, [(b, a, OPS["SYM"]) for a, b, _ in pos_hold])
-    tgt = [mu for _, _, mu in pos_hold]
+    ab = mu_batch(model, tok, [(a, b, OPS["SYM"]) for a, b, *_ in pos_hold])
+    ba = mu_batch(model, tok, [(b, a, OPS["SYM"]) for a, b, *_ in pos_hold])
+    tgt = [r[2] for r in pos_hold]
     corr = pearson(((ab + ba) / 2).tolist(), tgt)
     sym_gap = float((ab - ba).abs().mean())
     print(f"[SYM]  held-out μ corr (control +0.726, #3302 +0.335): {corr:+.3f}  ({len(pos_hold)} "
           f"positives, MSE {F.mse_loss((ab+ba)/2, torch.tensor(tgt)):.3f})  symmetry gap {sym_gap:.3f}")
+
+    # --- ELEM: held-out page/collection-membership centrality corr + direction (the new operator) ---
+    if elem_hold and not args.sym_only:
+        ef = mu_batch(model, tok, [(b, a, OPS["ELEM"]) for a, b, *_ in elem_hold])   # μ(page|category)
+        er = mu_batch(model, tok, [(a, b, OPS["ELEM"]) for a, b, *_ in elem_hold])   # μ(category|page)
+        etgt = [r[2] for r in elem_hold]
+        ecorr = pearson(ef.tolist(), etgt)
+        edir = float((ef > er).float().mean())
+        print(f"[ELEM] held-out centrality μ(page|cat) corr: {ecorr:+.3f}  ({len(elem_hold)} positives, "
+              f"MSE {F.mse_loss(ef, torch.tensor(etgt)):.3f})  direction μ(page|cat)>μ(cat|page) {edir*100:.0f}%")
 
     # --- gate-leak 5-probe (control 0/5), per operator --- (filter to nodes present in this graph;
     # science-only slices like wide_enwiki won't contain Music/Cooking/etc.)
@@ -480,6 +534,7 @@ def main():
     ap.add_argument("--wiki-abs", type=float, default=0.5,
                     help="weight on bce(μ(child|parent),0.9) — absolute anchor for the WIKI map")
     ap.add_argument("--wiki-weight", type=float, default=1.0, help="WIKI loss weight (parity)")
+    ap.add_argument("--elem-weight", type=float, default=1.0, help="ELEM (element-of/page-membership) loss weight")
     ap.add_argument("--llm-weight", type=float, default=1.0)
     ap.add_argument("--k", type=int, default=1, help="ancestor depth (1 = node+parents)")
     ap.add_argument("--max-anc", type=int, default=8)
