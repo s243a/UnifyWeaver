@@ -196,6 +196,36 @@ negatives*, not positives). `Network_theory`, the tight sibling the user's map a
 the hub — confirming that **broad container categories make poor positive seeds; their tight theory-named
 children are the ones to sample.**
 
+### (11) Page-membership round — the page frontier (element-of relation)
+First round below the category level. For categories that are **important to the systems/dynamical region
+but category-thin** (few/no subcategories, so subcat-sampling is empty), we pull their **member pages**
+straight from the MediaWiki API (`fetch_category_pages.py`, `list=categorymembers&cmtype=page`) and grade
+each page's **centrality** to the category with the page-membership Haiku template
+(`mu_pairs_scored_pages_*.tsv`, 298 graded ~38k tok; tagged `relation=element_of`, `a_type=category`,
+`b_type=page` — see `DESIGN_calibrated_judges.md` §7). Selection criteria: important region ∧ subcat-count
+≤ 2 ∧ distinguishable as page-membership. Picked: `Bifurcation_theory` (0 subcats / 20 pages),
+`Emergence` (0/69), `Ergodic_theory` (0/57), `Nonlinear_systems` (1/56), `Holism` (2/45),
+`Systems_analysis` (2/53). (`Catastrophe_theory` is itself a *page*, not a category — dropped.)
+
+| category | pages | mean centrality |
+|---|---|---|
+| `Bifurcation_theory` | 20 | **0.84** (tight math) |
+| `Ergodic_theory` | 57 | 0.79 |
+| `Nonlinear_systems` | 55 | 0.74 |
+| `Systems_analysis` | 53 | 0.66 (methodology) |
+| `Holism` | 44 | 0.47 (philosophy — diffuse) |
+| `Emergence` | 69 | 0.44 (most diffuse) |
+
+**Findings.** (a) The same tight-math / diffuse-umbrella split as the category rounds reappears at the page
+level: math categories (bifurcation, ergodic) are centrality-tight (~0.8), philosophy umbrellas (emergence,
+holism) collect many tangents (~0.45). (b) Centrality distribution `{0.0:18, 0.2:26, 0.4:28, 0.6:63,
+0.8:143, 1.0:20}` — **~15% of listed members are peripheral (≤0.2)** (`Holism→Prancercise`,
+`Emergence→Price_point`, `Holism→Theory_of_Colours`), so *bare membership ≠ centrality* and the graded pass
+recovers a real gradient bare `page ∈ category` would miss. (c) These thin categories are **learnable only
+at the page level** — exactly the proof case for the page node-type + element-of operator. Until those land
+in the model, the rows ride as graded positives but stay tagged for re-routing. Tooling: `fetch_category_
+pages.py` (API, backoff) + `gen_page_pairs.py`, both reusable.
+
 ## Honest verdict — the saturation pattern, confirmed
 This round sharpens the meta-finding across the whole arc:
 
