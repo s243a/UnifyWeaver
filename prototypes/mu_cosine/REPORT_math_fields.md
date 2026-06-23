@@ -104,9 +104,27 @@ downward > bidir gradient and show the bidir-μ tracks how *central* a seed's ne
 | `Topological_methods_of_algebraic_geometry` | bidir | **0.47** | a narrow boundary — all neighbours are tight AG/topology/homotopy siblings |
 | `Tensors` | bidir | **0.36** | a wider boundary — reaches linear-algebra, differential-geometry AND mathematical physics |
 
-**Coverage gap flagged:** Probability is well-covered (`pos_discrete` +0.922), but **Statistics** is only
-spillover (`Mathematical_statistics`/`Statistical_inference`/`Sampling` unseeded) and **Estimation_theory**
-is absent from every slice/scored set — a dedicated stats/estimation seeding round is the natural next gap.
+### (7) Statistics + Estimation Theory round (the flagged gap, now filled)
+The coverage gap — Probability solid but **Statistics** only spillover and **Estimation_theory** absent —
+is closed with a dedicated round (`mu_pairs_scored_stats.tsv`, 200 pairs ~32k tok). These categories live
+*outside* the math slice, so the neighbourhood was pulled from the full 9.9M-edge enwiki graph by a
+**streaming BFS** (downward closures of the seeds + one level up + siblings; the naive full-graph load
+OOMs). Downward from `Statistics`/`Estimation_theory`/`Statistical_theory`; bidirectional from
+`Estimation_theory`/`Statistical_theory` — with **`--coh-keep Mathematics,Computer_science,Engineering`**
+so the bidir walk keeps the genuine stats↔signal-processing↔control boundary instead of filtering it to
+math-only.
+
+| seed | mode | mean μ | reads as |
+|---|---|---|---|
+| `Estimation_theory` | downward | **0.77** | tightest — a focused subfield (Estimator/M-estimators/Point_estimation/Bayesian_estimation all 1.0) |
+| `Statistical_theory` | downward | 0.67 | coherent theory cluster |
+| `Statistics` | downward | **0.47** | most diffuse — the top category is broad/admin-heavy (educators, regions, organizations) |
+| `Estimation_theory` | bidir | **0.50** | the multi-domain bridge — signal-estimation, econometrics, decision theory |
+| `Statistical_theory` | bidir | 0.39 | wider statistical boundary |
+
+`Estimation_theory` is confirmed as the stats analogue of `Tensors` — a genuine multi-domain boundary
+(stats / signal processing / econometrics / decision theory), and the downward-μ ranks subfield
+*focus* (Estimation 0.77 tight ≫ Statistics 0.47 diffuse).
 
 ## Honest verdict — the saturation pattern, confirmed
 This round sharpens the meta-finding across the whole arc:

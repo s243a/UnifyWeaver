@@ -33,6 +33,8 @@ def main():
     ap.add_argument("--n-bidir", type=int, default=40)
     ap.add_argument("--depth", type=int, default=2)
     ap.add_argument("--math-floor", type=float, default=0.74)
+    ap.add_argument("--coh-keep", default="Mathematics", help="comma-separated argmax domains to keep for "
+                    "bidir endpoints (e.g. Mathematics,Computer_science,Engineering for stats/estimation)")
     ap.add_argument("--neg-ratio", type=float, default=3.0)
     ap.add_argument("--dedup-against", default=os.path.join(ROOT, "mu_pairs_scored_cumulative.tsv"))
     ap.add_argument("--coh-cache", default=os.path.join(ROOT, "e5_mathfields_cos.pt"))
@@ -51,8 +53,10 @@ def main():
     ns = sorted(full)
     cos = e5_cos_to_roots(ns, COH, cache=args.coh_cache)
     C = {r: {n: cos[r][i] for i, n in enumerate(ns)} for r in COH}
+    keep_doms = set(args.coh_keep.split(","))
     def mathy(n):
-        return max(COH, key=lambda r: C[r][n]) == "Mathematics" and C["Mathematics"][n] >= args.math_floor
+        am = max(COH, key=lambda r: C[r][n])
+        return am in keep_doms and C[am][n] >= args.math_floor
 
     def closure(root):
         seen = {root} if root in full else set()
