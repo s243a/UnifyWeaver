@@ -28,3 +28,5 @@ mu_pairs_stats.tsv
 mu_pairs_sysinfo.tsv
 mu_pairs_cyber.tsv
 mu_pairs_systheory.tsv
+mu_pairs_pages.tsv
+page_members.tsv
