@@ -171,6 +171,31 @@ in the **bidirectional reach** (232 math-coherent endpoints) and in cybernetics'
 node, not in a deep downward subtree. Same saturation shape as rounds 7–8: focused cores score tight
 (~0.79), umbrella categories diffuse (~0.26–0.50), and the bidir-μ ranks boundary cleanliness.
 
+### (10) System-theory round (mindmap-aligned roots)
+Downward from the direct roots of the user's SimpleMind *System Theory* map — `Network_theory`,
+`Dynamical_systems`, `Complex_systems_theory`, `Systems_analysis` — plus bidirectional on the broad
+`Networks` hub (`mu_pairs_scored_systheory_260622-231618.tsv`, 195 non-neg ~35k tok; slice
+`wide_enwiki_systheory`, 599 nodes / 967 edges via the new reusable `build_slice.py`; `--coh-keep
+Mathematics,Computer_science,Engineering`). Sampling the *same* roots that anchor the mindmap is
+deliberate: it maximises the enwiki∩mindmap node overlap, which is the cheap "bootstrap-from-overlap"
+calibration path for the eventual SimpleMind/Pearltrees tie-in (see `DESIGN_calibrated_judges.md` §5).
+
+| seed | mode | mean μ |
+|---|---|---|
+| `Network_theory` | downward | **0.77** (tight; its 6 enwiki subcats map ~1:1 onto the mindmap's "Network theory" branch) |
+| `Complex_systems_theory` | downward | **0.73** (thin pool, n=9) |
+| `Systems_analysis` | downward | 0.65 |
+| `Dynamical_systems` | downward | 0.62 |
+| `Networks` | bidir | **0.075** (≈ hard negatives) |
+
+**Key finding — separate the hub from the theory.** `Networks` is a generic enwiki hub dominated by
+telecom / transport / broadcasting / gaming / social-media subcategories with no tie to mathematical
+network theory, so its bidirectional boundary walk is almost pure junk (0.075 — it functions as *hard
+negatives*, not positives). `Network_theory`, the tight sibling the user's map actually points at, scores
+0.77. The down-`Network_theory` / bidir-`Networks` split (the user's call) cleanly isolated the signal from
+the hub — confirming that **broad container categories make poor positive seeds; their tight theory-named
+children are the ones to sample.**
+
 ## Honest verdict — the saturation pattern, confirmed
 This round sharpens the meta-finding across the whole arc:
 
