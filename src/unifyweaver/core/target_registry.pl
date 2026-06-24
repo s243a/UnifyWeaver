@@ -216,6 +216,7 @@ register_builtin_targets :-
 
     % JavaScript family - runtime selection via js_runtime_choice/2
     register_target(typescript, javascript, [types, async, modules, generics]),
+    register_target(clojurescript, javascript, [streaming, functional, lisp, browser, scittle, interpreted]),
     register_target(node, javascript, [streaming, npm, filesystem, async]),
     register_target(deno, javascript, [typescript, permissions, secure, async]),
     register_target(bun, javascript, [fast, npm_compat, bundled, async]),
@@ -257,6 +258,7 @@ target_module(scala, scala_target).
 target_module(kotlin, kotlin_target).
 target_module(wam_kotlin, wam_kotlin_target).
 target_module(clojure, clojure_target).
+target_module(clojurescript, clojurescript_target).
 target_module(wam_clojure, wam_clojure_target).
 target_module(jython, jython_target).
 target_module(jamaica, jamaica_target).
