@@ -52,6 +52,25 @@ Two honest caveats on *why* this isn't a refutation of the diversity idea:
    **larger scale** (redundancy + compute bite) and needs a **disjoint held-out** (excluding pruned pages)
    to measure fairly — not at few-hundred-page scale where quantity dominates.
 
+**Method, precisely (documenting what was actually run).** `select_diverse.py` is **greedy
+quality-weighted farthest-point** on e5 cosine (drop μ<0.4, seed highest-Haiku, then add the page
+maximising `centrality·(1 − max cos to picked)`) — a cheap **DPP-MAP proxy, NOT a PCA/SVD decomposition**.
+PCA/SVD was the *suggested* framing. It is now **implemented as `select_svd_coverage.py`**: take the top-K
+SVD axes of the page-embedding matrix and keep a subset covering the **μ distribution along each axis**
+(both ends × low/mid/high μ), ensuring enough negatives — coverage of the *(e5-axis × μ)* joint, with the
+kept-count set by the SVD **variance elbow** (intrinsic dimension) rather than a fixed `--frac`. It adds a
+**sufficiency threshold** (`--min-pages`: keep a category whole below it) and pairs with **subcategory
+augmentation** (`fetch_category_pages.py --recurse-subcats`) to push a thin category over that threshold.
+Both selectors remain the larger-scale "must filter" knob; not used at current scale.
+
+**Page-sampling policy (the operative conclusion).** There is far more page than category data, but because
+page-membership trains on its **own `ELEM` operator**, the imbalance is *contained* in `ELEM` rather than
+drowning the category operators — so **don't filter page data for `ELEM`; use all**. Instead, **monitor**
+whether growing `ELEM` learning degrades the other operators (shared-trunk interference), and if so
+**throttle `ELEM`'s gradient** (`--elem-weight`, or a per-operator learning rate / reduced backprop — not
+yet implemented) or **add capacity** (the 3rd layer already removed the interference) — rather than cutting
+the data. Diversity-pruning (`select_diverse.py`) is reserved for the larger-scale "must filter" regime.
+
 `select_diverse.py` is kept as the knob (`--frac`, `--min-mu`) for that larger-scale regime. The **full**
 326-page set is folded into the cumulative (25,651 rows). Reproduce: `find_data_gaps.py` →
 `fetch_category_pages.py` → Haiku centrality → `gen_page_pairs.py`; A/B via two `train_mu_attention.py

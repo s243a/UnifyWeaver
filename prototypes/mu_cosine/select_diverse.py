@@ -3,9 +3,21 @@
 BEST-RANKED pages (high Haiku centrality) but maintain e5 DIVERSITY (don't over-weight a dense cluster of
 near-identical pages). Not a fixed percentage — the kept count is the category's INTRINSIC e5 diversity
 (an SVD/variance elbow), so a 60-page filter category collapses to its ~k distinct subtopics while a
-category of genuinely distinct pages keeps most. Greedy quality-weighted farthest-point selection (a cheap
-DPP-MAP proxy): seed with the highest-Haiku page, then repeatedly add the page maximising
-score·(1−max_cosine_to_already_picked). Drops junk (μ < --min-mu) first.
+category of genuinely distinct pages keeps most.
+
+METHOD: greedy quality-weighted farthest-point selection (a cheap DPP-MAP proxy) — seed with the
+highest-Haiku page, then repeatedly add the page maximising score·(1−max_cosine_to_already_picked). Drops
+junk (μ < --min-mu) first. This is NOT a PCA/SVD decomposition.
+
+ALTERNATIVE (implemented as select_svd_coverage.py) — PCA/μ-coverage: take the top-K SVD axes of the
+page-embedding matrix and cover the μ distribution along EACH axis (both ends × low/mid/high μ), ensuring
+enough negatives — the (e5-axis × μ) joint, kept-count from the SVD variance elbow instead of a fixed
+--frac, with a --min-pages sufficiency gate.
+
+POLICY (TECHNIQUES.md §5): at current scale do NOT filter page data for the ELEM operator — its
+own-operator isolation contains the page/category imbalance; use all pages and monitor cross-operator
+degradation, throttling ELEM's gradient (--elem-weight / per-op LR) if it appears. This selector is for the
+larger-scale "must filter" regime.
 
     python3 select_diverse.py --scored mu_pairs_scored_pages_gaps_<ts>.tsv --frac 0.55 \
         --out mu_pairs_scored_pages_gaps_div.tsv
