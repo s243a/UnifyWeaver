@@ -6,6 +6,11 @@ WAM-Rust target) can run on domains where only a sparse set of categories has be
 
 This is a **separate project, prototyped on a branch** — it is Python/ML, not the Rust/Prolog core.
 
+> **New here? Start with [`TECHNIQUES.md`](TECHNIQUES.md)** — a practical guide to the multi-operator model
+> (`SYM`/`WIKI`/`ELEM`/`LLM`), the data-acquisition toolchain (category slices → page frontier → Pearltrees
+> gap-fill), and the find-weak → supplement → retrain loop, with runnable commands. Deep theory:
+> [`DESIGN_calibrated_judges.md`](DESIGN_calibrated_judges.md).
+
 ## Status & handoff (read this first)
 
 **Status:** merged to `main` (via #3280); the torch port + direct-embedding comparison are folded in
