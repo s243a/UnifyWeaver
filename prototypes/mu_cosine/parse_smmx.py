@@ -11,8 +11,10 @@ Relation semantics (the structural container retypes its descendants' edge to th
        `../` UP to a parent folder → `super_category` (target map is a broader PARENT tree);
        DOWN into a subfolder       → `subcategory`    (target map is narrower / a child)
   * explicit <relation source target>     → `assoc`           (cross-link)
-  * a child labelled "wiki"/"Wikipedia", or any node with a direct en.wikipedia.org urllink
-       → NOT a node: it sets the enwiki ANCHOR of the node it is attached to (the join key into enwiki)
+  * a child labelled "wiki"/"Wikipedia"/"enwiki", or any node with a direct en.wikipedia.org urllink
+       → a `bridge` edge: the node ↔ the SAME concept in enwiki, a node of type `category` (Category:…) or
+       `page`. Same concept, DIFFERENT node-type (mindmap_node ⟷ category/page), possibly different name —
+       the cross-corpus join key. (Scarce in the maps; most live in the Pearltrees data.)
 
 Node identity = Pearltrees slug (from a pearltrees urllink) if present, else the normalised title. Each node
 also carries: title, pearltrees id, enwiki_alias.
@@ -25,11 +27,12 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
+from urllib.parse import unquote
 
 SEE_ALSO = {"See Also", "Via Link", "Related"}
 SUPER = {"Super Categories", "Super Category", "Navigate Up"}
 STRUCTURAL = SEE_ALSO | SUPER | {""}            # "" = blank grouping/section node
-WIKI_LABEL = re.compile(r"^\s*(wiki|wikipedia)\s*$", re.I)
+WIKI_LABEL = re.compile(r"^\s*(wiki|wikipedia|enwiki)\s*$", re.I)
 PEARL = re.compile(r"pearltrees\.com/[^/]+/([^/\"]+)/id(\d+)")
 WIKI_URL = re.compile(r"en\.wikipedia\.org/wiki/(.+)$")
 
@@ -142,14 +145,15 @@ def main():
             p = parent.get(p)
         return p, rel
 
-    nodes, edges = {}, []
+    nodes, edges, id2key = {}, [], {}
     for i, t in topics.items():
         if i in is_anchor or label(topics[i]) in STRUCTURAL:
             continue                               # skip wiki-anchor holders and structural containers
         k = key(t)
         sl, pid = slug_of(t)
         nodes[k] = {"title": label(t), "slug": sl or "", "pid": pid or "",
-                    "enwiki": enwiki.get(i, "")}
+                    "enwiki": enwiki.get(i, ""), "ntype": "mindmap_node"}
+        id2key[i] = k
         # hierarchy edge to effective (non-structural) parent
         pp, rel = eff_parent_and_rel(i)
         if pp in topics and pp not in is_anchor:
@@ -177,12 +181,34 @@ def main():
                 os.path.normpath(os.path.join(base_dir, ref.replace("\\", "/"))))
             if ident:
                 tkey, ttitle, tsl, tpid = ident
-                nodes.setdefault(tkey, {"title": ttitle, "slug": tsl, "pid": tpid, "enwiki": ""})
+                nodes.setdefault(tkey, {"title": ttitle, "slug": tsl, "pid": tpid,
+                                        "enwiki": "", "ntype": "mindmap_node"})
             else:
                 fn = re.sub(r"\.smmx$", "", os.path.basename(ref.rstrip("/")))
                 tkey = re.sub(r"[^a-z0-9]+", "_", fn.lower()).strip("_")
-                nodes.setdefault(tkey, {"title": fn, "slug": "", "pid": "", "enwiki": ""})
+                nodes.setdefault(tkey, {"title": fn, "slug": "", "pid": "",
+                                        "enwiki": "", "ntype": "mindmap_node"})
             edges.append((key(topics[src_id]), tkey, rel))
+
+    # BRIDGE edges: a node tagged wiki/Wikipedia/enwiki ⇒ the SAME concept in enwiki, but a DIFFERENT
+    # node-type (mindmap_node ⟷ category/page) and possibly a different name. These cross-corpus identity
+    # edges are scarce in the maps (most enwiki links live in the Pearltrees data) and therefore valuable —
+    # and the differing endpoint TYPES under one `bridge` relation are exactly the within-operator type
+    # diversity that makes the node-type token informative (REPORT_nodetype.md).
+    for i, w in enwiki.items():
+        if i not in id2key or not w:
+            continue
+        ww = unquote(w).split("#")[0]
+        if ww.startswith("Category:"):
+            ek, etype = ww[len("Category:"):], "category"
+        else:
+            ek, etype = ww, "page"
+        ek = ek.replace(" ", "_").strip("_")
+        if not ek:
+            continue
+        nodes.setdefault(ek, {"title": ek.replace("_", " "), "slug": "", "pid": "",
+                              "enwiki": ek, "ntype": etype})
+        edges.append((id2key[i], ek, "bridge"))
 
     # explicit <relation source target> → assoc
     for r in root.findall(".//relation"):
@@ -198,16 +224,17 @@ def main():
 
     from collections import Counter
     rc = Counter(r for _, _, r in uniq)
-    print(f"{os.path.basename(args.smmx)}: {len(nodes)} nodes, {len(uniq)} edges  {dict(rc)}")
-    print(f"  enwiki-anchored nodes: {sum(1 for n in nodes.values() if n['enwiki'])}")
+    ntc = Counter(n.get("ntype", "mindmap_node") for n in nodes.values())
+    print(f"{os.path.basename(args.smmx)}: {len(nodes)} nodes {dict(ntc)}, {len(uniq)} edges {dict(rc)}")
+    print(f"  bridges (mindmap↔enwiki): {rc.get('bridge', 0)}")
 
     if args.out_prefix:
         with open(args.out_prefix + "_nodes.tsv", "w", encoding="utf-8") as f:
-            f.write("# node_key\ttitle\tpearltrees_slug\tpearltrees_id\tenwiki_alias\n")
+            f.write("# node_key\tnode_type\ttitle\tpearltrees_slug\tpearltrees_id\tenwiki_alias\n")
             for k, n in sorted(nodes.items()):
-                f.write(f"{k}\t{n['title']}\t{n['slug']}\t{n['pid']}\t{n['enwiki']}\n")
+                f.write(f"{k}\t{n.get('ntype','mindmap_node')}\t{n['title']}\t{n['slug']}\t{n['pid']}\t{n['enwiki']}\n")
         with open(args.out_prefix + "_edges.tsv", "w", encoding="utf-8") as f:
-            f.write("# src_key\tdst_key\trelation  (subtopic|subcategory|see_also|super_category|assoc)\n")
+            f.write("# src_key\tdst_key\trelation  (subtopic|subcategory|see_also|super_category|bridge|assoc)\n")
             for a, b, rel in uniq:
                 f.write(f"{a}\t{b}\t{rel}\n")
         print(f"  wrote {args.out_prefix}_nodes.tsv + {args.out_prefix}_edges.tsv")

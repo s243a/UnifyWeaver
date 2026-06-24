@@ -45,7 +45,7 @@ Some nodes are **containers / scaffolding**, not real concepts. Skip them as nod
 | `See Also`, `Via Link`, `Related` | **see-also**: weakly/associatively related (not membership) | `see_also` |
 | `Super Categories`, `Super Category`, `Navigate Up` | **broader / parent** category of the attached node | `super_category` |
 | blank (`text=""`) / section headers | just visual grouping — pass through, keep the relation from above | — |
-| a node labelled **`wiki`** / `Wikipedia` (with a Wikipedia urllink) | NOT a node — it gives the **enwiki anchor** of its **parent** | (anchor) |
+| a node labelled **`wiki`** / `Wikipedia` / `enwiki` (with a Wikipedia urllink), or any node with a direct `en.wikipedia.org` urllink | a **`bridge`**: the node ↔ the SAME concept in enwiki (a `category` if `Category:…`, else a `page`) — same concept, **different node-type**, possibly different name | `bridge` |
 
 Everything else is a **real node**, and a plain parent→child link (after skipping any containers) is a
 **`subtopic`** = membership / narrower-than.
@@ -110,6 +110,7 @@ These relations map onto membership strength for `μ(node | root)` grading (huma
 | `subcategory` | **high** membership — the target map is narrower / a child (downward cloudmapref); μ(target\|node) high |
 | `super_category` | the *parent direction* — the target is **broader** (in-map Super Categories, or upward cloudmapref); μ(node\|target) high, reverse low |
 | `see_also` | **associative**, not membership — moderate-to-low, symmetric (grade like a boundary pair) |
+| `bridge` | **near-identity** across corpora — the mindmap node and its enwiki `category`/`page` are the *same concept* (μ ≈ high). The endpoints differ in **node-type** (mindmap_node ⟷ category/page) and possibly name; this is the cross-corpus join (scarce in maps, more in Pearltrees) |
 | `assoc` (explicit relation) | a deliberate cross-link — moderate associative |
 
 The Pearltrees slug is the node identity; the `enwiki_alias`, where present, is the bridge into the enwiki
