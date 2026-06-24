@@ -70,11 +70,39 @@ def cloud_of(t):
     return None, None
 
 
+def _key_from(slug, title):
+    return slug or re.sub(r"[^a-z0-9]+", "_", (title or "").lower()).strip("_")
+
+
+_ROOT_CACHE = {}
+def root_identity(smmx_path):
+    """Open a linked .smmx and read its ROOT node's identity — because super-category/parent (and many
+    cloudmapref) holder nodes are UNNAMED in the source map; the real name + Pearltrees slug lives on the
+    linked map's central theme. Returns (key, title, slug, pid) or None if the file can't be read."""
+    if smmx_path in _ROOT_CACHE:
+        return _ROOT_CACHE[smmx_path]
+    out = None
+    try:
+        r = load_xml(smmx_path)
+        ts = r.findall(".//topic")
+        rt = next((t for t in ts if (t.get("parent") in (None, "-1"))), ts[0] if ts else None)
+        if rt is not None:
+            sl, pid = slug_of(rt)
+            out = (_key_from(sl, label(rt)), label(rt), sl or "", pid or "")
+    except Exception:
+        out = None
+    _ROOT_CACHE[smmx_path] = out
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("smmx")
     ap.add_argument("--out-prefix", default=None, help="write <prefix>_nodes.tsv + <prefix>_edges.tsv")
+    ap.add_argument("--no-resolve", action="store_true", help="don't open linked maps to name cloudmapref "
+                    "targets (offline / single-file mode); fall back to the filename")
     args = ap.parse_args()
+    base_dir = os.path.dirname(os.path.abspath(args.smmx))
 
     root = load_xml(args.smmx)
     topics = {t.get("id"): t for t in root.findall(".//topic")}
@@ -138,14 +166,23 @@ def main():
         else:
             src_id = i
         if src_id in topics and src_id not in is_anchor:
-            tgt = re.sub(r"\.smmx$", "", os.path.basename(ref.rstrip("/")))
             # DIRECTION from the relative path (when no container tags the relation): a ref UP to a parent
             # folder (`../`) ⇒ the target map is a broader PARENT (`super_category`); a ref DOWN into a
             # subfolder ⇒ the target is narrower (`subcategory`). Mirrors the directory-as-taxonomy layout.
             segs = [s for s in re.split(r"[\\/]+", ref) if s and s != "."]
             rel = "super_category" if ".." in segs else "subcategory"
-            edges.append((key(topics[src_id]),
-                          re.sub(r"[^a-z0-9]+", "_", tgt.lower()).strip("_"), rel))
+            # NAME the target from the linked map's ROOT node (holder/parent nodes are usually unnamed);
+            # fall back to the filename if the linked file can't be opened.
+            ident = None if args.no_resolve else root_identity(
+                os.path.normpath(os.path.join(base_dir, ref.replace("\\", "/"))))
+            if ident:
+                tkey, ttitle, tsl, tpid = ident
+                nodes.setdefault(tkey, {"title": ttitle, "slug": tsl, "pid": tpid, "enwiki": ""})
+            else:
+                fn = re.sub(r"\.smmx$", "", os.path.basename(ref.rstrip("/")))
+                tkey = re.sub(r"[^a-z0-9]+", "_", fn.lower()).strip("_")
+                nodes.setdefault(tkey, {"title": fn, "slug": "", "pid": "", "enwiki": ""})
+            edges.append((key(topics[src_id]), tkey, rel))
 
     # explicit <relation source target> → assoc
     for r in root.findall(".//relation"):

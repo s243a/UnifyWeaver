@@ -79,7 +79,9 @@ For each real (non-container, non-`wiki`) node:
    a `wiki`-labelled child).
 4. `cloudmapref` on a node (or its blank link-holder child) ⇒ a cross-map edge to that other map's root.
    Set the relation by the **path direction**: `../` (parent folder) ⇒ `super_category` (broader);
-   subfolder (down) ⇒ `subcategory` (narrower).
+   subfolder (down) ⇒ `subcategory` (narrower). **The super-category/parent holder nodes are usually
+   UNNAMED** — to name the target you must **open the linked `.smmx` and read its ROOT node's title +
+   Pearltrees slug** (the tool does this automatically; `--no-resolve` falls back to the filename).
 
 ---
 
