@@ -30,6 +30,7 @@
 :- use_module('../targets/kotlin_target', [compile_predicate_to_kotlin/3]).
 :- use_module('../targets/scala_target', [compile_predicate_to_scala/3]).
 :- use_module('../targets/clojure_target', [compile_predicate_to_clojure/3]).
+:- use_module('../targets/clojurescript_target', [compile_predicate_to_clojurescript/3, clojurescript_from_clojure/2]).
 :- use_module('../targets/jython_target', [compile_predicate_to_jython/3]).
 :- use_module('../targets/elixir_target', [compile_predicate_to_elixir/3]).
 :- use_module('../targets/typr_target', [compile_predicate_to_typr/3, compile_recursive_predicate_to_typr/3]).
@@ -183,6 +184,8 @@ compile_non_recursive(scala, Pred/Arity, FinalOptions, GeneratedCode) :-
     scala_target:compile_predicate_to_scala(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(clojure, Pred/Arity, FinalOptions, GeneratedCode) :-
     clojure_target:compile_predicate_to_clojure(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(clojurescript, Pred/Arity, FinalOptions, GeneratedCode) :-
+    clojurescript_target:compile_predicate_to_clojurescript(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(python, Pred/Arity, FinalOptions, GeneratedCode) :-
     python_target:compile_predicate_to_python(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(lua, Pred/Arity, FinalOptions, GeneratedCode) :-
@@ -729,6 +732,20 @@ compile_transitive_closure(scala, Pred, _Arity, BasePred, Options, GeneratedCode
 %% Clojure transitive closure — supports input(Mode) via composable templates
 compile_transitive_closure(clojure, Pred, _Arity, BasePred, Options, GeneratedCode) :-
     compile_tc_from_template(clojure, Pred, BasePred, [], Options, GeneratedCode),
+    !.
+
+%% ClojureScript transitive closure — reuse the JVM Clojure templates, then
+%% rewrite host interop to JS (mirrors how clojurescript_target wraps
+%% clojure_target). Default to embedded facts so the output runs as-is in a
+%% browser CLJS runtime (Scittle/SCI) - the stdin/CLI input modes assume a
+%% Node/JVM host and don't apply in the REPL.
+compile_transitive_closure(clojurescript, Pred, _Arity, BasePred, Options, GeneratedCode) :-
+    (   member(input(_), Options)
+    ->  TcOptions = Options
+    ;   TcOptions = [input(embedded)|Options]
+    ),
+    compile_tc_from_template(clojure, Pred, BasePred, [], TcOptions, ClojureCode),
+    clojurescript_target:clojurescript_from_clojure(ClojureCode, GeneratedCode),
     !.
 
 %% Jython transitive closure — supports input(Mode) via composable templates
