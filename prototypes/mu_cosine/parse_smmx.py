@@ -7,8 +7,9 @@ Relation semantics (the structural container retypes its descendants' edge to th
   * plain hierarchy parent→child          → `subtopic`        (membership / narrower)
   * under  See Also / Via Link / Related  → `see_also`        (associative, weakly related)
   * under  Super Categories / Super Cat.  → `super_category`  (broader / parent category)
-  * `cloudmapref` (relative path to another .smmx) → `cloudmapref` (link to that map's ROOT = a parent
-       tree / broader context; element=None ⇒ the whole map)
+  * `cloudmapref` (relative path to another .smmx, when no container tags it) → DIRECTIONAL by the path:
+       `../` UP to a parent folder → `super_category` (target map is a broader PARENT tree);
+       DOWN into a subfolder       → `subcategory`    (target map is narrower / a child)
   * explicit <relation source target>     → `assoc`           (cross-link)
   * a child labelled "wiki"/"Wikipedia", or any node with a direct en.wikipedia.org urllink
        → NOT a node: it sets the enwiki ANCHOR of the node it is attached to (the join key into enwiki)
@@ -138,8 +139,13 @@ def main():
             src_id = i
         if src_id in topics and src_id not in is_anchor:
             tgt = re.sub(r"\.smmx$", "", os.path.basename(ref.rstrip("/")))
-            edges.append((key(topics[src_id]), re.sub(r"[^a-z0-9]+", "_", tgt.lower()).strip("_"),
-                          "cloudmapref"))
+            # DIRECTION from the relative path (when no container tags the relation): a ref UP to a parent
+            # folder (`../`) ⇒ the target map is a broader PARENT (`super_category`); a ref DOWN into a
+            # subfolder ⇒ the target is narrower (`subcategory`). Mirrors the directory-as-taxonomy layout.
+            segs = [s for s in re.split(r"[\\/]+", ref) if s and s != "."]
+            rel = "super_category" if ".." in segs else "subcategory"
+            edges.append((key(topics[src_id]),
+                          re.sub(r"[^a-z0-9]+", "_", tgt.lower()).strip("_"), rel))
 
     # explicit <relation source target> → assoc
     for r in root.findall(".//relation"):
@@ -164,7 +170,7 @@ def main():
             for k, n in sorted(nodes.items()):
                 f.write(f"{k}\t{n['title']}\t{n['slug']}\t{n['pid']}\t{n['enwiki']}\n")
         with open(args.out_prefix + "_edges.tsv", "w", encoding="utf-8") as f:
-            f.write("# src_key\tdst_key\trelation  (subtopic|see_also|super_category|cloudmapref|assoc)\n")
+            f.write("# src_key\tdst_key\trelation  (subtopic|subcategory|see_also|super_category|assoc)\n")
             for a, b, rel in uniq:
                 f.write(f"{a}\t{b}\t{rel}\n")
         print(f"  wrote {args.out_prefix}_nodes.tsv + {args.out_prefix}_edges.tsv")
