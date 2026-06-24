@@ -9,7 +9,11 @@ import random
 
 import torch
 
-from mu_attention import OPS, load_dag, all_names, build_e5_tables, Tokenizer, MuAttention
+from mu_attention import OPS, NODETYPE, load_dag, all_names, build_e5_tables, Tokenizer, MuAttention
+
+_NT = {"category": 0, "page": 1, "mindmap_node": 2, "collection": 3, "pearltrees_collection": 3}
+def nt(s):
+    return _NT.get(s, 0)
 from train_mu_attention import load_edges, load_mu, pearson, mu_batch
 from gen_mu_pairs import GRAPH
 
@@ -25,7 +29,9 @@ def load_pairs_strat(path):
         if len(p) < 5 or p[4].strip() == "":
             continue
         rel = p[5].strip() if len(p) > 5 and p[5].strip() else "subcat_of"
-        (neg if p[2] == "neg" else pos).append((p[0], p[1], float(p[4]), p[2], rel))
+        at = p[6].strip() if len(p) > 6 and p[6].strip() else "category"
+        bt = p[7].strip() if len(p) > 7 and p[7].strip() else "category"
+        (neg if p[2] == "neg" else pos).append((p[0], p[1], float(p[4]), p[2], rel, at, bt))
     return pos, neg
 
 
@@ -43,7 +49,7 @@ def main(pairs=os.path.join(ROOT, "mu_pairs_scored_multidomain_260620-235025.tsv
     ck = torch.load(model_path, weights_only=False)
     model = MuAttention(d_model=ck["cfg"]["d_model"], n_heads=ck["cfg"]["heads"],
                         n_layers=ck["cfg"]["layers"])
-    model.load_state_dict(ck["state"])
+    model.load_state_dict(ck["state"], strict=False)   # tolerate old checkpoints w/o nodetype_emb (zeros)
     model.eval()
 
     # reproduce the split EXACTLY (rng consumes the edge shuffle first, then the pos shuffle)
@@ -67,7 +73,8 @@ def main(pairs=os.path.join(ROOT, "mu_pairs_scored_multidomain_260620-235025.tsv
         for i, v in zip(sym_i, ((ab + ba) / 2).tolist()):
             pred[i] = v
     if elem_i and "ELEM" in OPS:
-        ef = mu_batch(model, tok, [(hold[i][1], hold[i][0], OPS["ELEM"]) for i in elem_i])
+        ef = mu_batch(model, tok, [(hold[i][1], hold[i][0], OPS["ELEM"], None, None,
+                                    nt(hold[i][6]), nt(hold[i][5])) for i in elem_i])
         for i, v in zip(elem_i, ef.tolist()):
             pred[i] = v
     tgt = [h[2] for h in hold]
