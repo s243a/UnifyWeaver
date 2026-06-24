@@ -19,6 +19,7 @@
 :- use_module(library(lists)).
 :- use_module(library(readutil)).
 :- use_module('../../src/unifyweaver/targets/clojurescript_target').
+:- use_module('../../src/unifyweaver/core/recursive_compiler').
 
 test_clojurescript_runtime_smoke :-
     run_tests([clojurescript_runtime_smoke]).
@@ -56,6 +57,32 @@ run_nbb(File, Arg, Output) :-
     ; format(user_error, "nbb stderr: ~w~n", [ErrStr]) ),
     normalize_space(atom(Output), OutStr).
 
+% --- compile ancestor/2 (transitive closure) to CLJS, append REPL queries, ---
+% --- and run the whole file under nbb (no CLI args: embedded facts + the   ---
+% --- appended forms execute at load - same shape the SciREPL workbook runs). --
+compile_tc_and_run(Output) :-
+    recursive_compiler:compile_recursive(ancestor/2, [target(clojurescript)], Code),
+    tmp_file(cljs_tc, Base),
+    atom_concat(Base, '.cljs', File),
+    Queries = "\n(println (sort (find-all \"alice\")))\n(println (check-path \"alice\" \"dave\"))\n(println (check-path \"alice\" \"zzz\"))\n",
+    setup_call_cleanup(
+        ( open(File, write, S), write(S, Code), write(S, Queries), close(S) ),
+        run_nbb_noargs(File, Output),
+        catch(delete_file(File), _, true)
+    ).
+
+run_nbb_noargs(File, Output) :-
+    nbb_path(Nbb),
+    process_create(Nbb, [File],
+                   [stdout(pipe(Out)), stderr(pipe(Err)), process(PID)]),
+    read_string(Out, _, OutStr),
+    read_string(Err, _, ErrStr),
+    close(Out), close(Err),
+    process_wait(PID, _Status),
+    ( ErrStr == "" -> true
+    ; format(user_error, "nbb stderr: ~w~n", [ErrStr]) ),
+    normalize_space(atom(Output), OutStr).
+
 :- begin_tests(clojurescript_runtime_smoke).
 
 % Sample predicates spanning arithmetic, guard chains, and Math interop.
@@ -84,5 +111,21 @@ test(classify_large_branch, [condition(nbb_available), setup(setup_preds)]) :-
 test(absval_math_interop, [condition(nbb_available), setup(setup_preds)]) :-
     compile_and_run(absval/2, 7, Out),
     assertion(Out == '7').
+
+% Transitive closure compiled via recursive_compiler actually runs in CLJS:
+% find-all returns the descendants, check-path answers reachability. This is
+% the runtime half of the "Prolog generates ClojureScript" demo.
+setup_family :-
+    retractall(user:parent(_,_)),
+    retractall(user:ancestor(_,_)),
+    assertz(user:parent(alice, bob)),
+    assertz(user:parent(bob, charlie)),
+    assertz(user:parent(charlie, dave)),
+    assertz(user:(ancestor(X,Y) :- parent(X,Y))),
+    assertz(user:(ancestor(X,Y) :- parent(X,Z), ancestor(Z,Y))).
+
+test(transitive_closure_runtime, [condition(nbb_available), setup(setup_family)]) :-
+    compile_tc_and_run(Out),
+    assertion(Out == '(bob charlie dave) true false').
 
 :- end_tests(clojurescript_runtime_smoke).

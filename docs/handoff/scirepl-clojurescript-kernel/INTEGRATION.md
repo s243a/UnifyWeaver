@@ -19,15 +19,33 @@ integration points per the proposal). Verified: the patch applies cleanly
 | File | Goes to (in SciREPL) |
 |------|----------------------|
 | `kernels/clojurescript.js` | `www/js/kernels/clojurescript.js` (new file) |
+| `workbooks/prolog-generates-clojurescript.srwb` | `www/workbooks/prolog-generates-clojurescript.srwb` (new file) |
+| `test_prolog_generates_clojurescript.mjs` | SciREPL repo root (new file) |
 | `integration.patch` | applied at the SciREPL repo root (edits 5 existing files) |
+
+This is **phase 1 (kernel) + phase 3 (tie-together)**. Phase 3 — the workbook and
+the `.mjs` end-to-end test — depends on the UnifyWeaver-side recursive
+ClojureScript support added in the same PR that ships this hand-off
+(`recursive_compiler` now accepts `target(clojurescript)` and emits
+browser-runnable CLJS). Make sure that UnifyWeaver version is the one installed
+as the SciREPL package before running the workbook/test.
 
 ## Apply
 
 ```bash
 cd /path/to/SciREPL
 cp /path/to/this/kernels/clojurescript.js www/js/kernels/clojurescript.js
+cp /path/to/this/workbooks/prolog-generates-clojurescript.srwb www/workbooks/
+cp /path/to/this/test_prolog_generates_clojurescript.mjs .
 git apply /path/to/this/integration.patch
 node scripts/configure-build.mjs full   # regenerates www/js/kernel_config.js from build-profiles.json
+```
+
+Then exercise the end-to-end demo (mirrors `test_prolog_generates_typr.mjs`):
+
+```bash
+# serve www/ on :8085, then:
+node test_prolog_generates_clojurescript.mjs   # prints PASS / FAIL
 ```
 
 ## What the patch changes (5 files)
@@ -41,7 +59,8 @@ node scripts/configure-build.mjs full   # regenerates www/js/kernel_config.js fr
   set (so `.ipynb` round-trips with a real kernelspec, not a python fallback).
 - **`www/index.html`** — adds the `CLJS` `#lang-selector` option and the
   `<script src="js/kernels/clojurescript.js">` tag.
-- **`www/sw.js`** — precaches the kernel in `APP_SHELL` and bumps
+- **`www/sw.js`** — precaches the kernel and the
+  `prolog-generates-clojurescript.srwb` workbook in `APP_SHELL`, and bumps
   `CACHE_VERSION` v113 → v114.
 - **`www/css/style.css`** — `#lang-selector.clojurescript-active` color (Clojure
   green `#63b132`) and a `.lang-badge.lang-clojurescript` badge.

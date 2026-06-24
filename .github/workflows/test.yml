@@ -39,6 +39,21 @@ jobs:
         run: |
           swipl -g "asserta(user:file_search_path(library, 'src/unifyweaver/core')), use_module('src/unifyweaver/core/recursive_compiler'), test_recursive_compiler, halt."
 
+      - name: Run ClojureScript target tests (codegen)
+        run: |
+          swipl -q -g "consult('tests/core/test_clojurescript_target'), (test_clojurescript_target -> halt(0) ; halt(1))" -t "halt(1)"
+
+      - name: Run ClojureScript recursive-compiler tests (codegen)
+        run: |
+          swipl -q -g "consult('tests/core/test_clojurescript_recursive'), (test_clojurescript_recursive -> halt(0) ; halt(1))" -t "halt(1)"
+
+      - name: Install nbb (Node ClojureScript runtime for CLJS smoke)
+        run: npm install nbb
+
+      - name: Run ClojureScript runtime smoke tests (nbb)
+        run: |
+          NBB="$PWD/node_modules/.bin/nbb" swipl -q -g "consult('tests/core/test_clojurescript_runtime_smoke'), (test_clojurescript_runtime_smoke -> halt(0) ; halt(1))" -t "halt(1)"
+
       - name: Run advanced recursion tests (24 tests)
         run: |
           swipl -g "use_module('src/unifyweaver/core/advanced/test_advanced'), test_all_advanced, halt."

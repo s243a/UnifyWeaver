@@ -39,6 +39,7 @@
     compile_predicate_to_clojurescript/3,   % +Pred/Arity, +Options, -CljsCode
     compile_predicate/3,                     % +Pred/Arity, +Options, -Code (registry dispatch)
     compile_facts_to_clojurescript/3,        % +Pred, +Arity, -CljsCode
+    clojurescript_from_clojure/2,            % +ClojureCode, -CljsCode (rewrite + banner)
     clojurescript_interop_rewrite/2,         % +ClojureCode, -CljsCode
     generate_shadow_cljs_edn/2,              % +Options, -ShadowFile
     generate_scittle_html/3,                 % +Title, +Options, -HTML
@@ -66,6 +67,15 @@ init_clojurescript_target :-
 %  target and rewriting the JVM host interop into JS host interop.
 compile_predicate_to_clojurescript(PredIndicator, Options, CljsCode) :-
     compile_predicate_to_clojure(PredIndicator, Options, ClojureCode),
+    clojurescript_from_clojure(ClojureCode, CljsCode).
+
+%% clojurescript_from_clojure(+ClojureCode, -CljsCode)
+%  Turn JVM-Clojure source into ClojureScript: rewrite host interop, then
+%  prepend the CLJS banner. Shared by the single-predicate path above and the
+%  recursive_compiler's transitive-closure path (which reuses the JVM Clojure
+%  templates and post-processes them here), keeping the JVM->JS translation in
+%  one place.
+clojurescript_from_clojure(ClojureCode, CljsCode) :-
     clojurescript_interop_rewrite(ClojureCode, Rewritten),
     cljs_banner(Banner),
     string_concat(Banner, Rewritten, CljsCode).

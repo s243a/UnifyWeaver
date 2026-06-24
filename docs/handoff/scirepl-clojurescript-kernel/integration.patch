@@ -74,7 +74,7 @@
      <script src="js/package_loader.js"></script>
      <script src="js/package_catalog.js"></script>
 --- a/www/sw.js	2026-06-24 11:52:08.926434485 +0000
-+++ b/www/sw.js	2026-06-24 11:52:32.900079500 +0000
++++ b/www/sw.js	2026-06-24 15:05:02.859427454 +0000
 @@ -1,7 +1,7 @@
  // Service Worker for SciREPL PWA
  // Caches app shell on install, caches CDN runtimes (Pyodide, swipl-wasm) on first fetch.
@@ -92,6 +92,14 @@
    './vendor/typr/typr_wasm.js',
    './vendor/typr/typr_wasm_bg.wasm',
    './vendor/katex/katex.min.css',
+@@ -59,6 +60,7 @@
+   './workbooks/lua-tables-coroutines.srwb',
+   './workbooks/lua-parsing-coroutines.srwb',
+   './workbooks/prolog-generates-r.srwb',
++  './workbooks/prolog-generates-clojurescript.srwb',
+ ];
+ 
+ // CDN domains to cache (Pyodide ~25MB, swipl-wasm ~10MB, webR ~50MB)
 --- a/www/css/style.css	2026-06-24 11:52:08.938107382 +0000
 +++ b/www/css/style.css	2026-06-24 11:52:32.900364720 +0000
 @@ -742,6 +742,15 @@
