@@ -195,12 +195,14 @@ class Tokenizer:
         so the model learns BOTH provenance-conditioned and provenance-agnostic μ."""
         B = len(items)
         rows = []          # per-example list of token dicts
-        ntypes, rtypes = [], []   # node-type of the node / the root, per example (category=0 default)
+        ntypes, rtypes, has_nt = [], [], []   # node-type of node/root per example; off unless item carries it
         for it in items:
             node, root, op = it[0], it[1], it[2]
             corpus_id, judge_id = (it[3], it[4]) if len(it) >= 5 else (None, None)
-            ntype, rtype = (it[5], it[6]) if len(it) >= 7 else (0, 0)
-            ntypes.append(ntype); rtypes.append(rtype)
+            if len(it) >= 7:
+                ntypes.append(it[5]); rtypes.append(it[6]); has_nt.append(True)
+            else:                               # no node-type tags ⇒ leave nodetype_of=-1 (emb not applied)
+                ntypes.append(0); rtypes.append(0); has_nt.append(False)
             toks = []
             toks.append(("op", None, op, 0))                              # operator token
             toks.append(("anchor", root, None, 0))                       # anchor(root) — e5 query:
@@ -243,15 +245,18 @@ class Tokenizer:
                 elif kind == "anchor":
                     content[bi, ti] = self.q[self.idx[name]]
                     is_anchor[bi, ti] = True
-                    nodetype_of[bi, ti] = rtypes[bi]                      # the root's type
+                    if has_nt[bi]:
+                        nodetype_of[bi, ti] = rtypes[bi]                  # the root's type
                 elif kind == "node":
                     content[bi, ti] = self.p[self.idx[name]]
                     gen_id[bi, ti] = 0
-                    nodetype_of[bi, ti] = ntypes[bi]                      # the candidate node's type
+                    if has_nt[bi]:
+                        nodetype_of[bi, ti] = ntypes[bi]                  # the candidate node's type
                 elif kind == "anc":
                     content[bi, ti] = self.p[self.idx[name]]
                     gen_id[bi, ti] = d
-                    nodetype_of[bi, ti] = NODETYPE["category"]            # ancestors are categories
+                    if has_nt[bi]:
+                        nodetype_of[bi, ti] = NODETYPE["category"]        # ancestors are categories
                 elif kind == "prov":
                     is_prov[bi, ti] = True                                # content stays 0; forward adds
                     corpus_of[bi, ti], judge_of[bi, ti] = op              # corpus_emb + judge_emb + prov_tag

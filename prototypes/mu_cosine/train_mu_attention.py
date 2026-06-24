@@ -283,9 +283,13 @@ def train(args):
         L_elem = torch.zeros(())
         if elem_tr and not args.sym_only:
             eb2 = [elem_tr[rng.randrange(len(elem_tr))] for _ in range(args.bs)]
-            # node-type tags: node=b (member, b_type=r[5]), root=a (topic, a_type=r[4])
-            fwd = [(r[1], r[0], OPS["ELEM"], new_corpus, HAIKU, nt(r[5]), nt(r[4])) for r in eb2]   # μ(page|cat)
-            rev = [(r[0], r[1], OPS["ELEM"], new_corpus, HAIKU, nt(r[4]), nt(r[5])) for r in eb2]   # μ(cat|page)
+            # node-type tags (opt-in): node=b (member, b_type=r[5]), root=a (topic, a_type=r[4])
+            if args.use_nodetype:
+                fwd = [(r[1], r[0], OPS["ELEM"], new_corpus, HAIKU, nt(r[5]), nt(r[4])) for r in eb2]
+                rev = [(r[0], r[1], OPS["ELEM"], new_corpus, HAIKU, nt(r[4]), nt(r[5])) for r in eb2]
+            else:
+                fwd = [(r[1], r[0], OPS["ELEM"], new_corpus, HAIKU) for r in eb2]   # μ(page|cat)
+                rev = [(r[0], r[1], OPS["ELEM"], new_corpus, HAIKU) for r in eb2]   # μ(cat|page)
             mu_e = model(**tok.build(fwd + rev, train=True, rng=rng, p_mask_prov=args.prov_mask))
             mu_ef, mu_er = mu_e[:args.bs], mu_e[args.bs:]
             tgt_e = torch.tensor([r[2] for r in eb2])
@@ -342,11 +346,15 @@ def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_
 
     # --- ELEM: held-out page/collection-membership centrality corr + direction (the new operator) ---
     if elem_hold and not args.sym_only:
-        # node-typed, provenance masked (None corpus): node=b (b_type=r[5]), root=a (a_type=r[4])
-        ef = mu_batch(model, tok, [(r[1], r[0], OPS["ELEM"], None, None, nt(r[5]), nt(r[4]))
-                                   for r in elem_hold])                          # μ(page|category)
-        er = mu_batch(model, tok, [(r[0], r[1], OPS["ELEM"], None, None, nt(r[4]), nt(r[5]))
-                                   for r in elem_hold])                          # μ(category|page)
+        # match training: node-type tags only when --use-nodetype (else plain 3-tuples)
+        if args.use_nodetype:
+            ef = mu_batch(model, tok, [(r[1], r[0], OPS["ELEM"], None, None, nt(r[5]), nt(r[4]))
+                                       for r in elem_hold])                      # μ(page|category)
+            er = mu_batch(model, tok, [(r[0], r[1], OPS["ELEM"], None, None, nt(r[4]), nt(r[5]))
+                                       for r in elem_hold])                      # μ(category|page)
+        else:
+            ef = mu_batch(model, tok, [(r[1], r[0], OPS["ELEM"]) for r in elem_hold])   # μ(page|category)
+            er = mu_batch(model, tok, [(r[0], r[1], OPS["ELEM"]) for r in elem_hold])   # μ(category|page)
         etgt = [r[2] for r in elem_hold]
         ecorr = pearson(ef.tolist(), etgt)
         edir = float((ef > er).float().mean())
@@ -546,6 +554,10 @@ def main():
                     help="weight on bce(μ(child|parent),0.9) — absolute anchor for the WIKI map")
     ap.add_argument("--wiki-weight", type=float, default=1.0, help="WIKI loss weight (parity)")
     ap.add_argument("--elem-weight", type=float, default=1.0, help="ELEM (element-of/page-membership) loss weight")
+    ap.add_argument("--use-nodetype", action="store_true", help="tag ELEM endpoints with the node-type token "
+                    "(DESIGN §7). DEFAULT OFF: at current data operator and node-type are COLLINEAR "
+                    "(ELEM⟺page), so it's redundant and hurts (REPORT_nodetype.md); enable once data has "
+                    "within-operator type diversity (pearltrees collections / mindmap nodes).")
     ap.add_argument("--llm-weight", type=float, default=1.0)
     ap.add_argument("--k", type=int, default=1, help="ancestor depth (1 = node+parents)")
     ap.add_argument("--max-anc", type=int, default=8)
