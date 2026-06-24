@@ -52,6 +52,13 @@ OPS = {"SYM": 0, "WIKI": 1, "LLM": 2, "ELEM": 3}
 CORPORA = {"simplewiki": 0, "enwiki": 1}
 JUDGES = {"haiku": 0, "graph": 1}        # haiku = a bought LLM judgment (SYM/LLM); graph = a Wikipedia
                                          # edge / non-edge (WIKI, and the free μ=0 SYM negatives)
+# NODE-TYPE (DESIGN_calibrated_judges.md §7): a factored per-ENDPOINT token saying WHAT each node is — a
+# `category`/`mindmap_node` is an internal node that can have children; a `page` is a LEAF; a
+# `pearltrees_collection` is a curated container. Orthogonal to the OPERATOR (which says what the RELATION
+# is). e5 still encodes the title text; the node-type token only adds the structural role the title can't
+# convey. category=0 is the implicit default; the embedding is zero-initialised so it is a no-op at warm
+# start and the type signal is learned during fine-tuning.
+NODETYPE = {"category": 0, "page": 1, "mindmap_node": 2, "pearltrees_collection": 3}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -188,9 +195,14 @@ class Tokenizer:
         so the model learns BOTH provenance-conditioned and provenance-agnostic μ."""
         B = len(items)
         rows = []          # per-example list of token dicts
+        ntypes, rtypes, has_nt = [], [], []   # node-type of node/root per example; off unless item carries it
         for it in items:
             node, root, op = it[0], it[1], it[2]
             corpus_id, judge_id = (it[3], it[4]) if len(it) >= 5 else (None, None)
+            if len(it) >= 7:
+                ntypes.append(it[5]); rtypes.append(it[6]); has_nt.append(True)
+            else:                               # no node-type tags ⇒ leave nodetype_of=-1 (emb not applied)
+                ntypes.append(0); rtypes.append(0); has_nt.append(False)
             toks = []
             toks.append(("op", None, op, 0))                              # operator token
             toks.append(("anchor", root, None, 0))                       # anchor(root) — e5 query:
@@ -221,6 +233,7 @@ class Tokenizer:
         is_prov = torch.zeros(B, T, dtype=torch.bool)                     # the provenance slot (any state)
         corpus_of = torch.full((B, T), -1, dtype=torch.long)
         judge_of = torch.full((B, T), -1, dtype=torch.long)
+        nodetype_of = torch.full((B, T), -1, dtype=torch.long)            # per-endpoint structural role
         pad = torch.ones(B, T, dtype=torch.bool)                          # True = pad (ignored)
         op_of = torch.tensor([it[2] for it in items], dtype=torch.long)
 
@@ -232,12 +245,18 @@ class Tokenizer:
                 elif kind == "anchor":
                     content[bi, ti] = self.q[self.idx[name]]
                     is_anchor[bi, ti] = True
+                    if has_nt[bi]:
+                        nodetype_of[bi, ti] = rtypes[bi]                  # the root's type
                 elif kind == "node":
                     content[bi, ti] = self.p[self.idx[name]]
                     gen_id[bi, ti] = 0
+                    if has_nt[bi]:
+                        nodetype_of[bi, ti] = ntypes[bi]                  # the candidate node's type
                 elif kind == "anc":
                     content[bi, ti] = self.p[self.idx[name]]
                     gen_id[bi, ti] = d
+                    if has_nt[bi]:
+                        nodetype_of[bi, ti] = NODETYPE["category"]        # ancestors are categories
                 elif kind == "prov":
                     is_prov[bi, ti] = True                                # content stays 0; forward adds
                     corpus_of[bi, ti], judge_of[bi, ti] = op              # corpus_emb + judge_emb + prov_tag
@@ -255,7 +274,7 @@ class Tokenizer:
                         gen_id[bi, ti] = d
         return {"content": content, "gen_id": gen_id, "is_anchor": is_anchor, "op_pos": op_pos,
                 "is_prov": is_prov, "corpus_of": corpus_of, "judge_of": judge_of,
-                "op_of": op_of, "pad": pad}
+                "nodetype_of": nodetype_of, "op_of": op_of, "pad": pad}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -263,10 +282,14 @@ class Tokenizer:
 # --------------------------------------------------------------------------------------------------
 class MuAttention(nn.Module):
     def __init__(self, d_model=384, n_ops=len(OPS), n_heads=4, n_layers=1, max_gen=5,
-                 dim_ff=None, dropout=0.0, n_corpus=len(CORPORA), n_judge=len(JUDGES)):
+                 dim_ff=None, dropout=0.0, n_corpus=len(CORPORA), n_judge=len(JUDGES),
+                 n_nodetype=len(NODETYPE)):
         super().__init__()
         self.d = d_model
         self.op_emb = nn.Embedding(n_ops, d_model)
+        # NODE-TYPE: per-endpoint structural-role token (category/page/mindmap/pearltrees). Zero-init so it
+        # is a no-op at warm start (category=0 default) and the type signal is learned during fine-tuning.
+        self.nodetype_emb = nn.Embedding(n_nodetype, d_model)
         self.gen_emb = nn.Embedding(max_gen + 1, d_model)                 # gen 0..max_gen
         self.anchor_tag = nn.Parameter(torch.randn(d_model) * 0.02)
         # PROVENANCE (PART B): factored corpus_emb + judge_emb on a single maskable token. `prov_tag`
@@ -283,13 +306,16 @@ class MuAttention(nn.Module):
         self.readout_b = nn.Parameter(torch.zeros(n_ops))
         for emb in (self.op_emb, self.gen_emb, self.corpus_emb, self.judge_emb):
             nn.init.normal_(emb.weight, std=0.02)
+        nn.init.zeros_(self.nodetype_emb.weight)            # no-op at warm start; learned during fine-tune
 
     def forward(self, content, gen_id, is_anchor, op_pos, op_of, pad,
-                is_prov=None, corpus_of=None, judge_of=None):
+                is_prov=None, corpus_of=None, judge_of=None, nodetype_of=None):
         emb = content.clone()
         gmask = (gen_id >= 0).unsqueeze(-1)
         emb = emb + self.gen_emb(gen_id.clamp(min=0)) * gmask
         emb = emb + self.anchor_tag * is_anchor.unsqueeze(-1)
+        if nodetype_of is not None:                          # per-endpoint structural role
+            emb = emb + self.nodetype_emb(nodetype_of.clamp(min=0)) * (nodetype_of >= 0).unsqueeze(-1)
         omask = (op_pos >= 0).unsqueeze(-1)
         emb = emb + self.op_emb(op_pos.clamp(min=0)) * omask
         if is_prov is not None:

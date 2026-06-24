@@ -27,6 +27,45 @@ so the trunk learns the common "membership geometry" once and each operator embe
 delta. That's why page-membership needed `ELEM` (see §3). Full theory — including calibrating the graph
 judge's target and supervising **ranges** instead of points — in `DESIGN_calibrated_judges.md`.
 
+### Architecture at a glance
+
+One example — `μ(node | root)` under operator `OP`, corpus `C`, judge `J` — becomes a **set of tokens**
+(order-invariant; the transformer has no positional encoding). Each token's content is a frozen e5 vector
+(or 0 for the op/provenance slots) **plus** a sum of the factored, learned embeddings below. Note the
+**node-type token is added per ENDPOINT** — the anchor carries the *root's* type, the node carries the
+*candidate's* type — so a single ELEM example mixes a `page` node with a `category` anchor:
+
+```
+ example:  μ( node | root )   op=OP  corpus=C  judge=J   nodetype(node)=NTn  nodetype(root)=NTr
+
+ token:    [op]        [anchor=root]     [node=cand]     [anc × k]        [prov]  (maskable)
+ ───────   ─────       ────────────      ───────────     ──────────       ──────────────────
+ content:  0           e5.query(root)    e5.passage(cand) e5.passage(anc)  0
+ + adds :  op_emb[OP]  anchor_tag        gen_emb[0]       gen_emb[depth]   prov_tag
+                       nodetype_emb[NTr] nodetype_emb[NTn] nodetype_emb[cat] corpus_emb[C]
+                          ▲  per-endpoint type            (ancestors are    judge_emb[J]
+                          └─ root's type   candidate's      categories)      └─ factored, maskable
+                                            type                                 ⇒ provenance-agnostic
+                                                                                   default when masked
+                                  │
+                                  ▼
+              Transformer encoder  —  SHARED TRUNK (3 layers, norm-first, GELU)
+                                  │
+                                  ▼
+              pooled = h[op token]                          ← CLS-style readout (op token attends the set)
+              logit  = pooled · readout_w[OP] + readout_b[OP]   ← per-OPERATOR readout row
+                                  │
+                                  ▼
+                       μ = sigmoid(logit) ∈ [0,1]
+```
+
+Reading the asymmetry off the diagram: the **operator** appears **twice** — as an input token (`op_emb`)
+*and* as the readout row (`readout_w[OP]`), so it conditions both what goes in and which relation-function
+comes out. **Node-type** appears only on the **input** endpoint tokens (it's contextual "what is this
+node"); it has no readout row. **Provenance** (`corpus⊗judge`) rides one maskable token — masked ⇒ the
+agnostic default. `nodetype_emb` is zero-initialised, so at warm-start the whole node-type row is a no-op
+and the signal is learned during fine-tuning.
+
 ---
 
 ## 2. Data-acquisition toolchain (how-to)
