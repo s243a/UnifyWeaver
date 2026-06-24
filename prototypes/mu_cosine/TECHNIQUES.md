@@ -42,7 +42,7 @@ All tools are reusable and live in this directory. The pair-file format is
 | 2b. **page** pairs | `fetch_category_pages.py` → `gen_page_pairs.py` | pull category **member pages** via the MediaWiki API (`cmtype=page`), emit `element_of` candidates (page→category) |
 | 2c. **pearltrees** pairs | `fetch_pearltrees_tree.py` → `gen_pearltrees_pairs.py` | harvest a Pearltrees tree (cookie session; collections/pages/shortcuts) for topics enwiki has no category for; PagePearl `url`s carry the enwiki anchor |
 | 3. grade | (inline Haiku subagents) | 6-band centrality rubric — see `DESIGN_sampling_and_grading.md` §3 (the "instruct grading" technique) |
-| 4. select | `select_diverse.py` | optional quality×diversity pruning (drop μ<0.4 junk, then quality-weighted farthest-point ≈ DPP-MAP). At small scale keep all; see `REPORT_page_selection.md` |
+| 4. select (large scale only) | `select_diverse.py` (farthest-point ≈ DPP-MAP) **or** `select_svd_coverage.py` (top-K SVD axes × μ-coverage, with `--min-pages` sufficiency gate) | optional pruning for big page pools; at current scale **keep all** (policy in §5). See `REPORT_page_selection.md` |
 | 5. assemble | `make_cumulative.sh` | union all `mu_pairs_scored_<round>_<yymmdd-HHMMSS>.tsv` into the (gitignored) cumulative + prior replay sets |
 
 Filenames: scored rounds are timestamped `mu_pairs_scored_<round>_<yymmdd-HHMMSS>.tsv` (first-commit time,
@@ -138,10 +138,40 @@ python3 find_data_gaps.py --region-root Systems_theory --region-root Dynamical_s
   to the domain roots is one e5 (and thus the model) can't place confidently — the ex-ante predictor of
   model weakness. Validated: the finder independently flagged `Ergodic_theory`, the exact stratum the
   trained model ranked worst, and supplementing it nudged its corr up (`REPORT_page_selection.md`).
-- **How much to keep per category:** at few-hundred-page scale, **keep all (prune only μ<0.4 junk)** — the
-  ELEM operator is data-hungry and "redundant" pages carry distinct centrality; the diversity A/B
-  (`select_diverse.py`, `REPORT_page_selection.md`) favoured the full set. Quality×diversity selection is
-  the knob for larger scale (needs a disjoint held-out to measure fairly).
+### Page-sampling policy (how much page data to keep, and why)
+
+There is **far more page data than category data** (a thin category can have 60+ member pages), which would
+normally argue for subsampling the majority class. The key insight: **because page-membership trains on its
+own `ELEM` operator, the imbalance is *contained* in `ELEM` rather than drowning the category operators
+(`SYM`/`WIKI`).** That structural isolation — not a sampling trick — is what neutralises the imbalance. So
+the policy is:
+
+1. **Don't filter page data for `ELEM` — use all of it.** The A/B (`REPORT_page_selection.md`) confirmed
+   keep-all beat a diversity-pruned subset at current scale (the operator is data-hungry; "redundant"
+   filter/wavelet pages carry distinct centrality; frozen e5 means it can't overfit duplicates). Filtering
+   is the wrong lever.
+2. **Monitor cross-operator degradation every run.** `ELEM` shares the trunk, so heavy `ELEM` learning can
+   pull the shared representation and degrade `SYM`/`WIKI` — exactly the capacity interference measured at
+   2 layers (discrimination 90%→79%, `REPORT_element_operator.md`). Watch the `[SYM]` corr and 6-domain
+   discrimination as `ELEM`'s share of the data grows.
+3. **If it degrades the others, throttle `ELEM`'s gradient — don't cut the data.** Reduce `ELEM`'s pull on
+   the shared trunk via **`--elem-weight`** (existing lever; 0.4 recovered discrimination) or, as a
+   stronger next lever, a **per-operator learning rate / scaled backprop on `ELEM`** (not yet implemented).
+   Adding **capacity (a layer)** is the cleanest fix when available — 3 layers removed the interference at
+   full `ELEM` weight without throttling — which is why `--layers` defaults to 3.
+
+**The selection method, precisely (for the larger-scale "must filter" regime).** `select_diverse.py` is
+**greedy quality-weighted farthest-point** on e5 cosine — drop μ<0.4 junk, seed the highest-Haiku page,
+then add the page maximising `centrality · (1 − max cosine to already-picked)`. This is a cheap **DPP-MAP
+proxy; it is NOT a PCA/SVD decomposition.** The **second method, `select_svd_coverage.py`, IS the
+SVD/μ-coverage one:** take the **top-K SVD axes** of the category's page-embedding matrix (K from the
+variance elbow = intrinsic dimension, not a fixed `--frac`) and keep a subset that **covers the
+*(e5-axis × μ)* joint** — both ends of each principal axis × low/mid/high centrality — so the operator
+learns how membership varies along each subtopic direction; junk (μ<min) dropped, negatives passed
+through. It adds the two design preconditions: a **sufficiency threshold** (`--min-pages` — below it a
+category is kept whole, sampling isn't worthwhile) and **subcategory augmentation** (push a thin category
+over the threshold by pooling its subtree's pages via `fetch_category_pages.py --recurse-subcats`). Both
+selectors are the **larger-scale "must filter" knob**; at current scale the policy is keep-all (above).
 
 ---
 

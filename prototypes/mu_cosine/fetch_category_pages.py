@@ -62,17 +62,37 @@ def members(cat, cmtype, delay=1.0):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cat", action="append", default=[], required=True)
+    ap.add_argument("--recurse-subcats", type=int, default=0, help="AUGMENT: also pull pages from "
+                    "subcategories down to this depth (attributed to the parent --cat), to push a thin "
+                    "category over a sampling threshold (select_svd_coverage.py --min-pages)")
     ap.add_argument("--out", default=os.path.join(ROOT, "page_members.tsv"))
     args = ap.parse_args()
 
     rows, summary = [], []
     for cat in args.cat:
-        pages = sorted(set(members(cat, "page")))
-        nsub = sum(1 for _ in members(cat, "subcat"))
+        if args.recurse_subcats > 0:
+            # BFS the subcategory subtree; pool member pages of cat + all subcats, attributed to `cat`
+            seen_sub, frontier = {cat}, [cat]
+            pages = set(members(cat, "page"))
+            for _ in range(args.recurse_subcats):
+                nxt = []
+                for sc in frontier:
+                    for sub in members(sc, "subcat"):
+                        if sub not in seen_sub:
+                            seen_sub.add(sub); nxt.append(sub)
+                            pages.update(members(sub, "page"))
+                            time.sleep(0.3)
+                frontier = nxt
+            pages = sorted(pages)
+            nsub = len(seen_sub) - 1
+        else:
+            pages = sorted(set(members(cat, "page")))
+            nsub = sum(1 for _ in members(cat, "subcat"))
         for p in pages:
             rows.append((p, cat, "element_of"))
         summary.append((cat, len(pages), nsub))
-        print(f"  {cat:26} pages={len(pages):4d}  subcats={nsub}")
+        print(f"  {cat:26} pages={len(pages):4d}  subcats={nsub}"
+              + (f"  (incl. subtree depth {args.recurse_subcats})" if args.recurse_subcats else ""))
         time.sleep(1.0)
 
     with open(args.out, "w", encoding="utf-8") as f:
