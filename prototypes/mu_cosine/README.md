@@ -32,6 +32,7 @@ torch 2.x + sentence-transformers (ML pieces).
 | **four roots (Phys/Chem/Math/CS)** | ✅ **done** — depth-bounded closures ∩ μ-coherence + #3309 bidir batch (`gen_multidomain_pairs.py`, +885 Haiku pairs) → `REPORT_4roots.md`. **4-domain discrimination 18/20 (90%)** — Physics/Chemistry/CS clean 5/5, **Math 3/5** (Calculus & Diff-eq leak to Physics — thin 9-node pool). WIKI 98.6%; lin-agreement +0.237. `pos` stratum regressed +0.695→+0.570 (breadth traded vs physics fidelity). |
 | **more Math DATA + Engineering** | ✅ **done** — deepened *inclusive* Math pool (9→13, keeps math-of-physics) + new Engineering domain (`gen_math_eng_pairs.py`, +404 Haiku pairs ~24.8k tok) → `REPORT_matheng.md`. **Physics SYM corr recovered +0.570→+0.838** (more DATA, not breadth — Part-A hypothesis confirmed); `pos_math` +0.818, `cross_MP` +0.780 (math-of-physics learned **high-to-both**); `Calculus` now argmax-Math; Engineering clean 4–5/5; WIKI 99.2%. 5-way argmax **seed-sensitive 56–84%** — Physics is the brittle one (1–2/5) because it's the spine's connective domain (high-μ to several roots → argmax ill-posed even as ranking stays strongest). |
 | **core-physics discrimination** | ✅ **done** — re-measured with a **ranking/margin** metric + targeted sampling (`gen_core_physics_pairs.py`, +152 Haiku pairs ~15.6k tok) → `REPORT_phys_discrim.md`. Re-eval: argmax swings 64–92% but **ranking is robustly strong (top-2 92–100%; physics margins ±0.08)** — the #3314 "brittleness" is mostly a **metric artifact (correct multi-membership)**. Targeted classical-physics data **did NOT help** (argmax mean 81%→71%; physics SYM held +0.823); the clean classical core is only ~23 nodes and the **modern subfields (Quantum/Stat-mech/Relativity) are absent**. Verdict: brittleness is **structural (connective spine) + a missing-subfield problem** — the real fix is graph widening (#3313). |
+| **fine-tune with replay** | ✅ **done** — `train_mu_attention.py` now supports `--init-from <ckpt>` (warm-start) + `--replay <old_scored_set> --replay-frac` (experience replay against forgetting), so the next data trains as a **fine-tune, not a full retrain** (warm loss starts ~0.057 vs ~0.13 cold; ~40 steps recover SYM +0.77 / discrim 76%). Survey of the requested sub-roots in the **10k** graph: `Mechanical_engineering`/`Civil_engineering` are **near-singletons (pool 1)** and `Electrical_/Process_engineering` are **absent** — the subcategory datasets need the **widened graph** (the `10x` slice has complementary `Electrical_engineering`/`Quantum_mechanics`/`Relativity` coverage). |
 
 ### Progress — directional, multi-relational μ (`MuAttention`, DESIGN_directional_attention.md realized)
 
@@ -65,6 +66,29 @@ the slot is read (revealing `judge=graph` collapses μ by 0.66 — it learned gr
 non-edges; `judge=haiku` near-constant 0.027), and a `--prov-mask 1.0` ablation confirms it does **not
 regress** Part A (`pos_phys` +0.831 vs +0.838). Ready to carry real signal once `enwiki`/a 2nd judge
 arrives — no architecture change.
+
+**Fine-tune with replay** — as the data grows, prefer warm-starting from the last checkpoint over a
+full cold retrain. `train_mu_attention.py` adds `--init-from <ckpt>` (load weights, `strict=False` so
+added/removed tags are tolerated across versions) and `--replay <old_scored_set> --replay-frac 0.3`
+(each SYM example is drawn from the old set with that probability — experience replay so the new data
+doesn't make it forget the old distribution; WIKI edges and the LLM fixture are already shared, so
+replay only needs to cover the bought SYM labels). Fine-tune at a smaller `--lr` / fewer `--steps`:
+
+```
+python3 train_mu_attention.py --pairs mu_pairs_scored_NEW.tsv \
+    --init-from model_corephys.pt --replay mu_pairs_scored_corephys.tsv --replay-frac 0.3 \
+    --llm --steps 300 --lr 2e-4 --save model_NEW.pt
+```
+
+Warm loss starts ~0.057 (vs ~0.13 cold) and ~40 steps already recover SYM +0.77 / discrimination 76%.
+
+*Next-data note (the requested sub-roots).* Downward walks on `Branches_of_science` / `Applied_sciences`
+/ `Engineering` / `Mechanics` (pool 7) / `Thermodynamics` (4) / `Computer_science` (20) are samplable in
+the **10k** graph, but `Mechanical_engineering` and `Civil_engineering` are **near-singletons (pool 1)**
+and `Electrical_engineering` / `Process_engineering` are **absent** — the engineering-subcategory
+datasets need the **widened graph** (the `data/benchmark/10x` slice, though smaller at 1,593 nodes, does
+carry `Electrical_engineering` / `Quantum_mechanics` / `Relativity`). The replay path above is ready to
+fine-tune onto that data the moment it lands.
 
 ### Progress — ML-environment port (folded in from #3283)
 

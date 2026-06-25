@@ -160,6 +160,18 @@ def train(args):
     print(f"WIKI edges: {len(edges_tr)} train / {len(edges_hold)} held-out")
     print(f"SYM pairs: {len(pos_tr)} pos + {len(neg)} neg train / {len(pos_hold)} held-out positives")
 
+    # REPLAY (fine-tune without forgetting): an OLD scored set whose SYM pos/neg are mixed into each
+    # batch at probability --replay-frac, so warm-started fine-tuning on NEW data keeps the old
+    # distribution. WIKI (the free graph edges) and the LLM fixture are already shared across runs, so
+    # replay only needs to cover the bought SYM labels. Empty unless --replay is given.
+    pos_replay, neg_replay = [], []
+    if args.replay:
+        pr, nr = load_pairs(args.replay)
+        pos_replay = [r for r in pr if r[0] in idx and r[1] in idx]
+        neg_replay = [r for r in nr if r[0] in idx and r[1] in idx]
+        print(f"REPLAY from {os.path.basename(args.replay)}: {len(pos_replay)} pos + {len(neg_replay)} "
+              f"neg mixed at frac {args.replay_frac}")
+
     llm = []
     if args.llm:
         bmu = load_mu(BOUNDARY)
@@ -167,7 +179,18 @@ def train(args):
         print(f"LLM (already-bought boundary fixture, no new spend): {len(llm)} directional labels")
 
     torch.manual_seed(args.seed)
-    model = MuAttention(d_model=q.shape[1], n_heads=args.heads, n_layers=args.layers)
+    # WARM-START (fine-tune): load weights from an existing checkpoint instead of random init. Uses the
+    # checkpoint's architecture cfg; strict=False tolerates added/removed tags across versions.
+    if args.init_from:
+        ck = torch.load(args.init_from, weights_only=False)
+        cfg = ck.get("cfg", {})
+        model = MuAttention(d_model=cfg.get("d_model", q.shape[1]),
+                            n_heads=cfg.get("heads", args.heads), n_layers=cfg.get("layers", args.layers))
+        miss, unexp = model.load_state_dict(ck["state"], strict=False)
+        print(f"WARM-START from {os.path.basename(args.init_from)} "
+              f"(missing {len(miss)}, unexpected {len(unexp)}) — fine-tuning at lr {args.lr}")
+    else:
+        model = MuAttention(d_model=q.shape[1], n_heads=args.heads, n_layers=args.layers)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     m = args.margin
 
@@ -194,8 +217,13 @@ def train(args):
                                               + F.relu(m - (mu_cp - mu_cpn)).mean()))
         # SYM (order-invariant) — BALANCED pos/neg so the μ=0 negatives can't collapse μ→0
         half = args.bs // 2
-        sb = ([pos_tr[rng.randrange(len(pos_tr))] for _ in range(half)] +
-              [neg[rng.randrange(len(neg))] for _ in range(args.bs - half)])
+
+        def draw(new_l, old_l):                          # experience replay: mix the OLD set in at frac
+            if old_l and rng.random() < args.replay_frac:
+                return old_l[rng.randrange(len(old_l))]
+            return new_l[rng.randrange(len(new_l))]
+        sb = ([draw(pos_tr, pos_replay) for _ in range(half)] +
+              [draw(neg, neg_replay) for _ in range(args.bs - half)])
         sb_j = [HAIKU] * half + [GRAPHJ] * (args.bs - half)             # pos=bought, neg=free non-edge
         sym_items = ([(a, b, OPS["SYM"], SW, j) for (a, b, _), j in zip(sb, sb_j)] +
                      [(b, a, OPS["SYM"], SW, j) for (a, b, _), j in zip(sb, sb_j)])
@@ -437,6 +465,12 @@ def main():
     ap.add_argument("--sym-weight", type=float, default=1.0, help="SYM loss weight (ablation lever b)")
     ap.add_argument("--sym-only", action="store_true", help="single-task SYM head (ablation lever c)")
     ap.add_argument("--quick-val", action="store_true", help="skip dense-map emission/lin-agreement")
+    ap.add_argument("--init-from", default=None, help="warm-start (fine-tune) from this checkpoint "
+                    "instead of random init; use a smaller --lr / fewer --steps than a full retrain")
+    ap.add_argument("--replay", default=None, help="OLD scored set whose SYM pos/neg are replayed into "
+                    "each batch (anti-forgetting when fine-tuning on a new --pairs set)")
+    ap.add_argument("--replay-frac", type=float, default=0.3, help="prob a SYM example is drawn from the "
+                    "--replay set rather than the new --pairs set")
     ap.add_argument("--prov-mask", type=float, default=0.5, help="PART B: prob of masking the provenance "
                     "token during training (1.0 = always-masked = the provenance-OFF ablation control)")
     ap.add_argument("--seed", type=int, default=1)
