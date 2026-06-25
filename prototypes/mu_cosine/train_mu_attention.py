@@ -87,6 +87,32 @@ def load_pairs(path=PAIRS):
     return pos, neg
 
 
+def load_graded(pairs_path, nodes_path=None):
+    """Read the fused multi-corpus graded round (build_graded_round.py). Returns (rows, node_text):
+      rows      = (node, root, mu, op, relation, node_type, root_type, corpus, judge) directional targets
+      node_text = key → embed_text (the e5 string per fused node; key is corpus-prefixed mm:/pt:/wiki:)."""
+    if nodes_path is None:
+        nodes_path = pairs_path.replace("_pairs.tsv", "_nodes.tsv")
+    node_text = {}
+    if os.path.exists(nodes_path):
+        with open(nodes_path) as f:
+            for ln in f:
+                if ln.startswith("#"):
+                    continue
+                c = ln.rstrip("\n").split("\t")          # key, corpus, node_type, title, embed_text
+                if len(c) >= 5:
+                    node_text[c[0]] = c[4] or c[3]
+    rows = []
+    with open(pairs_path) as f:
+        for ln in f:
+            if ln.startswith("#"):
+                continue
+            c = ln.rstrip("\n").split("\t")              # node root mu op relation n_type r_type corpus judge
+            if len(c) >= 9:
+                rows.append((c[0], c[1], float(c[2]), c[3], c[4], c[5], c[6], c[7], c[8]))
+    return rows, node_text
+
+
 def load_mu(path):
     out = {}
     with open(path) as f:
@@ -116,9 +142,12 @@ def bfs_dist(adj, src):
 
 @torch.no_grad()
 def mu_batch(model, tok, items, bs=256):
+    dev = next(model.parameters()).device
     out = []
     for i in range(0, len(items), bs):
-        out.append(model(**tok.build(items[i:i + bs], train=False)))
+        b = tok.build(items[i:i + bs], train=False)
+        b = {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in b.items()}
+        out.append(model(**b).cpu())
     return torch.cat(out) if out else torch.zeros(0)
 
 
@@ -144,6 +173,10 @@ def check_feeds(path):
 
 # --------------------------------------------------------------------------------------------------
 def train(args):
+    dev_arg = getattr(args, "device", "auto")
+    device = torch.device("cuda" if (dev_arg == "cuda" or (dev_arg == "auto" and torch.cuda.is_available()))
+                          else "cpu")
+    print(f"device: {device}")
     parents, children, deg = load_dag()
     names = all_names(parents, children)
     adj = {}
@@ -154,7 +187,7 @@ def train(args):
     # union in every node referenced by --pairs/--replay-pairs/LLM so cold-start nodes (pairs whose
     # endpoints aren't in the GRAPH — e.g. cross-slice, page, or pearltrees nodes) still get a frozen e5
     # embedding instead of being silently dropped by the `in idx` filters below.
-    extra = set()
+    extra, extra_texts = set(), {}
     for _pth in (args.pairs, args.replay_pairs):
         if _pth and os.path.exists(_pth):
             _pp, _nn = load_pairs(_pth)
@@ -162,8 +195,19 @@ def train(args):
                 extra.add(_r[0]); extra.add(_r[1])
     if args.llm and os.path.exists(BOUNDARY):
         extra.update(load_mu(BOUNDARY).keys())
+    # fused graded round: union its corpus-prefixed keys, each embedding its TITLE (embed_text), not the key.
+    graded_rows, graded_text = ([], {})
+    if args.graded and os.path.exists(args.graded):
+        graded_rows, graded_text = load_graded(args.graded, args.graded_nodes)
+        for _k, _t in graded_text.items():
+            if _k not in set(names):
+                extra.add(_k); extra_texts[_k] = _t
     names = list(dict.fromkeys(list(names) + sorted(extra - set(names))))
-    q, p, idx = build_e5_tables(names, cache_path=os.environ.get("UW_E5_CACHE", os.path.join(ROOT, "e5_tables.pt")))
+    cache = os.environ.get("UW_E5_CACHE", os.path.join(ROOT, "e5_tables.pt"))
+    if args.graded:                                       # keep the base cache pristine; graded set differs
+        cache = cache.replace(".pt", "_graded.pt")
+    q, p, idx = build_e5_tables(names, cache_path=cache, texts=extra_texts, device=str(device),
+                                batch_size=128 if device.type == "cuda" else 512)
     tok = Tokenizer(q, p, idx, parents, deg, k=args.k, beta=1.0, max_anc=args.max_anc)
 
     rng = random.Random(args.seed)
@@ -209,6 +253,16 @@ def train(args):
         llm = [(n, "Physics", m) for n, m in bmu.items() if n in idx]
         print(f"LLM (already-bought boundary fixture, no new spend): {len(llm)} directional labels")
 
+    # fused graded round (mixed-operator, hand-curated): hold out 15% for eval; bridges down-weighted in loss
+    graded_rows = [r for r in graded_rows if r[0] in idx and r[1] in idx]
+    rng.shuffle(graded_rows)
+    n_gh = int(0.15 * len(graded_rows))
+    graded_hold, graded_tr = graded_rows[:n_gh], graded_rows[n_gh:]
+    if args.graded:
+        from collections import Counter as _C
+        print(f"GRADED round: {len(graded_tr)} train / {len(graded_hold)} held-out "
+              f"(ops {dict(_C(r[3] for r in graded_tr))}; bridge weight {args.bridge_weight:g})")
+
     torch.manual_seed(args.seed)
     model = MuAttention(d_model=q.shape[1], n_heads=args.heads, n_layers=args.layers)
     if args.init_from:                                    # warm start — DON'T reinit the head (fine-tune)
@@ -231,8 +285,13 @@ def train(args):
         model.load_state_dict(own)
         print(f"WARM START from {os.path.basename(args.init_from)} (fine-tune, head NOT reinitialised) "
               f"@ lr {args.lr:g}" + (f"; grew {grown} for new op(s), ELEM seeded from SYM" if grown else ""))
+    model.to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     m = args.margin
+
+    def bld(items, **kw):                                  # tokenize on CPU, move the batch to the device
+        b = tok.build(items, **kw)
+        return {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in b.items()}
 
     new_corpus = CORPORA.get(args.pairs_corpus, SW)        # corpus tag for the --pairs (new) data
     def draw_sym(pool, replay, k):
@@ -260,7 +319,7 @@ def train(args):
             wiki_items = ([(c, par, OPS["WIKI"], SW, GRAPHJ) for c, par in eb]
                           + [(par, c, OPS["WIKI"], SW, GRAPHJ) for c, par in eb]
                           + [(c, negpar[i], OPS["WIKI"], SW, GRAPHJ) for i, (c, par) in enumerate(eb)])
-            mu_w = model(**tok.build(wiki_items, train=True, rng=rng, p_mask_prov=args.prov_mask))
+            mu_w = model(**bld(wiki_items, train=True, rng=rng, p_mask_prov=args.prov_mask))
             mu_cp, mu_pc, mu_cpn = mu_w[:args.bs], mu_w[args.bs:2 * args.bs], mu_w[2 * args.bs:]
             L_wiki = (bce(mu_pc, 0) + bce(mu_cpn, 0)
                       + args.wiki_abs * bce(mu_cp, 0.9)
@@ -273,8 +332,8 @@ def train(args):
         sb_j = [HAIKU] * half + [GRAPHJ] * (args.bs - half)             # pos=bought, neg=free non-edge
         sym_items = ([(it[0], it[1], OPS["SYM"], cid, j) for (it, cid), j in zip(sb, sb_j)] +
                      [(it[1], it[0], OPS["SYM"], cid, j) for (it, cid), j in zip(sb, sb_j)])
-        tgt = torch.tensor([it[2] for it, _ in sb])
-        mu_s = model(**tok.build(sym_items, train=True, rng=rng, p_mask_prov=args.prov_mask))
+        tgt = torch.tensor([it[2] for it, _ in sb]).to(device)
+        mu_s = model(**bld(sym_items, train=True, rng=rng, p_mask_prov=args.prov_mask))
         mu_ab, mu_ba = mu_s[:len(sb)], mu_s[len(sb):]
         L_sym = F.mse_loss(mu_ab, tgt) + F.mse_loss(mu_ba, tgt)
         # ELEM (element-of: directional + graded) — μ(page|category) toward the graded centrality target,
@@ -290,22 +349,37 @@ def train(args):
             else:
                 fwd = [(r[1], r[0], OPS["ELEM"], new_corpus, HAIKU) for r in eb2]   # μ(page|cat)
                 rev = [(r[0], r[1], OPS["ELEM"], new_corpus, HAIKU) for r in eb2]   # μ(cat|page)
-            mu_e = model(**tok.build(fwd + rev, train=True, rng=rng, p_mask_prov=args.prov_mask))
+            mu_e = model(**bld(fwd + rev, train=True, rng=rng, p_mask_prov=args.prov_mask))
             mu_ef, mu_er = mu_e[:args.bs], mu_e[args.bs:]
-            tgt_e = torch.tensor([r[2] for r in eb2])
+            tgt_e = torch.tensor([r[2] for r in eb2]).to(device)
             posmask = (tgt_e > 0).float()
             L_elem = (F.mse_loss(mu_ef, tgt_e)
                       + args.margin_weight * (F.relu(m - (mu_ef - mu_er)) * posmask).sum()
                       / posmask.sum().clamp_min(1.0))
+        # GRADED (fused multi-corpus, hand-curated) — per-row operator, weighted MSE to the calibrated μ.
+        # bridges (μ≈0.9 "same concept", the bulk) are DOWN-WEIGHTED so they don't swamp the directional
+        # WIKI/ELEM signal. Endpoints carry corpus/judge (maskable) + node-type tags (when --use-nodetype).
+        L_graded = torch.zeros(())
+        if graded_tr and not args.sym_only:
+            gb = [graded_tr[rng.randrange(len(graded_tr))] for _ in range(args.bs)]
+            if args.use_nodetype:
+                gi = [(r[0], r[1], OPS[r[3]], CORPORA[r[7]], JUDGES[r[8]], nt(r[5]), nt(r[6])) for r in gb]
+            else:
+                gi = [(r[0], r[1], OPS[r[3]], CORPORA[r[7]], JUDGES[r[8]]) for r in gb]
+            gt = torch.tensor([r[2] for r in gb]).to(device)
+            gw = torch.tensor([args.bridge_weight if r[4] == "bridge" else 1.0 for r in gb]).to(device)
+            mu_g = model(**bld(gi, train=True, rng=rng, p_mask_prov=args.prov_mask))
+            L_graded = (gw * (mu_g - gt) ** 2).sum() / gw.sum().clamp_min(1.0)
         loss = (args.sym_weight * L_sym + (0.0 if args.sym_only else args.wiki_weight * L_wiki)
-                + (args.elem_weight * L_elem if (elem_tr and not args.sym_only) else 0.0))
+                + (args.elem_weight * L_elem if (elem_tr and not args.sym_only) else 0.0)
+                + (args.graded_weight * L_graded if (graded_tr and not args.sym_only) else 0.0))
         # LLM (optional, already-bought) — skipped in single-task SYM mode
         L_llm = torch.zeros(())
         if llm and not args.sym_only:
             lb = [llm[rng.randrange(len(llm))] for _ in range(args.bs)]
             li = [(n, r, OPS["LLM"], SW, HAIKU) for n, r, _ in lb]
-            lt = torch.tensor([mu for _, _, mu in lb])
-            L_llm = F.mse_loss(model(**tok.build(li, train=True, rng=rng, p_mask_prov=args.prov_mask)), lt)
+            lt = torch.tensor([mu for _, _, mu in lb]).to(device)
+            L_llm = F.mse_loss(model(**bld(li, train=True, rng=rng, p_mask_prov=args.prov_mask)), lt)
             loss = loss + args.llm_weight * L_llm
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -313,19 +387,40 @@ def train(args):
         if (step + 1) % max(1, args.steps // 6) == 0:
             print(f"  step {step+1:5d}  L_sym {float(L_sym):.4f}  L_wiki {float(L_wiki):.4f}"
                   + (f"  L_elem {float(L_elem):.4f}" if (elem_tr and not args.sym_only) else "")
+                  + (f"  L_graded {float(L_graded):.4f}" if (graded_tr and not args.sym_only) else "")
                   + (f"  L_llm {float(L_llm):.4f}" if (llm and not args.sym_only) else ""))
 
     model.eval()
-    validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_hold=elem_hold)
+    validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_hold=elem_hold,
+             graded_hold=graded_hold)
     if args.save:
         torch.save({"state": model.state_dict(), "cfg": {"d_model": q.shape[1], "heads": args.heads,
                     "layers": args.layers}}, args.save)
         print(f"\nsaved model → {args.save}")
 
 
-def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_hold=None):
+def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_hold=None, graded_hold=None):
     print("\n=== PER-OPERATOR VALIDATION ===")
     ops = ["SYM"] if args.sym_only else (["SYM", "WIKI"] + (["LLM"] if llm else []))
+
+    # --- GRADED: held-out fused-round fit, per operator (revealed provenance + node-type as trained) ---
+    if graded_hold and not args.sym_only:
+        from collections import defaultdict
+        byop = defaultdict(list)
+        for r in graded_hold:
+            byop[r[3]].append(r)
+        print(f"[GRADED] held-out fused round ({len(graded_hold)} targets) — μ vs calibrated target:")
+        for op in sorted(byop):
+            rs = byop[op]
+            if args.use_nodetype:
+                items = [(r[0], r[1], OPS[op], CORPORA[r[7]], JUDGES[r[8]], nt(r[5]), nt(r[6])) for r in rs]
+            else:
+                items = [(r[0], r[1], OPS[op], CORPORA[r[7]], JUDGES[r[8]]) for r in rs]
+            pred = mu_batch(model, tok, items).tolist()
+            tgt = [r[2] for r in rs]
+            mse = sum((pred[i] - tgt[i]) ** 2 for i in range(len(rs))) / len(rs)
+            corr = pearson(pred, tgt) if len(set(tgt)) > 1 else float("nan")
+            print(f"  {op:5s} n={len(rs):4d}  MSE {mse:.4f}  r {corr:+.3f}")
 
     # --- WIKI: held-out edge order-accuracy ---
     if not args.sym_only:
@@ -567,6 +662,13 @@ def main():
                     "strength (REPORT_element_operator.md); 3 resolves the interference. ~3.6M params.")
     ap.add_argument("--llm", action="store_true", help="add the LLM operator (already-bought fixture)")
     ap.add_argument("--pairs", default=PAIRS, help="scored SYM pairs file (use mu_pairs_scored_large_260620-223001.tsv)")
+    ap.add_argument("--graded", default=None, help="fused multi-corpus graded round (build_graded_round.py "
+                    "<out>_pairs.tsv); its <out>_nodes.tsv supplies the e5 embed_text per fused node")
+    ap.add_argument("--graded-nodes", default=None, help="override the graded nodes file (default: derive "
+                    "from --graded by _pairs→_nodes)")
+    ap.add_argument("--graded-weight", type=float, default=1.0, help="graded-round loss weight")
+    ap.add_argument("--bridge-weight", type=float, default=0.2, help="down-weight bridge targets in the "
+                    "graded loss (they dominate at μ≈0.9; keep them from swamping directional signal)")
     ap.add_argument("--sym-weight", type=float, default=1.0, help="SYM loss weight (ablation lever b)")
     ap.add_argument("--sym-only", action="store_true", help="single-task SYM head (ablation lever c)")
     ap.add_argument("--quick-val", action="store_true", help="skip dense-map emission/lin-agreement")
@@ -580,6 +682,8 @@ def main():
                     "the replay set (0.3–0.5 typical)")
     ap.add_argument("--pairs-corpus", default="simplewiki", choices=list(CORPORA),
                     help="provenance corpus tag for the --pairs (new) data; replay stays simplewiki")
+    ap.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"],
+                    help="auto = cuda if available else cpu; keep --bs modest on a small GPU")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--save", default=None)
     args = ap.parse_args()
