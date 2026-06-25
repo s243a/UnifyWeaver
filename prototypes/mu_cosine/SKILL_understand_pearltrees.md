@@ -23,8 +23,20 @@ A Pearltrees account is a forest of **trees** (collections). The harvest stores 
 | 2 | **Collection** | a child tree (a sub-collection) — has `content_tree_id`/`content_tree_title` |
 | 1 | **PagePearl** | a URL bookmark — has `url` (often a Wikipedia page → a bridge; or an external resource) |
 | 5 | **Shortcut** | an alias / cross-reference to another tree elsewhere in the forest |
-| 7 | **Section** | a section header — grouping only |
+| 7 | **Section** | a section **header** — retypes the pearls that follow it (next section) |
 | 4 | **Root** | the tree's own root pearl |
+
+### The PRINCIPAL relationship + ordering
+
+- **Principal parent-child.** The Pearltrees **tree containment** (a Collection pearl = a child tree) is
+  the **one** canonical parent-child the user designated as the *principle* relationship — captured as
+  `subtopic` (parent collection → child). The same fact is what an **RDF export** encodes (RDF gives one
+  parent per item). The section-header relations below (`subcategory`/`super_category`/`see_also`/…) are
+  **secondary annotations** layered on top of it. ("Principle" = the one chosen, not necessarily the best.)
+- **Ordering / nested set.** Pearls carry a position: newer data a single `pos`; older data `leftpos` +
+  `rightpos` (a nested-set model — equivalent to `pos` when `leftpos == rightpos`, i.e. a leaf). The DB's
+  `left_index`/`right_index` are these; the parser reads pearls in `left_index` order so each section
+  header scopes the pearls after it.
 
 ---
 
@@ -37,7 +49,8 @@ relation of every pearl after it **until the next header**. The recognised heade
 |---|---|
 | `Subcategories` | `subcategory` (narrower category) |
 | `Subtopics` / `More Subtopics` | `element_of` (element relations) |
-| `Super Categories` / `Navigate Up` | `super_category` (parent — usually a super-category, but could be a page's parent) |
+| `Super Categories` | `super_category` (parent — usually a super-category, but could be a page's parent) |
+| `Navigate Up` | `super_category` too, but it is **redundant convenience backup** — it just re-points to the **principal parent** (the tree containment) so the user can navigate up from the bottom of the page (the Pearltrees app lacks an up button). Safe to dedup/ignore; it adds no information beyond the principal parent. |
 | `See Also` | `see_also` (associative) |
 | `Wiki / Encyclopedia type References` | the links here **bridge the whole TREE to enwiki** (collection-level bridge) |
 | topical groupers (`Algebra`, `Calculus`, …) / junk (`Meta`, `To sort`, `Friends Pages`) | none — fall back to the contentType default |
@@ -77,4 +90,9 @@ when reading raw harvested rows directly.
   **bridges** live (the within-operator type diversity that makes the node-type token informative —
   `REPORT_nodetype.md`).
 - It joins on **slug** to SimpleMind (`SKILL_understand_smmx.md`) and on **enwiki_alias** to the category /
-  page graph — three corpora, one identity fabric.
+  page graph — three corpora, one identity fabric. **Many SimpleMind nodes link to a Pearltrees
+  collection** (the pearltrees urllink on a topic), so there are **lots of SimpleMind↔Pearltrees bridges**
+  on the shared slug — a `mindmap_node` and a `pearltrees_collection` for the *same concept* (different
+  node-type, same key). The fusion step (`gen_mindmap_pairs.py`) should keep them as a typed `bridge` pair
+  rather than silently collapsing the key, since that type pairing is exactly the within-operator diversity
+  the node-type token needs.

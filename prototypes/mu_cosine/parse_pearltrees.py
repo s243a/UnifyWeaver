@@ -8,7 +8,9 @@ SECTION headers (contentType 7) retype the pearls that FOLLOW them (until the ne
 SimpleMind's structural containers — read in `left_index` order:
   * "Subcategories"                        → `subcategory`    (narrower category)
   * "Subtopics" / "More Subtopics"         → `element_of`     (element relations)
-  * "Super Categories" / "Navigate Up"     → `super_category` (parent — super-cat, or a page's parent)
+  * "Super Categories"                     → `super_category` (parent — super-cat, or a page's parent)
+  * "Navigate Up"                          → `super_category` too, but REDUNDANT: it just re-points to the
+       principal parent (tree containment) as a navigate-from-the-bottom convenience; dedup-safe.
   * "See Also"                             → `see_also`       (associative)
   * "Wiki / Encyclopedia type References"  → the wiki links bridge the whole TREE to enwiki
   * topical/junk headers (Algebra, Meta, To sort, …) → no retype; contentType default
