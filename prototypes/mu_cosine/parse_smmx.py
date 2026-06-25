@@ -10,7 +10,9 @@ Relation semantics (the structural container retypes its descendants' edge to th
   * `cloudmapref` (relative path to another .smmx, when no container tags it) → DIRECTIONAL by the path:
        `../` UP to a parent folder → `super_category` (target map is a broader PARENT tree);
        DOWN into a subfolder       → `subcategory`    (target map is narrower / a child)
-  * explicit <relation source target>     → `assoc`           (cross-link)
+  * explicit <relation source target>, or an INTRA-MAP `cloudmapref="."` (an empty list/chapter connector
+       referring to an adjacent node by `element` GUID) → `assoc` (cross-link)
+  * `element` GUID on a cloudmapref → resolve to the SPECIFIC target node (not the map root)
   * a child labelled "wiki"/"Wikipedia"/"enwiki", or any node with a direct en.wikipedia.org urllink
        → a `bridge` edge: the node ↔ the SAME concept in enwiki, a node of type `category` (Category:…) or
        `page`. Same concept, DIFFERENT node-type (mindmap_node ⟷ category/page), possibly different name —
@@ -33,6 +35,10 @@ SEE_ALSO = {"See Also", "Via Link", "Related"}
 SUPER = {"Super Categories", "Super Category", "Navigate Up"}
 STRUCTURAL = SEE_ALSO | SUPER | {""}            # "" = blank grouping/section node
 WIKI_LABEL = re.compile(r"^\s*(wiki|wikipedia|enwiki)\s*$", re.I)
+# NAVIGATION nodes in book/index maps: page markers (pg12, Pg6) and section numbers (1.1, 2.3, A.4) —
+# reading-order scaffolding, NOT concepts. Tagged node_type="navigation"; <relation> chains between them
+# are `sequence` (reading order), not membership. The real concepts hang off `See Also` nodes.
+NAV_LABEL = re.compile(r"^([Pp][gG]\.?\s*\d+|\d+(\.\d+)+|[A-Za-z]\.\d+)$")
 PEARL = re.compile(r"pearltrees\.com/[^/]+/([^/\"]+)/id(\d+)")
 WIKI_URL = re.compile(r"en\.wikipedia\.org/wiki/(.+)$")
 
@@ -98,6 +104,24 @@ def root_identity(smmx_path):
     return out
 
 
+_GUID_CACHE = {}
+def node_by_guid(smmx_path, guid):
+    """Resolve a cloudmapref `element` GUID to the SPECIFIC node it targets in the linked map (not the
+    root). Returns (key, title, slug, pid) or None."""
+    if smmx_path not in _GUID_CACHE:
+        d = {}
+        try:
+            for t in load_xml(smmx_path).findall(".//topic"):
+                g = t.get("guid")
+                if g:
+                    sl, pid = slug_of(t)
+                    d[g] = (_key_from(sl, label(t)), label(t), sl or "", pid or "")
+        except Exception:
+            pass
+        _GUID_CACHE[smmx_path] = d
+    return _GUID_CACHE[smmx_path].get(guid)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("smmx")
@@ -151,34 +175,46 @@ def main():
             continue                               # skip wiki-anchor holders and structural containers
         k = key(t)
         sl, pid = slug_of(t)
+        ntype = "navigation" if NAV_LABEL.match(label(t)) else "mindmap_node"
         nodes[k] = {"title": label(t), "slug": sl or "", "pid": pid or "",
-                    "enwiki": enwiki.get(i, ""), "ntype": "mindmap_node"}
+                    "enwiki": enwiki.get(i, ""), "ntype": ntype}
         id2key[i] = k
         # hierarchy edge to effective (non-structural) parent
         pp, rel = eff_parent_and_rel(i)
         if pp in topics and pp not in is_anchor:
             edges.append((key(topics[pp]), k, rel))
 
-    # cross-map links (cloudmapref) — over ALL topics, since a blank "link-holder" child often carries the
-    # ref; attribute it to the holder if it's a real node, else to its effective (non-structural) parent.
+    # cross-map links (cloudmapref) — over ALL topics, since a blank "link-holder"/connector child often
+    # carries the ref; attribute it to the holder if real, else to its effective (non-structural) parent.
+    guid2t = {t.get("guid"): t for t in topics.values() if t.get("guid")}
     for i, t in topics.items():
         ref, el = cloud_of(t)
         if not ref:
             continue
-        if label(t) in STRUCTURAL or i in is_anchor:
-            src_id, _ = eff_parent_and_rel(i)
+        src_id = eff_parent_and_rel(i)[0] if (label(t) in STRUCTURAL or i in is_anchor) else i
+        if src_id not in topics or src_id in is_anchor:
+            continue
+        segs = [s for s in re.split(r"[\\/]+", ref) if s and s != "."]
+        if not segs:
+            # cloudmapref="." ⇒ INTRA-MAP reference to a specific node by `element` GUID. An empty
+            # "connector" node doing this is often joining a node to an ADJACENT one (list/chapter
+            # structure) ⇒ treat as an associative cross-link.
+            tt = guid2t.get(el)
+            if tt is None:
+                continue
+            tsl, tpid = slug_of(tt)
+            tkey, rel = key(tt), "assoc"
+            nodes.setdefault(tkey, {"title": label(tt), "slug": tsl or "", "pid": tpid or "",
+                                    "enwiki": "", "ntype": "mindmap_node"})
         else:
-            src_id = i
-        if src_id in topics and src_id not in is_anchor:
-            # DIRECTION from the relative path (when no container tags the relation): a ref UP to a parent
-            # folder (`../`) ⇒ the target map is a broader PARENT (`super_category`); a ref DOWN into a
-            # subfolder ⇒ the target is narrower (`subcategory`). Mirrors the directory-as-taxonomy layout.
-            segs = [s for s in re.split(r"[\\/]+", ref) if s and s != "."]
+            # DIRECTION from the relative path: `../` UP ⇒ broader (`super_category`); subfolder DOWN ⇒
+            # narrower (`subcategory`). NAME the target from the linked map — the SPECIFIC node if an
+            # `element` GUID is given, else the map's ROOT (holder/parent nodes are usually unnamed).
             rel = "super_category" if ".." in segs else "subcategory"
-            # NAME the target from the linked map's ROOT node (holder/parent nodes are usually unnamed);
-            # fall back to the filename if the linked file can't be opened.
-            ident = None if args.no_resolve else root_identity(
-                os.path.normpath(os.path.join(base_dir, ref.replace("\\", "/"))))
+            tgt_path = os.path.normpath(os.path.join(base_dir, ref.replace("\\", "/")))
+            ident = None
+            if not args.no_resolve:
+                ident = (node_by_guid(tgt_path, el) if el else None) or root_identity(tgt_path)
             if ident:
                 tkey, ttitle, tsl, tpid = ident
                 nodes.setdefault(tkey, {"title": ttitle, "slug": tsl, "pid": tpid,
@@ -188,7 +224,7 @@ def main():
                 tkey = re.sub(r"[^a-z0-9]+", "_", fn.lower()).strip("_")
                 nodes.setdefault(tkey, {"title": fn, "slug": "", "pid": "",
                                         "enwiki": "", "ntype": "mindmap_node"})
-            edges.append((key(topics[src_id]), tkey, rel))
+        edges.append((key(topics[src_id]), tkey, rel))
 
     # BRIDGE edges: a node tagged wiki/Wikipedia/enwiki ⇒ the SAME concept in enwiki, but a DIFFERENT
     # node-type (mindmap_node ⟷ category/page) and possibly a different name. These cross-corpus identity
@@ -210,11 +246,13 @@ def main():
                               "enwiki": ek, "ntype": etype})
         edges.append((id2key[i], ek, "bridge"))
 
-    # explicit <relation source target> → assoc
+    # explicit <relation source target>: a chain between NAVIGATION nodes (page/section) is reading-order
+    # `sequence` (book/course list structure); otherwise a genuine `assoc` cross-link.
     for r in root.findall(".//relation"):
         s, d = topics.get(r.get("source")), topics.get(r.get("target"))
         if s is not None and d is not None:
-            edges.append((key(s), key(d), "assoc"))
+            rel = "sequence" if (NAV_LABEL.match(label(s)) and NAV_LABEL.match(label(d))) else "assoc"
+            edges.append((key(s), key(d), rel))
 
     # de-dup edges, drop self/empty
     seen, uniq = set(), []
@@ -234,7 +272,8 @@ def main():
             for k, n in sorted(nodes.items()):
                 f.write(f"{k}\t{n.get('ntype','mindmap_node')}\t{n['title']}\t{n['slug']}\t{n['pid']}\t{n['enwiki']}\n")
         with open(args.out_prefix + "_edges.tsv", "w", encoding="utf-8") as f:
-            f.write("# src_key\tdst_key\trelation  (subtopic|subcategory|see_also|super_category|bridge|assoc)\n")
+            f.write("# src_key\tdst_key\trelation  "
+                    "(subtopic|subcategory|see_also|super_category|bridge|sequence|assoc)\n")
             for a, b, rel in uniq:
                 f.write(f"{a}\t{b}\t{rel}\n")
         print(f"  wrote {args.out_prefix}_nodes.tsv + {args.out_prefix}_edges.tsv")

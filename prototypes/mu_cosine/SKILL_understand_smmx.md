@@ -44,7 +44,7 @@ Some nodes are **containers / scaffolding**, not real concepts. Skip them as nod
 |---|---|---|
 | `See Also`, `Via Link`, `Related` | **see-also**: weakly/associatively related (not membership) | `see_also` |
 | `Super Categories`, `Super Category`, `Navigate Up` | **broader / parent** category of the attached node | `super_category` |
-| blank (`text=""`) / section headers | just visual grouping — pass through, keep the relation from above | — |
+| blank (`text=""`) / section headers | usually just visual grouping — pass through, keep the relation from above. **But** a blank node can also be a **list/sequence connector**: in list-like structures (e.g. chapters) an empty node joins items, and it may carry a `cloudmapref` (often `="."` intra-map, with an `element` GUID) that **refers to an adjacent node** — treat that as an associative link (`assoc`) to the referenced node | — / `assoc` |
 | a node labelled **`wiki`** / `Wikipedia` / `enwiki` (with a Wikipedia urllink), or any node with a direct `en.wikipedia.org` urllink | a **`bridge`**: the node ↔ the SAME concept in enwiki (a `category` if `Category:…`, else a `page`) — same concept, **different node-type**, possibly different name | `bridge` |
 
 Everything else is a **real node**, and a plain parent→child link (after skipping any containers) is a
@@ -65,6 +65,25 @@ Cybernetics
 ```
 So a child *directly* under `Cybernetics` is a subtopic; a child under a `See Also` that hangs off
 `Cybernetics` is a *see-also* of Cybernetics (grandparent), not of the `See Also` node.
+
+---
+
+## Book / course maps — navigation skeleton vs concepts
+
+Some maps index a **book** or **course** and are mostly *navigation*, not concept-membership:
+
+- **Lists via empty containers + sequential names.** An empty node groups list items, whose names carry
+  the order: `Modules → [empty] → Week #1, Week #2 …`; `Chapter 2 → 2.1, 2.2 …`. The empty node is plain
+  grouping (pass through); the items are the list. (`CAD-111`, `Books (Tensors)`.)
+- **Reading order via `<relation>`.** Page/section nodes (`pg18`, `2.3`) are **navigation** (tagged
+  `node_type=navigation`); `<relation>` chains between them are `sequence` (page-to-page reading order),
+  **not** membership.
+- **The concepts hang off `See Also`.** The valuable nodes are the `See Also` targets — each a real concept
+  with a Pearltrees slug and often a `wiki` child ⇒ a **`bridge`** (these book/course maps are a richer
+  source of bridges than the top-level maps).
+
+**When grading membership, use the `see_also`/`bridge`/concept edges; treat the chapter/week/page skeleton
+(`subtopic` between `navigation` nodes, and `sequence`) as book structure, not topic membership.**
 
 ---
 
@@ -97,6 +116,24 @@ python3 parse_smmx.py path/to/Map.smmx --out-prefix map
 Read `map_edges.tsv` instead of eyeballing the XML. (Run with no `--out-prefix` for a summary + the first
 edges on stdout.) The tool applies exactly the rules above; use it to avoid mistakes on large maps, and use
 the by-hand rules to sanity-check or when only XML is pasted to you.
+
+---
+
+## For vision-capable models: render the map to an image
+
+If you are a **vision-capable** model (e.g. Gemini, recent Opus/ChatGPT — *not* a text-only Haiku pass),
+a **rendered picture** of the mind map often conveys structure faster than the XML: the spatial layout,
+colour palette, branch grouping, and which children hang off a `See Also` vs a `Super Categories` node are
+all visible at a glance, and SimpleMind's own visual conventions become legible.
+
+The repo's mind-map renderers can produce that image from the parsed graph (or `.smmx`):
+`src/unifyweaver/mindmap/render/` — **`graphviz_renderer.pl`** (→ Graphviz DOT → PNG/SVG, the simplest
+static image), **`d3_renderer.pl`** (interactive HTML/SVG), `mm_renderer.pl`, and `smmx_renderer.pl`
+(round-trips *back* to `.smmx`). Render with `graphviz_renderer.pl`, then read the resulting image.
+
+Use the image as the **primary** view and the typed edges (`parse_smmx.py`) as the **ground truth** to
+resolve anything ambiguous — colours/positions hint at relation type, but the container-retyping rules
+above are authoritative. A text-only grader should ignore this section and work from the XML / TSVs.
 
 ---
 
