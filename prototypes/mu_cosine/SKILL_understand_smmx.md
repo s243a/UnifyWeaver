@@ -25,8 +25,11 @@ A `.smmx` file is a **zip** containing `document/mindmap.xml`. The XML is a tree
   - `urllink="…en.wikipedia.org/wiki/<Title>"` — a **Wikipedia anchor** for the node (the join key to
     enwiki).
   - `cloudmapref="../Other Map.smmx" element="…"` — a **cross-map link** (relative path) to **another
-    mindmap, at its ROOT** (`element` is usually absent ⇒ the whole map). These form the upward chain to
-    broader "parent tree" maps.
+    mindmap, at its ROOT** (`element` usually absent ⇒ the whole map). **The path direction sets the
+    relation** (when no container tags it): a `../` path UP to a **parent folder** ⇒ the target is a
+    broader **parent / `super_category`** (the upward parent-tree chain); a path DOWN into a **subfolder**
+    ⇒ the target is a narrower **`subcategory`** (a dedicated sub-map expanding this node — e.g. a
+    `Chaos theory` node linking down to its own detailed `Chaos theory.smmx`).
 - `<relation source="123" target="141"/>` (at the end of the map) — an explicit **associative cross-link**
   between two topics.
 
@@ -42,7 +45,7 @@ Some nodes are **containers / scaffolding**, not real concepts. Skip them as nod
 | `See Also`, `Via Link`, `Related` | **see-also**: weakly/associatively related (not membership) | `see_also` |
 | `Super Categories`, `Super Category`, `Navigate Up` | **broader / parent** category of the attached node | `super_category` |
 | blank (`text=""`) / section headers | just visual grouping — pass through, keep the relation from above | — |
-| a node labelled **`wiki`** / `Wikipedia` (with a Wikipedia urllink) | NOT a node — it gives the **enwiki anchor** of its **parent** | (anchor) |
+| a node labelled **`wiki`** / `Wikipedia` / `enwiki` (with a Wikipedia urllink), or any node with a direct `en.wikipedia.org` urllink | a **`bridge`**: the node ↔ the SAME concept in enwiki (a `category` if `Category:…`, else a `page`) — same concept, **different node-type**, possibly different name | `bridge` |
 
 Everything else is a **real node**, and a plain parent→child link (after skipping any containers) is a
 **`subtopic`** = membership / narrower-than.
@@ -74,8 +77,11 @@ For each real (non-container, non-`wiki`) node:
    `see_also`; `Super Categories` ⇒ `super_category`; none (or only blanks) ⇒ `subtopic`.
 3. Record the node's **Pearltrees slug** (identity) and any **Wikipedia anchor** (its own wiki urllink, or
    a `wiki`-labelled child).
-4. `cloudmapref` on a node (or its blank link-holder child) ⇒ a `cloudmapref` edge to that other map's root
-   (a broader parent-tree / context).
+4. `cloudmapref` on a node (or its blank link-holder child) ⇒ a cross-map edge to that other map's root.
+   Set the relation by the **path direction**: `../` (parent folder) ⇒ `super_category` (broader);
+   subfolder (down) ⇒ `subcategory` (narrower). **The super-category/parent holder nodes are usually
+   UNNAMED** — to name the target you must **open the linked `.smmx` and read its ROOT node's title +
+   Pearltrees slug** (the tool does this automatically; `--no-resolve` falls back to the filename).
 
 ---
 
@@ -100,9 +106,11 @@ These relations map onto membership strength for `μ(node | root)` grading (huma
 
 | relation | μ reading |
 |---|---|
-| `subtopic` | **high** membership — the child is part of / narrower than the parent topic |
-| `super_category` / `cloudmapref` | the *parent direction* — the target is **broader**; μ(node\|target) high, reverse low |
+| `subtopic` | **high** membership — the child is part of / narrower than the parent topic (in-map hierarchy) |
+| `subcategory` | **high** membership — the target map is narrower / a child (downward cloudmapref); μ(target\|node) high |
+| `super_category` | the *parent direction* — the target is **broader** (in-map Super Categories, or upward cloudmapref); μ(node\|target) high, reverse low |
 | `see_also` | **associative**, not membership — moderate-to-low, symmetric (grade like a boundary pair) |
+| `bridge` | **near-identity** across corpora — the mindmap node and its enwiki `category`/`page` are the *same concept* (μ ≈ high). The endpoints differ in **node-type** (mindmap_node ⟷ category/page) and possibly name; this is the cross-corpus join (scarce in maps, more in Pearltrees) |
 | `assoc` (explicit relation) | a deliberate cross-link — moderate associative |
 
 The Pearltrees slug is the node identity; the `enwiki_alias`, where present, is the bridge into the enwiki
