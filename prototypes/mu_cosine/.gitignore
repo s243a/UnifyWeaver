@@ -38,3 +38,4 @@ mu_pairs_pages_gaps.tsv
 mu_pairs_scored_pages_gaps_*_div.tsv
 .pt_cache/
 *_bridges.tsv
+*_fused_*.tsv
