@@ -18,6 +18,8 @@ import re
 import subprocess
 import sys
 
+from privacy import is_private_title, propagate as privacy_propagate    # scrub-everywhere (see privacy.py)
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WIKI = re.compile(r"en\.wikipedia\.org/wiki/(.+)$")
 PT_REL = {"element_of": "element_of", "collection_of": "subtopic", "subtopic": "subtopic",
@@ -68,28 +70,51 @@ def main():
         if a and b:
             edges.append((f"mm:{norm(a)}", f"mm:{norm(b)}", rel))
 
-    # 2) fold in the cached Pearltrees harvest for each SM node, + the SM↔PT and PT↔enwiki bridges
+    # 2) fold in the cached Pearltrees harvest for each SM node, + the SM↔PT and PT↔enwiki bridges.
+    # PRIVACY (scrub-everywhere): raw .pt_cache harvests are NOT pre-scrubbed (they come from the private
+    # harvester, not parse_pearltrees.py), so apply the SAME rule here — drop private-titled pt nodes and,
+    # inherited down pt containment, their whole subtree — before building any fused edge.
+    pt_rows, pt_children, pt_priv = [], {}, set()       # rows ; norm(parent)→{norm(child)} ; private norm-keys
     for slug, tid in sm_seeds.items():
         path = os.path.join(args.pt_cache, f"pt_{tid}.tsv")
         if not os.path.exists(path):
             continue
-        edges.append((f"mm:{slug}", addn("pt", slug, "pearltrees_collection", slug), "bridge"))  # same concept
         for hl in open(path, encoding="utf-8"):
             if hl.startswith("#"):
                 continue
             f = hl.rstrip("\n").split("\t")             # parent, child, rel, child_type, url, ...
             if len(f) < 3:
                 continue
-            pk = addn("pt", f[0], "pearltrees_collection", f[0])
-            m = WIKI.search(f[4]) if len(f) > 4 else None
-            if m:                                       # PagePearl whose url is enwiki → a bridge
-                title = m.group(1).split("#")[0].replace("%28", "(").replace("%29", ")")
-                wk = addn("wiki", title, "category" if title.startswith("Category:") else "page", title)
-                edges.append((pk, wk, "bridge"))
-            else:
-                ck = addn("pt", f[1], "pearltrees_collection" if f[3] != "page" else "page", f[1]) if len(f) > 3 else None
-                if ck:
-                    edges.append((pk, ck, PT_REL.get(f[2], "assoc")))
+            pt_rows.append(f)
+            if is_private_title(f[0]):
+                pt_priv.add(norm(f[0]))
+            if len(f) > 1 and is_private_title(f[1]):
+                pt_priv.add(norm(f[1]))
+            if len(f) > 3 and f[3] != "page" and f[1]:  # collection child → a containment edge
+                pt_children.setdefault(norm(f[0]), set()).add(norm(f[1]))
+    pt_priv = privacy_propagate(pt_priv, pt_children)   # inherit privacy down the subtree
+    scrub_pt = 0
+
+    for slug, tid in sm_seeds.items():                  # SM↔PT bridge per seed (skip private seeds)
+        if norm(slug) in pt_priv:
+            continue
+        if os.path.exists(os.path.join(args.pt_cache, f"pt_{tid}.tsv")):
+            edges.append((f"mm:{slug}", addn("pt", slug, "pearltrees_collection", slug), "bridge"))
+
+    for f in pt_rows:
+        if norm(f[0]) in pt_priv:                       # private parent → scrub the row
+            scrub_pt += 1; continue
+        pk = addn("pt", f[0], "pearltrees_collection", f[0])
+        m = WIKI.search(f[4]) if len(f) > 4 else None
+        if m:                                           # PagePearl whose url is enwiki → a bridge
+            title = m.group(1).split("#")[0].replace("%28", "(").replace("%29", ")")
+            wk = addn("wiki", title, "category" if title.startswith("Category:") else "page", title)
+            edges.append((pk, wk, "bridge"))
+        elif len(f) > 3:
+            if norm(f[1]) in pt_priv:                   # private child → scrub
+                scrub_pt += 1; continue
+            ck = addn("pt", f[1], "pearltrees_collection" if f[3] != "page" else "page", f[1])
+            edges.append((pk, ck, PT_REL.get(f[2], "assoc")))
 
     # 3) N-hop BFS from the start over the UNDIRECTED fused graph (a hop = any cross-corpus edge)
     adj = collections.defaultdict(set)
@@ -114,6 +139,8 @@ def main():
     ntc = Counter(nodes[k][0] for k in seen if k in nodes)
     print(f"start={start} hops={args.hops}: {len(seen)} nodes {dict(ntc)}, {len(uniq)} edges "
           f"{dict(Counter(r for _, _, r in uniq))}")
+    if scrub_pt or pt_priv:
+        print(f"  PRIVACY: scrubbed {scrub_pt} pt rows ({len(pt_priv)} private pt nodes, inherited)")
     if args.out_prefix:
         with open(args.out_prefix + "_nodes.tsv", "w", encoding="utf-8") as f:
             f.write("# node_key(corpus:slug)\tcorpus\tnode_type\ttitle\n")

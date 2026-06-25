@@ -43,21 +43,10 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = os.path.join(os.path.abspath(os.path.join(ROOT, "..", "..")),
                           ".local", "data", "pearltrees_api", "pearltrees_api.db")
 WIKI_URL = re.compile(r"en\.wikipedia\.org/wiki/(.+)$")
-# PRIVACY (scrub-everywhere — DESIGN_provenance_and_representation.md §Privacy): private data must NEVER reach
-# the public dataset, so it is dropped at PARSE time, inherited down the subtree, with no include-private
-# escape hatch. Two markers: (1) the title contains the word "private" (the user's "*private*" marker node /
-# a root named "… private …"); (2) the Pearltrees `visibility` is set to anything other than public (0).
-# We err toward dropping (a topical "Private equity" would be scrubbed too) and LOG every scrub — a false
-# positive only loses public data, a false negative would leak private data.
-PRIVATE_RE = re.compile(r"(?i)\bprivate\b")
-
-
-def is_private_title(t):
-    return bool(t) and bool(PRIVATE_RE.search(t))
-
-
-def vis_private(v):                                       # Pearltrees visibility: 0 = public; else restricted
-    return v is not None and str(v).strip() not in ("", "0")
+# PRIVACY (scrub-everywhere — DESIGN_provenance_and_representation.md §Privacy + privacy.py): drop private
+# data at PARSE time, inherited down the subtree, no include-private escape hatch. Markers: title contains
+# "private", or Pearltrees `visibility` != public (0). We err toward dropping and LOG every scrub.
+from privacy import is_private_title, vis_private    # noqa: E402  (single source of truth)
 
 
 def slug(title):
