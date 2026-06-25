@@ -25,6 +25,7 @@ Outputs (consumed by the trainer in the next step; not committed — derived fro
 """
 import argparse
 import os
+import random
 from collections import Counter
 
 # corpus prefix (fuse_corpus keys mm:/pt:/wiki:) → CORPORA codebook name, and its default judge.
@@ -76,7 +77,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fused", action="append", required=True, help="fused prefix (repeatable)")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--bridge-neg-ratio", type=float, default=1.0, help="bridge negatives per positive "
+                    "bridge: a bridge source paired with a RANDOM wiki node it is NOT bridged to (μ≈0.1, "
+                    "SYM). Teaches discrimination, not just dominance control. 0 disables.")
+    ap.add_argument("--bridge-neg-mu", type=float, default=0.1)
+    ap.add_argument("--e5-cache", default=None, help="optional e5 table cache (e.g. e5_tables_graded.pt): if "
+                    "given, flag bridges whose endpoints are FAR in frozen e5 (likely bad/non-obvious links) "
+                    "and quarantine them to <out>_bridge_review.tsv for LLM review before training")
+    ap.add_argument("--bridge-min-cos", type=float, default=0.80, help="quarantine a bridge if its endpoints' "
+                    "e5 cosine is below this (only with --e5-cache). e5 cosines are COMPRESSED (~0.78–1.0 in "
+                    "practice), so this is e5-calibrated — 0.80 flags roughly the suspect bottom decile")
+    ap.add_argument("--seed", type=int, default=1)
     args = ap.parse_args()
+    rng = random.Random(args.seed)
 
     nodes = {}                                            # key → (corpus_prefix, node_type, title)
     edges = []
@@ -121,6 +134,56 @@ def main():
         else:                                             # symmetric
             emit(dst, src, hi, op, rel); emit(src, dst, hi, op, rel)
 
+    # --- e5-PRIOR bridge sanity gate: a bridge asserts "same concept across corpora"; if its endpoints are
+    # FAR in frozen e5, the link is suspect (a bad link, or a non-obvious synonym e5 can't see). Quarantine
+    # those for LLM/human review BEFORE training rather than feeding a possibly-wrong μ=0.9 (the user's idea).
+    review = []
+    if args.e5_cache and os.path.exists(args.e5_cache):
+        import torch
+        d = torch.load(args.e5_cache, weights_only=False)
+        vidx = {n: i for i, n in enumerate(d["names"])}
+        vec = d["passage"]                                # unit-normed ⇒ dot product = cosine
+        bridge_pairs = {tuple(sorted((n, r))) for (n, r, _op), v in rows.items() if v[1] == "bridge"}
+        quarantine = set()
+        for a, b in bridge_pairs:
+            ia, ib = vidx.get(a), vidx.get(b)
+            if ia is None or ib is None:
+                continue
+            c = float(vec[ia] @ vec[ib])
+            if c < args.bridge_min_cos:
+                quarantine.add(frozenset((a, b)))
+                review.append((a, b, c))
+        if quarantine:
+            rows = {k: v for k, v in rows.items()
+                    if not (v[1] == "bridge" and frozenset((k[0], k[1])) in quarantine)}
+
+    # --- bridge NEGATIVE sampling: each surviving bridge source vs a random wiki node it is NOT bridged to,
+    # at μ≈bridge_neg_mu (SYM). Teaches discrimination ("THIS pair is the same, random ones aren't") rather
+    # than relying on down-weighting alone. Full-weight (not a "bridge" rel ⇒ trainer won't down-weight them).
+    n_neg = 0
+    if args.bridge_neg_ratio > 0:
+        wiki_nodes = [k for k, v in nodes.items() if v[0] == "wiki"]
+        bsrc = {}                                         # mm/pt source → its true wiki bridge targets
+        for (n, r, _op), v in rows.items():
+            if v[1] == "bridge":
+                w, s = (n, r) if nodes.get(n, ("",))[0] == "wiki" else (r, n)
+                bsrc.setdefault(s, set()).add(w)
+        for s, targets in bsrc.items():
+            for _ in range(int(round(args.bridge_neg_ratio))):
+                w = rng.choice(wiki_nodes) if wiki_nodes else None
+                if not w or w == s or w in targets:
+                    continue
+                emit(s, w, args.bridge_neg_mu, "SYM", "bridge_neg")
+                emit(w, s, args.bridge_neg_mu, "SYM", "bridge_neg")
+                n_neg += 1
+
+    if review:
+        with open(args.out + "_bridge_review.tsv", "w", encoding="utf-8") as f:
+            f.write("# QUARANTINED bridges (e5 cosine < %.2f) — LLM-review before training\n"
+                    "# a\tb\te5_cosine\ta_title\tb_title\n" % args.bridge_min_cos)
+            for a, b, c in sorted(review, key=lambda x: x[2]):
+                f.write(f"{a}\t{b}\t{c:.3f}\t{nodes.get(a,('','',''))[2]}\t{nodes.get(b,('','',''))[2]}\n")
+
     with open(args.out + "_pairs.tsv", "w", encoding="utf-8") as f:
         f.write("# node\troot\tmu\top\trelation\tnode_type\troot_type\tcorpus\tjudge\n")
         for (node, root, op), (mu, rel, nty, rty, corpus, judge) in sorted(rows.items()):
@@ -138,6 +201,11 @@ def main():
     print(f"  by op:       {dict(op_c)}")
     print(f"  by relation: {dict(rel_c)}")
     print(f"  by corpus⊗judge: { {f'{c}/{j}': n for (c, j), n in cj_c.items()} }")
+    if n_neg:
+        print(f"  bridge negatives added: {n_neg} pairs (μ={args.bridge_neg_mu}, full-weight, rel=bridge_neg)")
+    if review:
+        print(f"  PRIVACY/QUALITY: quarantined {len(review)} far-in-e5 bridges (cos<{args.bridge_min_cos}) "
+              f"→ {args.out}_bridge_review.tsv (LLM-review before training)")
     if skipped:
         print(f"  skipped: {dict(skipped)}")
     print(f"  wrote {args.out}_pairs.tsv + {args.out}_nodes.tsv")
