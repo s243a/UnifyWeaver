@@ -52,7 +52,8 @@ learned table. Group membership conditions a member node via a **learned transfo
   *is* its contents) vs both concatenated. Lean: member-centroid for collections.
 - **Scope:** one `T_group`, or **per-node-type** transforms (`T_category`, `T_page`, `T_group`, …) making
   the whole node-type axis projection-based.
-- **Form:** start a **Linear** `d→d` (~150K params at d=384), init near identity; MLP only if it underfits.
+- **Form:** start a **Linear** `d→d` (~150K params at d=384), **zero-init its output** so it starts as a
+  no-op (see "Warm-start no-op" above — *not* identity); MLP only if it underfits.
 - **Compose or replace:** keep the additive `nodetype_emb` *and* add `T`, or let `T` subsume it.
 
 ### Group is a *weak* structural signal (calibration & magnitude)
@@ -133,7 +134,7 @@ the *attachment point*.
 | 1 | **Per-group learned axis** (treat group like type/op) | a per-group **table row** | ✗ open-ended → table grows with data; most groups seen too rarely to train a row. This is "adding it to types," and it breaks on **many-groups ≫ few-types**. |
 | 2 | **Separate group token** in the sequence (maskable, provenance-style) | `T(e5_group)` | ✗ one per-example token can't say *different nodes belong to different groups* — group is **per-node**, not per-example; + costs a token. |
 | 3 | **Added to the node embedding, per-node** (parallel to `nodetype_emb`) | `T(e5_group_of_node)` | ✓ **the lean.** Per-node (each node carries its own group's signal); identical mechanism, warm-start, and gating story as node-type; no extra token. |
-| 4 | **Concat + project** the node and group e5 | `W·[e5_node ; T(e5_group)]` | ~ more expressive (interaction terms) but changes the input projection and is hard to init near-identity; hold as an upgrade if (3) underfits. |
+| 4 | **Concat + project** the node and group e5 | `W·[e5_node ; T(e5_group)]` | ~ more expressive (interaction terms) but changes the input projection and is harder to warm-start as a clean no-op; hold as an upgrade if (3) underfits. |
 
 **Recommendation: option 3.** `node_emb += T(e5_group_of_node)`, exactly mirroring
 `node_emb += nodetype_emb[type]`, with `T` a shared Linear whose **output is zero-initialised** so it starts
@@ -160,6 +161,6 @@ The group's **title** e5 (cheap, uniform) vs the **centroid of its member nodes'
 contents). Lean: member-centroid for collections; revisit if titles prove more discriminative.
 
 ## Discipline (same as node-type)
-Init near identity, **gate** (`--group-transform`), and **A/B** it — only once group/multi-account data is
-flowing. Adding an expressive transform before the data has group diversity is node-type's collinearity
-problem with more parameters to overfit.
+**Zero-init `T`'s output** (no-op at warm start — *not* identity), **gate** (`--group-transform`), and
+**A/B** it — only once group/multi-account data is flowing. Adding an expressive transform before the data
+has group diversity is node-type's collinearity problem with more parameters to overfit.
