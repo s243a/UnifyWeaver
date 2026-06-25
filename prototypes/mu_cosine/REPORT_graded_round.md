@@ -52,8 +52,41 @@ mindmap/pearltrees curation did — so *both* directions of a bridge get the mm/
 - `<out>_nodes.tsv`: `key  corpus  node_type  title  embed_text` — `embed_text` is the e5 string per node
   (the `Team <name> <id>` prefix hook lives here; inert until the `s243a_groups`/teams account is harvested).
 
+## Bridge quality — negatives + an e5-prior review gate
+
+Two refinements to how bridges are handled (a bridge asserts "same concept across corpora" at μ≈0.9):
+
+### Bridge negative sampling (`--bridge-neg-ratio`, default 1.0)
+Bridges were all *positive*, so the model never saw "these two cross-corpus nodes are NOT the same concept" —
+down-weighting controls dominance but not discrimination. Now each surviving bridge source also gets a
+random wiki node it is *not* bridged to, at μ≈0.1 (SYM, `rel=bridge_neg`, **full-weight**). On the two
+neighbourhoods: 92 negative pairs → 184 targets.
+
+### e5-prior review gate (`--e5-cache`, `--bridge-min-cos`)
+The frozen e5 already gives a similarity prior, so a bridge whose endpoints are *far* in e5 is suspect — a
+bad link, or a non-obvious synonym e5 can't see — exactly the case to **quarantine for LLM review before
+training** rather than feed a possibly-wrong μ=0.9. e5 cosines are **compressed** (here min 0.784, median
+0.874, max 1.0), so the threshold is e5-calibrated (default 0.80 ≈ suspect bottom decile). It quarantined
+**8** bridges to `<out>_bridge_review.tsv` — a clean mix of genuinely-questionable (`ladybird-of-szeged`,
+`norbit`) and legit-but-non-obvious (`BELBIC` a real control architecture; `towards-a-new-socialism` =
+cybernetic planning) — precisely the set worth an LLM call. The LLM adjudication itself is **deferred (Haiku
+budget-gated)**; the gate produces the candidate list for free.
+
+### Honest A/B (fine-tune ±negatives+quarantine, both `--use-nodetype`)
+| metric | no neg | +neg +quarantine |
+|---|---|---|
+| discrimination | 94% | 92% |
+| SYM held-out | +0.838 | +0.832 |
+| ELEM corr | +0.702 | **+0.731** |
+| graded WIKI fit (r) | +0.757 | **+0.817** |
+
+Headline metrics are **flat within noise** (±1 discrimination example). This *confirms* the earlier read that
+**bridge down-weighting was already sufficient** — negatives are cheap, sound insurance (they stop "all
+cross-corpus pairs look similar") but don't move the needle at this scale. (The graded-SYM held-out r is not
+comparable across the two: the negatives make that held-out set wider/harder.) The e5-prior **quarantine** is
+the clearer, training-independent win — a data-quality gate.
+
 ## Next
-Wire the trainer to consume `<out>_pairs.tsv`: a mixed-operator graded path (per-row `op`, MSE to μ +
-directional margins), bridge down-weighting, the fused nodes unioned into the e5 build, then train with
-`--use-nodetype` on and measure whether type diversity now helps (`REPORT_nodetype.md` found it collinear
-*without* this data).
+- **LLM-review the quarantined bridges** (budget-gated) → re-include the legit non-obvious ones, drop the
+  bad links. Re-measure as the bridge set grows (negatives may matter more at larger scale).
+- Wire `account` + the `Team <name> <id>` e5-text once the `s243a_groups` account is harvested.
