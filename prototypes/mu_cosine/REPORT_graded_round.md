@@ -54,15 +54,18 @@ mindmap/pearltrees curation did — so *both* directions of a bridge get the mm/
 
 ## Correction: `bridge` is same-concept only (not every cross-dataset link)
 
-A `bridge` means the **same concept** across corpora (identity, μ≈0.9). `fuse_corpus.py` /
+A `bridge` means the **same concept** across corpora (identity, μ≈0.9) — the endpoints stay **distinct via
+their node-type (and group) tokens**, so identity doesn't collapse them. `fuse_corpus.py` /
 `parse_pearltrees.py` originally labelled *every* pt→wiki link `bridge`, but most are the collection's
-cross-dataset **references** to *different* things (`Cybernetics` collection → `Centrifugal governor` page) —
-those are `see_also` (associative, μ≈0.4), not identity. A **same-concept gate** (normalised titles match ⇒
-`bridge`, else `see_also`) corrects this: on the two neighbourhoods, **bridge 1654 → 122**, **see_also 22 →
-1550**. The remaining 122 bridges are genuine identity links (high e5; the ensemble keeps 60/61). This makes
-the round semantically honest — the model learns `centrifugal-governor ~0.4 cybernetics` (related), not
-`=0.9` (identical). Bridge dominance is no longer even an issue; `see_also` now carries the cross-dataset mass
-at its correct associative μ.
+cross-dataset links to *different* things (`Cybernetics` collection → `Centrifugal governor` page) — not
+identity. A **same-concept gate** (normalised titles match ⇒ `bridge`) corrects this: **bridge 1654 → 122**.
+
+For the non-identity ones, use the **most specific** relation the structure gives — the harvester tags a wiki
+page in a collection `element_of` (it is a member), and `parse_pearltrees` has the section context
+(Subcategories/Subtopics/…) — and fall back to `see_also` only when nothing more specific is identifiable
+(*not* a blanket see_also). Result on the two neighbourhoods: **element_of 6 → 1538**, see_also 22, bridge
+122. So `centrifugal-governor` becomes `element_of cybernetics` (a member, μ≈0.9 directional), which also
+finally gives the **ELEM operator** (previously starved at 6) real cross-corpus, node-type-diverse signal.
 
 ## Bridge quality — negatives + an e5-prior review gate
 

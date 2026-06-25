@@ -109,10 +109,12 @@ def main():
         if m:                                           # PagePearl whose url is enwiki → a cross-corpus link
             title = m.group(1).split("#")[0].replace("%28", "(").replace("%29", ")")
             wk = addn("wiki", title, "category" if title.startswith("Category:") else "page", title)
-            # A `bridge` is the SAME concept across corpora (identity). A wiki page in a collection that names
-            # a DIFFERENT thing (e.g. "Cybernetics" collection → "Centrifugal governor" page) is not identity
-            # — it is the collection's cross-dataset REFERENCE, so use `see_also`, not bridge.
-            rel = "bridge" if norm(title) == norm(f[0]) else "see_also"
+            # A `bridge` is the SAME concept across corpora (identity) — the endpoints still stay DISTINCT via
+            # their node-type (and group) tokens, so identity doesn't collapse them. If NOT the same concept
+            # (e.g. "Cybernetics" collection → "Centrifugal governor" page) it is the collection's cross-
+            # dataset link: use the MOST SPECIFIC relation the harvester gives (element_of for a page,
+            # subtopic for a sub-collection, …) and fall back to see_also only when nothing more specific is.
+            rel = "bridge" if norm(title) == norm(f[0]) else PT_REL.get(f[2], "see_also")
             edges.append((pk, wk, rel))
         elif len(f) > 3:
             if norm(f[1]) in pt_priv:                   # private child → scrub

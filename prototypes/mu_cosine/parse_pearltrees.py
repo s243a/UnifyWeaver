@@ -171,8 +171,9 @@ def main():
             if ek:
                 edges.append((dk, ek, "bridge"))          # the pt page IS that wiki page (identity)
                 if mode == "reference":                   # the TREE ↔ this wiki page: a `bridge` ONLY if the
-                    # tree names the SAME concept; otherwise it's the tree's cross-dataset REFERENCE → see_also
-                    edges.append((src, ek, "bridge" if slug(ek) == src else "see_also"))
+                    # tree names the SAME concept; otherwise mirror the page's own relation (the MOST SPECIFIC
+                    # one — element_of / the section relation), falling back to see_also, not blanket see_also.
+                    edges.append((src, ek, "bridge" if slug(ek) == src else rel))
 
     seen, uniq = set(), []
     for a, b, rel in edges:
