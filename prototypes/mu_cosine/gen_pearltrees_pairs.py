@@ -1,4 +1,5 @@
-"""Turn a harvested Pearltrees subtree (fetch_pearltrees_tree.py) into scored-pair candidates for the
+"""Turn a harvested Pearltrees subtree (harvested by the private .local harvester
+`.local/tools/browser-automation/scripts/fetch_pearltrees_tree.py`) into scored-pair candidates for the
 pearltrees corpus — a gap-fill for topics enwiki has no category for (e.g. Circuit Theory). Membership
 edges (collection_of = subtopic, element_of = member page) are graded by Haiku for CENTRALITY to the
 parent topic; shortcuts (cross-references) are emitted as weak associations (not Haiku-judged here).
