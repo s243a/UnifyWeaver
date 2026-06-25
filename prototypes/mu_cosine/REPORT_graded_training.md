@@ -70,6 +70,26 @@ The fix isn't just semantically honest — it *helps*: the references' correct `
 previously-starved ELEM operator (6 → 1538 targets) rich cross-corpus, node-type-diverse signal, and it fits
 at **r +0.999** while every other operator stays healthy (SYM still beats the control).
 
+### Section-driven relations (final): relations from the actual subsection names
+
+A further correction replaced the blanket `element_of` with the **section-derived** relation (Subcategories →
+subcategory, Subtopics → element_of, Super Categories → super_category, …; see `REPORT_graded_round.md`
+§Correction + §Harvest-vs-categorise). The graded mix becomes WIKI 534 / ELEM 1238 / SYM 343 (the
+directional category relations now feed WIKI). Same fine-tune:
+
+| metric | section-driven |
+|---|---|
+| graded **ELEM** fit (r) | +0.995 (MSE 0.002) |
+| graded **WIKI** fit (r) | **+0.852** (534 targets, ~2.5× more) |
+| graded **SYM** fit (r) | +0.792 |
+| **SYM** held-out | +0.830 (> control +0.726) |
+| **WIKI** order-acc | 99.9% |
+| **ELEM** corr / direction | +0.698 / 100% |
+| discrimination | 89% (32/36) |
+
+All operators stay healthy and the WIKI directional signal grows; discrimination dips ~5 pts (2 examples,
+within noise on a data-mix change). Net: the section-driven relations are both more correct and train well.
+
 ## Next
 - Bring the **account** token + the `Team <name> <id>` e5-text online once the `s243a_groups` account is
   harvested (the plumbing is in; `--use-account` will gate it).
