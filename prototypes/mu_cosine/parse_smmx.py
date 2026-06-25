@@ -45,16 +45,10 @@ WIKI_LABEL = re.compile(r"^\s*(wiki|wikipedia|enwiki)\s*$", re.I)
 NAV_LABEL = re.compile(r"^([Pp][gG]\.?\s*\d+|\d+(\.\d+)+|[A-Za-z]\.\d+)$")
 PEARL = re.compile(r"pearltrees\.com/[^/]+/([^/\"]+)/id(\d+)")
 WIKI_URL = re.compile(r"en\.wikipedia\.org/wiki/(.+)$")
-# PRIVACY (scrub-everywhere — see DESIGN_provenance_and_representation.md §Privacy): a node whose label
-# contains the word "private" marks itself AND its whole subtree private (children inherit, like the
-# Pearltrees/RDF field); a private ROOT ⇒ the whole map is private. Private topics are DROPPED at parse time
-# so private data never reaches the public dataset — no include-private escape hatch. We err toward dropping
-# (a topical "Private equity" would go too) and LOG the count; a false positive only loses public data.
-PRIVATE_RE = re.compile(r"(?i)\bprivate\b")
-
-
-def is_private_title(t):
-    return bool(t) and bool(PRIVATE_RE.search(t))
+# PRIVACY (scrub-everywhere — see DESIGN_provenance_and_representation.md §Privacy + privacy.py): a node whose
+# label contains the word "private" marks itself AND its whole subtree (children inherit); a private ROOT ⇒
+# the whole map. Dropped at parse time so private data never reaches the public dataset; we LOG every scrub.
+from privacy import is_private_title          # noqa: E402  (single source of truth for the privacy rule)
 
 
 def load_xml(path):
