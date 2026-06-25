@@ -18,6 +18,10 @@ Relation semantics (the structural container retypes its descendants' edge to th
        `page`. Same concept, DIFFERENT node-type (mindmap_node ⟷ category/page), possibly different name —
        the cross-corpus join key. (Scarce in the maps; most live in the Pearltrees data.)
 
+PRIVACY (scrub-everywhere): a topic labelled "private" drops itself AND its subtree; a private ROOT drops the
+whole map. Dropped at parse time, never emitted — private data never reaches the public dataset. See
+DESIGN_provenance_and_representation.md §Privacy.
+
 Node identity = Pearltrees slug (from a pearltrees urllink) if present, else the normalised title. Each node
 also carries: title, pearltrees id, enwiki_alias.
 
@@ -41,6 +45,16 @@ WIKI_LABEL = re.compile(r"^\s*(wiki|wikipedia|enwiki)\s*$", re.I)
 NAV_LABEL = re.compile(r"^([Pp][gG]\.?\s*\d+|\d+(\.\d+)+|[A-Za-z]\.\d+)$")
 PEARL = re.compile(r"pearltrees\.com/[^/]+/([^/\"]+)/id(\d+)")
 WIKI_URL = re.compile(r"en\.wikipedia\.org/wiki/(.+)$")
+# PRIVACY (scrub-everywhere — see DESIGN_provenance_and_representation.md §Privacy): a node whose label
+# contains the word "private" marks itself AND its whole subtree private (children inherit, like the
+# Pearltrees/RDF field); a private ROOT ⇒ the whole map is private. Private topics are DROPPED at parse time
+# so private data never reaches the public dataset — no include-private escape hatch. We err toward dropping
+# (a topical "Private equity" would go too) and LOG the count; a false positive only loses public data.
+PRIVATE_RE = re.compile(r"(?i)\bprivate\b")
+
+
+def is_private_title(t):
+    return bool(t) and bool(PRIVATE_RE.search(t))
 
 
 def load_xml(path):
@@ -139,6 +153,20 @@ def main():
         s, _ = slug_of(t)
         return s or re.sub(r"[^a-z0-9]+", "_", label(t).lower()).strip("_")
 
+    # PRIVACY: seed = topics labelled "private"; inherit DOWN the tree (a private node takes its subtree).
+    children_of = {}
+    for i, p in parent.items():
+        children_of.setdefault(p, []).append(i)
+    private_ids, fr = set(), [i for i, t in topics.items() if is_private_title(label(t))]
+    while fr:
+        x = fr.pop()
+        if x in private_ids:
+            continue
+        private_ids.add(x)
+        fr.extend(children_of.get(x, []))
+    root_id = next((i for i in topics if parent.get(i) in (None, "-1")), None)
+    map_private = bool(root_id) and root_id in private_ids        # private root ⇒ the whole map is private
+
     # pass 1: classify; collect enwiki anchors (wiki-labelled children + direct wiki urllinks)
     enwiki = {}                                     # node-id → enwiki title
     is_anchor = set()                              # ids that are wiki-anchor holders (not real nodes)
@@ -171,8 +199,8 @@ def main():
 
     nodes, edges, id2key = {}, [], {}
     for i, t in topics.items():
-        if i in is_anchor or label(topics[i]) in STRUCTURAL:
-            continue                               # skip wiki-anchor holders and structural containers
+        if i in is_anchor or label(topics[i]) in STRUCTURAL or i in private_ids:
+            continue                               # skip wiki-anchor holders, containers, and PRIVATE nodes
         k = key(t)
         sl, pid = slug_of(t)
         ntype = "navigation" if NAV_LABEL.match(label(t)) else "mindmap_node"
@@ -181,7 +209,7 @@ def main():
         id2key[i] = k
         # hierarchy edge to effective (non-structural) parent
         pp, rel = eff_parent_and_rel(i)
-        if pp in topics and pp not in is_anchor:
+        if pp in topics and pp not in is_anchor and pp not in private_ids:
             edges.append((key(topics[pp]), k, rel))
 
     # cross-map links (cloudmapref) — over ALL topics, since a blank "link-holder"/connector child often
@@ -192,7 +220,7 @@ def main():
         if not ref:
             continue
         src_id = eff_parent_and_rel(i)[0] if (label(t) in STRUCTURAL or i in is_anchor) else i
-        if src_id not in topics or src_id in is_anchor:
+        if src_id not in topics or src_id in is_anchor or src_id in private_ids:
             continue
         segs = [s for s in re.split(r"[\\/]+", ref) if s and s != "."]
         if not segs:
@@ -200,7 +228,7 @@ def main():
             # "connector" node doing this is often joining a node to an ADJACENT one (list/chapter
             # structure) ⇒ treat as an associative cross-link.
             tt = guid2t.get(el)
-            if tt is None:
+            if tt is None or tt.get("id") in private_ids:    # don't link to a PRIVATE intra-map target
                 continue
             tsl, tpid = slug_of(tt)
             tkey, rel = key(tt), "assoc"
@@ -232,7 +260,7 @@ def main():
     # and the differing endpoint TYPES under one `bridge` relation are exactly the within-operator type
     # diversity that makes the node-type token informative (REPORT_nodetype.md).
     for i, w in enwiki.items():
-        if i not in id2key or not w:
+        if i not in id2key or not w or i in private_ids:
             continue
         ww = unquote(w).split("#")[0]
         if ww.startswith("Category:"):
@@ -249,8 +277,9 @@ def main():
     # explicit <relation source target>: a chain between NAVIGATION nodes (page/section) is reading-order
     # `sequence` (book/course list structure); otherwise a genuine `assoc` cross-link.
     for r in root.findall(".//relation"):
-        s, d = topics.get(r.get("source")), topics.get(r.get("target"))
-        if s is not None and d is not None:
+        si, di = r.get("source"), r.get("target")
+        s, d = topics.get(si), topics.get(di)
+        if s is not None and d is not None and si not in private_ids and di not in private_ids:
             rel = "sequence" if (NAV_LABEL.match(label(s)) and NAV_LABEL.match(label(d))) else "assoc"
             edges.append((key(s), key(d), rel))
 
@@ -265,6 +294,10 @@ def main():
     ntc = Counter(n.get("ntype", "mindmap_node") for n in nodes.values())
     print(f"{os.path.basename(args.smmx)}: {len(nodes)} nodes {dict(ntc)}, {len(uniq)} edges {dict(rc)}")
     print(f"  bridges (mindmap↔enwiki): {rc.get('bridge', 0)}")
+    if map_private:
+        print(f"  PRIVACY: ROOT is marked private ⇒ WHOLE MAP scrubbed ({len(private_ids)} topics, nothing emitted)")
+    elif private_ids:
+        print(f"  PRIVACY scrubbed (dropped, never emitted): {len(private_ids)} topics (a node + its subtree)")
 
     if args.out_prefix:
         with open(args.out_prefix + "_nodes.tsv", "w", encoding="utf-8") as f:

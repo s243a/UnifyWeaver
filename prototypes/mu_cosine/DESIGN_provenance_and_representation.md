@@ -136,6 +136,29 @@ only what goes into `T`). We **defer** it deliberately: adopting it now would fr
 space every node shares into two encoder spaces to manage — implicit complexity for no present gain. Recorded
 as a real option, not ruled out; **stick to e5** until there's a measured reason group needs its own encoder.
 
+## Privacy: scrub-everywhere, at parse time
+
+**Private data must never appear in the public dataset.** The chosen policy is **scrub-everywhere**: private
+nodes are **dropped at parse time** — never emitted, never trained on — with **no include-private escape
+hatch**. Privacy is **inherited down the subtree** (children inherit, like the Pearltrees/RDF `private`
+field), and we **err toward dropping** (a topical "Private equity" is scrubbed too) and **log every scrub**
+(no silent drops) — a false positive only loses public data; a false negative would *leak* private data.
+
+Markers, per corpus:
+
+- **Pearltrees** (`parse_pearltrees.py`): (1) `trees.visibility` set to anything other than public (`0`);
+  (2) a collection/pearl whose **title contains the word "private"** (the user's `*private*` marker). A
+  private collection seeds privacy on its child tree; privacy then **propagates down tree-containment** so a
+  private collection takes its whole harvested subtree. On the harvest DB this scrubs the 5 `*private*`
+  shortcuts; nothing private reaches the TSVs.
+- **SimpleMind** (`parse_smmx.py`): a topic whose **label contains "private"** marks itself **and its whole
+  subtree**; a **private ROOT ⇒ the entire map** is dropped. Verified: a private interior node scrubs its
+  subtree (siblings kept); a private root emits nothing.
+
+Both use `\bprivate\b` (word-boundary, case-insensitive) so `Privacy`/`privatize` don't trigger but
+`*private*` / "… Private …" do. The downstream graded-round generator inherits this for free: it consumes
+the parsers' already-scrubbed output, so private data cannot reach training or a committed artifact.
+
 ## Two buckets, not one: **provenance** (maskable token) vs **structure** (on the node)
 
 The first cut lumped everything "factored" together; sharpen it into two buckets that behave differently:
