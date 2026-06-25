@@ -55,6 +55,34 @@ learned table. Group membership conditions a member node via a **learned transfo
 - **Form:** start a **Linear** `d→d` (~150K params at d=384), init near identity; MLP only if it underfits.
 - **Compose or replace:** keep the additive `nodetype_emb` *and* add `T`, or let `T` subsume it.
 
+### Group is a *weak* structural signal (calibration & magnitude)
+
+Group membership is **softer than category membership**: a group is user-curated and may not stay perfectly
+on topic (a "Systems Theory" group can hold off-topic pearls). There is a **confidence gradient** among the
+structural modifiers:
+
+> **node-type** (a hard fact — a page *is* a page) > **category membership** (curated, reliable) >
+> **group membership** (user-curated, *drifty*).
+
+Encode that weakness two ways — both levers we already use elsewhere:
+
+- **Soft / one-sided target.** Train group edges to a *ranged* target, `μ(node|group) ≳ low`, not a sharp
+  value (cf. the cross-entropy "it can be a range (e.g. `>`)" idea) — so topical drift isn't punished as
+  error the way a curated category miss would be.
+- **Small-magnitude modifier.** Extra weight-decay / lower LR on `T` so it learns a **gentle nudge**, not a
+  shift that overwrites the node's own e5 (the same "back-prop on it less" lever as the ELEM operator).
+
+The weakness also **reinforces** the transform-over-table choice: a per-group table could *memorise* the
+noisy membership, whereas a shared, zero-init, regularised `T` with a soft target is far more robust to drift.
+
+### Deferred: the transform's input embedding
+
+`T`'s input is **e5 for now**. In principle it could take a *different* frozen encoder (e.g. miniLM) — `T`
+doesn't care what vector feeds it, so adopting one later is a **localised** change (swap only what goes into
+`T`). Adopting it *now* would fragment the single uniform e5 space every node shares into two encoder spaces
+to manage — implicit complexity for no present gain. **Stick to e5**; revisit miniLM only if e5 proves
+insufficient for the group signal specifically.
+
 ## Two buckets, not one: **provenance** (maskable token) vs **structure** (on the node)
 
 The first cut lumped everything "factored" together; sharpen it into two buckets that behave differently:
