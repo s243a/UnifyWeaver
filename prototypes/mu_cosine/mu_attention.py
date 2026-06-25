@@ -49,9 +49,10 @@ OPS = {"SYM": 0, "WIKI": 1, "LLM": 2, "ELEM": 3}
 # corpus⊗judge product is representable while it presents to the set as one input. The token is MASKABLE
 # (off-manifold noise, exactly like an absent ancestor slot); masking ⇒ provenance-AGNOSTIC μ, which is
 # the DEFAULT inference path (marginalize over sources). Reserved entries (enwiki) are for later corpora.
-CORPORA = {"simplewiki": 0, "enwiki": 1}
-JUDGES = {"haiku": 0, "graph": 1}        # haiku = a bought LLM judgment (SYM/LLM); graph = a Wikipedia
-                                         # edge / non-edge (WIKI, and the free μ=0 SYM negatives)
+CORPORA = {"simplewiki": 0, "enwiki": 1, "pearltrees": 2, "mindmap": 3}
+JUDGES = {"haiku": 0, "graph": 1, "human": 2}    # haiku = a bought LLM judgment (SYM/LLM); graph = a
+                                         # Wikipedia edge / non-edge (WIKI, free μ=0 SYM negatives);
+                                         # human = a hand-curated edge (the mindmap/pearltrees corpora)
 # NODE-TYPE (DESIGN_calibrated_judges.md §7): a factored per-ENDPOINT token saying WHAT each node is — a
 # `category`/`mindmap_node` is an internal node that can have children; a `page` is a LEAF; a
 # `pearltrees_collection` is a curated container. Orthogonal to the OPERATOR (which says what the RELATION
@@ -59,6 +60,12 @@ JUDGES = {"haiku": 0, "graph": 1}        # haiku = a bought LLM judgment (SYM/LL
 # convey. category=0 is the implicit default; the embedding is zero-initialised so it is a no-op at warm
 # start and the type signal is learned during fine-tuning.
 NODETYPE = {"category": 0, "page": 1, "mindmap_node": 2, "pearltrees_collection": 3}
+# ACCOUNT (DESIGN_provenance_and_representation.md): a SECOND maskable provenance axis — which Pearltrees
+# account a label came from — factored into the SAME provenance token as corpus⊗judge (so it is masked /
+# marginalised out together with them). Small + closed (two accounts), so a learned token is right. It is a
+# no-op until items actually carry an account id (position 7); zero-initialised so warm-starts are safe and
+# the signal is learned only once BOTH accounts are harvested (single-account data is collinear with corpus).
+ACCOUNTS = {"s243a": 0, "s243a_groups": 1}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -199,6 +206,7 @@ class Tokenizer:
         for it in items:
             node, root, op = it[0], it[1], it[2]
             corpus_id, judge_id = (it[3], it[4]) if len(it) >= 5 else (None, None)
+            account_id = it[7] if len(it) >= 8 else None             # optional 2nd provenance axis (account)
             if len(it) >= 7:
                 ntypes.append(it[5]); rtypes.append(it[6]); has_nt.append(True)
             else:                               # no node-type tags ⇒ leave nodetype_of=-1 (emb not applied)
@@ -222,7 +230,7 @@ class Tokenizer:
             if masked:
                 toks.append(("prov_mask", node, None, 0))                # off-manifold noise ⇒ agnostic
             else:
-                toks.append(("prov", None, (corpus_id, judge_id), 0))    # corpus_emb + judge_emb
+                toks.append(("prov", None, (corpus_id, judge_id, account_id), 0))  # corpus+judge(+account)
             rows.append(toks)
 
         T = max(len(r) for r in rows)
@@ -233,6 +241,7 @@ class Tokenizer:
         is_prov = torch.zeros(B, T, dtype=torch.bool)                     # the provenance slot (any state)
         corpus_of = torch.full((B, T), -1, dtype=torch.long)
         judge_of = torch.full((B, T), -1, dtype=torch.long)
+        account_of = torch.full((B, T), -1, dtype=torch.long)             # 2nd provenance axis (account)
         nodetype_of = torch.full((B, T), -1, dtype=torch.long)            # per-endpoint structural role
         pad = torch.ones(B, T, dtype=torch.bool)                          # True = pad (ignored)
         op_of = torch.tensor([it[2] for it in items], dtype=torch.long)
@@ -259,7 +268,9 @@ class Tokenizer:
                         nodetype_of[bi, ti] = NODETYPE["category"]        # ancestors are categories
                 elif kind == "prov":
                     is_prov[bi, ti] = True                                # content stays 0; forward adds
-                    corpus_of[bi, ti], judge_of[bi, ti] = op              # corpus_emb + judge_emb + prov_tag
+                    corpus_of[bi, ti], judge_of[bi, ti], _acc = op        # corpus_emb + judge_emb + prov_tag
+                    if _acc is not None:
+                        account_of[bi, ti] = _acc                         # + account_emb (if item carries it)
                 elif kind in ("noise", "prov_mask"):
                     if train:                                 # fast path: fresh noise, no per-seed RNG
                         v = torch.randn(self.d)
@@ -274,7 +285,7 @@ class Tokenizer:
                         gen_id[bi, ti] = d
         return {"content": content, "gen_id": gen_id, "is_anchor": is_anchor, "op_pos": op_pos,
                 "is_prov": is_prov, "corpus_of": corpus_of, "judge_of": judge_of,
-                "nodetype_of": nodetype_of, "op_of": op_of, "pad": pad}
+                "account_of": account_of, "nodetype_of": nodetype_of, "op_of": op_of, "pad": pad}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -283,7 +294,7 @@ class Tokenizer:
 class MuAttention(nn.Module):
     def __init__(self, d_model=384, n_ops=len(OPS), n_heads=4, n_layers=1, max_gen=5,
                  dim_ff=None, dropout=0.0, n_corpus=len(CORPORA), n_judge=len(JUDGES),
-                 n_nodetype=len(NODETYPE)):
+                 n_nodetype=len(NODETYPE), n_account=len(ACCOUNTS)):
         super().__init__()
         self.d = d_model
         self.op_emb = nn.Embedding(n_ops, d_model)
@@ -297,6 +308,9 @@ class MuAttention(nn.Module):
         # can locate "the provenance input" regardless of whether its source is revealed.
         self.corpus_emb = nn.Embedding(n_corpus, d_model)
         self.judge_emb = nn.Embedding(n_judge, d_model)
+        # ACCOUNT: a 2nd factored provenance axis on the SAME maskable token. Zero-init ⇒ a no-op at warm
+        # start (and whenever items carry no account), so the signal is learned only once both accounts exist.
+        self.account_emb = nn.Embedding(n_account, d_model)
         self.prov_tag = nn.Parameter(torch.randn(d_model) * 0.02)
         layer = nn.TransformerEncoderLayer(d_model, n_heads, dim_feedforward=dim_ff or 2 * d_model,
                                            dropout=dropout, batch_first=True, activation="gelu",
@@ -307,9 +321,10 @@ class MuAttention(nn.Module):
         for emb in (self.op_emb, self.gen_emb, self.corpus_emb, self.judge_emb):
             nn.init.normal_(emb.weight, std=0.02)
         nn.init.zeros_(self.nodetype_emb.weight)            # no-op at warm start; learned during fine-tune
+        nn.init.zeros_(self.account_emb.weight)             # no-op until items carry an account id
 
     def forward(self, content, gen_id, is_anchor, op_pos, op_of, pad,
-                is_prov=None, corpus_of=None, judge_of=None, nodetype_of=None):
+                is_prov=None, corpus_of=None, judge_of=None, account_of=None, nodetype_of=None):
         emb = content.clone()
         gmask = (gen_id >= 0).unsqueeze(-1)
         emb = emb + self.gen_emb(gen_id.clamp(min=0)) * gmask
@@ -324,6 +339,9 @@ class MuAttention(nn.Module):
                 cmask = (corpus_of >= 0).unsqueeze(-1)
                 emb = emb + self.corpus_emb(corpus_of.clamp(min=0)) * cmask
                 emb = emb + self.judge_emb(judge_of.clamp(min=0)) * cmask
+            if account_of is not None:                                   # 2nd provenance axis (account)
+                amask = (account_of >= 0).unsqueeze(-1)
+                emb = emb + self.account_emb(account_of.clamp(min=0)) * amask
         h = self.encoder(emb, src_key_padding_mask=pad)
         # CLS-style readout: the operator token (always position 0, never padded) attends over the whole
         # set, giving a relation-conditioned summary. Cleaner than mean-pool, which dilutes the input

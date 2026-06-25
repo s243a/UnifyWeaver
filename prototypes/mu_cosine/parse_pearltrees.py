@@ -21,7 +21,10 @@ ANY PagePearl whose url is en.wikipedia.org ALSO emits a `bridge` to the enwiki 
 Category:…, else page) — Pearltrees is the bridge-RICH corpus. Root (4) is skipped.
 
 Node identity = the title-derived slug (matching the Pearltrees slugs SimpleMind nodes carry, so the two
-corpora join). node_type ∈ pearltrees_collection | page | category.
+corpora join). node_type ∈ pearltrees_collection | page | category. Each pearltrees node also carries its
+`account` (provenance: e.g. `s243a` vs the `s243a_groups`/teams account) from `trees.account`; enwiki-side
+bridge nodes carry none. See DESIGN_provenance_and_representation.md (account = maskable provenance token;
+groups/teams = a transform of e5, or a "Team <name> <id>" e5-text prefix).
 
     python3 parse_pearltrees.py --out-prefix pt        # uses the .local harvested DB if it exists
 """
@@ -52,11 +55,18 @@ def main():
                          f"or pass --db")
 
     con = sqlite3.connect(args.db)
-    trees = {r[0]: r[1] for r in con.execute("SELECT id, title FROM trees")}
+    trees, tree_acct = {}, {}                              # tree_id → title ; tree_id → account
+    for tid_, title_, acct_ in con.execute("SELECT id, title, account FROM trees"):
+        trees[tid_] = title_
+        tree_acct[tid_] = acct_ or ""
     nodes, edges = {}, []
 
-    def add(key, ntype, title, pid="", enwiki=""):
-        nodes.setdefault(key, {"ntype": ntype, "title": title, "pid": pid, "enwiki": enwiki})
+    def add(key, ntype, title, pid="", enwiki="", account=""):
+        n = nodes.get(key)
+        if n is None:
+            nodes[key] = {"ntype": ntype, "title": title, "pid": pid, "enwiki": enwiki, "account": account}
+        elif account and not n.get("account"):            # backfill account once we learn it
+            n["account"] = account
 
     def enwiki_node(ew):                                  # register the enwiki node, return (key, type)
         if ew.startswith("Category:"):
@@ -90,8 +100,9 @@ def main():
             continue
         if tid != cur_tree:
             cur_tree, mode = tid, None                    # reset section scope at each tree
+        acct = tree_acct.get(tid, "")                     # this tree's Pearltrees account (provenance)
         src = slug(trees[tid])
-        add(src, "pearltrees_collection", trees[tid], str(tid))
+        add(src, "pearltrees_collection", trees[tid], str(tid), account=acct)
         if ctype == 7:                                    # Section header → set the mode for what follows
             mode = section_mode(sec_text or title)
             continue
@@ -101,16 +112,16 @@ def main():
         ew = ""
         if ctype == 2 and ct_title:                       # Collection (child tree)
             dk, base = slug(ct_title), "subtopic"
-            add(dk, "pearltrees_collection", ct_title, str(ct_id or ""))
+            add(dk, "pearltrees_collection", ct_title, str(ct_id or ""), account=tree_acct.get(ct_id) or acct)
         elif ctype == 1 and title:                        # PagePearl (a member page / url)
             dk, base = slug(title), "element_of"
             m = WIKI_URL.search(url or "")
             if m:
                 ew = unquote(m.group(1)).split("#")[0]
-            add(dk, "page", title, "", ew)
+            add(dk, "page", title, "", ew, account=acct)
         elif ctype == 5 and ct_title:                     # Shortcut (alias)
             dk, base = slug(ct_title), "assoc"
-            add(dk, "pearltrees_collection", ct_title, str(ct_id or ""))
+            add(dk, "pearltrees_collection", ct_title, str(ct_id or ""), account=tree_acct.get(ct_id) or acct)
         else:
             continue
         # relation = the section mode if it names one, else the contentType default
@@ -131,12 +142,13 @@ def main():
     print(f"{os.path.basename(args.db)}: {len(nodes)} nodes {dict(Counter(n['ntype'] for n in nodes.values()))}, "
           f"{len(uniq)} edges {dict(Counter(r for _, _, r in uniq))}")
     print(f"  bridges (pearltrees↔enwiki): {sum(1 for _, _, r in uniq if r == 'bridge')}")
+    print(f"  accounts: {dict(Counter(n['account'] for n in nodes.values() if n['account']))}")
 
     if args.out_prefix:
         with open(args.out_prefix + "_nodes.tsv", "w", encoding="utf-8") as f:
-            f.write("# node_key\tnode_type\ttitle\tpearltrees_id\tenwiki_alias\n")
+            f.write("# node_key\tnode_type\ttitle\tpearltrees_id\tenwiki_alias\taccount\n")
             for k, n in sorted(nodes.items()):
-                f.write(f"{k}\t{n['ntype']}\t{n['title']}\t{n['pid']}\t{n['enwiki']}\n")
+                f.write(f"{k}\t{n['ntype']}\t{n['title']}\t{n['pid']}\t{n['enwiki']}\t{n['account']}\n")
         with open(args.out_prefix + "_edges.tsv", "w", encoding="utf-8") as f:
             f.write("# src_key\tdst_key\trelation  "
                     "(subtopic|subcategory|element_of|super_category|see_also|bridge|assoc)\n")
