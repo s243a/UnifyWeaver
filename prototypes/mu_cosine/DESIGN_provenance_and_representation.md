@@ -28,6 +28,13 @@ API `asso`, so carrying it through `parse_pearltrees.py` → the graded pairs is
 default off; activate once **both** accounts' data is in (single-account data makes `account` collinear with
 `corpus` — node-type's collinearity trap again).
 
+**Status (implemented):** `parse_pearltrees.py` emits each node's `account` column; `mu_attention.py` has the
+`ACCOUNTS` codebook + a zero-init `account_emb` factored into the same maskable provenance token as
+`corpus⊗judge` (threaded as item position 7 → `account_of`). It is a **no-op until items carry an account
+id**, so the effective gate is whether the graded-round generator tags items with one — `--use-account` will
+live in that data/training layer, added alongside the graded round. `CORPORA` also gained `pearltrees`/
+`mindmap` and `JUDGES` gained `human` for the multi-corpus round; warm-start grows those embedding rows.
+
 ## Groups: a transform of e5, never a per-group table
 
 A Pearltrees **group** is open-ended (grows with the data), so it is a **node with frozen e5**, not a
