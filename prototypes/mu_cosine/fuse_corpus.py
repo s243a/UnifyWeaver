@@ -19,6 +19,7 @@ import subprocess
 import sys
 
 from privacy import is_private_title, propagate as privacy_propagate    # scrub-everywhere (see privacy.py)
+from pt_sections import relation_for                                    # section label → relation (shared)
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WIKI = re.compile(r"en\.wikipedia\.org/wiki/(.+)$")
@@ -75,14 +76,20 @@ def main():
     # harvester, not parse_pearltrees.py), so apply the SAME rule here — drop private-titled pt nodes and,
     # inherited down pt containment, their whole subtree — before building any fused edge.
     pt_rows, pt_children, pt_priv = [], {}, set()       # rows ; norm(parent)→{norm(child)} ; private norm-keys
+    pt_sec = {}                                         # section pos_id → label text (from the #SECTION table)
     for slug, tid in sm_seeds.items():
         path = os.path.join(args.pt_cache, f"pt_{tid}.tsv")
         if not os.path.exists(path):
             continue
         for hl in open(path, encoding="utf-8"):
+            if hl.startswith("#SECTION\t"):             # the raw section table (pos_id → label); categorise later
+                sp = hl.rstrip("\n").split("\t")
+                if len(sp) >= 3:
+                    pt_sec[sp[1]] = sp[2]
+                continue
             if hl.startswith("#"):
                 continue
-            f = hl.rstrip("\n").split("\t")             # parent, child, rel, child_type, url, ...
+            f = hl.rstrip("\n").split("\t")             # parent, child, rel_struct, child_type, url, …, sec_pos_id
             if len(f) < 3:
                 continue
             pt_rows.append(f)
@@ -104,23 +111,25 @@ def main():
     for f in pt_rows:
         if norm(f[0]) in pt_priv:                       # private parent → scrub the row
             scrub_pt += 1; continue
+        # relation comes from the pearl's SECTION (the most specific, designed source: Subcategories →
+        # subcategory, Subtopics → element_of, See Also/References → see_also, …); fall back to the
+        # structural contentType default only when the pearl is in no recognised section.
+        cat_rel = relation_for(pt_sec.get(f[7], "")) [0] if len(f) > 7 else None
         pk = addn("pt", f[0], "pearltrees_collection", f[0])
         m = WIKI.search(f[4]) if len(f) > 4 else None
         if m:                                           # PagePearl whose url is enwiki → a cross-corpus link
             title = m.group(1).split("#")[0].replace("%28", "(").replace("%29", ")")
             wk = addn("wiki", title, "category" if title.startswith("Category:") else "page", title)
-            # A `bridge` is the SAME concept across corpora (identity) — the endpoints still stay DISTINCT via
-            # their node-type (and group) tokens, so identity doesn't collapse them. If NOT the same concept
-            # (e.g. "Cybernetics" collection → "Centrifugal governor" page) it is the collection's cross-
-            # dataset link: use the MOST SPECIFIC relation the harvester gives (element_of for a page,
-            # subtopic for a sub-collection, …) and fall back to see_also only when nothing more specific is.
-            rel = "bridge" if norm(title) == norm(f[0]) else PT_REL.get(f[2], "see_also")
+            # A `bridge` is the SAME concept across corpora (identity) — the endpoints stay DISTINCT via their
+            # node-type/group tokens, so identity doesn't collapse them. If NOT the same concept it is the
+            # collection's cross-dataset link: use the section relation, else the structural default.
+            rel = "bridge" if norm(title) == norm(f[0]) else (cat_rel or PT_REL.get(f[2], "see_also"))
             edges.append((pk, wk, rel))
         elif len(f) > 3:
             if norm(f[1]) in pt_priv:                   # private child → scrub
                 scrub_pt += 1; continue
             ck = addn("pt", f[1], "pearltrees_collection" if f[3] != "page" else "page", f[1])
-            edges.append((pk, ck, PT_REL.get(f[2], "assoc")))
+            edges.append((pk, ck, cat_rel or PT_REL.get(f[2], "assoc")))
 
     # 3) N-hop BFS from the start over the UNDIRECTED fused graph (a hop = any cross-corpus edge)
     adj = collections.defaultdict(set)

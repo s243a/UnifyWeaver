@@ -60,12 +60,24 @@ their node-type (and group) tokens**, so identity doesn't collapse them. `fuse_c
 cross-dataset links to *different* things (`Cybernetics` collection → `Centrifugal governor` page) — not
 identity. A **same-concept gate** (normalised titles match ⇒ `bridge`) corrects this: **bridge 1654 → 122**.
 
-For the non-identity ones, use the **most specific** relation the structure gives — the harvester tags a wiki
-page in a collection `element_of` (it is a member), and `parse_pearltrees` has the section context
-(Subcategories/Subtopics/…) — and fall back to `see_also` only when nothing more specific is identifiable
-(*not* a blanket see_also). Result on the two neighbourhoods: **element_of 6 → 1538**, see_also 22, bridge
-122. So `centrifugal-governor` becomes `element_of cybernetics` (a member, μ≈0.9 directional), which also
-finally gives the **ELEM operator** (previously starved at 6) real cross-corpus, node-type-diverse signal.
+For the non-identity ones, the relation comes from the pearl's **Pearltrees section name** — the designed
+source — not a blanket default: *Subcategories* → `subcategory`, *Subtopics* → `element_of`,
+*Super Categories* → `super_category`, *See Also / References* → `see_also`, with the structural contentType
+default only when a pearl is in no recognised section. This is captured as a **layered pipeline** (see
+"Harvest vs categorise" below): the harvester records raw section text by position id; categorisation is a
+separate, re-runnable step (`pt_sections.py` / `categorize_sections.py`). Result on the two neighbourhoods —
+a properly diverse relation set instead of one bucket: **element_of 1446, subcategory 396, super_category
+154, see_also 90, bridge 122, subtopic 82** (WIKI 632 / ELEM 1446 / SYM 410 targets). The directional
+category relations are now separated correctly, and the ELEM operator (once starved at 6) gets real
+cross-corpus, node-type-diverse signal.
+
+### Harvest vs categorise — two layers, not one
+The cookie harvester (`.local`) previously dropped section headers and tagged every page `element_of` from
+its contentType. Now it does **faithful raw capture only**: each pearl carries `section_pos_id`, and the
+section labels are emitted as a `#SECTION` table (pos_id → text). **Categorisation is a separate step**
+(`pt_sections.section_mode`, `categorize_sections.py`) that maps section text → relation and records the
+**method** (`exact_phrase` now; `fuzzy` / `llm_template` later) and a **confidence** — so categorisation is
+itself provenance, and can be re-run / upgraded over cached harvests **without re-harvesting**.
 
 ## Bridge quality — negatives + an e5-prior review gate
 

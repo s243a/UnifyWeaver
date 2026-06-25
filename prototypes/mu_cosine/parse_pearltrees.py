@@ -90,18 +90,10 @@ def main():
             add(ek, etype, ek.replace("_", " "), "", ek)
         return ek, etype
 
-    def section_mode(text):
-        """A SECTION header retypes the pearls that FOLLOW it (until the next section), like a SimpleMind
-        container. Recognised headers and the relation they impose:"""
-        t = (text or "").lower()
-        if "subcategor" in t:                       return "subcategory"      # → subcategory (narrower cat)
-        if "subtopic" in t:                         return "element_of"       # → element relations
-        if ("super" in t and "categor" in t) or "navigate up" in t:
-            return "super_category"                 # → parent (super-cat, or a page's parent)
-        if "see also" in t:                         return "see_also"         # → associative
-        if "wiki" in t or "encyclopedia" in t or "reference" in t:
-            return "reference"                      # → links that bridge the TREE to enwiki/encyclopedia
-        return None                                 # topical/junk header (Algebra, Meta, …) ⇒ default
+    # A SECTION header retypes the pearls that FOLLOW it (until the next section), like a SimpleMind
+    # container. The rule is the shared, re-runnable categoriser (pt_sections.section_mode) — exact-phrase
+    # match now, upgradeable to fuzzy/LLM, and the SAME rule fuse_corpus.py applies to the cookie-harvest.
+    from pt_sections import section_mode
 
     rows = list(con.execute("SELECT tree_id, content_type, title, url, content_tree_id, content_tree_title, "
                             "section_text, left_index FROM pearls ORDER BY tree_id, left_index"))
