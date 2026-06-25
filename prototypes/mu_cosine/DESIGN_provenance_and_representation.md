@@ -17,7 +17,7 @@ per-node embedding: cold-start safety, no overfitting, no table that grows with 
 | **`account`** | closed | **`s243a` / `s243a_groups`** | learned token (maskable provenance) — NEW |
 | `nodetype` | closed | category / page / mindmap_node / pearltrees_collection | learned token (+ optional transform, below) |
 | **node identity** | open | every concept | **frozen e5** (no table) |
-| **group** | open | every Pearltrees group | **frozen e5**, optionally a *transform* (below) — NOT a per-group table |
+| **group** | open | every Pearltrees group | **frozen e5 → required transform `T`** added to the member node (below) — NOT a per-group table, never raw e5 |
 
 ## Account (the two Pearltrees accounts)
 
@@ -31,17 +31,21 @@ default off; activate once **both** accounts' data is in (single-account data ma
 ## Groups: a transform of e5, never a per-group table
 
 A Pearltrees **group** is open-ended (grows with the data), so it is a **node with frozen e5**, not a
-learned table. When group-level conditioning is wanted *beyond* what e5 + the `account` token give, use a
-**learned transform of e5** — `group_repr = T(e5_group)` — NOT a per-group row:
+learned table. Group membership conditions a member node via a **learned transform of e5** that is
+**added** to the node — `node_emb += T(e5_group)` — NOT a per-group row, and **never raw e5**:
 
+- **The transform is mandatory, not optional.** A group's e5 is a point in *content space* (same space as
+  node e5). Adding it **raw** onto a member node would inject *another concept's vector* into the node, not
+  a membership signal. `T` is what **maps e5 → the additive node-role space** — it plays the role the table
+  plays for node-type, except its input is a *continuous e5* instead of a *discrete index*:
+  - node-type: `index → table-lookup → add` (the row is already a free learned vector in add-space)
+  - group:     `e5 → T → add`            (e5 is frozen, so a learned map into add-space is **required**)
 - **Parametric & shared.** `T` is the parameters, not a per-entity row, so it never grows with the number
-  of groups and **generalizes to unseen groups** (any new group's e5 → `T` → a sensible rep).
-- **Piggybacks e5.** Initialise `T` **near identity** ⇒ at warm start a group's rep *is* its e5 (full
-  piggyback on e5's pretrained semantics); fine-tuning learns only the group-specific **delta**. Same bet
-  as the rest of the model (frozen e5 carries meaning; learned parts are small deltas).
-- **Generalises node-type.** Today node-type conditions e5 *additively* (`e5 + nodetype_emb[type]`, a per-
-  type shift). A transform conditions it *multiplicatively* (`T_type(e5)`, a per-type projection that can
-  rotate/rescale/reweight e5 dims) — strictly more expressive, same cold-start safety.
+  of groups and **generalizes to unseen groups** (any new group's e5 → `T` → a sensible modifier).
+- **Warm-start no-op = zero output, NOT identity.** Zero-init `T`'s final layer so at warm start it **adds
+  nothing**, then learns the membership delta — exactly mirroring `nodetype_emb`'s zero-init. (Identity-init
+  would *add the raw group e5*, i.e. the wrong thing. Near-identity only applies to the *other* use — when a
+  group appears as its **own standalone node** and `T(e5)` *is* its representation; different role.)
 
 ### Choices to settle when we build it
 - **Input e5:** the group's **title** e5 (cheap, uniform) vs the **centroid of its members' e5** (a group
@@ -79,10 +83,12 @@ the *attachment point*.
 | 4 | **Concat + project** the node and group e5 | `W·[e5_node ; T(e5_group)]` | ~ more expressive (interaction terms) but changes the input projection and is hard to init near-identity; hold as an upgrade if (3) underfits. |
 
 **Recommendation: option 3.** `node_emb += T(e5_group_of_node)`, exactly mirroring
-`node_emb += nodetype_emb[type]`, with `T` a shared Linear init **near identity** so it starts as a **no-op**
-(warm-start-safe, the same reason `nodetype_emb` is zero-init). Minimal change; respects both constraints —
-the **per-node** nature of membership (so it goes on the node, not a global token) and the **open cardinality**
-(so the modifier is an e5-*transform* that generalizes, not a per-group row).
+`node_emb += nodetype_emb[type]`, with `T` a shared Linear whose **output is zero-initialised** so it starts
+as a **no-op** (warm-start-safe, the *same* reason `nodetype_emb` is zero-init — and **not** identity-init,
+which would add the raw group e5). Minimal change; respects both constraints — the **per-node** nature of
+membership (so it goes on the node, not a global token) and the **open cardinality** (so the modifier is an
+e5-*transform* that generalizes, not a per-group row). The transform is *required* here: raw e5 is the wrong
+space (see "The transform is mandatory" above).
 
 ### The unifying statement
 
