@@ -43,6 +43,24 @@ it separates text-dissimilar links weakly and never abstains.
 3. **The real rejecter is the LLM** (or a model trained *with* the bridges — informed but circular). The
    ensemble's job is to **bound the LLM bill**: rank by geomean, send the top-N most-suspicious to the LLM.
 
+## Resolution: the over-quarantine was a DATA BUG, not just calibration
+
+The 66% quarantine had a root cause: **most "bridges" weren't bridges.** `fuse_corpus.py` /
+`parse_pearltrees.py` labelled *every* pt→wiki link `bridge`, but a bridge is the **same concept** across
+corpora (identity, μ≈0.9). A wiki page in a collection that names a *different* thing (`Cybernetics`
+collection → `Centrifugal governor` page) is the collection's cross-dataset **reference**, not identity.
+The model's abstention (~0.047) was the honest signal that these *aren't* the same concept — it was right.
+
+Fixed with a **same-concept gate** (`bridge` iff the endpoints' normalised titles match, else `see_also`).
+Result: 827 → **61** true bridges; the ensemble (e5 + pre-bridge model, geomean≥0.7) now **keeps 60/61**, and
+the single "quarantine" (`mm:courses-dynamical-systems ↔ pt:courses-dynamical-systems`, same slug) is itself
+legit (e5 0.911; the model is merely under-confident at 0.327). So once the bridges are *actually* identity
+links, the ensemble agrees with them — exactly as it should.
+
+The architecture finding still stands for the genuinely-unknown cross-corpus pairs (the model abstains, can't
+reject) — but those are now correctly typed `see_also`, so they no longer masquerade as bridges needing a
+verdict.
+
 ## Next (item 2: review the current bridges)
 Use the ensemble **ranking** to feed a **bounded LLM review** — the top ~20–30 lowest-geomean bridges
 (model-abstained + any genuinely text-dissimilar), not all 549. That keeps the Haiku spend small while

@@ -30,7 +30,12 @@ import os
 # ----- the JUDGE (pluggable; default is a factory that closes over the threshold) -------------------------
 def geomean_judge(threshold=0.7):
     """Factory → judge(scores: dict[name,float]) -> bool. Keep iff the GEOMETRIC MEAN of the model scores
-    is ≥ threshold. Ignores the model names (but receives them, so a custom judge could use them)."""
+    is ≥ threshold. Ignores the model names (but receives them, so a custom judge could use them).
+
+    Note: with a SINGLE model the geometric mean is just that model's score, so this (and most judges)
+    reduce to `score ≥ threshold` — the sensible degenerate behaviour. A judge only *needs* ≥2 models if it
+    computes ensemble statistics (variance / disagreement / uncertainty); such a judge can check len(scores)
+    and decide how to behave when it's handed only one."""
     def judge(scores):
         vals = [max(1e-12, float(v)) for v in scores.values()]
         if not vals:

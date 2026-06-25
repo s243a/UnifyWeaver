@@ -17,6 +17,10 @@ SimpleMind map. A "hop" is ANY cross-corpus edge (mm↔mm, mm↔pt, pt↔pt, pt�
 | 2 | 77 | mm 32, pt 29, wiki 16 | 123 | 34 |
 | 3 | 753 | mm 42, pt 175, **wiki 536** | 932 | **626** |
 
+> **Correction (later):** these `bridge` counts predate the same-concept gate — most pt→wiki links are
+> cross-dataset *references* (different concepts), now typed `see_also`. Post-fix the 3-hop split is bridge
+> **43** / see_also 586 (not 626 bridges). See `REPORT_graded_round.md` §Correction.
+
 ## Profile vs Cybernetics — bridge depth differs by how the map was curated
 | map | seeds | bridges (harvest) | 2-hop wiki | 3-hop wiki |
 |---|---|---|---|---|

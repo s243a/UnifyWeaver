@@ -106,10 +106,14 @@ def main():
             scrub_pt += 1; continue
         pk = addn("pt", f[0], "pearltrees_collection", f[0])
         m = WIKI.search(f[4]) if len(f) > 4 else None
-        if m:                                           # PagePearl whose url is enwiki → a bridge
+        if m:                                           # PagePearl whose url is enwiki → a cross-corpus link
             title = m.group(1).split("#")[0].replace("%28", "(").replace("%29", ")")
             wk = addn("wiki", title, "category" if title.startswith("Category:") else "page", title)
-            edges.append((pk, wk, "bridge"))
+            # A `bridge` is the SAME concept across corpora (identity). A wiki page in a collection that names
+            # a DIFFERENT thing (e.g. "Cybernetics" collection → "Centrifugal governor" page) is not identity
+            # — it is the collection's cross-dataset REFERENCE, so use `see_also`, not bridge.
+            rel = "bridge" if norm(title) == norm(f[0]) else "see_also"
+            edges.append((pk, wk, rel))
         elif len(f) > 3:
             if norm(f[1]) in pt_priv:                   # private child → scrub
                 scrub_pt += 1; continue

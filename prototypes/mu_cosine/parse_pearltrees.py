@@ -166,12 +166,13 @@ def main():
         # relation = the section mode if it names one, else the contentType default
         rel = mode if mode in ("subcategory", "element_of", "super_category", "see_also") else base
         edges.append((src, dk, rel))
-        if ctype == 1 and ew:                             # any wiki PagePearl bridges to its enwiki node
+        if ctype == 1 and ew:                             # wiki PagePearl ↔ its enwiki node = SAME page
             ek, _ = enwiki_node(ew)
             if ek:
-                edges.append((dk, ek, "bridge"))
-                if mode == "reference":                   # a wiki/encyclopedia-REFERENCE section also
-                    edges.append((src, ek, "bridge"))     # bridges the whole TREE to enwiki
+                edges.append((dk, ek, "bridge"))          # the pt page IS that wiki page (identity)
+                if mode == "reference":                   # the TREE ↔ this wiki page: a `bridge` ONLY if the
+                    # tree names the SAME concept; otherwise it's the tree's cross-dataset REFERENCE → see_also
+                    edges.append((src, ek, "bridge" if slug(ek) == src else "see_also"))
 
     seen, uniq = set(), []
     for a, b, rel in edges:

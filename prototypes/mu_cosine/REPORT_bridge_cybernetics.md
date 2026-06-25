@@ -24,6 +24,11 @@ nodes** through 207 bridges; by 3 hops, **1020 enwiki nodes** / 1151 bridges. Th
 almost pure mindmap (the mm↔mm `subtopic`/`see_also`/`super_category` structure); pt and wiki enter at hop 2
 (the seeds' own collections + their enwiki references) and explode at hop 3 (the collections' members).
 
+> **Correction (later):** these `bridge` counts predate the same-concept gate. Most pt→wiki links here are
+> the collection's cross-dataset *references* (different concepts), now correctly typed `see_also`, not
+> `bridge`. Post-fix the 2-hop split is bridge **19** / see_also 196 (not 207 bridges). See
+> `REPORT_graded_round.md` §Correction.
+
 ## Privacy — the scrub-everywhere filter fired on real data
 The fresh harvest pulled **2 collections containing `*private*` markers** (`Intelegence & mind`,
 `System Perspective (Philosophy)` — each a `*private*` shortcut). `fuse_corpus.py` now applies the same

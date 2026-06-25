@@ -52,6 +52,18 @@ mindmap/pearltrees curation did — so *both* directions of a bridge get the mm/
 - `<out>_nodes.tsv`: `key  corpus  node_type  title  embed_text` — `embed_text` is the e5 string per node
   (the `Team <name> <id>` prefix hook lives here; inert until the `s243a_groups`/teams account is harvested).
 
+## Correction: `bridge` is same-concept only (not every cross-dataset link)
+
+A `bridge` means the **same concept** across corpora (identity, μ≈0.9). `fuse_corpus.py` /
+`parse_pearltrees.py` originally labelled *every* pt→wiki link `bridge`, but most are the collection's
+cross-dataset **references** to *different* things (`Cybernetics` collection → `Centrifugal governor` page) —
+those are `see_also` (associative, μ≈0.4), not identity. A **same-concept gate** (normalised titles match ⇒
+`bridge`, else `see_also`) corrects this: on the two neighbourhoods, **bridge 1654 → 122**, **see_also 22 →
+1550**. The remaining 122 bridges are genuine identity links (high e5; the ensemble keeps 60/61). This makes
+the round semantically honest — the model learns `centrifugal-governor ~0.4 cybernetics` (related), not
+`=0.9` (identical). Bridge dominance is no longer even an issue; `see_also` now carries the cross-dataset mass
+at its correct associative μ.
+
 ## Bridge quality — negatives + an e5-prior review gate
 
 Two refinements to how bridges are handled (a bridge asserts "same concept across corpora" at μ≈0.9):
