@@ -28,6 +28,20 @@ A Pearltrees account is a forest of **trees** (collections). The harvest stores 
 
 ---
 
+## Section headers retype what follows (like SimpleMind containers)
+
+`Section` pearls (contentType 7) are **headers**: read pearls in `left_index` order, and a header sets the
+relation of every pearl after it **until the next header**. The recognised headers:
+
+| section header | relation imposed on the pearls under it |
+|---|---|
+| `Subcategories` | `subcategory` (narrower category) |
+| `Subtopics` / `More Subtopics` | `element_of` (element relations) |
+| `Super Categories` / `Navigate Up` | `super_category` (parent — usually a super-category, but could be a page's parent) |
+| `See Also` | `see_also` (associative) |
+| `Wiki / Encyclopedia type References` | the links here **bridge the whole TREE to enwiki** (collection-level bridge) |
+| topical groupers (`Algebra`, `Calculus`, …) / junk (`Meta`, `To sort`, `Friends Pages`) | none — fall back to the contentType default |
+
 ## Relation semantics (tree = a collection of pearls)
 
 | pearl | relation | μ reading |

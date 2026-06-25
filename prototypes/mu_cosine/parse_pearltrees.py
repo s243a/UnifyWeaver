@@ -4,13 +4,19 @@ parse_smmx.py (corpus=pearltrees, judge=human). It is "ref-based": it reads data
 pulled (the cookie/API harvester + its skill live in .local — see SKILL_understand_pearltrees.md §Harvest);
 it does NOT harvest. Default source is the harvested SQLite DB if present, else pass --db.
 
-Relation semantics (a tree = a Collection of pearls; `contentType` of each pearl):
-  * Collection (2)  → `subtopic`   (a child collection — narrower membership)
-  * PagePearl  (1)  → `element_of` (a member page; node_type=page). If its url is en.wikipedia.org it ALSO
-                      emits a `bridge` edge to the enwiki node (category if Category:…, else page) — the
-                      cross-corpus join key. Pearltrees is the bridge-RICH corpus.
-  * Shortcut   (5)  → `assoc`      (an alias/cross-reference to another collection)
-  * Section (7), Root (4) → skipped (grouping / the tree's own root)
+SECTION headers (contentType 7) retype the pearls that FOLLOW them (until the next section), just like
+SimpleMind's structural containers — read in `left_index` order:
+  * "Subcategories"                        → `subcategory`    (narrower category)
+  * "Subtopics" / "More Subtopics"         → `element_of`     (element relations)
+  * "Super Categories" / "Navigate Up"     → `super_category` (parent — super-cat, or a page's parent)
+  * "See Also"                             → `see_also`       (associative)
+  * "Wiki / Encyclopedia type References"  → the wiki links bridge the whole TREE to enwiki
+  * topical/junk headers (Algebra, Meta, To sort, …) → no retype; contentType default
+
+Default relation (no section, or an unrecognised one), by `contentType`:
+  * Collection (2) → `subtopic`   ;  PagePearl (1) → `element_of`  ;  Shortcut (5) → `assoc`
+ANY PagePearl whose url is en.wikipedia.org ALSO emits a `bridge` to the enwiki node (category if
+Category:…, else page) — Pearltrees is the bridge-RICH corpus. Root (4) is skipped.
 
 Node identity = the title-derived slug (matching the Pearltrees slugs SimpleMind nodes carry, so the two
 corpora join). node_type ∈ pearltrees_collection | page | category.
@@ -50,37 +56,70 @@ def main():
     def add(key, ntype, title, pid="", enwiki=""):
         nodes.setdefault(key, {"ntype": ntype, "title": title, "pid": pid, "enwiki": enwiki})
 
-    for tid, ctype, title, url, ct_id, ct_title in con.execute(
-            "SELECT tree_id, content_type, title, url, content_tree_id, content_tree_title FROM pearls"):
+    def enwiki_node(ew):                                  # register the enwiki node, return (key, type)
+        if ew.startswith("Category:"):
+            ek, etype = ew[len("Category:"):], "category"
+        else:
+            ek, etype = ew, "page"
+        ek = ek.replace(" ", "_").strip("_")
+        if ek:
+            add(ek, etype, ek.replace("_", " "), "", ek)
+        return ek, etype
+
+    def section_mode(text):
+        """A SECTION header retypes the pearls that FOLLOW it (until the next section), like a SimpleMind
+        container. Recognised headers and the relation they impose:"""
+        t = (text or "").lower()
+        if "subcategor" in t:                       return "subcategory"      # → subcategory (narrower cat)
+        if "subtopic" in t:                         return "element_of"       # → element relations
+        if ("super" in t and "categor" in t) or "navigate up" in t:
+            return "super_category"                 # → parent (super-cat, or a page's parent)
+        if "see also" in t:                         return "see_also"         # → associative
+        if "wiki" in t or "encyclopedia" in t or "reference" in t:
+            return "reference"                      # → links that bridge the TREE to enwiki/encyclopedia
+        return None                                 # topical/junk header (Algebra, Meta, …) ⇒ default
+
+    # walk each tree's pearls IN ORDER (left_index) so section headers scope the pearls after them
+    rows = con.execute("SELECT tree_id, content_type, title, url, content_tree_id, content_tree_title, "
+                       "section_text, left_index FROM pearls ORDER BY tree_id, left_index")
+    cur_tree, mode = None, None
+    for tid, ctype, title, url, ct_id, ct_title, sec_text, _li in rows:
         if tid not in trees:
             continue
+        if tid != cur_tree:
+            cur_tree, mode = tid, None                    # reset section scope at each tree
         src = slug(trees[tid])
         add(src, "pearltrees_collection", trees[tid], str(tid))
-        if ctype == 2 and ct_title:                       # Collection → child collection (subtopic)
-            dk = slug(ct_title)
+        if ctype == 7:                                    # Section header → set the mode for what follows
+            mode = section_mode(sec_text or title)
+            continue
+        if ctype == 4:                                    # Root pearl
+            continue
+        # target node + base relation by contentType
+        ew = ""
+        if ctype == 2 and ct_title:                       # Collection (child tree)
+            dk, base = slug(ct_title), "subtopic"
             add(dk, "pearltrees_collection", ct_title, str(ct_id or ""))
-            edges.append((src, dk, "subtopic"))
-        elif ctype == 1 and title:                        # PagePearl → member page (element_of) + bridge
-            dk = slug(title)
-            ew = ""
+        elif ctype == 1 and title:                        # PagePearl (a member page / url)
+            dk, base = slug(title), "element_of"
             m = WIKI_URL.search(url or "")
             if m:
                 ew = unquote(m.group(1)).split("#")[0]
             add(dk, "page", title, "", ew)
-            edges.append((src, dk, "element_of"))
-            if ew:                                        # cross-corpus bridge to the enwiki node
-                if ew.startswith("Category:"):
-                    ek, etype = ew[len("Category:"):], "category"
-                else:
-                    ek, etype = ew, "page"
-                ek = ek.replace(" ", "_").strip("_")
-                if ek:
-                    add(ek, etype, ek.replace("_", " "), "", ek)
-                    edges.append((dk, ek, "bridge"))
-        elif ctype == 5 and ct_title:                     # Shortcut → alias/cross-reference (assoc)
-            dk = slug(ct_title)
+        elif ctype == 5 and ct_title:                     # Shortcut (alias)
+            dk, base = slug(ct_title), "assoc"
             add(dk, "pearltrees_collection", ct_title, str(ct_id or ""))
-            edges.append((src, dk, "assoc"))
+        else:
+            continue
+        # relation = the section mode if it names one, else the contentType default
+        rel = mode if mode in ("subcategory", "element_of", "super_category", "see_also") else base
+        edges.append((src, dk, rel))
+        if ctype == 1 and ew:                             # any wiki PagePearl bridges to its enwiki node
+            ek, _ = enwiki_node(ew)
+            if ek:
+                edges.append((dk, ek, "bridge"))
+                if mode == "reference":                   # a wiki/encyclopedia-REFERENCE section also
+                    edges.append((src, ek, "bridge"))     # bridges the whole TREE to enwiki
 
     seen, uniq = set(), []
     for a, b, rel in edges:
@@ -97,7 +136,8 @@ def main():
             for k, n in sorted(nodes.items()):
                 f.write(f"{k}\t{n['ntype']}\t{n['title']}\t{n['pid']}\t{n['enwiki']}\n")
         with open(args.out_prefix + "_edges.tsv", "w", encoding="utf-8") as f:
-            f.write("# src_key\tdst_key\trelation  (subtopic|element_of|bridge|assoc)\n")
+            f.write("# src_key\tdst_key\trelation  "
+                    "(subtopic|subcategory|element_of|super_category|see_also|bridge|assoc)\n")
             for a, b, rel in uniq:
                 f.write(f"{a}\t{b}\t{rel}\n")
         print(f"  wrote {args.out_prefix}_nodes.tsv + {args.out_prefix}_edges.tsv")
