@@ -51,7 +51,56 @@ learned table. When group-level conditioning is wanted *beyond* what e5 + the `a
 - **Form:** start a **Linear** `d→d` (~150K params at d=384), init near identity; MLP only if it underfits.
 - **Compose or replace:** keep the additive `nodetype_emb` *and* add `T`, or let `T` subsume it.
 
-### Discipline (same as node-type)
+## Two buckets, not one: **provenance** (maskable token) vs **structure** (on the node)
+
+The first cut lumped everything "factored" together; sharpen it into two buckets that behave differently:
+
+- **Provenance** — *where a label came from*: `corpus`, `judge`, `account`. Lives on its **own maskable
+  token** (mask it ⇒ a provenance-agnostic μ; unmask ⇒ condition on the source). You want to be able to
+  *marginalize it out*, so it is deliberately separable from the node.
+- **Structure** — *what a node is / what it belongs to*: `node-type`, `group`. **Added to the node's own
+  embedding**, per-node, **always on** (it is an intrinsic property of the node, not something you'd average
+  away). `mu_attention.py:317` already does this for node-type: `emb += nodetype_emb[type] * mask`.
+
+`account` is provenance (maskable). **`group` is structure** — same bucket as node-type, *not* provenance.
+That is the crux of your point.
+
+## Alternatives: where does group conditioning attach?
+
+Group membership is a *node* property, so the design question is **where the group signal enters** and
+**where its modifier vector comes from**. Cardinality (many groups, few types) constrains the *source*, not
+the *attachment point*.
+
+| # | Attachment | Source of modifier | Verdict |
+|---|---|---|---|
+| 1 | **Per-group learned axis** (treat group like type/op) | a per-group **table row** | ✗ open-ended → table grows with data; most groups seen too rarely to train a row. This is "adding it to types," and it breaks on **many-groups ≫ few-types**. |
+| 2 | **Separate group token** in the sequence (maskable, provenance-style) | `T(e5_group)` | ✗ one per-example token can't say *different nodes belong to different groups* — group is **per-node**, not per-example; + costs a token. |
+| 3 | **Added to the node embedding, per-node** (parallel to `nodetype_emb`) | `T(e5_group_of_node)` | ✓ **the lean.** Per-node (each node carries its own group's signal); identical mechanism, warm-start, and gating story as node-type; no extra token. |
+| 4 | **Concat + project** the node and group e5 | `W·[e5_node ; T(e5_group)]` | ~ more expressive (interaction terms) but changes the input projection and is hard to init near-identity; hold as an upgrade if (3) underfits. |
+
+**Recommendation: option 3.** `node_emb += T(e5_group_of_node)`, exactly mirroring
+`node_emb += nodetype_emb[type]`, with `T` a shared Linear init **near identity** so it starts as a **no-op**
+(warm-start-safe, the same reason `nodetype_emb` is zero-init). Minimal change; respects both constraints —
+the **per-node** nature of membership (so it goes on the node, not a global token) and the **open cardinality**
+(so the modifier is an e5-*transform* that generalizes, not a per-group row).
+
+### The unifying statement
+
+Node-type and group are the **same conditioning** — "what role does this node play" — both **summed into the
+node embedding**. They differ only in the *source* of the summed vector, and cardinality picks the source:
+
+> **Closed, small role set → a learned table (lookup).  Open, large role set → a shared transform of e5.**
+> Both are added to the node embedding.
+
+Node-type is the degenerate *closed* case; group is the *open* case of one general "node-role" modifier. "Many
+more groups than types" is **precisely why** group's modifier must be the e5-transform branch — and why it
+still attaches at the very same point type does, which is what you noticed.
+
+### What is "the group's e5"?
+The group's **title** e5 (cheap, uniform) vs the **centroid of its member nodes' e5** (a group *is* its
+contents). Lean: member-centroid for collections; revisit if titles prove more discriminative.
+
+## Discipline (same as node-type)
 Init near identity, **gate** (`--group-transform`), and **A/B** it — only once group/multi-account data is
 flowing. Adding an expressive transform before the data has group diversity is node-type's collinearity
 problem with more parameters to overfit.
