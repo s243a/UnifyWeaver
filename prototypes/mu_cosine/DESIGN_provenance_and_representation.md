@@ -75,13 +75,38 @@ Encode that weakness two ways — both levers we already use elsewhere:
 The weakness also **reinforces** the transform-over-table choice: a per-group table could *memorise* the
 noisy membership, whereas a shared, zero-init, regularised `T` with a soft target is far more robust to drift.
 
-### Deferred: the transform's input embedding
+### Learned per-group credibility (v2 extension; v1 stays uniform)
 
-`T`'s input is **e5 for now**. In principle it could take a *different* frozen encoder (e.g. miniLM) — `T`
-doesn't care what vector feeds it, so adopting one later is a **localised** change (swap only what goes into
-`T`). Adopting it *now* would fragment the single uniform e5 space every node shares into two encoder spaces
-to manage — implicit complexity for no present gain. **Stick to e5**; revisit miniLM only if e5 proves
-insufficient for the group signal specifically.
+The weakness is **heterogeneous**: groups vary *a lot* in internal source credibility / on-topic-ness — more
+than categories do. The model **can** learn which groups are more credible — but **only as a function of
+observable group features**, *never* a per-group learned scalar (that is the growing-table violation again).
+
+Implement as a learned **gate** `α(group) ∈ (0,1]` scaling the membership modifier:
+
+```
+node_emb += α(group) · T(e5_group)
+```
+
+with `α` computed from:
+- the group's **e5** (topic), and/or
+- the **dispersion of its members' e5** — a *tight* cluster of member embeddings = on-topic/credible →
+  larger `α`; a *scattered* group = drifty → smaller `α`. Coherence is computable straight from the members,
+  **no table**.
+
+Credible groups nudge harder, drifty ones barely. This turns the *global* "small-magnitude modifier"
+regulariser into a **per-group, e5/coherence-derived** one — still cold-start-safe (works on unseen groups),
+still no growing table. Start `α` at a neutral constant (≡ v1 behaviour) and learn deviations.
+
+Note the closed-vs-open split holds here too: **account**-level credibility (`s243a` vs `s243a_groups`) is
+fine as the small 2-value token; **per-group** credibility is the open case that *must* be a function.
+
+### Alternative: the transform's input embedding (documented, deferred)
+
+`T`'s input is **e5 for now**, but a *different* frozen encoder (e.g. **miniLM**) is a legitimate alternative
+input — `T` doesn't care what vector feeds it, so swapping/adding one later is a **localised** change (change
+only what goes into `T`). We **defer** it deliberately: adopting it now would fragment the single uniform e5
+space every node shares into two encoder spaces to manage — implicit complexity for no present gain. Recorded
+as a real option, not ruled out; **stick to e5** until there's a measured reason group needs its own encoder.
 
 ## Two buckets, not one: **provenance** (maskable token) vs **structure** (on the node)
 
