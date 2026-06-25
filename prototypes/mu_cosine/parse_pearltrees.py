@@ -26,6 +26,10 @@ corpora join). node_type ∈ pearltrees_collection | page | category. Each pearl
 bridge nodes carry none. See DESIGN_provenance_and_representation.md (account = maskable provenance token;
 groups/teams = a transform of e5, or a "Team <name> <id>" e5-text prefix).
 
+PRIVACY (scrub-everywhere): a private tree (visibility≠public) or a collection/pearl titled "private" is
+dropped at parse time WITH its whole subtree (privacy propagates down tree-containment) — private data never
+reaches the public dataset. See DESIGN_provenance_and_representation.md §Privacy.
+
     python3 parse_pearltrees.py --out-prefix pt        # uses the .local harvested DB if it exists
 """
 import argparse
@@ -39,6 +43,21 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = os.path.join(os.path.abspath(os.path.join(ROOT, "..", "..")),
                           ".local", "data", "pearltrees_api", "pearltrees_api.db")
 WIKI_URL = re.compile(r"en\.wikipedia\.org/wiki/(.+)$")
+# PRIVACY (scrub-everywhere — DESIGN_provenance_and_representation.md §Privacy): private data must NEVER reach
+# the public dataset, so it is dropped at PARSE time, inherited down the subtree, with no include-private
+# escape hatch. Two markers: (1) the title contains the word "private" (the user's "*private*" marker node /
+# a root named "… private …"); (2) the Pearltrees `visibility` is set to anything other than public (0).
+# We err toward dropping (a topical "Private equity" would be scrubbed too) and LOG every scrub — a false
+# positive only loses public data, a false negative would leak private data.
+PRIVATE_RE = re.compile(r"(?i)\bprivate\b")
+
+
+def is_private_title(t):
+    return bool(t) and bool(PRIVATE_RE.search(t))
+
+
+def vis_private(v):                                       # Pearltrees visibility: 0 = public; else restricted
+    return v is not None and str(v).strip() not in ("", "0")
 
 
 def slug(title):
@@ -56,10 +75,14 @@ def main():
 
     con = sqlite3.connect(args.db)
     trees, tree_acct = {}, {}                              # tree_id → title ; tree_id → account
-    for tid_, title_, acct_ in con.execute("SELECT id, title, account FROM trees"):
+    priv_trees = set()                                     # tree_ids that are private (seed + inherited)
+    for tid_, title_, acct_, vis_ in con.execute("SELECT id, title, account, visibility FROM trees"):
         trees[tid_] = title_
         tree_acct[tid_] = acct_ or ""
+        if vis_private(vis_) or is_private_title(title_):  # seed: this tree itself is private
+            priv_trees.add(tid_)
     nodes, edges = {}, []
+    scrub = Counter()                                      # what privacy dropped, by kind (logged, not silent)
 
     def add(key, ntype, title, pid="", enwiki="", account=""):
         n = nodes.get(key)
@@ -91,12 +114,33 @@ def main():
             return "reference"                      # → links that bridge the TREE to enwiki/encyclopedia
         return None                                 # topical/junk header (Algebra, Meta, …) ⇒ default
 
+    rows = list(con.execute("SELECT tree_id, content_type, title, url, content_tree_id, content_tree_title, "
+                            "section_text, left_index FROM pearls ORDER BY tree_id, left_index"))
+
+    # PRE-PASS (privacy): a collection NAMED private seeds privacy on its child tree; build tree containment
+    # (parent → child collection) and propagate privacy DOWN it so a private collection takes its whole
+    # harvested subtree with it (children inherit, exactly like the RDF `private` field).
+    contain = {}
+    for tid, ctype, title, _u, ct_id, ct_title, _s, _li in rows:
+        if tid not in trees or ctype != 2 or not ct_id:
+            continue
+        contain.setdefault(tid, set()).add(ct_id)
+        if is_private_title(ct_title):
+            priv_trees.add(ct_id)
+    frontier = list(priv_trees)                           # BFS the private mark down the containment graph
+    while frontier:
+        t = frontier.pop()
+        for c in contain.get(t, ()):
+            if c not in priv_trees:
+                priv_trees.add(c); frontier.append(c)
+
     # walk each tree's pearls IN ORDER (left_index) so section headers scope the pearls after them
-    rows = con.execute("SELECT tree_id, content_type, title, url, content_tree_id, content_tree_title, "
-                       "section_text, left_index FROM pearls ORDER BY tree_id, left_index")
     cur_tree, mode = None, None
     for tid, ctype, title, url, ct_id, ct_title, sec_text, _li in rows:
         if tid not in trees:
+            continue
+        if tid in priv_trees:                             # PRIVATE tree → scrub it and everything under it
+            scrub["tree"] += 1
             continue
         if tid != cur_tree:
             cur_tree, mode = tid, None                    # reset section scope at each tree
@@ -108,18 +152,24 @@ def main():
             continue
         if ctype == 4:                                    # Root pearl
             continue
-        # target node + base relation by contentType
+        # target node + base relation by contentType — but SCRUB any private target first
         ew = ""
         if ctype == 2 and ct_title:                       # Collection (child tree)
+            if ct_id in priv_trees or is_private_title(ct_title):
+                scrub["collection"] += 1; continue
             dk, base = slug(ct_title), "subtopic"
             add(dk, "pearltrees_collection", ct_title, str(ct_id or ""), account=tree_acct.get(ct_id) or acct)
         elif ctype == 1 and title:                        # PagePearl (a member page / url)
+            if is_private_title(title):
+                scrub["page"] += 1; continue
             dk, base = slug(title), "element_of"
             m = WIKI_URL.search(url or "")
             if m:
                 ew = unquote(m.group(1)).split("#")[0]
             add(dk, "page", title, "", ew, account=acct)
         elif ctype == 5 and ct_title:                     # Shortcut (alias)
+            if ct_id in priv_trees or is_private_title(ct_title):
+                scrub["shortcut"] += 1; continue
             dk, base = slug(ct_title), "assoc"
             add(dk, "pearltrees_collection", ct_title, str(ct_id or ""), account=tree_acct.get(ct_id) or acct)
         else:
@@ -143,6 +193,8 @@ def main():
           f"{len(uniq)} edges {dict(Counter(r for _, _, r in uniq))}")
     print(f"  bridges (pearltrees↔enwiki): {sum(1 for _, _, r in uniq if r == 'bridge')}")
     print(f"  accounts: {dict(Counter(n['account'] for n in nodes.values() if n['account']))}")
+    print(f"  PRIVACY scrubbed (dropped, never emitted): {dict(scrub) or 'none'}"
+          f"  [{len(priv_trees)} private tree-ids]")
 
     if args.out_prefix:
         with open(args.out_prefix + "_nodes.tsv", "w", encoding="utf-8") as f:
