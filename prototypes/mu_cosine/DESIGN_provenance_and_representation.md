@@ -17,7 +17,7 @@ per-node embedding: cold-start safety, no overfitting, no table that grows with 
 | **`account`** | closed | **`s243a` / `s243a_groups`** | learned token (maskable provenance) — NEW |
 | `nodetype` | closed | category / page / mindmap_node / pearltrees_collection | learned token (+ optional transform, below) |
 | **node identity** | open | every concept | **frozen e5** (no table) |
-| **group** | open | every Pearltrees group | **frozen e5 → required transform `T`** added to the member node (below) — NOT a per-group table, never raw e5 |
+| **group** | open | every Pearltrees group/team | **frozen e5**: first try a `"Team <name> <id>"` e5-text prefix (role+identity, zero params); else a transform `T` added to the member node — NOT a per-group table, never raw e5 |
 
 ## Account (the two Pearltrees accounts)
 
@@ -100,6 +100,26 @@ still no growing table. Start `α` at a neutral constant (≡ v1 behaviour) and 
 
 Note the closed-vs-open split holds here too: **account**-level credibility (`s243a` vs `s243a_groups`) is
 fine as the small 2-value token; **per-group** credibility is the open case that *must* be a function.
+
+### Cheaper than a transform: encode the role (and identity) in the embedded *text*
+
+e5 already uses text prefixes to mark role (`query:` / `passage:`). The same trick can encode a node's
+**structural role directly into its e5**, sometimes removing the need for a learned transform at all:
+
+- **Role via prefix.** Embed `"Team Physics"` (Pearltrees calls a group a *team*), not just `"Physics"`. The
+  `"Team "` prefix pushes the vector into the "this is a team/group" region of e5-space, so for a group that
+  appears as **its own node**, `T` may be **unnecessary** — the prefix does the role-injection the transform
+  would. This drops `T` from *mandatory* to *optional* for the standalone-group-node use. (It does **not**
+  remove `T` for the additive-membership use — conditioning a *different* member node still needs a map into
+  add-space; but even there a role-marked group e5 means `T` has *less* to learn.)
+- **Identity via id-in-text.** Fold the **team id** into the embedded text — `"Team Physics 13580844"` — so
+  two same-named teams get **distinct** e5 vectors. Uniqueness **without a per-team table** (it is still
+  frozen e5; the id is just input text), and still cold-start-safe. The parser already emits each node's
+  `pearltrees_id` + `account`, so the e5-text builder has what it needs to construct `"Team <title> <id>"`
+  for team/group nodes (and a plain title for ordinary nodes).
+
+This is the **first** thing to try for groups — text-prefix + id is zero new parameters; reach for the
+learned transform/credibility gate only if the prefix proves insufficient.
 
 ### Alternative: the transform's input embedding (documented, deferred)
 
