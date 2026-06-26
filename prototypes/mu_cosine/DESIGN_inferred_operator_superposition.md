@@ -40,10 +40,13 @@ Two realisations of "train under the distribution":
   true operator is none of the candidates (b). `sample_operator_weights` / `random_operator_embedding` in
   `mu_posterior.py` (torch-free reference + tests); tagged rows keep their fixed `op_emb[op]`.
 
-Hard sampling is the Monte-Carlo approximation of the soft loss; the **random embedding** is the cheap
-input-space realisation of the same expectation (one forward instead of K), and is the build target — it is
-what makes "operator = random superposition + noise, drawn from the fitted joint `P(relation|μ_vec)`"
-literal.
+Hard sampling is the Monte-Carlo approximation of the soft loss. The **random embedding is NOT the same
+expectation** — `model(Σ wᵢ·op_embᵢ)` ≠ `Σ wᵢ·model(op_embᵢ)` because the model is nonlinear in the operator
+token (Jensen) — it is a cheaper **stochastic surrogate**: a single forward through an input-space mixture of
+operator embeddings, which makes "operator = random superposition + noise, drawn from the fitted joint"
+literal at the cost of being an approximation, not the loss-space expectation. (It equals the expectation only
+if the readout were linear in the op token.) It is the build target *because* it is cheap (one forward) and
+injects the uncertainty as input noise; the soft loss is the exact-but-K-forward alternative to A/B against.
 
 ## 2. The posterior, and why it factors
 
@@ -106,22 +109,36 @@ all four show up as how *distributed* the operator-weighted gradient is.
 
 ## 5b. Training-integration spec (the build)
 
-Three rules govern how the random operator embedding is wired into training:
+Four rules govern how the random operator embedding is wired into training:
 
 1. **Blend on UNLABELED rows only.** Tagged rows keep their fixed `op_emb[op]` and exact μ target; the random
    superposition + the joint-posterior assignment apply to **inferred** (`confidence < 1`) rows. Labelled
    data is ground truth — never blur it.
 
-2. **Asymmetric operators carry TWO prior μ — handle both directions.** `WIKI` (subset/subcategory) and
-   `ELEM` (element) are directional, so each has two reference targets: forward `μ(member|container) ≈ 0.9`
-   and reverse `≈ 0.1`; `SYM` (see_also/assoc/bridge) is symmetric (one value, e.g. 0.4 both ways). So an
-   inferred pair generates **two** training examples — `(node, root)` and `(root, node)` — each with the
-   *same* random-superposition op token but a **direction-specific blended target**:
-   `μ_target_dir = Σ_op P(op|μ_vec) · target_dir(op)` (forward uses each op's forward target, reverse its
-   reverse). A symmetric op contributes the same value both ways; the asymmetric ops contribute their two.
-   This is also why the readout vector already carries `wiki_fwd/rev` and `elem_fwd/rev` separately.
+2. **Relation→operator marginalisation — embedding at OPERATOR level, target at RELATION level (PR #3359
+   review).** The joint head outputs `P(relation | μ_vec)`, but the model only has 4 operator tokens, and the
+   map is **many-to-one** (`element_of→ELEM`; `subcategory/super_category/subtopic→WIKI`;
+   `see_also/assoc/bridge→SYM`). So split the two consumptions:
+   - **Op-token embedding** uses the **operator marginal**
+     `P(op|μ_vec) = Σ_relation P(op|relation)·P(relation|μ_vec)` (`P(op|relation)` is the deterministic map) —
+     `op_token = (w ~ Dirichlet(α·P(op|μ_vec)))·op_emb`.
+   - **The μ target stays at the RELATION level** — crucial because relations sharing an operator have
+     **different** targets (under `SYM`: `bridge ≈ 0.9`, `see_also ≈ 0.4`, `assoc ≈ 0.3`). So
+     `μ_target_dir = Σ_relation P(relation|μ_vec) · target_dir(relation)`, NOT a single per-operator value.
+     Marginalising the target to the operator first would wrongly collapse SYM's three relations to one μ.
 
-3. **Curriculum — labelled first, then unlabelled.** The posterior is only as good as the model's μ readouts
+3. **Asymmetric operators carry TWO prior μ — both directions.** `WIKI`/`ELEM` are directional, so each
+   relation under them has forward `target_fwd ≈ 0.9` and reverse `≈ 0.1`; `SYM` relations are symmetric (one
+   value each). So an inferred pair generates **two** training examples — `(node, root)` and `(root, node)` —
+   each with the *same* random-superposition op token but the **direction-specific relation-blended target**
+   from rule 2 (forward uses each relation's forward target, reverse its reverse). This is why the readout
+   vector keeps `wiki_fwd/rev` and `elem_fwd/rev` separate.
+
+   **Inference-time discipline (PR #3359 review):** the Dirichlet *sampling* is training-time only — at
+   eval/inference use the **deterministic mean** (`α→∞`, i.e. `op_token = P(op|μ_vec)·op_emb`, no noise), and
+   keep the training-time sampling on its own isolated RNG (as the v1 switch already does).
+
+4. **Curriculum — labelled first, then unlabelled.** The posterior is only as good as the model's μ readouts
    and the joint head fitted on them; both are poor early. So **train on tagged data only until the joint
    `P(relation|μ_vec)` is reasonably fit** (e.g. held-out accuracy/log-loss has plateaued, or a fixed warm-up
    of steps), *then* introduce the inferred rows with the blend. This breaks the chicken-and-egg (a bad

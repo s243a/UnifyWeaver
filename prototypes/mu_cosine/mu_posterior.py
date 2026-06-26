@@ -152,13 +152,19 @@ class JointPosterior:
             return torch.softmax(self.net(torch.tensor(self._z(X), dtype=torch.float32)), -1).numpy()
 
 
-def _eval(proba, rels, ri):
-    """accuracy + cross-entropy (log-loss) of a [N,C] proba against true relations."""
+def _eval(proba, rels, ri, bins=10):
+    """accuracy + cross-entropy (log-loss) + ECE (expected calibration error) of a [N,C] proba."""
     import numpy as _np
     y = _np.array([ri[r] for r in rels])
-    acc = float((proba.argmax(1) == y).mean())
+    pred, conf = proba.argmax(1), proba.max(1)
+    acc = float((pred == y).mean())
     ll = float(-_np.log(_np.clip(proba[_np.arange(len(y)), y], 1e-9, 1.0)).mean())
-    return acc, ll
+    ece, edges = 0.0, _np.linspace(0, 1, bins + 1)        # |confidence − accuracy|, confidence-binned
+    for b in range(bins):
+        m = (conf > edges[b]) & (conf <= edges[b + 1])
+        if m.sum():
+            ece += m.mean() * abs(conf[m].mean() - (pred[m] == y[m]).mean())
+    return acc, ll, float(ece)
 
 
 # ---------- consume the fitted posterior: a RANDOM operator embedding (superposition) -------------------
@@ -284,12 +290,19 @@ def main():
     # provisional e5 fit → bands → OUTLIER REJECTION (the side-note rule, applied to ALL relation types)
     prov = MuPosterior(nbins=args.nbins)
     prov.fit_source("e5", ((r["rel"], mu_e5[(r["node"], r["root"])]) for r in tagged))
-    flagged = [r for r in tagged if prov.is_anomalous("e5", r["rel"], mu_e5[(r["node"], r["root"])], args.q)]
-    fit_set = [r for r in tagged if r not in flagged] if args.reject_outliers else tagged
+    flag_idx = {i for i, r in enumerate(tagged)
+                if prov.is_anomalous("e5", r["rel"], mu_e5[(r["node"], r["root"])], args.q)}
+    flagged = [tagged[i] for i in flag_idx]
+    fit_set = [r for i, r in enumerate(tagged) if i not in flag_idx] if args.reject_outliers else tagged
     print(f"tagged pairs: {len(tagged)} / {len(rows)} total; out-of-band {len(flagged)}"
           + (f" → REJECTED, fitting on {len(fit_set)}" if args.reject_outliers else " (kept; --reject-outliers to drop)"))
-    by_rel_flag = Counter(r["rel"] for r in flagged)
-    print(f"  out-of-band by relation: {dict(by_rel_flag)}")
+    # per-relation RATE, not count: the per-relation quantile band flags ~2q of EACH class by construction, so
+    # the absolute count tracks class size — this is a review QUEUE, not a relative-noise diagnostic.
+    rel_n = Counter(r["rel"] for r in tagged)
+    rel_f = Counter(r["rel"] for r in flagged)
+    print(f"  out-of-band by relation (rate; ~{2*args.q:.0%} expected per class by construction):")
+    for rel in sorted(rel_n, key=lambda r: -rel_f[r] / max(rel_n[r], 1)):
+        print(f"    {rel:14s} {rel_f[rel]:4d}/{rel_n[rel]:<4d} = {rel_f[rel]/max(rel_n[rel],1):.1%}")
 
     # build the SOURCE table: e5 (static) + the model μ-readout vector (sym, wiki_fwd/rev, elem_fwd/rev)
     post = MuPosterior(nbins=args.nbins)
@@ -326,19 +339,26 @@ def main():
         ri = {r: i for i, r in enumerate(relset)}
 
         joint = JointPosterior(relset, n_features=len(sources), hidden=args.hidden).fit(Xtr, rtr)
-        jacc, jll = _eval(joint.proba(Xhe), rhe, ri)
+        jacc, jll, jece = _eval(joint.proba(Xhe), rhe, ri)
 
-        fac = MuPosterior(nbins=args.nbins)                # factored product (equal weights) on the same train
-        for s in sources:
-            fac.fit_source(s, ((rtr[k], src_vals[s][i]) for k, i in enumerate(train)))
-        fp = np.array([[fac.posterior({s: src_vals[s][i] for s in sources}).get(r, 1e-9) for r in relset]
-                       for i in held])
-        facc, fll = _eval(fp, rhe, ri)
+        def factored(weights):                             # product-of-experts on train, with per-source weights
+            fac = MuPosterior(nbins=args.nbins)
+            for s in sources:
+                fac.fit_source(s, ((rtr[k], src_vals[s][i]) for k, i in enumerate(train)), weight=weights[s])
+            fp = np.array([[fac.posterior({s: src_vals[s][i] for s in sources}).get(r, 1e-9) for r in relset]
+                           for i in held])
+            return _eval(fp, rhe, ri)
 
-        print(f"\nJOINT vs FACTORED on held-out ({len(held)} pairs, {len(relset)} relations):")
-        print(f"  factored product-of-marginals : acc {facc*100:5.1f}%   log-loss {fll:.3f}")
-        print(f"  joint head ({'LR' if args.hidden==0 else f'MLP-{args.hidden}'})            : "
-              f"acc {jacc*100:5.1f}%   log-loss {jll:.3f}   ⇒ {'better' if jll < fll else 'worse'} calibrated")
+        eacc, ell, eece = factored({s: 1.0 for s in sources})           # naive equal-weight product
+        sep = {s: post.separability(s)[0] for s in sources}             # corrected PoE: weight ∝ separability
+        wacc, wll, wece = factored(sep)                                 # (down-weights weak/redundant sources)
+
+        print(f"\nJOINT vs FACTORED on held-out ({len(held)} pairs, {len(relset)} relations; "
+              f"majority baseline {max(Counter(rhe).values())/len(rhe):.1%}):")
+        print(f"  factored PoE  (equal weights)   : acc {eacc*100:5.1f}%  log-loss {ell:.3f}  ECE {eece:.3f}")
+        print(f"  factored PoE  (sep-weighted, #3357): acc {wacc*100:5.1f}%  log-loss {wll:.3f}  ECE {wece:.3f}")
+        print(f"  joint head    ({'LR' if args.hidden==0 else f'MLP-{args.hidden}':6s})        : "
+              f"acc {jacc*100:5.1f}%  log-loss {jll:.3f}  ECE {jece:.3f}")
         if args.hidden == 0:                              # show LR captured the asymmetry: fwd vs rev opposite signs
             W = joint.net.weight.detach().numpy()         # [C, K]
             for rel in ("subcategory", "element_of"):

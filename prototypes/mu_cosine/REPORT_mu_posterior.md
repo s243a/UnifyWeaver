@@ -66,9 +66,13 @@ The posterior should condition on the **full vector** of μ readouts, not one nu
 SYM μ, and — for the ASYMMETRIC operators — **both directions** (`wiki_fwd/wiki_rev`, `elem_fwd/elem_rev`).
 `mu_posterior.py --model --reject-outliers` fits all six and reports separability + the correlation matrix.
 
-**Outlier rejection (all relation types, e5 out-of-band):** 214/2088 rejected, by relation
-`element_of 110, subcategory 40, bridge_neg 20, super_category 16, see_also 10, bridge 10, subtopic 8` —
-**element_of is by far the noisiest label** (110, ≈10%), confirming it most needs outlier rejection.
+**Outlier rejection (all relation types, e5 out-of-band):** 214/2088 rejected. **Correction (PR #3359
+review):** the per-relation quantile band flags ~2q (≈10%) of *every* class **by construction**, so this is a
+**review queue whose count tracks class size**, NOT a relative-noise diagnostic. The measured *rates* are
+essentially uniform — `bridge 11.4%, see_also 11.1%, bridge_neg 11.0%, super_category 10.4%, subcategory
+10.1%, element_of 10.0%, subtopic 10.0%` — so `element_of`'s large *count* (110) is just because it is the
+biggest class (1098), not because it is intrinsically noisier. (A *global* reference band, not per-relation
+quantiles, would be needed to compare intrinsic noise across relations.)
 
 **Per-source separability:** `elem_fwd/rev 0.146 > sym 0.137 > wiki_fwd/rev 0.059 > e5 0.041`.
 
@@ -101,17 +105,19 @@ and can't represent the fwd×rev asymmetry *interaction*. `JointPosterior` repla
 discriminative head over the **whole** μ-vector (`hidden=0` → logistic regression; `hidden>0` → MLP), fit on
 the tagged pairs. Held-out (468 pairs, 7 relations; element_of ≈ 53% = majority baseline):
 
-| combiner | accuracy | log-loss |
-|---|---|---|
-| factored product-of-marginals | 50.9% (**below** majority) | 1.329 |
-| joint **LR** | 53.8% | 1.251 |
-| joint **MLP-16** | **56.0%** | **1.160** |
+| combiner (held-out, majority 51.1%) | accuracy | log-loss | ECE |
+|---|---|---|---|
+| factored PoE — equal weights | 50.9% (below majority) | 1.329 | 0.110 |
+| factored PoE — **sep-weighted** (the #3357 correction) | 51.1% | 1.376 | 0.041 |
+| joint **LR** | **53.8%** | **1.251** | **0.031** |
+| joint **MLP-16** | **56.0%** | **1.160** | — |
 
-The factored product lands **below the majority baseline** — the correlation over-counting actively hurts.
-The joint head clears it and is better calibrated (lower log-loss), the MLP most (the +0.6–0.7 redundancy and
-the −0.72 anti-correlation are handled natively, not asserted away with scalar weights). `test_joint_
-posterior.py` includes the decisive case: a target whose per-source *marginals carry zero information* and
-only the joint (the f−r interaction) separates — the joint head learns it, a product of marginals cannot.
+Benchmarked against **both** factored baselines (PR #3359 review): even the **correlation-corrected**
+sep-weighted PoE only reaches the majority baseline (51.1%) with a *worse* log-loss; the joint head clears it
+on accuracy, log-loss, **and** calibration (ECE 0.031 — well-calibrated, not the overconfident-softmax the
+calibration literature warns about). So the joint genuinely beats the *corrected* factored model, not just
+the naive product. `test_joint_posterior.py` includes the decisive case: a target whose per-source
+*marginals carry zero information* and only the joint (the f−r interaction) separates.
 
 So the combiner for the posterior is the **joint head**, not the weighted product; the per-source histograms
 remain the right tool for the **anomaly bands** (those genuinely are 1-D).
