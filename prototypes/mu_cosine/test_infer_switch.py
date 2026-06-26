@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Regression tests for the inferred-relation stochastic operator switch (PR #3356 review asks):
 TAGGED rows never switch, legacy 9-column pairs default to conf=1.0, the switch is seed-reproducible, and its
-RNG is isolated. Run: `python3 test_infer_switch.py` (no pytest needed)."""
+RNG is isolated. Run: `python3 test_infer_switch.py` — plain asserts, no pytest. (NOT dependency-free: it
+imports `train_mu_attention`, which imports torch; the functions under test, `switched_op`/`load_graded`,
+are themselves pure Python.)"""
 import os
 import random
 import tempfile
