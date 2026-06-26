@@ -122,6 +122,46 @@ def e5_mu_fn(cache_path):
     return mu
 
 
+def model_readout_fn(ckpt_path, e5_cache, device="cpu", bs=2048):
+    """Returns readouts(pairs) → {source: np.array} for the FULL μ-readout vector: the symmetric SYM μ and,
+    for the ASYMMETRIC operators (WIKI, ELEM), BOTH directions as separate features (wiki_fwd/wiki_rev,
+    elem_fwd/elem_rev). The posterior conditions on each of these; conditioning on fwd+rev separately captures
+    the directional asymmetry without hand-designing it (NB the operator readouts are circular — the model was
+    trained on these relations — so the estimator should down-weight them by their correlation)."""
+    import torch
+    from mu_attention import MuAttention, Tokenizer, OPS, load_dag
+    d = torch.load(e5_cache, weights_only=False)
+    idx = {n: i for i, n in enumerate(d["names"])}
+    parents, children, deg = load_dag()
+    tok = Tokenizer(d["query"], d["passage"], idx, parents, deg)
+    ck = torch.load(ckpt_path, weights_only=False); cfg = ck.get("cfg", {})
+    model = MuAttention(d_model=d["query"].shape[1], n_heads=cfg.get("heads", 4), n_layers=cfg.get("layers", 3))
+    sd, own = ck["state"], model.state_dict()
+    for k, v in sd.items():
+        if k in own and own[k].shape == v.shape:
+            own[k] = v
+        elif k in own and own[k].dim() >= 1 and own[k].shape[0] > v.shape[0] and own[k].shape[1:] == v.shape[1:]:
+            t = own[k].clone(); t[:v.shape[0]] = v; t[v.shape[0]:] = v[0]; own[k] = t
+    model.load_state_dict(own); model.to(device); model.eval()
+
+    @torch.no_grad()
+    def _mu(pairs, op):
+        out = []
+        for i in range(0, len(pairs), bs):
+            b = tok.build([(a, bb, OPS[op]) for a, bb in pairs[i:i + bs]], train=False)
+            b = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in b.items()}
+            out.append(model(**b).cpu().numpy())
+        return np.concatenate(out) if out else np.array([])
+
+    def readouts(pairs):                                   # pairs: list of (node, root) both in idx
+        rev = [(b, a) for a, b in pairs]
+        return {"sym": _mu(pairs, "SYM"),
+                "wiki_fwd": _mu(pairs, "WIKI"), "wiki_rev": _mu(rev, "WIKI"),
+                "elem_fwd": _mu(pairs, "ELEM"), "elem_rev": _mu(rev, "ELEM")}
+    readouts.idx = idx
+    return readouts
+
+
 def load_pairs(path):
     rows = []
     with open(path, encoding="utf-8") as f:
@@ -141,8 +181,11 @@ def main():
     ap.add_argument("--e5-cache", required=True)
     ap.add_argument("--nbins", type=int, default=20)
     ap.add_argument("--q", type=float, default=0.05, help="anomaly band quantile")
-    ap.add_argument("--model", default=None, help="a trained MuAttention checkpoint → adds the DYNAMIC model "
-                    "μ source (symmetric SYM μ, masked provenance) and reports e5↔model correlation")
+    ap.add_argument("--model", default=None, help="a trained MuAttention checkpoint → adds the full μ-READOUT "
+                    "VECTOR (sym + wiki_fwd/rev + elem_fwd/rev) and reports per-source separability + the "
+                    "correlation matrix")
+    ap.add_argument("--reject-outliers", action="store_true", help="drop tagged labels whose e5 μ is out of "
+                    "their relation's band BEFORE fitting (the design's outlier rejection, all relation types)")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
@@ -152,48 +195,42 @@ def main():
     e5mu = e5_mu_fn(args.e5_cache)
     mu_e5 = {(r["node"], r["root"]): e5mu(r["node"], r["root"]) for r in tagged}
 
+    # provisional e5 fit → bands → OUTLIER REJECTION (the side-note rule, applied to ALL relation types)
+    prov = MuPosterior(nbins=args.nbins)
+    prov.fit_source("e5", ((r["rel"], mu_e5[(r["node"], r["root"])]) for r in tagged))
+    flagged = [r for r in tagged if prov.is_anomalous("e5", r["rel"], mu_e5[(r["node"], r["root"])], args.q)]
+    fit_set = [r for r in tagged if r not in flagged] if args.reject_outliers else tagged
+    print(f"tagged pairs: {len(tagged)} / {len(rows)} total; out-of-band {len(flagged)}"
+          + (f" → REJECTED, fitting on {len(fit_set)}" if args.reject_outliers else " (kept; --reject-outliers to drop)"))
+    by_rel_flag = Counter(r["rel"] for r in flagged)
+    print(f"  out-of-band by relation: {dict(by_rel_flag)}")
+
+    # build the SOURCE table: e5 (static) + the model μ-readout vector (sym, wiki_fwd/rev, elem_fwd/rev)
     post = MuPosterior(nbins=args.nbins)
-    post.fit_source("e5", ((r["rel"], mu_e5[(r["node"], r["root"])]) for r in tagged), weight=1.0)
-    sp_e5, means = post.separability("e5")
-    print(f"tagged pairs: {len(tagged)} / {len(rows)} total")
-    print(f"e5 μ per-relation means (separability spread {sp_e5:.3f}):")
-    for rel in sorted(means, key=lambda r: -means[r]):
-        lo, hi = post.band("e5", rel, args.q)
-        print(f"  {rel:14s} mean {means[rel]:.3f}  band[{args.q:.2f}] [{lo:.3f},{hi:.3f}]  n={len(post.raw[('e5',rel)])}")
-
-    # DYNAMIC model source + the non-independence measurement (design: set weights from e5↔model correlation)
+    src_vals = {"e5": [mu_e5[(r["node"], r["root"])] for r in fit_set]}
+    post.fit_source("e5", ((r["rel"], v) for r, v in zip(fit_set, src_vals["e5"])))
     if args.model:
-        from bridge_ensemble import model_scorer
-        _, mmu = model_scorer(args.model, args.e5_cache, device=args.device)
-        mu_md = {(r["node"], r["root"]): mmu(r["node"], r["root"]) for r in tagged}
-        post.fit_source("model", ((r["rel"], mu_md[(r["node"], r["root"])]) for r in tagged))
-        sp_md, mmeans = post.separability("model")
-        print(f"\nmodel μ per-relation means (separability spread {sp_md:.3f}  vs e5 {sp_e5:.3f}):")
-        for rel in sorted(mmeans, key=lambda r: -mmeans[r]):
-            print(f"  {rel:14s} mean {mmeans[rel]:.3f}  n={len(post.raw[('model',rel)])}")
-        ce5 = [mu_e5[k] for k in mu_e5]
-        cmd = [mu_md[k] for k in mu_e5]
-        r_all = pearson(ce5, cmd)
-        print(f"\ne5 ↔ model μ correlation (overall): {r_all:+.3f}  "
-              f"⇒ they are {'strongly' if r_all > 0.6 else 'moderately' if r_all > 0.3 else 'weakly'} "
-              f"correlated; a naive product over-counts the shared evidence by ~this much.")
-        # set product-of-experts weights: down-weight the less-separating source AND the shared (correlated)
-        # part — give the model the full weight, e5 only its UNIQUE contribution ≈ (1 − r²).
-        w_e5 = max(0.0, 1.0 - r_all * r_all) * (sp_e5 / (sp_e5 + sp_md + 1e-9))
-        post.weights["e5"], post.weights["model"] = round(w_e5, 3), 1.0
-        print(f"  → suggested product-of-experts weights: model 1.0, e5 {post.weights['e5']:.3f} "
-              f"(its (1−r²)·relative-separability share)")
+        ro = model_readout_fn(args.model, args.e5_cache, device=args.device)
+        pairs = [(r["node"], r["root"]) for r in fit_set]
+        rdv = ro(pairs)                                    # {source: array aligned with fit_set}
+        for src in ("sym", "wiki_fwd", "wiki_rev", "elem_fwd", "elem_rev"):
+            src_vals[src] = list(rdv[src])
+            post.fit_source(src, ((r["rel"], v) for r, v in zip(fit_set, rdv[src])))
 
-    print("\nP(relation | μ_e5) at sample μ values:")
-    for mu in (0.78, 0.84, 0.90, 0.96):
-        pst = post.posterior({"e5": mu})
-        top = sorted(pst.items(), key=lambda x: -x[1])[:3]
-        print(f"  μ_e5={mu:.2f} → " + ", ".join(f"{r} {p:.2f}" for r, p in top))
+    sources = list(src_vals)
+    print(f"\nper-source separability (μ-mean spread across relations — higher = more discriminative):")
+    for src in sources:
+        sp, _ = post.separability(src)
+        print(f"  {src:9s} {sp:.3f}")
+    if len(sources) > 1:
+        print(f"\ncorrelation matrix (|r| ⇒ redundancy; the operator readouts are CIRCULAR — trained on these):")
+        print("            " + " ".join(f"{s[:8]:>8s}" for s in sources))
+        for a in sources:
+            print(f"  {a:9s} " + " ".join(f"{pearson(src_vals[a], src_vals[b]):+7.2f} " for b in sources))
 
-    # the side-note rule: TAGGED labels whose measured μ is out of band ⇒ flag for LLM/human review
-    flagged = [(r, e5mu(r["node"], r["root"])) for r in tagged
-               if post.is_anomalous("e5", r["rel"], e5mu(r["node"], r["root"]), args.q)]
-    print(f"\nLABEL-ANOMALY review (tagged, μ_e5 outside its relation band): {len(flagged)}/{len(tagged)}")
+    # the side-note rule: out-of-band tagged labels ⇒ review (these were rejected from the fit above)
+    print(f"\nLABEL-ANOMALY review (out-of-band tagged labels → LLM/human): {len(flagged)}/{len(tagged)}")
+    flagged = [(r, mu_e5[(r["node"], r["root"])]) for r in flagged]
     for r, mu in sorted(flagged, key=lambda x: x[1])[:15]:
         print(f"  μ_e5={mu:.3f}  [{r['rel']}]  {r['node']} ∈/~ {r['root']}")
     if args.out and flagged:
