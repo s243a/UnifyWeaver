@@ -58,6 +58,17 @@ def _norm(s):
     return " ".join(_re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).split())
 
 
+# "tag -- qualifier": a section header is often a category TAG followed by a free-text qualifier after a dash
+# (e.g. "See Also -- Foundational", "Subtopics -- Advanced"). Categorise on the TAG, so the qualifier neither
+# DILUTES the fuzzy ratio nor OVERRIDES the tag (e.g. "See Also -- Subcategories of X" must stay see_also).
+_QUALIFIER = _re.compile(r"\s*(?:--+|[–—])\s*")   # `--`, en-dash, em-dash
+
+
+def _segments(text):
+    tag = _QUALIFIER.split(text or "", 1)[0].strip()
+    return list(dict.fromkeys([tag, text]))                # the leading tag first, then the whole label
+
+
 def fuzzy_mode(text, threshold=0.78):
     """Best edit-distance match of a section label to a canonical keyword → (category, similarity), or
     (None, best) below threshold. Also tries the label's individual TOKENS so a typo'd keyword embedded in a
@@ -79,13 +90,16 @@ def categorize(text, method="exact_phrase", fuzzy_threshold=0.78):
     match first (confidence 1.0); `fuzzy` additionally falls back to an edit-distance match (a confident
     fuzzy hit is treated as a LABEL — confidence 1.0 — with provenance `fuzzy`, so it can be audited/
     down-weighted). `llm_template` is the next layer (not yet implemented)."""
-    cat = section_mode(text)
-    if cat:
-        return (cat, "exact_phrase", 1.0)
+    segs = _segments(text)                                 # leading "tag" (before `-- qualifier`), then full
+    for s in segs:
+        cat = section_mode(s)
+        if cat:
+            return (cat, "exact_phrase", 1.0)
     if method == "fuzzy":
-        fcat, r = fuzzy_mode(text, fuzzy_threshold)
-        if fcat:
-            return (fcat, "fuzzy", 1.0)
+        for s in segs:
+            fcat, r = fuzzy_mode(s, fuzzy_threshold)
+            if fcat:
+                return (fcat, "fuzzy", 1.0)
     elif method != "exact_phrase":
         raise ValueError(f"unknown categorization method: {method!r} (have: exact_phrase, fuzzy)")
     return (None, method, 0.0)

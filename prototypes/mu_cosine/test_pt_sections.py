@@ -31,6 +31,16 @@ def test_exact_method_does_not_fuzzy_match():
     assert categorize("Subtoipcs", "exact_phrase")[0] is None
 
 
+def test_tag_qualifier_pattern():
+    # categorise the leading TAG (before a `-- qualifier`); the qualifier must neither dilute the fuzzy match
+    # nor override the tag.
+    assert categorize("See Also -- Foundational", "fuzzy")[0] == "see_also"
+    assert categorize("See Aslo -- Foundational", "fuzzy")[:2] == ("see_also", "fuzzy")   # typo'd tag + qualifier
+    assert categorize("Subtopics -- Advanced", "fuzzy")[0] == "element_of"
+    # the qualifier carries a CONFLICTING keyword ('subcategories') — the tag must win
+    assert categorize("See Also -- Subcategories of X", "fuzzy")[0] == "see_also"
+
+
 def test_threshold_is_tunable():
     assert categorize("Subtoipcs", "fuzzy", fuzzy_threshold=0.99)[0] is None   # raise the bar ⇒ no match
     assert categorize("Subtoipcs", "fuzzy", fuzzy_threshold=0.70)[0] == "element_of"
