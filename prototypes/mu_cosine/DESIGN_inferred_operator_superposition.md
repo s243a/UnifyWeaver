@@ -9,16 +9,22 @@ captures, and the alternatives considered. Companion to `DESIGN_provenance_and_r
 
 ## 1. The model — operator as a random superposition
 
-For an inferred pair, the operator is drawn from a **joint posterior**
+The uncertain latent is the **relation** (`element_of`, `subcategory`, `see_also`, …); the **operator** /
+readout head (`ELEM`, `WIKI`, `SYM`) is a *deterministic downstream map* of it
+(`element_of→ELEM`; `subcategory`/`super_category`/`subtopic→WIKI`; `see_also`/`assoc`/`bridge→SYM`). So we
+reason about a posterior over **relations** and apply the map; the title says "operator" because that map is
+what the *trainer* ultimately switches.
 
 ```
-P(operator | μ, node_type, breadth)
+P(relation | μ, node_type, breadth)        operator = OP_OF(relation)
 ```
 
-— a *superposition* over the candidate operators (element_of, subcategory, see_also, … and an out-of-set
-"other"), weighted by that posterior, **plus noise**. The measurement is the model's **predicted** μ for the
-pair — NOT the inferred target. The target was the uncertain guess; the model's μ is the *evidence* that
-reconsiders it (a self-training / EM flavour). Warm-starting makes the measured μ trustworthy from step 0.
+— a *superposition* over the candidate relations (and an out-of-set "other"), weighted by that posterior,
+**plus noise**. The measurement is the model's **predicted** μ for the pair — NOT the inferred target. The
+target was the uncertain guess; the model's μ is the *evidence* that reconsiders it (a self-training / EM
+flavour). Warm-starting makes the measured μ trustworthy from step 0. (Because the map is many-relations→one-
+operator, distinct relations that share an operator — element_of/subcategory both touch membership but map to
+ELEM/WIKI — are exactly the cases μ alone can't resolve; see §2.)
 
 Two realisations of "train under the distribution":
 - **Hard sampling** — draw one operator per step from the posterior (a stochastic switch). Simple; higher

@@ -60,8 +60,8 @@ def main():
         if len(c) < 3:
             continue
         mk = addn("mm", c[0], c[1] if len(c) > 1 else "mindmap_node", c[2] if len(c) > 2 else c[0])
-        if len(c) >= 6 and c[5]:                        # direct enwiki anchor on the SM node (user-tagged)
-            edges.append((mk, addn("wiki", c[5], "category" if c[5].startswith("Category:") else "page", c[5]), "bridge", 0.9))
+        if len(c) >= 6 and c[5]:                        # direct enwiki anchor on the SM node — USER-TAGGED ⇒ 1.0
+            edges.append((mk, addn("wiki", c[5], "category" if c[5].startswith("Category:") else "page", c[5]), "bridge", 1.0))
         if len(c) >= 5 and c[4].strip().isdigit():
             sm_seeds[norm(c[3] or c[0])] = c[4].strip()
     for ln in open(sm_pref + "_edges.tsv", encoding="utf-8"):
