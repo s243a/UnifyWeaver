@@ -38,6 +38,8 @@ def main():
     ap.add_argument("--hops", type=int, default=2)
     ap.add_argument("--pt-cache", default=os.path.join(ROOT, ".pt_cache"))
     ap.add_argument("--out-prefix", default=None)
+    ap.add_argument("--section-method", default="exact_phrase", choices=["exact_phrase", "fuzzy"],
+                    help="fuzzy = edit-distance section matching (catches typo'd headers → more tagged labels)")
     args = ap.parse_args()
 
     # 1) parse the SimpleMind map
@@ -115,7 +117,7 @@ def main():
         # fall back to the structural contentType default — an INFERRED relation, low confidence — only when
         # the pearl is in no recognised section. The confidence rides downstream so the trainer can add
         # operator noise / stochastically switch the operator for inferred (untagged) relations.
-        cat = relation_for(pt_sec.get(f[7], "")) if len(f) > 7 else (None, "none", 0.0)
+        cat = relation_for(pt_sec.get(f[7], ""), args.section_method) if len(f) > 7 else (None, "none", 0.0)
         pk = addn("pt", f[0], "pearltrees_collection", f[0])
         m = WIKI.search(f[4]) if len(f) > 4 else None
         if m:                                           # PagePearl whose url is enwiki → a cross-corpus link
