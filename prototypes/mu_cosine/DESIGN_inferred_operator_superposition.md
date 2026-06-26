@@ -97,6 +97,21 @@ all four show up as how *distributed* the operator-weighted gradient is.
 ## 6. Status
 
 - **Shipped (v1, C):** `confidence` carried through fuse → graded pairs → trainer; `--infer-switch`
-  hard-switches inferred `element_of`→`subcategory` with p ∝ breadth. Discrimination 89% → **97%**.
+  hard-switches inferred `element_of`→`subcategory` with `p = base·min(1,breadth/scale)·(1−conf)`, drawing
+  from an **isolated** RNG (so switch-off/on share the batch-sampling/masking trajectory).
+- **A/B (clean, isolated RNG, same seed — only the operator differs):**
+
+  | metric | switch OFF | switch ON |
+  |---|---|---|
+  | discrimination (argmax) | 89% (32/36) | **94% (34/36)** |
+  | WIKI order-acc | 99.8% | **100.0%** |
+  | SYM held-out | +0.830 | +0.834 |
+  | ELEM corr | +0.698 | +0.662 (small trade-off) |
+
+  **Correction:** an earlier run reported 89% → **97%**, but that used a *shared* RNG, so switch-on perturbed
+  the whole training trajectory — the A/B was confounded (PR #3356 review, high-severity). With the RNG
+  isolated the honest gain is **89% → 94%** (+2 examples on a 36-item probe): a real but **modest**
+  improvement, ~half the originally-claimed magnitude, with a small ELEM trade-off. Treat as suggestive, not
+  decisive, at this probe size.
 - **Next (E→F):** estimate label-data `P(μ | relation)`, switch the trainer to the soft posterior-weighted
   operator loss, add the out-of-set mass + measurement-width terms; A/B against v1 and against no-switch.
