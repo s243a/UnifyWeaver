@@ -38,6 +38,18 @@ _NT = {"category": 0, "page": 1, "mindmap_node": 2, "collection": 3, "pearltrees
 def nt(s):
     return _NT.get(s, 0)
 
+
+def switched_op(op, rel, conf, breadth, base, scale, rng):
+    """For an INFERRED `element_of` (conf<1.0), stochastically return WIKI (subcategory) instead of ELEM, with
+    p = base · min(1, breadth/scale) · (1−conf). Pure + module-level so it is unit-testable and so its RNG is
+    ISOLATED from the training rng (passed in) — switch-on/off then preserves the same sampling trajectory.
+    Tagged rows (conf≥1.0) and non-element_of rows are returned unchanged (p=0)."""
+    if op == "ELEM" and rel == "element_of" and conf < 1.0:
+        p = base * min(1.0, breadth / max(1.0, scale)) * (1.0 - conf)
+        if rng.random() < p:
+            return "WIKI"                                # train this untagged membership as a subcategory
+    return op
+
 # PART B provenance tags for the current single-corpus data. corpus = simplewiki (the 10k graph);
 # judge = haiku for bought LLM labels (SYM positives, LLM fixture), graph for the free graph-derived
 # labels (WIKI edges, and the μ=0 SYM negatives = non-edges). Threaded as the 4th/5th item fields so the
@@ -109,7 +121,8 @@ def load_graded(pairs_path, nodes_path=None):
                 continue
             c = ln.rstrip("\n").split("\t")              # node root mu op relation n_type r_type corpus judge
             if len(c) >= 9:
-                rows.append((c[0], c[1], float(c[2]), c[3], c[4], c[5], c[6], c[7], c[8]))
+                conf = float(c[9]) if len(c) > 9 and c[9] else 1.0   # 1.0 tagged; <1.0 INFERRED
+                rows.append((c[0], c[1], float(c[2]), c[3], c[4], c[5], c[6], c[7], c[8], conf))
     return rows, node_text
 
 
@@ -260,8 +273,32 @@ def train(args):
     graded_hold, graded_tr = graded_rows[:n_gh], graded_rows[n_gh:]
     if args.graded:
         from collections import Counter as _C
+        n_inf = sum(1 for r in graded_tr if len(r) > 9 and r[9] < 1.0)
         print(f"GRADED round: {len(graded_tr)} train / {len(graded_hold)} held-out "
-              f"(ops {dict(_C(r[3] for r in graded_tr))}; bridge weight {args.bridge_weight:g})")
+              f"(ops {dict(_C(r[3] for r in graded_tr))}; bridge weight {args.bridge_weight:g}; "
+              f"inferred {n_inf}" + (f", infer-switch p={args.infer_subcat:g}×breadth×(1−conf), isolated rng"
+                                     if args.infer_switch else "")
+              + ")")
+
+    # INFERRED relations (confidence<1, e.g. a typo'd / missing section) are untagged ⇒ the operator is
+    # uncertain. Stochastically switch an inferred `element_of` → `subcategory` (same μ, directional, but the
+    # WIKI operator) with probability ∝ the container's BREADTH (a broad domain is likelier to hold
+    # subcategories than leaf elements). This injects operator noise + models the element/subcategory
+    # ambiguity for untagged relations; TAGGED rows (conf 1.0) always keep their operator.
+    elem_breadth = {}                                    # container key → # element_of MEMBERS (breadth proxy)
+    for r in graded_tr:                                  # count the FORWARD row only (μ≥0.5) so an edge counts
+        if r[4] == "element_of" and r[2] >= 0.5:         # once — not 2× for its fwd+rev rows
+            elem_breadth[r[1]] = elem_breadth.get(r[1], 0) + 1
+    # ISOLATED rng for the switch: switch-on vs switch-off then consumes NO draws from the training rng, so
+    # the batch-sampling/masking trajectory is identical between the A/B arms (only the operator differs).
+    switch_rng = random.Random(args.seed + 8191) if args.infer_switch else None
+
+    def graded_op(r):
+        if not (args.infer_switch and len(r) > 9):
+            return r[3]
+        container = r[1] if r[2] >= 0.5 else r[0]        # breadth keyed on the container (root in fwd rows)
+        return switched_op(r[3], r[4], r[9], elem_breadth.get(container, 0),
+                           args.infer_subcat, args.breadth_scale, switch_rng)
 
     torch.manual_seed(args.seed)
     model = MuAttention(d_model=q.shape[1], n_heads=args.heads, n_layers=args.layers)
@@ -363,9 +400,9 @@ def train(args):
         if graded_tr and not args.sym_only:
             gb = [graded_tr[rng.randrange(len(graded_tr))] for _ in range(args.bs)]
             if args.use_nodetype:
-                gi = [(r[0], r[1], OPS[r[3]], CORPORA[r[7]], JUDGES[r[8]], nt(r[5]), nt(r[6])) for r in gb]
+                gi = [(r[0], r[1], OPS[graded_op(r)], CORPORA[r[7]], JUDGES[r[8]], nt(r[5]), nt(r[6])) for r in gb]
             else:
-                gi = [(r[0], r[1], OPS[r[3]], CORPORA[r[7]], JUDGES[r[8]]) for r in gb]
+                gi = [(r[0], r[1], OPS[graded_op(r)], CORPORA[r[7]], JUDGES[r[8]]) for r in gb]
             gt = torch.tensor([r[2] for r in gb]).to(device)
             gw = torch.tensor([args.bridge_weight if r[4] == "bridge" else 1.0 for r in gb]).to(device)
             mu_g = model(**bld(gi, train=True, rng=rng, p_mask_prov=args.prov_mask))
@@ -669,6 +706,11 @@ def main():
     ap.add_argument("--graded-weight", type=float, default=1.0, help="graded-round loss weight")
     ap.add_argument("--bridge-weight", type=float, default=0.2, help="down-weight bridge targets in the "
                     "graded loss (they dominate at μ≈0.9; keep them from swamping directional signal)")
+    ap.add_argument("--infer-switch", action="store_true", help="for INFERRED graded relations (confidence "
+                    "<1, e.g. a typo'd/missing section), stochastically switch element_of→subcategory "
+                    "(operator noise + element/subcategory ambiguity for untagged relations)")
+    ap.add_argument("--infer-subcat", type=float, default=0.4, help="base switch prob (× container breadth)")
+    ap.add_argument("--breadth-scale", type=float, default=20.0, help="member count at which breadth→1.0")
     ap.add_argument("--sym-weight", type=float, default=1.0, help="SYM loss weight (ablation lever b)")
     ap.add_argument("--sym-only", action="store_true", help="single-task SYM head (ablation lever c)")
     ap.add_argument("--quick-val", action="store_true", help="skip dense-map emission/lin-agreement")
