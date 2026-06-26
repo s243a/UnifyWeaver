@@ -43,6 +43,11 @@ def test_tag_qualifier_pattern():
     assert categorize("See Aslo -- Foundational", "fuzzy")[:2] == ("see_also", "fuzzy")   # typo'd tag + qualifier
     # qualifier carries a CONFLICTING keyword ('subcategories') — the tag (first matching segment) wins:
     assert categorize("See Also -- Subcategories of X", "fuzzy")[0] == "see_also"
+    # PARENTHETICAL qualifiers, handled the same way (real-harvest examples):
+    assert categorize("Subtopics (old)", "fuzzy")[0] == "element_of"
+    assert categorize("Subtoipcs (old)", "fuzzy")[:2] == ("element_of", "fuzzy")          # paren can't dilute typo
+    assert categorize("Further reading (from wikipedia)", "fuzzy")[0] == "reference"       # keyword INSIDE parens
+    assert categorize("Reciprocity theorem (disambiguation)", "fuzzy")[0] is None          # topical node, no match
 
 
 def test_threshold_is_tunable():

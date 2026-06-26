@@ -58,12 +58,13 @@ def _norm(s):
     return " ".join(_re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).split())
 
 
-# tag/qualifier headers: a section header often pairs a category TAG with a free-text qualifier across a dash,
-# in EITHER order — "A-E -- Subtopics", "0-9, A-G -- Subtopics", "IT - Subtopics" (qualifier first, tag last),
-# or "Subtopics - old" (tag first). Split on a WHITESPACE-SURROUNDED dash only, so alphabetical-range
-# qualifiers ("A-E", "0-9", "N-Z") are NOT split, then categorise WHICHEVER segment matches (the qualifier
-# neither dilutes the fuzzy ratio nor overrides the tag). Examples from the real harvest informed this.
-_QUALIFIER = _re.compile(r"\s+(?:--+|[-–—])\s+")           # dash(es) surrounded by whitespace
+# tag/qualifier headers: a section header often pairs a category TAG with a free-text qualifier, either across
+# a DASH — in EITHER order, "A-E -- Subtopics", "IT - Subtopics" (qualifier first), "Subtopics - old" (tag
+# first) — or in PARENTHESES, "Subtopics (old)", "Further reading (from wikipedia)". Split on a
+# WHITESPACE-SURROUNDED dash (so alphabetical-range qualifiers "A-E"/"0-9"/"N-Z" are NOT split) OR a paren,
+# then categorise WHICHEVER segment matches: the qualifier can't dilute the fuzzy ratio or override the tag,
+# and a keyword INSIDE the parens ("from wikipedia") is still found. Real-harvest examples informed this.
+_QUALIFIER = _re.compile(r"\s+(?:--+|[-–—])\s+|\s*[()]\s*")   # whitespace-surrounded dash, or a parenthesis
 
 
 def _segments(text):
