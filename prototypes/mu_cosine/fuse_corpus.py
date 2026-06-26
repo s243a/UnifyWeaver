@@ -38,9 +38,16 @@ def main():
     ap.add_argument("--hops", type=int, default=2)
     ap.add_argument("--pt-cache", default=os.path.join(ROOT, ".pt_cache"))
     ap.add_argument("--out-prefix", default=None)
-    ap.add_argument("--section-method", default="exact_phrase", choices=["exact_phrase", "fuzzy"],
-                    help="fuzzy = edit-distance section matching (catches typo'd headers → more tagged labels)")
+    ap.add_argument("--section-method", default="exact_phrase",
+                    choices=["exact_phrase", "fuzzy", "embedding"],
+                    help="fuzzy = edit-distance (typos); embedding = e5 semantic match (paraphrases, "
+                         "conservative gate, graded confidence — see REPORT_section_embedding.md)")
     args = ap.parse_args()
+
+    section_encoder = None
+    if args.section_method == "embedding":                 # build the e5 encoder once (offline, cached)
+        from section_embed import e5_encoder
+        section_encoder = e5_encoder()
 
     # 1) parse the SimpleMind map
     sm_pref = "/tmp/_fuse_sm"
@@ -117,7 +124,8 @@ def main():
         # fall back to the structural contentType default — an INFERRED relation, low confidence — only when
         # the pearl is in no recognised section. The confidence rides downstream so the trainer can add
         # operator noise / stochastically switch the operator for inferred (untagged) relations.
-        cat = relation_for(pt_sec.get(f[7], ""), args.section_method) if len(f) > 7 else (None, "none", 0.0)
+        cat = (relation_for(pt_sec.get(f[7], ""), args.section_method, encoder=section_encoder)
+               if len(f) > 7 else (None, "none", 0.0))
         pk = addn("pt", f[0], "pearltrees_collection", f[0])
         m = WIKI.search(f[4]) if len(f) > 4 else None
         if m:                                           # PagePearl whose url is enwiki → a cross-corpus link
