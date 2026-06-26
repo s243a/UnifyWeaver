@@ -90,18 +90,10 @@ def main():
             add(ek, etype, ek.replace("_", " "), "", ek)
         return ek, etype
 
-    def section_mode(text):
-        """A SECTION header retypes the pearls that FOLLOW it (until the next section), like a SimpleMind
-        container. Recognised headers and the relation they impose:"""
-        t = (text or "").lower()
-        if "subcategor" in t:                       return "subcategory"      # → subcategory (narrower cat)
-        if "subtopic" in t:                         return "element_of"       # → element relations
-        if ("super" in t and "categor" in t) or "navigate up" in t:
-            return "super_category"                 # → parent (super-cat, or a page's parent)
-        if "see also" in t:                         return "see_also"         # → associative
-        if "wiki" in t or "encyclopedia" in t or "reference" in t:
-            return "reference"                      # → links that bridge the TREE to enwiki/encyclopedia
-        return None                                 # topical/junk header (Algebra, Meta, …) ⇒ default
+    # A SECTION header retypes the pearls that FOLLOW it (until the next section), like a SimpleMind
+    # container. The rule is the shared, re-runnable categoriser (pt_sections.section_mode) — exact-phrase
+    # match now, upgradeable to fuzzy/LLM, and the SAME rule fuse_corpus.py applies to the cookie-harvest.
+    from pt_sections import section_mode
 
     rows = list(con.execute("SELECT tree_id, content_type, title, url, content_tree_id, content_tree_title, "
                             "section_text, left_index FROM pearls ORDER BY tree_id, left_index"))
@@ -166,12 +158,14 @@ def main():
         # relation = the section mode if it names one, else the contentType default
         rel = mode if mode in ("subcategory", "element_of", "super_category", "see_also") else base
         edges.append((src, dk, rel))
-        if ctype == 1 and ew:                             # any wiki PagePearl bridges to its enwiki node
+        if ctype == 1 and ew:                             # wiki PagePearl ↔ its enwiki node = SAME page
             ek, _ = enwiki_node(ew)
             if ek:
-                edges.append((dk, ek, "bridge"))
-                if mode == "reference":                   # a wiki/encyclopedia-REFERENCE section also
-                    edges.append((src, ek, "bridge"))     # bridges the whole TREE to enwiki
+                edges.append((dk, ek, "bridge"))          # the pt page IS that wiki page (identity)
+                if mode == "reference":                   # the TREE ↔ this wiki page: a `bridge` ONLY if the
+                    # tree names the SAME concept; otherwise mirror the page's own relation (the MOST SPECIFIC
+                    # one — element_of / the section relation), falling back to see_also, not blanket see_also.
+                    edges.append((src, ek, "bridge" if slug(ek) == src else rel))
 
     seen, uniq = set(), []
     for a, b, rel in edges:

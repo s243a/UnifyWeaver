@@ -50,6 +50,46 @@ carries real signal. The gate-and-bank strategy paid off.
 - Bridge dominance handled by `--bridge-weight 0.2`; the thin ELEM in this round (6 targets) rides the
   existing wiki-page ELEM training — ELEM stayed healthy (+0.702).
 
+## Re-measured on the corrected round (bridge = same-concept; references → element_of)
+
+The numbers above were on the *pre-correction* (bridge-dominated) round. After the same-concept fix —
+`bridge` 1654→122 (identity only) and cross-dataset references → their specific relation (`element_of`
+1538, see_also fallback) — the same warm-start fine-tune (`--use-nodetype`, GPU) gives:
+
+| metric | corrected round |
+|---|---|
+| graded held-out **ELEM** fit (r) | **+0.999** (MSE 0.002) |
+| graded held-out **SYM** fit (r) | +0.865 |
+| graded held-out **WIKI** fit (r) | +0.837 |
+| **SYM** held-out corr | **+0.836** (> control +0.726) |
+| **WIKI** order-acc | 99.8% |
+| **ELEM** centrality corr / direction | +0.662 / 100% |
+| discrimination | 94% (34/36) |
+
+The fix isn't just semantically honest — it *helps*: the references' correct `element_of` relation hands the
+previously-starved ELEM operator (6 → 1538 targets) rich cross-corpus, node-type-diverse signal, and it fits
+at **r +0.999** while every other operator stays healthy (SYM still beats the control).
+
+### Section-driven relations (final): relations from the actual subsection names
+
+A further correction replaced the blanket `element_of` with the **section-derived** relation (Subcategories →
+subcategory, Subtopics → element_of, Super Categories → super_category, …; see `REPORT_graded_round.md`
+§Correction + §Harvest-vs-categorise). The graded mix becomes WIKI 534 / ELEM 1238 / SYM 343 (the
+directional category relations now feed WIKI). Same fine-tune:
+
+| metric | section-driven |
+|---|---|
+| graded **ELEM** fit (r) | +0.995 (MSE 0.002) |
+| graded **WIKI** fit (r) | **+0.852** (534 targets, ~2.5× more) |
+| graded **SYM** fit (r) | +0.792 |
+| **SYM** held-out | +0.830 (> control +0.726) |
+| **WIKI** order-acc | 99.9% |
+| **ELEM** corr / direction | +0.698 / 100% |
+| discrimination | 89% (32/36) |
+
+All operators stay healthy and the WIKI directional signal grows; discrimination dips ~5 pts (2 examples,
+within noise on a data-mix change). Net: the section-driven relations are both more correct and train well.
+
 ## Next
 - Bring the **account** token + the `Team <name> <id>` e5-text online once the `s243a_groups` account is
   harvested (the plumbing is in; `--use-account` will gate it).
