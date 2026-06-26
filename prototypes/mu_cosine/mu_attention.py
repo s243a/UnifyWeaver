@@ -328,7 +328,12 @@ class MuAttention(nn.Module):
         nn.init.zeros_(self.account_emb.weight)             # no-op until items carry an account id
 
     def forward(self, content, gen_id, is_anchor, op_pos, op_of, pad,
-                is_prov=None, corpus_of=None, judge_of=None, account_of=None, nodetype_of=None):
+                is_prov=None, corpus_of=None, judge_of=None, account_of=None, nodetype_of=None,
+                op_weights=None):
+        # op_weights [B, n_ops] (optional): a BLENDED operator — a weight vector over operators that replaces
+        # the one-hot op token AND the per-operator readout head (a random superposition for inferred rows;
+        # a one-hot for tagged rows reproduces the indexed path exactly). See
+        # DESIGN_inferred_operator_superposition.md (random operator embedding).
         emb = content.clone()
         gmask = (gen_id >= 0).unsqueeze(-1)
         emb = emb + self.gen_emb(gen_id.clamp(min=0)) * gmask
@@ -336,7 +341,10 @@ class MuAttention(nn.Module):
         if nodetype_of is not None:                          # per-endpoint structural role
             emb = emb + self.nodetype_emb(nodetype_of.clamp(min=0)) * (nodetype_of >= 0).unsqueeze(-1)
         omask = (op_pos >= 0).unsqueeze(-1)
-        emb = emb + self.op_emb(op_pos.clamp(min=0)) * omask
+        if op_weights is None:
+            emb = emb + self.op_emb(op_pos.clamp(min=0)) * omask                     # indexed (one-hot) op token
+        else:
+            emb = emb + (op_weights @ self.op_emb.weight).unsqueeze(1) * omask       # blended op token
         if is_prov is not None:
             emb = emb + self.prov_tag * is_prov.unsqueeze(-1)            # mark the provenance slot
             if corpus_of is not None:                                    # add factored source (if revealed)
@@ -351,8 +359,11 @@ class MuAttention(nn.Module):
         # set, giving a relation-conditioned summary. Cleaner than mean-pool, which dilutes the input
         # signal with the large learned op-embedding and collapses each operator's readout to a constant.
         pooled = h[:, 0, :]
-        w = self.readout_w[op_of]
-        logit = (pooled * w).sum(-1) + self.readout_b[op_of]
+        if op_weights is None:
+            w, b = self.readout_w[op_of], self.readout_b[op_of]                      # per-operator head
+        else:
+            w, b = op_weights @ self.readout_w, op_weights @ self.readout_b          # blended head
+        logit = (pooled * w).sum(-1) + b
         return torch.sigmoid(logit)
 
 
