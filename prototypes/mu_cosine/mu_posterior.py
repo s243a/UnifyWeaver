@@ -26,6 +26,14 @@ from collections import Counter, defaultdict
 import numpy as np
 
 
+def pearson(xs, ys):
+    xs, ys = np.asarray(xs, float), np.asarray(ys, float)
+    m = ~(np.isnan(xs) | np.isnan(ys))
+    xs, ys = xs[m] - xs[m].mean(), ys[m] - ys[m].mean()
+    d = (np.linalg.norm(xs) * np.linalg.norm(ys))
+    return float((xs @ ys) / d) if d else float("nan")
+
+
 class MuPosterior:
     """Per-(source, relation) μ histograms; Bayes posterior P(relation | μ_1..μ_K); per-relation expected band."""
 
@@ -133,21 +141,48 @@ def main():
     ap.add_argument("--e5-cache", required=True)
     ap.add_argument("--nbins", type=int, default=20)
     ap.add_argument("--q", type=float, default=0.05, help="anomaly band quantile")
+    ap.add_argument("--model", default=None, help="a trained MuAttention checkpoint → adds the DYNAMIC model "
+                    "μ source (symmetric SYM μ, masked provenance) and reports e5↔model correlation")
+    ap.add_argument("--device", default="cpu")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
     rows = load_pairs(args.pairs)
     tagged = [r for r in rows if r["conf"] >= 1.0]
     e5mu = e5_mu_fn(args.e5_cache)
+    mu_e5 = {(r["node"], r["root"]): e5mu(r["node"], r["root"]) for r in tagged}
 
     post = MuPosterior(nbins=args.nbins)
-    post.fit_source("e5", ((r["rel"], e5mu(r["node"], r["root"])) for r in tagged), weight=1.0)
-    spread, means = post.separability("e5")
+    post.fit_source("e5", ((r["rel"], mu_e5[(r["node"], r["root"])]) for r in tagged), weight=1.0)
+    sp_e5, means = post.separability("e5")
     print(f"tagged pairs: {len(tagged)} / {len(rows)} total")
-    print(f"e5 μ per-relation means (separability spread {spread:.3f}):")
+    print(f"e5 μ per-relation means (separability spread {sp_e5:.3f}):")
     for rel in sorted(means, key=lambda r: -means[r]):
         lo, hi = post.band("e5", rel, args.q)
         print(f"  {rel:14s} mean {means[rel]:.3f}  band[{args.q:.2f}] [{lo:.3f},{hi:.3f}]  n={len(post.raw[('e5',rel)])}")
+
+    # DYNAMIC model source + the non-independence measurement (design: set weights from e5↔model correlation)
+    if args.model:
+        from bridge_ensemble import model_scorer
+        _, mmu = model_scorer(args.model, args.e5_cache, device=args.device)
+        mu_md = {(r["node"], r["root"]): mmu(r["node"], r["root"]) for r in tagged}
+        post.fit_source("model", ((r["rel"], mu_md[(r["node"], r["root"])]) for r in tagged))
+        sp_md, mmeans = post.separability("model")
+        print(f"\nmodel μ per-relation means (separability spread {sp_md:.3f}  vs e5 {sp_e5:.3f}):")
+        for rel in sorted(mmeans, key=lambda r: -mmeans[r]):
+            print(f"  {rel:14s} mean {mmeans[rel]:.3f}  n={len(post.raw[('model',rel)])}")
+        ce5 = [mu_e5[k] for k in mu_e5]
+        cmd = [mu_md[k] for k in mu_e5]
+        r_all = pearson(ce5, cmd)
+        print(f"\ne5 ↔ model μ correlation (overall): {r_all:+.3f}  "
+              f"⇒ they are {'strongly' if r_all > 0.6 else 'moderately' if r_all > 0.3 else 'weakly'} "
+              f"correlated; a naive product over-counts the shared evidence by ~this much.")
+        # set product-of-experts weights: down-weight the less-separating source AND the shared (correlated)
+        # part — give the model the full weight, e5 only its UNIQUE contribution ≈ (1 − r²).
+        w_e5 = max(0.0, 1.0 - r_all * r_all) * (sp_e5 / (sp_e5 + sp_md + 1e-9))
+        post.weights["e5"], post.weights["model"] = round(w_e5, 3), 1.0
+        print(f"  → suggested product-of-experts weights: model 1.0, e5 {post.weights['e5']:.3f} "
+              f"(its (1−r²)·relative-separability share)")
 
     print("\nP(relation | μ_e5) at sample μ values:")
     for mu in (0.78, 0.84, 0.90, 0.96):
