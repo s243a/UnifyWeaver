@@ -636,11 +636,15 @@
       (Double/parseDouble text)
       (Long/parseLong text))))
 
+(declare eval-arithmetic-term)
+
 (defn arithmetic-value [state value]
   (let [cur (deref-value (:bindings state) value)]
     (cond
       (number? cur) cur
       (atom-term? cur) (parse-numeric-atom (deintern-atom (:intern-context state) (:id cur)))
+      ;; compound arithmetic term (e.g. Q0+D0): evaluate it
+      (structure-term? cur) (eval-arithmetic-term state cur)
       :else nil)))
 
 (defn arithmetic-equal? [state left right]
@@ -2556,6 +2560,13 @@
     (if-not instr
       (backtrack state)
       (case (:op instr)
+        :raw
+        ;; switch_on_* are first-argument indexing hints; if unimplemented, fall
+        ;; through to the try_me_else clause chain (correct, just unindexed).
+        (if (re-find #"^switch_on_" (or (:text instr) ""))
+          (advance state)
+          (backtrack state))
+
         :get-constant
         (let [reg (:reg instr)
               constant (:constant instr)
@@ -2634,6 +2645,18 @@
                   (enter-unify-mode (:args reg-val))
                   advance)
               (backtrack state))
+
+            ;; WRITE mode: unbound register → build a fresh [H|T] cell, bind the
+            ;; register (var) to it, and read-unify against the fresh arg vars so
+            ;; the following unify-* instructions construct the list.
+            (or (logic-var? reg-val) (= reg-val ::unbound))
+            (let [[h s1] (fresh-var state)
+                  [t s2] (fresh-var s1)
+                  cell (structure-term list-functor [h t])
+                  s3 (if (logic-var? reg-val)
+                       (bind-var s2 reg-val cell)
+                       (reg-set-raw s2 (:reg instr) cell))]
+              (-> s3 (enter-unify-mode [h t]) advance))
 
             :else
             (backtrack state)))
