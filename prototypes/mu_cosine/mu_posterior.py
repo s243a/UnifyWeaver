@@ -21,6 +21,7 @@ This module is pure-Python + numpy (no torch); the static **e5** source runs now
 import argparse
 import math
 import os
+import random
 from collections import Counter, defaultdict
 
 import numpy as np
@@ -109,6 +110,57 @@ class MuPosterior:
         return float(np.std(list(means.values()))), means
 
 
+class JointPosterior:
+    """JOINT conditional P(relation | μ_vector) — a small discriminative head over the FULL readout vector,
+    NOT a product of per-source marginals. Captures (a) source correlations (the joint fit down-weights
+    redundant features automatically) and (b) the fwd×rev ASYMMETRY interaction a product of 1-D marginals
+    cannot. `hidden=0` ⇒ multinomial logistic regression (the asymmetry `fwd−rev` is a linear feature combo,
+    so LR already captures it); `hidden>0` ⇒ a 1-hidden-layer MLP for higher-order interactions.
+
+    Inputs are standardised (z-scored); NaN readouts are imputed to the feature mean (0 after standardising)."""
+
+    def __init__(self, relations, n_features, hidden=0, seed=0):
+        import torch
+        torch.manual_seed(seed)
+        self.relations = list(relations)
+        self.ri = {r: i for i, r in enumerate(self.relations)}
+        C = len(self.relations)
+        self.net = (torch.nn.Sequential(torch.nn.Linear(n_features, hidden), torch.nn.ReLU(),
+                                        torch.nn.Linear(hidden, C)) if hidden > 0
+                    else torch.nn.Linear(n_features, C))
+        self.mean = self.std = None
+
+    def _z(self, X):
+        X = np.asarray(X, float)
+        return np.nan_to_num((X - self.mean) / self.std, nan=0.0)
+
+    def fit(self, X, rels, epochs=500, lr=0.05, weight_decay=2e-3):
+        import torch
+        X = np.asarray(X, float)
+        self.mean, self.std = np.nanmean(X, 0), np.nanstd(X, 0) + 1e-6
+        Xt = torch.tensor(self._z(X), dtype=torch.float32)
+        y = torch.tensor([self.ri[r] for r in rels])
+        opt = torch.optim.Adam(self.net.parameters(), lr=lr, weight_decay=weight_decay)
+        lf = torch.nn.CrossEntropyLoss()
+        for _ in range(epochs):
+            opt.zero_grad(); lf(self.net(Xt), y).backward(); opt.step()
+        return self
+
+    def proba(self, X):
+        import torch
+        with torch.no_grad():
+            return torch.softmax(self.net(torch.tensor(self._z(X), dtype=torch.float32)), -1).numpy()
+
+
+def _eval(proba, rels, ri):
+    """accuracy + cross-entropy (log-loss) of a [N,C] proba against true relations."""
+    import numpy as _np
+    y = _np.array([ri[r] for r in rels])
+    acc = float((proba.argmax(1) == y).mean())
+    ll = float(-_np.log(_np.clip(proba[_np.arange(len(y)), y], 1e-9, 1.0)).mean())
+    return acc, ll
+
+
 # ---------- static e5 source: μ_e5(node, root) = cos(query[root], passage[node]) -------------------------
 def e5_mu_fn(cache_path):
     import torch
@@ -186,6 +238,8 @@ def main():
                     "correlation matrix")
     ap.add_argument("--reject-outliers", action="store_true", help="drop tagged labels whose e5 μ is out of "
                     "their relation's band BEFORE fitting (the design's outlier rejection, all relation types)")
+    ap.add_argument("--hidden", type=int, default=0, help="JOINT head hidden units (0 = logistic regression)")
+    ap.add_argument("--held-frac", type=float, default=0.25)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
@@ -227,6 +281,38 @@ def main():
         print("            " + " ".join(f"{s[:8]:>8s}" for s in sources))
         for a in sources:
             print(f"  {a:9s} " + " ".join(f"{pearson(src_vals[a], src_vals[b]):+7.2f} " for b in sources))
+
+    # JOINT conditional P(relation | μ_vector) vs the FACTORED product-of-marginals, on a held-out split
+    if args.model and len(sources) > 1:
+        rels = [r["rel"] for r in fit_set]
+        relset = sorted(set(rels))
+        X = np.array([[src_vals[s][i] for s in sources] for i in range(len(fit_set))], float)
+        order = list(range(len(fit_set))); random.Random(0).shuffle(order)
+        nh = int(args.held_frac * len(order)); held, train = order[:nh], order[nh:]
+        Xtr = X[train]; rtr = [rels[i] for i in train]
+        Xhe = X[held]; rhe = [rels[i] for i in held]
+        ri = {r: i for i, r in enumerate(relset)}
+
+        joint = JointPosterior(relset, n_features=len(sources), hidden=args.hidden).fit(Xtr, rtr)
+        jacc, jll = _eval(joint.proba(Xhe), rhe, ri)
+
+        fac = MuPosterior(nbins=args.nbins)                # factored product (equal weights) on the same train
+        for s in sources:
+            fac.fit_source(s, ((rtr[k], src_vals[s][i]) for k, i in enumerate(train)))
+        fp = np.array([[fac.posterior({s: src_vals[s][i] for s in sources}).get(r, 1e-9) for r in relset]
+                       for i in held])
+        facc, fll = _eval(fp, rhe, ri)
+
+        print(f"\nJOINT vs FACTORED on held-out ({len(held)} pairs, {len(relset)} relations):")
+        print(f"  factored product-of-marginals : acc {facc*100:5.1f}%   log-loss {fll:.3f}")
+        print(f"  joint head ({'LR' if args.hidden==0 else f'MLP-{args.hidden}'})            : "
+              f"acc {jacc*100:5.1f}%   log-loss {jll:.3f}   ⇒ {'better' if jll < fll else 'worse'} calibrated")
+        if args.hidden == 0:                              # show LR captured the asymmetry: fwd vs rev opposite signs
+            W = joint.net.weight.detach().numpy()         # [C, K]
+            for rel in ("subcategory", "element_of"):
+                if rel in ri:
+                    w = W[ri[rel]]
+                    print(f"  LR weights[{rel:12s}] " + " ".join(f"{s}:{w[j]:+.2f}" for j, s in enumerate(sources)))
 
     # the side-note rule: out-of-band tagged labels ⇒ review (these were rejected from the fit above)
     print(f"\nLABEL-ANOMALY review (out-of-band tagged labels → LLM/human): {len(flagged)}/{len(tagged)}")

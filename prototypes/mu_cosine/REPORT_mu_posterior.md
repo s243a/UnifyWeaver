@@ -95,9 +95,29 @@ topic). But both are **trained** to be directional, so directional asymmetry is 
 it should NOT be a stand-alone "strictness axis" — instead feed `wiki_fwd/rev`, `elem_fwd/rev` as ordinary
 readouts and let the weighted/decorrelated combiner use only their non-redundant part.
 
+## Finding 5 — a JOINT head beats the product-of-marginals (correlations matter)
+The factored posterior is a *product of per-source 1-D marginals* — it over-counts the correlated readouts
+and can't represent the fwd×rev asymmetry *interaction*. `JointPosterior` replaces it with a small
+discriminative head over the **whole** μ-vector (`hidden=0` → logistic regression; `hidden>0` → MLP), fit on
+the tagged pairs. Held-out (468 pairs, 7 relations; element_of ≈ 53% = majority baseline):
+
+| combiner | accuracy | log-loss |
+|---|---|---|
+| factored product-of-marginals | 50.9% (**below** majority) | 1.329 |
+| joint **LR** | 53.8% | 1.251 |
+| joint **MLP-16** | **56.0%** | **1.160** |
+
+The factored product lands **below the majority baseline** — the correlation over-counting actively hurts.
+The joint head clears it and is better calibrated (lower log-loss), the MLP most (the +0.6–0.7 redundancy and
+the −0.72 anti-correlation are handled natively, not asserted away with scalar weights). `test_joint_
+posterior.py` includes the decisive case: a target whose per-source *marginals carry zero information* and
+only the joint (the f−r interaction) separates — the joint head learns it, a product of marginals cannot.
+
+So the combiner for the posterior is the **joint head**, not the weighted product; the per-source histograms
+remain the right tool for the **anomaly bands** (those genuinely are 1-D).
+
 ## Next increments
-1. **Soft posterior-weighted operator loss** for inferred rows, conditioning on the **full readout vector**
-   with weights that discount the mutual redundancy (e5 the independent anchor, model readouts down-weighted
-   by their +0.6–0.7 correlation); A/B vs v1 / no-switch with the clean isolated-RNG harness. (Model readouts
-   refreshed in-loop — EMA, stop-grad.)
+1. **Soft posterior-weighted operator loss** for inferred rows, using the **`JointPosterior`** over the full
+   readout vector as `P(relation | μ_vec)`; A/B vs v1 / no-switch with the clean isolated-RNG harness. (Model
+   readouts refreshed in-loop — EMA, stop-grad — and the joint head re-fit periodically on the tagged set.)
 2. Route the (now rejected) out-of-band labels through a budget-gated LLM/human pass and re-confidence.
