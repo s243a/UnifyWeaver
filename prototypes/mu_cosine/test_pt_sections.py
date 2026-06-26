@@ -32,12 +32,16 @@ def test_exact_method_does_not_fuzzy_match():
 
 
 def test_tag_qualifier_pattern():
-    # categorise the leading TAG (before a `-- qualifier`); the qualifier must neither dilute the fuzzy match
-    # nor override the tag.
+    # tag/qualifier across a dash, in EITHER order; categorise WHICHEVER segment is the tag.
+    # REAL harvest examples — the qualifier (an alphabetical RANGE) comes FIRST, the tag last, and the range's
+    # own hyphen ("A-E", "0-9", "N-Z") must NOT be treated as the delimiter (only whitespace-surrounded dashes).
+    for label in ["A-E -- Subtopics", "0-9, A-G -- Subtopics", "IT - Subtopics",
+                  "N-Z - Subtopics", "PT1 - Subtopics (Information THeory)", "Subtopics - old"]:
+        assert categorize(label, "fuzzy")[0] == "element_of", label
+    # tag-first order, and the qualifier must neither dilute a fuzzy match nor override the tag:
     assert categorize("See Also -- Foundational", "fuzzy")[0] == "see_also"
     assert categorize("See Aslo -- Foundational", "fuzzy")[:2] == ("see_also", "fuzzy")   # typo'd tag + qualifier
-    assert categorize("Subtopics -- Advanced", "fuzzy")[0] == "element_of"
-    # the qualifier carries a CONFLICTING keyword ('subcategories') — the tag must win
+    # qualifier carries a CONFLICTING keyword ('subcategories') — the tag (first matching segment) wins:
     assert categorize("See Also -- Subcategories of X", "fuzzy")[0] == "see_also"
 
 

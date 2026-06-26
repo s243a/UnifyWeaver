@@ -58,15 +58,17 @@ def _norm(s):
     return " ".join(_re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).split())
 
 
-# "tag -- qualifier": a section header is often a category TAG followed by a free-text qualifier after a dash
-# (e.g. "See Also -- Foundational", "Subtopics -- Advanced"). Categorise on the TAG, so the qualifier neither
-# DILUTES the fuzzy ratio nor OVERRIDES the tag (e.g. "See Also -- Subcategories of X" must stay see_also).
-_QUALIFIER = _re.compile(r"\s*(?:--+|[–—])\s*")   # `--`, en-dash, em-dash
+# tag/qualifier headers: a section header often pairs a category TAG with a free-text qualifier across a dash,
+# in EITHER order — "A-E -- Subtopics", "0-9, A-G -- Subtopics", "IT - Subtopics" (qualifier first, tag last),
+# or "Subtopics - old" (tag first). Split on a WHITESPACE-SURROUNDED dash only, so alphabetical-range
+# qualifiers ("A-E", "0-9", "N-Z") are NOT split, then categorise WHICHEVER segment matches (the qualifier
+# neither dilutes the fuzzy ratio nor overrides the tag). Examples from the real harvest informed this.
+_QUALIFIER = _re.compile(r"\s+(?:--+|[-–—])\s+")           # dash(es) surrounded by whitespace
 
 
 def _segments(text):
-    tag = _QUALIFIER.split(text or "", 1)[0].strip()
-    return list(dict.fromkeys([tag, text]))                # the leading tag first, then the whole label
+    parts = [s.strip() for s in _QUALIFIER.split(text or "") if s.strip()]
+    return list(dict.fromkeys(parts + [text]))             # each segment (in order), then the whole label
 
 
 def fuzzy_mode(text, threshold=0.78):
