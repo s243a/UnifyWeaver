@@ -60,8 +60,8 @@ def main():
         if len(c) < 3:
             continue
         mk = addn("mm", c[0], c[1] if len(c) > 1 else "mindmap_node", c[2] if len(c) > 2 else c[0])
-        if len(c) >= 6 and c[5]:                        # direct enwiki anchor on the SM node
-            edges.append((mk, addn("wiki", c[5], "category" if c[5].startswith("Category:") else "page", c[5]), "bridge"))
+        if len(c) >= 6 and c[5]:                        # direct enwiki anchor on the SM node (user-tagged)
+            edges.append((mk, addn("wiki", c[5], "category" if c[5].startswith("Category:") else "page", c[5]), "bridge", 0.9))
         if len(c) >= 5 and c[4].strip().isdigit():
             sm_seeds[norm(c[3] or c[0])] = c[4].strip()
     for ln in open(sm_pref + "_edges.tsv", encoding="utf-8"):
@@ -69,7 +69,7 @@ def main():
             continue
         a, b, rel = (ln.rstrip("\n").split("\t") + ["", "", ""])[:3]
         if a and b:
-            edges.append((f"mm:{norm(a)}", f"mm:{norm(b)}", rel))
+            edges.append((f"mm:{norm(a)}", f"mm:{norm(b)}", rel, 1.0))   # mindmap structure is explicit ⇒ tagged
 
     # 2) fold in the cached Pearltrees harvest for each SM node, + the SM↔PT and PT↔enwiki bridges.
     # PRIVACY (scrub-everywhere): raw .pt_cache harvests are NOT pre-scrubbed (they come from the private
@@ -106,34 +106,40 @@ def main():
         if norm(slug) in pt_priv:
             continue
         if os.path.exists(os.path.join(args.pt_cache, f"pt_{tid}.tsv")):
-            edges.append((f"mm:{slug}", addn("pt", slug, "pearltrees_collection", slug), "bridge"))
+            edges.append((f"mm:{slug}", addn("pt", slug, "pearltrees_collection", slug), "bridge", 1.0))
 
     for f in pt_rows:
         if norm(f[0]) in pt_priv:                       # private parent → scrub the row
             scrub_pt += 1; continue
-        # relation comes from the pearl's SECTION (the most specific, designed source: Subcategories →
-        # subcategory, Subtopics → element_of, See Also/References → see_also, …); fall back to the
-        # structural contentType default only when the pearl is in no recognised section.
-        cat_rel = relation_for(pt_sec.get(f[7], "")) [0] if len(f) > 7 else None
+        # relation comes from the pearl's SECTION (the designed source) WITH its categorisation CONFIDENCE;
+        # fall back to the structural contentType default — an INFERRED relation, low confidence — only when
+        # the pearl is in no recognised section. The confidence rides downstream so the trainer can add
+        # operator noise / stochastically switch the operator for inferred (untagged) relations.
+        cat = relation_for(pt_sec.get(f[7], "")) if len(f) > 7 else (None, "none", 0.0)
         pk = addn("pt", f[0], "pearltrees_collection", f[0])
         m = WIKI.search(f[4]) if len(f) > 4 else None
         if m:                                           # PagePearl whose url is enwiki → a cross-corpus link
             title = m.group(1).split("#")[0].replace("%28", "(").replace("%29", ")")
             wk = addn("wiki", title, "category" if title.startswith("Category:") else "page", title)
-            # A `bridge` is the SAME concept across corpora (identity) — the endpoints stay DISTINCT via their
-            # node-type/group tokens, so identity doesn't collapse them. If NOT the same concept it is the
-            # collection's cross-dataset link: use the section relation, else the structural default.
-            rel = "bridge" if norm(title) == norm(f[0]) else (cat_rel or PT_REL.get(f[2], "see_also"))
-            edges.append((pk, wk, rel))
+            # A `bridge` is the SAME concept across corpora (identity); endpoints stay distinct via node-type/
+            # group tokens. Else: section relation (tagged), else the structural default (inferred).
+            if norm(title) == norm(f[0]):
+                rel, conf = "bridge", 0.8               # same concept by TITLE-match — a heuristic, not tagged
+            elif cat[0]:
+                rel, conf = cat[0], cat[2]              # section-categorised (exact_phrase ⇒ conf 1.0)
+            else:
+                rel, conf = PT_REL.get(f[2], "see_also"), 0.4   # structural fallback ⇒ INFERRED
+            edges.append((pk, wk, rel, conf))
         elif len(f) > 3:
             if norm(f[1]) in pt_priv:                   # private child → scrub
                 scrub_pt += 1; continue
             ck = addn("pt", f[1], "pearltrees_collection" if f[3] != "page" else "page", f[1])
-            edges.append((pk, ck, cat_rel or PT_REL.get(f[2], "assoc")))
+            rel, conf = (cat[0], cat[2]) if cat[0] else (PT_REL.get(f[2], "assoc"), 0.4)
+            edges.append((pk, ck, rel, conf))
 
     # 3) N-hop BFS from the start over the UNDIRECTED fused graph (a hop = any cross-corpus edge)
     adj = collections.defaultdict(set)
-    for a, b, _ in edges:
+    for a, b, *_ in edges:
         adj[a].add(b); adj[b].add(a)
     start = f"mm:{norm(args.start) if args.start else norm(os.path.splitext(os.path.basename(args.smmx))[0])}"
     if start not in nodes:
@@ -144,16 +150,19 @@ def main():
         for u in frontier:
             nxt |= adj[u] - seen
         seen |= nxt; frontier = nxt
-    sub_edges = [(a, b, r) for a, b, r in edges if a in seen and b in seen]
-    seen2, uniq = set(), []
-    for e in sub_edges:
-        if e[0] != e[1] and e not in seen2:
-            seen2.add(e); uniq.append(e)
+    best = {}                                           # (a,b,rel) → max confidence (dedup, keep most certain)
+    for a, b, r, c in edges:
+        if a != b and a in seen and b in seen:
+            k = (a, b, r)
+            if k not in best or c > best[k]:
+                best[k] = c
+    uniq = [(a, b, r, c) for (a, b, r), c in best.items()]
 
     from collections import Counter
     ntc = Counter(nodes[k][0] for k in seen if k in nodes)
     print(f"start={start} hops={args.hops}: {len(seen)} nodes {dict(ntc)}, {len(uniq)} edges "
-          f"{dict(Counter(r for _, _, r in uniq))}")
+          f"{dict(Counter(r for _, _, r, _ in uniq))}  "
+          f"(inferred {sum(1 for *_, c in uniq if c < 1.0)})")
     if scrub_pt or pt_priv:
         print(f"  PRIVACY: scrubbed {scrub_pt} pt rows ({len(pt_priv)} private pt nodes, inherited)")
     if args.out_prefix:
@@ -164,9 +173,9 @@ def main():
                     co, ty, ti = nodes[k]
                     f.write(f"{k}\t{co}\t{ty}\t{ti}\n")
         with open(args.out_prefix + "_edges.tsv", "w", encoding="utf-8") as f:
-            f.write("# a_key\tb_key\trelation\n")
-            for a, b, r in uniq:
-                f.write(f"{a}\t{b}\t{r}\n")
+            f.write("# a_key\tb_key\trelation\tconfidence  (1.0 = tagged; <1.0 = inferred)\n")
+            for a, b, r, c in sorted(uniq):
+                f.write(f"{a}\t{b}\t{r}\t{c:.2f}\n")
         print(f"  wrote {args.out_prefix}_nodes.tsv + {args.out_prefix}_edges.tsv")
 
 

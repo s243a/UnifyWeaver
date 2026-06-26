@@ -60,9 +60,10 @@ def load_fused(prefix):
         for ln in f:
             if ln.startswith("#"):
                 continue
-            c = ln.rstrip("\n").split("\t")               # a_key, b_key, relation
+            c = ln.rstrip("\n").split("\t")               # a_key, b_key, relation, confidence
             if len(c) >= 3:
-                edges.append((c[0], c[1], c[2]))
+                conf = float(c[3]) if len(c) > 3 and c[3] else 1.0
+                edges.append((c[0], c[1], c[2], conf))
     return nodes, edges
 
 
@@ -111,7 +112,7 @@ def main():
         return nodes.get(key, ("", "category", ""))[1]
 
     rows, skipped = {}, Counter()                         # (node,root,op) → row ; dedup keeps strongest |μ-.5|
-    def emit(node, root, mu, op, rel):
+    def emit(node, root, mu, op, rel, conf=1.0):
         if node == root or node not in nodes or root not in nodes:
             skipped["dangling"] += 1
             return
@@ -119,20 +120,20 @@ def main():
         k = (node, root, op)
         if k in rows and abs(rows[k][0] - 0.5) >= abs(mu - 0.5):
             return                                        # keep the more decisive existing target
-        rows[k] = (mu, rel, ntype(node), ntype(root), corpus, judge)
+        rows[k] = (mu, rel, ntype(node), ntype(root), corpus, judge, conf)
 
-    for src, dst, rel in edges:
+    for src, dst, rel, conf in edges:
         spec = RELATION_SPEC.get(rel)
         if not spec:
             skipped[f"rel:{rel}"] += 1
             continue
         op, kind, hi, lo = spec
         if kind == "down":                                # dst is a member/narrower of src
-            emit(dst, src, hi, op, rel); emit(src, dst, lo, op, rel)
+            emit(dst, src, hi, op, rel, conf); emit(src, dst, lo, op, rel, conf)
         elif kind == "up":                                # dst is the broader; src belongs to dst
-            emit(src, dst, hi, op, rel); emit(dst, src, lo, op, rel)
+            emit(src, dst, hi, op, rel, conf); emit(dst, src, lo, op, rel, conf)
         else:                                             # symmetric
-            emit(dst, src, hi, op, rel); emit(src, dst, hi, op, rel)
+            emit(dst, src, hi, op, rel, conf); emit(src, dst, hi, op, rel, conf)
 
     # --- e5-PRIOR bridge sanity gate: a bridge asserts "same concept across corpora"; if its endpoints are
     # FAR in frozen e5, the link is suspect (a bad link, or a non-obvious synonym e5 can't see). Quarantine
@@ -185,9 +186,9 @@ def main():
                 f.write(f"{a}\t{b}\t{c:.3f}\t{nodes.get(a,('','',''))[2]}\t{nodes.get(b,('','',''))[2]}\n")
 
     with open(args.out + "_pairs.tsv", "w", encoding="utf-8") as f:
-        f.write("# node\troot\tmu\top\trelation\tnode_type\troot_type\tcorpus\tjudge\n")
-        for (node, root, op), (mu, rel, nty, rty, corpus, judge) in sorted(rows.items()):
-            f.write(f"{node}\t{root}\t{mu:.2f}\t{op}\t{rel}\t{nty}\t{rty}\t{corpus}\t{judge}\n")
+        f.write("# node\troot\tmu\top\trelation\tnode_type\troot_type\tcorpus\tjudge\tconfidence\n")
+        for (node, root, op), (mu, rel, nty, rty, corpus, judge, conf) in sorted(rows.items()):
+            f.write(f"{node}\t{root}\t{mu:.2f}\t{op}\t{rel}\t{nty}\t{rty}\t{corpus}\t{judge}\t{conf:.2f}\n")
     with open(args.out + "_nodes.tsv", "w", encoding="utf-8") as f:
         f.write("# key\tcorpus\tnode_type\ttitle\tembed_text\n")
         for key, (cp, nty, title) in sorted(nodes.items()):
@@ -201,6 +202,8 @@ def main():
     print(f"  by op:       {dict(op_c)}")
     print(f"  by relation: {dict(rel_c)}")
     print(f"  by corpus⊗judge: { {f'{c}/{j}': n for (c, j), n in cj_c.items()} }")
+    n_inf = sum(1 for r in rows.values() if r[6] < 1.0)
+    print(f"  INFERRED targets (confidence<1.0 → trainer adds operator noise / switch): {n_inf}/{len(rows)}")
     if n_neg:
         print(f"  bridge negatives added: {n_neg} pairs (μ={args.bridge_neg_mu}, full-weight, rel=bridge_neg)")
     if review:
