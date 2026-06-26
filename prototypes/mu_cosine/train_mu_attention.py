@@ -39,6 +39,16 @@ def nt(s):
     return _NT.get(s, 0)
 
 
+# relation → (operator, forward target, reverse target) for the INFER-BLEND path (§5b: blend the operator
+# embedding at OPERATOR level, but keep the μ target at RELATION level — SYM's relations have different μ).
+REL_SPEC = {
+    "element_of":     ("ELEM", 0.90, 0.10), "subcategory": ("WIKI", 0.90, 0.10),
+    "subtopic":       ("WIKI", 0.85, 0.12), "super_category": ("WIKI", 0.85, 0.12),
+    "see_also":       ("SYM",  0.40, 0.40), "assoc": ("SYM", 0.30, 0.30),
+    "bridge":         ("SYM",  0.90, 0.90), "bridge_neg": ("SYM", 0.10, 0.10),
+}
+
+
 def switched_op(op, rel, conf, breadth, base, scale, rng):
     """For an INFERRED `element_of` (conf<1.0), stochastically return WIKI (subcategory) instead of ELEM, with
     p = base · min(1, breadth/scale) · (1−conf). Pure + module-level so it is unit-testable and so its RNG is
@@ -330,6 +340,43 @@ def train(args):
         b = tok.build(items, **kw)
         return {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in b.items()}
 
+    # ---- INFER-BLEND (§5b): random operator embedding from the fitted joint P(relation|μ_vec) ----
+    import numpy as _np
+    from mu_posterior import JointPosterior, sample_operator_weights
+    blend_rng = random.Random(args.seed + 9973)            # ISOLATED rng for inferred-row sampling
+    blend_nprng = _np.random.default_rng(args.seed + 9973)  # ISOLATED rng for the Dirichlet draws
+    graded_inf = [r for r in graded_tr if len(r) > 9 and r[9] < 1.0]   # inferred rows (conf<1) for the blend
+    graded_tag = [r for r in graded_tr if not (len(r) > 9 and r[9] < 1.0)]
+    relset = sorted(set(r[4] for r in graded_tag))
+    blend_state = {"pop": None, "tgt": None}               # per-inferred-row P(op) [N,n_ops] + blended target
+
+    @torch.no_grad()
+    def measure_readouts(pairs):                           # [N,6]: e5, sym, wiki_fwd/rev, elem_fwd/rev (current model)
+        model.eval()
+        def mb(items):
+            return mu_batch(model, tok, items).numpy()
+        e5 = _np.array([float(tok.p[idx[a]] @ tok.q[idx[b]]) if a in idx and b in idx else _np.nan for a, b in pairs])
+        cols = [e5, mb([(a, b, OPS["SYM"]) for a, b in pairs]),
+                mb([(a, b, OPS["WIKI"]) for a, b in pairs]), mb([(b, a, OPS["WIKI"]) for a, b in pairs]),
+                mb([(a, b, OPS["ELEM"]) for a, b in pairs]), mb([(b, a, OPS["ELEM"]) for a, b in pairs])]
+        model.train()
+        return _np.stack(cols, 1)
+
+    def refresh_blend():                                   # fit the joint head on tagged, predict P(op)+target for inferred
+        tag = graded_tag if len(graded_tag) <= 1500 else [graded_tag[i] for i in
+              random.Random(0).sample(range(len(graded_tag)), 1500)]
+        Xt = measure_readouts([(r[0], r[1]) for r in tag])
+        jp = JointPosterior(relset, n_features=6, hidden=args.blend_hidden).fit(Xt, [r[4] for r in tag])
+        Pr = jp.proba(measure_readouts([(r[0], r[1]) for r in graded_inf]))      # [N, n_rel]
+        pop = _np.zeros((len(graded_inf), len(OPS)))
+        tgt = _np.zeros(len(graded_inf))
+        for j, rel in enumerate(relset):
+            op_i = OPS[REL_SPEC[rel][0]]
+            for i, r in enumerate(graded_inf):
+                pop[i, op_i] += Pr[i, j]
+                tgt[i] += Pr[i, j] * REL_SPEC[rel][1 if r[2] >= 0.5 else 2]      # relation-level dir-specific target
+        blend_state["pop"], blend_state["tgt"] = pop, tgt
+
     new_corpus = CORPORA.get(args.pairs_corpus, SW)        # corpus tag for the --pairs (new) data
     def draw_sym(pool, replay, k):
         """Draw k SYM examples as (item, corpus_id): replay-frac OLD (replay, corpus=simplewiki) mixed with
@@ -397,8 +444,9 @@ def train(args):
         # bridges (μ≈0.9 "same concept", the bulk) are DOWN-WEIGHTED so they don't swamp the directional
         # WIKI/ELEM signal. Endpoints carry corpus/judge (maskable) + node-type tags (when --use-nodetype).
         L_graded = torch.zeros(())
-        if graded_tr and not args.sym_only:
-            gb = [graded_tr[rng.randrange(len(graded_tr))] for _ in range(args.bs)]
+        graded_pool = graded_tag if args.infer_blend else graded_tr   # blend handles inferred separately
+        if graded_pool and not args.sym_only:
+            gb = [graded_pool[rng.randrange(len(graded_pool))] for _ in range(args.bs)]
             if args.use_nodetype:
                 gi = [(r[0], r[1], OPS[graded_op(r)], CORPORA[r[7]], JUDGES[r[8]], nt(r[5]), nt(r[6])) for r in gb]
             else:
@@ -407,9 +455,27 @@ def train(args):
             gw = torch.tensor([args.bridge_weight if r[4] == "bridge" else 1.0 for r in gb]).to(device)
             mu_g = model(**bld(gi, train=True, rng=rng, p_mask_prov=args.prov_mask))
             L_graded = (gw * (mu_g - gt) ** 2).sum() / gw.sum().clamp_min(1.0)
+        # INFER-BLEND: inferred rows trained with a RANDOM operator embedding from the fitted joint posterior
+        L_blend = torch.zeros(())
+        blend_on = args.infer_blend and graded_inf and step >= args.blend_warmup and not args.sym_only
+        if blend_on:
+            if (step - args.blend_warmup) % args.blend_refresh == 0:        # refresh the posterior (stop-grad)
+                refresh_blend()
+            bi = [blend_rng.randrange(len(graded_inf)) for _ in range(args.bs)]
+            br = [graded_inf[i] for i in bi]
+            ow = _np.stack([sample_operator_weights(blend_state["pop"][i], args.blend_alpha, blend_nprng) for i in bi])
+            op_w = torch.tensor(ow, dtype=torch.float32).to(device)
+            bt = torch.tensor([blend_state["tgt"][i] for i in bi], dtype=torch.float32).to(device)
+            if args.use_nodetype:                                          # op=SYM is just the position marker;
+                items = [(r[0], r[1], OPS["SYM"], new_corpus, HAIKU, nt(r[5]), nt(r[6])) for r in br]
+            else:                                                          # op_weights overrides token + readout
+                items = [(r[0], r[1], OPS["SYM"], new_corpus, HAIKU) for r in br]
+            mu_b = model(**bld(items, train=True, rng=rng, p_mask_prov=args.prov_mask), op_weights=op_w)
+            L_blend = F.mse_loss(mu_b, bt)
         loss = (args.sym_weight * L_sym + (0.0 if args.sym_only else args.wiki_weight * L_wiki)
                 + (args.elem_weight * L_elem if (elem_tr and not args.sym_only) else 0.0)
-                + (args.graded_weight * L_graded if (graded_tr and not args.sym_only) else 0.0))
+                + (args.graded_weight * L_graded if (graded_tr and not args.sym_only) else 0.0)
+                + (args.blend_weight * L_blend if blend_on else 0.0))
         # LLM (optional, already-bought) — skipped in single-task SYM mode
         L_llm = torch.zeros(())
         if llm and not args.sym_only:
@@ -425,6 +491,7 @@ def train(args):
             print(f"  step {step+1:5d}  L_sym {float(L_sym):.4f}  L_wiki {float(L_wiki):.4f}"
                   + (f"  L_elem {float(L_elem):.4f}" if (elem_tr and not args.sym_only) else "")
                   + (f"  L_graded {float(L_graded):.4f}" if (graded_tr and not args.sym_only) else "")
+                  + (f"  L_blend {float(L_blend):.4f}" if blend_on else "")
                   + (f"  L_llm {float(L_llm):.4f}" if (llm and not args.sym_only) else ""))
 
     model.eval()
@@ -711,6 +778,13 @@ def main():
                     "(operator noise + element/subcategory ambiguity for untagged relations)")
     ap.add_argument("--infer-subcat", type=float, default=0.4, help="base switch prob (× container breadth)")
     ap.add_argument("--breadth-scale", type=float, default=20.0, help="member count at which breadth→1.0")
+    ap.add_argument("--infer-blend", action="store_true", help="§5b: train INFERRED graded rows with a RANDOM "
+                    "operator embedding drawn from the fitted joint P(relation|μ_vec) (supersedes --infer-switch)")
+    ap.add_argument("--blend-warmup", type=int, default=200, help="steps tagged-only before the blend starts")
+    ap.add_argument("--blend-refresh", type=int, default=100, help="re-measure readouts + re-fit joint head every N steps")
+    ap.add_argument("--blend-alpha", type=float, default=20.0, help="Dirichlet concentration (low=more op noise)")
+    ap.add_argument("--blend-hidden", type=int, default=0, help="joint head hidden units (0=logistic regression)")
+    ap.add_argument("--blend-weight", type=float, default=1.0, help="infer-blend loss weight")
     ap.add_argument("--sym-weight", type=float, default=1.0, help="SYM loss weight (ablation lever b)")
     ap.add_argument("--sym-only", action="store_true", help="single-task SYM head (ablation lever c)")
     ap.add_argument("--quick-val", action="store_true", help="skip dense-map emission/lin-agreement")
