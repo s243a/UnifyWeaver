@@ -104,6 +104,31 @@ all four show up as how *distributed* the operator-weighted gradient is.
   operator untouched. The categorisation `method`/`confidence` is the gate (provenance, per
   `DESIGN_provenance_and_representation.md`).
 
+## 5b. Training-integration spec (the build)
+
+Three rules govern how the random operator embedding is wired into training:
+
+1. **Blend on UNLABELED rows only.** Tagged rows keep their fixed `op_emb[op]` and exact μ target; the random
+   superposition + the joint-posterior assignment apply to **inferred** (`confidence < 1`) rows. Labelled
+   data is ground truth — never blur it.
+
+2. **Asymmetric operators carry TWO prior μ — handle both directions.** `WIKI` (subset/subcategory) and
+   `ELEM` (element) are directional, so each has two reference targets: forward `μ(member|container) ≈ 0.9`
+   and reverse `≈ 0.1`; `SYM` (see_also/assoc/bridge) is symmetric (one value, e.g. 0.4 both ways). So an
+   inferred pair generates **two** training examples — `(node, root)` and `(root, node)` — each with the
+   *same* random-superposition op token but a **direction-specific blended target**:
+   `μ_target_dir = Σ_op P(op|μ_vec) · target_dir(op)` (forward uses each op's forward target, reverse its
+   reverse). A symmetric op contributes the same value both ways; the asymmetric ops contribute their two.
+   This is also why the readout vector already carries `wiki_fwd/rev` and `elem_fwd/rev` separately.
+
+3. **Curriculum — labelled first, then unlabelled.** The posterior is only as good as the model's μ readouts
+   and the joint head fitted on them; both are poor early. So **train on tagged data only until the joint
+   `P(relation|μ_vec)` is reasonably fit** (e.g. held-out accuracy/log-loss has plateaued, or a fixed warm-up
+   of steps), *then* introduce the inferred rows with the blend. This breaks the chicken-and-egg (a bad
+   posterior would mis-assign operators to unlabelled data while the model is still bad) — a warm-up gate,
+   not a hard switch. The joint head is re-fit periodically on the tagged set (EMA / stop-grad) as the model
+   sharpens.
+
 ## 6. Status
 
 - **Shipped (v1, C):** `confidence` carried through fuse → graded pairs → trainer; `--infer-switch`
