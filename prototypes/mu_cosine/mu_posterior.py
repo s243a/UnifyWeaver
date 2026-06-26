@@ -161,6 +161,38 @@ def _eval(proba, rels, ri):
     return acc, ll
 
 
+# ---------- consume the fitted posterior: a RANDOM operator embedding (superposition) -------------------
+def sample_operator_weights(probs, alpha=20.0, rng=None):
+    """Random CONVEX weights over the candidate operators ~ Dirichlet(alpha · probs). Mean ≈ probs; `alpha`
+    is the concentration — LOW alpha ⇒ more spread ⇒ more operator noise, alpha→∞ ⇒ the deterministic mean.
+    (The posterior's own entropy already spreads the mean; alpha adds sampling variance on top.)"""
+    p = np.asarray(probs, float)
+    p = p / max(p.sum(), 1e-12)
+    rng = rng or np.random.default_rng()
+    return rng.dirichlet(alpha * p + 1e-9)
+
+
+def random_operator_embedding(probs, op_emb, alpha=20.0, out_of_set_noise=0.0, rng=None):
+    """Generate a RANDOM operator embedding for an INFERRED row: a random superposition of the candidate
+    operator embeddings, `w @ op_emb` with `w ~ Dirichlet(alpha · probs)`, plus an optional OUT-OF-SET noise
+    term (the mass that the true operator is *none* of the candidates). Realises "operator = random
+    superposition of the possibilities + noise" with the noise decomposition's two knobs:
+      alpha           → (a) μ-residual / posterior spread + (c,d) measurement/churn variance
+      out_of_set_noise→ (b) the true operator is outside the candidate set.
+    Inputs: probs [K] over candidates; op_emb [K, d] the candidate operator embeddings. Returns [d].
+
+    In training this is the OP-TOKEN OVERRIDE for inferred rows (tagged rows keep their fixed op_emb[op]);
+    the matmul `w @ op_emb` is done in torch so gradients still flow to the operator embeddings (w is a
+    detached random constant, like a dropout mask). This is the numpy reference + the testable core."""
+    rng = rng or np.random.default_rng()
+    w = sample_operator_weights(probs, alpha, rng)
+    emb = np.asarray(op_emb, float)
+    out = w @ emb
+    if out_of_set_noise > 0:
+        out = out + out_of_set_noise * rng.standard_normal(emb.shape[-1])
+    return out
+
+
 # ---------- static e5 source: μ_e5(node, root) = cos(query[root], passage[node]) -------------------------
 def e5_mu_fn(cache_path):
     import torch

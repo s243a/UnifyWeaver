@@ -27,13 +27,23 @@ operator, distinct relations that share an operator — element_of/subcategory b
 ELEM/WIKI — are exactly the cases μ alone can't resolve; see §2.)
 
 Two realisations of "train under the distribution":
-- **Hard sampling** — draw one operator per step from the posterior (a stochastic switch). Simple; higher
-  gradient variance.
-- **Soft posterior-weighted loss** (preferred) — the *expectation* over operators,
-  `L = Σ_op P(op | μ, type, breadth) · mse_under(op)`. Lower variance; the posterior's spread *is* the noise
-  (a flat posterior automatically trains a mixture of operators; a peaked one trains essentially one).
+- **Hard sampling** — draw one operator per step from the posterior (a stochastic switch). Simple; one
+  forward; higher gradient variance.
+- **Soft posterior-weighted loss** — the *expectation* over operators in LOSS space,
+  `L = Σ_op P(op | μ) · mse_under(op)`. Lower variance, but **K forwards** per inferred row (one per operator).
+- **Random operator EMBEDDING** (preferred) — the expectation in **INPUT space**: build one op token that is a
+  random *superposition* of the candidate operator embeddings,
+  `op_token = (w ~ Dirichlet(α · P(op|μ))) · op_emb  + out_of_set_noise·ε`, and do a **single forward**. The
+  model literally sees a "superposition operator." `w @ op_emb` is a torch matmul so gradients still reach the
+  operator embeddings (`w` is a detached random constant, like a dropout mask). The noise decomposition's two
+  knobs live here: **α** = posterior-spread + measurement/churn variance (a,c,d); **out_of_set_noise** = the
+  true operator is none of the candidates (b). `sample_operator_weights` / `random_operator_embedding` in
+  `mu_posterior.py` (torch-free reference + tests); tagged rows keep their fixed `op_emb[op]`.
 
-Hard sampling is the Monte-Carlo approximation of the soft loss.
+Hard sampling is the Monte-Carlo approximation of the soft loss; the **random embedding** is the cheap
+input-space realisation of the same expectation (one forward instead of K), and is the build target — it is
+what makes "operator = random superposition + noise, drawn from the fitted joint `P(relation|μ_vec)`"
+literal.
 
 ## 2. The posterior, and why it factors
 
