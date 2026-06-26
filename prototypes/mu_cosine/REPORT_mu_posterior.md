@@ -103,14 +103,15 @@ readouts and let the weighted/decorrelated combiner use only their non-redundant
 The factored posterior is a *product of per-source 1-D marginals* — it over-counts the correlated readouts
 and can't represent the fwd×rev asymmetry *interaction*. `JointPosterior` replaces it with a small
 discriminative head over the **whole** μ-vector (`hidden=0` → logistic regression; `hidden>0` → MLP), fit on
-the tagged pairs. Held-out (468 pairs, 7 relations; element_of ≈ 53% = majority baseline):
+the tagged pairs. (`element_of` is ≈53% of the full tagged set; on the held-out split below its share — the
+majority baseline — is 51.1%.) Held-out, 468 pairs, 7 relations:
 
 | combiner (held-out, majority 51.1%) | accuracy | log-loss | ECE |
 |---|---|---|---|
 | factored PoE — equal weights | 50.9% (below majority) | 1.329 | 0.110 |
 | factored PoE — **sep-weighted** (the #3357 correction) | 51.1% | 1.376 | 0.041 |
 | joint **LR** | **53.8%** | **1.251** | **0.031** |
-| joint **MLP-16** | **56.0%** | **1.160** | — |
+| joint **MLP-16** | **56.0%** | **1.160** | 0.035 |
 
 Benchmarked against **both** factored baselines (PR #3359 review): even the **correlation-corrected**
 sep-weighted PoE only reaches the majority baseline (51.1%) with a *worse* log-loss; the joint head clears it
