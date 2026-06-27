@@ -175,6 +175,23 @@ def mu_batch(model, tok, items, bs=256):
 
 
 @torch.no_grad()
+def graded_hold_mse(model, tok, graded_hold, use_nodetype):
+    """Overall held-out graded MSE (μ vs calibrated target) — the early-stopping signal. The 15% graded
+    hold-out is the largest, most stable held-out set (vs SYM's ~40), and it IS the training objective."""
+    was_training = model.training
+    model.eval()
+    if use_nodetype:
+        items = [(r[0], r[1], OPS[r[3]], CORPORA[r[7]], JUDGES[r[8]], nt(r[5]), nt(r[6])) for r in graded_hold]
+    else:
+        items = [(r[0], r[1], OPS[r[3]], CORPORA[r[7]], JUDGES[r[8]]) for r in graded_hold]
+    pred = mu_batch(model, tok, items).tolist()
+    tgt = [r[2] for r in graded_hold]
+    if was_training:
+        model.train()
+    return sum((pred[i] - tgt[i]) ** 2 for i in range(len(tgt))) / max(1, len(tgt))
+
+
+@torch.no_grad()
 def emit_dense(model, tok, names, op, root="Physics", bs=512):
     items = [(n, root, OPS[op]) for n in names]
     mu = mu_batch(model, tok, items, bs)
@@ -401,6 +418,7 @@ def train(args):
 
     eps = 1e-6
     bce = lambda x, t: F.binary_cross_entropy(x.clamp(eps, 1 - eps), torch.full_like(x, float(t)))
+    es_best, es_best_step, es_wait, es_saved = float("inf"), 0, 0, False   # early-stopping state
     for step in range(args.steps):
         model.train()
         opt.zero_grad()
@@ -508,6 +526,23 @@ def train(args):
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
+        # EARLY STOPPING: track the best held-out graded MSE, save the BEST checkpoint, stop after patience.
+        if args.early_stop and graded_hold and not args.sym_only and (step + 1) % args.eval_every == 0:
+            vmse = graded_hold_mse(model, tok, graded_hold, args.use_nodetype)
+            if vmse < es_best - 1e-5:
+                es_best, es_best_step, es_wait = vmse, step + 1, 0
+                if args.save:
+                    torch.save({"state": model.state_dict(), "cfg": {"d_model": q.shape[1],
+                                "heads": args.heads, "layers": args.layers}}, args.save)
+                    es_saved = True
+            else:
+                es_wait += 1
+            print(f"  [early-stop] step {step+1:5d}  held-out graded MSE {vmse:.4f}  "
+                  f"(best {es_best:.4f} @ {es_best_step}, wait {es_wait}/{args.patience})")
+            if es_wait >= args.patience:
+                print(f"  [early-stop] no improvement for {args.patience} evals — stop at step {step+1}; "
+                      f"best @ {es_best_step}")
+                break
         if (step + 1) % max(1, args.steps // 6) == 0:
             print(f"  step {step+1:5d}  L_sym {float(L_sym):.4f}  L_wiki {float(L_wiki):.4f}"
                   + (f"  L_elem {float(L_elem):.4f}" if (elem_tr and not args.sym_only) else "")
@@ -515,10 +550,14 @@ def train(args):
                   + (f"  L_blend {float(L_blend):.4f}" if blend_on else "")
                   + (f"  L_llm {float(L_llm):.4f}" if (llm and not args.sym_only) else ""))
 
+    if es_saved:                                          # early-stop kept the BEST — validate THAT, not the last
+        ck = torch.load(args.save, weights_only=False)
+        model.load_state_dict(ck["state"])
+        print(f"\n[early-stop] reloaded best checkpoint (held-out graded MSE {es_best:.4f} @ step {es_best_step})")
     model.eval()
     validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_hold=elem_hold,
              graded_hold=graded_hold)
-    if args.save:
+    if args.save and not es_saved:                        # early-stop already saved the best; else save the final
         torch.save({"state": model.state_dict(), "cfg": {"d_model": q.shape[1], "heads": args.heads,
                     "layers": args.layers}}, args.save)
         print(f"\nsaved model → {args.save}")
@@ -765,6 +804,10 @@ def node_gated_lin_agreement(model, tok, idx):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--steps", type=int, default=1200)
+    ap.add_argument("--early-stop", action="store_true", help="stop when the held-out graded MSE stops "
+                    "improving; keep the BEST checkpoint (not the last). The targeted anti-overtraining fix.")
+    ap.add_argument("--eval-every", type=int, default=100, help="early-stop: eval the held-out graded MSE every N steps")
+    ap.add_argument("--patience", type=int, default=6, help="early-stop: stop after this many evals with no improvement")
     ap.add_argument("--bs", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--weight-decay", type=float, default=0.01)
