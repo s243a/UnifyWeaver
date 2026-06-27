@@ -210,3 +210,55 @@ reading the **train-vs-held-out generalisation gap** (the regulariser's actual t
 discrimination/SYM. Hypotheses: (i) tagged-blend narrows the generalisation gap; (ii) the gain is larger at
 higher capacity; (iii) at fixed small capacity, over-blending *underfits* (degrades discrimination), the
 signature of exceeding the capacity budget.
+
+## 8. Generalisation: an ANCHORED BASIS + a learnable residual (open-set relations)
+
+§1–§7 superpose a **fixed, all-learned** operator basis. The generalisation: make the relation/operator basis
+**two-part — frozen label-tied anchors ∪ K learnable residual atoms** — keeping the same finite-categorical
+machinery (the basis stays finite, so the weights stay a probability simplex and the token stays a finite
+sum: *no integration*, per §1's measure-vs-categorical choice).
+
+### The basis
+- **Frozen anchors** — one per known principle tag (`element`, `subcategory`, `bridge`, `see_also`; the full
+  relation set as needed). Embeddings are **fixed** (`requires_grad=False`), naturally seeded from the e5
+  phrase embeddings (`e5("see also")`, …) — i.e. the existing `EMBED_EXEMPLARS`, consistent with the
+  frozen-e5 philosophy. Frozen ⇒ stable meaning + stable calibration; they cannot drift.
+- **K learnable atoms** — `--n-learnable-atoms` (default **5**, configurable). Free embeddings that absorb
+  structure the fixed tags do not name. This makes the **out-of-set mass** (noise source (b), §3) *explicit
+  and learnable* instead of a generic "other" floor.
+
+### The token
+`token = Σ wᵢ · basis[i]` over the **enlarged** basis (anchors ++ atoms), with `w = softmax(...)` on the
+simplex. Two distinct bases are in play (the key/value distinction): the **projection** directions that
+*produce* `w` (classifier weights / `P(relation|μ)`) need not equal the **superposition** basis that gets
+*blended* (anchors ++ atoms).
+
+### The binding constraint (the crux — keeps the known part honest)
+Without a constraint the model would route mass to the learnable atoms and quietly ignore the labels (the
+collapse risk of §7 / the learned-confidence discussion). Fix: **on labelled rows, the probability mass on
+the frozen anchors must match the label and its confidence** — a cross-entropy/KL term pinning `P(anchors)`
+to the confidence-calibrated target. The atoms then receive only the **residual** mass (the uncertain /
+out-of-set portion); they cannot override a confident `element_of`. The anti-collapse anchor is exactly the
+**provenance confidence** (the `--blend-tagged-conf` dial, here expressed as the anchor-loss weight).
+
+### What the atoms buy
+- **Representation** — a relation like *by order* (a faceting/organising link that is none of the four cleanly)
+  can put mass on an atom instead of being forced onto subcategory/see_also.
+- **Discovery** — inspect *what routes to the atoms*: cluster the inputs that load on them and you have
+  candidate **new principle tags** to promote to frozen anchors. The atoms' non-interpretability is a feature
+  for this — they are where the unnamed relations accumulate.
+
+### Knobs & relation to the rest
+- **K** (`--n-learnable-atoms`, default 5): too many → atoms overfit / siphon anchor mass; too few → limited
+  residual capacity.
+- **anchor-loss weight**: how hard the frozen anchors are pinned to confidence (= the `--blend-tagged-conf`
+  dial as a constraint).
+- §1–§7 are the **K = 0** special case (anchors only). This is an **open-set / prototype-plus-residual**
+  model: fixed, calibrated, interpretable prototypes for what we know + a bounded learnable reserve for what
+  we don't, with the supervised KL keeping the known part faithful.
+
+### Build sketch (deferred — doc-first)
+Split the operator/relation embedding into a frozen anchor block (`requires_grad=False`, e5-seeded) ++ K
+learnable rows; `JointPosterior` outputs a distribution over `anchors ++ atoms`; add the anchor-confidence
+KL on labelled rows. Then A/B vs K=0 on the generalisation gap + the discrimination/SYM headline, and probe
+what the atoms specialise to.
