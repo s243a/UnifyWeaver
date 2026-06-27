@@ -312,3 +312,25 @@ not whether to trim.
 **Sequencing:** build **fixed-K (=5)** first to validate the anchored-basis + learnable-residual mechanism
 (it needs the utilisation metric anyway), THEN layer the grow/prune controller on top as v2 — the spawn/prune
 triggers are defined in terms of that same utilisation signal.
+
+## 8c. Query construction — fuse the categoriser output, the raw text, and the μ-evidence
+
+The attention **query** (what we attend *from*) should fuse three signals, so the model learns *how much to
+trust each*:
+1. **Categoriser output** (provenance) — the fuzzy/lexical decision: `category` + `confidence` + `method`
+   (embed the category as a small vector ++ the confidence scalar ++ the method). The **strong, calibrated**
+   signal for KNOWN relations; it drives high-confidence anchor activation. The model **learns** the anchor
+   calibration *from this signal* rather than having it imposed — and the **anchor-confidence KL target is
+   derived from the same categoriser decision**, so feeding it as a feature + supervising with it is
+   feature+label, not circular: the model learns to *reproduce a confident categoriser hit on the anchor
+   block* ("high confidence for the fixed labels, **because** the categoriser said so").
+2. **Raw-text e5 embedding** — `e5(section/node text)`. Direct semantic access: catches what the categoriser
+   missed (→ atoms), lets the model **override/modulate** when the categoriser is wrong/absent, and handles
+   the `None` / "by order" case (no categoriser signal ⇒ flows to raw-text + atoms).
+3. **μ-feature vector** — the model's own predicted μ (e5, sym, wiki_fwd/rev, elem_fwd/rev): the **evidence
+   that reconsiders** the label (§1).
+
+Fusion: `q = q_proj([μ_vec ++ provenance ++ e5_raw])` → attend over the anchors ++ atoms. The learned weighting
+is **confidence-modulated trust**: trust the categoriser when it fired confidently; fall back to raw-text +
+atoms otherwise. (Implemented at the trainer-wiring increment — `AnchoredBasis` already takes a generic
+`d_query`, so this is purely how the query is assembled.)
