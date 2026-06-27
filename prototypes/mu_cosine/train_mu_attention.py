@@ -349,6 +349,17 @@ def train(args):
     graded_tag = [r for r in graded_tr if not (len(r) > 9 and r[9] < 1.0)]
     relset = sorted(set(r[4] for r in graded_tag))
     blend_state = {"pop": None, "tgt": None}               # per-inferred-row P(op) [N,n_ops] + blended target
+    # tagged-blend (DESIGN §7): when --blend-tagged-conf c < 1.0, ALSO blend TAGGED rows as a REGULARIZER with
+    # a STATIC label-smoothed op distribution p = c·onehot(label) + (1-c)·uniform (the label is a sharp prior,
+    # not a delta). Feeds the regularizer the whole set, not just the (small) inferred remnant.
+    blend_tag_on = bool(args.infer_blend and args.blend_tagged_conf < 1.0)
+    tag_pop = None
+    if blend_tag_on:
+        c = args.blend_tagged_conf
+        tag_pop = _np.full((len(graded_tag), len(OPS)), (1.0 - c) / len(OPS))
+        for i, r in enumerate(graded_tag):
+            tag_pop[i, OPS[graded_op(r)]] += c
+    blend_all = (graded_inf + graded_tag) if blend_tag_on else graded_inf   # inferred first, then tagged
 
     @torch.no_grad()
     def measure_readouts(pairs):                           # [N,6]: e5, sym, wiki_fwd/rev, elem_fwd/rev (current model)
@@ -444,7 +455,11 @@ def train(args):
         # bridges (μ≈0.9 "same concept", the bulk) are DOWN-WEIGHTED so they don't swamp the directional
         # WIKI/ELEM signal. Endpoints carry corpus/judge (maskable) + node-type tags (when --use-nodetype).
         L_graded = torch.zeros(())
-        graded_pool = graded_tag if args.infer_blend else graded_tr   # blend handles inferred separately
+        # with infer-blend, the blend handles inferred separately. With tagged-blend, tagged rows train HARD
+        # until the warmup completes — the blend's joint posterior + μ readouts must be established BEFORE the
+        # blend consumes them (DESIGN §4/§7) — then move into the blend.
+        tag_blended_now = blend_tag_on and step >= args.blend_warmup
+        graded_pool = (([] if tag_blended_now else graded_tag) if args.infer_blend else graded_tr)
         if graded_pool and not args.sym_only:
             gb = [graded_pool[rng.randrange(len(graded_pool))] for _ in range(args.bs)]
             if args.use_nodetype:
@@ -457,19 +472,25 @@ def train(args):
             L_graded = (gw * (mu_g - gt) ** 2).sum() / gw.sum().clamp_min(1.0)
         # INFER-BLEND: inferred rows trained with a RANDOM operator embedding from the fitted joint posterior
         L_blend = torch.zeros(())
-        blend_on = args.infer_blend and graded_inf and step >= args.blend_warmup and not args.sym_only
+        blend_on = (args.infer_blend and (graded_inf or blend_tag_on)
+                    and step >= args.blend_warmup and not args.sym_only)
         if blend_on:
-            if (step - args.blend_warmup) % args.blend_refresh == 0:        # refresh the posterior (stop-grad)
+            if (step - args.blend_warmup) % args.blend_refresh == 0 and graded_inf:   # refresh inferred posterior
                 refresh_blend()
-            bi = [blend_rng.randrange(len(graded_inf)) for _ in range(args.bs)]
-            br = [graded_inf[i] for i in bi]
-            ow = _np.stack([sample_operator_weights(blend_state["pop"][i], args.blend_alpha, blend_nprng) for i in bi])
+            n_inf_b = len(graded_inf)
+            bi = [blend_rng.randrange(len(blend_all)) for _ in range(args.bs)]
+            pops, tgts, items = [], [], []                                 # op=SYM is just the position marker;
+            for i in bi:                                                   # op_weights overrides token + readout
+                r = blend_all[i]
+                if i < n_inf_b:                                            # inferred: μ-posterior P(op) + blended target
+                    pops.append(blend_state["pop"][i]); tgts.append(blend_state["tgt"][i]); co, ju = new_corpus, HAIKU
+                else:                                                      # tagged: label-smoothed P(op) + real μ + own provenance
+                    pops.append(tag_pop[i - n_inf_b]); tgts.append(r[2]); co, ju = CORPORA[r[7]], JUDGES[r[8]]
+                items.append((r[0], r[1], OPS["SYM"], co, ju, nt(r[5]), nt(r[6])) if args.use_nodetype
+                             else (r[0], r[1], OPS["SYM"], co, ju))
+            ow = _np.stack([sample_operator_weights(p, args.blend_alpha, blend_nprng) for p in pops])
             op_w = torch.tensor(ow, dtype=torch.float32).to(device)
-            bt = torch.tensor([blend_state["tgt"][i] for i in bi], dtype=torch.float32).to(device)
-            if args.use_nodetype:                                          # op=SYM is just the position marker;
-                items = [(r[0], r[1], OPS["SYM"], new_corpus, HAIKU, nt(r[5]), nt(r[6])) for r in br]
-            else:                                                          # op_weights overrides token + readout
-                items = [(r[0], r[1], OPS["SYM"], new_corpus, HAIKU) for r in br]
+            bt = torch.tensor(tgts, dtype=torch.float32).to(device)
             mu_b = model(**bld(items, train=True, rng=rng, p_mask_prov=args.prov_mask), op_weights=op_w)
             L_blend = F.mse_loss(mu_b, bt)
         loss = (args.sym_weight * L_sym + (0.0 if args.sym_only else args.wiki_weight * L_wiki)
@@ -785,6 +806,10 @@ def main():
     ap.add_argument("--blend-alpha", type=float, default=20.0, help="Dirichlet concentration (low=more op noise)")
     ap.add_argument("--blend-hidden", type=int, default=0, help="joint head hidden units (0=logistic regression)")
     ap.add_argument("--blend-weight", type=float, default=1.0, help="infer-blend loss weight")
+    ap.add_argument("--blend-tagged-conf", type=float, default=1.0, help="DESIGN §7: if <1.0, ALSO push TAGGED "
+                    "rows through the operator superposition as a REGULARIZER — op ~ Dirichlet(alpha · "
+                    "[c·onehot(label) + (1-c)·uniform]). c=1.0 (default) = tagged rows trained hard "
+                    "(inferred-only blend). Feeds the regularizer the whole set; capacity-bounded.")
     ap.add_argument("--sym-weight", type=float, default=1.0, help="SYM loss weight (ablation lever b)")
     ap.add_argument("--sym-only", action="store_true", help="single-task SYM head (ablation lever c)")
     ap.add_argument("--quick-val", action="store_true", help="skip dense-map emission/lin-agreement")
