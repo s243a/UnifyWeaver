@@ -31,10 +31,31 @@ That is the in-distribution-up / held-out-down signature of mild overfitting: th
 perfect discrimination probe at the cost of SYM generalisation. (SYM is a noisy 40-positive held-out set, so
 some of the gap is noise — but 0.554 is *outside* the A/B range, so it is partly real.)
 
-**Recommendation for the production base:** train **fewer steps (~700–900)** — or add early-stopping on the
-SYM held-out corr — so the base starts from a better-generalising point. The current 1500-step model is
-usable (disc/WIKI are strong) and SYM should partly recover under fine-tuning, but a shorter base is the
-cleaner starting point for the build-up-by-fine-tuning plan.
+## Early stopping — implemented and applied (the fix)
+Added `--early-stop` (`--eval-every`, `--patience`): every N steps, eval the **held-out graded MSE** (the
+505-target hold-out — the largest, most stable held-out set), keep the **best** checkpoint (not the last),
+stop after `patience` evals without improvement. It's the targeted anti-overtraining lever *and* the standing
+safeguard for the fine-tuning arc (each small increment overfits fast; this auto-finds the stop per round).
+
+Re-trained the base with it (`--steps 2000 --eval-every 100 --patience 6`): held-out graded MSE bottomed at
+**step 1400 (0.0276)** then climbed, so it stopped at 2000 and **reloaded best @ 1400**. The saved
+`model_4l_blend07.pt` is now that best checkpoint:
+
+| metric | 1500 steps (overtrained) | **early-stop, best @ 1400** |
+|---|---|---|
+| discrimination | 100% | **100%** |
+| WIKI order-acc | 99.9% | 99.8% |
+| SYM held-out | +0.554 | **+0.583** |
+| held-out graded MSE | — | **0.0276** |
+
+### Nuance: the stop-SIGNAL matters (graded MSE vs SYM peak at different steps)
+Early-stop on graded MSE recovered SYM (0.554 → 0.583) but **not** all the way to the 700-step A/B's ~0.689.
+Reason: the graded held-out MSE is roughly **flat (and noisy) from ~700 to 1400** (0.0339 → 0.0276, mostly
+noise), while the SYM-specific corr *degrades* over that same range — i.e. **SYM peaks earlier (~700) than
+the graded objective.** Optimising graded MSE therefore picks a later point than SYM alone would. The graded
+hold-out (505) is the more reliable signal and the main objective, so we keep it as the default; if SYM is
+the priority, a **composite criterion** (graded MSE + SYM corr, or stop on SYM) would land ~700 and trade a
+sliver of graded fit for ~+0.1 SYM. Left as an easy knob, not changed by default.
 
 ## Next
 - (Recommended) re-save the base at ~700–900 steps for better SYM generalisation.
