@@ -101,27 +101,74 @@ def fuzzy_mode(text, threshold=0.78):
     return (best_cat, best) if best >= threshold else (None, best)
 
 
-def categorize(text, method="exact_phrase", fuzzy_threshold=0.78):
-    """Section label → (category, method, confidence). Escalation: `exact_phrase` always tries the literal
-    match first (confidence 1.0); `fuzzy` additionally falls back to an edit-distance match (a confident
-    fuzzy hit is treated as a LABEL — confidence 1.0 — with provenance `fuzzy`, so it can be audited/
-    down-weighted). `llm_template` is the next layer (not yet implemented)."""
-    segs = _segments(text)                                 # leading "tag" (before `-- qualifier`), then full
+# EMBEDDING (semantic) layer — the escalation after exact + fuzzy. Catches SYNONYMS / PARAPHRASES that share
+# no edit-distance with a keyword (`Members`, `Narrower areas`, `Parent concepts`). Each category has a few
+# canonical EXEMPLARS; a label is e5-encoded and cosine-matched (best per category). Calibration on the real
+# harvest (REPORT_section_embedding.md) showed the post-fuzzy residual is mostly TOPICAL/junk sitting in a
+# narrow cosine band where `see also` is a generic attractor — so this layer uses a CONSERVATIVE
+# threshold + a 1st-vs-2nd MARGIN gate to reject that pack, and an embedding hit carries confidence = the
+# cosine (a GRADED, <1.0 tier — a soft relation prior feeding the operator-noise model, not a hard label).
+EMBED_EXEMPLARS = {
+    "element_of":    ["members", "elements", "instances", "subtopics", "things filed here"],
+    "subcategory":   ["subcategories", "narrower categories", "child categories", "more specific topics"],
+    "super_category": ["super categories", "broader categories", "parent categories", "more general topics"],
+    "see_also":      ["see also", "related topics", "cross references", "associated pages"],
+    "reference":     ["references", "sources", "further reading", "bibliography", "external links"],
+}
+
+
+def embed_mode(text, encoder, threshold=0.88, margin=0.02):
+    """Semantic match of a section label to the nearest category EXEMPLAR set → (category, cosine), or
+    (None, best) when the top cosine is below `threshold` OR within `margin` of the 2nd category (ambiguous,
+    likely a topical name). `encoder(texts)->[N,384]` unit-normed (see section_embed.e5_encoder); the label
+    is the `query:`, exemplars are `passage:` (e5's asymmetric prefixes)."""
+    import numpy as np
+    t = _norm(text)
+    if not t:
+        return (None, 0.0)
+    cats = list(EMBED_EXEMPLARS)
+    ex = [e for c in cats for e in EMBED_EXEMPLARS[c]]
+    vecs = np.asarray(encoder(["query: " + t] + ["passage: " + e for e in ex]))
+    sims = vecs[1:] @ vecs[0]
+    per, i = [], 0
+    for c in cats:
+        n = len(EMBED_EXEMPLARS[c])
+        per.append((float(sims[i:i + n].max()), c)); i += n
+    per.sort(reverse=True)
+    (best, best_cat), second = per[0], (per[1][0] if len(per) > 1 else -1.0)
+    return (best_cat, best) if (best >= threshold and best - second >= margin) else (None, best)
+
+
+def categorize(text, method="exact_phrase", fuzzy_threshold=0.78, encoder=None,
+               embed_threshold=0.88, embed_margin=0.02):
+    """Section label → (category, method, confidence). Escalation ladder (cheap→expensive, each catching what
+    the previous misses): `exact_phrase` literal match (conf 1.0) → `fuzzy` edit-distance (conf 1.0, audited)
+    → `embedding` semantic match (conf = cosine, a GRADED <1.0 tier; needs `encoder`). A given `method`
+    runs that rung and all cheaper ones."""
+    if method not in ("exact_phrase", "fuzzy", "embedding"):
+        raise ValueError(f"unknown categorization method: {method!r} (have: exact_phrase, fuzzy, embedding)")
+    segs = _segments(text)                                 # each dash/paren segment (tag & qualifier), then full
     for s in segs:
         cat = section_mode(s)
         if cat:
             return (cat, "exact_phrase", 1.0)
-    if method == "fuzzy":
+    if method in ("fuzzy", "embedding"):
         for s in segs:
             fcat, r = fuzzy_mode(s, fuzzy_threshold)
             if fcat:
                 return (fcat, "fuzzy", 1.0)
-    elif method != "exact_phrase":
-        raise ValueError(f"unknown categorization method: {method!r} (have: exact_phrase, fuzzy)")
+    if method == "embedding":
+        if encoder is None:
+            raise ValueError("method='embedding' needs an encoder (section_embed.e5_encoder())")
+        for s in segs:
+            ecat, sim = embed_mode(s, encoder, embed_threshold, embed_margin)
+            if ecat:
+                return (ecat, "embedding", round(float(sim), 3))
     return (None, method, 0.0)
 
 
-def relation_for(text, method="exact_phrase", fuzzy_threshold=0.78):
+def relation_for(text, method="exact_phrase", fuzzy_threshold=0.78, encoder=None,
+                 embed_threshold=0.88, embed_margin=0.02):
     """Convenience: section label → (relation, method, confidence). `relation` is None when no rule fires."""
-    cat, m, conf = categorize(text, method, fuzzy_threshold)
+    cat, m, conf = categorize(text, method, fuzzy_threshold, encoder, embed_threshold, embed_margin)
     return (CATEGORY_RELATION.get(cat), m, conf)

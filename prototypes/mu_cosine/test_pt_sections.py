@@ -1,7 +1,35 @@
 #!/usr/bin/env python3
-"""Tests for pt_sections section categorisation: exact + the fuzzy (typo-robust) method. Pure-Python
-(torch-free). Run: `python3 test_pt_sections.py`."""
-from pt_sections import categorize, fuzzy_mode, section_mode, CATEGORY_RELATION
+"""Tests for pt_sections categorisation: exact + fuzzy (typo) + embedding (semantic, via a STUB encoder so
+no model/torch is needed; numpy only). Run: `python3 test_pt_sections.py`."""
+import numpy as np
+
+from pt_sections import categorize, embed_mode, fuzzy_mode, section_mode, CATEGORY_RELATION
+
+
+def _stub_encoder():
+    """A deterministic stand-in for e5: map keyword presence to one of 5 orthonormal category axes (else a
+    neutral vector). Lets us test the embed_mode wiring (per-category max, threshold + margin gate,
+    escalation order) without loading the real model."""
+    keymap = [(["member", "element", "instance", "subtopic"], 0),
+              (["subcategor", "narrower", "child"], 1),
+              (["super", "broader", "parent", "general"], 2),
+              (["see also", "related", "cross", "associat"], 3),
+              (["reference", "source", "reading", "bibliograph", "link", "extern"], 4)]
+
+    def enc(texts):
+        out = []
+        for t in texts:
+            tl = t.lower(); v = np.zeros(5)
+            for keys, ax in keymap:
+                for k in keys:
+                    if k in tl:
+                        v[ax] += 1.0
+            if v.sum() == 0:
+                v = np.ones(5)                            # neutral ⇒ low cosine (0.45) to every single axis
+            out.append(v / np.linalg.norm(v))
+        return np.array(out)
+
+    return enc
 
 
 def test_exact_unchanged():
@@ -68,6 +96,41 @@ def test_parent_signal_guard():
 def test_threshold_is_tunable():
     assert categorize("Subtoipcs", "fuzzy", fuzzy_threshold=0.99)[0] is None   # raise the bar ⇒ no match
     assert categorize("Subtoipcs", "fuzzy", fuzzy_threshold=0.70)[0] == "element_of"
+
+
+def test_embedding_paraphrase_rescue():
+    # semantic matches that share NO edit-distance with a keyword (so fuzzy misses) — caught by embedding.
+    enc = _stub_encoder()
+    assert categorize("Narrower areas", "embedding", encoder=enc)[:2] == ("subcategory", "embedding")
+    assert categorize("Parent concepts", "embedding", encoder=enc)[0] == "super_category"
+    assert categorize("External links here", "embedding", encoder=enc)[0] == "reference"
+    assert categorize("The members", "embedding", encoder=enc)[0] == "element_of"
+
+
+def test_embedding_rejects_topical():
+    # a topical/content name (no relation keyword) must NOT be forced into a relation (the real-harvest risk)
+    enc = _stub_encoder()
+    for label in ["Quantum mechanics", "Thermodynamics", "Vector calculus"]:
+        assert categorize(label, "embedding", encoder=enc)[0] is None, label
+
+
+def test_embedding_escalation_order():
+    # embedding is the LAST rung — exact and fuzzy still win when they fire
+    enc = _stub_encoder()
+    assert categorize("Subcategories", "embedding", encoder=enc) == ("subcategory", "exact_phrase", 1.0)
+    assert categorize("Subtoipcs", "embedding", encoder=enc)[:2] == ("element_of", "fuzzy")
+    # and a missing encoder is an explicit error, not a silent miss
+    try:
+        categorize("Members", "embedding"); assert False
+    except ValueError:
+        pass
+
+
+def test_embedding_margin_gate():
+    # a label aligned EQUALLY to two categories is ambiguous (likely topical) ⇒ rejected by the margin gate
+    enc = _stub_encoder()
+    assert embed_mode("members narrower", enc, threshold=0.7, margin=0.05)[0] is None    # tie ⇒ rejected
+    assert embed_mode("members narrower", enc, threshold=0.7, margin=0.0)[0] is not None  # gate off ⇒ a pick
 
 
 if __name__ == "__main__":
