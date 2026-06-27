@@ -552,7 +552,8 @@
                 :else 2))
             (variable-key [v]
               (cond
-                (logic-var? v) (format "v%020d" (long (:var v)))
+                (logic-var? v) (let [s (str (:var v))]
+                                 (str "v" (subs "00000000000000000000" 0 (max 0 (- 20 (count s)))) s))
                 (keyword? v) (name v)
                 :else ""))
             (atom-key [v]
@@ -1804,7 +1805,7 @@
            (not= "" separator-text)
            (some? out-text))
       (let [segments (str/split out-text
-                                (re-pattern (java.util.regex.Pattern/quote separator-text))
+                                (re-pattern (str/replace separator-text #"[.*+?^${}()|\[\]\\]" (fn [m] (str "\\" m))))
                                 -1)
             [next-state list-term] (atomic-concat-list-term state segments)
             [ok unified-state] (unify-values next-state list-value list-term)]
@@ -1922,19 +1923,20 @@
       (backtrack state))))
 
 (defn char-type-class? [ch class-name]
-  (case class-name
-    "alpha" (Character/isLetter ch)
-    "alnum" (Character/isLetterOrDigit ch)
-    "digit" (Character/isDigit ch)
-    "upper" (Character/isUpperCase ch)
-    "lower" (Character/isLowerCase ch)
-    "whitespace" (Character/isWhitespace ch)
-    "space" (Character/isWhitespace ch)
-    "ascii" (<= (int ch) 127)
-    "punct" (and (<= (int ch) 127)
-                 (not (Character/isLetterOrDigit ch))
-                 (not (Character/isWhitespace ch)))
-    false))
+  ;; Portable char classification (JVM + ClojureScript): regex on (str ch)
+  ;; instead of JVM-only Character/* statics.
+  (let [s (str ch)]
+    (case class-name
+      "alpha" (boolean (re-find #"[A-Za-z]" s))
+      "alnum" (boolean (re-find #"[A-Za-z0-9]" s))
+      "digit" (boolean (re-find #"[0-9]" s))
+      "upper" (boolean (re-find #"[A-Z]" s))
+      "lower" (boolean (re-find #"[a-z]" s))
+      "whitespace" (boolean (re-find #"\s" s))
+      "space" (boolean (re-find #"\s" s))
+      "ascii" (boolean (re-find #"[\x00-\x7f]" s))
+      "punct" (boolean (re-find #"[!-/:-@\[-`{-~]" s))
+      false)))
 
 (defn char-type-code-arg [state type-value]
   (when (and (structure-term? type-value)

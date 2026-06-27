@@ -117,7 +117,12 @@ cljs_interop_rules([
     'Float/parseFloat'-'js/parseFloat',
     % --- Math host object: specific first, then generic prefix ---
     'Math/abs'-'js/Math.abs',
+    'Math/rint'-'js/Math.round',   % JS has no Math.rint; round is fine for the integral test
     'Math/'-'js/Math.',
+    % --- integer coercion: CLJS has no (long x) ---
+    '(long '-'(js/Math.trunc ',
+    % --- JVM type hints are meaningless in CLJS ---
+    '^String '-'',
     % --- exceptions: JS has no java.lang.Exception ---
     '(catch Exception '-'(catch :default ',
     '(.getMessage '-'(.-message ',
