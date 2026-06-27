@@ -262,3 +262,34 @@ Split the operator/relation embedding into a frozen anchor block (`requires_grad
 learnable rows; `JointPosterior` outputs a distribution over `anchors ++ atoms`; add the anchor-confidence
 KL on labelled rows. Then A/B vs K=0 on the generalisation gap + the discrimination/SYM headline, and probe
 what the atoms specialise to.
+
+## 8b. Choosing K, and growing it — incremental warm-started atoms
+
+**Default K = 5.** Rationale is the *asymmetric cost* + diversity, NOT matching the current residual: an unused
+atom merely gets no gradient (a few idle parameters, harmless), whereas too few atoms *bottleneck* distinct
+emergent relations into one. So err high. A learned basis **on the order of the fixed anchors** is also a
+clean symmetric design — comparable expressive room in the unknown space as the known. (An earlier
+"cut to 2–3 to match the ~4% residual" was optimising the wrong risk.)
+
+**Read utilisation as a FLOOR check, not a ceiling.** Instrument per-atom **mass-share** + atom **embedding
+diversity**; the question is whether all K are saturated *and* the generalisation gap is still open (⇒ grow),
+not whether to trim.
+
+**Grow-and-prune (the adaptive K — a finite, warm-started Dirichlet-Process / CRP flavour):**
+- **Spawn** a new atom when the existing atoms are all busy (high mass-share) AND residual/out-of-set mass is
+  still high / the gap isn't closing — "open a new table when the occupied ones fill up." Self-terminates:
+  when a freshly-spawned atom stays idle, the elbow is reached.
+- **Warm-start** the survivors — keep previously-learned atom embeddings as initialisation; only the new atom
+  starts fresh. (The "build up by fine-tuning" philosophy applied to the basis itself.)
+- **Seed the new atom from the residual direction** — the mean / top principal direction of the inputs
+  currently in the worst-fit / out-of-set mass — so growth is *targeted* and the atom specialises fast
+  instead of wandering. A mild diversity term stops it duplicating an existing atom.
+- **Prune** atoms that decay to near-zero mass. Grow + prune together converge K to the elbow automatically.
+- **Re-equilibrate** with the early-stop loop after each growth; the **frozen anchors stay pinned to
+  label-confidence throughout** — growth lives only in the learnable-residual subspace, so adding capacity
+  never threatens the calibrated known part. (This is the safety property: grow freely, the supervised anchor
+  keeps the labelled relations honest.)
+
+**Sequencing:** build **fixed-K (=5)** first to validate the anchored-basis + learnable-residual mechanism
+(it needs the utilisation metric anyway), THEN layer the grow/prune controller on top as v2 — the spawn/prune
+triggers are defined in terms of that same utilisation signal.
