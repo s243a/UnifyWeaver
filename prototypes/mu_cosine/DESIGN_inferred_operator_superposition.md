@@ -48,6 +48,25 @@ literal at the cost of being an approximation, not the loss-space expectation. (
 if the readout were linear in the op token.) It is the build target *because* it is cheap (one forward) and
 injects the uncertainty as input noise; the soft loss is the exact-but-K-forward alternative to A/B against.
 
+## 1b. The probability structure: a finite categorical, realised as attention
+
+The superposition weights are a **finite categorical on a simplex** (positive, sum to 1) over the finite
+basis — `token = Σ wᵢ·valueᵢ` is a finite sum, **no integration**. (The alternative — a continuous *measure*
+over superposition-vectors, with expectations as integrals — is declined; §1.)
+
+This is exactly an **attention** read. Each basis entry is a **(key, value)** pair:
+- **query** = the μ-feature vector; **keyᵢ** = the direction that sets how much entry *i* fires
+  (`wᵢ = softmax(query·keyᵀ)ᵢ`); **valueᵢ** = what entry *i* contributes to the token.
+- **key ≠ value** in general (untied). For a **frozen anchor**: `value` = `e5(tag phrase)` (frozen, the stable
+  interpretable contribution) while the `key` is **learnable but calibrated** by the anchor-confidence KL
+  (labels teach *when* it fires; *what* it contributes stays pinned). For a **learnable atom** (unknown
+  relation): both `key` and `value` are learned — it competes with the anchors in the same softmax for the
+  residual attention mass.
+- The basis need **not** be orthogonal — softmax normalises regardless, and we only ever take convex
+  combinations of values.
+- The Dirichlet noise is **sampled** (one simplex point per step), not integrated; the soft-loss form is a
+  finite sum over the basis. Both integration-free.
+
 ## 2. The posterior, and why it factors
 
 μ does **not** carry all the information, so the posterior factors along (roughly) orthogonal axes:
@@ -210,3 +229,108 @@ reading the **train-vs-held-out generalisation gap** (the regulariser's actual t
 discrimination/SYM. Hypotheses: (i) tagged-blend narrows the generalisation gap; (ii) the gain is larger at
 higher capacity; (iii) at fixed small capacity, over-blending *underfits* (degrades discrimination), the
 signature of exceeding the capacity budget.
+
+## 8. Generalisation: an ANCHORED BASIS + a learnable residual (open-set relations)
+
+§1–§7 superpose a **fixed, all-learned** operator basis. The generalisation: make the relation/operator basis
+**two-part — frozen label-tied anchors ∪ K learnable residual atoms** — keeping the same finite-categorical
+machinery (the basis stays finite, so the weights stay a probability simplex and the token stays a finite
+sum: *no integration*, per §1's measure-vs-categorical choice).
+
+### The basis
+- **Frozen anchors** — one per known principle tag (`element`, `subcategory`, `bridge`, `see_also`; the full
+  relation set as needed). Embeddings are **fixed** (`requires_grad=False`), naturally seeded from the e5
+  phrase embeddings (`e5("see also")`, …) — i.e. the existing `EMBED_EXEMPLARS`, consistent with the
+  frozen-e5 philosophy. Frozen ⇒ stable meaning + stable calibration; they cannot drift.
+- **K learnable atoms** — `--n-learnable-atoms` (default **5**, configurable). Free embeddings that absorb
+  structure the fixed tags do not name. This makes the **out-of-set mass** (noise source (b), §3) *explicit
+  and learnable* instead of a generic "other" floor.
+
+### The token
+`token = Σ wᵢ · basis[i]` over the **enlarged** basis (anchors ++ atoms), with `w = softmax(...)` on the
+simplex. Two distinct bases are in play (the key/value distinction): the **projection** directions that
+*produce* `w` (classifier weights / `P(relation|μ)`) need not equal the **superposition** basis that gets
+*blended* (anchors ++ atoms).
+
+### The binding constraint (the crux — keeps the known part honest)
+Without a constraint the model would route mass to the learnable atoms and quietly ignore the labels (the
+collapse risk of §7 / the learned-confidence discussion). Fix: **on labelled rows, the probability mass on
+the frozen anchors must match the label and its confidence** — a cross-entropy/KL term pinning `P(anchors)`
+to the confidence-calibrated target. The atoms then receive only the **residual** mass (the uncertain /
+out-of-set portion); they cannot override a confident `element_of`. The anti-collapse anchor is exactly the
+**provenance confidence** (the `--blend-tagged-conf` dial, here expressed as the anchor-loss weight).
+
+### What the atoms buy
+- **Representation** — a relation like *by order* (a faceting/organising link that is none of the four cleanly)
+  can put mass on an atom instead of being forced onto subcategory/see_also.
+- **Discovery** — inspect *what routes to the atoms*: cluster the inputs that load on them and you have
+  candidate **new principle tags** to promote to frozen anchors. The atoms' non-interpretability is a feature
+  for this — they are where the unnamed relations accumulate.
+
+### Knobs & relation to the rest
+- **K** (`--n-learnable-atoms`, default 5): too many → atoms overfit / siphon anchor mass; too few → limited
+  residual capacity.
+- **anchor-loss weight**: how hard the frozen anchors are pinned to confidence (= the `--blend-tagged-conf`
+  dial as a constraint).
+- §1–§7 are the **K = 0** special case (anchors only). This is an **open-set / prototype-plus-residual**
+  model: fixed, calibrated, interpretable prototypes for what we know + a bounded learnable reserve for what
+  we don't, with the supervised KL keeping the known part faithful.
+
+### Build sketch (deferred — doc-first)
+Split the operator/relation embedding into a frozen anchor block (`requires_grad=False`, e5-seeded) ++ K
+learnable rows; `JointPosterior` outputs a distribution over `anchors ++ atoms`; add the anchor-confidence
+KL on labelled rows. Then A/B vs K=0 on the generalisation gap + the discrimination/SYM headline, and probe
+what the atoms specialise to.
+
+## 8b. Choosing K, and growing it — incremental warm-started atoms
+
+**Default K = 5.** Rationale is the *asymmetric cost* + diversity, NOT matching the current residual: an unused
+atom merely gets no gradient (a few idle parameters, harmless), whereas too few atoms *bottleneck* distinct
+emergent relations into one. So err high. A learned basis **on the order of the fixed anchors** is also a
+clean symmetric design — comparable expressive room in the unknown space as the known. (An earlier
+"cut to 2–3 to match the ~4% residual" was optimising the wrong risk.)
+
+**Read utilisation as a FLOOR check, not a ceiling.** Instrument per-atom **mass-share** + atom **embedding
+diversity**; the question is whether all K are saturated *and* the generalisation gap is still open (⇒ grow),
+not whether to trim.
+
+**Grow-and-prune (the adaptive K — a finite, warm-started Dirichlet-Process / CRP flavour):**
+- **Spawn** a new atom when the existing atoms are all busy (high mass-share) AND residual/out-of-set mass is
+  still high / the gap isn't closing — "open a new table when the occupied ones fill up." Self-terminates:
+  when a freshly-spawned atom stays idle, the elbow is reached.
+- **Warm-start** the survivors — keep previously-learned atom embeddings as initialisation; only the new atom
+  starts fresh. (The "build up by fine-tuning" philosophy applied to the basis itself.)
+- **Seed the new atom from the residual direction** — the mean / top principal direction of the inputs
+  currently in the worst-fit / out-of-set mass — so growth is *targeted* and the atom specialises fast
+  instead of wandering. A mild diversity term stops it duplicating an existing atom.
+- **Prune** atoms that decay to near-zero mass. Grow + prune together converge K to the elbow automatically.
+- **Re-equilibrate** with the early-stop loop after each growth; the **frozen anchors stay pinned to
+  label-confidence throughout** — growth lives only in the learnable-residual subspace, so adding capacity
+  never threatens the calibrated known part. (This is the safety property: grow freely, the supervised anchor
+  keeps the labelled relations honest.)
+
+**Sequencing:** build **fixed-K (=5)** first to validate the anchored-basis + learnable-residual mechanism
+(it needs the utilisation metric anyway), THEN layer the grow/prune controller on top as v2 — the spawn/prune
+triggers are defined in terms of that same utilisation signal.
+
+## 8c. Query construction — fuse the categoriser output, the raw text, and the μ-evidence
+
+The attention **query** (what we attend *from*) should fuse three signals, so the model learns *how much to
+trust each*:
+1. **Categoriser output** (provenance) — the fuzzy/lexical decision: `category` + `confidence` + `method`
+   (embed the category as a small vector ++ the confidence scalar ++ the method). The **strong, calibrated**
+   signal for KNOWN relations; it drives high-confidence anchor activation. The model **learns** the anchor
+   calibration *from this signal* rather than having it imposed — and the **anchor-confidence KL target is
+   derived from the same categoriser decision**, so feeding it as a feature + supervising with it is
+   feature+label, not circular: the model learns to *reproduce a confident categoriser hit on the anchor
+   block* ("high confidence for the fixed labels, **because** the categoriser said so").
+2. **Raw-text e5 embedding** — `e5(section/node text)`. Direct semantic access: catches what the categoriser
+   missed (→ atoms), lets the model **override/modulate** when the categoriser is wrong/absent, and handles
+   the `None` / "by order" case (no categoriser signal ⇒ flows to raw-text + atoms).
+3. **μ-feature vector** — the model's own predicted μ (e5, sym, wiki_fwd/rev, elem_fwd/rev): the **evidence
+   that reconsiders** the label (§1).
+
+Fusion: `q = q_proj([μ_vec ++ provenance ++ e5_raw])` → attend over the anchors ++ atoms. The learned weighting
+is **confidence-modulated trust**: trust the categoriser when it fired confidently; fall back to raw-text +
+atoms otherwise. (Implemented at the trainer-wiring increment — `AnchoredBasis` already takes a generic
+`d_query`, so this is purely how the query is assembled.)
