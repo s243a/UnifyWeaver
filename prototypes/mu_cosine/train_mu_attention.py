@@ -431,7 +431,8 @@ def train(args):
                 _tgt[i] = 1.0 / len(_rels)
             if r[0] in idx:
                 _e5[i] = tok.p[idx[r[0]]].numpy()
-        _q = _np.concatenate([_mu, _prov, _e5], 1)
+        # ablation knob: `full` = §8c fusion; `mu` = μ_vec only (isolates the architecture from query-richness)
+        _q = _mu if args.anchor_query == "mu" else _np.concatenate([_mu, _prov, _e5], 1)
         anchored_rel = AnchoredRelation(_av, _aops, n_ops=len(OPS), n_atoms=args.n_atoms,
                                         d_query=_q.shape[1], d_k=args.anchor_dk).to(device)
         anchor_q = torch.tensor(_q, dtype=torch.float32).to(device)
@@ -855,6 +856,8 @@ def main():
     ap.add_argument("--n-atoms", type=int, default=5, help="anchored-basis: # learnable residual atoms (§8b)")
     ap.add_argument("--anchor-kl-weight", type=float, default=1.0, help="anchored-basis: weight on the anchor-confidence KL")
     ap.add_argument("--anchor-dk", type=int, default=64, help="anchored-basis: attention key dim")
+    ap.add_argument("--anchor-query", choices=["full", "mu"], default="full", help="ablation: full = §8c fusion "
+                    "[μ ++ provenance ++ e5_raw]; mu = μ_vec only (isolates the architecture from query-richness)")
     ap.add_argument("--bs", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--weight-decay", type=float, default=0.01)
