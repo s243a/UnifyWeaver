@@ -35,3 +35,37 @@ A consistent, modest improvement in the right direction — enough to justify th
 3. **μ-refresh** in the query (vs warm-start static).
 4. **Utilisation readout** (`anchored_rel.utilization()` at eval) → is K=5 right / grow? (§8b)
 5. then the **grow/prune controller**.
+
+## Ablation — attributing the gain (the verification)
+
+**What an ablation is:** change the system *one piece at a time* so each piece's contribution is isolated.
+The first A/B changed two things at once (the **architecture** AND the **query**), so it couldn't say which
+helped. Three arms, adding the changes one at a time:
+
+| arm | architecture | query | SYM mean | disc mean (per-seed) |
+|---|---|---|---|---|
+| baseline | JointPosterior+Dirichlet | μ_vec | +0.662 | 86.7% (88/80/92) |
+| **anchored-μ** | anchored attention | **μ_vec only** | +0.714 | **96.0% (96/96/96)** |
+| anchored-full | anchored attention | §8c fusion | +0.745 | 90.7% (88/92/92) |
+
+- **anchored-μ vs baseline** (same input, new architecture): **discrimination +9.3pp and perfectly consistent
+  (96/96/96)**; SYM +0.052. ⇒ **the architecture genuinely helps** — it is *not* just the richer query.
+- **anchored-full vs anchored-μ** (same architecture, + rich query): discrimination **−5.3pp**; SYM +0.031.
+  ⇒ **the rich query HURTS discrimination** (small SYM gain, real disc cost).
+
+## Verdict
+- **The anchored-basis architecture is validated.** With the *same* input as baseline it beats it on both
+  metrics — strongly and consistently on discrimination. The attention-over-anchors+atoms → op_weights
+  mechanism (with the anchor-KL) is the real driver, not a query-richness artefact.
+- **The §8c full query is NOT worth it as-is.** Adding the provenance + raw e5 text drops discrimination
+  (−5.3pp) for a noisy SYM sliver. Likely the 384-d `e5_raw` (and/or the provenance) drowns the μ-evidence
+  the discrimination probe needs.
+- **Operating point: anchored architecture + `--anchor-query mu`** — best discrimination (96%, stable),
+  good SYM, *and* simpler (no provenance/raw-text plumbing).
+
+## Next (revised by the ablation)
+- Adopt **anchored-μ** as the anchored default.
+- If we still want the query signal: ablate it finer — **provenance-only** vs **raw-text-only** (the −5.3pp
+  is probably the 384-d raw text; provenance alone might be neutral/positive). Project `e5_raw` down before
+  fusing, or drop it.
+- Then the deferred v2: value-token, μ-refresh, **utilisation readout** (is K=5 right?), grow/prune.
