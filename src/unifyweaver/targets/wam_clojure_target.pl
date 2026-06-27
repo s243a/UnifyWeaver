@@ -39,7 +39,14 @@
     clojure_lowered_func_name/2
 ]).
 :- use_module('../targets/clojurescript_target', [clojurescript_interop_rewrite/2]).
-:- use_module(library(readutil), [read_file_to_string/3]).
+
+%% read_whole_file(+Path, -String)
+%  Read a file into a string using only core builtins (open/read_string) — avoids
+%  library(readutil), which is absent in swipl-wasm.
+read_whole_file(Path, String) :-
+    setup_call_cleanup(open(Path, read, S),
+                       read_string(S, _, String),
+                       close(S)).
 
 %% write_wam_clojurescript_files(+Predicates, +Options, +OutDir)
 %  Transpile predicates to ClojureScript that runs under Scittle/SCI (browser) or
@@ -60,12 +67,12 @@ write_wam_clojurescript_files(Predicates, Options, OutDir) :-
     format(atom(RuntimeClj), "~w/src/~w/runtime.clj", [TmpDir, NsPath]),
     format(atom(CoreClj),    "~w/src/~w/core.clj",    [TmpDir, NsPath]),
     % runtime.cljs
-    read_file_to_string(RuntimeClj, RuntimeSrc, []),
+    read_whole_file(RuntimeClj, RuntimeSrc),
     clojurescript_interop_rewrite(RuntimeSrc, RuntimeCljs),
     format(atom(RuntimeOut), "~w/runtime.cljs", [OutDir]),
     write_text_file(RuntimeOut, RuntimeCljs),
     % core.cljs (drop CLI -main + its edn require — JVM/CLI only)
-    read_file_to_string(CoreClj, CoreSrc0, []),
+    read_whole_file(CoreClj, CoreSrc0),
     wamcljs_strip_main(CoreSrc0, CoreSrc1),
     wamcljs_replace(CoreSrc1, "[clojure.edn :as edn]", "", CoreSrc2),
     clojurescript_interop_rewrite(CoreSrc2, CoreCljs),
