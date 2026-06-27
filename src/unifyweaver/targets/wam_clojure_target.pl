@@ -796,10 +796,17 @@ namespace_relative_path(Namespace, RelativePath) :-
     ).
 
 read_template_file(Path, Content) :-
-    (   exists_file(Path)
-    ->  read_file_to_string(Path, Content, [])
+    (   template_abs_path(Path, Abs)
+    ->  read_whole_file(Abs, Content)
     ;   format(atom(Content), '; Template not found: ~w', [Path])
     ).
+
+%% template_abs_path(+RelPath, -AbsPath)
+%  Resolve a 'templates/...' path. In tests/CLI the cwd is the UnifyWeaver root,
+%  so the path resolves as-is. In swipl-wasm (SciREPL) the cwd is a notebook dir
+%  but the package is mounted at /user/, so fall back to /user/<path>.
+template_abs_path(Path, Path) :- exists_file(Path), !.
+template_abs_path(Path, Abs) :- atom_concat('/user/', Path, Abs), exists_file(Abs), !.
 
 write_file(Path, Content) :-
     open(Path, write, Stream),
