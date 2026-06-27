@@ -455,8 +455,11 @@ def train(args):
         # bridges (μ≈0.9 "same concept", the bulk) are DOWN-WEIGHTED so they don't swamp the directional
         # WIKI/ELEM signal. Endpoints carry corpus/judge (maskable) + node-type tags (when --use-nodetype).
         L_graded = torch.zeros(())
-        # with infer-blend, the blend handles inferred separately; with tagged-blend, it handles tagged too
-        graded_pool = (([] if blend_tag_on else graded_tag) if args.infer_blend else graded_tr)
+        # with infer-blend, the blend handles inferred separately. With tagged-blend, tagged rows train HARD
+        # until the warmup completes — the blend's joint posterior + μ readouts must be established BEFORE the
+        # blend consumes them (DESIGN §4/§7) — then move into the blend.
+        tag_blended_now = blend_tag_on and step >= args.blend_warmup
+        graded_pool = (([] if tag_blended_now else graded_tag) if args.infer_blend else graded_tr)
         if graded_pool and not args.sym_only:
             gb = [graded_pool[rng.randrange(len(graded_pool))] for _ in range(args.bs)]
             if args.use_nodetype:
