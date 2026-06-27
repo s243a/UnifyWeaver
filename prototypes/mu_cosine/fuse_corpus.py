@@ -33,19 +33,21 @@ def norm(s):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--smmx", required=True)
+    ap.add_argument("--smmx", default=None, help="SimpleMind map to root the walk at (optional if --pt-seed)")
     ap.add_argument("--start", default=None, help="start node slug (default: the map filename slug = root)")
     ap.add_argument("--hops", type=int, default=2)
     ap.add_argument("--pt-cache", default=os.path.join(ROOT, ".pt_cache"))
     ap.add_argument("--out-prefix", default=None)
+    ap.add_argument("--pt-seed", action="append", default=[], metavar="SLUG:TREEID",
+                    help="root directly at a Pearltrees tree (no mindmap): a start mm node SLUG bridged to "
+                         "Pearltrees tree TREEID. Repeatable. e.g. --pt-seed emergence:60457194")
     ap.add_argument("--section-method", default="exact_phrase", choices=["exact_phrase", "fuzzy"],
                     help="fuzzy = edit-distance section matching (catches typo'd headers → more tagged labels)")
     args = ap.parse_args()
+    if not args.smmx and not args.pt_seed:
+        ap.error("need --smmx and/or --pt-seed")
 
-    # 1) parse the SimpleMind map
-    sm_pref = "/tmp/_fuse_sm"
-    subprocess.run([sys.executable, os.path.join(ROOT, "parse_smmx.py"), args.smmx, "--out-prefix", sm_pref],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # 1) parse the SimpleMind map (optional) and/or inject direct Pearltrees seeds (--pt-seed)
     nodes = {}                                          # key → (corpus, type, title)
     edges = []                                          # (a_key, b_key, relation)
 
@@ -55,23 +57,32 @@ def main():
         return k
 
     sm_seeds = {}                                       # mm slug → pearltrees tree-id
-    for ln in open(sm_pref + "_nodes.tsv", encoding="utf-8"):
-        if ln.startswith("#"):
-            continue
-        c = ln.rstrip("\n").split("\t")                 # key, type, title, slug, pt_id, enwiki
-        if len(c) < 3:
-            continue
-        mk = addn("mm", c[0], c[1] if len(c) > 1 else "mindmap_node", c[2] if len(c) > 2 else c[0])
-        if len(c) >= 6 and c[5]:                        # direct enwiki anchor on the SM node — USER-TAGGED ⇒ 1.0
-            edges.append((mk, addn("wiki", c[5], "category" if c[5].startswith("Category:") else "page", c[5]), "bridge", 1.0))
-        if len(c) >= 5 and c[4].strip().isdigit():
-            sm_seeds[norm(c[3] or c[0])] = c[4].strip()
-    for ln in open(sm_pref + "_edges.tsv", encoding="utf-8"):
-        if ln.startswith("#"):
-            continue
-        a, b, rel = (ln.rstrip("\n").split("\t") + ["", "", ""])[:3]
-        if a and b:
-            edges.append((f"mm:{norm(a)}", f"mm:{norm(b)}", rel, 1.0))   # mindmap structure is explicit ⇒ tagged
+    if args.smmx:
+        sm_pref = "/tmp/_fuse_sm"
+        subprocess.run([sys.executable, os.path.join(ROOT, "parse_smmx.py"), args.smmx, "--out-prefix", sm_pref],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for ln in open(sm_pref + "_nodes.tsv", encoding="utf-8"):
+            if ln.startswith("#"):
+                continue
+            c = ln.rstrip("\n").split("\t")             # key, type, title, slug, pt_id, enwiki
+            if len(c) < 3:
+                continue
+            mk = addn("mm", c[0], c[1] if len(c) > 1 else "mindmap_node", c[2] if len(c) > 2 else c[0])
+            if len(c) >= 6 and c[5]:                     # direct enwiki anchor on the SM node — USER-TAGGED ⇒ 1.0
+                edges.append((mk, addn("wiki", c[5], "category" if c[5].startswith("Category:") else "page", c[5]), "bridge", 1.0))
+            if len(c) >= 5 and c[4].strip().isdigit():
+                sm_seeds[norm(c[3] or c[0])] = c[4].strip()
+        for ln in open(sm_pref + "_edges.tsv", encoding="utf-8"):
+            if ln.startswith("#"):
+                continue
+            a, b, rel = (ln.rstrip("\n").split("\t") + ["", "", ""])[:3]
+            if a and b:
+                edges.append((f"mm:{norm(a)}", f"mm:{norm(b)}", rel, 1.0))   # mindmap structure is explicit ⇒ tagged
+    for spec in args.pt_seed:                           # PT-rooted seed: a start mm node bridged to a PT tree
+        slug, _, tid = spec.partition(":")
+        slug = norm(slug)
+        addn("mm", slug, "mindmap_node", slug.replace("-", " ").title())
+        sm_seeds[slug] = tid.strip()
 
     # 2) fold in the cached Pearltrees harvest for each SM node, + the SM↔PT and PT↔enwiki bridges.
     # PRIVACY (scrub-everywhere): raw .pt_cache harvests are NOT pre-scrubbed (they come from the private
@@ -143,7 +154,12 @@ def main():
     adj = collections.defaultdict(set)
     for a, b, *_ in edges:
         adj[a].add(b); adj[b].add(a)
-    start = f"mm:{norm(args.start) if args.start else norm(os.path.splitext(os.path.basename(args.smmx))[0])}"
+    if args.start:
+        start = f"mm:{norm(args.start)}"
+    elif args.smmx:
+        start = f"mm:{norm(os.path.splitext(os.path.basename(args.smmx))[0])}"
+    else:
+        start = f"mm:{next(iter(sm_seeds))}"            # PT-rooted: first --pt-seed slug
     if start not in nodes:
         start = next((k for k in nodes if k.startswith("mm:")), None)
     seen, frontier = {start}, {start}
