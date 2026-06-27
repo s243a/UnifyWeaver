@@ -69,3 +69,30 @@ helped. Three arms, adding the changes one at a time:
   is probably the 384-d raw text; provenance alone might be neutral/positive). Project `e5_raw` down before
   fusing, or drop it.
 - Then the deferred v2: value-token, μ-refresh, **utilisation readout** (is K=5 right?), grow/prune.
+
+## The proper §8c test — section-header text, symmetric e5 (the real verification)
+
+After threading the **real section-header text** through the pipeline and adding the **symmetric**
+e5(header)→e5(label-anchor) attention (`--anchor-query header`), the 3-arm re-test on the regenerated round:
+
+| arm | SYM mean | disc mean (per-seed) |
+|---|---|---|
+| baseline | +0.691 | 93.3% (96/92/92) |
+| **anchored-μ** (architecture only) | **+0.743** | **94.7% (96/92/96)** |
+| anchored-hdr (proper header text, symmetric) | +0.736 | 92.0% (92/96/88) |
+
+**Verdict: the architecture is the win; the text-in-query is not.**
+- **anchored-μ > baseline** on both metrics — the anchored attention/atoms genuinely help, confirmed a 2nd time.
+- **anchored-hdr ≈ μ on SYM, *below* on discrimination** — the *properly-routed* header text (right text, right
+  e5-symmetric encoding) still does **not** beat μ-only, and costs disc. So the earlier "raw text hurts" was
+  **not** just the wrong text — the text genuinely doesn't earn its place in the query as tested.
+- **Why (honest caveat):** the `header` mode *replaced* μ with the header text rather than *fusing* them, so
+  it lost the μ-evidence discrimination relies on (likely the disc drop). A clean **μ+header fusion** is still
+  untested. But neither simple version (v1 wrong-text-fusion, header-only) beats μ-only.
+- Likely root cause beyond that: the **anchor-KL already injects the categoriser's decision** (which reads the
+  same header via fuzzy matching), so the header-in-query is largely **redundant** with the supervision.
+
+## Operating point
+**Anchored architecture with `--anchor-query mu`** — best discrimination, good SYM, simplest. The text signal
+is already captured by the anchor-KL supervision; adding it to the query (any version tried) doesn't help.
+A μ+header *fusion* remains the one untested variant if we want to revisit the text later.
