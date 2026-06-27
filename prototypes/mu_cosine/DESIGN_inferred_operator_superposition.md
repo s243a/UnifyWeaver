@@ -48,6 +48,25 @@ literal at the cost of being an approximation, not the loss-space expectation. (
 if the readout were linear in the op token.) It is the build target *because* it is cheap (one forward) and
 injects the uncertainty as input noise; the soft loss is the exact-but-K-forward alternative to A/B against.
 
+## 1b. The probability structure: a finite categorical, realised as attention
+
+The superposition weights are a **finite categorical on a simplex** (positive, sum to 1) over the finite
+basis — `token = Σ wᵢ·valueᵢ` is a finite sum, **no integration**. (The alternative — a continuous *measure*
+over superposition-vectors, with expectations as integrals — is declined; §1.)
+
+This is exactly an **attention** read. Each basis entry is a **(key, value)** pair:
+- **query** = the μ-feature vector; **keyᵢ** = the direction that sets how much entry *i* fires
+  (`wᵢ = softmax(query·keyᵀ)ᵢ`); **valueᵢ** = what entry *i* contributes to the token.
+- **key ≠ value** in general (untied). For a **frozen anchor**: `value` = `e5(tag phrase)` (frozen, the stable
+  interpretable contribution) while the `key` is **learnable but calibrated** by the anchor-confidence KL
+  (labels teach *when* it fires; *what* it contributes stays pinned). For a **learnable atom** (unknown
+  relation): both `key` and `value` are learned — it competes with the anchors in the same softmax for the
+  residual attention mass.
+- The basis need **not** be orthogonal — softmax normalises regardless, and we only ever take convex
+  combinations of values.
+- The Dirichlet noise is **sampled** (one simplex point per step), not integrated; the soft-loss form is a
+  finite sum over the basis. Both integration-free.
+
 ## 2. The posterior, and why it factors
 
 μ does **not** carry all the information, so the posterior factors along (roughly) orthogonal axes:
