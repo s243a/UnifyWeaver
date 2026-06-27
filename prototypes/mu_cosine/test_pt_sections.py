@@ -78,6 +78,21 @@ def test_tag_qualifier_pattern():
     assert categorize("Reciprocity theorem (disambiguation)", "fuzzy")[0] is None          # topical node, no match
 
 
+def test_parent_signal_guard():
+    # "super"/"broad"/"parent" + a category/topic noun is a BROADER grouping -> super_category, NEVER a sub*
+    # match (a bare "categories"/"topics" token is lexically closer to "subcategories"/"subtopics").
+    for label in ["Broad Categories", "Super Topics", "Broader Topics", "Parent Categories",
+                  "Broad Category", "Supercategories"]:                          # incl. singular + one-word
+        assert categorize(label, "fuzzy")[0] == "super_category", label
+    assert categorize("Broad Categories", "exact_phrase")[0] == "super_category"  # exact catches it too now
+    # scope: the guard keys on the parent WORD + a struct noun; a doubly-typo'd "Braod Catagories" (both
+    # misspelled) defeats it and is left for the semantic/embedding layer — not asserted here.
+    # the guard needs BOTH signals — a parent word alone or a noun alone must NOT force super_category:
+    assert categorize("Super Cool Resources", "fuzzy")[0] is None                 # parent word, no struct noun
+    assert categorize("My Groups", "fuzzy")[0] is None                            # struct noun, no parent word
+    assert categorize("Subcategories", "fuzzy")[0] == "subcategory"               # no regression on sub*
+
+
 def test_threshold_is_tunable():
     assert categorize("Subtoipcs", "fuzzy", fuzzy_threshold=0.99)[0] is None   # raise the bar ⇒ no match
     assert categorize("Subtoipcs", "fuzzy", fuzzy_threshold=0.70)[0] == "element_of"

@@ -29,8 +29,9 @@ def section_mode(text):
         return "subcategory"                          # narrower category
     if "subtopic" in t:
         return "element_of"                           # element / membership
-    if ("super" in t and "categor" in t) or "navigate up" in t:
-        return "super_category"                       # broader / parent
+    if ((("super" in t or "broad" in t or "parent" in t) and ("categor" in t or "topic" in t))
+            or "navigate up" in t):
+        return "super_category"                       # broader / parent ("Broad Categories", "Super Topics")
     if "see also" in t or "via link" in t or "related" in t:
         return "see_also"                             # associative
     if "wiki" in t or "encyclopedia" in t or "reference" in t:
@@ -58,6 +59,15 @@ def _norm(s):
     return " ".join(_re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).split())
 
 
+# parent-signal guard: a "Broad Categories" / "Super Topics" header is a BROADER (parent) grouping, but a bare
+# content token ("categories", "topics") is lexically closer to the SUB* keys ("subcategories", "subtopics")
+# than to "super categories" — so unguarded fuzzy flips the DIRECTION (super→sub). When a parent signal pairs
+# with a structural noun, force super_category (the user's Pearltrees convention). Requires BOTH so a plain
+# "Super Cool Resources" / "My Groups" is NOT swept up.
+_PARENT_SIGNAL = _re.compile(r"\b(super|broad(?:er)?|parent|ancestor)\b")
+_STRUCT_NOUN = _re.compile(r"(categor|topic|group|theme)")
+
+
 # tag/qualifier headers: a section header often pairs a category TAG with a free-text qualifier, either across
 # a DASH — in EITHER order, "A-E -- Subtopics", "IT - Subtopics" (qualifier first), "Subtopics - old" (tag
 # first) — or in PARENTHESES, "Subtopics (old)", "Further reading (from wikipedia)". Split on a
@@ -80,6 +90,9 @@ def fuzzy_mode(text, threshold=0.78):
     if not t:
         return (None, 0.0)
     cands = [t] + t.split()
+    if (_PARENT_SIGNAL.search(t) and _STRUCT_NOUN.search(t)) or "navigate up" in t:
+        r = max(difflib.SequenceMatcher(None, c, "super categories").ratio() for c in cands)
+        return ("super_category", max(r, threshold))   # parent-signal guard — never a sub* match
     best_cat, best = None, 0.0
     for key, cat in FUZZY_KEYS:
         r = max(difflib.SequenceMatcher(None, c, key).ratio() for c in cands)

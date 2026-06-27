@@ -167,3 +167,46 @@ Four rules govern how the random operator embedding is wired into training:
   decisive, at this probe size.
 - **Next (E→F):** estimate label-data `P(μ | relation)`, switch the trainer to the soft posterior-weighted
   operator loss, add the out-of-set mass + measurement-width terms; A/B against v1 and against no-switch.
+
+## 7. The superposition is a REGULARIZER — blending tagged data, and the capacity bound
+
+§1–§6 framed the random operator superposition narrowly as a way to handle **inferred**-label uncertainty,
+and §5/§5b accordingly **gate it to inferred rows only** (tagged rows keep a hard `op_emb[op]`). That is a
+*special case*. The mechanism is more general: the Dirichlet-sampled `op_weights` + noise is **stochastic
+regularization on the operator axis** — the same family as dropout and label-smoothing. It spreads each
+example's operator information across parameters rather than letting one hard operator token carve a brittle
+path, so it improves robustness/generalisation, not just inferred-label calibration.
+
+**Unification (every row, tagged or not).** A row's operator distribution is `label_prior × μ_posterior`, and
+its **confidence sets the Dirichlet concentration α** (sharpness ⇒ how much noise):
+- **Tagged** row → a *sharp* label prior, lightly softened by the μ-posterior. A label is **evidence, not
+  certainty** — "it is a label" ≠ "100% confidence information" — so its prior is sharp but **not a delta**.
+  High α ⇒ mild spread ⇒ *operator-label-smoothing*.
+- **Inferred** row → *no* label prior, so the μ-posterior is the whole mean. Low α ⇒ wide spread.
+
+So the current "tagged rows untouched" gating = the `confidence = 1.0 ⇒ α→∞ ⇒ no spread` corner. The general
+knob is a **tagged confidence `< 1.0`** (a single `--blend-tagged-conf`, or a per-method value): run tagged
+rows through the *same* sampler and they become a mild regularizer over the **whole** set.
+
+**Why this matters here.** `REPORT_infer_blend_cx.md` found the blend at *parity* with the cheap v1 switch
+because fuzzy tagging shrank the inferred set to **136 / 3370** (low-diversity, mostly element_of/subtopic +
+bridges) — the regularizer was **starved**. Blending tagged data removes that bottleneck: the regularizer
+sees all 3370 rows, with the label as an **additional prior** alongside the μ-priors, instead of only the
+inferred remnant. This is the lever to pull "if we need more blended data" without harvesting more.
+
+**The binding constraint is CAPACITY.** You can only regularise to the degree the model has spare capacity to
+absorb the spread — "spread the information across the parameters" needs parameters to spread into. This is
+exactly the **2→3-layer ELEM-interference** finding (`REPORT_element_operator.md`: 2 layers couldn't
+co-serve discrimination + page-centrality; 3 could). So more blend-noise wants more capacity, and
+**blend-strength must be evaluated *paired* with capacity** — a fixed-capacity sweep over tagged-blend
+confidence conflates "regularisation helped" with "the model had room for it". Larger models tolerate
+(and benefit from) more. (On *why* a parameter-count criterion like AIC can't answer "noise or layers" for a
+net — and the singular-learning-theory analog that can, Watanabe's **WAIC / WBIC** with the learning
+coefficient in place of `k` — see `NOTES_model_selection_capacity.md`.)
+
+**Proposed test (paired, multi-seed — methodology per `REPORT_infer_blend_cx.md`).** A 2×2+ over
+{capacity: layers 3 vs 4 / wider d_model} × {tagged-blend: off vs `--blend-tagged-conf` 0.8–0.9}, ≥3 seeds,
+reading the **train-vs-held-out generalisation gap** (the regulariser's actual target) alongside
+discrimination/SYM. Hypotheses: (i) tagged-blend narrows the generalisation gap; (ii) the gain is larger at
+higher capacity; (iii) at fixed small capacity, over-blending *underfits* (degrades discrimination), the
+signature of exceeding the capacity budget.
