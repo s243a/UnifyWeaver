@@ -132,7 +132,8 @@ def load_graded(pairs_path, nodes_path=None):
             c = ln.rstrip("\n").split("\t")              # node root mu op relation n_type r_type corpus judge
             if len(c) >= 9:
                 conf = float(c[9]) if len(c) > 9 and c[9] else 1.0   # 1.0 tagged; <1.0 INFERRED
-                rows.append((c[0], c[1], float(c[2]), c[3], c[4], c[5], c[6], c[7], c[8], conf))
+                raw = c[10] if len(c) > 10 else ""                   # raw section-header / annotation text (§8c)
+                rows.append((c[0], c[1], float(c[2]), c[3], c[4], c[5], c[6], c[7], c[8], conf, raw))
     return rows, node_text
 
 
