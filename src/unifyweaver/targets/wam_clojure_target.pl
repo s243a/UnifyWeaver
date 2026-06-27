@@ -26,7 +26,11 @@
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
-:- use_module(library(process), [process_create/3, process_wait/2]).
+% library(process) is absent in swipl-wasm; only the LMDB runtime path uses it.
+% Load best-effort so this module still loads in the browser (Scittle/SciREPL);
+% process_create/3 throws existence_error at call time there, which is fine since
+% the browser transpile path never invokes it.
+:- catch(use_module(library(process), [process_create/3, process_wait/2]), _, true).
 :- use_module('../core/template_system', [render_template/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('../targets/wam_clojure_lowered_emitter', [
