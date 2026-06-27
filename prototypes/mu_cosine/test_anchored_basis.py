@@ -67,6 +67,18 @@ def test_anchored_relation_k0_anchors_only():
     assert op_w.shape == (8, 3) and w.shape == (8, 4)                 # K=0: only anchors, fixed mapping
 
 
+def test_symmetric_e5_tied_keys():
+    # §8c proper: query is an e5 vector (header text), anchor keys TIED to the frozen e5 values (no q_proj)
+    ar = AnchoredRelation(torch.randn(4, 384), anchor_ops=[0, 1, 2, 2], n_ops=3, n_atoms=5, symmetric=True)
+    assert ar.basis.anchor_keys is None                              # tied to frozen anchor_values
+    q = torch.randn(8, 384)                                          # query lives in e5 space (d_model)
+    op_w, w = ar(q)
+    assert op_w.shape == (8, 3) and w.shape == (8, 4 + 5)
+    assert torch.allclose(op_w.sum(-1), torch.ones(8), atol=1e-5)
+    op_w.sum().backward()
+    assert ar.basis.atom_keys.grad is not None and ar.atom_op_logits.grad is not None
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

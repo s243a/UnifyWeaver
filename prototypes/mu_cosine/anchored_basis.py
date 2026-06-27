@@ -21,22 +21,31 @@ import torch.nn.functional as F
 
 
 class AnchoredBasis(nn.Module):
-    def __init__(self, anchor_values, n_atoms=5, d_query=6, d_k=64, atom_init=0.02):
-        """anchor_values: [A, d_model] FROZEN value embeddings (e5 phrase seeds). n_atoms K: learnable atoms."""
+    def __init__(self, anchor_values, n_atoms=5, d_query=6, d_k=64, atom_init=0.02, symmetric=False):
+        """anchor_values: [A, d_model] FROZEN value embeddings (e5 phrase seeds). n_atoms K: learnable atoms.
+        symmetric=True (§8c proper): query is an e5 vector (the header text), anchor KEYS are TIED to the
+        frozen e5 values, and atoms live in e5 space — so the weight is e5 cosine(header, label-anchor), the
+        embedding categorizer, with no q_proj and no dimensionality mismatch."""
         super().__init__()
         n_anchors, d_model = anchor_values.shape
-        self.n_anchors, self.n_atoms, self.d_model = n_anchors, n_atoms, d_model
+        self.n_anchors, self.n_atoms, self.d_model, self.symmetric = n_anchors, n_atoms, d_model, symmetric
         self.register_buffer("anchor_values", anchor_values.clone())        # FROZEN (not a Parameter)
-        self.anchor_keys = nn.Parameter(torch.randn(n_anchors, d_k) * atom_init)   # learnable, KL-calibrated
+        if symmetric:
+            d_k = d_model
+            self.anchor_keys = None                                         # tied to anchor_values (frozen)
+            self.q_proj = nn.Identity()
+        else:
+            self.anchor_keys = nn.Parameter(torch.randn(n_anchors, d_k) * atom_init)   # learnable, KL-calibrated
+            self.q_proj = nn.Linear(d_query, d_k)
         self.atom_keys = nn.Parameter(torch.randn(max(n_atoms, 0), d_k) * atom_init)
         self.atom_values = nn.Parameter(torch.randn(max(n_atoms, 0), d_model) * atom_init)
-        self.q_proj = nn.Linear(d_query, d_k)
 
     def _keys_values(self):
+        akeys = self.anchor_values if self.symmetric else self.anchor_keys
         if self.n_atoms:
-            return (torch.cat([self.anchor_keys, self.atom_keys], 0),
+            return (torch.cat([akeys, self.atom_keys], 0),
                     torch.cat([self.anchor_values, self.atom_values], 0))
-        return self.anchor_keys, self.anchor_values
+        return akeys, self.anchor_values
 
     def forward(self, query):
         """query [B, d_query] → (token [B, d_model], weights [B, A+K] on the simplex)."""
@@ -67,9 +76,9 @@ class AnchoredRelation(nn.Module):
     op_weights into MuAttention.forward(op_weights=…). Weights-only integration (the e5-phrase anchor *values*
     stay in AnchoredBasis, ready for the value-token upgrade)."""
 
-    def __init__(self, anchor_values, anchor_ops, n_ops, n_atoms=5, d_query=6, d_k=64):
+    def __init__(self, anchor_values, anchor_ops, n_ops, n_atoms=5, d_query=6, d_k=64, symmetric=False):
         super().__init__()
-        self.basis = AnchoredBasis(anchor_values, n_atoms=n_atoms, d_query=d_query, d_k=d_k)
+        self.basis = AnchoredBasis(anchor_values, n_atoms=n_atoms, d_query=d_query, d_k=d_k, symmetric=symmetric)
         self.n_anchors, self.n_atoms, self.n_ops = len(anchor_ops), n_atoms, n_ops
         R = torch.zeros(self.n_anchors, n_ops)
         for i, op in enumerate(anchor_ops):
