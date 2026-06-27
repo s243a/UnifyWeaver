@@ -405,6 +405,40 @@ def train(args):
                 tgt[i] += Pr[i, j] * REL_SPEC[rel][1 if r[2] >= 0.5 else 2]      # relation-level dir-specific target
         blend_state["pop"], blend_state["tgt"] = pop, tgt
 
+    # ANCHORED-BASIS (DESIGN §8): compute the blend op_weights via attention over frozen e5-phrase relation
+    # ANCHORS + K learnable ATOMS instead of the JointPosterior+Dirichlet. Static query = §8c fusion
+    # [μ_vec(warm) ++ provenance ++ e5_raw]; the anchor-KL pins the anchor block to the categoriser confidence.
+    anchored_rel, anchor_q, anchor_tgt = None, None, None
+    if args.anchored_basis and (graded_inf or blend_tag_on):
+        from anchored_basis import AnchoredRelation
+        from section_embed import e5_encoder
+        _rels = sorted(REL_SPEC)
+        _phrase = {"element_of": "element of", "subcategory": "subcategory", "subtopic": "subtopic",
+                   "super_category": "super category", "see_also": "see also", "assoc": "association",
+                   "bridge": "bridge", "bridge_neg": "unrelated"}
+        _av = torch.tensor(e5_encoder()(["passage: " + _phrase.get(r, r) for r in _rels]), dtype=torch.float32)
+        _aops = [OPS[REL_SPEC[r][0]] for r in _rels]
+        _ri = {r: i for i, r in enumerate(_rels)}
+        _mu = _np.nan_to_num(measure_readouts([(r[0], r[1]) for r in blend_all]))        # [N,6] warm-start
+        _prov = _np.zeros((len(blend_all), len(_rels) + 1)); _e5 = _np.zeros((len(blend_all), _av.shape[1]))
+        _tgt = _np.zeros((len(blend_all), len(_rels)))
+        for i, r in enumerate(blend_all):
+            j, conf = _ri.get(r[4]), float(r[9])
+            if j is not None:
+                _prov[i, j] = conf; _prov[i, -1] = conf
+                _tgt[i, j] = conf; _tgt[i] += (1.0 - conf) / len(_rels)                  # conf-weighted anchor target
+            else:
+                _tgt[i] = 1.0 / len(_rels)
+            if r[0] in idx:
+                _e5[i] = tok.p[idx[r[0]]].numpy()
+        _q = _np.concatenate([_mu, _prov, _e5], 1)
+        anchored_rel = AnchoredRelation(_av, _aops, n_ops=len(OPS), n_atoms=args.n_atoms,
+                                        d_query=_q.shape[1], d_k=args.anchor_dk).to(device)
+        anchor_q = torch.tensor(_q, dtype=torch.float32).to(device)
+        anchor_tgt = torch.tensor(_tgt, dtype=torch.float32).to(device)
+        opt.add_param_group({"params": anchored_rel.parameters()})
+        print(f"ANCHORED-BASIS: {len(_rels)} e5-phrase anchors + {args.n_atoms} atoms, d_query={_q.shape[1]}")
+
     new_corpus = CORPORA.get(args.pairs_corpus, SW)        # corpus tag for the --pairs (new) data
     def draw_sym(pool, replay, k):
         """Draw k SYM examples as (item, corpus_id): replay-frac OLD (replay, corpus=simplewiki) mixed with
@@ -490,6 +524,7 @@ def train(args):
             L_graded = (gw * (mu_g - gt) ** 2).sum() / gw.sum().clamp_min(1.0)
         # INFER-BLEND: inferred rows trained with a RANDOM operator embedding from the fitted joint posterior
         L_blend = torch.zeros(())
+        L_anchor = torch.zeros(())
         blend_on = (args.infer_blend and (graded_inf or blend_tag_on)
                     and step >= args.blend_warmup and not args.sym_only)
         if blend_on:
@@ -506,15 +541,20 @@ def train(args):
                     pops.append(tag_pop[i - n_inf_b]); tgts.append(r[2]); co, ju = CORPORA[r[7]], JUDGES[r[8]]
                 items.append((r[0], r[1], OPS["SYM"], co, ju, nt(r[5]), nt(r[6])) if args.use_nodetype
                              else (r[0], r[1], OPS["SYM"], co, ju))
-            ow = _np.stack([sample_operator_weights(p, args.blend_alpha, blend_nprng) for p in pops])
-            op_w = torch.tensor(ow, dtype=torch.float32).to(device)
+            if anchored_rel is not None:                                   # §8: op_weights from the anchored attention
+                op_w, w_rel = anchored_rel(anchor_q[bi])
+                L_anchor = anchored_rel.anchor_kl(w_rel, anchor_tgt[bi])
+            else:                                                          # default: Dirichlet sample of P(op)
+                ow = _np.stack([sample_operator_weights(p, args.blend_alpha, blend_nprng) for p in pops])
+                op_w = torch.tensor(ow, dtype=torch.float32).to(device)
             bt = torch.tensor(tgts, dtype=torch.float32).to(device)
             mu_b = model(**bld(items, train=True, rng=rng, p_mask_prov=args.prov_mask), op_weights=op_w)
             L_blend = F.mse_loss(mu_b, bt)
         loss = (args.sym_weight * L_sym + (0.0 if args.sym_only else args.wiki_weight * L_wiki)
                 + (args.elem_weight * L_elem if (elem_tr and not args.sym_only) else 0.0)
                 + (args.graded_weight * L_graded if (graded_tr and not args.sym_only) else 0.0)
-                + (args.blend_weight * L_blend if blend_on else 0.0))
+                + (args.blend_weight * L_blend if blend_on else 0.0)
+                + (args.anchor_kl_weight * L_anchor if blend_on else 0.0))
         # LLM (optional, already-bought) — skipped in single-task SYM mode
         L_llm = torch.zeros(())
         if llm and not args.sym_only:
@@ -548,6 +588,7 @@ def train(args):
                   + (f"  L_elem {float(L_elem):.4f}" if (elem_tr and not args.sym_only) else "")
                   + (f"  L_graded {float(L_graded):.4f}" if (graded_tr and not args.sym_only) else "")
                   + (f"  L_blend {float(L_blend):.4f}" if blend_on else "")
+                  + (f"  L_anchor {float(L_anchor):.4f}" if (blend_on and anchored_rel is not None) else "")
                   + (f"  L_llm {float(L_llm):.4f}" if (llm and not args.sym_only) else ""))
 
     if es_saved:                                          # early-stop kept the BEST — validate THAT, not the last
@@ -808,6 +849,12 @@ def main():
                     "improving; keep the BEST checkpoint (not the last). The targeted anti-overtraining fix.")
     ap.add_argument("--eval-every", type=int, default=100, help="early-stop: eval the held-out graded MSE every N steps")
     ap.add_argument("--patience", type=int, default=6, help="early-stop: stop after this many evals with no improvement")
+    ap.add_argument("--anchored-basis", action="store_true", help="DESIGN §8: compute the blend op_weights via "
+                    "attention over frozen e5-phrase relation ANCHORS + K learnable ATOMS (instead of the "
+                    "JointPosterior+Dirichlet); adds the anchor-confidence KL. Needs --infer-blend.")
+    ap.add_argument("--n-atoms", type=int, default=5, help="anchored-basis: # learnable residual atoms (§8b)")
+    ap.add_argument("--anchor-kl-weight", type=float, default=1.0, help="anchored-basis: weight on the anchor-confidence KL")
+    ap.add_argument("--anchor-dk", type=int, default=64, help="anchored-basis: attention key dim")
     ap.add_argument("--bs", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--weight-decay", type=float, default=0.01)
