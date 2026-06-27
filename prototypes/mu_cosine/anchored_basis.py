@@ -58,3 +58,34 @@ class AnchoredBasis(nn.Module):
         m = w.mean(0)
         return {"anchor_mass": m[:self.n_anchors].tolist(),
                 "atom_mass": m[self.n_anchors:].tolist()}
+
+
+class AnchoredRelation(nn.Module):
+    """Trainer-facing wrapper: attend over [anchors ∪ atoms] (AnchoredBasis), then map the relation weights to
+    OPERATOR weights for the existing per-operator readout — anchors via a FIXED relation→operator table
+    (from REL_SPEC), atoms via a LEARNED soft-operator row each. `forward(query) -> (op_weights, w)`; feed
+    op_weights into MuAttention.forward(op_weights=…). Weights-only integration (the e5-phrase anchor *values*
+    stay in AnchoredBasis, ready for the value-token upgrade)."""
+
+    def __init__(self, anchor_values, anchor_ops, n_ops, n_atoms=5, d_query=6, d_k=64):
+        super().__init__()
+        self.basis = AnchoredBasis(anchor_values, n_atoms=n_atoms, d_query=d_query, d_k=d_k)
+        self.n_anchors, self.n_atoms, self.n_ops = len(anchor_ops), n_atoms, n_ops
+        R = torch.zeros(self.n_anchors, n_ops)
+        for i, op in enumerate(anchor_ops):
+            R[i, op] = 1.0                                             # fixed anchor → operator (one-hot)
+        self.register_buffer("R_anchor", R)
+        self.atom_op_logits = nn.Parameter(torch.zeros(max(n_atoms, 0), n_ops))   # learned atom → operator
+
+    def forward(self, query):
+        _, w = self.basis(query)                                      # w [B, A+K] on the simplex
+        R = (torch.cat([self.R_anchor, F.softmax(self.atom_op_logits, dim=-1)], 0)
+             if self.n_atoms else self.R_anchor)                      # [A+K, n_ops]
+        return w @ R, w                                               # op_weights [B, n_ops] (also a simplex)
+
+    def anchor_kl(self, w, anchor_target):
+        return self.basis.anchor_kl(w, anchor_target)
+
+    @torch.no_grad()
+    def utilization(self, w):
+        return self.basis.utilization(w)
