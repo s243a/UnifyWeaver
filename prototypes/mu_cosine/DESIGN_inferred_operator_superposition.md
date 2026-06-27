@@ -200,7 +200,9 @@ exactly the **2→3-layer ELEM-interference** finding (`REPORT_element_operator.
 co-serve discrimination + page-centrality; 3 could). So more blend-noise wants more capacity, and
 **blend-strength must be evaluated *paired* with capacity** — a fixed-capacity sweep over tagged-blend
 confidence conflates "regularisation helped" with "the model had room for it". Larger models tolerate
-(and benefit from) more.
+(and benefit from) more. (On *why* a parameter-count criterion like AIC can't answer "noise or layers" for a
+net — and the singular-learning-theory analog that can, Watanabe's **WAIC / WBIC** with the learning
+coefficient in place of `k` — see `NOTES_model_selection_capacity.md`.)
 
 **Proposed test (paired, multi-seed — methodology per `REPORT_infer_blend_cx.md`).** A 2×2+ over
 {capacity: layers 3 vs 4 / wider d_model} × {tagged-blend: off vs `--blend-tagged-conf` 0.8–0.9}, ≥3 seeds,
