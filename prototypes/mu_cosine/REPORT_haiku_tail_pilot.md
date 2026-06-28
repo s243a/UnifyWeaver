@@ -90,3 +90,9 @@ escalation addendum). Rationale (user steer):
 So: keep all 228 rows (positives + uncertain + negatives). The `flag`/escalation path stays available as an
 *optional* uncertainty-refinement on high-stakes rows, **not** a cleaning gate. The "navigational/meta node"
 observation is still a true characterisation of where `none` mass concentrates — just retained as data, not pruned.
+
+**Deferred (not yet):** the `none`-disagreement column is *multi-purpose*. Today it's uncertainty + negatives.
+Later we can **sort by highest `none`-disagreement to hunt genuine graph errors** — a graph that confidently
+asserts an edge a strong judge confidently rejects is a likely *real mistake*, distinct from honest
+uncertainty. Same column, different read (keep-as-data now vs sort-descending-to-audit later); `flag` already
+selects by `none`, so only a descending sort is needed when we want it.
