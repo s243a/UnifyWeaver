@@ -351,12 +351,21 @@ the direct `P(op)_model` vs `P(op)_ref` eval and the explicit decomposition — 
 This is the Monte-Carlo realisation of `c·label + (1-c)·Haiku` applied to the μ expectation. Keep
 `op_weights` and the target on the **same** mixture (mismatching them distorts the per-op μ's).
 
+> **⚠ Superseded by §12(2).** The `(1-c)` branch does **not** target the scalar `E[μ]` (that is the
+> Jensen-biased mean, §11). It **samples one cell** from `P_Haiku(cell)` and backprops *that cell's* μ;
+> `E[μ]` is an inference quantity (MC average, §12(6)), not a per-step target.
+
 **Asymmetric operators → both permutations:** train `E[μ(node|root)]` and `E[μ(root|node)]` separately
 (REL_SPEC already stores fwd/rev).
 
 **Eval against Haiku ALONE (not the training mixture).** Using the label-biased mixture as the eval reference
 is circular (the model trained on the label). Independent reference = `corr(E[μ]_model, E[μ]_Haiku)` over the
 **inferred** held-out rows — the population the anchored basis exists for, which SYM/disc never measured.
+
+> **⚠ Superseded by §12(3).** "Independent / not circular" is softened to **"no per-row leakage"**: a
+> held-out/train split + row-keyed cache (train only on train-inferred, eval only on held-out-inferred). It
+> still measures *agreement-with-Haiku on unseen rows*, not ground truth — a human/alt-model subset is the
+> gold-standard upgrade.
 
 **`none` anchor (μ≈0):** a fixed "no relation" anchor for true negatives, DISTINCT from the learnable atoms
 (novel *positives*). Closes the open-world set: known-positive anchors + `none` + atoms = "X / nothing /
@@ -404,9 +413,10 @@ generalisation** activates from data: *promote an overlap atom* when a region of
 **splits** weight between two anchors AND its μ differs from both — the §8b grow rule applied to overlaps.
 That split-and-distinct signal is exactly how we'd detect we've outgrown the single-softmax model.
 
-**Training / eval** ride §9 unchanged: target the **expectation** `E[μ]` over the partition (Haiku `E[μ]`
-30% / label 70%, both directions for asymmetric cells); eval the model's `E[μ]` vs Haiku's over the inferred
-tail. Nothing new is bolted on — the anchored basis *is* the partition, the atoms *are* the overlap/novel
+**Training / eval** ride §9 **as corrected by §12** (target a **sampled cell's** μ, not the scalar `E[μ]`;
+cells per the §12(5) grouping key; Haiku 30% / label 70%, both directions for asymmetric cells); eval the
+model's `E[μ]` vs Haiku's over the inferred tail. Nothing new is bolted on — the anchored basis *is* the
+partition, the atoms *are* the overlap/novel
 cells, the `none` anchor closes it; we only add the *interpretation* + the overlap-promotion rule needed to
 handle correlated relations principledly.
 
@@ -469,12 +479,23 @@ gold-standard upgrade.
 shares the identical batch trajectory (the #3356 isolated-RNG lesson). No new draw touches the training rng.
 
 **(5) Overlap partition — operational grouping key.** A row's **cell = the set of relations Haiku scores ≥ τ**
-(`{rel : P_Haiku(rel) ≥ τ}`): one relation → a singleton cell; two+ → an overlap cell. **Atoms are promoted
-per recurring relation-set** (the §8b grow rule, keyed on the recurring subset that persistently splits
-weight and carries a distinct μ). The partition's grouping key is thus operational: Haiku's thresholded
-multi-label relation-set per row.
+(`{rel : P_Haiku(rel) ≥ τ}`, **default `τ = 0.25`** — just above uniform over ~4–5 relations + `none`):
+one relation → a singleton cell; two+ → an overlap cell; **the empty set (no relation clears τ) → the `none`
+cell** (the negative anchor, μ≈0). **Atoms are promoted per recurring relation-set** (the §8b grow rule, keyed
+on the recurring subset that persistently splits weight and carries a distinct μ). The partition's grouping
+key is thus operational: Haiku's thresholded multi-label relation-set per row.
 
 **(6) MC inference — sample count + error bar.** `E[μ] = (1/N) Σ_i μ(sample_i)` over **N** sampled cells;
 choose **N so `SE = σ_μ/√N ≤ target`** (default 0.02; with per-pair `σ_μ ~ 0.1` ⇒ N ≈ 25, so **N = 32
 default**), and **report SE** per estimate; eval correlations carry their CI. The mean-fed single pass remains
 a fast, Jensen-biased point estimate but is **not** the reported `E[μ]`.
+
+**(7) Deterministic `rel ≥ τ` construction vs the stochastic cell draw — two distinct roles, no conflict.**
+The `τ`-threshold of (5) is **partition *construction*** — it defines *which cells exist* (the support /
+vocabulary: which singletons and which recurring overlap-sets get a cell). It runs **once, deterministically**,
+to build the cell set. The draw of (2) is **per-step *sampling*** — given that fixed cell set, each training
+step draws **one cell** from `P_Haiku(cell)` to feed+target. So: `τ` answers *"what are the cells?"*
+(deterministic, structural); the draw answers *"which cell does this step train on?"* (stochastic, weighted by
+Haiku's mass). A row's `τ`-cell is its *dominant* cell; the draw additionally visits the lower-mass cells
+Haiku assigns (below `τ` but non-zero) for coverage (§11). Inference (6) samples from the same
+`P_Haiku(cell)` / model posterior over that fixed cell set.
