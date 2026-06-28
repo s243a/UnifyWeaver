@@ -112,7 +112,8 @@ Output STRICT JSON: a list, one object per pair IN ORDER, each:
   {"id": <int>, "element_of":{"mu_fwd":_,"mu_rev":_,"applies":_}, "subcategory":{...}, "subtopic":{...},
    "super_category":{...}, "see_also":{"mu":_,"applies":_}, "assoc":{"mu":_,"applies":_},
    "none":{"applies":_}, "unknown":{"mu_fwd":_,"mu_rev":_,"applies":_}}
-Output ONLY the JSON list, nothing else.
+BE TERSE: output COMPACT single-line JSON objects (no extra whitespace/newlines inside an object), no prose,
+no explanation, do NOT restate these rules. Just the raw JSON array.
 
 PAIRS:
 """
@@ -180,6 +181,28 @@ def ingest(pairs_path, responses_path, out):
     print(f"ingested {n}/{len(pairs)} pairs → {out}")
 
 
+def flag(scored_path, pairs_path, none_min, out):
+    """Escalation selector: every tail row IS a graph edge (conf<1.0 asserts a relation), so a high Haiku
+    `P[none]` is a direct graph↔Haiku contradiction. Emit those rows (none >= none_min) as a pairs file to
+    re-judge with a STRONGER model (Sonnet ¼-budget, Opus less) — the selective multi-source tie-break."""
+    scored = {}
+    sh = open(scored_path, encoding="utf-8").readline().strip().split("\t")
+    ni = sh.index("P[none]")
+    for r in (l.rstrip("\n").split("\t") for l in open(scored_path, encoding="utf-8") if not l.startswith("#")):
+        scored[(r[0].lower(), r[1].lower())] = float(r[ni])
+    kept = []
+    for ln in open(pairs_path, encoding="utf-8"):
+        if ln.startswith("#"):
+            continue
+        p = ln.rstrip("\n").split("\t")
+        if scored.get((p[0].lower(), p[1].lower()), 0.0) >= none_min:
+            kept.append(ln.rstrip("\n"))
+    with open(out, "w", encoding="utf-8") as f:
+        f.write("# node_title\troot_title\tcur_relation\tconf\tneighborhood\tnode_type\troot_type\traw\n")
+        f.write("\n".join(kept) + ("\n" if kept else ""))
+    print(f"flagged {len(kept)} sharp rows (Haiku P[none] >= {none_min}) → {out}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -188,9 +211,13 @@ def main():
     pr = sub.add_parser("prompt"); pr.add_argument("--pairs", required=True); pr.add_argument("--batch", type=int, default=10)
     ig = sub.add_parser("ingest"); ig.add_argument("--pairs", required=True)
     ig.add_argument("--responses", required=True); ig.add_argument("--out", required=True)
+    fl = sub.add_parser("flag"); fl.add_argument("--scored", required=True); fl.add_argument("--pairs", required=True)
+    fl.add_argument("--none-min", type=float, default=0.3); fl.add_argument("--out", required=True)
     a = ap.parse_args()
     if a.cmd == "extract":
         extract(a.neighborhoods, a.out)
+    elif a.cmd == "flag":
+        flag(a.scored, a.pairs, a.none_min, a.out)
     elif a.cmd == "prompt":
         pairs = [ln.rstrip("\n").split("\t") for ln in open(a.pairs, encoding="utf-8") if not ln.startswith("#")]
         for i, pr_text in enumerate(build_prompts(pairs, a.batch)):

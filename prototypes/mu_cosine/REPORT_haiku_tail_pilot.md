@@ -49,3 +49,27 @@ mismatch worth a closer look**, not necessarily a Haiku error.
    (isolated RNG), self-posterior for the labelled bulk, held-out tail for the §9 eval.
 3. Investigate the `subtopic`/`super_category` direction-convention mismatch — it may be a systematic
    labelling-vs-prompt direction issue, cheap to fix and high-leverage.
+
+## Addendum — selective Sonnet escalation of sharp `none`-vs-graph rows
+Every tail row is a graph edge (conf<1.0 asserts a relation), so a high Haiku `P[none]` is a direct
+graph↔Haiku contradiction. `score_inferred_tail.py flag --none-min 0.3` selected **6** such rows; a single
+**Sonnet** subagent re-judged them (the ¼-budget tier; Opus reserved). Sonnet wrote its JSON on the *first*
+pass — ~21k tokens, no double-emission.
+
+| node → root | label | Haiku none | Sonnet none | read |
+|---|---|---|---|---|
+| thermodynamics → Flickr_(Thermodynamics) | element_of | 0.60 | 0.71 | **spurious** (ROOT is a Flickr collection) |
+| Z_transform → Zeta_function_regularization | element_of | 0.64 | 0.67 | **spurious** (different math domains) |
+| Z_transform → Recommended_for_beginner | element_of | 0.33 | **0.81** | escalation **sharpened** → navigational node |
+| control-system-eng → Technicien_automaticien | assoc | 0.30 | 0.45 | leans spurious |
+| Gaussian_Linear_Models → MIT…LecNote19 | element_of | 0.30 | 0.23 | both keep some relation (note may cover it) |
+| lti-system-theory → Tellegen's_theorem | subtopic | 0.52 | **0.27** | Sonnet **softened** → real-but-loose lateral |
+
+**Takeaways:**
+- The selective multi-judge tie-break is cheap and decisive — it confirmed 2 spurious edges, *sharpened* 1
+  borderline navigational case (0.33→0.81), and *corrected* Haiku's over-doubt on 2 real-but-loose ones.
+- **Many conf-0.4 edges target navigational/meta nodes** (Flickr collections, "recommended for beginners",
+  lecture-note PDFs) → the augmentation is also a **graph-cleaning** signal: these edges should likely be
+  pruned, not just down-weighted.
+- Where Haiku and Sonnet still diverge most (Tellegen, the lecture note), an **Opus** final tie-break is the
+  natural next escalation — but only for genuine judge-disagreement, not all `none` rows.
