@@ -366,3 +366,46 @@ something-unnamed". Lets Haiku place "unrelated" mass and pulls the expectation 
 set is the **inferred tail** (no label → full Haiku `E[μ]`). Clean labeled rows' `(1-c)` share can come free
 from the model's own posterior; spend Haiku only on the tail (+ suspect labels). The same pass serves BOTH
 the training target and the eval reference.
+
+## 10. Overlap-aware partition — the softmax as learned effective disjoint boundaries (proposed)
+
+### Why the finite categorical is valid even when relations overlap (the conceptual closure of §1b)
+The relations are **not truly disjoint** — they correlate (the operator μ-readouts are ≈ +0.6–0.7 correlated;
+element_of/subcategory co-vary). The naive worry: if relations overlap, "P sums to 1" breaks (independent
+marginals would sum to > 1) and `E[μ]` is no longer a clean convex combination.
+
+Resolution: **the softmax operates on the EVIDENCE space (the query / μ-vector), not on the relations** — and
+there it imposes an **effective, *learned* partition.** "Disjoint" is a property of the partition the softmax
+carves, not of the relations:
+- It is a **soft tessellation** of evidence-space — each region gets a dominant anchor/atom ("in *this*
+  region, μ is mostly this anchor").
+- **Correlation lives in the *boundaries*, not the cells.** Where two relations genuinely overlap, the
+  softmax *splits* the weight (a soft boundary) or an **atom** owns that region. Non-disjointness is absorbed
+  as fuzzy boundaries / dedicated overlap cells — never a contradiction.
+- The softmax **sharpness = how disjoint to treat them**, and it is *learnable* — correlated relations get
+  softer boundaries, separable ones sharp boundaries; tuned per region.
+- So `E[μ] = Σ w·μ` is a **smooth mixture mean over the learned partition**, bounded in [0,1] *regardless* of
+  the true correlation. The categorical is valid because the softmax *manufactures* the effective
+  disjointness in evidence-space.
+
+### Proposed design: the disjoint-event partition
+Generalise the operator distribution from "one relation per pair" to a **disjoint partition of the
+relation-combination space** (the joint over relation *subsets*), realised directly by the anchored basis:
+- **Singleton cells = the fixed anchors** — the known individual relations (e5-seeded).
+- **Overlap / novel cells = the learnable atoms** — an atom firing for "element_of *and* subcategory" pairs
+  *is* a disjoint overlap event with its own μ; an atom for an unnamed relation is a novel cell.
+- **`none` cell = the negative anchor** (μ≈0) — closes the partition for unrelated pairs (absorbs mass,
+  pulls `E[μ] → 0`; zero contribution, non-zero role).
+- **softmax over [anchors ++ atoms ++ none] = the learned effective partition** (disjoint fractions, Σ = 1),
+  and `E[μ] = Σ_cell P(cell)·μ_cell` is the convex combination over it.
+
+**Mutual exclusivity is the special case** (mass only on singletons + none). The **multi-label
+generalisation** activates from data: *promote an overlap atom* when a region of evidence-space persistently
+**splits** weight between two anchors AND its μ differs from both — the §8b grow rule applied to overlaps.
+That split-and-distinct signal is exactly how we'd detect we've outgrown the single-softmax model.
+
+**Training / eval** ride §9 unchanged: target the **expectation** `E[μ]` over the partition (Haiku `E[μ]`
+30% / label 70%, both directions for asymmetric cells); eval the model's `E[μ]` vs Haiku's over the inferred
+tail. Nothing new is bolted on — the anchored basis *is* the partition, the atoms *are* the overlap/novel
+cells, the `none` anchor closes it; we only add the *interpretation* + the overlap-promotion rule needed to
+handle correlated relations principledly.
