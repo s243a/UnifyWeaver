@@ -98,3 +98,35 @@ class AnchoredRelation(nn.Module):
     @torch.no_grad()
     def utilization(self, w):
         return self.basis.utilization(w)
+
+
+class TypedQuery(nn.Module):
+    """Build the anchored-basis query from a SET of named, TYPED, separately-regularised input tokens
+    (DESIGN §8c, the typed-token design) — instead of a flat concat. Each input k is projected to d_k, gets a
+    learned TYPE embedding (so the model can tell μ from label-e5 from header-e5), and the *extra* inputs
+    (everything except `core`) are heavily DROPOUT-regularised so the model can gate them off when the label
+    is confident and lean on them only when it's weak — and so they can never dominate (the flat-concat
+    failure). The typed tokens are SUMMED (the factored-token pattern of the main MuAttention model).
+
+    dims: {name: input_dim}. core: the name(s) that are NOT dropout-regularised (e.g. 'mu' — the evidence the
+    joint distribution is deduced from). dropout: rate on the extra tokens."""
+
+    def __init__(self, dims, d_k=64, core=("mu",), dropout=0.5):
+        super().__init__()
+        self.proj = nn.ModuleDict({k: nn.Linear(d, d_k) for k, d in dims.items()})
+        self.type_emb = nn.ParameterDict({k: nn.Parameter(torch.zeros(d_k)) for k in dims})
+        self.drop = nn.Dropout(dropout)
+        self.core = set(core)
+        self.d_k = d_k
+
+    def forward(self, inputs):
+        """inputs: {name: [B, dim]} (a subset/superset of dims is fine — only matched names are used)."""
+        q = None
+        for k, x in inputs.items():
+            if k not in self.proj:
+                continue
+            t = self.proj[k](x) + self.type_emb[k]
+            if k not in self.core:                                     # heavily regularise the extra inputs
+                t = self.drop(t)
+            q = t if q is None else q + t
+        return q                                                      # [B, d_k]

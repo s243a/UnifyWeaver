@@ -409,7 +409,7 @@ def train(args):
     # ANCHORED-BASIS (DESIGN §8): compute the blend op_weights via attention over frozen e5-phrase relation
     # ANCHORS + K learnable ATOMS instead of the JointPosterior+Dirichlet. Static query = §8c fusion
     # [μ_vec(warm) ++ provenance ++ e5_raw]; the anchor-KL pins the anchor block to the categoriser confidence.
-    anchored_rel, anchor_q, anchor_tgt = None, None, None
+    anchored_rel, anchor_q, anchor_tgt, typed_q, anchor_inputs = None, None, None, None, None
     if args.anchored_basis and (graded_inf or blend_tag_on):
         from anchored_basis import AnchoredRelation
         from section_embed import e5_encoder
@@ -435,7 +435,24 @@ def train(args):
                 _e5[i] = tok.p[idx[r[0]]].numpy()
         # query: `header` = §8c proper — e5(section-header text) attends SYMMETRICALLY to the e5 label
         # anchors (the embedding categoriser); `full` = the v1 fusion; `mu` = μ_vec only (architecture ablation)
-        if args.anchor_query == "header":
+        if args.anchor_query == "typed":                              # §8c token-set: μ + label-e5 + header-e5
+            from anchored_basis import TypedQuery
+            _label = _np.zeros((len(blend_all), _av.shape[1]), dtype="float32")
+            for i, r in enumerate(blend_all):
+                jj = _ri.get(r[4])
+                if jj is not None:
+                    _label[i] = _av[jj].numpy()                       # e5 of the row's categorised relation
+            _hdr = _enc(["query: " + (r[10] if len(r) > 10 else "") for r in blend_all]).astype("float32")
+            typed_q = TypedQuery({"mu": _mu.shape[1], "label": _av.shape[1], "header": _av.shape[1]},
+                                 d_k=args.anchor_dk, core=("mu",), dropout=args.anchor_dropout).to(device)
+            anchored_rel = AnchoredRelation(_av, _aops, n_ops=len(OPS), n_atoms=args.n_atoms,
+                                            d_query=args.anchor_dk, d_k=args.anchor_dk).to(device)
+            anchor_inputs = {"mu": torch.tensor(_mu, dtype=torch.float32).to(device),
+                             "label": torch.tensor(_label).to(device),
+                             "header": torch.tensor(_hdr).to(device)}
+            opt.add_param_group({"params": typed_q.parameters()})
+            _q = _mu                                                  # for the d= printout only
+        elif args.anchor_query == "header":
             _q = _enc(["query: " + (r[10] if len(r) > 10 else "") for r in blend_all]).astype("float32")
             anchored_rel = AnchoredRelation(_av, _aops, n_ops=len(OPS), n_atoms=args.n_atoms,
                                             d_query=_q.shape[1], symmetric=True).to(device)
@@ -552,7 +569,10 @@ def train(args):
                 items.append((r[0], r[1], OPS["SYM"], co, ju, nt(r[5]), nt(r[6])) if args.use_nodetype
                              else (r[0], r[1], OPS["SYM"], co, ju))
             if anchored_rel is not None:                                   # §8: op_weights from the anchored attention
-                op_w, w_rel = anchored_rel(anchor_q[bi])
+                if typed_q is not None:                                    # typed token-set query (μ + label + header)
+                    op_w, w_rel = anchored_rel(typed_q({k: v[bi] for k, v in anchor_inputs.items()}))
+                else:
+                    op_w, w_rel = anchored_rel(anchor_q[bi])
                 L_anchor = anchored_rel.anchor_kl(w_rel, anchor_tgt[bi])
             else:                                                          # default: Dirichlet sample of P(op)
                 ow = _np.stack([sample_operator_weights(p, args.blend_alpha, blend_nprng) for p in pops])
@@ -865,9 +885,11 @@ def main():
     ap.add_argument("--n-atoms", type=int, default=5, help="anchored-basis: # learnable residual atoms (§8b)")
     ap.add_argument("--anchor-kl-weight", type=float, default=1.0, help="anchored-basis: weight on the anchor-confidence KL")
     ap.add_argument("--anchor-dk", type=int, default=64, help="anchored-basis: attention key dim")
-    ap.add_argument("--anchor-query", choices=["full", "mu", "header"], default="full",
-                    help="header = §8c proper (e5(section-header) attends symmetrically to e5 label anchors); "
-                         "full = v1 fusion [μ ++ provenance ++ e5_node]; mu = μ_vec only (architecture ablation)")
+    ap.add_argument("--anchor-query", choices=["full", "mu", "header", "typed"], default="full",
+                    help="typed = §8c token-set [μ-token + label-e5 + header-e5], type-embedded, extras "
+                         "dropout-regularised; header = symmetric e5(header)→e5(anchor); full = v1 fusion; "
+                         "mu = μ_vec only (the validated core)")
+    ap.add_argument("--anchor-dropout", type=float, default=0.5, help="typed query: dropout on the extra (non-μ) tokens")
     ap.add_argument("--bs", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--weight-decay", type=float, default=0.01)

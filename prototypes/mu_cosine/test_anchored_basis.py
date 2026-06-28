@@ -3,7 +3,7 @@
 Run: `python3 test_anchored_basis.py`."""
 import torch
 
-from anchored_basis import AnchoredBasis, AnchoredRelation
+from anchored_basis import AnchoredBasis, AnchoredRelation, TypedQuery
 
 
 def test_shapes_and_simplex():
@@ -77,6 +77,20 @@ def test_symmetric_e5_tied_keys():
     assert torch.allclose(op_w.sum(-1), torch.ones(8), atol=1e-5)
     op_w.sum().backward()
     assert ar.basis.atom_keys.grad is not None and ar.atom_op_logits.grad is not None
+
+
+def test_typed_query_tokens():
+    tq = TypedQuery({"mu": 6, "label": 384, "header": 384}, d_k=64, core=("mu",), dropout=0.5)
+    inp = {"mu": torch.randn(8, 6), "label": torch.randn(8, 384), "header": torch.randn(8, 384)}
+    q = tq(inp)
+    assert q.shape == (8, 64)
+    # core (mu) is NOT dropped; the extras get a distinct learned type embedding
+    assert "mu" in tq.core and "label" not in tq.core
+    q.sum().backward()
+    assert tq.proj["header"].weight.grad is not None and tq.type_emb["label"].grad is not None
+    # eval mode = no dropout (deterministic)
+    tq.eval()
+    assert torch.allclose(tq(inp), tq(inp))
 
 
 if __name__ == "__main__":
