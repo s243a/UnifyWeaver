@@ -137,6 +137,36 @@ def load_graded(pairs_path, nodes_path=None):
     return rows, node_text
 
 
+def apply_haiku_tail(graded_rows, graded_text, path):
+    """§9/§14 distributional augmentation: override the INFERRED (conf<1.0) graded rows' target μ with the
+    cached LLM E[μ] — forward or reverse by TITLE match — and stamp the judge provenance (haiku/sonnet/opus,
+    the stronger judge wins on a dup). Tagged rows (conf=1.0) are untouched. Returns (rows, n_overridden)."""
+    rank = {"haiku": 0, "graph": 0, "human": 0, "sonnet": 1, "opus": 2}
+    hdr = open(path, encoding="utf-8").readline().lstrip("#").strip().split("\t")
+    ji, fi, ri = hdr.index("judge"), hdr.index("E_mu_fwd"), hdr.index("E_mu_rev")
+    sc = {}                                                       # (node_title, root_title) → (E_fwd, E_rev, judge)
+    for ln in open(path, encoding="utf-8"):
+        if ln.startswith("#"):
+            continue
+        c = ln.rstrip("\n").split("\t")
+        k = (c[0].lower(), c[1].lower()); cand = (float(c[fi]), float(c[ri]), c[ji])
+        if k not in sc or rank.get(c[ji], 0) > rank.get(sc[k][2], 0):
+            sc[k] = cand
+    out, n = [], 0
+    for r in graded_rows:
+        conf = r[9] if len(r) > 9 else 1.0
+        if conf < 1.0:                                           # inferred tail → eligible for the LLM E[μ]
+            nt = graded_text.get(r[0], "").lower(); rt = graded_text.get(r[1], "").lower()
+            hit, di = sc.get((nt, rt)), 0
+            if hit is None:
+                hit, di = sc.get((rt, nt)), 1                    # this graded row is the reverse direction
+            if hit is not None:
+                r = (r[0], r[1], hit[di], r[3], r[4], r[5], r[6], r[7], hit[2], r[9], r[10] if len(r) > 10 else "")
+                n += 1
+        out.append(r)
+    return out, n
+
+
 def load_mu(path):
     out = {}
     with open(path) as f:
@@ -240,6 +270,10 @@ def train(args):
     graded_rows, graded_text = ([], {})
     if args.graded and os.path.exists(args.graded):
         graded_rows, graded_text = load_graded(args.graded, args.graded_nodes)
+        if args.haiku_tail and os.path.exists(args.haiku_tail):   # §9/§14: LLM E[μ] targets for the inferred tail
+            graded_rows, _n_ht = apply_haiku_tail(graded_rows, graded_text, args.haiku_tail)
+            print(f"HAIKU-TAIL (§9/§14): overrode {_n_ht} inferred graded targets with cached LLM E[μ] "
+                  f"+ judge provenance from {os.path.basename(args.haiku_tail)}")
         for _k, _t in graded_text.items():
             if _k not in set(names):
                 extra.add(_k); extra_texts[_k] = _t
@@ -914,6 +948,8 @@ def main():
     ap.add_argument("--pairs", default=PAIRS, help="scored SYM pairs file (use mu_pairs_scored_large_260620-223001.tsv)")
     ap.add_argument("--graded", default=None, help="fused multi-corpus graded round (build_graded_round.py "
                     "<out>_pairs.tsv); its <out>_nodes.tsv supplies the e5 embed_text per fused node")
+    ap.add_argument("--haiku-tail", default=None, help="cached LLM E[μ] scores (score_inferred_tail.py) — "
+                    "override inferred (conf<1.0) graded targets with E[μ] + judge provenance (§9/§14)")
     ap.add_argument("--graded-nodes", default=None, help="override the graded nodes file (default: derive "
                     "from --graded by _pairs→_nodes)")
     ap.add_argument("--graded-weight", type=float, default=1.0, help="graded-round loss weight")

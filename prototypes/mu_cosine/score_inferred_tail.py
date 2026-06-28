@@ -132,21 +132,23 @@ def build_prompts(pairs, batch):
 
 
 def _cell_partition(obj):
-    """§14 → §12(5) closure: applies[named]++none++unknown, renormalised to a categorical that sums to 1.
-    Returns (cells, probs, mus) where mus[i] is the per-cell μ (forward) for E[μ]; symmetric cells use mu."""
-    cells, weights, mus = [], [], []
+    """§14 → §12(5) closure: applies[named]++unknown++none, renormalised to a categorical that sums to 1.
+    Returns (cells, probs, mus_fwd, mus_rev) — symmetric cells share one mu both directions; none = 0."""
+    cells, weights, mf, mr = [], [], [], []
     for r in NAMED_DIR:
         e = obj.get(r, {})
-        cells.append(r); weights.append(float(e.get("applies", 0))); mus.append(float(e.get("mu_fwd", 0)))
+        cells.append(r); weights.append(float(e.get("applies", 0)))
+        mf.append(float(e.get("mu_fwd", 0))); mr.append(float(e.get("mu_rev", 0)))
     for r in NAMED_SYM:
-        e = obj.get(r, {})
-        cells.append(r); weights.append(float(e.get("applies", 0))); mus.append(float(e.get("mu", 0)))
+        e = obj.get(r, {}); m = float(e.get("mu", 0))
+        cells.append(r); weights.append(float(e.get("applies", 0))); mf.append(m); mr.append(m)
     cells.append("unknown"); u = obj.get("unknown", {})
-    weights.append(float(u.get("applies", 0))); mus.append(float(u.get("mu_fwd", 0)))
-    cells.append("none"); weights.append(float(obj.get("none", {}).get("applies", 0))); mus.append(0.0)
+    weights.append(float(u.get("applies", 0)))
+    mf.append(float(u.get("mu_fwd", 0))); mr.append(float(u.get("mu_rev", 0)))
+    cells.append("none"); weights.append(float(obj.get("none", {}).get("applies", 0))); mf.append(0.0); mr.append(0.0)
     tot = sum(weights) or 1.0
     probs = [w / tot for w in weights]
-    return cells, probs, mus
+    return cells, probs, mf, mr
 
 
 def ingest(pairs_path, responses_path, out, judge="haiku"):
@@ -166,17 +168,18 @@ def ingest(pairs_path, responses_path, out, judge="haiku"):
     cells = NAMED_DIR + NAMED_SYM + ["unknown", "none"]
     with open(out, "w", encoding="utf-8") as f:
         f.write("# node\troot\tcur_rel\tneighborhood\tjudge\t" + "\t".join(f"P[{c}]" for c in cells)
-                + "\t" + "\t".join(f"mu[{c}]" for c in cells) + "\tE_mu_fwd\n")
+                + "\t" + "\t".join(f"mu[{c}]" for c in cells) + "\tE_mu_fwd\tE_mu_rev\n")
         n = 0
         for i, p in enumerate(pairs):
             o = by_id.get(i)
             if not o:
                 continue
-            cs, probs, mus = _cell_partition(o)
-            emu = sum(pr * mu for pr, mu in zip(probs, mus))
+            cs, probs, mf, mr = _cell_partition(o)
+            emf = sum(pr * m for pr, m in zip(probs, mf))
+            emr = sum(pr * m for pr, m in zip(probs, mr))
             f.write("\t".join([p[0], p[1], p[2], p[4], judge]) + "\t"
                     + "\t".join(f"{x:.3f}" for x in probs) + "\t"
-                    + "\t".join(f"{x:.3f}" for x in mus) + f"\t{emu:.3f}\n")
+                    + "\t".join(f"{x:.3f}" for x in mf) + f"\t{emf:.3f}\t{emr:.3f}\n")
             n += 1
     print(f"ingested {n}/{len(pairs)} pairs (judge={judge}) → {out}")
 
