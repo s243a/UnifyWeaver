@@ -552,7 +552,8 @@
                 :else 2))
             (variable-key [v]
               (cond
-                (logic-var? v) (format "v%020d" (long (:var v)))
+                (logic-var? v) (let [s (str (:var v))]
+                                 (str "v" (subs "00000000000000000000" 0 (max 0 (- 20 (count s)))) s))
                 (keyword? v) (name v)
                 :else ""))
             (atom-key [v]
@@ -636,11 +637,15 @@
       (Double/parseDouble text)
       (Long/parseLong text))))
 
+(declare eval-arithmetic-term)
+
 (defn arithmetic-value [state value]
   (let [cur (deref-value (:bindings state) value)]
     (cond
       (number? cur) cur
       (atom-term? cur) (parse-numeric-atom (deintern-atom (:intern-context state) (:id cur)))
+      ;; compound arithmetic term (e.g. Q0+D0): evaluate it
+      (structure-term? cur) (eval-arithmetic-term state cur)
       :else nil)))
 
 (defn arithmetic-equal? [state left right]
@@ -1800,7 +1805,7 @@
            (not= "" separator-text)
            (some? out-text))
       (let [segments (str/split out-text
-                                (re-pattern (java.util.regex.Pattern/quote separator-text))
+                                (re-pattern (str/replace separator-text #"[.*+?^${}()|\[\]\\]" (fn [m] (str "\\" m))))
                                 -1)
             [next-state list-term] (atomic-concat-list-term state segments)
             [ok unified-state] (unify-values next-state list-value list-term)]
@@ -1918,19 +1923,20 @@
       (backtrack state))))
 
 (defn char-type-class? [ch class-name]
-  (case class-name
-    "alpha" (Character/isLetter ch)
-    "alnum" (Character/isLetterOrDigit ch)
-    "digit" (Character/isDigit ch)
-    "upper" (Character/isUpperCase ch)
-    "lower" (Character/isLowerCase ch)
-    "whitespace" (Character/isWhitespace ch)
-    "space" (Character/isWhitespace ch)
-    "ascii" (<= (int ch) 127)
-    "punct" (and (<= (int ch) 127)
-                 (not (Character/isLetterOrDigit ch))
-                 (not (Character/isWhitespace ch)))
-    false))
+  ;; Portable char classification (JVM + ClojureScript): regex on (str ch)
+  ;; instead of JVM-only Character/* statics.
+  (let [s (str ch)]
+    (case class-name
+      "alpha" (boolean (re-find #"[A-Za-z]" s))
+      "alnum" (boolean (re-find #"[A-Za-z0-9]" s))
+      "digit" (boolean (re-find #"[0-9]" s))
+      "upper" (boolean (re-find #"[A-Z]" s))
+      "lower" (boolean (re-find #"[a-z]" s))
+      "whitespace" (boolean (re-find #"\s" s))
+      "space" (boolean (re-find #"\s" s))
+      "ascii" (boolean (re-find #"[\x00-\x7f]" s))
+      "punct" (boolean (re-find #"[!-/:-@\[-`{-~]" s))
+      false)))
 
 (defn char-type-code-arg [state type-value]
   (when (and (structure-term? type-value)
@@ -2556,6 +2562,13 @@
     (if-not instr
       (backtrack state)
       (case (:op instr)
+        :raw
+        ;; switch_on_* are first-argument indexing hints; if unimplemented, fall
+        ;; through to the try_me_else clause chain (correct, just unindexed).
+        (if (re-find #"^switch_on_" (or (:text instr) ""))
+          (advance state)
+          (backtrack state))
+
         :get-constant
         (let [reg (:reg instr)
               constant (:constant instr)
@@ -2634,6 +2647,18 @@
                   (enter-unify-mode (:args reg-val))
                   advance)
               (backtrack state))
+
+            ;; WRITE mode: unbound register → build a fresh [H|T] cell, bind the
+            ;; register (var) to it, and read-unify against the fresh arg vars so
+            ;; the following unify-* instructions construct the list.
+            (or (logic-var? reg-val) (= reg-val ::unbound))
+            (let [[h s1] (fresh-var state)
+                  [t s2] (fresh-var s1)
+                  cell (structure-term list-functor [h t])
+                  s3 (if (logic-var? reg-val)
+                       (bind-var s2 reg-val cell)
+                       (reg-set-raw s2 (:reg instr) cell))]
+              (-> s3 (enter-unify-mode [h t]) advance))
 
             :else
             (backtrack state)))
