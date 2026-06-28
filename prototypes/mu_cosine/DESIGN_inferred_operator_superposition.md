@@ -439,3 +439,42 @@ per-pair expectation, the samples are drawn from `P(op | pair)` (the §10 partit
 **One-line summary:** *sample, don't average the input; for training, coverage (random Haiku-informed
 superpositions) is enough; for inference, average the samples and let the correlations shape where they're
 drawn.*
+
+## 12. Resolutions to the PR #3373 review
+
+Resolves the council's six comments + two spec-level blockers. **Authoritative where it clarifies §9–§11.**
+
+**(1) `E[μ]` is CELL-level, never operator-level.** `E[μ] = Σ_cell P(cell)·μ_cell`, where a **cell is a
+relation (or relation-combination, §10)** with its *own* μ — not an operator. Operators are only the shared
+**readout head** (many cells → one operator's readout, §2); μ stays per-cell so co-operator cells with
+different μ (SYM's `bridge`≈0.9 vs `see_also`≈0.4) never collapse. `P(cell)` may be marginalised to `P(op)`
+for the embedding/readout, but **the expectation and its targets are computed at the cell level.**
+
+**(2) The 30% Haiku branch — one contract (§11 supersedes §9's wording).** Per step, the Haiku branch: **draw
+one cell** from `P_Haiku(cell)` (isolated RNG — see (4)), feed it **as sampled**, backprop on **that cell's
+μ** (both directions for asymmetric cells). It does **NOT** target the scalar `E[μ]` — that is the
+Jensen-biased mean (§11). `E[μ]` is an *inference* quantity (MC average — see (6)), not a per-step target.
+§9's "target Haiku's `E[μ]`" is corrected to this **sampled-cell** form.
+
+**(3) Haiku eval — held-out protocol + honest independence.** Split the inferred tail into **train-inferred**
+and **held-out-inferred** *before* scoring; Haiku-score both once and **cache** (row-keyed). Train only on
+train-inferred; eval only on held-out-inferred — **no per-row leakage**. *Correction:* this is independent at
+the **row** level but NOT of Haiku's **style** (the model trains toward Haiku on other rows), so it measures
+**agreement-with-Haiku on unseen rows, not ground truth**. §9's "no circularity" is **softened to "no per-row
+leakage."** A genuinely independent check needs a **human-verified (or alternate-model) subset** — the
+gold-standard upgrade.
+
+**(4) Isolated RNG for the new draws.** All Haiku-branch cell draws use a **dedicated RNG**
+(`random.Random(seed + fixed_offset)`), isolated from the batch/masking rng, so a Haiku-branch on/off A/B
+shares the identical batch trajectory (the #3356 isolated-RNG lesson). No new draw touches the training rng.
+
+**(5) Overlap partition — operational grouping key.** A row's **cell = the set of relations Haiku scores ≥ τ**
+(`{rel : P_Haiku(rel) ≥ τ}`): one relation → a singleton cell; two+ → an overlap cell. **Atoms are promoted
+per recurring relation-set** (the §8b grow rule, keyed on the recurring subset that persistently splits
+weight and carries a distinct μ). The partition's grouping key is thus operational: Haiku's thresholded
+multi-label relation-set per row.
+
+**(6) MC inference — sample count + error bar.** `E[μ] = (1/N) Σ_i μ(sample_i)` over **N** sampled cells;
+choose **N so `SE = σ_μ/√N ≤ target`** (default 0.02; with per-pair `σ_μ ~ 0.1` ⇒ N ≈ 25, so **N = 32
+default**), and **report SE** per estimate; eval correlations carry their CI. The mean-fed single pass remains
+a fast, Jensen-biased point estimate but is **not** the reported `E[μ]`.
