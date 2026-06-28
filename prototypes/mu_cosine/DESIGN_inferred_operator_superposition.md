@@ -334,3 +334,168 @@ Fusion: `q = q_proj([μ_vec ++ provenance ++ e5_raw])` → attend over the ancho
 is **confidence-modulated trust**: trust the categoriser when it fired confidently; fall back to raw-text +
 atoms otherwise. (Implemented at the trainer-wiring increment — `AnchoredBasis` already takes a generic
 `d_query`, so this is purely how the query is assembled.)
+
+## 9. Haiku-expectation training + eval (the settled scheme)
+
+After the anchored-basis A/B (architecture validated; the explicit per-operator distribution and the
+text-in-query did NOT beat the simple version — `REPORT_anchored_basis_ab.md`), the operating scheme:
+
+**Train on the EXPECTATION, not the full distribution.** The deliverable is the read-out μ, so train the
+*blended* μ toward an expectation target, reusing the infer-blend (op_weights override + MSE). We do NOT
+supervise `P(op)` per-operator (the elaborations that leaned on it didn't pay off). Trade accepted: we lose
+the direct `P(op)_model` vs `P(op)_ref` eval and the explicit decomposition — but optimise the thing we use.
+
+**Stochastic 70/30 target (per row, per step):**
+- with prob = the row's label-confidence `c` (≈0.7): target the **label's** μ (calibrated, both directions);
+- with prob `(1-c)`: target **Haiku's expectation** `E[μ] = Σ P_Haiku(op)·μ_op` (both directions).
+This is the Monte-Carlo realisation of `c·label + (1-c)·Haiku` applied to the μ expectation. Keep
+`op_weights` and the target on the **same** mixture (mismatching them distorts the per-op μ's).
+
+> **⚠ Superseded by §12(2).** The `(1-c)` branch does **not** target the scalar `E[μ]` (that is the
+> Jensen-biased mean, §11). It **samples one cell** from `P_Haiku(cell)` and backprops *that cell's* μ;
+> `E[μ]` is an inference quantity (MC average, §12(6)), not a per-step target.
+
+**Asymmetric operators → both permutations:** train `E[μ(node|root)]` and `E[μ(root|node)]` separately
+(REL_SPEC already stores fwd/rev).
+
+**Eval against Haiku ALONE (not the training mixture).** Using the label-biased mixture as the eval reference
+is circular (the model trained on the label). Independent reference = `corr(E[μ]_model, E[μ]_Haiku)` over the
+**inferred** held-out rows — the population the anchored basis exists for, which SYM/disc never measured.
+
+> **⚠ Superseded by §12(3).** "Independent / not circular" is softened to **"no per-row leakage"**: a
+> held-out/train split + row-keyed cache (train only on train-inferred, eval only on held-out-inferred). It
+> still measures *agreement-with-Haiku on unseen rows*, not ground truth — a human/alt-model subset is the
+> gold-standard upgrade.
+
+**`none` anchor (μ≈0):** a fixed "no relation" anchor for true negatives, DISTINCT from the learnable atoms
+(novel *positives*). Closes the open-world set: known-positive anchors + `none` + atoms = "X / nothing /
+something-unnamed". Lets Haiku place "unrelated" mass and pulls the expectation toward 0 for negatives.
+
+**Haiku budget scope (one cached pass):** score each row ONCE → cache; reuse every epoch. The *must-Haiku*
+set is the **inferred tail** (no label → full Haiku `E[μ]`). Clean labeled rows' `(1-c)` share can come free
+from the model's own posterior; spend Haiku only on the tail (+ suspect labels). The same pass serves BOTH
+the training target and the eval reference.
+
+## 10. Overlap-aware partition — the softmax as learned effective disjoint boundaries (proposed)
+
+### Why the finite categorical is valid even when relations overlap (the conceptual closure of §1b)
+The relations are **not truly disjoint** — they correlate (the operator μ-readouts are ≈ +0.6–0.7 correlated;
+element_of/subcategory co-vary). The naive worry: if relations overlap, "P sums to 1" breaks (independent
+marginals would sum to > 1) and `E[μ]` is no longer a clean convex combination.
+
+Resolution: **the softmax operates on the EVIDENCE space (the query / μ-vector), not on the relations** — and
+there it imposes an **effective, *learned* partition.** "Disjoint" is a property of the partition the softmax
+carves, not of the relations:
+- It is a **soft tessellation** of evidence-space — each region gets a dominant anchor/atom ("in *this*
+  region, μ is mostly this anchor").
+- **Correlation lives in the *boundaries*, not the cells.** Where two relations genuinely overlap, the
+  softmax *splits* the weight (a soft boundary) or an **atom** owns that region. Non-disjointness is absorbed
+  as fuzzy boundaries / dedicated overlap cells — never a contradiction.
+- The softmax **sharpness = how disjoint to treat them**, and it is *learnable* — correlated relations get
+  softer boundaries, separable ones sharp boundaries; tuned per region.
+- So `E[μ] = Σ w·μ` is a **smooth mixture mean over the learned partition**, bounded in [0,1] *regardless* of
+  the true correlation. The categorical is valid because the softmax *manufactures* the effective
+  disjointness in evidence-space.
+
+### Proposed design: the disjoint-event partition
+Generalise the operator distribution from "one relation per pair" to a **disjoint partition of the
+relation-combination space** (the joint over relation *subsets*), realised directly by the anchored basis:
+- **Singleton cells = the fixed anchors** — the known individual relations (e5-seeded).
+- **Overlap / novel cells = the learnable atoms** — an atom firing for "element_of *and* subcategory" pairs
+  *is* a disjoint overlap event with its own μ; an atom for an unnamed relation is a novel cell.
+- **`none` cell = the negative anchor** (μ≈0) — closes the partition for unrelated pairs (absorbs mass,
+  pulls `E[μ] → 0`; zero contribution, non-zero role).
+- **softmax over [anchors ++ atoms ++ none] = the learned effective partition** (disjoint fractions, Σ = 1),
+  and `E[μ] = Σ_cell P(cell)·μ_cell` is the convex combination over it.
+
+**Mutual exclusivity is the special case** (mass only on singletons + none). The **multi-label
+generalisation** activates from data: *promote an overlap atom* when a region of evidence-space persistently
+**splits** weight between two anchors AND its μ differs from both — the §8b grow rule applied to overlaps.
+That split-and-distinct signal is exactly how we'd detect we've outgrown the single-softmax model.
+
+**Training / eval** ride §9 **as corrected by §12** (target a **sampled cell's** μ, not the scalar `E[μ]`;
+cells per the §12(5) grouping key; Haiku 30% / label 70%, both directions for asymmetric cells); eval the
+model's `E[μ]` vs Haiku's over the inferred tail. Nothing new is bolted on — the anchored basis *is* the
+partition, the atoms *are* the overlap/novel
+cells, the `none` anchor closes it; we only add the *interpretation* + the overlap-promotion rule needed to
+handle correlated relations principledly.
+
+## 11. Training mechanics — sample superpositions, don't feed the mean (corrects §9 wording)
+
+**Why we sample instead of feeding one averaged input.** The operator weights enter the model in two places:
+the linear readout *and* the operator token that is **added to the input and passed through the non-linear
+transformer** (attention + MLP). Because that path is non-linear, **the output of the *averaged* input is NOT
+the average of the outputs** — feeding the mean superposition gives `μ(mean)`, which is *not* the expectation
+`E[μ] = Σ P·μ`. (This is Jensen's inequality, and it's the §1 caveat: the blended-mean is a *biased shortcut*,
+not the true expectation.) Each *sampled* superposition is its own non-linear forward; they don't collapse to
+the mean. So we **sample**.
+
+**Training — the §9 70/30, made precise:**
+- **70% of steps:** train on the **label** (its operator + μ).
+- **30% of steps:** train on a **random superposition informed (at least in part) by Haiku** — draw a
+  superposition shaped by Haiku's distribution, feed it, backprop on its target.
+
+**Coverage beats exact correlations — for *training*.** Training only needs good **coverage** of the
+superposition space so the model learns the (non-linear) function across it. It does **not** need the exact
+joint / correlations. Random Haiku-informed superpositions already give coverage; **knowing the correlations
+just makes each sample more informative (better-placed), not required.** The §10 partition / exact
+correlations matter most for an accurate *inference* `E[μ]`, far less for training coverage — so we don't
+gate training on having them.
+
+**Inference `E[μ]`** (where correlations *do* matter): the true expectation is the **Monte-Carlo average over
+sampled superpositions**, not a single mean-fed pass (that pass is fast but Jensen-biased). For the
+per-pair expectation, the samples are drawn from `P(op | pair)` (the §10 partition, correlations included).
+
+**One-line summary:** *sample, don't average the input; for training, coverage (random Haiku-informed
+superpositions) is enough; for inference, average the samples and let the correlations shape where they're
+drawn.*
+
+## 12. Resolutions to the PR #3373 review
+
+Resolves the council's six comments + two spec-level blockers. **Authoritative where it clarifies §9–§11.**
+
+**(1) `E[μ]` is CELL-level, never operator-level.** `E[μ] = Σ_cell P(cell)·μ_cell`, where a **cell is a
+relation (or relation-combination, §10)** with its *own* μ — not an operator. Operators are only the shared
+**readout head** (many cells → one operator's readout, §2); μ stays per-cell so co-operator cells with
+different μ (SYM's `bridge`≈0.9 vs `see_also`≈0.4) never collapse. `P(cell)` may be marginalised to `P(op)`
+for the embedding/readout, but **the expectation and its targets are computed at the cell level.**
+
+**(2) The 30% Haiku branch — one contract (§11 supersedes §9's wording).** Per step, the Haiku branch: **draw
+one cell** from `P_Haiku(cell)` (isolated RNG — see (4)), feed it **as sampled**, backprop on **that cell's
+μ** (both directions for asymmetric cells). It does **NOT** target the scalar `E[μ]` — that is the
+Jensen-biased mean (§11). `E[μ]` is an *inference* quantity (MC average — see (6)), not a per-step target.
+§9's "target Haiku's `E[μ]`" is corrected to this **sampled-cell** form.
+
+**(3) Haiku eval — held-out protocol + honest independence.** Split the inferred tail into **train-inferred**
+and **held-out-inferred** *before* scoring; Haiku-score both once and **cache** (row-keyed). Train only on
+train-inferred; eval only on held-out-inferred — **no per-row leakage**. *Correction:* this is independent at
+the **row** level but NOT of Haiku's **style** (the model trains toward Haiku on other rows), so it measures
+**agreement-with-Haiku on unseen rows, not ground truth**. §9's "no circularity" is **softened to "no per-row
+leakage."** A genuinely independent check needs a **human-verified (or alternate-model) subset** — the
+gold-standard upgrade.
+
+**(4) Isolated RNG for the new draws.** All Haiku-branch cell draws use a **dedicated RNG**
+(`random.Random(seed + fixed_offset)`), isolated from the batch/masking rng, so a Haiku-branch on/off A/B
+shares the identical batch trajectory (the #3356 isolated-RNG lesson). No new draw touches the training rng.
+
+**(5) Overlap partition — operational grouping key.** A row's **cell = the set of relations Haiku scores ≥ τ**
+(`{rel : P_Haiku(rel) ≥ τ}`, **default `τ = 0.25`** — just above uniform over ~4–5 relations + `none`):
+one relation → a singleton cell; two+ → an overlap cell; **the empty set (no relation clears τ) → the `none`
+cell** (the negative anchor, μ≈0). **Atoms are promoted per recurring relation-set** (the §8b grow rule, keyed
+on the recurring subset that persistently splits weight and carries a distinct μ). The partition's grouping
+key is thus operational: Haiku's thresholded multi-label relation-set per row.
+
+**(6) MC inference — sample count + error bar.** `E[μ] = (1/N) Σ_i μ(sample_i)` over **N** sampled cells;
+choose **N so `SE = σ_μ/√N ≤ target`** (default 0.02; with per-pair `σ_μ ~ 0.1` ⇒ N ≈ 25, so **N = 32
+default**), and **report SE** per estimate; eval correlations carry their CI. The mean-fed single pass remains
+a fast, Jensen-biased point estimate but is **not** the reported `E[μ]`.
+
+**(7) Deterministic `rel ≥ τ` construction vs the stochastic cell draw — two distinct roles, no conflict.**
+The `τ`-threshold of (5) is **partition *construction*** — it defines *which cells exist* (the support /
+vocabulary: which singletons and which recurring overlap-sets get a cell). It runs **once, deterministically**,
+to build the cell set. The draw of (2) is **per-step *sampling*** — given that fixed cell set, each training
+step draws **one cell** from `P_Haiku(cell)` to feed+target. So: `τ` answers *"what are the cells?"*
+(deterministic, structural); the draw answers *"which cell does this step train on?"* (stochastic, weighted by
+Haiku's mass). A row's `τ`-cell is its *dominant* cell; the draw additionally visits the lower-mass cells
+Haiku assigns (below `τ` but non-zero) for coverage (§11). Inference (6) samples from the same
+`P_Haiku(cell)` / model posterior over that fixed cell set.
