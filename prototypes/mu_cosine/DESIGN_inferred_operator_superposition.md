@@ -542,3 +542,51 @@ mostly already in place:
 **Headline:** forward 70/30 fine-tuning is the preferred lever (it dissolves the imbalance at its source);
 self-posterior + ramp are the refinement/fallback; and the cells are always drawn *by us* from Haiku's cached
 parameters, never by Haiku.
+
+## 14. Haiku prompt contract — the per-row output schema + the two non-normalisation rules
+
+What we ask Haiku for, per `(node, root)` pair. Haiku supplies **parameters**; *we* sample + close the
+partition (§13). One cached call per row serves both the training target and the eval reference (§9).
+
+### Output schema (per pair)
+For each **named relation R** (both directions where asymmetric):
+- `mu_fwd[R]`, `mu_rev[R]` ∈ [0,1] — **fuzzy membership**: how strongly `(node|root)` / `(root|node)` belongs
+  to R.
+- `applies[R]` ∈ [0,1] — how much of the "which relation is operative" mass goes to R.
+
+Plus two **open-world** slots for the leftover mass:
+- **`none`** — mass for *no relation* → we map μ≈0 (the §9 negative anchor).
+- **`unknown`** — mass for *a real relation NOT in the list* → routes to the §8/§10 learnable **atoms**
+  (novel positives); carries its own estimate `mu_unknown` > 0.
+
+### The two opposite non-normalisation rules (the crux — state both explicitly in the prompt)
+- **μ memberships MAY SUM TO MORE THAN 1.** They are independent fuzzy degrees, *not* a distribution;
+  overlapping relations (`element_of` ∧ `subcategory`) both fire at once. **Never normalise them down.**
+- **The named relation weights MAY SUM TO LESS THAN 1.** The remainder `1 − Σ applies[named]` is split between
+  **`none`** and **`unknown`**. **Never inflate the named relations to reach 1.** The full partition
+  `applies[named] ++ none ++ unknown` sums to 1 — *that* closure is **our** job (the §12(5) construction),
+  not Haiku's.
+
+> One principle, opposite directions: **μ → don't cap the sum at 1; weights → don't pad the named sum up to
+> 1.** No forced normalisation of either.
+
+### `none` vs `unknown` — why both buckets
+- `none` = no relation (μ≈0) → fixed negative anchor (§9).
+- `unknown` = relation present but unnamed (μ>0) → learnable atoms (§8/§10).
+
+Conflating them is a bug: `none` mass would pull novel relations toward 0; `unknown` mass would inflate true
+negatives. Payoff: **Haiku's `unknown` mass is the supervision signal for atom growth** — a region that
+persistently carries `unknown` with a distinct μ is the §8b grow trigger.
+
+### Correlations — NOT requested as numbers
+LLMs are uncalibrated for correlation coefficients, and coverage beats exact correlations for training (§11).
+Correlation is captured **structurally**: rows where two `applies[R]` co-clear τ become an **overlap cell**
+(§12(5)). Optionally ask Haiku for the **multi-label set** ("list every relation that applies, possibly
+several") to surface overlaps directly. Defer any numeric pairwise correlation until an inference need is
+*measured*.
+
+### How it feeds the pipeline
+`applies[named] ++ none ++ unknown` → the disjoint partition we sample (§12(5), `cell_sampler.sample_index`);
+`mu_*` (REL_SPEC / Haiku for named, `mu_unknown` for atoms, 0 for `none`) → the per-cell μ feeding the target
+and the `expected` / `mc_expected` reducers (§12(1)/(6)). Haiku is the distribution **source**; the draw,
+the partition closure, and the expectation are all **ours** (§13).
