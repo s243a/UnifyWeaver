@@ -149,7 +149,7 @@ def _cell_partition(obj):
     return cells, probs, mus
 
 
-def ingest(pairs_path, responses_path, out):
+def ingest(pairs_path, responses_path, out, judge="haiku"):
     pairs = [ln.rstrip("\n").split("\t") for ln in open(pairs_path, encoding="utf-8") if not ln.startswith("#")]
     raw = open(responses_path, encoding="utf-8").read()
     raw = raw.replace("```json", " ").replace("```", " ")          # strip any markdown fences
@@ -165,7 +165,7 @@ def ingest(pairs_path, responses_path, out):
     by_id = {int(o["id"]): o for o in objs if "id" in o}
     cells = NAMED_DIR + NAMED_SYM + ["unknown", "none"]
     with open(out, "w", encoding="utf-8") as f:
-        f.write("# node\troot\tcur_rel\tneighborhood\t" + "\t".join(f"P[{c}]" for c in cells)
+        f.write("# node\troot\tcur_rel\tneighborhood\tjudge\t" + "\t".join(f"P[{c}]" for c in cells)
                 + "\t" + "\t".join(f"mu[{c}]" for c in cells) + "\tE_mu_fwd\n")
         n = 0
         for i, p in enumerate(pairs):
@@ -174,11 +174,11 @@ def ingest(pairs_path, responses_path, out):
                 continue
             cs, probs, mus = _cell_partition(o)
             emu = sum(pr * mu for pr, mu in zip(probs, mus))
-            f.write("\t".join([p[0], p[1], p[2], p[4]]) + "\t"
+            f.write("\t".join([p[0], p[1], p[2], p[4], judge]) + "\t"
                     + "\t".join(f"{x:.3f}" for x in probs) + "\t"
                     + "\t".join(f"{x:.3f}" for x in mus) + f"\t{emu:.3f}\n")
             n += 1
-    print(f"ingested {n}/{len(pairs)} pairs → {out}")
+    print(f"ingested {n}/{len(pairs)} pairs (judge={judge}) → {out}")
 
 
 def flag(scored_path, pairs_path, none_min, out):
@@ -211,6 +211,7 @@ def main():
     pr = sub.add_parser("prompt"); pr.add_argument("--pairs", required=True); pr.add_argument("--batch", type=int, default=10)
     ig = sub.add_parser("ingest"); ig.add_argument("--pairs", required=True)
     ig.add_argument("--responses", required=True); ig.add_argument("--out", required=True)
+    ig.add_argument("--judge", default="haiku", help="provenance tag for these scores (haiku/sonnet/opus)")
     fl = sub.add_parser("flag"); fl.add_argument("--scored", required=True); fl.add_argument("--pairs", required=True)
     fl.add_argument("--none-min", type=float, default=0.3); fl.add_argument("--out", required=True)
     a = ap.parse_args()
@@ -223,7 +224,7 @@ def main():
         for i, pr_text in enumerate(build_prompts(pairs, a.batch)):
             print(f"\n===== BATCH {i} =====\n{pr_text}")
     elif a.cmd == "ingest":
-        ingest(a.pairs, a.responses, a.out)
+        ingest(a.pairs, a.responses, a.out, a.judge)
 
 
 if __name__ == "__main__":

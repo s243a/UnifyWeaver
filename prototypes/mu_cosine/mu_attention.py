@@ -50,9 +50,10 @@ OPS = {"SYM": 0, "WIKI": 1, "LLM": 2, "ELEM": 3}
 # (off-manifold noise, exactly like an absent ancestor slot); masking ⇒ provenance-AGNOSTIC μ, which is
 # the DEFAULT inference path (marginalize over sources). Reserved entries (enwiki) are for later corpora.
 CORPORA = {"simplewiki": 0, "enwiki": 1, "pearltrees": 2, "mindmap": 3}
-JUDGES = {"haiku": 0, "graph": 1, "human": 2}    # haiku = a bought LLM judgment (SYM/LLM); graph = a
-                                         # Wikipedia edge / non-edge (WIKI, free μ=0 SYM negatives);
-                                         # human = a hand-curated edge (the mindmap/pearltrees corpora)
+JUDGES = {"haiku": 0, "graph": 1, "human": 2, "sonnet": 3, "opus": 4}    # haiku = a bought LLM judgment
+                                         # (SYM/LLM); graph = a Wikipedia edge / non-edge (WIKI, free μ=0 SYM
+                                         # negatives); human = a hand-curated edge (mindmap/pearltrees);
+                                         # sonnet/opus = stronger-model judgments (escalated tie-breaks, §14)
 # NODE-TYPE (DESIGN_calibrated_judges.md §7): a factored per-ENDPOINT token saying WHAT each node is — a
 # `category`/`mindmap_node` is an internal node that can have children; a `page` is a LEAF; a
 # `pearltrees_collection` is a curated container. Orthogonal to the OPERATOR (which says what the RELATION
