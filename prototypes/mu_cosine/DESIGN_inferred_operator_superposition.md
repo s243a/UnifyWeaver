@@ -409,3 +409,33 @@ That split-and-distinct signal is exactly how we'd detect we've outgrown the sin
 tail. Nothing new is bolted on — the anchored basis *is* the partition, the atoms *are* the overlap/novel
 cells, the `none` anchor closes it; we only add the *interpretation* + the overlap-promotion rule needed to
 handle correlated relations principledly.
+
+## 11. Training mechanics — sample superpositions, don't feed the mean (corrects §9 wording)
+
+**Why we sample instead of feeding one averaged input.** The operator weights enter the model in two places:
+the linear readout *and* the operator token that is **added to the input and passed through the non-linear
+transformer** (attention + MLP). Because that path is non-linear, **the output of the *averaged* input is NOT
+the average of the outputs** — feeding the mean superposition gives `μ(mean)`, which is *not* the expectation
+`E[μ] = Σ P·μ`. (This is Jensen's inequality, and it's the §1 caveat: the blended-mean is a *biased shortcut*,
+not the true expectation.) Each *sampled* superposition is its own non-linear forward; they don't collapse to
+the mean. So we **sample**.
+
+**Training — the §9 70/30, made precise:**
+- **70% of steps:** train on the **label** (its operator + μ).
+- **30% of steps:** train on a **random superposition informed (at least in part) by Haiku** — draw a
+  superposition shaped by Haiku's distribution, feed it, backprop on its target.
+
+**Coverage beats exact correlations — for *training*.** Training only needs good **coverage** of the
+superposition space so the model learns the (non-linear) function across it. It does **not** need the exact
+joint / correlations. Random Haiku-informed superpositions already give coverage; **knowing the correlations
+just makes each sample more informative (better-placed), not required.** The §10 partition / exact
+correlations matter most for an accurate *inference* `E[μ]`, far less for training coverage — so we don't
+gate training on having them.
+
+**Inference `E[μ]`** (where correlations *do* matter): the true expectation is the **Monte-Carlo average over
+sampled superpositions**, not a single mean-fed pass (that pass is fast but Jensen-biased). For the
+per-pair expectation, the samples are drawn from `P(op | pair)` (the §10 partition, correlations included).
+
+**One-line summary:** *sample, don't average the input; for training, coverage (random Haiku-informed
+superpositions) is enough; for inference, average the samples and let the correlations shape where they're
+drawn.*
