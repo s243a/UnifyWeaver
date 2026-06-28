@@ -334,3 +334,35 @@ Fusion: `q = q_proj([μ_vec ++ provenance ++ e5_raw])` → attend over the ancho
 is **confidence-modulated trust**: trust the categoriser when it fired confidently; fall back to raw-text +
 atoms otherwise. (Implemented at the trainer-wiring increment — `AnchoredBasis` already takes a generic
 `d_query`, so this is purely how the query is assembled.)
+
+## 9. Haiku-expectation training + eval (the settled scheme)
+
+After the anchored-basis A/B (architecture validated; the explicit per-operator distribution and the
+text-in-query did NOT beat the simple version — `REPORT_anchored_basis_ab.md`), the operating scheme:
+
+**Train on the EXPECTATION, not the full distribution.** The deliverable is the read-out μ, so train the
+*blended* μ toward an expectation target, reusing the infer-blend (op_weights override + MSE). We do NOT
+supervise `P(op)` per-operator (the elaborations that leaned on it didn't pay off). Trade accepted: we lose
+the direct `P(op)_model` vs `P(op)_ref` eval and the explicit decomposition — but optimise the thing we use.
+
+**Stochastic 70/30 target (per row, per step):**
+- with prob = the row's label-confidence `c` (≈0.7): target the **label's** μ (calibrated, both directions);
+- with prob `(1-c)`: target **Haiku's expectation** `E[μ] = Σ P_Haiku(op)·μ_op` (both directions).
+This is the Monte-Carlo realisation of `c·label + (1-c)·Haiku` applied to the μ expectation. Keep
+`op_weights` and the target on the **same** mixture (mismatching them distorts the per-op μ's).
+
+**Asymmetric operators → both permutations:** train `E[μ(node|root)]` and `E[μ(root|node)]` separately
+(REL_SPEC already stores fwd/rev).
+
+**Eval against Haiku ALONE (not the training mixture).** Using the label-biased mixture as the eval reference
+is circular (the model trained on the label). Independent reference = `corr(E[μ]_model, E[μ]_Haiku)` over the
+**inferred** held-out rows — the population the anchored basis exists for, which SYM/disc never measured.
+
+**`none` anchor (μ≈0):** a fixed "no relation" anchor for true negatives, DISTINCT from the learnable atoms
+(novel *positives*). Closes the open-world set: known-positive anchors + `none` + atoms = "X / nothing /
+something-unnamed". Lets Haiku place "unrelated" mass and pulls the expectation toward 0 for negatives.
+
+**Haiku budget scope (one cached pass):** score each row ONCE → cache; reuse every epoch. The *must-Haiku*
+set is the **inferred tail** (no label → full Haiku `E[μ]`). Clean labeled rows' `(1-c)` share can come free
+from the model's own posterior; spend Haiku only on the tail (+ suspect labels). The same pass serves BOTH
+the training target and the eval reference.
