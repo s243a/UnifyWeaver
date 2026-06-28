@@ -73,3 +73,20 @@ pass — ~21k tokens, no double-emission.
   pruned, not just down-weighted.
 - Where Haiku and Sonnet still diverge most (Tellegen, the lecture note), an **Opus** final tie-break is the
   natural next escalation — but only for genuine judge-disagreement, not all `none` rows.
+
+## Update — Engineering expansion + the no-clean decision
+**Generate-more, round 1 (no harvesting):** fused `Engineering.smmx` @ hops 3 against the 375 cached pt
+trees → 162 new untagged-tail pairs (assoc 92 / subtopic 51 / element_of 19), deduped vs the pilot and
+Haiku-scored (3 large batches, concise prompt). **Cumulative distributional rows: 66 → 228.**
+
+**Decision: do NOT clean the `none` cases** (supersedes the "prune spurious edges" suggestion in the
+escalation addendum). Rationale (user steer):
+- **Disagreement encodes uncertainty.** Graph-asserts-edge vs Haiku-says-`none` leaves mass on *both* the
+  relation cell and `none` → an honestly uncertain `E[μ]`. The fuzzy/distributional model is *built* to carry
+  that; resolving it away would discard information.
+- **Negatives are useful.** The 39 strong-`none` rows (≥0.4) are μ≈0 supervision for the `none` anchor (§9) —
+  exactly the negative signal the open-world partition needs.
+
+So: keep all 228 rows (positives + uncertain + negatives). The `flag`/escalation path stays available as an
+*optional* uncertainty-refinement on high-stakes rows, **not** a cleaning gate. The "navigational/meta node"
+observation is still a true characterisation of where `none` mass concentrates — just retained as data, not pruned.
