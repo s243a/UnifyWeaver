@@ -16,6 +16,7 @@
 :- module(wam_clojure_target, [
     compile_wam_predicate_to_clojure/4,  % +Pred/Arity, +WamCode, +Options, -ClojureCode
     write_wam_clojure_project/3,         % +Predicates, +Options, +ProjectDir
+    write_wam_clojurescript_files/3,     % +Predicates, +Options, +OutDir (runtime.cljs + core.cljs)
     clojure_foreign_predicate/3,         % +Pred, +Arity, +Options
     prepare_wam_clojure_lmdb_runtime_support/2, % +ProjectDir, +Options
     clojure_lmdb_reader_open_expr/3,     % +PathLiteral, +Options, -Expr
@@ -25,7 +26,11 @@
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
-:- use_module(library(process), [process_create/3, process_wait/2]).
+% library(process) is absent in swipl-wasm; only the LMDB runtime path uses it.
+% Load best-effort so this module still loads in the browser (Scittle/SciREPL);
+% process_create/3 throws existence_error at call time there, which is fine since
+% the browser transpile path never invokes it.
+:- catch(use_module(library(process), [process_create/3, process_wait/2]), _, true).
 :- use_module('../core/template_system', [render_template/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('../targets/wam_clojure_lowered_emitter', [
@@ -33,6 +38,60 @@
     lower_predicate_to_clojure/4,
     clojure_lowered_func_name/2
 ]).
+:- use_module('../targets/clojurescript_target', [clojurescript_interop_rewrite/2]).
+
+%% read_whole_file(+Path, -String)
+%  Read a file into a string using only core builtins (open/read_string) — avoids
+%  library(readutil), which is absent in swipl-wasm.
+read_whole_file(Path, String) :-
+    setup_call_cleanup(open(Path, read, S),
+                       read_string(S, _, String),
+                       close(S)).
+
+%% write_wam_clojurescript_files(+Predicates, +Options, +OutDir)
+%  Transpile predicates to ClojureScript that runs under Scittle/SCI (browser) or
+%  nbb. Generates the JVM WAM-Clojure project, then rewrites the JVM host interop
+%  (Integer/parseInt, Math/rint, (long ...), catch Exception, ...) into JS interop
+%  via the ClojureScript target's rewriter, writing OutDir/runtime.cljs and
+%  OutDir/core.cljs. The runtime's format/Character/Pattern usage is already
+%  portable in the template. core's CLI -main (edn-based) is dropped — the browser
+%  drives predicates directly via invoke-predicate. The two namespaces cross-
+%  require (SCI resolves a require of a namespace defined by a prior eval).
+write_wam_clojurescript_files(Predicates, Options, OutDir) :-
+    option(namespace(BaseNamespace), Options, 'generated.wam'),
+    make_directory_path(OutDir),
+    directory_file_path(OutDir, '.wamclj_tmp', TmpDir),
+    write_wam_clojure_project(Predicates, Options, TmpDir),
+    atomic_list_concat(NsParts, '.', BaseNamespace),
+    atomic_list_concat(NsParts, '/', NsPath),
+    format(atom(RuntimeClj), "~w/src/~w/runtime.clj", [TmpDir, NsPath]),
+    format(atom(CoreClj),    "~w/src/~w/core.clj",    [TmpDir, NsPath]),
+    % runtime.cljs
+    read_whole_file(RuntimeClj, RuntimeSrc),
+    clojurescript_interop_rewrite(RuntimeSrc, RuntimeCljs),
+    format(atom(RuntimeOut), "~w/runtime.cljs", [OutDir]),
+    write_text_file(RuntimeOut, RuntimeCljs),
+    % core.cljs (drop CLI -main + its edn require — JVM/CLI only)
+    read_whole_file(CoreClj, CoreSrc0),
+    wamcljs_strip_main(CoreSrc0, CoreSrc1),
+    wamcljs_replace(CoreSrc1, "[clojure.edn :as edn]", "", CoreSrc2),
+    clojurescript_interop_rewrite(CoreSrc2, CoreCljs),
+    format(atom(CoreOut), "~w/core.cljs", [OutDir]),
+    write_text_file(CoreOut, CoreCljs).
+
+wamcljs_strip_main(In, Out) :-
+    ( sub_string(In, B, _, _, "(defn -main")
+    ->  sub_string(In, 0, B, _, Out)
+    ;   Out = In ).
+
+wamcljs_replace(In, From, To, Out) :-
+    ( sub_string(In, _, _, _, From)
+    ->  atomic_list_concat(Parts, From, In),
+        atomic_list_concat(Parts, To, Out)
+    ;   Out = In ).
+
+write_text_file(Path, Text) :-
+    setup_call_cleanup(open(Path, write, S), write(S, Text), close(S)).
 
 %% write_wam_clojure_project(+Predicates, +Options, +ProjectDir)
 %  Generate a minimal hybrid/WAM Clojure project with:
@@ -737,10 +796,17 @@ namespace_relative_path(Namespace, RelativePath) :-
     ).
 
 read_template_file(Path, Content) :-
-    (   exists_file(Path)
-    ->  read_file_to_string(Path, Content, [])
+    (   template_abs_path(Path, Abs)
+    ->  read_whole_file(Abs, Content)
     ;   format(atom(Content), '; Template not found: ~w', [Path])
     ).
+
+%% template_abs_path(+RelPath, -AbsPath)
+%  Resolve a 'templates/...' path. In tests/CLI the cwd is the UnifyWeaver root,
+%  so the path resolves as-is. In swipl-wasm (SciREPL) the cwd is a notebook dir
+%  but the package is mounted at /user/, so fall back to /user/<path>.
+template_abs_path(Path, Path) :- exists_file(Path), !.
+template_abs_path(Path, Abs) :- atom_concat('/user/', Path, Abs), exists_file(Abs), !.
 
 write_file(Path, Content) :-
     open(Path, write, Stream),
