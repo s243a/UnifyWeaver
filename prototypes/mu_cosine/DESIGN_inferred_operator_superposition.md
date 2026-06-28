@@ -499,3 +499,46 @@ step draws **one cell** from `P_Haiku(cell)` to feed+target. So: `τ` answers *"
 Haiku's mass). A row's `τ`-cell is its *dominant* cell; the draw additionally visits the lower-mass cells
 Haiku assigns (below `τ` but non-zero) for coverage (§11). Inference (6) samples from the same
 `P_Haiku(cell)` / model posterior over that fixed cell set.
+
+## 13. Data imbalance: forward 70/30 fine-tune policy (preferred), with self-posterior + ramp as fallback
+
+We have **far more label data than Haiku distributional data** (Haiku is budget-gated to the inferred tail).
+Naively pooling everything lets label *count* drown the distributional signal; forcing the scarce Haiku rows
+to a fixed 30% by re-weighting instead **overfits the tiny sample** (§12 variance). Both are symptoms of
+*pooling all history*. The clean fix is to not pool.
+
+### Who samples — Haiku gives parameters, WE draw (precision on §12(2)/(4)/(7))
+**Haiku is the distribution *source*, never the sampler.** Per row, Haiku supplies the **distributional
+parameters** `P_Haiku(cell)` (cached once, §9). The **training loop draws the cell** from those parameters
+using the dedicated isolated RNG (§12(4)). So a "stochastic Haiku draw" = `our_rng.sample(P_Haiku(cell))`,
+fully reproducible from the cache + seed — no Haiku call at train time, and A/Bs share the batch trajectory.
+
+### The policy: fine-tune forward, don't re-balance the past
+The base model **already encodes the per-relation μ** (anchors + readout, learned from the abundant labels).
+So fine-tuning doesn't re-balance the historical label corpus — it **adds the distributional correction
+incrementally** on new data:
+- Apply the **70/30 mix to the new stream going forward** (70% label μ, 30% sampled-cell μ from
+  `P_Haiku(cell)` / self-posterior). The historical labels are *not replayed*, so they can't drown the 30%.
+- Run the fine-tune **right after scoring a tail batch**, so that batch is **Haiku-enriched** — 70/30 is hit
+  by plain sampling, with no heavy oversampling of a handful of rows. The overfit-the-scarce-sample risk
+  largely evaporates because the fine-tune set isn't 99% label to begin with.
+
+### Forgetting guard (the one real risk of forward fine-tuning)
+A forward fine-tune on a narrow new slice can pull the anchors off the label knowledge they hold. Guards,
+mostly already in place:
+- the **70% label share** in the new stream self-anchors it;
+- the **anchor-KL** pins the anchor *values* to the labels (its job, §8);
+- **early-stop on the held-out *graded* (label) MSE** trips the moment base competence degrades;
+- a **low LR** keeps the update incremental.
+
+### Composition with §12 / the earlier refinements
+- **Self-posterior for the labeled bulk:** labeled rows' 30% share can target the **model's own posterior**
+  (self-distillation), so Haiku is *spent and weighted only on the genuine tail* (§9) — shrinking the
+  imbalance to just the tail.
+- **Ramp as thin-batch fallback:** if even a fresh batch arrives Haiku-thin, scale the distributional weight
+  `λ_dist = λ_target · min(1, n_haiku / n_needed)` so a noisy handful can't dominate; it degrades to a no-op
+  once batches are adequately scored.
+
+**Headline:** forward 70/30 fine-tuning is the preferred lever (it dissolves the imbalance at its source);
+self-posterior + ramp are the refinement/fallback; and the cells are always drawn *by us* from Haiku's cached
+parameters, never by Haiku.
