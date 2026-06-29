@@ -590,3 +590,35 @@ several") to surface overlaps directly. Defer any numeric pairwise correlation u
 `mu_*` (REL_SPEC / Haiku for named, `mu_unknown` for atoms, 0 for `none`) → the per-cell μ feeding the target
 and the `expected` / `mc_expected` reducers (§12(1)/(6)). Haiku is the distribution **source**; the draw,
 the partition closure, and the expectation are all **ours** (§13).
+
+## 15. Implementation status & validated operating point (what this PR ships)
+This doc is largely a *proposal* record. This section maps it to what is actually **built/validated** here vs
+still **proposed**, and states the empirically-validated operating point. Empirical detail:
+`REPORT_haiku_tail_pilot.md`.
+
+### Validated operating point — `--tail-weight 6` (the *shipped* dilution fix, vs §13's ramp/self-posterior)
+§13 proposed forward-only fine-tuning + self-posterior + a ramp. **What was actually built and validated is
+simpler:** train on the (re-pooled) graded round and **upweight the inferred tail's loss via `--tail-weight`**.
+At its natural ~7% share the tail is drowned; **`--tail-weight 6` lifts it to ~30% effective share** (the §13
+target) → a **robust +0.12 held-out-tail corr lift (3-seed, sd 0.006)**. `--tail-weight 12` over-weights
+(inverted-U → the 3-layer capacity ceiling). **Recommended: `--tail-weight 6`.** Forward-only policy,
+self-posterior, and the ramp remain **proposed** — not needed for this result.
+
+### Build status by section
+| design element | status |
+|---|---|
+| §8 anchored basis (`anchored_basis.py`) | **BUILT + A/B-validated**, but NOT on the augmentation path (that uses `--haiku-tail`) |
+| §8b grow/prune K | **proposed** |
+| §9 Haiku-expectation training | **BUILT** as `--haiku-tail` (override inferred conf<1.0 targets with cached LLM **E[μ]** fwd/rev + judge). Self-posterior for the labelled bulk = **proposed** |
+| §10 disjoint partition | **BUILT** (`score_inferred_tail` closure applies++unknown++none→Σ1 + E[μ]); overlap-atom **promotion proposed** |
+| §11 sample-don't-feed-the-mean | `cell_sampler.py` = **tested reference** (sampler + analytic/MC reducers), **not wired into training**; the trainer uses the **deterministic E[μ] target** (the cheaper Jensen-biased form §11 names) — empirically sufficient |
+| §12 review resolutions | **BUILT** where code-touching: isolated RNG, `none` cell, sonnet/opus provenance; τ/MC-N live in `cell_sampler` |
+| §13 dilution fix | **BUILT** as `--tail-weight`; ramp/self-posterior/forward-only = proposed |
+| §14 Haiku prompt contract | **BUILT** in `score_inferred_tail.py` |
+| `--eval-tail` (tail instrument) | **BUILT** — model E[μ] (equal-weight superposition) vs held-out Haiku E[μ]; the only eval that sees the tail (base metrics saturate) |
+
+### Honest scope of the result
+The +0.12 lift is in the **agree-with-Haiku** frame (treatment trained on Haiku tail, judged vs held-out
+Haiku tail; non-leaking per §12(3), but not ground truth). The independent **Sonnet/human** check (provenance
+tagging + `score_inferred_tail.py flag` already support it; the sharp-disagreement set fits ~one query) is the
+next rigor tier.
