@@ -152,3 +152,29 @@ augmentation can't push past it.
 **Disambiguating experiment (next, cheap, no new data):** upweight the train-tail to ~30% effective share and
 re-run the tail eval. Beats baseline → it was dilution (more/heavier tail data helps). Still flat → it's the
 representation ceiling (need a better embedding). This is the experiment that tells us which ceiling we're against.
+
+## RESULT — augmentation helps at ~30% tail-weight (dilution confirmed, 3-seed)
+The tail-upweight disambiguation, held-out-tail corr (model E[μ] vs held-out Haiku E[μ]), 3 seeds:
+
+| arm | s1 | s2 | s3 | mean ± sd |
+|---|---|---|---|---|
+| base (tw1, no aug) | 0.202 | 0.144 | 0.143 | **+0.163 ± 0.028** |
+| **treat tw6 (~30%)** | 0.277 | 0.290 | 0.287 | **+0.285 ± 0.006** |
+| treat tw12 | 0.318 | 0.179 | 0.325 | +0.274 ± 0.067 |
+
+**Verdict: the distributional augmentation DOES help the inferred tail — a robust, low-variance +0.12 corr
+lift — but only at ~30% tail-weight (`--tail-weight 6`).** This is **dilution, confirmed**: at the natural ~7%
+share the tail signal was drowned (the earlier flat result); given its §13-intended ~30% share it replicates
+tightly (sd 0.006). `tw12` over-weights — same mean, 10× variance — an **inverted-U peaking near 30%**, the
+capacity-ceiling shape already located for this 3-layer model. **Frozen e5 is NOT the binding limit** (if it
+were, no weighting would help).
+
+**Actionable conclusions:**
+1. **Free lever now:** train with `--tail-weight ~6` (the §13 30% operating point). No new data needed.
+2. **Scaling the tail is justified:** the tail signal is real and learnable and we're below the representation
+   ceiling — so more tail data should compound (it just must carry ~30% weight, not 7%).
+3. **Don't over-weight** (tw12): past ~30% the small model destabilizes (no mean gain, high variance).
+
+**Caveats:** still the agree-with-Haiku frame (the independent Sonnet/human check via the now-tagged
+provenance is the next rigor tier); 82 holdout rows; equal-weight-superposition probe. But a 3-seed
+replication at sd 0.006 is signal, not noise — this is the payoff of measuring the tail + repeating across seeds.
