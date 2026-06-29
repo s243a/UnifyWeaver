@@ -178,3 +178,31 @@ were, no weighting would help).
 **Caveats:** still the agree-with-Haiku frame (the independent Sonnet/human check via the now-tagged
 provenance is the next rigor tier); 82 holdout rows; equal-weight-superposition probe. But a 3-seed
 replication at sd 0.006 is signal, not noise — this is the payoff of measuring the tail + repeating across seeds.
+
+## Independent (Sonnet) check — inconclusive; and the cascade triage
+Scored the 84 holdout-tail rows with **Sonnet** (one batch, the independent judge) and re-ran base vs tw6
+against that reference. **Inter-judge agreement (Haiku vs Sonnet) on the tail: corr +0.277** — i.e. read as
+reliability, **~70–80% of per-row tail variance is judge-noise**. This is largely a *selection effect*: the
+tail IS the conf<1.0 region the categoriser couldn't confidently tag — we deliberately scored the
+high-disagreement rows; the tagged (conf=1.0) data is far cleaner.
+
+**Model vs Sonnet (independent):** base 0.413/0.324, tw6 0.260/0.491 — **means ~0.37 vs ~0.38, variance ±0.15
+swamps any effect → INCONCLUSIVE.** (A seed-1-only read of "tw6 < base" was an artifact; seed 2 flipped it —
+the same single-seed trap.) So the tw6 +0.12 lift is **agreement-with-Haiku**; it does **not** demonstrably
+transfer to an independent judge at this sample size. Notably **base-vs-Sonnet (~0.37) > Haiku-vs-Sonnet
+(+0.28)** → the latent signal IS learnable; **Haiku is a noisy teacher of it**, and the frozen-e5 base already
+reads the tail better than Haiku labels it.
+
+**Cascade triage (built — `score_inferred_tail.py flag`):** Haiku as cheap triage → escalate only contentious
+rows to a stronger judge/human. Two signals (OR): `P[none] ≥ none_min` (graph↔judge contradiction, the
+spurious subset) and normalised `entropy(P(cell)) ≥ ent_min` (judge unsure which relation, the fuzzy subset);
+ranked by contention, `--top-k` budget-bounds it. **Finding:** at reasonable thresholds ~**half** the tail
+flags (211/417) — the tail is *uniformly* ambiguous, so triage-by-uncertainty doesn't shrink to a tiny set;
+`--top-k` (e.g. 42 = one Sonnet query) is the practical form, and the **`none` subset dominates contention**.
+
+**Forward path (revised by these results):**
+1. **Don't scale single-judge tail data** — its independent value is unproven and it overfits the teacher.
+2. **Denoise the target instead:** ensemble judges (avg Haiku+Sonnet) on the contentious set, or the model's
+   **self-posterior** (§13) — empirically motivated since base-vs-Sonnet (0.37) > Haiku-vs-Sonnet (0.28).
+3. **Cascade, don't blanket-spend:** Haiku triage → top-K escalation to Sonnet/Opus/human (Anthropic tiers via
+   subagents today; a non-Anthropic interface is a future generalisation).
