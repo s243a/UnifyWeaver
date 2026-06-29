@@ -223,6 +223,53 @@ def graded_hold_mse(model, tok, graded_hold, use_nodetype):
 
 
 @torch.no_grad()
+def eval_tail(model, tok, graded_text, nodes_path, tail_path, use_nodetype, mode="uniform"):
+    """§9/§12(3) held-out-TAIL eval: the model's E[μ] under an operator SUPERPOSITION vs the cached LLM E[μ],
+    on tail rows the model never trained the LLM target for. `uniform` = equal weight over operators (none
+    excluded — the base model has no none operator) = the unconditional expectation. Reports corr + MSE."""
+    was = model.training; model.eval()
+    title2key, ntype = {}, {}
+    if nodes_path and os.path.exists(nodes_path):
+        for ln in open(nodes_path, encoding="utf-8"):
+            if ln.startswith("#"):
+                continue
+            c = ln.rstrip("\n").split("\t")                  # key corpus node_type title [embed]
+            if len(c) >= 4:
+                title2key.setdefault(c[3].lower(), c[0]); ntype[c[0]] = c[2]
+    hdr = open(tail_path, encoding="utf-8").readline().lstrip("#").strip().split("\t")
+    fi = hdr.index("E_mu_fwd")
+    items, tgt = [], []
+    for ln in open(tail_path, encoding="utf-8"):
+        if ln.startswith("#"):
+            continue
+        c = ln.rstrip("\n").split("\t")
+        nk, rk = title2key.get(c[0].lower()), title2key.get(c[1].lower())
+        if not nk or not rk or nk not in tok.idx or rk not in tok.idx:
+            continue
+        if use_nodetype:
+            items.append((nk, rk, 0, CORPORA["pearltrees"], JUDGES["haiku"], nt(ntype.get(nk, "")), nt(ntype.get(rk, ""))))
+        else:
+            items.append((nk, rk, 0, CORPORA["pearltrees"], JUDGES["haiku"]))
+        tgt.append(float(c[fi]))
+    if not items:
+        print("[TAIL] 0 tail rows matched the model vocab — check the graded nodes file"); return
+    dev = next(model.parameters()).device
+    n_ops = model.op_emb.weight.shape[0]
+    preds = []
+    for i in range(0, len(items), 256):
+        chunk = items[i:i + 256]
+        b = tok.build(chunk, train=False)
+        b = {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in b.items()}
+        ow = torch.full((len(chunk), n_ops), 1.0 / n_ops, device=dev)     # equal-weight superposition (§ user)
+        preds += model(**b, op_weights=ow).cpu().tolist()
+    mse = sum((p - t) ** 2 for p, t in zip(preds, tgt)) / len(tgt)
+    if was:
+        model.train()
+    print(f"[TAIL] ({mode}) {len(tgt)} held-out tail rows — model E[μ] vs Haiku E[μ]: corr {pearson(preds, tgt):+.3f}"
+          f"  MSE {mse:.4f}  (model μ̄ {sum(preds)/len(preds):.3f}, haiku μ̄ {sum(tgt)/len(tgt):.3f})")
+
+
+@torch.no_grad()
 def emit_dense(model, tok, names, op, root="Physics", bs=512):
     items = [(n, root, OPS[op]) for n in names]
     mu = mu_batch(model, tok, items, bs)
@@ -662,6 +709,9 @@ def train(args):
     model.eval()
     validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_hold=elem_hold,
              graded_hold=graded_hold)
+    if args.eval_tail and os.path.exists(args.eval_tail):     # §9 held-out-tail eval (the tail-specific instrument)
+        _ntp = args.graded_nodes or (args.graded.replace("_pairs.tsv", "_nodes.tsv") if args.graded else None)
+        eval_tail(model, tok, graded_text, _ntp, args.eval_tail, args.use_nodetype)
     if args.save and not es_saved:                        # early-stop already saved the best; else save the final
         torch.save({"state": model.state_dict(), "cfg": {"d_model": q.shape[1], "heads": args.heads,
                     "layers": args.layers}}, args.save)
@@ -950,6 +1000,8 @@ def main():
                     "<out>_pairs.tsv); its <out>_nodes.tsv supplies the e5 embed_text per fused node")
     ap.add_argument("--haiku-tail", default=None, help="cached LLM E[μ] scores (score_inferred_tail.py) — "
                     "override inferred (conf<1.0) graded targets with E[μ] + judge provenance (§9/§14)")
+    ap.add_argument("--eval-tail", default=None, help="§9/§12(3) held-out-tail eval: model E[μ] (uniform op "
+                    "superposition) vs cached Haiku E[μ] on these tail rows (needs --graded for the title↔key map)")
     ap.add_argument("--graded-nodes", default=None, help="override the graded nodes file (default: derive "
                     "from --graded by _pairs→_nodes)")
     ap.add_argument("--graded-weight", type=float, default=1.0, help="graded-round loss weight")
