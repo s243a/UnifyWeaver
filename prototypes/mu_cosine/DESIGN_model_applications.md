@@ -1,5 +1,12 @@
 # Applications of the μ model — and a geometric (bivector) theory note
 
+**Status: FUTURE-WORK / roadmap.** Most of this is *proposed*, not built: the retrieval algorithm, the
+hop-stratified eval, and the geometric (bivector / root-centred) theory are directions, not shipped code. It
+builds on a few **existing** pieces — `emit_dense` → `dense_mu_attn_*.tsv` (density maps), the bridge detectors
+(`bridge_ensemble.py`, PR #3322), and the `DESIGN_bidirectional_walk.md` traversal — and on the **built +
+verified** transitive μ (`DESIGN_transitive_relations.md`) it relies on for distance-awareness. The "Build
+plan" at the end is the concrete next increment.
+
 The μ-attention model produces **`μ(node | root)`** — a *directional, fuzzy* relatedness/membership degree of
 `node` to `root` over a concept graph, learned over **frozen e5** embeddings with a permutation-invariant
 operator-attention readout. This doc collects the **applications** that consume μ, the **new retrieval
