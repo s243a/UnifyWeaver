@@ -186,6 +186,18 @@ joint likelihood**, each contributing where it is strong.
 6. **Risk the reviewer flagged:** will the chained value come out **too low**? Are the band + small margin +
    bounded hops sufficient, or is an explicit per-hop decay floor needed?
 
+## Generation order — start with the highest-μ (strongest-link) chains (curriculum)
+Generate transitive pairs **ranked by their weakest constituent link** (`min(links)`, which is also the
+inequality bound), **descending** — start where even the weakest hop is strong (subset∘subset, element_of∘
+subcategory at ~0.9). Rationale, all aligned with the loss design:
+- **Highest confidence / lowest variance:** strong links ⇒ the inequality holds most certainly ⇒ the
+  most-informative, sharpest-gradient constraints under the distributional loss. Cleanest first signal.
+- **Dodges the "too low" worry:** strong chains keep the transitive μ well above any floor (0.9·0.9 = 0.81 —
+  clearly still a relation); weak chains (0.4·0.4 = 0.16) are where decay collapses and the floor gets murky.
+- **Curriculum + cheap falsification:** establish the decay *pattern* on the clearest chains, then expand to
+  weaker ones; and if it fails to help even on the strongest chains, the idea is refuted early.
+- **Bounds the blow-up:** a high-μ prefix of all transitive pairs, grown on demand — pairs with the budget.
+
 ## If approved — build sketch
 1. `build_graded_round --transitive`: compose tagged hierarchical edges ≤N hops → emit transitive **triples**
    (the transitive pair + its bounding direct pair), dominant-path-only.
