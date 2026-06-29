@@ -56,7 +56,8 @@ def load_transitive(path, idx):
         c = ln.rstrip("\n").split("\t")
         if len(c) >= 6 and c[0] in idx and c[1] in idx and c[3] in idx and c[4] in idx:
             var = float(c[9]) if len(c) > 9 and c[9] else 0.0   # product-propagated chain variance (heteroscedastic)
-            rows.append((c[0], c[1], c[2], c[3], c[4], c[5], var))
+            hops = int(c[8]) if len(c) > 8 and c[8] else 2      # chain length (for stratified eval)
+            rows.append((c[0], c[1], c[2], c[3], c[4], c[5], var, hops))
     return rows
 
 
@@ -309,6 +310,15 @@ def eval_transitive(model, tok, path, idx, use_nodetype):
     mbm, mtm = sum(mb) / n, sum(mt) / n
     if was:
         model.train()
+    # stratify by hop-length — the heteroscedastic test: does it hold 2-hop while softening 3-hop?
+    by_h = {}
+    for i, t in enumerate(rows):
+        by_h.setdefault(t[7], []).append(i)
+    strat = "  ".join(
+        f"{h}h(n={len(ix)}): sat {100*sum(1 for i in ix if mt[i] <= mb[i])/len(ix):.0f}%, "
+        f"μ_bound {sum(mb[i] for i in ix)/len(ix):.2f}, μ_trans {sum(mt[i] for i in ix)/len(ix):.2f}"
+        for h, ix in sorted(by_h.items()))
+    print(f"[TRANS-EVAL/hops] {strat}")
     print(f"[TRANS-EVAL] {n} held-out pairs: satisfaction μ_trans≤μ_bound = {100*sat:.0f}%  | "
           f"anti-collapse: μ_bound̄ {mbm:.3f} (must stay high), μ_trans̄ {mtm:.3f}, gap {mbm-mtm:+.3f}")
 
