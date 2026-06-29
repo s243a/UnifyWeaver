@@ -24,6 +24,7 @@ def test_two_hop_product_and_bound():
     assert (p["src"], p["dst"]) == ("A", "C") and p["hops"] == 2 and p["rel"] == "subcategory"
     assert abs(p["product"] - 0.81) < 1e-9            # 0.9·0.9, the ranking key
     assert abs(p["min_link"] - 0.90) < 1e-9           # min link = the ordinal BOUND
+    assert abs(p["var"] - 2 * (0.1 / 0.9)) < 1e-6     # Σ (1−μ)/μ over 2 links = product-propagated variance
 
 
 def test_element_of_through_containment():

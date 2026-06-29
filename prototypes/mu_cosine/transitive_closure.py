@@ -53,9 +53,10 @@ def transitive_pairs(edges, rel_mu=REL_MU, max_hops=3):
         adj[s].append((d, r, mu)); direct.add((s, d))
     best = {}                                          # (src,dst) -> dict, keep max product
     for src in list(adj):                              # snapshot — the search below must not mutate adj
-        stack = [(src, None, 1.0, 1.0, None, 0, (src,))]   # node, acc_rel, prod, min_link, bound_edge, hops, path
+        # state: node, acc_rel, prod, min_link, bound_edge, var (Σ rel-variance, log-space product propagation), hops, path
+        stack = [(src, None, 1.0, 1.0, None, 0.0, 0, (src,))]
         while stack:
-            node, acc_rel, prod, mn, be, hops, path = stack.pop()
+            node, acc_rel, prod, mn, be, var, hops, path = stack.pop()
             if hops >= max_hops:
                 continue
             for d, r, mu in adj.get(node, ()):         # .get → don't auto-create leaf entries
@@ -65,13 +66,14 @@ def transitive_pairs(edges, rel_mu=REL_MU, max_hops=3):
                 if rel is None:                        # incompatible chain — prune
                     continue
                 nbe = (node, d, r) if (be is None or mu < mn) else be    # weakest link = the BOUND edge
+                nvar = var + (1.0 - mu) / mu           # additive log-variance (Bernoulli rel-var, product propagation)
                 np, nmn, nh, npath = prod * mu, min(mn, mu), hops + 1, path + (d,)
                 if nh >= 2 and (src, d) not in direct:        # a transitive pair (not a direct edge)
                     key = (src, d)
                     if key not in best or np > best[key]["product"]:
                         best[key] = {"src": src, "dst": d, "product": np, "min_link": nmn,
-                                     "hops": nh, "rel": rel, "bound": nbe, "path": npath}
-                stack.append((d, rel, np, nmn, nbe, nh, npath))
+                                     "hops": nh, "rel": rel, "bound": nbe, "var": nvar, "path": npath}
+                stack.append((d, rel, np, nmn, nbe, nvar, nh, npath))
     return sorted(best.values(), key=lambda x: -x["product"])
 
 
@@ -107,11 +109,11 @@ def _cli():
               f"{p['src'].split(':')[-1][:24]} -> {p['dst'].split(':')[-1][:24]}")
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:
-            f.write("# trans_src\ttrans_dst\ttrans_rel\tbound_src\tbound_dst\tbound_rel\tproduct\tmin_link\thops\n")
+            f.write("# trans_src\ttrans_dst\ttrans_rel\tbound_src\tbound_dst\tbound_rel\tproduct\tmin_link\thops\tvar\n")
             for p in pairs:                            # already sorted by product (curriculum order)
                 bs, bd, br = p["bound"]
                 f.write(f"{p['src']}\t{p['dst']}\t{p['rel']}\t{bs}\t{bd}\t{br}\t"
-                        f"{p['product']:.4f}\t{p['min_link']:.4f}\t{p['hops']}\n")
+                        f"{p['product']:.4f}\t{p['min_link']:.4f}\t{p['hops']}\t{p['var']:.4f}\n")
         print(f"  wrote {len(pairs)} triples → {a.out}")
 
 
