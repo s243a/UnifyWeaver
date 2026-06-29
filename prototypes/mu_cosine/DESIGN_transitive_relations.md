@@ -192,6 +192,22 @@ others genuinely ambiguous, which is the whole statistical point.
 *Caveat:* Gaussian-`Φ` is an approximation for bounded μ ∈ [0,1]; a **logit-space** difference or a **Beta**
 parameterisation of μ is the more correct distributional form, at some complexity. Open for review.
 
+### Variance source: product-propagation along the chain (IMPLEMENTED)
+The section above assumed the per-pair variance comes from the **superposition** (`Var[μ] = Σ P(cell)·(μ_cell −
+E[μ])²`) — which costs R hard-cell forwards / MC and is a *model-side* quantity. **What we built instead is
+cheaper and more apt: propagate the variance through the chain, exactly as μ propagates through the product.**
+This is **standard error-propagation** (cf. any error-analysis text): for a product `μ_trans = Π μ_link`,
+*relative* variances add — equivalently it is **additive in log-variance**, the dual of the log-μ chaining that
+makes generation a Dijkstra:
+
+> per-link relative variance `(1−μ)/μ` (Bernoulli) → accumulated **`V = Σ_links (1−μ_i)/μ_i`** →
+> per-pair scale **`s_pair = s / √(1 + V)`**.
+
+Properties: it is **structural** (known at generation time — emitted as the triple's `var` column, no variance
+head, no extra forwards), and it **grows with chain length** (longer/weaker chains → larger `V` → softer
+constraint), which the global-`s` form cannot express. Built as `--transitive-hetero` (off → global `s`). The
+superposition-variance variant remains a deferred alternative if a per-pair (non-chain) uncertainty is wanted.
+
 ## A multi-factor loss — judge (absolute) + pairwise (relative), as complementary likelihoods
 The loss need not be one term. Different supervisors know different things; each enters as a **likelihood
 factor**, weighted by its reliability:
@@ -232,6 +248,9 @@ defer-external-judges call). This composes with the heteroscedastic loss: the ju
 *ensemble* variance, the pairwise factor's is the superposition variance.
 
 ## Open questions (for review)
+*Update: several are now resolved by the implementation (see Implementation status) — Q7 (loss form: both the
+fixed-`s` CE and the heteroscedastic product-propagation are built; dual-ascent λ added), and the multi-path
+Q3 (`max`/Dijkstra built; noisy-OR deferred). The rest stand.*
 1. **Bound:** `≤ min(links)` alone (robust), or add `product` as a soft **floor** (band)? What floor / baseline?
 2. **Hyperparameters:** margin `m`, scale `s`, and `--transitive-weight` relative to the direct regression.
 3. **Multiple paths:** dominant-path-only to start vs max / noisy-OR aggregation — and should path-multiplicity
@@ -270,11 +289,23 @@ Rationale, all aligned with the loss design:
   weaker ones; and if it fails to help even on the strongest chains, the idea is refuted early.
 - **Bounds the blow-up:** a high-μ prefix of all transitive pairs, grown on demand — pairs with the budget.
 
-## If approved — build sketch
-1. `build_graded_round --transitive`: compose tagged hierarchical edges ≤N hops → emit transitive **triples**
-   (the transitive pair + its bounding direct pair), dominant-path-only.
-2. Trainer: `--transitive-weight` ranking-CE term (`−log σ(s·(μ_direct − μ_trans − m))`, optional floor).
-3. Eval: constraint-satisfaction % + μ-vs-hop decay curve on a held-out transitive slice.
+## Implementation status (BUILT vs proposed)
+Stages 1–3 + two stage-2 upgrades are built, verified, and documented (how-to:
+[`README_transitive.md`](README_transitive.md); results: [`REPORT_transitive_verification.md`](REPORT_transitive_verification.md)).
+
+**BUILT:**
+1. **Generation** — `transitive_closure.py`: compose tagged hierarchical edges ≤N hops, max-product
+   dominant-path (Dijkstra on `−log μ`), emit triples (transitive pair + bounding edge + product/min/hops/var).
+2. **Ranking-CE loss** — `--transitive` / `--transitive-weight` (`−log σ(s·(μ_bound − μ_trans − m))`).
+3. **Held-out eval** — `--eval-transitive`: constraint-satisfaction + anti-collapse level, leakage-aware node-split.
+4. **Dual-ascent λ** — `--transitive-target-sat`: the Lagrangian multiplier auto-tuned to a target satisfaction.
+5. **Heteroscedastic** — `--transitive-hetero`: per-pair `s/√(1+V)`, `V` the product-propagated chain variance.
+
+**Verified:** generalises (94%/93% on a leakage-aware holdout, 2-seed), no-collapse (μ_bound rose to ~0.85),
+survives convergence (baseline plateaus below at 0.595), dual-ascent λ self-tunes, hetero runs (95%, no collapse).
+
+**Proposed (not built):** superposition-variance hetero (vs the built product-propagation), noisy-OR multi-path
+(needs enumeration), LLM-anchored multi-factor `μ_bound`, product soft-floor band. See Open questions.
 
 ## Rejected alternatives (and why)
 Each design choice has a discarded counterpart; reviewers should feel free to challenge the *rejections*.
@@ -318,6 +349,9 @@ from memory — verify exact year/venue/page before publication.)
   2017 — aleatoric uncertainty as learned per-example variance ("gradient on the distribution").
 - L. Vilnis, A. McCallum, "Word representations via Gaussian embedding," *ICLR* 2015 — entities as
   **distributions (mean+variance)** with asymmetric/containment relations.
+- J.R. Taylor, *An Introduction to Error Analysis*, 2nd ed., 1997 (also Bevington & Robinson) — **product
+  error-propagation** (relative variances add / add in quadrature) — the basis for the *implemented*
+  chain-propagated transitive variance `V = Σ (1−μ)/μ`.
 - T. Gneiting, A. Raftery, "Strictly proper scoring rules, prediction, and estimation," *JASA* 102, 2007 — why
   NLL can't be gamed by inflating variance.
 
