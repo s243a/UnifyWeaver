@@ -290,6 +290,29 @@ def eval_tail(model, tok, graded_text, nodes_path, tail_path, use_nodetype, mode
 
 
 @torch.no_grad()
+def eval_transitive(model, tok, path, idx, use_nodetype):
+    """Held-out transitive eval (DESIGN §Eval): **constraint satisfaction** (`μ_trans ≤ μ_bound`) + the
+    **anti-collapse / level** guard (mean μ_bound must stay HIGH — not gamed by μ→0 — and μ_trans sits below
+    it, not at 0). Triples in transitive_closure --out format; should be a leakage-aware (node-split) holdout."""
+    was = model.training; model.eval()
+    rows = load_transitive(path, idx)
+    if not rows:
+        print("[TRANS-EVAL] 0 in-vocab pairs"); return
+    ex = (lambda: (0, 0)) if use_nodetype else (lambda: ())
+    ti = [(t[0], t[1], OPS[REL_SPEC[t[2]][0]], CORPORA[_corp_of(t[0])], JUDGES["graph"]) + ex() for t in rows]
+    bi = [(t[3], t[4], OPS[REL_SPEC[t[5]][0]], CORPORA[_corp_of(t[3])], JUDGES["graph"]) + ex() for t in rows]
+    mt = mu_batch(model, tok, ti).tolist()
+    mb = mu_batch(model, tok, bi).tolist()
+    n = len(rows)
+    sat = sum(1 for i in range(n) if mt[i] <= mb[i]) / n
+    mbm, mtm = sum(mb) / n, sum(mt) / n
+    if was:
+        model.train()
+    print(f"[TRANS-EVAL] {n} held-out pairs: satisfaction μ_trans≤μ_bound = {100*sat:.0f}%  | "
+          f"anti-collapse: μ_bound̄ {mbm:.3f} (must stay high), μ_trans̄ {mtm:.3f}, gap {mbm-mtm:+.3f}")
+
+
+@torch.no_grad()
 def emit_dense(model, tok, names, op, root="Physics", bs=512):
     items = [(n, root, OPS[op]) for n in names]
     mu = mu_batch(model, tok, items, bs)
@@ -692,6 +715,8 @@ def train(args):
         # TRANSITIVE ordinal constraint (DESIGN_transitive_relations.md): μ(transitive) ≤ μ(bound edge) via a
         # ranking CE — graph-truth, no LLM. Co-batch each transitive pair with its bounding (weakest-link) edge;
         # −log σ(s·(μ_bound − μ_trans − m)) = softplus(−s·Δ). Naive global-s (homoscedastic) first cut.
+        # NB: this is a Lagrangian relaxation of the hard inequality μ_trans ≤ μ_bound; --transitive-weight is
+        # the multiplier λ (fixed here — adaptive dual-ascent on a target satisfaction rate is the upgrade).
         L_trans = torch.zeros(())
         if trans_rows and not args.sym_only:
             tb = [trans_rows[rng.randrange(len(trans_rows))] for _ in range(args.bs)]
@@ -754,6 +779,8 @@ def train(args):
     if args.eval_tail and os.path.exists(args.eval_tail):     # §9 held-out-tail eval (the tail-specific instrument)
         _ntp = args.graded_nodes or (args.graded.replace("_pairs.tsv", "_nodes.tsv") if args.graded else None)
         eval_tail(model, tok, graded_text, _ntp, args.eval_tail, args.use_nodetype)
+    if args.eval_transitive and os.path.exists(args.eval_transitive):     # held-out transitive eval (stage 3)
+        eval_transitive(model, tok, args.eval_transitive, idx, args.use_nodetype)
     if args.save and not es_saved:                        # early-stop already saved the best; else save the final
         torch.save({"state": model.state_dict(), "cfg": {"d_model": q.shape[1], "heads": args.heads,
                     "layers": args.layers}}, args.save)
@@ -1050,6 +1077,8 @@ def main():
     ap.add_argument("--transitive-margin", type=float, default=0.05, help="margin m: enforce μ_bound − μ_trans ≥ m")
     ap.add_argument("--transitive-scale", type=float, default=10.0, help="logistic scale s (= global confidence; the "
                     "naive homoscedastic first cut — heteroscedastic per-pair variance is the stage-2 upgrade)")
+    ap.add_argument("--eval-transitive", default=None, help="held-out transitive triples → report constraint "
+                    "satisfaction + anti-collapse level (use a node-split holdout, not the training triples)")
     ap.add_argument("--graded-nodes", default=None, help="override the graded nodes file (default: derive "
                     "from --graded by _pairs→_nodes)")
     ap.add_argument("--graded-weight", type=float, default=1.0, help="graded-round loss weight")
