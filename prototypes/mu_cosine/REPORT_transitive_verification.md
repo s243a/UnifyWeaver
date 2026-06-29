@@ -66,3 +66,27 @@ replicated win on a leakage-aware holdout; the magnitude is largest in the under
 improves calibration — on clean graph-truth. The stage-2 upgrades (dual-ascent λ, heteroscedastic loss,
 LLM-anchored multi-factor μ_bound, noisy-OR multi-path) are justified; recommended order starts with
 **dual-ascent λ** (target a satisfaction rate, removing the hand-tuned weight).
+
+## Heteroscedastic A/B — NEUTRAL at this scale (honest result)
+Homoscedastic vs `--transitive-hetero`, 700 steps, 2 seeds, **stratified by hop-length** (the test: does
+hetero soften 3-hop while holding 2-hop?).
+
+| seed/arm | 2-hop sat / μ_trans | 3-hop sat / μ_trans | overall |
+|---|---|---|---|
+| 1/homo | 95% / 0.06 | 95% / 0.06 | 95% |
+| 1/hetero | 95% / 0.08 | 96% / 0.08 | 95% |
+| 2/homo | 96% / 0.10 | 93% / 0.13 | 95% |
+| 2/hetero | 96% / 0.10 | 92% / 0.12 | 94% |
+
+**Verdict: NEUTRAL** — hetero's per-hop μ_trans and satisfaction are within seed-noise of homoscedastic; the
+expected 3-hop softening did not appear.
+
+**Why (mechanistic, not a shrug):** on the **strong-chain curriculum** (high-product, μ≈0.9 links) the
+variance is small *and* uniform across lengths — `V(2-hop)=0.22`, `V(3-hop)=0.33` → `s_pair = s/√(1+V)` =
+**9.05 vs 8.67**, a ~4% scale difference, too small to bite. Hetero only matters where `V` varies a lot:
+**weak links** (low μ ⇒ large `(1−μ)/μ`) or **long chains** — precisely what the product-curriculum
+deprioritises. So on the data we actually train, homo ≈ hetero.
+
+**Conclusion:** hetero is built, correct, and composes, but is **currently neutral** — keep it **off by
+default** (available for a weak/long-chain regime). The core constraint (ranking-CE + dual-ascent λ) is the
+verified win; hetero is a correct-but-dormant option here.
