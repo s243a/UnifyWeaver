@@ -39,3 +39,7 @@ mu_pairs_scored_pages_gaps_*_div.tsv
 .pt_cache/
 *_bridges.tsv
 *_fused_*.tsv
+# inferred-tail Haiku augmentation (score_inferred_tail.py): pearltrees-derived titles = private-tier,
+# kept LOCAL like context/. The expensive Haiku scores persist on disk but are not committed.
+inferred_tail*.tsv
+haiku_scored_tail.tsv

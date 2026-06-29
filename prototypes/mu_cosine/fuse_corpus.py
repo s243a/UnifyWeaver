@@ -56,7 +56,8 @@ def main():
 
     # 1) parse the SimpleMind map (optional) and/or inject direct Pearltrees seeds (--pt-seed)
     nodes = {}                                          # key → (corpus, type, title)
-    edges = []                                          # (a_key, b_key, relation)
+    edges = []                                          # (a_key, b_key, relation, confidence)
+    edge_text = {}                                      # (a,b,rel) → raw section-header / annotation text
 
     def addn(corpus, slug, ntype, title):
         k = f"{corpus}:{norm(slug)}"
@@ -151,12 +152,14 @@ def main():
             else:
                 rel, conf = PT_REL.get(f[2], "see_also"), 0.4   # structural fallback ⇒ INFERRED
             edges.append((pk, wk, rel, conf))
+            edge_text[(pk, wk, rel)] = pt_sec.get(f[7], "") if len(f) > 7 else ""   # the raw section header
         elif len(f) > 3:
             if norm(f[1]) in pt_priv:                   # private child → scrub
                 scrub_pt += 1; continue
             ck = addn("pt", f[1], "pearltrees_collection" if f[3] != "page" else "page", f[1])
             rel, conf = (cat[0], cat[2]) if cat[0] else (PT_REL.get(f[2], "assoc"), 0.4)
             edges.append((pk, ck, rel, conf))
+            edge_text[(pk, ck, rel)] = pt_sec.get(f[7], "") if len(f) > 7 else ""   # the raw section header
 
     # 3) N-hop BFS from the start over the UNDIRECTED fused graph (a hop = any cross-corpus edge)
     adj = collections.defaultdict(set)
@@ -199,9 +202,10 @@ def main():
                     co, ty, ti = nodes[k]
                     f.write(f"{k}\t{co}\t{ty}\t{ti}\n")
         with open(args.out_prefix + "_edges.tsv", "w", encoding="utf-8") as f:
-            f.write("# a_key\tb_key\trelation\tconfidence  (1.0 = tagged; <1.0 = inferred)\n")
+            f.write("# a_key\tb_key\trelation\tconfidence\traw_text  (header/annotation; 1.0=tagged <1.0=inferred)\n")
             for a, b, r, c in sorted(uniq):
-                f.write(f"{a}\t{b}\t{r}\t{c:.2f}\n")
+                raw = edge_text.get((a, b, r), "").replace("\t", " ").replace("\n", " ")
+                f.write(f"{a}\t{b}\t{r}\t{c:.2f}\t{raw}\n")
         print(f"  wrote {args.out_prefix}_nodes.tsv + {args.out_prefix}_edges.tsv")
 
 

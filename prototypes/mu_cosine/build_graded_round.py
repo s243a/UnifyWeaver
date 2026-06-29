@@ -60,10 +60,10 @@ def load_fused(prefix):
         for ln in f:
             if ln.startswith("#"):
                 continue
-            c = ln.rstrip("\n").split("\t")               # a_key, b_key, relation, confidence
+            c = ln.rstrip("\n").split("\t")               # a_key, b_key, relation, confidence, raw_text
             if len(c) >= 3:
                 conf = float(c[3]) if len(c) > 3 and c[3] else 1.0
-                edges.append((c[0], c[1], c[2], conf))
+                edges.append((c[0], c[1], c[2], conf, c[4] if len(c) > 4 else ""))
     return nodes, edges
 
 
@@ -112,7 +112,8 @@ def main():
         return nodes.get(key, ("", "category", ""))[1]
 
     rows, skipped = {}, Counter()                         # (node,root,op) → row ; dedup keeps strongest |μ-.5|
-    def emit(node, root, mu, op, rel, conf=1.0):
+    row_text = {}                                         # (node,root,op) → raw section-header / annotation text
+    def emit(node, root, mu, op, rel, conf=1.0, raw=""):
         if node == root or node not in nodes or root not in nodes:
             skipped["dangling"] += 1
             return
@@ -121,19 +122,20 @@ def main():
         if k in rows and abs(rows[k][0] - 0.5) >= abs(mu - 0.5):
             return                                        # keep the more decisive existing target
         rows[k] = (mu, rel, ntype(node), ntype(root), corpus, judge, conf)
+        row_text[k] = raw                                 # carry the raw text alongside (side map)
 
-    for src, dst, rel, conf in edges:
+    for src, dst, rel, conf, raw in edges:
         spec = RELATION_SPEC.get(rel)
         if not spec:
             skipped[f"rel:{rel}"] += 1
             continue
         op, kind, hi, lo = spec
         if kind == "down":                                # dst is a member/narrower of src
-            emit(dst, src, hi, op, rel, conf); emit(src, dst, lo, op, rel, conf)
+            emit(dst, src, hi, op, rel, conf, raw); emit(src, dst, lo, op, rel, conf, raw)
         elif kind == "up":                                # dst is the broader; src belongs to dst
-            emit(src, dst, hi, op, rel, conf); emit(dst, src, lo, op, rel, conf)
+            emit(src, dst, hi, op, rel, conf, raw); emit(dst, src, lo, op, rel, conf, raw)
         else:                                             # symmetric
-            emit(dst, src, hi, op, rel, conf); emit(src, dst, hi, op, rel, conf)
+            emit(dst, src, hi, op, rel, conf, raw); emit(src, dst, hi, op, rel, conf, raw)
 
     # --- e5-PRIOR bridge sanity gate: a bridge asserts "same concept across corpora"; if its endpoints are
     # FAR in frozen e5, the link is suspect (a bad link, or a non-obvious synonym e5 can't see). Quarantine
@@ -186,9 +188,11 @@ def main():
                 f.write(f"{a}\t{b}\t{c:.3f}\t{nodes.get(a,('','',''))[2]}\t{nodes.get(b,('','',''))[2]}\n")
 
     with open(args.out + "_pairs.tsv", "w", encoding="utf-8") as f:
-        f.write("# node\troot\tmu\top\trelation\tnode_type\troot_type\tcorpus\tjudge\tconfidence\n")
-        for (node, root, op), (mu, rel, nty, rty, corpus, judge, conf) in sorted(rows.items()):
-            f.write(f"{node}\t{root}\t{mu:.2f}\t{op}\t{rel}\t{nty}\t{rty}\t{corpus}\t{judge}\t{conf:.2f}\n")
+        f.write("# node\troot\tmu\top\trelation\tnode_type\troot_type\tcorpus\tjudge\tconfidence\traw_text\n")
+        for k, (mu, rel, nty, rty, corpus, judge, conf) in sorted(rows.items()):
+            node, root, op = k
+            raw = row_text.get(k, "").replace("\t", " ").replace("\n", " ")
+            f.write(f"{node}\t{root}\t{mu:.2f}\t{op}\t{rel}\t{nty}\t{rty}\t{corpus}\t{judge}\t{conf:.2f}\t{raw}\n")
     with open(args.out + "_nodes.tsv", "w", encoding="utf-8") as f:
         f.write("# key\tcorpus\tnode_type\ttitle\tembed_text\n")
         for key, (cp, nty, title) in sorted(nodes.items()):

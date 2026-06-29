@@ -3,7 +3,7 @@
 Run: `python3 test_anchored_basis.py`."""
 import torch
 
-from anchored_basis import AnchoredBasis
+from anchored_basis import AnchoredBasis, AnchoredRelation, TypedQuery
 
 
 def test_shapes_and_simplex():
@@ -44,6 +44,53 @@ def test_zero_atoms_is_k0_special_case():
     ab = AnchoredBasis(torch.randn(4, 384), n_atoms=0, d_query=6, d_k=64)   # §8: K=0 = anchors-only
     token, w = ab(torch.randn(8, 6))
     assert w.shape == (8, 4) and token.shape == (8, 384)
+
+
+def test_anchored_relation_op_weights():
+    # 4 anchors mapping to 3 operators (e.g. element_of→0, subcategory→1, see_also→2, bridge→2) + 5 atoms → 3 ops
+    anchor_ops = [0, 1, 2, 2]
+    ar = AnchoredRelation(torch.randn(4, 384), anchor_ops=anchor_ops, n_ops=3, n_atoms=5, d_query=6, d_k=64)
+    q = torch.randn(8, 6)
+    op_w, w = ar(q)
+    assert op_w.shape == (8, 3) and w.shape == (8, 4 + 5)
+    assert torch.allclose(op_w.sum(-1), torch.ones(8), atol=1e-5)     # op_weights is a simplex too
+    assert (op_w >= 0).all()
+    # gradient reaches the learned atom→op mapping AND the atom basis params
+    op_w.sum().backward()
+    assert ar.atom_op_logits.grad is not None and ar.atom_op_logits.grad.abs().sum() > 0
+    assert ar.basis.atom_keys.grad is not None
+
+
+def test_anchored_relation_k0_anchors_only():
+    ar = AnchoredRelation(torch.randn(4, 384), anchor_ops=[0, 1, 2, 2], n_ops=3, n_atoms=0, d_query=6, d_k=64)
+    op_w, w = ar(torch.randn(8, 6))
+    assert op_w.shape == (8, 3) and w.shape == (8, 4)                 # K=0: only anchors, fixed mapping
+
+
+def test_symmetric_e5_tied_keys():
+    # §8c proper: query is an e5 vector (header text), anchor keys TIED to the frozen e5 values (no q_proj)
+    ar = AnchoredRelation(torch.randn(4, 384), anchor_ops=[0, 1, 2, 2], n_ops=3, n_atoms=5, symmetric=True)
+    assert ar.basis.anchor_keys is None                              # tied to frozen anchor_values
+    q = torch.randn(8, 384)                                          # query lives in e5 space (d_model)
+    op_w, w = ar(q)
+    assert op_w.shape == (8, 3) and w.shape == (8, 4 + 5)
+    assert torch.allclose(op_w.sum(-1), torch.ones(8), atol=1e-5)
+    op_w.sum().backward()
+    assert ar.basis.atom_keys.grad is not None and ar.atom_op_logits.grad is not None
+
+
+def test_typed_query_tokens():
+    tq = TypedQuery({"mu": 6, "label": 384, "header": 384}, d_k=64, core=("mu",), dropout=0.5)
+    inp = {"mu": torch.randn(8, 6), "label": torch.randn(8, 384), "header": torch.randn(8, 384)}
+    q = tq(inp)
+    assert q.shape == (8, 64)
+    # core (mu) is NOT dropped; the extras get a distinct learned type embedding
+    assert "mu" in tq.core and "label" not in tq.core
+    q.sum().backward()
+    assert tq.proj["header"].weight.grad is not None and tq.type_emb["label"].grad is not None
+    # eval mode = no dropout (deterministic)
+    tq.eval()
+    assert torch.allclose(tq(inp), tq(inp))
 
 
 if __name__ == "__main__":

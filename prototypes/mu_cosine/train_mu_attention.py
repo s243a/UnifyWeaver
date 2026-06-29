@@ -132,8 +132,39 @@ def load_graded(pairs_path, nodes_path=None):
             c = ln.rstrip("\n").split("\t")              # node root mu op relation n_type r_type corpus judge
             if len(c) >= 9:
                 conf = float(c[9]) if len(c) > 9 and c[9] else 1.0   # 1.0 tagged; <1.0 INFERRED
-                rows.append((c[0], c[1], float(c[2]), c[3], c[4], c[5], c[6], c[7], c[8], conf))
+                raw = c[10] if len(c) > 10 else ""                   # raw section-header / annotation text (§8c)
+                rows.append((c[0], c[1], float(c[2]), c[3], c[4], c[5], c[6], c[7], c[8], conf, raw))
     return rows, node_text
+
+
+def apply_haiku_tail(graded_rows, graded_text, path):
+    """§9/§14 distributional augmentation: override the INFERRED (conf<1.0) graded rows' target μ with the
+    cached LLM E[μ] — forward or reverse by TITLE match — and stamp the judge provenance (haiku/sonnet/opus,
+    the stronger judge wins on a dup). Tagged rows (conf=1.0) are untouched. Returns (rows, n_overridden)."""
+    rank = {"haiku": 0, "graph": 0, "human": 0, "sonnet": 1, "opus": 2}
+    hdr = open(path, encoding="utf-8").readline().lstrip("#").strip().split("\t")
+    ji, fi, ri = hdr.index("judge"), hdr.index("E_mu_fwd"), hdr.index("E_mu_rev")
+    sc = {}                                                       # (node_title, root_title) → (E_fwd, E_rev, judge)
+    for ln in open(path, encoding="utf-8"):
+        if ln.startswith("#"):
+            continue
+        c = ln.rstrip("\n").split("\t")
+        k = (c[0].lower(), c[1].lower()); cand = (float(c[fi]), float(c[ri]), c[ji])
+        if k not in sc or rank.get(c[ji], 0) > rank.get(sc[k][2], 0):
+            sc[k] = cand
+    out, n = [], 0
+    for r in graded_rows:
+        conf = r[9] if len(r) > 9 else 1.0
+        if conf < 1.0:                                           # inferred tail → eligible for the LLM E[μ]
+            nt = graded_text.get(r[0], "").lower(); rt = graded_text.get(r[1], "").lower()
+            hit, di = sc.get((nt, rt)), 0
+            if hit is None:
+                hit, di = sc.get((rt, nt)), 1                    # this graded row is the reverse direction
+            if hit is not None:
+                r = (r[0], r[1], hit[di], r[3], r[4], r[5], r[6], r[7], hit[2], r[9], r[10] if len(r) > 10 else "")
+                n += 1
+        out.append(r)
+    return out, n
 
 
 def load_mu(path):
@@ -192,6 +223,53 @@ def graded_hold_mse(model, tok, graded_hold, use_nodetype):
 
 
 @torch.no_grad()
+def eval_tail(model, tok, graded_text, nodes_path, tail_path, use_nodetype, mode="uniform"):
+    """§9/§12(3) held-out-TAIL eval: the model's E[μ] under an operator SUPERPOSITION vs the cached LLM E[μ],
+    on tail rows the model never trained the LLM target for. `uniform` = equal weight over operators (none
+    excluded — the base model has no none operator) = the unconditional expectation. Reports corr + MSE."""
+    was = model.training; model.eval()
+    title2key, ntype = {}, {}
+    if nodes_path and os.path.exists(nodes_path):
+        for ln in open(nodes_path, encoding="utf-8"):
+            if ln.startswith("#"):
+                continue
+            c = ln.rstrip("\n").split("\t")                  # key corpus node_type title [embed]
+            if len(c) >= 4:
+                title2key.setdefault(c[3].lower(), c[0]); ntype[c[0]] = c[2]
+    hdr = open(tail_path, encoding="utf-8").readline().lstrip("#").strip().split("\t")
+    fi = hdr.index("E_mu_fwd")
+    items, tgt = [], []
+    for ln in open(tail_path, encoding="utf-8"):
+        if ln.startswith("#"):
+            continue
+        c = ln.rstrip("\n").split("\t")
+        nk, rk = title2key.get(c[0].lower()), title2key.get(c[1].lower())
+        if not nk or not rk or nk not in tok.idx or rk not in tok.idx:
+            continue
+        if use_nodetype:
+            items.append((nk, rk, 0, CORPORA["pearltrees"], JUDGES["haiku"], nt(ntype.get(nk, "")), nt(ntype.get(rk, ""))))
+        else:
+            items.append((nk, rk, 0, CORPORA["pearltrees"], JUDGES["haiku"]))
+        tgt.append(float(c[fi]))
+    if not items:
+        print("[TAIL] 0 tail rows matched the model vocab — check the graded nodes file"); return
+    dev = next(model.parameters()).device
+    n_ops = model.op_emb.weight.shape[0]
+    preds = []
+    for i in range(0, len(items), 256):
+        chunk = items[i:i + 256]
+        b = tok.build(chunk, train=False)
+        b = {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in b.items()}
+        ow = torch.full((len(chunk), n_ops), 1.0 / n_ops, device=dev)     # equal-weight superposition (§ user)
+        preds += model(**b, op_weights=ow).cpu().tolist()
+    mse = sum((p - t) ** 2 for p, t in zip(preds, tgt)) / len(tgt)
+    if was:
+        model.train()
+    print(f"[TAIL] ({mode}) {len(tgt)} held-out tail rows — model E[μ] vs Haiku E[μ]: corr {pearson(preds, tgt):+.3f}"
+          f"  MSE {mse:.4f}  (model μ̄ {sum(preds)/len(preds):.3f}, haiku μ̄ {sum(tgt)/len(tgt):.3f})")
+
+
+@torch.no_grad()
 def emit_dense(model, tok, names, op, root="Physics", bs=512):
     items = [(n, root, OPS[op]) for n in names]
     mu = mu_batch(model, tok, items, bs)
@@ -239,6 +317,10 @@ def train(args):
     graded_rows, graded_text = ([], {})
     if args.graded and os.path.exists(args.graded):
         graded_rows, graded_text = load_graded(args.graded, args.graded_nodes)
+        if args.haiku_tail and os.path.exists(args.haiku_tail):   # §9/§14: LLM E[μ] targets for the inferred tail
+            graded_rows, _n_ht = apply_haiku_tail(graded_rows, graded_text, args.haiku_tail)
+            print(f"HAIKU-TAIL (§9/§14): overrode {_n_ht} inferred graded targets with cached LLM E[μ] "
+                  f"+ judge provenance from {os.path.basename(args.haiku_tail)}")
         for _k, _t in graded_text.items():
             if _k not in set(names):
                 extra.add(_k); extra_texts[_k] = _t
@@ -405,6 +487,66 @@ def train(args):
                 tgt[i] += Pr[i, j] * REL_SPEC[rel][1 if r[2] >= 0.5 else 2]      # relation-level dir-specific target
         blend_state["pop"], blend_state["tgt"] = pop, tgt
 
+    # ANCHORED-BASIS (DESIGN §8): compute the blend op_weights via attention over frozen e5-phrase relation
+    # ANCHORS + K learnable ATOMS instead of the JointPosterior+Dirichlet. Static query = §8c fusion
+    # [μ_vec(warm) ++ provenance ++ e5_raw]; the anchor-KL pins the anchor block to the categoriser confidence.
+    anchored_rel, anchor_q, anchor_tgt, typed_q, anchor_inputs = None, None, None, None, None
+    if args.anchored_basis and (graded_inf or blend_tag_on):
+        from anchored_basis import AnchoredRelation
+        from section_embed import e5_encoder
+        _rels = sorted(REL_SPEC)
+        _phrase = {"element_of": "element of", "subcategory": "subcategory", "subtopic": "subtopic",
+                   "super_category": "super category", "see_also": "see also", "assoc": "association",
+                   "bridge": "bridge", "bridge_neg": "unrelated"}
+        _enc = e5_encoder()
+        _av = torch.tensor(_enc(["passage: " + _phrase.get(r, r) for r in _rels]), dtype=torch.float32)
+        _aops = [OPS[REL_SPEC[r][0]] for r in _rels]
+        _ri = {r: i for i, r in enumerate(_rels)}
+        _mu = _np.nan_to_num(measure_readouts([(r[0], r[1]) for r in blend_all]))        # [N,6] warm-start
+        _prov = _np.zeros((len(blend_all), len(_rels) + 1)); _e5 = _np.zeros((len(blend_all), _av.shape[1]))
+        _tgt = _np.zeros((len(blend_all), len(_rels)))
+        for i, r in enumerate(blend_all):
+            j, conf = _ri.get(r[4]), float(r[9])
+            if j is not None:
+                _prov[i, j] = conf; _prov[i, -1] = conf
+                _tgt[i, j] = conf; _tgt[i] += (1.0 - conf) / len(_rels)                  # conf-weighted anchor target
+            else:
+                _tgt[i] = 1.0 / len(_rels)
+            if r[0] in idx:
+                _e5[i] = tok.p[idx[r[0]]].numpy()
+        # query: `header` = §8c proper — e5(section-header text) attends SYMMETRICALLY to the e5 label
+        # anchors (the embedding categoriser); `full` = the v1 fusion; `mu` = μ_vec only (architecture ablation)
+        if args.anchor_query == "typed":                              # §8c token-set: μ + label-e5 + header-e5
+            from anchored_basis import TypedQuery
+            _label = _np.zeros((len(blend_all), _av.shape[1]), dtype="float32")
+            for i, r in enumerate(blend_all):
+                jj = _ri.get(r[4])
+                if jj is not None:
+                    _label[i] = _av[jj].numpy()                       # e5 of the row's categorised relation
+            _hdr = _enc(["query: " + (r[10] if len(r) > 10 else "") for r in blend_all]).astype("float32")
+            typed_q = TypedQuery({"mu": _mu.shape[1], "label": _av.shape[1], "header": _av.shape[1]},
+                                 d_k=args.anchor_dk, core=("mu",), dropout=args.anchor_dropout).to(device)
+            anchored_rel = AnchoredRelation(_av, _aops, n_ops=len(OPS), n_atoms=args.n_atoms,
+                                            d_query=args.anchor_dk, d_k=args.anchor_dk).to(device)
+            anchor_inputs = {"mu": torch.tensor(_mu, dtype=torch.float32).to(device),
+                             "label": torch.tensor(_label).to(device),
+                             "header": torch.tensor(_hdr).to(device)}
+            opt.add_param_group({"params": typed_q.parameters()})
+            _q = _mu                                                  # for the d= printout only
+        elif args.anchor_query == "header":
+            _q = _enc(["query: " + (r[10] if len(r) > 10 else "") for r in blend_all]).astype("float32")
+            anchored_rel = AnchoredRelation(_av, _aops, n_ops=len(OPS), n_atoms=args.n_atoms,
+                                            d_query=_q.shape[1], symmetric=True).to(device)
+        else:
+            _q = _mu if args.anchor_query == "mu" else _np.concatenate([_mu, _prov, _e5], 1)
+            anchored_rel = AnchoredRelation(_av, _aops, n_ops=len(OPS), n_atoms=args.n_atoms,
+                                            d_query=_q.shape[1], d_k=args.anchor_dk).to(device)
+        anchor_q = torch.tensor(_q, dtype=torch.float32).to(device)
+        anchor_tgt = torch.tensor(_tgt, dtype=torch.float32).to(device)
+        opt.add_param_group({"params": anchored_rel.parameters()})
+        print(f"ANCHORED-BASIS: {len(_rels)} e5-phrase anchors + {args.n_atoms} atoms, "
+              f"query={args.anchor_query} (d={_q.shape[1]}{', symmetric' if args.anchor_query=='header' else ''})")
+
     new_corpus = CORPORA.get(args.pairs_corpus, SW)        # corpus tag for the --pairs (new) data
     def draw_sym(pool, replay, k):
         """Draw k SYM examples as (item, corpus_id): replay-frac OLD (replay, corpus=simplewiki) mixed with
@@ -485,11 +627,14 @@ def train(args):
             else:
                 gi = [(r[0], r[1], OPS[graded_op(r)], CORPORA[r[7]], JUDGES[r[8]]) for r in gb]
             gt = torch.tensor([r[2] for r in gb]).to(device)
-            gw = torch.tensor([args.bridge_weight if r[4] == "bridge" else 1.0 for r in gb]).to(device)
+            gw = torch.tensor([args.bridge_weight if r[4] == "bridge"
+                               else (args.tail_weight if (len(r) > 9 and r[9] < 1.0) else 1.0)
+                               for r in gb]).to(device)            # §13: upweight the inferred tail to fight dilution
             mu_g = model(**bld(gi, train=True, rng=rng, p_mask_prov=args.prov_mask))
             L_graded = (gw * (mu_g - gt) ** 2).sum() / gw.sum().clamp_min(1.0)
         # INFER-BLEND: inferred rows trained with a RANDOM operator embedding from the fitted joint posterior
         L_blend = torch.zeros(())
+        L_anchor = torch.zeros(())
         blend_on = (args.infer_blend and (graded_inf or blend_tag_on)
                     and step >= args.blend_warmup and not args.sym_only)
         if blend_on:
@@ -506,15 +651,23 @@ def train(args):
                     pops.append(tag_pop[i - n_inf_b]); tgts.append(r[2]); co, ju = CORPORA[r[7]], JUDGES[r[8]]
                 items.append((r[0], r[1], OPS["SYM"], co, ju, nt(r[5]), nt(r[6])) if args.use_nodetype
                              else (r[0], r[1], OPS["SYM"], co, ju))
-            ow = _np.stack([sample_operator_weights(p, args.blend_alpha, blend_nprng) for p in pops])
-            op_w = torch.tensor(ow, dtype=torch.float32).to(device)
+            if anchored_rel is not None:                                   # §8: op_weights from the anchored attention
+                if typed_q is not None:                                    # typed token-set query (μ + label + header)
+                    op_w, w_rel = anchored_rel(typed_q({k: v[bi] for k, v in anchor_inputs.items()}))
+                else:
+                    op_w, w_rel = anchored_rel(anchor_q[bi])
+                L_anchor = anchored_rel.anchor_kl(w_rel, anchor_tgt[bi])
+            else:                                                          # default: Dirichlet sample of P(op)
+                ow = _np.stack([sample_operator_weights(p, args.blend_alpha, blend_nprng) for p in pops])
+                op_w = torch.tensor(ow, dtype=torch.float32).to(device)
             bt = torch.tensor(tgts, dtype=torch.float32).to(device)
             mu_b = model(**bld(items, train=True, rng=rng, p_mask_prov=args.prov_mask), op_weights=op_w)
             L_blend = F.mse_loss(mu_b, bt)
         loss = (args.sym_weight * L_sym + (0.0 if args.sym_only else args.wiki_weight * L_wiki)
                 + (args.elem_weight * L_elem if (elem_tr and not args.sym_only) else 0.0)
                 + (args.graded_weight * L_graded if (graded_tr and not args.sym_only) else 0.0)
-                + (args.blend_weight * L_blend if blend_on else 0.0))
+                + (args.blend_weight * L_blend if blend_on else 0.0)
+                + (args.anchor_kl_weight * L_anchor if blend_on else 0.0))
         # LLM (optional, already-bought) — skipped in single-task SYM mode
         L_llm = torch.zeros(())
         if llm and not args.sym_only:
@@ -548,6 +701,7 @@ def train(args):
                   + (f"  L_elem {float(L_elem):.4f}" if (elem_tr and not args.sym_only) else "")
                   + (f"  L_graded {float(L_graded):.4f}" if (graded_tr and not args.sym_only) else "")
                   + (f"  L_blend {float(L_blend):.4f}" if blend_on else "")
+                  + (f"  L_anchor {float(L_anchor):.4f}" if (blend_on and anchored_rel is not None) else "")
                   + (f"  L_llm {float(L_llm):.4f}" if (llm and not args.sym_only) else ""))
 
     if es_saved:                                          # early-stop kept the BEST — validate THAT, not the last
@@ -557,6 +711,9 @@ def train(args):
     model.eval()
     validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_hold=elem_hold,
              graded_hold=graded_hold)
+    if args.eval_tail and os.path.exists(args.eval_tail):     # §9 held-out-tail eval (the tail-specific instrument)
+        _ntp = args.graded_nodes or (args.graded.replace("_pairs.tsv", "_nodes.tsv") if args.graded else None)
+        eval_tail(model, tok, graded_text, _ntp, args.eval_tail, args.use_nodetype)
     if args.save and not es_saved:                        # early-stop already saved the best; else save the final
         torch.save({"state": model.state_dict(), "cfg": {"d_model": q.shape[1], "heads": args.heads,
                     "layers": args.layers}}, args.save)
@@ -808,6 +965,17 @@ def main():
                     "improving; keep the BEST checkpoint (not the last). The targeted anti-overtraining fix.")
     ap.add_argument("--eval-every", type=int, default=100, help="early-stop: eval the held-out graded MSE every N steps")
     ap.add_argument("--patience", type=int, default=6, help="early-stop: stop after this many evals with no improvement")
+    ap.add_argument("--anchored-basis", action="store_true", help="DESIGN §8: compute the blend op_weights via "
+                    "attention over frozen e5-phrase relation ANCHORS + K learnable ATOMS (instead of the "
+                    "JointPosterior+Dirichlet); adds the anchor-confidence KL. Needs --infer-blend.")
+    ap.add_argument("--n-atoms", type=int, default=5, help="anchored-basis: # learnable residual atoms (§8b)")
+    ap.add_argument("--anchor-kl-weight", type=float, default=1.0, help="anchored-basis: weight on the anchor-confidence KL")
+    ap.add_argument("--anchor-dk", type=int, default=64, help="anchored-basis: attention key dim")
+    ap.add_argument("--anchor-query", choices=["full", "mu", "header", "typed"], default="full",
+                    help="typed = §8c token-set [μ-token + label-e5 + header-e5], type-embedded, extras "
+                         "dropout-regularised; header = symmetric e5(header)→e5(anchor); full = v1 fusion; "
+                         "mu = μ_vec only (the validated core)")
+    ap.add_argument("--anchor-dropout", type=float, default=0.5, help="typed query: dropout on the extra (non-μ) tokens")
     ap.add_argument("--bs", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--weight-decay", type=float, default=0.01)
@@ -832,9 +1000,15 @@ def main():
     ap.add_argument("--pairs", default=PAIRS, help="scored SYM pairs file (use mu_pairs_scored_large_260620-223001.tsv)")
     ap.add_argument("--graded", default=None, help="fused multi-corpus graded round (build_graded_round.py "
                     "<out>_pairs.tsv); its <out>_nodes.tsv supplies the e5 embed_text per fused node")
+    ap.add_argument("--haiku-tail", default=None, help="cached LLM E[μ] scores (score_inferred_tail.py) — "
+                    "override inferred (conf<1.0) graded targets with E[μ] + judge provenance (§9/§14)")
+    ap.add_argument("--eval-tail", default=None, help="§9/§12(3) held-out-tail eval: model E[μ] (uniform op "
+                    "superposition) vs cached Haiku E[μ] on these tail rows (needs --graded for the title↔key map)")
     ap.add_argument("--graded-nodes", default=None, help="override the graded nodes file (default: derive "
                     "from --graded by _pairs→_nodes)")
     ap.add_argument("--graded-weight", type=float, default=1.0, help="graded-round loss weight")
+    ap.add_argument("--tail-weight", type=float, default=1.0, help="§13: loss-weight multiplier for the inferred "
+                    "tail (conf<1.0, non-bridge) — counters dilution (~7%→30%% effective share at ~6)")
     ap.add_argument("--bridge-weight", type=float, default=0.2, help="down-weight bridge targets in the "
                     "graded loss (they dominate at μ≈0.9; keep them from swamping directional signal)")
     ap.add_argument("--infer-switch", action="store_true", help="for INFERRED graded relations (confidence "

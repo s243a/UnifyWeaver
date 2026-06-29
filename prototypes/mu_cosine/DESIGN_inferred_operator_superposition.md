@@ -499,3 +499,126 @@ step draws **one cell** from `P_Haiku(cell)` to feed+target. So: `τ` answers *"
 Haiku's mass). A row's `τ`-cell is its *dominant* cell; the draw additionally visits the lower-mass cells
 Haiku assigns (below `τ` but non-zero) for coverage (§11). Inference (6) samples from the same
 `P_Haiku(cell)` / model posterior over that fixed cell set.
+
+## 13. Data imbalance: forward 70/30 fine-tune policy (preferred), with self-posterior + ramp as fallback
+
+We have **far more label data than Haiku distributional data** (Haiku is budget-gated to the inferred tail).
+Naively pooling everything lets label *count* drown the distributional signal; forcing the scarce Haiku rows
+to a fixed 30% by re-weighting instead **overfits the tiny sample** (§12 variance). Both are symptoms of
+*pooling all history*. The clean fix is to not pool.
+
+### Who samples — Haiku gives parameters, WE draw (precision on §12(2)/(4)/(7))
+**Haiku is the distribution *source*, never the sampler.** Per row, Haiku supplies the **distributional
+parameters** `P_Haiku(cell)` (cached once, §9). The **training loop draws the cell** from those parameters
+using the dedicated isolated RNG (§12(4)). So a "stochastic Haiku draw" = `our_rng.sample(P_Haiku(cell))`,
+fully reproducible from the cache + seed — no Haiku call at train time, and A/Bs share the batch trajectory.
+
+### The policy: fine-tune forward, don't re-balance the past
+The base model **already encodes the per-relation μ** (anchors + readout, learned from the abundant labels).
+So fine-tuning doesn't re-balance the historical label corpus — it **adds the distributional correction
+incrementally** on new data:
+- Apply the **70/30 mix to the new stream going forward** (70% label μ, 30% sampled-cell μ from
+  `P_Haiku(cell)` / self-posterior). The historical labels are *not replayed*, so they can't drown the 30%.
+- Run the fine-tune **right after scoring a tail batch**, so that batch is **Haiku-enriched** — 70/30 is hit
+  by plain sampling, with no heavy oversampling of a handful of rows. The overfit-the-scarce-sample risk
+  largely evaporates because the fine-tune set isn't 99% label to begin with.
+
+### Forgetting guard (the one real risk of forward fine-tuning)
+A forward fine-tune on a narrow new slice can pull the anchors off the label knowledge they hold. Guards,
+mostly already in place:
+- the **70% label share** in the new stream self-anchors it;
+- the **anchor-KL** pins the anchor *values* to the labels (its job, §8);
+- **early-stop on the held-out *graded* (label) MSE** trips the moment base competence degrades;
+- a **low LR** keeps the update incremental.
+
+### Composition with §12 / the earlier refinements
+- **Self-posterior for the labeled bulk:** labeled rows' 30% share can target the **model's own posterior**
+  (self-distillation), so Haiku is *spent and weighted only on the genuine tail* (§9) — shrinking the
+  imbalance to just the tail.
+- **Ramp as thin-batch fallback:** if even a fresh batch arrives Haiku-thin, scale the distributional weight
+  `λ_dist = λ_target · min(1, n_haiku / n_needed)` so a noisy handful can't dominate; it degrades to a no-op
+  once batches are adequately scored.
+
+**Headline:** forward 70/30 fine-tuning is the preferred lever (it dissolves the imbalance at its source);
+self-posterior + ramp are the refinement/fallback; and the cells are always drawn *by us* from Haiku's cached
+parameters, never by Haiku.
+
+## 14. Haiku prompt contract — the per-row output schema + the two non-normalisation rules
+
+What we ask Haiku for, per `(node, root)` pair. Haiku supplies **parameters**; *we* sample + close the
+partition (§13). One cached call per row serves both the training target and the eval reference (§9).
+
+### Output schema (per pair)
+For each **named relation R** (both directions where asymmetric):
+- `mu_fwd[R]`, `mu_rev[R]` ∈ [0,1] — **fuzzy membership**: how strongly `(node|root)` / `(root|node)` belongs
+  to R.
+- `applies[R]` ∈ [0,1] — how much of the "which relation is operative" mass goes to R.
+
+Plus two **open-world** slots for the leftover mass:
+- **`none`** — mass for *no relation* → we map μ≈0 (the §9 negative anchor).
+- **`unknown`** — mass for *a real relation NOT in the list* → routes to the §8/§10 learnable **atoms**
+  (novel positives); carries its own estimate `mu_unknown` > 0.
+
+### The two opposite non-normalisation rules (the crux — state both explicitly in the prompt)
+- **μ memberships MAY SUM TO MORE THAN 1.** They are independent fuzzy degrees, *not* a distribution;
+  overlapping relations (`element_of` ∧ `subcategory`) both fire at once. **Never normalise them down.**
+- **The named relation weights MAY SUM TO LESS THAN 1.** The remainder `1 − Σ applies[named]` is split between
+  **`none`** and **`unknown`**. **Never inflate the named relations to reach 1.** The full partition
+  `applies[named] ++ none ++ unknown` sums to 1 — *that* closure is **our** job (the §12(5) construction),
+  not Haiku's.
+
+> One principle, opposite directions: **μ → don't cap the sum at 1; weights → don't pad the named sum up to
+> 1.** No forced normalisation of either.
+
+### `none` vs `unknown` — why both buckets
+- `none` = no relation (μ≈0) → fixed negative anchor (§9).
+- `unknown` = relation present but unnamed (μ>0) → learnable atoms (§8/§10).
+
+Conflating them is a bug: `none` mass would pull novel relations toward 0; `unknown` mass would inflate true
+negatives. Payoff: **Haiku's `unknown` mass is the supervision signal for atom growth** — a region that
+persistently carries `unknown` with a distinct μ is the §8b grow trigger.
+
+### Correlations — NOT requested as numbers
+LLMs are uncalibrated for correlation coefficients, and coverage beats exact correlations for training (§11).
+Correlation is captured **structurally**: rows where two `applies[R]` co-clear τ become an **overlap cell**
+(§12(5)). Optionally ask Haiku for the **multi-label set** ("list every relation that applies, possibly
+several") to surface overlaps directly. Defer any numeric pairwise correlation until an inference need is
+*measured*.
+
+### How it feeds the pipeline
+`applies[named] ++ none ++ unknown` → the disjoint partition we sample (§12(5), `cell_sampler.sample_index`);
+`mu_*` (REL_SPEC / Haiku for named, `mu_unknown` for atoms, 0 for `none`) → the per-cell μ feeding the target
+and the `expected` / `mc_expected` reducers (§12(1)/(6)). Haiku is the distribution **source**; the draw,
+the partition closure, and the expectation are all **ours** (§13).
+
+## 15. Implementation status & validated operating point (what this PR ships)
+This doc is largely a *proposal* record. This section maps it to what is actually **built/validated** here vs
+still **proposed**, and states the empirically-validated operating point. Empirical detail:
+`REPORT_haiku_tail_pilot.md`.
+
+### Validated operating point — `--tail-weight 6` (the *shipped* dilution fix, vs §13's ramp/self-posterior)
+§13 proposed forward-only fine-tuning + self-posterior + a ramp. **What was actually built and validated is
+simpler:** train on the (re-pooled) graded round and **upweight the inferred tail's loss via `--tail-weight`**.
+At its natural ~7% share the tail is drowned; **`--tail-weight 6` lifts it to ~30% effective share** (the §13
+target) → a **robust +0.12 held-out-tail corr lift (3-seed, sd 0.006)**. `--tail-weight 12` over-weights
+(inverted-U → the 3-layer capacity ceiling). **Recommended: `--tail-weight 6`.** Forward-only policy,
+self-posterior, and the ramp remain **proposed** — not needed for this result.
+
+### Build status by section
+| design element | status |
+|---|---|
+| §8 anchored basis (`anchored_basis.py`) | **BUILT + A/B-validated**, but NOT on the augmentation path (that uses `--haiku-tail`) |
+| §8b grow/prune K | **proposed** |
+| §9 Haiku-expectation training | **BUILT** as `--haiku-tail` (override inferred conf<1.0 targets with cached LLM **E[μ]** fwd/rev + judge). Self-posterior for the labelled bulk = **proposed** |
+| §10 disjoint partition | **BUILT** (`score_inferred_tail` closure applies++unknown++none→Σ1 + E[μ]); overlap-atom **promotion proposed** |
+| §11 sample-don't-feed-the-mean | `cell_sampler.py` = **tested reference** (sampler + analytic/MC reducers), **not wired into training**; the trainer uses the **deterministic E[μ] target** (the cheaper Jensen-biased form §11 names) — empirically sufficient |
+| §12 review resolutions | **BUILT** where code-touching: isolated RNG, `none` cell, sonnet/opus provenance; τ/MC-N live in `cell_sampler` |
+| §13 dilution fix | **BUILT** as `--tail-weight`; ramp/self-posterior/forward-only = proposed |
+| §14 Haiku prompt contract | **BUILT** in `score_inferred_tail.py` |
+| `--eval-tail` (tail instrument) | **BUILT** — model E[μ] (equal-weight superposition) vs held-out Haiku E[μ]; the only eval that sees the tail (base metrics saturate) |
+
+### Honest scope of the result
+The +0.12 lift is in the **agree-with-Haiku** frame (treatment trained on Haiku tail, judged vs held-out
+Haiku tail; non-leaking per §12(3), but not ground truth). The independent **Sonnet/human** check (provenance
+tagging + `score_inferred_tail.py flag` already support it; the sharp-disagreement set fits ~one query) is the
+next rigor tier.
