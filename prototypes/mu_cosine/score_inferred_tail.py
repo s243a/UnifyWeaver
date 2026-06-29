@@ -16,6 +16,7 @@ Spends NO budget itself — extraction + ingest are pure I/O; the Haiku call is 
 import argparse
 import glob
 import json
+import math
 import os
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -184,26 +185,40 @@ def ingest(pairs_path, responses_path, out, judge="haiku"):
     print(f"ingested {n}/{len(pairs)} pairs (judge={judge}) → {out}")
 
 
-def flag(scored_path, pairs_path, none_min, out):
-    """Escalation selector: every tail row IS a graph edge (conf<1.0 asserts a relation), so a high Haiku
-    `P[none]` is a direct graph↔Haiku contradiction. Emit those rows (none >= none_min) as a pairs file to
-    re-judge with a STRONGER model (Sonnet ¼-budget, Opus less) — the selective multi-source tie-break."""
-    scored = {}
-    sh = open(scored_path, encoding="utf-8").readline().strip().split("\t")
+def flag(scored_path, none_min, ent_min, out, top_k=0):
+    """Cascade triage: select CONTENTIOUS tail rows for a stronger judge (Sonnet/Opus/human), emitted as a
+    pairs file (ranked, most-contentious first). Two signals — a row is flagged if EITHER fires:
+      * `P[none] >= none_min` — graph↔judge contradiction (the spurious/no-relation subset);
+      * normalised entropy of P(cell) >= ent_min — the judge is unsure WHICH relation (spread mass), which
+        catches the genuinely-fuzzy cases (e.g. assoc↔see_also) that the none signal misses.
+    The cheap Haiku target is kept for everything else — we spend the good judge only where it's needed (the
+    measured insight: on the high-disagreement tail one cheap judge is too noisy to trust wholesale)."""
+    sh = open(scored_path, encoding="utf-8").readline().lstrip("#").strip().split("\t")
+    pcols = [i for i, h in enumerate(sh) if h.startswith("P[")]
     ni = sh.index("P[none]")
-    for r in (l.rstrip("\n").split("\t") for l in open(scored_path, encoding="utf-8") if not l.startswith("#")):
-        scored[(r[0].lower(), r[1].lower())] = float(r[ni])
-    kept = []
-    for ln in open(pairs_path, encoding="utf-8"):
+    kept = []                                                  # (contention, none, ent, reconstructed pairs line)
+    for ln in open(scored_path, encoding="utf-8"):
         if ln.startswith("#"):
             continue
-        p = ln.rstrip("\n").split("\t")
-        if scored.get((p[0].lower(), p[1].lower()), 0.0) >= none_min:
-            kept.append(ln.rstrip("\n"))
+        c = ln.rstrip("\n").split("\t")
+        ps = [max(1e-9, float(c[i])) for i in pcols]
+        ent = -sum(p * math.log(p) for p in ps) / math.log(len(ps))     # normalised entropy ∈ [0,1]
+        none = float(c[ni])
+        if none >= none_min or ent >= ent_min:
+            contention = max(none / max(none_min, 1e-9), ent / max(ent_min, 1e-9))
+            pair = "\t".join([c[0], c[1], c[2], "0.40", c[3], "", "", ""])   # reconstruct the pairs schema
+            kept.append((contention, none, ent, pair))
+    kept.sort(reverse=True)
+    total = len(kept)
+    if top_k and len(kept) > top_k:                           # budget-bound: keep the most contentious top_k
+        kept = kept[:top_k]
     with open(out, "w", encoding="utf-8") as f:
         f.write("# node_title\troot_title\tcur_relation\tconf\tneighborhood\tnode_type\troot_type\traw\n")
-        f.write("\n".join(kept) + ("\n" if kept else ""))
-    print(f"flagged {len(kept)} sharp rows (Haiku P[none] >= {none_min}) → {out}")
+        f.write("\n".join(p for _, _, _, p in kept) + ("\n" if kept else ""))
+    n_none = sum(1 for _, no, _, _ in kept if no >= none_min)
+    n_ent = sum(1 for _, _, e, _ in kept if e >= ent_min)
+    print(f"flagged {total} contentious rows{f' → top-{top_k} kept' if (top_k and total > top_k) else ''} → {out}"
+          f"  (none>={none_min}: {n_none}; entropy>={ent_min}: {n_ent})")
 
 
 def main():
@@ -215,13 +230,14 @@ def main():
     ig = sub.add_parser("ingest"); ig.add_argument("--pairs", required=True)
     ig.add_argument("--responses", required=True); ig.add_argument("--out", required=True)
     ig.add_argument("--judge", default="haiku", help="provenance tag for these scores (haiku/sonnet/opus)")
-    fl = sub.add_parser("flag"); fl.add_argument("--scored", required=True); fl.add_argument("--pairs", required=True)
-    fl.add_argument("--none-min", type=float, default=0.3); fl.add_argument("--out", required=True)
+    fl = sub.add_parser("flag"); fl.add_argument("--scored", required=True); fl.add_argument("--out", required=True)
+    fl.add_argument("--none-min", type=float, default=0.3); fl.add_argument("--ent-min", type=float, default=0.75)
+    fl.add_argument("--top-k", type=int, default=0, help="budget-bound: keep only the top-K most contentious (0=all)")
     a = ap.parse_args()
     if a.cmd == "extract":
         extract(a.neighborhoods, a.out)
     elif a.cmd == "flag":
-        flag(a.scored, a.pairs, a.none_min, a.out)
+        flag(a.scored, a.none_min, a.ent_min, a.out, a.top_k)
     elif a.cmd == "prompt":
         pairs = [ln.rstrip("\n").split("\t") for ln in open(a.pairs, encoding="utf-8") if not ln.startswith("#")]
         for i, pr_text in enumerate(build_prompts(pairs, a.batch)):
