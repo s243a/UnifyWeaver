@@ -53,9 +53,9 @@ def transitive_pairs(edges, rel_mu=REL_MU, max_hops=3):
         adj[s].append((d, r, mu)); direct.add((s, d))
     best = {}                                          # (src,dst) -> dict, keep max product
     for src in list(adj):                              # snapshot — the search below must not mutate adj
-        stack = [(src, None, 1.0, 1.0, 0, (src,))]     # node, acc_rel, product, min_link, hops, path
+        stack = [(src, None, 1.0, 1.0, None, 0, (src,))]   # node, acc_rel, prod, min_link, bound_edge, hops, path
         while stack:
-            node, acc_rel, prod, mn, hops, path = stack.pop()
+            node, acc_rel, prod, mn, be, hops, path = stack.pop()
             if hops >= max_hops:
                 continue
             for d, r, mu in adj.get(node, ()):         # .get → don't auto-create leaf entries
@@ -64,13 +64,14 @@ def transitive_pairs(edges, rel_mu=REL_MU, max_hops=3):
                 rel = r if acc_rel is None else compose_relation(acc_rel, r)
                 if rel is None:                        # incompatible chain — prune
                     continue
+                nbe = (node, d, r) if (be is None or mu < mn) else be    # weakest link = the BOUND edge
                 np, nmn, nh, npath = prod * mu, min(mn, mu), hops + 1, path + (d,)
                 if nh >= 2 and (src, d) not in direct:        # a transitive pair (not a direct edge)
                     key = (src, d)
                     if key not in best or np > best[key]["product"]:
                         best[key] = {"src": src, "dst": d, "product": np, "min_link": nmn,
-                                     "hops": nh, "rel": rel, "path": npath}
-                stack.append((d, rel, np, nmn, nh, npath))
+                                     "hops": nh, "rel": rel, "bound": nbe, "path": npath}
+                stack.append((d, rel, np, nmn, nbe, nh, npath))
     return sorted(best.values(), key=lambda x: -x["product"])
 
 
@@ -80,6 +81,8 @@ def _cli():
     ap.add_argument("--edges", nargs="+", required=True, help="fused *_edges.tsv files (a\\tb\\trel\\tconf[...])")
     ap.add_argument("--max-hops", type=int, default=3)
     ap.add_argument("--top", type=int, default=20, help="print the top-N by product")
+    ap.add_argument("--out", default=None, help="write triples (transitive pair + its bounding direct edge) "
+                    "for the trainer's ranking-CE term; sorted by product (curriculum order)")
     a = ap.parse_args()
     edges = []
     for f in a.edges:
@@ -102,6 +105,14 @@ def _cli():
     for p in pairs[:a.top]:
         print(f"    {p['product']:.3f}  min={p['min_link']:.2f}  {p['hops']}h  {p['rel']:13} "
               f"{p['src'].split(':')[-1][:24]} -> {p['dst'].split(':')[-1][:24]}")
+    if a.out:
+        with open(a.out, "w", encoding="utf-8") as f:
+            f.write("# trans_src\ttrans_dst\ttrans_rel\tbound_src\tbound_dst\tbound_rel\tproduct\tmin_link\thops\n")
+            for p in pairs:                            # already sorted by product (curriculum order)
+                bs, bd, br = p["bound"]
+                f.write(f"{p['src']}\t{p['dst']}\t{p['rel']}\t{bs}\t{bd}\t{br}\t"
+                        f"{p['product']:.4f}\t{p['min_link']:.4f}\t{p['hops']}\n")
+        print(f"  wrote {len(pairs)} triples → {a.out}")
 
 
 if __name__ == "__main__":
