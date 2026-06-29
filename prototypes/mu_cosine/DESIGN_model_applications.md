@@ -25,6 +25,25 @@ recording.
 - **Distance-aware:** trained with the transitive ordinal constraint so μ **decays sensibly with hop-distance**
   (`DESIGN_transitive_relations.md`) — which is what makes it usable for *multi-hop* retrieval.
 
+## Built foundation (what the roadmap enhances)
+The applications and roadmap below build on these **shipped, documented** pieces — described here so the
+proposed *enhancements* have context:
+- **μ-attention model** — directional fuzzy membership over **frozen e5**, permutation-invariant
+  operator-attention readout (SYM = lateral; WIKI/ELEM = directional) + the §8 **anchored basis** (frozen
+  label-tied anchors ∪ learnable atoms). The core estimator.
+- **Operator superposition** — μ read under an operator distribution; **equal-weight = the unconditional
+  `E[μ]`** (`DESIGN_inferred_operator_superposition.md`).
+- **Transitive ordinal constraint** — μ **decays with hop-distance**: ranking-CE + dual-ascent λ +
+  heteroscedastic product-propagated variance. Built **+ verified** (generalises, no-collapse,
+  convergence-stable) — `DESIGN_transitive_relations.md`, `README_transitive.md`, `REPORT_transitive_verification.md`.
+- **Density maps** — `emit_dense` → `dense_mu_attn_*.tsv`: μ(·|root) over all nodes (the density-explorer feed).
+- **Bridge detection** — `bridge_ensemble.py` (here) + PR #3322's declarative bridge detector (Prolog foreign
+  predicate).
+- **Bidirectional walk** — depth-balanced traversal sampler (`DESIGN_bidirectional_walk.md`,
+  `validate_bidir_walk.py`).
+- **Inferred-tail augmentation** — `score_inferred_tail.py` + `cell_sampler.py` (LLM `E[μ]` for the inferred
+  tail; measured ~80% judge-noise → soft-rejected, off by default).
+
 ## Applications
 | application | how μ is used | existing pieces |
 |---|---|---|
@@ -84,7 +103,25 @@ than global vector embeddings, and naturally per-root (each root its own chart).
 **For ranking we need none of this** — μ *is* the distance measure; embeddings/bivectors are for visualisation
 and a possible re-derivation, not for retrieval.
 
-## Build plan (the retrieval core — no LLM, runs against existing models)
+## Roadmap (enhancements to built things + new things)
+**Enhancements to built things:**
+- **Transitive μ** — the deferred stage-2 items (noisy-OR multi-path, LLM-anchored multi-factor `μ_bound`,
+  product soft-floor; `DESIGN_transitive_relations.md` open questions). Most bite only in the **weak/long-chain
+  regime**, so pursue them *when retrieval shows that regime matters* (the hetero A/B was neutral precisely
+  because the strong-chain curriculum doesn't exercise them).
+- **Density explorer** — **root-centred tangent charts** (theory below): a per-root local view, vs the current
+  global dense map.
+- **Bridge detection** — fuse with the transitive-decay μ and the retrieval gather (a bridge is a node with
+  high cross-domain μ reachable in the bidirectional walk).
+- **Operator superposition** — learned (non-uniform) operator weights per query instead of the equal-weight
+  `⅓+⅓+⅓` default.
+
+**New things:**
+- **Graph RAG / retrieval algorithm** — greedy bidirectional gather + μ-superposition sort (above).
+- **Hop-stratified retrieval eval** + the μ-vs-hop top-k scatter.
+- **Embedding bivectors / geometric (GA) re-derivation** — the theory note (research thread).
+
+## Build plan (the retrieval core — first concrete increment, no LLM, runs against existing models)
 1. **Hop-stratified retrieval eval** — ground-truth = graph reachability from a root (relevant = reachable at
    ≤H hops; stratify metrics by hop-distance). Metric: recall@k / AUC (related vs unrelated), per hop.
 2. **Baseline = weighted shortest path** on that eval.
