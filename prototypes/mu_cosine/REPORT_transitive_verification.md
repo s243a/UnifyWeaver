@@ -36,3 +36,33 @@ The min-bound, naive-CE floor works and generalises → the deferred upgrades ar
 heteroscedastic loss (per-pair variance), dual-ascent λ (target a satisfaction rate), noisy-OR multi-path,
 and the LLM-anchored multi-factor term (a better `μ_bound` estimator). A **converged-baseline** A/B (more
 steps) should come first, to isolate the pure-generalisation magnitude from convergence speed.
+
+## Converged-baseline A/B (700 steps) — the lift SURVIVES (caveat resolved)
+The 200-step caveat (undertrained baseline) is closed: re-run at 700 steps, 2 seeds.
+
+| seed/arm | satisfaction | μ_bound | gap |
+|---|---|---|---|
+| 1/base | 79% | 0.595 | 0.37 |
+| 1/treat | 93% | 0.846 | 0.71 |
+| 2/base | 74% | 0.595 | 0.33 |
+| 2/treat | 94% | 0.845 | 0.72 |
+| **base mean** | 76% | **0.595** | 0.35 |
+| **treat mean** | **94%** | **0.845** | **0.71** |
+
+**Both baseline seeds plateau at μ_bound = 0.595 (identical)** — a converged plateau, not undertraining (200→700
+moved it 0.38→0.595 then locked). Treatment holds 0.845 / 94% on both. So the lift is **NOT a
+convergence-speed artifact** — the baseline converges *below* treatment and does not catch up. Replicates
+tightly (treat 93/94% & 0.846/0.845; base 79/74% & 0.595/0.595).
+
+**Bonus finding:** treatment's μ_bound (0.845) >> baseline's (0.595, toward the true REL_SPEC 0.9) — the
+ordinal ranking loss **regularises / generalises the direct-edge μ calibration** on held-out nodes, a real
+side benefit beyond the ordinal constraint itself.
+
+**Regime note (honest):** baseline plateauing at 0.595 (not ~0.9) means the warm-start underfits these
+physics/EE nodes — so part of treatment's value is "a useful regulariser for an underfit model." Real,
+replicated win on a leakage-aware holdout; the magnitude is largest in the underfit regime.
+
+**Conclusion:** the transitive ordinal constraint generalises, doesn't collapse, survives convergence, and
+improves calibration — on clean graph-truth. The stage-2 upgrades (dual-ascent λ, heteroscedastic loss,
+LLM-anchored multi-factor μ_bound, noisy-OR multi-path) are justified; recommended order starts with
+**dual-ascent λ** (target a satisfaction rate, removing the hand-tuned weight).
