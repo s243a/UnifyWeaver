@@ -421,7 +421,7 @@ def train(args):
     # fused graded round (mixed-operator, hand-curated): hold out 15% for eval; bridges down-weighted in loss
     graded_rows = [r for r in graded_rows if r[0] in idx and r[1] in idx]
     trans_rows = []
-    if args.transitive and os.path.exists(args.transitive) and args.transitive_weight > 0:
+    if args.transitive and os.path.exists(args.transitive) and (args.transitive_weight > 0 or args.transitive_target_sat > 0):
         trans_rows = load_transitive(args.transitive, idx)
         print(f"TRANSITIVE (ordinal ranking-CE, w={args.transitive_weight:g}, m={args.transitive_margin:g}, "
               f"s={args.transitive_scale:g}): {trans_rows and len(trans_rows)} pairs in-vocab from "
@@ -610,6 +610,7 @@ def train(args):
     eps = 1e-6
     bce = lambda x, t: F.binary_cross_entropy(x.clamp(eps, 1 - eps), torch.full_like(x, float(t)))
     es_best, es_best_step, es_wait, es_saved = float("inf"), 0, 0, False   # early-stopping state
+    trans_lambda = args.transitive_weight if args.transitive_weight > 0 else 1.0   # running λ for dual-ascent
     for step in range(args.steps):
         model.train()
         opt.zero_grad()
@@ -717,7 +718,7 @@ def train(args):
         # −log σ(s·(μ_bound − μ_trans − m)) = softplus(−s·Δ). Naive global-s (homoscedastic) first cut.
         # NB: this is a Lagrangian relaxation of the hard inequality μ_trans ≤ μ_bound; --transitive-weight is
         # the multiplier λ (fixed here — adaptive dual-ascent on a target satisfaction rate is the upgrade).
-        L_trans = torch.zeros(())
+        L_trans = torch.zeros(()); tw_eff = 0.0
         if trans_rows and not args.sym_only:
             tb = [trans_rows[rng.randrange(len(trans_rows))] for _ in range(args.bs)]
             extra = (lambda k: (nt(""), nt(""))) if args.use_nodetype else (lambda k: ())
@@ -726,10 +727,17 @@ def train(args):
             mu_t = model(**bld(ti, train=True, rng=rng, p_mask_prov=args.prov_mask))
             mu_bnd = model(**bld(bi2, train=True, rng=rng, p_mask_prov=args.prov_mask))
             L_trans = F.softplus(-args.transitive_scale * (mu_bnd - mu_t - args.transitive_margin)).mean()
+            if args.transitive_target_sat > 0:                 # DUAL-ASCENT λ (Lagrangian): adapt to a target sat rate
+                sat = (mu_t <= mu_bnd).float().mean().item()
+                trans_lambda = min(args.transitive_lambda_max,
+                                   max(0.0, trans_lambda + args.transitive_lambda_lr * (args.transitive_target_sat - sat)))
+                tw_eff = trans_lambda
+            else:
+                tw_eff = args.transitive_weight                # fixed-λ (the multiplier set by hand)
         loss = (args.sym_weight * L_sym + (0.0 if args.sym_only else args.wiki_weight * L_wiki)
                 + (args.elem_weight * L_elem if (elem_tr and not args.sym_only) else 0.0)
                 + (args.graded_weight * L_graded if (graded_tr and not args.sym_only) else 0.0)
-                + (args.transitive_weight * L_trans if (trans_rows and not args.sym_only) else 0.0)
+                + (tw_eff * L_trans if (trans_rows and not args.sym_only) else 0.0)
                 + (args.blend_weight * L_blend if blend_on else 0.0)
                 + (args.anchor_kl_weight * L_anchor if blend_on else 0.0))
         # LLM (optional, already-bought) — skipped in single-task SYM mode
@@ -764,7 +772,8 @@ def train(args):
             print(f"  step {step+1:5d}  L_sym {float(L_sym):.4f}  L_wiki {float(L_wiki):.4f}"
                   + (f"  L_elem {float(L_elem):.4f}" if (elem_tr and not args.sym_only) else "")
                   + (f"  L_graded {float(L_graded):.4f}" if (graded_tr and not args.sym_only) else "")
-                  + (f"  L_trans {float(L_trans):.4f}" if (trans_rows and not args.sym_only) else "")
+                  + (f"  L_trans {float(L_trans):.4f}" + (f" λ{trans_lambda:.2f}" if args.transitive_target_sat > 0 else "")
+                     if (trans_rows and not args.sym_only) else "")
                   + (f"  L_blend {float(L_blend):.4f}" if blend_on else "")
                   + (f"  L_anchor {float(L_anchor):.4f}" if (blend_on and anchored_rel is not None) else "")
                   + (f"  L_llm {float(L_llm):.4f}" if (llm and not args.sym_only) else ""))
@@ -1077,6 +1086,10 @@ def main():
     ap.add_argument("--transitive-margin", type=float, default=0.05, help="margin m: enforce μ_bound − μ_trans ≥ m")
     ap.add_argument("--transitive-scale", type=float, default=10.0, help="logistic scale s (= global confidence; the "
                     "naive homoscedastic first cut — heteroscedastic per-pair variance is the stage-2 upgrade)")
+    ap.add_argument("--transitive-target-sat", type=float, default=0.0, help="dual-ascent λ (Lagrangian): adapt the "
+                    "transitive weight to hit this held-in satisfaction rate (0=off → fixed --transitive-weight). e.g. 0.92")
+    ap.add_argument("--transitive-lambda-lr", type=float, default=0.1, help="dual-ascent step: λ ← λ + lr·(target − sat)")
+    ap.add_argument("--transitive-lambda-max", type=float, default=20.0, help="cap on λ (runaway guard)")
     ap.add_argument("--eval-transitive", default=None, help="held-out transitive triples → report constraint "
                     "satisfaction + anti-collapse level (use a node-split holdout, not the training triples)")
     ap.add_argument("--graded-nodes", default=None, help="override the graded nodes file (default: derive "
