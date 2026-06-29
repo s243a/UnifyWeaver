@@ -255,3 +255,57 @@ Rationale, all aligned with the loss design:
    fixed, annealed, or learned (as inverse-variance)?
 9. **Judge-factor weight:** estimate it from inter-judge agreement (ensemble variance) on a calibration
    sample, not single-judge confidence (measured: judges *disagree more* at high single-judge μ on the tail).
+
+## References (theory anchors)
+The design composes several established frameworks; this maps each choice to its canonical source. (Cited
+from memory — verify exact year/venue/page before publication.)
+
+**Fuzzy membership, t-norms, transitivity** (the μ model + chaining)
+- L.A. Zadeh, "Fuzzy sets," *Information and Control* 8(3), 1965 — graded membership μ∈[0,1].
+- L.A. Zadeh, "Similarity relations and fuzzy orderings," *Information Sciences* 3(2), 1971 — **sup-T
+  transitivity** of fuzzy relations; the formal basis for transitive fuzzy μ.
+- E.P. Klement, R. Mesiar, E. Pap, *Triangular Norms*, Kluwer, 2000 — t-norms (**min**=Gödel,
+  **product**=probabilistic/Goguen) and dual t-conorms (the AND/OR connectives; the min-vs-product choice).
+
+**Ordinal / pairwise supervision** (the inequality + ranking CE)
+- R.A. Bradley, M.E. Terry, "Rank analysis of incomplete block designs," *Biometrika* 39, 1952 — pairwise
+  comparison as `σ(score difference)`.
+- C. Burges et al., "Learning to rank using gradient descent" (**RankNet**), *ICML* 2005 — the pairwise
+  logistic/cross-entropy ranking loss used here.
+
+**Distributional / heteroscedastic prediction** (variance-aware loss; variance from the superposition)
+- D. Nix, A. Weigend, "Estimating the mean and variance of the target probability distribution," *ICNN* 1994.
+- A. Kendall, Y. Gal, "What uncertainties do we need in Bayesian deep learning for computer vision?," *NeurIPS*
+  2017 — aleatoric uncertainty as learned per-example variance ("gradient on the distribution").
+- L. Vilnis, A. McCallum, "Word representations via Gaussian embedding," *ICLR* 2015 — entities as
+  **distributions (mean+variance)** with asymmetric/containment relations.
+- T. Gneiting, A. Raftery, "Strictly proper scoring rules, prediction, and estimation," *JASA* 102, 2007 — why
+  NLL can't be gamed by inflating variance.
+
+**Order / containment in embedding space** (transitive structure)
+- I. Vendrov, R. Kiros, S. Fidler, R. Urtasun, "Order-embeddings of images and language," *ICLR* 2016 —
+  partial-order (entailment/containment, transitive) in embedding space.
+- L. Vilnis, X. Li, S. Muresan, A. McCallum, "Probabilistic embedding of knowledge graphs with box lattice
+  measures," *ACL* 2018 — graded containment as probability.
+
+**Multi-factor loss / combining noisy supervisors**
+- G.E. Hinton, "Training products of experts by minimizing contrastive divergence," *Neural Computation* 14,
+  2002 — joint model as a product of experts (sum of log-factors).
+- inverse-variance weighting — classical (e.g. W.G. Cochran, "The combination of estimates from different
+  experiments," *Biometrics* 10, 1954) — weight ∝ 1/variance for combining noisy estimates.
+- B. Frénay, M. Verleysen, "Classification in the presence of label noise: a survey," *IEEE TNNLS* 25, 2014.
+- L. Zheng et al., "Judging LLM-as-a-judge with MT-Bench and Chatbot Arena," *NeurIPS* 2023 — LLM-judge biases
+  and agreement (why judge confidence ≠ reliability → use inter-judge agreement).
+
+**Multi-path / algebraic path problem** (the log-semiring)
+- J. Pearl, *Probabilistic Reasoning in Intelligent Systems*, Morgan Kaufmann, 1988 — the **noisy-OR** gate
+  (multi-path reinforcement).
+- E.W. Dijkstra, "A note on two problems in connexion with graphs," *Numerische Mathematik* 1, 1959 — shortest
+  path; here on `−log μ` edges = highest-product path (max-product semiring).
+- M. Mohri, "Semiring frameworks and algorithms for shortest-distance problems," *J. Automata, Languages and
+  Combinatorics* 7, 2002 — the **algebraic path problem**: `⊕`/`⊗` semiring closure generalising shortest path.
+- M. Gondran, M. Minoux, *Graphs, Dioids and Semirings*, Springer, 2008 — dioids/semirings for path algebras.
+
+**Curriculum**
+- Y. Bengio, J. Louradour, R. Collobert, J. Weston, "Curriculum learning," *ICML* 2009 — high-confidence
+  examples first (our highest-product-chains-first ordering).
