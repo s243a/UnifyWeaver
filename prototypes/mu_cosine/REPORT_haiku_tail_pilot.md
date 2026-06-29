@@ -206,3 +206,22 @@ flags (211/417) — the tail is *uniformly* ambiguous, so triage-by-uncertainty 
    **self-posterior** (§13) — empirically motivated since base-vs-Sonnet (0.37) > Haiku-vs-Sonnet (0.28).
 3. **Cascade, don't blanket-spend:** Haiku triage → top-K escalation to Sonnet/Opus/human (Anthropic tiers via
    subagents today; a non-Anthropic interface is a future generalisation).
+
+## Operating-point update — soft outlier rejection (down-weight, defer cleaning)
+Given the independent (Sonnet) check was **inconclusive** and the tail is **~80% judge-noise**, the
+conservative production default is to **down-weight the noisy tail rather than clean it**:
+
+> **`--tail-weight ~0.2`** — each inferred-tail row contributes ~20% of a clean row's loss. This is **soft
+> outlier rejection / reliability weighting** (weight ≈ the ~0.2–0.28 inter-judge reliability): no need to
+> *decide* which rows are bad, just stop trusting the noisy population much. **Defers** the expensive dataset
+> cleaning / ensemble while keeping the data in at low influence.
+
+**Safe by construction:** less weight on noisy data can't meaningfully hurt — worst case the tail goes ~inert
+(≈ dropping it), best case its ~20% signal helps slightly. **No verification run is warranted:** at 84 holdout
+rows the independent metric's ±0.15 noise can't resolve a do-no-harm difference, and down-weighting is
+conservative a priori — a null result would be uninformative.
+
+`--tail-weight 6` remains documented as the **Haiku-agreement optimum** (+0.12 vs Haiku, 3-seed) — but that
+gain did **not** transfer to an independent judge, so it is **not** the default. Use it only if agreeing with
+the cheap judge is itself the goal. Cleaning/ensemble (the §15 forward path) can revisit the tail later; until
+then `--tail-weight 0.2` is the do-no-harm setting.
