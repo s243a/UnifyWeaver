@@ -256,6 +256,25 @@ Rationale, all aligned with the loss design:
 9. **Judge-factor weight:** estimate it from inter-judge agreement (ensemble variance) on a calibration
    sample, not single-judge confidence (measured: judges *disagree more* at high single-judge μ on the tail).
 
+## Rejected alternatives (and why)
+Each design choice has a discarded counterpart; reviewers should feel free to challenge the *rejections*.
+
+| alternative | why rejected | chosen instead |
+|---|---|---|
+| **Point target** `μ(A→C)=Π μ` (regress to the product) | over-commits to a value we can't verify; bakes in one t-norm | the **inequality** `μ(A→C) ≤ min(links)` — robust to min-vs-product |
+| **Hard constraint** (projection / ∞-hinge) | treats a *statistical* likelihood as inviolable law; can't absorb legitimate violations | **soft ranking CE** — `σ(s·Δ)` = P(holds), trained not forbidden |
+| **`min` for generation ranking** | length-blind (5-hop all-0.9: min=0.9 but product=0.59) | **product** (Dijkstra on `−log μ`) — length-aware; `min` kept only as the *bound* |
+| **Homoscedastic point-error loss** (fixed global `s` / MSE residual) | can't express that some pairs are confidently ordered, others ambiguous | **heteroscedastic** `−log Φ((ΔE−m)/√ΣVar)`, variance free from the superposition (naive kept as a cheap first cut) |
+| **Scale single-judge LLM labels** (more tail augmentation) | measured ~80% judge-noise; no transfer to an independent judge | **graph-truth ordinal** data (clean, free, measurable) — this proposal |
+| **Compose inferred (conf<1.0) edges** | re-imports the judge noise just measured | **tagged (conf=1.0) edges only** |
+| **Judge self-confidence as the reliability weight** | measured: judges disagree *more* at high single-judge μ (overconfidence) | **inter-judge agreement** (ensemble variance) |
+| **Hope transitivity emerges** (no explicit data) | the model sees only endpoints — no path access — so it *cannot* compose from structure | **explicit** transitive training pairs |
+| **Fixed decay schedule** (`μ − δ` per hop) | imposes a guessed rate | **learned** via the ordinal constraint |
+| **Unbounded transitive closure** | combinatorial blow-up | **bounded + product-curriculum** (high-product head, grown on demand) |
+| **Hard dataset cleaning** (drop "bad" rows) | must *decide* which rows are bad; expensive | **soft down-weighting** (reliability / inverse-variance); defers cleaning |
+| **Add external judges (agy/codex) now** | premature cost+complexity; value is *independence*, only needed once the judge factor is binding | **deferred**; within-Anthropic cascade for calibration |
+| **`⊕ = noisy-OR` from the start** (multi-path) | reinforcement adds complexity before the core is validated | **start `⊕ = max`** (Dijkstra); noisy-OR as the upgrade |
+
 ## References (theory anchors)
 The design composes several established frameworks; this maps each choice to its canonical source. (Cited
 from memory — verify exact year/venue/page before publication.)
