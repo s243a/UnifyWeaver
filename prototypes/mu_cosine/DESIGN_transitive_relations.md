@@ -174,6 +174,22 @@ This is the **multi-source-of-truth** structure (deferred earlier) realised as a
 (tagged, clean) + model-judge (noisy, down-weighted) + transitive ordinal (graph-truth) = **factors in one
 joint likelihood**, each contributing where it is strong.
 
+## Measured caveat — judge *confidence* ≠ judge *reliability* (use inter-judge agreement)
+Tempting hypothesis: "where μ is high the LLM judge isn't noise." Checked on the 84-row Haiku+Sonnet holdout,
+stratified by Haiku μ — it **fails for judge-rated μ**: disagreement *rises* with Haiku-μ (mean |Δ| 0.12 mid →
+0.27 high; Sonnet stays ~0.3 even where Haiku says >0.75). I.e. **Haiku is *overconfident* on ambiguous tail
+pairs** (small-n caveat: high bins are 25 / 2 rows).
+
+The hypothesis survives only with the right population: the transitive chains compose **tagged (conf=1.0,
+human-curated) edges**, whose high μ is *not* a noisy judge rating — so there the judge is plausibly reliable
+(untested: tagged edges were never judge-scored). The tail merely refutes the *judge-rated-μ* version.
+
+**Design consequence:** the judge factor's reliability weight must come from **inter-judge agreement**
+(ensemble variance), **not single-judge confidence** — a judge's own high μ is not a reliability signal. So
+calibrating the judge-factor weight needs ≥2 judges *on a sample* (Sonnet already serves; doesn't change the
+defer-external-judges call). This composes with the heteroscedastic loss: the judge factor's variance is the
+*ensemble* variance, the pairwise factor's is the superposition variance.
+
 ## Open questions (for review)
 1. **Bound:** `≤ min(links)` alone (robust), or add `product` as a soft **floor** (band)? What floor / baseline?
 2. **Hyperparameters:** margin `m`, scale `s`, and `--transitive-weight` relative to the direct regression.
@@ -208,3 +224,5 @@ subcategory at ~0.9). Rationale, all aligned with the loss design:
 8. **Multi-factor loss:** the factor weights (reliabilities); avoiding double-counting when a direct
    edge is both REL_SPEC-regressed *and* judge-supervised; which judge anchors which factor; are weights
    fixed, annealed, or learned (as inverse-variance)?
+9. **Judge-factor weight:** estimate it from inter-judge agreement (ensemble variance) on a calibration
+   sample, not single-judge confidence (measured: judges *disagree more* at high single-judge μ on the tail).
