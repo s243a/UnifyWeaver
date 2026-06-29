@@ -627,7 +627,9 @@ def train(args):
             else:
                 gi = [(r[0], r[1], OPS[graded_op(r)], CORPORA[r[7]], JUDGES[r[8]]) for r in gb]
             gt = torch.tensor([r[2] for r in gb]).to(device)
-            gw = torch.tensor([args.bridge_weight if r[4] == "bridge" else 1.0 for r in gb]).to(device)
+            gw = torch.tensor([args.bridge_weight if r[4] == "bridge"
+                               else (args.tail_weight if (len(r) > 9 and r[9] < 1.0) else 1.0)
+                               for r in gb]).to(device)            # §13: upweight the inferred tail to fight dilution
             mu_g = model(**bld(gi, train=True, rng=rng, p_mask_prov=args.prov_mask))
             L_graded = (gw * (mu_g - gt) ** 2).sum() / gw.sum().clamp_min(1.0)
         # INFER-BLEND: inferred rows trained with a RANDOM operator embedding from the fitted joint posterior
@@ -1005,6 +1007,8 @@ def main():
     ap.add_argument("--graded-nodes", default=None, help="override the graded nodes file (default: derive "
                     "from --graded by _pairs→_nodes)")
     ap.add_argument("--graded-weight", type=float, default=1.0, help="graded-round loss weight")
+    ap.add_argument("--tail-weight", type=float, default=1.0, help="§13: loss-weight multiplier for the inferred "
+                    "tail (conf<1.0, non-bridge) — counters dilution (~7%→30%% effective share at ~6)")
     ap.add_argument("--bridge-weight", type=float, default=0.2, help="down-weight bridge targets in the "
                     "graded loss (they dominate at μ≈0.9; keep them from swamping directional signal)")
     ap.add_argument("--infer-switch", action="store_true", help="for INFERRED graded relations (confidence "
