@@ -85,6 +85,27 @@ weak path's `min`, violating a naively-applied per-path `≤`. Practical handlin
 2. **Defer** full max / noisy-OR aggregation — and note path-multiplicity is itself a signal the
    endpoint-only model cannot see, so it may deserve to be a feature later.
 
+## Multi-path as a log-semiring (the algebraic path problem)
+The log-space additivity that makes generation a Dijkstra also resolves multi-path: transitive μ with
+multiple routes is `⊕` over paths of ( `⊗` over the path's links ), a **semiring closure**:
+- **`⊗` (chain / AND)** = `Π μ(links)` = **`+` in log-μ space** (why Dijkstra works).
+- **`⊕` (combine paths / OR)** = the multi-path combiner — *its* choice IS the multi-path formulation:
+
+| `⊕` | behaviour | additive in |
+|---|---|---|
+| **max** (max-product semiring) | best single path; **no reinforcement** | `log μ` → Dijkstra (already specified) |
+| **noisy-OR** | paths **reinforce** (μ rises with multiplicity) | **`log(1−μ)`** (the complement / "survival") |
+
+**Noisy-OR is also additive, in the *dual* space:** `μ = 1 − Π_p(1−s_p)` ⇒ `log(1−μ) = Σ_p log(1−s_p)`. So two
+De Morgan–dual additive structures — `log μ` for chaining *within* a path, `log(1−μ)` for OR-ing *across*
+paths — i.e. a log-semiring; the full transitive closure is the algebraic-path generalisation of shortest
+path (Floyd–Warshall / Gauss–Jordan over the semiring).
+
+**So multi-path = "pick `⊕`":** start `⊕ = max` (the Dijkstra we already have — single best path, simplest);
+upgrade to `⊕ = noisy-OR` for reinforcement (still additive, same machinery, dual space). This also resolves
+the earlier contradiction: under reinforcement the bound `μ(A→C) ≤ min(links)` correctly **relaxes** (extra
+paths legitimately raise μ) — handled by the `⊕` choice, not hand-waved.
+
 ## Eval (finally clean — no judge-noise ceiling)
 - **Constraint satisfaction:** fraction of held-out transitive pairs with `μ_transitive ≤ μ_direct − m`.
 - **Decay curve:** mean μ vs hop-distance along chains (should decrease monotonically).
