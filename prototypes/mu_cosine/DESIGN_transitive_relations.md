@@ -151,6 +151,29 @@ others genuinely ambiguous, which is the whole statistical point.
 *Caveat:* Gaussian-`Φ` is an approximation for bounded μ ∈ [0,1]; a **logit-space** difference or a **Beta**
 parameterisation of μ is the more correct distributional form, at some complexity. Open for review.
 
+## A multi-factor loss — judge (absolute) + pairwise (relative), as complementary likelihoods
+The loss need not be one term. Different supervisors know different things; each enters as a **likelihood
+factor**, weighted by its reliability:
+- **Direct-step model judge** → anchors the **absolute** μ of a direct relation (calibration). Distributional,
+  and **down-weighted by reliability** — the inferred-tail finding (judge μ ~80% noise on hard rows) *is* this
+  weight; the soft-outlier-rejection `--tail-weight` is a factor weight.
+- **Pairwise transitive constraint** → shapes the **relative** structure (`μ_transitive ≤ μ_direct`), the
+  heteroscedastic ordinal term above. Graph-truth, clean, higher weight.
+
+**Complementary and jointly well-posed:** the judge anchors `μ_direct` (so the inequality can't be gamed by
+inflating the direct side), and the pairwise term then places `μ_transitive` below that anchored value —
+**absolute × relative**, each closing a degree of freedom the other leaves open.
+
+**Principled form:** total loss = a **joint negative log-likelihood** — a sum of per-factor log-likelihoods,
+each weighted by its reliability (a *product-of-experts / factor graph*). The distributional treatment applies
+to *every* factor: the judge's E[μ] carries its disagreement-variance, the pairwise carries the
+superposition's variance — so each is a likelihood under its own predicted distribution, and the **weights are
+reliabilities, not arbitrary knobs**.
+
+This is the **multi-source-of-truth** structure (deferred earlier) realised as a loss: REL_SPEC regression
+(tagged, clean) + model-judge (noisy, down-weighted) + transitive ordinal (graph-truth) = **factors in one
+joint likelihood**, each contributing where it is strong.
+
 ## Open questions (for review)
 1. **Bound:** `≤ min(links)` alone (robust), or add `product` as a soft **floor** (band)? What floor / baseline?
 2. **Hyperparameters:** margin `m`, scale `s`, and `--transitive-weight` relative to the direct regression.
@@ -170,3 +193,6 @@ parameterisation of μ is the more correct distributional form, at some complexi
 3. Eval: constraint-satisfaction % + μ-vs-hop decay curve on a held-out transitive slice.
 7. **Loss form:** naive global-`s` CE (homoscedastic, cheap) vs the distributional/heteroscedastic
    `Φ((ΔE−m)/√ΣVar)` using the superposition's own variance — and Gaussian-Φ vs logit/Beta for bounded μ.
+8. **Multi-factor loss:** the factor weights (reliabilities); avoiding double-counting when a direct
+   edge is both REL_SPEC-regressed *and* judge-supervised; which judge anchors which factor; are weights
+   fixed, annealed, or learned (as inverse-variance)?
