@@ -55,7 +55,8 @@ def load_transitive(path, idx):
             continue
         c = ln.rstrip("\n").split("\t")
         if len(c) >= 6 and c[0] in idx and c[1] in idx and c[3] in idx and c[4] in idx:
-            rows.append((c[0], c[1], c[2], c[3], c[4], c[5]))
+            var = float(c[9]) if len(c) > 9 and c[9] else 0.0   # product-propagated chain variance (heteroscedastic)
+            rows.append((c[0], c[1], c[2], c[3], c[4], c[5], var))
     return rows
 
 
@@ -726,7 +727,12 @@ def train(args):
             bi2 = [(t[3], t[4], OPS[REL_SPEC[t[5]][0]], CORPORA[_corp_of(t[3])], JUDGES["graph"]) + extra(t[3]) for t in tb]
             mu_t = model(**bld(ti, train=True, rng=rng, p_mask_prov=args.prov_mask))
             mu_bnd = model(**bld(bi2, train=True, rng=rng, p_mask_prov=args.prov_mask))
-            L_trans = F.softplus(-args.transitive_scale * (mu_bnd - mu_t - args.transitive_margin)).mean()
+            if args.transitive_hetero:                         # per-pair scale from product-propagated chain variance
+                v = torch.tensor([t[6] for t in tb], dtype=torch.float32, device=device)
+                s_eff = args.transitive_scale / (1.0 + v).sqrt()    # s_pair = s/√(1+V): longer/weaker chains → softer
+            else:
+                s_eff = args.transitive_scale                 # global s (homoscedastic)
+            L_trans = F.softplus(-s_eff * (mu_bnd - mu_t - args.transitive_margin)).mean()
             if args.transitive_target_sat > 0:                 # DUAL-ASCENT λ (Lagrangian): adapt to a target sat rate
                 sat = (mu_t <= mu_bnd).float().mean().item()
                 trans_lambda = min(args.transitive_lambda_max,
@@ -1090,6 +1096,9 @@ def main():
                     "transitive weight to hit this held-in satisfaction rate (0=off → fixed --transitive-weight). e.g. 0.92")
     ap.add_argument("--transitive-lambda-lr", type=float, default=0.1, help="dual-ascent step: λ ← λ + lr·(target − sat)")
     ap.add_argument("--transitive-lambda-max", type=float, default=20.0, help="cap on λ (runaway guard)")
+    ap.add_argument("--transitive-hetero", action="store_true", help="heteroscedastic: per-pair scale s_pair = "
+                    "s/√(1+V) from the product-propagated chain variance V (longer/weaker chains → softer); "
+                    "vs the default global s (homoscedastic). DESIGN §'loss over the DISTRIBUTION'")
     ap.add_argument("--eval-transitive", default=None, help="held-out transitive triples → report constraint "
                     "satisfaction + anti-collapse level (use a node-split holdout, not the training triples)")
     ap.add_argument("--graded-nodes", default=None, help="override the graded nodes file (default: derive "
