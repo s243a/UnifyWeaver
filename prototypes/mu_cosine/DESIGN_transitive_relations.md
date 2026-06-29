@@ -120,6 +120,37 @@ its link rather than collapsing.
 structural likelihood* of a graded relation — to **represent**. Same word "uncertainty"; opposite treatment.
 That is the difference between an **error model** and a **likelihood model**.
 
+## The loss must be over the predicted DISTRIBUTION, not the point error (heteroscedastic)
+Error-vs-likelihood is not just framing — it changes the **loss form**. A point error (MSE / naive gradient)
+assumes the target is exact and descends on `(μ − target)²`. A *statistical* relation has **variance in the
+predicted error**, so the loss must be a **proper scoring rule over the model's predicted distribution** — the
+gradient flows through the **spread**, not only the mean ("a gradient on the distribution that predicts the
+error").
+
+The naive ranking CE `−log σ(s·(E_dir − E_trans − m))` bakes a **global** confidence `s` — it is
+*homoscedastic*. The principled form makes confidence **per-pair**, from the model's own predicted spread:
+
+> `L = −log Φ( (E_dir − E_trans − m) / √(Var_dir + Var_trans) )`
+
+`s` is replaced by `1/√(Var_dir + Var_trans)`: a violation under **high** predicted variance costs little
+(within the spread — a genuine "unlikely-but-possible"); under **low** variance it costs a lot (a confident
+ordering broken). The gradient updates **both mean and variance**.
+
+**The variance is free — it is already the superposition.** μ is `E[μ] = Σ P(cell)·μ_cell` (§10); its spread
+is `Var[μ] = Σ P(cell)·(μ_cell − E[μ])²` — computed alongside the mean, **no new head**. The model's *existing*
+uncertainty (how spread its cell-distribution is) becomes the loss's per-pair confidence. This **unifies with
+§11** (sample-don't-feed-the-mean): the superposition *is* the predicted distribution; the transitive
+constraint is scored over it.
+
+**Proper scoring ⇒ no gaming.** The variance sits in the denominator, so inflating it to dodge a violation
+*also* dulls the reward on confident-correct orderings; NLL penalises the net. The model is forced to learn
+**calibrated** uncertainty rather than escape the constraint. The naive fixed-`s` CE remains the cheap
+homoscedastic first cut — but it *cannot* represent that some transitive pairs are confidently ordered and
+others genuinely ambiguous, which is the whole statistical point.
+
+*Caveat:* Gaussian-`Φ` is an approximation for bounded μ ∈ [0,1]; a **logit-space** difference or a **Beta**
+parameterisation of μ is the more correct distributional form, at some complexity. Open for review.
+
 ## Open questions (for review)
 1. **Bound:** `≤ min(links)` alone (robust), or add `product` as a soft **floor** (band)? What floor / baseline?
 2. **Hyperparameters:** margin `m`, scale `s`, and `--transitive-weight` relative to the direct regression.
@@ -137,3 +168,5 @@ That is the difference between an **error model** and a **likelihood model**.
    (the transitive pair + its bounding direct pair), dominant-path-only.
 2. Trainer: `--transitive-weight` ranking-CE term (`−log σ(s·(μ_direct − μ_trans − m))`, optional floor).
 3. Eval: constraint-satisfaction % + μ-vs-hop decay curve on a held-out transitive slice.
+7. **Loss form:** naive global-`s` CE (homoscedastic, cheap) vs the distributional/heteroscedastic
+   `Φ((ΔE−m)/√ΣVar)` using the superposition's own variance — and Gaussian-Φ vs logit/Beta for bounded μ.
