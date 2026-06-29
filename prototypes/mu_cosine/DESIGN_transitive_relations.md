@@ -284,7 +284,7 @@ Each design choice has a discarded counterpart; reviewers should feel free to ch
 | **Point target** `μ(A→C)=Π μ` (regress to the product) | over-commits to a value we can't verify; bakes in one t-norm | the **inequality** `μ(A→C) ≤ min(links)` — robust to min-vs-product |
 | **Hard constraint** (projection / ∞-hinge) | treats a *statistical* likelihood as inviolable law; can't absorb legitimate violations | **soft ranking CE** — `σ(s·Δ)` = P(holds), trained not forbidden |
 | **`min` for generation ranking** | length-blind (5-hop all-0.9: min=0.9 but product=0.59) | **product** (Dijkstra on `−log μ`) — length-aware; `min` kept only as the *bound* |
-| **Homoscedastic point-error loss** (fixed global `s` / MSE residual) | can't express that some pairs are confidently ordered, others ambiguous | **heteroscedastic** `−log Φ((ΔE−m)/√ΣVar)`, variance free from the superposition (naive kept as a cheap first cut) |
+| **Homoscedastic point-error loss** (fixed global `s` / MSE residual) | can't express that some pairs are confidently ordered, others ambiguous | **heteroscedastic** `−log Φ((ΔE−m)/√ΣVar)`, variance from the superposition (via R hard-cell forwards / MC — *not* free; naive fixed-`s` kept as a cheap first cut) |
 | **Scale single-judge LLM labels** (more tail augmentation) | measured ~80% judge-noise; no transfer to an independent judge | **graph-truth ordinal** data (clean, free, measurable) — this proposal |
 | **Compose inferred (conf<1.0) edges** | re-imports the judge noise just measured | **tagged (conf=1.0) edges only** |
 | **Judge self-confidence as the reliability weight** | measured: judges disagree *more* at high single-judge μ (overconfidence) | **inter-judge agreement** (ensemble variance) |
