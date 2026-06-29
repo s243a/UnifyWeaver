@@ -93,6 +93,33 @@ Both are **deterministic graph-truth** — no point-guessing, no judge disagreem
 metric (±0.15 noise at 84 rows, judges agree only +0.28), this metric can fully resolve whether the
 constraint is learned.
 
+## The constraint is statistical, not logical (loss semantics — clarifies the whole design)
+**The inequality `μ(A→C) ≤ μ(A→B)` is a high-confidence *statistical* statement, not a hard logical law** —
+and the ranking cross-entropy is the right loss *precisely because* it encodes this. `σ(s·(μ_direct −
+μ_transitive − m))` **is the modeled probability that the inequality holds**; CE trains that probability, it
+does **not** forbid violations.
+
+- **"Violation = error" is the wrong frame.** A violation is a **low-likelihood event, not a mistake** — e.g.
+  multi-path reinforcement (§Multiple paths) legitimately lifting μ(A→C) above a single weak link. Soft CE
+  absorbs these gracefully (bounded, proportional loss); a **hard** constraint (projection / ∞-hinge) would be
+  wrong — it treats structural likelihood as inviolable law.
+- **The scale `s` is the confidence** of the statistical inequality ("fairly high" ⇒ a moderately sharp `s`,
+  kept soft enough that genuine exceptions aren't crushed).
+- **Entropy is likelihood, not error.** The uncertainty in a transitive relation is a *statement of how
+  likely*, not noise to eliminate — so we **model the probability** (soft CE), we don't drive entropy to zero.
+
+This favors the **probabilistic reading** of μ (open Q4): μ = **E[membership] over a distribution**; transitive
+decay = the **expectation dropping along the chain** (each hop adds uncertainty ⇒ lower expected membership,
+*with high probability*); the constraint's confidence is a property of that distribution. The **product
+t-norm is the independent-chaining special case**; the inequality is the assumption-light version. And it
+**softens the "too low" worry** — we make decay *likely*, not *forced*, so μ_transitive sits modestly below
+its link rather than collapsing.
+
+**Distinct from the inferred-tail noise (ties the arc together):** there, judge-disagreement was partly
+*measurement error* (two judges, one truth, ~80% noise) — to **down-weight**. Here the entropy is *inherent
+structural likelihood* of a graded relation — to **represent**. Same word "uncertainty"; opposite treatment.
+That is the difference between an **error model** and a **likelihood model**.
+
 ## Open questions (for review)
 1. **Bound:** `≤ min(links)` alone (robust), or add `product` as a soft **floor** (band)? What floor / baseline?
 2. **Hyperparameters:** margin `m`, scale `s`, and `--transitive-weight` relative to the direct regression.
