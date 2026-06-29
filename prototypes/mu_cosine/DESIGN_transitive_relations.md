@@ -202,10 +202,18 @@ defer-external-judges call). This composes with the heteroscedastic loss: the ju
 6. **Risk the reviewer flagged:** will the chained value come out **too low**? Are the band + small margin +
    bounded hops sufficient, or is an explicit per-hop decay floor needed?
 
-## Generation order — start with the highest-μ (strongest-link) chains (curriculum)
-Generate transitive pairs **ranked by their weakest constituent link** (`min(links)`, which is also the
-inequality bound), **descending** — start where even the weakest hop is strong (subset∘subset, element_of∘
-subcategory at ~0.9). Rationale, all aligned with the loss design:
+## Generation order — rank by the PRODUCT of link μ (greedy / Dijkstra), curriculum
+Generate transitive pairs **ranked by the product of their link μ** (= the estimated transitive μ under the
+product t-norm), **descending**. Product, not `min`, because it is **length-aware**: a 5-hop all-0.9 chain has
+`min=0.9` but `product=0.59` — correctly deprioritised. (Product *ranks* generation; `≤ min` remains the
+*constraint bound* in the loss, robust to the t-norm choice — no conflict.)
+
+**The search is exact, not heuristic — it's Dijkstra.** Maximising `Π μ(links)` = maximising `Σ log μ` =
+minimising `Σ −log μ` (each `−log μ > 0`); so the **highest-product path = shortest path under edge cost
+`−log μ`**, with optimal substructure (highest-product path to C goes through that to B). Run greedy/Dijkstra
+from each root, emit (root, node, product) transitive pairs, sort by product, take the top as the curriculum.
+
+Rationale, all aligned with the loss design:
 - **Highest confidence / lowest variance:** strong links ⇒ the inequality holds most certainly ⇒ the
   most-informative, sharpest-gradient constraints under the distributional loss. Cleanest first signal.
 - **Dodges the "too low" worry:** strong chains keep the transitive μ well above any floor (0.9·0.9 = 0.81 —
