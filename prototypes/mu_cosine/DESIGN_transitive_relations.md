@@ -30,6 +30,11 @@ constituent direct pair(s):
 It is a constraint **between two model outputs** (pairwise prediction), enforced via a ranking loss — *not* a
 regression to a number.
 
+**Multi-hop `μ_direct` (review).** For chains >2 hops, the bound generalises: `μ_direct` is **`min` over the
+chain's constituent direct (1-hop, tagged) links** — equivalently a *recursive* monotone chain
+`μ(k-hop) ≤ μ((k−1)-hop sub-path) ≤ … ≤ min(links)`. The term can be applied at either granularity
+(transitive-vs-link or transitive-vs-sub-path); `μ_direct` below denotes whichever bounding quantity is used.
+
 ### Is the bound the product? (No — and why this is the key choice)
 Two candidate compositions (fuzzy **t-norms**):
 - **min** (Gödel): `μ(A→C) = min(links)` — "as strong as the weakest link"; no compounding.
@@ -85,9 +90,9 @@ weak path's `min`, violating a naively-applied per-path `≤`. Practical handlin
 2. **Defer** full max / noisy-OR aggregation — and note path-multiplicity is itself a signal the
    endpoint-only model cannot see, so it may deserve to be a feature later.
 
-## Multi-path as a log-semiring (the algebraic path problem)
+## Multi-path: semiring closure (max) vs path enumeration (noisy-OR)
 The log-space additivity that makes generation a Dijkstra also resolves multi-path: transitive μ with
-multiple routes is `⊕` over paths of ( `⊗` over the path's links ), a **semiring closure**:
+multiple routes is `⊕` over paths of ( `⊗` over the path's links ) — a genuine **semiring only for some `⊕`** (below):
 - **`⊗` (chain / AND)** = `Π μ(links)` = **`+` in log-μ space** (why Dijkstra works).
 - **`⊕` (combine paths / OR)** = the multi-path combiner — *its* choice IS the multi-path formulation:
 
@@ -96,23 +101,32 @@ multiple routes is `⊕` over paths of ( `⊗` over the path's links ), a **semi
 | **max** (max-product semiring) | best single path; **no reinforcement** | `log μ` → Dijkstra (already specified) |
 | **noisy-OR** | paths **reinforce** (μ rises with multiplicity) | **`log(1−μ)`** (the complement / "survival") |
 
-**Noisy-OR is also additive, in the *dual* space:** `μ = 1 − Π_p(1−s_p)` ⇒ `log(1−μ) = Σ_p log(1−s_p)`. So two
-De Morgan–dual additive structures — `log μ` for chaining *within* a path, `log(1−μ)` for OR-ing *across*
-paths — i.e. a log-semiring; the full transitive closure is the algebraic-path generalisation of shortest
-path (Floyd–Warshall / Gauss–Jordan over the semiring).
+**Caveat (review): only `max` gives a true semiring closure.** `max`-product *is* a semiring — product
+distributes over `max` (`c·max(a,b)=max(ca,cb)`) — so Dijkstra / Floyd–Warshall compute its closure exactly.
+**`noisy-OR` with product chaining is NOT a semiring**: distributivity fails (`a·(b⊕c) ≠ (a·b)⊕(a·c)` unless
+`a=1`), so there is **no closure algorithm** — it requires **explicit path enumeration**. The `log(1−μ)`
+additivity still holds for combining a *fixed, enumerated* path set (`log(1−μ)=Σ_p log(1−s_p)`), but that is
+an *aggregation*, not an algebraic-path closure. So the "one clean semiring" framing is rigorous only for
+`max`-product; reinforcement (noisy-OR) costs enumeration.
 
 **So multi-path = "pick `⊕`":** start `⊕ = max` (the Dijkstra we already have — single best path, simplest);
-upgrade to `⊕ = noisy-OR` for reinforcement (still additive, same machinery, dual space). This also resolves
-the earlier contradiction: under reinforcement the bound `μ(A→C) ≤ min(links)` correctly **relaxes** (extra
-paths legitimately raise μ) — handled by the `⊕` choice, not hand-waved.
+upgrade to `⊕ = noisy-OR` for reinforcement (**no closure — enumerate the top-k paths per pair and aggregate
+via `log(1−μ)`**; more expensive, but bounded by the curriculum's high-product head). This also resolves the
+earlier contradiction: under reinforcement the bound `μ(A→C) ≤ min(links)` correctly **relaxes** (extra paths
+legitimately raise μ).
 
-## Eval (finally clean — no judge-noise ceiling)
+## Eval (clean graph-truth — but guard collapse and leakage)
 - **Constraint satisfaction:** fraction of held-out transitive pairs with `μ_transitive ≤ μ_direct − m`.
-- **Decay curve:** mean μ vs hop-distance along chains (should decrease monotonically).
+- **Decay curve:** mean μ vs hop-distance (should decrease monotonically).
+- **Anti-collapse (review):** the two above are **gamed by `μ→0` everywhere**, so pair them with a **level**
+  metric — `μ_direct` stays at its REL_SPEC value, and transitive μ sits in the **band** `[floor, direct−m]`
+  (band occupancy), not at 0. Ordering + level together.
+- **Leakage-aware split (review):** a random *pair* split **leaks** — a held-out transitive pair shares its
+  constituent links and endpoint nodes with training. Split by **node / subgraph** so a held-out pair's links
+  and endpoints are unseen; else the model memorises rather than generalises the decay.
 
-Both are **deterministic graph-truth** — no point-guessing, no judge disagreement. Unlike the inferred-tail
-metric (±0.15 noise at 84 rows, judges agree only +0.28), this metric can fully resolve whether the
-constraint is learned.
+Still deterministic graph-truth (no judge-noise ceiling); with these guards the metric resolves
+*generalisation* of the constraint, not just in-sample satisfaction.
 
 ## The constraint is statistical, not logical (loss semantics — clarifies the whole design)
 **The inequality `μ(A→C) ≤ μ(A→B)` is a high-confidence *statistical* statement, not a hard logical law** —
@@ -157,11 +171,17 @@ The naive ranking CE `−log σ(s·(E_dir − E_trans − m))` bakes a **global*
 (within the spread — a genuine "unlikely-but-possible"); under **low** variance it costs a lot (a confident
 ordering broken). The gradient updates **both mean and variance**.
 
-**The variance is free — it is already the superposition.** μ is `E[μ] = Σ P(cell)·μ_cell` (§10); its spread
-is `Var[μ] = Σ P(cell)·(μ_cell − E[μ])²` — computed alongside the mean, **no new head**. The model's *existing*
-uncertainty (how spread its cell-distribution is) becomes the loss's per-pair confidence. This **unifies with
-§11** (sample-don't-feed-the-mean): the superposition *is* the predicted distribution; the transitive
-constraint is scored over it.
+**The variance comes from the superposition — but it is NOT "free" (review).** `Var[μ] = Σ P(cell)·(μ_cell −
+E[μ])²` *looks* closed-form, but the per-cell `μ_cell` are themselves **nonlinear readouts** (§11: μ is
+non-linear in the operator weights through the transformer), so obtaining them needs **R hard-cell forwards
+(or an MC estimate)** — the §11 sampling cost, not zero. So the variance is *available from the existing
+superposition machinery* (no new **head**), but it is **real compute**, not a free byproduct of one forward.
+
+**Independence caveat (review):** `√(Var_dir + Var_trans)` assumes `μ_dir ⟂ μ_trans`, but they are **not**
+independent — same model, shared endpoint (A is in both A→B and A→C), shared e5. Properly `Var(μ_dir −
+μ_trans) = Var_dir + Var_trans − 2·Cov(dir,trans)`, and `Cov` is likely **positive** (shared factors), so the
+independence sum **over**estimates the denominator → an **under-confident** loss. Estimate `Cov` from joint MC
+samples, or treat the sum as a conservative bound.
 
 **Proper scoring ⇒ no gaming.** The variance sits in the denominator, so inflating it to dodge a violation
 *also* dulls the reward on confident-correct orderings; NLL penalises the net. The model is forced to learn
@@ -222,6 +242,13 @@ defer-external-judges call). This composes with the heteroscedastic loss: the ju
    shouldn't attenuate)?
 6. **Risk the reviewer flagged:** will the chained value come out **too low**? Are the band + small margin +
    bounded hops sufficient, or is an explicit per-hop decay floor needed?
+7. **Loss form:** naive global-`s` CE (homoscedastic, cheap) vs the distributional/heteroscedastic
+   `Φ((ΔE−m)/√ΣVar)` using the superposition's own variance — and Gaussian-Φ vs logit/Beta for bounded μ.
+8. **Multi-factor loss:** the factor weights (reliabilities); avoiding double-counting when a direct
+   edge is both REL_SPEC-regressed *and* judge-supervised; which judge anchors which factor; are weights
+   fixed, annealed, or learned (as inverse-variance)?
+9. **Judge-factor weight:** estimate it from inter-judge agreement (ensemble variance) on a calibration
+   sample, not single-judge confidence (measured: judges *disagree more* at high single-judge μ on the tail).
 
 ## Generation order — rank by the PRODUCT of link μ (greedy / Dijkstra), curriculum
 Generate transitive pairs **ranked by the product of their link μ** (= the estimated transitive μ under the
@@ -248,13 +275,6 @@ Rationale, all aligned with the loss design:
    (the transitive pair + its bounding direct pair), dominant-path-only.
 2. Trainer: `--transitive-weight` ranking-CE term (`−log σ(s·(μ_direct − μ_trans − m))`, optional floor).
 3. Eval: constraint-satisfaction % + μ-vs-hop decay curve on a held-out transitive slice.
-7. **Loss form:** naive global-`s` CE (homoscedastic, cheap) vs the distributional/heteroscedastic
-   `Φ((ΔE−m)/√ΣVar)` using the superposition's own variance — and Gaussian-Φ vs logit/Beta for bounded μ.
-8. **Multi-factor loss:** the factor weights (reliabilities); avoiding double-counting when a direct
-   edge is both REL_SPEC-regressed *and* judge-supervised; which judge anchors which factor; are weights
-   fixed, annealed, or learned (as inverse-variance)?
-9. **Judge-factor weight:** estimate it from inter-judge agreement (ensemble variance) on a calibration
-   sample, not single-judge confidence (measured: judges *disagree more* at high single-judge μ on the tail).
 
 ## Rejected alternatives (and why)
 Each design choice has a discarded counterpart; reviewers should feel free to challenge the *rejections*.
