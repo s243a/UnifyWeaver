@@ -96,3 +96,32 @@ Later we can **sort by highest `none`-disagreement to hunt genuine graph errors*
 asserts an edge a strong judge confidently rejects is a likely *real mistake*, distinct from honest
 uncertainty. Same column, different read (keep-as-data now vs sort-descending-to-audit later); `flag` already
 selects by `none`, so only a descending sort is needed when we want it.
+
+## Measurement arc — wiring, scale, and the saturation/blind-spot verdict
+**Wired** the §9/§14 path into the trainer (`--haiku-tail`: override inferred conf<1.0 graded targets with the
+cached LLM E[μ] + judge provenance, fwd/rev by title-match). **Scaled** the distributional set **66 → 228 →
+417** rows (pilot + Engineering + System&Control, all from cache, no harvester; 411 haiku + 6 sonnet).
+
+**Fresh from-scratch sweep (3 seeds × base/treat, 500 steps):** UNRELIABLE — seed-3 diverged for *both* arms
+(WIKI 36%, μ→0); on the 2 valid seeds treatment gave only a small WIKI-order gain (+0.7, +1.6%); SYM/OOD were
+noise (the dramatic first-run drop 23.6→7.9% OOD did NOT replicate). The repeat correctly deflated a fluke.
+
+**Warm-start sweep (2 seeds × base/treat from `model_nodetype.pt`, 400 steps):** STABLE (no divergence; the
+3→5 judge-embedding resize auto-handled). Result — **treatment ≈ baseline on every clean metric**:
+
+| metric (warm-start) | base (s1/s2) | treat (s1/s2) |
+|---|---|---|
+| WIKI order-acc | 99.8 / 99.8 | 99.8 / 99.9 |
+| SYM corr (40) | +0.665 / +0.698 | +0.676 / +0.711 |
+| WIKI OOD-leak | 28 / 20% | 28 / ~20% |
+
+**Conclusion (honest):** at convergence the base metrics are **saturated and indistinguishable** with/without
+augmentation. The fresh-run gain was undertraining, not quality. **Critically, these held-out metrics measure
+the BASE simplewiki population — they are structurally blind to the inferred physics/EE tail the augmentation
+changes.** "No effect on WIKI/SYM" ≠ "no effect" — it means we measured the wrong population. This is the same
+labeled-population-vs-inferred-tail blind spot flagged in the design.
+
+**The missing instrument (next):** a **held-out-tail eval** (§9/§12(3)) — split the 417 scored rows, train
+treatment on the train-tail only, and compare each model's μ/E[μ] to the held-out Haiku E[μ] *on the tail*.
+That is the only measurement that can see whether augmenting the tail improved the tail. Until it exists, the
+data-scaling payoff is unmeasured. (More data is cheap and unblocked; reading it is the gap.)
