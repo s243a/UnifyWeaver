@@ -35,9 +35,10 @@ loss-note "adaptive dual-ascent"): `λ ← clamp(λ + lr·(target − sat), 0, m
     [--transitive-lambda-lr 0.1 --transitive-lambda-max 20]
 ```
 
-**Scale: homoscedastic vs heteroscedastic** (orthogonal to λ — this sets the logistic *sharpness*, not the
-weight). Default = global `s` (`--transitive-scale`). Add **`--transitive-hetero`** for **per-pair**
-`s_pair = s/√(1+V)`, where `V` is the **product-propagated chain variance** carried in the triples:
+**Scale: heteroscedastic (DEFAULT) vs homoscedastic** (orthogonal to λ — this sets the logistic *sharpness*,
+not the weight). The default is **per-pair** `s_pair = s/√(1+V)` (more principled, ~free — `V` is precomputed
+in the triples, no extra forwards). Pass **`--transitive-homo`** to force the global-`s` approximation (e.g.
+for an A/B). `V` is the **product-propagated chain variance** carried in the triples:
 `V = Σ_links (1−μ)/μ` — the textbook product error-propagation (relative variances add; additive in
 log-variance, the dual of the log-μ chaining). **Longer / weaker chains → larger `V` → softer constraint** —
 which the global-`s` form cannot express. DESIGN §"The loss must be over the predicted DISTRIBUTION".
@@ -73,7 +74,7 @@ PY
 | `--transitive-weight` | fixed-λ multiplier (also the dual-ascent init) | 0.0 (off) |
 | `--transitive-margin` | `m`: enforce `μ_bound − μ_trans ≥ m` | 0.05 |
 | `--transitive-scale` | logistic `s` (global confidence; homoscedastic) | 10.0 |
-| `--transitive-hetero` | per-pair `s_pair=s/√(1+V)` from product-propagated chain variance (heteroscedastic) | off |
+| `--transitive-homo` | force homoscedastic global `s` (default is heteroscedastic per-pair `s/√(1+V)`) | off (→ hetero) |
 | `--transitive-target-sat` | dual-ascent target satisfaction (0=fixed-λ) | 0.0 |
 | `--transitive-lambda-lr` / `-max` | dual-ascent step / cap | 0.1 / 20 |
 | `--eval-transitive PATH` | held-out triples → satisfaction + anti-collapse | — |
@@ -81,7 +82,7 @@ PY
 ## Deferred methods (proposed, not built — see DESIGN open questions)
 - **Heteroscedastic via superposition variance** — the design's *original* variance source (per-pair
   `Var[μ]` from the operator-superposition, needing R hard-cell forwards / MC). **Built instead:** the cheaper,
-  cleaner **product-propagated chain variance** (`--transitive-hetero`, above) — structural, no extra forwards.
+  cleaner **product-propagated chain variance** (the default, above) — structural, no extra forwards.
   The superposition-variance variant remains an alternative if a per-pair (non-chain) uncertainty is wanted.
 - **Noisy-OR multi-path** — reinforcement when multiple paths exist; NOT a semiring closure (needs path
   enumeration), unlike the `max` default (DESIGN §"Multi-path: semiring closure vs path enumeration").
