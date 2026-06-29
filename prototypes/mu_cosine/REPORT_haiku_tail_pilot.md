@@ -125,3 +125,30 @@ labeled-population-vs-inferred-tail blind spot flagged in the design.
 treatment on the train-tail only, and compare each model's μ/E[μ] to the held-out Haiku E[μ] *on the tail*.
 That is the only measurement that can see whether augmenting the tail improved the tail. Until it exists, the
 data-scaling payoff is unmeasured. (More data is cheap and unblocked; reading it is the gap.)
+
+## Held-out-TAIL eval — the decisive (negative) result
+Built `--eval-tail` (§9/§12(3)): model E[μ] under an equal-weight operator superposition (none excluded) vs
+the cached Haiku E[μ], on tail rows whose Haiku target the model never trained on. Split 417 → 333 train-tail
+/ 84 holdout; warm-start from `model_nodetype.pt`, 2 seeds × base/treat, only difference = the train-tail override.
+
+| seed | arm | TAIL corr | TAIL MSE | model μ̄ |
+|---|---|---|---|---|
+| 1 | base | +0.209 | 0.062 | 0.253 |
+| 1 | treat | +0.231 | 0.082 | 0.190 |
+| 2 | base | +0.196 | 0.063 | 0.262 |
+| 2 | treat | +0.187 | 0.070 | 0.231 |
+
+**The augmentation gives NO measurable lift on the tail.** Corr is flat (~+0.20 both arms, treat +0.02/−0.01
+across seeds = within noise); MSE slightly *worse* for treatment. The **baseline already correlates +0.20 with
+Haiku on the tail with zero Haiku training** — the frozen-e5 base extracts ~that much on its own, and the
+augmentation can't push past it.
+
+**Two interpretations → different levers:**
+1. **Representation ceiling (frozen e5):** the base already captures what e5 affords; better targets add no
+   information the embedding lacks. Lever = richer encoder, not more data.
+2. **Dilution (§13 imbalance, unsolved):** train-tail is only 333/~5000 graded targets (~7%), far below the
+   30% target. At 7% of the gradient even perfect targets can't move the model. Lever = upweight the tail.
+
+**Disambiguating experiment (next, cheap, no new data):** upweight the train-tail to ~30% effective share and
+re-run the tail eval. Beats baseline → it was dilution (more/heavier tail data helps). Still flat → it's the
+representation ceiling (need a better embedding). This is the experiment that tells us which ceiling we're against.
