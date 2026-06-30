@@ -571,9 +571,8 @@ def train(args):
     # every row is the router; no new embedding needed. (Beats the e5-probe on direction — REPORT §4.6.)
     _DIR_REL = {"element_of", "subcategory", "subtopic", "super_category"}
     dir_edges = [r for r in graded_tr if r[8] == "graph" and r[4] in _DIR_REL and r[2] >= 0.5]
-    # when the directional RANKING loss is on, graph-directional rows are rank-supervised (+ anchor) — exclude them
-    # from the REGRESSION pool so the 0.90/0.10 regression doesn't compete with the rank (haiku/lateral rows stay).
-    graded_nondir = [r for r in graded_tr if not (r[8] == "graph" and r[4] in _DIR_REL)]
+    # NB: directional graph rows go through BOTH the regression pool (foundation) and the rank term (sharpening) —
+    # rank-only from scratch underperforms, it needs the graded foundation first (REPORT §4.6 / the #2 commit).
     relset = sorted(set(r[4] for r in graded_tag))
     blend_state = {"pop": None, "tgt": None}               # per-inferred-row P(op) [N,n_ops] + blended target
     # tagged-blend (DESIGN §7): when --blend-tagged-conf c < 1.0, ALSO blend TAGGED rows as a REGULARIZER with

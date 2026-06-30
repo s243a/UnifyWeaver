@@ -185,16 +185,20 @@ was edge-leakage — μ had trained on the eval edges; this is the fair redo):
 | DIRECTION (fwd vs rev) | 0.511 | 0.930 [.919,.938] | 0.776 | 0.839 | **0.982** [.975,.988] |
 | CLOSE-NEG (parent vs sib) | 0.627 | 0.790 [.772,.807] | 0.738 | 0.779 | **0.864** [.849,.881] |
 
-**μ now beats the trained-head-on-frozen-e5 probe on both axes, held-out, with non-overlapping CIs.** So the
+**μ now beats the trained *linear* e5-probe on both axes, held-out, with non-overlapping CIs.** So the
 review's control was right (an *untrained-for-the-task* μ loses to a probe) but the cause was **entirely the
 objective**: symmetric-dominant training, then regression-to-constants. Fix the objective (keep direction, drop
-symmetric pressure, *rank* instead of *regress*) and μ's nonlinear architecture **exceeds** a linear probe — it
+symmetric pressure, *rank* instead of *regress*) and μ's nonlinear architecture **exceeds the linear e5-probe
+under the directional-rank objective** (capacity-matched nonlinear probe / LoRA / e5 fine-tune = future work) — it
 was never the bottleneck. `model_dir_disc` is the cumulative recipe (directional graded → discriminative).
 
 **Hardened — node-disjoint + multi-seed (`eval_arch_harden.py`, addresses review #4/rigor): the win holds.** The
-above shares *nodes* between train and test (only edges held out). The strict control holds out **30% of NODES**
-(neither μ nor the probe sees an eval node as a *task example*; frozen-e5/base-model pretraining exposure is
-symmetric), warm-starts `model_nodetype`, fine-tunes μ on train-node edges only, over **3 seeds**:
+above shares *nodes* between train and test (only edges held out). The strict control holds out **30% of NODES** so
+the comparison is **node-disjoint in the *task supervision*** (neither μ's fine-tune nor the probe sees an eval
+node as a *task example*). It is **not pretraining-disjoint**: μ warm-starts `model_nodetype` (which saw these
+nodes during *its* pretraining), while the probe starts from frozen e5 features (which saw them during e5
+pretraining) — so the asymmetry is bounded but real; a from-scratch node-disjoint train is the stricter follow-up.
+μ fine-tunes on train-node edges only, over **3 seeds**:
 
 | scorer | DIRECTION (mean±sd) | CLOSE-NEG (mean±sd) |
 |---|---|---|
@@ -260,17 +264,21 @@ structurally cannot supply **direction** or a **readable low-end** (a wide, usab
 - **Calibrated degrees:** μ has 4× dynamic range, but that is *readability/separation*, not probabilistic
   calibration, and does not give clean high-recall thresholding (FPR leaky). Rename pending (§5).
 - **Clean-domain coverage:** no rank gain (e5 already strong).
-- **Data scaling:** fine-tuning crossed the **e5-*cos*** bar — but that baseline is uncontrolled; an e5-*probe*
-  curve is the needed comparison and is **not yet run**.
+- **Data scaling:** fine-tuning crossed the **e5-*cos*** bar; the **e5-*probe* filing baseline IS run** (§6,
+  `eval_filing_probe.py`) — it lands at ~0.06 (filing is an interaction/match task a linear probe can't compute),
+  so **e5-cos is the strong e5 baseline for filing** and μ crosses it. (A hard-negative-tuned ranking probe is the
+  rigorous version; it would at best approach e5-cos.)
 
 **Net (final, after §4.6's full objective fix):** the symmetric-trained checkpoint lost to a trained e5-probe —
 but that was **entirely the objective** (symmetric-dominant training, then regression-to-constants), not the
 architecture. With the objective fixed — directional supervision + a **discriminative ranking loss** — **μ beats
-the trained-head-on-frozen-e5 probe on both direction (0.982 vs 0.930) and close-negatives (0.864 vs 0.790)**,
-held-out, with non-overlapping CIs — **and it holds under a node-disjoint, 3-seed control (0.961 vs 0.920;
-0.812 vs 0.777, §4.6).** So μ's nonlinear architecture **does add value over a linear probe**, once trained for
-the task; the earlier loss was supervision, not capacity. The review's control was the right test and it drove
-the fix. The systems argument (one general model vs a per-task probe zoo) is now *supported* rather than merely
+the trained *linear* e5-probe** on both direction (0.982 vs 0.930) and close-negatives (0.864 vs 0.790), held-out,
+non-overlapping CIs — **and it holds under a node-disjoint, 3-seed control (0.961 vs 0.920; 0.812 vs 0.777,
+§4.6).** **Scope:** the control is a *linear, order-aware* head on frozen e5; the claim is "μ beats a **linear**
+e5-probe **under the directional-rank objective**," *not* that all trained e5 adaptations are exhausted — a
+capacity-matched **nonlinear probe / LoRA / e5 fine-tune** remains future work. The earlier loss was supervision,
+not capacity. The review's control was the right test and it drove the fix. The systems argument (one general
+model vs a per-task probe zoo) is now *supported* rather than merely
 hypothesised.
 
 ## 8. Threats to validity / limitations (for the reviewer)
@@ -299,10 +307,14 @@ hypothesised.
   `eval_arch_control.py` / `eval_arch_harden.py`.
 - **Architecture control caveat (resolved).** e5-cos was a *product* baseline; the *architecture* control (a
   trained head on frozen e5) is now run (§4.6) and μ beats it once trained for the task.
-- **Still open:** an e5-*probe* learning curve for §4.1 (the filing curve beat e5-*cos* only); probabilistic
-  calibration (ECE/reliability) is unmeasured (§5); the node-disjoint base model (`model_nodetype`) still saw the
-  held-out nodes during *its* pretraining (only the task-example supervision is held out — symmetric with e5's
-  pretraining, but not a from-scratch node-disjoint train).
+- **Filing e5-probe (resolved, §6).** A trained linear/bilinear e5 head for filing lands at ~0.06 (far below
+  e5-cos 0.291) — filing is an interaction/match task a linear probe can't compute, so e5-cos is the filing bar
+  μ crosses. A hard-negative-tuned *ranking* probe is the rigorous version (would at best approach e5-cos).
+- **Still open:** probabilistic calibration (ECE/reliability) is unmeasured (§5); the node-disjoint control is
+  **task-supervision-disjoint, not pretraining-disjoint** (`model_nodetype` saw the held-out nodes in *its*
+  pretraining, the probe saw them in e5's — a from-scratch node-disjoint train is the stricter follow-up); the
+  architecture claim is scoped to a **linear** e5-probe (capacity-matched nonlinear/LoRA = future work); the
+  Haiku lateral layer is a 17-pair proof-of-pipeline, not a full-scale ≤30% result.
 
 ## 9. Questions we'd like the reviewer to scrutinise
 
