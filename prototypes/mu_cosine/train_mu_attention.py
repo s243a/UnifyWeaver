@@ -324,6 +324,65 @@ def eval_transitive(model, tok, path, idx, use_nodetype):
 
 
 @torch.no_grad()
+def eval_retrieval(model, tok, idx, adj, roots, k=25, out=None):
+    """Retrieval diagnostic (DESIGN_model_applications.md — the first concrete increment). For each root, rank
+    ALL nodes by the **unconditional** μ(·|root) (equal-weight operator superposition) and relate it to graph
+    **hop-distance** (BFS). Reports: per-hop mean μ (does μ decay with distance?), the top-k hop distribution
+    (does retrieval pull in near AND far semantically-related nodes?), and a **greedy bidirectional gather**
+    (best-first over the graph by μ) vs the global dense top-k. Writes the top-k (root, node, μ, hop) for the
+    μ-vs-hop SCATTER. Pure inference — no LLM. Include an OOD root to probe e5 generalisation outside training."""
+    import heapq, collections, statistics as st
+    was = model.training; model.eval()
+    dev = next(model.parameters()).device
+    n_ops = model.op_emb.weight.shape[0]
+    allnodes = list(idx)
+    for root in roots:
+        if root not in idx:
+            print(f"[RETRIEVAL] root '{root}' not in vocab — skip"); continue
+        items = [(nd, root, 0) for nd in allnodes]                  # op_id placeholder; op_weights override below
+        mu = []
+        for i in range(0, len(items), 512):
+            b = tok.build(items[i:i + 512], train=False)
+            b = {kk: (v.to(dev) if torch.is_tensor(v) else v) for kk, v in b.items()}
+            ow = torch.full((len(items[i:i + 512]), n_ops), 1.0 / n_ops, device=dev)   # equal-weight superposition
+            mu += model(**b, op_weights=ow).cpu().tolist()
+        mu = {allnodes[i]: mu[i] for i in range(len(allnodes))}
+        hop = bfs_dist(adj, root)                                   # graph hop-distance from root
+        topk = sorted(allnodes, key=lambda nd: -mu[nd])[:k]
+        byhop = collections.defaultdict(list)
+        for nd in allnodes:
+            byhop[hop.get(nd, 99)].append(mu[nd])
+        print(f"[RETRIEVAL] root={root}  (n={len(allnodes)})")
+        print(f"  mean μ by hop:  " + "  ".join(f"h{h}:{st.mean(byhop[h]):.2f}(n{len(byhop[h])})"
+                                                 for h in sorted(byhop) if h != 99))
+        print(f"  top-{k} hop dist: {dict(collections.Counter(hop.get(nd, '∞') for nd in topk))}")
+        ex = lambda lst: "  ".join(f"{nd.split(':')[-1][:16]}({mu[nd]:.2f},h{hop.get(nd, '∞')})" for nd in lst[:8])
+        print(f"  DENSE-μ   top-8:  {ex(topk)}")
+        # WSP baseline: nearest by graph hop-distance (μ tiebreak) — structure only
+        wsp = sorted((nd for nd in allnodes if hop.get(nd, 99) < 99), key=lambda nd: (hop[nd], -mu[nd]))[:k]
+        print(f"  WSP(struct) top-8:  {ex(wsp)}")
+        # greedy bidirectional gather: best-first over the graph by μ (structure ∩ semantics — the new algorithm)
+        seen, gathered = {root}, []
+        fr = [(-mu[nd], nd) for nd in adj.get(root, ()) if nd in idx]; heapq.heapify(fr)
+        while fr and len(gathered) < k:
+            _, nd = heapq.heappop(fr)
+            if nd in seen:
+                continue
+            seen.add(nd); gathered.append(nd)
+            for m in adj.get(nd, ()):
+                if m not in seen and m in idx:
+                    heapq.heappush(fr, (-mu[m], m))
+        print(f"  GREEDY    top-8:  {ex(gathered)}")
+        print(f"    (greedy = μ-ranked among graph-reachable; dense∩greedy overlap {len(set(gathered) & set(topk))}/{k})")
+        if out:
+            with open(out, "a", encoding="utf-8") as f:
+                for nd in topk:
+                    f.write(f"{root}\t{nd}\t{mu[nd]:.4f}\t{hop.get(nd, -1)}\n")
+    if was:
+        model.train()
+
+
+@torch.no_grad()
 def emit_dense(model, tok, names, op, root="Physics", bs=512):
     items = [(n, root, OPS[op]) for n in names]
     mu = mu_batch(model, tok, items, bs)
@@ -806,6 +865,8 @@ def train(args):
         eval_tail(model, tok, graded_text, _ntp, args.eval_tail, args.use_nodetype)
     if args.eval_transitive and os.path.exists(args.eval_transitive):     # held-out transitive eval (stage 3)
         eval_transitive(model, tok, args.eval_transitive, idx, args.use_nodetype)
+    if args.eval_retrieval:                                               # retrieval diagnostic (μ-vs-hop, greedy gather)
+        eval_retrieval(model, tok, idx, adj, args.eval_retrieval.split(","), k=args.retrieval_k, out=args.retrieval_out)
     if args.save and not es_saved:                        # early-stop already saved the best; else save the final
         torch.save({"state": model.state_dict(), "cfg": {"d_model": q.shape[1], "heads": args.heads,
                     "layers": args.layers}}, args.save)
@@ -1109,6 +1170,11 @@ def main():
     ap.add_argument("--transitive-hetero", action="store_true", help="heteroscedastic: per-pair scale s_pair = "
                     "s/√(1+V) from the product-propagated chain variance V (longer/weaker chains → softer); "
                     "vs the default global s (homoscedastic). DESIGN §'loss over the DISTRIBUTION'")
+    ap.add_argument("--eval-retrieval", default=None, help="comma-sep roots → retrieval diagnostic: rank all "
+                    "nodes by unconditional μ(·|root), report per-hop μ + greedy bidirectional gather + scatter "
+                    "(DESIGN_model_applications.md). Include an OOD root to probe e5 generalisation.")
+    ap.add_argument("--retrieval-k", type=int, default=25, help="top-k for the retrieval scatter/gather")
+    ap.add_argument("--retrieval-out", default=None, help="write top-k (root, node, μ, hop) for the μ-vs-hop scatter")
     ap.add_argument("--eval-transitive", default=None, help="held-out transitive triples → report constraint "
                     "satisfaction + anti-collapse level (use a node-split holdout, not the training triples)")
     ap.add_argument("--graded-nodes", default=None, help="override the graded nodes file (default: derive "
