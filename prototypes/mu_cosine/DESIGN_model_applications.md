@@ -156,9 +156,27 @@ the home-turf queries to these (`--holdout-nodes`, 500 sampled; candidates uncha
 
 Trained→held-out drop is **~3%**; the STEM-core win is **unchanged** (held-out core mu-super recall@10
 **0.637 vs 0.393**, median **7 vs 27** — the same numbers). μ ranks never-seen nodes almost exactly as well as
-seen ones ⇒ **the home-turf win is generalisation, not memorisation.** Baseline locked. **Next:** the filing
-fine-tune learning-curve (warm-start, folder-disjoint split, data fractions vs the flat e5-cos 0.299 bar); the
-local-tangent **bivector feature** is the geometric enhancement on top.
+seen ones ⇒ **the home-turf win is generalisation, not memorisation.** Baseline locked.
+
+### Filing fine-tune learning curve — μ CROSSES the e5-cos bar (`train_filing.py`)
+The quantified "with enough in-domain data the attention model wins." Warm-start `model_nodetype`, fine-tune on
+`element_of(bookmark→folder)` with **in-batch contrastive** negatives (B×B μ matrix; same-folder = positive), at
+rising **data fractions**, eval MRR/recall on a **fixed held-out bookmark set** (split is **bookmark-holdout**:
+folders are a stable taxonomy, the held-out *bookmarks* are never trained — the model carries no per-folder
+params, so a shared folder is not leakage). 500 steps, bs 48, single seed.
+
+| frac | n_train | MRR | recall@1 | recall@10 | med.rank | vs e5-cos (0.291) |
+|---|---|---|---|---|---|---|
+| 0.10 | 492 | 0.263 | 0.177 | 0.417 | 17 | −0.028 |
+| 0.30 | 1478 | 0.313 | 0.210 | 0.535 | 9 | **+0.022 ✓** |
+| 1.00 | 4929 | 0.352 | 0.235 | 0.573 | 7 | **+0.061 ✓** |
+
+μ **crosses between 10% and 30%** (~500–1500 bookmarks) and keeps climbing — at 100% **MRR 0.352 vs 0.291**
+(+21%), **recall@10 0.573 vs 0.440**, **median rank 7 vs 17** — monotonic and **still rising** (no plateau ⇒ more
+data helps). The OOD 2× loss (zero-shot) inverts to a clear win once the trained region is *extended* to the
+bookmark domain — the prediction confirmed. Caveats: single seed (multi-seed to lock — cf. perf-skepticism); a
+short fine-tune (more steps/data only helps per the slope). **Next:** the local-tangent **bivector feature** /
+orthogonalised codebook is the geometric enhancement on top (and per-region mixture for the long OOD tail).
 
 ### Relation to prior approaches
 Prior graph retrieval uses **distance metrics** — most relevantly **weighted shortest path** (and the WAM
