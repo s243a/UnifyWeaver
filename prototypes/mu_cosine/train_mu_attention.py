@@ -356,8 +356,12 @@ def eval_retrieval(model, tok, idx, adj, roots, k=25, out=None):
         print(f"  mean μ by hop:  " + "  ".join(f"h{h}:{st.mean(byhop[h]):.2f}(n{len(byhop[h])})"
                                                  for h in sorted(byhop) if h != 99))
         print(f"  top-{k} hop dist: {dict(collections.Counter(hop.get(nd, '∞') for nd in topk))}")
-        print(f"  top-8 by μ:  " + "  ".join(f"{nd.split(':')[-1][:16]}({mu[nd]:.2f},h{hop.get(nd, '∞')})" for nd in topk[:8]))
-        # greedy bidirectional gather: best-first over the graph by μ (structure ∩ semantics)
+        ex = lambda lst: "  ".join(f"{nd.split(':')[-1][:16]}({mu[nd]:.2f},h{hop.get(nd, '∞')})" for nd in lst[:8])
+        print(f"  DENSE-μ   top-8:  {ex(topk)}")
+        # WSP baseline: nearest by graph hop-distance (μ tiebreak) — structure only
+        wsp = sorted((nd for nd in allnodes if hop.get(nd, 99) < 99), key=lambda nd: (hop[nd], -mu[nd]))[:k]
+        print(f"  WSP(struct) top-8:  {ex(wsp)}")
+        # greedy bidirectional gather: best-first over the graph by μ (structure ∩ semantics — the new algorithm)
         seen, gathered = {root}, []
         fr = [(-mu[nd], nd) for nd in adj.get(root, ()) if nd in idx]; heapq.heapify(fr)
         while fr and len(gathered) < k:
@@ -368,9 +372,8 @@ def eval_retrieval(model, tok, idx, adj, roots, k=25, out=None):
             for m in adj.get(nd, ()):
                 if m not in seen and m in idx:
                     heapq.heappush(fr, (-mu[m], m))
-        ov = len(set(gathered) & set(topk))
-        print(f"  greedy-gather top-{len(gathered)}: {ov}/{k} overlap with the global dense top-{k} "
-              f"(greedy = connected high-μ; dense may include disconnected/cross-domain)")
+        print(f"  GREEDY    top-8:  {ex(gathered)}")
+        print(f"    (greedy = μ-ranked among graph-reachable; dense∩greedy overlap {len(set(gathered) & set(topk))}/{k})")
         if out:
             with open(out, "a", encoding="utf-8") as f:
                 for nd in topk:

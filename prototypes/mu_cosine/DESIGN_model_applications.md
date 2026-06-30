@@ -1,8 +1,9 @@
 # Applications of the μ model — and a geometric (bivector) theory note
 
-**Status: FUTURE-WORK / roadmap.** Most of this is *proposed*, not built: the retrieval algorithm, the
-hop-stratified eval, and the geometric (bivector / root-centred) theory are directions, not shipped code. It
-builds on a few **existing** pieces — `emit_dense` → `dense_mu_attn_*.tsv` (density maps), the bridge detectors
+**Status: mixed — roadmap + a built core.** The **retrieval algorithm itself is now built + verified**
+(`eval_retrieval`, three-way DENSE/WSP/GREEDY comparison — see "Built + verified" below). Still *proposed*: the
+**formal hop-stratified recall@k / AUC eval** against a held-out-edge ground truth, and the geometric (bivector /
+root-centred) theory. It builds on a few **existing** pieces — `emit_dense` → `dense_mu_attn_*.tsv` (density maps), the bridge detectors
 (`bridge_ensemble.py`, PR #3322), and the `DESIGN_bidirectional_walk.md` traversal — and on the **built +
 verified** transitive μ (`DESIGN_transitive_relations.md`) it relies on for distance-awareness. The "Build
 plan" at the end is the concrete next increment.
@@ -65,6 +66,28 @@ ranking*.
    close, graph-distant — what μ adds over shortest-path) and low-μ-near (graph-adjacent but weak — what μ
    *corrects*). The scatter is a visual proof of whether semantics-on-structure beats structure-alone.
 
+### Built + verified (`eval_retrieval` in `train_mu_attention.py`, `--eval-retrieval`)
+Stages 1–3 are implemented (`--eval-retrieval "Root1,Root2" --retrieval-k 25 [--retrieval-out scatter.tsv]`),
+reporting **three rankings side-by-side** — DENSE-μ (score all nodes), WSP (graph-hop, μ tiebreak; the
+structural baseline), GREEDY (μ-ranked among graph-reachable; the new algorithm) — plus per-hop mean μ and the
+top-k hop distribution. Verified on `model_nodetype.pt` over three roots spanning the generalisation gradient:
+- **Physics (in-distribution)** — all three rankings agree; dense∩greedy overlap **21/25**.
+- **Music (clean OOD, not trained)** — all three agree, **25/25** — frozen e5 generalises cleanly outside the
+  physics training region.
+- **Cooking (confusable OOD)** — the discriminating case. DENSE-μ is **polluted** by `Movies_directed`,
+  `Movie_studios`, `Basketball_movie` (hops 4–6, μ 0.4–0.6) because e5 conflates cooking-TV → film. GREEDY
+  **removes all of them** (they're not in the gather's graph region) and recovers the actual cooking
+  subcategories ranked by μ; dense∩greedy overlap collapses to **4/25**. It *also* beats WSP, which keeps
+  `Home(0.04,h1)`/`Nutrition(0.18,h2)` purely for graph-adjacency — greedy's μ-ranking demotes them.
+
+The two corrections, both visible in Cooking: **vs DENSE**, structure removes high-μ-far false positives (the
+movie leak); **vs WSP**, semantics demotes low-μ-near false positives (`Home`). **Bonus —
+dense∩greedy overlap is a free reliability self-diagnostic**: high (Physics/Music) ⇒ structure and semantics
+agree, trust the result; low (Cooking 4/25) ⇒ e5 is leaking across a domain boundary, trust the
+structure-constrained greedy over raw μ. No ground truth required. *Still proposed:* the formal hop-stratified
+recall@k / AUC vs a held-out-edge ground truth (Build-plan §1–2) — the number that turns this qualitative
+validation into a head-to-head.
+
 ### Relation to prior approaches
 Prior graph retrieval uses **distance metrics** — most relevantly **weighted shortest path** (and the WAM
 core's effective-distance). Those are *structural only*: graph-near ≠ semantically-related. The new algorithm
@@ -117,8 +140,11 @@ and a possible re-derivation, not for retrieval.
   `⅓+⅓+⅓` default.
 
 **New things:**
-- **Graph RAG / retrieval algorithm** — greedy bidirectional gather + μ-superposition sort (above).
-- **Hop-stratified retrieval eval** + the μ-vs-hop top-k scatter.
+- **Graph RAG / retrieval algorithm** — greedy bidirectional gather + μ-superposition sort. **Built + verified**
+  (`eval_retrieval`); the discriminating Cooking case shows it fixes the dense-μ domain-leak. The μ-vs-hop
+  top-k scatter is built too.
+- **Hop-stratified retrieval eval** (formal recall@k / AUC vs held-out-edge ground truth) — *still proposed*;
+  the head-to-head number against the WSP baseline.
 - **Embedding bivectors / geometric (GA) re-derivation** — the theory note (research thread).
 
 ## Build plan (the retrieval core — first concrete increment, no LLM, runs against existing models)
