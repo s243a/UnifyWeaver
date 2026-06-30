@@ -21,7 +21,19 @@ Usage:
 """
 import argparse, glob, json, os, random, collections
 import torch
-from mu_attention import build_e5_tables, Tokenizer, MuAttention, OPS
+from mu_attention import build_e5_tables, Tokenizer, MuAttention, OPS, load_dag, GRAPH
+
+
+def load_membership(graph_path, min_bm):
+    """IN-DOMAIN home-turf analog of filing: the simplewiki category DAG. A 'folder' = a category; its
+    'bookmarks' = its child nodes. Same (member → container) shape as filing, but in the model's TRAINED
+    region. Returns (queries=[(child_title, parent_id)], cand={parent_id: parent_title}). NB the checkpoint
+    trained on these edges — this is a best-case (memorisation-allowed) probe; a clean holdout is a follow-up."""
+    parents, children, deg = load_dag(graph_path)
+    disp = lambda s: s.replace("_", " ")
+    cand = {par: disp(par) for par, kids in children.items() if len(kids) >= min_bm}
+    queries = [(disp(c), par) for par in cand for c in children[par]]
+    return queries, cand
 
 
 def load_filing(trees_dir, min_bm):
@@ -77,7 +89,11 @@ def metrics(ranks):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ckpt", required=True)
-    ap.add_argument("--trees", required=True, help="dir of harvested per-tree JSONs (.local)")
+    ap.add_argument("--source", choices=("pearltrees", "simplewiki"), default="pearltrees",
+                    help="pearltrees = OOD bookmark filing (.local); simplewiki = IN-DOMAIN home-turf "
+                         "category membership (isolates OOD by changing only the domain, lineage held off)")
+    ap.add_argument("--trees", default=None, help="dir of harvested per-tree JSONs (.local; pearltrees source)")
+    ap.add_argument("--graph", default=GRAPH, help="category_parent.tsv (simplewiki source)")
     ap.add_argument("--min-bm", type=int, default=3, help="min bookmarks for a folder to be a candidate")
     ap.add_argument("--max-queries", type=int, default=500)
     ap.add_argument("--seed", type=int, default=7)
@@ -88,8 +104,13 @@ def main():
                          "true-folder's max e5-similarity to these (tests 'μ only helps inside its region')")
     a = ap.parse_args()
 
-    queries, cand = load_filing(a.trees, a.min_bm)
-    print(f"[DATA] {len(cand)} candidate folders (>= {a.min_bm} bookmarks), {len(queries)} eligible bookmarks")
+    if a.source == "simplewiki":
+        queries, cand = load_membership(a.graph, a.min_bm)
+    else:
+        assert a.trees, "--trees required for --source pearltrees"
+        queries, cand = load_filing(a.trees, a.min_bm)
+    print(f"[DATA] source={a.source}: {len(cand)} candidate folders (>= {a.min_bm} members), "
+          f"{len(queries)} eligible members")
     rng = random.Random(a.seed)
     if len(queries) > a.max_queries:
         queries = rng.sample(queries, a.max_queries)
