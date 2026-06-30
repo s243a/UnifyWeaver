@@ -313,6 +313,16 @@ calibrated, multi-relational estimator vs a per-(relation,direction) probe zoo �
 framing above stands only if that generality claim is substantiated; otherwise a trained e5-probe is the stronger,
 simpler tool. (This is the review's decisive catch; we ran the control and it overturned the headline.)
 
+**UPDATE — the gap was mostly the OBJECTIVE; directional supervision largely closes it.** Root cause: μ's
+dominant SYM walk term is *order-invariant* (trains symmetry, competing with direction); direction was a minority
+graded component. Retrained `model_dir` keeping direction as the target (directional graded + transitive,
+`--sym-weight 0`): DIRECTION 0.776→**0.839**, CLOSE-NEG 0.738→**0.779 (≈ probe 0.787, CIs overlap)**. So μ
+**matches the probe on close-negatives and closed ~half the direction gap from an objective change alone** — the
+architecture is competitive, not inferior; the earlier loss was a supervision artifact (under-supervised
+direction + symmetric pressure). Residual direction gap (0.84 vs 0.92) = μ's regression-to-0.90/0.10 vs the
+probe's discriminative loss; a ranking/discriminative directional loss is the remaining lever. Net: μ is viable
+for directional membership once supervised for it; "μ can't beat a trained head" is too strong.
+
 ### Relation to prior approaches
 Prior graph retrieval uses **distance metrics** — most relevantly **weighted shortest path** (and the WAM
 core's effective-distance). Those are *structural only*: graph-near ≠ semantically-related. The new algorithm
