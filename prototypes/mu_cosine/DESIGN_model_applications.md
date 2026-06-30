@@ -115,7 +115,11 @@ Physics/Math/Chem/CS/Eng — testing "μ only helps inside its region"): the e5-
 **not** close the gap near the core — the loss is *uniform*, not region-specific. Two confounds keep this from
 refuting the region hypothesis: (1) weak stratifier (e5-small's high cosine floor — even "FAR" folders sit at
 0.74 to *Physics*); (2) **the lineage confound** — the model trained *with* ancestor lineage but runs here on
-**cold, lineage-free** bookmarks (empty DAG), a uniform handicap that could itself flatten the ratio. So "μ
+**cold, lineage-free** bookmarks (empty DAG), a uniform handicap that could itself flatten the ratio. **NB —
+the transformer is nonlinear, so multi-region is *not* a capacity question.** A single μ model can represent
+many regions separated by boundary manifolds (the nonlinear analog of routed per-cluster Procrustes — the
+*linear* model needs discrete routing precisely because it can't); so the flat ~2× loss is cold-start + lineage,
+*not* a single-global-transform ceiling. The mixture is the linear workaround, not the fix here. So "μ
 loses ~2× everywhere" conflates OOD-task + cold-start + (maybe) wrong-region; stratification rules out
 wrong-region-as-sole-cause but not the rest.
 
@@ -150,16 +154,34 @@ Our operators split *exactly* along this seam:
 So μ's symmetric/directional operator structure *is* the scalar/bivector grade structure of a multivector — the
 asymmetry is geometric **by construction**, not bolted on.
 
-**Embedding bivectors (novel-ish):** rather than embed each node as a vector and patch the similarity, embed
-the **relationship** as a multivector — the directional content lives in the **bivector grade**. (GA / Clifford
-layers exist in recent ML, but tying the *fuzzy-membership operator split* to the scalar/bivector grades is
-uncommon.) This is a research thread, not a dependency of the applications.
+**Rotations on the sphere → bivectors as the generator.** e5 embeddings are **unit-normed**, so they live on a
+sphere and the relationship root→node is a **geodesic rotation**: rotor `R = exp(−½ θ B)`, applied
+`x_node = R x_root R̃`, where the **plane** `B = (x_root ∧ x_node)`-normalized and the **angle**
+`θ = arccos(x_root·x_node)`. The bivector encodes *both* — its plane is the rotation plane, its magnitude
+`|x_root ∧ x_node| = sin θ` is the angle. **Off the sphere = rotation + scalar dilation:** `x' = s·R x R̃`, a
+*scaled rotor* (similarity transform) splitting magnitude (`s`) from orientation (`R`). This is why
+the bookmarking agent's exact-Procrustes used **logm/expm** (the `so(n)` Lie algebra *is* the bivector space) —
+exact, but matrix-exp/log expensive. **Why bivector, not cross product:** in 3D they are Hodge-duals
+(`a∧b = I(a×b)`), but the cross product exists *only* in 3D/7D; for 384-dim e5 the bivector is the only correct
+generalisation of "oriented plane of rotation."
+
+**Embedding bivectors from the tangent space of each input (the concrete construction).** Rather than feed raw
+`x_node, x_root` and hope attention discovers directionality, feed the **local-tangent bivector**
+`B = x_root ∧ x_node` (or its compact rotor/log form) as an explicit feature. At a sphere point `x`, the tangent
+space `T_x` is everything ⟂ `x`; `B` lies in the root's tangent plane and *is* the geodesic direction toward the
+node. Two payoffs, both geometric-by-construction rather than learned: (1) **directionality is the sign of the
+bivector** (`x_r∧x_n = −x_n∧x_r` ⇒ `μ(a|b)≠μ(b|a)`); (2) because the tangent frame is **local**, `B` is
+**automatically region-adaptive** — the same construction yields different oriented relations in different parts
+of the sphere, the *continuous* analog of routed per-cluster transforms (the tangent space **is** the local
+chart, so no discrete clusters). The model then learns μ *on top of* the right primitive (`a∧b`, the
+antisymmetric part the scalar cosine throws away — exactly the part `e5-cos` ignores yet still beats a fumbling
+learned readout with). This is the model variant the GA note points at, now with a definite construction.
 
 **Root-centred embeddings / tangent chart (for visualisation):** fix the **root as origin**; node embeddings
-become root-relative, and the relationship to the root is the oriented `node ∧ root`. A **local chart** for the
-density explorer: 2D/3D coordinates where displacement ≈ μ-relatedness and the **axes are the principal
-statistical variations of the root's neighbourhood** (local PCA / a "tangent plane" at the root). Less common
-than global vector embeddings, and naturally per-root (each root its own chart). Also a viz/research thread.
+become root-relative, and the relationship to the root is the oriented `node ∧ root` (the same tangent bivector,
+used for *display* not features). A **local chart** for the density explorer: 2D/3D coordinates where
+displacement ≈ μ-relatedness and the **axes are the principal statistical variations of the root's
+neighbourhood** (local PCA / a "tangent plane" at the root). Naturally per-root (each root its own chart).
 
 **For ranking we need none of this** — μ *is* the distance measure; embeddings/bivectors are for visualisation
 and a possible re-derivation, not for retrieval.
