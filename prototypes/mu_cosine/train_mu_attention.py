@@ -565,6 +565,12 @@ def train(args):
     blend_nprng = _np.random.default_rng(args.seed + 9973)  # ISOLATED rng for the Dirichlet draws
     graded_inf = [r for r in graded_tr if len(r) > 9 and r[9] < 1.0]   # inferred rows (conf<1) for the blend
     graded_tag = [r for r in graded_tr if not (len(r) > 9 and r[9] < 1.0)]
+    # JUDGE→LOSS ROUTING (DESIGN): graph-judged DIRECTIONAL edges are *certain + oriented*, so train them with a
+    # RANKING loss (μ(member|container) > μ(container|member)) — discriminative, not regression-to-0.90/0.10
+    # (which caps separation). haiku/soft rows keep regression (L_graded/L_blend). The judge token already on
+    # every row is the router; no new embedding needed. (Beats the e5-probe on direction — REPORT §4.6.)
+    _DIR_REL = {"element_of", "subcategory", "subtopic", "super_category"}
+    dir_edges = [r for r in graded_tr if r[8] == "graph" and r[4] in _DIR_REL and r[2] >= 0.5]
     relset = sorted(set(r[4] for r in graded_tag))
     blend_state = {"pop": None, "tgt": None}               # per-inferred-row P(op) [N,n_ops] + blended target
     # tagged-blend (DESIGN §7): when --blend-tagged-conf c < 1.0, ALSO blend TAGGED rows as a REGULARIZER with
@@ -809,10 +815,27 @@ def train(args):
                 tw_eff = trans_lambda
             else:
                 tw_eff = args.transitive_weight                # fixed-λ (the multiplier set by hand)
+        # DISCRIMINATIVE DIRECTIONAL loss (judge=graph, directional rels): rank μ(member|container) above
+        # μ(container|member) instead of regressing both to fixed targets. Same form as L_trans; + light anchor.
+        L_dir = torch.zeros(())
+        if dir_edges and not args.sym_only and args.dir_rank_weight > 0:
+            db = [dir_edges[rng.randrange(len(dir_edges))] for _ in range(args.bs)]
+            if args.use_nodetype:
+                fi = [(r[0], r[1], OPS[graded_op(r)], CORPORA[r[7]], GRAPHJ, nt(r[5]), nt(r[6])) for r in db]
+                ri = [(r[1], r[0], OPS[graded_op(r)], CORPORA[r[7]], GRAPHJ, nt(r[6]), nt(r[5])) for r in db]
+            else:
+                fi = [(r[0], r[1], OPS[graded_op(r)], CORPORA[r[7]], GRAPHJ) for r in db]
+                ri = [(r[1], r[0], OPS[graded_op(r)], CORPORA[r[7]], GRAPHJ) for r in db]
+            mu_f = model(**bld(fi, train=True, rng=rng, p_mask_prov=args.prov_mask))   # μ(member|container) — HIGH
+            mu_r = model(**bld(ri, train=True, rng=rng, p_mask_prov=args.prov_mask))   # μ(container|member) — LOW
+            L_dir = (F.softplus(-args.dir_rank_scale * (mu_f - mu_r - args.dir_rank_margin)).mean()
+                     + args.dir_rank_anchor * (F.mse_loss(mu_f, torch.full_like(mu_f, 0.9))
+                                               + F.mse_loss(mu_r, torch.full_like(mu_r, 0.1))))
         loss = (args.sym_weight * L_sym + (0.0 if args.sym_only else args.wiki_weight * L_wiki)
                 + (args.elem_weight * L_elem if (elem_tr and not args.sym_only) else 0.0)
                 + (args.graded_weight * L_graded if (graded_tr and not args.sym_only) else 0.0)
                 + (tw_eff * L_trans if (trans_rows and not args.sym_only) else 0.0)
+                + (args.dir_rank_weight * L_dir if (dir_edges and not args.sym_only and args.dir_rank_weight > 0) else 0.0)
                 + (args.blend_weight * L_blend if blend_on else 0.0)
                 + (args.anchor_kl_weight * L_anchor if blend_on else 0.0))
         # LLM (optional, already-bought) — skipped in single-task SYM mode
@@ -1170,6 +1193,13 @@ def main():
     ap.add_argument("--transitive-hetero", action="store_true", help="heteroscedastic: per-pair scale s_pair = "
                     "s/√(1+V) from the product-propagated chain variance V (longer/weaker chains → softer); "
                     "vs the default global s (homoscedastic). DESIGN §'loss over the DISTRIBUTION'")
+    ap.add_argument("--dir-rank-weight", type=float, default=0.0, help="DISCRIMINATIVE directional loss "
+                    "(judge→loss routing: graph-judged DIRECTIONAL edges trained by RANKING not regression): "
+                    "softplus(-s·(μ(member|container) − μ(container|member) − m)). Beats e5-probe on direction. 0=off")
+    ap.add_argument("--dir-rank-scale", type=float, default=10.0, help="logistic scale s for the directional rank CE")
+    ap.add_argument("--dir-rank-margin", type=float, default=0.1, help="margin m: enforce μ_fwd − μ_rev ≥ m")
+    ap.add_argument("--dir-rank-anchor", type=float, default=0.2, help="light regression anchor (μ_fwd→0.9, "
+                    "μ_rev→0.1) so degrees stay readable/calibrated, not just separable")
     ap.add_argument("--eval-retrieval", default=None, help="comma-sep roots → retrieval diagnostic: rank all "
                     "nodes by unconditional μ(·|root), report per-hop μ + greedy bidirectional gather + scatter "
                     "(DESIGN_model_applications.md). Include an OOD root to probe e5 generalisation.")

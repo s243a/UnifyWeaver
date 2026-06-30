@@ -332,6 +332,23 @@ e5-probe. The review's control was the right test and drove the fix; "μ has no 
 **reversed** — it has one, once trained for the task. (Caveats: node-overlap remains → node-disjoint split next;
 single-run, tight CIs.)
 
+#### Judge→loss routing — the loss is keyed off provenance, not a new embedding (now in the main trainer)
+The discriminative loss is *not* a new "judge type." Provenance (`graph`/`haiku`/`human`/`sonnet`/`opus`) is an
+**input token** that conditions μ's *output* (and is marginalised at inference); the **loss function** is a
+*training-time* choice the model never sees as input. So we don't enlarge the judge table with "discriminative" —
+we **route the loss by the judge token already on every row**:
+- **`graph` + a DIRECTIONAL relation** (`element_of`/`subcategory`/`subtopic`/`super_category`) ⇒ *certain &
+  oriented* ⇒ **discriminative ranking** loss `softplus(−s·(μ(member|container) − μ(container|member) − m))` (+ a
+  light regression anchor so degrees stay readable). This is the term that beats the e5-probe.
+- **`haiku`** (soft superposition / inferred tail) ⇒ a *distribution*, not a hard orientation ⇒ keep **regression
+  to the soft target** (`L_graded`/`L_blend`).
+
+Implemented in `train_mu_attention.py` (`--dir-rank-weight`, `--dir-rank-scale/-margin/-anchor`): graph-judged
+directional rows are collected (`dir_edges`) and trained by the ranking term; everything else stays on
+regression. The judge table is unchanged (it only grows when a new *source* appears, e.g. `sonnet`/`opus`). Maps
+directly onto the data recipe: **downward directional (`graph`) → rank; bidirectional lateral (`haiku`
+superpositions, ≤30%) → soft regression.**
+
 ### Relation to prior approaches
 Prior graph retrieval uses **distance metrics** — most relevantly **weighted shortest path** (and the WAM
 core's effective-distance). Those are *structural only*: graph-near ≠ semantically-related. The new algorithm
