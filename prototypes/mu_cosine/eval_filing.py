@@ -24,7 +24,18 @@ import torch
 from mu_attention import build_e5_tables, Tokenizer, MuAttention, OPS, load_dag, GRAPH
 
 
-def load_membership(graph_path, min_bm, holdout=None):
+import re
+# Wikipedia admin / maintenance / navigation / structural-intersection categories — titles carry NO topical
+# meaning, so neither e5-cos nor μ can rank them (no training data fixes a meaningless label). Drop with --drop-admin.
+_ADMIN = re.compile(r"catautotoc|navseasoncats|navbox|wikipedia|^articles?[ _]|^pages?[ _]|^categor|"
+                    r"[ _]stubs?\b|templates?|redirects?|hidden|tracking|maintenance|disambiguation|"
+                    r"by[ _]nationality|by[ _]country|by[ _]year|by[ _]decade|by[ _]century|by[ _]date|by[ _]state|"
+                    r"establishments|disestablishments|introductions|^years[ _]of|^decades|^centuries", re.I)
+def is_admin(name):
+    return bool(_ADMIN.search(name.replace("_", " ")))
+
+
+def load_membership(graph_path, min_bm, holdout=None, drop_admin=False):
     """IN-DOMAIN home-turf analog of filing: the simplewiki category DAG. A 'folder' = a category; its
     'bookmarks' = its child nodes. Same (member → container) shape as filing, but in the model's TRAINED
     region. Returns (queries=[(child_title, parent_id)], cand={parent_id: parent_title}).
@@ -34,9 +45,10 @@ def load_membership(graph_path, min_bm, holdout=None):
     caveat: ranking never-seen nodes vs e5-cos is pure generalisation."""
     parents, children, deg = load_dag(graph_path)
     disp = lambda s: s.replace("_", " ")
-    cand = {par: disp(par) for par, kids in children.items() if len(kids) >= min_bm}
+    ok = (lambda n: not is_admin(n)) if drop_admin else (lambda n: True)
+    cand = {par: disp(par) for par, kids in children.items() if len(kids) >= min_bm and ok(par)}
     queries = [(disp(c), par) for par in cand for c in children[par]
-               if holdout is None or c in holdout]
+               if ok(c) and (holdout is None or c in holdout)]
     return queries, cand
 
 
@@ -100,6 +112,8 @@ def main():
     ap.add_argument("--graph", default=GRAPH, help="category_parent.tsv (simplewiki source)")
     ap.add_argument("--holdout-nodes", default=None, help="JSON list of RAW node names never seen in training; "
                     "restricts simplewiki queries to these (node-holdout: pure generalisation, no retrain)")
+    ap.add_argument("--drop-admin", action="store_true", help="drop Wikipedia admin/maintenance/navigation "
+                    "categories (meaningless titles) from folders+members (simplewiki source)")
     ap.add_argument("--min-bm", type=int, default=3, help="min bookmarks for a folder to be a candidate")
     ap.add_argument("--max-queries", type=int, default=500)
     ap.add_argument("--seed", type=int, default=7)
@@ -114,7 +128,7 @@ def main():
         held = set(json.load(open(a.holdout_nodes))) if a.holdout_nodes else None
         if held is not None:
             print(f"[HOLDOUT] restricting queries to {len(held)} never-trained nodes")
-        queries, cand = load_membership(a.graph, a.min_bm, holdout=held)
+        queries, cand = load_membership(a.graph, a.min_bm, holdout=held, drop_admin=a.drop_admin)
     else:
         assert a.trees, "--trees required for --source pearltrees"
         queries, cand = load_filing(a.trees, a.min_bm)

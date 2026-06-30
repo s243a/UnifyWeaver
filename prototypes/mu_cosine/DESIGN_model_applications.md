@@ -158,6 +158,27 @@ Trained→held-out drop is **~3%**; the STEM-core win is **unchanged** (held-out
 **0.637 vs 0.393**, median **7 vs 27** — the same numbers). μ ranks never-seen nodes almost exactly as well as
 seen ones ⇒ **the home-turf win is generalisation, not memorisation.** Baseline locked.
 
+#### Data quality > data quantity — dropping admin categories inverts the result (`--drop-admin`)
+Probing the "coverage" gap revealed the FAR-from-core bin is dominated by **Wikipedia admin/maintenance/nav
+scaffolding** (`CatAutoTOC generates no TOC` deg 1219, `Navseasoncats…`, `Establishments by year`, `X by
+country`) — titles with **no topical meaning**, so neither e5-cos nor μ can rank them and *no training data
+fixes a meaningless label*. Dropping them (`--drop-admin`, a name-pattern filter) **inverts the home-turf
+"tie"**:
+
+| in-domain | recall@10 | MRR | med.rank |
+|---|---|---|---|
+| with admin junk (earlier) | mu 0.494 / e5 0.424 | mu 0.255 / e5 0.270 (tie) | 11 / 29 |
+| **admin dropped — e5-cos** | 0.634 | 0.450 | 3 |
+| **admin dropped — mu-super** | **0.898** | **0.488** | **2** |
+
+The junk depressed *both* rankers and masked μ's edge. Cleaned, **μ clearly beats e5-cos** and **dominates at
+recall@10 (0.898 vs 0.634 — the answer in the top-10 90% vs 63% of the time)** — the LLM-re-rank operating point.
+Stratified: μ wins big in MID/NEAR-STEM (recall@10 0.86–0.88 vs 0.44–0.51, median 4 vs 8–23); on clean FAR
+*content* e5-cos leads at recall@1 but ties at recall@10. **Bitter-lesson footnote:** the "coverage" bet's first
+and cheapest win was **data quality** (drop ~meaningless labels), not quantity — and it sharpens where real
+coverage gaps remain (genuine non-STEM content, where e5 already does okay at recall@1, so the marginal value of
+more training there is lower than the headline gap suggested). Admin cats should also be filtered from *training*.
+
 ### Filing fine-tune learning curve — μ CROSSES the e5-cos bar (`train_filing.py`)
 The quantified "with enough in-domain data the attention model wins." Warm-start `model_nodetype`, fine-tune on
 `element_of(bookmark→folder)` with **in-batch contrastive** negatives (B×B μ matrix; same-folder = positive), at
