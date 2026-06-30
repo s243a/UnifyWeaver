@@ -24,15 +24,19 @@ import torch
 from mu_attention import build_e5_tables, Tokenizer, MuAttention, OPS, load_dag, GRAPH
 
 
-def load_membership(graph_path, min_bm):
+def load_membership(graph_path, min_bm, holdout=None):
     """IN-DOMAIN home-turf analog of filing: the simplewiki category DAG. A 'folder' = a category; its
     'bookmarks' = its child nodes. Same (member → container) shape as filing, but in the model's TRAINED
-    region. Returns (queries=[(child_title, parent_id)], cand={parent_id: parent_title}). NB the checkpoint
-    trained on these edges — this is a best-case (memorisation-allowed) probe; a clean holdout is a follow-up."""
+    region. Returns (queries=[(child_title, parent_id)], cand={parent_id: parent_title}).
+
+    `holdout` (optional set of RAW node names): restrict QUERIES to members in this set — for the node-holdout
+    eval (members the checkpoint NEVER trained on; candidates stay the full folder set). Kills the memorisation
+    caveat: ranking never-seen nodes vs e5-cos is pure generalisation."""
     parents, children, deg = load_dag(graph_path)
     disp = lambda s: s.replace("_", " ")
     cand = {par: disp(par) for par, kids in children.items() if len(kids) >= min_bm}
-    queries = [(disp(c), par) for par in cand for c in children[par]]
+    queries = [(disp(c), par) for par in cand for c in children[par]
+               if holdout is None or c in holdout]
     return queries, cand
 
 
@@ -94,6 +98,8 @@ def main():
                          "category membership (isolates OOD by changing only the domain, lineage held off)")
     ap.add_argument("--trees", default=None, help="dir of harvested per-tree JSONs (.local; pearltrees source)")
     ap.add_argument("--graph", default=GRAPH, help="category_parent.tsv (simplewiki source)")
+    ap.add_argument("--holdout-nodes", default=None, help="JSON list of RAW node names never seen in training; "
+                    "restricts simplewiki queries to these (node-holdout: pure generalisation, no retrain)")
     ap.add_argument("--min-bm", type=int, default=3, help="min bookmarks for a folder to be a candidate")
     ap.add_argument("--max-queries", type=int, default=500)
     ap.add_argument("--seed", type=int, default=7)
@@ -105,7 +111,10 @@ def main():
     a = ap.parse_args()
 
     if a.source == "simplewiki":
-        queries, cand = load_membership(a.graph, a.min_bm)
+        held = set(json.load(open(a.holdout_nodes))) if a.holdout_nodes else None
+        if held is not None:
+            print(f"[HOLDOUT] restricting queries to {len(held)} never-trained nodes")
+        queries, cand = load_membership(a.graph, a.min_bm, holdout=held)
     else:
         assert a.trees, "--trees required for --source pearltrees"
         queries, cand = load_filing(a.trees, a.min_bm)

@@ -139,13 +139,26 @@ shortlist better; e5-cos holds a thin recall@1 edge (different operating point).
 revives in the stratification:** NEAR-core (STEM) μ-super recall@10 **0.637 vs 0.393**, median **7 vs 30** — μ
 wins *decisively* where training was densest. It was invisible in filing only because *all* Pearltrees folders
 are OOD (no bin had training signal); on in-domain data where the core proxy is meaningful, μ's edge concentrates
-exactly in the trained region, as predicted. Two caveats: **lineage-free** (so μ ties/beats cosine *without* its
-ancestor context — the strong form); **memorisation-allowed** (trained on these edges) — but recall@1 0.144 ≪ the
-~1.0 of rote lookup, so this is *learned in-region generalisation*, not a table. **Verdict:** the readout works;
-the filing 2× loss is **OOD transfer**, not a broken model — so your "with training data it wins" is the right
-read. Clean follow-ups: a node-holdout in-domain run (kill the memorisation caveat); then the filing fine-tune
-learning-curve (warm-start, folder-disjoint split, data fractions vs the flat e5-cos 0.299 bar); the local-tangent
-**bivector feature** is the geometric enhancement on top.
+exactly in the trained region, as predicted. (Was lineage-free — so μ ties/beats cosine *without* its ancestor
+context, the strong form.) **Verdict:** the readout works; the filing 2× loss is **OOD transfer**, not a broken
+model — so your "with training data it wins" is the right read.
+
+#### Node-holdout — memorisation caveat KILLED (`--holdout-nodes`)
+The one caveat above (trained on these edges) is now removed *without a retrain*. 21% of graph nodes (1760) appear
+in **neither** the SYM pairs **nor** the graded context edges — a ready-made never-trained holdout. Restricting
+the home-turf queries to these (`--holdout-nodes`, 500 sampled; candidates unchanged) ranks nodes the checkpoint
+**never saw** — pure generalisation. Result is **near-identical to the memorised run**:
+
+| | mu-super MRR | mu-super recall@10 | mu-super med.rank | e5-cos recall@10 | e5-cos med.rank |
+|---|---|---|---|---|---|
+| home-turf (mem-allowed) | 0.255 | 0.494 | 11 | 0.424 | 29 |
+| **node-holdout (never-trained)** | **0.247** | **0.482** | **12** | **0.414** | **36** |
+
+Trained→held-out drop is **~3%**; the STEM-core win is **unchanged** (held-out core mu-super recall@10
+**0.637 vs 0.393**, median **7 vs 27** — the same numbers). μ ranks never-seen nodes almost exactly as well as
+seen ones ⇒ **the home-turf win is generalisation, not memorisation.** Baseline locked. **Next:** the filing
+fine-tune learning-curve (warm-start, folder-disjoint split, data fractions vs the flat e5-cos 0.299 bar); the
+local-tangent **bivector feature** is the geometric enhancement on top.
 
 ### Relation to prior approaches
 Prior graph retrieval uses **distance metrics** — most relevantly **weighted shortest path** (and the WAM
