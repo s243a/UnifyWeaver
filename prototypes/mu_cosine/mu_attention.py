@@ -248,6 +248,7 @@ class Tokenizer:
         judge_of = torch.full((B, T), -1, dtype=torch.long)
         account_of = torch.full((B, T), -1, dtype=torch.long)             # 2nd provenance axis (account)
         nodetype_of = torch.full((B, T), -1, dtype=torch.long)            # per-endpoint structural role
+        prefix_of = torch.full((B, T), -1, dtype=torch.long)              # e5 prefix regime (0 query:/1 passage:/2 none)
         pad = torch.ones(B, T, dtype=torch.bool)                          # True = pad (ignored)
         op_of = torch.tensor([it[2] for it in items], dtype=torch.long)
 
@@ -259,16 +260,19 @@ class Tokenizer:
                 elif kind == "anchor":
                     content[bi, ti] = self.q[self.idx[name]]
                     is_anchor[bi, ti] = True
+                    prefix_of[bi, ti] = 0                                 # e5 query: regime
                     if has_nt[bi]:
                         nodetype_of[bi, ti] = rtypes[bi]                  # the root's type
                 elif kind == "node":
                     content[bi, ti] = self.p[self.idx[name]]
                     gen_id[bi, ti] = 0
+                    prefix_of[bi, ti] = 1                                 # e5 passage: regime
                     if has_nt[bi]:
                         nodetype_of[bi, ti] = ntypes[bi]                  # the candidate node's type
                 elif kind == "anc":
                     content[bi, ti] = self.p[self.idx[name]]
                     gen_id[bi, ti] = d
+                    prefix_of[bi, ti] = 1                                 # e5 passage: regime
                     if has_nt[bi]:
                         nodetype_of[bi, ti] = NODETYPE["category"]        # ancestors are categories
                 elif kind == "prov":
@@ -290,7 +294,8 @@ class Tokenizer:
                         gen_id[bi, ti] = d
         return {"content": content, "gen_id": gen_id, "is_anchor": is_anchor, "op_pos": op_pos,
                 "is_prov": is_prov, "corpus_of": corpus_of, "judge_of": judge_of,
-                "account_of": account_of, "nodetype_of": nodetype_of, "op_of": op_of, "pad": pad}
+                "account_of": account_of, "nodetype_of": nodetype_of, "prefix_of": prefix_of,
+                "op_of": op_of, "pad": pad}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -306,6 +311,10 @@ class MuAttention(nn.Module):
         # NODE-TYPE: per-endpoint structural-role token (category/page/mindmap/pearltrees). Zero-init so it
         # is a no-op at warm start (category=0 default) and the type signal is learned during fine-tuning.
         self.nodetype_emb = nn.Embedding(n_nodetype, d_model)
+        # e5 PREFIX REGIME token (0 query: / 1 passage: / 2 none): lets the model know whether an input embedding
+        # carries e5's role prefix, so it can handle mixed/ablated regimes. Zero-init ⇒ no-op until used (direction
+        # survives with OR without the prefix — eval_prefix_ablation.py — so this is safe to add).
+        self.prefix_emb = nn.Embedding(3, d_model)
         self.gen_emb = nn.Embedding(max_gen + 1, d_model)                 # gen 0..max_gen
         self.anchor_tag = nn.Parameter(torch.randn(d_model) * 0.02)
         # PROVENANCE (PART B): factored corpus_emb + judge_emb on a single maskable token. `prov_tag`
@@ -326,11 +335,12 @@ class MuAttention(nn.Module):
         for emb in (self.op_emb, self.gen_emb, self.corpus_emb, self.judge_emb):
             nn.init.normal_(emb.weight, std=0.02)
         nn.init.zeros_(self.nodetype_emb.weight)            # no-op at warm start; learned during fine-tune
+        nn.init.zeros_(self.prefix_emb.weight)              # no-op until mixed prefix regimes are used
         nn.init.zeros_(self.account_emb.weight)             # no-op until items carry an account id
 
     def forward(self, content, gen_id, is_anchor, op_pos, op_of, pad,
                 is_prov=None, corpus_of=None, judge_of=None, account_of=None, nodetype_of=None,
-                op_weights=None):
+                prefix_of=None, op_weights=None):
         # op_weights [B, n_ops] (optional): a BLENDED operator — a weight vector over operators that replaces
         # the one-hot op token AND the per-operator readout head (a random superposition for inferred rows;
         # a one-hot for tagged rows reproduces the indexed path exactly). See
@@ -341,6 +351,8 @@ class MuAttention(nn.Module):
         emb = emb + self.anchor_tag * is_anchor.unsqueeze(-1)
         if nodetype_of is not None:                          # per-endpoint structural role
             emb = emb + self.nodetype_emb(nodetype_of.clamp(min=0)) * (nodetype_of >= 0).unsqueeze(-1)
+        if prefix_of is not None:                            # e5 prefix regime (query:/passage:/none); zero-init no-op
+            emb = emb + self.prefix_emb(prefix_of.clamp(min=0)) * (prefix_of >= 0).unsqueeze(-1)
         omask = (op_pos >= 0).unsqueeze(-1)
         if op_weights is None:
             emb = emb + self.op_emb(op_pos.clamp(min=0)) * omask                     # indexed (one-hot) op token

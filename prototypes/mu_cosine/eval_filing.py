@@ -173,7 +173,7 @@ def main():
                         n_judge=sz("judge_emb.weight", 2), n_nodetype=sz("nodetype_emb.weight", 4)).to(dev)
     missing, unexpected = model.load_state_dict(sd, strict=False)
     assert not unexpected, f"unexpected keys: {unexpected}"
-    assert all("account" in k for k in missing), f"unexpected missing keys: {missing}"
+    assert all(("account" in k or "prefix" in k) for k in missing), f"unexpected missing keys: {missing}"
     model.eval()
     print(f"[MODEL] {os.path.basename(a.ckpt)}  {cfg}  (n_ops={model.op_emb.weight.shape[0]})")
 

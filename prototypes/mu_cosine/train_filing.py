@@ -32,7 +32,7 @@ def build_model(ckpt, dev):
                     n_ops=sz("op_emb.weight", len(OPS)), n_corpus=sz("corpus_emb.weight", 2),
                     n_judge=sz("judge_emb.weight", 2), n_nodetype=sz("nodetype_emb.weight", 4)).to(dev)
     miss, unexp = m.load_state_dict(sd, strict=False)
-    assert not unexp and all("account" in k for k in miss), (miss, unexp)
+    assert not unexp and all(("account" in k or "prefix" in k) for k in miss), (miss, unexp)
     return m, cfg
 
 
