@@ -25,17 +25,24 @@ from mu_attention import build_e5_tables, Tokenizer, MuAttention, OPS, load_dag,
 
 
 import re
-# Wikipedia admin / maintenance / navigation / structural-intersection categories — titles carry NO topical
-# meaning, so neither e5-cos nor μ can rank them (no training data fixes a meaningless label). Drop with --drop-admin.
-_ADMIN = re.compile(r"catautotoc|navseasoncats|navbox|wikipedia|^articles?[ _]|^pages?[ _]|^categor|"
-                    r"[ _]stubs?\b|templates?|redirects?|hidden|tracking|maintenance|disambiguation|"
-                    r"by[ _]nationality|by[ _]country|by[ _]year|by[ _]decade|by[ _]century|by[ _]date|by[ _]state|"
-                    r"establishments|disestablishments|introductions|^years[ _]of|^decades|^centuries", re.I)
-def is_admin(name):
-    return bool(_ADMIN.search(name.replace("_", " ")))
+# TIER 1 — truly meaningless: maintenance / template / navigation categories whose TITLE is procedural noise
+# (zero topical content). Neither e5-cos nor μ can rank them; no training data fixes a meaningless label. Always
+# safe to drop (pure noise removal).
+_JUNK = re.compile(r"catautotoc|navseasoncats|navbox|wikipedia|^articles?[ _]|^pages?[ _]|^categor|"
+                   r"[ _]stubs?\b|templates?|redirects?|hidden|tracking|maintenance|disambiguation", re.I)
+# TIER 2 — loosely semantic: structural / temporal / by-X groupings (years, places, nationalities). These DO
+# carry meaning (just lower semantic density), so dropping them makes the eval EASIER on valid-but-hard targets.
+# Keep by default; down-SAMPLE (not drop) in training. Drop only with --drop-structural (to decompose the gain).
+_STRUCTURAL = re.compile(r"by[ _]nationality|by[ _]country|by[ _]year|by[ _]decade|by[ _]century|by[ _]date|"
+                         r"by[ _]state|establishments|disestablishments|introductions|^years[ _]of|^decades|"
+                         r"^centuries", re.I)
+def is_admin(name, level="junk"):
+    """level='junk' → Tier-1 only (meaningless); level='all' → Tier-1 + Tier-2 (also loosely-semantic structural)."""
+    n = name.replace("_", " ")
+    return bool(_JUNK.search(n) or (level == "all" and _STRUCTURAL.search(n)))
 
 
-def load_membership(graph_path, min_bm, holdout=None, drop_admin=False):
+def load_membership(graph_path, min_bm, holdout=None, drop_admin=None):
     """IN-DOMAIN home-turf analog of filing: the simplewiki category DAG. A 'folder' = a category; its
     'bookmarks' = its child nodes. Same (member → container) shape as filing, but in the model's TRAINED
     region. Returns (queries=[(child_title, parent_id)], cand={parent_id: parent_title}).
@@ -45,7 +52,7 @@ def load_membership(graph_path, min_bm, holdout=None, drop_admin=False):
     caveat: ranking never-seen nodes vs e5-cos is pure generalisation."""
     parents, children, deg = load_dag(graph_path)
     disp = lambda s: s.replace("_", " ")
-    ok = (lambda n: not is_admin(n)) if drop_admin else (lambda n: True)
+    ok = (lambda n: not is_admin(n, drop_admin)) if drop_admin else (lambda n: True)
     cand = {par: disp(par) for par, kids in children.items() if len(kids) >= min_bm and ok(par)}
     queries = [(disp(c), par) for par in cand for c in children[par]
                if ok(c) and (holdout is None or c in holdout)]
@@ -112,8 +119,9 @@ def main():
     ap.add_argument("--graph", default=GRAPH, help="category_parent.tsv (simplewiki source)")
     ap.add_argument("--holdout-nodes", default=None, help="JSON list of RAW node names never seen in training; "
                     "restricts simplewiki queries to these (node-holdout: pure generalisation, no retrain)")
-    ap.add_argument("--drop-admin", action="store_true", help="drop Wikipedia admin/maintenance/navigation "
-                    "categories (meaningless titles) from folders+members (simplewiki source)")
+    ap.add_argument("--drop-admin", nargs="?", const="junk", default=None, choices=("junk", "all"),
+                    help="drop categories: 'junk' = Tier-1 meaningless only (maintenance/template); "
+                         "'all' = also Tier-2 loosely-semantic structural (by-year/country/…). Default off.")
     ap.add_argument("--min-bm", type=int, default=3, help="min bookmarks for a folder to be a candidate")
     ap.add_argument("--max-queries", type=int, default=500)
     ap.add_argument("--seed", type=int, default=7)

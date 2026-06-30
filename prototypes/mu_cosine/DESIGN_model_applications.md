@@ -158,26 +158,33 @@ Trained→held-out drop is **~3%**; the STEM-core win is **unchanged** (held-out
 **0.637 vs 0.393**, median **7 vs 27** — the same numbers). μ ranks never-seen nodes almost exactly as well as
 seen ones ⇒ **the home-turf win is generalisation, not memorisation.** Baseline locked.
 
-#### Data quality > data quantity — dropping admin categories inverts the result (`--drop-admin`)
-Probing the "coverage" gap revealed the FAR-from-core bin is dominated by **Wikipedia admin/maintenance/nav
-scaffolding** (`CatAutoTOC generates no TOC` deg 1219, `Navseasoncats…`, `Establishments by year`, `X by
-country`) — titles with **no topical meaning**, so neither e5-cos nor μ can rank them and *no training data
-fixes a meaningless label*. Dropping them (`--drop-admin`, a name-pattern filter) **inverts the home-turf
-"tie"**:
+#### Data quality, two tiers — Tier-1 junk removal flips μ to a clear win; keep Tier-2 (`--drop-admin junk|all`)
+Probing the "coverage gap" found the FAR-from-core bin mixes **two very different things**, which must be treated
+differently:
+- **Tier-1 — meaningless:** maintenance / template / nav categories (`CatAutoTOC generates no TOC` deg 1219,
+  `Navseasoncats…`) — procedural titles, *zero* topical content. No ranker can place them, no training fixes them.
+- **Tier-2 — loosely semantic:** structural / temporal groupings (`Years of the 20th century`, `Establishments
+  by year`, `People by nationality`, `Cities by country`). Real but lower-density meaning (the year/place signal
+  *is* useful) — **keep in eval, *down-sample* in training**, do not drop.
 
-| in-domain | recall@10 | MRR | med.rank |
-|---|---|---|---|
-| with admin junk (earlier) | mu 0.494 / e5 0.424 | mu 0.255 / e5 0.270 (tie) | 11 / 29 |
-| **admin dropped — e5-cos** | 0.634 | 0.450 | 3 |
-| **admin dropped — mu-super** | **0.898** | **0.488** | **2** |
+Decomposing the gain (home-turf, 500 queries) shows the win is **almost entirely Tier-1 removal**:
 
-The junk depressed *both* rankers and masked μ's edge. Cleaned, **μ clearly beats e5-cos** and **dominates at
-recall@10 (0.898 vs 0.634 — the answer in the top-10 90% vs 63% of the time)** — the LLM-re-rank operating point.
-Stratified: μ wins big in MID/NEAR-STEM (recall@10 0.86–0.88 vs 0.44–0.51, median 4 vs 8–23); on clean FAR
-*content* e5-cos leads at recall@1 but ties at recall@10. **Bitter-lesson footnote:** the "coverage" bet's first
-and cheapest win was **data quality** (drop ~meaningless labels), not quantity — and it sharpens where real
-coverage gaps remain (genuine non-STEM content, where e5 already does okay at recall@1, so the marginal value of
-more training there is lower than the headline gap suggested). Admin cats should also be filtered from *training*.
+| filter | folders | e5-cos MRR | mu-super MRR | **μ − e5** | recall@10 (μ / e5) |
+|---|---|---|---|---|---|
+| none (junk in) | 295 | 0.270 | 0.255 | −0.015 *(tie)* | 0.494 / 0.424 |
+| **Tier-1 junk only** *(honest)* | 273 | 0.408 | 0.448 | **+0.040** | **0.812 / 0.660** |
+| Tier-1+2 (`all`) | 132 | 0.454 | 0.502 | +0.048 | 0.904 / 0.634 |
+
+**Dropping Tier-1 alone flips the home-turf "tie" to a clear μ win** (μ−e5 −0.015 → **+0.040**, recall@10
+**0.812 vs 0.660**) — legitimate noise removal. Dropping Tier-2 *as well* lifts **both** rankers' absolutes
+(easier candidate set) but the μ-advantage gap barely moves (+0.040 → +0.048) — so Tier-2 is **not** the source
+of μ's win; keeping it is honest (μ still wins) and dropping it would only inflate the headline. **Policy: Tier-1
+→ drop (eval + training); Tier-2 → keep in eval, down-sample in training.** **Bitter-lesson footnote:** the
+"coverage" bet's first and cheapest win was **data quality** (drop *meaningless* labels), not quantity — and it
+relocates the real gap to genuine non-STEM content (where e5 already does okay at recall@1, so more training there
+buys less than the raw gap suggested). **Generalises to never-trained nodes** (`--holdout-nodes`, aggressive
+`all` level shown): mu-super recall@10 **0.919 vs 0.662** on nodes never seen ⇒ μ is a strong **first-stage
+retriever** (feed top-10 to an LLM re-ranker), the recall@10 operating point.
 
 ### Filing fine-tune learning curve — μ CROSSES the e5-cos bar (`train_filing.py`)
 The quantified "with enough in-domain data the attention model wins." Warm-start `model_nodetype`, fine-tune on
@@ -215,6 +222,19 @@ candidates. μ excels at exactly the shortlist metric and recovers the early win
 — so "μ slightly behind at recall@1" is a **non-issue** for the real application: μ is the right **first-stage
 retriever** (return top-10, hand to the LLM), where median-rank-7 means the answer is almost always in the window
 the LLM sees. The early in-domain win lands precisely at the hit@(≥10) operating point that re-ranking uses.
+
+#### Coverage round 1 (enwiki linguistics/poli-sci/STS) — negative, and it sharpens *where* coverage pays
+Harvested 3 absent/weak STEM-adjacent domains from the local enwiki category DB (`build_slice.py`, ~3k new
+content nodes, 0% admin), trained a directional graded round (warm-start, `model_cov1`), evaluated on the merged
+graph. **Result: no μ gain on the new domains** — mu-super MRR **0.39 vs e5-cos 0.53**, recall@10 0.62 vs 0.71;
+the fine-tune barely moved it; originals roughly preserved (within n=400 single-run noise — e5-cos itself wobbled
+±0.013). **Why:** these are *clean, well-separated* domains where **e5's symmetric similarity already captures the
+structure** (same as "Music" generalising), so μ has nothing to add. **Lesson:** the bitter-lesson "more data →
+μ wins" is **conditional on e5 being *weak* in that region.** μ's value — and where coverage pays — is where e5
+is weak: **conflated** domains (Cooking→movies), the **dense STEM core** (directional structure matters), or
+**OOD tasks** (filing). So **prioritise coverage by e5-weakness** (the disagreement signal), *not* by
+"absent-but-clean." `model_cov1` is an experimental artifact, not an improvement. See
+`DESIGN_wikipedia_sampling.md`.
 
 ### Relation to prior approaches
 Prior graph retrieval uses **distance metrics** — most relevantly **weighted shortest path** (and the WAM
