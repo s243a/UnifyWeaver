@@ -158,6 +158,34 @@ Trained→held-out drop is **~3%**; the STEM-core win is **unchanged** (held-out
 **0.637 vs 0.393**, median **7 vs 27** — the same numbers). μ ranks never-seen nodes almost exactly as well as
 seen ones ⇒ **the home-turf win is generalisation, not memorisation.** Baseline locked.
 
+#### Data quality, two tiers — Tier-1 junk removal flips μ to a clear win; keep Tier-2 (`--drop-admin junk|all`)
+Probing the "coverage gap" found the FAR-from-core bin mixes **two very different things**, which must be treated
+differently:
+- **Tier-1 — meaningless:** maintenance / template / nav categories (`CatAutoTOC generates no TOC` deg 1219,
+  `Navseasoncats…`) — procedural titles, *zero* topical content. No ranker can place them, no training fixes them.
+- **Tier-2 — loosely semantic:** structural / temporal groupings (`Years of the 20th century`, `Establishments
+  by year`, `People by nationality`, `Cities by country`). Real but lower-density meaning (the year/place signal
+  *is* useful) — **keep in eval, *down-sample* in training**, do not drop.
+
+Decomposing the gain (home-turf, 500 queries) shows the win is **almost entirely Tier-1 removal**:
+
+| filter | folders | e5-cos MRR | mu-super MRR | **μ − e5** | recall@10 (μ / e5) |
+|---|---|---|---|---|---|
+| none (junk in) | 295 | 0.270 | 0.255 | −0.015 *(tie)* | 0.494 / 0.424 |
+| **Tier-1 junk only** *(honest)* | 273 | 0.408 | 0.448 | **+0.040** | **0.812 / 0.660** |
+| Tier-1+2 (`all`) | 132 | 0.454 | 0.502 | +0.048 | 0.904 / 0.634 |
+
+**Dropping Tier-1 alone flips the home-turf "tie" to a clear μ win** (μ−e5 −0.015 → **+0.040**, recall@10
+**0.812 vs 0.660**) — legitimate noise removal. Dropping Tier-2 *as well* lifts **both** rankers' absolutes
+(easier candidate set) but the μ-advantage gap barely moves (+0.040 → +0.048) — so Tier-2 is **not** the source
+of μ's win; keeping it is honest (μ still wins) and dropping it would only inflate the headline. **Policy: Tier-1
+→ drop (eval + training); Tier-2 → keep in eval, down-sample in training.** **Bitter-lesson footnote:** the
+"coverage" bet's first and cheapest win was **data quality** (drop *meaningless* labels), not quantity — and it
+relocates the real gap to genuine non-STEM content (where e5 already does okay at recall@1, so more training there
+buys less than the raw gap suggested). **Generalises to never-trained nodes** (`--holdout-nodes`, aggressive
+`all` level shown): mu-super recall@10 **0.919 vs 0.662** on nodes never seen ⇒ μ is a strong **first-stage
+retriever** (feed top-10 to an LLM re-ranker), the recall@10 operating point.
+
 ### Filing fine-tune learning curve — μ CROSSES the e5-cos bar (`train_filing.py`)
 The quantified "with enough in-domain data the attention model wins." Warm-start `model_nodetype`, fine-tune on
 `element_of(bookmark→folder)` with **in-batch contrastive** negatives (B×B μ matrix; same-folder = positive), at
@@ -194,6 +222,132 @@ candidates. μ excels at exactly the shortlist metric and recovers the early win
 — so "μ slightly behind at recall@1" is a **non-issue** for the real application: μ is the right **first-stage
 retriever** (return top-10, hand to the LLM), where median-rank-7 means the answer is almost always in the window
 the LLM sees. The early in-domain win lands precisely at the hit@(≥10) operating point that re-ranking uses.
+
+#### Coverage round 1 (enwiki linguistics/poli-sci/STS) — negative, and it sharpens *where* coverage pays
+Harvested 3 absent/weak STEM-adjacent domains from the local enwiki category DB (`build_slice.py`, ~3k new
+content nodes, 0% admin), trained a directional graded round (warm-start, `model_cov1`), evaluated on the merged
+graph. **Result: no μ gain on the new domains** — mu-super MRR **0.39 vs e5-cos 0.53**, recall@10 0.62 vs 0.71;
+the fine-tune barely moved it; originals roughly preserved (within n=400 single-run noise — e5-cos itself wobbled
+±0.013). **Why:** these are *clean, well-separated* domains where **e5's symmetric similarity already captures the
+structure** (same as "Music" generalising), so μ has nothing to add. **Lesson:** the bitter-lesson "more data →
+μ wins" is **conditional on e5 being *weak* in that region.** μ's value — and where coverage pays — is where e5
+is weak: **conflated** domains (Cooking→movies), the **dense STEM core** (directional structure matters), or
+**OOD tasks** (filing). So **prioritise coverage by e5-weakness** (the disagreement signal), *not* by
+"absent-but-clean." See `DESIGN_wikipedia_sampling.md`.
+
+#### Eval correction — μ's value is DIRECTIONALITY + CALIBRATION, not symmetric rank (`eval_relatedness.py`)
+The filing eval (member→*exact* parent, ranked vs all folders) is a **classification** task relative to roots; it
+rewards exact title-match (favours e5-cos, understates μ — a member is related to its whole subdomain, not one
+parent). Re-evaluated on the model's actual objective:
+- **Symmetric relatedness** (within-vs-cross *fine* subdomain, `eval_relatedness.py`): e5-cos rank-discriminates
+  *slightly better* (AUC POS-vs-hard-neg **0.74 vs μ 0.68**) — so filing wasn't hiding a μ rank-win. **But** e5
+  squashes all strata into a 0.05 band (0.81/0.78/0.76 cosine floor) while μ has **4× dynamic range**
+  (0.40/0.20/0.09) — μ gives *calibrated* membership degrees; e5 gives near-uninformative absolute scores.
+- **Directional** (`μ(member|container)` vs `μ(container|member)`): **μ AUC(fwd>rev) 0.78, asymmetry 0.33**;
+  **e5-cos AUC 0.51, asymmetry 0.001 — a coin flip.** e5-cosine *cannot express direction at all* (symmetric;
+  the query/passage prefix gives ~nothing). **This is μ's structurally-unique win** and what membership needs.
+
+**Conclusion:** e5-cos is a strong *symmetric ranker*, so symmetric evals (filing, relatedness-AUC) measure μ on
+e5's home turf and miss its point. μ's value = **directionality** + **calibration**, neither of which e5 can
+provide. **Re-judges coverage round 1:** `cov1` didn't move rank-AUC (e5 already ranks fine) but **sharpened μ's
+calibration on the new domains** (POS mean μ 0.40→0.51) — so it *did* contribute; the filing eval just couldn't
+see it. Going forward, evaluate coverage/μ on **directional + calibrated** metrics, not symmetric rank.
+
+**Depth test (settles the "μ wins deep" hypothesis — it doesn't):** stratified the membership discrimination by
+tree depth with a HARD distractor (a *sibling* of the true parent — same depth, same local domain). Both degrade
+with depth and **e5 stays ahead at every depth** (μ/e5 AUC(true>sibling): shallow 0.84/0.86, mid 0.79/0.83, deep
+0.72/0.79). e5's cosine doesn't saturate — deep child titles still lexically echo the true parent ("Medieval
+linguists"→"Linguists"). **So μ does not beat e5 on *magnitude* discrimination at any depth.** Tested four ways
+(clean domains, fine-subdomain rank, deep pairs, filing) — e5 is competitive-or-better on the symmetric/magnitude
+axis every time. **This is settled: μ's value is NOT being a better symmetric ranker; it is directionality +
+calibration** (the axes e5 structurally lacks). Stop benchmarking μ-vs-e5 on magnitude; build on direction +
+calibration — exactly what membership/filing need and cosine cannot give.
+
+**Negative-rejection test (honest correction — calibration ≠ separability):** at a fixed operating point (~90%
+positive-recall) **neither μ nor e5 rejects negatives cleanly, and μ is marginally *worse*** (FPR on cross-domain
+EASY-NEG: e5 52% vs μ-super 58%). μ's calibration gives different *means* (POS 0.37 vs EASY 0.10) but the
+**distributions overlap** (high within-stratum variance), so admitting 90% of positives drops the threshold low
+enough to readmit negatives. **A wide dynamic range ≠ functional thresholding.** So the "μ rejects negatives
+where e5 can't" hypothesis does **not** hold at the operating point.
+
+#### CLOSE-negative test — μ DOES win where it matters (corrects the verdict below)
+The "hard negatives" above (cross-fine-subdomain) weren't close enough. The **closest** negative is a *sibling*
+(another child of the same parent — same fine topic, no membership relation, often *more* e5-similar than the
+true parent). On that test (POS = child→parent vs CLOSE-NEG = child→sibling):
+
+| negative type | e5-cos AUC | μ AUC | winner |
+|---|---|---|---|
+| EASY (cross-domain) | 0.84 | 0.81 | e5 |
+| HARD (cross-fine-subdomain) | 0.73 | 0.68 | e5 |
+| **CLOSE (sibling, same parent)** | **0.62** | **0.73** | **μ** |
+
+**e5 scores a child's true parent (0.832) and its sibling (0.815) within 0.017 — it cannot tell member-of from
+sibling-of** ("everything looks similar"). μ separates them (0.48 vs 0.21) and wins 0.73 vs 0.62. **μ's advantage
+*grows as negatives get closer*** (e5 degrades 0.84→0.73→0.62; μ holds) — and close neighbours are exactly the
+confusions that matter in retrieval (the top-k is full of siblings, not random cross-domain nodes). This is also
+why μ took filing recall@10 (0.90 vs 0.63): it pushed close-but-wrong folders down, which e5 can't.
+
+**State it as a low μ value, not a threshold (the right framing).** The sibling subset-relation is *negative*, and
+the usable signal is that **μ gives siblings a low degree (0.22)** vs the true parent (0.48) — calibrated, readable
+("barely a member"). e5 gives siblings **0.815 ≈ parent 0.832**: it has *no way to say "low."* (A binary
+FPR@90%-TPR understates this — μ's long positive low-tail drops the cutoff to ~0.001, so FPR is leaky for both
+μ 74.5% / e5 91.5%; the *degree*, not the threshold, is what's usable and where μ wins structurally.)
+
+#### Consolidated verdict (corrected) — μ wins direction + close-negative discrimination; hybrid
+**μ's robust wins are two:** (1) **directionality** (member|container vs reverse: AUC **0.78 vs e5 0.51**); (2)
+**close-negative discrimination** (member-of vs sibling-of: **0.73 vs 0.62**). e5 wins only on *easy/medium*
+symmetric relatedness (coarse topical separation) and on negative-*rejection thresholding* (neither great).
+So the earlier "e5 better on everything symmetric" was wrong — it held only because the negatives tested weren't
+close enough. **Architecture = HYBRID:** e5 for coarse symmetric ranking (cheap, strong), **μ for the hard part —
+direction + close-neighbour disambiguation** (which determines the actual top of the retrieval list). Same
+"structure ∩ semantics" split; μ carries the practically-decisive cases e5 conflates.
+
+#### CORRECTION (architecture control, PR #3387 review) — the directional/close-neg wins are NOT μ-architectural
+`e5-cos` is the untrained *product* baseline; the *architecture* control is a **trained head on frozen e5**. A
+logistic probe on the ordered pair `concat(query[a], passage[b])` (held-out edges, `eval_arch_control.py`) **beats
+μ on both**: DIRECTION 0.92 vs μ 0.78; CLOSE-NEG (parent vs sibling) 0.78 vs μ 0.74. e5-cos fails direction only
+because cosine discards order — the signal is in e5's query/passage reps and a linear order-aware head recovers it
+*better* than μ. **So "μ wins direction + close-neg" is withdrawn:** against a trained-head baseline μ shows **no
+per-task advantage on any axis tested.** The only remaining candidate value is a *systems* argument — one general,
+calibrated, multi-relational estimator vs a per-(relation,direction) probe zoo — which is **untested**. The hybrid
+framing above stands only if that generality claim is substantiated; otherwise a trained e5-probe is the stronger,
+simpler tool. (This is the review's decisive catch; we ran the control and it overturned the headline.)
+
+**UPDATE — the gap was mostly the OBJECTIVE; directional supervision largely closes it.** Root cause: μ's
+dominant SYM walk term is *order-invariant* (trains symmetry, competing with direction); direction was a minority
+graded component. Retrained `model_dir` keeping direction as the target (directional graded + transitive,
+`--sym-weight 0`): DIRECTION 0.776→**0.839**, CLOSE-NEG 0.738→**0.779 (≈ probe 0.787, CIs overlap)**. So μ
+**matches the probe on close-negatives and closed ~half the direction gap from an objective change alone** — the
+architecture is competitive, not inferior; the earlier loss was a supervision artifact (under-supervised
+direction + symmetric pressure). Residual direction gap (0.84 vs 0.92) = μ's regression-to-0.90/0.10 vs the
+probe's discriminative loss; a ranking/discriminative directional loss is the remaining lever. Net: μ is viable
+for directional membership once supervised for it; "μ can't beat a trained head" is too strong.
+
+**RESOLVED — discriminative loss: μ BEATS the probe (`train_dir_rank.py`).** Replaced the regression with a
+ranking CE `softplus(−s·(μ_fwd−μ_rev−m))`, fine-tuned on the probe's 70% split, evaluated on held-out 30%
+(μ never saw those edges): **DIRECTION 0.982 vs probe 0.930; CLOSE-NEG 0.864 vs probe 0.790** — non-overlapping
+CIs. So the gap was *entirely* the objective (symmetric-dominant + regression-to-constants); fix it (keep
+direction, drop symmetric pressure, rank not regress) and μ's nonlinear architecture **exceeds** a linear
+e5-probe. The review's control was the right test and drove the fix; "μ has no architectural advantage" is now
+**reversed** — it has one, once trained for the task. (Caveats: node-overlap remains → node-disjoint split next;
+single-run, tight CIs.)
+
+#### Judge→loss routing — the loss is keyed off provenance, not a new embedding (now in the main trainer)
+The discriminative loss is *not* a new "judge type." Provenance (`graph`/`haiku`/`human`/`sonnet`/`opus`) is an
+**input token** that conditions μ's *output* (and is marginalised at inference); the **loss function** is a
+*training-time* choice the model never sees as input. So we don't enlarge the judge table with "discriminative" —
+we **route the loss by the judge token already on every row**:
+- **`graph` + a DIRECTIONAL relation** (`element_of`/`subcategory`/`subtopic`/`super_category`) ⇒ *certain &
+  oriented* ⇒ **discriminative ranking** loss `softplus(−s·(μ(member|container) − μ(container|member) − m))` (+ a
+  light regression anchor so degrees stay readable). This is the term that beats the e5-probe.
+- **`haiku`** (soft superposition / inferred tail) ⇒ a *distribution*, not a hard orientation ⇒ keep **regression
+  to the soft target** (`L_graded`/`L_blend`).
+
+Implemented in `train_mu_attention.py` (`--dir-rank-weight`, `--dir-rank-scale/-margin/-anchor`): graph-judged
+directional rows are collected (`dir_edges`) and trained by the ranking term; everything else stays on
+regression. The judge table is unchanged (it only grows when a new *source* appears, e.g. `sonnet`/`opus`). Maps
+directly onto the data recipe: **downward directional (`graph`) → rank; bidirectional lateral (`haiku`
+superpositions, ≤30%) → soft regression.**
 
 ### Relation to prior approaches
 Prior graph retrieval uses **distance metrics** — most relevantly **weighted shortest path** (and the WAM
