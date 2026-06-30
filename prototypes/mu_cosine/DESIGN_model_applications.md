@@ -277,23 +277,34 @@ So our hybrid has a **proven recipe**: K commuting blades, applied via Rodrigues
 codebook, optionally distilled into the μ transformer so inference is a plain forward pass. The geodesic
 `x_root ∧ x_node` is the K=1 special case (`src/.../minimal_transform.py:_rotation_between_vectors`).
 
-**Free planes vs axis-aligned — the theory says "fewer blades," but the repo found the *opposite* in practice
-(and the reason matters for us).** *Theory:* data-adaptive 2-planes are more expressive per blade than fixed
-coordinate (Givens) planes — PCA-vs-fixed-axis logic — so in principle the blade count drops to the rotation's
-**effective rank**, not the coordinate planes needed to *span* it. And there's a real catch: arbitrary planes
-**don't commute** (`exp(B₁+B₂) ≠ exp(B₁)exp(B₂)` ⇒ order-dependent BCH error in the Rodrigues product) and cost an
-eigendecomposition (≈ O(n³)) to find. *The obvious fix — PCA the planes then orthogonalise them — **backfires***:
-`docs/design/ORTHOGONAL_CODEBOOK_DESIGN.md` reports that forcing data-planes orthogonal **distorts** the original
-bivectors (information loss, broken clean commutativity), so the student must learn complex plane interactions.
-The **canonical axis-aligned** codebook *wins* instead (**0.9997** cosine vs the exact teacher) because its planes
-are orthogonal *by construction* — each weight is an **independent knob** (decomposable learning, changing `wᵢ`
-never needs compensating `wⱼ`). It can afford *fixed* coordinate planes because **Matryoshka** embeddings (Nomic)
-pack core meaning into dims 0-127, so the first ~64 axis planes already ≈ the principal directions — data-alignment
-*for free*, no PCA. **Caveat for our hybrid — `e5-small-v2` is *not* known to use Matryoshka representation
-learning**, so the canonical shortcut may not transfer: an **open question** (we may need PCA planes, more planes,
-or to first profile e5's per-dimension importance). Net: "small codebook + Rodrigues + distill" holds; *which*
-planes (canonical vs data-adaptive) is **embedding-structure-dependent and unsettled for e5** — verify before
-assuming axis-aligned. (The `rotational-fast` path leans hardest on Matryoshka; it is the least e5-portable.)
+**Free planes vs axis-aligned — fewer blades in theory; canonical won *for Nomic* because Matryoshka made the
+data-adaptive step unnecessary (NOT because PCA is a bad tool).** *Theory:* data-adaptive 2-planes are more
+expressive per blade than fixed coordinate (Givens) planes — PCA-vs-fixed-axis logic — so in principle the blade
+count drops to the rotation's **effective rank**, not the coordinate planes needed to *span* it. The real catch:
+arbitrary planes **don't commute** (`exp(B₁+B₂) ≠ exp(B₁)exp(B₂)` ⇒ order-dependent BCH error in the Rodrigues
+product) and cost an eigendecomposition (≈ O(n³)) to find. `docs/design/ORTHOGONAL_CODEBOOK_DESIGN.md` reports
+that PCA-then-orthogonalise **distorts** the data-planes (info loss, broken clean commutativity) and **lost** to
+the **canonical axis-aligned** codebook (**0.9997** cosine vs the exact teacher; orthogonal-by-construction ⇒ each
+weight an independent knob, decomposable learning). **But that verdict is conditional, not general:** canonical won
+*because* **Matryoshka** (Nomic) already packs core meaning into dims 0-127, so the first ~64 axis planes ≈ the
+principal directions — Matryoshka **negates the need** for data-adaptive planes. It does **not** rule PCA-
+orthogonalise out where that free alignment is absent. **For our `e5-small-v2` (not known to use Matryoshka
+representation learning), data-adaptive PCA planes may be the *right* tool, not a fallback** — profile e5's
+per-dimension importance first; *which* planes (canonical vs data-adaptive) is **embedding-structure-dependent and
+genuinely open for e5**. "Small codebook + Rodrigues + distil" holds either way.
+
+**When to bother with the bivector prior at all — the bitter lesson (this is mostly orthogonal to our path).**
+Two limits on how much the above matters *for us*. (1) **We use a transformer, not a standalone rotation
+codebook.** The canonical-vs-PCA-vs-Rodrigues machinery exists to make a *geometric rotation* cheap; our model
+*learns* the transform, so the bivector is at most an **added feature/prior**, not the estimator. (2) **The bitter
+lesson** (Sutton): hand-built structure tends to be overtaken by general methods that scale with data + compute.
+The bivector is a geometric **prior for asymmetry**; with enough data a transformer can learn that asymmetry
+itself — and our **filing learning curve is exactly this lesson in miniature** (the transformer crossed the
+e5-cos bar with modest data and was *still climbing*). So the prior's value is **sample-efficiency in the low-data
+regime** (the rotation-wins-at-low-data result), not a permanent component. Use it as **distillable scaffolding**:
+bootstrap with the prior where data is thin, distil into the transformer, then *drop the prior* as coverage grows
+(the repo's distillation path makes this literal). The danger to avoid is baking it in a way that **caps the
+ceiling**. **Bridge, not destination** — the long-term bet is data + the transformer's general learning.
 
 **Rotations on the sphere → bivectors as the generator.** e5 embeddings are **unit-normed**, so they live on a
 sphere and the relationship root→node is a **geodesic rotation**: rotor `R = exp(−½ θ B)`, applied
