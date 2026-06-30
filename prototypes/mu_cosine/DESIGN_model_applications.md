@@ -233,8 +233,25 @@ structure** (same as "Music" generalising), so μ has nothing to add. **Lesson:*
 μ wins" is **conditional on e5 being *weak* in that region.** μ's value — and where coverage pays — is where e5
 is weak: **conflated** domains (Cooking→movies), the **dense STEM core** (directional structure matters), or
 **OOD tasks** (filing). So **prioritise coverage by e5-weakness** (the disagreement signal), *not* by
-"absent-but-clean." `model_cov1` is an experimental artifact, not an improvement. See
-`DESIGN_wikipedia_sampling.md`.
+"absent-but-clean." See `DESIGN_wikipedia_sampling.md`.
+
+#### Eval correction — μ's value is DIRECTIONALITY + CALIBRATION, not symmetric rank (`eval_relatedness.py`)
+The filing eval (member→*exact* parent, ranked vs all folders) is a **classification** task relative to roots; it
+rewards exact title-match (favours e5-cos, understates μ — a member is related to its whole subdomain, not one
+parent). Re-evaluated on the model's actual objective:
+- **Symmetric relatedness** (within-vs-cross *fine* subdomain, `eval_relatedness.py`): e5-cos rank-discriminates
+  *slightly better* (AUC POS-vs-hard-neg **0.74 vs μ 0.68**) — so filing wasn't hiding a μ rank-win. **But** e5
+  squashes all strata into a 0.05 band (0.81/0.78/0.76 cosine floor) while μ has **4× dynamic range**
+  (0.40/0.20/0.09) — μ gives *calibrated* membership degrees; e5 gives near-uninformative absolute scores.
+- **Directional** (`μ(member|container)` vs `μ(container|member)`): **μ AUC(fwd>rev) 0.78, asymmetry 0.33**;
+  **e5-cos AUC 0.51, asymmetry 0.001 — a coin flip.** e5-cosine *cannot express direction at all* (symmetric;
+  the query/passage prefix gives ~nothing). **This is μ's structurally-unique win** and what membership needs.
+
+**Conclusion:** e5-cos is a strong *symmetric ranker*, so symmetric evals (filing, relatedness-AUC) measure μ on
+e5's home turf and miss its point. μ's value = **directionality** + **calibration**, neither of which e5 can
+provide. **Re-judges coverage round 1:** `cov1` didn't move rank-AUC (e5 already ranks fine) but **sharpened μ's
+calibration on the new domains** (POS mean μ 0.40→0.51) — so it *did* contribute; the filing eval just couldn't
+see it. Going forward, evaluate coverage/μ on **directional + calibrated** metrics, not symmetric rank.
 
 ### Relation to prior approaches
 Prior graph retrieval uses **distance metrics** — most relevantly **weighted shortest path** (and the WAM
