@@ -81,6 +81,21 @@ pairs — needs a scoring pass (μ column). Prefer the graded route for tagged c
 content stays in content (admin is reached going *up*); `0` = pure child-only. On a content-rooted/admin-flagged
 DB, bidirectional becomes safe (reaches siblings/cousins for lateral coverage).
 
+### Full training recipe (judge→loss routing) — ~70% directional + ≤30% lateral
+The validated recipe that makes μ **beat** a trained e5-probe on direction/close-neg (REPORT §4.6):
+- **~70% downward DIRECTIONAL (`graph` judge)** → **ranking** loss, *not* regression. 1-hop edges via
+  `build_graded_round` (`subcategory`/`element_of`, `μ(member|container)=0.90/rev 0.10`); multi-hop via
+  `transitive_closure.py` → `--transitive --transitive-hetero` (hop-aware variance, keeps hop distance). Train
+  with `train_mu_attention.py --graded <dir> --dir-rank-weight 1.0 --sym-weight 0` (drops the order-invariant SYM
+  pressure that competes with direction). **DONE + integrated.**
+- **≤30% bidirectional LATERAL (`haiku` judge)** → **soft regression** to a Haiku operator **superposition**
+  (siblings/cousins from `gen_mu_pairs --bidir`, scored by the §14 superposition prompt, fed via `--infer-blend`).
+  The judge token routes the loss (graph→rank, haiku→regress) — `--dir-rank-weight` already keys off `r[8]=="graph"`.
+  **REMAINING INPUT:** a Haiku-scoring pass over the bidirectional pairs (a *budgeted* spend) — the lateral
+  superposition data does not yet exist (`haiku_scored_tail.tsv` is the *no-relation tail*, ~80% noise, not the
+  lateral superpositions). Once generated, the training command is just `… --infer-blend <lateral> …` alongside
+  the directional flags; no code change (the routing is in place).
+
 ---
 
 ## 4. Page sampling — for leaf categories (`element_of ≈ subcategory`)
