@@ -323,6 +323,15 @@ direction + symmetric pressure). Residual direction gap (0.84 vs 0.92) = μ's re
 probe's discriminative loss; a ranking/discriminative directional loss is the remaining lever. Net: μ is viable
 for directional membership once supervised for it; "μ can't beat a trained head" is too strong.
 
+**RESOLVED — discriminative loss: μ BEATS the probe (`train_dir_rank.py`).** Replaced the regression with a
+ranking CE `softplus(−s·(μ_fwd−μ_rev−m))`, fine-tuned on the probe's 70% split, evaluated on held-out 30%
+(μ never saw those edges): **DIRECTION 0.982 vs probe 0.930; CLOSE-NEG 0.864 vs probe 0.790** — non-overlapping
+CIs. So the gap was *entirely* the objective (symmetric-dominant + regression-to-constants); fix it (keep
+direction, drop symmetric pressure, rank not regress) and μ's nonlinear architecture **exceeds** a linear
+e5-probe. The review's control was the right test and drove the fix; "μ has no architectural advantage" is now
+**reversed** — it has one, once trained for the task. (Caveats: node-overlap remains → node-disjoint split next;
+single-run, tight CIs.)
+
 ### Relation to prior approaches
 Prior graph retrieval uses **distance metrics** — most relevantly **weighted shortest path** (and the WAM
 core's effective-distance). Those are *structural only*: graph-near ≠ semantically-related. The new algorithm

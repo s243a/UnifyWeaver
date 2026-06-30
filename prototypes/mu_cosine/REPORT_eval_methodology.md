@@ -169,10 +169,25 @@ trains *symmetry*, competing with direction; direction was only a minority grade
 
 **μ now matches the probe on close-negatives and closed ~half the direction gap — from an *objective* change
 alone.** So μ's earlier 0.78 was **mostly a supervision artifact** (the symmetric-dominant objective), not an
-architectural limit; the architecture is competitive once direction is supervised. The **residual** direction gap
-(0.84 vs 0.92) is the last of the objective mismatch — μ still *regresses to fixed 0.90/0.10 targets* (caps
-separation) where the probe optimises a *discriminative* loss; a ranking/discriminative directional loss is the
-remaining lever. (Single-run, n=1200 held-out; gains exceed the ±0.018 CI.)
+architectural limit. The **residual** gap was the last of the objective mismatch — μ still *regressed to fixed
+0.90/0.10 targets* (caps separation) where the probe optimises a *discriminative* loss.
+
+**Final step — discriminative directional loss (`train_dir_rank.py`): μ BEATS the probe.** Replaced the
+regression with a ranking CE `softplus(−s·(μ_fwd − μ_rev − m))` (+ light calibration anchor); fine-tuned on the
+**same 70% split** the probe trains on; evaluated on the **held-out 30% μ never saw** (the earlier inline 0.999
+was edge-leakage — μ had trained on the eval edges; this is the fair redo):
+
+| task | e5-cos | e5-probe | model_nodetype | model_dir | **model_dir_disc** |
+|---|---|---|---|---|---|
+| DIRECTION (fwd vs rev) | 0.511 | 0.930 [.919,.938] | 0.776 | 0.839 | **0.982** [.975,.988] |
+| CLOSE-NEG (parent vs sib) | 0.627 | 0.790 [.772,.807] | 0.738 | 0.779 | **0.864** [.849,.881] |
+
+**μ now beats the trained-head-on-frozen-e5 probe on both axes, held-out, with non-overlapping CIs.** So the
+review's control was right (an *untrained-for-the-task* μ loses to a probe) but the cause was **entirely the
+objective**: symmetric-dominant training, then regression-to-constants. Fix the objective (keep direction, drop
+symmetric pressure, *rank* instead of *regress*) and μ's nonlinear architecture **exceeds** a linear probe — it
+was never the bottleneck. Caveats: node-overlap remains (node-disjoint split is the next rigor step); single-run
+(CIs tight/non-overlapping); `model_dir_disc` is the cumulative recipe (directional graded → discriminative).
 
 ## 5. The e5 calibration issue (central methodological point)
 
@@ -213,16 +228,14 @@ structurally cannot supply **direction** or a **calibrated low-end**.
 - **Data scaling:** fine-tuning crossed the **e5-*cos*** bar — but that baseline is uncontrolled; an e5-*probe*
   curve is the needed comparison and is **not yet run**.
 
-**Net (honest, updated after the directional retrain §4.6):** the symmetric-trained checkpoint lost to a trained
-e5-probe — but that was **mostly the objective** (μ's dominant SYM term trains *symmetry*). With direction
-actually supervised (`model_dir`), **μ matches the probe on close-negatives and closes ~half the direction gap**,
-so the **architecture is competitive**, not inferior. μ still does not *beat* the probe on pure direction (0.84
-vs 0.92) — the residual is the regression-to-fixed-targets objective vs a discriminative loss. So: μ is a viable
-directional/membership estimator once supervised for it; whether it should *replace* a per-task e5-probe rests on
-the **systems** argument (one general calibrated multi-relational model vs a probe zoo) plus closing the residual
-with a discriminative directional loss. The earlier "μ owns direction structurally" overclaim stays withdrawn,
-but "μ can't beat a trained head" is now **too strong** — it matches on close-neg and the gap is shrinking with
-the right objective.
+**Net (final, after §4.6's full objective fix):** the symmetric-trained checkpoint lost to a trained e5-probe —
+but that was **entirely the objective** (symmetric-dominant training, then regression-to-constants), not the
+architecture. With the objective fixed — directional supervision + a **discriminative ranking loss** — **μ beats
+the trained-head-on-frozen-e5 probe on both direction (0.982 vs 0.930) and close-negatives (0.864 vs 0.790)**,
+held-out, with non-overlapping CIs. So μ's nonlinear architecture **does add value over a linear probe**, once
+trained for the task; the earlier loss was supervision, not capacity. The review's control was the right test and
+it drove the fix. Remaining rigor: a node-disjoint split and multi-seed to harden the win; and the systems
+argument (one general model vs a per-task probe zoo) is now *supported* rather than merely hypothesised.
 
 ## 8. Threats to validity / limitations (for the reviewer)
 

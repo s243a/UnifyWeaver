@@ -36,6 +36,25 @@ def reachable_down(children, root, cap=20000):
     return seen
 
 
+def build_triples(parents, children, n_edges, seed):
+    """Deterministic (child, parent, DAG-filtered sibling) triples, split 70/30. Shared by the eval and the
+    directional fine-tune so μ trains on the SAME 70% the probe does and both eval on the held-out 30% (no leak)."""
+    rng = random.Random(seed)
+    triples = []
+    for p, kids in children.items():
+        kids = [k for k in kids if k]
+        if len(kids) < 2:
+            continue
+        for c in kids:
+            desc_c = reachable_down(children, c, 4000)
+            cands = [s for s in kids if s != c and s not in desc_c and c not in reachable_down(children, s, 4000)]
+            if cands:
+                triples.append((c, p, rng.choice(cands)))
+    rng.shuffle(triples); triples = triples[:n_edges]
+    cut = int(0.7 * len(triples))
+    return triples[:cut], triples[cut:]
+
+
 def auc(pos, neg):
     pos = sorted(pos); import bisect
     s = sum(bisect.bisect_left(pos, n) + 0.5 * (bisect.bisect_right(pos, n) - bisect.bisect_left(pos, n)) for n in neg)
@@ -72,18 +91,8 @@ def main():
     parents, children, deg = load_dag(a.graph)
 
     # membership edges + a FILTERED sibling per edge (reject ancestor/descendant siblings — DAG false-neg guard)
-    triples = []
-    for p, kids in children.items():
-        kids = [k for k in kids if k]
-        if len(kids) < 2:
-            continue
-        for c in kids:
-            desc_c = reachable_down(children, c, 4000)
-            cands = [s for s in kids if s != c and s not in desc_c and c not in reachable_down(children, s, 4000)]
-            if cands:
-                triples.append((c, p, rng.choice(cands)))
-    rng.shuffle(triples); triples = triples[:a.n_edges]
-    cut = int(0.7 * len(triples)); tr, te = triples[:cut], triples[cut:]
+    tr, te = build_triples(parents, children, a.n_edges, a.seed)
+    triples = tr + te
     print(f"[DATA] {len(triples)} filtered (child,parent,sibling) triples — {len(tr)} train / {len(te)} held-out")
 
     names = sorted({x for t in triples for x in t})
