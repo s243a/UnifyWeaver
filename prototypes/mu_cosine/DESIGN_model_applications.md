@@ -224,6 +224,28 @@ fit ⇒ a **hybrid**: operator embedding = the **low-rank bivector-mapped partia
 from `K` blades), transformer reads μ on top — strong prior *and* learned refinement, both at forward-pass cost.
 (The `> root` rotor is also amortised — computed once per root, reused across all candidates.)
 
+**Precedent — this is already built (the federated rotation machinery), and K-blades was the *representation*, not
+the whole trick.** The repo's Pearltrees federated projection (`scripts/infer_pearltrees_federated.py`,
+`scripts/train_orthogonal_codebook.py`, `scripts/train_bivector_codebook.py`, `src/.../rotation_transformer.py`)
+already beats the naïve per-cluster `logm`/`expm` (O(n³)). What actually carries the speed:
+- **The blades are made axis-aligned / orthogonal, and *that* is load-bearing.** Orthogonal planes **commute**, so
+  `exp(Σ wᵢBᵢ) = Π exp(wᵢBᵢ)` — which licenses the **Rodrigues / Givens product** application
+  (`train_orthogonal_codebook.py:351-439, 965-1077`). It is "K **commuting** blades," not just "K blades"; the
+  commuting removes the matrix exp. (Matryoshka structure ⇒ the first ~64 axis dims suffice —
+  `docs/design/ORTHOGONAL_CODEBOOK_DESIGN.md`.)
+- **Canonical plane-angle decomposition** (`infer_pearltrees_federated.py:191-391`, `rotational-fast`) is the
+  actual inference-time `logm`-beater: split `W` into d/2 axis-aligned 2×2 blocks, read each angle via `arctan2`,
+  blend angles by scalar weighted-average, apply vectorized 2×2 rotations — O(K·d), no matrix functions.
+- **Learned codebook** (PCA/SVD over cluster generators → K principal bivectors; defaults **K=64**, **top-8**
+  blended per query — matching the "K≈8" estimate above) learns *which* blades.
+- **Distillation pays the matrix functions once, at training, never at inference**: the exact `logm`/`expm`
+  teacher is distilled into a cheap student (a transformer / a Givens layer)
+  (`scripts/distill_federated_to_transformer.py`). So even the "high" cost is a *one-time training* cost — which
+  collapses the cost axis further toward the transformer once distilled.
+So our hybrid has a **proven recipe**: K commuting (axis-aligned) blades, applied via Rodrigues/Givens, selected
+by a small codebook, optionally distilled into the μ transformer so inference is a plain forward pass. The
+geodesic `x_root ∧ x_node` is the K=1 special case (`src/.../minimal_transform.py:_rotation_between_vectors`).
+
 **Rotations on the sphere → bivectors as the generator.** e5 embeddings are **unit-normed**, so they live on a
 sphere and the relationship root→node is a **geodesic rotation**: rotor `R = exp(−½ θ B)`, applied
 `x_node = R x_root R̃`, where the **plane** `B = (x_root ∧ x_node)`-normalized and the **angle**
