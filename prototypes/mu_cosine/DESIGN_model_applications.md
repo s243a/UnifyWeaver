@@ -165,18 +165,23 @@ rising **data fractions**, eval MRR/recall on a **fixed held-out bookmark set** 
 folders are a stable taxonomy, the held-out *bookmarks* are never trained — the model carries no per-folder
 params, so a shared folder is not leakage). 500 steps, bs 48, single seed.
 
-| frac | n_train | MRR | recall@1 | recall@10 | med.rank | vs e5-cos (0.291) |
-|---|---|---|---|---|---|---|
-| 0.10 | 492 | 0.263 | 0.177 | 0.417 | 17 | −0.028 |
-| 0.30 | 1478 | 0.313 | 0.210 | 0.535 | 9 | **+0.022 ✓** |
-| 1.00 | 4929 | 0.352 | 0.235 | 0.573 | 7 | **+0.061 ✓** |
+**Multi-seed locked** (3 training seeds, fixed eval split; ✓ = *mean − sd* clears the bar, i.e. survives seed noise):
 
-μ **crosses between 10% and 30%** (~500–1500 bookmarks) and keeps climbing — at 100% **MRR 0.352 vs 0.291**
-(+21%), **recall@10 0.573 vs 0.440**, **median rank 7 vs 17** — monotonic and **still rising** (no plateau ⇒ more
-data helps). The OOD 2× loss (zero-shot) inverts to a clear win once the trained region is *extended* to the
-bookmark domain — the prediction confirmed. Caveats: single seed (multi-seed to lock — cf. perf-skepticism); a
-short fine-tune (more steps/data only helps per the slope). **Next:** the local-tangent **bivector feature** /
-orthogonalised codebook is the geometric enhancement on top (and per-region mixture for the long OOD tail).
+| frac | n_train | MRR (mean±sd) | recall@10 (mean±sd) | med.rank | vs e5-cos (0.291) |
+|---|---|---|---|---|---|
+| 0.10 | 492 | 0.230 ± 0.025 | 0.406 ± 0.028 | 19 | −0.061 |
+| 0.30 | 1478 | 0.317 ± 0.006 | 0.537 ± 0.006 | 8 | **+0.025 ✓ CROSSED** |
+| 1.00 | 4929 | 0.358 ± 0.018 | 0.573 ± 0.008 | 6 | **+0.066 ✓ CROSSED** |
+
+μ **crosses between 10% and 30%** (~500–1500 bookmarks) and keeps climbing — at 100% **MRR 0.358 vs 0.291**
+(+23%), **recall@10 0.573 vs 0.440**, **median rank 6 vs 17** — monotonic and **still rising** (no plateau ⇒ more
+data helps). The cross is **robust to seed**: at 30%/100% even *mean − sd* (0.311, 0.340) clears the bar, with
+tiny std (0.006–0.018). The OOD 2× loss (zero-shot) inverts to a clear, replicated win once the trained region is
+*extended* to the bookmark domain — the prediction confirmed and locked. (10% is correctly *below* the bar; the
+earlier single-seed 0.263 there was a touch optimistic — the lock matters most at low data, where variance is
+highest, std 0.025.) Remaining headroom: a longer fine-tune / more data per the still-rising slope. **Next** (now
+*scaffolding*, per the bitter-lesson framing below): the local-tangent **bivector feature** only if a thin
+sub-domain needs sample-efficiency; otherwise the bet is simply more data + training.
 
 #### Operating point — μ's edge is at recall@10 / median rank, which is exactly what an LLM re-ranker consumes
 Across **all three** results, μ's advantage over `e5-cos` concentrates at **recall@10 and median rank**, *not*
