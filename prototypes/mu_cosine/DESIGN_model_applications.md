@@ -171,6 +171,32 @@ Our operators split *exactly* along this seam:
 So μ's symmetric/directional operator structure *is* the scalar/bivector grade structure of a multivector — the
 asymmetry is geometric **by construction**, not bolted on.
 
+**Partial application (currying) — `μ(·|root)` *is* a partial application.** With `>` = subset, the binary
+relation `A > B` (A ⊆ B) curries into two unary predicates: **`A >`** = λx. A ⊆ x = *supersets of A* = "A as a
+**member**" = the `μ(A|·)` predicate; **`> B`** = λx. x ⊆ B = *subsets of B* = "B as a **container**" = the
+`μ(·|B)` predicate. So **conditioning on the root is currying the relation** — `μ(·|root)` is exactly the partial
+application `> root` (rank the *members* of root). The proposal: **the bivector mapping outputs the
+partial-application embedding** (the operator `> root` as a vector/rotor), and `μ(node|root) = ⟨node, (>root)⟩`
+(contract node against it). A node's two structural roles — *member* (`node >`) vs *container* (`> node`) — are
+the **two signs of its bivector** (`x_a∧x_b = −x_b∧x_a` = subset-vs-superset = `μ(a|b)≠μ(b|a)`), so the sign
+picks the role for free. This re-grounds the symmetric/asymmetric split: a symmetric op has `A ~ = ~ A` (no
+orientation) ⇒ the **dot product suffices**; an asymmetric op has `A > ≠ > A` ⇒ you **need** the bivector to tell
+the two curryings apart (the dot product cannot curry asymmetrically). Consistency check: `μ(node|root)` computed
+as `⟨node,(>root)⟩` or `⟨(node>),root⟩` must agree — the associativity of the geometric product (one relation,
+two views).
+
+**Cost tradeoff — bivector = inference cost, transformer = training cost (the unifying axis).** The bivector
+carries a **strong geometric prior** (directionality is *given*), so it needs **little training data** but pays a
+**high inference cost** (rotor exp/log per pair). The transformer has a **weak prior** (must *learn* the
+direction from data), so it has a **high training/data cost** but **cheap inference** (one forward pass). This
+*is* the filing-vs-home-turf result: e5/Procrustes(+bivector) wins OOD where in-domain data is absent (strong
+prior pays); transformer μ wins in-domain where it had the data. With our **currently low training coverage**,
+the cost axis favours the strong-prior tool — which argues for a **hybrid**: make the operator embeddings the
+**bivector-mapped partial applications** (`> root` computed geometrically) and let the transformer read μ on top.
+Pay the rotor cost at inference, hand the transformer the directional primitive pre-built ⇒ far less data to
+reach in-domain-competitive. Strong prior *and* learned refinement, composed. (Open: the rotor cost is
+amortisable — a root's `> root` operator is computed once and reused across all candidate nodes.)
+
 **Rotations on the sphere → bivectors as the generator.** e5 embeddings are **unit-normed**, so they live on a
 sphere and the relationship root→node is a **geodesic rotation**: rotor `R = exp(−½ θ B)`, applied
 `x_node = R x_root R̃`, where the **plane** `B = (x_root ∧ x_node)`-normalized and the **angle**
