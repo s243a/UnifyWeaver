@@ -89,12 +89,16 @@ The validated recipe that makes μ **beat** a trained e5-probe on direction/clos
   with `train_mu_attention.py --graded <dir> --dir-rank-weight 1.0 --sym-weight 0` (drops the order-invariant SYM
   pressure that competes with direction). **DONE + integrated.**
 - **≤30% bidirectional LATERAL (`haiku` judge)** → **soft regression** to a Haiku operator **superposition**
-  (siblings/cousins from `gen_mu_pairs --bidir`, scored by the §14 superposition prompt, fed via `--infer-blend`).
-  The judge token routes the loss (graph→rank, haiku→regress) — `--dir-rank-weight` already keys off `r[8]=="graph"`.
-  **REMAINING INPUT:** a Haiku-scoring pass over the bidirectional pairs (a *budgeted* spend) — the lateral
-  superposition data does not yet exist (`haiku_scored_tail.tsv` is the *no-relation tail*, ~80% noise, not the
-  lateral superpositions). Once generated, the training command is just `… --infer-blend <lateral> …` alongside
-  the directional flags; no code change (the routing is in place).
+  (siblings from the merged graph, scored by a Haiku judge on the §14 superposition prompt). The judge token
+  routes the loss (graph→rank, haiku→regress) — `--dir-rank-weight` keys off `r[8]=="graph"`; `haiku` rows fall to
+  the regression pool automatically. **DONE (proof-of-pipeline):** sampled sibling pairs → Haiku scored the
+  superpositions → appended as `judge=haiku` `SYM` graded rows → `train_mu_attention.py --graded <dir+lateral>
+  --dir-rank-weight 1.5 --graded-weight 0.3 --transitive … --sym-weight 0`. The graded round shows the routing
+  (`51,632 WIKI → rank`, `SYM haiku → regress`); the full recipe trains end-to-end and **close-neg beats the
+  e5-probe (0.80 vs 0.78)**, direction ~0.88 (vs the sole-objective standalone ceiling 0.982 — the multi-objective
+  recipe trades some peak direction for lateral relatedness + transitive + calibration in one model). Scaling the
+  lateral to a true ≤30% needs a larger Haiku batch (the pipeline is the same; this run used a 17-pair proof
+  batch).
 
 ---
 

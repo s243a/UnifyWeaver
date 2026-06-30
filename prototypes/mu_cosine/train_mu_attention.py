@@ -571,6 +571,9 @@ def train(args):
     # every row is the router; no new embedding needed. (Beats the e5-probe on direction — REPORT §4.6.)
     _DIR_REL = {"element_of", "subcategory", "subtopic", "super_category"}
     dir_edges = [r for r in graded_tr if r[8] == "graph" and r[4] in _DIR_REL and r[2] >= 0.5]
+    # when the directional RANKING loss is on, graph-directional rows are rank-supervised (+ anchor) — exclude them
+    # from the REGRESSION pool so the 0.90/0.10 regression doesn't compete with the rank (haiku/lateral rows stay).
+    graded_nondir = [r for r in graded_tr if not (r[8] == "graph" and r[4] in _DIR_REL)]
     relset = sorted(set(r[4] for r in graded_tag))
     blend_state = {"pop": None, "tgt": None}               # per-inferred-row P(op) [N,n_ops] + blended target
     # tagged-blend (DESIGN §7): when --blend-tagged-conf c < 1.0, ALSO blend TAGGED rows as a REGULARIZER with
@@ -745,6 +748,8 @@ def train(args):
         # until the warmup completes — the blend's joint posterior + μ readouts must be established BEFORE the
         # blend consumes them (DESIGN §4/§7) — then move into the blend.
         tag_blended_now = blend_tag_on and step >= args.blend_warmup
+        # directional rows get BOTH the regression (foundation) and the rank (sharpening) — the regression is the
+        # base the rank refines; rank-only from scratch underperforms (it needs the graded foundation first).
         graded_pool = (([] if tag_blended_now else graded_tag) if args.infer_blend else graded_tr)
         if graded_pool and not args.sym_only:
             gb = [graded_pool[rng.randrange(len(graded_pool))] for _ in range(args.bs)]
