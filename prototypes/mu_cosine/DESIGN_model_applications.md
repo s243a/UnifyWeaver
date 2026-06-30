@@ -178,6 +178,18 @@ bookmark domain — the prediction confirmed. Caveats: single seed (multi-seed t
 short fine-tune (more steps/data only helps per the slope). **Next:** the local-tangent **bivector feature** /
 orthogonalised codebook is the geometric enhancement on top (and per-region mixture for the long OOD tail).
 
+#### Operating point — μ's edge is at recall@10 / median rank, which is exactly what an LLM re-ranker consumes
+Across **all three** results, μ's advantage over `e5-cos` concentrates at **recall@10 and median rank**, *not*
+recall@1 (where e5-cos is often comparable or slightly ahead): home-turf recall@10 **0.494 vs 0.424** /
+median **11 vs 29**; node-holdout **0.482 vs 0.414** / **12 vs 36**; fine-tuned filing **0.573 vs 0.440** /
+**7 vs 17** — yet recall@1 stays close (e.g. filing 0.235 vs ~0.20). **This is the ideal profile for a two-stage
+retrieve-then-rerank pipeline.** A first-stage retriever's job is to get the right answer *into the top-K
+shortlist* (high recall@K, low median rank); an **LLM re-ranker** then supplies precision@1 by reading the K
+candidates. μ excels at exactly the shortlist metric and recovers the early win *before* its recall@1 catches up
+— so "μ slightly behind at recall@1" is a **non-issue** for the real application: μ is the right **first-stage
+retriever** (return top-10, hand to the LLM), where median-rank-7 means the answer is almost always in the window
+the LLM sees. The early in-domain win lands precisely at the hit@(≥10) operating point that re-ranking uses.
+
 ### Relation to prior approaches
 Prior graph retrieval uses **distance metrics** — most relevantly **weighted shortest path** (and the WAM
 core's effective-distance). Those are *structural only*: graph-near ≠ semantically-related. The new algorithm
@@ -254,8 +266,9 @@ already beats the naïve per-cluster `logm`/`expm` (O(n³)). What actually carri
 - **Canonical plane-angle decomposition** (`infer_pearltrees_federated.py:191-391`, `rotational-fast`) is the
   actual inference-time `logm`-beater: split `W` into d/2 axis-aligned 2×2 blocks, read each angle via `arctan2`,
   blend angles by scalar weighted-average, apply vectorized 2×2 rotations — O(K·d), no matrix functions.
-- **Learned codebook** (PCA/SVD over cluster generators → K principal bivectors; defaults **K=64**, **top-8**
-  blended per query — matching the "K≈8" estimate above) learns *which* blades.
+- **Codebook of K planes** (defaults **K=64**, **top-8** blended per query — matching the "K≈8" estimate above).
+  Two variants — **canonical axis-aligned** (fixed planes, *recommended*) vs **PCA-derived** principal bivectors;
+  the canonical one wins on Matryoshka embeddings (see "Free planes vs axis-aligned" below — a non-obvious result).
 - **Distillation pays the matrix functions once, at training, never at inference**: the exact `logm`/`expm`
   teacher is distilled into a cheap student (a transformer / a Givens layer)
   (`scripts/distill_federated_to_transformer.py`). So even the "high" cost is a *one-time training* cost — which
@@ -264,19 +277,23 @@ So our hybrid has a **proven recipe**: K commuting blades, applied via Rodrigues
 codebook, optionally distilled into the μ transformer so inference is a plain forward pass. The geodesic
 `x_root ∧ x_node` is the K=1 special case (`src/.../minimal_transform.py:_rotation_between_vectors`).
 
-**Free planes vs axis-aligned — fewer blades for the same error, but a commuting catch (and its resolution).**
-Data-adaptive 2-planes are *more expressive per blade* than fixed coordinate (Givens) planes — same logic as PCA
-vs a fixed-axis projection — so the blade count drops to roughly the **effective rank** of the structural
-rotation (its number of significant rotation planes), not however many coordinate planes are needed to *span*
-them. The catch: arbitrary planes generally **don't commute** (`exp(B₁+B₂) ≠ exp(B₁)exp(B₂)`), so the cheap
-Rodrigues *product* becomes an order-dependent BCH approximation, and *finding* the optimal planes costs an
-eigendecomposition (≈ O(n³)) per rotation. The codebook's resolution gets both: find the planes **data-adaptively**
-(PCA/SVD over generators → principal bivectors) **then orthogonalise them** (`train_orthogonal_codebook.py`) — so
-they are data-chosen (small K) *and* mutually orthogonal (commuting ⇒ exact Rodrigues product) *and* the
-plane-finding is amortised once into the codebook. That is why **top-8** suffices: 8 *optimally placed* planes,
-not 8 arbitrary coordinate planes. (The axis-aligned `rotational-fast` path is the cruder cousin that skips even
-this, leaning on Matryoshka structure to make coordinate axes ≈ principal directions.) **For our hybrid:** use a
-small *orthogonalised, data-chosen* codebook, not raw Givens — smallest K per unit error, commuting preserved.
+**Free planes vs axis-aligned — the theory says "fewer blades," but the repo found the *opposite* in practice
+(and the reason matters for us).** *Theory:* data-adaptive 2-planes are more expressive per blade than fixed
+coordinate (Givens) planes — PCA-vs-fixed-axis logic — so in principle the blade count drops to the rotation's
+**effective rank**, not the coordinate planes needed to *span* it. And there's a real catch: arbitrary planes
+**don't commute** (`exp(B₁+B₂) ≠ exp(B₁)exp(B₂)` ⇒ order-dependent BCH error in the Rodrigues product) and cost an
+eigendecomposition (≈ O(n³)) to find. *The obvious fix — PCA the planes then orthogonalise them — **backfires***:
+`docs/design/ORTHOGONAL_CODEBOOK_DESIGN.md` reports that forcing data-planes orthogonal **distorts** the original
+bivectors (information loss, broken clean commutativity), so the student must learn complex plane interactions.
+The **canonical axis-aligned** codebook *wins* instead (**0.9997** cosine vs the exact teacher) because its planes
+are orthogonal *by construction* — each weight is an **independent knob** (decomposable learning, changing `wᵢ`
+never needs compensating `wⱼ`). It can afford *fixed* coordinate planes because **Matryoshka** embeddings (Nomic)
+pack core meaning into dims 0-127, so the first ~64 axis planes already ≈ the principal directions — data-alignment
+*for free*, no PCA. **Caveat for our hybrid — `e5-small-v2` is *not* known to use Matryoshka representation
+learning**, so the canonical shortcut may not transfer: an **open question** (we may need PCA planes, more planes,
+or to first profile e5's per-dimension importance). Net: "small codebook + Rodrigues + distill" holds; *which*
+planes (canonical vs data-adaptive) is **embedding-structure-dependent and unsettled for e5** — verify before
+assuming axis-aligned. (The `rotational-fast` path leans hardest on Matryoshka; it is the least e5-portable.)
 
 **Rotations on the sphere → bivectors as the generator.** e5 embeddings are **unit-normed**, so they live on a
 sphere and the relationship root→node is a **geodesic rotation**: rotor `R = exp(−½ θ B)`, applied
