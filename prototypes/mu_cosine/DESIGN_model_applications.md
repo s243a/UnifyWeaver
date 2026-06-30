@@ -253,6 +253,16 @@ provide. **Re-judges coverage round 1:** `cov1` didn't move rank-AUC (e5 already
 calibration on the new domains** (POS mean μ 0.40→0.51) — so it *did* contribute; the filing eval just couldn't
 see it. Going forward, evaluate coverage/μ on **directional + calibrated** metrics, not symmetric rank.
 
+**Depth test (settles the "μ wins deep" hypothesis — it doesn't):** stratified the membership discrimination by
+tree depth with a HARD distractor (a *sibling* of the true parent — same depth, same local domain). Both degrade
+with depth and **e5 stays ahead at every depth** (μ/e5 AUC(true>sibling): shallow 0.84/0.86, mid 0.79/0.83, deep
+0.72/0.79). e5's cosine doesn't saturate — deep child titles still lexically echo the true parent ("Medieval
+linguists"→"Linguists"). **So μ does not beat e5 on *magnitude* discrimination at any depth.** Tested four ways
+(clean domains, fine-subdomain rank, deep pairs, filing) — e5 is competitive-or-better on the symmetric/magnitude
+axis every time. **This is settled: μ's value is NOT being a better symmetric ranker; it is directionality +
+calibration** (the axes e5 structurally lacks). Stop benchmarking μ-vs-e5 on magnitude; build on direction +
+calibration — exactly what membership/filing need and cosine cannot give.
+
 ### Relation to prior approaches
 Prior graph retrieval uses **distance metrics** — most relevantly **weighted shortest path** (and the WAM
 core's effective-distance). Those are *structural only*: graph-near ≠ semantically-related. The new algorithm
