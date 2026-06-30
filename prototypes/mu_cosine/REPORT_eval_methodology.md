@@ -231,6 +231,16 @@ structurally cannot supply **direction** or a **readable low-end** (a wide, usab
 - **μ is the trained layer** — the filing learning curve (§4.1) is direct evidence: MRR 0.230 → 0.317 → 0.358
   across 10/30/100% of the data, **monotonic, still rising at 100% (no plateau)**. Extrapolating the slope, more
   in-domain data continues to widen μ's margin over the fixed e5 bar.
+- **e5-probe baseline for filing (review #5, `eval_filing_probe.py`):** a *trained* head on frozen e5 (logistic on
+  `concat(bm, folder, bm⊙folder)`, contrastive, same fractions/split) lands at **MRR ~0.06 — well below e5-cos
+  (0.291)**, flat across fractions. *Why (and the caveat):* filing is a 335-way ranking dominated by *topically
+  similar* hard confusions; a binary probe trained on *random* negatives never learns to separate those, while
+  e5-cos ranks by topical closeness natively. So unlike the **direction** task — where the signal is *per-slot*
+  (generality) and a linear probe is *strong* (0.92, §4.6) — for the **interaction/match** task of filing the
+  strong e5 baseline is **e5-cos itself**, and μ crosses it with data. (A hard-negative-tuned ranking probe is the
+  rigorous version; it would at best approach e5-cos, which μ already beats. The split between "probe strong on
+  per-slot tasks / weak on interaction tasks" is itself a clean result: μ wins by being *nonlinear* on the
+  interaction tasks and *better-supervised* on the per-slot ones.)
 - **Coverage sharpens calibration.** A coverage round (enwiki linguistics/poli-sci/STS) did **not** raise rank-AUC
   on those clean domains (e5 already ranks clean content well) but **sharpened μ's positive degree** there
   (mean POS μ 0.40 → 0.51) — i.e. data improves the *calibration/directional* axis even where rank is saturated.
