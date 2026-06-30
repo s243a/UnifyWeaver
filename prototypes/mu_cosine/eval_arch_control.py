@@ -36,10 +36,16 @@ def reachable_down(children, root, cap=20000):
     return seen
 
 
-def build_triples(parents, children, n_edges, seed):
-    """Deterministic (child, parent, DAG-filtered sibling) triples, split 70/30. Shared by the eval and the
-    directional fine-tune so μ trains on the SAME 70% the probe does and both eval on the held-out 30% (no leak)."""
+def build_triples(parents, children, n_edges, seed, node_disjoint=False):
+    """Deterministic (child, parent, DAG-filtered sibling) triples, split train/test. Shared by the eval and the
+    directional fine-tune so μ trains on the SAME train split the probe does and both eval on the held-out test.
+    node_disjoint=True: hold out ~30% of NODES; train triples have all endpoints in the train-node set, test
+    triples all in the held-out-node set — so neither μ nor the probe ever saw an eval node (the strict control)."""
     rng = random.Random(seed)
+    held = None
+    if node_disjoint:
+        nodes = sorted(set(parents) | set(children))
+        held = set(random.Random(seed * 7 + 1).sample(nodes, int(0.30 * len(nodes))))
     triples = []
     for p, kids in children.items():
         kids = [k for k in kids if k]
@@ -50,7 +56,12 @@ def build_triples(parents, children, n_edges, seed):
             cands = [s for s in kids if s != c and s not in desc_c and c not in reachable_down(children, s, 4000)]
             if cands:
                 triples.append((c, p, rng.choice(cands)))
-    rng.shuffle(triples); triples = triples[:n_edges]
+    rng.shuffle(triples)
+    if node_disjoint:
+        tr = [t for t in triples if all(x not in held for x in t)][:int(0.7 * n_edges)]
+        te = [t for t in triples if all(x in held for x in t)][:int(0.3 * n_edges)]
+        return tr, te
+    triples = triples[:n_edges]
     cut = int(0.7 * len(triples))
     return triples[:cut], triples[cut:]
 

@@ -60,7 +60,10 @@ e5-cos **doubles** the μ model — but this is **OOD transfer** (μ trained on 
 filing), not a verdict on the architecture (see 4.2). 
 
 **Filing fine-tune learning curve** (`train_filing.py`; warm-start, in-batch contrastive `element_of`, **3
-training seeds, fixed eval split**, ✓ = mean−sd above the e5-cos bar 0.291):
+training seeds, fixed eval split**, ✓ = mean−sd above the e5-cos bar 0.291). *Baseline note (per review #7):* the
+**0.291** bar here is e5-cos on this run's **fixed held-out bookmark split** (`train_filing.py`'s split); the
+**0.299** in §4.1 is e5-cos on the **separate 500-query zero-shot sample** (335 folders, admin included) — *different
+splits, not a moving target*; each μ number is compared only against the e5-cos measured on its **own** split:
 
 | data frac | n_train | MRR (mean±sd) | recall@10 | vs e5-cos |
 |---|---|---|---|---|
@@ -186,10 +189,29 @@ was edge-leakage — μ had trained on the eval edges; this is the fair redo):
 review's control was right (an *untrained-for-the-task* μ loses to a probe) but the cause was **entirely the
 objective**: symmetric-dominant training, then regression-to-constants. Fix the objective (keep direction, drop
 symmetric pressure, *rank* instead of *regress*) and μ's nonlinear architecture **exceeds** a linear probe — it
-was never the bottleneck. Caveats: node-overlap remains (node-disjoint split is the next rigor step); single-run
-(CIs tight/non-overlapping); `model_dir_disc` is the cumulative recipe (directional graded → discriminative).
+was never the bottleneck. `model_dir_disc` is the cumulative recipe (directional graded → discriminative).
 
-## 5. The e5 calibration issue (central methodological point)
+**Hardened — node-disjoint + multi-seed (`eval_arch_harden.py`, addresses review #4/rigor): the win holds.** The
+above shares *nodes* between train and test (only edges held out). The strict control holds out **30% of NODES**
+(neither μ nor the probe sees an eval node as a *task example*; frozen-e5/base-model pretraining exposure is
+symmetric), warm-starts `model_nodetype`, fine-tunes μ on train-node edges only, over **3 seeds**:
+
+| scorer | DIRECTION (mean±sd) | CLOSE-NEG (mean±sd) |
+|---|---|---|
+| e5-cos | 0.515 ± 0.009 | 0.612 ± 0.048 |
+| e5-probe | 0.920 ± 0.013 | 0.777 ± 0.015 |
+| **μ** | **0.961 ± 0.010** | **0.812 ± 0.008** |
+
+**μ beats the probe on both axes, every seed, with non-overlapping sds — under unseen nodes.** So the
+μ-exceeds-a-trained-e5-probe result is not a split artifact; it survives the strict node-disjoint, multi-seed
+control. (Node-disjoint AUC 0.961 < the edge-held-out 0.982 — generalising to wholly unseen nodes is harder — but
+still clearly above the probe's 0.920.)
+
+## 5. The e5 *dynamic-range* issue — range/separation, NOT probabilistic calibration (terminology, per review #3)
+**Terminology disclaimer:** throughout, "calibration" in earlier drafts meant **dynamic range / degree
+readability** (the spread of scores, mean-μ-per-stratum), **not** probabilistic calibration in the formal sense
+(reliability / ECE / Brier against empirical membership rates). We do **not** measure the latter here; that is a
+named follow-up (§9 Q2). Read every "calibration" below as "dynamic range / readable degree."
 
 e5-small cosine similarities live in a **compressed high band (~0.76–0.84)**: a true parent, a different-fine-
 subdomain category, and a *sibling* all score ~0.78–0.83. Consequences:
@@ -197,11 +219,11 @@ subdomain category, and a *sibling* all score ~0.78–0.83. Consequences:
   ~0.8. A sibling (0.815) is indistinguishable from the true parent (0.832).
 - **Rank-AUC hides this** — rank order can survive compression, so AUC makes e5 look fine (§4.3) even though it
   can't *threshold* or *read off a degree*.
-- **The usable signal is the calibrated degree, not a threshold.** μ outputs `0.48` for a member and `0.22` for a
-  sibling — directly readable. (We deliberately report the *degree*, because the binary FPR@TPR is leaky for both:
-  μ's positive low-tail forces a ~0.001 cutoff at 90% TPR.)
+- **The usable signal is the readable *degree*, not a threshold.** μ outputs `0.48` for a member and `0.22` for a
+  sibling — directly readable as a *range* (this is separation/readability, not a reliability claim). (We report
+  the degree because the binary FPR@TPR is leaky for both: μ's positive low-tail forces a ~0.001 cutoff at 90% TPR.)
 This is *why* a learned layer over frozen e5 is worth having: e5 supplies coarse topical similarity; it
-structurally cannot supply **direction** or a **calibrated low-end**.
+structurally cannot supply **direction** or a **readable low-end** (a wide, usable dynamic range).
 
 ## 6. How more data improves the μ numbers (and not e5's)
 
@@ -219,9 +241,12 @@ structurally cannot supply **direction** or a **calibrated low-end**.
 ## 7. What works / what doesn't
 
 **Corrected by the architecture control (§4.6) — the earlier "μ wins" claims do NOT survive a trained-head baseline:**
-- **Directionality:** signal is in frozen e5; an order-aware **linear probe beats μ (0.92 vs 0.78)**. Not μ-architectural.
-- **Close-negative (sibling):** **probe beats μ (0.78 vs 0.74)**. Not μ-architectural.
-- **Symmetric rank:** e5 ≥ μ (was already a non-win).
+- **Directionality:** the *symmetric-trained* μ lost to a linear probe (0.78 vs 0.92) — but that was the
+  *objective*; with directional + discriminative supervision **μ beats the probe (0.961 vs 0.920, node-disjoint
+  3-seed, §4.6).** μ-architectural after all.
+- **Close-negative (sibling):** same — symmetric-trained μ lost, discriminatively-trained **μ beats the probe
+  (0.812 vs 0.777, node-disjoint 3-seed).**
+- **Symmetric rank:** e5 ≥ μ (a genuine non-win — μ's edge is direction + close-neg + readable degree, not coarse rank).
 - **Calibrated degrees:** μ has 4× dynamic range, but that is *readability/separation*, not probabilistic
   calibration, and does not give clean high-recall thresholding (FPR leaky). Rename pending (§5).
 - **Clean-domain coverage:** no rank gain (e5 already strong).
@@ -232,10 +257,11 @@ structurally cannot supply **direction** or a **calibrated low-end**.
 but that was **entirely the objective** (symmetric-dominant training, then regression-to-constants), not the
 architecture. With the objective fixed — directional supervision + a **discriminative ranking loss** — **μ beats
 the trained-head-on-frozen-e5 probe on both direction (0.982 vs 0.930) and close-negatives (0.864 vs 0.790)**,
-held-out, with non-overlapping CIs. So μ's nonlinear architecture **does add value over a linear probe**, once
-trained for the task; the earlier loss was supervision, not capacity. The review's control was the right test and
-it drove the fix. Remaining rigor: a node-disjoint split and multi-seed to harden the win; and the systems
-argument (one general model vs a per-task probe zoo) is now *supported* rather than merely hypothesised.
+held-out, with non-overlapping CIs — **and it holds under a node-disjoint, 3-seed control (0.961 vs 0.920;
+0.812 vs 0.777, §4.6).** So μ's nonlinear architecture **does add value over a linear probe**, once trained for
+the task; the earlier loss was supervision, not capacity. The review's control was the right test and it drove
+the fix. The systems argument (one general model vs a per-task probe zoo) is now *supported* rather than merely
+hypothesised.
 
 ## 8. Threats to validity / limitations (for the reviewer)
 
@@ -253,6 +279,20 @@ argument (one general model vs a per-task probe zoo) is now *supported* rather t
   frozen encoder could shift the e5 baseline.
 - **Memorisation control.** The in-domain win is checked on a node-holdout (nodes in *neither* the SYM pairs nor
   the graded edges), so it is generalisation; but the holdout is from the same graph distribution.
+- **In-sample threshold for FPR@90%TPR.** The §4.3 negative-rejection threshold is picked on the same data it is
+  measured on (no validation split). Since the conclusion there is "neither thresholds cleanly / μ marginally
+  worse," the in-sample choice only *flatters* both equally; a validation-split threshold is the clean fix.
+- **Reproducibility (resolved).** The directional and sibling close-negative results, flagged in review #1/#2 as
+  not reproducible from committed tooling, are now produced by committed scripts with DAG sibling-filters and
+  bootstrap CIs (`eval_arch_control.py`) and a shared train/test split (`build_triples`); the directional loss is
+  in the main trainer (`--dir-rank-weight`). The architecture-control + node-disjoint multi-seed are
+  `eval_arch_control.py` / `eval_arch_harden.py`.
+- **Architecture control caveat (resolved).** e5-cos was a *product* baseline; the *architecture* control (a
+  trained head on frozen e5) is now run (§4.6) and μ beats it once trained for the task.
+- **Still open:** an e5-*probe* learning curve for §4.1 (the filing curve beat e5-*cos* only); probabilistic
+  calibration (ECE/reliability) is unmeasured (§5); the node-disjoint base model (`model_nodetype`) still saw the
+  held-out nodes during *its* pretraining (only the task-example supervision is held out — symmetric with e5's
+  pretraining, but not a from-scratch node-disjoint train).
 
 ## 9. Questions we'd like the reviewer to scrutinise
 
