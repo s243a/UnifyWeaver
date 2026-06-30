@@ -198,17 +198,31 @@ the two curryings apart (the dot product cannot curry asymmetrically). Consisten
 as `⟨node,(>root)⟩` or `⟨(node>),root⟩` must agree — the associativity of the geometric product (one relation,
 two views).
 
-**Cost tradeoff — bivector = inference cost, transformer = training cost (the unifying axis).** The bivector
-carries a **strong geometric prior** (directionality is *given*), so it needs **little training data** but pays a
-**high inference cost** (rotor exp/log per pair). The transformer has a **weak prior** (must *learn* the
-direction from data), so it has a **high training/data cost** but **cheap inference** (one forward pass). This
-*is* the filing-vs-home-turf result: e5/Procrustes(+bivector) wins OOD where in-domain data is absent (strong
-prior pays); transformer μ wins in-domain where it had the data. With our **currently low training coverage**,
-the cost axis favours the strong-prior tool — which argues for a **hybrid**: make the operator embeddings the
-**bivector-mapped partial applications** (`> root` computed geometrically) and let the transformer read μ on top.
-Pay the rotor cost at inference, hand the transformer the directional primitive pre-built ⇒ far less data to
-reach in-domain-competitive. Strong prior *and* learned refinement, composed. (Open: the rotor cost is
-amortisable — a root's `> root` operator is computed once and reused across all candidate nodes.)
+**Bivector dimensionality — general is O(n²), but ours are *simple* (O(n)).** A **general** bivector is an
+antisymmetric `n×n` matrix = `dim so(n) = n(n−1)/2`; for `n=384` that is **73,536** (≈ `n/2 ≈ 192×` the embedding
+dim) — materialising it per node is absurd. **But the bivectors we use are *blades* (rank-2): `x_a ∧ x_b` lies in
+the 2-plane `span(x_a,x_b)`**, parameterised by the two vectors (**O(n)**, never the 73k object). Its rotor acts
+*only* in that plane — apply `R x R̃` by projecting `x` onto the plane (two dot products), rotating that 2D part
+by `θ`, leaving the complement untouched: **O(n), closed form, no matrix exp**. Between the extremes sits a
+**low-rank bivector = sum of `K` blades** (= product of `K` Givens rotations), **O(Kn)** params/apply, `K`
+rotation planes — the expressiveness dial:
+
+| representation | params | apply | expressiveness |
+|---|---|---|---|
+| simple blade (`K=1`) | O(n) | O(n) | geodesic / one 2-plane |
+| **low-rank (`K` blades)** | **O(Kn)** | **O(Kn)** | `K` planes — *tunable* (`K≈8` ⇒ ~3k params) |
+| general (`K=n/2`) | n(n−1)/2 ≈ 73,536 | O(n²) | full `SO(n)` (the Procrustes case) |
+
+**Cost tradeoff — the unifying axis (corrected: the cost is *general rotation*, not bivectors per se).** The
+expensive object is the **general** rotation — the bookmarking agent's Procrustes `W` ∈ `SO(n)`, whose generator
+is a *general* (73k-dim) bivector recovered via `logm`/`expm` (O(n³)). **Simple/low-rank tangent blades avoid
+that entirely** (O(Kn), forward-pass cost). So the real axis is **prior strength vs data**, not inference cost:
+the bivector carries a **strong geometric prior** (directionality *given*) ⇒ little training data; the
+transformer has a **weak prior** ⇒ high data cost but cheap inference. This *is* the filing-vs-home-turf result
+(strong prior wins OOD; transformer wins in-domain-with-data). With our **low coverage**, the prior is the better
+fit ⇒ a **hybrid**: operator embedding = the **low-rank bivector-mapped partial application** (`> root` built
+from `K` blades), transformer reads μ on top — strong prior *and* learned refinement, both at forward-pass cost.
+(The `> root` rotor is also amortised — computed once per root, reused across all candidates.)
 
 **Rotations on the sphere → bivectors as the generator.** e5 embeddings are **unit-normed**, so they live on a
 sphere and the relationship root→node is a **geodesic rotation**: rotor `R = exp(−½ θ B)`, applied
