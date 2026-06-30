@@ -135,6 +135,27 @@ sibling-of-parent distractor, both degrade with depth and e5 stays ahead — so 
 *closeness* (sibling), **not** tree depth. **Close neighbours are exactly what fill the top of a retrieval list**,
 so this is the practically decisive regime — and it is why μ won filing recall@10.
 
+### 4.6 Architecture control (added per review #5) — the directional/close-neg wins are NOT μ-architectural
+`e5-cos` is the *product* baseline (untrained). The *architecture* control is a **trained head on the same frozen
+e5 features**: a logistic regression on the **ordered** pair `concat(query[a], passage[b])` (768-d), trained on a
+70% edge split, evaluated on the 30% held-out (`eval_arch_control.py`; sibling negatives DAG-filtered to drop
+ancestor/descendant "siblings"; bootstrap 95% CIs):
+
+| task | e5-cos (untrained, symmetric) | **e5-probe (trained head on frozen e5)** | mu-elem |
+|---|---|---|---|
+| DIRECTION (fwd vs rev) | 0.515 | **0.922** [0.911, 0.931] | 0.776 [0.758, 0.793] |
+| CLOSE-NEG (parent vs sibling) | 0.635 | **0.783** [0.765, 0.800] | 0.738 [0.718, 0.757] |
+
+**The control beats μ on both.** e5-cos can't do direction only because cosine *discards order*; the directional
+signal is present in e5's `query:`/`passage:` representations and a **linear order-aware head recovers it at 0.92
+— above μ's 0.78.** So **directionality and close-negative discrimination are NOT μ-architectural wins** — a
+trivial trained head on frozen e5 does them *better*. Against this properly-controlled baseline, **μ has not
+demonstrated a per-task advantage on any axis we tested**; the earlier "μ's structural win" framing compared μ to
+symmetric cosine, not to a trained head. Caveat: the probe is *task-specialised* (trained directly on each task),
+while μ is one *general* multi-relational model trained on a different (walk) objective — so this refutes the
+*architectural-superiority* claim, not the possibility that a single general calibrated estimator is *useful*
+(an untested systems argument, §7).
+
 ## 5. The e5 calibration issue (central methodological point)
 
 e5-small cosine similarities live in a **compressed high band (~0.76–0.84)**: a true parent, a different-fine-
@@ -164,20 +185,22 @@ structurally cannot supply **direction** or a **calibrated low-end**.
 
 ## 7. What works / what doesn't
 
-**Works (μ's robust, repeatable wins):**
-- **Directionality** — AUC 0.78 vs e5's 0.51 coin-flip. Structural; e5 cannot do it.
-- **Close-negative (sibling) discrimination** — AUC 0.73 vs 0.62; the win *grows* as negatives get closer.
-- **Calibrated degrees** — 4× dynamic range; readable "low" that e5 lacks.
-- **Data scaling** — fine-tuning crosses the e5-cos bar on a real OOD task with modest data and keeps rising.
+**Corrected by the architecture control (§4.6) — the earlier "μ wins" claims do NOT survive a trained-head baseline:**
+- **Directionality:** signal is in frozen e5; an order-aware **linear probe beats μ (0.92 vs 0.78)**. Not μ-architectural.
+- **Close-negative (sibling):** **probe beats μ (0.78 vs 0.74)**. Not μ-architectural.
+- **Symmetric rank:** e5 ≥ μ (was already a non-win).
+- **Calibrated degrees:** μ has 4× dynamic range, but that is *readability/separation*, not probabilistic
+  calibration, and does not give clean high-recall thresholding (FPR leaky). Rename pending (§5).
+- **Clean-domain coverage:** no rank gain (e5 already strong).
+- **Data scaling:** fine-tuning crossed the **e5-*cos*** bar — but that baseline is uncontrolled; an e5-*probe*
+  curve is the needed comparison and is **not yet run**.
 
-**Doesn't (honest negatives):**
-- μ is **not** a better *symmetric rank* metric than e5 on easy/medium negatives (e5 AUC ≥ μ there).
-- μ's calibration does **not** give clean high-recall thresholding (FPR leaky; distributions overlap).
-- **Clean-domain coverage gave no rank gain** (e5 already strong on clean content).
-- Zero-shot OOD μ loses badly (it needs in-domain data).
-
-**Architecture implied:** a **hybrid** — e5 for cheap coarse symmetric ranking; **μ for direction + close-
-neighbour disambiguation + calibrated degree** (the practically decisive top-of-list cases). Not "μ replaces e5."
+**Net (honest):** against a *properly controlled* e5 baseline (a trained head on the frozen features, not raw
+cosine), **μ has not demonstrated a per-task accuracy advantage on any axis tested.** The only remaining candidate
+value is a *systems* argument — **one general, calibrated, multi-relational estimator** (all relations/directions/
+superposition/transitive in a single model) versus a per-(relation,direction) probe zoo — which is **untested**.
+That is the claim to either substantiate or drop; the "μ's structural win" / "hybrid because μ owns direction"
+framing is **withdrawn** pending it.
 
 ## 8. Threats to validity / limitations (for the reviewer)
 

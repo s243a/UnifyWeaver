@@ -302,6 +302,17 @@ close enough. **Architecture = HYBRID:** e5 for coarse symmetric ranking (cheap,
 direction + close-neighbour disambiguation** (which determines the actual top of the retrieval list). Same
 "structure ∩ semantics" split; μ carries the practically-decisive cases e5 conflates.
 
+#### CORRECTION (architecture control, PR #3387 review) — the directional/close-neg wins are NOT μ-architectural
+`e5-cos` is the untrained *product* baseline; the *architecture* control is a **trained head on frozen e5**. A
+logistic probe on the ordered pair `concat(query[a], passage[b])` (held-out edges, `eval_arch_control.py`) **beats
+μ on both**: DIRECTION 0.92 vs μ 0.78; CLOSE-NEG (parent vs sibling) 0.78 vs μ 0.74. e5-cos fails direction only
+because cosine discards order — the signal is in e5's query/passage reps and a linear order-aware head recovers it
+*better* than μ. **So "μ wins direction + close-neg" is withdrawn:** against a trained-head baseline μ shows **no
+per-task advantage on any axis tested.** The only remaining candidate value is a *systems* argument — one general,
+calibrated, multi-relational estimator vs a per-(relation,direction) probe zoo — which is **untested**. The hybrid
+framing above stands only if that generality claim is substantiated; otherwise a trained e5-probe is the stronger,
+simpler tool. (This is the review's decisive catch; we ran the control and it overturned the headline.)
+
 ### Relation to prior approaches
 Prior graph retrieval uses **distance metrics** — most relevantly **weighted shortest path** (and the WAM
 core's effective-distance). Those are *structural only*: graph-near ≠ semantically-related. The new algorithm
