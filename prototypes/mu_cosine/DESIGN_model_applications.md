@@ -270,17 +270,31 @@ EASY-NEG: e5 52% vs μ-super 58%). μ's calibration gives different *means* (POS
 enough to readmit negatives. **A wide dynamic range ≠ functional thresholding.** So the "μ rejects negatives
 where e5 can't" hypothesis does **not** hold at the operating point.
 
-#### Consolidated verdict (tested 5 ways) — μ's one robust win is DIRECTIONALITY; use a hybrid
-Across clean-domain coverage, fine-subdomain rank, deep-pair discrimination, filing, and negative-rejection,
-**e5-cos is competitive-or-better on every symmetric / magnitude / rejection axis.** μ-super is a *reasonable*
-symmetric ranker (AUC 0.67 vs 0.73) but not a better one, and its calibration does not translate into functional
-negative-rejection. **The single robust, unique, repeatable μ advantage is DIRECTIONALITY** (member|container vs
-container|member: AUC **0.78 vs e5 0.51**) — structural, e5 cannot represent it. **Architectural conclusion: not
-"μ replaces e5" but a HYBRID** — e5 for symmetric relatedness/ranking (its genuine strength), **μ for direction**
-(orient membership, member→container, build/verify hierarchy). This is the same "structure ∩ semantics" split as
-the greedy gather, and why the bookmarking agent pairs e5 with learned structure rather than discarding e5. Build
-the application around μ's *directional* contribution on top of e5's symmetric ranking; don't expect μ to win the
-symmetric contest. *(We still track symmetric performance — μ-super stays near e5 — but the design bet is direction.)*
+#### CLOSE-negative test — μ DOES win where it matters (corrects the verdict below)
+The "hard negatives" above (cross-fine-subdomain) weren't close enough. The **closest** negative is a *sibling*
+(another child of the same parent — same fine topic, no membership relation, often *more* e5-similar than the
+true parent). On that test (POS = child→parent vs CLOSE-NEG = child→sibling):
+
+| negative type | e5-cos AUC | μ AUC | winner |
+|---|---|---|---|
+| EASY (cross-domain) | 0.84 | 0.81 | e5 |
+| HARD (cross-fine-subdomain) | 0.73 | 0.68 | e5 |
+| **CLOSE (sibling, same parent)** | **0.62** | **0.73** | **μ** |
+
+**e5 scores a child's true parent (0.832) and its sibling (0.815) within 0.017 — it cannot tell member-of from
+sibling-of** ("everything looks similar"). μ separates them (0.48 vs 0.21) and wins 0.73 vs 0.62. **μ's advantage
+*grows as negatives get closer*** (e5 degrades 0.84→0.73→0.62; μ holds) — and close neighbours are exactly the
+confusions that matter in retrieval (the top-k is full of siblings, not random cross-domain nodes). This is also
+why μ took filing recall@10 (0.90 vs 0.63): it pushed close-but-wrong folders down, which e5 can't.
+
+#### Consolidated verdict (corrected) — μ wins direction + close-negative discrimination; hybrid
+**μ's robust wins are two:** (1) **directionality** (member|container vs reverse: AUC **0.78 vs e5 0.51**); (2)
+**close-negative discrimination** (member-of vs sibling-of: **0.73 vs 0.62**). e5 wins only on *easy/medium*
+symmetric relatedness (coarse topical separation) and on negative-*rejection thresholding* (neither great).
+So the earlier "e5 better on everything symmetric" was wrong — it held only because the negatives tested weren't
+close enough. **Architecture = HYBRID:** e5 for coarse symmetric ranking (cheap, strong), **μ for the hard part —
+direction + close-neighbour disambiguation** (which determines the actual top of the retrieval list). Same
+"structure ∩ semantics" split; μ carries the practically-decisive cases e5 conflates.
 
 ### Relation to prior approaches
 Prior graph retrieval uses **distance metrics** — most relevantly **weighted shortest path** (and the WAM
