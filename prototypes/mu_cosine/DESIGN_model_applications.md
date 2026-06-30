@@ -287,6 +287,12 @@ sibling-of** ("everything looks similar"). μ separates them (0.48 vs 0.21) and 
 confusions that matter in retrieval (the top-k is full of siblings, not random cross-domain nodes). This is also
 why μ took filing recall@10 (0.90 vs 0.63): it pushed close-but-wrong folders down, which e5 can't.
 
+**State it as a low μ value, not a threshold (the right framing).** The sibling subset-relation is *negative*, and
+the usable signal is that **μ gives siblings a low degree (0.22)** vs the true parent (0.48) — calibrated, readable
+("barely a member"). e5 gives siblings **0.815 ≈ parent 0.832**: it has *no way to say "low."* (A binary
+FPR@90%-TPR understates this — μ's long positive low-tail drops the cutoff to ~0.001, so FPR is leaky for both
+μ 74.5% / e5 91.5%; the *degree*, not the threshold, is what's usable and where μ wins structurally.)
+
 #### Consolidated verdict (corrected) — μ wins direction + close-negative discrimination; hybrid
 **μ's robust wins are two:** (1) **directionality** (member|container vs reverse: AUC **0.78 vs e5 0.51**); (2)
 **close-negative discrimination** (member-of vs sibling-of: **0.73 vs 0.62**). e5 wins only on *easy/medium*
