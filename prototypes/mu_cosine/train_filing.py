@@ -80,7 +80,8 @@ def main():
     ap.add_argument("--steps", type=int, default=300)
     ap.add_argument("--bs", type=int, default=48)
     ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--seed", type=int, default=7, help="split seed (FIXED across training seeds for comparability)")
+    ap.add_argument("--seeds", default=None, help="comma-sep TRAINING seeds (multi-seed lock); split stays at --seed")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--cache", default="/tmp/trainfiling_e5.pt")
     a = ap.parse_args()
@@ -123,17 +124,24 @@ def main():
     print(f"\n[BASELINE] e5-cos (no training): MRR {base['MRR']:.3f}  recall@10 {base['recall@10']:.3f}  "
           f"med.rank {base['median_rank']}")
 
-    print(f"\n{'frac':>6} {'n_train':>8} {'MRR':>7} {'recall@1':>9} {'recall@10':>10} {'med.rank':>9}  vs e5-cos")
+    import statistics as stt
+    seeds = [int(s) for s in a.seeds.split(",")] if a.seeds else [a.seed]
+    print(f"\n[SEEDS] training seeds {seeds} (split fixed at seed {a.seed}); ✓ = mean−sd above the e5-cos bar")
+    print(f"\n{'frac':>6} {'n_train':>8} {'MRR (mean±sd)':>15} {'recall@10 (m±sd)':>18} {'med.rank':>9}  vs e5-cos")
     fracs = [float(x) for x in a.fracs.split(",")]
     for fr in fracs:
-        n = max(a.bs, int(fr * len(train_idx)))
-        sub = random.Random(a.seed + 1).sample(train_idx, min(n, len(train_idx)))
-        m = train_one(a.ckpt, tok, idx, bm_key, bm_folder, sub, f_order, eval_keys, eval_truepos,
-                      f_keys, a.steps, a.bs, a.lr, dev, a.seed)
-        delta = m["MRR"] - base["MRR"]
-        flag = "  ✓ CROSSED" if m["MRR"] > base["MRR"] else ""
-        print(f"{fr:6.2f} {len(sub):8d} {m['MRR']:7.3f} {m['recall@1']:9.3f} {m['recall@10']:10.3f} "
-              f"{m['median_rank']:9d}  {delta:+.3f}{flag}")
+        n = min(max(a.bs, int(fr * len(train_idx))), len(train_idx))
+        mrrs, r10s, meds = [], [], []
+        for sd in seeds:
+            sub = random.Random(sd + 1).sample(train_idx, n)
+            m = train_one(a.ckpt, tok, idx, bm_key, bm_folder, sub, f_order, eval_keys, eval_truepos,
+                          f_keys, a.steps, a.bs, a.lr, dev, sd)
+            mrrs.append(m["MRR"]); r10s.append(m["recall@10"]); meds.append(m["median_rank"])
+        mm, ms = stt.mean(mrrs), (stt.stdev(mrrs) if len(mrrs) > 1 else 0.0)
+        rm, rs = stt.mean(r10s), (stt.stdev(r10s) if len(r10s) > 1 else 0.0)
+        delta = mm - base["MRR"]
+        flag = "  ✓ CROSSED" if mm - ms > base["MRR"] else ("  ~at-bar" if mm > base["MRR"] else "")
+        print(f"{fr:6.2f} {n:8d}   {mm:.3f}±{ms:.3f}     {rm:.3f}±{rs:.3f}    {stt.median(meds):7.1f}  {delta:+.3f}{flag}")
 
 
 if __name__ == "__main__":
