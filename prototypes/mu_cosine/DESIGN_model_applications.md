@@ -84,9 +84,33 @@ The two corrections, both visible in Cooking: **vs DENSE**, structure removes hi
 movie leak); **vs WSP**, semantics demotes low-μ-near false positives (`Home`). **Bonus —
 dense∩greedy overlap is a free reliability self-diagnostic**: high (Physics/Music) ⇒ structure and semantics
 agree, trust the result; low (Cooking 4/25) ⇒ e5 is leaking across a domain boundary, trust the
-structure-constrained greedy over raw μ. No ground truth required. *Still proposed:* the formal hop-stratified
-recall@k / AUC vs a held-out-edge ground truth (Build-plan §1–2) — the number that turns this qualitative
-validation into a head-to-head.
+structure-constrained greedy over raw μ. No ground truth required.
+
+### Formal eval — bookmark-filing ground truth (`eval_filing.py`)
+The non-circular head-to-head (Build-plan §1–2), using **real Pearltrees filing decisions** as labels (a
+bookmark's actual `treeId` = which folder it belongs in — a human decision, not graph distance). 335 candidate
+folders (≥3 bookmarks), 500 sampled query bookmarks; rank folders by μ(bookmark|folder); recall@k / MRR. Three
+rankers: **e5-cos** (raw e5 cosine, no model), **mu-super** (equal-weight operator superposition), **mu-elem**
+(the `element_of` operator — the membership relation filing *is*).
+
+| ranker | recall@1 | recall@5 | recall@10 | MRR | med.rank |
+|---|---|---|---|---|---|
+| **e5-cos** | **0.202** | **0.410** | **0.480** | **0.299** | **14** |
+| mu-super | 0.088 | 0.198 | 0.248 | 0.151 | 52 |
+| mu-elem  | 0.096 | 0.208 | 0.256 | 0.160 | 48 |
+
+**Raw e5 cosine ~doubles the μ model on every metric** (random@335 ≈ MRR 0.019, so both beat chance — but the
+learned readout *underperforms its own frozen substrate* here). `mu-elem` edges out `mu-super` — the membership
+operator is the right one, and directionality helps a hair even untrained. **Why μ loses — it's zero-shot OOD,
+not an architecture ceiling:** the checkpoint was trained on *simplewiki category→category membership*
+(Physics→Energy), never on *bookmark→folder filing*; bookmarks are noisy web-article titles, folders are
+Pearltrees collections; and the gather runs with **no lineage** (empty DAG — the "absent lineage = off-manifold
+noise" regime). The learned transform, tuned for a different regime, *distorts* e5 for this task. Since the
+readout sits **on top of** frozen e5 and can represent near-identity, filing fine-tuning should recover *and*
+beat `e5-cos` via directionality — `e5-cos` MRR **0.299** is now the bar. **Next experiment:** fine-tune on a
+folder-disjoint *train* split of the filing pairs, re-run `eval_filing.py` on the held-out folders, and see if
+μ crosses the e5-cosine bar (the "with enough training data" test). This mirrors the bookmarking agent's own
+Procrustes engine — cheap e5-leverage wins at low data; the attention model needs in-domain data to pay off.
 
 ### Relation to prior approaches
 Prior graph retrieval uses **distance metrics** — most relevantly **weighted shortest path** (and the WAM
