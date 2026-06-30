@@ -242,9 +242,23 @@ already beats the naïve per-cluster `logm`/`expm` (O(n³)). What actually carri
   teacher is distilled into a cheap student (a transformer / a Givens layer)
   (`scripts/distill_federated_to_transformer.py`). So even the "high" cost is a *one-time training* cost — which
   collapses the cost axis further toward the transformer once distilled.
-So our hybrid has a **proven recipe**: K commuting (axis-aligned) blades, applied via Rodrigues/Givens, selected
-by a small codebook, optionally distilled into the μ transformer so inference is a plain forward pass. The
-geodesic `x_root ∧ x_node` is the K=1 special case (`src/.../minimal_transform.py:_rotation_between_vectors`).
+So our hybrid has a **proven recipe**: K commuting blades, applied via Rodrigues/Givens, selected by a small
+codebook, optionally distilled into the μ transformer so inference is a plain forward pass. The geodesic
+`x_root ∧ x_node` is the K=1 special case (`src/.../minimal_transform.py:_rotation_between_vectors`).
+
+**Free planes vs axis-aligned — fewer blades for the same error, but a commuting catch (and its resolution).**
+Data-adaptive 2-planes are *more expressive per blade* than fixed coordinate (Givens) planes — same logic as PCA
+vs a fixed-axis projection — so the blade count drops to roughly the **effective rank** of the structural
+rotation (its number of significant rotation planes), not however many coordinate planes are needed to *span*
+them. The catch: arbitrary planes generally **don't commute** (`exp(B₁+B₂) ≠ exp(B₁)exp(B₂)`), so the cheap
+Rodrigues *product* becomes an order-dependent BCH approximation, and *finding* the optimal planes costs an
+eigendecomposition (≈ O(n³)) per rotation. The codebook's resolution gets both: find the planes **data-adaptively**
+(PCA/SVD over generators → principal bivectors) **then orthogonalise them** (`train_orthogonal_codebook.py`) — so
+they are data-chosen (small K) *and* mutually orthogonal (commuting ⇒ exact Rodrigues product) *and* the
+plane-finding is amortised once into the codebook. That is why **top-8** suffices: 8 *optimally placed* planes,
+not 8 arbitrary coordinate planes. (The axis-aligned `rotational-fast` path is the cruder cousin that skips even
+this, leaning on Matryoshka structure to make coordinate axes ≈ principal directions.) **For our hybrid:** use a
+small *orthogonalised, data-chosen* codebook, not raw Givens — smallest K per unit error, commuting preserved.
 
 **Rotations on the sphere → bivectors as the generator.** e5 embeddings are **unit-normed**, so they live on a
 sphere and the relationship root→node is a **geodesic rotation**: rotor `R = exp(−½ θ B)`, applied
