@@ -263,6 +263,25 @@ axis every time. **This is settled: μ's value is NOT being a better symmetric r
 calibration** (the axes e5 structurally lacks). Stop benchmarking μ-vs-e5 on magnitude; build on direction +
 calibration — exactly what membership/filing need and cosine cannot give.
 
+**Negative-rejection test (honest correction — calibration ≠ separability):** at a fixed operating point (~90%
+positive-recall) **neither μ nor e5 rejects negatives cleanly, and μ is marginally *worse*** (FPR on cross-domain
+EASY-NEG: e5 52% vs μ-super 58%). μ's calibration gives different *means* (POS 0.37 vs EASY 0.10) but the
+**distributions overlap** (high within-stratum variance), so admitting 90% of positives drops the threshold low
+enough to readmit negatives. **A wide dynamic range ≠ functional thresholding.** So the "μ rejects negatives
+where e5 can't" hypothesis does **not** hold at the operating point.
+
+#### Consolidated verdict (tested 5 ways) — μ's one robust win is DIRECTIONALITY; use a hybrid
+Across clean-domain coverage, fine-subdomain rank, deep-pair discrimination, filing, and negative-rejection,
+**e5-cos is competitive-or-better on every symmetric / magnitude / rejection axis.** μ-super is a *reasonable*
+symmetric ranker (AUC 0.67 vs 0.73) but not a better one, and its calibration does not translate into functional
+negative-rejection. **The single robust, unique, repeatable μ advantage is DIRECTIONALITY** (member|container vs
+container|member: AUC **0.78 vs e5 0.51**) — structural, e5 cannot represent it. **Architectural conclusion: not
+"μ replaces e5" but a HYBRID** — e5 for symmetric relatedness/ranking (its genuine strength), **μ for direction**
+(orient membership, member→container, build/verify hierarchy). This is the same "structure ∩ semantics" split as
+the greedy gather, and why the bookmarking agent pairs e5 with learned structure rather than discarding e5. Build
+the application around μ's *directional* contribution on top of e5's symmetric ranking; don't expect μ to win the
+symmetric contest. *(We still track symmetric performance — μ-super stays near e5 — but the design bet is direction.)*
+
 ### Relation to prior approaches
 Prior graph retrieval uses **distance metrics** — most relevantly **weighted shortest path** (and the WAM
 core's effective-distance). Those are *structural only*: graph-near ≠ semantically-related. The new algorithm

@@ -135,14 +135,25 @@ def main():
                     "mu-sym": score_pairs(model, tok, idx, prs, sym, dev),
                     "mu-super": score_pairs(model, tok, idx, prs, sup, dev)}
 
-    print(f"\n{'scorer':9} {'AUC(POS vs HARD-NEG)':>22} {'AUC(POS vs EASY-NEG)':>22}   mean μ POS/HARD/EASY")
+    mean = lambda L: sum(L) / len(L)
+    print(f"\n{'scorer':9} {'AUC(P vs HARD)':>14} {'AUC(P vs EASY)':>14}   {'mean P/HARD/EASY':>20}")
     for scorer in ("e5-cos", "mu-sym", "mu-super"):
         ah = auc(sc["POS"][scorer], sc["HARD-NEG"][scorer], rng)
         ae = auc(sc["POS"][scorer], sc["EASY-NEG"][scorer], rng)
-        mean = lambda L: sum(L)/len(L)
-        print(f"{scorer:9} {ah:22.3f} {ae:22.3f}   "
+        print(f"{scorer:9} {ah:14.3f} {ae:14.3f}   "
               f"{mean(sc['POS'][scorer]):.3f}/{mean(sc['HARD-NEG'][scorer]):.3f}/{mean(sc['EASY-NEG'][scorer]):.3f}")
-    print("\n  headline = AUC(POS vs HARD-NEG): fine subdomain discrimination (the e5-weak regime).")
+
+    # NEGATIVE-REJECTION at a fixed operating point: threshold = 10th-percentile of POS (≈90% TPR); report the
+    # fraction of negatives that still pass (FPR). e5's compressed band ⇒ can't set a cutoff that rejects negs.
+    print(f"\n  Negative rejection — FPR at ~90% positive-recall (lower = better; tests THRESHOLDING, not rank):")
+    print(f"  {'scorer':9} {'threshold':>10} {'FPR HARD-NEG':>13} {'FPR EASY-NEG':>13}")
+    for scorer in ("e5-cos", "mu-sym", "mu-super"):
+        ps = sorted(sc["POS"][scorer]); thr = ps[max(0, int(0.10 * len(ps)))]   # admit ~90% of positives
+        fpr_h = sum(s >= thr for s in sc["HARD-NEG"][scorer]) / len(sc["HARD-NEG"][scorer])
+        fpr_e = sum(s >= thr for s in sc["EASY-NEG"][scorer]) / len(sc["EASY-NEG"][scorer])
+        print(f"  {scorer:9} {thr:10.3f} {fpr_h:13.2%} {fpr_e:13.2%}")
+    print("\n  headline: AUC = rank (e5's turf); FPR@90%TPR = can you THRESHOLD to reject negatives (μ's turf —"
+          " e5's compressed cosine band can't).")
 
 
 if __name__ == "__main__":
