@@ -83,6 +83,9 @@ def main():
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--cache", default="/tmp/filing_e5.pt", help="e5 table cache (regenerable)")
+    ap.add_argument("--core-anchors", default="Physics,Mathematics,Chemistry,Computer science,Engineering",
+                    help="comma-sep terms naming the model's TRAINED region; queries are stratified by their "
+                         "true-folder's max e5-similarity to these (tests 'μ only helps inside its region')")
     a = ap.parse_args()
 
     queries, cand = load_filing(a.trees, a.min_bm)
@@ -98,8 +101,11 @@ def main():
     ftext = {f"F:{tid}": cand[tid] for tid in cand}
     q_keys = [f"B:{i}" for i in range(len(queries))]
     qtext = {f"B:{i}": queries[i][0] for i in range(len(queries))}
-    names = f_keys + q_keys
-    texts = {**ftext, **qtext}
+    anchors = [s.strip() for s in a.core_anchors.split(",") if s.strip()]
+    a_keys = [f"A:{i}" for i in range(len(anchors))]
+    atext = {f"A:{i}": anchors[i] for i in range(len(anchors))}
+    names = f_keys + q_keys + a_keys
+    texts = {**ftext, **qtext, **atext}
     qtbl, ptbl, idx = build_e5_tables(names, cache_path=a.cache, texts=texts, device=a.device)
 
     dev = torch.device(a.device)
@@ -128,30 +134,46 @@ def main():
         "mu-super": torch.full((1, n_ops), 1.0 / n_ops),
         "mu-elem":  torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS["ELEM"]]), 1.0),
     }
-    results = {}
+    rank_of = {}                                                  # ranker -> per-query 1-based true-folder rank
     for name, ow in rankers.items():
         S = score_mu(model, tok, idx, q_keys, f_keys, ow, dev)
-        ranks = []
-        for r, row in enumerate(S):
-            tp = truepos[r]
-            ranks.append(1 + sum(1 for j, s in enumerate(row) if s > row[tp] or (s == row[tp] and j < tp)))
-        results[name] = metrics(ranks)
+        rank_of[name] = [1 + sum(1 for j, s in enumerate(row) if s > row[truepos[r]]
+                                 or (s == row[truepos[r]] and j < truepos[r])) for r, row in enumerate(S)]
 
     # raw e5 cosine baseline: cos(query: bookmark, passage: folder) — symmetric, no model
     qn = qtbl[[idx[k] for k in q_keys]]                           # bookmark query-embeddings
     fn = ptbl[[idx[k] for k in f_keys]]                           # folder passage-embeddings
     C = qn @ fn.T                                                 # [Q, F] cosine (tables are unit-normed)
-    ranks = []
-    for r in range(C.shape[0]):
-        tp = truepos[r]; row = C[r]
-        ranks.append(1 + int((row > row[tp]).sum().item()))
-    results["e5-cos"] = metrics(ranks)
+    rank_of["e5-cos"] = [1 + int((C[r] > C[r][truepos[r]]).sum().item()) for r in range(C.shape[0])]
 
-    print(f"\n{'ranker':10} {'recall@1':>9} {'recall@5':>9} {'recall@10':>10} {'MRR':>7} {'med.rank':>9}")
-    for name in ("e5-cos", "mu-super", "mu-elem"):
-        m = results[name]
-        print(f"{name:10} {m['recall@1']:9.3f} {m['recall@5']:9.3f} {m['recall@10']:10.3f} "
-              f"{m['MRR']:7.3f} {m['median_rank']:9d}")
+    order = ("e5-cos", "mu-super", "mu-elem")
+
+    def table(title, qsel):
+        print(f"\n{title}  (n={len(qsel)})")
+        print(f"  {'ranker':10} {'recall@1':>9} {'recall@5':>9} {'recall@10':>10} {'MRR':>7} {'med.rank':>9}")
+        for name in order:
+            m = metrics([rank_of[name][i] for i in qsel])
+            print(f"  {name:10} {m['recall@1']:9.3f} {m['recall@5']:9.3f} {m['recall@10']:10.3f} "
+                  f"{m['MRR']:7.3f} {m['median_rank']:9d}")
+
+    table("[OVERALL]", list(range(len(queries))))
+
+    # ---- stratify by distance to the model's TRAINED region (the user's "outside the physics core" test) ----
+    an = ptbl[[idx[k] for k in a_keys]]                           # anchor passage-embeddings [A, d]
+    core_sim = (fn @ an.T).max(dim=1).values                      # per-folder max cosine to any core anchor
+    qcore = [core_sim[f_order.index(t)].item() for t in true_tids]    # per-query: its true folder's core-sim
+    order_by_core = sorted(range(len(queries)), key=lambda i: qcore[i])
+    third = len(queries) // 3
+    bins = [("FAR from core", order_by_core[:third]),
+            ("MID", order_by_core[third:2 * third]),
+            ("NEAR core (STEM)", order_by_core[2 * third:])]
+    print(f"\n[STRATIFIED by true-folder e5-similarity to core anchors: {anchors}]")
+    for label, qsel in bins:
+        lo, hi = qcore[qsel[0]], qcore[qsel[-1]]
+        table(f"  {label}  [core-sim {lo:.2f}..{hi:.2f}]", qsel)
+    print("\n  → if μ closes the gap to e5-cos NEAR the core but loses FAR, the model helps only in its trained "
+          "region\n    (a single global transform); the fix is per-region/mixture μ — cf. the bookmarking agent's "
+          "routed per-cluster Procrustes.")
 
 
 if __name__ == "__main__":

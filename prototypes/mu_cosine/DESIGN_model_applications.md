@@ -107,10 +107,24 @@ not an architecture ceiling:** the checkpoint was trained on *simplewiki categor
 Pearltrees collections; and the gather runs with **no lineage** (empty DAG — the "absent lineage = off-manifold
 noise" regime). The learned transform, tuned for a different regime, *distorts* e5 for this task. Since the
 readout sits **on top of** frozen e5 and can represent near-identity, filing fine-tuning should recover *and*
-beat `e5-cos` via directionality — `e5-cos` MRR **0.299** is now the bar. **Next experiment:** fine-tune on a
-folder-disjoint *train* split of the filing pairs, re-run `eval_filing.py` on the held-out folders, and see if
-μ crosses the e5-cosine bar (the "with enough training data" test). This mirrors the bookmarking agent's own
-Procrustes engine — cheap e5-leverage wins at low data; the attention model needs in-domain data to pay off.
+beat `e5-cos` via directionality — `e5-cos` MRR **0.299** is now the bar.
+
+**Stratified by distance to the trained region** (`--core-anchors`, max folder-similarity to
+Physics/Math/Chem/CS/Eng — testing "μ only helps inside its region"): the e5-cos − mu-elem MRR gap is
+**flat at ~0.5× ratio across all three bins** (FAR 0.309/0.161, MID 0.327/0.185, NEAR-STEM 0.263/0.136). μ does
+**not** close the gap near the core — the loss is *uniform*, not region-specific. Two confounds keep this from
+refuting the region hypothesis: (1) weak stratifier (e5-small's high cosine floor — even "FAR" folders sit at
+0.74 to *Physics*); (2) **the lineage confound** — the model trained *with* ancestor lineage but runs here on
+**cold, lineage-free** bookmarks (empty DAG), a uniform handicap that could itself flatten the ratio. So "μ
+loses ~2× everywhere" conflates OOD-task + cold-start + (maybe) wrong-region; stratification rules out
+wrong-region-as-sole-cause but not the rest.
+
+**Decisive next test — μ vs e5-cos on home turf:** hold out *simplewiki* category→parent memberships
+(in-distribution, *with* lineage) and run the same recall@k. If μ beats e5-cos there, the filing loss is fully
+OOD + cold-start (your "with training data it wins" holds → filing fine-tune, then per-region/mixture μ like
+the routed per-cluster Procrustes). If μ still loses on home turf, that's a finding about the readout itself and
+reshapes the roadmap. Only *after* that: the filing fine-tune learning-curve (warm-start, folder-disjoint split,
+data fractions vs the flat e5-cos bar).
 
 ### Relation to prior approaches
 Prior graph retrieval uses **distance metrics** — most relevantly **weighted shortest path** (and the WAM
