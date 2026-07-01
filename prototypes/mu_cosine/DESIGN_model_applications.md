@@ -412,11 +412,33 @@ alternative confidence signals not yet swept — top1-μ was the cheapest and su
    fabricating a container. The +0.037 vs +0.003 split is evidence the signal is *trustworthy*, not merely present.
    *Boundary:* this is demonstrated **operationally** (top-μ predicts where μ helps); full **probabilistic**
    calibration (does μ=0.7 ⇒ 70% membership? ECE) remains the deferred calibration item.
-2. **Self-annealing blend — μ earns weight as it learns.** Under the adaptive rule α rises with top-μ, so as μ
-   trains on more data its confident regions expand → more queries clear the confidence bar → the **effective mean
-   α climbs on its own, no re-tuning**, and e5 recedes to only the still-uncovered frontier. *Testable (no Haiku):*
-   run the confidence diagnostic across checkpoints of increasing training data; expect the high-confidence
-   fraction and effective-α to rise with data. Not yet measured — a cheap, high-value validation.
+2. **Self-annealing blend — μ earns weight as it learns.** Under the adaptive rule α rises with confidence, so as μ
+   trains its confident regions expand → the **effective mean α climbs on its own, no re-tuning**, and e5 recedes to
+   the still-uncovered frontier.
+
+**Measured (`eval_self_anneal.py`, 4 checkpoints, shared frozen-e5 shortlists, 1000 queries) — and it forced a
+correction to the confidence metric:**
+
+| checkpoint | mean top1-μ (level) | mean margin (top1−top2) | MRR |
+|---|---|---|---|
+| nodetype | 0.913 | 0.025 | 0.299 |
+| +dir | 0.879 | 0.054 | 0.319 |
+| **+disc** | **0.941** (highest) | **0.005** (lowest) | **0.175** (lowest) |
+| prod | 0.854 | 0.057 | 0.356 |
+
+- **The confidence signal must be the MARGIN, not the absolute level.** The discriminative fine-tune `+disc` (anchor
+  pushes μ→0.9) saturates the *level* HIGH for everything (0.941, the highest of all four) yet is the *worst* ranker
+  (MRR 0.175) — a confident-but-wrong checkpoint. Its **margin correctly collapses to 0.005** (the lowest). So
+  absolute μ is confounded by per-checkpoint saturation; the **margin is calibration-invariant** and its rank-order
+  across all four checkpoints is **identical to MRR's**. This *deepens* property #1: with the right signal,
+  confidence tracks correctness even across models, and the confident-but-wrong trap is *detectable* (the naive level
+  metric is fooled; the margin is not). The in-dist adaptive blend above used top1-μ, which works when saturation is
+  fixed (single model) — but **margin is the signal to use for OOD / cross-checkpoint / self-annealing**.
+- **Self-annealing confirmed (by margin).** Along the proper capability path `nodetype → +dir → prod`, margin rises
+  **0.025 → 0.054 → 0.057**, tracking MRR **0.299 → 0.319 → 0.356** — μ *does* grow more confident (hence leans
+  harder on itself, less on e5) as it learns. (`+disc` is an off-path objective regression, not a data increment;
+  it usefully serves as the confident-but-wrong stress test the margin passes. Caveat: these checkpoints differ in
+  *objective*, so this is a capability-progression proxy, not a data-volume-controlled ablation.)
 
 #### Judge→loss routing — the loss is keyed off provenance, not a new embedding (now in the main trainer)
 The discriminative loss is *not* a new "judge type." Provenance (`graph`/`haiku`/`human`/`sonnet`/`opus`) is an
