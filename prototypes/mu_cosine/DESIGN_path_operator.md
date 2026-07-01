@@ -109,6 +109,25 @@ MLP is the *higher-order function realized in the architecture*: the "operator c
   consume. Adopt it *when building* PATH-with-methods, and the codebook stays valid for the base relations meanwhile
   (the MLP can be introduced as `op_encoding = MLP(spec)` with the current ops as its first, one-hot-spec outputs).
 
+**Preferred realization — a key–value *attention* lookup that reuses `op_weights` (not a plain MLP).** Rather than a
+generic MLP, make the encoder a content-addressable attention over the *existing* operators:
+- **keys** = e5(operator *names/descriptions*), one per existing operator;
+- **values** = the existing learned `op_emb` rows (SYM/HIER/ELEM), used as *initialized* values (warm-start, still
+  trainable);
+- **query** = e5(the desired operator's spec/description);
+- **encoding** = `softmax(query·keysᵀ / τ) @ values`.
+
+The softmax **IS `op_weights`**, and the model already has the blended-operator pathway `op_weights @ op_emb.weight`
+— so this doesn't add machinery, it **generates the superposition weights from the operator *description*** instead
+of hand-setting them (the operator-superposition design, made content-addressed). It degenerates cleanly: a query
+matching one key → one-hot `op_weights` → the current codebook lookup. And it **sidesteps the prompt-rewriting
+worry**: e5 is only the *key* (routing); the *learned value* carries the semantics — new operators are *addressed*
+by language but *encoded* by learned embeddings. Caveats: (i) continuous params (β) aren't words, so they layer on
+separately (concat to the query / FiLM after the blend) — the attention is the relation/method *router*, not the
+parameter injector; (ii) the key is the name/description, so **naming/description quality matters** (close
+descriptions → close keys → blended operators — right when they're related, under-resolved when they aren't; use
+fuller descriptions than the bare short name).
+
 ## 6. Why PATH (multi-path) is *not* redundant to HIER, though LINEAGE was
 
 `HIER` = the single category-hierarchy **edge**. Single-path `LINEAGE` = one chain of `HIER` edges ⊂ (`HIER` +
