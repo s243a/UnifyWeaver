@@ -196,6 +196,13 @@ the residual:
    - **Tier-2: a small learned subword vocab + character floor** for the **~6,864 singleton/tail** words (don't spend
      a token each; compose from subwords, chars as the no-hard-OOV floor).
    - Optional: recurring multi-word folder n-grams as atomic units for fluent phrases.
+   - **Punctuation = structure, not characters** (measured: parens in 8% of titles, hyphens 2%). *Parentheticals are
+     disambiguators/glosses* ("Satire (Social forces)") — split "X (Y)" into base `X` + qualifier `Y` (Y is a
+     human-readable disambiguator, same role as the id-anchor/lineage; for gloss/acronym cases Y also enriches the e5
+     embedding). Naming: generate base, add "(Y)" only on a name collision (Wikipedia-style), Y from the parent
+     branch. *Hyphens* split two ways: semantic compounds ("Counter-activism") stay whole (one concept), slug
+     artifacts ("s243a-wikispaces") are rare singletons → Tier-2 subword backoff. For *matching*, e5 absorbs all of it
+     ("20th-century" ≈ "20th century"); punctuation is a vocab/naming concern only, not a placement one.
    The full vocab is **~2k whole words + a few-hundred subword pieces** — on-device-trivial (fits the PWA ethos, no
    mandatory LLM). And Tier-1 is mostly **SELECTION not generation** (mirror placement): pick the folder-words nearest
    the slot embedding, order them; the tiny AR namer composes selected words + generates only tail subwords.
