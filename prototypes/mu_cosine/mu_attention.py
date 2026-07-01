@@ -43,7 +43,7 @@ E5_MODEL = "intfloat/e5-small-v2"
 #   ELEM = element_of (membership). Index 2 = DEPRECATED (was "LLM" — but the LLM is a *judge* on judge_emb, not a
 #   relation; the prompt gives the relation. The --llm fixture now routes to ELEM+haiku.) Kept only so n_ops stays 4
 #   (op_emb loads by shape); no relation maps to it.
-OPS = {"SYM": 0, "HIER": 1, "LLM": 2, "ELEM": 3}
+OPS = {"SYM": 0, "HIER": 1, "_DEPRECATED_LLM": 2, "ELEM": 3}   # index 2 kept for n_ops=4; explicit name so it can't be used by accident
 # ELEM = element-of (page-in-category / collection-membership): directional like WIKI (μ(page|category)
 # high, reverse low) but graded like SYM. Its own operator token + readout row on the shared trunk, so
 # page-membership trains as a DISTINCT relation instead of being conflated into SYM (see

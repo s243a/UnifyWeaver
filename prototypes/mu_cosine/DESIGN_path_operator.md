@@ -27,12 +27,24 @@ So factor it: **operator = ancestor-path membership (what); method = aggregation
 This unifies lineage/path into one operator and generalizes the pattern (any operator with multiple computation
 strategies can be method-parameterized).
 
+*Clarification (per review) — LINEAGE does NOT stay a separate codebook row.* The redundant experiment grew a
+distinct index-4 `LINEAGE` op; going forward that is **retired**. "Keep LINEAGE" means *keep the canonical-chain
+behaviour as a **method** (`method=canonical`)* of the single `ancestor-path` operator — a method selection at
+data-gen / inference time, **not** a new `op_emb` slot. So **`n_ops` does not grow**: `ancestor-path` is one operator
+(encoded via the `MLP(spec)`/attention-lookup once that exists; a single row meanwhile), and `canonical` vs
+`random-walk` vs `PPR` are its methods, not codebook entries.
+
 ## 3. "Random superposition" = sampling (cheap; reuses the variant cache)
 
 Realize the superposition **stochastically**: each training step, **sample ONE ancestor path** from the method's
 distribution, embed it, apply wildcard masking (id-dropout + prefix-dropout), and use it as the passage. The model
 learns the *expectation over paths* across steps — no need to embed every path and weight-average explicitly. The
 wildcards are an orthogonal masking augmentation on top of the path sampling.
+
+*Gradient-variance note (per review):* the 1-sample estimator has variance set by the *spread* of a node's ancestor
+chains — high-branching DAG nodes with divergent parents give dissimilar samples ⇒ noisy gradients. Two cheap
+mitigations (both reuse the pre-built node cache): **sample k paths per step and average**, and/or **warm up with the
+edge-weighted method** (lower-variance, canonical-path-dominated) before annealing toward uniform.
 
 ## 3b. Passage representation — per-node tokens, NOT a fixed whole-path embedding
 
@@ -48,6 +60,17 @@ the DAG's paths, wildcard-masked) is just **selecting which cached node-tokens e
   architecture change.
 - The materialized-id line / wildcards become per-node attributes rather than substrings of one blob.
 
+*Three implementation points the review flagged (resolve before building):*
+- **Ordered set → depth positional encoding.** The passage is a *set* of node tokens, but ancestor paths are
+  **ordered** (child→parent→grandparent). Attention over an unordered set would discard depth — which is exactly the
+  graded-depth signal we want. So **add a depth-position embedding** to each node token (0 = the node itself, 1 =
+  direct parent, …) before aggregation, so "direct parent" vs "grandparent" is distinguishable. (This is the natural
+  home for the graded-depth membership target.)
+- **Padding masking.** Variable-length paths (from stop-β / multi-path) are padded to a fixed slot count; the
+  attention block must **mask the padding tokens** so they don't pollute the aggregate. Standard, but must be wired.
+- **Cache invalidation.** The per-node embedding cache assumes static titles. On a graph refresh (Pearltrees/Wikipedia
+  snapshot), do **incremental update** — re-embed only new/changed nodes — rather than a full rebuild.
+
 So the path operator factors on **three** axes: **operator** (ancestor-path membership) × **method** (sampling incl.
 stop-β) × **representation** (per-node tokens, attention-aggregated). The whole-path-string embedding was scaffolding
 that doesn't scale; per-node composition is the structure that does — and it's what the decoder's per-node /
@@ -59,14 +82,20 @@ optimizer view wanted anyway (§0 of the decoder sketch: the optimizer reads a p
 node, and **terminate with probability β at each step**. Path prob ≈ `∏ 1/|parents(level)|` × the geometric
 stopping term. Parameter-free but for β — literally "sample a parent at each level, sometimes stop early." Two
 bonuses: **(a)** the stop gives geometric-depth (variable-length) paths ⇒ a *principled depth sampler* (graded-depth
-ancestor membership — a better-motivated prefix-dropout); **(b)** a uniform up-walk with per-step stop **IS discrete
-PPR** — β is the PPR restart — so **methods (1) and (3) collapse into one knob** (β→0 walks to the root; larger β
-stays shallow). Start here.
+ancestor membership — a better-motivated prefix-dropout); **(b)** a uniform up-walk with per-step stop is **closely
+analogous to discrete PPR** for depth weighting — β plays the role of the PPR restart — so methods (1) and (3)
+largely collapse into one knob. *Hedge (per review):* it is **not numerically identical** to PPR — a stop-walk
+*terminates* at a node, whereas PPR *teleports back to the source* and keeps circulating mass; treat them as the same
+*family* (geometric depth decay), not the same estimator, when comparing against a PPR baseline. *Direction
+convention (state once so the knob isn't swapped):* **β = the per-step stop probability, so larger β → shallower**
+paths (β→0 walks to the root; β→1 stays at the leaf). Start here.
 
 **(2) Edge-weighted — canonical strength.** Weight edges by **type/confidence** — RefPearl (inside/owned) ≫
-AliasPearl (cross-link), or graph-edge confidence — so a path's probability = normalized product of its edge
-weights. Down-weights incidental cross-link lineages; encodes "primary home vs cross-reference." The right refinement
-once uniform over-weights incidental multi-parenting.
+AliasPearl (cross-link), or graph-edge confidence — path probability = product of its edge weights. **Normalize
+LOCALLY, per step** (a softmax over a node's parent edges at each hop), *not* globally over all root-paths — global
+path normalization requires enumerating every path (intractable for large DAGs), while local per-step normalization
+is a cheap, differentiable random-walk transition. Down-weights incidental cross-link lineages; encodes "primary home
+vs cross-reference." The right refinement once uniform over-weights incidental multi-parenting.
 
 **(3) PPR / flux — principled continuous.** Personalized PageRank from the node over the **reverse (ancestor)**
 graph; each path's mass = the PPR flow along it, giving exp-decay / power-law weighting by depth × branching for
@@ -124,11 +153,18 @@ matching one key → one-hot `op_weights` → the current codebook lookup. And i
 worry**: e5 is only the *key* (routing); the *learned value* carries the semantics — new operators are *addressed*
 by language but *encoded* by learned embeddings. Caveat (naming): the key is the name/description, so **naming/description
 quality matters** (close descriptions → close keys → blended operators — right when they're related, under-resolved
-when they aren't; use fuller descriptions than the bare short name).
+when they aren't; use fuller descriptions than the bare short name). *Two more the review flagged:* **(cold-start)**
+a genuinely-new operator's query spreads softmax mass over existing keys → a blend biased toward neighbours; early
+gradients can then *pull the existing op embeddings*. Mitigate by **freezing `values` while a new operator's
+representation converges**, or treating the new operator as an *additive residual* on top of the blend.
+**(diagnostic)** on registration/startup, print `softmax(query·keysᵀ)` for each known operator — you want it
+**near one-hot** for `SYM/HIER/ELEM`; a diffuse row flags a silent description collision.
 
-**Numeric parameters (β, edge-weight scalars, τ) — Fourier-encode, then FiLM-modulate.** The attention lookup routes
+**Numeric parameters (β, edge-weight scalars) — Fourier-encode, then FiLM-modulate.** The attention lookup routes
 the *discrete/semantic* selection (which relation, which method); it cannot carry a **continuum** — β=0.3 isn't a
-word and has no key. So numeric params are injected on a **separate path**, in two steps:
+word and has no key. *(Note, per review: the lookup temperature **τ** is NOT one of these — it's a sharpness
+hyperparameter of the router, not a path-sampling semantic; keep it a **fixed** scalar, or at most a single learned
+scalar, and do NOT Fourier/FiLM it, else the model can learn to blur its own routing.)* So numeric params are injected on a **separate path**, in two steps:
 1. **Fourier-feature encode each scalar** — `β → [sin(ω₁β), cos(ω₁β), …, sin(ω_kβ), cos(ω_kβ)]` at several
    frequencies. A *raw scalar is a poor MLP input* (one dimension; nets learn ~linear-only functions of it or ignore
    it); sinusoidal features lift it into a space where a small net can express a **rich, smooth** function of β

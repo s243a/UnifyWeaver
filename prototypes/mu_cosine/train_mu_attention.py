@@ -849,6 +849,9 @@ def train(args):
             li = [(n, r, OPS["ELEM"], SW, HAIKU) for n, r, _ in lb]   # bought-Haiku MEMBERSHIP fixture = ELEM + judge=haiku (was mislabeled OPS["LLM"])
             lt = torch.tensor([mu for _, _, mu in lb]).to(device)
             L_llm = F.mse_loss(model(**bld(li, train=True, rng=rng, p_mask_prov=args.prov_mask)), lt)
+            # NB: this MSE now targets the ELEM row (rerouted from the demoted LLM op), which also gets BCE from the
+            # main ELEM training. Aligned in intent (both = membership); --llm-weight controls the MSE/BCE balance on
+            # the shared row. Only active with --llm (optional, rarely used); name kept for the CLI flag.
             loss = loss + args.llm_weight * L_llm
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -928,7 +931,7 @@ def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_
         cp = mu_batch(model, tok, [(c, p, OPS["HIER"]) for c, p in edges_hold])
         pc = mu_batch(model, tok, [(p, c, OPS["HIER"]) for c, p in edges_hold])
         acc = float((cp > pc).float().mean())
-        print(f"[WIKI] held-out edge ORDER-accuracy μ(child|parent)>μ(parent|child): {acc*100:.1f}% "
+        print(f"[HIER] held-out edge ORDER-accuracy μ(child|parent)>μ(parent|child): {acc*100:.1f}% "
               f"({len(edges_hold)} edges)  mean μ(c|p)={float(cp.mean()):.3f} μ(p|c)={float(pc.mean()):.3f}")
 
     # --- SYM: held-out corr + symmetry (the headline metric for this work) ---
