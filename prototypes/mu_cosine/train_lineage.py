@@ -182,17 +182,32 @@ def main():
     fol_keys = [f"F:{f}" for f in fold_ids]
     qn = qtbl[[idx[bm_key[i]] for i in ev_idx]]; fn = ptbl[[idx[k] for k in fol_keys]]
     C = (qn @ fn.T).cpu()
-    e5_ranks = [1 + int((C[r] > C[r][truepos[r]]).sum().item()) for r in range(C.shape[0])]
+    # per-operator score matrices: elem/wiki/sym use the folder TITLE passage, lineage uses the folder PATH passage
     S_elem, S_lin = score(fol_keys, ow_elem), score(lin_keys, ow_lin)
-    S_e5 = C.tolist()
+    S_wiki, S_sym = score(fol_keys, OW(OPS["WIKI"])), score(fol_keys, OW(OPS["SYM"]))
     elem_miss = [r for r in range(len(S_elem)) if top1(S_elem, r) != truepos[r]]   # FIXED hard subset (paired)
-    print(f"\n  [HELD-OUT n={len(ev_idx)} | seed {a.seed} train {a.train_seed}]  {'ranker':12} {'recall@1':>9} {'MRR':>7} "
+
+    # ── increment 2: COMBINER SWEEP (don't assume the combiner or the operator subset — measure) ──
+    def nz(M):                                                      # per-query min-max → [0,1] over candidate folders
+        M = torch.tensor(M); lo = M.min(1, keepdim=True).values; hi = M.max(1, keepdim=True).values
+        return (M - lo) / (hi - lo + 1e-9)
+    Ce, Se, Sl, Sw, Ss = nz(C.tolist()), nz(S_elem), nz(S_lin), nz(S_wiki), nz(S_sym)
+    mx = lambda *Ms: torch.stack(Ms).amax(0)
+    et = torch.tensor(S_elem); t2 = et.topk(min(2, et.shape[1]), 1).values          # leaf-certainty gate from ELEM margin
+    emar = (t2[:, 0] - t2[:, 1]) if t2.shape[1] > 1 else torch.zeros(et.shape[0])
+    ag = (emar.argsort().argsort().float() / max(1, len(emar) - 1)).unsqueeze(1)     # high elem-margin → lean elem
+    combos = [("e5-cos", Ce), ("mu-elem", Se), ("mu-wiki", Sw), ("mu-sym", Ss), ("mu-lineage", Sl),
+              ("max(elem,lin)", mx(Se, Sl)), ("max(elem,wiki)", mx(Se, Sw)),
+              ("gate(elem→wiki)", ag * Se + (1 - ag) * Sw), ("gate(elem→lin)", ag * Se + (1 - ag) * Sl),
+              ("e5+max(elem,wiki)", 0.1 * Ce + 0.9 * mx(Se, Sw)), ("e5+max(elem,lin)", 0.1 * Ce + 0.9 * mx(Se, Sl)),
+              ("e5+max(el,wk,lin)", 0.1 * Ce + 0.9 * mx(Se, Sw, Sl))]
+    print(f"\n  [HELD-OUT n={len(ev_idx)} | seed {a.seed} train {a.train_seed}]  {'combiner':18} {'recall@1':>9} {'MRR':>7} "
           f"{'ov(all)':>8} {'ov|miss':>8} {'depth|miss':>10}   [hard n={len(elem_miss)}]")
-    for nm, R, S in (("e5-cos", e5_ranks, S_e5), ("mu-elem", ranks(S_elem), S_elem), ("mu-lineage", ranks(S_lin), S_lin)):
-        m = metrics(R); ov_all, _ = path_overlap(S); ov_m, depth_m = path_overlap(S, elem_miss)
-        print(f"  {'':13}{nm:12} {m['recall@1']:9.3f} {m['MRR']:7.3f} {ov_all:8.3f} {ov_m:8.3f} {depth_m:10.2f}")
-    print("  (ov|miss = normalized ancestor-lineage recovered on the SAME hard cases where mu-elem misses the leaf;")
-    print("   depth|miss = ABSOLUTE deepest correctly-reached ancestor there — the actionable placement depth.)")
+    for nm, M in combos:
+        S = M.tolist(); m = metrics(ranks(S)); ov_all, _ = path_overlap(S); ov_m, depth_m = path_overlap(S, elem_miss)
+        print(f"  {'':13}{nm:18} {m['recall@1']:9.3f} {m['MRR']:7.3f} {ov_all:8.3f} {ov_m:8.3f} {depth_m:10.2f}")
+    print("  (target: a combiner with elem's recall@1 AND lineage's ov|miss/depth|miss. gate = lean elem where its")
+    print("   margin is sharp, else lineage. Does adding stale wiki/sym dilute vs max(elem,lin)?)")
 
     if a.save:
         torch.save({"state": model.state_dict(), "cfg": cfg, "ops_extra": ["LINEAGE"]}, a.save)

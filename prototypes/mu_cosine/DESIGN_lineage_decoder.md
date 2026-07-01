@@ -5,6 +5,18 @@ counterpart to the **retrieval** LINEAGE operator (`train_lineage.py`): instead 
 folder/path, a decoder *generates* the placement path — and, crucially, can **propose a folder that doesn't exist
 yet**. Everything below is design, not built.
 
+> **Status: ROUGH FIRST DRAFT / future-work.** Confidence is highest on the optimizer framing (§0/§0b — decoder =
+> projected optimizer around the encoder) and the numbers/IDs handling (§4c); **least settled: the parenthesis /
+> hyphen handling in §6** (base+qualifier split, compound vs slug hyphens) — treat that as a starting hypothesis.
+>
+> **Simplification from the increment-2 result:** the composition sweep found **WIKI (subcategory) does branch
+> recovery better than the LINEAGE operator, and LINEAGE is redundant** to `max(μ-elem, μ-wiki)` (see
+> DESIGN_model_applications.md, "Composition (increment 2)"). So a decoder likely does **not** need the lineage/path
+> machinery at all — it can be the same projected optimizer, but walking the tree with **`μ-wiki` (branch/descend) +
+> `μ-elem` (commit to leaf)** over *folder-title* passages, with **no path embedding, no id line, and none of the
+> numbers-in-the-path problem** of §4c. That materially simplifies §2–§4c. Read the lineage-specific parts below as
+> "the general mechanism"; substitute wiki+elem for the operators.
+
 ## 0. Core framing: the decoder is a *constrained optimizer around the encoder* (no separate decoder network)
 
 The cleanest conception (supersedes the architecture-first framing below): the encoder defines a score/energy
