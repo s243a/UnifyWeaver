@@ -332,6 +332,62 @@ e5-probe. The review's control was the right test and drove the fix; "μ has no 
 **reversed** — it has one, once trained for the task. (Caveats: node-overlap remains → node-disjoint split next;
 single-run, tight CIs.)
 
+#### Production model + hybrid application — the BLENDED score works (μ corrects e5's leakage)
+Trained a **production μ** (`model_prod`, full recipe: directional rank + scaled Haiku lateral (87 pairs) +
+transitive, 1000 steps): direction **0.890**, close-neg **0.775**, general (carries the lateral layer). Then the
+**hybrid retrieval** application (`eval_hybrid.py`) — e5 coarse top-N → μ re-rank — for "find my container".
+
+**The scoring matters.** *Pure* directional (`μ-elem`) **over-generalises** membership (the rank loss pushes
+μ(child|·) high for *many* candidates) and *loses* to e5. But the correct score is a **blend of directional +
+symmetric** — the operator **superposition** — because μ's Haiku-trained component **corrects e5's semantic
+leakage** (siblings/topically-similar that e5 ranks high but aren't members):
+
+| method | recall@1 | recall@5 | MRR |
+|---|---|---|---|
+| e5-cos alone | 0.170 | 0.418 | 0.282 |
+| hybrid μ-elem (pure directional) | 0.142 | 0.440 | 0.285 |
+| hybrid **μ-super** (blend) | 0.177 | **0.487** | **0.321** |
+| **hybrid e5 + μ-super** | **0.225** | **0.502** | **0.359** |
+
+**The `e5 + μ-super` blend beats e5-cos on every metric** (recall@1 +0.055, recall@5 +0.084, MRR +0.077), and
+**μ-super wins container-vs-sibling in the pipeline (74.6% vs e5 68.9%)**. So the hybrid *works* — μ's directional
++ Haiku-leakage-correction, blended with e5's topical ranking, out-retrieves e5 alone. (The earlier "does not
+beat e5" finding was an artifact of scoring with *pure* ELEM instead of the superposition blend.) The retrieval
+score = **e5 topical similarity + μ operator-superposition** (directional membership + symmetric relatedness,
+Haiku-corrected) — computed as a superposition or a sum of per-operator queries.
+
+**Tuned blend (`eval_hybrid.py` sweep, prefixed e5 shared by both — one encode).** The μ part should be a
+**non-linear OR over the separately-computed per-operator queries** — `max(μ-elem, μ-wiki, μ-sym)` — *not* the
+model's internal superposition, and *not* a linear mix:
+
+| μ score | recall@1 | recall@5 | MRR |
+|---|---|---|---|
+| e5-cos alone | 0.187 | 0.434 | 0.292 |
+| μ-super (internal superposition) | 0.177 | 0.477 | 0.320 |
+| **μ-max(elem,wiki,sym)** (OR of separate queries) | **0.220** | 0.496 | **0.354** |
+| e5 + 0.5·μ-max | 0.216 | **0.506** | **0.358** |
+
+**`max` over separate operator queries beats the internal `μ-super`** — a true container is relevant *by
+membership OR relatedness*, and `max` keeps a strong single-operator hit that the superposition (or a mean)
+averages away (the combiner needn't be linear).
+
+**Tuned grid (1000 queries, μ-part × α = e5-weight):** best = **`max(μ-elem, μ-wiki, μ-sym)` at α=0.9** →
+**MRR 0.358 vs e5-cos 0.286 (+25%)**, recall@1 0.223, recall@5 0.504, container-vs-sibling μ 72.2% vs e5 66.7%.
+Findings: **`max` (OR) beats `mean`** (0.358 vs 0.352) and the internal `μ-super`; **α≈0.9** is optimal — the
+score is *mostly μ* (~10% e5; μ-max alone at α=1 is 0.344, so e5 adds only +0.014); and the **directional
+operators carry it** — `max(elem, wiki)` alone already hits 0.358, adding sym/super doesn't move it. So the
+retrieval signal is fundamentally "**is this a member via element_of OR subcategory**," OR'd across operators, with
+e5 a small topical assist. **Default = `max(μ-elem, μ-wiki, μ-sym)` + 0.1·e5 (α=0.9).** Keep the small e5 term
+even though it is marginal on-distribution (+0.014): it is **coverage insurance / a catch-all for untrained
+regions** — where μ's coverage is thin and it over-generalises, e5's topical similarity grounds the score (e5 is
+the strong baseline on clean/OOD content, §4.2/coverage). *Testable:* the e5 contribution should grow on
+OOD/untrained queries relative to the +0.014 it adds here. Prefixed e5 is the default input to μ (same embeddings
+feed e5-cos and μ ⇒ computed once; the ablation showed no-prefix isn't meaningfully better, so no separate pass).
+**Deferred upgrade — confidence-adaptive blend:** make α *per-query* — lean on μ where it is confident (trained,
+sharp) and fall back to e5 where it is uncertain (untrained/OOD). This is the principled version of the static
+α=0.9 catch-all; drive it from the existing confidence signals (operator-superposition spread / MC-ancestor
+variance / cross-operator entropy, §6). Deferred, not built.
+
 #### Judge→loss routing — the loss is keyed off provenance, not a new embedding (now in the main trainer)
 The discriminative loss is *not* a new "judge type." Provenance (`graph`/`haiku`/`human`/`sonnet`/`opus`) is an
 **input token** that conditions μ's *output* (and is marginalised at inference); the **loss function** is a
