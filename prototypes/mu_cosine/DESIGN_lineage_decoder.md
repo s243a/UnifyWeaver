@@ -188,12 +188,17 @@ the residual:
 1. **Retrieval / template naming (no generation, no vocab).** Most new-folder names are *recombinations of known
    topics* (the folder is new; its words aren't). Try nearest existing titles / nearest inner-bookmark titles to the
    slot embedding, or a template compose ("X and Y" from the two nearest concepts). Handles a large fraction, zero OOV.
-2. **Learned compact, multi-granularity vocabulary + a tiny AR namer** (for the residual). Build a *domain-scoped*
-   vocab from the title corpus: **characters** (no-hard-OOV floor) + subwords + whole words + **multi-word units**
-   (mine common title n-grams — "Machine Learning", "Quantum Mechanics" — as single tokens for fluent compositional
-   names). A small AR namer decodes over it, **conditioned on the slot embedding + parent/sibling context**. This is
-   learned tokenization tailored to the user's topic space (hundreds–few-thousand units, not a 30k fixed vocab), and
-   it runs **on-device** — fits the PWA/on-device ethos; no mandatory LLM.
+2. **Two-tier domain vocabulary + a tiny AR namer** (for the residual) — word-level with subword backoff:
+   - **Tier-1: whole-word tokens from the titles.** Measured on the real harvest: **~1,804 unique *folder*-title
+     words** (the natural naming pool — folder names are generic recombinations), or ~5,361 words if you include
+     recurring (≥2×) bookmark words. No training — just collect them. Frequency-thresholded (≥2×) is the natural
+     Tier-1/Tier-2 boundary.
+   - **Tier-2: a small learned subword vocab + character floor** for the **~6,864 singleton/tail** words (don't spend
+     a token each; compose from subwords, chars as the no-hard-OOV floor).
+   - Optional: recurring multi-word folder n-grams as atomic units for fluent phrases.
+   The full vocab is **~2k whole words + a few-hundred subword pieces** — on-device-trivial (fits the PWA ethos, no
+   mandatory LLM). And Tier-1 is mostly **SELECTION not generation** (mirror placement): pick the folder-words nearest
+   the slot embedding, order them; the tiny AR namer composes selected words + generates only tail subwords.
 3. **LLM (Haiku) — only the genuinely-novel tail**, where even the learned vocab lacks coverage; or a one-tap user
    confirmation. Small, because placement already succeeded and naming is recombination most of the time.
 
