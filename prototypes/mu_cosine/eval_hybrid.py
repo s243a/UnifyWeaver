@@ -43,7 +43,7 @@ def main():
     tok = Tokenizer(qt, pt, idx, parents={}, deg={})
     model = build_model(a.ckpt, dev); n_ops = model.op_emb.weight.shape[0]
     OPW = {"elem": torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS["ELEM"]]), 1.0),
-           "wiki": torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS["WIKI"]]), 1.0),
+           "wiki": torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS["HIER"]]), 1.0),
            "sym":  torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS["SYM"]]), 1.0),
            "super": torch.full((1, n_ops), 1.0 / n_ops)}                    # blend = operator superposition
     C = pt[[idx[c] for c in cands]]                                          # candidate containers as passage

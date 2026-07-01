@@ -185,7 +185,7 @@ def main():
     C = (qn @ fn.T).cpu()
     # per-operator score matrices: elem/wiki/sym use the folder TITLE passage, lineage uses the folder PATH passage
     S_elem, S_lin = score(fol_keys, ow_elem), score(lin_keys, ow_lin)
-    S_wiki, S_sym = score(fol_keys, OW(OPS["WIKI"])), score(fol_keys, OW(OPS["SYM"]))
+    S_wiki, S_sym = score(fol_keys, OW(OPS["HIER"])), score(fol_keys, OW(OPS["SYM"]))
     elem_miss = [r for r in range(len(S_elem)) if top1(S_elem, r) != truepos[r]]   # FIXED hard subset (paired)
 
     # ── increment 2: COMBINER SWEEP (don't assume the combiner or the operator subset — measure) ──

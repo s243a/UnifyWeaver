@@ -64,8 +64,8 @@ def load_transitive(path, idx):
 # relation → (operator, forward target, reverse target) for the INFER-BLEND path (§5b: blend the operator
 # embedding at OPERATOR level, but keep the μ target at RELATION level — SYM's relations have different μ).
 REL_SPEC = {
-    "element_of":     ("ELEM", 0.90, 0.10), "subcategory": ("WIKI", 0.90, 0.10),
-    "subtopic":       ("WIKI", 0.85, 0.12), "super_category": ("WIKI", 0.85, 0.12),
+    "element_of":     ("ELEM", 0.90, 0.10), "subcategory": ("HIER", 0.90, 0.10),
+    "subtopic":       ("HIER", 0.85, 0.12), "super_category": ("HIER", 0.85, 0.12),
     "see_also":       ("SYM",  0.40, 0.40), "assoc": ("SYM", 0.30, 0.30),
     "bridge":         ("SYM",  0.90, 0.90), "bridge_neg": ("SYM", 0.10, 0.10),
 }
@@ -79,7 +79,7 @@ def switched_op(op, rel, conf, breadth, base, scale, rng):
     if op == "ELEM" and rel == "element_of" and conf < 1.0:
         p = base * min(1.0, breadth / max(1.0, scale)) * (1.0 - conf)
         if rng.random() < p:
-            return "WIKI"                                # train this untagged membership as a subcategory
+            return "HIER"                                # train this untagged membership as a subcategory
     return op
 
 # PART B provenance tags for the current single-corpus data. corpus = simplewiki (the 10k graph);
@@ -594,7 +594,7 @@ def train(args):
             return mu_batch(model, tok, items).numpy()
         e5 = _np.array([float(tok.p[idx[a]] @ tok.q[idx[b]]) if a in idx and b in idx else _np.nan for a, b in pairs])
         cols = [e5, mb([(a, b, OPS["SYM"]) for a, b in pairs]),
-                mb([(a, b, OPS["WIKI"]) for a, b in pairs]), mb([(b, a, OPS["WIKI"]) for a, b in pairs]),
+                mb([(a, b, OPS["HIER"]) for a, b in pairs]), mb([(b, a, OPS["HIER"]) for a, b in pairs]),
                 mb([(a, b, OPS["ELEM"]) for a, b in pairs]), mb([(b, a, OPS["ELEM"]) for a, b in pairs])]
         model.train()
         return _np.stack(cols, 1)
@@ -699,9 +699,9 @@ def train(args):
             # (no bce(·,1) ceiling on μ(child|parent) — that creates a "predict the mean (1/3)" collapse).
             eb = [edges_tr[rng.randrange(len(edges_tr))] for _ in range(args.bs)]
             negpar = [eb[(i + 1) % len(eb)][1] for i in range(len(eb))]
-            wiki_items = ([(c, par, OPS["WIKI"], SW, GRAPHJ) for c, par in eb]
-                          + [(par, c, OPS["WIKI"], SW, GRAPHJ) for c, par in eb]
-                          + [(c, negpar[i], OPS["WIKI"], SW, GRAPHJ) for i, (c, par) in enumerate(eb)])
+            wiki_items = ([(c, par, OPS["HIER"], SW, GRAPHJ) for c, par in eb]
+                          + [(par, c, OPS["HIER"], SW, GRAPHJ) for c, par in eb]
+                          + [(c, negpar[i], OPS["HIER"], SW, GRAPHJ) for i, (c, par) in enumerate(eb)])
             mu_w = model(**bld(wiki_items, train=True, rng=rng, p_mask_prov=args.prov_mask))
             mu_cp, mu_pc, mu_cpn = mu_w[:args.bs], mu_w[args.bs:2 * args.bs], mu_w[2 * args.bs:]
             L_wiki = (bce(mu_pc, 0) + bce(mu_cpn, 0)
@@ -846,7 +846,7 @@ def train(args):
         L_llm = torch.zeros(())
         if llm and not args.sym_only:
             lb = [llm[rng.randrange(len(llm))] for _ in range(args.bs)]
-            li = [(n, r, OPS["LLM"], SW, HAIKU) for n, r, _ in lb]
+            li = [(n, r, OPS["ELEM"], SW, HAIKU) for n, r, _ in lb]   # bought-Haiku MEMBERSHIP fixture = ELEM + judge=haiku (was mislabeled OPS["LLM"])
             lt = torch.tensor([mu for _, _, mu in lb]).to(device)
             L_llm = F.mse_loss(model(**bld(li, train=True, rng=rng, p_mask_prov=args.prov_mask)), lt)
             loss = loss + args.llm_weight * L_llm
@@ -902,7 +902,7 @@ def train(args):
 
 def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_hold=None, graded_hold=None):
     print("\n=== PER-OPERATOR VALIDATION ===")
-    ops = ["SYM"] if args.sym_only else (["SYM", "WIKI"] + (["LLM"] if llm else []))
+    ops = ["SYM"] if args.sym_only else (["SYM", "HIER"] + (["LLM"] if llm else []))
 
     # --- GRADED: held-out fused-round fit, per operator (revealed provenance + node-type as trained) ---
     if graded_hold and not args.sym_only:
@@ -925,8 +925,8 @@ def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_
 
     # --- WIKI: held-out edge order-accuracy ---
     if not args.sym_only:
-        cp = mu_batch(model, tok, [(c, p, OPS["WIKI"]) for c, p in edges_hold])
-        pc = mu_batch(model, tok, [(p, c, OPS["WIKI"]) for c, p in edges_hold])
+        cp = mu_batch(model, tok, [(c, p, OPS["HIER"]) for c, p in edges_hold])
+        pc = mu_batch(model, tok, [(p, c, OPS["HIER"]) for c, p in edges_hold])
         acc = float((cp > pc).float().mean())
         print(f"[WIKI] held-out edge ORDER-accuracy μ(child|parent)>μ(parent|child): {acc*100:.1f}% "
               f"({len(edges_hold)} edges)  mean μ(c|p)={float(cp.mean()):.3f} μ(p|c)={float(pc.mean()):.3f}")

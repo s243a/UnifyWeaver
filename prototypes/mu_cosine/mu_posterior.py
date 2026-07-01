@@ -246,7 +246,7 @@ def model_readout_fn(ckpt_path, e5_cache, device="cpu", bs=2048):
     def readouts(pairs):                                   # pairs: list of (node, root) both in idx
         rev = [(b, a) for a, b in pairs]
         return {"sym": _mu(pairs, "SYM"),
-                "wiki_fwd": _mu(pairs, "WIKI"), "wiki_rev": _mu(rev, "WIKI"),
+                "wiki_fwd": _mu(pairs, "HIER"), "wiki_rev": _mu(rev, "HIER"),
                 "elem_fwd": _mu(pairs, "ELEM"), "elem_rev": _mu(rev, "ELEM")}
     readouts.idx = idx
     return readouts
