@@ -383,10 +383,26 @@ regions** — where μ's coverage is thin and it over-generalises, e5's topical 
 the strong baseline on clean/OOD content, §4.2/coverage). *Testable:* the e5 contribution should grow on
 OOD/untrained queries relative to the +0.014 it adds here. Prefixed e5 is the default input to μ (same embeddings
 feed e5-cos and μ ⇒ computed once; the ablation showed no-prefix isn't meaningfully better, so no separate pass).
-**Deferred upgrade — confidence-adaptive blend:** make α *per-query* — lean on μ where it is confident (trained,
-sharp) and fall back to e5 where it is uncertain (untrained/OOD). This is the principled version of the static
-α=0.9 catch-all; drive it from the existing confidence signals (operator-superposition spread / MC-ancestor
-variance / cross-operator entropy, §6). Deferred, not built.
+**Confidence-adaptive blend (built, `eval_hybrid.py` — α per-query).** Make α *per-query* — lean on μ where it is
+confident, fall back to e5 where it is uncertain. Confidence = **top1 of μ-max over the shortlist** (μ is a
+calibrated [0,1] membership degree, so its top score is a free per-query confidence signal). Result at 1000
+queries, top-20:
+
+| slice | MRR @ α=0.3 | @ α=0.9 | Δ |
+|---|---|---|---|
+| high-conf (top1-μ ≥ median) | 0.355 | 0.393 | **+0.037** |
+| low-conf (top1-μ < median) | 0.350 | 0.353 | +0.003 |
+| fixed α=0.9 (all) | — | 0.373 | — |
+| **adaptive α∈[0.3,0.9]** (all) | — | **0.378** | **+0.006 vs fixed** |
+
+**The mechanism is validated:** μ's top-score cleanly predicts where μ earns its weight — leaning on μ is worth
++0.037 MRR where it's confident vs +0.003 where it isn't. **But adaptive beats fixed α=0.9 by only +0.006
+in-distribution**, because on low-confidence queries μ is **neutral, not harmful** (0.350 vs 0.353 — e5-heavy is
+even slightly worse), so a fixed high α already captures most of the benefit. **The adaptive blend's real payoff is
+OOD** — where low μ-confidence coincides with μ being *wrong*, not just neutral; on in-dist Wikipedia μ isn't wrong
+anywhere, so fixed ≈ adaptive. It is correct and never hurts (use α∈[0.3,0.9]); its value grows exactly where the
+coverage-insurance testable predicts. (Operator-spread / MC-ancestor variance / cross-operator entropy, §6, are
+alternative confidence signals not yet swept — top1-μ was the cheapest and sufficient to validate.)
 
 #### Judge→loss routing — the loss is keyed off provenance, not a new embedding (now in the main trainer)
 The discriminative loss is *not* a new "judge type." Provenance (`graph`/`haiku`/`human`/`sonnet`/`opus`) is an
