@@ -19,21 +19,21 @@ def test_tagged_never_switches():
 def test_non_element_never_switches():
     rng = random.Random(0)
     assert switched_op("SYM", "bridge", 0.4, 999, 0.4, 20, rng) == "SYM"
-    assert switched_op("WIKI", "subcategory", 0.4, 999, 0.4, 20, rng) == "WIKI"
+    assert switched_op("HIER", "subcategory", 0.4, 999, 0.4, 20, rng) == "HIER"
 
 
 def test_inferred_switches_at_expected_rate():
     # p = base·min(1, breadth/scale)·(1−conf) = 0.4 · min(1,100/20) · (1−0.4) = 0.4·1·0.6 = 0.24
     rng = random.Random(1)
-    n = sum(switched_op("ELEM", "element_of", 0.4, 100, 0.4, 20, rng) == "WIKI" for _ in range(4000))
+    n = sum(switched_op("ELEM", "element_of", 0.4, 100, 0.4, 20, rng) == "HIER" for _ in range(4000))
     assert 0.20 < n / 4000 < 0.28, n / 4000
 
 
 def test_confidence_scales_probability():
     # higher confidence ⇒ lower switch rate (0.8 inferred switches far less than 0.4)
     r1, r2 = random.Random(2), random.Random(2)
-    lo = sum(switched_op("ELEM", "element_of", 0.4, 100, 0.4, 20, r1) == "WIKI" for _ in range(4000))
-    hi = sum(switched_op("ELEM", "element_of", 0.8, 100, 0.4, 20, r2) == "WIKI" for _ in range(4000))
+    lo = sum(switched_op("ELEM", "element_of", 0.4, 100, 0.4, 20, r1) == "HIER" for _ in range(4000))
+    hi = sum(switched_op("ELEM", "element_of", 0.8, 100, 0.4, 20, r2) == "HIER" for _ in range(4000))
     assert hi < lo
 
 

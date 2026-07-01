@@ -113,7 +113,7 @@ def main():
     for spec in a.ckpts:
         path, _, label = spec.partition(":"); label = label or path
         model = build_model(path, dev); n_ops = model.op_emb.weight.shape[0]
-        OPW = {k: torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS[k.upper()]]), 1.0) for k in ("elem", "wiki", "sym")}
+        OPW = {k: torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS[k.upper()]]), 1.0) for k in ("elem", "hier", "sym")}
 
         @torch.no_grad()
         def mu(prs, ow):
@@ -126,8 +126,8 @@ def main():
 
         lvl, mrg, rr, wrong = [], [], [], []
         for qi, (c, tp_i, top) in enumerate(shortlists):
-            mvs = {k: mu([(c, cands[j]) for j in top], OPW[k]) for k in ("elem", "wiki", "sym")}
-            mm = [max(mvs["elem"][i], mvs["wiki"][i], mvs["sym"][i]) for i in range(len(top))]
+            mvs = {k: mu([(c, cands[j]) for j in top], OPW[k]) for k in ("elem", "hier", "sym")}
+            mm = [max(mvs["elem"][i], mvs["hier"][i], mvs["sym"][i]) for i in range(len(top))]
             sm = sorted(mm, reverse=True); top1, top2 = sm[0], (sm[1] if len(sm) > 1 else 0.0)
             order = sorted(range(len(top)), key=lambda i: -mm[i])
             rank = 1 + order.index(top.index(tp_i)) if tp_i in top else a.topn + 1

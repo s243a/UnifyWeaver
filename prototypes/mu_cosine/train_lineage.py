@@ -183,16 +183,16 @@ def main():
     fol_keys = [f"F:{f}" for f in fold_ids]
     qn = qtbl[[idx[bm_key[i]] for i in ev_idx]]; fn = ptbl[[idx[k] for k in fol_keys]]
     C = (qn @ fn.T).cpu()
-    # per-operator score matrices: elem/wiki/sym use the folder TITLE passage, lineage uses the folder PATH passage
+    # per-operator score matrices: elem/hier/sym use the folder TITLE passage, lineage uses the folder PATH passage
     S_elem, S_lin = score(fol_keys, ow_elem), score(lin_keys, ow_lin)
-    S_wiki, S_sym = score(fol_keys, OW(OPS["WIKI"])), score(fol_keys, OW(OPS["SYM"]))
+    S_hier, S_sym = score(fol_keys, OW(OPS["HIER"])), score(fol_keys, OW(OPS["SYM"]))
     elem_miss = [r for r in range(len(S_elem)) if top1(S_elem, r) != truepos[r]]   # FIXED hard subset (paired)
 
     # ── increment 2: COMBINER SWEEP (don't assume the combiner or the operator subset — measure) ──
     def nz(M):                                                      # per-query min-max → [0,1] over candidate folders
         M = torch.tensor(M); lo = M.min(1, keepdim=True).values; hi = M.max(1, keepdim=True).values
         return (M - lo) / (hi - lo + 1e-9)
-    Ce, Se, Sl, Sw, Ss = nz(C.tolist()), nz(S_elem), nz(S_lin), nz(S_wiki), nz(S_sym)
+    Ce, Se, Sl, Sw, Ss = nz(C.tolist()), nz(S_elem), nz(S_lin), nz(S_hier), nz(S_sym)
     mx = lambda *Ms: torch.stack(Ms).amax(0)
     et = torch.tensor(S_elem); t2 = et.topk(min(2, et.shape[1]), 1).values          # leaf-certainty gate from ELEM margin
     emar = (t2[:, 0] - t2[:, 1]) if t2.shape[1] > 1 else torch.zeros(et.shape[0])

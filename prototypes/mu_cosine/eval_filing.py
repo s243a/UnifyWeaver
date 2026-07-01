@@ -122,9 +122,9 @@ def rank_all(model, tok, qtbl, ptbl, idx, q_keys, f_keys, truepos, dev):
     n_ops = model.op_emb.weight.shape[0]
     ow_of = lambda op: torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS[op]]), 1.0)
     sm = lambda ow: torch.tensor(score_mu(model, tok, idx, q_keys, f_keys, ow, dev))   # [Q,F] μ score matrix
-    S_elem, S_wiki, S_sym = sm(ow_of("ELEM")), sm(ow_of("WIKI")), sm(ow_of("SYM"))
+    S_elem, S_hier, S_sym = sm(ow_of("ELEM")), sm(ow_of("HIER")), sm(ow_of("SYM"))
     S_super = sm(torch.full((1, n_ops), 1.0 / n_ops))
-    S_max = torch.maximum(torch.maximum(S_elem, S_wiki), S_sym)   # operator-OR — the Wikipedia-eval winner
+    S_max = torch.maximum(torch.maximum(S_elem, S_hier), S_sym)   # operator-OR — the hierarchy-eval winner
     C = (qtbl[[idx[k] for k in q_keys]] @ ptbl[[idx[k] for k in f_keys]].T).cpu()       # e5 cosine [Q,F], unit-normed
     def nzrow(M):                                                 # per-query min-max → [0,1] across folders
         lo = M.min(dim=1, keepdim=True).values; hi = M.max(dim=1, keepdim=True).values

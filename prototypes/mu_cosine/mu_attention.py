@@ -37,8 +37,13 @@ REPO = os.path.abspath(os.path.join(ROOT, "..", ".."))
 GRAPH = os.environ.get("UW_MU_GRAPH", os.path.join(REPO, "data", "benchmark", "10k", "category_parent.tsv"))
 E5_MODEL = "intfloat/e5-small-v2"
 
-# operator codebook (the relation axis).
-OPS = {"SYM": 0, "WIKI": 1, "LLM": 2, "ELEM": 3}
+# operator codebook (the relation axis). OPERATORS = pure RELATIONS (what the edge is). SOURCE lives on other axes:
+# corpus_emb (enwiki/simplewiki/pearltrees/mindmap) = which knowledge base; judge_emb (graph/haiku/…) = how labeled.
+#   SYM = symmetric relatedness · HIER = category-hierarchy (subcategory/subtopic/super_category; was "WIKI") ·
+#   ELEM = element_of (membership). Index 2 = DEPRECATED (was "LLM" — but the LLM is a *judge* on judge_emb, not a
+#   relation; the prompt gives the relation. The --llm fixture now routes to ELEM+haiku.) Kept only so n_ops stays 4
+#   (op_emb loads by shape); no relation maps to it.
+OPS = {"SYM": 0, "HIER": 1, "_DEPRECATED_LLM": 2, "ELEM": 3}   # index 2 kept for n_ops=4; explicit name so it can't be used by accident
 # ELEM = element-of (page-in-category / collection-membership): directional like WIKI (μ(page|category)
 # high, reverse low) but graded like SYM. Its own operator token + readout row on the shared trunk, so
 # page-membership trains as a DISTINCT relation instead of being conflated into SYM (see

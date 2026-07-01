@@ -43,7 +43,7 @@ def main():
     tok = Tokenizer(qt, pt, idx, parents={}, deg={})
     model = build_model(a.ckpt, dev); n_ops = model.op_emb.weight.shape[0]
     OPW = {"elem": torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS["ELEM"]]), 1.0),
-           "wiki": torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS["WIKI"]]), 1.0),
+           "hier": torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS["HIER"]]), 1.0),
            "sym":  torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS["SYM"]]), 1.0),
            "super": torch.full((1, n_ops), 1.0 / n_ops)}                    # blend = operator superposition
     C = pt[[idx[c] for c in cands]]                                          # candidate containers as passage
@@ -69,7 +69,7 @@ def main():
         order = torch.argsort(-e5s).tolist(); tp_i = cand_pos[tp]
         e5_ranks.append(1 + order.index(tp_i))
         top = order[:a.topn]
-        muvs = {k: mu([(c, cands[j]) for j in top], OPW[k]) for k in ("elem", "wiki", "sym", "super")}
+        muvs = {k: mu([(c, cands[j]) for j in top], OPW[k]) for k in ("elem", "hier", "sym", "super")}
         store.append((tp_i, top, [e5s[j].item() for j in top], muvs))
 
     def blend_ranks(mufn, alpha):
@@ -90,9 +90,9 @@ def main():
     print(f"  e5-cos alone: recall@1 {rr(e5_ranks,1):.3f}  recall@5 {rr(e5_ranks,5):.3f}  MRR {e5_mrr:.3f}")
     # GRID: μ-part (which operators, combined how) × α (e5 weight; α=1 ⇒ μ-only, 0 ⇒ e5-only)
     muparts = {"super": lambda m: m["super"], "elem": lambda m: m["elem"],
-               "mean(e,w,s)": lambda m: [(m["elem"][i]+m["wiki"][i]+m["sym"][i])/3 for i in range(len(m["elem"]))],
-               "max(e,s)": mx("elem", "sym"), "max(e,w)": mx("elem", "wiki"),
-               "max(e,w,s)": mx("elem", "wiki", "sym"), "max(sup,e,w,s)": mx("super", "elem", "wiki", "sym")}
+               "mean(e,w,s)": lambda m: [(m["elem"][i]+m["hier"][i]+m["sym"][i])/3 for i in range(len(m["elem"]))],
+               "max(e,s)": mx("elem", "sym"), "max(e,w)": mx("elem", "hier"),
+               "max(e,w,s)": mx("elem", "hier", "sym"), "max(sup,e,w,s)": mx("super", "elem", "hier", "sym")}
     alphas = [0.0, 0.3, 0.5, 0.7, 0.9, 1.0]
     print(f"\n  MRR grid — μ-part × α (e5 weight):   [e5-cos={e5_mrr:.3f}]")
     print(f"  {'μ-part':14} " + "".join(f"α={a_:<5}" for a_ in alphas))
@@ -105,7 +105,7 @@ def main():
         star = lambda m: ("*" if m == max(cells) else " ")
         print(f"  {nm:14} " + "".join(f"{c:.3f}{star(c)} " for c in cells))
     print(f"\n  BEST: {best[0]}  MRR {best[1]:.3f}  (recall@1 {rr(best[2],1):.3f}  recall@5 {rr(best[2],5):.3f})  vs e5-cos {e5_mrr:.3f}")
-    hy_ranks = blend_ranks(mx("elem", "wiki", "sym"), 1.0)                  # μ-max for the sibling metric below
+    hy_ranks = blend_ranks(mx("elem", "hier", "sym"), 1.0)                  # μ-max for the sibling metric below
     # how often μ promotes the true parent that e5 buried below rank 1 but within the shortlist
     fixed = sum(1 for e, h in zip(e5_ranks, hy_ranks) if e > 1 and h == 1)
     broke = sum(1 for e, h in zip(e5_ranks, hy_ranks) if e == 1 and h > 1)
@@ -139,7 +139,7 @@ def main():
     # Coverage-insurance made per-query: trust μ where it is confident (sharp / high top-μ over the shortlist), fall
     # back to e5 where μ is flat/low (untrained/OOD). μ is a calibrated [0,1] membership degree ⇒ the top candidate's
     # μ-max IS a confidence signal, computed for free from the scores we already have.
-    mm_all = [[max(mv["elem"][i], mv["wiki"][i], mv["sym"][i]) for i in range(len(mv["elem"]))] for _, _, _, mv in store]
+    mm_all = [[max(mv["elem"][i], mv["hier"][i], mv["sym"][i]) for i in range(len(mv["elem"]))] for _, _, _, mv in store]
     t1 = [max(mm) for mm in mm_all]; med = sorted(t1)[len(t1) // 2]; alli = list(range(len(store)))
     def mrr_on(idxs, alpha_of):                                             # α_of(i)→per-query blend weight
         rs = []

@@ -24,10 +24,10 @@ def _setup():
 def test_one_hot_equals_indexed():
     tok, m, names = _setup(); m.eval()
     a, b = names[100], names[200]
-    batch = tok.build([(a, b, OPS["WIKI"]), (a, b, OPS["ELEM"]), (a, b, OPS["SYM"])], train=False)
+    batch = tok.build([(a, b, OPS["HIER"]), (a, b, OPS["ELEM"]), (a, b, OPS["SYM"])], train=False)
     n_ops = m.op_emb.weight.shape[0]
     ow = torch.zeros(3, n_ops)
-    for k, op in enumerate(("WIKI", "ELEM", "SYM")):
+    for k, op in enumerate(("HIER", "ELEM", "SYM")):
         ow[k, OPS[op]] = 1.0
     with torch.no_grad():
         assert torch.allclose(m(**batch), m(**batch, op_weights=ow), atol=1e-6)
@@ -36,9 +36,9 @@ def test_one_hot_equals_indexed():
 def test_blend_differs_from_endpoints():
     tok, m, names = _setup(); m.eval()
     a, b = names[100], names[200]
-    batch = tok.build([(a, b, OPS["WIKI"])], train=False)
+    batch = tok.build([(a, b, OPS["HIER"])], train=False)
     n_ops = m.op_emb.weight.shape[0]
-    ow = torch.zeros(1, n_ops); ow[0, OPS["WIKI"]] = 0.5; ow[0, OPS["ELEM"]] = 0.5
+    ow = torch.zeros(1, n_ops); ow[0, OPS["HIER"]] = 0.5; ow[0, OPS["ELEM"]] = 0.5
     with torch.no_grad():
         wiki = float(m(**batch)[0])
         blend = float(m(**batch, op_weights=ow)[0])
@@ -48,7 +48,7 @@ def test_blend_differs_from_endpoints():
 def test_gradients_flow_through_op_weights():
     tok, m, names = _setup()
     a, b = names[100], names[200]
-    batch = tok.build([(a, b, OPS["WIKI"])], train=True)
+    batch = tok.build([(a, b, OPS["HIER"])], train=True)
     n_ops = m.op_emb.weight.shape[0]
     ow = torch.full((1, n_ops), 1.0 / n_ops)               # uniform blend (detached, like a sampled weight)
     m.zero_grad()

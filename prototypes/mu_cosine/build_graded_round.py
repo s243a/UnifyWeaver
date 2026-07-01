@@ -35,10 +35,10 @@ JUDGE_OF = {"mindmap": "human", "pearltrees": "human", "enwiki": "graph"}
 # relation → (op, kind, mu_hi, mu_lo). kind: "down" dst is member/narrower of src; "up" dst is broader of
 # src; "sym" symmetric. mu_lo = the reverse-direction target (semantic-drift floor) for directional rels.
 RELATION_SPEC = {
-    "subtopic":       ("WIKI", "down", 0.85, 0.12),
-    "subcategory":    ("WIKI", "down", 0.90, 0.10),
+    "subtopic":       ("HIER", "down", 0.85, 0.12),
+    "subcategory":    ("HIER", "down", 0.90, 0.10),
     "element_of":     ("ELEM", "down", 0.90, 0.10),
-    "super_category": ("WIKI", "up",   0.85, 0.12),
+    "super_category": ("HIER", "up",   0.85, 0.12),
     "see_also":       ("SYM",  "sym",  0.40, 0.40),
     "assoc":          ("SYM",  "sym",  0.30, 0.30),
     "sequence":       ("SYM",  "sym",  0.30, 0.30),
