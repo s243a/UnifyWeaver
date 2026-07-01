@@ -332,6 +332,20 @@ e5-probe. The review's control was the right test and drove the fix; "μ has no 
 **reversed** — it has one, once trained for the task. (Caveats: node-overlap remains → node-disjoint split next;
 single-run, tight CIs.)
 
+#### Production model + hybrid application — the pairwise wins do NOT translate to retrieval (honest)
+Trained a **production μ** (`model_prod`, full recipe: directional rank + scaled Haiku lateral (87 pairs) +
+transitive, 1000 steps): direction **0.890**, close-neg **0.775**, general (carries the lateral layer). Then the
+**hybrid retrieval** application (`eval_hybrid.py`) — e5 coarse top-N → μ directional re-rank — for "find my
+container": **it does NOT beat e5-cos.** `model_prod` gives only a marginal recall@5/MRR bump and *loses* the
+container-vs-sibling test (μ 61% vs e5 67%); the direction-*specialist* `model_dir_disc` is **much worse**
+(recall@1 0.047 vs e5 0.187) — it **over-generalises membership** (the rank loss pushes μ(child|·) high for *many*
+candidates), which is great for *pairwise* AUC but destroys the discrimination *retrieval* needs. **Lesson:** μ's
+controlled pairwise wins (direction 0.98, close-neg 0.93) are real but are a *different task* from multi-candidate
+ranking — e5's topical similarity is better at pinpointing a container among many. The one place μ *won* retrieval
+was the **filing fine-tune** (task-specific, recall@10 0.90 vs 0.63) — so μ helps retrieval when trained *on the
+retrieval task*, **not** as a drop-in re-ranker. μ's usable value is **pairwise directional decisions** ("is A a
+member of B", reject reverse/sibling) and **task-specific fine-tuning**, not generic re-ranking.
+
 #### Judge→loss routing — the loss is keyed off provenance, not a new embedding (now in the main trainer)
 The discriminative loss is *not* a new "judge type." Provenance (`graph`/`haiku`/`human`/`sonnet`/`opus`) is an
 **input token** that conditions μ's *output* (and is marginalised at inference); the **loss function** is a
