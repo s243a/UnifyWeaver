@@ -211,6 +211,128 @@ highest, std 0.025.) Remaining headroom: a longer fine-tune / more data per the 
 *scaffolding*, per the bitter-lesson framing below): the local-tangent **bivector feature** only if a thin
 sub-domain needs sample-efficiency; otherwise the bet is simply more data + training.
 
+#### Review-hardened rankers, zero-shot OOD — the margin gate is the best zero-shot strategy (damage control)
+`eval_filing.py` now carries the review-hardened rankers from the Wikipedia arc: **`mu-max`** = `max(μ-elem, μ-wiki,
+μ-sym)` (the operator-OR), **`e5+mu-max`** = the coverage-insurance blend, **`margin-gate`** = per-query α from the
+μ-max margin (the #3391 finding operationalised). Run **zero-shot** (Wikipedia-trained `model_prod`, *no* filing
+fine-tune) on 500 real filing decisions (335 folders):
+
+| ranker | recall@1 | MRR | | strat MRR (e5 / margin-gate): FAR·MID·NEAR |
+|---|---|---|---|---|
+| **e5-cos** | **0.196** | **0.295** | | 0.306 · 0.324 · 0.255 |
+| mu-super / mu-elem / mu-max | 0.06 | 0.12–0.13 | | (μ ~0.11–0.16 at every stratum) |
+| e5+mu-max | 0.078 | 0.144 | | |
+| **margin-gate** | 0.146 | **0.212** | | 0.202 · 0.253 · 0.181 |
+
+**Re-confirms the known ~2× zero-shot OOD loss** — and sharpens it: e5-cos wins at *every* core-distance stratum,
+including NEAR the STEM core, so this is **transfer failure** (Wikipedia *category* structure ≠ personal *folder*
+structure), **not** a trained-region effect (the gap is a uniform ~0.07–0.10 everywhere, refuting "μ helps in its
+trained region"). **New finding:** the **margin gate is by far the best zero-shot ranker** — 0.212 vs `mu-max` 0.125
+(+70%), recovering **~60% of the gap to e5**. It works exactly as designed: it detects μ's OOD low-confidence
+(flat margins) and defers to e5, so the *mechanism* validated in #3391 holds on real data even though the *payoff*
+(μ adding value OOD) does not — the optimal μ-weight zero-shot is ≈0 and the gate trends there (damage control where
+μ is net-harmful). Coverage-insurance vindicated in spirit: the whole domain is untrained for μ, e5 is the robust
+baseline, and the gate correctly leans on it. **The fix is in-domain training** (the learning curve above: fine-tune
+crosses e5 at 30%+ data, +23% at 100%).
+
+**In-domain (fine-tuned μ, `train_filing.py --save` → `rank_all` on the HELD-OUT split — fair, no train-on-test):**
+
+| ranker | recall@1 | MRR | note |
+|---|---|---|---|
+| e5-cos | 0.200 | 0.284 | the bar |
+| mu-elem | 0.258 | 0.362 | the documented fine-tune win (+27%) |
+| mu-max (OR) | 0.233 | 0.342 | **OR *dilutes* in-domain** — only ELEM was fine-tuned, so wiki/sym are stale |
+| **e5+mu-elem** | **0.307** | **0.396** | **best — +39% over e5, +9% over mu-elem** |
+| e5+mu-max | 0.302 | 0.391 | blend still strong even on the diluted OR |
+| margin-gate | 0.278 | 0.365 | ≈ mu-elem — gate redundant when μ is trustworthy in-domain |
+
+Three lessons, and they line up with the rest of the arc:
+1. **The coverage-insurance blend generalises to in-domain** — `e5+mu-elem` (0.396) beats *both* plain fine-tuned μ (0.362) and e5 (0.284), with a big recall@1 lift (0.307 vs 0.258/0.200). The blend adds value *on top of* the fine-tune win, exactly as on Wikipedia.
+2. **The operator-OR only helps if its operators are trained for the domain.** On Wikipedia (multi-relationally trained) `mu-max` won; here (ELEM-only fine-tune) it *dilutes* below `mu-elem`. → this is the direct argument for training *more* filing operators (e.g. a `LINEAGE` op), then OR-ing them.
+3. **The margin gate is redundant in-domain** (≈ mu-elem) — consistent with #3391: the gate's value is OOD damage-control, not in-domain, because in-domain μ is trustworthy and deserves full weight. Zero-shot the gate was the *best* μ-variant; in-domain it's a wash. The gate correctly self-adjusts to how much μ can be trusted.
+
+Net filing verdict: **zero-shot, use e5 (μ doesn't transfer, gate limits the damage); in-domain, use `e5 + μ-elem` (best, +39% over e5).**
+
+#### LINEAGE operator (increment 1) — graceful degradation confirms "file general→specific" (`train_lineage.py`)
+A new **`LINEAGE`** operator scores `μ(bookmark | hierarchical-PATH)` — the *undifferentiated* generalization of
+ELEM+WIKI (the embedded `target_text` path carries no relation-type; verified). Built per the agreed design: a
+**fresh op row** (n_ops 4→5 via row-copy warm-start of `model_filing` — *not* hand-initialized from ELEM/WIKI; it
+learns its relation to them through training), fine-tuned with **ELEM replay** + **masking** (ID-dropout via
+precomputed `/*`-wildcard variants + path-prefix dropout; the id line stays as unique anchors). Held-out filing
+(n=300):
+
+(n=300). **Multi-seed (3 training seeds 7/13/23, split fixed at 7); means, with per-seed ranges on the hard subset:**
+
+| ranker | recall@1 | MRR | ov(all) | ov\|elem-miss | depth\|elem-miss |
+|---|---|---|---|---|---|
+| e5-cos | 0.170 | 0.270 | 0.380 | 0.323 (.317–.328) | 1.40 |
+| mu-elem | 0.303 | 0.436 | 0.510 | 0.297 (.291–.300) | 1.33 |
+| **mu-lineage** | 0.177 | 0.299 | 0.445 | **0.356 (.340–.371)** | **1.63 (1.53–1.75)** |
+
+`depth|elem-miss` = ABSOLUTE deepest correctly-reached ancestor (the actionable placement depth — an intermediate
+ancestor is usable: searchable by name, resolvable by id).
+
+Findings: (1) `mu-lineage` beats e5 on *every* metric — a real, distinct signal. (2) `mu-elem` dominates exact-leaf
++ overall-overlap — it's the leaf specialist. (3) **But on the PAIRED hard subset** (queries where `mu-elem` misses
+the leaf), **`mu-lineage` recovers the ancestor branch best — and it is ROBUST TO SEED with non-overlapping ranges**:
+its ov|miss min (0.340) clears e5's max (0.328) clears elem's max (0.300), **same ordering all 3 seeds** (same for
+absolute depth: 1.63 vs 1.40 vs 1.33). The "file general→specific" hypothesis, confirmed and CI-hardened: when the
+leaf can't be nailed, lineage stays in the right general branch (densely-reused upper levels), while the
+leaf-specialist, *on its own misses, wanders below even raw e5 every seed* (0.297 < 0.323) — it optimises
+leaf-specificity over the general path. (4) So **elem and lineage are complementary** — leaf-specialist + graceful
+branch-fallback — which *data-motivates* the composition (increment 2: a margin-gate / OR switching on
+leaf-certainty). Masking's prefix-dropout also buys robustness to truncated / RDF-partial paths and free
+depth-placement. (Paired subset is the honest test — per-ranker miss-sets differ, so unpaired overlap|MISS was
+confounded; single split — a multi-split CI is the remaining follow-up.)
+
+#### Composition (increment 2) — best filer is `e5 + max(μ-elem, μ-wiki)`; LINEAGE is redundant (`train_lineage.py --eval-only`)
+Combiner sweep over `model_lineage` (held-out n=300, seed 7 — single-seed, multi-seed confirm is the follow-up):
+
+| combiner | recall@1 | MRR | ov\|miss | depth\|miss |
+|---|---|---|---|---|
+| mu-elem | 0.310 | 0.447 | 0.312 | 1.43 | *(leaf champ)* |
+| mu-wiki | 0.253 | 0.359 | **0.401** | **2.00** | *(BRANCH champ)* |
+| mu-sym | 0.293 | 0.431 | 0.340 | 1.57 | |
+| mu-lineage | 0.193 | 0.308 | 0.359 | 1.65 | |
+| e5+max(elem,wiki) | 0.303 | 0.438 | 0.391 | 1.94 | |
+| **e5+max(elem,wiki,sym)** | 0.313 | 0.439 | 0.395 | 1.93 | *(BEST — all three)* |
+| e5+max(all4) | 0.313 | 0.436 | 0.391 | 1.86 | *(+lineage adds ~0)* |
+
+Findings: (1) **Surprise — WIKI (subcategory/subset) is the graceful-degradation champion** (ov|miss 0.401, depth
+2.00), beating the purpose-built LINEAGE (0.359/1.65) *and simpler* (folder-title passage, no path). Subcategory is
+inherently general/structural containment ⇒ it *is* the branch operator. The complementary pair is **ELEM (leaf) +
+WIKI (branch), both pre-existing** — as the "why not subset?" question anticipated. (2) **All three win:**
+`e5 + max(μ-elem, μ-wiki, μ-sym)` is the best combiner (recall@1 0.313 ≥ elem's 0.310, MRR 0.439 ≈ 0.447, ov|miss
+0.395 ≈ wiki's 0.401) — sym adds a small lift over elem+wiki, so the full base-operator OR is best. Notably this is
+**the *same* operator-OR that won the Wikipedia retrieval eval** — same combiner, now confirmed in-domain on real
+filing. (3) **LINEAGE is redundant** — `e5+max(all4)` (0.391) is *below* `e5+max(elem,wiki,sym)` (0.395); the new
+operator adds ~0 even on top of all three. The lineage work still delivered the graceful-degradation *insight* +
+path-overlap *metric* that revealed this. **Verdict: filer = `e5 + max(μ-elem, μ-wiki, μ-sym)`, no new operator
+required.** (Open: lineage was a *fresh* op with only 300 steps vs wiki's rich Wikipedia pretraining, so it may be
+undertrained rather than wrong — but it's not needed given wiki/sym.)
+
+**Multi-seed confirm (3 seeds, retrained on own splits):** `e5+max(elem,wiki,sym)` beats `mu-elem` on all axes every
+seed — mean recall@1 0.304 vs 0.280, MRR 0.425 vs 0.414, ov|miss 0.388 vs 0.304. Adding lineage at inference stays a
+wash (`e5+max(all4)` 0.302 / 0.419 / 0.391 — recall@1/MRR a hair lower, branch a hair higher). So "best filer =
+`e5+max(elem,wiki,sym)`, lineage redundant *at inference*" is CI-hardened. *(Data note: `api_tree_paths_v8.jsonl`
+paths are 99% complete to the account root — the rate-limited harvester successfully backfilled the partial RDF
+export — so the lineage finding is NOT a path-truncation artifact; ~89% of trees have a path entry at all, the rest
+excluded.)*
+
+**Auxiliary-task ablation (`--lineage-weight 0` vs `1`, same warm-start/split/seed, 3 seeds).** Does *training* lineage
+improve the shared encoder even though it's redundant at inference? At 300 steps: **SYM is robustly helped** —
+with-lineage recall@1 0.293 vs elem-only 0.266 (+0.027; MRR +0.020), consistent across all 3 seeds. LINEAGE
+(undifferentiated path relatedness) is flavor-matched to SYM (symmetric relatedness), so co-training reinforces it;
+ELEM is wash/slightly-hurt, WIKI wash. **But at the *filer* level (`e5+max(elem,wiki,sym)`) the effect is marginal and
+mixed**: mean Δ recall@1 +0.008 (seed 13 *negative*), MRR +0.005, branch ov|miss +0.018 (2/3 seeds positive — the
+sym-flavored effect leaning toward branch recovery). So the sym gain does **not** cleanly propagate to the filer.
+**Verdict: the auxiliary-task hypothesis is OPEN** — one robust positive signal (sym) that doesn't robustly reach the
+filer at 300 steps. Crucially this is **early training**; early-mixed does NOT refute a late-training benefit
+(auxiliary tasks often slow early convergence yet improve the final representation). The real test is the A/B **at
+full training length — not run**. Net: lineage is *redundant as an inference ranker* (settled, CI-hardened),
+*plausibly useful as a training-time auxiliary* (open). It also slows end-model training — so any adoption is
+"worth it *iff* a full-length A/B confirms the filer benefit and it justifies the slowdown."
+
 #### Operating point — μ's edge is at recall@10 / median rank, which is exactly what an LLM re-ranker consumes
 Across **all three** results, μ's advantage over `e5-cos` concentrates at **recall@10 and median rank**, *not*
 recall@1 (where e5-cos is often comparable or slightly ahead): home-turf recall@10 **0.494 vs 0.424** /
