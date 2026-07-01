@@ -404,6 +404,20 @@ anywhere, so fixed ≈ adaptive. It is correct and never hurts (use α∈[0.3,0.
 coverage-insurance testable predicts. (Operator-spread / MC-ancestor variance / cross-operator entropy, §6, are
 alternative confidence signals not yet swept — top1-μ was the cheapest and sufficient to validate.)
 
+**Why this matters (two properties that make it more than a marginal-MRR result):**
+1. **Honest abstention, not hallucination.** The confidence signal is read straight off μ's *own* calibrated [0,1]
+   membership output — **not a separate confidence head** that could itself be overconfident-and-wrong (the
+   signature of hallucination: high stated confidence, wrong answer). Because μ is trained as a graded degree, a
+   low top-μ genuinely means "no candidate looks like a strong member" ⇒ the model defers to e5 instead of
+   fabricating a container. The +0.037 vs +0.003 split is evidence the signal is *trustworthy*, not merely present.
+   *Boundary:* this is demonstrated **operationally** (top-μ predicts where μ helps); full **probabilistic**
+   calibration (does μ=0.7 ⇒ 70% membership? ECE) remains the deferred calibration item.
+2. **Self-annealing blend — μ earns weight as it learns.** Under the adaptive rule α rises with top-μ, so as μ
+   trains on more data its confident regions expand → more queries clear the confidence bar → the **effective mean
+   α climbs on its own, no re-tuning**, and e5 recedes to only the still-uncovered frontier. *Testable (no Haiku):*
+   run the confidence diagnostic across checkpoints of increasing training data; expect the high-confidence
+   fraction and effective-α to rise with data. Not yet measured — a cheap, high-value validation.
+
 #### Judge→loss routing — the loss is keyed off provenance, not a new embedding (now in the main trainer)
 The discriminative loss is *not* a new "judge type." Provenance (`graph`/`haiku`/`human`/`sonnet`/`opus`) is an
 **input token** that conditions μ's *output* (and is marginalised at inference); the **loss function** is a
