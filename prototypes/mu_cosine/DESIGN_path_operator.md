@@ -122,11 +122,26 @@ The softmax **IS `op_weights`**, and the model already has the blended-operator 
 of hand-setting them (the operator-superposition design, made content-addressed). It degenerates cleanly: a query
 matching one key → one-hot `op_weights` → the current codebook lookup. And it **sidesteps the prompt-rewriting
 worry**: e5 is only the *key* (routing); the *learned value* carries the semantics — new operators are *addressed*
-by language but *encoded* by learned embeddings. Caveats: (i) continuous params (β) aren't words, so they layer on
-separately (concat to the query / FiLM after the blend) — the attention is the relation/method *router*, not the
-parameter injector; (ii) the key is the name/description, so **naming/description quality matters** (close
-descriptions → close keys → blended operators — right when they're related, under-resolved when they aren't; use
-fuller descriptions than the bare short name).
+by language but *encoded* by learned embeddings. Caveat (naming): the key is the name/description, so **naming/description
+quality matters** (close descriptions → close keys → blended operators — right when they're related, under-resolved
+when they aren't; use fuller descriptions than the bare short name).
+
+**Numeric parameters (β, edge-weight scalars, τ) — Fourier-encode, then FiLM-modulate.** The attention lookup routes
+the *discrete/semantic* selection (which relation, which method); it cannot carry a **continuum** — β=0.3 isn't a
+word and has no key. So numeric params are injected on a **separate path**, in two steps:
+1. **Fourier-feature encode each scalar** — `β → [sin(ω₁β), cos(ω₁β), …, sin(ω_kβ), cos(ω_kβ)]` at several
+   frequencies. A *raw scalar is a poor MLP input* (one dimension; nets learn ~linear-only functions of it or ignore
+   it); sinusoidal features lift it into a space where a small net can express a **rich, smooth** function of β
+   across its range (same trick as transformer positional encodings / NeRF).
+2. **FiLM-modulate the base encoding** — a tiny MLP maps the Fourier features → a **scale γ and shift**, applied to
+   the attention-lookup output: `op_encoding = γ(fourier(β)) ⊙ base + shift(fourier(β))`.
+
+So: **attention lookup = the discrete router (relation/method); Fourier + FiLM = the continuous parameter injector.**
+This matches the semantics — β controls the path *depth distribution* (small β → deep paths, large β → shallow), so
+the encoding should move *smoothly but expressively* as β sweeps, which a raw-scalar concat won't give but Fourier+
+FiLM will. (Vector params like per-edge-type weights: Fourier-encode each scalar, or, if the *choice* of weighting is
+discrete — uniform vs type-weighted vs confidence — that choice is semantic and goes in the attention query; only the
+actual weight *values* take the Fourier+FiLM path.)
 
 ## 6. Why PATH (multi-path) is *not* redundant to HIER, though LINEAGE was
 
