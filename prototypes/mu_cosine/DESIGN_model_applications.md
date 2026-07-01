@@ -292,21 +292,24 @@ Combiner sweep over `model_lineage` (held-out n=300, seed 7 — single-seed, mul
 |---|---|---|---|---|
 | mu-elem | 0.310 | 0.447 | 0.312 | 1.43 | *(leaf champ)* |
 | mu-wiki | 0.253 | 0.359 | **0.401** | **2.00** | *(BRANCH champ)* |
+| mu-sym | 0.293 | 0.431 | 0.340 | 1.57 | |
 | mu-lineage | 0.193 | 0.308 | 0.359 | 1.65 | |
-| **e5+max(elem,wiki)** | 0.303 | 0.438 | 0.391 | 1.94 | *(best all-rounder)* |
-| e5+max(elem,lin) | 0.313 | 0.438 | 0.379 | 1.83 | |
-| e5+max(el,wk,lin) | 0.307 | 0.434 | 0.392 | 1.89 | *(lineage adds ~0)* |
+| e5+max(elem,wiki) | 0.303 | 0.438 | 0.391 | 1.94 | |
+| **e5+max(elem,wiki,sym)** | 0.313 | 0.439 | 0.395 | 1.93 | *(BEST — all three)* |
+| e5+max(all4) | 0.313 | 0.436 | 0.391 | 1.86 | *(+lineage adds ~0)* |
 
 Findings: (1) **Surprise — WIKI (subcategory/subset) is the graceful-degradation champion** (ov|miss 0.401, depth
 2.00), beating the purpose-built LINEAGE (0.359/1.65) *and simpler* (folder-title passage, no path). Subcategory is
 inherently general/structural containment ⇒ it *is* the branch operator. The complementary pair is **ELEM (leaf) +
-WIKI (branch), both pre-existing** — as the "why not subset?" question anticipated. (2) **The composition achieves the
-goal:** `e5 + max(μ-elem, μ-wiki)` gets ~elem's leaf (recall@1 0.303 / MRR 0.438) *and* ~wiki's branch (ov|miss
-0.391) in **one** ranker — the best all-rounder. (3) **LINEAGE is redundant** — adding it (`e5+max(el,wk,lin)` 0.392)
-gives ~0 over `e5+max(elem,wiki)` (0.391); the new operator, as built, doesn't earn its place. The lineage work still
-delivered the graceful-degradation *insight* + the path-overlap *metric* that revealed this. **Verdict: filer =
-`e5 + max(μ-elem, μ-wiki)`, no new operator required.** (Open: lineage *might* improve with more training / a cleaner
-path representation, but it's not needed given wiki.)
+WIKI (branch), both pre-existing** — as the "why not subset?" question anticipated. (2) **All three win:**
+`e5 + max(μ-elem, μ-wiki, μ-sym)` is the best combiner (recall@1 0.313 ≥ elem's 0.310, MRR 0.439 ≈ 0.447, ov|miss
+0.395 ≈ wiki's 0.401) — sym adds a small lift over elem+wiki, so the full base-operator OR is best. Notably this is
+**the *same* operator-OR that won the Wikipedia retrieval eval** — same combiner, now confirmed in-domain on real
+filing. (3) **LINEAGE is redundant** — `e5+max(all4)` (0.391) is *below* `e5+max(elem,wiki,sym)` (0.395); the new
+operator adds ~0 even on top of all three. The lineage work still delivered the graceful-degradation *insight* +
+path-overlap *metric* that revealed this. **Verdict: filer = `e5 + max(μ-elem, μ-wiki, μ-sym)`, no new operator
+required.** (Open: lineage was a *fresh* op with only 300 steps vs wiki's rich Wikipedia pretraining, so it may be
+undertrained rather than wrong — but it's not needed given wiki/sym.)
 
 #### Operating point — μ's edge is at recall@10 / median rank, which is exactly what an LLM re-ranker consumes
 Across **all three** results, μ's advantage over `e5-cos` concentrates at **recall@10 and median rank**, *not*

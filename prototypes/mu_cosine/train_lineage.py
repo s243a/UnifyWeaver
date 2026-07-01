@@ -197,10 +197,12 @@ def main():
     emar = (t2[:, 0] - t2[:, 1]) if t2.shape[1] > 1 else torch.zeros(et.shape[0])
     ag = (emar.argsort().argsort().float() / max(1, len(emar) - 1)).unsqueeze(1)     # high elem-margin → lean elem
     combos = [("e5-cos", Ce), ("mu-elem", Se), ("mu-wiki", Sw), ("mu-sym", Ss), ("mu-lineage", Sl),
-              ("max(elem,lin)", mx(Se, Sl)), ("max(elem,wiki)", mx(Se, Sw)),
-              ("gate(elem→wiki)", ag * Se + (1 - ag) * Sw), ("gate(elem→lin)", ag * Se + (1 - ag) * Sl),
-              ("e5+max(elem,wiki)", 0.1 * Ce + 0.9 * mx(Se, Sw)), ("e5+max(elem,lin)", 0.1 * Ce + 0.9 * mx(Se, Sl)),
-              ("e5+max(el,wk,lin)", 0.1 * Ce + 0.9 * mx(Se, Sw, Sl))]
+              ("max(elem,wiki)", mx(Se, Sw)), ("max(elem,wiki,sym)", mx(Se, Sw, Ss)),
+              ("max(el,wk,sy,lin)", mx(Se, Sw, Ss, Sl)),
+              ("e5+max(elem,wiki)", 0.1 * Ce + 0.9 * mx(Se, Sw)),
+              ("e5+max(el,wk,sy)", 0.1 * Ce + 0.9 * mx(Se, Sw, Ss)),
+              ("e5+max(all4)", 0.1 * Ce + 0.9 * mx(Se, Sw, Ss, Sl)),
+              ("gate(elem→wiki)", ag * Se + (1 - ag) * Sw)]
     print(f"\n  [HELD-OUT n={len(ev_idx)} | seed {a.seed} train {a.train_seed}]  {'combiner':18} {'recall@1':>9} {'MRR':>7} "
           f"{'ov(all)':>8} {'ov|miss':>8} {'depth|miss':>10}   [hard n={len(elem_miss)}]")
     for nm, M in combos:
