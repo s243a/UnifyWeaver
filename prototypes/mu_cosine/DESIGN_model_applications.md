@@ -317,8 +317,21 @@ wash (`e5+max(all4)` 0.302 / 0.419 / 0.391 — recall@1/MRR a hair lower, branch
 `e5+max(elem,wiki,sym)`, lineage redundant *at inference*" is CI-hardened. *(Data note: `api_tree_paths_v8.jsonl`
 paths are 99% complete to the account root — the rate-limited harvester successfully backfilled the partial RDF
 export — so the lineage finding is NOT a path-truncation artifact; ~89% of trees have a path entry at all, the rest
-excluded. Separately testing whether *training* lineage helps the shared encoder — the auxiliary-task hypothesis —
-via a `--lineage-weight 0` ablation.)*
+excluded.)*
+
+**Auxiliary-task ablation (`--lineage-weight 0` vs `1`, same warm-start/split/seed, 3 seeds).** Does *training* lineage
+improve the shared encoder even though it's redundant at inference? At 300 steps: **SYM is robustly helped** —
+with-lineage recall@1 0.293 vs elem-only 0.266 (+0.027; MRR +0.020), consistent across all 3 seeds. LINEAGE
+(undifferentiated path relatedness) is flavor-matched to SYM (symmetric relatedness), so co-training reinforces it;
+ELEM is wash/slightly-hurt, WIKI wash. **But at the *filer* level (`e5+max(elem,wiki,sym)`) the effect is marginal and
+mixed**: mean Δ recall@1 +0.008 (seed 13 *negative*), MRR +0.005, branch ov|miss +0.018 (2/3 seeds positive — the
+sym-flavored effect leaning toward branch recovery). So the sym gain does **not** cleanly propagate to the filer.
+**Verdict: the auxiliary-task hypothesis is OPEN** — one robust positive signal (sym) that doesn't robustly reach the
+filer at 300 steps. Crucially this is **early training**; early-mixed does NOT refute a late-training benefit
+(auxiliary tasks often slow early convergence yet improve the final representation). The real test is the A/B **at
+full training length — not run**. Net: lineage is *redundant as an inference ranker* (settled, CI-hardened),
+*plausibly useful as a training-time auxiliary* (open). It also slows end-model training — so any adoption is
+"worth it *iff* a full-length A/B confirms the filer benefit and it justifies the slowdown."
 
 #### Operating point — μ's edge is at recall@10 / median rank, which is exactly what an LLM re-ranker consumes
 Across **all three** results, μ's advantage over `e5-cos` concentrates at **recall@10 and median rank**, *not*
