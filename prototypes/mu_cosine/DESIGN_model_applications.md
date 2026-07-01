@@ -332,19 +332,29 @@ e5-probe. The review's control was the right test and drove the fix; "μ has no 
 **reversed** — it has one, once trained for the task. (Caveats: node-overlap remains → node-disjoint split next;
 single-run, tight CIs.)
 
-#### Production model + hybrid application — the pairwise wins do NOT translate to retrieval (honest)
+#### Production model + hybrid application — the BLENDED score works (μ corrects e5's leakage)
 Trained a **production μ** (`model_prod`, full recipe: directional rank + scaled Haiku lateral (87 pairs) +
 transitive, 1000 steps): direction **0.890**, close-neg **0.775**, general (carries the lateral layer). Then the
-**hybrid retrieval** application (`eval_hybrid.py`) — e5 coarse top-N → μ directional re-rank — for "find my
-container": **it does NOT beat e5-cos.** `model_prod` gives only a marginal recall@5/MRR bump and *loses* the
-container-vs-sibling test (μ 61% vs e5 67%); the direction-*specialist* `model_dir_disc` is **much worse**
-(recall@1 0.047 vs e5 0.187) — it **over-generalises membership** (the rank loss pushes μ(child|·) high for *many*
-candidates), which is great for *pairwise* AUC but destroys the discrimination *retrieval* needs. **Lesson:** μ's
-controlled pairwise wins (direction 0.98, close-neg 0.93) are real but are a *different task* from multi-candidate
-ranking — e5's topical similarity is better at pinpointing a container among many. The one place μ *won* retrieval
-was the **filing fine-tune** (task-specific, recall@10 0.90 vs 0.63) — so μ helps retrieval when trained *on the
-retrieval task*, **not** as a drop-in re-ranker. μ's usable value is **pairwise directional decisions** ("is A a
-member of B", reject reverse/sibling) and **task-specific fine-tuning**, not generic re-ranking.
+**hybrid retrieval** application (`eval_hybrid.py`) — e5 coarse top-N → μ re-rank — for "find my container".
+
+**The scoring matters.** *Pure* directional (`μ-elem`) **over-generalises** membership (the rank loss pushes
+μ(child|·) high for *many* candidates) and *loses* to e5. But the correct score is a **blend of directional +
+symmetric** — the operator **superposition** — because μ's Haiku-trained component **corrects e5's semantic
+leakage** (siblings/topically-similar that e5 ranks high but aren't members):
+
+| method | recall@1 | recall@5 | MRR |
+|---|---|---|---|
+| e5-cos alone | 0.170 | 0.418 | 0.282 |
+| hybrid μ-elem (pure directional) | 0.142 | 0.440 | 0.285 |
+| hybrid **μ-super** (blend) | 0.177 | **0.487** | **0.321** |
+| **hybrid e5 + μ-super** | **0.225** | **0.502** | **0.359** |
+
+**The `e5 + μ-super` blend beats e5-cos on every metric** (recall@1 +0.055, recall@5 +0.084, MRR +0.077), and
+**μ-super wins container-vs-sibling in the pipeline (74.6% vs e5 68.9%)**. So the hybrid *works* — μ's directional
++ Haiku-leakage-correction, blended with e5's topical ranking, out-retrieves e5 alone. (The earlier "does not
+beat e5" finding was an artifact of scoring with *pure* ELEM instead of the superposition blend.) The retrieval
+score = **e5 topical similarity + μ operator-superposition** (directional membership + symmetric relatedness,
+Haiku-corrected) — computed as a superposition or a sum of per-operator queries.
 
 #### Judge→loss routing — the loss is keyed off provenance, not a new embedding (now in the main trainer)
 The discriminative loss is *not* a new "judge type." Provenance (`graph`/`haiku`/`human`/`sonnet`/`opus`) is an
