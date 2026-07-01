@@ -183,7 +183,7 @@ def main():
     fol_keys = [f"F:{f}" for f in fold_ids]
     qn = qtbl[[idx[bm_key[i]] for i in ev_idx]]; fn = ptbl[[idx[k] for k in fol_keys]]
     C = (qn @ fn.T).cpu()
-    # per-operator score matrices: elem/wiki/sym use the folder TITLE passage, lineage uses the folder PATH passage
+    # per-operator score matrices: elem/hier/sym use the folder TITLE passage, lineage uses the folder PATH passage
     S_elem, S_lin = score(fol_keys, ow_elem), score(lin_keys, ow_lin)
     S_hier, S_sym = score(fol_keys, OW(OPS["HIER"])), score(fol_keys, OW(OPS["SYM"]))
     elem_miss = [r for r in range(len(S_elem)) if top1(S_elem, r) != truepos[r]]   # FIXED hard subset (paired)

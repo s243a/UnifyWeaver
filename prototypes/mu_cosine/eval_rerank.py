@@ -29,7 +29,7 @@ def gen(a):
                                   texts={n: n.replace('_', ' ') for n in names}, device=a.device)
     tok = Tokenizer(qt, pt, idx, parents={}, deg={})
     model = build_model(a.ckpt, dev); n_ops = model.op_emb.weight.shape[0]
-    OPW = {k: (torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS[k.upper()]]), 1.0)) for k in ("elem", "wiki", "sym")}
+    OPW = {k: (torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS[k.upper()]]), 1.0)) for k in ("elem", "hier", "sym")}
     C = pt[[idx[c] for c in cands]]; cand_pos = {c: i for i, c in enumerate(cands)}
     nz = lambda v: [(x - min(v)) / (max(v) - min(v) + 1e-9) for x in v]
 
@@ -46,9 +46,9 @@ def gen(a):
         e5_top = torch.argsort(-e5s)[:a.topk].tolist()
         # blend over e5's top-N pool then take top-K
         pool = torch.argsort(-e5s)[:a.pool].tolist()
-        muv = {k: nz(mu([(c, cands[j]) for j in pool], OPW[k])) for k in ("elem", "wiki", "sym")}
+        muv = {k: nz(mu([(c, cands[j]) for j in pool], OPW[k])) for k in ("elem", "hier", "sym")}
         e5p = nz([e5s[j].item() for j in pool])
-        blend = [0.9 * max(muv["elem"][i], muv["wiki"][i], muv["sym"][i]) + 0.1 * e5p[i] for i in range(len(pool))]
+        blend = [0.9 * max(muv["elem"][i], muv["hier"][i], muv["sym"][i]) + 0.1 * e5p[i] for i in range(len(pool))]
         bl_top = [pool[i] for i in sorted(range(len(pool)), key=lambda i: -blend[i])[:a.topk]]
         out.append({"child": c, "true": tp,
                     "e5": [cands[j] for j in e5_top],           # e5 shortlist (ranked)

@@ -905,7 +905,7 @@ def train(args):
 
 def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_hold=None, graded_hold=None):
     print("\n=== PER-OPERATOR VALIDATION ===")
-    ops = ["SYM"] if args.sym_only else (["SYM", "HIER"] + (["LLM"] if llm else []))
+    ops = ["SYM"] if args.sym_only else ["SYM", "HIER"]   # LLM operator retired (fixture now trains ELEM); no op at idx 2 to validate
 
     # --- GRADED: held-out fused-round fit, per operator (revealed provenance + node-type as trained) ---
     if graded_hold and not args.sym_only:

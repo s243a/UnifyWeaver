@@ -65,7 +65,9 @@ the DAG's paths, wildcard-masked) is just **selecting which cached node-tokens e
   **ordered** (child→parent→grandparent). Attention over an unordered set would discard depth — which is exactly the
   graded-depth signal we want. So **add a depth-position embedding** to each node token (0 = the node itself, 1 =
   direct parent, …) before aggregation, so "direct parent" vs "grandparent" is distinguishable. (This is the natural
-  home for the graded-depth membership target.)
+  home for the graded-depth membership target.) *Max depth:* stop-β/multi-path give variable, possibly-deep paths, so
+  fix a **max-depth slot count with truncation** (simplest — deepest ancestors beyond it are dropped, acceptable as
+  branch signal is shallow-heavy), or use **relative** depth PEs if arbitrary depth must be exact.
 - **Padding masking.** Variable-length paths (from stop-β / multi-path) are padded to a fixed slot count; the
   attention block must **mask the padding tokens** so they don't pollute the aggregate. Standard, but must be wired.
 - **Cache invalidation.** The per-node embedding cache assumes static titles. On a graph refresh (Pearltrees/Wikipedia
@@ -205,3 +207,6 @@ is the part our experiments did **not** test, and the reason to build PATH rathe
 data-generation knob (no token yet). Add the `method` token when a second method (edge-weighted or PPR) is trained
 and inference wants to select. Eval with the graceful-degradation metrics already built (path-overlap / matched-depth
 on the paired hard subset) — the question is whether multi-path recovers ancestor branches better than HIER alone.
+*Interpretability guard (per review):* the `matched-depth` metric is only meaningful once the **depth PEs (§3b) are
+active** — a per-node baseline *without* them makes the model depth-blind, so a flat matched-depth would reflect the
+missing PEs, not a lack of PATH signal. Wire depth PEs before reading matched-depth results.
