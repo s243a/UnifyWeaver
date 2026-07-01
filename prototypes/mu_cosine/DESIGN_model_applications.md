@@ -285,8 +285,20 @@ leaf-certainty). Masking's prefix-dropout also buys robustness to truncated / RD
 depth-placement. (Paired subset is the honest test — per-ranker miss-sets differ, so unpaired overlap|MISS was
 confounded; single split — a multi-split CI is the remaining follow-up.)
 
-#### Composition (increment 2) — best filer is `e5 + max(μ-elem, μ-wiki)`; LINEAGE is redundant (`train_lineage.py --eval-only`)
-Combiner sweep over `model_lineage` (held-out n=300, seed 7 — single-seed, multi-seed confirm is the follow-up):
+#### Composition (increment 2) — best filer is `e5 + max(μ-elem, μ-wiki, μ-sym)`; LINEAGE is redundant (`train_lineage.py --eval-only`)
+**What is (and isn't) trained — read first.** There is **no "composition" objective and no composition embedding.**
+The *only* filing-supervised loss is **ELEM**, trained by **in-batch contrastive BCE** (`μ(bookmark_i | folder_j)`
+over a B×B batch, same-folder = positive) against the **folder TITLE** embedding. **WIKI and SYM are never
+fine-tuned** — warm-started from the Wikipedia pretraining, they shift only via the *shared* encoder. So
+`e5 + max(μ-elem, μ-wiki, μ-sym)` is an **inference-time combiner** (a `max` over the three per-operator scores +
+a fixed `0.1·e5` blend), not a trained model. *Why it works:* only ELEM (the personal, idiosyncratic leaf relation)
+needed fine-tuning; **WIKI/SYM transfer zero-shot** from Wikipedia because *folder titles are category-like*
+("Physics", "Politics of Italy" ≈ Wikipedia categories), so "is X a subcategory of Y" generalizes to "is this
+bookmark in the broad area of this folder" — branch recovery for free. *Fragility:* that branch-recovery leans on an
+**unsupervised transfer assumption** (idiosyncratically-named folders could break it), and the combiner is
+hand-designed (fixed `max`, fixed α), not learned.
+
+Combiner sweep over `model_lineage` (held-out n=300, seed 7 — single-seed, multi-seed confirm below):
 
 | combiner | recall@1 | MRR | ov\|miss | depth\|miss |
 |---|---|---|---|---|
