@@ -49,34 +49,47 @@ def main():
 
     def rr(ranks, k):
         return sum(x <= k for x in ranks) / len(ranks)
+    nz = lambda v: [(x - min(v)) / (max(v) - min(v) + 1e-9) for x in v]
     cand_pos = {c: i for i, c in enumerate(cands)}
     e5_ranks = []
-    hy = {k: [] for k in ("elem", "super", "sym", "e5+super")}
+    store = []                                                              # per query: (tp_i, top, nz(e5), {op:nz(μ)})
     for c, tp in queries:
         qv = qt[idx[c]]
         e5s = (qv @ C.T).cpu()
         order = torch.argsort(-e5s).tolist(); tp_i = cand_pos[tp]
         e5_ranks.append(1 + order.index(tp_i))
         top = order[:a.topn]
-        muvs = {k: mu([(c, cands[j]) for j in top], OPW[k]) for k in ("elem", "super", "sym")}
-        e5top = [e5s[j].item() for j in top]
-        for k in ("elem", "super", "sym"):
-            ro = [top[j] for j in sorted(range(len(top)), key=lambda j: -muvs[k][j])]
-            hy[k].append(1 + ro.index(tp_i) if tp_i in ro else a.topn + 1)
-        # e5+super blend: normalise both to [0,1] over the shortlist and average (mix leaky topical sim + μ correction)
-        import statistics as _st
-        def nz(v): m0, m1 = min(v), max(v); return [(x - m0) / (m1 - m0 + 1e-9) for x in v]
-        blend = [0.5 * a_ + 0.5 * b_ for a_, b_ in zip(nz(e5top), nz(muvs["super"]))]
-        ro = [top[j] for j in sorted(range(len(top)), key=lambda j: -blend[j])]
-        hy["e5+super"].append(1 + ro.index(tp_i) if tp_i in ro else a.topn + 1)
+        muvs = {k: nz(mu([(c, cands[j]) for j in top], OPW[k])) for k in ("elem", "super", "sym")}
+        store.append((tp_i, top, nz([e5s[j].item() for j in top]), muvs))
 
-    print(f"[DATA] {len(queries)} queries, {len(cands)} candidate containers, e5 top-{a.topn} → μ re-rank")
-    print(f"\n  {'method':16} {'recall@1':>9} {'recall@5':>9} {'MRR':>7}")
-    rows = [("e5-cos alone", e5_ranks)] + [(f"hybrid μ-{k}", hy[k]) for k in ("elem", "super", "sym", "e5+super")]
-    for nm, R in rows:
-        mrr = sum(1.0 / x for x in R) / len(R)
-        print(f"  {nm:16} {rr(R,1):9.3f} {rr(R,5):9.3f} {mrr:7.3f}")
-    hy_ranks = hy["super"]                                                   # for the sibling metric below
+    def blend_ranks(fn):                                                    # fn(e5vec, muvs) → score vec over shortlist
+        R = []
+        for tp_i, top, e5v, muvs in store:
+            sc = fn(e5v, muvs)
+            ro = [top[j] for j in sorted(range(len(top)), key=lambda j: -sc[j])]
+            R.append(1 + ro.index(tp_i) if tp_i in ro else a.topn + 1)
+        return R
+    def report(nm, R):
+        print(f"  {nm:22} {rr(R,1):9.3f} {rr(R,5):9.3f} {sum(1.0/x for x in R)/len(R):7.3f}")
+
+    print(f"[DATA] {len(queries)} queries, {len(cands)} candidate containers, e5 top-{a.topn} → re-rank (prefixed e5)")
+    print(f"\n  {'method':22} {'recall@1':>9} {'recall@5':>9} {'MRR':>7}")
+    report("e5-cos alone", e5_ranks)
+    for k in ("elem", "super", "sym"):
+        report(f"μ-{k} alone", blend_ranks(lambda e, m, k=k: m[k]))
+    print("  ── e5 + α·μ blend sweep ──")
+    best = (None, -1)
+    for op in ("super", "elem"):
+        for al in (0.3, 0.5, 0.7):
+            R = blend_ranks(lambda e, m, op=op, al=al: [(1-al)*x + al*y for x, y in zip(e, m[op])])
+            report(f"e5 + {al:.1f}·μ-{op}", R)
+            mrr = sum(1.0/x for x in R)/len(R)
+            if mrr > best[1]: best = (f"e5+{al}·μ-{op}", mrr)
+    # learned-ish op mix: weight ELEM (directional/leakage-correct) + SYM (relatedness), skip WIKI
+    R = blend_ranks(lambda e, m: [0.4*e[i] + 0.4*m["elem"][i] + 0.2*m["sym"][i] for i in range(len(e))])
+    report("e5·.4 + μelem·.4 + μsym·.2", R)
+    print(f"\n  best blend: {best[0]} (MRR {best[1]:.3f}) vs e5-cos MRR {sum(1.0/x for x in e5_ranks)/len(e5_ranks):.3f}")
+    hy_ranks = blend_ranks(lambda e, m: m["super"])                         # for the sibling metric below
     # how often μ promotes the true parent that e5 buried below rank 1 but within the shortlist
     fixed = sum(1 for e, h in zip(e5_ranks, hy_ranks) if e > 1 and h == 1)
     broke = sum(1 for e, h in zip(e5_ranks, hy_ranks) if e == 1 and h > 1)

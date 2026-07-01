@@ -356,6 +356,13 @@ beat e5" finding was an artifact of scoring with *pure* ELEM instead of the supe
 score = **e5 topical similarity + μ operator-superposition** (directional membership + symmetric relatedness,
 Haiku-corrected) — computed as a superposition or a sum of per-operator queries.
 
+**Tuned blend (`eval_hybrid.py` sweep, prefixed e5 shared by both — one encode):** the best score is
+**`e5 + 0.5·μ-super`** (equal weight, normalised) — **MRR 0.365 vs e5-cos 0.302 (+21%)**, recall@1 0.229 vs 0.183.
+The **superposition** is the right μ operator (beats pure-ELEM and a hand-mixed ELEM+SYM); **α≈0.5** is the sweet
+spot; and **μ-super *alone* already beats e5-cos** (0.329 vs 0.302), the blend adding more. Prefixed e5 is the
+default input to μ (same embeddings feed e5-cos and μ ⇒ computed once; the ablation showed no-prefix isn't
+meaningfully better, so no separate pass).
+
 #### Judge→loss routing — the loss is keyed off provenance, not a new embedding (now in the main trainer)
 The discriminative loss is *not* a new "judge type." Provenance (`graph`/`haiku`/`human`/`sonnet`/`opus`) is an
 **input token** that conditions μ's *output* (and is marginalised at inference); the **loss function** is a
