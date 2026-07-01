@@ -377,8 +377,12 @@ Findings: **`max` (OR) beats `mean`** (0.358 vs 0.352) and the internal `μ-supe
 score is *mostly μ* (~10% e5; μ-max alone at α=1 is 0.344, so e5 adds only +0.014); and the **directional
 operators carry it** — `max(elem, wiki)` alone already hits 0.358, adding sym/super doesn't move it. So the
 retrieval signal is fundamentally "**is this a member via element_of OR subcategory**," OR'd across operators, with
-e5 a small topical assist. Prefixed e5 is the default input to μ (same embeddings feed e5-cos and μ ⇒ computed
-once; the ablation showed no-prefix isn't meaningfully better, so no separate pass).
+e5 a small topical assist. **Default = `max(μ-elem, μ-wiki, μ-sym)` + 0.1·e5 (α=0.9).** Keep the small e5 term
+even though it is marginal on-distribution (+0.014): it is **coverage insurance / a catch-all for untrained
+regions** — where μ's coverage is thin and it over-generalises, e5's topical similarity grounds the score (e5 is
+the strong baseline on clean/OOD content, §4.2/coverage). *Testable:* the e5 contribution should grow on
+OOD/untrained queries relative to the +0.014 it adds here. Prefixed e5 is the default input to μ (same embeddings
+feed e5-cos and μ ⇒ computed once; the ablation showed no-prefix isn't meaningfully better, so no separate pass).
 
 #### Judge→loss routing — the loss is keyed off provenance, not a new embedding (now in the main trainer)
 The discriminative loss is *not* a new "judge type." Provenance (`graph`/`haiku`/`human`/`sonnet`/`opus`) is an
