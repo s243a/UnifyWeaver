@@ -146,7 +146,12 @@ actual weight *values* take the Fourier+FiLM path.)
 Notes: frequencies are indexed by the *dimension* (each dim a fixed ωᵢ, geometrically spaced), and the value is fed
 to all — so the wavelength lives on the *β-axis*; set the lowest ω so its wavelength covers β's range (distinct,
 non-wrapping codes), higher ω for resolution. The sin/cos *pair* handles sign automatically (β as an angle on the
-unit circle) — no phase-shift term needed. Frequencies may be fixed or learned. *Prior art:* sinusoidal positional
+unit circle) — no phase-shift term needed. **Use FIXED (not learned) frequencies** — chosen deliberately for
+*reduced training* (consumer-grade hardware): fixed makes the encoding **parameter-free** (only the small FiLM MLP
+trains), deterministic, and stable. Since β has a **known bounded range** (a probability/restart in [0,1]), the
+frequency band is set **analytically** to that range, so learned frequencies — which mainly help when the relevant
+scales are *unknown* — buy nothing here while adding parameters and mild instability. The only knob is the band
+(set-once hyperparameter), not a learned weight. *Prior art:* sinusoidal positional
 encoding (Vaswani et al. 2017, §3.5); Fourier features & the MLP spectral-bias motivation (Tancik et al., NeurIPS
 2020; Rahimi & Recht, NeurIPS 2007); continuous-coordinate encoding (NeRF, Mildenhall et al. 2020); learned scalar
 encoding (Time2Vec, Kazemi et al. 2019); FiLM modulation (Perez et al., AAAI 2018).
