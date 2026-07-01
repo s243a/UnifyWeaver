@@ -21,7 +21,7 @@ import argparse, collections, os, random
 import torch
 import torch.nn.functional as F
 from mu_attention import build_e5_tables, Tokenizer, MuAttention, OPS
-from eval_filing import load_filing, score_mu, metrics
+from eval_filing import load_filing, score_mu, metrics, rank_all
 
 
 def build_model(ckpt, dev):
@@ -37,7 +37,7 @@ def build_model(ckpt, dev):
 
 
 def train_one(ckpt, tok, idx, bm_key, bm_folder, train_idx, f_order, eval_keys, eval_truepos,
-              f_keys, steps, bs, lr, dev, seed):
+              f_keys, steps, bs, lr, dev, seed, save_path=None, qtbl=None, ptbl=None):
     """Warm-start a fresh model, fine-tune on `train_idx` bookmarks, return MRR on the fixed eval set."""
     model, _ = build_model(ckpt, dev)
     n_ops = model.op_emb.weight.shape[0]
@@ -62,6 +62,18 @@ def train_one(ckpt, tok, idx, bm_key, bm_folder, train_idx, f_order, eval_keys, 
         pos, neg = target > 0.5, target <= 0.5                       # balance pos/neg (negatives dominate B×B)
         loss = bce[pos].mean() + bce[neg].mean()
         opt.zero_grad(); loss.backward(); opt.step()
+    if save_path:                                                    # persist the fine-tuned model for downstream eval
+        cfg = torch.load(ckpt, weights_only=False).get("cfg", {"d_model": 384, "heads": 4, "layers": 3})
+        torch.save({"state": model.state_dict(), "cfg": cfg}, save_path)
+        print(f"[SAVE] fine-tuned model ({steps} steps) → {save_path}")
+        if qtbl is not None:                                         # FAIR in-domain head-to-head of all 6 rankers on the HELD-OUT set
+            rank_of, order = rank_all(model, tok, qtbl, ptbl, idx, eval_keys, f_keys, eval_truepos, dev)
+            print(f"\n  [IN-DOMAIN held-out, all rankers on fine-tuned μ]  (n={len(eval_keys)})")
+            print(f"  {'ranker':12} {'recall@1':>9} {'recall@5':>9} {'recall@10':>10} {'MRR':>7} {'med.rank':>9}")
+            for nm in order:
+                m = metrics(rank_of[nm])
+                print(f"  {nm:12} {m['recall@1']:9.3f} {m['recall@5']:9.3f} {m['recall@10']:10.3f} "
+                      f"{m['MRR']:7.3f} {m['median_rank']:9d}")
     # eval on the fixed held-out set
     S = score_mu(model, tok, idx, eval_keys, f_keys, elem.cpu(), dev)
     ranks = [1 + sum(1 for j, s in enumerate(row) if s > row[eval_truepos[r]]
@@ -84,6 +96,7 @@ def main():
     ap.add_argument("--seeds", default=None, help="comma-sep TRAINING seeds (multi-seed lock); split stays at --seed")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--cache", default="/tmp/trainfiling_e5.pt")
+    ap.add_argument("--save", default=None, help="save fine-tuned model (largest frac, first seed) to this path")
     a = ap.parse_args()
     dev = torch.device(a.device)
 
@@ -135,7 +148,9 @@ def main():
         for sd in seeds:
             sub = random.Random(sd + 1).sample(train_idx, n)
             m = train_one(a.ckpt, tok, idx, bm_key, bm_folder, sub, f_order, eval_keys, eval_truepos,
-                          f_keys, a.steps, a.bs, a.lr, dev, sd)
+                          f_keys, a.steps, a.bs, a.lr, dev, sd,
+                          save_path=(a.save if (fr == fracs[-1] and sd == seeds[0]) else None),
+                          qtbl=qtbl, ptbl=ptbl)
             mrrs.append(m["MRR"]); r10s.append(m["recall@10"]); meds.append(m["median_rank"])
         mm, ms = stt.mean(mrrs), (stt.stdev(mrrs) if len(mrrs) > 1 else 0.0)
         rm, rs = stt.mean(r10s), (stt.stdev(r10s) if len(r10s) > 1 else 0.0)

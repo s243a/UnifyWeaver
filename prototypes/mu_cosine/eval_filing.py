@@ -116,6 +116,37 @@ def metrics(ranks):
     return r
 
 
+def rank_all(model, tok, qtbl, ptbl, idx, q_keys, f_keys, truepos, dev):
+    """Build all six filing rankers → (rank_of, ordered-names). Caller owns the q_keys/truepos split (so this is
+    reusable for a FAIR held-out in-domain eval from train_filing, not just the zero-shot eval here)."""
+    n_ops = model.op_emb.weight.shape[0]
+    ow_of = lambda op: torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS[op]]), 1.0)
+    sm = lambda ow: torch.tensor(score_mu(model, tok, idx, q_keys, f_keys, ow, dev))   # [Q,F] μ score matrix
+    S_elem, S_wiki, S_sym = sm(ow_of("ELEM")), sm(ow_of("WIKI")), sm(ow_of("SYM"))
+    S_super = sm(torch.full((1, n_ops), 1.0 / n_ops))
+    S_max = torch.maximum(torch.maximum(S_elem, S_wiki), S_sym)   # operator-OR — the Wikipedia-eval winner
+    C = (qtbl[[idx[k] for k in q_keys]] @ ptbl[[idx[k] for k in f_keys]].T).cpu()       # e5 cosine [Q,F], unit-normed
+    def nzrow(M):                                                 # per-query min-max → [0,1] across folders
+        lo = M.min(dim=1, keepdim=True).values; hi = M.max(dim=1, keepdim=True).values
+        return (M - lo) / (hi - lo + 1e-9)
+    Cz, Sz, Se = nzrow(C), nzrow(S_max), nzrow(S_elem)
+    S_blend = 0.1 * Cz + 0.9 * Sz                                 # e5 + 0.9·μ-max (coverage insurance, tuned α)
+    S_blend_e = 0.1 * Cz + 0.9 * Se                               # e5 + 0.9·μ-elem (blend on the single trained op)
+    top2 = S_max.topk(min(2, S_max.shape[1]), dim=1).values       # per-query μ-max margin = top1 − top2 over folders
+    margin = (top2[:, 0] - top2[:, 1]).clamp(min=0) if top2.shape[1] > 1 else torch.zeros(S_max.shape[0])
+    mq = margin.argsort().argsort().float() / max(1, len(margin) - 1)   # cross-query quantile position (scale-free)
+    alpha = (0.3 + 0.6 * mq).unsqueeze(1)                         # low margin ⇒ lean e5; high ⇒ lean μ (the gate)
+    S_gate = (1 - alpha) * Cz + alpha * Sz
+    def ranks_from(M):                                            # per-query 1-based rank of the true folder
+        return [1 + int(((M[r] > M[r][truepos[r]]) |
+                         ((M[r] == M[r][truepos[r]]) & (torch.arange(M.shape[1]) < truepos[r]))).sum().item())
+                for r in range(M.shape[0])]
+    rank_of = {nm: ranks_from(M) for nm, M in (
+        ("e5-cos", C), ("mu-super", S_super), ("mu-elem", S_elem), ("mu-max", S_max),
+        ("e5+mu-max", S_blend), ("e5+mu-elem", S_blend_e), ("margin-gate", S_gate))}
+    return rank_of, ("e5-cos", "mu-super", "mu-elem", "mu-max", "e5+mu-max", "e5+mu-elem", "margin-gate")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ckpt", required=True)
@@ -188,39 +219,8 @@ def main():
     f_order = list(cand)                                          # tid order aligned with f_keys
     truepos = [f_order.index(t) for t in true_tids]
 
-    n_ops = model.op_emb.weight.shape[0]
-    ow_of = lambda op: torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS[op]]), 1.0)
-    sm = lambda ow: torch.tensor(score_mu(model, tok, idx, q_keys, f_keys, ow, dev))   # [Q,F] μ score matrix
-    S_elem, S_wiki, S_sym = sm(ow_of("ELEM")), sm(ow_of("WIKI")), sm(ow_of("SYM"))
-    S_super = sm(torch.full((1, n_ops), 1.0 / n_ops))
-    S_max = torch.maximum(torch.maximum(S_elem, S_wiki), S_sym)   # operator-OR — the Wikipedia-eval winner
-
-    # raw e5 cosine baseline: cos(query: bookmark, passage: folder) — symmetric, no model
-    qn = qtbl[[idx[k] for k in q_keys]]                           # bookmark query-embeddings
-    fn = ptbl[[idx[k] for k in f_keys]]                           # folder passage-embeddings
-    C = (qn @ fn.T).cpu()                                         # [Q, F] cosine (tables are unit-normed)
-
-    # review-hardened combined rankers (DESIGN_model_applications.md): coverage-insurance blend + margin gate
-    def nzrow(M):                                                 # per-query min-max → [0,1] across folders
-        lo = M.min(dim=1, keepdim=True).values; hi = M.max(dim=1, keepdim=True).values
-        return (M - lo) / (hi - lo + 1e-9)
-    Cz, Sz = nzrow(C), nzrow(S_max)
-    S_blend = 0.1 * Cz + 0.9 * Sz                                 # e5 + 0.9·μ-max (coverage insurance, tuned α)
-    top2 = S_max.topk(min(2, S_max.shape[1]), dim=1).values       # per-query μ-max margin = top1 − top2 over folders
-    margin = (top2[:, 0] - top2[:, 1]).clamp(min=0) if top2.shape[1] > 1 else torch.zeros(S_max.shape[0])
-    mq = margin.argsort().argsort().float() / max(1, len(margin) - 1)   # cross-query quantile position (scale-free)
-    alpha = (0.3 + 0.6 * mq).unsqueeze(1)                         # low margin ⇒ lean e5; high ⇒ lean μ (the gate)
-    S_gate = (1 - alpha) * Cz + alpha * Sz
-
-    def ranks_from(M):                                            # per-query 1-based rank of the true folder
-        return [1 + int(((M[r] > M[r][truepos[r]]) |
-                         ((M[r] == M[r][truepos[r]]) & (torch.arange(M.shape[1]) < truepos[r]))).sum().item())
-                for r in range(M.shape[0])]
-    rank_of = {nm: ranks_from(M) for nm, M in (
-        ("e5-cos", C), ("mu-super", S_super), ("mu-elem", S_elem),
-        ("mu-max", S_max), ("e5+mu-max", S_blend), ("margin-gate", S_gate))}
-
-    order = ("e5-cos", "mu-super", "mu-elem", "mu-max", "e5+mu-max", "margin-gate")
+    rank_of, order = rank_all(model, tok, qtbl, ptbl, idx, q_keys, f_keys, truepos, dev)
+    fn = ptbl[[idx[k] for k in f_keys]]                           # folder passage-embeddings (for core-sim stratification)
 
     def table(title, qsel):
         print(f"\n{title}  (n={len(qsel)})")

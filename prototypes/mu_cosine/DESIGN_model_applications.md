@@ -233,8 +233,25 @@ trained region"). **New finding:** the **margin gate is by far the best zero-sho
 (μ adding value OOD) does not — the optimal μ-weight zero-shot is ≈0 and the gate trends there (damage control where
 μ is net-harmful). Coverage-insurance vindicated in spirit: the whole domain is untrained for μ, e5 is the robust
 baseline, and the gate correctly leans on it. **The fix is in-domain training** (the learning curve above: fine-tune
-crosses e5 at 30%+ data, +23% at 100%). **Open next:** run these same rankers on a *filing-fine-tuned* μ — does the
-operator-OR + margin gate push *further* above e5 in-domain, on top of the +23% fine-tune win?
+crosses e5 at 30%+ data, +23% at 100%).
+
+**In-domain (fine-tuned μ, `train_filing.py --save` → `rank_all` on the HELD-OUT split — fair, no train-on-test):**
+
+| ranker | recall@1 | MRR | note |
+|---|---|---|---|
+| e5-cos | 0.200 | 0.284 | the bar |
+| mu-elem | 0.258 | 0.362 | the documented fine-tune win (+27%) |
+| mu-max (OR) | 0.233 | 0.342 | **OR *dilutes* in-domain** — only ELEM was fine-tuned, so wiki/sym are stale |
+| **e5+mu-elem** | **0.307** | **0.396** | **best — +39% over e5, +9% over mu-elem** |
+| e5+mu-max | 0.302 | 0.391 | blend still strong even on the diluted OR |
+| margin-gate | 0.278 | 0.365 | ≈ mu-elem — gate redundant when μ is trustworthy in-domain |
+
+Three lessons, and they line up with the rest of the arc:
+1. **The coverage-insurance blend generalises to in-domain** — `e5+mu-elem` (0.396) beats *both* plain fine-tuned μ (0.362) and e5 (0.284), with a big recall@1 lift (0.307 vs 0.258/0.200). The blend adds value *on top of* the fine-tune win, exactly as on Wikipedia.
+2. **The operator-OR only helps if its operators are trained for the domain.** On Wikipedia (multi-relationally trained) `mu-max` won; here (ELEM-only fine-tune) it *dilutes* below `mu-elem`. → this is the direct argument for training *more* filing operators (e.g. a `LINEAGE` op), then OR-ing them.
+3. **The margin gate is redundant in-domain** (≈ mu-elem) — consistent with #3391: the gate's value is OOD damage-control, not in-domain, because in-domain μ is trustworthy and deserves full weight. Zero-shot the gate was the *best* μ-variant; in-domain it's a wash. The gate correctly self-adjusts to how much μ can be trusted.
+
+Net filing verdict: **zero-shot, use e5 (μ doesn't transfer, gate limits the damage); in-domain, use `e5 + μ-elem` (best, +39% over e5).**
 
 #### Operating point — μ's edge is at recall@10 / median rank, which is exactly what an LLM re-ranker consumes
 Across **all three** results, μ's advantage over `e5-cos` concentrates at **recall@10 and median rank**, *not*
