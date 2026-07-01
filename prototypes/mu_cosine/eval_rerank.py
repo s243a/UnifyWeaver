@@ -54,32 +54,46 @@ def gen(a):
                     "e5": [cands[j] for j in e5_top],           # e5 shortlist (ranked)
                     "blend": [cands[j] for j in bl_top]})        # blend shortlist (ranked)
     json.dump(out, open(SHORT, "w"))
-    # build one LLM prompt: for each query, pick which candidate the child is a member of (from the BLEND shortlist)
-    P = ("For each query, a Wikipedia CHILD category and %d candidate PARENT categories are given. Pick the ONE "
-         "candidate that the child is most directly a MEMBER/subcategory of (its true parent). Return ONLY a JSON "
-         "array of objects {\"i\": int, \"pick\": int} where pick is the 0-based index into that query's candidate "
-         "list. Cover all i=0..%d.\n\n" % (a.topk, len(out) - 1))
-    for i, r in enumerate(out):
-        P += f"{i}: child='{disp(r['child'])}' candidates=[" + ", ".join(f"{j}:{disp(x)}" for j, x in enumerate(r["blend"])) + "]\n"
-    open(PROMPT, "w").write(P)
+    # build one LLM prompt per shortlist source (blend, e5) — SAME queries, so the pick quality is comparable
+    def write_prompt(key):
+        P = ("For each query, a Wikipedia CHILD category and %d candidate PARENT categories are given. Pick the ONE "
+             "candidate that the child is most directly a MEMBER/subcategory of (its true parent). Return ONLY a JSON "
+             "array of objects {\"i\": int, \"pick\": int} where pick is the 0-based index into that query's candidate "
+             "list. Cover all i=0..%d.\n\n" % (a.topk, len(out) - 1))
+        for i, r in enumerate(out):
+            P += f"{i}: child='{disp(r['child'])}' candidates=[" + ", ".join(f"{j}:{disp(x)}" for j, x in enumerate(r[key])) + "]\n"
+        path = PROMPT.replace(".txt", f"_{key}.txt"); open(path, "w").write(P)
+        return path, len(P)
+    pb, lb = write_prompt("blend"); pe, le = write_prompt("e5")
     inpar = sum(r["true"] in r["blend"] for r in out); ine5 = sum(r["true"] in r["e5"] for r in out)
     print(f"[GEN] {len(out)} queries, top-{a.topk}. true-parent in shortlist: blend {inpar}/{len(out)}  e5 {ine5}/{len(out)}")
-    print(f"  shortlists → {SHORT} ; LLM prompt (blend shortlists) → {PROMPT} ({len(P)} chars)")
+    print(f"  shortlists → {SHORT}")
+    print(f"  blend prompt → {pb} ({lb} chars)")
+    print(f"  e5    prompt → {pe} ({le} chars)")
 
 
 def score(a):
-    out = json.load(open(SHORT)); picks = {int(p["i"]): int(p["pick"]) for p in json.load(open(a.picks))}
-    n = len(out)
-    blend_top1 = sum(r["blend"][0] == r["true"] for r in out) / n           # μ-blend's own #1
-    llm_p1 = sum(0 <= picks.get(i, -1) < len(out[i]["blend"]) and out[i]["blend"][picks[i]] == out[i]["true"] for i in range(n)) / n
-    agree = sum(picks.get(i, -1) == 0 for i in range(n)) / n                # LLM kept blend's #1
-    moved = [picks[i] for i in range(n) if i in picks and picks[i] != 0]
-    ub = sum(r["true"] in r["blend"] for r in out) / n                      # ceiling: true parent in shortlist
-    print(f"[SCORE] {n} queries, blend→LLM re-rank")
-    print(f"  blend #1 (no LLM):      precision@1 {blend_top1:.3f}")
-    print(f"  blend → LLM re-rank:    precision@1 {llm_p1:.3f}   (shortlist ceiling {ub:.3f})")
-    print(f"  LLM↔μ agreement (kept μ's #1): {agree:.1%}   → the higher, the better μ's shortlist already was")
-    print(f"  LLM moved the pick off #1 on {len(moved)}/{n}; avg moved-to rank {sum(moved)/max(1,len(moved)):.1f}")
+    out = json.load(open(SHORT)); n = len(out)
+    def one(key, picks_path):
+        picks = {int(p["i"]): int(p["pick"]) for p in json.load(open(picks_path))}
+        top1 = sum(r[key][0] == r["true"] for r in out) / n                 # ranker's own #1 (no LLM)
+        llm = sum(0 <= picks.get(i, -1) < len(out[i][key]) and out[i][key][picks[i]] == out[i]["true"] for i in range(n)) / n
+        agree = sum(picks.get(i, -1) == 0 for i in range(n)) / n            # LLM kept ranker's #1
+        moved = [picks[i] for i in range(n) if i in picks and picks[i] != 0]
+        ub = sum(r["true"] in r[key] for r in out) / n                      # ceiling: true parent in shortlist
+        return top1, llm, agree, moved, ub
+    print(f"[SCORE] {n} queries, top-{len(out[0]['blend'])} → LLM re-rank\n")
+    print(f"  {'source':7} {'#1(no LLM)':>11} {'→LLM p@1':>9} {'ceiling':>8} {'LLM kept #1':>12} {'moved-to rank':>14}")
+    res = {}
+    for key, pk in (("blend", a.picks_blend), ("e5", a.picks_e5)):
+        if not pk:
+            continue
+        t1, llm, ag, mv, ub = one(key, pk); res[key] = llm
+        print(f"  {key:7} {t1:11.3f} {llm:9.3f} {ub:8.3f} {ag:11.1%} {(sum(mv)/max(1,len(mv))):13.1f}")
+    if "blend" in res and "e5" in res:
+        d = res["blend"] - res["e5"]
+        print(f"\n  head-to-head: blend→LLM {res['blend']:.3f} vs e5→LLM {res['e5']:.3f}  (Δ {d:+.3f})"
+              f"  — {'blend wins' if d > 0 else 'e5 wins' if d < 0 else 'tie'}")
 
 
 if __name__ == "__main__":
@@ -88,6 +102,6 @@ if __name__ == "__main__":
     g.add_argument("--n", type=int, default=60); g.add_argument("--topk", type=int, default=5)
     g.add_argument("--pool", type=int, default=20); g.add_argument("--min-children", type=int, default=5)
     g.add_argument("--seed", type=int, default=7); g.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    s = sub.add_parser("score"); s.add_argument("--picks", required=True)
+    s = sub.add_parser("score"); s.add_argument("--picks-blend"); s.add_argument("--picks-e5")
     a = ap.parse_args()
     gen(a) if a.cmd == "gen" else score(a)
