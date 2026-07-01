@@ -211,6 +211,31 @@ highest, std 0.025.) Remaining headroom: a longer fine-tune / more data per the 
 *scaffolding*, per the bitter-lesson framing below): the local-tangent **bivector feature** only if a thin
 sub-domain needs sample-efficiency; otherwise the bet is simply more data + training.
 
+#### Review-hardened rankers, zero-shot OOD — the margin gate is the best zero-shot strategy (damage control)
+`eval_filing.py` now carries the review-hardened rankers from the Wikipedia arc: **`mu-max`** = `max(μ-elem, μ-wiki,
+μ-sym)` (the operator-OR), **`e5+mu-max`** = the coverage-insurance blend, **`margin-gate`** = per-query α from the
+μ-max margin (the #3391 finding operationalised). Run **zero-shot** (Wikipedia-trained `model_prod`, *no* filing
+fine-tune) on 500 real filing decisions (335 folders):
+
+| ranker | recall@1 | MRR | | strat MRR (e5 / margin-gate): FAR·MID·NEAR |
+|---|---|---|---|---|
+| **e5-cos** | **0.196** | **0.295** | | 0.306 · 0.324 · 0.255 |
+| mu-super / mu-elem / mu-max | 0.06 | 0.12–0.13 | | (μ ~0.11–0.16 at every stratum) |
+| e5+mu-max | 0.078 | 0.144 | | |
+| **margin-gate** | 0.146 | **0.212** | | 0.202 · 0.253 · 0.181 |
+
+**Re-confirms the known ~2× zero-shot OOD loss** — and sharpens it: e5-cos wins at *every* core-distance stratum,
+including NEAR the STEM core, so this is **transfer failure** (Wikipedia *category* structure ≠ personal *folder*
+structure), **not** a trained-region effect (the gap is a uniform ~0.07–0.10 everywhere, refuting "μ helps in its
+trained region"). **New finding:** the **margin gate is by far the best zero-shot ranker** — 0.212 vs `mu-max` 0.125
+(+70%), recovering **~60% of the gap to e5**. It works exactly as designed: it detects μ's OOD low-confidence
+(flat margins) and defers to e5, so the *mechanism* validated in #3391 holds on real data even though the *payoff*
+(μ adding value OOD) does not — the optimal μ-weight zero-shot is ≈0 and the gate trends there (damage control where
+μ is net-harmful). Coverage-insurance vindicated in spirit: the whole domain is untrained for μ, e5 is the robust
+baseline, and the gate correctly leans on it. **The fix is in-domain training** (the learning curve above: fine-tune
+crosses e5 at 30%+ data, +23% at 100%). **Open next:** run these same rankers on a *filing-fine-tuned* μ — does the
+operator-OR + margin gate push *further* above e5 in-domain, on top of the +23% fine-tune win?
+
 #### Operating point — μ's edge is at recall@10 / median rank, which is exactly what an LLM re-ranker consumes
 Across **all three** results, μ's advantage over `e5-cos` concentrates at **recall@10 and median rank**, *not*
 recall@1 (where e5-cos is often comparable or slightly ahead): home-turf recall@10 **0.494 vs 0.424** /
