@@ -34,11 +34,34 @@ distribution, embed it, apply wildcard masking (id-dropout + prefix-dropout), an
 learns the *expectation over paths* across steps — no need to embed every path and weight-average explicitly. The
 wildcards are an orthogonal masking augmentation on top of the path sampling.
 
+## 3b. Passage representation — per-node tokens, NOT a fixed whole-path embedding
+
+Once paths are *sampled* (random walk × stop-β × multi-path × wildcards), the space is **combinatorial** — you cannot
+precompute a fixed e5 embedding for every sampled path (the variant-cache trick that worked for LINEAGE's ~6
+variants/folder breaks entirely). **Resolution: stop embedding the whole path as one e5 string.** Represent the path
+as a **set of per-node embeddings** — embed each ancestor node's *title* **once** (cached, linear in #nodes) — and
+let the model **attend / aggregate over the sampled subset**. Then all the sampling (which nodes, how deep, which of
+the DAG's paths, wildcard-masked) is just **selecting which cached node-tokens enter the passage**:
+- No re-embedding, ever — the combinatorial path space is handled by *token selection over a linear node cache*
+  (this also kills the re-embed-per-step compute concern that dogged the whole-path-string approach).
+- The μ-attention block already supports a **multi-token passage**, so this is a representation change, not an
+  architecture change.
+- The materialized-id line / wildcards become per-node attributes rather than substrings of one blob.
+
+So the path operator factors on **three** axes: **operator** (ancestor-path membership) × **method** (sampling incl.
+stop-β) × **representation** (per-node tokens, attention-aggregated). The whole-path-string embedding was scaffolding
+that doesn't scale; per-node composition is the structure that does — and it's what the decoder's per-node /
+optimizer view wanted anyway (§0 of the decoder sketch: the optimizer reads a per-node partial-path state).
+
 ## 4. The three path-sampling methods (document all three)
 
-**(1) Uniform random walk — default, cheapest.** Going up the DAG, pick a parent **uniformly** at each node;
-a path's probability is `∏ 1/|parents(level)|`. Parameter-free — literally "sample a parent at each level." Weights
-paths by *structural* (branching) likelihood: a node with two parents splits its mass evenly. Start here.
+**(1) Uniform random walk (+ stop-β) — default, cheapest.** Going up the DAG, pick a parent **uniformly** at each
+node, and **terminate with probability β at each step**. Path prob ≈ `∏ 1/|parents(level)|` × the geometric
+stopping term. Parameter-free but for β — literally "sample a parent at each level, sometimes stop early." Two
+bonuses: **(a)** the stop gives geometric-depth (variable-length) paths ⇒ a *principled depth sampler* (graded-depth
+ancestor membership — a better-motivated prefix-dropout); **(b)** a uniform up-walk with per-step stop **IS discrete
+PPR** — β is the PPR restart — so **methods (1) and (3) collapse into one knob** (β→0 walks to the root; larger β
+stays shallow). Start here.
 
 **(2) Edge-weighted — canonical strength.** Weight edges by **type/confidence** — RefPearl (inside/owned) ≫
 AliasPearl (cross-link), or graph-edge confidence — so a path's probability = normalized product of its edge
