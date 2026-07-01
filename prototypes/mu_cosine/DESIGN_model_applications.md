@@ -416,29 +416,44 @@ alternative confidence signals not yet swept — top1-μ was the cheapest and su
    trains its confident regions expand → the **effective mean α climbs on its own, no re-tuning**, and e5 recedes to
    the still-uncovered frontier.
 
-**Measured (`eval_self_anneal.py`, 4 checkpoints, shared frozen-e5 shortlists, 1000 queries) — and it forced a
-correction to the confidence metric:**
+**Measured (`eval_self_anneal.py`, 4 checkpoints, shared frozen-e5 shortlists, 1000 queries, seed 7).** The naive
+aggregate table (mean top1-μ / mean margin / MRR per checkpoint) *suggested* margin tracks MRR while level is fooled
+by the saturated `+disc` (level 0.941 highest yet MRR 0.175 lowest; margin 0.005 lowest). **But per the review
+(Perplexity council, PR #3391), aggregate means can hide the actual failure mode — so the claim must be tested at
+the *per-query* level.** Per-query results (Spearman ρ of each signal vs reciprocal-rank with Fisher-z 95% CI;
+AURC = selective @1-risk, lower = better gate; HMER@0.8 = @1-error rate among the 80%-most-confident):
 
-| checkpoint | mean top1-μ (level) | mean margin (top1−top2) | MRR |
-|---|---|---|---|
-| nodetype | 0.913 | 0.025 | 0.299 |
-| +dir | 0.879 | 0.054 | 0.319 |
-| **+disc** | **0.941** (highest) | **0.005** (lowest) | **0.175** (lowest) |
-| prod | 0.854 | 0.057 | 0.356 |
+| checkpoint | ρ_level(RR) | ρ_margin(RR) | AURC_level | AURC_margin | HMER_level | HMER_margin |
+|---|---|---|---|---|---|---|
+| nodetype | −0.08 [−.14,−.01] | **+0.15 [+.09,+.21]** | 0.841 | **0.763** | 83.4% | 81.1% |
+| +dir | −0.05 [−.11,+.01] | +0.05 [−.02,+.11] | 0.865 | **0.757** | 84.1% | 81.6% |
+| +disc | +0.06 [+.00,+.12] | +0.03 [−.03,+.09] | 0.942 | **0.940** | 94.8% | 94.1% |
+| prod | +0.04 [−.02,+.10] | +0.03 [−.03,+.09] | 0.792 | **0.737** | 77.0% | 77.2% |
 
-- **The confidence signal must be the MARGIN, not the absolute level.** The discriminative fine-tune `+disc` (anchor
-  pushes μ→0.9) saturates the *level* HIGH for everything (0.941, the highest of all four) yet is the *worst* ranker
-  (MRR 0.175) — a confident-but-wrong checkpoint. Its **margin correctly collapses to 0.005** (the lowest). So
-  absolute μ is confounded by per-checkpoint saturation; the **margin is calibration-invariant** and its rank-order
-  across all four checkpoints is **identical to MRR's**. This *deepens* property #1: with the right signal,
-  confidence tracks correctness even across models, and the confident-but-wrong trap is *detectable* (the naive level
-  metric is fooled; the margin is not). The in-dist adaptive blend above used top1-μ, which works when saturation is
-  fixed (single model) — but **margin is the signal to use for OOD / cross-checkpoint / self-annealing**.
-- **Self-annealing confirmed (by margin).** Along the proper capability path `nodetype → +dir → prod`, margin rises
-  **0.025 → 0.054 → 0.057**, tracking MRR **0.299 → 0.319 → 0.356** — μ *does* grow more confident (hence leans
-  harder on itself, less on e5) as it learns. (`+disc` is an off-path objective regression, not a data increment;
-  it usefully serves as the confident-but-wrong stress test the margin passes. Caveat: these checkpoints differ in
-  *objective*, so this is a capability-progression proxy, not a data-volume-controlled ablation.)
+**What survives (robust): margin is a better selective-risk *gate* than level.** AURC_margin < AURC_level on **all
+four** checkpoints, and level is even *anti-correlated* with correctness on the under-trained checkpoints (ρ_level
+−0.08, −0.05) — a clean, consistent reason to prefer margin as the gating signal. **What does NOT survive: margin
+is not a strong *per-query* correctness signal.** ρ_margin(RR) is weak (≈ +0.03 to +0.15) and its CI includes 0 for
+every checkpoint except `nodetype`; it does **not** strengthen with training. So the earlier "margin's rank-order is
+identical to MRR's across checkpoints" **oversold a weak per-query signal** — an aggregate/Simpson's-paradox artifact,
+exactly as the review warned.
+
+Corrected claims (both prior overclaims withdrawn):
+- **NOT "calibration-invariant."** Margin is *more robust to global level shifts / saturation* than raw top1-μ (the
+  `+disc` case, and the negative ρ_level early), but it is still affected by score scaling/sharpening and by the
+  checkpoint objective — a relative, not invariant, measure.
+- **NOT "self-annealing confirmed" — "consistent with self-annealing (at the gate level)."** Mean margin
+  (0.028→0.056→0.060) and gate quality AURC_margin (0.763→0.757→0.737) improve along `nodetype→+dir→prod`, but n=4
+  checkpoints from **one trajectory differing by objective, not data volume**, and `+dir`↔`prod` margin is nearly
+  flat while MRR differs — this supports "consistent with," not proof. Per-query discrimination does **not** rise.
+- Per-query margin stability ρ(nodetype↔prod) = **+0.386** (moderate — high-margin queries are somewhat persistent
+  across training, not a random reshuffle, but not strongly). Per-query audit emitted for offline HMER / risk-coverage
+  / difficulty-stratified analysis.
+
+**Net:** the margin-over-level thesis holds as a *selective-risk gating* result (use margin, not level, especially
+OOD / across model states); the strong "confidence tracks correctness per query" and "self-annealing confirmed"
+framings are withdrawn. Multi-seed training + a true data-volume anneal + AUGRC/failure-AUROC with query-bootstrap
+CIs are the follow-ups needed to move from "consistent with" to a claim (deferred; see review memo §5.3).
 
 #### Judge→loss routing — the loss is keyed off provenance, not a new embedding (now in the main trainer)
 The discriminative loss is *not* a new "judge type." Provenance (`graph`/`haiku`/`human`/`sonnet`/`opus`) is an

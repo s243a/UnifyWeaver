@@ -1,26 +1,85 @@
 #!/usr/bin/env python3
-"""eval_self_anneal.py — does μ's confidence (and thus its adaptive blend weight) RISE with training?
+"""eval_self_anneal.py — is μ's confidence a genuine per-query correctness signal, and does it grow with training?
 
-The self-annealing prediction (DESIGN_model_applications.md, confidence-adaptive blend, property #2): under the
-adaptive rule α rises with μ's top-score, so as μ trains on more data its confident regions expand ⇒ the effective
-mean α climbs on its own and e5 recedes. Test it directly: run the SAME queries + SAME e5 shortlists (frozen e5 ⇒
-checkpoint-independent) through checkpoints of increasing training maturity, and watch the confidence distribution.
+Tests two things, per the confidence-adaptive blend (DESIGN_model_applications.md):
+  (A) SIGNAL QUALITY — does a confidence score separate correct from incorrect retrievals PER QUERY (not just in
+      aggregate)? Compared for two signals: LEVEL (top1-μ) vs MARGIN (top1−top2 of μ-max over the shortlist).
+  (B) SELF-ANNEALING — does that confidence rise along a training progression?
 
-For each checkpoint we report, over the e5 top-N shortlist per query:
-  mean top1-μ    — average confidence (top μ-max candidate) — the raw signal
-  high-conf %    — fraction of queries with top1-μ ≥ τ (cleared the confidence bar)
-  eff. mean α    — average per-query blend weight under α_q = 0.3 + 0.6·top1-μ (⇒ how much μ is trusted on avg)
-  MRR            — retrieval quality of μ-max alone (sanity: capability should track confidence)
+Same queries + same FROZEN-e5 shortlists through every checkpoint (only μ varies). No LLM cost.
 
-Expect all four to rise along nodetype → dir → dir_disc → prod. NOTE: these checkpoints differ in OBJECTIVE, not
-purely data volume — so this is a capability-progression proxy for the data-curve, not a data-controlled ablation.
+Per checkpoint it prints, over the e5 top-N shortlist per query (confidence = --confidence-mode, default margin):
+  mean conf        — average of the selected confidence signal
+  high-conf %      — fraction of queries with conf ≥ --tau (on the selected signal)
+  eff. mean α      — average per-query blend weight α_q = 0.3 + 0.6·clamp01(conf) (how hard μ is trusted)
+  MRR              — retrieval quality of μ-max alone
+  ρ(sig,RR)        — per-query Spearman between the confidence signal and reciprocal-rank, with Fisher-z 95% CI
+                     — reported for BOTH level and margin (does margin discriminate correct-vs-wrong better?)
+  AURC             — selective risk (risk=1[rank>1]) sorted by the signal, lower=better gate, bootstrap 95% CI
+                     — reported for BOTH level and margin
+  HMER@0.8         — high-confidence error rate: fraction WRONG@1 among the top-80%-by-signal (the confident-but-
+                     -wrong diagnostic aggregate means hide), for BOTH level and margin
+
+Also writes a per-query audit TSV (--audit-out): checkpoint, qid, top1_mu, top2_mu, margin, rank, rr — for offline
+HMER / risk-coverage / Simpson-stratified analysis. NOTE: checkpoints differ in OBJECTIVE, not purely data volume —
+this is a capability-progression proxy for a data-anneal, single seed, single query sample; treat trends as
+*consistent with* self-annealing, not confirmatory (n=4 checkpoints).
 
   python3 eval_self_anneal.py --graph /tmp/merged_category_parent.tsv --n-queries 1000 --topn 20 \
-      --ckpts model_nodetype.pt:nodetype model_dir.pt:+dir model_dir_disc.pt:+disc model_prod.pt:prod
+      --confidence-mode margin --ckpts model_nodetype.pt:nodetype model_dir.pt:+dir model_dir_disc.pt:+disc model_prod.pt:prod
 """
-import argparse, random, torch
+import argparse, math, random, torch
 from mu_attention import build_e5_tables, Tokenizer, OPS, load_dag
 from eval_arch_control import build_model
+
+
+def rankdata(v):                                                            # average ranks, 1-based (ties averaged)
+    order = sorted(range(len(v)), key=lambda i: v[i]); r = [0.0] * len(v); i = 0
+    while i < len(v):
+        j = i
+        while j + 1 < len(v) and v[order[j + 1]] == v[order[i]]: j += 1
+        avg = (i + j) / 2.0 + 1.0
+        for k in range(i, j + 1): r[order[k]] = avg
+        i = j + 1
+    return r
+
+
+def pearson(a, b):
+    n = len(a); ma = sum(a) / n; mb = sum(b) / n
+    cov = sum((a[i] - ma) * (b[i] - mb) for i in range(n))
+    va = math.sqrt(sum((a[i] - ma) ** 2 for i in range(n))); vb = math.sqrt(sum((b[i] - mb) ** 2 for i in range(n)))
+    return cov / (va * vb + 1e-12)
+
+
+def spearman(x, y):
+    return pearson(rankdata(x), rankdata(y))
+
+
+def fisher_ci(rho, n):                                                      # closed-form 95% CI for a rank corr
+    if n <= 4 or abs(rho) >= 1: return (rho, rho)
+    z = 0.5 * math.log((1 + rho) / (1 - rho)); se = 1.0 / math.sqrt(n - 3)
+    lo, hi = z - 1.96 * se, z + 1.96 * se
+    return (math.tanh(lo), math.tanh(hi))
+
+
+def aurc(conf, risk):                                                       # selective risk: mean risk over coverage, sorted by desc conf
+    order = sorted(range(len(conf)), key=lambda i: -conf[i]); cum = 0.0; acc = 0.0
+    for k, i in enumerate(order, 1):
+        cum += risk[i]; acc += cum / k
+    return acc / len(order)
+
+
+def boot_aurc_ci(conf, risk, B, seed):
+    rng = random.Random(seed); n = len(conf); vals = []
+    for _ in range(B):
+        idx = [rng.randrange(n) for _ in range(n)]
+        vals.append(aurc([conf[i] for i in idx], [risk[i] for i in idx]))
+    vals.sort(); return (vals[int(0.025 * B)], vals[int(0.975 * B)])
+
+
+def hmer(conf, wrong, cov=0.8):                                            # error rate among top-cov by conf
+    order = sorted(range(len(conf)), key=lambda i: -conf[i])[:max(1, int(cov * len(conf)))]
+    return sum(wrong[i] for i in order) / len(order)
 
 
 def main():
@@ -28,10 +87,13 @@ def main():
     ap.add_argument("--graph", required=True)
     ap.add_argument("--ckpts", nargs="+", required=True, help="path[:label] in training order")
     ap.add_argument("--n-queries", type=int, default=1000); ap.add_argument("--topn", type=int, default=20)
-    ap.add_argument("--tau", type=float, default=0.5, help="high-confidence threshold on top1-μ")
+    ap.add_argument("--confidence-mode", choices=("level", "margin"), default="margin", help="signal for high-conf %/eff.α/--tau")
+    ap.add_argument("--tau", type=float, default=None, help="high-conf threshold on the selected signal (default 0.5 level / 0.03 margin)")
+    ap.add_argument("--audit-out", default="/tmp/anneal_audit.tsv"); ap.add_argument("--boot", type=int, default=500)
     ap.add_argument("--min-children", type=int, default=5)
     ap.add_argument("--seed", type=int, default=7); ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     a = ap.parse_args(); dev = torch.device(a.device); rng = random.Random(a.seed)
+    tau = a.tau if a.tau is not None else (0.5 if a.confidence_mode == "level" else 0.03)
     parents, children, deg = load_dag(a.graph)
     cands = [p for p, k in children.items() if len(k) >= a.min_children]; cset = set(cands)
     queries = [(c, p) for p in cands for c in children[p] if p in cset]
@@ -40,18 +102,16 @@ def main():
     qt, pt, idx = build_e5_tables(names, cache_path="/tmp/anneal_e5.pt", texts={n: n.replace('_', ' ') for n in names}, device=a.device)
     tok = Tokenizer(qt, pt, idx, parents={}, deg={})
     C = pt[[idx[c] for c in cands]]; cand_pos = {c: i for i, c in enumerate(cands)}
-
-    # e5 shortlists (frozen ⇒ identical for every checkpoint) + the true-parent position within each
     shortlists = []
     for c, tp in queries:
         e5s = (qt[idx[c]] @ C.T).cpu()
         top = torch.argsort(-e5s)[:a.topn].tolist()
         shortlists.append((c, cand_pos[tp], top))
 
-    def rr(ranks, k): return sum(x <= k for x in ranks) / len(ranks)
-    print(f"[DATA] {len(queries)} queries · e5 top-{a.topn} shortlists (frozen, shared) · τ={a.tau}\n")
-    print(f"  {'checkpoint':14} {'mean top1-μ':>12} {'mean margin':>12} {'MRR':>7}   {'ΔMRR':>7}")
-    base_mrr = None
+    print(f"[DATA] {len(queries)} queries · e5 top-{a.topn} shortlists (frozen, shared) · mode={a.confidence_mode} τ={tau} · boot={a.boot}\n")
+    print(f"  {'checkpoint':12} {'mean conf':>9} {'hi-conf%':>8} {'eff.α':>6} {'MRR':>6} │ "
+          f"{'ρ_lvl(CI)':>16} {'ρ_mrg(CI)':>16} │ {'AURC_lvl':>9} {'AURC_mrg':>9} │ {'HMER_lvl':>8} {'HMER_mrg':>8}")
+    audit = ["checkpoint\tqid\ttop1_mu\ttop2_mu\tmargin\trank\trr"]; per_ckpt_margin = {}
     for spec in a.ckpts:
         path, _, label = spec.partition(":"); label = label or path
         model = build_model(path, dev); n_ops = model.op_emb.weight.shape[0]
@@ -66,20 +126,37 @@ def main():
                 out += model(**b, op_weights=ow.to(dev).expand(len(ch), n_ops)).cpu().tolist()
             return out
 
-        tops, margins, ranks = [], [], []
-        for c, tp_i, top in shortlists:
+        lvl, mrg, rr, wrong = [], [], [], []
+        for qi, (c, tp_i, top) in enumerate(shortlists):
             mvs = {k: mu([(c, cands[j]) for j in top], OPW[k]) for k in ("elem", "wiki", "sym")}
-            mm = [max(mvs["elem"][i], mvs["wiki"][i], mvs["sym"][i]) for i in range(len(top))]   # μ-max (raw [0,1])
-            sm = sorted(mm, reverse=True)
-            tops.append(sm[0]); margins.append(sm[0] - (sm[1] if len(sm) > 1 else 0.0))          # level vs margin
+            mm = [max(mvs["elem"][i], mvs["wiki"][i], mvs["sym"][i]) for i in range(len(top))]
+            sm = sorted(mm, reverse=True); top1, top2 = sm[0], (sm[1] if len(sm) > 1 else 0.0)
             order = sorted(range(len(top)), key=lambda i: -mm[i])
-            ranks.append(1 + order.index(top.index(tp_i)) if tp_i in top else a.topn + 1)
-        mean_top = sum(tops) / len(tops); mean_mrg = sum(margins) / len(margins)
-        mrr = sum(1.0 / x for x in ranks) / len(ranks)
-        if base_mrr is None: base_mrr = mrr
-        print(f"  {label:14} {mean_top:12.3f} {mean_mrg:12.3f} {mrr:7.3f}   {mrr-base_mrr:+7.3f}")
-    print("\n  LEVEL (mean top1-μ) vs MARGIN (top1−top2). If margin tracks MRR and flags the confident-but-wrong")
-    print("  checkpoint (high level, low margin, low MRR), margin is the calibration-invariant confidence signal.")
+            rank = 1 + order.index(top.index(tp_i)) if tp_i in top else a.topn + 1
+            lvl.append(top1); mrg.append(top1 - top2); rr.append(1.0 / rank); wrong.append(0 if rank == 1 else 1)
+            audit.append(f"{label}\t{qi}\t{top1:.4f}\t{top2:.4f}\t{top1-top2:.4f}\t{rank}\t{1.0/rank:.4f}")
+        per_ckpt_margin[label] = mrg
+        conf = lvl if a.confidence_mode == "level" else mrg
+        n = len(conf); mean_conf = sum(conf) / n; hi = sum(x >= tau for x in conf) / n
+        c01 = (lambda v: v) if a.confidence_mode == "level" else (lambda v: min(1.0, v / max(1e-9, tau)))
+        eff_a = sum(0.3 + 0.6 * min(1.0, max(0.0, c01(x))) for x in conf) / n
+        mrr = sum(rr) / n
+        rl, rm = spearman(lvl, rr), spearman(mrg, rr)
+        cll, chl = fisher_ci(rl, n); clm, chm = fisher_ci(rm, n)
+        al = aurc(lvl, wrong); am = aurc(mrg, wrong)
+        hl, hm = hmer(lvl, wrong), hmer(mrg, wrong)
+        print(f"  {label:12} {mean_conf:9.3f} {hi:7.1%} {eff_a:6.3f} {mrr:6.3f} │ "
+              f"{rl:+.2f}[{cll:+.2f},{chl:+.2f}] {rm:+.2f}[{clm:+.2f},{chm:+.2f}] │ "
+              f"{al:9.3f} {am:9.3f} │ {hl:7.1%} {hm:7.1%}")
+    # cross-checkpoint per-query margin stability (are high-margin queries the SAME across training, not reshuffled?)
+    labs = list(per_ckpt_margin)
+    if len(labs) >= 2:
+        st = spearman(per_ckpt_margin[labs[0]], per_ckpt_margin[labs[-1]])
+        print(f"\n  per-query margin stability ρ({labs[0]}↔{labs[-1]}) = {st:+.3f}  (high = same queries confident, not random reshuffle)")
+    open(a.audit_out, "w").write("\n".join(audit) + "\n")
+    print(f"  per-query audit ({len(audit)-1} rows) → {a.audit_out}")
+    print("\n  Read: ρ_mrg > ρ_lvl and AURC_mrg < AURC_lvl and HMER_mrg < HMER_lvl ⇒ margin is the better per-query")
+    print("  correctness signal (esp. on the saturated/confident-but-wrong checkpoint). n=4 ckpts, 1 seed ⇒ 'consistent with', not proof.")
 
 
 if __name__ == "__main__":
