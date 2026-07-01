@@ -383,6 +383,10 @@ regions** — where μ's coverage is thin and it over-generalises, e5's topical 
 the strong baseline on clean/OOD content, §4.2/coverage). *Testable:* the e5 contribution should grow on
 OOD/untrained queries relative to the +0.014 it adds here. Prefixed e5 is the default input to μ (same embeddings
 feed e5-cos and μ ⇒ computed once; the ablation showed no-prefix isn't meaningfully better, so no separate pass).
+**Deferred upgrade — confidence-adaptive blend:** make α *per-query* — lean on μ where it is confident (trained,
+sharp) and fall back to e5 where it is uncertain (untrained/OOD). This is the principled version of the static
+α=0.9 catch-all; drive it from the existing confidence signals (operator-superposition spread / MC-ancestor
+variance / cross-operator entropy, §6). Deferred, not built.
 
 #### Judge→loss routing — the loss is keyed off provenance, not a new embedding (now in the main trainer)
 The discriminative loss is *not* a new "judge type." Provenance (`graph`/`haiku`/`human`/`sonnet`/`opus`) is an
