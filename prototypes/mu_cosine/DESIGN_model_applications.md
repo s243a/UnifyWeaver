@@ -261,22 +261,29 @@ learns its relation to them through training), fine-tuned with **ELEM replay** +
 precomputed `/*`-wildcard variants + path-prefix dropout; the id line stays as unique anchors). Held-out filing
 (n=300):
 
-| ranker | recall@1 | MRR | overlap(all) | overlap \| elem-miss (paired, n=207) |
-|---|---|---|---|---|
-| e5-cos | 0.170 | 0.270 | 0.380 | 0.332 |
-| mu-elem | 0.310 | 0.447 | 0.525 | 0.312 |
-| **mu-lineage** | 0.193 | 0.308 | 0.453 | **0.359** |
+(n=300). **Multi-seed (3 training seeds 7/13/23, split fixed at 7); means, with per-seed ranges on the hard subset:**
+
+| ranker | recall@1 | MRR | ov(all) | ov\|elem-miss | depth\|elem-miss |
+|---|---|---|---|---|---|
+| e5-cos | 0.170 | 0.270 | 0.380 | 0.323 (.317–.328) | 1.40 |
+| mu-elem | 0.303 | 0.436 | 0.510 | 0.297 (.291–.300) | 1.33 |
+| **mu-lineage** | 0.177 | 0.299 | 0.445 | **0.356 (.340–.371)** | **1.63 (1.53–1.75)** |
+
+`depth|elem-miss` = ABSOLUTE deepest correctly-reached ancestor (the actionable placement depth — an intermediate
+ancestor is usable: searchable by name, resolvable by id).
 
 Findings: (1) `mu-lineage` beats e5 on *every* metric — a real, distinct signal. (2) `mu-elem` dominates exact-leaf
-+ overall-overlap — it's the leaf specialist. (3) **But on the PAIRED hard subset** (the 207 queries where `mu-elem`
-misses the leaf), **`mu-lineage` recovers the ancestor branch best — 0.359 > e5 0.332 > elem 0.312.** The
-"file general→specific" hypothesis, confirmed: when the leaf can't be nailed, lineage stays in the right general
-branch (densely-reused upper levels), while the leaf-specialist, *on its own misses, wanders below even raw e5*
-(0.312 < 0.332) because it optimises leaf-specificity over the general path. (4) So **elem and lineage are
-complementary** — leaf-specialist + graceful branch-fallback — which *data-motivates* the composition (increment 2:
-a margin-gate / OR switching on leaf-certainty). Masking's prefix-dropout also buys robustness to truncated /
-RDF-partial paths and free depth-placement. Caveats: single-seed, one split (multi-seed + CI = follow-up); the
-paired subset is the honest test (per-ranker miss-sets differ, so unpaired overlap|MISS was confounded).
++ overall-overlap — it's the leaf specialist. (3) **But on the PAIRED hard subset** (queries where `mu-elem` misses
+the leaf), **`mu-lineage` recovers the ancestor branch best — and it is ROBUST TO SEED with non-overlapping ranges**:
+its ov|miss min (0.340) clears e5's max (0.328) clears elem's max (0.300), **same ordering all 3 seeds** (same for
+absolute depth: 1.63 vs 1.40 vs 1.33). The "file general→specific" hypothesis, confirmed and CI-hardened: when the
+leaf can't be nailed, lineage stays in the right general branch (densely-reused upper levels), while the
+leaf-specialist, *on its own misses, wanders below even raw e5 every seed* (0.297 < 0.323) — it optimises
+leaf-specificity over the general path. (4) So **elem and lineage are complementary** — leaf-specialist + graceful
+branch-fallback — which *data-motivates* the composition (increment 2: a margin-gate / OR switching on
+leaf-certainty). Masking's prefix-dropout also buys robustness to truncated / RDF-partial paths and free
+depth-placement. (Paired subset is the honest test — per-ranker miss-sets differ, so unpaired overlap|MISS was
+confounded; single split — a multi-split CI is the remaining follow-up.)
 
 #### Operating point — μ's edge is at recall@10 / median rank, which is exactly what an LLM re-ranker consumes
 Across **all three** results, μ's advantage over `e5-cos` concentrates at **recall@10 and median rank**, *not*

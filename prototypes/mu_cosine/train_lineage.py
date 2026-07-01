@@ -65,10 +65,13 @@ def main():
     ap.add_argument("--steps", type=int, default=500); ap.add_argument("--bs", type=int, default=48)
     ap.add_argument("--lr", type=float, default=3e-4); ap.add_argument("--replay", type=float, default=1.0,
                     help="weight on the ELEM(bookmark|folder-title) replay loss")
-    ap.add_argument("--seed", type=int, default=7); ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--seed", type=int, default=7, help="SPLIT seed (fix across runs for a comparable CI)")
+    ap.add_argument("--train-seed", type=int, default=None, help="TRAINING rng seed (default=--seed); vary for multi-seed CI")
+    ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--cache", default="/tmp/lineage_e5.pt")
     ap.add_argument("--eval-only", action="store_true", help="load --save model and eval only (no training)")
     a = ap.parse_args(); dev = torch.device(a.device); rng = random.Random(a.seed)
+    if a.train_seed is None: a.train_seed = a.seed
 
     queries, cand = load_filing(a.trees, a.min_bm)                  # [(bm_text, folder_tid)], {folder_tid: title}
     path_of, pids_of = {}, {}                                       # folder_tid -> target_text ; -> path_ids (root→leaf)
@@ -120,7 +123,7 @@ def main():
     bm_folder = [f for _, f in bm_list]
     train_idx = list(range(len(eval_q), len(bm_list)))
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
-    trng = random.Random(a.seed + 1)
+    trng = random.Random(a.train_seed + 1)                          # TRAINING rng — vary for multi-seed CI, split fixed by --seed
 
     def contrastive(bkidx, passages, ow):                           # B×B μ(bm_i | passage_j), same-folder = positive
         bk = [bm_key[i] for i in bkidx]
@@ -167,14 +170,14 @@ def main():
             n += 1
         return n
     def top1(S, r): return max(range(len(S[r])), key=lambda j: S[r][j])
-    def path_overlap(S, subset=None):                              # mean fraction of TRUE ancestor lineage recovered by top-1
-        vals = []
+    def path_overlap(S, subset=None):                              # → (mean normalized-LCP, mean ABSOLUTE matched-depth)
+        norm, absd = [], []                                        # abs matched-depth = deepest correctly-reached ancestor
         for r in (range(len(S)) if subset is None else subset):
             pred = fold_ids[top1(S, r)]; true = bm_folder[ev_idx[r]]
             tp = pids_of.get(true, []);  pp = pids_of.get(pred, [])
             if tp:
-                vals.append(lcp(pp, tp) / len(tp))
-        return sum(vals) / len(vals) if vals else 0.0
+                n = lcp(pp, tp); norm.append(n / len(tp)); absd.append(n)
+        return (sum(norm) / len(norm) if norm else 0.0, sum(absd) / len(absd) if absd else 0.0)
     lin_keys = [f"P:{f}:{full_variant[f]}" for f in fold_ids]       # full path per folder
     fol_keys = [f"F:{f}" for f in fold_ids]
     qn = qtbl[[idx[bm_key[i]] for i in ev_idx]]; fn = ptbl[[idx[k] for k in fol_keys]]
@@ -183,13 +186,13 @@ def main():
     S_elem, S_lin = score(fol_keys, ow_elem), score(lin_keys, ow_lin)
     S_e5 = C.tolist()
     elem_miss = [r for r in range(len(S_elem)) if top1(S_elem, r) != truepos[r]]   # FIXED hard subset (paired)
-    print(f"\n  [HELD-OUT n={len(ev_idx)}]  {'ranker':12} {'recall@1':>9} {'MRR':>7} {'overlap(all)':>13} "
-          f"{'overlap|elem-miss':>18}   [paired hard subset n={len(elem_miss)}]")
+    print(f"\n  [HELD-OUT n={len(ev_idx)} | seed {a.seed} train {a.train_seed}]  {'ranker':12} {'recall@1':>9} {'MRR':>7} "
+          f"{'ov(all)':>8} {'ov|miss':>8} {'depth|miss':>10}   [hard n={len(elem_miss)}]")
     for nm, R, S in (("e5-cos", e5_ranks, S_e5), ("mu-elem", ranks(S_elem), S_elem), ("mu-lineage", ranks(S_lin), S_lin)):
-        m = metrics(R)
-        print(f"  {'':13}{nm:12} {m['recall@1']:9.3f} {m['MRR']:7.3f} {path_overlap(S):13.3f} {path_overlap(S, elem_miss):18.3f}")
-    print("  (overlap|elem-miss = ancestor-lineage recovered on the SAME hard cases where the leaf-specialist mu-elem")
-    print("   fails — the paired graceful-degradation test: when the leaf can't be nailed, who stays in the right branch?)")
+        m = metrics(R); ov_all, _ = path_overlap(S); ov_m, depth_m = path_overlap(S, elem_miss)
+        print(f"  {'':13}{nm:12} {m['recall@1']:9.3f} {m['MRR']:7.3f} {ov_all:8.3f} {ov_m:8.3f} {depth_m:10.2f}")
+    print("  (ov|miss = normalized ancestor-lineage recovered on the SAME hard cases where mu-elem misses the leaf;")
+    print("   depth|miss = ABSOLUTE deepest correctly-reached ancestor there — the actionable placement depth.)")
 
     if a.save:
         torch.save({"state": model.state_dict(), "cfg": cfg, "ops_extra": ["LINEAGE"]}, a.save)
