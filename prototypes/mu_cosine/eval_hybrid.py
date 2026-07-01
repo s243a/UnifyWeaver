@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
-"""eval_hybrid.py — the application: hybrid retrieval (e5 coarse rank → μ directional re-rank) vs e5-alone.
+"""eval_hybrid.py — the application: hybrid retrieval (e5 coarse rank → μ re-rank) vs e5-alone.
 
 The payoff of the whole μ-vs-e5 arc. Task = "find my container": given a node, recover its true parent category
 from the full candidate pool. Stage 1 (e5): rank candidates by cosine — cheap, but confuses the true parent with
-SIBLINGS and with the reverse direction (all topically similar). Stage 2 (μ): re-rank e5's top-N by the
-DIRECTIONAL membership μ(node|candidate) (ELEM), which knows a sibling is NOT a container and which way membership
-points. Metric: true-parent recall@1 / MRR for e5-alone vs the hybrid — does μ fix e5's top-of-list errors?
+SIBLINGS and with the reverse direction (all topically similar). Stage 2 (μ): re-rank e5's top-N by directional
+membership, which knows a sibling is NOT a container and which way membership points.
 
-  python3 eval_hybrid.py --ckpt model_prod.pt --graph /tmp/merged_category_parent.tsv
+This script prints three things:
+  1. TUNING GRID — μ-part (which operators, combined how) × α (e5 weight). The winning score is the non-linear OR
+     `max(μ-elem, μ-wiki, μ-sym)` (a container is relevant by membership OR relatedness; `max` keeps a strong
+     single-operator hit a superposition/mean averages away) — NOT pure ELEM, NOT the internal μ-super. Best:
+     `max(elem,wiki,sym)` at α≈0.9 → ~+25% MRR over e5-cos.
+  2. CONTAINER-VS-SIBLING — μ's decisive close-neg regime: parent ranked above ALL the child's siblings.
+  3. CONFIDENCE-ADAPTIVE α — α per-query from μ's own top-score (calibrated [0,1] degree = free confidence signal).
+     Diagnostic shows μ earns its weight where confident (+0.037 MRR) vs not (+0.003); adaptive α∈[0.3,0.9] beats
+     fixed α=0.9 by +0.006 in-dist (μ is neutral-not-harmful where unconfident, so its real payoff is OOD).
+
+  python3 eval_hybrid.py --ckpt model_prod.pt --graph /tmp/merged_category_parent.tsv --n-queries 1000 --topn 20
 """
 import argparse, random, torch
 from mu_attention import build_e5_tables, Tokenizer, OPS, load_dag
@@ -125,6 +134,35 @@ def main():
     if n_sib:
         print(f"\n  container-vs-sibling ({n_sib} queries w/ siblings in shortlist): parent ranked above ALL siblings — "
               f"e5-cos {e5_win/n_sib:.1%}  |  μ {mu_win/n_sib:.1%}  (μ's close-neg win, in the pipeline)")
+
+    # ══ confidence-adaptive α (per-query blend weight from μ's own confidence) ══
+    # Coverage-insurance made per-query: trust μ where it is confident (sharp / high top-μ over the shortlist), fall
+    # back to e5 where μ is flat/low (untrained/OOD). μ is a calibrated [0,1] membership degree ⇒ the top candidate's
+    # μ-max IS a confidence signal, computed for free from the scores we already have.
+    mm_all = [[max(mv["elem"][i], mv["wiki"][i], mv["sym"][i]) for i in range(len(mv["elem"]))] for _, _, _, mv in store]
+    t1 = [max(mm) for mm in mm_all]; med = sorted(t1)[len(t1) // 2]; alli = list(range(len(store)))
+    def mrr_on(idxs, alpha_of):                                             # α_of(i)→per-query blend weight
+        rs = []
+        for i in idxs:
+            tp_i, top, e5v, _ = store[i]; e, m = nz(e5v), nz(mm_all[i]); al = alpha_of(i)
+            sc = [(1 - al) * e[j] + al * m[j] for j in range(len(e))]
+            ro = [top[j] for j in sorted(range(len(top)), key=lambda j: -sc[j])]
+            rs.append(1 + ro.index(tp_i) if tp_i in ro else a.topn + 1)
+        return sum(1.0 / x for x in rs) / len(rs)
+    print("\n  ══ confidence-adaptive α ══   (confidence = top1 of μ-max over the shortlist)")
+    # 1) diagnostic — does confidence predict the better fixed α? (the crossover that justifies adapting)
+    for lab, idxs in (("high-conf (top1-μ ≥ med)", [i for i in alli if t1[i] >= med]),
+                      ("low-conf  (top1-μ < med)",  [i for i in alli if t1[i] <  med])):
+        m03, m09 = mrr_on(idxs, lambda i: 0.3), mrr_on(idxs, lambda i: 0.9)
+        print(f"    {lab:26} n={len(idxs):4}  MRR@α0.3 {m03:.3f}   @α0.9 {m09:.3f}   Δ(0.9−0.3) {m09-m03:+.3f}")
+    # 2) adaptive vs best fixed — α_q linear in top1-μ across the observed range
+    lo, hi = min(t1), max(t1)
+    amap = lambda i, alo, ahi: alo + (ahi - alo) * ((t1[i] - lo) / (hi - lo + 1e-9))
+    mfix = mrr_on(alli, lambda i: 0.9)
+    print(f"    {'fixed α=0.9':30}     MRR {mfix:.3f}")
+    for alo, ahi in ((0.3, 1.0), (0.5, 1.0), (0.3, 0.9)):
+        ma = mrr_on(alli, lambda i, alo=alo, ahi=ahi: amap(i, alo, ahi))
+        print(f"    adaptive α∈[{alo},{ahi}] (top1-μ)     MRR {ma:.3f}   Δ vs fixed {ma-mfix:+.3f}")
 
 
 if __name__ == "__main__":
