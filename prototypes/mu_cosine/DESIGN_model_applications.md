@@ -367,13 +367,18 @@ model's internal superposition, and *not* a linear mix:
 | **μ-max(elem,wiki,sym)** (OR of separate queries) | **0.220** | 0.496 | **0.354** |
 | e5 + 0.5·μ-max | 0.216 | **0.506** | **0.358** |
 
-**`max` over separate operator queries beats the internal `μ-super`** (0.354 vs 0.320) — a true container is
-relevant *by membership OR relatedness*, and `max` keeps a strong single-operator hit that the superposition
-averages away (the user's point: the combiner needn't be linear). **`μ-max` *alone* beats e5-cos on every metric**
-(recall@1 0.220 vs 0.187, MRR 0.354 vs 0.292); the e5-blend adds only a hair (0.358) — the non-linear operator
-combination is doing the work. So the retrieval score = **`max(μ-elem, μ-wiki, μ-sym)` (± e5)**. Prefixed e5 is
-the default input to μ (same embeddings feed e5-cos and μ ⇒ computed once; the ablation showed no-prefix isn't
-meaningfully better, so no separate pass).
+**`max` over separate operator queries beats the internal `μ-super`** — a true container is relevant *by
+membership OR relatedness*, and `max` keeps a strong single-operator hit that the superposition (or a mean)
+averages away (the combiner needn't be linear).
+
+**Tuned grid (1000 queries, μ-part × α = e5-weight):** best = **`max(μ-elem, μ-wiki, μ-sym)` at α=0.9** →
+**MRR 0.358 vs e5-cos 0.286 (+25%)**, recall@1 0.223, recall@5 0.504, container-vs-sibling μ 72.2% vs e5 66.7%.
+Findings: **`max` (OR) beats `mean`** (0.358 vs 0.352) and the internal `μ-super`; **α≈0.9** is optimal — the
+score is *mostly μ* (~10% e5; μ-max alone at α=1 is 0.344, so e5 adds only +0.014); and the **directional
+operators carry it** — `max(elem, wiki)` alone already hits 0.358, adding sym/super doesn't move it. So the
+retrieval signal is fundamentally "**is this a member via element_of OR subcategory**," OR'd across operators, with
+e5 a small topical assist. Prefixed e5 is the default input to μ (same embeddings feed e5-cos and μ ⇒ computed
+once; the ablation showed no-prefix isn't meaningfully better, so no separate pass).
 
 #### Judge→loss routing — the loss is keyed off provenance, not a new embedding (now in the main trainer)
 The discriminative loss is *not* a new "judge type." Provenance (`graph`/`haiku`/`human`/`sonnet`/`opus`) is an

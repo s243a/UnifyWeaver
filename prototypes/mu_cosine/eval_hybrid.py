@@ -76,23 +76,27 @@ def main():
         print(f"  {nm:26} {rr(R,1):9.3f} {rr(R,5):9.3f} {sum(1.0/x for x in R)/len(R):7.3f}")
     mx = lambda *ks: (lambda m: [max(m[k][i] for k in ks) for i in range(len(m[ks[0]]))])   # OR over operators
 
+    e5_mrr = sum(1.0/x for x in e5_ranks)/len(e5_ranks)
     print(f"[DATA] {len(queries)} queries, {len(cands)} candidate containers, e5 top-{a.topn} → re-rank (prefixed e5)")
-    print(f"\n  {'method':26} {'recall@1':>9} {'recall@5':>9} {'MRR':>7}")
-    report("e5-cos alone", e5_ranks)
+    print(f"  e5-cos alone: recall@1 {rr(e5_ranks,1):.3f}  recall@5 {rr(e5_ranks,5):.3f}  MRR {e5_mrr:.3f}")
+    # GRID: μ-part (which operators, combined how) × α (e5 weight; α=1 ⇒ μ-only, 0 ⇒ e5-only)
     muparts = {"super": lambda m: m["super"], "elem": lambda m: m["elem"],
-               "max(super,elem)": mx("super", "elem"),
-               "max(elem,wiki,sym)": mx("elem", "wiki", "sym"),
-               "max(super,elem,wiki,sym)": mx("super", "elem", "wiki", "sym")}
-    for nm, f in muparts.items():
-        report(f"μ-{nm} alone", blend_ranks(f, 1.0))
-    print("  ── e5 + 0.5·μ-part blend ──")
+               "mean(e,w,s)": lambda m: [(m["elem"][i]+m["wiki"][i]+m["sym"][i])/3 for i in range(len(m["elem"]))],
+               "max(e,s)": mx("elem", "sym"), "max(e,w)": mx("elem", "wiki"),
+               "max(e,w,s)": mx("elem", "wiki", "sym"), "max(sup,e,w,s)": mx("super", "elem", "wiki", "sym")}
+    alphas = [0.0, 0.3, 0.5, 0.7, 0.9, 1.0]
+    print(f"\n  MRR grid — μ-part × α (e5 weight):   [e5-cos={e5_mrr:.3f}]")
+    print(f"  {'μ-part':14} " + "".join(f"α={a_:<5}" for a_ in alphas))
     best = (None, -1)
     for nm, f in muparts.items():
-        R = blend_ranks(f, 0.5); report(f"e5 + 0.5·μ-{nm}", R)
-        mrr = sum(1.0/x for x in R)/len(R)
-        if mrr > best[1]: best = (f"e5+0.5·μ-{nm}", mrr)
-    print(f"\n  best: {best[0]} (MRR {best[1]:.3f}) vs e5-cos MRR {sum(1.0/x for x in e5_ranks)/len(e5_ranks):.3f}")
-    hy_ranks = blend_ranks(lambda m: m["super"], 1.0)                       # for the sibling metric below
+        row, cells = [], []
+        for al in alphas:
+            R = blend_ranks(f, al); m = sum(1.0/x for x in R)/len(R); cells.append(m)
+            if m > best[1]: best = (f"μ-{nm} @ α={al}", m, R)
+        star = lambda m: ("*" if m == max(cells) else " ")
+        print(f"  {nm:14} " + "".join(f"{c:.3f}{star(c)} " for c in cells))
+    print(f"\n  BEST: {best[0]}  MRR {best[1]:.3f}  (recall@1 {rr(best[2],1):.3f}  recall@5 {rr(best[2],5):.3f})  vs e5-cos {e5_mrr:.3f}")
+    hy_ranks = blend_ranks(mx("elem", "wiki", "sym"), 1.0)                  # μ-max for the sibling metric below
     # how often μ promotes the true parent that e5 buried below rank 1 but within the shortlist
     fixed = sum(1 for e, h in zip(e5_ranks, hy_ranks) if e > 1 and h == 1)
     broke = sum(1 for e, h in zip(e5_ranks, hy_ranks) if e == 1 and h > 1)
