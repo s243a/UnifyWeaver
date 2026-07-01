@@ -88,6 +88,27 @@ But **with only one method live, a method token is constant = no signal.** So:
 (Same conclusion as the source-type discussion: design for it; adopt the machinery when the instance count justifies
 it, not before.)
 
+**Correction / the real mechanism — a learned MLP encoder, not more tokens.** A `method_emb` *token* (and the fixed
+`op_emb` **codebook** generally) fits a *small discrete* set — fine for `{SYM, HIER, ELEM}`. But once operators are
+**higher-order and parameterized** (`ancestor-path × method × stop-β × edge-weights`) the space is **continuous and
+compositional**, and no lookup table — nor a handful of factored tokens — can span it (you can't *index* a real-valued
+β, nor enumerate compositions). The mechanism that can: **compute the operator encoding with a small MLP from an
+operator SPECIFICATION** — `op_encoding = MLP([relation_emb, method_emb, params…])` — instead of looking it up. The
+MLP is the *higher-order function realized in the architecture*: the "operator constructor" that takes the parameters
+(method, β, edge-weights) and emits the `d_model` operator token.
+- **Parameterized:** β / edge-weights enter as real-valued inputs (a codebook holds points, not a continuum).
+- **Compositional + interpolable:** unseen (method, β) configs map smoothly; the base relations `{SYM, HIER, ELEM}`
+  become special *points* the MLP can still produce — the current codebook is the degenerate "lookup for one-hot
+  specs" case.
+- **Hypernetwork-flavored:** a small net generating the conditioning vector from a spec — the honest way to feed a
+  *function-with-parameters* to the model. Spec source = learned per-component embeddings (relation/method) + scalar
+  params; optionally grounded in e5-of-description (but that reintroduces prompt-rewriting; the MLP mediates it into a
+  *learned* encoding).
+- **Scope:** overkill for 3 discrete relations; it is the **enabling piece** for parameterized/higher-order operators
+  — it's what turns "operator × method × representation" from a *factoring* into something the model can actually
+  consume. Adopt it *when building* PATH-with-methods, and the codebook stays valid for the base relations meanwhile
+  (the MLP can be introduced as `op_encoding = MLP(spec)` with the current ops as its first, one-hot-spec outputs).
+
 ## 6. Why PATH (multi-path) is *not* redundant to HIER, though LINEAGE was
 
 `HIER` = the single category-hierarchy **edge**. Single-path `LINEAGE` = one chain of `HIER` edges ⊂ (`HIER` +
