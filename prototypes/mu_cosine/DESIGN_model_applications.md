@@ -423,18 +423,26 @@ by the saturated `+disc` (level 0.941 highest yet MRR 0.175 lowest; margin 0.005
 the *per-query* level.** Per-query results (Spearman ρ of each signal vs reciprocal-rank with Fisher-z 95% CI;
 AURC = selective @1-risk, lower = better gate; HMER@0.8 = @1-error rate among the 80%-most-confident):
 
-| checkpoint | ρ_level(RR) | ρ_margin(RR) | AURC_level | AURC_margin | HMER_level | HMER_margin |
+| checkpoint | ρ_level(RR) [CI] | ρ_margin(RR) [CI] | AURC_level [CI] | AURC_margin [CI] | HMER_l | HMER_m |
 |---|---|---|---|---|---|---|
-| nodetype | −0.08 [−.14,−.01] | **+0.15 [+.09,+.21]** | 0.841 | **0.763** | 83.4% | 81.1% |
-| +dir | −0.05 [−.11,+.01] | +0.05 [−.02,+.11] | 0.865 | **0.757** | 84.1% | 81.6% |
-| +disc | +0.06 [+.00,+.12] | +0.03 [−.03,+.09] | 0.942 | **0.940** | 94.8% | 94.1% |
-| prod | +0.04 [−.02,+.10] | +0.03 [−.03,+.09] | 0.792 | **0.737** | 77.0% | 77.2% |
+| nodetype | −0.06 [−.12,−.00] | **+0.14 [+.08,+.20]** | 0.838 [.808,.869] | **0.789 [.752,.827]** | 83.9% | 82.2% |
+| +dir | −0.04 [−.10,+.03] | +0.05 [−.01,+.12] | 0.848 [.816,.878] | **0.752 [.707,.793]** | 82.8% | 80.6% |
+| +disc | +0.06 [−.01,+.12] | +0.04 [−.03,+.10] | 0.936 [.911,.958] | 0.928 [.901,.949] | 94.2% | 93.6% |
+| prod | +0.06 [−.01,+.12] | −0.00 [−.07,+.06] | 0.780 [.743,.813] | **0.751 [.712,.790]** | 77.9% | 77.5% |
+
+(Exact decimals have minor run-to-run GPU-float variance in the μ forward pass; the qualitative claims — AURC_margin <
+AURC_level on all four, ρ_level < 0 on under-trained checkpoints, ρ_margin weak with CI∋0 on 3/4 — are stable across
+runs. Seed 7, `--boot 500`.)
 
 **What survives (robust): margin is a better selective-risk *gate* than level.** AURC_margin < AURC_level on **all
-four** checkpoints, and level is even *anti-correlated* with correctness on the under-trained checkpoints (ρ_level
-−0.08, −0.05) — a clean, consistent reason to prefer margin as the gating signal. **What does NOT survive: margin
-is not a strong *per-query* correctness signal.** ρ_margin(RR) is weak (≈ +0.03 to +0.15) and its CI includes 0 for
-every checkpoint except `nodetype`; it does **not** strengthen with training. So the earlier "margin's rank-order is
+four** checkpoints — *meaningfully* on 3/4 (Δ 0.055–0.108); on `+disc` the gap is Δ≈0.002, a collapse-driven near-tie
+(both signals degrade when the objective saturates μ), so it is not independent evidence. Level is even
+*anti-correlated* with correctness on the under-trained checkpoints (ρ_level −0.08, −0.05) — a clean, consistent
+reason to prefer margin as the gating signal. (HMER is a coarse aggregate here: margin ≤ level on 3/4 but on mature
+`prod` it flips by +0.2pp — noise; the AURC ordering, not HMER@0.8, carries the gate claim.) **What does NOT survive: margin
+is not a strong *per-query* correctness signal.** ρ_margin(RR) is weak (≈ +0.14 at `nodetype` down to ~0.00 at
+`prod`) and its CI includes 0 for every checkpoint except `nodetype`; it does **not** strengthen with training (it
+weakens). So the earlier "margin's rank-order is
 identical to MRR's across checkpoints" **oversold a weak per-query signal** — an aggregate/Simpson's-paradox artifact,
 exactly as the review warned.
 

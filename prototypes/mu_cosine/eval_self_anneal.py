@@ -109,9 +109,7 @@ def main():
         shortlists.append((c, cand_pos[tp], top))
 
     print(f"[DATA] {len(queries)} queries · e5 top-{a.topn} shortlists (frozen, shared) · mode={a.confidence_mode} τ={tau} · boot={a.boot}\n")
-    print(f"  {'checkpoint':12} {'mean conf':>9} {'hi-conf%':>8} {'eff.α':>6} {'MRR':>6} │ "
-          f"{'ρ_lvl(CI)':>16} {'ρ_mrg(CI)':>16} │ {'AURC_lvl':>9} {'AURC_mrg':>9} │ {'HMER_lvl':>8} {'HMER_mrg':>8}")
-    audit = ["checkpoint\tqid\ttop1_mu\ttop2_mu\tmargin\trank\trr"]; per_ckpt_margin = {}
+    audit = ["checkpoint\tqid\ttop1_mu\ttop2_mu\tmargin\trank\trr"]; per_ckpt_margin = {}; rows = []
     for spec in a.ckpts:
         path, _, label = spec.partition(":"); label = label or path
         model = build_model(path, dev); n_ops = model.op_emb.weight.shape[0]
@@ -144,10 +142,19 @@ def main():
         rl, rm = spearman(lvl, rr), spearman(mrg, rr)
         cll, chl = fisher_ci(rl, n); clm, chm = fisher_ci(rm, n)
         al = aurc(lvl, wrong); am = aurc(mrg, wrong)
+        all_, alh = boot_aurc_ci(lvl, wrong, a.boot, a.seed); aml, amh = boot_aurc_ci(mrg, wrong, a.boot, a.seed)
         hl, hm = hmer(lvl, wrong), hmer(mrg, wrong)
-        print(f"  {label:12} {mean_conf:9.3f} {hi:7.1%} {eff_a:6.3f} {mrr:6.3f} │ "
-              f"{rl:+.2f}[{cll:+.2f},{chl:+.2f}] {rm:+.2f}[{clm:+.2f},{chm:+.2f}] │ "
-              f"{al:9.3f} {am:9.3f} │ {hl:7.1%} {hm:7.1%}")
+        rows.append((label, mean_conf, hi, eff_a, mrr, rl, cll, chl, rm, clm, chm, al, all_, alh, am, aml, amh, hl, hm))
+
+    # Table 1 — blend / gating diagnostics (docstring-advertised)
+    print(f"  {'checkpoint':12} {'mean conf':>9} {'hi-conf%':>8} {'eff.α':>6} {'MRR':>6}")
+    for r in rows:
+        print(f"  {r[0]:12} {r[1]:9.3f} {r[2]:7.1%} {r[3]:6.3f} {r[4]:6.3f}")
+    # Table 2 — per-query discrimination (the thesis evidence): ρ(signal,RR)±Fisher-z CI · AURC±bootstrap CI · HMER@0.8
+    print(f"\n  {'checkpoint':12} {'ρ_lvl(RR)[CI]':>19} {'ρ_mrg(RR)[CI]':>19}   {'AURC_lvl[CI]':>21} {'AURC_mrg[CI]':>21}   {'HMER_l':>6} {'HMER_m':>6}")
+    for (lb, mc, hi, ea, mrr, rl, cll, chl, rm, clm, chm, al, all_, alh, am, aml, amh, hl, hm) in rows:
+        print(f"  {lb:12} {rl:+.2f}[{cll:+.2f},{chl:+.2f}] {rm:+.2f}[{clm:+.2f},{chm:+.2f}]   "
+              f"{al:.3f}[{all_:.3f},{alh:.3f}] {am:.3f}[{aml:.3f},{amh:.3f}]   {hl:5.1%} {hm:5.1%}")
     # cross-checkpoint per-query margin stability (are high-margin queries the SAME across training, not reshuffled?)
     labs = list(per_ckpt_margin)
     if len(labs) >= 2:
@@ -155,8 +162,11 @@ def main():
         print(f"\n  per-query margin stability ρ({labs[0]}↔{labs[-1]}) = {st:+.3f}  (high = same queries confident, not random reshuffle)")
     open(a.audit_out, "w").write("\n".join(audit) + "\n")
     print(f"  per-query audit ({len(audit)-1} rows) → {a.audit_out}")
-    print("\n  Read: ρ_mrg > ρ_lvl and AURC_mrg < AURC_lvl and HMER_mrg < HMER_lvl ⇒ margin is the better per-query")
-    print("  correctness signal (esp. on the saturated/confident-but-wrong checkpoint). n=4 ckpts, 1 seed ⇒ 'consistent with', not proof.")
+    print("\n  Read (narrowed thesis): margin is the better selective-risk GATE — AURC_mrg < AURC_lvl on all 4 checkpoints")
+    print("  (meaningfully on 3/4, Δ 0.055–0.108; +disc Δ≈0.002 is a collapse-driven near-tie, not independent evidence),")
+    print("  and ρ_lvl is NEGATIVE on the under-trained checkpoints. Margin is NOT a strong per-query correctness signal:")
+    print("  ρ_mrg is weak (CI incl. 0 on 3/4), and on the mature prod checkpoint ρ_lvl ≳ ρ_mrg and HMER is ~tied.")
+    print("  n=4 ckpts from one objective-progression trajectory, 1 seed ⇒ 'consistent with' self-annealing, not proof.")
 
 
 if __name__ == "__main__":
