@@ -412,11 +412,56 @@ alternative confidence signals not yet swept — top1-μ was the cheapest and su
    fabricating a container. The +0.037 vs +0.003 split is evidence the signal is *trustworthy*, not merely present.
    *Boundary:* this is demonstrated **operationally** (top-μ predicts where μ helps); full **probabilistic**
    calibration (does μ=0.7 ⇒ 70% membership? ECE) remains the deferred calibration item.
-2. **Self-annealing blend — μ earns weight as it learns.** Under the adaptive rule α rises with top-μ, so as μ
-   trains on more data its confident regions expand → more queries clear the confidence bar → the **effective mean
-   α climbs on its own, no re-tuning**, and e5 recedes to only the still-uncovered frontier. *Testable (no Haiku):*
-   run the confidence diagnostic across checkpoints of increasing training data; expect the high-confidence
-   fraction and effective-α to rise with data. Not yet measured — a cheap, high-value validation.
+2. **Self-annealing blend — μ earns weight as it learns.** Under the adaptive rule α rises with confidence, so as μ
+   trains its confident regions expand → the **effective mean α climbs on its own, no re-tuning**, and e5 recedes to
+   the still-uncovered frontier.
+
+**Measured (`eval_self_anneal.py`, 4 checkpoints, shared frozen-e5 shortlists, 1000 queries, seed 7).** The naive
+aggregate table (mean top1-μ / mean margin / MRR per checkpoint) *suggested* margin tracks MRR while level is fooled
+by the saturated `+disc` (level 0.941 highest yet MRR 0.175 lowest; margin 0.005 lowest). **But per the review
+(Perplexity council, PR #3391), aggregate means can hide the actual failure mode — so the claim must be tested at
+the *per-query* level.** Per-query results (Spearman ρ of each signal vs reciprocal-rank with Fisher-z 95% CI;
+AURC = selective @1-risk, lower = better gate; HMER@0.8 = @1-error rate among the 80%-most-confident):
+
+| checkpoint | ρ_level(RR) [CI] | ρ_margin(RR) [CI] | AURC_level [CI] | AURC_margin [CI] | HMER_l | HMER_m |
+|---|---|---|---|---|---|---|
+| nodetype | −0.06 [−.12,−.00] | **+0.14 [+.08,+.20]** | 0.838 [.808,.869] | **0.789 [.752,.827]** | 83.9% | 82.2% |
+| +dir | −0.04 [−.10,+.03] | +0.05 [−.01,+.12] | 0.848 [.816,.878] | **0.752 [.707,.793]** | 82.8% | 80.6% |
+| +disc | +0.06 [−.01,+.12] | +0.04 [−.03,+.10] | 0.936 [.911,.958] | 0.928 [.901,.949] | 94.2% | 93.6% |
+| prod | +0.06 [−.01,+.12] | −0.00 [−.07,+.06] | 0.780 [.743,.813] | **0.751 [.712,.790]** | 77.9% | 77.5% |
+
+(Exact decimals have minor run-to-run GPU-float variance in the μ forward pass; the qualitative claims — AURC_margin <
+AURC_level on all four, ρ_level < 0 on under-trained checkpoints, ρ_margin weak with CI∋0 on 3/4 — are stable across
+runs. Seed 7, `--boot 500`.)
+
+**What survives (robust): margin is a better selective-risk *gate* than level.** AURC_margin < AURC_level on **all
+four** checkpoints — *meaningfully* on 3/4 (Δ 0.029–0.096); on `+disc` the gap is Δ≈0.008, a collapse-driven near-tie
+(both signals degrade when the objective saturates μ), so it is not independent evidence. Level is even
+*anti-correlated* with correctness on the under-trained checkpoints (ρ_level −0.06, −0.04) — a clean, consistent
+reason to prefer margin as the gating signal. (HMER is a coarse aggregate here: margin ≤ level on 3/4 but on mature
+`prod` it flips by +0.2pp — noise; the AURC ordering, not HMER@0.8, carries the gate claim.) **What does NOT survive: margin
+is not a strong *per-query* correctness signal.** ρ_margin(RR) is weak (≈ +0.14 at `nodetype` down to ~0.00 at
+`prod`) and its CI includes 0 for every checkpoint except `nodetype`; it does **not** strengthen with training (it
+weakens). So the earlier "margin's rank-order is
+identical to MRR's across checkpoints" **oversold a weak per-query signal** — an aggregate/Simpson's-paradox artifact,
+exactly as the review warned.
+
+Corrected claims (both prior overclaims withdrawn):
+- **NOT "calibration-invariant."** Margin is *more robust to global level shifts / saturation* than raw top1-μ (the
+  `+disc` case, and the negative ρ_level early), but it is still affected by score scaling/sharpening and by the
+  checkpoint objective — a relative, not invariant, measure.
+- **NOT "self-annealing confirmed" — "consistent with self-annealing (at the gate level)."** Mean margin
+  rises and gate quality AURC_margin (0.789→0.752→0.751) improves along `nodetype→+dir→prod`, but n=4
+  checkpoints from **one trajectory differing by objective, not data volume**, and `+dir`↔`prod` margin is nearly
+  flat while MRR differs — this supports "consistent with," not proof. Per-query discrimination does **not** rise.
+- Per-query margin stability ρ(nodetype↔prod) = **+0.386** (moderate — high-margin queries are somewhat persistent
+  across training, not a random reshuffle, but not strongly). Per-query audit emitted for offline HMER / risk-coverage
+  / difficulty-stratified analysis.
+
+**Net:** the margin-over-level thesis holds as a *selective-risk gating* result (use margin, not level, especially
+OOD / across model states); the strong "confidence tracks correctness per query" and "self-annealing confirmed"
+framings are withdrawn. Multi-seed training + a true data-volume anneal + AUGRC/failure-AUROC with query-bootstrap
+CIs are the follow-ups needed to move from "consistent with" to a claim (deferred; see review memo §5.3).
 
 #### Judge→loss routing — the loss is keyed off provenance, not a new embedding (now in the main trainer)
 The discriminative loss is *not* a new "judge type." Provenance (`graph`/`haiku`/`human`/`sonnet`/`opus`) is an
