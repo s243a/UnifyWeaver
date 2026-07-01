@@ -65,6 +65,8 @@ def main():
     ap.add_argument("--steps", type=int, default=500); ap.add_argument("--bs", type=int, default=48)
     ap.add_argument("--lr", type=float, default=3e-4); ap.add_argument("--replay", type=float, default=1.0,
                     help="weight on the ELEM(bookmark|folder-title) replay loss")
+    ap.add_argument("--lineage-weight", type=float, default=1.0,
+                    help="weight on the LINEAGE loss; set 0 for the elem-only control (auxiliary-task ablation)")
     ap.add_argument("--seed", type=int, default=7, help="SPLIT seed (fix across runs for a comparable CI)")
     ap.add_argument("--train-seed", type=int, default=None, help="TRAINING rng seed (default=--seed); vary for multi-seed CI")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -138,11 +140,10 @@ def main():
     model.train()
     for step in ([] if a.eval_only else range(a.steps)):
         bkidx = trng.sample(train_idx, min(a.bs, len(train_idx)))
-        # LINEAGE: passage = a SAMPLED path variant (id-dropout + prefix-dropout) of each bookmark's folder
-        lin_pass = [f"P:{bm_folder[i]}:{trng.randrange(len(variants[bm_folder[i]]))}" for i in bkidx]
-        loss = contrastive(bkidx, lin_pass, ow_lin)
-        if a.replay > 0:                                            # ELEM replay: passage = folder TITLE
-            loss = loss + a.replay * contrastive(bkidx, [f"F:{bm_folder[i]}" for i in bkidx], ow_elem)
+        loss = a.replay * contrastive(bkidx, [f"F:{bm_folder[i]}" for i in bkidx], ow_elem)     # ELEM replay (base)
+        if a.lineage_weight > 0:                                    # LINEAGE (auxiliary): passage = sampled path variant
+            lin_pass = [f"P:{bm_folder[i]}:{trng.randrange(len(variants[bm_folder[i]]))}" for i in bkidx]
+            loss = loss + a.lineage_weight * contrastive(bkidx, lin_pass, ow_lin)
         opt.zero_grad(); loss.backward(); opt.step()
 
     # ── eval on held-out bookmarks: rank candidate folders; LINEAGE uses each folder's FULL path ──

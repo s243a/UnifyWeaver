@@ -311,6 +311,15 @@ path-overlap *metric* that revealed this. **Verdict: filer = `e5 + max(μ-elem, 
 required.** (Open: lineage was a *fresh* op with only 300 steps vs wiki's rich Wikipedia pretraining, so it may be
 undertrained rather than wrong — but it's not needed given wiki/sym.)
 
+**Multi-seed confirm (3 seeds, retrained on own splits):** `e5+max(elem,wiki,sym)` beats `mu-elem` on all axes every
+seed — mean recall@1 0.304 vs 0.280, MRR 0.425 vs 0.414, ov|miss 0.388 vs 0.304. Adding lineage at inference stays a
+wash (`e5+max(all4)` 0.302 / 0.419 / 0.391 — recall@1/MRR a hair lower, branch a hair higher). So "best filer =
+`e5+max(elem,wiki,sym)`, lineage redundant *at inference*" is CI-hardened. *(Data note: `api_tree_paths_v8.jsonl`
+paths are 99% complete to the account root — the rate-limited harvester successfully backfilled the partial RDF
+export — so the lineage finding is NOT a path-truncation artifact; ~89% of trees have a path entry at all, the rest
+excluded. Separately testing whether *training* lineage helps the shared encoder — the auxiliary-task hypothesis —
+via a `--lineage-weight 0` ablation.)*
+
 #### Operating point — μ's edge is at recall@10 / median rank, which is exactly what an LLM re-ranker consumes
 Across **all three** results, μ's advantage over `e5-cos` concentrates at **recall@10 and median rank**, *not*
 recall@1 (where e5-cos is often comparable or slightly ahead): home-turf recall@10 **0.494 vs 0.424** /
