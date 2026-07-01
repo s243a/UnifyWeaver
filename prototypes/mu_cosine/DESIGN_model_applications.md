@@ -356,11 +356,23 @@ beat e5" finding was an artifact of scoring with *pure* ELEM instead of the supe
 score = **e5 topical similarity + μ operator-superposition** (directional membership + symmetric relatedness,
 Haiku-corrected) — computed as a superposition or a sum of per-operator queries.
 
-**Tuned blend (`eval_hybrid.py` sweep, prefixed e5 shared by both — one encode):** the best score is
-**`e5 + 0.5·μ-super`** (equal weight, normalised) — **MRR 0.365 vs e5-cos 0.302 (+21%)**, recall@1 0.229 vs 0.183.
-The **superposition** is the right μ operator (beats pure-ELEM and a hand-mixed ELEM+SYM); **α≈0.5** is the sweet
-spot; and **μ-super *alone* already beats e5-cos** (0.329 vs 0.302), the blend adding more. Prefixed e5 is the
-default input to μ (same embeddings feed e5-cos and μ ⇒ computed once; the ablation showed no-prefix isn't
+**Tuned blend (`eval_hybrid.py` sweep, prefixed e5 shared by both — one encode).** The μ part should be a
+**non-linear OR over the separately-computed per-operator queries** — `max(μ-elem, μ-wiki, μ-sym)` — *not* the
+model's internal superposition, and *not* a linear mix:
+
+| μ score | recall@1 | recall@5 | MRR |
+|---|---|---|---|
+| e5-cos alone | 0.187 | 0.434 | 0.292 |
+| μ-super (internal superposition) | 0.177 | 0.477 | 0.320 |
+| **μ-max(elem,wiki,sym)** (OR of separate queries) | **0.220** | 0.496 | **0.354** |
+| e5 + 0.5·μ-max | 0.216 | **0.506** | **0.358** |
+
+**`max` over separate operator queries beats the internal `μ-super`** (0.354 vs 0.320) — a true container is
+relevant *by membership OR relatedness*, and `max` keeps a strong single-operator hit that the superposition
+averages away (the user's point: the combiner needn't be linear). **`μ-max` *alone* beats e5-cos on every metric**
+(recall@1 0.220 vs 0.187, MRR 0.354 vs 0.292); the e5-blend adds only a hair (0.358) — the non-linear operator
+combination is doing the work. So the retrieval score = **`max(μ-elem, μ-wiki, μ-sym)` (± e5)**. Prefixed e5 is
+the default input to μ (same embeddings feed e5-cos and μ ⇒ computed once; the ablation showed no-prefix isn't
 meaningfully better, so no separate pass).
 
 #### Judge→loss routing — the loss is keyed off provenance, not a new embedding (now in the main trainer)

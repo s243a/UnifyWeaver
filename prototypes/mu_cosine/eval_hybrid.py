@@ -34,6 +34,7 @@ def main():
     tok = Tokenizer(qt, pt, idx, parents={}, deg={})
     model = build_model(a.ckpt, dev); n_ops = model.op_emb.weight.shape[0]
     OPW = {"elem": torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS["ELEM"]]), 1.0),
+           "wiki": torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS["WIKI"]]), 1.0),
            "sym":  torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS["SYM"]]), 1.0),
            "super": torch.full((1, n_ops), 1.0 / n_ops)}                    # blend = operator superposition
     C = pt[[idx[c] for c in cands]]                                          # candidate containers as passage
@@ -52,44 +53,46 @@ def main():
     nz = lambda v: [(x - min(v)) / (max(v) - min(v) + 1e-9) for x in v]
     cand_pos = {c: i for i, c in enumerate(cands)}
     e5_ranks = []
-    store = []                                                              # per query: (tp_i, top, nz(e5), {op:nz(μ)})
+    store = []                                                              # per query: (tp_i, top, RAW e5, {op:RAW μ})
     for c, tp in queries:
         qv = qt[idx[c]]
         e5s = (qv @ C.T).cpu()
         order = torch.argsort(-e5s).tolist(); tp_i = cand_pos[tp]
         e5_ranks.append(1 + order.index(tp_i))
         top = order[:a.topn]
-        muvs = {k: nz(mu([(c, cands[j]) for j in top], OPW[k])) for k in ("elem", "super", "sym")}
-        store.append((tp_i, top, nz([e5s[j].item() for j in top]), muvs))
+        muvs = {k: mu([(c, cands[j]) for j in top], OPW[k]) for k in ("elem", "wiki", "sym", "super")}
+        store.append((tp_i, top, [e5s[j].item() for j in top], muvs))
 
-    def blend_ranks(fn):                                                    # fn(e5vec, muvs) → score vec over shortlist
+    def blend_ranks(mufn, alpha):
+        """mufn(muvs)→raw μ-part vec; score = (1−α)·nz(e5) + α·nz(μ-part). alpha=1 ⇒ μ-only, 0 ⇒ e5-only."""
         R = []
         for tp_i, top, e5v, muvs in store:
-            sc = fn(e5v, muvs)
+            e, m = nz(e5v), nz(mufn(muvs))
+            sc = [(1 - alpha) * e[i] + alpha * m[i] for i in range(len(e))]
             ro = [top[j] for j in sorted(range(len(top)), key=lambda j: -sc[j])]
             R.append(1 + ro.index(tp_i) if tp_i in ro else a.topn + 1)
         return R
     def report(nm, R):
-        print(f"  {nm:22} {rr(R,1):9.3f} {rr(R,5):9.3f} {sum(1.0/x for x in R)/len(R):7.3f}")
+        print(f"  {nm:26} {rr(R,1):9.3f} {rr(R,5):9.3f} {sum(1.0/x for x in R)/len(R):7.3f}")
+    mx = lambda *ks: (lambda m: [max(m[k][i] for k in ks) for i in range(len(m[ks[0]]))])   # OR over operators
 
     print(f"[DATA] {len(queries)} queries, {len(cands)} candidate containers, e5 top-{a.topn} → re-rank (prefixed e5)")
-    print(f"\n  {'method':22} {'recall@1':>9} {'recall@5':>9} {'MRR':>7}")
+    print(f"\n  {'method':26} {'recall@1':>9} {'recall@5':>9} {'MRR':>7}")
     report("e5-cos alone", e5_ranks)
-    for k in ("elem", "super", "sym"):
-        report(f"μ-{k} alone", blend_ranks(lambda e, m, k=k: m[k]))
-    print("  ── e5 + α·μ blend sweep ──")
+    muparts = {"super": lambda m: m["super"], "elem": lambda m: m["elem"],
+               "max(super,elem)": mx("super", "elem"),
+               "max(elem,wiki,sym)": mx("elem", "wiki", "sym"),
+               "max(super,elem,wiki,sym)": mx("super", "elem", "wiki", "sym")}
+    for nm, f in muparts.items():
+        report(f"μ-{nm} alone", blend_ranks(f, 1.0))
+    print("  ── e5 + 0.5·μ-part blend ──")
     best = (None, -1)
-    for op in ("super", "elem"):
-        for al in (0.3, 0.5, 0.7):
-            R = blend_ranks(lambda e, m, op=op, al=al: [(1-al)*x + al*y for x, y in zip(e, m[op])])
-            report(f"e5 + {al:.1f}·μ-{op}", R)
-            mrr = sum(1.0/x for x in R)/len(R)
-            if mrr > best[1]: best = (f"e5+{al}·μ-{op}", mrr)
-    # learned-ish op mix: weight ELEM (directional/leakage-correct) + SYM (relatedness), skip WIKI
-    R = blend_ranks(lambda e, m: [0.4*e[i] + 0.4*m["elem"][i] + 0.2*m["sym"][i] for i in range(len(e))])
-    report("e5·.4 + μelem·.4 + μsym·.2", R)
-    print(f"\n  best blend: {best[0]} (MRR {best[1]:.3f}) vs e5-cos MRR {sum(1.0/x for x in e5_ranks)/len(e5_ranks):.3f}")
-    hy_ranks = blend_ranks(lambda e, m: m["super"])                         # for the sibling metric below
+    for nm, f in muparts.items():
+        R = blend_ranks(f, 0.5); report(f"e5 + 0.5·μ-{nm}", R)
+        mrr = sum(1.0/x for x in R)/len(R)
+        if mrr > best[1]: best = (f"e5+0.5·μ-{nm}", mrr)
+    print(f"\n  best: {best[0]} (MRR {best[1]:.3f}) vs e5-cos MRR {sum(1.0/x for x in e5_ranks)/len(e5_ranks):.3f}")
+    hy_ranks = blend_ranks(lambda m: m["super"], 1.0)                       # for the sibling metric below
     # how often μ promotes the true parent that e5 buried below rank 1 but within the shortlist
     fixed = sum(1 for e, h in zip(e5_ranks, hy_ranks) if e > 1 and h == 1)
     broke = sum(1 for e, h in zip(e5_ranks, hy_ranks) if e == 1 and h > 1)
