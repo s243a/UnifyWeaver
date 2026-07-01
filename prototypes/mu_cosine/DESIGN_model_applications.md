@@ -435,9 +435,9 @@ AURC_level on all four, ρ_level < 0 on under-trained checkpoints, ρ_margin wea
 runs. Seed 7, `--boot 500`.)
 
 **What survives (robust): margin is a better selective-risk *gate* than level.** AURC_margin < AURC_level on **all
-four** checkpoints — *meaningfully* on 3/4 (Δ 0.055–0.108); on `+disc` the gap is Δ≈0.002, a collapse-driven near-tie
+four** checkpoints — *meaningfully* on 3/4 (Δ 0.029–0.096); on `+disc` the gap is Δ≈0.008, a collapse-driven near-tie
 (both signals degrade when the objective saturates μ), so it is not independent evidence. Level is even
-*anti-correlated* with correctness on the under-trained checkpoints (ρ_level −0.08, −0.05) — a clean, consistent
+*anti-correlated* with correctness on the under-trained checkpoints (ρ_level −0.06, −0.04) — a clean, consistent
 reason to prefer margin as the gating signal. (HMER is a coarse aggregate here: margin ≤ level on 3/4 but on mature
 `prod` it flips by +0.2pp — noise; the AURC ordering, not HMER@0.8, carries the gate claim.) **What does NOT survive: margin
 is not a strong *per-query* correctness signal.** ρ_margin(RR) is weak (≈ +0.14 at `nodetype` down to ~0.00 at
@@ -451,7 +451,7 @@ Corrected claims (both prior overclaims withdrawn):
   `+disc` case, and the negative ρ_level early), but it is still affected by score scaling/sharpening and by the
   checkpoint objective — a relative, not invariant, measure.
 - **NOT "self-annealing confirmed" — "consistent with self-annealing (at the gate level)."** Mean margin
-  (0.028→0.056→0.060) and gate quality AURC_margin (0.763→0.757→0.737) improve along `nodetype→+dir→prod`, but n=4
+  rises and gate quality AURC_margin (0.789→0.752→0.751) improves along `nodetype→+dir→prod`, but n=4
   checkpoints from **one trajectory differing by objective, not data volume**, and `+dir`↔`prod` margin is nearly
   flat while MRR differs — this supports "consistent with," not proof. Per-query discrimination does **not** rise.
 - Per-query margin stability ρ(nodetype↔prod) = **+0.386** (moderate — high-margin queries are somewhat persistent

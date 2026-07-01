@@ -163,7 +163,7 @@ def main():
     open(a.audit_out, "w").write("\n".join(audit) + "\n")
     print(f"  per-query audit ({len(audit)-1} rows) → {a.audit_out}")
     print("\n  Read (narrowed thesis): margin is the better selective-risk GATE — AURC_mrg < AURC_lvl on all 4 checkpoints")
-    print("  (meaningfully on 3/4, Δ 0.055–0.108; +disc Δ≈0.002 is a collapse-driven near-tie, not independent evidence),")
+    print("  (meaningfully on 3/4; +disc is a collapse-driven near-tie — margin also degenerates when the objective saturates μ),")
     print("  and ρ_lvl is NEGATIVE on the under-trained checkpoints. Margin is NOT a strong per-query correctness signal:")
     print("  ρ_mrg is weak (CI incl. 0 on 3/4), and on the mature prod checkpoint ρ_lvl ≳ ρ_mrg and HMER is ~tied.")
     print("  n=4 ckpts from one objective-progression trajectory, 1 seed ⇒ 'consistent with' self-annealing, not proof.")
