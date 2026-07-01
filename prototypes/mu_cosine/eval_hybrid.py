@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
-"""eval_hybrid.py — the application: hybrid retrieval (e5 coarse rank → μ directional re-rank) vs e5-alone.
+"""eval_hybrid.py — the application: hybrid retrieval (e5 coarse rank → μ re-rank) vs e5-alone.
 
 The payoff of the whole μ-vs-e5 arc. Task = "find my container": given a node, recover its true parent category
 from the full candidate pool. Stage 1 (e5): rank candidates by cosine — cheap, but confuses the true parent with
-SIBLINGS and with the reverse direction (all topically similar). Stage 2 (μ): re-rank e5's top-N by the
-DIRECTIONAL membership μ(node|candidate) (ELEM), which knows a sibling is NOT a container and which way membership
-points. Metric: true-parent recall@1 / MRR for e5-alone vs the hybrid — does μ fix e5's top-of-list errors?
+SIBLINGS and with the reverse direction (all topically similar). Stage 2 (μ): re-rank e5's top-N by directional
+membership, which knows a sibling is NOT a container and which way membership points.
 
-  python3 eval_hybrid.py --ckpt model_prod.pt --graph /tmp/merged_category_parent.tsv
+This script prints three things:
+  1. TUNING GRID — μ-part (which operators, combined how) × α (e5 weight). The winning score is the non-linear OR
+     `max(μ-elem, μ-wiki, μ-sym)` (a container is relevant by membership OR relatedness; `max` keeps a strong
+     single-operator hit a superposition/mean averages away) — NOT pure ELEM, NOT the internal μ-super. Best:
+     `max(elem,wiki,sym)` at α≈0.9 → ~+25% MRR over e5-cos.
+  2. CONTAINER-VS-SIBLING — μ's decisive close-neg regime: parent ranked above ALL the child's siblings.
+  3. CONFIDENCE-ADAPTIVE α — α per-query from μ's own top-score (calibrated [0,1] degree = free confidence signal).
+     Diagnostic shows μ earns its weight where confident (+0.037 MRR) vs not (+0.003); adaptive α∈[0.3,0.9] beats
+     fixed α=0.9 by +0.006 in-dist (μ is neutral-not-harmful where unconfident, so its real payoff is OOD).
+
+  python3 eval_hybrid.py --ckpt model_prod.pt --graph /tmp/merged_category_parent.tsv --n-queries 1000 --topn 20
 """
 import argparse, random, torch
 from mu_attention import build_e5_tables, Tokenizer, OPS, load_dag
