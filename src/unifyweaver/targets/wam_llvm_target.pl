@@ -63,6 +63,7 @@
     llvm_emit_printf_string/6,           % +FmtGlobal, +FmtLen, +FmtVar, +PrintVar, +PtrIR, -Parts
     llvm_emit_printf0/5,                 % +FmtGlobal, +FmtLen, +FmtVar, +PrintVar, -Parts
     llvm_emit_stream_driver_ir/3,        % +InputPath, +DriverBlocks, -DriverIR
+    llvm_emit_binary_stream_driver_ir/4, % +InputPath, +RecordSize, +DriverBlocks, -DriverIR
     llvm_emit_ascii_case_slice_print/5   % +Mode, +PtrIR, +LenIR, +PrintBase, -CallIR
 ]).
 
@@ -5002,6 +5003,94 @@ rtv.eof:
   %rtv.eof_v0 = insertvalue %Value undef, i32 0, 0
   %rtv.eof_v = insertvalue %Value %rtv.eof_v0, i64 %rtv.eof_aid, 1
   ret %Value %rtv.eof_v
+}
+
+; Fixed-size binary record reader over the buffered stream: copies
+; exactly %size bytes into %dst through the reader buffer. Returns
+; 1 for a full record, 0 for clean EOF at a record boundary, and -1
+; for a read error or a trailing partial record.
+define i64 @wam_stream_read_record(%Value %handle_value, i64 %size, i8* %dst) {
+entry:
+  %rrv.t = call i32 @value_tag(%Value %handle_value)
+  %rrv.is_int = icmp eq i32 %rrv.t, 1
+  br i1 %rrv.is_int, label %rrv.lookup_handle, label %rrv.fail
+
+rrv.fail:
+  ret i64 -1
+
+rrv.lookup_handle:
+  %rrv.handle64 = call i64 @value_payload(%Value %handle_value)
+  %rrv.handle = trunc i64 %rrv.handle64 to i32
+  %rrv.handle_min = icmp sgt i32 %rrv.handle, 0
+  %rrv.handle_max = icmp ult i32 %rrv.handle, 4096
+  %rrv.handle_ok = and i1 %rrv.handle_min, %rrv.handle_max
+  br i1 %rrv.handle_ok, label %rrv.load_handle, label %rrv.fail
+
+rrv.load_handle:
+  %rrv.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %rrv.handle
+  %rrv.reader = load %WamLineReader*, %WamLineReader** %rrv.slot
+  %rrv.reader_null = icmp eq %WamLineReader* %rrv.reader, null
+  br i1 %rrv.reader_null, label %rrv.fail, label %rrv.have_handle
+
+rrv.have_handle:
+  %rrv.fd_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 0
+  %rrv.fd = load i32, i32* %rrv.fd_slot
+  %rrv.fd_ok = icmp sge i32 %rrv.fd, 0
+  br i1 %rrv.fd_ok, label %rrv.loop, label %rrv.fail
+
+rrv.loop:
+  %rrv.copied = phi i64 [ 0, %rrv.have_handle ], [ %rrv.copied_next, %rrv.chunk ], [ %rrv.copied, %rrv.after_read ]
+  %rrv.done = icmp uge i64 %rrv.copied, %size
+  br i1 %rrv.done, label %rrv.full, label %rrv.need_bytes
+
+rrv.full:
+  ret i64 1
+
+rrv.need_bytes:
+  %rrv.buf_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 1
+  %rrv.buf = load i8*, i8** %rrv.buf_slot
+  %rrv.len_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 3
+  %rrv.len = load i64, i64* %rrv.len_slot
+  %rrv.pos_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 4
+  %rrv.pos = load i64, i64* %rrv.pos_slot
+  %rrv.have_byte = icmp slt i64 %rrv.pos, %rrv.len
+  br i1 %rrv.have_byte, label %rrv.chunk, label %rrv.fill
+
+rrv.chunk:
+  %rrv.avail = sub i64 %rrv.len, %rrv.pos
+  %rrv.want = sub i64 %size, %rrv.copied
+  %rrv.avail_smaller = icmp ult i64 %rrv.avail, %rrv.want
+  %rrv.n_copy = select i1 %rrv.avail_smaller, i64 %rrv.avail, i64 %rrv.want
+  %rrv.src = getelementptr i8, i8* %rrv.buf, i64 %rrv.pos
+  %rrv.dstp = getelementptr i8, i8* %dst, i64 %rrv.copied
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %rrv.dstp, i8* %rrv.src, i64 %rrv.n_copy, i1 false)
+  %rrv.pos_next = add i64 %rrv.pos, %rrv.n_copy
+  store i64 %rrv.pos_next, i64* %rrv.pos_slot
+  %rrv.copied_next = add i64 %rrv.copied, %rrv.n_copy
+  br label %rrv.loop
+
+rrv.fill:
+  %rrv.cap_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 2
+  %rrv.cap = load i64, i64* %rrv.cap_slot
+  %rrv.n = call i64 @read(i32 %rrv.fd, i8* %rrv.buf, i64 %rrv.cap)
+  %rrv.n_neg = icmp slt i64 %rrv.n, 0
+  br i1 %rrv.n_neg, label %rrv.fail, label %rrv.check_eof
+
+rrv.check_eof:
+  %rrv.n_zero = icmp eq i64 %rrv.n, 0
+  br i1 %rrv.n_zero, label %rrv.eof, label %rrv.after_read
+
+rrv.after_read:
+  store i64 %rrv.n, i64* %rrv.len_slot
+  store i64 0, i64* %rrv.pos_slot
+  br label %rrv.loop
+
+rrv.eof:
+  ; Clean EOF only at a record boundary; a trailing partial record is
+  ; an error.
+  %rrv.at_boundary = icmp eq i64 %rrv.copied, 0
+  %rrv.eof_status = select i1 %rrv.at_boundary, i64 0, i64 -1
+  ret i64 %rrv.eof_status
 }
 
 define i1 @wam_stream_close_value(%Value %handle_value) {
@@ -18015,6 +18104,209 @@ fail_close:
         [PathGlobalIR, RuntimeGlobals,
          BytesLen, BytesLen, PathLen, EntrySetupIR, LoopPhiIR, LoweredLabel,
          LoweredLabel, RecordIR, ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR]).
+
+%% llvm_emit_binary_stream_driver_ir(+InputPath, +RecordSize, +DriverBlocks, -DriverIR)
+%
+%  Binary sibling of llvm_emit_stream_driver_ir: the loop reads
+%  fixed-size RecordSize-byte records into a reusable %rec buffer with
+%  @wam_stream_read_record instead of interning text lines. There is no
+%  %line/%line_s; lowered blocks read typed fields directly from %rec.
+%  Block labels (%check_handle_value, %continue_loop, close labels)
+%  match the text skeleton so loop-carried phis work unchanged. A
+%  trailing partial record fails with the read error exit code.
+%  InputPath is a concrete path or the stdin_or_argv sentinel.
+llvm_emit_binary_stream_driver_ir(
+    InputPath,
+    RecordSize,
+    driver_blocks(RuntimeGlobals, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    !,
+    llvm_emit_binary_stream_driver_ir(InputPath, RecordSize,
+        driver_blocks(RuntimeGlobals, '', LoopPhiIR, LoweredLabel, RecordIR,
+            ContinueIR, '', CloseOkLabel, CloseOkIR),
+        DriverIR).
+
+llvm_emit_binary_stream_driver_ir(
+    InputPath,
+    RecordSize,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    !,
+    llvm_emit_binary_stream_driver_ir(InputPath, RecordSize,
+        driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+            ContinueIR, '', CloseOkLabel, CloseOkIR),
+        DriverIR).
+
+llvm_emit_binary_stream_driver_ir(
+    stdin_or_argv,
+    RecordSize,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    !,
+    format(atom(DriverIR),
+'@.wam_stream_stdin_dash = private constant [2 x i8] c"-\00"
+~w
+
+define i32 @main(i32 %argc, i8** %argv) {
+entry:
+~w
+  %rec = call i8* @malloc(i64 ~w)
+  %rec_null = icmp eq i8* %rec, null
+  br i1 %rec_null, label %fail_open, label %pick_input
+
+pick_input:
+  %have_arg = icmp sgt i32 %argc, 1
+  br i1 %have_arg, label %check_argv_path, label %use_stdin
+
+check_argv_path:
+  %argv1_ptr = getelementptr i8*, i8** %argv, i64 1
+  %argv1 = load i8*, i8** %argv1_ptr
+  %dash_ptr = getelementptr [2 x i8], [2 x i8]* @.wam_stream_stdin_dash, i32 0, i32 0
+  %dash_cmp = call i32 @strcmp(i8* %argv1, i8* %dash_ptr)
+  %is_dash = icmp eq i32 %dash_cmp, 0
+  br i1 %is_dash, label %use_stdin, label %open_argv_file
+
+open_argv_file:
+  %argv1_len = call i64 @strlen(i8* %argv1)
+  %path_id = call i64 @wam_intern_atom(i8* %argv1, i64 %argv1_len)
+  %path0 = insertvalue %Value undef, i32 0, 0
+  %path = insertvalue %Value %path0, i64 %path_id, 1
+  %file_handle = call %Value @wam_stream_open_value(%Value %path)
+  br label %have_handle
+
+use_stdin:
+  %stdin_handle = call %Value @wam_stream_open_fd_value(i64 0)
+  br label %have_handle
+
+have_handle:
+  %handle = phi %Value [ %file_handle, %open_argv_file ], [ %stdin_handle, %use_stdin ]
+  %handle_tag = extractvalue %Value %handle, 0
+  %handle_is_int = icmp eq i32 %handle_tag, 1
+  br i1 %handle_is_int, label %check_handle_value, label %fail_open
+
+check_handle_value:
+  %handle_payload = extractvalue %Value %handle, 1
+  %handle_ok = icmp sgt i64 %handle_payload, 0
+  br i1 %handle_ok, label %loop, label %fail_open
+
+loop:
+~w
+  %rec_status = call i64 @wam_stream_read_record(%Value %handle, i64 ~w, i8* %rec)
+  %rec_eof = icmp eq i64 %rec_status, 0
+  br i1 %rec_eof, label %close_stream, label %check_record
+
+check_record:
+  %rec_ok = icmp eq i64 %rec_status, 1
+  br i1 %rec_ok, label %~w, label %fail_read
+
+~w:
+~w
+
+continue_loop:
+~w
+  br label %loop
+
+~w
+close_stream:
+  %close_ok = call i1 @wam_stream_close_value(%Value %handle)
+  br i1 %close_ok, label %~w, label %fail_close
+
+~w
+
+fail_open:
+  ret i32 10
+
+fail_read:
+  %close_ignore_read = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 11
+
+fail_close:
+  ret i32 16
+}
+',
+        [RuntimeGlobals, EntrySetupIR, RecordSize, LoopPhiIR, RecordSize,
+         LoweredLabel, LoweredLabel, RecordIR, ContinueIR, BreakCloseIR,
+         CloseOkLabel, CloseOkIR]).
+
+llvm_emit_binary_stream_driver_ir(
+    InputPath,
+    RecordSize,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    llvm_emit_c_string_global(wam_stream_input_path, InputPath, PathGlobalIR, PathLen, BytesLen),
+    format(atom(DriverIR),
+'~w
+~w
+
+define i32 @main() {
+entry:
+  %path_ptr = getelementptr [~w x i8], [~w x i8]* @.wam_stream_input_path, i32 0, i32 0
+  %path_id = call i64 @wam_intern_atom(i8* %path_ptr, i64 ~w)
+  %path0 = insertvalue %Value undef, i32 0, 0
+  %path = insertvalue %Value %path0, i64 %path_id, 1
+~w
+  %rec = call i8* @malloc(i64 ~w)
+  %rec_null = icmp eq i8* %rec, null
+  br i1 %rec_null, label %fail_open, label %open_stream
+
+open_stream:
+  %handle = call %Value @wam_stream_open_value(%Value %path)
+  %handle_tag = extractvalue %Value %handle, 0
+  %handle_is_int = icmp eq i32 %handle_tag, 1
+  br i1 %handle_is_int, label %check_handle_value, label %fail_open
+
+check_handle_value:
+  %handle_payload = extractvalue %Value %handle, 1
+  %handle_ok = icmp sgt i64 %handle_payload, 0
+  br i1 %handle_ok, label %loop, label %fail_open
+
+loop:
+~w
+  %rec_status = call i64 @wam_stream_read_record(%Value %handle, i64 ~w, i8* %rec)
+  %rec_eof = icmp eq i64 %rec_status, 0
+  br i1 %rec_eof, label %close_stream, label %check_record
+
+check_record:
+  %rec_ok = icmp eq i64 %rec_status, 1
+  br i1 %rec_ok, label %~w, label %fail_read
+
+~w:
+~w
+
+continue_loop:
+~w
+  br label %loop
+
+~w
+close_stream:
+  %close_ok = call i1 @wam_stream_close_value(%Value %handle)
+  br i1 %close_ok, label %~w, label %fail_close
+
+~w
+
+fail_open:
+  ret i32 10
+
+fail_read:
+  %close_ignore_read = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 11
+
+fail_close:
+  ret i32 16
+}
+',
+        [PathGlobalIR, RuntimeGlobals,
+         BytesLen, BytesLen, PathLen, EntrySetupIR, RecordSize, LoopPhiIR,
+         RecordSize, LoweredLabel, LoweredLabel, RecordIR, ContinueIR,
+         BreakCloseIR, CloseOkLabel, CloseOkIR]).
 
 %% llvm_emit_ascii_case_slice_print(+Mode, +PtrIR, +LenIR, +PrintBase, -CallIR)
 %
