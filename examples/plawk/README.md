@@ -72,6 +72,7 @@ swipl -q -s tests/test_plawk_native_counter_stream_loop_driver.pl -g "setenv('UW
 swipl -q -s tests/test_plawk_native_output_stream_loop_driver.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_native_lowered_handler_stream_loop_driver.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_prefix_print.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_surface_forin_end_print.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -152,6 +153,14 @@ not `printf` formats. Mixed scalar/associative state is
 supported in the same native loop, e.g. `{ total++; counts[$1]++ }` with an
 `END` print of both `total` and `counts["ERROR"]`. `END` print fields can also
 include literal labels such as `print "total", total, "errors", counts["ERROR"]`.
+`END` can also iterate an associative array with the canonical awk report
+idiom, e.g. `{ counts[$1]++ } END { for (k in counts) print k, counts[k] }`.
+The loop lowers to a native walk over the runtime table's occupied slots via
+`wam_assoc_i64_iter_next`, maps each key id back to its text with
+`wam_atom_to_string`, and prints the loop key, same-array values (direct slot
+reads), other-array lookups such as `errs[k]` (hash lookups, `0` for missing
+keys), and string literal labels. Iteration order follows the hash table's
+slot order and, as in awk, is unspecified.
 
 For a walkthrough of the current Prolog-core syntax and how it maps to awk
 concepts like `$0`, `$1`, `NR`, `NF`, `FS`, `OFS`, and `print`, see

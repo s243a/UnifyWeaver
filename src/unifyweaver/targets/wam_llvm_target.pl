@@ -4295,6 +4295,95 @@ done:
   ret void
 }
 
+define i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %table, i64 %start) {
+entry:
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %iter.miss, label %iter.load
+
+iter.load:
+  %cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  %cap = load i64, i64* %cap_slot
+  %entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %entries_slot
+  %entries_null = icmp eq %WamAssocI64Entry* %entries, null
+  br i1 %entries_null, label %iter.miss, label %iter.loop
+
+iter.loop:
+  %idx = phi i64 [ %start, %iter.load ], [ %next_idx, %iter.next ]
+  %past_end = icmp uge i64 %idx, %cap
+  br i1 %past_end, label %iter.miss, label %iter.check
+
+iter.check:
+  %assoc_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %idx
+  %occupied_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 2
+  %occupied = load i1, i1* %occupied_slot
+  br i1 %occupied, label %iter.hit, label %iter.next
+
+iter.hit:
+  ret i64 %idx
+
+iter.next:
+  %next_idx = add i64 %idx, 1
+  br label %iter.loop
+
+iter.miss:
+  ret i64 -1
+}
+
+define i64 @wam_assoc_i64_key_at(%WamAssocI64Table* %table, i64 %idx) {
+entry:
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %kat.miss, label %kat.load
+
+kat.load:
+  %cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  %cap = load i64, i64* %cap_slot
+  %past_end = icmp uge i64 %idx, %cap
+  br i1 %past_end, label %kat.miss, label %kat.entries
+
+kat.entries:
+  %entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %entries_slot
+  %entries_null = icmp eq %WamAssocI64Entry* %entries, null
+  br i1 %entries_null, label %kat.miss, label %kat.read
+
+kat.read:
+  %assoc_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %idx
+  %key_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 0
+  %key = load i64, i64* %key_slot
+  ret i64 %key
+
+kat.miss:
+  ret i64 0
+}
+
+define i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %table, i64 %idx) {
+entry:
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %vat.miss, label %vat.load
+
+vat.load:
+  %cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  %cap = load i64, i64* %cap_slot
+  %past_end = icmp uge i64 %idx, %cap
+  br i1 %past_end, label %vat.miss, label %vat.entries
+
+vat.entries:
+  %entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %entries_slot
+  %entries_null = icmp eq %WamAssocI64Entry* %entries, null
+  br i1 %entries_null, label %vat.miss, label %vat.read
+
+vat.read:
+  %assoc_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %idx
+  %value_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 1
+  %value = load i64, i64* %value_slot
+  ret i64 %value
+
+vat.miss:
+  ret i64 0
+}
+
 define %Value @wam_stream_fail_value() alwaysinline nounwind {
 entry:
   %bad = call %Value @value_integer(i64 -1)

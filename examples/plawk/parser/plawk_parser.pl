@@ -298,18 +298,46 @@ begin_assignment_name('FS') -->
 begin_assignment_name('OFS') -->
     "OFS".
 
-end_clauses([end([PrintAction])]) -->
+end_clauses([end([Action])]) -->
     "END",
     ws,
     "{",
     ws,
-    print_action(PrintAction),
+    end_action(Action),
     ws,
     "}",
     ws,
     !.
 end_clauses([]) -->
     [].
+
+end_action(Action) -->
+    for_in_action(Action),
+    !.
+end_action(Action) -->
+    print_action(Action).
+
+for_in_action(for_in(var(LoopVar), var(ArrayName), Body)) -->
+    "for",
+    ws,
+    "(",
+    ws,
+    identifier(LoopVar),
+    ws,
+    "in",
+    identifier_boundary,
+    ws,
+    identifier(ArrayName),
+    ws,
+    ")",
+    ws,
+    for_in_body(Body).
+
+for_in_body(Actions) -->
+    action_block(Actions),
+    !.
+for_in_body([PrintAction]) -->
+    print_action(PrintAction).
 
 actions([Action | Actions]) -->
     action(Action),

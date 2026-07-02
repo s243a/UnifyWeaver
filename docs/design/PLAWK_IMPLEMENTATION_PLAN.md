@@ -338,6 +338,14 @@ needed per record for those count updates.
 Guarded associative-count rules now reuse the same native guard emitters and
 rule-chain structure as scalar counters, so the loop can run field/prefix checks
 and table increments without per-record WAM dispatch for the supported surface.
+`END` supports the canonical for-in report idiom,
+`END { for (k in counts) print k, counts[k] }`: the WAM/LLVM assoc runtime
+gained `wam_assoc_i64_iter_next`/`wam_assoc_i64_key_at`/`wam_assoc_i64_value_at`
+slot-walking helpers, and PLAWK lowers the loop to a native table walk that
+resolves key text through `wam_atom_to_string`, reads same-array values
+directly from the visited slot, and looks up other arrays (and string
+literals) per key with awk's missing-key-prints-0 behaviour. Iteration order
+is hash-slot order, unspecified as in awk.
 Mixed scalar/associative programs use a combined native state plan: scalar
 counters remain `i64` phi slots, assoc arrays remain runtime table pointers, and
 `END` printing can interleave scalar variables with associative lookups.
