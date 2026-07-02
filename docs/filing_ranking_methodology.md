@@ -122,10 +122,19 @@ Runs use the s243a federated model (8,800 folders) + `model_prod.pt`, Haiku via 
   rerank. Qualitatively the LLM *refines* µ's topic-right #1 to a more specific folder (relativity, bash control
   structures), not random reshuffling.
 - **Coverage / recall:** id spaces match; **~53%** of filing folders exist in the federated model (a coverage gap,
-  addressed by conditioning). µ **recall@15** and the in-shortlist **µ-top1 vs LLM-top1** accuracy are the headline
-  numbers.
-- **N=100 (real bookmarks + true folders):** _pending — fill in mean displacement, recall@15, µ-top1 vs LLM-top1,
-  tokens/rerank._
+  addressed by conditioning the sample on the true folder being in-model).
+- **N=100 (real bookmarks + true folders, coverage-conditioned, Haiku via `claude -p`, seed 7):** 100/100 parsed,
+  0 timeouts.
+  - **shortlist recall@15 = 28%** — µ surfaces the true folder in the top-15 (of 8,800) ~¼ of the time. **This is
+    the bottleneck**: for 72% of bookmarks the true folder isn't even a candidate, so no rerank can help.
+  - of the 28 in-shortlist cases: **µ-top1 35.7% → LLM-top1 64.3%** — the LLM rerank nearly **doubles** top-1.
+  - **mean displacement 0.491, top1_changed 69%** — µ's order is far from the LLM's, so the rerank is doing real,
+    productive work (not a "µ already good, skip it" case).
+  - **tokens/rerank ≈ 184** (18.5k total for 100) — cheap.
+  - **Read:** the LLM rerank earns its keep *where the true folder is a candidate* (36%→64%); the lever for the
+    other 72% is **recall, not reranking** → widen the shortlist (bigger K / the adaptive δ-band, §3).
+  - _Caveats:_ "true folder" = where the user filed it (other folders are often equally valid), so strict tree-id
+    match **understates** quality — 28%/64% are conservative. Single model, single 100-sample.
 - **Knee sweep (Haiku one-shot vs refine-loop, N=10…100):** _pending — rounds-to-stabilize, num_turns, cost vs N;
   the accuracy knee via ground-truth-orderable lists._
 
