@@ -48,7 +48,7 @@ def load_queries(path):
         if not line:
             continue
         parts = line.split("\t")
-        out.append((parts[0], parts[1] if len(parts) > 1 else None))
+        out.append((parts[0], parts[1] if len(parts) > 1 else None, None))   # (bookmark, true_title, true_id=None)
     return out
 
 
@@ -67,6 +67,10 @@ def main():
     ap.add_argument("--provider", default="claude"); ap.add_argument("--llm-model", default="haiku")
     a = ap.parse_args()
 
+    from infer_pearltrees_federated import FederatedInferenceEngine
+    engine = FederatedInferenceEngine(Path(a.model), routing_method="mu", mu_ckpt=a.mu_ckpt)
+    eng_ids = set(str(x) for x in engine.global_target_ids)      # folders the model actually knows
+
     if a.queries:
         queries = load_queries(a.queries)
     elif a.sample_filing:                                        # real bookmarks + true folders from filing data
@@ -75,21 +79,20 @@ def main():
         from eval_filing import load_filing
         pairs, cand = load_filing(a.trees, min_bm=3)             # [(bm_text, folder_tid)], {folder_tid: title}
         rng = random.Random(a.seed); rng.shuffle(pairs)
-        queries = [(bm, cand.get(str(f))) for bm, f in pairs if cand.get(str(f))]
-        print(f"[SAMPLE] drew from {len(pairs)} real filing bookmarks (seed {a.seed})")
+        # condition on the true folder being IN the model — else it can't be a candidate (that's a coverage gap,
+        # not a ranking miss). Measures μ's real recall@k, not the federated model's 53% folder coverage.
+        queries = [(bm, cand.get(f), str(f)) for bm, f in pairs if cand.get(f) and str(f) in eng_ids]
+        print(f"[SAMPLE] {len(pairs)} filing bookmarks; kept {len(queries)} whose true folder is in the model (seed {a.seed})")
     else:
-        queries = [(q, None) for q in DEFAULT_QUERIES]
+        queries = [(q, None, None) for q in DEFAULT_QUERIES]
     queries = queries[:a.n]
 
-    from infer_pearltrees_federated import FederatedInferenceEngine
-    engine = FederatedInferenceEngine(Path(a.model), routing_method="mu", mu_ckpt=a.mu_ckpt)
-
     disp, top1c, toks = [], [], []
-    mu_ok, llm_ok = [], []
+    mu_ok, llm_ok, recall = [], [], []
     print(f"[RERANK-EVAL] {len(queries)} bookmarks | μ shortlist top-{a.top_k} → {a.provider}/{a.llm_model} rerank\n")
-    for q, true_folder in queries:
+    for q, true_folder, true_id in queries:
         cands = engine.search(q, top_k=a.top_k)
-        cd = [{"title": c.title, "tree_id": c.tree_id} for c in cands]
+        cd = [{"title": c.title, "tree_id": str(c.tree_id)} for c in cands]
         if not cd:
             continue
         llm_cli.reset_usage()
@@ -97,13 +100,20 @@ def main():
         toks.append(llm_cli.get_usage()["total_tokens_est"])
         if out["parsed"]:
             disp.append(out["displacement"]); top1c.append(1 if out["top1_changed"] else 0)
-        mu_top, llm_top = cd[0]["title"], (out["reranked"][0]["title"] if out["reranked"] else "")
+        mu_top = cd[0]
+        llm_top = out["reranked"][0] if out["reranked"] else {"title": "", "tree_id": ""}
         flag = ""
-        if true_folder:
-            mu_ok.append(1 if true_folder.lower() in mu_top.lower() else 0)
-            llm_ok.append(1 if true_folder.lower() in llm_top.lower() else 0)
-            flag = f"  [true~{true_folder}]"
-        print(f"  disp={out['displacement']:.2f} moved_top1={out['top1_changed']!s:5}  μ#1={mu_top[:28]:28} → LLM#1={llm_top[:28]}{flag}")
+        if true_id:                                              # EXACT tree-id match (sample-filing)
+            in_sl = any(c["tree_id"] == true_id for c in cd)     # is the true folder even in the shortlist?
+            recall.append(1 if in_sl else 0)
+            if in_sl:                                            # only score top1 where the folder IS a candidate
+                mu_ok.append(1 if mu_top["tree_id"] == true_id else 0)
+                llm_ok.append(1 if llm_top["tree_id"] == true_id else 0)
+            flag = f"  [true {'IN' if in_sl else 'out'}]"
+        elif true_folder:                                        # title-substring fallback (--queries)
+            mu_ok.append(1 if true_folder.lower() in mu_top["title"].lower() else 0)
+            llm_ok.append(1 if true_folder.lower() in llm_top["title"].lower() else 0)
+        print(f"  disp={out['displacement']:.2f} moved_top1={out['top1_changed']!s:5}  μ#1={mu_top['title'][:26]:26} → LLM#1={llm_top['title'][:26]}{flag}")
 
     print("\n== AGGREGATE ==")
     if disp:
@@ -112,9 +122,12 @@ def main():
         print(f"  parsed              {len(disp)}/{len(queries)}")
     if toks:
         print(f"  tokens/rerank est   mean {int(st.mean(toks))}  total {sum(toks)}  (reranker's own cost)")
+    if recall:
+        print(f"  shortlist recall    {st.mean(recall):.1%}   (true folder present in the top-{a.top_k} μ shortlist — "
+              f"top1 accuracy is bounded by this)")
     if mu_ok:
         print(f"  μ-top1 correct      {st.mean(mu_ok):.1%}   |  LLM-top1 correct {st.mean(llm_ok):.1%}  "
-              f"(ground-truth match; validates the judge)")
+              f"(of the {len(mu_ok)} where the true folder IS in the shortlist — did rerank move it to #1?)")
     print("\n  Read: low displacement + high parsed ⇒ μ already near the LLM's order ⇒ a separate reranker adds little "
           "and the agent has little to fix. High displacement ⇒ μ misorders ⇒ rerank/agent correction matters.")
 
