@@ -17027,6 +17027,17 @@ define i64 @wam_intern_atom(i8* %str, i64 %len) {
 @wam_atom_dyn_count = global i32 0
 @wam_atom_dyn_cap   = global i32 0
 
+; FNV-1a hash index over the atom tables: maps string -> atom id so
+; wam_intern_atom is O(1) amortized instead of a linear scan over
+; every atom (previously O(table size) per intern, which made streams
+; that intern many unique lines through read_line quadratic). Slots
+; hold atom_id + 1; 0 marks an empty slot. Built lazily on the first
+; intern, seeded with every existing static and dynamic atom, and
+; grown at 50 percent load by rehashing all ids.
+@wam_atom_hash_slots = global i64* null
+@wam_atom_hash_cap   = global i64 0
+@wam_atom_hash_count = global i64 0
+
 define i8* @wam_atom_to_string(i64 %id) {
 entry:
   %cnt = load i32, i32* @wam_atom_string_count
@@ -17094,57 +17105,195 @@ check_term:
   ret i1 %term
 }
 
-; M29: intern an atom by (str, len). Linear scan over static then
-; dynamic table; if found, return existing id. If not found, copy
-; the string into a malloc''d block, append to the dynamic table
-; (growing via realloc as needed), and return the new id.
+; FNV-1a over the raw bytes. The 64-bit offset basis
+; 14695981039346656037 is written in two-s complement signed form
+; because LLVM textual IR rejects unsigned constants above 2^63 - 1.
+define i64 @wam_atom_hash_value(i8* %str, i64 %len) {
+entry:
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %i1, %step ]
+  %h = phi i64 [ -3750763034362895579, %entry ], [ %h1, %step ]
+  %done = icmp uge i64 %i, %len
+  br i1 %done, label %ret, label %step
+step:
+  %bp = getelementptr i8, i8* %str, i64 %i
+  %b = load i8, i8* %bp
+  %b64 = zext i8 %b to i64
+  %hx = xor i64 %h, %b64
+  %h1 = mul i64 %hx, 1099511628211
+  %i1 = add i64 %i, 1
+  br label %loop
+ret:
+  ret i64 %h
+}
+
+; Probe for (str, len): returns the index of the matching occupied
+; slot, or of the empty slot where the string belongs. Requires
+; cap > 0 with load factor below 1, which the grow-at-50-percent rule
+; guarantees, so the probe always terminates.
+define i64 @wam_atom_hash_find_slot(i8* %str, i64 %len) {
+entry:
+  %cap = load i64, i64* @wam_atom_hash_cap
+  %slots = load i64*, i64** @wam_atom_hash_slots
+  %h = call i64 @wam_atom_hash_value(i8* %str, i64 %len)
+  %start = urem i64 %h, %cap
+  br label %probe
+probe:
+  %idx = phi i64 [ %start, %entry ], [ %next, %miss ]
+  %slot_p = getelementptr i64, i64* %slots, i64 %idx
+  %v = load i64, i64* %slot_p
+  %empty = icmp eq i64 %v, 0
+  br i1 %empty, label %found, label %check
+check:
+  %cand_id = sub i64 %v, 1
+  %cand_s = call i8* @wam_atom_to_string(i64 %cand_id)
+  %cand_null = icmp eq i8* %cand_s, null
+  br i1 %cand_null, label %miss, label %cmp
+cmp:
+  %eq = call i1 @wam_str_eq_n(i8* %str, i64 %len, i8* %cand_s)
+  br i1 %eq, label %found, label %miss
+miss:
+  %idx1 = add i64 %idx, 1
+  %wrap = icmp uge i64 %idx1, %cap
+  %next = select i1 %wrap, i64 0, i64 %idx1
+  br label %probe
+found:
+  ret i64 %idx
+}
+
+; Insert an existing atom id into the hash by its string. When the
+; same string appears under two ids (duplicate static entries), the
+; first id inserted wins, mirroring the old first-match linear scan.
+define i1 @wam_atom_hash_insert_id(i64 %id) {
+entry:
+  %s = call i8* @wam_atom_to_string(i64 %id)
+  %s_null = icmp eq i8* %s, null
+  br i1 %s_null, label %skip, label %measure
+measure:
+  br label %len_loop
+len_loop:
+  %li = phi i64 [ 0, %measure ], [ %li1, %len_step ]
+  %lp = getelementptr i8, i8* %s, i64 %li
+  %lb = load i8, i8* %lp
+  %lz = icmp eq i8 %lb, 0
+  br i1 %lz, label %have_len, label %len_step
+len_step:
+  %li1 = add i64 %li, 1
+  br label %len_loop
+have_len:
+  %slot_idx = call i64 @wam_atom_hash_find_slot(i8* %s, i64 %li)
+  %slots = load i64*, i64** @wam_atom_hash_slots
+  %slot_p = getelementptr i64, i64* %slots, i64 %slot_idx
+  %v = load i64, i64* %slot_p
+  %empty = icmp eq i64 %v, 0
+  br i1 %empty, label %fill, label %skip
+fill:
+  %idp1 = add i64 %id, 1
+  store i64 %idp1, i64* %slot_p
+  %cnt = load i64, i64* @wam_atom_hash_count
+  %cnt1 = add i64 %cnt, 1
+  store i64 %cnt1, i64* @wam_atom_hash_count
+  ret i1 true
+skip:
+  ret i1 false
+}
+
+; Allocate a zeroed slot array of new_cap entries and reinsert every
+; atom id currently in the static + dynamic tables. Used for both
+; lazy init and growth. Fails only if malloc fails, in which case the
+; previous table (if any) is left untouched and still valid.
+define i1 @wam_atom_hash_rebuild(i64 %new_cap) {
+entry:
+  %bytes = shl i64 %new_cap, 3
+  %mem = call i8* @malloc(i64 %bytes)
+  %mem_null = icmp eq i8* %mem, null
+  br i1 %mem_null, label %fail, label %zero_init
+zero_init:
+  %new_slots = bitcast i8* %mem to i64*
+  br label %zloop
+zloop:
+  %zi = phi i64 [ 0, %zero_init ], [ %zi1, %zstep ]
+  %zdone = icmp uge i64 %zi, %new_cap
+  br i1 %zdone, label %swap, label %zstep
+zstep:
+  %zp = getelementptr i64, i64* %new_slots, i64 %zi
+  store i64 0, i64* %zp
+  %zi1 = add i64 %zi, 1
+  br label %zloop
+swap:
+  %old = load i64*, i64** @wam_atom_hash_slots
+  store i64* %new_slots, i64** @wam_atom_hash_slots
+  store i64 %new_cap, i64* @wam_atom_hash_cap
+  store i64 0, i64* @wam_atom_hash_count
+  %old_null = icmp eq i64* %old, null
+  br i1 %old_null, label %reinsert_init, label %free_old
+free_old:
+  %old_i8 = bitcast i64* %old to i8*
+  call void @free(i8* %old_i8)
+  br label %reinsert_init
+reinsert_init:
+  ; Total ids = static count + dynamic count. Id 0 and any null static
+  ; slots resolve to null strings and are skipped by insert.
+  %st_cnt = load i32, i32* @wam_atom_string_count
+  %st_64 = zext i32 %st_cnt to i64
+  %dy_cnt = load i32, i32* @wam_atom_dyn_count
+  %dy_64 = zext i32 %dy_cnt to i64
+  %total = add i64 %st_64, %dy_64
+  br label %riloop
+riloop:
+  %ri = phi i64 [ 0, %reinsert_init ], [ %ri1, %ristep ]
+  %ridone = icmp uge i64 %ri, %total
+  br i1 %ridone, label %ok, label %ristep
+ristep:
+  %ins_ignored = call i1 @wam_atom_hash_insert_id(i64 %ri)
+  %ri1 = add i64 %ri, 1
+  br label %riloop
+ok:
+  ret i1 true
+fail:
+  ret i1 false
+}
+
+; Intern an atom by (str, len) through the hash index: hit returns the
+; existing id in O(1) amortized; miss copies the string, appends it to
+; the dynamic table (growing via realloc as needed), and records the
+; new id in the hash.
 define i64 @wam_intern_atom(i8* %str, i64 %len) {
 entry:
-  ; Scan static table.
+  %cap0 = load i64, i64* @wam_atom_hash_cap
+  %uninit = icmp eq i64 %cap0, 0
+  br i1 %uninit, label %init_hash, label %lookup
+
+init_hash:
+  ; First intern: size the table to keep the static atoms below
+  ; 50 percent load, minimum 4096 slots.
+  %st_cnt0 = load i32, i32* @wam_atom_string_count
+  %st0_64 = zext i32 %st_cnt0 to i64
+  %seed_need = shl i64 %st0_64, 2
+  %small = icmp ult i64 %seed_need, 4096
+  %init_cap = select i1 %small, i64 4096, i64 %seed_need
+  %init_ok = call i1 @wam_atom_hash_rebuild(i64 %init_cap)
+  br i1 %init_ok, label %lookup, label %intern_fail
+
+lookup:
+  %slot_idx = call i64 @wam_atom_hash_find_slot(i8* %str, i64 %len)
+  %slots = load i64*, i64** @wam_atom_hash_slots
+  %slot_p = getelementptr i64, i64* %slots, i64 %slot_idx
+  %v = load i64, i64* %slot_p
+  %hit = icmp ne i64 %v, 0
+  br i1 %hit, label %ret_hit, label %do_intern
+
+ret_hit:
+  %hit_id = sub i64 %v, 1
+  ret i64 %hit_id
+
+do_intern:
   %st_cnt = load i32, i32* @wam_atom_string_count
   %st_cnt_64 = zext i32 %st_cnt to i64
-  br label %scan_static
-scan_static:
-  %s_i = phi i64 [ 0, %entry ], [ %s_i1, %scan_static_step ]
-  %s_done = icmp uge i64 %s_i, %st_cnt_64
-  br i1 %s_done, label %scan_dyn_init, label %scan_static_check
-scan_static_check:
-  %st_slot_ptr = getelementptr [~w x i8*], [~w x i8*]* @wam_atom_strings, i32 0, i64 %s_i
-  %st_cand = load i8*, i8** %st_slot_ptr
-  %st_null = icmp eq i8* %st_cand, null
-  br i1 %st_null, label %scan_static_step, label %scan_static_cmp
-scan_static_cmp:
-  %st_eq = call i1 @wam_str_eq_n(i8* %str, i64 %len, i8* %st_cand)
-  br i1 %st_eq, label %ret_static_id, label %scan_static_step
-ret_static_id:
-  ret i64 %s_i
-scan_static_step:
-  %s_i1 = add i64 %s_i, 1
-  br label %scan_static
-
-scan_dyn_init:
   %dyn_cnt = load i32, i32* @wam_atom_dyn_count
   %dyn_cnt_64 = zext i32 %dyn_cnt to i64
   %dyn_ptr_0 = load i8**, i8*** @wam_atom_dyn_ptr
-  br label %scan_dyn
-scan_dyn:
-  %d_i = phi i64 [ 0, %scan_dyn_init ], [ %d_i1, %scan_dyn_step ]
-  %d_done = icmp uge i64 %d_i, %dyn_cnt_64
-  br i1 %d_done, label %do_intern, label %scan_dyn_check
-scan_dyn_check:
-  %d_slot_ptr = getelementptr i8*, i8** %dyn_ptr_0, i64 %d_i
-  %d_cand = load i8*, i8** %d_slot_ptr
-  %d_eq = call i1 @wam_str_eq_n(i8* %str, i64 %len, i8* %d_cand)
-  br i1 %d_eq, label %ret_dyn_id, label %scan_dyn_step
-ret_dyn_id:
-  %dyn_id = add i64 %st_cnt_64, %d_i
-  ret i64 %dyn_id
-scan_dyn_step:
-  %d_i1 = add i64 %d_i, 1
-  br label %scan_dyn
-
-do_intern:
-  ; Need to append. First, ensure capacity.
   %dyn_cap = load i32, i32* @wam_atom_dyn_cap
   %need_grow = icmp uge i32 %dyn_cnt, %dyn_cap
   br i1 %need_grow, label %do_grow, label %do_alloc_str
@@ -17186,9 +17335,26 @@ do_copy:
   %new_cnt = add i32 %dyn_cnt, 1
   store i32 %new_cnt, i32* @wam_atom_dyn_count
   %new_id = add i64 %st_cnt_64, %dyn_cnt_64
+  ; Record the new id in the hash, then grow past 50 percent load.
+  %idp1 = add i64 %new_id, 1
+  store i64 %idp1, i64* %slot_p
+  %hcnt = load i64, i64* @wam_atom_hash_count
+  %hcnt1 = add i64 %hcnt, 1
+  store i64 %hcnt1, i64* @wam_atom_hash_count
+  %hcap = load i64, i64* @wam_atom_hash_cap
+  %half = lshr i64 %hcap, 1
+  %needs_hash_grow = icmp ugt i64 %hcnt1, %half
+  br i1 %needs_hash_grow, label %grow_hash, label %ret_new
+grow_hash:
+  ; On rebuild failure the old table stays valid, only fuller; the
+  ; intern itself already succeeded.
+  %gcap = shl i64 %hcap, 1
+  %grow_ignored = call i1 @wam_atom_hash_rebuild(i64 %gcap)
+  br label %ret_new
+ret_new:
   ret i64 %new_id
 }',
-           [ArrSize, SlotsStr, ArrSize, CharSlotsStr, ArrSize, ArrSize, ArrSize, ArrSize]),
+           [ArrSize, SlotsStr, ArrSize, CharSlotsStr, ArrSize, ArrSize]),
        atomic_list_concat(StrGlobals, '\n', StrGlobalsStr),
        atomic_list_concat([StrGlobalsStr, LookupTable], '\n\n', IR)
     ).
