@@ -135,8 +135,19 @@ Runs use the s243a federated model (8,800 folders) + `model_prod.pt`, Haiku via 
     other 72% is **recall, not reranking** → widen the shortlist (bigger K / the adaptive δ-band, §3).
   - _Caveats:_ "true folder" = where the user filed it (other folders are often equally valid), so strict tree-id
     match **understates** quality — 28%/64% are conservative. Single model, single 100-sample.
+- **Recall@K curve (N=100, μ+e5 over all 8,800 folders, judge-free):** true folder within top-K —
+  | cutoff | @15 | @30 | @50 | @100 | @200 | @500 | | e5 | 41 | 44 | 48 | 53 | 55 | **64** | | μ | 22 | 24 | 26 | 34 | 37 | 43 | | max(μ,e5) | 40 | 44 | 47 | 50 | 52 | 63 |  (%).
+  Findings: (1) **e5 climbs** with K (41→64%) — widening helps recall. (2) **µ recall < e5** at every K — µ is a
+  *rerank* signal, not a recall signal. (3) **max(µ,e5) ≈ e5** — the union adds nothing, so the µ-tower / wider-µ
+  cutoff is NOT worth building for recall. (4) **µ set-selection loses recall**: the filing eval's µ shortlist
+  recall@15 was 28% vs e5's own 41% — µ reranking e5-top-64 → top-15 *demotes* true folders.
+  **Revised design:** e5 *selects* the shortlist set (bigger K); µ only *reorders within* it (never prunes below
+  e5's recall — set µ's `shortlist_k` = the LLM's target K); LLM does final precision. `max(µ,e5)` dropped;
+  µ-tower shelved for recall. Roles: **e5 = recall (wide net), µ = precision (reorder), LLM = final precision.**
 - **Knee sweep (Haiku one-shot vs refine-loop, N=10…100):** _pending — rounds-to-stabilize, num_turns, cost vs N;
   the accuracy knee via ground-truth-orderable lists._
+- **e5-direct vs µ-select (pending):** e5-top-15 → LLM vs µ-select — since µ costs ~13 pts of recall, e5-direct may
+  win end-to-end; tests whether µ should touch the *set* at all or only the *order*.
 
 ## 8. Open items / caveats
 
