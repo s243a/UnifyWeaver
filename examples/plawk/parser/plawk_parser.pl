@@ -132,10 +132,10 @@ not_pattern(Pattern) -->
     base_pattern(Pattern).
 
 base_pattern(Pattern) -->
-    prefix_pattern(Pattern),
+    slash_regex_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
-    literal_pattern(Pattern),
+    field_match_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
     field_i64_cmp_pattern(Pattern),
@@ -143,20 +143,93 @@ base_pattern(Pattern) -->
 base_pattern(Pattern) -->
     field_eq_pattern(Pattern).
 
-prefix_pattern(prefix(Prefix)) -->
-    "/^",
-    prefix_codes(Codes),
+%% slash_regex_pattern(-Pattern)//
+%
+%  A bare /re/ pattern matches the whole record, as in awk. Bodies with
+%  no ERE metacharacters keep their existing fast native lowerings: a
+%  leading ^ plus a literal rest stays prefix/1 and an all-literal body
+%  stays contains/1. Anything else becomes field_match(0, Regex) and is
+%  matched with POSIX ERE at runtime.
+slash_regex_pattern(Pattern) -->
+    "/",
+    regex_body_codes(Codes),
     "/",
     { Codes \== [],
-      string_codes(Prefix, Codes)
+      classify_regex_codes(Codes, Pattern)
     }.
 
-literal_pattern(contains(Literal)) -->
+classify_regex_codes([0'^ | Rest], prefix(Prefix)) :-
+    Rest \== [],
+    \+ ere_metachar_in_codes(Rest),
+    !,
+    string_codes(Prefix, Rest).
+classify_regex_codes(Codes, contains(Literal)) :-
+    \+ ere_metachar_in_codes(Codes),
+    !,
+    string_codes(Literal, Codes).
+classify_regex_codes(Codes, field_match(0, Regex)) :-
+    string_codes(Regex, Codes).
+
+ere_metachar_in_codes(Codes) :-
+    member(Code, Codes),
+    memberchk(Code, [0'., 0'[, 0'], 0'(, 0'), 0'*, 0'+, 0'?,
+                     0'{, 0'}, 0'|, 0'^, 0'$, 0'\\]),
+    !.
+
+%% field_match_pattern(-Pattern)//
+%
+%  awk's match operators: $N ~ /re/ and $N !~ /re/. $0 works via
+%  field index 0. !~ reuses the combinator AST as not_pat(field_match).
+field_match_pattern(Pattern) -->
+    "$",
+    integer_codes(IndexCodes),
+    ws,
+    match_operator(Negated),
+    ws,
     "/",
-    literal_pattern_codes(Codes),
+    regex_body_codes(Codes),
     "/",
-    { Codes \== [],
-      string_codes(Literal, Codes)
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index >= 0,
+      Codes \== [],
+      string_codes(Regex, Codes),
+      (   Negated == false
+      ->  Pattern = field_match(Index, Regex)
+      ;   Pattern = not_pat(field_match(Index, Regex))
+      )
+    }.
+
+match_operator(true) -->
+    "!~".
+match_operator(false) -->
+    "~".
+
+%% regex_body_codes(-Codes)//
+%
+%  Codes between the pattern slashes. Backslash pairs pass through
+%  unchanged so ERE escapes like \. reach regcomp, except \/ which
+%  unescapes to a literal slash.
+regex_body_codes([Code | Codes]) -->
+    regex_body_code(Code),
+    regex_body_codes_rest(Codes).
+
+regex_body_codes_rest(Codes) -->
+    regex_body_code(Code),
+    !,
+    { Codes = [Code | Rest] },
+    regex_body_codes_rest(Rest).
+regex_body_codes_rest([]) -->
+    [].
+
+regex_body_code(0'/) -->
+    "\\/",
+    !.
+regex_body_code(Code) -->
+    [Code],
+    { Code =\= 0'/,
+      Code =\= 0'\n,
+      Code =\= 0'\r
     }.
 
 field_eq_pattern(field_eq(Index, Value)) -->
@@ -198,43 +271,6 @@ numeric_cmp_op(lt) -->
 numeric_cmp_op(gt) -->
     ">".
 
-prefix_codes([Code | Codes]) -->
-    [Code],
-    { Code =\= 0'/,
-      Code =\= 0'\n,
-      Code =\= 0'\r
-    },
-    prefix_codes_rest(Codes).
-
-prefix_codes_rest([Code | Codes]) -->
-    [Code],
-    { Code =\= 0'/,
-      Code =\= 0'\n,
-      Code =\= 0'\r
-    },
-    !,
-    prefix_codes_rest(Codes).
-prefix_codes_rest([]) -->
-    [].
-
-literal_pattern_codes([Code | Codes]) -->
-    [Code],
-    { Code =\= 0'/,
-      Code =\= 0'\n,
-      Code =\= 0'\r
-    },
-    literal_pattern_codes_rest(Codes).
-
-literal_pattern_codes_rest([Code | Codes]) -->
-    [Code],
-    { Code =\= 0'/,
-      Code =\= 0'\n,
-      Code =\= 0'\r
-    },
-    !,
-    literal_pattern_codes_rest(Codes).
-literal_pattern_codes_rest([]) -->
-    [].
 
 integer_codes([Code | Codes]) -->
     [Code],

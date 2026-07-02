@@ -76,6 +76,7 @@ swipl -q -s tests/test_plawk_surface_forin_end_print.pl -g "setenv('UW_SMOKE_TMP
 swipl -q -s tests/test_plawk_surface_stdin_input.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_arith_exprs.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_pattern_combinators.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_surface_regex_match.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -113,6 +114,15 @@ streaming loop. Patterns compose with `&&`, `||`, and `!` using awk precedence
 and `!/disk/ { print $0 }`. Combined guards lower to straight-line bitwise
 `i1` ops over the existing native guard helpers — no extra branches — and the
 same combinators work in `if (...)` conditions.
+POSIX ERE matching is available through awk's match operators `$N ~ /re/` and
+`$N !~ /re/` (with `$0` for the whole record) and through bare `/re/` patterns
+containing ERE metacharacters, e.g. `$2 ~ /^d[io]sk$/ { print $0 }` and
+`/ERROR|WARN/ { print $1 }`. Bare patterns with no metacharacters keep their
+existing fast native lowerings (`/^ERROR/` stays a prefix check, `/disk/` a
+byte search); `\/` escapes a literal slash. Regexes are compile-time constants
+compiled once per match site with libc `regcomp` (`REG_EXTENDED`) and cached;
+a pattern that fails to compile never matches. Match operators work in rule
+guards, `if` conditions, and `&&`/`||`/`!` combinations.
 Scalar state works with `$1 ==
 "ERROR" { count++ } END { print count }`. Multiple scalar increments
 compile to indexed native slots, e.g. `{ errors++; matches++ }`, and multiple

@@ -8,6 +8,7 @@
 :- use_module('../../../src/unifyweaver/targets/wam_llvm_target',
     [llvm_emit_atom_prefix_guard/5,
      llvm_emit_atom_field_eq_guard/7,
+     llvm_emit_regex_field_match_guard/7,
      llvm_emit_atom_field_slice/5,
      llvm_emit_atom_field_count/4,
      llvm_emit_atom_field_length/5,
@@ -2102,6 +2103,9 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, ''-GuardCall
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, '%is_match', GuardCallIR).
+plawk_pattern_guard_ir(field_match(Index, Regex), FieldSeparator, GuardIR) :-
+    llvm_emit_regex_field_match_guard(plawk_surface_regex, '%line', Index,
+        Regex, FieldSeparator, '%is_match', GuardIR).
 plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardIR) :-
     plawk_combined_pattern(Pattern),
     plawk_pattern_guard_ir(Pattern, FieldSeparator, plawk_surface_pattern,
@@ -2138,6 +2142,9 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, _GlobalBase,
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, MatchValue, GuardCallIR).
+plawk_pattern_guard_ir(field_match(Index, Regex), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
+    llvm_emit_regex_field_match_guard(GlobalBase, '%line', Index, Regex,
+        FieldSeparator, MatchValue, GuardIR).
 plawk_pattern_guard_ir(and_pat(Left, Right), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
     plawk_binary_pattern_guard_ir(and, Left, Right, FieldSeparator, GlobalBase,
         MatchValue, GuardIR).
