@@ -140,11 +140,29 @@ _DISPATCH = {"claude": call_claude_cli, "gemini": call_gemini_cli, "agy": call_a
              "ollama": call_ollama}
 PROVIDERS = list(_DISPATCH)
 
+# ── token accounting ── so a harness can measure total tokens per completed task (tokens-per-correct-filing).
+# Estimate = chars/4 (model-agnostic, first-order); good enough to compare configs. Reset per task, read after.
+_USAGE = {"calls": 0, "prompt_chars": 0, "completion_chars": 0}
+
+def reset_usage():
+    _USAGE.update(calls=0, prompt_chars=0, completion_chars=0)
+
+def get_usage() -> dict:
+    """Cumulative since the last reset_usage(): calls + char/token estimates (prompt, completion, total)."""
+    pt, ct = _USAGE["prompt_chars"] // 4, _USAGE["completion_chars"] // 4
+    return {"calls": _USAGE["calls"], "prompt_tokens_est": pt, "completion_tokens_est": ct,
+            "total_tokens_est": pt + ct}
+
 
 def call_llm(prompt: str, provider: str = "claude", model: str = "haiku", timeout: int = 60) -> Optional[str]:
-    """Route to the chosen provider. Returns the model's text, or None on failure."""
+    """Route to the chosen provider. Returns the model's text, or None on failure. Accumulates token usage
+    (see get_usage/reset_usage) so callers can measure cost per task."""
     fn = _DISPATCH.get(provider)
     if fn is None:
         print(f"  Unknown provider: {provider} (choices: {PROVIDERS})", file=sys.stderr)
         return None
-    return fn(prompt, model, timeout)
+    resp = fn(prompt, model, timeout)
+    _USAGE["calls"] += 1
+    _USAGE["prompt_chars"] += len(prompt or "")
+    _USAGE["completion_chars"] += len(resp or "")
+    return resp
