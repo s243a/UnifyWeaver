@@ -1,5 +1,32 @@
 # PATH operator — multi-path ancestor membership over the DAG (design / future-work)
 
+## Empirical conclusion (2026-07-01, 3-seed CI) — multipath does NOT beat single-path on Pearltrees
+
+Built the deterministic shallow merged-multipath passage (`merged_ancestors.py`, `train_lineage --merged --dag`)
+and tested it on the RDF+API **assembled** Pearltrees DAG (which recovers 396/880 multi-parent filing folders — the
+API-only 20 was an artifact of the RDF-export truncation bug, see [[project_pearltrees_rdf_export_bug]]).
+
+**Result: multipath is not a win on Pearltrees.** A 3-seed CI (seeds 7/13/42) of `mu-lineage` PATH(merged) vs
+single-path LINEAGE:
+- *Full eval:* mean deltas positive but **within noise** (stdev ≥ mean; seed 42 reverses). Looked promising at
+  seed 7 alone — walked back by multi-seed.
+- *Multi-parent subset* (where the passage actually differs — 82% of queries, dilution was minor): the
+  branch-recovery metrics are **negative** — `ov|miss` mean −0.027, `depth|miss` mean −0.123. The full-eval
+  positivity was **training-side variance**, not the multipath passage doing work.
+
+**Decision — corpus-driven operator choice:**
+- **Pearltrees → single-path `LINEAGE`.** It has a *principal* parent (the RefPearl "inside" precedence = the actual
+  human filing decision — real signal), and multipath gives no measurable benefit over it. Simpler and cheaper.
+- **Wikipedia → multipath `PATH`.** Categories have *no* principal parent (every parent link equal), so single-path
+  is an arbitrary pick — multipath is the only meaningful ancestor representation. NB: this is "what Wikipedia
+  affords," **not** proven-superior — a proper Wikipedia branch-recovery eval (avoiding the mis-framed
+  context-on-candidate setup in `eval_path_wiki.py`) is still open if we need it.
+
+The machinery below is built and correct; it's the right tool for the multi-parent Wikipedia DAG, not for Pearltrees.
+The rest of this doc is the (still-unbuilt) full design.
+
+---
+
 Design note (nothing built yet). Follows the finding that single-path LINEAGE is redundant to HIER, but a
 **multi-path** ancestor operator is *not* — because a DAG node has many ancestor chains, and the harvested
 single-path collapse (`parent_map` precedence) threw all but one away.
@@ -68,6 +95,14 @@ the DAG's paths, wildcard-masked) is just **selecting which cached node-tokens e
   home for the graded-depth membership target.) *Max depth:* stop-β/multi-path give variable, possibly-deep paths, so
   fix a **max-depth slot count with truncation** (simplest — deepest ancestors beyond it are dropped, acceptable as
   branch signal is shallow-heavy), or use **relative** depth PEs if arbitrary depth must be exact.
+  **EMPIRICAL (dense-DAG calibration, wide_enwiki_math):** on Wikipedia (dense multi-parent) the *deterministic*
+  merged closure **explodes** — `max_depth 12–15` from any node reaches all of science/humanities via structural
+  connectors (even after admin-filtering) — an incoherent grab-bag. At **`max_depth 2`** it's small and coherent
+  (`Abstract algebra` → `Algebra` + `Fields of mathematics`; `People` → `Humans` + `Anthropology`). So the merged
+  list must be a **shallow LOCAL context (parents + grandparents), NOT the full closure** — the branch signal lives
+  there anyway. `max_depth 15` only worked for *shallow Pearltrees*; the stochastic stop-β must likewise be
+  **shallow-mean** on dense DAGs (not the mean-10 that suited Pearltrees). Plus admin-filter the few structural
+  connectors (`Container categories`, `Categories requiring diffusion`) that appear as grandparents.
 - **Padding masking.** Variable-length paths (from stop-β / multi-path) are padded to a fixed slot count; the
   attention block must **mask the padding tokens** so they don't pollute the aggregate. Standard, but must be wired.
 - **Cache invalidation.** The per-node embedding cache assumes static titles. On a graph refresh (Pearltrees/Wikipedia

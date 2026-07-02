@@ -72,6 +72,12 @@ def main():
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--cache", default="/tmp/lineage_e5.pt")
     ap.add_argument("--eval-only", action="store_true", help="load --save model and eval only (no training)")
+    ap.add_argument("--merged", action="store_true", help="PATH: passage = MERGED multi-parent ancestor list (vs single-path)")
+    ap.add_argument("--max-depth", type=int, default=15, help="merged-ancestor walk depth cap (cycle-detected)")
+    ap.add_argument("--dag", default=None, help="PATH: assembled child<TAB>parent DAG TSV (RDF+API union); overrides --trees for the merged walk")
+    ap.add_argument("--titles", default=None, help="id<TAB>title map for --dag nodes")
+    ap.add_argument("--max-ancestors", type=int, default=None, help="cap merged list to nearest-N ancestors (dense DAGs)")
+    ap.add_argument("--mp-eval-dag", default=None, help="also print a MULTI-PARENT-SUBSET eval table (queries whose folder has >1 parent in this assembled DAG — where PATH can differ)")
     a = ap.parse_args(); dev = torch.device(a.device); rng = random.Random(a.seed)
     if a.train_seed is None: a.train_seed = a.seed
 
@@ -85,6 +91,18 @@ def main():
         if r.get("tree_id") and r.get("target_text"):
             path_of[str(r["tree_id"])] = r["target_text"]
             pids_of[str(r["tree_id"])] = [str(x) for x in (r.get("path_ids") or [])]
+    if a.merged:                                                    # PATH: passage = MERGED multi-parent ancestor list
+        from merged_ancestors import render_merged_list
+        if a.dag:                                                   # assembled RDF+API DAG (recovers truncated parents)
+            from merged_ancestors import load_assembled_dag
+            parents_of, title_of = load_assembled_dag(a.dag, a.titles)
+        else:                                                       # API-trees-only DAG (sparse: RDF-export truncation)
+            from merged_ancestors import load_multiparent_dag
+            parents_of, title_of = load_multiparent_dag(a.trees)
+        nmp = sum(1 for f in path_of if len(parents_of.get(f, [])) > 1)
+        for f in list(path_of):                                     # override the single-path passage with the merged list
+            path_of[f] = render_merged_list(f, parents_of, title_of, max_depth=a.max_depth, max_ancestors=a.max_ancestors)
+        print(f"[PATH] merged multi-parent passage; {nmp}/{len(path_of)} folders are multi-parent (pids_of stays single-path for eval ground-truth)")
     queries = [(b, str(f)) for b, f in queries if str(f) in path_of]   # keep bookmarks whose folder has a path
     cand = {str(f): t for f, t in cand.items() if str(f) in path_of}   # normalise folder ids to str (match path_of)
     print(f"[DATA] {len(cand)} folders w/ paths, {len(queries)} bookmarks (of harvested set)")
@@ -211,6 +229,18 @@ def main():
         print(f"  {'':13}{nm:18} {m['recall@1']:9.3f} {m['MRR']:7.3f} {ov_all:8.3f} {ov_m:8.3f} {depth_m:10.2f}")
     print("  (target: a combiner with elem's recall@1 AND lineage's ov|miss/depth|miss. gate = lean elem where its")
     print("   margin is sharp, else lineage. Does adding stale wiki/sym dilute vs max(elem,lin)?)")
+
+    if a.mp_eval_dag:                                              # MULTI-PARENT SUBSET: where PATH can actually differ
+        from merged_ancestors import load_assembled_dag
+        mp_par, _ = load_assembled_dag(a.mp_eval_dag, None)
+        mp_set = set(r for r in range(len(ev_idx)) if len(mp_par.get(str(bm_folder[ev_idx[r]]), [])) > 1)
+        mp_idx = sorted(mp_set); mp_miss = [r for r in elem_miss if r in mp_set]
+        print(f"\n  [MULTI-PARENT SUBSET n={len(mp_idx)} of {len(ev_idx)} | seed {a.seed}]  (folder has >1 parent in "
+              f"assembled DAG — where PATH differs from single-path)  [hard n={len(mp_miss)}]")
+        for nm, M in combos:
+            S = M.tolist(); rk = ranks(S); m = metrics([rk[r] for r in mp_idx])
+            ov_all, _ = path_overlap(S, mp_idx); ov_m, depth_m = path_overlap(S, mp_miss)
+            print(f"  {'':13}{nm:18} {m['recall@1']:9.3f} {m['MRR']:7.3f} {ov_all:8.3f} {ov_m:8.3f} {depth_m:10.2f}")
 
     if a.save:
         torch.save({"state": model.state_dict(), "cfg": cfg, "ops_extra": ["LINEAGE"]}, a.save)
