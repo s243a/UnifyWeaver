@@ -220,6 +220,161 @@ plawk_program_native_driver_ir(
             RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules, [end([for_in(var(LoopVar), var(ArrayName), BodyActions)])]),
+    InputPath,
+    DriverIR
+) :-
+    plawk_forin_end_plan(Rules, LoopVar, ArrayName, BodyActions, AssocPlan, PrintFields),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_field_separator(BeginClauses, FieldSeparator),
+    plawk_end_print_string_globals(PrintFields, StringGlobalIR),
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR, AssocChainIR),
+    plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
+    plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
+    plawk_forin_end_print_ir(LoopVar, ArrayName, PrintFields, AssocPlan,
+        OutputSeparator, EndPrintIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, AssocRuleGlobalIR]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
+    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w',
+        [EndPrintIR]),
+    llvm_emit_stream_driver_ir(InputPath,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
+            AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
+%% plawk_forin_end_plan(+Rules, +LoopVar, +ArrayName, +BodyActions, -AssocPlan, -PrintFields)
+%
+%  Plan the first END for-in surface: rules are associative-count updates and
+%  the loop body is one print whose fields are the loop key, associative
+%  lookups keyed by the loop variable, or string literals.
+plawk_forin_end_plan(Rules, LoopVar, ArrayName, BodyActions,
+        assoc_plan(Tables, PlannedRules), PrintFields) :-
+    BodyActions = [print(PrintFields)],
+    PrintFields = [_ | _],
+    maplist(plawk_forin_print_field(LoopVar), PrintFields),
+    maplist(plawk_assoc_rule_action_specs, Rules, RuleSpecs),
+    RuleSpecs \== [],
+    findall(RuleArrayName,
+        ( member(rule(_Pattern, ActionSpecs, _Control), RuleSpecs),
+          member(RuleArrayName-_KeyIndex, ActionSpecs)
+        ),
+        ActionArrays),
+    findall(LookupArrayName,
+        member(assoc(var(LookupArrayName), var(LoopVar)), PrintFields),
+        LookupArrays),
+    append([ActionArrays, [ArrayName], LookupArrays], ArrayNames0),
+    sort(ArrayNames0, Tables),
+    phrase(plawk_assoc_planned_rules(RuleSpecs, Tables, 0), PlannedRules).
+
+plawk_forin_print_field(LoopVar, var(LoopVar)).
+plawk_forin_print_field(LoopVar, assoc(var(_ArrayName), var(LoopVar))).
+plawk_forin_print_field(_LoopVar, string(_Value)).
+
+%% plawk_forin_end_print_ir(+LoopVar, +ArrayName, +PrintFields, +AssocPlan,
+%%     +OutputSeparator, -IR)
+%
+%  Emit the native END for-in loop: walk the iterated table's occupied slots
+%  through @wam_assoc_i64_iter_next, print each record's fields, then free
+%  every table and return.
+plawk_forin_end_print_ir(LoopVar, ArrayName, PrintFields, AssocPlan,
+        OutputSeparator, IR) :-
+    plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+    phrase(plawk_forin_body_print_lines(PrintFields, LoopVar, ArrayName,
+        TableIndex, AssocPlan, OutputSeparator, 0), BodyLines),
+    atomic_list_concat(BodyLines, '\n', BodyIR),
+    phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
+    atomic_list_concat(FreeLines, '\n', FreeIR),
+    format(atom(IR),
+'  br label %forin_head
+
+forin_head:
+  %forin_idx = phi i64 [0, %end_print], [%forin_next_idx, %forin_body_done]
+  %forin_slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_idx)
+  %forin_done = icmp slt i64 %forin_slot, 0
+  br i1 %forin_done, label %forin_after, label %forin_body
+
+forin_body:
+  %forin_key_id = call i64 @wam_assoc_i64_key_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)
+~w
+  %forin_printed_newline = call i32 @putchar(i32 10)
+  br label %forin_body_done
+
+forin_body_done:
+  %forin_next_idx = add i64 %forin_slot, 1
+  br label %forin_head
+
+forin_after:
+~w
+  ret i32 0',
+        [TableIndex, TableIndex, BodyIR, FreeIR]).
+
+plawk_forin_body_print_lines([], _LoopVar, _ArrayName, _TableIndex, _AssocPlan,
+        _OutputSeparator, _) -->
+    [].
+plawk_forin_body_print_lines([var(LoopVar) | Rest], LoopVar, ArrayName,
+        TableIndex, AssocPlan, OutputSeparator, PrintIndex) -->
+    plawk_forin_separator_lines(PrintIndex, OutputSeparator),
+    { format(atom(KeyString),
+          '  %forin_key_s_~w = call i8* @wam_atom_to_string(i64 %forin_key_id)',
+          [PrintIndex]),
+      format(atom(FmtVar), 'forin_key_fmt_~w', [PrintIndex]),
+      format(atom(PrintVar), 'forin_printed_key_~w', [PrintIndex]),
+      format(atom(PtrIR), '%forin_key_s_~w', [PrintIndex]),
+      llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar, PtrIR,
+          [FmtPtr, PrintCall]),
+      NextPrintIndex is PrintIndex + 1
+    },
+    [KeyString, FmtPtr, PrintCall],
+    plawk_forin_body_print_lines(Rest, LoopVar, ArrayName, TableIndex, AssocPlan,
+        OutputSeparator, NextPrintIndex).
+plawk_forin_body_print_lines([assoc(var(LookupArrayName), var(LoopVar)) | Rest],
+        LoopVar, ArrayName, TableIndex, AssocPlan, OutputSeparator, PrintIndex) -->
+    plawk_forin_separator_lines(PrintIndex, OutputSeparator),
+    { (   LookupArrayName == ArrayName
+      ->  format(atom(Value),
+              '  %forin_value_~w = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
+              [PrintIndex, TableIndex])
+      ;   plawk_assoc_table_index(AssocPlan, LookupArrayName, LookupTableIndex),
+          format(atom(Value),
+              '  %forin_value_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_key_id)',
+              [PrintIndex, LookupTableIndex])
+      ),
+      format(atom(FmtVar), 'forin_i64_fmt_~w', [PrintIndex]),
+      format(atom(PrintVar), 'forin_printed_i64_~w', [PrintIndex]),
+      format(atom(ValueIR), '%forin_value_~w', [PrintIndex]),
+      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
+          [FmtPtr, PrintCall]),
+      NextPrintIndex is PrintIndex + 1
+    },
+    [Value, FmtPtr, PrintCall],
+    plawk_forin_body_print_lines(Rest, LoopVar, ArrayName, TableIndex, AssocPlan,
+        OutputSeparator, NextPrintIndex).
+plawk_forin_body_print_lines([string(Value) | Rest], LoopVar, ArrayName,
+        TableIndex, AssocPlan, OutputSeparator, PrintIndex) -->
+    plawk_forin_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_string_print_lines(Value, PrintIndex),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_forin_body_print_lines(Rest, LoopVar, ArrayName, TableIndex, AssocPlan,
+        OutputSeparator, NextPrintIndex).
+
+plawk_forin_separator_lines(0, _OutputSeparator) -->
+    !,
+    [].
+plawk_forin_separator_lines(PrintIndex, OutputSeparator) -->
+    { format(atom(SpaceCall),
+          '  %forin_printed_separator_~w = call i32 @putchar(i32 ~w)',
+          [PrintIndex, OutputSeparator])
+    },
+    [SpaceCall].
+
 plawk_combine_entry_ir('', IR, IR) :-
     !.
 plawk_combine_entry_ir(IR, '', IR) :-
