@@ -189,11 +189,17 @@ The first WAM/LLVM probes now live under `examples/plawk/probes/`.
 **Success:** a native binary that reads stdin, counts records, prints matching
 lines — identical behaviour to Phase 0, running as compiled LLVM.
 
-**Current boundary:** the compiled and native stream smokes still read from file
-paths rather than stdin. WAM/LLVM exposes general stream helpers
-(`@wam_stream_open_value`, `@wam_stream_read_line_value`, and
-`@wam_stream_close_value`) that native LLVM code can call directly, alongside
-the existing `stream_open/2`, `read_line/2`, and `stream_close/1` builtins.
+**Current boundary:** WAM/LLVM exposes general stream helpers
+(`@wam_stream_open_value`, `@wam_stream_read_line_value`,
+`@wam_stream_close_value`, and `@wam_stream_open_fd_value` for wrapping an
+already-open descriptor such as stdin) that native LLVM code can call
+directly, alongside the existing `stream_open/2`, `read_line/2`, and
+`stream_close/1` builtins. `llvm_emit_stream_driver_ir/3` accepts either a
+concrete compile-time path or the `stdin_or_argv` sentinel; the sentinel
+emits a `main(argc, argv)` that opens `argv[1]` at runtime, treats `-` as
+stdin, and defaults to stdin when no argument is given, so compiled PLAWK
+binaries work as awk-style pipeline filters
+(`tests/test_plawk_surface_stdin_input.pl`).
 The `tests/test_plawk_native_stream_loop_driver.pl` smoke proves a native LLVM
 loop can open a runtime file path, read lines until `end_of_file`, call a
 compiled PLAWK handler once per record, and thread PLAWK state through WAM.
@@ -266,10 +272,15 @@ the allocation-free `@wam_atom_field_subslice_value` helper, and native
 `index($N, "literal")` through the shared `@wam_atom_field_index_value` helper.
 Explicit print-side numeric coercions such as `int($N)` lower through the shared
 `@wam_atom_field_i64_value` parse helper and print zero when the field is
-missing or not a strict signed decimal. The first composed arithmetic forms add
-or subtract a non-negative integer constant from native `i64` primaries such as
-`NR`, `NF`, `length($N)`, `int($N)`, and `index($N, "literal")`; each lowers
-through the shared primary emitter followed by a shared binary `i64` operation.
+missing or not a strict signed decimal. Arithmetic expressions support general
+`+`, `-`, `*`, `/`, and `%` with awk precedence and parentheses over `i64`
+operands: integer literals, `NR`, `NF`, `length($N)`, `int($N)`,
+`index($N, "literal")`, and bare numeric fields (`$3 + $4` coerces like
+`int/1`; a bare `$N` alone still prints as a slice). Each binary node lowers
+recursively through the shared `plawk_i64_expr_ir` emitter with `_lhs`/`_rhs`
+name suffixes; `/` and `%` emit branch-free guards so a zero divisor yields
+`0` and `INT64_MIN / -1` wraps instead of trapping. Scalar `+=`/`=` updates
+and `printf` arguments accept the same expression grammar.
 Print-only `tolower($N)` and `toupper($N)` lower through shared
 `@wam_print_ascii_lower_slice` and `@wam_print_ascii_upper_slice` helpers, so
 case mapping streams bytes without allocating a transformed atom.
@@ -280,6 +291,11 @@ pointer pairs.
 Numeric field guards such as `$3 > 100` lower through the shared
 `@wam_atom_field_i64_cmp_value` helper, which parses the projected field slice
 as a strict signed decimal `i64` and compares with numeric op codes.
+Patterns compose with `&&`, `||`, and `!` (awk precedence, parentheses
+group) in both rule guards and `if` conditions. The base guards are
+side-effect-free straight-line native checks, so combined guards lower to
+bitwise `i1` `and`/`or`/`xor` over per-subpattern `_l`/`_r`/`_n` suffixed
+names, keeping the whole guard a single block with no extra branches.
 The parser itself is factored as `@wam_atom_field_i64_value`, returning a value
 plus success flag, so the same machinery also feeds scalar expressions such as
 `bytes += $3` and `last = $3`; PLAWK uses zero for failed numeric coercions in
