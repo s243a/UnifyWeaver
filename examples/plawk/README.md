@@ -79,6 +79,7 @@ swipl -q -s tests/test_plawk_surface_pattern_combinators.pl -g "setenv('UW_SMOKE
 swipl -q -s tests/test_plawk_surface_regex_match.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_end_scalar_exprs.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_else_if.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_surface_prolog_calls.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -204,6 +205,23 @@ The loop lowers to a native walk over the runtime table's occupied slots via
 reads), other-array lookups such as `errs[k]` (hash lookups, `0` for missing
 keys), and string literal labels. Iteration order follows the hash table's
 slot order and, as in awk, is unspecified.
+
+Compiled Prolog predicates in the same binary are callable from PLAWK — the
+hybrid's headline capability. A named predicate is a rule guard
+(`plawk_is_error($1) { print $0 }` matches when the predicate succeeds) or an
+`i64` expression (`{ total += severity_rank($1) }` calls `severity_rank/2`
+with a trailing output argument and yields its integer binding, `0` on
+failure). Arguments are field atoms (`$0` is the whole record), string
+literal atoms, and integers; guards compose with `&&`/`||`/`!` and `if`
+conditions, and calls compose with native arithmetic. Codegen collects the
+called predicates and emits one wrapper per shape around a lazily created
+shared `%WamState`; each wrapper runs `wam_prepare_call` + `run_loop`, then
+restores the VM heap top and rewinds the arena, so per-record foreign calls
+run in constant memory at roughly 5µs per call (bytecode-interpreted WAM
+dispatch). Programs with foreign calls use
+`plawk_program_native_driver_ir/4` with `wam_vm(InstrCount, LabelCount)`
+from `wam_llvm_last_compile_counts/2` after `write_wam_llvm_project/3`
+compiled the predicates into the module.
 
 For a walkthrough of the current Prolog-core syntax and how it maps to awk
 concepts like `$0`, `$1`, `NR`, `NF`, `FS`, `OFS`, and `print`, see

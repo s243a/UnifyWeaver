@@ -2,7 +2,9 @@
 % Copyright (c) 2026 John William Creighton (s243a)
 
 :- module(plawk_native_codegen, [
-    plawk_program_native_driver_ir/3
+    plawk_program_native_driver_ir/3,
+    plawk_program_native_driver_ir/4,
+    plawk_program_foreign_specs/3
 ]).
 
 :- use_module('../../../src/unifyweaver/targets/wam_llvm_target',
@@ -250,6 +252,247 @@ plawk_program_native_driver_ir(
         driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
             AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
+
+%% plawk_program_native_driver_ir(+Program, +InputPath, +Options, -DriverIR) is semidet.
+%
+%  Options-aware driver entry. Programs that call compiled Prolog
+%  predicates (prolog_guard patterns / prolog_call expressions) need
+%  Options to carry wam_vm(InstrCount, LabelCount) -- the counts
+%  reported by wam_llvm_last_compile_counts/2 after
+%  write_wam_llvm_project/3 compiled the predicates into the module.
+%  The emitted support section holds a lazily created shared %WamState
+%  and one wrapper function per called predicate; call sites marshal
+%  arguments and invoke the wrappers, so the shared guard/expression
+%  emitters need no VM plumbing. Programs with no foreign calls
+%  delegate to plawk_program_native_driver_ir/3 unchanged.
+plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
+    plawk_program_foreign_specs(Program, GuardSpecs, CallSpecs),
+    (   GuardSpecs == [],
+        CallSpecs == []
+    ->  plawk_program_native_driver_ir(Program, InputPath, DriverIR)
+    ;   memberchk(wam_vm(InstrCount, LabelCount), Options),
+        plawk_foreign_support_ir(GuardSpecs, CallSpecs, InstrCount, LabelCount,
+            SupportIR),
+        plawk_program_native_driver_ir(Program, InputPath, MainIR),
+        format(atom(DriverIR), '~w~n~n~w', [SupportIR, MainIR])
+    ).
+
+%% plawk_program_foreign_specs(+Program, -GuardSpecs, -CallSpecs)
+%
+%  Collect the deduplicated foreign predicate call shapes used by the
+%  program. GuardSpecs are Name-NArgs pairs called as rule guards
+%  (predicate arity NArgs); CallSpecs are Name-NArgs pairs called as
+%  i64 expressions (predicate arity NArgs + 1 for the output).
+plawk_program_foreign_specs(program(_BeginClauses, Rules, EndClauses),
+        GuardSpecs, CallSpecs) :-
+    findall(Name-NArgs,
+        ( member(rule(Pattern, _Actions), Rules),
+          plawk_pattern_prolog_guard(Pattern, Name, Args),
+          length(Args, NArgs)
+        ),
+        GuardSpecs0),
+    findall(Name-NArgs,
+        ( ( member(rule(_Pattern, Actions), Rules)
+          ; member(end(Actions), EndClauses)
+          ),
+          plawk_actions_prolog_call(Actions, Name, Args),
+          length(Args, NArgs)
+        ),
+        CallSpecs0),
+    findall(Name-NArgs,
+        ( member(rule(_Pattern2, Actions2), Rules),
+          member(if(CondPattern, _Then, _Else), Actions2),
+          plawk_pattern_prolog_guard(CondPattern, Name, Args),
+          length(Args, NArgs)
+        ),
+        CondGuardSpecs0),
+    append(GuardSpecs0, CondGuardSpecs0, AllGuardSpecs),
+    sort(AllGuardSpecs, GuardSpecs),
+    sort(CallSpecs0, CallSpecs).
+
+plawk_pattern_prolog_guard(prolog_guard(Name, Args), Name, Args).
+plawk_pattern_prolog_guard(and_pat(Left, Right), Name, Args) :-
+    ( plawk_pattern_prolog_guard(Left, Name, Args)
+    ; plawk_pattern_prolog_guard(Right, Name, Args)
+    ).
+plawk_pattern_prolog_guard(or_pat(Left, Right), Name, Args) :-
+    ( plawk_pattern_prolog_guard(Left, Name, Args)
+    ; plawk_pattern_prolog_guard(Right, Name, Args)
+    ).
+plawk_pattern_prolog_guard(not_pat(Pattern), Name, Args) :-
+    plawk_pattern_prolog_guard(Pattern, Name, Args).
+
+plawk_actions_prolog_call(Actions, Name, Args) :-
+    member(Action, Actions),
+    plawk_action_prolog_call(Action, Name, Args).
+
+plawk_action_prolog_call(add(_Var, Expr), Name, Args) :-
+    plawk_expr_prolog_call(Expr, Name, Args).
+plawk_action_prolog_call(set(_Var, Expr), Name, Args) :-
+    plawk_expr_prolog_call(Expr, Name, Args).
+plawk_action_prolog_call(print(Fields), Name, Args) :-
+    member(Field, Fields),
+    plawk_expr_prolog_call(Field, Name, Args).
+plawk_action_prolog_call(printf(_Format, PrintfArgs), Name, Args) :-
+    member(Field, PrintfArgs),
+    plawk_expr_prolog_call(Field, Name, Args).
+plawk_action_prolog_call(if(_Pattern, ThenActions, ElseActions), Name, Args) :-
+    ( plawk_actions_prolog_call(ThenActions, Name, Args)
+    ; plawk_actions_prolog_call(ElseActions, Name, Args)
+    ).
+
+plawk_expr_prolog_call(prolog_call(Name, Args), Name, Args).
+plawk_expr_prolog_call(Expr, Name, Args) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    ( plawk_expr_prolog_call(Left, Name, Args)
+    ; plawk_expr_prolog_call(Right, Name, Args)
+    ).
+
+%% plawk_foreign_support_ir(+GuardSpecs, +CallSpecs, +InstrCount, +LabelCount, -IR)
+%
+%  Emit the shared foreign-call support section: a lazily initialized
+%  process-wide %WamState plus one wrapper per called predicate. Guard
+%  wrappers return run_loop's success directly. Call wrappers push one
+%  unbound output cell, run the predicate, and return {value, ok};
+%  failure or a non-integer binding yields {0, false}. Both wrappers
+%  save and restore the VM heap top (WamState field 6) and rewind the
+%  arena via @wam_cleanup, so per-record foreign calls run in constant
+%  memory -- nothing WAM-side persists between plawk calls.
+plawk_foreign_support_ir(GuardSpecs, CallSpecs, InstrCount, LabelCount, IR) :-
+    format(atom(VmIR),
+'@plawk_foreign_vm = internal global %WamState* null
+
+define %WamState* @plawk_foreign_vm_get() {
+entry:
+  %cur = load %WamState*, %WamState** @plawk_foreign_vm
+  %have = icmp ne %WamState* %cur, null
+  br i1 %have, label %ret_cur, label %make
+
+ret_cur:
+  ret %WamState* %cur
+
+make:
+  %vm = call %WamState* @wam_state_new(
+      %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
+      i32 ~w,
+      i32* getelementptr ([~w x i32], [~w x i32]* @module_labels, i32 0, i32 0),
+      i32 ~w)
+  store %WamState* %vm, %WamState** @plawk_foreign_vm
+  ret %WamState* %vm
+}',
+        [InstrCount, InstrCount, InstrCount, LabelCount, LabelCount,
+         LabelCount]),
+    findall(GuardIR,
+        ( member(Name-NArgs, GuardSpecs),
+          plawk_foreign_guard_wrapper_ir(Name, NArgs, GuardIR)
+        ),
+        GuardIRs),
+    findall(CallIR,
+        ( member(Name-NArgs, CallSpecs),
+          plawk_foreign_call_wrapper_ir(Name, NArgs, CallIR)
+        ),
+        CallIRs),
+    append([[VmIR], GuardIRs, CallIRs], Parts),
+    atomic_list_concat(Parts, '\n\n', IR).
+
+plawk_foreign_wrapper_params(NArgs, ParamsIR) :-
+    NArgs >= 1,
+    NArgs1 is NArgs - 1,
+    numlist(0, NArgs1, Ns),
+    findall(Param,
+        ( member(N, Ns),
+          format(atom(Param), '%Value %a~w', [N])
+        ),
+        Params),
+    atomic_list_concat(Params, ', ', ParamsIR).
+
+plawk_foreign_set_reg_lines(NArgs, Lines) :-
+    NArgs1 is NArgs - 1,
+    numlist(0, NArgs1, Ns),
+    findall(Line,
+        ( member(N, Ns),
+          format(atom(Line),
+              '  call void @wam_set_reg(%WamState* %vm, i32 ~w, %Value %a~w)',
+              [N, N])
+        ),
+        Lines).
+
+plawk_foreign_guard_wrapper_ir(Name, NArgs, IR) :-
+    plawk_foreign_wrapper_params(NArgs, ParamsIR),
+    plawk_foreign_set_reg_lines(NArgs, SetRegLines),
+    atomic_list_concat(SetRegLines, '\n', SetRegIR),
+    format(atom(IR),
+'define i1 @plawk_foreign_guard_~w_~w(~w) {
+entry:
+  %vm = call %WamState* @plawk_foreign_vm_get()
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+
+do_call:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs_saved = load i32, i32* %hs_ptr
+  %pc = load i32, i32* @~w_start_pc
+  call void @wam_prepare_call(%WamState* %vm, i32 %pc)
+~w
+  %ok = call i1 @run_loop(%WamState* %vm)
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  ret i1 %ok
+
+fail:
+  ret i1 false
+}',
+        [Name, NArgs, ParamsIR, Name, SetRegIR]).
+
+plawk_foreign_call_wrapper_ir(Name, NArgs, IR) :-
+    plawk_foreign_wrapper_params(NArgs, ParamsIR),
+    plawk_foreign_set_reg_lines(NArgs, SetRegLines),
+    atomic_list_concat(SetRegLines, '\n', SetRegIR),
+    format(atom(IR),
+'define { i64, i1 } @plawk_foreign_call_~w_~w(~w) {
+entry:
+  %vm = call %WamState* @plawk_foreign_vm_get()
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+
+do_call:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs_saved = load i32, i32* %hs_ptr
+  %pc = load i32, i32* @~w_start_pc
+  %unb = call %Value @value_unbound(i8* null)
+  %out_addr = call i32 @wam_heap_push(%WamState* %vm, %Value %unb)
+  %out_ref = call %Value @value_ref(i32 %out_addr)
+  call void @wam_prepare_call(%WamState* %vm, i32 %pc)
+~w
+  call void @wam_set_reg(%WamState* %vm, i32 ~w, %Value %out_ref)
+  %ok = call i1 @run_loop(%WamState* %vm)
+  br i1 %ok, label %read_out, label %rewind_fail
+
+read_out:
+  %out = call %Value @wam_deref_value(%WamState* %vm, %Value %out_ref)
+  %out_tag = extractvalue %Value %out, 0
+  %out_is_int = icmp eq i32 %out_tag, 1
+  br i1 %out_is_int, label %good, label %rewind_fail
+
+good:
+  %payload = extractvalue %Value %out, 1
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  %r0 = insertvalue { i64, i1 } undef, i64 %payload, 0
+  %r1 = insertvalue { i64, i1 } %r0, i1 true, 1
+  ret { i64, i1 } %r1
+
+rewind_fail:
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  br label %fail
+
+fail:
+  %f0 = insertvalue { i64, i1 } undef, i64 0, 0
+  %f1 = insertvalue { i64, i1 } %f0, i1 false, 1
+  ret { i64, i1 } %f1
+}',
+        [Name, NArgs, ParamsIR, Name, SetRegIR, NArgs]).
 
 %% plawk_forin_end_plan(+Rules, +LoopVar, +ArrayName, +BodyActions, -AssocPlan, -PrintFields)
 %
@@ -1550,6 +1793,8 @@ plawk_rule_body_print_field(special('NF')).
 plawk_rule_body_print_field(int(field(_))).
 plawk_rule_body_print_field(Expr) :-
     plawk_i64_general_binary_expr(Expr).
+plawk_rule_body_print_field(Expr) :-
+    plawk_prolog_call_expr(Expr).
 plawk_rule_body_print_field(length(field(_))).
 plawk_rule_body_print_field(substr(field(_), _Start, _Len)).
 plawk_rule_body_print_field(index(field(_), string(_))).
@@ -1572,8 +1817,23 @@ plawk_i64_operand_expr(field(FieldIndex)) :-
     FieldIndex >= 0.
 plawk_i64_operand_expr(Expr) :-
     plawk_i64_binary_primary_expr(Expr).
+plawk_i64_operand_expr(prolog_call(Name, Args)) :-
+    plawk_prolog_call_expr(prolog_call(Name, Args)).
 plawk_i64_operand_expr(Expr) :-
     plawk_i64_general_binary_expr(Expr).
+
+plawk_prolog_call_expr(prolog_call(Name, Args)) :-
+    atom(Name),
+    Args = [_ | _],
+    maplist(plawk_foreign_arg, Args).
+
+plawk_foreign_arg(field(Index)) :-
+    integer(Index),
+    Index >= 0.
+plawk_foreign_arg(string(String)) :-
+    string(String).
+plawk_foreign_arg(int(Value)) :-
+    integer(Value).
 
 %% plawk_i64_scalar_read_binary_expr(+Expr) is semidet.
 %
@@ -1725,6 +1985,9 @@ plawk_scalar_action_update(add(var(Name), Expr), Name, add(Expr)) :-
     plawk_i64_scalar_read_binary_expr(Expr).
 plawk_scalar_action_update(add(var(Name), var(Read)), Name, add(var(Read))) :-
     atom(Read).
+plawk_scalar_action_update(add(var(Name), prolog_call(Pred, Args)), Name,
+        add(prolog_call(Pred, Args))) :-
+    plawk_prolog_call_expr(prolog_call(Pred, Args)).
 plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) :-
     integer(Value),
     Value >= 0.
@@ -1740,6 +2003,9 @@ plawk_scalar_action_update(set(var(Name), Expr), Name, set(Expr)) :-
     plawk_i64_scalar_read_binary_expr(Expr).
 plawk_scalar_action_update(set(var(Name), var(Read)), Name, set(var(Read))) :-
     atom(Read).
+plawk_scalar_action_update(set(var(Name), prolog_call(Pred, Args)), Name,
+        set(prolog_call(Pred, Args))) :-
+    plawk_prolog_call_expr(prolog_call(Pred, Args)).
 
 plawk_scalar_action_sequence_pairs([], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
         OpIndex, Values, Values, OpIndex, CurrentLabel, []) -->
@@ -1867,6 +2133,12 @@ plawk_scalar_update_operation_ir(set(Expr), FieldSeparator, Prefix, SlotIndex,
 plawk_scalar_numeric_expr_ir(ssa(Value), _FieldSeparator, _Prefix, _SlotIndex,
         _OpIndex, Value, '', '') :-
     atom(Value).
+plawk_scalar_numeric_expr_ir(prolog_call(Name, Args), FieldSeparator, Prefix,
+        SlotIndex, OpIndex, ValueIR, GlobalIR, IR) :-
+    format(atom(CallBase), '~w_slot_~w_op_~w_prolog_call',
+        [Prefix, SlotIndex, OpIndex]),
+    plawk_i64_expr_ir_parts(prolog_call(Name, Args), FieldSeparator, CallBase,
+        CallBase, ValueIR, GlobalIR, IR).
 plawk_scalar_numeric_expr_ir(const(Value), _FieldSeparator, _Prefix, _SlotIndex,
         _OpIndex, ValueIR, GlobalIR, IR) :-
     plawk_i64_expr_ir_parts(const(Value), 0, scalar_const, scalar_const_global,
@@ -1917,6 +2189,23 @@ plawk_i64_expr_ir(int(Value), _FieldSeparator, _Base, _GlobalBase, ValueIR, [], 
     format(atom(ValueIR), '~w', [Value]).
 plawk_i64_expr_ir(ssa(Value), _FieldSeparator, _Base, _GlobalBase, Value, [], []) :-
     atom(Value).
+plawk_i64_expr_ir(prolog_call(Name, Args), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts) :-
+    length(Args, NArgs),
+    plawk_foreign_args_ir(Args, FieldSeparator, GlobalBase, ArgValueIRs,
+        GlobalParts, ArgSetupParts),
+    plawk_foreign_call_args_ir(ArgValueIRs, CallArgsIR),
+    format(atom(ResIR),
+        '  %~w_res = call { i64, i1 } @plawk_foreign_call_~w_~w(~w)',
+        [Base, Name, NArgs, CallArgsIR]),
+    format(atom(ValIR),
+        '  %~w_val = extractvalue { i64, i1 } %~w_res, 0', [Base, Base]),
+    format(atom(OkIR),
+        '  %~w_ok = extractvalue { i64, i1 } %~w_res, 1', [Base, Base]),
+    format(atom(SelIR),
+        '  %~w = select i1 %~w_ok, i64 %~w_val, i64 0', [Base, Base, Base]),
+    format(atom(ValueIR), '%~w', [Base]),
+    append(ArgSetupParts, [ResIR, ValIR, OkIR, SelIR], SetupParts).
 plawk_i64_expr_ir(field(FieldIndex), FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts) :-
     integer(FieldIndex),
@@ -2265,6 +2554,9 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, ''-GuardCall
 plawk_pattern_guard_ir(field_match(Index, Regex), FieldSeparator, GuardIR) :-
     llvm_emit_regex_field_match_guard(plawk_surface_regex, '%line', Index,
         Regex, FieldSeparator, '%is_match', GuardIR).
+plawk_pattern_guard_ir(prolog_guard(Name, Args), FieldSeparator, GuardIR) :-
+    plawk_foreign_guard_call_ir(Name, Args, FieldSeparator,
+        plawk_surface_prolog_guard, '%is_match', GuardIR).
 plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardIR) :-
     plawk_combined_pattern(Pattern),
     plawk_pattern_guard_ir(Pattern, FieldSeparator, plawk_surface_pattern,
@@ -2304,6 +2596,9 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, _GlobalBase,
 plawk_pattern_guard_ir(field_match(Index, Regex), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
     llvm_emit_regex_field_match_guard(GlobalBase, '%line', Index, Regex,
         FieldSeparator, MatchValue, GuardIR).
+plawk_pattern_guard_ir(prolog_guard(Name, Args), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
+    plawk_foreign_guard_call_ir(Name, Args, FieldSeparator, GlobalBase,
+        MatchValue, GuardIR).
 plawk_pattern_guard_ir(and_pat(Left, Right), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
     plawk_binary_pattern_guard_ir(and, Left, Right, FieldSeparator, GlobalBase,
         MatchValue, GuardIR).
@@ -2347,6 +2642,118 @@ plawk_binary_pattern_guard_ir(Op, Left, Right, FieldSeparator, GlobalBase,
 ~w
   ~w = ~w i1 ~w, ~w',
         [LeftCallIR, RightCallIR, MatchValue, Op, LeftValue, RightValue]).
+
+%% plawk_foreign_args_ir(+Args, +FieldSeparator, +BasePrefix, -ArgValueIRs,
+%%     -GlobalParts, -SetupParts)
+%
+%  Marshal plawk foreign-call arguments into %Value SSA names. field(0)
+%  passes the record atom %line directly; positive fields intern the
+%  projected slice (missing fields intern the empty atom); string
+%  literals intern per-site globals; integers build integer values.
+plawk_foreign_args_ir(Args, FieldSeparator, BasePrefix, ArgValueIRs,
+        GlobalParts, SetupParts) :-
+    plawk_foreign_args_ir(Args, FieldSeparator, BasePrefix, 0, ArgValueIRs,
+        GlobalPartsNested, SetupPartsNested),
+    append(GlobalPartsNested, GlobalParts),
+    append(SetupPartsNested, SetupParts).
+
+plawk_foreign_args_ir([], _FieldSeparator, _BasePrefix, _Index, [], [], []).
+plawk_foreign_args_ir([Arg | Rest], FieldSeparator, BasePrefix, Index,
+        [ArgValueIR | ArgValueIRs], [GlobalParts | GlobalPartsRest],
+        [SetupParts | SetupPartsRest]) :-
+    format(atom(ArgBase), '~w_a~w', [BasePrefix, Index]),
+    plawk_foreign_arg_ir(Arg, FieldSeparator, ArgBase, ArgValueIR,
+        GlobalParts, SetupParts),
+    NextIndex is Index + 1,
+    plawk_foreign_args_ir(Rest, FieldSeparator, BasePrefix, NextIndex,
+        ArgValueIRs, GlobalPartsRest, SetupPartsRest).
+
+plawk_foreign_arg_ir(field(0), _FieldSeparator, _ArgBase, '%line', [], []) :-
+    !.
+plawk_foreign_arg_ir(field(FieldIndex), FieldSeparator, ArgBase, ArgValueIR,
+        [EmptyGlobalIR], SetupParts) :-
+    integer(FieldIndex),
+    FieldIndex > 0,
+    !,
+    SafeBase = ArgBase,
+    format(atom(EmptyGlobalIR),
+        '@.~w_empty = private constant [1 x i8] zeroinitializer', [SafeBase]),
+    format(atom(SliceIR),
+        '  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+        [SafeBase, FieldIndex, FieldSeparator]),
+    format(atom(PtrIR),
+        '  %~w_ptr = extractvalue %WamSlice %~w_slice, 0', [SafeBase, SafeBase]),
+    format(atom(LenIR),
+        '  %~w_len = extractvalue %WamSlice %~w_slice, 1', [SafeBase, SafeBase]),
+    format(atom(NullIR),
+        '  %~w_null = icmp eq i8* %~w_ptr, null', [SafeBase, SafeBase]),
+    format(atom(SafePtrIR),
+        '  %~w_safe_ptr = select i1 %~w_null, i8* getelementptr ([1 x i8], [1 x i8]* @.~w_empty, i32 0, i32 0), i8* %~w_ptr',
+        [SafeBase, SafeBase, SafeBase, SafeBase]),
+    format(atom(SafeLenIR),
+        '  %~w_safe_len = select i1 %~w_null, i64 0, i64 %~w_len',
+        [SafeBase, SafeBase, SafeBase]),
+    format(atom(InternIR),
+        '  %~w_id = call i64 @wam_intern_atom(i8* %~w_safe_ptr, i64 %~w_safe_len)',
+        [SafeBase, SafeBase, SafeBase]),
+    format(atom(Value0IR),
+        '  %~w_v0 = insertvalue %Value undef, i32 0, 0', [SafeBase]),
+    format(atom(ValueIR),
+        '  %~w_v = insertvalue %Value %~w_v0, i64 %~w_id, 1',
+        [SafeBase, SafeBase, SafeBase]),
+    format(atom(ArgValueIR), '%~w_v', [SafeBase]),
+    SetupParts = [SliceIR, PtrIR, LenIR, NullIR, SafePtrIR, SafeLenIR,
+        InternIR, Value0IR, ValueIR].
+plawk_foreign_arg_ir(string(String), _FieldSeparator, ArgBase, ArgValueIR,
+        [StringGlobalIR], SetupParts) :-
+    !,
+    SafeBase = ArgBase,
+    format(atom(StringGlobalName), '~w_str', [SafeBase]),
+    llvm_emit_c_string_global(StringGlobalName, String, StringGlobalIR,
+        StringLen, BytesLen),
+    format(atom(PtrIR),
+        '  %~w_str_ptr = getelementptr [~w x i8], [~w x i8]* @.~w_str, i32 0, i32 0',
+        [SafeBase, BytesLen, BytesLen, SafeBase]),
+    format(atom(InternIR),
+        '  %~w_id = call i64 @wam_intern_atom(i8* %~w_str_ptr, i64 ~w)',
+        [SafeBase, SafeBase, StringLen]),
+    format(atom(Value0IR),
+        '  %~w_v0 = insertvalue %Value undef, i32 0, 0', [SafeBase]),
+    format(atom(ValueIR),
+        '  %~w_v = insertvalue %Value %~w_v0, i64 %~w_id, 1',
+        [SafeBase, SafeBase, SafeBase]),
+    format(atom(ArgValueIR), '%~w_v', [SafeBase]),
+    SetupParts = [PtrIR, InternIR, Value0IR, ValueIR].
+plawk_foreign_arg_ir(int(Value), _FieldSeparator, ArgBase, ArgValueIR,
+        [], [IntIR]) :-
+    integer(Value),
+    SafeBase = ArgBase,
+    format(atom(IntIR),
+        '  %~w_v = call %Value @value_integer(i64 ~w)', [SafeBase, Value]),
+    format(atom(ArgValueIR), '%~w_v', [SafeBase]).
+
+plawk_foreign_call_args_ir([], '').
+plawk_foreign_call_args_ir(ArgValueIRs, IR) :-
+    ArgValueIRs = [_ | _],
+    findall(Part,
+        ( member(ArgValueIR, ArgValueIRs),
+          format(atom(Part), '%Value ~w', [ArgValueIR])
+        ),
+        Parts),
+    atomic_list_concat(Parts, ', ', IR).
+
+plawk_foreign_guard_call_ir(Name, Args, FieldSeparator, GlobalBase, MatchValue,
+        GlobalIR-GuardCallIR) :-
+    length(Args, NArgs),
+    plawk_foreign_args_ir(Args, FieldSeparator, GlobalBase, ArgValueIRs,
+        GlobalParts, SetupParts),
+    plawk_join_nonempty_ir(GlobalParts, GlobalIR),
+    plawk_foreign_call_args_ir(ArgValueIRs, CallArgsIR),
+    format(atom(CallLine),
+        '  ~w = call i1 @plawk_foreign_guard_~w_~w(~w)',
+        [MatchValue, Name, NArgs, CallArgsIR]),
+    append(SetupParts, [CallLine], Lines),
+    atomic_list_concat(Lines, '\n', GuardCallIR).
 
 plawk_literal_contains_guard_ir(GlobalBase, Needle, FieldSeparator, MatchValue, GlobalIR-GuardCallIR) :-
     format(atom(IndexBase), '~w_contains_index', [GlobalBase]),
@@ -2627,6 +3034,14 @@ plawk_emit_print_expr_for_context(Expr, FieldSeparator, Context,
     plawk_i64_expr_ir(Expr, FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
 
+plawk_emit_print_expr_for_context(prolog_call(Name, Args), FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
+    plawk_prolog_call_expr(prolog_call(Name, Args)),
+    plawk_print_expr_value_base(Context, prolog_call, Base),
+    plawk_print_expr_output_names(Context, prolog_call, FmtPrefix, PrintPrefix),
+    plawk_i64_expr_ir(prolog_call(Name, Args), FieldSeparator, Base, Base,
+        ValueIR, GlobalParts, SetupParts).
+
 plawk_emit_print_expr_for_context(length(field(FieldIndex)), FieldSeparator, Context,
         i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
     plawk_print_expr_value_base(Context, length, Base),
@@ -2695,6 +3110,8 @@ plawk_normal_print_expr_value_base(int_div, Index, Base) :-
     format(atom(Base), 'plawk_int_div_~w', [Index]).
 plawk_normal_print_expr_value_base(int_mod, Index, Base) :-
     format(atom(Base), 'plawk_int_mod_~w', [Index]).
+plawk_normal_print_expr_value_base(prolog_call, Index, Base) :-
+    format(atom(Base), 'plawk_prolog_call_~w', [Index]).
 plawk_normal_print_expr_value_base(length, Index, Base) :-
     format(atom(Base), 'plawk_length_~w', [Index]).
 plawk_normal_print_expr_value_base(substr, Index, Base) :-

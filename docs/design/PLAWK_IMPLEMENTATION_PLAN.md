@@ -397,6 +397,21 @@ separator used by comma-separated `print` fields in `BEGIN`, rule, and `END`
 actions. Native separator emission uses direct byte output rather than
 passing the separator through `printf` as a format string.
 
+PLAWK programs can now call compiled Prolog predicates in the same binary:
+`prolog_guard` patterns (`pred(args...)` as a rule guard or `if` condition,
+match = success) and `prolog_call` i64 expressions (`pred(args...)` with a
+trailing output register, integer result, `0` on failure). Call sites
+marshal field atoms / string atoms / integers and invoke per-predicate
+wrapper functions around a lazily created shared `%WamState`; wrappers save
+and restore the VM heap top and rewind the arena via `@wam_cleanup`, so
+foreign calls run in constant memory (~5µs/call, bytecode-interpreted).
+`plawk_program_native_driver_ir/4` takes `wam_vm(InstrCount, LabelCount)`
+for the `wam_state_new` geps. Known pre-existing scalability note exposed
+by soak-testing this feature: `read_line`'s per-line `wam_intern_atom` is a
+linear scan over the dynamic atom table, so streams with many unique lines
+pay O(n^2) interning regardless of foreign calls — a hashed atom table (or
+slice-based records) is the fix and is independent of this surface.
+
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.
 

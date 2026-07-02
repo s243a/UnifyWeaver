@@ -141,7 +141,53 @@ base_pattern(Pattern) -->
     field_i64_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
-    field_eq_pattern(Pattern).
+    field_eq_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
+    prolog_guard_pattern(Pattern).
+
+%% prolog_guard_pattern(-Pattern)//
+%
+%  A named Prolog predicate as a rule guard: `pred(args...)` matches
+%  when the compiled predicate succeeds. Arguments are field atoms
+%  ($0 is the whole record), string literal atoms, or integers.
+prolog_guard_pattern(prolog_guard(Name, Args)) -->
+    identifier(Name),
+    ws,
+    "(",
+    ws,
+    foreign_args(Args),
+    ws,
+    ")".
+
+foreign_args([Arg | Args]) -->
+    foreign_arg(Arg),
+    foreign_args_rest(Args).
+
+foreign_args_rest([Arg | Args]) -->
+    ws,
+    ",",
+    ws,
+    !,
+    foreign_arg(Arg),
+    foreign_args_rest(Args).
+foreign_args_rest([]) -->
+    [].
+
+foreign_arg(field(Index)) -->
+    "$",
+    integer_codes(IndexCodes),
+    !,
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index >= 0
+    }.
+foreign_arg(string(Value)) -->
+    quoted_string(ValueCodes),
+    !,
+    { string_codes(Value, ValueCodes) }.
+foreign_arg(int(Value)) -->
+    signed_integer_value(Value).
 
 %% slash_regex_pattern(-Pattern)//
 %
@@ -585,6 +631,9 @@ scalar_delta_expr(index(Field, string(Needle))) -->
     { Field = field(_),
       NeedleCodes \== [],
       string_codes(Needle, NeedleCodes) }.
+scalar_delta_expr(Expr) -->
+    prolog_call_expr(Expr),
+    !.
 scalar_delta_expr(var(Name)) -->
     identifier(Name).
 
@@ -724,6 +773,9 @@ field_expr(string(Value)) -->
     quoted_string(ValueCodes),
     { string_codes(Value, ValueCodes)
     }.
+field_expr(Expr) -->
+    prolog_call_expr(Expr),
+    !.
 field_expr(var(Name)) -->
     identifier(Name).
 
@@ -820,8 +872,26 @@ i64_factor_expr(field(Index)) -->
       number_codes(Index, IndexCodes),
       Index >= 0
     }.
+i64_factor_expr(Expr) -->
+    prolog_call_expr(Expr),
+    !.
 i64_factor_expr(var(Name)) -->
     identifier(Name).
+
+%% prolog_call_expr(-Expr)//
+%
+%  A named Prolog predicate as an i64 expression: `pred(args...)` calls
+%  the compiled predicate with one extra trailing output argument and
+%  yields its integer binding, or 0 when the call fails or binds a
+%  non-integer.
+prolog_call_expr(prolog_call(Name, Args)) -->
+    identifier(Name),
+    ws,
+    "(",
+    ws,
+    foreign_args(Args),
+    ws,
+    ")".
 
 i64_binary_primary_expr(special('NR')) -->
     "NR".
