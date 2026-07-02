@@ -94,6 +94,7 @@ print_line:
 @.plawk_surface_print_i64 = private constant [4 x i8] c"%ld\\00"
 @.plawk_surface_print_newline = private constant [2 x i8] c"\\0A\\00"
 @.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"
+@.plawk_surface_print_f64 = private constant [3 x i8] c"%g\\00"
 ~w
 ~w
 ~w
@@ -633,6 +634,7 @@ plawk_i64_end_print_globals(SurfaceGlobals, RuntimeGlobals) :-
 @.plawk_surface_print_slice = private constant [5 x i8] c"%.*s\\00"
 @.plawk_surface_print_newline = private constant [2 x i8] c"\\0A\\00"
 @.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"
+@.plawk_surface_print_f64 = private constant [3 x i8] c"%g\\00"
 ~w
 
 ',
@@ -1795,6 +1797,8 @@ plawk_rule_body_print_field(Expr) :-
     plawk_i64_general_binary_expr(Expr).
 plawk_rule_body_print_field(Expr) :-
     plawk_prolog_call_expr(Expr).
+plawk_rule_body_print_field(Expr) :-
+    plawk_f64_print_expr(Expr).
 plawk_rule_body_print_field(length(field(_))).
 plawk_rule_body_print_field(substr(field(_), _Start, _Len)).
 plawk_rule_body_print_field(index(field(_), string(_))).
@@ -2278,6 +2282,96 @@ plawk_i64_binary_op_lines(srem, Base, LeftIR, RightIR, Lines) :-
 plawk_i64_binary_op_lines(LLVMOp, Base, LeftIR, RightIR, [Line]) :-
     format(atom(Line), '  %~w = ~w i64 ~w, ~w',
         [Base, LLVMOp, LeftIR, RightIR]).
+
+%% plawk_expr_is_double(+Expr) is semidet.
+%
+%  An expression tree is double-typed when any leaf is a float literal
+%  or a float($N) coercion; i64 leaves in a double tree promote via
+%  sitofp at emission time.
+plawk_expr_is_double(float_const(_Mantissa, _Denominator)).
+plawk_expr_is_double(float_field(_Index)).
+plawk_expr_is_double(Expr) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    ( plawk_expr_is_double(Left)
+    ; plawk_expr_is_double(Right)
+    ).
+
+%% plawk_f64_print_expr(+Expr) is semidet.
+%
+%  Valid double print expression: double-typed with recognizable leaves.
+plawk_f64_print_expr(Expr) :-
+    plawk_expr_is_double(Expr),
+    plawk_f64_operand_expr(Expr).
+
+plawk_f64_operand_expr(float_const(Mantissa, Denominator)) :-
+    integer(Mantissa),
+    integer(Denominator),
+    Denominator > 0.
+plawk_f64_operand_expr(float_field(Index)) :-
+    integer(Index),
+    Index >= 0.
+plawk_f64_operand_expr(Expr) :-
+    plawk_i64_operand_expr(Expr).
+plawk_f64_operand_expr(Expr) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    plawk_f64_operand_expr(Left),
+    plawk_f64_operand_expr(Right).
+
+%% plawk_f64_expr_ir(+Expr, +FieldSeparator, +Base, +GlobalBase, -ValueIR,
+%%     -GlobalParts, -SetupParts)
+%
+%  Double expression emitter. Float literals emit as an exact integer
+%  ratio (fdiv of two exactly representable doubles gives the correctly
+%  rounded value, matching strtod). i64 subtrees emit through the i64
+%  emitter and promote with sitofp; IEEE semantics apply to / (no
+%  divide-by-zero guard: x/0.0 is inf, 0.0/0.0 is nan, as in awk).
+plawk_f64_expr_ir(float_const(Mantissa, Denominator), _FieldSeparator, Base,
+        _GlobalBase, ValueIR, [], [ConstIR]) :-
+    format(atom(ValueIR), '%~w', [Base]),
+    format(atom(ConstIR), '  ~w = fdiv double ~w.0, ~w.0',
+        [ValueIR, Mantissa, Denominator]).
+plawk_f64_expr_ir(float_field(Index), FieldSeparator, Base, _GlobalBase,
+        ValueIR, [], [CallIR]) :-
+    format(atom(ValueIR), '%~w', [Base]),
+    format(atom(CallIR),
+        '  ~w = call double @wam_atom_field_f64_value(%Value %line, i64 ~w, i8 ~w)',
+        [ValueIR, Index, FieldSeparator]).
+plawk_f64_expr_ir(Expr, FieldSeparator, Base, GlobalBase, ValueIR,
+        GlobalParts, SetupParts) :-
+    plawk_expr_is_double(Expr),
+    plawk_i64_binary_expr(Expr, LLVMOp, _NamePart, Left, Right),
+    !,
+    plawk_f64_llvm_op(LLVMOp, F64Op),
+    format(atom(LeftBase), '~w_lhs', [Base]),
+    format(atom(LeftGlobalBase), '~w_lhs', [GlobalBase]),
+    plawk_f64_expr_ir(Left, FieldSeparator, LeftBase, LeftGlobalBase,
+        LeftValueIR, LeftGlobalParts, LeftSetupParts),
+    format(atom(RightBase), '~w_rhs', [Base]),
+    format(atom(RightGlobalBase), '~w_rhs', [GlobalBase]),
+    plawk_f64_expr_ir(Right, FieldSeparator, RightBase, RightGlobalBase,
+        RightValueIR, RightGlobalParts, RightSetupParts),
+    format(atom(ValueIR), '%~w', [Base]),
+    format(atom(OpIR), '  ~w = ~w double ~w, ~w',
+        [ValueIR, F64Op, LeftValueIR, RightValueIR]),
+    append(LeftGlobalParts, RightGlobalParts, GlobalParts),
+    append([LeftSetupParts, RightSetupParts, [OpIR]], SetupParts).
+plawk_f64_expr_ir(Expr, FieldSeparator, Base, GlobalBase, ValueIR,
+        GlobalParts, SetupParts) :-
+    % i64-typed subtree in a double context: emit as i64, then promote.
+    format(atom(IntBase), '~w_int', [Base]),
+    format(atom(IntGlobalBase), '~w_int', [GlobalBase]),
+    plawk_i64_expr_ir(Expr, FieldSeparator, IntBase, IntGlobalBase,
+        IntValueIR, GlobalParts, IntSetupParts),
+    format(atom(ValueIR), '%~w', [Base]),
+    format(atom(PromoteIR), '  ~w = sitofp i64 ~w to double',
+        [ValueIR, IntValueIR]),
+    append(IntSetupParts, [PromoteIR], SetupParts).
+
+plawk_f64_llvm_op(add, fadd).
+plawk_f64_llvm_op(sub, fsub).
+plawk_f64_llvm_op(mul, fmul).
+plawk_f64_llvm_op(sdiv, fdiv).
+plawk_f64_llvm_op(srem, frem).
 
 plawk_i64_guarded_div_lines(LLVMOp, Base, LeftIR, RightIR, Lines) :-
     format(atom(DenZero),
@@ -2865,11 +2959,13 @@ plawk_printf_arg_pairs([Arg | Args], FieldSeparator, Prefix, Index) -->
 plawk_printf_type_call_args(i64(_FmtPrefix, _PrintPrefix, ValueIR), [i64(ValueIR)]).
 plawk_printf_type_call_args(slice(_FmtPrefix, _PrintPrefix, LenIR, PtrIR), [slice_len(LenIR), slice_ptr(PtrIR)]).
 plawk_printf_type_call_args(string(_Base, PtrIR), [string_ptr(PtrIR)]).
+plawk_printf_type_call_args(f64(_FmtPrefix, _PrintPrefix, ValueIR), [f64(ValueIR)]).
 
 plawk_printf_call_arg_kind(i64(_ValueIR), i64).
 plawk_printf_call_arg_kind(slice_len(_LenIR), slice_len).
 plawk_printf_call_arg_kind(slice_ptr(_PtrIR), slice_ptr).
 plawk_printf_call_arg_kind(string_ptr(_PtrIR), string).
+plawk_printf_call_arg_kind(f64(_ValueIR), f64).
 
 plawk_printf_call_args_ir([], '') :-
     !.
@@ -2885,6 +2981,8 @@ plawk_printf_call_arg_ir(slice_ptr(PtrIR), IR) :-
     format(atom(IR), 'i8* ~w', [PtrIR]).
 plawk_printf_call_arg_ir(string_ptr(PtrIR), IR) :-
     format(atom(IR), 'i8* ~w', [PtrIR]).
+plawk_printf_call_arg_ir(f64(ValueIR), IR) :-
+    format(atom(IR), 'double ~w', [ValueIR]).
 
 plawk_printf_rewrite_format(Format, ArgKinds, RewrittenFormat) :-
     string_codes(Format, Codes),
@@ -2910,6 +3008,31 @@ plawk_printf_rewrite_codes([0'%, 0's | Rest], [slice_len, slice_ptr | Kinds],
         [0'%, 0'., 0'*, 0's | RewrittenRest]) :-
     !,
     plawk_printf_rewrite_codes(Rest, Kinds, RewrittenRest).
+plawk_printf_rewrite_codes([0'% | Rest], [f64 | Kinds], [0'% | RewrittenSpec]) :-
+    plawk_printf_f64_spec_codes(Rest, SpecCodes, RestAfterSpec),
+    !,
+    append(SpecCodes, RewrittenRest, RewrittenSpec),
+    plawk_printf_rewrite_codes(RestAfterSpec, Kinds, RewrittenRest).
+
+% %f / %g / %e with an optional .N precision pass through unchanged for
+% double arguments (C varargs receive the double directly).
+plawk_printf_f64_spec_codes([0'., Digit | Rest0], [0'., Digit | SpecRest], Rest) :-
+    code_type(Digit, digit),
+    !,
+    plawk_printf_f64_precision_codes(Rest0, SpecRest, Rest).
+plawk_printf_f64_spec_codes([Conv | Rest], [Conv], Rest) :-
+    plawk_printf_f64_conversion_code(Conv).
+
+plawk_printf_f64_precision_codes([Digit | Rest0], [Digit | SpecRest], Rest) :-
+    code_type(Digit, digit),
+    !,
+    plawk_printf_f64_precision_codes(Rest0, SpecRest, Rest).
+plawk_printf_f64_precision_codes([Conv | Rest], [Conv], Rest) :-
+    plawk_printf_f64_conversion_code(Conv).
+
+plawk_printf_f64_conversion_code(0'f).
+plawk_printf_f64_conversion_code(0'g).
+plawk_printf_f64_conversion_code(0'e).
 
 plawk_printf_i64_spec_codes([0'l, 0'd | Rest], Rest).
 plawk_printf_i64_spec_codes([0'd | Rest], Rest).
@@ -3026,6 +3149,15 @@ plawk_emit_print_expr_for_context(int(field(FieldIndex)), FieldSeparator, Contex
         ValueIR, GlobalParts, SetupParts).
 
 plawk_emit_print_expr_for_context(Expr, FieldSeparator, Context,
+        f64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
+    plawk_f64_print_expr(Expr),
+    !,
+    plawk_print_expr_value_base(Context, f64, Base),
+    plawk_print_expr_output_names(Context, f64, FmtPrefix, PrintPrefix),
+    plawk_f64_expr_ir(Expr, FieldSeparator, Base, Base, ValueIR,
+        GlobalParts, SetupParts).
+
+plawk_emit_print_expr_for_context(Expr, FieldSeparator, Context,
         i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, NamePart, _Left, _Right),
     plawk_i64_binary_print_kind(NamePart, Kind),
@@ -3112,6 +3244,8 @@ plawk_normal_print_expr_value_base(int_mod, Index, Base) :-
     format(atom(Base), 'plawk_int_mod_~w', [Index]).
 plawk_normal_print_expr_value_base(prolog_call, Index, Base) :-
     format(atom(Base), 'plawk_prolog_call_~w', [Index]).
+plawk_normal_print_expr_value_base(f64, Index, Base) :-
+    format(atom(Base), 'plawk_f64_~w', [Index]).
 plawk_normal_print_expr_value_base(length, Index, Base) :-
     format(atom(Base), 'plawk_length_~w', [Index]).
 plawk_normal_print_expr_value_base(substr, Index, Base) :-
@@ -3175,6 +3309,16 @@ plawk_print_expr_output_ir(slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), Index, P
     llvm_emit_printf_slice(plawk_surface_print_slice, FmtVar, PrintVar, LenIR, PtrIR,
         Parts).
 
+plawk_print_expr_output_ir(f64(FmtPrefix, PrintPrefix, ValueIR), Index, [FmtPtr, PrintCall]) :-
+    format(atom(FmtVar), '~w_fmt_~w', [FmtPrefix, Index]),
+    format(atom(PrintVar), 'printed_~w_~w', [PrintPrefix, Index]),
+    format(atom(FmtPtr),
+        '  %~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
+        [FmtVar]),
+    format(atom(PrintCall),
+        '  %~w = call i32 (i8*, ...) @printf(i8* %~w, double ~w)',
+        [PrintVar, FmtVar, ValueIR]).
+
 plawk_print_expr_output_ir(case_slice(Mode, PrintBase, LenIR, PtrIR), _Index, [PrintCall]) :-
     llvm_emit_ascii_case_slice_print(Mode, PtrIR, LenIR, PrintBase, PrintCall).
 
@@ -3183,6 +3327,9 @@ plawk_prefixed_print_expr_output_ir(i64(FmtPrefix, PrintPrefix, ValueIR), _Prefi
 
 plawk_prefixed_print_expr_output_ir(slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), _Prefix, Index, Parts) :-
     plawk_print_expr_output_ir(slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), Index, Parts).
+
+plawk_prefixed_print_expr_output_ir(f64(FmtPrefix, PrintPrefix, ValueIR), _Prefix, Index, Parts) :-
+    plawk_print_expr_output_ir(f64(FmtPrefix, PrintPrefix, ValueIR), Index, Parts).
 
 plawk_prefixed_print_expr_output_ir(case_slice(Mode, PrintBase, LenIR, PtrIR), _Prefix, _Index, [PrintCall]) :-
     llvm_emit_ascii_case_slice_print(Mode, PtrIR, LenIR, PrintBase, PrintCall).

@@ -311,6 +311,16 @@ those scalar arithmetic contexts. That coercion is emitted through the
 target-side `llvm_emit_atom_field_i64_or_default/7` helper so future native
 numeric consumers can share the parse-plus-default lowering instead of
 rebuilding it in PLAWK-specific code.
+Double-typed expressions are available in prints and printf arguments:
+an expression containing a float literal (`float_const(Mantissa, 10^k)`,
+emitted as an exact `fdiv` ratio so LLVM's exact-decimal-FP rule is
+satisfied and rounding matches strtod) or a `float($N)` strtod coercion
+(`@wam_atom_field_f64_value`) lowers through a parallel `plawk_f64_expr_ir`
+emitter with `fadd/fsub/fmul/fdiv/frem` and `sitofp` promotion of `i64`
+subtrees. Output is `%g` for `print` and `%f`/`%g`/`%e` (optional
+precision) for `printf`. Scalar slots remain `i64` in this slice; typed
+double slots (state-plan slot types threaded through the loop/branch/final
+phi emitters) are the follow-up that unlocks `{ sum += $2 * 1.5 }`.
 Scalar variables are readable inside rule-body update expressions and END
 prints: codegen substitutes `var(Name)` leaves with the current SSA slot
 value (an `ssa/1` leaf the shared emitters print verbatim) before emission,
