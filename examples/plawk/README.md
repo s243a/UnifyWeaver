@@ -75,6 +75,7 @@ swipl -q -s tests/test_plawk_surface_prefix_print.pl -g "setenv('UW_SMOKE_TMPDIR
 swipl -q -s tests/test_plawk_surface_forin_end_print.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_stdin_input.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_arith_exprs.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_surface_pattern_combinators.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -106,7 +107,12 @@ lowered allocation-free by rewriting `%s` to `%.*s` and passing the slice length
 and pointer to the native vararg call.
 Numeric field guards use the shared WAM/LLVM `i64` comparison helper, so forms
 such as `$3 > 100 { print $1, $3 }` and `$2 <= -5 { cold++ }` stay in the native
-streaming loop.
+streaming loop. Patterns compose with `&&`, `||`, and `!` using awk precedence
+(`!` over `&&` over `||`, parentheses group), e.g.
+`$1 == "ERROR" && $3 > 100 { print $0 }`, `/^ERROR/ || /^WARN/ { print $1 }`,
+and `!/disk/ { print $0 }`. Combined guards lower to straight-line bitwise
+`i1` ops over the existing native guard helpers — no extra branches — and the
+same combinators work in `if (...)` conditions.
 Scalar state works with `$1 ==
 "ERROR" { count++ } END { print count }`. Multiple scalar increments
 compile to indexed native slots, e.g. `{ errors++; matches++ }`, and multiple

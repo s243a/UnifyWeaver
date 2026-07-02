@@ -2102,6 +2102,10 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, ''-GuardCall
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, '%is_match', GuardCallIR).
+plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardIR) :-
+    plawk_combined_pattern(Pattern),
+    plawk_pattern_guard_ir(Pattern, FieldSeparator, plawk_surface_pattern,
+        '%is_match', GuardIR).
 
 plawk_pattern_guard_ir(always, _GlobalBase, MatchValue, GuardIR) :-
     format(atom(GuardCallIR), '  ~w = icmp eq i1 true, true', [MatchValue]),
@@ -2134,6 +2138,49 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, _GlobalBase,
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, MatchValue, GuardCallIR).
+plawk_pattern_guard_ir(and_pat(Left, Right), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
+    plawk_binary_pattern_guard_ir(and, Left, Right, FieldSeparator, GlobalBase,
+        MatchValue, GuardIR).
+plawk_pattern_guard_ir(or_pat(Left, Right), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
+    plawk_binary_pattern_guard_ir(or, Left, Right, FieldSeparator, GlobalBase,
+        MatchValue, GuardIR).
+plawk_pattern_guard_ir(not_pat(Pattern), FieldSeparator, GlobalBase, MatchValue, GlobalIR-GuardCallIR) :-
+    format(atom(InnerBase), '~w_n', [GlobalBase]),
+    format(atom(InnerValue), '~w_n', [MatchValue]),
+    plawk_pattern_guard_ir(Pattern, FieldSeparator, InnerBase, InnerValue,
+        GlobalIR-InnerCallIR),
+    format(atom(GuardCallIR),
+'~w
+  ~w = xor i1 ~w, true',
+        [InnerCallIR, MatchValue, InnerValue]).
+
+plawk_combined_pattern(and_pat(_Left, _Right)).
+plawk_combined_pattern(or_pat(_Left, _Right)).
+plawk_combined_pattern(not_pat(_Pattern)).
+
+%% plawk_binary_pattern_guard_ir(+Op, +Left, +Right, +FieldSeparator,
+%%     +GlobalBase, +MatchValue, -GuardIR)
+%
+%  Combine two pattern guards with a bitwise i1 op. The base guards are
+%  side-effect-free straight-line checks, so evaluating both operands
+%  keeps the combined guard a single block; awk's short-circuit order
+%  is unobservable here.
+plawk_binary_pattern_guard_ir(Op, Left, Right, FieldSeparator, GlobalBase,
+        MatchValue, GlobalIR-GuardCallIR) :-
+    format(atom(LeftBase), '~w_l', [GlobalBase]),
+    format(atom(LeftValue), '~w_l', [MatchValue]),
+    plawk_pattern_guard_ir(Left, FieldSeparator, LeftBase, LeftValue,
+        LeftGlobalIR-LeftCallIR),
+    format(atom(RightBase), '~w_r', [GlobalBase]),
+    format(atom(RightValue), '~w_r', [MatchValue]),
+    plawk_pattern_guard_ir(Right, FieldSeparator, RightBase, RightValue,
+        RightGlobalIR-RightCallIR),
+    plawk_join_nonempty_ir([LeftGlobalIR, RightGlobalIR], GlobalIR),
+    format(atom(GuardCallIR),
+'~w
+~w
+  ~w = ~w i1 ~w, ~w',
+        [LeftCallIR, RightCallIR, MatchValue, Op, LeftValue, RightValue]).
 
 plawk_literal_contains_guard_ir(GlobalBase, Needle, FieldSeparator, MatchValue, GlobalIR-GuardCallIR) :-
     format(atom(IndexBase), '~w_contains_index', [GlobalBase]),
