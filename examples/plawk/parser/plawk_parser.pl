@@ -79,16 +79,68 @@ action_block(Actions) -->
     "}",
     ws.
 
+%% pattern(-Pattern)//
+%
+%  awk pattern combinators: `!` binds tighter than `&&`, which binds
+%  tighter than `||`; both binary forms associate left and parentheses
+%  group. The base patterns are the existing prefix, contains,
+%  numeric-compare, and field-equality guards.
 pattern(Pattern) -->
+    or_pattern(Pattern).
+
+or_pattern(Pattern) -->
+    and_pattern(First),
+    or_pattern_chain(First, Pattern).
+
+or_pattern_chain(Acc, Pattern) -->
+    ws,
+    "||",
+    ws,
+    and_pattern(Right),
+    !,
+    or_pattern_chain(or_pat(Acc, Right), Pattern).
+or_pattern_chain(Pattern, Pattern) -->
+    [].
+
+and_pattern(Pattern) -->
+    not_pattern(First),
+    and_pattern_chain(First, Pattern).
+
+and_pattern_chain(Acc, Pattern) -->
+    ws,
+    "&&",
+    ws,
+    not_pattern(Right),
+    !,
+    and_pattern_chain(and_pat(Acc, Right), Pattern).
+and_pattern_chain(Pattern, Pattern) -->
+    [].
+
+not_pattern(not_pat(Pattern)) -->
+    "!",
+    ws,
+    not_pattern(Pattern),
+    !.
+not_pattern(Pattern) -->
+    "(",
+    ws,
+    or_pattern(Pattern),
+    ws,
+    ")",
+    !.
+not_pattern(Pattern) -->
+    base_pattern(Pattern).
+
+base_pattern(Pattern) -->
     prefix_pattern(Pattern),
     !.
-pattern(Pattern) -->
+base_pattern(Pattern) -->
     literal_pattern(Pattern),
     !.
-pattern(Pattern) -->
+base_pattern(Pattern) -->
     field_i64_cmp_pattern(Pattern),
     !.
-pattern(Pattern) -->
+base_pattern(Pattern) -->
     field_eq_pattern(Pattern).
 
 prefix_pattern(prefix(Prefix)) -->
@@ -393,10 +445,7 @@ if_action(if(Pattern, ThenActions, ElseActions)) -->
     action_block(ElseActions).
 
 condition_pattern(Pattern) -->
-    field_i64_cmp_pattern(Pattern),
-    !.
-condition_pattern(Pattern) -->
-    field_eq_pattern(Pattern).
+    or_pattern(Pattern).
 
 increment_action(inc_assoc(var(Name), KeyExpr)) -->
     identifier(Name),

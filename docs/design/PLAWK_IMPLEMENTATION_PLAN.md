@@ -291,6 +291,11 @@ pointer pairs.
 Numeric field guards such as `$3 > 100` lower through the shared
 `@wam_atom_field_i64_cmp_value` helper, which parses the projected field slice
 as a strict signed decimal `i64` and compares with numeric op codes.
+Patterns compose with `&&`, `||`, and `!` (awk precedence, parentheses
+group) in both rule guards and `if` conditions. The base guards are
+side-effect-free straight-line native checks, so combined guards lower to
+bitwise `i1` `and`/`or`/`xor` over per-subpattern `_l`/`_r`/`_n` suffixed
+names, keeping the whole guard a single block with no extra branches.
 The parser itself is factored as `@wam_atom_field_i64_value`, returning a value
 plus success flag, so the same machinery also feeds scalar expressions such as
 `bytes += $3` and `last = $3`; PLAWK uses zero for failed numeric coercions in
