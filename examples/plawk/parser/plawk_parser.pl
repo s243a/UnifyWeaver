@@ -988,6 +988,9 @@ assoc_key_expr(field(Index)) -->
       number_codes(Index, IndexCodes),
       Index >= 0
     }.
+assoc_key_expr(int(Value)) -->
+    signed_integer_value(Value),
+    !.
 assoc_key_expr(string(Value)) -->
     quoted_string(ValueCodes),
     { ValueCodes \== [],
