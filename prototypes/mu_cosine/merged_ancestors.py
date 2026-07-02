@@ -47,6 +47,32 @@ def load_multiparent_dag(trees_dir):
     return parents_of, title_of
 
 
+def load_category_graph(tsv):
+    """→ (parents_of: child→[parents], title_of: name→title) from a `child<TAB>parent` category graph (enwiki/
+    simplewiki — the genuine multi-parent DAG; Pearltrees' multi-parent is just this reflected in, so PATH belongs
+    here). Category name IS the node id and the title."""
+    from mu_attention import load_dag
+    parents, _children, _deg = load_dag(tsv)
+    parents_of = {c: list(ps) for c, ps in parents.items()}
+    title_of = {n: n.replace("_", " ") for n in parents}
+    return parents_of, title_of
+
+
+def subtree_scope(root, parents_of):
+    """Set of all descendants of `root` (BFS down) — pass as scope= to bound the ancestor walk to a content subtree
+    (e.g. Main_topic_classifications), avoiding admin-category wandering / weird long paths by construction."""
+    children_of = collections.defaultdict(list)
+    for c, ps in parents_of.items():
+        for p in ps:
+            children_of[p].append(c)
+    scope, frontier = {str(root)}, [str(root)]
+    while frontier:
+        for ch in children_of.get(frontier.pop(), []):
+            if ch not in scope:
+                scope.add(ch); frontier.append(ch)
+    return scope
+
+
 def merged_ancestor_list(node, parents_of, title_of, max_depth=15, scope=None):
     """Merged ancestor list for `node`: unique ancestors (ID-keyed) reached by walking up ALL parents.
     Cycle-detected (visited), max-depth bounded. Returns [(id, title, min_hop)] ordered root-ward first.
@@ -82,13 +108,14 @@ def render_merged_list(node, parents_of, title_of, max_depth=15, scope=None):
     return "\n".join(lines)
 
 
-if __name__ == "__main__":                                        # demo on a known multi-parent node
+if __name__ == "__main__":                                        # demo: category graph (.tsv) or Pearltrees trees dir
     import sys
-    td = sys.argv[1] if len(sys.argv) > 1 else "../../.local/data/pearltrees_api/trees"
-    parents_of, title_of = load_multiparent_dag(td)
+    src = sys.argv[1] if len(sys.argv) > 1 else "/tmp/merged_category_parent.tsv"
+    parents_of, title_of = (load_category_graph(src) if src.endswith(".tsv")
+                            else load_multiparent_dag(src))
     mp = [(c, ps) for c, ps in parents_of.items() if len(ps) > 1]
-    print(f"[DAG] {len(parents_of)} nodes with parents, {len(mp)} multi-parent")
+    print(f"[DAG] {len(parents_of)} nodes, {len(mp)} multi-parent ({100*len(mp)//max(1,len(parents_of))}%)")
     for cid, ps in mp[:3]:
-        print(f"\n=== '{title_of.get(cid, cid)}' (id {cid}) — {len(ps)} parents: {[title_of.get(p, p) for p in ps]} ===")
-        print("  single-path LINEAGE would pick ONE of those. Merged PATH list:")
+        print(f"\n=== '{title_of.get(cid, cid)}' — {len(ps)} parents: {[title_of.get(p, p) for p in ps][:6]} ===")
+        print("  single-path LINEAGE would pick ONE. Merged PATH list (root-ward first, max-depth 15):")
         print(render_merged_list(cid, parents_of, title_of))
