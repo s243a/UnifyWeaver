@@ -1321,6 +1321,17 @@ plawk_mixed_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], ScalarP
     },
     [KeyPtr, KeyId, Value, FmtPtr, PrintCall],
     plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
+plawk_mixed_end_print_lines([special('NR') | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_nr_print_lines(PrintIndex),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
+plawk_mixed_end_print_lines([Expr | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
+    { plawk_end_scalar_expr(Expr) },
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_expr_print_lines(Expr, ScalarPlan, PrintIndex),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
 plawk_mixed_end_print_lines([string(Value) | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     plawk_end_string_print_lines(Value, PrintIndex),
@@ -1328,6 +1339,9 @@ plawk_mixed_end_print_lines([string(Value) | Rest], ScalarPlan, AssocPlan, Outpu
     plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
 
 plawk_scalar_print_expr(var(Name), Name).
+plawk_scalar_print_expr(Expr, Name) :-
+    plawk_end_scalar_expr(Expr),
+    plawk_expr_scalar_read_name(Expr, Name).
 
 plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator,
         GlobalIR, ChainIR, RuleCount, BranchNextExits) :-
@@ -1557,6 +1571,87 @@ plawk_i64_operand_expr(Expr) :-
 plawk_i64_operand_expr(Expr) :-
     plawk_i64_general_binary_expr(Expr).
 
+%% plawk_i64_scalar_read_binary_expr(+Expr) is semidet.
+%
+%  Like plawk_i64_general_binary_expr but operands may also be scalar
+%  variable reads (var/1). Only usable where the emitter has the current
+%  slot values to substitute: scalar update expressions in rule bodies.
+plawk_i64_scalar_read_binary_expr(Expr) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    plawk_i64_scalar_read_operand_expr(Left),
+    plawk_i64_scalar_read_operand_expr(Right).
+
+plawk_i64_scalar_read_operand_expr(var(Name)) :-
+    atom(Name).
+plawk_i64_scalar_read_operand_expr(Expr) :-
+    plawk_i64_operand_expr(Expr).
+plawk_i64_scalar_read_operand_expr(Expr) :-
+    plawk_i64_scalar_read_binary_expr(Expr).
+
+%% plawk_end_scalar_expr(+Expr) is semidet.
+%
+%  END-position i64 expression: a binary tree whose leaves are integer
+%  literals, scalar variables (final slot values), or NR (the final
+%  record count). Fields, NF, length etc. are meaningless after the
+%  stream closes and are rejected.
+plawk_end_scalar_expr(Expr) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    plawk_end_scalar_operand_expr(Left),
+    plawk_end_scalar_operand_expr(Right).
+
+plawk_end_scalar_operand_expr(int(Value)) :-
+    integer(Value).
+plawk_end_scalar_operand_expr(var(Name)) :-
+    atom(Name).
+plawk_end_scalar_operand_expr(special('NR')).
+plawk_end_scalar_operand_expr(Expr) :-
+    plawk_end_scalar_expr(Expr).
+
+%% plawk_substitute_scalar_reads(+Expr0, +Slots, +Values, -Expr)
+%
+%  Replace var(Name) leaves with ssa(ValueIR) using the current scalar
+%  slot values, so the shared i64 emitters never see a variable read.
+plawk_substitute_operation_reads(add(Expr0), Slots, Values, add(Expr)) :-
+    !,
+    plawk_substitute_scalar_reads(Expr0, Slots, Values, Expr).
+plawk_substitute_operation_reads(set(Expr0), Slots, Values, set(Expr)) :-
+    !,
+    plawk_substitute_scalar_reads(Expr0, Slots, Values, Expr).
+plawk_substitute_operation_reads(Operation, _Slots, _Values, Operation).
+
+plawk_substitute_scalar_reads(var(Name), Slots, Values, ssa(Value)) :-
+    !,
+    nth0(SlotIndex, Slots, scalar_counter(Name)),
+    nth0(SlotIndex, Values, Value).
+plawk_substitute_scalar_reads(Expr0, Slots, Values, Expr) :-
+    plawk_i64_binary_expr(Expr0, _LLVMOp, _NamePart, Left0, Right0),
+    !,
+    plawk_substitute_scalar_reads(Left0, Slots, Values, Left),
+    plawk_substitute_scalar_reads(Right0, Slots, Values, Right),
+    Expr0 =.. [Functor, _, _],
+    Expr =.. [Functor, Left, Right].
+plawk_substitute_scalar_reads(Expr, _Slots, _Values, Expr).
+
+%% plawk_substitute_end_reads(+Expr0, +StatePlan, -Expr)
+%
+%  END-position substitution: var(Name) becomes the final slot value and
+%  NR becomes %plawk_nr, the loop-head record phi, which dominates
+%  end_print via close_stream / break_close_stream.
+plawk_substitute_end_reads(var(Name), StatePlan, ssa(Value)) :-
+    !,
+    plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex),
+    format(atom(Value), '%final_slot_~w', [SlotIndex]).
+plawk_substitute_end_reads(special('NR'), _StatePlan, ssa('%plawk_nr')) :-
+    !.
+plawk_substitute_end_reads(Expr0, StatePlan, Expr) :-
+    plawk_i64_binary_expr(Expr0, _LLVMOp, _NamePart, Left0, Right0),
+    !,
+    plawk_substitute_end_reads(Left0, StatePlan, Left),
+    plawk_substitute_end_reads(Right0, StatePlan, Right),
+    Expr0 =.. [Functor, _, _],
+    Expr =.. [Functor, Left, Right].
+plawk_substitute_end_reads(Expr, _StatePlan, Expr).
+
 plawk_i64_binary_primary_expr(special('NR')).
 plawk_i64_binary_primary_expr(special('NF')).
 plawk_i64_binary_primary_expr(int(field(FieldIndex))) :-
@@ -1589,13 +1684,26 @@ plawk_i64_binary_print_kind(mul, int_mul).
 plawk_i64_binary_print_kind(div, int_div).
 plawk_i64_binary_print_kind(mod, int_mod).
 
+% Reads count as slot names too: a variable read before any write gets a
+% zero-initialized slot, matching awk's uninitialized-variable semantics.
 plawk_scalar_update_action_name(Action, Name) :-
-    plawk_scalar_action_update(Action, Name, _Operation).
+    plawk_scalar_action_update(Action, WriteName, Operation),
+    (   Name = WriteName
+    ;   plawk_scalar_operation_expr(Operation, Expr),
+        plawk_expr_scalar_read_name(Expr, Name)
+    ).
 plawk_scalar_update_action_name(if(_Pattern, ThenActions, ElseActions), Name) :-
     ( member(Action, ThenActions)
     ; member(Action, ElseActions)
     ),
-    plawk_scalar_action_update(Action, Name, _Operation).
+    plawk_scalar_update_action_name(Action, Name).
+
+plawk_expr_scalar_read_name(var(Name), Name).
+plawk_expr_scalar_read_name(Expr, Name) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    ( plawk_expr_scalar_read_name(Left, Name)
+    ; plawk_expr_scalar_read_name(Right, Name)
+    ).
 
 plawk_scalar_action_update(inc(var(Name)), Name, add(const(1))).
 plawk_scalar_action_update(add(var(Name), int(Value)), Name, add(const(Value))) :-
@@ -1610,7 +1718,9 @@ plawk_scalar_action_update(add(var(Name), int(field(FieldIndex))), Name, add(fie
 plawk_scalar_action_update(add(var(Name), Expr), Name, add(Expr)) :-
     plawk_i64_scalar_primary_expr(Expr).
 plawk_scalar_action_update(add(var(Name), Expr), Name, add(Expr)) :-
-    plawk_i64_general_binary_expr(Expr).
+    plawk_i64_scalar_read_binary_expr(Expr).
+plawk_scalar_action_update(add(var(Name), var(Read)), Name, add(var(Read))) :-
+    atom(Read).
 plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) :-
     integer(Value),
     Value >= 0.
@@ -1623,16 +1733,19 @@ plawk_scalar_action_update(set(var(Name), int(field(FieldIndex))), Name, set(fie
 plawk_scalar_action_update(set(var(Name), Expr), Name, set(Expr)) :-
     plawk_i64_scalar_primary_expr(Expr).
 plawk_scalar_action_update(set(var(Name), Expr), Name, set(Expr)) :-
-    plawk_i64_general_binary_expr(Expr).
+    plawk_i64_scalar_read_binary_expr(Expr).
+plawk_scalar_action_update(set(var(Name), var(Read)), Name, set(var(Read))) :-
+    atom(Read).
 
 plawk_scalar_action_sequence_pairs([], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
         OpIndex, Values, Values, OpIndex, CurrentLabel, []) -->
     [].
 plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
-    { plawk_scalar_action_update(Action, Name, Operation),
+    { plawk_scalar_action_update(Action, Name, Operation0),
       nth0(SlotIndex, Slots, scalar_counter(Name)),
       nth0(SlotIndex, Values0, InputValue),
+      plawk_substitute_operation_reads(Operation0, Slots, Values0, Operation),
       plawk_scalar_update_operation_ir(Operation, FieldSeparator, Prefix, SlotIndex,
           OpIndex, InputValue, NextValue, Pair),
       replace_nth0(SlotIndex, Values0, NextValue, Values1),
@@ -1747,6 +1860,9 @@ plawk_scalar_update_operation_ir(set(Expr), FieldSeparator, Prefix, SlotIndex,
     format(atom(SetLine), '  ~w = add i64 0, ~w', [NextValue, ValueIR]),
     plawk_join_nonempty_ir([SetupIR, SetLine], IR).
 
+plawk_scalar_numeric_expr_ir(ssa(Value), _FieldSeparator, _Prefix, _SlotIndex,
+        _OpIndex, Value, '', '') :-
+    atom(Value).
 plawk_scalar_numeric_expr_ir(const(Value), _FieldSeparator, _Prefix, _SlotIndex,
         _OpIndex, ValueIR, GlobalIR, IR) :-
     plawk_i64_expr_ir_parts(const(Value), 0, scalar_const, scalar_const_global,
@@ -1795,6 +1911,8 @@ plawk_i64_expr_ir(const(Value), _FieldSeparator, _Base, _GlobalBase, ValueIR, []
 plawk_i64_expr_ir(int(Value), _FieldSeparator, _Base, _GlobalBase, ValueIR, [], []) :-
     integer(Value),
     format(atom(ValueIR), '~w', [Value]).
+plawk_i64_expr_ir(ssa(Value), _FieldSeparator, _Base, _GlobalBase, Value, [], []) :-
+    atom(Value).
 plawk_i64_expr_ir(field(FieldIndex), FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts) :-
     integer(FieldIndex),
@@ -2044,11 +2162,48 @@ plawk_scalar_end_print_lines([var(Name) | Rest], StatePlan, OutputSeparator, Pri
     },
     [FmtPtr, PrintCall],
     plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
+plawk_scalar_end_print_lines([special('NR') | Rest], StatePlan, OutputSeparator, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_nr_print_lines(PrintIndex),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
+plawk_scalar_end_print_lines([Expr | Rest], StatePlan, OutputSeparator, PrintIndex) -->
+    { plawk_end_scalar_expr(Expr) },
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_expr_print_lines(Expr, StatePlan, PrintIndex),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
 plawk_scalar_end_print_lines([string(Value) | Rest], StatePlan, OutputSeparator, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     plawk_end_string_print_lines(Value, PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
     plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
+
+plawk_end_nr_print_lines(PrintIndex) -->
+    { format(atom(FmtVar), 'end_nr_fmt_~w', [PrintIndex]),
+      format(atom(PrintVar), 'printed_end_nr_~w', [PrintIndex]),
+      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, '%plawk_nr',
+          [FmtPtr, PrintCall])
+    },
+    [FmtPtr, PrintCall].
+
+plawk_end_expr_print_lines(Expr, StatePlan, PrintIndex) -->
+    { plawk_substitute_end_reads(Expr, StatePlan, SubstitutedExpr),
+      format(atom(Base), 'plawk_end_expr_~w', [PrintIndex]),
+      plawk_i64_expr_ir(SubstitutedExpr, 32, Base, Base, ValueIR, [], SetupParts),
+      format(atom(FmtVar), 'end_expr_fmt_~w', [PrintIndex]),
+      format(atom(PrintVar), 'printed_end_expr_~w', [PrintIndex]),
+      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
+          [FmtPtr, PrintCall]),
+      append(SetupParts, [FmtPtr, PrintCall], Lines)
+    },
+    plawk_emit_lines(Lines).
+
+plawk_emit_lines([]) -->
+    [].
+plawk_emit_lines([Line | Rest]) -->
+    [Line],
+    plawk_emit_lines(Rest).
 
 plawk_end_string_print_lines(Value, PrintIndex) -->
     { string_codes(Value, Codes),
