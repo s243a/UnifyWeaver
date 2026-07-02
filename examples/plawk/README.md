@@ -86,6 +86,7 @@ swipl -q -s tests/test_plawk_transient_line_records.pl -g "setenv('UW_SMOKE_TMPD
 swipl -q -s tests/test_plawk_binary_records.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_binary_assoc.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_float_slots.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_binfmt_strings.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -243,8 +244,9 @@ compiled the predicates into the module.
 
 The first binary/typed-record slice is in:
 `BEGIN { BINFMT = "i64 i64 f64" }` switches the program to fixed-layout
-binary records (one 8-byte native-endian field per declared type, `$1..$N`,
-record size 8*N). Field access compiles to a typed load at a compile-time
+binary records (`$1..$N`; `i64`/`f64` fields are 8 native-endian bytes,
+`sN` fields are N fixed bytes, offsets and record size follow from the
+declared layout). Field access compiles to a typed load at a compile-time
 offset — no field splitting, no numeric parsing, no interning — so
 `BEGIN { BINFMT = "i64 i64" } $1 > 100 { sum += $2 } END { print sum }`
 is a load-compare-add loop. `i64` fields work in guards, arithmetic,
@@ -265,9 +267,15 @@ binary mode: `{ counts[$1]++ }` uses the raw field value as the table key
 k, counts[k] }` prints keys numerically, and END lookups take integer
 literals (`print counts[5], counts[-3]`); integer keys are binary-only
 (in text mode they would collide with atom ids, so they are rejected
-there). Remaining text-shaped forms ($0, regex, string equality,
-substr/length/index/case, string assoc keys, foreign calls) are rejected
-at codegen in binary mode. A trailing partial record exits with the read
+there). Fixed-width string fields are in: with
+`BINFMT = "s8 i64"`, `print $1` emits the bytes up to the first NUL or
+the field width (strnlen + `%.*s`, no copying), and `$1 == "ERR"`
+compiles to a memcmp plus a NUL check at the key length (skipped for
+full-width keys; oversized keys fold to constant false). String fields
+are print/equality only: arithmetic, `float()`, numeric compares, and
+assoc keys on `sN` fields are rejected. Remaining text-shaped forms
+($0, regex, substr/length/index/case, string assoc keys, foreign calls)
+are rejected at codegen in binary mode. A trailing partial record exits with the read
 error code. Measured on 2M records: 0.040s for the binary program vs
 0.225s for mawk on the equivalent text (5.6x) and 0.156s for plawk's own
 text mode.

@@ -1499,6 +1499,9 @@ plawk_binfmt_pattern_ok(_Descriptor, always) :- !.
 plawk_binfmt_pattern_ok(Descriptor, field_cmp(Index, _Op, _Value)) :-
     !,
     plawk_binfmt_field_type(Descriptor, Index, i64).
+plawk_binfmt_pattern_ok(Descriptor, field_eq(Index, _Value)) :-
+    !,
+    plawk_binfmt_field_type(Descriptor, Index, s(_Width)).
 plawk_binfmt_pattern_ok(Descriptor, and_pat(Left, Right)) :-
     !,
     plawk_binfmt_pattern_ok(Descriptor, Left),
@@ -1598,7 +1601,7 @@ plawk_binfmt_f64_expr_ok(Descriptor, Expr) :-
 %  compile-time offset from the %rec buffer. No parsing, no separators.
 plawk_binfmt_field_load_lines(Descriptor, Index, Base, ValueIR, Lines) :-
     plawk_binfmt_field_type(Descriptor, Index, Type),
-    plawk_binfmt_field_offset(Index, Offset),
+    plawk_binfmt_field_offset(Descriptor, Index, Offset),
     plawk_binfmt_llvm_type(Type, LLVMType),
     format(atom(ValueIR), '%~w', [Base]),
     format(atom(GepIR),
@@ -1651,14 +1654,33 @@ plawk_begin_binfmt_types(BeginClauses, Types) :-
 
 plawk_binfmt_type("i64", i64).
 plawk_binfmt_type("f64", f64).
+% sN: a fixed-width string field of N bytes. Values shorter than N are
+% NUL-terminated inside the field; a full-width value has no NUL.
+plawk_binfmt_type(Part, s(Width)) :-
+    string_concat("s", WidthStr, Part),
+    number_string(Width, WidthStr),
+    integer(Width),
+    Width > 0.
 
 plawk_binfmt_field_type(binfmt(Types), Index, Type) :-
     integer(Index),
     Index >= 1,
     nth1(Index, Types, Type).
 
-plawk_binfmt_field_offset(Index, Offset) :-
-    Offset is (Index - 1) * 8.
+plawk_binfmt_type_width(i64, 8).
+plawk_binfmt_type_width(f64, 8).
+plawk_binfmt_type_width(s(Width), Width).
+
+plawk_binfmt_field_offset(binfmt(Types), Index, Offset) :-
+    PrefixLen is Index - 1,
+    length(PrefixTypes, PrefixLen),
+    append(PrefixTypes, _, Types),
+    maplist(plawk_binfmt_type_width, PrefixTypes, Widths),
+    sum_list(Widths, Offset).
+
+plawk_binfmt_record_size(binfmt(Types), Size) :-
+    maplist(plawk_binfmt_type_width, Types, Widths),
+    sum_list(Widths, Size).
 
 %% plawk_emit_record_driver_ir(+Descriptor, +InputPath, +Blocks, -DriverIR)
 %
@@ -1666,8 +1688,7 @@ plawk_binfmt_field_offset(Index, Offset) :-
 %  fixed-size binary records.
 plawk_emit_record_driver_ir(binfmt(Types), InputPath, Blocks, DriverIR) :-
     !,
-    length(Types, NFields),
-    RecordSize is NFields * 8,
+    plawk_binfmt_record_size(binfmt(Types), RecordSize),
     llvm_emit_binary_stream_driver_ir(InputPath, RecordSize, Blocks, DriverIR).
 plawk_emit_record_driver_ir(_FieldSeparator, InputPath, Blocks, DriverIR) :-
     llvm_emit_stream_driver_ir(InputPath, Blocks, DriverIR).
@@ -3109,6 +3130,10 @@ plawk_pattern_guard_ir(prefix(Prefix), _FieldSeparator, GuardIR) :-
 plawk_pattern_guard_ir(contains(Needle), FieldSeparator, GuardIR) :-
     plawk_literal_contains_guard_ir(plawk_surface_contains, Needle, FieldSeparator,
         '%is_match', GuardIR).
+plawk_pattern_guard_ir(field_eq(Index, Value), binfmt(Types), GuardIR) :-
+    !,
+    plawk_binfmt_field_eq_guard_ir(binfmt(Types), Index, Value,
+        plawk_surface_binfeq, '%is_match', GuardIR).
 plawk_pattern_guard_ir(field_eq(Index, Value), FieldSeparator, GuardIR) :-
     llvm_emit_atom_field_eq_guard(plawk_surface_field_eq, '%line', Index, Value,
         FieldSeparator, '%is_match', GuardIR).
@@ -3155,6 +3180,10 @@ plawk_pattern_guard_ir(prefix(Prefix), _FieldSeparator, GlobalBase, MatchValue, 
 plawk_pattern_guard_ir(contains(Needle), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
     plawk_literal_contains_guard_ir(GlobalBase, Needle, FieldSeparator, MatchValue,
         GuardIR).
+plawk_pattern_guard_ir(field_eq(Index, Value), binfmt(Types), GlobalBase, MatchValue, GuardIR) :-
+    !,
+    plawk_binfmt_field_eq_guard_ir(binfmt(Types), Index, Value, GlobalBase,
+        MatchValue, GuardIR).
 plawk_pattern_guard_ir(field_eq(Index, Value), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
     llvm_emit_atom_field_eq_guard(GlobalBase, '%line', Index, Value, FieldSeparator,
         MatchValue, GuardIR).
@@ -3176,6 +3205,54 @@ plawk_binfmt_field_cmp_guard_ir(Descriptor, field_cmp(Index, Op, Value),
         [MatchValue, ICmpOp, ValueIR, Value]),
     append(LoadLines, [CmpIR], Lines),
     atomic_list_concat(Lines, '\n', GuardCallIR).
+
+%% plawk_binfmt_field_eq_guard_ir(+Descriptor, +Index, +Value, +GlobalBase,
+%%     +MatchValue, -GuardIR)
+%
+%  String equality on a fixed-width sN field: memcmp against the literal
+%  key, plus a NUL check at the key length when the key is shorter than
+%  the field (a full-width key needs no terminator). Keys longer than
+%  the field can never match.
+plawk_binfmt_field_eq_guard_ir(Descriptor, Index, Value, GlobalBase,
+        MatchValue, GuardIR) :-
+    plawk_binfmt_field_type(Descriptor, Index, s(Width)),
+    plawk_binfmt_field_offset(Descriptor, Index, Offset),
+    format(atom(Base), '~w_binfeq~w', [GlobalBase, Index]),
+    ( string_length(Value, KeyLen0), KeyLen0 > Width
+    ->  % Key cannot fit in the field: statically false.
+        format(atom(FalseIR), '  ~w = icmp eq i1 true, false', [MatchValue]),
+        GuardIR = ''-FalseIR
+    ;   format(atom(KeyGlobal), '~w_key', [Base]),
+        llvm_emit_c_string_global(KeyGlobal, Value, GlobalLine, KeyLen, BytesLen),
+        format(atom(GepIR),
+            '  %~w_fp = getelementptr i8, i8* %rec, i64 ~w', [Base, Offset]),
+        format(atom(KeyPtrIR),
+            '  %~w_keyp = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+            [Base, BytesLen, BytesLen, KeyGlobal]),
+        format(atom(CmpIR),
+            '  %~w_cmp = call i32 @memcmp(i8* %~w_fp, i8* %~w_keyp, i64 ~w)',
+            [Base, Base, Base, KeyLen]),
+        format(atom(EqIR),
+            '  %~w_eq = icmp eq i32 %~w_cmp, 0', [Base, Base]),
+        ( KeyLen =:= Width
+        ->  format(atom(FinalIR), '  ~w = and i1 %~w_eq, true',
+                [MatchValue, Base]),
+            Lines = [GepIR, KeyPtrIR, CmpIR, EqIR, FinalIR]
+        ;   format(atom(NulGepIR),
+                '  %~w_nulp = getelementptr i8, i8* %~w_fp, i64 ~w',
+                [Base, Base, KeyLen]),
+            format(atom(NulLoadIR),
+                '  %~w_nul = load i8, i8* %~w_nulp, align 1', [Base, Base]),
+            format(atom(NulOkIR),
+                '  %~w_nul_ok = icmp eq i8 %~w_nul, 0', [Base, Base]),
+            format(atom(FinalIR), '  ~w = and i1 %~w_eq, %~w_nul_ok',
+                [MatchValue, Base, Base]),
+            Lines = [GepIR, KeyPtrIR, CmpIR, EqIR, NulGepIR, NulLoadIR,
+                     NulOkIR, FinalIR]
+        ),
+        atomic_list_concat(Lines, '\n', GuardCallIR),
+        GuardIR = GlobalLine-GuardCallIR
+    ).
 plawk_pattern_guard_ir(field_match(Index, Regex), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
     llvm_emit_regex_field_match_guard(GlobalBase, '%line', Index, Regex,
         FieldSeparator, MatchValue, GuardIR).
@@ -3717,6 +3794,26 @@ plawk_emit_print_expr_for_context(toupper(field(FieldIndex)), FieldSeparator, Co
     plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, UpperBase, LenIR, PtrIR,
         SetupParts).
 
+plawk_emit_print_expr_for_context(field(FieldIndex), binfmt(Types), Context,
+        PrintType, [], SetupLines) :-
+    plawk_binfmt_field_type(binfmt(Types), FieldIndex, s(Width)),
+    !,
+    % Fixed-width string field: print the bytes up to the first NUL or
+    % the field width, whichever comes first (%.*s takes an i32 length).
+    plawk_print_expr_value_base(Context, binfield, Base),
+    plawk_print_expr_output_names(Context, binfield, FmtPrefix, PrintPrefix),
+    plawk_binfmt_field_offset(binfmt(Types), FieldIndex, Offset),
+    format(atom(PtrIR), '%~w_ptr', [Base]),
+    format(atom(LenIR), '%~w_len', [Base]),
+    format(atom(GepIR),
+        '  ~w = getelementptr i8, i8* %rec, i64 ~w', [PtrIR, Offset]),
+    format(atom(LenCall),
+        '  %~w_len64 = call i64 @strnlen(i8* ~w, i64 ~w)',
+        [Base, PtrIR, Width]),
+    format(atom(LenTrunc),
+        '  ~w = trunc i64 %~w_len64 to i32', [LenIR, Base]),
+    SetupLines = [GepIR, LenCall, LenTrunc],
+    PrintType = slice(FmtPrefix, PrintPrefix, LenIR, PtrIR).
 plawk_emit_print_expr_for_context(field(FieldIndex), binfmt(Types), Context,
         PrintType, [], LoadLines) :-
     plawk_binfmt_field_type(binfmt(Types), FieldIndex, Type),
