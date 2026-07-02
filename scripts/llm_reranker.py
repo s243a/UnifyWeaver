@@ -52,7 +52,7 @@ def _parse_order(text: str, n: int) -> Optional[List[int]]:
 
 
 def rerank(query: str, candidates: List[Dict], provider: str = "claude", model: str = "haiku",
-           timeout: int = 60, max_candidates: int = 20) -> Dict:
+           timeout: int = 120, max_candidates: int = 20) -> Dict:
     """Rerank `candidates` (list of dicts with a 'title') for `query`. → dict:
        reranked (list, LLM order), order (0-based indices), displacement (mean |Δrank|/max, [0,1]),
        top1_changed (bool), parsed (bool), raw (LLM text)."""
