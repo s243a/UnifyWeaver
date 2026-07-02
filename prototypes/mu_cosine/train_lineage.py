@@ -72,6 +72,8 @@ def main():
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--cache", default="/tmp/lineage_e5.pt")
     ap.add_argument("--eval-only", action="store_true", help="load --save model and eval only (no training)")
+    ap.add_argument("--merged", action="store_true", help="PATH: passage = MERGED multi-parent ancestor list (vs single-path)")
+    ap.add_argument("--max-depth", type=int, default=15, help="merged-ancestor walk depth cap (cycle-detected)")
     a = ap.parse_args(); dev = torch.device(a.device); rng = random.Random(a.seed)
     if a.train_seed is None: a.train_seed = a.seed
 
@@ -85,6 +87,13 @@ def main():
         if r.get("tree_id") and r.get("target_text"):
             path_of[str(r["tree_id"])] = r["target_text"]
             pids_of[str(r["tree_id"])] = [str(x) for x in (r.get("path_ids") or [])]
+    if a.merged:                                                    # PATH: passage = MERGED multi-parent ancestor list
+        from merged_ancestors import load_multiparent_dag, render_merged_list
+        parents_of, title_of = load_multiparent_dag(a.trees)        # the full DAG (multi-parent), not the collapse
+        nmp = sum(1 for f in path_of if len(parents_of.get(f, [])) > 1)
+        for f in list(path_of):                                     # override the single-path passage with the merged list
+            path_of[f] = render_merged_list(f, parents_of, title_of, max_depth=a.max_depth)
+        print(f"[PATH] merged multi-parent passage; {nmp}/{len(path_of)} folders are multi-parent (pids_of stays single-path for eval ground-truth)")
     queries = [(b, str(f)) for b, f in queries if str(f) in path_of]   # keep bookmarks whose folder has a path
     cand = {str(f): t for f, t in cand.items() if str(f) in path_of}   # normalise folder ids to str (match path_of)
     print(f"[DATA] {len(cand)} folders w/ paths, {len(queries)} bookmarks (of harvested set)")
