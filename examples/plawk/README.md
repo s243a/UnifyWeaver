@@ -87,6 +87,7 @@ swipl -q -s tests/test_plawk_binary_records.pl -g "setenv('UW_SMOKE_TMPDIR', '/m
 swipl -q -s tests/test_plawk_binary_assoc.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_float_slots.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_binfmt_strings.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_binary_writers.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -275,7 +276,20 @@ full-width keys; oversized keys fold to constant false). String fields
 are print/equality only: arithmetic, `float()`, numeric compares, and
 assoc keys on `sN` fields are rejected. Remaining text-shaped forms
 ($0, regex, substr/length/index/case, string assoc keys, foreign calls)
-are rejected at codegen in binary mode. A trailing partial record exits with the read
+are rejected at codegen in binary mode.
+
+Binary *writers* close the pipeline loop: `BEGIN { OUTFMT = "i64 f64" }
+{ writebin $1, float($2) }` emits one fixed-layout binary record on
+stdout per call (typed stores into a reused entry-block buffer, then a
+buffered `fwrite`). writebin works in text mode (a text-to-binary
+converter) and binary mode (a binary-to-binary transform), takes i64
+expressions, NR/NF, scalar reads, and double expressions per the OUTFMT
+slot types (i64 arguments promote into f64 slots), and composes with
+guards, scalar updates, and `if`/`else`. A plawk-to-plawk pipeline -
+converter | aggregator - runs with no text serialization between
+stages. Rejected: writebin without OUTFMT, argument/layout arity
+mismatch, `sN` output fields (later slice), and double expressions into
+i64 slots. A trailing partial record exits with the read
 error code. Measured on 2M records: 0.040s for the binary program vs
 0.225s for mawk on the equivalent text (5.6x) and 0.156s for plawk's own
 text mode.

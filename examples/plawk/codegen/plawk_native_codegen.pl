@@ -69,20 +69,28 @@
 %  function emits the target-specific native main that streams the file, lowers
 %  the deterministic guard, and prints matching records.
 plawk_program_native_driver_ir(
-    program(BeginClauses, [rule(Pattern, [Action])], []),
+    program(BeginClauses, [rule(Pattern, [Action0])], []),
     InputPath,
     DriverIR
 ) :-
-    plawk_rule_body_print_action(Action),
+    plawk_resolve_writebin_rules(BeginClauses, [rule(Pattern, [Action0])],
+        [rule(Pattern, [Action])], WritebinPlan),
+    ( Action = writebin_out(WritebinTypes, WritebinFields)
+    -> plawk_writebin_args_ok(WritebinTypes, WritebinFields)
+    ;  plawk_rule_body_print_action(Action)
+    ),
     plawk_output_action_exprs(Action, Exprs),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
-    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR0),
+    plawk_writebin_entry_lines(WritebinPlan, WritebinEntryIR),
+    plawk_join_nonempty_ir([BeginIR0, WritebinEntryIR], BeginIR),
     plawk_record_descriptor(BeginClauses, FieldSeparator),
     plawk_record_program_ok(FieldSeparator, [rule(Pattern, [Action])], []),
     plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
     plawk_print_record_counter_ir(Exprs, LoopPhiIR, RecordCounterIR),
     plawk_output_action_ir(Action, FieldSeparator, OutputSeparator, PrintGlobalIR-PrintActionIR),
+    plawk_writebin_globals(WritebinPlan, WritebinGlobalIR),
     format(atom(RecordIR),
 '~w
 ~w
@@ -102,8 +110,9 @@ print_line:
 ~w
 ~w
 ~w
+~w
 ',
-        [BeginGlobalIR, GuardGlobalIR, PrintGlobalIR]),
+        [BeginGlobalIR, GuardGlobalIR, PrintGlobalIR, WritebinGlobalIR]),
     plawk_emit_record_driver_ir(FieldSeparator, InputPath,
         driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR, '',
             success, 'success:\n  ret i32 0'),
@@ -154,14 +163,17 @@ plawk_program_native_driver_ir(
         DriverIR).
 
 plawk_program_native_driver_ir(
-    program(BeginClauses, Rules, [end([print(PrintFields)])]),
+    program(BeginClauses, Rules0, [end([print(PrintFields)])]),
     InputPath,
     DriverIR
 ) :-
+    plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules, WritebinPlan),
     plawk_scalar_state_plan(Rules, PrintFields, StatePlan),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
-    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR0),
+    plawk_writebin_entry_lines(WritebinPlan, WritebinEntryIR),
+    plawk_join_nonempty_ir([BeginIR0, WritebinEntryIR], BeginIR),
     plawk_record_descriptor(BeginClauses, FieldSeparator),
     plawk_record_program_ok(FieldSeparator, Rules, PrintFields),
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
@@ -169,7 +181,9 @@ plawk_program_native_driver_ir(
         RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
     plawk_rules_body_print_fields(Rules, BodyPrintFields),
     plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
-    append(PrintFields, BodyPrintFields, PrintExprs),
+    plawk_rules_writebin_exprs(Rules, WritebinExprs),
+    append(PrintFields, BodyPrintFields, PrintExprs0),
+    append(PrintExprs0, WritebinExprs, PrintExprs),
     append(PrintExprs, ScalarExprs, RecordCounterExprs),
     plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
     plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
@@ -180,8 +194,9 @@ plawk_program_native_driver_ir(
     plawk_break_close_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, done,
         BreakCloseIR, FinalStatePhiIR),
     plawk_scalar_end_print_ir(PrintFields, StatePlan, OutputSeparator, EndPrintIR),
-    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
-        [BeginGlobalIR, StringGlobalIR, RuleGlobalIR]),
+    plawk_writebin_globals(WritebinPlan, WritebinGlobalIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, RuleGlobalIR, WritebinGlobalIR]),
     plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
@@ -1547,6 +1562,20 @@ plawk_binfmt_action_ok(Descriptor, if(Pattern, ThenActions, ElseActions)) :-
     plawk_binfmt_pattern_ok(Descriptor, Pattern),
     plawk_binfmt_actions_ok(Descriptor, ThenActions),
     plawk_binfmt_actions_ok(Descriptor, ElseActions).
+plawk_binfmt_action_ok(Descriptor, writebin_out(Types, Fields)) :-
+    !,
+    plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
+
+plawk_binfmt_writebin_args_ok(_Descriptor, [], []).
+plawk_binfmt_writebin_args_ok(Descriptor, [i64 | Types], [Field | Fields]) :-
+    plawk_binfmt_i64_expr_ok(Descriptor, Field),
+    plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
+plawk_binfmt_writebin_args_ok(Descriptor, [f64 | Types], [Field | Fields]) :-
+    ( plawk_expr_is_double(Field)
+    -> plawk_binfmt_f64_expr_ok(Descriptor, Field)
+    ;  plawk_binfmt_i64_expr_ok(Descriptor, Field)
+    ),
+    plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
 
 plawk_binfmt_print_field_ok(_Descriptor, string(_Value)) :- !.
 plawk_binfmt_print_field_ok(_Descriptor, special('NR')) :- !.
@@ -1681,6 +1710,182 @@ plawk_binfmt_field_offset(binfmt(Types), Index, Offset) :-
 plawk_binfmt_record_size(binfmt(Types), Size) :-
     maplist(plawk_binfmt_type_width, Types, Widths),
     sum_list(Widths, Size).
+
+%% plawk_resolve_writebin_rules(+BeginClauses, +Rules0, -Rules, -WritebinPlan)
+%
+%  writebin actions write one fixed-layout binary record on stdout per
+%  call, laid out per BEGIN { OUTFMT = "i64 f64 ..." }. This pre-pass
+%  stamps each writebin(Fields) with the resolved output types
+%  (writebin_out(Types, Fields)) so downstream validation and emission
+%  are self-contained; it fails (rejecting the program) when writebin
+%  appears without OUTFMT, an argument count mismatches the layout, or
+%  the layout contains non-numeric fields (sN output is a later slice).
+plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules, WritebinPlan) :-
+    ( plawk_rules_have_writebin(Rules0)
+    ->  plawk_begin_outfmt_types(BeginClauses, Types),
+        forall(member(Type, Types), memberchk(Type, [i64, f64])),
+        plawk_binfmt_record_size(binfmt(Types), Size),
+        WritebinPlan = outfmt(Types, Size),
+        maplist(plawk_resolve_writebin_rule(Types), Rules0, Rules)
+    ;   WritebinPlan = none,
+        Rules = Rules0
+    ).
+
+plawk_rules_have_writebin(Rules) :-
+    member(rule(_Pattern, Actions), Rules),
+    plawk_actions_have_writebin(Actions),
+    !.
+
+plawk_actions_have_writebin(Actions) :-
+    member(Action, Actions),
+    ( Action = writebin(_Fields)
+    ; Action = if(_Pattern, ThenActions, ElseActions),
+      ( plawk_actions_have_writebin(ThenActions)
+      ; plawk_actions_have_writebin(ElseActions)
+      )
+    ),
+    !.
+
+plawk_resolve_writebin_rule(Types, rule(Pattern, Actions0), rule(Pattern, Actions)) :-
+    maplist(plawk_resolve_writebin_action(Types), Actions0, Actions).
+
+plawk_resolve_writebin_action(Types, writebin(Fields), writebin_out(Types, Fields)) :-
+    !,
+    length(Types, N),
+    length(Fields, N).
+plawk_resolve_writebin_action(Types, if(Pattern, Then0, Else0), if(Pattern, Then, Else)) :-
+    !,
+    maplist(plawk_resolve_writebin_action(Types), Then0, Then),
+    maplist(plawk_resolve_writebin_action(Types), Else0, Else).
+plawk_resolve_writebin_action(_Types, Action, Action).
+
+plawk_begin_outfmt_types(BeginClauses, Types) :-
+    member(begin(Actions), BeginClauses),
+    member(set(var('OUTFMT'), string(Fmt)), Actions),
+    split_string(Fmt, " ", " ", Parts0),
+    exclude(==(""), Parts0, Parts),
+    Parts \== [],
+    maplist(plawk_binfmt_type, Parts, Types).
+
+% Entry-block record buffer: one alloca reused by every writebin call
+% (a loop-body alloca would grow the stack per record).
+plawk_writebin_entry_lines(none, '').
+plawk_writebin_entry_lines(outfmt(_Types, Size), IR) :-
+    format(atom(IR), '  %plawk_wbuf = alloca [~w x i8], align 8~n', [Size]).
+
+% fwrite(buf, size, 1, stdout) buffers in libc; the normal return from
+% main flushes it.
+plawk_writebin_globals(none, '').
+plawk_writebin_globals(outfmt(_Types, _Size), '@stdout = external global i8*').
+
+plawk_rules_writebin_exprs(Rules, Exprs) :-
+    findall(Expr,
+        ( member(rule(_Pattern, Actions), Rules),
+          plawk_actions_writebin_expr(Actions, Expr)
+        ),
+        Exprs).
+
+plawk_actions_writebin_expr(Actions, Expr) :-
+    member(Action, Actions),
+    ( Action = writebin_out(_Types, Fields),
+      member(Expr, Fields)
+    ; Action = if(_Pattern, ThenActions, ElseActions),
+      ( plawk_actions_writebin_expr(ThenActions, Expr)
+      ; plawk_actions_writebin_expr(ElseActions, Expr)
+      )
+    ).
+
+%% plawk_writebin_args_ok(+Types, +Fields) is semidet.
+%
+%  i64 output slots take i64-shaped expressions (fields, literals,
+%  NR/NF, scalar reads, binary trees); f64 slots additionally take
+%  double-typed expressions, with i64 shapes promoted at emission.
+plawk_writebin_args_ok([], []).
+plawk_writebin_args_ok([Type | Types], [Field | Fields]) :-
+    ( Type == i64
+    -> plawk_writebin_i64_arg(Field)
+    ;  plawk_writebin_f64_arg(Field)
+    ),
+    plawk_writebin_args_ok(Types, Fields).
+
+plawk_writebin_i64_arg(special('NR')).
+plawk_writebin_i64_arg(special('NF')).
+plawk_writebin_i64_arg(Field) :-
+    plawk_i64_scalar_read_operand_expr(Field).
+
+plawk_writebin_f64_arg(Field) :-
+    plawk_writebin_i64_arg(Field),
+    !.
+plawk_writebin_f64_arg(Field) :-
+    plawk_expr_is_double(Field),
+    plawk_f64_scalar_read_operand_expr(Field).
+
+%% plawk_writebin_record_ir(+Types, +Fields, +Slots, +Values,
+%%     +FieldSeparator, +Prefix, -Pair)
+%
+%  Evaluate each argument, store it at its layout offset in the shared
+%  %plawk_wbuf buffer, then fwrite the record to stdout.
+plawk_writebin_record_ir(Types, Fields, Slots, Values, FieldSeparator,
+        Prefix, GlobalIR-IR) :-
+    plawk_binfmt_record_size(binfmt(Types), Size),
+    format(atom(BasePtr), '%~w_base', [Prefix]),
+    format(atom(BaseLine),
+        '  ~w = getelementptr inbounds [~w x i8], [~w x i8]* %plawk_wbuf, i32 0, i32 0',
+        [BasePtr, Size, Size]),
+    plawk_writebin_field_lines(Types, Fields, Slots, Values, FieldSeparator,
+        Prefix, BasePtr, 0, 0, FieldLines, GlobalParts),
+    format(atom(StdoutLoad),
+        '  %~w_stdout = load i8*, i8** @stdout', [Prefix]),
+    format(atom(WriteCall),
+        '  %~w_wr = call i64 @fwrite(i8* ~w, i64 ~w, i64 1, i8* %~w_stdout)',
+        [Prefix, BasePtr, Size, Prefix]),
+    append([[BaseLine], FieldLines, [StdoutLoad, WriteCall]], AllLines),
+    atomic_list_concat(AllLines, '\n', IR),
+    atomic_list_concat(GlobalParts, '\n', GlobalIR).
+
+plawk_writebin_field_lines([], [], _Slots, _Values, _FieldSeparator, _Prefix,
+        _BasePtr, _Index, _Offset, [], []).
+plawk_writebin_field_lines([Type | Types], [Field0 | Fields], Slots, Values,
+        FieldSeparator, Prefix, BasePtr, Index, Offset, Lines, GlobalParts) :-
+    plawk_substitute_scalar_reads(Field0, Slots, Values, Field),
+    format(atom(Base), '~w_f~w', [Prefix, Index]),
+    ( Type == i64
+    ->  plawk_i64_expr_ir(Field, FieldSeparator, Base, Base, ValueIR,
+            GParts, SetupParts),
+        LLVMType = i64
+    ;   plawk_writebin_f64_value_ir(Field, FieldSeparator, Base, ValueIR,
+            GParts, SetupParts),
+        LLVMType = double
+    ),
+    format(atom(Gep),
+        '  %~w_fp = getelementptr i8, i8* ~w, i64 ~w', [Base, BasePtr, Offset]),
+    format(atom(Cast),
+        '  %~w_tp = bitcast i8* %~w_fp to ~w*', [Base, Base, LLVMType]),
+    format(atom(Store),
+        '  store ~w ~w, ~w* %~w_tp, align 1', [LLVMType, ValueIR, LLVMType, Base]),
+    plawk_binfmt_type_width(Type, Width),
+    NextOffset is Offset + Width,
+    NextIndex is Index + 1,
+    plawk_writebin_field_lines(Types, Fields, Slots, Values, FieldSeparator,
+        Prefix, BasePtr, NextIndex, NextOffset, RestLines, RestGlobals),
+    append([SetupParts, [Gep, Cast, Store], RestLines], Lines),
+    append(GParts, RestGlobals, GlobalParts).
+
+plawk_writebin_f64_value_ir(Field, FieldSeparator, Base, ValueIR,
+        GParts, SetupParts) :-
+    plawk_expr_is_double(Field),
+    !,
+    plawk_f64_expr_ir(Field, FieldSeparator, Base, Base, ValueIR,
+        GParts, SetupParts).
+plawk_writebin_f64_value_ir(Field, FieldSeparator, Base, ValueIR,
+        GParts, SetupParts) :-
+    format(atom(IntBase), '~w_int', [Base]),
+    plawk_i64_expr_ir(Field, FieldSeparator, IntBase, IntBase, IntValueIR,
+        GParts, IntSetupParts),
+    format(atom(ValueIR), '%~w', [Base]),
+    format(atom(Promote), '  ~w = sitofp i64 ~w to double',
+        [ValueIR, IntValueIR]),
+    append(IntSetupParts, [Promote], SetupParts).
 
 %% plawk_emit_record_driver_ir(+Descriptor, +InputPath, +Blocks, -DriverIR)
 %
@@ -2144,6 +2349,8 @@ plawk_scalar_rule_body_action(Action) :-
     plawk_scalar_action_update(Action, _Name, _Operation).
 plawk_scalar_rule_body_action(Action) :-
     plawk_rule_body_print_action(Action).
+plawk_scalar_rule_body_action(writebin_out(Types, Fields)) :-
+    plawk_writebin_args_ok(Types, Fields).
 plawk_scalar_rule_body_action(if(_Pattern, ThenActions, ElseActions)) :-
     append(ThenActions, ElseActions, Actions),
     Actions \== [],
@@ -2158,6 +2365,8 @@ plawk_scalar_rule_body_plain_action(Action) :-
     plawk_scalar_action_update(Action, _Name, _Operation).
 plawk_scalar_rule_body_plain_action(Action) :-
     plawk_rule_body_print_action(Action).
+plawk_scalar_rule_body_plain_action(writebin_out(Types, Fields)) :-
+    plawk_writebin_args_ok(Types, Fields).
 % else-if chains nest an if inside a branch body; the sequence walker
 % lowers nested ifs recursively, so validation recurses the same way.
 plawk_scalar_rule_body_plain_action(if(Pattern, ThenActions, ElseActions)) :-
@@ -2454,6 +2663,16 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
     },
     [Pair],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, AssocExitLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
+plawk_scalar_action_sequence_pairs([writebin_out(Types, Fields) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { format(atom(WbPrefix), '~w_wb_~w', [Prefix, OpIndex]),
+      plawk_writebin_record_ir(Types, Fields, Slots, Values0, FieldSeparator,
+          WbPrefix, Pair),
+      NextOpIndex is OpIndex + 1
+    },
+    [Pair],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 plawk_scalar_action_sequence_pairs([print(Fields) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
@@ -3482,11 +3701,18 @@ plawk_print_action_ir(Fields, FieldSeparator, OutputSeparator, GlobalIR-IR) :-
 
 plawk_output_action_exprs(print(Fields), Fields).
 plawk_output_action_exprs(printf(string(_Format), Args), Args).
+plawk_output_action_exprs(writebin_out(_Types, Fields), Fields).
 
 plawk_output_action_ir(print(Fields), FieldSeparator, OutputSeparator, Pair) :-
     plawk_print_action_ir(Fields, FieldSeparator, OutputSeparator, Pair).
 plawk_output_action_ir(printf(string(Format), Args), FieldSeparator, _OutputSeparator, Pair) :-
     plawk_prefixed_printf_action_ir(Format, Args, FieldSeparator, plawk_printf, Pair).
+plawk_output_action_ir(writebin_out(Types, Fields), FieldSeparator, _OutputSeparator, Pair) :-
+    % No scalar slots exist in the single-action driver, so scalar reads
+    % in writebin arguments fail here and the program falls through to
+    % the state-plan drivers.
+    plawk_writebin_record_ir(Types, Fields, [], [], FieldSeparator,
+        plawk_writebin, Pair).
 
 plawk_prefixed_print_action_ir([field(0)], _FieldSeparator, _OutputSeparator, Prefix, ''-IR) :-
     !,

@@ -479,8 +479,17 @@ straight from the record buffer, and `$N == "key"` lowers to memcmp
 plus a NUL check at the key length (elided for full-width keys;
 oversized keys fold to constant false). String fields are
 print/equality-only; arithmetic, `float()`, numeric compares, and assoc
-keys on them are rejected. Remaining Phase 3 items below (DCG readers,
-richer ABIs, binary writers) are unchanged.
+keys on them are rejected. **Fourth slice landed (binary writers):** `BEGIN { OUTFMT = "..." }`
+plus the `writebin expr, ...` action write fixed-layout binary records
+to stdout: a resolve pre-pass stamps each writebin with the layout
+types (failing on missing OUTFMT, arity mismatch, or sN output), the
+entry block allocates one reused record buffer, each argument lowers
+through the i64/f64 expression emitters into a typed store at its
+layout offset, and a buffered `fwrite(buf, size, 1, stdout)` emits the
+record (libc flushes on normal main return). Works from both text and
+binary inputs, so plawk-to-plawk binary pipelines (converter |
+aggregator) run with no text serialization between stages. Remaining
+Phase 3 items below (DCG readers, richer ABIs) are unchanged.
 
 **Second slice landed (typed associative arrays):** in binary mode
 `{ counts[$1]++ }` keys the existing `%WamAssocI64Table` runtime with the
