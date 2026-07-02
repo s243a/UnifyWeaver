@@ -80,6 +80,7 @@ swipl -q -s tests/test_plawk_surface_regex_match.pl -g "setenv('UW_SMOKE_TMPDIR'
 swipl -q -s tests/test_plawk_surface_end_scalar_exprs.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_else_if.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_prolog_calls.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_surface_float_exprs.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -103,6 +104,18 @@ fields such as `$3`, which coerce like `int($3)` inside arithmetic (a bare
 `$N` on its own still prints as a byte slice). Division and modulo are
 guarded: a zero divisor yields `0`, and `INT64_MIN / -1` wraps to
 `INT64_MIN` (`% -1` yields `0`) instead of trapping.
+Expressions become double-typed when any operand is a float literal or a
+`float($N)` coercion: `{ print $2 / 2.0 }` prints `3.5` where
+`{ print $2 / 2 }` prints `3`. Float literals are kept exact as integer
+ratios (`1.5` emits `fdiv double 15.0, 10.0`, giving the correctly rounded
+double), `float($N)` parses with `strtod` semantics (leading number,
+trailing text ignored, `0` when non-numeric), and `i64` operands promote
+with `sitofp`. Double results print with `%g` (so `2.0 * 10` prints `20`)
+and `printf` accepts `%f`/`%g`/`%e` with optional precision such as `%.2f`.
+IEEE semantics apply to float division (no zero-divisor guard). Doubles are
+expression-level only in this slice: scalar slots, guards, and `END`
+expressions stay `i64`, and assigning a double expression to a scalar is
+rejected at codegen; typed double slots are the documented follow-up.
 Rule actions can also use basic `printf` forms, e.g.
 `$1 == "ERROR" { printf "%s=%s\n", $2, $3 }`. `printf` does not add `OFS` or
 an implicit newline; supported native formats are `%%`, `%s` for strings and

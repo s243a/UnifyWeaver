@@ -774,6 +774,12 @@ field_expr(string(Value)) -->
     { string_codes(Value, ValueCodes)
     }.
 field_expr(Expr) -->
+    float_field_expr(Expr),
+    !.
+field_expr(Expr) -->
+    float_literal_expr(Expr),
+    !.
+field_expr(Expr) -->
     prolog_call_expr(Expr),
     !.
 field_expr(var(Name)) -->
@@ -858,6 +864,12 @@ i64_factor_expr(Expr) -->
 i64_factor_expr(Expr) -->
     i64_binary_primary_expr(Expr),
     !.
+i64_factor_expr(Expr) -->
+    float_field_expr(Expr),
+    !.
+i64_factor_expr(Expr) -->
+    float_literal_expr(Expr),
+    !.
 i64_factor_expr(int(Value)) -->
     integer_codes(ValueCodes),
     !,
@@ -892,6 +904,43 @@ prolog_call_expr(prolog_call(Name, Args)) -->
     foreign_args(Args),
     ws,
     ")".
+
+%% float_literal_expr(-Expr)//
+%
+%  A decimal float literal such as 2.5 or 0.1, kept exact as
+%  float_const(Mantissa, Denominator) with Denominator = 10^k so
+%  codegen can emit a correctly rounded double without a lossy
+%  Prolog-float round trip (LLVM rejects inexact decimal FP text).
+float_literal_expr(float_const(Mantissa, Denominator)) -->
+    integer_codes(IntCodes),
+    ".",
+    integer_codes(FracCodes),
+    { IntCodes \== [],
+      FracCodes \== [],
+      append(IntCodes, FracCodes, AllCodes),
+      number_codes(Mantissa, AllCodes),
+      length(FracCodes, FracLen),
+      Denominator is 10 ** FracLen
+    }.
+
+%% float_field_expr(-Expr)//
+%
+%  awk-style numeric coercion to double: float($N) parses the field
+%  with strtod semantics (leading number, trailing text ignored, 0.0
+%  when non-numeric).
+float_field_expr(float_field(Index)) -->
+    "float",
+    ws,
+    "(",
+    ws,
+    "$",
+    integer_codes(IndexCodes),
+    ws,
+    ")",
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index >= 0
+    }.
 
 i64_binary_primary_expr(special('NR')) -->
     "NR".

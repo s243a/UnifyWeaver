@@ -1616,7 +1616,8 @@ declare double @acos(double)
 declare double @atan(double)
 declare double @atan2(double, double)
 declare i32 @regcomp(i8*, i8*, i32)
-declare i32 @regexec(i8*, i8*, i64, i8*, i32)'
+declare i32 @regexec(i8*, i8*, i64, i8*, i32)
+declare double @strtod(i8*, i8**)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -4489,6 +4490,81 @@ rgx.terminate:
 
 rgx.fail:
   ret i1 false
+}
+
+; awk-style numeric coercion of a record or projected field to double:
+; strtod parses a leading number and ignores trailing text, so
+; "3.14abc" reads as 3.14 and non-numeric text reads as 0.0. Field
+; slices are copied into a growable NUL-terminated scratch buffer;
+; field 0 uses the record atom''s C string directly.
+@wam_f64_field_buf = internal global i8* null
+@wam_f64_field_cap = internal global i64 0
+
+define double @wam_atom_field_f64_value(%Value %line, i64 %field_index, i8 %sep) {
+entry:
+  %is_whole = icmp eq i64 %field_index, 0
+  br i1 %is_whole, label %f64.whole, label %f64.field
+
+f64.whole:
+  %aid = call i64 @value_payload(%Value %line)
+  %line_s = call i8* @wam_atom_to_string(i64 %aid)
+  %line_null = icmp eq i8* %line_s, null
+  br i1 %line_null, label %f64.zero, label %f64.parse_whole
+
+f64.parse_whole:
+  %whole_v = call double @strtod(i8* %line_s, i8** null)
+  ret double %whole_v
+
+f64.field:
+  %slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %field_index, i8 %sep)
+  %fptr = extractvalue %WamSlice %slice, 0
+  %flen = extractvalue %WamSlice %slice, 1
+  %missing = icmp eq i8* %fptr, null
+  br i1 %missing, label %f64.zero, label %f64.ensure_buf
+
+f64.ensure_buf:
+  %need = add i64 %flen, 1
+  %cap = load i64, i64* @wam_f64_field_cap
+  %fits = icmp ule i64 %need, %cap
+  br i1 %fits, label %f64.copy, label %f64.grow
+
+f64.grow:
+  %old_buf = load i8*, i8** @wam_f64_field_buf
+  %new_cap = shl i64 %need, 1
+  %new_buf = call i8* @realloc(i8* %old_buf, i64 %new_cap)
+  %grow_null = icmp eq i8* %new_buf, null
+  br i1 %grow_null, label %f64.zero, label %f64.store_buf
+
+f64.store_buf:
+  store i8* %new_buf, i8** @wam_f64_field_buf
+  store i64 %new_cap, i64* @wam_f64_field_cap
+  br label %f64.copy
+
+f64.copy:
+  %buf = load i8*, i8** @wam_f64_field_buf
+  br label %f64.copy_loop
+
+f64.copy_loop:
+  %ci = phi i64 [ 0, %f64.copy ], [ %ci1, %f64.copy_step ]
+  %copy_done = icmp uge i64 %ci, %flen
+  br i1 %copy_done, label %f64.terminate, label %f64.copy_step
+
+f64.copy_step:
+  %src_p = getelementptr i8, i8* %fptr, i64 %ci
+  %dst_p = getelementptr i8, i8* %buf, i64 %ci
+  %byte = load i8, i8* %src_p
+  store i8 %byte, i8* %dst_p
+  %ci1 = add i64 %ci, 1
+  br label %f64.copy_loop
+
+f64.terminate:
+  %end_p = getelementptr i8, i8* %buf, i64 %flen
+  store i8 0, i8* %end_p
+  %field_v = call double @strtod(i8* %buf, i8** null)
+  ret double %field_v
+
+f64.zero:
+  ret double 0.000000e+00
 }
 
 define %Value @wam_stream_fail_value() alwaysinline nounwind {
