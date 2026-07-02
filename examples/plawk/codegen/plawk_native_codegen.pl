@@ -2762,8 +2762,27 @@ plawk_foreign_args_ir([Arg | Rest], FieldSeparator, BasePrefix, Index,
     plawk_foreign_args_ir(Rest, FieldSeparator, BasePrefix, NextIndex,
         ArgValueIRs, GlobalPartsRest, SetupPartsRest).
 
-plawk_foreign_arg_ir(field(0), _FieldSeparator, _ArgBase, '%line', [], []) :-
-    !.
+plawk_foreign_arg_ir(field(0), _FieldSeparator, ArgBase, ArgValueIR,
+        [], SetupParts) :-
+    !,
+    % The record Value is the transient line atom whose buffer mutates
+    % on the next read; Prolog-side atom identity (X == 'ERROR') and
+    % anything the predicate might persist need a real atom, so $0
+    % interns the current line text. %line_s is the C string the
+    % driver's EOF check already resolved.
+    SafeBase = ArgBase,
+    format(atom(LenIR),
+        '  %~w_len = call i64 @strlen(i8* %line_s)', [SafeBase]),
+    format(atom(InternIR),
+        '  %~w_id = call i64 @wam_intern_atom(i8* %line_s, i64 %~w_len)',
+        [SafeBase, SafeBase]),
+    format(atom(Value0IR),
+        '  %~w_v0 = insertvalue %Value undef, i32 0, 0', [SafeBase]),
+    format(atom(ValueIR),
+        '  %~w_v = insertvalue %Value %~w_v0, i64 %~w_id, 1',
+        [SafeBase, SafeBase, SafeBase]),
+    format(atom(ArgValueIR), '%~w_v', [SafeBase]),
+    SetupParts = [LenIR, InternIR, Value0IR, ValueIR].
 plawk_foreign_arg_ir(field(FieldIndex), FieldSeparator, ArgBase, ArgValueIR,
         [EmptyGlobalIR], SetupParts) :-
     integer(FieldIndex),

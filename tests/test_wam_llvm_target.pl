@@ -333,7 +333,7 @@ test(stream_driver_emitter_compact_blocks) :-
     assertion(sub_atom(DriverIR, _, _, _, '@.wam_stream_input_path = private constant [10 x i8]')),
     assertion(sub_atom(DriverIR, _, _, _, '@.wam_stream_eof = private constant [12 x i8] c"end_of_file\\00"')),
     assertion(sub_atom(DriverIR, _, _, _, '@.fmt = private constant [2 x i8] c"\\0A\\00"')),
-    assertion(sub_atom(DriverIR, _, _, _, '%line = call %Value @wam_stream_read_line_value(%Value %handle)')),
+    assertion(sub_atom(DriverIR, _, _, _, '%line = call %Value @wam_stream_read_line_transient_value(%Value %handle)')),
     assertion(sub_atom(DriverIR, _, _, _, 'br i1 %is_eof, label %close_stream, label %lowered_test')),
     assertion(sub_atom(DriverIR, _, _, _, 'success:\n  ret i32 0')),
     assertion(\+ sub_atom(DriverIR, _, _, _, 'plawk_surface_path')),

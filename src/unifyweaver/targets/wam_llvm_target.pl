@@ -4844,6 +4844,166 @@ rhv.free_out_fail:
   br label %rhv.fail
 }
 
+; Transient-line variant of read_line for per-record streaming: the
+; line lands in the shared @wam_transient_line_buf (grown geometrically,
+; reused across reads, never freed) and the returned atom Value carries
+; the reserved transient id 2^62 that @wam_atom_to_string maps to that
+; buffer. No malloc/free, no hashing, no atom-table append per record,
+; and memory stays constant on unbounded streams. Contract: the Value
+; is valid only until the next transient read -- callers that persist
+; line-derived data past the record must intern it (field-slice assoc
+; keys and $0 foreign-call arguments already do). EOF still returns the
+; real interned end_of_file atom.
+define %Value @wam_stream_read_line_transient_value(%Value %handle_value) {
+entry:
+  %rtv.t = call i32 @value_tag(%Value %handle_value)
+  %rtv.is_int = icmp eq i32 %rtv.t, 1
+  br i1 %rtv.is_int, label %rtv.lookup_handle, label %rtv.fail
+
+rtv.fail:
+  %rtv.bad = call %Value @wam_stream_fail_value()
+  ret %Value %rtv.bad
+
+rtv.lookup_handle:
+  %rtv.handle64 = call i64 @value_payload(%Value %handle_value)
+  %rtv.handle = trunc i64 %rtv.handle64 to i32
+  %rtv.handle_min = icmp sgt i32 %rtv.handle, 0
+  %rtv.handle_max = icmp ult i32 %rtv.handle, 4096
+  %rtv.handle_ok = and i1 %rtv.handle_min, %rtv.handle_max
+  br i1 %rtv.handle_ok, label %rtv.load_handle, label %rtv.fail
+
+rtv.load_handle:
+  %rtv.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %rtv.handle
+  %rtv.reader = load %WamLineReader*, %WamLineReader** %rtv.slot
+  %rtv.reader_null = icmp eq %WamLineReader* %rtv.reader, null
+  br i1 %rtv.reader_null, label %rtv.fail, label %rtv.have_handle
+
+rtv.have_handle:
+  %rtv.fd_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 0
+  %rtv.fd = load i32, i32* %rtv.fd_slot
+  %rtv.fd_ok = icmp sge i32 %rtv.fd, 0
+  br i1 %rtv.fd_ok, label %rtv.ensure_out, label %rtv.fail
+
+rtv.ensure_out:
+  %rtv.cap0 = load i64, i64* @wam_transient_line_cap
+  %rtv.have_buf = icmp sgt i64 %rtv.cap0, 0
+  br i1 %rtv.have_buf, label %rtv.loop_pre, label %rtv.first_alloc
+
+rtv.first_alloc:
+  %rtv.first_buf = call i8* @malloc(i64 4096)
+  %rtv.first_null = icmp eq i8* %rtv.first_buf, null
+  br i1 %rtv.first_null, label %rtv.fail, label %rtv.first_store
+
+rtv.first_store:
+  store i8* %rtv.first_buf, i8** @wam_transient_line_buf
+  store i64 4096, i64* @wam_transient_line_cap
+  br label %rtv.loop_pre
+
+rtv.loop_pre:
+  %rtv.out0 = load i8*, i8** @wam_transient_line_buf
+  %rtv.cap1 = load i64, i64* @wam_transient_line_cap
+  br label %rtv.loop
+
+rtv.loop:
+  %rtv.out_len = phi i64 [ 0, %rtv.loop_pre ], [ %rtv.out_len, %rtv.after_read ], [ %rtv.next_out_len, %rtv.append_store ]
+  %rtv.out_cur = phi i8* [ %rtv.out0, %rtv.loop_pre ], [ %rtv.out_cur, %rtv.after_read ], [ %rtv.append_out, %rtv.append_store ]
+  %rtv.out_cap = phi i64 [ %rtv.cap1, %rtv.loop_pre ], [ %rtv.out_cap, %rtv.after_read ], [ %rtv.append_cap, %rtv.append_store ]
+  %rtv.buf_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 1
+  %rtv.buf = load i8*, i8** %rtv.buf_slot
+  %rtv.len_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 3
+  %rtv.len = load i64, i64* %rtv.len_slot
+  %rtv.pos_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 4
+  %rtv.pos = load i64, i64* %rtv.pos_slot
+  %rtv.have_byte = icmp slt i64 %rtv.pos, %rtv.len
+  br i1 %rtv.have_byte, label %rtv.consume, label %rtv.fill
+
+rtv.fill:
+  %rtv.cap_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 2
+  %rtv.rcap = load i64, i64* %rtv.cap_slot
+  %rtv.n = call i64 @read(i32 %rtv.fd, i8* %rtv.buf, i64 %rtv.rcap)
+  %rtv.n_neg = icmp slt i64 %rtv.n, 0
+  br i1 %rtv.n_neg, label %rtv.fail, label %rtv.check_eof
+
+rtv.check_eof:
+  %rtv.n_zero = icmp eq i64 %rtv.n, 0
+  br i1 %rtv.n_zero, label %rtv.eof_or_partial, label %rtv.after_read
+
+rtv.after_read:
+  store i64 %rtv.n, i64* %rtv.len_slot
+  store i64 0, i64* %rtv.pos_slot
+  br label %rtv.loop
+
+rtv.eof_or_partial:
+  %rtv.empty_line = icmp eq i64 %rtv.out_len, 0
+  br i1 %rtv.empty_line, label %rtv.eof, label %rtv.finalize
+
+rtv.consume:
+  %rtv.char_ptr = getelementptr i8, i8* %rtv.buf, i64 %rtv.pos
+  %rtv.ch = load i8, i8* %rtv.char_ptr
+  %rtv.pos_next = add i64 %rtv.pos, 1
+  store i64 %rtv.pos_next, i64* %rtv.pos_slot
+  %rtv.is_lf = icmp eq i8 %rtv.ch, 10
+  br i1 %rtv.is_lf, label %rtv.finalize, label %rtv.append
+
+rtv.append:
+  %rtv.next_out_len_pre = add i64 %rtv.out_len, 1
+  %rtv.has_room = icmp ult i64 %rtv.next_out_len_pre, %rtv.out_cap
+  br i1 %rtv.has_room, label %rtv.append_store, label %rtv.grow_out
+
+rtv.grow_out:
+  %rtv.new_out_cap = shl i64 %rtv.out_cap, 1
+  %rtv.cap_grew = icmp ugt i64 %rtv.new_out_cap, %rtv.out_cap
+  br i1 %rtv.cap_grew, label %rtv.grow_alloc, label %rtv.fail
+
+rtv.grow_alloc:
+  %rtv.grown_out = call i8* @realloc(i8* %rtv.out_cur, i64 %rtv.new_out_cap)
+  %rtv.grown_null = icmp eq i8* %rtv.grown_out, null
+  br i1 %rtv.grown_null, label %rtv.fail, label %rtv.grow_store
+
+rtv.grow_store:
+  store i8* %rtv.grown_out, i8** @wam_transient_line_buf
+  store i64 %rtv.new_out_cap, i64* @wam_transient_line_cap
+  br label %rtv.append_store
+
+rtv.append_store:
+  %rtv.append_out = phi i8* [ %rtv.out_cur, %rtv.append ], [ %rtv.grown_out, %rtv.grow_store ]
+  %rtv.append_cap = phi i64 [ %rtv.out_cap, %rtv.append ], [ %rtv.new_out_cap, %rtv.grow_store ]
+  %rtv.out_ptr = getelementptr i8, i8* %rtv.append_out, i64 %rtv.out_len
+  store i8 %rtv.ch, i8* %rtv.out_ptr
+  %rtv.next_out_len = add i64 %rtv.out_len, 1
+  br label %rtv.loop
+
+rtv.finalize:
+  %rtv.has_chars = icmp sgt i64 %rtv.out_len, 0
+  br i1 %rtv.has_chars, label %rtv.check_cr, label %rtv.terminate_empty
+
+rtv.check_cr:
+  %rtv.last_idx = sub i64 %rtv.out_len, 1
+  %rtv.last_ptr = getelementptr i8, i8* %rtv.out_cur, i64 %rtv.last_idx
+  %rtv.last = load i8, i8* %rtv.last_ptr
+  %rtv.last_is_cr = icmp eq i8 %rtv.last, 13
+  %rtv.trim_len = select i1 %rtv.last_is_cr, i64 %rtv.last_idx, i64 %rtv.out_len
+  br label %rtv.terminate
+
+rtv.terminate_empty:
+  br label %rtv.terminate
+
+rtv.terminate:
+  %rtv.final_len = phi i64 [ %rtv.trim_len, %rtv.check_cr ], [ 0, %rtv.terminate_empty ]
+  %rtv.term = getelementptr i8, i8* %rtv.out_cur, i64 %rtv.final_len
+  store i8 0, i8* %rtv.term
+  %rtv.v0 = insertvalue %Value undef, i32 0, 0
+  %rtv.v = insertvalue %Value %rtv.v0, i64 4611686018427387904, 1
+  ret %Value %rtv.v
+
+rtv.eof:
+  %rtv.eof_ptr = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof_atom, i32 0, i32 0
+  %rtv.eof_aid = call i64 @wam_intern_atom(i8* %rtv.eof_ptr, i64 11)
+  %rtv.eof_v0 = insertvalue %Value undef, i32 0, 0
+  %rtv.eof_v = insertvalue %Value %rtv.eof_v0, i64 %rtv.eof_aid, 1
+  ret %Value %rtv.eof_v
+}
+
 define i1 @wam_stream_close_value(%Value %handle_value) {
 entry:
   %sch.t = call i32 @value_tag(%Value %handle_value)
@@ -16948,6 +17108,8 @@ emit_atom_string_globals(IR) :-
 @wam_atom_dyn_ptr   = global i8** null
 @wam_atom_dyn_count = global i32 0
 @wam_atom_dyn_cap   = global i32 0
+@wam_transient_line_buf = global i8* null
+@wam_transient_line_cap = global i64 0
 
 define i8* @wam_atom_to_string(i64 %id) {
   ret i8* null
@@ -17038,8 +17200,25 @@ define i64 @wam_intern_atom(i8* %str, i64 %len) {
 @wam_atom_hash_cap   = global i64 0
 @wam_atom_hash_count = global i64 0
 
+; Shared buffer behind the transient line atom (id 2^62). Grown
+; geometrically, never freed; contents are valid until the next
+; transient read.
+@wam_transient_line_buf = global i8* null
+@wam_transient_line_cap = global i64 0
+
 define i8* @wam_atom_to_string(i64 %id) {
 entry:
+  ; Transient line atom: id 2^62 resolves to the shared line buffer
+  ; owned by @wam_stream_read_line_transient_value. The buffer mutates
+  ; on every read, so this id must never enter the intern hash or the
+  ; dynamic table; it exists so per-record consumers (field helpers,
+  ; regex, printing) work on the current record without interning it.
+  %is_transient = icmp eq i64 %id, 4611686018427387904
+  br i1 %is_transient, label %transient, label %check_static
+transient:
+  %tbuf = load i8*, i8** @wam_transient_line_buf
+  ret i8* %tbuf
+check_static:
   %cnt = load i32, i32* @wam_atom_string_count
   %cnt64 = zext i32 %cnt to i64
   %in_static = icmp ult i64 %id, %cnt64
@@ -17624,6 +17803,12 @@ llvm_emit_printf0(FmtGlobal, FmtLen, FmtVar, PrintVar, [FmtPtr, PrintCall]) :-
 %  main(argc, argv) that opens argv[1] at runtime, treats "-" as stdin,
 %  and defaults to stdin (fd 0) when no argument is given -- the awk
 %  pipeline-filter convention.
+%
+%  Records are read with @wam_stream_read_line_transient_value: %line
+%  is the reserved transient atom whose string lives in a shared buffer
+%  valid only until the next read, so per-record lowerings read it
+%  freely but anything persisted past the record must intern (field
+%  slices used as assoc keys and $0 foreign-call arguments do).
 llvm_emit_stream_driver_ir(
     InputPath,
     driver_blocks(RuntimeGlobals, LoopPhiIR, LoweredLabel, RecordIR,
@@ -17697,7 +17882,7 @@ check_handle_value:
 
 loop:
 ~w
-  %line = call %Value @wam_stream_read_line_value(%Value %handle)
+  %line = call %Value @wam_stream_read_line_transient_value(%Value %handle)
   %line_tag = extractvalue %Value %line, 0
   %line_payload = extractvalue %Value %line, 1
   %line_is_int = icmp eq i32 %line_tag, 1
@@ -17779,7 +17964,7 @@ check_handle_value:
 
 loop:
 ~w
-  %line = call %Value @wam_stream_read_line_value(%Value %handle)
+  %line = call %Value @wam_stream_read_line_transient_value(%Value %handle)
   %line_tag = extractvalue %Value %line, 0
   %line_payload = extractvalue %Value %line, 1
   %line_is_int = icmp eq i32 %line_tag, 1
