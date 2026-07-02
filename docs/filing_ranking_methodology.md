@@ -149,7 +149,43 @@ Runs use the s243a federated model (8,800 folders) + `model_prod.pt`, Haiku via 
 - **e5-direct vs µ-select (pending):** e5-top-15 → LLM vs µ-select — since µ costs ~13 pts of recall, e5-direct may
   win end-to-end; tests whether µ should touch the *set* at all or only the *order*.
 
-## 8. Open items / caveats
+## 8. Diagnosing data-deficiency vs capacity — which lever to pull
+
+This project's constraint: **usable data is ≈ infinite** (we can harvest/generate more Pearltrees, Wikipedia, or
+LLM-labelled examples), but **capacity is bounded** (µ is a small head on *frozen* e5, on consumer hardware). So the
+question is never "do we have enough data" in the abstract — it's **"for our capacity, is the model *data*-limited
+(add data), *capacity*-limited (adding data won't help), or *feature*-limited (the representation is the ceiling)?"**
+The diagnostics that answer it, cheapest first:
+
+1. **Learning curve — the primary test.** Retrain at *fixed capacity* on 10/25/50/100% of the data; plot the eval
+   metric (recall@K, top-1) vs training-set size.
+   - Still **rising** at 100% → **data-limited** → harvest/add more (cheap here).
+   - **Plateaued** → not data-limited *at this capacity* → more data won't move it; the lever is capacity or features.
+2. **Train–validation gap (bias / variance).**
+   - **High train error** (can't fit even the training set) → **capacity-limited** (underfitting) → more data won't
+     help; need more layers/params or better features.
+   - **Low train, high val** (big gap) → **data-limited** (overfitting) → more data closes it.
+   - **Both converge at a poor level** → the **features are the ceiling** (here: frozen e5) → improve the
+     representation, not data or capacity.
+3. **Capacity sweep.** Repeat the learning curve at a few capacities (e.g. 3L vs 4L, ± heads/`d_model` — cf. the
+   3-layer ceiling found earlier). If the **plateau rises** with capacity → capacity is the binding constraint (worth
+   spending, within hardware). If it **doesn't move** → the ceiling is features/task, not capacity.
+4. **Baseline reference (e5-cosine).** For filing, e5-cosine is the strong baseline; the practical question is
+   whether µ's learning curve **reaches/crosses it**. If µ plateaus *below* e5-cosine at every affordable capacity →
+   the frozen-e5 features + small head can't out-read cosine on *recall* → neither data nor affordable capacity is the
+   lever; either improve features (fine-tune / replace e5) or accept the measured division of labour (e5 = recall,
+   µ = precision).
+
+**Decision rule (infinite data, bounded capacity):** add data until the learning curve plateaus for your capacity;
+then run a capacity sweep. In one line — **data-deficiency = "the curve is still rising"; capacity-deficiency =
+"adding capacity raises the plateau"; feature/task ceiling = "neither moves it."**
+
+*Applied here:* the µ-recall-< e5 result (§7) is currently **ambiguous between data and capacity — we haven't run the
+learning curve yet.** That's the first thing the retrain should produce: µ recall@K vs train-size at 3L (and one
+higher capacity). Rising ⇒ data is the lever (and µ may cross e5, §7); flat below e5 at 3L but rising at 4L ⇒
+capacity; flat at both ⇒ the frozen-e5 features are the ceiling.
+
+## 9. Open items / caveats
 
 - Confidence-adaptive α (defer to e5 when µ is uncertain) needs margin **calibration** to work as a live
   single-query signal — deferred; OOD is currently handled by the LLM/agent as final arbiter.
