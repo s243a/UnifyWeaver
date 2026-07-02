@@ -68,6 +68,14 @@ the DAG's paths, wildcard-masked) is just **selecting which cached node-tokens e
   home for the graded-depth membership target.) *Max depth:* stop-β/multi-path give variable, possibly-deep paths, so
   fix a **max-depth slot count with truncation** (simplest — deepest ancestors beyond it are dropped, acceptable as
   branch signal is shallow-heavy), or use **relative** depth PEs if arbitrary depth must be exact.
+  **EMPIRICAL (dense-DAG calibration, wide_enwiki_math):** on Wikipedia (dense multi-parent) the *deterministic*
+  merged closure **explodes** — `max_depth 12–15` from any node reaches all of science/humanities via structural
+  connectors (even after admin-filtering) — an incoherent grab-bag. At **`max_depth 2`** it's small and coherent
+  (`Abstract algebra` → `Algebra` + `Fields of mathematics`; `People` → `Humans` + `Anthropology`). So the merged
+  list must be a **shallow LOCAL context (parents + grandparents), NOT the full closure** — the branch signal lives
+  there anyway. `max_depth 15` only worked for *shallow Pearltrees*; the stochastic stop-β must likewise be
+  **shallow-mean** on dense DAGs (not the mean-10 that suited Pearltrees). Plus admin-filter the few structural
+  connectors (`Container categories`, `Categories requiring diffusion`) that appear as grandparents.
 - **Padding masking.** Variable-length paths (from stop-β / multi-path) are padded to a fixed slot count; the
   attention block must **mask the padding tokens** so they don't pollute the aggregate. Standard, but must be wired.
 - **Cache invalidation.** The per-node embedding cache assumes static titles. On a graph refresh (Pearltrees/Wikipedia
