@@ -437,13 +437,13 @@ assignment_action(set(var(Name), Value)) -->
 scalar_value_expr(Value) -->
     scalar_delta_expr(Value).
 
+scalar_delta_expr(Expr) -->
+    i64_binary_surface_expr(Expr).
 scalar_delta_expr(int(Value)) -->
     integer_codes(ValueCodes),
     { ValueCodes \== [],
       number_codes(Value, ValueCodes),
       Value >= 0 }.
-scalar_delta_expr(Expr) -->
-    i64_const_binary_expr(Expr).
 scalar_delta_expr(special('NR')) -->
     "NR".
 scalar_delta_expr(special('NF')) -->
@@ -529,7 +529,7 @@ print_fields_rest([]) -->
     [].
 
 field_expr(Expr) -->
-    i64_const_binary_expr(Expr).
+    i64_binary_surface_expr(Expr).
 field_expr(special('NR')) -->
     "NR".
 field_expr(special('NF')) -->
@@ -631,21 +631,88 @@ int_field_expr(int(Field)) -->
     ")",
     { Field = field(_) }.
 
-i64_const_binary_expr(Expr) -->
-    i64_binary_primary_expr(Left),
-    ws,
-    i64_binary_surface_operator(Functor),
-    ws,
-    integer_codes(ValueCodes),
-    { ValueCodes \== [],
-      number_codes(Value, ValueCodes),
-      Value >= 0,
-      Expr =.. [Functor, Left, int(Value)] }.
+%% i64_binary_surface_expr(-Expr)//
+%
+%  General native i64 arithmetic with awk precedence: * / % bind tighter
+%  than + -, both levels associate left, and parentheses group. Factors
+%  are the native i64 primaries plus integer literals and bare numeric
+%  field coercions such as `$3` (zero when the field is not a strict
+%  signed decimal). The top-level result must contain at least one
+%  operator so bare primaries keep their existing print/slice meaning.
+i64_binary_surface_expr(Expr) -->
+    i64_additive_expr(Expr),
+    { i64_binary_expr_ast(Expr) }.
 
-i64_binary_surface_operator(add_i64) -->
+i64_binary_expr_ast(Expr) :-
+    compound(Expr),
+    functor(Expr, Functor, 2),
+    memberchk(Functor, [add_i64, sub_i64, mul_i64, div_i64, mod_i64]).
+
+i64_additive_expr(Expr) -->
+    i64_multiplicative_expr(First),
+    i64_additive_chain(First, Expr).
+
+i64_additive_chain(Acc, Expr) -->
+    ws,
+    i64_additive_operator(Functor),
+    ws,
+    i64_multiplicative_expr(Right),
+    !,
+    { Acc1 =.. [Functor, Acc, Right] },
+    i64_additive_chain(Acc1, Expr).
+i64_additive_chain(Expr, Expr) -->
+    [].
+
+i64_multiplicative_expr(Expr) -->
+    i64_factor_expr(First),
+    i64_multiplicative_chain(First, Expr).
+
+i64_multiplicative_chain(Acc, Expr) -->
+    ws,
+    i64_multiplicative_operator(Functor),
+    ws,
+    i64_factor_expr(Right),
+    !,
+    { Acc1 =.. [Functor, Acc, Right] },
+    i64_multiplicative_chain(Acc1, Expr).
+i64_multiplicative_chain(Expr, Expr) -->
+    [].
+
+i64_additive_operator(add_i64) -->
     "+".
-i64_binary_surface_operator(sub_i64) -->
+i64_additive_operator(sub_i64) -->
     "-".
+
+i64_multiplicative_operator(mul_i64) -->
+    "*".
+i64_multiplicative_operator(div_i64) -->
+    "/".
+i64_multiplicative_operator(mod_i64) -->
+    "%".
+
+i64_factor_expr(Expr) -->
+    "(",
+    ws,
+    i64_additive_expr(Expr),
+    ws,
+    ")",
+    !.
+i64_factor_expr(Expr) -->
+    i64_binary_primary_expr(Expr),
+    !.
+i64_factor_expr(int(Value)) -->
+    integer_codes(ValueCodes),
+    !,
+    { ValueCodes \== [],
+      number_codes(Value, ValueCodes)
+    }.
+i64_factor_expr(field(Index)) -->
+    "$",
+    integer_codes(IndexCodes),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index >= 0
+    }.
 
 i64_binary_primary_expr(special('NR')) -->
     "NR".

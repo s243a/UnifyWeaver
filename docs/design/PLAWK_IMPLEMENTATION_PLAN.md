@@ -272,10 +272,15 @@ the allocation-free `@wam_atom_field_subslice_value` helper, and native
 `index($N, "literal")` through the shared `@wam_atom_field_index_value` helper.
 Explicit print-side numeric coercions such as `int($N)` lower through the shared
 `@wam_atom_field_i64_value` parse helper and print zero when the field is
-missing or not a strict signed decimal. The first composed arithmetic forms add
-or subtract a non-negative integer constant from native `i64` primaries such as
-`NR`, `NF`, `length($N)`, `int($N)`, and `index($N, "literal")`; each lowers
-through the shared primary emitter followed by a shared binary `i64` operation.
+missing or not a strict signed decimal. Arithmetic expressions support general
+`+`, `-`, `*`, `/`, and `%` with awk precedence and parentheses over `i64`
+operands: integer literals, `NR`, `NF`, `length($N)`, `int($N)`,
+`index($N, "literal")`, and bare numeric fields (`$3 + $4` coerces like
+`int/1`; a bare `$N` alone still prints as a slice). Each binary node lowers
+recursively through the shared `plawk_i64_expr_ir` emitter with `_lhs`/`_rhs`
+name suffixes; `/` and `%` emit branch-free guards so a zero divisor yields
+`0` and `INT64_MIN / -1` wraps instead of trapping. Scalar `+=`/`=` updates
+and `printf` arguments accept the same expression grammar.
 Print-only `tolower($N)` and `toupper($N)` lower through shared
 `@wam_print_ascii_lower_slice` and `@wam_print_ascii_upper_slice` helpers, so
 case mapping streams bytes without allocating a transformed atom.

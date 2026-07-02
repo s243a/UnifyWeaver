@@ -74,6 +74,7 @@ swipl -q -s tests/test_plawk_native_lowered_handler_stream_loop_driver.pl -g "se
 swipl -q -s tests/test_plawk_surface_prefix_print.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_forin_end_print.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_stdin_input.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_surface_arith_exprs.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -88,10 +89,15 @@ as `$1 == "ERROR" { print substr($2, 1, 3) }`, and native byte searches such as
 case-mapped field slices such as `$1 == "ERROR" { print tolower($2), toupper($0) }`.
 Explicit numeric field coercion is available as `int($N)`, e.g.
 `$1 == "ERROR" { print $3, int($3) }`; failed numeric parses print `0`.
-The first arithmetic composition forms add or subtract a non-negative integer
-constant from native `i64` primaries such as `NR`, `NF`, `length($N)`,
-`int($N)`, and `index($N, "literal")`, e.g.
-`$1 == "ERROR" { print NR - 1, int($3) + 1, index($2, "sk") + 1 }`.
+Arithmetic expressions support general `+`, `-`, `*`, `/`, and `%` between
+native `i64` operands with awk precedence (`* / %` bind tighter than `+ -`,
+both associate left) and parentheses, e.g.
+`{ print ($2 + $3) * $4, $2 + $3 * $4 }`. Operands are integer literals,
+`NR`, `NF`, `length($N)`, `int($N)`, `index($N, "literal")`, and bare numeric
+fields such as `$3`, which coerce like `int($3)` inside arithmetic (a bare
+`$N` on its own still prints as a byte slice). Division and modulo are
+guarded: a zero divisor yields `0`, and `INT64_MIN / -1` wraps to
+`INT64_MIN` (`% -1` yields `0`) instead of trapping.
 Rule actions can also use basic `printf` forms, e.g.
 `$1 == "ERROR" { printf "%s=%s\n", $2, $3 }`. `printf` does not add `OFS` or
 an implicit newline; supported native formats are `%%`, `%s` for strings and
