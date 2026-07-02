@@ -31,9 +31,10 @@ class MuRanker:
     """Loads a mu_cosine checkpoint + e5, precomputes candidate-folder embeddings, scores live queries."""
 
     def __init__(self, ckpt_path, folder_titles, folder_ids, device="cpu", cache_path=None,
-                 mu_weight=0.9, e5_weight=0.1):
+                 mu_weight=0.9, e5_weight=0.1, shortlist_k=64):
         self.dev = torch.device(device)
         self.mu_weight, self.e5_weight = mu_weight, e5_weight
+        self.shortlist_k = shortlist_k          # e5 coarse-ranks all folders, μ reranks only the top-K (speed + OOD)
         self.folder_ids = list(folder_ids)
         self.folder_keys = ["F:%d" % i for i in range(len(folder_titles))]
         ftext = {k: (folder_titles[i] or str(folder_ids[i])) for i, k in enumerate(self.folder_keys)}
@@ -70,8 +71,8 @@ class MuRanker:
         return torch.tensor(v, dtype=torch.float32)
 
     @torch.no_grad()
-    def _mu(self, tok, op, batch=512):
-        items = [("Q", fk, 0) for fk in self.folder_keys]        # node=bookmark(Q), root=folder, op placeholder
+    def _mu(self, tok, keys, op, batch=512):
+        items = [("Q", fk, 0) for fk in keys]                    # node=bookmark(Q), root=folder, op placeholder
         ow = self.ow[op]
         out = []
         for i in range(0, len(items), batch):
@@ -83,16 +84,33 @@ class MuRanker:
 
     @torch.no_grad()
     def score(self, query):
-        """→ np.ndarray[F]: blended per-folder score, aligned with the folder_titles/ids order given at init."""
-        qv, pv = self._encode(query, "query"), self._encode(query, "passage")
-        q = torch.cat([self.folder_q, qv[None]]); p = torch.cat([self.folder_p, pv[None]])
-        idx = {k: i for i, k in enumerate(self.folder_keys)}; idx["Q"] = self.F
-        tok = Tokenizer(q, p, idx, parents={}, deg={})
-        S_elem, S_hier, S_sym = self._mu(tok, "ELEM"), self._mu(tok, "HIER"), self._mu(tok, "SYM")
-        S_max = torch.maximum(torch.maximum(S_elem, S_hier), S_sym)      # operator-OR
-        C = qv @ self.folder_p.T                                         # e5-cos: bookmark query: · folder passage:
+        """→ np.ndarray[F]: blended per-folder score aligned with the init folder order. e5 coarse-ranks ALL folders,
+        μ reranks only the top shortlist_k (speed + OOD: μ never sees implausible folders). Non-shortlisted folders
+        get a low score ordered by e5, so they only surface if the shortlist is exhausted."""
+        qv = self._encode(query, "query")
+        C = qv @ self.folder_p.T                                        # e5-cos: bookmark query: · folder passage:
+        k = min(self.shortlist_k or self.F, self.F)
+        top = torch.topk(C, k).indices                                  # e5 shortlist
+        top_keys = [self.folder_keys[int(i)] for i in top]
+
+        # μ only on the shortlist (bookmark passage: injected as "Q")
+        pv = self._encode(query, "passage")
+        sub_q = torch.cat([self.folder_q[top], qv[None]])
+        sub_p = torch.cat([self.folder_p[top], pv[None]])
+        sub_keys = ["S:%d" % j for j in range(k)]
+        remap = {sub_keys[j]: j for j in range(k)}; remap["Q"] = k
+        tok = Tokenizer(sub_q, sub_p, remap, parents={}, deg={})
+        S_elem, S_hier, S_sym = (self._mu(tok, sub_keys, o) for o in ("ELEM", "HIER", "SYM"))
+        S_max = torch.maximum(torch.maximum(S_elem, S_hier), S_sym)     # operator-OR over the shortlist
         nz = lambda v: (v - v.min()) / (v.max() - v.min() + 1e-9)
-        return (self.e5_weight * nz(C) + self.mu_weight * nz(S_max)).numpy()
+        blended = self.e5_weight * nz(C[top]) + self.mu_weight * nz(S_max)
+
+        out = torch.full((self.F,), -1.0)                               # non-shortlisted: below any blended score
+        out[top] = blended + 1.0                                        # shortlisted sit above (offset keeps order)
+        # tie-break the non-shortlisted tail by e5 so they're still sensibly ordered if ever surfaced
+        mask = torch.ones(self.F, dtype=torch.bool); mask[top] = False
+        out[mask] = -1.0 + 0.001 * nz(C)[mask]
+        return out.numpy()
 
 
 if __name__ == "__main__":                                              # smoke test on toy folders
