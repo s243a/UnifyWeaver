@@ -4463,6 +4463,66 @@ soh.close_all_fail:
   br label %soh.fail
 }
 
+define %Value @wam_stream_open_fd_value(i64 %fd64) {
+entry:
+  ; Wrap an already-open file descriptor (e.g. fd 0 for stdin) in a
+  ; buffered reader handle. The fd is not opened or validated here;
+  ; wam_stream_close_value closes it like any other stream. On
+  ; allocation failure the caller keeps ownership of the fd.
+  %sfd.fd_ok = icmp sge i64 %fd64, 0
+  br i1 %sfd.fd_ok, label %sfd.alloc_reader, label %sfd.fail
+
+sfd.fail:
+  %sfd.bad = call %Value @wam_stream_fail_value()
+  ret %Value %sfd.bad
+
+sfd.alloc_reader:
+  %sfd.fd = trunc i64 %fd64 to i32
+  %sfd.reader_size = ptrtoint %WamLineReader* getelementptr (%WamLineReader, %WamLineReader* null, i32 1) to i64
+  %sfd.reader_mem = call i8* @malloc(i64 %sfd.reader_size)
+  %sfd.reader_null = icmp eq i8* %sfd.reader_mem, null
+  br i1 %sfd.reader_null, label %sfd.fail, label %sfd.alloc_buf
+
+sfd.alloc_buf:
+  %sfd.buf = call i8* @malloc(i64 4096)
+  %sfd.buf_null = icmp eq i8* %sfd.buf, null
+  br i1 %sfd.buf_null, label %sfd.free_reader_fail, label %sfd.init
+
+sfd.free_reader_fail:
+  call void @free(i8* %sfd.reader_mem)
+  br label %sfd.fail
+
+sfd.init:
+  %sfd.reader = bitcast i8* %sfd.reader_mem to %WamLineReader*
+  %sfd.fd_slot = getelementptr %WamLineReader, %WamLineReader* %sfd.reader, i32 0, i32 0
+  store i32 %sfd.fd, i32* %sfd.fd_slot
+  %sfd.buf_slot = getelementptr %WamLineReader, %WamLineReader* %sfd.reader, i32 0, i32 1
+  store i8* %sfd.buf, i8** %sfd.buf_slot
+  %sfd.cap_slot = getelementptr %WamLineReader, %WamLineReader* %sfd.reader, i32 0, i32 2
+  store i64 4096, i64* %sfd.cap_slot
+  %sfd.len_slot = getelementptr %WamLineReader, %WamLineReader* %sfd.reader, i32 0, i32 3
+  store i64 0, i64* %sfd.len_slot
+  %sfd.pos_slot = getelementptr %WamLineReader, %WamLineReader* %sfd.reader, i32 0, i32 4
+  store i64 0, i64* %sfd.pos_slot
+  %sfd.count = load i32, i32* @wam_stream_handle_count
+  %sfd.next = add i32 %sfd.count, 1
+  %sfd.cap_ok = icmp ult i32 %sfd.next, 4096
+  br i1 %sfd.cap_ok, label %sfd.store_handle, label %sfd.free_all_fail
+
+sfd.store_handle:
+  %sfd.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %sfd.next
+  store %WamLineReader* %sfd.reader, %WamLineReader** %sfd.slot
+  store i32 %sfd.next, i32* @wam_stream_handle_count
+  %sfd.handle = zext i32 %sfd.next to i64
+  %sfd.v = call %Value @value_integer(i64 %sfd.handle)
+  ret %Value %sfd.v
+
+sfd.free_all_fail:
+  call void @free(i8* %sfd.buf)
+  call void @free(i8* %sfd.reader_mem)
+  br label %sfd.fail
+}
+
 define %Value @wam_stream_read_line_value(%Value %handle_value) {
 entry:
   %rhv.t = call i32 @value_tag(%Value %handle_value)
@@ -17185,6 +17245,12 @@ llvm_emit_printf0(FmtGlobal, FmtLen, FmtVar, PrintVar, [FmtPtr, PrintCall]) :-
 %  lowerers provide runtime globals, optional entry setup, loop-carried phis,
 %  per-record lowered IR, continuation phis, optional terminal-break close IR,
 %  and the close-success block.
+%
+%  InputPath is either a concrete path (compiled into the binary as a
+%  string global) or the atom `stdin_or_argv`, which emits a
+%  main(argc, argv) that opens argv[1] at runtime, treats "-" as stdin,
+%  and defaults to stdin (fd 0) when no argument is given -- the awk
+%  pipeline-filter convention.
 llvm_emit_stream_driver_ir(
     InputPath,
     driver_blocks(RuntimeGlobals, LoopPhiIR, LoweredLabel, RecordIR,
@@ -17206,6 +17272,108 @@ llvm_emit_stream_driver_ir(
         driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
             ContinueIR, '', CloseOkLabel, CloseOkIR),
         DriverIR).
+
+llvm_emit_stream_driver_ir(
+    stdin_or_argv,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    !,
+    format(atom(DriverIR),
+'@.wam_stream_eof = private constant [12 x i8] c"end_of_file\\00"
+@.wam_stream_stdin_dash = private constant [2 x i8] c"-\\00"
+~w
+
+define i32 @main(i32 %argc, i8** %argv) {
+entry:
+~w
+  %have_arg = icmp sgt i32 %argc, 1
+  br i1 %have_arg, label %check_argv_path, label %use_stdin
+
+check_argv_path:
+  %argv1_ptr = getelementptr i8*, i8** %argv, i64 1
+  %argv1 = load i8*, i8** %argv1_ptr
+  %dash_ptr = getelementptr [2 x i8], [2 x i8]* @.wam_stream_stdin_dash, i32 0, i32 0
+  %dash_cmp = call i32 @strcmp(i8* %argv1, i8* %dash_ptr)
+  %is_dash = icmp eq i32 %dash_cmp, 0
+  br i1 %is_dash, label %use_stdin, label %open_argv_file
+
+open_argv_file:
+  %argv1_len = call i64 @strlen(i8* %argv1)
+  %path_id = call i64 @wam_intern_atom(i8* %argv1, i64 %argv1_len)
+  %path0 = insertvalue %Value undef, i32 0, 0
+  %path = insertvalue %Value %path0, i64 %path_id, 1
+  %file_handle = call %Value @wam_stream_open_value(%Value %path)
+  br label %have_handle
+
+use_stdin:
+  %stdin_handle = call %Value @wam_stream_open_fd_value(i64 0)
+  br label %have_handle
+
+have_handle:
+  %handle = phi %Value [ %file_handle, %open_argv_file ], [ %stdin_handle, %use_stdin ]
+  %handle_tag = extractvalue %Value %handle, 0
+  %handle_is_int = icmp eq i32 %handle_tag, 1
+  br i1 %handle_is_int, label %check_handle_value, label %fail_open
+
+check_handle_value:
+  %handle_payload = extractvalue %Value %handle, 1
+  %handle_ok = icmp sgt i64 %handle_payload, 0
+  br i1 %handle_ok, label %loop, label %fail_open
+
+loop:
+~w
+  %line = call %Value @wam_stream_read_line_value(%Value %handle)
+  %line_tag = extractvalue %Value %line, 0
+  %line_payload = extractvalue %Value %line, 1
+  %line_is_int = icmp eq i32 %line_tag, 1
+  %line_bad_payload = icmp slt i64 %line_payload, 0
+  %line_bad = and i1 %line_is_int, %line_bad_payload
+  br i1 %line_bad, label %fail_read, label %check_line_atom
+
+check_line_atom:
+  %line_is_atom = icmp eq i32 %line_tag, 0
+  br i1 %line_is_atom, label %check_eof, label %fail_line_tag
+
+check_eof:
+  %line_s = call i8* @wam_atom_to_string(i64 %line_payload)
+  %eof_s = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof, i32 0, i32 0
+  %eof_cmp = call i32 @strcmp(i8* %line_s, i8* %eof_s)
+  %is_eof = icmp eq i32 %eof_cmp, 0
+  br i1 %is_eof, label %close_stream, label %~w
+
+~w:
+~w
+
+continue_loop:
+~w
+  br label %loop
+
+~w
+close_stream:
+  %close_ok = call i1 @wam_stream_close_value(%Value %handle)
+  br i1 %close_ok, label %~w, label %fail_close
+
+~w
+
+fail_open:
+  ret i32 10
+
+fail_read:
+  %close_ignore_read = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 11
+
+fail_line_tag:
+  %close_ignore_line_tag = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 12
+
+fail_close:
+  ret i32 16
+}
+',
+        [RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel,
+         LoweredLabel, RecordIR, ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR]).
 
 llvm_emit_stream_driver_ir(
     InputPath,

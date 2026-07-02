@@ -73,6 +73,7 @@ swipl -q -s tests/test_plawk_native_output_stream_loop_driver.pl -g "setenv('UW_
 swipl -q -s tests/test_plawk_native_lowered_handler_stream_loop_driver.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_prefix_print.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_forin_end_print.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_surface_stdin_input.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -149,7 +150,12 @@ explicit single-byte `FS` values such as `BEGIN { FS = ":" }` for native field
 equality, selected-field printing, and associative key extraction. Single-byte
 `OFS` values such as `BEGIN { OFS = "," }` drive comma-separated `print` fields;
 the native path emits separator bytes directly, so values such as `%` are data,
-not `printf` formats. Mixed scalar/associative state is
+not `printf` formats. Compiled binaries take their input the awk way: passing the
+`stdin_or_argv` sentinel instead of a compile-time path emits a
+`main(argc, argv)` that opens `argv[1]` at runtime, treats `-` as stdin, and
+defaults to stdin when no argument is given, so `./prog file.txt`,
+`./prog < file.txt`, and `cat file.txt | ./prog` all work.
+Mixed scalar/associative state is
 supported in the same native loop, e.g. `{ total++; counts[$1]++ }` with an
 `END` print of both `total` and `counts["ERROR"]`. `END` print fields can also
 include literal labels such as `print "total", total, "errors", counts["ERROR"]`.

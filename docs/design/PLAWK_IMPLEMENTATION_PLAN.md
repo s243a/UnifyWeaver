@@ -189,11 +189,17 @@ The first WAM/LLVM probes now live under `examples/plawk/probes/`.
 **Success:** a native binary that reads stdin, counts records, prints matching
 lines — identical behaviour to Phase 0, running as compiled LLVM.
 
-**Current boundary:** the compiled and native stream smokes still read from file
-paths rather than stdin. WAM/LLVM exposes general stream helpers
-(`@wam_stream_open_value`, `@wam_stream_read_line_value`, and
-`@wam_stream_close_value`) that native LLVM code can call directly, alongside
-the existing `stream_open/2`, `read_line/2`, and `stream_close/1` builtins.
+**Current boundary:** WAM/LLVM exposes general stream helpers
+(`@wam_stream_open_value`, `@wam_stream_read_line_value`,
+`@wam_stream_close_value`, and `@wam_stream_open_fd_value` for wrapping an
+already-open descriptor such as stdin) that native LLVM code can call
+directly, alongside the existing `stream_open/2`, `read_line/2`, and
+`stream_close/1` builtins. `llvm_emit_stream_driver_ir/3` accepts either a
+concrete compile-time path or the `stdin_or_argv` sentinel; the sentinel
+emits a `main(argc, argv)` that opens `argv[1]` at runtime, treats `-` as
+stdin, and defaults to stdin when no argument is given, so compiled PLAWK
+binaries work as awk-style pipeline filters
+(`tests/test_plawk_surface_stdin_input.pl`).
 The `tests/test_plawk_native_stream_loop_driver.pl` smoke proves a native LLVM
 loop can open a runtime file path, read lines until `end_of_file`, call a
 compiled PLAWK handler once per record, and thread PLAWK state through WAM.
