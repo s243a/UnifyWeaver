@@ -318,9 +318,19 @@ satisfied and rounding matches strtod) or a `float($N)` strtod coercion
 (`@wam_atom_field_f64_value`) lowers through a parallel `plawk_f64_expr_ir`
 emitter with `fadd/fsub/fmul/fdiv/frem` and `sitofp` promotion of `i64`
 subtrees. Output is `%g` for `print` and `%f`/`%g`/`%e` (optional
-precision) for `printf`. Scalar slots remain `i64` in this slice; typed
-double slots (state-plan slot types threaded through the loop/branch/final
-phi emitters) are the follow-up that unlocks `{ sum += $2 * 1.5 }`.
+precision) for `printf`. Typed double scalar slots are in:
+state-plan slots carry an inferred type (`scalar_counter(Name)` = i64,
+`scalar_double(Name)` = double), computed by a fixpoint over update
+expressions — a scalar is double when any update assigns it a
+float-typed expression or reads an already-double scalar. Every phi
+emitter (loop head, rule input, next, break, final, if-join) formats the
+slot's LLVM type; double updates lower the RHS through
+`plawk_f64_expr_ir` (substituted double reads arrive as `ssa_f64/1`
+leaves, i64 operands promote via `sitofp`) into `fadd`, and END prints
+of double slots use `%g`. `{ sum += $2 * 1.5 }` and
+`{ sum += float($2) }` now accumulate natively in both text and binary
+record modes; END *arithmetic* on double slots stays i64-only and is
+rejected (the next f64 slice).
 Scalar variables are readable inside rule-body update expressions and END
 prints: codegen substitutes `var(Name)` leaves with the current SSA slot
 value (an `ssa/1` leaf the shared emitters print verbatim) before emission,

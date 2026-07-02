@@ -85,6 +85,7 @@ swipl -q -s tests/test_wam_llvm_atom_intern_scaling.pl -g "setenv('UW_SMOKE_TMPD
 swipl -q -s tests/test_plawk_transient_line_records.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_binary_records.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_binary_assoc.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_float_slots.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -248,7 +249,15 @@ offset — no field splitting, no numeric parsing, no interning — so
 `BEGIN { BINFMT = "i64 i64" } $1 > 100 { sum += $2 } END { print sum }`
 is a load-compare-add loop. `i64` fields work in guards, arithmetic,
 scalar updates, and prints; `f64` fields load as native doubles for
-prints and `float($N)` double expressions. `NF` is a compile-time
+prints and `float($N)` double expressions. Scalar accumulators are typed
+by inference: `sum += float($2) * 1.5` makes `sum` a native double slot
+(double loop phis, `fadd` updates, `%g` END prints) while `n++` in the
+same program stays i64 — a scalar becomes double when any update
+assigns it a float-typed expression or reads an already-double scalar
+(fixpoint), and i64 operands promote via `sitofp` at the update site.
+This works in text mode (`float($N)` = strtod) and binary mode
+(`float($N)` = native f64 field load), through `if`/`else`,
+`next`/`break`, and rule chains. `NF` is a compile-time
 constant; `NR`, `if/else`, `next`/`break`, `printf`, and END reports
 compose unchanged. Associative arrays keyed by i64 fields work in
 binary mode: `{ counts[$1]++ }` uses the raw field value as the table key
