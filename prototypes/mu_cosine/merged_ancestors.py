@@ -58,6 +58,24 @@ def load_category_graph(tsv):
     return parents_of, title_of
 
 
+def load_assembled_dag(dag_tsv, titles_tsv=None):
+    """→ (parents_of: child→[parents], title_of) from an assembled `child<TAB>parent` DAG TSV (e.g. the RDF+API
+    Pearltrees union that recovers the parents the truncated RDF export dropped) + an optional `id<TAB>title` map.
+    Nodes without a title fall back to the id string."""
+    parents_of = collections.defaultdict(list)
+    for line in open(dag_tsv, encoding="utf-8"):
+        p = line.rstrip("\n").split("\t")
+        if len(p) >= 2 and p[1] not in parents_of[p[0]]:
+            parents_of[p[0]].append(p[1])
+    title_of = {}
+    if titles_tsv:
+        for line in open(titles_tsv, encoding="utf-8"):
+            p = line.rstrip("\n").split("\t")
+            if len(p) >= 2:
+                title_of[p[0]] = p[1]
+    return dict(parents_of), title_of
+
+
 def subtree_scope(root, parents_of):
     """Set of all descendants of `root` (BFS down) — pass as scope= to bound the ancestor walk to a content subtree
     (e.g. Main_topic_classifications), avoiding admin-category wandering / weird long paths by construction."""
@@ -73,10 +91,11 @@ def subtree_scope(root, parents_of):
     return scope
 
 
-def merged_ancestor_list(node, parents_of, title_of, max_depth=15, scope=None):
+def merged_ancestor_list(node, parents_of, title_of, max_depth=15, scope=None, max_ancestors=None):
     """Merged ancestor list for `node`: unique ancestors (ID-keyed) reached by walking up ALL parents.
     Cycle-detected (visited), max-depth bounded. Returns [(id, title, min_hop)] ordered root-ward first.
-    `scope` (a set of allowed ids) restricts the walk to a subtree if given."""
+    `scope` (a set of allowed ids) restricts the walk to a subtree if given. `max_ancestors` keeps only the
+    NEAREST-N by hop (protects e5's token limit on dense high-level nodes — deep grab-bag drops first)."""
     node = str(node)
     min_hop = {}                                                   # ancestor id -> min hops from `node`
     # BFS upward over the multi-parent DAG (visited = cycle detection; depth = max_depth bound)
@@ -94,15 +113,18 @@ def merged_ancestor_list(node, parents_of, title_of, max_depth=15, scope=None):
                 min_hop[par] = h + 1
             if par not in seen:                                    # cycle detection
                 seen.add(par); frontier.append((par, h + 1))
-    # merged (ID-keyed → each ancestor once), ordered root-ward first (largest hop = closest to root)
-    anc = sorted(min_hop.items(), key=lambda kv: -kv[1])
+    # merged (ID-keyed → each ancestor once)
+    if max_ancestors:                                              # keep NEAREST-N by hop (drop the deep grab-bag)
+        keep = sorted(min_hop.items(), key=lambda kv: kv[1])[:max_ancestors]
+        min_hop = dict(keep)
+    anc = sorted(min_hop.items(), key=lambda kv: -kv[1])           # ordered root-ward first (largest hop = near root)
     return [(aid, title_of.get(aid, aid), hop) for aid, hop in anc]
 
 
-def render_merged_list(node, parents_of, title_of, max_depth=15, scope=None):
+def render_merged_list(node, parents_of, title_of, max_depth=15, scope=None, max_ancestors=None):
     """Text passage for e5: titles only, root-ward first, node title last. NO id line (merged/branching → no linear
     id anchor); ids stay internal merge keys. Depth shown by indent (informational; the model gets depth via PEs)."""
-    anc = merged_ancestor_list(node, parents_of, title_of, max_depth, scope)
+    anc = merged_ancestor_list(node, parents_of, title_of, max_depth, scope, max_ancestors)
     lines = [f"{'  ' * (len(anc) - i)}- {title}" for i, (_, title, _) in enumerate(anc)]
     lines.append(f"{'  ' * 0}- {title_of.get(str(node), str(node))}")   # the node itself, deepest
     return "\n".join(lines)
