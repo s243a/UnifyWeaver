@@ -158,9 +158,15 @@ Runs use the s243a federated model (8,800 folders) + `model_prod.pt`, Haiku via 
 - Displacement believes the judge; validate the judge against ground truth (method A) before trusting it.
 - **µ recall < e5 is likely undertraining, not architectural.** µ is a small head on *frozen* e5, trained on a
   modest filing set and applied here to the federated model's 8,800 folders (partly out-of-distribution). **Primary
-  lever: retrain µ on more data** (the RDF-assembly + harvest in this branch) → re-run the recall@K curve. Nuances:
-  µ rides on e5 so it's *bounded* by e5's information (can approach, not exceed, e5's recall), and its directional
-  objective leans precision, so µ may stay precision>recall by design — but the gap should close with data.
+  lever: retrain µ on more data** (the RDF-assembly + harvest in this branch) → re-run the recall@K curve. Precise
+  bound: µ is bounded by the **information content of the e5 embeddings** (can't recover what e5 never encoded), but
+  **NOT by e5-*cosine*'s performance** — e5-cosine is a naive symmetric readout weighting every dimension equally,
+  including task-irrelevant "noise" (general topical similarity that isn't filing membership); µ is a *learned*
+  readout that can down-weight that noise and **beat e5-cosine**. So the gap between what the e5 embedding *contains*
+  and what cosine *extracts* is µ's headroom, and µ recall < e5-cosine today means µ hasn't yet learned to out-read
+  cosine — not a ceiling. Caveat: realizing that headroom is bounded by µ's capacity (the 3-layer ceiling) + data,
+  so "µ can pass e5" is an upside to *test* (retrain → does µ's recall curve cross e5's?), not bank. If it crosses,
+  the bi-encoder re-enters as worth building.
 - **Bi-encoder / µ-tower (FUTURE TO-DO, currently NOT helpful).** Distill the µ cross-encoder into a precomputable
   per-folder × per-operator embedding via a learned MLP head on µ's hidden layer (operator/provenance as inputs —
   the `MLP(spec)` head from `DESIGN_path_operator.md`), so µ scoring becomes a dot-product (fast as e5) and
