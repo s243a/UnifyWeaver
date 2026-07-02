@@ -83,6 +83,19 @@ class MuRanker:
         return torch.tensor(out)
 
     @torch.no_grad()
+    def score_components(self, query):
+        """→ (e5[F], mu_max[F]) RAW per-folder scores over ALL folders (μ NOT shortlisted). For recall-curve /
+        max(μ,e5)-cutoff analysis — expensive (μ over every folder), diagnostic-only."""
+        qv, pv = self._encode(query, "query"), self._encode(query, "passage")
+        C = (qv @ self.folder_p.T).numpy()
+        q = torch.cat([self.folder_q, qv[None]]); p = torch.cat([self.folder_p, pv[None]])
+        idx = {k: i for i, k in enumerate(self.folder_keys)}; idx["Q"] = self.F
+        tok = Tokenizer(q, p, idx, parents={}, deg={})
+        S = [self._mu(tok, self.folder_keys, o) for o in ("ELEM", "HIER", "SYM")]
+        S_max = torch.maximum(torch.maximum(S[0], S[1]), S[2]).numpy()
+        return C, S_max
+
+    @torch.no_grad()
     def score(self, query):
         """→ np.ndarray[F]: blended per-folder score aligned with the init folder order. e5 coarse-ranks ALL folders,
         μ reranks only the top shortlist_k (speed + OOD: μ never sees implausible folders). Non-shortlisted folders
