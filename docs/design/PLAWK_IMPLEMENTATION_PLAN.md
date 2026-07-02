@@ -446,6 +446,24 @@ produces correct output on standard awk test cases.
 
 **Goal:** replace text records with binary structures; add DCG-based readers.
 
+**First slice landed:** `BEGIN { BINFMT = "i64 i64 f64" }` selects
+fixed-layout binary records: one 8-byte native-endian field per type,
+`$1..$N`, record size 8*N. The runtime gained
+`@wam_stream_read_record(handle, size, dst)` (1 = record, 0 = clean EOF at
+a record boundary, -1 = error or trailing partial record) and the target a
+binary sibling of the stream driver skeleton
+(`llvm_emit_binary_stream_driver_ir/4`, same block labels so loop phis are
+unchanged, both concrete-path and stdin_or_argv). Codegen threads a record
+descriptor through the existing `FieldSeparator` position — `binfmt(Types)`
+clauses ahead of the text clauses lower `$N` guards/arithmetic/prints to a
+typed load at a compile-time offset, `NF` to a constant, and `float($N)` to
+a double load; a whitelist validator rejects text-shaped programs in binary
+mode instead of letting them reach text emitters. Measured on 2M records
+(`$1 > 100 { sum += $2 }`): binary 0.040s vs mawk-on-text 0.225s (5.6x)
+vs plawk text mode 0.156s — the no-parsing thesis, demonstrated.
+Remaining Phase 3 items below (DCG readers, richer ABIs, string fields,
+binary writers) are unchanged.
+
 1. Binary record ABI: struct layout, alignment, (de)serialisation convention.
 2. DCG grammar for parsing binary records into terms.
 3. Compile the DCG through UnifyWeaver to LLVM.

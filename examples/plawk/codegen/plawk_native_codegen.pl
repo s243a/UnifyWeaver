@@ -7,6 +7,8 @@
     plawk_program_foreign_specs/3
 ]).
 
+:- discontiguous plawk_pattern_guard_ir/5.
+
 :- use_module('../../../src/unifyweaver/targets/wam_llvm_target',
     [llvm_emit_atom_prefix_guard/5,
      llvm_emit_atom_field_eq_guard/7,
@@ -25,6 +27,7 @@
      llvm_emit_printf_string/6,
      llvm_emit_printf0/5,
      llvm_emit_stream_driver_ir/3,
+     llvm_emit_binary_stream_driver_ir/4,
      llvm_emit_ascii_case_slice_print/5]).
 
 %% plawk_program_native_driver_ir(+Program, +InputPath, -DriverIR) is semidet.
@@ -75,7 +78,8 @@ plawk_program_native_driver_ir(
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
-    plawk_field_separator(BeginClauses, FieldSeparator),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    plawk_record_program_ok(FieldSeparator, [rule(Pattern, [Action])], []),
     plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
     plawk_print_record_counter_ir(Exprs, LoopPhiIR, RecordCounterIR),
     plawk_output_action_ir(Action, FieldSeparator, OutputSeparator, PrintGlobalIR-PrintActionIR),
@@ -100,7 +104,7 @@ print_line:
 ~w
 ',
         [BeginGlobalIR, GuardGlobalIR, PrintGlobalIR]),
-    llvm_emit_stream_driver_ir(InputPath,
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
         driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR, '',
             success, 'success:\n  ret i32 0'),
         DriverIR).
@@ -110,6 +114,7 @@ plawk_program_native_driver_ir(
     InputPath,
     DriverIR
 ) :-
+    \+ plawk_begin_has_binfmt(BeginClauses),
     plawk_mixed_state_plan(Rules, PrintFields, MixedPlan),
     MixedPlan = mixed_plan(ScalarPlan, AssocPlan, _PlannedRules),
     plawk_output_separator(BeginClauses, OutputSeparator),
@@ -157,7 +162,8 @@ plawk_program_native_driver_ir(
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
-    plawk_field_separator(BeginClauses, FieldSeparator),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    plawk_record_program_ok(FieldSeparator, Rules, PrintFields),
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
     plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator,
         RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
@@ -182,7 +188,7 @@ plawk_program_native_driver_ir(
 ~w~w
   ret i32 0',
         [FinalStatePhiIR, EndPrintIR]),
-    llvm_emit_stream_driver_ir(InputPath,
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
         driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
             NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
@@ -192,6 +198,7 @@ plawk_program_native_driver_ir(
     InputPath,
     DriverIR
 ) :-
+    \+ plawk_begin_has_binfmt(BeginClauses),
     plawk_assoc_runtime_count_plan(Rules, PrintFields, AssocPlan),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
@@ -229,6 +236,7 @@ plawk_program_native_driver_ir(
     InputPath,
     DriverIR
 ) :-
+    \+ plawk_begin_has_binfmt(BeginClauses),
     plawk_forin_end_plan(Rules, LoopVar, ArrayName, BodyActions, AssocPlan, PrintFields),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
@@ -1330,12 +1338,192 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, Table
     [Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId, Inc, Next, ''],
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
 
+%% plawk_record_program_ok(+Descriptor, +Rules, +EndPrintFields) is semidet.
+%
+%  Text mode accepts everything. Binary mode whitelists the record
+%  representation's supported surface: numeric guards and arithmetic on
+%  i64 fields, float($N) on f64 fields, prints of either, NR/NF, scalar
+%  state, if/else, next/break, and representation-free END prints.
+%  Text-shaped forms (regex, string equality, substr/index/length/case,
+%  $0, assoc arrays, foreign calls) fail the whole driver clause.
+plawk_record_program_ok(binfmt(Types), Rules, _EndPrintFields) :-
+    !,
+    forall(member(rule(Pattern, Actions), Rules),
+        ( plawk_binfmt_pattern_ok(binfmt(Types), Pattern),
+          plawk_binfmt_actions_ok(binfmt(Types), Actions)
+        )).
+plawk_record_program_ok(_FieldSeparator, _Rules, _EndPrintFields).
+
+plawk_binfmt_pattern_ok(_Descriptor, always) :- !.
+plawk_binfmt_pattern_ok(Descriptor, field_cmp(Index, _Op, _Value)) :-
+    !,
+    plawk_binfmt_field_type(Descriptor, Index, i64).
+plawk_binfmt_pattern_ok(Descriptor, and_pat(Left, Right)) :-
+    !,
+    plawk_binfmt_pattern_ok(Descriptor, Left),
+    plawk_binfmt_pattern_ok(Descriptor, Right).
+plawk_binfmt_pattern_ok(Descriptor, or_pat(Left, Right)) :-
+    !,
+    plawk_binfmt_pattern_ok(Descriptor, Left),
+    plawk_binfmt_pattern_ok(Descriptor, Right).
+plawk_binfmt_pattern_ok(Descriptor, not_pat(Pattern)) :-
+    !,
+    plawk_binfmt_pattern_ok(Descriptor, Pattern).
+
+plawk_binfmt_actions_ok(Descriptor, Actions) :-
+    forall(member(Action, Actions),
+        plawk_binfmt_action_ok(Descriptor, Action)).
+
+plawk_binfmt_action_ok(_Descriptor, next) :- !.
+plawk_binfmt_action_ok(_Descriptor, break) :- !.
+plawk_binfmt_action_ok(Descriptor, inc(var(_Name))) :- !,
+    Descriptor = binfmt(_).
+plawk_binfmt_action_ok(Descriptor, add(var(_Name), Expr)) :-
+    !,
+    plawk_binfmt_i64_expr_ok(Descriptor, Expr).
+plawk_binfmt_action_ok(Descriptor, set(var(_Name), Expr)) :-
+    !,
+    plawk_binfmt_i64_expr_ok(Descriptor, Expr).
+plawk_binfmt_action_ok(Descriptor, print(Fields)) :-
+    !,
+    forall(member(Field, Fields),
+        plawk_binfmt_print_field_ok(Descriptor, Field)).
+plawk_binfmt_action_ok(Descriptor, printf(string(_Format), Args)) :-
+    !,
+    forall(member(Arg, Args),
+        plawk_binfmt_print_field_ok(Descriptor, Arg)).
+plawk_binfmt_action_ok(Descriptor, if(Pattern, ThenActions, ElseActions)) :-
+    !,
+    plawk_binfmt_pattern_ok(Descriptor, Pattern),
+    plawk_binfmt_actions_ok(Descriptor, ThenActions),
+    plawk_binfmt_actions_ok(Descriptor, ElseActions).
+
+plawk_binfmt_print_field_ok(_Descriptor, string(_Value)) :- !.
+plawk_binfmt_print_field_ok(_Descriptor, special('NR')) :- !.
+plawk_binfmt_print_field_ok(_Descriptor, special('NF')) :- !.
+plawk_binfmt_print_field_ok(Descriptor, field(Index)) :-
+    !,
+    plawk_binfmt_field_type(Descriptor, Index, _Type).
+plawk_binfmt_print_field_ok(Descriptor, float_field(Index)) :-
+    !,
+    plawk_binfmt_field_type(Descriptor, Index, f64).
+plawk_binfmt_print_field_ok(Descriptor, Expr) :-
+    plawk_expr_is_double(Expr),
+    !,
+    plawk_binfmt_f64_expr_ok(Descriptor, Expr).
+plawk_binfmt_print_field_ok(Descriptor, Expr) :-
+    plawk_binfmt_i64_expr_ok(Descriptor, Expr).
+
+plawk_binfmt_i64_expr_ok(_Descriptor, int(Value)) :-
+    integer(Value),
+    !.
+plawk_binfmt_i64_expr_ok(_Descriptor, var(Name)) :-
+    atom(Name),
+    !.
+plawk_binfmt_i64_expr_ok(_Descriptor, special('NR')) :- !.
+plawk_binfmt_i64_expr_ok(_Descriptor, special('NF')) :- !.
+plawk_binfmt_i64_expr_ok(Descriptor, field(Index)) :-
+    !,
+    plawk_binfmt_field_type(Descriptor, Index, i64).
+plawk_binfmt_i64_expr_ok(Descriptor, int(field(Index))) :-
+    !,
+    plawk_binfmt_field_type(Descriptor, Index, i64).
+plawk_binfmt_i64_expr_ok(Descriptor, Expr) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    plawk_binfmt_i64_expr_ok(Descriptor, Left),
+    plawk_binfmt_i64_expr_ok(Descriptor, Right).
+
+plawk_binfmt_f64_expr_ok(Descriptor, float_field(Index)) :-
+    !,
+    plawk_binfmt_field_type(Descriptor, Index, f64).
+plawk_binfmt_f64_expr_ok(_Descriptor, float_const(_Mantissa, _Denominator)) :- !.
+plawk_binfmt_f64_expr_ok(Descriptor, Expr) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    !,
+    plawk_binfmt_f64_expr_ok(Descriptor, Left),
+    plawk_binfmt_f64_expr_ok(Descriptor, Right).
+plawk_binfmt_f64_expr_ok(Descriptor, Expr) :-
+    plawk_binfmt_i64_expr_ok(Descriptor, Expr).
+
+%% plawk_binfmt_field_load_lines(+Descriptor, +Index, +Base, -ValueIR, -Lines)
+%
+%  Typed field access on a fixed-layout binary record: a load at the
+%  compile-time offset from the %rec buffer. No parsing, no separators.
+plawk_binfmt_field_load_lines(Descriptor, Index, Base, ValueIR, Lines) :-
+    plawk_binfmt_field_type(Descriptor, Index, Type),
+    plawk_binfmt_field_offset(Index, Offset),
+    plawk_binfmt_llvm_type(Type, LLVMType),
+    format(atom(ValueIR), '%~w', [Base]),
+    format(atom(GepIR),
+        '  %~w_fp = getelementptr i8, i8* %rec, i64 ~w', [Base, Offset]),
+    format(atom(CastIR),
+        '  %~w_tp = bitcast i8* %~w_fp to ~w*', [Base, Base, LLVMType]),
+    format(atom(LoadIR),
+        '  ~w = load ~w, ~w* %~w_tp, align 1', [ValueIR, LLVMType, LLVMType, Base]),
+    Lines = [GepIR, CastIR, LoadIR].
+
+plawk_binfmt_llvm_type(i64, i64).
+plawk_binfmt_llvm_type(f64, double).
+
+plawk_binfmt_icmp_op(eq, eq).
+plawk_binfmt_icmp_op(ne, ne).
+plawk_binfmt_icmp_op(lt, slt).
+plawk_binfmt_icmp_op(le, sle).
+plawk_binfmt_icmp_op(gt, sgt).
+plawk_binfmt_icmp_op(ge, sge).
+
 plawk_field_separator(BeginClauses, FieldSeparator) :-
     (   member(begin(Actions), BeginClauses),
         member(set(var('FS'), string(Value)), Actions)
     ->  string_codes(Value, [FieldSeparator])
     ;   FieldSeparator = 32
     ).
+
+%% plawk_record_descriptor(+BeginClauses, -Descriptor)
+%
+%  Text mode yields the single-byte field separator code as before;
+%  BEGIN { BINFMT = "i64 i64 f64" } yields binfmt(Types) for fixed-
+%  layout binary records: one 8-byte native-endian field per type,
+%  fields numbered $1..$N, record size 8 * N.
+plawk_record_descriptor(BeginClauses, binfmt(Types)) :-
+    plawk_begin_binfmt_types(BeginClauses, Types),
+    !.
+plawk_record_descriptor(BeginClauses, FieldSeparator) :-
+    plawk_field_separator(BeginClauses, FieldSeparator).
+
+plawk_begin_has_binfmt(BeginClauses) :-
+    plawk_begin_binfmt_types(BeginClauses, _Types).
+
+plawk_begin_binfmt_types(BeginClauses, Types) :-
+    member(begin(Actions), BeginClauses),
+    member(set(var('BINFMT'), string(Fmt)), Actions),
+    split_string(Fmt, " ", " ", Parts0),
+    exclude(==(""), Parts0, Parts),
+    Parts \== [],
+    maplist(plawk_binfmt_type, Parts, Types).
+
+plawk_binfmt_type("i64", i64).
+plawk_binfmt_type("f64", f64).
+
+plawk_binfmt_field_type(binfmt(Types), Index, Type) :-
+    integer(Index),
+    Index >= 1,
+    nth1(Index, Types, Type).
+
+plawk_binfmt_field_offset(Index, Offset) :-
+    Offset is (Index - 1) * 8.
+
+%% plawk_emit_record_driver_ir(+Descriptor, +InputPath, +Blocks, -DriverIR)
+%
+%  Pick the stream skeleton by record representation: text lines or
+%  fixed-size binary records.
+plawk_emit_record_driver_ir(binfmt(Types), InputPath, Blocks, DriverIR) :-
+    !,
+    length(Types, NFields),
+    RecordSize is NFields * 8,
+    llvm_emit_binary_stream_driver_ir(InputPath, RecordSize, Blocks, DriverIR).
+plawk_emit_record_driver_ir(_FieldSeparator, InputPath, Blocks, DriverIR) :-
+    llvm_emit_stream_driver_ir(InputPath, Blocks, DriverIR).
 
 plawk_output_separator(BeginClauses, OutputSeparator) :-
     (   member(begin(Actions), BeginClauses),
@@ -2216,6 +2404,10 @@ plawk_i64_expr_ir(field(FieldIndex), FieldSeparator, Base, GlobalBase,
     plawk_i64_expr_ir(field_i64(FieldIndex), FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts).
 plawk_i64_expr_ir(nr, _FieldSeparator, _Base, _GlobalBase, '%current_nr', [], []).
+plawk_i64_expr_ir(nf, binfmt(Types), _Base, _GlobalBase, ValueIR, [], []) :-
+    !,
+    length(Types, NFields),
+    format(atom(ValueIR), '~w', [NFields]).
 plawk_i64_expr_ir(nf, FieldSeparator, Base, _GlobalBase, ValueIR, [], [CountIR]) :-
     llvm_emit_atom_field_count('%line', FieldSeparator, Base, CountIR),
     format(atom(ValueIR), '%~w', [Base]).
@@ -2238,6 +2430,11 @@ plawk_i64_expr_ir(int(field(FieldIndex)), FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts) :-
     plawk_i64_expr_ir(field_i64(FieldIndex), FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts).
+plawk_i64_expr_ir(field_i64(FieldIndex), binfmt(Types), Base, _GlobalBase,
+        ValueIR, [], LoadLines) :-
+    !,
+    plawk_binfmt_field_load_lines(binfmt(Types), FieldIndex, Base, ValueIR,
+        LoadLines).
 plawk_i64_expr_ir(field_i64(FieldIndex), FieldSeparator, Base, _GlobalBase, ValueIR, [], [ParseIR]) :-
     format(atom(ValueIR), '%~w_value_or_default', [Base]),
     llvm_emit_atom_field_i64_or_default('%line', FieldIndex, FieldSeparator, 0,
@@ -2330,6 +2527,11 @@ plawk_f64_expr_ir(float_const(Mantissa, Denominator), _FieldSeparator, Base,
     format(atom(ValueIR), '%~w', [Base]),
     format(atom(ConstIR), '  ~w = fdiv double ~w.0, ~w.0',
         [ValueIR, Mantissa, Denominator]).
+plawk_f64_expr_ir(float_field(Index), binfmt(Types), Base, _GlobalBase,
+        ValueIR, [], LoadLines) :-
+    !,
+    plawk_binfmt_field_load_lines(binfmt(Types), Index, Base, ValueIR,
+        LoadLines).
 plawk_f64_expr_ir(float_field(Index), FieldSeparator, Base, _GlobalBase,
         ValueIR, [], [CallIR]) :-
     format(atom(ValueIR), '%~w', [Base]),
@@ -2641,6 +2843,10 @@ plawk_pattern_guard_ir(contains(Needle), FieldSeparator, GuardIR) :-
 plawk_pattern_guard_ir(field_eq(Index, Value), FieldSeparator, GuardIR) :-
     llvm_emit_atom_field_eq_guard(plawk_surface_field_eq, '%line', Index, Value,
         FieldSeparator, '%is_match', GuardIR).
+plawk_pattern_guard_ir(field_cmp(Index, Op, Value), binfmt(Types), GuardIR) :-
+    !,
+    plawk_binfmt_field_cmp_guard_ir(binfmt(Types), field_cmp(Index, Op, Value),
+        plawk_surface_bincmp, '%is_match', GuardIR).
 plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, ''-GuardCallIR) :-
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
@@ -2683,10 +2889,24 @@ plawk_pattern_guard_ir(contains(Needle), FieldSeparator, GlobalBase, MatchValue,
 plawk_pattern_guard_ir(field_eq(Index, Value), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
     llvm_emit_atom_field_eq_guard(GlobalBase, '%line', Index, Value, FieldSeparator,
         MatchValue, GuardIR).
+plawk_pattern_guard_ir(field_cmp(Index, Op, Value), binfmt(Types), GlobalBase, MatchValue, GuardIR) :-
+    !,
+    plawk_binfmt_field_cmp_guard_ir(binfmt(Types), field_cmp(Index, Op, Value),
+        GlobalBase, MatchValue, GuardIR).
 plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, _GlobalBase, MatchValue, ''-GuardCallIR) :-
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, MatchValue, GuardCallIR).
+
+plawk_binfmt_field_cmp_guard_ir(Descriptor, field_cmp(Index, Op, Value),
+        GlobalBase, MatchValue, ''-GuardCallIR) :-
+    format(atom(Base), '~w_binf~w', [GlobalBase, Index]),
+    plawk_binfmt_field_load_lines(Descriptor, Index, Base, ValueIR, LoadLines),
+    plawk_binfmt_icmp_op(Op, ICmpOp),
+    format(atom(CmpIR), '  ~w = icmp ~w i64 ~w, ~w',
+        [MatchValue, ICmpOp, ValueIR, Value]),
+    append(LoadLines, [CmpIR], Lines),
+    atomic_list_concat(Lines, '\n', GuardCallIR).
 plawk_pattern_guard_ir(field_match(Index, Regex), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
     llvm_emit_regex_field_match_guard(GlobalBase, '%line', Index, Regex,
         FieldSeparator, MatchValue, GuardIR).
@@ -3228,6 +3448,19 @@ plawk_emit_print_expr_for_context(toupper(field(FieldIndex)), FieldSeparator, Co
     plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, UpperBase, LenIR, PtrIR,
         SetupParts).
 
+plawk_emit_print_expr_for_context(field(FieldIndex), binfmt(Types), Context,
+        PrintType, [], LoadLines) :-
+    plawk_binfmt_field_type(binfmt(Types), FieldIndex, Type),
+    !,
+    plawk_print_expr_value_base(Context, binfield, Base),
+    plawk_print_expr_output_names(Context, binfield, FmtPrefix, PrintPrefix),
+    plawk_binfmt_field_load_lines(binfmt(Types), FieldIndex, Base, ValueIR,
+        LoadLines),
+    (   Type == i64
+    ->  PrintType = i64(FmtPrefix, PrintPrefix, ValueIR)
+    ;   PrintType = f64(FmtPrefix, PrintPrefix, ValueIR)
+    ).
+
 plawk_emit_print_expr_for_context(field(0), _FieldSeparator, Context,
         slice(FmtPrefix, PrintPrefix, LenIR, '%line_s'), [], [LineLen64, LineLen]) :-
     plawk_print_expr_output_names(Context, line, FmtPrefix, PrintPrefix),
@@ -3265,6 +3498,8 @@ plawk_normal_print_expr_value_base(prolog_call, Index, Base) :-
     format(atom(Base), 'plawk_prolog_call_~w', [Index]).
 plawk_normal_print_expr_value_base(f64, Index, Base) :-
     format(atom(Base), 'plawk_f64_~w', [Index]).
+plawk_normal_print_expr_value_base(binfield, Index, Base) :-
+    format(atom(Base), 'plawk_binfield_~w', [Index]).
 plawk_normal_print_expr_value_base(length, Index, Base) :-
     format(atom(Base), 'plawk_length_~w', [Index]).
 plawk_normal_print_expr_value_base(substr, Index, Base) :-

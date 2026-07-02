@@ -427,6 +427,8 @@ begin_assignment(set(var(Name), string(Value))) -->
     quoted_string(ValueCodes),
     { string_codes(Value, ValueCodes) }.
 
+begin_assignment_name('BINFMT') -->
+    "BINFMT".
 begin_assignment_name('FS') -->
     "FS".
 begin_assignment_name('OFS') -->

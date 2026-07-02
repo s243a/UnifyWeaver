@@ -83,6 +83,7 @@ swipl -q -s tests/test_plawk_surface_prolog_calls.pl -g "setenv('UW_SMOKE_TMPDIR
 swipl -q -s tests/test_plawk_surface_float_exprs.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_wam_llvm_atom_intern_scaling.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_transient_line_records.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_binary_records.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -237,6 +238,23 @@ dispatch). Programs with foreign calls use
 `plawk_program_native_driver_ir/4` with `wam_vm(InstrCount, LabelCount)`
 from `wam_llvm_last_compile_counts/2` after `write_wam_llvm_project/3`
 compiled the predicates into the module.
+
+The first binary/typed-record slice is in:
+`BEGIN { BINFMT = "i64 i64 f64" }` switches the program to fixed-layout
+binary records (one 8-byte native-endian field per declared type, `$1..$N`,
+record size 8*N). Field access compiles to a typed load at a compile-time
+offset — no field splitting, no numeric parsing, no interning — so
+`BEGIN { BINFMT = "i64 i64" } $1 > 100 { sum += $2 } END { print sum }`
+is a load-compare-add loop. `i64` fields work in guards, arithmetic,
+scalar updates, and prints; `f64` fields load as native doubles for
+prints and `float($N)` double expressions. `NF` is a compile-time
+constant; `NR`, `if/else`, `next`/`break`, `printf`, and END reports
+compose unchanged. Text-shaped forms ($0, regex, string equality,
+substr/length/index/case, associative arrays, foreign calls) are rejected
+at codegen in binary mode. A trailing partial record exits with the read
+error code. Measured on 2M records: 0.040s for the binary program vs
+0.225s for mawk on the equivalent text (5.6x) and 0.156s for plawk's own
+text mode.
 
 For a walkthrough of the current Prolog-core syntax and how it maps to awk
 concepts like `$0`, `$1`, `NR`, `NF`, `FS`, `OFS`, and `print`, see
