@@ -156,3 +156,16 @@ Runs use the s243a federated model (8,800 folders) + `model_prod.pt`, Haiku via 
 - `codex` backend flag syntax is unverified (needs node ≥ 22).
 - Per-call `claude -p` startup (~15–20 s) dominates large-N runs; for a service, use the API, not the CLI.
 - Displacement believes the judge; validate the judge against ground truth (method A) before trusting it.
+- **µ recall < e5 is likely undertraining, not architectural.** µ is a small head on *frozen* e5, trained on a
+  modest filing set and applied here to the federated model's 8,800 folders (partly out-of-distribution). **Primary
+  lever: retrain µ on more data** (the RDF-assembly + harvest in this branch) → re-run the recall@K curve. Nuances:
+  µ rides on e5 so it's *bounded* by e5's information (can approach, not exceed, e5's recall), and its directional
+  objective leans precision, so µ may stay precision>recall by design — but the gap should close with data.
+- **Bi-encoder / µ-tower (FUTURE TO-DO, currently NOT helpful).** Distill the µ cross-encoder into a precomputable
+  per-folder × per-operator embedding via a learned MLP head on µ's hidden layer (operator/provenance as inputs —
+  the `MLP(spec)` head from `DESIGN_path_operator.md`), so µ scoring becomes a dot-product (fast as e5) and
+  `max(µ,e5)` over all folders is trivial. Trained separately by distillation (freeze the cross-encoder; ranking loss
+  on generated (bookmark,folder,µ) triples). **Not worth building now** — µ recall < e5, so a fast µ-net adds nothing.
+  **Its value is coupled to µ's recall becoming competitive** (i.e. build it *after* the retrain lifts µ recall). Keep
+  the cross-encoder for the final small-set rerank regardless (two-stage µ: fast approximate tower for recall,
+  accurate cross-encoder for rerank).
