@@ -423,9 +423,19 @@ tables, so streams with many unique lines paid O(n^2) interning — fixed:
 dynamic atom tables (slots hold atom id + 1, built lazily on first intern,
 grown at 50% load), making interning O(1) amortized. Measured on a
 200k-unique-line stream: 2m8s before, 0.1s after, ~4x of mawk on the same
-program. The remaining per-record cost is the malloc+copy of each unique
-line into the dynamic atom table; slice-based records (Phase 3 binary-record
-territory) remove it entirely.
+program. Follow-up landed: the plawk surface
+drivers now read records with `wam_stream_read_line_transient_value`, which
+builds each line in a shared reusable buffer behind the reserved transient
+atom id 2^62 (special-cased in `wam_atom_to_string`, never entered into the
+intern hash or dynamic table). No malloc, hash, or atom-table append per
+record, and memory is constant on unbounded unique-line streams (verified:
+500k unique ~100-byte lines under a 60 MB ulimit). Contract: the line Value
+is valid until the next read; anything persisted past the record interns
+explicitly -- field-slice assoc keys already did, and $0 foreign-call
+arguments now intern the current line so Prolog-side atom identity is
+preserved. Measured: 200k short records 0.098s -> 0.029s (mawk parity);
+long-line streams remain ~4x behind mawk on the reader's byte-at-a-time
+copy loop, which binary records bypass entirely.
 
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.
