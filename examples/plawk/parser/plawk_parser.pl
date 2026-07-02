@@ -466,6 +466,11 @@ action(Action) -->
     increment_action(Action),
     !.
 
+%% if_action(-Action)//
+%
+%  awk conditionals: `else` is optional (an absent else parses as an
+%  empty branch), and `else if` chains nest as a single-element else
+%  branch containing the next if.
 if_action(if(Pattern, ThenActions, ElseActions)) -->
     "if",
     ws,
@@ -476,8 +481,22 @@ if_action(if(Pattern, ThenActions, ElseActions)) -->
     ")",
     ws,
     action_block(ThenActions),
+    if_else_part(ElseActions).
+
+if_else_part(ElseActions) -->
     "else",
+    identifier_boundary,
+    if_else_body(ElseActions),
+    !.
+if_else_part([]) -->
+    [].
+
+if_else_body([ElseIfAction]) -->
     required_ws,
+    if_action(ElseIfAction),
+    !.
+if_else_body(ElseActions) -->
+    ws,
     action_block(ElseActions).
 
 condition_pattern(Pattern) -->
