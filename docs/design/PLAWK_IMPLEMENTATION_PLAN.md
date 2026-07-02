@@ -296,6 +296,14 @@ group) in both rule guards and `if` conditions. The base guards are
 side-effect-free straight-line native checks, so combined guards lower to
 bitwise `i1` `and`/`or`/`xor` over per-subpattern `_l`/`_r`/`_n` suffixed
 names, keeping the whole guard a single block with no extra branches.
+POSIX ERE matching (`$N ~ /re/`, `$N !~ /re/`, and bare `/re/` with
+metacharacters, AST `field_match(Index, Regex)`) lowers through the
+`@wam_regex_field_match` runtime helper: each match site owns a string
+global plus a cache slot holding a lazily `regcomp`ed (`REG_EXTENDED`)
+`regex_t`; field slices are copied into a growable NUL-terminated scratch
+buffer for `regexec`, and `$0` matches use the atom's C string directly.
+Metacharacter-free bare patterns keep the prefix/contains fast paths, so
+existing programs lower unchanged.
 The parser itself is factored as `@wam_atom_field_i64_value`, returning a value
 plus success flag, so the same machinery also feeds scalar expressions such as
 `bytes += $3` and `last = $3`; PLAWK uses zero for failed numeric coercions in

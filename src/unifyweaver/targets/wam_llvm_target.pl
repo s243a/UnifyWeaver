@@ -47,6 +47,7 @@
     split_functor_arity/3,               % +Str, -Name, -Arity (handles `/` in name)
     llvm_emit_atom_prefix_guard/5,       % +GlobalBase, +ValueIR, +Prefix, +ResultIR, -GlobalIR-CallIR
     llvm_emit_atom_field_eq_guard/7,     % +GlobalBase, +ValueIR, +FieldIndex, +Expected, +SepCode, +ResultIR, -GlobalIR-CallIR
+    llvm_emit_regex_field_match_guard/7, % +GlobalBase, +ValueIR, +FieldIndex, +Regex, +SepCode, +ResultIR, -GlobalIR-CallIR
     llvm_emit_atom_field_slice/5,        % +ValueIR, +FieldIndex, +SepCode, +SliceBase, -CallIR
     llvm_emit_atom_field_count/4,        % +ValueIR, +SepCode, +CountBase, -CallIR
     llvm_emit_atom_field_length/5,       % +ValueIR, +FieldIndex, +SepCode, +LengthBase, -CallIR
@@ -1613,7 +1614,9 @@ declare i64 @mktime(i8*)
 declare double @asin(double)
 declare double @acos(double)
 declare double @atan(double)
-declare double @atan2(double, double)'
+declare double @atan2(double, double)
+declare i32 @regcomp(i8*, i8*, i32)
+declare i32 @regexec(i8*, i8*, i64, i8*, i32)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -4382,6 +4385,110 @@ vat.read:
 
 vat.miss:
   ret i64 0
+}
+
+; POSIX ERE matching over atom-backed text records. Patterns are
+; compile-time constants; each match site owns a cache slot holding a
+; lazily regcomp()ed regex_t. The regex_t is malloc''d at 512 bytes,
+; comfortably above sizeof(regex_t) on glibc (64), musl, and the BSDs.
+; cflags is REG_EXTENDED (1 on all common libcs); REG_NOSUB is skipped
+; because its value differs across libcs and it is only an optimization.
+@wam_regex_field_buf = internal global i8* null
+@wam_regex_field_cap = internal global i64 0
+
+define i1 @wam_regex_field_match(%Value %line, i64 %field_index, i8 %sep, i8* %pattern, i8** %cache_slot) {
+entry:
+  %cached = load i8*, i8** %cache_slot
+  %have = icmp ne i8* %cached, null
+  br i1 %have, label %rgx.have_regex, label %rgx.compile
+
+rgx.compile:
+  %mem = call i8* @malloc(i64 512)
+  %mem_null = icmp eq i8* %mem, null
+  br i1 %mem_null, label %rgx.fail, label %rgx.do_comp
+
+rgx.do_comp:
+  %comp_rc = call i32 @regcomp(i8* %mem, i8* %pattern, i32 1)
+  %comp_ok = icmp eq i32 %comp_rc, 0
+  br i1 %comp_ok, label %rgx.store_regex, label %rgx.comp_fail
+
+rgx.comp_fail:
+  call void @free(i8* %mem)
+  br label %rgx.fail
+
+rgx.store_regex:
+  store i8* %mem, i8** %cache_slot
+  br label %rgx.have_regex
+
+rgx.have_regex:
+  %preg = load i8*, i8** %cache_slot
+  %is_whole = icmp eq i64 %field_index, 0
+  br i1 %is_whole, label %rgx.match_whole, label %rgx.match_field
+
+rgx.match_whole:
+  %aid = call i64 @value_payload(%Value %line)
+  %line_s = call i8* @wam_atom_to_string(i64 %aid)
+  %line_null = icmp eq i8* %line_s, null
+  br i1 %line_null, label %rgx.fail, label %rgx.exec_whole
+
+rgx.exec_whole:
+  %exec_rc_w = call i32 @regexec(i8* %preg, i8* %line_s, i64 0, i8* null, i32 0)
+  %match_w = icmp eq i32 %exec_rc_w, 0
+  ret i1 %match_w
+
+rgx.match_field:
+  %slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %field_index, i8 %sep)
+  %fptr = extractvalue %WamSlice %slice, 0
+  %flen = extractvalue %WamSlice %slice, 1
+  %missing = icmp eq i8* %fptr, null
+  br i1 %missing, label %rgx.fail, label %rgx.ensure_buf
+
+rgx.ensure_buf:
+  ; Field slices are not NUL-terminated; copy into a growable scratch
+  ; buffer so regexec sees a C string.
+  %need = add i64 %flen, 1
+  %cap = load i64, i64* @wam_regex_field_cap
+  %fits = icmp ule i64 %need, %cap
+  br i1 %fits, label %rgx.copy, label %rgx.grow
+
+rgx.grow:
+  %old_buf = load i8*, i8** @wam_regex_field_buf
+  %new_cap = shl i64 %need, 1
+  %new_buf = call i8* @realloc(i8* %old_buf, i64 %new_cap)
+  %grow_null = icmp eq i8* %new_buf, null
+  br i1 %grow_null, label %rgx.fail, label %rgx.store_buf
+
+rgx.store_buf:
+  store i8* %new_buf, i8** @wam_regex_field_buf
+  store i64 %new_cap, i64* @wam_regex_field_cap
+  br label %rgx.copy
+
+rgx.copy:
+  %buf = load i8*, i8** @wam_regex_field_buf
+  br label %rgx.copy_loop
+
+rgx.copy_loop:
+  %ci = phi i64 [ 0, %rgx.copy ], [ %ci1, %rgx.copy_step ]
+  %copy_done = icmp uge i64 %ci, %flen
+  br i1 %copy_done, label %rgx.terminate, label %rgx.copy_step
+
+rgx.copy_step:
+  %src_p = getelementptr i8, i8* %fptr, i64 %ci
+  %dst_p = getelementptr i8, i8* %buf, i64 %ci
+  %byte = load i8, i8* %src_p
+  store i8 %byte, i8* %dst_p
+  %ci1 = add i64 %ci, 1
+  br label %rgx.copy_loop
+
+rgx.terminate:
+  %end_p = getelementptr i8, i8* %buf, i64 %flen
+  store i8 0, i8* %end_p
+  %exec_rc_f = call i32 @regexec(i8* %preg, i8* %buf, i64 0, i8* null, i32 0)
+  %match_f = icmp eq i32 %exec_rc_f, 0
+  ret i1 %match_f
+
+rgx.fail:
+  ret i1 false
 }
 
 define %Value @wam_stream_fail_value() alwaysinline nounwind {
@@ -17065,6 +17172,30 @@ llvm_emit_atom_field_eq_guard(GlobalBase, ValueIR, FieldIndex, Expected, SepCode
         '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0~n  ~w = call i1 @wam_atom_field_eq_value(%Value ~w, i64 ~w, i8* %~w_ptr, i64 ~w, i8 ~w)',
         [SafeBase, ArrLen, ArrLen, SafeBase,
          ResultIR, ValueIR, FieldIndex, SafeBase, ExpectedLen, SepCode]).
+
+%% llvm_emit_regex_field_match_guard(+GlobalBase, +ValueIR, +FieldIndex, +Regex, +SepCode, +ResultIR, -GlobalIR-CallIR)
+%
+%  Emit a native POSIX ERE guard over an atom-backed text record.
+%  FieldIndex 0 matches the whole record; positive indexes match the
+%  projected field slice. The pattern is emitted as a string global
+%  plus a per-site cache slot holding the lazily compiled regex_t;
+%  matching happens in the @wam_regex_field_match runtime helper. A
+%  pattern that fails to compile never matches.
+llvm_emit_regex_field_match_guard(GlobalBase, ValueIR, FieldIndex, Regex, SepCode, ResultIR, GlobalIR-CallIR) :-
+    integer(FieldIndex),
+    FieldIndex >= 0,
+    sanitize_functor_for_llvm(GlobalBase, SafeBase),
+    escape_llvm_string(Regex, EscapedRegex, RegexLen),
+    ArrLen is RegexLen + 1,
+    format(atom(GlobalIR),
+'@.~w = private constant [~w x i8] c"~w\\00"
+@~w_regex_cache = internal global i8* null',
+        [SafeBase, ArrLen, EscapedRegex, SafeBase]),
+    format(atom(CallIR),
+'  %~w_pat_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0
+  ~w = call i1 @wam_regex_field_match(%Value ~w, i64 ~w, i8 ~w, i8* %~w_pat_ptr, i8** @~w_regex_cache)',
+        [SafeBase, ArrLen, ArrLen, SafeBase,
+         ResultIR, ValueIR, FieldIndex, SepCode, SafeBase, SafeBase]).
 
 %% llvm_emit_atom_field_slice(+ValueIR, +FieldIndex, +SepCode, +SliceBase, -CallIR)
 %
