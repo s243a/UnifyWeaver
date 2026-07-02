@@ -311,6 +311,13 @@ those scalar arithmetic contexts. That coercion is emitted through the
 target-side `llvm_emit_atom_field_i64_or_default/7` helper so future native
 numeric consumers can share the parse-plus-default lowering instead of
 rebuilding it in PLAWK-specific code.
+Scalar variables are readable inside rule-body update expressions and END
+prints: codegen substitutes `var(Name)` leaves with the current SSA slot
+value (an `ssa/1` leaf the shared emitters print verbatim) before emission,
+so `{ avg = $2 / 2; total += avg }` folds in source order with no extra
+state. END expressions substitute final slot values and map `NR` to
+`%plawk_nr`, the loop-head record phi (which dominates `end_print`), so
+`END { print sum / NR }` averages lower natively with guarded division.
 The scalar counter
 path threads a native `i64` loop variable and prints it from the `END` action. Multiple scalar counters
 become parallel `i64` phi slots in the native streaming loop.

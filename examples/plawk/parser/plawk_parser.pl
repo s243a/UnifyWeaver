@@ -566,6 +566,8 @@ scalar_delta_expr(index(Field, string(Needle))) -->
     { Field = field(_),
       NeedleCodes \== [],
       string_codes(Needle, NeedleCodes) }.
+scalar_delta_expr(var(Name)) -->
+    identifier(Name).
 
 print_action(print(Fields)) -->
     "print",
@@ -794,10 +796,13 @@ i64_factor_expr(int(Value)) -->
 i64_factor_expr(field(Index)) -->
     "$",
     integer_codes(IndexCodes),
+    !,
     { IndexCodes \== [],
       number_codes(Index, IndexCodes),
       Index >= 0
     }.
+i64_factor_expr(var(Name)) -->
+    identifier(Name).
 
 i64_binary_primary_expr(special('NR')) -->
     "NR".

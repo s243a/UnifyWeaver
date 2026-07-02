@@ -77,6 +77,7 @@ swipl -q -s tests/test_plawk_surface_stdin_input.pl -g "setenv('UW_SMOKE_TMPDIR'
 swipl -q -s tests/test_plawk_surface_arith_exprs.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_pattern_combinators.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_regex_match.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_surface_end_scalar_exprs.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -181,6 +182,15 @@ Mixed scalar/associative state is
 supported in the same native loop, e.g. `{ total++; counts[$1]++ }` with an
 `END` print of both `total` and `counts["ERROR"]`. `END` print fields can also
 include literal labels such as `print "total", total, "errors", counts["ERROR"]`.
+`END` prints also take native `i64` arithmetic over final scalar values, `NR`
+(the final record count), and integer literals, so canonical reports such as
+`{ sum += $2 } END { print "avg", sum / NR }` lower natively; `NR` reads the
+loop-head record phi, and empty input divides to `0` through the shared
+guarded division. Scalar variables can also be read inside rule-body update
+expressions, e.g. `{ avg = $2 / 2; total += avg }` or `{ x = x + 2 }`;
+assignments apply in source order, a read before any write sees `0` (awk's
+uninitialized-variable semantics), and reads work across rules within the
+same record.
 `END` can also iterate an associative array with the canonical awk report
 idiom, e.g. `{ counts[$1]++ } END { for (k in counts) print k, counts[k] }`.
 The loop lowers to a native walk over the runtime table's occupied slots via
