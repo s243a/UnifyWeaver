@@ -1531,6 +1531,10 @@ plawk_scalar_rule_body_plain_action(Action) :-
     plawk_scalar_action_update(Action, _Name, _Operation).
 plawk_scalar_rule_body_plain_action(Action) :-
     plawk_rule_body_print_action(Action).
+% else-if chains nest an if inside a branch body; the sequence walker
+% lowers nested ifs recursively, so validation recurses the same way.
+plawk_scalar_rule_body_plain_action(if(Pattern, ThenActions, ElseActions)) :-
+    plawk_scalar_rule_body_action(if(Pattern, ThenActions, ElseActions)).
 
 plawk_rule_body_print_action(print(Fields)) :-
     Fields = [_ | _],

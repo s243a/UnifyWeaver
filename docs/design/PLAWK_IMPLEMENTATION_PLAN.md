@@ -335,7 +335,11 @@ emits per-slot phis at the branch join, and can run field-key associative
 increments or selected-field/string-literal `print` as branch-local side effects. Scalar,
 mixed, and assoc-only branch bodies now share the same rule-body action walker;
 branch phis use each branch's actual exit block, including assoc side-effect
-`_done` blocks. Branch-local `print` uses prefixed SSA names so multiple branch
+`_done` blocks. `else` is optional (an absent else lowers as an empty branch
+whose join phis pass the incoming slot values through), and `else if` chains
+nest as a single-element else branch containing the next if; the sequence
+walker lowers nested ifs recursively with prefix-derived label names.
+Branch-local `print` uses prefixed SSA names so multiple branch
 prints do not collide; branch-local `NR` printing uses the same native record
 counter threaded through the stream loop as top-level `print NR`. Print
 expression lowering now shares one context-aware path for top-level and

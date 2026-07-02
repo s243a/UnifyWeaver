@@ -78,6 +78,7 @@ swipl -q -s tests/test_plawk_surface_arith_exprs.pl -g "setenv('UW_SMOKE_TMPDIR'
 swipl -q -s tests/test_plawk_surface_pattern_combinators.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_regex_match.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_end_scalar_exprs.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_surface_else_if.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -139,6 +140,10 @@ integer literals, `NR`, `NF`, `length($N)`, `index($N, "literal")`, numeric
 `$N`, explicit `int($N)`, and native scalar `i64` primary `+/- K` forms such as
 `NF + K`, `length($N) - K`, `int($N) + K`, and
 `index($N, "literal") + K`.
+`else` is optional (`{ if ($1 == "ERROR") { errors++ } }`), and `else if`
+chains parse as nested conditionals with awk semantics, e.g.
+`{ if ($3 > 100) { big++ } else if ($3 > 10) { mid++ } else { small++ } }`;
+`if` bodies can also nest further `if` statements.
 Scalar slot updates can also sit behind native `if/else` guards, e.g.
 `{ if ($1 == "ERROR") { errors++; last_len = length($0) } else { non_errors++ } }
 END { print errors, non_errors, last_len }`. The first branch slice supports
