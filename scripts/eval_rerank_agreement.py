@@ -57,12 +57,28 @@ def main():
     ap.add_argument("--model", required=True, help="federated .pkl model")
     ap.add_argument("--mu-ckpt", required=True, help="mu_cosine checkpoint")
     ap.add_argument("--queries", default=None, help="TSV 'bookmark[<TAB>true_folder_title]' per line; else built-in set")
+    ap.add_argument("--sample-filing", action="store_true",
+                    help="sample N REAL bookmarks (+ true folders) from the Pearltrees filing data — large N + accuracy")
+    ap.add_argument("--trees", default=".local/data/pearltrees_api/trees",
+                    help="Pearltrees trees dir for --sample-filing")
+    ap.add_argument("--seed", type=int, default=7, help="sampling seed for --sample-filing")
     ap.add_argument("--n", type=int, default=20, help="cap number of bookmarks")
     ap.add_argument("--top-k", type=int, default=15, help="μ shortlist size handed to the reranker")
     ap.add_argument("--provider", default="claude"); ap.add_argument("--llm-model", default="haiku")
     a = ap.parse_args()
 
-    queries = load_queries(a.queries) if a.queries else [(q, None) for q in DEFAULT_QUERIES]
+    if a.queries:
+        queries = load_queries(a.queries)
+    elif a.sample_filing:                                        # real bookmarks + true folders from filing data
+        import random
+        sys.path.insert(0, str(Path(__file__).parent.parent / "prototypes" / "mu_cosine"))
+        from eval_filing import load_filing
+        pairs, cand = load_filing(a.trees, min_bm=3)             # [(bm_text, folder_tid)], {folder_tid: title}
+        rng = random.Random(a.seed); rng.shuffle(pairs)
+        queries = [(bm, cand.get(str(f))) for bm, f in pairs if cand.get(str(f))]
+        print(f"[SAMPLE] drew from {len(pairs)} real filing bookmarks (seed {a.seed})")
+    else:
+        queries = [(q, None) for q in DEFAULT_QUERIES]
     queries = queries[:a.n]
 
     from infer_pearltrees_federated import FederatedInferenceEngine
