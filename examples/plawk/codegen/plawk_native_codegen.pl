@@ -1530,18 +1530,31 @@ plawk_rule_body_print_field(special('NR')).
 plawk_rule_body_print_field(special('NF')).
 plawk_rule_body_print_field(int(field(_))).
 plawk_rule_body_print_field(Expr) :-
-    plawk_i64_const_binary_expr(Expr).
+    plawk_i64_general_binary_expr(Expr).
 plawk_rule_body_print_field(length(field(_))).
 plawk_rule_body_print_field(substr(field(_), _Start, _Len)).
 plawk_rule_body_print_field(index(field(_), string(_))).
 plawk_rule_body_print_field(tolower(field(_))).
 plawk_rule_body_print_field(toupper(field(_))).
 
-plawk_i64_const_binary_expr(Expr) :-
-    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, int(Value)),
-    plawk_i64_binary_primary_expr(Left),
-    integer(Value),
-    Value >= 0.
+%% plawk_i64_general_binary_expr(+Expr) is semidet.
+%
+%  Recognize a native i64 binary expression tree whose leaves are i64
+%  primaries, integer literals, or bare numeric field coercions.
+plawk_i64_general_binary_expr(Expr) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    plawk_i64_operand_expr(Left),
+    plawk_i64_operand_expr(Right).
+
+plawk_i64_operand_expr(int(Value)) :-
+    integer(Value).
+plawk_i64_operand_expr(field(FieldIndex)) :-
+    integer(FieldIndex),
+    FieldIndex >= 0.
+plawk_i64_operand_expr(Expr) :-
+    plawk_i64_binary_primary_expr(Expr).
+plawk_i64_operand_expr(Expr) :-
+    plawk_i64_general_binary_expr(Expr).
 
 plawk_i64_binary_primary_expr(special('NR')).
 plawk_i64_binary_primary_expr(special('NF')).
@@ -1553,12 +1566,6 @@ plawk_i64_binary_primary_expr(index(field(FieldIndex), string(Needle))) :-
     FieldIndex >= 0,
     string(Needle).
 
-plawk_i64_scalar_const_binary_expr(Expr) :-
-    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, int(Value)),
-    plawk_i64_scalar_binary_primary_expr(Left),
-    integer(Value),
-    Value >= 0.
-
 plawk_i64_scalar_primary_expr(special('NR')).
 plawk_i64_scalar_primary_expr(special('NF')).
 plawk_i64_scalar_primary_expr(int(field(FieldIndex))) :-
@@ -1569,14 +1576,17 @@ plawk_i64_scalar_primary_expr(index(field(FieldIndex), string(Needle))) :-
     FieldIndex >= 0,
     string(Needle).
 
-plawk_i64_scalar_binary_primary_expr(Expr) :-
-    plawk_i64_scalar_primary_expr(Expr).
-
 plawk_i64_binary_expr(add_i64(Left, Right), add, add, Left, Right).
 plawk_i64_binary_expr(sub_i64(Left, Right), sub, sub, Left, Right).
+plawk_i64_binary_expr(mul_i64(Left, Right), mul, mul, Left, Right).
+plawk_i64_binary_expr(div_i64(Left, Right), sdiv, div, Left, Right).
+plawk_i64_binary_expr(mod_i64(Left, Right), srem, mod, Left, Right).
 
 plawk_i64_binary_print_kind(add, int_add).
 plawk_i64_binary_print_kind(sub, int_sub).
+plawk_i64_binary_print_kind(mul, int_mul).
+plawk_i64_binary_print_kind(div, int_div).
+plawk_i64_binary_print_kind(mod, int_mod).
 
 plawk_scalar_update_action_name(Action, Name) :-
     plawk_scalar_action_update(Action, Name, _Operation).
@@ -1599,7 +1609,7 @@ plawk_scalar_action_update(add(var(Name), int(field(FieldIndex))), Name, add(fie
 plawk_scalar_action_update(add(var(Name), Expr), Name, add(Expr)) :-
     plawk_i64_scalar_primary_expr(Expr).
 plawk_scalar_action_update(add(var(Name), Expr), Name, add(Expr)) :-
-    plawk_i64_scalar_const_binary_expr(Expr).
+    plawk_i64_general_binary_expr(Expr).
 plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) :-
     integer(Value),
     Value >= 0.
@@ -1612,7 +1622,7 @@ plawk_scalar_action_update(set(var(Name), int(field(FieldIndex))), Name, set(fie
 plawk_scalar_action_update(set(var(Name), Expr), Name, set(Expr)) :-
     plawk_i64_scalar_primary_expr(Expr).
 plawk_scalar_action_update(set(var(Name), Expr), Name, set(Expr)) :-
-    plawk_i64_scalar_const_binary_expr(Expr).
+    plawk_i64_general_binary_expr(Expr).
 
 plawk_scalar_action_sequence_pairs([], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
         OpIndex, Values, Values, OpIndex, CurrentLabel, []) -->
@@ -1781,6 +1791,14 @@ plawk_i64_expr_ir_parts(Expr, FieldSeparator, Base, GlobalBase,
 plawk_i64_expr_ir(const(Value), _FieldSeparator, _Base, _GlobalBase, ValueIR, [], []) :-
     integer(Value),
     format(atom(ValueIR), '~w', [Value]).
+plawk_i64_expr_ir(int(Value), _FieldSeparator, _Base, _GlobalBase, ValueIR, [], []) :-
+    integer(Value),
+    format(atom(ValueIR), '~w', [Value]).
+plawk_i64_expr_ir(field(FieldIndex), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts) :-
+    integer(FieldIndex),
+    plawk_i64_expr_ir(field_i64(FieldIndex), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts).
 plawk_i64_expr_ir(nr, _FieldSeparator, _Base, _GlobalBase, '%current_nr', [], []).
 plawk_i64_expr_ir(nf, FieldSeparator, Base, _GlobalBase, ValueIR, [], [CountIR]) :-
     llvm_emit_atom_field_count('%line', FieldSeparator, Base, CountIR),
@@ -1814,21 +1832,62 @@ plawk_i64_expr_ir(index(field(FieldIndex), string(Needle)), FieldSeparator, Base
         ValueIR, GlobalParts, SetupParts).
 plawk_i64_expr_ir(Expr, FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts) :-
-    plawk_i64_binary_expr(Expr, LLVMOp, _NamePart, Left, int(Value)),
-    integer(Value),
+    plawk_i64_binary_expr(Expr, LLVMOp, _NamePart, Left, Right),
     format(atom(LeftBase), '~w_lhs', [Base]),
     format(atom(LeftGlobalBase), '~w_lhs', [GlobalBase]),
     plawk_i64_expr_ir(Left, FieldSeparator, LeftBase, LeftGlobalBase,
-        LeftValueIR, GlobalParts, LeftSetupParts),
+        LeftValueIR, LeftGlobalParts, LeftSetupParts),
+    format(atom(RightBase), '~w_rhs', [Base]),
+    format(atom(RightGlobalBase), '~w_rhs', [GlobalBase]),
+    plawk_i64_expr_ir(Right, FieldSeparator, RightBase, RightGlobalBase,
+        RightValueIR, RightGlobalParts, RightSetupParts),
     format(atom(ValueIR), '%~w', [Base]),
-    format(atom(BinaryIR), '  ~w = ~w i64 ~w, ~w',
-        [ValueIR, LLVMOp, LeftValueIR, Value]),
-    append(LeftSetupParts, [BinaryIR], SetupParts).
+    plawk_i64_binary_op_lines(LLVMOp, Base, LeftValueIR, RightValueIR, OpLines),
+    append(LeftGlobalParts, RightGlobalParts, GlobalParts),
+    append([LeftSetupParts, RightSetupParts, OpLines], SetupParts).
 plawk_i64_expr_ir(index(FieldIndex, Needle), FieldSeparator, Base, GlobalBase,
         ValueIR, [GlobalIR], [CallIR]) :-
     llvm_emit_atom_field_index(GlobalBase, '%line', FieldIndex, Needle, FieldSeparator,
         Base, GlobalIR-CallIR),
     format(atom(ValueIR), '%~w', [Base]).
+
+%% plawk_i64_binary_op_lines(+LLVMOp, +Base, +LeftIR, +RightIR, -Lines)
+%
+%  add/sub/mul emit one instruction. sdiv/srem are guarded so awk-side
+%  division stays defined: a zero divisor yields 0, and the
+%  INT64_MIN / -1 overflow case divides by 1 instead, wrapping to
+%  INT64_MIN for `/` and 0 for `%`.
+plawk_i64_binary_op_lines(sdiv, Base, LeftIR, RightIR, Lines) :-
+    !,
+    plawk_i64_guarded_div_lines(sdiv, Base, LeftIR, RightIR, Lines).
+plawk_i64_binary_op_lines(srem, Base, LeftIR, RightIR, Lines) :-
+    !,
+    plawk_i64_guarded_div_lines(srem, Base, LeftIR, RightIR, Lines).
+plawk_i64_binary_op_lines(LLVMOp, Base, LeftIR, RightIR, [Line]) :-
+    format(atom(Line), '  %~w = ~w i64 ~w, ~w',
+        [Base, LLVMOp, LeftIR, RightIR]).
+
+plawk_i64_guarded_div_lines(LLVMOp, Base, LeftIR, RightIR, Lines) :-
+    format(atom(DenZero),
+        '  %~w_den_zero = icmp eq i64 ~w, 0', [Base, RightIR]),
+    format(atom(LhsMin),
+        '  %~w_lhs_min = icmp eq i64 ~w, -9223372036854775808', [Base, LeftIR]),
+    format(atom(RhsNegOne),
+        '  %~w_rhs_negone = icmp eq i64 ~w, -1', [Base, RightIR]),
+    format(atom(Overflow),
+        '  %~w_overflow = and i1 %~w_lhs_min, %~w_rhs_negone',
+        [Base, Base, Base]),
+    format(atom(DenBad),
+        '  %~w_den_bad = or i1 %~w_den_zero, %~w_overflow', [Base, Base, Base]),
+    format(atom(SafeDen),
+        '  %~w_safe_den = select i1 %~w_den_bad, i64 1, i64 ~w',
+        [Base, Base, RightIR]),
+    format(atom(Raw),
+        '  %~w_raw = ~w i64 ~w, %~w_safe_den', [Base, LLVMOp, LeftIR, Base]),
+    format(atom(Result),
+        '  %~w = select i1 %~w_den_zero, i64 0, i64 %~w_raw',
+        [Base, Base, Base]),
+    Lines = [DenZero, LhsMin, RhsNegOne, Overflow, DenBad, SafeDen, Raw, Result].
 
 plawk_branch_to_done_ir(none, _DoneLabel, '  br label %continue_loop') :-
     !.
@@ -2043,6 +2102,10 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, ''-GuardCall
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, '%is_match', GuardCallIR).
+plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardIR) :-
+    plawk_combined_pattern(Pattern),
+    plawk_pattern_guard_ir(Pattern, FieldSeparator, plawk_surface_pattern,
+        '%is_match', GuardIR).
 
 plawk_pattern_guard_ir(always, _GlobalBase, MatchValue, GuardIR) :-
     format(atom(GuardCallIR), '  ~w = icmp eq i1 true, true', [MatchValue]),
@@ -2075,6 +2138,49 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, _GlobalBase,
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, MatchValue, GuardCallIR).
+plawk_pattern_guard_ir(and_pat(Left, Right), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
+    plawk_binary_pattern_guard_ir(and, Left, Right, FieldSeparator, GlobalBase,
+        MatchValue, GuardIR).
+plawk_pattern_guard_ir(or_pat(Left, Right), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
+    plawk_binary_pattern_guard_ir(or, Left, Right, FieldSeparator, GlobalBase,
+        MatchValue, GuardIR).
+plawk_pattern_guard_ir(not_pat(Pattern), FieldSeparator, GlobalBase, MatchValue, GlobalIR-GuardCallIR) :-
+    format(atom(InnerBase), '~w_n', [GlobalBase]),
+    format(atom(InnerValue), '~w_n', [MatchValue]),
+    plawk_pattern_guard_ir(Pattern, FieldSeparator, InnerBase, InnerValue,
+        GlobalIR-InnerCallIR),
+    format(atom(GuardCallIR),
+'~w
+  ~w = xor i1 ~w, true',
+        [InnerCallIR, MatchValue, InnerValue]).
+
+plawk_combined_pattern(and_pat(_Left, _Right)).
+plawk_combined_pattern(or_pat(_Left, _Right)).
+plawk_combined_pattern(not_pat(_Pattern)).
+
+%% plawk_binary_pattern_guard_ir(+Op, +Left, +Right, +FieldSeparator,
+%%     +GlobalBase, +MatchValue, -GuardIR)
+%
+%  Combine two pattern guards with a bitwise i1 op. The base guards are
+%  side-effect-free straight-line checks, so evaluating both operands
+%  keeps the combined guard a single block; awk's short-circuit order
+%  is unobservable here.
+plawk_binary_pattern_guard_ir(Op, Left, Right, FieldSeparator, GlobalBase,
+        MatchValue, GlobalIR-GuardCallIR) :-
+    format(atom(LeftBase), '~w_l', [GlobalBase]),
+    format(atom(LeftValue), '~w_l', [MatchValue]),
+    plawk_pattern_guard_ir(Left, FieldSeparator, LeftBase, LeftValue,
+        LeftGlobalIR-LeftCallIR),
+    format(atom(RightBase), '~w_r', [GlobalBase]),
+    format(atom(RightValue), '~w_r', [MatchValue]),
+    plawk_pattern_guard_ir(Right, FieldSeparator, RightBase, RightValue,
+        RightGlobalIR-RightCallIR),
+    plawk_join_nonempty_ir([LeftGlobalIR, RightGlobalIR], GlobalIR),
+    format(atom(GuardCallIR),
+'~w
+~w
+  ~w = ~w i1 ~w, ~w',
+        [LeftCallIR, RightCallIR, MatchValue, Op, LeftValue, RightValue]).
 
 plawk_literal_contains_guard_ir(GlobalBase, Needle, FieldSeparator, MatchValue, GlobalIR-GuardCallIR) :-
     format(atom(IndexBase), '~w_contains_index', [GlobalBase]),
@@ -2106,8 +2212,10 @@ plawk_fields_include_nr(Fields) :-
 
 plawk_expr_uses_nr(special('NR')).
 plawk_expr_uses_nr(Expr) :-
-    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, _Right),
-    plawk_expr_uses_nr(Left).
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    ( plawk_expr_uses_nr(Left)
+    ; plawk_expr_uses_nr(Right)
+    ).
 
 plawk_print_action_ir([field(0)], _FieldSeparator, _OutputSeparator, ''-IR) :-
     !,
@@ -2415,6 +2523,12 @@ plawk_normal_print_expr_value_base(int_add, Index, Base) :-
     format(atom(Base), 'plawk_int_add_~w', [Index]).
 plawk_normal_print_expr_value_base(int_sub, Index, Base) :-
     format(atom(Base), 'plawk_int_sub_~w', [Index]).
+plawk_normal_print_expr_value_base(int_mul, Index, Base) :-
+    format(atom(Base), 'plawk_int_mul_~w', [Index]).
+plawk_normal_print_expr_value_base(int_div, Index, Base) :-
+    format(atom(Base), 'plawk_int_div_~w', [Index]).
+plawk_normal_print_expr_value_base(int_mod, Index, Base) :-
+    format(atom(Base), 'plawk_int_mod_~w', [Index]).
 plawk_normal_print_expr_value_base(length, Index, Base) :-
     format(atom(Base), 'plawk_length_~w', [Index]).
 plawk_normal_print_expr_value_base(substr, Index, Base) :-

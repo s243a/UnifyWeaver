@@ -73,6 +73,9 @@ swipl -q -s tests/test_plawk_native_output_stream_loop_driver.pl -g "setenv('UW_
 swipl -q -s tests/test_plawk_native_lowered_handler_stream_loop_driver.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_prefix_print.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_surface_forin_end_print.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_surface_stdin_input.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_surface_arith_exprs.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_surface_pattern_combinators.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -87,10 +90,15 @@ as `$1 == "ERROR" { print substr($2, 1, 3) }`, and native byte searches such as
 case-mapped field slices such as `$1 == "ERROR" { print tolower($2), toupper($0) }`.
 Explicit numeric field coercion is available as `int($N)`, e.g.
 `$1 == "ERROR" { print $3, int($3) }`; failed numeric parses print `0`.
-The first arithmetic composition forms add or subtract a non-negative integer
-constant from native `i64` primaries such as `NR`, `NF`, `length($N)`,
-`int($N)`, and `index($N, "literal")`, e.g.
-`$1 == "ERROR" { print NR - 1, int($3) + 1, index($2, "sk") + 1 }`.
+Arithmetic expressions support general `+`, `-`, `*`, `/`, and `%` between
+native `i64` operands with awk precedence (`* / %` bind tighter than `+ -`,
+both associate left) and parentheses, e.g.
+`{ print ($2 + $3) * $4, $2 + $3 * $4 }`. Operands are integer literals,
+`NR`, `NF`, `length($N)`, `int($N)`, `index($N, "literal")`, and bare numeric
+fields such as `$3`, which coerce like `int($3)` inside arithmetic (a bare
+`$N` on its own still prints as a byte slice). Division and modulo are
+guarded: a zero divisor yields `0`, and `INT64_MIN / -1` wraps to
+`INT64_MIN` (`% -1` yields `0`) instead of trapping.
 Rule actions can also use basic `printf` forms, e.g.
 `$1 == "ERROR" { printf "%s=%s\n", $2, $3 }`. `printf` does not add `OFS` or
 an implicit newline; supported native formats are `%%`, `%s` for strings and
@@ -99,7 +107,12 @@ lowered allocation-free by rewriting `%s` to `%.*s` and passing the slice length
 and pointer to the native vararg call.
 Numeric field guards use the shared WAM/LLVM `i64` comparison helper, so forms
 such as `$3 > 100 { print $1, $3 }` and `$2 <= -5 { cold++ }` stay in the native
-streaming loop.
+streaming loop. Patterns compose with `&&`, `||`, and `!` using awk precedence
+(`!` over `&&` over `||`, parentheses group), e.g.
+`$1 == "ERROR" && $3 > 100 { print $0 }`, `/^ERROR/ || /^WARN/ { print $1 }`,
+and `!/disk/ { print $0 }`. Combined guards lower to straight-line bitwise
+`i1` ops over the existing native guard helpers — no extra branches — and the
+same combinators work in `if (...)` conditions.
 Scalar state works with `$1 ==
 "ERROR" { count++ } END { print count }`. Multiple scalar increments
 compile to indexed native slots, e.g. `{ errors++; matches++ }`, and multiple
@@ -149,7 +162,12 @@ explicit single-byte `FS` values such as `BEGIN { FS = ":" }` for native field
 equality, selected-field printing, and associative key extraction. Single-byte
 `OFS` values such as `BEGIN { OFS = "," }` drive comma-separated `print` fields;
 the native path emits separator bytes directly, so values such as `%` are data,
-not `printf` formats. Mixed scalar/associative state is
+not `printf` formats. Compiled binaries take their input the awk way: passing the
+`stdin_or_argv` sentinel instead of a compile-time path emits a
+`main(argc, argv)` that opens `argv[1]` at runtime, treats `-` as stdin, and
+defaults to stdin when no argument is given, so `./prog file.txt`,
+`./prog < file.txt`, and `cat file.txt | ./prog` all work.
+Mixed scalar/associative state is
 supported in the same native loop, e.g. `{ total++; counts[$1]++ }` with an
 `END` print of both `total` and `counts["ERROR"]`. `END` print fields can also
 include literal labels such as `print "total", total, "errors", counts["ERROR"]`.
