@@ -17216,7 +17216,40 @@ define i1 @wam_str_eq_n(i8* %str, i64 %len, i8* %cand) {
 
 define i64 @wam_intern_atom(i8* %str, i64 %len) {
   ret i64 0
-}'
+}
+
+; Tier-2 payload marshaling: copy Len bytes into the shared transient
+; buffer (grown geometrically, NUL-terminated) and return the transient
+; atom id (2^62). Constant memory: one buffer for the process, valid
+; until the next transient write/read. At most one live payload at a
+; time -- callers pass at most one blob argument per foreign call.
+define i64 @wam_transient_atom_from_bytes(i8* %src, i64 %len) {
+entry:
+  %need = add i64 %len, 1
+  %cap = load i64, i64* @wam_transient_line_cap
+  %fits = icmp ule i64 %need, %cap
+  br i1 %fits, label %copy, label %grow
+grow:
+  %small = icmp ult i64 %need, 4096
+  %newcap = select i1 %small, i64 4096, i64 %need
+  %old = load i8*, i8** @wam_transient_line_buf
+  %newbuf = call i8* @realloc(i8* %old, i64 %newcap)
+  %newnull = icmp eq i8* %newbuf, null
+  br i1 %newnull, label %fail, label %store_new
+store_new:
+  store i8* %newbuf, i8** @wam_transient_line_buf
+  store i64 %newcap, i64* @wam_transient_line_cap
+  br label %copy
+copy:
+  %buf = load i8*, i8** @wam_transient_line_buf
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %buf, i8* %src, i64 %len, i1 false)
+  %endp = getelementptr i8, i8* %buf, i64 %len
+  store i8 0, i8* %endp
+  ret i64 4611686018427387904
+fail:
+  ret i64 -1
+}
+'
     ;  sort(Pairs0, Pairs),   % sort by id
        last(Pairs, MaxId-_),
        ArrSize is MaxId + 1,
@@ -17346,6 +17379,39 @@ get:
   ret i64 %id
 zret:
   ret i64 0
+}
+
+
+; Tier-2 payload marshaling: copy Len bytes into the shared transient
+; buffer (grown geometrically, NUL-terminated) and return the transient
+; atom id (2^62). Constant memory: one buffer for the process, valid
+; until the next transient write/read. At most one live payload at a
+; time -- callers pass at most one blob argument per foreign call.
+define i64 @wam_transient_atom_from_bytes(i8* %src, i64 %len) {
+entry:
+  %need = add i64 %len, 1
+  %cap = load i64, i64* @wam_transient_line_cap
+  %fits = icmp ule i64 %need, %cap
+  br i1 %fits, label %copy, label %grow
+grow:
+  %small = icmp ult i64 %need, 4096
+  %newcap = select i1 %small, i64 4096, i64 %need
+  %old = load i8*, i8** @wam_transient_line_buf
+  %newbuf = call i8* @realloc(i8* %old, i64 %newcap)
+  %newnull = icmp eq i8* %newbuf, null
+  br i1 %newnull, label %fail, label %store_new
+store_new:
+  store i8* %newbuf, i8** @wam_transient_line_buf
+  store i64 %newcap, i64* @wam_transient_line_cap
+  br label %copy
+copy:
+  %buf = load i8*, i8** @wam_transient_line_buf
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %buf, i8* %src, i64 %len, i1 false)
+  %endp = getelementptr i8, i8* %buf, i64 %len
+  store i8 0, i8* %endp
+  ret i64 4611686018427387904
+fail:
+  ret i64 -1
 }
 
 ; M29: case-sensitive string equality of (str, len) against a

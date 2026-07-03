@@ -1728,6 +1728,10 @@ plawk_binfmt_pattern_ok(Descriptor, field_cmp(Index, _Op, _Value)) :-
 plawk_binfmt_pattern_ok(Descriptor, field_eq(Index, _Value)) :-
     !,
     plawk_binfmt_field_type(Descriptor, Index, s(_Width)).
+plawk_binfmt_pattern_ok(Descriptor, prolog_guard(Name, Args)) :-
+    !,
+    atom(Name),
+    plawk_binfmt_foreign_args_ok(Descriptor, Args).
 plawk_binfmt_pattern_ok(Descriptor, and_pat(Left, Right)) :-
     !,
     plawk_binfmt_pattern_ok(Descriptor, Left),
@@ -1832,10 +1836,46 @@ plawk_binfmt_i64_expr_ok(Descriptor, field(Index)) :-
 plawk_binfmt_i64_expr_ok(Descriptor, int(field(Index))) :-
     !,
     plawk_binfmt_field_type(Descriptor, Index, i64).
+plawk_binfmt_i64_expr_ok(Descriptor, prolog_call(Name, Args)) :-
+    !,
+    atom(Name),
+    plawk_binfmt_foreign_args_ok(Descriptor, Args).
 plawk_binfmt_i64_expr_ok(Descriptor, Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     plawk_binfmt_i64_expr_ok(Descriptor, Left),
     plawk_binfmt_i64_expr_ok(Descriptor, Right).
+
+%% plawk_binfmt_foreign_args_ok(+Descriptor, +Args)
+%
+%  Foreign-call arguments in binary mode: integer and string literals,
+%  i64 fields (marshaled as WAM integers), and blob fields (marshaled
+%  as the transient payload atom). At most one blob per call -- all
+%  blobs share the one transient buffer, so a second would overwrite
+%  the first before the call.
+plawk_binfmt_foreign_args_ok(Descriptor, Args) :-
+    Args = [_ | _],
+    forall(member(Arg, Args),
+        plawk_binfmt_foreign_arg_ok(Descriptor, Arg)),
+    findall(F,
+        ( member(field(F), Args),
+          plawk_binfmt_field_type(Descriptor, F, blob(_))
+        ),
+        Blobs),
+    length(Blobs, BlobCount),
+    BlobCount =< 1.
+
+plawk_binfmt_foreign_arg_ok(_Descriptor, int(Value)) :-
+    integer(Value),
+    !.
+plawk_binfmt_foreign_arg_ok(_Descriptor, string(Value)) :-
+    string(Value),
+    !.
+plawk_binfmt_foreign_arg_ok(Descriptor, field(Index)) :-
+    integer(Index),
+    Index >= 1,
+    plawk_binfmt_field_type(Descriptor, Index, Type),
+    ( Type == i64 ; Type = blob(_Cap) ),
+    !.
 
 plawk_binfmt_f64_expr_ok(Descriptor, float_field(Index)) :-
     !,
@@ -1994,6 +2034,18 @@ plawk_binfmt_type(Part, rep(Cap, ElemTypes)) :-
     % region is one bulk read and one flat access layout
     forall(member(ElemType, ElemTypes),
         ( memberchk(ElemType, [i64, f64]) ; ElemType = s(_) )).
+% blobN: a length-prefixed binary payload (8-byte length, then up to N
+% payload bytes) whose ONLY consumer is a compiled-Prolog foreign call:
+% the record loop stays native for framing and hands the payload to a
+% WAM-compiled predicate (a DCG over the bytes) through the foreign
+% bridge -- the Tier-2 composition of PLAWK_DCG_BINARY_READERS.md.
+% Payload bytes must be NUL-free (the transient atom carrying them to
+% Prolog is a C string).
+plawk_binfmt_type(Part, blob(Cap)) :-
+    string_concat("blob", CapStr, Part),
+    number_string(Cap, CapStr),
+    integer(Cap),
+    Cap > 0.
 % sN: a fixed-width string field of N bytes. Values shorter than N are
 % NUL-terminated inside the field; a full-width value has no NUL.
 plawk_binfmt_type(Part, s(Width)) :-
@@ -2044,10 +2096,14 @@ plawk_binfmt_type_width(rep(Cap, ElemTypes), Width) :-
     maplist(plawk_binfmt_type_width, ElemTypes, ElemWidths),
     sum_list(ElemWidths, ElemSize),
     Width is 8 + Cap * ElemSize.
+% in-memory: the actual length (i64), then the payload bytes
+plawk_binfmt_type_width(blob(Cap), Width) :-
+    Width is 8 + Cap.
 
 plawk_binfmt_has_varlen(Types) :-
     ( memberchk(lps(_Cap), Types)
     ; memberchk(rep(_K, _Elems), Types)
+    ; memberchk(blob(_C), Types)
     ),
     !.
 
@@ -2793,6 +2849,44 @@ plawk_varlen_field_sections([Type | Types], LoweredLabel, Prefix, EofPolicy,
     plawk_varlen_field_sections(Types, LoweredLabel, Prefix, EofPolicy,
         NextIndex, NextOffset, Sections).
 
+plawk_varlen_field_body(blob(Cap), FBase, FieldEof, Offset, NextLabel, BodyIR) :-
+    !,
+    PayloadOffset is Offset + 8,
+    plawk_varlen_eof_check_ir(FieldEof, FBase, cstatus, BodyPrefixIR),
+    format(atom(BodyIR),
+'  %~w_dst = getelementptr i8, i8* %rec, i64 ~w
+  %~w_cstatus = call i64 @wam_stream_read_record(%Value %handle, i64 8, i8* %~w_dst)
+~w  %~w_cok = icmp eq i64 %~w_cstatus, 1
+  br i1 %~w_cok, label %~w_len, label %fail_read
+
+~w_len:
+  %~w_ctp = bitcast i8* %~w_dst to i64*
+  %~w_n = load i64, i64* %~w_ctp
+  %~w_fits = icmp ule i64 %~w_n, ~w
+  br i1 %~w_fits, label %~w_read, label %fail_read
+
+~w_read:
+  %~w_pdst = getelementptr i8, i8* %rec, i64 ~w
+  call void @llvm.memset.p0i8.i64(i8* %~w_pdst, i8 0, i64 ~w, i1 false)
+  %~w_pstatus = call i64 @wam_stream_read_record(%Value %handle, i64 %~w_n, i8* %~w_pdst)
+  %~w_pok = icmp eq i64 %~w_pstatus, 1
+  br i1 %~w_pok, label %~w, label %fail_read
+',
+        [FBase, Offset,
+         FBase, FBase,
+         BodyPrefixIR, FBase, FBase,
+         FBase, FBase,
+         FBase,
+         FBase, FBase,
+         FBase, FBase,
+         FBase, FBase, Cap,
+         FBase, FBase,
+         FBase,
+         FBase, PayloadOffset,
+         FBase, Cap,
+         FBase, FBase, FBase,
+         FBase, FBase,
+         FBase, NextLabel]).
 plawk_varlen_field_body(rep(Cap, ElemTypes), FBase, FieldEof, Offset, NextLabel, BodyIR) :-
     !,
     maplist(plawk_binfmt_type_width, ElemTypes, ElemWidths),
@@ -4595,6 +4689,48 @@ plawk_foreign_args_ir([Arg | Rest], FieldSeparator, BasePrefix, Index,
     plawk_foreign_args_ir(Rest, FieldSeparator, BasePrefix, NextIndex,
         ArgValueIRs, GlobalPartsRest, SetupPartsRest).
 
+% Binary mode: i64 fields marshal as WAM integers (a typed load, no
+% text anywhere); blob fields copy their payload into the shared
+% transient buffer and marshal as the transient atom -- constant
+% memory, no interning, readable Prolog-side via atom_codes/2.
+plawk_foreign_arg_ir(field(FieldIndex), binfmt(Types), ArgBase, ArgValueIR,
+        [], SetupParts) :-
+    integer(FieldIndex),
+    FieldIndex >= 1,
+    plawk_binfmt_field_type(binfmt(Types), FieldIndex, i64),
+    !,
+    format(atom(LoadBase), '~w_bf', [ArgBase]),
+    plawk_binfmt_field_load_lines(binfmt(Types), FieldIndex, LoadBase,
+        LoadedIR, LoadLines),
+    format(atom(ValueLine),
+        '  %~w_v = call %Value @value_integer(i64 ~w)', [ArgBase, LoadedIR]),
+    format(atom(ArgValueIR), '%~w_v', [ArgBase]),
+    append(LoadLines, [ValueLine], SetupParts).
+plawk_foreign_arg_ir(field(FieldIndex), binfmt(Types), ArgBase, ArgValueIR,
+        [], SetupParts) :-
+    integer(FieldIndex),
+    FieldIndex >= 1,
+    plawk_binfmt_field_type(binfmt(Types), FieldIndex, blob(_Cap)),
+    !,
+    plawk_binfmt_field_offset(binfmt(Types), FieldIndex, Offset),
+    PayloadOffset is Offset + 8,
+    format(atom(SetupIR),
+'  %~w_lp = getelementptr i8, i8* %rec, i64 ~w
+  %~w_ltp = bitcast i8* %~w_lp to i64*
+  %~w_len = load i64, i64* %~w_ltp
+  %~w_ptr = getelementptr i8, i8* %rec, i64 ~w
+  %~w_id = call i64 @wam_transient_atom_from_bytes(i8* %~w_ptr, i64 %~w_len)
+  %~w_v0 = insertvalue %Value undef, i32 0, 0
+  %~w_v = insertvalue %Value %~w_v0, i64 %~w_id, 1',
+        [ArgBase, Offset,
+         ArgBase, ArgBase,
+         ArgBase, ArgBase,
+         ArgBase, PayloadOffset,
+         ArgBase, ArgBase, ArgBase,
+         ArgBase,
+         ArgBase, ArgBase, ArgBase]),
+    format(atom(ArgValueIR), '%~w_v', [ArgBase]),
+    SetupParts = [SetupIR].
 plawk_foreign_arg_ir(field(0), _FieldSeparator, ArgBase, ArgValueIR,
         [], SetupParts) :-
     !,
