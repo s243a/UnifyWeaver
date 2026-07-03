@@ -165,10 +165,15 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
    no interning) and marshals it as the transient atom, which the
    compiled predicate reads with `atom_codes/2` and parses with an
    ordinary WAM DCG — real choice points and all. i64 fields marshal
-   as WAM integers (a typed load, no text). Constraints: one blob
-   argument per call (one shared buffer), NUL-free payloads (the
-   transient atom is a C string), f64 marshaling and blob output are
-   later slices.
+   as WAM integers and f64 fields as WAM floats (typed loads, no text;
+   the f64 packs its bits under the Float tag via `@value_float`).
+   Double-returning calls (landed) are spelled `float(name(args))`:
+   the site calls a `{double, ok}` wrapper that accepts an Integer or
+   Float output and promotes via `@value_to_double`; a failed call
+   contributes 0.0, and the written scalar types as a double through
+   the ordinary slot-type fixpoint. Constraints: one blob argument per
+   call (one shared buffer), NUL-free payloads (the transient atom is
+   a C string), blob output is a later slice.
 
 ## Known design debt
 
