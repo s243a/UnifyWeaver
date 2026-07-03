@@ -89,6 +89,7 @@ swipl -q -s tests/test_plawk_float_slots.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/
 swipl -q -s tests/test_plawk_binfmt_strings.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_binary_writers.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_forin_writebin.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_outfmt_strings.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -295,9 +296,14 @@ stages. Group-by results can also leave as binary:
 `END { for (k in counts) writebin k, counts[k] }` walks the table and
 emits one record per group (raw i64 keys, table values, or literals;
 i64 values promote into f64 output slots) - binary input mode only,
-since text-mode keys are interned atom ids. Rejected: writebin without OUTFMT, argument/layout arity
-mismatch, `sN` output fields (later slice), and double expressions into
-i64 slots. A trailing partial record exits with the read
+since text-mode keys are interned atom ids. OUTFMT also takes `sN` string slots: sources are string
+literals that fit the width, `sM` binary input fields with `M <= N`
+(memcpy + zero-fill), or text-mode field slices clamped to the width
+(a missing field writes all zeros) - so text-to-binary converters
+carry names alongside numbers. Rejected: writebin without OUTFMT,
+argument/layout arity mismatch, oversized literals or source fields,
+numeric fields into string slots, and double expressions into i64
+slots. A trailing partial record exits with the read
 error code. Measured on 2M records: 0.040s for the binary program vs
 0.225s for mawk on the equivalent text (5.6x) and 0.156s for plawk's own
 text mode.

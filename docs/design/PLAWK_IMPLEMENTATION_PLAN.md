@@ -494,7 +494,11 @@ binary inputs, so plawk-to-plawk binary pipelines (converter |
 aggregator) run with no text serialization between stages. The END
 for-in loop composes with writebin: `for (k in counts) writebin k,
 counts[k]` iterates the group table and emits one binary record per
-group (binary input mode only -- text keys are atom ids). Remaining
+group (binary input mode only -- text keys are atom ids). OUTFMT
+accepts `sN` string slots: literals, `sM` input fields (`M <= N`), and
+text-mode slices clamped to the width lower to memset + memcpy against
+the record buffer, so string-carrying binary pipelines work in both
+directions. Remaining
 Phase 3 items below (DCG readers, richer ABIs) are unchanged.
 
 **Second slice landed (typed associative arrays):** in binary mode
