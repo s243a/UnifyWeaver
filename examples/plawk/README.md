@@ -319,7 +319,11 @@ every record starts with an 8-byte tag selecting an arm layout, and
 arms; the reader is a native tag switch dispatching per-arm field
 reads into one record buffer sized to the widest arm. Unknown tags
 and truncated arms exit with the read-error code; arms with no case
-block are still read and skipped, keeping the stream framed. (Assoc
+block are still read and skipped, keeping the stream framed. Rules may
+also lead with a tag guard instead: `TAG == 1 && $1 == "boom" { events++ }`
+is pure sugar for the same rule inside `case 1 { ... }` (identical IR);
+every rule must then lead with `TAG == K`, and tag tests under `||`/`!`
+or in non-leftmost position are rejected. (Assoc
 arrays and writebin inside case blocks are later slices.)
 `lpsN` also works in OUTFMT: writebin emits the
 8-byte length plus exactly the payload bytes (no padding), sourcing
