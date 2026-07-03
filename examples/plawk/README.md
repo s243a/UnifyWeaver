@@ -94,6 +94,7 @@ swipl -q -s tests/test_plawk_varlen_records.pl -g "setenv('UW_SMOKE_TMPDIR', '/m
 swipl -q -s tests/test_plawk_varlen_writers.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_tagged_unions.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_bounded_rep.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_rep_strings.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_tier2_blob.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
@@ -304,8 +305,12 @@ real runtime loop (loop-carried phis per scalar slot; the current
 element is staged into a hidden slot at the end of the record buffer
 so field accesses stay compile-time offsets), so code size is
 independent of the cap and rep64 costs the same IR as rep4. The wire
-read is one bulk count*elemsize read. Oversized counts and truncated element regions
-exit with the read-error code. Tagged unions let one stream carry several
+read is one bulk count*elemsize read for fixed-width elements; elements
+may also contain `lpsN` strings (`BINFMT = "i64 rep4(lps8 i64)"`), in
+which case the reader loops, parsing one variable-length element at a
+time into its fixed in-memory slot group, so `foreach` string guards
+and prints work unchanged. Oversized counts, oversized element strings,
+and truncated element regions exit with the read-error code. Tagged unions let one stream carry several
 record kinds: `BINFMT = "case(i64 f64 | lps16 i64)"` declares that
 every record starts with an 8-byte tag selecting an arm layout, and
 `case K { ... }` blocks hold ordinary pattern-action rules whose

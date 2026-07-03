@@ -631,6 +631,19 @@ carrying your counters around the loop in registers. Constant memory,
 and the code size does not depend on the cap — `rep64` compiles to
 the same loop as `rep4`.
 
+Elements can carry strings too. `BINFMT = "i64 rep4(lps8 i64)"`
+declares elements that each start with a length-prefixed name of up to
+8 bytes. On the wire every element can be a different size, so the
+reader parses them one at a time (each string lands in a fixed 8-byte
+slot, NUL-padded, exactly like a top-level `lps` field); inside
+`foreach`, string fields guard and print like any other:
+
+```awk
+BEGIN { BINFMT = "i64 rep4(lps8 i64)" }
+{ foreach { if ($1 == "hot") { hits++ }; total += $2 } }
+END { print hits, total }
+```
+
 ### Handing payloads to Prolog
 
 Everything so far was compiled to plain native code. But PLAWK lives
