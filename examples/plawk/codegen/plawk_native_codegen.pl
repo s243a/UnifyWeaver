@@ -168,14 +168,15 @@ plawk_program_native_driver_ir(
     InputPath,
     DriverIR
 ) :-
-    plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules, WritebinPlan),
+    plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules1, WritebinPlan),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    plawk_resolve_foreach_rules(FieldSeparator, Rules1, Rules),
     plawk_scalar_state_plan(Rules, PrintFields, StatePlan),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR0),
     plawk_writebin_entry_lines(WritebinPlan, WritebinEntryIR),
     plawk_join_nonempty_ir([BeginIR0, WritebinEntryIR], BeginIR),
-    plawk_record_descriptor(BeginClauses, FieldSeparator),
     plawk_record_program_ok(FieldSeparator, Rules, PrintFields),
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
     plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator,
@@ -1927,10 +1928,37 @@ plawk_union_arm_types(ArmStr, Types) :-
 plawk_begin_binfmt_types(BeginClauses, Types) :-
     member(begin(Actions), BeginClauses),
     member(set(var('BINFMT'), string(Fmt)), Actions),
-    split_string(Fmt, " ", " ", Parts0),
-    exclude(==(""), Parts0, Parts),
+    plawk_binfmt_tokens(Fmt, Parts),
     Parts \== [],
     maplist(plawk_binfmt_type, Parts, Types).
+
+%% plawk_binfmt_tokens(+Fmt, -Parts)
+%
+%  Space-split, but a token containing "(" absorbs following tokens
+%  until its ")" closes, so "i64 rep4(i64 f64)" tokenizes as
+%  ["i64", "rep4(i64 f64)"].
+plawk_binfmt_tokens(Fmt, Parts) :-
+    split_string(Fmt, " ", " ", Parts0),
+    exclude(==(""), Parts0, Parts1),
+    plawk_binfmt_join_parens(Parts1, Parts).
+
+plawk_binfmt_join_parens([], []).
+plawk_binfmt_join_parens([Part | Rest], [Joined | Parts]) :-
+    sub_string(Part, _, _, _, "("),
+    \+ sub_string(Part, _, _, _, ")"),
+    !,
+    plawk_binfmt_take_until_close(Rest, Taken, Remaining),
+    atomic_list_concat([Part | Taken], ' ', JoinedAtom),
+    atom_string(JoinedAtom, Joined),
+    plawk_binfmt_join_parens(Remaining, Parts).
+plawk_binfmt_join_parens([Part | Rest], [Part | Parts]) :-
+    plawk_binfmt_join_parens(Rest, Parts).
+
+plawk_binfmt_take_until_close([Part | Rest], [Part], Rest) :-
+    sub_string(Part, _, _, _, ")"),
+    !.
+plawk_binfmt_take_until_close([Part | Rest], [Part | Taken], Remaining) :-
+    plawk_binfmt_take_until_close(Rest, Taken, Remaining).
 
 plawk_binfmt_type("i64", i64).
 plawk_binfmt_type("f64", f64).
@@ -1943,6 +1971,29 @@ plawk_binfmt_type(Part, lps(Cap)) :-
     number_string(Cap, CapStr),
     integer(Cap),
     Cap > 0.
+% repK(elem types): bounded repetition -- an 8-byte native-endian
+% element count C (0 <= C <= K), then C elements each laid out per the
+% parenthesized fixed-width types. Access layout: the count as an i64
+% field, then K flattened element field groups (zero-filled past C).
+plawk_binfmt_type(Part, rep(Cap, ElemTypes)) :-
+    string_concat("rep", Rest0, Part),
+    sub_string(Rest0, Before, 1, _, "("),
+    !,
+    sub_string(Rest0, 0, Before, _, CapStr),
+    number_string(Cap, CapStr),
+    integer(Cap),
+    Cap > 0,
+    Skip is Before + 1,
+    sub_string(Rest0, Skip, _, 0, Rest1),
+    string_concat(Body, ")", Rest1),
+    split_string(Body, " ", " ", ElemParts0),
+    exclude(==(""), ElemParts0, ElemParts),
+    ElemParts \== [],
+    maplist(plawk_binfmt_type, ElemParts, ElemTypes),
+    % elements must be fixed-width (no nested lps/rep) so the element
+    % region is one bulk read and one flat access layout
+    forall(member(ElemType, ElemTypes),
+        ( memberchk(ElemType, [i64, f64]) ; ElemType = s(_) )).
 % sN: a fixed-width string field of N bytes. Values shorter than N are
 % NUL-terminated inside the field; a full-width value has no NUL.
 plawk_binfmt_type(Part, s(Width)) :-
@@ -1960,30 +2011,57 @@ plawk_binfmt_type(Part, s(Width)) :-
 plawk_binfmt_field_type(binfmt(Types), Index, Type) :-
     integer(Index),
     Index >= 1,
-    nth1(Index, Types, StoredType),
-    plawk_binfmt_access_type(StoredType, Type).
+    plawk_binfmt_access_types(Types, AccessTypes),
+    nth1(Index, AccessTypes, Type).
 
 plawk_binfmt_access_type(lps(Cap), s(Cap)) :- !.
 plawk_binfmt_access_type(Type, Type).
+
+%% plawk_binfmt_access_types(+StoredTypes, -AccessTypes)
+%
+%  Expand stored types into the flat per-field access list: a
+%  rep(K, Elems) contributes its i64 count field followed by K copies
+%  of the element fields; everything else is one field.
+plawk_binfmt_access_types([], []).
+plawk_binfmt_access_types([rep(Cap, ElemTypes) | Rest], AccessTypes) :-
+    !,
+    maplist(plawk_binfmt_access_type, ElemTypes, ElemAccess),
+    findall(ElemField,
+        ( between(1, Cap, _), member(ElemField, ElemAccess) ),
+        Repeated),
+    plawk_binfmt_access_types(Rest, RestAccess),
+    append([i64 | Repeated], RestAccess, AccessTypes).
+plawk_binfmt_access_types([StoredType | Rest], [Type | RestAccess]) :-
+    plawk_binfmt_access_type(StoredType, Type),
+    plawk_binfmt_access_types(Rest, RestAccess).
 
 plawk_binfmt_type_width(i64, 8).
 plawk_binfmt_type_width(f64, 8).
 plawk_binfmt_type_width(s(Width), Width).
 % in-memory width of the materialized slot, not the wire size
 plawk_binfmt_type_width(lps(Cap), Cap).
+plawk_binfmt_type_width(rep(Cap, ElemTypes), Width) :-
+    maplist(plawk_binfmt_type_width, ElemTypes, ElemWidths),
+    sum_list(ElemWidths, ElemSize),
+    Width is 8 + Cap * ElemSize.
 
 plawk_binfmt_has_varlen(Types) :-
-    memberchk(lps(_Cap), Types).
+    ( memberchk(lps(_Cap), Types)
+    ; memberchk(rep(_K, _Elems), Types)
+    ),
+    !.
 
 plawk_binfmt_field_offset(binfmt(Types), Index, Offset) :-
+    plawk_binfmt_access_types(Types, AccessTypes),
     PrefixLen is Index - 1,
     length(PrefixTypes, PrefixLen),
-    append(PrefixTypes, _, Types),
+    append(PrefixTypes, _, AccessTypes),
     maplist(plawk_binfmt_type_width, PrefixTypes, Widths),
     sum_list(Widths, Offset).
 
 plawk_binfmt_record_size(binfmt(Types), Size) :-
-    maplist(plawk_binfmt_type_width, Types, Widths),
+    plawk_binfmt_access_types(Types, AccessTypes),
+    maplist(plawk_binfmt_type_width, AccessTypes, Widths),
     sum_list(Widths, Size).
 
 %% plawk_resolve_writebin_rules(+BeginClauses, +Rules0, -Rules, -WritebinPlan)
@@ -2416,6 +2494,134 @@ plawk_rule_descriptor(arm_pat(_Tag, ArmTypes, _Pattern), _Default,
     !.
 plawk_rule_descriptor(_Pattern, Default, Default).
 
+%% plawk_resolve_foreach_rules(+Descriptor, +Rules0, -Rules)
+%
+%  foreach { actions } iterates the record's repetition elements:
+%  inside the block, $1..$M are the CURRENT ELEMENT's fields. Because
+%  the element count is capped at compile time, the block unrolls into
+%  Cap guarded ifs -- if (count >= j) { actions with fields shifted to
+%  element j's flat slots } -- reusing the existing if machinery, so no
+%  new loop/phi mechanics exist at the IR level. Requires a binfmt
+%  layout with exactly one rep field; fails (rejecting the program)
+%  otherwise, on nested foreach, or on $F beyond the element arity.
+plawk_resolve_foreach_rules(Descriptor, Rules0, Rules) :-
+    ( plawk_rules_have_foreach(Rules0)
+    ->  Descriptor = binfmt(Types),
+        plawk_binfmt_rep_info(Types, CountIndex, Cap, ElemArity),
+        maplist(plawk_resolve_foreach_rule(CountIndex, Cap, ElemArity),
+            Rules0, Rules)
+    ;   Rules = Rules0
+    ).
+
+plawk_rules_have_foreach(Rules) :-
+    member(rule(_Pattern, Actions), Rules),
+    plawk_actions_have_foreach(Actions),
+    !.
+
+plawk_actions_have_foreach(Actions) :-
+    member(Action, Actions),
+    ( Action = foreach(_Body)
+    ; Action = if(_Pattern, ThenActions, ElseActions),
+      ( plawk_actions_have_foreach(ThenActions)
+      ; plawk_actions_have_foreach(ElseActions)
+      )
+    ),
+    !.
+
+plawk_binfmt_rep_info(Types, CountIndex, Cap, ElemArity) :-
+    findall(StoredIndex-rep(K, Elems),
+        nth1(StoredIndex, Types, rep(K, Elems)),
+        [RepStoredIndex-rep(Cap, ElemTypes)]),
+    length(ElemTypes, ElemArity),
+    PrefixLen is RepStoredIndex - 1,
+    length(PrefixTypes, PrefixLen),
+    append(PrefixTypes, _, Types),
+    plawk_binfmt_access_types(PrefixTypes, PrefixAccess),
+    length(PrefixAccess, PrefixCount),
+    CountIndex is PrefixCount + 1.
+
+plawk_resolve_foreach_rule(CountIndex, Cap, ElemArity,
+        rule(Pattern, Actions0), rule(Pattern, Actions)) :-
+    plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity,
+        Actions0, Actions).
+
+plawk_resolve_foreach_actions(_CountIndex, _Cap, _ElemArity, [], []).
+plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity,
+        [foreach(Body) | Rest0], Actions) :-
+    !,
+    \+ plawk_actions_have_foreach(Body),
+    plawk_foreach_body_fields_ok(Body, ElemArity),
+    findall(if(field_cmp(CountIndex, ge, ElemIndex), ShiftedBody, []),
+        ( between(1, Cap, ElemIndex),
+          Base is CountIndex + (ElemIndex - 1) * ElemArity,
+          plawk_foreach_shift_actions(Body, Base, ShiftedBody)
+        ),
+        Unrolled),
+    plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity, Rest0, Rest),
+    append(Unrolled, Rest, Actions).
+plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity,
+        [if(Pattern, Then0, Else0) | Rest0], [if(Pattern, Then, Else) | Rest]) :-
+    !,
+    plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity, Then0, Then),
+    plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity, Else0, Else),
+    plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity, Rest0, Rest).
+plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity,
+        [Action | Rest0], [Action | Rest]) :-
+    plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity, Rest0, Rest).
+
+plawk_foreach_body_fields_ok(Body, ElemArity) :-
+    forall(( sub_term(Sub, Body),
+             plawk_foreach_field_ref(Sub, F),
+             integer(F)
+           ),
+        ( F >= 1, F =< ElemArity )).
+
+% every AST shape that carries a field index, whether wrapped in
+% field/1 or stored raw (guard patterns)
+plawk_foreach_field_ref(field(F), F).
+plawk_foreach_field_ref(float_field(F), F).
+plawk_foreach_field_ref(field_cmp(F, _Op, _Value), F).
+plawk_foreach_field_ref(field_eq(F, _Value), F).
+plawk_foreach_field_ref(field_match(F, _Regex), F).
+
+plawk_foreach_shift_actions(Actions, Base, Shifted) :-
+    maplist(plawk_foreach_shift_term(Base), Actions, Shifted).
+
+plawk_foreach_shift_term(Base, field(F), field(Shifted)) :-
+    integer(F),
+    F >= 1,
+    !,
+    Shifted is Base + F.
+plawk_foreach_shift_term(Base, float_field(F), float_field(Shifted)) :-
+    integer(F),
+    F >= 1,
+    !,
+    Shifted is Base + F.
+% guard patterns carry the field index raw, so the generic walk would
+% miss it (and must not touch the comparison value)
+plawk_foreach_shift_term(Base, field_cmp(F, Op, Value), field_cmp(Shifted, Op, Value)) :-
+    integer(F),
+    F >= 1,
+    !,
+    Shifted is Base + F.
+plawk_foreach_shift_term(Base, field_eq(F, Value), field_eq(Shifted, Value)) :-
+    integer(F),
+    F >= 1,
+    !,
+    Shifted is Base + F.
+plawk_foreach_shift_term(Base, field_match(F, Regex), field_match(Shifted, Regex)) :-
+    integer(F),
+    F >= 1,
+    !,
+    Shifted is Base + F.
+plawk_foreach_shift_term(Base, Term, Shifted) :-
+    compound(Term),
+    !,
+    Term =.. [Functor | Args],
+    maplist(plawk_foreach_shift_term(Base), Args, ShiftedArgs),
+    Shifted =.. [Functor | ShiftedArgs].
+plawk_foreach_shift_term(_Base, Term, Term).
+
 %% plawk_union_flatten_rules(+CaseBlocks, +Arms, -Rules)
 %
 %  Flatten case blocks into one rule chain, stamping each rule with
@@ -2587,6 +2793,49 @@ plawk_varlen_field_sections([Type | Types], LoweredLabel, Prefix, EofPolicy,
     plawk_varlen_field_sections(Types, LoweredLabel, Prefix, EofPolicy,
         NextIndex, NextOffset, Sections).
 
+plawk_varlen_field_body(rep(Cap, ElemTypes), FBase, FieldEof, Offset, NextLabel, BodyIR) :-
+    !,
+    maplist(plawk_binfmt_type_width, ElemTypes, ElemWidths),
+    sum_list(ElemWidths, ElemSize),
+    RegionSize is Cap * ElemSize,
+    ElemOffset is Offset + 8,
+    plawk_varlen_eof_check_ir(FieldEof, FBase, cstatus, BodyPrefixIR),
+    format(atom(BodyIR),
+'  %~w_dst = getelementptr i8, i8* %rec, i64 ~w
+  %~w_cstatus = call i64 @wam_stream_read_record(%Value %handle, i64 8, i8* %~w_dst)
+~w  %~w_cok = icmp eq i64 %~w_cstatus, 1
+  br i1 %~w_cok, label %~w_len, label %fail_read
+
+~w_len:
+  %~w_ctp = bitcast i8* %~w_dst to i64*
+  %~w_n = load i64, i64* %~w_ctp
+  %~w_fits = icmp ule i64 %~w_n, ~w
+  br i1 %~w_fits, label %~w_read, label %fail_read
+
+~w_read:
+  %~w_edst = getelementptr i8, i8* %rec, i64 ~w
+  call void @llvm.memset.p0i8.i64(i8* %~w_edst, i8 0, i64 ~w, i1 false)
+  %~w_bytes = mul i64 %~w_n, ~w
+  %~w_pstatus = call i64 @wam_stream_read_record(%Value %handle, i64 %~w_bytes, i8* %~w_edst)
+  %~w_pok = icmp eq i64 %~w_pstatus, 1
+  br i1 %~w_pok, label %~w, label %fail_read
+',
+        [FBase, Offset,
+         FBase, FBase,
+         BodyPrefixIR, FBase, FBase,
+         FBase, FBase,
+         FBase,
+         FBase, FBase,
+         FBase, FBase,
+         FBase, FBase, Cap,
+         FBase, FBase,
+         FBase,
+         FBase, ElemOffset,
+         FBase, RegionSize,
+         FBase, FBase, ElemSize,
+         FBase, FBase, FBase,
+         FBase, FBase,
+         FBase, NextLabel]).
 plawk_varlen_field_body(lps(Cap), FBase, FieldEof, Offset, NextLabel, BodyIR) :-
     !,
     plawk_varlen_eof_check_ir(FieldEof, FBase, lstatus, BodyPrefixIR),

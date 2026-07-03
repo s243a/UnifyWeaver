@@ -538,6 +538,9 @@ action(Action) -->
     writebin_action(Action),
     !.
 action(Action) -->
+    foreach_action(Action),
+    !.
+action(Action) -->
     print_action(Action),
     !.
 action(Action) -->
@@ -698,6 +701,16 @@ printf_action(printf(string(Format), Args)) -->
     quoted_string(FormatCodes),
     printf_args(Args),
     { string_codes(Format, FormatCodes) }.
+
+%% foreach_action(-Action)//
+%
+%  foreach { actions } - run the block once per repetition element of
+%  the current record; inside, $1..$M are the element's fields.
+foreach_action(foreach(Actions)) -->
+    "foreach",
+    identifier_boundary,
+    ws,
+    action_block(Actions).
 
 %% writebin_action(-Action)//
 %

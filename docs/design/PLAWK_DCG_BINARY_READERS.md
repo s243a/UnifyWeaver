@@ -37,7 +37,7 @@ handles) maps to an **access type** (what consumers see):
 | `sN` | N | `sN` | N bytes |
 | `lpsN` (landed) | 8 + len, len ≤ N | `sN` | N bytes, NUL-padded |
 | tagged union (landed) | 8-byte tag + arm | per-arm `$1..$N` via `case` blocks | widest arm (tag in SSA only) |
-| bounded repetition (planned) | 8-byte count + count×elem, count ≤ K | count `i64` + K elems | count slot + K elem slots |
+| bounded repetition (landed) | 8-byte count + count×elem, count ≤ K | count `i64` + K flat elem fields; `foreach` | count slot + K elem slots, zeroed past count |
 
 ## The lowering spectrum
 
@@ -125,9 +125,17 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
    framed. The tag-guard spelling (`$0 == K && ...`) can later be
    accepted as sugar that desugars into a case block. Not yet inside
    case blocks: assoc arrays, writebin, and union output.
-2. **Bounded repetition:** `count` header + up to K fixed elements;
-   access layout is a count slot plus K element slots; `for` over
-   elements in rule bodies is the surface question.
+2. **Bounded repetition (landed):** `repK(elem types)` — an 8-byte
+   count (≤ K) then that many fixed-width elements, read as one bulk
+   count×elemsize read after a memset of the element region (element
+   slots past the count are deterministic zeros). Access layout
+   flattens: the count is an i64 field and each element's fields are
+   plain record fields. The surface answer to "for over elements" is
+   `foreach { actions }`: inside the block `$1..$M` are the current
+   element's fields, and the block unrolls at compile time into K
+   count-guarded ifs (`count >= j`), reusing the existing if/join-phi
+   machinery — no loop-carried phis were added. One rep per layout,
+   fixed-width elements only, no nesting; those are later extensions.
 3. **Varlen writers (landed):** `lpsN` in OUTFMT emits the 8-byte
    length plus exactly the payload bytes, sourced from literals,
    `sM`/`lpsM` input fields (`M ≤ cap`), or text-mode slices clamped to
