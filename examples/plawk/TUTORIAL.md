@@ -662,6 +662,10 @@ BEGIN { BINFMT = "i64 rep4(lps8 i64)" }
 END { print hits, total }
 ```
 
+Repetition also composes with tagged unions: an arm of a `case(...)`
+layout may carry its own `repK(...)`, and `foreach` inside that arm's
+rules (block or `TAG == K` spelling) iterates that arm's elements.
+
 ### Handing payloads to Prolog
 
 Everything so far was compiled to plain native code. But PLAWK lives
