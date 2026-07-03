@@ -673,6 +673,25 @@ plawk_state_slot_index(StatePlan, Slot, Index) :-
     plawk_state_plan_slots(StatePlan, Slots),
     nth0(Index, Slots, Slot).
 
+% Scalar slots are typed: scalar_counter(Name) accumulates in an i64
+% register chain, scalar_double(Name) in a double chain. The type is
+% inferred from the program (see plawk_scalar_typed_slots/3), never
+% declared, matching awk's untyped surface.
+plawk_slot_name(scalar_counter(Name), Name).
+plawk_slot_name(scalar_double(Name), Name).
+
+plawk_slot_llvm_type(scalar_counter(_Name), i64).
+plawk_slot_llvm_type(scalar_double(_Name), double).
+
+plawk_slot_zero_ir(scalar_counter(_Name), '0').
+plawk_slot_zero_ir(scalar_double(_Name), '0.0').
+
+plawk_state_slot_lookup(StatePlan, Name, Index, Slot) :-
+    plawk_state_plan_slots(StatePlan, Slots),
+    nth0(Index, Slots, Slot),
+    plawk_slot_name(Slot, Name),
+    !.
+
 plawk_trim_control_tails([], []).
 plawk_trim_control_tails([next | _Rest], [next]) :-
     !.
@@ -770,7 +789,7 @@ plawk_break_close_ir(StatePlan, _RuleCount, _Controls, _BranchControlExits, _Bre
     ).
 plawk_break_slot_phi_lines([], _RuleCount, _Controls, _BranchControlExits, _BreakPredKind, _) -->
     [].
-plawk_break_slot_phi_lines([_Slot | Rest], RuleCount, Controls, BranchControlExits, BreakPredKind, SlotIndex) -->
+plawk_break_slot_phi_lines([Slot | Rest], RuleCount, Controls, BranchControlExits, BreakPredKind, SlotIndex) -->
     { LastRuleIndex is RuleCount - 1,
       findall(Incoming,
           ( between(0, LastRuleIndex, RuleIndex),
@@ -784,7 +803,8 @@ plawk_break_slot_phi_lines([_Slot | Rest], RuleCount, Controls, BranchControlExi
       append(RuleIncomings, BranchIncomings, Incomings),
       Incomings \== [],
       atomic_list_concat(Incomings, ', ', IncomingIR),
-      format(atom(Line), '  %break_slot_~w = phi i64 ~w', [SlotIndex, IncomingIR]),
+      plawk_slot_llvm_type(Slot, Type),
+      format(atom(Line), '  %break_slot_~w = phi ~w ~w', [SlotIndex, Type, IncomingIR]),
       NextSlotIndex is SlotIndex + 1
     },
     [Line],
@@ -806,7 +826,7 @@ plawk_break_predecessor_label(done, RuleIndex, Label) :-
 
 plawk_final_state_phi_lines([], _HasBreak, _) -->
     [].
-plawk_final_state_phi_lines([_Slot | Rest], HasBreak, SlotIndex) -->
+plawk_final_state_phi_lines([Slot | Rest], HasBreak, SlotIndex) -->
     { format(atom(EofIncoming), '[%slot_~w, %close_stream]', [SlotIndex]),
       ( HasBreak == true
       -> format(atom(BreakIncoming), '[%break_slot_~w, %break_close_stream]', [SlotIndex]),
@@ -814,7 +834,8 @@ plawk_final_state_phi_lines([_Slot | Rest], HasBreak, SlotIndex) -->
       ;  Incomings = [EofIncoming]
       ),
       atomic_list_concat(Incomings, ', ', IncomingIR),
-      format(atom(Line), '  %final_slot_~w = phi i64 ~w', [SlotIndex, IncomingIR]),
+      plawk_slot_llvm_type(Slot, Type),
+      format(atom(Line), '  %final_slot_~w = phi ~w ~w', [SlotIndex, Type, IncomingIR]),
       NextSlotIndex is SlotIndex + 1
     },
     [Line],
@@ -844,9 +865,60 @@ plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
         PrintVars),
     append(ActionVars, PrintVars, Names0),
     sort(Names0, Names),
-    maplist(plawk_scalar_state_slot, Names, Slots).
+    plawk_scalar_typed_slots(Rules, Names, Slots).
 
-plawk_scalar_state_slot(Name, scalar_counter(Name)).
+%% plawk_scalar_typed_slots(+Rules, +Names, -Slots)
+%
+%  Fixpoint type inference: a scalar is double when any update assigns
+%  it a double-typed expression (float literal or float($N) leaf) or
+%  reads an already-double scalar; everything else stays i64. i64
+%  reads inside a double update promote via sitofp at emission.
+plawk_scalar_typed_slots(Rules, Names, Slots) :-
+    findall(Name-Expr,
+        ( member(rule(_Pattern, Actions0), Rules),
+          plawk_trim_control_tails(Actions0, Actions),
+          member(Action, Actions),
+          plawk_scalar_update_name_expr(Action, Name, Expr)
+        ),
+        Updates),
+    plawk_scalar_double_fixpoint(Updates, [], Doubles),
+    maplist(plawk_scalar_typed_slot(Doubles), Names, Slots).
+
+plawk_scalar_update_name_expr(Action, Name, Expr) :-
+    plawk_scalar_action_update(Action, Name, Operation),
+    plawk_scalar_operation_expr(Operation, Expr).
+plawk_scalar_update_name_expr(if(_Pattern, ThenActions, ElseActions), Name, Expr) :-
+    ( member(Action, ThenActions)
+    ; member(Action, ElseActions)
+    ),
+    plawk_scalar_update_name_expr(Action, Name, Expr).
+
+plawk_scalar_double_fixpoint(Updates, Doubles0, Doubles) :-
+    findall(Name,
+        ( member(Name-Expr, Updates),
+          \+ memberchk(Name, Doubles0),
+          plawk_update_expr_is_double(Expr, Doubles0)
+        ),
+        New0),
+    sort(New0, New),
+    ( New == []
+    -> Doubles = Doubles0
+    ;  append(Doubles0, New, Doubles1),
+       plawk_scalar_double_fixpoint(Updates, Doubles1, Doubles)
+    ).
+
+plawk_update_expr_is_double(Expr, _Doubles) :-
+    plawk_expr_is_double(Expr),
+    !.
+plawk_update_expr_is_double(Expr, Doubles) :-
+    plawk_expr_scalar_read_name(Expr, Name),
+    memberchk(Name, Doubles),
+    !.
+
+plawk_scalar_typed_slot(Doubles, Name, scalar_double(Name)) :-
+    memberchk(Name, Doubles),
+    !.
+plawk_scalar_typed_slot(_Doubles, Name, scalar_counter(Name)).
 
 plawk_mixed_state_plan(Rules, PrintFields, mixed_plan(ScalarPlan, AssocPlan, PlannedRules)) :-
     plawk_mixed_scalar_state_plan(Rules, PrintFields, ScalarPlan),
@@ -873,7 +945,7 @@ plawk_mixed_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
         PrintVars),
     append(ActionVars, PrintVars, Names0),
     sort(Names0, Names),
-    maplist(plawk_scalar_state_slot, Names, Slots).
+    plawk_scalar_typed_slots(Rules, Names, Slots).
 
 plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, [])) :-
     findall(ArrayName,
@@ -1118,7 +1190,7 @@ plawk_mixed_scalar_rule_input_phi_ir(StatePlan, RuleIndex, Controls, IR) :-
 
 plawk_mixed_scalar_rule_input_phi_lines([], _RuleIndex, _Controls, _) -->
     [].
-plawk_mixed_scalar_rule_input_phi_lines([_Slot | Rest], RuleIndex, Controls, SlotIndex) -->
+plawk_mixed_scalar_rule_input_phi_lines([Slot | Rest], RuleIndex, Controls, SlotIndex) -->
     { PrevRuleIndex is RuleIndex - 1,
       plawk_scalar_rule_input_value(PrevRuleIndex, SlotIndex, PrevFalseValue),
       format(atom(FalseIncoming), '[~w, %rule_~w_match]',
@@ -1130,8 +1202,9 @@ plawk_mixed_scalar_rule_input_phi_lines([_Slot | Rest], RuleIndex, Controls, Slo
           Incomings = [FalseIncoming, ApplyIncoming]
       ),
       atomic_list_concat(Incomings, ', ', IncomingIR),
-      format(atom(Line), '  %rule_~w_in_slot_~w = phi i64 ~w',
-          [RuleIndex, SlotIndex, IncomingIR]),
+      plawk_slot_llvm_type(Slot, Type),
+      format(atom(Line), '  %rule_~w_in_slot_~w = phi ~w ~w',
+          [RuleIndex, SlotIndex, Type, IncomingIR]),
       NextSlotIndex is SlotIndex + 1
     },
     [Line],
@@ -1144,7 +1217,7 @@ plawk_mixed_scalar_next_phi_ir(StatePlan, RuleCount, Controls, BranchNextExits, 
 
 plawk_mixed_scalar_next_phi_lines([], _RuleCount, _Controls, _BranchNextExits, _) -->
     [].
-plawk_mixed_scalar_next_phi_lines([_Slot | Rest], RuleCount, Controls, BranchNextExits, Index) -->
+plawk_mixed_scalar_next_phi_lines([Slot | Rest], RuleCount, Controls, BranchNextExits, Index) -->
     { LastRuleIndex is RuleCount - 1,
       plawk_scalar_rule_input_value(LastRuleIndex, Index, FalseValue),
       format(atom(FalseIncoming), '[~w, %rule_~w_match]',
@@ -1163,7 +1236,8 @@ plawk_mixed_scalar_next_phi_lines([_Slot | Rest], RuleCount, Controls, BranchNex
       plawk_branch_next_phi_incomings(BranchNextExits, Index, BranchNextIncomings),
       append([FalseIncoming | ApplyIncomings], BranchNextIncomings, Incomings),
       atomic_list_concat(Incomings, ', ', IncomingIR),
-      format(atom(Line), '  %next_slot_~w = phi i64 ~w', [Index, IncomingIR]),
+      plawk_slot_llvm_type(Slot, Type),
+      format(atom(Line), '  %next_slot_~w = phi ~w ~w', [Index, Type, IncomingIR]),
       NextIndex is Index + 1
     },
     [Line],
@@ -1447,10 +1521,16 @@ plawk_binfmt_action_ok(Descriptor, inc(var(_Name))) :- !,
     Descriptor = binfmt(_).
 plawk_binfmt_action_ok(Descriptor, add(var(_Name), Expr)) :-
     !,
-    plawk_binfmt_i64_expr_ok(Descriptor, Expr).
+    ( plawk_expr_is_double(Expr)
+    -> plawk_binfmt_f64_expr_ok(Descriptor, Expr)
+    ;  plawk_binfmt_i64_expr_ok(Descriptor, Expr)
+    ).
 plawk_binfmt_action_ok(Descriptor, set(var(_Name), Expr)) :-
     !,
-    plawk_binfmt_i64_expr_ok(Descriptor, Expr).
+    ( plawk_expr_is_double(Expr)
+    -> plawk_binfmt_f64_expr_ok(Descriptor, Expr)
+    ;  plawk_binfmt_i64_expr_ok(Descriptor, Expr)
+    ).
 plawk_binfmt_action_ok(Descriptor, print(Fields)) :-
     !,
     forall(member(Field, Fields),
@@ -1940,7 +2020,7 @@ plawk_scalar_rule_input_phi_ir(StatePlan, RuleIndex, Controls, IR) :-
 
 plawk_scalar_rule_input_phi_lines([], _RuleIndex, _Controls, _) -->
     [].
-plawk_scalar_rule_input_phi_lines([_Name | Rest], RuleIndex, Controls, SlotIndex) -->
+plawk_scalar_rule_input_phi_lines([Slot | Rest], RuleIndex, Controls, SlotIndex) -->
     { PrevRuleIndex is RuleIndex - 1,
       plawk_scalar_rule_input_value(PrevRuleIndex, SlotIndex, PrevFalseValue),
       format(atom(FalseIncoming), '[~w, %rule_~w_match]',
@@ -1952,8 +2032,9 @@ plawk_scalar_rule_input_phi_lines([_Name | Rest], RuleIndex, Controls, SlotIndex
           Incomings = [FalseIncoming, ApplyIncoming]
       ),
       atomic_list_concat(Incomings, ', ', IncomingIR),
-      format(atom(Line), '  %rule_~w_in_slot_~w = phi i64 ~w',
-          [RuleIndex, SlotIndex, IncomingIR]),
+      plawk_slot_llvm_type(Slot, Type),
+      format(atom(Line), '  %rule_~w_in_slot_~w = phi ~w ~w',
+          [RuleIndex, SlotIndex, Type, IncomingIR]),
       NextSlotIndex is SlotIndex + 1
     },
     [Line],
@@ -1982,10 +2063,12 @@ plawk_state_loop_phi_ir(StatePlan, IR) :-
 
 plawk_scalar_loop_phi_lines([], _) -->
     [].
-plawk_scalar_loop_phi_lines([_Slot | Rest], Index) -->
-    { format(atom(Line),
-          '  %slot_~w = phi i64 [0, %check_handle_value], [%next_slot_~w, %continue_loop]',
-          [Index, Index]),
+plawk_scalar_loop_phi_lines([Slot | Rest], Index) -->
+    { plawk_slot_llvm_type(Slot, Type),
+      plawk_slot_zero_ir(Slot, Zero),
+      format(atom(Line),
+          '  %slot_~w = phi ~w [~w, %check_handle_value], [%next_slot_~w, %continue_loop]',
+          [Index, Type, Zero, Index]),
       NextIndex is Index + 1
     },
     [Line],
@@ -2000,7 +2083,7 @@ plawk_native_match_update_ir(StatePlan, AssocPlan, Actions, FieldSeparator, Outp
     format(atom(Prefix), 'rule_~w_body', [RuleIndex]),
     phrase(plawk_scalar_action_sequence_pairs(Actions, Slots, AssocPlan, FieldSeparator, OutputSeparator,
         Prefix, Prefix, RuleIndex, 0, InitialValues, FinalValues, _NextOpIndex, _ExitLabel, NextExits), Pairs0),
-    phrase(plawk_scalar_final_slot_pairs(FinalValues, RuleIndex, 0), FinalPairs),
+    phrase(plawk_scalar_final_slot_pairs(FinalValues, Slots, RuleIndex, 0), FinalPairs),
     append(Pairs0, FinalPairs, Pairs),
     pairs_keys_values(Pairs, GlobalParts, LineParts),
     atomic_list_concat(GlobalParts, '\n', GlobalIR),
@@ -2015,15 +2098,21 @@ plawk_scalar_initial_slot_values(RuleIndex, [_Slot | Rest], SlotIndex) -->
     [Value],
     plawk_scalar_initial_slot_values(RuleIndex, Rest, NextIndex).
 
-plawk_scalar_final_slot_pairs([], _RuleIndex, _) -->
+plawk_scalar_final_slot_pairs([], _Slots, _RuleIndex, _) -->
     [].
-plawk_scalar_final_slot_pairs([Value | Rest], RuleIndex, SlotIndex) -->
-    { format(atom(Line), '  %rule_~w_slot_~w = add i64 ~w, 0',
-          [RuleIndex, SlotIndex, Value]),
+plawk_scalar_final_slot_pairs([Value | Rest], [Slot | Slots], RuleIndex, SlotIndex) -->
+    { % SSA copy idiom: x + 0 for i64, -0.0 + x for double (IEEE identity
+      % that preserves the sign of zero, unlike x + 0.0).
+      ( Slot = scalar_double(_Name)
+      -> format(atom(Line), '  %rule_~w_slot_~w = fadd double -0.0, ~w',
+             [RuleIndex, SlotIndex, Value])
+      ;  format(atom(Line), '  %rule_~w_slot_~w = add i64 ~w, 0',
+             [RuleIndex, SlotIndex, Value])
+      ),
       NextSlotIndex is SlotIndex + 1
     },
     [''-Line],
-    plawk_scalar_final_slot_pairs(Rest, RuleIndex, NextSlotIndex).
+    plawk_scalar_final_slot_pairs(Rest, Slots, RuleIndex, NextSlotIndex).
 
 plawk_scalar_update_action(Action) :-
     plawk_scalar_action_update(Action, _Name, _Operation).
@@ -2159,10 +2248,16 @@ plawk_substitute_operation_reads(set(Expr0), Slots, Values, set(Expr)) :-
     plawk_substitute_scalar_reads(Expr0, Slots, Values, Expr).
 plawk_substitute_operation_reads(Operation, _Slots, _Values, Operation).
 
-plawk_substitute_scalar_reads(var(Name), Slots, Values, ssa(Value)) :-
+plawk_substitute_scalar_reads(var(Name), Slots, Values, Substituted) :-
     !,
-    nth0(SlotIndex, Slots, scalar_counter(Name)),
-    nth0(SlotIndex, Values, Value).
+    nth0(SlotIndex, Slots, Slot),
+    plawk_slot_name(Slot, Name),
+    !,
+    nth0(SlotIndex, Values, Value),
+    ( Slot = scalar_double(_Name)
+    -> Substituted = ssa_f64(Value)
+    ;  Substituted = ssa(Value)
+    ).
 plawk_substitute_scalar_reads(Expr0, Slots, Values, Expr) :-
     plawk_i64_binary_expr(Expr0, _LLVMOp, _NamePart, Left0, Right0),
     !,
@@ -2282,6 +2377,33 @@ plawk_scalar_action_update(set(var(Name), var(Read)), Name, set(var(Read))) :-
 plawk_scalar_action_update(set(var(Name), prolog_call(Pred, Args)), Name,
         set(prolog_call(Pred, Args))) :-
     plawk_prolog_call_expr(prolog_call(Pred, Args)).
+% Double-typed update expressions: float literals, float($N), and
+% binary trees mixing them with i64 operands or scalar reads. The
+% written slot becomes a double via plawk_scalar_typed_slots/3.
+plawk_scalar_action_update(add(var(Name), Expr), Name, add(Expr)) :-
+    plawk_f64_scalar_update_expr(Expr).
+plawk_scalar_action_update(set(var(Name), Expr), Name, set(Expr)) :-
+    plawk_f64_scalar_update_expr(Expr).
+
+plawk_f64_scalar_update_expr(Expr) :-
+    plawk_expr_is_double(Expr),
+    plawk_f64_scalar_read_operand_expr(Expr).
+
+plawk_f64_scalar_read_operand_expr(var(Name)) :-
+    atom(Name).
+plawk_f64_scalar_read_operand_expr(float_const(Mantissa, Denominator)) :-
+    integer(Mantissa),
+    integer(Denominator),
+    Denominator > 0.
+plawk_f64_scalar_read_operand_expr(float_field(Index)) :-
+    integer(Index),
+    Index >= 0.
+plawk_f64_scalar_read_operand_expr(Expr) :-
+    plawk_i64_operand_expr(Expr).
+plawk_f64_scalar_read_operand_expr(Expr) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    plawk_f64_scalar_read_operand_expr(Left),
+    plawk_f64_scalar_read_operand_expr(Right).
 
 plawk_scalar_action_sequence_pairs([], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
         OpIndex, Values, Values, OpIndex, CurrentLabel, []) -->
@@ -2289,10 +2411,11 @@ plawk_scalar_action_sequence_pairs([], _Slots, _AssocPlan, _FieldSeparator, _Out
 plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_scalar_action_update(Action, Name, Operation0),
-      nth0(SlotIndex, Slots, scalar_counter(Name)),
+      nth0(SlotIndex, Slots, Slot),
+      plawk_slot_name(Slot, Name),
       nth0(SlotIndex, Values0, InputValue),
       plawk_substitute_operation_reads(Operation0, Slots, Values0, Operation),
-      plawk_scalar_update_operation_ir(Operation, FieldSeparator, Prefix, SlotIndex,
+      plawk_scalar_update_operation_ir(Operation, Slot, FieldSeparator, Prefix, SlotIndex,
           OpIndex, InputValue, NextValue, Pair),
       replace_nth0(SlotIndex, Values0, NextValue, Values1),
       NextOpIndex is OpIndex + 1
@@ -2359,7 +2482,7 @@ plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest
       plawk_branch_to_done_ir(ThenExitLabel, DoneLabel, ThenDoneIR),
       plawk_branch_to_done_ir(ElseExitLabel, DoneLabel, ElseDoneIR),
       plawk_scalar_if_join_pairs(ThenExitLabel, ThenValues, ElseExitLabel, ElseValues,
-          Prefix, OpIndex, PhiPairs),
+          Slots, Prefix, OpIndex, PhiPairs),
       pairs_keys_values(PhiPairs, _PhiGlobalParts, PhiLineParts),
       atomic_list_concat(PhiLineParts, '\n', PhiIR),
       pairs_keys(PhiPairs, Values1),
@@ -2390,7 +2513,25 @@ plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest
         NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, RestNextExits),
     { append(BranchNextExits, RestNextExits, NextExits) }.
 
-plawk_scalar_update_operation_ir(add(Expr), FieldSeparator, Prefix, SlotIndex,
+plawk_scalar_update_operation_ir(add(Expr), scalar_double(_Name), FieldSeparator,
+        Prefix, SlotIndex, OpIndex, InputValue, NextValue, GlobalIR-IR) :-
+    !,
+    plawk_scalar_f64_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
+        OpIndex, ValueIR, GlobalIR, SetupIR),
+    format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
+    format(atom(AddLine), '  ~w = fadd double ~w, ~w',
+        [NextValue, InputValue, ValueIR]),
+    plawk_join_nonempty_ir([SetupIR, AddLine], IR).
+plawk_scalar_update_operation_ir(set(Expr), scalar_double(_Name), FieldSeparator,
+        Prefix, SlotIndex, OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
+    !,
+    plawk_scalar_f64_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
+        OpIndex, ValueIR, GlobalIR, SetupIR),
+    format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
+    % -0.0 + x is the IEEE identity copy (x + 0.0 would flip -0.0).
+    format(atom(SetLine), '  ~w = fadd double -0.0, ~w', [NextValue, ValueIR]),
+    plawk_join_nonempty_ir([SetupIR, SetLine], IR).
+plawk_scalar_update_operation_ir(add(Expr), _Slot, FieldSeparator, Prefix, SlotIndex,
         OpIndex, InputValue, NextValue, GlobalIR-IR) :-
     plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
         OpIndex, ValueIR, GlobalIR, SetupIR),
@@ -2398,13 +2539,40 @@ plawk_scalar_update_operation_ir(add(Expr), FieldSeparator, Prefix, SlotIndex,
     format(atom(AddLine), '  ~w = add i64 ~w, ~w',
         [NextValue, InputValue, ValueIR]),
     plawk_join_nonempty_ir([SetupIR, AddLine], IR).
-plawk_scalar_update_operation_ir(set(Expr), FieldSeparator, Prefix, SlotIndex,
+plawk_scalar_update_operation_ir(set(Expr), _Slot, FieldSeparator, Prefix, SlotIndex,
         OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
     plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
         OpIndex, ValueIR, GlobalIR, SetupIR),
     format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
     format(atom(SetLine), '  ~w = add i64 0, ~w', [NextValue, ValueIR]),
     plawk_join_nonempty_ir([SetupIR, SetLine], IR).
+
+%% plawk_scalar_f64_numeric_expr_ir(+Expr, +FieldSeparator, +Prefix,
+%%     +SlotIndex, +OpIndex, -ValueIR, -GlobalIR, -SetupIR)
+%
+%  Update RHS for a double slot. Double-typed trees (and double scalar
+%  reads) emit through the f64 emitter; i64-shaped operands emit through
+%  the i64 path and promote with sitofp.
+plawk_scalar_f64_numeric_expr_ir(ssa_f64(Value), _FieldSeparator, _Prefix,
+        _SlotIndex, _OpIndex, Value, '', '') :-
+    !.
+plawk_scalar_f64_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
+        OpIndex, ValueIR, GlobalIR, SetupIR) :-
+    plawk_expr_is_double(Expr),
+    !,
+    format(atom(Base), '~w_slot_~w_op_~w_f64', [Prefix, SlotIndex, OpIndex]),
+    plawk_f64_expr_ir(Expr, FieldSeparator, Base, Base, ValueIR,
+        GlobalParts, SetupParts),
+    atomic_list_concat(GlobalParts, '\n', GlobalIR),
+    atomic_list_concat(SetupParts, '\n', SetupIR).
+plawk_scalar_f64_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
+        OpIndex, ValueIR, GlobalIR, SetupIR) :-
+    plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
+        OpIndex, IntValueIR, GlobalIR, IntSetupIR),
+    format(atom(ValueIR), '%~w_slot_~w_op_~w_f64p', [Prefix, SlotIndex, OpIndex]),
+    format(atom(PromoteIR), '  ~w = sitofp i64 ~w to double',
+        [ValueIR, IntValueIR]),
+    plawk_join_nonempty_ir([IntSetupIR, PromoteIR], SetupIR).
 
 plawk_scalar_numeric_expr_ir(ssa(Value), _FieldSeparator, _Prefix, _SlotIndex,
         _OpIndex, Value, '', '') :-
@@ -2571,6 +2739,9 @@ plawk_i64_binary_op_lines(LLVMOp, Base, LeftIR, RightIR, [Line]) :-
 %  sitofp at emission time.
 plawk_expr_is_double(float_const(_Mantissa, _Denominator)).
 plawk_expr_is_double(float_field(_Index)).
+% A substituted read of a double scalar slot (see
+% plawk_substitute_scalar_reads/4).
+plawk_expr_is_double(ssa_f64(_Value)).
 plawk_expr_is_double(Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     ( plawk_expr_is_double(Left)
@@ -2606,6 +2777,9 @@ plawk_f64_operand_expr(Expr) :-
 %  rounded value, matching strtod). i64 subtrees emit through the i64
 %  emitter and promote with sitofp; IEEE semantics apply to / (no
 %  divide-by-zero guard: x/0.0 is inf, 0.0/0.0 is nan, as in awk).
+plawk_f64_expr_ir(ssa_f64(Value), _FieldSeparator, _Base, _GlobalBase,
+        Value, [], []) :-
+    !.
 plawk_f64_expr_ir(float_const(Mantissa, Denominator), _FieldSeparator, Base,
         _GlobalBase, ValueIR, [], [ConstIR]) :-
     format(atom(ValueIR), '%~w', [Base]),
@@ -2693,21 +2867,21 @@ plawk_branch_to_done_ir(ExitLabel, DoneLabel, IR) :-
 plawk_branch_terminal_exit(none).
 plawk_branch_terminal_exit(break).
 
-plawk_scalar_if_join_pairs(ThenExitLabel, _ThenValues, ElseExitLabel, _ElseValues, _Prefix, _OpIndex, _Pairs) :-
+plawk_scalar_if_join_pairs(ThenExitLabel, _ThenValues, ElseExitLabel, _ElseValues, _Slots, _Prefix, _OpIndex, _Pairs) :-
     plawk_branch_terminal_exit(ThenExitLabel),
     plawk_branch_terminal_exit(ElseExitLabel),
     !,
     fail.
-plawk_scalar_if_join_pairs(ThenExitLabel, _ThenValues, _ElseExitLabel, ElseValues, _Prefix, _OpIndex, Pairs) :-
+plawk_scalar_if_join_pairs(ThenExitLabel, _ThenValues, _ElseExitLabel, ElseValues, _Slots, _Prefix, _OpIndex, Pairs) :-
     plawk_branch_terminal_exit(ThenExitLabel),
     !,
     plawk_scalar_if_passthrough_pairs(ElseValues, Pairs).
-plawk_scalar_if_join_pairs(_ThenExitLabel, ThenValues, ElseExitLabel, _ElseValues, _Prefix, _OpIndex, Pairs) :-
+plawk_scalar_if_join_pairs(_ThenExitLabel, ThenValues, ElseExitLabel, _ElseValues, _Slots, _Prefix, _OpIndex, Pairs) :-
     plawk_branch_terminal_exit(ElseExitLabel),
     !,
     plawk_scalar_if_passthrough_pairs(ThenValues, Pairs).
-plawk_scalar_if_join_pairs(ThenExitLabel, ThenValues, ElseExitLabel, ElseValues, Prefix, OpIndex, Pairs) :-
-    phrase(plawk_scalar_if_phi_lines(ThenValues, ElseValues, Prefix, OpIndex,
+plawk_scalar_if_join_pairs(ThenExitLabel, ThenValues, ElseExitLabel, ElseValues, Slots, Prefix, OpIndex, Pairs) :-
+    phrase(plawk_scalar_if_phi_lines(ThenValues, ElseValues, Slots, Prefix, OpIndex,
         ThenExitLabel, ElseExitLabel, 0), Pairs).
 
 plawk_scalar_if_passthrough_pairs([], []).
@@ -2754,17 +2928,18 @@ plawk_assoc_update_operation_ir(Prefix, OpIndex, TableIndex, KeyIndex,
          DoneLabel,
          DoneLabel]).
 
-plawk_scalar_if_phi_lines([], [], _Prefix, _OpIndex, _ThenLabel, _ElseLabel, _) -->
+plawk_scalar_if_phi_lines([], [], _Slots, _Prefix, _OpIndex, _ThenLabel, _ElseLabel, _) -->
     [].
 plawk_scalar_if_phi_lines([ThenValue | ThenRest], [ElseValue | ElseRest],
-        Prefix, OpIndex, ThenLabel, ElseLabel, SlotIndex) -->
+        [Slot | Slots], Prefix, OpIndex, ThenLabel, ElseLabel, SlotIndex) -->
     { format(atom(PhiValue), '%~w_if_~w_slot_~w', [Prefix, OpIndex, SlotIndex]),
-      format(atom(Line), '  ~w = phi i64 [~w, %~w], [~w, %~w]',
-          [PhiValue, ThenValue, ThenLabel, ElseValue, ElseLabel]),
+      plawk_slot_llvm_type(Slot, Type),
+      format(atom(Line), '  ~w = phi ~w [~w, %~w], [~w, %~w]',
+          [PhiValue, Type, ThenValue, ThenLabel, ElseValue, ElseLabel]),
       NextSlotIndex is SlotIndex + 1
     },
     [PhiValue-Line],
-    plawk_scalar_if_phi_lines(ThenRest, ElseRest, Prefix, OpIndex, ThenLabel, ElseLabel, NextSlotIndex).
+    plawk_scalar_if_phi_lines(ThenRest, ElseRest, Slots, Prefix, OpIndex, ThenLabel, ElseLabel, NextSlotIndex).
 
 replace_nth0(0, [_Old | Rest], Value, [Value | Rest]) :-
     !.
@@ -2780,7 +2955,7 @@ plawk_scalar_next_phi_ir(StatePlan, RuleCount, Controls, BranchNextExits, IR) :-
 
 plawk_scalar_next_phi_lines([], _RuleCount, _Controls, _BranchNextExits, _) -->
     [].
-plawk_scalar_next_phi_lines([_Slot | Rest], RuleCount, Controls, BranchNextExits, Index) -->
+plawk_scalar_next_phi_lines([Slot | Rest], RuleCount, Controls, BranchNextExits, Index) -->
     { LastRuleIndex is RuleCount - 1,
       plawk_scalar_rule_input_value(LastRuleIndex, Index, FalseValue),
       format(atom(FalseIncoming), '[~w, %rule_~w_match]',
@@ -2799,7 +2974,8 @@ plawk_scalar_next_phi_lines([_Slot | Rest], RuleCount, Controls, BranchNextExits
       plawk_branch_next_phi_incomings(BranchNextExits, Index, BranchNextIncomings),
       append([FalseIncoming | ApplyIncomings], BranchNextIncomings, Incomings),
       atomic_list_concat(Incomings, ', ', IncomingIR),
-      format(atom(Line), '  %next_slot_~w = phi i64 ~w', [Index, IncomingIR]),
+      plawk_slot_llvm_type(Slot, Type),
+      format(atom(Line), '  %next_slot_~w = phi ~w ~w', [Index, Type, IncomingIR]),
       NextIndex is Index + 1
     },
     [Line],
@@ -2825,12 +3001,21 @@ plawk_scalar_end_print_lines([], _StatePlan, _OutputSeparator, _) -->
     [FmtPtr, PrintCall].
 plawk_scalar_end_print_lines([var(Name) | Rest], StatePlan, OutputSeparator, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    { plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex),
-      format(atom(FmtVar), 'end_i64_fmt_~w', [PrintIndex]),
-      format(atom(PrintVar), 'printed_end_i64_~w', [PrintIndex]),
+    { plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
       format(atom(ValueIR), '%final_slot_~w', [SlotIndex]),
-      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
-          [FmtPtr, PrintCall]),
+      ( Slot = scalar_double(_Name)
+      -> format(atom(FmtVar), 'end_f64_fmt_~w', [PrintIndex]),
+         format(atom(FmtPtr),
+             '  %~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
+             [FmtVar]),
+         format(atom(PrintCall),
+             '  %printed_end_f64_~w = call i32 (i8*, ...) @printf(i8* %~w, double ~w)',
+             [PrintIndex, FmtVar, ValueIR])
+      ;  format(atom(FmtVar), 'end_i64_fmt_~w', [PrintIndex]),
+         format(atom(PrintVar), 'printed_end_i64_~w', [PrintIndex]),
+         llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
+             [FmtPtr, PrintCall])
+      ),
       NextPrintIndex is PrintIndex + 1
     },
     [FmtPtr, PrintCall],

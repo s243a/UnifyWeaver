@@ -591,6 +591,12 @@ scalar_value_expr(Value) -->
 
 scalar_delta_expr(Expr) -->
     i64_binary_surface_expr(Expr).
+% Bare float leaves before the integer clause: "0.5" must not stop at
+% the integer prefix "0".
+scalar_delta_expr(Expr) -->
+    float_field_expr(Expr).
+scalar_delta_expr(Expr) -->
+    float_literal_expr(Expr).
 scalar_delta_expr(int(Value)) -->
     integer_codes(ValueCodes),
     { ValueCodes \== [],
