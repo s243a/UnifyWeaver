@@ -47,6 +47,7 @@
     split_functor_arity/3,               % +Str, -Name, -Arity (handles `/` in name)
     llvm_emit_atom_prefix_guard/5,       % +GlobalBase, +ValueIR, +Prefix, +ResultIR, -GlobalIR-CallIR
     llvm_emit_atom_field_eq_guard/7,     % +GlobalBase, +ValueIR, +FieldIndex, +Expected, +SepCode, +ResultIR, -GlobalIR-CallIR
+    llvm_emit_regex_field_match_guard/7, % +GlobalBase, +ValueIR, +FieldIndex, +Regex, +SepCode, +ResultIR, -GlobalIR-CallIR
     llvm_emit_atom_field_slice/5,        % +ValueIR, +FieldIndex, +SepCode, +SliceBase, -CallIR
     llvm_emit_atom_field_count/4,        % +ValueIR, +SepCode, +CountBase, -CallIR
     llvm_emit_atom_field_length/5,       % +ValueIR, +FieldIndex, +SepCode, +LengthBase, -CallIR
@@ -62,6 +63,7 @@
     llvm_emit_printf_string/6,           % +FmtGlobal, +FmtLen, +FmtVar, +PrintVar, +PtrIR, -Parts
     llvm_emit_printf0/5,                 % +FmtGlobal, +FmtLen, +FmtVar, +PrintVar, -Parts
     llvm_emit_stream_driver_ir/3,        % +InputPath, +DriverBlocks, -DriverIR
+    llvm_emit_binary_stream_driver_ir/4, % +InputPath, +RecordSize, +DriverBlocks, -DriverIR
     llvm_emit_ascii_case_slice_print/5   % +Mode, +PtrIR, +LenIR, +PrintBase, -CallIR
 ]).
 
@@ -1562,6 +1564,7 @@ declare i8* @opendir(i8*)
 declare i8* @readdir(i8*)
 declare i32 @closedir(i8*)
 declare i64 @strlen(i8*)
+declare i64 @strnlen(i8*, i64)
 declare i32 @system(i8*)
 declare i8* @getcwd(i8*, i64)
 declare i32 @chdir(i8*)
@@ -1613,7 +1616,10 @@ declare i64 @mktime(i8*)
 declare double @asin(double)
 declare double @acos(double)
 declare double @atan(double)
-declare double @atan2(double, double)'
+declare double @atan2(double, double)
+declare i32 @regcomp(i8*, i8*, i32)
+declare i32 @regexec(i8*, i8*, i64, i8*, i32)
+declare double @strtod(i8*, i8**)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -4384,6 +4390,185 @@ vat.miss:
   ret i64 0
 }
 
+; POSIX ERE matching over atom-backed text records. Patterns are
+; compile-time constants; each match site owns a cache slot holding a
+; lazily regcomp()ed regex_t. The regex_t is malloc''d at 512 bytes,
+; comfortably above sizeof(regex_t) on glibc (64), musl, and the BSDs.
+; cflags is REG_EXTENDED (1 on all common libcs); REG_NOSUB is skipped
+; because its value differs across libcs and it is only an optimization.
+@wam_regex_field_buf = internal global i8* null
+@wam_regex_field_cap = internal global i64 0
+
+define i1 @wam_regex_field_match(%Value %line, i64 %field_index, i8 %sep, i8* %pattern, i8** %cache_slot) {
+entry:
+  %cached = load i8*, i8** %cache_slot
+  %have = icmp ne i8* %cached, null
+  br i1 %have, label %rgx.have_regex, label %rgx.compile
+
+rgx.compile:
+  %mem = call i8* @malloc(i64 512)
+  %mem_null = icmp eq i8* %mem, null
+  br i1 %mem_null, label %rgx.fail, label %rgx.do_comp
+
+rgx.do_comp:
+  %comp_rc = call i32 @regcomp(i8* %mem, i8* %pattern, i32 1)
+  %comp_ok = icmp eq i32 %comp_rc, 0
+  br i1 %comp_ok, label %rgx.store_regex, label %rgx.comp_fail
+
+rgx.comp_fail:
+  call void @free(i8* %mem)
+  br label %rgx.fail
+
+rgx.store_regex:
+  store i8* %mem, i8** %cache_slot
+  br label %rgx.have_regex
+
+rgx.have_regex:
+  %preg = load i8*, i8** %cache_slot
+  %is_whole = icmp eq i64 %field_index, 0
+  br i1 %is_whole, label %rgx.match_whole, label %rgx.match_field
+
+rgx.match_whole:
+  %aid = call i64 @value_payload(%Value %line)
+  %line_s = call i8* @wam_atom_to_string(i64 %aid)
+  %line_null = icmp eq i8* %line_s, null
+  br i1 %line_null, label %rgx.fail, label %rgx.exec_whole
+
+rgx.exec_whole:
+  %exec_rc_w = call i32 @regexec(i8* %preg, i8* %line_s, i64 0, i8* null, i32 0)
+  %match_w = icmp eq i32 %exec_rc_w, 0
+  ret i1 %match_w
+
+rgx.match_field:
+  %slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %field_index, i8 %sep)
+  %fptr = extractvalue %WamSlice %slice, 0
+  %flen = extractvalue %WamSlice %slice, 1
+  %missing = icmp eq i8* %fptr, null
+  br i1 %missing, label %rgx.fail, label %rgx.ensure_buf
+
+rgx.ensure_buf:
+  ; Field slices are not NUL-terminated; copy into a growable scratch
+  ; buffer so regexec sees a C string.
+  %need = add i64 %flen, 1
+  %cap = load i64, i64* @wam_regex_field_cap
+  %fits = icmp ule i64 %need, %cap
+  br i1 %fits, label %rgx.copy, label %rgx.grow
+
+rgx.grow:
+  %old_buf = load i8*, i8** @wam_regex_field_buf
+  %new_cap = shl i64 %need, 1
+  %new_buf = call i8* @realloc(i8* %old_buf, i64 %new_cap)
+  %grow_null = icmp eq i8* %new_buf, null
+  br i1 %grow_null, label %rgx.fail, label %rgx.store_buf
+
+rgx.store_buf:
+  store i8* %new_buf, i8** @wam_regex_field_buf
+  store i64 %new_cap, i64* @wam_regex_field_cap
+  br label %rgx.copy
+
+rgx.copy:
+  %buf = load i8*, i8** @wam_regex_field_buf
+  br label %rgx.copy_loop
+
+rgx.copy_loop:
+  %ci = phi i64 [ 0, %rgx.copy ], [ %ci1, %rgx.copy_step ]
+  %copy_done = icmp uge i64 %ci, %flen
+  br i1 %copy_done, label %rgx.terminate, label %rgx.copy_step
+
+rgx.copy_step:
+  %src_p = getelementptr i8, i8* %fptr, i64 %ci
+  %dst_p = getelementptr i8, i8* %buf, i64 %ci
+  %byte = load i8, i8* %src_p
+  store i8 %byte, i8* %dst_p
+  %ci1 = add i64 %ci, 1
+  br label %rgx.copy_loop
+
+rgx.terminate:
+  %end_p = getelementptr i8, i8* %buf, i64 %flen
+  store i8 0, i8* %end_p
+  %exec_rc_f = call i32 @regexec(i8* %preg, i8* %buf, i64 0, i8* null, i32 0)
+  %match_f = icmp eq i32 %exec_rc_f, 0
+  ret i1 %match_f
+
+rgx.fail:
+  ret i1 false
+}
+
+; awk-style numeric coercion of a record or projected field to double:
+; strtod parses a leading number and ignores trailing text, so
+; "3.14abc" reads as 3.14 and non-numeric text reads as 0.0. Field
+; slices are copied into a growable NUL-terminated scratch buffer;
+; field 0 uses the record atom''s C string directly.
+@wam_f64_field_buf = internal global i8* null
+@wam_f64_field_cap = internal global i64 0
+
+define double @wam_atom_field_f64_value(%Value %line, i64 %field_index, i8 %sep) {
+entry:
+  %is_whole = icmp eq i64 %field_index, 0
+  br i1 %is_whole, label %f64.whole, label %f64.field
+
+f64.whole:
+  %aid = call i64 @value_payload(%Value %line)
+  %line_s = call i8* @wam_atom_to_string(i64 %aid)
+  %line_null = icmp eq i8* %line_s, null
+  br i1 %line_null, label %f64.zero, label %f64.parse_whole
+
+f64.parse_whole:
+  %whole_v = call double @strtod(i8* %line_s, i8** null)
+  ret double %whole_v
+
+f64.field:
+  %slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %field_index, i8 %sep)
+  %fptr = extractvalue %WamSlice %slice, 0
+  %flen = extractvalue %WamSlice %slice, 1
+  %missing = icmp eq i8* %fptr, null
+  br i1 %missing, label %f64.zero, label %f64.ensure_buf
+
+f64.ensure_buf:
+  %need = add i64 %flen, 1
+  %cap = load i64, i64* @wam_f64_field_cap
+  %fits = icmp ule i64 %need, %cap
+  br i1 %fits, label %f64.copy, label %f64.grow
+
+f64.grow:
+  %old_buf = load i8*, i8** @wam_f64_field_buf
+  %new_cap = shl i64 %need, 1
+  %new_buf = call i8* @realloc(i8* %old_buf, i64 %new_cap)
+  %grow_null = icmp eq i8* %new_buf, null
+  br i1 %grow_null, label %f64.zero, label %f64.store_buf
+
+f64.store_buf:
+  store i8* %new_buf, i8** @wam_f64_field_buf
+  store i64 %new_cap, i64* @wam_f64_field_cap
+  br label %f64.copy
+
+f64.copy:
+  %buf = load i8*, i8** @wam_f64_field_buf
+  br label %f64.copy_loop
+
+f64.copy_loop:
+  %ci = phi i64 [ 0, %f64.copy ], [ %ci1, %f64.copy_step ]
+  %copy_done = icmp uge i64 %ci, %flen
+  br i1 %copy_done, label %f64.terminate, label %f64.copy_step
+
+f64.copy_step:
+  %src_p = getelementptr i8, i8* %fptr, i64 %ci
+  %dst_p = getelementptr i8, i8* %buf, i64 %ci
+  %byte = load i8, i8* %src_p
+  store i8 %byte, i8* %dst_p
+  %ci1 = add i64 %ci, 1
+  br label %f64.copy_loop
+
+f64.terminate:
+  %end_p = getelementptr i8, i8* %buf, i64 %flen
+  store i8 0, i8* %end_p
+  %field_v = call double @strtod(i8* %buf, i8** null)
+  ret double %field_v
+
+f64.zero:
+  ret double 0.000000e+00
+}
+
 define %Value @wam_stream_fail_value() alwaysinline nounwind {
 entry:
   %bad = call %Value @value_integer(i64 -1)
@@ -4659,6 +4844,254 @@ rhv.free_out_fail:
   %rhv.fail_out = phi i8* [ %rhv.out_cur, %rhv.fill ], [ %rhv.out_cur, %rhv.grow_out ], [ %rhv.out_cur, %rhv.grow_alloc ]
   call void @free(i8* %rhv.fail_out)
   br label %rhv.fail
+}
+
+; Transient-line variant of read_line for per-record streaming: the
+; line lands in the shared @wam_transient_line_buf (grown geometrically,
+; reused across reads, never freed) and the returned atom Value carries
+; the reserved transient id 2^62 that @wam_atom_to_string maps to that
+; buffer. No malloc/free, no hashing, no atom-table append per record,
+; and memory stays constant on unbounded streams. Contract: the Value
+; is valid only until the next transient read -- callers that persist
+; line-derived data past the record must intern it (field-slice assoc
+; keys and $0 foreign-call arguments already do). EOF still returns the
+; real interned end_of_file atom.
+define %Value @wam_stream_read_line_transient_value(%Value %handle_value) {
+entry:
+  %rtv.t = call i32 @value_tag(%Value %handle_value)
+  %rtv.is_int = icmp eq i32 %rtv.t, 1
+  br i1 %rtv.is_int, label %rtv.lookup_handle, label %rtv.fail
+
+rtv.fail:
+  %rtv.bad = call %Value @wam_stream_fail_value()
+  ret %Value %rtv.bad
+
+rtv.lookup_handle:
+  %rtv.handle64 = call i64 @value_payload(%Value %handle_value)
+  %rtv.handle = trunc i64 %rtv.handle64 to i32
+  %rtv.handle_min = icmp sgt i32 %rtv.handle, 0
+  %rtv.handle_max = icmp ult i32 %rtv.handle, 4096
+  %rtv.handle_ok = and i1 %rtv.handle_min, %rtv.handle_max
+  br i1 %rtv.handle_ok, label %rtv.load_handle, label %rtv.fail
+
+rtv.load_handle:
+  %rtv.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %rtv.handle
+  %rtv.reader = load %WamLineReader*, %WamLineReader** %rtv.slot
+  %rtv.reader_null = icmp eq %WamLineReader* %rtv.reader, null
+  br i1 %rtv.reader_null, label %rtv.fail, label %rtv.have_handle
+
+rtv.have_handle:
+  %rtv.fd_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 0
+  %rtv.fd = load i32, i32* %rtv.fd_slot
+  %rtv.fd_ok = icmp sge i32 %rtv.fd, 0
+  br i1 %rtv.fd_ok, label %rtv.ensure_out, label %rtv.fail
+
+rtv.ensure_out:
+  %rtv.cap0 = load i64, i64* @wam_transient_line_cap
+  %rtv.have_buf = icmp sgt i64 %rtv.cap0, 0
+  br i1 %rtv.have_buf, label %rtv.loop_pre, label %rtv.first_alloc
+
+rtv.first_alloc:
+  %rtv.first_buf = call i8* @malloc(i64 4096)
+  %rtv.first_null = icmp eq i8* %rtv.first_buf, null
+  br i1 %rtv.first_null, label %rtv.fail, label %rtv.first_store
+
+rtv.first_store:
+  store i8* %rtv.first_buf, i8** @wam_transient_line_buf
+  store i64 4096, i64* @wam_transient_line_cap
+  br label %rtv.loop_pre
+
+rtv.loop_pre:
+  %rtv.out0 = load i8*, i8** @wam_transient_line_buf
+  %rtv.cap1 = load i64, i64* @wam_transient_line_cap
+  br label %rtv.loop
+
+rtv.loop:
+  %rtv.out_len = phi i64 [ 0, %rtv.loop_pre ], [ %rtv.out_len, %rtv.after_read ], [ %rtv.next_out_len, %rtv.append_store ]
+  %rtv.out_cur = phi i8* [ %rtv.out0, %rtv.loop_pre ], [ %rtv.out_cur, %rtv.after_read ], [ %rtv.append_out, %rtv.append_store ]
+  %rtv.out_cap = phi i64 [ %rtv.cap1, %rtv.loop_pre ], [ %rtv.out_cap, %rtv.after_read ], [ %rtv.append_cap, %rtv.append_store ]
+  %rtv.buf_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 1
+  %rtv.buf = load i8*, i8** %rtv.buf_slot
+  %rtv.len_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 3
+  %rtv.len = load i64, i64* %rtv.len_slot
+  %rtv.pos_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 4
+  %rtv.pos = load i64, i64* %rtv.pos_slot
+  %rtv.have_byte = icmp slt i64 %rtv.pos, %rtv.len
+  br i1 %rtv.have_byte, label %rtv.consume, label %rtv.fill
+
+rtv.fill:
+  %rtv.cap_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 2
+  %rtv.rcap = load i64, i64* %rtv.cap_slot
+  %rtv.n = call i64 @read(i32 %rtv.fd, i8* %rtv.buf, i64 %rtv.rcap)
+  %rtv.n_neg = icmp slt i64 %rtv.n, 0
+  br i1 %rtv.n_neg, label %rtv.fail, label %rtv.check_eof
+
+rtv.check_eof:
+  %rtv.n_zero = icmp eq i64 %rtv.n, 0
+  br i1 %rtv.n_zero, label %rtv.eof_or_partial, label %rtv.after_read
+
+rtv.after_read:
+  store i64 %rtv.n, i64* %rtv.len_slot
+  store i64 0, i64* %rtv.pos_slot
+  br label %rtv.loop
+
+rtv.eof_or_partial:
+  %rtv.empty_line = icmp eq i64 %rtv.out_len, 0
+  br i1 %rtv.empty_line, label %rtv.eof, label %rtv.finalize
+
+rtv.consume:
+  %rtv.char_ptr = getelementptr i8, i8* %rtv.buf, i64 %rtv.pos
+  %rtv.ch = load i8, i8* %rtv.char_ptr
+  %rtv.pos_next = add i64 %rtv.pos, 1
+  store i64 %rtv.pos_next, i64* %rtv.pos_slot
+  %rtv.is_lf = icmp eq i8 %rtv.ch, 10
+  br i1 %rtv.is_lf, label %rtv.finalize, label %rtv.append
+
+rtv.append:
+  %rtv.next_out_len_pre = add i64 %rtv.out_len, 1
+  %rtv.has_room = icmp ult i64 %rtv.next_out_len_pre, %rtv.out_cap
+  br i1 %rtv.has_room, label %rtv.append_store, label %rtv.grow_out
+
+rtv.grow_out:
+  %rtv.new_out_cap = shl i64 %rtv.out_cap, 1
+  %rtv.cap_grew = icmp ugt i64 %rtv.new_out_cap, %rtv.out_cap
+  br i1 %rtv.cap_grew, label %rtv.grow_alloc, label %rtv.fail
+
+rtv.grow_alloc:
+  %rtv.grown_out = call i8* @realloc(i8* %rtv.out_cur, i64 %rtv.new_out_cap)
+  %rtv.grown_null = icmp eq i8* %rtv.grown_out, null
+  br i1 %rtv.grown_null, label %rtv.fail, label %rtv.grow_store
+
+rtv.grow_store:
+  store i8* %rtv.grown_out, i8** @wam_transient_line_buf
+  store i64 %rtv.new_out_cap, i64* @wam_transient_line_cap
+  br label %rtv.append_store
+
+rtv.append_store:
+  %rtv.append_out = phi i8* [ %rtv.out_cur, %rtv.append ], [ %rtv.grown_out, %rtv.grow_store ]
+  %rtv.append_cap = phi i64 [ %rtv.out_cap, %rtv.append ], [ %rtv.new_out_cap, %rtv.grow_store ]
+  %rtv.out_ptr = getelementptr i8, i8* %rtv.append_out, i64 %rtv.out_len
+  store i8 %rtv.ch, i8* %rtv.out_ptr
+  %rtv.next_out_len = add i64 %rtv.out_len, 1
+  br label %rtv.loop
+
+rtv.finalize:
+  %rtv.has_chars = icmp sgt i64 %rtv.out_len, 0
+  br i1 %rtv.has_chars, label %rtv.check_cr, label %rtv.terminate_empty
+
+rtv.check_cr:
+  %rtv.last_idx = sub i64 %rtv.out_len, 1
+  %rtv.last_ptr = getelementptr i8, i8* %rtv.out_cur, i64 %rtv.last_idx
+  %rtv.last = load i8, i8* %rtv.last_ptr
+  %rtv.last_is_cr = icmp eq i8 %rtv.last, 13
+  %rtv.trim_len = select i1 %rtv.last_is_cr, i64 %rtv.last_idx, i64 %rtv.out_len
+  br label %rtv.terminate
+
+rtv.terminate_empty:
+  br label %rtv.terminate
+
+rtv.terminate:
+  %rtv.final_len = phi i64 [ %rtv.trim_len, %rtv.check_cr ], [ 0, %rtv.terminate_empty ]
+  %rtv.term = getelementptr i8, i8* %rtv.out_cur, i64 %rtv.final_len
+  store i8 0, i8* %rtv.term
+  %rtv.v0 = insertvalue %Value undef, i32 0, 0
+  %rtv.v = insertvalue %Value %rtv.v0, i64 4611686018427387904, 1
+  ret %Value %rtv.v
+
+rtv.eof:
+  %rtv.eof_ptr = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof_atom, i32 0, i32 0
+  %rtv.eof_aid = call i64 @wam_intern_atom(i8* %rtv.eof_ptr, i64 11)
+  %rtv.eof_v0 = insertvalue %Value undef, i32 0, 0
+  %rtv.eof_v = insertvalue %Value %rtv.eof_v0, i64 %rtv.eof_aid, 1
+  ret %Value %rtv.eof_v
+}
+
+; Fixed-size binary record reader over the buffered stream: copies
+; exactly %size bytes into %dst through the reader buffer. Returns
+; 1 for a full record, 0 for clean EOF at a record boundary, and -1
+; for a read error or a trailing partial record.
+define i64 @wam_stream_read_record(%Value %handle_value, i64 %size, i8* %dst) {
+entry:
+  %rrv.t = call i32 @value_tag(%Value %handle_value)
+  %rrv.is_int = icmp eq i32 %rrv.t, 1
+  br i1 %rrv.is_int, label %rrv.lookup_handle, label %rrv.fail
+
+rrv.fail:
+  ret i64 -1
+
+rrv.lookup_handle:
+  %rrv.handle64 = call i64 @value_payload(%Value %handle_value)
+  %rrv.handle = trunc i64 %rrv.handle64 to i32
+  %rrv.handle_min = icmp sgt i32 %rrv.handle, 0
+  %rrv.handle_max = icmp ult i32 %rrv.handle, 4096
+  %rrv.handle_ok = and i1 %rrv.handle_min, %rrv.handle_max
+  br i1 %rrv.handle_ok, label %rrv.load_handle, label %rrv.fail
+
+rrv.load_handle:
+  %rrv.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %rrv.handle
+  %rrv.reader = load %WamLineReader*, %WamLineReader** %rrv.slot
+  %rrv.reader_null = icmp eq %WamLineReader* %rrv.reader, null
+  br i1 %rrv.reader_null, label %rrv.fail, label %rrv.have_handle
+
+rrv.have_handle:
+  %rrv.fd_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 0
+  %rrv.fd = load i32, i32* %rrv.fd_slot
+  %rrv.fd_ok = icmp sge i32 %rrv.fd, 0
+  br i1 %rrv.fd_ok, label %rrv.loop, label %rrv.fail
+
+rrv.loop:
+  %rrv.copied = phi i64 [ 0, %rrv.have_handle ], [ %rrv.copied_next, %rrv.chunk ], [ %rrv.copied, %rrv.after_read ]
+  %rrv.done = icmp uge i64 %rrv.copied, %size
+  br i1 %rrv.done, label %rrv.full, label %rrv.need_bytes
+
+rrv.full:
+  ret i64 1
+
+rrv.need_bytes:
+  %rrv.buf_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 1
+  %rrv.buf = load i8*, i8** %rrv.buf_slot
+  %rrv.len_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 3
+  %rrv.len = load i64, i64* %rrv.len_slot
+  %rrv.pos_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 4
+  %rrv.pos = load i64, i64* %rrv.pos_slot
+  %rrv.have_byte = icmp slt i64 %rrv.pos, %rrv.len
+  br i1 %rrv.have_byte, label %rrv.chunk, label %rrv.fill
+
+rrv.chunk:
+  %rrv.avail = sub i64 %rrv.len, %rrv.pos
+  %rrv.want = sub i64 %size, %rrv.copied
+  %rrv.avail_smaller = icmp ult i64 %rrv.avail, %rrv.want
+  %rrv.n_copy = select i1 %rrv.avail_smaller, i64 %rrv.avail, i64 %rrv.want
+  %rrv.src = getelementptr i8, i8* %rrv.buf, i64 %rrv.pos
+  %rrv.dstp = getelementptr i8, i8* %dst, i64 %rrv.copied
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %rrv.dstp, i8* %rrv.src, i64 %rrv.n_copy, i1 false)
+  %rrv.pos_next = add i64 %rrv.pos, %rrv.n_copy
+  store i64 %rrv.pos_next, i64* %rrv.pos_slot
+  %rrv.copied_next = add i64 %rrv.copied, %rrv.n_copy
+  br label %rrv.loop
+
+rrv.fill:
+  %rrv.cap_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 2
+  %rrv.cap = load i64, i64* %rrv.cap_slot
+  %rrv.n = call i64 @read(i32 %rrv.fd, i8* %rrv.buf, i64 %rrv.cap)
+  %rrv.n_neg = icmp slt i64 %rrv.n, 0
+  br i1 %rrv.n_neg, label %rrv.fail, label %rrv.check_eof
+
+rrv.check_eof:
+  %rrv.n_zero = icmp eq i64 %rrv.n, 0
+  br i1 %rrv.n_zero, label %rrv.eof, label %rrv.after_read
+
+rrv.after_read:
+  store i64 %rrv.n, i64* %rrv.len_slot
+  store i64 0, i64* %rrv.pos_slot
+  br label %rrv.loop
+
+rrv.eof:
+  ; Clean EOF only at a record boundary; a trailing partial record is
+  ; an error.
+  %rrv.at_boundary = icmp eq i64 %rrv.copied, 0
+  %rrv.eof_status = select i1 %rrv.at_boundary, i64 0, i64 -1
+  ret i64 %rrv.eof_status
 }
 
 define i1 @wam_stream_close_value(%Value %handle_value) {
@@ -16765,6 +17198,8 @@ emit_atom_string_globals(IR) :-
 @wam_atom_dyn_ptr   = global i8** null
 @wam_atom_dyn_count = global i32 0
 @wam_atom_dyn_cap   = global i32 0
+@wam_transient_line_buf = global i8* null
+@wam_transient_line_cap = global i64 0
 
 define i8* @wam_atom_to_string(i64 %id) {
   ret i8* null
@@ -16844,8 +17279,36 @@ define i64 @wam_intern_atom(i8* %str, i64 %len) {
 @wam_atom_dyn_count = global i32 0
 @wam_atom_dyn_cap   = global i32 0
 
+; FNV-1a hash index over the atom tables: maps string -> atom id so
+; wam_intern_atom is O(1) amortized instead of a linear scan over
+; every atom (previously O(table size) per intern, which made streams
+; that intern many unique lines through read_line quadratic). Slots
+; hold atom_id + 1; 0 marks an empty slot. Built lazily on the first
+; intern, seeded with every existing static and dynamic atom, and
+; grown at 50 percent load by rehashing all ids.
+@wam_atom_hash_slots = global i64* null
+@wam_atom_hash_cap   = global i64 0
+@wam_atom_hash_count = global i64 0
+
+; Shared buffer behind the transient line atom (id 2^62). Grown
+; geometrically, never freed; contents are valid until the next
+; transient read.
+@wam_transient_line_buf = global i8* null
+@wam_transient_line_cap = global i64 0
+
 define i8* @wam_atom_to_string(i64 %id) {
 entry:
+  ; Transient line atom: id 2^62 resolves to the shared line buffer
+  ; owned by @wam_stream_read_line_transient_value. The buffer mutates
+  ; on every read, so this id must never enter the intern hash or the
+  ; dynamic table; it exists so per-record consumers (field helpers,
+  ; regex, printing) work on the current record without interning it.
+  %is_transient = icmp eq i64 %id, 4611686018427387904
+  br i1 %is_transient, label %transient, label %check_static
+transient:
+  %tbuf = load i8*, i8** @wam_transient_line_buf
+  ret i8* %tbuf
+check_static:
   %cnt = load i32, i32* @wam_atom_string_count
   %cnt64 = zext i32 %cnt to i64
   %in_static = icmp ult i64 %id, %cnt64
@@ -16911,57 +17374,195 @@ check_term:
   ret i1 %term
 }
 
-; M29: intern an atom by (str, len). Linear scan over static then
-; dynamic table; if found, return existing id. If not found, copy
-; the string into a malloc''d block, append to the dynamic table
-; (growing via realloc as needed), and return the new id.
+; FNV-1a over the raw bytes. The 64-bit offset basis
+; 14695981039346656037 is written in two-s complement signed form
+; because LLVM textual IR rejects unsigned constants above 2^63 - 1.
+define i64 @wam_atom_hash_value(i8* %str, i64 %len) {
+entry:
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %i1, %step ]
+  %h = phi i64 [ -3750763034362895579, %entry ], [ %h1, %step ]
+  %done = icmp uge i64 %i, %len
+  br i1 %done, label %ret, label %step
+step:
+  %bp = getelementptr i8, i8* %str, i64 %i
+  %b = load i8, i8* %bp
+  %b64 = zext i8 %b to i64
+  %hx = xor i64 %h, %b64
+  %h1 = mul i64 %hx, 1099511628211
+  %i1 = add i64 %i, 1
+  br label %loop
+ret:
+  ret i64 %h
+}
+
+; Probe for (str, len): returns the index of the matching occupied
+; slot, or of the empty slot where the string belongs. Requires
+; cap > 0 with load factor below 1, which the grow-at-50-percent rule
+; guarantees, so the probe always terminates.
+define i64 @wam_atom_hash_find_slot(i8* %str, i64 %len) {
+entry:
+  %cap = load i64, i64* @wam_atom_hash_cap
+  %slots = load i64*, i64** @wam_atom_hash_slots
+  %h = call i64 @wam_atom_hash_value(i8* %str, i64 %len)
+  %start = urem i64 %h, %cap
+  br label %probe
+probe:
+  %idx = phi i64 [ %start, %entry ], [ %next, %miss ]
+  %slot_p = getelementptr i64, i64* %slots, i64 %idx
+  %v = load i64, i64* %slot_p
+  %empty = icmp eq i64 %v, 0
+  br i1 %empty, label %found, label %check
+check:
+  %cand_id = sub i64 %v, 1
+  %cand_s = call i8* @wam_atom_to_string(i64 %cand_id)
+  %cand_null = icmp eq i8* %cand_s, null
+  br i1 %cand_null, label %miss, label %cmp
+cmp:
+  %eq = call i1 @wam_str_eq_n(i8* %str, i64 %len, i8* %cand_s)
+  br i1 %eq, label %found, label %miss
+miss:
+  %idx1 = add i64 %idx, 1
+  %wrap = icmp uge i64 %idx1, %cap
+  %next = select i1 %wrap, i64 0, i64 %idx1
+  br label %probe
+found:
+  ret i64 %idx
+}
+
+; Insert an existing atom id into the hash by its string. When the
+; same string appears under two ids (duplicate static entries), the
+; first id inserted wins, mirroring the old first-match linear scan.
+define i1 @wam_atom_hash_insert_id(i64 %id) {
+entry:
+  %s = call i8* @wam_atom_to_string(i64 %id)
+  %s_null = icmp eq i8* %s, null
+  br i1 %s_null, label %skip, label %measure
+measure:
+  br label %len_loop
+len_loop:
+  %li = phi i64 [ 0, %measure ], [ %li1, %len_step ]
+  %lp = getelementptr i8, i8* %s, i64 %li
+  %lb = load i8, i8* %lp
+  %lz = icmp eq i8 %lb, 0
+  br i1 %lz, label %have_len, label %len_step
+len_step:
+  %li1 = add i64 %li, 1
+  br label %len_loop
+have_len:
+  %slot_idx = call i64 @wam_atom_hash_find_slot(i8* %s, i64 %li)
+  %slots = load i64*, i64** @wam_atom_hash_slots
+  %slot_p = getelementptr i64, i64* %slots, i64 %slot_idx
+  %v = load i64, i64* %slot_p
+  %empty = icmp eq i64 %v, 0
+  br i1 %empty, label %fill, label %skip
+fill:
+  %idp1 = add i64 %id, 1
+  store i64 %idp1, i64* %slot_p
+  %cnt = load i64, i64* @wam_atom_hash_count
+  %cnt1 = add i64 %cnt, 1
+  store i64 %cnt1, i64* @wam_atom_hash_count
+  ret i1 true
+skip:
+  ret i1 false
+}
+
+; Allocate a zeroed slot array of new_cap entries and reinsert every
+; atom id currently in the static + dynamic tables. Used for both
+; lazy init and growth. Fails only if malloc fails, in which case the
+; previous table (if any) is left untouched and still valid.
+define i1 @wam_atom_hash_rebuild(i64 %new_cap) {
+entry:
+  %bytes = shl i64 %new_cap, 3
+  %mem = call i8* @malloc(i64 %bytes)
+  %mem_null = icmp eq i8* %mem, null
+  br i1 %mem_null, label %fail, label %zero_init
+zero_init:
+  %new_slots = bitcast i8* %mem to i64*
+  br label %zloop
+zloop:
+  %zi = phi i64 [ 0, %zero_init ], [ %zi1, %zstep ]
+  %zdone = icmp uge i64 %zi, %new_cap
+  br i1 %zdone, label %swap, label %zstep
+zstep:
+  %zp = getelementptr i64, i64* %new_slots, i64 %zi
+  store i64 0, i64* %zp
+  %zi1 = add i64 %zi, 1
+  br label %zloop
+swap:
+  %old = load i64*, i64** @wam_atom_hash_slots
+  store i64* %new_slots, i64** @wam_atom_hash_slots
+  store i64 %new_cap, i64* @wam_atom_hash_cap
+  store i64 0, i64* @wam_atom_hash_count
+  %old_null = icmp eq i64* %old, null
+  br i1 %old_null, label %reinsert_init, label %free_old
+free_old:
+  %old_i8 = bitcast i64* %old to i8*
+  call void @free(i8* %old_i8)
+  br label %reinsert_init
+reinsert_init:
+  ; Total ids = static count + dynamic count. Id 0 and any null static
+  ; slots resolve to null strings and are skipped by insert.
+  %st_cnt = load i32, i32* @wam_atom_string_count
+  %st_64 = zext i32 %st_cnt to i64
+  %dy_cnt = load i32, i32* @wam_atom_dyn_count
+  %dy_64 = zext i32 %dy_cnt to i64
+  %total = add i64 %st_64, %dy_64
+  br label %riloop
+riloop:
+  %ri = phi i64 [ 0, %reinsert_init ], [ %ri1, %ristep ]
+  %ridone = icmp uge i64 %ri, %total
+  br i1 %ridone, label %ok, label %ristep
+ristep:
+  %ins_ignored = call i1 @wam_atom_hash_insert_id(i64 %ri)
+  %ri1 = add i64 %ri, 1
+  br label %riloop
+ok:
+  ret i1 true
+fail:
+  ret i1 false
+}
+
+; Intern an atom by (str, len) through the hash index: hit returns the
+; existing id in O(1) amortized; miss copies the string, appends it to
+; the dynamic table (growing via realloc as needed), and records the
+; new id in the hash.
 define i64 @wam_intern_atom(i8* %str, i64 %len) {
 entry:
-  ; Scan static table.
+  %cap0 = load i64, i64* @wam_atom_hash_cap
+  %uninit = icmp eq i64 %cap0, 0
+  br i1 %uninit, label %init_hash, label %lookup
+
+init_hash:
+  ; First intern: size the table to keep the static atoms below
+  ; 50 percent load, minimum 4096 slots.
+  %st_cnt0 = load i32, i32* @wam_atom_string_count
+  %st0_64 = zext i32 %st_cnt0 to i64
+  %seed_need = shl i64 %st0_64, 2
+  %small = icmp ult i64 %seed_need, 4096
+  %init_cap = select i1 %small, i64 4096, i64 %seed_need
+  %init_ok = call i1 @wam_atom_hash_rebuild(i64 %init_cap)
+  br i1 %init_ok, label %lookup, label %intern_fail
+
+lookup:
+  %slot_idx = call i64 @wam_atom_hash_find_slot(i8* %str, i64 %len)
+  %slots = load i64*, i64** @wam_atom_hash_slots
+  %slot_p = getelementptr i64, i64* %slots, i64 %slot_idx
+  %v = load i64, i64* %slot_p
+  %hit = icmp ne i64 %v, 0
+  br i1 %hit, label %ret_hit, label %do_intern
+
+ret_hit:
+  %hit_id = sub i64 %v, 1
+  ret i64 %hit_id
+
+do_intern:
   %st_cnt = load i32, i32* @wam_atom_string_count
   %st_cnt_64 = zext i32 %st_cnt to i64
-  br label %scan_static
-scan_static:
-  %s_i = phi i64 [ 0, %entry ], [ %s_i1, %scan_static_step ]
-  %s_done = icmp uge i64 %s_i, %st_cnt_64
-  br i1 %s_done, label %scan_dyn_init, label %scan_static_check
-scan_static_check:
-  %st_slot_ptr = getelementptr [~w x i8*], [~w x i8*]* @wam_atom_strings, i32 0, i64 %s_i
-  %st_cand = load i8*, i8** %st_slot_ptr
-  %st_null = icmp eq i8* %st_cand, null
-  br i1 %st_null, label %scan_static_step, label %scan_static_cmp
-scan_static_cmp:
-  %st_eq = call i1 @wam_str_eq_n(i8* %str, i64 %len, i8* %st_cand)
-  br i1 %st_eq, label %ret_static_id, label %scan_static_step
-ret_static_id:
-  ret i64 %s_i
-scan_static_step:
-  %s_i1 = add i64 %s_i, 1
-  br label %scan_static
-
-scan_dyn_init:
   %dyn_cnt = load i32, i32* @wam_atom_dyn_count
   %dyn_cnt_64 = zext i32 %dyn_cnt to i64
   %dyn_ptr_0 = load i8**, i8*** @wam_atom_dyn_ptr
-  br label %scan_dyn
-scan_dyn:
-  %d_i = phi i64 [ 0, %scan_dyn_init ], [ %d_i1, %scan_dyn_step ]
-  %d_done = icmp uge i64 %d_i, %dyn_cnt_64
-  br i1 %d_done, label %do_intern, label %scan_dyn_check
-scan_dyn_check:
-  %d_slot_ptr = getelementptr i8*, i8** %dyn_ptr_0, i64 %d_i
-  %d_cand = load i8*, i8** %d_slot_ptr
-  %d_eq = call i1 @wam_str_eq_n(i8* %str, i64 %len, i8* %d_cand)
-  br i1 %d_eq, label %ret_dyn_id, label %scan_dyn_step
-ret_dyn_id:
-  %dyn_id = add i64 %st_cnt_64, %d_i
-  ret i64 %dyn_id
-scan_dyn_step:
-  %d_i1 = add i64 %d_i, 1
-  br label %scan_dyn
-
-do_intern:
-  ; Need to append. First, ensure capacity.
   %dyn_cap = load i32, i32* @wam_atom_dyn_cap
   %need_grow = icmp uge i32 %dyn_cnt, %dyn_cap
   br i1 %need_grow, label %do_grow, label %do_alloc_str
@@ -17003,9 +17604,26 @@ do_copy:
   %new_cnt = add i32 %dyn_cnt, 1
   store i32 %new_cnt, i32* @wam_atom_dyn_count
   %new_id = add i64 %st_cnt_64, %dyn_cnt_64
+  ; Record the new id in the hash, then grow past 50 percent load.
+  %idp1 = add i64 %new_id, 1
+  store i64 %idp1, i64* %slot_p
+  %hcnt = load i64, i64* @wam_atom_hash_count
+  %hcnt1 = add i64 %hcnt, 1
+  store i64 %hcnt1, i64* @wam_atom_hash_count
+  %hcap = load i64, i64* @wam_atom_hash_cap
+  %half = lshr i64 %hcap, 1
+  %needs_hash_grow = icmp ugt i64 %hcnt1, %half
+  br i1 %needs_hash_grow, label %grow_hash, label %ret_new
+grow_hash:
+  ; On rebuild failure the old table stays valid, only fuller; the
+  ; intern itself already succeeded.
+  %gcap = shl i64 %hcap, 1
+  %grow_ignored = call i1 @wam_atom_hash_rebuild(i64 %gcap)
+  br label %ret_new
+ret_new:
   ret i64 %new_id
 }',
-           [ArrSize, SlotsStr, ArrSize, CharSlotsStr, ArrSize, ArrSize, ArrSize, ArrSize]),
+           [ArrSize, SlotsStr, ArrSize, CharSlotsStr, ArrSize, ArrSize]),
        atomic_list_concat(StrGlobals, '\n', StrGlobalsStr),
        atomic_list_concat([StrGlobalsStr, LookupTable], '\n\n', IR)
     ).
@@ -17065,6 +17683,30 @@ llvm_emit_atom_field_eq_guard(GlobalBase, ValueIR, FieldIndex, Expected, SepCode
         '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0~n  ~w = call i1 @wam_atom_field_eq_value(%Value ~w, i64 ~w, i8* %~w_ptr, i64 ~w, i8 ~w)',
         [SafeBase, ArrLen, ArrLen, SafeBase,
          ResultIR, ValueIR, FieldIndex, SafeBase, ExpectedLen, SepCode]).
+
+%% llvm_emit_regex_field_match_guard(+GlobalBase, +ValueIR, +FieldIndex, +Regex, +SepCode, +ResultIR, -GlobalIR-CallIR)
+%
+%  Emit a native POSIX ERE guard over an atom-backed text record.
+%  FieldIndex 0 matches the whole record; positive indexes match the
+%  projected field slice. The pattern is emitted as a string global
+%  plus a per-site cache slot holding the lazily compiled regex_t;
+%  matching happens in the @wam_regex_field_match runtime helper. A
+%  pattern that fails to compile never matches.
+llvm_emit_regex_field_match_guard(GlobalBase, ValueIR, FieldIndex, Regex, SepCode, ResultIR, GlobalIR-CallIR) :-
+    integer(FieldIndex),
+    FieldIndex >= 0,
+    sanitize_functor_for_llvm(GlobalBase, SafeBase),
+    escape_llvm_string(Regex, EscapedRegex, RegexLen),
+    ArrLen is RegexLen + 1,
+    format(atom(GlobalIR),
+'@.~w = private constant [~w x i8] c"~w\\00"
+@~w_regex_cache = internal global i8* null',
+        [SafeBase, ArrLen, EscapedRegex, SafeBase]),
+    format(atom(CallIR),
+'  %~w_pat_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0
+  ~w = call i1 @wam_regex_field_match(%Value ~w, i64 ~w, i8 ~w, i8* %~w_pat_ptr, i8** @~w_regex_cache)',
+        [SafeBase, ArrLen, ArrLen, SafeBase,
+         ResultIR, ValueIR, FieldIndex, SepCode, SafeBase, SafeBase]).
 
 %% llvm_emit_atom_field_slice(+ValueIR, +FieldIndex, +SepCode, +SliceBase, -CallIR)
 %
@@ -17251,6 +17893,12 @@ llvm_emit_printf0(FmtGlobal, FmtLen, FmtVar, PrintVar, [FmtPtr, PrintCall]) :-
 %  main(argc, argv) that opens argv[1] at runtime, treats "-" as stdin,
 %  and defaults to stdin (fd 0) when no argument is given -- the awk
 %  pipeline-filter convention.
+%
+%  Records are read with @wam_stream_read_line_transient_value: %line
+%  is the reserved transient atom whose string lives in a shared buffer
+%  valid only until the next read, so per-record lowerings read it
+%  freely but anything persisted past the record must intern (field
+%  slices used as assoc keys and $0 foreign-call arguments do).
 llvm_emit_stream_driver_ir(
     InputPath,
     driver_blocks(RuntimeGlobals, LoopPhiIR, LoweredLabel, RecordIR,
@@ -17324,7 +17972,7 @@ check_handle_value:
 
 loop:
 ~w
-  %line = call %Value @wam_stream_read_line_value(%Value %handle)
+  %line = call %Value @wam_stream_read_line_transient_value(%Value %handle)
   %line_tag = extractvalue %Value %line, 0
   %line_payload = extractvalue %Value %line, 1
   %line_is_int = icmp eq i32 %line_tag, 1
@@ -17406,7 +18054,7 @@ check_handle_value:
 
 loop:
 ~w
-  %line = call %Value @wam_stream_read_line_value(%Value %handle)
+  %line = call %Value @wam_stream_read_line_transient_value(%Value %handle)
   %line_tag = extractvalue %Value %line, 0
   %line_payload = extractvalue %Value %line, 1
   %line_is_int = icmp eq i32 %line_tag, 1
@@ -17457,6 +18105,209 @@ fail_close:
         [PathGlobalIR, RuntimeGlobals,
          BytesLen, BytesLen, PathLen, EntrySetupIR, LoopPhiIR, LoweredLabel,
          LoweredLabel, RecordIR, ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR]).
+
+%% llvm_emit_binary_stream_driver_ir(+InputPath, +RecordSize, +DriverBlocks, -DriverIR)
+%
+%  Binary sibling of llvm_emit_stream_driver_ir: the loop reads
+%  fixed-size RecordSize-byte records into a reusable %rec buffer with
+%  @wam_stream_read_record instead of interning text lines. There is no
+%  %line/%line_s; lowered blocks read typed fields directly from %rec.
+%  Block labels (%check_handle_value, %continue_loop, close labels)
+%  match the text skeleton so loop-carried phis work unchanged. A
+%  trailing partial record fails with the read error exit code.
+%  InputPath is a concrete path or the stdin_or_argv sentinel.
+llvm_emit_binary_stream_driver_ir(
+    InputPath,
+    RecordSize,
+    driver_blocks(RuntimeGlobals, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    !,
+    llvm_emit_binary_stream_driver_ir(InputPath, RecordSize,
+        driver_blocks(RuntimeGlobals, '', LoopPhiIR, LoweredLabel, RecordIR,
+            ContinueIR, '', CloseOkLabel, CloseOkIR),
+        DriverIR).
+
+llvm_emit_binary_stream_driver_ir(
+    InputPath,
+    RecordSize,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    !,
+    llvm_emit_binary_stream_driver_ir(InputPath, RecordSize,
+        driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+            ContinueIR, '', CloseOkLabel, CloseOkIR),
+        DriverIR).
+
+llvm_emit_binary_stream_driver_ir(
+    stdin_or_argv,
+    RecordSize,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    !,
+    format(atom(DriverIR),
+'@.wam_stream_stdin_dash = private constant [2 x i8] c"-\00"
+~w
+
+define i32 @main(i32 %argc, i8** %argv) {
+entry:
+~w
+  %rec = call i8* @malloc(i64 ~w)
+  %rec_null = icmp eq i8* %rec, null
+  br i1 %rec_null, label %fail_open, label %pick_input
+
+pick_input:
+  %have_arg = icmp sgt i32 %argc, 1
+  br i1 %have_arg, label %check_argv_path, label %use_stdin
+
+check_argv_path:
+  %argv1_ptr = getelementptr i8*, i8** %argv, i64 1
+  %argv1 = load i8*, i8** %argv1_ptr
+  %dash_ptr = getelementptr [2 x i8], [2 x i8]* @.wam_stream_stdin_dash, i32 0, i32 0
+  %dash_cmp = call i32 @strcmp(i8* %argv1, i8* %dash_ptr)
+  %is_dash = icmp eq i32 %dash_cmp, 0
+  br i1 %is_dash, label %use_stdin, label %open_argv_file
+
+open_argv_file:
+  %argv1_len = call i64 @strlen(i8* %argv1)
+  %path_id = call i64 @wam_intern_atom(i8* %argv1, i64 %argv1_len)
+  %path0 = insertvalue %Value undef, i32 0, 0
+  %path = insertvalue %Value %path0, i64 %path_id, 1
+  %file_handle = call %Value @wam_stream_open_value(%Value %path)
+  br label %have_handle
+
+use_stdin:
+  %stdin_handle = call %Value @wam_stream_open_fd_value(i64 0)
+  br label %have_handle
+
+have_handle:
+  %handle = phi %Value [ %file_handle, %open_argv_file ], [ %stdin_handle, %use_stdin ]
+  %handle_tag = extractvalue %Value %handle, 0
+  %handle_is_int = icmp eq i32 %handle_tag, 1
+  br i1 %handle_is_int, label %check_handle_value, label %fail_open
+
+check_handle_value:
+  %handle_payload = extractvalue %Value %handle, 1
+  %handle_ok = icmp sgt i64 %handle_payload, 0
+  br i1 %handle_ok, label %loop, label %fail_open
+
+loop:
+~w
+  %rec_status = call i64 @wam_stream_read_record(%Value %handle, i64 ~w, i8* %rec)
+  %rec_eof = icmp eq i64 %rec_status, 0
+  br i1 %rec_eof, label %close_stream, label %check_record
+
+check_record:
+  %rec_ok = icmp eq i64 %rec_status, 1
+  br i1 %rec_ok, label %~w, label %fail_read
+
+~w:
+~w
+
+continue_loop:
+~w
+  br label %loop
+
+~w
+close_stream:
+  %close_ok = call i1 @wam_stream_close_value(%Value %handle)
+  br i1 %close_ok, label %~w, label %fail_close
+
+~w
+
+fail_open:
+  ret i32 10
+
+fail_read:
+  %close_ignore_read = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 11
+
+fail_close:
+  ret i32 16
+}
+',
+        [RuntimeGlobals, EntrySetupIR, RecordSize, LoopPhiIR, RecordSize,
+         LoweredLabel, LoweredLabel, RecordIR, ContinueIR, BreakCloseIR,
+         CloseOkLabel, CloseOkIR]).
+
+llvm_emit_binary_stream_driver_ir(
+    InputPath,
+    RecordSize,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    llvm_emit_c_string_global(wam_stream_input_path, InputPath, PathGlobalIR, PathLen, BytesLen),
+    format(atom(DriverIR),
+'~w
+~w
+
+define i32 @main() {
+entry:
+  %path_ptr = getelementptr [~w x i8], [~w x i8]* @.wam_stream_input_path, i32 0, i32 0
+  %path_id = call i64 @wam_intern_atom(i8* %path_ptr, i64 ~w)
+  %path0 = insertvalue %Value undef, i32 0, 0
+  %path = insertvalue %Value %path0, i64 %path_id, 1
+~w
+  %rec = call i8* @malloc(i64 ~w)
+  %rec_null = icmp eq i8* %rec, null
+  br i1 %rec_null, label %fail_open, label %open_stream
+
+open_stream:
+  %handle = call %Value @wam_stream_open_value(%Value %path)
+  %handle_tag = extractvalue %Value %handle, 0
+  %handle_is_int = icmp eq i32 %handle_tag, 1
+  br i1 %handle_is_int, label %check_handle_value, label %fail_open
+
+check_handle_value:
+  %handle_payload = extractvalue %Value %handle, 1
+  %handle_ok = icmp sgt i64 %handle_payload, 0
+  br i1 %handle_ok, label %loop, label %fail_open
+
+loop:
+~w
+  %rec_status = call i64 @wam_stream_read_record(%Value %handle, i64 ~w, i8* %rec)
+  %rec_eof = icmp eq i64 %rec_status, 0
+  br i1 %rec_eof, label %close_stream, label %check_record
+
+check_record:
+  %rec_ok = icmp eq i64 %rec_status, 1
+  br i1 %rec_ok, label %~w, label %fail_read
+
+~w:
+~w
+
+continue_loop:
+~w
+  br label %loop
+
+~w
+close_stream:
+  %close_ok = call i1 @wam_stream_close_value(%Value %handle)
+  br i1 %close_ok, label %~w, label %fail_close
+
+~w
+
+fail_open:
+  ret i32 10
+
+fail_read:
+  %close_ignore_read = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 11
+
+fail_close:
+  ret i32 16
+}
+',
+        [PathGlobalIR, RuntimeGlobals,
+         BytesLen, BytesLen, PathLen, EntrySetupIR, RecordSize, LoopPhiIR,
+         RecordSize, LoweredLabel, LoweredLabel, RecordIR, ContinueIR,
+         BreakCloseIR, CloseOkLabel, CloseOkIR]).
 
 %% llvm_emit_ascii_case_slice_print(+Mode, +PtrIR, +LenIR, +PrintBase, -CallIR)
 %
