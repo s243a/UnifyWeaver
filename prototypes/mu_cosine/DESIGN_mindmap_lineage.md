@@ -83,12 +83,15 @@ accounts for the **full materialized-path prefix**, via two complementary whole-
 
 - **LCA depth (structural):** how deep the *shared* prefix runs (shares-only-Root ⇒ ~0) — a topological measure
   of common ancestry.
-- **e5-of-prefix (semantic):** e5-embed the candidate's path prefix (`root / … / parent`) and the truth's, and
-  factor in their e5 distance — so `Math/Calculus/…` stays close to `Math/Analysis/…` despite the differing
-  immediate parent. This keeps e5 as **one factor inside the graph heuristic**, not e5 alone as μ (§2a caution);
-  the LLM judge still arbitrates the hard semantic cases.
+- **e5-of-prefix (semantic) — a TIE-BREAKER, not a multiplied factor.** A deep shared prefix (high LCA depth)
+  is *already* e5-similar, so multiplying both double-counts (review, critical #3). Instead, LCA-depth carries
+  the whole-lineage weight, and e5-of-prefix **only breaks ties among structurally-equivalent candidates** — two
+  paths with the same LCA depth / hop distance but different divergent tails (`Math/Calculus/…` vs
+  `Math/Analysis/…`) get separated by prefix e5-similarity. This keeps e5 as a *tie-breaker inside* the graph
+  heuristic, not e5 alone as μ (§2a caution); the LLM judge arbitrates the hard semantic cases.
 
-So `μ_graph ≈ decay(hops) · lca_depth_frac · f(e5_prefix_dist)` (exact combination TBD by the prototype).
+So `μ_graph = decay(hops) · lca_depth_frac`, with **e5-prefix distance breaking ties** among structurally
+equivalent candidates (decay variant per the table below; exact tie-break margin TBD by the prototype).
 
 **Decay choice — alternatives (we pick a default; these are the project's existing metrics).** The decay is
 exactly a flux/cost-function over the tree; see `docs/design/COST_FUNCTION_PHILOSOPHY.md` and
@@ -124,5 +127,54 @@ model's judge axis learns both calibrations side-by-side (`corpus_emb + judge_em
   full value lands with the harvester.
 - **Built:** `gen_mindmap_lineage.py` (491 chains). **Next:** substitution+e5 candidate gen → graph judge →
   targeted LLM judge → graded-round rows.
+
+## 6. Review responses (PR #3426)
+
+**Positive decay (D1):** graded-positive μ uses the SAME family as the graph judge — `μ = γ^d` (geometric in
+lineage distance `d`), γ tuned so a direct parent ≈ 0.9, a depth-5 ancestor ≈ 0.35. Harmonic `1/(1+d)` is the
+one alternative (heavier tail). Pinned to one family, not two.
+
+**Depth bias (methodology-2):** complete enumeration gives C(8,2)=28 pairs for a depth-8 chain vs 1 for depth-2,
+so deep systems-theory nodes would dominate. Mitigation: **per-chain pair weighting** (down-weight each pair by
+`1/(#pairs in its chain)` so every chain contributes equal mass), OR cap transitive pairs (keep all adjacent +
+sample K transitive). The pair generator will emit **pair-count-by-depth** and apply the weight.
+
+**Negative μ-floor (methodology-3):** since all nodes share the global root, **negatives are NOT μ=0.**
+Directional-reverse (ancestor|descendant) → `μ_rev ≈ 0.05–0.15` (residual membership); cross-branch →
+`decay(tree-distance)` down to `μ_floor ≈ 0.02` at shares-only-Root; only truly out-of-forest pairs get 0.
+
+**Negative ratio by type (D2):** the 3:1 budget is split, weighted to hard — per positive ≈ 1.5 hard
+(sibling/cousin, e5-near) + 1.0 cross-branch (medium) + 0.5 easy (permutation/far), logged by type.
+
+**70/30 semantics on a lineage (methodology-1):** unlike enwiki's distinct downward-vs-bidirectional EDGE types,
+on a lineage the 70/30 is a **query role**: 70% directional = μ(descendant|ancestor) [downward membership]; 30%
+"superposition" = **ancestor-as-query** / symmetric μ(anc,desc) fed both orders (SYM operator). Same operators,
+different query construction — will state this in §0.
+
+**Multi-hop vs remove-last-hop (methodology-4):** **complementary, not competing.** The multi-hop
+ancestor-descendant pairs (graded by distance) train the μ operators directly (LINEAGE positives). Remove-last-hop
+generates the **filing-candidate** examples (true parent + substituted alternates) the judges score — it *adds*
+hard negatives + judge-calibrated μ *on top of* the lineage positives, it does not replace them.
+
+**Multi-parent, operationalized (D3):** graded-round schema adds `gt_rank` (rank of the ground-truth filing
+among candidates by judge μ) + `gt_mu`. Disposition: `gt_rank==1` → normal; `gt_rank==2 & spread<τ_tie` → **keep
+both** (multi-parent); `gt_rank≥3` OR `gt_mu<τ_low` → **flag + exclude from training**. `τ_tie≈0.1`, `τ_low≈0.3`
+(μ scale), tuned on the pilot.
+
+**Cost-split + judge_agreement (D4, methodology-7):** output stores `mu_graph`, `mu_llm`, and
+`judge_agreement = abs(mu_graph − mu_llm)`. LLM spent only where graph-μ is uncertain: **near-tie** = top-two
+graph-μ within `τ_tie`; **structurally-distant** = candidate hop-distance `≥3` OR shares-only-Root. Else free
+graph-μ alone.
+
+**Judge fusion — DON'T (methodology-6):** graph-μ is truth=1 *by construction*; LLM-μ is *discovered* and can
+prefer a better parent — **not the same scale.** Stored as **separate judge-tagged rows** (`judge=graph`,
+`judge=gpt-5.5-low`), never averaged; the model's `judge_emb` is the only place they reconcile. `judge_agreement`
+is diagnostic, not a fused target.
+
+**Judge confidence spread (methodology-5):** the LLM pass logs `raw_top`, `raw_runner_up`, `spread` alongside the
+normalized μ, so the training loop can down-weight low-spread (uncertain) calls.
+
+**e5 hard/easy boundary (nit):** TBD from the pilot — set at the **median e5 distance of in-map sibling pairs**
+(empirical, per-map), not a fixed constant.
 
 See also: `DESIGN_path_operator.md`, `DESIGN_calibrated_judges.md`, `feedback_enwiki_sampling_strategy`.

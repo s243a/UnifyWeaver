@@ -55,7 +55,7 @@ OPS = {"SYM": 0, "HIER": 1, "_DEPRECATED_LLM": 2, "ELEM": 3}   # index 2 kept fo
 # (off-manifold noise, exactly like an absent ancestor slot); masking ⇒ provenance-AGNOSTIC μ, which is
 # the DEFAULT inference path (marginalize over sources). Reserved entries (enwiki) are for later corpora.
 CORPORA = {"simplewiki": 0, "enwiki": 1, "pearltrees": 2, "mindmap": 3}
-JUDGES = {"haiku": 0, "graph": 1, "human": 2, "sonnet": 3, "opus": 4, "gemini": 5, "gpt-5.5-low": 6}    # judge_emb is a LEARNED table (nn.Embedding, ~line 329), keyed by these indices — each (MODEL, reasoning-EFFORT) = own calibration row → own tag (low≠xhigh; they disagreed on labels). gpt-5.5-low = `codex exec -m gpt-5.5 -c model_reasoning_effort=low`. Cheaper future judges (gpt-5.3-low, gpt-5.4-low, …) get 7,8,… Tag pairs by the exact judge that scored them, NEVER default to haiku.
+JUDGES = {"haiku": 0, "graph": 1, "human": 2, "sonnet": 3, "opus": 4, "gemini": 5, "gpt-5.5-low": 6}    # learned judge_emb; each (model,effort) = own calibration row, tagged by the exact judge that scored it. Rationale/policy in DESIGN_calibrated_judges.md.
                                          # (SYM/LLM); graph = a Wikipedia edge / non-edge (WIKI, free μ=0 SYM
                                          # negatives); human = a hand-curated edge (mindmap/pearltrees);
                                          # sonnet/opus = stronger-model judgments (escalated tie-breaks, §14)

@@ -6,12 +6,12 @@ For each node, navigate parent links UP to the root and emit the materialized pa
 hangs off one structural parent, so lineage is well-defined. Yields data NOT in enwiki.
 
 Privacy: parse_smmx.py already scrubs (privacy.py::is_private_title drops a "private" node + its subtree,
-a private root drops the whole map) at parse time — so this builds on already-clean output. As a belt-and-
-suspenders check we ALSO skip any lineage whose path contains a "private"-labelled title.
+a private root drops the whole map) at parse time — so this builds on already-clean output. Belt-and-
+suspenders: we re-check both the RAW and the CLEANED path titles here.
 
 Edges from parse_smmx are src(parent)→dst(child):relation. Parent map:
   subtopic / subcategory : parent[dst] = src   (dst is under src)
-  super_category         : parent[src] = dst   (dst is broader than src)  — only if no structural parent
+  super_category         : parent[src] = dst   (dst is broader than src)  — fallback only, counted+logged
 Then materialized_path(node) = titles(root … node). 70/30 directional/superposition sampling comes AFTER.
 
   python3 gen_mindmap_lineage.py --maps context/*.smmx --out mindmap_lineage.tsv
@@ -25,34 +25,40 @@ try:
 except Exception:
     def is_private_title(t): return "private" in (t or "").lower()
 
+SENTINELS = ("root node", "root_node")   # shared top placeholder (folder "root"); dropped from paths
+NAV = ("via link",)                       # navigation artifacts
+
 
 def parse_map(smmx, tmp):
     pref = os.path.join(tmp, os.path.basename(smmx).replace(".smmx", "").replace(" ", "_"))
     r = subprocess.run([sys.executable, os.path.join(ROOT, "parse_smmx.py"), smmx, "--out-prefix", pref],
                        capture_output=True, text=True)
     if not os.path.exists(pref + "_nodes.tsv"):
-        return {}, {}, r.stderr
+        return {}, {}, set(), r.stderr
     title = {}
-    for ln in open(pref + "_nodes.tsv", encoding="utf-8"):
-        if ln.startswith("#"):
-            continue
-        c = ln.rstrip("\n").split("\t")
-        if c and c[0]:
-            title[c[0]] = c[2] if len(c) > 2 and c[2] else c[0]
-    struct_parent, broader = {}, {}      # keep structural (subtopic) separate from super_category fallback
-    for ln in open(pref + "_edges.tsv", encoding="utf-8"):
-        if ln.startswith("#"):
-            continue
-        c = ln.rstrip("\n").split("\t")
-        if len(c) < 3:
-            continue
-        src, dst, rel = c[0], c[1], c[2]
-        if rel in ("subtopic", "subcategory"):
-            struct_parent.setdefault(dst, src)          # first structural parent wins (principal)
-        elif rel == "super_category":
-            broader.setdefault(src, dst)
+    with open(pref + "_nodes.tsv", encoding="utf-8") as f:
+        for ln in f:
+            if ln.startswith("#"):
+                continue
+            c = ln.rstrip("\n").split("\t")
+            if c and c[0]:
+                title[c[0]] = c[2] if len(c) > 2 and c[2] else c[0]
+    struct_parent, broader = {}, {}       # structural (subtopic) vs super_category fallback
+    with open(pref + "_edges.tsv", encoding="utf-8") as f:
+        for ln in f:
+            if ln.startswith("#"):
+                continue
+            c = ln.rstrip("\n").split("\t")
+            if len(c) < 3:
+                continue
+            src, dst, rel = c[0], c[1], c[2]
+            if rel in ("subtopic", "subcategory"):
+                struct_parent.setdefault(dst, src)        # first structural parent wins (principal)
+            elif rel == "super_category":
+                broader.setdefault(src, dst)
     parent = dict(broader); parent.update(struct_parent)  # structural parent takes precedence
-    return title, parent, ""
+    fallback = set(broader) - set(struct_parent)          # parent came ONLY from super_category
+    return title, parent, fallback, ""
 
 
 def lineage(node, parent):
@@ -60,6 +66,18 @@ def lineage(node, parent):
     while node in parent and parent[node] not in seen:
         node = parent[node]; chain.append(node); seen.add(node)
     return list(reversed(chain))                          # root first
+
+
+def clean_titles(titles):
+    out = []
+    for t in titles:
+        tl = t.strip().lower()
+        if tl in SENTINELS or tl in NAV:
+            continue
+        if out and out[-1] == t:                          # collapse cross-map join echoes
+            continue
+        out.append(t)
+    return out
 
 
 def main():
@@ -70,30 +88,23 @@ def main():
     a = ap.parse_args()
     os.makedirs(a.tmp, exist_ok=True)
 
-    rows, skipped_private, per_map = [], 0, {}
+    rows, skipped_private, fb_total, per_map = [], 0, 0, {}
     for smmx in a.maps:
-        title, parent, err = parse_map(smmx, a.tmp)
+        title, parent, fallback, err = parse_map(smmx, a.tmp)
         mapname = os.path.basename(smmx).replace(".smmx", "")
         if not title:
             print(f"  SKIP {mapname}: {err.strip()[:80] or 'no nodes (private root?)'}"); continue
+        fb_total += len(fallback)
         n_map = 0
         for node in title:
             chain = lineage(node, parent)
             if len(chain) < 2:
                 continue                                  # roots/orphans — no lineage
-            titles = [title.get(k, k) for k in chain]
-            if any(is_private_title(t) for t in titles):  # belt-and-suspenders
+            raw = [title.get(k, k) for k in chain]
+            clean = clean_titles(raw)
+            # belt-and-suspenders: privacy on BOTH raw and cleaned titles (review #9)
+            if any(is_private_title(t) for t in raw) or any(is_private_title(t) for t in clean):
                 skipped_private += 1; continue
-            # CLEAN: drop the "Root Node" sentinel (in folder "root", a generic placeholder), drop nav
-            # artifacts ("via link"), and collapse consecutive duplicate titles (cross-map join echoes).
-            clean = []
-            for t in titles:
-                tl = t.strip().lower()
-                if tl in ("root node", "root_node") or tl == "via link":
-                    continue
-                if clean and clean[-1] == t:
-                    continue
-                clean.append(t)
             if len(clean) < 2:
                 continue
             rows.append((mapname, node, clean[-1], " / ".join(clean), len(clean)))
@@ -107,6 +118,7 @@ def main():
     print(f"\nwrote {len(rows)} lineage chains from {len(a.maps)} maps → {a.out}")
     print(f"  per-map: {per_map}")
     print(f"  depth distribution: {dict(sorted(Counter(r[4] for r in rows).items()))}")
+    print(f"  super_category-fallback parents (no structural parent): {fb_total}")
     print(f"  private lineages skipped (belt-and-suspenders): {skipped_private}")
 
 
