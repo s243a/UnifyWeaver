@@ -261,7 +261,10 @@ assigns it a float-typed expression or reads an already-double scalar
 (fixpoint), and i64 operands promote via `sitofp` at the update site.
 This works in text mode (`float($N)` = strtod) and binary mode
 (`float($N)` = native f64 field load), through `if`/`else`,
-`next`/`break`, and rule chains. `NF` is a compile-time
+`next`/`break`, and rule chains. END arithmetic composes with double
+slots: `END { print sum / NR }` promotes the whole expression to double
+(IEEE `fdiv`, no divide-by-zero guard, `%g` print), and float literals
+in END expressions (`print n * 1.5`) do the same. `NF` is a compile-time
 constant; `NR`, `if/else`, `next`/`break`, `printf`, and END reports
 compose unchanged. Associative arrays keyed by i64 fields work in
 binary mode: `{ counts[$1]++ }` uses the raw field value as the table key

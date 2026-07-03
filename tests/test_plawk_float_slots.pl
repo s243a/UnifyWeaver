@@ -60,10 +60,25 @@ test(fixpoint_promotes_transitive_reads) :-
         '@printf(i8* %end_f64_fmt_0, double %final_slot_'))),
     !.
 
-test(end_arith_on_double_slot_is_rejected) :-
-    % END i64 arithmetic cannot consume a double slot.
+test(end_arith_on_double_slot_promotes_to_f64) :-
+    % END arithmetic reading a double slot promotes the whole expression
+    % to double and prints %g (was rejected before the f64 END slice).
     plawk_parse_string("{ sum += 0.5 } END { print sum + 1 }\n", Program),
-    assertion(\+ plawk_program_native_driver_ir(Program, 'input.txt', _)).
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, ' = fadd double '))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'printed_end_expr_f64_0'))),
+    !.
+
+test(surface_end_f64_average) :-
+    % The classic average: double slot divided by NR, IEEE fdiv, %g print.
+    run_f64_smoke("{ sum += float($2) ; n++ } END { print sum / NR, n * 2, sum + 0.5 }\n",
+        "a 2.5\nb 0.5\nc 1.5\nd 3.5\n",
+        "2 8 8.5\n").
+
+test(surface_end_float_literal_expr) :-
+    run_f64_smoke("{ n++ } END { print n * 1.5 }\n",
+        "a\nb\nc\n",
+        "4.5\n").
 
 test(surface_double_accumulator_text) :-
     run_f64_smoke("{ sum += float($2) * 1.5 ; n++ } END { print n, sum }\n",
