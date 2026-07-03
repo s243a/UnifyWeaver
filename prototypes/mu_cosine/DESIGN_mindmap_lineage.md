@@ -76,6 +76,20 @@ Score a candidate by its **graph distance to the true filing**, decayed to μ (t
 maps to μ **directly and honestly** — distance-to-truth *is* a plausibility. Tag `judge=graph`
 (`JUDGES["graph"] = 1`, already defined).
 
+**Whole-lineage, not just the immediate parent.** A bare parent-to-parent hop is myopic: two candidates can be
+equidistant from the true parent yet sit in very different lineages (`Math/Calculus/X` vs `Math/Analysis/X` — one
+leaf-hop apart but nearly the same folder path — versus one hop into an unrelated subtree). So the graph-μ
+accounts for the **full materialized-path prefix**, via two complementary whole-lineage factors:
+
+- **LCA depth (structural):** how deep the *shared* prefix runs (shares-only-Root ⇒ ~0) — a topological measure
+  of common ancestry.
+- **e5-of-prefix (semantic):** e5-embed the candidate's path prefix (`root / … / parent`) and the truth's, and
+  factor in their e5 distance — so `Math/Calculus/…` stays close to `Math/Analysis/…` despite the differing
+  immediate parent. This keeps e5 as **one factor inside the graph heuristic**, not e5 alone as μ (§2a caution);
+  the LLM judge still arbitrates the hard semantic cases.
+
+So `μ_graph ≈ decay(hops) · lca_depth_frac · f(e5_prefix_dist)` (exact combination TBD by the prototype).
+
 **Decay choice — alternatives (we pick a default; these are the project's existing metrics).** The decay is
 exactly a flux/cost-function over the tree; see `docs/design/COST_FUNCTION_PHILOSOPHY.md` and
 `docs/design/SCAN_STRATEGY_SPECIFICATION.md`:
