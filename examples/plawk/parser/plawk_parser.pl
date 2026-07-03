@@ -132,31 +132,150 @@ not_pattern(Pattern) -->
     base_pattern(Pattern).
 
 base_pattern(Pattern) -->
-    prefix_pattern(Pattern),
+    slash_regex_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
-    literal_pattern(Pattern),
+    field_match_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
     field_i64_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
-    field_eq_pattern(Pattern).
+    field_eq_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
+    prolog_guard_pattern(Pattern).
 
-prefix_pattern(prefix(Prefix)) -->
-    "/^",
-    prefix_codes(Codes),
+%% prolog_guard_pattern(-Pattern)//
+%
+%  A named Prolog predicate as a rule guard: `pred(args...)` matches
+%  when the compiled predicate succeeds. Arguments are field atoms
+%  ($0 is the whole record), string literal atoms, or integers.
+prolog_guard_pattern(prolog_guard(Name, Args)) -->
+    identifier(Name),
+    ws,
+    "(",
+    ws,
+    foreign_args(Args),
+    ws,
+    ")".
+
+foreign_args([Arg | Args]) -->
+    foreign_arg(Arg),
+    foreign_args_rest(Args).
+
+foreign_args_rest([Arg | Args]) -->
+    ws,
+    ",",
+    ws,
+    !,
+    foreign_arg(Arg),
+    foreign_args_rest(Args).
+foreign_args_rest([]) -->
+    [].
+
+foreign_arg(field(Index)) -->
+    "$",
+    integer_codes(IndexCodes),
+    !,
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index >= 0
+    }.
+foreign_arg(string(Value)) -->
+    quoted_string(ValueCodes),
+    !,
+    { string_codes(Value, ValueCodes) }.
+foreign_arg(int(Value)) -->
+    signed_integer_value(Value).
+
+%% slash_regex_pattern(-Pattern)//
+%
+%  A bare /re/ pattern matches the whole record, as in awk. Bodies with
+%  no ERE metacharacters keep their existing fast native lowerings: a
+%  leading ^ plus a literal rest stays prefix/1 and an all-literal body
+%  stays contains/1. Anything else becomes field_match(0, Regex) and is
+%  matched with POSIX ERE at runtime.
+slash_regex_pattern(Pattern) -->
+    "/",
+    regex_body_codes(Codes),
     "/",
     { Codes \== [],
-      string_codes(Prefix, Codes)
+      classify_regex_codes(Codes, Pattern)
     }.
 
-literal_pattern(contains(Literal)) -->
+classify_regex_codes([0'^ | Rest], prefix(Prefix)) :-
+    Rest \== [],
+    \+ ere_metachar_in_codes(Rest),
+    !,
+    string_codes(Prefix, Rest).
+classify_regex_codes(Codes, contains(Literal)) :-
+    \+ ere_metachar_in_codes(Codes),
+    !,
+    string_codes(Literal, Codes).
+classify_regex_codes(Codes, field_match(0, Regex)) :-
+    string_codes(Regex, Codes).
+
+ere_metachar_in_codes(Codes) :-
+    member(Code, Codes),
+    memberchk(Code, [0'., 0'[, 0'], 0'(, 0'), 0'*, 0'+, 0'?,
+                     0'{, 0'}, 0'|, 0'^, 0'$, 0'\\]),
+    !.
+
+%% field_match_pattern(-Pattern)//
+%
+%  awk's match operators: $N ~ /re/ and $N !~ /re/. $0 works via
+%  field index 0. !~ reuses the combinator AST as not_pat(field_match).
+field_match_pattern(Pattern) -->
+    "$",
+    integer_codes(IndexCodes),
+    ws,
+    match_operator(Negated),
+    ws,
     "/",
-    literal_pattern_codes(Codes),
+    regex_body_codes(Codes),
     "/",
-    { Codes \== [],
-      string_codes(Literal, Codes)
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index >= 0,
+      Codes \== [],
+      string_codes(Regex, Codes),
+      (   Negated == false
+      ->  Pattern = field_match(Index, Regex)
+      ;   Pattern = not_pat(field_match(Index, Regex))
+      )
+    }.
+
+match_operator(true) -->
+    "!~".
+match_operator(false) -->
+    "~".
+
+%% regex_body_codes(-Codes)//
+%
+%  Codes between the pattern slashes. Backslash pairs pass through
+%  unchanged so ERE escapes like \. reach regcomp, except \/ which
+%  unescapes to a literal slash.
+regex_body_codes([Code | Codes]) -->
+    regex_body_code(Code),
+    regex_body_codes_rest(Codes).
+
+regex_body_codes_rest(Codes) -->
+    regex_body_code(Code),
+    !,
+    { Codes = [Code | Rest] },
+    regex_body_codes_rest(Rest).
+regex_body_codes_rest([]) -->
+    [].
+
+regex_body_code(0'/) -->
+    "\\/",
+    !.
+regex_body_code(Code) -->
+    [Code],
+    { Code =\= 0'/,
+      Code =\= 0'\n,
+      Code =\= 0'\r
     }.
 
 field_eq_pattern(field_eq(Index, Value)) -->
@@ -198,43 +317,6 @@ numeric_cmp_op(lt) -->
 numeric_cmp_op(gt) -->
     ">".
 
-prefix_codes([Code | Codes]) -->
-    [Code],
-    { Code =\= 0'/,
-      Code =\= 0'\n,
-      Code =\= 0'\r
-    },
-    prefix_codes_rest(Codes).
-
-prefix_codes_rest([Code | Codes]) -->
-    [Code],
-    { Code =\= 0'/,
-      Code =\= 0'\n,
-      Code =\= 0'\r
-    },
-    !,
-    prefix_codes_rest(Codes).
-prefix_codes_rest([]) -->
-    [].
-
-literal_pattern_codes([Code | Codes]) -->
-    [Code],
-    { Code =\= 0'/,
-      Code =\= 0'\n,
-      Code =\= 0'\r
-    },
-    literal_pattern_codes_rest(Codes).
-
-literal_pattern_codes_rest([Code | Codes]) -->
-    [Code],
-    { Code =\= 0'/,
-      Code =\= 0'\n,
-      Code =\= 0'\r
-    },
-    !,
-    literal_pattern_codes_rest(Codes).
-literal_pattern_codes_rest([]) -->
-    [].
 
 integer_codes([Code | Codes]) -->
     [Code],
@@ -345,6 +427,10 @@ begin_assignment(set(var(Name), string(Value))) -->
     quoted_string(ValueCodes),
     { string_codes(Value, ValueCodes) }.
 
+begin_assignment_name('BINFMT') -->
+    "BINFMT".
+begin_assignment_name('OUTFMT') -->
+    "OUTFMT".
 begin_assignment_name('FS') -->
     "FS".
 begin_assignment_name('OFS') -->
@@ -412,6 +498,9 @@ action(Action) -->
     printf_action(Action),
     !.
 action(Action) -->
+    writebin_action(Action),
+    !.
+action(Action) -->
     print_action(Action),
     !.
 action(Action) -->
@@ -430,6 +519,11 @@ action(Action) -->
     increment_action(Action),
     !.
 
+%% if_action(-Action)//
+%
+%  awk conditionals: `else` is optional (an absent else parses as an
+%  empty branch), and `else if` chains nest as a single-element else
+%  branch containing the next if.
 if_action(if(Pattern, ThenActions, ElseActions)) -->
     "if",
     ws,
@@ -440,8 +534,22 @@ if_action(if(Pattern, ThenActions, ElseActions)) -->
     ")",
     ws,
     action_block(ThenActions),
+    if_else_part(ElseActions).
+
+if_else_part(ElseActions) -->
     "else",
+    identifier_boundary,
+    if_else_body(ElseActions),
+    !.
+if_else_part([]) -->
+    [].
+
+if_else_body([ElseIfAction]) -->
     required_ws,
+    if_action(ElseIfAction),
+    !.
+if_else_body(ElseActions) -->
+    ws,
     action_block(ElseActions).
 
 condition_pattern(Pattern) -->
@@ -488,6 +596,12 @@ scalar_value_expr(Value) -->
 
 scalar_delta_expr(Expr) -->
     i64_binary_surface_expr(Expr).
+% Bare float leaves before the integer clause: "0.5" must not stop at
+% the integer prefix "0".
+scalar_delta_expr(Expr) -->
+    float_field_expr(Expr).
+scalar_delta_expr(Expr) -->
+    float_literal_expr(Expr).
 scalar_delta_expr(int(Value)) -->
     integer_codes(ValueCodes),
     { ValueCodes \== [],
@@ -530,6 +644,11 @@ scalar_delta_expr(index(Field, string(Needle))) -->
     { Field = field(_),
       NeedleCodes \== [],
       string_codes(Needle, NeedleCodes) }.
+scalar_delta_expr(Expr) -->
+    prolog_call_expr(Expr),
+    !.
+scalar_delta_expr(var(Name)) -->
+    identifier(Name).
 
 print_action(print(Fields)) -->
     "print",
@@ -542,6 +661,15 @@ printf_action(printf(string(Format), Args)) -->
     quoted_string(FormatCodes),
     printf_args(Args),
     { string_codes(Format, FormatCodes) }.
+
+%% writebin_action(-Action)//
+%
+%  writebin expr, expr, ... - emit one fixed-layout binary record on
+%  stdout, laid out per BEGIN { OUTFMT = "..." }.
+writebin_action(writebin(Fields)) -->
+    "writebin",
+    required_ws,
+    print_fields(Fields).
 
 printf_args([Arg | Args]) -->
     ws,
@@ -667,6 +795,15 @@ field_expr(string(Value)) -->
     quoted_string(ValueCodes),
     { string_codes(Value, ValueCodes)
     }.
+field_expr(Expr) -->
+    float_field_expr(Expr),
+    !.
+field_expr(Expr) -->
+    float_literal_expr(Expr),
+    !.
+field_expr(Expr) -->
+    prolog_call_expr(Expr),
+    !.
 field_expr(var(Name)) -->
     identifier(Name).
 
@@ -749,6 +886,12 @@ i64_factor_expr(Expr) -->
 i64_factor_expr(Expr) -->
     i64_binary_primary_expr(Expr),
     !.
+i64_factor_expr(Expr) -->
+    float_field_expr(Expr),
+    !.
+i64_factor_expr(Expr) -->
+    float_literal_expr(Expr),
+    !.
 i64_factor_expr(int(Value)) -->
     integer_codes(ValueCodes),
     !,
@@ -758,6 +901,64 @@ i64_factor_expr(int(Value)) -->
 i64_factor_expr(field(Index)) -->
     "$",
     integer_codes(IndexCodes),
+    !,
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index >= 0
+    }.
+i64_factor_expr(Expr) -->
+    prolog_call_expr(Expr),
+    !.
+i64_factor_expr(var(Name)) -->
+    identifier(Name).
+
+%% prolog_call_expr(-Expr)//
+%
+%  A named Prolog predicate as an i64 expression: `pred(args...)` calls
+%  the compiled predicate with one extra trailing output argument and
+%  yields its integer binding, or 0 when the call fails or binds a
+%  non-integer.
+prolog_call_expr(prolog_call(Name, Args)) -->
+    identifier(Name),
+    ws,
+    "(",
+    ws,
+    foreign_args(Args),
+    ws,
+    ")".
+
+%% float_literal_expr(-Expr)//
+%
+%  A decimal float literal such as 2.5 or 0.1, kept exact as
+%  float_const(Mantissa, Denominator) with Denominator = 10^k so
+%  codegen can emit a correctly rounded double without a lossy
+%  Prolog-float round trip (LLVM rejects inexact decimal FP text).
+float_literal_expr(float_const(Mantissa, Denominator)) -->
+    integer_codes(IntCodes),
+    ".",
+    integer_codes(FracCodes),
+    { IntCodes \== [],
+      FracCodes \== [],
+      append(IntCodes, FracCodes, AllCodes),
+      number_codes(Mantissa, AllCodes),
+      length(FracCodes, FracLen),
+      Denominator is 10 ** FracLen
+    }.
+
+%% float_field_expr(-Expr)//
+%
+%  awk-style numeric coercion to double: float($N) parses the field
+%  with strtod semantics (leading number, trailing text ignored, 0.0
+%  when non-numeric).
+float_field_expr(float_field(Index)) -->
+    "float",
+    ws,
+    "(",
+    ws,
+    "$",
+    integer_codes(IndexCodes),
+    ws,
+    ")",
     { IndexCodes \== [],
       number_codes(Index, IndexCodes),
       Index >= 0
@@ -807,6 +1008,9 @@ assoc_key_expr(field(Index)) -->
       number_codes(Index, IndexCodes),
       Index >= 0
     }.
+assoc_key_expr(int(Value)) -->
+    signed_integer_value(Value),
+    !.
 assoc_key_expr(string(Value)) -->
     quoted_string(ValueCodes),
     { ValueCodes \== [],
