@@ -11,6 +11,7 @@ Copyright (c) 2026 John William Creighton (s243a)
 
 > **Companion docs:** [Philosophy](PLAWK_PHILOSOPHY.md) ·
 > [Specification](PLAWK_SPECIFICATION.md) ·
+> [Execution Architecture](PLAWK_EXECUTION_ARCHITECTURE.md) ·
 > [Submodule README](../../examples/plawk/README.md)
 
 ---

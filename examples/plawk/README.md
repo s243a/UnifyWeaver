@@ -303,6 +303,11 @@ concepts like `$0`, `$1`, `NR`, `NF`, `FS`, `OFS`, and `print`, see
 - [`docs/design/PLAWK_PHILOSOPHY.md`](../../docs/design/PLAWK_PHILOSOPHY.md)
 - [`docs/design/PLAWK_SPECIFICATION.md`](../../docs/design/PLAWK_SPECIFICATION.md)
 - [`docs/design/PLAWK_IMPLEMENTATION_PLAN.md`](../../docs/design/PLAWK_IMPLEMENTATION_PLAN.md)
+- [`docs/design/PLAWK_EXECUTION_ARCHITECTURE.md`](../../docs/design/PLAWK_EXECUTION_ARCHITECTURE.md)
+  — where the system sits on the compiled/JIT/interpreted spectrum: PLAWK
+  loops are AOT native code, transpiled Prolog is WAM bytecode on a
+  natively compiled interpreter in the same binary, and there is no JIT
+  (yet).
 
 The implementation plan's **Codebase reconciliation** section captures the
 original audit findings and the current compiled-stream boundary. The buffered
