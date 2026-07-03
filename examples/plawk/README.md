@@ -91,6 +91,7 @@ swipl -q -s tests/test_plawk_binary_writers.pl -g "setenv('UW_SMOKE_TMPDIR', '/m
 swipl -q -s tests/test_plawk_forin_writebin.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_outfmt_strings.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_varlen_records.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_varlen_writers.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -282,7 +283,11 @@ that materializes each record into the same fixed access layout, so an
 guards, `sN` OUTFMT passthrough) while numeric fields keep guards,
 arithmetic, and assoc keys. Clean EOF is only legal at a record
 boundary; oversized lengths, truncated payloads, and mid-record EOF
-exit with the read-error code. See
+exit with the read-error code. `lpsN` also works in OUTFMT: writebin emits the
+8-byte length plus exactly the payload bytes (no padding), sourcing
+from literals, `sM`/`lpsM` input fields, or text-mode slices clamped to
+the cap - writer output is byte-compatible with the `lpsN` reader, so
+varlen plawk-to-plawk pipelines round-trip. See
 [`docs/design/PLAWK_DCG_BINARY_READERS.md`](../../docs/design/PLAWK_DCG_BINARY_READERS.md)
 for the grammar-to-native-reader lowering design this is the first
 slice of. Fixed-width string fields are in: with
