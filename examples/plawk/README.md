@@ -98,6 +98,7 @@ swipl -q -s tests/test_plawk_rep_strings.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/
 swipl -q -s tests/test_plawk_union_rep.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_tier2_blob.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_f64_foreign.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_union_writebin.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -333,8 +334,12 @@ or in non-leftmost position are rejected. Arms can carry their own
 repetition: `BINFMT = "case(i64 rep4(lps8 i64) | i64)"` gives arm 0 an
 element list, and `foreach` inside that arm's rules (either spelling)
 iterates it -- element types, staging, and buffer sizing all resolve
-per arm. (Assoc
-arrays and writebin inside case blocks are later slices.)
+per arm. writebin also works inside case blocks: OUTFMT stays
+program-wide (one output layout regardless of arm) while each rule's
+source fields type against its own arm, so a two-arm stream can be
+normalized into one fixed layout -- a pure per-arm normalizer needs no
+END and no scalars at all. (Assoc arrays inside case blocks are a
+later slice.)
 `lpsN` also works in OUTFMT: writebin emits the
 8-byte length plus exactly the payload bytes (no padding), sourcing
 from literals, `sM`/`lpsM` input fields, or text-mode slices clamped to

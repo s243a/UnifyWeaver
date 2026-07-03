@@ -238,13 +238,17 @@ plawk_program_native_driver_ir(
 % chain where each rule's guard checks the record tag before its own
 % pattern, and each rule's fields type against its arm's layout. The
 % END print block is optional (a pure per-arm printer needs none).
+% writebin works inside case blocks: OUTFMT is program-wide, source
+% fields type against each rule's arm.
 plawk_program_native_driver_ir(
-    program(BeginClauses, case_blocks(CaseBlocks), EndClauses),
+    program(BeginClauses, case_blocks(CaseBlocks0), EndClauses),
     InputPath,
     DriverIR
 ) :-
     plawk_record_descriptor(BeginClauses, Descriptor),
     Descriptor = binfmt_union(Arms),
+    plawk_resolve_union_writebin_blocks(BeginClauses, CaseBlocks0, CaseBlocks,
+        WritebinPlan),
     plawk_union_program_ok(Arms, CaseBlocks),
     plawk_union_flatten_rules(CaseBlocks, Arms, Rules),
     (   EndClauses = [end([print(PrintFields)])]
@@ -253,16 +257,27 @@ plawk_program_native_driver_ir(
         PrintFields = [],
         HasEnd = false
     ),
-    plawk_scalar_state_plan(Rules, PrintFields, StatePlan),
+    (   plawk_scalar_state_plan(Rules, PrintFields, StatePlan)
+    ->  true
+    ;   % a pure normalizer: every rule just writebins its arm into
+        % the shared output layout -- no scalar state at all
+        WritebinPlan = outfmt(_OutTypes, _OutSize),
+        PrintFields == [],
+        StatePlan = state_plan([])
+    ),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
-    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR0),
+    plawk_writebin_entry_lines(WritebinPlan, WritebinEntryIR),
+    plawk_join_nonempty_ir([BeginIR0, WritebinEntryIR], BeginIR),
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
     plawk_scalar_rule_chain_ir(Rules, StatePlan, Descriptor, OutputSeparator,
         RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
     plawk_rules_body_print_fields(Rules, BodyPrintFields),
     plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
-    append(PrintFields, BodyPrintFields, PrintExprs),
+    plawk_rules_writebin_exprs(Rules, WritebinExprs),
+    append(PrintFields, BodyPrintFields, PrintExprs0),
+    append(PrintExprs0, WritebinExprs, PrintExprs),
     append(PrintExprs, ScalarExprs, RecordCounterExprs),
     plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
     plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
@@ -276,8 +291,9 @@ plawk_program_native_driver_ir(
     ->  plawk_scalar_end_print_ir(PrintFields, StatePlan, OutputSeparator, EndPrintIR)
     ;   EndPrintIR = ''
     ),
-    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
-        [BeginGlobalIR, StringGlobalIR, RuleGlobalIR]),
+    plawk_writebin_globals(WritebinPlan, WritebinGlobalIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, RuleGlobalIR, WritebinGlobalIR]),
     plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
@@ -2305,6 +2321,33 @@ plawk_rules_have_writebin(Rules) :-
     member(rule(_Pattern, Actions), Rules),
     plawk_actions_have_writebin(Actions),
     !.
+
+%% plawk_resolve_union_writebin_blocks(+BeginClauses, +CaseBlocks0,
+%%     -CaseBlocks, -WritebinPlan)
+%
+%  The case-block variant of the writebin pre-pass: OUTFMT is
+%  program-wide (one output layout regardless of which arm produced
+%  the record), so the plan is built once and every arm's rules are
+%  stamped with it. Source-field typing against each rule's own arm
+%  happens downstream via the per-rule descriptor.
+plawk_resolve_union_writebin_blocks(BeginClauses, CaseBlocks0, CaseBlocks,
+        WritebinPlan) :-
+    ( member(case_arm(_I, ArmRules), CaseBlocks0),
+      plawk_rules_have_writebin(ArmRules)
+    ->  plawk_begin_outfmt_types(BeginClauses, Types),
+        forall(member(Type, Types),
+            ( memberchk(Type, [i64, f64]) ; Type = s(_W) ; Type = lps(_C) )),
+        plawk_binfmt_record_size(binfmt(Types), Size),
+        WritebinPlan = outfmt(Types, Size),
+        maplist(plawk_resolve_union_writebin_block(Types), CaseBlocks0,
+            CaseBlocks)
+    ;   WritebinPlan = none,
+        CaseBlocks = CaseBlocks0
+    ).
+
+plawk_resolve_union_writebin_block(Types, case_arm(Index, Rules0),
+        case_arm(Index, Rules)) :-
+    maplist(plawk_resolve_writebin_rule(Types), Rules0, Rules).
 
 plawk_actions_have_writebin(Actions) :-
     member(Action, Actions),
