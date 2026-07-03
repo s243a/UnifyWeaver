@@ -159,16 +159,16 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
 
 ## Known design debt
 
-- **WAM bug: constant-in-list clause heads never match.** A clause head
-  containing a constant inside a list cell — `p(..., [44|T], ...)` —
-  compiles (get_list/unify_constant path) but never matches at runtime;
-  the semantically identical `p(..., [C|T], ...) :- C == 44` works.
-  Found by the Tier-2 payload DCG (the first code to exercise that head
-  shape through the hybrid compiler); minimal reproducer: a predicate
-  counting leading commas of a code list returns failure on `",,,"`
-  with the constant head and 3 with the guard form. Needs a targeted
-  fix in the WAM head-compilation path; until then, write separators as
-  guards.
+- **(FIXED) WAM bug: constant-in-list clause heads never matched.**
+  `unify_constant` built its read-mode comparison value with a
+  hardcoded Atom tag (op2 was unused), so an integer constant in a
+  list/structure head — `p(..., [44|T], ...)` — compared `Atom(44)`
+  against the heap's `Integer(44)` and always failed. The fix packs
+  the tag into `op2 >> 16` (both encoders, mirroring `get_constant`)
+  and routes read mode through the general `wam_unify_value`, which
+  also closes a second hole: an unbound sub-arg used to "match"
+  without being bound; it now binds with trailing. The Tier-2 payload
+  DCG's comma clause is the standing regression test.
 
 
 - **`foreach` unrolling does not scale in code size.** The bounded-

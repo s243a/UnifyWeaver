@@ -1166,9 +1166,18 @@ string_replace(Haystack, Needle, Replacement, Result) :-
 % PHASE 5: Hybrid Module Assembly
 % ============================================================================
 
-%% write_wam_llvm_project(+Predicates, +Options, +OutputFile)
+%% write_wam_llvm_project(+Predicates, +Options, +OutputFile) is det.
+%
 %  Generates a complete LLVM IR module for the given predicates.
+%  Deterministic by contract: the body's compilation pipeline leaves
+%  internal choice points, and a caller that backtracks into them
+%  (e.g. a test negating a goal that contains this call) re-runs the
+%  whole compiler search -- one such \+ burned 45 CPU-minutes before
+%  this fence existed.
 write_wam_llvm_project(Predicates, Options, OutputFile) :-
+    once(write_wam_llvm_project_(Predicates, Options, OutputFile)).
+
+write_wam_llvm_project_(Predicates, Options, OutputFile) :-
     option(module_name(ModuleName), Options, 'wam_generated'),
     option(target_triple(Triple), Options, 'x86_64-pc-linux-gnu'),
     option(target_datalayout(DataLayout), Options,
@@ -2988,21 +2997,25 @@ uvl.fail:
   ret i1 false').
 
 wam_llvm_case('unify_constant',
-'  ; unify_constant: op1 = constant value (packed)
-  ; Read mode: check next arg equals constant
-  ; Write mode: push constant onto heap
+'  ; unify_constant: op1 = constant value (packed), op2 = tag << 16.
+  ; The tag (0 = Atom, 1 = Integer) was historically missing: the
+  ; comparison value was always built Atom-tagged, so an integer
+  ; constant in a list/structure head (p([44|T])) compared Atom(44)
+  ; against the heap Integer(44) and never matched. Read mode now
+  ; also goes through the general unifier, so an unbound sub-arg is
+  ; BOUND to the constant (with trailing) instead of silently
+  ; "matching" while staying unbound.
   %uc.stype = call i32 @wam_peek_stack_type(%WamState* %vm)
   %uc.is_read = icmp eq i32 %uc.stype, 1
-  %uc.val = insertvalue %Value undef, i32 0, 0
+  %uc.op2_32 = trunc i64 %op2 to i32
+  %uc.tag = lshr i32 %uc.op2_32, 16
+  %uc.val = insertvalue %Value undef, i32 %uc.tag, 0
   %uc.val2 = insertvalue %Value %uc.val, i64 %op1, 1
   br i1 %uc.is_read, label %uc.read, label %uc.write
 
 uc.read:
-  ; Read mode: get expected, check equality
   %uc.expected = call %Value @wam_unify_ctx_next(%WamState* %vm)
-  %uc.eq = call i1 @value_equals(%Value %uc.expected, %Value %uc.val2)
-  %uc.exp_unb = call i1 @value_is_unbound(%Value %uc.expected)
-  %uc.ok = or i1 %uc.eq, %uc.exp_unb
+  %uc.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %uc.expected, %Value %uc.val2)
   br i1 %uc.ok, label %uc.read_ok, label %uc.fail
 
 uc.read_ok:
@@ -16961,7 +16974,7 @@ compile_wam_runtime_to_llvm(Options, LLVMCode) :-
 wam_instruction_to_llvm_literal(get_constant(C, Ai), Lit) :-
     llvm_pack_value(C, PackedVal),
     reg_name_to_index(Ai, RegIdx),
-    ( integer(C) -> Tag = 1 ; Tag = 0 ),
+    llvm_constant_tag(C, Tag),
     Op2 is (Tag << 16) \/ RegIdx,
     format(atom(Lit), '{ i32 0, i64 ~w, i64 ~w }', [PackedVal, Op2]).
 wam_instruction_to_llvm_literal(get_variable(Xn, Ai), Lit) :-
@@ -16995,7 +17008,9 @@ wam_instruction_to_llvm_literal(unify_value(Xn), Lit) :-
     format(atom(Lit), '{ i32 6, i64 ~w, i64 0 }', [XnIdx]).
 wam_instruction_to_llvm_literal(unify_constant(C), Lit) :-
     llvm_pack_value(C, PackedVal),
-    format(atom(Lit), '{ i32 7, i64 ~w, i64 0 }', [PackedVal]).
+    llvm_constant_tag(C, Tag),
+    Op2 is Tag << 16,
+    format(atom(Lit), '{ i32 7, i64 ~w, i64 ~w }', [PackedVal, Op2]).
 
 wam_instruction_to_llvm_literal(put_constant(C, Ai), Lit) :-
     llvm_pack_value(C, PackedVal),
@@ -18823,6 +18838,14 @@ target_struct_tm_gmtoff_offset(_, 40).
 
 % --- Value packing helpers ---
 
+% %Value tag for a head constant: integers (raw or integer/1-wrapped)
+% are tag 1, everything else interns as an atom (tag 0). get_constant
+% and unify_constant share this so integer constants in heads compare
+% against heap Integers, not same-payload Atoms.
+llvm_constant_tag(C, 1) :- integer(C), !.
+llvm_constant_tag(integer(_), 1) :- !.
+llvm_constant_tag(_, 0).
+
 llvm_pack_value(atom(A0), Packed) :- !,
     llvm_normalize_atom_token(A0, A),
     intern_atom(A, Packed).
@@ -19523,7 +19546,9 @@ wam_line_to_llvm_literal(["unify_value", Xn], Lit) :-
 wam_line_to_llvm_literal(["unify_constant", C], Lit) :-
     clean_comma(C, CC),
     llvm_pack_value_str(CC, PackedVal),
-    format(atom(Lit), '%Instruction { i32 7, i64 ~w, i64 0 }', [PackedVal]).
+    ( number_string(_, CC) -> Tag = 1 ; Tag = 0 ),
+    Op2 is Tag << 16,
+    format(atom(Lit), '%Instruction { i32 7, i64 ~w, i64 ~w }', [PackedVal, Op2]).
 
 wam_line_to_llvm_literal(["put_constant", C, Ai], Lit) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),

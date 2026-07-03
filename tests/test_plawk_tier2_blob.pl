@@ -36,14 +36,11 @@ user:plawk_nums(Sum, S0, S) :-
     user:plawk_num(N, S0, S1),
     user:plawk_nums_rest(N, Sum, S1, S).
 
-% NOTE: the separator is matched with a variable head plus an ==/2
-% guard rather than the natural [0', | S0] head: the hybrid WAM
-% compiler currently miscompiles clause heads with a constant inside a
-% list cell (the get_list/unify_constant path never matches at
-% runtime). Known upstream bug -- see the PR notes; this formulation is
-% semantically identical.
-user:plawk_nums_rest(Acc, Sum, [C | S0], S) :-
-    C == 0',,
+% The natural constant-in-list head. This shape is ALSO the regression
+% test for the unify_constant tag bug: the instruction used to build
+% its comparison value Atom-tagged, so Integer(44) on the heap never
+% matched and every comma-separated payload summed to failure.
+user:plawk_nums_rest(Acc, Sum, [0', | S0], S) :-
     user:plawk_num(N, S0, S1),
     Acc2 is Acc + N,
     user:plawk_nums_rest(Acc2, Sum, S1, S).
@@ -108,6 +105,21 @@ test(tier2_rejections) :-
         -> assertion(\+ build_tier2_ir(Program, _))
         ;  true
         )).
+
+test(compile_is_deterministic) :-
+    % write_wam_llvm_project is det by contract: a caller backtracking
+    % into it (e.g. \+ over a goal containing the compile) must not
+    % re-run the compiler search.
+    tmp_root(Root),
+    directory_file_path(Root, 'uw_plawk_tier2_det', Dir),
+    clean_dir(Dir),
+    make_directory_path(Dir),
+    directory_file_path(Dir, 'det.ll', LLPath),
+    tier2_preds(Preds),
+    write_wam_llvm_project(Preds, [module_name('plawk_tier2_det')], LLPath),
+    deterministic(Det),
+    assertion(Det == true),
+    !.
 
 test(surface_blob_payload_dcg_sum) :-
     % The record loop frames natively; the payload is parsed by the
@@ -182,9 +194,8 @@ write_raw(Path, Items) :-
         close(Out)).
 
 % IR-only build (throwaway module compile for the vm counts). The
-% compile is fenced with once/1: rejection tests negate this goal, and
-% without the fence \+ would backtrack into write_wam_llvm_project's
-% internal choice points and re-run the whole compiler search.
+% once/1 fence predates write_wam_llvm_project being made det; kept as
+% belt and braces for the rest of the conjunction.
 build_tier2_ir(Program, DriverIR) :-
     once(( tmp_root(Root),
            directory_file_path(Root, 'uw_plawk_tier2_blob_ir', Dir),
