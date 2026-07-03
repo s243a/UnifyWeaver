@@ -100,6 +100,7 @@ swipl -q -s tests/test_plawk_tier2_blob.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c
 swipl -q -s tests/test_plawk_f64_foreign.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_union_writebin.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_union_assoc.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_rep_writer.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -348,7 +349,13 @@ integer lookups.
 8-byte length plus exactly the payload bytes (no padding), sourcing
 from literals, `sM`/`lpsM` input fields, or text-mode slices clamped to
 the cap - writer output is byte-compatible with the `lpsN` reader, so
-varlen plawk-to-plawk pipelines round-trip. See
+varlen plawk-to-plawk pipelines round-trip. `repK(...)` works in
+OUTFMT as a passthrough: the writebin argument names the input rep's
+count field (`OUTFMT = "i64 rep4(i64 f64)"` with `writebin $1, $2`),
+and the writer emits the live count plus one bulk copy of the live
+elements - so guarded rules make byte-exact stream filters.
+Fixed-width elements only; the input rep's cap and element layout must
+match the output slot exactly. See
 [`docs/design/PLAWK_DCG_BINARY_READERS.md`](../../docs/design/PLAWK_DCG_BINARY_READERS.md)
 for the grammar-to-native-reader lowering design this is the first
 slice of. Fixed-width string fields are in: with
