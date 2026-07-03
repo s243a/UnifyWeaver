@@ -133,7 +133,9 @@ per-operator like SYM/HIER/ELEM), each with its own loss — which also keeps e5
   graded confidence. The "filing-primary" dominance belongs in the **`op_emb` routing** at inference, not just
   this narrative. **Pilot diagnostics:** log per-example **teacher softmax entropy** (near-uniform ⇒ tiny CE
   gradient — the real collapse risk, from *flat teacher distributions*, not operator correlation) and per-depth
-  MSE-gradient-vs-CE-entropy.
+  MSE-gradient-vs-CE-entropy. **Teacher temperature T (built):** softmax over `rank_score ∈ [0,1]` at T=1 is too
+  flat even when the true parent clearly leads — apply `softmax(rank_score / T)`, T≈0.2, to sharpen the CE
+  target (mindmap pilot: entropy 1.9 → 1.2 mean / 0.25 min). Per-node entropy doubles as an uncertainty weight.
 
 **e5 is on the GRANDPARENT lineage (the prefix), not the immediate parent.** The immediate parent is the
 decision the structural `decay(hops)` already makes; e5 compares the *ancestral context above it* — so
