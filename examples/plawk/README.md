@@ -88,6 +88,7 @@ swipl -q -s tests/test_plawk_binary_assoc.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt
 swipl -q -s tests/test_plawk_float_slots.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_binfmt_strings.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_binary_writers.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_forin_writebin.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -287,7 +288,11 @@ expressions, NR/NF, scalar reads, and double expressions per the OUTFMT
 slot types (i64 arguments promote into f64 slots), and composes with
 guards, scalar updates, and `if`/`else`. A plawk-to-plawk pipeline -
 converter | aggregator - runs with no text serialization between
-stages. Rejected: writebin without OUTFMT, argument/layout arity
+stages. Group-by results can also leave as binary:
+`END { for (k in counts) writebin k, counts[k] }` walks the table and
+emits one record per group (raw i64 keys, table values, or literals;
+i64 values promote into f64 output slots) - binary input mode only,
+since text-mode keys are interned atom ids. Rejected: writebin without OUTFMT, argument/layout arity
 mismatch, `sN` output fields (later slice), and double expressions into
 i64 slots. A trailing partial record exits with the read
 error code. Measured on 2M records: 0.040s for the binary program vs

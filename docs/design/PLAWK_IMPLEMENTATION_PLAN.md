@@ -489,7 +489,10 @@ through the i64/f64 expression emitters into a typed store at its
 layout offset, and a buffered `fwrite(buf, size, 1, stdout)` emits the
 record (libc flushes on normal main return). Works from both text and
 binary inputs, so plawk-to-plawk binary pipelines (converter |
-aggregator) run with no text serialization between stages. Remaining
+aggregator) run with no text serialization between stages. The END
+for-in loop composes with writebin: `for (k in counts) writebin k,
+counts[k]` iterates the group table and emits one binary record per
+group (binary input mode only -- text keys are atom ids). Remaining
 Phase 3 items below (DCG readers, richer ABIs) are unchanged.
 
 **Second slice landed (typed associative arrays):** in binary mode
