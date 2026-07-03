@@ -4,7 +4,8 @@
 :- module(plawk_native_codegen, [
     plawk_program_native_driver_ir/3,
     plawk_program_native_driver_ir/4,
-    plawk_program_foreign_specs/3
+    plawk_program_foreign_specs/3,
+    plawk_program_foreign_specs/4
 ]).
 
 :- discontiguous plawk_pattern_guard_ir/5.
@@ -417,25 +418,32 @@ plawk_program_native_driver_ir(
 %  emitters need no VM plumbing. Programs with no foreign calls
 %  delegate to plawk_program_native_driver_ir/3 unchanged.
 plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
-    plawk_program_foreign_specs(Program, GuardSpecs, CallSpecs),
+    plawk_program_foreign_specs(Program, GuardSpecs, CallSpecs, FCallSpecs),
     (   GuardSpecs == [],
-        CallSpecs == []
+        CallSpecs == [],
+        FCallSpecs == []
     ->  plawk_program_native_driver_ir(Program, InputPath, DriverIR)
     ;   memberchk(wam_vm(InstrCount, LabelCount), Options),
-        plawk_foreign_support_ir(GuardSpecs, CallSpecs, InstrCount, LabelCount,
-            SupportIR),
+        plawk_foreign_support_ir(GuardSpecs, CallSpecs, FCallSpecs,
+            InstrCount, LabelCount, SupportIR),
         plawk_program_native_driver_ir(Program, InputPath, MainIR),
         format(atom(DriverIR), '~w~n~n~w', [SupportIR, MainIR])
     ).
 
 %% plawk_program_foreign_specs(+Program, -GuardSpecs, -CallSpecs)
+%% plawk_program_foreign_specs(+Program, -GuardSpecs, -CallSpecs, -FCallSpecs)
 %
 %  Collect the deduplicated foreign predicate call shapes used by the
 %  program. GuardSpecs are Name-NArgs pairs called as rule guards
 %  (predicate arity NArgs); CallSpecs are Name-NArgs pairs called as
-%  i64 expressions (predicate arity NArgs + 1 for the output).
+%  i64 expressions and FCallSpecs Name-NArgs pairs called as double
+%  expressions via float(name(args)) (predicate arity NArgs + 1 for
+%  the output in both).
+plawk_program_foreign_specs(Program, GuardSpecs, CallSpecs) :-
+    plawk_program_foreign_specs(Program, GuardSpecs, CallSpecs, _FCallSpecs).
+
 plawk_program_foreign_specs(program(_BeginClauses, Rules, EndClauses),
-        GuardSpecs, CallSpecs) :-
+        GuardSpecs, CallSpecs, FCallSpecs) :-
     findall(Name-NArgs,
         ( member(rule(Pattern, _Actions), Rules),
           plawk_pattern_prolog_guard(Pattern, Name, Args),
@@ -451,6 +459,14 @@ plawk_program_foreign_specs(program(_BeginClauses, Rules, EndClauses),
         ),
         CallSpecs0),
     findall(Name-NArgs,
+        ( ( member(rule(_PatternF, FActions), Rules)
+          ; member(end(FActions), EndClauses)
+          ),
+          plawk_actions_prolog_fcall(FActions, Name, Args),
+          length(Args, NArgs)
+        ),
+        FCallSpecs0),
+    findall(Name-NArgs,
         ( member(rule(_Pattern2, Actions2), Rules),
           member(if(CondPattern, _Then, _Else), Actions2),
           plawk_pattern_prolog_guard(CondPattern, Name, Args),
@@ -459,7 +475,8 @@ plawk_program_foreign_specs(program(_BeginClauses, Rules, EndClauses),
         CondGuardSpecs0),
     append(GuardSpecs0, CondGuardSpecs0, AllGuardSpecs),
     sort(AllGuardSpecs, GuardSpecs),
-    sort(CallSpecs0, CallSpecs).
+    sort(CallSpecs0, CallSpecs),
+    sort(FCallSpecs0, FCallSpecs).
 
 plawk_pattern_prolog_guard(prolog_guard(Name, Args), Name, Args).
 plawk_pattern_prolog_guard(and_pat(Left, Right), Name, Args) :-
@@ -499,17 +516,48 @@ plawk_expr_prolog_call(Expr, Name, Args) :-
     ; plawk_expr_prolog_call(Right, Name, Args)
     ).
 
-%% plawk_foreign_support_ir(+GuardSpecs, +CallSpecs, +InstrCount, +LabelCount, -IR)
+% float(name(args)) call sites -- same walk, double-returning wrappers.
+plawk_actions_prolog_fcall(Actions, Name, Args) :-
+    member(Action, Actions),
+    plawk_action_prolog_fcall(Action, Name, Args).
+
+plawk_action_prolog_fcall(add(_Var, Expr), Name, Args) :-
+    plawk_expr_prolog_fcall(Expr, Name, Args).
+plawk_action_prolog_fcall(set(_Var, Expr), Name, Args) :-
+    plawk_expr_prolog_fcall(Expr, Name, Args).
+plawk_action_prolog_fcall(print(Fields), Name, Args) :-
+    member(Field, Fields),
+    plawk_expr_prolog_fcall(Field, Name, Args).
+plawk_action_prolog_fcall(printf(_Format, PrintfArgs), Name, Args) :-
+    member(Field, PrintfArgs),
+    plawk_expr_prolog_fcall(Field, Name, Args).
+plawk_action_prolog_fcall(if(_Pattern, ThenActions, ElseActions), Name, Args) :-
+    ( plawk_actions_prolog_fcall(ThenActions, Name, Args)
+    ; plawk_actions_prolog_fcall(ElseActions, Name, Args)
+    ).
+
+plawk_expr_prolog_fcall(float_call(Name, Args), Name, Args).
+plawk_expr_prolog_fcall(Expr, Name, Args) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    ( plawk_expr_prolog_fcall(Left, Name, Args)
+    ; plawk_expr_prolog_fcall(Right, Name, Args)
+    ).
+
+%% plawk_foreign_support_ir(+GuardSpecs, +CallSpecs, +FCallSpecs,
+%%     +InstrCount, +LabelCount, -IR)
 %
 %  Emit the shared foreign-call support section: a lazily initialized
 %  process-wide %WamState plus one wrapper per called predicate. Guard
 %  wrappers return run_loop's success directly. Call wrappers push one
 %  unbound output cell, run the predicate, and return {value, ok};
-%  failure or a non-integer binding yields {0, false}. Both wrappers
+%  failure or a non-integer binding yields {0, false}. Float-call
+%  wrappers (float(name(args)) sites) accept an Integer or Float
+%  output and return {double, ok} via @value_to_double. All wrappers
 %  save and restore the VM heap top (WamState field 6) and rewind the
 %  arena via @wam_cleanup, so per-record foreign calls run in constant
 %  memory -- nothing WAM-side persists between plawk calls.
-plawk_foreign_support_ir(GuardSpecs, CallSpecs, InstrCount, LabelCount, IR) :-
+plawk_foreign_support_ir(GuardSpecs, CallSpecs, FCallSpecs, InstrCount,
+        LabelCount, IR) :-
     format(atom(VmIR),
 '@plawk_foreign_vm = internal global %WamState* null
 
@@ -543,7 +591,12 @@ make:
           plawk_foreign_call_wrapper_ir(Name, NArgs, CallIR)
         ),
         CallIRs),
-    append([[VmIR], GuardIRs, CallIRs], Parts),
+    findall(FCallIR,
+        ( member(Name-NArgs, FCallSpecs),
+          plawk_foreign_fcall_wrapper_ir(Name, NArgs, FCallIR)
+        ),
+        FCallIRs),
+    append([[VmIR], GuardIRs, CallIRs, FCallIRs], Parts),
     atomic_list_concat(Parts, '\n\n', IR).
 
 plawk_foreign_wrapper_params(NArgs, ParamsIR) :-
@@ -642,6 +695,58 @@ fail:
   %f0 = insertvalue { i64, i1 } undef, i64 0, 0
   %f1 = insertvalue { i64, i1 } %f0, i1 false, 1
   ret { i64, i1 } %f1
+}',
+        [Name, NArgs, ParamsIR, Name, SetRegIR, NArgs]).
+
+% The double-returning variant behind float(name(args)): identical
+% shape, but the output cell may bind to an Integer or a Float --
+% @value_to_double promotes either to double.
+plawk_foreign_fcall_wrapper_ir(Name, NArgs, IR) :-
+    plawk_foreign_wrapper_params(NArgs, ParamsIR),
+    plawk_foreign_set_reg_lines(NArgs, SetRegLines),
+    atomic_list_concat(SetRegLines, '\n', SetRegIR),
+    format(atom(IR),
+'define { double, i1 } @plawk_foreign_fcall_~w_~w(~w) {
+entry:
+  %vm = call %WamState* @plawk_foreign_vm_get()
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+
+do_call:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs_saved = load i32, i32* %hs_ptr
+  %pc = load i32, i32* @~w_start_pc
+  %unb = call %Value @value_unbound(i8* null)
+  %out_addr = call i32 @wam_heap_push(%WamState* %vm, %Value %unb)
+  %out_ref = call %Value @value_ref(i32 %out_addr)
+  call void @wam_prepare_call(%WamState* %vm, i32 %pc)
+~w
+  call void @wam_set_reg(%WamState* %vm, i32 ~w, %Value %out_ref)
+  %ok = call i1 @run_loop(%WamState* %vm)
+  br i1 %ok, label %read_out, label %rewind_fail
+
+read_out:
+  %out = call %Value @wam_deref_value(%WamState* %vm, %Value %out_ref)
+  %out_is_num = call i1 @value_is_number(%Value %out)
+  br i1 %out_is_num, label %good, label %rewind_fail
+
+good:
+  %fval = call double @value_to_double(%Value %out)
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  %r0 = insertvalue { double, i1 } undef, double %fval, 0
+  %r1 = insertvalue { double, i1 } %r0, i1 true, 1
+  ret { double, i1 } %r1
+
+rewind_fail:
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  br label %fail
+
+fail:
+  %f0 = insertvalue { double, i1 } undef, double 0.0, 0
+  %f1 = insertvalue { double, i1 } %f0, i1 false, 1
+  ret { double, i1 } %f1
 }',
         [Name, NArgs, ParamsIR, Name, SetRegIR, NArgs]).
 
@@ -1906,13 +2011,17 @@ plawk_binfmt_foreign_arg_ok(Descriptor, field(Index)) :-
     integer(Index),
     Index >= 1,
     plawk_binfmt_field_type(Descriptor, Index, Type),
-    ( Type == i64 ; Type = blob(_Cap) ),
+    ( Type == i64 ; Type == f64 ; Type = blob(_Cap) ),
     !.
 
 plawk_binfmt_f64_expr_ok(Descriptor, float_field(Index)) :-
     !,
     plawk_binfmt_field_type(Descriptor, Index, f64).
 plawk_binfmt_f64_expr_ok(_Descriptor, float_const(_Mantissa, _Denominator)) :- !.
+plawk_binfmt_f64_expr_ok(Descriptor, float_call(Name, Args)) :-
+    !,
+    atom(Name),
+    plawk_binfmt_foreign_args_ok(Descriptor, Args).
 plawk_binfmt_f64_expr_ok(Descriptor, Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     !,
@@ -3938,6 +4047,8 @@ plawk_f64_scalar_read_operand_expr(float_const(Mantissa, Denominator)) :-
 plawk_f64_scalar_read_operand_expr(float_field(Index)) :-
     integer(Index),
     Index >= 0.
+plawk_f64_scalar_read_operand_expr(float_call(Name, Args)) :-
+    plawk_prolog_call_expr(prolog_call(Name, Args)).
 plawk_f64_scalar_read_operand_expr(Expr) :-
     plawk_i64_operand_expr(Expr).
 plawk_f64_scalar_read_operand_expr(Expr) :-
@@ -4381,6 +4492,7 @@ plawk_i64_binary_op_lines(LLVMOp, Base, LeftIR, RightIR, [Line]) :-
 %  sitofp at emission time.
 plawk_expr_is_double(float_const(_Mantissa, _Denominator)).
 plawk_expr_is_double(float_field(_Index)).
+plawk_expr_is_double(float_call(_Name, _Args)).
 % A substituted read of a double scalar slot (see
 % plawk_substitute_scalar_reads/4).
 plawk_expr_is_double(ssa_f64(_Value)).
@@ -4438,6 +4550,27 @@ plawk_f64_expr_ir(float_field(Index), FieldSeparator, Base, _GlobalBase,
     format(atom(CallIR),
         '  ~w = call double @wam_atom_field_f64_value(%Value %line, i64 ~w, i8 ~w)',
         [ValueIR, Index, FieldSeparator]).
+% float(name(args)): the double-returning foreign call. A failed call
+% contributes 0.0, mirroring the i64 prolog_call contract.
+plawk_f64_expr_ir(float_call(Name, Args), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts) :-
+    !,
+    length(Args, NArgs),
+    plawk_foreign_args_ir(Args, FieldSeparator, GlobalBase, ArgValueIRs,
+        GlobalParts, ArgSetupParts),
+    plawk_foreign_call_args_ir(ArgValueIRs, CallArgsIR),
+    format(atom(ResIR),
+        '  %~w_res = call { double, i1 } @plawk_foreign_fcall_~w_~w(~w)',
+        [Base, Name, NArgs, CallArgsIR]),
+    format(atom(ValIR),
+        '  %~w_val = extractvalue { double, i1 } %~w_res, 0', [Base, Base]),
+    format(atom(OkIR),
+        '  %~w_ok = extractvalue { double, i1 } %~w_res, 1', [Base, Base]),
+    format(atom(SelIR),
+        '  %~w = select i1 %~w_ok, double %~w_val, double 0.0',
+        [Base, Base, Base]),
+    format(atom(ValueIR), '%~w', [Base]),
+    append(ArgSetupParts, [ResIR, ValIR, OkIR, SelIR], SetupParts).
 plawk_f64_expr_ir(Expr, FieldSeparator, Base, GlobalBase, ValueIR,
         GlobalParts, SetupParts) :-
     plawk_expr_is_double(Expr),
@@ -5020,6 +5153,21 @@ plawk_foreign_arg_ir(field(FieldIndex), binfmt(Types), ArgBase, ArgValueIR,
         LoadedIR, LoadLines),
     format(atom(ValueLine),
         '  %~w_v = call %Value @value_integer(i64 ~w)', [ArgBase, LoadedIR]),
+    format(atom(ArgValueIR), '%~w_v', [ArgBase]),
+    append(LoadLines, [ValueLine], SetupParts).
+% f64 fields marshal as WAM floats: a typed double load, then
+% @value_float packs the bits under the Float tag.
+plawk_foreign_arg_ir(field(FieldIndex), binfmt(Types), ArgBase, ArgValueIR,
+        [], SetupParts) :-
+    integer(FieldIndex),
+    FieldIndex >= 1,
+    plawk_binfmt_field_type(binfmt(Types), FieldIndex, f64),
+    !,
+    format(atom(LoadBase), '~w_bf', [ArgBase]),
+    plawk_binfmt_field_load_lines(binfmt(Types), FieldIndex, LoadBase,
+        LoadedIR, LoadLines),
+    format(atom(ValueLine),
+        '  %~w_v = call %Value @value_float(double ~w)', [ArgBase, LoadedIR]),
     format(atom(ArgValueIR), '%~w_v', [ArgBase]),
     append(LoadLines, [ValueLine], SetupParts).
 plawk_foreign_arg_ir(field(FieldIndex), binfmt(Types), ArgBase, ArgValueIR,

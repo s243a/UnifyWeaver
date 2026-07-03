@@ -687,3 +687,18 @@ the native loop does the framing (find each record, check lengths,
 skip what doesn't match), and Prolog does the understanding. The
 hand-off costs about 0.2 microseconds and no memory growth - the
 payload travels in a single reused buffer.
+
+Numbers cross the bridge in both directions and both widths: `i64`
+fields arrive in Prolog as integers, `f64` fields as floats. When the
+predicate's answer is itself fractional, wrap the call in `float(...)`:
+
+```awk
+BEGIN { BINFMT = "i64 f64" }
+{ wsum += float(weight($1, $2)) }
+END { print wsum }
+```
+
+Without the wrapper a call is an integer expression (fractions would
+be truncated); with it, the result stays a double - whether the
+predicate bound an integer or a float. A call that fails contributes
+`0.0`, mirroring awk's forgiving arithmetic.

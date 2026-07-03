@@ -97,6 +97,7 @@ swipl -q -s tests/test_plawk_bounded_rep.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/
 swipl -q -s tests/test_plawk_rep_strings.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_union_rep.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_tier2_blob.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_f64_foreign.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -294,8 +295,12 @@ only consumer is a compiled Prolog predicate - the loop frames records
 natively, and `total += payload_sum($2)` hands the payload bytes to a
 WAM-compiled DCG through the ~0.2us foreign bridge (constant memory:
 the payload rides the shared transient atom, no interning). i64 fields
-marshal as WAM integers in binary mode, so foreign guards and calls now
-work over binary records generally. One blob argument per call;
+marshal as WAM integers and f64 fields as WAM floats in binary mode, so
+foreign guards and calls work over binary records generally; a
+double-returning call is spelled `wsum += float(score($1, $2))` (the
+float(...) wrapper selects a {double, ok} bridge that accepts Integer
+or Float results, keeping fractions that the i64 spelling would
+truncate; a failed call contributes 0.0). One blob argument per call;
 payloads are NUL-free byte strings. Bounded repetition handles records containing a
 list: `BINFMT = "i64 rep4(i64 f64)"` declares an 8-byte element count
 (at most 4) followed by that many (i64, f64) elements. The count is an

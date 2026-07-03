@@ -89,8 +89,8 @@ test(binfmt_i64_foreign_arg_is_value_integer) :-
 
 test(tier2_rejections) :-
     Rejects = [
-        % f64 fields are not marshalable in this slice
-        "BEGIN { BINFMT = \"f64 blob32\" } { t += plawk_payload_sum($1) } END { print t }\n",
+        % string fields are not marshalable in binary mode
+        "BEGIN { BINFMT = \"s8 blob32\" } { t += plawk_payload_sum($1) } END { print t }\n",
         % blob fields have no print/guard/arithmetic role
         "BEGIN { BINFMT = \"i64 blob32\" } { print $2 }\n",
         "BEGIN { BINFMT = \"i64 blob32\" } $2 == \"x\" { c++ } END { print c }\n",

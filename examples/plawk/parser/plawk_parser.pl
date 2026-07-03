@@ -662,6 +662,8 @@ scalar_delta_expr(Expr) -->
 scalar_delta_expr(Expr) -->
     float_field_expr(Expr).
 scalar_delta_expr(Expr) -->
+    float_call_expr(Expr).
+scalar_delta_expr(Expr) -->
     float_literal_expr(Expr).
 scalar_delta_expr(int(Value)) -->
     integer_codes(ValueCodes),
@@ -1015,6 +1017,22 @@ float_literal_expr(float_const(Mantissa, Denominator)) -->
       length(FracCodes, FracLen),
       Denominator is 10 ** FracLen
     }.
+
+%% float_call_expr(-Expr)//
+%
+%  float(name(args)): a compiled-Prolog call whose output argument is
+%  numeric and lands in a double context -- Float results keep their
+%  fraction (an i64-context call would truncate the surface to
+%  integers). The float(...) wrapper is what selects the
+%  double-returning wrapper at codegen time.
+float_call_expr(float_call(Name, Args)) -->
+    "float",
+    ws,
+    "(",
+    ws,
+    prolog_call_expr(prolog_call(Name, Args)),
+    ws,
+    ")".
 
 %% float_field_expr(-Expr)//
 %
