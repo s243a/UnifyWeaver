@@ -238,13 +238,17 @@ plawk_program_native_driver_ir(
 % chain where each rule's guard checks the record tag before its own
 % pattern, and each rule's fields type against its arm's layout. The
 % END print block is optional (a pure per-arm printer needs none).
+% writebin works inside case blocks: OUTFMT is program-wide, source
+% fields type against each rule's arm.
 plawk_program_native_driver_ir(
-    program(BeginClauses, case_blocks(CaseBlocks), EndClauses),
+    program(BeginClauses, case_blocks(CaseBlocks0), EndClauses),
     InputPath,
     DriverIR
 ) :-
     plawk_record_descriptor(BeginClauses, Descriptor),
     Descriptor = binfmt_union(Arms),
+    plawk_resolve_union_writebin_blocks(BeginClauses, CaseBlocks0, CaseBlocks,
+        WritebinPlan),
     plawk_union_program_ok(Arms, CaseBlocks),
     plawk_union_flatten_rules(CaseBlocks, Arms, Rules),
     (   EndClauses = [end([print(PrintFields)])]
@@ -253,16 +257,27 @@ plawk_program_native_driver_ir(
         PrintFields = [],
         HasEnd = false
     ),
-    plawk_scalar_state_plan(Rules, PrintFields, StatePlan),
+    (   plawk_scalar_state_plan(Rules, PrintFields, StatePlan)
+    ->  true
+    ;   % a pure normalizer: every rule just writebins its arm into
+        % the shared output layout -- no scalar state at all
+        WritebinPlan = outfmt(_OutTypes, _OutSize),
+        PrintFields == [],
+        StatePlan = state_plan([])
+    ),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
-    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR0),
+    plawk_writebin_entry_lines(WritebinPlan, WritebinEntryIR),
+    plawk_join_nonempty_ir([BeginIR0, WritebinEntryIR], BeginIR),
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
     plawk_scalar_rule_chain_ir(Rules, StatePlan, Descriptor, OutputSeparator,
         RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
     plawk_rules_body_print_fields(Rules, BodyPrintFields),
     plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
-    append(PrintFields, BodyPrintFields, PrintExprs),
+    plawk_rules_writebin_exprs(Rules, WritebinExprs),
+    append(PrintFields, BodyPrintFields, PrintExprs0),
+    append(PrintExprs0, WritebinExprs, PrintExprs),
     append(PrintExprs, ScalarExprs, RecordCounterExprs),
     plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
     plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
@@ -276,8 +291,9 @@ plawk_program_native_driver_ir(
     ->  plawk_scalar_end_print_ir(PrintFields, StatePlan, OutputSeparator, EndPrintIR)
     ;   EndPrintIR = ''
     ),
-    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
-        [BeginGlobalIR, StringGlobalIR, RuleGlobalIR]),
+    plawk_writebin_globals(WritebinPlan, WritebinGlobalIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, RuleGlobalIR, WritebinGlobalIR]),
     plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
@@ -287,6 +303,86 @@ plawk_program_native_driver_ir(
     plawk_emit_record_driver_ir(Descriptor, InputPath,
         driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
             NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
+% Tagged-union group-by: case-block (or TAG-guarded) rules whose
+% actions are assoc increments, with the shared END report. Keys are
+% the raw i64 field values of each rule's own arm; every arm updates
+% the same table per array name (as in awk, counts[k] is one array no
+% matter which rule touched it).
+plawk_program_native_driver_ir(
+    program(BeginClauses, case_blocks(CaseBlocks), [end([print(PrintFields)])]),
+    InputPath,
+    DriverIR
+) :-
+    plawk_record_descriptor(BeginClauses, Descriptor),
+    Descriptor = binfmt_union(Arms),
+    plawk_union_flatten_rules(CaseBlocks, Arms, Rules),
+    plawk_assoc_runtime_count_plan(Rules, PrintFields, AssocPlan),
+    plawk_assoc_record_program_ok(Descriptor, Rules, PrintFields),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_end_print_string_globals(PrintFields, StringGlobalIR),
+    plawk_assoc_print_key_globals(PrintFields, AssocGlobalIR),
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_assoc_rule_chain_ir(AssocPlan, Descriptor, AssocRuleGlobalIR, AssocChainIR),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    append(PrintFields, BodyPrintFields, PrintExprs),
+    append(PrintExprs, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
+    plawk_join_nonempty_ir([RecordCounterIR, AssocChainIR], RecordIR),
+    plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
+    plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
+    plawk_assoc_end_print_ir(PrintFields, AssocPlan, Descriptor, OutputSeparator, EndPrintIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, AssocGlobalIR, AssocRuleGlobalIR]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
+    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w
+  ret i32 0',
+        [EndPrintIR]),
+    plawk_emit_record_driver_ir(Descriptor, InputPath,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, RecordLoopPhiIR, lowered_assoc,
+            RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
+% ... and the canonical group-by report: END { for (k in counts)
+% print k, counts[k] } over a tagged-union stream.
+plawk_program_native_driver_ir(
+    program(BeginClauses, case_blocks(CaseBlocks), [end([for_in(var(LoopVar), var(ArrayName), BodyActions)])]),
+    InputPath,
+    DriverIR
+) :-
+    plawk_record_descriptor(BeginClauses, Descriptor),
+    Descriptor = binfmt_union(Arms),
+    plawk_union_flatten_rules(CaseBlocks, Arms, Rules),
+    plawk_forin_end_plan(Rules, LoopVar, ArrayName, BodyActions, AssocPlan, PrintFields),
+    plawk_assoc_record_program_ok(Descriptor, Rules, PrintFields),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_end_print_string_globals(PrintFields, StringGlobalIR),
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_assoc_rule_chain_ir(AssocPlan, Descriptor, AssocRuleGlobalIR, AssocChainIR),
+    plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
+    plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
+    plawk_forin_end_print_ir(LoopVar, ArrayName, PrintFields, AssocPlan,
+        Descriptor, OutputSeparator, EndPrintIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, AssocRuleGlobalIR]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
+    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w',
+        [EndPrintIR]),
+    plawk_emit_record_driver_ir(Descriptor, InputPath,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
+            AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
 plawk_program_native_driver_ir(
@@ -926,7 +1022,8 @@ plawk_forin_body_print_lines([], _LoopVar, _ArrayName, _TableIndex, _AssocPlan,
         _Descriptor, _OutputSeparator, _) -->
     [].
 plawk_forin_body_print_lines([var(LoopVar) | Rest], LoopVar, ArrayName,
-        TableIndex, AssocPlan, binfmt(Types), OutputSeparator, PrintIndex) -->
+        TableIndex, AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
+    { plawk_descriptor_is_binary(Descriptor) },
     % Binary mode: keys are raw i64 field values, printed numerically.
     plawk_forin_separator_lines(PrintIndex, OutputSeparator),
     { format(atom(FmtVar), 'forin_key_fmt_~w', [PrintIndex]),
@@ -937,7 +1034,7 @@ plawk_forin_body_print_lines([var(LoopVar) | Rest], LoopVar, ArrayName,
     },
     [FmtPtr, PrintCall],
     plawk_forin_body_print_lines(Rest, LoopVar, ArrayName, TableIndex, AssocPlan,
-        binfmt(Types), OutputSeparator, NextPrintIndex).
+        Descriptor, OutputSeparator, NextPrintIndex).
 plawk_forin_body_print_lines([var(LoopVar) | Rest], LoopVar, ArrayName,
         TableIndex, AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
     plawk_forin_separator_lines(PrintIndex, OutputSeparator),
@@ -1694,13 +1791,15 @@ plawk_assoc_rule_chain_lines([assoc_rule(Index, Pattern, Actions, Control) | Res
       format(atom(RuleLabel), 'assoc_rule_~w_match', [Index]),
       format(atom(ApplyLabel), 'assoc_rule_~w_apply', [Index]),
       plawk_rule_target(Control, NextLabel, RuleTargetLabel),
-      plawk_assoc_rule_apply_ir(Index, Actions, RuleTargetLabel, FieldSeparator, ApplyIR),
+      % tagged-union rules carry their arm's field types with them
+      plawk_rule_descriptor(Pattern, FieldSeparator, RuleDescriptor),
+      plawk_assoc_rule_apply_ir(Index, Actions, RuleTargetLabel, RuleDescriptor, ApplyIR),
       ( Index =:= 0
       -> EntryIR = '  br label %assoc_rule_0_match\n\n'
       ;  EntryIR = ''
       ),
       plawk_assoc_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel,
-          NextLabel, EntryIR, FieldSeparator, GuardGlobalIR, BranchIR),
+          NextLabel, EntryIR, RuleDescriptor, GuardGlobalIR, BranchIR),
       format(atom(RuleIR),
 '~w
 
@@ -1833,6 +1932,21 @@ plawk_assoc_record_program_ok(binfmt(Types), Rules, EndPrintFields) :-
         % Integer literals in END lookups; the loop variable inside a
         % for-in body (the key is already the raw i64 slot key there).
         ( Key = int(_) ; Key = var(_) )).
+% Tagged-union rules (already flattened): guards and counted keys type
+% against each rule's own arm; keys from every arm land in one shared
+% i64 keyspace, as in awk where counts[k] is one array no matter which
+% rule updated it.
+plawk_assoc_record_program_ok(binfmt_union(_Arms), Rules, EndPrintFields) :-
+    !,
+    forall(member(rule(arm_pat(_Tag, ArmTypes, Pattern), Actions), Rules),
+        ( plawk_binfmt_pattern_ok(binfmt(ArmTypes), Pattern),
+          forall(member(Action, Actions),
+              plawk_binfmt_assoc_action_ok(binfmt(ArmTypes), Action))
+        )),
+    forall(( member(Field, EndPrintFields),
+             Field = assoc(_Array, Key)
+           ),
+        ( Key = int(_) ; Key = var(_) )).
 plawk_assoc_record_program_ok(_FieldSeparator, _Rules, EndPrintFields) :-
     % Text mode: integer assoc keys would collide with atom ids, so
     % they stay binary-only.
@@ -1934,6 +2048,18 @@ plawk_binfmt_writebin_args_ok(Descriptor, [s(Width) | Types], [Field | Fields]) 
 plawk_binfmt_writebin_args_ok(Descriptor, [lps(Cap) | Types], [Field | Fields]) :-
     plawk_binfmt_writebin_str_ok(Descriptor, Field, Cap),
     plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
+plawk_binfmt_writebin_args_ok(Descriptor, [rep(Cap, ElemTypes) | Types],
+        [Field | Fields]) :-
+    plawk_binfmt_writebin_rep_ok(Descriptor, rep(Cap, ElemTypes), Field),
+    plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
+
+% rep passthrough: the argument names the input rep's COUNT field, and
+% the input rep must match the output slot exactly (same cap, same
+% element layout) -- count and live elements copy through unchanged.
+plawk_binfmt_writebin_rep_ok(binfmt(InTypes), rep(Cap, ElemTypes),
+        field(CountIndex)) :-
+    plawk_binfmt_rep_info(InTypes, CountIndex, Cap, _ElemArity),
+    memberchk(rep(Cap, ElemTypes), InTypes).
 
 plawk_binfmt_writebin_str_ok(_Descriptor, string(Value), Width) :-
     !,
@@ -2292,8 +2418,7 @@ plawk_binfmt_record_size(binfmt(Types), Size) :-
 plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules, WritebinPlan) :-
     ( plawk_rules_have_writebin(Rules0)
     ->  plawk_begin_outfmt_types(BeginClauses, Types),
-        forall(member(Type, Types),
-            ( memberchk(Type, [i64, f64]) ; Type = s(_W) ; Type = lps(_C) )),
+        forall(member(Type, Types), plawk_outfmt_type_ok(Type)),
         plawk_binfmt_record_size(binfmt(Types), Size),
         WritebinPlan = outfmt(Types, Size),
         maplist(plawk_resolve_writebin_rule(Types), Rules0, Rules)
@@ -2305,6 +2430,32 @@ plawk_rules_have_writebin(Rules) :-
     member(rule(_Pattern, Actions), Rules),
     plawk_actions_have_writebin(Actions),
     !.
+
+%% plawk_resolve_union_writebin_blocks(+BeginClauses, +CaseBlocks0,
+%%     -CaseBlocks, -WritebinPlan)
+%
+%  The case-block variant of the writebin pre-pass: OUTFMT is
+%  program-wide (one output layout regardless of which arm produced
+%  the record), so the plan is built once and every arm's rules are
+%  stamped with it. Source-field typing against each rule's own arm
+%  happens downstream via the per-rule descriptor.
+plawk_resolve_union_writebin_blocks(BeginClauses, CaseBlocks0, CaseBlocks,
+        WritebinPlan) :-
+    ( member(case_arm(_I, ArmRules), CaseBlocks0),
+      plawk_rules_have_writebin(ArmRules)
+    ->  plawk_begin_outfmt_types(BeginClauses, Types),
+        forall(member(Type, Types), plawk_outfmt_type_ok(Type)),
+        plawk_binfmt_record_size(binfmt(Types), Size),
+        WritebinPlan = outfmt(Types, Size),
+        maplist(plawk_resolve_union_writebin_block(Types), CaseBlocks0,
+            CaseBlocks)
+    ;   WritebinPlan = none,
+        CaseBlocks = CaseBlocks0
+    ).
+
+plawk_resolve_union_writebin_block(Types, case_arm(Index, Rules0),
+        case_arm(Index, Rules)) :-
+    maplist(plawk_resolve_writebin_rule(Types), Rules0, Rules).
 
 plawk_actions_have_writebin(Actions) :-
     member(Action, Actions),
@@ -2332,8 +2483,9 @@ plawk_resolve_writebin_action(_Types, Action, Action).
 plawk_begin_outfmt_types(BeginClauses, Types) :-
     member(begin(Actions), BeginClauses),
     member(set(var('OUTFMT'), string(Fmt)), Actions),
-    split_string(Fmt, " ", " ", Parts0),
-    exclude(==(""), Parts0, Parts),
+    % the shared tokenizer joins parenthesized types, so OUTFMT can
+    % carry a rep: "i64 rep4(i64 f64)"
+    plawk_binfmt_tokens(Fmt, Parts),
     Parts \== [],
     maplist(plawk_binfmt_type, Parts, Types).
 
@@ -2378,9 +2530,22 @@ plawk_writebin_args_ok([Type | Types], [Field | Fields]) :-
     -> plawk_writebin_str_arg(Field, Width)
     ;  Type = lps(Cap)
     -> plawk_writebin_str_arg(Field, Cap)
+    ;  Type = rep(_K, _Elems)
+    -> Field = field(_CountIndex)
     ;  plawk_writebin_f64_arg(Field)
     ),
     plawk_writebin_args_ok(Types, Fields).
+
+% OUTFMT slot types: i64/f64/sN/lpsN as before, plus rep passthrough
+% (fixed-width elements only -- the element region is copied as one
+% bulk write, which requires in-memory layout == wire layout).
+plawk_outfmt_type_ok(i64) :- !.
+plawk_outfmt_type_ok(f64) :- !.
+plawk_outfmt_type_ok(s(_W)) :- !.
+plawk_outfmt_type_ok(lps(_C)) :- !.
+plawk_outfmt_type_ok(rep(_K, ElemTypes)) :-
+    forall(member(ElemType, ElemTypes),
+        ( memberchk(ElemType, [i64, f64]) ; ElemType = s(_) )).
 
 % sN output slots take string literals that fit the width, or field
 % reads (validated against the input layout separately in binary mode;
@@ -2491,6 +2656,37 @@ plawk_writebin_varlen_slot_lines(lps(Cap), Field, FieldSeparator, Base,
         '  %~w_pwr = call i64 @fwrite(i8* ~w, i64 ~w, i64 1, i8* ~w)',
         [Base, PtrIR, LenIR, Stdout]),
     append(SourceLines, [LenStore, PayloadWrite], Lines).
+plawk_writebin_varlen_slot_lines(rep(_Cap, ElemTypes), field(CountIndex),
+        binfmt(InTypes), Base, BasePtr, Stdout, Lines, []) :-
+    !,
+    % rep passthrough: write the live count, then the live elements as
+    % one bulk write straight from the input record's element region
+    % (fixed-width elements, so in-memory layout == wire layout; a
+    % zero count writes nothing -- fwrite with size 0 is a no-op).
+    maplist(plawk_binfmt_type_width, ElemTypes, ElemWidths),
+    sum_list(ElemWidths, ElemSize),
+    plawk_binfmt_field_offset(binfmt(InTypes), CountIndex, CountOff),
+    ElemsOff is CountOff + 8,
+    format(atom(RepIR),
+'  %~w_cfp = getelementptr i8, i8* %rec, i64 ~w
+  %~w_ctp = bitcast i8* %~w_cfp to i64*
+  %~w_n = load i64, i64* %~w_ctp, align 1
+  %~w_csp = bitcast i8* ~w to i64*
+  store i64 %~w_n, i64* %~w_csp, align 1
+  %~w_cwr = call i64 @fwrite(i8* ~w, i64 8, i64 1, i8* ~w)
+  %~w_efp = getelementptr i8, i8* %rec, i64 ~w
+  %~w_bytes = mul i64 %~w_n, ~w
+  %~w_ewr = call i64 @fwrite(i8* %~w_efp, i64 %~w_bytes, i64 1, i8* ~w)',
+        [Base, CountOff,
+         Base, Base,
+         Base, Base,
+         Base, BasePtr,
+         Base, Base,
+         Base, BasePtr, Stdout,
+         Base, ElemsOff,
+         Base, Base, ElemSize,
+         Base, Base, Base, Stdout]),
+    Lines = [RepIR].
 plawk_writebin_varlen_slot_lines(Type, Field, FieldSeparator, Base, BasePtr,
         Stdout, Lines, GParts) :-
     % numeric slot: stage the value in the scratch buffer, write 8 bytes
@@ -3439,7 +3635,7 @@ plawk_assoc_end_print_lines([], AssocPlan, _Descriptor, _OutputSeparator, _) -->
     plawk_assoc_free_lines(AssocPlan).
 plawk_assoc_end_print_lines([assoc(var(ArrayName), int(Key)) | Rest], AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    { Descriptor = binfmt(_Types),
+    { plawk_descriptor_is_binary(Descriptor),
       plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
       format(atom(Value),
           '  %assoc_end_value_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
@@ -3485,6 +3681,11 @@ plawk_assoc_end_print_lines([string(Value) | Rest], AssocPlan, Descriptor, Outpu
 
 plawk_assoc_table_index(assoc_plan(Tables, _Actions), ArrayName, TableIndex) :-
     nth0(TableIndex, Tables, ArrayName).
+
+% Binary record modes: assoc keys are raw i64 field values (no
+% interning), so END key handling prints them numerically.
+plawk_descriptor_is_binary(binfmt(_Types)).
+plawk_descriptor_is_binary(binfmt_union(_Arms)).
 
 plawk_assoc_free_lines(assoc_plan(Tables, _Actions)) -->
     plawk_assoc_free_lines(Tables, 0).

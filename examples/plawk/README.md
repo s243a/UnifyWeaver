@@ -98,6 +98,9 @@ swipl -q -s tests/test_plawk_rep_strings.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/
 swipl -q -s tests/test_plawk_union_rep.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_tier2_blob.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_f64_foreign.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_union_writebin.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_union_assoc.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_rep_writer.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -333,13 +336,26 @@ or in non-leftmost position are rejected. Arms can carry their own
 repetition: `BINFMT = "case(i64 rep4(lps8 i64) | i64)"` gives arm 0 an
 element list, and `foreach` inside that arm's rules (either spelling)
 iterates it -- element types, staging, and buffer sizing all resolve
-per arm. (Assoc
-arrays and writebin inside case blocks are later slices.)
+per arm. writebin also works inside case blocks: OUTFMT stays
+program-wide (one output layout regardless of arm) while each rule's
+source fields type against its own arm, so a two-arm stream can be
+normalized into one fixed layout -- a pure per-arm normalizer needs no
+END and no scalars at all. Assoc group-bys work across arms too:
+`case 0 { { counts[$1]++ } } case 1 { { counts[$2]++ } }` counts into
+one shared table (keys are raw i64 field values typed per arm), with
+the usual END reports -- `for (k in counts) print k, counts[k]` or
+integer lookups.
 `lpsN` also works in OUTFMT: writebin emits the
 8-byte length plus exactly the payload bytes (no padding), sourcing
 from literals, `sM`/`lpsM` input fields, or text-mode slices clamped to
 the cap - writer output is byte-compatible with the `lpsN` reader, so
-varlen plawk-to-plawk pipelines round-trip. See
+varlen plawk-to-plawk pipelines round-trip. `repK(...)` works in
+OUTFMT as a passthrough: the writebin argument names the input rep's
+count field (`OUTFMT = "i64 rep4(i64 f64)"` with `writebin $1, $2`),
+and the writer emits the live count plus one bulk copy of the live
+elements - so guarded rules make byte-exact stream filters.
+Fixed-width elements only; the input rep's cap and element layout must
+match the output slot exactly. See
 [`docs/design/PLAWK_DCG_BINARY_READERS.md`](../../docs/design/PLAWK_DCG_BINARY_READERS.md)
 for the grammar-to-native-reader lowering design this is the first
 slice of. Fixed-width string fields are in: with
