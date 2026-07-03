@@ -50,8 +50,9 @@ test(union_rejections) :-
         "BEGIN { BINFMT = \"case(i64 | lps8)\" } case 0 { $1 == \"x\" { c++ } } END { print c }\n",
         % numeric compare on an lps field
         "BEGIN { BINFMT = \"case(i64 | lps8)\" } case 1 { $1 > 5 { c++ } } END { print c }\n",
-        % assoc arrays are not in the union slice
-        "BEGIN { BINFMT = \"case(i64 | lps8)\" } case 0 { { counts[$1]++ } } END { print counts[5] }\n",
+        % assoc keys must be raw i64 fields of their arm ($1 in arm 1
+        % is a string)
+        "BEGIN { BINFMT = \"case(i64 | lps8)\" } case 1 { { counts[$1]++ } } END { print counts[5] }\n",
         % case blocks demand a union BINFMT
         "case 0 { { c++ } } END { print c }\n",
         "BEGIN { BINFMT = \"i64 i64\" } case 0 { { c++ } } END { print c }\n"
