@@ -119,28 +119,41 @@ per-operator like SYM/HIER/ELEM), each with its own loss — which also keeps e5
   **teacher** score (NOT the model's own output — self-referential bootstrapping drifts/collapses):
 
   ```
-  rank_score(c) = μ_graph(c)  +  β · e5_sim_prefix(c)         # additive soft margin (dense e5 signal)
+  rank_score(c) = (1 − β)·μ_graph(c)  +  β · e5_sim_prefix_norm(c)      # CONVEX combo — bounded [0,1]
+      e5_sim_prefix_norm = (cos_prefix + 1) / 2   ∈ [0,1]              # normalize cosine BEFORE mixing (review r2)
   ```
 
-  Candidates are ordered by `rank_score`; `lineage-rank` is trained by softmax-CE to reproduce that order.
-  Because CE is **scale-invariant**, `lineage-rank` carries order information the MSE head can't — notably in
-  the flat graded-middle where the regression targets bunch. **This is the filing-primary operator** (filing =
-  rank the candidate folders); `lineage` supplies graded confidence / fall-off.
+  **Convex, not additive (review round 2):** `μ_graph ∈ [floor,1]` and a raw cosine `∈ [−1,1]` have no shared
+  unit — an additive `μ_graph + β·cos` can go negative / exceed 1. The convex form keeps `rank_score ∈ [0,1]`,
+  makes **β an interpretable weight fraction** (requires `k ≤ 1`), and the `(cos+1)/2` normalization fixes the
+  sign. Candidates are ordered by `rank_score`; `lineage-rank` is trained by softmax-CE to reproduce that order.
+  Because CE is **scale-invariant**, `lineage-rank` carries order info the MSE head can't — notably in the flat
+  graded-middle where regression targets bunch (weakest, conversely, for deep trees with diverse `μ_graph`, where
+  MSE already has a strong gradient). **Filing-primary operator** (filing = rank the folders); `lineage` supplies
+  graded confidence. The "filing-primary" dominance belongs in the **`op_emb` routing** at inference, not just
+  this narrative. **Pilot diagnostics:** log per-example **teacher softmax entropy** (near-uniform ⇒ tiny CE
+  gradient — the real collapse risk, from *flat teacher distributions*, not operator correlation) and per-depth
+  MSE-gradient-vs-CE-entropy.
 
 **e5 is on the GRANDPARENT lineage (the prefix), not the immediate parent.** The immediate parent is the
 decision the structural `decay(hops)` already makes; e5 compares the *ancestral context above it* — so
 `e5_sim_prefix(c)` = e5 similarity of the `root … grandparent` prefix of candidate `c` vs the truth's. (`Math/
-Calculus/…` stays close to `Math/Analysis/…` because their grandparent prefixes match.)
+Calculus/…` stays close to `Math/Analysis/…` because their grandparent prefixes match.) Since LCA-depth (in
+`lineage`, MSE) and e5-prefix (in `lineage-rank`, CE) now live in **different operators with different losses**,
+their correlation is **redundancy, not double-count** (review r2). *Degenerate case:* when the candidate's
+grandparent **is** the LCA, both CE inputs coincide → zero CE gradient — log its frequency in the pilot.
 
 **β scales e5 by how much prefix there is to compare** (user):
 
   ```
   β = ( G / (L + G) ) · k
-      G = grandparent-prefix length (root … grandparent),   L = total path length (root … node),   k = tuned blend const
+      G = grandparent-prefix length in NODES (root … grandparent, node count — same unit as lca_depth_frac)
+      L = total path length in nodes (root … node)          k = tuned blend const, k ≤ 1 (convex ⇒ β ≤ 0.5)
   ```
 
-  So a shallow node with no grandparent (`G=0`) → **β=0**, e5 contributes nothing (nothing to compare); deeper
-  nodes → more ancestral context → larger β, up to `~0.5·k`. `k` is tuned on the pilot.
+  `G=0` (shallow node, no grandparent) → **β=0**: `lineage-rank` adds no signal over `lineage` there (fine —
+  state it). Deeper nodes → more ancestral context → larger β, asymptoting at `~0.5·k`; `k ≤ 1` keeps `β ≤ 0.5`
+  (and `rank_score` a proper convex mix). `k` tuned on the pilot.
 
 **Losses:** `lineage` → the existing graded-MSE head; `lineage-rank` → a candidate-softmax CE (same family as
 the model's transitive/directional margins). Both are weighted like the other operators.
@@ -162,12 +175,15 @@ model's judge axis learns both calibrations side-by-side (`corpus_emb + judge_em
 - SimpleMind is **most useful once fused with Pearltrees** (`fuse_corpus.py` needs the PT cache) — this is prep;
   full value lands with the harvester.
 - **Built:** `gen_mindmap_lineage.py` (491 chains); `prototype_graph_judge.py` — graph-μ validated on Chaos
-  theory: true parent = 1.0, ancestors graded up the chain (2 hops ≈ 0.36, 3 ≈ 0.22 at γ=0.6), far → floor 0.02.
-  **Finding:** a single-map parse is **fragmented** (many candidate `hops=99`), so the graph judge needs the
-  **connected cross-map / fused graph** for real candidate connectivity — another reason SimpleMind pairs with
-  Pearltrees (`fuse_corpus.py`). Nav (`via link`) nodes are now bypassed in the *structure* (not just display).
-  **Next:** run on the fused graph → substitution candidate gen → targeted LLM judge on uncertain cases →
-  graded-round rows.
+  theory: true parent = 1.0, siblings/near graded (1 hop ≈ 0.60, 2 ≈ 0.36 at γ=0.6), far → floor 0.02.
+  Candidate pool excludes **ancestors of n** (they're graded positives, not negatives — review r2).
+  **Finding:** a single-map parse is **fragmented** (117 unreachable candidates on Chaos theory), so the graph
+  judge needs the **connected cross-map / fused graph** for real candidate connectivity — another reason
+  SimpleMind pairs with Pearltrees (`fuse_corpus.py`). **Interim single-map fallback (review r2):** unreachable
+  candidates get `hops = D_max + 1` (not a sentinel), so `decay(hops)·lca_frac` still degrades gracefully —
+  `lca_frac` differentiates them by shared ancestry while the harvester is pending. Nav (`via link`) nodes are
+  bypassed in the *structure* (not just display). **Next:** run on the fused graph → substitution candidate gen
+  → targeted LLM judge on uncertain cases → graded-round rows.
 
 ## 6. Review responses (PR #3426)
 
@@ -178,7 +194,9 @@ one alternative (heavier tail). Pinned to one family, not two.
 **Depth bias (methodology-2):** complete enumeration gives C(8,2)=28 pairs for a depth-8 chain vs 1 for depth-2,
 so deep systems-theory nodes would dominate. Mitigation: **per-chain pair weighting** (down-weight each pair by
 `1/(#pairs in its chain)` so every chain contributes equal mass), OR cap transitive pairs (keep all adjacent +
-sample K transitive). The pair generator will emit **pair-count-by-depth** and apply the weight.
+sample K transitive). The pair generator will emit **pair-count-by-depth** and apply the weight. NB per-chain
+weighting shifts the *effective* negative type-ratio by depth, so log the **weighted** negative-type
+distribution, not just raw counts (review r2).
 
 **Negative μ-floor (methodology-3):** since all nodes share the global root, **negatives are NOT μ=0.**
 Directional-reverse (ancestor|descendant) → `μ_rev ≈ 0.05–0.15` (residual membership); cross-branch →
@@ -199,8 +217,10 @@ hard negatives + judge-calibrated μ *on top of* the lineage positives, it does 
 
 **Multi-parent, operationalized (D3):** graded-round schema adds `gt_rank` (rank of the ground-truth filing
 among candidates by judge μ) + `gt_mu`. Disposition: `gt_rank==1` → normal; `gt_rank==2 & spread<τ_tie` → **keep
-both** (multi-parent); `gt_rank≥3` OR `gt_mu<τ_low` → **flag + exclude from training**. `τ_tie≈0.1`, `τ_low≈0.3`
-(μ scale), tuned on the pilot.
+both** (multi-parent); `gt_rank≥3` OR `gt_mu<τ_low` → **flag + exclude from training**. `τ_tie≈0.1`; **`τ_low` =
+the 10th percentile of the true-parent μ distribution from the prototype run, NOT a fixed 0.3** (review r2 —
+a fixed 0.3 would wrongly flag legitimate weak-but-correct parents, e.g. 2-hop with moderate lca_frac). Tuned on
+the pilot.
 
 **Cost-split + judge_agreement (D4, methodology-7):** output stores `mu_graph`, `mu_llm`, and
 `judge_agreement = abs(mu_graph − mu_llm)`. LLM spent only where graph-μ is uncertain: **near-tie** = top-two

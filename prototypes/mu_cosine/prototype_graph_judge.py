@@ -4,10 +4,14 @@
 For each node (the item to file) with a true structural parent p, score candidate parents by
     mu_graph = max(floor, gamma^hops(c,p) * lca_frac(c,p))
 where hops = undirected graph distance, lca_frac = shared-prefix depth of lineage(c) vs lineage(p) over
-len(lineage(p)) (the whole-lineage structural factor). Truth (c==p) -> hops 0, lca_frac 1 -> mu 1.
-e5-of-prefix is only a TIE-BREAKER among structurally-equal candidates (not multiplied) -- shown as a hook.
+len(lineage(p)) -- i.e. "how much of the TRUTH's ancestry the candidate shares" (whole-lineage structural
+factor). Truth (c==p) -> hops 0, lca_frac 1 -> mu 1.
 
-Eyeball: true parent should rank #1 at mu=1; siblings/uncles moderate; far subtrees -> floor.
+Candidate pool = NEGATIVES only: excludes n, its descendants, AND its ancestors (ancestors are graded
+POSITIVES, not negatives -- review round 2). Unreachable candidates get hops = D_max+1 (graceful fallback
+for a single-map parse, not a sentinel) so lca_frac still differentiates them by shared ancestry.
+
+Eyeball: true parent should be #1 at mu=1; ancestors excluded; near subtrees moderate; far -> floor.
 
   python3 prototype_graph_judge.py --map "context/Chaos theory.smmx"
 """
@@ -72,20 +76,28 @@ def main():
     for c, p in parent.items():
         children[p].add(c)
 
+    adj = undirected_adj(parent)                              # build ONCE (review: was per-node O(N^2))
+    D_max = max((len(lineage(n, parent)) for n in title), default=1)
+    dist_cache = {}                                           # bfs from each true parent, cached by key
+
     filed = [n for n in title if n in parent]
-    true_is_top, true_mu1, shown, all_mu = 0, 0, 0, []
+    true_is_top, true_mu1, shown, all_mu, unreachable = 0, 0, 0, [], 0
     for n in filed:
         p = parent[n]
         lin_p = lineage(p, parent)
-        dist = bfs_dist(undirected_adj(parent), p)
-        forbidden = descendants(n, children) | {n, p}          # can't file under self/descendant; p added separately
+        if p not in dist_cache:
+            dist_cache[p] = bfs_dist(adj, p)
+        dist = dist_cache[p]
+        ancestors = set(lineage(n, parent)[:-1])              # graded POSITIVES, not negatives -> exclude
+        forbidden = descendants(n, children) | ancestors | {n}
         pool = [m for m in title if m not in forbidden]
         cands = [p] + rng.sample(pool, min(a.k, len(pool)))
         scored = []
         for c in cands:
-            hops = dist.get(c, 99)
-            lca = common_prefix_len(lineage(c, parent), lin_p)
-            frac = lca / max(1, len(lin_p))
+            hops = dist.get(c, D_max + 1)                     # graceful fallback, not a sentinel
+            if c not in dist:
+                unreachable += 1
+            frac = common_prefix_len(lineage(c, parent), lin_p) / max(1, len(lin_p))
             mu = max(a.floor, (a.gamma ** hops) * frac)
             scored.append((mu, hops, round(frac, 2), c))
         scored.sort(key=lambda x: -x[0])
@@ -103,10 +115,11 @@ def main():
             shown += 1
 
     N = len(filed)
-    print(f"\n=== summary ({N} filable nodes, gamma={a.gamma}, floor={a.floor}) ===")
+    print(f"\n=== summary ({N} filable nodes, gamma={a.gamma}, floor={a.floor}, D_max={D_max}) ===")
     print(f"  true parent ranked #1: {true_is_top}/{N} ({100*true_is_top/max(1,N):.0f}%)")
     print(f"  true parent mu == 1.0: {true_mu1}/{N}")
     print(f"  mean/min true-parent mu: {sum(all_mu)/max(1,N):.3f} / {min(all_mu):.3f}")
+    print(f"  unreachable candidates (single-map fragmentation, hops=D_max+1): {unreachable}")
 
 
 if __name__ == "__main__":

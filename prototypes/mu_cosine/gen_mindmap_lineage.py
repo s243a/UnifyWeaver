@@ -63,12 +63,13 @@ def parse_map(smmx, tmp):
     # true parent in the graph judge + reconnects chains the nav node was breaking.
     nav_keys = {k for k, t in title.items() if t.strip().lower() in NAV}
     if nav_keys:
+        _orig = dict(parent)                                  # snapshot: real_parent reads the PRE-mutation map
         def real_parent(n):
-            p, seen = parent.get(n), set()
+            p, seen = _orig.get(n), set()
             while p in nav_keys and p not in seen:
-                seen.add(p); p = parent.get(p)
+                seen.add(p); p = _orig.get(p)
             return p
-        parent = {n: real_parent(n) for n in parent}
+        parent = {n: real_parent(n) for n in _orig}
         parent = {n: p for n, p in parent.items() if p is not None and p not in nav_keys and n not in nav_keys}
         fallback -= nav_keys
         for k in nav_keys:
