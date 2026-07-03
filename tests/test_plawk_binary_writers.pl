@@ -44,8 +44,6 @@ test(writebin_rejections) :-
         "{ writebin $1, $2 }\n",
         % argument count does not match the layout
         "BEGIN { OUTFMT = \"i64 i64\" } { writebin $1 }\n",
-        % sN output fields are a later slice
-        "BEGIN { OUTFMT = \"s8 i64\" } { writebin $1, $2 }\n",
         % double expression into an i64 slot
         "BEGIN { OUTFMT = \"i64\" } { writebin 1.5 }\n",
         % string field into an i64 slot in binary input mode

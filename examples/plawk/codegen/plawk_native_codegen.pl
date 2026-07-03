@@ -1729,6 +1729,17 @@ plawk_binfmt_writebin_args_ok(Descriptor, [f64 | Types], [Field | Fields]) :-
     ;  plawk_binfmt_i64_expr_ok(Descriptor, Field)
     ),
     plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
+plawk_binfmt_writebin_args_ok(Descriptor, [s(Width) | Types], [Field | Fields]) :-
+    plawk_binfmt_writebin_str_ok(Descriptor, Field, Width),
+    plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
+
+plawk_binfmt_writebin_str_ok(_Descriptor, string(Value), Width) :-
+    !,
+    string_length(Value, Length),
+    Length =< Width.
+plawk_binfmt_writebin_str_ok(Descriptor, field(FieldIndex), Width) :-
+    plawk_binfmt_field_type(Descriptor, FieldIndex, s(SourceWidth)),
+    SourceWidth =< Width.
 
 plawk_binfmt_print_field_ok(_Descriptor, string(_Value)) :- !.
 plawk_binfmt_print_field_ok(_Descriptor, special('NR')) :- !.
@@ -1872,11 +1883,13 @@ plawk_binfmt_record_size(binfmt(Types), Size) :-
 %  (writebin_out(Types, Fields)) so downstream validation and emission
 %  are self-contained; it fails (rejecting the program) when writebin
 %  appears without OUTFMT, an argument count mismatches the layout, or
-%  the layout contains non-numeric fields (sN output is a later slice).
+%  the layout contains an unknown field type (i64, f64, and sN are
+%  supported).
 plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules, WritebinPlan) :-
     ( plawk_rules_have_writebin(Rules0)
     ->  plawk_begin_outfmt_types(BeginClauses, Types),
-        forall(member(Type, Types), memberchk(Type, [i64, f64])),
+        forall(member(Type, Types),
+            ( memberchk(Type, [i64, f64]) ; Type = s(_Width) )),
         plawk_binfmt_record_size(binfmt(Types), Size),
         WritebinPlan = outfmt(Types, Size),
         maplist(plawk_resolve_writebin_rule(Types), Rules0, Rules)
@@ -1957,9 +1970,21 @@ plawk_writebin_args_ok([], []).
 plawk_writebin_args_ok([Type | Types], [Field | Fields]) :-
     ( Type == i64
     -> plawk_writebin_i64_arg(Field)
+    ;  Type = s(Width)
+    -> plawk_writebin_str_arg(Field, Width)
     ;  plawk_writebin_f64_arg(Field)
     ),
     plawk_writebin_args_ok(Types, Fields).
+
+% sN output slots take string literals that fit the width, or field
+% reads (validated against the input layout separately in binary mode;
+% any field slice in text mode, clamped to the width at emission).
+plawk_writebin_str_arg(string(Value), Width) :-
+    string_length(Value, Length),
+    Length =< Width.
+plawk_writebin_str_arg(field(FieldIndex), _Width) :-
+    integer(FieldIndex),
+    FieldIndex >= 1.
 
 plawk_writebin_i64_arg(special('NR')).
 plawk_writebin_i64_arg(special('NF')).
@@ -2002,27 +2027,118 @@ plawk_writebin_field_lines([Type | Types], [Field0 | Fields], Slots, Values,
         FieldSeparator, Prefix, BasePtr, Index, Offset, Lines, GlobalParts) :-
     plawk_substitute_scalar_reads(Field0, Slots, Values, Field),
     format(atom(Base), '~w_f~w', [Prefix, Index]),
-    ( Type == i64
-    ->  plawk_i64_expr_ir(Field, FieldSeparator, Base, Base, ValueIR,
-            GParts, SetupParts),
-        LLVMType = i64
-    ;   plawk_writebin_f64_value_ir(Field, FieldSeparator, Base, ValueIR,
-            GParts, SetupParts),
-        LLVMType = double
-    ),
-    format(atom(Gep),
-        '  %~w_fp = getelementptr i8, i8* ~w, i64 ~w', [Base, BasePtr, Offset]),
-    format(atom(Cast),
-        '  %~w_tp = bitcast i8* %~w_fp to ~w*', [Base, Base, LLVMType]),
-    format(atom(Store),
-        '  store ~w ~w, ~w* %~w_tp, align 1', [LLVMType, ValueIR, LLVMType, Base]),
+    plawk_writebin_slot_lines(Type, Field, FieldSeparator, Base, BasePtr,
+        Offset, SlotLines, GParts),
     plawk_binfmt_type_width(Type, Width),
     NextOffset is Offset + Width,
     NextIndex is Index + 1,
     plawk_writebin_field_lines(Types, Fields, Slots, Values, FieldSeparator,
         Prefix, BasePtr, NextIndex, NextOffset, RestLines, RestGlobals),
-    append([SetupParts, [Gep, Cast, Store], RestLines], Lines),
+    append(SlotLines, RestLines, Lines),
     append(GParts, RestGlobals, GlobalParts).
+
+%% plawk_writebin_slot_lines(+Type, +Field, +FieldSeparator, +Base,
+%%     +BasePtr, +Offset, -Lines, -GlobalParts)
+%
+%  Store one writebin argument at its layout offset. Numeric slots are
+%  typed stores; sN slots memset the slot to zero and memcpy the source
+%  bytes (a literal's global, an sM binary input field, or a text-mode
+%  field slice clamped to the slot width).
+plawk_writebin_slot_lines(s(Width), string(Value), _FieldSeparator, Base,
+        BasePtr, Offset, Lines, [GlobalLine]) :-
+    !,
+    format(atom(LitGlobal), '~w_lit', [Base]),
+    llvm_emit_c_string_global(LitGlobal, Value, GlobalLine, StringLen, BytesLen),
+    StringLen =< Width,
+    format(atom(Dst),
+        '  %~w_dst = getelementptr i8, i8* ~w, i64 ~w', [Base, BasePtr, Offset]),
+    format(atom(Src),
+        '  %~w_src = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+        [Base, BytesLen, BytesLen, LitGlobal]),
+    format(atom(Zero),
+        '  call void @llvm.memset.p0i8.i64(i8* %~w_dst, i8 0, i64 ~w, i1 false)',
+        [Base, Width]),
+    format(atom(Copy),
+        '  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %~w_dst, i8* %~w_src, i64 ~w, i1 false)',
+        [Base, Base, StringLen]),
+    Lines = [Dst, Src, Zero, Copy].
+plawk_writebin_slot_lines(s(Width), field(FieldIndex), binfmt(Types), Base,
+        BasePtr, Offset, Lines, []) :-
+    !,
+    plawk_binfmt_field_type(binfmt(Types), FieldIndex, s(SourceWidth)),
+    SourceWidth =< Width,
+    plawk_binfmt_field_offset(binfmt(Types), FieldIndex, SourceOffset),
+    format(atom(Dst),
+        '  %~w_dst = getelementptr i8, i8* ~w, i64 ~w', [Base, BasePtr, Offset]),
+    format(atom(Src),
+        '  %~w_src = getelementptr i8, i8* %rec, i64 ~w', [Base, SourceOffset]),
+    ( SourceWidth < Width
+    ->  format(atom(Zero),
+            '  call void @llvm.memset.p0i8.i64(i8* %~w_dst, i8 0, i64 ~w, i1 false)',
+            [Base, Width]),
+        ZeroLines = [Zero]
+    ;   ZeroLines = []
+    ),
+    format(atom(Copy),
+        '  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %~w_dst, i8* %~w_src, i64 ~w, i1 false)',
+        [Base, Base, SourceWidth]),
+    append([[Dst, Src], ZeroLines, [Copy]], Lines).
+plawk_writebin_slot_lines(s(Width), field(FieldIndex), FieldSeparator, Base,
+        BasePtr, Offset, Lines, []) :-
+    !,
+    % Text mode: slice the field, clamp to the slot width, zero-fill,
+    % and copy behind a null guard (a missing field writes all zeros).
+    FieldIndex >= 1,
+    llvm_emit_atom_field_slice('%line', FieldIndex, FieldSeparator, Base,
+        SliceIR),
+    format(atom(Dst),
+        '  %~w_dst = getelementptr i8, i8* ~w, i64 ~w', [Base, BasePtr, Offset]),
+    format(atom(Zero),
+        '  call void @llvm.memset.p0i8.i64(i8* %~w_dst, i8 0, i64 ~w, i1 false)',
+        [Base, Width]),
+    format(atom(Guard),
+'  %~w_null = icmp eq i8* %~w_ptr, null
+  %~w_over = icmp ugt i64 %~w_len64, ~w
+  %~w_cap = select i1 %~w_over, i64 ~w, i64 %~w_len64
+  br i1 %~w_null, label %~w_done, label %~w_copy
+
+~w_copy:
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %~w_dst, i8* %~w_ptr, i64 %~w_cap, i1 false)
+  br label %~w_done
+
+~w_done:',
+        [Base, Base,
+         Base, Base, Width,
+         Base, Base, Width, Base,
+         Base, Base, Base,
+         Base, Base, Base, Base, Base,
+         Base]),
+    Lines = [SliceIR, Dst, Zero, Guard].
+plawk_writebin_slot_lines(i64, Field, FieldSeparator, Base, BasePtr, Offset,
+        Lines, GParts) :-
+    !,
+    plawk_i64_expr_ir(Field, FieldSeparator, Base, Base, ValueIR,
+        GParts, SetupParts),
+    plawk_writebin_numeric_store_lines(i64, ValueIR, Base, BasePtr, Offset,
+        StoreLines),
+    append(SetupParts, StoreLines, Lines).
+plawk_writebin_slot_lines(f64, Field, FieldSeparator, Base, BasePtr, Offset,
+        Lines, GParts) :-
+    plawk_writebin_f64_value_ir(Field, FieldSeparator, Base, ValueIR,
+        GParts, SetupParts),
+    plawk_writebin_numeric_store_lines(double, ValueIR, Base, BasePtr, Offset,
+        StoreLines),
+    append(SetupParts, StoreLines, Lines).
+
+plawk_writebin_numeric_store_lines(LLVMType, ValueIR, Base, BasePtr, Offset,
+        [Gep, Cast, Store]) :-
+    format(atom(Gep),
+        '  %~w_fp = getelementptr i8, i8* ~w, i64 ~w', [Base, BasePtr, Offset]),
+    format(atom(Cast),
+        '  %~w_tp = bitcast i8* %~w_fp to ~w*', [Base, Base, LLVMType]),
+    format(atom(Store),
+        '  store ~w ~w, ~w* %~w_tp, align 1',
+        [LLVMType, ValueIR, LLVMType, Base]).
 
 plawk_writebin_f64_value_ir(Field, FieldSeparator, Base, ValueIR,
         GParts, SetupParts) :-
