@@ -122,9 +122,13 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
    it at runtime because the arm is static inside the block). Unknown
    tags and truncated arms are malformed input (`fail_read`); arms
    without a case block are still read and skipped so the stream stays
-   framed. The tag-guard spelling (`$0 == K && ...`) can later be
-   accepted as sugar that desugars into a case block. Not yet inside
-   case blocks: assoc arrays, writebin, and union output.
+   framed. The tag-guard spelling (landed) is accepted as sugar:
+   `TAG == K && P { actions }` desugars into `case K { P { actions } }`
+   (one single-rule block per rule, so source order is preserved and
+   the two spellings compile to identical IR). Every rule must lead
+   with a tag guard, and a tag test under `||`/`!` or in a non-leftmost
+   conjunct is rejected. Not yet inside case blocks: assoc arrays,
+   writebin, and union output.
 2. **Bounded repetition (landed):** `repK(elem types)` — an 8-byte
    count (≤ K) then that many elements. Fixed-width elements read as
    one bulk count×elemsize read after a memset of the element region

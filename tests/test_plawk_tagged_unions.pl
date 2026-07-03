@@ -87,6 +87,43 @@ test(surface_union_endless_program) :-
         [m(1, 1.0), e("aa", 5), e("bb", 6)],
         "aa 5\nbb 6\n").
 
+test(tag_guard_sugar_matches_case_blocks_exactly) :-
+    % TAG == K && P is pure sugar: it must compile to byte-identical IR
+    % as the case-block spelling.
+    plawk_parse_string("BEGIN { BINFMT = \"case(i64 f64 | lps16 i64)\" } TAG == 1 && $2 > 5 { b++ } END { print b }\n", Sugar),
+    plawk_parse_string("BEGIN { BINFMT = \"case(i64 f64 | lps16 i64)\" } case 1 { $2 > 5 { b++ } } END { print b }\n", Blocks),
+    plawk_program_native_driver_ir(Sugar, 'input.bin', SugarIR),
+    plawk_program_native_driver_ir(Blocks, 'input.bin', BlocksIR),
+    assertion(SugarIR == BlocksIR),
+    !.
+
+test(tag_guard_rejections) :-
+    Rejects = [
+        % every rule must lead with a tag guard (an unguarded rule has
+        % no arm to type its fields against)
+        "BEGIN { BINFMT = \"case(i64 | lps8)\" } TAG == 0 { a++ } { b++ } END { print a, b }\n",
+        % a tag test under || has no single-arm meaning
+        "BEGIN { BINFMT = \"case(i64 | lps8)\" } TAG == 0 || TAG == 1 { a++ } END { print a }\n",
+        % ... nor one that is not the leftmost conjunct
+        "BEGIN { BINFMT = \"case(i64 | lps8)\" } $1 > 3 && TAG == 0 { a++ } END { print a }\n",
+        % tag beyond the declared arms
+        "BEGIN { BINFMT = \"case(i64 | lps8)\" } TAG == 5 { a++ } END { print a }\n",
+        % TAG guards demand a union BINFMT
+        "BEGIN { BINFMT = \"i64 i64\" } TAG == 0 { a++ } END { print a }\n"
+    ],
+    forall(member(Source, Rejects),
+        ( plawk_parse_string(Source, Program)
+        -> assertion(\+ plawk_program_native_driver_ir(Program, 'input.bin', _))
+        ;  true
+        )).
+
+test(surface_tag_guard_dispatch) :-
+    % The case-block dispatch test, respelled with tag guards --
+    % including rules for different arms interleaved in source order.
+    run_tun_smoke("BEGIN { BINFMT = \"case(i64 f64 | lps16 i64)\" } TAG == 0 && $1 > 100 { msum += float($2) ; mhits++ } TAG == 1 && $2 == 7 { print $1 } TAG == 1 && $1 == \"boom\" { events++ } END { print mhits, msum, events }\n",
+        [m(50, 1.5), e("hello", 7), m(200, 2.5), e("boom", 3), m(300, 0.25), e("boom", 7)],
+        "hello\nboom\n2 2.75 2\n").
+
 test(surface_union_error_paths) :-
     build_tun_probe("BEGIN { BINFMT = \"case(i64 f64 | lps16 i64)\" } case 0 { { c++ } } END { print c }\n",
         Dir, BinPath),
