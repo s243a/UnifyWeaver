@@ -383,3 +383,23 @@ parser + a small fixture). Everything stays in `prototypes/mu_cosine/`; nothing 
 - **Node-type as a token vs separate embedding tables** — one factored `NODETYPE` token (cheap, lets the
   model interpolate) vs a per-type encoder (more capacity, no cold-start sharing). Token first; revisit if
   pages and categories turn out to need different encoders.
+
+## Judge registry + tagging policy (JUDGES)
+
+`JUDGES` in `mu_attention.py` maps a judge name → an index into the learned `judge_emb`
+(`nn.Embedding(n_judge, d_model)`), carried on the factored provenance token `corpus_emb + judge_emb`.
+Current: `{haiku:0, graph:1, human:2, sonnet:3, opus:4, gemini:5, gpt-5.5-low:6}`.
+
+- **Each (model, reasoning-effort) is its own row.** Calibration is per-model *and* per-effort — e.g.
+  `gpt-5.5` at `low` vs `xhigh` disagreed on labels on a pilot, so they must not share a row. Naming encodes
+  both: `gpt-5.5-low` = `codex exec -m gpt-5.5 -c model_reasoning_effort=low`. Cheaper future judges
+  (`gpt-5.3-low`, `gpt-5.4-low`, …) take the next free indices.
+- **Tag every scored pair by the exact judge that produced it — never default to `haiku`.** Mis-tagging
+  conflates calibrations and corrupts training.
+- **`graph` is a first-class judge** (a structural heuristic `μ = decay(distance-to-truth)`, not an LLM). Graph-
+  and LLM-scored rows are stored separately and reconciled ONLY by `judge_emb` — never averaged into one μ
+  (they are not on the same scale; see `DESIGN_mindmap_lineage.md` §3b/§6).
+- **Table-based today; open-ended later.** The index table has no cross-judge transfer (a new judge starts from a
+  blank row needing its own data). The future direction is an attribute/attention-derived judge embedding
+  (model family, effort, provider) so unseen judges get a prior by proximity — the same index→superposition path
+  the operators took.
