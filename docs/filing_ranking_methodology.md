@@ -172,7 +172,16 @@ question is never "do we have enough data" in the abstract — it's **"for our c
   shortlisted; the recall@K curve is the in-model recall signal). Fix = better recall (widen K, retrain µ).
 - **Type C — ordering error:** the folder is in the shortlist but ranked below #1. Fix = rerank (the LLM's 36→64%).
 
-`eval_rerank_agreement.py` currently **conditions out Type A** (samples only in-model true folders) to isolate
+**Measured (`--coverage-2x2`, N=100, 3 seeds): Type A ≈ 60% (59–62%, stable & DOMINANT), Type B ≈ 24%,
+reachable ≈ 16%.** So the primary data weakness is **coverage**, and the top lever is **data completion (this
+branch's pipeline) ≫ recall (retrain µ) > rerank**. **How we know it's coverage and not a ranking problem:** the
+unconditioned 2×2 counts, per bookmark, whether the true folder is *even a candidate in the model* — 60% are not,
+which is independent of *any* ranking or shortlist size (no amount of widening K or reranking can surface a folder
+the model doesn't contain). That number was invisible until we stopped conditioning on in-model folders — the
+conditioning that (correctly) isolates ranking quality also (silently) hid the biggest data hole. This is *the*
+unlock: the eval that measured µ's ranking said nothing about the 60% of bookmarks whose answer isn't in the model.
+
+`eval_rerank_agreement.py` (the ranking eval) **conditions out Type A** (samples only in-model true folders) to isolate
 ranking quality — which is correct for B/C but *hides* A. So report the two as a **2×2 joint distribution over an
 UNCONDITIONED sample** — {in-model, out-of-model} × {in-shortlist, out-of-shortlist} — not two separate scalars:
 whether A and B hit the *same* hard bookmarks or *disjoint* subsets changes the harvest-vs-retrain priority. (`--coverage-2x2`
