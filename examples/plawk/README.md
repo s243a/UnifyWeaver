@@ -93,6 +93,7 @@ swipl -q -s tests/test_plawk_outfmt_strings.pl -g "setenv('UW_SMOKE_TMPDIR', '/m
 swipl -q -s tests/test_plawk_varlen_records.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_varlen_writers.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_tagged_unions.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_bounded_rep.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -284,6 +285,15 @@ that materializes each record into the same fixed access layout, so an
 guards, `sN` OUTFMT passthrough) while numeric fields keep guards,
 arithmetic, and assoc keys. Clean EOF is only legal at a record
 boundary; oversized lengths, truncated payloads, and mid-record EOF
+exit with the read-error code. Bounded repetition handles records containing a
+list: `BINFMT = "i64 rep4(i64 f64)"` declares an 8-byte element count
+(at most 4) followed by that many (i64, f64) elements. The count is an
+ordinary i64 field, element slots are flat addressable fields
+(zero-filled past the count), and `foreach { ... }` runs its block once
+per element with `$1..$M` meaning the current element's fields - it
+unrolls at compile time into count-guarded ifs, so the loop machinery
+is the existing if/join emitters and the wire read is one bulk
+count*elemsize read. Oversized counts and truncated element regions
 exit with the read-error code. Tagged unions let one stream carry several
 record kinds: `BINFMT = "case(i64 f64 | lps16 i64)"` declares that
 every record starts with an 8-byte tag selecting an arm layout, and
