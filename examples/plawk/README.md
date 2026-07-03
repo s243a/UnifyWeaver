@@ -92,6 +92,7 @@ swipl -q -s tests/test_plawk_forin_writebin.pl -g "setenv('UW_SMOKE_TMPDIR', '/m
 swipl -q -s tests/test_plawk_outfmt_strings.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_varlen_records.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_varlen_writers.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_tagged_unions.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -283,7 +284,18 @@ that materializes each record into the same fixed access layout, so an
 guards, `sN` OUTFMT passthrough) while numeric fields keep guards,
 arithmetic, and assoc keys. Clean EOF is only legal at a record
 boundary; oversized lengths, truncated payloads, and mid-record EOF
-exit with the read-error code. `lpsN` also works in OUTFMT: writebin emits the
+exit with the read-error code. Tagged unions let one stream carry several
+record kinds: `BINFMT = "case(i64 f64 | lps16 i64)"` declares that
+every record starts with an 8-byte tag selecting an arm layout, and
+`case K { ... }` blocks hold ordinary pattern-action rules whose
+`$1..$N` are typed by arm K. Scalars (including doubles), `NR`,
+`next`/`break`, `if`/`else`, and the END report are shared across
+arms; the reader is a native tag switch dispatching per-arm field
+reads into one record buffer sized to the widest arm. Unknown tags
+and truncated arms exit with the read-error code; arms with no case
+block are still read and skipped, keeping the stream framed. (Assoc
+arrays and writebin inside case blocks are later slices.)
+`lpsN` also works in OUTFMT: writebin emits the
 8-byte length plus exactly the payload bytes (no padding), sourcing
 from literals, `sM`/`lpsM` input fields, or text-mode slices clamped to
 the cap - writer output is byte-compatible with the `lpsN` reader, so
