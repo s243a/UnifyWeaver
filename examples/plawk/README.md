@@ -90,6 +90,7 @@ swipl -q -s tests/test_plawk_binfmt_strings.pl -g "setenv('UW_SMOKE_TMPDIR', '/m
 swipl -q -s tests/test_plawk_binary_writers.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_forin_writebin.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_outfmt_strings.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_varlen_records.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -273,7 +274,18 @@ binary mode: `{ counts[$1]++ }` uses the raw field value as the table key
 k, counts[k] }` prints keys numerically, and END lookups take integer
 literals (`print counts[5], counts[-3]`); integer keys are binary-only
 (in text mode they would collide with atom ids, so they are rejected
-there). Fixed-width string fields are in: with
+there). Variable-length records are in via `lpsN`
+(length-prefixed string, 8-byte length + up to N payload bytes):
+`BINFMT = "i64 lps16"` switches to a field-by-field varlen read loop
+that materializes each record into the same fixed access layout, so an
+`lpsN` field behaves exactly like `sN` downstream (prints, equality
+guards, `sN` OUTFMT passthrough) while numeric fields keep guards,
+arithmetic, and assoc keys. Clean EOF is only legal at a record
+boundary; oversized lengths, truncated payloads, and mid-record EOF
+exit with the read-error code. See
+[`docs/design/PLAWK_DCG_BINARY_READERS.md`](../../docs/design/PLAWK_DCG_BINARY_READERS.md)
+for the grammar-to-native-reader lowering design this is the first
+slice of. Fixed-width string fields are in: with
 `BINFMT = "s8 i64"`, `print $1` emits the bytes up to the first NUL or
 the field width (strnlen + `%.*s`, no copying), and `$1 == "ERR"`
 compiles to a memcmp plus a NUL check at the key length (skipped for
@@ -318,6 +330,9 @@ concepts like `$0`, `$1`, `NR`, `NF`, `FS`, `OFS`, and `print`, see
 - [`docs/design/PLAWK_SPECIFICATION.md`](../../docs/design/PLAWK_SPECIFICATION.md)
 - [`docs/design/PLAWK_IMPLEMENTATION_PLAN.md`](../../docs/design/PLAWK_IMPLEMENTATION_PLAN.md)
 - [`docs/design/PLAWK_EXECUTION_ARCHITECTURE.md`](../../docs/design/PLAWK_EXECUTION_ARCHITECTURE.md)
+- [`docs/design/PLAWK_DCG_BINARY_READERS.md`](../../docs/design/PLAWK_DCG_BINARY_READERS.md)
+  — grammar-driven binary readers: the native/WAM lowering spectrum and
+  the varlen (`lpsN`) reader design.
   — where the system sits on the compiled/JIT/interpreted spectrum: PLAWK
   loops are AOT native code, transpiled Prolog is WAM bytecode on a
   natively compiled interpreter in the same binary, and there is no JIT
