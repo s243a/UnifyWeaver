@@ -178,7 +178,28 @@ base_pattern(Pattern) -->
     field_eq_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
+    tag_eq_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
     prolog_guard_pattern(Pattern).
+
+%% tag_eq_pattern(-Pattern)//
+%
+%  TAG == K guards a rule by the record tag of a tagged-union layout.
+%  Surface sugar: the codegen groups TAG-guarded rules into the same
+%  per-arm case blocks that `case K { ... }` produces, so the tag test
+%  must be the leftmost conjunct of the rule's pattern.
+tag_eq_pattern(tag_pat(Tag)) -->
+    "TAG",
+    identifier_boundary,
+    ws,
+    "==",
+    ws,
+    integer_codes(TagCodes),
+    { TagCodes \== [],
+      number_codes(Tag, TagCodes),
+      Tag >= 0
+    }.
 
 %% prolog_guard_pattern(-Pattern)//
 %

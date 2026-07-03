@@ -210,6 +210,28 @@ plawk_program_native_driver_ir(
             NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+% Tag-guard sugar: with a union BINFMT, plain rules whose patterns lead
+% with TAG == K are shorthand for case blocks -- the tag test selects
+% the arm and the rest of the pattern stays as the rule's own guard, so
+%   TAG == 0 && $1 > 10 { hits++ }
+% means exactly
+%   case 0 { $1 > 10 { hits++ } }.
+% Every rule must lead with a tag guard (an unguarded rule has no arm
+% to type its fields against), and the tag test may appear nowhere
+% else; otherwise the program is rejected.
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules, EndClauses),
+    InputPath,
+    DriverIR
+) :-
+    is_list(Rules),
+    plawk_record_descriptor(BeginClauses, binfmt_union(_Arms)),
+    plawk_tag_rules_case_blocks(Rules, CaseBlocks),
+    !,
+    plawk_program_native_driver_ir(
+        program(BeginClauses, case_blocks(CaseBlocks), EndClauses),
+        InputPath, DriverIR).
+
 % Tagged-union programs: BINFMT = "case(arm0 | arm1 | ...)" plus
 % case K { rules } blocks. Case blocks flatten into one scalar rule
 % chain where each rule's guard checks the record tag before its own
@@ -2722,6 +2744,32 @@ plawk_foreach_shift_term(Base, Term, Shifted) :-
     maplist(plawk_foreach_shift_term(Base), Args, ShiftedArgs),
     Shifted =.. [Functor | ShiftedArgs].
 plawk_foreach_shift_term(_Base, Term, Term).
+
+%% plawk_tag_rules_case_blocks(+Rules, -CaseBlocks)
+%
+%  Desugar TAG-guarded rules into case blocks, one single-rule arm
+%  block per rule (duplicate arm indexes are fine: flattening walks the
+%  blocks in order, so source rule order is preserved). Fails -- and
+%  the program is rejected -- when any rule lacks a leading tag guard
+%  or mentions TAG anywhere else in its pattern.
+plawk_tag_rules_case_blocks(Rules, CaseBlocks) :-
+    Rules = [_ | _],
+    maplist(plawk_tag_rule_case_arm, Rules, CaseBlocks).
+
+plawk_tag_rule_case_arm(rule(Pattern0, Actions),
+        case_arm(Tag, [rule(Pattern, Actions)])) :-
+    plawk_pattern_strip_tag(Pattern0, Tag, Pattern),
+    \+ ( sub_term(Sub, Pattern), nonvar(Sub), Sub = tag_pat(_) ).
+
+% The tag test must be the leftmost conjunct of a left-associated &&
+% chain: TAG == K alone selects the arm (residual guard `always`), and
+% TAG == K && P keeps P as the rule's own guard. A tag test under ||,
+% !, or anywhere deeper has no single-arm meaning and is rejected.
+plawk_pattern_strip_tag(tag_pat(Tag), Tag, always).
+plawk_pattern_strip_tag(and_pat(tag_pat(Tag), Residual), Tag, Residual) :-
+    !.
+plawk_pattern_strip_tag(and_pat(Left0, Right), Tag, and_pat(Left, Right)) :-
+    plawk_pattern_strip_tag(Left0, Tag, Left).
 
 %% plawk_union_flatten_rules(+CaseBlocks, +Arms, -Rules)
 %
