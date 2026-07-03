@@ -84,6 +84,7 @@ swipl -q -s tests/test_plawk_surface_float_exprs.pl -g "setenv('UW_SMOKE_TMPDIR'
 swipl -q -s tests/test_wam_llvm_atom_intern_scaling.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_transient_line_records.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_binary_records.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_binary_assoc.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -249,8 +250,14 @@ is a load-compare-add loop. `i64` fields work in guards, arithmetic,
 scalar updates, and prints; `f64` fields load as native doubles for
 prints and `float($N)` double expressions. `NF` is a compile-time
 constant; `NR`, `if/else`, `next`/`break`, `printf`, and END reports
-compose unchanged. Text-shaped forms ($0, regex, string equality,
-substr/length/index/case, associative arrays, foreign calls) are rejected
+compose unchanged. Associative arrays keyed by i64 fields work in
+binary mode: `{ counts[$1]++ }` uses the raw field value as the table key
+(no interning anywhere in the record loop), `END { for (k in counts) print
+k, counts[k] }` prints keys numerically, and END lookups take integer
+literals (`print counts[5], counts[-3]`); integer keys are binary-only
+(in text mode they would collide with atom ids, so they are rejected
+there). Remaining text-shaped forms ($0, regex, string equality,
+substr/length/index/case, string assoc keys, foreign calls) are rejected
 at codegen in binary mode. A trailing partial record exits with the read
 error code. Measured on 2M records: 0.040s for the binary program vs
 0.225s for mawk on the equivalent text (5.6x) and 0.156s for plawk's own

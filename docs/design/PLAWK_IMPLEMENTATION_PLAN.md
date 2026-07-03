@@ -464,6 +464,20 @@ vs plawk text mode 0.156s — the no-parsing thesis, demonstrated.
 Remaining Phase 3 items below (DCG readers, richer ABIs, string fields,
 binary writers) are unchanged.
 
+**Second slice landed (typed associative arrays):** in binary mode
+`{ counts[$1]++ }` keys the existing `%WamAssocI64Table` runtime with the
+raw i64 field value — the record loop performs zero interning (the only
+`wam_intern_atom` call left is the one-shot input-path atom in the entry
+block). `END { for (k in counts) print k, counts[k] }` prints keys
+numerically straight from `wam_assoc_i64_key_at`, and END lookups accept
+signed integer literals (`print counts[5], counts[-3]`). A
+binary-mode validator (`plawk_assoc_record_program_ok/3`) requires counted
+keys to be i64 fields and END lookup keys to be integers; text mode
+rejects integer keys outright since raw integers would collide with atom
+ids in the shared i64 table. This delivers the associative-array note
+below for the group-by shape: a fully native, allocation-free aggregation
+loop over binary records.
+
 1. Binary record ABI: struct layout, alignment, (de)serialisation convention.
 2. DCG grammar for parsing binary records into terms.
 3. Compile the DCG through UnifyWeaver to LLVM.
