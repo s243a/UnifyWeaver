@@ -1,0 +1,114 @@
+# Mindmap LINEAGE → filing training data (design + methodology)
+
+Status: lineage sampler built (`gen_mindmap_lineage.py`); negative-generation + judge-scoring specified here,
+prototype next. Non-enwiki data from SimpleMind `.smmx` maps; prep for fusion with Pearltrees once harvested.
+
+## 0. Why mindmaps, why lineage first
+
+The SimpleMind maps are the user's own systems-theory domain — structurally and topically the closest proxy we
+have to the Pearltrees filing target, and **not** present in enwiki. We build **LINEAGE first, then the 70/30
+split on top of it** (directional/superposition — see `feedback_enwiki_sampling_strategy`). Lineage is
+well-defined here because a mindmap node hangs off exactly one structural parent — the same property that made us
+choose single-path LINEAGE for Pearltrees (`project_mu_cosine_path_multipath_result`).
+
+## 1. Positives — complete, and graded by distance
+
+The dataset is small (491 lineage chains over 6 maps), so we take **complete coverage of positives**: every
+(descendant, ancestor) pair along each materialized path. They are **not binary** — μ is **graded by lineage
+distance**: direct parent = strong, grandparent = weaker, great-grandparent = weaker still. The depth gives
+calibrated positives for free.
+
+Materialized paths are cleaned (`gen_mindmap_lineage.py`): the shared sentinel `Root Node` (in folder `root`,
+a generic placeholder to which all maps link up) is dropped, `via link` nav nodes filtered, cross-map join
+echoes (consecutive duplicate titles) collapsed. Privacy is scrubbed upstream by `parse_smmx.py`
+(`privacy.py::is_private_title`: a "private" node drops itself + subtree, a private root drops the whole map).
+
+## 2. Negatives — sampled, typed, graded (not enumerated)
+
+The negative complement is ~O(N²) and would swamp the positives, so we **sample** (enwiki uses 3:1). Three types
+in increasing value:
+
+1. **Directional-reverse** (ancestor | descendant) — free; drives the directional margin μ(desc|anc) ≫ μ(anc|desc).
+2. **Cross-branch** (different subtrees) — the easy "unrelated" tail.
+3. **Hard negatives — siblings / cousins** (same parent/grandparent, *not* ancestor-descendant). The valuable
+   ones: they teach μ that *same branch ≠ lineage*, the confusion a hierarchy model must resolve.
+
+**Key subtlety — no pair is truly unrelated.** Because every node shares the global `Root Node`, even
+cross-domain pairs share distant ancestry. So a "negative" means *"not a direct lineage link,"* and μ should
+**fall off gradually with tree-distance**, not snap to 0. This graded fall-off is the signal we want, and it is
+why hard sibling/cousin negatives matter more than random cross-map ones (the shared root already makes those
+mildly positive).
+
+### 2a. Candidate generation — substitution, e5-stratified
+
+Generate hard negatives by **substituting** a node in a true path with an alternative (an alternate parent/path
+— exactly the filing question "could it go here instead?"). **Permutation** (scrambling path order) mostly
+yields obviously-broken hierarchies — kept only as a cheap easy-negative floor.
+
+Control hardness with **e5 distance of the substituted node vs the original**: e5-near = sibling/cousin = hard
+negative; e5-far = easy. **e5 distance is used to *stratify candidates*, not as μ** — semantic distance ≠ filing
+plausibility (a sibling can be e5-close yet filing-wrong; a valid alternate parent can be e5-far). The μ comes
+from a judge (§3).
+
+## 3. Judge scoring
+
+Remove the last hop of a path → (path-minus-leaf = folder, leaf = item to file). Each example is thus **actual
+filing training data** — more target-aligned than raw lineage pairs, and buildable now without the harvester.
+Present the judge ≥2 candidate filings (2 = cheapest; 3–4 = better-shaped curve), scored **pointwise and
+independently — μ does NOT sum to 1** (matches the §14 prompt and the model's per-pair μ).
+
+### 3a. LLM judge (codex `gpt-5.5-low`, or Haiku)
+
+- **Max-normalize to the model's top pick = 1**, then a scoring curve: **linear first** (preserves the graded
+  middle); a **temperature-controlled sigmoid** only if raw scores come back too bunched to separate hard-from-easy
+  (a *steep* sigmoid discards the grading — avoid).
+- **Multi-parent guard:** anchoring to the model's top (not the ground-truth) honors genuine second parents
+  (Pearltrees supercategories, cross-map links) — a valid substituted path *should* be allowed near 1. But keep
+  the **ground-truth as a sanity floor**: if the true filing scores *low*, flag it (judge error or a genuinely
+  ambiguous node), don't silently train on it.
+- Tag `judge=gpt-5.5-low` (its own calibration row; see `DESIGN_calibrated_judges.md`, `JUDGES` in
+  `mu_attention.py`). Cost/latency: `gpt-5.5-low` ≈ 5 s/pair, non-Anthropic.
+
+### 3b. Graph judge (nearly free) — `μ = decay( distance-to-truth )`
+
+Score a candidate by its **graph distance to the true filing**, decayed to μ (truth at distance 0 → **1**;
+1 hop = sibling/uncle → high; far → low). This is the **structural** analogue of the e5 idea, and unlike e5 it
+maps to μ **directly and honestly** — distance-to-truth *is* a plausibility. Tag `judge=graph`
+(`JUDGES["graph"] = 1`, already defined).
+
+**Decay choice — alternatives (we pick a default; these are the project's existing metrics).** The decay is
+exactly a flux/cost-function over the tree; see `docs/design/COST_FUNCTION_PHILOSOPHY.md` and
+`docs/design/SCAN_STRATEGY_SPECIFICATION.md`:
+
+| variant | form | note |
+|---|---|---|
+| **hop / shortest-path** (our default) | `μ = γ^d`, or `1/(1+d)` | simplest; no flux interpretation |
+| exponential-decay flux | `Σ_paths (decay/branching)^|p|` | our `exp(-λd)` is the single-path case |
+| power-law / inverse-radial | `1/r^N` (log-flux `= −N·log r`) | N-dim source model; heavier tail |
+| PPR / Markov walk | stationary dist. biased by the node seed | probabilistic dual; handles multi-path |
+| LCA depth | depth of lowest common ancestor | tree-native; "shares-only-Root ⇒ ~0" |
+
+Default: **hop-distance with geometric/exp decay + LCA depth as the tie-breaker** (cheap, tree-native). The
+power-law and PPR variants are the natural upgrades if the graded fall-off needs a heavier tail or multi-path
+mass — they are already specified in `COST_FUNCTION_PHILOSOPHY.md` and left as alternatives.
+
+## 4. Two judges, complementary — and a cost-smart split
+
+Graph judge = cheap, structural, but **blind to a semantically-valid parent that is structurally distant**
+(a cross-domain-but-correct filing). LLM judge = semantic, catches those, but costs. Their **disagreement is the
+useful part**: agree → confident μ; diverge → the ambiguous, probably-multi-parent cases.
+
+**Cost-smart pipeline:** run the **graph judge over everything (free, `judge=graph`)**, then spend LLM
+(`gpt-5.5-low`) calls **only where graph-μ is uncertain** — near-ties and structurally-distant candidates. The
+model's judge axis learns both calibrations side-by-side (`corpus_emb + judge_emb` provenance token).
+
+## 5. Integration + status
+
+- Feeds the graded round (`build_graded_round.py` → `load_graded`) as `corpus=mindmap` rows with per-row operator
+  + calibrated μ + judge tag.
+- SimpleMind is **most useful once fused with Pearltrees** (`fuse_corpus.py` needs the PT cache) — this is prep;
+  full value lands with the harvester.
+- **Built:** `gen_mindmap_lineage.py` (491 chains). **Next:** substitution+e5 candidate gen → graph judge →
+  targeted LLM judge → graded-round rows.
+
+See also: `DESIGN_path_operator.md`, `DESIGN_calibrated_judges.md`, `feedback_enwiki_sampling_strategy`.
