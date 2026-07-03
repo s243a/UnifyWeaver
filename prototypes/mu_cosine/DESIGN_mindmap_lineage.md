@@ -83,15 +83,13 @@ accounts for the **full materialized-path prefix**, via two complementary whole-
 
 - **LCA depth (structural):** how deep the *shared* prefix runs (shares-only-Root ⇒ ~0) — a topological measure
   of common ancestry.
-- **e5-of-prefix (semantic) — a TIE-BREAKER, not a multiplied factor.** A deep shared prefix (high LCA depth)
-  is *already* e5-similar, so multiplying both double-counts (review, critical #3). Instead, LCA-depth carries
-  the whole-lineage weight, and e5-of-prefix **only breaks ties among structurally-equivalent candidates** — two
-  paths with the same LCA depth / hop distance but different divergent tails (`Math/Calculus/…` vs
-  `Math/Analysis/…`) get separated by prefix e5-similarity. This keeps e5 as a *tie-breaker inside* the graph
-  heuristic, not e5 alone as μ (§2a caution); the LLM judge arbitrates the hard semantic cases.
+- **LCA-depth carries the whole-lineage *structural* weight** in `μ_graph` (below). e5-of-prefix does **not**
+  enter `μ_graph` — multiplying it against LCA-depth double-counts, since a deep shared prefix is *already*
+  e5-similar (review, critical #3). Instead **e5 is routed to a separate `lineage-rank` operator** (§3c), where
+  it is a *ranking* signal (cross-entropy), not a regression factor.
 
-So `μ_graph = decay(hops) · lca_depth_frac`, with **e5-prefix distance breaking ties** among structurally
-equivalent candidates (decay variant per the table below; exact tie-break margin TBD by the prototype).
+So `μ_graph = decay(hops) · lca_depth_frac` (pure structural; decay variant per the table below) — the regression
+target of the **`lineage`** operator. The semantic e5 signal goes to **`lineage-rank`** (§3c).
 
 **Decay choice — alternatives (we pick a default; these are the project's existing metrics).** The decay is
 exactly a flux/cost-function over the tree; see `docs/design/COST_FUNCTION_PHILOSOPHY.md` and
@@ -105,9 +103,47 @@ exactly a flux/cost-function over the tree; see `docs/design/COST_FUNCTION_PHILO
 | PPR / Markov walk | stationary dist. biased by the node seed | probabilistic dual; handles multi-path |
 | LCA depth | depth of lowest common ancestor | tree-native; "shares-only-Root ⇒ ~0" |
 
-Default: **hop-distance with geometric/exp decay + LCA depth as the tie-breaker** (cheap, tree-native). The
-power-law and PPR variants are the natural upgrades if the graded fall-off needs a heavier tail or multi-path
-mass — they are already specified in `COST_FUNCTION_PHILOSOPHY.md` and left as alternatives.
+Default: **hop-distance with geometric/exp decay + LCA depth** (cheap, tree-native). The power-law and PPR
+variants are the natural upgrades if the graded fall-off needs a heavier tail or multi-path mass — already
+specified in `COST_FUNCTION_PHILOSOPHY.md` and left as alternatives.
+
+### 3c. Two operators — `lineage` (MSE) and `lineage-rank` (CE)
+
+How e5 enters determines the loss: as a **scoring factor** it implies regression (error/MSE); as a **ranking**
+signal it implies cross-entropy. Rather than choose, split into two operators (two `op_emb` entries, routed
+per-operator like SYM/HIER/ELEM), each with its own loss — which also keeps e5 out of the regressed magnitude:
+
+- **`lineage` → MSE / regression.** Target = the pure structural `μ_graph = decay(hops) · lca_depth_frac`.
+  Learns the graded *magnitude* (parent > grandparent > far). No e5 → no LCA double-count.
+- **`lineage-rank` → cross-entropy / ranking.** Target = an *ordering* over a node's candidate parents, from a
+  **teacher** score (NOT the model's own output — self-referential bootstrapping drifts/collapses):
+
+  ```
+  rank_score(c) = μ_graph(c)  +  β · e5_sim_prefix(c)         # additive soft margin (dense e5 signal)
+  ```
+
+  Candidates are ordered by `rank_score`; `lineage-rank` is trained by softmax-CE to reproduce that order.
+  Because CE is **scale-invariant**, `lineage-rank` carries order information the MSE head can't — notably in
+  the flat graded-middle where the regression targets bunch. **This is the filing-primary operator** (filing =
+  rank the candidate folders); `lineage` supplies graded confidence / fall-off.
+
+**e5 is on the GRANDPARENT lineage (the prefix), not the immediate parent.** The immediate parent is the
+decision the structural `decay(hops)` already makes; e5 compares the *ancestral context above it* — so
+`e5_sim_prefix(c)` = e5 similarity of the `root … grandparent` prefix of candidate `c` vs the truth's. (`Math/
+Calculus/…` stays close to `Math/Analysis/…` because their grandparent prefixes match.)
+
+**β scales e5 by how much prefix there is to compare** (user):
+
+  ```
+  β = ( G / (L + G) ) · k
+      G = grandparent-prefix length (root … grandparent),   L = total path length (root … node),   k = tuned blend const
+  ```
+
+  So a shallow node with no grandparent (`G=0`) → **β=0**, e5 contributes nothing (nothing to compare); deeper
+  nodes → more ancestral context → larger β, up to `~0.5·k`. `k` is tuned on the pilot.
+
+**Losses:** `lineage` → the existing graded-MSE head; `lineage-rank` → a candidate-softmax CE (same family as
+the model's transitive/directional margins). Both are weighted like the other operators.
 
 ## 4. Two judges, complementary — and a cost-smart split
 
