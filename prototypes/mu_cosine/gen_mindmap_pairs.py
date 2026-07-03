@@ -134,7 +134,7 @@ def main():
         depth_pairs[L] += n_anc
         for i, anc in enumerate(reversed(ancestors)):          # i=0 -> parent (d=1)
             mu = round(a.gamma ** i, 4)
-            pair_rows.append((n, anc, mu, "LINEAGE", "ancestor", NT, NT, CORPUS, JUDGE, round(w, 4)))
+            pair_rows.append((n, anc, mu, "LINEAGE", "ancestor", NT, NT, CORPUS, JUDGE))
         # --- NEGATIVES (MSE) + RANK candidates ---
         if p not in dist_cache:
             dist_cache[p] = bfs_dist(adj, p)
@@ -170,7 +170,7 @@ def main():
             mu_g = max(a.floor, (a.gamma ** hops) * frac)
             t = neg_type(hops, reachable)
             neg_types_w[t] += w
-            pair_rows.append((n, c, round(mu_g, 4), "LINEAGE", f"neg_{t}", NT, NT, CORPUS, JUDGE, round(w, 4)))
+            pair_rows.append((n, c, round(mu_g, 4), "LINEAGE", f"neg_{t}", NT, NT, CORPUS, JUDGE))
             sim = e5_prefix_sim(c, p)
             sim_norm = (sim + 1.0) / 2.0
             rs = (1 - beta) * mu_g + beta * sim_norm
@@ -186,7 +186,7 @@ def main():
 
     # --- write outputs ---
     with open(a.out + "_pairs.tsv", "w", encoding="utf-8") as f:
-        f.write("# node\troot\tmu\top\trelation\tnode_type\troot_type\tcorpus\tjudge\tweight\n")
+        f.write("# node\troot\tmu\top\trelation\tnode_type\troot_type\tcorpus\tjudge\n")
         for r in pair_rows:
             f.write("\t".join(str(x) for x in r) + "\n")
     with open(a.out + "_nodes.tsv", "w", encoding="utf-8") as f:
