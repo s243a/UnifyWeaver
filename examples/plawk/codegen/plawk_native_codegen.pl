@@ -2616,6 +2616,12 @@ plawk_end_scalar_operand_expr(int(Value)) :-
 plawk_end_scalar_operand_expr(var(Name)) :-
     atom(Name).
 plawk_end_scalar_operand_expr(special('NR')).
+% Float literals make the whole END expression double-typed (%g print,
+% IEEE fdiv), as does reading a double slot.
+plawk_end_scalar_operand_expr(float_const(Mantissa, Denominator)) :-
+    integer(Mantissa),
+    integer(Denominator),
+    Denominator > 0.
 plawk_end_scalar_operand_expr(Expr) :-
     plawk_end_scalar_expr(Expr).
 
@@ -2655,10 +2661,14 @@ plawk_substitute_scalar_reads(Expr, _Slots, _Values, Expr).
 %  END-position substitution: var(Name) becomes the final slot value and
 %  NR becomes %plawk_nr, the loop-head record phi, which dominates
 %  end_print via close_stream / break_close_stream.
-plawk_substitute_end_reads(var(Name), StatePlan, ssa(Value)) :-
+plawk_substitute_end_reads(var(Name), StatePlan, Substituted) :-
     !,
-    plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex),
-    format(atom(Value), '%final_slot_~w', [SlotIndex]).
+    plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
+    format(atom(Value), '%final_slot_~w', [SlotIndex]),
+    ( Slot = scalar_double(_Name)
+    -> Substituted = ssa_f64(Value)
+    ;  Substituted = ssa(Value)
+    ).
 plawk_substitute_end_reads(special('NR'), _StatePlan, ssa('%plawk_nr')) :-
     !.
 plawk_substitute_end_reads(Expr0, StatePlan, Expr) :-
@@ -3441,11 +3451,25 @@ plawk_end_nr_print_lines(PrintIndex) -->
 plawk_end_expr_print_lines(Expr, StatePlan, PrintIndex) -->
     { plawk_substitute_end_reads(Expr, StatePlan, SubstitutedExpr),
       format(atom(Base), 'plawk_end_expr_~w', [PrintIndex]),
-      plawk_i64_expr_ir(SubstitutedExpr, 32, Base, Base, ValueIR, [], SetupParts),
       format(atom(FmtVar), 'end_expr_fmt_~w', [PrintIndex]),
-      format(atom(PrintVar), 'printed_end_expr_~w', [PrintIndex]),
-      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
-          [FmtPtr, PrintCall]),
+      ( plawk_expr_is_double(SubstitutedExpr)
+      -> % A double-typed END expression (float literal leaf or a read of
+         % a double slot): whole tree promotes to double, prints as %g,
+         % and division is IEEE fdiv rather than guarded sdiv.
+         plawk_f64_expr_ir(SubstitutedExpr, 32, Base, Base, ValueIR,
+             [], SetupParts),
+         format(atom(FmtPtr),
+             '  %~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
+             [FmtVar]),
+         format(atom(PrintCall),
+             '  %printed_end_expr_f64_~w = call i32 (i8*, ...) @printf(i8* %~w, double ~w)',
+             [PrintIndex, FmtVar, ValueIR])
+      ;  plawk_i64_expr_ir(SubstitutedExpr, 32, Base, Base, ValueIR,
+             [], SetupParts),
+         format(atom(PrintVar), 'printed_end_expr_~w', [PrintIndex]),
+         llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
+             ValueIR, [FmtPtr, PrintCall])
+      ),
       append(SetupParts, [FmtPtr, PrintCall], Lines)
     },
     plawk_emit_lines(Lines).

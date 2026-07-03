@@ -330,8 +330,10 @@ slot's LLVM type; double updates lower the RHS through
 leaves, i64 operands promote via `sitofp`) into `fadd`, and END prints
 of double slots use `%g`. `{ sum += $2 * 1.5 }` and
 `{ sum += float($2) }` now accumulate natively in both text and binary
-record modes; END *arithmetic* on double slots stays i64-only and is
-rejected (the next f64 slice).
+record modes; END *arithmetic* composes too:
+an END expression that reads a double slot or contains a float literal
+promotes wholesale to double (`END { print sum / NR }` is an IEEE
+`fdiv` with a `%g` print; i64 END expressions keep guarded `sdiv`).
 Scalar variables are readable inside rule-body update expressions and END
 prints: codegen substitutes `var(Name)` leaves with the current SSA slot
 value (an `ssa/1` leaf the shared emitters print verbatim) before emission,
