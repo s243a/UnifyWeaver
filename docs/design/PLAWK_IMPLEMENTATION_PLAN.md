@@ -471,8 +471,16 @@ a double load; a whitelist validator rejects text-shaped programs in binary
 mode instead of letting them reach text emitters. Measured on 2M records
 (`$1 > 100 { sum += $2 }`): binary 0.040s vs mawk-on-text 0.225s (5.6x)
 vs plawk text mode 0.156s — the no-parsing thesis, demonstrated.
-Remaining Phase 3 items below (DCG readers, richer ABIs, string fields,
-binary writers) are unchanged.
+**Third slice landed (fixed-width string fields):** `BINFMT = "s8 i64"`
+declares an 8-byte string field; offsets and record size are computed
+from per-type widths (`plawk_binfmt_type_width/2`), so layouts mix
+freely. `print $N` on an `sN` field emits a strnlen-bounded `%.*s`
+straight from the record buffer, and `$N == "key"` lowers to memcmp
+plus a NUL check at the key length (elided for full-width keys;
+oversized keys fold to constant false). String fields are
+print/equality-only; arithmetic, `float()`, numeric compares, and assoc
+keys on them are rejected. Remaining Phase 3 items below (DCG readers,
+richer ABIs, binary writers) are unchanged.
 
 **Second slice landed (typed associative arrays):** in binary mode
 `{ counts[$1]++ }` keys the existing `%WamAssocI64Table` runtime with the
