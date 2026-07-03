@@ -330,8 +330,10 @@ slot's LLVM type; double updates lower the RHS through
 leaves, i64 operands promote via `sitofp`) into `fadd`, and END prints
 of double slots use `%g`. `{ sum += $2 * 1.5 }` and
 `{ sum += float($2) }` now accumulate natively in both text and binary
-record modes; END *arithmetic* on double slots stays i64-only and is
-rejected (the next f64 slice).
+record modes; END *arithmetic* composes too:
+an END expression that reads a double slot or contains a float literal
+promotes wholesale to double (`END { print sum / NR }` is an IEEE
+`fdiv` with a `%g` print; i64 END expressions keep guarded `sdiv`).
 Scalar variables are readable inside rule-body update expressions and END
 prints: codegen substitutes `var(Name)` leaves with the current SSA slot
 value (an `ssa/1` leaf the shared emitters print verbatim) before emission,
@@ -489,7 +491,14 @@ through the i64/f64 expression emitters into a typed store at its
 layout offset, and a buffered `fwrite(buf, size, 1, stdout)` emits the
 record (libc flushes on normal main return). Works from both text and
 binary inputs, so plawk-to-plawk binary pipelines (converter |
-aggregator) run with no text serialization between stages. Remaining
+aggregator) run with no text serialization between stages. The END
+for-in loop composes with writebin: `for (k in counts) writebin k,
+counts[k]` iterates the group table and emits one binary record per
+group (binary input mode only -- text keys are atom ids). OUTFMT
+accepts `sN` string slots: literals, `sM` input fields (`M <= N`), and
+text-mode slices clamped to the width lower to memset + memcpy against
+the record buffer, so string-carrying binary pipelines work in both
+directions. Remaining
 Phase 3 items below (DCG readers, richer ABIs) are unchanged.
 
 **Second slice landed (typed associative arrays):** in binary mode

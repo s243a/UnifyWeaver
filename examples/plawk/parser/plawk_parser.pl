@@ -474,6 +474,9 @@ for_in_action(for_in(var(LoopVar), var(ArrayName), Body)) -->
 for_in_body(Actions) -->
     action_block(Actions),
     !.
+for_in_body([WritebinAction]) -->
+    writebin_action(WritebinAction),
+    !.
 for_in_body([PrintAction]) -->
     print_action(PrintAction).
 
