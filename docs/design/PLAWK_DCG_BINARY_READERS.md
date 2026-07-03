@@ -131,8 +131,12 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
    `foreach` inside a case block resolves against that arm's own
    layout, per-arm staging rides the same access-type expansion, and
    the union buffer (max record size across arms) covers it
-   automatically. Not yet inside case blocks: assoc arrays, writebin,
-   and union output.
+   automatically. writebin inside case blocks (landed): OUTFMT is
+   program-wide (one output layout regardless of arm) while each
+   rule's source fields type against its own arm, so a union stream
+   normalizes into one fixed layout; a pure normalizer (every rule
+   just writebins) needs no END and no scalar state. Not yet inside
+   case blocks: assoc arrays and union (tagged) output.
 2. **Bounded repetition (landed):** `repK(elem types)` — an 8-byte
    count (≤ K) then that many elements. Fixed-width elements read as
    one bulk count×elemsize read after a memset of the element region
