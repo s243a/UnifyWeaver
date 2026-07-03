@@ -141,8 +141,10 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
    shared table per array name; both END report shapes (for-in print,
    integer lookups) work, and the assoc rule chain resolves guards and
    key loads through the same per-rule arm descriptor as the scalar
-   chain. Not yet inside case blocks: union (tagged) output, and
-   for-in writebin over a union input.
+   chain. for-in writebin over a union input (landed): the END table
+   walk writebins one fixed-layout (key, count, ...) record per group,
+   mirroring the plain binary group-by-to-binary-output clause. Not
+   yet inside case blocks: union (tagged) output.
 2. **Bounded repetition (landed):** `repK(elem types)` — an 8-byte
    count (≤ K) then that many elements. Fixed-width elements read as
    one bulk count×elemsize read after a memset of the element region
