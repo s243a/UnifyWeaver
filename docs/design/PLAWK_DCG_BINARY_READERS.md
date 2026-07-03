@@ -119,9 +119,13 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
 2. **Bounded repetition:** `count` header + up to K fixed elements;
    access layout is a count slot plus K element slots; `for` over
    elements in rule bodies is the surface question.
-3. **Varlen writers:** `lpsN` in OUTFMT emitting length + payload from
-   `sN`/`lpsN` sources — closing the varlen pipeline loop the same way
-   fixed writers did.
+3. **Varlen writers (landed):** `lpsN` in OUTFMT emits the 8-byte
+   length plus exactly the payload bytes, sourced from literals,
+   `sM`/`lpsM` input fields (`M ≤ cap`), or text-mode slices clamped to
+   the cap. Records with an lps slot switch from the single-buffer
+   fwrite to per-slot fwrites emitted left to right (buffered in libc,
+   so still memcpy cost per record). Writer output is byte-compatible
+   with the `lpsN` reader.
 4. **Tier-2 composition sugar:** a declared payload type whose slice is
    passed to a compiled Prolog DCG via the foreign bridge without
    hand-written glue.

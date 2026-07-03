@@ -1733,6 +1733,9 @@ plawk_binfmt_writebin_args_ok(Descriptor, [f64 | Types], [Field | Fields]) :-
 plawk_binfmt_writebin_args_ok(Descriptor, [s(Width) | Types], [Field | Fields]) :-
     plawk_binfmt_writebin_str_ok(Descriptor, Field, Width),
     plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
+plawk_binfmt_writebin_args_ok(Descriptor, [lps(Cap) | Types], [Field | Fields]) :-
+    plawk_binfmt_writebin_str_ok(Descriptor, Field, Cap),
+    plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
 
 plawk_binfmt_writebin_str_ok(_Descriptor, string(Value), Width) :-
     !,
@@ -1914,7 +1917,7 @@ plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules, WritebinPlan) :-
     ( plawk_rules_have_writebin(Rules0)
     ->  plawk_begin_outfmt_types(BeginClauses, Types),
         forall(member(Type, Types),
-            ( memberchk(Type, [i64, f64]) ; Type = s(_Width) )),
+            ( memberchk(Type, [i64, f64]) ; Type = s(_W) ; Type = lps(_C) )),
         plawk_binfmt_record_size(binfmt(Types), Size),
         WritebinPlan = outfmt(Types, Size),
         maplist(plawk_resolve_writebin_rule(Types), Rules0, Rules)
@@ -1997,6 +2000,8 @@ plawk_writebin_args_ok([Type | Types], [Field | Fields]) :-
     -> plawk_writebin_i64_arg(Field)
     ;  Type = s(Width)
     -> plawk_writebin_str_arg(Field, Width)
+    ;  Type = lps(Cap)
+    -> plawk_writebin_str_arg(Field, Cap)
     ;  plawk_writebin_f64_arg(Field)
     ),
     plawk_writebin_args_ok(Types, Fields).
@@ -2029,6 +2034,15 @@ plawk_writebin_f64_arg(Field) :-
 %  Evaluate each argument, store it at its layout offset in the shared
 %  %plawk_wbuf buffer, then fwrite the record to stdout.
 plawk_writebin_record_ir(Types, Fields, Slots, Values, FieldSeparator,
+        Prefix, Pair) :-
+    ( plawk_binfmt_has_varlen(Types)
+    ->  plawk_writebin_varlen_record_ir(Types, Fields, Slots, Values,
+            FieldSeparator, Prefix, Pair)
+    ;   plawk_writebin_fixed_record_ir(Types, Fields, Slots, Values,
+            FieldSeparator, Prefix, Pair)
+    ).
+
+plawk_writebin_fixed_record_ir(Types, Fields, Slots, Values, FieldSeparator,
         Prefix, GlobalIR-IR) :-
     plawk_binfmt_record_size(binfmt(Types), Size),
     format(atom(BasePtr), '%~w_base', [Prefix]),
@@ -2045,6 +2059,129 @@ plawk_writebin_record_ir(Types, Fields, Slots, Values, FieldSeparator,
     append([[BaseLine], FieldLines, [StdoutLoad, WriteCall]], AllLines),
     atomic_list_concat(AllLines, '\n', IR),
     atomic_list_concat(GlobalParts, '\n', GlobalIR).
+
+%% plawk_writebin_varlen_record_ir(+Types, +Fields, +Slots, +Values,
+%%     +FieldSeparator, +Prefix, -Pair)
+%
+%  Records whose OUTFMT contains an lps slot are variable-length on the
+%  wire, so the single-buffer fwrite becomes per-slot fwrites emitted
+%  strictly left to right (fwrite buffers in libc, so this is memcpy
+%  cost, not syscall cost). Numeric slots stage their value in the
+%  first 8 bytes of %plawk_wbuf; lps slots write their runtime length
+%  the same way, then the payload straight from its source bytes.
+plawk_writebin_varlen_record_ir(Types, Fields, Slots, Values, FieldSeparator,
+        Prefix, GlobalIR-IR) :-
+    plawk_binfmt_record_size(binfmt(Types), Size),
+    format(atom(BasePtr), '%~w_base', [Prefix]),
+    format(atom(BaseLine),
+        '  ~w = getelementptr inbounds [~w x i8], [~w x i8]* %plawk_wbuf, i32 0, i32 0',
+        [BasePtr, Size, Size]),
+    format(atom(StdoutLoad),
+        '  %~w_stdout = load i8*, i8** @stdout', [Prefix]),
+    format(atom(StdoutVar), '%~w_stdout', [Prefix]),
+    plawk_writebin_varlen_field_lines(Types, Fields, Slots, Values,
+        FieldSeparator, Prefix, BasePtr, StdoutVar, 0, FieldLines, GlobalParts),
+    append([[BaseLine, StdoutLoad], FieldLines], AllLines),
+    atomic_list_concat(AllLines, '\n', IR),
+    atomic_list_concat(GlobalParts, '\n', GlobalIR).
+
+plawk_writebin_varlen_field_lines([], [], _Slots, _Values, _FieldSeparator,
+        _Prefix, _BasePtr, _Stdout, _Index, [], []).
+plawk_writebin_varlen_field_lines([Type | Types], [Field0 | Fields], Slots,
+        Values, FieldSeparator, Prefix, BasePtr, Stdout, Index, Lines,
+        GlobalParts) :-
+    plawk_substitute_scalar_reads(Field0, Slots, Values, Field),
+    format(atom(Base), '~w_f~w', [Prefix, Index]),
+    plawk_writebin_varlen_slot_lines(Type, Field, FieldSeparator, Base,
+        BasePtr, Stdout, SlotLines, GParts),
+    NextIndex is Index + 1,
+    plawk_writebin_varlen_field_lines(Types, Fields, Slots, Values,
+        FieldSeparator, Prefix, BasePtr, Stdout, NextIndex, RestLines,
+        RestGlobals),
+    append(SlotLines, RestLines, Lines),
+    append(GParts, RestGlobals, GlobalParts).
+
+plawk_writebin_varlen_slot_lines(lps(Cap), Field, FieldSeparator, Base,
+        BasePtr, Stdout, Lines, GParts) :-
+    !,
+    plawk_writebin_lps_source_lines(Field, FieldSeparator, Cap, Base,
+        BasePtr, PtrIR, LenIR, SourceLines, GParts),
+    format(atom(LenStore),
+'  %~w_lensp = bitcast i8* ~w to i64*
+  store i64 ~w, i64* %~w_lensp, align 1
+  %~w_lwr = call i64 @fwrite(i8* ~w, i64 8, i64 1, i8* ~w)',
+        [Base, BasePtr, LenIR, Base, Base, BasePtr, Stdout]),
+    format(atom(PayloadWrite),
+        '  %~w_pwr = call i64 @fwrite(i8* ~w, i64 ~w, i64 1, i8* ~w)',
+        [Base, PtrIR, LenIR, Stdout]),
+    append(SourceLines, [LenStore, PayloadWrite], Lines).
+plawk_writebin_varlen_slot_lines(Type, Field, FieldSeparator, Base, BasePtr,
+        Stdout, Lines, GParts) :-
+    % numeric slot: stage the value in the scratch buffer, write 8 bytes
+    ( Type == i64
+    ->  plawk_i64_expr_ir(Field, FieldSeparator, Base, Base, ValueIR,
+            GParts, SetupParts),
+        LLVMType = i64
+    ;   plawk_writebin_f64_value_ir(Field, FieldSeparator, Base, ValueIR,
+            GParts, SetupParts),
+        LLVMType = double
+    ),
+    format(atom(StoreWrite),
+'  %~w_sp = bitcast i8* ~w to ~w*
+  store ~w ~w, ~w* %~w_sp, align 1
+  %~w_wr = call i64 @fwrite(i8* ~w, i64 8, i64 1, i8* ~w)',
+        [Base, BasePtr, LLVMType, LLVMType, ValueIR, LLVMType, Base,
+         Base, BasePtr, Stdout]),
+    append(SetupParts, [StoreWrite], Lines).
+
+%% plawk_writebin_lps_source_lines(+Field, +FieldSeparator, +Cap, +Base,
+%%     +BasePtr, -PtrIR, -LenIR, -Lines, -GlobalParts)
+%
+%  Resolve an lps payload source to a (pointer, runtime length) pair.
+%  lps payloads are string-valued: source bytes run to the first NUL or
+%  the source bound, clamped to the slot cap.
+plawk_writebin_lps_source_lines(string(Value), _FieldSeparator, Cap, Base,
+        _BasePtr, PtrIR, StringLen, [PtrLine], [GlobalLine]) :-
+    !,
+    format(atom(LitGlobal), '~w_lit', [Base]),
+    llvm_emit_c_string_global(LitGlobal, Value, GlobalLine, StringLen, BytesLen),
+    StringLen =< Cap,
+    format(atom(PtrIR), '%~w_src', [Base]),
+    format(atom(PtrLine),
+        '  ~w = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+        [PtrIR, BytesLen, BytesLen, LitGlobal]).
+plawk_writebin_lps_source_lines(field(FieldIndex), binfmt(Types), Cap, Base,
+        _BasePtr, PtrIR, LenIR, [PtrLine, LenLine], []) :-
+    !,
+    plawk_binfmt_field_type(binfmt(Types), FieldIndex, s(SourceWidth)),
+    SourceWidth =< Cap,
+    plawk_binfmt_field_offset(binfmt(Types), FieldIndex, SourceOffset),
+    format(atom(PtrIR), '%~w_src', [Base]),
+    format(atom(LenIR), '%~w_len', [Base]),
+    format(atom(PtrLine),
+        '  ~w = getelementptr i8, i8* %rec, i64 ~w', [PtrIR, SourceOffset]),
+    format(atom(LenLine),
+        '  ~w = call i64 @strnlen(i8* ~w, i64 ~w)',
+        [LenIR, PtrIR, SourceWidth]).
+plawk_writebin_lps_source_lines(field(FieldIndex), FieldSeparator, Cap, Base,
+        BasePtr, PtrIR, LenIR, [SliceIR, ClampIR], []) :-
+    FieldIndex >= 1,
+    llvm_emit_atom_field_slice('%line', FieldIndex, FieldSeparator, Base,
+        SliceIR),
+    format(atom(PtrIR), '%~w_srcp', [Base]),
+    format(atom(LenIR), '%~w_srclen', [Base]),
+    % a missing field (null slice) writes length 0 with a safe pointer
+    format(atom(ClampIR),
+'  %~w_null = icmp eq i8* %~w_ptr, null
+  %~w_len0 = select i1 %~w_null, i64 0, i64 %~w_len64
+  %~w_over = icmp ugt i64 %~w_len0, ~w
+  ~w = select i1 %~w_over, i64 ~w, i64 %~w_len0
+  ~w = select i1 %~w_null, i8* ~w, i8* %~w_ptr',
+        [Base, Base,
+         Base, Base, Base,
+         Base, Base, Cap,
+         LenIR, Base, Cap, Base,
+         PtrIR, Base, BasePtr, Base]).
 
 plawk_writebin_field_lines([], [], _Slots, _Values, _FieldSeparator, _Prefix,
         _BasePtr, _Index, _Offset, [], []).
