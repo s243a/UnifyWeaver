@@ -28,6 +28,7 @@
      llvm_emit_printf0/5,
      llvm_emit_stream_driver_ir/3,
      llvm_emit_binary_stream_driver_ir/4,
+     llvm_emit_varlen_stream_driver_ir/5,
      llvm_emit_ascii_case_slice_print/5]).
 
 %% plawk_program_native_driver_ir(+Program, +InputPath, -DriverIR) is semidet.
@@ -1847,6 +1848,15 @@ plawk_begin_binfmt_types(BeginClauses, Types) :-
 
 plawk_binfmt_type("i64", i64).
 plawk_binfmt_type("f64", f64).
+% lpsN: a length-prefixed string on the wire (8-byte native-endian
+% length, then that many payload bytes, at most N). The varlen reader
+% materializes it into the record buffer as a fixed NUL-padded N-byte
+% slot, so downstream consumers see it exactly like an sN field.
+plawk_binfmt_type(Part, lps(Cap)) :-
+    string_concat("lps", CapStr, Part),
+    number_string(Cap, CapStr),
+    integer(Cap),
+    Cap > 0.
 % sN: a fixed-width string field of N bytes. Values shorter than N are
 % NUL-terminated inside the field; a full-width value has no NUL.
 plawk_binfmt_type(Part, s(Width)) :-
@@ -1855,14 +1865,29 @@ plawk_binfmt_type(Part, s(Width)) :-
     integer(Width),
     Width > 0.
 
+%% plawk_binfmt_field_type(+Descriptor, +Index, -Type)
+%
+%  The ACCESS type of a field: what guards, prints, assoc keys, and
+%  writers see. lps(Cap) fields access as s(Cap) -- the varlen reader
+%  has already materialized them as fixed NUL-padded slots in the
+%  record buffer.
 plawk_binfmt_field_type(binfmt(Types), Index, Type) :-
     integer(Index),
     Index >= 1,
-    nth1(Index, Types, Type).
+    nth1(Index, Types, StoredType),
+    plawk_binfmt_access_type(StoredType, Type).
+
+plawk_binfmt_access_type(lps(Cap), s(Cap)) :- !.
+plawk_binfmt_access_type(Type, Type).
 
 plawk_binfmt_type_width(i64, 8).
 plawk_binfmt_type_width(f64, 8).
 plawk_binfmt_type_width(s(Width), Width).
+% in-memory width of the materialized slot, not the wire size
+plawk_binfmt_type_width(lps(Cap), Cap).
+
+plawk_binfmt_has_varlen(Types) :-
+    memberchk(lps(_Cap), Types).
 
 plawk_binfmt_field_offset(binfmt(Types), Index, Offset) :-
     PrefixLen is Index - 1,
@@ -2132,12 +2157,14 @@ plawk_writebin_slot_lines(f64, Field, FieldSeparator, Base, BasePtr, Offset,
 
 plawk_writebin_numeric_store_lines(LLVMType, ValueIR, Base, BasePtr, Offset,
         [Gep, Cast, Store]) :-
+    % _sp/_stp, not _fp/_tp: a bare $N argument's binfmt field LOAD
+    % already claims Base_fp/Base_tp for the read from %rec.
     format(atom(Gep),
-        '  %~w_fp = getelementptr i8, i8* ~w, i64 ~w', [Base, BasePtr, Offset]),
+        '  %~w_sp = getelementptr i8, i8* ~w, i64 ~w', [Base, BasePtr, Offset]),
     format(atom(Cast),
-        '  %~w_tp = bitcast i8* %~w_fp to ~w*', [Base, Base, LLVMType]),
+        '  %~w_stp = bitcast i8* %~w_sp to ~w*', [Base, Base, LLVMType]),
     format(atom(Store),
-        '  store ~w ~w, ~w* %~w_tp, align 1',
+        '  store ~w ~w, ~w* %~w_stp, align 1',
         [LLVMType, ValueIR, LLVMType, Base]).
 
 plawk_writebin_f64_value_ir(Field, FieldSeparator, Base, ValueIR,
@@ -2161,11 +2188,138 @@ plawk_writebin_f64_value_ir(Field, FieldSeparator, Base, ValueIR,
 %  Pick the stream skeleton by record representation: text lines or
 %  fixed-size binary records.
 plawk_emit_record_driver_ir(binfmt(Types), InputPath, Blocks, DriverIR) :-
+    plawk_binfmt_has_varlen(Types),
+    !,
+    plawk_binfmt_record_size(binfmt(Types), BufSize),
+    plawk_normalize_driver_blocks(Blocks,
+        driver_blocks(RuntimeGlobals, EntrySetupIR0, LoopPhiIR, LoweredLabel,
+            RecordIR, ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR)),
+    % one shared 8-byte scratch for every lps length prefix
+    plawk_combine_entry_ir(EntrySetupIR0,
+'  %vr_len_scratch = alloca i64, align 8
+  %vr_len_i8 = bitcast i64* %vr_len_scratch to i8*',
+        EntrySetupIR),
+    plawk_varlen_read_ir(Types, LoweredLabel, ReadIR),
+    llvm_emit_varlen_stream_driver_ir(InputPath, BufSize, ReadIR,
+        driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel,
+            RecordIR, ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR),
+        DriverIR).
+plawk_emit_record_driver_ir(binfmt(Types), InputPath, Blocks, DriverIR) :-
     !,
     plawk_binfmt_record_size(binfmt(Types), RecordSize),
     llvm_emit_binary_stream_driver_ir(InputPath, RecordSize, Blocks, DriverIR).
 plawk_emit_record_driver_ir(_FieldSeparator, InputPath, Blocks, DriverIR) :-
     llvm_emit_stream_driver_ir(InputPath, Blocks, DriverIR).
+
+plawk_normalize_driver_blocks(
+    driver_blocks(RuntimeGlobals, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, CloseOkLabel, CloseOkIR),
+    driver_blocks(RuntimeGlobals, '', LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, '', CloseOkLabel, CloseOkIR)) :-
+    !.
+plawk_normalize_driver_blocks(
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel,
+        RecordIR, ContinueIR, CloseOkLabel, CloseOkIR),
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel,
+        RecordIR, ContinueIR, '', CloseOkLabel, CloseOkIR)) :-
+    !.
+plawk_normalize_driver_blocks(Blocks, Blocks).
+
+%% plawk_varlen_read_ir(+Types, +LoweredLabel, -ReadIR)
+%
+%  Field-by-field read sequence for variable-length records. The first
+%  read of a record is the only place clean EOF is legal (branching to
+%  close_stream); running out of bytes anywhere later in the record is
+%  a partial record and exits through fail_read, matching the
+%  fixed-record skeleton's trailing-partial semantics. Numeric fields
+%  read their 8 bytes straight into the record buffer; lps(Cap) fields
+%  read the 8-byte length into the shared scratch, bound it by Cap,
+%  zero the slot, then read the payload (a zero length reads nothing:
+%  @wam_stream_read_record returns 1 immediately for size 0).
+plawk_varlen_read_ir(Types, LoweredLabel, ReadIR) :-
+    plawk_varlen_field_sections(Types, LoweredLabel, 0, 0, Sections),
+    atomic_list_concat(Sections, '\n', ReadIR).
+
+plawk_varlen_field_sections([], _LoweredLabel, _Index, _Offset, []).
+plawk_varlen_field_sections([Type | Types], LoweredLabel, Index, Offset,
+        [Section | Sections]) :-
+    ( Types == []
+    -> NextLabel = LoweredLabel
+    ;  NextIndex0 is Index + 1,
+       format(atom(NextLabel), 'vr_f~w', [NextIndex0])
+    ),
+    ( Index =:= 0
+    -> LabelIR = ''
+    ;  format(atom(LabelIR), 'vr_f~w:~n', [Index])
+    ),
+    plawk_varlen_field_body(Type, Index, Offset, NextLabel, BodyIR),
+    format(atom(Section), '~w~w', [LabelIR, BodyIR]),
+    plawk_binfmt_type_width(Type, Width),
+    NextOffset is Offset + Width,
+    NextIndex is Index + 1,
+    plawk_varlen_field_sections(Types, LoweredLabel, NextIndex, NextOffset,
+        Sections).
+
+plawk_varlen_field_body(lps(Cap), Index, Offset, NextLabel, BodyIR) :-
+    !,
+    plawk_varlen_eof_check_ir(Index, lstatus, BodyPrefixIR, OkLabelIR),
+    format(atom(BodyIR),
+'  %vr_f~w_lstatus = call i64 @wam_stream_read_record(%Value %handle, i64 8, i8* %vr_len_i8)
+~w~w  %vr_f~w_lok = icmp eq i64 %vr_f~w_lstatus, 1
+  br i1 %vr_f~w_lok, label %vr_f~w_len, label %fail_read
+
+vr_f~w_len:
+  %vr_f~w_n = load i64, i64* %vr_len_scratch
+  %vr_f~w_fits = icmp ule i64 %vr_f~w_n, ~w
+  br i1 %vr_f~w_fits, label %vr_f~w_read, label %fail_read
+
+vr_f~w_read:
+  %vr_f~w_dst = getelementptr i8, i8* %rec, i64 ~w
+  call void @llvm.memset.p0i8.i64(i8* %vr_f~w_dst, i8 0, i64 ~w, i1 false)
+  %vr_f~w_pstatus = call i64 @wam_stream_read_record(%Value %handle, i64 %vr_f~w_n, i8* %vr_f~w_dst)
+  %vr_f~w_pok = icmp eq i64 %vr_f~w_pstatus, 1
+  br i1 %vr_f~w_pok, label %~w, label %fail_read
+',
+        [Index,
+         BodyPrefixIR, OkLabelIR, Index, Index,
+         Index, Index,
+         Index,
+         Index,
+         Index, Index, Cap,
+         Index, Index,
+         Index,
+         Index, Offset,
+         Index, Cap,
+         Index, Index, Index,
+         Index, Index,
+         Index, NextLabel]).
+plawk_varlen_field_body(_NumericType, Index, Offset, NextLabel, BodyIR) :-
+    plawk_varlen_eof_check_ir(Index, status, BodyPrefixIR, OkLabelIR),
+    format(atom(BodyIR),
+'  %vr_f~w_dst = getelementptr i8, i8* %rec, i64 ~w
+  %vr_f~w_status = call i64 @wam_stream_read_record(%Value %handle, i64 8, i8* %vr_f~w_dst)
+~w~w  %vr_f~w_ok = icmp eq i64 %vr_f~w_status, 1
+  br i1 %vr_f~w_ok, label %~w, label %fail_read
+',
+        [Index, Offset,
+         Index, Index,
+         BodyPrefixIR, OkLabelIR, Index, Index,
+         Index, NextLabel]).
+
+% Only the record's first read may see clean EOF (status 0). Later
+% fields fall straight through to the 1/other check, where 0 lands in
+% fail_read like any short read.
+plawk_varlen_eof_check_ir(0, StatusSuffix, BodyPrefixIR, OkLabelIR) :-
+    !,
+    format(atom(BodyPrefixIR),
+'  %vr_f0_eof = icmp eq i64 %vr_f0_~w, 0
+  br i1 %vr_f0_eof, label %close_stream, label %vr_f0_chk
+
+vr_f0_chk:
+',
+        [StatusSuffix]),
+    OkLabelIR = ''.
+plawk_varlen_eof_check_ir(_Index, _StatusSuffix, '', '').
 
 plawk_output_separator(BeginClauses, OutputSeparator) :-
     (   member(begin(Actions), BeginClauses),
