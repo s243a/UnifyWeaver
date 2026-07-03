@@ -2048,6 +2048,18 @@ plawk_binfmt_writebin_args_ok(Descriptor, [s(Width) | Types], [Field | Fields]) 
 plawk_binfmt_writebin_args_ok(Descriptor, [lps(Cap) | Types], [Field | Fields]) :-
     plawk_binfmt_writebin_str_ok(Descriptor, Field, Cap),
     plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
+plawk_binfmt_writebin_args_ok(Descriptor, [rep(Cap, ElemTypes) | Types],
+        [Field | Fields]) :-
+    plawk_binfmt_writebin_rep_ok(Descriptor, rep(Cap, ElemTypes), Field),
+    plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
+
+% rep passthrough: the argument names the input rep's COUNT field, and
+% the input rep must match the output slot exactly (same cap, same
+% element layout) -- count and live elements copy through unchanged.
+plawk_binfmt_writebin_rep_ok(binfmt(InTypes), rep(Cap, ElemTypes),
+        field(CountIndex)) :-
+    plawk_binfmt_rep_info(InTypes, CountIndex, Cap, _ElemArity),
+    memberchk(rep(Cap, ElemTypes), InTypes).
 
 plawk_binfmt_writebin_str_ok(_Descriptor, string(Value), Width) :-
     !,
@@ -2406,8 +2418,7 @@ plawk_binfmt_record_size(binfmt(Types), Size) :-
 plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules, WritebinPlan) :-
     ( plawk_rules_have_writebin(Rules0)
     ->  plawk_begin_outfmt_types(BeginClauses, Types),
-        forall(member(Type, Types),
-            ( memberchk(Type, [i64, f64]) ; Type = s(_W) ; Type = lps(_C) )),
+        forall(member(Type, Types), plawk_outfmt_type_ok(Type)),
         plawk_binfmt_record_size(binfmt(Types), Size),
         WritebinPlan = outfmt(Types, Size),
         maplist(plawk_resolve_writebin_rule(Types), Rules0, Rules)
@@ -2433,8 +2444,7 @@ plawk_resolve_union_writebin_blocks(BeginClauses, CaseBlocks0, CaseBlocks,
     ( member(case_arm(_I, ArmRules), CaseBlocks0),
       plawk_rules_have_writebin(ArmRules)
     ->  plawk_begin_outfmt_types(BeginClauses, Types),
-        forall(member(Type, Types),
-            ( memberchk(Type, [i64, f64]) ; Type = s(_W) ; Type = lps(_C) )),
+        forall(member(Type, Types), plawk_outfmt_type_ok(Type)),
         plawk_binfmt_record_size(binfmt(Types), Size),
         WritebinPlan = outfmt(Types, Size),
         maplist(plawk_resolve_union_writebin_block(Types), CaseBlocks0,
@@ -2473,8 +2483,9 @@ plawk_resolve_writebin_action(_Types, Action, Action).
 plawk_begin_outfmt_types(BeginClauses, Types) :-
     member(begin(Actions), BeginClauses),
     member(set(var('OUTFMT'), string(Fmt)), Actions),
-    split_string(Fmt, " ", " ", Parts0),
-    exclude(==(""), Parts0, Parts),
+    % the shared tokenizer joins parenthesized types, so OUTFMT can
+    % carry a rep: "i64 rep4(i64 f64)"
+    plawk_binfmt_tokens(Fmt, Parts),
     Parts \== [],
     maplist(plawk_binfmt_type, Parts, Types).
 
@@ -2519,9 +2530,22 @@ plawk_writebin_args_ok([Type | Types], [Field | Fields]) :-
     -> plawk_writebin_str_arg(Field, Width)
     ;  Type = lps(Cap)
     -> plawk_writebin_str_arg(Field, Cap)
+    ;  Type = rep(_K, _Elems)
+    -> Field = field(_CountIndex)
     ;  plawk_writebin_f64_arg(Field)
     ),
     plawk_writebin_args_ok(Types, Fields).
+
+% OUTFMT slot types: i64/f64/sN/lpsN as before, plus rep passthrough
+% (fixed-width elements only -- the element region is copied as one
+% bulk write, which requires in-memory layout == wire layout).
+plawk_outfmt_type_ok(i64) :- !.
+plawk_outfmt_type_ok(f64) :- !.
+plawk_outfmt_type_ok(s(_W)) :- !.
+plawk_outfmt_type_ok(lps(_C)) :- !.
+plawk_outfmt_type_ok(rep(_K, ElemTypes)) :-
+    forall(member(ElemType, ElemTypes),
+        ( memberchk(ElemType, [i64, f64]) ; ElemType = s(_) )).
 
 % sN output slots take string literals that fit the width, or field
 % reads (validated against the input layout separately in binary mode;
@@ -2632,6 +2656,37 @@ plawk_writebin_varlen_slot_lines(lps(Cap), Field, FieldSeparator, Base,
         '  %~w_pwr = call i64 @fwrite(i8* ~w, i64 ~w, i64 1, i8* ~w)',
         [Base, PtrIR, LenIR, Stdout]),
     append(SourceLines, [LenStore, PayloadWrite], Lines).
+plawk_writebin_varlen_slot_lines(rep(_Cap, ElemTypes), field(CountIndex),
+        binfmt(InTypes), Base, BasePtr, Stdout, Lines, []) :-
+    !,
+    % rep passthrough: write the live count, then the live elements as
+    % one bulk write straight from the input record's element region
+    % (fixed-width elements, so in-memory layout == wire layout; a
+    % zero count writes nothing -- fwrite with size 0 is a no-op).
+    maplist(plawk_binfmt_type_width, ElemTypes, ElemWidths),
+    sum_list(ElemWidths, ElemSize),
+    plawk_binfmt_field_offset(binfmt(InTypes), CountIndex, CountOff),
+    ElemsOff is CountOff + 8,
+    format(atom(RepIR),
+'  %~w_cfp = getelementptr i8, i8* %rec, i64 ~w
+  %~w_ctp = bitcast i8* %~w_cfp to i64*
+  %~w_n = load i64, i64* %~w_ctp, align 1
+  %~w_csp = bitcast i8* ~w to i64*
+  store i64 %~w_n, i64* %~w_csp, align 1
+  %~w_cwr = call i64 @fwrite(i8* ~w, i64 8, i64 1, i8* ~w)
+  %~w_efp = getelementptr i8, i8* %rec, i64 ~w
+  %~w_bytes = mul i64 %~w_n, ~w
+  %~w_ewr = call i64 @fwrite(i8* %~w_efp, i64 %~w_bytes, i64 1, i8* ~w)',
+        [Base, CountOff,
+         Base, Base,
+         Base, Base,
+         Base, BasePtr,
+         Base, Base,
+         Base, BasePtr, Stdout,
+         Base, ElemsOff,
+         Base, Base, ElemSize,
+         Base, Base, Base, Stdout]),
+    Lines = [RepIR].
 plawk_writebin_varlen_slot_lines(Type, Field, FieldSeparator, Base, BasePtr,
         Stdout, Lines, GParts) :-
     % numeric slot: stage the value in the scratch buffer, write 8 bytes
