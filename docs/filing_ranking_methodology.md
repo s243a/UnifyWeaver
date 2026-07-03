@@ -135,12 +135,22 @@ Runs use the s243a federated model (8,800 folders) + `model_prod.pt`, Haiku via 
     other 72% is **recall, not reranking** → widen the shortlist (bigger K / the adaptive δ-band, §3).
   - _Caveats:_ "true folder" = where the user filed it (other folders are often equally valid), so strict tree-id
     match **understates** quality — 28%/64% are conservative. Single model, single 100-sample.
-- **Coverage 2×2 (N=100 UNCONDITIONED, no LLM, 3 seeds) — WHERE the data weakness is:** Type A (folder out-of-model)
-  **59–62%** (seeds 7/13/42 — stable ~60%); Type B (in-model, out-of-shortlist) 19–28%; reachable (in-shortlist)
-  12–22% (B/reachable noisier, as expected). **The dominant weakness is COVERAGE (~60%, robust)** — most bookmarks
-  fail because their folder isn't in the model at all, which conditioning had hidden. **Priority reframed: complete
-  the data (Type A, this branch's pipeline) ≫ widen-K / retrain-µ (Type B) > rerank (Type C, already 36→64%).** So
-  the biggest data lever is *completion*, not the µ retrain.
+- **Coverage 2×2 (N=100 UNCONDITIONED, no LLM) — WHERE the data weakness is.** Reproduce:
+  `python3 scripts/eval_rerank_agreement.py --model models/pearltrees_federated_s243a.pkl --mu-ckpt prototypes/mu_cosine/model_prod.pt --coverage-2x2 --n 100 --seed S`. Per-seed counts (%):
+
+  | seed | Type A (out-of-model) | Type B (in-model, out-of-shortlist) | reachable (in-shortlist) |
+  |---|---|---|---|
+  | 7  | 60 | 28 | 12 |
+  | 13 | 62 | 24 | 14 |
+  | 42 | 59 | 19 | 22 |
+  | **mean** | **~60** | ~24 | ~16 |
+
+  **Type A ≈ 60% is stable & DOMINANT** (59–62); B/reachable are noisier (single-seed ±~5 pts). The dominant weakness
+  is **coverage** — most bookmarks fail because their folder isn't in the model at all, which the conditioned ranking
+  eval had hidden. **Current priority given this error mix: complete the data (Type A, this branch's pipeline) ≫
+  widen-K / retrain-µ (Type B) > rerank (Type C, already 36→64%).** NB this ordering is a statement about the *current*
+  mix, **not a permanent invariant** — once completion closes much of the 60% Type A, the bottleneck shifts to B/C
+  and the priority should be re-measured. The biggest data lever *today* is *completion*, not the µ retrain.
 - **Recall@K curve (N=100, single seed, judge-free):** produced by `recall_curve.py` via
   `MuRanker.score_components` — **μ scored over ALL 8,800 folders**, NOT the shortlisted `engine.search` path
   (`eval_rerank_agreement.py`'s "shortlist recall@15=28%" is the *shortlisted* path — a different measurement). So
@@ -174,7 +184,8 @@ question is never "do we have enough data" in the abstract — it's **"for our c
 
 **Measured (`--coverage-2x2`, N=100, 3 seeds): Type A ≈ 60% (59–62%, stable & DOMINANT), Type B ≈ 24%,
 reachable ≈ 16%.** So the primary data weakness is **coverage**, and the top lever is **data completion (this
-branch's pipeline) ≫ recall (retrain µ) > rerank**. **How we know it's coverage and not a ranking problem:** the
+branch's pipeline) ≫ recall (retrain µ) > rerank** *(current error mix — re-measure after completion, as the
+bottleneck then shifts to B/C)*. **How we know it's coverage and not a ranking problem:** the
 unconditioned 2×2 counts, per bookmark, whether the true folder is *even a candidate in the model* — 60% are not,
 which is independent of *any* ranking or shortlist size (no amount of widening K or reranking can surface a folder
 the model doesn't contain). That number was invisible until we stopped conditioning on in-model folders — the
