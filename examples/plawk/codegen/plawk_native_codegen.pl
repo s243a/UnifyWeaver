@@ -1992,8 +1992,9 @@ plawk_begin_union_arms(BeginClauses, Arms) :-
     maplist(plawk_union_arm_types, ArmStrs, Arms).
 
 plawk_union_arm_types(ArmStr, Types) :-
-    split_string(ArmStr, " ", " ", Parts0),
-    exclude(==(""), Parts0, Parts),
+    % the shared tokenizer joins parenthesized types, so an arm can
+    % carry a rep: "case(i64 rep4(lps8 i64) | lps16 i64)"
+    plawk_binfmt_tokens(ArmStr, Parts),
     Parts \== [],
     maplist(plawk_binfmt_type, Parts, Types).
 
@@ -2775,12 +2776,16 @@ plawk_pattern_strip_tag(and_pat(Left0, Right), Tag, and_pat(Left, Right)) :-
 %
 %  Flatten case blocks into one rule chain, stamping each rule with
 %  arm_pat(Tag, ArmTypes, Pattern) so guards check the record tag and
-%  everything downstream types fields against the right arm.
+%  everything downstream types fields against the right arm. foreach
+%  resolves per arm against that arm's own layout (each arm may carry
+%  its own rep), so a case block iterates its arm's elements.
 plawk_union_flatten_rules(CaseBlocks, Arms, Rules) :-
     findall(rule(arm_pat(Index, ArmTypes, Pattern), Actions),
         ( member(case_arm(Index, ArmRules), CaseBlocks),
           nth0(Index, Arms, ArmTypes),
-          member(rule(Pattern, Actions), ArmRules)
+          plawk_resolve_foreach_rules(binfmt(ArmTypes), ArmRules,
+              ResolvedRules),
+          member(rule(Pattern, Actions), ResolvedRules)
         ),
         Rules),
     Rules \== [].
@@ -2792,7 +2797,9 @@ plawk_union_program_ok(Arms, CaseBlocks) :-
           Index >= 0,
           Index < ArmCount,
           nth0(Index, Arms, ArmTypes),
-          forall(member(rule(Pattern, Actions), ArmRules),
+          plawk_resolve_foreach_rules(binfmt(ArmTypes), ArmRules,
+              ResolvedRules),
+          forall(member(rule(Pattern, Actions), ResolvedRules),
               ( plawk_binfmt_pattern_ok(binfmt(ArmTypes), Pattern),
                 plawk_binfmt_actions_ok(binfmt(ArmTypes), Actions)
               ))

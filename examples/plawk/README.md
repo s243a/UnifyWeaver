@@ -95,6 +95,7 @@ swipl -q -s tests/test_plawk_varlen_writers.pl -g "setenv('UW_SMOKE_TMPDIR', '/m
 swipl -q -s tests/test_plawk_tagged_unions.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_bounded_rep.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_rep_strings.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_union_rep.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_tier2_blob.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
@@ -323,7 +324,11 @@ block are still read and skipped, keeping the stream framed. Rules may
 also lead with a tag guard instead: `TAG == 1 && $1 == "boom" { events++ }`
 is pure sugar for the same rule inside `case 1 { ... }` (identical IR);
 every rule must then lead with `TAG == K`, and tag tests under `||`/`!`
-or in non-leftmost position are rejected. (Assoc
+or in non-leftmost position are rejected. Arms can carry their own
+repetition: `BINFMT = "case(i64 rep4(lps8 i64) | i64)"` gives arm 0 an
+element list, and `foreach` inside that arm's rules (either spelling)
+iterates it -- element types, staging, and buffer sizing all resolve
+per arm. (Assoc
 arrays and writebin inside case blocks are later slices.)
 `lpsN` also works in OUTFMT: writebin emits the
 8-byte length plus exactly the payload bytes (no padding), sourcing

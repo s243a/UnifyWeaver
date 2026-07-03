@@ -127,8 +127,12 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
    (one single-rule block per rule, so source order is preserved and
    the two spellings compile to identical IR). Every rule must lead
    with a tag guard, and a tag test under `||`/`!` or in a non-leftmost
-   conjunct is rejected. Not yet inside case blocks: assoc arrays,
-   writebin, and union output.
+   conjunct is rejected. Arms may carry a `repK(...)` (landed):
+   `foreach` inside a case block resolves against that arm's own
+   layout, per-arm staging rides the same access-type expansion, and
+   the union buffer (max record size across arms) covers it
+   automatically. Not yet inside case blocks: assoc arrays, writebin,
+   and union output.
 2. **Bounded repetition (landed):** `repK(elem types)` — an 8-byte
    count (≤ K) then that many elements. Fixed-width elements read as
    one bulk count×elemsize read after a memset of the element region
@@ -143,8 +147,8 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
    compiler emits a genuine runtime loop — the current element is
    memcpy'd into a hidden staging slot group appended to the record
    buffer and every scalar slot rides a loop-carried typed phi, so code
-   size is O(body) at any cap. One rep per layout, no rep/blob nesting;
-   those are later extensions.
+   size is O(body) at any cap. One rep per layout (per arm in a
+   union), no rep/blob nesting; those are later extensions.
 3. **Varlen writers (landed):** `lpsN` in OUTFMT emits the 8-byte
    length plus exactly the payload bytes, sourced from literals,
    `sM`/`lpsM` input fields (`M ≤ cap`), or text-mode slices clamped to
