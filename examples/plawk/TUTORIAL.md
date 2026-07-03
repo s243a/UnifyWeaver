@@ -629,3 +629,25 @@ Because the cap (4) is known at compile time, the compiler does not
 emit a loop at all — it writes the block out 4 times, each copy
 guarded by "does the record have at least j elements?". Constant
 memory, straight-line native code, same as everything else.
+
+### Handing payloads to Prolog
+
+Everything so far was compiled to plain native code. But PLAWK lives
+inside a Prolog compiler, and some payloads deserve a real parser. A
+`blob32` field is a length-prefixed chunk of bytes that PLAWK itself
+never interprets - its only use is as an argument to a compiled Prolog
+predicate:
+
+```awk
+BEGIN { BINFMT = "i64 blob32" }
+$1 > 0 { total += payload_sum($2) }
+END { print total }
+```
+
+Here `payload_sum/2` is ordinary Prolog compiled into the same binary -
+typically `atom_codes` on the payload followed by a DCG over the byte
+list, with unification and backtracking intact. The division of labor:
+the native loop does the framing (find each record, check lengths,
+skip what doesn't match), and Prolog does the understanding. The
+hand-off costs about 0.2 microseconds and no memory growth - the
+payload travels in a single reused buffer.

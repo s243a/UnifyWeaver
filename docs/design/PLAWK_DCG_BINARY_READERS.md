@@ -143,9 +143,45 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
    fwrite to per-slot fwrites emitted left to right (buffered in libc,
    so still memcpy cost per record). Writer output is byte-compatible
    with the `lpsN` reader.
-4. **Tier-2 composition sugar:** a declared payload type whose slice is
-   passed to a compiled Prolog DCG via the foreign bridge without
-   hand-written glue.
+4. **Tier-2 composition sugar (landed):** `blobN` — a length-prefixed
+   binary payload whose only consumer is a compiled-Prolog foreign
+   call. The record loop frames natively (length read, cap check, bulk
+   payload read into the record buffer); passing `$K` to a
+   `prolog_call`/`prolog_guard` copies the payload into the shared
+   transient buffer (`@wam_transient_atom_from_bytes`, constant memory,
+   no interning) and marshals it as the transient atom, which the
+   compiled predicate reads with `atom_codes/2` and parses with an
+   ordinary WAM DCG — real choice points and all. i64 fields marshal
+   as WAM integers (a typed load, no text). Constraints: one blob
+   argument per call (one shared buffer), NUL-free payloads (the
+   transient atom is a C string), f64 marshaling and blob output are
+   later slices.
+
+## Known design debt
+
+- **WAM bug: constant-in-list clause heads never match.** A clause head
+  containing a constant inside a list cell — `p(..., [44|T], ...)` —
+  compiles (get_list/unify_constant path) but never matches at runtime;
+  the semantically identical `p(..., [C|T], ...) :- C == 44` works.
+  Found by the Tier-2 payload DCG (the first code to exercise that head
+  shape through the hybrid compiler); minimal reproducer: a predicate
+  counting leading commas of a code list returns failure on `",,,"`
+  with the constant head and 3 with the guard form. Needs a targeted
+  fix in the WAM head-compilation path; until then, write separators as
+  guards.
+
+
+- **`foreach` unrolling does not scale in code size.** The bounded-
+  repetition surface unrolls its block Cap times (each copy guarded by
+  `count >= j`), which is ideal for small caps (4–8: straight-line,
+  branch-predictable, zero new phi machinery) but emits O(Cap × body)
+  IR — `rep1000` would be absurd. The fix is a real runtime loop:
+  an induction variable, loop-carried phis for the scalar slots, and
+  element addresses computed as `base + j*elemsize` instead of
+  constants. That is the one genuinely new piece of IR machinery the
+  emitter stack lacks (everything today is straight-line plus joins).
+  Plan: emit the loop above a small cap threshold and keep unrolling
+  as the small-cap optimization.
 
 ## Why not a real DCG engine in the loop?
 
