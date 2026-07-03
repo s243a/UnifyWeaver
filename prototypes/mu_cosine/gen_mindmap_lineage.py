@@ -58,6 +58,21 @@ def parse_map(smmx, tmp):
                 broader.setdefault(src, dst)
     parent = dict(broader); parent.update(struct_parent)  # structural parent takes precedence
     fallback = set(broader) - set(struct_parent)          # parent came ONLY from super_category
+    # BYPASS nav nodes in the STRUCTURE (not just the display path): if a node's parent is a nav node,
+    # reconnect it to the nav node's parent, then drop nav nodes entirely. Fixes "via link" appearing as a
+    # true parent in the graph judge + reconnects chains the nav node was breaking.
+    nav_keys = {k for k, t in title.items() if t.strip().lower() in NAV}
+    if nav_keys:
+        def real_parent(n):
+            p, seen = parent.get(n), set()
+            while p in nav_keys and p not in seen:
+                seen.add(p); p = parent.get(p)
+            return p
+        parent = {n: real_parent(n) for n in parent}
+        parent = {n: p for n, p in parent.items() if p is not None and p not in nav_keys and n not in nav_keys}
+        fallback -= nav_keys
+        for k in nav_keys:
+            title.pop(k, None)
     return title, parent, fallback, ""
 
 

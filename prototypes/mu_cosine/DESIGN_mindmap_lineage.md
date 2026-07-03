@@ -125,8 +125,13 @@ model's judge axis learns both calibrations side-by-side (`corpus_emb + judge_em
   + calibrated μ + judge tag.
 - SimpleMind is **most useful once fused with Pearltrees** (`fuse_corpus.py` needs the PT cache) — this is prep;
   full value lands with the harvester.
-- **Built:** `gen_mindmap_lineage.py` (491 chains). **Next:** substitution+e5 candidate gen → graph judge →
-  targeted LLM judge → graded-round rows.
+- **Built:** `gen_mindmap_lineage.py` (491 chains); `prototype_graph_judge.py` — graph-μ validated on Chaos
+  theory: true parent = 1.0, ancestors graded up the chain (2 hops ≈ 0.36, 3 ≈ 0.22 at γ=0.6), far → floor 0.02.
+  **Finding:** a single-map parse is **fragmented** (many candidate `hops=99`), so the graph judge needs the
+  **connected cross-map / fused graph** for real candidate connectivity — another reason SimpleMind pairs with
+  Pearltrees (`fuse_corpus.py`). Nav (`via link`) nodes are now bypassed in the *structure* (not just display).
+  **Next:** run on the fused graph → substitution candidate gen → targeted LLM judge on uncertain cases →
+  graded-round rows.
 
 ## 6. Review responses (PR #3426)
 
