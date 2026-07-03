@@ -159,29 +159,31 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
 
 ## Known design debt
 
-- **WAM bug: constant-in-list clause heads never match.** A clause head
-  containing a constant inside a list cell — `p(..., [44|T], ...)` —
-  compiles (get_list/unify_constant path) but never matches at runtime;
-  the semantically identical `p(..., [C|T], ...) :- C == 44` works.
-  Found by the Tier-2 payload DCG (the first code to exercise that head
-  shape through the hybrid compiler); minimal reproducer: a predicate
-  counting leading commas of a code list returns failure on `",,,"`
-  with the constant head and 3 with the guard form. Needs a targeted
-  fix in the WAM head-compilation path; until then, write separators as
-  guards.
+- **(FIXED) WAM bug: constant-in-list clause heads never matched.**
+  `unify_constant` built its read-mode comparison value with a
+  hardcoded Atom tag (op2 was unused), so an integer constant in a
+  list/structure head — `p(..., [44|T], ...)` — compared `Atom(44)`
+  against the heap's `Integer(44)` and always failed. The fix packs
+  the tag into `op2 >> 16` (both encoders, mirroring `get_constant`)
+  and routes read mode through the general `wam_unify_value`, which
+  also closes a second hole: an unbound sub-arg used to "match"
+  without being bound; it now binds with trailing. The Tier-2 payload
+  DCG's comma clause is the standing regression test.
 
 
-- **`foreach` unrolling does not scale in code size.** The bounded-
-  repetition surface unrolls its block Cap times (each copy guarded by
-  `count >= j`), which is ideal for small caps (4–8: straight-line,
-  branch-predictable, zero new phi machinery) but emits O(Cap × body)
-  IR — `rep1000` would be absurd. The fix is a real runtime loop:
-  an induction variable, loop-carried phis for the scalar slots, and
-  element addresses computed as `base + j*elemsize` instead of
-  constants. That is the one genuinely new piece of IR machinery the
-  emitter stack lacks (everything today is straight-line plus joins).
-  Plan: emit the loop above a small cap threshold and keep unrolling
-  as the small-cap optimization.
+- **(FIXED) `foreach` unrolling did not scale in code size.** The
+  original surface unrolled its block Cap times — O(Cap × body) IR.
+  It is now a real runtime loop, the one loop in the emitter stack:
+  an index phi, one loop-carried phi per scalar slot (typed i64 or
+  double), and a per-iteration `memcpy` of the current element into a
+  hidden staging group appended to the record buffer — so the body's
+  field accesses remain compile-time offsets and every existing
+  emitter (updates, doubles, prints, inner if/else, next/break) works
+  unchanged inside the loop. Code size is O(body) at any cap
+  (regression test: `rep64` emits one increment site), user-visible
+  field numbering and `NF` are untouched, and exit values are the
+  head phis themselves. The staging copy costs one small memcpy per
+  element — noise next to the per-element work itself.
 
 ## Why not a real DCG engine in the loop?
 

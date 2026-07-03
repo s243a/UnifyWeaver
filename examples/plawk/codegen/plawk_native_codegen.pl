@@ -957,6 +957,8 @@ plawk_action_has_control(if(_Pattern, ThenActions, ElseActions)) :-
     ( plawk_branch_actions_have_unsupported_control(ThenActions)
     ; plawk_branch_actions_have_unsupported_control(ElseActions)
     ).
+plawk_action_has_control(foreach_loop(_Layout, Body)) :-
+    plawk_branch_actions_have_unsupported_control(Body).
 
 plawk_branch_actions_have_unsupported_control(Actions) :-
     plawk_trim_control_tails(Actions, TrimmedActions),
@@ -1118,6 +1120,9 @@ plawk_scalar_update_name_expr(if(_Pattern, ThenActions, ElseActions), Name, Expr
     ; member(Action, ElseActions)
     ),
     plawk_scalar_update_name_expr(Action, Name, Expr).
+plawk_scalar_update_name_expr(foreach_loop(_Layout, Body), Name, Expr) :-
+    member(Action, Body),
+    plawk_scalar_update_name_expr(Action, Name, Expr).
 
 plawk_scalar_double_fixpoint(Updates, Doubles0, Doubles) :-
     findall(Name,
@@ -1243,6 +1248,8 @@ plawk_action_body_print_field(if(_Pattern, ThenActions, ElseActions), Field) :-
     (   plawk_actions_body_print_field(ThenActions, Field)
     ;   plawk_actions_body_print_field(ElseActions, Field)
     ).
+plawk_action_body_print_field(foreach_loop(_Layout, Body), Field) :-
+    plawk_actions_body_print_field(Body, Field).
 
 plawk_mixed_planned_rules([], _AssocPlan, _Index) -->
     [].
@@ -1780,6 +1787,9 @@ plawk_binfmt_action_ok(Descriptor, if(Pattern, ThenActions, ElseActions)) :-
 plawk_binfmt_action_ok(Descriptor, writebin_out(Types, Fields)) :-
     !,
     plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
+plawk_binfmt_action_ok(Descriptor, foreach_loop(_Layout, Body)) :-
+    !,
+    plawk_binfmt_actions_ok(Descriptor, Body).
 
 plawk_binfmt_writebin_args_ok(_Descriptor, [], []).
 plawk_binfmt_writebin_args_ok(Descriptor, [i64 | Types], [Field | Fields]) :-
@@ -2074,18 +2084,31 @@ plawk_binfmt_access_type(Type, Type).
 %  Expand stored types into the flat per-field access list: a
 %  rep(K, Elems) contributes its i64 count field followed by K copies
 %  of the element fields; everything else is one field.
-plawk_binfmt_access_types([], []).
-plawk_binfmt_access_types([rep(Cap, ElemTypes) | Rest], AccessTypes) :-
+plawk_binfmt_access_types(Types, AccessTypes) :-
+    plawk_binfmt_declared_access_types(Types, Declared),
+    % A rep layout appends one hidden staging element group at the very
+    % end of the record buffer: the foreach runtime loop memcpys the
+    % current element there so the body's field accesses stay
+    % compile-time offsets. Appending after all declared fields keeps
+    % user-visible numbering and offsets unchanged.
+    ( memberchk(rep(_Cap, ElemTypes), Types)
+    ->  maplist(plawk_binfmt_access_type, ElemTypes, StageAccess),
+        append(Declared, StageAccess, AccessTypes)
+    ;   AccessTypes = Declared
+    ).
+
+plawk_binfmt_declared_access_types([], []).
+plawk_binfmt_declared_access_types([rep(Cap, ElemTypes) | Rest], AccessTypes) :-
     !,
     maplist(plawk_binfmt_access_type, ElemTypes, ElemAccess),
     findall(ElemField,
         ( between(1, Cap, _), member(ElemField, ElemAccess) ),
         Repeated),
-    plawk_binfmt_access_types(Rest, RestAccess),
+    plawk_binfmt_declared_access_types(Rest, RestAccess),
     append([i64 | Repeated], RestAccess, AccessTypes).
-plawk_binfmt_access_types([StoredType | Rest], [Type | RestAccess]) :-
+plawk_binfmt_declared_access_types([StoredType | Rest], [Type | RestAccess]) :-
     plawk_binfmt_access_type(StoredType, Type),
-    plawk_binfmt_access_types(Rest, RestAccess).
+    plawk_binfmt_declared_access_types(Rest, RestAccess).
 
 plawk_binfmt_type_width(i64, 8).
 plawk_binfmt_type_width(f64, 8).
@@ -2563,11 +2586,30 @@ plawk_rule_descriptor(_Pattern, Default, Default).
 plawk_resolve_foreach_rules(Descriptor, Rules0, Rules) :-
     ( plawk_rules_have_foreach(Rules0)
     ->  Descriptor = binfmt(Types),
-        plawk_binfmt_rep_info(Types, CountIndex, Cap, ElemArity),
-        maplist(plawk_resolve_foreach_rule(CountIndex, Cap, ElemArity),
-            Rules0, Rules)
+        plawk_binfmt_rep_info(Types, CountIndex, _Cap, ElemArity),
+        plawk_binfmt_foreach_layout(Types, CountIndex, ElemArity, Layout),
+        maplist(plawk_resolve_foreach_rule(Layout, ElemArity), Rules0, Rules)
     ;   Rules = Rules0
     ).
+
+%% plawk_binfmt_foreach_layout(+Types, +CountIndex, +ElemArity, -Layout)
+%
+%  Byte/field geometry the runtime loop needs: the count field's byte
+%  offset, the first element's byte offset, the element size, the
+%  staging area's byte offset (end of the declared layout), and the
+%  access index of the first staging field minus one (the shift base
+%  for body field references).
+plawk_binfmt_foreach_layout(Types, CountIndex, _ElemArity,
+        foreach_layout(CountOff, ElemsOff, ElemSize, StageOff, StageBase)) :-
+    plawk_binfmt_field_offset(binfmt(Types), CountIndex, CountOff),
+    ElemsOff is CountOff + 8,
+    memberchk(rep(_Cap, ElemTypes), Types),
+    maplist(plawk_binfmt_type_width, ElemTypes, ElemWidths),
+    sum_list(ElemWidths, ElemSize),
+    plawk_binfmt_declared_access_types(Types, Declared),
+    length(Declared, StageBase),
+    maplist(plawk_binfmt_type_width, Declared, DeclaredWidths),
+    sum_list(DeclaredWidths, StageOff).
 
 plawk_rules_have_foreach(Rules) :-
     member(rule(_Pattern, Actions), Rules),
@@ -2596,34 +2638,33 @@ plawk_binfmt_rep_info(Types, CountIndex, Cap, ElemArity) :-
     length(PrefixAccess, PrefixCount),
     CountIndex is PrefixCount + 1.
 
-plawk_resolve_foreach_rule(CountIndex, Cap, ElemArity,
+plawk_resolve_foreach_rule(Layout, ElemArity,
         rule(Pattern, Actions0), rule(Pattern, Actions)) :-
-    plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity,
-        Actions0, Actions).
+    plawk_resolve_foreach_actions(Layout, ElemArity, Actions0, Actions).
 
-plawk_resolve_foreach_actions(_CountIndex, _Cap, _ElemArity, [], []).
-plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity,
-        [foreach(Body) | Rest0], Actions) :-
+% foreach { Body } becomes one foreach_loop/2 term: a RUNTIME loop over
+% the elements (code size O(body), any cap), whose body reads the
+% current element from the fixed staging area -- field references are
+% shifted once to the staging indexes, so every existing field emitter
+% works unchanged.
+plawk_resolve_foreach_actions(_Layout, _ElemArity, [], []).
+plawk_resolve_foreach_actions(Layout, ElemArity,
+        [foreach(Body) | Rest0], [foreach_loop(Layout, ShiftedBody) | Rest]) :-
     !,
     \+ plawk_actions_have_foreach(Body),
     plawk_foreach_body_fields_ok(Body, ElemArity),
-    findall(if(field_cmp(CountIndex, ge, ElemIndex), ShiftedBody, []),
-        ( between(1, Cap, ElemIndex),
-          Base is CountIndex + (ElemIndex - 1) * ElemArity,
-          plawk_foreach_shift_actions(Body, Base, ShiftedBody)
-        ),
-        Unrolled),
-    plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity, Rest0, Rest),
-    append(Unrolled, Rest, Actions).
-plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity,
+    Layout = foreach_layout(_CountOff, _ElemsOff, _ElemSize, _StageOff, StageBase),
+    plawk_foreach_shift_actions(Body, StageBase, ShiftedBody),
+    plawk_resolve_foreach_actions(Layout, ElemArity, Rest0, Rest).
+plawk_resolve_foreach_actions(Layout, ElemArity,
         [if(Pattern, Then0, Else0) | Rest0], [if(Pattern, Then, Else) | Rest]) :-
     !,
-    plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity, Then0, Then),
-    plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity, Else0, Else),
-    plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity, Rest0, Rest).
-plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity,
+    plawk_resolve_foreach_actions(Layout, ElemArity, Then0, Then),
+    plawk_resolve_foreach_actions(Layout, ElemArity, Else0, Else),
+    plawk_resolve_foreach_actions(Layout, ElemArity, Rest0, Rest).
+plawk_resolve_foreach_actions(Layout, ElemArity,
         [Action | Rest0], [Action | Rest]) :-
-    plawk_resolve_foreach_actions(CountIndex, Cap, ElemArity, Rest0, Rest).
+    plawk_resolve_foreach_actions(Layout, ElemArity, Rest0, Rest).
 
 plawk_foreach_body_fields_ok(Body, ElemArity) :-
     forall(( sub_term(Sub, Body),
@@ -3445,6 +3486,8 @@ plawk_scalar_rule_body_action(Action) :-
     plawk_rule_body_print_action(Action).
 plawk_scalar_rule_body_action(writebin_out(Types, Fields)) :-
     plawk_writebin_args_ok(Types, Fields).
+plawk_scalar_rule_body_action(foreach_loop(_Layout, Body)) :-
+    plawk_scalar_branch_body_actions(Body).
 plawk_scalar_rule_body_action(if(_Pattern, ThenActions, ElseActions)) :-
     append(ThenActions, ElseActions, Actions),
     Actions \== [],
@@ -3666,6 +3709,9 @@ plawk_scalar_update_action_name(if(_Pattern, ThenActions, ElseActions), Name) :-
     ; member(Action, ElseActions)
     ),
     plawk_scalar_update_action_name(Action, Name).
+plawk_scalar_update_action_name(foreach_loop(_Layout, Body), Name) :-
+    member(Action, Body),
+    plawk_scalar_update_action_name(Action, Name).
 
 plawk_expr_scalar_read_name(var(Name), Name).
 plawk_expr_scalar_read_name(Expr, Name) :-
@@ -3805,6 +3851,98 @@ plawk_scalar_action_sequence_pairs([next], _Slots, _AssocPlan, _FieldSeparator, 
 plawk_scalar_action_sequence_pairs([break], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
         OpIndex, Values, Values, OpIndex, break, [branch_break(CurrentLabel, Values)]) -->
     [].
+% foreach_loop: the one loop in the emitter stack. Loop-carried phis
+% for the element index and every scalar slot; the body memcpys the
+% current element into the staging area and runs one copy of the
+% actions (inner ifs, prints, updates, next/break all reuse the
+% existing machinery). Exit values are the head phis themselves.
+plawk_scalar_action_sequence_pairs([foreach_loop(Layout, Body) | Rest],
+        Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { Layout = foreach_layout(CountOff, ElemsOff, ElemSize, StageOff, _StageBase),
+      format(atom(FeBase), '~w_fe_~w', [Prefix, OpIndex]),
+      format(atom(EntryLabel), '~w_entry', [FeBase]),
+      format(atom(HeadLabel), '~w_head', [FeBase]),
+      format(atom(BodyLabel), '~w_body', [FeBase]),
+      format(atom(BodyDoneLabel), '~w_body_done', [FeBase]),
+      format(atom(AfterLabel), '~w_after', [FeBase]),
+      % head phi names double as the slot values inside and after the loop
+      findall(PhiValue,
+          ( nth0(SlotIndex, Slots, _Slot),
+            format(atom(PhiValue), '%~w_slot_~w', [FeBase, SlotIndex])
+          ),
+          HeadValues),
+      phrase(plawk_scalar_action_sequence_pairs(Body, Slots, AssocPlan,
+          FieldSeparator, OutputSeparator, FeBase, BodyLabel, RuleIndex, 0,
+          HeadValues, BodyOutValues, _InnerOpIndex, InnerExitLabel,
+          InnerNextExits), BodyPairs),
+      pairs_keys_values(BodyPairs, BodyGlobalParts, BodyLineParts),
+      atomic_list_concat(BodyGlobalParts, '\n', GlobalIR),
+      atomic_list_concat(BodyLineParts, '\n', BodyIR),
+      plawk_branch_to_done_ir(InnerExitLabel, BodyDoneLabel, BodyDoneBrIR),
+      phrase(plawk_foreach_head_phi_lines(Slots, Values0, BodyOutValues,
+          FeBase, EntryLabel, BodyDoneLabel, 0), HeadPhiLines),
+      atomic_list_concat(HeadPhiLines, '\n', HeadPhiIR),
+      format(atom(IR),
+'  br label %~w
+
+~w:
+  %~w_count_p = getelementptr i8, i8* %rec, i64 ~w
+  %~w_count_tp = bitcast i8* %~w_count_p to i64*
+  %~w_count = load i64, i64* %~w_count_tp
+  br label %~w
+
+~w:
+  %~w_j = phi i64 [1, %~w], [%~w_j_next, %~w]
+~w
+  %~w_cont = icmp sle i64 %~w_j, %~w_count
+  br i1 %~w_cont, label %~w, label %~w
+
+~w:
+  %~w_jm1 = add i64 %~w_j, -1
+  %~w_rel = mul i64 %~w_jm1, ~w
+  %~w_off = add i64 %~w_rel, ~w
+  %~w_src = getelementptr i8, i8* %rec, i64 %~w_off
+  %~w_dst = getelementptr i8, i8* %rec, i64 ~w
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %~w_dst, i8* %~w_src, i64 ~w, i1 false)
+~w
+~w
+
+~w:
+  %~w_j_next = add i64 %~w_j, 1
+  br label %~w
+
+~w:',
+          [EntryLabel,
+           EntryLabel,
+           FeBase, CountOff,
+           FeBase, FeBase,
+           FeBase, FeBase,
+           HeadLabel,
+           HeadLabel,
+           FeBase, EntryLabel, FeBase, BodyDoneLabel,
+           HeadPhiIR,
+           FeBase, FeBase, FeBase,
+           FeBase, BodyLabel, AfterLabel,
+           BodyLabel,
+           FeBase, FeBase,
+           FeBase, FeBase, ElemSize,
+           FeBase, FeBase, ElemsOff,
+           FeBase, FeBase,
+           FeBase, StageOff,
+           FeBase, FeBase, ElemSize,
+           BodyIR,
+           BodyDoneBrIR,
+           BodyDoneLabel,
+           FeBase, FeBase,
+           HeadLabel,
+           AfterLabel]),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, AfterLabel, RuleIndex,
+        NextOpIndex, HeadValues, Values, FinalOpIndex, ExitLabel, RestNextExits),
+    { append(InnerNextExits, RestNextExits, NextExits) }.
 plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest],
         Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex, OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { format(atom(GlobalBase), '~w_if_~w', [Prefix, OpIndex]),
@@ -4284,6 +4422,24 @@ plawk_scalar_if_phi_lines([ThenValue | ThenRest], [ElseValue | ElseRest],
     },
     [PhiValue-Line],
     plawk_scalar_if_phi_lines(ThenRest, ElseRest, Slots, Prefix, OpIndex, ThenLabel, ElseLabel, NextSlotIndex).
+
+%% plawk_foreach_head_phi_lines(+Slots, +InValues, +OutValues, +FeBase,
+%%     +EntryLabel, +BodyDoneLabel, +Index)//
+%
+%  One loop-carried phi per scalar slot, typed by the slot.
+plawk_foreach_head_phi_lines([], [], [], _FeBase, _EntryLabel, _DoneLabel, _) -->
+    [].
+plawk_foreach_head_phi_lines([Slot | Slots], [InValue | InValues],
+        [OutValue | OutValues], FeBase, EntryLabel, DoneLabel, Index) -->
+    { plawk_slot_llvm_type(Slot, Type),
+      format(atom(Line),
+          '  %~w_slot_~w = phi ~w [~w, %~w], [~w, %~w]',
+          [FeBase, Index, Type, InValue, EntryLabel, OutValue, DoneLabel]),
+      NextIndex is Index + 1
+    },
+    [Line],
+    plawk_foreach_head_phi_lines(Slots, InValues, OutValues, FeBase,
+        EntryLabel, DoneLabel, NextIndex).
 
 replace_nth0(0, [_Old | Rest], Value, [Value | Rest]) :-
     !.

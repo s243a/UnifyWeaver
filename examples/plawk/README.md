@@ -299,10 +299,12 @@ list: `BINFMT = "i64 rep4(i64 f64)"` declares an 8-byte element count
 (at most 4) followed by that many (i64, f64) elements. The count is an
 ordinary i64 field, element slots are flat addressable fields
 (zero-filled past the count), and `foreach { ... }` runs its block once
-per element with `$1..$M` meaning the current element's fields - it
-unrolls at compile time into count-guarded ifs, so the loop machinery
-is the existing if/join emitters and the wire read is one bulk
-count*elemsize read. Oversized counts and truncated element regions
+per element with `$1..$M` meaning the current element's fields - a
+real runtime loop (loop-carried phis per scalar slot; the current
+element is staged into a hidden slot at the end of the record buffer
+so field accesses stay compile-time offsets), so code size is
+independent of the cap and rep64 costs the same IR as rep4. The wire
+read is one bulk count*elemsize read. Oversized counts and truncated element regions
 exit with the read-error code. Tagged unions let one stream carry several
 record kinds: `BINFMT = "case(i64 f64 | lps16 i64)"` declares that
 every record starts with an 8-byte tag selecting an arm layout, and
