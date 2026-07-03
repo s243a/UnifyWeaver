@@ -429,6 +429,8 @@ begin_assignment(set(var(Name), string(Value))) -->
 
 begin_assignment_name('BINFMT') -->
     "BINFMT".
+begin_assignment_name('OUTFMT') -->
+    "OUTFMT".
 begin_assignment_name('FS') -->
     "FS".
 begin_assignment_name('OFS') -->
@@ -494,6 +496,9 @@ action(Action) -->
     !.
 action(Action) -->
     printf_action(Action),
+    !.
+action(Action) -->
+    writebin_action(Action),
     !.
 action(Action) -->
     print_action(Action),
@@ -656,6 +661,15 @@ printf_action(printf(string(Format), Args)) -->
     quoted_string(FormatCodes),
     printf_args(Args),
     { string_codes(Format, FormatCodes) }.
+
+%% writebin_action(-Action)//
+%
+%  writebin expr, expr, ... - emit one fixed-layout binary record on
+%  stdout, laid out per BEGIN { OUTFMT = "..." }.
+writebin_action(writebin(Fields)) -->
+    "writebin",
+    required_ws,
+    print_fields(Fields).
 
 printf_args([Arg | Args]) -->
     ws,
