@@ -2040,10 +2040,14 @@ plawk_binfmt_type(Part, rep(Cap, ElemTypes)) :-
     exclude(==(""), ElemParts0, ElemParts),
     ElemParts \== [],
     maplist(plawk_binfmt_type, ElemParts, ElemTypes),
-    % elements must be fixed-width (no nested lps/rep) so the element
-    % region is one bulk read and one flat access layout
+    % Elements may be fixed-width (i64/f64/sN -> one bulk read of the
+    % whole region) or contain lpsN strings (variable wire size per
+    % element -> the reader loops, parsing one element at a time into
+    % its fixed in-memory slot group). Nested rep/blob stay out: the
+    % access layout must remain one flat fixed-offset slot group per
+    % element.
     forall(member(ElemType, ElemTypes),
-        ( memberchk(ElemType, [i64, f64]) ; ElemType = s(_) )).
+        ( memberchk(ElemType, [i64, f64]) ; ElemType = s(_) ; ElemType = lps(_) )).
 % blobN: a length-prefixed binary payload (8-byte length, then up to N
 % payload bytes) whose ONLY consumer is a compiled-Prolog foreign call:
 % the record loop stays native for framing and hands the payload to a
@@ -2778,7 +2782,7 @@ vr_tag_switch:
         ( nth0(Index, Arms, ArmTypes),
           format(atom(ArmPrefix), 'vr_a~w', [Index]),
           plawk_varlen_field_sections(ArmTypes, LoweredLabel, ArmPrefix,
-              no_eof, 0, 0, Sections),
+              no_eof, 0, rec, 0, Sections),
           atomic_list_concat(Sections, '\n', ArmBodyIR),
           format(atom(ArmIR), '~w:~n~w', [ArmPrefix, ArmBodyIR])
         ),
@@ -2860,14 +2864,17 @@ plawk_normalize_driver_blocks(Blocks, Blocks).
 %  zero the slot, then read the payload (a zero length reads nothing:
 %  @wam_stream_read_record returns 1 immediately for size 0).
 plawk_varlen_read_ir(Types, LoweredLabel, ReadIR) :-
-    plawk_varlen_field_sections(Types, LoweredLabel, vr, eof_first, 0, 0,
+    plawk_varlen_field_sections(Types, LoweredLabel, vr, eof_first, 0, rec, 0,
         Sections),
     atomic_list_concat(Sections, '\n', ReadIR).
 
+%  Base is the LLVM pointer register destinations gep from: 'rec' for
+%  record-level fields, or a rep loop's current-element base pointer
+%  (Offset is then relative to the element start).
 plawk_varlen_field_sections([], _LoweredLabel, _Prefix, _EofPolicy, _Index,
-        _Offset, []).
+        _Base, _Offset, []).
 plawk_varlen_field_sections([Type | Types], LoweredLabel, Prefix, EofPolicy,
-        Index, Offset, [Section | Sections]) :-
+        Index, Base, Offset, [Section | Sections]) :-
     ( Types == []
     -> NextLabel = LoweredLabel
     ;  NextIndex0 is Index + 1,
@@ -2882,20 +2889,22 @@ plawk_varlen_field_sections([Type | Types], LoweredLabel, Prefix, EofPolicy,
     -> FieldEof = eof
     ;  FieldEof = no_eof
     ),
-    plawk_varlen_field_body(Type, FBase, FieldEof, Offset, NextLabel, BodyIR),
+    plawk_varlen_field_body(Type, FBase, FieldEof, Base, Offset, NextLabel,
+        BodyIR),
     format(atom(Section), '~w~w', [LabelIR, BodyIR]),
     plawk_binfmt_type_width(Type, Width),
     NextOffset is Offset + Width,
     NextIndex is Index + 1,
     plawk_varlen_field_sections(Types, LoweredLabel, Prefix, EofPolicy,
-        NextIndex, NextOffset, Sections).
+        NextIndex, Base, NextOffset, Sections).
 
-plawk_varlen_field_body(blob(Cap), FBase, FieldEof, Offset, NextLabel, BodyIR) :-
+plawk_varlen_field_body(blob(Cap), FBase, FieldEof, Base, Offset, NextLabel,
+        BodyIR) :-
     !,
     PayloadOffset is Offset + 8,
     plawk_varlen_eof_check_ir(FieldEof, FBase, cstatus, BodyPrefixIR),
     format(atom(BodyIR),
-'  %~w_dst = getelementptr i8, i8* %rec, i64 ~w
+'  %~w_dst = getelementptr i8, i8* %~w, i64 ~w
   %~w_cstatus = call i64 @wam_stream_read_record(%Value %handle, i64 8, i8* %~w_dst)
 ~w  %~w_cok = icmp eq i64 %~w_cstatus, 1
   br i1 %~w_cok, label %~w_len, label %fail_read
@@ -2907,13 +2916,13 @@ plawk_varlen_field_body(blob(Cap), FBase, FieldEof, Offset, NextLabel, BodyIR) :
   br i1 %~w_fits, label %~w_read, label %fail_read
 
 ~w_read:
-  %~w_pdst = getelementptr i8, i8* %rec, i64 ~w
+  %~w_pdst = getelementptr i8, i8* %~w, i64 ~w
   call void @llvm.memset.p0i8.i64(i8* %~w_pdst, i8 0, i64 ~w, i1 false)
   %~w_pstatus = call i64 @wam_stream_read_record(%Value %handle, i64 %~w_n, i8* %~w_pdst)
   %~w_pok = icmp eq i64 %~w_pstatus, 1
   br i1 %~w_pok, label %~w, label %fail_read
 ',
-        [FBase, Offset,
+        [FBase, Base, Offset,
          FBase, FBase,
          BodyPrefixIR, FBase, FBase,
          FBase, FBase,
@@ -2923,12 +2932,90 @@ plawk_varlen_field_body(blob(Cap), FBase, FieldEof, Offset, NextLabel, BodyIR) :
          FBase, FBase, Cap,
          FBase, FBase,
          FBase,
-         FBase, PayloadOffset,
+         FBase, Base, PayloadOffset,
          FBase, Cap,
          FBase, FBase, FBase,
          FBase, FBase,
          FBase, NextLabel]).
-plawk_varlen_field_body(rep(Cap, ElemTypes), FBase, FieldEof, Offset, NextLabel, BodyIR) :-
+% rep whose elements contain lps strings: the wire size varies per
+% element, so the region cannot be one bulk read. Read the count, then
+% loop: each iteration parses one element's fields (through the same
+% field-body emitters, based at the current element's slot group), so
+% in-memory layout is identical to the fixed-element case and
+% everything downstream (field access, foreach staging) is unchanged.
+% Elements past the count stay zero from the region memset.
+plawk_varlen_field_body(rep(Cap, ElemTypes), FBase, FieldEof, Base, Offset,
+        NextLabel, BodyIR) :-
+    memberchk(lps(_ECap), ElemTypes),
+    !,
+    maplist(plawk_binfmt_type_width, ElemTypes, ElemWidths),
+    sum_list(ElemWidths, ElemSize),
+    RegionSize is Cap * ElemSize,
+    ElemOffset is Offset + 8,
+    plawk_varlen_eof_check_ir(FieldEof, FBase, cstatus, BodyPrefixIR),
+    format(atom(HeaderIR),
+'  %~w_dst = getelementptr i8, i8* %~w, i64 ~w
+  %~w_cstatus = call i64 @wam_stream_read_record(%Value %handle, i64 8, i8* %~w_dst)
+~w  %~w_cok = icmp eq i64 %~w_cstatus, 1
+  br i1 %~w_cok, label %~w_len, label %fail_read
+
+~w_len:
+  %~w_ctp = bitcast i8* %~w_dst to i64*
+  %~w_n = load i64, i64* %~w_ctp
+  %~w_fits = icmp ule i64 %~w_n, ~w
+  br i1 %~w_fits, label %~w_read, label %fail_read
+
+~w_read:
+  %~w_edst = getelementptr i8, i8* %~w, i64 ~w
+  call void @llvm.memset.p0i8.i64(i8* %~w_edst, i8 0, i64 ~w, i1 false)
+  br label %~w_lh
+
+~w_lh:
+  %~w_j = phi i64 [ 1, %~w_read ], [ %~w_jn, %~w_ld ]
+  %~w_cont = icmp sle i64 %~w_j, %~w_n
+  br i1 %~w_cont, label %~w_lb, label %~w
+
+~w_lb:
+  %~w_jm1 = sub i64 %~w_j, 1
+  %~w_rel = mul i64 %~w_jm1, ~w
+  %~w_eb = getelementptr i8, i8* %~w_edst, i64 %~w_rel
+',
+        [FBase, Base, Offset,
+         FBase, FBase,
+         BodyPrefixIR, FBase, FBase,
+         FBase, FBase,
+         FBase,
+         FBase, FBase,
+         FBase, FBase,
+         FBase, FBase, Cap,
+         FBase, FBase,
+         FBase,
+         FBase, Base, ElemOffset,
+         FBase, RegionSize,
+         FBase,
+         FBase,
+         FBase, FBase, FBase, FBase,
+         FBase, FBase, FBase,
+         FBase, FBase, NextLabel,
+         FBase,
+         FBase, FBase,
+         FBase, FBase, ElemSize,
+         FBase, FBase, FBase]),
+    format(atom(ElemPrefix), '~w_e', [FBase]),
+    format(atom(ElemBase), '~w_eb', [FBase]),
+    format(atom(DoneLabel), '~w_ld', [FBase]),
+    plawk_varlen_field_sections(ElemTypes, DoneLabel, ElemPrefix, no_eof, 0,
+        ElemBase, 0, ElemSections),
+    atomic_list_concat(ElemSections, '\n', ElemsIR),
+    format(atom(FooterIR),
+'~w_ld:
+  %~w_jn = add i64 %~w_j, 1
+  br label %~w_lh
+',
+        [FBase, FBase, FBase, FBase]),
+    atomic_list_concat([HeaderIR, ElemsIR, FooterIR], '\n', BodyIR).
+plawk_varlen_field_body(rep(Cap, ElemTypes), FBase, FieldEof, Base, Offset,
+        NextLabel, BodyIR) :-
     !,
     maplist(plawk_binfmt_type_width, ElemTypes, ElemWidths),
     sum_list(ElemWidths, ElemSize),
@@ -2936,7 +3023,7 @@ plawk_varlen_field_body(rep(Cap, ElemTypes), FBase, FieldEof, Offset, NextLabel,
     ElemOffset is Offset + 8,
     plawk_varlen_eof_check_ir(FieldEof, FBase, cstatus, BodyPrefixIR),
     format(atom(BodyIR),
-'  %~w_dst = getelementptr i8, i8* %rec, i64 ~w
+'  %~w_dst = getelementptr i8, i8* %~w, i64 ~w
   %~w_cstatus = call i64 @wam_stream_read_record(%Value %handle, i64 8, i8* %~w_dst)
 ~w  %~w_cok = icmp eq i64 %~w_cstatus, 1
   br i1 %~w_cok, label %~w_len, label %fail_read
@@ -2948,14 +3035,14 @@ plawk_varlen_field_body(rep(Cap, ElemTypes), FBase, FieldEof, Offset, NextLabel,
   br i1 %~w_fits, label %~w_read, label %fail_read
 
 ~w_read:
-  %~w_edst = getelementptr i8, i8* %rec, i64 ~w
+  %~w_edst = getelementptr i8, i8* %~w, i64 ~w
   call void @llvm.memset.p0i8.i64(i8* %~w_edst, i8 0, i64 ~w, i1 false)
   %~w_bytes = mul i64 %~w_n, ~w
   %~w_pstatus = call i64 @wam_stream_read_record(%Value %handle, i64 %~w_bytes, i8* %~w_edst)
   %~w_pok = icmp eq i64 %~w_pstatus, 1
   br i1 %~w_pok, label %~w, label %fail_read
 ',
-        [FBase, Offset,
+        [FBase, Base, Offset,
          FBase, FBase,
          BodyPrefixIR, FBase, FBase,
          FBase, FBase,
@@ -2965,13 +3052,14 @@ plawk_varlen_field_body(rep(Cap, ElemTypes), FBase, FieldEof, Offset, NextLabel,
          FBase, FBase, Cap,
          FBase, FBase,
          FBase,
-         FBase, ElemOffset,
+         FBase, Base, ElemOffset,
          FBase, RegionSize,
          FBase, FBase, ElemSize,
          FBase, FBase, FBase,
          FBase, FBase,
          FBase, NextLabel]).
-plawk_varlen_field_body(lps(Cap), FBase, FieldEof, Offset, NextLabel, BodyIR) :-
+plawk_varlen_field_body(lps(Cap), FBase, FieldEof, Base, Offset, NextLabel,
+        BodyIR) :-
     !,
     plawk_varlen_eof_check_ir(FieldEof, FBase, lstatus, BodyPrefixIR),
     format(atom(BodyIR),
@@ -2985,7 +3073,7 @@ plawk_varlen_field_body(lps(Cap), FBase, FieldEof, Offset, NextLabel, BodyIR) :-
   br i1 %~w_fits, label %~w_read, label %fail_read
 
 ~w_read:
-  %~w_dst = getelementptr i8, i8* %rec, i64 ~w
+  %~w_dst = getelementptr i8, i8* %~w, i64 ~w
   call void @llvm.memset.p0i8.i64(i8* %~w_dst, i8 0, i64 ~w, i1 false)
   %~w_pstatus = call i64 @wam_stream_read_record(%Value %handle, i64 %~w_n, i8* %~w_dst)
   %~w_pok = icmp eq i64 %~w_pstatus, 1
@@ -2999,20 +3087,37 @@ plawk_varlen_field_body(lps(Cap), FBase, FieldEof, Offset, NextLabel, BodyIR) :-
          FBase, FBase, Cap,
          FBase, FBase,
          FBase,
-         FBase, Offset,
+         FBase, Base, Offset,
          FBase, Cap,
          FBase, FBase, FBase,
          FBase, FBase,
          FBase, NextLabel]).
-plawk_varlen_field_body(_NumericType, FBase, FieldEof, Offset, NextLabel, BodyIR) :-
+% sN is fixed on the wire (exactly N bytes, NUL-padded by the writer),
+% so it reads straight into its slot.
+plawk_varlen_field_body(s(Width), FBase, FieldEof, Base, Offset, NextLabel,
+        BodyIR) :-
+    !,
     plawk_varlen_eof_check_ir(FieldEof, FBase, status, BodyPrefixIR),
     format(atom(BodyIR),
-'  %~w_dst = getelementptr i8, i8* %rec, i64 ~w
+'  %~w_dst = getelementptr i8, i8* %~w, i64 ~w
+  %~w_status = call i64 @wam_stream_read_record(%Value %handle, i64 ~w, i8* %~w_dst)
+~w  %~w_ok = icmp eq i64 %~w_status, 1
+  br i1 %~w_ok, label %~w, label %fail_read
+',
+        [FBase, Base, Offset,
+         FBase, Width, FBase,
+         BodyPrefixIR, FBase, FBase,
+         FBase, NextLabel]).
+plawk_varlen_field_body(_NumericType, FBase, FieldEof, Base, Offset, NextLabel,
+        BodyIR) :-
+    plawk_varlen_eof_check_ir(FieldEof, FBase, status, BodyPrefixIR),
+    format(atom(BodyIR),
+'  %~w_dst = getelementptr i8, i8* %~w, i64 ~w
   %~w_status = call i64 @wam_stream_read_record(%Value %handle, i64 8, i8* %~w_dst)
 ~w  %~w_ok = icmp eq i64 %~w_status, 1
   br i1 %~w_ok, label %~w, label %fail_read
 ',
-        [FBase, Offset,
+        [FBase, Base, Offset,
          FBase, FBase,
          BodyPrefixIR, FBase, FBase,
          FBase, NextLabel]).

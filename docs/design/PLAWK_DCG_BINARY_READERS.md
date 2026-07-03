@@ -126,16 +126,21 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
    accepted as sugar that desugars into a case block. Not yet inside
    case blocks: assoc arrays, writebin, and union output.
 2. **Bounded repetition (landed):** `repK(elem types)` — an 8-byte
-   count (≤ K) then that many fixed-width elements, read as one bulk
-   count×elemsize read after a memset of the element region (element
-   slots past the count are deterministic zeros). Access layout
-   flattens: the count is an i64 field and each element's fields are
-   plain record fields. The surface answer to "for over elements" is
-   `foreach { actions }`: inside the block `$1..$M` are the current
-   element's fields, and the block unrolls at compile time into K
-   count-guarded ifs (`count >= j`), reusing the existing if/join-phi
-   machinery — no loop-carried phis were added. One rep per layout,
-   fixed-width elements only, no nesting; those are later extensions.
+   count (≤ K) then that many elements. Fixed-width elements read as
+   one bulk count×elemsize read after a memset of the element region
+   (element slots past the count are deterministic zeros); elements
+   containing `lpsN` strings have per-element wire sizes, so the reader
+   emits a runtime loop that parses one element at a time into its
+   fixed in-memory slot group (the lps materializes as an NUL-padded
+   `sN` slot, same as at top level). Access layout flattens: the count
+   is an i64 field and each element's fields are plain record fields.
+   The surface answer to "for over elements" is `foreach { actions }`:
+   inside the block `$1..$M` are the current element's fields, and the
+   compiler emits a genuine runtime loop — the current element is
+   memcpy'd into a hidden staging slot group appended to the record
+   buffer and every scalar slot rides a loop-carried typed phi, so code
+   size is O(body) at any cap. One rep per layout, no rep/blob nesting;
+   those are later extensions.
 3. **Varlen writers (landed):** `lpsN` in OUTFMT emits the 8-byte
    length plus exactly the payload bytes, sourced from literals,
    `sM`/`lpsM` input fields (`M ≤ cap`), or text-mode slices clamped to
