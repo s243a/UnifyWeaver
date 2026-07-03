@@ -52,6 +52,7 @@ def add_edge(child, parent, src):
         edges[child].add(parent); edge_source[(child, parent)].add(src)
 
 RDF_FILES = [(os.path.join(BASE, "context/PT/pearltrees_export_s243a_2026-01-02.rdf"), "s243a"),
+             # NB "grous" is Pearltrees' actual export filename (their typo, on disk) — do NOT "correct" to "groups"
              (os.path.join(BASE, "context/PT/pearltrees_export_s243a_grous_2026-01-02.rdf"), "groups")]
 rdf_defined = defaultdict(set); rdf_refd = defaultdict(set)
 

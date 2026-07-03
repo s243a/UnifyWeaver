@@ -56,7 +56,9 @@ def call_gemini_cli(prompt: str, model: str = "gemini-2.0-flash", timeout: int =
 
 
 def call_agy_cli(prompt: str, model: str = "", timeout: int = 120) -> Optional[str]:
-    """Antigravity (agy) CLI — Gemini-backed. `agy -p <prompt> [--model M]`. Empty model → CLI default."""
+    """Antigravity (agy) CLI — Gemini-backed. `agy -p <prompt> [--model M]`. Empty model → CLI default.
+    SECURITY NOTE: passes --dangerously-skip-permissions (auto-approves tool use) so a rerank/eval batch runs
+    unattended — fine for a trusted local ranking prompt, but be aware it changes the security posture."""
     try:
         cmd = ["agy", "-p", prompt, "--dangerously-skip-permissions"]
         if model:

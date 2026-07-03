@@ -135,7 +135,17 @@ Runs use the s243a federated model (8,800 folders) + `model_prod.pt`, Haiku via 
     other 72% is **recall, not reranking** → widen the shortlist (bigger K / the adaptive δ-band, §3).
   - _Caveats:_ "true folder" = where the user filed it (other folders are often equally valid), so strict tree-id
     match **understates** quality — 28%/64% are conservative. Single model, single 100-sample.
-- **Recall@K curve (N=100, μ+e5 over all 8,800 folders, judge-free):** true folder within top-K —
+- **Coverage 2×2 (N=100 UNCONDITIONED, no LLM, 3 seeds) — WHERE the data weakness is:** Type A (folder out-of-model)
+  **59–62%** (seeds 7/13/42 — stable ~60%); Type B (in-model, out-of-shortlist) 19–28%; reachable (in-shortlist)
+  12–22% (B/reachable noisier, as expected). **The dominant weakness is COVERAGE (~60%, robust)** — most bookmarks
+  fail because their folder isn't in the model at all, which conditioning had hidden. **Priority reframed: complete
+  the data (Type A, this branch's pipeline) ≫ widen-K / retrain-µ (Type B) > rerank (Type C, already 36→64%).** So
+  the biggest data lever is *completion*, not the µ retrain.
+- **Recall@K curve (N=100, single seed, judge-free):** produced by `recall_curve.py` via
+  `MuRanker.score_components` — **μ scored over ALL 8,800 folders**, NOT the shortlisted `engine.search` path
+  (`eval_rerank_agreement.py`'s "shortlist recall@15=28%" is the *shortlisted* path — a different measurement). So
+  this is μ-over-all vs e5-over-all, apples-to-apples — not a shortlist-truncation artifact. **Single seed → treat
+  the direction (μ < e5) as real but the exact %s as ±~5 pts until 3-seeded** (see §8). True folder within top-K —
   | cutoff | @15 | @30 | @50 | @100 | @200 | @500 | | e5 | 41 | 44 | 48 | 53 | 55 | **64** | | μ | 22 | 24 | 26 | 34 | 37 | 43 | | max(μ,e5) | 40 | 44 | 47 | 50 | 52 | 63 |  (%).
   Findings: (1) **e5 climbs** with K (41→64%) — widening helps recall. (2) **µ recall < e5** at every K — µ is a
   *rerank* signal, not a recall signal. (3) **max(µ,e5) ≈ e5** — the union adds nothing, so the µ-tower / wider-µ
@@ -155,7 +165,20 @@ This project's constraint: **usable data is ≈ infinite** (we can harvest/gener
 LLM-labelled examples), but **capacity is bounded** (µ is a small head on *frozen* e5, on consumer hardware). So the
 question is never "do we have enough data" in the abstract — it's **"for our capacity, is the model *data*-limited
 (add data), *capacity*-limited (adding data won't help), or *feature*-limited (the representation is the ceiling)?"**
-The diagnostics that answer it, cheapest first:
+**First, localize the weakness — three failure modes, reported as a joint distribution.** A bookmark can fail at:
+- **Type A — coverage gap:** its true folder isn't in the model at all (~47% here — the federated model holds only
+  53% of filing folders). Fix = harvest/complete the folder's data (the data-completion pipeline).
+- **Type B — recall gap:** the folder *is* in the model but µ/e5 don't surface it in the shortlist (recall@15 = 28%
+  shortlisted; the recall@K curve is the in-model recall signal). Fix = better recall (widen K, retrain µ).
+- **Type C — ordering error:** the folder is in the shortlist but ranked below #1. Fix = rerank (the LLM's 36→64%).
+
+`eval_rerank_agreement.py` currently **conditions out Type A** (samples only in-model true folders) to isolate
+ranking quality — which is correct for B/C but *hides* A. So report the two as a **2×2 joint distribution over an
+UNCONDITIONED sample** — {in-model, out-of-model} × {in-shortlist, out-of-shortlist} — not two separate scalars:
+whether A and B hit the *same* hard bookmarks or *disjoint* subsets changes the harvest-vs-retrain priority. (`--coverage-2x2`
+flag added to `eval_rerank_agreement.py`.) Only the B slice feeds the data-vs-capacity ladder below.
+
+The diagnostics (for the Type-B / recall-gap slice) that answer "which lever," cheapest first:
 
 1. **Learning curve — the primary test.** Retrain at *fixed capacity* on 10/25/50/100% of the data; plot the eval
    metric (recall@K, top-1) vs training-set size.
@@ -180,6 +203,28 @@ The diagnostics that answer it, cheapest first:
 then run a capacity sweep. In one line — **data-deficiency = "the curve is still rising"; capacity-deficiency =
 "adding capacity raises the plateau"; feature/task ceiling = "neither moves it."**
 
+**Practical requirements for the learning curve (so the diagnosis is trustworthy — from review):**
+- **Multi-seed everything first.** The §7 numbers are single-seed; a 28% vs 41% direction is real but exact %s carry
+  ±~5 pts, and PR #3395 showed a single-seed "win" *reverse* under a 3-seed check. **Report ≥3 seeds (mean ± spread)
+  before any retrain-or-not decision**, and derive the noise band used by the plateau criterion below.
+- **Numeric plateau criterion** (so two readers don't disagree): "plateaued" = slope over the last two train-size
+  points **below the seed-to-seed noise band** (from the multi-seed runs); otherwise "still rising."
+- **Leakage-resistant split.** `load_filing` draws bookmarks from the same trees; a *random example-level* split
+  lets sibling folders + near-duplicate bookmarks bleed structure across train/val and makes the train–val gap look
+  healthier than it is. Split by **account / subtree / harvest-period**, not by random example. State the val split
+  explicitly (which folders/period is held out).
+- **Define "100% of the data"** = all *currently-assembled* (bookmark, folder) pairs; the ~4,040 still-missing trees
+  aren't training signal yet, so the curve is over today's assembled set (it grows as the harvest fills in).
+- **Slice-aware curves, not one aggregate.** Break the curve by slices the completion work specifically creates —
+  **sparse-title folders, multi-parent folders (assembled DAG), and newly-recovered folders** (only present after
+  completion). A global plateau can hide a saturated core while the long tail is still steeply data-limited — which
+  is exactly *where* the data weakness lives.
+- **Capacity sweep = retrain, not reconfigure a checkpoint.** `MuRanker` infers layers/heads/`d_model` from the
+  state dict, so a sweep means training separate checkpoints. The head is trained in
+  `prototypes/mu_cosine/train_lineage.py` — cross-reference it and its `--layers`/`--heads` (or equivalent) flags.
+- **Report an oracle decomposition** so the "e5=recall, µ=precision, LLM=final" story can't be misread:
+  a table of **e5 shortlist-recall@K → µ reorder-within → LLM reorder-within**, each stage's contribution isolated.
+
 *Applied here:* the µ-recall-< e5 result (§7) is currently **ambiguous between data and capacity — we haven't run the
 learning curve yet.** That's the first thing the retrain should produce: µ recall@K vs train-size at 3L (and one
 higher capacity). Rising ⇒ data is the lever (and µ may cross e5, §7); flat below e5 at 3L but rising at 4L ⇒
@@ -191,8 +236,13 @@ capacity; flat at both ⇒ the frozen-e5 features are the ceiling.
   single-query signal — deferred; OOD is currently handled by the LLM/agent as final arbiter.
 - `codex` backend flag syntax is unverified (needs node ≥ 22).
 - Per-call `claude -p` startup (~15–20 s) dominates large-N runs; for a service, use the API, not the CLI.
+- **Token accounting is estimate-only (chars/4).** `call_claude_cli` does not yet pass `--output-format json`, so
+  real `usage`/`total_cost_usd` aren't captured — the estimate is fine for *relative* config comparisons but wire the
+  JSON path before trusting absolute "tokens-per-correct-task" / cost numbers.
 - Displacement believes the judge; validate the judge against ground truth (method A) before trusting it.
-- **µ recall < e5 is likely undertraining, not architectural.** µ is a small head on *frozen* e5, trained on a
+- **µ recall < e5 is an UNTESTED HYPOTHESIS that undertraining is the cause — not an architectural finding.** The
+  learning curve (§8) is the required test; until it's run, "undertraining" is a hypothesis, not a result. µ is a
+  small head on *frozen* e5, trained on a
   modest filing set and applied here to the federated model's 8,800 folders (partly out-of-distribution). **Primary
   lever: retrain µ on more data** (the RDF-assembly + harvest in this branch) → re-run the recall@K curve. Precise
   bound: µ is bounded by the **information content of the e5 embeddings** (can't recover what e5 never encoded), but

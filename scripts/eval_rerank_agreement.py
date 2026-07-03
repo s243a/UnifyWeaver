@@ -63,6 +63,8 @@ def main():
                     help="Pearltrees trees dir for --sample-filing")
     ap.add_argument("--seed", type=int, default=7, help="sampling seed for --sample-filing")
     ap.add_argument("--n", type=int, default=20, help="cap number of bookmarks")
+    ap.add_argument("--coverage-2x2", action="store_true",
+                    help="localize data weakness: UNCONDITIONED Type-A/B breakdown (in/out-model × in/out-shortlist); no LLM")
     ap.add_argument("--top-k", type=int, default=15, help="μ shortlist size handed to the reranker")
     ap.add_argument("--provider", default="claude"); ap.add_argument("--llm-model", default="haiku")
     a = ap.parse_args()
@@ -70,6 +72,26 @@ def main():
     from infer_pearltrees_federated import FederatedInferenceEngine
     engine = FederatedInferenceEngine(Path(a.model), routing_method="mu", mu_ckpt=a.mu_ckpt)
     eng_ids = set(str(x) for x in engine.global_target_ids)      # folders the model actually knows
+
+    if a.coverage_2x2:                                           # localize the data weakness (Type A vs B), no LLM
+        import random
+        sys.path.insert(0, str(Path(__file__).parent.parent / "prototypes" / "mu_cosine"))
+        from eval_filing import load_filing
+        pairs, cand = load_filing(a.trees, min_bm=3)
+        rng = random.Random(a.seed); rng.shuffle(pairs)
+        m = min(a.n, len(pairs)); g = {"in_in": 0, "in_out": 0, "out": 0}
+        for bm, f in pairs[:m]:
+            tid = str(f)
+            if tid not in eng_ids:                              # Type A: folder not in the model
+                g["out"] += 1; continue
+            in_sl = any(str(c.tree_id) == tid for c in engine.search(bm, top_k=a.top_k))
+            g["in_in" if in_sl else "in_out"] += 1              # in-shortlist vs Type B (in-model, missed)
+        print(f"[COVERAGE 2x2] n={m} UNCONDITIONED bookmarks | top-{a.top_k} shortlist")
+        print(f"  Type A  folder OUT of model:        {g['out']:4d}  ({100*g['out']//m:2d}%)  -> harvest / complete data")
+        print(f"  Type B  in-model, OUT of shortlist: {g['in_out']:4d}  ({100*g['in_out']//m:2d}%)  -> recall (widen K / retrain μ)")
+        print(f"  reachable (in-model, in-shortlist): {g['in_in']:4d}  ({100*g['in_in']//m:2d}%)  -> rerank decides #1 (Type C)")
+        print(f"  coverage_gap_fraction = {g['out']/m:.2f}   in-shortlist-of-all = {g['in_in']/m:.2f}")
+        return
 
     if a.queries:
         queries = load_queries(a.queries)
