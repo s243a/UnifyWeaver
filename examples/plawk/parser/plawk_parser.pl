@@ -47,9 +47,43 @@ plawk_parse_string(Source, Program) :-
 plawk_program(program(BeginClauses, Rules, EndClauses)) -->
     ws,
     begin_clauses(BeginClauses),
-    rules(Rules),
+    program_rules(Rules),
     end_clauses(EndClauses),
     eos.
+
+% Tagged-union programs route rules through per-arm case blocks: the
+% arm index scopes the field types of every rule inside the block.
+program_rules(case_blocks(Blocks)) -->
+    case_block(Block),
+    !,
+    case_blocks_rest(Blocks0),
+    { Blocks = [Block | Blocks0] }.
+program_rules(Rules) -->
+    rules(Rules).
+
+case_blocks_rest([Block | Blocks]) -->
+    ws,
+    case_block(Block),
+    !,
+    case_blocks_rest(Blocks).
+case_blocks_rest([]) -->
+    ws.
+
+case_block(case_arm(Index, Rules)) -->
+    "case",
+    identifier_boundary,
+    ws,
+    integer_codes(IndexCodes),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index >= 0
+    },
+    ws,
+    "{",
+    ws,
+    rules(Rules),
+    ws,
+    "}".
 
 rules([Rule | Rules]) -->
     rule(Rule),
