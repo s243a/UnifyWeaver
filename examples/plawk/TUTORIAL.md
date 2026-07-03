@@ -601,3 +601,31 @@ No interpreter, no allocation; a malformed record (unknown tag,
 truncated bytes) exits with the read-error code, and record kinds you
 wrote no block for are still read and skipped, so the stream never
 loses its framing.
+
+### Repetition: records that contain a list
+
+Some records carry a variable number of sub-items — an order with up
+to 4 line items, a reading with up to 8 samples. The wire convention
+mirrors `lps`: a count, then that many elements:
+
+```text
+            +--------+--------+--------+--------+--------+--------+
+            |  i64   | count=2| elem 1 (i64,f64)| elem 2 (i64,f64)|
+            +--------+--------+--------+--------+--------+--------+
+```
+
+Declared as `BINFMT = "i64 rep4(i64 f64)"` — "an i64, then up to 4
+(i64, f64) elements". To process the elements, `foreach { ... }` runs
+its block once per element, and inside the block `$1, $2` mean *the
+current element's* fields:
+
+```awk
+BEGIN { BINFMT = "i64 rep4(i64 f64)" }
+$1 > 0 { foreach { n++ ; wsum += float($2) } }
+END { print n, wsum }
+```
+
+Because the cap (4) is known at compile time, the compiler does not
+emit a loop at all — it writes the block out 4 times, each copy
+guarded by "does the record have at least j elements?". Constant
+memory, straight-line native code, same as everything else.
