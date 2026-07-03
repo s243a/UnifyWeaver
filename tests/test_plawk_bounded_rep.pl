@@ -29,15 +29,19 @@ test(parses_foreach_action) :-
 test(rep_ir_reads_count_then_bulk_elements) :-
     plawk_parse_string("BEGIN { BINFMT = \"i64 rep4(i64 f64)\" } { foreach { n++ } } END { print n }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.bin', DriverIR),
-    % buffer: 8 (id) + 8 (count) + 4*16 (elems) = 80
-    assertion(once(sub_atom(DriverIR, _, _, _, 'malloc(i64 80)'))),
+    % buffer: 8 (id) + 8 (count) + 4*16 (elems) + 16 (staging) = 96
+    assertion(once(sub_atom(DriverIR, _, _, _, 'malloc(i64 96)'))),
     % count read into its record slot, bounded by the cap
     assertion(once(sub_atom(DriverIR, _, _, _, '%vr_f1_fits = icmp ule i64 %vr_f1_n, 4'))),
     % one memset of the element region + one bulk read of count*16 bytes
     assertion(once(sub_atom(DriverIR, _, _, _, 'i8 0, i64 64, i1 false'))),
     assertion(once(sub_atom(DriverIR, _, _, _, 'mul i64 %vr_f1_n, 16'))),
-    % foreach unrolled into count-guarded ifs on the count field ($2)
-    assertion(once(sub_atom(DriverIR, _, _, _, 'icmp sge i64 %'))),
+    % foreach is a RUNTIME loop: index phi, per-iteration staging
+    % memcpy, back edge -- one body copy regardless of cap
+    assertion(once(sub_atom(DriverIR, _, _, _, '_j = phi i64 [1, %'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '_cont = icmp sle i64 '))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '_dst, i8* %rule_0_body_fe_0_src, i64 16'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'icmp sge i64 %')),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
@@ -61,6 +65,15 @@ test(rep_rejections) :-
         -> assertion(\+ plawk_program_native_driver_ir(Program, 'input.bin', _))
         ;  true
         )).
+
+test(foreach_code_size_is_cap_independent) :-
+    % The scaling property: rep64 emits the same single loop body as
+    % rep4 -- one increment site, not 64.
+    plawk_parse_string("BEGIN { BINFMT = \"i64 rep64(i64 f64)\" } { foreach { n++ } } END { print n }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.bin', DriverIR),
+    findall(B, sub_atom(DriverIR, B, _, _, '_slot_0_op_0 = add i64 '), IncSites),
+    assertion(IncSites = [_]),
+    !.
 
 test(surface_foreach_aggregation) :-
     % 4 records with 2, 0, 4, and 1 elements; the guarded record ($1>0)

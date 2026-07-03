@@ -625,10 +625,11 @@ $1 > 0 { foreach { n++ ; wsum += float($2) } }
 END { print n, wsum }
 ```
 
-Because the cap (4) is known at compile time, the compiler does not
-emit a loop at all — it writes the block out 4 times, each copy
-guarded by "does the record have at least j elements?". Constant
-memory, straight-line native code, same as everything else.
+The compiler emits a genuine native loop: each iteration copies the
+current element into a fixed scratch slot and runs the block over it,
+carrying your counters around the loop in registers. Constant memory,
+and the code size does not depend on the cap — `rep64` compiles to
+the same loop as `rep4`.
 
 ### Handing payloads to Prolog
 

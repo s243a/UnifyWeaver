@@ -171,17 +171,19 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
   DCG's comma clause is the standing regression test.
 
 
-- **`foreach` unrolling does not scale in code size.** The bounded-
-  repetition surface unrolls its block Cap times (each copy guarded by
-  `count >= j`), which is ideal for small caps (4–8: straight-line,
-  branch-predictable, zero new phi machinery) but emits O(Cap × body)
-  IR — `rep1000` would be absurd. The fix is a real runtime loop:
-  an induction variable, loop-carried phis for the scalar slots, and
-  element addresses computed as `base + j*elemsize` instead of
-  constants. That is the one genuinely new piece of IR machinery the
-  emitter stack lacks (everything today is straight-line plus joins).
-  Plan: emit the loop above a small cap threshold and keep unrolling
-  as the small-cap optimization.
+- **(FIXED) `foreach` unrolling did not scale in code size.** The
+  original surface unrolled its block Cap times — O(Cap × body) IR.
+  It is now a real runtime loop, the one loop in the emitter stack:
+  an index phi, one loop-carried phi per scalar slot (typed i64 or
+  double), and a per-iteration `memcpy` of the current element into a
+  hidden staging group appended to the record buffer — so the body's
+  field accesses remain compile-time offsets and every existing
+  emitter (updates, doubles, prints, inner if/else, next/break) works
+  unchanged inside the loop. Code size is O(body) at any cap
+  (regression test: `rep64` emits one increment site), user-visible
+  field numbering and `NF` are untouched, and exit values are the
+  head phis themselves. The staging copy costs one small memcpy per
+  element — noise next to the per-element work itself.
 
 ## Why not a real DCG engine in the loop?
 
