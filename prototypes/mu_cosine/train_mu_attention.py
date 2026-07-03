@@ -499,6 +499,21 @@ def train(args):
     rng.shuffle(graded_rows)
     n_gh = int(0.15 * len(graded_rows))
     graded_hold, graded_tr = graded_rows[:n_gh], graded_rows[n_gh:]
+    # LINEAGE_RANK: per-node candidate groups for the softmax-CE (DESIGN_mindmap_lineage.md §3c). Keep only
+    # groups whose node + all candidates are embedded (in idx); split train/held-out.
+    rank_tr, rank_hold = [], []
+    if args.rank_groups and os.path.exists(args.rank_groups):
+        import json as _json
+        _grps = []
+        for _ln in open(args.rank_groups, encoding="utf-8"):
+            _g = _json.loads(_ln)
+            if _g["node"] in idx and all(c["key"] in idx for c in _g["candidates"]) and len(_g["candidates"]) >= 2:
+                _grps.append(_g)
+        rng.shuffle(_grps)
+        _rh = int(0.15 * len(_grps))
+        rank_hold, rank_tr = _grps[:_rh], _grps[_rh:]
+        print(f"LINEAGE_RANK: {len(rank_tr)} train / {len(rank_hold)} held-out groups "
+              f"(avg {sum(len(g['candidates']) for g in _grps)/max(1,len(_grps)):.1f} candidates)")
     if args.graded:
         from collections import Counter as _C
         n_inf = sum(1 for r in graded_tr if len(r) > 9 and r[9] < 1.0)
@@ -835,12 +850,28 @@ def train(args):
             L_dir = (F.softplus(-args.dir_rank_scale * (mu_f - mu_r - args.dir_rank_margin)).mean()
                      + args.dir_rank_anchor * (F.mse_loss(mu_f, torch.full_like(mu_f, 0.9))
                                                + F.mse_loss(mu_r, torch.full_like(mu_r, 0.1))))
+        # LINEAGE_RANK (CE): per node, softmax the LINEAGE_RANK μ over the candidate parents and match the
+        # temperature-sharpened teacher (soft cross-entropy). DESIGN_mindmap_lineage.md §3c.
+        L_rank = torch.zeros((), device=device)
+        if rank_tr and not args.sym_only:
+            _rl = []
+            for _ in range(args.rank_bs):
+                g = rank_tr[rng.randrange(len(rank_tr))]
+                cands = g["candidates"]
+                items = [(g["node"], c["key"], OPS["LINEAGE_RANK"], CORPORA["mindmap"], GRAPHJ) for c in cands]
+                mu_c = model(**bld(items, train=True, rng=rng, p_mask_prov=args.prov_mask)).view(-1)
+                T = g.get("temp", 0.2)
+                student = F.log_softmax(mu_c / T, dim=0)
+                teacher = F.softmax(torch.tensor([c["rank_score"] for c in cands], device=device) / T, dim=0)
+                _rl.append(-(teacher * student).sum())
+            L_rank = torch.stack(_rl).mean()
         loss = (args.sym_weight * L_sym + (0.0 if args.sym_only else args.wiki_weight * L_wiki)
                 + (args.elem_weight * L_elem if (elem_tr and not args.sym_only) else 0.0)
                 + (args.graded_weight * L_graded if (graded_tr and not args.sym_only) else 0.0)
                 + (tw_eff * L_trans if (trans_rows and not args.sym_only) else 0.0)
                 + (args.dir_rank_weight * L_dir if (dir_edges and not args.sym_only and args.dir_rank_weight > 0) else 0.0)
                 + (args.blend_weight * L_blend if blend_on else 0.0)
+                + (args.rank_weight * L_rank if (rank_tr and not args.sym_only) else 0.0)
                 + (args.anchor_kl_weight * L_anchor if blend_on else 0.0))
         # LLM (optional, already-bought) — skipped in single-task SYM mode
         L_llm = torch.zeros(())
@@ -880,6 +911,7 @@ def train(args):
                   + (f"  L_trans {float(L_trans):.4f}" + (f" λ{trans_lambda:.2f}" if args.transitive_target_sat > 0 else "")
                      if (trans_rows and not args.sym_only) else "")
                   + (f"  L_blend {float(L_blend):.4f}" if blend_on else "")
+                  + (f"  L_rank {float(L_rank):.4f}" if (rank_tr and not args.sym_only) else "")
                   + (f"  L_anchor {float(L_anchor):.4f}" if (blend_on and anchored_rel is not None) else "")
                   + (f"  L_llm {float(L_llm):.4f}" if (llm and not args.sym_only) else ""))
 
@@ -889,7 +921,7 @@ def train(args):
         print(f"\n[early-stop] reloaded best checkpoint (held-out graded MSE {es_best:.4f} @ step {es_best_step})")
     model.eval()
     validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_hold=elem_hold,
-             graded_hold=graded_hold)
+             graded_hold=graded_hold, rank_hold=rank_hold)
     if args.eval_tail and os.path.exists(args.eval_tail):     # §9 held-out-tail eval (the tail-specific instrument)
         _ntp = args.graded_nodes or (args.graded.replace("_pairs.tsv", "_nodes.tsv") if args.graded else None)
         eval_tail(model, tok, graded_text, _ntp, args.eval_tail, args.use_nodetype)
@@ -903,7 +935,8 @@ def train(args):
         print(f"\nsaved model → {args.save}")
 
 
-def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_hold=None, graded_hold=None):
+def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_hold=None, graded_hold=None,
+             rank_hold=None):
     print("\n=== PER-OPERATOR VALIDATION ===")
     ops = ["SYM"] if args.sym_only else ["SYM", "HIER"]   # LLM operator retired (fixture now trains ELEM); no op at idx 2 to validate
 
@@ -925,6 +958,20 @@ def validate(model, tok, names, idx, adj, edges_hold, pos_hold, llm, args, elem_
             mse = sum((pred[i] - tgt[i]) ** 2 for i in range(len(rs))) / len(rs)
             corr = pearson(pred, tgt) if len(set(tgt)) > 1 else float("nan")
             print(f"  {op:5s} n={len(rs):4d}  MSE {mse:.4f}  r {corr:+.3f}")
+
+    # --- LINEAGE_RANK: held-out ranking (does the true parent get the top LINEAGE_RANK μ?) ---
+    if rank_hold:
+        top1, mrr, nrank = 0, 0.0, 0
+        for g in rank_hold:
+            cands = g["candidates"]
+            mu_c = mu_batch(model, tok, [(g["node"], c["key"], OPS["LINEAGE_RANK"]) for c in cands]).tolist()
+            order = sorted(range(len(cands)), key=lambda i: -mu_c[i])
+            tpos = next((rank for rank, i in enumerate(order) if cands[i]["key"] == g["true"]), None)
+            if tpos is not None:
+                top1 += (tpos == 0); mrr += 1.0 / (tpos + 1); nrank += 1
+        if nrank:
+            print(f"[LINEAGE_RANK] held-out ranking ({nrank} groups): true-parent top-1 "
+                  f"{100*top1/nrank:.0f}%  MRR {mrr/nrank:.3f}")
 
     # --- WIKI: held-out edge order-accuracy ---
     if not args.sym_only:
@@ -1183,6 +1230,10 @@ def main():
     ap.add_argument("--pairs", default=PAIRS, help="scored SYM pairs file (use mu_pairs_scored_large_260620-223001.tsv)")
     ap.add_argument("--graded", default=None, help="fused multi-corpus graded round (build_graded_round.py "
                     "<out>_pairs.tsv); its <out>_nodes.tsv supplies the e5 embed_text per fused node")
+    ap.add_argument("--rank-groups", default=None, help="LINEAGE_RANK candidate-softmax CE groups "
+                    "(gen_mindmap_pairs.py <out>_rank.jsonl); nodes must be in the --graded-nodes set")
+    ap.add_argument("--rank-weight", type=float, default=0.5, help="LINEAGE_RANK CE loss weight")
+    ap.add_argument("--rank-bs", type=int, default=4, help="rank groups per step")
     ap.add_argument("--haiku-tail", default=None, help="cached LLM E[μ] scores (score_inferred_tail.py) — "
                     "override inferred (conf<1.0) graded targets with E[μ] + judge provenance (§9/§14)")
     ap.add_argument("--eval-tail", default=None, help="§9/§12(3) held-out-tail eval: model E[μ] (uniform op "
