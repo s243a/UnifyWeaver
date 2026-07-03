@@ -303,7 +303,8 @@ foreign guards and calls work over binary records generally; a
 double-returning call is spelled `wsum += float(score($1, $2))` (the
 float(...) wrapper selects a {double, ok} bridge that accepts Integer
 or Float results, keeping fractions that the i64 spelling would
-truncate; a failed call contributes 0.0). One blob argument per call;
+truncate; a failed call contributes 0.0); the same spelling works in
+print position (`print $1, float(score($1, $2))`). One blob argument per call;
 payloads are NUL-free byte strings. Bounded repetition handles records containing a
 list: `BINFMT = "i64 rep4(i64 f64)"` declares an 8-byte element count
 (at most 4) followed by that many (i64, f64) elements. The count is an

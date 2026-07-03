@@ -872,6 +872,9 @@ field_expr(Expr) -->
     float_field_expr(Expr),
     !.
 field_expr(Expr) -->
+    float_call_expr(Expr),
+    !.
+field_expr(Expr) -->
     float_literal_expr(Expr),
     !.
 field_expr(Expr) -->

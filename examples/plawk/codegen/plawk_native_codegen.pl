@@ -4717,6 +4717,8 @@ plawk_f64_operand_expr(float_const(Mantissa, Denominator)) :-
 plawk_f64_operand_expr(float_field(Index)) :-
     integer(Index),
     Index >= 0.
+plawk_f64_operand_expr(float_call(Name, Args)) :-
+    plawk_prolog_call_expr(prolog_call(Name, Args)).
 plawk_f64_operand_expr(Expr) :-
     plawk_i64_operand_expr(Expr).
 plawk_f64_operand_expr(Expr) :-
