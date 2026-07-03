@@ -12,6 +12,7 @@ Copyright (c) 2026 John William Creighton (s243a)
 > **Companion docs:** [Philosophy](PLAWK_PHILOSOPHY.md) ·
 > [Specification](PLAWK_SPECIFICATION.md) ·
 > [Execution Architecture](PLAWK_EXECUTION_ARCHITECTURE.md) ·
+> [DCG Binary Readers](PLAWK_DCG_BINARY_READERS.md) ·
 > [Submodule README](../../examples/plawk/README.md)
 
 ---
@@ -498,8 +499,17 @@ group (binary input mode only -- text keys are atom ids). OUTFMT
 accepts `sN` string slots: literals, `sM` input fields (`M <= N`), and
 text-mode slices clamped to the width lower to memset + memcpy against
 the record buffer, so string-carrying binary pipelines work in both
-directions. Remaining
-Phase 3 items below (DCG readers, richer ABIs) are unchanged.
+directions. **Fifth
+slice landed (varlen records / first DCG-reader slice):** `lpsN`
+length-prefixed string fields make records variable-length on the wire
+while keeping the fixed access layout in memory -- the design document
+[PLAWK_DCG_BINARY_READERS.md](PLAWK_DCG_BINARY_READERS.md) fixes the
+general approach (Tier 1: LL(1)-over-fields grammars with compile-time
+caps compile to native field-by-field read sequences; Tier 2: native
+framing + WAM-bytecode payload parsing via the foreign bridge; Tier 3:
+full DCG fallback, the Phase 5 JIT target). Planned next slices there:
+tagged unions, bounded repetition, varlen writers. Remaining Phase 3
+items below (richer ABIs) are otherwise unchanged.
 
 **Second slice landed (typed associative arrays):** in binary mode
 `{ counts[$1]++ }` keys the existing `%WamAssocI64Table` runtime with the
