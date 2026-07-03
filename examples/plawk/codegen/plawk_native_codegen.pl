@@ -209,6 +209,62 @@ plawk_program_native_driver_ir(
             NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+% Tagged-union programs: BINFMT = "case(arm0 | arm1 | ...)" plus
+% case K { rules } blocks. Case blocks flatten into one scalar rule
+% chain where each rule's guard checks the record tag before its own
+% pattern, and each rule's fields type against its arm's layout. The
+% END print block is optional (a pure per-arm printer needs none).
+plawk_program_native_driver_ir(
+    program(BeginClauses, case_blocks(CaseBlocks), EndClauses),
+    InputPath,
+    DriverIR
+) :-
+    plawk_record_descriptor(BeginClauses, Descriptor),
+    Descriptor = binfmt_union(Arms),
+    plawk_union_program_ok(Arms, CaseBlocks),
+    plawk_union_flatten_rules(CaseBlocks, Arms, Rules),
+    (   EndClauses = [end([print(PrintFields)])]
+    ->  HasEnd = true
+    ;   EndClauses == [],
+        PrintFields = [],
+        HasEnd = false
+    ),
+    plawk_scalar_state_plan(Rules, PrintFields, StatePlan),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_end_print_string_globals(PrintFields, StringGlobalIR),
+    plawk_scalar_rule_chain_ir(Rules, StatePlan, Descriptor, OutputSeparator,
+        RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    append(PrintFields, BodyPrintFields, PrintExprs),
+    append(PrintExprs, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
+    plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
+    plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
+    plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
+    plawk_scalar_rule_controls(Rules, ScalarRuleControls),
+    plawk_scalar_next_phi_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, NextPhiIR),
+    plawk_break_close_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, done,
+        BreakCloseIR, FinalStatePhiIR),
+    (   HasEnd == true
+    ->  plawk_scalar_end_print_ir(PrintFields, StatePlan, OutputSeparator, EndPrintIR)
+    ;   EndPrintIR = ''
+    ),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, RuleGlobalIR]),
+    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w~w
+  ret i32 0',
+        [FinalStatePhiIR, EndPrintIR]),
+    plawk_emit_record_driver_ir(Descriptor, InputPath,
+        driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
+            NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
 plawk_program_native_driver_ir(
     program(BeginClauses, Rules, [end([print(PrintFields)])]),
     InputPath,
@@ -1733,6 +1789,9 @@ plawk_binfmt_writebin_args_ok(Descriptor, [f64 | Types], [Field | Fields]) :-
 plawk_binfmt_writebin_args_ok(Descriptor, [s(Width) | Types], [Field | Fields]) :-
     plawk_binfmt_writebin_str_ok(Descriptor, Field, Width),
     plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
+plawk_binfmt_writebin_args_ok(Descriptor, [lps(Cap) | Types], [Field | Fields]) :-
+    plawk_binfmt_writebin_str_ok(Descriptor, Field, Cap),
+    plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
 
 plawk_binfmt_writebin_str_ok(_Descriptor, string(Value), Width) :-
     !,
@@ -1829,6 +1888,9 @@ plawk_field_separator(BeginClauses, FieldSeparator) :-
 %  BEGIN { BINFMT = "i64 i64 f64" } yields binfmt(Types) for fixed-
 %  layout binary records: one 8-byte native-endian field per type,
 %  fields numbered $1..$N, record size 8 * N.
+plawk_record_descriptor(BeginClauses, binfmt_union(Arms)) :-
+    plawk_begin_union_arms(BeginClauses, Arms),
+    !.
 plawk_record_descriptor(BeginClauses, binfmt(Types)) :-
     plawk_begin_binfmt_types(BeginClauses, Types),
     !.
@@ -1836,7 +1898,31 @@ plawk_record_descriptor(BeginClauses, FieldSeparator) :-
     plawk_field_separator(BeginClauses, FieldSeparator).
 
 plawk_begin_has_binfmt(BeginClauses) :-
-    plawk_begin_binfmt_types(BeginClauses, _Types).
+    plawk_begin_binfmt_types(BeginClauses, _Types),
+    !.
+plawk_begin_has_binfmt(BeginClauses) :-
+    plawk_begin_union_arms(BeginClauses, _Arms).
+
+%% plawk_begin_union_arms(+BeginClauses, -Arms)
+%
+%  BINFMT = "case(i64 f64 | lps16 i64)" declares a tagged union: every
+%  record starts with an 8-byte native-endian tag selecting one of the
+%  |-separated arm layouts (arm indices are 0-based, in declaration
+%  order). Arms is a list of type lists.
+plawk_begin_union_arms(BeginClauses, Arms) :-
+    member(begin(Actions), BeginClauses),
+    member(set(var('BINFMT'), string(Fmt)), Actions),
+    string_concat("case(", Rest, Fmt),
+    string_concat(Body, ")", Rest),
+    split_string(Body, "|", " ", ArmStrs),
+    ArmStrs \== [],
+    maplist(plawk_union_arm_types, ArmStrs, Arms).
+
+plawk_union_arm_types(ArmStr, Types) :-
+    split_string(ArmStr, " ", " ", Parts0),
+    exclude(==(""), Parts0, Parts),
+    Parts \== [],
+    maplist(plawk_binfmt_type, Parts, Types).
 
 plawk_begin_binfmt_types(BeginClauses, Types) :-
     member(begin(Actions), BeginClauses),
@@ -1914,7 +2000,7 @@ plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules, WritebinPlan) :-
     ( plawk_rules_have_writebin(Rules0)
     ->  plawk_begin_outfmt_types(BeginClauses, Types),
         forall(member(Type, Types),
-            ( memberchk(Type, [i64, f64]) ; Type = s(_Width) )),
+            ( memberchk(Type, [i64, f64]) ; Type = s(_W) ; Type = lps(_C) )),
         plawk_binfmt_record_size(binfmt(Types), Size),
         WritebinPlan = outfmt(Types, Size),
         maplist(plawk_resolve_writebin_rule(Types), Rules0, Rules)
@@ -1997,6 +2083,8 @@ plawk_writebin_args_ok([Type | Types], [Field | Fields]) :-
     -> plawk_writebin_i64_arg(Field)
     ;  Type = s(Width)
     -> plawk_writebin_str_arg(Field, Width)
+    ;  Type = lps(Cap)
+    -> plawk_writebin_str_arg(Field, Cap)
     ;  plawk_writebin_f64_arg(Field)
     ),
     plawk_writebin_args_ok(Types, Fields).
@@ -2029,6 +2117,15 @@ plawk_writebin_f64_arg(Field) :-
 %  Evaluate each argument, store it at its layout offset in the shared
 %  %plawk_wbuf buffer, then fwrite the record to stdout.
 plawk_writebin_record_ir(Types, Fields, Slots, Values, FieldSeparator,
+        Prefix, Pair) :-
+    ( plawk_binfmt_has_varlen(Types)
+    ->  plawk_writebin_varlen_record_ir(Types, Fields, Slots, Values,
+            FieldSeparator, Prefix, Pair)
+    ;   plawk_writebin_fixed_record_ir(Types, Fields, Slots, Values,
+            FieldSeparator, Prefix, Pair)
+    ).
+
+plawk_writebin_fixed_record_ir(Types, Fields, Slots, Values, FieldSeparator,
         Prefix, GlobalIR-IR) :-
     plawk_binfmt_record_size(binfmt(Types), Size),
     format(atom(BasePtr), '%~w_base', [Prefix]),
@@ -2045,6 +2142,129 @@ plawk_writebin_record_ir(Types, Fields, Slots, Values, FieldSeparator,
     append([[BaseLine], FieldLines, [StdoutLoad, WriteCall]], AllLines),
     atomic_list_concat(AllLines, '\n', IR),
     atomic_list_concat(GlobalParts, '\n', GlobalIR).
+
+%% plawk_writebin_varlen_record_ir(+Types, +Fields, +Slots, +Values,
+%%     +FieldSeparator, +Prefix, -Pair)
+%
+%  Records whose OUTFMT contains an lps slot are variable-length on the
+%  wire, so the single-buffer fwrite becomes per-slot fwrites emitted
+%  strictly left to right (fwrite buffers in libc, so this is memcpy
+%  cost, not syscall cost). Numeric slots stage their value in the
+%  first 8 bytes of %plawk_wbuf; lps slots write their runtime length
+%  the same way, then the payload straight from its source bytes.
+plawk_writebin_varlen_record_ir(Types, Fields, Slots, Values, FieldSeparator,
+        Prefix, GlobalIR-IR) :-
+    plawk_binfmt_record_size(binfmt(Types), Size),
+    format(atom(BasePtr), '%~w_base', [Prefix]),
+    format(atom(BaseLine),
+        '  ~w = getelementptr inbounds [~w x i8], [~w x i8]* %plawk_wbuf, i32 0, i32 0',
+        [BasePtr, Size, Size]),
+    format(atom(StdoutLoad),
+        '  %~w_stdout = load i8*, i8** @stdout', [Prefix]),
+    format(atom(StdoutVar), '%~w_stdout', [Prefix]),
+    plawk_writebin_varlen_field_lines(Types, Fields, Slots, Values,
+        FieldSeparator, Prefix, BasePtr, StdoutVar, 0, FieldLines, GlobalParts),
+    append([[BaseLine, StdoutLoad], FieldLines], AllLines),
+    atomic_list_concat(AllLines, '\n', IR),
+    atomic_list_concat(GlobalParts, '\n', GlobalIR).
+
+plawk_writebin_varlen_field_lines([], [], _Slots, _Values, _FieldSeparator,
+        _Prefix, _BasePtr, _Stdout, _Index, [], []).
+plawk_writebin_varlen_field_lines([Type | Types], [Field0 | Fields], Slots,
+        Values, FieldSeparator, Prefix, BasePtr, Stdout, Index, Lines,
+        GlobalParts) :-
+    plawk_substitute_scalar_reads(Field0, Slots, Values, Field),
+    format(atom(Base), '~w_f~w', [Prefix, Index]),
+    plawk_writebin_varlen_slot_lines(Type, Field, FieldSeparator, Base,
+        BasePtr, Stdout, SlotLines, GParts),
+    NextIndex is Index + 1,
+    plawk_writebin_varlen_field_lines(Types, Fields, Slots, Values,
+        FieldSeparator, Prefix, BasePtr, Stdout, NextIndex, RestLines,
+        RestGlobals),
+    append(SlotLines, RestLines, Lines),
+    append(GParts, RestGlobals, GlobalParts).
+
+plawk_writebin_varlen_slot_lines(lps(Cap), Field, FieldSeparator, Base,
+        BasePtr, Stdout, Lines, GParts) :-
+    !,
+    plawk_writebin_lps_source_lines(Field, FieldSeparator, Cap, Base,
+        BasePtr, PtrIR, LenIR, SourceLines, GParts),
+    format(atom(LenStore),
+'  %~w_lensp = bitcast i8* ~w to i64*
+  store i64 ~w, i64* %~w_lensp, align 1
+  %~w_lwr = call i64 @fwrite(i8* ~w, i64 8, i64 1, i8* ~w)',
+        [Base, BasePtr, LenIR, Base, Base, BasePtr, Stdout]),
+    format(atom(PayloadWrite),
+        '  %~w_pwr = call i64 @fwrite(i8* ~w, i64 ~w, i64 1, i8* ~w)',
+        [Base, PtrIR, LenIR, Stdout]),
+    append(SourceLines, [LenStore, PayloadWrite], Lines).
+plawk_writebin_varlen_slot_lines(Type, Field, FieldSeparator, Base, BasePtr,
+        Stdout, Lines, GParts) :-
+    % numeric slot: stage the value in the scratch buffer, write 8 bytes
+    ( Type == i64
+    ->  plawk_i64_expr_ir(Field, FieldSeparator, Base, Base, ValueIR,
+            GParts, SetupParts),
+        LLVMType = i64
+    ;   plawk_writebin_f64_value_ir(Field, FieldSeparator, Base, ValueIR,
+            GParts, SetupParts),
+        LLVMType = double
+    ),
+    format(atom(StoreWrite),
+'  %~w_sp = bitcast i8* ~w to ~w*
+  store ~w ~w, ~w* %~w_sp, align 1
+  %~w_wr = call i64 @fwrite(i8* ~w, i64 8, i64 1, i8* ~w)',
+        [Base, BasePtr, LLVMType, LLVMType, ValueIR, LLVMType, Base,
+         Base, BasePtr, Stdout]),
+    append(SetupParts, [StoreWrite], Lines).
+
+%% plawk_writebin_lps_source_lines(+Field, +FieldSeparator, +Cap, +Base,
+%%     +BasePtr, -PtrIR, -LenIR, -Lines, -GlobalParts)
+%
+%  Resolve an lps payload source to a (pointer, runtime length) pair.
+%  lps payloads are string-valued: source bytes run to the first NUL or
+%  the source bound, clamped to the slot cap.
+plawk_writebin_lps_source_lines(string(Value), _FieldSeparator, Cap, Base,
+        _BasePtr, PtrIR, StringLen, [PtrLine], [GlobalLine]) :-
+    !,
+    format(atom(LitGlobal), '~w_lit', [Base]),
+    llvm_emit_c_string_global(LitGlobal, Value, GlobalLine, StringLen, BytesLen),
+    StringLen =< Cap,
+    format(atom(PtrIR), '%~w_src', [Base]),
+    format(atom(PtrLine),
+        '  ~w = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+        [PtrIR, BytesLen, BytesLen, LitGlobal]).
+plawk_writebin_lps_source_lines(field(FieldIndex), binfmt(Types), Cap, Base,
+        _BasePtr, PtrIR, LenIR, [PtrLine, LenLine], []) :-
+    !,
+    plawk_binfmt_field_type(binfmt(Types), FieldIndex, s(SourceWidth)),
+    SourceWidth =< Cap,
+    plawk_binfmt_field_offset(binfmt(Types), FieldIndex, SourceOffset),
+    format(atom(PtrIR), '%~w_src', [Base]),
+    format(atom(LenIR), '%~w_len', [Base]),
+    format(atom(PtrLine),
+        '  ~w = getelementptr i8, i8* %rec, i64 ~w', [PtrIR, SourceOffset]),
+    format(atom(LenLine),
+        '  ~w = call i64 @strnlen(i8* ~w, i64 ~w)',
+        [LenIR, PtrIR, SourceWidth]).
+plawk_writebin_lps_source_lines(field(FieldIndex), FieldSeparator, Cap, Base,
+        BasePtr, PtrIR, LenIR, [SliceIR, ClampIR], []) :-
+    FieldIndex >= 1,
+    llvm_emit_atom_field_slice('%line', FieldIndex, FieldSeparator, Base,
+        SliceIR),
+    format(atom(PtrIR), '%~w_srcp', [Base]),
+    format(atom(LenIR), '%~w_srclen', [Base]),
+    % a missing field (null slice) writes length 0 with a safe pointer
+    format(atom(ClampIR),
+'  %~w_null = icmp eq i8* %~w_ptr, null
+  %~w_len0 = select i1 %~w_null, i64 0, i64 %~w_len64
+  %~w_over = icmp ugt i64 %~w_len0, ~w
+  ~w = select i1 %~w_over, i64 ~w, i64 %~w_len0
+  ~w = select i1 %~w_null, i8* ~w, i8* %~w_ptr',
+        [Base, Base,
+         Base, Base, Base,
+         Base, Base, Cap,
+         LenIR, Base, Cap, Base,
+         PtrIR, Base, BasePtr, Base]).
 
 plawk_writebin_field_lines([], [], _Slots, _Values, _FieldSeparator, _Prefix,
         _BasePtr, _Index, _Offset, [], []).
@@ -2187,6 +2407,106 @@ plawk_writebin_f64_value_ir(Field, FieldSeparator, Base, ValueIR,
 %
 %  Pick the stream skeleton by record representation: text lines or
 %  fixed-size binary records.
+%% plawk_rule_descriptor(+Pattern, +Default, -Descriptor)
+%
+%  Rules inside a case block see their arm's field layout; everything
+%  else uses the program-wide descriptor.
+plawk_rule_descriptor(arm_pat(_Tag, ArmTypes, _Pattern), _Default,
+        binfmt(ArmTypes)) :-
+    !.
+plawk_rule_descriptor(_Pattern, Default, Default).
+
+%% plawk_union_flatten_rules(+CaseBlocks, +Arms, -Rules)
+%
+%  Flatten case blocks into one rule chain, stamping each rule with
+%  arm_pat(Tag, ArmTypes, Pattern) so guards check the record tag and
+%  everything downstream types fields against the right arm.
+plawk_union_flatten_rules(CaseBlocks, Arms, Rules) :-
+    findall(rule(arm_pat(Index, ArmTypes, Pattern), Actions),
+        ( member(case_arm(Index, ArmRules), CaseBlocks),
+          nth0(Index, Arms, ArmTypes),
+          member(rule(Pattern, Actions), ArmRules)
+        ),
+        Rules),
+    Rules \== [].
+
+plawk_union_program_ok(Arms, CaseBlocks) :-
+    length(Arms, ArmCount),
+    forall(member(case_arm(Index, ArmRules), CaseBlocks),
+        ( integer(Index),
+          Index >= 0,
+          Index < ArmCount,
+          nth0(Index, Arms, ArmTypes),
+          forall(member(rule(Pattern, Actions), ArmRules),
+              ( plawk_binfmt_pattern_ok(binfmt(ArmTypes), Pattern),
+                plawk_binfmt_actions_ok(binfmt(ArmTypes), Actions)
+              ))
+        )).
+
+%% plawk_union_read_ir(+Arms, +LoweredLabel, -ReadIR)
+%
+%  Read the 8-byte tag (the only place clean EOF is legal), switch on
+%  it, and run the selected arm's field-by-field read sequence. Every
+%  arm materializes its fields at offset 0 of %rec (the tag itself
+%  lives only in %vr_tag), so each arm's access layout is a plain
+%  binfmt(ArmTypes). An unknown tag is malformed input -> fail_read.
+plawk_union_read_ir(Arms, LoweredLabel, ReadIR) :-
+    findall(SwitchEntry,
+        ( nth0(Index, Arms, _),
+          format(atom(SwitchEntry), 'i64 ~w, label %vr_a~w', [Index, Index])
+        ),
+        SwitchEntries),
+    atomic_list_concat(SwitchEntries, ' ', SwitchBody),
+    format(atom(TagIR),
+'  %vr_tag_status = call i64 @wam_stream_read_record(%Value %handle, i64 8, i8* %vr_len_i8)
+  %vr_tag_eof = icmp eq i64 %vr_tag_status, 0
+  br i1 %vr_tag_eof, label %close_stream, label %vr_tag_chk
+
+vr_tag_chk:
+  %vr_tag_ok = icmp eq i64 %vr_tag_status, 1
+  br i1 %vr_tag_ok, label %vr_tag_switch, label %fail_read
+
+vr_tag_switch:
+  %vr_tag = load i64, i64* %vr_len_scratch
+  switch i64 %vr_tag, label %fail_read [ ~w ]
+',
+        [SwitchBody]),
+    findall(ArmIR,
+        ( nth0(Index, Arms, ArmTypes),
+          format(atom(ArmPrefix), 'vr_a~w', [Index]),
+          plawk_varlen_field_sections(ArmTypes, LoweredLabel, ArmPrefix,
+              no_eof, 0, 0, Sections),
+          atomic_list_concat(Sections, '\n', ArmBodyIR),
+          format(atom(ArmIR), '~w:~n~w', [ArmPrefix, ArmBodyIR])
+        ),
+        ArmIRs),
+    atomic_list_concat([TagIR | ArmIRs], '\n', ReadIR).
+
+plawk_union_buf_size(Arms, BufSize) :-
+    findall(Size,
+        ( member(ArmTypes, Arms),
+          plawk_binfmt_record_size(binfmt(ArmTypes), Size)
+        ),
+        Sizes),
+    max_list(Sizes, BufSize).
+
+plawk_emit_record_driver_ir(binfmt_union(Arms), InputPath, Blocks, DriverIR) :-
+    !,
+    plawk_union_buf_size(Arms, BufSize),
+    plawk_normalize_driver_blocks(Blocks,
+        driver_blocks(RuntimeGlobals, EntrySetupIR0, LoopPhiIR, LoweredLabel,
+            RecordIR, ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR)),
+    % the 8-byte scratch holds the tag, then any lps length prefixes
+    plawk_combine_entry_ir(EntrySetupIR0,
+'  %vr_len_scratch = alloca i64, align 8
+  %vr_len_i8 = bitcast i64* %vr_len_scratch to i8*',
+        EntrySetupIR),
+    plawk_union_read_ir(Arms, LoweredLabel, ReadIR),
+    llvm_emit_varlen_stream_driver_ir(InputPath, BufSize, ReadIR,
+        driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel,
+            RecordIR, ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR),
+        DriverIR).
+
 plawk_emit_record_driver_ir(binfmt(Types), InputPath, Blocks, DriverIR) :-
     plawk_binfmt_has_varlen(Types),
     !,
@@ -2237,89 +2557,95 @@ plawk_normalize_driver_blocks(Blocks, Blocks).
 %  zero the slot, then read the payload (a zero length reads nothing:
 %  @wam_stream_read_record returns 1 immediately for size 0).
 plawk_varlen_read_ir(Types, LoweredLabel, ReadIR) :-
-    plawk_varlen_field_sections(Types, LoweredLabel, 0, 0, Sections),
+    plawk_varlen_field_sections(Types, LoweredLabel, vr, eof_first, 0, 0,
+        Sections),
     atomic_list_concat(Sections, '\n', ReadIR).
 
-plawk_varlen_field_sections([], _LoweredLabel, _Index, _Offset, []).
-plawk_varlen_field_sections([Type | Types], LoweredLabel, Index, Offset,
-        [Section | Sections]) :-
+plawk_varlen_field_sections([], _LoweredLabel, _Prefix, _EofPolicy, _Index,
+        _Offset, []).
+plawk_varlen_field_sections([Type | Types], LoweredLabel, Prefix, EofPolicy,
+        Index, Offset, [Section | Sections]) :-
     ( Types == []
     -> NextLabel = LoweredLabel
     ;  NextIndex0 is Index + 1,
-       format(atom(NextLabel), 'vr_f~w', [NextIndex0])
+       format(atom(NextLabel), '~w_f~w', [Prefix, NextIndex0])
     ),
     ( Index =:= 0
     -> LabelIR = ''
-    ;  format(atom(LabelIR), 'vr_f~w:~n', [Index])
+    ;  format(atom(LabelIR), '~w_f~w:~n', [Prefix, Index])
     ),
-    plawk_varlen_field_body(Type, Index, Offset, NextLabel, BodyIR),
+    format(atom(FBase), '~w_f~w', [Prefix, Index]),
+    ( Index =:= 0, EofPolicy == eof_first
+    -> FieldEof = eof
+    ;  FieldEof = no_eof
+    ),
+    plawk_varlen_field_body(Type, FBase, FieldEof, Offset, NextLabel, BodyIR),
     format(atom(Section), '~w~w', [LabelIR, BodyIR]),
     plawk_binfmt_type_width(Type, Width),
     NextOffset is Offset + Width,
     NextIndex is Index + 1,
-    plawk_varlen_field_sections(Types, LoweredLabel, NextIndex, NextOffset,
-        Sections).
+    plawk_varlen_field_sections(Types, LoweredLabel, Prefix, EofPolicy,
+        NextIndex, NextOffset, Sections).
 
-plawk_varlen_field_body(lps(Cap), Index, Offset, NextLabel, BodyIR) :-
+plawk_varlen_field_body(lps(Cap), FBase, FieldEof, Offset, NextLabel, BodyIR) :-
     !,
-    plawk_varlen_eof_check_ir(Index, lstatus, BodyPrefixIR, OkLabelIR),
+    plawk_varlen_eof_check_ir(FieldEof, FBase, lstatus, BodyPrefixIR),
     format(atom(BodyIR),
-'  %vr_f~w_lstatus = call i64 @wam_stream_read_record(%Value %handle, i64 8, i8* %vr_len_i8)
-~w~w  %vr_f~w_lok = icmp eq i64 %vr_f~w_lstatus, 1
-  br i1 %vr_f~w_lok, label %vr_f~w_len, label %fail_read
+'  %~w_lstatus = call i64 @wam_stream_read_record(%Value %handle, i64 8, i8* %vr_len_i8)
+~w  %~w_lok = icmp eq i64 %~w_lstatus, 1
+  br i1 %~w_lok, label %~w_len, label %fail_read
 
-vr_f~w_len:
-  %vr_f~w_n = load i64, i64* %vr_len_scratch
-  %vr_f~w_fits = icmp ule i64 %vr_f~w_n, ~w
-  br i1 %vr_f~w_fits, label %vr_f~w_read, label %fail_read
+~w_len:
+  %~w_n = load i64, i64* %vr_len_scratch
+  %~w_fits = icmp ule i64 %~w_n, ~w
+  br i1 %~w_fits, label %~w_read, label %fail_read
 
-vr_f~w_read:
-  %vr_f~w_dst = getelementptr i8, i8* %rec, i64 ~w
-  call void @llvm.memset.p0i8.i64(i8* %vr_f~w_dst, i8 0, i64 ~w, i1 false)
-  %vr_f~w_pstatus = call i64 @wam_stream_read_record(%Value %handle, i64 %vr_f~w_n, i8* %vr_f~w_dst)
-  %vr_f~w_pok = icmp eq i64 %vr_f~w_pstatus, 1
-  br i1 %vr_f~w_pok, label %~w, label %fail_read
+~w_read:
+  %~w_dst = getelementptr i8, i8* %rec, i64 ~w
+  call void @llvm.memset.p0i8.i64(i8* %~w_dst, i8 0, i64 ~w, i1 false)
+  %~w_pstatus = call i64 @wam_stream_read_record(%Value %handle, i64 %~w_n, i8* %~w_dst)
+  %~w_pok = icmp eq i64 %~w_pstatus, 1
+  br i1 %~w_pok, label %~w, label %fail_read
 ',
-        [Index,
-         BodyPrefixIR, OkLabelIR, Index, Index,
-         Index, Index,
-         Index,
-         Index,
-         Index, Index, Cap,
-         Index, Index,
-         Index,
-         Index, Offset,
-         Index, Cap,
-         Index, Index, Index,
-         Index, Index,
-         Index, NextLabel]).
-plawk_varlen_field_body(_NumericType, Index, Offset, NextLabel, BodyIR) :-
-    plawk_varlen_eof_check_ir(Index, status, BodyPrefixIR, OkLabelIR),
+        [FBase,
+         BodyPrefixIR, FBase, FBase,
+         FBase, FBase,
+         FBase,
+         FBase,
+         FBase, FBase, Cap,
+         FBase, FBase,
+         FBase,
+         FBase, Offset,
+         FBase, Cap,
+         FBase, FBase, FBase,
+         FBase, FBase,
+         FBase, NextLabel]).
+plawk_varlen_field_body(_NumericType, FBase, FieldEof, Offset, NextLabel, BodyIR) :-
+    plawk_varlen_eof_check_ir(FieldEof, FBase, status, BodyPrefixIR),
     format(atom(BodyIR),
-'  %vr_f~w_dst = getelementptr i8, i8* %rec, i64 ~w
-  %vr_f~w_status = call i64 @wam_stream_read_record(%Value %handle, i64 8, i8* %vr_f~w_dst)
-~w~w  %vr_f~w_ok = icmp eq i64 %vr_f~w_status, 1
-  br i1 %vr_f~w_ok, label %~w, label %fail_read
+'  %~w_dst = getelementptr i8, i8* %rec, i64 ~w
+  %~w_status = call i64 @wam_stream_read_record(%Value %handle, i64 8, i8* %~w_dst)
+~w  %~w_ok = icmp eq i64 %~w_status, 1
+  br i1 %~w_ok, label %~w, label %fail_read
 ',
-        [Index, Offset,
-         Index, Index,
-         BodyPrefixIR, OkLabelIR, Index, Index,
-         Index, NextLabel]).
+        [FBase, Offset,
+         FBase, FBase,
+         BodyPrefixIR, FBase, FBase,
+         FBase, NextLabel]).
 
 % Only the record's first read may see clean EOF (status 0). Later
 % fields fall straight through to the 1/other check, where 0 lands in
 % fail_read like any short read.
-plawk_varlen_eof_check_ir(0, StatusSuffix, BodyPrefixIR, OkLabelIR) :-
+plawk_varlen_eof_check_ir(eof, FBase, StatusSuffix, BodyPrefixIR) :-
     !,
     format(atom(BodyPrefixIR),
-'  %vr_f0_eof = icmp eq i64 %vr_f0_~w, 0
-  br i1 %vr_f0_eof, label %close_stream, label %vr_f0_chk
+'  %~w_eof = icmp eq i64 %~w_~w, 0
+  br i1 %~w_eof, label %close_stream, label %~w_chk
 
-vr_f0_chk:
+~w_chk:
 ',
-        [StatusSuffix]),
-    OkLabelIR = ''.
-plawk_varlen_eof_check_ir(_Index, _StatusSuffix, '', '').
+        [FBase, FBase, StatusSuffix, FBase, FBase, FBase]).
+plawk_varlen_eof_check_ir(no_eof, _FBase, _StatusSuffix, '').
 
 plawk_output_separator(BeginClauses, OutputSeparator) :-
     (   member(begin(Actions), BeginClauses),
@@ -2627,13 +2953,15 @@ plawk_scalar_rule_chain_lines([scalar_rule(Index, Pattern, Actions, Control) | R
       format(atom(MatchVar), 'rule_~w_is_match', [Index]),
       format(atom(GlobalBase), 'plawk_surface_rule_~w', [Index]),
       format(atom(MatchValue), '%~w', [MatchVar]),
-      plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, MatchValue,
+      % tagged-union rules carry their arm's field types with them
+      plawk_rule_descriptor(Pattern, FieldSeparator, RuleDescriptor),
+      plawk_pattern_guard_ir(Pattern, RuleDescriptor, GlobalBase, MatchValue,
           GuardGlobalIR-GuardCallIR),
       plawk_rule_target(Control, NextLabel, RuleTargetLabel),
       maplist(plawk_scalar_rule_body_action, Actions),
       BodyActions = Actions,
       plawk_scalar_rule_input_phi_ir(StatePlan, Index, Controls, InputPhiIR),
-      plawk_scalar_match_update_ir(StatePlan, BodyActions, FieldSeparator, OutputSeparator, Index,
+      plawk_scalar_match_update_ir(StatePlan, BodyActions, RuleDescriptor, OutputSeparator, Index,
           BranchNextExits, MatchUpdateGlobalIR-MatchUpdateIR),
       ( Index =:= 0
       -> EntryIR = '  br label %rule_0_match\n\n'
@@ -3839,6 +4167,30 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), GlobalBase, MatchValue, Guar
     plawk_pattern_guard_ir(field_cmp(Index, Op, Value), 32, GlobalBase,
         MatchValue, GuardIR).
 
+% Tagged-union rule guard: the record tag must equal the rule's arm,
+% and the inner pattern (typed against the arm's layout) must match.
+% %vr_tag is loaded once per record in the union read sequence and
+% dominates every rule block. Field reads in the inner guard are safe
+% even when the tag check fails: the record buffer is always at least
+% as large as the widest arm, so a mismatched read sees stale-but-owned
+% bytes and its result is discarded by the and.
+plawk_pattern_guard_ir(arm_pat(Tag, ArmTypes, Pattern), _FieldSeparator,
+        GlobalBase, MatchValue, GuardIR) :-
+    !,
+    format(atom(TagOk), '%~w_tag_ok', [GlobalBase]),
+    format(atom(TagCheck), '  ~w = icmp eq i64 %vr_tag, ~w', [TagOk, Tag]),
+    ( Pattern == always
+    ->  format(atom(CallIR), '~w~n  ~w = and i1 ~w, true',
+            [TagCheck, MatchValue, TagOk]),
+        GuardIR = ''-CallIR
+    ;   format(atom(InnerBase), '~w_arm', [GlobalBase]),
+        format(atom(InnerValue), '~w_arm', [MatchValue]),
+        plawk_pattern_guard_ir(Pattern, binfmt(ArmTypes), InnerBase,
+            InnerValue, GlobalIR-InnerCallIR),
+        format(atom(CallIR), '~w~n~w~n  ~w = and i1 ~w, ~w',
+            [TagCheck, InnerCallIR, MatchValue, TagOk, InnerValue]),
+        GuardIR = GlobalIR-CallIR
+    ).
 plawk_pattern_guard_ir(always, _FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
     plawk_pattern_guard_ir(always, GlobalBase, MatchValue, GuardIR).
 plawk_pattern_guard_ir(prefix(Prefix), _FieldSeparator, GlobalBase, MatchValue, GuardIR) :-

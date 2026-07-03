@@ -36,7 +36,7 @@ handles) maps to an **access type** (what consumers see):
 | `f64` | 8 | `f64` | 8 bytes |
 | `sN` | N | `sN` | N bytes |
 | `lpsN` (landed) | 8 + len, len ≤ N | `sN` | N bytes, NUL-padded |
-| tagged union (planned) | 8-byte tag + arm | tag `i64` + widest arm | tag slot + max-arm slot |
+| tagged union (landed) | 8-byte tag + arm | per-arm `$1..$N` via `case` blocks | widest arm (tag in SSA only) |
 | bounded repetition (planned) | 8-byte count + count×elem, count ≤ K | count `i64` + K elems | count slot + K elem slots |
 
 ## The lowering spectrum
@@ -110,18 +110,31 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
 
 ## Planned slices
 
-1. **Tagged unions:** `BINFMT = "i64 union(0: i64 i64 | 1: lps16)"`
-   style — an 8-byte discriminator selects one of several arm layouts;
-   the access layout reserves the widest arm plus the tag as `$K`;
-   guards on the tag route rules per arm. Requires surface syntax
-   design (the awk-flavored form is the open question, e.g. rule
-   patterns like `$tag == 1 { ... }` with per-arm field numbering).
+1. **Tagged unions (landed):** `BINFMT = "case(i64 f64 | lps16 i64)"`
+   — an 8-byte discriminator selects an arm layout. The chosen surface
+   is per-arm blocks (`case K { rules }`): the arm is lexically scoped,
+   so every rule's field types are decided by the parser, not by
+   guard-shape analysis. Case blocks flatten into one scalar rule chain
+   whose guards prepend a tag check (`arm_pat/3`); the reader is a
+   native `switch` on the tag dispatching per-arm field-read sequences
+   that all materialize at offset 0 of a buffer sized to the widest arm
+   (the tag lives only in the `%vr_tag` SSA value — no case block needs
+   it at runtime because the arm is static inside the block). Unknown
+   tags and truncated arms are malformed input (`fail_read`); arms
+   without a case block are still read and skipped so the stream stays
+   framed. The tag-guard spelling (`$0 == K && ...`) can later be
+   accepted as sugar that desugars into a case block. Not yet inside
+   case blocks: assoc arrays, writebin, and union output.
 2. **Bounded repetition:** `count` header + up to K fixed elements;
    access layout is a count slot plus K element slots; `for` over
    elements in rule bodies is the surface question.
-3. **Varlen writers:** `lpsN` in OUTFMT emitting length + payload from
-   `sN`/`lpsN` sources — closing the varlen pipeline loop the same way
-   fixed writers did.
+3. **Varlen writers (landed):** `lpsN` in OUTFMT emits the 8-byte
+   length plus exactly the payload bytes, sourced from literals,
+   `sM`/`lpsM` input fields (`M ≤ cap`), or text-mode slices clamped to
+   the cap. Records with an lps slot switch from the single-buffer
+   fwrite to per-slot fwrites emitted left to right (buffered in libc,
+   so still memcpy cost per record). Writer output is byte-compatible
+   with the `lpsN` reader.
 4. **Tier-2 composition sugar:** a declared payload type whose slice is
    passed to a compiled Prolog DCG via the foreign bridge without
    hand-written glue.

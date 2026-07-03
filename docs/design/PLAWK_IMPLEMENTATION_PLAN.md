@@ -507,8 +507,9 @@ while keeping the fixed access layout in memory -- the design document
 general approach (Tier 1: LL(1)-over-fields grammars with compile-time
 caps compile to native field-by-field read sequences; Tier 2: native
 framing + WAM-bytecode payload parsing via the foreign bridge; Tier 3:
-full DCG fallback, the Phase 5 JIT target). Planned next slices there:
-tagged unions, bounded repetition, varlen writers. Remaining Phase 3
+full DCG fallback, the Phase 5 JIT target). Landed since: varlen
+writers (lpsN in OUTFMT) and tagged unions (case-block surface, native
+tag switch); bounded repetition remains. Remaining Phase 3
 items below (richer ABIs) are otherwise unchanged.
 
 **Second slice landed (typed associative arrays):** in binary mode
