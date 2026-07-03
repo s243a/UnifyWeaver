@@ -584,13 +584,31 @@ those." Scalars like `msum` and `events`, plus `NR`, `next`, `break`,
 and the END report, are shared across the blocks — there is still only
 one stream and one loop.
 
-Why blocks rather than writing the tag into each guard
-(`$0 == 1 && $1 == "boom"`)? Because the *types* of `$1, $2` depend on
-the arm: the compiler must know which arm a rule belongs to before it
-can decide whether `$1 == "boom"` is a string comparison or nonsense.
-With a block, that is decided by where the rule sits on the page. (The
-guard spelling can be added later as a shorthand that expands to a
-block.)
+Why blocks rather than writing the tag into each guard? Because the
+*types* of `$1, $2` depend on the arm: the compiler must know which arm
+a rule belongs to before it can decide whether `$1 == "boom"` is a
+string comparison or nonsense. With a block, that is decided by where
+the rule sits on the page.
+
+That said, for a program with only a rule or two per arm, a block per
+arm is ceremony. So the guard spelling exists as **shorthand**: a rule
+may lead with `TAG == K`, and it means exactly the same as putting the
+rest of the rule inside `case K { ... }`:
+
+```awk
+BEGIN { BINFMT = "case(i64 f64 | lps16 i64)" }
+TAG == 0 && $1 > 100 { msum += float($2) }
+TAG == 1 && $1 == "boom" { events++ }
+END { print msum, events }
+```
+
+This compiles to *identical* code as the block version — it is pure
+sugar, not a second mechanism. The one rule: the `TAG == K` test must
+come first in the guard (and every rule must have one), because it is
+what tells the compiler which arm's types the rest of the rule is
+checked against. `TAG == 0 || TAG == 1` is rejected for the same
+reason — such a rule would need two different type checks at once.
+Pick whichever spelling reads better; don't mix both in one program.
 
 ### What the compiled program actually does
 
@@ -630,6 +648,23 @@ current element into a fixed scratch slot and runs the block over it,
 carrying your counters around the loop in registers. Constant memory,
 and the code size does not depend on the cap — `rep64` compiles to
 the same loop as `rep4`.
+
+Elements can carry strings too. `BINFMT = "i64 rep4(lps8 i64)"`
+declares elements that each start with a length-prefixed name of up to
+8 bytes. On the wire every element can be a different size, so the
+reader parses them one at a time (each string lands in a fixed 8-byte
+slot, NUL-padded, exactly like a top-level `lps` field); inside
+`foreach`, string fields guard and print like any other:
+
+```awk
+BEGIN { BINFMT = "i64 rep4(lps8 i64)" }
+{ foreach { if ($1 == "hot") { hits++ }; total += $2 } }
+END { print hits, total }
+```
+
+Repetition also composes with tagged unions: an arm of a `case(...)`
+layout may carry its own `repK(...)`, and `foreach` inside that arm's
+rules (block or `TAG == K` spelling) iterates that arm's elements.
 
 ### Handing payloads to Prolog
 

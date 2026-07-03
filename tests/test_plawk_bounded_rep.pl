@@ -57,8 +57,8 @@ test(rep_rejections) :-
         "BEGIN { BINFMT = \"i64 rep4(i64)\" } { foreach { s += $2 } } END { print s }\n",
         % one rep per layout in this slice
         "BEGIN { BINFMT = \"rep2(i64) rep2(i64)\" } { foreach { n++ } } END { print n }\n",
-        % elements must be fixed-width
-        "BEGIN { BINFMT = \"rep2(lps8)\" } { foreach { n++ } } END { print n }\n"
+        % no blob elements (a blob's only consumer is a foreign call)
+        "BEGIN { BINFMT = \"rep2(blob8)\" } { foreach { n++ } } END { print n }\n"
     ],
     forall(member(Source, Rejects),
         ( plawk_parse_string(Source, Program)
