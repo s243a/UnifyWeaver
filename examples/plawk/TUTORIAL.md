@@ -476,3 +476,128 @@ records=4
 ERROR disk
 ERROR network
 ```
+
+## Binary records, from the beginning
+
+Everything above processed *text*: lines, split into fields by spaces.
+PLAWK can also process *binary* records — and since several binary
+concepts come from outside both awk and Prolog, this section builds
+them up from zero.
+
+### What a binary record is
+
+A text record says `200 2.5` and makes the machine parse "200" from
+digits every single time. A binary record stores the number 200 as the
+8 bytes a CPU register already uses, so reading it is one load
+instruction — no parsing. `BEGIN { BINFMT = "i64 f64" }` declares:
+every record is exactly 16 bytes — an 8-byte integer, then an 8-byte
+float:
+
+```text
+byte offset:   0        8        16
+              +--------+--------+
+              |  i64   |  f64   |     $1 = the i64, $2 = the f64
+              +--------+--------+
+```
+
+After that BEGIN line, the same awk you already write —
+`$1 > 100 { sum += float($2) }` — runs over these 16-byte records.
+The `$N` variables just mean "the Nth declared slot" instead of "the
+Nth space-separated word".
+
+### Strings in binary records
+
+Two flavors:
+
+- `s8` — a **fixed** 8-byte slot. Short values are padded with zero
+  bytes ("alpha" + three zeros). Simple, but always 8 bytes.
+- `lps16` — a **length-prefixed string** ("lps"): the wire carries an
+  8-byte length, then exactly that many bytes (up to the cap, 16).
+  `"bee"` costs 8+3 = 11 bytes instead of a padded 16:
+
+```text
+              +--------+---+
+              |   3    |bee|      an lps16 holding "bee"
+              +--------+---+
+```
+
+Records containing an `lps` field have different sizes on the wire —
+but PLAWK copies each one into a fixed-size buffer in memory, so to
+your program an `lps16` field looks exactly like an `s16`. That
+"variable on the wire, fixed in memory" trick is the foundation for
+everything below.
+
+### Tagged unions: one stream, several kinds of record
+
+The name comes from C, not from awk or Prolog (Prolog's analogue is
+different functors: `metric(Id,V)` vs `event(Name,Code)`; Rust calls
+them enums; type theory says sum types). The situation it solves is
+everyday, though: **a stream where not every record has the same
+shape.** A telemetry feed might interleave *metrics* (an id and a
+reading) with *events* (a name and a code). Different layouts, one
+pipe.
+
+The binary convention: every record starts with a small number — the
+**tag** (or *discriminator*) — announcing which layout follows. Each
+possible layout is called an **arm** (pattern-matching vocabulary:
+the arms of a match). On the wire:
+
+```text
+a metric:   +--------+--------+--------+
+            | tag=0  |  i64   |  f64   |
+            +--------+--------+--------+
+an event:   +--------+--------+-----------+--------+
+            | tag=1  | len    | name bytes|  i64   |
+            +--------+--------+-----------+--------+
+```
+
+In PLAWK you declare the arms in BINFMT, separated by `|`:
+
+```awk
+BEGIN { BINFMT = "case(i64 f64 | lps16 i64)" }
+```
+
+meaning: tag 0 → the record continues `i64 f64`; tag 1 → it continues
+`lps16 i64`.
+
+### case blocks: routing rules by record kind
+
+Here is the part that is genuinely new syntax (awk has no switch;
+gawk bolted one on later): you group your rules into one block per
+arm, and **inside a block, everything is ordinary awk** — the block
+only fixes what `$1, $2, …` mean there:
+
+```awk
+BEGIN { BINFMT = "case(i64 f64 | lps16 i64)" }
+case 0 {                               # metric records: $1=i64, $2=f64
+  $1 > 100 { msum += float($2) }
+}
+case 1 {                               # event records: $1=lps16, $2=i64
+  $1 == "boom" { events++ }
+}
+END { print msum, events }
+```
+
+Reading it aloud: "when a record's tag is 0, treat it as a metric and
+run these rules on it; when the tag is 1, treat it as an event and run
+those." Scalars like `msum` and `events`, plus `NR`, `next`, `break`,
+and the END report, are shared across the blocks — there is still only
+one stream and one loop.
+
+Why blocks rather than writing the tag into each guard
+(`$0 == 1 && $1 == "boom"`)? Because the *types* of `$1, $2` depend on
+the arm: the compiler must know which arm a rule belongs to before it
+can decide whether `$1 == "boom"` is a string comparison or nonsense.
+With a block, that is decided by where the rule sits on the page. (The
+guard spelling can be added later as a shorthand that expands to a
+block.)
+
+### What the compiled program actually does
+
+Per record: read 8 bytes (the tag) → a native `switch` jumps to that
+arm's reader → the arm's fields are copied to fixed positions in one
+buffer → the rules run, each first checking the tag matches its block.
+No interpreter, no allocation; a malformed record (unknown tag,
+truncated bytes) exits with the read-error code, and record kinds you
+wrote no block for are still read and skipped, so the stream never
+loses its framing.

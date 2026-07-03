@@ -339,7 +339,11 @@ text mode.
 
 For a walkthrough of the current Prolog-core syntax and how it maps to awk
 concepts like `$0`, `$1`, `NR`, `NF`, `FS`, `OFS`, and `print`, see
-[`TUTORIAL.md`](TUTORIAL.md).
+[`TUTORIAL.md`](TUTORIAL.md) — which now ends with a
+from-first-principles walkthrough of binary records, `lps`
+length-prefixed strings, and tagged unions / `case` blocks (what a
+tag, an arm, and a discriminated record are, with byte-level
+diagrams).
 
 ## Design documents
 
