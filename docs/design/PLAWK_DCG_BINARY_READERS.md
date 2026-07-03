@@ -135,8 +135,14 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
    program-wide (one output layout regardless of arm) while each
    rule's source fields type against its own arm, so a union stream
    normalizes into one fixed layout; a pure normalizer (every rule
-   just writebins) needs no END and no scalar state. Not yet inside
-   case blocks: assoc arrays and union (tagged) output.
+   just writebins) needs no END and no scalar state. Assoc arrays
+   inside case blocks (landed): rules are assoc increments whose keys
+   are raw i64 field values typed per arm, all arms updating one
+   shared table per array name; both END report shapes (for-in print,
+   integer lookups) work, and the assoc rule chain resolves guards and
+   key loads through the same per-rule arm descriptor as the scalar
+   chain. Not yet inside case blocks: union (tagged) output, and
+   for-in writebin over a union input.
 2. **Bounded repetition (landed):** `repK(elem types)` — an 8-byte
    count (≤ K) then that many elements. Fixed-width elements read as
    one bulk count×elemsize read after a memset of the element region

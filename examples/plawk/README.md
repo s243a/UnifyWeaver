@@ -99,6 +99,7 @@ swipl -q -s tests/test_plawk_union_rep.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/
 swipl -q -s tests/test_plawk_tier2_blob.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_f64_foreign.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_union_writebin.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_union_assoc.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -338,8 +339,11 @@ per arm. writebin also works inside case blocks: OUTFMT stays
 program-wide (one output layout regardless of arm) while each rule's
 source fields type against its own arm, so a two-arm stream can be
 normalized into one fixed layout -- a pure per-arm normalizer needs no
-END and no scalars at all. (Assoc arrays inside case blocks are a
-later slice.)
+END and no scalars at all. Assoc group-bys work across arms too:
+`case 0 { { counts[$1]++ } } case 1 { { counts[$2]++ } }` counts into
+one shared table (keys are raw i64 field values typed per arm), with
+the usual END reports -- `for (k in counts) print k, counts[k]` or
+integer lookups.
 `lpsN` also works in OUTFMT: writebin emits the
 8-byte length plus exactly the payload bytes (no padding), sourcing
 from literals, `sM`/`lpsM` input fields, or text-mode slices clamped to
