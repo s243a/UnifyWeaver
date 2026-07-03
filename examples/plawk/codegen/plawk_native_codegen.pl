@@ -246,6 +246,53 @@ plawk_program_native_driver_ir(
             RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+% Binary group-by to binary output: iterate the table and writebin one
+% fixed-layout record per group. Binary input mode only -- text-mode
+% keys are interned atom ids, which would be meaningless bytes in the
+% output stream.
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules, [end([for_in(var(LoopVar), var(ArrayName), [writebin(Fields)])])]),
+    InputPath,
+    DriverIR
+) :-
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    FieldSeparator = binfmt(_InputTypes),
+    plawk_begin_outfmt_types(BeginClauses, OutTypes),
+    forall(member(OutType, OutTypes), memberchk(OutType, [i64, f64])),
+    length(OutTypes, ArgCount),
+    length(Fields, ArgCount),
+    maplist(plawk_forin_writebin_field(LoopVar), Fields),
+    findall(LookupArrayName,
+        member(assoc(var(LookupArrayName), var(LoopVar)), Fields),
+        LookupArrays),
+    plawk_forin_assoc_plan(Rules, ArrayName, LookupArrays, AssocPlan),
+    plawk_assoc_record_program_ok(FieldSeparator, Rules, []),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_binfmt_record_size(binfmt(OutTypes), OutRecordSize),
+    plawk_writebin_entry_lines(outfmt(OutTypes, OutRecordSize), WritebinEntryIR),
+    plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR, AssocChainIR),
+    plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
+    plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
+    plawk_forin_end_writebin_ir(LoopVar, ArrayName, OutTypes, Fields, AssocPlan,
+        EndPrintIR),
+    plawk_writebin_globals(outfmt(OutTypes, OutRecordSize), WritebinGlobalIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
+        [BeginGlobalIR, AssocRuleGlobalIR, WritebinGlobalIR]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR0),
+    plawk_combine_entry_ir(CombinedEntrySetupIR0, WritebinEntryIR, CombinedEntrySetupIR),
+    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w',
+        [EndPrintIR]),
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
+            AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
 plawk_program_native_driver_ir(
     program(BeginClauses, Rules, [end([for_in(var(LoopVar), var(ArrayName), BodyActions)])]),
     InputPath,
@@ -524,10 +571,17 @@ fail:
 %  the loop body is one print whose fields are the loop key, associative
 %  lookups keyed by the loop variable, or string literals.
 plawk_forin_end_plan(Rules, LoopVar, ArrayName, BodyActions,
-        assoc_plan(Tables, PlannedRules), PrintFields) :-
+        AssocPlan, PrintFields) :-
     BodyActions = [print(PrintFields)],
     PrintFields = [_ | _],
     maplist(plawk_forin_print_field(LoopVar), PrintFields),
+    findall(LookupArrayName,
+        member(assoc(var(LookupArrayName), var(LoopVar)), PrintFields),
+        LookupArrays),
+    plawk_forin_assoc_plan(Rules, ArrayName, LookupArrays, AssocPlan).
+
+plawk_forin_assoc_plan(Rules, ArrayName, LookupArrays,
+        assoc_plan(Tables, PlannedRules)) :-
     maplist(plawk_assoc_rule_action_specs, Rules, RuleSpecs),
     RuleSpecs \== [],
     findall(RuleArrayName,
@@ -535,9 +589,6 @@ plawk_forin_end_plan(Rules, LoopVar, ArrayName, BodyActions,
           member(RuleArrayName-_KeyIndex, ActionSpecs)
         ),
         ActionArrays),
-    findall(LookupArrayName,
-        member(assoc(var(LookupArrayName), var(LoopVar)), PrintFields),
-        LookupArrays),
     append([ActionArrays, [ArrayName], LookupArrays], ArrayNames0),
     sort(ArrayNames0, Tables),
     phrase(plawk_assoc_planned_rules(RuleSpecs, Tables, 0), PlannedRules).
@@ -545,6 +596,108 @@ plawk_forin_end_plan(Rules, LoopVar, ArrayName, BodyActions,
 plawk_forin_print_field(LoopVar, var(LoopVar)).
 plawk_forin_print_field(LoopVar, assoc(var(_ArrayName), var(LoopVar))).
 plawk_forin_print_field(_LoopVar, string(_Value)).
+
+plawk_forin_writebin_field(LoopVar, var(LoopVar)).
+plawk_forin_writebin_field(LoopVar, assoc(var(_ArrayName), var(LoopVar))).
+plawk_forin_writebin_field(_LoopVar, int(Value)) :-
+    integer(Value).
+
+%% plawk_forin_end_writebin_ir(+LoopVar, +ArrayName, +OutTypes, +Fields,
+%%     +AssocPlan, -IR)
+%
+%  writebin variant of the END for-in loop: walk the iterated table's
+%  occupied slots and emit one fixed-layout binary record per group
+%  (raw i64 keys, table values, or literals; i64 values promote via
+%  sitofp into f64 output slots), then free every table and return.
+plawk_forin_end_writebin_ir(LoopVar, ArrayName, OutTypes, Fields, AssocPlan, IR) :-
+    plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+    plawk_binfmt_record_size(binfmt(OutTypes), Size),
+    format(atom(BasePtr), '%forin_wb_base', []),
+    format(atom(BaseLine),
+        '  ~w = getelementptr inbounds [~w x i8], [~w x i8]* %plawk_wbuf, i32 0, i32 0',
+        [BasePtr, Size, Size]),
+    plawk_forin_writebin_field_lines(OutTypes, Fields, LoopVar, ArrayName,
+        TableIndex, AssocPlan, BasePtr, 0, 0, FieldLines),
+    format(atom(StdoutLoad),
+        '  %forin_wb_stdout = load i8*, i8** @stdout', []),
+    format(atom(WriteCall),
+        '  %forin_wb_wr = call i64 @fwrite(i8* ~w, i64 ~w, i64 1, i8* %forin_wb_stdout)',
+        [BasePtr, Size]),
+    append([[BaseLine], FieldLines, [StdoutLoad, WriteCall]], BodyLines),
+    atomic_list_concat(BodyLines, '\n', BodyIR),
+    phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
+    atomic_list_concat(FreeLines, '\n', FreeIR),
+    format(atom(IR),
+'  br label %forin_head
+
+forin_head:
+  %forin_idx = phi i64 [0, %end_print], [%forin_next_idx, %forin_body_done]
+  %forin_slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_idx)
+  %forin_done = icmp slt i64 %forin_slot, 0
+  br i1 %forin_done, label %forin_after, label %forin_body
+
+forin_body:
+  %forin_key_id = call i64 @wam_assoc_i64_key_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)
+~w
+  br label %forin_body_done
+
+forin_body_done:
+  %forin_next_idx = add i64 %forin_slot, 1
+  br label %forin_head
+
+forin_after:
+~w
+  ret i32 0',
+        [TableIndex, TableIndex, BodyIR, FreeIR]).
+
+plawk_forin_writebin_field_lines([], [], _LoopVar, _ArrayName, _TableIndex,
+        _AssocPlan, _BasePtr, _Index, _Offset, []).
+plawk_forin_writebin_field_lines([OutType | OutTypes], [Field | Fields], LoopVar,
+        ArrayName, TableIndex, AssocPlan, BasePtr, Index, Offset, Lines) :-
+    format(atom(Base), 'forin_wb_f~w', [Index]),
+    plawk_forin_writebin_value_lines(Field, LoopVar, ArrayName, TableIndex,
+        AssocPlan, Base, ValueIR, ValueLines),
+    ( OutType == i64
+    ->  StoreValueIR = ValueIR,
+        LLVMType = i64,
+        PromoteLines = []
+    ;   format(atom(StoreValueIR), '%~w_f64p', [Base]),
+        format(atom(Promote), '  ~w = sitofp i64 ~w to double',
+            [StoreValueIR, ValueIR]),
+        LLVMType = double,
+        PromoteLines = [Promote]
+    ),
+    format(atom(Gep),
+        '  %~w_fp = getelementptr i8, i8* ~w, i64 ~w', [Base, BasePtr, Offset]),
+    format(atom(Cast),
+        '  %~w_tp = bitcast i8* %~w_fp to ~w*', [Base, Base, LLVMType]),
+    format(atom(Store),
+        '  store ~w ~w, ~w* %~w_tp, align 1',
+        [LLVMType, StoreValueIR, LLVMType, Base]),
+    plawk_binfmt_type_width(OutType, Width),
+    NextOffset is Offset + Width,
+    NextIndex is Index + 1,
+    plawk_forin_writebin_field_lines(OutTypes, Fields, LoopVar, ArrayName,
+        TableIndex, AssocPlan, BasePtr, NextIndex, NextOffset, RestLines),
+    append([ValueLines, PromoteLines, [Gep, Cast, Store], RestLines], Lines).
+
+plawk_forin_writebin_value_lines(var(LoopVar), LoopVar, _ArrayName, _TableIndex,
+        _AssocPlan, _Base, '%forin_key_id', []).
+plawk_forin_writebin_value_lines(assoc(var(LookupArrayName), var(LoopVar)),
+        LoopVar, ArrayName, TableIndex, AssocPlan, Base, ValueIR, [Line]) :-
+    format(atom(ValueIR), '%~w_val', [Base]),
+    (   LookupArrayName == ArrayName
+    ->  format(atom(Line),
+            '  ~w = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
+            [ValueIR, TableIndex])
+    ;   plawk_assoc_table_index(AssocPlan, LookupArrayName, LookupTableIndex),
+        format(atom(Line),
+            '  ~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_key_id)',
+            [ValueIR, LookupTableIndex])
+    ).
+plawk_forin_writebin_value_lines(int(Value), _LoopVar, _ArrayName, _TableIndex,
+        _AssocPlan, _Base, Value, []) :-
+    integer(Value).
 
 %% plawk_forin_end_print_ir(+LoopVar, +ArrayName, +PrintFields, +AssocPlan,
 %%     +OutputSeparator, -IR)
@@ -1576,6 +1729,17 @@ plawk_binfmt_writebin_args_ok(Descriptor, [f64 | Types], [Field | Fields]) :-
     ;  plawk_binfmt_i64_expr_ok(Descriptor, Field)
     ),
     plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
+plawk_binfmt_writebin_args_ok(Descriptor, [s(Width) | Types], [Field | Fields]) :-
+    plawk_binfmt_writebin_str_ok(Descriptor, Field, Width),
+    plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
+
+plawk_binfmt_writebin_str_ok(_Descriptor, string(Value), Width) :-
+    !,
+    string_length(Value, Length),
+    Length =< Width.
+plawk_binfmt_writebin_str_ok(Descriptor, field(FieldIndex), Width) :-
+    plawk_binfmt_field_type(Descriptor, FieldIndex, s(SourceWidth)),
+    SourceWidth =< Width.
 
 plawk_binfmt_print_field_ok(_Descriptor, string(_Value)) :- !.
 plawk_binfmt_print_field_ok(_Descriptor, special('NR')) :- !.
@@ -1719,11 +1883,13 @@ plawk_binfmt_record_size(binfmt(Types), Size) :-
 %  (writebin_out(Types, Fields)) so downstream validation and emission
 %  are self-contained; it fails (rejecting the program) when writebin
 %  appears without OUTFMT, an argument count mismatches the layout, or
-%  the layout contains non-numeric fields (sN output is a later slice).
+%  the layout contains an unknown field type (i64, f64, and sN are
+%  supported).
 plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules, WritebinPlan) :-
     ( plawk_rules_have_writebin(Rules0)
     ->  plawk_begin_outfmt_types(BeginClauses, Types),
-        forall(member(Type, Types), memberchk(Type, [i64, f64])),
+        forall(member(Type, Types),
+            ( memberchk(Type, [i64, f64]) ; Type = s(_Width) )),
         plawk_binfmt_record_size(binfmt(Types), Size),
         WritebinPlan = outfmt(Types, Size),
         maplist(plawk_resolve_writebin_rule(Types), Rules0, Rules)
@@ -1804,9 +1970,21 @@ plawk_writebin_args_ok([], []).
 plawk_writebin_args_ok([Type | Types], [Field | Fields]) :-
     ( Type == i64
     -> plawk_writebin_i64_arg(Field)
+    ;  Type = s(Width)
+    -> plawk_writebin_str_arg(Field, Width)
     ;  plawk_writebin_f64_arg(Field)
     ),
     plawk_writebin_args_ok(Types, Fields).
+
+% sN output slots take string literals that fit the width, or field
+% reads (validated against the input layout separately in binary mode;
+% any field slice in text mode, clamped to the width at emission).
+plawk_writebin_str_arg(string(Value), Width) :-
+    string_length(Value, Length),
+    Length =< Width.
+plawk_writebin_str_arg(field(FieldIndex), _Width) :-
+    integer(FieldIndex),
+    FieldIndex >= 1.
 
 plawk_writebin_i64_arg(special('NR')).
 plawk_writebin_i64_arg(special('NF')).
@@ -1849,27 +2027,118 @@ plawk_writebin_field_lines([Type | Types], [Field0 | Fields], Slots, Values,
         FieldSeparator, Prefix, BasePtr, Index, Offset, Lines, GlobalParts) :-
     plawk_substitute_scalar_reads(Field0, Slots, Values, Field),
     format(atom(Base), '~w_f~w', [Prefix, Index]),
-    ( Type == i64
-    ->  plawk_i64_expr_ir(Field, FieldSeparator, Base, Base, ValueIR,
-            GParts, SetupParts),
-        LLVMType = i64
-    ;   plawk_writebin_f64_value_ir(Field, FieldSeparator, Base, ValueIR,
-            GParts, SetupParts),
-        LLVMType = double
-    ),
-    format(atom(Gep),
-        '  %~w_fp = getelementptr i8, i8* ~w, i64 ~w', [Base, BasePtr, Offset]),
-    format(atom(Cast),
-        '  %~w_tp = bitcast i8* %~w_fp to ~w*', [Base, Base, LLVMType]),
-    format(atom(Store),
-        '  store ~w ~w, ~w* %~w_tp, align 1', [LLVMType, ValueIR, LLVMType, Base]),
+    plawk_writebin_slot_lines(Type, Field, FieldSeparator, Base, BasePtr,
+        Offset, SlotLines, GParts),
     plawk_binfmt_type_width(Type, Width),
     NextOffset is Offset + Width,
     NextIndex is Index + 1,
     plawk_writebin_field_lines(Types, Fields, Slots, Values, FieldSeparator,
         Prefix, BasePtr, NextIndex, NextOffset, RestLines, RestGlobals),
-    append([SetupParts, [Gep, Cast, Store], RestLines], Lines),
+    append(SlotLines, RestLines, Lines),
     append(GParts, RestGlobals, GlobalParts).
+
+%% plawk_writebin_slot_lines(+Type, +Field, +FieldSeparator, +Base,
+%%     +BasePtr, +Offset, -Lines, -GlobalParts)
+%
+%  Store one writebin argument at its layout offset. Numeric slots are
+%  typed stores; sN slots memset the slot to zero and memcpy the source
+%  bytes (a literal's global, an sM binary input field, or a text-mode
+%  field slice clamped to the slot width).
+plawk_writebin_slot_lines(s(Width), string(Value), _FieldSeparator, Base,
+        BasePtr, Offset, Lines, [GlobalLine]) :-
+    !,
+    format(atom(LitGlobal), '~w_lit', [Base]),
+    llvm_emit_c_string_global(LitGlobal, Value, GlobalLine, StringLen, BytesLen),
+    StringLen =< Width,
+    format(atom(Dst),
+        '  %~w_dst = getelementptr i8, i8* ~w, i64 ~w', [Base, BasePtr, Offset]),
+    format(atom(Src),
+        '  %~w_src = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+        [Base, BytesLen, BytesLen, LitGlobal]),
+    format(atom(Zero),
+        '  call void @llvm.memset.p0i8.i64(i8* %~w_dst, i8 0, i64 ~w, i1 false)',
+        [Base, Width]),
+    format(atom(Copy),
+        '  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %~w_dst, i8* %~w_src, i64 ~w, i1 false)',
+        [Base, Base, StringLen]),
+    Lines = [Dst, Src, Zero, Copy].
+plawk_writebin_slot_lines(s(Width), field(FieldIndex), binfmt(Types), Base,
+        BasePtr, Offset, Lines, []) :-
+    !,
+    plawk_binfmt_field_type(binfmt(Types), FieldIndex, s(SourceWidth)),
+    SourceWidth =< Width,
+    plawk_binfmt_field_offset(binfmt(Types), FieldIndex, SourceOffset),
+    format(atom(Dst),
+        '  %~w_dst = getelementptr i8, i8* ~w, i64 ~w', [Base, BasePtr, Offset]),
+    format(atom(Src),
+        '  %~w_src = getelementptr i8, i8* %rec, i64 ~w', [Base, SourceOffset]),
+    ( SourceWidth < Width
+    ->  format(atom(Zero),
+            '  call void @llvm.memset.p0i8.i64(i8* %~w_dst, i8 0, i64 ~w, i1 false)',
+            [Base, Width]),
+        ZeroLines = [Zero]
+    ;   ZeroLines = []
+    ),
+    format(atom(Copy),
+        '  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %~w_dst, i8* %~w_src, i64 ~w, i1 false)',
+        [Base, Base, SourceWidth]),
+    append([[Dst, Src], ZeroLines, [Copy]], Lines).
+plawk_writebin_slot_lines(s(Width), field(FieldIndex), FieldSeparator, Base,
+        BasePtr, Offset, Lines, []) :-
+    !,
+    % Text mode: slice the field, clamp to the slot width, zero-fill,
+    % and copy behind a null guard (a missing field writes all zeros).
+    FieldIndex >= 1,
+    llvm_emit_atom_field_slice('%line', FieldIndex, FieldSeparator, Base,
+        SliceIR),
+    format(atom(Dst),
+        '  %~w_dst = getelementptr i8, i8* ~w, i64 ~w', [Base, BasePtr, Offset]),
+    format(atom(Zero),
+        '  call void @llvm.memset.p0i8.i64(i8* %~w_dst, i8 0, i64 ~w, i1 false)',
+        [Base, Width]),
+    format(atom(Guard),
+'  %~w_null = icmp eq i8* %~w_ptr, null
+  %~w_over = icmp ugt i64 %~w_len64, ~w
+  %~w_cap = select i1 %~w_over, i64 ~w, i64 %~w_len64
+  br i1 %~w_null, label %~w_done, label %~w_copy
+
+~w_copy:
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %~w_dst, i8* %~w_ptr, i64 %~w_cap, i1 false)
+  br label %~w_done
+
+~w_done:',
+        [Base, Base,
+         Base, Base, Width,
+         Base, Base, Width, Base,
+         Base, Base, Base,
+         Base, Base, Base, Base, Base,
+         Base]),
+    Lines = [SliceIR, Dst, Zero, Guard].
+plawk_writebin_slot_lines(i64, Field, FieldSeparator, Base, BasePtr, Offset,
+        Lines, GParts) :-
+    !,
+    plawk_i64_expr_ir(Field, FieldSeparator, Base, Base, ValueIR,
+        GParts, SetupParts),
+    plawk_writebin_numeric_store_lines(i64, ValueIR, Base, BasePtr, Offset,
+        StoreLines),
+    append(SetupParts, StoreLines, Lines).
+plawk_writebin_slot_lines(f64, Field, FieldSeparator, Base, BasePtr, Offset,
+        Lines, GParts) :-
+    plawk_writebin_f64_value_ir(Field, FieldSeparator, Base, ValueIR,
+        GParts, SetupParts),
+    plawk_writebin_numeric_store_lines(double, ValueIR, Base, BasePtr, Offset,
+        StoreLines),
+    append(SetupParts, StoreLines, Lines).
+
+plawk_writebin_numeric_store_lines(LLVMType, ValueIR, Base, BasePtr, Offset,
+        [Gep, Cast, Store]) :-
+    format(atom(Gep),
+        '  %~w_fp = getelementptr i8, i8* ~w, i64 ~w', [Base, BasePtr, Offset]),
+    format(atom(Cast),
+        '  %~w_tp = bitcast i8* %~w_fp to ~w*', [Base, Base, LLVMType]),
+    format(atom(Store),
+        '  store ~w ~w, ~w* %~w_tp, align 1',
+        [LLVMType, ValueIR, LLVMType, Base]).
 
 plawk_writebin_f64_value_ir(Field, FieldSeparator, Base, ValueIR,
         GParts, SetupParts) :-
@@ -2463,6 +2732,12 @@ plawk_end_scalar_operand_expr(int(Value)) :-
 plawk_end_scalar_operand_expr(var(Name)) :-
     atom(Name).
 plawk_end_scalar_operand_expr(special('NR')).
+% Float literals make the whole END expression double-typed (%g print,
+% IEEE fdiv), as does reading a double slot.
+plawk_end_scalar_operand_expr(float_const(Mantissa, Denominator)) :-
+    integer(Mantissa),
+    integer(Denominator),
+    Denominator > 0.
 plawk_end_scalar_operand_expr(Expr) :-
     plawk_end_scalar_expr(Expr).
 
@@ -2502,10 +2777,14 @@ plawk_substitute_scalar_reads(Expr, _Slots, _Values, Expr).
 %  END-position substitution: var(Name) becomes the final slot value and
 %  NR becomes %plawk_nr, the loop-head record phi, which dominates
 %  end_print via close_stream / break_close_stream.
-plawk_substitute_end_reads(var(Name), StatePlan, ssa(Value)) :-
+plawk_substitute_end_reads(var(Name), StatePlan, Substituted) :-
     !,
-    plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex),
-    format(atom(Value), '%final_slot_~w', [SlotIndex]).
+    plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
+    format(atom(Value), '%final_slot_~w', [SlotIndex]),
+    ( Slot = scalar_double(_Name)
+    -> Substituted = ssa_f64(Value)
+    ;  Substituted = ssa(Value)
+    ).
 plawk_substitute_end_reads(special('NR'), _StatePlan, ssa('%plawk_nr')) :-
     !.
 plawk_substitute_end_reads(Expr0, StatePlan, Expr) :-
@@ -3288,11 +3567,25 @@ plawk_end_nr_print_lines(PrintIndex) -->
 plawk_end_expr_print_lines(Expr, StatePlan, PrintIndex) -->
     { plawk_substitute_end_reads(Expr, StatePlan, SubstitutedExpr),
       format(atom(Base), 'plawk_end_expr_~w', [PrintIndex]),
-      plawk_i64_expr_ir(SubstitutedExpr, 32, Base, Base, ValueIR, [], SetupParts),
       format(atom(FmtVar), 'end_expr_fmt_~w', [PrintIndex]),
-      format(atom(PrintVar), 'printed_end_expr_~w', [PrintIndex]),
-      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
-          [FmtPtr, PrintCall]),
+      ( plawk_expr_is_double(SubstitutedExpr)
+      -> % A double-typed END expression (float literal leaf or a read of
+         % a double slot): whole tree promotes to double, prints as %g,
+         % and division is IEEE fdiv rather than guarded sdiv.
+         plawk_f64_expr_ir(SubstitutedExpr, 32, Base, Base, ValueIR,
+             [], SetupParts),
+         format(atom(FmtPtr),
+             '  %~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
+             [FmtVar]),
+         format(atom(PrintCall),
+             '  %printed_end_expr_f64_~w = call i32 (i8*, ...) @printf(i8* %~w, double ~w)',
+             [PrintIndex, FmtVar, ValueIR])
+      ;  plawk_i64_expr_ir(SubstitutedExpr, 32, Base, Base, ValueIR,
+             [], SetupParts),
+         format(atom(PrintVar), 'printed_end_expr_~w', [PrintIndex]),
+         llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
+             ValueIR, [FmtPtr, PrintCall])
+      ),
       append(SetupParts, [FmtPtr, PrintCall], Lines)
     },
     plawk_emit_lines(Lines).
