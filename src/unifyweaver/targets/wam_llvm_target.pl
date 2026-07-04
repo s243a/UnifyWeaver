@@ -65,7 +65,11 @@
     llvm_emit_stream_driver_ir/3,        % +InputPath, +DriverBlocks, -DriverIR
     llvm_emit_binary_stream_driver_ir/4, % +InputPath, +RecordSize, +DriverBlocks, -DriverIR
     llvm_emit_varlen_stream_driver_ir/5, % +InputPath, +BufSize, +ReadIR, +DriverBlocks, -DriverIR
-    llvm_emit_ascii_case_slice_print/5   % +Mode, +PtrIR, +LenIR, +PrintBase, -CallIR
+    llvm_emit_ascii_case_slice_print/5,  % +Mode, +PtrIR, +LenIR, +PrintBase, -CallIR
+    % Phase 5 (JIT): runtime-loadable WAM objects (.wamo)
+    write_wam_object/3,                  % +Predicates, +Options, +OutFile
+    wam_object_encode/3,                 % +Predicates, +Options, -Text (in-memory .wamo bytes)
+    wam_object_support_ir/1              % -IR (loader + call primitive; append to a host module)
 ]).
 
 :- use_module(library(lists)).
@@ -1335,7 +1339,16 @@ write_wam_llvm_project_(Predicates, Options, OutputFile) :-
     % predicates section so they are at module scope before any use.
     atomic_list_concat([ForeignGlobals, '\n', FunctorGlobals, '\n',
         EmptyListGlobal, '\n', AtomStringGlobals, '\n\n', NativeCode],
-        FinalNativeCode),
+        FinalNativeCode0),
+    % Phase 5 (JIT): append the .wamo loader + object-call primitive when
+    % requested. It references only runtime helpers already in this module
+    % plus libc open/read/close, so it can ride any host module.
+    (   option(emit_wamo_loader(true), Options)
+    ->  wam_object_support_ir(WamoLoaderIR),
+        atomic_list_concat([FinalNativeCode0, '\n\n', WamoLoaderIR],
+            FinalNativeCode)
+    ;   FinalNativeCode = FinalNativeCode0
+    ),
 
     % Generate external declarations (native vs WASM).
     generate_external_declarations(Triple, ExternalDecls),
@@ -19915,3 +19928,695 @@ build_llvm_arg_setup(Arity, Setup) :-
             [RegIdx, I])
     ), Indices, Parts),
     atomic_list_concat(Parts, '\n', Setup).
+
+% ============================================================================
+% PHASE 5 (JIT): Runtime-loadable WAM objects (.wamo)
+% ============================================================================
+%
+% A .wamo object is a self-contained, position-independent WAM program that
+% a host binary can load at RUNTIME and execute on the shared WAM runtime.
+% The host is any module produced by write_wam_llvm_project/3 with the
+% wam_object_support_ir/1 loader appended (option emit_wamo_loader(true)).
+% This is UnifyWeaver's JIT slice-1: grammars compiled ahead of time and
+% swapped in without recompiling the host.
+%
+% Format -- a whitespace-separated token stream. Strings are length-prefixed
+% ("<bytelen> <raw bytes>") so the native loader needs no escaping:
+%
+%     WAMO\n
+%     <version=1>
+%     <entry-label-index>
+%     <atom-count N>      then N length-prefixed strings
+%     <functor-count M>   then M length-prefixed strings
+%     <label-count L>     then L ints (PC per label; index = position)
+%     <code-count C>      then C * 4 ints (tag op1 op2 reloc)
+%
+% Relocation classes (reloc field, per instruction):
+%     0 none     - op1/op2 verbatim
+%     1 atom     - op1 is an index into the atom table; the loader re-interns
+%                  atoms[op1] via @wam_intern_atom (which copies the string)
+%                  and writes the runtime atom id back into op1
+%     2 functor  - op1 is an index into the functor table; the loader makes
+%                  ONE malloc'd NUL-terminated copy per functor and writes its
+%                  pointer into op1. Pointer identity within the object keeps
+%                  get/put_structure unification correct (functor comparison
+%                  is by pointer); arithmetic is content-based so the copy is
+%                  also fine for `is`/comparison operators.
+%
+% call/execute/try_me_else/retry_me_else operands are indexes into the
+% object's OWN labels array -- @wam_label_pc reads the VM's installed labels
+% array, so they are already self-relative. builtin_call ids are host-stable
+% per UnifyWeaver version. Float constants (tag 2), switch-on-constant tables
+% and call/N meta-calls are outside slice 1 and rejected at write time.
+
+%% write_wam_object(+Predicates, +Options, +OutFile) is det.
+%
+%  Compile Predicates (plus their same-module helper closure) to a .wamo
+%  object and write it to OutFile. Options:
+%    wamo_entry(Pred/Arity) - entry predicate (default: first of Predicates)
+%  Throws error(wamo_unsupported(_), _) if any instruction is outside the
+%  loadable subset, error(wamo_entry_not_found(_), _) if the entry label
+%  is missing, or error(wamo_uncompilable(_), _) on a WAM compile failure.
+write_wam_object(Predicates, Options, OutFile) :-
+    wam_object_encode(Predicates, Options, Codes),
+    setup_call_cleanup(
+        open(OutFile, write, S, [encoding(octet)]),
+        format(S, "~s", [Codes]),
+        close(S)).
+
+%% wam_object_encode(+Predicates, +Options, -Codes) is det.
+%
+%  Produce the .wamo byte stream (a list of 0..255 codes) in memory.
+wam_object_encode(Predicates, Options, Codes) :-
+    expand_wam_llvm_project_predicates(Predicates, Options, Expanded),
+    wamo_classify(Expanded, Options, 0, Records),
+    build_merged_labels(Records, NamePCPairs, LabelMap),
+    wamo_entry_index(Predicates, Options, LabelMap, EntryIndex),
+    wamo_all_instr_parts(Records, AllParts),
+    foldl(wamo_encode_step(LabelMap), AllParts,
+          ws([], tab([], 0), tab([], 0)),
+          ws(RevEnc, ATab, FTab)),
+    reverse(RevEnc, EncInstrs),
+    wamo_table_list(ATab, Atoms),
+    wamo_table_list(FTab, Functors),
+    findall(PC, member(_-PC, NamePCPairs), PCs),
+    wamo_serialize(EntryIndex, Atoms, Functors, PCs, EncInstrs, Codes).
+
+%% wamo_classify(+Preds, +Options, +StartPC, -Records)
+%
+%  Like pass1_classify_predicates/4 but WAM-only: every predicate is
+%  compiled to bytecode (no native lowering, no foreign kernels) so the
+%  object carries real instructions. StartPC threads through all records.
+wamo_classify([], _, _, []).
+wamo_classify([PI|Rest], Options, StartPC, [Rec|Recs]) :-
+    ( PI = M:P/A -> true ; PI = P/A, M = user ),
+    (   catch(wam_target:compile_predicate_to_wam(M:P/A, Options, WamRaw), _, fail)
+    ->  parse_wam_to_pass1(P/A, WamRaw, A, StartPC, Rec, NumInstrs),
+        NextPC is StartPC + NumInstrs
+    ;   throw(error(wamo_uncompilable(M:P/A),
+            context(write_wam_object,
+                'predicate has no WAM-compilable clauses')))
+    ),
+    wamo_classify(Rest, Options, NextPC, Recs).
+
+%% wamo_entry_index(+Predicates, +Options, +LabelMap, -Index)
+wamo_entry_index(Predicates, Options, LabelMap, Index) :-
+    (   option(wamo_entry(EP/EA), Options)
+    ->  P = EP, A = EA
+    ;   Predicates = [First|_],
+        ( First = _:P0/A0 -> P = P0, A = A0
+        ; First = P0/A0   -> P = P0, A = A0 )
+    ),
+    format(string(Name), "~w/~w", [P, A]),
+    (   memberchk(Name-Index, LabelMap)
+    ->  true
+    ;   throw(error(wamo_entry_not_found(Name),
+            context(write_wam_object,
+                'entry predicate has no label in the merged object')))
+    ).
+
+%% wamo_all_instr_parts(+Records, -AllParts)
+%  Concatenate every record's parsed instruction Parts in emission order.
+wamo_all_instr_parts([], []).
+wamo_all_instr_parts([Rec|Rest], All) :-
+    ( Rec = wam(_, _, RawInstrs, _, _, _) -> true ; RawInstrs = [] ),
+    wamo_all_instr_parts(Rest, RestAll),
+    append(RawInstrs, RestAll, All).
+
+% --- object-local string interning tables (string -> dense index) ---------
+
+tab_intern(Str, tab(P0, N0), Idx, tab(P1, N1)) :-
+    (   wamo_tab_lookup(P0, Str, I)
+    ->  Idx = I, P1 = P0, N1 = N0
+    ;   Idx = N0, N1 is N0 + 1, P1 = [N0-Str | P0]
+    ).
+
+wamo_tab_lookup([I-S | _], Str, I) :- S == Str, !.
+wamo_tab_lookup([_ | T], Str, I) :- wamo_tab_lookup(T, Str, I).
+
+wamo_table_list(tab(Pairs, _), List) :-
+    keysort(Pairs, Sorted),
+    findall(S, member(_-S, Sorted), List).
+
+% --- per-instruction encoding ---------------------------------------------
+
+wamo_encode_step(LabelMap, Parts, ws(E0, A0, F0), ws([Enc|E0], A1, F1)) :-
+    wamo_enc(Parts, LabelMap, A0, A1, F0, F1, Enc).
+
+%% wamo_enc(+Parts, +LabelMap, +A0, -A1, +F0, -F1, -enc(Tag,Op1,Op2,Reloc))
+%  Encode one parsed WAM instruction into the object's triple form,
+%  threading the atom (A) and functor (F) interning tables.
+
+% constants
+wamo_enc(["get_constant", C, Ai], _, A0, A1, F, F, enc(0, Op1, Op2, R)) :- !,
+    clean_comma(C, CC), clean_comma(Ai, CAi),
+    atom_string(CAiA, CAi), reg_name_to_index(CAiA, Reg),
+    wamo_const(CC, A0, A1, Op1, Tag, R),
+    Op2 is (Tag << 16) \/ Reg.
+wamo_enc(["unify_constant", C], _, A0, A1, F, F, enc(7, Op1, Op2, R)) :- !,
+    clean_comma(C, CC),
+    wamo_const(CC, A0, A1, Op1, Tag, R),
+    Op2 is Tag << 16.
+wamo_enc(["put_constant", C, Ai], _, A0, A1, F, F, enc(8, Op1, Op2, R)) :- !,
+    clean_comma(C, CC), clean_comma(Ai, CAi),
+    atom_string(CAiA, CAi), reg_name_to_index(CAiA, Reg),
+    wamo_const(CC, A0, A1, Op1, Tag, R),
+    Op2 is (Tag << 16) \/ Reg.
+wamo_enc(["set_constant", C], _, A0, A1, F, F, enc(15, Op1, Tag, R)) :- !,
+    clean_comma(C, CC),
+    wamo_const(CC, A0, A1, Op1, Tag, R).
+
+% structures
+wamo_enc(["get_structure", FN, Ai], _, A, A, F0, F1, enc(3, Idx, Op2, functor)) :- !,
+    wamo_structure(FN, Ai, F0, F1, Idx, Op2).
+wamo_enc(["put_structure", FN, Ai], _, A, A, F0, F1, enc(11, Idx, Op2, functor)) :- !,
+    wamo_structure(FN, Ai, F0, F1, Idx, Op2).
+
+% two-register
+wamo_enc(["get_variable", Xn, Ai], _, A, A, F, F, enc(1, X, Y, none)) :- !, wamo_reg2(Xn, Ai, X, Y).
+wamo_enc(["get_value",    Xn, Ai], _, A, A, F, F, enc(2, X, Y, none)) :- !, wamo_reg2(Xn, Ai, X, Y).
+wamo_enc(["put_variable", Xn, Ai], _, A, A, F, F, enc(9, X, Y, none)) :- !, wamo_reg2(Xn, Ai, X, Y).
+wamo_enc(["put_value",    Xn, Ai], _, A, A, F, F, enc(10, X, Y, none)) :- !, wamo_reg2(Xn, Ai, X, Y).
+
+% one-register
+wamo_enc(["get_list", Ai], _, A, A, F, F, enc(4, R, 0, none)) :- !, wamo_reg1(Ai, R).
+wamo_enc(["put_list", Ai], _, A, A, F, F, enc(12, R, 0, none)) :- !, wamo_reg1(Ai, R).
+wamo_enc(["unify_variable", Xn], _, A, A, F, F, enc(5, R, 0, none)) :- !, wamo_reg1(Xn, R).
+wamo_enc(["unify_value", Xn], _, A, A, F, F, enc(6, R, 0, none)) :- !, wamo_reg1(Xn, R).
+wamo_enc(["set_variable", Xn], _, A, A, F, F, enc(13, R, 0, none)) :- !, wamo_reg1(Xn, R).
+wamo_enc(["set_value", Xn], _, A, A, F, F, enc(14, R, 0, none)) :- !, wamo_reg1(Xn, R).
+wamo_enc(["get_level", Yn], _, A, A, F, F, enc(33, R, 0, none)) :- !, wamo_reg1(Yn, R).
+wamo_enc(["cut", Yn], _, A, A, F, F, enc(34, R, 0, none)) :- !, wamo_reg1(Yn, R).
+
+% nullary
+wamo_enc(["allocate"],   _, A, A, F, F, enc(16, 0, 0, none)) :- !.
+wamo_enc(["deallocate"], _, A, A, F, F, enc(17, 0, 0, none)) :- !.
+wamo_enc(["proceed"],    _, A, A, F, F, enc(20, 0, 0, none)) :- !.
+wamo_enc(["trust_me"],   _, A, A, F, F, enc(24, 0, 0, none)) :- !.
+wamo_enc(["cut_ite"],    _, A, A, F, F, enc(31, 0, 0, none)) :- !.
+
+% builtins (ids host-stable per UnifyWeaver version)
+wamo_enc(["builtin_call", Op, N], _, A, A, F, F, enc(21, Id, Num, none)) :- !,
+    clean_comma(Op, COp), clean_comma(N, CN),
+    ( number_string(Num, CN) -> true ; Num = 0 ),
+    ( atom(COp) -> OpA = COp ; atom_string(OpA, COp) ),
+    builtin_op_to_id(OpA, Id).
+
+% control-flow with label operands (self-relative indexes into the object)
+wamo_enc(["call", P, N], LabelMap, A, A, F, F, enc(18, Idx, Arity, none)) :- !,
+    clean_comma(P, CP), clean_comma(N, CN),
+    ( number_string(Arity, CN) -> true ; Arity = 0 ),
+    wamo_label(CP, LabelMap, Idx).
+wamo_enc(["execute", P], LabelMap, A, A, F, F, enc(19, Idx, 0, none)) :- !,
+    clean_comma(P, CP),
+    wamo_label(CP, LabelMap, Idx).
+wamo_enc(["try_me_else", L], LabelMap, A, A, F, F, enc(22, Idx, 0, none)) :- !,
+    clean_comma(L, CL), lookup_label_index(CL, LabelMap, Idx).
+wamo_enc(["retry_me_else", L], LabelMap, A, A, F, F, enc(23, Idx, 0, none)) :- !,
+    clean_comma(L, CL), lookup_label_index(CL, LabelMap, Idx).
+
+% type-based dispatch: nop fallthrough (tag 26), matching the interpreter's
+% runtime semantics. The try_me_else / retry_me_else chain still runs, so
+% the predicate is correct (just unindexed). No switch table is needed.
+wamo_enc(["switch_on_term" | _],      _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+wamo_enc(["switch_on_term_a2" | _],   _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+wamo_enc(["switch_on_structure" | _], _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+wamo_enc(["try" | _],   _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+wamo_enc(["retry" | _], _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+wamo_enc(["trust" | _], _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+
+% everything else is outside the slice-1 loadable subset
+wamo_enc(["switch_on_constant" | _], _, _, _, _, _, _) :-
+    throw(error(wamo_unsupported(switch_on_constant),
+        context(write_wam_object,
+            'first-argument constant indexing needs a switch table (not in slice 1)'))).
+wamo_enc(["switch_on_constant_a2" | _], _, _, _, _, _, _) :-
+    throw(error(wamo_unsupported(switch_on_constant_a2),
+        context(write_wam_object,
+            'second-argument constant indexing needs a switch table (not in slice 1)'))).
+wamo_enc(Parts, _, _, _, _, _, _) :-
+    throw(error(wamo_unsupported(instruction(Parts)),
+        context(write_wam_object,
+            'instruction is outside the loadable WAM object subset'))).
+
+%% wamo_const(+Str, +A0, -A1, -Op1, -Tag, -Reloc)
+%  Encode a constant operand. Integers embed directly (Tag=1, no reloc);
+%  atoms intern into the object atom table (Tag=0, reloc=atom, Op1=index);
+%  floats are rejected (slice 1).
+wamo_const(CC, A0, A1, Op1, Tag, R) :-
+    (   number_string(N, CC)
+    ->  (   integer(N)
+        ->  Op1 = N, Tag = 1, R = none, A1 = A0
+        ;   throw(error(wamo_unsupported(float_constant(CC)),
+                context(write_wam_object,
+                    'float constants are not in slice 1')))
+        )
+    ;   strip_quoted_atom(CC, Inner),
+        wamo_to_string(Inner, InnerStr),
+        tab_intern(InnerStr, A0, Idx, A1),
+        Op1 = Idx, Tag = 0, R = atom
+    ).
+
+%% wamo_structure(+FN, +Ai, +F0, -F1, -FunctorIdx, -Op2)
+wamo_structure(FN, Ai, F0, F1, Idx, Op2) :-
+    clean_comma(FN, CFN), clean_comma(Ai, CAi),
+    atom_string(CAiA, CAi), reg_name_to_index(CAiA, Reg),
+    atom_string(CFN, CFNStr),
+    split_functor_arity(CFNStr, NameStr0, Arity),
+    wamo_to_string(NameStr0, NameStr),
+    tab_intern(NameStr, F0, Idx, F1),
+    Op2 is (Arity << 16) \/ Reg.
+
+wamo_to_string(X, S) :- ( string(X) -> S = X ; atom_string(X, S) ).
+
+wamo_reg1(S, R) :-
+    clean_comma(S, CS), atom_string(CSA, CS), reg_name_to_index(CSA, R).
+wamo_reg2(Xn, Ai, X, Y) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    atom_string(CXnA, CXn), atom_string(CAiA, CAi),
+    reg_name_to_index(CXnA, X), reg_name_to_index(CAiA, Y).
+
+%% wamo_label(+P, +LabelMap, -Idx)
+%  Resolve a call/execute target. call/N meta-calls are outside slice 1.
+wamo_label(CP, _, _) :-
+    wam_meta_call_label(CP), !,
+    throw(error(wamo_unsupported(meta_call(CP)),
+        context(write_wam_object,
+            'call/N meta-calls need the apply machinery (not in slice 1)'))).
+wamo_label(CP, LabelMap, Idx) :-
+    lookup_label_index(CP, LabelMap, Idx).
+
+% --- serialization to the .wamo byte stream --------------------------------
+
+wamo_reloc_id(none, 0).
+wamo_reloc_id(atom, 1).
+wamo_reloc_id(functor, 2).
+
+wamo_serialize(EntryIndex, Atoms, Functors, PCs, EncInstrs, Codes) :-
+    length(Atoms, NA), length(Functors, NF),
+    length(PCs, NL), length(EncInstrs, NC),
+    format(codes(Head), "WAMO\n1\n~w\n~w\n", [EntryIndex, NA]),
+    maplist(wamo_string_codes, Atoms, AtomChunks),
+    format(codes(FHdr), "~w\n", [NF]),
+    maplist(wamo_string_codes, Functors, FunChunks),
+    format(codes(LHdr), "~w\n", [NL]),
+    maplist([PC, Cs]>>format(codes(Cs), "~w\n", [PC]), PCs, PCChunks),
+    format(codes(CHdr), "~w\n", [NC]),
+    maplist(wamo_instr_codes, EncInstrs, InstrChunks),
+    append([[Head], AtomChunks, [FHdr], FunChunks, [LHdr], PCChunks,
+            [CHdr], InstrChunks], Lists),
+    append(Lists, Codes).
+
+wamo_instr_codes(enc(T, O1, O2, R), Cs) :-
+    wamo_reloc_id(R, RI),
+    format(codes(Cs), "~w ~w ~w ~w\n", [T, O1, O2, RI]).
+
+%% wamo_string_codes(+Text, -Codes)
+%  Emit a length-prefixed byte string: "<bytelen> <utf8 bytes>\n".
+wamo_string_codes(Text, Codes) :-
+    ( atom(Text) -> atom_codes(Text, Cps)
+    ; string(Text) -> string_codes(Text, Cps)
+    ; Cps = Text
+    ),
+    wamo_utf8_bytes(Cps, Bytes),
+    length(Bytes, Len),
+    format(codes(Hdr), "~w ", [Len]),
+    append(Hdr, Bytes, C0),
+    append(C0, [0'\n], Codes).
+
+%% wamo_utf8_bytes(+CodePoints, -Bytes)
+%  Encode Unicode code points to UTF-8 byte values (all 0..255) so the
+%  object stream is byte-exact regardless of the source stream encoding.
+wamo_utf8_bytes([], []).
+wamo_utf8_bytes([C|Cs], Bytes) :-
+    (   C < 0x80
+    ->  B = [C]
+    ;   C < 0x800
+    ->  B0 is 0xC0 \/ (C >> 6),
+        B1 is 0x80 \/ (C /\ 0x3F),
+        B = [B0, B1]
+    ;   C < 0x10000
+    ->  B0 is 0xE0 \/ (C >> 12),
+        B1 is 0x80 \/ ((C >> 6) /\ 0x3F),
+        B2 is 0x80 \/ (C /\ 0x3F),
+        B = [B0, B1, B2]
+    ;   B0 is 0xF0 \/ (C >> 18),
+        B1 is 0x80 \/ ((C >> 12) /\ 0x3F),
+        B2 is 0x80 \/ ((C >> 6) /\ 0x3F),
+        B3 is 0x80 \/ (C /\ 0x3F),
+        B = [B0, B1, B2, B3]
+    ),
+    wamo_utf8_bytes(Cs, Rest),
+    append(B, Rest, Bytes).
+
+% --- native loader + call primitive ---------------------------------------
+
+%% wam_object_support_ir(-IR) is det.
+%
+%  The runtime support a host module needs to load and run .wamo objects:
+%    @wamo_next_int      - parse the next integer from a byte buffer
+%    @wam_object_load    - read a .wamo file, relocate, build a %WamState
+%    @wam_object_call_i64 - call the object's entry with N %Value args and
+%                           read back an Integer result ({value, ok})
+%
+%  Emitted into a host module when write_wam_llvm_project/3 is called with
+%  emit_wamo_loader(true). References only runtime helpers already present
+%  in the module (@wam_intern_atom, @wam_state_new, @run_loop, ...) plus
+%  libc @open/@read/@close/@malloc/@realloc/@free (already declared).
+wam_object_support_ir(
+'; --- .wamo loader (Phase 5 JIT slice 1) ---
+
+; Parse the next base-10 integer (optional leading -) from %buf, skipping
+; leading whitespace. Returns { value, cursor-past-digits }.
+define { i64, i64 } @wamo_next_int(i8* %buf, i64 %size, i64 %cur0) {
+entry:
+  br label %skip
+skip:
+  %c = phi i64 [ %cur0, %entry ], [ %c1, %skip_step ]
+  %at_end = icmp uge i64 %c, %size
+  br i1 %at_end, label %done_zero, label %look
+look:
+  %p = getelementptr i8, i8* %buf, i64 %c
+  %ch = load i8, i8* %p
+  %is_sp = icmp eq i8 %ch, 32
+  %is_nl = icmp eq i8 %ch, 10
+  %is_cr = icmp eq i8 %ch, 13
+  %is_tab = icmp eq i8 %ch, 9
+  %w1 = or i1 %is_sp, %is_nl
+  %w2 = or i1 %is_cr, %is_tab
+  %ws = or i1 %w1, %w2
+  br i1 %ws, label %skip_step, label %num_init
+skip_step:
+  %c1 = add i64 %c, 1
+  br label %skip
+num_init:
+  %np = getelementptr i8, i8* %buf, i64 %c
+  %nch = load i8, i8* %np
+  %isneg = icmp eq i8 %nch, 45
+  %cplus1 = add i64 %c, 1
+  %start = select i1 %isneg, i64 %cplus1, i64 %c
+  br label %dloop
+dloop:
+  %dc = phi i64 [ %start, %num_init ], [ %dc1, %dstep ]
+  %acc = phi i64 [ 0, %num_init ], [ %acc1, %dstep ]
+  %dend = icmp uge i64 %dc, %size
+  br i1 %dend, label %finish, label %dcheck
+dcheck:
+  %dp = getelementptr i8, i8* %buf, i64 %dc
+  %dch = load i8, i8* %dp
+  %ge0 = icmp uge i8 %dch, 48
+  %le9 = icmp ule i8 %dch, 57
+  %isd = and i1 %ge0, %le9
+  br i1 %isd, label %dstep, label %finish
+dstep:
+  %digit = sub i8 %dch, 48
+  %digit64 = zext i8 %digit to i64
+  %acc10 = mul i64 %acc, 10
+  %acc1 = add i64 %acc10, %digit64
+  %dc1 = add i64 %dc, 1
+  br label %dloop
+finish:
+  %neg_val = sub i64 0, %acc
+  %val = select i1 %isneg, i64 %neg_val, i64 %acc
+  %r0 = insertvalue { i64, i64 } undef, i64 %val, 0
+  %r1 = insertvalue { i64, i64 } %r0, i64 %dc, 1
+  ret { i64, i64 } %r1
+done_zero:
+  %z0 = insertvalue { i64, i64 } undef, i64 0, 0
+  %z1 = insertvalue { i64, i64 } %z0, i64 %c, 1
+  ret { i64, i64 } %z1
+}
+
+; Load a .wamo object. Returns { vm, entry_pc }; vm is null on any failure
+; (open, bad magic). The code + label arrays are malloc''d and owned by the
+; returned VM for its lifetime; functor string copies live as long as the
+; code array references them.
+define { %WamState*, i32 } @wam_object_load(i8* %path) {
+entry:
+  %fd = call i32 @open(i8* %path, i32 0, i32 0)
+  %fd_bad = icmp slt i32 %fd, 0
+  br i1 %fd_bad, label %fail, label %read_init
+read_init:
+  %buf0 = call i8* @malloc(i64 65536)
+  br label %read_loop
+read_loop:
+  %buf = phi i8* [ %buf0, %read_init ], [ %bufc, %after_read ]
+  %cap = phi i64 [ 65536, %read_init ], [ %capc, %after_read ]
+  %total = phi i64 [ 0, %read_init ], [ %total3, %after_read ]
+  %free = sub i64 %cap, %total
+  %low = icmp ult i64 %free, 32768
+  br i1 %low, label %do_grow, label %do_read
+do_grow:
+  %cap.d = mul i64 %cap, 2
+  %buf.d = call i8* @realloc(i8* %buf, i64 %cap.d)
+  br label %do_read
+do_read:
+  %bufc = phi i8* [ %buf.d, %do_grow ], [ %buf, %read_loop ]
+  %capc = phi i64 [ %cap.d, %do_grow ], [ %cap, %read_loop ]
+  %freec = sub i64 %capc, %total
+  %dst = getelementptr i8, i8* %bufc, i64 %total
+  %n = call i64 @read(i32 %fd, i8* %dst, i64 %freec)
+  %eof = icmp sle i64 %n, 0
+  br i1 %eof, label %read_done, label %after_read
+after_read:
+  %total3 = add i64 %total, %n
+  br label %read_loop
+read_done:
+  %close_ignore = call i32 @close(i32 %fd)
+  ; magic check: need >= 5 bytes and buf[0..3] == "WAMO"
+  %too_small = icmp ult i64 %total, 5
+  br i1 %too_small, label %fail_free, label %magic
+magic:
+  %m0p = getelementptr i8, i8* %bufc, i64 0
+  %m0 = load i8, i8* %m0p
+  %m1p = getelementptr i8, i8* %bufc, i64 1
+  %m1 = load i8, i8* %m1p
+  %m2p = getelementptr i8, i8* %bufc, i64 2
+  %m2 = load i8, i8* %m2p
+  %m3p = getelementptr i8, i8* %bufc, i64 3
+  %m3 = load i8, i8* %m3p
+  %ok0 = icmp eq i8 %m0, 87
+  %ok1 = icmp eq i8 %m1, 65
+  %ok2 = icmp eq i8 %m2, 77
+  %ok3 = icmp eq i8 %m3, 79
+  %okA = and i1 %ok0, %ok1
+  %okB = and i1 %ok2, %ok3
+  %magic_ok = and i1 %okA, %okB
+  br i1 %magic_ok, label %parse, label %fail_free
+parse:
+  ; version
+  %pv = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 4)
+  %cur_v = extractvalue { i64, i64 } %pv, 1
+  ; entry index
+  %pe = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %cur_v)
+  %entry_idx64 = extractvalue { i64, i64 } %pe, 0
+  %cur_e = extractvalue { i64, i64 } %pe, 1
+  ; atom count
+  %pa = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %cur_e)
+  %natoms = extractvalue { i64, i64 } %pa, 0
+  %cur_a0 = extractvalue { i64, i64 } %pa, 1
+  %atom_bytes = mul i64 %natoms, 8
+  %atom_mem = call i8* @malloc(i64 %atom_bytes)
+  %atomIds = bitcast i8* %atom_mem to i64*
+  br label %aloop
+aloop:
+  %ai = phi i64 [ 0, %parse ], [ %ai1, %astep ]
+  %acur = phi i64 [ %cur_a0, %parse ], [ %acur2, %astep ]
+  %adone = icmp uge i64 %ai, %natoms
+  br i1 %adone, label %fdr_init, label %astep
+astep:
+  %alen_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %acur)
+  %alen = extractvalue { i64, i64 } %alen_r, 0
+  %acur_d = extractvalue { i64, i64 } %alen_r, 1
+  %astr_off = add i64 %acur_d, 1
+  %astr = getelementptr i8, i8* %bufc, i64 %astr_off
+  %aid = call i64 @wam_intern_atom(i8* %astr, i64 %alen)
+  %aslot = getelementptr i64, i64* %atomIds, i64 %ai
+  store i64 %aid, i64* %aslot
+  %acur2 = add i64 %astr_off, %alen
+  %ai1 = add i64 %ai, 1
+  br label %aloop
+fdr_init:
+  ; functor count
+  %pf = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %acur)
+  %nfun = extractvalue { i64, i64 } %pf, 0
+  %cur_f0 = extractvalue { i64, i64 } %pf, 1
+  %fun_bytes = mul i64 %nfun, 8
+  %fun_mem = call i8* @malloc(i64 %fun_bytes)
+  %funPtrs = bitcast i8* %fun_mem to i8**
+  br label %floop
+floop:
+  %fi = phi i64 [ 0, %fdr_init ], [ %fi1, %fstep ]
+  %fcur = phi i64 [ %cur_f0, %fdr_init ], [ %fcur2, %fstep ]
+  %fdone = icmp uge i64 %fi, %nfun
+  br i1 %fdone, label %lbl_init, label %fstep
+fstep:
+  %flen_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %fcur)
+  %flen = extractvalue { i64, i64 } %flen_r, 0
+  %fcur_d = extractvalue { i64, i64 } %flen_r, 1
+  %fstr_off = add i64 %fcur_d, 1
+  %fstr = getelementptr i8, i8* %bufc, i64 %fstr_off
+  %fcopy_sz = add i64 %flen, 1
+  %fcopy = call i8* @malloc(i64 %fcopy_sz)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fcopy, i8* %fstr, i64 %flen, i1 false)
+  %fnul = getelementptr i8, i8* %fcopy, i64 %flen
+  store i8 0, i8* %fnul
+  %fpslot = getelementptr i8*, i8** %funPtrs, i64 %fi
+  store i8* %fcopy, i8** %fpslot
+  %fcur2 = add i64 %fstr_off, %flen
+  %fi1 = add i64 %fi, 1
+  br label %floop
+lbl_init:
+  ; label count
+  %pl = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %fcur)
+  %nlbl = extractvalue { i64, i64 } %pl, 0
+  %cur_l0 = extractvalue { i64, i64 } %pl, 1
+  %lbl_bytes = mul i64 %nlbl, 4
+  %lbl_mem = call i8* @malloc(i64 %lbl_bytes)
+  %labels = bitcast i8* %lbl_mem to i32*
+  br label %lloop
+lloop:
+  %li = phi i64 [ 0, %lbl_init ], [ %li1, %lstep ]
+  %lcur = phi i64 [ %cur_l0, %lbl_init ], [ %lcur2, %lstep ]
+  %ldone = icmp uge i64 %li, %nlbl
+  br i1 %ldone, label %code_init, label %lstep
+lstep:
+  %lpc_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %lcur)
+  %lpc = extractvalue { i64, i64 } %lpc_r, 0
+  %lcur2 = extractvalue { i64, i64 } %lpc_r, 1
+  %lpc32 = trunc i64 %lpc to i32
+  %lslot = getelementptr i32, i32* %labels, i64 %li
+  store i32 %lpc32, i32* %lslot
+  %li1 = add i64 %li, 1
+  br label %lloop
+code_init:
+  ; code count
+  %pc_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %lcur)
+  %ncode = extractvalue { i64, i64 } %pc_r, 0
+  %cur_c0 = extractvalue { i64, i64 } %pc_r, 1
+  %instr_sz = ptrtoint %Instruction* getelementptr (%Instruction, %Instruction* null, i32 1) to i64
+  %code_bytes = mul i64 %ncode, %instr_sz
+  %code_mem = call i8* @malloc(i64 %code_bytes)
+  %code = bitcast i8* %code_mem to %Instruction*
+  br label %cloop
+cloop:
+  %ci = phi i64 [ 0, %code_init ], [ %ci1, %cstore ]
+  %ccur = phi i64 [ %cur_c0, %code_init ], [ %ccur4, %cstore ]
+  %cdone = icmp uge i64 %ci, %ncode
+  br i1 %cdone, label %build_vm, label %cstep
+cstep:
+  %tag_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %ccur)
+  %tag64 = extractvalue { i64, i64 } %tag_r, 0
+  %ccur1 = extractvalue { i64, i64 } %tag_r, 1
+  %op1_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %ccur1)
+  %op1 = extractvalue { i64, i64 } %op1_r, 0
+  %ccur2 = extractvalue { i64, i64 } %op1_r, 1
+  %op2_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %ccur2)
+  %op2 = extractvalue { i64, i64 } %op2_r, 0
+  %ccur3 = extractvalue { i64, i64 } %op2_r, 1
+  %rel_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %ccur3)
+  %reloc = extractvalue { i64, i64 } %rel_r, 0
+  %ccur4 = extractvalue { i64, i64 } %rel_r, 1
+  %is_atom = icmp eq i64 %reloc, 1
+  br i1 %is_atom, label %patch_atom, label %chk_functor
+patch_atom:
+  %ai_slot = getelementptr i64, i64* %atomIds, i64 %op1
+  %aid_p = load i64, i64* %ai_slot
+  br label %cstore
+chk_functor:
+  %is_fun = icmp eq i64 %reloc, 2
+  br i1 %is_fun, label %patch_fun, label %cstore
+patch_fun:
+  %fp_slot = getelementptr i8*, i8** %funPtrs, i64 %op1
+  %fp = load i8*, i8** %fp_slot
+  %fpi = ptrtoint i8* %fp to i64
+  br label %cstore
+cstore:
+  %op1_final = phi i64 [ %aid_p, %patch_atom ], [ %fpi, %patch_fun ], [ %op1, %chk_functor ]
+  %tag32 = trunc i64 %tag64 to i32
+  %ip = getelementptr %Instruction, %Instruction* %code, i64 %ci
+  %ip_tag = getelementptr %Instruction, %Instruction* %ip, i32 0, i32 0
+  store i32 %tag32, i32* %ip_tag
+  %ip_op1 = getelementptr %Instruction, %Instruction* %ip, i32 0, i32 1
+  store i64 %op1_final, i64* %ip_op1
+  %ip_op2 = getelementptr %Instruction, %Instruction* %ip, i32 0, i32 2
+  store i64 %op2, i64* %ip_op2
+  %ci1 = add i64 %ci, 1
+  br label %cloop
+build_vm:
+  ; entry pc = labels[entry_idx]
+  %eslot = getelementptr i32, i32* %labels, i64 %entry_idx64
+  %entry_pc = load i32, i32* %eslot
+  ; scratch buffers no longer needed (atom strings copied by intern; functor
+  ; string copies are referenced by %code, so only the pointer arrays free)
+  call void @free(i8* %bufc)
+  call void @free(i8* %atom_mem)
+  call void @free(i8* %fun_mem)
+  %ncode32 = trunc i64 %ncode to i32
+  %nlbl32 = trunc i64 %nlbl to i32
+  %vm = call %WamState* @wam_state_new(%Instruction* %code, i32 %ncode32, i32* %labels, i32 %nlbl32)
+  %ret0 = insertvalue { %WamState*, i32 } undef, %WamState* %vm, 0
+  %ret1 = insertvalue { %WamState*, i32 } %ret0, i32 %entry_pc, 1
+  ret { %WamState*, i32 } %ret1
+fail_free:
+  call void @free(i8* %bufc)
+  br label %fail
+fail:
+  %fnull = insertvalue { %WamState*, i32 } undef, %WamState* null, 0
+  %fret = insertvalue { %WamState*, i32 } %fnull, i32 0, 1
+  ret { %WamState*, i32 } %fret
+}
+
+; Call a loaded object''s entry predicate with %nargs %Value arguments (in
+; registers A0..A_{nargs-1}) and read back an Integer from register
+; %out_reg. Returns { value, ok }; ok=false on failure or non-integer.
+; Saves/restores the VM heap top and rewinds the arena so repeated calls
+; run in constant memory -- same discipline as the plawk foreign bridge.
+define { i64, i1 } @wam_object_call_i64(%WamState* %vm, i32 %entry_pc, i32 %nargs, %Value* %args, i32 %out_reg) {
+entry:
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+do_call:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs_saved = load i32, i32* %hs_ptr
+  %unb = call %Value @value_unbound(i8* null)
+  %out_addr = call i32 @wam_heap_push(%WamState* %vm, %Value %unb)
+  %out_ref = call %Value @value_ref(i32 %out_addr)
+  call void @wam_prepare_call(%WamState* %vm, i32 %entry_pc)
+  br label %argloop
+argloop:
+  %ai = phi i32 [ 0, %do_call ], [ %ai1, %argstep ]
+  %adone = icmp sge i32 %ai, %nargs
+  br i1 %adone, label %args_done, label %argstep
+argstep:
+  %aidx64 = sext i32 %ai to i64
+  %ap = getelementptr %Value, %Value* %args, i64 %aidx64
+  %av = load %Value, %Value* %ap
+  call void @wam_set_reg(%WamState* %vm, i32 %ai, %Value %av)
+  %ai1 = add i32 %ai, 1
+  br label %argloop
+args_done:
+  call void @wam_set_reg(%WamState* %vm, i32 %out_reg, %Value %out_ref)
+  %ok = call i1 @run_loop(%WamState* %vm)
+  br i1 %ok, label %read_out, label %rewind_fail
+read_out:
+  %out = call %Value @wam_deref_value(%WamState* %vm, %Value %out_ref)
+  %out_tag = extractvalue %Value %out, 0
+  %out_is_int = icmp eq i32 %out_tag, 1
+  br i1 %out_is_int, label %good, label %rewind_fail
+good:
+  %payload = extractvalue %Value %out, 1
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  %g0 = insertvalue { i64, i1 } undef, i64 %payload, 0
+  %g1 = insertvalue { i64, i1 } %g0, i1 true, 1
+  ret { i64, i1 } %g1
+rewind_fail:
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  br label %fail
+fail:
+  %f0 = insertvalue { i64, i1 } undef, i64 0, 0
+  %f1 = insertvalue { i64, i1 } %f0, i1 false, 1
+  ret { i64, i1 } %f1
+}').
