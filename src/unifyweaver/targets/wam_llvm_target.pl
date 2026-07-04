@@ -6067,6 +6067,7 @@ entry:
     i32 73, label %builtin_atomic_list_concat
     i32 74, label %builtin_atomic_list_concat3
     i32 75, label %builtin_char_type
+    i32 172, label %builtin_code_type
     i32 76, label %builtin_compare
     i32 77, label %builtin_must_be
     i32 78, label %builtin_write
@@ -14961,6 +14962,35 @@ alc3.s_b_bind:
   %alc3.s_b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %alc3.s_b_raw1, %Value %alc3.s_b_acc)
   ret i1 %alc3.s_b_ok
 
+builtin_code_type:
+  ; code_type(+Code, +Type) -- check mode only, ASCII semantics. A1 is
+  ; an Integer character code; A2 is the type atom. Joins char_type''s
+  ; classifier at ctp.dispatch (same type names, same class checks).
+  %cot.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %cot.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %cot.t1 = extractvalue %Value %cot.a1, 0
+  %cot.t2 = extractvalue %Value %cot.a2, 0
+  %cot.is_int1 = icmp eq i32 %cot.t1, 1
+  %cot.is_atom2 = icmp eq i32 %cot.t2, 0
+  %cot.both = and i1 %cot.is_int1, %cot.is_atom2
+  br i1 %cot.both, label %cot.range, label %cot.fail
+cot.fail:
+  ret i1 false
+cot.range:
+  %cot.code = extractvalue %Value %cot.a1, 1
+  %cot.ge0 = icmp sge i64 %cot.code, 0
+  %cot.le255 = icmp sle i64 %cot.code, 255
+  %cot.in_range = and i1 %cot.ge0, %cot.le255
+  br i1 %cot.in_range, label %cot.lookup, label %cot.fail
+cot.lookup:
+  %cot.aid2 = extractvalue %Value %cot.a2, 1
+  %cot.t_str = call i8* @wam_atom_to_string(i64 %cot.aid2)
+  %cot.t_null = icmp eq i8* %cot.t_str, null
+  br i1 %cot.t_null, label %cot.fail, label %cot.enter
+cot.enter:
+  %cot.byte = trunc i64 %cot.code to i8
+  br label %ctp.dispatch
+
 builtin_char_type:
   ; M58: char_type(+Char, +Type) -- check mode only. A1 is a single-
   ; char atom; A2 is the type atom (alpha, digit, upper, lower,
@@ -14997,118 +15027,120 @@ ctp.measure_c_next:
   %ctp.c1_zero = icmp eq i8 %ctp.c1, 0
   br i1 %ctp.c1_zero, label %ctp.dispatch, label %ctp.fail
 ctp.dispatch:
-  ; %ctp.c0 holds the character byte. Try each type name in order.
+  ; %ctp.cv holds the character byte. Try each type name in order.
+  %ctp.cv = phi i8 [ %ctp.c0, %ctp.measure_c_next ], [ %cot.byte, %cot.enter ]
+  %ctp.tsv = phi i8* [ %ctp.t_str, %ctp.measure_c_next ], [ %cot.t_str, %cot.enter ]
   %ctp.fn_alpha = getelementptr [6 x i8], [6 x i8]* @.fn_alpha, i32 0, i32 0
-  %ctp.cmp_alpha = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_alpha)
+  %ctp.cmp_alpha = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_alpha)
   %ctp.is_alpha_t = icmp eq i32 %ctp.cmp_alpha, 0
   br i1 %ctp.is_alpha_t, label %ctp.do_alpha, label %ctp.try_alnum
 ctp.try_alnum:
   %ctp.fn_alnum = getelementptr [6 x i8], [6 x i8]* @.fn_alnum, i32 0, i32 0
-  %ctp.cmp_alnum = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_alnum)
+  %ctp.cmp_alnum = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_alnum)
   %ctp.is_alnum_t = icmp eq i32 %ctp.cmp_alnum, 0
   br i1 %ctp.is_alnum_t, label %ctp.do_alnum, label %ctp.try_digit
 ctp.try_digit:
   %ctp.fn_digit = getelementptr [6 x i8], [6 x i8]* @.fn_digit, i32 0, i32 0
-  %ctp.cmp_digit = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_digit)
+  %ctp.cmp_digit = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_digit)
   %ctp.is_digit_t = icmp eq i32 %ctp.cmp_digit, 0
   br i1 %ctp.is_digit_t, label %ctp.do_digit, label %ctp.try_upper
 ctp.try_upper:
   %ctp.fn_upper = getelementptr [6 x i8], [6 x i8]* @.fn_upper, i32 0, i32 0
-  %ctp.cmp_upper = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_upper)
+  %ctp.cmp_upper = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_upper)
   %ctp.is_upper_t = icmp eq i32 %ctp.cmp_upper, 0
   br i1 %ctp.is_upper_t, label %ctp.do_upper, label %ctp.try_lower
 ctp.try_lower:
   %ctp.fn_lower = getelementptr [6 x i8], [6 x i8]* @.fn_lower, i32 0, i32 0
-  %ctp.cmp_lower = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_lower)
+  %ctp.cmp_lower = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_lower)
   %ctp.is_lower_t = icmp eq i32 %ctp.cmp_lower, 0
   br i1 %ctp.is_lower_t, label %ctp.do_lower, label %ctp.try_space
 ctp.try_space:
   %ctp.fn_space = getelementptr [6 x i8], [6 x i8]* @.fn_space, i32 0, i32 0
-  %ctp.cmp_space = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_space)
+  %ctp.cmp_space = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_space)
   %ctp.is_space_t = icmp eq i32 %ctp.cmp_space, 0
   br i1 %ctp.is_space_t, label %ctp.do_space, label %ctp.try_white
 ctp.try_white:
   %ctp.fn_white = getelementptr [6 x i8], [6 x i8]* @.fn_white, i32 0, i32 0
-  %ctp.cmp_white = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_white)
+  %ctp.cmp_white = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_white)
   %ctp.is_white_t = icmp eq i32 %ctp.cmp_white, 0
   br i1 %ctp.is_white_t, label %ctp.do_white, label %ctp.try_ascii
 ctp.try_ascii:
   %ctp.fn_ascii = getelementptr [6 x i8], [6 x i8]* @.fn_ascii, i32 0, i32 0
-  %ctp.cmp_ascii = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_ascii)
+  %ctp.cmp_ascii = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_ascii)
   %ctp.is_ascii_t = icmp eq i32 %ctp.cmp_ascii, 0
   br i1 %ctp.is_ascii_t, label %ctp.do_ascii, label %ctp.try_punct
 ctp.try_punct:
   %ctp.fn_punct = getelementptr [6 x i8], [6 x i8]* @.fn_punct, i32 0, i32 0
-  %ctp.cmp_punct = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_punct)
+  %ctp.cmp_punct = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_punct)
   %ctp.is_punct_t = icmp eq i32 %ctp.cmp_punct, 0
   br i1 %ctp.is_punct_t, label %ctp.do_punct, label %ctp.try_csym
 ctp.try_csym:
   %ctp.fn_csym = getelementptr [5 x i8], [5 x i8]* @.fn_csym, i32 0, i32 0
-  %ctp.cmp_csym = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_csym)
+  %ctp.cmp_csym = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_csym)
   %ctp.is_csym_t = icmp eq i32 %ctp.cmp_csym, 0
   br i1 %ctp.is_csym_t, label %ctp.do_csym, label %ctp.try_csymf
 ctp.try_csymf:
   %ctp.fn_csymf = getelementptr [6 x i8], [6 x i8]* @.fn_csymf, i32 0, i32 0
-  %ctp.cmp_csymf = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_csymf)
+  %ctp.cmp_csymf = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_csymf)
   %ctp.is_csymf_t = icmp eq i32 %ctp.cmp_csymf, 0
   br i1 %ctp.is_csymf_t, label %ctp.do_csymf, label %ctp.try_newline
 ctp.try_newline:
   %ctp.fn_newline = getelementptr [8 x i8], [8 x i8]* @.fn_newline, i32 0, i32 0
-  %ctp.cmp_newline = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_newline)
+  %ctp.cmp_newline = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_newline)
   %ctp.is_newline_t = icmp eq i32 %ctp.cmp_newline, 0
   br i1 %ctp.is_newline_t, label %ctp.do_newline, label %ctp.try_eol
 ctp.try_eol:
   %ctp.fn_eol = getelementptr [12 x i8], [12 x i8]* @.fn_end_5Fof_5Fline, i32 0, i32 0
-  %ctp.cmp_eol = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_eol)
+  %ctp.cmp_eol = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_eol)
   %ctp.is_eol_t = icmp eq i32 %ctp.cmp_eol, 0
   br i1 %ctp.is_eol_t, label %ctp.do_newline, label %ctp.fail
 ctp.do_alpha:
-  %ctp.a_ge_a = icmp uge i8 %ctp.c0, 97
-  %ctp.a_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.a_ge_a = icmp uge i8 %ctp.cv, 97
+  %ctp.a_le_z = icmp ule i8 %ctp.cv, 122
   %ctp.a_lower = and i1 %ctp.a_ge_a, %ctp.a_le_z
-  %ctp.a_ge_A = icmp uge i8 %ctp.c0, 65
-  %ctp.a_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.a_ge_A = icmp uge i8 %ctp.cv, 65
+  %ctp.a_le_Z = icmp ule i8 %ctp.cv, 90
   %ctp.a_upper = and i1 %ctp.a_ge_A, %ctp.a_le_Z
   %ctp.a_any = or i1 %ctp.a_lower, %ctp.a_upper
   ret i1 %ctp.a_any
 ctp.do_alnum:
-  %ctp.an_ge_a = icmp uge i8 %ctp.c0, 97
-  %ctp.an_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.an_ge_a = icmp uge i8 %ctp.cv, 97
+  %ctp.an_le_z = icmp ule i8 %ctp.cv, 122
   %ctp.an_lower = and i1 %ctp.an_ge_a, %ctp.an_le_z
-  %ctp.an_ge_A = icmp uge i8 %ctp.c0, 65
-  %ctp.an_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.an_ge_A = icmp uge i8 %ctp.cv, 65
+  %ctp.an_le_Z = icmp ule i8 %ctp.cv, 90
   %ctp.an_upper = and i1 %ctp.an_ge_A, %ctp.an_le_Z
-  %ctp.an_ge_0 = icmp uge i8 %ctp.c0, 48
-  %ctp.an_le_9 = icmp ule i8 %ctp.c0, 57
+  %ctp.an_ge_0 = icmp uge i8 %ctp.cv, 48
+  %ctp.an_le_9 = icmp ule i8 %ctp.cv, 57
   %ctp.an_dig = and i1 %ctp.an_ge_0, %ctp.an_le_9
   %ctp.an_letter = or i1 %ctp.an_lower, %ctp.an_upper
   %ctp.an_any = or i1 %ctp.an_letter, %ctp.an_dig
   ret i1 %ctp.an_any
 ctp.do_digit:
-  %ctp.d_ge_0 = icmp uge i8 %ctp.c0, 48
-  %ctp.d_le_9 = icmp ule i8 %ctp.c0, 57
+  %ctp.d_ge_0 = icmp uge i8 %ctp.cv, 48
+  %ctp.d_le_9 = icmp ule i8 %ctp.cv, 57
   %ctp.d_any = and i1 %ctp.d_ge_0, %ctp.d_le_9
   ret i1 %ctp.d_any
 ctp.do_upper:
-  %ctp.u_ge_A = icmp uge i8 %ctp.c0, 65
-  %ctp.u_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.u_ge_A = icmp uge i8 %ctp.cv, 65
+  %ctp.u_le_Z = icmp ule i8 %ctp.cv, 90
   %ctp.u_any = and i1 %ctp.u_ge_A, %ctp.u_le_Z
   ret i1 %ctp.u_any
 ctp.do_lower:
-  %ctp.l_ge_a = icmp uge i8 %ctp.c0, 97
-  %ctp.l_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.l_ge_a = icmp uge i8 %ctp.cv, 97
+  %ctp.l_le_z = icmp ule i8 %ctp.cv, 122
   %ctp.l_any = and i1 %ctp.l_ge_a, %ctp.l_le_z
   ret i1 %ctp.l_any
 ctp.do_space:
   ; ISO Prolog: space includes ASCII space (32), HT (9), VT (11), FF (12),
   ; LF (10), CR (13). Same set as ``white'' for now; SWI distinguishes
   ; further but we collapse them.
-  %ctp.s_sp = icmp eq i8 %ctp.c0, 32
-  %ctp.s_ht = icmp eq i8 %ctp.c0, 9
-  %ctp.s_lf = icmp eq i8 %ctp.c0, 10
-  %ctp.s_vt = icmp eq i8 %ctp.c0, 11
-  %ctp.s_ff = icmp eq i8 %ctp.c0, 12
-  %ctp.s_cr = icmp eq i8 %ctp.c0, 13
+  %ctp.s_sp = icmp eq i8 %ctp.cv, 32
+  %ctp.s_ht = icmp eq i8 %ctp.cv, 9
+  %ctp.s_lf = icmp eq i8 %ctp.cv, 10
+  %ctp.s_vt = icmp eq i8 %ctp.cv, 11
+  %ctp.s_ff = icmp eq i8 %ctp.cv, 12
+  %ctp.s_cr = icmp eq i8 %ctp.cv, 13
   %ctp.s_a = or i1 %ctp.s_sp, %ctp.s_ht
   %ctp.s_b = or i1 %ctp.s_a, %ctp.s_lf
   %ctp.s_c = or i1 %ctp.s_b, %ctp.s_vt
@@ -15117,28 +15149,28 @@ ctp.do_space:
   ret i1 %ctp.s_any
 ctp.do_white:
   ; SWI ``white'' = space + tab only.
-  %ctp.w_sp = icmp eq i8 %ctp.c0, 32
-  %ctp.w_ht = icmp eq i8 %ctp.c0, 9
+  %ctp.w_sp = icmp eq i8 %ctp.cv, 32
+  %ctp.w_ht = icmp eq i8 %ctp.cv, 9
   %ctp.w_any = or i1 %ctp.w_sp, %ctp.w_ht
   ret i1 %ctp.w_any
 ctp.do_ascii:
   ; Byte < 128.
-  %ctp.as_any = icmp ult i8 %ctp.c0, 128
+  %ctp.as_any = icmp ult i8 %ctp.cv, 128
   ret i1 %ctp.as_any
 ctp.do_punct:
   ; SWI ``punct'' = printable graphical character that is not alphanumeric
   ; or space. ASCII 33..126 minus alnum minus space.
-  %ctp.p_ge33 = icmp uge i8 %ctp.c0, 33
-  %ctp.p_le126 = icmp ule i8 %ctp.c0, 126
+  %ctp.p_ge33 = icmp uge i8 %ctp.cv, 33
+  %ctp.p_le126 = icmp ule i8 %ctp.cv, 126
   %ctp.p_print = and i1 %ctp.p_ge33, %ctp.p_le126
-  %ctp.p_ge_a = icmp uge i8 %ctp.c0, 97
-  %ctp.p_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.p_ge_a = icmp uge i8 %ctp.cv, 97
+  %ctp.p_le_z = icmp ule i8 %ctp.cv, 122
   %ctp.p_lower = and i1 %ctp.p_ge_a, %ctp.p_le_z
-  %ctp.p_ge_A = icmp uge i8 %ctp.c0, 65
-  %ctp.p_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.p_ge_A = icmp uge i8 %ctp.cv, 65
+  %ctp.p_le_Z = icmp ule i8 %ctp.cv, 90
   %ctp.p_upper = and i1 %ctp.p_ge_A, %ctp.p_le_Z
-  %ctp.p_ge_0 = icmp uge i8 %ctp.c0, 48
-  %ctp.p_le_9 = icmp ule i8 %ctp.c0, 57
+  %ctp.p_ge_0 = icmp uge i8 %ctp.cv, 48
+  %ctp.p_le_9 = icmp ule i8 %ctp.cv, 57
   %ctp.p_dig = and i1 %ctp.p_ge_0, %ctp.p_le_9
   %ctp.p_letter = or i1 %ctp.p_lower, %ctp.p_upper
   %ctp.p_alnum = or i1 %ctp.p_letter, %ctp.p_dig
@@ -15147,36 +15179,36 @@ ctp.do_punct:
   ret i1 %ctp.p_any
 ctp.do_csym:
   ; C symbol: alnum or underscore.
-  %ctp.cs_ge_a = icmp uge i8 %ctp.c0, 97
-  %ctp.cs_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.cs_ge_a = icmp uge i8 %ctp.cv, 97
+  %ctp.cs_le_z = icmp ule i8 %ctp.cv, 122
   %ctp.cs_lower = and i1 %ctp.cs_ge_a, %ctp.cs_le_z
-  %ctp.cs_ge_A = icmp uge i8 %ctp.c0, 65
-  %ctp.cs_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.cs_ge_A = icmp uge i8 %ctp.cv, 65
+  %ctp.cs_le_Z = icmp ule i8 %ctp.cv, 90
   %ctp.cs_upper = and i1 %ctp.cs_ge_A, %ctp.cs_le_Z
-  %ctp.cs_ge_0 = icmp uge i8 %ctp.c0, 48
-  %ctp.cs_le_9 = icmp ule i8 %ctp.c0, 57
+  %ctp.cs_ge_0 = icmp uge i8 %ctp.cv, 48
+  %ctp.cs_le_9 = icmp ule i8 %ctp.cv, 57
   %ctp.cs_dig = and i1 %ctp.cs_ge_0, %ctp.cs_le_9
-  %ctp.cs_us = icmp eq i8 %ctp.c0, 95
+  %ctp.cs_us = icmp eq i8 %ctp.cv, 95
   %ctp.cs_letter = or i1 %ctp.cs_lower, %ctp.cs_upper
   %ctp.cs_alnum = or i1 %ctp.cs_letter, %ctp.cs_dig
   %ctp.cs_any = or i1 %ctp.cs_alnum, %ctp.cs_us
   ret i1 %ctp.cs_any
 ctp.do_csymf:
   ; C symbol-first: alpha or underscore.
-  %ctp.csf_ge_a = icmp uge i8 %ctp.c0, 97
-  %ctp.csf_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.csf_ge_a = icmp uge i8 %ctp.cv, 97
+  %ctp.csf_le_z = icmp ule i8 %ctp.cv, 122
   %ctp.csf_lower = and i1 %ctp.csf_ge_a, %ctp.csf_le_z
-  %ctp.csf_ge_A = icmp uge i8 %ctp.c0, 65
-  %ctp.csf_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.csf_ge_A = icmp uge i8 %ctp.cv, 65
+  %ctp.csf_le_Z = icmp ule i8 %ctp.cv, 90
   %ctp.csf_upper = and i1 %ctp.csf_ge_A, %ctp.csf_le_Z
-  %ctp.csf_us = icmp eq i8 %ctp.c0, 95
+  %ctp.csf_us = icmp eq i8 %ctp.cv, 95
   %ctp.csf_letter = or i1 %ctp.csf_lower, %ctp.csf_upper
   %ctp.csf_any = or i1 %ctp.csf_letter, %ctp.csf_us
   ret i1 %ctp.csf_any
 ctp.do_newline:
   ; ``newline'' and ``end_of_line'' both match LF (and CR for end_of_line).
-  %ctp.n_lf = icmp eq i8 %ctp.c0, 10
-  %ctp.n_cr = icmp eq i8 %ctp.c0, 13
+  %ctp.n_lf = icmp eq i8 %ctp.cv, 10
+  %ctp.n_cr = icmp eq i8 %ctp.cv, 13
   %ctp.n_any = or i1 %ctp.n_lf, %ctp.n_cr
   ret i1 %ctp.n_any
 
@@ -19034,6 +19066,7 @@ builtin_op_to_id('stream_close/1', 168).      % close + free line-reader handle.
 builtin_op_to_id('atom_starts_with/2', 169).  % prefix check via memcmp.
 builtin_op_to_id('atom_ends_with/2', 170).    % suffix check via memcmp.
 builtin_op_to_id('atom_contains/2', 171).     % substring check via strstr.
+builtin_op_to_id('code_type/2', 172).        % ASCII class check; shares char_type's classifier.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
@@ -19367,13 +19400,14 @@ lookup_label_index(LabelName, LabelMap, Index) :-
 lookup_label_index(LabelName, LabelMap, Options, Index) :-
     (   member(LabelName-Index, LabelMap)
     ->  true
-    ;   (   option(wam_strict_labels(true), Options)
-        ->  throw(error(unknown_label(LabelName),
-                'Label not found in LabelMap — enable wam_strict_labels(false) to allow fallback'))
-        ;   format(user_error,
+    ;   (   option(wam_strict_labels(false), Options)
+        ->  format(user_error,
                 'Warning: unknown label "~w" in WAM LLVM codegen, defaulting to index 0~n',
                 [LabelName]),
             Index = 0
+        ;   throw(error(existence_error(procedure, LabelName),
+                context(wam_llvm_codegen,
+                    'called predicate was not compiled into this module; add it to the predicate list passed to write_wam_llvm_project/3, or pass wam_strict_labels(false) to allow the legacy index-0 fallback')))
         )
     ).
 
