@@ -1147,6 +1147,9 @@ field_expr(Expr) -->
     float_call_expr(Expr),
     !.
 field_expr(Expr) -->
+    blob_call_expr(Expr),
+    !.
+field_expr(Expr) -->
     float_literal_expr(Expr),
     !.
 field_expr(Expr) -->
@@ -1373,6 +1376,43 @@ float_call_expr(float_call(Name, Args)) -->
     prolog_call_expr(prolog_call(Name, Args)),
     ws,
     ")".
+
+%% blob_call_expr(-Expr)//
+%
+%  blob(dyncall(...)) / blob(dyncall_at(...)): read the runtime grammar's
+%  Atom output as opaque bytes (a slice), for print / writebin positions.
+%  Reserved like the dyncall forms; the inner keyword disambiguates.
+blob_call_expr(blob_dyncall_at(Source, Args)) -->
+    "blob",
+    ws,
+    "(",
+    ws,
+    "dyncall_at",
+    ws,
+    "(",
+    ws,
+    foreign_arg(Source),
+    foreign_args_rest(Args),
+    ws,
+    ")",
+    ws,
+    ")",
+    !.
+blob_call_expr(blob_dyncall(Args)) -->
+    "blob",
+    ws,
+    "(",
+    ws,
+    "dyncall",
+    ws,
+    "(",
+    ws,
+    foreign_args(Args),
+    ws,
+    ")",
+    ws,
+    ")",
+    !.
 
 %% float_field_expr(-Expr)//
 %

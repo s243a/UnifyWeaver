@@ -410,7 +410,11 @@ definition takes effect with no rebuild (query/userspace redefinition);
 `float(dyncall(...))` / `float(dyncall_at(...))` read the grammar's output
 as a double (keeping fractions), mirroring `float(name(args))` for
 compiled predicates — needed when a grammar returns a Float (e.g.
-`R is X / 2`), which the integer form cannot read (it yields 0). Bounded repetition handles records containing a
+`R is X / 2`), which the integer form cannot read (it yields 0).
+`blob(dyncall(...))` / `blob(dyncall_at(...))` read an Atom output as
+**opaque bytes** (a byte slice) for `print` — a grammar that emits text or
+encoded output rather than a number, e.g.
+`{ print blob(dyncall($1)) }`. Bounded repetition handles records containing a
 list: `BINFMT = "i64 rep4(i64 f64)"` declares an 8-byte element count
 (at most 4) followed by that many (i64, f64) elements. The count is an
 ordinary i64 field, element slots are flat addressable fields
