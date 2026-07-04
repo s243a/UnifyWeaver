@@ -414,7 +414,14 @@ compiled predicates — needed when a grammar returns a Float (e.g.
 `blob(dyncall(...))` / `blob(dyncall_at(...))` read an Atom output as
 **opaque bytes** (a byte slice) for `print` — a grammar that emits text or
 encoded output rather than a number, e.g.
-`{ print blob(dyncall($1)) }`. Bounded repetition handles records containing a
+`{ print blob(dyncall($1)) }`.
+A single `.wamo` can expose several named entries (built with
+`write_wam_object(Preds, [wamo_entries([P/A, ...])], File)`);
+`dyncall@name(args...)` selects one by name at the call site — e.g.
+`{ s += dyncall@square($1) ; c += dyncall@cube($1) }` calls two entries of
+one `DYNLOAD` object. The `@name` is fixed at compile time, so the entry's
+address is resolved once at startup and reused (a name no entry exposes
+yields 0). Bounded repetition handles records containing a
 list: `BINFMT = "i64 rep4(i64 f64)"` declares an 8-byte element count
 (at most 4) followed by that many (i64, f64) elements. The count is an
 ordinary i64 field, element slots are flat addressable fields
