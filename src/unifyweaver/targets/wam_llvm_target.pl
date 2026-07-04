@@ -20383,9 +20383,25 @@ after_read:
   br label %read_loop
 read_done:
   %close_ignore = call i32 @close(i32 %fd)
+  %r = call { %WamState*, i32 } @wam_object_load_bytes(i8* %bufc, i64 %total)
+  call void @free(i8* %bufc)
+  ret { %WamState*, i32 } %r
+fail:
+  %fnull = insertvalue { %WamState*, i32 } undef, %WamState* null, 0
+  %fret = insertvalue { %WamState*, i32 } %fnull, i32 0, 1
+  ret { %WamState*, i32 } %fret
+}
+
+; Parse a .wamo object from an in-memory buffer. Does NOT free %bufc --
+; the caller owns it (the file loader above frees it after; an
+; eval-from-value caller keeps its own bytes alive). Re-interns atoms,
+; copies functor strings, patches operands, builds the VM. Returns
+; { vm, entry_pc }; null vm on a short or bad-magic buffer.
+define { %WamState*, i32 } @wam_object_load_bytes(i8* %bufc, i64 %total) {
+entry:
   ; magic check: need >= 5 bytes and buf[0..3] == "WAMO"
   %too_small = icmp ult i64 %total, 5
-  br i1 %too_small, label %fail_free, label %magic
+  br i1 %too_small, label %fail, label %magic
 magic:
   %m0p = getelementptr i8, i8* %bufc, i64 0
   %m0 = load i8, i8* %m0p
@@ -20402,7 +20418,7 @@ magic:
   %okA = and i1 %ok0, %ok1
   %okB = and i1 %ok2, %ok3
   %magic_ok = and i1 %okA, %okB
-  br i1 %magic_ok, label %parse, label %fail_free
+  br i1 %magic_ok, label %parse, label %fail
 parse:
   ; version
   %pv = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 4)
@@ -20547,9 +20563,9 @@ build_vm:
   ; entry pc = labels[entry_idx]
   %eslot = getelementptr i32, i32* %labels, i64 %entry_idx64
   %entry_pc = load i32, i32* %eslot
-  ; scratch buffers no longer needed (atom strings copied by intern; functor
-  ; string copies are referenced by %code, so only the pointer arrays free)
-  call void @free(i8* %bufc)
+  ; scratch pointer arrays no longer needed: atom strings were copied by
+  ; @wam_intern_atom, functor string copies are owned by %code, and the
+  ; source buffer belongs to the caller.
   call void @free(i8* %atom_mem)
   call void @free(i8* %fun_mem)
   %ncode32 = trunc i64 %ncode to i32
@@ -20558,9 +20574,6 @@ build_vm:
   %ret0 = insertvalue { %WamState*, i32 } undef, %WamState* %vm, 0
   %ret1 = insertvalue { %WamState*, i32 } %ret0, i32 %entry_pc, 1
   ret { %WamState*, i32 } %ret1
-fail_free:
-  call void @free(i8* %bufc)
-  br label %fail
 fail:
   %fnull = insertvalue { %WamState*, i32 } undef, %WamState* null, 0
   %fret = insertvalue { %WamState*, i32 } %fnull, i32 0, 1
