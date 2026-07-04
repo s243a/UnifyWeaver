@@ -189,21 +189,23 @@ class Tokenizer:
     """Builds the token set per example and pads a batch. Holds the frozen e5 tables + the DAG."""
 
     def __init__(self, query_tbl, passage_tbl, idx, parents, deg, k=1, beta=1.0, max_anc=8,
-                 struct_tbl=None, struct_super=False, struct_cap=8):
+                 struct_tbl=None, struct_dir=False, struct_cap=8):
         self.q, self.p, self.idx = query_tbl, passage_tbl, idx
         self.parents, self.deg = parents, deg
         self.k, self.beta, self.max_anc = k, beta, max_anc
         self.d = query_tbl.shape[1]
         # DUAL-JUDGE (step 3): {name: struct-emb vector} for the O(1) graph-judge proxy `3/(1+‖Δ‖)`. When set,
-        # build() emits a per-example `struct_feat` scalar (the SYM logit's structural channel). None ⇒ omitted.
+        # build() emits a per-example `struct_feat` VECTOR [K] of graph PREDICTORS. None ⇒ omitted.
         self.struct = struct_tbl
-        # SUPERPOSITION form (user's theory, 2026-07-04): SYM = AVERAGE of (distance proxy, forward membership,
-        # backward membership) — a superposition of ALL relatedness signals, POSITIVE-signed:
-        #   struct_feat = ( 3/(1+‖Δ‖) + 3/(1+up_hops(a→b)) + 3/(1+up_hops(b→a)) ) / 3
-        # (NOT the earlier subtraction — that sign was a DISTANCE estimator, not symmetric.) up_hops = directed
-        # DAG ancestry (a graph-structural proxy for the subcategory membership, not the model's μ ⇒ no feedback
-        # loop; cheap local parent-climb). Dropping fwd/bwd ⇒ all weight on the distance proxy (plain 3/d).
-        self.struct_super, self.struct_cap = struct_super, struct_cap
+        # PREDICTOR channels (user's theory, 2026-07-04): SYM is a regression on POSITIVE predictors — the
+        # distance proxy AND the fwd/bwd memberships, each its own channel with a learned weight (the model sets
+        # the "confidence" weights; equal-⅓ average is just the fixed-weight case). NOT a subtraction/residual —
+        # that expression is the ERROR term (belongs in the loss), from writing 1/d as the dependent variable.
+        #   struct_dir=False ⇒ K=1: [ 3/(1+‖Δ‖) ]                              (distance predictor only)
+        #   struct_dir=True  ⇒ K=3: [ 3/(1+‖Δ‖), 3/(1+up_hops(a→b)), 3/(1+up_hops(b→a)) ]
+        # up_hops = directed DAG ancestry (graph proxy for subcategory membership, not the model's μ ⇒ no
+        # feedback loop; cheap local parent-climb). n_struct on the model must match K.
+        self.struct_dir, self.struct_cap = struct_dir, struct_cap
 
     def _up_hops(self, x, y, cap):
         """min hops climbing PARENT edges from x up to y (y an ancestor of x); None if not within cap."""
@@ -333,19 +335,18 @@ class Tokenizer:
                "is_prov": is_prov, "corpus_of": corpus_of, "judge_of": judge_of,
                "account_of": account_of, "nodetype_of": nodetype_of, "prefix_of": prefix_of,
                "op_of": op_of, "pad": pad}
-        if self.struct is not None:                          # DUAL-JUDGE: per-pair structural channel 3/(1+‖Δ‖)
-            sf = torch.zeros(B)
+        if self.struct is not None:                          # DUAL-JUDGE: per-pair graph PREDICTOR vector [B, K]
+            K = 3 if self.struct_dir else 1
+            sf = torch.zeros(B, K)
             for bi, it in enumerate(items):
                 a, b = it[0], it[1]                          # (node, root)
                 va, vb = self.struct.get(a), self.struct.get(b)
-                s = float(3.0 / (1.0 + (va - vb).norm())) if (va is not None and vb is not None) else 0.0
-                if self.struct_super:                        # SYM = AVERAGE(dist proxy, fwd membership, bwd membership)
+                sf[bi, 0] = float(3.0 / (1.0 + (va - vb).norm())) if (va is not None and vb is not None) else 0.0
+                if self.struct_dir:                          # + fwd/bwd membership predictors (each its own channel)
                     fh = self._up_hops(a, b, self.struct_cap)   # forward: b is an ancestor of a (a subcat_of b)
                     bh = self._up_hops(b, a, self.struct_cap)   # backward: a is an ancestor of b
-                    fwd = 3.0 / (1.0 + fh) if fh is not None else 0.0
-                    bwd = 3.0 / (1.0 + bh) if bh is not None else 0.0
-                    s = (s + fwd + bwd) / 3.0                  # positive superposition (sign corrected)
-                sf[bi] = s
+                    sf[bi, 1] = 3.0 / (1.0 + fh) if fh is not None else 0.0
+                    sf[bi, 2] = 3.0 / (1.0 + bh) if bh is not None else 0.0
             out["struct_feat"] = sf
         return out
 
@@ -356,7 +357,7 @@ class Tokenizer:
 class MuAttention(nn.Module):
     def __init__(self, d_model=384, n_ops=len(OPS), n_heads=4, n_layers=1, max_gen=5,
                  dim_ff=None, dropout=0.0, n_corpus=len(CORPORA), n_judge=len(JUDGES),
-                 n_nodetype=len(NODETYPE), n_account=len(ACCOUNTS), struct_blend="inside"):
+                 n_nodetype=len(NODETYPE), n_account=len(ACCOUNTS), struct_blend="inside", n_struct=1):
         super().__init__()
         self.d = d_model
         self.struct_blend = struct_blend            # DUAL-JUDGE combine mode: "inside" (logit-space) | "outside" (μ-space)
@@ -388,12 +389,12 @@ class MuAttention(nn.Module):
         # DUAL-JUDGE (SYM = e5 ⊕ graph, DESIGN_sym_dual_judge.md step 3): a learned scale on the O(1)
         # structural feature `3/(1+‖Δ struct-emb‖)` (the cheap graph-judge proxy). Added to the SYM logit
         # ONLY (gated by op). Zero-init ⇒ exact warm-start no-op; learns the graph half during SYM training.
-        self.sym_struct_w = nn.Parameter(torch.zeros(1))        # INSIDE mode: logit += w·struct_feat, one sigmoid
+        self.sym_struct_w = nn.Parameter(torch.zeros(n_struct))  # INSIDE: logit += Σ wₖ·struct_featₖ (learned per-channel)
         # OUTSIDE mode (user's point): blend two BOUNDED judges — μ = μ_e5 + λ·(μ_graph − μ_e5), where the e5 μ
-        # passes through untouched and only the unbounded graph term gets its own squash μ_graph = σ(g·feat + h).
+        # passes through untouched and only the unbounded graph term gets its own squash μ_graph = σ(Σ gₖ·featₖ + h).
         # λ zero-init ⇒ pure-e5 ⇒ exact warm-start no-op; g,h unused at init (λ=0 gates them out).
         self.struct_lambda = nn.Parameter(torch.zeros(1))
-        self.struct_g = nn.Parameter(torch.zeros(1))
+        self.struct_g = nn.Parameter(torch.zeros(n_struct))
         self.struct_h = nn.Parameter(torch.zeros(1))
         for emb in (self.op_emb, self.gen_emb, self.corpus_emb, self.judge_emb):
             nn.init.normal_(emb.weight, std=0.02)
@@ -440,14 +441,14 @@ class MuAttention(nn.Module):
         else:
             w, b = op_weights @ self.readout_w, op_weights @ self.readout_b          # blended head
         logit = (pooled * w).sum(-1) + b
-        if struct_feat is not None:                          # DUAL-JUDGE: add the O(1) structural channel to SYM only
+        if struct_feat is not None:                          # DUAL-JUDGE: graph predictors [B,K] → SYM only
             sym_gate = op_weights[:, OPS["SYM"]] if op_weights is not None else (op_of == OPS["SYM"]).to(logit.dtype)
             if self.struct_blend == "outside":               # blend two BOUNDED judges in μ-space (no outer sigmoid)
                 mu_e5 = torch.sigmoid(logit)                                     # e5 judge — already ∈[0,1]
-                mu_graph = torch.sigmoid(self.struct_g * struct_feat + self.struct_h)   # squash the unbounded graph term
+                mu_graph = torch.sigmoid((struct_feat * self.struct_g).sum(-1) + self.struct_h)  # squash the graph terms
                 mu = mu_e5 + sym_gate * self.struct_lambda * (mu_graph - mu_e5)  # λ=0 ⇒ pure e5 (no-op)
                 return mu.clamp(0.0, 1.0)
-            logit = logit + sym_gate * self.sym_struct_w * struct_feat           # INSIDE: logit-space, one sigmoid
+            logit = logit + sym_gate * (struct_feat * self.sym_struct_w).sum(-1)  # INSIDE: Σ wₖ·featₖ, one sigmoid
         return torch.sigmoid(logit)
 
 

@@ -69,19 +69,22 @@ judge is *already* a bounded μ, so it needn't re-enter a sigmoid (user, 2026-07
   On the cumulative SYM pairs, **57 %** have both endpoints in the table (the rest fall back to pure e5,
   `struct_feat = 0` — the same graceful degradation as inference on out-of-graph pairs).
 
-**`--struct-super` (superposition average — the corrected theory).** SYM is the **average of ALL relatedness
-signals**: `μ_sym ≈ ( distance_proxy + forward_membership + backward_membership ) / 3` — **positive-signed**, a
-superposition (user, 2026-07-04). Dropping fwd/bwd puts all weight on the distance proxy (plain `3/d`). NB the
-earlier `3/d − μfwd − μbwd` (subtraction) had the **sign backwards** — that is a *distance* estimator (subtract
-the memberships from closeness), not the symmetric one. `--struct-super` feeds
-`( 3/(1+‖Δ‖) + 3/(1+up_hops(a→b)) + 3/(1+up_hops(b→a)) ) / 3`, where `up_hops` is **directed DAG ancestry** (a
-graph-structural proxy for the subcategory membership, *not* the model's μ ⇒ no feedback loop; a bounded local
-parent-climb ⇒ cheap at inference). Smoke-tested: parent/child → 1.0, grandparent → 0.667, lateral siblings →
-0.333 (distance only) — directionals add *positively*. Still zero-init `sym_struct_w`/`λ` ⇒ warm-start no-op.
+**`--struct-dir` (predictor channels — the corrected theory).** SYM is a **regression on positive predictors**,
+not a subtraction: `μ_sym ≈ w₀ + w₁·(1/d) + w₂·fwd + w₃·bwd + error`. The `1/d`, `fwd`, `bwd` are all predictors
+on the RHS (positive); the earlier `3/d − fwd − bwd` came from writing `1/d` as the *dependent* variable and
+solving — that expression is the **residual/error term** (it belongs in the loss), *not* an input feature (you
+don't predict μ_sym from its own error). So the struct channel is a **K-vector of predictors, each with its own
+learned weight** (`sym_struct_w[K]`), the model setting the "confidence" weights (equal-⅓ average = the fixed
+case). Channels:
+- `--struct-dir` off ⇒ **K=1**: `[ 3/(1+‖Δ‖) ]` — distance predictor only (the step-1-validated default).
+- `--struct-dir` on  ⇒ **K=3**: `[ 3/(1+‖Δ‖), 3/(1+up_hops(a→b)), 3/(1+up_hops(b→a)) ]`, where `up_hops` is
+  directed DAG ancestry (a graph proxy for subcategory membership, *not* the model's μ ⇒ no feedback loop; cheap
+  local parent-climb). Smoke-tested: parent/child fwd channel = 1.5, siblings = distance-only.
 
-*Open refinements (user):* (1) **confidence-weighted** average instead of equal 1/3 (weight each judge by its
-reliability); (2) include **element** forward/backward memberships (ELEM operator / `element_of` edges), not
-just subcategory — `up_hops` currently climbs the category-parent DAG only.
+Zero-init `sym_struct_w`/`struct_g`/`λ` ⇒ warm-start no-op in both blend modes. *Open refinements (user):*
+(1) the learned weights already give per-channel confidence; a per-*pair* confidence gate (weight `fwd` by path
+unambiguity, `dist` by table membership) is the next step; (2) add **element** fwd/bwd predictors (ELEM operator
+/ `element_of` edges) as two more channels — `up_hops` climbs the category-parent DAG only for now.
 
 **Why the pairwise scalar (not a per-endpoint struct token).** The validated finding is a function of the
 *pairwise* distance, so injecting the single scalar `3/(1+‖Δ‖)` into the SYM logit reproduces the +0.652 dual

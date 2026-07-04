@@ -450,7 +450,7 @@ def train(args):
         print(f"STRUCT-EMB (SYM dual judge): {len(struct_tbl)} nodes, {_se['dim']}d, from "
               f"{os.path.basename(args.struct_emb)}")
     tok = Tokenizer(q, p, idx, parents, deg, k=args.k, beta=1.0, max_anc=args.max_anc,
-                    struct_tbl=struct_tbl, struct_super=args.struct_super)
+                    struct_tbl=struct_tbl, struct_dir=args.struct_dir)
 
     rng = random.Random(args.seed)
     edges = [e for e in load_edges() if e[0] in idx and e[1] in idx]
@@ -552,7 +552,7 @@ def train(args):
 
     torch.manual_seed(args.seed)
     model = MuAttention(d_model=q.shape[1], n_heads=args.heads, n_layers=args.layers,
-                        struct_blend=args.struct_blend)
+                        struct_blend=args.struct_blend, n_struct=(3 if args.struct_dir else 1))
     if args.init_from:                                    # warm start — DON'T reinit the head (fine-tune)
         ck = torch.load(args.init_from, weights_only=False)
         sd, own = ck["state"], model.state_dict()
@@ -1303,10 +1303,10 @@ def main():
                     help="DUAL-JUDGE combine mode: 'inside' = μ=σ(logit_e5 + w·struct) (one sigmoid, logit-space); "
                     "'outside' = μ=μ_e5 + λ·(μ_graph−μ_e5), a μ-space blend of two BOUNDED judges (e5 μ untouched, "
                     "only the graph term squashed). λ zero-init ⇒ pure-e5 warm-start no-op either way.")
-    ap.add_argument("--struct-super", action="store_true", help="DUAL-JUDGE: feed the SUPERPOSITION average "
-                    "( 3/(1+‖Δ‖) + 3/(1+up_hops(a→b)) + 3/(1+up_hops(b→a)) )/3 instead of plain 3/(1+‖Δ‖) — SYM as "
-                    "the AVERAGE of distance proxy + fwd + bwd memberships (positive; up_hops = DAG ancestry, not "
-                    "model μ ⇒ no feedback loop). Dropping fwd/bwd = plain 3/d. A/B vs plain.")
+    ap.add_argument("--struct-dir", action="store_true", help="DUAL-JUDGE: add the fwd/bwd membership PREDICTORS "
+                    "as separate channels (K=3: [3/(1+‖Δ‖), 3/(1+up_hops(a→b)), 3/(1+up_hops(b→a))]) — each with "
+                    "its own LEARNED weight (regression; equal-⅓ average is the fixed-weight case). up_hops = DAG "
+                    "ancestry (not model μ ⇒ no feedback loop). Off ⇒ K=1, distance predictor only. A/B vs plain.")
     ap.add_argument("--sym-weight", type=float, default=1.0, help="SYM loss weight (ablation lever b)")
     ap.add_argument("--sym-only", action="store_true", help="single-task SYM head (ablation lever c)")
     ap.add_argument("--quick-val", action="store_true", help="skip dense-map emission/lin-agreement")
