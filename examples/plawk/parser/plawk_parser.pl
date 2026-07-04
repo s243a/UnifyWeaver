@@ -1329,6 +1329,42 @@ float_literal_expr(float_const(Mantissa, Denominator)) -->
 %  fraction (an i64-context call would truncate the surface to
 %  integers). The float(...) wrapper is what selects the
 %  double-returning wrapper at codegen time.
+%
+%  float(dyncall(...)) / float(dyncall_at(...)) are the runtime-object
+%  variants: the loaded grammar's numeric output is read as a double.
+%  These must precede the generic clause, whose inner prolog_call_expr
+%  would otherwise parse `dyncall` as an ordinary identifier call.
+float_call_expr(float_dyncall_at(Source, Args)) -->
+    "float",
+    ws,
+    "(",
+    ws,
+    "dyncall_at",
+    ws,
+    "(",
+    ws,
+    foreign_arg(Source),
+    foreign_args_rest(Args),
+    ws,
+    ")",
+    ws,
+    ")",
+    !.
+float_call_expr(float_dyncall(Args)) -->
+    "float",
+    ws,
+    "(",
+    ws,
+    "dyncall",
+    ws,
+    "(",
+    ws,
+    foreign_args(Args),
+    ws,
+    ")",
+    ws,
+    ")",
+    !.
 float_call_expr(float_call(Name, Args)) -->
     "float",
     ws,

@@ -115,6 +115,8 @@ build(File, Out0, KeepLL) :-
     % object.
     (   ( plawk_program_dyncall_arities(Program, DynArities), DynArities \== []
         ; plawk_program_dyncall_at_arities(Program, DynAtArities), DynAtArities \== []
+        ; plawk_program_dyncall_float_arities(Program, DynFArities), DynFArities \== []
+        ; plawk_program_dyncall_at_float_arities(Program, DynAtFArities), DynAtFArities \== []
         )
     ->  ProjectOptions = [module_name(OutBase), emit_wamo_loader(true)]
     ;   ProjectOptions = [module_name(OutBase)]

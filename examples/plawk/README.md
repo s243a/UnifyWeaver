@@ -406,7 +406,11 @@ named in column 1 of each line. Object management is set by
 each distinct grammar (load once, reuse); `mtime` also keys on the file's
 modification time, so recompiling a `.wamo` busts the cache and the new
 definition takes effect with no rebuild (query/userspace redefinition);
-`off` reloads and frees every call (always current, no cache). Bounded repetition handles records containing a
+`off` reloads and frees every call (always current, no cache).
+`float(dyncall(...))` / `float(dyncall_at(...))` read the grammar's output
+as a double (keeping fractions), mirroring `float(name(args))` for
+compiled predicates — needed when a grammar returns a Float (e.g.
+`R is X / 2`), which the integer form cannot read (it yields 0). Bounded repetition handles records containing a
 list: `BINFMT = "i64 rep4(i64 f64)"` declares an 8-byte element count
 (at most 4) followed by that many (i64, f64) elements. The count is an
 ordinary i64 field, element slots are flat addressable fields
