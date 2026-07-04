@@ -1306,10 +1306,12 @@ def main():
                     "μ=μ_e5 + λ·(μ_graph−μ_e5), μ-space blend of two bounded judges; 'precision' (LOCKED design) = "
                     "μ_graph is the precision-weighted (c_mem·mem + c_dist·(1/d))/(c_mem+c_dist), then the e5↔graph "
                     "complementary superposition. λ zero-init ⇒ pure-e5 warm-start no-op in every mode.")
-    ap.add_argument("--c-dist", type=float, default=1.0, help="precision mode: GLOBAL distance-proxy confidence "
-                    "(MEASURED = how well 1/d agrees with the LLM judge, corr or 1/MSE; default 1.0 until measured).")
-    ap.add_argument("--c-mem-ceiling", type=float, default=1.0, help="precision mode: membership-confidence CEILING "
-                    "(MEASURED = 1/error_converged of the HIER membership op; per-region c_mem = ceiling·region).")
+    ap.add_argument("--c-dist", type=float, default=0.35, help="precision mode: GLOBAL distance-proxy confidence "
+                    "= how well 1/d agrees with the SYM judge (corr). MEASURED +0.349 on the representative "
+                    "cumulative mix (O(1) struct-emb proxy; true-BFS would be ~0.66). Re-measure on the two-judge round.")
+    ap.add_argument("--c-mem-ceiling", type=float, default=0.67, help="precision mode: membership-confidence CEILING "
+                    "= corr(membership signal, SYM judge). MEASURED +0.669 (membership ~2x more reliable than 1/d, but "
+                    "nonzero on only ~11% of pairs ⇒ region fallback essential). per-region c_mem = ceiling·region.")
     ap.add_argument("--deg-scale", type=float, default=5.0, help="precision mode: data-density scale for the "
                     "per-region c_mem factor min(deg)/(min(deg)+deg_scale) — larger ⇒ needs more edges for confidence.")
     ap.add_argument("--struct-dir", action="store_true", help="DUAL-JUDGE: add the fwd/bwd membership PREDICTORS "

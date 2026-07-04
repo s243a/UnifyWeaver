@@ -80,10 +80,22 @@ Theory → code mapping (`mu_attention.py`, `train_mu_attention.py`):
 confidence, not a second free-weight scheme. Smoke-tested: warm-start no-op (λ=0); per-region shift verified
 (data-rich pair → `1/d` share 0.38, sparse pair → 0.75); SYM-gated (HIER untouched); output ∈[0,1].
 
-**Measurement is the remaining gate** (not code): `c_dist` = corr / `1/MSE` of `1/d` vs the LLM judge, and the
-`c_mem_ceiling` = `1/error_converged` of the membership operator — both read off the **two-judge round** (§14
-scoring, still generating). Until then the buffers hold their defaults (`1.0`), i.e. an equal-confidence
-prior. Other modes (`--struct-blend inside|outside`, `--struct-dir` free weights) remain as A/B controls.
+**First-pass measurement (2026-07-04, `c_dist`/`c_mem_ceiling` now the calibrated defaults `0.35`/`0.67`).**
+Measured on the representative cumulative mix (14 562 pairs both-in-embedding, haiku-judged, target std 0.249),
+both as `corr(signal, SYM judge target)` so they share one scale:
+
+| signal | confidence = corr with SYM judge | coverage |
+|---|---|---|
+| membership `(μ_fwd+μ_bwd)/2` (up_hops proxy) | **`c_mem_ceiling` = +0.669** | nonzero on only **~11 %** of pairs (an ancestor path exists) |
+| distance `1/d` (struct-emb proxy) | **`c_dist` = +0.349** | all pairs |
+
+Two findings that validate the design: (1) **memberships are ~2× more reliable than `1/d`** where they exist
+(+0.67 vs +0.35) — the data confirms "weight `1/d` less"; (2) but memberships cover only **~11 %** of pairs, so
+for the other ~89 % `1/d` is the only signal — which is *exactly* why the per-region `c_mem = c_mem_ceiling·region`
+fallback is load-bearing, not optional. Caveats: this uses the **O(1) struct-emb** distance (true-BFS corr is
+~0.66) and the **up_hops graph proxy** for memberships (not the model's HIER readouts), on **haiku**-judged data —
+**re-measure on the two-judge (§14, LLM) round** and against the model's own memberships. Other modes
+(`--struct-blend inside|outside`, `--struct-dir` free weights) remain A/B controls.
 
 ## Architecture
 
