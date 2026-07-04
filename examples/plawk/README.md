@@ -80,6 +80,30 @@ error, 3 compile error (including a program that calls a predicate no
 propagates the program's own exit status. Compilation uses
 `clang -O2`.
 
+## Benchmarks
+
+`examples/plawk/bench/bench.sh` generates text and binary workloads,
+verifies plawk's output is byte-identical to the system awk on every
+text job (a hard gate before any timing), then reports best-of-3 wall
+times. One run on this repository's CI-like container (4-core Xeon
+2.80GHz, mawk 1.3.4 -- the fast awk -- as the baseline, `clang -O2`),
+N = 2,000,000 records (~29MB text / 32MB binary):
+
+| workload | plawk | mawk | speedup |
+|---|---|---|---|
+| W1 filter-count (text) | 104 ms | 180 ms | 1.7x |
+| W2 aggregate (text) | 139 ms | 309 ms | 2.2x |
+| W3 aggregate (binary records) | 17 ms | 234 ms | 13.8x |
+| W4 group-by (text) | 117 ms | 186 ms | 1.6x |
+
+W3 is the thesis workload: the same aggregation over `i64 f64` binary
+records instead of their text encoding -- no field splitting, no
+number parsing, just typed loads at fixed offsets. Text-mode wins are
+honest but modest (mawk is very fast at what it does); the binary
+representation is where the design pays. Numbers are
+environment-relative; rerun the script for yours (`N=... sh
+examples/plawk/bench/bench.sh`).
+
 ## Run the Phase 0 prototype
 
 ```bash
@@ -127,6 +151,7 @@ swipl -q -s tests/test_plawk_multiline.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/
 swipl -q -s tests/test_plawk_prolog_blocks.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_functions.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_cli.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_bench_smoke.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
