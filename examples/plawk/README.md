@@ -59,6 +59,27 @@ plawk/
   codegen/           AST -> native WAM/LLVM driver fragments              (Phase 2)
 ```
 
+## The plawk CLI
+
+`examples/plawk/bin/plawk` compiles `.plawk` programs to native
+binaries in one step (requires swipl + clang on PATH; run from
+anywhere -- the script locates its own modules):
+
+```bash
+examples/plawk/bin/plawk build program.plawk -o program   # compile
+./program input.txt                                       # like awk
+producer | ./program                                      # stdin
+examples/plawk/bin/plawk run program.plawk input.txt      # build + run
+```
+
+The produced binary follows the awk input convention: first argument
+is the input file, `-` or no argument reads stdin. `--keep-ll` keeps
+the intermediate LLVM IR next to the output. Exit codes: 2 parse
+error, 3 compile error (including a program that calls a predicate no
+`@prolog` block or `function` defines), 4 clang failure; `run`
+propagates the program's own exit status. Compilation uses
+`clang -O2`.
+
 ## Run the Phase 0 prototype
 
 ```bash
@@ -105,6 +126,7 @@ swipl -q -s tests/test_plawk_union_out.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/
 swipl -q -s tests/test_plawk_multiline.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_prolog_blocks.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_functions.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_cli.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.

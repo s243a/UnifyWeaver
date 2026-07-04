@@ -1738,10 +1738,26 @@ echo "Size: $(wc -c < ~w.wasm) bytes"
 ', [LLFile, LLFile, OutputName, OutputName, OutputName, OutputName, OutputName, OutputName]).
 
 %% read_template_file(+Path, -Content)
+% Captured at load time so template paths resolve against the
+% repository the module was loaded from, not the process cwd.
+:- dynamic wam_llvm_module_dir/1.
+:- prolog_load_context(directory, Dir),
+   retractall(wam_llvm_module_dir(_)),
+   assertz(wam_llvm_module_dir(Dir)).
+
 read_template_file(Path, Content) :-
     (   exists_file(Path)
     ->  read_file_to_string(Path, Content, [])
-    ;   format(atom(Content), "; Template not found: ~w", [Path])
+    ;   wam_llvm_module_dir(ModuleDir),
+        format(atom(RootPath), '~w/../../../~w', [ModuleDir, Path]),
+        exists_file(RootPath)
+    ->  read_file_to_string(RootPath, Content, [])
+    ;   % A missing runtime template used to become an IR comment,
+        % producing a module full of undefined types that failed later
+        % at clang with baffling errors. Fail here instead.
+        throw(error(existence_error(source_sink, Path),
+            context(wam_llvm_codegen,
+                'runtime template not found relative to the working directory or the UnifyWeaver source tree')))
     ).
 
 %% compile_predicates_for_llvm(+Predicates, +Options, -NativeCode, -WamCode)
