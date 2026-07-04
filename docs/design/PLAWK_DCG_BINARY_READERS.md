@@ -222,6 +222,16 @@ bridge does everything (guards, i64/f64/blob marshaling,
 `float(name(args))`). One source file now carries the whole Tier-2
 story: native framing above, the payload grammar below.
 
+awk-style expression functions are sugar over the same bridge:
+`function scale(a, b) { return a * b + 1 }` desugars at parse time to
+`scale(A, B, R) :- R is A * B + 1` (awk precedence, `%` → mod, float
+literals allowed; every identifier in the body must be a parameter)
+and installs through the identical clause path. Full imperative awk
+functions (locals, loops, early returns) are deliberately out of
+scope: between `foreach`, `if/else`, and Prolog blocks they don't earn
+their native-codegen complexity, and a hot expression function can be
+inlined natively later without changing the surface.
+
 ## Known design debt
 
 - **(OPEN) WAM lowering of if-then-else/cut in compiled DCG bodies.**
