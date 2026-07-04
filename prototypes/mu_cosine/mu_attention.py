@@ -189,7 +189,7 @@ class Tokenizer:
     """Builds the token set per example and pads a batch. Holds the frozen e5 tables + the DAG."""
 
     def __init__(self, query_tbl, passage_tbl, idx, parents, deg, k=1, beta=1.0, max_anc=8,
-                 struct_tbl=None, struct_residual=False, struct_cap=8):
+                 struct_tbl=None, struct_super=False, struct_cap=8):
         self.q, self.p, self.idx = query_tbl, passage_tbl, idx
         self.parents, self.deg = parents, deg
         self.k, self.beta, self.max_anc = k, beta, max_anc
@@ -197,10 +197,13 @@ class Tokenizer:
         # DUAL-JUDGE (step 3): {name: struct-emb vector} for the O(1) graph-judge proxy `3/(1+‖Δ‖)`. When set,
         # build() emits a per-example `struct_feat` scalar (the SYM logit's structural channel). None ⇒ omitted.
         self.struct = struct_tbl
-        # RESIDUAL variant (user, 2026-07-04): isolate the LATERAL part of graph closeness by subtracting the
-        # DAG's directed hierarchy — 3/(1+‖Δ‖) − 3/(1+up_hops(a→b)) − 3/(1+up_hops(b→a)). Uses graph ancestry
-        # (not the model's μ) ⇒ no feedback loop; local parent-climb ⇒ still cheap at inference.
-        self.struct_residual, self.struct_cap = struct_residual, struct_cap
+        # SUPERPOSITION form (user's theory, 2026-07-04): SYM = AVERAGE of (distance proxy, forward membership,
+        # backward membership) — a superposition of ALL relatedness signals, POSITIVE-signed:
+        #   struct_feat = ( 3/(1+‖Δ‖) + 3/(1+up_hops(a→b)) + 3/(1+up_hops(b→a)) ) / 3
+        # (NOT the earlier subtraction — that sign was a DISTANCE estimator, not symmetric.) up_hops = directed
+        # DAG ancestry (a graph-structural proxy for the subcategory membership, not the model's μ ⇒ no feedback
+        # loop; cheap local parent-climb). Dropping fwd/bwd ⇒ all weight on the distance proxy (plain 3/d).
+        self.struct_super, self.struct_cap = struct_super, struct_cap
 
     def _up_hops(self, x, y, cap):
         """min hops climbing PARENT edges from x up to y (y an ancestor of x); None if not within cap."""
@@ -336,11 +339,12 @@ class Tokenizer:
                 a, b = it[0], it[1]                          # (node, root)
                 va, vb = self.struct.get(a), self.struct.get(b)
                 s = float(3.0 / (1.0 + (va - vb).norm())) if (va is not None and vb is not None) else 0.0
-                if self.struct_residual and s:               # subtract the DAG's directed hierarchy → lateral SYM
-                    fh = self._up_hops(a, b, self.struct_cap)   # b is an ancestor of a (forward/up)
-                    bh = self._up_hops(b, a, self.struct_cap)   # a is an ancestor of b (backward/up)
-                    s -= (3.0 / (1.0 + fh) if fh is not None else 0.0)
-                    s -= (3.0 / (1.0 + bh) if bh is not None else 0.0)
+                if self.struct_super:                        # SYM = AVERAGE(dist proxy, fwd membership, bwd membership)
+                    fh = self._up_hops(a, b, self.struct_cap)   # forward: b is an ancestor of a (a subcat_of b)
+                    bh = self._up_hops(b, a, self.struct_cap)   # backward: a is an ancestor of b
+                    fwd = 3.0 / (1.0 + fh) if fh is not None else 0.0
+                    bwd = 3.0 / (1.0 + bh) if bh is not None else 0.0
+                    s = (s + fwd + bwd) / 3.0                  # positive superposition (sign corrected)
                 sf[bi] = s
             out["struct_feat"] = sf
         return out

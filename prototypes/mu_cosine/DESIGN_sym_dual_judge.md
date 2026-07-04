@@ -69,15 +69,19 @@ judge is *already* a bounded μ, so it needn't re-enter a sigmoid (user, 2026-07
   On the cumulative SYM pairs, **57 %** have both endpoints in the table (the rest fall back to pure e5,
   `struct_feat = 0` — the same graceful degradation as inference on out-of-graph pairs).
 
-**`--struct-residual` (lateral variant).** The step-1 fit found plain `3/d` (+0.66) slightly *beat* the fixed
-residual `3/d − μfwd − μbwd` (+0.61), so plain `3/d` is the default. But that residual used the *model's* μ
-(a training feedback loop) and was tested on the old single-judge pairs. The `--struct-residual` flag instead
-feeds `3/(1+‖Δ‖) − 3/(1+up_hops(a→b)) − 3/(1+up_hops(b→a))`, where `up_hops` is **directed DAG ancestry**
-(graph-structural, *not* model μ ⇒ no feedback loop; a bounded local parent-climb ⇒ still cheap at inference).
-This zeroes hierarchical closeness and keeps only the lateral part — smoke-tested: a parent/child or
-grandparent pair → residual `0.000`, lateral siblings → residual unchanged. Worth an A/B on the **two-judge**
-round, where the semantic judge is explicitly the lateral `see_also`/`assoc` score, so "minus hierarchy" may
-re-earn its keep. Still zero-init ⇒ warm-start no-op.
+**`--struct-super` (superposition average — the corrected theory).** SYM is the **average of ALL relatedness
+signals**: `μ_sym ≈ ( distance_proxy + forward_membership + backward_membership ) / 3` — **positive-signed**, a
+superposition (user, 2026-07-04). Dropping fwd/bwd puts all weight on the distance proxy (plain `3/d`). NB the
+earlier `3/d − μfwd − μbwd` (subtraction) had the **sign backwards** — that is a *distance* estimator (subtract
+the memberships from closeness), not the symmetric one. `--struct-super` feeds
+`( 3/(1+‖Δ‖) + 3/(1+up_hops(a→b)) + 3/(1+up_hops(b→a)) ) / 3`, where `up_hops` is **directed DAG ancestry** (a
+graph-structural proxy for the subcategory membership, *not* the model's μ ⇒ no feedback loop; a bounded local
+parent-climb ⇒ cheap at inference). Smoke-tested: parent/child → 1.0, grandparent → 0.667, lateral siblings →
+0.333 (distance only) — directionals add *positively*. Still zero-init `sym_struct_w`/`λ` ⇒ warm-start no-op.
+
+*Open refinements (user):* (1) **confidence-weighted** average instead of equal 1/3 (weight each judge by its
+reliability); (2) include **element** forward/backward memberships (ELEM operator / `element_of` edges), not
+just subcategory — `up_hops` currently climbs the category-parent DAG only.
 
 **Why the pairwise scalar (not a per-endpoint struct token).** The validated finding is a function of the
 *pairwise* distance, so injecting the single scalar `3/(1+‖Δ‖)` into the SYM logit reproduces the +0.652 dual
