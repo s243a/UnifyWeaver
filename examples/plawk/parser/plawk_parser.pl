@@ -63,9 +63,10 @@ plawk_parse_source(Source, Program, PrologClauses) :-
     string(Source),
     plawk_split_prolog_blocks(Source, Stripped, BlockTexts),
     maplist(plawk_read_block_clauses, BlockTexts, ClausesNested),
-    append(ClausesNested, PrologClauses),
+    append(ClausesNested, BlockClauses),
     string_codes(Stripped, Codes),
-    phrase(plawk_program(Program), Codes).
+    phrase(plawk_program(Program, FunctionClauses), Codes),
+    append(BlockClauses, FunctionClauses, PrologClauses).
 
 plawk_split_prolog_blocks(Source, Stripped, BlockTexts) :-
     split_string(Source, "\n", "", Lines),
@@ -117,12 +118,140 @@ plawk_read_stream_clauses(Stream, Clauses) :-
         plawk_read_stream_clauses(Stream, Rest)
     ).
 
-plawk_program(program(BeginClauses, Rules, EndClauses)) -->
+plawk_program(Program) -->
+    plawk_program(Program, _FunctionClauses).
+
+plawk_program(program(BeginClauses, Rules, EndClauses), FunctionClauses) -->
     ws,
     begin_clauses(BeginClauses),
+    function_defs(FunctionClauses),
     program_rules(Rules),
     end_clauses(EndClauses),
     eos.
+
+%% function_defs(-Clauses)//
+%
+%  awk-style expression functions, pure sugar over the foreign bridge:
+%
+%      function scale(a, b) { return a * b + 1 }
+%
+%  desugars at parse time into the Prolog clause
+%
+%      scale(A, B, R) :- R is A * B + 1.
+%
+%  and is called like any bridged predicate: `scale($1, $2)` as an
+%  integer expression, `float(scale($1, $2))` to keep fractions. The
+%  body is one `return` of an arithmetic expression over the
+%  parameters (awk precedence; % maps to Prolog mod); an identifier
+%  that is not a parameter fails the parse.
+function_defs([Clause | Clauses]) -->
+    function_def(Clause),
+    !,
+    function_defs(Clauses).
+function_defs([]) -->
+    [].
+
+function_def((Head :- Body)) -->
+    "function",
+    identifier_boundary,
+    ws,
+    identifier(Name),
+    ws,
+    "(",
+    ws,
+    function_params(Params),
+    ws,
+    ")",
+    ws,
+    "{",
+    ws,
+    "return",
+    identifier_boundary,
+    ws,
+    function_expr(Params, Pairs, ArithTerm),
+    action_block_close,
+    { pairs_values(Pairs, Vars),
+      append(Vars, [Result], HeadArgs),
+      Head =.. [Name | HeadArgs],
+      Body = (Result is ArithTerm)
+    }.
+
+function_params([Param | Params]) -->
+    identifier(Param),
+    function_params_rest(Params).
+
+function_params_rest([Param | Params]) -->
+    ws,
+    ",",
+    ws,
+    !,
+    identifier(Param),
+    function_params_rest(Params).
+function_params_rest([]) -->
+    [].
+
+% arithmetic over the parameters, with awk precedence: * / % bind
+% tighter than + -, both associate left, parentheses group
+function_expr(Params, Pairs, Term) -->
+    { pairs_keys(Pairs, Params) },
+    function_additive(Pairs, Term).
+
+function_additive(Pairs, Term) -->
+    function_multiplicative(Pairs, First),
+    function_additive_chain(Pairs, First, Term).
+
+function_additive_chain(Pairs, Acc, Term) -->
+    ws,
+    function_add_op(Op),
+    ws,
+    !,
+    function_multiplicative(Pairs, Right),
+    { Acc1 =.. [Op, Acc, Right] },
+    function_additive_chain(Pairs, Acc1, Term).
+function_additive_chain(_Pairs, Term, Term) -->
+    [].
+
+function_add_op(+) --> "+".
+function_add_op(-) --> "-".
+
+function_multiplicative(Pairs, Term) -->
+    function_factor(Pairs, First),
+    function_multiplicative_chain(Pairs, First, Term).
+
+function_multiplicative_chain(Pairs, Acc, Term) -->
+    ws,
+    function_mul_op(Op),
+    ws,
+    !,
+    function_factor(Pairs, Right),
+    { Acc1 =.. [Op, Acc, Right] },
+    function_multiplicative_chain(Pairs, Acc1, Term).
+function_multiplicative_chain(_Pairs, Term, Term) -->
+    [].
+
+function_mul_op(*) --> "*".
+function_mul_op(/) --> "/".
+function_mul_op(mod) --> "%".
+
+function_factor(Pairs, Term) -->
+    "(",
+    ws,
+    !,
+    function_additive(Pairs, Term),
+    ws,
+    ")".
+function_factor(_Pairs, Value) -->
+    float_literal_expr(float_const(Mantissa, Denominator)),
+    !,
+    { Value is Mantissa / Denominator }.
+function_factor(_Pairs, Value) -->
+    integer_codes(ValueCodes),
+    { ValueCodes \== [] },
+    !,
+    { number_codes(Value, ValueCodes) }.
+function_factor(Pairs, Var) -->
+    identifier(Param),
+    { memberchk(Param-Var, Pairs) }.
 
 % Tagged-union programs route rules through per-arm case blocks: the
 % arm index scopes the field types of every rule inside the block.
