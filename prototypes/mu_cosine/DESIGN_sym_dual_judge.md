@@ -66,8 +66,17 @@ the model's trained **ELEM readout** `μ_ELEM(a|b)` (which generalises over e5).
 signal toward the **model's-own-readout route** (HIER + ELEM heads, fwd+bwd) — heavier (extra forward passes)
 and self-referential (a 2nd head on the shared trunk), and it also upgrades subcategory from the `up_hops` proxy
 to the real membership function. **This is its own architectural step** (a follow-up), not a channel tweak;
-coverage should rise well past the proxy's ~11 %. Optionally give subcategory and element **separate** `c_mem`
-confidences (they may have different reliabilities).
+coverage should rise well past the proxy's ~11 %.
+
+*Confidence structure for the four membership terms (user 2026-07-04).* Confidence is per **operator**, not per
+direction: `μ_HIER(a|b)` and `μ_HIER(b|a)` are the same trained function ⇒ same `error_converged` ⇒ **same `c`,
+shared across fwd/bwd** (the direction difference is already the per-pair `region` factor). But **HIER and ELEM
+are separate operators with separate errors** (ELEM was split out because element membership is a distinct,
+harder relation) ⇒ **separate `c_subcat`, `c_elem`** by the inverse-variance principle. General form:
+`μ_graph = Σ_s (c_s·region_s·value_s) / Σ_s (c_s·region_s)`, `s ∈ {dist, subcat_fwd, subcat_bwd, elem_fwd,
+elem_bwd}`, `c` grouped `{c_dist, c_subcat×2, c_elem×2}`. **Empirically decidable:** measure `error_HIER` vs
+`error_ELEM` (or `corr(signal, SYM judge)` — subcat's was +0.669); if close, **collapse to one combined `c_mem`**
+(the simple default — lose nothing); if they diverge, keep separate.
 
 ### Implementation (`--struct-blend precision`, BUILT)
 
