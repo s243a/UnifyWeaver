@@ -1289,6 +1289,23 @@ prolog_call_expr(dyncall_at(Source, Args)) -->
     ws,
     ")",
     !.
+% dyncall@name(args...) selects a named entry of the runtime object (a
+% multi-entry .wamo, one file exposing several predicates via
+% wamo_entries([...])). The @name is a compile-time token -- the entry
+% name is fixed in the source, so the shim resolves its label index once
+% at startup (via @wam_object_entry_index) and caches the PC. Parsed
+% before the bare `dyncall(...)` so the `@` form wins; a plain
+% `dyncall(...)` still falls through to the clause below.
+prolog_call_expr(dyncall_named(Name, Args)) -->
+    "dyncall@",
+    identifier(Name),
+    ws,
+    "(",
+    ws,
+    foreign_args(Args),
+    ws,
+    ")",
+    !.
 prolog_call_expr(dyncall(Args)) -->
     "dyncall",
     ws,

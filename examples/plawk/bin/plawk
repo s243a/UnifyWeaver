@@ -114,6 +114,7 @@ build(File, Out0, KeepLL) :-
     % loader emitted into the host module so it can load and run a runtime
     % object.
     (   ( plawk_program_dyncall_arities(Program, DynArities), DynArities \== []
+        ; plawk_program_dyncall_named_entries(Program, DynNamed), DynNamed \== []
         ; plawk_program_dyncall_at_arities(Program, DynAtArities), DynAtArities \== []
         ; plawk_program_dyncall_float_arities(Program, DynFArities), DynFArities \== []
         ; plawk_program_dyncall_at_float_arities(Program, DynAtFArities), DynAtFArities \== []

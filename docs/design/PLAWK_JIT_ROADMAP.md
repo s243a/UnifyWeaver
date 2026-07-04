@@ -20,7 +20,8 @@ The dynamic-grammar surface is feature-complete for numeric work:
 | `dyncall_at(Source, args...)` (runtime-chosen source) + path cache (`on`/`mtime`/`off`) | #3465 |
 | `float(dyncall(...))` / `float(dyncall_at(...))` (double returns) | #3467 |
 | `blob(dyncall(...))` / `blob(dyncall_at(...))` (opaque byte returns) | #3470 |
-| Multi-entry objects — writer `wamo_entries([...])` + loader name resolution (`@wam_object_entry_index`) | this PR |
+| Multi-entry objects — writer `wamo_entries([...])` + loader name resolution (`@wam_object_entry_index`) | #3471 |
+| plawk surface A — `dyncall@name(...)` (named entry, compile-time-fixed, cached PC) | this PR |
 
 A grammar is compiled ahead of time to a `.wamo`, loaded at runtime (from a
 fixed path, an in-memory buffer, or a per-call runtime source), cached with
@@ -79,33 +80,70 @@ for item 4.
 the same `(ptr,len)` shape and are the natural follow-on (each needs the
 blob node wired into that consumer's path).
 
-### 3. Multi-entry objects — *LANDED (mechanism); surface deferred*
+### 3. Multi-entry objects — *LANDED (mechanism + surface A)*
 
-**What:** one `.wamo` can now expose several named entry predicates. The
-writer takes `wamo_entries([P/A, ...])` and emits a name→label-index table
-early in the stream (right after the default-entry index), so
-`@wam_object_load` steps past it with a tiny skip loop and pays nothing at
-call time. Two new loader primitives resolve a name to its label index:
-`@wam_object_entry_index_bytes(buf, total, name, namelen)` scans the table
-in an already-read buffer (reads only the early table, stops at the first
-match — never touches the code section), and `@wam_object_entry_index(path,
-name, namelen)` is the path convenience (reads the file, scans, frees).
-`@wam_label_pc` turns the returned label index into a PC to call against the
-loaded VM. Verified end to end: one object exposing `answer/1` and
-`answer_swapped/1` (both over a shared `sum3/3`), a host that loads it once
-and resolves each name to a distinct PC → `119` and `1020`; an unknown name
-resolves to `-1`.
+**What (mechanism):** one `.wamo` can expose several named entry
+predicates. The writer takes `wamo_entries([P/A, ...])` and emits a
+name→label-index table early in the stream (right after the default-entry
+index), so `@wam_object_load` steps past it with a tiny skip loop and pays
+nothing at call time. Two loader primitives resolve a name to its label
+index: `@wam_object_entry_index_bytes(buf, total, name, namelen)` scans the
+table in an already-read buffer (reads only the early table, stops at the
+first match — never touches the code section), and
+`@wam_object_entry_index(path, name, namelen)` is the path convenience
+(reads the file, scans, frees). `@wam_label_pc` turns the returned label
+index into a PC to call against the loaded VM.
 
-**Deferred to a follow-up:** the plawk *surface* — `dyncall@parse($1)` /
-`dyncall@classify($1)` over a single `DYNLOAD`. The naming fork noted below
-(binding entries at declaration vs. overloading `dyncall`'s arg list) still
-needs settling, but the loader mechanism it will ride is done.
+**What (surface A — `dyncall@name`):** `dyncall@square($1)` /
+`dyncall@cube($1)` over a single `DYNLOAD` selects a named entry at the
+call site. The `@name` is a compile-time token, so the shim
+(`@plawk_dyncall_named_<name>_<N>`) resolves the entry's label index once
+at startup via `@wam_object_entry_index`, caches the PC in a per-entry
+global (sentinel `-1` = unresolved), and every later call skips straight to
+the object call — no per-call dispatch. A name no entry exposes yields `0`
+(the shim's resolve-fail path). Rides `emit_wamo_loader(true)` + per-site
+entry collection, so a program with no named calls emits none of this IR.
+Verified end to end: one object exposing `square/2` and `cube/2`, summed by
+name in one binary → `c - s = 22` (reachable only if both resolved).
+
+**Deferred follow-ons:** `float(dyncall@name(...))` / `blob(dyncall@name(...))`
+(the named form is i64-only today; the float/blob wrappers reuse the same
+resolver — mechanical), and `dyncall_at@name(Src, ...)` (named entry on a
+*runtime* source, which needs the PC cached per (object, name) pair rather
+than per entry). And surface **B** below.
+
+**Surface B — declaration-bound library names (planned):** for a fixed
+`DYNLOAD` shipping a known family, bind entries once at declaration and call
+them like ordinary functions: `DYNENTRY parse` → `parse($1)`. Cleaner call
+sites than A, and resolution stays static (baked PC) because the object is
+compile-time-fixed. **A is for the userspace/dynamic case (call site says
+`@name`, cost is visible); B is for the pre-compiled library case (bare
+call, cost read from the declaration).** The rule that makes B coherent:
+*entry resolution inherits the object's sourcing* — fixed `DYNLOAD` ⇒ static
+PC bake; a runtime source ⇒ per-load resolution. Build B when a real
+multi-entry library exists and A's `@name` call sites feel noisy.
+
+**Namespace rule for B (settled):** `DYNENTRY name` **reserves** `name` for
+the compiled object — it removes that identifier from userspace, so the two
+name sets are disjoint *by construction*. A bare `name(...)` call resolves
+by set membership: in the `DYNENTRY` set → compiled entry; otherwise →
+userspace (foreign call / builtin / user function). A rule freely mixes both
+(`parse($1)` compiled, `score($2)` userspace) with no per-call ambiguity.
+Declaring `DYNENTRY` over a name that is already a builtin/foreign name is a
+**compile error**, never silent shadowing — so B never calls a userspace
+name. **Optional guaranteed-no-shadow prefix:** allow a sigil/namespace
+prefix (e.g. `dyn::parse($1)` or a configurable `DYNPREFIX`) so a program can
+force compiled-space names into their own lexical zone and *statically*
+guarantee no collision with userspace, at the cost of slightly noisier call
+sites — the same static-safety-vs-brevity trade B itself makes, offered per
+program.
 
 **Why:** today one `.wamo` = one entry, so a "grammar library" means one
 file per predicate. Multi-entry lets a related family ship as one object.
 Purely additive; no dependency on the other items.
 
-**Effort:** moderate (there's a surface fork to settle). **Depends on:** nothing.
+**Effort:** A landed. B is moderate (declaration table + a resolution pass +
+the reserved-name check). **Depends on:** nothing.
 
 ### 4. Binary-data returns — structured records (deserialization) — *large, capstone*
 
