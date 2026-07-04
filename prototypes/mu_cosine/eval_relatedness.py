@@ -29,7 +29,10 @@ def build_model(ckpt, dev):
     m = MuAttention(d_model=cfg["d_model"], n_heads=cfg["heads"], n_layers=cfg["layers"],
                     n_ops=sz("op_emb.weight", len(OPS)), n_corpus=sz("corpus_emb.weight", 2),
                     n_judge=sz("judge_emb.weight", 2), n_nodetype=sz("nodetype_emb.weight", 4)).to(dev)
-    miss, unexp = m.load_state_dict(sd, strict=False); assert not unexp and all(("account" in k or "prefix" in k) for k in miss)
+    # allow keys absent from older checkpoints: account/prefix tags + the SYM dual-judge struct/precision params
+    # (sym_struct_w, struct_lambda, struct_g, struct_h, prec_g, prec_h, c_dist, c_mem_ceiling) — all zero-init/no-op.
+    _ok = ("account", "prefix", "struct", "prec_", "c_dist", "c_mem")
+    miss, unexp = m.load_state_dict(sd, strict=False); assert not unexp and all(any(t in k for t in _ok) for k in miss)
     m.eval(); return m
 
 

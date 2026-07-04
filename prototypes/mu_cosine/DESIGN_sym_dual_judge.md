@@ -78,6 +78,14 @@ elem_bwd}`, `c` grouped `{c_dist, c_subcat×2, c_elem×2}`. **Empirically decida
 `error_ELEM` (or `corr(signal, SYM judge)` — subcat's was +0.669); if close, **collapse to one combined `c_mem`**
 (the simple default — lose nothing); if they diverge, keep separate.
 
+*Measured (`measure_membership_confidence.py`, `model_prod.pt`, 2500 pairs).* Model readouts vs SYM judge:
+**`c_elem` = +0.815 > `c_subcat` = +0.715** (up_hops proxy was +0.669) — three findings: (1) **element is the
+STRONGEST membership signal** (validates including it — it's not just complementary, it's the best); (2) gap
+0.10 ⇒ **keep `c_subcat`/`c_elem` separate** (confirmed); (3) the model HIER readout (+0.715) beats the up_hops
+proxy (+0.669) ⇒ **use model readouts** (and element has no proxy anyway). *Caveat:* measured on model_prod's
+training pairs ⇒ absolute values likely inflated by leakage; the **relative ordering `elem ≥ subcat > dist`** is
+the robust takeaway — set the actual `c` buffers from **held-out** error / the two-judge round.
+
 ### Implementation (`--struct-blend precision`, BUILT)
 
 Theory → code mapping (`mu_attention.py`, `train_mu_attention.py`):
