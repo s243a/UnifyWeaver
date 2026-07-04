@@ -2,7 +2,8 @@
 % Copyright (c) 2026 John William Creighton (s243a)
 
 :- module(plawk_parser, [
-    plawk_parse_string/2
+    plawk_parse_string/2,
+    plawk_parse_source/3
 ]).
 
 %% plawk_parse_string(+Source, -Program) is semidet.
@@ -40,16 +41,217 @@
 %  The AST is deliberately small and explicit so later syntax can extend it
 %  without changing the native codegen contract.
 plawk_parse_string(Source, Program) :-
-    string(Source),
-    string_codes(Source, Codes),
-    phrase(plawk_program(Program), Codes).
+    plawk_parse_source(Source, Program, _PrologClauses).
 
-plawk_program(program(BeginClauses, Rules, EndClauses)) -->
+%% plawk_parse_source(+Source, -Program, -PrologClauses) is semidet.
+%
+%  Like plawk_parse_string/2, but also lifts embedded Prolog blocks:
+%
+%      @prolog
+%      weight(I, F, R) :- R is I * F.
+%      @end
+%
+%  Block markers sit alone on their line (leading/trailing blanks ok).
+%  A heredoc-style tag makes the fence unambiguous when the Prolog
+%  text itself contains an @end-shaped line: `@prolog-TAG` closes only
+%  at `@end-TAG` with the exact same tag. Blocks may appear anywhere
+%  between top-level program parts; their text never routes through
+%  the awk grammar -- it is term-read as ordinary Prolog and returned
+%  as PrologClauses for the compile driver to hand to
+%  write_wam_llvm_project alongside the program.
+plawk_parse_source(Source, Program, PrologClauses) :-
+    string(Source),
+    plawk_split_prolog_blocks(Source, Stripped, BlockTexts),
+    maplist(plawk_read_block_clauses, BlockTexts, ClausesNested),
+    append(ClausesNested, BlockClauses),
+    string_codes(Stripped, Codes),
+    phrase(plawk_program(Program, FunctionClauses), Codes),
+    append(BlockClauses, FunctionClauses, PrologClauses).
+
+plawk_split_prolog_blocks(Source, Stripped, BlockTexts) :-
+    split_string(Source, "\n", "", Lines),
+    plawk_split_block_lines(Lines, KeptLines, BlockTexts),
+    atomic_list_concat(KeptLines, '\n', StrippedAtom),
+    atom_string(StrippedAtom, Stripped).
+
+plawk_split_block_lines([], [], []).
+plawk_split_block_lines([Line | Lines], KeptLines, [BlockText | BlockTexts]) :-
+    plawk_prolog_open_marker(Line, EndMarker),
+    !,
+    plawk_take_block_lines(Lines, EndMarker, BlockLines, Rest),
+    atomic_list_concat(BlockLines, '\n', BlockAtom),
+    atom_string(BlockAtom, BlockText),
+    plawk_split_block_lines(Rest, KeptLines, BlockTexts).
+plawk_split_block_lines([Line | Lines], [Line | KeptLines], BlockTexts) :-
+    plawk_split_block_lines(Lines, KeptLines, BlockTexts).
+
+plawk_prolog_open_marker(Line, EndMarker) :-
+    split_string(Line, "", " \t", [Trimmed]),
+    ( Trimmed == "@prolog"
+    ->  EndMarker = "@end"
+    ;   string_concat("@prolog-", Tag, Trimmed),
+        Tag \== "",
+        string_concat("@end-", Tag, EndMarker)
+    ).
+
+% an unterminated block fails the parse (no clause for [])
+plawk_take_block_lines([Line | Lines], EndMarker, BlockLines, Rest) :-
+    split_string(Line, "", " \t", [Trimmed]),
+    ( Trimmed == EndMarker
+    ->  BlockLines = [],
+        Rest = Lines
+    ;   BlockLines = [Line | BlockLines1],
+        plawk_take_block_lines(Lines, EndMarker, BlockLines1, Rest)
+    ).
+
+plawk_read_block_clauses(BlockText, Clauses) :-
+    setup_call_cleanup(
+        open_string(BlockText, Stream),
+        plawk_read_stream_clauses(Stream, Clauses),
+        close(Stream)).
+
+plawk_read_stream_clauses(Stream, Clauses) :-
+    read_term(Stream, Term, []),
+    ( Term == end_of_file
+    ->  Clauses = []
+    ;   Clauses = [Term | Rest],
+        plawk_read_stream_clauses(Stream, Rest)
+    ).
+
+plawk_program(Program) -->
+    plawk_program(Program, _FunctionClauses).
+
+plawk_program(program(BeginClauses, Rules, EndClauses), FunctionClauses) -->
     ws,
     begin_clauses(BeginClauses),
+    function_defs(FunctionClauses),
     program_rules(Rules),
     end_clauses(EndClauses),
     eos.
+
+%% function_defs(-Clauses)//
+%
+%  awk-style expression functions, pure sugar over the foreign bridge:
+%
+%      function scale(a, b) { return a * b + 1 }
+%
+%  desugars at parse time into the Prolog clause
+%
+%      scale(A, B, R) :- R is A * B + 1.
+%
+%  and is called like any bridged predicate: `scale($1, $2)` as an
+%  integer expression, `float(scale($1, $2))` to keep fractions. The
+%  body is one `return` of an arithmetic expression over the
+%  parameters (awk precedence; % maps to Prolog mod); an identifier
+%  that is not a parameter fails the parse.
+function_defs([Clause | Clauses]) -->
+    function_def(Clause),
+    !,
+    function_defs(Clauses).
+function_defs([]) -->
+    [].
+
+function_def((Head :- Body)) -->
+    "function",
+    identifier_boundary,
+    ws,
+    identifier(Name),
+    ws,
+    "(",
+    ws,
+    function_params(Params),
+    ws,
+    ")",
+    ws,
+    "{",
+    ws,
+    "return",
+    identifier_boundary,
+    ws,
+    function_expr(Params, Pairs, ArithTerm),
+    action_block_close,
+    { pairs_values(Pairs, Vars),
+      append(Vars, [Result], HeadArgs),
+      Head =.. [Name | HeadArgs],
+      Body = (Result is ArithTerm)
+    }.
+
+function_params([Param | Params]) -->
+    identifier(Param),
+    function_params_rest(Params).
+
+function_params_rest([Param | Params]) -->
+    ws,
+    ",",
+    ws,
+    !,
+    identifier(Param),
+    function_params_rest(Params).
+function_params_rest([]) -->
+    [].
+
+% arithmetic over the parameters, with awk precedence: * / % bind
+% tighter than + -, both associate left, parentheses group
+function_expr(Params, Pairs, Term) -->
+    { pairs_keys(Pairs, Params) },
+    function_additive(Pairs, Term).
+
+function_additive(Pairs, Term) -->
+    function_multiplicative(Pairs, First),
+    function_additive_chain(Pairs, First, Term).
+
+function_additive_chain(Pairs, Acc, Term) -->
+    ws,
+    function_add_op(Op),
+    ws,
+    !,
+    function_multiplicative(Pairs, Right),
+    { Acc1 =.. [Op, Acc, Right] },
+    function_additive_chain(Pairs, Acc1, Term).
+function_additive_chain(_Pairs, Term, Term) -->
+    [].
+
+function_add_op(+) --> "+".
+function_add_op(-) --> "-".
+
+function_multiplicative(Pairs, Term) -->
+    function_factor(Pairs, First),
+    function_multiplicative_chain(Pairs, First, Term).
+
+function_multiplicative_chain(Pairs, Acc, Term) -->
+    ws,
+    function_mul_op(Op),
+    ws,
+    !,
+    function_factor(Pairs, Right),
+    { Acc1 =.. [Op, Acc, Right] },
+    function_multiplicative_chain(Pairs, Acc1, Term).
+function_multiplicative_chain(_Pairs, Term, Term) -->
+    [].
+
+function_mul_op(*) --> "*".
+function_mul_op(/) --> "/".
+function_mul_op(mod) --> "%".
+
+function_factor(Pairs, Term) -->
+    "(",
+    ws,
+    !,
+    function_additive(Pairs, Term),
+    ws,
+    ")".
+function_factor(_Pairs, Value) -->
+    float_literal_expr(float_const(Mantissa, Denominator)),
+    !,
+    { Value is Mantissa / Denominator }.
+function_factor(_Pairs, Value) -->
+    integer_codes(ValueCodes),
+    { ValueCodes \== [] },
+    !,
+    { number_codes(Value, ValueCodes) }.
+function_factor(Pairs, Var) -->
+    identifier(Param),
+    { memberchk(Param-Var, Pairs) }.
 
 % Tagged-union programs route rules through per-arm case blocks: the
 % arm index scopes the field types of every rule inside the block.
@@ -109,6 +311,15 @@ action_block(Actions) -->
     "{",
     ws,
     actions(Actions),
+    action_block_close.
+
+% a trailing `;` or newline before the closing brace is harmless
+action_block_close -->
+    action_sep,
+    !,
+    "}",
+    ws.
+action_block_close -->
     ws,
     "}",
     ws.
@@ -537,16 +748,54 @@ for_in_body([PrintAction]) -->
 
 actions([Action | Actions]) -->
     action(Action),
-    actions_rest(Actions).
+    actions_rest(Action, Actions).
 
-actions_rest([Action | Actions]) -->
-    ws,
-    ";",
-    ws,
-    !,
+actions_rest(_Prev, [Action | Actions]) -->
+    action_sep,
     action(Action),
-    actions_rest(Actions).
-actions_rest([]) -->
+    !,
+    actions_rest(Action, Actions).
+% as in awk/C, no separator is needed after a compound statement's
+% closing brace (whose trailing ws has already been consumed)
+actions_rest(Prev, [Action | Actions]) -->
+    { plawk_block_action(Prev) },
+    action(Action),
+    !,
+    actions_rest(Action, Actions).
+actions_rest(_Prev, []) -->
+    [].
+
+plawk_block_action(if(_Pattern, _Then, _Else)).
+plawk_block_action(foreach(_Body)).
+
+%% action_sep//0
+%
+%  One statement separator, as in awk: any run of blanks, comments,
+%  semicolons, and newlines containing at least one `;` or newline.
+%  (A trailing separator before `}` is harmless: the following
+%  action// fails and actions_rest backtracks to its empty clause.)
+action_sep -->
+    action_sep_scan(no).
+
+action_sep_scan(_Seen) -->
+    ";",
+    !,
+    action_sep_scan(yes).
+action_sep_scan(_Seen) -->
+    "\n",
+    !,
+    action_sep_scan(yes).
+action_sep_scan(Seen) -->
+    [Code],
+    { Code =\= 0'\n, code_type(Code, space) },
+    !,
+    action_sep_scan(Seen).
+action_sep_scan(Seen) -->
+    "#",
+    !,
+    comment_rest,
+    action_sep_scan(Seen).
+action_sep_scan(yes) -->
     [].
 
 action(Action) -->
@@ -1161,12 +1410,30 @@ required_ws -->
     { code_type(Code, space) },
     ws.
 
+% Whitespace, including newlines and awk-style # comments (a comment
+% runs to end of line; its terminating newline still counts as a
+% statement separator in action_sep//0). `#` is not a token anywhere
+% in the surface, and strings/regex bodies never route through ws//0,
+% so comments cannot be consumed inside literals.
 ws -->
     [Code],
     { code_type(Code, space) },
     !,
     ws.
 ws -->
+    "#",
+    !,
+    comment_rest,
+    ws.
+ws -->
+    [].
+
+comment_rest -->
+    [Code],
+    { Code =\= 0'\n },
+    !,
+    comment_rest.
+comment_rest -->
     [].
 
 eos([], []).

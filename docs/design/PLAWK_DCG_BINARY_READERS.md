@@ -207,8 +207,39 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
    call (one shared buffer), NUL-free payloads (the transient atom is
    a C string), blob output is a later slice.
 
+## Embedded Prolog blocks (landed)
+
+`@prolog ... @end` blocks in the plawk source hold ordinary Prolog
+clauses (including DCG rules, which expand on the way in). Markers sit
+alone on their line; a heredoc-style tag (`@prolog-TAG ... @end-TAG`,
+exact tag match) makes the fence unambiguous when the Prolog text
+itself contains an `@end`-shaped line. `plawk_parse_source/3` lifts
+the blocks before the awk grammar runs and term-reads them;
+`plawk_prolog_block_preds/2` installs the clauses (reset-then-assert,
+so recompiles replace) and returns the `user:Name/Arity` list that
+`write_wam_llvm_project/3` takes — from there the existing foreign
+bridge does everything (guards, i64/f64/blob marshaling,
+`float(name(args))`). One source file now carries the whole Tier-2
+story: native framing above, the payload grammar below.
+
+awk-style expression functions are sugar over the same bridge:
+`function scale(a, b) { return a * b + 1 }` desugars at parse time to
+`scale(A, B, R) :- R is A * B + 1` (awk precedence, `%` → mod, float
+literals allowed; every identifier in the body must be a parameter)
+and installs through the identical clause path. Full imperative awk
+functions (locals, loops, early returns) are deliberately out of
+scope: between `foreach`, `if/else`, and Prolog blocks they don't earn
+their native-codegen complexity, and a hot expression function can be
+inlined natively later without changing the surface.
+
 ## Known design debt
 
+- **(OPEN) WAM lowering of if-then-else/cut in compiled DCG bodies.**
+  An embedded grammar written with `( "," -> ... ; ... )` and a cut in
+  the digits rule compiled but returned 0 at runtime; the same grammar
+  respelled as plain clause alternation (greedy clause before stop
+  clause, tier2 style) works. Needs a minimal WAM-target reproduction;
+  until then, prefer clause alternation in embedded grammars.
 - **(FIXED) WAM bug: constant-in-list clause heads never matched.**
   `unify_constant` built its read-mode comparison value with a
   hardcoded Atom tag (op2 was unused), so an integer constant in a
