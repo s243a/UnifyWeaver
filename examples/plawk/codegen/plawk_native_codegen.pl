@@ -423,6 +423,53 @@ plawk_program_native_driver_ir(
             RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+% Tagged-union group-by to binary output: case-block rules count per
+% arm, END iterates the table and writebins one fixed-layout record
+% per group.
+plawk_program_native_driver_ir(
+    program(BeginClauses, case_blocks(CaseBlocks), [end([for_in(var(LoopVar), var(ArrayName), [writebin(Fields)])])]),
+    InputPath,
+    DriverIR
+) :-
+    plawk_record_descriptor(BeginClauses, Descriptor),
+    Descriptor = binfmt_union(Arms),
+    plawk_union_flatten_rules(CaseBlocks, Arms, Rules),
+    plawk_begin_outfmt_types(BeginClauses, OutTypes),
+    forall(member(OutType, OutTypes), memberchk(OutType, [i64, f64])),
+    length(OutTypes, ArgCount),
+    length(Fields, ArgCount),
+    maplist(plawk_forin_writebin_field(LoopVar), Fields),
+    findall(LookupArrayName,
+        member(assoc(var(LookupArrayName), var(LoopVar)), Fields),
+        LookupArrays),
+    plawk_forin_assoc_plan(Rules, ArrayName, LookupArrays, AssocPlan),
+    plawk_assoc_record_program_ok(Descriptor, Rules, []),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_binfmt_record_size(binfmt(OutTypes), OutRecordSize),
+    plawk_writebin_entry_lines(outfmt(OutTypes, OutRecordSize), WritebinEntryIR),
+    plawk_assoc_rule_chain_ir(AssocPlan, Descriptor, AssocRuleGlobalIR, AssocChainIR),
+    plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
+    plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
+    plawk_forin_end_writebin_ir(LoopVar, ArrayName, OutTypes, Fields, AssocPlan,
+        EndPrintIR),
+    plawk_writebin_globals(outfmt(OutTypes, OutRecordSize), WritebinGlobalIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
+        [BeginGlobalIR, AssocRuleGlobalIR, WritebinGlobalIR]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR0),
+    plawk_combine_entry_ir(CombinedEntrySetupIR0, WritebinEntryIR, CombinedEntrySetupIR),
+    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w',
+        [EndPrintIR]),
+    plawk_emit_record_driver_ir(Descriptor, InputPath,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
+            AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
 % Binary group-by to binary output: iterate the table and writebin one
 % fixed-layout record per group. Binary input mode only -- text-mode
 % keys are interned atom ids, which would be meaningless bytes in the

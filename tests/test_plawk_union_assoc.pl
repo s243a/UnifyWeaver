@@ -61,6 +61,25 @@ test(surface_union_groupby_tag_guards_and_lookup) :-
         [m(20, 1.5), e("a", 20), m(5, 2.5), m(20, 1.5), e("b", 5)],
         "3 1\n").
 
+test(surface_union_groupby_forin_writebin) :-
+    % Group-by to BINARY output over a union stream: one (key, count)
+    % record per group.
+    build_uas_probe("BEGIN { BINFMT = \"case(i64 f64 | lps16 i64)\" ; OUTFMT = \"i64 i64\" } case 0 { { counts[$1]++ } } case 1 { { counts[$2]++ } } END { for (k in counts) writebin k, counts[k] }\n",
+        Dir, BinPath),
+    directory_file_path(Dir, 'input.bin', InputPath),
+    write_uas_records(InputPath, [m(5, 1.5), e("x", 9), m(5, 2.5), e("y", 5), m(9, 1.5)]),
+    process_create(BinPath, [],
+                   [stdout(pipe(Stdout)), stderr(std), process(Pid)]),
+    set_stream(Stdout, type(binary)),
+    read_string(Stdout, _, Bytes),
+    close(Stdout),
+    process_wait(Pid, Status),
+    assertion(Status == exit(0)),
+    decode_i64_pairs(Bytes, Records0),
+    msort(Records0, Records),
+    assertion(Records == [5-3, 9-2]),
+    !.
+
 :- end_tests(plawk_union_assoc).
 
 % --- helpers ---------------------------------------------------------------
@@ -93,6 +112,26 @@ write_uas_record(Out, e(S, C)) :-
     write_i64_le(Out, Len),
     forall(member(Code, Codes), put_byte(Out, Code)),
     write_i64_le(Out, C).
+
+le_i64(Bytes, Value) :-
+    foldl([B, I0-V0, I-V]>>( V is V0 + (B << (8 * I0)), I is I0 + 1 ),
+        Bytes, 0-0, _-Unsigned),
+    ( Unsigned >= 0x8000000000000000
+    -> Value is Unsigned - 0x10000000000000000
+    ;  Value = Unsigned
+    ).
+
+decode_i64_pairs(Bytes, Records) :-
+    string_codes(Bytes, Codes),
+    decode_i64_pairs_codes(Codes, Records).
+
+decode_i64_pairs_codes([], []).
+decode_i64_pairs_codes(Codes, [A-B | Records]) :-
+    length(ABytes, 8), length(BBytes, 8),
+    append(ABytes, Rest0, Codes), append(BBytes, Rest, Rest0),
+    le_i64(ABytes, A),
+    le_i64(BBytes, B),
+    decode_i64_pairs_codes(Rest, Records).
 
 build_uas_probe(Source, Dir, BinPath) :-
     tmp_root(Root),
