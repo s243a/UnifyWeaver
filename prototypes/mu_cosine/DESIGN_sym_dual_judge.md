@@ -45,6 +45,16 @@ Two axes, and the confidence principle (#3356) applies to **only one** of them:
   **`1/d` as the low-confidence fallback** (the role e5-text played in the anchored basis). Precision-weighted
   (inverse-variance) fusion of two estimators of different reliability.
 
+**Division of labor — `1/d` captures SIBLINGS (user 2026-07-04).** The membership operators are inherently
+**vertical** (ancestor↔descendant); **siblings have no directional membership** (neither is the other's
+ancestor) so all four membership terms → 0. But siblings are related (same parent, `d≈2` → high `1/d`), so
+**`1/d` is the dedicated LATERAL/sibling channel**, not a generic fallback. Measured (14 562 pairs, classified
+on the graph): sibling/cousin pairs are **37 %** of the set with real relatedness (target μ 0.13 vs distant
+0.00) and **0 % membership coverage**, yet `corr(1/d, SYM) = +0.136` there — `1/d` is the *sole* structural
+signal for that 37 %. Vertical pairs (11 %, μ 0.49) are where memberships lead. This is *why* the dual judge
+beats either judge alone: memberships cover the vertical axis, `1/d` covers the lateral/sibling axis, e5 covers
+semantics. (The old "lateral residual" intuition was this — right concept, wrong sign.)
+
 **The two confidences (each an error/agreement measurement, not a free knob):**
 - **`c_dist` — global, fixed.** The distance proxy's reliability = how well `1/d` **agrees with the LLM judge**
   on the two-judge data (corr or `1/MSE`). One number. (Gated on the §14 two-judge scoring — the LLM judge is
