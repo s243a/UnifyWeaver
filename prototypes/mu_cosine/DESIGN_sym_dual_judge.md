@@ -57,9 +57,17 @@ Two axes, and the confidence principle (#3356) applies to **only one** of them:
   width δ** that grows in sparse regions. Cheap per-region proxy: node **degree / local graph density** (already
   in the tokenizer as `deg`) or training frequency; richer: an actual μ-uncertainty band (`boundary_band.py`).
 
-**`μ_fwd`/`μ_bwd`** = the model's learned HIER (subcategory) memberships (the data-rich signal), i.e. a second
-readout head on the shared trunk (a well-defined self-reference, not the `up_hops` proxy). Possibly extend with
-**element** fwd/bwd (ELEM op) as further membership terms.
+**`μ_fwd`/`μ_bwd` — the membership signal must include ELEMENT, not just subcategory (user 2026-07-04).** The
+v1 `mem` uses only `up_hops` on the category-parent DAG = **subcategory (HIER) only**. It should also carry the
+**element** (ELEM) memberships, fwd and bwd. **Asymmetry found:** subcategory has a broad graph (category-parent
+DAG → cheap `up_hops` proxy), but there is **no broad element graph** — `element_of` edges live only in the
+training pairs (643 distinct nodes), so element membership **cannot** use a graph proxy and **must** come from
+the model's trained **ELEM readout** `μ_ELEM(a|b)` (which generalises over e5). That pulls the whole membership
+signal toward the **model's-own-readout route** (HIER + ELEM heads, fwd+bwd) — heavier (extra forward passes)
+and self-referential (a 2nd head on the shared trunk), and it also upgrades subcategory from the `up_hops` proxy
+to the real membership function. **This is its own architectural step** (a follow-up), not a channel tweak;
+coverage should rise well past the proxy's ~11 %. Optionally give subcategory and element **separate** `c_mem`
+confidences (they may have different reliabilities).
 
 ### Implementation (`--struct-blend precision`, BUILT)
 
