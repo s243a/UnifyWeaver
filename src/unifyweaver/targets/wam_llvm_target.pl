@@ -20632,4 +20632,56 @@ fail:
   %f0 = insertvalue { i64, i1 } undef, i64 0, 0
   %f1 = insertvalue { i64, i1 } %f0, i1 false, 1
   ret { i64, i1 } %f1
+}
+
+; Double-returning variant of @wam_object_call_i64: the entry output cell
+; may bind to an Integer or a Float, and @value_to_double promotes either
+; to double. Returns { value, ok }; ok=false on failure or a non-numeric
+; binding. Same heap-save/arena-rewind discipline for constant memory.
+define { double, i1 } @wam_object_call_f64(%WamState* %vm, i32 %entry_pc, i32 %nargs, %Value* %args, i32 %out_reg) {
+entry:
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+do_call:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs_saved = load i32, i32* %hs_ptr
+  %unb = call %Value @value_unbound(i8* null)
+  %out_addr = call i32 @wam_heap_push(%WamState* %vm, %Value %unb)
+  %out_ref = call %Value @value_ref(i32 %out_addr)
+  call void @wam_prepare_call(%WamState* %vm, i32 %entry_pc)
+  br label %argloop
+argloop:
+  %ai = phi i32 [ 0, %do_call ], [ %ai1, %argstep ]
+  %adone = icmp sge i32 %ai, %nargs
+  br i1 %adone, label %args_done, label %argstep
+argstep:
+  %aidx64 = sext i32 %ai to i64
+  %ap = getelementptr %Value, %Value* %args, i64 %aidx64
+  %av = load %Value, %Value* %ap
+  call void @wam_set_reg(%WamState* %vm, i32 %ai, %Value %av)
+  %ai1 = add i32 %ai, 1
+  br label %argloop
+args_done:
+  call void @wam_set_reg(%WamState* %vm, i32 %out_reg, %Value %out_ref)
+  %ok = call i1 @run_loop(%WamState* %vm)
+  br i1 %ok, label %read_out, label %rewind_fail
+read_out:
+  %out = call %Value @wam_deref_value(%WamState* %vm, %Value %out_ref)
+  %out_is_num = call i1 @value_is_number(%Value %out)
+  br i1 %out_is_num, label %good, label %rewind_fail
+good:
+  %fval = call double @value_to_double(%Value %out)
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  %g0 = insertvalue { double, i1 } undef, double %fval, 0
+  %g1 = insertvalue { double, i1 } %g0, i1 true, 1
+  ret { double, i1 } %g1
+rewind_fail:
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  br label %fail
+fail:
+  %f0 = insertvalue { double, i1 } undef, double 0.0, 0
+  %f1 = insertvalue { double, i1 } %f0, i1 false, 1
+  ret { double, i1 } %f1
 }').

@@ -389,6 +389,21 @@ by a filename column and reuses a repeated file (sum 30 = 7+9+7+7), `off`
 reloads each call, and `mtime` returns 7, then 11 after `g.wamo` is
 redefined — same binary, no rebuild.
 
+**Float returns (`float(dyncall(...))`).** `dyncall`/`dyncall_at` read the
+entry output as an Integer; `float(dyncall(...))` and
+`float(dyncall_at(...))` read it as a double via a `@wam_object_call_f64`
+primitive (`@value_is_number` + `@value_to_double`), exactly like the
+compiled bridge's `float(name(args))`. This matters two ways: it puts an
+integer result into the f64 lane so plawk-side float math applies, and —
+crucially — a grammar whose output is a *Float* (e.g. `R is X / 2`, since
+runtime `/` yields float) is **unreadable by the integer form**, which
+demands tag=1 and returns 0. `tests/test_plawk_dyncall_float.pl` pins the
+contrast: for a `half(X,R):-R is X/2` grammar and input 7, `dyncall($1)`
+yields `0` while `float(dyncall($1))` yields `3.5`; `float(dyncall_at($1))`
+does the same over a dynamic source. (Float *constants* in a grammar are
+still outside the loadable subset — a grammar reaches a Float via
+computation, not a literal, until that restriction is lifted.)
+
 ## Why not a real DCG engine in the loop?
 
 Because the loop's performance contract is the whole point of PLAWK:
