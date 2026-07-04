@@ -103,6 +103,7 @@ swipl -q -s tests/test_plawk_union_assoc.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/
 swipl -q -s tests/test_plawk_rep_writer.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_union_out.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_multiline.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_prolog_blocks.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -120,7 +121,26 @@ Explicit numeric field coercion is available as `int($N)`, e.g.
 Programs are multi-line awk: `#` comments run to end of line,
 statements separate on newlines as well as `;` (with awk/C semantics
 after a compound statement's closing brace -- no separator needed),
-and trailing separators before `}` are harmless.
+and trailing separators before `}` are harmless. A program can carry
+its Prolog with it: `@prolog ... @end` blocks hold ordinary clauses
+(DCG rules included) that compile into the same binary and are
+callable through the foreign bridge --
+
+```awk
+@prolog
+weight(I, F, R) :- R is I * F.
+hot(X) :- X > 100.
+@end
+BEGIN { BINFMT = "i64 f64" }
+hot($1) { wsum += float(weight($1, $2)) }
+END { print wsum }
+```
+
+Markers sit alone on their line; the heredoc-style tagged form
+(`@prolog-TAG ... @end-TAG`, exact tag match) fences Prolog text that
+itself contains an `@end`-shaped line. `plawk_parse_source/3` returns
+program + clauses, and `plawk_prolog_block_preds/2` installs them for
+`write_wam_llvm_project/3`.
 Arithmetic expressions support general `+`, `-`, `*`, `/`, and `%` between
 native `i64` operands with awk precedence (`* / %` bind tighter than `+ -`,
 both associate left) and parentheses, e.g.

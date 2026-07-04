@@ -5,10 +5,60 @@
     plawk_program_native_driver_ir/3,
     plawk_program_native_driver_ir/4,
     plawk_program_foreign_specs/3,
-    plawk_program_foreign_specs/4
+    plawk_program_foreign_specs/4,
+    plawk_prolog_block_preds/2
 ]).
 
 :- discontiguous plawk_pattern_guard_ir/5.
+
+%% plawk_prolog_block_preds(+Clauses, -Preds)
+%
+%  Install the embedded @prolog clauses a plawk_parse_source/3 parse
+%  returned, so write_wam_llvm_project/3 can compile them into the
+%  same binary as the driver. DCG rules expand; each defined predicate
+%  is reset (retractall) before its clauses assert, so recompiling a
+%  program replaces rather than accumulates definitions. Preds is the
+%  deduplicated user:Name/Arity list in first-definition order --
+%  exactly the predicate list write_wam_llvm_project/3 takes.
+%  Directives are not clauses and reject the program.
+plawk_prolog_block_preds(Clauses0, Preds) :-
+    \+ member((:- _Directive), Clauses0),
+    maplist(plawk_expand_block_clause, Clauses0, ClausesNested),
+    append(ClausesNested, Clauses),
+    findall(Name/Arity,
+        ( member(Clause, Clauses),
+          plawk_block_clause_head(Clause, Head),
+          functor(Head, Name, Arity)
+        ),
+        PIs0),
+    plawk_dedupe_keep_order(PIs0, PIs),
+    forall(member(Name/Arity, PIs),
+        ( functor(Head, Name, Arity),
+          retractall(user:Head)
+        )),
+    forall(member(Clause, Clauses), assertz(user:Clause)),
+    findall(user:PI, member(PI, PIs), Preds).
+
+% expand_term/2 may return one clause or a list, and DCG expansion can
+% interleave compile-time directives (e.g. discontiguous hints) with
+% the clauses -- keep only the clauses.
+plawk_expand_block_clause(Clause0, Clauses) :-
+    expand_term(Clause0, Expanded),
+    ( is_list(Expanded)
+    ->  Expanded1 = Expanded
+    ;   Expanded1 = [Expanded]
+    ),
+    exclude(plawk_block_directive, Expanded1, Clauses).
+
+plawk_block_directive((:- _Goal)).
+
+plawk_block_clause_head((Head :- _Body), Head) :- !.
+plawk_block_clause_head(Head, Head).
+
+plawk_dedupe_keep_order([], []).
+plawk_dedupe_keep_order([PI | Rest0], [PI | Deduped]) :-
+    exclude(==(PI), Rest0, Rest),
+    plawk_dedupe_keep_order(Rest, Deduped).
 
 :- use_module('../../../src/unifyweaver/targets/wam_llvm_target',
     [llvm_emit_atom_prefix_guard/5,
