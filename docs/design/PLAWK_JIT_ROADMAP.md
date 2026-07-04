@@ -19,6 +19,8 @@ The dynamic-grammar surface is feature-complete for numeric work:
 | In-memory loader (`@wam_object_load_bytes`) | #3463 |
 | `dyncall_at(Source, args...)` (runtime-chosen source) + path cache (`on`/`mtime`/`off`) | #3465 |
 | `float(dyncall(...))` / `float(dyncall_at(...))` (double returns) | #3467 |
+| `blob(dyncall(...))` / `blob(dyncall_at(...))` (opaque byte returns) | #3470 |
+| Multi-entry objects — writer `wamo_entries([...])` + loader name resolution (`@wam_object_entry_index`) | this PR |
 
 A grammar is compiled ahead of time to a `.wamo`, loaded at runtime (from a
 fixed path, an in-memory buffer, or a per-call runtime source), cached with
@@ -77,14 +79,27 @@ for item 4.
 the same `(ptr,len)` shape and are the natural follow-on (each needs the
 blob node wired into that consumer's path).
 
-### 3. Multi-entry objects — *moderate, ergonomics*
+### 3. Multi-entry objects — *LANDED (mechanism); surface deferred*
 
-**What:** let one `.wamo` expose several entry predicates, selected by name
-at the call site — e.g. `dyncall@parse($1)` / `dyncall@classify($1)` over a
-single `DYNLOAD = "lib.wamo"`. Needs the writer to emit a name→label-index
-table, the loader to expose entry-by-name lookup, and a naming surface
-(binding entries at declaration rather than overloading `dyncall`'s arg
-list — a leading entry-name arg can't be told apart from a value).
+**What:** one `.wamo` can now expose several named entry predicates. The
+writer takes `wamo_entries([P/A, ...])` and emits a name→label-index table
+early in the stream (right after the default-entry index), so
+`@wam_object_load` steps past it with a tiny skip loop and pays nothing at
+call time. Two new loader primitives resolve a name to its label index:
+`@wam_object_entry_index_bytes(buf, total, name, namelen)` scans the table
+in an already-read buffer (reads only the early table, stops at the first
+match — never touches the code section), and `@wam_object_entry_index(path,
+name, namelen)` is the path convenience (reads the file, scans, frees).
+`@wam_label_pc` turns the returned label index into a PC to call against the
+loaded VM. Verified end to end: one object exposing `answer/1` and
+`answer_swapped/1` (both over a shared `sum3/3`), a host that loads it once
+and resolves each name to a distinct PC → `119` and `1020`; an unknown name
+resolves to `-1`.
+
+**Deferred to a follow-up:** the plawk *surface* — `dyncall@parse($1)` /
+`dyncall@classify($1)` over a single `DYNLOAD`. The naming fork noted below
+(binding entries at declaration vs. overloading `dyncall`'s arg list) still
+needs settling, but the loader mechanism it will ride is done.
 
 **Why:** today one `.wamo` = one entry, so a "grammar library" means one
 file per predicate. Multi-entry lets a related family ship as one object.

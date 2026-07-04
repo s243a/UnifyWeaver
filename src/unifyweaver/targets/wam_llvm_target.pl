@@ -19945,7 +19945,10 @@ build_llvm_arg_setup(Arity, Setup) :-
 %
 %     WAMO\n
 %     <version=1>
-%     <entry-label-index>
+%     <default-entry-label-index>
+%     <entry-count E>     then E records of (name-string, label-index) --
+%                         the named entries a multi-entry object exposes;
+%                         placed early so @wam_object_load skips it cheaply
 %     <atom-count N>      then N length-prefixed strings
 %     <functor-count M>   then M length-prefixed strings
 %     <label-count L>     then L ints (PC per label; index = position)
@@ -19978,7 +19981,11 @@ build_llvm_arg_setup(Arity, Setup) :-
 %
 %  Compile Predicates (plus their same-module helper closure) to a .wamo
 %  object and write it to OutFile. Options:
-%    wamo_entry(Pred/Arity) - entry predicate (default: first of Predicates)
+%    wamo_entry(Pred/Arity)    - default entry (bare dyncall); defaults to the
+%                                first of wamo_entries, else the first predicate
+%    wamo_entries([P/A, ...])  - the named entries this object exposes (for
+%                                multi-entry objects resolved by name at the
+%                                call site); the first is also the default entry
 %  Throws error(wamo_unsupported(_), _) if any instruction is outside the
 %  loadable subset, error(wamo_entry_not_found(_), _) if the entry label
 %  is missing, or error(wamo_uncompilable(_), _) on a WAM compile failure.
@@ -19997,6 +20004,7 @@ wam_object_encode(Predicates, Options, Codes) :-
     wamo_classify(Expanded, Options, 0, Records),
     build_merged_labels(Records, NamePCPairs, LabelMap),
     wamo_entry_index(Predicates, Options, LabelMap, EntryIndex),
+    wamo_entries_list(Predicates, Options, LabelMap, Entries),
     wamo_all_instr_parts(Records, AllParts),
     foldl(wamo_encode_step(LabelMap), AllParts,
           ws([], tab([], 0), tab([], 0)),
@@ -20005,7 +20013,7 @@ wam_object_encode(Predicates, Options, Codes) :-
     wamo_table_list(ATab, Atoms),
     wamo_table_list(FTab, Functors),
     findall(PC, member(_-PC, NamePCPairs), PCs),
-    wamo_serialize(EntryIndex, Atoms, Functors, PCs, EncInstrs, Codes).
+    wamo_serialize(EntryIndex, Entries, Atoms, Functors, PCs, EncInstrs, Codes).
 
 %% wamo_classify(+Preds, +Options, +StartPC, -Records)
 %
@@ -20024,14 +20032,41 @@ wamo_classify([PI|Rest], Options, StartPC, [Rec|Recs]) :-
     ),
     wamo_classify(Rest, Options, NextPC, Recs).
 
+%% wamo_default_entry_pi(+Predicates, +Options, -Pred/Arity)
+%  The default entry (used by a bare dyncall): wamo_entry(P/A) if given,
+%  else the first of wamo_entries([...]), else the first predicate.
+wamo_default_entry_pi(_Predicates, Options, P/A) :-
+    option(wamo_entry(P/A), Options), !.
+wamo_default_entry_pi(_Predicates, Options, P/A) :-
+    option(wamo_entries([P/A | _]), Options), !.
+wamo_default_entry_pi(Predicates, _Options, P/A) :-
+    Predicates = [First|_],
+    ( First = _:P/A -> true ; First = P/A ).
+
 %% wamo_entry_index(+Predicates, +Options, +LabelMap, -Index)
+%  The default entry's label index.
 wamo_entry_index(Predicates, Options, LabelMap, Index) :-
-    (   option(wamo_entry(EP/EA), Options)
-    ->  P = EP, A = EA
-    ;   Predicates = [First|_],
-        ( First = _:P0/A0 -> P = P0, A = A0
-        ; First = P0/A0   -> P = P0, A = A0 )
+    wamo_default_entry_pi(Predicates, Options, P/A),
+    wamo_lookup_entry_index(P/A, LabelMap, Index).
+
+%% wamo_entries_list(+Predicates, +Options, +LabelMap, -Entries)
+%  The named-entry table: Name-Index pairs for every exposed entry. From
+%  wamo_entries([...]) if given, else just the default entry. Names are
+%  the "Pred/Arity" label form so the loader can resolve dyncall@name.
+wamo_entries_list(Predicates, Options, LabelMap, Entries) :-
+    (   option(wamo_entries(List), Options)
+    ->  EntryPIs = List
+    ;   wamo_default_entry_pi(Predicates, Options, DP),
+        EntryPIs = [DP]
     ),
+    findall(Name-Index,
+        ( member(EP/EA, EntryPIs),
+          format(string(Name), "~w/~w", [EP, EA]),
+          wamo_lookup_entry_index(EP/EA, LabelMap, Index)
+        ),
+        Entries).
+
+wamo_lookup_entry_index(P/A, LabelMap, Index) :-
     format(string(Name), "~w/~w", [P, A]),
     (   memberchk(Name-Index, LabelMap)
     ->  true
@@ -20235,10 +20270,14 @@ wamo_reloc_id(atom, 1).
 wamo_reloc_id(functor, 2).
 wamo_reloc_id(float, 3).
 
-wamo_serialize(EntryIndex, Atoms, Functors, PCs, EncInstrs, Codes) :-
-    length(Atoms, NA), length(Functors, NF),
+wamo_serialize(EntryIndex, Entries, Atoms, Functors, PCs, EncInstrs, Codes) :-
+    length(Entries, NE), length(Atoms, NA), length(Functors, NF),
     length(PCs, NL), length(EncInstrs, NC),
-    format(codes(Head), "WAMO\n1\n~w\n~w\n", [EntryIndex, NA]),
+    % header: magic, version, default-entry index, then the named-entry
+    % table (early, so @wam_object_load can skip it without a full parse).
+    format(codes(Head), "WAMO\n1\n~w\n~w\n", [EntryIndex, NE]),
+    maplist(wamo_entry_codes, Entries, EntryChunks),
+    format(codes(AHdr), "~w\n", [NA]),
     maplist(wamo_string_codes, Atoms, AtomChunks),
     format(codes(FHdr), "~w\n", [NF]),
     maplist(wamo_string_codes, Functors, FunChunks),
@@ -20246,9 +20285,16 @@ wamo_serialize(EntryIndex, Atoms, Functors, PCs, EncInstrs, Codes) :-
     maplist([PC, Cs]>>format(codes(Cs), "~w\n", [PC]), PCs, PCChunks),
     format(codes(CHdr), "~w\n", [NC]),
     maplist(wamo_instr_codes, EncInstrs, InstrChunks),
-    append([[Head], AtomChunks, [FHdr], FunChunks, [LHdr], PCChunks,
-            [CHdr], InstrChunks], Lists),
+    append([[Head], EntryChunks, [AHdr], AtomChunks, [FHdr], FunChunks,
+            [LHdr], PCChunks, [CHdr], InstrChunks], Lists),
     append(Lists, Codes).
+
+%% wamo_entry_codes(+Name-Index, -Codes)
+%  One named-entry record: length-prefixed name string then its label index.
+wamo_entry_codes(Name-Index, Codes) :-
+    wamo_string_codes(Name, NameCodes),
+    format(codes(IdxCodes), "~w\n", [Index]),
+    append(NameCodes, IdxCodes, Codes).
 
 wamo_instr_codes(enc(T, O1, O2, R), Cs) :-
     wamo_reloc_id(R, RI),
@@ -20301,6 +20347,10 @@ wamo_utf8_bytes([C|Cs], Bytes) :-
 %    @wam_object_load    - read a .wamo file, relocate, build a %WamState
 %    @wam_object_call_i64 - call the object's entry with N %Value args and
 %                           read back an Integer result ({value, ok})
+%    @wam_object_entry_index / @wam_object_entry_index_bytes
+%                        - resolve a named entry to its label index (or -1)
+%                          for multi-entry objects; @wam_label_pc turns that
+%                          into a PC to call against the loaded VM
 %
 %  Emitted into a host module when write_wam_llvm_project/3 is called with
 %  emit_wamo_loader(true). References only runtime helpers already present
@@ -20450,8 +20500,31 @@ parse:
   %pe = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %cur_v)
   %entry_idx64 = extractvalue { i64, i64 } %pe, 0
   %cur_e = extractvalue { i64, i64 } %pe, 1
+  ; named-entry table: skip it (name-string, label-index) x E. The table is
+  ; placed early so this loader can step past it without a full parse; the
+  ; separate @wam_object_entries_load reads it when a call site names an entry.
+  %pne = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %cur_e)
+  %nentries = extractvalue { i64, i64 } %pne, 0
+  %cur_ne = extractvalue { i64, i64 } %pne, 1
+  br label %eskip_loop
+eskip_loop:
+  %ei = phi i64 [ 0, %parse ], [ %ei1, %eskip_step ]
+  %ecur = phi i64 [ %cur_ne, %parse ], [ %ecur2, %eskip_step ]
+  %edone = icmp uge i64 %ei, %nentries
+  br i1 %edone, label %after_entries, label %eskip_step
+eskip_step:
+  %elen_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %ecur)
+  %elen = extractvalue { i64, i64 } %elen_r, 0
+  %ecur_d = extractvalue { i64, i64 } %elen_r, 1
+  %estr_off = add i64 %ecur_d, 1
+  %eafter_str = add i64 %estr_off, %elen
+  %eidx_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %eafter_str)
+  %ecur2 = extractvalue { i64, i64 } %eidx_r, 1
+  %ei1 = add i64 %ei, 1
+  br label %eskip_loop
+after_entries:
   ; atom count
-  %pa = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %cur_e)
+  %pa = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %ecur)
   %natoms = extractvalue { i64, i64 } %pa, 0
   %cur_a0 = extractvalue { i64, i64 } %pa, 1
   %atom_bytes = mul i64 %natoms, 8
@@ -20459,8 +20532,8 @@ parse:
   %atomIds = bitcast i8* %atom_mem to i64*
   br label %aloop
 aloop:
-  %ai = phi i64 [ 0, %parse ], [ %ai1, %astep ]
-  %acur = phi i64 [ %cur_a0, %parse ], [ %acur2, %astep ]
+  %ai = phi i64 [ 0, %after_entries ], [ %ai1, %astep ]
+  %acur = phi i64 [ %cur_a0, %after_entries ], [ %acur2, %astep ]
   %adone = icmp uge i64 %ai, %natoms
   br i1 %adone, label %fdr_init, label %astep
 astep:
@@ -20780,4 +20853,115 @@ fail:
   %f1 = insertvalue { i8*, i64, i1 } %f0, i64 0, 1
   %f2 = insertvalue { i8*, i64, i1 } %f1, i1 false, 2
   ret { i8*, i64, i1 } %f2
+}
+
+; Read a whole file into a fresh malloc''d buffer, writing the byte count to
+; *out_total. Returns the buffer (caller frees) or null on open failure. Same
+; grow-and-read loop as @wam_object_load, factored so entry-name lookup can
+; read the object without a second copy of the loop.
+define i8* @wamo_read_file(i8* %path, i64* %out_total) {
+entry:
+  %fd = call i32 @open(i8* %path, i32 0, i32 0)
+  %fd_bad = icmp slt i32 %fd, 0
+  br i1 %fd_bad, label %fail, label %read_init
+read_init:
+  %buf0 = call i8* @malloc(i64 65536)
+  br label %read_loop
+read_loop:
+  %buf = phi i8* [ %buf0, %read_init ], [ %bufc, %after_read ]
+  %cap = phi i64 [ 65536, %read_init ], [ %capc, %after_read ]
+  %total = phi i64 [ 0, %read_init ], [ %total3, %after_read ]
+  %free = sub i64 %cap, %total
+  %low = icmp ult i64 %free, 32768
+  br i1 %low, label %do_grow, label %do_read
+do_grow:
+  %cap.d = mul i64 %cap, 2
+  %buf.d = call i8* @realloc(i8* %buf, i64 %cap.d)
+  br label %do_read
+do_read:
+  %bufc = phi i8* [ %buf.d, %do_grow ], [ %buf, %read_loop ]
+  %capc = phi i64 [ %cap.d, %do_grow ], [ %cap, %read_loop ]
+  %freec = sub i64 %capc, %total
+  %dst = getelementptr i8, i8* %bufc, i64 %total
+  %n = call i64 @read(i32 %fd, i8* %dst, i64 %freec)
+  %eof = icmp sle i64 %n, 0
+  br i1 %eof, label %read_done, label %after_read
+after_read:
+  %total3 = add i64 %total, %n
+  br label %read_loop
+read_done:
+  %close_ignore = call i32 @close(i32 %fd)
+  store i64 %total, i64* %out_total
+  ret i8* %bufc
+fail:
+  store i64 0, i64* %out_total
+  ret i8* null
+}
+
+; Scan the named-entry table (in a buffer already read into memory) for the
+; entry named `name` (namelen bytes) and return its label index, or -1 if the
+; name is absent or the buffer is too small. Reads only the early table --
+; version, default-entry index, entry count, then E x (name-string, index) --
+; and stops at the first match, so it never parses the code section.
+define i32 @wam_object_entry_index_bytes(i8* %bufc, i64 %total, i8* %name, i64 %namelen) {
+entry:
+  %too_small = icmp ult i64 %total, 5
+  br i1 %too_small, label %notfound, label %parse
+parse:
+  %pv = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 4)
+  %cur_v = extractvalue { i64, i64 } %pv, 1
+  %pe = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %cur_v)
+  %cur_e = extractvalue { i64, i64 } %pe, 1
+  %pne = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %cur_e)
+  %nentries = extractvalue { i64, i64 } %pne, 0
+  %cur_ne = extractvalue { i64, i64 } %pne, 1
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %parse ], [ %i1, %next ]
+  %cur = phi i64 [ %cur_ne, %parse ], [ %cur2, %next ]
+  %done = icmp uge i64 %i, %nentries
+  br i1 %done, label %notfound, label %step
+step:
+  %len_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %cur)
+  %len = extractvalue { i64, i64 } %len_r, 0
+  %cur_d = extractvalue { i64, i64 } %len_r, 1
+  %str_off = add i64 %cur_d, 1
+  %str = getelementptr i8, i8* %bufc, i64 %str_off
+  %after_str = add i64 %str_off, %len
+  %idx_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %after_str)
+  %idx = extractvalue { i64, i64 } %idx_r, 0
+  %cur2 = extractvalue { i64, i64 } %idx_r, 1
+  %i1 = add i64 %i, 1
+  %lenmatch = icmp eq i64 %len, %namelen
+  br i1 %lenmatch, label %cmp, label %next
+cmp:
+  %cmpres = call i32 @memcmp(i8* %str, i8* %name, i64 %len)
+  %eq = icmp eq i32 %cmpres, 0
+  br i1 %eq, label %hit, label %next
+next:
+  br label %loop
+hit:
+  %idx32 = trunc i64 %idx to i32
+  ret i32 %idx32
+notfound:
+  ret i32 -1
+}
+
+; Path convenience: read the file, scan its entry table for `name`, free.
+; Returns the label index or -1. For the fixed-DYNLOAD call sites that name
+; an entry, resolve the label index once at startup, then @wam_label_pc it
+; against the loaded VM to get a PC to call.
+define i32 @wam_object_entry_index(i8* %path, i8* %name, i64 %namelen) {
+entry:
+  %totp = alloca i64
+  %bufc = call i8* @wamo_read_file(i8* %path, i64* %totp)
+  %isnull = icmp eq i8* %bufc, null
+  br i1 %isnull, label %fail, label %ok
+ok:
+  %total = load i64, i64* %totp
+  %idx = call i32 @wam_object_entry_index_bytes(i8* %bufc, i64 %total, i8* %name, i64 %namelen)
+  call void @free(i8* %bufc)
+  ret i32 %idx
+fail:
+  ret i32 -1
 }').
