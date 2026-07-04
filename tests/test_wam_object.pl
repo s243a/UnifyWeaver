@@ -104,6 +104,50 @@ test(load_bytes_from_memory, [condition(clang_available)]) :-
     assertion(Out == "119\n"),
     !.
 
+% Multi-entry object: one .wamo exposes two named entries (answer/1 and
+% answer_swapped/1, both over the shared sum3/3). The writer emits a
+% name->label-index table; the encoded stream carries both names.
+test(multi_entry_encodes_name_table) :-
+    wam_object_encode([user:answer/1, user:answer_swapped/1, user:sum3/3],
+        [wamo_entries([answer/1, answer_swapped/1])], Codes),
+    string_codes(Text, Codes),
+    split_string(Text, "\n \t", "\n \t", Parts0),
+    exclude(==(""), Parts0, Parts),
+    % WAMO 1 <default-entry> <E=2> 8 answer/1 <idx> 16 answer_swapped/1 <idx> ...
+    Parts = ["WAMO", "1", _Default, "2" | _],
+    memberchk("answer/1", Parts),
+    memberchk("answer_swapped/1", Parts),
+    !.
+
+% Full round trip through the loader's name resolution: build one host that
+% loads a two-entry object, resolves each entry by name to a label index
+% (@wam_object_entry_index), turns each into a PC (@wam_label_pc) and calls
+% it. Distinct names -> distinct results from the SAME object.
+test(host_resolves_named_entries,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'multi.wamo', Wamo),
+    write_wam_object([user:answer/1, user:answer_swapped/1, user:sum3/3],
+        [wamo_entries([answer/1, answer_swapped/1])], Wamo),
+    build_multi_host(Dir, Host),
+    run_host(Host, Wamo, Out, 0),
+    assertion(Out == "119\n1020\n"),
+    !.
+
+% A name that no entry exposes resolves to -1; the host exits with the
+% resolve-fail code rather than calling a bogus PC.
+test(unknown_entry_name_resolves_to_minus_one,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'multi.wamo', Wamo),
+    ( exists_file(Wamo) -> true
+    ; write_wam_object([user:answer/1, user:answer_swapped/1, user:sum3/3],
+          [wamo_entries([answer/1, answer_swapped/1])], Wamo) ),
+    directory_file_path(Dir, 'multi_miss_host', Host),
+    ( exists_file(Host) -> true ; build_multi_miss_host(Dir, Host) ),
+    run_host(Host, Wamo, _Out, 22),
+    !.
+
 :- end_tests(wam_object).
 
 % --- helpers ---------------------------------------------------------------
@@ -159,6 +203,116 @@ load_fail:\n\c
   ret i32 20\n\c
 run_fail:\n\c
   ret i32 21\n\c
+}\n').
+
+% Build a host that loads argv[1], resolves "answer/1" and "answer_swapped/1"
+% by name against the object's entry table, and calls each in turn.
+build_multi_host(Dir, Host) :-
+    directory_file_path(Dir, 'multi_host.ll', LL),
+    with_output_to(string(_),
+        write_wam_llvm_project([user:answer/1],
+            [module_name(wam_object_multi_host), emit_wamo_loader(true)], LL)),
+    multi_host_main_ir(MainIR),
+    setup_call_cleanup(
+        open(LL, append, S, [encoding(utf8)]),
+        write(S, MainIR),
+        close(S)),
+    directory_file_path(Dir, 'multi_host_bin', Host),
+    clang_link(LL, Host).
+
+% A host that resolves a name absent from the table -> -1 -> resolve_fail (22).
+build_multi_miss_host(Dir, Host) :-
+    directory_file_path(Dir, 'multi_miss.ll', LL),
+    with_output_to(string(_),
+        write_wam_llvm_project([user:answer/1],
+            [module_name(wam_object_multi_miss), emit_wamo_loader(true)], LL)),
+    multi_miss_main_ir(MainIR),
+    setup_call_cleanup(
+        open(LL, append, S, [encoding(utf8)]),
+        write(S, MainIR),
+        close(S)),
+    clang_link(LL, Host).
+
+clang_link(LL, Bin) :-
+    format(atom(Cmd), 'clang -w -O2 ~w -o ~w -lm 2>&1', [LL, Bin]),
+    process_create(path(sh), ['-c', Cmd],
+        [stdout(pipe(CS)), stderr(std), process(Pid)]),
+    read_string(CS, _, ClangOut),
+    close(CS),
+    process_wait(Pid, Status),
+    ( Status == exit(0) -> true ; throw(error(clang_failed(ClangOut), _)) ).
+
+multi_host_main_ir(
+'\n@.me_fmt = private constant [6 x i8] c"%lld\\0A\\00"\n\c
+@.me_n1 = private constant [8 x i8] c"answer/1"\n\c
+@.me_n2 = private constant [16 x i8] c"answer_swapped/1"\n\n\c
+define i32 @main(i32 %argc, i8** %argv) {\n\c
+entry:\n\c
+  %p1 = getelementptr i8*, i8** %argv, i64 1\n\c
+  %path = load i8*, i8** %p1\n\c
+  %obj = call { %WamState*, i32 } @wam_object_load(i8* %path)\n\c
+  %vm = extractvalue { %WamState*, i32 } %obj, 0\n\c
+  %vm_null = icmp eq %WamState* %vm, null\n\c
+  br i1 %vm_null, label %load_fail, label %e1\n\c
+e1:\n\c
+  %n1 = getelementptr [8 x i8], [8 x i8]* @.me_n1, i32 0, i32 0\n\c
+  %idx1 = call i32 @wam_object_entry_index(i8* %path, i8* %n1, i64 8)\n\c
+  %bad1 = icmp slt i32 %idx1, 0\n\c
+  br i1 %bad1, label %resolve_fail, label %run1\n\c
+run1:\n\c
+  %pc1 = call i32 @wam_label_pc(%WamState* %vm, i32 %idx1)\n\c
+  %r1 = call { i64, i1 } @wam_object_call_i64(%WamState* %vm, i32 %pc1, i32 0, %Value* null, i32 0)\n\c
+  %v1 = extractvalue { i64, i1 } %r1, 0\n\c
+  %ok1 = extractvalue { i64, i1 } %r1, 1\n\c
+  br i1 %ok1, label %print1, label %run_fail\n\c
+print1:\n\c
+  %fmt1 = getelementptr [6 x i8], [6 x i8]* @.me_fmt, i32 0, i32 0\n\c
+  %pr1 = call i32 (i8*, ...) @printf(i8* %fmt1, i64 %v1)\n\c
+  br label %e2\n\c
+e2:\n\c
+  %n2 = getelementptr [16 x i8], [16 x i8]* @.me_n2, i32 0, i32 0\n\c
+  %idx2 = call i32 @wam_object_entry_index(i8* %path, i8* %n2, i64 16)\n\c
+  %bad2 = icmp slt i32 %idx2, 0\n\c
+  br i1 %bad2, label %resolve_fail, label %run2\n\c
+run2:\n\c
+  %pc2 = call i32 @wam_label_pc(%WamState* %vm, i32 %idx2)\n\c
+  %r2 = call { i64, i1 } @wam_object_call_i64(%WamState* %vm, i32 %pc2, i32 0, %Value* null, i32 0)\n\c
+  %v2 = extractvalue { i64, i1 } %r2, 0\n\c
+  %ok2 = extractvalue { i64, i1 } %r2, 1\n\c
+  br i1 %ok2, label %print2, label %run_fail\n\c
+print2:\n\c
+  %fmt2 = getelementptr [6 x i8], [6 x i8]* @.me_fmt, i32 0, i32 0\n\c
+  %pr2 = call i32 (i8*, ...) @printf(i8* %fmt2, i64 %v2)\n\c
+  ret i32 0\n\c
+load_fail:\n\c
+  ret i32 20\n\c
+run_fail:\n\c
+  ret i32 21\n\c
+resolve_fail:\n\c
+  ret i32 22\n\c
+}\n').
+
+multi_miss_main_ir(
+'\n@.mm_name = private constant [7 x i8] c"nope/99"\n\n\c
+define i32 @main(i32 %argc, i8** %argv) {\n\c
+entry:\n\c
+  %p1 = getelementptr i8*, i8** %argv, i64 1\n\c
+  %path = load i8*, i8** %p1\n\c
+  %obj = call { %WamState*, i32 } @wam_object_load(i8* %path)\n\c
+  %vm = extractvalue { %WamState*, i32 } %obj, 0\n\c
+  %vm_null = icmp eq %WamState* %vm, null\n\c
+  br i1 %vm_null, label %load_fail, label %resolve\n\c
+resolve:\n\c
+  %n = getelementptr [7 x i8], [7 x i8]* @.mm_name, i32 0, i32 0\n\c
+  %idx = call i32 @wam_object_entry_index(i8* %path, i8* %n, i64 7)\n\c
+  %bad = icmp slt i32 %idx, 0\n\c
+  br i1 %bad, label %resolve_fail, label %ok\n\c
+ok:\n\c
+  ret i32 0\n\c
+load_fail:\n\c
+  ret i32 20\n\c
+resolve_fail:\n\c
+  ret i32 22\n\c
 }\n').
 
 run_host(Host, Wamo, Out, ExpectedStatus) :-
