@@ -99,6 +99,7 @@ write_text_file(Path, Text) :-
 %  - runtime namespace containing instruction resolution helpers
 %  - core namespace containing shared code/labels and predicate wrappers
 write_wam_clojure_project(Predicates, Options, ProjectDir) :-
+    clojure_wam_compile_options(Options, CompileOptions),
     option(namespace(BaseNamespace), Options, 'generated.wam'),
     option(module_name(ModuleName), Options, 'wam-clojure-generated'),
     atom_concat(BaseNamespace, '.runtime', RuntimeNamespace),
@@ -110,9 +111,14 @@ write_wam_clojure_project(Predicates, Options, ProjectDir) :-
     write_project_clj(ModuleName, CoreNamespace, ProjectDir),
     write_runtime_namespace(RuntimeNamespace, Date, ProjectDir),
     maybe_prepare_wam_clojure_lmdb_runtime_support(ProjectDir, Options),
-    compile_predicates_for_project(Predicates, Options, CoreNamespace, RuntimeNamespace, CoreCode),
+    compile_predicates_for_project(Predicates, CompileOptions, CoreNamespace, RuntimeNamespace, CoreCode),
     write_namespace_file(ProjectDir, CoreNamespace, CoreCode),
     format(user_error, '[WAM-Clojure] Generated project at: ~w~n', [ProjectDir]).
+
+clojure_wam_compile_options(Options, Options) :-
+    option(inline_bagof_setof(_), Options),
+    !.
+clojure_wam_compile_options(Options, [inline_bagof_setof(true)|Options]).
 
 write_deps_edn(ModuleName, CoreNamespace, ProjectDir) :-
     read_template_file('templates/targets/clojure_wam/deps.edn.mustache', Template),
