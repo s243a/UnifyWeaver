@@ -141,8 +141,20 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
    shared table per array name; both END report shapes (for-in print,
    integer lookups) work, and the assoc rule chain resolves guards and
    key loads through the same per-rule arm descriptor as the scalar
-   chain. Not yet inside case blocks: union (tagged) output, and
-   for-in writebin over a union input.
+   chain. for-in writebin over a union input (landed): the END table
+   walk writebins one fixed-layout (key, count, ...) record per group,
+   mirroring the plain binary group-by-to-binary-output clause. Union
+   (tagged) output (landed): `OUTFMT = "case(arm0 | arm1)"` (same
+   spelling as BINFMT), and each writebin site statically targets one
+   arm -- `writebin case K, args` emits the 8-byte tag K then arm K's
+   slots through the per-slot varlen writer (the shared buffer sizes
+   to the widest arm; its element pointer is resolved once in the
+   entry block). Output is byte-compatible with the union reader, so
+   tagged plawk-to-plawk pipelines round-trip; works from flat or
+   union inputs and in the single-rule endless shape. Arm slots are
+   i64/f64/sN/lpsN (a tagged rep write is a later slice); plain
+   writebin with a union OUTFMT, arm writes against a flat OUTFMT,
+   out-of-range arms, and arity mismatches all reject the program.
 2. **Bounded repetition (landed):** `repK(elem types)` — an 8-byte
    count (≤ K) then that many elements. Fixed-width elements read as
    one bulk count×elemsize read after a memset of the element region
@@ -167,11 +179,15 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
    so still memcpy cost per record). Writer output is byte-compatible
    with the `lpsN` reader. `repK(elems)` in OUTFMT (landed) is a
    passthrough slot: the argument names the input rep's count field,
-   and the writer emits the live count plus one bulk fwrite of
-   count×elemsize bytes from the input's element region (fixed-width
-   elements only, so in-memory layout == wire layout; caps and element
-   layouts must match the input rep exactly). Guarded rules therefore
-   make byte-exact stream filters, in plain and union input modes.
+   and the writer emits the live count plus the live elements — one
+   bulk fwrite of count×elemsize bytes when the elements are all
+   fixed-width (in-memory layout == wire layout), or a writer-side
+   loop when they contain `lpsN` strings (each iteration recovers the
+   live length from the NUL-padded slot with strnlen and emits the
+   prefix plus exactly those bytes, mirroring the reader loop). Caps
+   and element layouts must match the input rep exactly. Guarded rules
+   therefore make byte-exact stream filters, in plain and union input
+   modes.
 4. **Tier-2 composition sugar (landed):** `blobN` — a length-prefixed
    binary payload whose only consumer is a compiled-Prolog foreign
    call. The record loop frames natively (length read, cap check, bulk

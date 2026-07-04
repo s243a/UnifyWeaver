@@ -101,6 +101,7 @@ swipl -q -s tests/test_plawk_f64_foreign.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/
 swipl -q -s tests/test_plawk_union_writebin.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_union_assoc.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_rep_writer.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_union_out.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -303,7 +304,8 @@ foreign guards and calls work over binary records generally; a
 double-returning call is spelled `wsum += float(score($1, $2))` (the
 float(...) wrapper selects a {double, ok} bridge that accepts Integer
 or Float results, keeping fractions that the i64 spelling would
-truncate; a failed call contributes 0.0). One blob argument per call;
+truncate; a failed call contributes 0.0); the same spelling works in
+print position (`print $1, float(score($1, $2))`). One blob argument per call;
 payloads are NUL-free byte strings. Bounded repetition handles records containing a
 list: `BINFMT = "i64 rep4(i64 f64)"` declares an 8-byte element count
 (at most 4) followed by that many (i64, f64) elements. The count is an
@@ -353,9 +355,16 @@ varlen plawk-to-plawk pipelines round-trip. `repK(...)` works in
 OUTFMT as a passthrough: the writebin argument names the input rep's
 count field (`OUTFMT = "i64 rep4(i64 f64)"` with `writebin $1, $2`),
 and the writer emits the live count plus one bulk copy of the live
-elements - so guarded rules make byte-exact stream filters.
-Fixed-width elements only; the input rep's cap and element layout must
-match the output slot exactly. See
+elements - so guarded rules make byte-exact stream filters. Elements
+with `lpsN` strings pass through too: the writer loops over the live
+elements, recovering each string's live length from its NUL-padded
+slot and emitting the length prefix plus exactly those bytes. The
+input rep's cap and element layout must match the output slot exactly.
+Output can be tagged too: `OUTFMT = "case(i64 | i64 lps8)"` declares a
+union output, and `writebin case K, args` emits the 8-byte tag K then
+arm K's slots -- byte-compatible with the union reader, so a plawk
+program can split, retag, or normalize a stream that another plawk
+program consumes directly. See
 [`docs/design/PLAWK_DCG_BINARY_READERS.md`](../../docs/design/PLAWK_DCG_BINARY_READERS.md)
 for the grammar-to-native-reader lowering design this is the first
 slice of. Fixed-width string fields are in: with

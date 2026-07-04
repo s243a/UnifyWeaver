@@ -40,8 +40,9 @@ test(rep_outfmt_rejections) :-
         "BEGIN { BINFMT = \"i64 rep4(i64 f64)\" ; OUTFMT = \"i64 rep4(i64)\" } { writebin $1, $2 }\n",
         % the rep argument must be the input rep's count field
         "BEGIN { BINFMT = \"i64 rep4(i64 f64)\" ; OUTFMT = \"i64 rep4(i64 f64)\" } { writebin $1, $1 }\n",
-        % lps elements are not bulk-copyable (wire differs per element)
-        "BEGIN { BINFMT = \"i64 rep4(lps8 i64)\" ; OUTFMT = \"i64 rep4(lps8 i64)\" } { writebin $1, $2 }\n"
+        % element layouts must match even in loop mode (input s8 vs
+        % output lps8 differ on the wire)
+        "BEGIN { BINFMT = \"i64 rep4(s8 i64)\" ; OUTFMT = \"i64 rep4(lps8 i64)\" } { writebin $1, $2 }\n"
     ],
     forall(member(Source, Rejects),
         ( plawk_parse_string(Source, Program)
@@ -61,6 +62,28 @@ test(surface_rep_filter_is_byte_exact) :-
     records_bytes(Drop, DropBytes),
     assertion(OutBytes == ExpectedBytes),
     assertion(OutBytes \== DropBytes).
+
+test(rep_lps_elements_write_in_a_loop) :-
+    plawk_parse_string("BEGIN { BINFMT = \"i64 rep4(lps8 i64)\" ; OUTFMT = \"i64 rep4(lps8 i64)\" } $1 > 0 { writebin $1, $2 }\n", Program),
+    plawk_program_native_driver_ir(Program, 'input.bin', DriverIR),
+    % a writer-side loop: head phi, live length via strnlen, per-field
+    % fwrites -- and no bulk element write
+    assertion(once(sub_atom(DriverIR, _, _, _, '_j = phi i64 [ 1, %'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '@strnlen(i8* %'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '_pwr = call i64 @fwrite'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '_ewr = call i64 @fwrite')),
+    !.
+
+test(surface_rep_lps_filter_is_byte_exact) :-
+    % Same byte-exact filter contract as the fixed-element case, with
+    % variable-size elements: name lengths 3, 0, and the full cap 8.
+    Keep = [rec2(1, [f("hot", 5), f("", 7)]), rec2(4, [f("full8chr", 2)])],
+    Input = [rec2(1, [f("hot", 5), f("", 7)]), rec2(-9, [f("drop", 1)]),
+             rec2(4, [f("full8chr", 2)])],
+    run_rpw2_smoke("BEGIN { BINFMT = \"i64 rep4(lps8 i64)\" ; OUTFMT = \"i64 rep4(lps8 i64)\" } $1 > 0 { writebin $1, $2 }\n",
+        Input, OutBytes),
+    records2_bytes(Keep, ExpectedBytes),
+    assertion(OutBytes == ExpectedBytes).
 
 test(surface_rep_passthrough_in_union_arm) :-
     % Composes with case blocks: arm 0 carries the rep, its rule
@@ -99,6 +122,69 @@ write_rpw_stream(Out, Recs) :-
               ( write_i64_le(Out, V),
                 double_bits(F, Bits),
                 write_i64_le(Out, Bits) )) )).
+
+% rec2(Id, Elems): i64 id, i64 count, then per element lps8 + i64
+write_rpw2_records(Path, Recs) :-
+    setup_call_cleanup(
+        open(Path, write, Out, [type(binary)]),
+        forall(member(rec2(Id, Elems), Recs),
+            ( write_i64_le(Out, Id),
+              length(Elems, Count),
+              write_i64_le(Out, Count),
+              forall(member(f(S, V), Elems),
+                  ( string_codes(S, Codes),
+                    length(Codes, Len),
+                    write_i64_le(Out, Len),
+                    forall(member(C, Codes), put_byte(Out, C)),
+                    write_i64_le(Out, V) )) )),
+        close(Out)).
+
+records2_bytes(Recs, Bytes) :-
+    tmp_root(Root),
+    directory_file_path(Root, 'uw_plawk_rep_writer_expect2.bin', Path),
+    write_rpw2_records(Path, Recs),
+    setup_call_cleanup(
+        open(Path, read, In, [type(binary)]),
+        read_string(In, _, Bytes),
+        close(In)).
+
+run_rpw2_smoke(Source, Recs, OutBytes) :-
+    tmp_root(Root),
+    directory_file_path(Root, 'uw_plawk_rep_writer2', Dir),
+    clean_dir(Dir),
+    make_directory_path(Dir),
+    directory_file_path(Dir, 'input.bin', InputPath),
+    plawk_parse_string(Source, Program),
+    plawk_program_native_driver_ir(Program, InputPath, DriverIR),
+    directory_file_path(Dir, 'probe.ll', LLPath),
+    write_wam_llvm_project(
+        [ user:plawk_rpw_marker/0 ],
+        [module_name('plawk_rep_writer2')], LLPath),
+    setup_call_cleanup(
+        open(LLPath, append, Out, [encoding(utf8)]),
+        ( nl(Out), write(Out, DriverIR) ),
+        close(Out)),
+    directory_file_path(Dir, 'probe_bin', BinPath),
+    format(atom(Cmd), 'clang -w ~w -o ~w -lm 2>&1', [LLPath, BinPath]),
+    process_create(path(sh), ['-c', Cmd],
+                   [stdout(pipe(BuildOutS)), stderr(std), process(BuildPid)]),
+    read_string(BuildOutS, _, BuildOut),
+    close(BuildOutS),
+    process_wait(BuildPid, BuildStatus),
+    ( BuildStatus == exit(0)
+    -> true
+    ;  format(user_error, "~n[plawk rep writer2 build output]~n~w~n", [BuildOut]),
+       throw(plawk_rep_writer2_build_failed(BuildStatus))
+    ),
+    write_rpw2_records(InputPath, Recs),
+    process_create(BinPath, [],
+                   [stdout(pipe(Stdout)), stderr(std), process(Pid)]),
+    set_stream(Stdout, type(binary)),
+    read_string(Stdout, _, OutBytes),
+    close(Stdout),
+    process_wait(Pid, Status),
+    assertion(Status == exit(0)),
+    !.
 
 % the byte string a record list occupies on the wire
 records_bytes(Recs, Bytes) :-

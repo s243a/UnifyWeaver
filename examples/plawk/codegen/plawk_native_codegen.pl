@@ -79,6 +79,8 @@ plawk_program_native_driver_ir(
         [rule(Pattern, [Action])], WritebinPlan),
     ( Action = writebin_out(WritebinTypes, WritebinFields)
     -> plawk_writebin_args_ok(WritebinTypes, WritebinFields)
+    ;  Action = writebin_arm_out(_Tag, ArmTypes, ArmFields)
+    -> plawk_writebin_args_ok(ArmTypes, ArmFields)
     ;  plawk_rule_body_print_action(Action)
     ),
     plawk_output_action_exprs(Action, Exprs),
@@ -261,7 +263,7 @@ plawk_program_native_driver_ir(
     ->  true
     ;   % a pure normalizer: every rule just writebins its arm into
         % the shared output layout -- no scalar state at all
-        WritebinPlan = outfmt(_OutTypes, _OutSize),
+        WritebinPlan \== none,
         PrintFields == [],
         StatePlan = state_plan([])
     ),
@@ -421,6 +423,53 @@ plawk_program_native_driver_ir(
     plawk_emit_record_driver_ir(FieldSeparator, InputPath,
         driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, RecordLoopPhiIR, lowered_assoc,
             RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
+% Tagged-union group-by to binary output: case-block rules count per
+% arm, END iterates the table and writebins one fixed-layout record
+% per group.
+plawk_program_native_driver_ir(
+    program(BeginClauses, case_blocks(CaseBlocks), [end([for_in(var(LoopVar), var(ArrayName), [writebin(Fields)])])]),
+    InputPath,
+    DriverIR
+) :-
+    plawk_record_descriptor(BeginClauses, Descriptor),
+    Descriptor = binfmt_union(Arms),
+    plawk_union_flatten_rules(CaseBlocks, Arms, Rules),
+    plawk_begin_outfmt_types(BeginClauses, OutTypes),
+    forall(member(OutType, OutTypes), memberchk(OutType, [i64, f64])),
+    length(OutTypes, ArgCount),
+    length(Fields, ArgCount),
+    maplist(plawk_forin_writebin_field(LoopVar), Fields),
+    findall(LookupArrayName,
+        member(assoc(var(LookupArrayName), var(LoopVar)), Fields),
+        LookupArrays),
+    plawk_forin_assoc_plan(Rules, ArrayName, LookupArrays, AssocPlan),
+    plawk_assoc_record_program_ok(Descriptor, Rules, []),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_binfmt_record_size(binfmt(OutTypes), OutRecordSize),
+    plawk_writebin_entry_lines(outfmt(OutTypes, OutRecordSize), WritebinEntryIR),
+    plawk_assoc_rule_chain_ir(AssocPlan, Descriptor, AssocRuleGlobalIR, AssocChainIR),
+    plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
+    plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
+    plawk_forin_end_writebin_ir(LoopVar, ArrayName, OutTypes, Fields, AssocPlan,
+        EndPrintIR),
+    plawk_writebin_globals(outfmt(OutTypes, OutRecordSize), WritebinGlobalIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
+        [BeginGlobalIR, AssocRuleGlobalIR, WritebinGlobalIR]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR0),
+    plawk_combine_entry_ir(CombinedEntrySetupIR0, WritebinEntryIR, CombinedEntrySetupIR),
+    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w',
+        [EndPrintIR]),
+    plawk_emit_record_driver_ir(Descriptor, InputPath,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
+            AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
 % Binary group-by to binary output: iterate the table and writebin one
@@ -2028,6 +2077,9 @@ plawk_binfmt_action_ok(Descriptor, if(Pattern, ThenActions, ElseActions)) :-
 plawk_binfmt_action_ok(Descriptor, writebin_out(Types, Fields)) :-
     !,
     plawk_binfmt_writebin_args_ok(Descriptor, Types, Fields).
+plawk_binfmt_action_ok(Descriptor, writebin_arm_out(_Tag, ArmTypes, Fields)) :-
+    !,
+    plawk_binfmt_writebin_args_ok(Descriptor, ArmTypes, Fields).
 plawk_binfmt_action_ok(Descriptor, foreach_loop(_Layout, Body)) :-
     !,
     plawk_binfmt_actions_ok(Descriptor, Body).
@@ -2417,14 +2469,50 @@ plawk_binfmt_record_size(binfmt(Types), Size) :-
 %  supported).
 plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules, WritebinPlan) :-
     ( plawk_rules_have_writebin(Rules0)
-    ->  plawk_begin_outfmt_types(BeginClauses, Types),
-        forall(member(Type, Types), plawk_outfmt_type_ok(Type)),
-        plawk_binfmt_record_size(binfmt(Types), Size),
-        WritebinPlan = outfmt(Types, Size),
-        maplist(plawk_resolve_writebin_rule(Types), Rules0, Rules)
+    ->  plawk_begin_out_spec(BeginClauses, OutSpec),
+        plawk_writebin_plan(OutSpec, WritebinPlan),
+        maplist(plawk_resolve_writebin_rule(OutSpec), Rules0, Rules)
     ;   WritebinPlan = none,
         Rules = Rules0
     ).
+
+%% plawk_begin_out_spec(+BeginClauses, -OutSpec)
+%
+%  OUTFMT is either one flat layout or a tagged union of arm layouts
+%  (`OUTFMT = "case(arm0 | arm1)"`, same spelling as BINFMT). With a
+%  union, every writebin site statically targets one arm via
+%  `writebin case K, args`.
+plawk_begin_out_spec(BeginClauses, union(Arms)) :-
+    plawk_begin_outfmt_union_arms(BeginClauses, Arms),
+    !.
+plawk_begin_out_spec(BeginClauses, flat(Types)) :-
+    plawk_begin_outfmt_types(BeginClauses, Types).
+
+plawk_begin_outfmt_union_arms(BeginClauses, Arms) :-
+    member(begin(Actions), BeginClauses),
+    member(set(var('OUTFMT'), string(Fmt)), Actions),
+    string_concat("case(", Rest, Fmt),
+    string_concat(Body, ")", Rest),
+    split_string(Body, "|", " ", ArmStrs),
+    ArmStrs \== [],
+    maplist(plawk_union_arm_types, ArmStrs, Arms).
+
+plawk_writebin_plan(flat(Types), outfmt(Types, Size)) :-
+    forall(member(Type, Types), plawk_outfmt_type_ok(Type)),
+    plawk_binfmt_record_size(binfmt(Types), Size).
+plawk_writebin_plan(union(Arms), outfmt_union(Arms, BufSize)) :-
+    % arm slots: the varlen writer set minus rep (a tagged rep write
+    % is a later slice); the shared buffer holds the tag or any one
+    % staged slot, so size it to the widest arm (at least 8)
+    forall(member(ArmTypes, Arms),
+        forall(member(Type, ArmTypes),
+            ( memberchk(Type, [i64, f64]) ; Type = s(_) ; Type = lps(_) ))),
+    findall(Size,
+        ( member(ArmTypes, Arms),
+          plawk_binfmt_record_size(binfmt(ArmTypes), Size)
+        ),
+        Sizes),
+    max_list([8 | Sizes], BufSize).
 
 plawk_rules_have_writebin(Rules) :-
     member(rule(_Pattern, Actions), Rules),
@@ -2443,23 +2531,22 @@ plawk_resolve_union_writebin_blocks(BeginClauses, CaseBlocks0, CaseBlocks,
         WritebinPlan) :-
     ( member(case_arm(_I, ArmRules), CaseBlocks0),
       plawk_rules_have_writebin(ArmRules)
-    ->  plawk_begin_outfmt_types(BeginClauses, Types),
-        forall(member(Type, Types), plawk_outfmt_type_ok(Type)),
-        plawk_binfmt_record_size(binfmt(Types), Size),
-        WritebinPlan = outfmt(Types, Size),
-        maplist(plawk_resolve_union_writebin_block(Types), CaseBlocks0,
+    ->  plawk_begin_out_spec(BeginClauses, OutSpec),
+        plawk_writebin_plan(OutSpec, WritebinPlan),
+        maplist(plawk_resolve_union_writebin_block(OutSpec), CaseBlocks0,
             CaseBlocks)
     ;   WritebinPlan = none,
         CaseBlocks = CaseBlocks0
     ).
 
-plawk_resolve_union_writebin_block(Types, case_arm(Index, Rules0),
+plawk_resolve_union_writebin_block(OutSpec, case_arm(Index, Rules0),
         case_arm(Index, Rules)) :-
-    maplist(plawk_resolve_writebin_rule(Types), Rules0, Rules).
+    maplist(plawk_resolve_writebin_rule(OutSpec), Rules0, Rules).
 
 plawk_actions_have_writebin(Actions) :-
     member(Action, Actions),
     ( Action = writebin(_Fields)
+    ; Action = writebin_arm(_Index, _AFields)
     ; Action = if(_Pattern, ThenActions, ElseActions),
       ( plawk_actions_have_writebin(ThenActions)
       ; plawk_actions_have_writebin(ElseActions)
@@ -2467,18 +2554,33 @@ plawk_actions_have_writebin(Actions) :-
     ),
     !.
 
-plawk_resolve_writebin_rule(Types, rule(Pattern, Actions0), rule(Pattern, Actions)) :-
-    maplist(plawk_resolve_writebin_action(Types), Actions0, Actions).
+plawk_resolve_writebin_rule(OutSpec, rule(Pattern, Actions0), rule(Pattern, Actions)) :-
+    maplist(plawk_resolve_writebin_action(OutSpec), Actions0, Actions).
 
-plawk_resolve_writebin_action(Types, writebin(Fields), writebin_out(Types, Fields)) :-
+plawk_resolve_writebin_action(flat(Types), writebin(Fields),
+        writebin_out(Types, Fields)) :-
     !,
     length(Types, N),
     length(Fields, N).
-plawk_resolve_writebin_action(Types, if(Pattern, Then0, Else0), if(Pattern, Then, Else)) :-
+% a plain writebin cannot pick an arm, and an arm-targeted writebin is
+% meaningless against a flat layout -- both reject the program
+plawk_resolve_writebin_action(union(_Arms), writebin(_Fields), _) :-
     !,
-    maplist(plawk_resolve_writebin_action(Types), Then0, Then),
-    maplist(plawk_resolve_writebin_action(Types), Else0, Else).
-plawk_resolve_writebin_action(_Types, Action, Action).
+    fail.
+plawk_resolve_writebin_action(flat(_Types), writebin_arm(_Index, _Fields), _) :-
+    !,
+    fail.
+plawk_resolve_writebin_action(union(Arms), writebin_arm(Index, Fields),
+        writebin_arm_out(Index, ArmTypes, Fields)) :-
+    !,
+    nth0(Index, Arms, ArmTypes),
+    length(ArmTypes, N),
+    length(Fields, N).
+plawk_resolve_writebin_action(OutSpec, if(Pattern, Then0, Else0), if(Pattern, Then, Else)) :-
+    !,
+    maplist(plawk_resolve_writebin_action(OutSpec), Then0, Then),
+    maplist(plawk_resolve_writebin_action(OutSpec), Else0, Else).
+plawk_resolve_writebin_action(_OutSpec, Action, Action).
 
 plawk_begin_outfmt_types(BeginClauses, Types) :-
     member(begin(Actions), BeginClauses),
@@ -2490,15 +2592,23 @@ plawk_begin_outfmt_types(BeginClauses, Types) :-
     maplist(plawk_binfmt_type, Parts, Types).
 
 % Entry-block record buffer: one alloca reused by every writebin call
-% (a loop-body alloca would grow the stack per record).
+% (a loop-body alloca would grow the stack per record). The union plan
+% also resolves the buffer's element pointer once, so per-site tagged
+% emitters need no knowledge of the buffer's alloca size.
 plawk_writebin_entry_lines(none, '').
 plawk_writebin_entry_lines(outfmt(_Types, Size), IR) :-
     format(atom(IR), '  %plawk_wbuf = alloca [~w x i8], align 8~n', [Size]).
+plawk_writebin_entry_lines(outfmt_union(_Arms, BufSize), IR) :-
+    format(atom(IR),
+'  %plawk_wbuf = alloca [~w x i8], align 8
+  %plawk_wbuf_p = getelementptr inbounds [~w x i8], [~w x i8]* %plawk_wbuf, i32 0, i32 0~n',
+        [BufSize, BufSize, BufSize]).
 
 % fwrite(buf, size, 1, stdout) buffers in libc; the normal return from
 % main flushes it.
 plawk_writebin_globals(none, '').
 plawk_writebin_globals(outfmt(_Types, _Size), '@stdout = external global i8*').
+plawk_writebin_globals(outfmt_union(_Arms, _BufSize), '@stdout = external global i8*').
 
 plawk_rules_writebin_exprs(Rules, Exprs) :-
     findall(Expr,
@@ -2511,6 +2621,8 @@ plawk_actions_writebin_expr(Actions, Expr) :-
     member(Action, Actions),
     ( Action = writebin_out(_Types, Fields),
       member(Expr, Fields)
+    ; Action = writebin_arm_out(_Tag, _ArmTypes, AFields),
+      member(Expr, AFields)
     ; Action = if(_Pattern, ThenActions, ElseActions),
       ( plawk_actions_writebin_expr(ThenActions, Expr)
       ; plawk_actions_writebin_expr(ElseActions, Expr)
@@ -2545,7 +2657,9 @@ plawk_outfmt_type_ok(s(_W)) :- !.
 plawk_outfmt_type_ok(lps(_C)) :- !.
 plawk_outfmt_type_ok(rep(_K, ElemTypes)) :-
     forall(member(ElemType, ElemTypes),
-        ( memberchk(ElemType, [i64, f64]) ; ElemType = s(_) )).
+        ( memberchk(ElemType, [i64, f64]) ; ElemType = s(_)
+        ; ElemType = lps(_)
+        )).
 
 % sN output slots take string literals that fit the width, or field
 % reads (validated against the input layout separately in binary mode;
@@ -2626,6 +2740,30 @@ plawk_writebin_varlen_record_ir(Types, Fields, Slots, Values, FieldSeparator,
     atomic_list_concat(AllLines, '\n', IR),
     atomic_list_concat(GlobalParts, '\n', GlobalIR).
 
+%% plawk_writebin_union_record_ir(+Tag, +ArmTypes, +Fields, +Slots,
+%%     +Values, +FieldSeparator, +Prefix, -Pair)
+%
+%  One tagged output record: the 8-byte arm tag, then the arm's slots
+%  through the per-slot varlen writer. The shared buffer pointer
+%  (%plawk_wbuf_p) was resolved once in the entry block by the
+%  outfmt_union plan, so sites need no knowledge of the buffer size.
+plawk_writebin_union_record_ir(Tag, ArmTypes, Fields, Slots, Values,
+        FieldSeparator, Prefix, GlobalIR-IR) :-
+    format(atom(StdoutLoad),
+        '  %~w_stdout = load i8*, i8** @stdout', [Prefix]),
+    format(atom(StdoutVar), '%~w_stdout', [Prefix]),
+    format(atom(TagIR),
+'  %~w_tsp = bitcast i8* %plawk_wbuf_p to i64*
+  store i64 ~w, i64* %~w_tsp, align 1
+  %~w_twr = call i64 @fwrite(i8* %plawk_wbuf_p, i64 8, i64 1, i8* ~w)',
+        [Prefix, Tag, Prefix, Prefix, StdoutVar]),
+    plawk_writebin_varlen_field_lines(ArmTypes, Fields, Slots, Values,
+        FieldSeparator, Prefix, '%plawk_wbuf_p', StdoutVar, 0, FieldLines,
+        GlobalParts),
+    append([[StdoutLoad, TagIR], FieldLines], AllLines),
+    atomic_list_concat(AllLines, '\n', IR),
+    atomic_list_concat(GlobalParts, '\n', GlobalIR).
+
 plawk_writebin_varlen_field_lines([], [], _Slots, _Values, _FieldSeparator,
         _Prefix, _BasePtr, _Stdout, _Index, [], []).
 plawk_writebin_varlen_field_lines([Type | Types], [Field0 | Fields], Slots,
@@ -2656,6 +2794,73 @@ plawk_writebin_varlen_slot_lines(lps(Cap), Field, FieldSeparator, Base,
         '  %~w_pwr = call i64 @fwrite(i8* ~w, i64 ~w, i64 1, i8* ~w)',
         [Base, PtrIR, LenIR, Stdout]),
     append(SourceLines, [LenStore, PayloadWrite], Lines).
+% rep passthrough whose elements contain lps strings: each element's
+% wire size varies (a length prefix plus the live payload, recovered
+% with strnlen from the NUL-padded slot), so the writer loops over the
+% live elements, emitting each field left to right. The loop gets its
+% own labeled blocks; the fragment enters through a br so the head phi
+% has a named predecessor.
+plawk_writebin_varlen_slot_lines(rep(_Cap, ElemTypes), field(CountIndex),
+        binfmt(InTypes), Base, BasePtr, Stdout, Lines, []) :-
+    memberchk(lps(_ECap), ElemTypes),
+    !,
+    maplist(plawk_binfmt_type_width, ElemTypes, ElemWidths),
+    sum_list(ElemWidths, ElemSize),
+    plawk_binfmt_field_offset(binfmt(InTypes), CountIndex, CountOff),
+    ElemsOff is CountOff + 8,
+    format(atom(HeaderIR),
+'  br label %~w_pre
+
+~w_pre:
+  %~w_cfp = getelementptr i8, i8* %rec, i64 ~w
+  %~w_ctp = bitcast i8* %~w_cfp to i64*
+  %~w_n = load i64, i64* %~w_ctp, align 1
+  %~w_csp = bitcast i8* ~w to i64*
+  store i64 %~w_n, i64* %~w_csp, align 1
+  %~w_cwr = call i64 @fwrite(i8* ~w, i64 8, i64 1, i8* ~w)
+  br label %~w_lh
+
+~w_lh:
+  %~w_j = phi i64 [ 1, %~w_pre ], [ %~w_jn, %~w_ld ]
+  %~w_cont = icmp sle i64 %~w_j, %~w_n
+  br i1 %~w_cont, label %~w_lb, label %~w_after
+
+~w_lb:
+  %~w_jm1 = sub i64 %~w_j, 1
+  %~w_rel = mul i64 %~w_jm1, ~w
+  %~w_efp = getelementptr i8, i8* %rec, i64 ~w
+  %~w_eb = getelementptr i8, i8* %~w_efp, i64 %~w_rel',
+        [Base,
+         Base,
+         Base, CountOff,
+         Base, Base,
+         Base, Base,
+         Base, BasePtr,
+         Base, Base,
+         Base, BasePtr, Stdout,
+         Base,
+         Base,
+         Base, Base, Base, Base,
+         Base, Base, Base,
+         Base, Base, Base,
+         Base,
+         Base, Base,
+         Base, Base, ElemSize,
+         Base, ElemsOff,
+         Base, Base, Base]),
+    format(atom(ElemBase), '%~w_eb', [Base]),
+    plawk_writebin_rep_elem_lines(ElemTypes, Base, ElemBase, BasePtr, Stdout,
+        0, 0, ElemLines),
+    format(atom(FooterIR),
+'  br label %~w_ld
+
+~w_ld:
+  %~w_jn = add i64 %~w_j, 1
+  br label %~w_lh
+
+~w_after:',
+        [Base, Base, Base, Base, Base, Base]),
+    append([[HeaderIR], ElemLines, [FooterIR]], Lines).
 plawk_writebin_varlen_slot_lines(rep(_Cap, ElemTypes), field(CountIndex),
         binfmt(InTypes), Base, BasePtr, Stdout, Lines, []) :-
     !,
@@ -2705,6 +2910,49 @@ plawk_writebin_varlen_slot_lines(Type, Field, FieldSeparator, Base, BasePtr,
         [Base, BasePtr, LLVMType, LLVMType, ValueIR, LLVMType, Base,
          Base, BasePtr, Stdout]),
     append(SetupParts, [StoreWrite], Lines).
+
+%% plawk_writebin_rep_elem_lines(+ElemTypes, +Base, +ElemBase, +BasePtr,
+%%     +Stdout, +Index, +Offset, -Lines)
+%
+%  Loop-body field writes for one rep element based at ElemBase.
+%  Fixed-width fields pass through directly; lps fields recover the
+%  live length from the NUL-padded slot with strnlen, then emit the
+%  8-byte prefix and exactly that many payload bytes.
+plawk_writebin_rep_elem_lines([], _Base, _ElemBase, _BasePtr, _Stdout,
+        _Index, _Offset, []).
+plawk_writebin_rep_elem_lines([lps(Cap) | Types], Base, ElemBase, BasePtr,
+        Stdout, Index, Offset, [IR | Lines]) :-
+    !,
+    format(atom(IR),
+'  %~w_e~w_sp = getelementptr i8, i8* ~w, i64 ~w
+  %~w_e~w_len = call i64 @strnlen(i8* %~w_e~w_sp, i64 ~w)
+  %~w_e~w_lsp = bitcast i8* ~w to i64*
+  store i64 %~w_e~w_len, i64* %~w_e~w_lsp, align 1
+  %~w_e~w_lwr = call i64 @fwrite(i8* ~w, i64 8, i64 1, i8* ~w)
+  %~w_e~w_pwr = call i64 @fwrite(i8* %~w_e~w_sp, i64 %~w_e~w_len, i64 1, i8* ~w)',
+        [Base, Index, ElemBase, Offset,
+         Base, Index, Base, Index, Cap,
+         Base, Index, BasePtr,
+         Base, Index, Base, Index,
+         Base, Index, BasePtr, Stdout,
+         Base, Index, Base, Index, Base, Index, Stdout]),
+    plawk_binfmt_type_width(lps(Cap), Width),
+    NextOffset is Offset + Width,
+    NextIndex is Index + 1,
+    plawk_writebin_rep_elem_lines(Types, Base, ElemBase, BasePtr, Stdout,
+        NextIndex, NextOffset, Lines).
+plawk_writebin_rep_elem_lines([Type | Types], Base, ElemBase, BasePtr,
+        Stdout, Index, Offset, [IR | Lines]) :-
+    plawk_binfmt_type_width(Type, Width),
+    format(atom(IR),
+'  %~w_e~w_sp = getelementptr i8, i8* ~w, i64 ~w
+  %~w_e~w_wr = call i64 @fwrite(i8* %~w_e~w_sp, i64 ~w, i64 1, i8* ~w)',
+        [Base, Index, ElemBase, Offset,
+         Base, Index, Base, Index, Width, Stdout]),
+    NextOffset is Offset + Width,
+    NextIndex is Index + 1,
+    plawk_writebin_rep_elem_lines(Types, Base, ElemBase, BasePtr, Stdout,
+        NextIndex, NextOffset, Lines).
 
 %% plawk_writebin_lps_source_lines(+Field, +FieldSeparator, +Cap, +Base,
 %%     +BasePtr, -PtrIR, -LenIR, -Lines, -GlobalParts)
@@ -3956,6 +4204,8 @@ plawk_scalar_rule_body_action(Action) :-
     plawk_rule_body_print_action(Action).
 plawk_scalar_rule_body_action(writebin_out(Types, Fields)) :-
     plawk_writebin_args_ok(Types, Fields).
+plawk_scalar_rule_body_action(writebin_arm_out(_Tag, ArmTypes, Fields)) :-
+    plawk_writebin_args_ok(ArmTypes, Fields).
 plawk_scalar_rule_body_action(foreach_loop(_Layout, Body)) :-
     plawk_scalar_branch_body_actions(Body).
 plawk_scalar_rule_body_action(if(_Pattern, ThenActions, ElseActions)) :-
@@ -3974,6 +4224,8 @@ plawk_scalar_rule_body_plain_action(Action) :-
     plawk_rule_body_print_action(Action).
 plawk_scalar_rule_body_plain_action(writebin_out(Types, Fields)) :-
     plawk_writebin_args_ok(Types, Fields).
+plawk_scalar_rule_body_plain_action(writebin_arm_out(_Tag, ArmTypes, Fields)) :-
+    plawk_writebin_args_ok(ArmTypes, Fields).
 % else-if chains nest an if inside a branch body; the sequence walker
 % lowers nested ifs recursively, so validation recurses the same way.
 plawk_scalar_rule_body_plain_action(if(Pattern, ThenActions, ElseActions)) :-
@@ -4291,6 +4543,16 @@ plawk_scalar_action_sequence_pairs([writebin_out(Types, Fields) | Rest], Slots, 
     { format(atom(WbPrefix), '~w_wb_~w', [Prefix, OpIndex]),
       plawk_writebin_record_ir(Types, Fields, Slots, Values0, FieldSeparator,
           WbPrefix, Pair),
+      NextOpIndex is OpIndex + 1
+    },
+    [Pair],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
+plawk_scalar_action_sequence_pairs([writebin_arm_out(Tag, ArmTypes, Fields) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { format(atom(WbPrefix), '~w_wba_~w', [Prefix, OpIndex]),
+      plawk_writebin_union_record_ir(Tag, ArmTypes, Fields, Slots, Values0,
+          FieldSeparator, WbPrefix, Pair),
       NextOpIndex is OpIndex + 1
     },
     [Pair],
@@ -4717,6 +4979,8 @@ plawk_f64_operand_expr(float_const(Mantissa, Denominator)) :-
 plawk_f64_operand_expr(float_field(Index)) :-
     integer(Index),
     Index >= 0.
+plawk_f64_operand_expr(float_call(Name, Args)) :-
+    plawk_prolog_call_expr(prolog_call(Name, Args)).
 plawk_f64_operand_expr(Expr) :-
     plawk_i64_operand_expr(Expr).
 plawk_f64_operand_expr(Expr) :-
@@ -5551,6 +5815,7 @@ plawk_print_action_ir(Fields, FieldSeparator, OutputSeparator, GlobalIR-IR) :-
 plawk_output_action_exprs(print(Fields), Fields).
 plawk_output_action_exprs(printf(string(_Format), Args), Args).
 plawk_output_action_exprs(writebin_out(_Types, Fields), Fields).
+plawk_output_action_exprs(writebin_arm_out(_Tag, _ArmTypes, Fields), Fields).
 
 plawk_output_action_ir(print(Fields), FieldSeparator, OutputSeparator, Pair) :-
     plawk_print_action_ir(Fields, FieldSeparator, OutputSeparator, Pair).
@@ -5562,6 +5827,10 @@ plawk_output_action_ir(writebin_out(Types, Fields), FieldSeparator, _OutputSepar
     % the state-plan drivers.
     plawk_writebin_record_ir(Types, Fields, [], [], FieldSeparator,
         plawk_writebin, Pair).
+plawk_output_action_ir(writebin_arm_out(Tag, ArmTypes, Fields), FieldSeparator,
+        _OutputSeparator, Pair) :-
+    plawk_writebin_union_record_ir(Tag, ArmTypes, Fields, [], [],
+        FieldSeparator, plawk_writebin, Pair).
 
 plawk_prefixed_print_action_ir([field(0)], _FieldSeparator, _OutputSeparator, Prefix, ''-IR) :-
     !,
