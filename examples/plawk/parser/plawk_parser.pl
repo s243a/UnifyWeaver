@@ -109,6 +109,15 @@ action_block(Actions) -->
     "{",
     ws,
     actions(Actions),
+    action_block_close.
+
+% a trailing `;` or newline before the closing brace is harmless
+action_block_close -->
+    action_sep,
+    !,
+    "}",
+    ws.
+action_block_close -->
     ws,
     "}",
     ws.
@@ -537,16 +546,54 @@ for_in_body([PrintAction]) -->
 
 actions([Action | Actions]) -->
     action(Action),
-    actions_rest(Actions).
+    actions_rest(Action, Actions).
 
-actions_rest([Action | Actions]) -->
-    ws,
-    ";",
-    ws,
-    !,
+actions_rest(_Prev, [Action | Actions]) -->
+    action_sep,
     action(Action),
-    actions_rest(Actions).
-actions_rest([]) -->
+    !,
+    actions_rest(Action, Actions).
+% as in awk/C, no separator is needed after a compound statement's
+% closing brace (whose trailing ws has already been consumed)
+actions_rest(Prev, [Action | Actions]) -->
+    { plawk_block_action(Prev) },
+    action(Action),
+    !,
+    actions_rest(Action, Actions).
+actions_rest(_Prev, []) -->
+    [].
+
+plawk_block_action(if(_Pattern, _Then, _Else)).
+plawk_block_action(foreach(_Body)).
+
+%% action_sep//0
+%
+%  One statement separator, as in awk: any run of blanks, comments,
+%  semicolons, and newlines containing at least one `;` or newline.
+%  (A trailing separator before `}` is harmless: the following
+%  action// fails and actions_rest backtracks to its empty clause.)
+action_sep -->
+    action_sep_scan(no).
+
+action_sep_scan(_Seen) -->
+    ";",
+    !,
+    action_sep_scan(yes).
+action_sep_scan(_Seen) -->
+    "\n",
+    !,
+    action_sep_scan(yes).
+action_sep_scan(Seen) -->
+    [Code],
+    { Code =\= 0'\n, code_type(Code, space) },
+    !,
+    action_sep_scan(Seen).
+action_sep_scan(Seen) -->
+    "#",
+    !,
+    comment_rest,
+    action_sep_scan(Seen).
+action_sep_scan(yes) -->
     [].
 
 action(Action) -->
@@ -1161,12 +1208,30 @@ required_ws -->
     { code_type(Code, space) },
     ws.
 
+% Whitespace, including newlines and awk-style # comments (a comment
+% runs to end of line; its terminating newline still counts as a
+% statement separator in action_sep//0). `#` is not a token anywhere
+% in the surface, and strings/regex bodies never route through ws//0,
+% so comments cannot be consumed inside literals.
 ws -->
     [Code],
     { code_type(Code, space) },
     !,
     ws.
 ws -->
+    "#",
+    !,
+    comment_rest,
+    ws.
+ws -->
+    [].
+
+comment_rest -->
+    [Code],
+    { Code =\= 0'\n },
+    !,
+    comment_rest.
+comment_rest -->
     [].
 
 eos([], []).
