@@ -32,10 +32,12 @@ Fit `μ_sym ≈ σ(w·features)` against the judge-scored SYM targets:
 `μ_sym = blend( judge=graph [3/dist], judge=e5 [SYM operator] )` — exactly the **calibrated-judges /
 operator-superposition** machinery (`judge_emb`, the blend regularizer). SYM is its first real use.
 - **Inference:** e5 is free (model input); the graph half must be a **cheap O(1) structural signal**, not a BFS.
-- **Open:** the naive landmark-L2 structural embedding is too weak (recovers +0.63, not +0.75; more landmarks
-  didn't help — L2-of-landmark-distance-vectors is a poor proxy). Needs a **proper structural embedding**
-  (node2vec / DeepWalk / spectral, or a tighter landmark distance *estimator* rather than L2) to reproduce the
-  `3/dist` half at O(1) inference. That's the remaining piece for a cheap dual-judge SYM.
+- **Structural embedding (step 2, `structural_embedding.py`):** landmark heuristics fail (corr ~+0.33). A
+  learned metric embedding trained on the **RECIPROCAL target** `3/d` (not distance — far pairs' small `3/d`
+  auto-weighs down, so capacity goes to the near scale where SYM lives; user's insight) recovers +0.405 corr
+  with true `3/dist` on the SYM pairs → **DUAL(struct-embed ⊕ e5) corr +0.652**, beating e5-only (+0.60) but
+  below the raw-BFS ceiling (+0.76). So the O(1) signal adds real value; residual fine-scale loss remains
+  (higher dim / better training / the exact scoring graph are the levers).
 
 ## Caveats
 - R²≈0.43 for the graph half is *moderate* — `3/dist` explains ~half of SYM; the rest is semantic nuance +
