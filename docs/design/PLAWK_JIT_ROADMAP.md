@@ -36,23 +36,21 @@ Items 1–3 are largely independent; the ordering reflects value-per-effort
 and the fact that each earlier item feeds the later ones. Items 4–5 have
 real dependencies on the earlier subset work.
 
-### 1. Lift float constants into the loadable subset — *small, quick win*
+### 1. Lift float constants into the loadable subset — *LANDED*
 
-**What:** allow a grammar clause like `scale(X, R) :- R is X * 1.5` (a
-`float` constant, tag 2) to compile into a `.wamo`. Today `write_wam_object`
-rejects float literals; the object encoding for `get`/`put`/`set_constant`
-already has a tag lane and `set_constant_literal_parts` knows how to emit a
-`bitcast (double c to i64)`, so this is mostly relaxing the writer's
-`wamo_const` guard and carrying the float payload through the relocation
-(no relocation needed — a float constant is self-contained).
+**What:** a grammar clause like `scale(X, R) :- R is X * 1.5` (a `float`
+constant, tag 2) now compiles into a `.wamo`. `put_constant`/`set_constant`
+accept floats (matching AOT `set_constant_literal_parts`); the object stores
+the float's decimal text in the C-string table (reloc class `float`, id 3)
+and the loader `strtod`s it at load, writing the i64 bit pattern into op1 —
+the same double the AOT `bitcast (double c to i64)` yields.
+`get_constant`/`unify_constant` stay integer/atom only (AOT never emits a
+float there). Verified: `scale(3)` via `float(dyncall($1))` yields `4.5`.
 
-**Why:** `float(dyncall(...))` (just landed) makes float-returning grammars
-first-class, but a grammar can currently only *reach* a Float by
-computation (`R is X / 2`), not by writing one (`R is X * 1.5`). This closes
-that gap. It is also the first, smallest step of the subset expansion that
-item 5 (source-eval) ultimately needs.
-
-**Effort:** small. **Depends on:** nothing.
+**Why:** `float(dyncall(...))` made float-returning grammars first-class, but
+a grammar could only *reach* a Float by computation (`R is X / 2`), not by
+writing one. This closes that gap and is the first step of the subset
+expansion that item 5 (source-eval) needs.
 
 ### 2. Binary-data returns — opaque bytes — *moderate, high value*
 
