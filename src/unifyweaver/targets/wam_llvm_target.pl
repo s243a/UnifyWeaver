@@ -20347,6 +20347,9 @@ wamo_utf8_bytes([C|Cs], Bytes) :-
 %    @wam_object_load    - read a .wamo file, relocate, build a %WamState
 %    @wam_object_call_i64 - call the object's entry with N %Value args and
 %                           read back an Integer result ({value, ok})
+%    @wam_object_call_record - call the entry and deserialize a returned
+%                           Compound's args into typed i64/f64 slots (the
+%                           "output is a term" primitive)
 %    @wam_object_entry_index / @wam_object_entry_index_bytes
 %                        - resolve a named entry to its label index (or -1)
 %                          for multi-entry objects; @wam_label_pc turns that
@@ -20853,6 +20856,112 @@ fail:
   %f1 = insertvalue { i8*, i64, i1 } %f0, i64 0, 1
   %f2 = insertvalue { i8*, i64, i1 } %f1, i1 false, 2
   ret { i8*, i64, i1 } %f2
+}
+
+; Structured-record variant (JIT roadmap #4): the entry output cell must bind
+; to a Compound term whose arity equals %nfields; each arg is deserialized
+; into out_slots[i] per typecodes[i] BEFORE the arena is rewound (the compound
+; and its arg cells live in the arena -- only atoms survive a rewind). This is
+; the "output is a term, not a scalar" primitive: a grammar returns e.g.
+; rec(42, 3.14) and the caller lays the fields into a record buffer.
+;   typecodes[i] = 0  -> i64  : arg i must be Integer; out_slots[i] = its i64
+;   typecodes[i] = 1  -> f64  : arg i must be a number; out_slots[i] = the
+;                               double bits (value_to_double promotes Integer)
+; out_slots is an i64[nfields]; f64 fields are stored as bitcast double bits,
+; so the caller reads slot i as i64 or bitcasts to double per its own shape.
+; Returns i1 ok; false on call failure, a non-Compound output, an arity
+; mismatch, or an arg whose type does not satisfy its typecode. Same
+; heap-save / arena-rewind discipline as the scalar variants, so a per-record
+; call stays constant-memory. (String/atom fields are a planned follow-on:
+; their bytes survive the rewind via the persistent atom table, but need a
+; (ptr,len) slot pair rather than one i64.)
+define i1 @wam_object_call_record(%WamState* %vm, i32 %entry_pc, i32 %nargs, %Value* %args, i32 %out_reg, i32 %nfields, i8* %typecodes, i64* %out_slots) {
+entry:
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+do_call:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs_saved = load i32, i32* %hs_ptr
+  %unb = call %Value @value_unbound(i8* null)
+  %out_addr = call i32 @wam_heap_push(%WamState* %vm, %Value %unb)
+  %out_ref = call %Value @value_ref(i32 %out_addr)
+  call void @wam_prepare_call(%WamState* %vm, i32 %entry_pc)
+  br label %argloop
+argloop:
+  %ai = phi i32 [ 0, %do_call ], [ %ai1, %argstep ]
+  %adone = icmp sge i32 %ai, %nargs
+  br i1 %adone, label %args_done, label %argstep
+argstep:
+  %aidx64 = sext i32 %ai to i64
+  %ap = getelementptr %Value, %Value* %args, i64 %aidx64
+  %av = load %Value, %Value* %ap
+  call void @wam_set_reg(%WamState* %vm, i32 %ai, %Value %av)
+  %ai1 = add i32 %ai, 1
+  br label %argloop
+args_done:
+  call void @wam_set_reg(%WamState* %vm, i32 %out_reg, %Value %out_ref)
+  %ok = call i1 @run_loop(%WamState* %vm)
+  br i1 %ok, label %read_out, label %rewind_fail
+read_out:
+  %out = call %Value @wam_deref_value(%WamState* %vm, %Value %out_ref)
+  %out_tag = call i32 @value_tag(%Value %out)
+  %is_compound = icmp eq i32 %out_tag, 3
+  br i1 %is_compound, label %have_compound, label %rewind_fail
+have_compound:
+  %cp_bits = call i64 @value_payload(%Value %out)
+  %cp = inttoptr i64 %cp_bits to %Compound*
+  %ar_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 1
+  %arity = load i32, i32* %ar_slot
+  %arity_ok = icmp eq i32 %arity, %nfields
+  br i1 %arity_ok, label %fields_init, label %rewind_fail
+fields_init:
+  %cargs_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 2
+  %cargs = load %Value*, %Value** %cargs_slot
+  br label %floop
+floop:
+  %fi = phi i32 [ 0, %fields_init ], [ %fi1, %fstep_ok ]
+  %fdone = icmp sge i32 %fi, %nfields
+  br i1 %fdone, label %ok_rewind, label %fstep
+fstep:
+  %fi64 = sext i32 %fi to i64
+  %farg_ptr = getelementptr %Value, %Value* %cargs, i64 %fi64
+  %farg_raw = load %Value, %Value* %farg_ptr
+  %farg = call %Value @wam_deref_value(%WamState* %vm, %Value %farg_raw)
+  %ftag = call i32 @value_tag(%Value %farg)
+  %tc_ptr = getelementptr i8, i8* %typecodes, i64 %fi64
+  %tc = load i8, i8* %tc_ptr
+  %is_f64 = icmp eq i8 %tc, 1
+  br i1 %is_f64, label %field_f64, label %field_i64
+field_i64:
+  %is_int = icmp eq i32 %ftag, 1
+  br i1 %is_int, label %store_i64, label %rewind_fail
+store_i64:
+  %ival = call i64 @value_payload(%Value %farg)
+  %slot_i = getelementptr i64, i64* %out_slots, i64 %fi64
+  store i64 %ival, i64* %slot_i
+  br label %fstep_ok
+field_f64:
+  %is_num = call i1 @value_is_number(%Value %farg)
+  br i1 %is_num, label %store_f64, label %rewind_fail
+store_f64:
+  %dval = call double @value_to_double(%Value %farg)
+  %dbits = bitcast double %dval to i64
+  %slot_f = getelementptr i64, i64* %out_slots, i64 %fi64
+  store i64 %dbits, i64* %slot_f
+  br label %fstep_ok
+fstep_ok:
+  %fi1 = add i32 %fi, 1
+  br label %floop
+ok_rewind:
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  ret i1 true
+rewind_fail:
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  br label %fail
+fail:
+  ret i1 false
 }
 
 ; Read a whole file into a fresh malloc''d buffer, writing the byte count to

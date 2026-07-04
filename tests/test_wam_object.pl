@@ -23,6 +23,10 @@ answer_swapped(R) :- sum3([7, 8, 5, 1000], 0, R). % -> 1020
 
 uses_float(X) :- X is 1.5 + 2.5.                % float constant -> rejected
 
+% returns a compound record rather than a scalar: rec2f(Integer, Float).
+% Exercises the structured-return primitive (@wam_object_call_record).
+makerec(R) :- X = 10, Y is X + 0.5, R = rec2f(X, Y).   % -> rec2f(10, 10.5)
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -148,6 +152,21 @@ test(unknown_entry_name_resolves_to_minus_one,
     run_host(Host, Wamo, _Out, 22),
     !.
 
+% A grammar can return a Compound record; @wam_object_call_record
+% deserializes its args into typed slots. makerec/1 returns
+% rec2f(10, 10.5): field 0 as i64 (typecode 0) -> 10, field 1 as f64
+% (typecode 1) -> 10.5. The compound + its arg cells are read before the
+% arena rewind.
+test(struct_return_deserializes_fields,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'rec.wamo', Wamo),
+    write_wam_object([user:makerec/1], [wamo_entry(makerec/1)], Wamo),
+    build_record_host(Dir, Host),
+    run_host(Host, Wamo, Out, 0),
+    assertion(Out == "10\n10.5\n"),
+    !.
+
 :- end_tests(wam_object).
 
 % --- helpers ---------------------------------------------------------------
@@ -232,6 +251,57 @@ build_multi_miss_host(Dir, Host) :-
         write(S, MainIR),
         close(S)),
     clang_link(LL, Host).
+
+% Build a host that loads argv[1], calls the entry via
+% @wam_object_call_record with a 2-field shape (i64, f64), and prints the
+% deserialized fields.
+build_record_host(Dir, Host) :-
+    directory_file_path(Dir, 'record_host.ll', LL),
+    with_output_to(string(_),
+        write_wam_llvm_project([user:answer/1],
+            [module_name(wam_object_record_host), emit_wamo_loader(true)], LL)),
+    record_host_main_ir(MainIR),
+    setup_call_cleanup(
+        open(LL, append, S, [encoding(utf8)]),
+        write(S, MainIR),
+        close(S)),
+    directory_file_path(Dir, 'record_host_bin', Host),
+    clang_link(LL, Host).
+
+record_host_main_ir(
+'\n@.rec_ifmt = private constant [6 x i8] c"%lld\\0A\\00"\n\c
+@.rec_ffmt = private constant [6 x i8] c"%.1f\\0A\\00"\n\c
+@.rec_types = private constant [2 x i8] c"\\00\\01"\n\n\c
+define i32 @main(i32 %argc, i8** %argv) {\n\c
+entry:\n\c
+  %p1 = getelementptr i8*, i8** %argv, i64 1\n\c
+  %path = load i8*, i8** %p1\n\c
+  %obj = call { %WamState*, i32 } @wam_object_load(i8* %path)\n\c
+  %vm = extractvalue { %WamState*, i32 } %obj, 0\n\c
+  %pc = extractvalue { %WamState*, i32 } %obj, 1\n\c
+  %vm_null = icmp eq %WamState* %vm, null\n\c
+  br i1 %vm_null, label %load_fail, label %run\n\c
+run:\n\c
+  %slots = alloca i64, i32 2\n\c
+  %tc = getelementptr [2 x i8], [2 x i8]* @.rec_types, i32 0, i32 0\n\c
+  %ok = call i1 @wam_object_call_record(%WamState* %vm, i32 %pc, i32 0, %Value* null, i32 0, i32 2, i8* %tc, i64* %slots)\n\c
+  br i1 %ok, label %print, label %run_fail\n\c
+print:\n\c
+  %s0 = getelementptr i64, i64* %slots, i64 0\n\c
+  %v0 = load i64, i64* %s0\n\c
+  %ifmt = getelementptr [6 x i8], [6 x i8]* @.rec_ifmt, i32 0, i32 0\n\c
+  %pi = call i32 (i8*, ...) @printf(i8* %ifmt, i64 %v0)\n\c
+  %s1 = getelementptr i64, i64* %slots, i64 1\n\c
+  %v1bits = load i64, i64* %s1\n\c
+  %v1 = bitcast i64 %v1bits to double\n\c
+  %ffmt = getelementptr [6 x i8], [6 x i8]* @.rec_ffmt, i32 0, i32 0\n\c
+  %pf = call i32 (i8*, ...) @printf(i8* %ffmt, double %v1)\n\c
+  ret i32 0\n\c
+load_fail:\n\c
+  ret i32 20\n\c
+run_fail:\n\c
+  ret i32 21\n\c
+}\n').
 
 clang_link(LL, Bin) :-
     format(atom(Cmd), 'clang -w -O2 ~w -o ~w -lm 2>&1', [LL, Bin]),
