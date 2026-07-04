@@ -2592,7 +2592,9 @@ plawk_outfmt_type_ok(s(_W)) :- !.
 plawk_outfmt_type_ok(lps(_C)) :- !.
 plawk_outfmt_type_ok(rep(_K, ElemTypes)) :-
     forall(member(ElemType, ElemTypes),
-        ( memberchk(ElemType, [i64, f64]) ; ElemType = s(_) )).
+        ( memberchk(ElemType, [i64, f64]) ; ElemType = s(_)
+        ; ElemType = lps(_)
+        )).
 
 % sN output slots take string literals that fit the width, or field
 % reads (validated against the input layout separately in binary mode;
@@ -2703,6 +2705,73 @@ plawk_writebin_varlen_slot_lines(lps(Cap), Field, FieldSeparator, Base,
         '  %~w_pwr = call i64 @fwrite(i8* ~w, i64 ~w, i64 1, i8* ~w)',
         [Base, PtrIR, LenIR, Stdout]),
     append(SourceLines, [LenStore, PayloadWrite], Lines).
+% rep passthrough whose elements contain lps strings: each element's
+% wire size varies (a length prefix plus the live payload, recovered
+% with strnlen from the NUL-padded slot), so the writer loops over the
+% live elements, emitting each field left to right. The loop gets its
+% own labeled blocks; the fragment enters through a br so the head phi
+% has a named predecessor.
+plawk_writebin_varlen_slot_lines(rep(_Cap, ElemTypes), field(CountIndex),
+        binfmt(InTypes), Base, BasePtr, Stdout, Lines, []) :-
+    memberchk(lps(_ECap), ElemTypes),
+    !,
+    maplist(plawk_binfmt_type_width, ElemTypes, ElemWidths),
+    sum_list(ElemWidths, ElemSize),
+    plawk_binfmt_field_offset(binfmt(InTypes), CountIndex, CountOff),
+    ElemsOff is CountOff + 8,
+    format(atom(HeaderIR),
+'  br label %~w_pre
+
+~w_pre:
+  %~w_cfp = getelementptr i8, i8* %rec, i64 ~w
+  %~w_ctp = bitcast i8* %~w_cfp to i64*
+  %~w_n = load i64, i64* %~w_ctp, align 1
+  %~w_csp = bitcast i8* ~w to i64*
+  store i64 %~w_n, i64* %~w_csp, align 1
+  %~w_cwr = call i64 @fwrite(i8* ~w, i64 8, i64 1, i8* ~w)
+  br label %~w_lh
+
+~w_lh:
+  %~w_j = phi i64 [ 1, %~w_pre ], [ %~w_jn, %~w_ld ]
+  %~w_cont = icmp sle i64 %~w_j, %~w_n
+  br i1 %~w_cont, label %~w_lb, label %~w_after
+
+~w_lb:
+  %~w_jm1 = sub i64 %~w_j, 1
+  %~w_rel = mul i64 %~w_jm1, ~w
+  %~w_efp = getelementptr i8, i8* %rec, i64 ~w
+  %~w_eb = getelementptr i8, i8* %~w_efp, i64 %~w_rel',
+        [Base,
+         Base,
+         Base, CountOff,
+         Base, Base,
+         Base, Base,
+         Base, BasePtr,
+         Base, Base,
+         Base, BasePtr, Stdout,
+         Base,
+         Base,
+         Base, Base, Base, Base,
+         Base, Base, Base,
+         Base, Base, Base,
+         Base,
+         Base, Base,
+         Base, Base, ElemSize,
+         Base, ElemsOff,
+         Base, Base, Base]),
+    format(atom(ElemBase), '%~w_eb', [Base]),
+    plawk_writebin_rep_elem_lines(ElemTypes, Base, ElemBase, BasePtr, Stdout,
+        0, 0, ElemLines),
+    format(atom(FooterIR),
+'  br label %~w_ld
+
+~w_ld:
+  %~w_jn = add i64 %~w_j, 1
+  br label %~w_lh
+
+~w_after:',
+        [Base, Base, Base, Base, Base, Base]),
+    append([[HeaderIR], ElemLines, [FooterIR]], Lines).
 plawk_writebin_varlen_slot_lines(rep(_Cap, ElemTypes), field(CountIndex),
         binfmt(InTypes), Base, BasePtr, Stdout, Lines, []) :-
     !,
@@ -2752,6 +2821,49 @@ plawk_writebin_varlen_slot_lines(Type, Field, FieldSeparator, Base, BasePtr,
         [Base, BasePtr, LLVMType, LLVMType, ValueIR, LLVMType, Base,
          Base, BasePtr, Stdout]),
     append(SetupParts, [StoreWrite], Lines).
+
+%% plawk_writebin_rep_elem_lines(+ElemTypes, +Base, +ElemBase, +BasePtr,
+%%     +Stdout, +Index, +Offset, -Lines)
+%
+%  Loop-body field writes for one rep element based at ElemBase.
+%  Fixed-width fields pass through directly; lps fields recover the
+%  live length from the NUL-padded slot with strnlen, then emit the
+%  8-byte prefix and exactly that many payload bytes.
+plawk_writebin_rep_elem_lines([], _Base, _ElemBase, _BasePtr, _Stdout,
+        _Index, _Offset, []).
+plawk_writebin_rep_elem_lines([lps(Cap) | Types], Base, ElemBase, BasePtr,
+        Stdout, Index, Offset, [IR | Lines]) :-
+    !,
+    format(atom(IR),
+'  %~w_e~w_sp = getelementptr i8, i8* ~w, i64 ~w
+  %~w_e~w_len = call i64 @strnlen(i8* %~w_e~w_sp, i64 ~w)
+  %~w_e~w_lsp = bitcast i8* ~w to i64*
+  store i64 %~w_e~w_len, i64* %~w_e~w_lsp, align 1
+  %~w_e~w_lwr = call i64 @fwrite(i8* ~w, i64 8, i64 1, i8* ~w)
+  %~w_e~w_pwr = call i64 @fwrite(i8* %~w_e~w_sp, i64 %~w_e~w_len, i64 1, i8* ~w)',
+        [Base, Index, ElemBase, Offset,
+         Base, Index, Base, Index, Cap,
+         Base, Index, BasePtr,
+         Base, Index, Base, Index,
+         Base, Index, BasePtr, Stdout,
+         Base, Index, Base, Index, Base, Index, Stdout]),
+    plawk_binfmt_type_width(lps(Cap), Width),
+    NextOffset is Offset + Width,
+    NextIndex is Index + 1,
+    plawk_writebin_rep_elem_lines(Types, Base, ElemBase, BasePtr, Stdout,
+        NextIndex, NextOffset, Lines).
+plawk_writebin_rep_elem_lines([Type | Types], Base, ElemBase, BasePtr,
+        Stdout, Index, Offset, [IR | Lines]) :-
+    plawk_binfmt_type_width(Type, Width),
+    format(atom(IR),
+'  %~w_e~w_sp = getelementptr i8, i8* ~w, i64 ~w
+  %~w_e~w_wr = call i64 @fwrite(i8* %~w_e~w_sp, i64 ~w, i64 1, i8* ~w)',
+        [Base, Index, ElemBase, Offset,
+         Base, Index, Base, Index, Width, Stdout]),
+    NextOffset is Offset + Width,
+    NextIndex is Index + 1,
+    plawk_writebin_rep_elem_lines(Types, Base, ElemBase, BasePtr, Stdout,
+        NextIndex, NextOffset, Lines).
 
 %% plawk_writebin_lps_source_lines(+Field, +FieldSeparator, +Cap, +Base,
 %%     +BasePtr, -PtrIR, -LenIR, -Lines, -GlobalParts)

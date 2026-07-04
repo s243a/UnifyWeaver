@@ -169,11 +169,15 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
    so still memcpy cost per record). Writer output is byte-compatible
    with the `lpsN` reader. `repK(elems)` in OUTFMT (landed) is a
    passthrough slot: the argument names the input rep's count field,
-   and the writer emits the live count plus one bulk fwrite of
-   count×elemsize bytes from the input's element region (fixed-width
-   elements only, so in-memory layout == wire layout; caps and element
-   layouts must match the input rep exactly). Guarded rules therefore
-   make byte-exact stream filters, in plain and union input modes.
+   and the writer emits the live count plus the live elements — one
+   bulk fwrite of count×elemsize bytes when the elements are all
+   fixed-width (in-memory layout == wire layout), or a writer-side
+   loop when they contain `lpsN` strings (each iteration recovers the
+   live length from the NUL-padded slot with strnlen and emits the
+   prefix plus exactly those bytes, mirroring the reader loop). Caps
+   and element layouts must match the input rep exactly. Guarded rules
+   therefore make byte-exact stream filters, in plain and union input
+   modes.
 4. **Tier-2 composition sugar (landed):** `blobN` — a length-prefixed
    binary payload whose only consumer is a compiled-Prolog foreign
    call. The record loop frames natively (length read, cap check, bulk

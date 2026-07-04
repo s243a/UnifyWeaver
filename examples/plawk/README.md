@@ -354,9 +354,11 @@ varlen plawk-to-plawk pipelines round-trip. `repK(...)` works in
 OUTFMT as a passthrough: the writebin argument names the input rep's
 count field (`OUTFMT = "i64 rep4(i64 f64)"` with `writebin $1, $2`),
 and the writer emits the live count plus one bulk copy of the live
-elements - so guarded rules make byte-exact stream filters.
-Fixed-width elements only; the input rep's cap and element layout must
-match the output slot exactly. See
+elements - so guarded rules make byte-exact stream filters. Elements
+with `lpsN` strings pass through too: the writer loops over the live
+elements, recovering each string's live length from its NUL-padded
+slot and emitting the length prefix plus exactly those bytes. The
+input rep's cap and element layout must match the output slot exactly. See
 [`docs/design/PLAWK_DCG_BINARY_READERS.md`](../../docs/design/PLAWK_DCG_BINARY_READERS.md)
 for the grammar-to-native-reader lowering design this is the first
 slice of. Fixed-width string fields are in: with
