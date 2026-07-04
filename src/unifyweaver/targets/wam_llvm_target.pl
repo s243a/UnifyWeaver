@@ -2160,6 +2160,19 @@ pass2_emit_merged(Classified, LabelMap, NamePCPairs, Options,
                   NativeParts, WamParts) :-
     partition_classified(Classified,
         NativeRecords, WamRecords, HybridRecords, FailedRecords),
+    % A predicate that failed every compilation route used to become
+    % an IR comment inside a "successful" module -- the caller thought
+    % it compiled. Fail loudly instead (wam_allow_failed(true) keeps
+    % the old comment-and-continue behaviour).
+    (   FailedRecords == []
+    ->  true
+    ;   option(wam_allow_failed(true), Options)
+    ->  true
+    ;   findall(PI, member(failed(PI, _A), FailedRecords), FailedPIs),
+        throw(error(existence_error(procedures, FailedPIs),
+            context(wam_llvm_codegen,
+                'these predicates could not be compiled (no clauses or no supported route); check the name/arity -- a DCG rule adds 2 to the visible arity -- or pass wam_allow_failed(true) to emit the module with them omitted')))
+    ),
     % Native records' PredCode already includes both the lowered
     % function AND the @<pred> wrapper. Hybrid records contribute
     % their LoweredCode (just the @lowered_*_* fn); the matching
