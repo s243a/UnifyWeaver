@@ -143,8 +143,18 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
    key loads through the same per-rule arm descriptor as the scalar
    chain. for-in writebin over a union input (landed): the END table
    walk writebins one fixed-layout (key, count, ...) record per group,
-   mirroring the plain binary group-by-to-binary-output clause. Not
-   yet inside case blocks: union (tagged) output.
+   mirroring the plain binary group-by-to-binary-output clause. Union
+   (tagged) output (landed): `OUTFMT = "case(arm0 | arm1)"` (same
+   spelling as BINFMT), and each writebin site statically targets one
+   arm -- `writebin case K, args` emits the 8-byte tag K then arm K's
+   slots through the per-slot varlen writer (the shared buffer sizes
+   to the widest arm; its element pointer is resolved once in the
+   entry block). Output is byte-compatible with the union reader, so
+   tagged plawk-to-plawk pipelines round-trip; works from flat or
+   union inputs and in the single-rule endless shape. Arm slots are
+   i64/f64/sN/lpsN (a tagged rep write is a later slice); plain
+   writebin with a union OUTFMT, arm writes against a flat OUTFMT,
+   out-of-range arms, and arity mismatches all reject the program.
 2. **Bounded repetition (landed):** `repK(elem types)` — an 8-byte
    count (≤ K) then that many elements. Fixed-width elements read as
    one bulk count×elemsize read after a memset of the element region

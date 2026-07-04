@@ -101,6 +101,7 @@ swipl -q -s tests/test_plawk_f64_foreign.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/
 swipl -q -s tests/test_plawk_union_writebin.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_union_assoc.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_rep_writer.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_union_out.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -358,7 +359,12 @@ elements - so guarded rules make byte-exact stream filters. Elements
 with `lpsN` strings pass through too: the writer loops over the live
 elements, recovering each string's live length from its NUL-padded
 slot and emitting the length prefix plus exactly those bytes. The
-input rep's cap and element layout must match the output slot exactly. See
+input rep's cap and element layout must match the output slot exactly.
+Output can be tagged too: `OUTFMT = "case(i64 | i64 lps8)"` declares a
+union output, and `writebin case K, args` emits the 8-byte tag K then
+arm K's slots -- byte-compatible with the union reader, so a plawk
+program can split, retag, or normalize a stream that another plawk
+program consumes directly. See
 [`docs/design/PLAWK_DCG_BINARY_READERS.md`](../../docs/design/PLAWK_DCG_BINARY_READERS.md)
 for the grammar-to-native-reader lowering design this is the first
 slice of. Fixed-width string fields are in: with

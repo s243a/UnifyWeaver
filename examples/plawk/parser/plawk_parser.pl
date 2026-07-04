@@ -738,7 +738,26 @@ foreach_action(foreach(Actions)) -->
 %% writebin_action(-Action)//
 %
 %  writebin expr, expr, ... - emit one fixed-layout binary record on
-%  stdout, laid out per BEGIN { OUTFMT = "..." }.
+%  stdout, laid out per BEGIN { OUTFMT = "..." }. With a tagged-union
+%  OUTFMT (`OUTFMT = "case(arm0 | arm1)"`), each site statically
+%  targets one arm: `writebin case K, expr, ...` emits the 8-byte tag
+%  K then arm K's slots.
+writebin_action(writebin_arm(Index, Fields)) -->
+    "writebin",
+    required_ws,
+    "case",
+    identifier_boundary,
+    ws,
+    integer_codes(IndexCodes),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index >= 0
+    },
+    ws,
+    ",",
+    !,
+    ws,
+    print_fields(Fields).
 writebin_action(writebin(Fields)) -->
     "writebin",
     required_ws,
