@@ -2,7 +2,8 @@
 % Copyright (c) 2026 John William Creighton (s243a)
 
 :- module(plawk_parser, [
-    plawk_parse_string/2
+    plawk_parse_string/2,
+    plawk_parse_source/3
 ]).
 
 %% plawk_parse_string(+Source, -Program) is semidet.
@@ -40,9 +41,81 @@
 %  The AST is deliberately small and explicit so later syntax can extend it
 %  without changing the native codegen contract.
 plawk_parse_string(Source, Program) :-
+    plawk_parse_source(Source, Program, _PrologClauses).
+
+%% plawk_parse_source(+Source, -Program, -PrologClauses) is semidet.
+%
+%  Like plawk_parse_string/2, but also lifts embedded Prolog blocks:
+%
+%      @prolog
+%      weight(I, F, R) :- R is I * F.
+%      @end
+%
+%  Block markers sit alone on their line (leading/trailing blanks ok).
+%  A heredoc-style tag makes the fence unambiguous when the Prolog
+%  text itself contains an @end-shaped line: `@prolog-TAG` closes only
+%  at `@end-TAG` with the exact same tag. Blocks may appear anywhere
+%  between top-level program parts; their text never routes through
+%  the awk grammar -- it is term-read as ordinary Prolog and returned
+%  as PrologClauses for the compile driver to hand to
+%  write_wam_llvm_project alongside the program.
+plawk_parse_source(Source, Program, PrologClauses) :-
     string(Source),
-    string_codes(Source, Codes),
+    plawk_split_prolog_blocks(Source, Stripped, BlockTexts),
+    maplist(plawk_read_block_clauses, BlockTexts, ClausesNested),
+    append(ClausesNested, PrologClauses),
+    string_codes(Stripped, Codes),
     phrase(plawk_program(Program), Codes).
+
+plawk_split_prolog_blocks(Source, Stripped, BlockTexts) :-
+    split_string(Source, "\n", "", Lines),
+    plawk_split_block_lines(Lines, KeptLines, BlockTexts),
+    atomic_list_concat(KeptLines, '\n', StrippedAtom),
+    atom_string(StrippedAtom, Stripped).
+
+plawk_split_block_lines([], [], []).
+plawk_split_block_lines([Line | Lines], KeptLines, [BlockText | BlockTexts]) :-
+    plawk_prolog_open_marker(Line, EndMarker),
+    !,
+    plawk_take_block_lines(Lines, EndMarker, BlockLines, Rest),
+    atomic_list_concat(BlockLines, '\n', BlockAtom),
+    atom_string(BlockAtom, BlockText),
+    plawk_split_block_lines(Rest, KeptLines, BlockTexts).
+plawk_split_block_lines([Line | Lines], [Line | KeptLines], BlockTexts) :-
+    plawk_split_block_lines(Lines, KeptLines, BlockTexts).
+
+plawk_prolog_open_marker(Line, EndMarker) :-
+    split_string(Line, "", " \t", [Trimmed]),
+    ( Trimmed == "@prolog"
+    ->  EndMarker = "@end"
+    ;   string_concat("@prolog-", Tag, Trimmed),
+        Tag \== "",
+        string_concat("@end-", Tag, EndMarker)
+    ).
+
+% an unterminated block fails the parse (no clause for [])
+plawk_take_block_lines([Line | Lines], EndMarker, BlockLines, Rest) :-
+    split_string(Line, "", " \t", [Trimmed]),
+    ( Trimmed == EndMarker
+    ->  BlockLines = [],
+        Rest = Lines
+    ;   BlockLines = [Line | BlockLines1],
+        plawk_take_block_lines(Lines, EndMarker, BlockLines1, Rest)
+    ).
+
+plawk_read_block_clauses(BlockText, Clauses) :-
+    setup_call_cleanup(
+        open_string(BlockText, Stream),
+        plawk_read_stream_clauses(Stream, Clauses),
+        close(Stream)).
+
+plawk_read_stream_clauses(Stream, Clauses) :-
+    read_term(Stream, Term, []),
+    ( Term == end_of_file
+    ->  Clauses = []
+    ;   Clauses = [Term | Rest],
+        plawk_read_stream_clauses(Stream, Rest)
+    ).
 
 plawk_program(program(BeginClauses, Rules, EndClauses)) -->
     ws,
