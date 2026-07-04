@@ -699,6 +699,8 @@ begin_assignment_name('OUTFMT') -->
     "OUTFMT".
 begin_assignment_name('DYNLOAD') -->
     "DYNLOAD".
+begin_assignment_name('DYNCACHE') -->
+    "DYNCACHE".
 begin_assignment_name('FS') -->
     "FS".
 begin_assignment_name('OFS') -->
@@ -1270,6 +1272,20 @@ i64_factor_expr(var(Name)) -->
 % compiled-foreign-call machinery. The cut fires only after a full
 % `dyncall(...)`, so an identifier like `dyncalls(...)` still falls
 % through to the generic prolog call below.
+% dyncall_at(Source, args...) is the dynamic-source form: Source (a field
+% or string literal) names the .wamo object at runtime, chosen per call,
+% and args... are the entry's inputs. Reserved like dyncall; parsed before
+% it so the longer keyword wins.
+prolog_call_expr(dyncall_at(Source, Args)) -->
+    "dyncall_at",
+    ws,
+    "(",
+    ws,
+    foreign_arg(Source),
+    foreign_args_rest(Args),
+    ws,
+    ")",
+    !.
 prolog_call_expr(dyncall(Args)) -->
     "dyncall",
     ws,

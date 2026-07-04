@@ -110,9 +110,12 @@ build(File, Out0, KeepLL) :-
     check_foreign_calls(File, Program, Preds),
     ll_path(Out, KeepLL, LLPath),
     file_base_name(Out, OutBase),
-    % A program that uses dyncall(...) needs the .wamo loader emitted into
-    % the host module so it can load and run a runtime object.
-    (   plawk_program_dyncall_arities(Program, DynArities), DynArities \== []
+    % A program that uses dyncall(...) or dyncall_at(...) needs the .wamo
+    % loader emitted into the host module so it can load and run a runtime
+    % object.
+    (   ( plawk_program_dyncall_arities(Program, DynArities), DynArities \== []
+        ; plawk_program_dyncall_at_arities(Program, DynAtArities), DynAtArities \== []
+        )
     ->  ProjectOptions = [module_name(OutBase), emit_wamo_loader(true)]
     ;   ProjectOptions = [module_name(OutBase)]
     ),
