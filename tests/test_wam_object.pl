@@ -43,11 +43,16 @@ test(encode_produces_well_formed_stream) :-
     Parts = ["WAMO", "1", "0" | _],
     !.
 
-% call/N meta-calls, float constants and switch-on-constant tables are
-% outside slice 1 -- the writer rejects them loudly.
-test(float_constant_is_rejected,
-        [throws(error(wamo_unsupported(float_constant(_)), _))]) :-
-    wam_object_encode([user:uses_float/1], [wamo_entry(uses_float/1)], _).
+% Float constants now compile in put/set_constant: the object carries the
+% decimal text (in the C-string table) and the loader strtod's it. uses_float
+% (X is 1.5 + 2.5) reaches both floats through set_constant.
+test(float_constant_compiles) :-
+    wam_object_encode([user:uses_float/1], [wamo_entry(uses_float/1)], Codes),
+    string_codes(Text, Codes),
+    sub_string(Text, 0, 4, _, "WAMO"),
+    sub_string(Text, _, _, _, "1.5"),
+    sub_string(Text, _, _, _, "2.5"),
+    !.
 
 % A requested entry predicate with no label is a hard error.
 test(missing_entry_is_rejected,

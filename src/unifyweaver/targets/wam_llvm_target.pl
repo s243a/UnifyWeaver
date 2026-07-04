@@ -19962,12 +19962,17 @@ build_llvm_arg_setup(Arity, Setup) :-
 %                  get/put_structure unification correct (functor comparison
 %                  is by pointer); arithmetic is content-based so the copy is
 %                  also fine for `is`/comparison operators.
+%     3 float    - op1 is an index into the C-string table (shared with
+%                  functor names); the loader strtod's the stored decimal
+%                  text and writes its i64 bit pattern into op1 -- the same
+%                  double the AOT `bitcast (double c to i64)` yields. Used by
+%                  put_constant / set_constant with a tag=2 float literal.
 %
 % call/execute/try_me_else/retry_me_else operands are indexes into the
 % object's OWN labels array -- @wam_label_pc reads the VM's installed labels
 % array, so they are already self-relative. builtin_call ids are host-stable
-% per UnifyWeaver version. Float constants (tag 2), switch-on-constant tables
-% and call/N meta-calls are outside slice 1 and rejected at write time.
+% per UnifyWeaver version. switch-on-constant tables and call/N meta-calls
+% are still outside the loadable subset and rejected at write time.
 
 %% write_wam_object(+Predicates, +Options, +OutFile) is det.
 %
@@ -20067,24 +20072,26 @@ wamo_encode_step(LabelMap, Parts, ws(E0, A0, F0), ws([Enc|E0], A1, F1)) :-
 %  Encode one parsed WAM instruction into the object's triple form,
 %  threading the atom (A) and functor (F) interning tables.
 
-% constants
-wamo_enc(["get_constant", C, Ai], _, A0, A1, F, F, enc(0, Op1, Op2, R)) :- !,
+% constants. put_constant / set_constant support float literals (tag 2),
+% matching AOT set_constant_literal_parts; get_constant / unify_constant
+% stay integer/atom only (AOT itself never emits a float there).
+wamo_enc(["get_constant", C, Ai], _, A0, A1, F0, F1, enc(0, Op1, Op2, R)) :- !,
     clean_comma(C, CC), clean_comma(Ai, CAi),
     atom_string(CAiA, CAi), reg_name_to_index(CAiA, Reg),
-    wamo_const(CC, A0, A1, Op1, Tag, R),
+    wamo_const(no_float, CC, A0, A1, F0, F1, Op1, Tag, R),
     Op2 is (Tag << 16) \/ Reg.
-wamo_enc(["unify_constant", C], _, A0, A1, F, F, enc(7, Op1, Op2, R)) :- !,
+wamo_enc(["unify_constant", C], _, A0, A1, F0, F1, enc(7, Op1, Op2, R)) :- !,
     clean_comma(C, CC),
-    wamo_const(CC, A0, A1, Op1, Tag, R),
+    wamo_const(no_float, CC, A0, A1, F0, F1, Op1, Tag, R),
     Op2 is Tag << 16.
-wamo_enc(["put_constant", C, Ai], _, A0, A1, F, F, enc(8, Op1, Op2, R)) :- !,
+wamo_enc(["put_constant", C, Ai], _, A0, A1, F0, F1, enc(8, Op1, Op2, R)) :- !,
     clean_comma(C, CC), clean_comma(Ai, CAi),
     atom_string(CAiA, CAi), reg_name_to_index(CAiA, Reg),
-    wamo_const(CC, A0, A1, Op1, Tag, R),
+    wamo_const(float, CC, A0, A1, F0, F1, Op1, Tag, R),
     Op2 is (Tag << 16) \/ Reg.
-wamo_enc(["set_constant", C], _, A0, A1, F, F, enc(15, Op1, Tag, R)) :- !,
+wamo_enc(["set_constant", C], _, A0, A1, F0, F1, enc(15, Op1, Tag, R)) :- !,
     clean_comma(C, CC),
-    wamo_const(CC, A0, A1, Op1, Tag, R).
+    wamo_const(float, CC, A0, A1, F0, F1, Op1, Tag, R).
 
 % structures
 wamo_enc(["get_structure", FN, Ai], _, A, A, F0, F1, enc(3, Idx, Op2, functor)) :- !,
@@ -20159,22 +20166,33 @@ wamo_enc(Parts, _, _, _, _, _, _) :-
         context(write_wam_object,
             'instruction is outside the loadable WAM object subset'))).
 
-%% wamo_const(+Str, +A0, -A1, -Op1, -Tag, -Reloc)
-%  Encode a constant operand. Integers embed directly (Tag=1, no reloc);
-%  atoms intern into the object atom table (Tag=0, reloc=atom, Op1=index);
-%  floats are rejected (slice 1).
-wamo_const(CC, A0, A1, Op1, Tag, R) :-
+%% wamo_const(+AllowFloat, +Str, +A0, -A1, +F0, -F1, -Op1, -Tag, -Reloc)
+%  Encode a constant operand:
+%    integer      -> Tag=1, Op1=value, reloc=none.
+%    atom         -> Tag=0, reloc=atom, Op1=atom-table index (re-interned
+%                    by the loader).
+%    float        -> Tag=2, reloc=float, Op1=index into the C-string table
+%                    (shared with functor names); the loader strtod's the
+%                    stored decimal text and stores its i64 bit pattern.
+%                    Only when AllowFloat==float (put_constant/set_constant,
+%                    matching AOT); elsewhere a float is rejected.
+%  The decimal text is stored verbatim so strtod reproduces exactly the
+%  double the AOT `bitcast (double <c> to i64)` would have.
+wamo_const(AllowFloat, CC, A0, A1, F0, F1, Op1, Tag, R) :-
     (   number_string(N, CC)
     ->  (   integer(N)
-        ->  Op1 = N, Tag = 1, R = none, A1 = A0
+        ->  Op1 = N, Tag = 1, R = none, A1 = A0, F1 = F0
+        ;   AllowFloat == float
+        ->  tab_intern(CC, F0, Idx, F1),
+            Op1 = Idx, Tag = 2, R = float, A1 = A0
         ;   throw(error(wamo_unsupported(float_constant(CC)),
                 context(write_wam_object,
-                    'float constants are not in slice 1')))
+                    'float constants are only supported in put_constant / set_constant')))
         )
     ;   strip_quoted_atom(CC, Inner),
         wamo_to_string(Inner, InnerStr),
         tab_intern(InnerStr, A0, Idx, A1),
-        Op1 = Idx, Tag = 0, R = atom
+        Op1 = Idx, Tag = 0, R = atom, F1 = F0
     ).
 
 %% wamo_structure(+FN, +Ai, +F0, -F1, -FunctorIdx, -Op2)
@@ -20211,6 +20229,7 @@ wamo_label(CP, LabelMap, Idx) :-
 wamo_reloc_id(none, 0).
 wamo_reloc_id(atom, 1).
 wamo_reloc_id(functor, 2).
+wamo_reloc_id(float, 3).
 
 wamo_serialize(EntryIndex, Atoms, Functors, PCs, EncInstrs, Codes) :-
     length(Atoms, NA), length(Functors, NF),
@@ -20541,14 +20560,26 @@ patch_atom:
   br label %cstore
 chk_functor:
   %is_fun = icmp eq i64 %reloc, 2
-  br i1 %is_fun, label %patch_fun, label %cstore
+  br i1 %is_fun, label %patch_fun, label %chk_float
 patch_fun:
   %fp_slot = getelementptr i8*, i8** %funPtrs, i64 %op1
   %fp = load i8*, i8** %fp_slot
   %fpi = ptrtoint i8* %fp to i64
   br label %cstore
+chk_float:
+  %is_float = icmp eq i64 %reloc, 3
+  br i1 %is_float, label %patch_float, label %cstore
+patch_float:
+  ; float constant: op1 indexes the C-string table (shared with functor
+  ; names); parse the decimal text with strtod and store the i64 bit
+  ; pattern -- the same double the AOT `bitcast (double c to i64)` yields.
+  %flp_slot = getelementptr i8*, i8** %funPtrs, i64 %op1
+  %flp = load i8*, i8** %flp_slot
+  %fld = call double @strtod(i8* %flp, i8** null)
+  %flbits = bitcast double %fld to i64
+  br label %cstore
 cstore:
-  %op1_final = phi i64 [ %aid_p, %patch_atom ], [ %fpi, %patch_fun ], [ %op1, %chk_functor ]
+  %op1_final = phi i64 [ %aid_p, %patch_atom ], [ %fpi, %patch_fun ], [ %flbits, %patch_float ], [ %op1, %chk_float ]
   %tag32 = trunc i64 %tag64 to i32
   %ip = getelementptr %Instruction, %Instruction* %code, i64 %ci
   %ip_tag = getelementptr %Instruction, %Instruction* %ip, i32 0, i32 0

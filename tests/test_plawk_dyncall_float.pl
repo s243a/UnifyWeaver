@@ -18,6 +18,7 @@
 % grammars whose output is a Float (division yields float in eval)
 half(X, R) :- R is X / 2.       % 7 -> 3.5   (dyncall, binary i64 arg)
 threehalf(R) :- R is 7 / 2.     % -> 3.5     (dyncall_at, nullary)
+scale(X, R) :- R is X * 1.5.    % 3 -> 4.5   (float LITERAL in the grammar)
 
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
@@ -87,6 +88,20 @@ test(float_dyncall_at_keeps_fraction, [condition(clang_available)]) :-
         close(S)),
     run_bin(Bin, [Input], Out, 0),
     assertion(Out == "3.5\n"),
+    !.
+
+% A grammar with a float LITERAL (R is X * 1.5) now compiles into a .wamo
+% (the loader strtod's the stored decimal text). scale(3) = 4.5.
+test(float_literal_grammar_runs, [condition(clang_available)]) :-
+    f_dir(Dir),
+    directory_file_path(Dir, 'scale.wamo', Wamo),
+    write_wam_object([user:scale/2], [wamo_entry(scale/2)], Wamo),
+    binfmt_dynload_src(Wamo, "s += float(dyncall($1))", Src),
+    build_prog(Dir, 'ps.plawk', 'ps', Src, Bin),
+    write_i64(Dir, 'three.bin', 3),
+    directory_file_path(Dir, 'three.bin', Input),
+    run_bin(Bin, [Input], Out, 0),
+    assertion(Out == "4.5\n"),
     !.
 
 :- end_tests(plawk_dyncall_float).

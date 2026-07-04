@@ -400,9 +400,14 @@ runtime `/` yields float) is **unreadable by the integer form**, which
 demands tag=1 and returns 0. `tests/test_plawk_dyncall_float.pl` pins the
 contrast: for a `half(X,R):-R is X/2` grammar and input 7, `dyncall($1)`
 yields `0` while `float(dyncall($1))` yields `3.5`; `float(dyncall_at($1))`
-does the same over a dynamic source. (Float *constants* in a grammar are
-still outside the loadable subset — a grammar reaches a Float via
-computation, not a literal, until that restriction is lifted.)
+does the same over a dynamic source.
+
+**Float constants in grammars (landed).** `put_constant`/`set_constant`
+now accept float literals, so a grammar may write one directly (`R is X *
+1.5`), not only reach a Float by computation. The object stores the float's
+decimal text (C-string table, reloc class `float`) and the loader `strtod`s
+it, reproducing the exact double the AOT `bitcast` would. `scale(3)` via
+`float(dyncall($1))` yields `4.5`.
 
 ## Why not a real DCG engine in the loop?
 
