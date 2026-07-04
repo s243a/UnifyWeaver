@@ -102,6 +102,7 @@ swipl -q -s tests/test_plawk_union_writebin.pl -g "setenv('UW_SMOKE_TMPDIR', '/m
 swipl -q -s tests/test_plawk_union_assoc.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_rep_writer.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 swipl -q -s tests/test_plawk_union_out.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
+swipl -q -s tests/test_plawk_multiline.pl -g "setenv('UW_SMOKE_TMPDIR', '/mnt/c/Users/johnc/Scratch'),run_tests" -t halt
 ```
 
 The demo prints the record count and the lines whose first field is `ERROR`.
@@ -116,6 +117,10 @@ as `$1 == "ERROR" { print substr($2, 1, 3) }`, and native byte searches such as
 case-mapped field slices such as `$1 == "ERROR" { print tolower($2), toupper($0) }`.
 Explicit numeric field coercion is available as `int($N)`, e.g.
 `$1 == "ERROR" { print $3, int($3) }`; failed numeric parses print `0`.
+Programs are multi-line awk: `#` comments run to end of line,
+statements separate on newlines as well as `;` (with awk/C semantics
+after a compound statement's closing brace -- no separator needed),
+and trailing separators before `}` are harmless.
 Arithmetic expressions support general `+`, `-`, `*`, `/`, and `%` between
 native `i64` operands with awk precedence (`* / %` bind tighter than `+ -`,
 both associate left) and parentheses, e.g.
