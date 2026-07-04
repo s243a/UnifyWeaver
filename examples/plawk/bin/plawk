@@ -1,0 +1,210 @@
+#!/usr/bin/env swipl
+% SPDX-License-Identifier: MIT
+% Copyright (c) 2026 John William Creighton (s243a)
+%
+% plawk -- compile .plawk programs to native binaries.
+%
+%   plawk build FILE.plawk [-o OUT] [--keep-ll]
+%   plawk run FILE.plawk [INPUT ...]
+%   plawk --help
+%
+% `build` compiles FILE.plawk (awk-like rules, optional @prolog blocks
+% and function definitions) through the hybrid WAM->LLVM pipeline and
+% clang into a native binary. The binary follows the awk input
+% convention: it reads the file named by its first argument, treats
+% "-" as stdin, and defaults to stdin when no argument is given.
+%
+% `run` builds into a temporary directory and immediately executes the
+% binary with the remaining arguments.
+%
+% Exit codes: 0 success; 2 parse error; 3 compile error; 4 clang
+% failure; `run` propagates the program's own exit status.
+
+:- initialization(main, main).
+
+:- use_module('../parser/plawk_parser').
+:- use_module('../codegen/plawk_native_codegen').
+:- use_module('../../../src/unifyweaver/targets/wam_llvm_target').
+
+% keeps write_wam_llvm_project fed when a program has no embedded
+% Prolog at all (the module wants at least one predicate)
+user:plawk_cli_marker.
+
+main(['--help']) :- !, usage, halt(0).
+main(['-h']) :- !, usage, halt(0).
+main([build | Args]) :-
+    !,
+    parse_build_args(Args, File, Out, KeepLL),
+    build(File, Out, KeepLL),
+    format(user_error, 'plawk: built ~w~n', [Out]),
+    halt(0).
+main([run, File | RunArgs]) :-
+    !,
+    tmp_build_dir(Dir),
+    directory_file_path(Dir, 'plawk_bin', Out),
+    build(File, Out, false),
+    process_create(Out, RunArgs,
+        [stdin(std), stdout(std), stderr(std), process(Pid)]),
+    process_wait(Pid, exit(Status)),
+    halt(Status).
+main(_) :-
+    usage,
+    halt(1).
+
+usage :-
+    format(user_error,
+'usage: plawk build FILE.plawk [-o OUT] [--keep-ll]~n\c
+       plawk run FILE.plawk [INPUT ...]~n', []).
+
+parse_build_args(Args, File, Out, KeepLL) :-
+    pb_walk(Args, none, default, false, File, Out, KeepLL).
+
+pb_walk([], file(File), Out, KeepLL, File, Out, KeepLL) :- !.
+pb_walk(['-o', Out0 | Rest], F, _Out, K, File, Out, KeepLL) :-
+    !,
+    pb_walk(Rest, F, Out0, K, File, Out, KeepLL).
+pb_walk(['--keep-ll' | Rest], F, O, _K, File, Out, KeepLL) :-
+    !,
+    pb_walk(Rest, F, O, true, File, Out, KeepLL).
+pb_walk([FileAtom | Rest], none, O, K, File, Out, KeepLL) :-
+    !,
+    pb_walk(Rest, file(FileAtom), O, K, File, Out, KeepLL).
+pb_walk(_, _, _, _, _, _, _) :-
+    usage,
+    halt(1).
+
+default_out(File, Out) :-
+    file_base_name(File, Base),
+    (   file_name_extension(Stem, plawk, Base)
+    ->  Out = Stem
+    ;   atom_concat(Base, '.bin', Out)
+    ).
+
+build(File, Out0, KeepLL) :-
+    (   exists_file(File)
+    ->  true
+    ;   format(user_error, 'plawk: no such file: ~w~n', [File]),
+        halt(2)
+    ),
+    (   Out0 == default
+    ->  default_out(File, Out)
+    ;   Out = Out0
+    ),
+    read_file_to_string(File, Src, []),
+    (   catch(plawk_parse_source(Src, Program, Clauses), ParseErr,
+            ( report_error('parse error', File, ParseErr), halt(2) ))
+    ->  true
+    ;   format(user_error, 'plawk: parse error in ~w~n', [File]),
+        halt(2)
+    ),
+    (   Clauses == []
+    ->  Preds = [user:plawk_cli_marker/0]
+    ;   (   plawk_prolog_block_preds(Clauses, Preds)
+        ->  true
+        ;   format(user_error,
+                'plawk: invalid @prolog block in ~w (directives are not clauses)~n',
+                [File]),
+            halt(2)
+        )
+    ),
+    check_foreign_calls(File, Program, Preds),
+    ll_path(Out, KeepLL, LLPath),
+    file_base_name(Out, OutBase),
+    (   catch(
+            ( % the compiler narrates on user_output; keep the CLI's
+              % stdout clean for the compiled program's own output
+              with_output_to(string(_CompilerChatter),
+                  write_wam_llvm_project(Preds, [module_name(OutBase)], LLPath)),
+              wam_llvm_last_compile_counts(InstrCount, LabelCount),
+              (   plawk_program_native_driver_ir(Program, stdin_or_argv,
+                      [wam_vm(InstrCount, LabelCount)], DriverIR)
+              ->  true
+              ;   format(user_error,
+                      'plawk: ~w parses but is outside the compilable surface~n',
+                      [File]),
+                  halt(3)
+              )
+            ),
+            CompileErr,
+            ( report_error('compile error', File, CompileErr), halt(3) ))
+    ->  true
+    ;   format(user_error, 'plawk: compile error in ~w~n', [File]),
+        halt(3)
+    ),
+    setup_call_cleanup(
+        open(LLPath, append, S, [encoding(utf8)]),
+        ( nl(S), write(S, DriverIR) ),
+        close(S)),
+    format(atom(Cmd), 'clang -w -O2 ~w -o ~w -lm 2>&1', [LLPath, Out]),
+    process_create(path(sh), ['-c', Cmd],
+        [stdout(pipe(CS)), stderr(std), process(Pid)]),
+    read_string(CS, _, ClangOut),
+    close(CS),
+    process_wait(Pid, ClangStatus),
+    (   KeepLL == true
+    ->  true
+    ;   catch(delete_file(LLPath), _, true)
+    ),
+    (   ClangStatus == exit(0)
+    ->  true
+    ;   format(user_error, 'plawk: clang failed:~n~w~n', [ClangOut]),
+        halt(4)
+    ).
+
+ll_path(Out, true, LLPath) :-
+    !,
+    atom_concat(Out, '.ll', LLPath).
+ll_path(_Out, false, LLPath) :-
+    tmp_build_dir(Dir),
+    directory_file_path(Dir, 'plawk_build.ll', LLPath).
+
+tmp_build_dir(Dir) :-
+    current_prolog_flag(pid, Pid),
+    current_prolog_flag(tmp_dir, Tmp),
+    format(atom(Dir), '~w/plawk_cli_~w', [Tmp, Pid]),
+    (   exists_directory(Dir)
+    ->  true
+    ;   make_directory(Dir)
+    ).
+
+%% check_foreign_calls(+File, +Program, +Preds)
+%
+%  Every predicate the program calls through the bridge must be among
+%  the compiled predicates (from @prolog blocks / function defs). The
+%  bridge wrapper references @<name>_start_pc directly, so a missing
+%  predicate would otherwise surface as a raw clang link error.
+check_foreign_calls(File, Program, Preds) :-
+    plawk_program_foreign_specs(Program, GuardSpecs, CallSpecs, FCallSpecs),
+    findall(Name/Arity,
+        ( member(Name-NArgs, GuardSpecs), Arity = NArgs
+        ; member(Name-NArgs, CallSpecs), Arity is NArgs + 1
+        ; member(Name-NArgs, FCallSpecs), Arity is NArgs + 1
+        ),
+        Wanted0),
+    sort(Wanted0, Wanted),
+    findall(Name/Arity,
+        ( member(Name/Arity, Wanted),
+          \+ memberchk(user:Name/Arity, Preds)
+        ),
+        Missing),
+    (   Missing == []
+    ->  true
+    ;   format(user_error,
+            'plawk: compile error in ~w: the program calls ~w but no @prolog block or function defines ~w~n\c
+  (a guard pred(args) needs pred with the same arity; a value call needs one extra output argument)~n',
+            [File, Missing, Missing]),
+        halt(3)
+    ).
+
+report_error(Kind, File, error(existence_error(procedures, PIs),
+        context(_, Message))) :-
+    !,
+    format(user_error, 'plawk: ~w in ~w: uncompilable predicates ~w~n  (~w)~n',
+        [Kind, File, PIs, Message]).
+report_error(Kind, File, error(existence_error(procedure, Name),
+        context(_, Message))) :-
+    !,
+    format(user_error, 'plawk: ~w in ~w: unknown predicate ~w~n  (~w)~n',
+        [Kind, File, Name, Message]).
+report_error(Kind, File, Error) :-
+    format(user_error, 'plawk: ~w in ~w: ~q~n', [Kind, File, Error]).
