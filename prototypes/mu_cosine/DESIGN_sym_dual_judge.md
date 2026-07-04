@@ -102,9 +102,14 @@ just `1/d` (ties to `COST_FUNCTION_PHILOSOPHY.md`'s exp-decay / power-law / PPR 
 struct-emb `‖Δ‖` range (mean 5.0, std 0.8), the form is empirically **irrelevant**: `3/(1+d)` +0.349, `1/d`
 +0.351, `1/(1+d)²` +0.352, best-fit `exp(-d/1.65)` +0.357 — all within noise (correlation is monotone-linear
 invariant; the range is narrow so every smooth `g` is locally linear). Only `exp(-d²)` collapses (+0.05). ⇒
-**keep the simple `3/(1+d)`; the `c_dist` lever is distance *quality* (better embedding / true-BFS +0.66), not
-the transform.** Downstream, `σ(prec_g·pw + prec_h)` already supplies a learned monotone calibration. (Re-check
-`g` only if a wider-range / true-distance source replaces the proxy — the form may matter there.)
+**keep the simple `3/(1+d)` for now; the `c_dist` lever is distance *quality* (better embedding / true-BFS
++0.66), not the transform.** Downstream, `σ(prec_g·pw + prec_h)` already supplies a learned monotone calibration.
+
+*Future work (`g(d)`):* no alternative beat `3/(1+d)` beyond noise on the current proxy, so we keep `1/d`-style
+and defer. Revisit if a **wider-range / true-BFS distance** replaces the O(1) proxy (the form may matter over a
+larger `d` range), or explore a **learned parametric `g`** (power-law exponent / exp rate) jointly with the
+embedding — tracked against the decay families in `COST_FUNCTION_PHILOSOPHY.md`. Sweep results above are the
+baseline to beat.
 
 ## Architecture
 
