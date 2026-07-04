@@ -352,9 +352,10 @@ class Tokenizer:
 class MuAttention(nn.Module):
     def __init__(self, d_model=384, n_ops=len(OPS), n_heads=4, n_layers=1, max_gen=5,
                  dim_ff=None, dropout=0.0, n_corpus=len(CORPORA), n_judge=len(JUDGES),
-                 n_nodetype=len(NODETYPE), n_account=len(ACCOUNTS)):
+                 n_nodetype=len(NODETYPE), n_account=len(ACCOUNTS), struct_blend="inside"):
         super().__init__()
         self.d = d_model
+        self.struct_blend = struct_blend            # DUAL-JUDGE combine mode: "inside" (logit-space) | "outside" (μ-space)
         self.op_emb = nn.Embedding(n_ops, d_model)
         # NODE-TYPE: per-endpoint structural-role token (category/page/mindmap/pearltrees). Zero-init so it
         # is a no-op at warm start (category=0 default) and the type signal is learned during fine-tuning.
@@ -383,7 +384,13 @@ class MuAttention(nn.Module):
         # DUAL-JUDGE (SYM = e5 ⊕ graph, DESIGN_sym_dual_judge.md step 3): a learned scale on the O(1)
         # structural feature `3/(1+‖Δ struct-emb‖)` (the cheap graph-judge proxy). Added to the SYM logit
         # ONLY (gated by op). Zero-init ⇒ exact warm-start no-op; learns the graph half during SYM training.
-        self.sym_struct_w = nn.Parameter(torch.zeros(1))
+        self.sym_struct_w = nn.Parameter(torch.zeros(1))        # INSIDE mode: logit += w·struct_feat, one sigmoid
+        # OUTSIDE mode (user's point): blend two BOUNDED judges — μ = μ_e5 + λ·(μ_graph − μ_e5), where the e5 μ
+        # passes through untouched and only the unbounded graph term gets its own squash μ_graph = σ(g·feat + h).
+        # λ zero-init ⇒ pure-e5 ⇒ exact warm-start no-op; g,h unused at init (λ=0 gates them out).
+        self.struct_lambda = nn.Parameter(torch.zeros(1))
+        self.struct_g = nn.Parameter(torch.zeros(1))
+        self.struct_h = nn.Parameter(torch.zeros(1))
         for emb in (self.op_emb, self.gen_emb, self.corpus_emb, self.judge_emb):
             nn.init.normal_(emb.weight, std=0.02)
         nn.init.zeros_(self.nodetype_emb.weight)            # no-op at warm start; learned during fine-tune
@@ -431,7 +438,12 @@ class MuAttention(nn.Module):
         logit = (pooled * w).sum(-1) + b
         if struct_feat is not None:                          # DUAL-JUDGE: add the O(1) structural channel to SYM only
             sym_gate = op_weights[:, OPS["SYM"]] if op_weights is not None else (op_of == OPS["SYM"]).to(logit.dtype)
-            logit = logit + sym_gate * self.sym_struct_w * struct_feat
+            if self.struct_blend == "outside":               # blend two BOUNDED judges in μ-space (no outer sigmoid)
+                mu_e5 = torch.sigmoid(logit)                                     # e5 judge — already ∈[0,1]
+                mu_graph = torch.sigmoid(self.struct_g * struct_feat + self.struct_h)   # squash the unbounded graph term
+                mu = mu_e5 + sym_gate * self.struct_lambda * (mu_graph - mu_e5)  # λ=0 ⇒ pure e5 (no-op)
+                return mu.clamp(0.0, 1.0)
+            logit = logit + sym_gate * self.sym_struct_w * struct_feat           # INSIDE: logit-space, one sigmoid
         return torch.sigmoid(logit)
 
 

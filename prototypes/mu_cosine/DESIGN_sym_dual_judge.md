@@ -52,6 +52,16 @@ logit_SYM = pooled·w_SYM + b_SYM  +  sym_struct_w · struct_feat        # struc
 - **`self.sym_struct_w` (scalar, zero-init)** — the learned scale on the structural channel. Zero-init ⇒ an
   **exact warm-start no-op** (unit-tested: identical μ to the no-struct path), so it's safe to add to any
   checkpoint; the scale is learned only during SYM training.
+
+**`--struct-blend {inside, outside}` — where the two judges combine.** The sigmoid only bounds to [0,1]; the e5
+judge is *already* a bounded μ, so it needn't re-enter a sigmoid (user, 2026-07-04). Two modes:
+- **`inside`** (default, matches the step-1 logistic fit): `μ = σ(logit_e5 + w·struct_feat)` — both judges in
+  logit space, one sigmoid bounds the sum. The graph term *must* be inside (`3/d` is unbounded).
+- **`outside`** (the truer superposition): `μ = μ_e5 + λ·(μ_graph − μ_e5)` — a μ-space convex blend of two
+  **bounded** judges. The e5 μ passes through untouched; only the unbounded graph term gets its own squash
+  `μ_graph = σ(g·struct_feat + h)`. No outer sigmoid on the blend (two [0,1] values ⇒ blend ∈ [0,1]). `λ` is an
+  interpretable mix weight, **zero-init ⇒ pure e5 ⇒ exact warm-start no-op**. Unit-tested: `λ=1` ⇒ μ = μ_graph
+  exactly, SYM-gated (HIER untouched), output ∈ [0,1]. An A/B lever alongside `--struct-residual`.
 - **SYM-gated** — added to the logit *only* where `op == SYM` (via `op_of`, or `op_weights[:,SYM]` in the
   blended path). Unit-tested: perturbing the scale moves the SYM row and leaves HIER/others untouched.
 - **`struct_feat`** — computed in `Tokenizer.build` from a `{name: struct-emb vec}` table (`--struct-emb`,

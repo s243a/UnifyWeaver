@@ -551,7 +551,8 @@ def train(args):
                            args.infer_subcat, args.breadth_scale, switch_rng)
 
     torch.manual_seed(args.seed)
-    model = MuAttention(d_model=q.shape[1], n_heads=args.heads, n_layers=args.layers)
+    model = MuAttention(d_model=q.shape[1], n_heads=args.heads, n_layers=args.layers,
+                        struct_blend=args.struct_blend)
     if args.init_from:                                    # warm start — DON'T reinit the head (fine-tune)
         ck = torch.load(args.init_from, weights_only=False)
         sd, own = ck["state"], model.state_dict()
@@ -1298,6 +1299,10 @@ def main():
     ap.add_argument("--struct-emb", default=None, help="DUAL-JUDGE step 3: learned structural embedding "
                     "(structural_embedding.py .pt). When set, the SYM logit gets the O(1) structural channel "
                     "3/(1+‖Δ struct-emb‖); zero-init scale ⇒ warm-start no-op until SYM training learns it.")
+    ap.add_argument("--struct-blend", choices=["inside", "outside"], default="inside",
+                    help="DUAL-JUDGE combine mode: 'inside' = μ=σ(logit_e5 + w·struct) (one sigmoid, logit-space); "
+                    "'outside' = μ=μ_e5 + λ·(μ_graph−μ_e5), a μ-space blend of two BOUNDED judges (e5 μ untouched, "
+                    "only the graph term squashed). λ zero-init ⇒ pure-e5 warm-start no-op either way.")
     ap.add_argument("--struct-residual", action="store_true", help="DUAL-JUDGE: feed the LATERAL residual "
                     "3/(1+‖Δ‖) − 3/(1+up_hops(a→b)) − 3/(1+up_hops(b→a)) instead of plain 3/(1+‖Δ‖) — subtracts "
                     "the DAG's directed hierarchy (graph ancestry, not model μ ⇒ no feedback loop). A/B vs plain.")
