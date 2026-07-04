@@ -1738,10 +1738,26 @@ echo "Size: $(wc -c < ~w.wasm) bytes"
 ', [LLFile, LLFile, OutputName, OutputName, OutputName, OutputName, OutputName, OutputName]).
 
 %% read_template_file(+Path, -Content)
+% Captured at load time so template paths resolve against the
+% repository the module was loaded from, not the process cwd.
+:- dynamic wam_llvm_module_dir/1.
+:- prolog_load_context(directory, Dir),
+   retractall(wam_llvm_module_dir(_)),
+   assertz(wam_llvm_module_dir(Dir)).
+
 read_template_file(Path, Content) :-
     (   exists_file(Path)
     ->  read_file_to_string(Path, Content, [])
-    ;   format(atom(Content), "; Template not found: ~w", [Path])
+    ;   wam_llvm_module_dir(ModuleDir),
+        format(atom(RootPath), '~w/../../../~w', [ModuleDir, Path]),
+        exists_file(RootPath)
+    ->  read_file_to_string(RootPath, Content, [])
+    ;   % A missing runtime template used to become an IR comment,
+        % producing a module full of undefined types that failed later
+        % at clang with baffling errors. Fail here instead.
+        throw(error(existence_error(source_sink, Path),
+            context(wam_llvm_codegen,
+                'runtime template not found relative to the working directory or the UnifyWeaver source tree')))
     ).
 
 %% compile_predicates_for_llvm(+Predicates, +Options, -NativeCode, -WamCode)
@@ -2160,6 +2176,19 @@ pass2_emit_merged(Classified, LabelMap, NamePCPairs, Options,
                   NativeParts, WamParts) :-
     partition_classified(Classified,
         NativeRecords, WamRecords, HybridRecords, FailedRecords),
+    % A predicate that failed every compilation route used to become
+    % an IR comment inside a "successful" module -- the caller thought
+    % it compiled. Fail loudly instead (wam_allow_failed(true) keeps
+    % the old comment-and-continue behaviour).
+    (   FailedRecords == []
+    ->  true
+    ;   option(wam_allow_failed(true), Options)
+    ->  true
+    ;   findall(PI, member(failed(PI, _A), FailedRecords), FailedPIs),
+        throw(error(existence_error(procedures, FailedPIs),
+            context(wam_llvm_codegen,
+                'these predicates could not be compiled (no clauses or no supported route); check the name/arity -- a DCG rule adds 2 to the visible arity -- or pass wam_allow_failed(true) to emit the module with them omitted')))
+    ),
     % Native records' PredCode already includes both the lowered
     % function AND the @<pred> wrapper. Hybrid records contribute
     % their LoweredCode (just the @lowered_*_* fn); the matching

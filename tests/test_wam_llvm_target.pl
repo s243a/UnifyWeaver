@@ -569,4 +569,29 @@ test(lookup_label_lenient_optout_defaults_to_zero, [true]) :-
         'nonexistent_label', [], [wam_strict_labels(false)], Index),
     assertion(Index == 0).
 
+:- dynamic user:uw_failedreq_ok/2.
+user:uw_failedreq_ok(X, R) :- R is X + 1.
+
+test(requested_predicate_that_fails_to_compile_throws,
+        [throws(error(existence_error(procedures, [user:uw_no_such_pred/3]), _)),
+         setup(tmp_failedreq_path(Path)), cleanup(catch(delete_file(Path), _, true))]) :-
+    % A predicate in the request list with no clauses used to become an
+    % IR comment inside a "successful" module. It is now a compile-time
+    % error (the message also flags the DCG +2-arity gotcha, which is
+    % how this trap was originally sprung).
+    tmp_failedreq_path(Path),
+    write_wam_llvm_project([user:uw_failedreq_ok/2, user:uw_no_such_pred/3],
+        [module_name(uw_failedreq)], Path).
+
+test(wam_allow_failed_keeps_comment_and_continue,
+        [setup(tmp_failedreq_path(Path)), cleanup(catch(delete_file(Path), _, true))]) :-
+    tmp_failedreq_path(Path),
+    write_wam_llvm_project([user:uw_failedreq_ok/2, user:uw_no_such_pred/3],
+        [module_name(uw_failedreq2), wam_allow_failed(true)], Path),
+    exists_file(Path).
+
+tmp_failedreq_path(Path) :-
+    current_prolog_flag(tmp_dir, Tmp),
+    directory_file_path(Tmp, 'uw_failedreq_probe.ll', Path).
+
 :- end_tests(wam_llvm_target).
