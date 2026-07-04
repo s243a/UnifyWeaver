@@ -83,6 +83,22 @@ test(same_host_runs_a_swapped_grammar,
     assertion(Out == "1020\n"),
     !.
 
+% The loader has an in-memory entry point: @wam_object_load_bytes parses a
+% buffer directly, with no file. Embed a grammar's .wamo bytes as an LLVM
+% constant in the host and load from memory -- this is the primitive that
+% lets a grammar travel as a value rather than a path.
+test(load_bytes_from_memory, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'embed.wamo', Wamo),
+    write_wam_object([user:answer/1, user:sum3/3],
+        [wamo_entry(answer/1)], Wamo),
+    read_file_to_bytes(Wamo, Bytes),
+    length(Bytes, NBytes),
+    build_embed_host(Dir, Bytes, NBytes, Host),
+    run_embed_host(Host, Out),
+    assertion(Out == "119\n"),
+    !.
+
 :- end_tests(wam_object).
 
 % --- helpers ---------------------------------------------------------------
@@ -147,3 +163,81 @@ run_host(Host, Wamo, Out, ExpectedStatus) :-
     close(S),
     process_wait(Pid, exit(Status)),
     assertion(Status == ExpectedStatus).
+
+% Build a host whose main() embeds the .wamo bytes as a constant and loads
+% them via @wam_object_load_bytes (no file open), then runs the entry.
+build_embed_host(Dir, Bytes, NBytes, Host) :-
+    directory_file_path(Dir, 'embed_host.ll', LL),
+    with_output_to(string(_),
+        write_wam_llvm_project([user:answer/1],
+            [module_name(wam_object_embed_host), emit_wamo_loader(true)], LL)),
+    llvm_bytes_escape(Bytes, Escaped),
+    format(atom(MainIR),
+'\n@.embedded_wamo = private constant [~w x i8] c"~w"\n\n\c
+define i32 @main() {\n\c
+entry:\n\c
+  %p = getelementptr [~w x i8], [~w x i8]* @.embedded_wamo, i32 0, i32 0\n\c
+  %obj = call { %WamState*, i32 } @wam_object_load_bytes(i8* %p, i64 ~w)\n\c
+  %vm = extractvalue { %WamState*, i32 } %obj, 0\n\c
+  %pc = extractvalue { %WamState*, i32 } %obj, 1\n\c
+  %vm_null = icmp eq %WamState* %vm, null\n\c
+  br i1 %vm_null, label %load_fail, label %run\n\c
+run:\n\c
+  %r = call { i64, i1 } @wam_object_call_i64(%WamState* %vm, i32 %pc, i32 0, %Value* null, i32 0)\n\c
+  %val = extractvalue { i64, i1 } %r, 0\n\c
+  %fmt = getelementptr [6 x i8], [6 x i8]* @.wam_object_embed_fmt, i32 0, i32 0\n\c
+  %pr = call i32 (i8*, ...) @printf(i8* %fmt, i64 %val)\n\c
+  ret i32 0\n\c
+load_fail:\n\c
+  ret i32 20\n\c
+}\n@.wam_object_embed_fmt = private constant [6 x i8] c"%lld\\0A\\00"\n',
+        [NBytes, Escaped, NBytes, NBytes, NBytes]),
+    setup_call_cleanup(
+        open(LL, append, S, [encoding(utf8)]),
+        write(S, MainIR),
+        close(S)),
+    directory_file_path(Dir, 'embed_host_bin', Host),
+    format(atom(Cmd), 'clang -w -O2 ~w -o ~w -lm 2>&1', [LL, Host]),
+    process_create(path(sh), ['-c', Cmd],
+        [stdout(pipe(CS)), stderr(std), process(Pid)]),
+    read_string(CS, _, ClangOut),
+    close(CS),
+    process_wait(Pid, Status),
+    ( Status == exit(0) -> true ; throw(error(clang_failed(ClangOut), _)) ).
+
+run_embed_host(Host, Out) :-
+    process_create(Host, [],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0).
+
+read_file_to_bytes(Path, Bytes) :-
+    setup_call_cleanup(
+        open(Path, read, S, [type(binary)]),
+        read_stream_bytes(S, Bytes),
+        close(S)).
+
+read_stream_bytes(S, Bytes) :-
+    get_byte(S, B),
+    ( B == -1 -> Bytes = []
+    ; Bytes = [B | Rest], read_stream_bytes(S, Rest) ).
+
+% Escape a byte list for an LLVM c"..." string constant: printable ASCII
+% (except " and backslash) verbatim, everything else as \XX hex.
+llvm_bytes_escape(Bytes, Escaped) :-
+    foldl(llvm_byte_escape, Bytes, [], RevCodes),
+    reverse(RevCodes, Codes),
+    string_codes(Escaped, Codes).
+
+llvm_byte_escape(B, Acc, NewAcc) :-
+    (   B >= 32, B =< 126, B =\= 0'", B =\= 0'\\
+    ->  NewAcc = [B | Acc]
+    ;   Hi is B >> 4, Lo is B /\ 0xF,
+        hex_digit(Hi, HiC), hex_digit(Lo, LoC),
+        NewAcc = [LoC, HiC, 0'\\ | Acc]
+    ).
+
+hex_digit(N, C) :- N < 10, !, C is 0'0 + N.
+hex_digit(N, C) :- C is 0'A + (N - 10).
