@@ -334,6 +334,29 @@ builds a host, writes a sum grammar, and the host computes `119` from an
 object it never saw at compile time; the swap test runs a *second*
 grammar (`1020`) through the *same* host binary with no rebuild.
 
+**plawk surface (`dyncall`).** A plawk program opts into a runtime object
+with `BEGIN { DYNLOAD = "file.wamo" }` and calls into it with
+`dyncall(args...)`, which yields the entry's integer result (or 0 on
+load/call failure). `dyncall` is a reserved call form that parses to its
+own AST node — it never touches the compiled-foreign-call machinery, so
+the spelling itself marks the runtime-JIT boundary (the object file can be
+absent or swapped, unlike a compiled call). Codegen emits one
+`@plawk_dyncall_N` shim per arity that boxes N `%Value` args and calls
+`@wam_object_call_i64`; the object loads lazily on the first `dyncall`
+(mirroring `@plawk_foreign_vm_get`) and is reused, so no driver-startup
+plumbing is needed. The CLI turns on `emit_wamo_loader(true)` whenever a
+program uses `dyncall`. The entry is read as `entry(A0..A_{N-1},
+out=A_N)`, so a grammar predicate has arity N+1 (N inputs + one output).
+`tests/test_plawk_dyncall.pl` builds a binary that sums `dyncall($1)` over
+i64 records (sum of squares = 150), then swaps `square.wamo` for a
+doubling grammar and reruns the *same binary* → 44, no rebuild.
+
+One thing kept open for later: a `.wamo` currently exposes a single
+entry, so `dyncall(args)` is unambiguous. Multiple entry points would bind
+at declaration (e.g. a named-entry directive) rather than overloading
+`dyncall`'s argument list, since a leading entry-name arg can't be told
+apart from a value.
+
 ## Why not a real DCG engine in the loop?
 
 Because the loop's performance contract is the whole point of PLAWK:

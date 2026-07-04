@@ -385,7 +385,19 @@ float(...) wrapper selects a {double, ok} bridge that accepts Integer
 or Float results, keeping fractions that the i64 spelling would
 truncate; a failed call contributes 0.0); the same spelling works in
 print position (`print $1, float(score($1, $2))`). One blob argument per call;
-payloads are NUL-free byte strings. Bounded repetition handles records containing a
+payloads are NUL-free byte strings.
+Runtime-loaded grammars (JIT) go one step further than the compiled
+bridge: `BEGIN { DYNLOAD = "file.wamo" }` names a WAM object built ahead
+of time with `write_wam_object/3`, and `dyncall(args...)` invokes its
+entry at runtime, yielding an i64 (0 on load/call failure). The object
+loads lazily on the first `dyncall` and is reused; swapping the `.wamo`
+file changes behaviour with **no rebuild of the plawk binary**. `dyncall`
+is a reserved form (never a compiled predicate), so the spelling marks
+the JIT boundary. A grammar predicate has arity N+1 (N inputs read as
+`A0..A_{N-1}`, output in `A_N`). Example:
+`BEGIN { BINFMT = "i64" ; DYNLOAD = "square.wamo" } { total += dyncall($1) } END { print total }`
+sums `X*X` over i64 records; overwrite `square.wamo` with a doubling
+grammar and the same binary sums `X*2`. Bounded repetition handles records containing a
 list: `BINFMT = "i64 rep4(i64 f64)"` declares an 8-byte element count
 (at most 4) followed by that many (i64, f64) elements. The count is an
 ordinary i64 field, element slots are flat addressable fields

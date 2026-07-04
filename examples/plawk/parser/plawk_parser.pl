@@ -697,6 +697,8 @@ begin_assignment_name('BINFMT') -->
     "BINFMT".
 begin_assignment_name('OUTFMT') -->
     "OUTFMT".
+begin_assignment_name('DYNLOAD') -->
+    "DYNLOAD".
 begin_assignment_name('FS') -->
     "FS".
 begin_assignment_name('OFS') -->
@@ -1262,6 +1264,21 @@ i64_factor_expr(var(Name)) -->
 %  the compiled predicate with one extra trailing output argument and
 %  yields its integer binding, or 0 when the call fails or binds a
 %  non-integer.
+% dyncall(args...) is reserved: it routes to a runtime-loaded .wamo
+% object's entry (BEGIN { DYNLOAD = "file.wamo" }) rather than a
+% compiled predicate, so it parses to its own node and never touches the
+% compiled-foreign-call machinery. The cut fires only after a full
+% `dyncall(...)`, so an identifier like `dyncalls(...)` still falls
+% through to the generic prolog call below.
+prolog_call_expr(dyncall(Args)) -->
+    "dyncall",
+    ws,
+    "(",
+    ws,
+    foreign_args(Args),
+    ws,
+    ")",
+    !.
 prolog_call_expr(prolog_call(Name, Args)) -->
     identifier(Name),
     ws,
