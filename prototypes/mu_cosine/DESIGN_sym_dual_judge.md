@@ -61,9 +61,29 @@ Two axes, and the confidence principle (#3356) applies to **only one** of them:
 readout head on the shared trunk (a well-defined self-reference, not the `up_hops` proxy). Possibly extend with
 **element** fwd/bwd (ELEM op) as further membership terms.
 
-**Build status:** design locked; the current `--struct-dir` uses free learned per-channel weights (a stand-in) —
-to be replaced by this precision-weighted blend. `c_dist` is *measured* once the two-judge data lands; `c_mem`'s
-per-region factor comes from `deg`/frequency (+ the converged-error ceiling).
+### Implementation (`--struct-blend precision`, BUILT)
+
+Theory → code mapping (`mu_attention.py`, `train_mu_attention.py`):
+
+| theory | code |
+|---|---|
+| distance proxy `1/d` | `struct_feat[:,0] = 3/(1+‖Δ struct-emb‖)` (Tokenizer, precision mode) |
+| membership signal `(μ_fwd+μ_bwd)/2` | `struct_feat[:,1] = mem` = avg of `3/(1+up_hops(a→b))`, `3/(1+up_hops(b→a))` — the **graph proxy** for the memberships (cheap, no feedback loop; the model's own HIER readouts are the heavier alternative) |
+| per-region factor for `c_mem` (#3356 §3(c)) | `struct_feat[:,2] = region = min(deg_a,deg_b)/(min(deg_a,deg_b)+deg_scale) ∈[0,1)` — a **data-density** proxy (`deg`); low in sparse regions ⇒ lower `c_mem` ⇒ `1/d` takes over. `--deg-scale` |
+| `c_mem = c_mem_ceiling · region` | `--c-mem-ceiling` → a **buffer** (measured `1/error_converged`, NOT learned) × per-pair `region` |
+| `c_dist` (global) | `--c-dist` → a **buffer** (measured LLM-agreement, NOT learned) |
+| `μ_graph = σ(g·pw + h)`, `pw = (c_mem·mem + c_dist·(1/d))/(c_mem+c_dist)` | precision branch in `forward`; `prec_g`/`prec_h` calibrate `pw→[0,1]` |
+| `μ_sym = μ_e5 + λ·(μ_graph − μ_e5)` | `struct_lambda` — the **complementary** e5↔graph superposition (learned ~0.5, **not** confidence-gated); **zero-init ⇒ exact warm-start no-op** |
+
+`c_dist` and `c_mem_ceiling` are **`register_buffer`s, not `nn.Parameter`s** — they are *measured* quantities
+(LLM agreement; converged membership error), deliberately kept off the gradient so this is a calibrated
+confidence, not a second free-weight scheme. Smoke-tested: warm-start no-op (λ=0); per-region shift verified
+(data-rich pair → `1/d` share 0.38, sparse pair → 0.75); SYM-gated (HIER untouched); output ∈[0,1].
+
+**Measurement is the remaining gate** (not code): `c_dist` = corr / `1/MSE` of `1/d` vs the LLM judge, and the
+`c_mem_ceiling` = `1/error_converged` of the membership operator — both read off the **two-judge round** (§14
+scoring, still generating). Until then the buffers hold their defaults (`1.0`), i.e. an equal-confidence
+prior. Other modes (`--struct-blend inside|outside`, `--struct-dir` free weights) remain as A/B controls.
 
 ## Architecture
 

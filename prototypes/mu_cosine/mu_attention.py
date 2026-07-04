@@ -189,23 +189,24 @@ class Tokenizer:
     """Builds the token set per example and pads a batch. Holds the frozen e5 tables + the DAG."""
 
     def __init__(self, query_tbl, passage_tbl, idx, parents, deg, k=1, beta=1.0, max_anc=8,
-                 struct_tbl=None, struct_dir=False, struct_cap=8):
+                 struct_tbl=None, struct_mode="dist", struct_cap=8, deg_scale=5.0):
         self.q, self.p, self.idx = query_tbl, passage_tbl, idx
         self.parents, self.deg = parents, deg
         self.k, self.beta, self.max_anc = k, beta, max_anc
         self.d = query_tbl.shape[1]
         # DUAL-JUDGE (step 3): {name: struct-emb vector} for the O(1) graph-judge proxy `3/(1+‖Δ‖)`. When set,
-        # build() emits a per-example `struct_feat` VECTOR [K] of graph PREDICTORS. None ⇒ omitted.
+        # build() emits a per-example `struct_feat` VECTOR [K] of graph signals. None ⇒ omitted.
         self.struct = struct_tbl
-        # PREDICTOR channels (user's theory, 2026-07-04): SYM is a regression on POSITIVE predictors — the
-        # distance proxy AND the fwd/bwd memberships, each its own channel with a learned weight (the model sets
-        # the "confidence" weights; equal-⅓ average is just the fixed-weight case). NOT a subtraction/residual —
-        # that expression is the ERROR term (belongs in the loss), from writing 1/d as the dependent variable.
-        #   struct_dir=False ⇒ K=1: [ 3/(1+‖Δ‖) ]                              (distance predictor only)
-        #   struct_dir=True  ⇒ K=3: [ 3/(1+‖Δ‖), 3/(1+up_hops(a→b)), 3/(1+up_hops(b→a)) ]
+        # struct_mode selects what build() emits (see DESIGN_sym_dual_judge.md "Confidence architecture"):
+        #   "dist"      ⇒ K=1: [ 3/(1+‖Δ‖) ]                                   distance predictor only
+        #   "dir"       ⇒ K=3: [ dist, 3/(1+up_hops(a→b)), 3/(1+up_hops(b→a)) ] free-weight predictors
+        #   "precision" ⇒ K=3: [ dist, mem, region ] — the LOCKED design:
+        #       mem    = (3/(1+up_hops(a→b)) + 3/(1+up_hops(b→a)))/2   membership signal (data-rich)
+        #       region = min(deg_a,deg_b)/(min(deg_a,deg_b)+deg_scale) ∈[0,1) — the PER-REGION c_mem factor
+        #                (#3356 §3 source (c) measurement uncertainty: sparse-data ⇒ noisier μ ⇒ lower confidence)
         # up_hops = directed DAG ancestry (graph proxy for subcategory membership, not the model's μ ⇒ no
-        # feedback loop; cheap local parent-climb). n_struct on the model must match K.
-        self.struct_dir, self.struct_cap = struct_dir, struct_cap
+        # feedback loop; cheap local parent-climb). n_struct on the model must match K (1 for "dist", else 3).
+        self.struct_mode, self.struct_cap, self.deg_scale = struct_mode, struct_cap, deg_scale
 
     def _up_hops(self, x, y, cap):
         """min hops climbing PARENT edges from x up to y (y an ancestor of x); None if not within cap."""
@@ -335,18 +336,25 @@ class Tokenizer:
                "is_prov": is_prov, "corpus_of": corpus_of, "judge_of": judge_of,
                "account_of": account_of, "nodetype_of": nodetype_of, "prefix_of": prefix_of,
                "op_of": op_of, "pad": pad}
-        if self.struct is not None:                          # DUAL-JUDGE: per-pair graph PREDICTOR vector [B, K]
-            K = 3 if self.struct_dir else 1
+        if self.struct is not None:                          # DUAL-JUDGE: per-pair graph signal vector [B, K]
+            mode = self.struct_mode
+            K = 1 if mode == "dist" else 3
             sf = torch.zeros(B, K)
             for bi, it in enumerate(items):
                 a, b = it[0], it[1]                          # (node, root)
                 va, vb = self.struct.get(a), self.struct.get(b)
                 sf[bi, 0] = float(3.0 / (1.0 + (va - vb).norm())) if (va is not None and vb is not None) else 0.0
-                if self.struct_dir:                          # + fwd/bwd membership predictors (each its own channel)
+                if mode != "dist":
                     fh = self._up_hops(a, b, self.struct_cap)   # forward: b is an ancestor of a (a subcat_of b)
                     bh = self._up_hops(b, a, self.struct_cap)   # backward: a is an ancestor of b
-                    sf[bi, 1] = 3.0 / (1.0 + fh) if fh is not None else 0.0
-                    sf[bi, 2] = 3.0 / (1.0 + bh) if bh is not None else 0.0
+                    fwd = 3.0 / (1.0 + fh) if fh is not None else 0.0
+                    bwd = 3.0 / (1.0 + bh) if bh is not None else 0.0
+                    if mode == "dir":                        # free-weight predictors [dist, fwd, bwd]
+                        sf[bi, 1] = fwd; sf[bi, 2] = bwd
+                    else:                                    # "precision": [dist, mem, region]
+                        sf[bi, 1] = (fwd + bwd) / 2.0        # membership signal (data-rich)
+                        mind = min(self.deg.get(a, 0), self.deg.get(b, 0))
+                        sf[bi, 2] = mind / (mind + self.deg_scale)   # per-region c_mem factor ∈[0,1)
             out["struct_feat"] = sf
         return out
 
@@ -357,10 +365,11 @@ class Tokenizer:
 class MuAttention(nn.Module):
     def __init__(self, d_model=384, n_ops=len(OPS), n_heads=4, n_layers=1, max_gen=5,
                  dim_ff=None, dropout=0.0, n_corpus=len(CORPORA), n_judge=len(JUDGES),
-                 n_nodetype=len(NODETYPE), n_account=len(ACCOUNTS), struct_blend="inside", n_struct=1):
+                 n_nodetype=len(NODETYPE), n_account=len(ACCOUNTS), struct_blend="inside", n_struct=1,
+                 c_dist=1.0, c_mem_ceiling=1.0):
         super().__init__()
         self.d = d_model
-        self.struct_blend = struct_blend            # DUAL-JUDGE combine mode: "inside" (logit-space) | "outside" (μ-space)
+        self.struct_blend = struct_blend            # DUAL-JUDGE combine: "inside" | "outside" | "precision"
         self.op_emb = nn.Embedding(n_ops, d_model)
         # NODE-TYPE: per-endpoint structural-role token (category/page/mindmap/pearltrees). Zero-init so it
         # is a no-op at warm start (category=0 default) and the type signal is learned during fine-tuning.
@@ -396,6 +405,16 @@ class MuAttention(nn.Module):
         self.struct_lambda = nn.Parameter(torch.zeros(1))
         self.struct_g = nn.Parameter(torch.zeros(n_struct))
         self.struct_h = nn.Parameter(torch.zeros(1))
+        # PRECISION mode (LOCKED design, DESIGN_sym_dual_judge.md "Confidence architecture"):
+        #   μ_graph = σ(prec_g·pw + prec_h),  pw = (c_mem·mem + c_dist·dist)/(c_mem + c_dist)
+        #   c_mem   = c_mem_ceiling · region   (per-pair; ceiling = 1/error_converged, region from data density)
+        # c_dist / c_mem_ceiling are MEASURED constants (LLM-agreement / converged membership error), NOT learned
+        # ⇒ registered buffers set from config. prec_g/prec_h just calibrate pw→[0,1]. The e5↔graph blend reuses
+        # struct_lambda (zero-init ⇒ warm-start no-op; learned ~0.5 as a COMPLEMENTARY superposition, not gated).
+        self.register_buffer("c_dist", torch.tensor(float(c_dist)))
+        self.register_buffer("c_mem_ceiling", torch.tensor(float(c_mem_ceiling)))
+        self.prec_g = nn.Parameter(torch.tensor(1.0))
+        self.prec_h = nn.Parameter(torch.tensor(0.0))
         for emb in (self.op_emb, self.gen_emb, self.corpus_emb, self.judge_emb):
             nn.init.normal_(emb.weight, std=0.02)
         nn.init.zeros_(self.nodetype_emb.weight)            # no-op at warm start; learned during fine-tune
@@ -443,6 +462,14 @@ class MuAttention(nn.Module):
         logit = (pooled * w).sum(-1) + b
         if struct_feat is not None:                          # DUAL-JUDGE: graph predictors [B,K] → SYM only
             sym_gate = op_weights[:, OPS["SYM"]] if op_weights is not None else (op_of == OPS["SYM"]).to(logit.dtype)
+            if self.struct_blend == "precision":             # LOCKED: precision-weighted(mem,1/d) ⊕ e5, per-region c_mem
+                dist, mem, region = struct_feat[:, 0], struct_feat[:, 1], struct_feat[:, 2]
+                c_mem = self.c_mem_ceiling * region                             # per-pair membership confidence
+                pw = (c_mem * mem + self.c_dist * dist) / (c_mem + self.c_dist + 1e-6)   # inverse-variance fusion
+                mu_graph = torch.sigmoid(self.prec_g * pw + self.prec_h)        # graph judge ∈[0,1]
+                mu_e5 = torch.sigmoid(logit)                                    # complementary e5 judge
+                mu = mu_e5 + sym_gate * self.struct_lambda * (mu_graph - mu_e5)  # λ=0 ⇒ pure e5 (no-op); ~0.5 learned
+                return mu.clamp(0.0, 1.0)
             if self.struct_blend == "outside":               # blend two BOUNDED judges in μ-space (no outer sigmoid)
                 mu_e5 = torch.sigmoid(logit)                                     # e5 judge — already ∈[0,1]
                 mu_graph = torch.sigmoid((struct_feat * self.struct_g).sum(-1) + self.struct_h)  # squash the graph terms

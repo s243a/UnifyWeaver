@@ -449,8 +449,9 @@ def train(args):
         struct_tbl = {n: v for n, v in zip(_se["nodes"], _se["emb"])}
         print(f"STRUCT-EMB (SYM dual judge): {len(struct_tbl)} nodes, {_se['dim']}d, from "
               f"{os.path.basename(args.struct_emb)}")
+    struct_mode = "precision" if args.struct_blend == "precision" else ("dir" if args.struct_dir else "dist")
     tok = Tokenizer(q, p, idx, parents, deg, k=args.k, beta=1.0, max_anc=args.max_anc,
-                    struct_tbl=struct_tbl, struct_dir=args.struct_dir)
+                    struct_tbl=struct_tbl, struct_mode=struct_mode, deg_scale=args.deg_scale)
 
     rng = random.Random(args.seed)
     edges = [e for e in load_edges() if e[0] in idx and e[1] in idx]
@@ -552,7 +553,8 @@ def train(args):
 
     torch.manual_seed(args.seed)
     model = MuAttention(d_model=q.shape[1], n_heads=args.heads, n_layers=args.layers,
-                        struct_blend=args.struct_blend, n_struct=(3 if args.struct_dir else 1))
+                        struct_blend=args.struct_blend, n_struct=(1 if struct_mode == "dist" else 3),
+                        c_dist=args.c_dist, c_mem_ceiling=args.c_mem_ceiling)
     if args.init_from:                                    # warm start — DON'T reinit the head (fine-tune)
         ck = torch.load(args.init_from, weights_only=False)
         sd, own = ck["state"], model.state_dict()
@@ -1277,7 +1279,7 @@ def main():
                     "from --graded by _pairs→_nodes)")
     ap.add_argument("--graded-weight", type=float, default=1.0, help="graded-round loss weight")
     ap.add_argument("--tail-weight", type=float, default=1.0, help="§13: loss-weight multiplier for the inferred "
-                    "tail (conf<1.0, non-bridge) — counters dilution (~7%→30%% effective share at ~6)")
+                    "tail (conf<1.0, non-bridge) — counters dilution (~7%%→30%% effective share at ~6)")
     ap.add_argument("--bridge-weight", type=float, default=0.2, help="down-weight bridge targets in the "
                     "graded loss (they dominate at μ≈0.9; keep them from swamping directional signal)")
     ap.add_argument("--infer-switch", action="store_true", help="for INFERRED graded relations (confidence "
@@ -1299,10 +1301,17 @@ def main():
     ap.add_argument("--struct-emb", default=None, help="DUAL-JUDGE step 3: learned structural embedding "
                     "(structural_embedding.py .pt). When set, the SYM logit gets the O(1) structural channel "
                     "3/(1+‖Δ struct-emb‖); zero-init scale ⇒ warm-start no-op until SYM training learns it.")
-    ap.add_argument("--struct-blend", choices=["inside", "outside"], default="inside",
-                    help="DUAL-JUDGE combine mode: 'inside' = μ=σ(logit_e5 + w·struct) (one sigmoid, logit-space); "
-                    "'outside' = μ=μ_e5 + λ·(μ_graph−μ_e5), a μ-space blend of two BOUNDED judges (e5 μ untouched, "
-                    "only the graph term squashed). λ zero-init ⇒ pure-e5 warm-start no-op either way.")
+    ap.add_argument("--struct-blend", choices=["inside", "outside", "precision"], default="inside",
+                    help="DUAL-JUDGE combine mode: 'inside' = μ=σ(logit_e5 + w·struct) (logit-space); 'outside' = "
+                    "μ=μ_e5 + λ·(μ_graph−μ_e5), μ-space blend of two bounded judges; 'precision' (LOCKED design) = "
+                    "μ_graph is the precision-weighted (c_mem·mem + c_dist·(1/d))/(c_mem+c_dist), then the e5↔graph "
+                    "complementary superposition. λ zero-init ⇒ pure-e5 warm-start no-op in every mode.")
+    ap.add_argument("--c-dist", type=float, default=1.0, help="precision mode: GLOBAL distance-proxy confidence "
+                    "(MEASURED = how well 1/d agrees with the LLM judge, corr or 1/MSE; default 1.0 until measured).")
+    ap.add_argument("--c-mem-ceiling", type=float, default=1.0, help="precision mode: membership-confidence CEILING "
+                    "(MEASURED = 1/error_converged of the HIER membership op; per-region c_mem = ceiling·region).")
+    ap.add_argument("--deg-scale", type=float, default=5.0, help="precision mode: data-density scale for the "
+                    "per-region c_mem factor min(deg)/(min(deg)+deg_scale) — larger ⇒ needs more edges for confidence.")
     ap.add_argument("--struct-dir", action="store_true", help="DUAL-JUDGE: add the fwd/bwd membership PREDICTORS "
                     "as separate channels (K=3: [3/(1+‖Δ‖), 3/(1+up_hops(a→b)), 3/(1+up_hops(b→a))]) — each with "
                     "its own LEARNED weight (regression; equal-⅓ average is the fixed-weight case). up_hops = DAG "
