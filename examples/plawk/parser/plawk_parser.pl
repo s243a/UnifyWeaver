@@ -2,7 +2,8 @@
 % Copyright (c) 2026 John William Creighton (s243a)
 
 :- module(plawk_parser, [
-    plawk_parse_string/2
+    plawk_parse_string/2,
+    plawk_parse_source/3
 ]).
 
 %% plawk_parse_string(+Source, -Program) is semidet.
@@ -40,16 +41,217 @@
 %  The AST is deliberately small and explicit so later syntax can extend it
 %  without changing the native codegen contract.
 plawk_parse_string(Source, Program) :-
-    string(Source),
-    string_codes(Source, Codes),
-    phrase(plawk_program(Program), Codes).
+    plawk_parse_source(Source, Program, _PrologClauses).
 
-plawk_program(program(BeginClauses, Rules, EndClauses)) -->
+%% plawk_parse_source(+Source, -Program, -PrologClauses) is semidet.
+%
+%  Like plawk_parse_string/2, but also lifts embedded Prolog blocks:
+%
+%      @prolog
+%      weight(I, F, R) :- R is I * F.
+%      @end
+%
+%  Block markers sit alone on their line (leading/trailing blanks ok).
+%  A heredoc-style tag makes the fence unambiguous when the Prolog
+%  text itself contains an @end-shaped line: `@prolog-TAG` closes only
+%  at `@end-TAG` with the exact same tag. Blocks may appear anywhere
+%  between top-level program parts; their text never routes through
+%  the awk grammar -- it is term-read as ordinary Prolog and returned
+%  as PrologClauses for the compile driver to hand to
+%  write_wam_llvm_project alongside the program.
+plawk_parse_source(Source, Program, PrologClauses) :-
+    string(Source),
+    plawk_split_prolog_blocks(Source, Stripped, BlockTexts),
+    maplist(plawk_read_block_clauses, BlockTexts, ClausesNested),
+    append(ClausesNested, BlockClauses),
+    string_codes(Stripped, Codes),
+    phrase(plawk_program(Program, FunctionClauses), Codes),
+    append(BlockClauses, FunctionClauses, PrologClauses).
+
+plawk_split_prolog_blocks(Source, Stripped, BlockTexts) :-
+    split_string(Source, "\n", "", Lines),
+    plawk_split_block_lines(Lines, KeptLines, BlockTexts),
+    atomic_list_concat(KeptLines, '\n', StrippedAtom),
+    atom_string(StrippedAtom, Stripped).
+
+plawk_split_block_lines([], [], []).
+plawk_split_block_lines([Line | Lines], KeptLines, [BlockText | BlockTexts]) :-
+    plawk_prolog_open_marker(Line, EndMarker),
+    !,
+    plawk_take_block_lines(Lines, EndMarker, BlockLines, Rest),
+    atomic_list_concat(BlockLines, '\n', BlockAtom),
+    atom_string(BlockAtom, BlockText),
+    plawk_split_block_lines(Rest, KeptLines, BlockTexts).
+plawk_split_block_lines([Line | Lines], [Line | KeptLines], BlockTexts) :-
+    plawk_split_block_lines(Lines, KeptLines, BlockTexts).
+
+plawk_prolog_open_marker(Line, EndMarker) :-
+    split_string(Line, "", " \t", [Trimmed]),
+    ( Trimmed == "@prolog"
+    ->  EndMarker = "@end"
+    ;   string_concat("@prolog-", Tag, Trimmed),
+        Tag \== "",
+        string_concat("@end-", Tag, EndMarker)
+    ).
+
+% an unterminated block fails the parse (no clause for [])
+plawk_take_block_lines([Line | Lines], EndMarker, BlockLines, Rest) :-
+    split_string(Line, "", " \t", [Trimmed]),
+    ( Trimmed == EndMarker
+    ->  BlockLines = [],
+        Rest = Lines
+    ;   BlockLines = [Line | BlockLines1],
+        plawk_take_block_lines(Lines, EndMarker, BlockLines1, Rest)
+    ).
+
+plawk_read_block_clauses(BlockText, Clauses) :-
+    setup_call_cleanup(
+        open_string(BlockText, Stream),
+        plawk_read_stream_clauses(Stream, Clauses),
+        close(Stream)).
+
+plawk_read_stream_clauses(Stream, Clauses) :-
+    read_term(Stream, Term, []),
+    ( Term == end_of_file
+    ->  Clauses = []
+    ;   Clauses = [Term | Rest],
+        plawk_read_stream_clauses(Stream, Rest)
+    ).
+
+plawk_program(Program) -->
+    plawk_program(Program, _FunctionClauses).
+
+plawk_program(program(BeginClauses, Rules, EndClauses), FunctionClauses) -->
     ws,
     begin_clauses(BeginClauses),
+    function_defs(FunctionClauses),
     program_rules(Rules),
     end_clauses(EndClauses),
     eos.
+
+%% function_defs(-Clauses)//
+%
+%  awk-style expression functions, pure sugar over the foreign bridge:
+%
+%      function scale(a, b) { return a * b + 1 }
+%
+%  desugars at parse time into the Prolog clause
+%
+%      scale(A, B, R) :- R is A * B + 1.
+%
+%  and is called like any bridged predicate: `scale($1, $2)` as an
+%  integer expression, `float(scale($1, $2))` to keep fractions. The
+%  body is one `return` of an arithmetic expression over the
+%  parameters (awk precedence; % maps to Prolog mod); an identifier
+%  that is not a parameter fails the parse.
+function_defs([Clause | Clauses]) -->
+    function_def(Clause),
+    !,
+    function_defs(Clauses).
+function_defs([]) -->
+    [].
+
+function_def((Head :- Body)) -->
+    "function",
+    identifier_boundary,
+    ws,
+    identifier(Name),
+    ws,
+    "(",
+    ws,
+    function_params(Params),
+    ws,
+    ")",
+    ws,
+    "{",
+    ws,
+    "return",
+    identifier_boundary,
+    ws,
+    function_expr(Params, Pairs, ArithTerm),
+    action_block_close,
+    { pairs_values(Pairs, Vars),
+      append(Vars, [Result], HeadArgs),
+      Head =.. [Name | HeadArgs],
+      Body = (Result is ArithTerm)
+    }.
+
+function_params([Param | Params]) -->
+    identifier(Param),
+    function_params_rest(Params).
+
+function_params_rest([Param | Params]) -->
+    ws,
+    ",",
+    ws,
+    !,
+    identifier(Param),
+    function_params_rest(Params).
+function_params_rest([]) -->
+    [].
+
+% arithmetic over the parameters, with awk precedence: * / % bind
+% tighter than + -, both associate left, parentheses group
+function_expr(Params, Pairs, Term) -->
+    { pairs_keys(Pairs, Params) },
+    function_additive(Pairs, Term).
+
+function_additive(Pairs, Term) -->
+    function_multiplicative(Pairs, First),
+    function_additive_chain(Pairs, First, Term).
+
+function_additive_chain(Pairs, Acc, Term) -->
+    ws,
+    function_add_op(Op),
+    ws,
+    !,
+    function_multiplicative(Pairs, Right),
+    { Acc1 =.. [Op, Acc, Right] },
+    function_additive_chain(Pairs, Acc1, Term).
+function_additive_chain(_Pairs, Term, Term) -->
+    [].
+
+function_add_op(+) --> "+".
+function_add_op(-) --> "-".
+
+function_multiplicative(Pairs, Term) -->
+    function_factor(Pairs, First),
+    function_multiplicative_chain(Pairs, First, Term).
+
+function_multiplicative_chain(Pairs, Acc, Term) -->
+    ws,
+    function_mul_op(Op),
+    ws,
+    !,
+    function_factor(Pairs, Right),
+    { Acc1 =.. [Op, Acc, Right] },
+    function_multiplicative_chain(Pairs, Acc1, Term).
+function_multiplicative_chain(_Pairs, Term, Term) -->
+    [].
+
+function_mul_op(*) --> "*".
+function_mul_op(/) --> "/".
+function_mul_op(mod) --> "%".
+
+function_factor(Pairs, Term) -->
+    "(",
+    ws,
+    !,
+    function_additive(Pairs, Term),
+    ws,
+    ")".
+function_factor(_Pairs, Value) -->
+    float_literal_expr(float_const(Mantissa, Denominator)),
+    !,
+    { Value is Mantissa / Denominator }.
+function_factor(_Pairs, Value) -->
+    integer_codes(ValueCodes),
+    { ValueCodes \== [] },
+    !,
+    { number_codes(Value, ValueCodes) }.
+function_factor(Pairs, Var) -->
+    identifier(Param),
+    { memberchk(Param-Var, Pairs) }.
 
 % Tagged-union programs route rules through per-arm case blocks: the
 % arm index scopes the field types of every rule inside the block.
