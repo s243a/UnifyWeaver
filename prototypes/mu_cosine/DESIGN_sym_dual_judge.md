@@ -27,6 +27,44 @@ Fit `μ_sym ≈ σ(w·features)` against the judge-scored SYM targets:
   **re-explains the SYM "regression"**: SYM is ~half structural, so when the broad fine-tune shifted the graph,
   the pure-e5 operator lost the structural half it never had.
 
+## Confidence architecture (LOCKED design, user 2026-07-04 — build pending)
+
+Two axes, and the confidence principle (#3356) applies to **only one** of them:
+
+```
+μ_sym   = superposition( μ_graph , μ_e5 )                          ← COMPLEMENTARY judges, ~50/50, NOT confidence-gated
+μ_graph = precision_weighted( memberships , 1/d )                 ← the confidences live HERE
+        = ( c_mem·(μ_fwd+μ_bwd)/2  +  c_dist·(1/d) ) / (c_mem + c_dist)
+```
+
+- **e5 ↔ graph is a superposition of complementary judges, NOT a confidence gate.** The dual finding (DUAL
+  +0.75 > graph +0.66 > e5 +0.60) proves they capture *different residuals* — they measure different things, so
+  the blend weight *is* the answer we want (learned / ~50/50), not a fallback where one substitutes for the
+  other. Do **not** re-apply the confidence principle here.
+- **Inside the graph judge it IS a confidence-modulated trust** (the #3356 / anchored-basis principle), with
+  **`1/d` as the low-confidence fallback** (the role e5-text played in the anchored basis). Precision-weighted
+  (inverse-variance) fusion of two estimators of different reliability.
+
+**The two confidences (each an error/agreement measurement, not a free knob):**
+- **`c_dist` — global, fixed.** The distance proxy's reliability = how well `1/d` **agrees with the LLM judge**
+  on the two-judge data (corr or `1/MSE`). One number. (Gated on the §14 two-judge scoring — the LLM judge is
+  the semantic ground truth `1/d` is approximating.)
+- **`c_mem` — per-region, NOT a global scalar.** A global *ceiling* = `1/error_converged` of the membership
+  (HIER) operator — so as the memberships train down with data, `c_mem` rises and `1/d`'s share shrinks (the
+  "more data ⇒ weight `1/d` less" intuition). **Modulated down per-region by #3356 §3 source (c), measurement/
+  estimation uncertainty** ("finite capacity, e5, ancestor sampling") — μ is a noisier estimate where there is
+  **less data**, so `c_mem` is lower there and `1/d` takes over locally. #3356 enters this as a **measurement
+  width δ** that grows in sparse regions. Cheap per-region proxy: node **degree / local graph density** (already
+  in the tokenizer as `deg`) or training frequency; richer: an actual μ-uncertainty band (`boundary_band.py`).
+
+**`μ_fwd`/`μ_bwd`** = the model's learned HIER (subcategory) memberships (the data-rich signal), i.e. a second
+readout head on the shared trunk (a well-defined self-reference, not the `up_hops` proxy). Possibly extend with
+**element** fwd/bwd (ELEM op) as further membership terms.
+
+**Build status:** design locked; the current `--struct-dir` uses free learned per-channel weights (a stand-in) —
+to be replaced by this precision-weighted blend. `c_dist` is *measured* once the two-judge data lands; `c_mem`'s
+per-region factor comes from `deg`/frequency (+ the converged-error ceiling).
+
 ## Architecture
 
 `μ_sym = blend( judge=graph [3/dist], judge=e5 [SYM operator] )` — exactly the **calibrated-judges /
