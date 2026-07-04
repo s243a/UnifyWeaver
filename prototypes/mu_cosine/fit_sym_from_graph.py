@@ -64,6 +64,7 @@ def main():
     ap.add_argument("--pairs", default="mu_pairs_scored_cumulative.tsv")
     ap.add_argument("--cap-pairs", type=int, default=1500)
     ap.add_argument("--bfs-cap", type=int, default=10)
+    ap.add_argument("--struct-emb", default=None, help="learned structural embedding (structural_embedding.py .pt)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     a = ap.parse_args()
     dev = torch.device(a.device)
@@ -141,16 +142,14 @@ def main():
     fixed = 1 / (1 + np.exp(-(recip - mab - mba)))
     print(f"  [FIXED σ(3/dist − μab − μba)]  corr {np.corrcoef(fixed, y)[0,1]:+.3f}  "
           f"R² {1 - ((y-fixed)**2).sum()/ss_tot:+.3f}")
-    # STRUCTURAL EMBEDDING (landmark BFS) — the cheap O(1)-inference proxy for graph distance
-    sym_nodes = {x for x, _, _ in sym} | {y for _, y, _ in sym}
-    landmarks = sorted(present, key=lambda n: -len(adj.get(n, ())))[:64]   # high-degree, well-spread
-    LMCAP = a.bfs_cap * 3
-    lm_dist = {l: bfs_from(adj, l, sym_nodes, LMCAP) for l in landmarks}
-    def svec(n):
-        return np.array([lm_dist[l].get(n, LMCAP + 1) for l in landmarks], float)
-    struct_l2 = np.array([np.linalg.norm(svec(x) - svec(y)) for x, y, _ in sym])
-    struct_feat = 3.0 / (1.0 + struct_l2)                 # 3/‖Δ landmark-vec‖ — precomputed, O(1) at inference
-    print(f"  struct-embed({len(landmarks)} landmarks) vs true 3/dist corr: {np.corrcoef(struct_feat, recip)[0, 1]:+.3f}")
+    # STRUCTURAL EMBEDDING (learned metric emb) — the cheap O(1)-inference proxy: 3/‖emb(a)−emb(b)‖
+    se = torch.load(a.struct_emb)
+    svmap = {n: v for n, v in zip(se["nodes"], se["emb"].numpy())}
+    cap2 = se.get("cap", 6) + 2
+    def sdist(x, y):
+        return float(np.linalg.norm(svmap[x] - svmap[y])) if (x in svmap and y in svmap) else cap2
+    struct_feat = 3.0 / (1.0 + np.array([sdist(x, y) for x, y, _ in sym]))
+    print(f"  struct-embed (learned {se['dim']}d) vs true 3/dist corr: {np.corrcoef(struct_feat, recip)[0, 1]:+.3f}")
 
     print(f"  --- dual judge (superposition test) ---")
     for name, feats in [("graph only  (3/dist true)", [recip]),
