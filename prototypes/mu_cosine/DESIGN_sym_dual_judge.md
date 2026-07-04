@@ -97,6 +97,15 @@ fallback is load-bearing, not optional. Caveats: this uses the **O(1) struct-emb
 **re-measure on the two-judge (§14, LLM) round** and against the model's own memberships. Other modes
 (`--struct-blend inside|outside`, `--struct-dir` free weights) remain A/B controls.
 
+**On the distance form `g(d)` (user 2026-07-04).** The distance channel is any monotone-decreasing `g(d)`, not
+just `1/d` (ties to `COST_FUNCTION_PHILOSOPHY.md`'s exp-decay / power-law / PPR families). But swept over the
+struct-emb `‖Δ‖` range (mean 5.0, std 0.8), the form is empirically **irrelevant**: `3/(1+d)` +0.349, `1/d`
++0.351, `1/(1+d)²` +0.352, best-fit `exp(-d/1.65)` +0.357 — all within noise (correlation is monotone-linear
+invariant; the range is narrow so every smooth `g` is locally linear). Only `exp(-d²)` collapses (+0.05). ⇒
+**keep the simple `3/(1+d)`; the `c_dist` lever is distance *quality* (better embedding / true-BFS +0.66), not
+the transform.** Downstream, `σ(prec_g·pw + prec_h)` already supplies a learned monotone calibration. (Re-check
+`g` only if a wider-range / true-distance source replaces the proxy — the form may matter there.)
+
 ## Architecture
 
 `μ_sym = blend( judge=graph [3/dist], judge=e5 [SYM operator] )` — exactly the **calibrated-judges /
