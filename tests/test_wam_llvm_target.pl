@@ -555,13 +555,18 @@ test(write_ctx_pushed_by_structures) :-
     compile_step_wam_to_llvm([], StepCode),
     assertion(sub_atom(StepCode, _, _, _, 'wam_push_write_ctx')).
 
-test(lookup_label_warns_on_unknown, [true]) :-
-    % Should succeed with Index=0 (and print a warning to stderr)
-    wam_llvm_target:lookup_label_index('nonexistent_label', [], Index),
-    assertion(Index == 0).
+test(lookup_label_throws_by_default,
+        [throws(error(existence_error(procedure, _), _))]) :-
+    % An unknown label means a call to a predicate that was never
+    % compiled into the module -- jumping to index 0 instead produced
+    % silent runtime failures (the plawk code_type incident), so the
+    % default is now a loud compile-time error.
+    wam_llvm_target:lookup_label_index('nonexistent_label', [], _).
 
-test(lookup_label_strict_throws, [throws(error(unknown_label(_), _))]) :-
+test(lookup_label_lenient_optout_defaults_to_zero, [true]) :-
+    % The legacy behaviour stays available behind an explicit opt-out.
     wam_llvm_target:lookup_label_index(
-        'nonexistent_label', [], [wam_strict_labels(true)], _).
+        'nonexistent_label', [], [wam_strict_labels(false)], Index),
+    assertion(Index == 0).
 
 :- end_tests(wam_llvm_target).

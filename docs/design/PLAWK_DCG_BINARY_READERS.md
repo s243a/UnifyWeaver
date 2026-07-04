@@ -234,12 +234,20 @@ inlined natively later without changing the surface.
 
 ## Known design debt
 
-- **(OPEN) WAM lowering of if-then-else/cut in compiled DCG bodies.**
-  An embedded grammar written with `( "," -> ... ; ... )` and a cut in
-  the digits rule compiled but returned 0 at runtime; the same grammar
-  respelled as plain clause alternation (greedy clause before stop
-  clause, tier2 style) works. Needs a minimal WAM-target reproduction;
-  until then, prefer clause alternation in embedded grammars.
+- **(FIXED) The "if-then-else grammar returned 0" incident — root
+  cause was neither if-then-else nor cut.** Bisection showed ITE
+  (including binding conditions), cut, and recursive cut all lower
+  correctly; the failing grammar differed in calling `code_type/2`,
+  which was not a WAM builtin. A call to an unknown predicate lowered
+  to **label index 0** with only a stderr warning, so the digit check
+  failed silently and the whole parse summed to 0. Two fixes:
+  `code_type/2` is now a builtin (id 172, entering `char_type/2`'s
+  classifier through phis at `ctp.dispatch` — same type names, ASCII
+  semantics, check mode); and unknown labels are a **compile-time
+  existence error** by default (`wam_strict_labels(false)` restores
+  the legacy index-0 fallback). The originally-failing grammar is the
+  standing regression test, alongside a test that an uncompiled
+  callee fails the compile.
 - **(FIXED) WAM bug: constant-in-list clause heads never matched.**
   `unify_constant` built its read-mode comparison value with a
   hardcoded Atom tag (op2 was unused), so an integer constant in a
