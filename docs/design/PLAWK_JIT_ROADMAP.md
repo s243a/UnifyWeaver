@@ -21,7 +21,8 @@ The dynamic-grammar surface is feature-complete for numeric work:
 | `float(dyncall(...))` / `float(dyncall_at(...))` (double returns) | #3467 |
 | `blob(dyncall(...))` / `blob(dyncall_at(...))` (opaque byte returns) | #3470 |
 | Multi-entry objects — writer `wamo_entries([...])` + loader name resolution (`@wam_object_entry_index`) | #3471 |
-| plawk surface A — `dyncall@name(...)` (named entry, compile-time-fixed, cached PC) | this PR |
+| plawk surface A — `dyncall@name(...)` (named entry, compile-time-fixed, cached PC) | #3473 |
+| `float(dyncall@name(...))` / `blob(dyncall@name(...))` (named double / byte returns, shared resolver) | this PR |
 
 A grammar is compiled ahead of time to a `.wamo`, loaded at runtime (from a
 fixed path, an in-memory buffer, or a per-call runtime source), cached with
@@ -106,11 +107,19 @@ entry collection, so a program with no named calls emits none of this IR.
 Verified end to end: one object exposing `square/2` and `cube/2`, summed by
 name in one binary → `c - s = 22` (reachable only if both resolved).
 
-**Deferred follow-ons:** `float(dyncall@name(...))` / `blob(dyncall@name(...))`
-(the named form is i64-only today; the float/blob wrappers reuse the same
-resolver — mechanical), and `dyncall_at@name(Src, ...)` (named entry on a
-*runtime* source, which needs the PC cached per (object, name) pair rather
-than per entry). And surface **B** below.
+**float / blob named — LANDED:** `float(dyncall@name(...))` reads a named
+entry's numeric output as a double, `blob(dyncall@name(...))` reads its Atom
+output as a byte slice — mirroring the bare `float`/`blob` forms. All three
+return kinds (i64 / double / bytes) for one entry share a **single** per-entry
+PC resolver `@plawk_dyncall_resolve_<name>_<N>` (the shims differ only in
+which `@wam_object_call_*` they call), so an entry used in more than one
+return position resolves once and shares the cached PC — no duplicate globals.
+Verified: `float(dyncall@halve($1))` summing `N/2` over 3,5 → `4`;
+`blob(dyncall@greet($1))` echoing a field.
+
+**Deferred follow-on:** `dyncall_at@name(Src, ...)` (named entry on a
+*runtime* source), which needs the PC cached per (object, name) pair rather
+than per entry. And surface **B** below.
 
 **Surface B — declaration-bound library names (planned):** for a fixed
 `DYNLOAD` shipping a known family, bind entries once at declaration and call
@@ -131,12 +140,22 @@ userspace (foreign call / builtin / user function). A rule freely mixes both
 (`parse($1)` compiled, `score($2)` userspace) with no per-call ambiguity.
 Declaring `DYNENTRY` over a name that is already a builtin/foreign name is a
 **compile error**, never silent shadowing — so B never calls a userspace
-name. **Optional guaranteed-no-shadow prefix:** allow a sigil/namespace
-prefix (e.g. `dyn::parse($1)` or a configurable `DYNPREFIX`) so a program can
-force compiled-space names into their own lexical zone and *statically*
-guarantee no collision with userspace, at the cost of slightly noisier call
-sites — the same static-safety-vs-brevity trade B itself makes, offered per
-program.
+name. **Optional guaranteed-no-shadow prefix — two directions:** a prefix can
+carve compiled and userspace names into disjoint lexical zones, and which
+side gets the prefix depends on the program's center of gravity:
+
+- *Declaration-side (reserve):* `DYNENTRY parse` pulls `parse` out of
+  userspace; bare `parse($1)` is compiled. Default-compiled, opt-out to
+  userspace — for a grammar-library program where most calls are compiled.
+- *Call-site-side (reach in):* userspace stays the default; a prefix like
+  `static.parse($1)` (or a configurable `DYNPREFIX`) *reaches into* compiled
+  space per call and statically guarantees no collision. Default-userspace,
+  opt-in to compiled — for a mostly-userspace program that occasionally calls
+  a compiled entry.
+
+The two are not exclusive: a program can reserve the names it uses heavily
+and prefix the occasional one. Same static-safety-vs-brevity trade B itself
+makes, offered per program in whichever direction fits.
 
 **Why:** today one `.wamo` = one entry, so a "grammar library" means one
 file per predicate. Multi-entry lets a related family ship as one object.
