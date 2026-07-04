@@ -274,6 +274,66 @@ inlined natively later without changing the surface.
   head phis themselves. The staging copy costs one small memcpy per
   element — noise next to the per-element work itself.
 
+## Phase 5 (JIT) slice 1 (landed): runtime-loadable WAM objects (`.wamo`)
+
+The Tier-3 note above imagined a grammar *loaded at runtime* that
+compiles through the same WAM→LLVM path. Slice 1 delivers the loading
+half: a `.wamo` object is a self-contained, position-independent WAM
+program that any host binary (a module built with
+`emit_wamo_loader(true)`) reads at runtime and executes on the shared
+WAM runtime. The grammar is compiled ahead of time; the host swaps it
+in without recompiling. `examples/plawk/bin/plawk` already carries the
+full runtime, so a plawk binary is the natural host.
+
+**Format** (`write_wam_object/3`, `wam_object_encode/3`) — a
+whitespace-separated token stream (`WAMO\n`, version, entry-label index,
+then length-prefixed atom/functor tables, label PCs, and `tag op1 op2
+reloc` code quads). Length-prefixed strings mean the native loader needs
+no escaping, which keeps it small and robust.
+
+**The three relocation classes** are the whole trick. A compiled WAM
+instruction can't carry absolute addresses across a process boundary, so
+each operand that would be one is tagged:
+
+- **atom** — a constant's atom id is meaningless in another process. The
+  object stores the atom *string* and its table index; at load time the
+  loader re-interns via `@wam_intern_atom` (which copies the string) and
+  patches the runtime id into the operand. Atom equality is by id, and
+  interning is deduplicating, so identity is preserved.
+- **functor** — `get/put_structure` operands are functor *pointers*, and
+  the runtime compares functors by pointer. The loader makes exactly one
+  `malloc`'d copy per functor name and points every referencing
+  instruction at that single copy, so structure unification inside the
+  object stays correct. (Arithmetic — `is`, comparisons — inspects
+  functor *bytes*, so the copy is fine there too.)
+- **none** — everything else is already self-relative.
+  `call`/`execute`/`try_me_else`/`retry_me_else` operands are indexes
+  into the object's *own* labels array, and `@wam_label_pc` reads the
+  VM's installed labels — so they need no relocation. `builtin_call` ids
+  are host-stable per UnifyWeaver version.
+
+**Loadable subset.** Tier-2-style grammars (try_me_else chains, no
+switch tables) use only: get/put/set/unify variable+value+constant,
+get/put_list, get/put_structure, allocate/deallocate, call/execute,
+proceed, try_me_else/retry_me_else/trust_me, builtin_call, cut_ite,
+get_level/cut. First-argument *type* switches (`switch_on_term` and
+friends) lower to nop-fallthrough exactly as the interpreter does — the
+`try_me_else` chain still runs, just unindexed. Outside slice 1 and
+rejected loudly at write time: float constants (tag 2),
+`switch_on_constant` tables (need a global table), and `call/N`
+meta-calls (need the apply machinery).
+
+**Runtime.** `@wam_object_load(path)` reads the file, re-interns atoms,
+copies functor strings, patches operands, `malloc`s the code + label
+arrays, and returns `{ %WamState*, entry_pc }`. `@wam_object_call_i64`
+mirrors the plawk foreign bridge: push an unbound output cell, set the
+argument registers, `@run_loop`, read back the Integer result, and
+rewind the arena (heap-top save/restore) so repeated calls run in
+constant memory. See `tests/test_wam_object.pl` — the round-trip test
+builds a host, writes a sum grammar, and the host computes `119` from an
+object it never saw at compile time; the swap test runs a *second*
+grammar (`1020`) through the *same* host binary with no rebuild.
+
 ## Why not a real DCG engine in the loop?
 
 Because the loop's performance contract is the whole point of PLAWK:
