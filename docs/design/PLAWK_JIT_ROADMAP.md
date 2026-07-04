@@ -52,28 +52,30 @@ a grammar could only *reach* a Float by computation (`R is X / 2`), not by
 writing one. This closes that gap and is the first step of the subset
 expansion that item 5 (source-eval) needs.
 
-### 2. Binary-data returns — opaque bytes — *moderate, high value*
+### 2. Binary-data returns — opaque bytes — *LANDED (print position)*
 
-**What:** let a grammar return a **byte string**, read by a new
-`blob(dyncall(...))` / `blob(dyncall_at(...))` form. The grammar binds its
-output to an Atom whose interned string is the payload (atoms in this
-runtime are byte strings); a `@wam_object_call_bytes` primitive checks the
-output tag is Atom, reads `@wam_atom_to_string` + length, and returns
-`{ i8* ptr, i64 len, i1 ok }`. The atom lives in the (persistent) atom
-table, so the pointer survives the arena rewind. In plawk the result is a
-byte **slice** — exactly the `%WamSlice` (ptr,len) shape that
-`llvm_emit_atom_field_slice` already produces — so it plugs into the
-existing consumers: `print` (`%.*s`), `writebin` into an `sN`/`lpsN` slot,
-equality guards, assoc keys.
+**What:** a grammar returns a **byte string** (its entry binds the output
+to an Atom, a byte string here), read by `blob(dyncall(...))` /
+`blob(dyncall_at(...))`. The `@wam_object_call_bytes` primitive checks the
+output tag is Atom, reads `@wam_atom_to_string` + `strlen`, and returns
+`{ i8* ptr, i64 len, i1 ok }` — the pointer is into the persistent atom
+table, so it survives the arena rewind. In plawk the result is a byte
+**slice** (`%Base_ptr`/`%Base_len`), printed via `%.*s` (empty on
+failure). `blob(dyncall($1))` echoing a text field, and
+`blob(dyncall_at($1))` over a dynamic source returning `hello`, both
+verified. NUL-free by the blob convention. Also lifted `jump` (tag 32, a
+self-relative label) into the loadable subset so if-then-else grammars
+compile.
 
-**Why:** this is the "binary data return" you raised, in its
-**no-deserialization** form — the bytes are opaque to plawk, consumed as a
-string/blob. It opens grammars that *emit* encoded or textual output (a
-formatter, an encoder, a template filler) rather than a single number. It
-reuses the slice machinery, so it's mostly a new call primitive + surface,
-not new consumer code. It is also the foundation for item 4.
+**Why:** the "binary data return" in its **no-deserialization** form — the
+bytes are opaque, consumed as a string/blob. Opens grammars that *emit*
+encoded/textual output rather than a single number, and is the foundation
+for item 4.
 
-**Effort:** moderate. **Depends on:** nothing (independent of item 1).
+**Still to do within item 2:** the slice currently plugs into `print`;
+`writebin` into an `sN`/`lpsN` slot, equality guards, and assoc keys reuse
+the same `(ptr,len)` shape and are the natural follow-on (each needs the
+blob node wired into that consumer's path).
 
 ### 3. Multi-entry objects — *moderate, ergonomics*
 

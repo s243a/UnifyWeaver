@@ -20141,6 +20141,10 @@ wamo_enc(["try_me_else", L], LabelMap, A, A, F, F, enc(22, Idx, 0, none)) :- !,
     clean_comma(L, CL), lookup_label_index(CL, LabelMap, Idx).
 wamo_enc(["retry_me_else", L], LabelMap, A, A, F, F, enc(23, Idx, 0, none)) :- !,
     clean_comma(L, CL), lookup_label_index(CL, LabelMap, Idx).
+% jump L: unconditional branch (emitted by if-then-else to the continuation
+% after the then/else arm). Self-relative label index, like try_me_else.
+wamo_enc(["jump", L], LabelMap, A, A, F, F, enc(32, Idx, 0, none)) :- !,
+    clean_comma(L, CL), lookup_label_index(CL, LabelMap, Idx).
 
 % type-based dispatch: nop fallthrough (tag 26), matching the interpreter's
 % runtime semantics. The try_me_else / retry_me_else chain still runs, so
@@ -20715,4 +20719,65 @@ fail:
   %f0 = insertvalue { double, i1 } undef, double 0.0, 0
   %f1 = insertvalue { double, i1 } %f0, i1 false, 1
   ret { double, i1 } %f1
+}
+
+; Byte-string variant: the entry output cell must bind to an Atom whose
+; interned string is the payload (atoms are byte strings here; NUL-free by
+; the blob convention). Returns { ptr, len, ok } -- the pointer is into the
+; persistent atom table, so it survives the arena rewind. ok=false on
+; failure or a non-atom output.
+define { i8*, i64, i1 } @wam_object_call_bytes(%WamState* %vm, i32 %entry_pc, i32 %nargs, %Value* %args, i32 %out_reg) {
+entry:
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+do_call:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs_saved = load i32, i32* %hs_ptr
+  %unb = call %Value @value_unbound(i8* null)
+  %out_addr = call i32 @wam_heap_push(%WamState* %vm, %Value %unb)
+  %out_ref = call %Value @value_ref(i32 %out_addr)
+  call void @wam_prepare_call(%WamState* %vm, i32 %entry_pc)
+  br label %argloop
+argloop:
+  %ai = phi i32 [ 0, %do_call ], [ %ai1, %argstep ]
+  %adone = icmp sge i32 %ai, %nargs
+  br i1 %adone, label %args_done, label %argstep
+argstep:
+  %aidx64 = sext i32 %ai to i64
+  %ap = getelementptr %Value, %Value* %args, i64 %aidx64
+  %av = load %Value, %Value* %ap
+  call void @wam_set_reg(%WamState* %vm, i32 %ai, %Value %av)
+  %ai1 = add i32 %ai, 1
+  br label %argloop
+args_done:
+  call void @wam_set_reg(%WamState* %vm, i32 %out_reg, %Value %out_ref)
+  %ok = call i1 @run_loop(%WamState* %vm)
+  br i1 %ok, label %read_out, label %rewind_fail
+read_out:
+  %out = call %Value @wam_deref_value(%WamState* %vm, %Value %out_ref)
+  %out_tag = extractvalue %Value %out, 0
+  %out_is_atom = icmp eq i32 %out_tag, 0
+  br i1 %out_is_atom, label %good, label %rewind_fail
+good:
+  %aid = extractvalue %Value %out, 1
+  %sptr = call i8* @wam_atom_to_string(i64 %aid)
+  %sptr_null = icmp eq i8* %sptr, null
+  br i1 %sptr_null, label %rewind_fail, label %have_str
+have_str:
+  %slen = call i64 @strlen(i8* %sptr)
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  %g0 = insertvalue { i8*, i64, i1 } undef, i8* %sptr, 0
+  %g1 = insertvalue { i8*, i64, i1 } %g0, i64 %slen, 1
+  %g2 = insertvalue { i8*, i64, i1 } %g1, i1 true, 2
+  ret { i8*, i64, i1 } %g2
+rewind_fail:
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  br label %fail
+fail:
+  %f0 = insertvalue { i8*, i64, i1 } undef, i8* null, 0
+  %f1 = insertvalue { i8*, i64, i1 } %f0, i64 0, 1
+  %f2 = insertvalue { i8*, i64, i1 } %f1, i1 false, 2
+  ret { i8*, i64, i1 } %f2
 }').
