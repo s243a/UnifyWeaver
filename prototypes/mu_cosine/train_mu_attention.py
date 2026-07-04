@@ -443,7 +443,15 @@ def train(args):
         cache = cache.replace(".pt", "_graded.pt")
     q, p, idx = build_e5_tables(names, cache_path=cache, texts=extra_texts, device=str(device),
                                 batch_size=128 if device.type == "cuda" else 512)
-    tok = Tokenizer(q, p, idx, parents, deg, k=args.k, beta=1.0, max_anc=args.max_anc)
+    struct_tbl = None
+    if args.struct_emb:                                   # DUAL-JUDGE step 3: {name: struct-emb vec} for SYM's O(1) graph channel
+        _se = torch.load(args.struct_emb, weights_only=False)
+        struct_tbl = {n: v for n, v in zip(_se["nodes"], _se["emb"])}
+        print(f"STRUCT-EMB (SYM dual judge): {len(struct_tbl)} nodes, {_se['dim']}d, from "
+              f"{os.path.basename(args.struct_emb)}")
+    struct_mode = "precision" if args.struct_blend == "precision" else ("dir" if args.struct_dir else "dist")
+    tok = Tokenizer(q, p, idx, parents, deg, k=args.k, beta=1.0, max_anc=args.max_anc,
+                    struct_tbl=struct_tbl, struct_mode=struct_mode, deg_scale=args.deg_scale)
 
     rng = random.Random(args.seed)
     edges = [e for e in load_edges() if e[0] in idx and e[1] in idx]
@@ -544,7 +552,9 @@ def train(args):
                            args.infer_subcat, args.breadth_scale, switch_rng)
 
     torch.manual_seed(args.seed)
-    model = MuAttention(d_model=q.shape[1], n_heads=args.heads, n_layers=args.layers)
+    model = MuAttention(d_model=q.shape[1], n_heads=args.heads, n_layers=args.layers,
+                        struct_blend=args.struct_blend, n_struct=(1 if struct_mode == "dist" else 3),
+                        c_dist=args.c_dist, c_mem_ceiling=args.c_mem_ceiling)
     if args.init_from:                                    # warm start — DON'T reinit the head (fine-tune)
         ck = torch.load(args.init_from, weights_only=False)
         sd, own = ck["state"], model.state_dict()
@@ -1269,7 +1279,7 @@ def main():
                     "from --graded by _pairs→_nodes)")
     ap.add_argument("--graded-weight", type=float, default=1.0, help="graded-round loss weight")
     ap.add_argument("--tail-weight", type=float, default=1.0, help="§13: loss-weight multiplier for the inferred "
-                    "tail (conf<1.0, non-bridge) — counters dilution (~7%→30%% effective share at ~6)")
+                    "tail (conf<1.0, non-bridge) — counters dilution (~7%%→30%% effective share at ~6)")
     ap.add_argument("--bridge-weight", type=float, default=0.2, help="down-weight bridge targets in the "
                     "graded loss (they dominate at μ≈0.9; keep them from swamping directional signal)")
     ap.add_argument("--infer-switch", action="store_true", help="for INFERRED graded relations (confidence "
@@ -1288,6 +1298,26 @@ def main():
                     "rows through the operator superposition as a REGULARIZER — op ~ Dirichlet(alpha · "
                     "[c·onehot(label) + (1-c)·uniform]). c=1.0 (default) = tagged rows trained hard "
                     "(inferred-only blend). Feeds the regularizer the whole set; capacity-bounded.")
+    ap.add_argument("--struct-emb", default=None, help="DUAL-JUDGE step 3: learned structural embedding "
+                    "(structural_embedding.py .pt). When set, the SYM logit gets the O(1) structural channel "
+                    "3/(1+‖Δ struct-emb‖); zero-init scale ⇒ warm-start no-op until SYM training learns it.")
+    ap.add_argument("--struct-blend", choices=["inside", "outside", "precision"], default="inside",
+                    help="DUAL-JUDGE combine mode: 'inside' = μ=σ(logit_e5 + w·struct) (logit-space); 'outside' = "
+                    "μ=μ_e5 + λ·(μ_graph−μ_e5), μ-space blend of two bounded judges; 'precision' (LOCKED design) = "
+                    "μ_graph is the precision-weighted (c_mem·mem + c_dist·(1/d))/(c_mem+c_dist), then the e5↔graph "
+                    "complementary superposition. λ zero-init ⇒ pure-e5 warm-start no-op in every mode.")
+    ap.add_argument("--c-dist", type=float, default=0.35, help="precision mode: GLOBAL distance-proxy confidence "
+                    "= how well 1/d agrees with the SYM judge (corr). MEASURED +0.349 on the representative "
+                    "cumulative mix (O(1) struct-emb proxy; true-BFS would be ~0.66). Re-measure on the two-judge round.")
+    ap.add_argument("--c-mem-ceiling", type=float, default=0.67, help="precision mode: membership-confidence CEILING "
+                    "= corr(membership signal, SYM judge). MEASURED +0.669 (membership ~2x more reliable than 1/d, but "
+                    "nonzero on only ~11% of pairs ⇒ region fallback essential). per-region c_mem = ceiling·region.")
+    ap.add_argument("--deg-scale", type=float, default=5.0, help="precision mode: data-density scale for the "
+                    "per-region c_mem factor min(deg)/(min(deg)+deg_scale) — larger ⇒ needs more edges for confidence.")
+    ap.add_argument("--struct-dir", action="store_true", help="DUAL-JUDGE: add the fwd/bwd membership PREDICTORS "
+                    "as separate channels (K=3: [3/(1+‖Δ‖), 3/(1+up_hops(a→b)), 3/(1+up_hops(b→a))]) — each with "
+                    "its own LEARNED weight (regression; equal-⅓ average is the fixed-weight case). up_hops = DAG "
+                    "ancestry (not model μ ⇒ no feedback loop). Off ⇒ K=1, distance predictor only. A/B vs plain.")
     ap.add_argument("--sym-weight", type=float, default=1.0, help="SYM loss weight (ablation lever b)")
     ap.add_argument("--sym-only", action="store_true", help="single-task SYM head (ablation lever c)")
     ap.add_argument("--quick-val", action="store_true", help="skip dense-map emission/lin-agreement")
