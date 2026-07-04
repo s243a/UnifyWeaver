@@ -110,11 +110,17 @@ build(File, Out0, KeepLL) :-
     check_foreign_calls(File, Program, Preds),
     ll_path(Out, KeepLL, LLPath),
     file_base_name(Out, OutBase),
+    % A program that uses dyncall(...) needs the .wamo loader emitted into
+    % the host module so it can load and run a runtime object.
+    (   plawk_program_dyncall_arities(Program, DynArities), DynArities \== []
+    ->  ProjectOptions = [module_name(OutBase), emit_wamo_loader(true)]
+    ;   ProjectOptions = [module_name(OutBase)]
+    ),
     (   catch(
             ( % the compiler narrates on user_output; keep the CLI's
               % stdout clean for the compiled program's own output
               with_output_to(string(_CompilerChatter),
-                  write_wam_llvm_project(Preds, [module_name(OutBase)], LLPath)),
+                  write_wam_llvm_project(Preds, ProjectOptions, LLPath)),
               wam_llvm_last_compile_counts(InstrCount, LabelCount),
               (   plawk_program_native_driver_ir(Program, stdin_or_argv,
                       [wam_vm(InstrCount, LabelCount)], DriverIR)

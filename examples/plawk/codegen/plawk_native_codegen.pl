@@ -6,6 +6,8 @@
     plawk_program_native_driver_ir/4,
     plawk_program_foreign_specs/3,
     plawk_program_foreign_specs/4,
+    plawk_program_dyncall_arities/2,
+    plawk_program_dynload_path/2,
     plawk_prolog_block_preds/2
 ]).
 
@@ -614,15 +616,36 @@ plawk_program_native_driver_ir(
 %  delegate to plawk_program_native_driver_ir/3 unchanged.
 plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
     plawk_program_foreign_specs(Program, GuardSpecs, CallSpecs, FCallSpecs),
+    plawk_program_dyncall_arities(Program, DynArities),
     (   GuardSpecs == [],
         CallSpecs == [],
-        FCallSpecs == []
+        FCallSpecs == [],
+        DynArities == []
     ->  plawk_program_native_driver_ir(Program, InputPath, DriverIR)
-    ;   memberchk(wam_vm(InstrCount, LabelCount), Options),
-        plawk_foreign_support_ir(GuardSpecs, CallSpecs, FCallSpecs,
-            InstrCount, LabelCount, SupportIR),
+    ;   % Compiled-foreign support (shared VM + per-predicate wrappers)
+        % only when the program actually calls a compiled predicate; it
+        % needs the module's instruction/label counts. dyncall does not.
+        (   GuardSpecs == [], CallSpecs == [], FCallSpecs == []
+        ->  ForeignSupportIR = ''
+        ;   memberchk(wam_vm(InstrCount, LabelCount), Options),
+            plawk_foreign_support_ir(GuardSpecs, CallSpecs, FCallSpecs,
+                InstrCount, LabelCount, ForeignSupportIR)
+        ),
+        % Object-call shims for dyncall(...) sites, plus the lazily
+        % loaded .wamo object handle.
+        (   DynArities == []
+        ->  DyncallSupportIR = ''
+        ;   ( plawk_program_dynload_path(Program, DynPath)
+            ->  true
+            ;   throw(error(plawk_dyncall_without_dynload,
+                    context(plawk_program_native_driver_ir,
+                        'dyncall(...) requires BEGIN { DYNLOAD = "file.wamo" }')))
+            ),
+            plawk_dyncall_support_ir(DynPath, DynArities, DyncallSupportIR)
+        ),
         plawk_program_native_driver_ir(Program, InputPath, MainIR),
-        format(atom(DriverIR), '~w~n~n~w', [SupportIR, MainIR])
+        exclude(==(''), [ForeignSupportIR, DyncallSupportIR, MainIR], Parts),
+        atomic_list_concat(Parts, '\n\n', DriverIR)
     ).
 
 %% plawk_program_foreign_specs(+Program, -GuardSpecs, -CallSpecs)
@@ -684,6 +707,51 @@ plawk_pattern_prolog_guard(or_pat(Left, Right), Name, Args) :-
     ).
 plawk_pattern_prolog_guard(not_pat(Pattern), Name, Args) :-
     plawk_pattern_prolog_guard(Pattern, Name, Args).
+
+%% plawk_program_dyncall_arities(+Program, -Arities)
+%
+%  Deduplicated set of argument counts used by dyncall(...) sites across
+%  rule and END bodies. One object-call shim @plawk_dyncall_N is emitted
+%  per arity.
+plawk_program_dyncall_arities(program(_Begin, Rules, EndClauses), Arities) :-
+    findall(NArgs,
+        ( ( member(rule(_Pattern, Actions), Rules)
+          ; member(end(Actions), EndClauses)
+          ),
+          plawk_actions_dyncall(Actions, Args),
+          length(Args, NArgs)
+        ),
+        Arities0),
+    sort(Arities0, Arities).
+
+%% plawk_program_dynload_path(+Program, -Path)
+%  The .wamo path from BEGIN { DYNLOAD = "..." }, or fails if absent.
+plawk_program_dynload_path(program(BeginClauses, _Rules, _End), Path) :-
+    member(begin(Actions), BeginClauses),
+    member(set(var('DYNLOAD'), string(Path)), Actions),
+    !.
+
+plawk_actions_dyncall(Actions, Args) :-
+    member(Action, Actions),
+    plawk_action_dyncall(Action, Args).
+plawk_action_dyncall(add(_Var, Expr), Args) :- plawk_expr_dyncall(Expr, Args).
+plawk_action_dyncall(set(_Var, Expr), Args) :- plawk_expr_dyncall(Expr, Args).
+plawk_action_dyncall(print(Fields), Args) :-
+    member(Field, Fields),
+    plawk_expr_dyncall(Field, Args).
+plawk_action_dyncall(printf(_Format, PrintfArgs), Args) :-
+    member(Field, PrintfArgs),
+    plawk_expr_dyncall(Field, Args).
+plawk_action_dyncall(if(_Pattern, ThenActions, ElseActions), Args) :-
+    ( plawk_actions_dyncall(ThenActions, Args)
+    ; plawk_actions_dyncall(ElseActions, Args)
+    ).
+plawk_expr_dyncall(dyncall(Args), Args).
+plawk_expr_dyncall(Expr, Args) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    ( plawk_expr_dyncall(Left, Args)
+    ; plawk_expr_dyncall(Right, Args)
+    ).
 
 plawk_actions_prolog_call(Actions, Name, Args) :-
     member(Action, Actions),
@@ -944,6 +1012,84 @@ fail:
   ret { double, i1 } %f1
 }',
         [Name, NArgs, ParamsIR, Name, SetRegIR, NArgs]).
+
+%% plawk_dyncall_support_ir(+Path, +Arities, -IR)
+%
+%  Emit the dyncall runtime for a program: the .wamo path string, a
+%  lazily loaded object handle (%WamState* + entry PC), and one
+%  @plawk_dyncall_N shim per arity. The shim boxes N %Value args into a
+%  stack array and calls @wam_object_call_i64 (emitted into the host
+%  module by write_wam_llvm_project/3 with emit_wamo_loader(true)),
+%  reading the object's entry as `entry(A0..A_{N-1}, out=A_N)`. The
+%  object loads on the first dyncall and is reused for the rest of the
+%  run -- the object-call primitive rewinds the arena per call, so this
+%  stays constant-memory just like the compiled foreign bridge.
+plawk_dyncall_support_ir(Path, Arities, IR) :-
+    llvm_emit_c_string_global('plawk_dyncall_path', Path, PathGlobal,
+        _StrLen, BytesLen),
+    format(atom(GetterIR),
+'@plawk_dyncall_vm = internal global %WamState* null
+@plawk_dyncall_pc = internal global i32 0
+
+define %WamState* @plawk_dyncall_get() {
+entry:
+  %cur = load %WamState*, %WamState** @plawk_dyncall_vm
+  %have = icmp ne %WamState* %cur, null
+  br i1 %have, label %ret_cur, label %load
+
+ret_cur:
+  ret %WamState* %cur
+
+load:
+  %pathp = getelementptr [~w x i8], [~w x i8]* @.plawk_dyncall_path, i32 0, i32 0
+  %obj = call { %WamState*, i32 } @wam_object_load(i8* %pathp)
+  %vm = extractvalue { %WamState*, i32 } %obj, 0
+  %pc = extractvalue { %WamState*, i32 } %obj, 1
+  store %WamState* %vm, %WamState** @plawk_dyncall_vm
+  store i32 %pc, i32* @plawk_dyncall_pc
+  ret %WamState* %vm
+}',
+        [BytesLen, BytesLen]),
+    findall(ShimIR,
+        ( member(N, Arities), plawk_dyncall_shim_ir(N, ShimIR) ),
+        Shims),
+    atomic_list_concat([PathGlobal, GetterIR | Shims], '\n\n', IR).
+
+plawk_dyncall_shim_ir(NArgs, IR) :-
+    plawk_foreign_wrapper_params(NArgs, ParamsIR),
+    plawk_dyncall_store_lines(NArgs, StoreLines),
+    atomic_list_concat(StoreLines, '\n', StoreIR),
+    format(atom(IR),
+'define { i64, i1 } @plawk_dyncall_~w(~w) {
+entry:
+  %vm = call %WamState* @plawk_dyncall_get()
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+
+do_call:
+  %pc = load i32, i32* @plawk_dyncall_pc
+  %args = alloca %Value, i32 ~w
+~w
+  %r = call { i64, i1 } @wam_object_call_i64(%WamState* %vm, i32 %pc, i32 ~w, %Value* %args, i32 ~w)
+  ret { i64, i1 } %r
+
+fail:
+  %f0 = insertvalue { i64, i1 } undef, i64 0, 0
+  %f1 = insertvalue { i64, i1 } %f0, i1 false, 1
+  ret { i64, i1 } %f1
+}',
+        [NArgs, ParamsIR, NArgs, StoreIR, NArgs, NArgs]).
+
+plawk_dyncall_store_lines(NArgs, Lines) :-
+    NArgs1 is NArgs - 1,
+    numlist(0, NArgs1, Ns),
+    findall(Line,
+        ( member(I, Ns),
+          format(atom(Line),
+              '  %args_~w = getelementptr %Value, %Value* %args, i32 ~w\n  store %Value %a~w, %Value* %args_~w',
+              [I, I, I, I])
+        ),
+        Lines).
 
 %% plawk_forin_end_plan(+Rules, +LoopVar, +ArrayName, +BodyActions, -AssocPlan, -PrintFields)
 %
@@ -2204,6 +2350,9 @@ plawk_binfmt_i64_expr_ok(Descriptor, int(field(Index))) :-
 plawk_binfmt_i64_expr_ok(Descriptor, prolog_call(Name, Args)) :-
     !,
     atom(Name),
+    plawk_binfmt_foreign_args_ok(Descriptor, Args).
+plawk_binfmt_i64_expr_ok(Descriptor, dyncall(Args)) :-
+    !,
     plawk_binfmt_foreign_args_ok(Descriptor, Args).
 plawk_binfmt_i64_expr_ok(Descriptor, Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
@@ -4298,6 +4447,8 @@ plawk_rule_body_print_field(Expr) :-
 plawk_rule_body_print_field(Expr) :-
     plawk_prolog_call_expr(Expr).
 plawk_rule_body_print_field(Expr) :-
+    plawk_dyncall_expr(Expr).
+plawk_rule_body_print_field(Expr) :-
     plawk_f64_print_expr(Expr).
 plawk_rule_body_print_field(length(field(_))).
 plawk_rule_body_print_field(substr(field(_), _Start, _Len)).
@@ -4323,11 +4474,24 @@ plawk_i64_operand_expr(Expr) :-
     plawk_i64_binary_primary_expr(Expr).
 plawk_i64_operand_expr(prolog_call(Name, Args)) :-
     plawk_prolog_call_expr(prolog_call(Name, Args)).
+plawk_i64_operand_expr(dyncall(Args)) :-
+    plawk_dyncall_expr(dyncall(Args)).
 plawk_i64_operand_expr(Expr) :-
     plawk_i64_general_binary_expr(Expr).
 
 plawk_prolog_call_expr(prolog_call(Name, Args)) :-
     atom(Name),
+    Args = [_ | _],
+    maplist(plawk_foreign_arg, Args).
+
+%% plawk_dyncall_expr(+Expr) is semidet.
+%
+%  dyncall(args...) routes to a runtime-loaded .wamo object's entry
+%  (declared by BEGIN { DYNLOAD = "..." }) and yields its integer
+%  binding, or 0 on load/call failure. Same arg shapes as a compiled
+%  foreign i64 call; it just targets the object-call shim instead of a
+%  compiled @<name>_start_pc.
+plawk_dyncall_expr(dyncall(Args)) :-
     Args = [_ | _],
     maplist(plawk_foreign_arg, Args).
 
@@ -4511,6 +4675,9 @@ plawk_scalar_action_update(add(var(Name), var(Read)), Name, add(var(Read))) :-
 plawk_scalar_action_update(add(var(Name), prolog_call(Pred, Args)), Name,
         add(prolog_call(Pred, Args))) :-
     plawk_prolog_call_expr(prolog_call(Pred, Args)).
+plawk_scalar_action_update(add(var(Name), dyncall(Args)), Name,
+        add(dyncall(Args))) :-
+    plawk_dyncall_expr(dyncall(Args)).
 plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) :-
     integer(Value),
     Value >= 0.
@@ -4529,6 +4696,9 @@ plawk_scalar_action_update(set(var(Name), var(Read)), Name, set(var(Read))) :-
 plawk_scalar_action_update(set(var(Name), prolog_call(Pred, Args)), Name,
         set(prolog_call(Pred, Args))) :-
     plawk_prolog_call_expr(prolog_call(Pred, Args)).
+plawk_scalar_action_update(set(var(Name), dyncall(Args)), Name,
+        set(dyncall(Args))) :-
+    plawk_dyncall_expr(dyncall(Args)).
 % Double-typed update expressions: float literals, float($N), and
 % binary trees mixing them with i64 operands or scalar reads. The
 % written slot becomes a double via plawk_scalar_typed_slots/3.
@@ -4849,6 +5019,12 @@ plawk_scalar_numeric_expr_ir(prolog_call(Name, Args), FieldSeparator, Prefix,
         [Prefix, SlotIndex, OpIndex]),
     plawk_i64_expr_ir_parts(prolog_call(Name, Args), FieldSeparator, CallBase,
         CallBase, ValueIR, GlobalIR, IR).
+plawk_scalar_numeric_expr_ir(dyncall(Args), FieldSeparator, Prefix,
+        SlotIndex, OpIndex, ValueIR, GlobalIR, IR) :-
+    format(atom(DynBase), '~w_slot_~w_op_~w_dyncall',
+        [Prefix, SlotIndex, OpIndex]),
+    plawk_i64_expr_ir_parts(dyncall(Args), FieldSeparator, DynBase,
+        DynBase, ValueIR, GlobalIR, IR).
 plawk_scalar_numeric_expr_ir(const(Value), _FieldSeparator, _Prefix, _SlotIndex,
         _OpIndex, ValueIR, GlobalIR, IR) :-
     plawk_i64_expr_ir_parts(const(Value), 0, scalar_const, scalar_const_global,
@@ -4908,6 +5084,23 @@ plawk_i64_expr_ir(prolog_call(Name, Args), FieldSeparator, Base, GlobalBase,
     format(atom(ResIR),
         '  %~w_res = call { i64, i1 } @plawk_foreign_call_~w_~w(~w)',
         [Base, Name, NArgs, CallArgsIR]),
+    format(atom(ValIR),
+        '  %~w_val = extractvalue { i64, i1 } %~w_res, 0', [Base, Base]),
+    format(atom(OkIR),
+        '  %~w_ok = extractvalue { i64, i1 } %~w_res, 1', [Base, Base]),
+    format(atom(SelIR),
+        '  %~w = select i1 %~w_ok, i64 %~w_val, i64 0', [Base, Base, Base]),
+    format(atom(ValueIR), '%~w', [Base]),
+    append(ArgSetupParts, [ResIR, ValIR, OkIR, SelIR], SetupParts).
+plawk_i64_expr_ir(dyncall(Args), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts) :-
+    length(Args, NArgs),
+    plawk_foreign_args_ir(Args, FieldSeparator, GlobalBase, ArgValueIRs,
+        GlobalParts, ArgSetupParts),
+    plawk_foreign_call_args_ir(ArgValueIRs, CallArgsIR),
+    format(atom(ResIR),
+        '  %~w_res = call { i64, i1 } @plawk_dyncall_~w(~w)',
+        [Base, NArgs, CallArgsIR]),
     format(atom(ValIR),
         '  %~w_val = extractvalue { i64, i1 } %~w_res, 0', [Base, Base]),
     format(atom(OkIR),
