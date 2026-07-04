@@ -189,7 +189,7 @@ class Tokenizer:
     """Builds the token set per example and pads a batch. Holds the frozen e5 tables + the DAG."""
 
     def __init__(self, query_tbl, passage_tbl, idx, parents, deg, k=1, beta=1.0, max_anc=8,
-                 struct_tbl=None):
+                 struct_tbl=None, struct_residual=False, struct_cap=8):
         self.q, self.p, self.idx = query_tbl, passage_tbl, idx
         self.parents, self.deg = parents, deg
         self.k, self.beta, self.max_anc = k, beta, max_anc
@@ -197,6 +197,31 @@ class Tokenizer:
         # DUAL-JUDGE (step 3): {name: struct-emb vector} for the O(1) graph-judge proxy `3/(1+‖Δ‖)`. When set,
         # build() emits a per-example `struct_feat` scalar (the SYM logit's structural channel). None ⇒ omitted.
         self.struct = struct_tbl
+        # RESIDUAL variant (user, 2026-07-04): isolate the LATERAL part of graph closeness by subtracting the
+        # DAG's directed hierarchy — 3/(1+‖Δ‖) − 3/(1+up_hops(a→b)) − 3/(1+up_hops(b→a)). Uses graph ancestry
+        # (not the model's μ) ⇒ no feedback loop; local parent-climb ⇒ still cheap at inference.
+        self.struct_residual, self.struct_cap = struct_residual, struct_cap
+
+    def _up_hops(self, x, y, cap):
+        """min hops climbing PARENT edges from x up to y (y an ancestor of x); None if not within cap."""
+        if x == y:
+            return 0
+        frontier, seen = {x}, {x}
+        for h in range(1, cap + 1):
+            nxt = set()
+            for cur in frontier:
+                ps = self.parents.get(cur)
+                if not ps:
+                    continue
+                for pp in (ps if isinstance(ps, (set, list, tuple)) else [ps]):
+                    if pp == y:
+                        return h
+                    if pp not in seen:
+                        seen.add(pp); nxt.add(pp)
+            if not nxt:
+                break
+            frontier = nxt
+        return None
 
     def _anc_for(self, node, train, rng):
         import random as _r
@@ -308,9 +333,15 @@ class Tokenizer:
         if self.struct is not None:                          # DUAL-JUDGE: per-pair structural channel 3/(1+‖Δ‖)
             sf = torch.zeros(B)
             for bi, it in enumerate(items):
-                va, vb = self.struct.get(it[0]), self.struct.get(it[1])   # (node, root)
-                if va is not None and vb is not None:
-                    sf[bi] = 3.0 / (1.0 + (va - vb).norm())
+                a, b = it[0], it[1]                          # (node, root)
+                va, vb = self.struct.get(a), self.struct.get(b)
+                s = float(3.0 / (1.0 + (va - vb).norm())) if (va is not None and vb is not None) else 0.0
+                if self.struct_residual and s:               # subtract the DAG's directed hierarchy → lateral SYM
+                    fh = self._up_hops(a, b, self.struct_cap)   # b is an ancestor of a (forward/up)
+                    bh = self._up_hops(b, a, self.struct_cap)   # a is an ancestor of b (backward/up)
+                    s -= (3.0 / (1.0 + fh) if fh is not None else 0.0)
+                    s -= (3.0 / (1.0 + bh) if bh is not None else 0.0)
+                sf[bi] = s
             out["struct_feat"] = sf
         return out
 

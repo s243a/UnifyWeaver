@@ -450,7 +450,7 @@ def train(args):
         print(f"STRUCT-EMB (SYM dual judge): {len(struct_tbl)} nodes, {_se['dim']}d, from "
               f"{os.path.basename(args.struct_emb)}")
     tok = Tokenizer(q, p, idx, parents, deg, k=args.k, beta=1.0, max_anc=args.max_anc,
-                    struct_tbl=struct_tbl)
+                    struct_tbl=struct_tbl, struct_residual=args.struct_residual)
 
     rng = random.Random(args.seed)
     edges = [e for e in load_edges() if e[0] in idx and e[1] in idx]
@@ -1298,6 +1298,9 @@ def main():
     ap.add_argument("--struct-emb", default=None, help="DUAL-JUDGE step 3: learned structural embedding "
                     "(structural_embedding.py .pt). When set, the SYM logit gets the O(1) structural channel "
                     "3/(1+‖Δ struct-emb‖); zero-init scale ⇒ warm-start no-op until SYM training learns it.")
+    ap.add_argument("--struct-residual", action="store_true", help="DUAL-JUDGE: feed the LATERAL residual "
+                    "3/(1+‖Δ‖) − 3/(1+up_hops(a→b)) − 3/(1+up_hops(b→a)) instead of plain 3/(1+‖Δ‖) — subtracts "
+                    "the DAG's directed hierarchy (graph ancestry, not model μ ⇒ no feedback loop). A/B vs plain.")
     ap.add_argument("--sym-weight", type=float, default=1.0, help="SYM loss weight (ablation lever b)")
     ap.add_argument("--sym-only", action="store_true", help="single-task SYM head (ablation lever c)")
     ap.add_argument("--quick-val", action="store_true", help="skip dense-map emission/lin-agreement")

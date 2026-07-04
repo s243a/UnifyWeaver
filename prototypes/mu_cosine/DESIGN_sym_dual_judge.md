@@ -59,6 +59,16 @@ logit_SYM = pooled·w_SYM + b_SYM  +  sym_struct_w · struct_feat        # struc
   On the cumulative SYM pairs, **57 %** have both endpoints in the table (the rest fall back to pure e5,
   `struct_feat = 0` — the same graceful degradation as inference on out-of-graph pairs).
 
+**`--struct-residual` (lateral variant).** The step-1 fit found plain `3/d` (+0.66) slightly *beat* the fixed
+residual `3/d − μfwd − μbwd` (+0.61), so plain `3/d` is the default. But that residual used the *model's* μ
+(a training feedback loop) and was tested on the old single-judge pairs. The `--struct-residual` flag instead
+feeds `3/(1+‖Δ‖) − 3/(1+up_hops(a→b)) − 3/(1+up_hops(b→a))`, where `up_hops` is **directed DAG ancestry**
+(graph-structural, *not* model μ ⇒ no feedback loop; a bounded local parent-climb ⇒ still cheap at inference).
+This zeroes hierarchical closeness and keeps only the lateral part — smoke-tested: a parent/child or
+grandparent pair → residual `0.000`, lateral siblings → residual unchanged. Worth an A/B on the **two-judge**
+round, where the semantic judge is explicitly the lateral `see_also`/`assoc` score, so "minus hierarchy" may
+re-earn its keep. Still zero-init ⇒ warm-start no-op.
+
 **Why the pairwise scalar (not a per-endpoint struct token).** The validated finding is a function of the
 *pairwise* distance, so injecting the single scalar `3/(1+‖Δ‖)` into the SYM logit reproduces the +0.652 dual
 **by construction** and is O(1). A per-endpoint structural token (project each node's struct-vec into `d_model`,
