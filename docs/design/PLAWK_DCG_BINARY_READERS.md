@@ -357,6 +357,38 @@ at declaration (e.g. a named-entry directive) rather than overloading
 `dyncall`'s argument list, since a leading entry-name arg can't be told
 apart from a value.
 
+**Dynamic source (`dyncall_at`).** Where `dyncall` binds one fixed object
+at compile time, `dyncall_at(Source, args...)` chooses the object *per
+call* from a runtime value: `Source` is a field or string literal naming a
+`.wamo` path, `args...` are the entry inputs. The source is marshalled to
+a NUL-terminated path (a field slice is copied into a stack buffer, capped
+at 4095 bytes; a literal becomes a constant global) and everything else
+mirrors `dyncall`. Object management is set by `BEGIN { DYNCACHE = "..." }`
+— a compile-time constant, so the mode is baked into the emitted shim, not
+dispatched at runtime:
+
+- **`on`** (default) — a fixed-capacity (64) cache keyed by the interned
+  path id. Each distinct grammar loads once via `@wam_object_load` and is
+  reused; per-call cost is one intern + a linear scan, and memory grows
+  only with the number of *distinct* grammars (beyond 64, load without
+  caching). Ideal for "pick one of N grammars by a tag."
+- **`mtime`** — like `on`, but the cache also keys on the file's
+  modification time (`st_mtim` at offset 88/96, combined to nanoseconds,
+  matching `time_file/2`). Recompiling the `.wamo` bumps its mtime, which
+  busts the cached entry (freeing the stale VM via `@wam_state_free`) and
+  reloads — so a query/userspace **redefinition** takes effect with no
+  reload-per-call tax and no rebuild of the host binary. The nanosecond
+  key catches sub-second edits.
+- **`off`** — no cache: load fresh and `@wam_state_free` after every call.
+  Always current, correct for genuinely-changing sources, but pays a full
+  parse+relocate+build per call (fine when calls are rare, wrong in a hot
+  loop).
+
+`tests/test_plawk_dyncall_at.pl` covers all three: `on` picks the grammar
+by a filename column and reuses a repeated file (sum 30 = 7+9+7+7), `off`
+reloads each call, and `mtime` returns 7, then 11 after `g.wamo` is
+redefined — same binary, no rebuild.
+
 ## Why not a real DCG engine in the loop?
 
 Because the loop's performance contract is the whole point of PLAWK:

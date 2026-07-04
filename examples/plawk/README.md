@@ -397,7 +397,16 @@ the JIT boundary. A grammar predicate has arity N+1 (N inputs read as
 `A0..A_{N-1}`, output in `A_N`). Example:
 `BEGIN { BINFMT = "i64" ; DYNLOAD = "square.wamo" } { total += dyncall($1) } END { print total }`
 sums `X*X` over i64 records; overwrite `square.wamo` with a doubling
-grammar and the same binary sums `X*2`. Bounded repetition handles records containing a
+grammar and the same binary sums `X*2`.
+`dyncall_at(Source, args...)` is the dynamic-source form: `Source` (a
+field or string) names the `.wamo` at runtime, so a program chooses its
+grammar per record — e.g. `{ total += dyncall_at($1) }` picks the grammar
+named in column 1 of each line. Object management is set by
+`BEGIN { DYNCACHE = "on" | "mtime" | "off" }` (default `on`): `on` caches
+each distinct grammar (load once, reuse); `mtime` also keys on the file's
+modification time, so recompiling a `.wamo` busts the cache and the new
+definition takes effect with no rebuild (query/userspace redefinition);
+`off` reloads and frees every call (always current, no cache). Bounded repetition handles records containing a
 list: `BINFMT = "i64 rep4(i64 f64)"` declares an 8-byte element count
 (at most 4) followed by that many (i64, f64) elements. The count is an
 ordinary i64 field, element slots are flat addressable fields
