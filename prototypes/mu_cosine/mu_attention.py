@@ -188,11 +188,15 @@ def unit_noise(n, d, generator=None):
 class Tokenizer:
     """Builds the token set per example and pads a batch. Holds the frozen e5 tables + the DAG."""
 
-    def __init__(self, query_tbl, passage_tbl, idx, parents, deg, k=1, beta=1.0, max_anc=8):
+    def __init__(self, query_tbl, passage_tbl, idx, parents, deg, k=1, beta=1.0, max_anc=8,
+                 struct_tbl=None):
         self.q, self.p, self.idx = query_tbl, passage_tbl, idx
         self.parents, self.deg = parents, deg
         self.k, self.beta, self.max_anc = k, beta, max_anc
         self.d = query_tbl.shape[1]
+        # DUAL-JUDGE (step 3): {name: struct-emb vector} for the O(1) graph-judge proxy `3/(1+‖Δ‖)`. When set,
+        # build() emits a per-example `struct_feat` scalar (the SYM logit's structural channel). None ⇒ omitted.
+        self.struct = struct_tbl
 
     def _anc_for(self, node, train, rng):
         import random as _r
@@ -297,10 +301,18 @@ class Tokenizer:
                         is_prov[bi, ti] = True                            # masked provenance slot (agnostic)
                     else:
                         gen_id[bi, ti] = d
-        return {"content": content, "gen_id": gen_id, "is_anchor": is_anchor, "op_pos": op_pos,
-                "is_prov": is_prov, "corpus_of": corpus_of, "judge_of": judge_of,
-                "account_of": account_of, "nodetype_of": nodetype_of, "prefix_of": prefix_of,
-                "op_of": op_of, "pad": pad}
+        out = {"content": content, "gen_id": gen_id, "is_anchor": is_anchor, "op_pos": op_pos,
+               "is_prov": is_prov, "corpus_of": corpus_of, "judge_of": judge_of,
+               "account_of": account_of, "nodetype_of": nodetype_of, "prefix_of": prefix_of,
+               "op_of": op_of, "pad": pad}
+        if self.struct is not None:                          # DUAL-JUDGE: per-pair structural channel 3/(1+‖Δ‖)
+            sf = torch.zeros(B)
+            for bi, it in enumerate(items):
+                va, vb = self.struct.get(it[0]), self.struct.get(it[1])   # (node, root)
+                if va is not None and vb is not None:
+                    sf[bi] = 3.0 / (1.0 + (va - vb).norm())
+            out["struct_feat"] = sf
+        return out
 
 
 # --------------------------------------------------------------------------------------------------
@@ -337,6 +349,10 @@ class MuAttention(nn.Module):
         self.encoder = nn.TransformerEncoder(layer, n_layers)
         self.readout_w = nn.Parameter(torch.randn(n_ops, d_model) * (1.0 / math.sqrt(d_model)))
         self.readout_b = nn.Parameter(torch.zeros(n_ops))
+        # DUAL-JUDGE (SYM = e5 ⊕ graph, DESIGN_sym_dual_judge.md step 3): a learned scale on the O(1)
+        # structural feature `3/(1+‖Δ struct-emb‖)` (the cheap graph-judge proxy). Added to the SYM logit
+        # ONLY (gated by op). Zero-init ⇒ exact warm-start no-op; learns the graph half during SYM training.
+        self.sym_struct_w = nn.Parameter(torch.zeros(1))
         for emb in (self.op_emb, self.gen_emb, self.corpus_emb, self.judge_emb):
             nn.init.normal_(emb.weight, std=0.02)
         nn.init.zeros_(self.nodetype_emb.weight)            # no-op at warm start; learned during fine-tune
@@ -345,7 +361,7 @@ class MuAttention(nn.Module):
 
     def forward(self, content, gen_id, is_anchor, op_pos, op_of, pad,
                 is_prov=None, corpus_of=None, judge_of=None, account_of=None, nodetype_of=None,
-                prefix_of=None, op_weights=None):
+                prefix_of=None, op_weights=None, struct_feat=None):
         # op_weights [B, n_ops] (optional): a BLENDED operator — a weight vector over operators that replaces
         # the one-hot op token AND the per-operator readout head (a random superposition for inferred rows;
         # a one-hot for tagged rows reproduces the indexed path exactly). See
@@ -382,6 +398,9 @@ class MuAttention(nn.Module):
         else:
             w, b = op_weights @ self.readout_w, op_weights @ self.readout_b          # blended head
         logit = (pooled * w).sum(-1) + b
+        if struct_feat is not None:                          # DUAL-JUDGE: add the O(1) structural channel to SYM only
+            sym_gate = op_weights[:, OPS["SYM"]] if op_weights is not None else (op_of == OPS["SYM"]).to(logit.dtype)
+            logit = logit + sym_gate * self.sym_struct_w * struct_feat
         return torch.sigmoid(logit)
 
 

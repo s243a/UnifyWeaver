@@ -443,7 +443,14 @@ def train(args):
         cache = cache.replace(".pt", "_graded.pt")
     q, p, idx = build_e5_tables(names, cache_path=cache, texts=extra_texts, device=str(device),
                                 batch_size=128 if device.type == "cuda" else 512)
-    tok = Tokenizer(q, p, idx, parents, deg, k=args.k, beta=1.0, max_anc=args.max_anc)
+    struct_tbl = None
+    if args.struct_emb:                                   # DUAL-JUDGE step 3: {name: struct-emb vec} for SYM's O(1) graph channel
+        _se = torch.load(args.struct_emb, weights_only=False)
+        struct_tbl = {n: v for n, v in zip(_se["nodes"], _se["emb"])}
+        print(f"STRUCT-EMB (SYM dual judge): {len(struct_tbl)} nodes, {_se['dim']}d, from "
+              f"{os.path.basename(args.struct_emb)}")
+    tok = Tokenizer(q, p, idx, parents, deg, k=args.k, beta=1.0, max_anc=args.max_anc,
+                    struct_tbl=struct_tbl)
 
     rng = random.Random(args.seed)
     edges = [e for e in load_edges() if e[0] in idx and e[1] in idx]
@@ -1288,6 +1295,9 @@ def main():
                     "rows through the operator superposition as a REGULARIZER — op ~ Dirichlet(alpha · "
                     "[c·onehot(label) + (1-c)·uniform]). c=1.0 (default) = tagged rows trained hard "
                     "(inferred-only blend). Feeds the regularizer the whole set; capacity-bounded.")
+    ap.add_argument("--struct-emb", default=None, help="DUAL-JUDGE step 3: learned structural embedding "
+                    "(structural_embedding.py .pt). When set, the SYM logit gets the O(1) structural channel "
+                    "3/(1+‖Δ struct-emb‖); zero-init scale ⇒ warm-start no-op until SYM training learns it.")
     ap.add_argument("--sym-weight", type=float, default=1.0, help="SYM loss weight (ablation lever b)")
     ap.add_argument("--sym-only", action="store_true", help="single-task SYM head (ablation lever c)")
     ap.add_argument("--quick-val", action="store_true", help="skip dense-map emission/lin-agreement")

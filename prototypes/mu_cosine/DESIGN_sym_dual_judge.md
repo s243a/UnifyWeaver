@@ -39,6 +39,39 @@ operator-superposition** machinery (`judge_emb`, the blend regularizer). SYM is 
   below the raw-BFS ceiling (+0.76). So the O(1) signal adds real value; residual fine-scale loss remains
   (higher dim / better training / the exact scoring graph are the levers).
 
+## Step 3 — wiring the dual judge into the model (`mu_attention.py`)
+
+The finding is a **linear blend of one scalar (`3/dist`, now the O(1) struct-embed proxy) and the e5-SYM
+readout**. Step 3 bakes that blend into the model as a **learnable, SYM-gated structural channel** — the
+faithful, minimal operationalisation of the measured dual judge:
+
+```
+logit_SYM = pooled·w_SYM + b_SYM  +  sym_struct_w · struct_feat        # struct_feat = 3/(1+‖Δ struct-emb‖)
+```
+
+- **`self.sym_struct_w` (scalar, zero-init)** — the learned scale on the structural channel. Zero-init ⇒ an
+  **exact warm-start no-op** (unit-tested: identical μ to the no-struct path), so it's safe to add to any
+  checkpoint; the scale is learned only during SYM training.
+- **SYM-gated** — added to the logit *only* where `op == SYM` (via `op_of`, or `op_weights[:,SYM]` in the
+  blended path). Unit-tested: perturbing the scale moves the SYM row and leaves HIER/others untouched.
+- **`struct_feat`** — computed in `Tokenizer.build` from a `{name: struct-emb vec}` table (`--struct-emb`,
+  the `structural_embedding.py` `.pt`). Off by default (no table ⇒ key omitted ⇒ old behaviour byte-for-byte).
+  On the cumulative SYM pairs, **57 %** have both endpoints in the table (the rest fall back to pure e5,
+  `struct_feat = 0` — the same graceful degradation as inference on out-of-graph pairs).
+
+**Why the pairwise scalar (not a per-endpoint struct token).** The validated finding is a function of the
+*pairwise* distance, so injecting the single scalar `3/(1+‖Δ‖)` into the SYM logit reproduces the +0.652 dual
+**by construction** and is O(1). A per-endpoint structural token (project each node's struct-vec into `d_model`,
+let attention re-derive the distance) is a strictly more ambitious generalisation — deferred as a follow-up; it
+*might* exceed +0.652 but is not what the measurement supports, and it costs a projection + more plumbing.
+
+**Validation status.** The *value* of the channel is already established (step 2: DUAL +0.652 > e5-only +0.60).
+The *wiring* is unit-verified (no-op at warm start, SYM-gated). The remaining step — an **end-to-end SYM retrain
+with `--struct-emb`** confirming a trained model realises the lift — must use the full production recipe that
+produced `model_prod.pt`; a throwaway `--sym-only --steps 600` warm-start collapses to μ=0 (a known,
+struct-independent failure of that reduced recipe, not of this change). Launch with the real recipe + a held-out
+SYM-corr A/B (`--struct-emb` on vs off), multi-seed before believing.
+
 ## Caveats
 - R²≈0.43 for the graph half is *moderate* — `3/dist` explains ~half of SYM; the rest is semantic nuance +
   judge noise + the fact that 100k_cats may not be the exact graph the pairs were scored on (true corr could be
