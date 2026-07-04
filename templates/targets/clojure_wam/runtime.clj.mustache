@@ -231,7 +231,8 @@
          list->term
          parse-number-text
          reg-get-raw
-         sorted-unique-terms)
+         sorted-unique-terms
+         term-compare)
 
 (defn choice-snapshot [state target-pc]
   {:kind :wam
@@ -269,6 +270,7 @@
          :aggregate-kind (:kind instr)
          :aggregate-template-reg (:template instr)
          :aggregate-bag-reg (:bag instr)
+         :aggregate-witness-regs (vec (or (:witnesses instr) []))
          :aggregate-next-pc (inc end-pc)
          :aggregate-collected []))
 
@@ -339,17 +341,92 @@
     "setof" (if (seq collected) (aggregate-set-term state collected) ::aggregate-failure)
     (aggregate-list-term state collected)))
 
+(defn aggregate-entry? [entry]
+  (and (map? entry) (contains? entry :aggregate-template)))
+
+(defn aggregate-entry-template [entry]
+  (if (aggregate-entry? entry)
+    (:aggregate-template entry)
+    entry))
+
+(defn aggregate-entry-witnesses [entry]
+  (if (aggregate-entry? entry)
+    (:aggregate-witnesses entry)
+    []))
+
+(defn aggregate-witness-compare [state left right]
+  (loop [xs (seq left)
+         ys (seq right)]
+    (cond
+      (and (nil? xs) (nil? ys)) 0
+      (nil? xs) -1
+      (nil? ys) 1
+      :else
+      (let [c (term-compare state (first xs) (first ys))]
+        (if (zero? c)
+          (recur (next xs) (next ys))
+          c)))))
+
+(defn aggregate-same-witnesses? [state left right]
+  (zero? (aggregate-witness-compare state left right)))
+
+(defn aggregate-add-entry-group [state groups entry]
+  (let [witnesses (aggregate-entry-witnesses entry)]
+    (loop [remaining groups
+           out []]
+      (if-let [group (first remaining)]
+        (if (aggregate-same-witnesses? state witnesses (:witnesses group))
+          (vec (concat out [(update group :entries conj entry)] (rest remaining)))
+          (recur (rest remaining) (conj out group)))
+        (conj out {:witnesses witnesses :entries [entry]})))))
+
+(defn aggregate-groups [state collected]
+  (sort #(aggregate-witness-compare state (:witnesses %1) (:witnesses %2))
+        (reduce (fn [groups entry]
+                  (aggregate-add-entry-group state groups entry))
+                []
+                collected)))
+
+(defn aggregate-grouped-result-terms [state kind collected]
+  (mapv (fn [group]
+          (aggregate-result-term state kind (mapv aggregate-entry-template (:entries group))))
+        (aggregate-groups state collected)))
+
+(defn aggregate-result-terms [state kind collected witness-regs]
+  (if (and (seq witness-regs) (or (= kind "bagof") (= kind "setof")))
+    (aggregate-grouped-result-terms state kind collected)
+    (let [bag (aggregate-result-term state kind collected)]
+      (if (= bag ::aggregate-failure)
+        []
+        [bag]))))
+
 (defn aggregate-choice-index [choice-points]
   (some (fn [[idx cp]]
           (when (= :aggregate (:kind cp)) idx))
         (reverse (map-indexed vector choice-points))))
 
+(defn copy-register-terms [state regs]
+  (loop [s state
+         remaining (seq regs)
+         out []]
+    (if remaining
+      (let [[copied next-state] (copy-term s (or (reg-get-raw s (first remaining)) ::unbound))]
+        (recur next-state (next remaining) (conj out copied)))
+      [out s])))
+
 (defn collect-aggregate-template [state template-reg]
   (when-let [idx (aggregate-choice-index (:choice-points state))]
-    (let [[copied copy-state] (copy-term state (reg-get-raw state template-reg))]
+    (let [cp (get (:choice-points state) idx)
+          witness-regs (:aggregate-witness-regs cp)
+          [copied copy-state] (copy-term state (reg-get-raw state template-reg))
+          [witnesses witness-state] (copy-register-terms copy-state witness-regs)
+          entry (if (seq witness-regs)
+                  {:aggregate-template copied :aggregate-witnesses witnesses}
+                  copied)]
       (-> copy-state
-          (update-in [:choice-points idx :aggregate-collected] conj copied)
-          (assoc-in [:choice-points idx :next-var-id] (:next-var-id copy-state))))))
+          (assoc :next-var-id (:next-var-id witness-state))
+          (update-in [:choice-points idx :aggregate-collected] conj entry)
+          (assoc-in [:choice-points idx :next-var-id] (:next-var-id witness-state))))))
 
 (defn push-choice-point [state target-pc]
   (update state :choice-points conj (choice-snapshot state target-pc)))
@@ -2517,6 +2594,32 @@
           (recur (next remaining))))
       (backtrack base-state))))
 
+(defn aggregate-result-choice-snapshot [state bag-reg results]
+  (assoc (choice-snapshot state (:pc state))
+         :kind :aggregate-result
+         :aggregate-bag-reg bag-reg
+         :aggregate-results (vec results)))
+
+(defn push-aggregate-result-choice-point [state bag-reg results]
+  (if (seq results)
+    (update state :choice-points conj
+            (aggregate-result-choice-snapshot state bag-reg results))
+    state))
+
+(defn apply-aggregate-results [state bag-reg results]
+  (if-let [remaining (seq results)]
+    (let [bag (first remaining)
+          alternatives (next remaining)
+          choice-state (push-aggregate-result-choice-point state bag-reg alternatives)
+          current (or (reg-get-raw choice-state bag-reg) ::unbound)
+          [ok next-state] (if (= current ::unbound)
+                            [true (reg-set-raw choice-state bag-reg bag)]
+                            (unify-values choice-state current bag))]
+      (if ok
+        next-state
+        (backtrack choice-state)))
+    (backtrack state)))
+
 (defn activate-choice [state cp]
   (case (:kind cp)
     :foreign
@@ -2527,19 +2630,16 @@
     :member
     (apply-member-solution state (:pc cp) (:member-elem cp) (:member-rest cp))
 
+    :aggregate-result
+    (apply-aggregate-results state (:aggregate-bag-reg cp) (:aggregate-results cp))
+
     :aggregate
-    (let [bag (aggregate-result-term state (:aggregate-kind cp) (:aggregate-collected cp))]
-      (if (= bag ::aggregate-failure)
-        (backtrack state)
-        (let [bag-reg (:aggregate-bag-reg cp)
-              current (or (reg-get-raw state bag-reg) ::unbound)
-              resumed-state (assoc state :pc (:aggregate-next-pc cp))
-              [ok next-state] (if (= current ::unbound)
-                                [true (reg-set-raw resumed-state bag-reg bag)]
-                                (unify-values resumed-state current bag))]
-          (if ok
-            next-state
-            (backtrack resumed-state)))))
+    (let [results (aggregate-result-terms state
+                                          (:aggregate-kind cp)
+                                          (:aggregate-collected cp)
+                                          (:aggregate-witness-regs cp))
+          resumed-state (assoc state :pc (:aggregate-next-pc cp))]
+      (apply-aggregate-results resumed-state (:aggregate-bag-reg cp) results))
 
     (assoc state :status :running)))
 

@@ -721,8 +721,15 @@ wam_op_to_clojure_literal("begin_aggregate", [Kind, TemplateReg, BagReg], _, Lit
     clj_string_literal(Kind, KindLit),
     clj_string_literal(TemplateReg, TemplateLit),
     clj_string_literal(BagReg, BagLit),
-    format(atom(Literal), '{:op :begin-aggregate :kind ~w :template ~w :bag ~w}',
+    format(atom(Literal), '{:op :begin-aggregate :kind ~w :template ~w :bag ~w :witnesses []}',
            [KindLit, TemplateLit, BagLit]).
+wam_op_to_clojure_literal("begin_aggregate", [Kind, TemplateReg, BagReg, WitnessText], _, Literal) :-
+    clj_string_literal(Kind, KindLit),
+    clj_string_literal(TemplateReg, TemplateLit),
+    clj_string_literal(BagReg, BagLit),
+    aggregate_witness_vector_literal(WitnessText, WitnessLit),
+    format(atom(Literal), '{:op :begin-aggregate :kind ~w :template ~w :bag ~w :witnesses ~w}',
+           [KindLit, TemplateLit, BagLit, WitnessLit]).
 wam_op_to_clojure_literal("end_aggregate", [TemplateReg], _, Literal) :-
     clj_string_literal(TemplateReg, TemplateLit),
     format(atom(Literal), '{:op :end-aggregate :template ~w}', [TemplateLit]).
@@ -745,6 +752,14 @@ parse_switch_case(RawCase, Entry) :-
         clj_string_literal("malformed", LabelLit),
         format(atom(Entry), '{:value ~w :label ~w}', [ConstLit, LabelLit])
     ).
+
+aggregate_witness_vector_literal(WitnessText, WitnessLit) :-
+    clj_unquote_wam_atom_token(WitnessText, Unquoted),
+    (   Unquoted == ""
+    ->  Witnesses = []
+    ;   split_string(Unquoted, ";", "", Witnesses)
+    ),
+    emit_clojure_string_vector(Witnesses, WitnessLit).
 
 functor_arity_string(Functor, Arity) :-
     split_string(Functor, "/", "", [_Name, ArityStr]),
