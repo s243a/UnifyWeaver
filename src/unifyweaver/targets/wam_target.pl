@@ -2776,6 +2776,7 @@ is_builtin_pred(string_length, 2).      % alias for atom_length/2.
 is_builtin_pred(number_chars, 2).       % number ↔ list of single-char atoms.
 is_builtin_pred(atom_to_term, 3).       % parse atom + return [] bindings.
 is_builtin_pred(char_code, 2).    % char-atom ↔ integer code.
+is_builtin_pred(code_type, 2).    % ASCII class check (code + type atom).
 is_builtin_pred(between, 3).      % between(+Low, +High, ?X) -- nondet enumeration.
 is_builtin_pred(atom_concat, 3).  % atom_concat(+A1, +A2, -A12) -- forward concat.
 is_builtin_pred(sub_atom, 5).     % sub_atom(+A, +B, +L, ?After, ?Sub) -- deterministic extraction.

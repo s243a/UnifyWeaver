@@ -56,6 +56,27 @@ test(surface_embedded_dcg_parses_blob_payloads) :-
         [brec(1, "12,7"), brec(2, "100"), brec(-5, "9")],
         "119\n").
 
+test(surface_embedded_dcg_with_ite_cut_and_code_type) :-
+    % Regression for the "returned 0" incident: this exact grammar --
+    % if-then-else with a binding condition, a cut in the digits rule,
+    % and code_type/2 -- silently returned 0 because code_type was not
+    % a WAM builtin and its call lowered to label index 0. code_type
+    % is now a builtin (sharing char_type's classifier), and unknown
+    % callees fail the COMPILE loudly instead.
+    Src = "@prolog-t3\nplawk_pbt3_sum(Payload, Sum) :- atom_codes(Payload, Codes), plawk_pbt3_nums(0, Sum, Codes, []).\nplawk_pbt3_nums(Acc, Sum) --> plawk_pbt3_num(N), ( \",\" -> { Acc1 is Acc + N }, plawk_pbt3_nums(Acc1, Sum) ; { Sum is Acc + N } ).\nplawk_pbt3_num(N) --> plawk_pbt3_digits(Ds), { Ds \\== [], number_codes(N, Ds) }.\nplawk_pbt3_digits([D | Ds]) --> [D], { code_type(D, digit) }, !, plawk_pbt3_digits(Ds).\nplawk_pbt3_digits([]) --> [].\n@end-t3\nBEGIN { BINFMT = \"i64 blob32\" }\n$1 > 0 { total += plawk_pbt3_sum($2) }\nEND { print total }\n",
+    run_pb_blob_smoke(Src,
+        [brec(1, "12,7"), brec(2, "100"), brec(-5, "9")],
+        "119\n").
+
+test(calling_an_uncompiled_predicate_fails_the_compile,
+        [throws(error(existence_error(procedure, _), _))]) :-
+    % The trap behind that incident: a call to a predicate that is not
+    % compiled into the module used to lower to label index 0 with
+    % only a stderr warning -- a silent runtime failure. It is now a
+    % compile-time existence error.
+    Src = "@prolog\nplawk_pbt_broken(X, R) :- plawk_pbt_no_such_helper(X, R).\n@end\nBEGIN { BINFMT = \"i64\" }\n{ total += plawk_pbt_broken($1) }\nEND { print total }\n",
+    build_pb_probe(Src, _, _).
+
 :- end_tests(plawk_prolog_blocks).
 
 % --- helpers ---------------------------------------------------------------
