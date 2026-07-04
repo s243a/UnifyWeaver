@@ -421,7 +421,9 @@ A single `.wamo` can expose several named entries (built with
 `{ s += dyncall@square($1) ; c += dyncall@cube($1) }` calls two entries of
 one `DYNLOAD` object. The `@name` is fixed at compile time, so the entry's
 address is resolved once at startup and reused (a name no entry exposes
-yields 0). Bounded repetition handles records containing a
+yields 0). `float(dyncall@name(...))` and `blob(dyncall@name(...))` read a
+named entry's output as a double or a byte slice, just like the bare
+`float`/`blob` forms. Bounded repetition handles records containing a
 list: `BINFMT = "i64 rep4(i64 f64)"` declares an 8-byte element count
 (at most 4) followed by that many (i64, f64) elements. The count is an
 ordinary i64 field, element slots are flat addressable fields
