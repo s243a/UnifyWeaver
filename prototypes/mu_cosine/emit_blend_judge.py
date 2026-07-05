@@ -25,8 +25,12 @@ def main():
     ap.add_argument("--e5-cache", required=True)
     ap.add_argument("--model", default="model_prod.pt")
     ap.add_argument("--struct-emb", required=True)
-    ap.add_argument("--lam", type=float, default=0.5, help="graph-judge portion; blend = (1−λ)·e5 ⊕ λ·graph")
-    ap.add_argument("--random", action="store_true", help="draw λ~U(0,1) per pair (blend regulariser)")
+    ap.add_argument("--lam", type=float, default=0.5, help="graph-judge portion / λ mean; blend = (1−λ)·e5 ⊕ λ·graph")
+    ap.add_argument("--lam-dist", choices=["fixed", "uniform", "normal"], default="fixed",
+                    help="per-pair λ: fixed(=--lam) | uniform U(0,1) | normal(mean=--lam, std=--lam-std) clamped [0,1] "
+                    "(the blend regulariser — some randomness spreads the family; user 2026-07-05)")
+    ap.add_argument("--lam-std", type=float, default=0.15, help="std for --lam-dist normal (clamped-normal)")
+    ap.add_argument("--random", action="store_true", help="[deprecated alias for --lam-dist uniform]")
     ap.add_argument("--c-dist", type=float, default=0.35)
     ap.add_argument("--c-subcat", type=float, default=0.72)
     ap.add_argument("--c-elem", type=float, default=0.82)
@@ -65,10 +69,19 @@ def main():
 
     with open(a.out, "w", encoding="utf-8") as f:
         f.write("# node\troot\tmu\top\trelation\tnode_type\troot_type\tcorpus\tjudge\tconf\n")
+        dist = "uniform" if a.random else a.lam_dist
         for i, (x, y) in enumerate(pairs):
-            lam = rng.random() if a.random else a.lam
+            if dist == "uniform":
+                lam = rng.random()
+            elif dist == "normal":
+                lam = min(1.0, max(0.0, rng.gauss(a.lam, a.lam_std)))     # clamped normal(mean=λ, std)
+            else:
+                lam = a.lam
             blend = float((1 - lam) * mu_e5_sym[i] + lam * mu_graph_sym[i])
             blend = max(0.0, min(1.0, blend))
+            # relation=see_also is a PLACEHOLDER: these are SYM-operator targets (op=SYM is what trains); the
+            # relation field is unused for SYM rows. conf=1.0 is a placeholder too — the target is a construction,
+            # not a graded label (a |blend−0.5|-based conf is a documented future option; review #3491 F).
             f.write(f"{x}\t{y}\t{blend:.3f}\tSYM\tsee_also\tcategory\tcategory\t{a.corpus}\tblend\t1.0\n")
     print(f"wrote {len(pairs)} blend-judge SYM rows → {a.out}  "
           f"(λ={'random' if a.random else a.lam}; mean e5-sym {mu_e5_sym.mean():.3f}, graph-sym {mu_graph_sym.mean():.3f})")

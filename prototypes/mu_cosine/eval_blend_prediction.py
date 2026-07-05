@@ -43,7 +43,10 @@ def main():
     ap.add_argument("--struct-emb", required=True)
     ap.add_argument("--ref", default="model_prod.pt", help="reference model for graph_ref memberships")
     ap.add_argument("--models", nargs="+", required=True, help="name=path ...")
-    ap.add_argument("--lam", type=float, default=0.5)
+    ap.add_argument("--lam", type=float, default=0.5, help="[legacy single λ; --lam-eval overrides]")
+    ap.add_argument("--lam-eval", default=None, help="comma-sep λ values to build T at, e.g. 0.3,0.5,0.7 — "
+                    "eval a model trained at one λ against T at OTHER λ tests generality vs recipe-memorisation "
+                    "(review #3491 III.L; user's 'try other blends').")
     ap.add_argument("--c-dist", type=float, default=0.35)
     ap.add_argument("--c-subcat", type=float, default=0.72)
     ap.add_argument("--c-elem", type=float, default=0.82)
@@ -71,23 +74,27 @@ def main():
     ref = build_model(a.ref, dev)
     ms, me = membership_readouts(ref, tok, pairs, dev); ms, me = ms.cpu().numpy(), me.cpu().numpy()
     sd = struct_dist_fn(a.struct_emb)
-    dist01 = np.array([min(1.0, sd(x, y) / 3.0) if sd(x, y) == sd(x, y) else 0.0 for x, y in pairs])
+    _sv = [sd(x, y) for x, y in pairs]                      # call sd once per pair (nit: review #3491)
+    dist01 = np.array([min(1.0, v / 3.0) if v == v else 0.0 for v in _sv])
     ws = a.c_dist + a.c_subcat + a.c_elem
     graph_ref = (a.c_dist * dist01 + a.c_subcat * ms + a.c_elem * me) / ws
-    T = (1 - a.lam) * e5_ref + a.lam * graph_ref
-    print(f"target T = {1-a.lam:.2f}·e5_ref ⊕ {a.lam:.2f}·graph_ref   (mean e5_ref {e5_ref.mean():.3f}, graph_ref {graph_ref.mean():.3f})")
-    print(f"  component corr with T: e5_ref {corr(e5_ref,T):+.3f}  graph_ref {corr(graph_ref,T):+.3f}\n")
+    lams = [float(x) for x in a.lam_eval.split(",")] if a.lam_eval else [a.lam]
+    print(f"mean e5_ref {e5_ref.mean():.3f} (std {e5_ref.std():.3f}), graph_ref {graph_ref.mean():.3f} (std {graph_ref.std():.3f})")
+    print(f"target(s) T(λ) = (1−λ)·e5_ref ⊕ λ·graph_ref  for λ ∈ {lams}\n")
 
-    print(f"{'model':10s} {'judge input':12s}  corr(SYM readout, T)   corr(SYM, e5_ref)  corr(SYM, graph_ref)")
+    hdr = "  ".join(f"corr@λ={l:g}" for l in lams)
+    print(f"{'model':10s} {'judge input':12s}  {hdr}   corr(e5_ref) corr(graph_ref)")
     for spec in a.models:
         name, path = spec.split("=", 1)
+        if os.path.abspath(path) == os.path.abspath(a.ref):
+            print(f"# note: {name} is the --ref model (graph_ref uses its memberships) — not independent")
         m = build_model(path, dev)
         for judge in (None, "blend"):
             if judge == "blend" and m.judge_emb.num_embeddings <= JUDGES["blend"]:
-                continue                                   # model has no blend judge row
+                continue                                   # model has no blend judge row (pre-PR checkpoint)
             sym = score_sym(m, tok, pairs, dev, judge=judge)
-            print(f"{name:10s} {str(judge or 'agnostic'):12s}  {corr(sym,T):+.3f}"
-                  f"                 {corr(sym,e5_ref):+.3f}              {corr(sym,graph_ref):+.3f}")
+            cols = "  ".join(f"{corr(sym, (1-l)*e5_ref + l*graph_ref):+.3f}   " for l in lams)
+            print(f"{name:10s} {str(judge or 'agnostic'):12s}  {cols} {corr(sym,e5_ref):+.3f}       {corr(sym,graph_ref):+.3f}")
 
 
 if __name__ == "__main__":

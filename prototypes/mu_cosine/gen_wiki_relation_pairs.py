@@ -11,7 +11,6 @@ graded _pairs.tsv + e5 cache align without a title↔key map):
       --struct-emb /tmp/mu_data/struct_emb_recip.pt --per 220 --out /tmp/mu_data/wiki_rel_pairs.tsv
 """
 import argparse, os, random, sys
-from collections import deque
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mu_attention import load_dag
 
@@ -30,7 +29,7 @@ def main():
     se = torch.load(a.struct_emb, weights_only=False)
     inemb = set(se["nodes"])
     parents, children, deg = load_dag(a.graph)
-    print(f"struct-emb nodes {len(inemb)}; graph {len(parents)|len(children) if False else len(set(parents)|set(children))} nodes")
+    print(f"struct-emb nodes {len(inemb)}; graph {len(set(parents) | set(children))} nodes")
 
     def anc(x, cap=4):
         out, fr = set(), {x}

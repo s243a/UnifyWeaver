@@ -13,7 +13,7 @@ This is a **separate project, prototyped on a branch** — it is Python/ML, not 
 >
 > **Doing uncertainty / confidence / multi-source estimation work?** Read
 > [`DESIGN_uncertainty_estimation_playbook.md`](DESIGN_uncertainty_estimation_playbook.md) **first** — the
-> calibrated-joint-posterior + margin-gate approach and the five pitfalls (correlated sources, margin-not-level,
+> calibrated-joint-posterior + margin-gate approach and the six pitfalls (correlated sources, margin-not-level,
 > held-out node-disjoint, …) the project learned the slow way. Don't hand-set independent confidence weights.
 
 ## Status & handoff (read this first)

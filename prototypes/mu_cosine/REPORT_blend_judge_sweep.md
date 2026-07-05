@@ -91,3 +91,20 @@ B robustly **recovers the graph half** (+0.815) that **LLM-only training drifts 
 under `judge=blend` beats agnostic for B on all three seeds. So the blend-judge advantage on the *right* metric
 is not a single-seed fluke — it's consistent. (Scope: `T` is graph-dominated on this Wikipedia held-out set, so
 this confirms the *structural* half most strongly; a higher-e5-variance held-out would test the e5 side.)
+
+### Circularity check — CLEARED (multi-λ + B-agnostic, `--lam-eval 0.3,0.5,0.7`)
+
+Concern (review #3491 III.L/M): `B` trained at λ=0.5 and `T` built at λ=0.5 share a recipe — is `B` just
+memorising it? Two tests say no. **(i) B beats A at every λ**, not only the trained one — mean corr(SYM, T(λ)):
+
+| λ | B (blend) | A (LLM-only) | B (agnostic) |
+|---|---|---|---|
+| 0.3 | +0.863 | +0.724 | +0.795 |
+| 0.5 | +0.841 | +0.697 | +0.766 |
+| 0.7 | +0.828 | +0.682 | +0.751 |
+
+`B` predicts `T` across the *whole* blend family ⇒ it learned the **components** (e5 + graph), not the λ=0.5
+mixture. **(ii) B read *agnostically* (no blend judge input) still beats A-blend** (+0.766 vs +0.697 at λ=0.5) ⇒
+the **shared trunk** learned the graph geometry, not just the `judge=blend` head (the trunk/head-split story,
+now verified — the judge head adds a further ~+0.07). Caveat unchanged: `e5_ref` std is 0.032 here (near-constant),
+so these confirm the structural half; the e5 side needs a higher-e5-variance held-out.

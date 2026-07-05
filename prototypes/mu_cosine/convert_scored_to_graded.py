@@ -11,6 +11,9 @@ import argparse
 from collections import Counter
 
 NAMED = ["element_of", "subcategory", "subtopic", "super_category", "see_also", "assoc", "unknown", "none"]
+# relation → operator. `none`/`unknown` → SYM by design: they become SYM *negatives* (low E_mu ⇒ μ≈0), which is
+# legitimate symmetric-relatedness training signal, NOT label noise (review #3491 #3). The relation field is
+# retained as the JointPosterior classification target; the op only routes graded-round operator training.
 OP_OF = {"element_of": "ELEM", "subcategory": "HIER", "subtopic": "HIER", "super_category": "HIER",
          "see_also": "SYM", "assoc": "SYM", "unknown": "SYM", "none": "SYM"}
 

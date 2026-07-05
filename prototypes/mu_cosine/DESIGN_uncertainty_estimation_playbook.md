@@ -9,7 +9,7 @@ for "confidence weighting." This encodes lessons the project learned the slow wa
 **Don't hand-set independent confidence weights over correlated sources. Fit a LEARNED, CALIBRATED combiner
 (`JointPosterior`) on HELD-OUT data, and use confidence as a MARGIN GATE, not a per-item weight.**
 
-## The five pitfalls (each one we actually hit)
+## The six pitfalls (each one we actually hit)
 
 1. **Sources are not independent → naive/inverse-variance fusion over-confidences.** In this project every
    model readout *consumes frozen e5*, so `e5`, `μ_SYM`, `μ_HIER`, `μ_ELEM` are correlated (measured **+0.751**,

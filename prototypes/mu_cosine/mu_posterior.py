@@ -253,9 +253,11 @@ def model_readout_fn(ckpt_path, e5_cache, device="cpu", bs=2048):
 
 
 def struct_dist_fn(struct_emb_path):
-    """The DECORRELATED lateral/sibling source (DESIGN_sym_estimation_integration.md): `1/d` via the learned
-    structural embedding, `3/(1+‖Δ‖)`. Trained separately on graph distance ⇒ not a re-reading of e5, and it
-    covers the sibling axis the vertical membership operators miss. NaN if either endpoint is absent."""
+    """The structural distance source `1/d` (DESIGN_sym_estimation_integration.md): `3/(1+‖Δ‖)` via the learned
+    embedding. Trained separately on graph distance — but measured `corr(1/d, e5) ≈ +0.50` on Wikipedia
+    categories (graph distance tracks topical similarity), so it is *not* fully decorrelated from e5; that
+    correlation is a positive sanity signal (it does capture semantic distance) while `1/d` also carries the
+    graph structure e5 lacks. It is a distinct estimator, not identical to e5. NaN if either endpoint is absent."""
     import torch
     se = torch.load(struct_emb_path, weights_only=False)
     sv = {n: v for n, v in zip(se["nodes"], se["emb"])}
