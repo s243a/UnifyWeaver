@@ -69,6 +69,35 @@ transitive superposition should use **direct LLM scores** on the multi-hop pairs
 those scores **validate p^h**: does the LLM's transitive membership actually decay like 0.9^h? (Needs a scoring
 run on the multi-hop chains; see §(d) below.)
 
+## (d) Effective-h from semantic distance (user 2026-07-05) — calibration
+Make the operator continuous *within* a hop: measure avg semantic distance per h, calibrate it, and use a
+continuous **effective-h** (blending graph hops with an external-judge distance) in μ=p^(effective_h).
+
+| h | mean e5 cos (query·query) | dist=1−cos | 0.9^h | adjacent-hop Cohen's d |
+|---|---|---|---|---|
+| 1 | **0.902** | 0.098 | 0.900 | h1–h2: 1.01 |
+| 2 | 0.855 | 0.145 | 0.810 | h2–h3: 0.77 |
+| 3 | 0.820 | 0.180 | 0.729 | h3–h4: 0.66 |
+| 4 | 0.792 | 0.208 | 0.656 | h4–h5: 0.41 |
+| 5 | 0.777 | 0.223 | 0.590 | |
+
+Findings: (i) **mean h=1 cos = 0.902 ≈ p=0.9** — the base rate *is* the average h=1 semantic similarity, a clean
+interpretation. (ii) distance is **smooth & monotonic** in h ⇒ calibratable to effective-h. (iii) **separable at
+low h** (d≈1.0) but **poor at high h** (d=0.41, h4–h5) — leakage compresses distant nodes (e5 cos decays *slower*
+than 0.9^h, 0.78 at h=5 vs 0.59). ⇒ effective-h refines within ~3 hops on Wikipedia; a **lower-leakage corpus or a
+better embedding** extends the resolution. Construction: `effective_h = blend(graph_hops, embedding_distance)`,
+μ=p^effective_h — connects to the reciprocal-target struct embedding (`structural_embedding.py`, `1/d = 3/(1+‖Δ‖)`).
+
+### The two-part architecture (user 2026-07-05) — each side gets the transitive treatment it needs
+The transitive superposition has **two distinct parts**, and the two ideas map to them 1:1:
+- **GRAPH part** (discrimination operator): continuous via **effective-h** — integer hops refined by an
+  **embedding** distance, `μ = p^(effective_h)`. Structure is only direct-edged, so it needs the calibrated rule.
+- **NON-GRAPH part** (element / subcategory operators): **direct LLM** scores on the transitive pairs — the LLM
+  judges any pair directly, so *no* mathematical composition is needed (and those scores also validate `p^h`).
+
+So the LLM is the judge for the *non-graph* operators; the *embedding* is the distance for the *graph* effective-h.
+*Deferred: (graph) build effective-h target + train; (non-graph) LLM-score the multi-hop chains, then superpose.*
+
 ## Takeaways
 - The discrimination operator as trained is **direct-membership** (μ collapses by h=3); transitive `p^h` behaviour
   is a **design target requiring explicit training**, with p a measurable per-source leakage base (≈0.88 here).
