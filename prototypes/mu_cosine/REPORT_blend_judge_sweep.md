@@ -99,7 +99,8 @@ this confirms the *structural* half most strongly; a higher-e5-variance held-out
 ### Circularity check — CLEARED (multi-λ + B-agnostic, `--lam-eval 0.3,0.5,0.7`)
 
 Concern (review #3491 III.L/M): `B` trained at λ=0.5 and `T` built at λ=0.5 share a recipe — is `B` just
-memorising it? Two tests say no. **(i) B beats A at every λ**, not only the trained one — mean corr(SYM, T(λ)):
+memorising it? Two tests say no. **(i) B beats A at every λ**, not only the trained one — **cross-seed mean
+(3 seeds)** of corr(SYM, T(λ)):
 
 | λ | B (blend) | A (LLM-only) | B (agnostic) |
 |---|---|---|---|

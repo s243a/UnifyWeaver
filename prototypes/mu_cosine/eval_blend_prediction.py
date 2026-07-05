@@ -87,7 +87,7 @@ def main():
     print(f"{'model':10s} {'judge input':12s}  {hdr}   corr(e5_ref) corr(graph_ref)")
     for spec in a.models:
         name, path = spec.split("=", 1)
-        if os.path.abspath(path) == os.path.abspath(a.ref):
+        if os.path.realpath(path) == os.path.realpath(a.ref):     # realpath: also catches symlinks (review N)
             print(f"# note: {name} is the --ref model (graph_ref uses its memberships) — not independent")
         m = build_model(path, dev)
         for judge in (None, "blend"):

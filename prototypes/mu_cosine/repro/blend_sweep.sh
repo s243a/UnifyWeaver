@@ -1,7 +1,7 @@
 #!/bin/bash
 # Multi-seed test of the judge-superposition generality hypothesis: does the blend judge lift BASE simplewiki
 # SYM held-out (never touched by the blend pairs), consistently across seeds, and does random-λ help?
-cd /home/s243a/Projects/UnifyWeaver/prototypes/mu_cosine
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1     # repo-relative: repro/ -> prototypes/mu_cosine
 export PYTHONIOENCODING=utf-8
 GRAPH=../../data/benchmark/100k_cats/category_parent.tsv
 RES=/tmp/mu_data/blend_sweep_results.tsv

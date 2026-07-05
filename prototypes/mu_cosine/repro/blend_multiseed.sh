@@ -1,7 +1,7 @@
 #!/bin/bash
 # Multi-seed confirmation of the held-out judge-superposition result: does B (blend) predict T better than
 # A (LLM-only) and prod, consistently across seeds? Seed 1 checkpoints already exist (model_A_ft / model_blend_ft).
-cd /home/s243a/Projects/UnifyWeaver/prototypes/mu_cosine
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1     # repo-relative: repro/ -> prototypes/mu_cosine
 export PYTHONIOENCODING=utf-8
 GRAPH=../../data/benchmark/100k_cats/category_parent.tsv
 A_GRADED=/tmp/mu_data/wiki_rel_graded_pairs.tsv          # arm A: LLM only

@@ -80,8 +80,9 @@ def main():
                 lam = rng.random()
             elif dist == "truncated":
                 lam = rng.gauss(a.lam, a.lam_std)
-                while lam < 0.0 or lam > 1.0:            # TRUNCATED normal: resample (no boundary pile-up)
-                    lam = rng.gauss(a.lam, a.lam_std)
+                while lam < 0.0 or lam > 1.0:            # TRUNCATED normal: resample (no boundary pile-up).
+                    lam = rng.gauss(a.lam, a.lam_std)    # cheap at the default mean 0.5/std 0.15 (~0.1% reject);
+                # NB: this resample is deliberate — do NOT "optimise" it back to clamping (that piles mass at 0/1).
             else:
                 lam = a.lam
             blend = float((1 - lam) * mu_e5_sym[i] + lam * mu_graph_sym[i])
