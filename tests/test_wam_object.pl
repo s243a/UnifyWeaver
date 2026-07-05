@@ -51,6 +51,20 @@ metaatom(R) :- G = mfoo, call(G, R).  % atom goal -> mfoo(R) -> 100
 maddk(X, R) :- R is X + 32.
 metacomp(R) :- G = maddk(10), call(G, R). % compound goal -> maddk(10,R) -> 42
 
+% Aggregate control (findall / setof / bagof) inside a loaded object (eval
+% bootstrap milestone 3). The tier-2 compiler brackets the collected goal
+% with begin_aggregate/end_aggregate; those opcodes operate purely on VM
+% state, so a loaded object runs them like the host. The goal is a user
+% predicate (agnum/1) -- the case a compiler actually hits (iterating over
+% clauses), as opposed to a backtracking list builtin.
+agnum(30).
+agnum(10).
+agnum(20).
+agnum(10).
+collectsum(S) :- findall(X, agnum(X), L), sum_list(L, S).  % 30+10+20+10 -> 70
+setcard(N)    :- setof(X, agnum(X), L), length(L, N).      % {10,20,30} -> 3
+bagcard(N)    :- bagof(X, agnum(X), L), length(L, N).      % 4 solutions -> 4
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -259,6 +273,36 @@ test(meta_call_compound_goal_in_object,
     ( exists_file(Host) -> true ; build_host(Dir, Host) ),
     run_host(Host, Wamo, Out, 0),
     assertion(Out == "42\n"),
+    !.
+
+% findall over a user predicate loads and runs: begin_aggregate/end_aggregate
+% are now in the loadable subset. collectsum sums agnum/1's four solutions.
+test(findall_in_object,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'collectsum.wamo', Wamo),
+    write_wam_object([user:collectsum/1, user:agnum/1], [wamo_entry(collectsum/1)], Wamo),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    run_host(Host, Wamo, Out, 0),
+    assertion(Out == "70\n"),
+    !.
+
+% setof (sort + dedup) and bagof (keep dups) load and run: the .wamo writer
+% lowers them through the same aggregate path as findall (inline_bagof_setof).
+test(setof_and_bagof_in_object,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'setcard.wamo', WSet),
+    directory_file_path(Dir, 'bagcard.wamo', WBag),
+    write_wam_object([user:setcard/1, user:agnum/1], [wamo_entry(setcard/1)], WSet),
+    write_wam_object([user:bagcard/1, user:agnum/1], [wamo_entry(bagcard/1)], WBag),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    run_host(Host, WSet, SetOut, 0),
+    assertion(SetOut == "3\n"),
+    run_host(Host, WBag, BagOut, 0),
+    assertion(BagOut == "4\n"),
     !.
 
 :- end_tests(wam_object).

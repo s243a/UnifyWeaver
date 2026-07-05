@@ -317,8 +317,18 @@ loadable along the way.
   `%WamState` fields, so a loaded object can `call/N` its own predicates —
   atom goals and compound (partial-application) goals alike. Falls back to the
   host-global table for host VMs. The spine of any runtime-built goal.
-- **Milestones 3–6** (the compiler's builtin closure, byte-buffer output, the
-  `eval`/`compile` surface, self-host) — see the bootstrap doc.
+- **Milestone 3 — the compiler's builtin closure — audit done, aggregates
+  landed.** The audit sorted the compiler's constructs by how the tier-2
+  compiler lowers them (`builtin_call`, aggregate opcodes, unimplemented
+  builtins, library-predicate calls). Landed this PR: **aggregate control**
+  `begin_aggregate`/`end_aggregate` into the loadable subset, so `findall`,
+  `setof` and `bagof` over user-predicate goals load and run from a `.wamo`
+  (setof/bagof via `inline_bagof_setof`, now the `.wamo` default). Remaining:
+  `assert`/`retract`/`term_to_atom`/`read_term` runtime builtins (3b) and
+  `catch`/`throw` predicate linkage (3c) — the true long pole. See the
+  bootstrap doc for the full loadability matrix.
+- **Milestones 4–6** (byte-buffer output, the `eval`/`compile` surface,
+  self-host) — see the bootstrap doc.
 
 ## The binary-return question, specifically
 
