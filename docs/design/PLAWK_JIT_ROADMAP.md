@@ -27,7 +27,8 @@ The dynamic-grammar surface is feature-complete for numeric work:
 | Destructure surface — `(a, b) = dyncall[@name](args) as (i64 f64)` binds fields to typed scalars | #3476 |
 | Record-view surface — `dyncall[@name](args) as (i64 f64) { … $1 $2 … }` reads the return like the current record | #3477 |
 | String/atom record fields (mechanism) — `@wam_object_call_record` typecode 2 → `(ptr,len)` via `out_slots`+`out_lens` | #3478 |
-| String fields in the record view — `... as (i64 string) { print $2 }` (slice from hidden ptr/len temps) | this PR |
+| String fields in the record view — `... as (i64 string) { print $2 }` (slice from hidden ptr/len temps) | #3479 |
+| Assoc-return (mechanism) — `@wam_object_call_assoc` walks `[K-V,...]` into an i64 assoc table | this PR |
 
 A grammar is compiled ahead of time to a `.wamo`, loaded at runtime (from a
 fixed path, an in-memory buffer, or a per-call runtime source), cached with
@@ -215,9 +216,20 @@ different plawk containers — this is the through-line for the rest of item 4:
   such field). Recurses into if-branches; a view nested in a for-in body is a
   follow-on. Verified: `dyncall@rec($1) as (i64 f64) { total += $1 }` sums
   the i64 field to 30; `{ sum += $2 }` sums the f64 field to 31.
-- **Associative array** (`arr = ... as assoc`) — a grammar returning keyed
-  pairs (`[k1-v1, k2-v2]` or a keyed compound) materializes into plawk's
-  existing assoc-array table, addressed `arr["k"]`.
+- **Associative array** (`arr = ... as assoc`) — *mechanism LANDED.* A
+  grammar returning a list of pairs (`[K1-V1, K2-V2, ...]`) materializes into
+  an i64 assoc table via `@wam_object_call_assoc(vm, pc, nargs, args,
+  out_reg, %WamAssocI64Table*)`: it walks the cons list (functor `[|]`,
+  identified by `strcmp` against the module's cons-functor string, since the
+  loaded object's functor pointers are its own malloc'd copies), takes each
+  arity-2 element's (Integer key, Integer value), and `@wam_assoc_i64_inc`s
+  it into the caller's table — before the arena rewind, like the record
+  primitive. `@wam_assoc_i64_*` is always in the module (WAM helpers), so no
+  new runtime coupling. Verified: `tally -> [1-100, 2-200, 3-30]` populates a
+  table read back as 100/200/30. **Deferred surface:** `arr = <call> as
+  assoc` binding + integrating the grammar-populated table into plawk's assoc
+  plan so `arr[k]` lookups / END iteration see it (atom/string keys need
+  interning — an extension of the integer-key mechanism here).
 - **Positional array** — fields by numeric index into one array value.
 
 Each target reuses one marshaller over the same walked compound; they differ

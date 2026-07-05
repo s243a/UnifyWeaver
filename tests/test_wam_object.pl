@@ -31,6 +31,10 @@ makerec(R) :- X = 10, Y is X + 0.5, R = rec2f(X, Y).   % -> rec2f(10, 10.5)
 % Exercises string fields (typecode 2 -> (ptr, len)).
 makerecs(R) :- R = rs(7, hello).
 
+% returns a list of integer key-value pairs, for the assoc-table variant
+% (@wam_object_call_assoc): each K-V is inserted into an i64 assoc table.
+tally(R) :- R = [1-100, 2-200, 3-30].
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -183,6 +187,19 @@ test(struct_return_string_field,
     build_record_str_host(Dir, Host),
     run_host(Host, Wamo, Out, 0),
     assertion(Out == "7\nhello\n"),
+    !.
+
+% Assoc-table variant: tally/1 returns [1-100, 2-200, 3-30];
+% @wam_object_call_assoc inserts each pair into a fresh i64 table, and the
+% host reads keys 1,2,3 back with @wam_assoc_i64_get.
+test(assoc_return_populates_table,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'tally.wamo', Wamo),
+    write_wam_object([user:tally/1], [wamo_entry(tally/1)], Wamo),
+    build_record_assoc_host(Dir, Host),
+    run_host(Host, Wamo, Out, 0),
+    assertion(Out == "100\n200\n30\n"),
     !.
 
 :- end_tests(wam_object).
@@ -370,6 +387,52 @@ print:\n\c
   %len32 = trunc i64 %len to i32\n\c
   %sfmt = getelementptr [6 x i8], [6 x i8]* @.rs_sfmt, i32 0, i32 0\n\c
   %ps = call i32 (i8*, ...) @printf(i8* %sfmt, i32 %len32, i8* %ptr)\n\c
+  ret i32 0\n\c
+load_fail:\n\c
+  ret i32 20\n\c
+run_fail:\n\c
+  ret i32 21\n\c
+}\n').
+
+% Build a host that allocates an i64 assoc table, calls
+% @wam_object_call_assoc to populate it from the grammar's returned pairs,
+% then reads keys 1,2,3 back and prints their values.
+build_record_assoc_host(Dir, Host) :-
+    directory_file_path(Dir, 'record_assoc_host.ll', LL),
+    with_output_to(string(_),
+        write_wam_llvm_project([user:answer/1],
+            [module_name(wam_object_record_assoc_host), emit_wamo_loader(true)], LL)),
+    record_assoc_host_main_ir(MainIR),
+    setup_call_cleanup(
+        open(LL, append, S, [encoding(utf8)]),
+        write(S, MainIR),
+        close(S)),
+    directory_file_path(Dir, 'record_assoc_host_bin', Host),
+    clang_link(LL, Host).
+
+record_assoc_host_main_ir(
+'\n@.ra_ifmt = private constant [6 x i8] c"%lld\\0A\\00"\n\n\c
+define i32 @main(i32 %argc, i8** %argv) {\n\c
+entry:\n\c
+  %p1 = getelementptr i8*, i8** %argv, i64 1\n\c
+  %path = load i8*, i8** %p1\n\c
+  %obj = call { %WamState*, i32 } @wam_object_load(i8* %path)\n\c
+  %vm = extractvalue { %WamState*, i32 } %obj, 0\n\c
+  %pc = extractvalue { %WamState*, i32 } %obj, 1\n\c
+  %vm_null = icmp eq %WamState* %vm, null\n\c
+  br i1 %vm_null, label %load_fail, label %run\n\c
+run:\n\c
+  %table = call %WamAssocI64Table* @wam_assoc_i64_new(i64 64)\n\c
+  %ok = call i1 @wam_object_call_assoc(%WamState* %vm, i32 %pc, i32 0, %Value* null, i32 0, %WamAssocI64Table* %table)\n\c
+  br i1 %ok, label %print, label %run_fail\n\c
+print:\n\c
+  %v1 = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 1)\n\c
+  %v2 = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 2)\n\c
+  %v3 = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 3)\n\c
+  %fmt = getelementptr [6 x i8], [6 x i8]* @.ra_ifmt, i32 0, i32 0\n\c
+  %p_1 = call i32 (i8*, ...) @printf(i8* %fmt, i64 %v1)\n\c
+  %p_2 = call i32 (i8*, ...) @printf(i8* %fmt, i64 %v2)\n\c
+  %p_3 = call i32 (i8*, ...) @printf(i8* %fmt, i64 %v3)\n\c
   ret i32 0\n\c
 load_fail:\n\c
   ret i32 20\n\c
