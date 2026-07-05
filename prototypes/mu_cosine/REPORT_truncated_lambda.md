@@ -22,12 +22,20 @@ blend (truncated-normal, mean 0.5, std 0.15, resampled to [0,1]) changes what th
    — more of what the model learned lives in the **shared trunk**, not the judge head. (User's framing, verified:
    *"if we vary λ the model becomes more robust to judge input, and finds a generality that is judge-independent."*)
 
-## The trade-off (honest)
-Truncated's **peak** (blend-read) is marginally *lower* — mean +0.825 vs +0.841 (fixed higher on 2/3 seeds). So
-randomness buys **robustness / judge-independence, not peak accuracy**: spreading the blend family pushes the
-signal into the trunk (general, judge-agnostic) and makes the per-judge head less sharp. Which you want depends
-on the use: fixed-λ if you'll always supply the right judge tag; truncated-λ if you want a model that behaves
-well **without** the tag (robust deployment, or as a regulariser toward judge-independent structure).
+## Why judge-independence is the BETTER objective (not merely a trade-off) — user, 2026-07-05
+Truncated's **peak** (blend-read) is marginally *lower* — mean +0.825 vs +0.841. It's tempting to call fixed-λ
+"better" for that. **It isn't, when we don't know which judge is correct** — which is the whole reason the
+superposition exists (no single judge — LLM, graph, e5 — is ground truth). The fixed-λ peak is peak **only if the
+judge tag you supply at inference is the right one**; committing to a judge to claim the peak is betting on a
+judge you can't verify. **Judge-independence hedges that uncertainty:** the shared trunk learns what the judges
+*agree on* (the invariant), which is the most defensible estimate *because* it doesn't exploit any one judge's
+idiosyncrasies (which may be its errors) — a bias-reduction across judges (minimax / distributional-robustness
+over the judge distribution) at a small variance cost. So:
+
+> **Under judge uncertainty (the usual case), prefer varied-λ training for a judge-INDEPENDENT model. Fixed-λ +
+> a specified judge is preferable only when that judge is *known*-correct for the task.**
+
+Fixed-λ peak = overfit to one possibly-wrong judge; truncated-λ = robust to not knowing which is right.
 
 ## Caveats
 - `T` is graph-dominated on this held-out set (`e5_ref` std 0.032) — confirms the structural half most strongly.
