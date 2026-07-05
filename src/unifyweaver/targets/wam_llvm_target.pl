@@ -6294,6 +6294,243 @@ pfail:
   ret %Value %uv
 }
 
+; === term_to_atom/2 support ===
+; A malloc-backed growable string buffer and a recursive term writer. The
+; writer renders a %Value with write/1 (unquoted) semantics; term_to_atom
+; then interns the buffer as an Atom. Unquoted means atoms needing quotes do
+; not yet round-trip through a reader -- the reader (read_term) is a separate
+; milestone; canonical output for the common case (foo(1,[a,b])) is correct.
+
+define void @wam_sb_reserve(%WamStrBuf* %sb, i64 %need) {
+entry:
+  %len_ptr = getelementptr %WamStrBuf, %WamStrBuf* %sb, i32 0, i32 1
+  %len = load i64, i64* %len_ptr
+  %cap_ptr = getelementptr %WamStrBuf, %WamStrBuf* %sb, i32 0, i32 2
+  %cap = load i64, i64* %cap_ptr
+  %want = add i64 %len, %need
+  %ok = icmp ule i64 %want, %cap
+  br i1 %ok, label %done, label %grow
+grow:
+  %cap2 = mul i64 %cap, 2
+  %use2 = icmp ugt i64 %cap2, %want
+  %newcap = select i1 %use2, i64 %cap2, i64 %want
+  %data_ptr = getelementptr %WamStrBuf, %WamStrBuf* %sb, i32 0, i32 0
+  %data = load i8*, i8** %data_ptr
+  %ndata = call i8* @realloc(i8* %data, i64 %newcap)
+  store i8* %ndata, i8** %data_ptr
+  store i64 %newcap, i64* %cap_ptr
+  br label %done
+done:
+  ret void
+}
+
+define void @wam_sb_putc(%WamStrBuf* %sb, i8 %c) {
+entry:
+  call void @wam_sb_reserve(%WamStrBuf* %sb, i64 1)
+  %data_ptr = getelementptr %WamStrBuf, %WamStrBuf* %sb, i32 0, i32 0
+  %data = load i8*, i8** %data_ptr
+  %len_ptr = getelementptr %WamStrBuf, %WamStrBuf* %sb, i32 0, i32 1
+  %len = load i64, i64* %len_ptr
+  %dst = getelementptr i8, i8* %data, i64 %len
+  store i8 %c, i8* %dst
+  %len1 = add i64 %len, 1
+  store i64 %len1, i64* %len_ptr
+  ret void
+}
+
+define void @wam_sb_puts(%WamStrBuf* %sb, i8* %s) {
+entry:
+  br label %measure
+measure:
+  %n = phi i64 [ 0, %entry ], [ %n1, %mstep ]
+  %p = getelementptr i8, i8* %s, i64 %n
+  %ch = load i8, i8* %p
+  %z = icmp eq i8 %ch, 0
+  br i1 %z, label %copy, label %mstep
+mstep:
+  %n1 = add i64 %n, 1
+  br label %measure
+copy:
+  call void @wam_sb_reserve(%WamStrBuf* %sb, i64 %n)
+  %data_ptr = getelementptr %WamStrBuf, %WamStrBuf* %sb, i32 0, i32 0
+  %data = load i8*, i8** %data_ptr
+  %len_ptr = getelementptr %WamStrBuf, %WamStrBuf* %sb, i32 0, i32 1
+  %len = load i64, i64* %len_ptr
+  %dst = getelementptr i8, i8* %data, i64 %len
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst, i8* %s, i64 %n, i1 false)
+  %len1 = add i64 %len, %n
+  store i64 %len1, i64* %len_ptr
+  ret void
+}
+
+; True iff the functor name is the cons functor "[|]". Compares by bytes, not
+; pointer identity: a loaded .wamo object builds list cells with its OWN
+; malloc''d "[|]" copy, distinct from the host @.fn__5B_7C_5D global, so a
+; pointer compare would misclassify lists in loaded objects as ordinary
+; compounds and render [a,b] as [|](a,[|](b,[])).
+define i1 @wam_functor_is_cons(i8* %fn) {
+entry:
+  %isnull = icmp eq i8* %fn, null
+  br i1 %isnull, label %no, label %c0
+c0:
+  %p0 = getelementptr i8, i8* %fn, i64 0
+  %b0 = load i8, i8* %p0
+  %e0 = icmp eq i8 %b0, 91
+  br i1 %e0, label %c1, label %no
+c1:
+  %p1 = getelementptr i8, i8* %fn, i64 1
+  %b1 = load i8, i8* %p1
+  %e1 = icmp eq i8 %b1, 124
+  br i1 %e1, label %c2, label %no
+c2:
+  %p2 = getelementptr i8, i8* %fn, i64 2
+  %b2 = load i8, i8* %p2
+  %e2 = icmp eq i8 %b2, 93
+  br i1 %e2, label %c3, label %no
+c3:
+  %p3 = getelementptr i8, i8* %fn, i64 3
+  %b3 = load i8, i8* %p3
+  %e3 = icmp eq i8 %b3, 0
+  br i1 %e3, label %yes, label %no
+yes:
+  ret i1 true
+no:
+  ret i1 false
+}
+
+define void @wam_term_to_sb(%WamState* %vm, %Value %v, %WamStrBuf* %sb) {
+entry:
+  %d = call %Value @wam_deref_value(%WamState* %vm, %Value %v)
+  %tag = extractvalue %Value %d, 0
+  switch i32 %tag, label %t_unbound [
+    i32 0, label %t_atom
+    i32 1, label %t_int
+    i32 2, label %t_float
+    i32 3, label %t_compound
+  ]
+t_int:
+  %iv = extractvalue %Value %d, 1
+  %iscr = alloca [32 x i8]
+  %iscr0 = getelementptr [32 x i8], [32 x i8]* %iscr, i32 0, i32 0
+  %ifmt = getelementptr [5 x i8], [5 x i8]* @.fmt_lld, i32 0, i32 0
+  call i32 (i8*, i64, i8*, ...) @snprintf(i8* %iscr0, i64 32, i8* %ifmt, i64 %iv)
+  call void @wam_sb_puts(%WamStrBuf* %sb, i8* %iscr0)
+  ret void
+t_float:
+  %fb = extractvalue %Value %d, 1
+  %fv = bitcast i64 %fb to double
+  %fscr = alloca [32 x i8]
+  %fscr0 = getelementptr [32 x i8], [32 x i8]* %fscr, i32 0, i32 0
+  %ffmt = getelementptr [3 x i8], [3 x i8]* @.fmt_dbl, i32 0, i32 0
+  call i32 (i8*, i64, i8*, ...) @snprintf(i8* %fscr0, i64 32, i8* %ffmt, double %fv)
+  call void @wam_sb_puts(%WamStrBuf* %sb, i8* %fscr0)
+  ret void
+t_atom:
+  %aid = extractvalue %Value %d, 1
+  %eid = load i64, i64* @wam_empty_list_atom_id
+  %is_empty = icmp eq i64 %aid, %eid
+  br i1 %is_empty, label %t_atom_empty, label %t_atom_str
+t_atom_empty:
+  call void @wam_sb_putc(%WamStrBuf* %sb, i8 91)
+  call void @wam_sb_putc(%WamStrBuf* %sb, i8 93)
+  ret void
+t_atom_str:
+  %astr = call i8* @wam_atom_to_string(i64 %aid)
+  %anull = icmp eq i8* %astr, null
+  br i1 %anull, label %t_atom_q, label %t_atom_go
+t_atom_go:
+  call void @wam_sb_puts(%WamStrBuf* %sb, i8* %astr)
+  ret void
+t_atom_q:
+  call void @wam_sb_putc(%WamStrBuf* %sb, i8 63)
+  ret void
+t_unbound:
+  call void @wam_sb_putc(%WamStrBuf* %sb, i8 95)
+  ret void
+t_compound:
+  %cpb = extractvalue %Value %d, 1
+  %cp = inttoptr i64 %cpb to %Compound*
+  %fn_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 0
+  %fn = load i8*, i8** %fn_slot
+  %ar_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 1
+  %ar = load i32, i32* %ar_slot
+  %args_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 2
+  %args = load %Value*, %Value** %args_slot
+  %is_list = call i1 @wam_functor_is_cons(i8* %fn)
+  br i1 %is_list, label %t_list, label %t_functor
+t_functor:
+  call void @wam_sb_puts(%WamStrBuf* %sb, i8* %fn)
+  call void @wam_sb_putc(%WamStrBuf* %sb, i8 40)
+  br label %t_arg_loop
+t_arg_loop:
+  %ai = phi i32 [ 0, %t_functor ], [ %ai1, %t_arg_next ]
+  %adone = icmp sge i32 %ai, %ar
+  br i1 %adone, label %t_functor_end, label %t_arg_body
+t_arg_body:
+  %first = icmp eq i32 %ai, 0
+  br i1 %first, label %t_arg_write, label %t_arg_comma
+t_arg_comma:
+  call void @wam_sb_putc(%WamStrBuf* %sb, i8 44)
+  br label %t_arg_write
+t_arg_write:
+  %ap = getelementptr %Value, %Value* %args, i32 %ai
+  %av = load %Value, %Value* %ap
+  call void @wam_term_to_sb(%WamState* %vm, %Value %av, %WamStrBuf* %sb)
+  br label %t_arg_next
+t_arg_next:
+  %ai1 = add i32 %ai, 1
+  br label %t_arg_loop
+t_functor_end:
+  call void @wam_sb_putc(%WamStrBuf* %sb, i8 41)
+  ret void
+t_list:
+  call void @wam_sb_putc(%WamStrBuf* %sb, i8 91)
+  %h0p = getelementptr %Value, %Value* %args, i32 0
+  %h0 = load %Value, %Value* %h0p
+  call void @wam_term_to_sb(%WamState* %vm, %Value %h0, %WamStrBuf* %sb)
+  %t0p = getelementptr %Value, %Value* %args, i32 1
+  %t0 = load %Value, %Value* %t0p
+  br label %t_list_walk
+t_list_walk:
+  %cur = phi %Value [ %t0, %t_list ], [ %curnext, %t_list_step ]
+  %curd = call %Value @wam_deref_value(%WamState* %vm, %Value %cur)
+  %curtag = extractvalue %Value %curd, 0
+  %cur_is_atom = icmp eq i32 %curtag, 0
+  br i1 %cur_is_atom, label %t_list_end_chk, label %t_list_cons_chk
+t_list_end_chk:
+  %curaid = extractvalue %Value %curd, 1
+  %eid2 = load i64, i64* @wam_empty_list_atom_id
+  %is_end = icmp eq i64 %curaid, %eid2
+  br i1 %is_end, label %t_list_done, label %t_list_improper
+t_list_cons_chk:
+  %cur_is_cmp = icmp eq i32 %curtag, 3
+  br i1 %cur_is_cmp, label %t_list_cons_chk2, label %t_list_improper
+t_list_cons_chk2:
+  %curcpb = extractvalue %Value %curd, 1
+  %curcp = inttoptr i64 %curcpb to %Compound*
+  %curfn_slot = getelementptr %Compound, %Compound* %curcp, i32 0, i32 0
+  %curfn = load i8*, i8** %curfn_slot
+  %cur_is_list = call i1 @wam_functor_is_cons(i8* %curfn)
+  br i1 %cur_is_list, label %t_list_step, label %t_list_improper
+t_list_step:
+  call void @wam_sb_putc(%WamStrBuf* %sb, i8 44)
+  %curargs_slot = getelementptr %Compound, %Compound* %curcp, i32 0, i32 2
+  %curargs = load %Value*, %Value** %curargs_slot
+  %curhp = getelementptr %Value, %Value* %curargs, i32 0
+  %curh = load %Value, %Value* %curhp
+  call void @wam_term_to_sb(%WamState* %vm, %Value %curh, %WamStrBuf* %sb)
+  %curtp = getelementptr %Value, %Value* %curargs, i32 1
+  %curnext = load %Value, %Value* %curtp
+  br label %t_list_walk
+t_list_improper:
+  call void @wam_sb_putc(%WamStrBuf* %sb, i8 124)
+  call void @wam_term_to_sb(%WamState* %vm, %Value %curd, %WamStrBuf* %sb)
+  br label %t_list_done
+t_list_done:
+  call void @wam_sb_putc(%WamStrBuf* %sb, i8 93)
+  ret void
+}
+
 define i1 @execute_builtin(%WamState* %vm, i32 %op, i32 %arity) {
 entry:
   switch i32 %op, label %unknown [
@@ -6373,6 +6610,7 @@ entry:
     i32 74, label %builtin_atomic_list_concat3
     i32 75, label %builtin_char_type
     i32 172, label %builtin_code_type
+    i32 173, label %builtin_term_to_atom
     i32 174, label %builtin_read_term_from_atom
     i32 76, label %builtin_compare
     i32 77, label %builtin_must_be
@@ -15767,6 +16005,29 @@ rta.unify:
 rta.fail:
   ret i1 false
 
+builtin_term_to_atom:
+  ; term_to_atom(+Term, ?Atom): render Term (write semantics) into a growable
+  ; buffer, intern it, and unify the result Atom with A2.
+  %tta.term = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %tta.sb = alloca %WamStrBuf
+  %tta.init = call i8* @malloc(i64 64)
+  %tta.data_ptr = getelementptr %WamStrBuf, %WamStrBuf* %tta.sb, i32 0, i32 0
+  store i8* %tta.init, i8** %tta.data_ptr
+  %tta.len_ptr = getelementptr %WamStrBuf, %WamStrBuf* %tta.sb, i32 0, i32 1
+  store i64 0, i64* %tta.len_ptr
+  %tta.cap_ptr = getelementptr %WamStrBuf, %WamStrBuf* %tta.sb, i32 0, i32 2
+  store i64 64, i64* %tta.cap_ptr
+  call void @wam_term_to_sb(%WamState* %vm, %Value %tta.term, %WamStrBuf* %tta.sb)
+  %tta.data = load i8*, i8** %tta.data_ptr
+  %tta.len = load i64, i64* %tta.len_ptr
+  %tta.id = call i64 @wam_intern_atom(i8* %tta.data, i64 %tta.len)
+  call void @free(i8* %tta.data)
+  %tta.v0 = insertvalue %Value undef, i32 0, 0
+  %tta.v = insertvalue %Value %tta.v0, i64 %tta.id, 1
+  %tta.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %tta.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %tta.raw2, %Value %tta.v)
+  ret i1 %tta.ok
+
 unknown:
   ret i1 false
 }',
@@ -19397,6 +19658,7 @@ builtin_op_to_id('atom_starts_with/2', 169).  % prefix check via memcmp.
 builtin_op_to_id('atom_ends_with/2', 170).    % suffix check via memcmp.
 builtin_op_to_id('atom_contains/2', 171).     % substring check via strstr.
 builtin_op_to_id('code_type/2', 172).        % ASCII class check; shares char_type's classifier.
+builtin_op_to_id('term_to_atom/2', 173).     % render a term to its text (write semantics) and intern as an atom.
 builtin_op_to_id('read_term_from_atom/2', 174). % parse an atom's text into a term (atomic terms only, for now).
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in

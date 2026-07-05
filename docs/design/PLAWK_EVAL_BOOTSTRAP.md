@@ -113,7 +113,8 @@ independently useful (richer hand-written grammars load sooner).
    |---|---|---|
    | `is`/`=`/`==`/comparison, `functor`/`arg`/`=..`, `copy_term`, `atom_codes`/`number_codes`/`char_code`, `sub_atom`/`atom_concat`, `sort`/`msort`/`keysort`, `length`/`append`/`nth`/`reverse`, `sum_list` … | `builtin_call <id>` (id in `builtin_op_to_id`, host-implemented) | **yes** — already in the subset and loader-safe (operate on VM regs/heap + libc) |
    | `findall`/`aggregate_all`, `setof`/`bagof` | `begin_aggregate`/`end_aggregate` (tags 28/29) | **yes, this PR** — opcodes lifted into the subset; setof/bagof additionally need `inline_bagof_setof(true)`, now the `.wamo` default |
-   | `assert`/`asserta`/`assertz`/`retract`, `term_to_atom`/`read_term`/`read_term_from_atom` | `builtin_call <name>` with **no `builtin_op_to_id` entry and no host runtime impl** (writer would emit the unknown-id 200) | **no** — genuinely unimplemented; needs new runtime builtins (milestone 3b). `assert`/`retract` against a loaded object's own clauses is the subtle one — mutable clause state in an arena-rewound VM |
+   | `term_to_atom/2` (write direction) | `builtin_call term_to_atom/2` (id 173) → `@wam_term_to_sb` | **yes, milestone 3b** — a recursive term→text writer into a growable buffer, interned as an atom. Works in loaded objects too: cons detection is by functor *bytes*, not pointer identity. Unquoted (write semantics), so it does not yet round-trip through a reader |
+   | `assert`/`asserta`/`assertz`/`retract`, `read_term`/`read_term_from_atom`, `term_to_atom/2` (read direction) | `builtin_call <name>` with **no `builtin_op_to_id` entry and no host runtime impl** | **no** — needs new runtime machinery. The reader (`read_term`) is a tokenizer + operator-precedence parser (milestone 3b-read). `assert`/`retract` against a loaded object's own clauses is the subtle one — mutable clause state in an arena-rewound VM (milestone 3b-db) |
    | `catch`/`throw` | `execute catch/3` — a call to a runtime *library predicate*, not a builtin | **no** — the loaded object references `catch/3`, which lives in the host, not the object; needs cross-object/host predicate linkage (milestone 3c) |
 
    **Landed here:** the aggregate opcodes, verified end-to-end — `findall`,
@@ -124,6 +125,12 @@ independently useful (richer hand-written grammars load sooner).
    even in AOT-compiled host code — orthogonal to the loader, filed
    separately, and not a blocker since compiler-style `findall` iterates over
    predicates, not `member`.
+
+   **term_to_atom/2, write direction (milestone 3b):** a recursive term→text
+   writer (`@wam_term_to_sb`) into a growable buffer, interned as an atom.
+   Verified in both AOT and loaded objects; the byte-based cons detection
+   (`@wam_functor_is_cons`) makes list rendering correct across the loader
+   boundary despite each object carrying its own functor copies.
 
    **Reader, first increment (milestone 3b):** `read_term_from_atom/2` parses
    **atomic** canonical terms — integers (optional leading `-`) and unquoted
@@ -142,7 +149,8 @@ independently useful (richer hand-written grammars load sooner).
    **Remaining (3b/3c):** the compound/list/operator reader (with functor
    canonicalization), `assert`/`retract` (a dynamic clause store), and
    `catch`/`throw` predicate linkage. These are the true long pole for
-   self-hosting the compiler.
+   self-hosting the compiler — each is its own substantial effort, not a
+   subset lift.
 4. **Byte-buffer output from a grammar.** The compiler object must *emit*
    `.wamo` bytes. It returns them as an Atom/byte string (the item-2 blob
    bridge already carries bytes out); building that byte string inside the

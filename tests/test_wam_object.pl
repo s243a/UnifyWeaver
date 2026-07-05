@@ -74,6 +74,12 @@ bagcard(N)    :- bagof(X, agnum(X), L), length(L, N).      % 4 solutions -> 4
 noagg(_) :- fail.
 emptycount(N) :- findall(X, noagg(X), L), length(L, N).    % [] -> 0
 
+% term_to_atom/2 (eval bootstrap milestone 3b): render a term to its text and
+% intern it. Exercises nested compound + list rendering; list detection is by
+% functor bytes, not pointer identity, so it works with the loaded object's
+% own functor copies (a pointer compare would mis-render [x,y,z]).
+ttalen(N) :- term_to_atom(pt(3, [x,y,z]), A), atom_length(A, N).  % "pt(3,[x,y,z])" -> 13
+
 % read_term_from_atom/2 (eval bootstrap milestone 3b, reader -- first
 % increment: atomic terms). Parse an integer from text at runtime and use it
 % arithmetically -- proving the parse yields a real Integer, in a loaded
@@ -331,6 +337,19 @@ test(empty_aggregate_terminates,
     ( exists_file(Host) -> true ; build_host(Dir, Host) ),
     run_host(Host, Wamo, Out, 0),
     assertion(Out == "0\n"),
+    !.
+
+% term_to_atom in a loaded object renders pt(3,[x,y,z]) -> 13 chars. Verifies
+% the byte-based cons detection works with the object's own functor copies.
+test(term_to_atom_in_object,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'ttalen.wamo', Wamo),
+    write_wam_object([user:ttalen/1], [wamo_entry(ttalen/1)], Wamo),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    run_host(Host, Wamo, Out, 0),
+    assertion(Out == "13\n"),
     !.
 
 % read_term_from_atom in a loaded object: parse "40" at runtime, add 2 -> 42.

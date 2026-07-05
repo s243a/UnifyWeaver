@@ -10,6 +10,10 @@
 %WamSlice = type { i8*, i64 }             ; pointer, length
 %WamI64Parse = type { i64, i1 }           ; parsed value, success flag
 
+; === Growable string buffer ===
+; Used by term_to_atom/2 to render a term's text before interning it.
+%WamStrBuf = type { i8*, i64, i64 }       ; data, len, cap
+
 ; === Compound and List (heap-allocated) ===
 %Compound = type { i8*, i32, %Value* }    ; functor, arity, args
 %List = type { i32, %Value* }             ; length, elements

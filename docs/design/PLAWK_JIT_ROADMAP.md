@@ -323,10 +323,12 @@ loadable along the way.
   builtins, library-predicate calls). Landed this PR: **aggregate control**
   `begin_aggregate`/`end_aggregate` into the loadable subset, so `findall`,
   `setof` and `bagof` over user-predicate goals load and run from a `.wamo`
-  (setof/bagof via `inline_bagof_setof`, now the `.wamo` default). Remaining:
-  `assert`/`retract`/`term_to_atom`/`read_term` runtime builtins (3b) and
-  `catch`/`throw` predicate linkage (3c) — the true long pole. See the
-  bootstrap doc for the full loadability matrix.
+  (setof/bagof via `inline_bagof_setof`, now the `.wamo` default). Milestone 3b
+  adds `term_to_atom/2` (write direction) — a recursive term→text writer that
+  works in loaded objects (byte-based cons detection). Remaining: the reader
+  (`read_term` / `term_to_atom` read direction — a parser), `assert`/`retract`
+  (a dynamic clause store), and `catch`/`throw` predicate linkage (3c) — the
+  true long pole. See the bootstrap doc for the full loadability matrix.
 - **Milestones 4–6** (byte-buffer output, the `eval`/`compile` surface,
   self-host) — see the bootstrap doc.
 
