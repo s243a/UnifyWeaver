@@ -69,10 +69,16 @@ the general notion (of relatedness, lineage, …).
   **per-judge `judge_emb` rows** absorb each judge's *offset/bias* (fidelity). You get generality **and**
   per-judge calibration — not a lossy average. This is the "operator superposition as a regulariser" idea
   (`DESIGN_inferred_operator_superposition.md` §7) lifted from *operators* to *judges*.
-- **Symptom of success:** performance rises on a **held-out set the blend pairs never touched** (generalisation,
-  not memorisation). E.g. blend-judge SYM training lifted *base* simplewiki SYM held-out well above the
-  fine-tune-data's own domain — evidence the model learned a more general SYM, not the Wikipedia round. (Confirm
-  across seeds; a single-seed lift can be variance.)
+- **Symptom of success (and a cautionary result):** the *theory* predicts a rise on a held-out set the blend
+  pairs never touched (generalisation, not memorisation). **We tested it and it did NOT pan out for the
+  *constructed* blend.** A 3×3 sweep (`REPORT_blend_judge_sweep.md`): fine-tuning on the LLM Wikipedia round did
+  lift *base* simplewiki SYM held-out (+0.41 → **~+0.79, stable across seeds**) — but a **control with *no*
+  constructed blend matched it** (LLM-only +0.790 vs fixed-λ blend +0.787), and **random-λ destabilised** (one
+  seed collapsed to +0.09). So the lift was **the data + the fine-tune (which already spans multiple judge
+  tags), not the constructed superposition** — and forcing a per-pair random blend is *risky*. Lesson: (a)
+  multi-judge *data diversity* may buy the generality without any hand-constructed blend judge; (b) a constructed
+  blend must **beat a no-blend control across seeds** before you credit it; (c) random-λ needs stability
+  guards. Don't cite a single-seed lift.
 - **The one honest condition:** this teaches the *right* generality only if the judges genuinely measure the same
   latent. A systematically-biased judge, superposed in, teaches an averaged-wrong signal — which is exactly what
   the per-judge calibration rows guard against, and why the blend must be *validated* (does graph⊕e5 actually
