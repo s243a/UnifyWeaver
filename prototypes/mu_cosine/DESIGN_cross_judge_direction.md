@@ -73,6 +73,26 @@ is the *direction*, so target the directional **rank** (existing `L_dir`), which
 scale mismatch. The magnitude blend is the genuine cross-judge divergence — a secondary, optional term, not the
 foundation.
 
+## Three-way finding (2026-07-05): direction is CONSENSUS on Wikipedia — magnitude is where they differ
+
+Extended to **three** estimators (user's idea) — graph-discrimination, LLM-element, LLM-subcategory — the
+sign-agreement is **100% pairwise, zero disagreements** (incl. element-vs-subcategory), on the 880 pairs. They
+differ only in **magnitude**: corr(graph, subcat) +0.81, (graph, element) +0.44, (element, subcat) +0.28.
+
+**Implication:** Wikipedia categories are a *clean taxonomy* — direction, when it exists, is unambiguous
+(`model_prod` already gets 99.9% edge-order accuracy). So the "same direction" premise is confirmed but *trivially*
+(nothing to resolve). Two consequences:
+- A 3-operator random superposition here tests the **judge/operator-independence MECHANISM** (does varying the mix
+  push a robust direction into the trunk — the truncated-λ transfer) and blends the **magnitude** differences
+  (element vs subcat are genuinely different, +0.28). Valid, but it is a *mechanism* test, not a
+  *disagreement-resolution* test.
+- The **disagreement-resolution motivation needs direction-AMBIGUOUS data** — looser hierarchies (Pearltrees,
+  pages, mindmaps) where the graph and LLM would actually flip. Wikipedia can't provide it.
+
+**Decision pending (user):** (A) build the 3-operator superposition on Wikipedia = a clean mechanism/transfer
+test on a consensus direction; or (B) source direction-ambiguous data first, so the superposition resolves real
+disagreements. (Not mutually exclusive — A is cheap and reuses everything; B is the harder, more novel test.)
+
 ## Open design decisions (need resolving before building)
 
 1. **Lateral / no-ancestor pairs.** `d_graph = 0` when neither node is an ancestor (siblings, distant). Are those
