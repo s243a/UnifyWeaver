@@ -45,13 +45,42 @@ agreement sharpened it. But the **negative behaviour itself is not demonstrated*
 (0.093→0.127), which on **16** held laterals (all values ~0.1) is noise, not a real regression. The mechanism is
 sound and implemented; Wikipedia's tiny held set can't show the no-direction half.
 
-## Conclusion
-On Wikipedia, **direction is too consensual to be a real test** — the *sign* invariant is trivial, and the
-*magnitude* + *negative* signals are too small/noisy on 26 dir / 16 lateral held pairs to claim anything firmly
-(the +0.54 with negatives is suggestive but underpowered). The build is the reusable asset: the `dir-blend` judge,
-the 3-estimator emitter with **contradiction→negative** handling (user's insight, ready for real contradictions),
-and the eval. The **definitive test needs direction-AMBIGUOUS data** (option B: Pearltrees multi-parent DAG /
-looser hierarchies) where the graph and LLM actually *flip* — there the negatives are *genuine* (not just absent),
-and a larger held set gives the power this lacks.
+## THE TRUE TEST — novel-node generalization (user 2026-07-05)
+The real test (user): *"how well it predicts the direction in cases where NONE of the operators have seen the
+nodes."* Sampled **400 enwiki parent-child pairs whose both nodes are OUTSIDE the training graph** (not in
+100k_cats, never LLM-scored) — the model has **only frozen e5**, no graph ancestors, no operator readout trained
+on them. Direction ground-truth = the enwiki edge (child→parent); metric = sign of `μ(child|parent)−μ(parent|child)`.
 
-Repro: `emit_direction_blend.py --mix {equal,dirichlet}` (+ negatives by default) → fine-tune → `eval_direction.py`.
+**Purpose (user):** the superposition *target* is a **linear** sum `Σ wᵢ·dᵢ`; the network learning it is **not**
+linear — it uses that capacity to *separate* the operator inputs so it can reconstruct any linear mix, which is
+what should let it generalize direction to unseen nodes.
+
+### Result 1 — direction generalizes from e5 (the robust positive)
+Every model predicts novel-node direction **~90%** from e5 alone (`prod` 91.5%). The separated direction concept
+transfers to nodes no operator saw — it is *not* memorised operator outputs.
+
+### Result 2 — the superposition does NOT reliably beat baseline (multi-seed kills the single-seed win)
+`dirichlet` (random-mix): s1 95.5% / s2 **81.8%** / s3 94.2% → **mean 90.5% vs prod 91.5%** (−1.0). The single-seed
++4 was seed luck; across seeds the superposition training adds no reliable novel-node direction over `model_prod`.
+
+### Result 3 — e5 prefixes carry ~8 points of it (user's prediction, confirmed)
+| | WITH e5 prefixes | WITHOUT (query==passage) |
+|---|---|---|
+| prod | 91.5% | 83.2% |
+| dirichlet s1 | 95.5% | 86.8% |
+
+Removing the `query:`/`passage:` asymmetry drops direction ~8 pts — so **the frozen e5 prefixes are a real source
+of the direction** (as predicted). But the model keeps **83%** without them: a large **learned, prefix-independent**
+direction the non-linear network built during training.
+
+## Conclusion
+On Wikipedia the direction axis is **consensus** (sign trivially agreed) and the superposition's magnitude/negative
+signals are underpowered on the in-coverage held set. The **true (novel-node) test** is the informative one and
+gives a clean, honest read: **direction generalizes to unseen nodes ~90% from frozen e5** — driven partly by the
+e5 prefix asymmetry (~8 pts, confirmed) and partly by a learned prefix-independent representation — but the
+**direction-superposition training adds no reliable generalization over `model_prod`** (multi-seed 90.5% vs 91.5%).
+The reusable assets stand (the `dir-blend` judge, the 3-estimator emitter with contradiction→negative, the novel-
+node eval). The superposition's value on *direction* is not established here; a **direction-AMBIGUOUS** corpus
+(option B) — where operators genuinely flip — remains the setting where it could actually pay off.
+
+Repro: `emit_direction_blend.py --mix {equal,dirichlet}` → fine-tune → novel-node eval (± e5 prefixes).

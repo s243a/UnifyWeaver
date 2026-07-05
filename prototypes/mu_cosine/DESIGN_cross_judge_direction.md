@@ -97,10 +97,11 @@ disagreements. (Not mutually exclusive — A is cheap and reuses everything; B i
 
 - **Superposition = linear SUM, not product.** `d_blend = Σ wᵢ·dᵢ`. A *product* of operators is a *different
   (composite) operator*, not a superposition. Linearity is deliberate.
-- **The purpose is to teach the model to SEPARATE the operator inputs; linearity makes it learnable.** Training on
-  random *linear* mixes forces the model to represent each operator's contribution *separately* (so it can
-  reconstruct *any* linear combination) — a linear source-separation / unmixing objective. This is *why*
-  judge-independence emerges (the trunk holds the separable components); a product wouldn't decompose this way.
+- **The purpose is to teach the model to SEPARATE the operator inputs; linearity of the TARGET makes it learnable
+  — the NETWORK is not linear.** The mixing target is a linear sum, but the model learning it is a non-linear
+  network that uses that capacity to represent each operator's contribution *separately* (so it can reconstruct
+  *any* linear combination) — a source-separation / unmixing objective. This is *why* judge-independence emerges
+  (the trunk holds the separable components); a *product* target wouldn't decompose this way.
 - **The TRUE test: predict direction where NO operator has seen the nodes.** The eval above scored pairs the
   operators *cover* (graph knows them, LLM scored them) — not a real generalisation test. The decisive test is
   **novel-node pairs** (not in the graph, not LLM-scored in training) where all operators are *silent* — so the
