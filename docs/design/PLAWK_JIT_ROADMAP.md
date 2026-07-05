@@ -23,7 +23,8 @@ The dynamic-grammar surface is feature-complete for numeric work:
 | Multi-entry objects — writer `wamo_entries([...])` + loader name resolution (`@wam_object_entry_index`) | #3471 |
 | plawk surface A — `dyncall@name(...)` (named entry, compile-time-fixed, cached PC) | #3473 |
 | `float(dyncall@name(...))` / `blob(dyncall@name(...))` (named double / byte returns, shared resolver) | #3474 |
-| Structured returns — `@wam_object_call_record` (deserialize a returned Compound's args into typed i64/f64 slots) | this PR |
+| Structured returns — `@wam_object_call_record` (deserialize a returned Compound's args into typed i64/f64 slots) | #3475 |
+| Destructure surface — `(a, b) = dyncall[@name](args) as (i64 f64)` binds fields to typed scalars | this PR |
 
 A grammar is compiled ahead of time to a `.wamo`, loaded at runtime (from a
 fixed path, an in-memory buffer, or a per-call runtime source), cached with
@@ -165,15 +166,16 @@ Purely additive; no dependency on the other items.
 **Effort:** A landed. B is moderate (declaration table + a resolution pass +
 the reserved-name check). **Depends on:** nothing.
 
-### 4. Binary-data returns — structured records (deserialization) — *mechanism LANDED (numeric fields); surface + string fields deferred*
+### 4. Binary-data returns — structured records (deserialization) — *mechanism + destructure surface LANDED (numeric fields)*
 
 **What:** let a grammar return a **compound term** (e.g. `rec(42, 3.14,
 "name")`) that plawk **deserializes** into typed fields against a declared
-return shape — `dyncall(...) as (i64 f64 s16)` → walk the compound's args,
-type each (arg0 Integer→i64, arg1 Float→f64, arg2 Atom→sN), and materialize
-into a record buffer so `$1`,`$2`,`$3` address it like any binary record.
+return shape. Because deserialization means *choosing the target type*, the
+same walked compound can materialize into more than one plawk container
+(see "Target containers" below) — the first shipped target is a set of
+typed scalar variables.
 
-**Mechanism landed (this PR):** the native primitive
+**Mechanism landed:** the native primitive
 `@wam_object_call_record(vm, pc, nargs, args, out_reg, nfields, typecodes,
 out_slots)`. It runs the entry, requires the output cell to deref to a
 **Compound** of arity `nfields`, and deserializes each arg into `out_slots[i]`
@@ -181,18 +183,41 @@ per `typecodes[i]` (`0` → i64, arg must be Integer; `1` → f64, arg must be a
 number, stored as double bits) — **before** the arena rewind, since the
 compound and its arg cells live in the arena (atoms survive; a plain
 `@wam_object_call_*` would rewind them away). Same heap-save/rewind discipline
-as the scalar variants, so a per-record call stays constant-memory. Verified
-end to end: a grammar returning `rec2f(10, 10.5)` → `10` (i64) + `10.5` (f64)
-via a host that calls the primitive with typecodes `[0,1]`. This is the
-"output is a term, not a scalar" plumbing item 2 anticipated.
+as the scalar variants, so a per-record call stays constant-memory. This is
+the "output is a term, not a scalar" plumbing item 2 anticipated.
 
-**Deferred:** (a) **string/atom fields** — the bytes survive the rewind via
-the persistent atom table, but a field needs a `(ptr,len)` slot pair rather
-than one i64, so the typecode set and slot layout grow; (b) the plawk
-`dyncall(...) as (shape)` **surface** — a return-shape parser, wiring the
-`out_slots` into a synthesized `BINFMT`-style record so `$1`,`$2`,`$3` address
-it, and a `dyncache`-style lifetime for the record buffer. Mechanism-first,
-surface-second — the same split used for every earlier item.
+**Destructure surface landed:** `(v1, ..., vn) = dyncall[@name](args) as
+(T1 ... Tn)` binds each returned field to a typed scalar variable — field i
+lands in `vi`, an i64 scalar for `T=i64` or an f64 scalar for `T=f64`. The
+record shims (`@plawk_dyncall_rec_N` / `@plawk_dyncall_named_rec_<Sym>`)
+forward the call-site typecodes + a stack slot array to the primitive, then
+each field is loaded and threaded into the variable's scalar slot like any
+assignment (so `total += n` after a bind works). A failed call zeroes the
+slots. Verified end to end: `rec(X) -> pair(X, X+0.5)`, `(n, half) =
+dyncall@rec($1) as (i64 f64)` over 10,20 → `total=30`, `sum=31.0`. Rides
+`emit_wamo_loader(true)` + per-site collection (no IR when unused).
+
+**Target containers (the "choose the type" generalization):** a return shape
+is really a *marshalling target*, and the walked compound can land in
+different plawk containers — this is the through-line for the rest of item 4:
+
+- **Typed scalars** (`(a,b) = ... as (i64 f64)`) — *landed*.
+- **Record view / field reindex** (`... as (i64 f64) { $1 $2 ... }`) — the
+  more awk-like target: the returned record becomes the current record for a
+  scoped block so `$1`,`$2` read it like a `BINFMT` line, reusing the typed
+  field-read machinery. The maintainer's preferred long-term surface;
+  next phase.
+- **Associative array** (`arr = ... as assoc`) — a grammar returning keyed
+  pairs (`[k1-v1, k2-v2]` or a keyed compound) materializes into plawk's
+  existing assoc-array table, addressed `arr["k"]`.
+- **Positional array** — fields by numeric index into one array value.
+
+Each target reuses one marshaller over the same walked compound; they differ
+only in where fields are written (scalar slots, the line record, an assoc
+table). String/atom fields are the cross-cutting extension: their bytes
+survive the rewind via the persistent atom table, but a field needs a
+`(ptr,len)` slot pair rather than one i64, so the typecode set and slot
+layout grow — add once, and every target gains string fields.
 
 **Why:** this is the *other half* of your binary-return idea — the case
 that **does** need deserialization. It is also the endgame that closes the

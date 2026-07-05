@@ -117,6 +117,8 @@ build(File, Out0, KeepLL) :-
         ; plawk_program_dyncall_named_entries(Program, DynNamed), DynNamed \== []
         ; plawk_program_dyncall_named_float_entries(Program, DynNamedF), DynNamedF \== []
         ; plawk_program_dyncall_named_blob_entries(Program, DynNamedB), DynNamedB \== []
+        ; plawk_program_dyncall_rec_arities(Program, DynRecArities), DynRecArities \== []
+        ; plawk_program_dyncall_named_rec_entries(Program, DynNamedRec), DynNamedRec \== []
         ; plawk_program_dyncall_at_arities(Program, DynAtArities), DynAtArities \== []
         ; plawk_program_dyncall_float_arities(Program, DynFArities), DynFArities \== []
         ; plawk_program_dyncall_at_float_arities(Program, DynAtFArities), DynAtFArities \== []
