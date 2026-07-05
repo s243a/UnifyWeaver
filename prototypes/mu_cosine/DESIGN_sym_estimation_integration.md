@@ -60,12 +60,16 @@ sources  →  JointPosterior (calibrated, held-out)  →  P(relation | μ-vector
 
 ## What is genuinely new: the distance (sibling) source
 
-> **TESTED — `1/d` does NOT earn its keep (2026-07-05, `REPORT_mu_posterior_dist.md`).** On 880 LLM-labelled
-> Wikipedia relation pairs, the with-vs-without-`1/d` ablation of the calibrated joint head shows **no gain**
-> (AURC CIs overlap on both node-disjoint and random splits; acc/ECE flat-to-worse). Reason: on Wikipedia
-> *categories* `1/d` correlates **+0.50 with e5** (graph distance ≈ topical similarity) — it is **redundant with
-> e5**, not decorrelated. The claim below was the *hypothesis*; it lost. What *did* validate: **the joint head
-> beats the factored PoE** (log-loss 1.08 vs 1.55/1.26, ECE 0.09 vs 0.16/0.12) — the course-correction's core.
+> **TESTED, then SCOPE-CORRECTED (2026-07-05, `REPORT_mu_posterior_dist.md`).** The ablation used the **LLM's
+> argmax relation as the target** — but that is **not the SYM judge**. The SYM judge is a *constructed
+> superposition* `e5 ⊕ confidence_weighted(1/d ⊕ asymmetric memberships)`; the model's loss is against that
+> blend, where `1/d` is a **constituent** (set by the superposition ratio), not a competitor. So the "no gain /
+> redundant with e5" outcome is scoped to *LLM-relation prediction*, and `corr(1/d,e5)=+0.50` is a **positive**
+> signal (`1/d` captures semantic distance while tracking the graph). The loss-relevant validation of graph+e5
+> is the **original dual-judge finding** (LLM SYM-*relatedness* → DUAL +0.75 vs e5 +0.60), which stands. What
+> this run **did** establish cleanly: **the joint head beats the factored PoE** (log-loss 1.08 vs 1.55/1.26,
+> ECE 0.09 vs 0.16/0.12) — the course-correction's core. Right next test = the **superposition ratio** in the
+> judge/SYM-training framing, not relation classification.
 
 The dual-judge work's hypothesised lasting value was a **source** (below) — but the test above shows it's
 redundant with e5. The real, validated win is the *estimator* (joint head > PoE), not this source:

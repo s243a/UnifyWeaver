@@ -1,5 +1,18 @@
 # Does `1/d` earn its keep in the calibrated joint posterior? — the honest test
 
+> **SCOPE CORRECTION (user, 2026-07-05).** This test used the **LLM's argmax relation as the target** and asked
+> whether `1/d` beats e5 at *predicting the LLM label*. That is **not the SYM judge**. The SYM judge is a
+> *constructed superposition* — `judge = e5 ⊕ confidence_weighted(1/d ⊕ asymmetric memberships)` — and the
+> model's loss is against **that blend**, in which `1/d` is a **constituent** (weighted by the superposition
+> ratio), not a competitor. So "`1/d` is redundant with e5" here means only "redundant *for predicting the LLM
+> relation label*"; it says **nothing** about `1/d`'s role in the constructed judge. Two consequences: (a) the
+> `corr(1/d, e5)=+0.50` is a *positive* signal — `1/d` captures semantic distance while tracking our graph more
+> closely; (b) the loss-relevant validation of `1/d`+graph is the *original dual-judge finding* (LLM SYM-
+> **relatedness** as validation ground truth → DUAL(graph⊕e5) +0.75 vs e5 +0.60), which this does not overturn.
+> **What still stands unambiguously: the JOINT head beats the factored PoE.** The "`1/d` doesn't earn its keep"
+> headline is retained below only for the narrow LLM-relation-classification framing.
+
+
 *Result of the `DESIGN_sym_estimation_integration.md` build plan (steps 1–3): add `1/d` to the JointPosterior
 source vector, fit on held-out, ablate with vs without. Data = 880 Wikipedia category pairs, both endpoints in
 the struct embedding, LLM-labelled (gpt-5.5-low, §14 rubric; argmax relation = the classification target). Model
