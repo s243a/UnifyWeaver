@@ -80,11 +80,21 @@ emptycount(N) :- findall(X, noagg(X), L), length(L, N).    % [] -> 0
 % own functor copies (a pointer compare would mis-render [x,y,z]).
 ttalen(N) :- term_to_atom(pt(3, [x,y,z]), A), atom_length(A, N).  % "pt(3,[x,y,z])" -> 13
 
-% read_term_from_atom/2 (eval bootstrap milestone 3b, reader -- first
-% increment: atomic terms). Parse an integer from text at runtime and use it
-% arithmetically -- proving the parse yields a real Integer, in a loaded
-% object. Compounds/lists/floats/operators are follow-up increments.
+% read_term_from_atom/2 (eval bootstrap milestone 3b, reader). Atomic terms:
+% parse an integer from text at runtime and use it arithmetically.
 readint_obj(R) :- read_term_from_atom('40', T), R is T + 2.  % -> 42
+
+% Compound reader: a parsed compound unifies against a source-level literal
+% pattern -- exercising @wam_functor_eq (the reader's atom-table functor
+% pointer differs from the AOT @.fn_point global; the strcmp fallback makes
+% them equal). Then arithmetic on the decomposed args.
+readcompound_obj(R) :- read_term_from_atom('point(3,4)', T), T = point(X,Y), R is X*10 + Y.  % 34
+
+% Nested compound decomposition.
+readnested_obj(R) :- read_term_from_atom('f(g(7),h(5))', T), T = f(g(A),h(B)), R is A + B.  % 12
+
+% List reader: parse a list and reduce it.
+readlist_obj(S) :- read_term_from_atom('[10,20,30]', L), sum_list(L, S).  % 60
 
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
@@ -363,6 +373,25 @@ test(read_term_from_atom_in_object,
     ( exists_file(Host) -> true ; build_host(Dir, Host) ),
     run_host(Host, Wamo, Out, 0),
     assertion(Out == "42\n"),
+    !.
+
+% Compound reader in a loaded object: a parsed compound unifies against a
+% source literal (via @wam_functor_eq), decomposes, and computes. Also covers
+% nested compounds and list parsing.
+test(read_compound_in_object,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'readcompound.wamo', W1),
+    directory_file_path(Dir, 'readnested.wamo', W2),
+    directory_file_path(Dir, 'readlist.wamo', W3),
+    write_wam_object([user:readcompound_obj/1], [wamo_entry(readcompound_obj/1)], W1),
+    write_wam_object([user:readnested_obj/1], [wamo_entry(readnested_obj/1)], W2),
+    write_wam_object([user:readlist_obj/1], [wamo_entry(readlist_obj/1)], W3),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    run_host(Host, W1, O1, 0), assertion(O1 == "34\n"),
+    run_host(Host, W2, O2, 0), assertion(O2 == "12\n"),
+    run_host(Host, W3, O3, 0), assertion(O3 == "60\n"),
     !.
 
 :- end_tests(wam_object).

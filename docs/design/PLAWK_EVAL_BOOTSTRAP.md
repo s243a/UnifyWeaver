@@ -132,22 +132,26 @@ independently useful (richer hand-written grammars load sooner).
    (`@wam_functor_is_cons`) makes list rendering correct across the loader
    boundary despite each object carrying its own functor copies.
 
-   **Reader, first increment (milestone 3b):** `read_term_from_atom/2` parses
-   **atomic** canonical terms — integers (optional leading `-`) and unquoted
-   atoms — via `@wam_parse_atomic`, returning a real Integer/Atom `%Value`.
-   Verified in a loaded object (parse `"40"`, add 2 → 42). Compounds, lists,
-   floats, variables and operators are follow-up increments: they need the
-   recursive descent parser **plus functor-pointer canonicalization** —
-   unification compares compound functors by pointer (`icmp eq i8*`), so a
-   reader-built functor must resolve to the same pointer the rest of the
-   runtime uses. `=..` compose mode wrestles with the same problem (a trail of
-   fixes: "did not compare equal to a literal"); the analogous *atom* case
-   (a dynamically-interned atom vs a source-baked literal) already shows up
-   under `==`/`atom_concat`, independent of the reader. Resolving that
-   canonicalization is the gating design task for the compound reader.
+   **Reader (milestone 3b):** `read_term_from_atom/2` is a recursive-descent
+   parser (`@wam_parse_term` / `@wam_parse_list` / `@wam_make_atomic`, ported
+   in structure from the C++ hybrid target) for canonical terms: integers,
+   unquoted atoms, compounds `name(a,b)`, and lists `[a,b|t]` (unbounded, built
+   through a tail slot). Verified in loaded objects — `point(3,4)` unifies
+   against a source literal `point(X,Y)`, nested `f(g(7),h(5))` decomposes,
+   `[10,20,30]` sums to 60.
 
-   **Remaining (3b/3c):** the compound/list/operator reader (with functor
-   canonicalization), `assert`/`retract` (a dynamic clause store), and
+   The functor-pointer problem it exposed is **solved**, not deferred:
+   unification compares compound functors by pointer, and a reader-built
+   functor (from the atom table) will not equal the AOT `@.fn_*` global for the
+   same name. `@wam_functor_eq` makes the compare **pointer-fast with a strcmp
+   fallback only when the pointers differ** — the hot AOT-vs-AOT path is
+   unchanged, dynamic compounds unify correctly, and this also retroactively
+   fixes the `=..` "did not compare equal to a literal" issue. (List cons cells
+   reuse the shared `@.fn__5B_7C_5D` global, so they stay pointer-equal.)
+
+   **Remaining (3b/3c):** operators (`X is A+B`, `H :- B` — an operator-
+   precedence layer over this parser), floats, variables, and quoted atoms in
+   the reader; `assert`/`retract` (a dynamic clause store); and
    `catch`/`throw` predicate linkage. These are the true long pole for
    self-hosting the compiler — each is its own substantial effort, not a
    subset lift.
