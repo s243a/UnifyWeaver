@@ -73,4 +73,21 @@ graph_ref +0.823). And the **judge input matters** — B under `blend` +0.847 vs
 adds exactly the structural signal LLM-only training discards. *Caveats:* single-seed checkpoints (the 3×3 sweep
 above didn't `--save`); `T` is graph-dominated here (`e5_ref` mean 0.907, low variance on this Wikipedia sample),
 so "predict T" leans on the graph half — which is the point, but a held-out set with more e5 spread would
-sharpen the e5 side. Multi-seed of the *checkpoints* is the confirming follow-up.
+sharpen the e5 side.
+
+### Multi-seed — CONFIRMED (checkpoints A/B × seeds 1-3, `--save`, `eval_blend_prediction.py`)
+
+`corr(SYM readout, T)` under `judge=blend`, and the discriminating `graph_ref` half:
+
+| seed | A (LLM-only) | B (blend) | B−A | A graph_ref | B graph_ref |
+|---|---|---|---|---|---|
+| 1 | +0.675 | **+0.847** | +0.172 | +0.641 | +0.823 |
+| 2 | +0.753 | **+0.832** | +0.079 | +0.729 | +0.805 |
+| 3 | +0.664 | **+0.845** | +0.181 | +0.632 | +0.817 |
+| **mean** | **+0.697** | **+0.841** | **+0.144** | +0.667 | **+0.815** |
+
+*(prod baseline +0.746 / graph_ref +0.714.)* **B beats A on every seed** (mean +0.841 vs +0.697, vs prod +0.746);
+B robustly **recovers the graph half** (+0.815) that **LLM-only training drifts from** (+0.667); and reading
+under `judge=blend` beats agnostic for B on all three seeds. So the blend-judge advantage on the *right* metric
+is not a single-seed fluke — it's consistent. (Scope: `T` is graph-dominated on this Wikipedia held-out set, so
+this confirms the *structural* half most strongly; a higher-e5-variance held-out would test the e5 side.)
