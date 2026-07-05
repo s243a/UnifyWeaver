@@ -74,6 +74,12 @@ bagcard(N)    :- bagof(X, agnum(X), L), length(L, N).      % 4 solutions -> 4
 noagg(_) :- fail.
 emptycount(N) :- findall(X, noagg(X), L), length(L, N).    % [] -> 0
 
+% read_term_from_atom/2 (eval bootstrap milestone 3b, reader -- first
+% increment: atomic terms). Parse an integer from text at runtime and use it
+% arithmetically -- proving the parse yields a real Integer, in a loaded
+% object. Compounds/lists/floats/operators are follow-up increments.
+readint_obj(R) :- read_term_from_atom('40', T), R is T + 2.  % -> 42
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -325,6 +331,19 @@ test(empty_aggregate_terminates,
     ( exists_file(Host) -> true ; build_host(Dir, Host) ),
     run_host(Host, Wamo, Out, 0),
     assertion(Out == "0\n"),
+    !.
+
+% read_term_from_atom in a loaded object: parse "40" at runtime, add 2 -> 42.
+% Proves the parse yields a genuine Integer usable in arithmetic.
+test(read_term_from_atom_in_object,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'readint.wamo', Wamo),
+    write_wam_object([user:readint_obj/1], [wamo_entry(readint_obj/1)], Wamo),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    run_host(Host, Wamo, Out, 0),
+    assertion(Out == "42\n"),
     !.
 
 :- end_tests(wam_object).

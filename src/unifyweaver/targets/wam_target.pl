@@ -2756,6 +2756,7 @@ is_builtin_pred(split_string, 4). % split string by separator chars.
 is_builtin_pred(term_to_atom, 2). % bidirectional canonical-form term ↔ atom.
 is_builtin_pred(read, 1).         % stdin: read a term terminated by `.`.
 is_builtin_pred(read_term, 1).    % alias for read/1.
+is_builtin_pred(read_term_from_atom, 2). % parse an atom's text into a term (WAM/LLVM: atomic terms).
 is_builtin_pred(get_char, 1).     % stdin: read one char as atom.
 is_builtin_pred(get_char, 2).     % stream: read one char as atom.
 is_builtin_pred(get_code, 1).     % stdin: read one char as int code.

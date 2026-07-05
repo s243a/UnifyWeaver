@@ -125,9 +125,24 @@ independently useful (richer hand-written grammars load sooner).
    separately, and not a blocker since compiler-style `findall` iterates over
    predicates, not `member`.
 
-   **Remaining (3b/3c):** `assert`/`retract`/`term_to_atom`/`read_term` runtime
-   builtins, and `catch`/`throw` predicate linkage. These are the true long
-   pole for self-hosting the compiler.
+   **Reader, first increment (milestone 3b):** `read_term_from_atom/2` parses
+   **atomic** canonical terms — integers (optional leading `-`) and unquoted
+   atoms — via `@wam_parse_atomic`, returning a real Integer/Atom `%Value`.
+   Verified in a loaded object (parse `"40"`, add 2 → 42). Compounds, lists,
+   floats, variables and operators are follow-up increments: they need the
+   recursive descent parser **plus functor-pointer canonicalization** —
+   unification compares compound functors by pointer (`icmp eq i8*`), so a
+   reader-built functor must resolve to the same pointer the rest of the
+   runtime uses. `=..` compose mode wrestles with the same problem (a trail of
+   fixes: "did not compare equal to a literal"); the analogous *atom* case
+   (a dynamically-interned atom vs a source-baked literal) already shows up
+   under `==`/`atom_concat`, independent of the reader. Resolving that
+   canonicalization is the gating design task for the compound reader.
+
+   **Remaining (3b/3c):** the compound/list/operator reader (with functor
+   canonicalization), `assert`/`retract` (a dynamic clause store), and
+   `catch`/`throw` predicate linkage. These are the true long pole for
+   self-hosting the compiler.
 4. **Byte-buffer output from a grammar.** The compiler object must *emit*
    `.wamo` bytes. It returns them as an Atom/byte string (the item-2 blob
    bridge already carries bytes out); building that byte string inside the
