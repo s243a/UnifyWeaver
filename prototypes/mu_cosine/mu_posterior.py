@@ -271,7 +271,9 @@ def struct_dist_fn(struct_emb_path):
 def aurc(conf, correct):
     """Area under the risk-coverage curve (Geifman & El-Yaniv). conf = per-item confidence, correct ∈ {0,1}.
     Sort by confidence desc; selective risk at coverage k = error rate among the k most-confident. Lower = the
-    confidence signal routes errors to the low-confidence tail better."""
+    confidence signal routes errors to the low-confidence tail better. Definition here: UNIFORM-coverage mean
+    over k=1..n INCLUDING the full-coverage point k=n (where confidence is irrelevant) — a fixed, consistent
+    normalisation; compare only against AURCs computed the same way (review 2026-07-05)."""
     conf, correct = np.asarray(conf, float), np.asarray(correct, float)
     order = np.argsort(-conf)
     err = 1.0 - correct[order]
@@ -403,6 +405,8 @@ def main():
             train = [i for i, r in enumerate(fit_set) if r["node"] not in hn and r["root"] not in hn]
             print(f"\nsplit=node-disjoint: {len(train)} train / {len(held)} held "
                   f"({len(fit_set)-len(train)-len(held)} cross-split pairs dropped)")
+            _hc = Counter(rels[i] for i in held)          # per-relation held counts — a class dropped to 0 (esp.
+            print(f"  held-set relations: {dict(_hc)}")    # the tiny lateral see_also) invalidates that axis's AURC
         else:
             order = list(range(len(fit_set))); random.Random(0).shuffle(order)
             nh = int(args.held_frac * len(order)); held, train = order[:nh], order[nh:]

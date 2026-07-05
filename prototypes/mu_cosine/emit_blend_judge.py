@@ -26,11 +26,15 @@ def main():
     ap.add_argument("--model", default="model_prod.pt")
     ap.add_argument("--struct-emb", required=True)
     ap.add_argument("--lam", type=float, default=0.5, help="graph-judge portion / λ mean; blend = (1−λ)·e5 ⊕ λ·graph")
-    ap.add_argument("--lam-dist", choices=["fixed", "uniform", "normal"], default="fixed",
-                    help="per-pair λ: fixed(=--lam) | uniform U(0,1) | normal(mean=--lam, std=--lam-std) clamped [0,1] "
-                    "(the blend regulariser — some randomness spreads the family; user 2026-07-05)")
-    ap.add_argument("--lam-std", type=float, default=0.15, help="std for --lam-dist normal (clamped-normal)")
+    ap.add_argument("--lam-dist", choices=["fixed", "uniform", "truncated"], default="fixed",
+                    help="per-pair λ: fixed(=--lam) | uniform U(0,1) | truncated-normal(mean=--lam, std=--lam-std) "
+                    "on [0,1] (resampled, NOT clamped — no boundary mass pile-up; user 2026-07-05). The blend "
+                    "regulariser — some randomness spreads the family.")
+    ap.add_argument("--lam-std", type=float, default=0.15, help="std for --lam-dist truncated-normal")
     ap.add_argument("--random", action="store_true", help="[deprecated alias for --lam-dist uniform]")
+    # measured reliabilities from measure_membership_confidence.py (corr with SYM judge; leakage-inflated first
+    # pass — see REPORT_mu_posterior_dist.md). Used INSIDE the blend-judge CONSTRUCTION (not the final fusion
+    # combiner, so not subject to the playbook's "don't hand-set combiners over correlated sources" rule).
     ap.add_argument("--c-dist", type=float, default=0.35)
     ap.add_argument("--c-subcat", type=float, default=0.72)
     ap.add_argument("--c-elem", type=float, default=0.82)
@@ -61,7 +65,8 @@ def main():
     ms, me = membership_readouts(model, tok, pairs, dev)                       # asym-ops (max fwd/bwd), detached
     ms, me = ms.cpu().numpy(), me.cpu().numpy()
     sdist = struct_dist_fn(a.struct_emb)
-    dist01 = np.array([min(1.0, sdist(x, y) / 3.0) if sdist(x, y) == sdist(x, y) else 0.0 for x, y in pairs])
+    _sv = [sdist(x, y) for x, y in pairs]                  # call sdist once per pair (review nit)
+    dist01 = np.array([min(1.0, v / 3.0) if v == v else 0.0 for v in _sv])
 
     # P(SYM | 1/d, asym-ops): confidence-weighted superposition (weights = measured reliabilities), ∈[0,1]
     wsum = a.c_dist + a.c_subcat + a.c_elem
@@ -73,8 +78,10 @@ def main():
         for i, (x, y) in enumerate(pairs):
             if dist == "uniform":
                 lam = rng.random()
-            elif dist == "normal":
-                lam = min(1.0, max(0.0, rng.gauss(a.lam, a.lam_std)))     # clamped normal(mean=λ, std)
+            elif dist == "truncated":
+                lam = rng.gauss(a.lam, a.lam_std)
+                while lam < 0.0 or lam > 1.0:            # TRUNCATED normal: resample (no boundary pile-up)
+                    lam = rng.gauss(a.lam, a.lam_std)
             else:
                 lam = a.lam
             blend = float((1 - lam) * mu_e5_sym[i] + lam * mu_graph_sym[i])

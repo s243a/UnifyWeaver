@@ -74,9 +74,12 @@ the general notion (of relatedness, lineage, …).
   **per-judge `judge_emb` rows** absorb each judge's *offset/bias* (fidelity). You get generality **and**
   per-judge calibration — not a lossy average. This is the "operator superposition as a regulariser" idea
   (`DESIGN_inferred_operator_superposition.md` §7) lifted from *operators* to *judges*.
-- **Symptom of success (and a cautionary result):** the *theory* predicts a rise on a held-out set the blend
-  pairs never touched (generalisation, not memorisation). **We tested it and it did NOT pan out for the
-  *constructed* blend.** A 3×3 sweep (`REPORT_blend_judge_sweep.md`): fine-tuning on the LLM Wikipedia round did
+- **Symptom of success — the arc in one line:** *theory predicts generality → it did NOT show on the LLM-scored
+  eval (a confound) → it DID show on the right (non-LLM) target.* Read the three beats in order:
+
+  **(beat 1 — theory)** predicts a rise on a held-out set the blend pairs never touched (generalisation, not
+  memorisation). **(beat 2 — the trap)** we tested it and it did NOT pan out on the LLM-scored eval for the
+  *constructed* blend. A 3×3 sweep (`REPORT_blend_judge_sweep.md`): fine-tuning on the LLM Wikipedia round did
   lift *base* simplewiki SYM held-out (+0.41 → **~+0.79, stable across seeds**) — but a **control with *no*
   constructed blend matched it** (LLM-only +0.790 vs fixed-λ blend +0.787), and **random-λ destabilised** (one
   seed collapsed to +0.09). So the lift was **the data + the fine-tune (which already spans multiple judge

@@ -86,6 +86,10 @@ sharpen the e5 side.
 | 3 | +0.664 | **+0.845** | +0.181 | +0.632 | +0.817 |
 | **mean** | **+0.697** | **+0.841** | **+0.144** | +0.667 | **+0.815** |
 
+**\* Scope caveat (read with the numbers):** `T` is **graph-dominated** on this held-out set — `e5_ref` mean
+0.907, std **0.032** (near-constant) vs `graph_ref` std 0.244 — so `corr(SYM, T)` leans on the *structural* half.
+These confirm the graph side strongly; the e5 side needs a higher-e5-variance held-out.
+
 *(prod baseline +0.746 / graph_ref +0.714.)* **B beats A on every seed** (mean +0.841 vs +0.697, vs prod +0.746);
 B robustly **recovers the graph half** (+0.815) that **LLM-only training drifts from** (+0.667); and reading
 under `judge=blend` beats agnostic for B on all three seeds. So the blend-judge advantage on the *right* metric

@@ -68,7 +68,8 @@ def main():
             pairs.append((c[0], c[1]))
     print(f"held-out pairs scored: {len(pairs)}")
 
-    # e5_ref (model-independent): raw cosine → [0,1]
+    # e5_ref (model-independent): raw e5 cosine → [0,1]. Direction = passage(node)·query(root), i.e. the same
+    # e5-prefix regime the SYM readout consumes (μ(node|root)); |cos| is symmetric enough for this reference.
     e5_ref = np.array([(float(p[idx[x]] @ q[idx[y]]) + 1.0) / 2.0 for x, y in pairs])
     # graph_ref from the REFERENCE model (fixed): conf-weighted(1/d, μ_HIER, μ_ELEM)
     ref = build_model(a.ref, dev)

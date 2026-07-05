@@ -47,45 +47,46 @@ def main():
     kids = {p: [c for c in cs if c in inemb] for p, cs in children.items() if p in inemb}
     kids = {p: cs for p, cs in kids.items() if cs}
     parents_l = [p for p in kids]
-    seen = set()
-    rows = []                                              # (node, root, cur_rel)
+    from collections import Counter
+    seen, rows, cnt = set(), [], Counter()                 # running per-stratum counter (was O(n²) via sum(...))
 
     def add(n, r, rel):
         if n != r and n in inemb and r in inemb and (n, r) not in seen and (r, n) not in seen:
-            seen.add((n, r)); rows.append((n, r, rel)); return True
+            seen.add((n, r)); rows.append((n, r, rel)); cnt[rel] += 1; return True
         return False
 
     # 1) SUBCATEGORY: child → parent
     random.Random(a.seed + 1).shuffle(parents_l)
     for p in parents_l:
-        if sum(1 for x in rows if x[2] == "subcategory") >= a.per:
+        if cnt["subcategory"] >= a.per:
             break
         add(rng.choice(kids[p]), p, "subcategory")
     # 2) SUBTOPIC: grandchild → grandparent
     for p in parents_l:
-        if sum(1 for x in rows if x[2] == "subtopic") >= a.per:
+        if cnt["subtopic"] >= a.per:
             break
         gk = [g for c in kids[p] for g in kids.get(c, [])]
         if gk:
             add(rng.choice(gk), p, "subtopic")
     # 3) SEE_ALSO: siblings (share a parent, neither ancestor of the other)
     for p in parents_l:
-        if sum(1 for x in rows if x[2] == "see_also") >= a.per:
+        if cnt["see_also"] >= a.per:
             break
         cs = kids[p]
         if len(cs) >= 2:
             x, y = rng.sample(cs, 2)
             if y not in anc(x) and x not in anc(y):
                 add(x, y, "see_also")
-    # 4) NONE: random distant pairs (no shared ancestor within reach, not linked)
+    # 4) NONE: random distant pairs. Use a DEEPER ancestor check (cap 8, not 4) so hop-5+ common ancestors don't
+    # leak structurally-related pairs into `none` on deep Wikipedia taxonomies (review 2026-07-05).
     nodes = sorted(inemb)
     tries = 0
-    while sum(1 for x in rows if x[2] == "none") < a.per and tries < a.per * 40:
+    while cnt["none"] < a.per and tries < a.per * 40:
         tries += 1
         x, y = rng.choice(nodes), rng.choice(nodes)
         if x == y:
             continue
-        if y in anc(x) or x in anc(y) or (anc(x) & anc(y)):     # share structure ⇒ not "none"
+        if y in anc(x, 8) or x in anc(y, 8) or (anc(x, 8) & anc(y, 8)):   # share structure ⇒ not "none"
             continue
         add(x, y, "none")
 

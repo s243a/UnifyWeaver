@@ -16,7 +16,7 @@ def test_aurc_monotone():
     assert aurc(good, correct) < aurc(bad, correct), "AURC must reward correctness-tracking confidence"
     assert abs(aurc([0.9, 0.8, 0.7, 0.6], [1, 1, 1, 1]) - 0.0) < 1e-9, "all-correct ⇒ AURC 0"
     assert abs(aurc([0.9, 0.8, 0.7, 0.6], [0, 0, 0, 0]) - 1.0) < 1e-9, "all-wrong ⇒ AURC 1"
-    # exact value for the 'good' case: risk_at_k = [0,0,1/3,1/2] ⇒ mean 0.2083…
+    # exact value for the 'good' case: risk_at_k = [0,0,1/3,1/2] ⇒ mean (5/6)/4 = 5/24 ≈ 0.2083
     assert abs(aurc(good, correct) - (0 + 0 + 1/3 + 1/2) / 4) < 1e-9
     print("PASS: AURC monotone + exact")
 
@@ -48,8 +48,10 @@ def test_struct_dist_fn():
     dist = struct_dist_fn(path)
     assert abs(dist("A", "B") - 0.5) < 1e-6, f"1/d wrong: {dist('A','B')}"
     assert dist("A", "A") == 3.0, "identical nodes ⇒ 3/(1+0)=3"
+    # the /3 normalisation (used in emit_blend_judge / eval): identical ⇒ dist01 = min(1, 3/3) = 1
+    assert abs(min(1.0, dist("A", "A") / 3.0) - 1.0) < 1e-9, "dist01(identical) must saturate at 1"
     assert dist("A", "Z") != dist("A", "Z"), "missing node ⇒ NaN"   # NaN != NaN
-    print("PASS: struct_dist_fn (1/d = 3/(1+‖Δ‖), NaN on miss)")
+    print("PASS: struct_dist_fn (1/d = 3/(1+‖Δ‖), /3 normalisation, NaN on miss)")
 
 
 if __name__ == "__main__":
