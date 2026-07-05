@@ -731,6 +731,32 @@ done:
 ;     compound-tag => same functor+arity + recurse on args.
 ; Recursive => NOT alwaysinline. `inlinehint` lets non-recursive
 ; call sites still get inlined.
+; Functor equality: fast pointer identity, with a byte-compare fallback only
+; when the pointers differ. AOT-emitted functors are static @.fn_* globals, so
+; AOT-vs-AOT compares hit the pointer path at zero added cost. Dynamically
+; built compounds (read_term_from_atom, =..) carry functor strings from the
+; atom table, whose pointer will not equal the AOT global for the same name --
+; the strcmp fallback (cold path only) makes them unify correctly without
+; slowing the common case.
+define i1 @wam_functor_eq(i8* %a, i8* %b) {
+entry:
+  %same = icmp eq i8* %a, %b
+  br i1 %same, label %yes, label %maybe
+maybe:
+  %anull = icmp eq i8* %a, null
+  %bnull = icmp eq i8* %b, null
+  %either_null = or i1 %anull, %bnull
+  br i1 %either_null, label %no, label %cmp
+cmp:
+  %r = call i32 @strcmp(i8* %a, i8* %b)
+  %eq = icmp eq i32 %r, 0
+  ret i1 %eq
+yes:
+  ret i1 true
+no:
+  ret i1 false
+}
+
 define i1 @wam_unify_value(%WamState* %vm, %Value %a, %Value %b) inlinehint nounwind {
 entry:
   %da = call %Value @wam_deref_value(%WamState* %vm, %Value %a)
@@ -859,7 +885,7 @@ deep_unify:
   %bfn_slot = getelementptr %Compound, %Compound* %bp, i32 0, i32 0
   %afn = load i8*, i8** %afn_slot
   %bfn = load i8*, i8** %bfn_slot
-  %fn_eq = icmp eq i8* %afn, %bfn
+  %fn_eq = call i1 @wam_functor_eq(i8* %afn, i8* %bfn)
   br i1 %fn_eq, label %check_arity, label %fail
 
 check_arity:
