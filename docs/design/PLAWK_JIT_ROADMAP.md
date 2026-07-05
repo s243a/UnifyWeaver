@@ -25,7 +25,8 @@ The dynamic-grammar surface is feature-complete for numeric work:
 | `float(dyncall@name(...))` / `blob(dyncall@name(...))` (named double / byte returns, shared resolver) | #3474 |
 | Structured returns — `@wam_object_call_record` (deserialize a returned Compound's args into typed i64/f64 slots) | #3475 |
 | Destructure surface — `(a, b) = dyncall[@name](args) as (i64 f64)` binds fields to typed scalars | #3476 |
-| Record-view surface — `dyncall[@name](args) as (i64 f64) { … $1 $2 … }` reads the return like the current record | this PR |
+| Record-view surface — `dyncall[@name](args) as (i64 f64) { … $1 $2 … }` reads the return like the current record | #3477 |
+| String/atom record fields (mechanism) — `@wam_object_call_record` typecode 2 → `(ptr,len)` via `out_slots`+`out_lens` | this PR |
 
 A grammar is compiled ahead of time to a `.wamo`, loaded at runtime (from a
 fixed path, an in-memory buffer, or a per-call runtime source), cached with
@@ -220,10 +221,22 @@ different plawk containers — this is the through-line for the rest of item 4:
 
 Each target reuses one marshaller over the same walked compound; they differ
 only in where fields are written (scalar slots, the line record, an assoc
-table). String/atom fields are the cross-cutting extension: their bytes
-survive the rewind via the persistent atom table, but a field needs a
-`(ptr,len)` slot pair rather than one i64, so the typecode set and slot
-layout grow — add once, and every target gains string fields.
+table).
+
+**String/atom fields — mechanism LANDED:** the cross-cutting field type.
+`@wam_object_call_record` gained typecode `2` (string) and an `out_lens`
+array: a string field's atom is read as `@wam_atom_to_string` + `strlen`,
+`out_slots[i]` gets the pointer (into the persistent atom table, so it
+survives the arena rewind, like `blob`) and `out_lens[i]` gets the length —
+a `(ptr,len)` byte slice per field. Numeric fields set `out_lens[i]=0`.
+Verified: a grammar returning `rs(7, hello)` deserializes field 0 → i64 `7`
+and field 1 → the slice `hello` (printed `%.*s` after rewind). The **surface**
+for string fields is the remaining piece and forces a design choice, because
+plawk scalars are numeric-only: a string field can't bind to a scalar
+variable (so the destructure target needs a string/slice binding) — it fits
+the record-view target naturally (a `blob`-style slice `$k` printed via
+`%.*s`), and the assoc target (string values, or interned string keys). That
+surface fork is the next decision.
 
 **Why:** this is the *other half* of your binary-return idea — the case
 that **does** need deserialization. It is also the endgame that closes the

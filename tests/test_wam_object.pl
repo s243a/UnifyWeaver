@@ -27,6 +27,10 @@ uses_float(X) :- X is 1.5 + 2.5.                % float constant -> rejected
 % Exercises the structured-return primitive (@wam_object_call_record).
 makerec(R) :- X = 10, Y is X + 0.5, R = rec2f(X, Y).   % -> rec2f(10, 10.5)
 
+% a record with an integer and an atom (string) field: rs(7, hello).
+% Exercises string fields (typecode 2 -> (ptr, len)).
+makerecs(R) :- R = rs(7, hello).
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -167,6 +171,20 @@ test(struct_return_deserializes_fields,
     assertion(Out == "10\n10.5\n"),
     !.
 
+% A string field (typecode 2): makerecs/1 returns rs(7, hello). The record
+% call writes field 0's i64 (7) into a slot and field 1's atom string into
+% (out_slots[1] = ptr, out_lens[1] = 5). The pointer is into the persistent
+% atom table, so it prints (%.*s) after the arena rewind.
+test(struct_return_string_field,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'recs.wamo', Wamo),
+    write_wam_object([user:makerecs/1], [wamo_entry(makerecs/1)], Wamo),
+    build_record_str_host(Dir, Host),
+    run_host(Host, Wamo, Out, 0),
+    assertion(Out == "7\nhello\n"),
+    !.
+
 :- end_tests(wam_object).
 
 % --- helpers ---------------------------------------------------------------
@@ -283,8 +301,9 @@ entry:\n\c
   br i1 %vm_null, label %load_fail, label %run\n\c
 run:\n\c
   %slots = alloca i64, i32 2\n\c
+  %lens = alloca i64, i32 2\n\c
   %tc = getelementptr [2 x i8], [2 x i8]* @.rec_types, i32 0, i32 0\n\c
-  %ok = call i1 @wam_object_call_record(%WamState* %vm, i32 %pc, i32 0, %Value* null, i32 0, i32 2, i8* %tc, i64* %slots)\n\c
+  %ok = call i1 @wam_object_call_record(%WamState* %vm, i32 %pc, i32 0, %Value* null, i32 0, i32 2, i8* %tc, i64* %slots, i64* %lens)\n\c
   br i1 %ok, label %print, label %run_fail\n\c
 print:\n\c
   %s0 = getelementptr i64, i64* %slots, i64 0\n\c
@@ -296,6 +315,61 @@ print:\n\c
   %v1 = bitcast i64 %v1bits to double\n\c
   %ffmt = getelementptr [6 x i8], [6 x i8]* @.rec_ffmt, i32 0, i32 0\n\c
   %pf = call i32 (i8*, ...) @printf(i8* %ffmt, double %v1)\n\c
+  ret i32 0\n\c
+load_fail:\n\c
+  ret i32 20\n\c
+run_fail:\n\c
+  ret i32 21\n\c
+}\n').
+
+% Build a host that calls @wam_object_call_record with a 2-field shape
+% (i64, string), then prints field 0 as an integer and field 1 as a
+% length-counted string (%.*s from out_slots[1] + out_lens[1]).
+build_record_str_host(Dir, Host) :-
+    directory_file_path(Dir, 'record_str_host.ll', LL),
+    with_output_to(string(_),
+        write_wam_llvm_project([user:answer/1],
+            [module_name(wam_object_record_str_host), emit_wamo_loader(true)], LL)),
+    record_str_host_main_ir(MainIR),
+    setup_call_cleanup(
+        open(LL, append, S, [encoding(utf8)]),
+        write(S, MainIR),
+        close(S)),
+    directory_file_path(Dir, 'record_str_host_bin', Host),
+    clang_link(LL, Host).
+
+record_str_host_main_ir(
+'\n@.rs_ifmt = private constant [6 x i8] c"%lld\\0A\\00"\n\c
+@.rs_sfmt = private constant [6 x i8] c"%.*s\\0A\\00"\n\c
+@.rs_types = private constant [2 x i8] c"\\00\\02"\n\n\c
+define i32 @main(i32 %argc, i8** %argv) {\n\c
+entry:\n\c
+  %p1 = getelementptr i8*, i8** %argv, i64 1\n\c
+  %path = load i8*, i8** %p1\n\c
+  %obj = call { %WamState*, i32 } @wam_object_load(i8* %path)\n\c
+  %vm = extractvalue { %WamState*, i32 } %obj, 0\n\c
+  %pc = extractvalue { %WamState*, i32 } %obj, 1\n\c
+  %vm_null = icmp eq %WamState* %vm, null\n\c
+  br i1 %vm_null, label %load_fail, label %run\n\c
+run:\n\c
+  %slots = alloca i64, i32 2\n\c
+  %lens = alloca i64, i32 2\n\c
+  %tc = getelementptr [2 x i8], [2 x i8]* @.rs_types, i32 0, i32 0\n\c
+  %ok = call i1 @wam_object_call_record(%WamState* %vm, i32 %pc, i32 0, %Value* null, i32 0, i32 2, i8* %tc, i64* %slots, i64* %lens)\n\c
+  br i1 %ok, label %print, label %run_fail\n\c
+print:\n\c
+  %s0 = getelementptr i64, i64* %slots, i64 0\n\c
+  %v0 = load i64, i64* %s0\n\c
+  %ifmt = getelementptr [6 x i8], [6 x i8]* @.rs_ifmt, i32 0, i32 0\n\c
+  %pi = call i32 (i8*, ...) @printf(i8* %ifmt, i64 %v0)\n\c
+  %s1 = getelementptr i64, i64* %slots, i64 1\n\c
+  %v1 = load i64, i64* %s1\n\c
+  %ptr = inttoptr i64 %v1 to i8*\n\c
+  %l1 = getelementptr i64, i64* %lens, i64 1\n\c
+  %len = load i64, i64* %l1\n\c
+  %len32 = trunc i64 %len to i32\n\c
+  %sfmt = getelementptr [6 x i8], [6 x i8]* @.rs_sfmt, i32 0, i32 0\n\c
+  %ps = call i32 (i8*, ...) @printf(i8* %sfmt, i32 %len32, i8* %ptr)\n\c
   ret i32 0\n\c
 load_fail:\n\c
   ret i32 20\n\c
