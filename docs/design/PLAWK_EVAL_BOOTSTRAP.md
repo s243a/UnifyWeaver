@@ -160,11 +160,21 @@ independently useful (richer hand-written grammars load sooner).
    evaluator dispatches on the functor bytes (so it reads reader-built
    `+`/`*`/`-` compounds directly).
 
-   **Remaining (3b/3c):** control operators (`,` `;` `->` `:-`), floats,
-   variables (a per-parse var dictionary), and quoted atoms in the reader;
-   `assert`/`retract` (a dynamic clause store); and `catch`/`throw` predicate
-   linkage. Variables and `:-`/`,` are the next step toward parsing whole
-   clauses. These remain the long pole for self-hosting the compiler.
+   **Variables (milestone 3b):** a per-parse var-dictionary (a transient block
+   hung off `%WamState` field 27, set by `read_term_from_atom` while parsing).
+   A name led by an uppercase letter or `_` is a variable; `@wam_var_ref`
+   interns the name and looks it up in the dict so repeated occurrences share
+   one fresh heap cell (`X` in `p(X,X)`), while anonymous `_` is always a fresh,
+   unshared cell. Reader variables are bound by unifying the parsed *term* (they
+   have no connection to the surrounding clause's variables). Verified in loaded
+   objects: `p(X,X)` binds both from one unify (→9), shared var through
+   arithmetic (→42), anonymous `q(_,_) = q(3,4)` succeeds (distinct).
+
+   **Remaining (3b/3c):** control operators (`,` `;` `->` `:-` — the layer that
+   turns parsed goals into clause bodies), floats, and quoted atoms in the
+   reader; `assert`/`retract` (a dynamic clause store); and `catch`/`throw`
+   predicate linkage. With variables done, `:-`/`,` are the last reader piece
+   before a whole clause parses. These remain the long pole for self-hosting.
 4. **Byte-buffer output from a grammar.** The compiler object must *emit*
    `.wamo` bytes. It returns them as an Atom/byte string (the item-2 blob
    bridge already carries bytes out); building that byte string inside the

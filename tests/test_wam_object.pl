@@ -104,6 +104,14 @@ readop_prec(R)  :- read_term_from_atom('1+2*3', T), R is T.        % 7
 readop_paren(R) :- read_term_from_atom('(1+2)*3', T), R is T.      % 9
 readop_assoc(R) :- read_term_from_atom('100 - 2 * -3', T), R is T. % 106
 
+% Variable reader: a repeated variable name shares one cell within the term, so
+% binding it once via unification propagates to every occurrence. Anonymous _
+% are distinct. (Reader vars are bound by unifying the parsed TERM, not by the
+% surrounding clause's variables.)
+readvar_shared(R) :- read_term_from_atom('p(X,X)', T), T = p(9, Y), R is Y.   % 9
+readvar_arith(R)  :- read_term_from_atom('v(A,A)', T), T = v(6, X), R is X*7. % 42
+readvar_anon(R)   :- read_term_from_atom('q(_,_)', T), T = q(3,4), R is 1.    % 1 (distinct)
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -419,6 +427,24 @@ test(read_operators_in_object,
     run_host(Host, W1, O1, 0), assertion(O1 == "7\n"),
     run_host(Host, W2, O2, 0), assertion(O2 == "9\n"),
     run_host(Host, W3, O3, 0), assertion(O3 == "106\n"),
+    !.
+
+% Variable reader in a loaded object: shared variables share a cell (bind once,
+% see everywhere), anonymous _ are distinct.
+test(read_variables_in_object,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'readvar_shared.wamo', W1),
+    directory_file_path(Dir, 'readvar_arith.wamo', W2),
+    directory_file_path(Dir, 'readvar_anon.wamo', W3),
+    write_wam_object([user:readvar_shared/1], [wamo_entry(readvar_shared/1)], W1),
+    write_wam_object([user:readvar_arith/1], [wamo_entry(readvar_arith/1)], W2),
+    write_wam_object([user:readvar_anon/1], [wamo_entry(readvar_anon/1)], W3),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    run_host(Host, W1, O1, 0), assertion(O1 == "9\n"),
+    run_host(Host, W2, O2, 0), assertion(O2 == "42\n"),
+    run_host(Host, W3, O3, 0), assertion(O3 == "1\n"),
     !.
 
 :- end_tests(wam_object).

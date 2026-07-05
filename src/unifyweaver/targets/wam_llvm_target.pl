@@ -6666,9 +6666,70 @@ pfail:
 ; structure from the C++ hybrid target Parser. Compound functors come from
 ; the atom table; unification tolerates that via @wam_functor_eq. No operators,
 ; floats, variables or quoting yet -- follow-up increments.
+; Resolve a named variable to a Ref, using the reader var-dict on the VM (field
+; 27) so repeated occurrences of the same name within one term share a cell.
+; The dict block is [count:i64][ (atom_id:i64, heap_addr:i64) x N ]. A miss (or
+; a full/absent dict) pushes a fresh unbound heap cell. Anonymous "_" is handled
+; by the caller (always fresh, never recorded).
+define %Value @wam_var_ref(%WamState* %vm, i64 %atom_id) {
+entry:
+  %dp = getelementptr %WamState, %WamState* %vm, i32 0, i32 27
+  %dict = load i8*, i8** %dp
+  %dnull = icmp eq i8* %dict, null
+  br i1 %dnull, label %fresh, label %have_dict
+have_dict:
+  %cntp = bitcast i8* %dict to i64*
+  %cnt = load i64, i64* %cntp
+  %ebase = getelementptr i8, i8* %dict, i64 8
+  %entries = bitcast i8* %ebase to i64*
+  br label %scan
+scan:
+  %i = phi i64 [ 0, %have_dict ], [ %i1, %scan_next ]
+  %done = icmp uge i64 %i, %cnt
+  br i1 %done, label %add, label %check
+check:
+  %aidx = mul i64 %i, 2
+  %aslot = getelementptr i64, i64* %entries, i64 %aidx
+  %eaid = load i64, i64* %aslot
+  %match = icmp eq i64 %eaid, %atom_id
+  br i1 %match, label %found, label %scan_next
+found:
+  %addridx = add i64 %aidx, 1
+  %addrslot = getelementptr i64, i64* %entries, i64 %addridx
+  %eaddr64 = load i64, i64* %addrslot
+  %eaddr = trunc i64 %eaddr64 to i32
+  %frv = call %Value @value_ref(i32 %eaddr)
+  ret %Value %frv
+scan_next:
+  %i1 = add i64 %i, 1
+  br label %scan
+add:
+  %full = icmp uge i64 %cnt, 128
+  br i1 %full, label %fresh, label %record
+record:
+  %runb = call %Value @value_unbound(i8* null)
+  %raddr = call i32 @wam_heap_push(%WamState* %vm, %Value %runb)
+  %raddr64 = zext i32 %raddr to i64
+  %nidx = mul i64 %cnt, 2
+  %naslot = getelementptr i64, i64* %entries, i64 %nidx
+  store i64 %atom_id, i64* %naslot
+  %naddridx = add i64 %nidx, 1
+  %naddrslot = getelementptr i64, i64* %entries, i64 %naddridx
+  store i64 %raddr64, i64* %naddrslot
+  %cnt1 = add i64 %cnt, 1
+  store i64 %cnt1, i64* %cntp
+  %rrv = call %Value @value_ref(i32 %raddr)
+  ret %Value %rrv
+fresh:
+  %funb = call %Value @value_unbound(i8* null)
+  %faddr = call i32 @wam_heap_push(%WamState* %vm, %Value %funb)
+  %frv2 = call %Value @value_ref(i32 %faddr)
+  ret %Value %frv2
+}
+
 ; Parse a single primary: a parenthesised expression, a negative number, a
-; list, a compound name(args), or an atomic (integer / atom). The operator
-; layer (@wam_parse_expr) sits on top of this.
+; variable, a list, a compound name(args), or an atomic (integer / atom). The
+; operator layer (@wam_parse_expr) sits on top of this.
 define %Value @wam_parse_primary(%WamState* %vm, i8* %s, i64 %len, i64* %pos) {
 entry:
   call void @wam_skip_ws(i8* %s, i64 %len, i64* %pos)
@@ -6760,7 +6821,32 @@ id_done:
   store i64 %ie, i64* %pos
   %namelen = sub i64 %ie, %p0
   %namelen0 = icmp eq i64 %namelen, 0
-  br i1 %namelen0, label %pfail, label %peek_paren
+  br i1 %namelen0, label %pfail, label %chk_var
+chk_var:
+  ; A token led by an uppercase letter or underscore is a variable.
+  %fcp = getelementptr i8, i8* %s, i64 %p0
+  %fc = load i8, i8* %fcp
+  %fc_ge_A = icmp uge i8 %fc, 65
+  %fc_le_Z = icmp ule i8 %fc, 90
+  %fc_upper = and i1 %fc_ge_A, %fc_le_Z
+  %fc_us = icmp eq i8 %fc, 95
+  %fc_isvar = or i1 %fc_upper, %fc_us
+  br i1 %fc_isvar, label %do_var, label %peek_paren
+do_var:
+  ; "_" alone is anonymous (always a fresh, unshared variable).
+  %len_is_1 = icmp eq i64 %namelen, 1
+  %anon = and i1 %len_is_1, %fc_us
+  br i1 %anon, label %anon_var, label %named_var
+anon_var:
+  %aunb = call %Value @value_unbound(i8* null)
+  %aaddr = call i32 @wam_heap_push(%WamState* %vm, %Value %aunb)
+  %arv = call %Value @value_ref(i32 %aaddr)
+  ret %Value %arv
+named_var:
+  %vnameptr = getelementptr i8, i8* %s, i64 %p0
+  %vid = call i64 @wam_intern_atom(i8* %vnameptr, i64 %namelen)
+  %vrv = call %Value @wam_var_ref(%WamState* %vm, i64 %vid)
+  ret %Value %vrv
 peek_paren:
   call void @wam_skip_ws(i8* %s, i64 %len, i64* %pos)
   %pp = load i64, i64* %pos
@@ -16567,7 +16653,16 @@ rta.parse:
   %rta.len = call i64 @strlen(i8* %rta.str)
   %rta.pos = alloca i64
   store i64 0, i64* %rta.pos
+  ; Install a fresh var-dict on the VM: [count:i64][128 x (atom_id, addr)].
+  call void @wam_arena_ensure()
+  %rta.dict = call i8* @wam_arena_alloc(i64 2056)
+  %rta.dcntp = bitcast i8* %rta.dict to i64*
+  store i64 0, i64* %rta.dcntp
+  %rta.vdp = getelementptr %WamState, %WamState* %vm, i32 0, i32 27
+  store i8* %rta.dict, i8** %rta.vdp
   %rta.val = call %Value @wam_parse_expr(%WamState* %vm, i8* %rta.str, i64 %rta.len, i64* %rta.pos, i32 1200)
+  ; Clear the transient dict pointer (the arena block is reclaimed on rewind).
+  store i8* null, i8** %rta.vdp
   %rta.vtag = extractvalue %Value %rta.val, 0
   %rta.pfail = icmp eq i32 %rta.vtag, 6
   br i1 %rta.pfail, label %rta.fail, label %rta.unify
