@@ -433,7 +433,11 @@ field 1 to the f64 scalar `half` (a failed call yields zeros). The awk-like
 `$2` the returned record's fields for that block. A field may be typed
 `string` in a view —
 `{ dyncall@info($1) as (i64 string) { total += $1 ; print $2 } }` reads
-field 2 as a byte string, printed like a blob. Bounded
+field 2 as a byte string, printed like a blob. A grammar returning a list
+of integer key-value pairs can populate an associative array:
+`{ arr = dyncall@tally($1) as assoc }` inserts each `[K-V, ...]` pair into
+`arr`'s table per record (accumulating), so END `arr[k]` lookups read the
+result. Bounded
 repetition handles records containing a
 list: `BINFMT = "i64 rep4(i64 f64)"` declares an 8-byte element count
 (at most 4) followed by that many (i64, f64) elements. The count is an
