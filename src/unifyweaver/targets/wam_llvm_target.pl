@@ -6180,6 +6180,120 @@ usp.done:
 ;   10 = !/0, 11 = write/1, 12 = nl/0
 ;   13 = atom/1, 14 = integer/1, 15 = float/1, 16 = number/1
 ;   17 = compound/1, 18 = var/1, 19 = nonvar/1, 20 = is_list/1
+; === read_term_from_atom/2 support (the term reader, first increment) ===
+; Parses ATOMIC canonical terms only -- integers (optional leading -) and
+; unquoted atoms. Compounds, lists, floats, variables and operators are
+; follow-up increments: they need the recursive parser plus functor-pointer
+; canonicalization (unification compares compound functors by pointer, so a
+; reader-built functor must resolve to the same pointer the rest of the
+; runtime uses -- the same problem =.. compose mode wrestles with). Atomic
+; terms carry no functor pointer, so this slice is unambiguously correct.
+
+define i1 @wam_byte_is_ws(i8 %c) {
+entry:
+  %a = icmp eq i8 %c, 32
+  %b = icmp eq i8 %c, 9
+  %d = icmp eq i8 %c, 10
+  %e = icmp eq i8 %c, 13
+  %ab = or i1 %a, %b
+  %de = or i1 %d, %e
+  %r = or i1 %ab, %de
+  ret i1 %r
+}
+
+; Parse the first whitespace-delimited token of %s as an atomic term. Returns
+; an Integer or Atom %Value, or an Unbound %Value (tag 6) to signal failure.
+define %Value @wam_parse_atomic(i8* %s) {
+entry:
+  br label %len_loop
+len_loop:
+  %li = phi i64 [ 0, %entry ], [ %li1, %len_step ]
+  %lp = getelementptr i8, i8* %s, i64 %li
+  %lc = load i8, i8* %lp
+  %lz = icmp eq i8 %lc, 0
+  br i1 %lz, label %skip_ws, label %len_step
+len_step:
+  %li1 = add i64 %li, 1
+  br label %len_loop
+skip_ws:
+  br label %sw_loop
+sw_loop:
+  %start = phi i64 [ 0, %skip_ws ], [ %start1, %sw_step ]
+  %sw_end = icmp uge i64 %start, %li
+  br i1 %sw_end, label %pfail, label %sw_check
+sw_check:
+  %sp = getelementptr i8, i8* %s, i64 %start
+  %sc = load i8, i8* %sp
+  %sws = call i1 @wam_byte_is_ws(i8 %sc)
+  br i1 %sws, label %sw_step, label %find_end
+sw_step:
+  %start1 = add i64 %start, 1
+  br label %sw_loop
+find_end:
+  br label %fe_loop
+fe_loop:
+  %tend = phi i64 [ %start, %find_end ], [ %tend1, %fe_step ]
+  %fe_at_end = icmp uge i64 %tend, %li
+  br i1 %fe_at_end, label %classify, label %fe_check
+fe_check:
+  %tp = getelementptr i8, i8* %s, i64 %tend
+  %tc = load i8, i8* %tp
+  %tws = call i1 @wam_byte_is_ws(i8 %tc)
+  br i1 %tws, label %classify, label %fe_step
+fe_step:
+  %tend1 = add i64 %tend, 1
+  br label %fe_loop
+classify:
+  %tlen = sub i64 %tend, %start
+  %tlen0 = icmp eq i64 %tlen, 0
+  br i1 %tlen0, label %pfail, label %chk_int
+chk_int:
+  %fp = getelementptr i8, i8* %s, i64 %start
+  %fc = load i8, i8* %fp
+  %is_minus = icmp eq i8 %fc, 45
+  %ds0 = zext i1 %is_minus to i64
+  %dstart = add i64 %start, %ds0
+  %minus_only = icmp uge i64 %dstart, %tend
+  br i1 %minus_only, label %as_atom, label %int_scan
+int_scan:
+  br label %is_loop
+is_loop:
+  %isi = phi i64 [ %dstart, %int_scan ], [ %isi1, %is_step ]
+  %acc = phi i64 [ 0, %int_scan ], [ %acc1, %is_step ]
+  %is_done = icmp uge i64 %isi, %tend
+  br i1 %is_done, label %make_int, label %is_check
+is_check:
+  %isp = getelementptr i8, i8* %s, i64 %isi
+  %isc = load i8, i8* %isp
+  %ge0 = icmp uge i8 %isc, 48
+  %le9 = icmp ule i8 %isc, 57
+  %isd = and i1 %ge0, %le9
+  br i1 %isd, label %is_step, label %as_atom
+is_step:
+  %dig = sub i8 %isc, 48
+  %dig64 = zext i8 %dig to i64
+  %acc10 = mul i64 %acc, 10
+  %acc1 = add i64 %acc10, %dig64
+  %isi1 = add i64 %isi, 1
+  br label %is_loop
+make_int:
+  %neg = sub i64 0, %acc
+  %val_i = select i1 %is_minus, i64 %neg, i64 %acc
+  %iv0 = insertvalue %Value undef, i32 1, 0
+  %iv = insertvalue %Value %iv0, i64 %val_i, 1
+  ret %Value %iv
+as_atom:
+  %astart = getelementptr i8, i8* %s, i64 %start
+  %aid = call i64 @wam_intern_atom(i8* %astart, i64 %tlen)
+  %av0 = insertvalue %Value undef, i32 0, 0
+  %av = insertvalue %Value %av0, i64 %aid, 1
+  ret %Value %av
+pfail:
+  %uv0 = insertvalue %Value undef, i32 6, 0
+  %uv = insertvalue %Value %uv0, i64 0, 1
+  ret %Value %uv
+}
+
 ; === term_to_atom/2 support ===
 ; A malloc-backed growable string buffer and a recursive term writer. The
 ; writer renders a %Value with write/1 (unquoted) semantics; term_to_atom
@@ -6497,6 +6611,7 @@ entry:
     i32 75, label %builtin_char_type
     i32 172, label %builtin_code_type
     i32 173, label %builtin_term_to_atom
+    i32 174, label %builtin_read_term_from_atom
     i32 76, label %builtin_compare
     i32 77, label %builtin_must_be
     i32 78, label %builtin_write
@@ -15866,6 +15981,30 @@ mb.bool_full_cmp:
 mb.bool_no:
   ret i1 false
 
+builtin_read_term_from_atom:
+  ; read_term_from_atom(+Atom, -Term): parse the atom text (atomic terms only
+  ; in this increment) and unify the result with A2.
+  %rta.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %rta.tag = extractvalue %Value %rta.a1, 0
+  %rta.is_atom = icmp eq i32 %rta.tag, 0
+  br i1 %rta.is_atom, label %rta.go, label %rta.fail
+rta.go:
+  %rta.aid = extractvalue %Value %rta.a1, 1
+  %rta.str = call i8* @wam_atom_to_string(i64 %rta.aid)
+  %rta.snull = icmp eq i8* %rta.str, null
+  br i1 %rta.snull, label %rta.fail, label %rta.parse
+rta.parse:
+  %rta.val = call %Value @wam_parse_atomic(i8* %rta.str)
+  %rta.vtag = extractvalue %Value %rta.val, 0
+  %rta.pfail = icmp eq i32 %rta.vtag, 6
+  br i1 %rta.pfail, label %rta.fail, label %rta.unify
+rta.unify:
+  %rta.raw2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %rta.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %rta.raw2, %Value %rta.val)
+  ret i1 %rta.ok
+rta.fail:
+  ret i1 false
+
 builtin_term_to_atom:
   ; term_to_atom(+Term, ?Atom): render Term (write semantics) into a growable
   ; buffer, intern it, and unify the result Atom with A2.
@@ -19520,6 +19659,7 @@ builtin_op_to_id('atom_ends_with/2', 170).    % suffix check via memcmp.
 builtin_op_to_id('atom_contains/2', 171).     % substring check via strstr.
 builtin_op_to_id('code_type/2', 172).        % ASCII class check; shares char_type's classifier.
 builtin_op_to_id('term_to_atom/2', 173).     % render a term to its text (write semantics) and intern as an atom.
+builtin_op_to_id('read_term_from_atom/2', 174). % parse an atom's text into a term (atomic terms only, for now).
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
