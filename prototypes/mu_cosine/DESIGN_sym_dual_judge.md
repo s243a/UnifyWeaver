@@ -27,7 +27,15 @@ Fit `μ_sym ≈ σ(w·features)` against the judge-scored SYM targets:
   **re-explains the SYM "regression"**: SYM is ~half structural, so when the broad fine-tune shifted the graph,
   the pure-e5 operator lost the structural half it never had.
 
-## Confidence architecture (LOCKED design, user 2026-07-04 — build pending)
+## Confidence architecture (hand-fusion — SUPERSEDED, see `DESIGN_sym_estimation_integration.md`)
+
+> **Course-correction (2026-07-05):** the hand-set inverse-variance fusion below is the wrong shape per the
+> project's own estimation PRs — the μ sources are correlated (e5↔model +0.75, #3357/#3359), subcat/elem are
+> anti-correlated (#3359), and confidence is a weak per-query signal that should *gate* not *weight* (margin not
+> level, #3391). The recommended path is the calibrated **`JointPosterior`** (`mu_posterior.py`, #3359) over the
+> full μ-vector, with `1/d` added as the one decorrelated (sibling/lateral) source, gated by margin. See
+> **`DESIGN_sym_estimation_integration.md`**. The design below stays as an A/B control / ablation.
+
 
 Two axes, and the confidence principle (#3356) applies to **only one** of them:
 
