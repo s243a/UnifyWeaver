@@ -93,6 +93,29 @@ differ only in **magnitude**: corr(graph, subcat) +0.81, (graph, element) +0.44,
 test on a consensus direction; or (B) source direction-ambiguous data first, so the superposition resolves real
 disagreements. (Not mutually exclusive — A is cheap and reuses everything; B is the harder, more novel test.)
 
+## Purpose & the TRUE test (user, 2026-07-05) — supersedes the framing above
+
+- **Superposition = linear SUM, not product.** `d_blend = Σ wᵢ·dᵢ`. A *product* of operators is a *different
+  (composite) operator*, not a superposition. Linearity is deliberate.
+- **The purpose is to teach the model to SEPARATE the operator inputs; linearity makes it learnable.** Training on
+  random *linear* mixes forces the model to represent each operator's contribution *separately* (so it can
+  reconstruct *any* linear combination) — a linear source-separation / unmixing objective. This is *why*
+  judge-independence emerges (the trunk holds the separable components); a product wouldn't decompose this way.
+- **The TRUE test: predict direction where NO operator has seen the nodes.** The eval above scored pairs the
+  operators *cover* (graph knows them, LLM scored them) — not a real generalisation test. The decisive test is
+  **novel-node pairs** (not in the graph, not LLM-scored in training) where all operators are *silent* — so the
+  model must infer direction from **frozen e5 + the separated direction concept**, checked against an
+  **independent** direction ground-truth (an eval-time LLM/human on those novel pairs). If the separation
+  worked, the model predicts direction there; if it only memorised operator outputs, it fails.
+
+### Build (the true test)
+1. Sample **novel** category pairs — nodes *outside* the training graph (not in 100k_cats) and unscored in
+   training — with a genuine direction. (`d_graph≈0`, and the ELEM/HIER readouts were never trained on them ⇒
+   operators silent; the model has only e5.)
+2. **LLM-score them at eval** for the direction ground-truth (`E_mu_fwd−E_mu_rev`) — independent of training.
+3. `corr(model HIER-asymmetry, LLM direction)` for the dir-blend-trained model vs `model_prod` — does the
+   superposition-trained model generalise direction to unseen nodes better? (multi-seed; agnostic vs dir-blend.)
+
 ## Open design decisions (need resolving before building)
 
 1. **Lateral / no-ancestor pairs.** `d_graph = 0` when neither node is an ancestor (siblings, distant). Are those
