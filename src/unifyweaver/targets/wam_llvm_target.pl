@@ -3534,10 +3534,19 @@ dealloc.done:
   ret i1 true').
 
 wam_llvm_case('do_call',
-'  ; op1 = label index or -1 for meta-call, op2 = arity
+'  ; op1 = label index, -1 for meta-call, or -3 for retract/1; op2 = arity
   %call.label = trunc i64 %op1 to i32
   %call.pc = call i32 @wam_get_pc(%WamState* %vm)
   %call.next = add i32 %call.pc, 1
+  %call.is_retract = icmp eq i32 %call.label, -3
+  br i1 %call.is_retract, label %call.retract, label %call.check_meta
+
+call.retract:
+  ; retract/1: the pattern is in reg 0; consult + remove + backtrack.
+  %call.retract_ok = call i1 @wam_dyn_retract_consult(%WamState* %vm, i32 %call.next)
+  br i1 %call.retract_ok, label %call.meta_done, label %call.fail
+
+call.check_meta:
   %call.is_meta = icmp slt i32 %call.label, 0
   br i1 %call.is_meta, label %call.meta, label %call.static
 
@@ -3569,8 +3578,18 @@ call.fail:
   ret i1 false').
 
 wam_llvm_case('do_execute',
-'  ; op1 = label index or -1 for meta-call, op2 = total arity for meta-call
+'  ; op1 = label index, -1 for meta-call, or -3 for retract/1
   %exec.label = trunc i64 %op1 to i32
+  %exec.is_retract = icmp eq i32 %exec.label, -3
+  br i1 %exec.is_retract, label %exec.retract, label %exec.check_meta
+
+exec.retract:
+  ; retract/1 in last-call position: continuation is the current CP.
+  %exec.rpc = call i32 @wam_get_cp(%WamState* %vm)
+  %exec.retract_ok = call i1 @wam_dyn_retract_consult(%WamState* %vm, i32 %exec.rpc)
+  br i1 %exec.retract_ok, label %exec.meta_done, label %exec.fail
+
+exec.check_meta:
   %exec.is_meta = icmp slt i32 %exec.label, 0
   br i1 %exec.is_meta, label %exec.meta, label %exec.static
 
@@ -4094,7 +4113,17 @@ check_dyn:
   ; If the top CP is a dynamic-clause iterator (agg_type == -3), advance
   ; the store scan and yield the next matching asserted clause.
   %is_dyn = icmp eq i32 %ca_at, -3
-  br i1 %is_dyn, label %do_dyn_yield, label %restore
+  br i1 %is_dyn, label %do_dyn_yield, label %check_retract
+
+check_retract:
+  ; agg_type == -4: a retract/1 iterator -- advance the scan, remove and
+  ; yield the next matching clause.
+  %is_ret = icmp eq i32 %ca_at, -4
+  br i1 %is_ret, label %do_retract_yield, label %restore
+
+do_retract_yield:
+  %ry_ok = call i1 @wam_dyn_retract_iter_next(%WamState* %vm)
+  ret i1 %ry_ok
 
 do_dyn_yield:
   %dy_ok = call i1 @wam_dyn_iter_next(%WamState* %vm)
@@ -18495,6 +18524,15 @@ wam_instruction_to_llvm_literal(retry_me_else(L), _) :-
 wam_meta_call_label(Label) :-
     wam_meta_call_total_arity(Label, _).
 
+%% wam_retract_call_label(+Label) is semidet.
+%  retract/1 lowers to a call/execute whose op1 is the sentinel -3, which the
+%  runtime routes to the nondet retract iterator (@wam_dyn_retract_consult).
+%  Recognised here so "retract/1" is not treated as an unknown static label
+%  (which would warn / default to index 0). See PLAWK_DYNAMIC_DB.md.
+wam_retract_call_label(Label) :-
+    ( atom(Label) -> atom_string(Label, S) ; S = Label ),
+    S == "retract/1".
+
 wam_meta_call_total_arity(Label, Arity) :-
     (   atom(Label)
     ->  atom_string(Label, LabelString)
@@ -18512,13 +18550,18 @@ wam_meta_call_total_arity(Label, Arity) :-
 %  line comment to end-of-line, which eats the comma separator in array
 %  constants and produces a parser error.
 wam_instruction_to_llvm_literal(call(P, N), LabelMap, Lit) :- !,
-    (   wam_meta_call_label(P)
+    (   wam_retract_call_label(P)
+    ->  LabelIdx = -3
+    ;   wam_meta_call_label(P)
     ->  LabelIdx = -1
     ;   lookup_label_index(P, LabelMap, LabelIdx)
     ),
     format(atom(Lit), '{ i32 18, i64 ~w, i64 ~w }', [LabelIdx, N]).
 wam_instruction_to_llvm_literal(execute(P), LabelMap, Lit) :- !,
-    (   wam_meta_call_label(P)
+    (   wam_retract_call_label(P)
+    ->  LabelIdx = -3,
+        Arity = 1
+    ;   wam_meta_call_label(P)
     ->  LabelIdx = -1,
         wam_meta_call_total_arity(P, Arity)
     ;   lookup_label_index(P, LabelMap, LabelIdx),
@@ -20819,14 +20862,18 @@ lookup_label_index(LabelName, LabelMap, Options, Index) :-
 wam_line_to_llvm_literal_resolved(["call", P, N], LabelMap, Lit) :- !,
     clean_comma(P, CP), clean_comma(N, CN),
     (   number_string(Arity, CN) -> true ; Arity = 0 ),
-    (   wam_meta_call_label(CP)
+    (   wam_retract_call_label(CP)
+    ->  LabelIdx = -3
+    ;   wam_meta_call_label(CP)
     ->  LabelIdx = -1
     ;   lookup_label_index(CP, LabelMap, LabelIdx)
     ),
     format(atom(Lit), '%Instruction { i32 18, i64 ~w, i64 ~w }', [LabelIdx, Arity]).
 wam_line_to_llvm_literal_resolved(["execute", P], LabelMap, Lit) :- !,
     clean_comma(P, CP),
-    (   wam_meta_call_label(CP)
+    (   wam_retract_call_label(CP)
+    ->  LabelIdx = -3, Arity = 1
+    ;   wam_meta_call_label(CP)
     ->  LabelIdx = -1,
         wam_meta_call_total_arity(CP, Arity)
     ;   lookup_label_index(CP, LabelMap, LabelIdx),
@@ -21584,13 +21631,17 @@ wamo_enc(["builtin_call", Op, N], _, A, A, F, F, enc(21, Id, Num, none)) :- !,
 wamo_enc(["call", P, N], LabelMap, A, A, F, F, enc(18, Idx, Arity, none)) :- !,
     clean_comma(P, CP), clean_comma(N, CN),
     ( number_string(Arity, CN) -> true ; Arity = 0 ),
-    (   wam_meta_call_label(CP)
+    (   wam_retract_call_label(CP)
+    ->  Idx = -3
+    ;   wam_meta_call_label(CP)
     ->  Idx = -1
     ;   wamo_label(CP, LabelMap, Idx)
     ).
 wamo_enc(["execute", P], LabelMap, A, A, F, F, enc(19, Idx, Op2, none)) :- !,
     clean_comma(P, CP),
-    (   wam_meta_call_label(CP)
+    (   wam_retract_call_label(CP)
+    ->  Idx = -3, Op2 = 1
+    ;   wam_meta_call_label(CP)
     ->  Idx = -1, wam_meta_call_total_arity(CP, Op2)
     ;   wamo_label(CP, LabelMap, Idx), Op2 = 0
     ).
