@@ -252,6 +252,47 @@ def model_readout_fn(ckpt_path, e5_cache, device="cpu", bs=2048):
     return readouts
 
 
+def struct_dist_fn(struct_emb_path):
+    """The DECORRELATED lateral/sibling source (DESIGN_sym_estimation_integration.md): `1/d` via the learned
+    structural embedding, `3/(1+‖Δ‖)`. Trained separately on graph distance ⇒ not a re-reading of e5, and it
+    covers the sibling axis the vertical membership operators miss. NaN if either endpoint is absent."""
+    import torch
+    se = torch.load(struct_emb_path, weights_only=False)
+    sv = {n: v for n, v in zip(se["nodes"], se["emb"])}
+
+    def dist(node, root):
+        va, vb = sv.get(node), sv.get(root)
+        return float("nan") if va is None or vb is None else float(3.0 / (1.0 + (va - vb).norm()))
+    return dist
+
+
+def aurc(conf, correct):
+    """Area under the risk-coverage curve (Geifman & El-Yaniv). conf = per-item confidence, correct ∈ {0,1}.
+    Sort by confidence desc; selective risk at coverage k = error rate among the k most-confident. Lower = the
+    confidence signal routes errors to the low-confidence tail better."""
+    conf, correct = np.asarray(conf, float), np.asarray(correct, float)
+    order = np.argsort(-conf)
+    err = 1.0 - correct[order]
+    risk_at_k = np.cumsum(err) / np.arange(1, len(err) + 1)
+    return float(risk_at_k.mean())
+
+
+def aurc_boot(conf, correct, B=500, seed=0):
+    """AURC point estimate + percentile bootstrap 95% CI (AURC is noisy on small held-out sets)."""
+    rng = np.random.default_rng(seed)
+    conf, correct = np.asarray(conf, float), np.asarray(correct, float)
+    n = len(conf)
+    vals = [aurc(conf[ix], correct[ix]) for ix in (rng.integers(0, n, n) for _ in range(B))]
+    lo, hi = np.percentile(vals, [2.5, 97.5])
+    return aurc(conf, correct), float(lo), float(hi)
+
+
+def margin_conf(proba):
+    """#3391 gate: top1 − top2 of the posterior (margin, not level)."""
+    s = np.sort(np.asarray(proba, float), axis=1)
+    return s[:, -1] - s[:, -2]
+
+
 def load_pairs(path):
     rows = []
     with open(path, encoding="utf-8") as f:
@@ -278,6 +319,12 @@ def main():
                     "their relation's band BEFORE fitting (the design's outlier rejection, all relation types)")
     ap.add_argument("--hidden", type=int, default=0, help="JOINT head hidden units (0 = logistic regression)")
     ap.add_argument("--held-frac", type=float, default=0.25)
+    ap.add_argument("--struct-emb", default=None, help="structural_embedding.py .pt → adds the DECORRELATED "
+                    "lateral/sibling source `1/d`; triggers the with-vs-without-1/d ablation (does it earn its keep?)")
+    ap.add_argument("--split", choices=["node-disjoint", "random"], default="node-disjoint",
+                    help="held-out split: node-disjoint (no node in both train+held — guards leakage, the #3488 "
+                    "lesson) or random pairs.")
+    ap.add_argument("--boot", type=int, default=500, help="bootstrap resamples for the AURC 95%% CI")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
@@ -315,6 +362,17 @@ def main():
         for src in ("sym", "wiki_fwd", "wiki_rev", "elem_fwd", "elem_rev"):
             src_vals[src] = list(rdv[src])
             post.fit_source(src, ((r["rel"], v) for r, v in zip(fit_set, rdv[src])))
+    if args.struct_emb:                                    # the decorrelated lateral/sibling source `1/d`
+        sdist = struct_dist_fn(args.struct_emb)
+        src_vals["dist"] = [sdist(r["node"], r["root"]) for r in fit_set]
+        # restrict to rows where 1/d is available so the with-vs-without ablation is on the SAME pairs
+        keep = [i for i, v in enumerate(src_vals["dist"]) if v == v]   # not NaN
+        if len(keep) < len(fit_set):
+            print(f"struct-emb: {len(keep)}/{len(fit_set)} fit pairs have both nodes in the embedding "
+                  f"→ ablation restricted to those")
+            fit_set = [fit_set[i] for i in keep]
+            src_vals = {s: [vals[i] for i in keep] for s, vals in src_vals.items()}
+        post.fit_source("dist", ((r["rel"], v) for r, v in zip(fit_set, src_vals["dist"])))
 
     sources = list(src_vals)
     print(f"\nper-source separability (μ-mean spread across relations — higher = more discriminative):")
@@ -332,11 +390,23 @@ def main():
         rels = [r["rel"] for r in fit_set]
         relset = sorted(set(rels))
         X = np.array([[src_vals[s][i] for s in sources] for i in range(len(fit_set))], float)
-        order = list(range(len(fit_set))); random.Random(0).shuffle(order)
-        nh = int(args.held_frac * len(order)); held, train = order[:nh], order[nh:]
+        ri = {r: i for i, r in enumerate(relset)}
+        # HELD-OUT SPLIT — node-disjoint by default (no node in both train & held) to guard the leakage the
+        # #3488 review flagged; pairs spanning the two node-sets are dropped so the split is strictly disjoint.
+        if args.split == "node-disjoint":
+            nodes = sorted({r["node"] for r in fit_set} | {r["root"] for r in fit_set})
+            random.Random(0).shuffle(nodes)
+            hn = set(nodes[:int(args.held_frac * len(nodes))])
+            held = [i for i, r in enumerate(fit_set) if r["node"] in hn and r["root"] in hn]
+            train = [i for i, r in enumerate(fit_set) if r["node"] not in hn and r["root"] not in hn]
+            print(f"\nsplit=node-disjoint: {len(train)} train / {len(held)} held "
+                  f"({len(fit_set)-len(train)-len(held)} cross-split pairs dropped)")
+        else:
+            order = list(range(len(fit_set))); random.Random(0).shuffle(order)
+            nh = int(args.held_frac * len(order)); held, train = order[:nh], order[nh:]
+            print(f"\nsplit=random: {len(train)} train / {len(held)} held")
         Xtr = X[train]; rtr = [rels[i] for i in train]
         Xhe = X[held]; rhe = [rels[i] for i in held]
-        ri = {r: i for i, r in enumerate(relset)}
 
         joint = JointPosterior(relset, n_features=len(sources), hidden=args.hidden).fit(Xtr, rtr)
         jacc, jll, jece = _eval(joint.proba(Xhe), rhe, ri)
@@ -361,10 +431,34 @@ def main():
               f"acc {jacc*100:5.1f}%  log-loss {jll:.3f}  ECE {jece:.3f}")
         if args.hidden == 0:                              # show LR captured the asymmetry: fwd vs rev opposite signs
             W = joint.net.weight.detach().numpy()         # [C, K]
-            for rel in ("subcategory", "element_of"):
+            for rel in ("subcategory", "element_of", "see_also", "assoc"):
                 if rel in ri:
                     w = W[ri[rel]]
                     print(f"  LR weights[{rel:12s}] " + " ".join(f"{s}:{w[j]:+.2f}" for j, s in enumerate(sources)))
+
+        # ── THE HONEST TEST: does the decorrelated 1/d source earn its keep in the calibrated joint head? ──
+        # Same held-out split; refit the joint head WITH vs WITHOUT 1/d; compare acc / log-loss / ECE(bins=10)
+        # and AURC gated by MARGIN (#3391), with a bootstrap 95% CI. If 1/d is redundant, the intervals overlap.
+        if "dist" in sources:
+            true_he = np.array([ri[r] for r in rhe])
+            print(f"\n── ABLATION: 1/d contribution (JOINT {'LR' if args.hidden==0 else f'MLP-{args.hidden}'}, "
+                  f"held-out {len(held)}, split={args.split}; AURC=margin gate, bins=10 ECE) ──")
+
+            def fit_joint(sub):
+                cols = [sources.index(s) for s in sub]
+                pr = JointPosterior(relset, n_features=len(cols), hidden=args.hidden).fit(Xtr[:, cols], rtr).proba(Xhe[:, cols])
+                acc, ll, ece = _eval(pr, rhe, ri)
+                correct = (pr.argmax(1) == true_he).astype(float)
+                a, lo, hi = aurc_boot(margin_conf(pr), correct, B=args.boot)
+                return acc, ll, ece, a, lo, hi
+
+            no_dist = [s for s in sources if s != "dist"]
+            for label, sub in [("without 1/d", no_dist), ("with 1/d   ", list(sources))]:
+                acc, ll, ece, a, lo, hi = fit_joint(sub)
+                print(f"  {label}: acc {acc*100:5.1f}%  log-loss {ll:.3f}  ECE {ece:.3f}  "
+                      f"AURC(margin) {a:.3f} [{lo:.3f}, {hi:.3f}]")
+            print(f"  (dist separability {post.separability('dist')[0]:.3f}; "
+                  f"1/d 'earns its keep' iff the with-1/d AURC CI sits below the without-1/d point estimate)")
 
     # the side-note rule: out-of-band tagged labels ⇒ review (these were rejected from the fit above)
     print(f"\nLABEL-ANOMALY review (out-of-band tagged labels → LLM/human): {len(flagged)}/{len(tagged)}")
