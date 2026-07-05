@@ -6398,6 +6398,8 @@ len1:
     i8 60, label %r_xfx700
     i8 62, label %r_xfx700
     i8 61, label %r_xfx700
+    i8 44, label %r_xfy1000
+    i8 59, label %r_xfy1100
   ]
 chk2:
   %is2 = icmp eq i64 %len, 2
@@ -6429,7 +6431,17 @@ len2e:
   %sl1 = icmp eq i8 %p0, 47
   %sl2 = icmp eq i8 %p1, 47
   %is_idiv = and i1 %sl1, %sl2
-  br i1 %is_idiv, label %r_yfx400, label %none
+  br i1 %is_idiv, label %r_yfx400, label %len2f
+len2f:
+  %cl = icmp eq i8 %p0, 58
+  %mn = icmp eq i8 %p1, 45
+  %is_neck = and i1 %cl, %mn
+  br i1 %is_neck, label %r_xfx1200, label %len2g
+len2g:
+  %ar0 = icmp eq i8 %p0, 45
+  %ar1 = icmp eq i8 %p1, 62
+  %is_arrow = and i1 %ar0, %ar1
+  br i1 %is_arrow, label %r_xfy1050, label %none
 chk3:
   %is3 = icmp eq i64 %len, 3
   br i1 %is3, label %len3, label %none
@@ -6465,6 +6477,14 @@ r_yfx400:
   ret i32 6402
 r_xfx700:
   ret i32 11200
+r_xfy1000:
+  ret i32 16001
+r_xfy1100:
+  ret i32 17601
+r_xfy1050:
+  ret i32 16801
+r_xfx1200:
+  ret i32 19200
 none:
   ret i32 0
 }
@@ -6517,12 +6537,24 @@ loop:
 read_op:
   %ocp = getelementptr i8, i8* %s, i64 %opstart
   %occ = load i8, i8* %ocp
+  ; comma (44) and semicolon (59) are single-char operators that are neither
+  ; symbol nor alnum chars, so they need explicit solo-token handling. Other
+  ; operators are symbol runs (:- -> and the comparisons) or alnum runs
+  ; (is / mod / rem).
+  %is_comma = icmp eq i8 %occ, 44
+  %is_semi = icmp eq i8 %occ, 59
+  %is_solo = or i1 %is_comma, %is_semi
+  br i1 %is_solo, label %solo_op, label %chk_name
+solo_op:
+  %oe_solo = add i64 %opstart, 1
+  br label %op_done
+chk_name:
   %o_sym = call i1 @wam_is_symbol_char(i8 %occ)
   %o_aln = call i1 @wam_is_alnum(i8 %occ)
   %o_isname = or i1 %o_sym, %o_aln
   br i1 %o_isname, label %op_loop, label %restore
 op_loop:
-  %oe = phi i64 [ %opstart, %read_op ], [ %oe1, %op_step ]
+  %oe = phi i64 [ %opstart, %chk_name ], [ %oe1, %op_step ]
   %oe_end = icmp uge i64 %oe, %len
   br i1 %oe_end, label %op_done, label %op_check
 op_check:
@@ -6536,7 +6568,8 @@ op_step:
   %oe1 = add i64 %oe, 1
   br label %op_loop
 op_done:
-  %oplen = sub i64 %oe, %opstart
+  %oe_final = phi i64 [ %oe, %op_loop ], [ %oe, %op_check ], [ %oe_solo, %solo_op ]
+  %oplen = sub i64 %oe_final, %opstart
   %optokptr = getelementptr i8, i8* %s, i64 %opstart
   %opcode = call i32 @wam_infix_op(i8* %optokptr, i64 %oplen)
   %notop = icmp eq i32 %opcode, 0
@@ -6547,7 +6580,7 @@ check_prec:
   %too_high = icmp sgt i32 %prio, %maxprec
   br i1 %too_high, label %restore, label %apply
 apply:
-  store i64 %oe, i64* %pos
+  store i64 %oe_final, i64* %pos
   %is_xfy = icmp eq i32 %type, 1
   %prio_m1 = sub i32 %prio, 1
   %rmax = select i1 %is_xfy, i32 %prio, i32 %prio_m1

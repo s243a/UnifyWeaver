@@ -170,11 +170,24 @@ independently useful (richer hand-written grammars load sooner).
    objects: `p(X,X)` binds both from one unify (→9), shared var through
    arithmetic (→42), anonymous `q(_,_) = q(3,4)` succeeds (distinct).
 
-   **Remaining (3b/3c):** control operators (`,` `;` `->` `:-` — the layer that
-   turns parsed goals into clause bodies), floats, and quoted atoms in the
-   reader; `assert`/`retract` (a dynamic clause store); and `catch`/`throw`
-   predicate linkage. With variables done, `:-`/`,` are the last reader piece
-   before a whole clause parses. These remain the long pole for self-hosting.
+   **Control operators (milestone 3b):** `:-` (1200 xfx), `,` (1000 xfy), `;`
+   (1100 xfy), `->` (1050 xfy) — added as `@wam_infix_op` table entries over the
+   precedence-climbing machinery. `,` and `;` are single punctuation chars
+   (neither symbol nor alnum), so `parse_expr` gains explicit solo-token
+   handling for them; `:-`/`->` tokenize as symbol runs. With variables +
+   these, **a whole clause parses**: `read_term_from_atom("foo(X) :- bar(X),
+   baz(X)", T)` yields `:-(foo(X), ,(bar(X),baz(X)))` with `X` shared across
+   head and body (verified in a loaded object: binding X once is visible in the
+   body goal → 7; right-assoc conjunction `1,2,3` → 123; disjunction → 33).
+   The reader now covers the term shapes a clause is made of.
+
+   **Remaining (3b/3c):** floats and quoted atoms in the reader (both
+   token-level); `assert`/`retract` (a dynamic clause store); and `catch`/`throw`
+   predicate linkage. A minor loadable-subset gap also surfaced: `arg/3` with a
+   constant index compiles to a specialised `arg` opcode outside the `.wamo`
+   subset (so loaded objects decompose reader terms via unification /
+   `functor/3`, not `arg/3`) — a candidate subset lift. These remain the long
+   pole for self-hosting.
 4. **Byte-buffer output from a grammar.** The compiler object must *emit*
    `.wamo` bytes. It returns them as an Atom/byte string (the item-2 blob
    bridge already carries bytes out); building that byte string inside the
