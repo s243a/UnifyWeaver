@@ -110,6 +110,10 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   %objmetac_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 26
   store i32 0, i32* %objmetac_ptr
 
+  ; reader var-dict = null (set transiently by read_term_from_atom)
+  %vardict_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 27
+  store i8* null, i8** %vardict_ptr
+
   ret %WamState* %vm
 }
 

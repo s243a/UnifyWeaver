@@ -113,7 +113,10 @@
     %WamMetaRow*,                          ; 25: obj_meta (loaded-object meta-call
                                            ;     table; null for host VMs -- see
                                            ;     PLAWK_EVAL_BOOTSTRAP.md milestone 2)
-    i32                                    ; 26: obj_meta_count
+    i32,                                   ; 26: obj_meta_count
+    i8*                                    ; 27: reader var-dict scratch (transient,
+                                           ;     set by read_term_from_atom while
+                                           ;     parsing; null otherwise)
 }
 
 ; One row of a loaded object's meta-call dispatch table: a predicate the
