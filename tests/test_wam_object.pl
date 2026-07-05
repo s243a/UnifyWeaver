@@ -65,6 +65,15 @@ collectsum(S) :- findall(X, agnum(X), L), sum_list(L, S).  % 30+10+20+10 -> 70
 setcard(N)    :- setof(X, agnum(X), L), length(L, N).      % {10,20,30} -> 3
 bagcard(N)    :- bagof(X, agnum(X), L), length(L, N).      % 4 solutions -> 4
 
+% Regression: an aggregate whose goal yields ZERO solutions. end_aggregate
+% never runs, so the aggregate frame's return PC must have been set at
+% begin_aggregate time (via the forward scan) rather than left at the
+% placeholder 0 -- otherwise finalize jumps to PC 0 and the predicate
+% re-executes forever (empty findall used to OOM / segfault). Exercises the
+% same @run_loop the host uses, so it covers the AOT path too.
+noagg(_) :- fail.
+emptycount(N) :- findall(X, noagg(X), L), length(L, N).    % [] -> 0
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -303,6 +312,19 @@ test(setof_and_bagof_in_object,
     assertion(SetOut == "3\n"),
     run_host(Host, WBag, BagOut, 0),
     assertion(BagOut == "4\n"),
+    !.
+
+% Regression for the zero-solution aggregate crash: findall over a goal that
+% never succeeds must finalize to the empty list and return, not loop forever.
+test(empty_aggregate_terminates,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'emptycount.wamo', Wamo),
+    write_wam_object([user:emptycount/1, user:noagg/1], [wamo_entry(emptycount/1)], Wamo),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    run_host(Host, Wamo, Out, 0),
+    assertion(Out == "0\n"),
     !.
 
 :- end_tests(wam_object).
