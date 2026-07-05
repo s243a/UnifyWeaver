@@ -827,6 +827,9 @@ action(Action) -->
     dynrec_view_action(Action),
     !.
 action(Action) -->
+    dynassoc_bind_action(Action),
+    !.
+action(Action) -->
     dynrec_bind_action(Action),
     !.
 action(Action) -->
@@ -920,6 +923,28 @@ break_action(break) -->
 %  desugars (in codegen) to a destructure into hidden temporaries plus the
 %  block body with `$N` rewritten to the Nth temporary -- so it rides the
 %  same machinery as the explicit destructure, no field-pointer repoint.
+%% dynassoc_bind_action(-Action)//
+%
+%  Associative-array return: a grammar returning a list of integer key-value
+%  pairs populates a plawk assoc array.
+%
+%      arr = dyncall@tally($1) as assoc
+%
+%  desugars to dynassoc_bind(var(arr), dyncall_named(tally, [field(1)])); per
+%  record the returned [K-V, ...] pairs are inserted into arr's i64 table, so
+%  END `arr[key]` lookups see the accumulated result.
+dynassoc_bind_action(dynassoc_bind(var(Name), Call)) -->
+    identifier(Name),
+    ws,
+    "=",
+    ws,
+    dynrec_call_expr(Call),
+    ws,
+    "as",
+    identifier_boundary,
+    ws,
+    "assoc".
+
 dynrec_view_action(dynrec_view(Call, Types, Body)) -->
     dynrec_call_expr(Call),
     ws,

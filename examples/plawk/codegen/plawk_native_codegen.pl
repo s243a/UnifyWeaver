@@ -12,6 +12,7 @@
     plawk_program_dyncall_named_blob_entries/2,
     plawk_program_dyncall_rec_arities/2,
     plawk_program_dyncall_named_rec_entries/2,
+    plawk_program_dyncall_named_assoc_entries/2,
     plawk_program_dyncall_at_arities/2,
     plawk_program_dyncall_float_arities/2,
     plawk_program_dyncall_at_float_arities/2,
@@ -634,6 +635,7 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
     plawk_program_dyncall_named_blob_entries(Program, DynNamedB),
     plawk_program_dyncall_rec_arities(Program, DynRecArities),
     plawk_program_dyncall_named_rec_entries(Program, DynNamedRec),
+    plawk_program_dyncall_named_assoc_entries(Program, DynNamedAssoc),
     plawk_program_dyncall_at_arities(Program, DynAtArities),
     plawk_program_dyncall_float_arities(Program, DynFArities),
     plawk_program_dyncall_at_float_arities(Program, DynAtFArities),
@@ -648,6 +650,7 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
         DynNamedB == [],
         DynRecArities == [],
         DynNamedRec == [],
+        DynNamedAssoc == [],
         DynAtArities == [],
         DynFArities == [],
         DynAtFArities == [],
@@ -667,7 +670,7 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
         % blob(dyncall(...)) sites, plus the shared .wamo object handle.
         (   DynArities == [], DynFArities == [], DynBArities == [],
             DynNamed == [], DynNamedF == [], DynNamedB == [],
-            DynRecArities == [], DynNamedRec == []
+            DynRecArities == [], DynNamedRec == [], DynNamedAssoc == []
         ->  DyncallSupportIR = ''
         ;   ( plawk_program_dynload_path(Program, DynPath)
             ->  true
@@ -677,7 +680,7 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
             ),
             plawk_dyncall_support_ir(DynPath, DynArities, DynFArities,
                 DynBArities, DynNamed, DynNamedF, DynNamedB,
-                DynRecArities, DynNamedRec, DyncallSupportIR)
+                DynRecArities, DynNamedRec, DynNamedAssoc, DyncallSupportIR)
         ),
         % Dynamic-source shims for dyncall_at(...) / float(dyncall_at(...)) /
         % blob(dyncall_at(...)) sites + the shared path cache.
@@ -851,6 +854,29 @@ plawk_program_dyncall_named_rec_entries(program(_Begin, Rules, EndClauses),
         ),
         Entries0),
     sort(Entries0, Entries).
+
+%% plawk_program_dyncall_named_assoc_entries(+Program, -Entries)
+%  Named entries used in `arr = dyncall@name(args) as assoc` sites -- each
+%  gets a @plawk_dyncall_assoc_<Name>_<N> shim that populates a caller table
+%  via @wam_object_call_assoc.
+plawk_program_dyncall_named_assoc_entries(program(_Begin, Rules, EndClauses),
+        Entries) :-
+    findall(Name-NArgs,
+        ( ( member(rule(_Pattern, Actions), Rules)
+          ; member(end(Actions), EndClauses)
+          ),
+          member(Action, Actions),
+          plawk_subterm_dynassoc_call(Action, dyncall_named(Name, Args)),
+          length(Args, NArgs)
+        ),
+        Entries0),
+    sort(Entries0, Entries).
+
+plawk_subterm_dynassoc_call(dynassoc_bind(_Var, Call), Call).
+plawk_subterm_dynassoc_call(Term, Call) :-
+    compound(Term),
+    arg(_, Term, Sub),
+    plawk_subterm_dynassoc_call(Sub, Call).
 
 plawk_subterm_dynrec_call(dynrec_bind(_Vars, Call, _Types), Call).
 plawk_subterm_dynrec_call(dynrec_view(Call, _Types, _Body), Call).
@@ -1159,18 +1185,22 @@ fail:
 %  run -- the object-call primitive rewinds the arena per call, so this
 %  stays constant-memory just like the compiled foreign bridge.
 plawk_dyncall_support_ir(Path, Arities, IR) :-
-    plawk_dyncall_support_ir(Path, Arities, [], [], [], [], [], [], [], IR).
+    plawk_dyncall_support_ir(Path, Arities, [], [], [], [], [], [], [], [], IR).
 plawk_dyncall_support_ir(Path, IArities, FArities, IR) :-
-    plawk_dyncall_support_ir(Path, IArities, FArities, [], [], [], [], [], [], IR).
+    plawk_dyncall_support_ir(Path, IArities, FArities, [], [], [], [], [], [], [], IR).
 plawk_dyncall_support_ir(Path, IArities, FArities, BArities, IR) :-
-    plawk_dyncall_support_ir(Path, IArities, FArities, BArities, [], [], [], [], [], IR).
+    plawk_dyncall_support_ir(Path, IArities, FArities, BArities, [], [], [], [], [], [], IR).
 plawk_dyncall_support_ir(Path, IArities, FArities, BArities, NamedEntries, IR) :-
     plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
-        NamedEntries, [], [], [], [], IR).
+        NamedEntries, [], [], [], [], [], IR).
 plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
         NamedI, NamedF, NamedB, IR) :-
     plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
-        NamedI, NamedF, NamedB, [], [], IR).
+        NamedI, NamedF, NamedB, [], [], [], IR).
+plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
+        NamedI, NamedF, NamedB, RecArities, NamedRec, IR) :-
+    plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
+        NamedI, NamedF, NamedB, RecArities, NamedRec, [], IR).
 
 %% plawk_dyncall_support_ir(+Path, +IArities, +FArities, +BArities,
 %%                          +NamedI, +NamedF, +NamedB, +RecArities,
@@ -1189,7 +1219,7 @@ plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
 %  destructure binds (they also feed the resolver union). All share the
 %  single lazily loaded object handle + @plawk_dyncall_get.
 plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
-        NamedI, NamedF, NamedB, RecArities, NamedRec, IR) :-
+        NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc, IR) :-
     llvm_emit_c_string_global('plawk_dyncall_path', Path, PathGlobal,
         _StrLen, BytesLen),
     format(atom(GetterIR),
@@ -1227,7 +1257,7 @@ load:
     % one shared resolver per named entry, over the union of the kinds
     % (record binds that name an entry feed the union too, so their
     % resolver exists even when the entry is used nowhere else)
-    append([NamedI, NamedF, NamedB, NamedRec], NamedAll0),
+    append([NamedI, NamedF, NamedB, NamedRec, NamedAssoc], NamedAll0),
     sort(NamedAll0, NamedAll),
     findall(ResIR,
         ( member(REName-RENArgs, NamedAll),
@@ -1252,9 +1282,42 @@ load:
         ( member(NRName-NRNArgs, NamedRec),
           plawk_dyncall_named_rec_shim_ir(NRName, NRNArgs, NRecShim) ),
         NRecShims),
+    findall(NAShim,
+        ( member(NAName-NANArgs, NamedAssoc),
+          plawk_dyncall_named_assoc_shim_ir(NAName, NANArgs, NAShim) ),
+        NAShims),
     append([[PathGlobal, GetterIR], IShims, FShims, BShims,
-            Resolvers, NIShims, NFShims, NBShims, RecShims, NRecShims], Parts),
+            Resolvers, NIShims, NFShims, NBShims, RecShims, NRecShims,
+            NAShims], Parts),
     atomic_list_concat(Parts, '\n\n', IR).
+
+%% plawk_dyncall_named_assoc_shim_ir(+Name, +NArgs, -IR)
+%  Assoc shim for `arr = dyncall@name(args) as assoc`: resolve the PC via
+%  the shared resolver, box args, and forward the caller's assoc table to
+%  @wam_object_call_assoc (which walks the returned [K-V,...] pairs into it).
+plawk_dyncall_named_assoc_shim_ir(Name, NArgs, IR) :-
+    plawk_dyncall_named_symbol(Name, NArgs, Sym),
+    plawk_foreign_wrapper_params(NArgs, ParamsIR),
+    plawk_dyncall_store_lines(NArgs, StoreLines),
+    atomic_list_concat(StoreLines, '\n', StoreIR),
+    format(atom(IR),
+'define i1 @plawk_dyncall_assoc_~w(~w, %WamAssocI64Table* %table) {
+entry:
+  %pc = call i32 @plawk_dyncall_resolve_~w()
+  %bad = icmp slt i32 %pc, 0
+  br i1 %bad, label %fail, label %do_call
+
+do_call:
+  %vm = call %WamState* @plawk_dyncall_get()
+  %args = alloca %Value, i32 ~w
+~w
+  %r = call i1 @wam_object_call_assoc(%WamState* %vm, i32 %pc, i32 ~w, %Value* %args, i32 ~w, %WamAssocI64Table* %table)
+  ret i1 %r
+
+fail:
+  ret i1 false
+}',
+        [Sym, ParamsIR, Sym, NArgs, StoreIR, NArgs, NArgs]).
 
 %% plawk_dyncall_rec_shim_ir(+NArgs, -IR)
 %  Record shim for a default-entry destructure bind: resolve vm/pc from the
@@ -3034,7 +3097,9 @@ plawk_assoc_runtime_count_plan(
     PrintArrays \== [],
     findall(ArrayName,
         ( member(rule(_Pattern, ActionSpecs, _Control), RuleSpecs),
-          member(ArrayName-_KeyIndex, ActionSpecs)
+          ( member(ArrayName-_KeyIndex, ActionSpecs)
+          ; member(dynassoc(ArrayName, _Call), ActionSpecs)
+          )
         ),
         ActionArrays),
     append(ActionArrays, PrintArrays, ArrayNames0),
@@ -3048,9 +3113,19 @@ plawk_assoc_rule_action_specs(rule(Pattern, Actions), rule(Pattern, ActionSpecs,
     plawk_split_terminal_control(Actions, BodyActions, Control),
     ( BodyActions == []
     -> ActionSpecs = []
-    ;  maplist(plawk_assoc_increment_action, BodyActions, ActionSpecs)
+    ;  maplist(plawk_assoc_body_action_spec, BodyActions, ActionSpecs)
     ),
     ( ActionSpecs \== [] ; memberchk(Control, [terminal_next, terminal_break]) ).
+
+% Per-record assoc actions: an increment (Array-KeyIndex) or a grammar
+% populate (dynassoc(Array, Call)) that fills Array's table from the
+% returned [K-V,...] pairs.
+plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), field(KeyIndex)),
+        ArrayName-KeyIndex) :-
+    KeyIndex > 0.
+plawk_assoc_body_action_spec(dynassoc_bind(var(ArrayName), Call),
+        dynassoc(ArrayName, Call)) :-
+    plawk_dynrec_call_ok(Call).
 
 plawk_assoc_increment_action(inc_assoc(var(ArrayName), field(KeyIndex)), ArrayName-KeyIndex) :-
     KeyIndex > 0.
@@ -3074,6 +3149,12 @@ plawk_assoc_planned_actions([ArrayName-KeyIndex | Rest], Tables, Index) -->
       NextIndex is Index + 1
     },
     [assoc_action(Index, ArrayName, TableIndex, KeyIndex)],
+    plawk_assoc_planned_actions(Rest, Tables, NextIndex).
+plawk_assoc_planned_actions([dynassoc(ArrayName, Call) | Rest], Tables, Index) -->
+    { nth0(TableIndex, Tables, ArrayName),
+      NextIndex is Index + 1
+    },
+    [assoc_dyn_action(Index, ArrayName, TableIndex, Call)],
     plawk_assoc_planned_actions(Rest, Tables, NextIndex).
 
 plawk_assoc_entry_setup_ir(assoc_plan(Tables, _Actions), IR) :-
@@ -3166,6 +3247,31 @@ plawk_assoc_rule_action_lines(RuleIndex, Actions, NextLabel, FieldSeparator) -->
 
 plawk_assoc_rule_action_blocks(_RuleIndex, [], _NextLabel, _FieldSeparator) -->
     [].
+% Grammar-populate action: evaluate the call args, then hand the whole
+% [K-V,...] result to the assoc shim, which walks it into this array's table.
+plawk_assoc_rule_action_blocks(RuleIndex,
+        [assoc_dyn_action(Index, _ArrayName, TableIndex, Call) | Rest],
+        NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(Base), 'assoc_rule_~w_action_~w_dyn', [RuleIndex, Index]),
+      plawk_dynassoc_call_parts(Call, Args, ShimName),
+      plawk_foreign_args_ir(Args, FieldSeparator, Base, ArgValueIRs,
+          _Globals, Setup),
+      plawk_foreign_call_args_ir(ArgValueIRs, CallArgsIR),
+      format(atom(CallLine),
+          '  %~w_ok = call i1 @~w(~w, %WamAssocI64Table* %plawk_assoc_table_~w)',
+          [Base, ShimName, CallArgsIR, TableIndex]),
+      format(atom(Next), '  br label %~w', [ActionNextLabel]),
+      append([[Label], Setup, [CallLine, Next, '']], Lines)
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
 plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, TableIndex, KeyIndex) | Rest], NextLabel, binfmt(Types)) -->
     { !,
       ( Rest == []
@@ -3279,6 +3385,10 @@ plawk_binfmt_assoc_action_ok(_Descriptor, break) :- !.
 plawk_binfmt_assoc_action_ok(Descriptor, inc_assoc(var(_Name), field(Index))) :-
     !,
     plawk_binfmt_field_type(Descriptor, Index, i64).
+plawk_binfmt_assoc_action_ok(Descriptor, dynassoc_bind(var(_Name), Call)) :-
+    !,
+    plawk_dynassoc_call_parts(Call, Args, _Shim),
+    plawk_binfmt_foreign_args_ok(Descriptor, Args).
 
 plawk_record_program_ok(binfmt(Types), Rules, _EndPrintFields) :-
     !,
@@ -5827,6 +5937,14 @@ plawk_dynrec_call_parts(dyncall_named(Name, Args), Args, ShimName) :-
     length(Args, NArgs),
     plawk_dyncall_named_symbol(Name, NArgs, Sym),
     format(atom(ShimName), 'plawk_dyncall_named_rec_~w', [Sym]).
+
+%% plawk_dynassoc_call_parts(+Call, -Args, -ShimName)
+%  The assoc shim for a named-entry `... as assoc` site (named entry only;
+%  a default-entry `dyncall(...) as assoc` is a follow-on).
+plawk_dynassoc_call_parts(dyncall_named(Name, Args), Args, ShimName) :-
+    length(Args, NArgs),
+    plawk_dyncall_named_symbol(Name, NArgs, Sym),
+    format(atom(ShimName), 'plawk_dyncall_assoc_~w', [Sym]).
 
 plawk_dynrec_field_load_lines([], [], _Base, []).
 plawk_dynrec_field_load_lines([F | Fs], [Type | Ts], Base, [Line | Lines]) :-
