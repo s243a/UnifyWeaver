@@ -130,3 +130,15 @@
     i32,                                   ; 2: arity
     i32                                    ; 3: label_index (object-relative)
 }
+
+; One row of the process-global dynamic clause store (assert/retract). A
+; clause asserted at runtime must outlive the arena rewind, so functor and
+; args are malloc'd durable copies owned by the store (see
+; PLAWK_DYNAMIC_DB.md). live=0 is a lazy tombstone (retracted; skipped on
+; scan, row kept so a retract mid-iteration does not shift indices).
+%WamDynClause = type {
+    i8*,                                   ; 0: functor (malloc'd name copy)
+    i32,                                   ; 1: arity
+    i32,                                   ; 2: live (1=present, 0=retracted)
+    %Value*                                ; 3: args (malloc'd, arity cells)
+}

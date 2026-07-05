@@ -4741,3 +4741,428 @@ pop_restore:
   %pop_retry = call i1 @backtrack(%WamState* %vm)
   ret i1 %pop_retry
 }
+
+; ==========================================================================
+; Dynamic clause store (assert / retract) -- see PLAWK_DYNAMIC_DB.md.
+; A process-global, malloc-backed table of asserted clauses that survives
+; the arena rewind between queries. PR 1: ground facts, called via call/1.
+; ==========================================================================
+
+@wam_dyn_ptr = internal global %WamDynClause* null
+@wam_dyn_count = internal global i32 0
+@wam_dyn_cap = internal global i32 0
+
+; Duplicate a NUL-terminated functor name into malloc storage owned by the
+; store (so a row does not depend on the source pointer lifetime).
+define i8* @wam_dyn_dup_functor(i8* %src) {
+entry:
+  %len = call i64 @strlen(i8* %src)
+  %len1 = add i64 %len, 1
+  %mem = call i8* @malloc(i64 %len1)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %mem, i8* %src, i64 %len1, i1 false)
+  ret i8* %mem
+}
+
+; Deep-copy a %Value into durable malloc storage. Atomic values are returned
+; by value; compounds get a fresh malloc %Compound with a duplicated functor
+; and recursively-copied args. Unbound values become a fresh Unbound sentinel
+; with no var-map sharing (same naive limitation as @wam_copy_term_value;
+; ground facts are unaffected).
+define %Value @wam_dyn_copy_durable(%WamState* %vm, %Value %v) {
+entry:
+  %dv = call %Value @wam_deref_value(%WamState* %vm, %Value %v)
+  %tag = call i32 @value_tag(%Value %dv)
+  %is_compound = icmp eq i32 %tag, 3
+  br i1 %is_compound, label %compound, label %atomic
+atomic:
+  ret %Value %dv
+compound:
+  %pl = call i64 @value_payload(%Value %dv)
+  %cp = inttoptr i64 %pl to %Compound*
+  %fn_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 0
+  %fn = load i8*, i8** %fn_slot
+  %ar_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 1
+  %ar = load i32, i32* %ar_slot
+  %args_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 2
+  %src_args = load %Value*, %Value** %args_slot
+  %cpsize = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %newmem = call i8* @malloc(i64 %cpsize)
+  %newcp = bitcast i8* %newmem to %Compound*
+  %newfn = call i8* @wam_dyn_dup_functor(i8* %fn)
+  %nf_slot = getelementptr %Compound, %Compound* %newcp, i32 0, i32 0
+  store i8* %newfn, i8** %nf_slot
+  %na_slot = getelementptr %Compound, %Compound* %newcp, i32 0, i32 1
+  store i32 %ar, i32* %na_slot
+  %vsz = ptrtoint %Value* getelementptr (%Value, %Value* null, i32 1) to i64
+  %ar64 = sext i32 %ar to i64
+  %argbytes = mul i64 %vsz, %ar64
+  %argsmem = call i8* @malloc(i64 %argbytes)
+  %newargs = bitcast i8* %argsmem to %Value*
+  %nargs_slot = getelementptr %Compound, %Compound* %newcp, i32 0, i32 2
+  store %Value* %newargs, %Value** %nargs_slot
+  %has = icmp sgt i32 %ar, 0
+  br i1 %has, label %loop, label %done
+loop:
+  %i = phi i32 [ 0, %compound ], [ %inext, %loopstep ]
+  %sp = getelementptr %Value, %Value* %src_args, i32 %i
+  %sv = load %Value, %Value* %sp
+  %dvc = call %Value @wam_dyn_copy_durable(%WamState* %vm, %Value %sv)
+  %dp = getelementptr %Value, %Value* %newargs, i32 %i
+  store %Value %dvc, %Value* %dp
+  %inext = add i32 %i, 1
+  %more = icmp slt i32 %inext, %ar
+  br i1 %more, label %loopstep, label %done
+loopstep:
+  br label %loop
+done:
+  %ni = ptrtoint %Compound* %newcp to i64
+  %r0 = insertvalue %Value undef, i32 3, 0
+  %r1 = insertvalue %Value %r0, i64 %ni, 1
+  ret %Value %r1
+}
+
+; Append (prepend=false) or prepend (prepend=true) a row into the store,
+; growing the array by realloc-doubling.
+define void @wam_dyn_store(i8* %functor, i32 %arity, %Value* %args, i1 %prepend) {
+entry:
+  %count = load i32, i32* @wam_dyn_count
+  %cap = load i32, i32* @wam_dyn_cap
+  %need_grow = icmp sge i32 %count, %cap
+  br i1 %need_grow, label %grow, label %have_cap
+grow:
+  %cap2 = mul i32 %cap, 2
+  %small = icmp slt i32 %cap2, 8
+  %newcap = select i1 %small, i32 8, i32 %cap2
+  %oldptr = load %WamDynClause*, %WamDynClause** @wam_dyn_ptr
+  %oldraw = bitcast %WamDynClause* %oldptr to i8*
+  %elsz = ptrtoint %WamDynClause* getelementptr (%WamDynClause, %WamDynClause* null, i32 1) to i64
+  %newcap64 = sext i32 %newcap to i64
+  %newbytes = mul i64 %elsz, %newcap64
+  %newraw = call i8* @realloc(i8* %oldraw, i64 %newbytes)
+  %newptr = bitcast i8* %newraw to %WamDynClause*
+  store %WamDynClause* %newptr, %WamDynClause** @wam_dyn_ptr
+  store i32 %newcap, i32* @wam_dyn_cap
+  br label %have_cap
+have_cap:
+  %ptr = load %WamDynClause*, %WamDynClause** @wam_dyn_ptr
+  br i1 %prepend, label %do_prepend, label %do_append
+do_prepend:
+  %elsz2 = ptrtoint %WamDynClause* getelementptr (%WamDynClause, %WamDynClause* null, i32 1) to i64
+  %cnt64 = sext i32 %count to i64
+  %movebytes = mul i64 %elsz2, %cnt64
+  %dst1 = getelementptr %WamDynClause, %WamDynClause* %ptr, i32 1
+  %dst1raw = bitcast %WamDynClause* %dst1 to i8*
+  %src0raw = bitcast %WamDynClause* %ptr to i8*
+  call void @llvm.memmove.p0i8.p0i8.i64(i8* %dst1raw, i8* %src0raw, i64 %movebytes, i1 false)
+  %slot0 = getelementptr %WamDynClause, %WamDynClause* %ptr, i32 0
+  br label %fill
+do_append:
+  %slotN = getelementptr %WamDynClause, %WamDynClause* %ptr, i32 %count
+  br label %fill
+fill:
+  %slot = phi %WamDynClause* [ %slot0, %do_prepend ], [ %slotN, %do_append ]
+  %f_fn = getelementptr %WamDynClause, %WamDynClause* %slot, i32 0, i32 0
+  store i8* %functor, i8** %f_fn
+  %f_ar = getelementptr %WamDynClause, %WamDynClause* %slot, i32 0, i32 1
+  store i32 %arity, i32* %f_ar
+  %f_lv = getelementptr %WamDynClause, %WamDynClause* %slot, i32 0, i32 2
+  store i32 1, i32* %f_lv
+  %f_args = getelementptr %WamDynClause, %WamDynClause* %slot, i32 0, i32 3
+  store %Value* %args, %Value** %f_args
+  %newcount = add i32 %count, 1
+  store i32 %newcount, i32* @wam_dyn_count
+  ret void
+}
+
+; assertz (prepend=false) / asserta (prepend=true): store a clause term as a
+; ground fact. Returns false only for a non-callable term (a number/var).
+define i1 @wam_dyn_assert(%WamState* %vm, %Value %clause, i1 %prepend) {
+entry:
+  %dc = call %Value @wam_deref_value(%WamState* %vm, %Value %clause)
+  %tag = call i32 @value_tag(%Value %dc)
+  %is_atom = icmp eq i32 %tag, 0
+  br i1 %is_atom, label %atom_clause, label %maybe_compound
+atom_clause:
+  %aid = call i64 @value_payload(%Value %dc)
+  %astr = call i8* @wam_atom_to_string(i64 %aid)
+  %astr_null = icmp eq i8* %astr, null
+  br i1 %astr_null, label %fail, label %atom_store
+atom_store:
+  %afn = call i8* @wam_dyn_dup_functor(i8* %astr)
+  call void @wam_dyn_store(i8* %afn, i32 0, %Value* null, i1 %prepend)
+  ret i1 true
+maybe_compound:
+  %is_comp = icmp eq i32 %tag, 3
+  br i1 %is_comp, label %comp_clause, label %fail
+comp_clause:
+  %pl = call i64 @value_payload(%Value %dc)
+  %cp = inttoptr i64 %pl to %Compound*
+  %fn_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 0
+  %fn = load i8*, i8** %fn_slot
+  %ar_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 1
+  %ar = load i32, i32* %ar_slot
+  %args_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 2
+  %src_args = load %Value*, %Value** %args_slot
+  %dfn = call i8* @wam_dyn_dup_functor(i8* %fn)
+  %vsz = ptrtoint %Value* getelementptr (%Value, %Value* null, i32 1) to i64
+  %ar64 = sext i32 %ar to i64
+  %argbytes = mul i64 %vsz, %ar64
+  %argsmem = call i8* @malloc(i64 %argbytes)
+  %dargs = bitcast i8* %argsmem to %Value*
+  %has = icmp sgt i32 %ar, 0
+  br i1 %has, label %cloop, label %cstore
+cloop:
+  %i = phi i32 [ 0, %comp_clause ], [ %inext, %cloopstep ]
+  %sp = getelementptr %Value, %Value* %src_args, i32 %i
+  %sv = load %Value, %Value* %sp
+  %cvd = call %Value @wam_dyn_copy_durable(%WamState* %vm, %Value %sv)
+  %dp = getelementptr %Value, %Value* %dargs, i32 %i
+  store %Value %cvd, %Value* %dp
+  %inext = add i32 %i, 1
+  %more = icmp slt i32 %inext, %ar
+  br i1 %more, label %cloopstep, label %cstore
+cloopstep:
+  br label %cloop
+cstore:
+  call void @wam_dyn_store(i8* %dfn, i32 %ar, %Value* %dargs, i1 %prepend)
+  ret i1 true
+fail:
+  ret i1 false
+}
+
+; retractall(Pattern): tombstone every live row whose head unifies with the
+; pattern. Pattern-side bindings are unwound after each test so they do not
+; leak. Always succeeds.
+define i1 @wam_dyn_retractall(%WamState* %vm, %Value %pattern) {
+entry:
+  %dp = call %Value @wam_deref_value(%WamState* %vm, %Value %pattern)
+  %tag = call i32 @value_tag(%Value %dp)
+  %is_atom = icmp eq i32 %tag, 0
+  br i1 %is_atom, label %pat_atom, label %pat_maybe_comp
+pat_atom:
+  %aid = call i64 @value_payload(%Value %dp)
+  %astr = call i8* @wam_atom_to_string(i64 %aid)
+  br label %scan_init
+pat_maybe_comp:
+  %is_comp = icmp eq i32 %tag, 3
+  br i1 %is_comp, label %pat_comp, label %ra_done
+pat_comp:
+  %cpl = call i64 @value_payload(%Value %dp)
+  %ccp = inttoptr i64 %cpl to %Compound*
+  %cfn_s = getelementptr %Compound, %Compound* %ccp, i32 0, i32 0
+  %cfn = load i8*, i8** %cfn_s
+  %car_s = getelementptr %Compound, %Compound* %ccp, i32 0, i32 1
+  %car = load i32, i32* %car_s
+  %cargs_s = getelementptr %Compound, %Compound* %ccp, i32 0, i32 2
+  %cargs = load %Value*, %Value** %cargs_s
+  br label %scan_init
+scan_init:
+  %pfn = phi i8* [ %astr, %pat_atom ], [ %cfn, %pat_comp ]
+  %par = phi i32 [ 0, %pat_atom ], [ %car, %pat_comp ]
+  %pargs = phi %Value* [ null, %pat_atom ], [ %cargs, %pat_comp ]
+  %count = load i32, i32* @wam_dyn_count
+  %store = load %WamDynClause*, %WamDynClause** @wam_dyn_ptr
+  %ts_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %mark = load i32, i32* %ts_p
+  br label %scan
+scan:
+  %ri = phi i32 [ 0, %scan_init ], [ %rinext, %scan_cont ]
+  %sdone = icmp sge i32 %ri, %count
+  br i1 %sdone, label %ra_done, label %row
+row:
+  %row_ptr = getelementptr %WamDynClause, %WamDynClause* %store, i32 %ri
+  %lv_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 2
+  %lv = load i32, i32* %lv_s
+  %islive = icmp ne i32 %lv, 0
+  br i1 %islive, label %row_live, label %scan_cont
+row_live:
+  %rar_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 1
+  %rar = load i32, i32* %rar_s
+  %ar_eq = icmp eq i32 %rar, %par
+  br i1 %ar_eq, label %row_fn, label %scan_cont
+row_fn:
+  %rfn_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 0
+  %rfn = load i8*, i8** %rfn_s
+  %fn_eq = call i1 @wam_functor_eq(i8* %rfn, i8* %pfn)
+  br i1 %fn_eq, label %row_args, label %scan_cont
+row_args:
+  %rargs_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 3
+  %rargs = load %Value*, %Value** %rargs_s
+  br label %uloop
+uloop:
+  %ui = phi i32 [ 0, %row_args ], [ %uinext, %ucont ]
+  %uidone = icmp sge i32 %ui, %par
+  br i1 %uidone, label %matched, label %ustep
+ustep:
+  %pap = getelementptr %Value, %Value* %pargs, i32 %ui
+  %pav = load %Value, %Value* %pap
+  %rap = getelementptr %Value, %Value* %rargs, i32 %ui
+  %rav = load %Value, %Value* %rap
+  %uok = call i1 @wam_unify_value(%WamState* %vm, %Value %pav, %Value %rav)
+  br i1 %uok, label %ucont, label %after_test
+ucont:
+  %uinext = add i32 %ui, 1
+  br label %uloop
+matched:
+  store i32 0, i32* %lv_s
+  br label %after_test
+after_test:
+  call void @unwind_trail(%WamState* %vm, i32 %mark)
+  br label %scan_cont
+scan_cont:
+  %rinext = add i32 %ri, 1
+  br label %scan
+ra_done:
+  ret i1 true
+}
+
+; Consult the store for a goal whose meta-call resolution missed. Pushes a
+; dynamic-clause choice point (agg_type = -3) and yields the first matching
+; clause; returns false if no clause matches. functor/arity identify the
+; predicate; the goal itself is read from reg 0 by the iterator.
+define i1 @wam_dyn_consult(%WamState* %vm, i8* %functor, i32 %arity, i32 %return_pc) {
+entry:
+  call void @wam_cp_ensure_capacity(%WamState* %vm)
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  %cp = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %cpn
+  %npc_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 0
+  store i32 0, i32* %npc_s
+  %dst = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 1, i32 0
+  %src = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %dstr = bitcast %Value* %dst to i8*
+  %srcr = bitcast %Value* %src to i8*
+  ; Save 32 registers (512 bytes), matching the foreign-result iterator:
+  ; the aggregate machinery keeps state in the high registers, which must
+  ; survive unchanged across the solutions this CP yields.
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dstr, i8* %srcr, i64 512, i1 false)
+  %ts_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %ts = load i32, i32* %ts_p
+  %tm_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 2
+  store i32 %ts, i32* %tm_s
+  %cpv_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
+  %cpv = load i32, i32* %cpv_p
+  %scp_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 3
+  store i32 %cpv, i32* %scp_s
+  %at_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 4
+  store i32 -3, i32* %at_s
+  %fn_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 8
+  store i8* %functor, i8** %fn_s
+  %ar_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 9
+  store i32 %arity, i32* %ar_s
+  %cur_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 10
+  store i32 0, i32* %cur_s
+  %rpc_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 7
+  store i32 %return_pc, i32* %rpc_s
+  %hs_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs = load i32, i32* %hs_p
+  %sht_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 11
+  store i32 %hs, i32* %sht_s
+  %ncpn = add i32 %cpn, 1
+  store i32 %ncpn, i32* %cpn_ptr
+  %r = call i1 @wam_dyn_iter_next(%WamState* %vm)
+  ret i1 %r
+}
+
+; Advance the dynamic-clause iterator on the top choice point (agg_type -3).
+; Scans the store from the saved cursor for the next live row matching the
+; functor/arity, unifies the goal (reg 0) args against the row args, and on
+; full success sets PC to the return PC. On exhaustion pops the CP and keeps
+; backtracking. Called by @backtrack when it sees agg_type == -3.
+define i1 @wam_dyn_iter_next(%WamState* %vm) {
+entry:
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
+  %top_idx = sub i32 %cpn, 1
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  %top = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %top_idx
+  %fn_s = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 8
+  %fn = load i8*, i8** %fn_s
+  %ar_s = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 9
+  %ar = load i32, i32* %ar_s
+  %cur_s = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 10
+  %cur0 = load i32, i32* %cur_s
+  %tm_s = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 2
+  %mark = load i32, i32* %tm_s
+  %count = load i32, i32* @wam_dyn_count
+  %store = load %WamDynClause*, %WamDynClause** @wam_dyn_ptr
+  br label %scan
+scan:
+  %ri = phi i32 [ %cur0, %entry ], [ %rinext, %scan_cont ]
+  %exhausted = icmp sge i32 %ri, %count
+  br i1 %exhausted, label %pop, label %row
+row:
+  %row_ptr = getelementptr %WamDynClause, %WamDynClause* %store, i32 %ri
+  %lv_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 2
+  %lv = load i32, i32* %lv_s
+  %islive = icmp ne i32 %lv, 0
+  br i1 %islive, label %row_live, label %scan_cont
+row_live:
+  %rar_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 1
+  %rar = load i32, i32* %rar_s
+  %ar_eq = icmp eq i32 %rar, %ar
+  br i1 %ar_eq, label %row_fn, label %scan_cont
+row_fn:
+  %rfn_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 0
+  %rfn = load i8*, i8** %rfn_s
+  %fn_eq = call i1 @wam_functor_eq(i8* %rfn, i8* %fn)
+  br i1 %fn_eq, label %candidate, label %scan_cont
+candidate:
+  %dst = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %csrc = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 1, i32 0
+  %dstr = bitcast %Value* %dst to i8*
+  %csrcr = bitcast %Value* %csrc to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dstr, i8* %csrcr, i64 512, i1 false)
+  call void @unwind_trail(%WamState* %vm, i32 %mark)
+  %has_args = icmp sgt i32 %ar, 0
+  br i1 %has_args, label %get_goal, label %success
+get_goal:
+  %goal = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %gtag = call i32 @value_tag(%Value %goal)
+  %g_is_comp = icmp eq i32 %gtag, 3
+  br i1 %g_is_comp, label %goal_comp, label %scan_cont
+goal_comp:
+  %gpl = call i64 @value_payload(%Value %goal)
+  %gcp = inttoptr i64 %gpl to %Compound*
+  %gargs_s = getelementptr %Compound, %Compound* %gcp, i32 0, i32 2
+  %gargs = load %Value*, %Value** %gargs_s
+  %crargs_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 3
+  %crargs = load %Value*, %Value** %crargs_s
+  br label %uloop
+uloop:
+  %ui = phi i32 [ 0, %goal_comp ], [ %uinext, %ucont ]
+  %uidone = icmp sge i32 %ui, %ar
+  br i1 %uidone, label %success, label %ustep
+ustep:
+  %gap = getelementptr %Value, %Value* %gargs, i32 %ui
+  %gav = load %Value, %Value* %gap
+  %rap = getelementptr %Value, %Value* %crargs, i32 %ui
+  %rav = load %Value, %Value* %rap
+  %uok = call i1 @wam_unify_value(%WamState* %vm, %Value %gav, %Value %rav)
+  br i1 %uok, label %ucont, label %unify_fail
+ucont:
+  %uinext = add i32 %ui, 1
+  br label %uloop
+unify_fail:
+  call void @unwind_trail(%WamState* %vm, i32 %mark)
+  br label %scan_cont
+success:
+  %next = add i32 %ri, 1
+  store i32 %next, i32* %cur_s
+  %rpc_s = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 7
+  %rpc = load i32, i32* %rpc_s
+  call void @wam_set_pc(%WamState* %vm, i32 %rpc)
+  call void @wam_set_halted(%WamState* %vm, i1 false)
+  ret i1 true
+scan_cont:
+  %rinext = add i32 %ri, 1
+  br label %scan
+pop:
+  call void @unwind_trail(%WamState* %vm, i32 %mark)
+  store i32 %top_idx, i32* %cpn_ptr
+  %retry = call i1 @backtrack(%WamState* %vm)
+  ret i1 %retry
+}

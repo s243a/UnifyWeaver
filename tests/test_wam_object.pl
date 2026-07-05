@@ -140,6 +140,32 @@ emitnum(S)   :- N is 6*7, number_codes(N, Cs), atom_codes(S, Cs).            % "
 emithdr(S)   :- number_codes(2, VC), atom_codes(V, VC), atom_concat('WAMO ', V, S). % "WAMO 2"
 emitcodes(S) :- atom_codes(S, [104,105]).                                   % "hi"
 
+% Dynamic clause store (eval bootstrap milestone 3b-db): assert facts at
+% runtime into the process-global store and call them back through the call/1
+% meta-call, which consults the store when the meta table misses (see
+% PLAWK_DYNAMIC_DB.md). Ground facts, PR 1. These run in a loaded object -- the
+% store is process-global, shared by the host and any loaded .wamo.
+% Deterministic call of an asserted fact.
+dsingle(R) :- assertz(fact(42)), G = fact(X), call(G), R = X.                  % 42
+% Argument-directed selection: the iterator scans past pair(a,_) (functor
+% matches, args do not) to unify pair(b,X).
+dselect(R) :- assertz(pair(a,1)), assertz(pair(b,2)), assertz(pair(c,3)),
+              G = pair(b,X), call(G), R = X.                                   % 2
+% Real choice-point backtracking (no findall): num(1) is yielded first, the
+% continuation X>=2 fails, backtrack re-enters the clause iterator, num(2)
+% succeeds. Proves the -3 choice point advances the store scan.
+dfirst(R) :- assertz(num(1)), assertz(num(2)),
+             G = num(X), call(G), X >= 2, R = X.                              % 2
+% asserta prepends: the prepended clause is the first solution.
+dorder(R) :- assertz(item(1)), assertz(item(2)), asserta(item(9)),
+             G = item(X), call(G), R = X.                                     % 9
+% retractall tombstones every match; the subsequent call then fails.
+dret(R) :- assertz(k(1)), assertz(k(2)), retractall(k(_)),
+           G = k(X), ( call(G) -> R = X ; R = 0 ).                            % 0
+% Partial retractall: only k2(2,_) is removed; k2(1,10) survives.
+dretp(R) :- assertz(k2(1,10)), assertz(k2(2,20)), retractall(k2(2,_)),
+            G = k2(A,B), call(G), R is A*100+B.                               % 110
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -532,6 +558,31 @@ test(emit_bytes_from_object,
     run_host(Host, W1, O1, 0), assertion(O1 == "42"),
     run_host(Host, W2, O2, 0), assertion(O2 == "WAMO 2"),
     run_host(Host, W3, O3, 0), assertion(O3 == "hi"),
+    !.
+
+% Dynamic clause store in a loaded object (eval bootstrap milestone 3b-db):
+% assertz/asserta/retractall build a process-global clause database at runtime,
+% and call/1 consults it (with unification and backtracking) when the meta
+% table misses. Each grammar runs in a fresh host process, so the store starts
+% empty. Ground facts, called via call/1 (PR 1). See PLAWK_DYNAMIC_DB.md.
+test(dynamic_clause_store_in_object,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    forall(member(Name-Expected,
+               [ dsingle-"42\n",   % deterministic assert + call
+                 dselect-"2\n",    % argument-directed clause selection
+                 dfirst-"2\n",     % choice-point backtracking (continuation fails)
+                 dorder-"9\n",     % asserta prepends
+                 dret-"0\n",       % retractall clears, call fails
+                 dretp-"110\n" ]), % partial retractall keeps the non-match
+           ( PI = Name/1,
+             directory_file_path(Dir, Name, Base),
+             atom_concat(Base, '.wamo', W),
+             write_wam_object([user:PI], [wamo_entry(PI)], W),
+             run_host(Host, W, Out, 0),
+             assertion(Out == Expected) )),
     !.
 
 :- end_tests(wam_object).

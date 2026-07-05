@@ -328,10 +328,14 @@ loadable along the way.
   works in loaded objects (byte-based cons detection) — and the **reader**
   (`read_term_from_atom/2`): a recursive-descent parser with operator
   precedence, variables, control operators, floats and quoted atoms. A loaded
-  object can now parse whole clauses from source text. Remaining: `assert`/
-  `retract` (a dynamic clause store) and `catch`/`throw` predicate linkage
-  (3c) — the true long pole. See the bootstrap doc for the full loadability
-  matrix.
+  object can now parse whole clauses from source text. Milestone 3b-db (PR 1)
+  adds a **dynamic clause store**: a process-global, malloc-backed clause
+  database (survives the arena rewind) with `assertz`/`asserta`/`retractall`
+  and calling ground dynamic facts via `call/1` (the meta-call consults the
+  store, with unification and backtracking). See PLAWK_DYNAMIC_DB.md. Remaining:
+  direct calls to `:- dynamic` predicates + nondet `retract/1` (3b-db PR 2),
+  rule bodies (PR 3), and `catch`/`throw` predicate linkage (3c) — the true
+  long pole. See the bootstrap doc for the full loadability matrix.
 - **Milestone 4 — byte-buffer output from a grammar — LANDED.** A loaded
   grammar assembles a byte string at runtime (via the milestone-3 string/codes
   builtins) and returns it as an Atom; the host reads it back through

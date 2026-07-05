@@ -2499,7 +2499,7 @@ atom_goal:
   %target_arity = sub i32 %total_arity, 1
   %label_idx = call i32 @wam_meta_find_atom(%WamState* %vm, i64 %atom_id, i32 %target_arity)
   %atom_found = icmp sge i32 %label_idx, 0
-  br i1 %atom_found, label %atom_resolve, label %fail
+  br i1 %atom_found, label %atom_resolve, label %atom_consult
 
 atom_resolve:
   %target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %label_idx)
@@ -2532,7 +2532,7 @@ compound_goal:
   %compound_target_arity = add i32 %compound_base_arity, %compound_extra_arity
   %clabel_idx = call i32 @wam_meta_find_compound(%WamState* %vm, i8* %compound_functor, i32 %compound_target_arity)
   %comp_found = icmp sge i32 %clabel_idx, 0
-  br i1 %comp_found, label %compound_resolve, label %fail
+  br i1 %comp_found, label %compound_resolve, label %compound_consult
 
 compound_resolve:
   %ctarget_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %clabel_idx)
@@ -2579,6 +2579,28 @@ go:
   call void @wam_set_cp(%WamState* %vm, i32 %after_pc)
   call void @wam_set_pc(%WamState* %vm, i32 %target_pc)
   ret i1 true
+
+atom_consult:
+  ; Meta table missed an atom goal -- consult the dynamic clause store
+  ; for name/target_arity (see PLAWK_DYNAMIC_DB.md). target_arity > 0
+  ; here means a call/N closure the iterator cannot read from reg0, so
+  ; it simply finds no match and fails cleanly.
+  %ac_fn = call i8* @wam_atom_to_string(i64 %atom_id)
+  %ac_fn_null = icmp eq i8* %ac_fn, null
+  br i1 %ac_fn_null, label %fail, label %ac_go
+ac_go:
+  %ac_ok = call i1 @wam_dyn_consult(%WamState* %vm, i8* %ac_fn, i32 %target_arity, i32 %after_pc)
+  ret i1 %ac_ok
+
+compound_consult:
+  ; Meta table missed a compound goal -- consult the dynamic clause store.
+  ; Only when the goal in reg0 is the complete goal (no call/N closure
+  ; extra args); with extra args the iterator cannot see them, so fail.
+  %cc_no_extra = icmp eq i32 %compound_extra_arity, 0
+  br i1 %cc_no_extra, label %cc_go, label %fail
+cc_go:
+  %cc_ok = call i1 @wam_dyn_consult(%WamState* %vm, i8* %compound_functor, i32 %compound_base_arity, i32 %after_pc)
+  ret i1 %cc_ok
 
 fail:
   ret i1 false
@@ -4066,7 +4088,17 @@ check_foreign:
   ; If the top CP is a foreign-result iterator (agg_type == -2),
   ; advance the cursor and yield the next result.
   %is_foreign = icmp eq i32 %ca_at, -2
-  br i1 %is_foreign, label %do_foreign_yield, label %restore
+  br i1 %is_foreign, label %do_foreign_yield, label %check_dyn
+
+check_dyn:
+  ; If the top CP is a dynamic-clause iterator (agg_type == -3), advance
+  ; the store scan and yield the next matching asserted clause.
+  %is_dyn = icmp eq i32 %ca_at, -3
+  br i1 %is_dyn, label %do_dyn_yield, label %restore
+
+do_dyn_yield:
+  %dy_ok = call i1 @wam_dyn_iter_next(%WamState* %vm)
+  ret i1 %dy_ok
 
 do_foreign_yield:
   %fy_ok = call i1 @wam_foreign_iter_next(%WamState* %vm)
@@ -7349,6 +7381,9 @@ entry:
     i32 172, label %builtin_code_type
     i32 173, label %builtin_term_to_atom
     i32 174, label %builtin_read_term_from_atom
+    i32 175, label %builtin_assertz
+    i32 176, label %builtin_asserta
+    i32 177, label %builtin_retractall
     i32 76, label %builtin_compare
     i32 77, label %builtin_must_be
     i32 78, label %builtin_write
@@ -16778,6 +16813,26 @@ builtin_term_to_atom:
   %tta.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %tta.raw2, %Value %tta.v)
   ret i1 %tta.ok
 
+builtin_assertz:
+  ; assertz(+Clause): store A1 as a ground fact at the end of the store.
+  ; See PLAWK_DYNAMIC_DB.md (dynamic clause store, milestone 3b-db).
+  %az.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %az.ok = call i1 @wam_dyn_assert(%WamState* %vm, %Value %az.a1, i1 false)
+  ret i1 %az.ok
+
+builtin_asserta:
+  ; asserta(+Clause): store A1 as a ground fact at the front of the store.
+  %aa.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %aa.ok = call i1 @wam_dyn_assert(%WamState* %vm, %Value %aa.a1, i1 true)
+  ret i1 %aa.ok
+
+builtin_retractall:
+  ; retractall(+Pattern): tombstone every live clause whose head unifies
+  ; with A1. Always succeeds.
+  %ra.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
+  %ra.ok = call i1 @wam_dyn_retractall(%WamState* %vm, %Value %ra.a1)
+  ret i1 %ra.ok
+
 unknown:
   ret i1 false
 }',
@@ -20410,6 +20465,9 @@ builtin_op_to_id('atom_contains/2', 171).     % substring check via strstr.
 builtin_op_to_id('code_type/2', 172).        % ASCII class check; shares char_type's classifier.
 builtin_op_to_id('term_to_atom/2', 173).     % render a term to its text (write semantics) and intern as an atom.
 builtin_op_to_id('read_term_from_atom/2', 174). % parse an atom's text into a term (atomic terms only, for now).
+builtin_op_to_id('assertz/1', 175).          % dynamic clause store: append a ground fact.
+builtin_op_to_id('asserta/1', 176).          % dynamic clause store: prepend a ground fact.
+builtin_op_to_id('retractall/1', 177).       % dynamic clause store: tombstone matching clauses.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
