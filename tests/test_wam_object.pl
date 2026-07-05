@@ -128,6 +128,18 @@ readfloat(R)  :- read_term_from_atom('3.5 + 1.5', T), F is T, R is truncate(F). 
 readfloatc(R) :- read_term_from_atom('pt(2.5,4.5)', T), T = pt(A,B), R is truncate(A+B). % 7
 readquoted(R) :- read_term_from_atom('foo(\'hello world\')', T), T = foo(A), atom_length(A, R). % 11
 
+% Byte-buffer output (eval bootstrap milestone 4): a loaded grammar BUILDS a
+% byte string at runtime -- via arithmetic + the string/codes builtins -- and
+% returns it as an atom. The host reads the bytes back through
+% @wam_object_call_bytes ({ptr, len, ok}). This is the shape the eventual eval
+% path uses to hand assembled .wamo text back across the blob bridge; it
+% composes primitives that already exist (items 2-3), so it needs no new
+% target IR. Three grammars: a computed decimal, a synthesized ".wamo"-style
+% header line, and a literal code list.
+emitnum(S)   :- N is 6*7, number_codes(N, Cs), atom_codes(S, Cs).            % "42"
+emithdr(S)   :- number_codes(2, VC), atom_codes(V, VC), atom_concat('WAMO ', V, S). % "WAMO 2"
+emitcodes(S) :- atom_codes(S, [104,105]).                                   % "hi"
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -500,6 +512,28 @@ test(read_floats_and_quoted_in_object,
     run_host(Host, W3, O3, 0), assertion(O3 == "11\n"),
     !.
 
+% Byte-buffer output in a loaded object (eval bootstrap milestone 4): a grammar
+% assembles a byte string at runtime and the host reads it back via
+% @wam_object_call_bytes ({ptr, len, ok}), printing it with %.*s so embedded
+% NULs or the absence of a trailing newline do not matter. A computed decimal
+% ("42"), a ".wamo"-style header line ("WAMO 2"), and a literal code list
+% ("hi"). No trailing newline is emitted by the host, so the bytes are exact.
+test(emit_bytes_from_object,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'emitnum.wamo', W1),
+    directory_file_path(Dir, 'emithdr.wamo', W2),
+    directory_file_path(Dir, 'emitcodes.wamo', W3),
+    write_wam_object([user:emitnum/1],   [wamo_entry(emitnum/1)],   W1),
+    write_wam_object([user:emithdr/1],   [wamo_entry(emithdr/1)],   W2),
+    write_wam_object([user:emitcodes/1], [wamo_entry(emitcodes/1)], W3),
+    directory_file_path(Dir, 'bytes_host_bin', Host),
+    ( exists_file(Host) -> true ; build_bytes_host(Dir, Host) ),
+    run_host(Host, W1, O1, 0), assertion(O1 == "42"),
+    run_host(Host, W2, O2, 0), assertion(O2 == "WAMO 2"),
+    run_host(Host, W3, O3, 0), assertion(O3 == "hi"),
+    !.
+
 :- end_tests(wam_object).
 
 % --- helpers ---------------------------------------------------------------
@@ -731,6 +765,50 @@ print:\n\c
   %p_1 = call i32 (i8*, ...) @printf(i8* %fmt, i64 %v1)\n\c
   %p_2 = call i32 (i8*, ...) @printf(i8* %fmt, i64 %v2)\n\c
   %p_3 = call i32 (i8*, ...) @printf(i8* %fmt, i64 %v3)\n\c
+  ret i32 0\n\c
+load_fail:\n\c
+  ret i32 20\n\c
+run_fail:\n\c
+  ret i32 21\n\c
+}\n').
+
+% Build a host that loads argv[1], runs the entry via @wam_object_call_bytes,
+% and writes the returned bytes verbatim (length-counted, %.*s -- no trailing
+% newline, so the captured output equals the grammar's byte string exactly).
+build_bytes_host(Dir, Host) :-
+    directory_file_path(Dir, 'bytes_host.ll', LL),
+    with_output_to(string(_),
+        write_wam_llvm_project([user:answer/1],
+            [module_name(wam_object_bytes_host), emit_wamo_loader(true)], LL)),
+    bytes_host_main_ir(MainIR),
+    setup_call_cleanup(
+        open(LL, append, S, [encoding(utf8)]),
+        write(S, MainIR),
+        close(S)),
+    directory_file_path(Dir, 'bytes_host_bin', Host),
+    clang_link(LL, Host).
+
+bytes_host_main_ir(
+'\n@.by_sfmt = private constant [5 x i8] c"%.*s\\00"\n\n\c
+define i32 @main(i32 %argc, i8** %argv) {\n\c
+entry:\n\c
+  %p1 = getelementptr i8*, i8** %argv, i64 1\n\c
+  %path = load i8*, i8** %p1\n\c
+  %obj = call { %WamState*, i32 } @wam_object_load(i8* %path)\n\c
+  %vm = extractvalue { %WamState*, i32 } %obj, 0\n\c
+  %pc = extractvalue { %WamState*, i32 } %obj, 1\n\c
+  %vm_null = icmp eq %WamState* %vm, null\n\c
+  br i1 %vm_null, label %load_fail, label %run\n\c
+run:\n\c
+  %r = call { i8*, i64, i1 } @wam_object_call_bytes(%WamState* %vm, i32 %pc, i32 0, %Value* null, i32 0)\n\c
+  %ptr = extractvalue { i8*, i64, i1 } %r, 0\n\c
+  %len = extractvalue { i8*, i64, i1 } %r, 1\n\c
+  %ok = extractvalue { i8*, i64, i1 } %r, 2\n\c
+  br i1 %ok, label %print, label %run_fail\n\c
+print:\n\c
+  %len32 = trunc i64 %len to i32\n\c
+  %fmt = getelementptr [5 x i8], [5 x i8]* @.by_sfmt, i32 0, i32 0\n\c
+  %ps = call i32 (i8*, ...) @printf(i8* %fmt, i32 %len32, i8* %ptr)\n\c
   ret i32 0\n\c
 load_fail:\n\c
   ret i32 20\n\c

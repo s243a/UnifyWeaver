@@ -325,12 +325,21 @@ loadable along the way.
   `setof` and `bagof` over user-predicate goals load and run from a `.wamo`
   (setof/bagof via `inline_bagof_setof`, now the `.wamo` default). Milestone 3b
   adds `term_to_atom/2` (write direction) — a recursive term→text writer that
-  works in loaded objects (byte-based cons detection). Remaining: the reader
-  (`read_term` / `term_to_atom` read direction — a parser), `assert`/`retract`
-  (a dynamic clause store), and `catch`/`throw` predicate linkage (3c) — the
-  true long pole. See the bootstrap doc for the full loadability matrix.
-- **Milestones 4–6** (byte-buffer output, the `eval`/`compile` surface,
-  self-host) — see the bootstrap doc.
+  works in loaded objects (byte-based cons detection) — and the **reader**
+  (`read_term_from_atom/2`): a recursive-descent parser with operator
+  precedence, variables, control operators, floats and quoted atoms. A loaded
+  object can now parse whole clauses from source text. Remaining: `assert`/
+  `retract` (a dynamic clause store) and `catch`/`throw` predicate linkage
+  (3c) — the true long pole. See the bootstrap doc for the full loadability
+  matrix.
+- **Milestone 4 — byte-buffer output from a grammar — LANDED.** A loaded
+  grammar assembles a byte string at runtime (via the milestone-3 string/codes
+  builtins) and returns it as an Atom; the host reads it back through
+  `@wam_object_call_bytes` (`{ptr, len, ok}`). No new target IR — it composes
+  existing primitives. This is the path the `eval`/`compile` surface hands
+  assembled `.wamo` text back across.
+- **Milestones 5–6** (the `eval`/`compile` surface, self-host) — see the
+  bootstrap doc.
 
 ## The binary-return question, specifically
 

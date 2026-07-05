@@ -196,10 +196,25 @@ independently useful (richer hand-written grammars load sooner).
    / `functor/3`, not `arg/3`) — a candidate subset lift. These remain the long
    pole for self-hosting; the **reader itself is done** — a grammar object can
    now parse whole clauses from source text.
-4. **Byte-buffer output from a grammar.** The compiler object must *emit*
-   `.wamo` bytes. It returns them as an Atom/byte string (the item-2 blob
-   bridge already carries bytes out); building that byte string inside the
+4. **Byte-buffer output from a grammar. — landed.** The compiler object must
+   *emit* `.wamo` bytes. It returns them as an Atom/byte string (the item-2
+   blob bridge already carries bytes out); building that byte string inside the
    grammar needs the string/codes builtins from milestone 3.
+
+   **What landed:** this milestone needed *no new target IR* — it composes
+   primitives already in place. A loaded grammar assembles a byte string with
+   the milestone-3 string/codes builtins (`number_codes`, `atom_codes`,
+   `atom_concat`, arithmetic) and returns it as an Atom; the host reads it back
+   through `@wam_object_call_bytes`, which returns `{ptr, len, ok}` — the
+   pointer is into the persistent atom table, so it survives the arena rewind,
+   and the length lets the caller print it with `%.*s` (embedded NULs and the
+   absence of a trailing newline are both fine). Verified in loaded objects
+   (`tests/test_wam_object.pl:emit_bytes_from_object`): a computed decimal
+   (`6*7` → `"42"`), a synthesized header line (`atom_concat('WAMO ', V, S)` →
+   `"WAMO 2"`, the shape of a real `.wamo` header), and a literal code list
+   (`atom_codes(S,[104,105])` → `"hi"`). The byte-return path is the same one
+   the eventual `eval`/`compile` surface (milestone 5) hands assembled `.wamo`
+   text back across.
 5. **The `eval` / `compile` surface + pipeline.** Wire the plawk surface:
    `compile(src)` → run `compiler.wamo` on `src` (blob out) →
    `@wam_object_load_bytes` → a handle usable by `dyncall_at`. Lazy-load the
@@ -216,6 +231,8 @@ independently useful (richer hand-written grammars load sooner).
   1). If the eval loop becomes hot, a real switch-table in the loader is a
   later optimization — the format already carries the switch operands we
   currently drop.
-- **Milestones 1–4 are the long pole**; 5–6 are plumbing over primitives that
+- **Milestones 1–4 have landed**; 5–6 are plumbing over primitives that
   already exist (`@wam_object_load_bytes`, `@wam_object_call_bytes`, the
-  `mtime` cache).
+  `mtime` cache). The reader (3b) and byte-buffer output (4) together mean a
+  loaded object can now both parse source text into terms *and* emit assembled
+  bytes back out — the two halves the eval loop threads together.
