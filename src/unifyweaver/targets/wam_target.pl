@@ -1868,8 +1868,19 @@ compile_aggregate_all(Template, InnerGoal, Result, V0, Vf, Code) :-
         InitResultCode = ""
     ),
     % Compile the Value register (what gets collected per solution)
-    (   var(ValueVar)
-    ->  % ValueVar is a Prolog variable — allocate a Y-register for it
+    (   var(ValueVar), get_var_reg(ValueVar, V1, ValueReg)
+    ->  % The template var already has a register: it is shared with a term
+        % constructed BEFORE this aggregate -- e.g. findall(X, call(G), L)
+        % where an earlier `G = pc(X)` built X''s cell -- or it is a head
+        % variable. Do NOT re-initialize it. The existing cell IS the
+        % template, and backtracking refreshes it each solution. Emitting
+        % `put_variable ValueReg, ValueReg` here would allocate a FRESH cell
+        % disconnected from the goal, so the inner goal binds one cell while
+        % end_aggregate collects another -- the findall/call/1 case that used
+        % to collect nothing. (Mirrors the Result-register logic above.)
+        V2 = V1, InitValueCode = "", ConstructionCode = ""
+    ;   var(ValueVar)
+    ->  % ValueVar is a fresh Prolog variable — allocate a Y-register for it
         allocate_var(ValueVar, V1, V2, ValueReg),
         % Emit put_variable to actually create the Y-register in the env
         % frame. Use the SELF-INIT form (put_variable Y_n, Y_n) rather

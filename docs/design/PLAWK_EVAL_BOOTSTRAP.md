@@ -209,10 +209,13 @@ independently useful (richer hand-written grammars load sooner).
    now parse whole clauses from source text — and the dynamic store gives a
    grammar mutable state.
 
-   (Aside: `findall/setof/bagof` over a `call/1` meta-call goal — e.g.
-   `findall(X, call(G), L)` — is a pre-existing limitation independent of the
-   store: the meta-call inside the aggregate collects nothing. Dynamic facts
-   are exercised via direct `call/1` + backtracking instead. A separate fix.)
+   (Aside: `findall(X, call(G), L)` — an aggregate over a `call/1` meta-call
+   goal — is now fixed. It used to collect nothing: the tier-2 compiler
+   re-initialised the aggregate template variable with a fresh cell, breaking
+   the sharing with the copy embedded in the pre-built goal `G`, so the goal
+   bound one cell while the aggregate collected another. The fix skips that
+   re-initialisation when the template var already has a register. Works for
+   both object-compiled predicates and dynamic-store facts.)
 4. **Byte-buffer output from a grammar. — landed.** The compiler object must
    *emit* `.wamo` bytes. It returns them as an Atom/byte string (the item-2
    blob bridge already carries bytes out); building that byte string inside the

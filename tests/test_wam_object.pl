@@ -166,6 +166,18 @@ dret(R) :- assertz(k(1)), assertz(k(2)), retractall(k(_)),
 dretp(R) :- assertz(k2(1,10)), assertz(k2(2,20)), retractall(k2(2,_)),
             G = k2(A,B), call(G), R is A*100+B.                               % 110
 
+% findall over a call/1 meta-call goal. This used to collect nothing: the
+% tier-2 compiler re-initialised the aggregate template variable with a fresh
+% cell (put_variable), disconnecting it from the copy embedded in the
+% pre-built goal G, so the goal bound one cell while the aggregate collected
+% another. Fixed by not re-initialising a template var that already has a
+% register (it is shared with G; backtracking refreshes it). Two flavours:
+% a predicate compiled into the object, and dynamically asserted facts.
+fanum(1). fanum(2). fanum(3).
+faobjc(S)  :- G = fanum(X), findall(X, call(G), L), sum_list(L, S).           % 6
+fadynsum(S) :- assertz(dv(10)), assertz(dv(20)), assertz(dv(30)),
+               G = dv(X), findall(X, call(G), L), sum_list(L, S).             % 60
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -583,6 +595,23 @@ test(dynamic_clause_store_in_object,
              write_wam_object([user:PI], [wamo_entry(PI)], W),
              run_host(Host, W, Out, 0),
              assertion(Out == Expected) )),
+    !.
+
+% Regression: findall/3 over a call/1 meta-call goal now collects correctly
+% (was a template-variable aliasing bug in the aggregate lowering). Covers
+% both a predicate compiled into the object (fanum/1 must be included so the
+% meta table resolves it) and dynamically asserted facts consulted through
+% the store.
+test(findall_over_meta_call, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'faobjc.wamo', W1),
+    directory_file_path(Dir, 'fadynsum.wamo', W2),
+    write_wam_object([user:faobjc/1, user:fanum/1], [wamo_entry(faobjc/1)], W1),
+    write_wam_object([user:fadynsum/1], [wamo_entry(fadynsum/1)], W2),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    run_host(Host, W1, O1, 0), assertion(O1 == "6\n"),
+    run_host(Host, W2, O2, 0), assertion(O2 == "60\n"),
     !.
 
 :- end_tests(wam_object).
