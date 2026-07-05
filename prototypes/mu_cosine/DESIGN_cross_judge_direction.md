@@ -54,6 +54,25 @@ operators (HIER/ELEM) give `μ(a|b) ≠ μ(b|a)`, and there's a directional-rank
 3. **Truncated-λ transfer:** does varying λ push the direction into the trunk (smaller judge-input gap), as it did
    for SYM?
 
+## Premise check — RESULT (go/no-go, 2026-07-05): GREEN, use rank/sign
+
+`corr(d_graph, d_LLM)` + sign-agreement on the 880 scored pairs (no training):
+
+| set | corr | sign-agreement |
+|---|---|---|
+| all 880 | +0.839\* | 99% |
+| directional subset (419) | +0.455 | **100%** |
+| graph-directional only (394) | +0.259 | **100%** |
+
+**On DIRECTION (sign) the graph and LLM agree ~100% — the premise holds.** On *magnitude* the correlation is weak
+(+0.26–0.46): they agree *which way*, not *how asymmetric* (hop-count vs semantic-confidence, different scales).
+(\* the +0.839 is inflated by lateral pairs where both ≈0 — trivial agreement; the directional subset is honest.)
+
+**⇒ Build on the sign/RANK, not the magnitude** (resolves decisions #3 and #5): the invariant the two judges share
+is the *direction*, so target the directional **rank** (existing `L_dir`), which also sidesteps the magnitude-
+scale mismatch. The magnitude blend is the genuine cross-judge divergence — a secondary, optional term, not the
+foundation.
+
 ## Open design decisions (need resolving before building)
 
 1. **Lateral / no-ancestor pairs.** `d_graph = 0` when neither node is an ancestor (siblings, distant). Are those
