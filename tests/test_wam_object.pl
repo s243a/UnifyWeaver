@@ -96,6 +96,14 @@ readnested_obj(R) :- read_term_from_atom('f(g(7),h(5))', T), T = f(g(A),h(B)), R
 % List reader: parse a list and reduce it.
 readlist_obj(S) :- read_term_from_atom('[10,20,30]', L), sum_list(L, S).  % 60
 
+% Operator reader: parse an infix arithmetic expression with precedence /
+% associativity / parens / negatives, then evaluate it with is/2 (the
+% arithmetic evaluator dispatches on the functor bytes, so it evaluates the
+% reader-built + / * / - compounds).
+readop_prec(R)  :- read_term_from_atom('1+2*3', T), R is T.        % 7
+readop_paren(R) :- read_term_from_atom('(1+2)*3', T), R is T.      % 9
+readop_assoc(R) :- read_term_from_atom('100 - 2 * -3', T), R is T. % 106
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -392,6 +400,25 @@ test(read_compound_in_object,
     run_host(Host, W1, O1, 0), assertion(O1 == "34\n"),
     run_host(Host, W2, O2, 0), assertion(O2 == "12\n"),
     run_host(Host, W3, O3, 0), assertion(O3 == "60\n"),
+    !.
+
+% Operator reader in a loaded object: infix arithmetic parsed with precedence
+% and evaluated by is/2. Precedence (1+2*3=7), parens ((1+2)*3=9), and
+% left-assoc + negatives + spaces (100 - 2 * -3 = 106).
+test(read_operators_in_object,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'readop_prec.wamo', W1),
+    directory_file_path(Dir, 'readop_paren.wamo', W2),
+    directory_file_path(Dir, 'readop_assoc.wamo', W3),
+    write_wam_object([user:readop_prec/1], [wamo_entry(readop_prec/1)], W1),
+    write_wam_object([user:readop_paren/1], [wamo_entry(readop_paren/1)], W2),
+    write_wam_object([user:readop_assoc/1], [wamo_entry(readop_assoc/1)], W3),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    run_host(Host, W1, O1, 0), assertion(O1 == "7\n"),
+    run_host(Host, W2, O2, 0), assertion(O2 == "9\n"),
+    run_host(Host, W3, O3, 0), assertion(O3 == "106\n"),
     !.
 
 :- end_tests(wam_object).

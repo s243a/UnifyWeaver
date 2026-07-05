@@ -6319,6 +6319,250 @@ entry:
   ret %Compound* %cp
 }
 
+; --- operator layer (precedence-climbing) --------------------------------
+; A symbolic-operator character (the set that forms multi-char operators like
+; =:= or =<). Symbol runs tokenize separately from alphanumeric runs, so a+b
+; splits into a / + / b without spaces.
+define i1 @wam_is_symbol_char(i8 %c) {
+entry:
+  %e1 = icmp eq i8 %c, 43
+  %e2 = icmp eq i8 %c, 45
+  %e3 = icmp eq i8 %c, 42
+  %e4 = icmp eq i8 %c, 47
+  %e5 = icmp eq i8 %c, 92
+  %e6 = icmp eq i8 %c, 94
+  %e7 = icmp eq i8 %c, 60
+  %e8 = icmp eq i8 %c, 62
+  %e9 = icmp eq i8 %c, 61
+  %e10 = icmp eq i8 %c, 126
+  %e11 = icmp eq i8 %c, 58
+  %e12 = icmp eq i8 %c, 46
+  %e13 = icmp eq i8 %c, 63
+  %e14 = icmp eq i8 %c, 64
+  %e15 = icmp eq i8 %c, 35
+  %e16 = icmp eq i8 %c, 38
+  %e17 = icmp eq i8 %c, 36
+  %o1 = or i1 %e1, %e2
+  %o2 = or i1 %e3, %e4
+  %o3 = or i1 %e5, %e6
+  %o4 = or i1 %e7, %e8
+  %o5 = or i1 %e9, %e10
+  %o6 = or i1 %e11, %e12
+  %o7 = or i1 %e13, %e14
+  %o8 = or i1 %e15, %e16
+  %o9 = or i1 %o1, %o2
+  %o10 = or i1 %o3, %o4
+  %o11 = or i1 %o5, %o6
+  %o12 = or i1 %o7, %o8
+  %o13 = or i1 %o9, %o10
+  %o14 = or i1 %o11, %o12
+  %o15 = or i1 %o13, %o14
+  %r = or i1 %o15, %e17
+  ret i1 %r
+}
+
+; A letter, digit or underscore (an alphanumeric-run character).
+define i1 @wam_is_alnum(i8 %c) {
+entry:
+  %lo_a = icmp uge i8 %c, 97
+  %lo_z = icmp ule i8 %c, 122
+  %islo = and i1 %lo_a, %lo_z
+  %up_a = icmp uge i8 %c, 65
+  %up_z = icmp ule i8 %c, 90
+  %isup = and i1 %up_a, %up_z
+  %d0 = icmp uge i8 %c, 48
+  %d9 = icmp ule i8 %c, 57
+  %isd = and i1 %d0, %d9
+  %us = icmp eq i8 %c, 95
+  %o1 = or i1 %islo, %isup
+  %o2 = or i1 %isd, %us
+  %r = or i1 %o1, %o2
+  ret i1 %r
+}
+
+; Look up an infix operator by token bytes. Returns 0 if not an operator, else
+; (priority << 4) | type, where type 0=xfx, 1=xfy, 2=yfx. Covers arithmetic
+; (+ - * / // mod rem) and the 700-level comparisons / is. Extend the table for
+; more operators; the parser mechanism is table-driven.
+define i32 @wam_infix_op(i8* %tok, i64 %len) {
+entry:
+  %is1 = icmp eq i64 %len, 1
+  br i1 %is1, label %len1, label %chk2
+len1:
+  %b0 = load i8, i8* %tok
+  switch i8 %b0, label %none [
+    i8 43, label %r_yfx500
+    i8 45, label %r_yfx500
+    i8 42, label %r_yfx400
+    i8 47, label %r_yfx400
+    i8 60, label %r_xfx700
+    i8 62, label %r_xfx700
+    i8 61, label %r_xfx700
+  ]
+chk2:
+  %is2 = icmp eq i64 %len, 2
+  br i1 %is2, label %len2, label %chk3
+len2:
+  %p0 = load i8, i8* %tok
+  %t1 = getelementptr i8, i8* %tok, i64 1
+  %p1 = load i8, i8* %t1
+  %is_i = icmp eq i8 %p0, 105
+  %is_s = icmp eq i8 %p1, 115
+  %is_is = and i1 %is_i, %is_s
+  br i1 %is_is, label %r_xfx700, label %len2b
+len2b:
+  %eq = icmp eq i8 %p0, 61
+  %lt = icmp eq i8 %p1, 60
+  %is_le = and i1 %eq, %lt
+  br i1 %is_le, label %r_xfx700, label %len2c
+len2c:
+  %gt2 = icmp eq i8 %p0, 62
+  %eq2 = icmp eq i8 %p1, 61
+  %is_ge = and i1 %gt2, %eq2
+  br i1 %is_ge, label %r_xfx700, label %len2d
+len2d:
+  %eq3 = icmp eq i8 %p0, 61
+  %eq4 = icmp eq i8 %p1, 61
+  %is_eqeq = and i1 %eq3, %eq4
+  br i1 %is_eqeq, label %r_xfx700, label %len2e
+len2e:
+  %sl1 = icmp eq i8 %p0, 47
+  %sl2 = icmp eq i8 %p1, 47
+  %is_idiv = and i1 %sl1, %sl2
+  br i1 %is_idiv, label %r_yfx400, label %none
+chk3:
+  %is3 = icmp eq i64 %len, 3
+  br i1 %is3, label %len3, label %none
+len3:
+  %q0 = load i8, i8* %tok
+  %u1 = getelementptr i8, i8* %tok, i64 1
+  %q1 = load i8, i8* %u1
+  %u2 = getelementptr i8, i8* %tok, i64 2
+  %q2 = load i8, i8* %u2
+  %m0 = icmp eq i8 %q0, 109
+  %m1 = icmp eq i8 %q1, 111
+  %m2 = icmp eq i8 %q2, 100
+  %mm = and i1 %m0, %m1
+  %is_mod = and i1 %mm, %m2
+  br i1 %is_mod, label %r_yfx400, label %len3b
+len3b:
+  %re0 = icmp eq i8 %q0, 114
+  %re1 = icmp eq i8 %q1, 101
+  %re2 = icmp eq i8 %q2, 109
+  %rr = and i1 %re0, %re1
+  %is_rem = and i1 %rr, %re2
+  br i1 %is_rem, label %r_yfx400, label %len3c
+len3c:
+  %c0 = icmp eq i8 %q0, 61
+  %c1 = icmp eq i8 %q1, 58
+  %c2 = icmp eq i8 %q2, 61
+  %cc = and i1 %c0, %c1
+  %is_aeq = and i1 %cc, %c2
+  br i1 %is_aeq, label %r_xfx700, label %none
+r_yfx500:
+  ret i32 8002
+r_yfx400:
+  ret i32 6402
+r_xfx700:
+  ret i32 11200
+none:
+  ret i32 0
+}
+
+; Build op(L,R): a 2-arity compound whose functor is the interned operator
+; token (canonical atom-table pointer; unification tolerates it via
+; @wam_functor_eq, and the arithmetic evaluator dispatches on the functor
+; bytes, so `is` evaluates reader-built expressions).
+define %Value @wam_build_binop(i8* %s, i64 %opstart, i64 %oplen, %Value %l, %Value %r) {
+entry:
+  %nameptr = getelementptr i8, i8* %s, i64 %opstart
+  %fid = call i64 @wam_intern_atom(i8* %nameptr, i64 %oplen)
+  %fnstr = call i8* @wam_atom_to_string(i64 %fid)
+  call void @wam_arena_ensure()
+  %cpsz = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %cpmem = call i8* @wam_arena_alloc(i64 %cpsz)
+  %cp = bitcast i8* %cpmem to %Compound*
+  %fnsl = getelementptr %Compound, %Compound* %cp, i32 0, i32 0
+  store i8* %fnstr, i8** %fnsl
+  %arsl = getelementptr %Compound, %Compound* %cp, i32 0, i32 1
+  store i32 2, i32* %arsl
+  %argsmem = call i8* @wam_arena_alloc(i64 32)
+  %args = bitcast i8* %argsmem to %Value*
+  %argssl = getelementptr %Compound, %Compound* %cp, i32 0, i32 2
+  store %Value* %args, %Value** %argssl
+  %a0 = getelementptr %Value, %Value* %args, i64 0
+  store %Value %l, %Value* %a0
+  %a1 = getelementptr %Value, %Value* %args, i64 1
+  store %Value %r, %Value* %a1
+  %cpi = ptrtoint %Compound* %cp to i64
+  %v0 = insertvalue %Value undef, i32 3, 0
+  %v = insertvalue %Value %v0, i64 %cpi, 1
+  ret %Value %v
+}
+
+; Parse a term of priority <= maxprec: a primary, then a left-associative
+; infix-operator loop (precedence climbing). yfx/xfx parse the right operand at
+; prio-1, xfy at prio, giving correct associativity.
+define %Value @wam_parse_expr(%WamState* %vm, i8* %s, i64 %len, i64* %pos, i32 %maxprec) {
+entry:
+  %left0 = call %Value @wam_parse_primary(%WamState* %vm, i8* %s, i64 %len, i64* %pos)
+  br label %loop
+loop:
+  %left = phi %Value [ %left0, %entry ], [ %newleft, %applied ]
+  %savedpos = load i64, i64* %pos
+  call void @wam_skip_ws(i8* %s, i64 %len, i64* %pos)
+  %opstart = load i64, i64* %pos
+  %at_end = icmp uge i64 %opstart, %len
+  br i1 %at_end, label %done, label %read_op
+read_op:
+  %ocp = getelementptr i8, i8* %s, i64 %opstart
+  %occ = load i8, i8* %ocp
+  %o_sym = call i1 @wam_is_symbol_char(i8 %occ)
+  %o_aln = call i1 @wam_is_alnum(i8 %occ)
+  %o_isname = or i1 %o_sym, %o_aln
+  br i1 %o_isname, label %op_loop, label %restore
+op_loop:
+  %oe = phi i64 [ %opstart, %read_op ], [ %oe1, %op_step ]
+  %oe_end = icmp uge i64 %oe, %len
+  br i1 %oe_end, label %op_done, label %op_check
+op_check:
+  %oep = getelementptr i8, i8* %s, i64 %oe
+  %oec = load i8, i8* %oep
+  %oec_sym = call i1 @wam_is_symbol_char(i8 %oec)
+  %oec_aln = call i1 @wam_is_alnum(i8 %oec)
+  %ocont = select i1 %o_sym, i1 %oec_sym, i1 %oec_aln
+  br i1 %ocont, label %op_step, label %op_done
+op_step:
+  %oe1 = add i64 %oe, 1
+  br label %op_loop
+op_done:
+  %oplen = sub i64 %oe, %opstart
+  %optokptr = getelementptr i8, i8* %s, i64 %opstart
+  %opcode = call i32 @wam_infix_op(i8* %optokptr, i64 %oplen)
+  %notop = icmp eq i32 %opcode, 0
+  br i1 %notop, label %restore, label %check_prec
+check_prec:
+  %prio = ashr i32 %opcode, 4
+  %type = and i32 %opcode, 15
+  %too_high = icmp sgt i32 %prio, %maxprec
+  br i1 %too_high, label %restore, label %apply
+apply:
+  store i64 %oe, i64* %pos
+  %is_xfy = icmp eq i32 %type, 1
+  %prio_m1 = sub i32 %prio, 1
+  %rmax = select i1 %is_xfy, i32 %prio, i32 %prio_m1
+  %right = call %Value @wam_parse_expr(%WamState* %vm, i8* %s, i64 %len, i64* %pos, i32 %rmax)
+  %newleft = call %Value @wam_build_binop(i8* %s, i64 %opstart, i64 %oplen, %Value %left, %Value %right)
+  br label %applied
+applied:
+  br label %loop
+restore:
+  store i64 %savedpos, i64* %pos
+  br label %done
+done:
+  ret %Value %left
+}
+
 ; Parse a list body after the opening bracket has been consumed. Builds the
 ; cons chain incrementally through a tail slot, so lists are unbounded.
 define %Value @wam_parse_list(%WamState* %vm, i8* %s, i64 %len, i64* %pos) {
@@ -6337,7 +6581,7 @@ empty:
   store i64 %p0e, i64* %pos
   br label %ret_nil
 first:
-  %e0 = call %Value @wam_parse_term(%WamState* %vm, i8* %s, i64 %len, i64* %pos)
+  %e0 = call %Value @wam_parse_expr(%WamState* %vm, i8* %s, i64 %len, i64* %pos, i32 999)
   %cell0 = call %Compound* @wam_alloc_cons()
   %cell0args_slot = getelementptr %Compound, %Compound* %cell0, i32 0, i32 2
   %cell0args = load %Value*, %Value** %cell0args_slot
@@ -6362,7 +6606,7 @@ sep:
 do_comma:
   %pn1 = add i64 %pn, 1
   store i64 %pn1, i64* %pos
-  %en = call %Value @wam_parse_term(%WamState* %vm, i8* %s, i64 %len, i64* %pos)
+  %en = call %Value @wam_parse_expr(%WamState* %vm, i8* %s, i64 %len, i64* %pos, i32 999)
   %ncell = call %Compound* @wam_alloc_cons()
   %ncargs_slot = getelementptr %Compound, %Compound* %ncell, i32 0, i32 2
   %ncargs = load %Value*, %Value** %ncargs_slot
@@ -6380,7 +6624,7 @@ chk_bar:
 do_bar:
   %pnb = add i64 %pn, 1
   store i64 %pnb, i64* %pos
-  %tailterm = call %Value @wam_parse_term(%WamState* %vm, i8* %s, i64 %len, i64* %pos)
+  %tailterm = call %Value @wam_parse_expr(%WamState* %vm, i8* %s, i64 %len, i64* %pos, i32 999)
   store %Value %tailterm, %Value* %tailslot
   call void @wam_skip_ws(i8* %s, i64 %len, i64* %pos)
   %pb = load i64, i64* %pos
@@ -6422,7 +6666,10 @@ pfail:
 ; structure from the C++ hybrid target Parser. Compound functors come from
 ; the atom table; unification tolerates that via @wam_functor_eq. No operators,
 ; floats, variables or quoting yet -- follow-up increments.
-define %Value @wam_parse_term(%WamState* %vm, i8* %s, i64 %len, i64* %pos) {
+; Parse a single primary: a parenthesised expression, a negative number, a
+; list, a compound name(args), or an atomic (integer / atom). The operator
+; layer (@wam_parse_expr) sits on top of this.
+define %Value @wam_parse_primary(%WamState* %vm, i8* %s, i64 %len, i64* %pos) {
 entry:
   call void @wam_skip_ws(i8* %s, i64 %len, i64* %pos)
   %p0 = load i64, i64* %pos
@@ -6432,13 +6679,68 @@ look:
   %cp = getelementptr i8, i8* %s, i64 %p0
   %c = load i8, i8* %cp
   %is_lb = icmp eq i8 %c, 91
-  br i1 %is_lb, label %do_list, label %read_ident
+  br i1 %is_lb, label %do_list, label %chk_paren
+chk_paren:
+  %is_lp0 = icmp eq i8 %c, 40
+  br i1 %is_lp0, label %do_paren, label %chk_neg
+chk_neg:
+  %is_minus0 = icmp eq i8 %c, 45
+  br i1 %is_minus0, label %chk_neg2, label %read_ident
+chk_neg2:
+  %p0n = add i64 %p0, 1
+  %hasnext = icmp ult i64 %p0n, %len
+  br i1 %hasnext, label %chk_neg3, label %read_ident
+chk_neg3:
+  %ncp = getelementptr i8, i8* %s, i64 %p0n
+  %ncc = load i8, i8* %ncp
+  %nc_ge0 = icmp uge i8 %ncc, 48
+  %nc_le9 = icmp ule i8 %ncc, 57
+  %nc_dig = and i1 %nc_ge0, %nc_le9
+  br i1 %nc_dig, label %do_negnum, label %read_ident
+do_paren:
+  %pinc = add i64 %p0, 1
+  store i64 %pinc, i64* %pos
+  %pv = call %Value @wam_parse_expr(%WamState* %vm, i8* %s, i64 %len, i64* %pos, i32 1200)
+  call void @wam_skip_ws(i8* %s, i64 %len, i64* %pos)
+  %pcp = load i64, i64* %pos
+  %pcp_end = icmp uge i64 %pcp, %len
+  br i1 %pcp_end, label %pfail, label %chk_rparen
+chk_rparen:
+  %pcpp = getelementptr i8, i8* %s, i64 %pcp
+  %pcpc = load i8, i8* %pcpp
+  %is_rp_p = icmp eq i8 %pcpc, 41
+  br i1 %is_rp_p, label %close_paren, label %pfail
+close_paren:
+  %pcp1 = add i64 %pcp, 1
+  store i64 %pcp1, i64* %pos
+  ret %Value %pv
+do_negnum:
+  br label %nn_loop
+nn_loop:
+  %nne = phi i64 [ %p0n, %do_negnum ], [ %nne1, %nn_step ]
+  %nne_end = icmp uge i64 %nne, %len
+  br i1 %nne_end, label %nn_done, label %nn_check
+nn_check:
+  %nnep = getelementptr i8, i8* %s, i64 %nne
+  %nnec = load i8, i8* %nnep
+  %nne_ge0 = icmp uge i8 %nnec, 48
+  %nne_le9 = icmp ule i8 %nnec, 57
+  %nne_dig = and i1 %nne_ge0, %nne_le9
+  br i1 %nne_dig, label %nn_step, label %nn_done
+nn_step:
+  %nne1 = add i64 %nne, 1
+  br label %nn_loop
+nn_done:
+  store i64 %nne, i64* %pos
+  %nnv = call %Value @wam_make_atomic(i8* %s, i64 %p0, i64 %nne)
+  ret %Value %nnv
 do_list:
   %p0inc = add i64 %p0, 1
   store i64 %p0inc, i64* %pos
   %lv = call %Value @wam_parse_list(%WamState* %vm, i8* %s, i64 %len, i64* %pos)
   ret %Value %lv
 read_ident:
+  %first_sym = call i1 @wam_is_symbol_char(i8 %c)
   br label %id_loop
 id_loop:
   %ie = phi i64 [ %p0, %read_ident ], [ %ie1, %id_step ]
@@ -6447,8 +6749,10 @@ id_loop:
 id_check:
   %iep = getelementptr i8, i8* %s, i64 %ie
   %iec = load i8, i8* %iep
-  %iedelim = call i1 @wam_is_term_delim(i8 %iec)
-  br i1 %iedelim, label %id_done, label %id_step
+  %iec_sym = call i1 @wam_is_symbol_char(i8 %iec)
+  %iec_aln = call i1 @wam_is_alnum(i8 %iec)
+  %icont = select i1 %first_sym, i1 %iec_sym, i1 %iec_aln
+  br i1 %icont, label %id_step, label %id_done
 id_step:
   %ie1 = add i64 %ie, 1
   br label %id_loop
@@ -6494,7 +6798,7 @@ args_loop:
   %n_over = icmp uge i64 %n, 256
   br i1 %n_over, label %pfail, label %args_body
 args_body:
-  %argval = call %Value @wam_parse_term(%WamState* %vm, i8* %s, i64 %len, i64* %pos)
+  %argval = call %Value @wam_parse_expr(%WamState* %vm, i8* %s, i64 %len, i64* %pos, i32 999)
   %argslot = getelementptr %Value, %Value* %argv, i64 %n
   store %Value %argval, %Value* %argslot
   %n1 = add i64 %n, 1
@@ -16263,7 +16567,7 @@ rta.parse:
   %rta.len = call i64 @strlen(i8* %rta.str)
   %rta.pos = alloca i64
   store i64 0, i64* %rta.pos
-  %rta.val = call %Value @wam_parse_term(%WamState* %vm, i8* %rta.str, i64 %rta.len, i64* %rta.pos)
+  %rta.val = call %Value @wam_parse_expr(%WamState* %vm, i8* %rta.str, i64 %rta.len, i64* %rta.pos, i32 1200)
   %rta.vtag = extractvalue %Value %rta.val, 0
   %rta.pfail = icmp eq i32 %rta.vtag, 6
   br i1 %rta.pfail, label %rta.fail, label %rta.unify
