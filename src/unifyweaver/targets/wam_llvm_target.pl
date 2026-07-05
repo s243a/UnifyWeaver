@@ -2341,6 +2341,10 @@ emit_meta_call_dispatch(LabelMap, IR) :-
     ),
     format(string(IR),
 "; === Meta-call dispatch table: atom/functor + arity -> label index ===
+; Host-global table, built at compile time from the host''s own predicates.
+; A loaded .wamo object carries its OWN table on the VM (fields 25/26); the
+; two find helpers below consult that table when present so an object can
+; meta-call its own predicates (eval bootstrap milestone 2).
 @wam_meta_call_atom_ids = private constant [~w x i64] [
 ~w
 ]
@@ -2353,6 +2357,127 @@ emit_meta_call_dispatch(LabelMap, IR) :-
 @wam_meta_call_label_indexes = private constant [~w x i32] [
 ~w
 ]
+
+; Resolve an atom goal (atom_id + target_arity) to a predicate label index,
+; or -1 if none matches. Uses the VM''s object meta-call table when installed
+; (loaded .wamo), else the host-global arrays.
+define i32 @wam_meta_find_atom(%WamState* %vm, i64 %atom_id, i32 %target_arity) {
+entry:
+  %om_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 25
+  %om = load %WamMetaRow*, %WamMetaRow** %om_ptr
+  %om_null = icmp eq %WamMetaRow* %om, null
+  br i1 %om_null, label %global, label %obj
+obj:
+  %omc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 26
+  %omc = load i32, i32* %omc_ptr
+  br label %oloop
+oloop:
+  %oi = phi i32 [ 0, %obj ], [ %oi1, %onext ]
+  %odone = icmp sge i32 %oi, %omc
+  br i1 %odone, label %notfound, label %ocheck
+ocheck:
+  %orow = getelementptr %WamMetaRow, %WamMetaRow* %om, i32 %oi
+  %oa_ptr = getelementptr %WamMetaRow, %WamMetaRow* %orow, i32 0, i32 0
+  %oa = load i64, i64* %oa_ptr
+  %oa_match = icmp eq i64 %oa, %atom_id
+  %oar_ptr = getelementptr %WamMetaRow, %WamMetaRow* %orow, i32 0, i32 2
+  %oar = load i32, i32* %oar_ptr
+  %oar_match = icmp eq i32 %oar, %target_arity
+  %o_match = and i1 %oa_match, %oar_match
+  br i1 %o_match, label %ofound, label %onext
+onext:
+  %oi1 = add i32 %oi, 1
+  br label %oloop
+ofound:
+  %ol_ptr = getelementptr %WamMetaRow, %WamMetaRow* %orow, i32 0, i32 3
+  %ol = load i32, i32* %ol_ptr
+  ret i32 %ol
+global:
+  br label %gloop
+gloop:
+  %gi = phi i32 [ 0, %global ], [ %gi1, %gnext ]
+  %gdone = icmp sge i32 %gi, ~w
+  br i1 %gdone, label %notfound, label %gcheck
+gcheck:
+  %gap = getelementptr [~w x i64], [~w x i64]* @wam_meta_call_atom_ids, i32 0, i32 %gi
+  %ga = load i64, i64* %gap
+  %ga_match = icmp eq i64 %ga, %atom_id
+  %grp = getelementptr [~w x i32], [~w x i32]* @wam_meta_call_arities, i32 0, i32 %gi
+  %gr = load i32, i32* %grp
+  %gr_match = icmp eq i32 %gr, %target_arity
+  %g_match = and i1 %ga_match, %gr_match
+  br i1 %g_match, label %gfound, label %gnext
+gnext:
+  %gi1 = add i32 %gi, 1
+  br label %gloop
+gfound:
+  %glp = getelementptr [~w x i32], [~w x i32]* @wam_meta_call_label_indexes, i32 0, i32 %gi
+  %gl = load i32, i32* %glp
+  ret i32 %gl
+notfound:
+  ret i32 -1
+}
+
+; Resolve a compound goal (functor pointer + target_arity) to a label index,
+; or -1. Functor matching is by pointer identity; a loaded object''s compound
+; goals carry its own functor copies, which is exactly what its object table
+; stores (see the loader), so identity holds within one object.
+define i32 @wam_meta_find_compound(%WamState* %vm, i8* %functor, i32 %target_arity) {
+entry:
+  %om_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 25
+  %om = load %WamMetaRow*, %WamMetaRow** %om_ptr
+  %om_null = icmp eq %WamMetaRow* %om, null
+  br i1 %om_null, label %global, label %obj
+obj:
+  %omc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 26
+  %omc = load i32, i32* %omc_ptr
+  br label %oloop
+oloop:
+  %oi = phi i32 [ 0, %obj ], [ %oi1, %onext ]
+  %odone = icmp sge i32 %oi, %omc
+  br i1 %odone, label %notfound, label %ocheck
+ocheck:
+  %orow = getelementptr %WamMetaRow, %WamMetaRow* %om, i32 %oi
+  %of_ptr = getelementptr %WamMetaRow, %WamMetaRow* %orow, i32 0, i32 1
+  %of = load i8*, i8** %of_ptr
+  %of_match = icmp eq i8* %of, %functor
+  %oar_ptr = getelementptr %WamMetaRow, %WamMetaRow* %orow, i32 0, i32 2
+  %oar = load i32, i32* %oar_ptr
+  %oar_match = icmp eq i32 %oar, %target_arity
+  %o_match = and i1 %of_match, %oar_match
+  br i1 %o_match, label %ofound, label %onext
+onext:
+  %oi1 = add i32 %oi, 1
+  br label %oloop
+ofound:
+  %ol_ptr = getelementptr %WamMetaRow, %WamMetaRow* %orow, i32 0, i32 3
+  %ol = load i32, i32* %ol_ptr
+  ret i32 %ol
+global:
+  br label %gloop
+gloop:
+  %gi = phi i32 [ 0, %global ], [ %gi1, %gnext ]
+  %gdone = icmp sge i32 %gi, ~w
+  br i1 %gdone, label %notfound, label %gcheck
+gcheck:
+  %gfp = getelementptr [~w x i8*], [~w x i8*]* @wam_meta_call_functors, i32 0, i32 %gi
+  %gf = load i8*, i8** %gfp
+  %gf_match = icmp eq i8* %gf, %functor
+  %grp = getelementptr [~w x i32], [~w x i32]* @wam_meta_call_arities, i32 0, i32 %gi
+  %gr = load i32, i32* %grp
+  %gr_match = icmp eq i32 %gr, %target_arity
+  %g_match = and i1 %gf_match, %gr_match
+  br i1 %g_match, label %gfound, label %gnext
+gnext:
+  %gi1 = add i32 %gi, 1
+  br label %gloop
+gfound:
+  %glp = getelementptr [~w x i32], [~w x i32]* @wam_meta_call_label_indexes, i32 0, i32 %gi
+  %gl = load i32, i32* %glp
+  ret i32 %gl
+notfound:
+  ret i32 -1
+}
 
 define i1 @wam_dispatch_meta_call(%WamState* %vm, i32 %total_arity, i32 %after_pc) {
 entry:
@@ -2372,30 +2497,11 @@ maybe_compound:
 atom_goal:
   %atom_id = extractvalue %Value %goal, 1
   %target_arity = sub i32 %total_arity, 1
-  br label %loop
+  %label_idx = call i32 @wam_meta_find_atom(%WamState* %vm, i64 %atom_id, i32 %target_arity)
+  %atom_found = icmp sge i32 %label_idx, 0
+  br i1 %atom_found, label %atom_resolve, label %fail
 
-loop:
-  %i = phi i32 [ 0, %atom_goal ], [ %next_i, %next ]
-  %done = icmp sge i32 %i, ~w
-  br i1 %done, label %fail, label %check
-
-check:
-  %atom_ptr = getelementptr [~w x i64], [~w x i64]* @wam_meta_call_atom_ids, i32 0, i32 %i
-  %cand_atom = load i64, i64* %atom_ptr
-  %atom_match = icmp eq i64 %atom_id, %cand_atom
-  %arity_ptr = getelementptr [~w x i32], [~w x i32]* @wam_meta_call_arities, i32 0, i32 %i
-  %cand_arity = load i32, i32* %arity_ptr
-  %arity_match = icmp eq i32 %target_arity, %cand_arity
-  %match = and i1 %atom_match, %arity_match
-  br i1 %match, label %dispatch, label %next
-
-next:
-  %next_i = add i32 %i, 1
-  br label %loop
-
-dispatch:
-  %label_ptr = getelementptr [~w x i32], [~w x i32]* @wam_meta_call_label_indexes, i32 0, i32 %i
-  %label_idx = load i32, i32* %label_ptr
+atom_resolve:
   %target_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %label_idx)
   %valid = icmp sge i32 %target_pc, 0
   br i1 %valid, label %prepare_atom_args, label %fail
@@ -2424,30 +2530,11 @@ compound_goal:
   %compound_args = load %Value*, %Value** %compound_args_slot
   %compound_extra_arity = sub i32 %total_arity, 1
   %compound_target_arity = add i32 %compound_base_arity, %compound_extra_arity
-  br label %compound_loop
+  %clabel_idx = call i32 @wam_meta_find_compound(%WamState* %vm, i8* %compound_functor, i32 %compound_target_arity)
+  %comp_found = icmp sge i32 %clabel_idx, 0
+  br i1 %comp_found, label %compound_resolve, label %fail
 
-compound_loop:
-  %ci = phi i32 [ 0, %compound_goal ], [ %cnext_i, %compound_next ]
-  %cdone = icmp sge i32 %ci, ~w
-  br i1 %cdone, label %fail, label %compound_check
-
-compound_check:
-  %functor_ptr = getelementptr [~w x i8*], [~w x i8*]* @wam_meta_call_functors, i32 0, i32 %ci
-  %cand_functor = load i8*, i8** %functor_ptr
-  %functor_match = icmp eq i8* %compound_functor, %cand_functor
-  %carity_ptr = getelementptr [~w x i32], [~w x i32]* @wam_meta_call_arities, i32 0, i32 %ci
-  %cand_carity = load i32, i32* %carity_ptr
-  %carity_match = icmp eq i32 %compound_target_arity, %cand_carity
-  %cmatch = and i1 %functor_match, %carity_match
-  br i1 %cmatch, label %dispatch_compound, label %compound_next
-
-compound_next:
-  %cnext_i = add i32 %ci, 1
-  br label %compound_loop
-
-dispatch_compound:
-  %clabel_ptr = getelementptr [~w x i32], [~w x i32]* @wam_meta_call_label_indexes, i32 0, i32 %ci
-  %clabel_idx = load i32, i32* %clabel_ptr
+compound_resolve:
   %ctarget_pc = call i32 @wam_label_pc(%WamState* %vm, i32 %clabel_idx)
   %cvalid = icmp sge i32 %ctarget_pc, 0
   br i1 %cvalid, label %prepare_compound_extra, label %fail
@@ -20008,12 +20095,55 @@ wam_object_encode(Predicates, Options, Codes) :-
     wamo_all_instr_parts(Records, AllParts),
     foldl(wamo_encode_step(LabelMap), AllParts,
           ws([], tab([], 0), tab([], 0)),
-          ws(RevEnc, ATab, FTab)),
+          ws(RevEnc, ATab0, FTab)),
     reverse(RevEnc, EncInstrs),
+    % A meta-call table is only needed if the object actually contains a
+    % call/N meta-call (op1 = -1); interning predicate names for objects that
+    % never meta-call would bloat them for no benefit (pay-for-what-you-use).
+    (   wamo_has_meta_call(EncInstrs)
+    ->  wamo_meta_rows(LabelMap, ATab0, ATab, FTab, MetaRows)
+    ;   ATab = ATab0, MetaRows = []
+    ),
     wamo_table_list(ATab, Atoms),
     wamo_table_list(FTab, Functors),
     findall(PC, member(_-PC, NamePCPairs), PCs),
-    wamo_serialize(EntryIndex, Entries, Atoms, Functors, PCs, EncInstrs, Codes).
+    wamo_serialize(EntryIndex, Entries, Atoms, Functors, PCs, EncInstrs,
+                   MetaRows, Codes).
+
+%% wamo_has_meta_call(+EncInstrs) is semidet.
+%  True if any encoded call/execute is a meta-call (op1 = -1).
+wamo_has_meta_call(EncInstrs) :-
+    member(enc(T, -1, _, _), EncInstrs),
+    ( T =:= 18 ; T =:= 19 ), !.
+
+%% wamo_meta_rows(+LabelMap, +ATab0, -ATab1, +FTab, -Rows)
+%  Build the object's meta-call dispatch rows: one per predicate head label
+%  (Name/Arity), mirroring the host's @wam_dispatch_meta_call table but with
+%  indices into the object's OWN atom/functor tables so the loader can
+%  resolve them after relocation. Each row is
+%      row(AtomIdx, FunIdx, Arity, LabelIdx)
+%  where AtomIdx interns the predicate name (extending ATab), FunIdx is the
+%  functor-table index of that name (or -1 if the object builds no such
+%  compound), and LabelIdx is the object-relative label of the predicate.
+wamo_meta_rows(LabelMap, ATab0, ATab1, tab(FPairs, _), Rows) :-
+    findall(mpred(NameStr, Arity, LabelIdx),
+        ( member(Label-LabelIdx, LabelMap),
+          catch(split_functor_arity(Label, Name0, Arity), _, fail),
+          Arity >= 0,
+          % split_functor_arity returns an atom; the atom/functor interning
+          % tables key on strings, so coerce or dedup fails and the functor
+          % lookup (needed for compound meta-calls) silently misses.
+          wamo_to_string(Name0, NameStr)
+        ),
+        Preds0),
+    sort(Preds0, Preds),
+    foldl(wamo_meta_row_step(FPairs), Preds, ATab0-[], ATab1-RevRows),
+    reverse(RevRows, Rows).
+
+wamo_meta_row_step(FPairs, mpred(NameStr, Arity, LabelIdx),
+                   A0-R0, A1-[row(AtomIdx, FunIdx, Arity, LabelIdx)|R0]) :-
+    tab_intern(NameStr, A0, AtomIdx, A1),
+    ( wamo_tab_lookup(FPairs, NameStr, FI) -> FunIdx = FI ; FunIdx = -1 ).
 
 %% wamo_classify(+Preds, +Options, +StartPC, -Records)
 %
@@ -20165,13 +20295,23 @@ wamo_enc(["builtin_call", Op, N], _, A, A, F, F, enc(21, Id, Num, none)) :- !,
     builtin_op_to_id(OpA, Id).
 
 % control-flow with label operands (self-relative indexes into the object)
+% call/execute with op1 = -1 is a call/N meta-call (goal built at runtime);
+% op2 carries the total arity and @wam_dispatch_meta_call resolves the goal
+% through the loaded object's own meta-call table (see PLAWK_EVAL_BOOTSTRAP.md
+% milestone 2). A static target resolves its label index as usual.
 wamo_enc(["call", P, N], LabelMap, A, A, F, F, enc(18, Idx, Arity, none)) :- !,
     clean_comma(P, CP), clean_comma(N, CN),
     ( number_string(Arity, CN) -> true ; Arity = 0 ),
-    wamo_label(CP, LabelMap, Idx).
-wamo_enc(["execute", P], LabelMap, A, A, F, F, enc(19, Idx, 0, none)) :- !,
+    (   wam_meta_call_label(CP)
+    ->  Idx = -1
+    ;   wamo_label(CP, LabelMap, Idx)
+    ).
+wamo_enc(["execute", P], LabelMap, A, A, F, F, enc(19, Idx, Op2, none)) :- !,
     clean_comma(P, CP),
-    wamo_label(CP, LabelMap, Idx).
+    (   wam_meta_call_label(CP)
+    ->  Idx = -1, wam_meta_call_total_arity(CP, Op2)
+    ;   wamo_label(CP, LabelMap, Idx), Op2 = 0
+    ).
 wamo_enc(["try_me_else", L], LabelMap, A, A, F, F, enc(22, Idx, 0, none)) :- !,
     clean_comma(L, CL), lookup_label_index(CL, LabelMap, Idx).
 wamo_enc(["retry_me_else", L], LabelMap, A, A, F, F, enc(23, Idx, 0, none)) :- !,
@@ -20193,11 +20333,12 @@ wamo_enc(["jump", L], LabelMap, A, A, F, F, enc(32, Idx, 0, none)) :- !,
 % switch_on_term. Lifting these is the first subset-expansion step toward
 % the eval bootstrap (item 5) -- the WAM compiler's own predicates lean
 % heavily on atom-keyed clause indexing.
-wamo_enc(["switch_on_term" | _],         _, A, A, F, F, enc(26, 0, 0, none)) :- !.
-wamo_enc(["switch_on_term_a2" | _],      _, A, A, F, F, enc(26, 0, 0, none)) :- !.
-wamo_enc(["switch_on_structure" | _],    _, A, A, F, F, enc(26, 0, 0, none)) :- !.
-wamo_enc(["switch_on_constant" | _],     _, A, A, F, F, enc(26, 0, 0, none)) :- !.
-wamo_enc(["switch_on_constant_a2" | _],  _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+% Every switch_on_* variant is an indexing optimization sitting inline before
+% the clause chain -- including the *_fallthrough forms (no-match falls through
+% to the next clause) and the first/second-argument (_a2) variants. A prefix
+% match covers the whole family; the loader runs them all as nops.
+wamo_enc([Op | _], _, A, A, F, F, enc(26, 0, 0, none)) :-
+    string_concat("switch_on_", _, Op), !.
 wamo_enc(["try" | _],   _, A, A, F, F, enc(26, 0, 0, none)) :- !.
 wamo_enc(["retry" | _], _, A, A, F, F, enc(26, 0, 0, none)) :- !.
 wamo_enc(["trust" | _], _, A, A, F, F, enc(26, 0, 0, none)) :- !.
@@ -20257,12 +20398,14 @@ wamo_reg2(Xn, Ai, X, Y) :-
     reg_name_to_index(CXnA, X), reg_name_to_index(CAiA, Y).
 
 %% wamo_label(+P, +LabelMap, -Idx)
-%  Resolve a call/execute target. call/N meta-calls are outside slice 1.
+%  Resolve a static call/execute target to its object label index. call/N
+%  meta-calls are handled by the caller (op1 = -1) and never reach here; the
+%  guard stays as a defensive assertion should that ever change.
 wamo_label(CP, _, _) :-
     wam_meta_call_label(CP), !,
     throw(error(wamo_unsupported(meta_call(CP)),
         context(write_wam_object,
-            'call/N meta-calls need the apply machinery (not in slice 1)'))).
+            'meta-call reached wamo_label; should have been encoded as op1=-1'))).
 wamo_label(CP, LabelMap, Idx) :-
     lookup_label_index(CP, LabelMap, Idx).
 
@@ -20273,12 +20416,14 @@ wamo_reloc_id(atom, 1).
 wamo_reloc_id(functor, 2).
 wamo_reloc_id(float, 3).
 
-wamo_serialize(EntryIndex, Entries, Atoms, Functors, PCs, EncInstrs, Codes) :-
+wamo_serialize(EntryIndex, Entries, Atoms, Functors, PCs, EncInstrs, MetaRows, Codes) :-
     length(Entries, NE), length(Atoms, NA), length(Functors, NF),
-    length(PCs, NL), length(EncInstrs, NC),
+    length(PCs, NL), length(EncInstrs, NC), length(MetaRows, NM),
     % header: magic, version, default-entry index, then the named-entry
     % table (early, so @wam_object_load can skip it without a full parse).
-    format(codes(Head), "WAMO\n1\n~w\n~w\n", [EntryIndex, NE]),
+    % Version 2 adds a trailing meta-call table section (milestone 2 of the
+    % eval bootstrap) so loaded objects can call/N their own predicates.
+    format(codes(Head), "WAMO\n2\n~w\n~w\n", [EntryIndex, NE]),
     maplist(wamo_entry_codes, Entries, EntryChunks),
     format(codes(AHdr), "~w\n", [NA]),
     maplist(wamo_string_codes, Atoms, AtomChunks),
@@ -20288,9 +20433,16 @@ wamo_serialize(EntryIndex, Entries, Atoms, Functors, PCs, EncInstrs, Codes) :-
     maplist([PC, Cs]>>format(codes(Cs), "~w\n", [PC]), PCs, PCChunks),
     format(codes(CHdr), "~w\n", [NC]),
     maplist(wamo_instr_codes, EncInstrs, InstrChunks),
+    % meta-call table: <count>\n then <atomIdx> <funIdx> <arity> <labelIdx>\n
+    format(codes(MHdr), "~w\n", [NM]),
+    maplist(wamo_meta_row_codes, MetaRows, MetaChunks),
     append([[Head], EntryChunks, [AHdr], AtomChunks, [FHdr], FunChunks,
-            [LHdr], PCChunks, [CHdr], InstrChunks], Lists),
+            [LHdr], PCChunks, [CHdr], InstrChunks, [MHdr], MetaChunks], Lists),
     append(Lists, Codes).
+
+%% wamo_meta_row_codes(+row(AtomIdx,FunIdx,Arity,LabelIdx), -Codes)
+wamo_meta_row_codes(row(AtomIdx, FunIdx, Arity, LabelIdx), Cs) :-
+    format(codes(Cs), "~w ~w ~w ~w\n", [AtomIdx, FunIdx, Arity, LabelIdx]).
 
 %% wamo_entry_codes(+Name-Index, -Codes)
 %  One named-entry record: length-prefixed name string then its label index.
@@ -20625,7 +20777,7 @@ cloop:
   %ci = phi i64 [ 0, %code_init ], [ %ci1, %cstore ]
   %ccur = phi i64 [ %cur_c0, %code_init ], [ %ccur4, %cstore ]
   %cdone = icmp uge i64 %ci, %ncode
-  br i1 %cdone, label %build_vm, label %cstep
+  br i1 %cdone, label %meta_init, label %cstep
 cstep:
   %tag_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %ccur)
   %tag64 = extractvalue { i64, i64 } %tag_r, 0
@@ -20677,18 +20829,84 @@ cstore:
   store i64 %op2, i64* %ip_op2
   %ci1 = add i64 %ci, 1
   br label %cloop
+meta_init:
+  ; --- meta-call table (format v2) ---------------------------------------
+  ; A trailing table of the object''s meta-callable predicates so a loaded
+  ; object can call/N its own goals (@wam_dispatch_meta_call consults the VM
+  ; field when present). Rows: <atomIdx> <funIdx> <arity> <labelIdx>, where
+  ; atomIdx / funIdx index the object''s own (relocated) atom / functor
+  ; tables so we resolve them here, before the scratch arrays are freed.
+  ; Count is 0 for objects the writer saw contain no meta-call.
+  %pm = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %ccur)
+  %nmeta = extractvalue { i64, i64 } %pm, 0
+  %cur_m0 = extractvalue { i64, i64 } %pm, 1
+  %meta_row_sz = ptrtoint %WamMetaRow* getelementptr (%WamMetaRow, %WamMetaRow* null, i32 1) to i64
+  %meta_bytes = mul i64 %nmeta, %meta_row_sz
+  %meta_mem = call i8* @malloc(i64 %meta_bytes)
+  %metaRows = bitcast i8* %meta_mem to %WamMetaRow*
+  br label %mloop
+mloop:
+  %mi = phi i64 [ 0, %meta_init ], [ %mi1, %mstore ]
+  %mcur = phi i64 [ %cur_m0, %meta_init ], [ %mcur4, %mstore ]
+  %mdone = icmp uge i64 %mi, %nmeta
+  br i1 %mdone, label %build_vm, label %mstep
+mstep:
+  %matom_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %mcur)
+  %matomIdx = extractvalue { i64, i64 } %matom_r, 0
+  %mcur1 = extractvalue { i64, i64 } %matom_r, 1
+  %mfun_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %mcur1)
+  %mfunIdx = extractvalue { i64, i64 } %mfun_r, 0
+  %mcur2 = extractvalue { i64, i64 } %mfun_r, 1
+  %mar_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %mcur2)
+  %marity = extractvalue { i64, i64 } %mar_r, 0
+  %mcur3 = extractvalue { i64, i64 } %mar_r, 1
+  %mlbl_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %mcur3)
+  %mlabel = extractvalue { i64, i64 } %mlbl_r, 0
+  %mcur4 = extractvalue { i64, i64 } %mlbl_r, 1
+  ; atom_id = atomIds[atomIdx] (already re-interned)
+  %maslot = getelementptr i64, i64* %atomIds, i64 %matomIdx
+  %matom_id = load i64, i64* %maslot
+  ; functor_ptr = funIdx < 0 ? null : funPtrs[funIdx] (object''s own copy)
+  %mfun_neg = icmp slt i64 %mfunIdx, 0
+  br i1 %mfun_neg, label %mstore, label %mfun_load
+mfun_load:
+  %mfslot = getelementptr i8*, i8** %funPtrs, i64 %mfunIdx
+  %mfp = load i8*, i8** %mfslot
+  br label %mstore
+mstore:
+  %mfp_final = phi i8* [ null, %mstep ], [ %mfp, %mfun_load ]
+  %mrow = getelementptr %WamMetaRow, %WamMetaRow* %metaRows, i64 %mi
+  %mrow_atom = getelementptr %WamMetaRow, %WamMetaRow* %mrow, i32 0, i32 0
+  store i64 %matom_id, i64* %mrow_atom
+  %mrow_fun = getelementptr %WamMetaRow, %WamMetaRow* %mrow, i32 0, i32 1
+  store i8* %mfp_final, i8** %mrow_fun
+  %mrow_ar = getelementptr %WamMetaRow, %WamMetaRow* %mrow, i32 0, i32 2
+  %marity32 = trunc i64 %marity to i32
+  store i32 %marity32, i32* %mrow_ar
+  %mrow_lbl = getelementptr %WamMetaRow, %WamMetaRow* %mrow, i32 0, i32 3
+  %mlabel32 = trunc i64 %mlabel to i32
+  store i32 %mlabel32, i32* %mrow_lbl
+  %mi1 = add i64 %mi, 1
+  br label %mloop
 build_vm:
   ; entry pc = labels[entry_idx]
   %eslot = getelementptr i32, i32* %labels, i64 %entry_idx64
   %entry_pc = load i32, i32* %eslot
   ; scratch pointer arrays no longer needed: atom strings were copied by
-  ; @wam_intern_atom, functor string copies are owned by %code, and the
-  ; source buffer belongs to the caller.
+  ; @wam_intern_atom, functor string copies are owned by %code, the meta
+  ; rows already captured the ids/pointers they need, and the source buffer
+  ; belongs to the caller.
   call void @free(i8* %atom_mem)
   call void @free(i8* %fun_mem)
   %ncode32 = trunc i64 %ncode to i32
   %nlbl32 = trunc i64 %nlbl to i32
   %vm = call %WamState* @wam_state_new(%Instruction* %code, i32 %ncode32, i32* %labels, i32 %nlbl32)
+  ; install the object''s meta-call table (fields 25/26)
+  %vm_meta_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 25
+  store %WamMetaRow* %metaRows, %WamMetaRow** %vm_meta_ptr
+  %vm_metac_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 26
+  %nmeta32 = trunc i64 %nmeta to i32
+  store i32 %nmeta32, i32* %vm_metac_ptr
   %ret0 = insertvalue { %WamState*, i32 } undef, %WamState* %vm, 0
   %ret1 = insertvalue { %WamState*, i32 } %ret0, i32 %entry_pc, 1
   ret { %WamState*, i32 } %ret1

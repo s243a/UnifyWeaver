@@ -303,17 +303,22 @@ Item 5 is a **subset-expansion campaign** with the bootstrap as its payoff;
 each milestone is its own PR(s) and richer hand-written grammars become
 loadable along the way.
 
-- **Milestone 1 — clause indexing — LANDED.** All clause-indexing dispatch
-  (`switch_on_term`, `switch_on_structure`, `switch_on_constant`,
-  `switch_on_constant_a2`) is now in the loadable `.wamo` subset as
-  nop-fallthroughs. Safe because the tier-2 compiler emits every indexing
-  instruction *inline at the head of the predicate*, immediately before the
-  `try_me_else` chain it dispatches into; dropping the switch and falling
-  through runs every clause in order — correct, just unindexed. This lets
-  atom-keyed multi-clause predicates (pervasive in the compiler) load.
-- **Milestones 2–6** (meta-call in objects, the compiler's builtin closure,
-  byte-buffer output, the `eval`/`compile` surface, self-host) — see the
-  bootstrap doc.
+- **Milestone 1 — clause indexing — LANDED.** Every `switch_on_*` dispatch
+  variant (matched by prefix, so the `_fallthrough` and `_a2` forms are
+  covered) is now in the loadable `.wamo` subset as a nop-fallthrough. Safe
+  because the tier-2 compiler emits every indexing instruction *inline at the
+  head of the predicate*, immediately before the `try_me_else` chain it
+  dispatches into; dropping the switch and falling through runs every clause
+  in order — correct, just unindexed. Lets atom-keyed multi-clause predicates
+  (pervasive in the compiler) load.
+- **Milestone 2 — `call/N` meta-call in objects — LANDED.** A meta-call
+  encodes `op1 = -1`; dispatch resolves the runtime goal through a new
+  **per-object meta-call table** (format version 2) hung off two new
+  `%WamState` fields, so a loaded object can `call/N` its own predicates —
+  atom goals and compound (partial-application) goals alike. Falls back to the
+  host-global table for host VMs. The spine of any runtime-built goal.
+- **Milestones 3–6** (the compiler's builtin closure, byte-buffer output, the
+  `eval`/`compile` surface, self-host) — see the bootstrap doc.
 
 ## The binary-return question, specifically
 
