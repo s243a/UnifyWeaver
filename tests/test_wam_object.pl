@@ -215,6 +215,14 @@ ctgrab(V, V).
 ct_ball(R)    :- catch(ctcompute(R), result(V), ctgrab(V, R)).               % 42 (recovery uses ball)
 ct_uncaught(R) :- throw(oops), R = 1.                                        % uncaught -> fails
 
+% Milestone 5 (eval/compile pipeline): a loaded compiler object runs on source
+% text and emits .wamo bytes, which @wam_object_eval loads into a fresh VM in
+% the same process; running the result closes the eval loop. ea/1 is the
+% "program" that gets compiled+loaded+run; echocompile/2 is a stand-in compiler
+% (echoes its source as the emitted object -- a real compiler is milestone 6).
+ea(R) :- R = 42.
+echocompile(Src, Wamo) :- Wamo = Src.
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -696,6 +704,29 @@ test(catch_and_throw_in_object, [condition(clang_available)]) :-
              assertion(Out == Expected) )),
     !.
 
+% Milestone 5: the eval/compile pipeline end to end. A compiler object runs on
+% source text and emits .wamo bytes; @wam_object_eval loads those bytes into a
+% fresh VM in the SAME process; running its entry yields the answer. The
+% stand-in compiler (echocompile/2) echoes its source, so the "source" here is
+% itself a valid .wamo (ea/1 -> 42); a real source-to-bytecode compiler is
+% milestone 6. This closes the eval loop: emit bytes -> load -> run.
+test(eval_compile_pipeline, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'ea.wamo', EaWamo),
+    write_wam_object([user:ea/1], [wamo_entry(ea/1)], EaWamo),
+    directory_file_path(Dir, 'compiler.wamo', CompWamo),
+    write_wam_object([user:echocompile/2], [wamo_entry(echocompile/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    process_create(Host, [CompWamo, EaWamo],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "42\n"),
+    !.
+
 :- end_tests(wam_object).
 
 % --- helpers ---------------------------------------------------------------
@@ -977,6 +1008,52 @@ load_fail:\n\c
 run_fail:\n\c
   ret i32 21\n\c
 }\n').
+
+% Build a host for the eval/compile pipeline: argv[1] = compiler .wamo,
+% argv[2] = source (here itself a .wamo). It lazy-loads the compiler
+% (@wam_object_load_cached), reads the source, runs @wam_object_eval to
+% compile+load it, then runs the resulting object and prints the integer.
+build_eval_host(Dir, Host) :-
+    directory_file_path(Dir, 'eval_host.ll', LL),
+    with_output_to(string(_),
+        write_wam_llvm_project([user:answer/1],
+            [module_name(wam_object_eval_host), emit_wamo_loader(true)], LL)),
+    eval_host_main_ir(MainIR),
+    setup_call_cleanup(
+        open(LL, append, S, [encoding(utf8)]),
+        write(S, MainIR),
+        close(S)),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    clang_link(LL, Host).
+
+eval_host_main_ir(
+'\n@.ev_fmt = private constant [6 x i8] c"%lld\\0A\\00"\n\n\c
+define i32 @main(i32 %argc, i8** %argv) {\n\c
+entry:\n\c
+  %p1 = getelementptr i8*, i8** %argv, i64 1\n  %cpath = load i8*, i8** %p1\n\c
+  %p2 = getelementptr i8*, i8** %argv, i64 2\n  %spath = load i8*, i8** %p2\n\c
+  %cobj = call { %WamState*, i32 } @wam_object_load_cached(i8* %cpath)\n\c
+  %cvm = extractvalue { %WamState*, i32 } %cobj, 0\n\c
+  %cpc = extractvalue { %WamState*, i32 } %cobj, 1\n\c
+  %cnull = icmp eq %WamState* %cvm, null\n  br i1 %cnull, label %fail, label %readsrc\n\c
+readsrc:\n\c
+  %totp = alloca i64\n\c
+  %sbuf = call i8* @wamo_read_file(i8* %spath, i64* %totp)\n\c
+  %sbnull = icmp eq i8* %sbuf, null\n  br i1 %sbnull, label %fail, label %doeval\n\c
+doeval:\n\c
+  %slen = load i64, i64* %totp\n\c
+  %robj = call { %WamState*, i32 } @wam_object_eval(%WamState* %cvm, i32 %cpc, i8* %sbuf, i64 %slen)\n\c
+  %rvm = extractvalue { %WamState*, i32 } %robj, 0\n\c
+  %rpc = extractvalue { %WamState*, i32 } %robj, 1\n\c
+  %rnull = icmp eq %WamState* %rvm, null\n  br i1 %rnull, label %fail, label %runit\n\c
+runit:\n\c
+  %res = call { i64, i1 } @wam_object_call_i64(%WamState* %rvm, i32 %rpc, i32 0, %Value* null, i32 0)\n\c
+  %val = extractvalue { i64, i1 } %res, 0\n\c
+  %ok = extractvalue { i64, i1 } %res, 1\n  br i1 %ok, label %prn, label %fail\n\c
+prn:\n\c
+  %fmt = getelementptr [6 x i8], [6 x i8]* @.ev_fmt, i32 0, i32 0\n\c
+  %pr = call i32 (i8*, ...) @printf(i8* %fmt, i64 %val)\n  ret i32 0\n\c
+fail:\n  ret i32 21\n}\n').
 
 clang_link(LL, Bin) :-
     format(atom(Cmd), 'clang -w -O2 ~w -o ~w -lm 2>&1', [LL, Bin]),

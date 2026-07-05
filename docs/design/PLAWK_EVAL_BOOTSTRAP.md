@@ -248,10 +248,31 @@ independently useful (richer hand-written grammars load sooner).
    (`atom_codes(S,[104,105])` → `"hi"`). The byte-return path is the same one
    the eventual `eval`/`compile` surface (milestone 5) hands assembled `.wamo`
    text back across.
-5. **The `eval` / `compile` surface + pipeline.** Wire the plawk surface:
+5. **The `eval` / `compile` surface + pipeline. — landed (runtime).**
    `compile(src)` → run `compiler.wamo` on `src` (blob out) →
    `@wam_object_load_bytes` → a handle usable by `dyncall_at`. Lazy-load the
    compiler object; cache per `DYNCACHE`.
+
+   **What landed:** two runtime primitives that compose the existing pieces
+   into the eval loop, in `wam_object_support_ir` (emitted with
+   `emit_wamo_loader(true)`):
+   - `@wam_object_eval(cvm, cpc, src, srclen)` — interns `src` as an atom, runs
+     the compiler entry `compile(Src, Wamo)` via `@wam_object_call_bytes`
+     (`Src` in A1, emitted bytes read from A2), then feeds those bytes straight
+     to `@wam_object_load_bytes`, returning the fresh `{vm, entry_pc}`. The
+     emitted bytes live in the persistent atom table, so they survive the
+     compiler VM's arena rewind and need no buffer management.
+   - `@wam_object_load_cached(path)` — lazy-loads a compiler object once and
+     memoizes it in a small path-keyed cache, so repeated `compile` calls reuse
+     one compiler VM (the `DYNCACHE` role).
+
+   Verified end to end (`tests/test_wam_object.pl:eval_compile_pipeline`): a
+   loaded compiler object runs on source text, emits `.wamo` bytes,
+   `@wam_object_eval` loads them into a fresh VM in the same process, and
+   running its entry yields `42`. The stand-in compiler echoes its source (so
+   the "source" is itself a valid `.wamo`); a real source-to-bytecode compiler
+   is milestone 6. This closes the eval loop at the runtime layer: **emit bytes
+   → load → run**, all in one process.
 6. **Self-host.** Compile the actual WAM compiler to a `.wamo` and run the
    whole pipeline from source text end to end. The capstone.
 
@@ -264,8 +285,9 @@ independently useful (richer hand-written grammars load sooner).
   1). If the eval loop becomes hot, a real switch-table in the loader is a
   later optimization — the format already carries the switch operands we
   currently drop.
-- **Milestones 1–4 have landed**; 5–6 are plumbing over primitives that
-  already exist (`@wam_object_load_bytes`, `@wam_object_call_bytes`, the
-  `mtime` cache). The reader (3b) and byte-buffer output (4) together mean a
-  loaded object can now both parse source text into terms *and* emit assembled
-  bytes back out — the two halves the eval loop threads together.
+- **Milestones 1–5 have landed** (3b-db PR 3, rule bodies, is the one open
+  runtime item); milestone 6 is self-host. The reader (3b), byte-buffer output
+  (4), dynamic store + catch/throw (3b-db/3c), and the eval pipeline (5) mean a
+  loaded object can parse source text into terms, keep mutable state, handle
+  errors, emit assembled bytes, and load+run those bytes in the same process —
+  the whole eval loop, wanting only a real compiler grammar to fill it (6).

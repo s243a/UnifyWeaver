@@ -22846,4 +22846,94 @@ ok:
   ret i32 %idx
 fail:
   ret i32 -1
+}
+
+; --- eval/compile pipeline (JIT roadmap #5) ---
+
+; Run a loaded compiler object on a source string, then load the .wamo bytes
+; it emits into a fresh VM -- the "compile(Src)" primitive. The compiler entry
+; is compile(Src, Wamo): the source text (interned as an atom) goes in A1 and
+; the emitted byte-string atom binds A2 (out_reg = 1). The emitted bytes live
+; in the persistent atom table (they survive the compiler VM''s arena rewind),
+; and @wam_object_load_bytes copies what it needs, so there is no buffer to
+; manage here. Returns { vm, entry_pc } for the freshly compiled object, or
+; { null, 0 } if the compiler is null, fails, or yields a non-atom output.
+define { %WamState*, i32 } @wam_object_eval(%WamState* %cvm, i32 %cpc, i8* %src, i64 %srclen) {
+entry:
+  %cvm_null = icmp eq %WamState* %cvm, null
+  br i1 %cvm_null, label %fail, label %run
+run:
+  %srcid = call i64 @wam_intern_atom(i8* %src, i64 %srclen)
+  %sv0 = insertvalue %Value undef, i32 0, 0
+  %srcval = insertvalue %Value %sv0, i64 %srcid, 1
+  %args = alloca %Value, i32 1
+  store %Value %srcval, %Value* %args
+  %r = call { i8*, i64, i1 } @wam_object_call_bytes(%WamState* %cvm, i32 %cpc, i32 1, %Value* %args, i32 1)
+  %ptr = extractvalue { i8*, i64, i1 } %r, 0
+  %len = extractvalue { i8*, i64, i1 } %r, 1
+  %ok = extractvalue { i8*, i64, i1 } %r, 2
+  br i1 %ok, label %load, label %fail
+load:
+  %obj = call { %WamState*, i32 } @wam_object_load_bytes(i8* %ptr, i64 %len)
+  ret { %WamState*, i32 } %obj
+fail:
+  %f0 = insertvalue { %WamState*, i32 } undef, %WamState* null, 0
+  %f1 = insertvalue { %WamState*, i32 } %f0, i32 0, 1
+  ret { %WamState*, i32 } %f1
+}
+
+; Lazy-load a compiler object from a file path and cache it, so repeated
+; eval/compile calls reuse one loaded compiler VM (roadmap #5 DYNCACHE). A
+; small fixed cache keyed by path string; a cache miss loads via
+; @wam_object_load and records the result (paths are strdup''d). Beyond the
+; cache capacity, later paths load uncached rather than evict.
+@wam_compiler_cache_paths = internal global [16 x i8*] zeroinitializer
+@wam_compiler_cache_vms = internal global [16 x %WamState*] zeroinitializer
+@wam_compiler_cache_pcs = internal global [16 x i32] zeroinitializer
+@wam_compiler_cache_count = internal global i32 0
+
+define { %WamState*, i32 } @wam_object_load_cached(i8* %path) {
+entry:
+  %count = load i32, i32* @wam_compiler_cache_count
+  br label %scan
+scan:
+  %i = phi i32 [ 0, %entry ], [ %inext, %scan_cont ]
+  %done = icmp sge i32 %i, %count
+  br i1 %done, label %miss, label %probe
+probe:
+  %pp = getelementptr [16 x i8*], [16 x i8*]* @wam_compiler_cache_paths, i32 0, i32 %i
+  %cpath = load i8*, i8** %pp
+  %cmp = call i32 @strcmp(i8* %cpath, i8* %path)
+  %eq = icmp eq i32 %cmp, 0
+  br i1 %eq, label %hit, label %scan_cont
+scan_cont:
+  %inext = add i32 %i, 1
+  br label %scan
+hit:
+  %hvmp = getelementptr [16 x %WamState*], [16 x %WamState*]* @wam_compiler_cache_vms, i32 0, i32 %i
+  %hvm = load %WamState*, %WamState** %hvmp
+  %hpcp = getelementptr [16 x i32], [16 x i32]* @wam_compiler_cache_pcs, i32 0, i32 %i
+  %hpc = load i32, i32* %hpcp
+  %h0 = insertvalue { %WamState*, i32 } undef, %WamState* %hvm, 0
+  %h1 = insertvalue { %WamState*, i32 } %h0, i32 %hpc, 1
+  ret { %WamState*, i32 } %h1
+miss:
+  %obj = call { %WamState*, i32 } @wam_object_load(i8* %path)
+  %ovm = extractvalue { %WamState*, i32 } %obj, 0
+  %opc = extractvalue { %WamState*, i32 } %obj, 1
+  %space = icmp slt i32 %count, 16
+  br i1 %space, label %record, label %ret_obj
+record:
+  %dup = call i8* @wam_dyn_dup_functor(i8* %path)
+  %spp = getelementptr [16 x i8*], [16 x i8*]* @wam_compiler_cache_paths, i32 0, i32 %count
+  store i8* %dup, i8** %spp
+  %svmp = getelementptr [16 x %WamState*], [16 x %WamState*]* @wam_compiler_cache_vms, i32 0, i32 %count
+  store %WamState* %ovm, %WamState** %svmp
+  %spcp = getelementptr [16 x i32], [16 x i32]* @wam_compiler_cache_pcs, i32 0, i32 %count
+  store i32 %opc, i32* %spcp
+  %ncount = add i32 %count, 1
+  store i32 %ncount, i32* @wam_compiler_cache_count
+  br label %ret_obj
+ret_obj:
+  ret { %WamState*, i32 } %obj
 }').
