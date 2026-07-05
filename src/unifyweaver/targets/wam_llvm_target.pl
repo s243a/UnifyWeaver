@@ -20351,6 +20351,9 @@ wamo_utf8_bytes([C|Cs], Bytes) :-
 %                           Compound's args into typed i64/f64/string slots
 %                           (the "output is a term" primitive; string fields
 %                           yield a (ptr,len) pair via out_slots + out_lens)
+%    @wam_object_call_assoc - call the entry and materialize a returned list
+%                           of [Key-Value] integer pairs into an i64 assoc
+%                           table (@wam_assoc_i64_inc per pair)
 %    @wam_object_entry_index / @wam_object_entry_index_bytes
 %                        - resolve a named entry to its label index (or -1)
 %                          for multi-entry objects; @wam_label_pc turns that
@@ -20981,6 +20984,117 @@ fstep_ok:
   %fi1 = add i32 %fi, 1
   br label %floop
 ok_rewind:
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  ret i1 true
+rewind_fail:
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  br label %fail
+fail:
+  ret i1 false
+}
+
+; Associative-array variant (JIT roadmap #4): the entry output cell must bind
+; to a proper list of 2-arg pairs -- e.g. [K1-V1, K2-V2, ...] -- and each
+; pair''s (Integer key, Integer value) is inserted into the caller''s i64
+; assoc table via @wam_assoc_i64_inc (add semantics: a fresh key ends at its
+; value; a repeated key accumulates, matching a tally). The walk reads the
+; cons cells (functor "[|]", arity 2) and pairs (any arity-2 compound; arg0 =
+; key, arg1 = value) BEFORE the arena rewind, since they live in the arena.
+; Returns i1 ok; false on call failure, a non-list output, a non-pair
+; element, or a non-Integer key/value.
+define i1 @wam_object_call_assoc(%WamState* %vm, i32 %entry_pc, i32 %nargs, %Value* %args, i32 %out_reg, %WamAssocI64Table* %table) {
+entry:
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+do_call:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs_saved = load i32, i32* %hs_ptr
+  %unb = call %Value @value_unbound(i8* null)
+  %out_addr = call i32 @wam_heap_push(%WamState* %vm, %Value %unb)
+  %out_ref = call %Value @value_ref(i32 %out_addr)
+  call void @wam_prepare_call(%WamState* %vm, i32 %entry_pc)
+  br label %argloop
+argloop:
+  %ai = phi i32 [ 0, %do_call ], [ %ai1, %argstep ]
+  %adone = icmp sge i32 %ai, %nargs
+  br i1 %adone, label %args_done, label %argstep
+argstep:
+  %aidx64 = sext i32 %ai to i64
+  %ap = getelementptr %Value, %Value* %args, i64 %aidx64
+  %av = load %Value, %Value* %ap
+  call void @wam_set_reg(%WamState* %vm, i32 %ai, %Value %av)
+  %ai1 = add i32 %ai, 1
+  br label %argloop
+args_done:
+  call void @wam_set_reg(%WamState* %vm, i32 %out_reg, %Value %out_ref)
+  %ok = call i1 @run_loop(%WamState* %vm)
+  br i1 %ok, label %walk_init, label %rewind_fail
+walk_init:
+  %consfn = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  %head0 = call %Value @wam_deref_value(%WamState* %vm, %Value %out_ref)
+  br label %walk
+walk:
+  %cur = phi %Value [ %head0, %walk_init ], [ %tail_d, %next ]
+  %ctag = call i32 @value_tag(%Value %cur)
+  %is_comp = icmp eq i32 %ctag, 3
+  br i1 %is_comp, label %check_cons, label %walk_done
+check_cons:
+  %cbits = call i64 @value_payload(%Value %cur)
+  %ccp = inttoptr i64 %cbits to %Compound*
+  %cfn_slot = getelementptr %Compound, %Compound* %ccp, i32 0, i32 0
+  %cfn = load i8*, i8** %cfn_slot
+  %car_slot = getelementptr %Compound, %Compound* %ccp, i32 0, i32 1
+  %car = load i32, i32* %car_slot
+  %car_ok = icmp eq i32 %car, 2
+  br i1 %car_ok, label %cmp_cons, label %walk_done
+cmp_cons:
+  %fncmp = call i32 @strcmp(i8* %cfn, i8* %consfn)
+  %is_cons = icmp eq i32 %fncmp, 0
+  br i1 %is_cons, label %have_cell, label %walk_done
+have_cell:
+  %cargs_slot = getelementptr %Compound, %Compound* %ccp, i32 0, i32 2
+  %cargs = load %Value*, %Value** %cargs_slot
+  %h_ptr = getelementptr %Value, %Value* %cargs, i64 0
+  %h_raw = load %Value, %Value* %h_ptr
+  %t_ptr = getelementptr %Value, %Value* %cargs, i64 1
+  %t_raw = load %Value, %Value* %t_ptr
+  %pair = call %Value @wam_deref_value(%WamState* %vm, %Value %h_raw)
+  %ptag = call i32 @value_tag(%Value %pair)
+  %p_is_comp = icmp eq i32 %ptag, 3
+  br i1 %p_is_comp, label %pair_arity, label %rewind_fail
+pair_arity:
+  %pbits = call i64 @value_payload(%Value %pair)
+  %pcp = inttoptr i64 %pbits to %Compound*
+  %par_slot = getelementptr %Compound, %Compound* %pcp, i32 0, i32 1
+  %par = load i32, i32* %par_slot
+  %par_ok = icmp eq i32 %par, 2
+  br i1 %par_ok, label %pair_args, label %rewind_fail
+pair_args:
+  %pargs_slot = getelementptr %Compound, %Compound* %pcp, i32 0, i32 2
+  %pargs = load %Value*, %Value** %pargs_slot
+  %k_ptr = getelementptr %Value, %Value* %pargs, i64 0
+  %k_raw = load %Value, %Value* %k_ptr
+  %v_ptr = getelementptr %Value, %Value* %pargs, i64 1
+  %v_raw = load %Value, %Value* %v_ptr
+  %kv = call %Value @wam_deref_value(%WamState* %vm, %Value %k_raw)
+  %vv = call %Value @wam_deref_value(%WamState* %vm, %Value %v_raw)
+  %ktag = call i32 @value_tag(%Value %kv)
+  %vtag = call i32 @value_tag(%Value %vv)
+  %k_is_int = icmp eq i32 %ktag, 1
+  %v_is_int = icmp eq i32 %vtag, 1
+  %kv_ok = and i1 %k_is_int, %v_is_int
+  br i1 %kv_ok, label %insert, label %rewind_fail
+insert:
+  %kval = call i64 @value_payload(%Value %kv)
+  %vval = call i64 @value_payload(%Value %vv)
+  %ignored = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %table, i64 %kval, i64 %vval)
+  br label %next
+next:
+  %tail_d = call %Value @wam_deref_value(%WamState* %vm, %Value %t_raw)
+  br label %walk
+walk_done:
   store i32 %hs_saved, i32* %hs_ptr
   call void @wam_cleanup()
   ret i1 true
