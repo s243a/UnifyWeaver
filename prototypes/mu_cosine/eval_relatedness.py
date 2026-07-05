@@ -29,7 +29,16 @@ def build_model(ckpt, dev):
     m = MuAttention(d_model=cfg["d_model"], n_heads=cfg["heads"], n_layers=cfg["layers"],
                     n_ops=sz("op_emb.weight", len(OPS)), n_corpus=sz("corpus_emb.weight", 2),
                     n_judge=sz("judge_emb.weight", 2), n_nodetype=sz("nodetype_emb.weight", 4)).to(dev)
-    miss, unexp = m.load_state_dict(sd, strict=False); assert not unexp and all(("account" in k or "prefix" in k) for k in miss)
+    # Older checkpoints (e.g. model_prod.pt) predate the account/prefix tags and the SYM dual-judge
+    # struct/precision/confidence params+buffers; all are zero-init / no-op, so loading strict=False and ignoring
+    # EXACTLY these is safe. Explicit leaf-name allow-list (not broad substrings) so a genuinely-missing/renamed
+    # key in a future refactor still trips the assert (PR #3488 review, finding #9).
+    _NEW = ("account_emb.weight", "prefix_emb.weight", "sym_struct_w", "struct_lambda", "struct_g", "struct_h",
+            "prec_g", "prec_h", "c_dist", "c_mem_ceiling", "c_subcat", "c_elem")
+    miss, unexp = m.load_state_dict(sd, strict=False)
+    assert not unexp, f"unexpected keys loading {ckpt}: {unexp}"
+    bad = [k for k in miss if not any(k.endswith(n) for n in _NEW)]
+    assert not bad, f"unexpected MISSING keys loading {ckpt}: {bad}"
     m.eval(); return m
 
 

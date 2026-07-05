@@ -27,7 +27,15 @@ Fit `μ_sym ≈ σ(w·features)` against the judge-scored SYM targets:
   **re-explains the SYM "regression"**: SYM is ~half structural, so when the broad fine-tune shifted the graph,
   the pure-e5 operator lost the structural half it never had.
 
-## Confidence architecture (LOCKED design, user 2026-07-04 — build pending)
+## Confidence architecture (hand-fusion — SUPERSEDED, see `DESIGN_sym_estimation_integration.md`)
+
+> **Course-correction (2026-07-05):** the hand-set inverse-variance fusion below is the wrong shape per the
+> project's own estimation PRs — the μ sources are correlated (e5↔model +0.75, #3357/#3359), subcat/elem are
+> anti-correlated (#3359), and confidence is a weak per-query signal that should *gate* not *weight* (margin not
+> level, #3391). The recommended path is the calibrated **`JointPosterior`** (`mu_posterior.py`, #3359) over the
+> full μ-vector, with `1/d` added as the one decorrelated (sibling/lateral) source, gated by margin. See
+> **`DESIGN_sym_estimation_integration.md`**. The design below stays as an A/B control / ablation.
+
 
 Two axes, and the confidence principle (#3356) applies to **only one** of them:
 
@@ -44,6 +52,16 @@ Two axes, and the confidence principle (#3356) applies to **only one** of them:
 - **Inside the graph judge it IS a confidence-modulated trust** (the #3356 / anchored-basis principle), with
   **`1/d` as the low-confidence fallback** (the role e5-text played in the anchored basis). Precision-weighted
   (inverse-variance) fusion of two estimators of different reliability.
+
+**Division of labor — `1/d` captures SIBLINGS (user 2026-07-04).** The membership operators are inherently
+**vertical** (ancestor↔descendant); **siblings have no directional membership** (neither is the other's
+ancestor) so all four membership terms → 0. But siblings are related (same parent, `d≈2` → high `1/d`), so
+**`1/d` is the dedicated LATERAL/sibling channel**, not a generic fallback. Measured (14 562 pairs, classified
+on the graph): sibling/cousin pairs are **37 %** of the set with real relatedness (target μ 0.13 vs distant
+0.00) and **0 % membership coverage**, yet `corr(1/d, SYM) = +0.136` there — `1/d` is the *sole* structural
+signal for that 37 %. Vertical pairs (11 %, μ 0.49) are where memberships lead. This is *why* the dual judge
+beats either judge alone: memberships cover the vertical axis, `1/d` covers the lateral/sibling axis, e5 covers
+semantics. (The old "lateral residual" intuition was this — right concept, wrong sign.)
 
 **The two confidences (each an error/agreement measurement, not a free knob):**
 - **`c_dist` — global, fixed.** The distance proxy's reliability = how well `1/d` **agrees with the LLM judge**
@@ -77,6 +95,16 @@ harder relation) ⇒ **separate `c_subcat`, `c_elem`** by the inverse-variance p
 elem_bwd}`, `c` grouped `{c_dist, c_subcat×2, c_elem×2}`. **Empirically decidable:** measure `error_HIER` vs
 `error_ELEM` (or `corr(signal, SYM judge)` — subcat's was +0.669); if close, **collapse to one combined `c_mem`**
 (the simple default — lose nothing); if they diverge, keep separate.
+
+*Measured (`measure_membership_confidence.py`, `model_prod.pt`, 2500 pairs).* Model readouts vs SYM judge:
+**`c_elem` = +0.815 > `c_subcat` = +0.715** (up_hops proxy was +0.669) — three findings: (1) **element is the
+STRONGEST membership signal** (validates including it — it's not just complementary, it's the best); (2) gap
+0.10 ⇒ **keep `c_subcat`/`c_elem` separate** (confirmed); (3) the model HIER readout (+0.715) beats the up_hops
+proxy (+0.669) ⇒ **use model readouts** (and element has no proxy anyway). *Caveat:* measured on model_prod's
+training pairs ⇒ absolute values likely inflated by leakage. Leakage is **not guaranteed rank-preserving** across
+operators (it can inflate one more than another), so the ordering `elem ≥ subcat > dist` is **the hypothesis to
+re-measure held-out**, not an established result — set the actual `c` buffers from **held-out** (node-disjoint)
+error / the two-judge round before relying on it.
 
 ### Implementation (`--struct-blend precision`, BUILT)
 
