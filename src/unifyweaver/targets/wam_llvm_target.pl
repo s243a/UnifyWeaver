@@ -6776,7 +6776,15 @@ look:
   br i1 %is_lb, label %do_list, label %chk_paren
 chk_paren:
   %is_lp0 = icmp eq i8 %c, 40
-  br i1 %is_lp0, label %do_paren, label %chk_neg
+  br i1 %is_lp0, label %do_paren, label %chk_quote
+chk_quote:
+  %is_q = icmp eq i8 %c, 39
+  br i1 %is_q, label %do_quoted, label %chk_digit
+chk_digit:
+  %c_ge0 = icmp uge i8 %c, 48
+  %c_le9 = icmp ule i8 %c, 57
+  %c_dig = and i1 %c_ge0, %c_le9
+  br i1 %c_dig, label %do_number, label %chk_neg
 chk_neg:
   %is_minus0 = icmp eq i8 %c, 45
   br i1 %is_minus0, label %chk_neg2, label %read_ident
@@ -6790,7 +6798,7 @@ chk_neg3:
   %nc_ge0 = icmp uge i8 %ncc, 48
   %nc_le9 = icmp ule i8 %ncc, 57
   %nc_dig = and i1 %nc_ge0, %nc_le9
-  br i1 %nc_dig, label %do_negnum, label %read_ident
+  br i1 %nc_dig, label %do_number, label %read_ident
 do_paren:
   %pinc = add i64 %p0, 1
   store i64 %pinc, i64* %pos
@@ -6808,26 +6816,67 @@ close_paren:
   %pcp1 = add i64 %pcp, 1
   store i64 %pcp1, i64* %pos
   ret %Value %pv
-do_negnum:
-  br label %nn_loop
-nn_loop:
-  %nne = phi i64 [ %p0n, %do_negnum ], [ %nne1, %nn_step ]
-  %nne_end = icmp uge i64 %nne, %len
-  br i1 %nne_end, label %nn_done, label %nn_check
-nn_check:
-  %nnep = getelementptr i8, i8* %s, i64 %nne
-  %nnec = load i8, i8* %nnep
-  %nne_ge0 = icmp uge i8 %nnec, 48
-  %nne_le9 = icmp ule i8 %nnec, 57
-  %nne_dig = and i1 %nne_ge0, %nne_le9
-  br i1 %nne_dig, label %nn_step, label %nn_done
-nn_step:
-  %nne1 = add i64 %nne, 1
-  br label %nn_loop
-nn_done:
-  store i64 %nne, i64* %pos
-  %nnv = call %Value @wam_make_atomic(i8* %s, i64 %p0, i64 %nne)
-  ret %Value %nnv
+do_number:
+  ; Parse an integer or float via strtod (which also handles a leading minus
+  ; and an exponent) and take its end via the endptr; then pick the tag by
+  ; scanning the token for a dot or e/E (float) vs none (integer, kept exact).
+  %nsptr = getelementptr i8, i8* %s, i64 %p0
+  %endpp = alloca i8*
+  %dval = call double @strtod(i8* %nsptr, i8** %endpp)
+  %endp = load i8*, i8** %endpp
+  %endi = ptrtoint i8* %endp to i64
+  %sbase = ptrtoint i8* %s to i64
+  %numend = sub i64 %endi, %sbase
+  store i64 %numend, i64* %pos
+  br label %dn_scan
+dn_scan:
+  %dsi = phi i64 [ %p0, %do_number ], [ %dsi1, %dn_scan_step ]
+  %ds_done = icmp uge i64 %dsi, %numend
+  br i1 %ds_done, label %dn_int_result, label %dn_scan_chk
+dn_scan_chk:
+  %dsp = getelementptr i8, i8* %s, i64 %dsi
+  %dsc = load i8, i8* %dsp
+  %dsc_dot = icmp eq i8 %dsc, 46
+  %dsc_e = icmp eq i8 %dsc, 101
+  %dsc_E = icmp eq i8 %dsc, 69
+  %dsc_ee = or i1 %dsc_e, %dsc_E
+  %dsc_isfloat = or i1 %dsc_dot, %dsc_ee
+  br i1 %dsc_isfloat, label %dn_float_result, label %dn_scan_step
+dn_scan_step:
+  %dsi1 = add i64 %dsi, 1
+  br label %dn_scan
+dn_float_result:
+  %fv = call %Value @value_float(double %dval)
+  ret %Value %fv
+dn_int_result:
+  %iv = call %Value @wam_make_atomic(i8* %s, i64 %p0, i64 %numend)
+  ret %Value %iv
+do_quoted:
+  ; A single-quoted atom: content runs from just after the opening quote to the
+  ; next quote. First cut -- no doubled-quote or backslash escapes yet.
+  %q0 = add i64 %p0, 1
+  br label %q_loop
+q_loop:
+  %qi = phi i64 [ %q0, %do_quoted ], [ %qi1, %q_step ]
+  %q_end = icmp uge i64 %qi, %len
+  br i1 %q_end, label %pfail, label %q_chk
+q_chk:
+  %qcp = getelementptr i8, i8* %s, i64 %qi
+  %qc = load i8, i8* %qcp
+  %q_close = icmp eq i8 %qc, 39
+  br i1 %q_close, label %q_done, label %q_step
+q_step:
+  %qi1 = add i64 %qi, 1
+  br label %q_loop
+q_done:
+  %qlen = sub i64 %qi, %q0
+  %qcontent = getelementptr i8, i8* %s, i64 %q0
+  %qid = call i64 @wam_intern_atom(i8* %qcontent, i64 %qlen)
+  %qpos = add i64 %qi, 1
+  store i64 %qpos, i64* %pos
+  %qv0 = insertvalue %Value undef, i32 0, 0
+  %qv = insertvalue %Value %qv0, i64 %qid, 1
+  ret %Value %qv
 do_list:
   %p0inc = add i64 %p0, 1
   store i64 %p0inc, i64* %pos
