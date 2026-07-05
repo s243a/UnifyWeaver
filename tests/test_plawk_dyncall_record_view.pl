@@ -19,6 +19,9 @@
 % rec(X) returns a 2-field compound pair(X, X+0.5): field 0 i64, field 1 f64.
 rec(X, R) :- H is X + 0.5, R = pair(X, H).
 
+% info(X) returns tag(X, Atom): field 0 i64, field 1 a string (atom).
+info(X, R) :- ( X > 100 -> N = big ; N = small ), R = tag(X, N).
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -84,6 +87,34 @@ test(view_f64_field_runs, [condition(clang_available)]) :-
          END { print sum }\n", [Wamo]),
     build_run(Dir, 'rvf', Src, [10, 20], Out),
     assertion(Out == "31\n"),
+    !.
+
+% A string field in a view desugars its `$k` to a (ptr,len) slice built
+% from two hidden i64 temporaries (a string can't be a scalar variable),
+% while numeric fields stay single scalar temps.
+test(view_string_field_desugars_to_slice) :-
+    Rules = [rule(always, [dynrec_view(dyncall_named(info, [field(1)]),
+        [i64, string], [add(var(total), field(1)), print([field(2)])])])],
+    plawk_native_codegen:plawk_resolve_dynrec_view_rules(Rules, [rule(always, Out)]),
+    Out = [dynrec_bind([NumT, str(P, L)], dyncall_named(info, [field(1)]),
+               [i64, string]),
+           add(var(total), var(NumT)),
+           print([blob_slice_vars(var(P), var(L))])],
+    !.
+
+% Full round trip with a string field: info(X) -> tag(X, big/small). The
+% view sums the i64 field ($1) and prints the string field ($2) per record.
+% Inputs 5, 200, 7 -> "small","big","small" printed, and total 212.
+test(view_string_field_runs, [condition(clang_available)]) :-
+    rv_dir(Dir),
+    directory_file_path(Dir, 'info.wamo', Wamo),
+    write_wam_object([user:info/2], [wamo_entries([info/2])], Wamo),
+    format(string(Src),
+        "BEGIN { BINFMT = \"i64\" ; DYNLOAD = \"~w\" }\n\c
+         { dyncall@info($1) as (i64 string) { total += $1 ; print $2 } }\n\c
+         END { print total }\n", [Wamo]),
+    build_run(Dir, 'rvs', Src, [5, 200, 7], Out),
+    assertion(Out == "small\nbig\nsmall\n212\n"),
     !.
 
 :- end_tests(plawk_dyncall_record_view).

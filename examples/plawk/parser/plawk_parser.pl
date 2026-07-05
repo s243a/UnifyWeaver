@@ -976,6 +976,7 @@ dynrec_type_list_rest([]) -->
 
 dynrec_type(i64) --> "i64".
 dynrec_type(f64) --> "f64".
+dynrec_type(string) --> "string".
 
 add_assign_action(add(var(Name), Delta)) -->
     identifier(Name),

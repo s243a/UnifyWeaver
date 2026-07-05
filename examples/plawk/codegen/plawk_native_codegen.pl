@@ -1265,7 +1265,7 @@ plawk_dyncall_rec_shim_ir(NArgs, IR) :-
     plawk_dyncall_store_lines(NArgs, StoreLines),
     atomic_list_concat(StoreLines, '\n', StoreIR),
     format(atom(IR),
-'define i1 @plawk_dyncall_rec_~w(~w, i32 %nfields, i8* %tc, i64* %slots) {
+'define i1 @plawk_dyncall_rec_~w(~w, i32 %nfields, i8* %tc, i64* %slots, i64* %lens) {
 entry:
   %vm = call %WamState* @plawk_dyncall_get()
   %vm_null = icmp eq %WamState* %vm, null
@@ -1274,7 +1274,6 @@ entry:
 do_call:
   %pc = load i32, i32* @plawk_dyncall_pc
   %args = alloca %Value, i32 ~w
-  %lens = alloca i64, i32 %nfields
 ~w
   %r = call i1 @wam_object_call_record(%WamState* %vm, i32 %pc, i32 ~w, %Value* %args, i32 ~w, i32 %nfields, i8* %tc, i64* %slots, i64* %lens)
   ret i1 %r
@@ -1294,7 +1293,7 @@ plawk_dyncall_named_rec_shim_ir(Name, NArgs, IR) :-
     plawk_dyncall_store_lines(NArgs, StoreLines),
     atomic_list_concat(StoreLines, '\n', StoreIR),
     format(atom(IR),
-'define i1 @plawk_dyncall_named_rec_~w(~w, i32 %nfields, i8* %tc, i64* %slots) {
+'define i1 @plawk_dyncall_named_rec_~w(~w, i32 %nfields, i8* %tc, i64* %slots, i64* %lens) {
 entry:
   %pc = call i32 @plawk_dyncall_resolve_~w()
   %bad = icmp slt i32 %pc, 0
@@ -1303,7 +1302,6 @@ entry:
 do_call:
   %vm = call %WamState* @plawk_dyncall_get()
   %args = alloca %Value, i32 ~w
-  %lens = alloca i64, i32 %nfields
 ~w
   %r = call i1 @wam_object_call_record(%WamState* %vm, i32 %pc, i32 ~w, %Value* %args, i32 ~w, i32 %nfields, i8* %tc, i64* %slots, i64* %lens)
   ret i1 %r
@@ -2652,9 +2650,14 @@ plawk_scalar_update_name_expr(Action, Name, Expr) :-
 % sentinel (f64) or an i64-typed one, so the scalar_double fixpoint types
 % each slot correctly without a real RHS expression.
 plawk_scalar_update_name_expr(dynrec_bind(Vars, _Call, Types), Name, Expr) :-
-    nth0(I, Vars, Name),
+    nth0(I, Vars, Binding),
     nth0(I, Types, Type),
-    ( Type == f64 -> Expr = float_const(0, 1) ; Expr = int(0) ).
+    ( Type == f64
+    ->  Binding = Name, Expr = float_const(0, 1)      % double-typed slot
+    ;   Type == string
+    ->  Binding = str(P, L), ( Name = P ; Name = L ), Expr = int(0)  % i64 slots
+    ;   Binding = Name, Expr = int(0)                 % i64 slot
+    ).
 plawk_scalar_update_name_expr(if(_Pattern, ThenActions, ElseActions), Name, Expr) :-
     ( member(Action, ThenActions)
     ; member(Action, ElseActions)
@@ -3394,6 +3397,10 @@ plawk_binfmt_writebin_str_ok(Descriptor, field(FieldIndex), Width) :-
     SourceWidth =< Width.
 
 plawk_binfmt_print_field_ok(_Descriptor, string(_Value)) :- !.
+% a record-view string field ($k) printed as a byte slice
+plawk_binfmt_print_field_ok(_Descriptor, blob_slice_vars(var(P), var(L))) :-
+    !,
+    atom(P), atom(L).
 plawk_binfmt_print_field_ok(_Descriptor, special('NR')) :- !.
 plawk_binfmt_print_field_ok(_Descriptor, special('NF')) :- !.
 plawk_binfmt_print_field_ok(Descriptor, field(Index)) :-
@@ -5544,6 +5551,8 @@ plawk_rule_body_print_field(Expr) :-
     plawk_dyncall_named_expr(Expr).
 plawk_rule_body_print_field(Expr) :-
     plawk_dyncall_at_expr(Expr).
+plawk_rule_body_print_field(blob_slice_vars(var(P), var(L))) :-
+    atom(P), atom(L).
 plawk_rule_body_print_field(blob_dyncall(Args)) :-
     plawk_float_dyncall_expr(float_dyncall(Args)).   % same arg shape check
 plawk_rule_body_print_field(blob_dyncall_named(Name, Args)) :-
@@ -5636,21 +5645,33 @@ plawk_float_dyncall_at_expr(float_dyncall_at(Source, Args)) :-
 %% plawk_dynrec_bind_ok(+Action) is semidet.
 %
 %  A structured-return destructuring bind
-%  `(V1, ..., Vn) = <dyncall> as (T1 ... Tn)` is compilable when: the
-%  variables are distinct atoms, the type list is the same length and
-%  every type is i64 or f64, and the call is a bare dyncall(...) (default
-%  entry) or dyncall@name(...) (named entry). Each Vi becomes a scalar
-%  slot typed by Ti (f64 -> double slot, i64 -> counter slot); the
-%  grammar's returned Compound is deserialized field-by-field into them
-%  via @wam_object_call_record. (dyncall_at sources and string fields are
-%  planned follow-ons.)
+%  `(V1, ..., Vn) = <dyncall> as (T1 ... Tn)` is compilable when: the type
+%  list is the same length as the bindings, each binding matches its type
+%  (an i64/f64 field binds one scalar-var atom; a string field binds a
+%  str(PtrVar, LenVar) pair -- string fields arise only from the
+%  record-view desugar, since a string can't bind to a scalar surface
+%  variable), all bound names are distinct, and the call is a bare
+%  dyncall(...) or dyncall@name(...). Each numeric field's Compound arg is
+%  deserialized into its slot; a string field's (ptr,len) slice lands in
+%  the two i64 slots -- all via @wam_object_call_record.
 plawk_dynrec_bind_ok(dynrec_bind(Vars, Call, Types)) :-
     Vars = [_ | _],
-    maplist(atom, Vars),
-    sort(Vars, Sorted), same_length(Vars, Sorted),   % distinct
     same_length(Vars, Types),
-    maplist(plawk_dynrec_type_ok, Types),
+    maplist(plawk_dynrec_binding_ok, Vars, Types),
+    plawk_dynrec_binding_names(Vars, Names),
+    sort(Names, Sorted), same_length(Names, Sorted),   % distinct
     plawk_dynrec_call_ok(Call).
+
+plawk_dynrec_binding_ok(V, i64) :- atom(V).
+plawk_dynrec_binding_ok(V, f64) :- atom(V).
+plawk_dynrec_binding_ok(str(P, L), string) :- atom(P), atom(L).
+
+plawk_dynrec_binding_names([], []).
+plawk_dynrec_binding_names([str(P, L) | Rest], [P, L | Names]) :-
+    !,
+    plawk_dynrec_binding_names(Rest, Names).
+plawk_dynrec_binding_names([V | Rest], [V | Names]) :-
+    plawk_dynrec_binding_names(Rest, Names).
 
 plawk_dynrec_type_ok(i64).
 plawk_dynrec_type_ok(f64).
@@ -5660,9 +5681,10 @@ plawk_dynrec_call_ok(dyncall(Args)) :-
 plawk_dynrec_call_ok(dyncall_named(Name, Args)) :-
     plawk_dyncall_named_expr(dyncall_named(Name, Args)).
 
-%% plawk_dynrec_type_code(+Type, -Byte)  i64 -> 0, f64 -> 1 (typecodes byte).
+%% plawk_dynrec_type_code(+Type, -Byte)  i64->0, f64->1, string->2 (typecodes).
 plawk_dynrec_type_code(i64, 0).
 plawk_dynrec_type_code(f64, 1).
+plawk_dynrec_type_code(string, 2).
 
 %% plawk_resolve_dynrec_view_rules(+Rules0, -Rules)
 %
@@ -5694,13 +5716,12 @@ plawk_resolve_dynrec_view_actions([A0 | As0], K0, K, Out) :-
     append(Expanded, RestOut, Out).
 
 plawk_resolve_dynrec_view_action(dynrec_view(Call, Types, Body0), K0, K,
-        [dynrec_bind(Temps, Call, Types) | Body]) :-
+        [dynrec_bind(Bindings, Call, Types) | Body]) :-
     !,
-    length(Types, NFields),
-    plawk_dynrec_temp_names(K0, NFields, Temps),
+    plawk_dynrec_view_specs(K0, 1, Types, Bindings, FieldTargets),
     K1 is K0 + 1,
     plawk_resolve_dynrec_view_actions(Body0, K1, K, Body1),
-    maplist(plawk_dynrec_rewrite_field_refs(Temps, NFields), Body1, Body),
+    maplist(plawk_dynrec_rewrite_field_targets(FieldTargets), Body1, Body),
     \+ plawk_term_has_field_ref(Body).
 plawk_resolve_dynrec_view_action(if(Pattern, Then0, Else0), K0, K,
         [if(Pattern, Then, Else)]) :-
@@ -5709,22 +5730,36 @@ plawk_resolve_dynrec_view_action(if(Pattern, Then0, Else0), K0, K,
     plawk_resolve_dynrec_view_actions(Else0, K1, K, Else).
 plawk_resolve_dynrec_view_action(Action, K, K, [Action]).
 
-plawk_dynrec_temp_names(K, NFields, Temps) :-
-    numlist(1, NFields, Is),
-    findall(T,
-        ( member(I, Is), format(atom(T), '__dynrec_~w_~w', [K, I]) ),
-        Temps).
+%% plawk_dynrec_view_specs(+K, +I, +Types, -Bindings, -FieldTargets)
+%  Per field: a numeric type gets one scalar temp (binding = the atom,
+%  target = var(temp)); a string type gets a (ptr,len) temp pair (binding
+%  = str(PtrTemp,LenTemp), target = a blob slice built from those two i64
+%  scalars). FieldTargets maps 1-based field index -> the rewrite target
+%  for `$k` in the body.
+plawk_dynrec_view_specs(_K, _I, [], [], []).
+plawk_dynrec_view_specs(K, I, [Type | Ts], [Binding | Bs], [I-Target | Rs]) :-
+    (   Type == string
+    ->  format(atom(P), '__dynrec_~w_~w_p', [K, I]),
+        format(atom(L), '__dynrec_~w_~w_l', [K, I]),
+        Binding = str(P, L),
+        Target = blob_slice_vars(var(P), var(L))
+    ;   format(atom(T), '__dynrec_~w_~w', [K, I]),
+        Binding = T,
+        Target = var(T)
+    ),
+    I1 is I + 1,
+    plawk_dynrec_view_specs(K, I1, Ts, Bs, Rs).
 
-% Rewrite $k field references (1..NF) to the k-th destructure temporary.
-plawk_dynrec_rewrite_field_refs(Temps, NF, field(N), var(T)) :-
-    integer(N), N >= 1, N =< NF, !, nth1(N, Temps, T).
-plawk_dynrec_rewrite_field_refs(Temps, NF, float_field(N), var(T)) :-
-    integer(N), N >= 1, N =< NF, !, nth1(N, Temps, T).
-plawk_dynrec_rewrite_field_refs(_Temps, _NF, Term, Term) :-
+% Rewrite $k field references to their per-field target (var or slice).
+plawk_dynrec_rewrite_field_targets(Targets, field(N), Target) :-
+    integer(N), memberchk(N-Target, Targets), !.
+plawk_dynrec_rewrite_field_targets(Targets, float_field(N), Target) :-
+    integer(N), memberchk(N-Target, Targets), !.
+plawk_dynrec_rewrite_field_targets(_Targets, Term, Term) :-
     ( var(Term) ; atomic(Term) ), !.
-plawk_dynrec_rewrite_field_refs(Temps, NF, Term0, Term) :-
+plawk_dynrec_rewrite_field_targets(Targets, Term0, Term) :-
     Term0 =.. [F | Args0],
-    maplist(plawk_dynrec_rewrite_field_refs(Temps, NF), Args0, Args),
+    maplist(plawk_dynrec_rewrite_field_targets(Targets), Args0, Args),
     Term =.. [F | Args].
 
 plawk_term_has_field_ref(Term) :-
@@ -5762,16 +5797,18 @@ plawk_dynrec_bind_pair(Vars, Call, Types, FieldSeparator, Base, Slots,
     findall(ZLine,
         ( member(FZ, Fields),
           format(atom(ZLine),
-              '  %~w_z~wp = getelementptr i64, i64* %~w_slots, i64 ~w\n  store i64 0, i64* %~w_z~wp',
-              [Base, FZ, Base, FZ, Base, FZ]) ),
+              '  %~w_z~wp = getelementptr i64, i64* %~w_slots, i64 ~w\n  store i64 0, i64* %~w_z~wp\n  %~w_zl~wp = getelementptr i64, i64* %~w_lens, i64 ~w\n  store i64 0, i64* %~w_zl~wp',
+              [Base, FZ, Base, FZ, Base, FZ, Base, FZ, Base, FZ, Base, FZ]) ),
         ZeroLines),
-    format(atom(AllocaIR), '  %~w_slots = alloca i64, i32 ~w', [Base, NFields]),
+    format(atom(AllocaIR),
+        '  %~w_slots = alloca i64, i32 ~w\n  %~w_lens = alloca i64, i32 ~w',
+        [Base, NFields, Base, NFields]),
     format(atom(TCPtrIR),
         '  %~w_tcp = getelementptr [~w x i8], [~w x i8]* @.~w_tc, i32 0, i32 0',
         [Base, NFields, NFields, Base]),
     format(atom(CallIR),
-        '  %~w_ok = call i1 @~w(~w, i32 ~w, i8* %~w_tcp, i64* %~w_slots)',
-        [Base, ShimName, CallArgsIR, NFields, Base, Base]),
+        '  %~w_ok = call i1 @~w(~w, i32 ~w, i8* %~w_tcp, i64* %~w_slots, i64* %~w_lens)',
+        [Base, ShimName, CallArgsIR, NFields, Base, Base, Base]),
     plawk_dynrec_field_load_lines(Fields, Types, Base, LoadLines),
     append([ArgSetup, [AllocaIR], ZeroLines, [TCPtrIR, CallIR], LoadLines],
         LineList),
@@ -5797,22 +5834,41 @@ plawk_dynrec_field_load_lines([F | Fs], [Type | Ts], Base, [Line | Lines]) :-
     ->  format(atom(Line),
             '  %~w_s~wp = getelementptr i64, i64* %~w_slots, i64 ~w\n  %~w_f~wbits = load i64, i64* %~w_s~wp\n  %~w_f~w = bitcast i64 %~w_f~wbits to double',
             [Base, F, Base, F, Base, F, Base, F, Base, F, Base, F])
+    ;   Type == string
+    ->  % load the atom pointer (kept as i64) and the length from out_lens
+        format(atom(Line),
+            '  %~w_s~wp = getelementptr i64, i64* %~w_slots, i64 ~w\n  %~w_f~w = load i64, i64* %~w_s~wp\n  %~w_l~wp = getelementptr i64, i64* %~w_lens, i64 ~w\n  %~w_l~w = load i64, i64* %~w_l~wp',
+            [Base, F, Base, F, Base, F, Base, F, Base, F, Base, F, Base, F, Base, F])
     ;   format(atom(Line),
             '  %~w_s~wp = getelementptr i64, i64* %~w_slots, i64 ~w\n  %~w_f~w = load i64, i64* %~w_s~wp',
             [Base, F, Base, F, Base, F, Base, F])
     ),
     plawk_dynrec_field_load_lines(Fs, Ts, Base, Lines).
 
-% Point each bound variable's threaded slot value at its loaded field SSA.
+% Point each binding's threaded slot value(s) at its loaded field SSA. A
+% numeric binding sets one slot to %Base_f<i>; a string binding str(P,L)
+% sets P's slot to the pointer (%Base_f<i>) and L's to the length
+% (%Base_l<i>).
 plawk_dynrec_update_slots([], _I, _Base, _Slots, Values, Values).
+plawk_dynrec_update_slots([str(P, L) | Rest], I, Base, Slots, Values0, Values) :-
+    !,
+    format(atom(PtrSSA), '%~w_f~w', [Base, I]),
+    format(atom(LenSSA), '%~w_l~w', [Base, I]),
+    plawk_dynrec_set_slot(P, PtrSSA, Slots, Values0, Values1),
+    plawk_dynrec_set_slot(L, LenSSA, Slots, Values1, Values2),
+    I1 is I + 1,
+    plawk_dynrec_update_slots(Rest, I1, Base, Slots, Values2, Values).
 plawk_dynrec_update_slots([Var | Rest], I, Base, Slots, Values0, Values) :-
     format(atom(SSA), '%~w_f~w', [Base, I]),
+    plawk_dynrec_set_slot(Var, SSA, Slots, Values0, Values1),
+    I1 is I + 1,
+    plawk_dynrec_update_slots(Rest, I1, Base, Slots, Values1, Values).
+
+plawk_dynrec_set_slot(Var, SSA, Slots, Values0, Values) :-
     nth0(SlotIndex, Slots, Slot),
     plawk_slot_name(Slot, Var),
     !,
-    replace_nth0(SlotIndex, Values0, SSA, Values1),
-    I1 is I + 1,
-    plawk_dynrec_update_slots(Rest, I1, Base, Slots, Values1, Values).
+    replace_nth0(SlotIndex, Values0, SSA, Values).
 
 %% plawk_f64_call_tail_ir(+Base, +ResIR, +PreSetup, -ValueIR, -SetupParts)
 %  Shared {double,i1} call tail: unpack value/ok and select 0.0 on failure.
@@ -5899,6 +5955,14 @@ plawk_substitute_scalar_reads(var(Name), Slots, Values, Substituted) :-
     -> Substituted = ssa_f64(Value)
     ;  Substituted = ssa(Value)
     ).
+plawk_substitute_print_field(Slots, Values, Field0, Field) :-
+    plawk_substitute_scalar_reads(Field0, Slots, Values, Field).
+
+plawk_substitute_scalar_reads(blob_slice_vars(A0, B0), Slots, Values,
+        blob_slice_vars(A, B)) :-
+    !,
+    plawk_substitute_scalar_reads(A0, Slots, Values, A),
+    plawk_substitute_scalar_reads(B0, Slots, Values, B).
 plawk_substitute_scalar_reads(Expr0, Slots, Values, Expr) :-
     plawk_i64_binary_expr(Expr0, _LLVMOp, _NamePart, Left0, Right0),
     !,
@@ -5973,7 +6037,8 @@ plawk_scalar_update_action_name(Action, Name) :-
         plawk_expr_scalar_read_name(Expr, Name)
     ).
 plawk_scalar_update_action_name(dynrec_bind(Vars, _Call, _Types), Name) :-
-    member(Name, Vars).
+    plawk_dynrec_binding_names(Vars, Names),
+    member(Name, Names).
 plawk_scalar_update_action_name(if(_Pattern, ThenActions, ElseActions), Name) :-
     ( member(Action, ThenActions)
     ; member(Action, ElseActions)
@@ -6144,8 +6209,12 @@ plawk_scalar_action_sequence_pairs([writebin_arm_out(Tag, ArmTypes, Fields) | Re
 plawk_scalar_action_sequence_pairs([print(Fields) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_rule_body_print_action(print(Fields)),
+      % substitute scalar-slot reads with their threaded SSA values so a
+      % print can reference a scalar (e.g. a record-view string field's
+      % (ptr,len) slice temps); idempotent for field/literal print items.
+      maplist(plawk_substitute_print_field(Slots, Values0), Fields, SubFields),
       format(atom(PrintPrefix), '~w_print_~w', [Prefix, OpIndex]),
-      plawk_prefixed_print_action_ir(Fields, FieldSeparator, OutputSeparator, PrintPrefix, Pair),
+      plawk_prefixed_print_action_ir(SubFields, FieldSeparator, OutputSeparator, PrintPrefix, Pair),
       NextOpIndex is OpIndex + 1
     },
     [Pair],
@@ -7821,6 +7890,18 @@ plawk_emit_print_expr_for_context(blob_dyncall(Args), FieldSeparator, Context,
     plawk_print_expr_output_names(Context, blob, FmtPrefix, PrintPrefix),
     plawk_blob_expr_ir(blob_dyncall(Args), FieldSeparator, Base,
         LenIR, PtrIR, GlobalParts, SetupParts).
+% A record-view string field prints as a byte slice: its scalar reads are
+% already substituted to SSA (ptr as i64, len), so inttoptr the pointer and
+% pair it with the length for %.*s (empty when the field was absent -> 0/0).
+plawk_emit_print_expr_for_context(blob_slice_vars(ssa(PtrVal), ssa(LenVal)),
+        _FieldSeparator, Context,
+        slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), [], [PtrLine, LenLine]) :-
+    plawk_print_expr_value_base(Context, blob, Base),
+    plawk_print_expr_output_names(Context, blob, FmtPrefix, PrintPrefix),
+    format(atom(PtrIR), '%~w_sptr', [Base]),
+    format(atom(PtrLine), '  ~w = inttoptr i64 ~w to i8*', [PtrIR, PtrVal]),
+    format(atom(LenIR), '%~w_slen', [Base]),
+    format(atom(LenLine), '  ~w = trunc i64 ~w to i32', [LenIR, LenVal]).
 plawk_emit_print_expr_for_context(blob_dyncall_named(Name, Args), FieldSeparator, Context,
         slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), GlobalParts, SetupParts) :-
     plawk_print_expr_value_base(Context, blob, Base),
