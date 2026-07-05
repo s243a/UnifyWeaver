@@ -55,7 +55,7 @@ OPS = {"SYM": 0, "HIER": 1, "_DEPRECATED_LLM": 2, "ELEM": 3, "LINEAGE": 4, "LINE
 # (off-manifold noise, exactly like an absent ancestor slot); masking ⇒ provenance-AGNOSTIC μ, which is
 # the DEFAULT inference path (marginalize over sources). Reserved entries (enwiki) are for later corpora.
 CORPORA = {"simplewiki": 0, "enwiki": 1, "pearltrees": 2, "mindmap": 3}
-JUDGES = {"haiku": 0, "graph": 1, "human": 2, "sonnet": 3, "opus": 4, "gemini": 5, "gpt-5.5-low": 6, "blend": 7}    # learned judge_emb; each (model,effort) = own calibration row, tagged by the exact judge that scored it. "blend" = the constructed dual judge (1−λ)·e5 ⊕ λ·P(SYM|1/d,asym-ops) (emit_blend_judge.py). Rationale/policy in DESIGN_calibrated_judges.md.
+JUDGES = {"haiku": 0, "graph": 1, "human": 2, "sonnet": 3, "opus": 4, "gemini": 5, "gpt-5.5-low": 6, "blend": 7, "dir-blend": 8}    # learned judge_emb; each = own calibration row. "blend" = SYM dual judge (emit_blend_judge.py); "dir-blend" = cross-judge DIRECTION superposition (graph-discrim ⊕ LLM-element ⊕ LLM-subcat, emit_direction_blend.py). Rationale in DESIGN_calibrated_judges.md.
                                          # (SYM/LLM); graph = a Wikipedia edge / non-edge (WIKI, free μ=0 SYM
                                          # negatives); human = a hand-curated edge (mindmap/pearltrees);
                                          # sonnet/opus = stronger-model judgments (escalated tie-breaks, §14)
