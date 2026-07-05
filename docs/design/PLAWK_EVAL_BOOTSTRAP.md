@@ -181,13 +181,21 @@ independently useful (richer hand-written grammars load sooner).
    body goal → 7; right-assoc conjunction `1,2,3` → 123; disjunction → 33).
    The reader now covers the term shapes a clause is made of.
 
-   **Remaining (3b/3c):** floats and quoted atoms in the reader (both
-   token-level); `assert`/`retract` (a dynamic clause store); and `catch`/`throw`
-   predicate linkage. A minor loadable-subset gap also surfaced: `arg/3` with a
-   constant index compiles to a specialised `arg` opcode outside the `.wamo`
-   subset (so loaded objects decompose reader terms via unification /
-   `functor/3`, not `arg/3`) — a candidate subset lift. These remain the long
-   pole for self-hosting.
+   **Floats + quoted atoms (milestone 3b) — the reader is now complete for the
+   canonical + operator surface.** A digit- or `-`digit-led token routes to a
+   `strtod`-based number scan: the endptr gives the token end, and a scan for
+   `.`/`e`/`E` picks Float (via `@value_float`) vs Integer (exact, via
+   `@wam_make_atomic`). A `'`-led token reads a single-quoted atom (content to
+   the next quote; no escape handling yet). Verified in loaded objects:
+   `3.5 + 1.5` → 5, negative/compound floats, and `'hello world'` → length 11.
+
+   **Remaining (3b/3c):** `assert`/`retract` (a dynamic clause store); and
+   `catch`/`throw` predicate linkage. A minor loadable-subset gap also surfaced:
+   `arg/3` with a constant index compiles to a specialised `arg` opcode outside
+   the `.wamo` subset (so loaded objects decompose reader terms via unification
+   / `functor/3`, not `arg/3`) — a candidate subset lift. These remain the long
+   pole for self-hosting; the **reader itself is done** — a grammar object can
+   now parse whole clauses from source text.
 4. **Byte-buffer output from a grammar.** The compiler object must *emit*
    `.wamo` bytes. It returns them as an Atom/byte string (the item-2 blob
    bridge already carries bytes out); building that byte string inside the

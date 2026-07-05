@@ -123,6 +123,11 @@ readclause(R) :- read_term_from_atom('foo(X) :- bar(X), baz(X)', T),
 readconj(R)  :- read_term_from_atom('1,2,3', T), T = (A,Bc,C), R is A*100+Bc*10+C. % 123
 readsemi(R)  :- read_term_from_atom('11;22', T), T = (A;Bd), R is A+Bd.            % 33
 
+% Floats (parsed via strtod, tag Float) and quoted atoms (spaces/specials).
+readfloat(R)  :- read_term_from_atom('3.5 + 1.5', T), F is T, R is truncate(F).       % 5
+readfloatc(R) :- read_term_from_atom('pt(2.5,4.5)', T), T = pt(A,B), R is truncate(A+B). % 7
+readquoted(R) :- read_term_from_atom('foo(\'hello world\')', T), T = foo(A), atom_length(A, R). % 11
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -474,6 +479,25 @@ test(read_control_operators_in_object,
     run_host(Host, W1, O1, 0), assertion(O1 == "7\n"),
     run_host(Host, W2, O2, 0), assertion(O2 == "123\n"),
     run_host(Host, W3, O3, 0), assertion(O3 == "33\n"),
+    !.
+
+% Floats and quoted atoms in a loaded object: float arithmetic (3.5+1.5 -> 5),
+% a float inside a compound (2.5+4.5 -> 7), and a quoted atom with a space
+% (atom_length 'hello world' -> 11).
+test(read_floats_and_quoted_in_object,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'readfloat.wamo', W1),
+    directory_file_path(Dir, 'readfloatc.wamo', W2),
+    directory_file_path(Dir, 'readquoted.wamo', W3),
+    write_wam_object([user:readfloat/1], [wamo_entry(readfloat/1)], W1),
+    write_wam_object([user:readfloatc/1], [wamo_entry(readfloatc/1)], W2),
+    write_wam_object([user:readquoted/1], [wamo_entry(readquoted/1)], W3),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    run_host(Host, W1, O1, 0), assertion(O1 == "5\n"),
+    run_host(Host, W2, O2, 0), assertion(O2 == "7\n"),
+    run_host(Host, W3, O3, 0), assertion(O3 == "11\n"),
     !.
 
 :- end_tests(wam_object).
