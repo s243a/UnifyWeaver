@@ -73,6 +73,23 @@ Removing the `query:`/`passage:` asymmetry drops direction ~8 pts — so **the f
 of the direction** (as predicted). But the model keeps **83%** without them: a large **learned, prefix-independent**
 direction the non-linear network built during training.
 
+### Result 4 — BACKWARD prefixes don't invert it (user: "the prefixes assume we know the answer")
+Concern: assigning root=`query`, node=`passage` bakes in the direction. Test — swap the tables (root=`passage`,
+node=`query`), which *negates* the e5-content term `D→−D` while the learned anchor/node role tokens stay fixed:
+
+| prefix mode | prod | dirichlet s1 |
+|---|---|---|
+| forward (root=query) | 91.5% (+0.416) | 95.5% (+0.438) |
+| none (query==passage) | 83.2% (+0.231) | 86.8% (+0.264) |
+| **backward (root=passage)** | **81.5% (+0.146)** | 75.5% (+0.237) |
+
+**Backward does NOT invert direction** — `prod` stays **81.5%** (a pure-prefix signal would collapse to ~15%). The
+mean asymmetry shrinks (+0.416→+0.146) but the *sign* survives. So the direction is **not** a prefix artifact: it's
+carried by the **learned role encoding**, with the e5 prefix a *modulator* (+8 aligned, −2 fought). Subtlety:
+`dirichlet` swings more (95.5→75.5, 20 pts) than `prod` (91.5→81.5, 10 pts) — the superposition-trained model leaned
+*more* on the prefix, not less, reinforcing the multi-seed null (it built a more prefix-dependent, not more robust,
+direction).
+
 ## Conclusion
 On Wikipedia the direction axis is **consensus** (sign trivially agreed) and the superposition's magnitude/negative
 signals are underpowered on the in-coverage held set. The **true (novel-node) test** is the informative one and
