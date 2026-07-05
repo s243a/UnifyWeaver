@@ -333,9 +333,11 @@ loadable along the way.
   database (survives the arena rewind) with `assertz`/`asserta`/`retractall`;
   calling dynamic facts via `call/1` AND via direct calls (`counter(N)`,
   rewritten to `call/1` at compile time); and nondet `retract/1` (a
-  remove+unify+backtrack iterator). See PLAWK_DYNAMIC_DB.md. Remaining: rule
-  bodies (`assertz((H :- B))`, PR 3) and `catch`/`throw` predicate linkage (3c)
-  — the true long pole. See the bootstrap doc for the full loadability matrix.
+  remove+unify+backtrack iterator). **Milestone 3c** adds `catch`/`throw`: a
+  process-global side stack of catch frames (op1 sentinels -5/-6), no
+  cross-object linkage needed. See PLAWK_DYNAMIC_DB.md. Remaining: rule bodies
+  (`assertz((H :- B))`, PR 3) — a body meta-interpreter, the true long pole. See
+  the bootstrap doc for the full loadability matrix.
 - **Milestone 4 — byte-buffer output from a grammar — LANDED.** A loaded
   grammar assembles a byte string at runtime (via the milestone-3 string/codes
   builtins) and returns it as an Atom; the host reads it back through

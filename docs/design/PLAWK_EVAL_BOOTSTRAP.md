@@ -117,7 +117,7 @@ independently useful (richer hand-written grammars load sooner).
    | `assertz`/`asserta`/`retractall` | `builtin_call <name>` (ids 175/176/177) → `@wam_dyn_assert` / `@wam_dyn_retractall` | **yes, milestone 3b-db (PR 1)** — a process-global, malloc-backed clause store that survives the arena rewind. Ground facts; calling them goes through the `call/1` meta-call, whose meta-table miss consults the store with unification + backtracking (`agg_type = -3` choice point). See PLAWK_DYNAMIC_DB.md |
    | `retract/1` (nondet), direct calls to `:- dynamic` predicates | `call retract/1` / `execute <dyn>/N` | **yes, milestone 3b-db (PR 2)** — direct dynamic calls are rewritten to a `call/1` store consult (`dynamic_store_goal/1`); nondet `retract/1` is an `agg_type = -4` remove+unify+backtrack iterator (op1 = -3 sentinel). See PLAWK_DYNAMIC_DB.md |
    | `read_term`/`read_term_from_atom` | `builtin_call read_term_from_atom/2` (id 174) → the reader | **yes, milestone 3b** — a tokenizer + operator-precedence recursive-descent parser (done: canonical + operator surface, variables, control ops, floats, quoted atoms) |
-   | `catch`/`throw` | `execute catch/3` — a call to a runtime *library predicate*, not a builtin | **no** — the loaded object references `catch/3`, which lives in the host, not the object; needs cross-object/host predicate linkage (milestone 3c) |
+   | `catch`/`throw` | `call`/`execute catch/3` (op1 = -5) and `throw/1` (op1 = -6) | **yes, milestone 3c** — a process-global side stack of catch frames; catch pushes a frame + meta-calls Goal, throw deep-copies the ball and unwinds to the nearest frame whose catcher unifies, running Recovery. No cross-object linkage needed (the runtime handles both). See PLAWK_DYNAMIC_DB.md |
 
    **Landed here:** the aggregate opcodes, verified end-to-end — `findall`,
    `setof`, `bagof` over a *user predicate* goal load and run from a `.wamo`
@@ -203,13 +203,24 @@ independently useful (richer hand-written grammars load sooner).
    Remaining there: rule bodies (`assertz((H :- B))`, PR 3) and `call/N`
    partial-application consult.
 
-   **Remaining (3b/3c):** `catch`/`throw` predicate linkage. A minor
-   loadable-subset gap also surfaced: `arg/3` with a constant index compiles to
-   a specialised `arg` opcode outside the `.wamo` subset (so loaded objects
-   decompose reader terms via unification / `functor/3`, not `arg/3`) — a
-   candidate subset lift. The **reader itself is done** — a grammar object can
-   now parse whole clauses from source text — and the dynamic store gives a
-   grammar mutable state.
+   **`catch`/`throw` (milestone 3c) — landed.** A process-global side stack of
+   catch frames (`@wam_catch_setup` / `@wam_throw`, reset per top-level query in
+   `@wam_prepare_call`). No cross-object linkage was needed after all: `catch/3`
+   and `throw/1` lower to op1 sentinels (-5 / -6) the runtime handles directly,
+   and Goal/Recovery are run through the existing meta-call dispatch. Verified
+   in loaded objects (catch + recover, goal-succeeds, nested/propagating throw,
+   recovery using the ball value, uncaught). Documented scoping limitation:
+   catch protects Goal, but a frame can linger within a query until backtracking
+   or the next query resets it, so a throw sequenced *after* a catch in the same
+   clause may be caught by it (real ISO restricts catch to Goal).
+
+   **Remaining:** a minor loadable-subset gap — `arg/3` with a constant index
+   compiles to a specialised `arg` opcode outside the `.wamo` subset (so loaded
+   objects decompose reader terms via unification / `functor/3`, not `arg/3`) —
+   a candidate subset lift; and PR 3 for the dynamic store (rule bodies). The
+   **reader is done**, the **dynamic store** gives a grammar mutable state, and
+   **catch/throw** gives it error handling — the runtime-primitive layer for the
+   eval surface (milestone 5) is now essentially complete.
 
    (Aside: `findall(X, call(G), L)` — an aggregate over a `call/1` meta-call
    goal — is now fixed. It used to collect nothing: the tier-2 compiler

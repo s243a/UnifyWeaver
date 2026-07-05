@@ -195,6 +195,26 @@ dretgone(R) :- assertz(cc(1)), assertz(cc(2)), retract(cc(_)), retract(cc(_)),
 dretcount(N) :- assertz(cc(1)), assertz(cc(2)), assertz(cc(3)),
                 findall(X, retract(cc(X)), L), length(L, N).                  % 3 (nondet retract)
 
+% Milestone 3c: catch/3 + throw/1. catch pushes a side-stack frame and
+% meta-calls Goal; throw deep-copies the ball and unwinds to the nearest frame
+% whose catcher unifies with it, running Recovery. All helper predicates must
+% be compiled into the object so the meta-call resolves them.
+ctrisky(_) :- throw(myerr(42)).
+cthandle(V, V).
+ct_catch(R)   :- catch(ctrisky(R), myerr(V), cthandle(V, R)).                 % 42 (catch + recover)
+ctok(5).
+ctnorec(_) :- throw(unused).
+ct_nothrow(R) :- catch(ctok(R), _, ctnorec(R)).                              % 5 (Goal succeeds)
+ctthrower(_) :- throw(typeb(9)).
+cthia(_) :- throw(nope).
+ctmid(R) :- catch(ctthrower(R), typea(_), cthia(R)).
+cthb(V, V).
+ct_nested(R)  :- catch(ctmid(R), typeb(V), cthb(V, R)).                       % 9 (propagate to outer)
+ctcompute(R) :- X is 6*7, throw(result(X)), R = X.
+ctgrab(V, V).
+ct_ball(R)    :- catch(ctcompute(R), result(V), ctgrab(V, R)).               % 42 (recovery uses ball)
+ct_uncaught(R) :- throw(oops), R = 1.                                        % uncaught -> fails
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -651,6 +671,28 @@ test(dynamic_direct_calls_and_retract, [condition(clang_available)]) :-
              atom_concat(Base, '.wamo', W),
              write_wam_object([user:PI], [wamo_entry(PI)], W),
              run_host(Host, W, Out, 0),
+             assertion(Out == Expected) )),
+    !.
+
+% Milestone 3c: catch/3 and throw/1 in a loaded object. The helper predicates
+% (Goal, Recovery, and any predicates they reach) must be in the object so the
+% meta-call inside catch/throw can resolve them. ct_uncaught has no catch, so
+% the throw escapes and the query fails (exit 21).
+test(catch_and_throw_in_object, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    Cases = [ ct_catch-[ctrisky/1, cthandle/2]-"42\n"-0,
+              ct_nothrow-[ctok/1, ctnorec/1]-"5\n"-0,
+              ct_nested-[ctmid/1, ctthrower/1, cthia/1, cthb/2]-"9\n"-0,
+              ct_ball-[ctcompute/1, ctgrab/2]-"42\n"-0,
+              ct_uncaught-[]-""-21 ],
+    forall(member(Name-Deps-Expected-ExpStatus, Cases),
+           ( findall(user:P, member(P, Deps), DepPIs),
+             directory_file_path(Dir, Name, Base),
+             atom_concat(Base, '.wamo', W),
+             write_wam_object([user:Name/1|DepPIs], [wamo_entry(Name/1)], W),
+             run_host(Host, W, Out, ExpStatus),
              assertion(Out == Expected) )),
     !.
 
