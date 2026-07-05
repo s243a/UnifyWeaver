@@ -824,6 +824,9 @@ action(Action) -->
     break_action(Action),
     !.
 action(Action) -->
+    dynrec_bind_action(Action),
+    !.
+action(Action) -->
     add_assign_action(Action),
     !.
 action(Action) -->
@@ -890,6 +893,61 @@ next_action(next) -->
 break_action(break) -->
     "break",
     identifier_boundary.
+
+%% dynrec_bind_action(-Action)//
+%
+%  Structured-return destructuring: bind each field of a grammar's compound
+%  return to a scalar variable, typed by a return shape.
+%
+%      (n, half) = dyncall@rec($1) as (i64 f64)
+%
+%  desugars to dynrec_bind([n, half], dyncall_named(rec, [field(1)]),
+%  [i64, f64]); field 0 lands in the i64 scalar n, field 1 in the f64
+%  scalar half. The call is a bare dyncall(...) (default entry) or a
+%  dyncall@name(...) (named entry); the type list is whitespace-separated
+%  i64 / f64 tokens (one per bound variable).
+dynrec_bind_action(dynrec_bind(Vars, Call, Types)) -->
+    "(",
+    ws,
+    dynrec_var_list(Vars),
+    ws,
+    ")",
+    ws,
+    "=",
+    ws,
+    dynrec_call_expr(Call),
+    ws,
+    "as",
+    identifier_boundary,
+    ws,
+    "(",
+    ws,
+    dynrec_type_list(Types),
+    ws,
+    ")".
+
+dynrec_var_list([Name | Rest]) -->
+    identifier(Name),
+    dynrec_var_list_rest(Rest).
+dynrec_var_list_rest([Name | Rest]) -->
+    ws, ",", ws, identifier(Name), !, dynrec_var_list_rest(Rest).
+dynrec_var_list_rest([]) -->
+    [].
+
+dynrec_call_expr(Call) -->
+    prolog_call_expr(Call),
+    { ( Call = dyncall(_) ; Call = dyncall_named(_, _) ) }.
+
+dynrec_type_list([Type | Rest]) -->
+    dynrec_type(Type),
+    dynrec_type_list_rest(Rest).
+dynrec_type_list_rest([Type | Rest]) -->
+    ws, dynrec_type(Type), !, dynrec_type_list_rest(Rest).
+dynrec_type_list_rest([]) -->
+    [].
+
+dynrec_type(i64) --> "i64".
+dynrec_type(f64) --> "f64".
 
 add_assign_action(add(var(Name), Delta)) -->
     identifier(Name),
