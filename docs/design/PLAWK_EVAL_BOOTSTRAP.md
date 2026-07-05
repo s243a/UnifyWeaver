@@ -149,12 +149,22 @@ independently useful (richer hand-written grammars load sooner).
    fixes the `=..` "did not compare equal to a literal" issue. (List cons cells
    reuse the shared `@.fn__5B_7C_5D` global, so they stay pointer-equal.)
 
-   **Remaining (3b/3c):** operators (`X is A+B`, `H :- B` — an operator-
-   precedence layer over this parser), floats, variables, and quoted atoms in
-   the reader; `assert`/`retract` (a dynamic clause store); and
-   `catch`/`throw` predicate linkage. These are the true long pole for
-   self-hosting the compiler — each is its own substantial effort, not a
-   subset lift.
+   **Operators (milestone 3b):** a precedence-climbing layer
+   (`@wam_parse_expr`) sits over the primary parser, with a char-class
+   tokenizer (`a+b` splits without spaces) and a table-driven operator lookup
+   (`@wam_infix_op`) covering arithmetic (`+ - * / // mod rem`) and the
+   700-level comparisons / `is`. Correct precedence, associativity (yfx/xfx/xfy
+   parse the right operand at `prio-1` / `prio`), parentheses, and negative
+   numbers. Verified in loaded objects: `1+2*3`→7, `(1+2)*3`→9,
+   `100 - 2 * -3`→106 — evaluated by `is/2`, which works because the arithmetic
+   evaluator dispatches on the functor bytes (so it reads reader-built
+   `+`/`*`/`-` compounds directly).
+
+   **Remaining (3b/3c):** control operators (`,` `;` `->` `:-`), floats,
+   variables (a per-parse var dictionary), and quoted atoms in the reader;
+   `assert`/`retract` (a dynamic clause store); and `catch`/`throw` predicate
+   linkage. Variables and `:-`/`,` are the next step toward parsing whole
+   clauses. These remain the long pole for self-hosting the compiler.
 4. **Byte-buffer output from a grammar.** The compiler object must *emit*
    `.wamo` bytes. It returns them as an Atom/byte string (the item-2 blob
    bridge already carries bytes out); building that byte string inside the
