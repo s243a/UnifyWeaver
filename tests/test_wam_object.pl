@@ -112,6 +112,17 @@ readvar_shared(R) :- read_term_from_atom('p(X,X)', T), T = p(9, Y), R is Y.   % 
 readvar_arith(R)  :- read_term_from_atom('v(A,A)', T), T = v(6, X), R is X*7. % 42
 readvar_anon(R)   :- read_term_from_atom('q(_,_)', T), T = q(3,4), R is 1.    % 1 (distinct)
 
+% Control operators: :- (1200), , (1000), ; (1100), -> (1050). With variables
+% and these, a whole clause parses. readclause parses "foo(X) :- bar(X), baz(X)"
+% into :-(foo(X), ,(bar(X),baz(X))) with X shared across head and body: binding
+% X once (via V) is visible in the body goal (W).
+readclause(R) :- read_term_from_atom('foo(X) :- bar(X), baz(X)', T),
+                 T = (H :- B), H = foo(V), B = (G1, _), G1 = bar(W),
+                 V = 7, R is W.                                  % 7
+% Right-associative conjunction: 1,2,3 = ,(1,,(2,3)).
+readconj(R)  :- read_term_from_atom('1,2,3', T), T = (A,Bc,C), R is A*100+Bc*10+C. % 123
+readsemi(R)  :- read_term_from_atom('11;22', T), T = (A;Bd), R is A+Bd.            % 33
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -445,6 +456,24 @@ test(read_variables_in_object,
     run_host(Host, W1, O1, 0), assertion(O1 == "9\n"),
     run_host(Host, W2, O2, 0), assertion(O2 == "42\n"),
     run_host(Host, W3, O3, 0), assertion(O3 == "1\n"),
+    !.
+
+% Control operators in a loaded object: a whole clause parses (:- , with a
+% variable shared head-to-body), right-associative conjunction, and disjunction.
+test(read_control_operators_in_object,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'readclause.wamo', W1),
+    directory_file_path(Dir, 'readconj.wamo', W2),
+    directory_file_path(Dir, 'readsemi.wamo', W3),
+    write_wam_object([user:readclause/1], [wamo_entry(readclause/1)], W1),
+    write_wam_object([user:readconj/1], [wamo_entry(readconj/1)], W2),
+    write_wam_object([user:readsemi/1], [wamo_entry(readsemi/1)], W3),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    run_host(Host, W1, O1, 0), assertion(O1 == "7\n"),
+    run_host(Host, W2, O2, 0), assertion(O2 == "123\n"),
+    run_host(Host, W3, O3, 0), assertion(O3 == "33\n"),
     !.
 
 :- end_tests(wam_object).
