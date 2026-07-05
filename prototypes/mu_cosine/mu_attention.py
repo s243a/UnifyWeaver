@@ -369,7 +369,10 @@ class MuAttention(nn.Module):
     def __init__(self, d_model=384, n_ops=len(OPS), n_heads=4, n_layers=1, max_gen=5,
                  dim_ff=None, dropout=0.0, n_corpus=len(CORPORA), n_judge=len(JUDGES),
                  n_nodetype=len(NODETYPE), n_account=len(ACCOUNTS), struct_blend="inside", n_struct=1,
-                 c_dist=1.0, c_mem_ceiling=1.0, c_subcat=0.72, c_elem=0.82):
+                 c_dist=1.0, c_mem_ceiling=1.0, c_subcat=1.0, c_elem=1.0):
+        # NB c_subcat/c_elem default to a NEUTRAL 1.0 here — the measured +0.72/+0.82 are LEAKAGE-INFLATED
+        # (training-pair measurement, PR #3488 review) and are supplied ONLY via the CLI on the superseded
+        # `membership` ablation path (see DESIGN_sym_estimation_integration.md), not baked into the module.
         super().__init__()
         self.d = d_model
         self.struct_blend = struct_blend            # DUAL-JUDGE combine: "inside"|"outside"|"precision"|"membership"
@@ -480,6 +483,10 @@ class MuAttention(nn.Module):
                 mu = mu_e5 + sym_gate * self.struct_lambda * (mu_graph - mu_e5)  # λ=0 ⇒ pure e5 (no-op); ~0.5 learned
                 return mu.clamp(0.0, 1.0)
             if self.struct_blend == "membership":            # ELEM: fuse dist(siblings) + subcat + elem memberships
+                # ⚠ SUPERSEDED ABLATION (PR #3488 review): this hand-set fusion still gates the memberships by the
+                # graph-degree `region` proxy, which DESIGN_sym_estimation_integration.md argues is the wrong
+                # data-limit proxy (confidence should be learned/calibrated via JointPosterior, not a per-item
+                # weight). Kept only as an A/B control — NOT the recommended path; don't cite it as evidence for it.
                 dist, region = struct_feat[:, 0], struct_feat[:, 1]            # struct_feat = [dist, region]
                 ms = mem_subcat if mem_subcat is not None else torch.zeros_like(dist)   # detached μ_HIER (max fwd/bwd)
                 me = mem_elem if mem_elem is not None else torch.zeros_like(dist)        # detached μ_ELEM (max fwd/bwd)

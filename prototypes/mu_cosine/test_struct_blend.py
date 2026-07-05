@@ -103,8 +103,35 @@ def test_precision_per_region_shift():
     print(f"PASS: per-region shift (1/d share rich {share_rich:.2f} < sparse {share_sparse:.2f})")
 
 
+def test_build_model_loads_old_checkpoint():
+    # Regression for PR #3488: build_model must load a PRE-PR checkpoint (missing the new struct/confidence
+    # buffers incl. c_subcat/c_elem) AND still reject a genuinely-missing key. Constructs a tiny old-style ckpt.
+    import os, tempfile
+    from eval_relatedness import build_model
+    NEW = ("sym_struct_w", "struct_lambda", "struct_g", "struct_h", "prec_g", "prec_h",
+           "c_dist", "c_mem_ceiling", "c_subcat", "c_elem", "account_emb.weight", "prefix_emb.weight")
+    m = MuAttention(d_model=32, n_heads=4, n_layers=1)
+    sd = m.state_dict()
+    old = {k: v for k, v in sd.items() if not any(k.endswith(n) for n in NEW)}   # simulate pre-PR checkpoint
+    cfg = {"d_model": 32, "heads": 4, "layers": 1}
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "old_ckpt.pt")
+    torch.save({"state": old, "cfg": cfg}, path)
+    mm = build_model(path, torch.device("cpu"))                                 # must NOT raise
+    assert hasattr(mm, "c_subcat") and hasattr(mm, "c_elem"), "new buffers should exist at defaults"
+    broken = {k: v for k, v in old.items() if k != "op_emb.weight"}             # a genuinely-missing key
+    torch.save({"state": broken, "cfg": cfg}, path)
+    try:
+        build_model(path, torch.device("cpu")); raised = False
+    except AssertionError:
+        raised = True
+    assert raised, "build_model must still reject a genuinely-missing key (not swallow it)"
+    print("PASS: build_model loads pre-PR checkpoints (missing new buffers) + rejects genuine gaps")
+
+
 if __name__ == "__main__":
     test_warm_start_no_op_and_gating_and_bounds()
     test_membership_readouts_detached()
     test_precision_per_region_shift()
+    test_build_model_loads_old_checkpoint()
     print("ALL PASS")

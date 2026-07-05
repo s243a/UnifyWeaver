@@ -101,8 +101,10 @@ elem_bwd}`, `c` grouped `{c_dist, c_subcat×2, c_elem×2}`. **Empirically decida
 STRONGEST membership signal** (validates including it — it's not just complementary, it's the best); (2) gap
 0.10 ⇒ **keep `c_subcat`/`c_elem` separate** (confirmed); (3) the model HIER readout (+0.715) beats the up_hops
 proxy (+0.669) ⇒ **use model readouts** (and element has no proxy anyway). *Caveat:* measured on model_prod's
-training pairs ⇒ absolute values likely inflated by leakage; the **relative ordering `elem ≥ subcat > dist`** is
-the robust takeaway — set the actual `c` buffers from **held-out** error / the two-judge round.
+training pairs ⇒ absolute values likely inflated by leakage. Leakage is **not guaranteed rank-preserving** across
+operators (it can inflate one more than another), so the ordering `elem ≥ subcat > dist` is **the hypothesis to
+re-measure held-out**, not an established result — set the actual `c` buffers from **held-out** (node-disjoint)
+error / the two-judge round before relying on it.
 
 ### Implementation (`--struct-blend precision`, BUILT)
 

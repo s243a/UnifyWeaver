@@ -68,11 +68,14 @@ The dual-judge work's lasting value is **not** the fusion mechanism — it's a *
 - **It carries the lateral / sibling axis the model readouts structurally cannot.** Membership operators are
   vertical (ancestor↔descendant); *siblings have zero membership in either direction* yet are related. Measured
   (14 562 pairs): **sibling/cousin = 37 % of pairs, 0 % membership coverage**, real relatedness (target μ 0.13
-  vs distant 0.00), and **`corr(1/d, SYM) = +0.136` there — `1/d` is the *sole* structural signal for that
-  37 %.** (See `DESIGN_sym_dual_judge.md` "Division of labor.")
+  vs distant 0.00), and `corr(1/d, SYM) = +0.136` there — so `1/d` is the *sole* structural signal *covering*
+  that 37 % (a **coverage** claim). NB `+0.136` is **weak** (explains <2 % of variance): it justifies adding
+  `1/d` as a **candidate** source, and is *not* evidence that `1/d` alone does much work or will improve the
+  calibrated posterior. (See `DESIGN_sym_dual_judge.md` "Division of labor.")
 
-So `1/d` is precisely the kind of **non-redundant** source #3357 wants added to the vector — its whole point is
-to cover an axis the correlated model readouts miss.
+So `1/d` is a plausibly **non-redundant** source to add to the vector (#3357) — it covers an axis the correlated
+model readouts miss. **Whether it actually helps is the hypothesis this design's follow-up test decides** (joint
+head with vs without `1/d`, held-out, separability + AURC — below), not something established here.
 
 ## Build plan
 
