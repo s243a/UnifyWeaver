@@ -1274,8 +1274,9 @@ entry:
 do_call:
   %pc = load i32, i32* @plawk_dyncall_pc
   %args = alloca %Value, i32 ~w
+  %lens = alloca i64, i32 %nfields
 ~w
-  %r = call i1 @wam_object_call_record(%WamState* %vm, i32 %pc, i32 ~w, %Value* %args, i32 ~w, i32 %nfields, i8* %tc, i64* %slots)
+  %r = call i1 @wam_object_call_record(%WamState* %vm, i32 %pc, i32 ~w, %Value* %args, i32 ~w, i32 %nfields, i8* %tc, i64* %slots, i64* %lens)
   ret i1 %r
 
 fail:
@@ -1302,8 +1303,9 @@ entry:
 do_call:
   %vm = call %WamState* @plawk_dyncall_get()
   %args = alloca %Value, i32 ~w
+  %lens = alloca i64, i32 %nfields
 ~w
-  %r = call i1 @wam_object_call_record(%WamState* %vm, i32 %pc, i32 ~w, %Value* %args, i32 ~w, i32 %nfields, i8* %tc, i64* %slots)
+  %r = call i1 @wam_object_call_record(%WamState* %vm, i32 %pc, i32 ~w, %Value* %args, i32 ~w, i32 %nfields, i8* %tc, i64* %slots, i64* %lens)
   ret i1 %r
 
 fail:

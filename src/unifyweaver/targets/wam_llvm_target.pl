@@ -20348,8 +20348,9 @@ wamo_utf8_bytes([C|Cs], Bytes) :-
 %    @wam_object_call_i64 - call the object's entry with N %Value args and
 %                           read back an Integer result ({value, ok})
 %    @wam_object_call_record - call the entry and deserialize a returned
-%                           Compound's args into typed i64/f64 slots (the
-%                           "output is a term" primitive)
+%                           Compound's args into typed i64/f64/string slots
+%                           (the "output is a term" primitive; string fields
+%                           yield a (ptr,len) pair via out_slots + out_lens)
 %    @wam_object_entry_index / @wam_object_entry_index_bytes
 %                        - resolve a named entry to its label index (or -1)
 %                          for multi-entry objects; @wam_label_pc turns that
@@ -20864,18 +20865,24 @@ fail:
 ; and its arg cells live in the arena -- only atoms survive a rewind). This is
 ; the "output is a term, not a scalar" primitive: a grammar returns e.g.
 ; rec(42, 3.14) and the caller lays the fields into a record buffer.
-;   typecodes[i] = 0  -> i64  : arg i must be Integer; out_slots[i] = its i64
-;   typecodes[i] = 1  -> f64  : arg i must be a number; out_slots[i] = the
-;                               double bits (value_to_double promotes Integer)
+;   typecodes[i] = 0  -> i64    : arg i must be Integer; out_slots[i] = its i64
+;   typecodes[i] = 1  -> f64    : arg i must be a number; out_slots[i] = the
+;                                 double bits (value_to_double promotes Integer)
+;   typecodes[i] = 2  -> string : arg i must be an Atom; out_slots[i] = the
+;                                 atom string pointer (as i64), out_lens[i] =
+;                                 its strlen. The pointer is into the persistent
+;                                 atom table, so it survives the arena rewind
+;                                 (same as @wam_object_call_bytes). NUL-free by
+;                                 the blob convention.
 ; out_slots is an i64[nfields]; f64 fields are stored as bitcast double bits,
-; so the caller reads slot i as i64 or bitcasts to double per its own shape.
+; string fields as a ptrtoint. out_lens is an i64[nfields]; only string fields
+; write it (numeric fields set 0). So the caller reads slot i as i64, bitcasts
+; to double, or pairs (slot,len) into a byte slice per its own shape.
 ; Returns i1 ok; false on call failure, a non-Compound output, an arity
 ; mismatch, or an arg whose type does not satisfy its typecode. Same
 ; heap-save / arena-rewind discipline as the scalar variants, so a per-record
-; call stays constant-memory. (String/atom fields are a planned follow-on:
-; their bytes survive the rewind via the persistent atom table, but need a
-; (ptr,len) slot pair rather than one i64.)
-define i1 @wam_object_call_record(%WamState* %vm, i32 %entry_pc, i32 %nargs, %Value* %args, i32 %out_reg, i32 %nfields, i8* %typecodes, i64* %out_slots) {
+; call stays constant-memory.
+define i1 @wam_object_call_record(%WamState* %vm, i32 %entry_pc, i32 %nargs, %Value* %args, i32 %out_reg, i32 %nfields, i8* %typecodes, i64* %out_slots, i64* %out_lens) {
 entry:
   %vm_null = icmp eq %WamState* %vm, null
   br i1 %vm_null, label %fail, label %do_call
@@ -20930,6 +20937,10 @@ fstep:
   %ftag = call i32 @value_tag(%Value %farg)
   %tc_ptr = getelementptr i8, i8* %typecodes, i64 %fi64
   %tc = load i8, i8* %tc_ptr
+  %len_slot = getelementptr i64, i64* %out_lens, i64 %fi64
+  %is_str = icmp eq i8 %tc, 2
+  br i1 %is_str, label %field_str, label %field_num
+field_num:
   %is_f64 = icmp eq i8 %tc, 1
   br i1 %is_f64, label %field_f64, label %field_i64
 field_i64:
@@ -20939,6 +20950,7 @@ store_i64:
   %ival = call i64 @value_payload(%Value %farg)
   %slot_i = getelementptr i64, i64* %out_slots, i64 %fi64
   store i64 %ival, i64* %slot_i
+  store i64 0, i64* %len_slot
   br label %fstep_ok
 field_f64:
   %is_num = call i1 @value_is_number(%Value %farg)
@@ -20948,6 +20960,22 @@ store_f64:
   %dbits = bitcast double %dval to i64
   %slot_f = getelementptr i64, i64* %out_slots, i64 %fi64
   store i64 %dbits, i64* %slot_f
+  store i64 0, i64* %len_slot
+  br label %fstep_ok
+field_str:
+  %is_atom = icmp eq i32 %ftag, 0
+  br i1 %is_atom, label %store_str, label %rewind_fail
+store_str:
+  %said = call i64 @value_payload(%Value %farg)
+  %sptr = call i8* @wam_atom_to_string(i64 %said)
+  %sptr_null = icmp eq i8* %sptr, null
+  br i1 %sptr_null, label %rewind_fail, label %have_sptr
+have_sptr:
+  %slen = call i64 @strlen(i8* %sptr)
+  %sbits = ptrtoint i8* %sptr to i64
+  %slot_s = getelementptr i64, i64* %out_slots, i64 %fi64
+  store i64 %sbits, i64* %slot_s
+  store i64 %slen, i64* %len_slot
   br label %fstep_ok
 fstep_ok:
   %fi1 = add i32 %fi, 1
