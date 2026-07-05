@@ -11,6 +11,7 @@ target triple = "{{target_triple}}"
 ; === External Declarations ===
 {{external_declarations}}
 declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i1)
+declare void @llvm.memmove.p0i8.p0i8.i64(i8*, i8*, i64, i1)
 declare void @llvm.memset.p0i8.i64(i8*, i8, i64, i1)
 declare double @llvm.fabs.f64(double)
 declare double @llvm.trunc.f64(double)
