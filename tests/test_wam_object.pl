@@ -43,6 +43,14 @@ coltab(green, 2).
 coltab(blue, 3).
 pick(R) :- coltab(green, R).          % -> 2
 
+% call/N meta-call inside a loaded object (eval bootstrap milestone 2). The
+% goal is built at runtime and dispatched through the object's OWN meta-call
+% table, so a loaded .wamo can call its own predicates.
+mfoo(100).
+metaatom(R) :- G = mfoo, call(G, R).  % atom goal -> mfoo(R) -> 100
+maddk(X, R) :- R is X + 32.
+metacomp(R) :- G = maddk(10), call(G, R). % compound goal -> maddk(10,R) -> 42
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -51,7 +59,7 @@ clang_available :-
 :- begin_tests(wam_object).
 
 % The writer emits a well-formed .wamo byte stream: "WAMO" magic, version
-% 1, and the section counts we can recover by re-parsing the tokens.
+% 2, and the section counts we can recover by re-parsing the tokens.
 test(encode_produces_well_formed_stream) :-
     wam_object_encode([user:answer/1, user:sum3/3],
         [wamo_entry(answer/1)], Codes),
@@ -59,8 +67,8 @@ test(encode_produces_well_formed_stream) :-
     sub_string(Text, 0, 4, _, "WAMO"),
     split_string(Text, "\n \t", "\n \t", Parts0),
     exclude(==(""), Parts0, Parts),
-    % tokens: WAMO 1 <entry> <natoms> ... ; version must be "1", entry "0"
-    Parts = ["WAMO", "1", "0" | _],
+    % tokens: WAMO 2 <entry> <natoms> ... ; version must be "2", entry "0"
+    Parts = ["WAMO", "2", "0" | _],
     !.
 
 % Float constants now compile in put/set_constant: the object carries the
@@ -133,8 +141,8 @@ test(multi_entry_encodes_name_table) :-
     string_codes(Text, Codes),
     split_string(Text, "\n \t", "\n \t", Parts0),
     exclude(==(""), Parts0, Parts),
-    % WAMO 1 <default-entry> <E=2> 8 answer/1 <idx> 16 answer_swapped/1 <idx> ...
-    Parts = ["WAMO", "1", _Default, "2" | _],
+    % WAMO 2 <default-entry> <E=2> 8 answer/1 <idx> 16 answer_swapped/1 <idx> ...
+    Parts = ["WAMO", "2", _Default, "2" | _],
     memberchk("answer/1", Parts),
     memberchk("answer_swapped/1", Parts),
     !.
@@ -223,6 +231,34 @@ test(switch_on_constant_loads_and_runs,
     ( exists_file(Host) -> true ; build_host(Dir, Host) ),
     run_host(Host, Wamo, Out, 0),
     assertion(Out == "2\n"),
+    !.
+
+% A loaded object meta-calls (call/N) one of its own predicates, the goal
+% built at runtime. Atom goal: metaatom builds `mfoo` and calls it -> 100.
+% Dispatch runs through the object's own meta-call table (fields 25/26).
+test(meta_call_atom_goal_in_object,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'metaatom.wamo', Wamo),
+    write_wam_object([user:metaatom/1, user:mfoo/1], [wamo_entry(metaatom/1)], Wamo),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    run_host(Host, Wamo, Out, 0),
+    assertion(Out == "100\n"),
+    !.
+
+% Compound goal: metacomp builds `maddk(10)` and calls it with one extra
+% argument -> maddk(10, R) -> 42. Exercises functor-pointer matching against
+% the object's own functor copies in the meta-call table.
+test(meta_call_compound_goal_in_object,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'metacomp.wamo', Wamo),
+    write_wam_object([user:metacomp/1, user:maddk/2], [wamo_entry(metacomp/1)], Wamo),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    run_host(Host, Wamo, Out, 0),
+    assertion(Out == "42\n"),
     !.
 
 :- end_tests(wam_object).

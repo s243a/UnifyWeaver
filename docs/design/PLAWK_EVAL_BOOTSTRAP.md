@@ -43,13 +43,13 @@ compiler's needs, the compiler can be compiled *ahead of time* (as the host
 does today) but not *loaded and run* from a `.wamo`. So item 5 is really a
 **subset-expansion campaign** with the bootstrap as its payoff.
 
-The loadable subset today (post item 1–4): `try_me_else`/`retry_me_else`
-chains, `get`/`put`/`set`/`unify` variable+value+constant (integer, atom,
-float), `get`/`put_list`, `get`/`put_structure`, `allocate`/`deallocate`,
-`call`/`execute`, `proceed`, `builtin_call`, `cut`/`get_level`/`cut_ite`,
-`jump`, and — as of this PR — **all clause-indexing dispatch**
-(`switch_on_term`, `switch_on_structure`, `switch_on_constant`,
-`switch_on_constant_a2`) as nop-fallthroughs.
+The loadable subset today: `try_me_else`/`retry_me_else` chains,
+`get`/`put`/`set`/`unify` variable+value+constant (integer, atom, float),
+`get`/`put_list`, `get`/`put_structure`, `allocate`/`deallocate`,
+`call`/`execute` (**including `call/N` meta-calls** — milestone 2, landed),
+`proceed`, `builtin_call`, `cut`/`get_level`/`cut_ite`, `jump`, and **all
+clause-indexing dispatch** — every `switch_on_*` variant, matched by prefix
+so the `_fallthrough` and `_a2` forms are covered too — as nop-fallthroughs.
 
 ### Why indexing dispatch is a safe nop
 
@@ -83,11 +83,23 @@ independently useful (richer hand-written grammars load sooner).
 
 1. **Clause indexing** — *LANDED (this PR).* `switch_on_constant`/`_a2` as
    nop-fallthroughs. Atom-keyed multi-clause predicates load.
-2. **`call/N` meta-call in objects.** The loader's `call`/`execute` handle a
-   label index; a meta-call encodes `op1 = -1` and dispatches through
-   `@wam_dispatch_meta_call` (which the host already has). The `.wamo` writer
-   rejects meta-calls today (the label lookup fails). Needed for any grammar
-   that calls a goal built at runtime — the spine of an interpreter/compiler.
+2. **`call/N` meta-call in objects** — *LANDED.* A meta-call encodes
+   `op1 = -1` (`op2` = total arity), exactly as the host AOT path does, and
+   dispatches through `@wam_dispatch_meta_call`. The subtlety is that
+   dispatch resolves a *goal* (atom/functor + arity) to a *label index*, and
+   a loaded object's predicates are not in the host's compile-time dispatch
+   table. So the format grew a **per-object meta-call table** (version 2): a
+   trailing section listing each predicate as `(atomIdx, funIdx, arity,
+   labelIdx)` into the object's own atom/functor tables. The loader
+   materializes it into a `%WamMetaRow` array hung off two new `%WamState`
+   fields (25/26); `@wam_dispatch_meta_call` consults the VM's table when
+   present (via `@wam_meta_find_atom` / `@wam_meta_find_compound`) and falls
+   back to the host-global arrays otherwise. Compound-goal matching works
+   because a loaded object's runtime functor pointers are its own malloc'd
+   copies — the very pointers the table stores — so identity holds within one
+   object. The table is only emitted for objects that actually contain a
+   meta-call (pay-for-what-you-use). This is the spine of any grammar that
+   calls a goal built at runtime — an interpreter or compiler.
 3. **The builtin closure the compiler needs.** `builtin_call` is already in
    the subset, so a builtin works in a loaded object *if the host runtime
    provides it*. Audit the compiler's builtin use (`findall`/`bagof`,

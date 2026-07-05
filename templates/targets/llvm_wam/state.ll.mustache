@@ -103,6 +103,13 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   %lcpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 24
   store i32 0, i32* %lcpn_ptr
 
+  ; obj_meta = null, obj_meta_count = 0. Host VMs never carry an object
+  ; meta-call table; the .wamo loader installs one after wam_state_new.
+  %objmeta_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 25
+  store %WamMetaRow* null, %WamMetaRow** %objmeta_ptr
+  %objmetac_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 26
+  store i32 0, i32* %objmetac_ptr
+
   ret %WamState* %vm
 }
 
@@ -170,6 +177,13 @@ cp_done_label:
   %agg = load %Value*, %Value** %agg_ptr
   %agg_i8 = bitcast %Value* %agg to i8*
   call void @free(i8* %agg_i8)
+
+  ; Free the loaded-object meta-call table, if any (null for host VMs;
+  ; @free(null) is a no-op so no guard needed).
+  %objmeta_fp = getelementptr %WamState, %WamState* %vm, i32 0, i32 25
+  %objmeta = load %WamMetaRow*, %WamMetaRow** %objmeta_fp
+  %objmeta_i8 = bitcast %WamMetaRow* %objmeta to i8*
+  call void @free(i8* %objmeta_i8)
 
   %vm_i8 = bitcast %WamState* %vm to i8*
   call void @free(i8* %vm_i8)

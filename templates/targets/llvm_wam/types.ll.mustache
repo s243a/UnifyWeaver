@@ -105,5 +105,21 @@
     i32,                                   ; 21: agg_count
     i32,                                   ; 22: agg_cap
     i32,                                   ; 23: cut_barrier
-    i32                                    ; 24: last_entry_cpn
+    i32,                                   ; 24: last_entry_cpn
+    %WamMetaRow*,                          ; 25: obj_meta (loaded-object meta-call
+                                           ;     table; null for host VMs -- see
+                                           ;     PLAWK_EVAL_BOOTSTRAP.md milestone 2)
+    i32                                    ; 26: obj_meta_count
+}
+
+; One row of a loaded object's meta-call dispatch table: a predicate the
+; object can reach via call/N built at runtime. atom_id + arity match an
+; atom goal; functor_ptr (the object's own malloc'd functor copy, or null)
+; + arity match a compound goal. label_index resolves through the VM's own
+; labels array (@wam_label_pc) to the predicate's PC.
+%WamMetaRow = type {
+    i64,                                   ; 0: atom_id (re-interned at load)
+    i8*,                                   ; 1: functor_ptr (object copy, or null)
+    i32,                                   ; 2: arity
+    i32                                    ; 3: label_index (object-relative)
 }
