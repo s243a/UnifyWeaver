@@ -90,14 +90,41 @@ carried by the **learned role encoding**, with the e5 prefix a *modulator* (+8 a
 *more* on the prefix, not less, reinforcing the multi-seed null (it built a more prefix-dependent, not more robust,
 direction).
 
+### Result 5 — superposition value scales with direction UNCERTAINTY (user's hypothesis, confirmed)
+The null (Result 2) is a **saturation artifact**: direction is a strong signal (Wikipedia titles *leak* it —
+"X by country" vs "X in Germany"), so most pairs are near-certain and nothing can help them. Stratify the 400
+novel pairs by direction confidence and the benefit appears exactly where the theory says it should:
+
+| stratum | prod | dirichlet (3-seed) | gap |
+|---|---|---|---|
+| high-confidence half (large \|asym\|) | 98.0% | 98.0% | **0.0** |
+| low-confidence half (small \|asym\|) | 85.0% | 93.0% | **+8.0** |
+| by title-sim: easy / medium / hard | 93 / 90 / 91% | 95 / 98 / 94% | +1.5 / +7.5 / +3.0 |
+
+**Where direction is certain the superposition adds nothing (98→98); where uncertain it adds +8 (85→93).** So the
+value scales with direction *uncertainty* — and the overall mean is drowned by easy, leakage-driven pairs. (Caveat:
+"dirichlet" here is the 3-seed asym-*ensemble*, which does some averaging; but the *structure* — 0 on certain, +8
+on uncertain — is the finding, and it's model-confidence-stratified so partly regression-to-mean too.)
+
+### Open: multi-hop / transitive direction (user) — no magnitude rule yet
+Untested and *underspecified*: for a grandparent pair (A subcat-of B subcat-of C), the *sign* should be transitive
+(A→C), but we have **no rule for how the discrimination operator's MAGNITUDE should behave** across hops (decay
+with distance? constant? — the transitive-as-ordinal-constraints question, PR #3377). The *sign* is cheaply
+testable (novel multi-hop pairs); the magnitude needs a defined target first.
+
 ## Conclusion
-On Wikipedia the direction axis is **consensus** (sign trivially agreed) and the superposition's magnitude/negative
-signals are underpowered on the in-coverage held set. The **true (novel-node) test** is the informative one and
-gives a clean, honest read: **direction generalizes to unseen nodes ~90% from frozen e5** — driven partly by the
-e5 prefix asymmetry (~8 pts, confirmed) and partly by a learned prefix-independent representation — but the
-**direction-superposition training adds no reliable generalization over `model_prod`** (multi-seed 90.5% vs 91.5%).
-The reusable assets stand (the `dir-blend` judge, the 3-estimator emitter with contradiction→negative, the novel-
-node eval). The superposition's value on *direction* is not established here; a **direction-AMBIGUOUS** corpus
-(option B) — where operators genuinely flip — remains the setting where it could actually pay off.
+On Wikipedia the direction axis is **consensus** (sign trivially agreed). The **true (novel-node) test** is the
+informative one: **direction generalizes to unseen nodes ~90% from frozen e5**, and it's genuinely *learned* (it
+survives backward prefixes — not a prefix artifact), the e5 prefix only *modulating* it (~8 pts). On the
+**aggregate**, the superposition training adds nothing over `model_prod` (multi-seed 90.5% vs 91.5%) — **but that
+aggregate is a saturation artifact.** Stratified by direction confidence, the superposition's benefit is **real and
+regime-specific: 0 where direction is certain, +8 where it is uncertain** (Result 5) — exactly where extra signal
+can help. Wikipedia's semantic leakage makes most pairs certain, so the mean hides it.
+
+**Net:** the superposition is not worthless on direction — it helps precisely in the *uncertain* regime — but
+Wikipedia has too few uncertain pairs to move the aggregate. The natural next step is a corpus with **more
+direction uncertainty** (option B: looser hierarchies / multi-parent DAGs), where the uncertain tail is the bulk,
+not the fringe. Reusable assets stand (the `dir-blend` judge, the 3-estimator emitter with contradiction→negative,
+the novel-node + prefix + difficulty-stratified evals).
 
 Repro: `emit_direction_blend.py --mix {equal,dirichlet}` → fine-tune → novel-node eval (± e5 prefixes).
