@@ -5166,3 +5166,175 @@ pop:
   %retry = call i1 @backtrack(%WamState* %vm)
   ret i1 %retry
 }
+
+; retract/1 (nondet): find a live clause whose head unifies with the pattern
+; (reg 0), remove it (tombstone), unify, and yield; on backtrack find the next
+; match. The pattern's functor/arity are read from reg 0 here and stashed on a
+; new agg_type = -4 choice point; @wam_dyn_retract_iter_next advances the scan.
+define i1 @wam_dyn_retract_consult(%WamState* %vm, i32 %return_pc) {
+entry:
+  %pat = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ptag = call i32 @value_tag(%Value %pat)
+  %is_atom = icmp eq i32 %ptag, 0
+  br i1 %is_atom, label %pat_atom, label %pat_maybe_comp
+pat_atom:
+  %aid = call i64 @value_payload(%Value %pat)
+  %astr = call i8* @wam_atom_to_string(i64 %aid)
+  br label %have_id
+pat_maybe_comp:
+  %is_comp = icmp eq i32 %ptag, 3
+  br i1 %is_comp, label %pat_comp, label %rc_fail
+pat_comp:
+  %cpl = call i64 @value_payload(%Value %pat)
+  %ccp = inttoptr i64 %cpl to %Compound*
+  %cfn_s = getelementptr %Compound, %Compound* %ccp, i32 0, i32 0
+  %cfn = load i8*, i8** %cfn_s
+  %car_s = getelementptr %Compound, %Compound* %ccp, i32 0, i32 1
+  %car = load i32, i32* %car_s
+  br label %have_id
+have_id:
+  %pfn = phi i8* [ %astr, %pat_atom ], [ %cfn, %pat_comp ]
+  %par = phi i32 [ 0, %pat_atom ], [ %car, %pat_comp ]
+  call void @wam_cp_ensure_capacity(%WamState* %vm)
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  %cp = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %cpn
+  %npc_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 0
+  store i32 0, i32* %npc_s
+  %dst = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 1, i32 0
+  %src = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %dstr = bitcast %Value* %dst to i8*
+  %srcr = bitcast %Value* %src to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dstr, i8* %srcr, i64 512, i1 false)
+  %ts_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %ts = load i32, i32* %ts_p
+  %tm_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 2
+  store i32 %ts, i32* %tm_s
+  %cpv_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
+  %cpv = load i32, i32* %cpv_p
+  %scp_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 3
+  store i32 %cpv, i32* %scp_s
+  %at_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 4
+  store i32 -4, i32* %at_s
+  %fn_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 8
+  store i8* %pfn, i8** %fn_s
+  %ar_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 9
+  store i32 %par, i32* %ar_s
+  %cur_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 10
+  store i32 0, i32* %cur_s
+  %rpc_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 7
+  store i32 %return_pc, i32* %rpc_s
+  %hs_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs = load i32, i32* %hs_p
+  %sht_s = getelementptr %ChoicePoint, %ChoicePoint* %cp, i32 0, i32 11
+  store i32 %hs, i32* %sht_s
+  %ncpn = add i32 %cpn, 1
+  store i32 %ncpn, i32* %cpn_ptr
+  %r = call i1 @wam_dyn_retract_iter_next(%WamState* %vm)
+  ret i1 %r
+rc_fail:
+  ret i1 false
+}
+
+; Advance the retract iterator (agg_type -4). Like @wam_dyn_iter_next but it
+; TOMBSTONES the matched row before yielding, so each solution removes one
+; clause. Called by @backtrack when it sees agg_type == -4.
+define i1 @wam_dyn_retract_iter_next(%WamState* %vm) {
+entry:
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
+  %top_idx = sub i32 %cpn, 1
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  %top = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %top_idx
+  %fn_s = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 8
+  %fn = load i8*, i8** %fn_s
+  %ar_s = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 9
+  %ar = load i32, i32* %ar_s
+  %cur_s = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 10
+  %cur0 = load i32, i32* %cur_s
+  %tm_s = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 2
+  %mark = load i32, i32* %tm_s
+  %count = load i32, i32* @wam_dyn_count
+  %store = load %WamDynClause*, %WamDynClause** @wam_dyn_ptr
+  br label %scan
+scan:
+  %ri = phi i32 [ %cur0, %entry ], [ %rinext, %scan_cont ]
+  %exhausted = icmp sge i32 %ri, %count
+  br i1 %exhausted, label %pop, label %row
+row:
+  %row_ptr = getelementptr %WamDynClause, %WamDynClause* %store, i32 %ri
+  %lv_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 2
+  %lv = load i32, i32* %lv_s
+  %islive = icmp ne i32 %lv, 0
+  br i1 %islive, label %row_live, label %scan_cont
+row_live:
+  %rar_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 1
+  %rar = load i32, i32* %rar_s
+  %ar_eq = icmp eq i32 %rar, %ar
+  br i1 %ar_eq, label %row_fn, label %scan_cont
+row_fn:
+  %rfn_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 0
+  %rfn = load i8*, i8** %rfn_s
+  %fn_eq = call i1 @wam_functor_eq(i8* %rfn, i8* %fn)
+  br i1 %fn_eq, label %candidate, label %scan_cont
+candidate:
+  %dst = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %csrc = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 1, i32 0
+  %dstr = bitcast %Value* %dst to i8*
+  %csrcr = bitcast %Value* %csrc to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dstr, i8* %csrcr, i64 512, i1 false)
+  call void @unwind_trail(%WamState* %vm, i32 %mark)
+  %has_args = icmp sgt i32 %ar, 0
+  br i1 %has_args, label %get_goal, label %success
+get_goal:
+  %goal = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %gtag = call i32 @value_tag(%Value %goal)
+  %g_is_comp = icmp eq i32 %gtag, 3
+  br i1 %g_is_comp, label %goal_comp, label %scan_cont
+goal_comp:
+  %gpl = call i64 @value_payload(%Value %goal)
+  %gcp = inttoptr i64 %gpl to %Compound*
+  %gargs_s = getelementptr %Compound, %Compound* %gcp, i32 0, i32 2
+  %gargs = load %Value*, %Value** %gargs_s
+  %crargs_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 3
+  %crargs = load %Value*, %Value** %crargs_s
+  br label %uloop
+uloop:
+  %ui = phi i32 [ 0, %goal_comp ], [ %uinext, %ucont ]
+  %uidone = icmp sge i32 %ui, %ar
+  br i1 %uidone, label %success, label %ustep
+ustep:
+  %gap = getelementptr %Value, %Value* %gargs, i32 %ui
+  %gav = load %Value, %Value* %gap
+  %rap = getelementptr %Value, %Value* %crargs, i32 %ui
+  %rav = load %Value, %Value* %rap
+  %uok = call i1 @wam_unify_value(%WamState* %vm, %Value %gav, %Value %rav)
+  br i1 %uok, label %ucont, label %unify_fail
+ucont:
+  %uinext = add i32 %ui, 1
+  br label %uloop
+unify_fail:
+  call void @unwind_trail(%WamState* %vm, i32 %mark)
+  br label %scan_cont
+success:
+  ; Remove the matched clause (tombstone) before yielding.
+  store i32 0, i32* %lv_s
+  %next = add i32 %ri, 1
+  store i32 %next, i32* %cur_s
+  %rpc_s = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 7
+  %rpc = load i32, i32* %rpc_s
+  call void @wam_set_pc(%WamState* %vm, i32 %rpc)
+  call void @wam_set_halted(%WamState* %vm, i1 false)
+  ret i1 true
+scan_cont:
+  %rinext = add i32 %ri, 1
+  br label %scan
+pop:
+  call void @unwind_trail(%WamState* %vm, i32 %mark)
+  store i32 %top_idx, i32* %cpn_ptr
+  %retry = call i1 @backtrack(%WamState* %vm)
+  ret i1 %retry
+}

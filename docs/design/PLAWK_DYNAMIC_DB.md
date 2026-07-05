@@ -1,9 +1,11 @@
 # Dynamic clause store (assert / retract) for the WAM/LLVM target
 
-Status: **PR 1 landed — ground dynamic facts, called via `call/1`.** This is
-milestone **3b-db** of the eval bootstrap (see PLAWK_EVAL_BOOTSTRAP.md). It is
-the last genuinely-new runtime machinery before the eval/compile surface: a
-mutable clause database in a VM whose term arena is rewound between queries.
+Status: **PR 1 + PR 2 landed.** PR 1: the store + `assertz`/`asserta`/
+`retractall` + ground facts called via `call/1`. PR 2: **direct** calls to
+`:- dynamic` predicates (no explicit `call/1`) and **nondet `retract/1`**.
+This is milestone **3b-db** of the eval bootstrap (see PLAWK_EVAL_BOOTSTRAP.md):
+a mutable clause database in a VM whose term arena is rewound between queries —
+the last genuinely-new runtime machinery before the eval/compile surface.
 
 ## Why it is the subtle one
 
@@ -67,14 +69,21 @@ ground once fully built). Concretely, in PR 1:
 
 ## Calling a dynamic predicate
 
-The probe that motivated the split: `getc(N) :- counter(N)` lowers to
-`execute counter/1` with an **unresolved label** (no compiled clauses for
-`counter/1`), which today silently defaults to label index 0. Routing that
-*direct* call to the store needs compile-time `:- dynamic` tracking plus a new
-runtime dispatch — that is **PR 2**.
+`getc(N) :- counter(N)` lowers to `execute counter/1` with an **unresolved
+label** (no compiled clauses for `counter/1`), which used to silently default
+to label index 0. **PR 2** routes such *direct* calls to the store without any
+new runtime dispatch: the tier-2 compiler (`dynamic_store_goal/1` in
+`wam_target.pl`) detects a body goal calling a `:- dynamic` predicate that has
+no compiled clauses and **rewrites it to a `call/1` meta-call** —
+`counter(N)` → `call(counter(N))`, which lowers to `execute call/1` and flows
+through the exact path below. Detection is `predicate_property(Mod:Head,
+dynamic)` + no `clause/2` (the compile module is recorded in `b_setval`); a
+dynamic predicate that also has compiled clauses is left as a static call
+(mixing compiled + asserted clauses for one predicate is out of scope).
 
-PR 1 reaches the store through the path that already resolves runtime-built
-goals: the `call/1` meta-call. `G = counter(X), call(G)` lowers to
+Both PR 1's explicit `call/1` and PR 2's rewritten direct calls reach the store
+through the path that resolves runtime-built goals: the `call/1` meta-call.
+`G = counter(X), call(G)` lowers to
 `call call/1` (label index −1), handled by `@wam_dispatch_meta_call`, which
 resolves the goal's functor/arity against the compiled meta-call table and
 `fail`s when nothing matches. That `fail` is the hook: on a miss we consult the
@@ -134,18 +143,32 @@ database — the eval-bootstrap need):
 | `asserta/1` | 176 | `@wam_dyn_assert(vm, A1, /*prepend*/ true)` |
 | `retractall/1` | 177 | `@wam_dyn_retractall(vm, A1)` — tombstone every live row whose head unifies with the pattern (pattern bindings unwound after each test); always succeeds |
 
-`retract/1` lowers to `call retract/1` (nondet, dispatched as a choice-point
-iterator per `wam_target.pl`), so it lands with the dispatch work in **PR 2**.
+### retract/1 — nondet (PR 2)
+
+`retract/1` is NOT in `is_builtin_pred`, so it lowers to `call retract/1` /
+`execute retract/1` (a nondet operation, not a plain builtin). PR 2 recognises
+`"retract/1"` in the LLVM call/execute lowering and emits the op1 sentinel
+**−3** (alongside −1 for meta-call), which the `do_call` / `do_execute` opcode
+handlers route to `@wam_dyn_retract_consult`. That reads the pattern from
+reg 0, extracts its functor/arity, and pushes a **new `agg_type = −4`
+choice point** — a retract iterator (`@wam_dyn_retract_iter_next`, dispatched
+from `@backtrack` next to −2/−3). It is the consult iterator plus one step: on
+a matching unify it **tombstones the row** (`live = 0`) before yielding, so
+each solution removes one clause and backtracking removes the next. Works in
+call position (`retract(X), More`) and last-call position, and drives cleanly
+under `findall(X, retract(p(X)), L)` to remove every match.
 
 ## Roadmap
 
-- **PR 1 (this):** durable store; `assertz`/`asserta`/`retractall`; calling
-  ground dynamic facts via `call/1`. AOT + loaded-object tests.
-- **PR 2:** compile-time `:- dynamic P/N` tracking so direct calls
-  (`counter(N)`) resolve to the store; nondet `retract/1` as a CP iterator;
-  `call/N` partial-application consult.
+- **PR 1:** durable store; `assertz`/`asserta`/`retractall`; calling ground
+  dynamic facts via `call/1`.
+- **PR 2:** compiler rewrite of direct `:- dynamic` calls to `call/1`
+  (`dynamic_store_goal/1`); nondet `retract/1` as an `agg_type = −4` CP
+  iterator (op1 = −3 sentinel). AOT + loaded-object tests.
 - **PR 3 (later):** rule bodies (`assertz((H :- B))`) — a body interpreter for
   asserted clauses. The true long pole; likely unneeded for the eval bootstrap
   if the compiler's dynamic predicates are all fact tables.
-- Optimizations: functor+arity index over the store; variable-map durable copy
-  for non-ground asserts.
+- Follow-ups / optimizations: `call/N` partial-application consult (the
+  iterator currently reads the complete goal from reg 0); a functor+arity index
+  over the store (the scan is O(n) per backtrack); a variable-map durable copy
+  for non-ground asserts; mixing compiled + asserted clauses for one predicate.

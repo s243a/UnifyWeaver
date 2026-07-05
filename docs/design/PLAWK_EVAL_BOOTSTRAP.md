@@ -115,7 +115,7 @@ independently useful (richer hand-written grammars load sooner).
    | `findall`/`aggregate_all`, `setof`/`bagof` | `begin_aggregate`/`end_aggregate` (tags 28/29) | **yes, this PR** — opcodes lifted into the subset; setof/bagof additionally need `inline_bagof_setof(true)`, now the `.wamo` default |
    | `term_to_atom/2` (write direction) | `builtin_call term_to_atom/2` (id 173) → `@wam_term_to_sb` | **yes, milestone 3b** — a recursive term→text writer into a growable buffer, interned as an atom. Works in loaded objects too: cons detection is by functor *bytes*, not pointer identity. Unquoted (write semantics), so it does not yet round-trip through a reader |
    | `assertz`/`asserta`/`retractall` | `builtin_call <name>` (ids 175/176/177) → `@wam_dyn_assert` / `@wam_dyn_retractall` | **yes, milestone 3b-db (PR 1)** — a process-global, malloc-backed clause store that survives the arena rewind. Ground facts; calling them goes through the `call/1` meta-call, whose meta-table miss consults the store with unification + backtracking (`agg_type = -3` choice point). See PLAWK_DYNAMIC_DB.md |
-   | `retract/1` (nondet), direct calls to `:- dynamic` predicates | `call retract/1` / `execute <dyn>/N` with an unresolved label | **PR 2** — nondet `retract` as a CP iterator; compile-time `:- dynamic` tracking so `counter(N)` (not just `call(counter(N))`) resolves to the store |
+   | `retract/1` (nondet), direct calls to `:- dynamic` predicates | `call retract/1` / `execute <dyn>/N` | **yes, milestone 3b-db (PR 2)** — direct dynamic calls are rewritten to a `call/1` store consult (`dynamic_store_goal/1`); nondet `retract/1` is an `agg_type = -4` remove+unify+backtrack iterator (op1 = -3 sentinel). See PLAWK_DYNAMIC_DB.md |
    | `read_term`/`read_term_from_atom` | `builtin_call read_term_from_atom/2` (id 174) → the reader | **yes, milestone 3b** — a tokenizer + operator-precedence recursive-descent parser (done: canonical + operator surface, variables, control ops, floats, quoted atoms) |
    | `catch`/`throw` | `execute catch/3` — a call to a runtime *library predicate*, not a builtin | **no** — the loaded object references `catch/3`, which lives in the host, not the object; needs cross-object/host predicate linkage (milestone 3c) |
 
@@ -191,15 +191,17 @@ independently useful (richer hand-written grammars load sooner).
    the next quote; no escape handling yet). Verified in loaded objects:
    `3.5 + 1.5` → 5, negative/compound floats, and `'hello world'` → length 11.
 
-   **Dynamic clause store (milestone 3b-db) — PR 1 landed.** A process-global,
-   malloc-backed clause store (survives the arena rewind) with `assertz` /
-   `asserta` / `retractall` builtins, and calling ground dynamic facts via the
-   `call/1` meta-call (its meta-table miss consults the store, with unification
-   and backtracking through a new `agg_type = -3` choice point). Works in loaded
-   objects — the store is process-global. See **PLAWK_DYNAMIC_DB.md** for the
-   full design and the PR breakdown. Remaining there: direct calls to `:-
-   dynamic` predicates (`counter(N)` rather than `call(counter(N))`) + nondet
-   `retract/1` (PR 2), and rule bodies (PR 3).
+   **Dynamic clause store (milestone 3b-db) — PR 1 + PR 2 landed.** A
+   process-global, malloc-backed clause store (survives the arena rewind) with
+   `assertz` / `asserta` / `retractall` builtins. Calling a dynamic fact goes
+   through the `call/1` meta-call (its meta-table miss consults the store, with
+   unification and backtracking through an `agg_type = -3` choice point), and
+   PR 2 makes **direct** calls (`counter(N)`, not just `call(counter(N))`) reach
+   it by rewriting them to `call/1` at compile time, plus **nondet `retract/1`**
+   as an `agg_type = -4` remove+unify+backtrack iterator. Works in loaded
+   objects — the store is process-global. See **PLAWK_DYNAMIC_DB.md**.
+   Remaining there: rule bodies (`assertz((H :- B))`, PR 3) and `call/N`
+   partial-application consult.
 
    **Remaining (3b/3c):** `catch`/`throw` predicate linkage. A minor
    loadable-subset gap also surfaced: `arg/3` with a constant index compiles to

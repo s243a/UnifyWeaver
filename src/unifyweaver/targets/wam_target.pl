@@ -74,6 +74,9 @@ resolve_wam_predicate_indicator(PredIndicator, Options, Module, Pred, Arity) :-
 %  predicate resolution and missing-predicate behaviour.
 wam_predicate_clauses(PredIndicator, Options, Pred, Arity, Clauses) :-
     resolve_wam_predicate_indicator(PredIndicator, Options, Module, Pred, Arity),
+    % Record the module so the body-goal compiler can detect direct calls to
+    % :- dynamic predicates (routed to the runtime clause store via call/1).
+    b_setval(wam_compile_module, Module),
     functor(Head, Pred, Arity),
     findall(Head-Body, clause(Module:Head, Body), Clauses),
     (   Clauses = []
@@ -1613,8 +1616,44 @@ pre_bind_unbound_yi([Var|Rest], Bindings, YI, NewBindings) :-
         pre_bind_unbound_yi(Rest, [y_alloc(Var, YReg)|Bindings], NYI, NewBindings)
     ).
 
+%% dynamic_store_goal(+Goal) is semidet.
+%  True when Goal is a direct call to a user predicate that is declared
+%  `:- dynamic` and has NO compiled clauses in the compilation module -- i.e.
+%  it lives only in the runtime clause store. Such a goal has no label to
+%  compile a static call to, so compile_goals rewrites it to `call(Goal)`.
+%  Excludes builtins, control constructs, call/N (already a meta-call), and
+%  predicates that DO have clauses (those compile normally; mixing compiled
+%  and asserted clauses for one predicate is out of scope -- see
+%  PLAWK_DYNAMIC_DB.md).
+dynamic_store_goal(Goal) :-
+    nonvar(Goal),
+    Goal \= (_ , _),
+    Goal \= (_ ; _),
+    Goal \= (_ -> _),
+    Goal \= (_ : _),
+    Goal \= \+(_),
+    functor(Goal, Pred, Arity),
+    Pred \== call,
+    \+ is_builtin_pred(Pred, Arity),
+    ( catch(b_getval(wam_compile_module, Mod), _, fail) -> true ; Mod = user ),
+    functor(Head, Pred, Arity),
+    catch(predicate_property(Mod:Head, dynamic), _, fail),
+    \+ clause(Mod:Head, _).
+
 %% compile_goals(+Goals, +VarMap, +HasEnv, -Vf, -Code)
 compile_goals([], V, _, V, "").
+compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
+    % Direct call to a :- dynamic predicate with no compiled clauses (e.g.
+    % `counter(N)` where counter/1 lives only in the runtime clause store).
+    % There is no compiled label to jump to, so rewrite it to a call/1
+    % meta-call: `counter(N)` -> `call(counter(N))`. That lowers to
+    % `call call/1` / `execute call/1`, and the meta-call dispatch consults
+    % the dynamic store on a table miss (WAM/LLVM target; other targets get
+    % a clean meta-call failure instead of a jump to label 0). See
+    % PLAWK_DYNAMIC_DB.md.
+    dynamic_store_goal(Goal),
+    !,
+    compile_goals([call(Goal)|Rest], V0, HasEnv, Vf, Code).
 compile_goals([Goal|Rest], V0, HasEnv, Vf, Code) :-
     % Check for aggregate_all/findall/bagof/setof first — these are
     % always compiled inline.

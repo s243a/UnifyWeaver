@@ -178,6 +178,23 @@ faobjc(S)  :- G = fanum(X), findall(X, call(G), L), sum_list(L, S).           % 
 fadynsum(S) :- assertz(dv(10)), assertz(dv(20)), assertz(dv(30)),
                G = dv(X), findall(X, call(G), L), sum_list(L, S).             % 60
 
+% Milestone 3b-db PR 2: DIRECT calls to :- dynamic predicates (no explicit
+% call/1) and nondet retract/1. A body goal calling a dynamic predicate with
+% no compiled clauses is rewritten to a call/1 meta-call, which consults the
+% store; retract/1 lowers to a dedicated remove+unify+backtrack iterator.
+% The :- dynamic declarations let the compiler detect the direct-call case.
+:- dynamic w/1, nn/1, ee/2, cc/1.
+ddirect(R)  :- assertz(w(5)), w(X), R = X.                                    % 5 (direct call)
+ddirbt(R)   :- assertz(nn(1)), assertz(nn(2)), nn(X), X >= 2, R = X.          % 2 (direct + backtrack)
+dtwoarg(R)  :- assertz(ee(a,10)), assertz(ee(b,20)), ee(b,V), R = V.          % 20 (2-arg direct)
+dretract(R) :- assertz(cc(1)), assertz(cc(2)), assertz(cc(3)), retract(cc(X)), R = X.  % 1
+dretbt(R)   :- assertz(cc(1)), assertz(cc(2)), assertz(cc(3)),
+               retract(cc(X)), X >= 2, R = X.                                 % 2 (retract + backtrack)
+dretgone(R) :- assertz(cc(1)), assertz(cc(2)), retract(cc(_)), retract(cc(_)),
+               ( retract(cc(_)) -> R = 1 ; R = 0 ).                           % 0 (both removed)
+dretcount(N) :- assertz(cc(1)), assertz(cc(2)), assertz(cc(3)),
+                findall(X, retract(cc(X)), L), length(L, N).                  % 3 (nondet retract)
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -612,6 +629,29 @@ test(findall_over_meta_call, [condition(clang_available)]) :-
     ( exists_file(Host) -> true ; build_host(Dir, Host) ),
     run_host(Host, W1, O1, 0), assertion(O1 == "6\n"),
     run_host(Host, W2, O2, 0), assertion(O2 == "60\n"),
+    !.
+
+% Milestone 3b-db PR 2: direct calls to :- dynamic predicates (rewritten to a
+% call/1 store consult) and nondet retract/1 (a remove+unify+backtrack
+% iterator). Each grammar runs in a fresh host process, so the store is empty.
+test(dynamic_direct_calls_and_retract, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    forall(member(Name-Expected,
+               [ ddirect-"5\n",    % direct call to a dynamic predicate
+                 ddirbt-"2\n",     % direct call + choice-point backtracking
+                 dtwoarg-"20\n",   % 2-arg direct call, argument-directed
+                 dretract-"1\n",   % nondet retract, first match
+                 dretbt-"2\n",     % retract + backtrack to the next clause
+                 dretgone-"0\n",   % clauses actually removed
+                 dretcount-"3\n" ]), % findall drives retract to remove all
+           ( PI = Name/1,
+             directory_file_path(Dir, Name, Base),
+             atom_concat(Base, '.wamo', W),
+             write_wam_object([user:PI], [wamo_entry(PI)], W),
+             run_host(Host, W, Out, 0),
+             assertion(Out == Expected) )),
     !.
 
 :- end_tests(wam_object).
