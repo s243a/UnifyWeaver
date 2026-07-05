@@ -101,6 +101,14 @@ the general notion (of relatedness, lineage, …).
 - **When you swap judges, swap the judge input.** The target's provenance token (`judge_emb`) must name the judge
   that produced it (`gpt-5.5-low` for LLM data, `blend` for the constructed superposition). Wrong tag ⇒ wrong
   calibration row ⇒ the generality is learned against the wrong offset.
+- **Vary the blend ratio (truncated-λ) to buy JUDGE-INDEPENDENCE — and prefer it under judge uncertainty.**
+  Training with a *distribution* of λ (truncated-normal, resampled — not clamped) instead of a fixed λ pushes the
+  learned signal into the shared **trunk**: measured, the with-vs-without-judge-input gap shrinks (+0.075→+0.045)
+  and the judge-*independent* fraction rises (0.911→0.945), 3/3 seeds (`REPORT_truncated_lambda.md`). Cost: a
+  slightly lower *peak* when you do supply the exact judge. **But the peak is conditional on picking the right
+  judge — the very thing you can't verify when no judge is ground truth (the usual case).** So the judge-
+  independent model (what the judges *agree on*, minimax over the judge distribution) is the better objective;
+  fixed-λ + a named judge wins only when that judge is *known*-correct.
 
 ## Tools & references
 - **`mu_posterior.py`** — `MuPosterior` (per-source `P(μ|rel)`, bands, separability), `JointPosterior` (the
