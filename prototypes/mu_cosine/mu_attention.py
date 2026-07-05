@@ -338,13 +338,16 @@ class Tokenizer:
                "op_of": op_of, "pad": pad}
         if self.struct is not None:                          # DUAL-JUDGE: per-pair graph signal vector [B, K]
             mode = self.struct_mode
-            K = 1 if mode == "dist" else 3
+            K = {"dist": 1, "membership": 2}.get(mode, 3)    # membership: [dist, region] (mem from model kwargs)
             sf = torch.zeros(B, K)
             for bi, it in enumerate(items):
                 a, b = it[0], it[1]                          # (node, root)
                 va, vb = self.struct.get(a), self.struct.get(b)
                 sf[bi, 0] = float(3.0 / (1.0 + (va - vb).norm())) if (va is not None and vb is not None) else 0.0
-                if mode != "dist":
+                if mode == "membership":                     # [dist, region]; memberships arrive as detached kwargs
+                    mind = min(self.deg.get(a, 0), self.deg.get(b, 0))
+                    sf[bi, 1] = mind / (mind + self.deg_scale)   # per-region data-density factor ∈[0,1)
+                elif mode != "dist":
                     fh = self._up_hops(a, b, self.struct_cap)   # forward: b is an ancestor of a (a subcat_of b)
                     bh = self._up_hops(b, a, self.struct_cap)   # backward: a is an ancestor of b
                     fwd = 3.0 / (1.0 + fh) if fh is not None else 0.0
@@ -352,7 +355,7 @@ class Tokenizer:
                     if mode == "dir":                        # free-weight predictors [dist, fwd, bwd]
                         sf[bi, 1] = fwd; sf[bi, 2] = bwd
                     else:                                    # "precision": [dist, mem, region]
-                        sf[bi, 1] = (fwd + bwd) / 2.0        # membership signal (data-rich)
+                        sf[bi, 1] = (fwd + bwd) / 2.0        # membership signal (up_hops proxy)
                         mind = min(self.deg.get(a, 0), self.deg.get(b, 0))
                         sf[bi, 2] = mind / (mind + self.deg_scale)   # per-region c_mem factor ∈[0,1)
             out["struct_feat"] = sf
@@ -366,10 +369,10 @@ class MuAttention(nn.Module):
     def __init__(self, d_model=384, n_ops=len(OPS), n_heads=4, n_layers=1, max_gen=5,
                  dim_ff=None, dropout=0.0, n_corpus=len(CORPORA), n_judge=len(JUDGES),
                  n_nodetype=len(NODETYPE), n_account=len(ACCOUNTS), struct_blend="inside", n_struct=1,
-                 c_dist=1.0, c_mem_ceiling=1.0):
+                 c_dist=1.0, c_mem_ceiling=1.0, c_subcat=0.72, c_elem=0.82):
         super().__init__()
         self.d = d_model
-        self.struct_blend = struct_blend            # DUAL-JUDGE combine: "inside" | "outside" | "precision"
+        self.struct_blend = struct_blend            # DUAL-JUDGE combine: "inside"|"outside"|"precision"|"membership"
         self.op_emb = nn.Embedding(n_ops, d_model)
         # NODE-TYPE: per-endpoint structural-role token (category/page/mindmap/pearltrees). Zero-init so it
         # is a no-op at warm start (category=0 default) and the type signal is learned during fine-tuning.
@@ -413,6 +416,12 @@ class MuAttention(nn.Module):
         # struct_lambda (zero-init ⇒ warm-start no-op; learned ~0.5 as a COMPLEMENTARY superposition, not gated).
         self.register_buffer("c_dist", torch.tensor(float(c_dist)))
         self.register_buffer("c_mem_ceiling", torch.tensor(float(c_mem_ceiling)))
+        # "membership" mode (ELEM follow-up): the graph judge fuses THREE structural signals — distance (siblings/
+        # lateral) + subcategory membership + element membership — each weighted by its MEASURED reliability
+        # (register_buffers, not learned). μ_HIER/μ_ELEM come in as detached kwargs (mem_subcat/mem_elem). Per
+        # DESIGN §Confidence: c per OPERATOR (subcat vs elem separate), region (data density) modulates memberships.
+        self.register_buffer("c_subcat", torch.tensor(float(c_subcat)))
+        self.register_buffer("c_elem", torch.tensor(float(c_elem)))
         self.prec_g = nn.Parameter(torch.tensor(1.0))
         self.prec_h = nn.Parameter(torch.tensor(0.0))
         for emb in (self.op_emb, self.gen_emb, self.corpus_emb, self.judge_emb):
@@ -423,7 +432,7 @@ class MuAttention(nn.Module):
 
     def forward(self, content, gen_id, is_anchor, op_pos, op_of, pad,
                 is_prov=None, corpus_of=None, judge_of=None, account_of=None, nodetype_of=None,
-                prefix_of=None, op_weights=None, struct_feat=None):
+                prefix_of=None, op_weights=None, struct_feat=None, mem_subcat=None, mem_elem=None):
         # op_weights [B, n_ops] (optional): a BLENDED operator — a weight vector over operators that replaces
         # the one-hot op token AND the per-operator readout head (a random superposition for inferred rows;
         # a one-hot for tagged rows reproduces the indexed path exactly). See
@@ -470,6 +479,17 @@ class MuAttention(nn.Module):
                 mu_e5 = torch.sigmoid(logit)                                    # complementary e5 judge
                 mu = mu_e5 + sym_gate * self.struct_lambda * (mu_graph - mu_e5)  # λ=0 ⇒ pure e5 (no-op); ~0.5 learned
                 return mu.clamp(0.0, 1.0)
+            if self.struct_blend == "membership":            # ELEM: fuse dist(siblings) + subcat + elem memberships
+                dist, region = struct_feat[:, 0], struct_feat[:, 1]            # struct_feat = [dist, region]
+                ms = mem_subcat if mem_subcat is not None else torch.zeros_like(dist)   # detached μ_HIER (max fwd/bwd)
+                me = mem_elem if mem_elem is not None else torch.zeros_like(dist)        # detached μ_ELEM (max fwd/bwd)
+                cs, ce = region * self.c_subcat, region * self.c_elem          # per-region membership confidences
+                num = self.c_dist * dist + cs * ms + ce * me                   # precision (inverse-variance) fusion
+                pw = num / (self.c_dist + cs + ce + 1e-6)
+                mu_graph = torch.sigmoid(self.prec_g * pw + self.prec_h)
+                mu_e5 = torch.sigmoid(logit)
+                mu = mu_e5 + sym_gate * self.struct_lambda * (mu_graph - mu_e5)  # λ=0 ⇒ pure e5 (no-op)
+                return mu.clamp(0.0, 1.0)
             if self.struct_blend == "outside":               # blend two BOUNDED judges in μ-space (no outer sigmoid)
                 mu_e5 = torch.sigmoid(logit)                                     # e5 judge — already ∈[0,1]
                 mu_graph = torch.sigmoid((struct_feat * self.struct_g).sum(-1) + self.struct_h)  # squash the graph terms
@@ -477,6 +497,32 @@ class MuAttention(nn.Module):
                 return mu.clamp(0.0, 1.0)
             logit = logit + sym_gate * (struct_feat * self.sym_struct_w).sum(-1)  # INSIDE: Σ wₖ·featₖ, one sigmoid
         return torch.sigmoid(logit)
+
+
+@torch.no_grad()
+def membership_readouts(model, tok, pairs, dev, batch=512):
+    """Detached μ_HIER / μ_ELEM memberships for the 'membership' graph judge (DESIGN §ELEM follow-up).
+    pairs = [(a, b), ...] (node, root). Returns (mem_subcat, mem_elem) tensors [N] on `dev`:
+        mem_subcat = max(μ_HIER(a|b), μ_HIER(b|a)),   mem_elem = max(μ_ELEM(a|b), μ_ELEM(b|a))
+    STOP-GRAD (features, not targets): SYM training must not back-prop into / corrupt the HIER/ELEM operators.
+    Correct even in 'membership' blend mode: a non-SYM readout has sym_gate=0 ⇒ the struct branch returns μ_e5,
+    i.e. the plain operator readout."""
+    n_ops = model.op_emb.num_embeddings
+
+    def score(op, ordered):
+        ow = torch.zeros(1, n_ops, device=dev); ow[0, OPS[op]] = 1.0
+        out = []
+        for i in range(0, len(ordered), batch):
+            ch = ordered[i:i + batch]
+            bd = tok.build([(x, y, 0) for x, y in ch], train=False)
+            bd = {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in bd.items()}
+            out.append(model(**bd, op_weights=ow.expand(len(ch), n_ops)))
+        return torch.cat(out) if out else torch.zeros(0, device=dev)
+
+    fwd = list(pairs); rev = [(b, a) for a, b in pairs]
+    ms = torch.maximum(score("HIER", fwd), score("HIER", rev))
+    me = torch.maximum(score("ELEM", fwd), score("ELEM", rev))
+    return ms.detach(), me.detach()
 
 
 if __name__ == "__main__":

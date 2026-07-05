@@ -31,7 +31,7 @@ import torch
 import torch.nn.functional as F
 
 from mu_attention import (OPS, CORPORA, JUDGES, NODETYPE, GRAPH, load_dag, all_names, build_e5_tables,
-                          Tokenizer, MuAttention)
+                          Tokenizer, MuAttention, membership_readouts)
 
 # map the pair-file a_type/b_type strings to NODETYPE ids (category=0 default; pearltrees "collection" → 3)
 _NT = {"category": 0, "page": 1, "mindmap_node": 2, "collection": 3, "pearltrees_collection": 3}
@@ -219,10 +219,18 @@ def bfs_dist(adj, src):
 @torch.no_grad()
 def mu_batch(model, tok, items, bs=256):
     dev = next(model.parameters()).device
+    # membership mode: SYM readout needs the detached μ_HIER/μ_ELEM memberships (else eval sees the pure-e5 no-op).
+    # Only SYM-op batches need them (non-SYM ⇒ sym_gate=0 ⇒ ignored); gate to avoid needless readouts elsewhere.
+    memmode = (getattr(model, "struct_blend", None) == "membership"
+               and items and len(items[0]) > 2 and items[0][2] == OPS["SYM"])
     out = []
     for i in range(0, len(items), bs):
-        b = tok.build(items[i:i + bs], train=False)
+        ch = items[i:i + bs]
+        b = tok.build(ch, train=False)
         b = {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in b.items()}
+        if memmode:
+            ms, me = membership_readouts(model, tok, [(it[0], it[1]) for it in ch], dev)
+            b["mem_subcat"] = ms; b["mem_elem"] = me
         out.append(model(**b).cpu())
     return torch.cat(out) if out else torch.zeros(0)
 
@@ -449,7 +457,8 @@ def train(args):
         struct_tbl = {n: v for n, v in zip(_se["nodes"], _se["emb"])}
         print(f"STRUCT-EMB (SYM dual judge): {len(struct_tbl)} nodes, {_se['dim']}d, from "
               f"{os.path.basename(args.struct_emb)}")
-    struct_mode = "precision" if args.struct_blend == "precision" else ("dir" if args.struct_dir else "dist")
+    struct_mode = (args.struct_blend if args.struct_blend in ("precision", "membership")
+                   else ("dir" if args.struct_dir else "dist"))
     tok = Tokenizer(q, p, idx, parents, deg, k=args.k, beta=1.0, max_anc=args.max_anc,
                     struct_tbl=struct_tbl, struct_mode=struct_mode, deg_scale=args.deg_scale)
 
@@ -554,7 +563,8 @@ def train(args):
     torch.manual_seed(args.seed)
     model = MuAttention(d_model=q.shape[1], n_heads=args.heads, n_layers=args.layers,
                         struct_blend=args.struct_blend, n_struct=(1 if struct_mode == "dist" else 3),
-                        c_dist=args.c_dist, c_mem_ceiling=args.c_mem_ceiling)
+                        c_dist=args.c_dist, c_mem_ceiling=args.c_mem_ceiling,
+                        c_subcat=args.c_subcat, c_elem=args.c_elem)
     if args.init_from:                                    # warm start — DON'T reinit the head (fine-tune)
         ck = torch.load(args.init_from, weights_only=False)
         sd, own = ck["state"], model.state_dict()
@@ -741,7 +751,11 @@ def train(args):
         sym_items = ([(it[0], it[1], OPS["SYM"], cid, j) for (it, cid), j in zip(sb, sb_j)] +
                      [(it[1], it[0], OPS["SYM"], cid, j) for (it, cid), j in zip(sb, sb_j)])
         tgt = torch.tensor([it[2] for it, _ in sb]).to(device)
-        mu_s = model(**bld(sym_items, train=True, rng=rng, p_mask_prov=args.prov_mask))
+        sym_batch = bld(sym_items, train=True, rng=rng, p_mask_prov=args.prov_mask)
+        if args.struct_blend == "membership":              # detached μ_HIER/μ_ELEM (max fwd/bwd is symmetric → tile)
+            _ms, _me = membership_readouts(model, tok, [(it[0], it[1]) for it, _ in sb], device)
+            sym_batch["mem_subcat"] = torch.cat([_ms, _ms]); sym_batch["mem_elem"] = torch.cat([_me, _me])
+        mu_s = model(**sym_batch)
         mu_ab, mu_ba = mu_s[:len(sb)], mu_s[len(sb):]
         L_sym = F.mse_loss(mu_ab, tgt) + F.mse_loss(mu_ba, tgt)
         # ELEM (element-of: directional + graded) — μ(page|category) toward the graded centrality target,
@@ -1301,11 +1315,12 @@ def main():
     ap.add_argument("--struct-emb", default=None, help="DUAL-JUDGE step 3: learned structural embedding "
                     "(structural_embedding.py .pt). When set, the SYM logit gets the O(1) structural channel "
                     "3/(1+‖Δ struct-emb‖); zero-init scale ⇒ warm-start no-op until SYM training learns it.")
-    ap.add_argument("--struct-blend", choices=["inside", "outside", "precision"], default="inside",
-                    help="DUAL-JUDGE combine mode: 'inside' = μ=σ(logit_e5 + w·struct) (logit-space); 'outside' = "
-                    "μ=μ_e5 + λ·(μ_graph−μ_e5), μ-space blend of two bounded judges; 'precision' (LOCKED design) = "
-                    "μ_graph is the precision-weighted (c_mem·mem + c_dist·(1/d))/(c_mem+c_dist), then the e5↔graph "
-                    "complementary superposition. λ zero-init ⇒ pure-e5 warm-start no-op in every mode.")
+    ap.add_argument("--struct-blend", choices=["inside", "outside", "precision", "membership"], default="inside",
+                    help="DUAL-JUDGE combine mode: 'inside' = μ=σ(logit_e5 + w·struct); 'outside' = μ_e5 + "
+                    "λ·(μ_graph−μ_e5); 'precision' = precision-weighted (c_mem·mem + c_dist·(1/d))/(c_mem+c_dist) with "
+                    "the up_hops subcat proxy; 'membership' (ELEM follow-up) = fuse dist(siblings) + SUBCAT + ELEMENT "
+                    "memberships (model μ_HIER/μ_ELEM readouts, detached) weighted by c_dist/c_subcat/c_elem. "
+                    "λ zero-init ⇒ pure-e5 warm-start no-op in every mode.")
     ap.add_argument("--c-dist", type=float, default=0.35, help="precision mode: GLOBAL distance-proxy confidence "
                     "= how well 1/d agrees with the SYM judge (corr). MEASURED +0.349 on the representative "
                     "cumulative mix (O(1) struct-emb proxy; true-BFS would be ~0.66). Re-measure on the two-judge round.")
@@ -1314,6 +1329,10 @@ def main():
                     "nonzero on only ~11% of pairs ⇒ region fallback essential). per-region c_mem = ceiling·region.")
     ap.add_argument("--deg-scale", type=float, default=5.0, help="precision mode: data-density scale for the "
                     "per-region c_mem factor min(deg)/(min(deg)+deg_scale) — larger ⇒ needs more edges for confidence.")
+    ap.add_argument("--c-subcat", type=float, default=0.72, help="membership mode: SUBCATEGORY (HIER) membership "
+                    "confidence = corr(μ_HIER, SYM). MEASURED +0.715 (model readout; leakage-inflated — re-measure held-out).")
+    ap.add_argument("--c-elem", type=float, default=0.82, help="membership mode: ELEMENT (ELEM) membership "
+                    "confidence = corr(μ_ELEM, SYM). MEASURED +0.815 — the STRONGEST membership signal; separate from c_subcat.")
     ap.add_argument("--struct-dir", action="store_true", help="DUAL-JUDGE: add the fwd/bwd membership PREDICTORS "
                     "as separate channels (K=3: [3/(1+‖Δ‖), 3/(1+up_hops(a→b)), 3/(1+up_hops(b→a))]) — each with "
                     "its own LEARNED weight (regression; equal-⅓ average is the fixed-weight case). up_hops = DAG "
