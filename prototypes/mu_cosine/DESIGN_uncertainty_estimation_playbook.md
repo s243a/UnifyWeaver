@@ -57,6 +57,30 @@ for "confidence weighting." This encodes lessons the project learned the slow wa
 - Node degree as a "data density" / confidence term. (→ pitfall 4.)
 - Adding a source and asserting it helps because it's conceptually motivated — *test it* (step 4/5).
 
+## Why train on judge *superpositions* — it teaches generality
+
+Beyond constructing a good target, training on **judge superpositions** — a target `(1−λ)·judgeA ⊕ λ·judgeB`,
+especially with **random λ per example** — is a **multi-view consistency regulariser**. It *asserts that the two
+judges are two views of one underlying quantity*, so to fit the whole blend family the model can't latch onto
+either judge's idiosyncrasies; it must find the **shared signal** they both approximate. That shared signal is
+the general notion (of relatedness, lineage, …).
+
+- **The trunk/head split makes it clean.** The **shared trunk** learns the invariant (generality); the
+  **per-judge `judge_emb` rows** absorb each judge's *offset/bias* (fidelity). You get generality **and**
+  per-judge calibration — not a lossy average. This is the "operator superposition as a regulariser" idea
+  (`DESIGN_inferred_operator_superposition.md` §7) lifted from *operators* to *judges*.
+- **Symptom of success:** performance rises on a **held-out set the blend pairs never touched** (generalisation,
+  not memorisation). E.g. blend-judge SYM training lifted *base* simplewiki SYM held-out well above the
+  fine-tune-data's own domain — evidence the model learned a more general SYM, not the Wikipedia round. (Confirm
+  across seeds; a single-seed lift can be variance.)
+- **The one honest condition:** this teaches the *right* generality only if the judges genuinely measure the same
+  latent. A systematically-biased judge, superposed in, teaches an averaged-wrong signal — which is exactly what
+  the per-judge calibration rows guard against, and why the blend must be *validated* (does graph⊕e5 actually
+  track the semantic judge?) before it's trusted, not assumed.
+- **When you swap judges, swap the judge input.** The target's provenance token (`judge_emb`) must name the judge
+  that produced it (`gpt-5.5-low` for LLM data, `blend` for the constructed superposition). Wrong tag ⇒ wrong
+  calibration row ⇒ the generality is learned against the wrong offset.
+
 ## Tools & references
 - **`mu_posterior.py`** — `MuPosterior` (per-source `P(μ|rel)`, bands, separability), `JointPosterior` (the
   calibrated combiner), `struct_dist_fn` / `e5_mu_fn` / `model_readout_fn` (sources), `aurc`/`aurc_boot`/
