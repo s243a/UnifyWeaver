@@ -24,7 +24,8 @@ The dynamic-grammar surface is feature-complete for numeric work:
 | plawk surface A — `dyncall@name(...)` (named entry, compile-time-fixed, cached PC) | #3473 |
 | `float(dyncall@name(...))` / `blob(dyncall@name(...))` (named double / byte returns, shared resolver) | #3474 |
 | Structured returns — `@wam_object_call_record` (deserialize a returned Compound's args into typed i64/f64 slots) | #3475 |
-| Destructure surface — `(a, b) = dyncall[@name](args) as (i64 f64)` binds fields to typed scalars | this PR |
+| Destructure surface — `(a, b) = dyncall[@name](args) as (i64 f64)` binds fields to typed scalars | #3476 |
+| Record-view surface — `dyncall[@name](args) as (i64 f64) { … $1 $2 … }` reads the return like the current record | this PR |
 
 A grammar is compiled ahead of time to a `.wamo`, loaded at runtime (from a
 fixed path, an in-memory buffer, or a per-call runtime source), cached with
@@ -202,11 +203,16 @@ is really a *marshalling target*, and the walked compound can land in
 different plawk containers — this is the through-line for the rest of item 4:
 
 - **Typed scalars** (`(a,b) = ... as (i64 f64)`) — *landed*.
-- **Record view / field reindex** (`... as (i64 f64) { $1 $2 ... }`) — the
-  more awk-like target: the returned record becomes the current record for a
-  scoped block so `$1`,`$2` read it like a `BINFMT` line, reusing the typed
-  field-read machinery. The maintainer's preferred long-term surface;
-  next phase.
+- **Record view / field reindex** (`... as (i64 f64) { $1 $2 ... }`) —
+  *landed*. The returned compound reads like the current record inside the
+  block: `$k` accesses field k. Implemented by **desugaring** to a
+  destructure into hidden per-site temporaries plus the block body with
+  every `$k` (1≤k≤nfields) rewritten to the k-th temporary — so it rides the
+  destructure machinery with no field-pointer repoint. A body field outside
+  1..nfields (including `$0`) leaves the view uncompilable (the record has no
+  such field). Recurses into if-branches; a view nested in a for-in body is a
+  follow-on. Verified: `dyncall@rec($1) as (i64 f64) { total += $1 }` sums
+  the i64 field to 30; `{ sum += $2 }` sums the f64 field to 31.
 - **Associative array** (`arr = ... as assoc`) — a grammar returning keyed
   pairs (`[k1-v1, k2-v2]` or a keyed compound) materializes into plawk's
   existing assoc-array table, addressed `arr["k"]`.

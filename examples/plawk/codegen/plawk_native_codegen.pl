@@ -236,7 +236,8 @@ plawk_program_native_driver_ir(
 ) :-
     plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules1, WritebinPlan),
     plawk_record_descriptor(BeginClauses, FieldSeparator),
-    plawk_resolve_foreach_rules(FieldSeparator, Rules1, Rules),
+    plawk_resolve_dynrec_view_rules(Rules1, Rules1b),
+    plawk_resolve_foreach_rules(FieldSeparator, Rules1b, Rules),
     plawk_scalar_state_plan(Rules, PrintFields, StatePlan),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
@@ -852,6 +853,7 @@ plawk_program_dyncall_named_rec_entries(program(_Begin, Rules, EndClauses),
     sort(Entries0, Entries).
 
 plawk_subterm_dynrec_call(dynrec_bind(_Vars, Call, _Types), Call).
+plawk_subterm_dynrec_call(dynrec_view(Call, _Types, _Body), Call).
 plawk_subterm_dynrec_call(Term, Call) :-
     compound(Term),
     arg(_, Term, Sub),
@@ -5659,6 +5661,77 @@ plawk_dynrec_call_ok(dyncall_named(Name, Args)) :-
 %% plawk_dynrec_type_code(+Type, -Byte)  i64 -> 0, f64 -> 1 (typecodes byte).
 plawk_dynrec_type_code(i64, 0).
 plawk_dynrec_type_code(f64, 1).
+
+%% plawk_resolve_dynrec_view_rules(+Rules0, -Rules)
+%
+%  Desugar record-view blocks. `dyncall[@name](args) as (T1..Tn) { Body }`
+%  becomes a destructure into fresh hidden temporaries followed by Body with
+%  every `$k` (field(k) / float_field(k), 1<=k<=n) rewritten to the k-th
+%  temporary -- so the returned record reads like the current record inside
+%  the block, riding the destructure machinery with no field-pointer
+%  repoint. A per-site counter keeps temp names unique; if the body
+%  references a field outside 1..n (including $0), it does not rewrite and
+%  the view is left uncompilable (the record has no such field). Recurses
+%  into if-branches; a view nested in a for-in body is a follow-on.
+plawk_resolve_dynrec_view_rules(Rules0, Rules) :-
+    plawk_resolve_dynrec_view_rules(Rules0, 0, Rules).
+
+plawk_resolve_dynrec_view_rules([], _, []).
+plawk_resolve_dynrec_view_rules([rule(Pattern, Actions0) | Rest], K0,
+        [rule(Pattern, Actions) | RestOut]) :-
+    !,
+    plawk_resolve_dynrec_view_actions(Actions0, K0, K1, Actions),
+    plawk_resolve_dynrec_view_rules(Rest, K1, RestOut).
+plawk_resolve_dynrec_view_rules([Other | Rest], K0, [Other | RestOut]) :-
+    plawk_resolve_dynrec_view_rules(Rest, K0, RestOut).
+
+plawk_resolve_dynrec_view_actions([], K, K, []).
+plawk_resolve_dynrec_view_actions([A0 | As0], K0, K, Out) :-
+    plawk_resolve_dynrec_view_action(A0, K0, K1, Expanded),
+    plawk_resolve_dynrec_view_actions(As0, K1, K, RestOut),
+    append(Expanded, RestOut, Out).
+
+plawk_resolve_dynrec_view_action(dynrec_view(Call, Types, Body0), K0, K,
+        [dynrec_bind(Temps, Call, Types) | Body]) :-
+    !,
+    length(Types, NFields),
+    plawk_dynrec_temp_names(K0, NFields, Temps),
+    K1 is K0 + 1,
+    plawk_resolve_dynrec_view_actions(Body0, K1, K, Body1),
+    maplist(plawk_dynrec_rewrite_field_refs(Temps, NFields), Body1, Body),
+    \+ plawk_term_has_field_ref(Body).
+plawk_resolve_dynrec_view_action(if(Pattern, Then0, Else0), K0, K,
+        [if(Pattern, Then, Else)]) :-
+    !,
+    plawk_resolve_dynrec_view_actions(Then0, K0, K1, Then),
+    plawk_resolve_dynrec_view_actions(Else0, K1, K, Else).
+plawk_resolve_dynrec_view_action(Action, K, K, [Action]).
+
+plawk_dynrec_temp_names(K, NFields, Temps) :-
+    numlist(1, NFields, Is),
+    findall(T,
+        ( member(I, Is), format(atom(T), '__dynrec_~w_~w', [K, I]) ),
+        Temps).
+
+% Rewrite $k field references (1..NF) to the k-th destructure temporary.
+plawk_dynrec_rewrite_field_refs(Temps, NF, field(N), var(T)) :-
+    integer(N), N >= 1, N =< NF, !, nth1(N, Temps, T).
+plawk_dynrec_rewrite_field_refs(Temps, NF, float_field(N), var(T)) :-
+    integer(N), N >= 1, N =< NF, !, nth1(N, Temps, T).
+plawk_dynrec_rewrite_field_refs(_Temps, _NF, Term, Term) :-
+    ( var(Term) ; atomic(Term) ), !.
+plawk_dynrec_rewrite_field_refs(Temps, NF, Term0, Term) :-
+    Term0 =.. [F | Args0],
+    maplist(plawk_dynrec_rewrite_field_refs(Temps, NF), Args0, Args),
+    Term =.. [F | Args].
+
+plawk_term_has_field_ref(Term) :-
+    ( Term = field(_) ; Term = float_field(_) ),
+    !.
+plawk_term_has_field_ref(Term) :-
+    compound(Term),
+    arg(_, Term, Sub),
+    plawk_term_has_field_ref(Sub).
 
 %% plawk_dynrec_bind_pair(+Vars, +Call, +Types, +FieldSeparator, +Base,
 %%                        +Slots, +Values0, -Values, -GlobalIR-LineIR)
