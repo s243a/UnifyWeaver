@@ -142,3 +142,20 @@
     i32,                                   ; 2: live (1=present, 0=retracted)
     %Value*                                ; 3: args (malloc'd, arity cells)
 }
+
+; One frame of the process-global catch/3 side stack (see PLAWK_DYNAMIC_DB.md
+; -- catch/throw). Pushed by catch(Goal, Catcher, Recovery); throw/1 unwinds
+; the VM state to the nearest frame whose catcher unifies with the ball, then
+; runs Recovery. catcher/recovery are heap Values built before the catch (they
+; live below heap_mark, so they survive the unwind). The marks snapshot the VM
+; state at catch entry; return_pc is the continuation after catch/3.
+%WamCatchFrame = type {
+    %Value,                                ; 0: catcher term
+    %Value,                                ; 1: recovery goal
+    i32,                                   ; 2: trail_mark
+    i32,                                   ; 3: heap_mark
+    i32,                                   ; 4: stack_size
+    i32,                                   ; 5: saved_cp
+    i32,                                   ; 6: cp_count (choice points at entry)
+    i32                                    ; 7: return_pc (continuation after catch)
+}

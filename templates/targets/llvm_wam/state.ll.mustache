@@ -336,6 +336,9 @@ define void @wam_prepare_call(%WamState* %vm, i32 %start_pc) alwaysinline nounwi
   store i32 0, i32* %cb_ptr
   %lcpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 24
   store i32 0, i32* %lcpn_ptr
+  ; Reset the catch/3 side stack so a frame left over from a previous
+  ; top-level query never matches a throw in this one.
+  call void @wam_catch_reset()
   call void @wam_set_pc(%WamState* %vm, i32 %start_pc)
   ret void
 }
@@ -5337,4 +5340,184 @@ pop:
   store i32 %top_idx, i32* %cpn_ptr
   %retry = call i1 @backtrack(%WamState* %vm)
   ret i1 %retry
+}
+
+; ==========================================================================
+; catch/3 and throw/1 (milestone 3c) -- see PLAWK_DYNAMIC_DB.md.
+; A process-global side stack of catch frames. catch(Goal, Catcher, Recovery)
+; pushes a frame snapshotting the VM marks and meta-calls Goal; throw(Ball)
+; deep-copies the ball, unwinds the VM to the nearest frame whose Catcher
+; unifies with the ball, and runs Recovery. The side stack is reset per
+; top-level query (in @wam_prepare_call) and trimmed on backtrack.
+; ==========================================================================
+
+@wam_catch_ptr = internal global %WamCatchFrame* null
+@wam_catch_count = internal global i32 0
+@wam_catch_cap = internal global i32 0
+@wam_ball = internal global %Value zeroinitializer
+
+; Reset the catch side stack -- called at the start of a top-level query so a
+; frame left over from a previous query (forward-scoping) never matches.
+define void @wam_catch_reset() {
+entry:
+  store i32 0, i32* @wam_catch_count
+  ret void
+}
+
+; Drop catch frames whose entry cp_count is above the current cp_count -- their
+; protected goal has been fully backtracked past. Called from @backtrack.
+define void @wam_catch_trim(i32 %cur_cp_count) {
+entry:
+  br label %loop
+loop:
+  %cnt = load i32, i32* @wam_catch_count
+  %empty = icmp sle i32 %cnt, 0
+  br i1 %empty, label %done, label %check
+check:
+  %top = sub i32 %cnt, 1
+  %frames = load %WamCatchFrame*, %WamCatchFrame** @wam_catch_ptr
+  %f = getelementptr %WamCatchFrame, %WamCatchFrame* %frames, i32 %top
+  %cc_s = getelementptr %WamCatchFrame, %WamCatchFrame* %f, i32 0, i32 6
+  %cc = load i32, i32* %cc_s
+  %stale = icmp sgt i32 %cc, %cur_cp_count
+  br i1 %stale, label %popone, label %done
+popone:
+  store i32 %top, i32* @wam_catch_count
+  br label %loop
+done:
+  ret void
+}
+
+; Push a catch frame snapshotting the current VM marks.
+define void @wam_catch_push(%WamState* %vm, %Value %catcher, %Value %recovery, i32 %return_pc) {
+entry:
+  %count = load i32, i32* @wam_catch_count
+  %cap = load i32, i32* @wam_catch_cap
+  %need = icmp sge i32 %count, %cap
+  br i1 %need, label %grow, label %have
+grow:
+  %cap2 = mul i32 %cap, 2
+  %small = icmp slt i32 %cap2, 8
+  %newcap = select i1 %small, i32 8, i32 %cap2
+  %oldp = load %WamCatchFrame*, %WamCatchFrame** @wam_catch_ptr
+  %oldraw = bitcast %WamCatchFrame* %oldp to i8*
+  %elsz = ptrtoint %WamCatchFrame* getelementptr (%WamCatchFrame, %WamCatchFrame* null, i32 1) to i64
+  %nc64 = sext i32 %newcap to i64
+  %bytes = mul i64 %elsz, %nc64
+  %newraw = call i8* @realloc(i8* %oldraw, i64 %bytes)
+  %newp = bitcast i8* %newraw to %WamCatchFrame*
+  store %WamCatchFrame* %newp, %WamCatchFrame** @wam_catch_ptr
+  store i32 %newcap, i32* @wam_catch_cap
+  br label %have
+have:
+  %frames = load %WamCatchFrame*, %WamCatchFrame** @wam_catch_ptr
+  %slot = getelementptr %WamCatchFrame, %WamCatchFrame* %frames, i32 %count
+  %c_s = getelementptr %WamCatchFrame, %WamCatchFrame* %slot, i32 0, i32 0
+  store %Value %catcher, %Value* %c_s
+  %r_s = getelementptr %WamCatchFrame, %WamCatchFrame* %slot, i32 0, i32 1
+  store %Value %recovery, %Value* %r_s
+  %ts_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %ts = load i32, i32* %ts_p
+  %tm_s = getelementptr %WamCatchFrame, %WamCatchFrame* %slot, i32 0, i32 2
+  store i32 %ts, i32* %tm_s
+  %hs_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs = load i32, i32* %hs_p
+  %hm_s = getelementptr %WamCatchFrame, %WamCatchFrame* %slot, i32 0, i32 3
+  store i32 %hs, i32* %hm_s
+  %ss_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ss = load i32, i32* %ss_p
+  %ss_s = getelementptr %WamCatchFrame, %WamCatchFrame* %slot, i32 0, i32 4
+  store i32 %ss, i32* %ss_s
+  %cpv_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
+  %cpv = load i32, i32* %cpv_p
+  %scp_s = getelementptr %WamCatchFrame, %WamCatchFrame* %slot, i32 0, i32 5
+  store i32 %cpv, i32* %scp_s
+  %cpn_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_p
+  %cc_s = getelementptr %WamCatchFrame, %WamCatchFrame* %slot, i32 0, i32 6
+  store i32 %cpn, i32* %cc_s
+  %rpc_s = getelementptr %WamCatchFrame, %WamCatchFrame* %slot, i32 0, i32 7
+  store i32 %return_pc, i32* %rpc_s
+  %newcount = add i32 %count, 1
+  store i32 %newcount, i32* @wam_catch_count
+  ret void
+}
+
+; catch(Goal, Catcher, Recovery): A1=Goal, A2=Catcher, A3=Recovery. Push a
+; frame, then meta-call Goal (reg 0 already holds it) with continuation
+; return_pc. If Goal cannot be dispatched, pop the frame and fail.
+define i1 @wam_catch_setup(%WamState* %vm, i32 %return_pc) {
+entry:
+  %catcher = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %recovery = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  call void @wam_catch_push(%WamState* %vm, %Value %catcher, %Value %recovery, i32 %return_pc)
+  %ok = call i1 @wam_dispatch_meta_call(%WamState* %vm, i32 1, i32 %return_pc)
+  br i1 %ok, label %done, label %goalfail
+done:
+  ret i1 true
+goalfail:
+  %cnt = load i32, i32* @wam_catch_count
+  %pos = icmp sgt i32 %cnt, 0
+  br i1 %pos, label %pop, label %ret
+pop:
+  %dec = sub i32 %cnt, 1
+  store i32 %dec, i32* @wam_catch_count
+  br label %ret
+ret:
+  ret i1 false
+}
+
+; throw(Ball): deep-copy the ball durably, then unwind to the nearest catch
+; frame whose catcher unifies with it and run Recovery. If no frame matches,
+; halt the computation (uncaught).
+define i1 @wam_throw(%WamState* %vm) {
+entry:
+  %a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %ball = call %Value @wam_dyn_copy_durable(%WamState* %vm, %Value %a1)
+  store %Value %ball, %Value* @wam_ball
+  br label %loop
+loop:
+  %cnt = load i32, i32* @wam_catch_count
+  %none = icmp sle i32 %cnt, 0
+  br i1 %none, label %uncaught, label %try
+try:
+  %top = sub i32 %cnt, 1
+  %frames = load %WamCatchFrame*, %WamCatchFrame** @wam_catch_ptr
+  %f = getelementptr %WamCatchFrame, %WamCatchFrame* %frames, i32 %top
+  %tm_s = getelementptr %WamCatchFrame, %WamCatchFrame* %f, i32 0, i32 2
+  %tm = load i32, i32* %tm_s
+  call void @unwind_trail(%WamState* %vm, i32 %tm)
+  %hm_s = getelementptr %WamCatchFrame, %WamCatchFrame* %f, i32 0, i32 3
+  %hm = load i32, i32* %hm_s
+  %hs_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  store i32 %hm, i32* %hs_p
+  %ss_s = getelementptr %WamCatchFrame, %WamCatchFrame* %f, i32 0, i32 4
+  %ss = load i32, i32* %ss_s
+  %ss_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  store i32 %ss, i32* %ss_p
+  %cc_s = getelementptr %WamCatchFrame, %WamCatchFrame* %f, i32 0, i32 6
+  %cc = load i32, i32* %cc_s
+  %cpn_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  store i32 %cc, i32* %cpn_p
+  %scp_s = getelementptr %WamCatchFrame, %WamCatchFrame* %f, i32 0, i32 5
+  %scp = load i32, i32* %scp_s
+  call void @wam_set_cp(%WamState* %vm, i32 %scp)
+  store i32 %top, i32* @wam_catch_count
+  %catcher_s = getelementptr %WamCatchFrame, %WamCatchFrame* %f, i32 0, i32 0
+  %catcher = load %Value, %Value* %catcher_s
+  %ballv = load %Value, %Value* @wam_ball
+  %match = call i1 @wam_unify_value(%WamState* %vm, %Value %catcher, %Value %ballv)
+  br i1 %match, label %recover, label %loop
+recover:
+  %rec_s = getelementptr %WamCatchFrame, %WamCatchFrame* %f, i32 0, i32 1
+  %rec = load %Value, %Value* %rec_s
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %rec)
+  %rpc_s = getelementptr %WamCatchFrame, %WamCatchFrame* %f, i32 0, i32 7
+  %rpc = load i32, i32* %rpc_s
+  call void @wam_set_halted(%WamState* %vm, i1 false)
+  %rok = call i1 @wam_dispatch_meta_call(%WamState* %vm, i32 1, i32 %rpc)
+  ret i1 %rok
+uncaught:
+  call void @wam_set_halted(%WamState* %vm, i1 true)
+  ret i1 false
 }

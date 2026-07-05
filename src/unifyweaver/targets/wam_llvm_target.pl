@@ -1880,6 +1880,11 @@ wam_llvm_project_predicate_targets(PI, Options, Targets) :-
         ( member(TargetPred/TargetArity, TargetPAs),
           TargetPred \== call,
           \+ wam_target:is_builtin_pred(TargetPred, TargetArity),
+          % Skip runtime-handled control/db predicates (retract/1, catch/3,
+          % throw/1). catch/3 in particular is flagged both built_in AND
+          % interpreted in SWI (it has a Prolog definition using $catch), so
+          % without this it would be pulled in and fail to compile.
+          \+ wam_special_call_pred(TargetPred, TargetArity),
           current_predicate(Module:TargetPred/TargetArity),
           functor(TargetHead, TargetPred, TargetArity),
           predicate_property(Module:TargetHead, interpreted)
@@ -3534,17 +3539,35 @@ dealloc.done:
   ret i1 true').
 
 wam_llvm_case('do_call',
-'  ; op1 = label index, -1 for meta-call, or -3 for retract/1; op2 = arity
+'  ; op1 = label index, -1 meta-call, -3 retract/1, -5 catch/3, -6 throw/1
   %call.label = trunc i64 %op1 to i32
   %call.pc = call i32 @wam_get_pc(%WamState* %vm)
   %call.next = add i32 %call.pc, 1
   %call.is_retract = icmp eq i32 %call.label, -3
-  br i1 %call.is_retract, label %call.retract, label %call.check_meta
+  br i1 %call.is_retract, label %call.retract, label %call.check_catch
 
 call.retract:
   ; retract/1: the pattern is in reg 0; consult + remove + backtrack.
   %call.retract_ok = call i1 @wam_dyn_retract_consult(%WamState* %vm, i32 %call.next)
   br i1 %call.retract_ok, label %call.meta_done, label %call.fail
+
+call.check_catch:
+  %call.is_catch = icmp eq i32 %call.label, -5
+  br i1 %call.is_catch, label %call.catch, label %call.check_throw
+
+call.catch:
+  ; catch/3: A1=Goal, A2=Catcher, A3=Recovery; push a frame and run Goal.
+  %call.catch_ok = call i1 @wam_catch_setup(%WamState* %vm, i32 %call.next)
+  br i1 %call.catch_ok, label %call.meta_done, label %call.fail
+
+call.check_throw:
+  %call.is_throw = icmp eq i32 %call.label, -6
+  br i1 %call.is_throw, label %call.throw, label %call.check_meta
+
+call.throw:
+  ; throw/1: unwind to the nearest matching catch frame and run Recovery.
+  %call.throw_ok = call i1 @wam_throw(%WamState* %vm)
+  br i1 %call.throw_ok, label %call.meta_done, label %call.fail
 
 call.check_meta:
   %call.is_meta = icmp slt i32 %call.label, 0
@@ -3578,16 +3601,33 @@ call.fail:
   ret i1 false').
 
 wam_llvm_case('do_execute',
-'  ; op1 = label index, -1 for meta-call, or -3 for retract/1
+'  ; op1 = label index, -1 meta-call, -3 retract/1, -5 catch/3, -6 throw/1
   %exec.label = trunc i64 %op1 to i32
   %exec.is_retract = icmp eq i32 %exec.label, -3
-  br i1 %exec.is_retract, label %exec.retract, label %exec.check_meta
+  br i1 %exec.is_retract, label %exec.retract, label %exec.check_catch
 
 exec.retract:
   ; retract/1 in last-call position: continuation is the current CP.
   %exec.rpc = call i32 @wam_get_cp(%WamState* %vm)
   %exec.retract_ok = call i1 @wam_dyn_retract_consult(%WamState* %vm, i32 %exec.rpc)
   br i1 %exec.retract_ok, label %exec.meta_done, label %exec.fail
+
+exec.check_catch:
+  %exec.is_catch = icmp eq i32 %exec.label, -5
+  br i1 %exec.is_catch, label %exec.catch, label %exec.check_throw
+
+exec.catch:
+  %exec.crpc = call i32 @wam_get_cp(%WamState* %vm)
+  %exec.catch_ok = call i1 @wam_catch_setup(%WamState* %vm, i32 %exec.crpc)
+  br i1 %exec.catch_ok, label %exec.meta_done, label %exec.fail
+
+exec.check_throw:
+  %exec.is_throw = icmp eq i32 %exec.label, -6
+  br i1 %exec.is_throw, label %exec.throw, label %exec.check_meta
+
+exec.throw:
+  %exec.throw_ok = call i1 @wam_throw(%WamState* %vm)
+  br i1 %exec.throw_ok, label %exec.meta_done, label %exec.fail
 
 exec.check_meta:
   %exec.is_meta = icmp slt i32 %exec.label, 0
@@ -18524,14 +18564,28 @@ wam_instruction_to_llvm_literal(retry_me_else(L), _) :-
 wam_meta_call_label(Label) :-
     wam_meta_call_total_arity(Label, _).
 
-%% wam_retract_call_label(+Label) is semidet.
-%  retract/1 lowers to a call/execute whose op1 is the sentinel -3, which the
-%  runtime routes to the nondet retract iterator (@wam_dyn_retract_consult).
-%  Recognised here so "retract/1" is not treated as an unknown static label
-%  (which would warn / default to index 0). See PLAWK_DYNAMIC_DB.md.
-wam_retract_call_label(Label) :-
+%% wam_special_call_label(+Label, -Op1Sentinel, -Arity) is semidet.
+%  A handful of control/db predicates have no compiled label; they lower to a
+%  call/execute whose op1 is a negative sentinel the runtime routes to a
+%  dedicated handler (rather than being treated as an unknown static label,
+%  which would warn / default to index 0). See PLAWK_DYNAMIC_DB.md.
+%    retract/1 -> -3 (nondet retract iterator)
+%    catch/3   -> -5 (push a catch frame, meta-call Goal)
+%    throw/1   -> -6 (unwind to the nearest matching catch frame)
+wam_special_call_label(Label, Sentinel, Arity) :-
     ( atom(Label) -> atom_string(Label, S) ; S = Label ),
-    S == "retract/1".
+    wam_special_call_sentinel_(S, Sentinel, Arity).
+
+wam_special_call_sentinel_("retract/1", -3, 1).
+wam_special_call_sentinel_("catch/3",   -5, 3).
+wam_special_call_sentinel_("throw/1",   -6, 1).
+
+%% wam_special_call_pred(+Pred, +Arity) is semidet.
+%  Pred/Arity names a runtime-handled special call (retract/catch/throw) that
+%  must not be pulled into a project as a compilable dependency.
+wam_special_call_pred(Pred, Arity) :-
+    format(atom(PA), '~w/~w', [Pred, Arity]),
+    wam_special_call_label(PA, _, _).
 
 wam_meta_call_total_arity(Label, Arity) :-
     (   atom(Label)
@@ -18550,17 +18604,16 @@ wam_meta_call_total_arity(Label, Arity) :-
 %  line comment to end-of-line, which eats the comma separator in array
 %  constants and produces a parser error.
 wam_instruction_to_llvm_literal(call(P, N), LabelMap, Lit) :- !,
-    (   wam_retract_call_label(P)
-    ->  LabelIdx = -3
+    (   wam_special_call_label(P, LabelIdx, _)
+    ->  true
     ;   wam_meta_call_label(P)
     ->  LabelIdx = -1
     ;   lookup_label_index(P, LabelMap, LabelIdx)
     ),
     format(atom(Lit), '{ i32 18, i64 ~w, i64 ~w }', [LabelIdx, N]).
 wam_instruction_to_llvm_literal(execute(P), LabelMap, Lit) :- !,
-    (   wam_retract_call_label(P)
-    ->  LabelIdx = -3,
-        Arity = 1
+    (   wam_special_call_label(P, LabelIdx, Arity)
+    ->  true
     ;   wam_meta_call_label(P)
     ->  LabelIdx = -1,
         wam_meta_call_total_arity(P, Arity)
@@ -20862,8 +20915,8 @@ lookup_label_index(LabelName, LabelMap, Options, Index) :-
 wam_line_to_llvm_literal_resolved(["call", P, N], LabelMap, Lit) :- !,
     clean_comma(P, CP), clean_comma(N, CN),
     (   number_string(Arity, CN) -> true ; Arity = 0 ),
-    (   wam_retract_call_label(CP)
-    ->  LabelIdx = -3
+    (   wam_special_call_label(CP, LabelIdx, _)
+    ->  true
     ;   wam_meta_call_label(CP)
     ->  LabelIdx = -1
     ;   lookup_label_index(CP, LabelMap, LabelIdx)
@@ -20871,8 +20924,8 @@ wam_line_to_llvm_literal_resolved(["call", P, N], LabelMap, Lit) :- !,
     format(atom(Lit), '%Instruction { i32 18, i64 ~w, i64 ~w }', [LabelIdx, Arity]).
 wam_line_to_llvm_literal_resolved(["execute", P], LabelMap, Lit) :- !,
     clean_comma(P, CP),
-    (   wam_retract_call_label(CP)
-    ->  LabelIdx = -3, Arity = 1
+    (   wam_special_call_label(CP, LabelIdx, Arity)
+    ->  true
     ;   wam_meta_call_label(CP)
     ->  LabelIdx = -1,
         wam_meta_call_total_arity(CP, Arity)
@@ -21440,10 +21493,15 @@ wam_object_encode(Predicates, Options0, Codes) :-
                    MetaRows, Codes).
 
 %% wamo_has_meta_call(+EncInstrs) is semidet.
-%  True if any encoded call/execute is a meta-call (op1 = -1).
+%  True if any encoded call/execute dispatches a goal through the object's
+%  meta-call table: a plain meta-call (op1 = -1), or catch/3 (op1 = -5) whose
+%  Goal and Recovery are meta-dispatched, or throw/1 (op1 = -6) whose recovery
+%  runs via the same path. Without the table @wam_dispatch_meta_call has
+%  nothing to resolve against and the goal fails. See PLAWK_DYNAMIC_DB.md.
 wamo_has_meta_call(EncInstrs) :-
-    member(enc(T, -1, _, _), EncInstrs),
-    ( T =:= 18 ; T =:= 19 ), !.
+    member(enc(T, Op1, _, _), EncInstrs),
+    ( T =:= 18 ; T =:= 19 ),
+    ( Op1 =:= -1 ; Op1 =:= -5 ; Op1 =:= -6 ), !.
 
 %% wamo_meta_rows(+LabelMap, +ATab0, -ATab1, +FTab, -Rows)
 %  Build the object's meta-call dispatch rows: one per predicate head label
@@ -21631,16 +21689,16 @@ wamo_enc(["builtin_call", Op, N], _, A, A, F, F, enc(21, Id, Num, none)) :- !,
 wamo_enc(["call", P, N], LabelMap, A, A, F, F, enc(18, Idx, Arity, none)) :- !,
     clean_comma(P, CP), clean_comma(N, CN),
     ( number_string(Arity, CN) -> true ; Arity = 0 ),
-    (   wam_retract_call_label(CP)
-    ->  Idx = -3
+    (   wam_special_call_label(CP, Idx, _)
+    ->  true
     ;   wam_meta_call_label(CP)
     ->  Idx = -1
     ;   wamo_label(CP, LabelMap, Idx)
     ).
 wamo_enc(["execute", P], LabelMap, A, A, F, F, enc(19, Idx, Op2, none)) :- !,
     clean_comma(P, CP),
-    (   wam_retract_call_label(CP)
-    ->  Idx = -3, Op2 = 1
+    (   wam_special_call_label(CP, Idx, Op2)
+    ->  true
     ;   wam_meta_call_label(CP)
     ->  Idx = -1, wam_meta_call_total_arity(CP, Op2)
     ;   wamo_label(CP, LabelMap, Idx), Op2 = 0

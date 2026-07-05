@@ -158,6 +158,42 @@ each solution removes one clause and backtracking removes the next. Works in
 call position (`retract(X), More`) and last-call position, and drives cleanly
 under `findall(X, retract(p(X)), L)` to remove every match.
 
+## catch/3 and throw/1 (milestone 3c)
+
+The last runtime primitive before the eval surface, and — like the store — it
+turned out not to need cross-object linkage. `catch/3` and `throw/1` aren't
+`is_builtin_pred`, so they lower to `call`/`execute` with op1 sentinels **−5**
+(catch) and **−6** (throw), which `do_call` / `do_execute` route to dedicated
+handlers. State lives in a **process-global side stack of `%WamCatchFrame`**
+(separate from the choice-point stack), reset per top-level query in
+`@wam_prepare_call`.
+
+- `@wam_catch_setup` reads A2/A3 (Catcher, Recovery), pushes a frame
+  snapshotting the VM marks (trail / heap / stack / cp / cp_count) and the
+  post-catch continuation PC, then meta-calls Goal (in reg 0) — reusing
+  `@wam_dispatch_meta_call`, so Goal resolves against the object's meta table /
+  the clause store exactly like `call/1`. (This is why `wamo_has_meta_call`
+  treats −5/−6 as needing the meta table built.)
+- `@wam_throw` deep-copies the ball durably (`@wam_dyn_copy_durable`, so it
+  survives the heap unwind), then walks the side stack top-down: for each frame
+  it restores the VM to that frame's marks and unifies the catcher with the
+  ball; on a match it runs Recovery via the meta-call and continues at the
+  frame's return PC, otherwise it keeps unwinding. No matching frame → the throw
+  is uncaught and the computation fails (halts).
+
+Goal, Catcher and Recovery are built before `catch/3` runs, so they sit below
+the frame's heap mark and survive the unwind; the catcher's bindings are made
+*after* the unwind and are the ones Recovery sees.
+
+**Scoping limitation (documented):** true ISO `catch/3` protects only Goal. A
+frame here is popped on backtracking past it and on the per-query reset, but on
+a *forward* path a frame can linger after Goal has exited — so a `throw`
+sequenced after a `catch` in the same clause body, before any backtrack, may be
+caught by it. This is correct for the dominant error-boundary usage
+(`catch(work(X), E, handle(E))`); exact ISO forward-scoping is a follow-up.
+Recovery is run through the meta-call, so (like `call/1`) it should be a
+predicate goal, not a bare builtin.
+
 ## Roadmap
 
 - **PR 1:** durable store; `assertz`/`asserta`/`retractall`; calling ground
@@ -165,9 +201,11 @@ under `findall(X, retract(p(X)), L)` to remove every match.
 - **PR 2:** compiler rewrite of direct `:- dynamic` calls to `call/1`
   (`dynamic_store_goal/1`); nondet `retract/1` as an `agg_type = −4` CP
   iterator (op1 = −3 sentinel). AOT + loaded-object tests.
-- **PR 3 (later):** rule bodies (`assertz((H :- B))`) — a body interpreter for
-  asserted clauses. The true long pole; likely unneeded for the eval bootstrap
-  if the compiler's dynamic predicates are all fact tables.
+- **Milestone 3c:** `catch/3` + `throw/1` (side stack of catch frames, op1
+  sentinels −5/−6). Loaded-object tests.
+- **PR 3 (later):** rule bodies (`assertz((H :- B))`) — a body meta-interpreter
+  for asserted clauses. The true long pole; likely unneeded for the eval
+  bootstrap if the compiler's dynamic predicates are all fact tables.
 - Follow-ups / optimizations: `call/N` partial-application consult (the
   iterator currently reads the complete goal from reg 0); a functor+arity index
   over the store (the scan is O(n) per backtrack); a variable-map durable copy
