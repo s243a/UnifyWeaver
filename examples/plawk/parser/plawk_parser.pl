@@ -824,6 +824,9 @@ action(Action) -->
     break_action(Action),
     !.
 action(Action) -->
+    dynrec_view_action(Action),
+    !.
+action(Action) -->
     dynrec_bind_action(Action),
     !.
 action(Action) -->
@@ -906,6 +909,31 @@ break_action(break) -->
 %  scalar half. The call is a bare dyncall(...) (default entry) or a
 %  dyncall@name(...) (named entry); the type list is whitespace-separated
 %  i64 / f64 tokens (one per bound variable).
+%% dynrec_view_action(-Action)//
+%
+%  Structured-return record view: the returned compound becomes the current
+%  record for a scoped block, so `$1`,`$2` read its fields like a BINFMT
+%  line.
+%
+%      dyncall@rec($1) as (i64 f64) { total += $1 ; sum += $2 }
+%
+%  desugars (in codegen) to a destructure into hidden temporaries plus the
+%  block body with `$N` rewritten to the Nth temporary -- so it rides the
+%  same machinery as the explicit destructure, no field-pointer repoint.
+dynrec_view_action(dynrec_view(Call, Types, Body)) -->
+    dynrec_call_expr(Call),
+    ws,
+    "as",
+    identifier_boundary,
+    ws,
+    "(",
+    ws,
+    dynrec_type_list(Types),
+    ws,
+    ")",
+    ws,
+    action_block(Body).
+
 dynrec_bind_action(dynrec_bind(Vars, Call, Types)) -->
     "(",
     ws,

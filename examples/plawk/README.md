@@ -427,7 +427,10 @@ named entry's output as a double or a byte slice, just like the bare
 than a scalar, destructure it into typed variables:
 `{ (n, half) = dyncall@rec($1) as (i64 f64) }` calls `rec`, expects its
 output to be a 2-arg compound, and binds field 0 to the i64 scalar `n` and
-field 1 to the f64 scalar `half` (a failed call yields zeros). Bounded
+field 1 to the f64 scalar `half` (a failed call yields zeros). The awk-like
+**record view** reads the return like the current record inside a block:
+`{ dyncall@rec($1) as (i64 f64) { total += $1 ; sum += $2 } }` makes `$1`,
+`$2` the returned record's fields for that block. Bounded
 repetition handles records containing a
 list: `BINFMT = "i64 rep4(i64 f64)"` declares an 8-byte element count
 (at most 4) followed by that many (i64, f64) elements. The count is an
