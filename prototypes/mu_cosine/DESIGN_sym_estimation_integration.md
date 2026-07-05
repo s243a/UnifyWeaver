@@ -60,11 +60,20 @@ sources  →  JointPosterior (calibrated, held-out)  →  P(relation | μ-vector
 
 ## What is genuinely new: the distance (sibling) source
 
-The dual-judge work's lasting value is **not** the fusion mechanism — it's a **source**:
+> **TESTED — `1/d` does NOT earn its keep (2026-07-05, `REPORT_mu_posterior_dist.md`).** On 880 LLM-labelled
+> Wikipedia relation pairs, the with-vs-without-`1/d` ablation of the calibrated joint head shows **no gain**
+> (AURC CIs overlap on both node-disjoint and random splits; acc/ECE flat-to-worse). Reason: on Wikipedia
+> *categories* `1/d` correlates **+0.50 with e5** (graph distance ≈ topical similarity) — it is **redundant with
+> e5**, not decorrelated. The claim below was the *hypothesis*; it lost. What *did* validate: **the joint head
+> beats the factored PoE** (log-loss 1.08 vs 1.55/1.26, ECE 0.09 vs 0.16/0.12) — the course-correction's core.
 
-- **`1/d` (structural-embedding distance) is the one input decorrelated from the model/e5 cluster.** It was
-  trained *separately* on graph distance (`structural_embedding.py`, reciprocal target), so it is not a
-  re-reading of e5.
+The dual-judge work's hypothesised lasting value was a **source** (below) — but the test above shows it's
+redundant with e5. The real, validated win is the *estimator* (joint head > PoE), not this source:
+
+- **`1/d` (structural-embedding distance) was expected to be decorrelated from the model/e5 cluster.** It is
+  trained *separately* on graph distance (`structural_embedding.py`, reciprocal target) — but empirically it
+  still correlates +0.50 with e5 on Wikipedia categories, so it is largely a re-reading of e5 *for this task*.
+  (Its unique contribution was over the vertical *memberships*, which e5 also covers — not over e5 itself.)
 - **It carries the lateral / sibling axis the model readouts structurally cannot.** Membership operators are
   vertical (ancestor↔descendant); *siblings have zero membership in either direction* yet are related. Measured
   (14 562 pairs): **sibling/cousin = 37 % of pairs, 0 % membership coverage**, real relatedness (target μ 0.13
