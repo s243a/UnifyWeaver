@@ -37,8 +37,18 @@ Metric: **base simplewiki SYM held-out corr** (1074 positives, disjoint from the
   training across several real judge tags already spans views.
 - **If you do use a constructed blend, it must beat a no-blend control across seeds** before you credit it, and
   **random-λ needs a stability guard** (warmup, λ schedule, or a floor).
-- Not overturned: the *estimator* wins from earlier (joint head > PoE), and the base fine-tune's +0.79 SYM is a
-  genuine, reproducible improvement over model_prod's +0.41 — just not for the reason hypothesised.
+- Not overturned: the *estimator* win from earlier (joint head > PoE).
+
+## ⚠ The +0.79 is likely an LLM-ALIGNMENT artifact, not a general SYM gain (user, 2026-07-05)
+
+The base SYM held-out **eval targets are haiku-scored (LLM)**, and the fine-tune added **LLM data** (gpt-5.5-low)
++ more passes over the base haiku pairs. So "+0.41 → +0.79" measures the model getting better at **the LLM's
+notion of SYM** — which is exactly what an LLM-scored eval rewards. This is a **train/eval-share-a-judge
+confound**: more LLM training data → higher LLM-based eval, almost by construction (and why *all* arms rose
+together). It does **not** establish a *general* SYM improvement. To claim that, evaluate against an
+**independent, non-LLM** target — graph-structural relatedness on held-out pairs, a human check, or a downstream
+task (retrieval / filing recall). Until then, read +0.79 as "better aligned to the LLM SYM judge," scoped, not
+"better SYM."
 
 Data: `gen_wiki_relation_pairs.py` → `score_with_codex.py` → `convert_scored_to_graded.py` + `emit_blend_judge.py`.
 Sweep: `/tmp/mu_data/blend_sweep.sh`.

@@ -33,6 +33,11 @@ for "confidence weighting." This encodes lessons the project learned the slow wa
 5. **Measure on HELD-OUT, node-disjoint splits — never on training pairs.** Correlating a model's own readouts
    against a target it was trained on inflates *and can reorder* effect sizes (a readout ordering measured on
    training pairs can flip held-out). Split so no node appears in both train and held.
+6. **Don't let the eval share a judge with the training data.** If the eval targets are LLM-scored and you train
+   on more LLM data, the metric rises *by alignment to that judge* — not necessarily a real quality gain (a
+   train/eval-share-a-judge confound; `REPORT_blend_judge_sweep.md` — a +0.41→+0.79 SYM "gain" on a haiku-scored
+   eval, driven by adding LLM training data). To claim a *general* improvement, evaluate against an
+   **independent** target (a different judge, graph-structural, human, or a downstream task).
 
 ## The workflow (what "doing it right" looks like)
 
