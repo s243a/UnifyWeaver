@@ -280,7 +280,7 @@ byte-return primitive and the "output is a term, not a scalar" plumbing),
 and benefits from item 1 (float constants) for grammars that build float
 fields.
 
-### 5. Source-`eval` via the compiler-as-`.wamo` bootstrap — *largest*
+### 5. Source-`eval` via the compiler-as-`.wamo` bootstrap — *largest, STARTED*
 
 **What:** compile a grammar from **source text at runtime** — `g =
 compile($1); total += dyncall_at(g, $2)` — by shipping the WAM compiler
@@ -296,6 +296,24 @@ you-use holds: the compiler-object only loads when an `eval` surface is used.
 subset — the compiler leans on `findall`/`assert`/`read_term`/meta-call,
 which are outside the subset today. Items 1 (float constants) and the
 broader builtin/subset work are stepping stones; this is genuinely last.
+
+**Status:** design + first subset increment landed. The full plan and its
+six milestones live in [PLAWK_EVAL_BOOTSTRAP.md](./PLAWK_EVAL_BOOTSTRAP.md).
+Item 5 is a **subset-expansion campaign** with the bootstrap as its payoff;
+each milestone is its own PR(s) and richer hand-written grammars become
+loadable along the way.
+
+- **Milestone 1 — clause indexing — LANDED.** All clause-indexing dispatch
+  (`switch_on_term`, `switch_on_structure`, `switch_on_constant`,
+  `switch_on_constant_a2`) is now in the loadable `.wamo` subset as
+  nop-fallthroughs. Safe because the tier-2 compiler emits every indexing
+  instruction *inline at the head of the predicate*, immediately before the
+  `try_me_else` chain it dispatches into; dropping the switch and falling
+  through runs every clause in order — correct, just unindexed. This lets
+  atom-keyed multi-clause predicates (pervasive in the compiler) load.
+- **Milestones 2–6** (meta-call in objects, the compiler's builtin closure,
+  byte-buffer output, the `eval`/`compile` surface, self-host) — see the
+  bootstrap doc.
 
 ## The binary-return question, specifically
 

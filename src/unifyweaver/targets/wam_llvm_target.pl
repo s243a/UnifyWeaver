@@ -20181,25 +20181,28 @@ wamo_enc(["retry_me_else", L], LabelMap, A, A, F, F, enc(23, Idx, 0, none)) :- !
 wamo_enc(["jump", L], LabelMap, A, A, F, F, enc(32, Idx, 0, none)) :- !,
     clean_comma(L, CL), lookup_label_index(CL, LabelMap, Idx).
 
-% type-based dispatch: nop fallthrough (tag 26), matching the interpreter's
-% runtime semantics. The try_me_else / retry_me_else chain still runs, so
-% the predicate is correct (just unindexed). No switch table is needed.
-wamo_enc(["switch_on_term" | _],      _, A, A, F, F, enc(26, 0, 0, none)) :- !.
-wamo_enc(["switch_on_term_a2" | _],   _, A, A, F, F, enc(26, 0, 0, none)) :- !.
-wamo_enc(["switch_on_structure" | _], _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+% Indexing dispatch: nop fallthrough (tag 26), matching the interpreter's
+% runtime semantics. Every indexing instruction the tier-2 compiler emits
+% sits INLINE at the head of the predicate, immediately before the
+% try_me_else / retry_me_else clause chain (see the layout in
+% PLAWK_EVAL_BOOTSTRAP.md); the switch entries only point deeper into that
+% same chain. So dropping the switch and falling through to try_me_else
+% runs every clause in order -- correct, just unindexed. This includes
+% switch_on_constant / _a2 (first/second-argument constant indexing): a
+% loaded object runs them unindexed, exactly as it already does for
+% switch_on_term. Lifting these is the first subset-expansion step toward
+% the eval bootstrap (item 5) -- the WAM compiler's own predicates lean
+% heavily on atom-keyed clause indexing.
+wamo_enc(["switch_on_term" | _],         _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+wamo_enc(["switch_on_term_a2" | _],      _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+wamo_enc(["switch_on_structure" | _],    _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+wamo_enc(["switch_on_constant" | _],     _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+wamo_enc(["switch_on_constant_a2" | _],  _, A, A, F, F, enc(26, 0, 0, none)) :- !.
 wamo_enc(["try" | _],   _, A, A, F, F, enc(26, 0, 0, none)) :- !.
 wamo_enc(["retry" | _], _, A, A, F, F, enc(26, 0, 0, none)) :- !.
 wamo_enc(["trust" | _], _, A, A, F, F, enc(26, 0, 0, none)) :- !.
 
-% everything else is outside the slice-1 loadable subset
-wamo_enc(["switch_on_constant" | _], _, _, _, _, _, _) :-
-    throw(error(wamo_unsupported(switch_on_constant),
-        context(write_wam_object,
-            'first-argument constant indexing needs a switch table (not in slice 1)'))).
-wamo_enc(["switch_on_constant_a2" | _], _, _, _, _, _, _) :-
-    throw(error(wamo_unsupported(switch_on_constant_a2),
-        context(write_wam_object,
-            'second-argument constant indexing needs a switch table (not in slice 1)'))).
+% everything else is outside the loadable WAM object subset
 wamo_enc(Parts, _, _, _, _, _, _) :-
     throw(error(wamo_unsupported(instruction(Parts)),
         context(write_wam_object,

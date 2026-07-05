@@ -35,6 +35,14 @@ makerecs(R) :- R = rs(7, hello).
 % (@wam_object_call_assoc): each K-V is inserted into an i64 assoc table.
 tally(R) :- R = [1-100, 2-200, 3-30].
 
+% atom-first-argument clause indexing: coltab/2 compiles to a
+% switch_on_constant. pick/1 looks up `green`. The loader nops the switch
+% and runs the try_me_else chain (unindexed but correct) -> 2.
+coltab(red, 1).
+coltab(green, 2).
+coltab(blue, 3).
+pick(R) :- coltab(green, R).          % -> 2
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -200,6 +208,21 @@ test(assoc_return_populates_table,
     build_record_assoc_host(Dir, Host),
     run_host(Host, Wamo, Out, 0),
     assertion(Out == "100\n200\n30\n"),
+    !.
+
+% Atom-first-argument indexing (switch_on_constant) is now loadable: the
+% loader nops the switch and runs the clause chain unindexed. pick/1 over
+% the atom-keyed coltab/2 returns 2 -- the first subset-expansion step for
+% the eval bootstrap (item 5).
+test(switch_on_constant_loads_and_runs,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'pick.wamo', Wamo),
+    write_wam_object([user:pick/1, user:coltab/2], [wamo_entry(pick/1)], Wamo),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    run_host(Host, Wamo, Out, 0),
+    assertion(Out == "2\n"),
     !.
 
 :- end_tests(wam_object).
