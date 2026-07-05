@@ -47,9 +47,11 @@ The loadable subset today: `try_me_else`/`retry_me_else` chains,
 `get`/`put`/`set`/`unify` variable+value+constant (integer, atom, float),
 `get`/`put_list`, `get`/`put_structure`, `allocate`/`deallocate`,
 `call`/`execute` (**including `call/N` meta-calls** — milestone 2, landed),
-`proceed`, `builtin_call`, `cut`/`get_level`/`cut_ite`, `jump`, and **all
+`proceed`, `builtin_call`, `cut`/`get_level`/`cut_ite`, `jump`, **all
 clause-indexing dispatch** — every `switch_on_*` variant, matched by prefix
-so the `_fallthrough` and `_a2` forms are covered too — as nop-fallthroughs.
+so the `_fallthrough` and `_a2` forms are covered too — as nop-fallthroughs,
+and **aggregate control** `begin_aggregate`/`end_aggregate` (milestone 3 —
+`findall`/`setof`/`bagof`/`aggregate_all`).
 
 ### Why indexing dispatch is a safe nop
 
@@ -100,14 +102,32 @@ independently useful (richer hand-written grammars load sooner).
    object. The table is only emitted for objects that actually contain a
    meta-call (pay-for-what-you-use). This is the spine of any grammar that
    calls a goal built at runtime — an interpreter or compiler.
-3. **The builtin closure the compiler needs.** `builtin_call` is already in
-   the subset, so a builtin works in a loaded object *if the host runtime
-   provides it*. Audit the compiler's builtin use (`findall`/`bagof`,
-   `assert`/`retract`, `read_term`/`term_to_atom`, `=..`, `functor`/`arg`,
-   `atom_codes`/`number_codes`, list ops) and confirm each is host-provided
-   and loader-safe; add any that are missing. `assert`/`retract` against a
-   loaded object's own dynamic predicates is the subtle one (mutable state in
-   an arena-rewound VM).
+3. **The builtin closure the compiler needs** — *audit done; aggregates
+   landed.* `builtin_call` is already in the subset, so a builtin works in a
+   loaded object *if the host runtime provides it AND the construct is in the
+   loadable subset*. The audit sorted the compiler's constructs into four
+   buckets by **how the tier-2 compiler lowers them**, which decides what
+   "make it loadable" means:
+
+   | Construct | Lowers to | Loadable now? |
+   |---|---|---|
+   | `is`/`=`/`==`/comparison, `functor`/`arg`/`=..`, `copy_term`, `atom_codes`/`number_codes`/`char_code`, `sub_atom`/`atom_concat`, `sort`/`msort`/`keysort`, `length`/`append`/`nth`/`reverse`, `sum_list` … | `builtin_call <id>` (id in `builtin_op_to_id`, host-implemented) | **yes** — already in the subset and loader-safe (operate on VM regs/heap + libc) |
+   | `findall`/`aggregate_all`, `setof`/`bagof` | `begin_aggregate`/`end_aggregate` (tags 28/29) | **yes, this PR** — opcodes lifted into the subset; setof/bagof additionally need `inline_bagof_setof(true)`, now the `.wamo` default |
+   | `assert`/`asserta`/`assertz`/`retract`, `term_to_atom`/`read_term`/`read_term_from_atom` | `builtin_call <name>` with **no `builtin_op_to_id` entry and no host runtime impl** (writer would emit the unknown-id 200) | **no** — genuinely unimplemented; needs new runtime builtins (milestone 3b). `assert`/`retract` against a loaded object's own clauses is the subtle one — mutable clause state in an arena-rewound VM |
+   | `catch`/`throw` | `execute catch/3` — a call to a runtime *library predicate*, not a builtin | **no** — the loaded object references `catch/3`, which lives in the host, not the object; needs cross-object/host predicate linkage (milestone 3c) |
+
+   **Landed here:** the aggregate opcodes, verified end-to-end — `findall`,
+   `setof`, `bagof` over a *user predicate* goal load and run from a `.wamo`
+   (the case a compiler actually hits, iterating over clauses). Also note a
+   **pre-existing host bug** surfaced by the audit: a *backtracking list
+   builtin as a findall goal* (e.g. `findall(X, member(X, L), _)`) segfaults
+   even in AOT-compiled host code — orthogonal to the loader, filed
+   separately, and not a blocker since compiler-style `findall` iterates over
+   predicates, not `member`.
+
+   **Remaining (3b/3c):** `assert`/`retract`/`term_to_atom`/`read_term` runtime
+   builtins, and `catch`/`throw` predicate linkage. These are the true long
+   pole for self-hosting the compiler.
 4. **Byte-buffer output from a grammar.** The compiler object must *emit*
    `.wamo` bytes. It returns them as an Atom/byte string (the item-2 blob
    bridge already carries bytes out); building that byte string inside the

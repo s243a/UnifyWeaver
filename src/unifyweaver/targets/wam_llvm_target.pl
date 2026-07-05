@@ -20086,7 +20086,17 @@ write_wam_object(Predicates, Options, OutFile) :-
 %% wam_object_encode(+Predicates, +Options, -Codes) is det.
 %
 %  Produce the .wamo byte stream (a list of 0..255 codes) in memory.
-wam_object_encode(Predicates, Options, Codes) :-
+wam_object_encode(Predicates, Options0, Codes) :-
+    % Lower bagof/setof through the aggregate path (begin_aggregate/
+    % end_aggregate) rather than as calls to a setof/3 library predicate --
+    % the same default write_wam_llvm_project uses. Without it, closure
+    % expansion tries to compile the (clause-less) setof/3 and the object
+    % fails to build; with it, and now that the aggregate opcodes are in the
+    % loadable subset, setof/bagof load and run like findall.
+    ( memberchk(inline_bagof_setof(_), Options0)
+    -> Options = Options0
+    ;  Options = [inline_bagof_setof(true) | Options0]
+    ),
     expand_wam_llvm_project_predicates(Predicates, Options, Expanded),
     wamo_classify(Expanded, Options, 0, Records),
     build_merged_labels(Records, NamePCPairs, LabelMap),
@@ -20320,6 +20330,25 @@ wamo_enc(["retry_me_else", L], LabelMap, A, A, F, F, enc(23, Idx, 0, none)) :- !
 % after the then/else arm). Self-relative label index, like try_me_else.
 wamo_enc(["jump", L], LabelMap, A, A, F, F, enc(32, Idx, 0, none)) :- !,
     clean_comma(L, CL), lookup_label_index(CL, LabelMap, Idx).
+
+% Aggregate control: findall / bagof / setof / aggregate_all. The tier-2
+% compiler brackets the collected goal with begin_aggregate/end_aggregate
+% (tags 28/29). Both operate purely on the VM's own choice-point stack,
+% registers, trail and aggregate accumulator -- no relocation, no
+% host-compile-time state -- and the shared @run_loop already dispatches
+% these tags, so a loaded object runs them exactly as the host does (no
+% loader change needed). op1 = agg-type id, op2 = (val_reg << 16) | res_reg,
+% mirroring begin_aggregate_lit/4. The 4-argument begin form carries a
+% setof/bagof witness that the encoding ignores, exactly as the AOT path does.
+wamo_enc(["begin_aggregate", TypeStr, ValRegStr, ResRegStr | _], _, A, A, F, F,
+         enc(28, TypeId, Op2, none)) :- !,
+    clean_comma(TypeStr, CT), clean_comma(ValRegStr, CV), clean_comma(ResRegStr, CR),
+    atom_string(CTAtom, CT), agg_type_id(CTAtom, TypeId),
+    atom_string(CVAtom, CV), reg_name_to_index(CVAtom, ValIdx),
+    atom_string(CRAtom, CR), reg_name_to_index(CRAtom, ResIdx),
+    Op2 is (ValIdx << 16) \/ ResIdx.
+wamo_enc(["end_aggregate", ValRegStr], _, A, A, F, F, enc(29, ValIdx, 0, none)) :- !,
+    clean_comma(ValRegStr, CV), atom_string(CVAtom, CV), reg_name_to_index(CVAtom, ValIdx).
 
 % Indexing dispatch: nop fallthrough (tag 26), matching the interpreter's
 % runtime semantics. Every indexing instruction the tier-2 compiler emits
