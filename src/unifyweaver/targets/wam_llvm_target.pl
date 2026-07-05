@@ -3772,6 +3772,67 @@ wam_llvm_case('begin_aggregate',
   %ba.val_reg = lshr i32 %ba.op2_trunc, 16
   %ba.res_reg = and i32 %ba.op2_trunc, 65535
 
+  ; Compute the continuation PC = (matching end_aggregate PC) + 1 by scanning
+  ; forward from this instruction for the matching tag-29, tracking nesting so
+  ; inner aggregates are skipped. Doing this at begin time -- rather than
+  ; relying on end_aggregate to set agg_return_pc -- keeps the return PC
+  ; correct even when the goal yields ZERO solutions and end_aggregate never
+  ; runs. Otherwise finalize jumps to the placeholder PC 0 and the predicate
+  ; re-executes forever (empty findall / setof / bagof).
+  %ba.code_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 15
+  %ba.code = load %Instruction*, %Instruction** %ba.code_ptr
+  %ba.clen_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 16
+  %ba.clen = load i32, i32* %ba.clen_ptr
+  %ba.begin_pc = call i32 @wam_get_pc(%WamState* %vm)
+  %ba.scan_start = add i32 %ba.begin_pc, 1
+  br label %ba.scan
+
+ba.scan:
+  %ba.si = phi i32 [ %ba.scan_start, %begin_aggregate ], [ %ba.si_next, %ba.scan_cont ]
+  %ba.depth = phi i32 [ 0, %begin_aggregate ], [ %ba.depth_next, %ba.scan_cont ]
+  %ba.oob = icmp sge i32 %ba.si, %ba.clen
+  br i1 %ba.oob, label %ba.scan_fallback, label %ba.scan_check
+
+ba.scan_check:
+  %ba.instr = getelementptr %Instruction, %Instruction* %ba.code, i32 %ba.si
+  %ba.tag_ptr = getelementptr %Instruction, %Instruction* %ba.instr, i32 0, i32 0
+  %ba.itag = load i32, i32* %ba.tag_ptr
+  %ba.is_begin = icmp eq i32 %ba.itag, 28
+  br i1 %ba.is_begin, label %ba.nest, label %ba.maybe_end
+
+ba.nest:
+  %ba.depth_inc = add i32 %ba.depth, 1
+  br label %ba.scan_cont
+
+ba.maybe_end:
+  %ba.is_end = icmp eq i32 %ba.itag, 29
+  br i1 %ba.is_end, label %ba.at_end, label %ba.scan_cont
+
+ba.at_end:
+  %ba.depth_zero = icmp eq i32 %ba.depth, 0
+  br i1 %ba.depth_zero, label %ba.found, label %ba.unnest
+
+ba.unnest:
+  %ba.depth_dec = sub i32 %ba.depth, 1
+  br label %ba.scan_cont
+
+ba.scan_cont:
+  %ba.depth_next = phi i32 [ %ba.depth_inc, %ba.nest ], [ %ba.depth, %ba.maybe_end ], [ %ba.depth_dec, %ba.unnest ]
+  %ba.si_next = add i32 %ba.si, 1
+  br label %ba.scan
+
+ba.found:
+  %ba.cont_pc = add i32 %ba.si, 1
+  br label %ba.setup
+
+ba.scan_fallback:
+  ; No matching end_aggregate found (should not happen for compiler output);
+  ; fall back to begin_pc+1 so we at least make forward progress.
+  br label %ba.setup
+
+ba.setup:
+  %ba.arpc_val = phi i32 [ %ba.cont_pc, %ba.found ], [ %ba.scan_start, %ba.scan_fallback ]
+
   ; M5: ensure CP array has room before reading its pointer.
   call void @wam_cp_ensure_capacity(%WamState* %vm)
   ; Push a choice point
@@ -3811,7 +3872,8 @@ wam_llvm_case('begin_aggregate',
   %ba.arr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %ba.cp_slot, i32 0, i32 6
   store i32 %ba.res_reg, i32* %ba.arr_ptr
   %ba.arpc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %ba.cp_slot, i32 0, i32 7
-  store i32 0, i32* %ba.arpc_ptr  ; placeholder, end_aggregate updates this
+  store i32 %ba.arpc_val, i32* %ba.arpc_ptr  ; continuation PC after end_aggregate
+                                             ; (correct even for zero solutions)
 
   ; Save heap_top so unwind via wam_finalize_aggregate can rewind.
   %ba.hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
