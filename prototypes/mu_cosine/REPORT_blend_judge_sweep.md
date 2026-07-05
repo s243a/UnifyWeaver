@@ -52,3 +52,25 @@ task (retrieval / filing recall). Until then, read +0.79 as "better aligned to t
 
 Data: `gen_wiki_relation_pairs.py` → `score_with_codex.py` → `convert_scored_to_graded.py` + `emit_blend_judge.py`.
 Sweep: `/tmp/mu_data/blend_sweep.sh`.
+
+## ✅ On the RIGHT metric — predict the judge SUPERPOSITION on held-out — the blend DOES earn its keep
+
+The LLM-scored SYM eval above was the wrong yardstick (it rewards LLM-alignment). The relevant measure (user):
+**how well does the model predict the judge superposition `T = (1−λ)·e5_ref ⊕ λ·graph_ref` on 360 held-out pairs
+never trained on** (`eval_blend_prediction.py`; `e5_ref` = raw-e5 cosine, `graph_ref` = conf-weighted
+`1/d + μ_HIER/μ_ELEM` from model_prod — the graph half is *not* LLM, so no confound). corr(SYM readout, T):
+
+| model | judge input | corr(SYM, T) | corr(SYM, graph_ref) |
+|---|---|---|---|
+| prod | agnostic | +0.746 | +0.714 |
+| A (LLM-only) | blend | +0.675 | +0.641 |
+| **B (blend)** | **blend** | **+0.847** | **+0.823** |
+
+**Verdict flips on the right target:** B (blend-trained, read under `judge=blend`) predicts the held-out
+superposition **best (+0.847)**; **LLM-only training *drifts away* from the graph half** (A graph_ref +0.641 <
+prod +0.714 — the LLM-alignment confound made visible), while the **blend judge recovers+improves it** (B
+graph_ref +0.823). And the **judge input matters** — B under `blend` +0.847 vs agnostic +0.787. So the blend
+adds exactly the structural signal LLM-only training discards. *Caveats:* single-seed checkpoints (the 3×3 sweep
+above didn't `--save`); `T` is graph-dominated here (`e5_ref` mean 0.907, low variance on this Wikipedia sample),
+so "predict T" leans on the graph half — which is the point, but a held-out set with more e5 spread would
+sharpen the e5 side. Multi-seed of the *checkpoints* is the confirming follow-up.

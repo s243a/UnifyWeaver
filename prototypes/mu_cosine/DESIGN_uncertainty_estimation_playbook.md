@@ -84,6 +84,13 @@ the general notion (of relatedness, lineage, …).
   multi-judge *data diversity* may buy the generality without any hand-constructed blend judge; (b) a constructed
   blend must **beat a no-blend control across seeds** before you credit it; (c) random-λ needs stability
   guards. Don't cite a single-seed lift.
+  **Resolution — measure against the RIGHT target and the blend DOES earn its keep.** On the LLM-scored eval the
+  blend tied the control (that eval rewards LLM-alignment). On the *relevant* metric — **predict the judge
+  superposition `(1−λ)·e5 ⊕ λ·graph` on held-out pairs** — the blend-trained model (read under `judge=blend`)
+  won: **corr +0.847 vs prod +0.746 vs LLM-only +0.675**, and it recovered the **graph half** (graph_ref corr
+  +0.823) that **LLM-only training actively drifts away from** (+0.641). Lesson: **the blend's value only shows
+  up against a target that isn't itself the LLM** — so pick the eval target deliberately (pitfall #6), and read
+  under the matching judge input (blend > agnostic, +0.847 vs +0.787).
 - **The one honest condition:** this teaches the *right* generality only if the judges genuinely measure the same
   latent. A systematically-biased judge, superposed in, teaches an averaged-wrong signal — which is exactly what
   the per-judge calibration rows guard against, and why the blend must be *validated* (does graph⊕e5 actually
