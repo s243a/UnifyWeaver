@@ -200,3 +200,19 @@ super-layer), sampled within-map multi-hop pairs, re-scored (gpt-5.5-low, 200 pa
   all depths. Genuine (concepts are relationally richer than categories) OR the **LLM over-assigns `assoc` to
   concepts** (the user's judge-calibration dispute — open). Either way, a `Σ(hop)` head must learn a **corpus-specific
   curve** (steep-relaxing for Wikipedia, flat for SimpleMind), confirming the covariance is not universal.
+
+## The `assoc` dispute, resolved: low-directional pairs are DATA errors, not LLM errors (user, 2026-07-06)
+Inspecting the clean-SimpleMind pairs with the LOWEST directional signal (μ_D) — is it the LLM over-assigning
+`assoc`, or genuine? It's genuine — the LLM is CORRECTLY rejecting bad "parents":
+- **Title typo:** `Valve Body & Bonnet → "Values"` (×5) — "Values" is a corrupted "Valves"; LLM says `none=0.85`.
+- **Organizational tag-nodes:** `Abel Kernel → "related"`, `"related" → Engineering` — "related" isn't a concept; `none`.
+- **Spurious cross-topic lineage:** `Thermodynamics → Global bifurcations`, `Subjects of Learning → Derivative` — `none`.
+- **Resource/website nodes:** `electronics-cooling.com → Fans & Blowers`, `Dortmund Data Bank → Mechanical Engineering`
+  — genuinely lateral, LLM `assoc` correct. And `Number Theory → Complex Analysis` = related-not-hierarchical (`assoc`).
+
+**⇒ the LLM is not over-lateraling concepts** — it correctly flags corrupted / organizational / spurious / resource
+"parents" as non-directional. So SimpleMind's flat, low-directional-confidence `Σ(hop)` signature is a **DATA-QUALITY
+artifact** (typos, tag-nodes, resource links, cross-topic lineage slips), not a judge-calibration problem. The user's
+two intuitions are both upheld: the deliberate hierarchy IS the cleaner one, and the LLM is right — the *extraction*
+is noisy. Fix upstream (dedup/typo-fix `Valves`, drop tag-nodes like "related", filter resource/URL nodes, fix
+cross-topic lineage), not the judge.
