@@ -363,8 +363,12 @@ loadable along the way.
   (`cgcompile/2` parses source text with the reader, walks the clause to
   instructions, and serializes; `p(R) :- R = 42` and `p(R) :- R is 6*7` compile
   from source and run to `42` end to end via `@wam_object_eval` — the first
-  source→bytecode compile); (C) multi-goal bodies + predicate calls; (D) widen
-  toward the compiler's own subset — the self-host fixpoint. Stage A surfaced two
+  source→bytecode compile); **(C) predicate calls — LANDED** (`cgcprog/2`
+  compiles a multi-clause program — a list of clauses — into a multi-predicate
+  `.wamo` with per-clause labels and `execute(CalleeLabel)` tail calls, so one
+  clause calls another; `[(main0(R):-helper(R)), helper(42)]` → `42`. Conjunction
+  with register allocation is a Stage C follow-on); (D) widen toward the
+  compiler's own subset — the self-host fixpoint. Stage A surfaced two
   loaded-runtime bugs, **both since fixed** (a 64-register-file ceiling that
   corrupted memory for large clauses; `get_structure` not comparing the functor),
   so large clauses and tagged-union dispatch both work now. See

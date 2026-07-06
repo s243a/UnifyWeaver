@@ -250,13 +250,36 @@ loaded compiler object and run to `42`. Codegen logic also checked byte-identica
 to the host writer's golden `.wamo`. This is the first source→bytecode compile:
 reader + codegen + serializer composed into one loadable object.
 
-### Stage C — multi-goal bodies and predicate calls
+### Stage C — multi-goal bodies and predicate calls — *predicate calls LANDED*
 
 Extend codegen to conjunctions (`,`/2), calls to other predicates
 (`call`/`execute` + the meta-call table from M2), and multi-argument heads
-with register allocation. Add the named-entry table so a compiled object
-exposes its entry by name. Test: a two-clause source program where one
+with register allocation. Test: a two-clause source program where one
 clause calls the other.
+
+**Predicate calls — LANDED.** `cgcprog/2` compiles a **multi-clause** program
+(source parses in one reader call to a *list of clauses*,
+`[(main0(R):-helper(R)), helper(42)]`) into a **multi-predicate `.wamo`**. Each
+clause gets a label (its index); a single-goal predicate-call body compiles to
+`[allocate, deallocate, execute(CalleeLabel)]` (a tail call), with the callee
+resolved through a name/arity→label map built in a first pass. `execute`
+references the label **directly** (tag 19, op1 = label index), so no meta-call
+table is needed (`NM = 0`). The label→PC table is exactly the PC list the Stage
+A serializer already accepts — so the serializer was unchanged; all the new work
+is codegen (label assignment, PC computation, call resolution). Facts `P(Int)`
+and the Stage B body forms (`=`/`is`) still lower to
+`[get_constant(V,A1), proceed]`. Verified end to end
+(`tests/test_wam_object.pl:selfhost_codegen_stage_c`): `main0` tail-calls
+`helper` → `42`; the codegen is byte-identical to the host writer's golden for
+the same program.
+
+**Still to do in Stage C (follow-on):** conjunction (`,`/2) with **register
+allocation** for temporaries that span goals (e.g. `p(R) :- X is 6*7, R = X`),
+non-tail calls (`call` + `proceed`), and multi-argument heads with argument
+setup (`put_value`/`put_constant` before the call). These need a real (if
+simple, sequential) register allocator — the piece the design flags as
+"correctness over reuse". The register-file and `get_structure` fixes mean
+large clauses and tagged-union walkers already work, so this is codegen-only.
 
 **Deliverable:** the compiler handles the clause shapes a small hand-written
 grammar uses — the point at which "compile a grammar at runtime from source"
