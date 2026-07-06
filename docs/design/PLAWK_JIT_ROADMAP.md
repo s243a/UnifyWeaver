@@ -366,8 +366,12 @@ loadable along the way.
   source→bytecode compile); **(C) predicate calls — LANDED** (`cgcprog/2`
   compiles a multi-clause program — a list of clauses — into a multi-predicate
   `.wamo` with per-clause labels and `execute(CalleeLabel)` tail calls, so one
-  clause calls another; `[(main0(R):-helper(R)), helper(42)]` → `42`. Conjunction
-  with register allocation is a Stage C follow-on); (D) widen toward the
+  clause calls another; `[(main0(R):-helper(R)), helper(42)]` → `42`), plus
+  **conjunction + register allocation — LANDED** (`cgconj/2`: `numbervars`→
+  Y-registers, first/subsequent occurrence → `put_variable`/`put_value`,
+  `builtin_call =/2`; `pconj(R):-Y=42,R=Y` → `42`, byte-identical to the host).
+  Runtime arithmetic (`is/2` via `put_structure`) and non-tail calls remain;
+  (D) widen toward the
   compiler's own subset — the self-host fixpoint. Stage A surfaced two
   loaded-runtime bugs, **both since fixed** (a 64-register-file ceiling that
   corrupted memory for large clauses; `get_structure` not comparing the functor),

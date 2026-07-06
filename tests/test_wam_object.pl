@@ -390,6 +390,66 @@ codegen_body(Body, PL, Instrs) :-
 lookup_label(P, A, [key(P,A)-L|_], L) :- !.
 lookup_label(P, A, [_|R], L) :- lookup_label(P, A, R, L).
 
+% Milestone 6 (self-host) Stage C (rest): conjunction + register allocation.
+% cgconj/2 compiles a clause whose body is a conjunction of unification goals
+% (X = Y, X = Int) with a real (simple) register allocator: numbervars binds
+% each source variable to '$VAR'(N), mapped to permanent register Y(N+1); the
+% initialized-Y set is threaded through so a variable's first occurrence emits
+% put_variable / get_variable and later occurrences put_value. Head arguments
+% are saved with get_variable; each `=` goal sets up A1/A2 (put_variable /
+% put_value / put_constant) then builtin_call =/2 (id 24). This is the WAM
+% register-allocation core -- verified byte-identical to the host writer for
+% `pconj(R):-Y=42,R=Y`. Runtime arithmetic (is/2 building expression terms via
+% put_structure) and non-tail calls are the remaining Stage C pieces.
+cgconj(Src, Wamo) :-
+    read_term_from_atom(Src, Clause),
+    numbervars(Clause, 0, _),
+    conj_instrs(Clause, NameCodes, Instrs),
+    wz_serialize(0, NameCodes, 0, 0, 0, [0], Instrs, Codes),
+    atom_codes(Wamo, Codes).
+
+conj_instrs(Clause, NameCodes, Instrs) :-
+    clause_hb(Clause, Head, Goals),
+    functor(Head, Pred, Arity), pred_name_codes(Pred, Arity, NameCodes),
+    head_args(Head, 1, Arity, [], Init1, HeadIs),
+    goals_instrs(Goals, Init1, _, GoalIs),
+    append([enc(16,0,0,0) | HeadIs], GoalIs, B0),          % allocate + head
+    append(B0, [enc(17,0,0,0), enc(20,0,0,0)], Instrs).     % deallocate, proceed
+
+clause_hb((H :- B), H, Goals) :- !, conj_list(B, Goals).
+clause_hb(H, H, []).
+conj_list((A,B), [A|Rest]) :- !, conj_list(B, Rest).
+conj_list(G, [G]).
+
+is_init(N, [N|_]) :- !.
+is_init(N, [_|T]) :- is_init(N, T).
+
+head_args(_, I, Arity, Init, Init, []) :- I > Arity, !.
+head_args(Head, I, Arity, Init0, Init, [Instr|Rest]) :-
+    arg(I, Head, Arg), AiIdx is I - 1,
+    head_arg_instr(Arg, AiIdx, Init0, Init1, Instr),
+    I1 is I + 1, head_args(Head, I1, Arity, Init1, Init, Rest).
+head_arg_instr('$VAR'(N), AiIdx, Init0, [N|Init0], enc(1, YIdx, AiIdx, 0)) :- YIdx is 48 + N.
+head_arg_instr(V, AiIdx, Init, Init, enc(0, V, Op2, 0)) :- integer(V), Op2 is (1 << 16) \/ AiIdx.
+
+operand_instr('$VAR'(N), AiIdx, Init0, Init1, [Instr]) :-
+    YIdx is 48 + N,
+    (   is_init(N, Init0)
+    ->  Instr = enc(10, YIdx, AiIdx, 0), Init1 = Init0     % put_value (subsequent)
+    ;   Instr = enc(9, YIdx, AiIdx, 0), Init1 = [N|Init0]  % put_variable (first)
+    ).
+operand_instr(V, AiIdx, Init, Init, [enc(8, V, Op2, 0)]) :- integer(V), Op2 is (1 << 16) \/ AiIdx.
+
+goal_instrs((L = R), Init0, Init2, Is) :-
+    operand_instr(L, 0, Init0, Init1, ILs),
+    operand_instr(R, 1, Init1, Init2, IRs),
+    append(ILs, IRs, LR), append(LR, [enc(21, 24, 2, 0)], Is).   % builtin_call =/2
+
+goals_instrs([], Init, Init, []).
+goals_instrs([G|Gs], Init0, Init, Is) :-
+    goal_instrs(G, Init0, Init1, GIs),
+    goals_instrs(Gs, Init1, Init, RestIs), append(GIs, RestIs, Is).
+
 % Register-file ceiling regression: manyperm/1 has 20 variables all live
 % across the mp_barrier call, so the compiler assigns them Y1..Y20. Before
 % the register file was enlarged from [64 x %Value] to [128 x %Value], Y17+
@@ -1035,6 +1095,29 @@ test(selfhost_codegen_stage_c, [condition(clang_available)]) :-
     directory_file_path(Dir, 'cgc_src.txt', SrcPath),
     setup_call_cleanup(open(SrcPath, write, S0),
         write(S0, '[(main0(R):-helper(R)), helper(42)]'), close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "42\n"),
+    !.
+
+% Milestone 6 (self-host) Stage C (rest): conjunction + register allocation.
+% cgconj/2 compiles a clause with a conjunction of unification goals, doing
+% real register allocation (numbervars -> Y-registers, first/subsequent
+% occurrence -> put_variable/put_value). "pconj(R) :- Y = 42, R = Y" -- Y is a
+% temporary shared across the two goals -- compiles from source and runs to 42.
+test(selfhost_codegen_stage_c_conjunction, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgconj.wamo', CompWamo),
+    write_wam_object([user:cgconj/2], [wamo_entry(cgconj/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgconj_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, 'pconj(R) :- Y = 42, R = Y'), close(S0)),
     process_create(Host, [CompWamo, SrcPath],
         [stdout(pipe(S)), stderr(std), process(Pid)]),
     read_string(S, _, Out),
