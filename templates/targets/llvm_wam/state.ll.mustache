@@ -19,7 +19,7 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   ; accept the bogus IR without complaint.
   %regs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
   %regs_raw = bitcast %Value* %regs_ptr to i8*
-  %regs_size = mul i64 64, 16  ; 64 x sizeof(%Value) = 64 x {i32, i64}
+  %regs_size = mul i64 128, 16  ; 128 x sizeof(%Value) = 128 x {i32, i64}
   call void @llvm.memset.p0i8.i64(i8* %regs_raw, i8 0, i64 %regs_size, i1 false)
 
   ; Allocate stack (initial capacity 1024 entries)

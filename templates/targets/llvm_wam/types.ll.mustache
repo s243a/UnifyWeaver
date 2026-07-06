@@ -86,7 +86,7 @@
 ; === WAM State ===
 %WamState = type {
     i32,                                   ; 0: pc
-    [64 x %Value],                         ; 1: regs (A1..A16 → 0..15, X1..X48 → 16..63)
+    [128 x %Value],                        ; 1: regs (A1..A16 → 0..15, X1..X32 → 16..47, Y1..Y48 → 48..95; 96..127 slack)
     %StackEntry*,                          ; 2: stack
     i32,                                   ; 3: stack_size
     i32,                                   ; 4: stack_cap

@@ -3464,17 +3464,18 @@ wam_llvm_case('allocate',
   %alloc.le_cpn = load i32, i32* %alloc.le_ptr
   store i32 %alloc.le_cpn, i32* %alloc.cb_ptr
 
-  ; M10: snapshot regs[48..63] (the Y-reg window) into the env frame.
-  ; Y1..Y16 map to 48..63 under the disjoint X/Y ABI -- see
+  ; M10: snapshot regs[48..95] (the Y-reg window) into the env frame.
+  ; Y1..Y48 map to 48..95 under the disjoint X/Y ABI -- see
   ; bindings/llvm_wam_bindings.pl reg_name_to_index. Pre-M10 the
   ; snapshot covered 16..63 (X and Y mixed); now only Y space needs
-  ; protection (X space dies at calls per canonical WAM).
+  ; protection (X space dies at calls per canonical WAM). The register
+  ; file is [128 x %Value] and y_save holds 48 permanents.
   %alloc.y_src = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 48
   %alloc.y_dst = getelementptr %StackEntry, %StackEntry* %alloc.entry, i32 0, i32 3, i32 0
   %alloc.y_src_i8 = bitcast %Value* %alloc.y_src to i8*
   %alloc.y_dst_i8 = bitcast %Value* %alloc.y_dst to i8*
-  ; 16 Values * 16 bytes = 256 bytes.
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alloc.y_dst_i8, i8* %alloc.y_src_i8, i64 256, i1 false)
+  ; 48 Values * 16 bytes = 768 bytes.
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %alloc.y_dst_i8, i8* %alloc.y_src_i8, i64 768, i1 false)
   ; Increment stack size
   %alloc.new_ss = add i32 %alloc.ss, 1
   store i32 %alloc.new_ss, i32* %alloc.ss_ptr
@@ -3523,13 +3524,13 @@ dealloc.restore:
   %dealloc.cb_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 23
   store i32 %dealloc.saved_cb, i32* %dealloc.cb_ptr
 
-  ; M10: restore regs[48..63] (Y-reg window) from the env frame
-  ; snapshot. See allocate for the save side.
+  ; M10: restore regs[48..95] (Y-reg window) from the env frame
+  ; snapshot. See allocate for the save side (48 Values = 768 bytes).
   %dealloc.y_src = getelementptr %StackEntry, %StackEntry* %dealloc.entry, i32 0, i32 3, i32 0
   %dealloc.y_dst = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 48
   %dealloc.y_src_i8 = bitcast %Value* %dealloc.y_src to i8*
   %dealloc.y_dst_i8 = bitcast %Value* %dealloc.y_dst to i8*
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dealloc.y_dst_i8, i8* %dealloc.y_src_i8, i64 256, i1 false)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dealloc.y_dst_i8, i8* %dealloc.y_src_i8, i64 768, i1 false)
   ; Pop stack down to this frame (exclusive)
   store i32 %dealloc.prev_idx, i32* %dealloc.ss_ptr
   br label %dealloc.done
