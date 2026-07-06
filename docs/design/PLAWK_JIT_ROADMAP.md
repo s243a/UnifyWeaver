@@ -358,11 +358,15 @@ loadable along the way.
   compiler written in the loadable subset (not the full ~22 000-line host
   compiler), run through the existing `@wam_object_eval` pipeline. The key
   enabler: `.wamo` is a **text** format, so emitting it is string assembly —
-  already proven loadable in milestone 4. Staged: (A) a `.wamo` serializer in
-  the subset, diffed against golden host objects; (B) minimal codegen for one
-  clause shape, end to end; (C) multi-goal bodies + predicate calls; (D) widen
-  toward the compiler's own subset — the self-host fixpoint. See
-  [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
+  already proven loadable in milestone 4. Staged: **(A) a `.wamo` serializer in
+  the subset — LANDED** (runs as a loaded object, emits a valid 42-returning
+  `.wamo` byte-identical to the host writer's golden, loads+runs end to end via
+  `@wam_object_eval`); (B) minimal codegen for one clause shape, end to end;
+  (C) multi-goal bodies + predicate calls; (D) widen toward the compiler's own
+  subset — the self-host fixpoint. Stage A also surfaced two loaded-runtime
+  limitations to fix before Stage C (a 64-register-file ceiling that corrupts
+  memory for large clauses; a multi-way functor-dispatch anomaly for ≥4 tagged
+  clauses). See [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
 
 ## The binary-return question, specifically
 
