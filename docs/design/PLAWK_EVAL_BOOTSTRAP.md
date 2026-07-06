@@ -278,8 +278,15 @@ independently useful (richer hand-written grammars load sooner).
    the "source" is itself a valid `.wamo`); a real source-to-bytecode compiler
    is milestone 6. This closes the eval loop at the runtime layer: **emit bytes
    → load → run**, all in one process.
-6. **Self-host.** Compile the actual WAM compiler to a `.wamo` and run the
-   whole pipeline from source text end to end. The capstone.
+6. **Self-host. — design landed.** Not the full host compiler: a **minimal**
+   Prolog→`.wamo` compiler written in the loadable subset, run through the
+   existing `@wam_object_eval` pipeline. The enabler is that `.wamo` is a
+   **text** format (`wamo_serialize/8`), so its back end is string assembly —
+   loadable since milestone 4 — while its front end (`read_term_from_atom/2`)
+   and middle (`functor/3`/`arg/3`/`=..` + list builtins) are already loadable
+   too. The one real subset gap is constant-index `arg/3` (handled by a coding
+   constraint or a small opcode lift). Staged A→D from a diffable serializer to
+   the self-host fixpoint. Full design: **PLAWK_SELFHOST.md**.
 
 ## Cross-cutting notes
 

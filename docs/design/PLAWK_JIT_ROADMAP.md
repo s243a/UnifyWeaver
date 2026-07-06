@@ -354,8 +354,15 @@ loadable along the way.
   and memoizes the compiler object (the `DYNCACHE` role). Verified end to end
   with a stand-in (echo) compiler: source text → emitted bytes → load → run →
   `42`. A real source-to-bytecode compiler is milestone 6.
-- **Milestone 6** (self-host) — compile the actual WAM compiler to a `.wamo`
-  and run the whole pipeline from source text end to end. See the bootstrap doc.
+- **Milestone 6** (self-host) — *design landed.* A **minimal** Prolog→`.wamo`
+  compiler written in the loadable subset (not the full ~22 000-line host
+  compiler), run through the existing `@wam_object_eval` pipeline. The key
+  enabler: `.wamo` is a **text** format, so emitting it is string assembly —
+  already proven loadable in milestone 4. Staged: (A) a `.wamo` serializer in
+  the subset, diffed against golden host objects; (B) minimal codegen for one
+  clause shape, end to end; (C) multi-goal bodies + predicate calls; (D) widen
+  toward the compiler's own subset — the self-host fixpoint. See
+  [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
 
 ## The binary-return question, specifically
 
