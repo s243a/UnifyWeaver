@@ -520,6 +520,72 @@ wz_fname(F, A0, A1) :- atom_codes(F, Cs), wz_n(Cs, A0, A1).
 wz_funcs([], A, A).
 wz_funcs([F|Fs], A0, A2) :- wz_fname(F, A0, A1), wz_funcs(Fs, A1, A2).
 
+% Milestone 6 (self-host) Stage C (non-tail calls): the UNIFIED compiler.
+% cgfull/2 merges every Stage C piece into one multi-clause compiler: labels +
+% PC table (from cgcprog), per-clause register allocation + conjunction (cgconj),
+% runtime arithmetic + functor table (cgarith), and now non-tail predicate-call
+% goals. A call goal p(Args) sets up A1.. with the args (operand_instr) then
+% call(CalleeLabel, arity) (tag 18) -- a non-tail call: cp = the next PC, so
+% execution resumes after the call when the callee proceeds. A permanent holds
+% the result across the call (register allocation makes any variable spanning
+% the call a Y-register). Each clause is copy_term'd + numbervars'd so its
+% variables are clause-local. Facts (no body) emit head + proceed (no env).
+% Verified byte-identical to the host writer for
+% [(mnt(R):-helper(A), R=A), helper(42)] -- a non-tail call whose result A is
+% used after the call.
+cgfull(Src, Wamo) :-
+    read_term_from_atom(Src, Clauses),
+    assign_labels(Clauses, 0, PL),
+    f_collect_all(Clauses, Functors),
+    f_codegen_all(Clauses, PL, Functors, 0, AllIs, PCs),
+    Clauses = [First|_], clause_hb(First, H0, _), functor(H0, P0, A0),
+    pred_name_codes(P0, A0, EntryName),
+    wzf_serialize(0, EntryName, 0, Functors, PCs, AllIs, Codes),
+    atom_codes(Wamo, Codes).
+
+% functor table across all clauses
+f_collect_all([], []).
+f_collect_all([C|Cs], FT) :-
+    ( C = (_ :- B) -> conj_list(B, Gs) ; Gs = [] ),
+    collect_functors(Gs, F1), f_collect_all(Cs, F2), f_merge(F1, F2, FT).
+f_merge([], FT, FT).
+f_merge([F|Fs], A0, FT) :- add_unique(F, A0, A1), f_merge(Fs, A1, FT).
+
+% per-clause codegen, tracking the label->PC list
+f_codegen_all([], _, _, _, [], []).
+f_codegen_all([C0|Cs], PL, FT, PC, All, [PC|PCs]) :-
+    copy_term(C0, C), numbervars(C, 0, _),
+    f_clause_instrs(C, PL, FT, Is), length(Is, N), PC1 is PC + N,
+    f_codegen_all(Cs, PL, FT, PC1, Rest, PCs), append(Is, Rest, All).
+
+f_clause_instrs(Clause, PL, FT, Instrs) :-
+    clause_hb(Clause, Head, Goals), functor(Head, _, Arity),
+    head_args(Head, 1, Arity, [], Init1, HeadIs),
+    (   Goals == []
+    ->  append(HeadIs, [enc(20,0,0,0)], Instrs)              % fact: head + proceed
+    ;   f_goals(Goals, PL, FT, Init1, _, GoalIs),
+        append([enc(16,0,0,0) | HeadIs], GoalIs, B0),
+        append(B0, [enc(17,0,0,0), enc(20,0,0,0)], Instrs)
+    ).
+
+f_goals([], _, _, In, In, []).
+f_goals([G|Gs], PL, FT, In0, In, Is) :-
+    f_goal(G, PL, FT, In0, In1, GI),
+    f_goals(Gs, PL, FT, In1, In, RI), append(GI, RI, Is).
+
+f_goal((L is E), _, FT, In0, In1, Is) :- !, a_goal_instrs((L is E), FT, In0, In1, Is).
+f_goal((L = R),  _, FT, In0, In1, Is) :- !, a_goal_instrs((L = R),  FT, In0, In1, Is).
+f_goal(Goal, PL, _, In0, In, Is) :-               % predicate call
+    functor(Goal, P, A), lookup_label(P, A, PL, Label),
+    call_args(Goal, 1, A, In0, In, SetupIs),
+    append(SetupIs, [enc(18, Label, A, 0)], Is).   % call(Label, arity)
+
+call_args(_, I, Ar, In, In, []) :- I > Ar, !.
+call_args(Goal, I, Ar, In0, In, Is) :-
+    arg(I, Goal, Arg), Ai is I - 1,
+    operand_instr(Arg, Ai, In0, In1, AI),
+    I1 is I + 1, call_args(Goal, I1, Ar, In1, In, R), append(AI, R, Is).
+
 % Register-file ceiling regression: manyperm/1 has 20 variables all live
 % across the mp_barrier call, so the compiler assigns them Y1..Y20. Before
 % the register file was enlarged from [64 x %Value] to [128 x %Value], Y17+
@@ -1212,6 +1278,33 @@ test(selfhost_codegen_stage_c_arithmetic, [condition(clang_available)]) :-
     forall(member(Source, ['ca(R) :- X is 6*7, R = X',
                            'add(R) :- A = 40, B = 2, R is A+B']),
         ( directory_file_path(Dir, 'cgarith_src.txt', SrcPath),
+          setup_call_cleanup(open(SrcPath, write, S0),
+              write(S0, Source), close(S0)),
+          process_create(Host, [CompWamo, SrcPath],
+              [stdout(pipe(S)), stderr(std), process(Pid)]),
+          read_string(S, _, Out),
+          close(S),
+          process_wait(Pid, exit(Status)),
+          assertion(Status == 0),
+          assertion(Out == "42\n") )),
+    !.
+
+% Milestone 6 (self-host) Stage C (non-tail calls): the unified compiler cgfull/2
+% merges labels + register allocation + conjunction + arithmetic + predicate
+% calls. Two multi-clause programs exercise a non-tail call whose result is used
+% after it returns: a passthrough (mnt calls helper, then unifies) and a compute
+% (main calls add1 with a computed arg, doubling via the callee). Both compile
+% from a list-of-clauses source in a loaded object and run to 42.
+test(selfhost_codegen_stage_c_nontail_call, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([user:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    forall(member(Source,
+               [ '[(mnt(R):-helper(A), R=A), helper(42)]',
+                 '[(main0(R):-add1(41,V), R=V), (add1(X,Y):-Y is X+1)]' ]),
+        ( directory_file_path(Dir, 'cgfull_src.txt', SrcPath),
           setup_call_cleanup(open(SrcPath, write, S0),
               write(S0, Source), close(S0)),
           process_create(Host, [CompWamo, SrcPath],

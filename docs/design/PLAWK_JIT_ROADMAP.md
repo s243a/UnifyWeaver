@@ -373,8 +373,13 @@ loadable along the way.
   plus **runtime arithmetic — LANDED** (`cgarith/2`: `Var is op(A,B)` →
   `put_structure` + `set_value`/`set_constant` + `builtin_call is/2`, with a
   functor table `NF>0`; `ca(R):-X is 6*7, R=X` → `42`, byte-identical to the
-  host). Non-tail calls and nested expressions remain; (D) widen toward the
-  compiler's own subset — the self-host fixpoint. Stage A surfaced two
+  host), plus **non-tail calls — LANDED** (the unified `cgfull/2`: multi-clause +
+  labels + register allocation + conjunction + arithmetic + `call(Label,arity)`
+  goals; a call whose callee computes, `main0` calls `add1(41,V)` with
+  `add1(X,Y):-Y is X+1` → `42`; also enlarged the transient arena 1→16 MiB, which
+  an allocation-heavy compiler grammar needs). Nested expressions and last-call
+  optimization remain — Stage C's mechanisms are all in place; (D) widen toward
+  the compiler's own subset — the self-host fixpoint. Stage A surfaced two
   loaded-runtime bugs, **both since fixed** (a 64-register-file ceiling that
   corrupted memory for large clauses; `get_structure` not comparing the functor),
   so large clauses and tagged-union dispatch both work now. See
