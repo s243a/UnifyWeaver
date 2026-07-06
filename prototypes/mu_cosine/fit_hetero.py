@@ -20,8 +20,24 @@ from mu_attention import OPS, Tokenizer, load_dag
 from eval_relatedness import build_model
 from emit_transitive_hops import hit_prob
 from emit_direction_blend import parse_responses
+from scipy.optimize import minimize
 
 DIR = ["subcategory", "subtopic", "element_of", "super_category"]; SYM = ["see_also", "assoc"]
+
+
+def sig_of_d(params, d):
+    """smooth PARAMETRIC covariance as a function of the conditioning feature d (here = hop): log-linear σ, tanh ρ.
+    This is the predictive 'Σ(hop) into the model' — Σ is a learned function of d, not per-hop oracle bins."""
+    aD, bD, aS, bS, c, e = params
+    return np.exp(aD + bD * d), np.exp(aS + bS * d), np.tanh(c + e * d)
+
+
+def fit_sig_of_d(rD, rS, d):
+    def nll(p):
+        sD, sS, rho = sig_of_d(p, d)
+        return biv_nll(rD, rS, sD, sS, rho).mean()
+    p0 = [np.log(rD.std() + 1e-6), 0.0, np.log(rS.std() + 1e-6), 0.0, np.arctanh(np.clip(np.corrcoef(rD, rS)[0, 1], -0.9, 0.9)), 0.0]
+    return minimize(nll, p0, method="Nelder-Mead", options={"maxiter": 5000, "xatol": 1e-5, "fatol": 1e-7}).x
 
 
 def biv_nll(rD, rS, sD, sS, rho):
@@ -79,7 +95,8 @@ def main():
             out.append((y[tr] - X[tr] @ beta, y[he] - X[he] @ beta))
         return out
     S = {"(a) independent ρ=0": [], "(b) constant ρ": [], "(c) ρ(hop) off-diag": [],
-         "(d) σ(hop) CONFIDENCE, const ρ": [], "(e) σ(hop)+ρ(hop) full": []}
+         "(d) σ(hop) CONFIDENCE, const ρ": [], "(e) σ(hop)+ρ(hop) oracle-bin": [],
+         "(f) Σ(hop) PREDICTIVE smooth": []}
     for s in range(a.seeds):
         rng = np.random.default_rng(s); p = rng.permutation(len(pairs)); cut = int(0.7*len(pairs))
         tr, he = p[:cut], p[cut:]
@@ -98,7 +115,11 @@ def main():
         S["(b) constant ρ"].append(biv_nll(rD_he, rS_he, sD, sS, rho).mean())
         S["(c) ρ(hop) off-diag"].append(biv_nll(rD_he, rS_he, sD, sS, rho_he).mean())
         S["(d) σ(hop) CONFIDENCE, const ρ"].append(biv_nll(rD_he, rS_he, sD_he, sS_he, rho).mean())
-        S["(e) σ(hop)+ρ(hop) full"].append(biv_nll(rD_he, rS_he, sD_he, sS_he, rho_he).mean())
+        S["(e) σ(hop)+ρ(hop) oracle-bin"].append(biv_nll(rD_he, rS_he, sD_he, sS_he, rho_he).mean())
+        # (f) the actual build: Σ as a SMOOTH parametric function of hop, fit by MLE on train — predictive, not oracle
+        pf = fit_sig_of_d(rD_tr, rS_tr, hop[tr].astype(float))
+        sDf, sSf, rhof = sig_of_d(pf, hop[he].astype(float))
+        S["(f) Σ(hop) PREDICTIVE smooth"].append(biv_nll(rD_he, rS_he, sDf, sSf, rhof).mean())
     print(f"held-out joint NLL (mean±std over {a.seeds} splits; LOWER better):\n")
     for k, v in S.items():
         v = np.array(v); print(f"  {k:32s}  {v.mean():.4f} ± {v.std():.4f}")
@@ -107,10 +128,9 @@ def main():
         print(f"  Δ({base.split()[0]} − {alt.split()[0]}) = {d.mean():+.4f} (SE {se:.4f}, {d.mean()/se:+.1f}σ) "
               f"{'← HELPS' if d.mean()-2*se>0 else '(not sig)'}")
     print()
-    delta("(b) constant ρ", "(c) ρ(hop) off-diag")
-    delta("(b) constant ρ", "(d) σ(hop) CONFIDENCE, const ρ")
-    delta("(b) constant ρ", "(e) σ(hop)+ρ(hop) full")
-    delta("(a) independent ρ=0", "(e) σ(hop)+ρ(hop) full")
+    delta("(b) constant ρ", "(e) σ(hop)+ρ(hop) oracle-bin")
+    delta("(b) constant ρ", "(f) Σ(hop) PREDICTIVE smooth")      # ← the actual build vs constant baseline
+    delta("(e) σ(hop)+ρ(hop) oracle-bin", "(f) Σ(hop) PREDICTIVE smooth")  # predictive vs oracle: how much lost?
 
 
 if __name__ == "__main__":

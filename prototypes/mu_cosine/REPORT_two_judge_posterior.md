@@ -76,7 +76,8 @@ h=1 μ_D=0.85≫μ_S=0.23; by h=5 they're indistinguishable.
 | (b) constant ρ | −0.721 | — |
 | (c) ρ(hop) off-diagonal ALONE | −0.732 | +0.011 (+1.1σ) not sig |
 | (d) σ(hop) confidence ALONE | −0.725 | +0.004 (+0.4σ) not sig |
-| **(e) σ(hop)+ρ(hop) — full Σ(hop)** | **−0.782** | **+0.061 (+4.9σ) HELPS** |
+| (e) σ(hop)+ρ(hop) — full Σ(hop), oracle per-hop bins | −0.782 | +0.061 (+4.9σ) HELPS |
+| **(f) Σ(hop) PREDICTIVE — smooth σ(hop),ρ(hop) by MLE** | **−0.819** | **+0.098 (+8.5σ), and +3.6σ vs (e)** |
 
 - **The full hop-dependent covariance is a significant win (+4.9σ vs constant, +6.4σ vs independent)** — even though
   *neither* `σ(hop)` nor `ρ(hop)` alone clears noise. They only help *together*: modelling the correlation with a
@@ -88,6 +89,11 @@ h=1 μ_D=0.85≫μ_S=0.23; by h=5 they're indistinguishable.
   pseudo-judges `μ_D²,μ_S²` = the σ diagonal, cross `μ_D·μ_S` = the ρ off-diagonal, both coupled to `d`), not the
   cross-term alone. This is the first *significant* evidence for the hop-conditional posterior. (The separation trick
   / constant-Σ remains the base; Σ(hop) adds a real, significant increment on top.)
+- **BUILT (rung f): the predictive smooth `Σ(hop)`** — `σ_D(hop)=exp(a+b·hop)`, `σ_S(hop)`, `ρ(hop)=tanh(c+e·hop)`
+  fit by MLE (no per-hop bins) — is **+8.5σ over constant AND +3.6σ over the oracle per-hop `Σ` (e)**. The smooth
+  form *regularises* the covariance: it pools across hops instead of estimating `Σ` from ~35 pairs/bin, so the
+  *buildable* model (Σ a learned function of the conditioning feature) beats the oracle. This is "`Σ(hop)` in the
+  model," done — a hop-conditional covariance head with 6 extra parameters.
 
 ### WHY Σ(hop) beats constant Σ — the decoupling geometry rotates with hop (user)
 The decoupling (whitening) transformation is a *function of hop*, and `Σ(hop)`'s **condition number reduces with
