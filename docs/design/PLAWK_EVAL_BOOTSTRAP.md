@@ -202,8 +202,9 @@ independently useful (richer hand-written grammars load sooner).
    bodies** (`assertz((H :- B))`): a var-preserving clause copy (head↔body
    variable sharing, fresh vars per call) plus a deterministic body interpreter
    handling `,`/2, builtins, and predicate calls (including nested rules).
-   Works in loaded objects — the store is process-global. See
-   **PLAWK_DYNAMIC_DB.md**. Remaining there: `;`/`->`/`!` and cross-goal
+   Works in loaded objects — the store is process-global. Body `;`/`->`/`\+`
+   (deterministic if-then-else / disjunction / negation) are handled too. See
+   **PLAWK_DYNAMIC_DB.md**. Remaining there: `!` (cut) and cross-goal
    backtracking in bodies, retract of rules, and `call/N` partial application.
 
    **`catch`/`throw` (milestone 3c) — landed.** A process-global side stack of

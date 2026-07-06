@@ -237,6 +237,16 @@ rb_mix(R)    :- assertz(rbbase(10)),
                 assertz((rbcompute(Y) :- rbbase(B), Y is B+32)),
                 rbcompute(R).                                                % 42 (body: fact call + builtin)
 
+% Rule-body control constructs (follow-up): if-then-else, disjunction, and
+% negation-as-failure, all within the deterministic first-solution model.
+:- dynamic rcsgn/2, rcpk/1, rcdj/1, rcnz/2.
+rc_ite_t(R) :- assertz((rcsgn(N,X) :- (N > 0 -> X = 1 ; X = 0))), rcsgn(7, R).   % 1 (cond true)
+rc_ite_f(R) :- assertz((rcsgn(N,X) :- (N > 0 -> X = 1 ; X = 0))), rcsgn(-7, R).  % 0 (cond false)
+rc_disj1(R) :- assertz((rcpk(X) :- (X = 11 ; X = 22))), rcpk(R).                 % 11 (first branch)
+rc_disj2(R) :- assertz((rcdj(X) :- (fail ; X = 22))), rcdj(R).                   % 22 (second branch)
+rc_naf1(R)  :- assertz((rcnz(N,X) :- (\+ (N =:= 0) -> X = 1 ; X = 0))), rcnz(5, R). % 1
+rc_naf0(R)  :- assertz((rcnz(N,X) :- (\+ (N =:= 0) -> X = 1 ; X = 0))), rcnz(0, R). % 0
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -757,6 +767,27 @@ test(rule_bodies_in_object, [condition(clang_available)]) :-
              write_wam_object([user:PI], [wamo_entry(PI)], W),
              run_host(Host, W, Out, 0),
              assertion(Out == "42\n") )),
+    !.
+
+% Rule-body control constructs: if-then-else (both directions), disjunction
+% (both branches), and negation-as-failure (both ways), deterministic.
+test(rule_body_control_in_object, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    forall(member(Name-Expected,
+               [ rc_ite_t-"1\n",   % if-then-else, condition true
+                 rc_ite_f-"0\n",   % if-then-else, condition false -> else
+                 rc_disj1-"11\n",  % disjunction, first branch
+                 rc_disj2-"22\n",  % disjunction, first fails -> second
+                 rc_naf1-"1\n",    % \+ of a false goal -> succeeds
+                 rc_naf0-"0\n" ]), % \+ of a true goal -> else
+           ( PI = Name/1,
+             directory_file_path(Dir, Name, Base),
+             atom_concat(Base, '.wamo', W),
+             write_wam_object([user:PI], [wamo_entry(PI)], W),
+             run_host(Host, W, Out, 0),
+             assertion(Out == Expected) )),
     !.
 
 :- end_tests(wam_object).

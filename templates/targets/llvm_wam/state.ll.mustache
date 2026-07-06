@@ -5240,45 +5240,161 @@ ret_eq:  ret i32 24
 nf:      ret i32 -1
 }
 
-; Solve a rule body deterministically (first solution). Handles ,/2 recursion
-; and single goals.
+; Solve a rule body deterministically (first solution). Handles ,/2, ;/2
+; (disjunction and, when the left arg is ->/2, if-then-else), ->/2 (if-then),
+; \+/1 (negation as failure), and single goals. Control constructs stay within
+; the first-solution model: a failing branch's bindings are unwound (trail
+; mark) before the alternative runs.
 define i1 @wam_dyn_run_body(%WamState* %vm, %Value %body) {
 entry:
   %b = call %Value @wam_deref_value(%WamState* %vm, %Value %body)
   %tag = call i32 @value_tag(%Value %b)
   %is_comp = icmp eq i32 %tag, 3
-  br i1 %is_comp, label %maybe_conj, label %single
-maybe_conj:
+  br i1 %is_comp, label %comp, label %single
+comp:
   %pl = call i64 @value_payload(%Value %b)
   %cp = inttoptr i64 %pl to %Compound*
   %ar_s = getelementptr %Compound, %Compound* %cp, i32 0, i32 1
   %ar = load i32, i32* %ar_s
   %fn_s = getelementptr %Compound, %Compound* %cp, i32 0, i32 0
   %fn = load i8*, i8** %fn_s
-  %c0 = load i8, i8* %fn
-  %is_comma_c = icmp eq i8 %c0, 44
-  %ar2 = icmp eq i32 %ar, 2
-  %isconj0 = and i1 %is_comma_c, %ar2
-  br i1 %isconj0, label %conj_check2, label %single
-conj_check2:
-  %p1 = getelementptr i8, i8* %fn, i64 1
-  %c1 = load i8, i8* %p1
-  %c1nul = icmp eq i8 %c1, 0
-  br i1 %c1nul, label %conj, label %single
-conj:
   %args_s = getelementptr %Compound, %Compound* %cp, i32 0, i32 2
   %cargs = load %Value*, %Value** %args_s
-  %a0p = getelementptr %Value, %Value* %cargs, i32 0
-  %a0 = load %Value, %Value* %a0p
-  %ok1 = call i1 @wam_dyn_run_body(%WamState* %vm, %Value %a0)
-  br i1 %ok1, label %conj_rest, label %cfalse
+  %c0 = load i8, i8* %fn
+  switch i8 %c0, label %single [
+    i8 44, label %try_comma
+    i8 59, label %try_semi
+    i8 45, label %try_arrow
+    i8 92, label %try_naf
+  ]
+try_comma:
+  %tc_ar2 = icmp eq i32 %ar, 2
+  %tc_p1 = getelementptr i8, i8* %fn, i64 1
+  %tc_c1 = load i8, i8* %tc_p1
+  %tc_nul = icmp eq i8 %tc_c1, 0
+  %is_comma = and i1 %tc_ar2, %tc_nul
+  br i1 %is_comma, label %conj, label %single
+try_semi:
+  %ts_ar2 = icmp eq i32 %ar, 2
+  %ts_p1 = getelementptr i8, i8* %fn, i64 1
+  %ts_c1 = load i8, i8* %ts_p1
+  %ts_nul = icmp eq i8 %ts_c1, 0
+  %is_semi = and i1 %ts_ar2, %ts_nul
+  br i1 %is_semi, label %semi, label %single
+try_arrow:
+  %ta_ar2 = icmp eq i32 %ar, 2
+  %ta_p1 = getelementptr i8, i8* %fn, i64 1
+  %ta_c1 = load i8, i8* %ta_p1
+  %ta_gt = icmp eq i8 %ta_c1, 62
+  %ta_p2 = getelementptr i8, i8* %fn, i64 2
+  %ta_c2 = load i8, i8* %ta_p2
+  %ta_nul = icmp eq i8 %ta_c2, 0
+  %ta_ok0 = and i1 %ta_ar2, %ta_gt
+  %is_arrow = and i1 %ta_ok0, %ta_nul
+  br i1 %is_arrow, label %if_then, label %single
+try_naf:
+  %tn_ar1 = icmp eq i32 %ar, 1
+  %tn_p1 = getelementptr i8, i8* %fn, i64 1
+  %tn_c1 = load i8, i8* %tn_p1
+  %tn_plus = icmp eq i8 %tn_c1, 43
+  %tn_p2 = getelementptr i8, i8* %fn, i64 2
+  %tn_c2 = load i8, i8* %tn_p2
+  %tn_nul = icmp eq i8 %tn_c2, 0
+  %tn_ok0 = and i1 %tn_ar1, %tn_plus
+  %is_naf = and i1 %tn_ok0, %tn_nul
+  br i1 %is_naf, label %naf, label %single
+conj:
+  %cj_a0p = getelementptr %Value, %Value* %cargs, i32 0
+  %cj_a0 = load %Value, %Value* %cj_a0p
+  %cj_ok1 = call i1 @wam_dyn_run_body(%WamState* %vm, %Value %cj_a0)
+  br i1 %cj_ok1, label %conj_rest, label %cfalse
 conj_rest:
-  %a1p = getelementptr %Value, %Value* %cargs, i32 1
-  %a1 = load %Value, %Value* %a1p
-  %ok2 = call i1 @wam_dyn_run_body(%WamState* %vm, %Value %a1)
-  ret i1 %ok2
+  %cj_a1p = getelementptr %Value, %Value* %cargs, i32 1
+  %cj_a1 = load %Value, %Value* %cj_a1p
+  %cj_ok2 = call i1 @wam_dyn_run_body(%WamState* %vm, %Value %cj_a1)
+  ret i1 %cj_ok2
 cfalse:
   ret i1 false
+semi:
+  ; (A ; B): if A is (C -> T) this is if-then-else, else first-solution disjunction
+  %sm_a0p = getelementptr %Value, %Value* %cargs, i32 0
+  %sm_a0 = load %Value, %Value* %sm_a0p
+  %sm_a1p = getelementptr %Value, %Value* %cargs, i32 1
+  %sm_a1 = load %Value, %Value* %sm_a1p
+  %sm_a0d = call %Value @wam_deref_value(%WamState* %vm, %Value %sm_a0)
+  %sm_a0tag = call i32 @value_tag(%Value %sm_a0d)
+  %sm_a0comp = icmp eq i32 %sm_a0tag, 3
+  br i1 %sm_a0comp, label %semi_ite_check, label %disj
+semi_ite_check:
+  %sm_pl = call i64 @value_payload(%Value %sm_a0d)
+  %sm_cp = inttoptr i64 %sm_pl to %Compound*
+  %sm_ar_s = getelementptr %Compound, %Compound* %sm_cp, i32 0, i32 1
+  %sm_ar = load i32, i32* %sm_ar_s
+  %sm_fn_s = getelementptr %Compound, %Compound* %sm_cp, i32 0, i32 0
+  %sm_fn = load i8*, i8** %sm_fn_s
+  %sm_f0 = load i8, i8* %sm_fn
+  %sm_f0d = icmp eq i8 %sm_f0, 45
+  %sm_p1 = getelementptr i8, i8* %sm_fn, i64 1
+  %sm_f1 = load i8, i8* %sm_p1
+  %sm_f1gt = icmp eq i8 %sm_f1, 62
+  %sm_p2 = getelementptr i8, i8* %sm_fn, i64 2
+  %sm_f2 = load i8, i8* %sm_p2
+  %sm_f2n = icmp eq i8 %sm_f2, 0
+  %sm_ar2 = icmp eq i32 %sm_ar, 2
+  %sm_x0 = and i1 %sm_f0d, %sm_f1gt
+  %sm_x1 = and i1 %sm_x0, %sm_f2n
+  %sm_isarrow = and i1 %sm_x1, %sm_ar2
+  br i1 %sm_isarrow, label %ite, label %disj
+ite:
+  %ite_cargs_s = getelementptr %Compound, %Compound* %sm_cp, i32 0, i32 2
+  %ite_cargs = load %Value*, %Value** %ite_cargs_s
+  %ite_Cp = getelementptr %Value, %Value* %ite_cargs, i32 0
+  %ite_C = load %Value, %Value* %ite_Cp
+  %ite_Tp = getelementptr %Value, %Value* %ite_cargs, i32 1
+  %ite_T = load %Value, %Value* %ite_Tp
+  %ite_ts_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %ite_mark = load i32, i32* %ite_ts_p
+  %ite_cok = call i1 @wam_dyn_run_body(%WamState* %vm, %Value %ite_C)
+  br i1 %ite_cok, label %ite_then, label %ite_else
+ite_then:
+  %ite_tr = call i1 @wam_dyn_run_body(%WamState* %vm, %Value %ite_T)
+  ret i1 %ite_tr
+ite_else:
+  call void @unwind_trail(%WamState* %vm, i32 %ite_mark)
+  %ite_er = call i1 @wam_dyn_run_body(%WamState* %vm, %Value %sm_a1)
+  ret i1 %ite_er
+disj:
+  %dj_ts_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %dj_mark = load i32, i32* %dj_ts_p
+  %dj_aok = call i1 @wam_dyn_run_body(%WamState* %vm, %Value %sm_a0)
+  br i1 %dj_aok, label %disj_true, label %disj_else
+disj_true:
+  ret i1 true
+disj_else:
+  call void @unwind_trail(%WamState* %vm, i32 %dj_mark)
+  %dj_br = call i1 @wam_dyn_run_body(%WamState* %vm, %Value %sm_a1)
+  ret i1 %dj_br
+if_then:
+  %it_Cp = getelementptr %Value, %Value* %cargs, i32 0
+  %it_C = load %Value, %Value* %it_Cp
+  %it_Tp = getelementptr %Value, %Value* %cargs, i32 1
+  %it_T = load %Value, %Value* %it_Tp
+  %it_cok = call i1 @wam_dyn_run_body(%WamState* %vm, %Value %it_C)
+  br i1 %it_cok, label %if_then_do, label %if_then_fail
+if_then_do:
+  %it_tr = call i1 @wam_dyn_run_body(%WamState* %vm, %Value %it_T)
+  ret i1 %it_tr
+if_then_fail:
+  ret i1 false
+naf:
+  %nf_Gp = getelementptr %Value, %Value* %cargs, i32 0
+  %nf_G = load %Value, %Value* %nf_Gp
+  %nf_ts_p = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %nf_mark = load i32, i32* %nf_ts_p
+  %nf_gok = call i1 @wam_dyn_run_body(%WamState* %vm, %Value %nf_G)
+  call void @unwind_trail(%WamState* %vm, i32 %nf_mark)
+  %nf_res = xor i1 %nf_gok, true
+  ret i1 %nf_res
 single:
   %r = call i1 @wam_dyn_solve_goal(%WamState* %vm, %Value %b)
   ret i1 %r
