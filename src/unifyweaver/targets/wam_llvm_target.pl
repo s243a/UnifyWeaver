@@ -4159,7 +4159,14 @@ check_retract:
   ; agg_type == -4: a retract/1 iterator -- advance the scan, remove and
   ; yield the next matching clause.
   %is_ret = icmp eq i32 %ca_at, -4
-  br i1 %is_ret, label %do_retract_yield, label %restore
+  br i1 %is_ret, label %do_retract_yield, label %check_barrier
+
+check_barrier:
+  ; agg_type == -8: a rule-body solve barrier. Backtracking that reaches it
+  ; means the nested body goal has no (more) solutions -- stop here so the
+  ; nested run_loop returns false rather than unwinding into the caller.
+  %is_barrier = icmp eq i32 %ca_at, -8
+  br i1 %is_barrier, label %fail, label %restore
 
 do_retract_yield:
   %ry_ok = call i1 @wam_dyn_retract_iter_next(%WamState* %vm)

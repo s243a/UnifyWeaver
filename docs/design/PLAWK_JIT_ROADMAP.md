@@ -335,9 +335,12 @@ loadable along the way.
   rewritten to `call/1` at compile time); and nondet `retract/1` (a
   remove+unify+backtrack iterator). **Milestone 3c** adds `catch`/`throw`: a
   process-global side stack of catch frames (op1 sentinels -5/-6), no
-  cross-object linkage needed. See PLAWK_DYNAMIC_DB.md. Remaining: rule bodies
-  (`assertz((H :- B))`, PR 3) — a body meta-interpreter, the true long pole. See
-  the bootstrap doc for the full loadability matrix.
+  cross-object linkage needed. **PR 3** completes the store with **rule bodies**
+  (`assertz((H :- B))`): a var-preserving clause copy (head↔body sharing, fresh
+  vars per call) + a deterministic body interpreter over `,`/2, builtins, and
+  predicate calls (incl. nested rules). See PLAWK_DYNAMIC_DB.md. The dynamic
+  store is now feature-complete for the eval bootstrap. See the bootstrap doc
+  for the full loadability matrix.
 - **Milestone 4 — byte-buffer output from a grammar — LANDED.** A loaded
   grammar assembles a byte string at runtime (via the milestone-3 string/codes
   builtins) and returns it as an Atom; the host reads it back through

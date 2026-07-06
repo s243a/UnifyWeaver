@@ -223,6 +223,20 @@ ct_uncaught(R) :- throw(oops), R = 1.                                        % u
 ea(R) :- R = 42.
 echocompile(Src, Wamo) :- Wamo = Src.
 
+% Milestone 3b-db PR 3: rule bodies. assertz((H :- B)) stores a rule; calling
+% its head runs the body (deterministic first solution). Bodies handle ,/2,
+% builtins (is/2, comparisons, =/2), and predicate calls; head<->body variable
+% sharing is preserved by a var-index durable copy instantiated per call.
+:- dynamic rbdbl/2, rbinc/2, rbadd2/2, rbclamp/2, rbbase/1, rbcompute/1.
+rb_double(R) :- assertz((rbdbl(X,Y) :- Y is X*2)), rbdbl(21, R).              % 42 (builtin body, shared X)
+rb_chain(R)  :- assertz((rbinc(X,Y) :- Y is X+1)),
+                assertz((rbadd2(X,Z) :- rbinc(X,Y), rbinc(Y,Z))),
+                rbadd2(40, R).                                               % 42 (rule calls rule, var chain)
+rb_clamp(R)  :- assertz((rbclamp(X,X) :- X =< 100)), rbclamp(42, R).         % 42 (head var in body guard)
+rb_mix(R)    :- assertz(rbbase(10)),
+                assertz((rbcompute(Y) :- rbbase(B), Y is B+32)),
+                rbcompute(R).                                                % 42 (body: fact call + builtin)
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -725,6 +739,24 @@ test(eval_compile_pipeline, [condition(clang_available)]) :-
     process_wait(Pid, exit(Status)),
     assertion(Status == 0),
     assertion(Out == "42\n"),
+    !.
+
+% Milestone 3b-db PR 3: rule bodies in a loaded object. asserted (H :- B)
+% clauses run their bodies when the head is called -- builtin bodies with
+% head<->body var sharing (rb_double, rb_clamp), a rule whose body calls
+% another rule with a chained variable (rb_chain), and a body mixing a fact
+% call with a builtin (rb_mix).
+test(rule_bodies_in_object, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    forall(member(Name, [rb_double, rb_chain, rb_clamp, rb_mix]),
+           ( PI = Name/1,
+             directory_file_path(Dir, Name, Base),
+             atom_concat(Base, '.wamo', W),
+             write_wam_object([user:PI], [wamo_entry(PI)], W),
+             run_host(Host, W, Out, 0),
+             assertion(Out == "42\n") )),
     !.
 
 :- end_tests(wam_object).

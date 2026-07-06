@@ -4826,7 +4826,7 @@ done:
 
 ; Append (prepend=false) or prepend (prepend=true) a row into the store,
 ; growing the array by realloc-doubling.
-define void @wam_dyn_store(i8* %functor, i32 %arity, %Value* %args, i1 %prepend) {
+define void @wam_dyn_store(i8* %functor, i32 %arity, %Value* %args, %Value %body, i32 %nvars, i1 %prepend) {
 entry:
   %count = load i32, i32* @wam_dyn_count
   %cap = load i32, i32* @wam_dyn_cap
@@ -4872,27 +4872,234 @@ fill:
   store i32 1, i32* %f_lv
   %f_args = getelementptr %WamDynClause, %WamDynClause* %slot, i32 0, i32 3
   store %Value* %args, %Value** %f_args
+  %f_body = getelementptr %WamDynClause, %WamDynClause* %slot, i32 0, i32 4
+  store %Value %body, %Value* %f_body
+  %f_nv = getelementptr %WamDynClause, %WamDynClause* %slot, i32 0, i32 5
+  store i32 %nvars, i32* %f_nv
   %newcount = add i32 %count, 1
   store i32 %newcount, i32* @wam_dyn_count
   ret void
 }
 
-; assertz (prepend=false) / asserta (prepend=true): store a clause term as a
-; ground fact. Returns false only for a non-callable term (a number/var).
+; True iff the functor name is ":-" (the rule neck / clause operator).
+define i1 @wam_functor_is_neck(i8* %fn) {
+entry:
+  %c0 = load i8, i8* %fn
+  %is_colon = icmp eq i8 %c0, 58
+  br i1 %is_colon, label %check1, label %no
+check1:
+  %p1 = getelementptr i8, i8* %fn, i64 1
+  %c1 = load i8, i8* %p1
+  %is_dash = icmp eq i8 %c1, 45
+  br i1 %is_dash, label %check2, label %no
+check2:
+  %p2 = getelementptr i8, i8* %fn, i64 2
+  %c2 = load i8, i8* %p2
+  %is_nul = icmp eq i8 %c2, 0
+  ret i1 %is_nul
+no:
+  ret i1 false
+}
+
+; Var-preserving durable copy. Distinct unbound clause variables are assigned
+; indices via %map (source heap-cell addr -> index); each is stored as a Ref
+; %Value whose payload is that INDEX (not a heap address). Atomic values copy
+; by value; compounds get fresh malloc'd cells. Sharing a single %map across a
+; clause's head and body preserves head<->body variable sharing.
+define %Value @wam_dyn_copy_var(%WamState* %vm, %Value %v, i64* %map, i32* %countp) {
+entry:
+  %kv = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %v)
+  %tag = call i32 @value_tag(%Value %kv)
+  %is_ref = icmp eq i32 %tag, 5
+  br i1 %is_ref, label %var, label %not_var
+var:
+  %addr = call i64 @value_payload(%Value %kv)
+  %count = load i32, i32* %countp
+  br label %scan
+scan:
+  %i = phi i32 [ 0, %var ], [ %inext, %scan_cont ]
+  %seen = icmp sge i32 %i, %count
+  br i1 %seen, label %fresh, label %probe
+probe:
+  %mp = getelementptr i64, i64* %map, i32 %i
+  %ma = load i64, i64* %mp
+  %hit = icmp eq i64 %ma, %addr
+  br i1 %hit, label %use, label %scan_cont
+scan_cont:
+  %inext = add i32 %i, 1
+  br label %scan
+fresh:
+  %mp2 = getelementptr i64, i64* %map, i32 %count
+  store i64 %addr, i64* %mp2
+  %count1 = add i32 %count, 1
+  store i32 %count1, i32* %countp
+  %rv1 = call %Value @value_ref(i32 %count)
+  ret %Value %rv1
+use:
+  %rv2 = call %Value @value_ref(i32 %i)
+  ret %Value %rv2
+not_var:
+  %is_comp = icmp eq i32 %tag, 3
+  br i1 %is_comp, label %compound, label %atomic
+atomic:
+  ret %Value %kv
+compound:
+  %pl = call i64 @value_payload(%Value %kv)
+  %cp = inttoptr i64 %pl to %Compound*
+  %fn_s = getelementptr %Compound, %Compound* %cp, i32 0, i32 0
+  %fn = load i8*, i8** %fn_s
+  %ar_s = getelementptr %Compound, %Compound* %cp, i32 0, i32 1
+  %ar = load i32, i32* %ar_s
+  %args_s = getelementptr %Compound, %Compound* %cp, i32 0, i32 2
+  %src_args = load %Value*, %Value** %args_s
+  %csz = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %cmem = call i8* @malloc(i64 %csz)
+  %ncp = bitcast i8* %cmem to %Compound*
+  %nfn = call i8* @wam_dyn_dup_functor(i8* %fn)
+  %nfn_s = getelementptr %Compound, %Compound* %ncp, i32 0, i32 0
+  store i8* %nfn, i8** %nfn_s
+  %nar_s = getelementptr %Compound, %Compound* %ncp, i32 0, i32 1
+  store i32 %ar, i32* %nar_s
+  %vsz = ptrtoint %Value* getelementptr (%Value, %Value* null, i32 1) to i64
+  %ar64 = sext i32 %ar to i64
+  %abytes = mul i64 %vsz, %ar64
+  %amem = call i8* @malloc(i64 %abytes)
+  %nargs = bitcast i8* %amem to %Value*
+  %nargs_s = getelementptr %Compound, %Compound* %ncp, i32 0, i32 2
+  store %Value* %nargs, %Value** %nargs_s
+  %has = icmp sgt i32 %ar, 0
+  br i1 %has, label %cloop, label %cdone
+cloop:
+  %ci = phi i32 [ 0, %compound ], [ %cinext, %cstep ]
+  %sp = getelementptr %Value, %Value* %src_args, i32 %ci
+  %sv = load %Value, %Value* %sp
+  %dv = call %Value @wam_dyn_copy_var(%WamState* %vm, %Value %sv, i64* %map, i32* %countp)
+  %dp = getelementptr %Value, %Value* %nargs, i32 %ci
+  store %Value %dv, %Value* %dp
+  %cinext = add i32 %ci, 1
+  %cmore = icmp slt i32 %cinext, %ar
+  br i1 %cmore, label %cstep, label %cdone
+cstep:
+  br label %cloop
+cdone:
+  %ni = ptrtoint %Compound* %ncp to i64
+  %r0 = insertvalue %Value undef, i32 3, 0
+  %r1 = insertvalue %Value %r0, i64 %ni, 1
+  ret %Value %r1
+}
+
+; Copy a compound's args into a fresh malloc'd durable array via copy_var.
+define %Value* @wam_dyn_copy_args(%WamState* %vm, %Value* %src, i32 %arity, i64* %map, i32* %countp) {
+entry:
+  %vsz = ptrtoint %Value* getelementptr (%Value, %Value* null, i32 1) to i64
+  %ar64 = sext i32 %arity to i64
+  %bytes = mul i64 %vsz, %ar64
+  %mem = call i8* @malloc(i64 %bytes)
+  %dargs = bitcast i8* %mem to %Value*
+  %has = icmp sgt i32 %arity, 0
+  br i1 %has, label %loop, label %done
+loop:
+  %i = phi i32 [ 0, %entry ], [ %inext, %step ]
+  %sp = getelementptr %Value, %Value* %src, i32 %i
+  %sv = load %Value, %Value* %sp
+  %dv = call %Value @wam_dyn_copy_var(%WamState* %vm, %Value %sv, i64* %map, i32* %countp)
+  %dp = getelementptr %Value, %Value* %dargs, i32 %i
+  store %Value %dv, %Value* %dp
+  %inext = add i32 %i, 1
+  %more = icmp slt i32 %inext, %arity
+  br i1 %more, label %step, label %done
+step:
+  br label %loop
+done:
+  ret %Value* %dargs
+}
+
+; Instantiate a durable term into the arena, mapping each var-index Ref to the
+; caller-provided fresh heap cell %cells[index]. Atomic values copy by value;
+; compounds are rebuilt in the arena. Used at consult time to give each clause
+; use fresh, correctly-shared variables.
+define %Value @wam_dyn_instantiate(%WamState* %vm, %Value %dt, i32* %cells) {
+entry:
+  %tag = call i32 @value_tag(%Value %dt)
+  %is_ref = icmp eq i32 %tag, 5
+  br i1 %is_ref, label %var, label %not_var
+var:
+  %idx64 = call i64 @value_payload(%Value %dt)
+  %idx = trunc i64 %idx64 to i32
+  %cp = getelementptr i32, i32* %cells, i32 %idx
+  %addr = load i32, i32* %cp
+  %rv = call %Value @value_ref(i32 %addr)
+  ret %Value %rv
+not_var:
+  %is_comp = icmp eq i32 %tag, 3
+  br i1 %is_comp, label %compound, label %atomic
+atomic:
+  ret %Value %dt
+compound:
+  %pl = call i64 @value_payload(%Value %dt)
+  %scp = inttoptr i64 %pl to %Compound*
+  %fn_s = getelementptr %Compound, %Compound* %scp, i32 0, i32 0
+  %fn = load i8*, i8** %fn_s
+  %ar_s = getelementptr %Compound, %Compound* %scp, i32 0, i32 1
+  %ar = load i32, i32* %ar_s
+  %args_s = getelementptr %Compound, %Compound* %scp, i32 0, i32 2
+  %src_args = load %Value*, %Value** %args_s
+  call void @wam_arena_ensure()
+  %csz = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %cmem = call i8* @wam_arena_alloc(i64 %csz)
+  %ncp = bitcast i8* %cmem to %Compound*
+  %nfn_s = getelementptr %Compound, %Compound* %ncp, i32 0, i32 0
+  store i8* %fn, i8** %nfn_s
+  %nar_s = getelementptr %Compound, %Compound* %ncp, i32 0, i32 1
+  store i32 %ar, i32* %nar_s
+  %vsz = ptrtoint %Value* getelementptr (%Value, %Value* null, i32 1) to i64
+  %ar64 = sext i32 %ar to i64
+  %abytes = mul i64 %vsz, %ar64
+  %amem = call i8* @wam_arena_alloc(i64 %abytes)
+  %nargs = bitcast i8* %amem to %Value*
+  %nargs_s = getelementptr %Compound, %Compound* %ncp, i32 0, i32 2
+  store %Value* %nargs, %Value** %nargs_s
+  %has = icmp sgt i32 %ar, 0
+  br i1 %has, label %iloop, label %idone
+iloop:
+  %ii = phi i32 [ 0, %compound ], [ %iinext, %istep ]
+  %sp = getelementptr %Value, %Value* %src_args, i32 %ii
+  %sv = load %Value, %Value* %sp
+  %dv = call %Value @wam_dyn_instantiate(%WamState* %vm, %Value %sv, i32* %cells)
+  %dp = getelementptr %Value, %Value* %nargs, i32 %ii
+  store %Value %dv, %Value* %dp
+  %iinext = add i32 %ii, 1
+  %imore = icmp slt i32 %iinext, %ar
+  br i1 %imore, label %istep, label %idone
+istep:
+  br label %iloop
+idone:
+  %ni = ptrtoint %Compound* %ncp to i64
+  %r0 = insertvalue %Value undef, i32 3, 0
+  %r1 = insertvalue %Value %r0, i64 %ni, 1
+  ret %Value %r1
+}
+
+; assertz (prepend=false) / asserta (prepend=true). A (H :- B) term stores a
+; RULE keyed by H's functor/arity with B as the durable body; any other
+; callable term stores a fact (body = Unbound sentinel). Variables are copied
+; preserving sharing (var-index Refs) with nvars recorded. Returns false only
+; for a non-callable term.
 define i1 @wam_dyn_assert(%WamState* %vm, %Value %clause, i1 %prepend) {
 entry:
+  %map = alloca i64, i32 256
+  %countp = alloca i32
+  store i32 0, i32* %countp
   %dc = call %Value @wam_deref_value(%WamState* %vm, %Value %clause)
   %tag = call i32 @value_tag(%Value %dc)
+  %unb = call %Value @value_unbound(i8* null)
   %is_atom = icmp eq i32 %tag, 0
-  br i1 %is_atom, label %atom_clause, label %maybe_compound
-atom_clause:
+  br i1 %is_atom, label %atom_fact, label %maybe_compound
+atom_fact:
   %aid = call i64 @value_payload(%Value %dc)
   %astr = call i8* @wam_atom_to_string(i64 %aid)
-  %astr_null = icmp eq i8* %astr, null
-  br i1 %astr_null, label %fail, label %atom_store
-atom_store:
   %afn = call i8* @wam_dyn_dup_functor(i8* %astr)
-  call void @wam_dyn_store(i8* %afn, i32 0, %Value* null, i1 %prepend)
+  call void @wam_dyn_store(i8* %afn, i32 0, %Value* null, %Value %unb, i32 0, i1 %prepend)
   ret i1 true
 maybe_compound:
   %is_comp = icmp eq i32 %tag, 3
@@ -4904,33 +5111,278 @@ comp_clause:
   %fn = load i8*, i8** %fn_slot
   %ar_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 1
   %ar = load i32, i32* %ar_slot
+  %neck = call i1 @wam_functor_is_neck(i8* %fn)
+  %ar2 = icmp eq i32 %ar, 2
+  %isrule = and i1 %neck, %ar2
+  br i1 %isrule, label %rule, label %fact_compound
+fact_compound:
+  %fc_args_s = getelementptr %Compound, %Compound* %cp, i32 0, i32 2
+  %fc_src = load %Value*, %Value** %fc_args_s
+  %fc_fn = call i8* @wam_dyn_dup_functor(i8* %fn)
+  %fc_args = call %Value* @wam_dyn_copy_args(%WamState* %vm, %Value* %fc_src, i32 %ar, i64* %map, i32* %countp)
+  %fc_nv = load i32, i32* %countp
+  call void @wam_dyn_store(i8* %fc_fn, i32 %ar, %Value* %fc_args, %Value %unb, i32 %fc_nv, i1 %prepend)
+  ret i1 true
+rule:
   %args_slot = getelementptr %Compound, %Compound* %cp, i32 0, i32 2
-  %src_args = load %Value*, %Value** %args_slot
-  %dfn = call i8* @wam_dyn_dup_functor(i8* %fn)
-  %vsz = ptrtoint %Value* getelementptr (%Value, %Value* null, i32 1) to i64
-  %ar64 = sext i32 %ar to i64
-  %argbytes = mul i64 %vsz, %ar64
-  %argsmem = call i8* @malloc(i64 %argbytes)
-  %dargs = bitcast i8* %argsmem to %Value*
-  %has = icmp sgt i32 %ar, 0
-  br i1 %has, label %cloop, label %cstore
-cloop:
-  %i = phi i32 [ 0, %comp_clause ], [ %inext, %cloopstep ]
-  %sp = getelementptr %Value, %Value* %src_args, i32 %i
-  %sv = load %Value, %Value* %sp
-  %cvd = call %Value @wam_dyn_copy_durable(%WamState* %vm, %Value %sv)
-  %dp = getelementptr %Value, %Value* %dargs, i32 %i
-  store %Value %cvd, %Value* %dp
-  %inext = add i32 %i, 1
-  %more = icmp slt i32 %inext, %ar
-  br i1 %more, label %cloopstep, label %cstore
-cloopstep:
-  br label %cloop
-cstore:
-  call void @wam_dyn_store(i8* %dfn, i32 %ar, %Value* %dargs, i1 %prepend)
+  %rargs = load %Value*, %Value** %args_slot
+  %hp = getelementptr %Value, %Value* %rargs, i32 0
+  %headv = load %Value, %Value* %hp
+  %head = call %Value @wam_deref_value(%WamState* %vm, %Value %headv)
+  %bp = getelementptr %Value, %Value* %rargs, i32 1
+  %bodyv = load %Value, %Value* %bp
+  %htag = call i32 @value_tag(%Value %head)
+  %h_atom = icmp eq i32 %htag, 0
+  br i1 %h_atom, label %rule_head_atom, label %rule_head_comp
+rule_head_atom:
+  %haid = call i64 @value_payload(%Value %head)
+  %hastr = call i8* @wam_atom_to_string(i64 %haid)
+  %hafn = call i8* @wam_dyn_dup_functor(i8* %hastr)
+  %rba = call %Value @wam_dyn_copy_var(%WamState* %vm, %Value %bodyv, i64* %map, i32* %countp)
+  %nv_a = load i32, i32* %countp
+  call void @wam_dyn_store(i8* %hafn, i32 0, %Value* null, %Value %rba, i32 %nv_a, i1 %prepend)
+  ret i1 true
+rule_head_comp:
+  %h_comp = icmp eq i32 %htag, 3
+  br i1 %h_comp, label %rule_head_store, label %fail
+rule_head_store:
+  %hpl = call i64 @value_payload(%Value %head)
+  %hcp = inttoptr i64 %hpl to %Compound*
+  %hfn_s = getelementptr %Compound, %Compound* %hcp, i32 0, i32 0
+  %hfn = load i8*, i8** %hfn_s
+  %har_s = getelementptr %Compound, %Compound* %hcp, i32 0, i32 1
+  %har = load i32, i32* %har_s
+  %hargs_s = getelementptr %Compound, %Compound* %hcp, i32 0, i32 2
+  %hsrc = load %Value*, %Value** %hargs_s
+  %hdfn = call i8* @wam_dyn_dup_functor(i8* %hfn)
+  %hdargs = call %Value* @wam_dyn_copy_args(%WamState* %vm, %Value* %hsrc, i32 %har, i64* %map, i32* %countp)
+  %rbc = call %Value @wam_dyn_copy_var(%WamState* %vm, %Value %bodyv, i64* %map, i32* %countp)
+  %nv_c = load i32, i32* %countp
+  call void @wam_dyn_store(i8* %hdfn, i32 %har, %Value* %hdargs, %Value %rbc, i32 %nv_c, i1 %prepend)
   ret i1 true
 fail:
   ret i1 false
+}
+
+; ==========================================================================
+; Rule bodies (milestone 3b-db PR 3): deterministic conjunctive bodies. When
+; a consulted clause has a body, @wam_dyn_run_body solves it: `,`/2 recurses
+; left-to-right; a builtin goal (is/2, comparisons, =/2, ==/2) runs via
+; @execute_builtin; any other goal is a predicate call solved to its FIRST
+; solution through a nested @run_loop, isolated by a barrier choice point
+; (agg_type -8) and a cp=0 halt continuation. No `;`/`->`/`!` inside bodies
+; and no cross-goal backtracking yet (first-solution). See PLAWK_DYNAMIC_DB.md.
+; ==========================================================================
+
+@.bid_is = private constant [3 x i8] c"is\00"
+@.bid_eq = private constant [2 x i8] c"=\00"
+@.bid_eqeq = private constant [3 x i8] c"==\00"
+@.bid_le = private constant [3 x i8] c"=<\00"
+@.bid_ge = private constant [3 x i8] c">=\00"
+@.bid_gt = private constant [2 x i8] c">\00"
+@.bid_lt = private constant [2 x i8] c"<\00"
+@.bid_aeq = private constant [4 x i8] c"=:=\00"
+@.bid_ane = private constant [4 x i8] c"=\5C=\00"
+@.bid_true = private constant [5 x i8] c"true\00"
+@.bid_fail = private constant [5 x i8] c"fail\00"
+@.bid_false = private constant [6 x i8] c"false\00"
+
+; functor/arity -> @execute_builtin id for the builtins bodies may use, or -1.
+define i32 @wam_builtin_id_of(i8* %fn, i32 %arity) {
+entry:
+  %is2 = icmp eq i32 %arity, 2
+  br i1 %is2, label %a2, label %nf
+a2:
+  %r_is = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.bid_is, i32 0, i32 0))
+  %e_is = icmp eq i32 %r_is, 0
+  br i1 %e_is, label %ret_is, label %t_eq
+t_eq:
+  %r_eq = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.bid_eq, i32 0, i32 0))
+  %e_eq = icmp eq i32 %r_eq, 0
+  br i1 %e_eq, label %ret_eq, label %t_eqeq
+t_eqeq:
+  %r_ee = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.bid_eqeq, i32 0, i32 0))
+  %e_ee = icmp eq i32 %r_ee, 0
+  br i1 %e_ee, label %ret_ee, label %t_le
+t_le:
+  %r_le = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.bid_le, i32 0, i32 0))
+  %e_le = icmp eq i32 %r_le, 0
+  br i1 %e_le, label %ret_le, label %t_ge
+t_ge:
+  %r_ge = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.bid_ge, i32 0, i32 0))
+  %e_ge = icmp eq i32 %r_ge, 0
+  br i1 %e_ge, label %ret_ge, label %t_gt
+t_gt:
+  %r_gt = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.bid_gt, i32 0, i32 0))
+  %e_gt = icmp eq i32 %r_gt, 0
+  br i1 %e_gt, label %ret_gt, label %t_lt
+t_lt:
+  %r_lt = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.bid_lt, i32 0, i32 0))
+  %e_lt = icmp eq i32 %r_lt, 0
+  br i1 %e_lt, label %ret_lt, label %t_aeq
+t_aeq:
+  %r_ae = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([4 x i8], [4 x i8]* @.bid_aeq, i32 0, i32 0))
+  %e_ae = icmp eq i32 %r_ae, 0
+  br i1 %e_ae, label %ret_aeq, label %t_ane
+t_ane:
+  %r_an = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([4 x i8], [4 x i8]* @.bid_ane, i32 0, i32 0))
+  %e_an = icmp eq i32 %r_an, 0
+  br i1 %e_an, label %ret_ane, label %nf
+ret_is:  ret i32 0
+ret_gt:  ret i32 1
+ret_lt:  ret i32 2
+ret_ge:  ret i32 3
+ret_le:  ret i32 4
+ret_aeq: ret i32 5
+ret_ane: ret i32 6
+ret_ee:  ret i32 7
+ret_eq:  ret i32 24
+nf:      ret i32 -1
+}
+
+; Solve a rule body deterministically (first solution). Handles ,/2 recursion
+; and single goals.
+define i1 @wam_dyn_run_body(%WamState* %vm, %Value %body) {
+entry:
+  %b = call %Value @wam_deref_value(%WamState* %vm, %Value %body)
+  %tag = call i32 @value_tag(%Value %b)
+  %is_comp = icmp eq i32 %tag, 3
+  br i1 %is_comp, label %maybe_conj, label %single
+maybe_conj:
+  %pl = call i64 @value_payload(%Value %b)
+  %cp = inttoptr i64 %pl to %Compound*
+  %ar_s = getelementptr %Compound, %Compound* %cp, i32 0, i32 1
+  %ar = load i32, i32* %ar_s
+  %fn_s = getelementptr %Compound, %Compound* %cp, i32 0, i32 0
+  %fn = load i8*, i8** %fn_s
+  %c0 = load i8, i8* %fn
+  %is_comma_c = icmp eq i8 %c0, 44
+  %ar2 = icmp eq i32 %ar, 2
+  %isconj0 = and i1 %is_comma_c, %ar2
+  br i1 %isconj0, label %conj_check2, label %single
+conj_check2:
+  %p1 = getelementptr i8, i8* %fn, i64 1
+  %c1 = load i8, i8* %p1
+  %c1nul = icmp eq i8 %c1, 0
+  br i1 %c1nul, label %conj, label %single
+conj:
+  %args_s = getelementptr %Compound, %Compound* %cp, i32 0, i32 2
+  %cargs = load %Value*, %Value** %args_s
+  %a0p = getelementptr %Value, %Value* %cargs, i32 0
+  %a0 = load %Value, %Value* %a0p
+  %ok1 = call i1 @wam_dyn_run_body(%WamState* %vm, %Value %a0)
+  br i1 %ok1, label %conj_rest, label %cfalse
+conj_rest:
+  %a1p = getelementptr %Value, %Value* %cargs, i32 1
+  %a1 = load %Value, %Value* %a1p
+  %ok2 = call i1 @wam_dyn_run_body(%WamState* %vm, %Value %a1)
+  ret i1 %ok2
+cfalse:
+  ret i1 false
+single:
+  %r = call i1 @wam_dyn_solve_goal(%WamState* %vm, %Value %b)
+  ret i1 %r
+}
+
+; Solve a single body goal: true/fail atoms, a builtin, or a predicate call.
+define i1 @wam_dyn_solve_goal(%WamState* %vm, %Value %goal) {
+entry:
+  %g = call %Value @wam_deref_value(%WamState* %vm, %Value %goal)
+  %tag = call i32 @value_tag(%Value %g)
+  %is_atom = icmp eq i32 %tag, 0
+  br i1 %is_atom, label %atom_goal, label %maybe_comp
+atom_goal:
+  %aid = call i64 @value_payload(%Value %g)
+  %astr = call i8* @wam_atom_to_string(i64 %aid)
+  %r_true = call i32 @strcmp(i8* %astr, i8* getelementptr inbounds ([5 x i8], [5 x i8]* @.bid_true, i32 0, i32 0))
+  %e_true = icmp eq i32 %r_true, 0
+  br i1 %e_true, label %ret_true, label %atom_chk_fail
+atom_chk_fail:
+  %r_fail = call i32 @strcmp(i8* %astr, i8* getelementptr inbounds ([5 x i8], [5 x i8]* @.bid_fail, i32 0, i32 0))
+  %e_fail = icmp eq i32 %r_fail, 0
+  %r_false = call i32 @strcmp(i8* %astr, i8* getelementptr inbounds ([6 x i8], [6 x i8]* @.bid_false, i32 0, i32 0))
+  %e_false = icmp eq i32 %r_false, 0
+  %is_falsey = or i1 %e_fail, %e_false
+  br i1 %is_falsey, label %ret_false, label %atom_pred
+atom_pred:
+  %rp = call i1 @wam_dyn_solve_pred(%WamState* %vm, %Value %g)
+  ret i1 %rp
+maybe_comp:
+  %is_c = icmp eq i32 %tag, 3
+  br i1 %is_c, label %comp_goal, label %ret_false
+comp_goal:
+  %pl = call i64 @value_payload(%Value %g)
+  %cp = inttoptr i64 %pl to %Compound*
+  %fn_s = getelementptr %Compound, %Compound* %cp, i32 0, i32 0
+  %fn = load i8*, i8** %fn_s
+  %ar_s = getelementptr %Compound, %Compound* %cp, i32 0, i32 1
+  %ar = load i32, i32* %ar_s
+  %bid = call i32 @wam_builtin_id_of(i8* %fn, i32 %ar)
+  %is_builtin = icmp sge i32 %bid, 0
+  br i1 %is_builtin, label %do_builtin, label %do_pred
+do_builtin:
+  %args_s = getelementptr %Compound, %Compound* %cp, i32 0, i32 2
+  %gargs = load %Value*, %Value** %args_s
+  %has_a = icmp sgt i32 %ar, 0
+  br i1 %has_a, label %marshal, label %run_builtin
+marshal:
+  %mi = phi i32 [ 0, %do_builtin ], [ %minext, %marshal_step ]
+  %gap = getelementptr %Value, %Value* %gargs, i32 %mi
+  %gav = load %Value, %Value* %gap
+  call void @wam_set_reg(%WamState* %vm, i32 %mi, %Value %gav)
+  %minext = add i32 %mi, 1
+  %mmore = icmp slt i32 %minext, %ar
+  br i1 %mmore, label %marshal_step, label %run_builtin
+marshal_step:
+  br label %marshal
+run_builtin:
+  %br = call i1 @execute_builtin(%WamState* %vm, i32 %bid, i32 %ar)
+  ret i1 %br
+do_pred:
+  %pr2 = call i1 @wam_dyn_solve_pred(%WamState* %vm, %Value %g)
+  ret i1 %pr2
+ret_true:
+  ret i1 true
+ret_false:
+  ret i1 false
+}
+
+; Solve a predicate-call body goal to its first solution via a nested run_loop.
+; A barrier choice point (agg_type -8) caps backtracking at the current CP
+; depth; the goal is meta-called with a cp=0 halt continuation so run_loop
+; returns after the first success. Afterwards the barrier and the goal's own
+; choice points are cut, leaving the caller's CP stack as it was (the goal is
+; deterministic here). Bindings made by the goal persist (not unwound).
+define i1 @wam_dyn_solve_pred(%WamState* %vm, %Value %goal) {
+entry:
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %B0 = load i32, i32* %cpn_ptr
+  %cpv_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 11
+  %outer_cp = load i32, i32* %cpv_ptr
+  call void @wam_cp_ensure_capacity(%WamState* %vm)
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  %bcp = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %B0
+  %bat = getelementptr %ChoicePoint, %ChoicePoint* %bcp, i32 0, i32 4
+  store i32 -8, i32* %bat
+  %ncpn = add i32 %B0, 1
+  store i32 %ncpn, i32* %cpn_ptr
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %goal)
+  %disp = call i1 @wam_dispatch_meta_call(%WamState* %vm, i32 1, i32 0)
+  br i1 %disp, label %run, label %cut
+run:
+  ; Do NOT clear halted here. A dynamic (consulted) goal is run INLINE by the
+  ; dispatch above and signals completion by halting (its return_pc is 0), so
+  ; run_loop returns true immediately. A compiled goal leaves halted false and
+  ; PC at its entry, so run_loop drives it to its first solution.
+  %ok = call i1 @run_loop(%WamState* %vm)
+  br label %cut
+cut:
+  %result = phi i1 [ %ok, %run ], [ false, %entry ]
+  store i32 %B0, i32* %cpn_ptr
+  call void @wam_set_cp(%WamState* %vm, i32 %outer_cp)
+  call void @wam_set_halted(%WamState* %vm, i1 false)
+  ret i1 %result
 }
 
 ; retractall(Pattern): tombstone every live row whose head unifies with the
@@ -4987,7 +5439,14 @@ row_fn:
   %rfn_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 0
   %rfn = load i8*, i8** %rfn_s
   %fn_eq = call i1 @wam_functor_eq(i8* %rfn, i8* %pfn)
-  br i1 %fn_eq, label %row_args, label %scan_cont
+  br i1 %fn_eq, label %row_ground, label %scan_cont
+row_ground:
+  ; retractall only removes ground facts (v1): a rule / var-clause stores
+  ; var-index Refs that must not be unified directly. Skip those.
+  %ra_nv_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 5
+  %ra_nv = load i32, i32* %ra_nv_s
+  %ra_ground = icmp eq i32 %ra_nv, 0
+  br i1 %ra_ground, label %row_args, label %scan_cont
 row_args:
   %rargs_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 3
   %rargs = load %Value*, %Value** %rargs_s
@@ -5120,36 +5579,104 @@ candidate:
   %csrcr = bitcast %Value* %csrc to i8*
   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dstr, i8* %csrcr, i64 512, i1 false)
   call void @unwind_trail(%WamState* %vm, i32 %mark)
+  ; classify: a ground bodyless fact takes the fast path (unify goal args vs
+  ; stored args directly); a rule or a clause with variables takes the slow
+  ; path (instantiate with fresh cells to preserve head<->body var sharing).
+  %nv_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 5
+  %nv = load i32, i32* %nv_s
+  %cbody_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 4
+  %cbody = load %Value, %Value* %cbody_s
+  %cbtag = call i32 @value_tag(%Value %cbody)
+  %has_body = icmp ne i32 %cbtag, 6
+  %nv_pos = icmp sgt i32 %nv, 0
+  %needs_inst = or i1 %has_body, %nv_pos
+  br i1 %needs_inst, label %slow, label %fast
+fast:
   %has_args = icmp sgt i32 %ar, 0
-  br i1 %has_args, label %get_goal, label %success
-get_goal:
+  br i1 %has_args, label %fp_goal, label %success
+fp_goal:
   %goal = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %gtag = call i32 @value_tag(%Value %goal)
   %g_is_comp = icmp eq i32 %gtag, 3
-  br i1 %g_is_comp, label %goal_comp, label %scan_cont
-goal_comp:
+  br i1 %g_is_comp, label %fp_comp, label %scan_cont
+fp_comp:
   %gpl = call i64 @value_payload(%Value %goal)
   %gcp = inttoptr i64 %gpl to %Compound*
   %gargs_s = getelementptr %Compound, %Compound* %gcp, i32 0, i32 2
   %gargs = load %Value*, %Value** %gargs_s
   %crargs_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 3
   %crargs = load %Value*, %Value** %crargs_s
-  br label %uloop
-uloop:
-  %ui = phi i32 [ 0, %goal_comp ], [ %uinext, %ucont ]
+  br label %fp_uloop
+fp_uloop:
+  %ui = phi i32 [ 0, %fp_comp ], [ %uinext, %fp_ucont ]
   %uidone = icmp sge i32 %ui, %ar
-  br i1 %uidone, label %success, label %ustep
-ustep:
+  br i1 %uidone, label %success, label %fp_ustep
+fp_ustep:
   %gap = getelementptr %Value, %Value* %gargs, i32 %ui
   %gav = load %Value, %Value* %gap
   %rap = getelementptr %Value, %Value* %crargs, i32 %ui
   %rav = load %Value, %Value* %rap
   %uok = call i1 @wam_unify_value(%WamState* %vm, %Value %gav, %Value %rav)
-  br i1 %uok, label %ucont, label %unify_fail
-ucont:
+  br i1 %uok, label %fp_ucont, label %fp_fail
+fp_ucont:
   %uinext = add i32 %ui, 1
-  br label %uloop
-unify_fail:
+  br label %fp_uloop
+fp_fail:
+  call void @unwind_trail(%WamState* %vm, i32 %mark)
+  br label %scan_cont
+slow:
+  %cells = alloca i32, i32 %nv
+  %has_v = icmp sgt i32 %nv, 0
+  br i1 %has_v, label %scell_loop, label %shead
+scell_loop:
+  %ci = phi i32 [ 0, %slow ], [ %cinext, %scell_step ]
+  %unbc = call %Value @value_unbound(i8* null)
+  %caddr = call i32 @wam_heap_push(%WamState* %vm, %Value %unbc)
+  %cellp = getelementptr i32, i32* %cells, i32 %ci
+  store i32 %caddr, i32* %cellp
+  %cinext = add i32 %ci, 1
+  %cmore = icmp slt i32 %cinext, %nv
+  br i1 %cmore, label %scell_step, label %shead
+scell_step:
+  br label %scell_loop
+shead:
+  %shas_args = icmp sgt i32 %ar, 0
+  br i1 %shas_args, label %shead_goal, label %sbody_check
+shead_goal:
+  %sgoal = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %sgtag = call i32 @value_tag(%Value %sgoal)
+  %sg_comp = icmp eq i32 %sgtag, 3
+  br i1 %sg_comp, label %shloop_init, label %slow_fail
+shloop_init:
+  %sgpl = call i64 @value_payload(%Value %sgoal)
+  %sgcp = inttoptr i64 %sgpl to %Compound*
+  %sgargs_s = getelementptr %Compound, %Compound* %sgcp, i32 0, i32 2
+  %sgargs = load %Value*, %Value** %sgargs_s
+  %srargs_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 3
+  %srargs = load %Value*, %Value** %srargs_s
+  br label %shloop
+shloop:
+  %hi = phi i32 [ 0, %shloop_init ], [ %hinext, %shcont ]
+  %hidone = icmp sge i32 %hi, %ar
+  br i1 %hidone, label %sbody_check, label %shstep
+shstep:
+  %sgap = getelementptr %Value, %Value* %sgargs, i32 %hi
+  %sgav = load %Value, %Value* %sgap
+  %srap = getelementptr %Value, %Value* %srargs, i32 %hi
+  %srav = load %Value, %Value* %srap
+  %iha = call %Value @wam_dyn_instantiate(%WamState* %vm, %Value %srav, i32* %cells)
+  %hok = call i1 @wam_unify_value(%WamState* %vm, %Value %sgav, %Value %iha)
+  br i1 %hok, label %shcont, label %slow_fail
+shcont:
+  %hinext = add i32 %hi, 1
+  br label %shloop
+sbody_check:
+  br i1 %has_body, label %srun_body, label %success
+srun_body:
+  %ibody = call %Value @wam_dyn_instantiate(%WamState* %vm, %Value %cbody, i32* %cells)
+  %bok = call i1 @wam_dyn_run_body(%WamState* %vm, %Value %ibody)
+  br i1 %bok, label %success, label %slow_fail
+slow_fail:
   call void @unwind_trail(%WamState* %vm, i32 %mark)
   br label %scan_cont
 success:
@@ -5157,6 +5684,14 @@ success:
   store i32 %next, i32* %cur_s
   %rpc_s = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 7
   %rpc = load i32, i32* %rpc_s
+  ; return_pc == 0 is the halt sentinel (a tail call whose continuation is the
+  ; top-level cp); mirror `proceed` and halt rather than jumping to PC 0.
+  %rpc_halt = icmp eq i32 %rpc, 0
+  br i1 %rpc_halt, label %succ_halt, label %succ_jump
+succ_halt:
+  call void @wam_set_halted(%WamState* %vm, i1 true)
+  ret i1 true
+succ_jump:
   call void @wam_set_pc(%WamState* %vm, i32 %rpc)
   call void @wam_set_halted(%WamState* %vm, i1 false)
   ret i1 true
@@ -5282,7 +5817,14 @@ row_fn:
   %rfn_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 0
   %rfn = load i8*, i8** %rfn_s
   %fn_eq = call i1 @wam_functor_eq(i8* %rfn, i8* %fn)
-  br i1 %fn_eq, label %candidate, label %scan_cont
+  br i1 %fn_eq, label %row_ground, label %scan_cont
+row_ground:
+  ; retract/1 only removes ground facts (v1); skip rules / var-clauses whose
+  ; stored args are var-index Refs (retracting rules is a follow-up).
+  %rt_nv_s = getelementptr %WamDynClause, %WamDynClause* %row_ptr, i32 0, i32 5
+  %rt_nv = load i32, i32* %rt_nv_s
+  %rt_ground = icmp eq i32 %rt_nv, 0
+  br i1 %rt_ground, label %candidate, label %scan_cont
 candidate:
   %dst = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
   %csrc = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 1, i32 0
@@ -5329,6 +5871,12 @@ success:
   store i32 %next, i32* %cur_s
   %rpc_s = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 7
   %rpc = load i32, i32* %rpc_s
+  %rpc_halt = icmp eq i32 %rpc, 0
+  br i1 %rpc_halt, label %succ_halt, label %succ_jump
+succ_halt:
+  call void @wam_set_halted(%WamState* %vm, i1 true)
+  ret i1 true
+succ_jump:
   call void @wam_set_pc(%WamState* %vm, i32 %rpc)
   call void @wam_set_halted(%WamState* %vm, i1 false)
   ret i1 true

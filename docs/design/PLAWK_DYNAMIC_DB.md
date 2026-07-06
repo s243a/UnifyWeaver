@@ -194,19 +194,56 @@ caught by it. This is correct for the dominant error-boundary usage
 Recovery is run through the meta-call, so (like `call/1`) it should be a
 predicate goal, not a bare builtin.
 
+## Rule bodies (PR 3)
+
+`assertz((H :- B))` stores a **rule**: the row is keyed by `H`'s functor/arity
+with `B` kept as a durable body term (facts store an Unbound-sentinel body).
+When the head is consulted, the body runs.
+
+**Variable sharing — the load-bearing piece.** A rule like `p(X) :- q(X)`
+shares `X` between head and body, so the durable copy must preserve variable
+identity (the naive `@wam_dyn_copy_durable` does not). `@wam_dyn_copy_var`
+copies the clause assigning each distinct source variable an **index**, stored
+as a Ref whose payload is that index; sharing one var-map across the head and
+body copy preserves head↔body sharing, and `nvars` is recorded on the row. At
+call time `@wam_dyn_instantiate` copies the durable head/body into the arena,
+mapping each var-index to a **fresh heap cell** — so every clause use gets
+fresh, correctly-shared variables. The consult iterator splits: a ground
+bodyless fact (`nvars == 0`, sentinel body) takes the existing fast path
+(unify goal args vs stored args directly); a rule or var-clause takes a slow
+path (allocate `nvars` fresh cells, instantiate + unify the head, then run the
+body). `retract`/`retractall` match only ground facts (`nvars == 0`); retract
+of rules is a follow-up.
+
+**Body execution (`@wam_dyn_run_body`)** is deterministic (first solution):
+`,`/2 recurses; a builtin goal (`is/2`, `<`,`>`,`>=`,`=<`,`=:=`,`=\=`, `==`,
+`=`) marshals its args into registers and runs through `@execute_builtin`; any
+other goal is a predicate call solved via `@wam_dyn_solve_pred` — a nested
+`@run_loop` capped by a **barrier choice point** (`agg_type = −8`, which
+`@backtrack` turns into a `false`) and a `cp = 0` halt continuation, then the
+goal's choice points are cut (deterministic). A dynamic body goal is run inline
+by the consult during dispatch (it halts), so `solve_pred` must not clear
+`halted` before `run_loop`; a compiled body goal leaves `halted` false and
+`run_loop` drives it. Nested rules work (a rule body may call another rule).
+Not yet: `;`/`->`/`!` inside bodies, and cross-goal backtracking (first
+solution only).
+
+(This PR also fixed a latent tail-position bug: a consulted goal whose
+continuation is the top-level `cp = 0` must **halt** rather than jump to PC 0 —
+the consult/retract `success` blocks now mirror `proceed`.)
+
 ## Roadmap
 
 - **PR 1:** durable store; `assertz`/`asserta`/`retractall`; calling ground
   dynamic facts via `call/1`.
 - **PR 2:** compiler rewrite of direct `:- dynamic` calls to `call/1`
   (`dynamic_store_goal/1`); nondet `retract/1` as an `agg_type = −4` CP
-  iterator (op1 = −3 sentinel). AOT + loaded-object tests.
+  iterator (op1 = −3 sentinel).
 - **Milestone 3c:** `catch/3` + `throw/1` (side stack of catch frames, op1
-  sentinels −5/−6). Loaded-object tests.
-- **PR 3 (later):** rule bodies (`assertz((H :- B))`) — a body meta-interpreter
-  for asserted clauses. The true long pole; likely unneeded for the eval
-  bootstrap if the compiler's dynamic predicates are all fact tables.
-- Follow-ups / optimizations: `call/N` partial-application consult (the
-  iterator currently reads the complete goal from reg 0); a functor+arity index
-  over the store (the scan is O(n) per backtrack); a variable-map durable copy
-  for non-ground asserts; mixing compiled + asserted clauses for one predicate.
+  sentinels −5/−6).
+- **PR 3:** rule bodies (`assertz((H :- B))`) — var-preserving clause copy +
+  a deterministic body interpreter. Landed.
+- Follow-ups / optimizations: `;`/`->`/`!` and cross-goal backtracking in
+  bodies; retract of rules; `call/N` partial-application consult; a
+  functor+arity index over the store (the scan is O(n) per backtrack); mixing
+  compiled + asserted clauses for one predicate.
