@@ -43,6 +43,19 @@ coltab(green, 2).
 coltab(blue, 3).
 pick(R) :- coltab(green, R).          % -> 2
 
+% get_structure functor-check regression: dispatch over a tagged compound to
+% one of several clauses keyed by the first argument's functor. Before
+% get_structure compared the functor (it accepted ANY compound of the right
+% shape), calling dp_sel(three(7),R) wrongly matched the FIRST clause
+% (one/1) -- reading three(7)'s arg as if it were one(7) -- and returned 8
+% instead of 42. The dp_many clause has a list-typed permanent head-arg (the
+% shape whose body does not cleanly fail, which made the bug visible). With
+% the functor check, one/1 and many/1 fail cleanly and three/1 matches -> 42.
+dp_go(R)          :- dp_sel(three(7), R).
+dp_sel(one(X), R)   :- R is X + 1.
+dp_sel(many(L), R)  :- length(L, N), R is N * 100.
+dp_sel(three(X), R) :- R is X * 6.          % 7 * 6 = 42
+
 % call/N meta-call inside a loaded object (eval bootstrap milestone 2). The
 % goal is built at runtime and dispatched through the object's OWN meta-call
 % table, so a loaded .wamo can call its own predicates.
@@ -509,6 +522,23 @@ test(switch_on_constant_loads_and_runs,
     ( exists_file(Host) -> true ; build_host(Dir, Host) ),
     run_host(Host, Wamo, Out, 0),
     assertion(Out == "2\n"),
+    !.
+
+% get_structure functor-check regression: dispatch over a compound keyed by
+% first-argument functor. Before get_structure verified the functor, calling
+% dp_sel(three(7),R) mis-matched the first clause (one/1) and returned 8; now
+% it correctly falls through to three/1 -> 42. Also validates that a tagged-
+% union walker (a compiler's natural AST/token representation) dispatches
+% correctly in loaded objects.
+test(get_structure_functor_dispatch,
+        [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'dpgo.wamo', Wamo),
+    write_wam_object([user:dp_go/1, user:dp_sel/2], [wamo_entry(dp_go/1)], Wamo),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    run_host(Host, Wamo, Out, 0),
+    assertion(Out == "42\n"),
     !.
 
 % A loaded object meta-calls (call/N) one of its own predicates, the goal

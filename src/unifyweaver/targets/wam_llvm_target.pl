@@ -2993,9 +2993,34 @@ gs.write:
   ret i1 true
 
 gs.read:
-  ; Read mode: extract args from Compound and push UnifyCtx
+  ; Read mode: the register holds a Compound. It only matches if its
+  ; functor name AND arity equal the expected op1/arity -- otherwise this
+  ; get_structure must FAIL. Historically this block accepted ANY compound
+  ; (tag == 3) without comparing the functor, so `get_structure f/N` on a
+  ; compound g/M succeeded and read g''s args as if they were f''s. Multi-
+  ; clause first-argument dispatch then only worked by accident, relying on
+  ; the wrong clauses'' BODIES failing; a body that did not cleanly fail
+  ; (e.g. length/2 on a compound) ran the wrong clause and returned garbage.
   %gs.cp_bits = extractvalue %Value %gs.val, 1
   %gs.cp_ptr = inttoptr i64 %gs.cp_bits to %Compound*
+  ; arity must match
+  %gs.car_slot = getelementptr %Compound, %Compound* %gs.cp_ptr, i32 0, i32 1
+  %gs.car = load i32, i32* %gs.car_slot
+  %gs.arity_ok = icmp eq i32 %gs.car, %gs.arity
+  br i1 %gs.arity_ok, label %gs.check_fn, label %gs.fail
+
+gs.check_fn:
+  ; functor name must match (op1 is the expected functor string pointer;
+  ; wam_functor_eq is pointer-fast with a strcmp fallback for dynamically
+  ; built compounds whose functor came from the atom table).
+  %gs.cfn_slot = getelementptr %Compound, %Compound* %gs.cp_ptr, i32 0, i32 0
+  %gs.cfn = load i8*, i8** %gs.cfn_slot
+  %gs.exp_fn = inttoptr i64 %op1 to i8*
+  %gs.fn_ok = call i1 @wam_functor_eq(i8* %gs.cfn, i8* %gs.exp_fn)
+  br i1 %gs.fn_ok, label %gs.read_ok, label %gs.fail
+
+gs.read_ok:
+  ; extract args from the Compound and push UnifyCtx
   %gs.args_slot = getelementptr %Compound, %Compound* %gs.cp_ptr, i32 0, i32 2
   %gs.args = load %Value*, %Value** %gs.args_slot
   call void @wam_push_unify_ctx(%WamState* %vm, %Value* %gs.args, i32 %gs.arity)

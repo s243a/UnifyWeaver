@@ -185,40 +185,40 @@ runs to `42`** end to end (the eval loop closes on a grammar-emitted object).
 **Deliverable — done:** a loaded grammar emits a valid `.wamo` from a
 hand-supplied instruction list; emitted object loads and runs.
 
-**Two loaded-runtime limitations Stage A surfaced (prerequisites for later
-stages, both routed around here):**
+**Two loaded-runtime bugs Stage A surfaced — both now FIXED (each its own PR):**
 
-1. **Register-file ceiling (correctness bug, affects AOT too).** The register
-   file is `[64 x %Value]` (16 args + 48 temps, indices 0–63). A clause holding
-   ~16+ call-spanning variables makes the tier-2 compiler emit register indices
-   ≥ 64, which write **past the register array** into the adjacent `%WamState`
+1. **Register-file ceiling (correctness bug, affected AOT too) — FIXED.** The
+   register file was `[64 x %Value]`, partitioned A1–16 / X1–32 / **Y1–16**
+   (48–63). A clause holding >16 permanent variables assigned Y17+ → array
+   index 64+, writing **past the register array** into the adjacent `%WamState`
    fields (the stack pointer) → memory corruption / segfault. Confirmed: a
-   clause with 16 accumulator variables reaches reg index 65 and crashes; 12
-   variables (reg ≤ 61) is fine. **Impact on self-host:** real codegen clauses
-   can easily exceed this. The serializer here is written as small
-   accumulator-threaded clauses (each ≤ ~12 call-spanning vars) to stay under
-   the ceiling — the "correctness over register reuse, small clauses" style this
-   doc already prescribes. **Before Stage C** (codegen with larger clauses) the
-   register file likely needs enlarging (a runtime change touching the register
-   array, the choice-point saved-register block, and the save/restore loops),
-   or the compiler needs a spill/environment strategy. Filed as a follow-up.
+   clause with 16+ call-spanning variables crashes; ≤12 is fine. Fixed by
+   enlarging the file to `[128 x %Value]` and widening the Y window to Y48
+   (formula unchanged, so Y1–16 keep identical slots), growing the
+   `allocate`/`deallocate` snapshot to match, and adding a compile-time guard
+   (`wam_too_many_permanent_vars`) so any future overflow is a clean error, not
+   corruption. The Stage A serializer's small-clause style is no longer forced,
+   but remains good practice.
 
-2. **Multi-way first-argument functor dispatch anomaly.** A predicate with ≥ 4
-   clauses dispatched by the first argument's functor (a tagged union like
-   `f(int(_))`, `f(atom(_))`, `f(nstr(_))`, `f(ins(_))`) **mis-dispatches** in
-   loaded objects when a list-carrying variant is present: calling it with one
-   variant returns a corrupted result. Confirmed by bisection — removing the
-   list-carrying variant fixes it; the same clause set works with ≤ 3 clauses.
-   Root cause is likely the loader's `switch_on_constant`/`switch_on_term`
-   nop-fallthrough interacting with the clause chain. **Impact on self-host:** a
-   natural codegen representation is a tagged token/AST union walked by functor
-   dispatch — exactly this shape. The serializer avoids it (only list `[]`/`[|]`
-   and `enc/4`-head dispatch, no polymorphic union). **Before Stage C** this
-   needs a real fix in the loader's indexing path. Filed as a follow-up.
+2. **`get_structure` did not compare the functor — FIXED.** The real bug behind
+   the "multi-way functor dispatch anomaly" was simpler and more fundamental
+   than first thought: `get_structure f/N` entered read mode for **any**
+   Compound (`tag == 3`) without comparing the functor name or arity against the
+   expected `f/N`. So `get_structure atom/1` on `ins(enc(...))` *succeeded* and
+   read `ins`'s arg as if it were `atom`'s. Multi-clause first-argument dispatch
+   therefore only worked by accident — the wrong clauses' **bodies** had to fail
+   (`atom_codes`/`number_codes` of a compound fails). A body that did not
+   cleanly fail (e.g. `length/2` on a compound) ran the wrong clause and
+   returned garbage; a first clause whose body *succeeded* on the wrong data
+   returned the wrong answer outright. This affected AOT and loaded objects
+   alike. Fixed by comparing arity, then functor (via `@wam_functor_eq` —
+   pointer-fast with a `strcmp` fallback for reader/`=..`-built compounds),
+   before entering read mode; a mismatch now fails as it should.
 
-Neither blocks Stage A, but both are on the critical path for Stage C and are
-recorded here so they are fixed (or explicitly designed around) before codegen
-produces large clauses and tagged-union walkers.
+**Consequence for later stages:** a tagged token/AST union walked by
+first-argument functor dispatch — the natural codegen representation for Stages
+B–D — now dispatches correctly in loaded objects. The serializer here still uses
+list `[]`/`[|]` + `enc/4` dispatch, but that is no longer a requirement.
 
 *Aside:* the byte-return path (`atom_codes` interning) strips **trailing**
 newlines from an atom, so the loaded serializer's object is 1 byte shorter than
