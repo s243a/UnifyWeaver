@@ -63,24 +63,31 @@ group; Pearson is shift-invariant so `μ−0.5` centering doesn't change r — t
   genuinely varies across the space (Wikipedia), the QDA condition the h=1-only linear fit could not see. **Lesson:
   fit/measure on the continuous fuzzy μ, not binarised labels** — binarisation destroyed the very signal.
 
-## Does the hop-conditional correlation help PREDICTION? — not at n=250 (`fit_hetero.py`)
-The raw `corr(μ_D,μ_S)` is heteroscedastic, but does *modelling* the hop-dependence improve held-out prediction?
-Continuous bivariate-Gaussian NLL of the (D,S) residuals (after a linear mean model on `[μ_D,μ_S,d]`), 250 Wikipedia
-multi-hop pairs, 40 splits:
+## Hop-conditional CONFIDENCE Σ(hop) DOES help — but only the full covariance (`fit_hetero.py`, user)
+Does *modelling* the hop-dependence improve held-out prediction? Continuous bivariate-Gaussian NLL of the (D,S)
+residuals (mean model on `[μ_D,μ_S,d]`), 250 Wikipedia multi-hop pairs, 40 splits. **Key (user): the real
+heteroscedasticity is in the CONFIDENCE (the diagonal `σ`), not just the correlation** — the direction is
+*confident* at low hops and *ambiguous* at high hops. Measured (margin `μ_D−μ_S`): **0.62 (h1) → 0.11 (h5)** — at
+h=1 μ_D=0.85≫μ_S=0.23; by h=5 they're indistinguishable.
 
-| correlation model | held-out joint NLL |
-|---|---|
-| (a) independent ρ=0 | −0.7086 |
-| (b) constant ρ | −0.7215 |
-| (c) ρ(hop) heteroscedastic | −0.7329 |
+| model | held-out joint NLL | vs constant ρ |
+|---|---|---|
+| (a) independent ρ=0 | −0.708 | — |
+| (b) constant ρ | −0.721 | — |
+| (c) ρ(hop) off-diagonal ALONE | −0.732 | +0.011 (+1.1σ) not sig |
+| (d) σ(hop) confidence ALONE | −0.725 | +0.004 (+0.4σ) not sig |
+| **(e) σ(hop)+ρ(hop) — full Σ(hop)** | **−0.782** | **+0.061 (+4.9σ) HELPS** |
 
-- **Correlation helps** — constant ρ beats independent (the separation trick, once more).
-- **Hop-conditioning does NOT reliably help** — `Δ(constant − ρ(hop)) = +0.011 ± 0.066`, i.e. ~1σ (SE of mean
-  ≈0.010). Point estimate favours ρ(hop), but it's within noise. Why: the mean model already absorbs much of the
-  hop-dependence, so the *residual* correlation is far less heteroscedastic than the *raw* one; and 50 pairs/hop is
-  too few to estimate per-hop ρ. **So the raw heteroscedasticity is real, but its predictive payoff over a constant
-  correlation is below the noise floor here** — the cross pseudo-judge coupled to `d` would need ≫250 pairs (more
-  per hop) to establish. The **separation trick (constant correlation) captures the reliable value.**
+- **The full hop-dependent covariance is a significant win (+4.9σ vs constant, +6.4σ vs independent)** — even though
+  *neither* `σ(hop)` nor `ρ(hop)` alone clears noise. They only help *together*: modelling the correlation with a
+  wrong (constant) variance, or vice-versa, is misspecified; only the whole `Σ(hop)` is correct.
+- **The driver is the CONFIDENCE term (`σ(hop)`)** — the earlier ρ-only test measured the off-diagonal and missed
+  the diagonal, so it read "below noise." User's "compare learning rates" maps onto `σ(hop)`: the per-hop confidence
+  IS the effective example weight; holding it constant (uniform LR) washes the effect out.
+- **⇒ the second-order machinery earns its keep on multi-hop data — as the full hop-conditional Σ(hop)** (self
+  pseudo-judges `μ_D²,μ_S²` = the σ diagonal, cross `μ_D·μ_S` = the ρ off-diagonal, both coupled to `d`), not the
+  cross-term alone. This is the first *significant* evidence for the hop-conditional posterior. (The separation trick
+  / constant-Σ remains the base; Σ(hop) adds a real, significant increment on top.)
 
 ## [SUPERSEDED by the continuous analysis above] Is the cross term ever justified? — (binarised, noisy)
 The cross pseudo-judge is the QDA/heteroscedastic term: it earns its keep ONLY if `Cov(D,S)` **varies across the

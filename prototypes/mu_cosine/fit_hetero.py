@@ -64,6 +64,13 @@ def main():
     gd = np.array([hit_prob(parents, x, y) for x, y in pairs])
     X = np.column_stack([muD, muS, gd, np.ones(len(pairs))])
     print(f"n={len(pairs)}  hops {sorted(set(hop))}\n")
+    # CONFIDENCE vs hop (user): is the direction well-separated at low hop and ambiguous at high hop?
+    print(f"{'h':>2} {'μ_D':>5} {'μ_S':>5} {'margin μ_D−μ_S':>14} {'σ(D)':>5} {'σ(S)':>5}   (confidence = margin↑, σ↓)")
+    for h in sorted(set(hop)):
+        mth = hop == h
+        print(f"{h:>2} {Dl[mth].mean():>5.2f} {Sl[mth].mean():>5.2f} {(Dl[mth]-Sl[mth]).mean():>14.2f} "
+              f"{Dl[mth].std():>5.2f} {Sl[mth].std():>5.2f}")
+    print()
 
     def resid(tr, he):                                          # fit marginal means on tr, residuals on he
         out = []
@@ -71,27 +78,39 @@ def main():
             beta, *_ = np.linalg.lstsq(X[tr], y[tr], rcond=None)
             out.append((y[tr] - X[tr] @ beta, y[he] - X[he] @ beta))
         return out
-    S = {"(a) independent ρ=0": [], "(b) constant ρ": [], "(c) ρ(hop) — heteroscedastic": []}
+    S = {"(a) independent ρ=0": [], "(b) constant ρ": [], "(c) ρ(hop) off-diag": [],
+         "(d) σ(hop) CONFIDENCE, const ρ": [], "(e) σ(hop)+ρ(hop) full": []}
     for s in range(a.seeds):
         rng = np.random.default_rng(s); p = rng.permutation(len(pairs)); cut = int(0.7*len(pairs))
         tr, he = p[:cut], p[cut:]
         (rD_tr, rD_he), (rS_tr, rS_he) = resid(tr, he)
         sD, sS = rD_tr.std() + 1e-6, rS_tr.std() + 1e-6
         rho = np.corrcoef(rD_tr, rS_tr)[0, 1]
+        def per_hop(fn, default):                              # estimate a per-hop stat on train, map to held pairs
+            hh = {}
+            for h in set(hop):
+                mth = hop[tr] == h
+                hh[h] = fn(mth) if mth.sum() > 5 else default
+            return np.array([hh.get(h, default) for h in hop[he]])
+        rho_he = np.clip(per_hop(lambda m: np.corrcoef(rD_tr[m], rS_tr[m])[0, 1] if rD_tr[m].std() > 0 else rho, rho), -0.98, 0.98)
+        sD_he = per_hop(lambda m: rD_tr[m].std() + 1e-6, sD); sS_he = per_hop(lambda m: rS_tr[m].std() + 1e-6, sS)
         S["(a) independent ρ=0"].append(biv_nll(rD_he, rS_he, sD, sS, 0.0).mean())
         S["(b) constant ρ"].append(biv_nll(rD_he, rS_he, sD, sS, rho).mean())
-        rho_h = {}                                              # per-hop ρ on train (fallback to global)
-        for h in set(hop):
-            mth = hop[tr] == h
-            rho_h[h] = np.corrcoef(rD_tr[mth], rS_tr[mth])[0, 1] if mth.sum() > 5 and rD_tr[mth].std() > 0 else rho
-        rho_he = np.array([rho_h.get(h, rho) for h in hop[he]])
-        S["(c) ρ(hop) — heteroscedastic"].append(biv_nll(rD_he, rS_he, sD, sS, rho_he).mean())
+        S["(c) ρ(hop) off-diag"].append(biv_nll(rD_he, rS_he, sD, sS, rho_he).mean())
+        S["(d) σ(hop) CONFIDENCE, const ρ"].append(biv_nll(rD_he, rS_he, sD_he, sS_he, rho).mean())
+        S["(e) σ(hop)+ρ(hop) full"].append(biv_nll(rD_he, rS_he, sD_he, sS_he, rho_he).mean())
     print(f"held-out joint NLL (mean±std over {a.seeds} splits; LOWER better):\n")
     for k, v in S.items():
         v = np.array(v); print(f"  {k:32s}  {v.mean():.4f} ± {v.std():.4f}")
-    b, c = np.array(S["(b) constant ρ"]), np.array(S["(c) ρ(hop) — heteroscedastic"])
-    print(f"\n  Δ (constant − ρ(hop)) = {(b-c).mean():+.4f} ± {(b-c).std():.4f}  "
-          f"({'ρ(hop) HELPS' if (b-c).mean()>0 else 'no gain'})")
+    def delta(base, alt):
+        d = np.array(S[base]) - np.array(S[alt]); se = d.std()/np.sqrt(len(d))
+        print(f"  Δ({base.split()[0]} − {alt.split()[0]}) = {d.mean():+.4f} (SE {se:.4f}, {d.mean()/se:+.1f}σ) "
+              f"{'← HELPS' if d.mean()-2*se>0 else '(not sig)'}")
+    print()
+    delta("(b) constant ρ", "(c) ρ(hop) off-diag")
+    delta("(b) constant ρ", "(d) σ(hop) CONFIDENCE, const ρ")
+    delta("(b) constant ρ", "(e) σ(hop)+ρ(hop) full")
+    delta("(a) independent ρ=0", "(e) σ(hop)+ρ(hop) full")
 
 
 if __name__ == "__main__":
