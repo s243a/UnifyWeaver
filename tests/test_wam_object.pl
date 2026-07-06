@@ -335,6 +335,61 @@ pred_name_codes(Pred, Arity, Codes) :-
     atom_codes(Pred, PC), number_codes(Arity, AC),
     append(PC, [0'/ | AC], Codes).
 
+% Milestone 6 (self-host) Stage C: multi-clause programs with predicate calls.
+% cgcprog/2 is the eval entry compile(Src,Wamo): Src parses (one reader call)
+% to a LIST of clauses -- e.g. "[(main0(R):-helper(R)), helper(42)]" -- and the
+% program compiles to a multi-predicate .wamo. Each clause gets a label (its
+% index); a predicate-call body becomes execute(CalleeLabel) resolved through
+% a name/arity->label map (execute references the label directly, so no
+% meta-call table is needed). The label->PC table (PCs, one entry per clause)
+% is exactly what the Stage A serializer already accepts. Facts P(Int) and the
+% Stage B body forms (= / is) still lower to [get_constant(V,A1), proceed].
+% A single-goal predicate-call body is a tail call: [allocate, deallocate,
+% execute] -- matching the host writer (verified byte-identical). Register
+% allocation for temporaries across conjoined goals is a Stage C follow-on.
+cgcprog(Src, Wamo) :-
+    read_term_from_atom(Src, Clauses),
+    cgc_clauses(Clauses, EntryName, PCs, Instrs),
+    wz_serialize(0, EntryName, 0, 0, 0, PCs, Instrs, Codes),
+    atom_codes(Wamo, Codes).
+
+cgc_clauses(Clauses, EntryName, PCs, AllInstrs) :-
+    assign_labels(Clauses, 0, PL),
+    codegen_all(Clauses, PL, 0, AllInstrs, PCs),
+    Clauses = [First|_], cgc_head(First, H0), functor(H0, P0, A0),
+    pred_name_codes(P0, A0, EntryName).
+
+cgc_head((H :- _), H) :- !.
+cgc_head(H, H).
+
+assign_labels([], _, []).
+assign_labels([C|Cs], L, [key(P,A)-L | Rest]) :-
+    cgc_head(C, H), functor(H, P, A), L1 is L + 1,
+    assign_labels(Cs, L1, Rest).
+
+codegen_all([], _, _, [], []).
+codegen_all([C|Cs], PL, PC, All, [PC|PCs]) :-
+    codegen_clause(C, PL, Instrs),
+    length(Instrs, N), PC1 is PC + N,
+    codegen_all(Cs, PL, PC1, Rest, PCs),
+    append(Instrs, Rest, All).
+
+codegen_clause((_ :- Body), PL, Instrs) :- !, codegen_body(Body, PL, Instrs).
+codegen_clause(Fact, _, [enc(0,V,65536,0), enc(20,0,0,0)]) :-   % fact P(Int)
+    Fact =.. [_, V], integer(V).
+
+codegen_body(Body, PL, Instrs) :-
+    (   Body = (_ = V), integer(V)
+    ->  Instrs = [enc(0,V,65536,0), enc(20,0,0,0)]
+    ;   Body = (_ is Expr)
+    ->  V is Expr, Instrs = [enc(0,V,65536,0), enc(20,0,0,0)]
+    ;   functor(Body, P, A), lookup_label(P, A, PL, Label)
+    ->  Instrs = [enc(16,0,0,0), enc(17,0,0,0), enc(19,Label,0,0)]  % allocate,deallocate,execute
+    ).
+
+lookup_label(P, A, [key(P,A)-L|_], L) :- !.
+lookup_label(P, A, [_|R], L) :- lookup_label(P, A, R, L).
+
 % Register-file ceiling regression: manyperm/1 has 20 variables all live
 % across the mp_barrier call, so the compiler assigns them Y1..Y20. Before
 % the register file was enlarged from [64 x %Value] to [128 x %Value], Y17+
@@ -962,6 +1017,31 @@ test(selfhost_codegen_stage_b, [condition(clang_available)]) :-
           process_wait(Pid, exit(Status)),
           assertion(Status == 0),
           assertion(Out == "42\n") )),
+    !.
+
+% Milestone 6 (self-host) Stage C: multi-clause program with a predicate call.
+% cgcprog/2 compiles a list-of-clauses source into a multi-predicate .wamo: the
+% entry clause tail-calls a second clause. Exercises label assignment, the
+% label->PC table, and execute(CalleeLabel). "[(main0(R):-helper(R)),
+% helper(42)]" compiles so main0 calls helper -> 42, end to end via the eval
+% host. The codegen is also verified byte-identical to the host writer's golden
+% for the same program (in SWI, where the /3 reader is available).
+test(selfhost_codegen_stage_c, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgcprog.wamo', CompWamo),
+    write_wam_object([user:cgcprog/2], [wamo_entry(cgcprog/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgc_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R):-helper(R)), helper(42)]'), close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "42\n"),
     !.
 
 % Register-file ceiling fix: a clause with 20 permanent variables (Y1..Y20)
