@@ -216,3 +216,34 @@ artifact** (typos, tag-nodes, resource links, cross-topic lineage slips), not a 
 two intuitions are both upheld: the deliberate hierarchy IS the cleaner one, and the LLM is right — the *extraction*
 is noisy. Fix upstream (dedup/typo-fix `Valves`, drop tag-nodes like "related", filter resource/URL nodes, fix
 cross-topic lineage), not the judge.
+
+## METHODOLOGY: explicit vs inferred semantics — a confound in "semantic drift" (user, 2026-07-06)
+The `assoc`-dispute resolution surfaces a general point. There are **two legitimate "knowns" of semantics**, and
+they answer different questions:
+- **Explicit** — read the title *literally*, typos included (`"Values"` = *values*). Faithful to data-as-written.
+- **Inferred** — read the *intended* meaning (`"Values"` → *Valves*). Faithful to data-as-meant.
+
+They're a **noisy-channel pair**: `observed = intended + typo-noise`; inferring corrections *denoises the channel*.
+Neither is universally correct — they measure different things.
+
+**The confound (what we learned):** with the current EXPLICIT prompts, the measured "semantic drift" (directionality
+decaying toward `none`/`assoc` at depth) has **two conflated causes** — *typos/data errors* and *real graph drift* —
+and the prompt cannot separate them (both read as low directional signal). So SimpleMind's flat `Σ(hop)` signature is
+partly data-noise, partly (maybe) real.
+
+**Should the LLM infer typo corrections? Open — a genuine trade-off:**
+- *For:* recovers the intended direction, removes typo-noise ⇒ measures *real* drift.
+- *Against:* couples the measurement to the LLM's **guesses about intent** (over-correction / hallucinated fixes),
+  and *hides* data errors you may want surfaced. It swaps a data-noise source for a model-prior source.
+
+**The deconfounding — don't choose, use the DELTA:** score the same pairs BOTH ways; `inferred − explicit` is a
+per-pair **data-error detector**: explicit ≈ inferred ⇒ clean data / real drift; explicit ≪ inferred (a direction
+appears only once the typo is fixed) ⇒ a data error. What remains after removing the delta is the true semantic drift.
+
+**Two goals, two choices:** for the *filing assistant* (deployment), inferred semantics has value — handle/flag
+typos gracefully. For *measuring drift* (research), remove the confound (clean explicitly, or use the delta) rather
+than silently LLM-correcting, which would bury the very signal being measured.
+
+**Deferred (post-merge, new branch):** either (a) upstream SimpleMind data cleaning (typo `Valves`, drop `"related"`-
+type tag-nodes, filter URL/resource nodes, fix cross-topic lineage), or (b) the explicit-vs-inferred delta pass to
+quantify how much of the flat signature is data vs real. Decision open.
