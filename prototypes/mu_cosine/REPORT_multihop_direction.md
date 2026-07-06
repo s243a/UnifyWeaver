@@ -125,8 +125,27 @@ Can the *graph alone* give a continuous effective-h (avoiding the embedding/seco
 **Implication:** a graph-native transitive target `μ_fwd(desc|anc)=hit_prob`, `μ_rev=0` needs **no embedding and no
 LLM** for the graph side of the superposition — it is continuous, mean-reverting, root-converging, and
 direction-correct by construction. Relative to §(d)'s effective-h, this *replaces* the second model rather than
-calibrating against it. (Next: train on hit-prob targets and compare the learned decay to §(c)'s p^h model;
-optionally normalise hit-prob against a random-pair base rate to recover a true direction-uncertainty at large h.)
+calibrating against it.
+
+### (f) Walk-target TRAINING — direction FLOORS above 0.5 (user), and walk beats p^h at depth
+Trained a model on `--target walk` (`μ_fwd=hit_prob, μ_rev=0`, + the h=1 element/subcat superposition), evaluated
+`μ_fwd` and **direction sign-accuracy** vs h to h=8 on held nodes (n=200/hop):
+
+| h | prod μ / dir% | p^h μ / dir% | walk μ / dir% |
+|---|---|---|---|
+| 1 | 0.880 / 100% | 0.807 / 100% | 0.807 / 99% |
+| 3 | 0.065 / 88% | 0.446 / 98% | 0.166 / 98% |
+| 5 | 0.000 / 52% | 0.202 / 91% | 0.069 / 94% |
+| 6 | 0.001 / 40% | 0.144 / 86% | 0.050 / 90% |
+| 7 | 0.000 / 30% | 0.079 / 79% | 0.031 / 87% |
+| 8 | 0.000 / **25%** | 0.071 / 66% | 0.032 / **79%** |
+
+**Direction floors ABOVE 0.5 (user's prediction, confirmed):** root convergence makes the more-root-ward node
+consistently the ancestor, so even where the *magnitude* floors near the base rate the *direction* survives — walk
+holds **79% at h=8**, p^h 66%, both far above chance. `prod` (no transitive training) instead falls **below** chance
+(25% at h=8) — its μ collapses to 0 and noise dominates, so it's actively wrong deep down. **Walk beats p^h at every
+deep hop** (79 vs 66% at h=8): the graph-native mean-reverting/root-converging target teaches a *more robust*
+deep-hop direction than the exponential `p^h`, and needs no second model to define it.
 
 ## Takeaways
 - The discrimination operator as trained is **direct-membership** (μ collapses by h=3); transitive `p^h` behaviour
