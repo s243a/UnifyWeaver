@@ -273,13 +273,26 @@ and the Stage B body forms (`=`/`is`) still lower to
 `helper` → `42`; the codegen is byte-identical to the host writer's golden for
 the same program.
 
-**Still to do in Stage C (follow-on):** conjunction (`,`/2) with **register
-allocation** for temporaries that span goals (e.g. `p(R) :- X is 6*7, R = X`),
-non-tail calls (`call` + `proceed`), and multi-argument heads with argument
-setup (`put_value`/`put_constant` before the call). These need a real (if
-simple, sequential) register allocator — the piece the design flags as
-"correctness over reuse". The register-file and `get_structure` fixes mean
-large clauses and tagged-union walkers already work, so this is codegen-only.
+**Conjunction + register allocation — LANDED.** `cgconj/2` compiles a clause
+whose body is a conjunction of unification goals (`X = Y`, `X = Int`) with a
+real (simple) register allocator: `numbervars/3` binds each source variable to
+`'$VAR'(N)`, mapped to permanent register Y(N+1); an initialized-Y set is
+threaded through so a variable's **first** occurrence emits
+`put_variable`/`get_variable` and **later** occurrences `put_value`. Head
+arguments are saved with `get_variable`; each `=` goal stages A1/A2
+(`put_variable`/`put_value`/`put_constant`) then `builtin_call =/2` (id 24).
+This is the WAM register-allocation core. Verified byte-identical to the host
+writer for `pconj(R) :- Y = 42, R = Y` (Y a temporary shared across both goals),
+and end to end (`tests/test_wam_object.pl:selfhost_codegen_stage_c_conjunction`):
+compiles from source and runs to `42`.
+
+**Still to do in Stage C (follow-on):** runtime arithmetic — `is/2` where an
+operand is a variable (`Y is X + 1`) builds the expression term on the heap
+(`put_structure` + a functor table, `NF > 0`) and calls `builtin_call is/2`;
+and non-tail predicate calls (`call` + `proceed`) with a permanent holding the
+result across the call, plus multi-argument argument setup. These extend the
+same allocator with `put_structure`/`call` and the functor-table section of the
+serializer.
 
 **Deliverable:** the compiler handles the clause shapes a small hand-written
 grammar uses — the point at which "compile a grammar at runtime from source"
