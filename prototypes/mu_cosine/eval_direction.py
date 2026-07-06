@@ -41,7 +41,8 @@ def hier_dir(model, tok, pairs, dev, judge=None, corpus="enwiki"):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pairs", required=True)
-    ap.add_argument("--ids", required=True, help="held pair-index file")
+    ap.add_argument("--ids", "--held-ids", dest="ids", required=True,
+                    help="held pair-index file (same one emit_direction_blend.py took as --held-ids)")
     ap.add_argument("--responses", required=True)
     ap.add_argument("--graph", required=True)
     ap.add_argument("--e5-cache", required=True)

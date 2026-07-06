@@ -103,7 +103,7 @@ The null (Result 2) is a **saturation artifact**: direction is a strong signal (
 "X by country" vs "X in Germany"), so most pairs are near-certain and nothing can help them. Stratify the 400
 novel pairs by direction confidence and the benefit appears exactly where the theory says it should:
 
-| stratum | prod | dirichlet (3-seed) | gap |
+| stratum | prod (single model) | dirichlet (3-model ensemble) | gap |
 |---|---|---|---|
 | high-confidence half (large \|asym\|) | 98.0% | 98.0% | **0.0** |
 | low-confidence half (small \|asym\|) | 85.0% | 93.0% | **+8.0** |
@@ -133,7 +133,9 @@ can help. Wikipedia's semantic leakage makes most pairs certain, so the mean hid
 Wikipedia has too few uncertain pairs to move the aggregate. **The aggregate null (−1.0) is NOT evidence against
 cross-judge direction superposition in general** — only evidence that Wikipedia (a consensus taxonomy) is the wrong
 corpus to test its motivation. The natural next step is a corpus with **more direction uncertainty** (option B:
-looser hierarchies / multi-parent DAGs), where the uncertain tail is the bulk, not the fringe. Reusable assets stand (the `dir-blend` judge, the 3-estimator emitter with contradiction→negative,
-the novel-node + prefix + difficulty-stratified evals).
+looser hierarchies / multi-parent DAGs), where the uncertain tail is the bulk, not the fringe.
+
+Reusable assets stand (the `dir-blend` judge, the 3-estimator emitter with contradiction→negative, the novel-node
++ prefix + difficulty-stratified evals).
 
 Repro: `emit_direction_blend.py --mix {equal,dirichlet}` → fine-tune → novel-node eval (± e5 prefixes).

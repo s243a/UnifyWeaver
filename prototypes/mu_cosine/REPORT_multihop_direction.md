@@ -70,6 +70,8 @@ those scores **validate p^h**: does the LLM's transitive membership actually dec
 run on the multi-hop chains; see §(d) below.)
 
 ## (d) Effective-h from semantic distance (user 2026-07-05) — calibration
+> **Superseded:** §(e) gives a graph-native alternative that needs no embedding, and the DECISION at §(f) adopts it.
+> This section is retained for comparison; skip to §(e) for the chosen approach.
 Make the operator continuous *within* a hop: measure avg semantic distance per h, calibrate it, and use a
 continuous **effective-h** (blending graph hops with an external-judge distance) in μ=p^(effective_h).
 
@@ -118,6 +120,15 @@ Can the *graph alone* give a continuous effective-h (avoiding the embedding/seco
 - **Within-hop variance grows with h** (0.48×→1.21×) — refines exactly where integer-h is coarsest.
 - **Direction encoded for free** — `P(up-walk anc→desc)=0` structurally (up-walks never descend), so `μ_rev=0`
   automatically; the fwd/rev asymmetry needs no `1−p^h` construction, and it converges toward the common root.
+  **Two distinct "reverses" (user):** (a) *invert the arguments* → `μ(anc|desc)=hit_prob(anc,desc)=0` — the correct
+  reverse *membership* (an ancestor is genuinely not under its descendant); this is the right `μ_rev`, and it shows
+  why `1−p^h` was wrong (it conflated direction-*uncertainty* with reverse-*membership*, inflating μ_rev to 0.41).
+  (b) *reverse the walk direction* → a **down**-walk `P(anc→desc)` is small-nonzero but is still a *forward*
+  containment viewed top-down (fan-out-diluted: a broad ancestor "reaches" any one member weakly) — a useful
+  *specificity-weighted* second direction signal, **not** the reverse.
+- **Path-agnostic** — `hit_prob` sums over *all* routes, so a pair sampled at shortest-path h via BFS may read a
+  hit-prob for a *shorter effective distance* if alternate short paths exist (part of why h=1 mean is 0.53 not 0.9:
+  branching, not distance). This is intended (effective, not shortest-path, membership).
 - Caveat: **+0.27 corr with e5 cos** — *complementary* to semantic distance, not a replacement; at h=1 it's 0.53
   (not 0.9) because branching dilutes membership when a node has many parents (arguably *correct* for effective
   membership — each of many parents is a weaker container).
@@ -145,7 +156,9 @@ consistently the ancestor, so even where the *magnitude* floors near the base ra
 holds **79% at h=8**, p^h 66%, both far above chance. `prod` (no transitive training) instead falls **below** chance
 (25% at h=8) — its μ collapses to 0 and noise dominates, so it's actively wrong deep down. **Walk beats p^h at every
 deep hop** (79 vs 66% at h=8): the graph-native mean-reverting/root-converging target teaches a *more robust*
-deep-hop direction than the exponential `p^h`, and needs no second model to define it.
+deep-hop direction than the exponential `p^h`, and needs no second model to define it. **Single-seed — the
+walk-vs-p^h *margin* should be validated multi-seed before it is cited as a quantitative claim** (the direction
+*floor* trend and the `μ_rev=0` structure are robust; the exact margin is not yet).
 
 **DECISION (user 2026-07-05): the WALK target is the graph side of the transitive superposition.** The deciding
 reason is *architectural, not the accuracy margin*: the walk needs **only the graph** — the same definition on

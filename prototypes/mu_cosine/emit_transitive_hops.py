@@ -35,26 +35,29 @@ def anc_by_hop(parents, start, hmax):
     return byh
 
 
-def hit_prob(parents, desc, anc, cap=40):
-    """P(uniform-random up-walk from desc visits anc) — a graph-native, CONTINUOUS, mean-reverting,
-    root-converging effective-membership (needs no embedding/LLM). μ_rev = hit_prob(anc→desc) = 0 structurally
-    (up-walks never descend), so direction is encoded for free. See REPORT_multihop_direction.md §(e)."""
+def hit_prob(parents, desc, anc):
+    """P(uniform-random UP-walk from desc visits anc) — a graph-native, CONTINUOUS, mean-reverting,
+    root-converging effective-membership (needs no embedding/LLM). Two distinct "reverses" (user 2026-07-05):
+    (a) INVERT ARGS → μ(anc|desc)=hit_prob(anc,desc)=0 structurally (up-walks never descend) — the correct μ_rev
+    for direction; (b) REVERSE THE WALK → a DOWN-walk P(anc→desc) is small-nonzero but is still a *forward*
+    containment (top-down, fan-out-diluted), NOT the reverse. See REPORT_multihop_direction.md §(e).
+
+    Exact DP on the DAG (unconditional hitting prob, no depth budget): the memo double-serves as a cycle guard
+    (a node mid-computation returns 0). memo is per-(desc,anc) call — not cached across pairs."""
     memo = {}
-    def h(x, depth):
+    def h(x):
         if x == anc:
             return 1.0
-        if depth > cap:
-            return 0.0
         if x in memo:
             return memo[x]
         ps = parents.get(x) or []
         if not ps:
-            return 0.0
-        memo[x] = 0.0                                    # guard against DAG re-entry
-        v = sum(h(p, depth + 1) for p in ps) / len(ps)
+            return 0.0                                   # reached a root without hitting anc
+        memo[x] = 0.0                                    # cycle guard: node currently being computed → 0
+        v = sum(h(p) for p in ps) / len(ps)
         memo[x] = v
         return v
-    return h(desc, 0)
+    return h(desc)
 
 
 def main():
@@ -94,6 +97,9 @@ def main():
     rng.shuffle(train_src)
     train = {h: [(s, ch[h]) for s, ch in train_src[:a.chains]] for h in range(1, a.hmax + 1)}
 
+    # Rows are tagged judge=graph (they ARE graph-structural). This DELIBERATELY extends the graph judge's
+    # calibration from direct-edge to transitive membership; if you want to keep those separate, a `graph-transitive`
+    # judge row (analogous to dir-blend getting its own row) is the tracked alternative (review 2026-07-05).
     with open(a.out, "w", encoding="utf-8") as f:
         f.write("# node\troot\tmu\top\trelation\tnode_type\troot_type\tcorpus\tjudge\tconf\n")
         n = 0
@@ -110,7 +116,10 @@ def main():
     json.dump({str(h): held[h] for h in held}, open(a.held_out, "w"))
     print(f"wrote {n} transitive HIER rows (p={a.p}, h=1..{a.hmax}, {len(train_src[:a.chains])} train chains × "
           f"{a.hmax} hops × fwd/rev) → {a.out}; held {len(held[1])} chains → {a.held_out}")
-    print("  targets μ_fwd=p^h:", {h: round(a.p ** h, 3) for h in range(1, a.hmax + 1)})
+    if a.target == "ph":
+        print("  targets μ_fwd=p^h:", {h: round(a.p ** h, 3) for h in range(1, a.hmax + 1)})
+    else:
+        print("  targets μ_fwd=hit_prob (per-pair up-walk); μ_rev=0")
 
 
 if __name__ == "__main__":
