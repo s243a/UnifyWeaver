@@ -129,6 +129,15 @@ Can the *graph alone* give a continuous effective-h (avoiding the embedding/seco
 - **Path-agnostic** — `hit_prob` sums over *all* routes, so a pair sampled at shortest-path h via BFS may read a
   hit-prob for a *shorter effective distance* if alternate short paths exist (part of why h=1 mean is 0.53 not 0.9:
   branching, not distance). This is intended (effective, not shortest-path, membership).
+
+**Design principle — IS vs OUGHT (user 2026-07-05).** `μ_rev=0` answers *is* the ancestor structurally a member of
+its descendant (no — a descriptive graph fact). The `1−p^h` complement was reaching for *ought* it be uncertain at
+distance (an epistemic claim). Different questions — and the architecture assigns each to its right source: the
+**graph** component supplies the crisp structural **IS** (`μ_rev=0` — trains faster and keeps a clean basis for
+source-separation), and the epistemic **OUGHT** (confidence softening at distance) enters through the **judge we
+superpose with** (the LLM/semantic side). So the *blended* `μ_rev` is not 0 — it is the graph's structural 0 mixed
+with the partner's uncertainty. We deliberately keep the graph target factual and let the superposition carry the
+ought; baking ought into the graph would muddy the very basis the superposition needs to separate.
 - Caveat: **+0.27 corr with e5 cos** — *complementary* to semantic distance, not a replacement; at h=1 it's 0.53
   (not 0.9) because branching dilutes membership when a node has many parents (arguably *correct* for effective
   membership — each of many parents is a weaker container).
