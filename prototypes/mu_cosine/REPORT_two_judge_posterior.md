@@ -175,3 +175,28 @@ A fully trustworthy SimpleMind correlation-vs-hop needs **re-sampling within-map
   walk on the Pearltrees multi-parent DAG (on h=1 categories `d` is near-binary and contributes little).
 
 Repro: `fit_two_judge_posterior.py --scored wiki_rel_scored.tsv --e5-cache wiki_rel_e5.pt --graph 100k_cats/... --seeds 20`.
+
+## SimpleMind re-validation on CLEAN within-map data (Part 2, 2026-07-06)
+Regenerated per-map lineages with the improved `gen_mindmap_lineage.py` (488 chains, within-map, no cross-map org
+super-layer), sampled within-map multi-hop pairs, re-scored (gpt-5.5-low, 200 pairs). `Σ(hop)` signature vs Wikipedia:
+
+| | h1 | h3 | h5 | pooled corr |
+|---|---|---|---|---|
+| SimpleMind margin (μ_D−μ_S) | 0.21 | 0.20 | 0.13 | — |
+| SimpleMind corr(μ_D,μ_S) | +0.17 | +0.07 | +0.43 | **+0.20 [+0.02,+0.36]** |
+| SimpleMind κ(Σ) | 3.3 | 7.1 | 5.5 | — |
+| Wikipedia margin | 0.62 | — | 0.11 | — |
+| Wikipedia corr | −0.83 | — | +0.25 | −0.03 |
+| Wikipedia κ(Σ) | 11.0 | — | 5.3 | — |
+
+- **The "SimpleMind decouples at depth" hypothesis is NOT confirmed** — that was over-read from the (confounded)
+  content-rooted split. On clean data SimpleMind corr is weakly *positive* (+0.20 pooled, CI excludes 0), roughly
+  flat/rising, not decreasing. (Corrected.)
+- **But the corpus-level `Σ(hop)` signatures genuinely differ (the real finding):** Wikipedia is *strongly*
+  heteroscedastic (high directional confidence at low hop, margin 0.62; strong anti-corr −0.83; ill-conditioned
+  κ=11; all relaxing with depth). SimpleMind is *flat* — **low directional confidence at every depth** (margin only
+  0.21 at h1; μ_D=0.62, μ_S=0.41 both moderate), weak positive corr, better-conditioned (κ~3–7), little hop trend.
+- **On SimpleMind D and S are never cleanly separated** — concepts read as both hierarchical *and* associative at
+  all depths. Genuine (concepts are relationally richer than categories) OR the **LLM over-assigns `assoc` to
+  concepts** (the user's judge-calibration dispute — open). Either way, a `Σ(hop)` head must learn a **corpus-specific
+  curve** (steep-relaxing for Wikipedia, flat for SimpleMind), confirming the covariance is not universal.
