@@ -223,6 +223,71 @@ ct_uncaught(R) :- throw(oops), R = 1.                                        % u
 ea(R) :- R = 42.
 echocompile(Src, Wamo) :- Wamo = Src.
 
+% Milestone 6 (self-host) Stage A: a .wamo serializer written in the loadable
+% subset. wamoserz/2 is a real eval-pipeline compiler entry -- compile(Src,
+% Wamo) -- but Stage A ignores Src and serializes a FIXED ground instruction
+% list for a 42-returning program (`ea(R):-R=42`), exercising the string-
+% assembly back end end to end. It reproduces wamo_serialize/8's byte format
+% using only loadable builtins (atom_codes/number_codes/append/length), so it
+% runs as a loaded object; the emitted bytes load via @wam_object_eval and run
+% to 42. NA/NF are 0 here (no atom/functor tables); the PC and instruction
+% lists drive the rest, so this is a genuine serializer, not a string literal.
+%
+% Written as SMALL accumulator-threaded clauses (a code list is threaded
+% through, each clause holding only a few call-spanning variables) with only
+% list / enc(...) head dispatch -- deliberately avoiding two loaded-runtime
+% limitations this stage surfaced: (1) a clause holding ~16+ call-spanning
+% variables emits register indices past the 64-slot register file and corrupts
+% memory; (2) multi-way first-argument functor dispatch across >=4 tagged
+% variants (with a list-carrying variant present) mis-dispatches in loaded
+% objects. Both are recorded in PLAWK_SELFHOST.md as prerequisites for later
+% stages; the "small clauses, correctness over register reuse" style the design
+% doc prescribes routes around both.
+wamoserz(_Src, Wamo) :-
+    atom_codes('ea/1', NameCodes),
+    wz_serialize(0, NameCodes, 0, 0, 0, [0],
+        [enc(0,42,65536,0), enc(20,0,0,0)], Codes),
+    atom_codes(Wamo, Codes).
+
+% accumulator appenders: each threads a code list, holding few call-spanning
+% vars. wz_i "<int>\n", wz_a "<atom>\n", wz_n "<len> <bytes>\n", wz_si " <int>".
+wz_i(N, A0, A1)  :- number_codes(N, Cs), append(A0, Cs, B), append(B, [10], A1).
+wz_a(X, A0, A1)  :- atom_codes(X, Cs), append(A0, Cs, B), append(B, [10], A1).
+wz_n(Cs, A0, A1) :- length(Cs, Len), number_codes(Len, LC),
+    append(A0, LC, B), append(B, [32|Cs], C), append(C, [10], A1).
+wz_si(N, A0, A1) :- number_codes(N, Cs), append(A0, [32|Cs], A1).
+
+wz_serialize(EntryIdx, NameCodes, LabelIdx, NA, NF, PCs, Instrs, Out) :-
+    wz_header(EntryIdx, NameCodes, LabelIdx, NA, NF, [], Hdr),
+    wz_body(PCs, Instrs, Hdr, Out).
+
+% header: WAMO / version 2 / entry index / NE=1 / name / label / NA / NF,
+% split across two clauses so neither holds too many call-spanning vars.
+wz_header(EntryIdx, NameCodes, LabelIdx, NA, NF, A0, Out) :-
+    wz_a('WAMO', A0, A1), wz_i(2, A1, A2), wz_i(EntryIdx, A2, A3), wz_i(1, A3, A4),
+    wz_header2(NameCodes, LabelIdx, NA, NF, A4, Out).
+wz_header2(NameCodes, LabelIdx, NA, NF, A0, Out) :-
+    wz_n(NameCodes, A0, A1), wz_i(LabelIdx, A1, A2), wz_i(NA, A2, A3), wz_i(NF, A3, Out).
+
+% body: PC section, instruction section, then NM=0.
+wz_body(PCs, Instrs, A0, Out) :-
+    wz_pcs_sec(PCs, A0, A1),
+    wz_instr_sec(Instrs, A1, A2),
+    wz_i(0, A2, Out).
+
+wz_pcs_sec(PCs, A0, A2) :- length(PCs, NL), wz_i(NL, A0, A1), wz_pcs_rows(PCs, A1, A2).
+wz_pcs_rows([], A, A).
+wz_pcs_rows([P|Ps], A0, A2) :- wz_i(P, A0, A1), wz_pcs_rows(Ps, A1, A2).
+
+wz_instr_sec(Instrs, A0, A2) :-
+    length(Instrs, NC), wz_i(NC, A0, A1), wz_instr_rows(Instrs, A1, A2).
+wz_instr_rows([], A, A).
+wz_instr_rows([enc(T,O1,O2,R)|Is], A0, A2) :-
+    wz_row(T, O1, O2, R, A0, A1), wz_instr_rows(Is, A1, A2).
+wz_row(T, O1, O2, R, A0, A5) :-
+    number_codes(T, Tc), append(A0, Tc, A1),
+    wz_si(O1, A1, A2), wz_si(O2, A2, A3), wz_si(R, A3, A4), append(A4, [10], A5).
+
 % Milestone 3b-db PR 3: rule bodies. assertz((H :- B)) stores a rule; calling
 % its head runs the body (deterministic first solution). Bodies handle ,/2,
 % builtins (is/2, comparisons, =/2), and predicate calls; head<->body variable
@@ -743,6 +808,46 @@ test(eval_compile_pipeline, [condition(clang_available)]) :-
     directory_file_path(Dir, 'eval_host_bin', Host),
     ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
     process_create(Host, [CompWamo, EaWamo],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "42\n"),
+    !.
+
+% Milestone 6 (self-host) Stage A: the .wamo serializer runs AS a loaded
+% compiler object. Two checks, low-cost first:
+%  (1) differential -- the serializer grammar, run in-process, emits bytes
+%      byte-identical to the host writer's golden .wamo for the same program.
+%      This locks the format (operand encoding, section layout) before any
+%      codegen, exactly as the self-host design's Stage A prescribes.
+%  (2) end to end -- write the serializer to a .wamo, hand it to the eval host
+%      as the "compiler"; @wam_object_eval runs it, loads the bytes it emits,
+%      and runs the result -> 42. Proves a loaded grammar can assemble a valid
+%      .wamo from ground instruction terms and that the loop closes on it.
+test(selfhost_serializer_matches_golden) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'golden_ea.wamo', Golden),
+    write_wam_object([user:ea/1], [wamo_entry(ea/1)], Golden),
+    read_file_to_string(Golden, GStr, [encoding(octet)]),
+    string_codes(GStr, GoldenCodes),
+    wamoserz(ignored_source, Wamo),
+    atom_codes(Wamo, GotCodes),
+    assertion(GotCodes == GoldenCodes),
+    !.
+
+test(selfhost_serializer_stage_a, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'serz.wamo', SerzWamo),
+    write_wam_object([user:wamoserz/2], [wamo_entry(wamoserz/2)], SerzWamo),
+    % any source file works -- Stage A ignores its input
+    directory_file_path(Dir, 'serz_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, 'ignored'), close(S0)),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    process_create(Host, [SerzWamo, SrcPath],
         [stdout(pipe(S)), stderr(std), process(Pid)]),
     read_string(S, _, Out),
     close(S),
