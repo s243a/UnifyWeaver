@@ -98,6 +98,36 @@ The transitive superposition has **two distinct parts**, and the two ideas map t
 So the LLM is the judge for the *non-graph* operators; the *embedding* is the distance for the *graph* effective-h.
 *Deferred: (graph) build effective-h target + train; (non-graph) LLM-score the multi-hop chains, then superpose.*
 
+## (e) Graph-native effective-h via random walk — no second model (user 2026-07-05)
+Can the *graph alone* give a continuous effective-h (avoiding the embedding/second model for §d)? Yes — the
+**up-walk hitting probability** `P(uniform-random up-walk from desc visits anc)` (exact DP: `h(anc)=1`,
+`h(x)=mean over parents`, roots→0):
+
+| h | mean hit-prob | within-h CV | 0.9^h | mean e5 cos |
+|---|---|---|---|---|
+| 1 | 0.529 | 0.48× | 0.900 | 0.900 |
+| 2 | 0.327 | 0.83× | 0.810 | 0.851 |
+| 3 | 0.246 | 1.02× | 0.729 | 0.814 |
+| 4 | 0.201 | 1.12× | 0.656 | 0.775 |
+| 5 | 0.181 | 1.21× | 0.590 | 0.775 |
+
+- **Continuous** — 418 distinct values over 1500 pairs (vs 5 integer hops); graph-only.
+- **Mean-reverting** — flattens toward a base-rate floor (~0.18) instead of decaying to 0 like `p^h`. Fixes the
+  `p^h → 0` asymptote (a distant ancestor is a near-random pair) *for free* — the walk dilutes across branches, so
+  "the probability of drifting back rises the further you drift" (user) is intrinsic.
+- **Within-hop variance grows with h** (0.48×→1.21×) — refines exactly where integer-h is coarsest.
+- **Direction encoded for free** — `P(up-walk anc→desc)=0` structurally (up-walks never descend), so `μ_rev=0`
+  automatically; the fwd/rev asymmetry needs no `1−p^h` construction, and it converges toward the common root.
+- Caveat: **+0.27 corr with e5 cos** — *complementary* to semantic distance, not a replacement; at h=1 it's 0.53
+  (not 0.9) because branching dilutes membership when a node has many parents (arguably *correct* for effective
+  membership — each of many parents is a weaker container).
+
+**Implication:** a graph-native transitive target `μ_fwd(desc|anc)=hit_prob`, `μ_rev=0` needs **no embedding and no
+LLM** for the graph side of the superposition — it is continuous, mean-reverting, root-converging, and
+direction-correct by construction. Relative to §(d)'s effective-h, this *replaces* the second model rather than
+calibrating against it. (Next: train on hit-prob targets and compare the learned decay to §(c)'s p^h model;
+optionally normalise hit-prob against a random-pair base rate to recover a true direction-uncertainty at large h.)
+
 ## Takeaways
 - The discrimination operator as trained is **direct-membership** (μ collapses by h=3); transitive `p^h` behaviour
   is a **design target requiring explicit training**, with p a measurable per-source leakage base (≈0.88 here).

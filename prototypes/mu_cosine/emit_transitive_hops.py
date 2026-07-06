@@ -35,10 +35,35 @@ def anc_by_hop(parents, start, hmax):
     return byh
 
 
+def hit_prob(parents, desc, anc, cap=40):
+    """P(uniform-random up-walk from desc visits anc) — a graph-native, CONTINUOUS, mean-reverting,
+    root-converging effective-membership (needs no embedding/LLM). μ_rev = hit_prob(anc→desc) = 0 structurally
+    (up-walks never descend), so direction is encoded for free. See REPORT_multihop_direction.md §(e)."""
+    memo = {}
+    def h(x, depth):
+        if x == anc:
+            return 1.0
+        if depth > cap:
+            return 0.0
+        if x in memo:
+            return memo[x]
+        ps = parents.get(x) or []
+        if not ps:
+            return 0.0
+        memo[x] = 0.0                                    # guard against DAG re-entry
+        v = sum(h(p, depth + 1) for p in ps) / len(ps)
+        memo[x] = v
+        return v
+    return h(desc, 0)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--graph", required=True)
-    ap.add_argument("--p", type=float, default=0.9, help="per-source leakage base for μ_fwd = p^h")
+    ap.add_argument("--target", choices=["ph", "walk"], default="ph",
+                    help="ph: μ_fwd=p^h, μ_rev=1−p^h (exponential, needs p). walk: μ_fwd=up-walk hit-prob, μ_rev=0 "
+                    "— graph-native, continuous, mean-reverting, no second model (REPORT_multihop_direction §e).")
+    ap.add_argument("--p", type=float, default=0.9, help="per-source leakage base for μ_fwd = p^h (--target ph)")
     ap.add_argument("--hmax", type=int, default=5)
     ap.add_argument("--chains", type=int, default=1500)
     ap.add_argument("--held-frac", type=float, default=0.15)
@@ -73,8 +98,12 @@ def main():
         f.write("# node\troot\tmu\top\trelation\tnode_type\troot_type\tcorpus\tjudge\tconf\n")
         n = 0
         for h in range(1, a.hmax + 1):
-            mf, mr = a.p ** h, 1.0 - a.p ** h
+            ph_f, ph_r = a.p ** h, 1.0 - a.p ** h
             for desc, anc in train[h]:
+                if a.target == "walk":
+                    mf, mr = hit_prob(parents, desc, anc), 0.0     # graph-native; μ_rev=0 by construction
+                else:
+                    mf, mr = ph_f, ph_r
                 f.write(f"{desc}\t{anc}\t{mf:.3f}\tHIER\tsubcategory\tcategory\tcategory\t{a.corpus}\tgraph\t1.0\n")
                 f.write(f"{anc}\t{desc}\t{mr:.3f}\tHIER\tsubcategory\tcategory\tcategory\t{a.corpus}\tgraph\t1.0\n")
                 n += 2
