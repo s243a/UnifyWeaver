@@ -89,6 +89,24 @@ h=1 μ_D=0.85≫μ_S=0.23; by h=5 they're indistinguishable.
   cross-term alone. This is the first *significant* evidence for the hop-conditional posterior. (The separation trick
   / constant-Σ remains the base; Σ(hop) adds a real, significant increment on top.)
 
+### WHY Σ(hop) beats constant Σ — the decoupling geometry rotates with hop (user)
+The decoupling (whitening) transformation is a *function of hop*, and `Σ(hop)`'s **condition number reduces with
+hop** (user's prediction):
+
+| h | ρ | κ(Σ) | decoupling rotation |
+|---|---|---|---|
+| 1 | −0.83 | 11.0 | **−40°** |
+| 3 | −0.06 | 7.8 | −1° |
+| 5 | +0.25 | 5.3 | **+8°** |
+
+Low hops: ill-conditioned (`ρ=−0.83` ⇒ D,S near-collinear) ⇒ strong decoupling rotation. High hops: decorrelated
+(`ρ→0`), `Σ`→isotropic ⇒ ~identity transform. A **constant Σ must commit to one geometry** — but the true one
+rotates −40°→~0° across hops, so it's a bad *average of incompatible geometries* (wrong at both ends); only `Σ(hop)`
+fits each. Division of labor: at LOW hops the **correlation/decoupling** carries the info (joint ≫ product) while the
+direction is certain; at HIGH hops `ρ→0` (joint≈product) but the **confidence/margin** degrades — `Σ(hop)` captures
+both. (`κ` also mixes the variance ratio `σ_D/σ_S`; the *rotation* is the pure-correlation signal and reduces
+monotonically.)
+
 ## [SUPERSEDED by the continuous analysis above] Is the cross term ever justified? — (binarised, noisy)
 The cross pseudo-judge is the QDA/heteroscedastic term: it earns its keep ONLY if `Cov(D,S)` **varies across the
 space** (LDA/linear suffices for a constant covariance — a Gaussian's score is linear, its correlation a single
