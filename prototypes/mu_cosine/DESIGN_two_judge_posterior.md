@@ -87,6 +87,47 @@ superposition training — no new architecture. **Regularizing the pseudo-judge 
 n-dependent complexity (interactions come online only when n licenses them), soft/crossable constraints (weights
 shrink under the prior, overridden by strong local data), and transfer (carry the pseudo-judge weight as a prior).
 
+### The smallest build target: 2 operators → 3 pseudo-judges
+Simplest case — a directional operator `D` and a symmetric operator `S`. The second-order structure is a symmetric
+2×2 matrix: 4 entries, `Σ_DS = Σ_SD`, so **3 unique terms → 3 pseudo-judges** (= the degree-2 monomials of `[D,S]`,
+= dim of a symmetric 2×2):
+
+| pseudo-judge | reading | matrix entry | role |
+|---|---|---|---|
+| self-`D` | `μ_D²` | `Σ_DD` (diagonal) | directional reliability/curvature → *confidence-weighted rung* |
+| self-`S` | `μ_S²` | `Σ_SS` (diagonal) | symmetric reliability/curvature → *confidence-weighted rung* |
+| cross | `μ_D·μ_S` | `Σ_DS` (off-diagonal) | directional↔symmetric **correlation** → *joint rung; the large-n term* |
+
+The two self-terms are the diagonal (the confidence-weighted rung); the one cross-term is the off-diagonal — the
+large-n directional↔symmetric correlation that carries the co-occurrence. Scaling: **k operators →
+`k(k+1)/2` pseudo-judges** (`k` self + `k(k−1)/2` cross). Start at k=2 (3 pseudo-judges): the smallest model that
+contains the one correlation term that matters; only switch on further cross-terms as `n` licenses them.
+
+### Two realizations of the pseudo-judges — GLM form and ATTENTION form
+Same 3 pseudo-judges, two ways to compute them:
+- **GLM form (append features):** add scalar columns `[μ_D², μ_S², μ_D·μ_S]` to the logistic feature vector; three
+  learned weights = the three unique `Σ⁻¹` entries. Cheap, convex, interpretable (read off which carries weight).
+- **ATTENTION form (compute the Gram matrix):** if the operator readouts are VECTORS, `μ_D·μ_S` is a *dot product*
+  — which **is** the (uncentered) correlation. The three pseudo-judges are then the three unique entries of the
+  **Gram matrix** `G = [⟨μ_D,μ_D⟩, ⟨μ_D,μ_S⟩; ·, ⟨μ_S,μ_S⟩]` (= `‖μ_D‖², ‖μ_S‖², μ_D·μ_S`), and `G` *is* the
+  second-moment/correlation matrix. So "3 unique covariance terms" and "3 unique Gram entries" are the same object.
+
+The closure: the model is **μ-attention** — its native op is the dot product (query·key). So the second-order
+correlation is computed the *same way the model computes everything*: the cross pseudo-judge is an **attention score
+between operators** (learned bilinear `μ_Dᵀ W μ_S`), the self-terms are operator self-attention (`‖μ_·‖²`), and a
+single small operator-attention head over the operator representation vectors *learns the whole second-order
+structure*. Two readings of the vectors:
+- **sample vectors over a region** (`μ_D=[μ_D(xᵢ,yᵢ)…]` across a neighborhood): `μ_D·μ_S` = the empirical regional
+  correlation — ties to per-region confidence (`c_mem`); the correlation is a neighborhood property, computed as a
+  dot product over that neighborhood.
+- **feature vectors per pair** (`μ_D∈Rᵏ`): `μ_Dᵀ W μ_S` = a learned bilinear alignment of the two operator
+  representations for that pair.
+
+This also tames the scaling: `k(k+1)/2` cross-terms is one `k×k` (or low-rank) `W` as a bilinear form — attention
+handles the quadratic count natively instead of enumerating features. **First build:** k=2 GLM form (3 scalar
+pseudo-judges) to validate the correlation term cheaply; then the operator-attention head as the architectural
+realization if it earns it.
+
 ## Deployment: teacher/student
 The joint `P(op | d, LLM_op)` needs `LLM_op` as a LIVE feature — expensive. So: **teacher** = the joint posterior
 (LLM in the loop, offline label-maker); **student** = the model distilled on the FREE features (e5 readouts + `d` +
