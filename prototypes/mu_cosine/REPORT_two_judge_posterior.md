@@ -40,7 +40,30 @@ So the essential second-order move is **joint modeling** (a multinomial over the
 interaction feature. Restated on the ladder: product-of-marginals (independent) → **joint (captures unconditional
 correlation) = the win** → +cross (captures conditional correlation = data-dependent, not needed here).
 
-## Is the cross term ever justified? — NOT established (2026-07-06, bootstrap)
+## CONTINUOUS μ reverses it — heteroscedasticity IS real (2026-07-06, user)
+The analysis below binarised D,S at a threshold — which (user) is wrong for a fuzzy set: it discards the graded
+membership and is threshold-dependent. Redone on the **continuous** μ (`corr(μ_D,μ_S)`, max over each relation
+group; Pearson is shift-invariant so `μ−0.5` centering doesn't change r — the fix is *continuous vs binary*):
+
+| hop | SimpleMind corr [95% CI] | Wikipedia corr [95% CI] |
+|---|---|---|
+| 1 | +0.20 [−0.22,+0.51] | **−0.83 [−0.91,−0.69]** |
+| 2 | +0.23 [−0.22,+0.60] | **−0.70 [−0.83,−0.54]** |
+| 3 | +0.51 [+0.16,+0.76] | −0.06 [−0.46,+0.28] |
+| 4 | +0.51 [+0.26,+0.71] | −0.18 [−0.48,+0.12] |
+| 5 | +0.49 [+0.22,+0.69] | +0.25 [−0.06,+0.53] |
+| pooled | +0.41 [+0.26,+0.55] | −0.20 [−0.33,−0.06] |
+
+- **Wikipedia is significantly HETEROSCEDASTIC** — `corr(μ_D,μ_S)` runs −0.83 (h1, compete) → +0.25 (h5), h1 & h5
+  CIs **disjoint**. This is the **lateral-drift** prediction (user): climbing hops, the relation stops being
+  strictly directional and drifts lateral, so D & S stop competing. The binarised analysis below **hid** this
+  (threshold noise turned the clean trend into overlapping phi-coefficients — a measurement artefact, corrected).
+- SimpleMind: strong positive throughout (pooled +0.41), hop-trend suggestive (+0.2→+0.5) but CIs overlap.
+- **⇒ the cross pseudo-judge IS warranted** (hop-conditional, `μ_D·μ_S` coupled to `d`): the D↔S covariance
+  genuinely varies across the space (Wikipedia), the QDA condition the h=1-only linear fit could not see. **Lesson:
+  fit/measure on the continuous fuzzy μ, not binarised labels** — binarisation destroyed the very signal.
+
+## [SUPERSEDED by the continuous analysis above] Is the cross term ever justified? — (binarised, noisy)
 The cross pseudo-judge is the QDA/heteroscedastic term: it earns its keep ONLY if `Cov(D,S)` **varies across the
 space** (LDA/linear suffices for a constant covariance — a Gaussian's score is linear, its correlation a single
 change of basis absorbed into linear weights). Deciding check: does `corr(D,S)` vary with hop? **Point estimates
