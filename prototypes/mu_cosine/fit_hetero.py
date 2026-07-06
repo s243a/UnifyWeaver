@@ -158,7 +158,7 @@ def main():
             pf = fit_sig_of_d(rD_t, rS_t, hop_arr[trI].astype(float)); sDf, sSf, rhof = sig_of_d(pf, hop_arr[heI].astype(float))
             gains.append(cnll - biv_nll(rD_h, rS_h, sDf, sSf, rhof).mean())
         return np.mean(gains)
-    obs = mean_gain(hop); K = 200; prng = np.random.default_rng(1)
+    obs = mean_gain(hop); K = 1000; prng = np.random.default_rng(1)   # ≥1000 so p isn't floored at 1/(200+1)
     null = np.array([mean_gain(hop[prng.permutation(len(pairs))]) for _ in range(K)])
     pval = (1 + np.sum(null >= obs)) / (K + 1)
     print(f"\nPERMUTATION TEST — mean Σ(hop)-vs-constant gain, hop SHUFFLED, node-disjoint, K={K} (calibrated):")

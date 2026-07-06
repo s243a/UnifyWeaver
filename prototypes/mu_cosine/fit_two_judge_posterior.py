@@ -121,6 +121,7 @@ def main():
     # binarises D,S at 0.5 — which the PR's own later work showed can distort. Here: bivariate-Gaussian NLL of the
     # CONTINUOUS (D_llm,S_llm) residuals, product (ρ=0) vs joint (constant ρ), node-disjoint, + permutation test.
     from fit_hetero import biv_nll
+    Xi = np.column_stack([base, np.ones(len(base))])        # WITH intercept (consistency w/ fit_hetero; review)
     def cont_gain(Sarr, nsplits):
         gains = []
         for s in range(nsplits):
@@ -129,9 +130,9 @@ def main():
             he = np.array([i for i, (x, y) in enumerate(pairs) if x in hn and y in hn])
             if len(he) < 10 or len(tr) < 30:
                 continue
-            bD = np.linalg.lstsq(base[tr], D_llm[tr], rcond=None)[0]; bS = np.linalg.lstsq(base[tr], Sarr[tr], rcond=None)[0]
-            rD_h = D_llm[he] - base[he] @ bD; rS_h = Sarr[he] - base[he] @ bS
-            rD_t = D_llm[tr] - base[tr] @ bD; rS_t = Sarr[tr] - base[tr] @ bS
+            bD = np.linalg.lstsq(Xi[tr], D_llm[tr], rcond=None)[0]; bS = np.linalg.lstsq(Xi[tr], Sarr[tr], rcond=None)[0]
+            rD_h = D_llm[he] - Xi[he] @ bD; rS_h = Sarr[he] - Xi[he] @ bS
+            rD_t = D_llm[tr] - Xi[tr] @ bD; rS_t = Sarr[tr] - Xi[tr] @ bS
             sD, sS = rD_t.std() + 1e-6, rS_t.std() + 1e-6; rho = np.corrcoef(rD_t, rS_t)[0, 1]
             gains.append(biv_nll(rD_h, rS_h, sD, sS, 0.0).mean() - biv_nll(rD_h, rS_h, sD, sS, rho).mean())  # + = joint better
         return np.mean(gains)

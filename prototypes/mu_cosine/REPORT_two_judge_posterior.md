@@ -76,10 +76,12 @@ heteroscedasticity is in the CONFIDENCE (the diagonal `σ`), not just the correl
 *confident* at low hops and *ambiguous* at high hops. Measured (margin `μ_D−μ_S`): **0.62 (h1) → 0.11 (h5)** — at
 h=1 μ_D=0.85≫μ_S=0.23; by h=5 they're indistinguishable.
 
-**Validation protocol (corrected after review #3517):** NODE-DISJOINT splits (hold out descendant nodes, so a
-descendant's h=1..5 pairs never straddle train/held — an earlier version used pair-level random splits = leakage),
-and a **permutation test** for significance (shuffle hop → null; the earlier `mean/√n` "σ" over correlated resamples
-was *not* a calibrated significance). Held-out joint NLL, 40 node-disjoint splits (~75 held pairs/split):
+**Validation protocol (corrected after review #3517):** **descendant-disjoint** splits (hold out the *descendant*
+endpoint, so a descendant's h=1..5 pairs never straddle train/held — an earlier version used pair-level random
+splits = leakage; note this is disjoint on the descendant side, not both endpoints — ancestors, being shared roots,
+can recur), and a **one-sided permutation test** for significance (shuffle hop → null; the earlier `mean/√n` "σ"
+over correlated resamples was *not* a calibrated significance). Held-out joint NLL, 40 splits (~75 held pairs/split;
+n≈250 pairs, ~45/hop — small, see limitations):
 
 | model | held-out joint NLL | gain vs constant |
 |---|---|---|
@@ -109,9 +111,15 @@ weaker split), which review correctly flagged.
 
 **Known limitations (review #3517):** (i) all labels come from one LLM judge (`gpt-5.5-low`) with no independent/
 human validation — the "assoc dispute" is inspected on the same judge's outputs; (ii) the σ/ρ functional forms
-(log-linear / tanh) aren't goodness-of-fit-checked against alternatives (spline/logistic); (iii) "corpus-specific"
-rests on n=2 corpora, one hand-cleaned; (iv) result #1 (joint > PoE) binarises D,S at 0.5 — defensible (0.5 = the
-member/non-member boundary, unlike the 0.3 cut that hid the hop signal) but a continuous-target check is deferred.
+(log-linear / tanh) aren't goodness-of-fit-checked against alternatives (spline/logistic) — the smooth-vs-oracle win
+is *regularization* value, not proof the form is the true generative one; (iii) "corpus-specific" rests on n=2
+corpora, one hand-cleaned; (iv) result #1 (joint > PoE) binarises D,S at 0.5 — **this HAS now been checked on
+continuous μ (finding #1 above): it does NOT replicate** (a discrete co-occurrence effect); (v) the split is
+descendant-disjoint (not both-endpoint) and does not model graph-topological dependence beyond entity overlap
+(shared ancestors ⇒ some residual correlation among held pairs); (vi) **post-exploratory, not pre-registered** — the
+final specification (smooth exp/tanh Σ(hop), descendant-disjoint split, continuous μ) was reached through iterative,
+reviewer-guided exploration on the same ~250 pairs, so **p=0.005 is significant *under the finally-adopted
+specification*, not an unconditional/pre-registered level**; confirmatory evidence would need a fresh held-out corpus.
 
 ### WHY Σ(hop) beats constant Σ — the decoupling geometry rotates with hop (user)
 The decoupling (whitening) transformation is a *function of hop*, and `Σ(hop)`'s **condition number reduces with
