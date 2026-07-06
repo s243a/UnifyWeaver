@@ -53,7 +53,7 @@ def parse_responses(path):
             if isinstance(arr, list):
                 for o in arr:
                     if isinstance(o, dict) and "id" in o:
-                        byid[int(o["id"])] = o
+                        byid[int(o["id"])] = o          # last-wins on duplicate ids (restarted/concatenated runs)
             i = end
         except json.JSONDecodeError:
             i = j + 1
@@ -86,10 +86,12 @@ def main():
     def d_of(o, rel):
         e = o.get(rel, {}); return float(e.get("mu_fwd", 0)) - float(e.get("mu_rev", 0))
 
+    # held_ids are POSITIONAL indices into --pairs — valid because emit + eval read the SAME unmodified pairs
+    # file; if that file is ever reordered/filtered upstream, switch to hashing on (na, ro) (review).
     held = set(int(x) for x in open(a.held_ids).read().split()) if a.held_ids else set()
     rows, npos, nneg = [], 0, 0
     for idx, (na, ro) in enumerate(pairs):
-        if idx not in byid or idx in held:
+        if idx not in byid or idx in held or na == ro:      # skip self-pairs (up_hops(x,x)=0 would be ambiguous)
             continue
         uf, ur = up_hops(parents, na, ro), up_hops(parents, ro, na)
         dg = ((3 / (1 + uf) if uf is not None else 0.0) - (3 / (1 + ur) if ur is not None else 0.0)) / 3.0  # →[-1,1]

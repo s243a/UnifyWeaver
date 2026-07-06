@@ -5,7 +5,12 @@ hops instead of direct-only. For an ancestor-descendant pair at h hops, target
     μ_fwd(desc | anc) = p^h          (forward membership decays with distance)
     μ_rev(anc | desc) = 1 − p^h      (direction confidence degrades toward ambiguous as h grows)
 
-p = per-source semantic-leakage base (≈0.9 on Wikipedia; LOWER leakage ⇒ HIGHER p, cleaner structural decay).
+μ_rev = 1−p^h is a DELIBERATE, Wikipedia-calibrated choice: the reverse is the COMPLEMENT (a soft non-membership
+that rises toward 0.5 at large h), NOT p^h-in-reverse. A stricter hierarchy (formal ontology) may want reverse ≈ 0
+at h=1 — the general two-parameter form is μ_rev = r^h with a separate reverse base r (here r implicitly ties to p).
+p = per-source semantic-leakage base. Use p ≈ 0.90 = mean h=1 e5 cosine on enwiki (the geometric grounding); the
+trained model's actual h=1 output is ≈0.88, slightly below target from direct-edge (μ≈1) training pressure. LOWER
+leakage ⇒ HIGHER p (structure-led, cleaner decay).
 Emitted as HIER rows tagged judge=graph (purely graph-structural). Sampled ancestor-descendant chains at exact
 hop distances via BFS-up; node-disjoint train/held split so the eval measures the LEARNED decay curve.
 
@@ -48,17 +53,21 @@ def main():
     nodes = list(parents.keys()); rng.shuffle(nodes)
     held_nodes = set(nodes[:int(a.held_frac * len(nodes))])
 
-    train, held = {h: [] for h in range(1, a.hmax + 1)}, {h: [] for h in range(1, a.hmax + 1)}
+    # collect ALL full chains first, then downsample train to the cap — so the held set is NOT biased toward
+    # early-shuffle nodes (an earlier version broke out as soon as train filled, starving the held set; review).
+    train_src, held = [], {h: [] for h in range(1, a.hmax + 1)}
     for s in nodes:
         byh = anc_by_hop(parents, s, a.hmax)
         if not all(h in byh for h in range(1, a.hmax + 1)):
             continue
         chain = {h: rng.choice(byh[h]) for h in range(1, a.hmax + 1)}
-        bucket = held if (s in held_nodes) else train
-        for h in range(1, a.hmax + 1):
-            bucket[h].append((s, chain[h]))
-        if sum(len(v) for v in train.values()) >= a.chains * a.hmax:
-            break
+        if s in held_nodes:
+            for h in range(1, a.hmax + 1):
+                held[h].append((s, chain[h]))
+        else:
+            train_src.append((s, chain))
+    rng.shuffle(train_src)
+    train = {h: [(s, ch[h]) for s, ch in train_src[:a.chains]] for h in range(1, a.hmax + 1)}
 
     with open(a.out, "w", encoding="utf-8") as f:
         f.write("# node\troot\tmu\top\trelation\tnode_type\troot_type\tcorpus\tjudge\tconf\n")
@@ -70,8 +79,8 @@ def main():
                 f.write(f"{anc}\t{desc}\t{mr:.3f}\tHIER\tsubcategory\tcategory\tcategory\t{a.corpus}\tgraph\t1.0\n")
                 n += 2
     json.dump({str(h): held[h] for h in held}, open(a.held_out, "w"))
-    print(f"wrote {n} transitive HIER rows (p={a.p}, h=1..{a.hmax}, {sum(len(v) for v in train.values())} train "
-          f"chains) → {a.out}; held {sum(len(v) for v in held.values())} chains → {a.held_out}")
+    print(f"wrote {n} transitive HIER rows (p={a.p}, h=1..{a.hmax}, {len(train_src[:a.chains])} train chains × "
+          f"{a.hmax} hops × fwd/rev) → {a.out}; held {len(held[1])} chains → {a.held_out}")
     print("  targets μ_fwd=p^h:", {h: round(a.p ** h, 3) for h in range(1, a.hmax + 1)})
 
 

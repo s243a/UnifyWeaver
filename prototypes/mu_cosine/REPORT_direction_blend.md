@@ -51,6 +51,12 @@ nodes."* Sampled **400 enwiki parent-child pairs whose both nodes are OUTSIDE th
 100k_cats, never LLM-scored) — the model has **only frozen e5**, no graph ancestors, no operator readout trained
 on them. Direction ground-truth = the enwiki edge (child→parent); metric = sign of `μ(child|parent)−μ(parent|child)`.
 
+> **Scope limitation (review):** the ground-truth is the enwiki *structural* edge, not an independent semantic
+> judgment. So this tests generalization of *structural* direction via e5, and can't fully separate "learned a
+> direction concept" from "learned that enwiki taxonomy structure transfers via e5." The clean version uses an
+> eval-time LLM/human on the novel pairs (deferred). Still meaningful — the nodes are outside all training — but
+> not the maximally-independent test.
+
 **Purpose (user):** the superposition *target* is a **linear** sum `Σ wᵢ·dᵢ`; the network learning it is **not**
 linear — it uses that capacity to *separate* the operator inputs so it can reconstruct any linear mix, which is
 what should let it generalize direction to unseen nodes.
@@ -62,6 +68,8 @@ transfers to nodes no operator saw — it is *not* memorised operator outputs.
 ### Result 2 — the superposition does NOT reliably beat baseline (multi-seed kills the single-seed win)
 `dirichlet` (random-mix): s1 95.5% / s2 **81.8%** / s3 94.2% → **mean 90.5% vs prod 91.5%** (−1.0). The single-seed
 +4 was seed luck; across seeds the superposition training adds no reliable novel-node direction over `model_prod`.
+(The 3 seeds vary *both* the emission seed — different Dirichlet mixing family per arm, `--seed 0/1/2` — and the
+training seed, so the spread is genuine mixing+optimization variation, not optimization noise alone.)
 
 ### Result 3 — e5 prefixes carry ~8 points of it (user's prediction, confirmed)
 | | WITH e5 prefixes | WITHOUT (query==passage) |
@@ -122,9 +130,10 @@ regime-specific: 0 where direction is certain, +8 where it is uncertain** (Resul
 can help. Wikipedia's semantic leakage makes most pairs certain, so the mean hides it.
 
 **Net:** the superposition is not worthless on direction — it helps precisely in the *uncertain* regime — but
-Wikipedia has too few uncertain pairs to move the aggregate. The natural next step is a corpus with **more
-direction uncertainty** (option B: looser hierarchies / multi-parent DAGs), where the uncertain tail is the bulk,
-not the fringe. Reusable assets stand (the `dir-blend` judge, the 3-estimator emitter with contradiction→negative,
+Wikipedia has too few uncertain pairs to move the aggregate. **The aggregate null (−1.0) is NOT evidence against
+cross-judge direction superposition in general** — only evidence that Wikipedia (a consensus taxonomy) is the wrong
+corpus to test its motivation. The natural next step is a corpus with **more direction uncertainty** (option B:
+looser hierarchies / multi-parent DAGs), where the uncertain tail is the bulk, not the fringe. Reusable assets stand (the `dir-blend` judge, the 3-estimator emitter with contradiction→negative,
 the novel-node + prefix + difficulty-stratified evals).
 
 Repro: `emit_direction_blend.py --mix {equal,dirichlet}` → fine-tune → novel-node eval (± e5 prefixes).

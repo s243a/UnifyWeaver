@@ -17,7 +17,10 @@ from eval_relatedness import build_model
 from emit_direction_blend import up_hops, parse_responses
 
 
-def corr(a, b): return float(np.corrcoef(a, b)[0, 1])
+def corr(a, b):
+    if np.std(a) < 1e-12 or np.std(b) < 1e-12:      # guard: corrcoef → nan on a constant array
+        return float("nan")
+    return float(np.corrcoef(a, b)[0, 1])
 
 
 def hier_dir(model, tok, pairs, dev, judge=None, corpus="enwiki"):
@@ -64,10 +67,10 @@ def main():
         dg, de, ds = dgraph(x, y), dllm(byid[i], "element_of"), dllm(byid[i], "subcategory")
         if abs(dg) < 1e-6 and abs(de) < 1e-6 and abs(ds) < 1e-6: continue      # no direction — skip
         pairs.append((x, y)); d_true.append((dg + de + ds) / 3.0)
-    d_true = np.array(d_true)
     d = torch.load(a.e5_cache, weights_only=False); idx = {n: i for i, n in enumerate(d["names"])}
-    pairs = [(x, y) for x, y in pairs if x in idx and y in idx]
-    d_true = d_true[:len(pairs)]
+    # paired filter — keep pairs and their targets in lockstep (was a fragile d_true[:len(pairs)] slice; review)
+    kept = [(p, t) for p, t in zip(pairs, d_true) if p[0] in idx and p[1] in idx]
+    pairs = [p for p, _ in kept]; d_true = np.array([t for _, t in kept])
     tok = Tokenizer(d["query"], d["passage"], idx, parents, load_dag(a.graph)[2])
     print(f"held directional pairs: {len(pairs)}  (target = mean(d_graph,d_element,d_subcat), sign-consensus)\n")
 

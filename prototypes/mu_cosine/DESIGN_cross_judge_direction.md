@@ -44,7 +44,9 @@ operators (HIER/ELEM) give `μ(a|b) ≠ μ(b|a)`, and there's a directional-rank
 `L_dir`). So the cross-judge direction is a **target for the directional discrimination**: train so the model's
 `μ(a|b) − μ(b|a)` matches `d_blend`, under a **cross-judge blend judge tag** (parallel to the SYM `blend` judge).
 
-## The tests (mirror what worked for SYM)
+## The tests (mirror what worked for SYM)  — [SUPERSEDED: see "Purpose & the TRUE test" below]
+> **Note:** this eval plan (in-distribution held set) was **superseded** by the novel-node TRUE test — read
+> "Purpose & the TRUE test" before implementing anything from this section.
 
 1. **Do the judges agree?** `corr(d_graph, d_LLM)` on held-out — validates the premise ("same direction info").
    If low, the whole idea is questionable; if high, they're two views of one direction.
@@ -117,19 +119,14 @@ disagreements. (Not mutually exclusive — A is cheap and reuses everything; B i
 3. `corr(model HIER-asymmetry, LLM direction)` for the dir-blend-trained model vs `model_prod` — does the
    superposition-trained model generalise direction to unseen nodes better? (multi-seed; agnostic vs dir-blend.)
 
-## Open design decisions (need resolving before building)
+## Open design decisions (need resolving before building) — all RESOLVED in the build
 
-1. **Lateral / no-ancestor pairs.** `d_graph = 0` when neither node is an ancestor (siblings, distant). Are those
-   excluded (train only on genuinely-directional pairs) or included as `d≈0` (both judges say "no direction")?
-   Cleanest: **restrict to directionally-labelled pairs** for the target, keep laterals as `d≈0` negatives.
-2. **`d_LLM` source: LLM score vs model's ELEM/HIER readout.** `E_mu_fwd−E_mu_rev` is the *LLM's* direction (no
-   feedback loop) — preferred. Using the model's own ELEM/HIER asymmetry would be a feedback loop (avoid, or
-   detach as we did for the membership readouts).
-3. **Readout carrier.** Reuse the existing `L_dir` directional-ranking machinery (fit the *rank/sign*) vs a new
-   signed-magnitude target. Rank is more robust; magnitude carries "how asymmetric."
-4. **Judge tag.** A new `direction-blend` judge row, or reuse `blend`? A distinct row keeps its calibration clean.
-5. **Scale alignment.** `d_graph` (hop-based) and `d_LLM` (μ-difference ∈[−1,1]) need a common scale before the
-   convex blend (normalise both to a comparable range, or blend the *signs/ranks* rather than magnitudes).
+1. **Lateral / no-ancestor pairs.** — **RESOLVED:** kept as `d≈0` **negatives** (direction-requires-agreement).
+2. **`d_LLM` source.** — **RESOLVED:** LLM score `E_mu_fwd−E_mu_rev` (no feedback loop), not the model readout.
+3. **Readout carrier.** — **RESOLVED:** built on **rank/sign** (the premise check showed sign is the shared
+   invariant, magnitude diverges); emitted as HIER fwd/rev asymmetry rows.
+4. **Judge tag.** — **RESOLVED:** distinct **`dir-blend`** row (not reusing `blend`).
+5. **Scale alignment.** — **RESOLVED by #3:** blend on sign/rank sidesteps the hop-vs-μ scale mismatch.
 
 ## Build plan (after this doc is reviewed)
 1. Compute `d_graph`, `d_LLM` on the 880 pairs; **report `corr(d_graph, d_LLM)`** (the go/no-go premise check).
