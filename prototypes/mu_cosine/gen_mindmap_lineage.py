@@ -16,7 +16,14 @@ Then materialized_path(node) = titles(root … node). 70/30 directional/superpos
 
   python3 gen_mindmap_lineage.py --maps context/*.smmx --out mindmap_lineage.tsv
 """
-import argparse, glob, os, subprocess, sys
+import argparse, glob, os, re, subprocess, sys
+
+
+def canon_key(title):
+    """Canonical node key from the TITLE, so the same concept appearing in multiple maps (with different .smmx
+    slug conventions — case / hyphen / underscore) collapses to ONE node instead of duplicate variants that
+    manufacture fake self-hops (SimpleMind cleanup, user 2026-07-06)."""
+    return re.sub(r"[^a-z0-9]+", "-", (title or "").strip().lower()).strip("-") or "node"
 from collections import Counter
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -123,7 +130,8 @@ def main():
                 skipped_private += 1; continue
             if len(clean) < 2:
                 continue
-            rows.append((mapname, node, clean[-1], " / ".join(clean), len(clean)))
+            # node_key = canonical title-slug (dedups cross-map concept variants) instead of the raw .smmx key
+            rows.append((mapname, canon_key(clean[-1]), clean[-1], " / ".join(clean), len(clean)))
             n_map += 1
         per_map[mapname] = n_map
 

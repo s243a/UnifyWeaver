@@ -104,6 +104,33 @@ looked like it did — but with 95% bootstrap CIs (n≈45/hop) they don't:**
   *significant* heteroscedasticity, which we do not observe. **Keep the separation trick; hold the pseudo-judge**
   until a corpus shows a covariance that provably varies (would need more data/hop than n≈45 to detect).
 
+## SimpleMind cleanup — the depth co-occurrence was the ORG layer, not content (user, 2026-07-06)
+`simplemind_clean.py`. Two confounds (user): (1) duplicate concept nodes — key case/hyphen/underscore variants of
+the same title (500 keys → 464 titles, 36 merged); (2) chains climbing past the 6 `.smmx` map roots into an
+**organisational super-layer** (`Applied mathematics`, `Cybernetics`, `Dynamical systems`, `Chaos theory` — the
+ancestors of the map roots). Splitting the scored pairs by root type:
+
+| root type | n | corr(μ_D,μ_S) |
+|---|---|---|
+| content-rooted (genuine concept parent) | 164 | +0.24 |
+| **org-rooted** (broad organisational bucket) | 36 | **+0.82** |
+
+By hop, the org-rooted pairs appear only at h≥4 — and they carry the high correlation:
+
+| hop | content-rooted | org-rooted |
+|---|---|---|
+| 1–2 | +0.20, +0.23 | — |
+| 4 | +0.09 (n=27) | +0.89 (n=13) |
+| 5 | +0.08 (n=18) | +0.75 (n=22) |
+
+**⇒ the "co-occurrence rises with depth" was the ORG layer, not the hierarchy.** On the **content** hierarchy `corr`
+runs +0.2 (shallow) → +0.08 (deep) — *decreasing*: adjacent concepts are both nested & associated, deep content
+ancestors decouple toward purely-directional. The rise came entirely from org-rooted pairs (root = a broad bucket,
+where a concept is *weakly* directional *and* lateral, so both fire). Root-anchoring (content→map-root, drop the org
+layer) is the reliable signal — and it does NOT show the strong heteroscedasticity the confounded read suggested.
+A fully trustworthy SimpleMind correlation-vs-hop needs **re-sampling within-map on the deduped graph + re-scoring**
+(deferred — a scoring run); `gen_mindmap_lineage.py` now canonicalises keys so the duplicates don't recur.
+
 ## Caveats & next
 - **h=1 Wikipedia is the wrong regime for the cross term.** D↔S *anti*-correlate here (compete); the *positive
   co-occurrence* that would exercise a conditional cross-term appears at **deep hops** / concept graphs
