@@ -140,7 +140,15 @@
     i8*,                                   ; 0: functor (malloc'd name copy)
     i32,                                   ; 1: arity
     i32,                                   ; 2: live (1=present, 0=retracted)
-    %Value*                                ; 3: args (malloc'd, arity cells)
+    %Value*,                               ; 3: args (malloc'd, arity cells)
+    %Value,                                ; 4: body (durable goal term for a
+                                           ;    rule; Unbound sentinel = fact)
+    i32                                    ; 5: nvars (distinct clause variables;
+                                           ;    0 = ground. Durable vars are stored
+                                           ;    as Ref values whose payload is the
+                                           ;    var INDEX, instantiated to fresh
+                                           ;    heap cells per call to preserve
+                                           ;    head<->body sharing)
 }
 
 ; One frame of the process-global catch/3 side stack (see PLAWK_DYNAMIC_DB.md

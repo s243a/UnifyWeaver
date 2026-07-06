@@ -198,10 +198,13 @@ independently useful (richer hand-written grammars load sooner).
    unification and backtracking through an `agg_type = -3` choice point), and
    PR 2 makes **direct** calls (`counter(N)`, not just `call(counter(N))`) reach
    it by rewriting them to `call/1` at compile time, plus **nondet `retract/1`**
-   as an `agg_type = -4` remove+unify+backtrack iterator. Works in loaded
-   objects — the store is process-global. See **PLAWK_DYNAMIC_DB.md**.
-   Remaining there: rule bodies (`assertz((H :- B))`, PR 3) and `call/N`
-   partial-application consult.
+   as an `agg_type = -4` remove+unify+backtrack iterator. PR 3 adds **rule
+   bodies** (`assertz((H :- B))`): a var-preserving clause copy (head↔body
+   variable sharing, fresh vars per call) plus a deterministic body interpreter
+   handling `,`/2, builtins, and predicate calls (including nested rules).
+   Works in loaded objects — the store is process-global. See
+   **PLAWK_DYNAMIC_DB.md**. Remaining there: `;`/`->`/`!` and cross-goal
+   backtracking in bodies, retract of rules, and `call/N` partial application.
 
    **`catch`/`throw` (milestone 3c) — landed.** A process-global side stack of
    catch frames (`@wam_catch_setup` / `@wam_throw`, reset per top-level query in
@@ -217,10 +220,11 @@ independently useful (richer hand-written grammars load sooner).
    **Remaining:** a minor loadable-subset gap — `arg/3` with a constant index
    compiles to a specialised `arg` opcode outside the `.wamo` subset (so loaded
    objects decompose reader terms via unification / `functor/3`, not `arg/3`) —
-   a candidate subset lift; and PR 3 for the dynamic store (rule bodies). The
-   **reader is done**, the **dynamic store** gives a grammar mutable state, and
-   **catch/throw** gives it error handling — the runtime-primitive layer for the
-   eval surface (milestone 5) is now essentially complete.
+   a candidate subset lift. The **reader is done**, the **dynamic store** (facts
+   AND rule bodies) gives a grammar mutable state, **catch/throw** gives it
+   error handling, and the **eval pipeline** loads+runs emitted bytes — the
+   runtime-primitive layer for the eval surface is complete; only milestone 6
+   (a real compiler grammar, self-host) remains.
 
    (Aside: `findall(X, call(G), L)` — an aggregate over a `call/1` meta-call
    goal — is now fixed. It used to collect nothing: the tier-2 compiler
@@ -285,9 +289,10 @@ independently useful (richer hand-written grammars load sooner).
   1). If the eval loop becomes hot, a real switch-table in the loader is a
   later optimization — the format already carries the switch operands we
   currently drop.
-- **Milestones 1–5 have landed** (3b-db PR 3, rule bodies, is the one open
-  runtime item); milestone 6 is self-host. The reader (3b), byte-buffer output
-  (4), dynamic store + catch/throw (3b-db/3c), and the eval pipeline (5) mean a
-  loaded object can parse source text into terms, keep mutable state, handle
-  errors, emit assembled bytes, and load+run those bytes in the same process —
-  the whole eval loop, wanting only a real compiler grammar to fill it (6).
+- **Milestones 1–5 have landed, and the dynamic store is complete through rule
+  bodies (3b-db PR 3);** milestone 6 is self-host. The reader (3b), byte-buffer
+  output (4), dynamic store incl. rule bodies + catch/throw (3b-db/3c), and the
+  eval pipeline (5) mean a loaded object can parse source text into terms, keep
+  mutable state (facts and rules), handle errors, emit assembled bytes, and
+  load+run those bytes in the same process — the whole eval loop, wanting only
+  a real compiler grammar to fill it (6).
