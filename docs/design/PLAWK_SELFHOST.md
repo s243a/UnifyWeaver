@@ -286,13 +286,26 @@ writer for `pconj(R) :- Y = 42, R = Y` (Y a temporary shared across both goals),
 and end to end (`tests/test_wam_object.pl:selfhost_codegen_stage_c_conjunction`):
 compiles from source and runs to `42`.
 
-**Still to do in Stage C (follow-on):** runtime arithmetic — `is/2` where an
-operand is a variable (`Y is X + 1`) builds the expression term on the heap
-(`put_structure` + a functor table, `NF > 0`) and calls `builtin_call is/2`;
-and non-tail predicate calls (`call` + `proceed`) with a permanent holding the
-result across the call, plus multi-argument argument setup. These extend the
-same allocator with `put_structure`/`call` and the functor-table section of the
-serializer.
+**Runtime arithmetic — LANDED.** `cgarith/2` extends the conjunction compiler
+with `Var is BinExpr` goals. A binary expression `op(A,B)` builds a compound on
+the heap: `put_structure op/2` into A2 (op1 = **functor-table index**, reloc 2),
+then `set_value` (a variable operand) / `set_constant` (an integer operand) per
+arg, then `builtin_call is/2` (id 0). The functor names used across the clause
+are collected into the object's **functor table** (`NF > 0`), emitted by a
+functor-aware serializer (`wzf_serialize`); `put_structure`'s op1 references a
+functor by index, which the loader relocates to the object's own functor
+pointer. Reuses the cgconj register allocator. Verified byte-identical to the
+host writer for `ca(R) :- X is 6*7, R = X` — which combines conjunction, a
+shared temporary, arithmetic, and unification — and end to end
+(`tests/test_wam_object.pl:selfhost_codegen_stage_c_arithmetic`): both
+constant-operand (`6*7`) and variable-operand (`R is A+B` after `A=40, B=2`)
+forms compile from source and run to `42`.
+
+**Still to do in Stage C (follow-on):** non-tail predicate calls (`call` +
+`proceed`) with a permanent holding the result across the call, and nested
+arithmetic expressions (recursive `put_structure`). These extend the same
+allocator; the serializer (labels + functor table) already covers what they
+emit.
 
 **Deliverable:** the compiler handles the clause shapes a small hand-written
 grammar uses — the point at which "compile a grammar at runtime from source"
