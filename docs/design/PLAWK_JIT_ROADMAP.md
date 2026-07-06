@@ -344,8 +344,15 @@ loadable along the way.
   `@wam_object_call_bytes` (`{ptr, len, ok}`). No new target IR — it composes
   existing primitives. This is the path the `eval`/`compile` surface hands
   assembled `.wamo` text back across.
-- **Milestones 5–6** (the `eval`/`compile` surface, self-host) — see the
-  bootstrap doc.
+- **Milestone 5 — eval/compile pipeline — LANDED (runtime).**
+  `@wam_object_eval` chains the compiler run (`@wam_object_call_bytes` on a
+  source arg) into `@wam_object_load_bytes`, so a grammar's emitted `.wamo`
+  bytes load and run in the same process; `@wam_object_load_cached` lazy-loads
+  and memoizes the compiler object (the `DYNCACHE` role). Verified end to end
+  with a stand-in (echo) compiler: source text → emitted bytes → load → run →
+  `42`. A real source-to-bytecode compiler is milestone 6.
+- **Milestone 6** (self-host) — compile the actual WAM compiler to a `.wamo`
+  and run the whole pipeline from source text end to end. See the bootstrap doc.
 
 ## The binary-return question, specifically
 
