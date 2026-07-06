@@ -147,6 +147,14 @@ holds **79% at h=8**, p^h 66%, both far above chance. `prod` (no transitive trai
 deep hop** (79 vs 66% at h=8): the graph-native mean-reverting/root-converging target teaches a *more robust*
 deep-hop direction than the exponential `p^h`, and needs no second model to define it.
 
+**DECISION (user 2026-07-05): the WALK target is the graph side of the transitive superposition.** The deciding
+reason is *architectural, not the accuracy margin*: the walk needs **only the graph** — the same definition on
+every corpus — so it **avoids the "which model/embedding measures effective distance?" question** that §(d)'s
+effective-h forces (pick an embedding, verify it separates hops on that corpus — e5 barely does past ~3 hops here,
+§d — then re-tune). §(d) effective-h and the `p^h` rule (§c) are demoted to **deferred alternatives** kept for
+comparison. (The walk-beats-p^h deep-hop margin is single-seed and a bonus; the decision stands on self-sufficiency
++ the confirmed direction floor.)
+
 ## Takeaways
 - The discrimination operator as trained is **direct-membership** (μ collapses by h=3); transitive `p^h` behaviour
   is a **design target requiring explicit training**, with p a measurable per-source leakage base (≈0.88 here).
