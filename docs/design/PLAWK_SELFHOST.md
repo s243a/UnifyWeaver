@@ -228,16 +228,27 @@ byte-identity check runs in SWI and the loaded check asserts load-and-run. Worth
 noting because a milestone-4 byte output that legitimately ends in `\n` would
 lose it; a candidate fix if that ever matters.
 
-### Stage B — minimal codegen for one clause shape
+### Stage B — minimal codegen for one clause shape — *LANDED*
 
-Add `clause_to_instrs/3` for the smallest useful subset: a single fact or a
-single-goal body that binds the head arg to a constant or an arithmetic
-result — `p(R) :- R = 42`, `p(R) :- R is 6 * 7`. Front end is the existing
-reader. Test end to end: `compile("p(R) :- R is 6*7", W)` inside a loaded
-compiler object → `@wam_object_eval` → run → `42`.
+`cgcompile/2` is a real compiler grammar (the eval-pipeline `compile(Src,Wamo)`
+entry): it parses `Src` with the runtime reader (`read_term_from_atom/2`), walks
+the clause to an instruction list (`clause_to_instrs/3`), and hands it to the
+Stage A serializer (`wz_serialize/8`). The loadable subset: a one-argument
+clause whose body binds the head variable to an integer, either directly
+(`p(R) :- R = 42`) or by evaluating a ground arithmetic expression
+(`p(R) :- R is 6*7`). Both lower to `[get_constant(V,A1), proceed]` — the golden
+shape from Stage A, parameterized by the value `V` (`= N` binds `N`; `is Expr`
+evaluates `Expr` in the grammar). `body_int/2` dispatches on the body's functor
+(`=/2` vs `is/2`) — the exact tagged-dispatch shape the get_structure functor
+check made correct. No constant-index `arg/3` (the known subset gap): `functor/3`
+gives the predicate name and `body_int/2` the value.
 
-**Deliverable:** source text → `.wamo` → run, for one clause shape,
-end to end through the eval pipeline.
+**Deliverable — done:** source text → `.wamo` → run, end to end through
+`@wam_object_eval`. Verified (`tests/test_wam_object.pl:selfhost_codegen_stage_b`):
+both `p1(R) :- R = 42` and `p1(R) :- R is 6*7` compile from source text inside a
+loaded compiler object and run to `42`. Codegen logic also checked byte-identical
+to the host writer's golden `.wamo`. This is the first source→bytecode compile:
+reader + codegen + serializer composed into one loadable object.
 
 ### Stage C — multi-goal bodies and predicate calls
 

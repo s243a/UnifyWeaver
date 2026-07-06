@@ -359,14 +359,16 @@ loadable along the way.
   compiler), run through the existing `@wam_object_eval` pipeline. The key
   enabler: `.wamo` is a **text** format, so emitting it is string assembly —
   already proven loadable in milestone 4. Staged: **(A) a `.wamo` serializer in
-  the subset — LANDED** (runs as a loaded object, emits a valid 42-returning
-  `.wamo` byte-identical to the host writer's golden, loads+runs end to end via
-  `@wam_object_eval`); (B) minimal codegen for one clause shape, end to end;
-  (C) multi-goal bodies + predicate calls; (D) widen toward the compiler's own
-  subset — the self-host fixpoint. Stage A also surfaced two loaded-runtime
-  limitations to fix before Stage C (a 64-register-file ceiling that corrupts
-  memory for large clauses; a multi-way functor-dispatch anomaly for ≥4 tagged
-  clauses). See [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
+  the subset — LANDED**; **(B) minimal codegen for one clause shape — LANDED**
+  (`cgcompile/2` parses source text with the reader, walks the clause to
+  instructions, and serializes; `p(R) :- R = 42` and `p(R) :- R is 6*7` compile
+  from source and run to `42` end to end via `@wam_object_eval` — the first
+  source→bytecode compile); (C) multi-goal bodies + predicate calls; (D) widen
+  toward the compiler's own subset — the self-host fixpoint. Stage A surfaced two
+  loaded-runtime bugs, **both since fixed** (a 64-register-file ceiling that
+  corrupted memory for large clauses; `get_structure` not comparing the functor),
+  so large clauses and tagged-union dispatch both work now. See
+  [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
 
 ## The binary-return question, specifically
 

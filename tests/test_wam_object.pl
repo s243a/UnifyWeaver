@@ -301,6 +301,40 @@ wz_row(T, O1, O2, R, A0, A5) :-
     number_codes(T, Tc), append(A0, Tc, A1),
     wz_si(O1, A1, A2), wz_si(O2, A2, A3), wz_si(R, A3, A4), append(A4, [10], A5).
 
+% Milestone 6 (self-host) Stage B: minimal CODEGEN -- source text to a .wamo,
+% end to end. cgcompile/2 is the eval-pipeline entry compile(Src,Wamo): it
+% parses Src with the runtime reader (read_term_from_atom/2, milestone 3b),
+% walks the clause to an instruction list (clause_to_instrs/3), and hands it to
+% the Stage A serializer (wz_serialize/8). The loadable subset for now: a
+% one-argument clause whose body binds the head variable to an integer, either
+% directly (`p(R) :- R = 42`) or by evaluating a ground arithmetic expression
+% (`p(R) :- R is 6*7`). Both lower to [get_constant(V,A1), proceed] -- the
+% golden shape from Stage A, parameterized by the computed value V.
+%
+% body_int/2 dispatches on the body's functor (=/2 vs is/2); this is exactly
+% the tagged first-argument dispatch that the get_structure functor-check fix
+% made correct in loaded objects. No constant-index arg/3 (the known subset
+% gap) -- functor/3 gives the predicate name and body_int gives the value.
+cgcompile(Src, Wamo) :-
+    read_term_from_atom(Src, Clause),
+    clause_to_instrs(Clause, Instrs, NameCodes),
+    wz_serialize(0, NameCodes, 0, 0, 0, [0], Instrs, Codes),
+    atom_codes(Wamo, Codes).
+
+clause_to_instrs((Head :- Body), Instrs, NameCodes) :-
+    body_int(Body, V),
+    functor(Head, Pred, Arity),
+    pred_name_codes(Pred, Arity, NameCodes),
+    % get_constant(V, A1): tag 0, op1 = V, op2 = (Integer-tag 1 << 16)|reg A1(0).
+    Instrs = [enc(0, V, 65536, 0), enc(20, 0, 0, 0)].
+
+body_int((_ = V), V)     :- integer(V).
+body_int((_ is Expr), V) :- V is Expr.
+
+pred_name_codes(Pred, Arity, Codes) :-
+    atom_codes(Pred, PC), number_codes(Arity, AC),
+    append(PC, [0'/ | AC], Codes).
+
 % Register-file ceiling regression: manyperm/1 has 20 variables all live
 % across the mp_barrier call, so the compiler assigns them Y1..Y20. Before
 % the register file was enlarged from [64 x %Value] to [128 x %Value], Y17+
@@ -901,6 +935,33 @@ test(selfhost_serializer_stage_a, [condition(clang_available)]) :-
     process_wait(Pid, exit(Status)),
     assertion(Status == 0),
     assertion(Out == "42\n"),
+    !.
+
+% Milestone 6 (self-host) Stage B: minimal codegen, source text to a running
+% object end to end. cgcompile/2 is a REAL compiler grammar: it parses the
+% source clause with the runtime reader, walks it to instructions, and
+% serializes a .wamo. Hand it to the eval host as the "compiler"; for each
+% source, @wam_object_eval runs cgcompile on the text, loads the .wamo it
+% emits, and runs the result -> 42. Exercises both body forms (= and is) --
+% the reader, the =/2-vs-is/2 functor dispatch, ground arithmetic evaluation,
+% and the serializer, composed into the first source->bytecode compile.
+test(selfhost_codegen_stage_b, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgcompile.wamo', CompWamo),
+    write_wam_object([user:cgcompile/2], [wamo_entry(cgcompile/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    forall(member(Source, ['p1(R) :- R = 42', 'p1(R) :- R is 6*7']),
+        ( directory_file_path(Dir, 'cg_src.txt', SrcPath),
+          setup_call_cleanup(open(SrcPath, write, S0),
+              write(S0, Source), close(S0)),
+          process_create(Host, [CompWamo, SrcPath],
+              [stdout(pipe(S)), stderr(std), process(Pid)]),
+          read_string(S, _, Out),
+          close(S),
+          process_wait(Pid, exit(Status)),
+          assertion(Status == 0),
+          assertion(Out == "42\n") )),
     !.
 
 % Register-file ceiling fix: a clause with 20 permanent variables (Y1..Y20)
