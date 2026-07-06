@@ -5,6 +5,11 @@ non-graph side is the deferred piece now built: the LLM scores multi-hop pairs *
 supplying element/subcategory transitive membership; the graph side is the walk hit-prob. 2026-07-05, branch
 `claude/transitive-superposition`.*
 
+> **⚠ Read the numbers with these caveats (review):** all magnitudes are **single-seed** on **250 LLM-scored
+> pairs (h≤5)**. The LLM OUGHT signal exists **only to h=5** — so every h≥6 row in §2 is an **extrapolation
+> regime** where one blend component was trained to zero. The walk-vs-superpos *margins* are single-seed and want
+> multi-seed before quantitative use; the qualitative direction of each effect is the finding.
+
 ## (1) VALIDATION — does the LLM's direct transitive judgment match the graph models?
 250 multi-hop pairs (50 chains × h=1..5) scored by gpt-5.5-low (element_of / subcategory, mu_fwd & mu_rev):
 
@@ -15,6 +20,9 @@ supplying element/subcategory transitive membership; the graph side is the walk 
 | 3 | 0.500 | 0.096 | 0.002 | 0.223 | 0.729 |
 | 4 | 0.360 | 0.121 | 0.000 | 0.185 | 0.656 |
 | 5 | 0.263 | 0.109 | 0.000 | 0.185 | 0.590 |
+
+*(The walk hit-prob plateaus at 0.185 for h=4 and h=5 — a branching-factor floor in this 50-chain sample, not a
+bug: at depth the up-walk from these descendants converges onto the same near-root ancestors.)*
 
 - **Transitive membership is real and continuous** — the LLM rates a grandchild ~0.60 a *subcategory* of the
   grandparent, decaying smoothly 0.77→0.26. Judging multi-hop pairs directly works (no math composition needed).
@@ -35,7 +43,12 @@ supplying element/subcategory transitive membership; the graph side is the walk 
 | 2 | 0.284 / 99% | 0.522 / 96% |
 | 3 | 0.153 / 99% | 0.253 / 92% |
 | 5 | 0.054 / 95% | 0.061 / 70% |
-| 8 | 0.028 / 81% | 0.018 / 36% |
+| *— beyond h=5: LLM OUGHT signal = 0 (extrapolation regime) —* | | |
+| 8 | 0.028 / 81% | 0.018 / **36%\*** |
+
+*\* h≥6 is OUT of the LLM's scoring horizon (h≤5) — the superposition's OUGHT component is extrapolated to zero
+there, so the 36% is partly "no OUGHT signal," not purely the blend failing. Do not cite it as the blend's h=8
+performance without that qualifier.*
 
 - **The OUGHT raises forward magnitude** at mid-hops (0.52 vs 0.28 @h2) — the blend is more semantically calibrated
   (the LLM thinks membership is stronger than the branch-diluted walk does).

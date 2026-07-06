@@ -33,7 +33,8 @@ the **Hessian** `−Cov(φ)` is the feature COVARIANCE — the `φᵢφⱼ` oute
 | joint distribution | + off-diagonal `σᵢⱼ` (the products) | — | needs a head + calibration + both judges as features |
 
 The joint SUBSUMES the others (recovers them if the data supports it) and is the only rung that survives
-**correlated** judges (`e5↔graph ≈ +0.75`): the off-diagonal it keeps is exactly the term linear/PoE throw away.
+**correlated** judges (`e5↔graph/model ≈ +0.75`, measured in the JointPosterior work #3359 on the μ-readout
+vector — worth re-measuring per corpus): the off-diagonal it keeps is exactly the term linear/PoE throw away.
 Superposition (`⊕`, a sum) cannot represent an interaction (`⊗`, a product) — correlation is rank-2, it lives in `⊗`.
 
 ## Soft constraints = Mahalanobis fusion (the second-order structure IS a Lagrangian penalty)
@@ -44,13 +45,28 @@ is to **stop double-counting** correlated evidence — the over-confidence we hi
 weights. The same applies to OPERATOR correlations: `subcat↔element` anti-correlation is a mutual-exclusion soft
 constraint on the operator simplex.
 
-**Constraints must be SOFT, and crossing them is the mechanism, not a failure** (user): the correlation is itself
+**Some constraints are SOFT, and crossing them is the mechanism, not a failure** (user): a *sampled correlation* is
 estimated from a churning, randomly-sampled corpus, so it has a standard error. A hard constraint overfits the
 sample; the soft one is regularized, its stiffness tracking estimation/transfer certainty. The local likelihood
 should *cross* it where domains genuinely diverge — and the stochastic minibatch churn makes the fit orbit the
 boundary, enforcing it in expectation, not instantaneously.
 
-## The diffusion data (P(op | d), applies-mass vs hop h; 40–50 pairs/hop, gpt-5.5-low)
+**But not every constraint is soft — distinguish them (review):** `μ_rev = 0` is *not* a sampled correlation; it is
+a **structural identity** (up-walks can't descend, `μ_rev=0` by construction) **independently confirmed by the LLM**
+(0.007→0.000 at every hop). Two judges agreeing on a structural fact is a **hard** constraint — softening it just
+adds a free parameter the optimizer can abuse to trade direction for magnitude on the reverse (the very `1−p^h`
+failure the OUGHT refuted). Enforce it as a clamp/equality, not a penalty.
+
+| constraint | type | why |
+|---|---|---|
+| `μ_rev = 0` | **HARD** | structural (graph) + LLM-confirmed at every hop; no domain variance ⇒ clamp |
+| `directional↔symmetric` off-diagonal | soft | corpus-estimated (SimpleMind ≠ Wikipedia), transferable-as-prior, crossable |
+| `subcat↔element` anti-correlation | soft | corpus-dependent, crossable |
+
+## The diffusion data (relation MASS vs hop h; 40–50 pairs/hop, gpt-5.5-low)
+*These are **summed `applies`-mass over a relation GROUP** (e.g. `subcat + subtopic`), not a single probability —
+fuzzy memberships need not sum to 1, so a group's mass can exceed 1.0. Read them as `Σ_op∈group P(op|d)`, i.e. the
+shape of the diffusion, not calibrated probabilities.*
 | corpus | | h1 | h2 | h3 | h4 | h5 |
 |---|---|---|---|---|---|---|
 | SimpleMind | directional (sub+subtop) | 0.99 | 0.72 | 0.75 | 0.62 | 0.51 |
@@ -128,15 +144,33 @@ handles the quadratic count natively instead of enumerating features. **First bu
 pseudo-judges) to validate the correlation term cheaply; then the operator-attention head as the architectural
 realization if it earns it.
 
+**Two caveats for the attention form (review):**
+- **`W` symmetry.** The GLM's `μ_D·μ_S` is symmetric, so it estimates a proper (symmetric PSD) covariance. A *learned*
+  `W` in `μ_Dᵀ W μ_S` is not symmetric in general (`μ_Dᵀ W μ_S ≠ μ_Sᵀ W μ_D`), which is *more expressive but loses
+  the Mahalanobis/covariance interpretation*. Choose deliberately: constrain `W = (W+Wᵀ)/2` (or `W = LLᵀ`) to keep
+  the statistical reading, or allow asymmetry and treat it as a general bilinear head (expressivity over
+  interpretability). For the k=2 GLM first build this is moot; it matters only for the attention realization.
+- **The pseudo-judges are ENDOGENOUS (feedback loop).** In the student, `μ_D², μ_S², μ_D·μ_S` are computed from the
+  student's OWN operator readouts, not the teacher's — so as fine-tuning updates the readouts, the pseudo-judge
+  *inputs* shift with the model's *outputs*. Static one-shot distillation (readouts precomputed/frozen) is benign;
+  live fine-tuning is a self-referential loop that can destabilise. **Recommendation: freeze the operator readouts
+  when computing pseudo-judge features during distillation** (or add them as a late, low-LR head), and only unfreeze
+  once the main effects have settled.
+
 ## Deployment: teacher/student
 The joint `P(op | d, LLM_op)` needs `LLM_op` as a LIVE feature — expensive. So: **teacher** = the joint posterior
 (LLM in the loop, offline label-maker); **student** = the model distilled on the FREE features (e5 readouts + `d` +
 interaction pseudo-judges), superposition-style, for LLM-free serving. Joint-posterior quality, linear-deploy cost.
 This also bounds how much LLM scoring we need — only enough to fit the teacher.
 
-## Open questions / next
-- Is `d` the walk hit-prob everywhere (needs multi-parent — Pearltrees) or hops-on-trees (SimpleMind) / walk-on-DAGs?
-- Full non-parametric teacher vs a 2nd-order GLM with cartesian-product features (cheaper, interpretable — read off
-  which pseudo-judges carry weight). Lean GLM-with-interactions.
-- Fit the off-diagonal at Wikipedia scale; carry it as a constraint pseudo-judge to SimpleMind/Pearltrees.
-- Revisit whether the LLM over-assigns `assoc` to mindmap concepts (user's dispute) — a judge-calibration question.
+## Open questions / next (rough priority)
+- **[first build]** k=2 GLM: fit `P({D,S} | d, LLM_op)` with the 3 pseudo-judges at Wikipedia scale (where `n`
+  supports the cross-term), `μ_rev=0` clamped hard, held-out log-loss as the metric.
+- **[blocker for the continuous-`d` story]** Is `d` the walk hit-prob everywhere (needs multi-parent — Pearltrees)
+  or hops-on-trees (SimpleMind) / walk-on-DAGs? SimpleMind's tree makes `d` an integer (walk binary) — so Pearltrees
+  is where `d` earns its keep as a continuous judge.
+- **[design decision]** Full non-parametric teacher vs the 2nd-order GLM with cartesian-product features (cheaper,
+  interpretable). Lean GLM-with-interactions.
+- **[after first build]** Carry the fitted off-diagonal as a constraint pseudo-judge (soft prior) to SimpleMind/Pearltrees.
+- **[deferred, separate]** Revisit whether the LLM over-assigns `assoc` to mindmap concepts (user disputes the LLM
+  here) — a judge-calibration question, not a blocker for the posterior build.
