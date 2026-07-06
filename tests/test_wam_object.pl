@@ -288,6 +288,23 @@ wz_row(T, O1, O2, R, A0, A5) :-
     number_codes(T, Tc), append(A0, Tc, A1),
     wz_si(O1, A1, A2), wz_si(O2, A2, A3), wz_si(R, A3, A4), append(A4, [10], A5).
 
+% Register-file ceiling regression: manyperm/1 has 20 variables all live
+% across the mp_barrier call, so the compiler assigns them Y1..Y20. Before
+% the register file was enlarged from [64 x %Value] to [128 x %Value], Y17+
+% mapped to array index 64+ and wrote past the register array into adjacent
+% %WamState fields -> memory corruption / segfault in loaded objects (and
+% AOT). With the fix Y1..Y48 (48..95) have real backing; this must run to
+% 1+2+...+20 = 210.
+manyperm(R) :-
+    N1 is 1, N2 is 2, N3 is 3, N4 is 4, N5 is 5,
+    N6 is 6, N7 is 7, N8 is 8, N9 is 9, N10 is 10,
+    N11 is 11, N12 is 12, N13 is 13, N14 is 14, N15 is 15,
+    N16 is 16, N17 is 17, N18 is 18, N19 is 19, N20 is 20,
+    mp_barrier,
+    R is N1+N2+N3+N4+N5+N6+N7+N8+N9+N10
+       + N11+N12+N13+N14+N15+N16+N17+N18+N19+N20.
+mp_barrier.
+
 % Milestone 3b-db PR 3: rule bodies. assertz((H :- B)) stores a rule; calling
 % its head runs the body (deterministic first solution). Bodies handle ,/2,
 % builtins (is/2, comparisons, =/2), and predicate calls; head<->body variable
@@ -854,6 +871,19 @@ test(selfhost_serializer_stage_a, [condition(clang_available)]) :-
     process_wait(Pid, exit(Status)),
     assertion(Status == 0),
     assertion(Out == "42\n"),
+    !.
+
+% Register-file ceiling fix: a clause with 20 permanent variables (Y1..Y20)
+% loads and runs. Before enlarging the register file to [128 x %Value], Y17+
+% overflowed the 64-slot array and corrupted memory. Must yield 210.
+test(register_file_many_permanents, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    directory_file_path(Dir, 'manyperm.wamo', W),
+    write_wam_object([user:manyperm/1], [wamo_entry(manyperm/1)], W),
+    run_host(Host, W, Out, 0),
+    assertion(Out == "210\n"),
     !.
 
 % Milestone 3b-db PR 3: rule bodies in a loaded object. asserted (H :- B)

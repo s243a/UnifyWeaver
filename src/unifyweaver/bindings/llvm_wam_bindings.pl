@@ -66,14 +66,14 @@ llvm_wam_type_map(wam_state, '%WamState*').
 % ============================================================================
 
 %% reg_name_to_index(+Name, -Index)
-%  Maps WAM register names to fixed array indices in the [64 x %Value] array.
+%  Maps WAM register names to fixed array indices in the [128 x %Value] array.
 %  Register ABI (M10): disjoint X and Y windows so a callee clause
 %  without `allocate` cannot corrupt the caller's permanent vars by
 %  writing to a "temporary" with the same slot index.
 %
 %    A1..A16  -> 0..15   (argument registers, caller-saved)
 %    X1..X32  -> 16..47  (temporaries, do not survive calls in canonical WAM)
-%    Y1..Y16  -> 48..63  (permanents, snapshotted by allocate)
+%    Y1..Y48  -> 48..95  (permanents, snapshotted by allocate; 96..127 slack)
 %
 %  Pre-M10 used X1..X48 -> 16..63 AND Y1..Y48 -> 16..63 (same slots).
 %  A callee clause with no allocate would write to e.g. X1=slot 16,
@@ -82,9 +82,15 @@ llvm_wam_type_map(wam_state, '%WamState*').
 %  exactly when it was about to be used. The disjoint layout makes
 %  this category of bug impossible.
 %
-%  Trade-off: callers limited to Y16 permanents and X32 temporaries
-%  per clause. Existing tests fit (max X seen in the corpus is X11
-%  on an 8-element list build; Y rarely exceeds Y4).
+%  The register file was [64 x %Value] with Y limited to Y16 (48..63):
+%  a clause needing >16 permanents assigned Y17+ -> index 64+, writing
+%  past the register array into the adjacent %WamState fields (memory
+%  corruption). Enlarged to [128 x %Value] so the full Y1..Y48 window
+%  has real backing; the allocate/deallocate snapshot copies 48 Values
+%  (768 bytes, matching the [48 x %Value] env y_save). Y1..Y16 map to
+%  the same slots as before, so existing behavior is unchanged. Trade-off:
+%  callers now limited to Y48 permanents and X32 temporaries per clause;
+%  the compiler errors if a clause exceeds Y48 rather than corrupting.
 reg_name_to_index(Name, Index) :-
     atom_string(Name, Str),
     (   string_concat("A", NumStr, Str)

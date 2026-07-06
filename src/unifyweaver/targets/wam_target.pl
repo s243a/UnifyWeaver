@@ -1538,12 +1538,20 @@ pre_assign_permanent_vars(Goals, vmap(Bindings, X), vmap(NewBindings, XOut)) :-
     find_permanent_vars(GoalVarSets, PermVars),
     reassign_to_yi(Bindings, PermVars, 1, ReassignedBindings, NextY),
     pre_bind_unbound_yi(PermVars, ReassignedBindings, NextY, NewBindings),
-    %% Bump the X register counter past all allocated Yi indices.
-    %% Yi and Xi share the same register-file range (both map to
-    %% N + 31 in reg_name_to_index), so a subsequent next_x_reg
-    %% must not hand out an Xi that collides with an allocated Yi.
+    %% M10: Xi and Yi occupy DISJOINT register-file windows (X1..X32 ->
+    %% 16..47, Y1..Y48 -> 48..95 in reg_name_to_index), so the X counter is
+    %% independent of the Yi indices -- no bump needed (the pre-M10 shared
+    %% layout required one). Guard the Y window instead: a clause needing
+    %% more than Y48 permanents would assign Y49+ -> index 96+, overflowing
+    %% the [128 x %Value] register file. Fail with a clear error rather than
+    %% emit a corrupting index.
     max_yi_index(NewBindings, 0, MaxY),
-    XOut is max(X, MaxY + 1).
+    (   MaxY > 48
+    ->  throw(error(wam_too_many_permanent_vars(MaxY, 48),
+                    context(pre_assign_permanent_vars/3, _)))
+    ;   true
+    ),
+    XOut = X.
 
 %% max_yi_index(+Bindings, +Acc, -Max)
 %  Finds the highest Y-register number among b(_, Yi) and y_alloc(_, Yi)
