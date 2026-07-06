@@ -40,28 +40,27 @@ So the essential second-order move is **joint modeling** (a multinomial over the
 interaction feature. Restated on the ladder: product-of-marginals (independent) → **joint (captures unconditional
 correlation) = the win** → +cross (captures conditional correlation = data-dependent, not needed here).
 
-## The cross term is HOP-CONDITIONAL — measured (2026-07-06)
-The cross pseudo-judge is the QDA/heteroscedastic term: it earns its keep only if `Cov(D,S)` **varies across the
+## Is the cross term ever justified? — NOT established (2026-07-06, bootstrap)
+The cross pseudo-judge is the QDA/heteroscedastic term: it earns its keep ONLY if `Cov(D,S)` **varies across the
 space** (LDA/linear suffices for a constant covariance — a Gaussian's score is linear, its correlation a single
-change of basis absorbed into linear weights). So the deciding check is whether `corr(D,S)` is a function of hops.
-It is (`corr(D,S)` on the LLM labels, threshold 0.3):
+change of basis absorbed into linear weights). Deciding check: does `corr(D,S)` vary with hop? **Point estimates
+looked like it did — but with 95% bootstrap CIs (n≈45/hop) they don't:**
 
-| hop | SimpleMind corr / BOTH% | Wikipedia corr / BOTH% |
+| | SimpleMind (per-hop → **pooled**) | Wikipedia (per-hop → **pooled**) |
 |---|---|---|
-| 1 | +0.24 / 68% | nan / 24% |
-| 2 | +0.22 / 55% | −0.31 / 28% |
-| 3 | +0.42 / 60% | −0.10 / 26% |
-| 4 | +0.26 / 38% | −0.18 / 6% |
-| 5 | +0.20 / 30% | +0.18 / 20% |
+| corr(D,S) | +0.24/+0.22/+0.42/+0.26/+0.20 → **+0.29 [+0.15,+0.43]** | −/−0.31/−0.10/−0.18/+0.18 → **−0.03 [−0.16,+0.09]** |
 
-- **Heteroscedastic in both** — `corr(D,S)` varies with hop, so the covariance is not constant ⇒ the cross term is
-  warranted *once hops are included* (the h=1-only fit above was a single, constant slice → LDA sufficed).
-- **Opposite SIGN by corpus** — SimpleMind: D & S **co-occur** (+corr, BOTH 30–68%; a concept is nested *and*
-  associated). Wikipedia: they **compete** (−corr, BOTH ≤28%). The first build measured Wikipedia h=1 (−0.19) — the
-  worst place to find a co-occurrence term.
-- **⇒ build the cross pseudo-judge on SimpleMind / a deliberate concept graph**, with the term **hop-conditional**
-  (`μ_D·μ_S` coupled to `d`), where the co-occurrence is strong and the correlation swings — the QDA regime the
-  h=1 linear fit could not exercise.
+- **Hop-variation is NOT significant** — every per-hop CI overlaps every other (they are ±0.3 wide). The apparent
+  swing was small-n noise; there is **no evidence the covariance is hop-conditional**, so the pseudo-judge is **not
+  yet justified**. (Earlier draft over-read the point estimates — corrected.)
+- **The real, significant signal is the CORPUS difference:** SimpleMind D & S genuinely **co-occur** (pooled +0.29,
+  CI excludes 0); Wikipedia is **indistinguishable from independent** (pooled −0.03, CI includes 0). The `1996`-style
+  "lateral drift ⇒ more correlation at depth" prior is **not** borne out (no significant hop trend).
+- **⇒ the separation trick (joint modelling) is doing the work, without the pseudo-judge.** Whatever correlation
+  exists (SimpleMind's real +0.29; Wikipedia's weak −0.19 at h=1) is CONSTANT enough to be captured **linearly** —
+  a single change of basis folded into the joint's weights. The cross pseudo-judge earns its keep only under
+  *significant* heteroscedasticity, which we do not observe. **Keep the separation trick; hold the pseudo-judge**
+  until a corpus shows a covariance that provably varies (would need more data/hop than n≈45 to detect).
 
 ## Caveats & next
 - **h=1 Wikipedia is the wrong regime for the cross term.** D↔S *anti*-correlate here (compete); the *positive
