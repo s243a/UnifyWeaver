@@ -23,9 +23,15 @@ joint +CROSS (μ_D·μ_S)        0.7107 ± 0.117
 ```
 
 ## Two findings
-1. **JOINT beats product-of-marginals (0.711 vs 0.761)** — the core claim of the design holds: the operators are
-   correlated and modeling them jointly captures what product-of-marginals (which forces `P(D,S)=P(D)P(S)`) throws
-   away. This reproduces the `mu_posterior` "joint > PoE" result specifically for the D/S operators.
+1. **JOINT beats product-of-marginals (0.711 vs 0.761) — but ONLY on BINARIZED labels.** The joint multinomial's
+   4-class structure captures the discrete D↔S **co-occurrence** rate that two independent logistics can't — a real
+   *binary-outcome* effect.
+   > **Continuous-μ check (review #3517):** does it hold *without* binarizing? **No.** On the continuous fuzzy μ,
+   > after a linear mean model `[μ_D,μ_S,d]`, the *residual* D↔S correlation is ~0 (the mean model already explains
+   > their relationship), so a joint bivariate-Gaussian (constant ρ) does NOT beat product-of-marginals: gain
+   > **−0.005, permutation p = 1.000**. So result #1 is a **discrete co-occurrence** effect, *not* a continuous
+   > residual-correlation one — it does not replicate on continuous μ. (The headline hop-conditional `Σ(hop)` result
+   > below *is* continuous and stands at permutation p=0.005 — a different, stronger claim about how `Σ` varies with hop.)
 2. **The explicit cross pseudo-judge (`μ_D·μ_S`) adds nothing** — the three joint rungs are identical within noise.
 
 ## What that refines in the design

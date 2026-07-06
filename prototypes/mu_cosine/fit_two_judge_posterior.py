@@ -117,6 +117,31 @@ def main():
     for k in rungs:
         v = np.array(scores[k]); print(f"{k:28s}  {v.mean():.4f} ± {v.std():.4f}")
 
+    # CONTINUOUS-μ check (review #3517): does JOINT beat product-of-marginals WITHOUT binarising? The headline above
+    # binarises D,S at 0.5 — which the PR's own later work showed can distort. Here: bivariate-Gaussian NLL of the
+    # CONTINUOUS (D_llm,S_llm) residuals, product (ρ=0) vs joint (constant ρ), node-disjoint, + permutation test.
+    from fit_hetero import biv_nll
+    def cont_gain(Sarr, nsplits):
+        gains = []
+        for s in range(nsplits):
+            rng = np.random.default_rng(a.seed + s); nd = list(nodes); rng.shuffle(nd); hn = set(nd[:int(0.25*len(nd))])
+            tr = np.array([i for i, (x, y) in enumerate(pairs) if x not in hn and y not in hn])
+            he = np.array([i for i, (x, y) in enumerate(pairs) if x in hn and y in hn])
+            if len(he) < 10 or len(tr) < 30:
+                continue
+            bD = np.linalg.lstsq(base[tr], D_llm[tr], rcond=None)[0]; bS = np.linalg.lstsq(base[tr], Sarr[tr], rcond=None)[0]
+            rD_h = D_llm[he] - base[he] @ bD; rS_h = Sarr[he] - base[he] @ bS
+            rD_t = D_llm[tr] - base[tr] @ bD; rS_t = Sarr[tr] - base[tr] @ bS
+            sD, sS = rD_t.std() + 1e-6, rS_t.std() + 1e-6; rho = np.corrcoef(rD_t, rS_t)[0, 1]
+            gains.append(biv_nll(rD_h, rS_h, sD, sS, 0.0).mean() - biv_nll(rD_h, rS_h, sD, sS, rho).mean())  # + = joint better
+        return np.mean(gains)
+    obs = cont_gain(S_llm, a.seeds); prng = np.random.default_rng(1); K = 200
+    null = np.array([cont_gain(S_llm[prng.permutation(len(pairs))], a.seeds) for _ in range(K)])
+    pval = (1 + np.sum(null >= obs)) / (K + 1)
+    print(f"\nCONTINUOUS-μ (no binarisation) — joint(ρ) − product(ρ=0) mean gain {obs:+.4f}; "
+          f"perm-null 95%ile {np.percentile(null, 95):+.4f}; p = {pval:.3f}  "
+          f"{'← joint HELPS on continuous too' if pval < 0.05 else '(not sig on continuous)'}")
+
 
 if __name__ == "__main__":
     main()
