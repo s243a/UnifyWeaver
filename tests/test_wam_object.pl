@@ -450,6 +450,76 @@ goals_instrs([G|Gs], Init0, Init, Is) :-
     goal_instrs(G, Init0, Init1, GIs),
     goals_instrs(Gs, Init1, Init, RestIs), append(GIs, RestIs, Is).
 
+% Milestone 6 (self-host) Stage C (arithmetic): runtime is/2. cgarith/2 extends
+% the conjunction compiler with `Var is BinExpr` goals -- e.g. `X is 6*7`. A
+% binary expression op(A,B) builds a compound term on the heap: put_structure
+% op/2 into A2 (op1 = functor-table index, reloc 2), then set_value (a variable
+% arg) / set_constant (an integer arg) for each operand, then builtin_call is/2
+% (id 0). Functor names used across the clause are collected into the object's
+% functor table (NF>0, emitted by the functor-aware serializer wzf_serialize).
+% Reuses the cgconj register allocator (operand_instr / head_args / is_init).
+% Verified byte-identical to the host writer for `ca(R) :- X is 6*7, R = X`,
+% which combines conjunction, a shared temporary, arithmetic, and unification.
+cgarith(Src, Wamo) :-
+    read_term_from_atom(Src, Clause),
+    numbervars(Clause, 0, _),
+    a_conj_instrs(Clause, NameCodes, Functors, Instrs),
+    wzf_serialize(0, NameCodes, 0, Functors, [0], Instrs, Codes),
+    atom_codes(Wamo, Codes).
+
+a_conj_instrs(Clause, NameCodes, Functors, Instrs) :-
+    clause_hb(Clause, Head, Goals),
+    functor(Head, Pred, Arity), pred_name_codes(Pred, Arity, NameCodes),
+    collect_functors(Goals, Functors),
+    head_args(Head, 1, Arity, [], Init1, HeadIs),
+    a_goals_instrs(Goals, Functors, Init1, _, GoalIs),
+    append([enc(16,0,0,0) | HeadIs], GoalIs, B0),
+    append(B0, [enc(17,0,0,0), enc(20,0,0,0)], Instrs).
+
+a_goals_instrs([], _, Init, Init, []).
+a_goals_instrs([G|Gs], FT, Init0, Init, Is) :-
+    a_goal_instrs(G, FT, Init0, Init1, GIs),
+    a_goals_instrs(Gs, FT, Init1, Init, RestIs), append(GIs, RestIs, Is).
+
+a_goal_instrs((L is Expr), FT, Init0, Init1, Is) :- !,
+    operand_instr(L, 0, Init0, Init1, LhsIs),   % LHS var -> A1
+    expr_build(Expr, FT, ExprIs),               % put_structure + set args -> A2
+    append(LhsIs, ExprIs, LE), append(LE, [enc(21, 0, 2, 0)], Is).   % builtin is/2
+a_goal_instrs((L = R), _FT, Init0, Init2, Is) :-
+    operand_instr(L, 0, Init0, Init1, IL), operand_instr(R, 1, Init1, Init2, IR),
+    append(IL, IR, LR), append(LR, [enc(21, 24, 2, 0)], Is).         % builtin =/2
+
+expr_build(Expr, FT, [PutS, SA, SB]) :-
+    Expr =.. [Op, A, B], functor_index(Op, FT, FIdx),
+    Op2 is (2 << 16) \/ 1,                       % arity 2, reg A2(1)
+    PutS = enc(11, FIdx, Op2, 2),                % put_structure, reloc functor
+    arg_set(A, SA), arg_set(B, SB).
+arg_set('$VAR'(N), enc(14, YIdx, 0, 0)) :- YIdx is 48 + N.   % set_value Y
+arg_set(V, enc(15, V, 1, 0)) :- integer(V).                   % set_constant integer
+functor_index(Op, [Op|_], 0) :- !.
+functor_index(Op, [_|T], I) :- functor_index(Op, T, I0), I is I0 + 1.
+
+collect_functors(Goals, FT) :- collect_f(Goals, [], FT).
+collect_f([], Acc, Acc).
+collect_f([G|Gs], Acc0, FT) :-
+    ( G = (_ is E), functor(E, Op, 2) -> add_unique(Op, Acc0, Acc1) ; Acc1 = Acc0 ),
+    collect_f(Gs, Acc1, FT).
+memberchk_op(Op, [Op|_]) :- !.
+memberchk_op(Op, [_|T]) :- memberchk_op(Op, T).
+add_unique(Op, Acc, Acc) :- memberchk_op(Op, Acc), !.
+add_unique(Op, Acc, Acc1) :- append(Acc, [Op], Acc1).
+
+% functor-aware serializer: like wz_serialize but emits the functor table
+% (NF + NF length-prefixed functor name strings) after the (empty) atom table.
+wzf_serialize(EI, NC, LI, Functors, PCs, Instrs, Out) :-
+    wz_a('WAMO', [], A1), wz_i(2, A1, A2), wz_i(EI, A2, A3), wz_i(1, A3, A4),
+    wz_n(NC, A4, A5), wz_i(LI, A5, A6), wz_i(0, A6, A7),          % NA = 0
+    length(Functors, NF), wz_i(NF, A7, A8), wz_funcs(Functors, A8, A9),
+    wz_pcs_sec(PCs, A9, A10), wz_instr_sec(Instrs, A10, A11), wz_i(0, A11, Out).
+wz_fname(F, A0, A1) :- atom_codes(F, Cs), wz_n(Cs, A0, A1).
+wz_funcs([], A, A).
+wz_funcs([F|Fs], A0, A2) :- wz_fname(F, A0, A1), wz_funcs(Fs, A1, A2).
+
 % Register-file ceiling regression: manyperm/1 has 20 variables all live
 % across the mp_barrier call, so the compiler assigns them Y1..Y20. Before
 % the register file was enlarged from [64 x %Value] to [128 x %Value], Y17+
@@ -1125,6 +1195,32 @@ test(selfhost_codegen_stage_c_conjunction, [condition(clang_available)]) :-
     process_wait(Pid, exit(Status)),
     assertion(Status == 0),
     assertion(Out == "42\n"),
+    !.
+
+% Milestone 6 (self-host) Stage C (arithmetic): runtime is/2 with put_structure.
+% cgarith/2 compiles "ca(R) :- X is 6*7, R = X" -- X is 6*7 builds *(6,7) on the
+% heap (put_structure + set_constant), calls builtin is/2, binds temporary X;
+% then R = X. Exercises the functor table (NF=1, functor "*"), put_structure
+% with a functor reloc, and is/2 -- combined with conjunction and register
+% allocation. Compiles from source in a loaded object and runs to 42.
+test(selfhost_codegen_stage_c_arithmetic, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgarith.wamo', CompWamo),
+    write_wam_object([user:cgarith/2], [wamo_entry(cgarith/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    forall(member(Source, ['ca(R) :- X is 6*7, R = X',
+                           'add(R) :- A = 40, B = 2, R is A+B']),
+        ( directory_file_path(Dir, 'cgarith_src.txt', SrcPath),
+          setup_call_cleanup(open(SrcPath, write, S0),
+              write(S0, Source), close(S0)),
+          process_create(Host, [CompWamo, SrcPath],
+              [stdout(pipe(S)), stderr(std), process(Pid)]),
+          read_string(S, _, Out),
+          close(S),
+          process_wait(Pid, exit(Status)),
+          assertion(Status == 0),
+          assertion(Out == "42\n") )),
     !.
 
 % Register-file ceiling fix: a clause with 20 permanent variables (Y1..Y20)

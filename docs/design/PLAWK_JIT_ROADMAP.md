@@ -369,9 +369,11 @@ loadable along the way.
   clause calls another; `[(main0(R):-helper(R)), helper(42)]` → `42`), plus
   **conjunction + register allocation — LANDED** (`cgconj/2`: `numbervars`→
   Y-registers, first/subsequent occurrence → `put_variable`/`put_value`,
-  `builtin_call =/2`; `pconj(R):-Y=42,R=Y` → `42`, byte-identical to the host).
-  Runtime arithmetic (`is/2` via `put_structure`) and non-tail calls remain;
-  (D) widen toward the
+  `builtin_call =/2`; `pconj(R):-Y=42,R=Y` → `42`, byte-identical to the host),
+  plus **runtime arithmetic — LANDED** (`cgarith/2`: `Var is op(A,B)` →
+  `put_structure` + `set_value`/`set_constant` + `builtin_call is/2`, with a
+  functor table `NF>0`; `ca(R):-X is 6*7, R=X` → `42`, byte-identical to the
+  host). Non-tail calls and nested expressions remain; (D) widen toward the
   compiler's own subset — the self-host fixpoint. Stage A surfaced two
   loaded-runtime bugs, **both since fixed** (a 64-register-file ceiling that
   corrupted memory for large clauses; `get_structure` not comparing the functor),
