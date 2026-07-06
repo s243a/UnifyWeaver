@@ -97,9 +97,18 @@ def main():
     S = {"(a) independent ρ=0": [], "(b) constant ρ": [], "(c) ρ(hop) off-diag": [],
          "(d) σ(hop) CONFIDENCE, const ρ": [], "(e) σ(hop)+ρ(hop) oracle-bin": [],
          "(f) Σ(hop) PREDICTIVE smooth": []}
+    heldsizes = []
     for s in range(a.seeds):
-        rng = np.random.default_rng(s); p = rng.permutation(len(pairs)); cut = int(0.7*len(pairs))
-        tr, he = p[:cut], p[cut:]
+        # NODE-DISJOINT split (review): hold out DESCENDANT nodes — the entity that repeats across hops — so a
+        # descendant's h=1..5 pairs never straddle train/held (pair-level random splits leaked them).
+        rng = np.random.default_rng(s)
+        descs = sorted({x for x, y in pairs}); rng.shuffle(descs)
+        held_d = set(descs[:max(1, int(0.3 * len(descs)))])
+        tr = np.array([i for i, (x, y) in enumerate(pairs) if x not in held_d])
+        he = np.array([i for i, (x, y) in enumerate(pairs) if x in held_d])
+        if len(he) < 12 or len(tr) < 30:
+            continue
+        heldsizes.append(len(he))
         (rD_tr, rD_he), (rS_tr, rS_he) = resid(tr, he)
         sD, sS = rD_tr.std() + 1e-6, rS_tr.std() + 1e-6
         rho = np.corrcoef(rD_tr, rS_tr)[0, 1]
@@ -120,17 +129,41 @@ def main():
         pf = fit_sig_of_d(rD_tr, rS_tr, hop[tr].astype(float))
         sDf, sSf, rhof = sig_of_d(pf, hop[he].astype(float))
         S["(f) Σ(hop) PREDICTIVE smooth"].append(biv_nll(rD_he, rS_he, sDf, sSf, rhof).mean())
-    print(f"held-out joint NLL (mean±std over {a.seeds} splits; LOWER better):\n")
+    hs = np.array(heldsizes)
+    print(f"held-out joint NLL (mean±std over {len(hs)} NODE-DISJOINT splits, ~{hs.mean():.0f} held pairs/split; ↓ better):\n")
     for k, v in S.items():
         v = np.array(v); print(f"  {k:32s}  {v.mean():.4f} ± {v.std():.4f}")
-    def delta(base, alt):
+    def gain(base, alt):
         d = np.array(S[base]) - np.array(S[alt]); se = d.std()/np.sqrt(len(d))
-        print(f"  Δ({base.split()[0]} − {alt.split()[0]}) = {d.mean():+.4f} (SE {se:.4f}, {d.mean()/se:+.1f}σ) "
-              f"{'← HELPS' if d.mean()-2*se>0 else '(not sig)'}")
+        print(f"  gain({base.split()[0]}→{alt.split()[0]}) = {d.mean():+.4f}  (repeated-split SE {se:.4f} — STABILITY "
+              "only, NOT a calibrated significance: the 40 resamples share one dataset, so SE understates variance)")
     print()
-    delta("(b) constant ρ", "(e) σ(hop)+ρ(hop) oracle-bin")
-    delta("(b) constant ρ", "(f) Σ(hop) PREDICTIVE smooth")      # ← the actual build vs constant baseline
-    delta("(e) σ(hop)+ρ(hop) oracle-bin", "(f) Σ(hop) PREDICTIVE smooth")  # predictive vs oracle: how much lost?
+    gain("(b) constant ρ", "(f) Σ(hop) PREDICTIVE smooth")
+    gain("(e) σ(hop)+ρ(hop) oracle-bin", "(f) Σ(hop) PREDICTIVE smooth")
+
+    # CALIBRATED test: permutation on the AVERAGED statistic. Shuffle hop (breaking pair↔hop), recompute the mean
+    # Σ(hop)-vs-constant gain over the SAME node-disjoint splits. p = fraction of hop-permutations with gain ≥ observed.
+    def mean_gain(hop_arr, nsplits=20):
+        gains = []
+        for s in range(nsplits):
+            rng = np.random.default_rng(s); descs = sorted({x for x, y in pairs}); rng.shuffle(descs)
+            hd = set(descs[:max(1, int(0.3 * len(descs)))])
+            trI = np.array([i for i, (x, y) in enumerate(pairs) if x not in hd])
+            heI = np.array([i for i, (x, y) in enumerate(pairs) if x in hd])
+            if len(heI) < 12 or len(trI) < 30:
+                continue
+            (rD_t, rD_h), (rS_t, rS_h) = resid(trI, heI)
+            sD_, sS_ = rD_t.std() + 1e-6, rS_t.std() + 1e-6; rho_ = np.corrcoef(rD_t, rS_t)[0, 1]
+            cnll = biv_nll(rD_h, rS_h, sD_, sS_, rho_).mean()
+            pf = fit_sig_of_d(rD_t, rS_t, hop_arr[trI].astype(float)); sDf, sSf, rhof = sig_of_d(pf, hop_arr[heI].astype(float))
+            gains.append(cnll - biv_nll(rD_h, rS_h, sDf, sSf, rhof).mean())
+        return np.mean(gains)
+    obs = mean_gain(hop); K = 200; prng = np.random.default_rng(1)
+    null = np.array([mean_gain(hop[prng.permutation(len(pairs))]) for _ in range(K)])
+    pval = (1 + np.sum(null >= obs)) / (K + 1)
+    print(f"\nPERMUTATION TEST — mean Σ(hop)-vs-constant gain, hop SHUFFLED, node-disjoint, K={K} (calibrated):")
+    print(f"  observed mean gain {obs:+.4f}; null mean {null.mean():+.4f}, 95%ile {np.percentile(null, 95):+.4f}; "
+          f"permutation p = {pval:.3f}  {'← SIGNIFICANT' if pval < 0.05 else '(NOT significant)'}")
 
 
 if __name__ == "__main__":

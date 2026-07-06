@@ -70,30 +70,42 @@ heteroscedasticity is in the CONFIDENCE (the diagonal `σ`), not just the correl
 *confident* at low hops and *ambiguous* at high hops. Measured (margin `μ_D−μ_S`): **0.62 (h1) → 0.11 (h5)** — at
 h=1 μ_D=0.85≫μ_S=0.23; by h=5 they're indistinguishable.
 
-| model | held-out joint NLL | vs constant ρ |
-|---|---|---|
-| (a) independent ρ=0 | −0.708 | — |
-| (b) constant ρ | −0.721 | — |
-| (c) ρ(hop) off-diagonal ALONE | −0.732 | +0.011 (+1.1σ) not sig |
-| (d) σ(hop) confidence ALONE | −0.725 | +0.004 (+0.4σ) not sig |
-| (e) σ(hop)+ρ(hop) — full Σ(hop), oracle per-hop bins | −0.782 | +0.061 (+4.9σ) HELPS |
-| **(f) Σ(hop) PREDICTIVE — smooth σ(hop),ρ(hop) by MLE** | **−0.819** | **+0.098 (+8.5σ), and +3.6σ vs (e)** |
+**Validation protocol (corrected after review #3517):** NODE-DISJOINT splits (hold out descendant nodes, so a
+descendant's h=1..5 pairs never straddle train/held — an earlier version used pair-level random splits = leakage),
+and a **permutation test** for significance (shuffle hop → null; the earlier `mean/√n` "σ" over correlated resamples
+was *not* a calibrated significance). Held-out joint NLL, 40 node-disjoint splits (~75 held pairs/split):
 
-- **The full hop-dependent covariance is a significant win (+4.9σ vs constant, +6.4σ vs independent)** — even though
-  *neither* `σ(hop)` nor `ρ(hop)` alone clears noise. They only help *together*: modelling the correlation with a
-  wrong (constant) variance, or vice-versa, is misspecified; only the whole `Σ(hop)` is correct.
+| model | held-out joint NLL | gain vs constant |
+|---|---|---|
+| (a) independent ρ=0 | −0.712 | — |
+| (b) constant ρ | −0.724 | — |
+| (c) ρ(hop) off-diagonal ALONE | −0.750 | (not robust alone) |
+| (d) σ(hop) confidence ALONE | −0.733 | (not robust alone) |
+| (e) σ(hop)+ρ(hop) — oracle per-hop bins | −0.794 | +0.070 |
+| **(f) Σ(hop) PREDICTIVE — smooth σ(hop),ρ(hop) by MLE** | **−0.817** | **+0.094** |
+
+**Permutation test (calibrated):** mean `Σ(hop)`-vs-constant gain **+0.094**, hop-shuffled null mean −0.013 (95%ile
++0.003) ⇒ **p = 0.005**. The gain survives node-disjoint splits AND is significant by a permutation test — the
+effect is real; only the earlier "+8.5σ / +4.9σ" *framing* was wrong (mis-calibrated correlated-resample SE + a
+weaker split), which review correctly flagged.
+
+- **It's the full hop-dependent covariance that wins** — `σ(hop)` and `ρ(hop)` are not robust *alone*; only the whole
+  `Σ(hop)` (both moving together) beats constant. Modelling the correlation with a wrong (constant) variance, or
+  vice-versa, is misspecified.
 - **The driver is the CONFIDENCE term (`σ(hop)`)** — the earlier ρ-only test measured the off-diagonal and missed
-  the diagonal, so it read "below noise." User's "compare learning rates" maps onto `σ(hop)`: the per-hop confidence
-  IS the effective example weight; holding it constant (uniform LR) washes the effect out.
-- **⇒ the second-order machinery earns its keep on multi-hop data — as the full hop-conditional Σ(hop)** (self
-  pseudo-judges `μ_D²,μ_S²` = the σ diagonal, cross `μ_D·μ_S` = the ρ off-diagonal, both coupled to `d`), not the
-  cross-term alone. This is the first *significant* evidence for the hop-conditional posterior. (The separation trick
-  / constant-Σ remains the base; Σ(hop) adds a real, significant increment on top.)
+  the diagonal. User's "compare learning rates" maps onto `σ(hop)`: the per-hop confidence IS the effective example
+  weight; holding it constant washes the effect out.
 - **BUILT (rung f): the predictive smooth `Σ(hop)`** — `σ_D(hop)=exp(a+b·hop)`, `σ_S(hop)`, `ρ(hop)=tanh(c+e·hop)`
-  fit by MLE (no per-hop bins) — is **+8.5σ over constant AND +3.6σ over the oracle per-hop `Σ` (e)**. The smooth
-  form *regularises* the covariance: it pools across hops instead of estimating `Σ` from ~35 pairs/bin, so the
-  *buildable* model (Σ a learned function of the conditioning feature) beats the oracle. This is "`Σ(hop)` in the
-  model," done — a hop-conditional covariance head with 6 extra parameters.
+  fit by MLE (no per-hop bins) — beats both constant (+0.094, permutation p=0.005) and the oracle per-hop `Σ`
+  (+0.023). It *regularises* the covariance (pools across hops vs ~35 pairs/bin), so the buildable model (Σ a learned
+  function of the conditioning feature) beats the oracle — the expected signature of shrinkage vs a small-sample
+  empirical estimate. A hop-conditional covariance head, 6 parameters.
+
+**Known limitations (review #3517):** (i) all labels come from one LLM judge (`gpt-5.5-low`) with no independent/
+human validation — the "assoc dispute" is inspected on the same judge's outputs; (ii) the σ/ρ functional forms
+(log-linear / tanh) aren't goodness-of-fit-checked against alternatives (spline/logistic); (iii) "corpus-specific"
+rests on n=2 corpora, one hand-cleaned; (iv) result #1 (joint > PoE) binarises D,S at 0.5 — defensible (0.5 = the
+member/non-member boundary, unlike the 0.3 cut that hid the hop signal) but a continuous-target check is deferred.
 
 ### WHY Σ(hop) beats constant Σ — the decoupling geometry rotates with hop (user)
 The decoupling (whitening) transformation is a *function of hop*, and `Σ(hop)`'s **condition number reduces with
