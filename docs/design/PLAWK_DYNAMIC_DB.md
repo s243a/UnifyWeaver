@@ -225,8 +225,15 @@ goal's choice points are cut (deterministic). A dynamic body goal is run inline
 by the consult during dispatch (it halts), so `solve_pred` must not clear
 `halted` before `run_loop`; a compiled body goal leaves `halted` false and
 `run_loop` drives it. Nested rules work (a rule body may call another rule).
-Not yet: `;`/`->`/`!` inside bodies, and cross-goal backtracking (first
-solution only).
+
+**Control constructs** are handled structurally in `@wam_dyn_run_body`, staying
+within the first-solution model: `;`/2 is if-then-else when its left arg is
+`->`/2 (run the condition, commit to Then, else Else) and otherwise a
+first-solution disjunction; `->`/2 alone is if-then (fail if the condition
+fails); `\+`/1 is negation-as-failure. A failing branch's bindings are unwound
+to a trail mark before the alternative runs, and `\+` always unwinds (it is a
+test). Not yet: `!` (cut, needs barrier semantics) and cross-goal backtracking
+(first solution only).
 
 (This PR also fixed a latent tail-position bug: a consulted goal whose
 continuation is the top-level `cp = 0` must **halt** rather than jump to PC 0 —
@@ -243,7 +250,9 @@ the consult/retract `success` blocks now mirror `proceed`.)
   sentinels −5/−6).
 - **PR 3:** rule bodies (`assertz((H :- B))`) — var-preserving clause copy +
   a deterministic body interpreter. Landed.
-- Follow-ups / optimizations: `;`/`->`/`!` and cross-goal backtracking in
-  bodies; retract of rules; `call/N` partial-application consult; a
-  functor+arity index over the store (the scan is O(n) per backtrack); mixing
-  compiled + asserted clauses for one predicate.
+- **PR 3 follow-up:** `;`/`->`/`\+` control constructs in bodies (deterministic
+  if-then-else / disjunction / negation). Landed.
+- Follow-ups / optimizations: `!` (cut) and cross-goal backtracking in bodies;
+  retract of rules; `call/N` partial-application consult; a functor+arity index
+  over the store (the scan is O(n) per backtrack); mixing compiled + asserted
+  clauses for one predicate.
