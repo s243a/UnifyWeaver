@@ -103,6 +103,17 @@ superposition training — no new architecture. **Regularizing the pseudo-judge 
 n-dependent complexity (interactions come online only when n licenses them), soft/crossable constraints (weights
 shrink under the prior, overridden by strong local data), and transfer (carry the pseudo-judge weight as a prior).
 
+### FIRST-BUILD RESULT (2026-07-06, REPORT_two_judge_posterior.md) — the joint IS the win; cross is conditional
+Built the k=2 GLM on 880 LLM-scored Wikipedia pairs (20 node-disjoint splits). **Joint beats product-of-marginals
+(0.711 vs 0.761 log-loss)** — the correlation matters, as predicted. **But the explicit `μ_D·μ_S` cross pseudo-judge
+added nothing** (three joint rungs identical within noise). Reason: the correlation here is **UNCONDITIONAL** (D↔S
+`−0.19`, a baseline "either directional or symmetric"), which the **joint multinomial already captures via its class
+structure**. The cross pseudo-judge earns its keep only for **feature-CONDITIONAL** correlation (the D↔S coupling
+*varying with* the readouts) — not present in h=1 data. **So the essential second-order move is JOINT modeling, not
+the interaction feature;** the cross-term is a data-dependent refinement, to be retested where D & S genuinely
+co-occur (deep hops / SimpleMind concepts / Pearltrees). The structure below still holds — it's just that the *cross*
+of the three switches on later than the design implied.
+
 ### The smallest build target: 2 operators → 3 pseudo-judges
 Simplest case — a directional operator `D` and a symmetric operator `S`. The second-order structure is a symmetric
 2×2 matrix: 4 entries, `Σ_DS = Σ_SD`, so **3 unique terms → 3 pseudo-judges** (= the degree-2 monomials of `[D,S]`,
