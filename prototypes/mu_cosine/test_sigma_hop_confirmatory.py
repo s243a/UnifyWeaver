@@ -16,6 +16,7 @@ from sigma_hop_confirmatory import (
     ConfirmatoryInputError,
     OverlapError,
     assert_no_node_overlap,
+    degree_from_maps,
     descendant_disjoint_split,
     load_scored_pairs,
     permutation_test,
@@ -80,6 +81,13 @@ def test_assert_no_node_overlap_allows_clean_pairs():
         assert assert_no_node_overlap((("fresh_child", "fresh_parent"),), path) == []
     finally:
         os.unlink(path)
+
+
+def test_degree_from_maps_includes_value_only_nodes():
+    deg = degree_from_maps({"child": {"parent"}}, {"parent": {"child"}, "orphan_parent": {"leaf_only"}})
+    assert deg["child"] == 1
+    assert deg["parent"] == 1
+    assert deg["leaf_only"] == 0
 
 
 def test_permutation_result_reports_preregistered_decision_fields():

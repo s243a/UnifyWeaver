@@ -44,6 +44,9 @@ rendered run report: /tmp/mu_data/sigma_hop_confirmatory_REPORT.md
 runner commit: 98efc2fdc Add LMDB graph support to sigma-hop confirmatory runner
 ```
 
+The `/tmp/mu_data/...` paths above are local run artifacts, not durable repository records. The durable record in this
+PR is this committed report plus the runner change needed to consume the LMDB feature graph.
+
 The selected root was `Behavior`. The retained LMDB slice had 75,901 nodes after the preregistered no-overlap and
 admin-title filtering. Sampling produced exactly 50 pairs at each shortest upward hop 1..5.
 
