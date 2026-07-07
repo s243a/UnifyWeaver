@@ -31,7 +31,7 @@ joint +CROSS (μ_D·μ_S)        0.7107 ± 0.117
    > their relationship), so a joint bivariate-Gaussian (constant ρ) does NOT beat product-of-marginals: gain
    > **−0.005, permutation p = 1.000**. So result #1 is a **discrete co-occurrence** effect, *not* a continuous
    > residual-correlation one — it does not replicate on continuous μ. (The headline hop-conditional `Σ(hop)` result
-   > below *is* continuous and stands at permutation p=0.005 — a different, stronger claim about how `Σ` varies with hop.)
+   > below *is* continuous and stands at permutation p=0.001 (K=1000) — a different, stronger claim about how `Σ` varies with hop.)
 2. **The explicit cross pseudo-judge (`μ_D·μ_S`) adds nothing** — the three joint rungs are identical within noise.
 
 ## What that refines in the design
@@ -92,8 +92,7 @@ n≈250 pairs, ~45/hop — small, see limitations):
 | (e) σ(hop)+ρ(hop) — oracle per-hop bins | −0.794 | +0.070 |
 | **(f) Σ(hop) PREDICTIVE — smooth σ(hop),ρ(hop) by MLE** | **−0.817** | **+0.094** |
 
-**Permutation test (calibrated):** mean `Σ(hop)`-vs-constant gain **+0.094**, hop-shuffled null mean −0.013 (95%ile
-+0.003) ⇒ **p = 0.005**. The gain survives node-disjoint splits AND is significant by a permutation test — the
+**Permutation test (calibrated):** mean `Σ(hop)`-vs-constant gain **+0.094**, hop-shuffled null mean −0.014 (95%ile +0.003) ⇒ **p = 0.001 (K=1000)**. The gain survives node-disjoint splits AND is significant by a permutation test — the
 effect is real; only the earlier "+8.5σ / +4.9σ" *framing* was wrong (mis-calibrated correlated-resample SE + a
 weaker split), which review correctly flagged.
 
@@ -104,7 +103,7 @@ weaker split), which review correctly flagged.
   the diagonal. User's "compare learning rates" maps onto `σ(hop)`: the per-hop confidence IS the effective example
   weight; holding it constant washes the effect out.
 - **BUILT (rung f): the predictive smooth `Σ(hop)`** — `σ_D(hop)=exp(a+b·hop)`, `σ_S(hop)`, `ρ(hop)=tanh(c+e·hop)`
-  fit by MLE (no per-hop bins) — beats both constant (+0.094, permutation p=0.005) and the oracle per-hop `Σ`
+  fit by MLE (no per-hop bins) — beats both constant (+0.093, permutation p=0.001, K=1000) and the oracle per-hop `Σ`
   (+0.023). It *regularises* the covariance (pools across hops vs ~35 pairs/bin), so the buildable model (Σ a learned
   function of the conditioning feature) beats the oracle — the expected signature of shrinkage vs a small-sample
   empirical estimate. A hop-conditional covariance head, 6 parameters.
@@ -118,7 +117,7 @@ continuous μ (finding #1 above): it does NOT replicate** (a discrete co-occurre
 descendant-disjoint (not both-endpoint) and does not model graph-topological dependence beyond entity overlap
 (shared ancestors ⇒ some residual correlation among held pairs); (vi) **post-exploratory, not pre-registered** — the
 final specification (smooth exp/tanh Σ(hop), descendant-disjoint split, continuous μ) was reached through iterative,
-reviewer-guided exploration on the same ~250 pairs, so **p=0.005 is significant *under the finally-adopted
+reviewer-guided exploration on the same ~250 pairs, so **p=0.001 (K=1000) is significant *under the finally-adopted
 specification*, not an unconditional/pre-registered level**; confirmatory evidence would need a fresh held-out corpus.
 
 ### WHY Σ(hop) beats constant Σ — the decoupling geometry rotates with hop (user)
