@@ -1,0 +1,269 @@
+// Dynamic database and source-term input helpers for WamState.
+// Included inside `impl WamState` by wam_rust_target.pl.
+
+    fn execute_read_term_builtin(&mut self) -> bool {
+        use std::io::Read;
+        let mut input = String::new();
+        if std::io::stdin().read_to_string(&mut input).is_err() {
+            return false;
+        }
+        let text = match Self::first_dotted_term_text(&input) {
+            Some(text) => text,
+            None => {
+                let eof = Value::Atom("end_of_file".to_string());
+                let target = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                return if self.unify(&target, &eof) { self.pc += 1; true } else { false };
+            }
+        };
+        if self.bind_compiled_parse_atom(&text, "A1") { self.pc += 1; true }
+        else { false }
+    }
+
+    fn first_dotted_term_text(input: &str) -> Option<String> {
+        let trimmed = input.trim_start();
+        if trimmed.is_empty() { return None; }
+        let bytes = trimmed.as_bytes();
+        let mut in_quote = false;
+        let mut escaped = false;
+        for (idx, &b) in bytes.iter().enumerate() {
+            if in_quote {
+                if escaped { escaped = false; continue; }
+                if b == 92 { escaped = true; continue; }
+                if b == 39 { in_quote = false; }
+                continue;
+            }
+            if b == 39 { in_quote = true; continue; }
+            if b == 46 {
+                let next_is_term_end = bytes.get(idx + 1)
+                    .map(|c| c.is_ascii_whitespace())
+                    .unwrap_or(true);
+                if next_is_term_end {
+                    return Some(trimmed[..idx].trim().to_string());
+                }
+            }
+        }
+        let body = trimmed.trim_end();
+        let body = body.strip_suffix(".").unwrap_or(body);
+        Some(body.trim().to_string())
+    }
+
+    fn execute_assert_builtin(&mut self, op: &str) -> bool {
+        let raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let term = self.deref_heap(&self.deref_var(&raw));
+        if matches!(term, Value::Unbound(_) | Value::Uninit) { return false; }
+        let key = match self.dynamic_clause_key(&term) {
+            Some(key) => key,
+            None => return false,
+        };
+        let mut var_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let stored = Self::copy_term_walk(&mut self.var_counter, &mut var_map, &term);
+        let bucket = self.dynamic_db.entry(key).or_default();
+        if op == "asserta/1" { bucket.insert(0, stored); }
+        else { bucket.push(stored); }
+        self.pc += 1;
+        true
+    }
+
+    fn execute_retractall_builtin(&mut self) -> bool {
+        let raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let pattern = self.deref_heap(&self.deref_var(&raw));
+        if matches!(pattern, Value::Unbound(_) | Value::Uninit) { return false; }
+        let key = match self.dynamic_clause_key(&pattern) {
+            Some(key) => key,
+            None => return false,
+        };
+        let clauses = self.dynamic_db.remove(&key).unwrap_or_default();
+        let mut kept = Vec::new();
+        for clause in clauses {
+            if !self.dynamic_clause_matches_pattern(&pattern, &clause) {
+                kept.push(clause);
+            }
+        }
+        if !kept.is_empty() {
+            self.dynamic_db.insert(key, kept);
+        }
+        self.pc += 1;
+        true
+    }
+
+    fn dynamic_clause_key(&self, clause: &Value) -> Option<String> {
+        let head = self.dynamic_clause_head(clause)?;
+        self.dynamic_head_key(&head)
+    }
+
+    fn dynamic_clause_head(&self, clause: &Value) -> Option<Value> {
+        match clause {
+            Value::Str(f, args) if (f == ":-" || f == ":-/2") && args.len() == 2 => {
+                Some(args[0].clone())
+            }
+            other => Some(other.clone()),
+        }
+    }
+
+    fn dynamic_clause_head_body(&self, clause: &Value) -> Option<(Value, Option<Value>)> {
+        match clause {
+            Value::Str(f, args) if (f == ":-" || f == ":-/2") && args.len() == 2 => {
+                Some((args[0].clone(), Some(args[1].clone())))
+            }
+            other => Some((other.clone(), None)),
+        }
+    }
+
+    fn dynamic_head_key(&self, head: &Value) -> Option<String> {
+        match head {
+            Value::Atom(name) => Some(format!("{}/0", name)),
+            Value::Str(f, args) => {
+                let name = Self::display_functor_name(f, args.len());
+                Some(format!("{}/{}", name, args.len()))
+            }
+            _ => None,
+        }
+    }
+
+    fn dynamic_clause_matches_pattern(&mut self, pattern: &Value, clause: &Value) -> bool {
+        let mark = self.trail.len();
+        let heap_mark = self.heap.len();
+        let mut pattern_vars = std::collections::HashMap::new();
+        let mut clause_vars = std::collections::HashMap::new();
+        let p = Self::copy_term_walk(&mut self.var_counter, &mut pattern_vars, pattern);
+        let head = match self.dynamic_clause_head(clause) {
+            Some(head) => Self::copy_term_walk(&mut self.var_counter, &mut clause_vars, &head),
+            None => return false,
+        };
+        let ok = self.unify(&p, &head);
+        self.unwind_trail_to(mark);
+        self.heap.truncate(heap_mark);
+        ok
+    }
+
+    fn dynamic_call(&mut self, key: &str, cont_pc: usize) -> bool {
+        if !self.dynamic_db.contains_key(key) { return false; }
+        self.dynamic_call_attempt(key.to_string(), 0, cont_pc)
+    }
+
+    fn dynamic_call_attempt(&mut self, key: String, start_idx: usize, cont_pc: usize) -> bool {
+        let clauses = match self.dynamic_db.get(&key) {
+            Some(clauses) => clauses.clone(),
+            None => return false,
+        };
+        for idx in start_idx..clauses.len() {
+            let cp_trail = self.trail.len();
+            let cp_heap = self.heap.len();
+            let cp_regs = self.save_regs();
+            let cp_stack = self.stack.clone();
+            let mut var_map = std::collections::HashMap::new();
+            let clause = Self::copy_term_walk(&mut self.var_counter, &mut var_map, &clauses[idx]);
+            if self.dynamic_apply_clause(&clause) {
+                if idx + 1 < clauses.len() {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: cont_pc,
+                        saved_args: cp_regs,
+                        stack: cp_stack,
+                        cp: self.cp,
+                        trail_len: cp_trail,
+                        heap_len: cp_heap,
+                        builtin_state: Some(BuiltinState {
+                            name: "dynamic_call".to_string(),
+                            args: vec![Value::Atom(key.clone())],
+                            data: vec![Value::Integer((idx + 1) as i64), Value::Integer(cont_pc as i64)],
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                self.pc = cont_pc;
+                return true;
+            }
+            self.unwind_trail_to(cp_trail);
+            self.heap.truncate(cp_heap);
+            self.restore_regs(&cp_regs);
+            self.stack = cp_stack;
+        }
+        false
+    }
+
+    fn dynamic_apply_clause(&mut self, clause: &Value) -> bool {
+        let (head, body) = match self.dynamic_clause_head_body(clause) {
+            Some(parts) => parts,
+            None => return false,
+        };
+        if !self.dynamic_unify_head_args(&head) { return false; }
+        match body {
+            None => true,
+            Some(Value::Atom(ref s)) if s == "true" => true,
+            _ => false,
+        }
+    }
+
+    fn dynamic_unify_head_args(&mut self, head: &Value) -> bool {
+        match head {
+            Value::Atom(_) => true,
+            Value::Str(_, args) => {
+                for (idx, arg) in args.iter().enumerate() {
+                    let reg = format!("A{}", idx + 1);
+                    let raw = self.get_reg_raw(&reg).unwrap_or(Value::Uninit);
+                    if !self.unify(&raw, arg) { return false; }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn dynamic_retract_call(&mut self, cont_pc: usize) -> bool {
+        let raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let pattern = self.deref_heap(&self.deref_var(&raw));
+        if matches!(pattern, Value::Unbound(_) | Value::Uninit) { return false; }
+        let key = match self.dynamic_clause_key(&pattern) {
+            Some(key) => key,
+            None => return false,
+        };
+        self.dynamic_retract_attempt(key, 0, pattern, cont_pc)
+    }
+
+    fn dynamic_retract_attempt(&mut self, key: String, start_idx: usize, pattern: Value, cont_pc: usize) -> bool {
+        let clauses = match self.dynamic_db.get(&key) {
+            Some(clauses) => clauses.clone(),
+            None => return false,
+        };
+        for idx in start_idx..clauses.len() {
+            let cp_trail = self.trail.len();
+            let cp_heap = self.heap.len();
+            let cp_regs = self.save_regs();
+            let cp_stack = self.stack.clone();
+            let mut clause_vars = std::collections::HashMap::new();
+            let p = pattern.clone();
+            let head = match self.dynamic_clause_head(&clauses[idx]) {
+                Some(head) => Self::copy_term_walk(&mut self.var_counter, &mut clause_vars, &head),
+                None => continue,
+            };
+            if self.unify(&p, &head) {
+                if let Some(bucket) = self.dynamic_db.get_mut(&key) {
+                    if idx < bucket.len() { bucket.remove(idx); }
+                    if bucket.is_empty() { self.dynamic_db.remove(&key); }
+                }
+                if self.dynamic_db.get(&key).map(|b| idx < b.len()).unwrap_or(false) {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: cont_pc,
+                        saved_args: cp_regs,
+                        stack: cp_stack,
+                        cp: self.cp,
+                        trail_len: cp_trail,
+                        heap_len: cp_heap,
+                        builtin_state: Some(BuiltinState {
+                            name: "dynamic_retract".to_string(),
+                            args: vec![Value::Atom(key.clone()), pattern.clone()],
+                            data: vec![Value::Integer(idx as i64), Value::Integer(cont_pc as i64)],
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                self.pc = cont_pc;
+                return true;
+            }
+            self.unwind_trail_to(cp_trail);
+            self.heap.truncate(cp_heap);
+            self.restore_regs(&cp_regs);
+            self.stack = cp_stack;
+        }
+        false
+    }

@@ -671,6 +671,8 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                     self.cp = self.pc + 1;
                     self.pc = target_pc;
                     true
+                } else if p == "retract/1" {
+                    self.dynamic_retract_call(self.pc + 1)
                 } else if self.foreign_predicates.contains(p) {
                     self.cp = self.pc + 1;
                     if self.execute_foreign_predicate(p, *_arity) {
@@ -682,6 +684,8 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                     // continuation is the next instruction; the fact enumerator
                     // sets pc/cp and leaves a choice point for further rows.
                     __ftr
+                } else if self.dynamic_call(p, self.pc + 1) {
+                    true
                 } else if Self::is_iso_meta_builtin(p) {
                     // ISO meta-builtins (catch/3, throw/1, succ/2) are
                     // emitted by the shared WAM compiler as Call rather
@@ -738,12 +742,16 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
     Body = '                if let Some(&target_pc) = self.labels.get(p) {
                     self.pc = target_pc;
                     true
+                } else if p == "retract/1" {
+                    self.dynamic_retract_call(self.cp)
                 } else if self.foreign_predicates.contains(p) {
                     self.execute_foreign_predicate(p, 0)
                 } else if let Some(__ftr) = crate::fact_table_call(self, p, self.cp) {
                     // T9 fact table in tail position: continuation is the saved
                     // cp (the caller resumes there when the fact pred succeeds).
                     __ftr
+                } else if self.dynamic_call(p, self.cp) {
+                    true
                 } else if Self::is_iso_meta_builtin(p) {
                     // Tail-position ISO meta-builtin: dispatch, then honor
                     // return semantics by jumping to the continuation.
@@ -1581,6 +1589,9 @@ compile_execute_term_builtin_to_rust(Code) :-
             "term_to_atom/2" => { self.execute_term_to_atom_builtin() }
             "read_term_from_atom/2" => { self.execute_read_term_from_atom_builtin(2) }
             "read_term_from_atom/3" => { self.execute_read_term_from_atom_builtin(3) }
+            "read/1" | "read_term/1" => { self.execute_read_term_builtin() }
+            "assertz/1" | "asserta/1" => { self.execute_assert_builtin(op) }
+            "retractall/1" => { self.execute_retractall_builtin() }
             _ => false,
         }
     }
@@ -1881,7 +1892,14 @@ compile_execute_term_builtin_to_rust(Code) :-
             }
         }
         name.to_string()
-    }'.
+    }
+
+    '.
+
+
+compile_dynamic_db_helpers_to_rust(Code) :-
+    read_template_file('templates/targets/rust_wam/dynamic_db_methods.rs.mustache', Template),
+    render_template(Template, [], Code).
 
 compile_execute_foreign_predicate_to_rust(Code) :-
     Code = '    /// Execute a registered foreign predicate by name/arity.
@@ -3517,6 +3535,40 @@ compile_resume_builtin_to_rust(Code) :-
                 if self.unify(&a2, &Value::Atom(values[idx].clone())) {
                     self.pc += 1; true
                 } else { false }
+            }
+            "dynamic_call" => {
+                let key = match state.args.get(0) {
+                    Some(Value::Atom(key)) => key.clone(),
+                    _ => return false,
+                };
+                let start_idx = match state.data.get(0) {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return false,
+                };
+                let cont_pc = match state.data.get(1) {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return false,
+                };
+                self.dynamic_call_attempt(key, start_idx, cont_pc)
+            }
+            "dynamic_retract" => {
+                let key = match state.args.get(0) {
+                    Some(Value::Atom(key)) => key.clone(),
+                    _ => return false,
+                };
+                let pattern = match state.args.get(1) {
+                    Some(pattern) => pattern.clone(),
+                    _ => return false,
+                };
+                let start_idx = match state.data.get(0) {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return false,
+                };
+                let cont_pc = match state.data.get(1) {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return false,
+                };
+                self.dynamic_retract_attempt(key, start_idx, pattern, cont_pc)
             }
             "foreign_results" => {
                 let pred_key = match state.args.get(0) {
@@ -6298,7 +6350,11 @@ write_wam_rust_project(Predicates, Options, ProjectDir) :-
     % Generate state.rs: template + transpiled runtime methods
     option(include_runtime(IncludeRuntime), Options, true),
     read_template_file('templates/targets/rust_wam/state.rs.mustache', StateTemplate),
-    render_template(StateTemplate, [date=Date], StateBase),
+    (   IncludeRuntime == true
+    ->  compile_dynamic_db_helpers_to_rust(DynamicDbCode)
+    ;   DynamicDbCode = ''
+    ),
+    render_template(StateTemplate, [date=Date, dynamic_db_methods=DynamicDbCode], StateBase),
     (   IncludeRuntime == true
     ->  compile_wam_runtime_to_rust(Options, RuntimeCode),
         format(string(StateCode), "~w\n\n~w", [StateBase, RuntimeCode])
