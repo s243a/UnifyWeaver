@@ -1,4 +1,6 @@
-# Hop-Conditional Covariance in Fuzzy Concept-Graph Relations
+# Hop-Conditional Covariance in Wikipedia Category Relations
+
+*Toward fuzzy concept-graph uncertainty modeling, with one pre-registered Wikipedia-category confirmation.*
 
 *Manuscript scaffold, 2026-07-07. This draft consolidates the exploratory `Sigma(hop)` finding, the
 pre-registration, and the fresh-corpus confirmation. It is intentionally conservative: one confirmed Wikipedia
@@ -6,18 +8,20 @@ category result, not a universal claim about all concept graphs.*
 
 ## Abstract
 
-Concept-graph relation labels are often treated as independent scalar judgments: a pair is hierarchical,
-associative, both, or neither. In fuzzy LLM-scored labels, however, the uncertainty structure itself can change with
-where a pair sits in the graph. We test whether the covariance of directional and symmetric relation residuals varies
-with graph-hop distance. An exploratory Wikipedia multi-hop sample suggested that a smooth hop-conditional covariance
-model, `Sigma(hop)`, improves held-out bivariate Gaussian residual likelihood over a constant-covariance baseline.
-Because that specification was chosen after exploration, we pre-registered a single confirmatory test on a fresh
-Wikipedia category slice with no node overlap against the exploratory graph. On 250 fresh `Behavior`-slice pairs,
+Wikipedia category-relation labels are often treated as independent scalar judgments: a pair is hierarchical,
+associative, both, or neither. In fuzzy LLM-scored category labels, however, the uncertainty structure may vary with
+where a pair sits in the graph. We test, within a Wikipedia category regime, whether the covariance of directional and
+symmetric relation residuals varies with graph-hop distance. An exploratory Wikipedia multi-hop sample suggested that
+a smooth hop-conditional covariance model, `Sigma(hop)`, improves held-out bivariate Gaussian residual likelihood over
+a constant-covariance baseline. Because that specification was chosen after exploration, we pre-registered a single
+confirmatory test on a fresh Wikipedia category slice with no node overlap against the exploratory graph. On 250
+fresh `Behavior`-slice pairs,
 balanced across hops 1..5 and scored by the same `gpt-5.5-low` prompt family, the preregistered test confirmed the
 effect: mean held-out NLL gain `+0.059799`, hop-shuffle null mean `-0.009487`, null 95th percentile `+0.000456`,
-`K=1000`, one-sided permutation `p=0.000999`. The result supports hop-conditioned uncertainty modeling for this
-Wikipedia-category regime while retaining limitations from a single LLM judge, descendant-disjoint rather than
-both-endpoint-disjoint splits, and graph-topological dependence.
+`K=1000`, one-sided permutation `p < 0.001` (finite-K floor `0.000999`). The result supports hop-conditioned
+uncertainty modeling for this
+Wikipedia-category regime as a predictive NLL result, while retaining limitations from a single LLM judge,
+descendant-disjoint rather than both-endpoint-disjoint splits, and graph-topological dependence.
 
 ## Claims
 
@@ -25,8 +29,9 @@ both-endpoint-disjoint splits, and graph-topological dependence.
    directional/symmetric residuals better than constant-Sigma under the preregistered one-sided hop-shuffle test.
 2. **Interpretive claim:** the gain is evidence for hop-dependent uncertainty geometry, not proof that the log-linear
    variance and tanh-correlation functional form is generative truth.
-3. **Scope claim:** the confirmed result is for one Wikipedia category regime. It should motivate, not replace,
-   separate confirmatory tests on SimpleMind, Pearltrees, or other concept graphs.
+3. **Scope claim:** the confirmed result is for one Wikipedia category regime. It is a confirmation of predictive
+   likelihood under this evaluation setup, not a general validation of concept-graph uncertainty theory. It should
+   motivate, not replace, separate confirmatory tests on SimpleMind, Pearltrees, or other concept graphs.
 
 ## Background
 
@@ -147,31 +152,51 @@ decision: confirmed
 ```
 
 With `K=1000`, `p=0.000999` is the finite-permutation floor `(1 + 0) / (1000 + 1)`: no shuffled-hop null run reached
-the observed gain.
+the observed gain. In prose this should usually be reported as `p < 0.001` or as the finite-K floor above, rather
+than as more precision than the permutation design supports. The confirmatory gain is smaller than the exploratory
+`+0.094` estimate, which is consistent with post-exploratory attenuation on a fresh slice; the pre-registered
+decision rule required a positive gain and `p < 0.01`, not replication of the exploratory effect size.
+
+As a descriptive stability check, 33 of 40 descendant-disjoint split gains were positive. The split-gain standard
+deviation was `0.051246`, giving a descriptive split-resampling SE of `0.008103` and a bootstrap-over-splits 95%
+interval of approximately `[+0.044183, +0.075277]`. These split-resampling numbers are not used as the significance
+claim because the splits share one dataset; the confirmatory inference remains the hop-shuffle permutation test.
 
 ## Interpretation
 
-The confirmed gain means that graph-hop distance carries information about the covariance of fuzzy directional and
-symmetric residuals beyond the marginal mean model. In geometric terms, the residual uncertainty ellipse is not
-constant across hop: the decoupling transformation appropriate for shallow category relations is not the same as the
-one appropriate for deeper, semantically drifted relations. A constant-Sigma baseline averages those geometries;
-`Sigma(hop)` regularizes a hop-dependent geometry using only six covariance parameters.
+The confirmed gain means that, in this fresh Wikipedia slice, graph-hop distance is associated with better prediction
+of the covariance of fuzzy directional and symmetric residuals beyond the marginal mean model. In geometric terms, the
+fitted residual uncertainty ellipse is not constant across hop: the decoupling transformation useful for shallow
+category relations differs from that for deeper pairs, which may reflect semantic drift or other hop-dependent
+structural factors. A constant-Sigma baseline averages these fitted geometries; `Sigma(hop)` provides a six-parameter
+hop-conditioned regularizer.
 
 This supports the design idea that uncertainty should sometimes be modeled as structured conditional covariance, not
 only as independent scalar confidence. It also gives a cleaner statistical target for later model work: rather than
-adding a generic cross pseudo-judge everywhere, use conditional covariance where the data show residual coupling that
-changes with graph position.
+adding a generic cross pseudo-judge everywhere, use conditional covariance where held-out data show residual coupling
+that changes with graph position.
+
+This paper does not yet implement a Kalman-style update rule or a fully calibrated predicted-error update rate. A
+product term or product-of-experts score can be a useful feature or baseline, but it is not by itself a likelihood for
+the measured error unless the expert-error distribution and dependence structure are specified. The present
+`Sigma(hop)` result is closer to an error-modeling step: it estimates how residual variance and correlation change
+with hop after the mean model, while leaving full calibration of predicted error, expert covariance, and update-rate
+control as future work.
 
 ## Limitations
 
-- **Single LLM judge.** The fresh labels come from one judge/prompt family. Confirmation of the statistical effect is
-  not equivalent to human validation of every fuzzy relation label.
+- **Single, non-deterministic LLM judge.** The fresh labels come from one judge/prompt family. Confirmation of the
+  statistical effect is not equivalent to human validation of every fuzzy relation label, and re-querying the same
+  model name later may not reproduce the same scores. The hashed raw response file is the run record for judge
+  outputs.
 - **Descendant-disjoint splits only.** Descendant endpoints are disjoint across train and held-out sets, but ancestors
   may recur. Shared ancestors and graph topology can still induce residual dependence.
 - **Functional form as regularization.** The `exp/tanh` covariance head is confirmed as a predictive regularizer here,
-  not as the true generative law of semantic drift.
+  not as the true generative law of semantic drift or of any other hop-dependent mechanism.
 - **One fresh Wikipedia slice.** The result confirms the effect in a structurally distinct Wikipedia category slice.
-  It does not prove the same curve applies to SimpleMind, Pearltrees, or all concept graphs.
+  It does not prove the same curve applies to SimpleMind, Pearltrees, or all concept graphs. Hop-5 category pairs may
+  also be more semantically heterogeneous than shallow pairs, so the confirmed result averages over a deliberately
+  bounded hop range rather than proving uniform behavior at arbitrary depth.
 - **Ephemeral local artifacts.** Raw scoring outputs and caches currently live under `/tmp/mu_data/...`; the committed
   durable record is the pre-registration, sampler/runner code, and confirmatory report.
 
@@ -194,6 +219,9 @@ confirmatory report: prototypes/mu_cosine/REPORT_sigma_hop_confirmatory.md
 exploratory report: prototypes/mu_cosine/REPORT_two_judge_posterior.md
 ```
 
+The preregistration was committed as `638825558` at `2026-07-06T21:06:22-06:00`, before the confirmatory report
+commits on `2026-07-07`. A submission version should preserve or cite this git ordering explicitly.
+
 Local run artifacts recorded by the report:
 
 ```text
@@ -204,6 +232,10 @@ ingested judge scores: /tmp/mu_data/sigma_hop_fresh_scored_gpt55low.tsv
 retained-slice e5 cache: /tmp/mu_data/sigma_hop_behavior_slice_e5.pt
 result JSON: /tmp/mu_data/sigma_hop_confirmatory_result.json
 ```
+
+These hashes identify the completed local run only; because the files currently live under `/tmp/mu_data/...`, the
+hash table is not a durable archive. Before external submission, the small text artifacts should be committed in a
+reproducibility directory or deposited in a stable data store.
 
 Small text-artifact hashes from the completed run:
 
@@ -217,7 +249,9 @@ Small text-artifact hashes from the completed run:
 | `/tmp/mu_data/sigma_hop_confirmatory_REPORT.md` | 941 | `17b957a93cad3c0ef6f294041b28b93ea57be7ef84682d1877ae1d58f0a3b89d` |
 
 The retained-slice e5 cache is a large regenerable torch artifact, so the manuscript records its path and generation
-rule rather than treating it as a text artifact to archive inline.
+rule rather than treating it as a text artifact to archive inline. It was generated with `build_e5_tables` from
+`mu_attention.py` over all 75,901 retained `Behavior` slice node titles using `intfloat/e5-small-v2` query/passage
+prefixes and batch size 128 on CUDA.
 
 ## References To Carry Forward
 
@@ -227,12 +261,18 @@ rule rather than treating it as a text artifact to archive inline.
   *Annals of Statistics*, 40(2), 1024-1060.
 - Kou, S. C. and Yang, J. J. (2015). Optimal shrinkage estimation in heteroscedastic hierarchical linear models.
   arXiv:1503.06262.
-- Gelman, A. and Loken, E. (2013). The garden of forking paths.
+- Gelman, A. and Loken, E. (2013). The garden of forking paths. Unpublished manuscript; submission drafts may also
+  cite the later *American Scientist* discussion depending on venue expectations.
 - Zheng, L. et al. (2023). Judging LLM-as-a-judge with MT-Bench and Chatbot Arena.
 
 ## Submission Readiness Checklist
 
-- Decide whether to commit or externally archive durable copies of the fresh score input, raw responses, manifest, and result JSON; this scaffold records hashes for the small text artifacts.
+- Commit or externally archive durable copies of the fresh score input, raw responses, manifest, and result JSON;
+  this scaffold records hashes for the small text artifacts but does not archive them.
+- Confirm the git ordering evidence in the final manuscript: preregistration commit `638825558` precedes fresh-corpus
+  sampling/scoring and result reporting.
+- Pin the judge model/API version if the provider exposes one; otherwise state that `gpt-5.5-low` is a run label and
+  the hashed raw response file is the reproducible judge-output record.
 - Generate the null-distribution and covariance-curve figures from the saved run artifacts.
 - Decide whether to position this as a workshop note, arXiv technical report, or methods appendix for the broader
   UnifyWeaver relation-modeling work.
