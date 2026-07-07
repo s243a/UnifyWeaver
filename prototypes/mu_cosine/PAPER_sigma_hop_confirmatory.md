@@ -176,12 +176,86 @@ only as independent scalar confidence. It also gives a cleaner statistical targe
 adding a generic cross pseudo-judge everywhere, use conditional covariance where held-out data show residual coupling
 that changes with graph position.
 
-This paper does not yet implement a Kalman-style update rule or a fully calibrated predicted-error update rate. A
-product term or product-of-experts score can be a useful feature or baseline, but it is not by itself a likelihood for
-the measured error unless the expert-error distribution and dependence structure are specified. The present
-`Sigma(hop)` result is closer to an error-modeling step: it estimates how residual variance and correlation change
-with hop after the mean model, while leaving full calibration of predicted error, expert covariance, and update-rate
-control as future work.
+## Proposed Alternate: Product-Kalman PoE
+
+A natural extension is to treat the transitive-parent operator as a noisy superposition of simpler operators. In the
+additive version, a transitive-parent label is modeled as a weighted mixture of a directional/asymmetric operator and
+a symmetric/associative operator:
+
+```text
+z        = [asymmetric, symmetric, ...]^T
+mu_T     = H mu_z
+V_T      = H Sigma_z H^T + R
+loss_T   = 0.5 * (y_T - mu_T)^T V_T^-1 (y_T - mu_T) + 0.5 * log |V_T|
+```
+
+For a scalar mixture this reduces to:
+
+```text
+mu_T      = w_asym * mu_asym + w_sym * mu_sym
+sigma_T^2 = w^T Sigma_ops w + sigma_obs^2
+loss_T    = 0.5 * (y_T - mu_T)^2 / sigma_T^2 + 0.5 * log sigma_T^2
+```
+
+This gives the desired "measured error divided by predicted error" form while penalizing inflated uncertainty through
+the log-variance term. It also gives a Kalman-style update rate:
+
+```text
+K       = P H^T (H P H^T + R)^-1
+mu_post = mu_prior + K (y - H mu_prior)
+```
+
+The pseudoinverse is therefore a special low-information case; the covariance-aware update is the version needed when
+operator estimates and judge channels are correlated.
+
+The product version treats the model-predicted operator superposition and graph-predicted operator superposition as
+two experts. Their product, or weighted geometric mean, is a product-of-experts prior over the latent relation:
+
+```text
+g_prior = prod_i mu_model,i ^ alpha_i * prod_j mu_graph,j ^ beta_j
+```
+
+Replacing the model expert with a judge expert gives an analogous measurement:
+
+```text
+g_meas = prod_i mu_judge,i ^ alpha_i * prod_j mu_graph,j ^ beta_j
+```
+
+An update can then be written in log-product space. Let `ell_prior = log g_prior`, `ell_meas = log g_meas`, prior
+variance `P_ell`, and measurement variance `R_ell`. The scalar Kalman-like update is:
+
+```text
+K_ell        = P_ell / (P_ell + R_ell)
+ell_post     = ell_prior + K_ell * (ell_meas - ell_prior)
+g_post       = exp(ell_post)
+```
+
+In vector form this becomes the same covariance-weighted update as above, with `H` mapping latent operator logits or
+log-memberships into the observed product channel. This is a trainable PoE model: the exponents, operator
+superposition weights, and error covariances can be learned on held-out node-disjoint data by minimizing calibrated
+negative log likelihood in the product space.
+
+The caveat is that a raw product is not automatically a likelihood for measured error. For memberships in `[0, 1]`, a
+product is an AND-like quantity; values greater than one only make sense after moving to odds, likelihood ratios, or
+another positive evidence scale. Error propagation also requires the covariance terms:
+
+```text
+p = x y
+Var(p) ~= y^2 Var(x) + x^2 Var(y) + 2xy Cov(x, y)
+```
+
+Equivalently, for a geometric mean `g = sqrt(xy)`:
+
+```text
+Var(log g) ~= 0.25 * [Var(log x) + Var(log y) + 2 Cov(log x, log y)]
+Var(g)     ~= g^2 Var(log g)
+```
+
+Thus the product-Kalman view is promising precisely when it is trained as a correlated PoE rather than assumed as an
+independent PoE. The empirical question becomes whether the product-space update improves held-out log loss,
+calibration, and margin-gated selective risk over the additive joint covariance model and over naive independent PoE
+controls. The present `Sigma(hop)` result supplies one ingredient for that program: it shows that predicted-error
+geometry changes with graph position, which is exactly the information a Kalman-like PoE update would need.
 
 ## Limitations
 
@@ -264,6 +338,10 @@ prefixes and batch size 128 on CUDA.
 - Gelman, A. and Loken, E. (2013). The garden of forking paths. Unpublished manuscript; submission drafts may also
   cite the later *American Scientist* discussion depending on venue expectations.
 - Zheng, L. et al. (2023). Judging LLM-as-a-judge with MT-Bench and Chatbot Arena.
+- Kalman, R. E. (1960). A new approach to linear filtering and prediction problems.
+  *Journal of Basic Engineering*, 82(1), 35-45.
+- Hinton, G. E. (2002). Training products of experts by minimizing contrastive divergence.
+  *Neural Computation*, 14(8), 1771-1800.
 
 ## Submission Readiness Checklist
 
@@ -274,6 +352,8 @@ prefixes and batch size 128 on CUDA.
 - Pin the judge model/API version if the provider exposes one; otherwise state that `gpt-5.5-low` is a run label and
   the hashed raw response file is the reproducible judge-output record.
 - Generate the null-distribution and covariance-curve figures from the saved run artifacts.
+- If carrying the Product-Kalman PoE alternate forward, evaluate it against additive joint-covariance and naive-PoE
+  controls on held-out node-disjoint splits with log loss, calibration, and margin-gated selective risk.
 - Decide whether to position this as a workshop note, arXiv technical report, or methods appendix for the broader
   UnifyWeaver relation-modeling work.
 - Run one independent-judge audit sample, or explicitly frame single-judge labels as a limitation rather than a
