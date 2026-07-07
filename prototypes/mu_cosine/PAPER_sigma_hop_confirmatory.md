@@ -187,6 +187,8 @@ predicted-error covariance `V` required by a calibrated loss of the form
 mechanism with an error-geometry mechanism; the cleaner relationship is that PoE-style aggregation can propose
 `mu`, while conditional covariance supplies the likelihood geometry around it.
 
+The fuller design treatment is recorded separately in `DESIGN_product_kalman_poe.md`.
+
 One possible downstream extension is to treat the transitive-parent operator as a noisy superposition of simpler
 operators. In the additive version, a transitive-parent label is modeled as a weighted mixture of a
 directional/asymmetric operator and a symmetric/associative operator:
