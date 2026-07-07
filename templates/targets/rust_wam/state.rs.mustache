@@ -453,6 +453,12 @@ pub struct WamState {
     pub code: Vec<Instruction>,
     /// Label -> PC mapping.
     pub labels: HashMap<String, usize>,
+    /// Runtime-extensible dynamic clause store populated by asserta/assertz.
+    /// Keys are predicate indicators such as "edge/2"; values are fact terms
+    /// or ":-/2" rule terms. Dynamic DB mutations intentionally live outside
+    /// choice point snapshots, matching Prolog's logical update behavior for
+    /// assert/retract side effects.
+    pub dynamic_db: HashMap<String, Vec<Value>>,
     /// Pre-indexed 2-column atom facts keyed by predicate then first argument.
     pub indexed_atom_fact2: HashMap<String, HashMap<String, Vec<String>>>,
     /// Pre-indexed weighted 3-column edge facts keyed by predicate then source node.
@@ -679,6 +685,7 @@ impl WamState {
             choice_points: Vec::new(),
             code,
             labels,
+            dynamic_db: HashMap::new(),
             indexed_atom_fact2: HashMap::new(),
             indexed_weighted_edge: HashMap::new(),
             atom_intern: HashMap::new(),
@@ -2717,6 +2724,8 @@ impl WamState {
     pub fn resolve_label(&self, label: &str) -> Option<usize> {
         self.labels.get(label).copied()
     }
+
+{{dynamic_db_methods}}
 
     /// Fetch the current instruction.
     pub fn fetch(&self) -> Option<&Instruction> {
