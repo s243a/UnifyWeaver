@@ -24,6 +24,7 @@ from emit_direction_blend import parse_responses
 from emit_transitive_hops import hit_prob
 from eval_relatedness import build_model
 from mu_attention import OPS, Tokenizer, load_dag
+from sample_sigma_hop_fresh_corpus import FreshCorpusError, LmdbTitleGraph, load_lmdb_slice_maps
 
 
 DIR = ["subcategory", "subtopic", "element_of", "super_category"]
@@ -260,6 +261,63 @@ def assert_no_node_overlap(pairs, exploratory_graph):
     return overlap
 
 
+def degree_from_maps(parents, children):
+    nodes = set(parents) | set(children)
+    return {
+        node: len(parents.get(node, ())) + len(children.get(node, ()))
+        for node in nodes
+    }
+
+
+def load_feature_graph(
+    graph,
+    candidate_lmdb,
+    lmdb_root,
+    exploratory_graph,
+    title_i2s_db="title_i2s",
+    title_s2i_db="title_s2i",
+    lmdb_no_lock=False,
+):
+    """Return parents/children/degree maps for confirmatory feature construction.
+
+    TSV keeps backward compatibility with the exploratory runner. LMDB reuses the sampler's retained-slice
+    traversal so `hit_prob` is computed on the same no-overlap/admin-filtered graph that produced the fresh pairs.
+    """
+    if graph:
+        parents, children, deg = load_dag(graph)
+        return parents, children, deg, {}
+
+    if not candidate_lmdb:
+        raise ConfirmatoryInputError("one of --graph or --candidate-lmdb is required")
+    if not lmdb_root:
+        raise ConfirmatoryInputError("--candidate-lmdb requires --lmdb-root for confirmatory feature construction")
+    if not exploratory_graph:
+        raise ConfirmatoryInputError("--exploratory-graph is required for LMDB no-overlap graph filtering")
+
+    exploratory_nodes = load_exploratory_nodes(exploratory_graph)
+    lmdb_graph = LmdbTitleGraph(candidate_lmdb, title_i2s_db, title_s2i_db, lock=not lmdb_no_lock)
+    try:
+        root_id = lmdb_graph.node_id(lmdb_root)
+        root_title, slice_nodes, parents, children, stats = load_lmdb_slice_maps(
+            lmdb_graph, root_id, exploratory_nodes
+        )
+    except FreshCorpusError as exc:
+        raise ConfirmatoryInputError(str(exc)) from exc
+    finally:
+        lmdb_graph.close()
+
+    if not slice_nodes:
+        raise ConfirmatoryInputError(f"LMDB root `{lmdb_root}` produced an empty retained feature graph")
+    deg = degree_from_maps(parents, children)
+    return parents, children, deg, {
+        "feature_graph_source": "lmdb",
+        "feature_graph_lmdb": candidate_lmdb,
+        "feature_graph_root": root_title,
+        "feature_graph_slice_nodes": len(slice_nodes),
+        "feature_graph_lmdb_stats": dict(sorted(stats.items())),
+    }
+
+
 def load_confirmatory_labels(score_in, responses, prefix, exploratory_graph):
     pairs, hop, D, S = load_scored_pairs(score_in, responses, prefix=prefix)
     assert_no_node_overlap(pairs, exploratory_graph)
@@ -281,8 +339,8 @@ def load_e5_cache_and_filter(pairs, hop, D, S, e5_cache):
     return cache, idx, filtered_pairs, hop[keep], D[keep], S[keep]
 
 
-def build_confirmatory_features(pairs, cache, idx, graph, model_path, device):
-    parents, _, deg = load_dag(graph)
+def build_confirmatory_features(pairs, cache, idx, graph, model_path, device, **feature_graph_kwargs):
+    parents, _, deg, _ = load_feature_graph(graph=graph, **feature_graph_kwargs)
     tokenizer = Tokenizer(cache["query"], cache["passage"], idx, parents, deg)
     model = build_model(model_path, device)
 
@@ -302,16 +360,20 @@ def build_confirmatory_features(pairs, cache, idx, graph, model_path, device):
     return np.column_stack([muD, muS, gd, np.ones(len(pairs))])
 
 
-def build_confirmatory_data_from_labels(pairs, hop, D, S, e5_cache, graph, model_path, device):
+def build_confirmatory_data_from_labels(pairs, hop, D, S, e5_cache, graph, model_path, device, **feature_graph_kwargs):
     cache, idx, pairs, hop, D, S = load_e5_cache_and_filter(pairs, hop, D, S, e5_cache)
     validate_hop_range(hop)
-    X = build_confirmatory_features(pairs, cache, idx, graph, model_path, device)
+    X = build_confirmatory_features(pairs, cache, idx, graph, model_path, device, **feature_graph_kwargs)
     return ConfirmatoryData(pairs=pairs, hop=hop, D=D, S=S, X=X)
 
 
-def build_confirmatory_data(score_in, responses, e5_cache, graph, model_path, device, prefix, exploratory_graph):
+def build_confirmatory_data(
+    score_in, responses, e5_cache, graph, model_path, device, prefix, exploratory_graph, **feature_graph_kwargs
+):
     pairs, hop, D, S = load_confirmatory_labels(score_in, responses, prefix, exploratory_graph)
-    return build_confirmatory_data_from_labels(pairs, hop, D, S, e5_cache, graph, model_path, device)
+    return build_confirmatory_data_from_labels(
+        pairs, hop, D, S, e5_cache, graph, model_path, device, **feature_graph_kwargs
+    )
 
 
 def _one_line(value):
@@ -372,7 +434,13 @@ def main():
     ap.add_argument("--score-in", required=True)
     ap.add_argument("--responses", required=True)
     ap.add_argument("--e5-cache", required=True)
-    ap.add_argument("--graph", required=True)
+    graph_source = ap.add_mutually_exclusive_group(required=True)
+    graph_source.add_argument("--graph", help="child<TAB>parent TSV graph for feature construction")
+    graph_source.add_argument("--candidate-lmdb", help="Phase-1 category LMDB graph for feature construction")
+    ap.add_argument("--lmdb-root", help="selected retained LMDB slice root, e.g. the sampled root recorded in the manifest")
+    ap.add_argument("--title-i2s-db", default="title_i2s", help="LMDB uint32 id -> real category title sub-db")
+    ap.add_argument("--title-s2i-db", default="title_s2i", help="LMDB real category title -> uint32 id sub-db")
+    ap.add_argument("--lmdb-no-lock", action="store_true", help="open candidate LMDB with lock=False; use only for immutable fixtures")
     ap.add_argument("--model", default="model_prod.pt")
     ap.add_argument("--prefix", default="transitive_h")
     ap.add_argument("--exploratory-graph", required=True, help="PR #3517 100k_cats/category_parent.tsv for required no-overlap check")
@@ -417,7 +485,15 @@ def main():
         if not splits:
             raise ConfirmatoryInputError("no valid descendant-disjoint splits survived e5-cache filtering")
 
-        X = build_confirmatory_features(pairs, cache, idx, args.graph, args.model, device)
+        feature_graph_kwargs = {
+            "candidate_lmdb": args.candidate_lmdb,
+            "lmdb_root": args.lmdb_root,
+            "exploratory_graph": args.exploratory_graph,
+            "title_i2s_db": args.title_i2s_db,
+            "title_s2i_db": args.title_s2i_db,
+            "lmdb_no_lock": args.lmdb_no_lock,
+        }
+        X = build_confirmatory_features(pairs, cache, idx, args.graph, args.model, device, **feature_graph_kwargs)
         data = ConfirmatoryData(pairs=pairs, hop=hop, D=D, S=S, X=X)
     except ConfirmatoryInputError as exc:
         raise SystemExit(str(exc)) from exc
