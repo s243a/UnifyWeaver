@@ -267,7 +267,7 @@ def _build_lmdb(path, edges, titles, meta=None):
     return True
 
 
-def _lmdb_chain_fixture(path, identity_titles=False, scoped=False):
+def _lmdb_chain_fixture(path, identity_titles=False, scoped=False, missing_title_branch=False):
     root = 1
     edges = []
     titles = {root: "Fresh_root"}
@@ -286,6 +286,10 @@ def _lmdb_chain_fixture(path, identity_titles=False, scoped=False):
             edges.append((child, parent))
             titles[child] = f"fresh_{i}_{d}"
             parent = child
+    if missing_title_branch:
+        edges.append((999, root))
+        edges.append((1000, 999))
+        titles[1000] = "Titled_descendant_under_missing_parent"
     if identity_titles:
         titles = {node_id: str(node_id) for node_id in titles}
     return _build_lmdb(path, edges, titles, meta=meta)
@@ -325,6 +329,40 @@ def test_cli_writes_from_lmdb_real_title_layer():
         assert m["title_i2s_db"] == "title_i2s"
         assert m["title_s2i_db"] == "title_s2i"
         assert m["hop_counts"] == {"1": 2, "2": 2, "3": 2, "4": 2, "5": 2}
+
+
+
+def test_cli_skips_lmdb_nodes_missing_title_entries():
+    with tempfile.TemporaryDirectory() as td:
+        lmdb_dir = os.path.join(td, "candidate.lmdb")
+        if not _lmdb_chain_fixture(lmdb_dir, missing_title_branch=True):
+            print("  skip test_cli_skips_lmdb_nodes_missing_title_entries (python-lmdb unavailable)")
+            return
+        exploratory = os.path.join(td, "exploratory.tsv")
+        out = os.path.join(td, "pairs.tsv")
+        manifest = os.path.join(td, "manifest.json")
+        _write(exploratory, "child\tparent\nold_child\told_parent\n")
+
+        _run_cli([
+            "sample_sigma_hop_fresh_corpus.py",
+            "--candidate-lmdb", lmdb_dir,
+            "--exploratory-graph", exploratory,
+            "--root", "Fresh_root",
+            "--pairs", "10",
+            "--hmax", "5",
+            "--min-descendants", "10",
+            "--out", out,
+            "--manifest", manifest,
+            "--allow-small-sample",
+        ])
+
+        rows = [ln.rstrip("\n").split("\t") for ln in open(out, encoding="utf-8") if not ln.startswith("#")]
+        assert rows
+        assert all("999" not in row[0] and "999" not in row[1] for row in rows)
+        with open(manifest, encoding="utf-8") as f:
+            m = json.load(f)
+        stats = m["selected_lmdb_slice_stats"]
+        assert stats["missing_title_nodes"] == 1
 
 
 def test_cli_uses_lmdb_meta_scoped_root_when_root_omitted():

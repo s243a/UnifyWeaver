@@ -323,12 +323,14 @@ class LmdbTitleGraph:
             return None
         return int(text)
 
-    def title(self, node_id):
+    def title(self, node_id, missing_ok=False):
         node_id = int(node_id)
         if node_id in self._title_cache:
             return self._title_cache[node_id]
         raw = self.txn.get(enc_id(node_id), db=self.title_i2s)
         if raw is None:
+            if missing_ok:
+                return None
             raise FreshCorpusError(f"candidate LMDB title layer lacks node id {node_id}")
         title = bytes(raw).decode("utf-8")
         if is_identity_numeric_title(node_id, title):
@@ -383,11 +385,14 @@ def title_block_reason(title, exploratory_nodes):
 def load_lmdb_slice_maps(graph, root_id, exploratory_nodes, slice_depth=None):
     stats = Counter()
 
-    def title_for(node_id):
+    def title_for(node_id, missing_ok=True):
         stats["title_lookups"] += 1
-        return graph.title(node_id)
+        title = graph.title(node_id, missing_ok=missing_ok)
+        if title is None:
+            stats["missing_title_nodes"] += 1
+        return title
 
-    root_title = title_for(root_id)
+    root_title = title_for(root_id, missing_ok=False)
     reason = title_block_reason(root_title, exploratory_nodes)
     if reason:
         stats[reason] += 1
@@ -405,6 +410,8 @@ def load_lmdb_slice_maps(graph, root_id, exploratory_nodes, slice_depth=None):
         child_records = []
         for child_id in child_ids:
             child_title = title_for(child_id)
+            if child_title is None:
+                continue
             reason = title_block_reason(child_title, exploratory_nodes)
             if reason:
                 stats[reason] += 1
@@ -418,18 +425,18 @@ def load_lmdb_slice_maps(graph, root_id, exploratory_nodes, slice_depth=None):
 
     parents, children = {}, {}
     for node_id in kept_ids:
-        title = title_for(node_id)
+        title = title_for(node_id, missing_ok=False)
         parents.setdefault(title, set())
         children.setdefault(title, set())
 
-    for child_id in sorted(kept_ids, key=lambda nid: sort_key(title_for(nid))):
-        child_title = title_for(child_id)
+    for child_id in sorted(kept_ids, key=lambda nid: sort_key(title_for(nid, missing_ok=False))):
+        child_title = title_for(child_id, missing_ok=False)
         parent_ids = graph.parents(child_id)
         stats["parent_edges_examined"] += len(parent_ids)
         for parent_id in parent_ids:
             if parent_id not in kept_ids:
                 continue
-            parent_title = title_for(parent_id)
+            parent_title = title_for(parent_id, missing_ok=False)
             parents[child_title].add(parent_title)
             children[parent_title].add(child_title)
             stats["retained_edges"] += 1
@@ -465,10 +472,16 @@ def lmdb_candidate_root_ids(graph, roots, scope_root):
 
 
 def first_eligible_lmdb_roots(graph, root_ids, exploratory_nodes, excluded_roots, hmax, targets, min_descendants, slice_depth):
-    candidates = sorted(root_ids, key=lambda nid: sort_key(graph.title(nid)))
+    candidate_records = []
+    skipped_missing_title_roots = 0
+    for root_id in root_ids:
+        root_title = graph.title(root_id, missing_ok=True)
+        if root_title is None:
+            skipped_missing_title_roots += 1
+            continue
+        candidate_records.append((sort_key(root_title), root_id, root_title))
     attempts = []
-    for root_id in candidates:
-        root_title = graph.title(root_id)
+    for _key, root_id, root_title in sorted(candidate_records):
         if root_title in excluded_roots or ADMIN.search(root_title):
             continue
         root_title, slice_nodes, parents, children, stats = load_lmdb_slice_maps(
@@ -493,9 +506,12 @@ def first_eligible_lmdb_roots(graph, root_ids, exploratory_nodes, excluded_roots
         if ok:
             return (root_title,), slice_nodes, pool, {
                 "candidate_root_attempts": attempts,
+                "skipped_candidate_roots_missing_title": skipped_missing_title_roots,
                 "selected_root_id": root_id,
                 "selected_lmdb_slice_stats": dict(sorted(stats.items())),
             }
+    if skipped_missing_title_roots:
+        attempts.append({"skipped_candidate_roots_missing_title": skipped_missing_title_roots})
     raise FreshCorpusError("no eligible LMDB root slice supplied enough no-overlap pairs for every hop")
 
 
