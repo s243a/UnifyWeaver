@@ -301,15 +301,38 @@ shared temporary, arithmetic, and unification — and end to end
 constant-operand (`6*7`) and variable-operand (`R is A+B` after `A=40, B=2`)
 forms compile from source and run to `42`.
 
-**Still to do in Stage C (follow-on):** non-tail predicate calls (`call` +
-`proceed`) with a permanent holding the result across the call, and nested
-arithmetic expressions (recursive `put_structure`). These extend the same
-allocator; the serializer (labels + functor table) already covers what they
-emit.
+**Non-tail predicate calls — LANDED (the unified compiler).** `cgfull/2` merges
+every Stage C piece into one multi-clause compiler: labels + PC table, per-clause
+register allocation, conjunction, runtime arithmetic + functor table, and now
+non-tail predicate-call goals. A call goal `p(Args)` stages A1.. with the args
+(`operand_instr`) then `call(CalleeLabel, arity)` (tag 18) — a *non-tail* call:
+`cp` = the next PC, so execution resumes after the call when the callee
+proceeds, and a permanent (any variable spanning the call, made a Y-register by
+the allocator) carries the result forward. Each clause is `copy_term`'d +
+`numbervars`'d so its variables are clause-local; facts emit head + `proceed`
+(no env). Verified byte-identical to the host writer for
+`[(mnt(R):-helper(A), R=A), helper(42)]`, and end to end
+(`tests/test_wam_object.pl:selfhost_codegen_stage_c_nontail_call`): a passthrough
+call (`mnt` → `helper` → 42) and a compute call whose callee does arithmetic
+(`main0` calls `add1(41,V)`, `add1(X,Y):-Y is X+1`, → 42) both run.
 
-**Deliverable:** the compiler handles the clause shapes a small hand-written
-grammar uses — the point at which "compile a grammar at runtime from source"
-becomes real for non-trivial grammars.
+*Runtime fix this surfaced:* the transient **arena** (put_structure / `=..` /
+reader workspace) was 1 MiB and grows monotonically within a top-level call;
+`wam_arena_alloc` returns null past the cap and callers do not check, so an
+allocation-heavy grammar — a compiler assembling instruction/code lists via
+`append` — silently exhausted it and segfaulted. Enlarged to 16 MiB (headroom
+for compiler workloads). This is why cgfull can now compile a program mixing
+calls *and* arithmetic (which crossed 1 MiB) rather than only one or the other.
+
+**Remaining:** nested arithmetic expressions (recursive `put_structure`) and
+last-call optimization (a tail call as `execute` rather than `call`+`proceed`).
+Both are codegen refinements; the mechanisms are all in place.
+
+**Deliverable — met:** the compiler handles the clause shapes a small
+hand-written grammar uses (multi-clause, conjunction, register allocation,
+unification, arithmetic, predicate calls) — "compile a grammar at runtime from
+source" is now real for non-trivial grammars. Stage D widens the accepted subset
+toward the compiler compiling itself.
 
 ### Stage D — widen toward the compiler's own subset (the fixpoint)
 
