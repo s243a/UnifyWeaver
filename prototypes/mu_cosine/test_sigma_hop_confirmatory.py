@@ -13,8 +13,11 @@ import numpy as np
 
 from sigma_hop_confirmatory import (
     ConfirmatoryData,
+    ConfirmatoryInputError,
+    OverlapError,
     assert_no_node_overlap,
     descendant_disjoint_split,
+    load_scored_pairs,
     permutation_test,
     validate_preregistered_cli,
     valid_splits,
@@ -35,8 +38,14 @@ def _synthetic_data(n_desc=24, seed=0):
     hop = np.array(hop)
     D = np.array(D)
     S = np.array(S)
-    X = np.ones((len(pairs), 1))
-    return ConfirmatoryData(pairs=pairs, hop=hop, D=D, S=S, X=X)
+    n = len(pairs)
+    X = np.column_stack([
+        rng.uniform(0.1, 0.9, n),
+        rng.uniform(0.1, 0.9, n),
+        rng.uniform(0.0, 1.0, n),
+        np.ones(n),
+    ])
+    return ConfirmatoryData(pairs=tuple(pairs), hop=hop, D=D, S=S, X=X)
 
 
 def test_descendant_disjoint_split_keeps_all_hops_together():
@@ -55,10 +64,20 @@ def test_assert_no_node_overlap_blocks_exploratory_nodes():
     try:
         try:
             assert_no_node_overlap([("fresh_child", "old_parent")], path)
-        except SystemExit as exc:
+        except OverlapError as exc:
             assert "overlap exploratory graph nodes" in str(exc)
         else:
             raise AssertionError("expected overlap check to abort")
+    finally:
+        os.unlink(path)
+
+
+def test_assert_no_node_overlap_allows_clean_pairs():
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
+        f.write("old_child\told_parent\n")
+        path = f.name
+    try:
+        assert assert_no_node_overlap((("fresh_child", "fresh_parent"),), path) == []
     finally:
         os.unlink(path)
 
@@ -68,7 +87,7 @@ def test_permutation_result_reports_preregistered_decision_fields():
     splits, skipped = valid_splits(data, range(4), min_train=30, min_held=12)
     assert len(splits) == 4
     assert skipped == []
-    result = permutation_test(data, splits, k=5, seed=2)
+    result = permutation_test(data, splits, k=5, seed=2, allow_small_k=True)
     for key in [
         "mean_gain",
         "constant_nll",
@@ -77,11 +96,46 @@ def test_permutation_result_reports_preregistered_decision_fields():
         "null_p95",
         "permutation_k",
         "permutation_p",
+        "decision_inputs",
         "confirmed",
+        "decision",
     ]:
         assert key in result
     assert result["permutation_k"] == 5
     assert 0 < result["permutation_p"] <= 1
+
+
+def test_permutation_test_rejects_small_k_by_default():
+    data = _synthetic_data()
+    splits, _ = valid_splits(data, range(4), min_train=30, min_held=12)
+    try:
+        permutation_test(data, splits, k=999, seed=2)
+    except ValueError as exc:
+        assert "k >= 1000" in str(exc)
+    else:
+        raise AssertionError("expected confirmatory permutation K guard to abort")
+
+
+def test_load_scored_pairs_reports_bad_hop_with_context():
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as score, tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", delete=False
+    ) as resp:
+        score.write("child\tparent\tx\ty\ttransitive_hx\n")
+        resp.write(
+            '[{"id": 0, "subcategory": {"mu_fwd": 0.7}, "assoc": {"mu": 0.2}}]'
+        )
+        score_path, resp_path = score.name, resp.name
+    try:
+        try:
+            load_scored_pairs(score_path, resp_path)
+        except ConfirmatoryInputError as exc:
+            assert "cannot parse hop count" in str(exc)
+            assert "row 0" in str(exc)
+        else:
+            raise AssertionError("expected malformed hop to abort")
+    finally:
+        os.unlink(score_path)
+        os.unlink(resp_path)
 
 
 def test_cli_guard_rejects_non_preregistered_split_protocol():
@@ -92,6 +146,16 @@ def test_cli_guard_rejects_non_preregistered_split_protocol():
         assert "non-preregistered split protocol" in str(exc)
     else:
         raise AssertionError("expected non-preregistered protocol to abort")
+
+
+def test_cli_guard_rejects_too_few_permutations():
+    args = Namespace(splits=40, held_frac=0.30, min_train=30, min_held=12, permutations=999)
+    try:
+        validate_preregistered_cli(args)
+    except SystemExit as exc:
+        assert "permutations must be >= 1000" in str(exc)
+    else:
+        raise AssertionError("expected too-few permutations to abort")
 
 
 if __name__ == "__main__":

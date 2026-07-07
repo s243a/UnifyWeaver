@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import sys
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -27,11 +28,21 @@ from mu_attention import OPS, Tokenizer, load_dag
 
 DIR = ["subcategory", "subtopic", "element_of", "super_category"]
 SYM = ["see_also", "assoc"]
+SCHEMA_VERSION = 1
+EXPECTED_HOPS = {1, 2, 3, 4, 5}
 
 
-@dataclass
+class ConfirmatoryInputError(ValueError):
+    pass
+
+
+class OverlapError(ConfirmatoryInputError):
+    pass
+
+
+@dataclass(frozen=True)
 class ConfirmatoryData:
-    pairs: list[tuple[str, str]]
+    pairs: tuple[tuple[str, str], ...]
     hop: np.ndarray
     D: np.ndarray
     S: np.ndarray
@@ -45,6 +56,7 @@ def sigma_of_hop(params, hop):
 
 
 def biv_nll(rD, rS, sD, sS, rho):
+    # Apply the same numerical boundary to sample-rho baselines and tanh-parametrized smooth rhos.
     rho = np.clip(rho, -0.98, 0.98)
     sD = np.maximum(sD, 1e-6)
     sS = np.maximum(sS, 1e-6)
@@ -70,12 +82,15 @@ def fit_sigma_of_hop(rD, rS, hop):
         sD, sS, rho = sigma_of_hop(params, hop)
         return biv_nll(rD, rS, sD, sS, rho).mean()
 
-    return minimize(
+    result = minimize(
         objective,
         p0,
         method="Nelder-Mead",
         options={"maxiter": 5000, "xatol": 1e-5, "fatol": 1e-7},
-    ).x
+    )
+    if not result.success:
+        warnings.warn(f"Nelder-Mead did not converge while fitting Sigma(hop): {result.message}")
+    return result.x
 
 
 def descendant_disjoint_split(pairs, seed, held_frac=0.30):
@@ -89,6 +104,12 @@ def descendant_disjoint_split(pairs, seed, held_frac=0.30):
 
 
 def residuals_for_split(D, S, X, train, held):
+    rank = np.linalg.matrix_rank(X[train])
+    if rank < X.shape[1]:
+        warnings.warn(
+            f"rank-deficient residual mean design on split: rank {rank} < {X.shape[1]}; "
+            "using numpy lstsq minimum-norm solution"
+        )
     out = []
     for y in (D, S):
         beta, *_ = np.linalg.lstsq(X[train], y[train], rcond=None)
@@ -143,20 +164,27 @@ def mean_gain(data, splits, hop_for_sigma):
     }
 
 
-def permutation_test(data, splits, k=1000, seed=1):
+def permutation_test(data, splits, k=1000, seed=1, allow_small_k=False):
+    if k < 1000 and not allow_small_k:
+        raise ValueError("permutation_test requires k >= 1000 for confirmatory use")
     observed = mean_gain(data, splits, data.hop)
     rng = np.random.default_rng(seed)
+    # Sequential RNG use is intentional: it gives a reproducible ordered stream of hop shuffles for the audit log.
     null = np.array(
         [mean_gain(data, splits, data.hop[rng.permutation(len(data.hop))])["mean_gain"] for _ in range(k)]
     )
     p = (1 + int(np.sum(null >= observed["mean_gain"]))) / (k + 1)
+    confirmed = bool(observed["mean_gain"] > 0 and p < 0.01)
     return {
         **observed,
         "null_mean": float(null.mean()),
         "null_p95": float(np.percentile(null, 95)),
         "permutation_k": int(k),
         "permutation_p": float(p),
-        "confirmed": bool(observed["mean_gain"] > 0 and p < 0.01),
+        "decision_inputs": {"mean_gain": float(observed["mean_gain"]), "permutation_p": float(p)},
+        # The positive-gain check repeats the preregistered direction even though the p-value is upper-tail.
+        "confirmed": confirmed,
+        "decision": "confirmed" if confirmed else "not confirmed",
     }
 
 
@@ -166,17 +194,45 @@ def gmu(obj, rel):
 
 
 def load_scored_pairs(score_in, responses, prefix="transitive_h"):
-    rows = [ln.rstrip("\n").split("\t") for ln in open(score_in, encoding="utf-8") if not ln.startswith("#")]
+    with open(score_in, encoding="utf-8") as fh:
+        rows = [ln.rstrip("\n").split("\t") for ln in fh if not ln.startswith("#")]
     byid = parse_responses(responses)
     pairs, hop, D, S = [], [], [], []
+    dropped_no_response = 0
+    dropped_malformed = 0
     for idx, row in enumerate(rows):
-        if idx not in byid or len(row) < 5 or not row[4].startswith(prefix):
+        if len(row) < 5:
+            dropped_malformed += 1
             continue
+        if not row[4].startswith(prefix):
+            continue
+        if idx not in byid:
+            dropped_no_response += 1
+            continue
+        raw_hop = row[4][len(prefix) :]
+        try:
+            h = int(raw_hop)
+        except ValueError as exc:
+            raise ConfirmatoryInputError(
+                f"cannot parse hop count {raw_hop!r} from row {idx} in {score_in}"
+            ) from exc
         pairs.append((row[0], row[1]))
-        hop.append(int(row[4][len(prefix) :]))
-        D.append(max(gmu(byid[idx], rel) for rel in DIR))
-        S.append(max(gmu(byid[idx], rel) for rel in SYM))
-    return pairs, np.array(hop), np.array(D), np.array(S)
+        hop.append(h)
+        D.append(max((gmu(byid[idx], rel) for rel in DIR), default=0.0))
+        S.append(max((gmu(byid[idx], rel) for rel in SYM), default=0.0))
+    if dropped_malformed:
+        warnings.warn(f"{dropped_malformed} malformed score rows ignored in {score_in}")
+    if dropped_no_response:
+        warnings.warn(f"{dropped_no_response} {prefix} rows dropped: no LLM response found in {responses}")
+    if not pairs:
+        raise ConfirmatoryInputError(f"no scored {prefix} pairs with responses found in {score_in}")
+    return tuple(pairs), np.array(hop), np.array(D), np.array(S)
+
+
+def validate_hop_range(hop):
+    got = {int(h) for h in set(hop)}
+    if got != EXPECTED_HOPS:
+        raise ConfirmatoryInputError(f"expected hop levels {sorted(EXPECTED_HOPS)}, got {sorted(got)}")
 
 
 def load_exploratory_nodes(graph_path):
@@ -194,28 +250,38 @@ def load_exploratory_nodes(graph_path):
 
 def assert_no_node_overlap(pairs, exploratory_graph):
     if not exploratory_graph:
-        return []
+        raise ConfirmatoryInputError("--exploratory-graph is required for the preregistered no-overlap check")
     exploratory_nodes = load_exploratory_nodes(exploratory_graph)
     confirmatory_nodes = {n for pair in pairs for n in pair}
     overlap = sorted(confirmatory_nodes & exploratory_nodes)
     if overlap:
         preview = ", ".join(overlap[:10])
-        raise SystemExit(
-            f"confirmatory pairs overlap exploratory graph nodes ({len(overlap)} total): {preview}"
-        )
+        raise OverlapError(f"confirmatory pairs overlap exploratory graph nodes ({len(overlap)} total): {preview}")
     return overlap
 
 
-def build_confirmatory_data(score_in, responses, e5_cache, graph, model_path, device, prefix, exploratory_graph=None):
+def load_confirmatory_labels(score_in, responses, prefix, exploratory_graph):
     pairs, hop, D, S = load_scored_pairs(score_in, responses, prefix=prefix)
     assert_no_node_overlap(pairs, exploratory_graph)
+    validate_hop_range(hop)
+    return pairs, hop, D, S
 
+
+def load_e5_cache_and_filter(pairs, hop, D, S, e5_cache):
+    # This project cache is a trusted local torch pickle produced by the scoring pipeline. Do not use untrusted caches.
     cache = torch.load(e5_cache, weights_only=False)
     idx = {name: i for i, name in enumerate(cache["names"])}
-    keep = [i for i, (x, y) in enumerate(pairs) if x in idx and y in idx]
-    pairs = [pairs[i] for i in keep]
-    hop, D, S = hop[keep], D[keep], S[keep]
+    keep = np.array([i for i, (x, y) in enumerate(pairs) if x in idx and y in idx], dtype=int)
+    dropped = len(pairs) - len(keep)
+    if dropped:
+        warnings.warn(f"{dropped}/{len(pairs)} scored pairs dropped: endpoint missing from e5 cache {e5_cache}")
+    if len(keep) == 0:
+        raise ConfirmatoryInputError("no scored pairs survived the e5-cache endpoint filter")
+    filtered_pairs = tuple(pairs[i] for i in keep)
+    return cache, idx, filtered_pairs, hop[keep], D[keep], S[keep]
 
+
+def build_confirmatory_features(pairs, cache, idx, graph, model_path, device):
     parents, _, deg = load_dag(graph)
     tokenizer = Tokenizer(cache["query"], cache["passage"], idx, parents, deg)
     model = build_model(model_path, device)
@@ -233,22 +299,39 @@ def build_confirmatory_data(score_in, responses, e5_cache, graph, model_path, de
     muD = np.maximum(mu("HIER", pairs), mu("HIER", [(y, x) for x, y in pairs]))
     muS = mu("SYM", pairs)
     gd = np.array([hit_prob(parents, x, y) for x, y in pairs])
-    X = np.column_stack([muD, muS, gd, np.ones(len(pairs))])
+    return np.column_stack([muD, muS, gd, np.ones(len(pairs))])
+
+
+def build_confirmatory_data_from_labels(pairs, hop, D, S, e5_cache, graph, model_path, device):
+    cache, idx, pairs, hop, D, S = load_e5_cache_and_filter(pairs, hop, D, S, e5_cache)
+    validate_hop_range(hop)
+    X = build_confirmatory_features(pairs, cache, idx, graph, model_path, device)
     return ConfirmatoryData(pairs=pairs, hop=hop, D=D, S=S, X=X)
+
+
+def build_confirmatory_data(score_in, responses, e5_cache, graph, model_path, device, prefix, exploratory_graph):
+    pairs, hop, D, S = load_confirmatory_labels(score_in, responses, prefix, exploratory_graph)
+    return build_confirmatory_data_from_labels(pairs, hop, D, S, e5_cache, graph, model_path, device)
+
+
+def _one_line(value):
+    return str(value).replace("\r", " ").replace("\n", " ")
 
 
 def render_markdown(result, args, n_pairs, hop_counts, skipped):
     decision = "confirmed" if result["confirmed"] else "not confirmed"
+    corpus_note = _one_line(args.corpus_note)
+    judge_note = _one_line(args.judge_note)
     return f"""# Confirmatory Σ(hop) run
 
 Preregistration: `PREREG_sigma_hop_confirmatory.md`
 
 ```text
-fresh corpus dump/root: {args.corpus_note}
+fresh corpus dump/root: {corpus_note}
 node-overlap check with 100k_cats: passed
 n scored pairs: {n_pairs}
 hop counts: {hop_counts}
-judge/prompt/model: {args.judge_note}
+judge/prompt/model: {judge_note}
 valid descendant-disjoint splits: {result['valid_splits']}
 mean held pairs/split: {result['mean_held_pairs']:.1f}
 observed mean gain: {result['mean_gain']:+.6f}
@@ -302,39 +385,52 @@ def main():
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--json-out", default=None)
     ap.add_argument("--md-out", default=None)
-    ap.add_argument("--corpus-note", default="TODO record dump/root before scoring")
-    ap.add_argument("--judge-note", default="gpt-5.5-low, PR #3517 prompt template")
+    ap.add_argument("--corpus-note", required=True, help="fresh corpus dump/root, recorded before scoring")
+    ap.add_argument("--judge-note", required=True, help="judge model, prompt template, and frozen predictor model provenance")
     args = ap.parse_args()
 
     validate_preregistered_cli(args)
     device = torch.device(args.device)
-    data = build_confirmatory_data(
-        args.score_in,
-        args.responses,
-        args.e5_cache,
-        args.graph,
-        args.model,
-        device,
-        args.prefix,
-        exploratory_graph=args.exploratory_graph,
-    )
-    splits, skipped = valid_splits(
-        data,
-        range(args.splits),
-        held_frac=args.held_frac,
-        min_train=args.min_train,
-        min_held=args.min_held,
-    )
-    if not splits:
-        raise SystemExit("no valid descendant-disjoint splits survived minimum-size guards")
+    try:
+        pairs, hop, D, S = load_confirmatory_labels(args.score_in, args.responses, args.prefix, args.exploratory_graph)
+        preflight = ConfirmatoryData(pairs=pairs, hop=hop, D=D, S=S, X=np.ones((len(pairs), 1)))
+        splits, skipped = valid_splits(
+            preflight,
+            range(args.splits),
+            held_frac=args.held_frac,
+            min_train=args.min_train,
+            min_held=args.min_held,
+        )
+        if not splits:
+            raise ConfirmatoryInputError("no valid descendant-disjoint splits before model inference")
+
+        cache, idx, pairs, hop, D, S = load_e5_cache_and_filter(pairs, hop, D, S, args.e5_cache)
+        validate_hop_range(hop)
+        preflight = ConfirmatoryData(pairs=pairs, hop=hop, D=D, S=S, X=np.ones((len(pairs), 1)))
+        splits, skipped = valid_splits(
+            preflight,
+            range(args.splits),
+            held_frac=args.held_frac,
+            min_train=args.min_train,
+            min_held=args.min_held,
+        )
+        if not splits:
+            raise ConfirmatoryInputError("no valid descendant-disjoint splits survived e5-cache filtering")
+
+        X = build_confirmatory_features(pairs, cache, idx, args.graph, args.model, device)
+        data = ConfirmatoryData(pairs=pairs, hop=hop, D=D, S=S, X=X)
+    except ConfirmatoryInputError as exc:
+        raise SystemExit(str(exc)) from exc
 
     result = permutation_test(data, splits, k=args.permutations, seed=args.perm_seed)
     result.update(
         {
+            "schema_version": SCHEMA_VERSION,
             "n_pairs": len(data.pairs),
             "hop_counts": {int(h): int(np.sum(data.hop == h)) for h in sorted(set(data.hop))},
             "valid_splits": len(splits),
             "skipped_splits": skipped,
+            "split_weighting": "equal_by_split",
             "decision_rule": "confirmed iff mean_gain > 0 and one-sided hop-shuffle p < 0.01",
         }
     )
