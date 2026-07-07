@@ -292,6 +292,16 @@ for any future objective:
   not a coupling strength. Any `λ` (or covariance-correction magnitude) should be **learned / regularized**, **selected
   by held-out validation**, or **absorbed into the covariance-head / shrinkage parameterization** — and regularized /
   gated toward PoE (diagonal / constant covariance) as the default. It is not a knob to set from an observed p-value.
+- **Two distinct `λ` regimes — don't conflate them (there is no universal `λ≤1`).** In the *convex* form
+  `L = (1−λ)·L_PoE + λ·L_joint`, `λ∈[0,1]` is a **shrinkage / trust gate**: `λ=1` is already the *full* joint, so PoE
+  is the **ceiling** and the joint is never weighted beyond the fitted joint likelihood — the conservative default,
+  and the reason a bounded gate implies "joint never above PoE." In the *additive* form `L = L_PoE + λ·ΔL_joint/Σ`,
+  `λ>1` is mathematically allowed but is **not** a shrinkage gate — it amplifies the correction beyond the estimate,
+  so treat it as a **temperature / power-likelihood** parameter that needs normalization/calibration (else it
+  double-counts correlated evidence), and choose it only by held-out NLL/calibration. **If you want the dependence to
+  be as strong as the data supports, don't make `λ` the effect-size limiter at all** — learn `Σ(h, corpus)` (or a
+  precision head) directly, regularized toward diagonal/PoE; then the off-diagonal can be as strong as the data
+  licenses while remaining a *valid* covariance model. Bound `λ∈[0,1]` only when it is explicitly a convex gate.
 - **Conditional, not universal.** Because finding #1 (joint > PoE) is a *discrete* co-occurrence effect that does not
   carry to continuous μ, while the continuous `Σ(hop)` result *does* support conditional covariance modeling, the
   right future objective is **conditional/adaptive** — apply the joint/covariance correction where the conditioning
