@@ -153,8 +153,24 @@
             let cp_stack = self.stack.clone();
             let mut var_map = std::collections::HashMap::new();
             let clause = Self::copy_term_walk(&mut self.var_counter, &mut var_map, &clauses[idx]);
-            if self.dynamic_apply_clause(&clause) {
+            if self.dynamic_apply_clause_solution(&clause, 0) {
                 if idx + 1 < clauses.len() {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: cont_pc,
+                        saved_args: cp_regs.clone(),
+                        stack: cp_stack.clone(),
+                        cp: self.cp,
+                        trail_len: cp_trail,
+                        heap_len: cp_heap,
+                        builtin_state: Some(BuiltinState {
+                            name: "dynamic_call".to_string(),
+                            args: vec![Value::Atom(key.clone())],
+                            data: vec![Value::Integer((idx + 1) as i64), Value::Integer(cont_pc as i64)],
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                if self.dynamic_clause_has_body(&clause) {
                     self.choice_points.push(ChoicePoint {
                         next_pc: cont_pc,
                         saved_args: cp_regs,
@@ -163,9 +179,9 @@
                         trail_len: cp_trail,
                         heap_len: cp_heap,
                         builtin_state: Some(BuiltinState {
-                            name: "dynamic_call".to_string(),
-                            args: vec![Value::Atom(key.clone())],
-                            data: vec![Value::Integer((idx + 1) as i64), Value::Integer(cont_pc as i64)],
+                            name: "dynamic_rule_body".to_string(),
+                            args: vec![clause.clone()],
+                            data: vec![Value::Integer(1), Value::Integer(cont_pc as i64)],
                         }),
                         cut_barrier: self.cut_barrier,
                     });
@@ -181,29 +197,89 @@
         false
     }
 
-    fn dynamic_apply_clause(&mut self, clause: &Value) -> bool {
+    fn dynamic_clause_has_body(&self, clause: &Value) -> bool {
+        matches!(self.dynamic_clause_head_body(clause), Some((_, Some(_))))
+    }
+
+    fn dynamic_apply_clause_solution(&mut self, clause: &Value, solution_idx: usize) -> bool {
         let (head, body) = match self.dynamic_clause_head_body(clause) {
             Some(parts) => parts,
             None => return false,
         };
         if !self.dynamic_unify_head_args(&head) { return false; }
         match body {
-            None => true,
-            Some(body) => self.dynamic_eval_body(&body),
+            None => solution_idx == 0,
+            Some(body) => self.dynamic_eval_body_solution(&body, solution_idx),
         }
     }
 
-    fn dynamic_eval_body(&mut self, body: &Value) -> bool {
+    fn dynamic_eval_body_solution(&mut self, body: &Value, solution_idx: usize) -> bool {
+        let limit = solution_idx.saturating_add(1);
+        let mut solutions = self.dynamic_body_solutions(body, limit);
+        if solutions.len() <= solution_idx { return false; }
+        *self = solutions.remove(solution_idx);
+        true
+    }
+
+    fn dynamic_body_solutions(&self, body: &Value, limit: usize) -> Vec<WamState> {
+        if limit == 0 { return Vec::new(); }
         let body = self.deref_heap(&self.deref_var(body));
         match body {
-            Value::Atom(ref s) if s == "true" => true,
-            Value::Atom(ref s) if s == "fail" || s == "false" => false,
+            Value::Atom(ref s) if s == "true" => vec![self.clone()],
+            Value::Atom(ref s) if s == "fail" || s == "false" => Vec::new(),
             Value::Str(ref f, ref args) if (f == "," || f == ",/2") && args.len() == 2 => {
-                if !self.dynamic_eval_body(&args[0]) { return false; }
-                self.dynamic_eval_body(&args[1])
+                let mut out = Vec::new();
+                for left in self.dynamic_body_solutions(&args[0], limit) {
+                    let remaining = limit.saturating_sub(out.len());
+                    if remaining == 0 { break; }
+                    out.extend(left.dynamic_body_solutions(&args[1], remaining));
+                    if out.len() >= limit { break; }
+                }
+                out
             }
-            other => self.call_goal_value(&other),
+            other => {
+                let mut vm = self.clone();
+                let cp_depth = vm.choice_points.len();
+                let mut out = Vec::new();
+                if vm.call_goal_value(&other) {
+                    loop {
+                        let mut solution = vm.clone();
+                        solution.choice_points.truncate(cp_depth);
+                        out.push(solution);
+                        if out.len() >= limit { break; }
+                        if vm.choice_points.len() <= cp_depth { break; }
+                        if !vm.backtrack() { break; }
+                    }
+                }
+                out
+            }
         }
+    }
+
+    fn dynamic_rule_body_attempt(&mut self, clause: Value, solution_idx: usize, cont_pc: usize) -> bool {
+        let cp_trail = self.trail.len();
+        let cp_heap = self.heap.len();
+        let cp_regs = self.save_regs();
+        let cp_stack = self.stack.clone();
+        if self.dynamic_apply_clause_solution(&clause, solution_idx) {
+            self.choice_points.push(ChoicePoint {
+                next_pc: cont_pc,
+                saved_args: cp_regs,
+                stack: cp_stack,
+                cp: self.cp,
+                trail_len: cp_trail,
+                heap_len: cp_heap,
+                builtin_state: Some(BuiltinState {
+                    name: "dynamic_rule_body".to_string(),
+                    args: vec![clause],
+                    data: vec![Value::Integer((solution_idx + 1) as i64), Value::Integer(cont_pc as i64)],
+                }),
+                cut_barrier: self.cut_barrier,
+            });
+            self.pc = cont_pc;
+            return true;
+        }
+        false
     }
 
     fn dynamic_unify_head_args(&mut self, head: &Value) -> bool {
