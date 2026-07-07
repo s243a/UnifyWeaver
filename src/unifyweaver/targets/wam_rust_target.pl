@@ -4752,6 +4752,10 @@ compile_execute_meta_builtin_to_rust(Code) :-
             self.pc = saved_pc;
             return ok;
         }
+        if self.dynamic_call(key, saved_pc) {
+            self.pc = saved_pc;
+            return true;
+        }
         false
     }'.
 
