@@ -272,3 +272,30 @@ than silently LLM-correcting, which would bury the very signal being measured.
 **Deferred (post-merge, new branch):** either (a) upstream SimpleMind data cleaning (typo `Valves`, drop `"related"`-
 type tag-nodes, filter URL/resource nodes, fix cross-topic lineage), or (b) the explicit-vs-inferred delta pass to
 quantify how much of the flat signature is data vs real. Decision open.
+
+## Future work: objective integration (design recommendation, NOT built here)
+This PR is a **prototype / offline empirical evaluation** and a design update. It does **not** implement a production
+training objective — in particular it does *not* commit to a fixed universal form like
+`L = L_PoE + λ(h,corpus)·ΔL_joint/Σ`. The empirical findings above instead recommend a *conditional/adaptive* shape
+for any future objective:
+
+- **Default to PoE / product-of-marginals as the shrinkage baseline.** Where continuous residual dependence is *not*
+  supported — as in finding #1, where the joint-vs-PoE win **downgraded to a binarized/discrete co-occurrence effect**
+  and did **not** replicate on continuous μ (residual `corr≈0`, permutation `p=1.000`) — the error/objective should
+  fall back to PoE. Treat PoE (diagonal / constant covariance) as the *default* the objective regularizes/gates toward.
+- **Add a learned, hop/corpus-conditioned covariance correction on top — only when it earns it.** Where continuous
+  dependence *is* supported — the multi-hop `Σ(hop)` result, which is continuous and holds (permutation `p=0.001`,
+  K=1000) — model it with a **learned `Σ(hop, corpus)` covariance head** (cf. the 6-parameter smooth `exp/tanh` Σ(hop)
+  built here) or an equivalent **gated correction `λ(h, corpus)`**. Enable the correction **only when it improves
+  held-out NLL** relative to the PoE baseline; otherwise the gate should shrink it away.
+- **`λ` must NOT be hand-picked from a p-value.** The p-values reported here establish *significance of an effect*,
+  not a coupling strength. Any `λ` (or covariance-correction magnitude) should be **learned / regularized**, **selected
+  by held-out validation**, or **absorbed into the covariance-head / shrinkage parameterization** — and regularized /
+  gated toward PoE (diagonal / constant covariance) as the default. It is not a knob to set from an observed p-value.
+- **Conditional, not universal.** Because finding #1 (joint > PoE) is a *discrete* co-occurrence effect that does not
+  carry to continuous μ, while the continuous `Σ(hop)` result *does* support conditional covariance modeling, the
+  right future objective is **conditional/adaptive** — apply the joint/covariance correction where the conditioning
+  feature (hop, corpus) licenses it, rather than imposing a fixed joint model everywhere.
+- **Confirm on a fresh corpus.** The current results are **post-exploratory, not pre-registered** (reached by
+  iterative, reviewer-guided fitting on the same ~250 pairs). Tuning and validating this future objective should
+  therefore target a **fresh held-out corpus** as the confirmatory setting, not the exploratory data used here.
