@@ -12,7 +12,9 @@ Product-of-Experts (PoE) / geometric-mean objective would be simpler.
 
 The short answer is that PoE and joint covariance answer different questions:
 
-- PoE supplies a consensus-style point estimate of `mu`.
+- PoE supplies a consensus-style point estimate of `mu`, often read as a lower-support proxy.
+- The product-of-complements / noisy-OR dual can supply an upper-support proxy.
+- Direct `mu`, lower-product `mu`, and upper-product `mu` can be fused as correlated channels.
 - Sigma(hop) supplies a predicted-error covariance `V(hop)`.
 - A calibrated loss needs both `mu` and `V`.
 
@@ -121,6 +123,33 @@ another positive evidence scale.
 PoE can therefore give a lower-confidence bound or consensus point estimate of membership, but it does not by itself
 say how uncertain that bound is. A calibrated NLL still needs an uncertainty model.
 
+## Lower and upper product proxies
+
+If the plain product is used as a lower-support proxy, the natural dual is a product of complements. For source
+memberships `mu_i` and nonnegative powers `w_i`:
+
+```text
+mu_lower = prod_i mu_i ^ w_i
+mu_upper = 1 - prod_i (1 - mu_i) ^ w_i
+```
+
+`mu_lower` is an AND-style proxy: all sources must support the relation. `mu_upper` is the corresponding noisy-OR /
+non-rejection proxy: the relation remains plausible if any source supports it. The interval
+`[mu_lower, mu_upper]` is a useful disagreement diagnostic, not automatically a calibrated credible interval. It
+widens when sources disagree and narrows when they agree.
+
+A weighted geometric mean is a softened version of the same family:
+
+```text
+mu_geo_lower = prod_i mu_i ^ alpha_i
+mu_geo_upper = 1 - prod_i (1 - mu_i) ^ alpha_i
+sum_i alpha_i = 1
+```
+
+With normalized exponents, `mu_geo_lower` is not a strict lower bound in the order-theoretic sense; it is a
+conservative consensus statistic relative to additive averaging. Calibration still has to be learned or checked on
+held-out data.
+
 ## Product error propagation
 
 If a product is used inside the likelihood, its error needs its own variance. For two random estimates:
@@ -168,6 +197,34 @@ ell_post = ell_prior + K (ell_meas - H ell_prior)
 This is a correlated PoE, not an independent PoE. The exponents, source weights, and covariance terms should be
 learned or calibrated on held-out node-disjoint data.
 
+## Kalman design variants
+
+There are at least three reasonable Kalman-style designs, and they should be compared rather than conflated.
+
+1. **Direct-mu Kalman.** The state is the latent relation strength, usually in `mu`, `logit(mu)`, or log-evidence
+   coordinates. The model's direct `mu` readout is the prior or one measurement channel, and graph/judge evidence
+   updates it with a covariance-aware gain.
+2. **PoE-as-mu Kalman.** The PoE lower/consensus product supplies the prior point estimate `mu_prior`; a judge+graph
+   product supplies a measurement-like channel. Sigma(hop) or another covariance head supplies the predicted-error
+   terms that decide the update rate.
+3. **Joint direct-mu + PoE Kalman.** The observation vector includes the direct `mu` readout, the lower-product proxy,
+   the upper noisy-OR proxy, and any graph/judge channels. The covariance matrix `R` carries their correlations, so
+   the update can use PoE information without double-counting the direct model signal.
+
+A schematic joint-channel form is:
+
+```text
+s = [logit(mu_direct), log(mu_lower), logit(mu_upper), graph_features, judge_features]^T
+s = H ell + epsilon
+epsilon ~ N(0, R)
+K = P H^T (H P H^T + R)^-1
+ell_post = ell_prior + K (s - H ell_prior)
+```
+
+This is the version most aligned with the existing `JointPosterior` lesson: PoE, direct `mu`, and graph/judge signals
+are features of one correlated measurement vector. The Kalman gain should learn how much nonredundant information
+each channel contributes.
+
 ## Why not just weight PoE and joint?
 
 A simple objective such as:
@@ -212,6 +269,8 @@ Treat this as a modeling hypothesis, not a paper claim. Compare on held-out node
 3. **Additive covariance model:** PoE or linear mean plus diagonal/constant covariance.
 4. **Sigma-conditioned covariance:** mean model plus `V(hop)`.
 5. **Product-Kalman PoE:** product/log-evidence mean plus learned product-space covariance/update.
+6. **Joint direct-mu + PoE Kalman:** direct `mu`, lower-product, and upper-noisy-OR channels fused with a learned
+   covariance matrix.
 
 Report:
 
@@ -221,8 +280,8 @@ Report:
 - ablations for model, graph, judge, product, and covariance terms;
 - source correlation matrices and separability, before any fusion claim.
 
-A Product-Kalman PoE earns its keep only if it improves held-out log loss and calibration against both the naive-PoE
-controls and the additive/joint covariance baselines.
+A Product-Kalman PoE or joint-channel Kalman variant earns its keep only if it improves held-out log loss and
+calibration against both the naive-PoE controls and the additive/joint covariance baselines.
 
 ## Guardrails
 
@@ -230,6 +289,7 @@ controls and the additive/joint covariance baselines.
 - Do not use confidence level as a per-item weight; use calibrated margins for routing/abstention.
 - Do not evaluate on the same judge family used to train without naming the alignment confound.
 - Do not treat a constructed product target as ground truth unless the data source actually measured a joint event.
+- Do not treat `[mu_lower, mu_upper]` as a calibrated confidence interval until it has been calibrated on held-out data.
 - Do not tune the covariance gate on the same data used to claim a confirmatory effect.
 - Do not collapse structural likelihood and measurement error: transitive uncertainty can be inherent likelihood,
   while judge disagreement can be measurement noise.
@@ -238,9 +298,10 @@ controls and the additive/joint covariance baselines.
 
 1. Write a small synthetic test where two sources have known correlation and naive PoE becomes overconfident.
 2. Implement a product-space transform that exposes `log_mu`, `logit_mu`, or likelihood-ratio coordinates explicitly.
-3. Fit scalar/vector product-Kalman updates with learned `P_ell` and `R_ell`.
-4. Compare against `JointPosterior` and Sigma-conditioned covariance on held-out node-disjoint splits.
-5. Only after the held-out comparison, decide whether this belongs in the training objective.
+3. Add the noisy-OR upper proxy and track the width `mu_upper - mu_lower` as a disagreement diagnostic.
+4. Fit scalar/vector product-Kalman updates with learned `P_ell` and `R_ell`.
+5. Compare against `JointPosterior` and Sigma-conditioned covariance on held-out node-disjoint splits.
+6. Only after the held-out comparison, decide whether this belongs in the training objective.
 
 ## Related local artifacts
 
