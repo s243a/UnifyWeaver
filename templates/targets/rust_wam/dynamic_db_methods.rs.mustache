@@ -189,8 +189,20 @@
         if !self.dynamic_unify_head_args(&head) { return false; }
         match body {
             None => true,
-            Some(Value::Atom(ref s)) if s == "true" => true,
-            _ => false,
+            Some(body) => self.dynamic_eval_body(&body),
+        }
+    }
+
+    fn dynamic_eval_body(&mut self, body: &Value) -> bool {
+        let body = self.deref_heap(&self.deref_var(body));
+        match body {
+            Value::Atom(ref s) if s == "true" => true,
+            Value::Atom(ref s) if s == "fail" || s == "false" => false,
+            Value::Str(ref f, ref args) if (f == "," || f == ",/2") && args.len() == 2 => {
+                if !self.dynamic_eval_body(&args[0]) { return false; }
+                self.dynamic_eval_body(&args[1])
+            }
+            other => self.call_goal_value(&other),
         }
     }
 
