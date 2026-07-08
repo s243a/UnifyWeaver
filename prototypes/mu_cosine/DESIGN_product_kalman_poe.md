@@ -377,10 +377,13 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    shape/values; `product_kalman_evaluation.py` then fits calibration blocks on one split, scores prior /
    zero-cross-covariance / correlated Product-Kalman predictions on a separate split, and keeps
    calibration/evaluation IDs disjoint. *(Synthetic harness added; real-corpus comparison pending.)*
-7. Fit empirical Product-Kalman variants on those calibration blocks, then compare against `JointPosterior` and
+7. Use `product_kalman_report.py` to render the input manifest plus score JSON into a descriptive Markdown run
+   note. The report is an audit artifact only: it records scores and provenance, but does not encode a decision
+   rule or promote Product-Kalman without comparison against registered baselines.
+8. Fit empirical Product-Kalman variants on those calibration blocks, then compare against `JointPosterior` and
    Sigma-conditioned covariance on a separate node-disjoint evaluation split; do not reuse the calibration
    residuals that set `R_ell` as the comparison set.
-8. Only after the held-out comparison, decide whether this belongs in the training objective.
+9. Only after the held-out comparison, decide whether this belongs in the training objective.
 
 ## Related local artifacts
 
@@ -404,6 +407,8 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
   manifests for real-corpus provenance checks.
 - `product_kalman_table_evaluation.py` and `test_product_kalman_table_evaluation.py` — one-command table-to-input-artifacts-to-holdout-score
   runner for real-corpus Product-Kalman comparisons.
+- `product_kalman_report.py` and `test_product_kalman_report.py` — descriptive Markdown report generator for
+  Product-Kalman input manifests and score JSON artifacts.
 - `product_kalman_evaluation.py` and `test_product_kalman_evaluation.py` — holdout comparison harness for
   prior, zero-cross-covariance, and correlated Product-Kalman scoring on disjoint splits, including JSON summaries
   and row-level NPZ artifacts for reproducible corpus-run diagnostics.
