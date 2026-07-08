@@ -240,6 +240,11 @@ where `C` projects the vector residual covariance into the scalar or vector prod
 measurement noise and linearization error. Treating `R_ell` as a free scalar while citing `V(hop)` would lose the
 bridge from the confirmatory result.
 
+Here `J` is the per-channel link Jacobian, such as `d log(mu) / d mu = 1 / mu` or
+`d logit(mu) / d mu = 1 / (mu * (1 - mu))`, so the clipping convention in the preconditions is part of the
+definition rather than cosmetic numerical hygiene. `C` may be the identity when `R_ell` is kept per-channel; otherwise
+it is the projection from linked residual channels into the fused product channel.
+
 This is a correlated PoE, not an independent PoE. The exponents, source weights, and covariance terms should be
 learned or calibrated on held-out node-disjoint data.
 
