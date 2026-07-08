@@ -8,15 +8,25 @@ not construct product proxies themselves; use `product_space.py` for that layer.
 This module deliberately exposes cross-covariance between the prior state error and
 measurement noise. When prior and measurement channels share evidence, treating that
 cross term as zero is an assumption, not a default fact.
+
+Prototype note: this module prioritizes correctness and auditability over speed. A
+full update regularizes several covariance matrices with eigendecompositions; a
+performance-sensitive path should use a Cholesky-specialized implementation.
 """
 
 from dataclasses import dataclass
+import warnings
 
 import numpy as np
 
 
+NUMERIC_EIGEN_FLOOR = 1e-12
+SEMIDEFINITE_TOL_MULTIPLIER = 100.0
+
 __all__ = [
     "GaussianUpdate",
+    "NUMERIC_EIGEN_FLOOR",
+    "SEMIDEFINITE_TOL_MULTIPLIER",
     "fit_error_covariance",
     "fit_residual_covariance",
     "gaussian_condition_update",
@@ -26,9 +36,19 @@ __all__ = [
 ]
 
 
+def _readonly_array(value):
+    arr = np.array(value, dtype=float, copy=True)
+    arr.setflags(write=False)
+    return arr
+
+
 @dataclass(frozen=True)
 class GaussianUpdate:
-    """Result of one Gaussian conditioning / Kalman-style update."""
+    """Result of one Gaussian conditioning / Kalman-style update.
+
+    Array fields are copied and marked read-only in `__post_init__`; `frozen=True`
+    alone would not prevent in-place mutation of numpy arrays.
+    """
 
     mean: np.ndarray
     covariance: np.ndarray
@@ -37,13 +57,19 @@ class GaussianUpdate:
     innovation_covariance: np.ndarray
     cross_covariance: np.ndarray
 
+    def __post_init__(self):
+        for name in ("mean", "covariance", "gain", "innovation", "innovation_covariance", "cross_covariance"):
+            object.__setattr__(self, name, _readonly_array(getattr(self, name)))
+
 
 def _as_vector(name, value):
     arr = np.asarray(value, dtype=float)
     if arr.ndim == 0:
         arr = arr.reshape(1)
+    elif arr.ndim == 2 and 1 in arr.shape:
+        arr = arr.reshape(-1)
     if arr.ndim != 1:
-        raise ValueError(f"{name} must be a 1-D vector or scalar")
+        raise ValueError(f"{name} must be a 1-D vector, column vector, row vector, or scalar")
     if arr.size == 0:
         raise ValueError(f"{name} must be nonempty")
     if not np.isfinite(arr).all():
@@ -76,7 +102,9 @@ def regularize_covariance(covariance, jitter=1e-9, name="covariance"):
 
     Small negative eigenvalues from floating-point symmetry error are lifted. A
     materially negative eigenvalue raises instead of silently accepting an invalid
-    covariance model.
+    covariance model. Even when `jitter=0`, exact semidefinite covariances are
+    lifted to `NUMERIC_EIGEN_FLOOR` so downstream solves see positive-definite
+    matrices rather than singular ones.
     """
     if jitter < 0:
         raise ValueError("jitter must be nonnegative")
@@ -86,48 +114,70 @@ def regularize_covariance(covariance, jitter=1e-9, name="covariance"):
     cov = 0.5 * (cov + cov.T)
     eig = np.linalg.eigvalsh(cov)
     min_eig = float(eig[0])
-    floor = max(float(jitter), 1e-12)
-    if min_eig < -100.0 * floor:
+    floor = max(float(jitter), NUMERIC_EIGEN_FLOOR)
+    if min_eig < -SEMIDEFINITE_TOL_MULTIPLIER * floor:
         raise ValueError(f"{name} is not positive semidefinite; min eigenvalue={min_eig:g}")
-    lift = max(float(jitter) - min_eig, 0.0)
+    lift = max(floor - min_eig, 0.0)
     if lift:
         cov = cov + np.eye(cov.shape[0]) * lift
     return cov
 
 
-def fit_residual_covariance(residuals, shrinkage=0.0, jitter=1e-9):
+def _shrinkage_target(cov, target):
+    if target == "diagonal":
+        return np.diag(np.diag(cov))
+    if target == "scaled_identity":
+        return np.eye(cov.shape[0]) * float(np.trace(cov) / cov.shape[0])
+    raise ValueError("shrinkage_target must be 'diagonal' or 'scaled_identity'")
+
+
+def fit_residual_covariance(residuals, shrinkage=0.0, jitter=1e-9, ddof=1, shrinkage_target="diagonal"):
     """Estimate residual covariance from rows of calibration residuals.
 
-    `shrinkage=1` keeps only the diagonal; `shrinkage=0` keeps the empirical full
-    covariance. Use residuals from an appropriate calibration split, not the data
-    used for the claimed evaluation.
+    `ddof=1` gives the unbiased sample covariance; use `ddof=0` for an MLE
+    covariance estimate. `shrinkage=1` keeps only the selected target covariance:
+    sample `diagonal` by default, or `scaled_identity` for a Ledoit-Wolf-style
+    isotropic target. Use residuals from an appropriate calibration split, not the
+    data used for the claimed evaluation.
     """
     if not 0.0 <= shrinkage <= 1.0:
         raise ValueError("shrinkage must be in [0, 1]")
+    if not isinstance(ddof, (int, np.integer)) or ddof < 0:
+        raise ValueError("ddof must be a nonnegative integer")
     r = np.asarray(residuals, dtype=float)
     if r.ndim == 1:
         r = r.reshape(-1, 1)
     if r.ndim != 2:
         raise ValueError("residuals must be a 1-D or 2-D array")
-    if r.shape[0] < 2:
-        raise ValueError("at least two residual rows are required")
+    if r.shape[0] <= ddof:
+        raise ValueError("residual rows must exceed ddof")
     if not np.isfinite(r).all():
         raise ValueError("residuals must be finite")
     centered = r - r.mean(axis=0, keepdims=True)
-    cov = centered.T @ centered / float(r.shape[0] - 1)
+    cov = centered.T @ centered / float(r.shape[0] - ddof)
     if shrinkage:
-        diag = np.diag(np.diag(cov))
-        cov = (1.0 - shrinkage) * cov + shrinkage * diag
+        target = _shrinkage_target(cov, shrinkage_target)
+        cov = (1.0 - shrinkage) * cov + shrinkage * target
     return regularize_covariance(cov, jitter=jitter, name="residual covariance")
 
 
-def fit_error_covariance(predicted, observed, shrinkage=0.0, jitter=1e-9):
+def fit_error_covariance(predicted, observed, shrinkage=0.0, jitter=1e-9, ddof=1, shrinkage_target="diagonal"):
     """Estimate covariance of `observed - predicted` calibration errors."""
     pred = np.asarray(predicted, dtype=float)
     obs = np.asarray(observed, dtype=float)
     if pred.shape != obs.shape:
         raise ValueError(f"predicted shape {pred.shape} must match observed shape {obs.shape}")
-    return fit_residual_covariance(obs - pred, shrinkage=shrinkage, jitter=jitter)
+    if not np.isfinite(pred).all():
+        raise ValueError("predicted must be finite")
+    if not np.isfinite(obs).all():
+        raise ValueError("observed must be finite")
+    return fit_residual_covariance(
+        obs - pred,
+        shrinkage=shrinkage,
+        jitter=jitter,
+        ddof=ddof,
+        shrinkage_target=shrinkage_target,
+    )
 
 
 def gaussian_condition_update(mean, covariance, observation, observation_covariance, H=None, cross_covariance=None,
@@ -142,6 +192,11 @@ def gaussian_condition_update(mean, covariance, observation, observation_covaria
     `observation_covariance` is Cov(v). `cross_covariance` is Cov(x - mean, v),
     with shape `(state_dim, obs_dim)`. If omitted, it is treated as zero; callers
     should pass it explicitly when prior and measurement channels share evidence.
+
+    The returned `innovation_covariance` is the regularized S used for the gain
+    computation; it may include a small diagonal lift for numerical positive
+    definiteness. The posterior covariance is the Gaussian-conditioning covariance
+    `P - Cov(x,y) S^-1 Cov(y,x)`, symmetrized/regularized after the update.
     """
     m = _as_vector("mean", mean)
     y = _as_vector("observation", observation)
@@ -153,14 +208,20 @@ def gaussian_condition_update(mean, covariance, observation, observation_covaria
         jitter=jitter,
         name="observation covariance",
     )
-    Hm = np.eye(n) if H is None else _as_matrix("H", H, k, n)
+    if H is None:
+        if k != n:
+            raise ValueError("H is required when observation dimension differs from state dimension")
+        Hm = np.eye(n)
+    else:
+        Hm = _as_matrix("H", H, k, n)
     C = np.zeros((n, k)) if cross_covariance is None else _as_matrix("cross_covariance", cross_covariance, n, k)
 
     innovation = y - Hm @ m
     innovation_cov = Hm @ P @ Hm.T + Hm @ C + C.T @ Hm.T + R
     innovation_cov = regularize_covariance(innovation_cov, jitter=jitter, name="innovation covariance")
     state_innovation_cov = P @ Hm.T + C
-    gain = np.linalg.solve(innovation_cov.T, state_innovation_cov.T).T
+    chol = np.linalg.cholesky(innovation_cov)
+    gain = np.linalg.solve(chol.T, np.linalg.solve(chol, state_innovation_cov.T)).T
     posterior_mean = m + gain @ innovation
     posterior_cov = P - gain @ innovation_cov @ gain.T
     posterior_cov = regularize_covariance(posterior_cov, jitter=jitter, name="posterior covariance")
@@ -175,9 +236,25 @@ def gaussian_condition_update(mean, covariance, observation, observation_covaria
     )
 
 
-def scalar_product_kalman_update(ell_prior, ell_measurement, prior_var, measurement_var, cross_covariance=0.0,
+def scalar_product_kalman_update(ell_prior, ell_measurement, prior_var, measurement_var, cross_covariance=None,
                                  jitter=1e-9):
-    """Scalar Product-Kalman update in one log/link evidence coordinate."""
+    """Scalar Product-Kalman update in one log/link evidence coordinate.
+
+    `cross_covariance=None` warns and assumes zero. Pass `0.0` explicitly only
+    when independence or negligible prior-measurement covariance is an intentional
+    modeling assumption.
+    """
+    if not np.isfinite(prior_var) or prior_var <= 0:
+        raise ValueError(f"prior_var must be finite and positive, got {prior_var}")
+    if not np.isfinite(measurement_var) or measurement_var <= 0:
+        raise ValueError(f"measurement_var must be finite and positive, got {measurement_var}")
+    if cross_covariance is None:
+        warnings.warn(
+            "assuming zero prior-measurement cross_covariance; pass 0.0 explicitly if this is intentional",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        cross_covariance = 0.0
     return gaussian_condition_update(
         [ell_prior],
         [[prior_var]],
@@ -190,7 +267,11 @@ def scalar_product_kalman_update(ell_prior, ell_measurement, prior_var, measurem
 
 
 def gaussian_nll(observed, mean, covariance, jitter=1e-9, include_constant=True):
-    """Negative log likelihood of one Gaussian observation."""
+    """Negative log likelihood of one Gaussian observation.
+
+    Argument order is `observed, mean, covariance`, matching residual notation
+    `observed - mean` used elsewhere in this prototype.
+    """
     y = _as_vector("observed", observed)
     m = _as_vector("mean", mean)
     if y.shape != m.shape:
@@ -199,7 +280,7 @@ def gaussian_nll(observed, mean, covariance, jitter=1e-9, include_constant=True)
     residual = y - m
     solved = np.linalg.solve(cov, residual)
     sign, logdet = np.linalg.slogdet(cov)
-    if sign <= 0:
+    if sign <= 0:  # Defensive guard after covariance regularization.
         raise ValueError("covariance must have positive determinant")
     constant = y.size * np.log(2.0 * np.pi) if include_constant else 0.0
     return float(0.5 * (residual @ solved + logdet + constant))

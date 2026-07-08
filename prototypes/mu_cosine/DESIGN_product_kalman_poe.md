@@ -363,10 +363,12 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    Product-Kalman implementation depends on it enough to promote into CI.)*
 4. Keep `product_kalman.py` as the scalar/vector Gaussian-conditioning core in product-evidence coordinates:
    estimate residual covariances from calibration residuals, pass cross-covariance when channels share evidence,
-   and use Joseph-equivalent conditioning rather than independent precision summation.
+   and use the Gaussian-conditioning covariance `P - Cov(x,y) S^-1 Cov(y,x)` rather than independent precision
+   summation. *(Core helper added in PR #3530.)*
 5. Fit empirical Product-Kalman variants with `P_ell`, `R_ell`, and prior-measurement cross-covariance on
-   held-out node-disjoint calibration splits.
-6. Compare against `JointPosterior` and Sigma-conditioned covariance on held-out node-disjoint splits.
+   calibration splits that are node-disjoint from training data and from the final evaluation split.
+6. Compare against `JointPosterior` and Sigma-conditioned covariance on a separate node-disjoint evaluation split;
+   do not reuse the calibration residuals that set `R_ell` as the comparison set.
 7. Only after the held-out comparison, decide whether this belongs in the training objective.
 
 ## Related local artifacts
