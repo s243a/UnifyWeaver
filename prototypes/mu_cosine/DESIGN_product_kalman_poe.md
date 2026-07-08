@@ -361,9 +361,15 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
 3. Use `test_product_space_monte_carlo.py` as the local nonlinear-statistics sanity check: CPU by default,
    optional CUDA for larger Monte Carlo runs. *(Completed in PR #3529; keep as a prototype diagnostic until a
    Product-Kalman implementation depends on it enough to promote into CI.)*
-4. Fit scalar/vector product-Kalman updates with learned `P_ell` and `R_ell`.
-5. Compare against `JointPosterior` and Sigma-conditioned covariance on held-out node-disjoint splits.
-6. Only after the held-out comparison, decide whether this belongs in the training objective.
+4. Keep `product_kalman.py` as the scalar/vector Gaussian-conditioning core in product-evidence coordinates:
+   estimate residual covariances from calibration residuals, pass cross-covariance when channels share evidence,
+   and use the Gaussian-conditioning covariance `P - Cov(x,y) S^-1 Cov(y,x)` rather than independent precision
+   summation. *(Core helper added in PR #3530.)*
+5. Fit empirical Product-Kalman variants with `P_ell`, `R_ell`, and prior-measurement cross-covariance on
+   calibration splits that are node-disjoint from training data and from the final evaluation split.
+6. Compare against `JointPosterior` and Sigma-conditioned covariance on a separate node-disjoint evaluation split;
+   do not reuse the calibration residuals that set `R_ell` as the comparison set.
+7. Only after the held-out comparison, decide whether this belongs in the training objective.
 
 ## Related local artifacts
 
@@ -378,5 +384,7 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
   Gaussian PoE overconfident unless the full covariance is modeled.
 - `product_space.py`, `test_product_space.py`, and `test_product_space_monte_carlo.py` — finite product-space
   transform helpers, closed-form Jacobian tests, and CPU/CUDA Monte Carlo checks for nonlinear covariance propagation.
+- `product_kalman.py` and `test_product_kalman.py` — Gaussian conditioning/update core for scalar/vector
+  product-evidence coordinates, with residual covariance fitting and explicit prior-measurement cross-covariance.
 - `REPORT_sigma_hop_confirmatory.md` and `PAPER_sigma_hop_confirmatory.md` — confirmatory Sigma(hop) result and
   publication scaffold.
