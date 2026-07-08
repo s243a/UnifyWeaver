@@ -366,8 +366,10 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    and use the Gaussian-conditioning covariance `P - Cov(x,y) S^-1 Cov(y,x)` rather than independent precision
    summation. *(Core helper added in PR #3530.)*
 5. Use `product_kalman_calibration.py` to fit `P_ell`, `R_ell`, and prior-measurement cross-covariance
-   from calibration residuals in linked evidence coordinates. Calibration splits must be node-disjoint from
-   training data and from the final evaluation split.
+   from calibration residuals in linked evidence coordinates. The calibration helper slices one regularized joint
+   covariance block matrix, and all scalar channels must be passed as explicit `(n, 1)` row matrices rather than
+   ambiguous 1-D arrays. Calibration splits must be node-disjoint from training data and from the final evaluation
+   split.
 6. Fit empirical Product-Kalman variants on those calibration blocks, then compare against `JointPosterior` and
    Sigma-conditioned covariance on a separate node-disjoint evaluation split; do not reuse the calibration
    residuals that set `R_ell` as the comparison set.
