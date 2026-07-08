@@ -4,7 +4,9 @@
 Run: `python3 test_product_kalman_evaluation.py`.
 """
 
+import json
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -13,6 +15,9 @@ import numpy as np
 
 from product_kalman_evaluation import (
     evaluate_product_kalman_holdout,
+    evaluation_to_json_dict,
+    main,
+    run_product_kalman_holdout_npz,
     score_gaussian_predictions,
 )
 
@@ -104,6 +109,53 @@ def test_split_ids_are_checked_before_scoring():
         calibration_ids=["dup", "dup"] + [f"cal-{i}" for i in range(8)],
         evaluation_ids=[f"eval-{i}" for i in range(6)],
     )
+
+
+def write_identity_npz(path, n_cal=8000, n_eval=4000):
+    cal_prior, cal_measure, cal_target, eval_prior, eval_measure, eval_target = synthetic_identity_split(
+        n_cal=n_cal,
+        n_eval=n_eval,
+    )
+    np.savez(
+        path,
+        calibration_prior_mean=cal_prior,
+        calibration_measurement=cal_measure,
+        calibration_target_state=cal_target,
+        evaluation_prior_mean=eval_prior,
+        evaluation_measurement=eval_measure,
+        evaluation_target_state=eval_target,
+        calibration_ids=np.array([f"cal-{i}" for i in range(n_cal)]),
+        evaluation_ids=np.array([f"eval-{i}" for i in range(n_eval)]),
+    )
+
+
+def test_npz_runner_and_json_cli_roundtrip():
+    with tempfile.TemporaryDirectory() as tmp:
+        input_path = Path(tmp) / "holdout.npz"
+        output_path = Path(tmp) / "scores.json"
+        write_identity_npz(input_path)
+        result = run_product_kalman_holdout_npz(input_path)
+        data = evaluation_to_json_dict(result)
+        assert data["score_order"] == ["prior", "measurement", "independent_kalman", "product_kalman"]
+        assert data["calibration"]["state_dim"] == 1
+        assert data["nll_improvement_vs_prior"]["product_kalman"] > 0.85
+        assert data["nll_improvement_vs_independent_kalman"]["product_kalman"] > 0.12
+
+        rc = main([str(input_path), "--output-json", str(output_path), "--indent", "0"])
+        assert rc == 0
+        from_cli = json.loads(output_path.read_text())
+        assert from_cli["score_order"] == data["score_order"]
+        assert abs(
+            from_cli["scores"]["product_kalman"]["mean_nll"]
+            - data["scores"]["product_kalman"]["mean_nll"]
+        ) < 1e-12
+
+
+def test_npz_runner_validates_required_keys():
+    with tempfile.TemporaryDirectory() as tmp:
+        input_path = Path(tmp) / "missing.npz"
+        np.savez(input_path, calibration_prior_mean=np.zeros((4, 1)))
+        assert_raises(run_product_kalman_holdout_npz, input_path)
 
 
 def test_nonidentity_observation_omits_measurement_baseline():
