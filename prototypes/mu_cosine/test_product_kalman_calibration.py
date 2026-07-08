@@ -129,50 +129,48 @@ def test_calibration_and_batch_results_are_read_only():
         assert not arr.flags.writeable
 
 
+def calibration_kwargs(**overrides):
+    kwargs = dict(
+        state_covariance=np.eye(2),
+        observation_covariance=np.eye(1),
+        cross_covariance=np.zeros((2, 1)),
+        H=np.zeros((1, 2)),
+        n_samples=5,
+        ddof=1,
+        shrinkage=0.0,
+        shrinkage_target="diagonal",
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
 def test_constructor_invariants_fail_fast():
     assert_raises(
         ProductKalmanCalibration,
-        np.eye(2),
-        np.eye(1),
-        np.zeros((1, 1)),
-        np.zeros((1, 2)),
-        5,
-        1,
-        0.0,
-        "diagonal",
+        **calibration_kwargs(cross_covariance=np.zeros((1, 1))),
     )
     assert_raises(
         ProductKalmanCalibration,
-        np.eye(2),
-        np.eye(1),
-        np.zeros((2, 1)),
-        np.zeros((2, 2)),
-        5,
-        1,
-        0.0,
-        "diagonal",
+        **calibration_kwargs(H=np.zeros((2, 2))),
     )
     assert_raises(
         ProductKalmanCalibration,
-        [[1.0, 2.0]],
-        np.eye(1),
-        np.zeros((1, 1)),
-        np.zeros((1, 1)),
-        5,
-        1,
-        0.0,
-        "diagonal",
+        **calibration_kwargs(state_covariance=[[1.0, 2.0]]),
     )
     assert_raises(
         ProductKalmanCalibration,
-        np.eye(2),
-        np.eye(1),
-        np.zeros((2, 1)),
-        np.zeros((1, 2)),
-        3,
-        1,
-        0.0,
-        "diagonal",
+        **calibration_kwargs(n_samples=3),
+    )
+    assert_raises(
+        ProductKalmanCalibration,
+        state_covariance=[[1.0]],
+        observation_covariance=[[1.0]],
+        cross_covariance=[[1.5]],
+        H=[[1.0]],
+        n_samples=3,
+        ddof=1,
+        shrinkage=0.0,
+        shrinkage_target="diagonal",
     )
 
 
@@ -181,6 +179,7 @@ def test_assert_disjoint_ids_flags_leakage_and_duplicates():
     assert_raises(assert_disjoint_ids, ["a", "b"], ["b", "c"])
     assert_raises(assert_disjoint_ids, ["a", "a"], ["b", "c"])
     assert_raises(assert_disjoint_ids, ["a", "b"], ["c", "c"])
+    assert_raises(assert_disjoint_ids, [["a"]], ["b"])
 
 
 def test_shape_and_type_errors_fail_fast():
@@ -219,6 +218,31 @@ def test_shrinkage_path_handles_near_singular_joint_errors():
     out = apply_product_kalman_calibration(cal, prior[:2], measurement[:2])
     assert np.linalg.eigvalsh(cal.joint_covariance).min() > 0.0
     assert np.linalg.eigvalsh(out.innovation_covariance).min() > 0.0
+
+
+def test_shrinkage_targets_are_threaded_to_residual_fit():
+    prior, measurement, target, H, _, _ = toy_calibration_inputs()
+    diagonal = fit_product_kalman_calibration(
+        prior,
+        measurement,
+        target,
+        H=H,
+        shrinkage=0.5,
+        shrinkage_target="diagonal",
+        jitter=1e-8,
+    )
+    scaled = fit_product_kalman_calibration(
+        prior,
+        measurement,
+        target,
+        H=H,
+        shrinkage=0.5,
+        shrinkage_target="scaled_identity",
+        jitter=1e-8,
+    )
+    assert not np.allclose(diagonal.joint_covariance, scaled.joint_covariance)
+    assert np.linalg.eigvalsh(diagonal.joint_covariance).min() > 0.0
+    assert np.linalg.eigvalsh(scaled.joint_covariance).min() > 0.0
 
 
 def test_core_update_contract_used_by_batch_template():

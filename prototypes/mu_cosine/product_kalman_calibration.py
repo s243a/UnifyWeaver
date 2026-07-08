@@ -44,16 +44,30 @@ def _readonly_array(value):
 
 
 def _check_finite(name, arr):
+    """Validate a pre-converted ndarray is finite."""
     if not np.isfinite(arr).all():
         raise ValueError(f"{name} must be finite")
 
 
+def _covariance_atol(arr):
+    return 1e-10 * max(1.0, float(np.linalg.norm(arr, ord=np.inf)))
+
+
 def _check_square_covariance(name, arr):
+    """Validate a pre-converted ndarray has covariance-matrix shape and symmetry."""
     if arr.ndim != 2 or arr.shape[0] != arr.shape[1] or arr.shape[0] == 0:
         raise ValueError(f"{name} must be a nonempty square matrix")
     _check_finite(name, arr)
-    if not np.allclose(arr, arr.T, atol=1e-10, rtol=1e-10):
+    if not np.allclose(arr, arr.T, atol=_covariance_atol(arr), rtol=1e-10):
         raise ValueError(f"{name} must be symmetric")
+
+
+def _check_positive_semidefinite(name, arr):
+    sym = 0.5 * (arr + arr.T)
+    floor = -1e-9 * max(1.0, float(np.linalg.norm(sym, ord=np.inf)))
+    min_eig = float(np.linalg.eigvalsh(sym).min())
+    if min_eig < floor:
+        raise ValueError(f"{name} must be positive semidefinite; min eigenvalue {min_eig:.3g}")
 
 
 @dataclass(frozen=True)
@@ -82,6 +96,8 @@ class ProductKalmanCalibration:
 
         _check_square_covariance("state_covariance", state_cov)
         _check_square_covariance("observation_covariance", obs_cov)
+        _check_positive_semidefinite("state_covariance", state_cov)
+        _check_positive_semidefinite("observation_covariance", obs_cov)
         state_dim = state_cov.shape[0]
         obs_dim = obs_cov.shape[0]
         if cross_cov.shape != (state_dim, obs_dim):
@@ -90,11 +106,15 @@ class ProductKalmanCalibration:
             raise ValueError(f"H shape {H.shape} must be ({obs_dim}, {state_dim})")
         _check_finite("cross_covariance", cross_cov)
         _check_finite("H", H)
+        joint_cov = np.block([[state_cov, cross_cov], [cross_cov.T, obs_cov]])
+        _check_positive_semidefinite("joint_covariance", joint_cov)
 
         n_samples = int(self.n_samples)
         ddof = int(self.ddof)
         shrinkage = float(self.shrinkage)
         shrinkage_target = str(self.shrinkage_target)
+        # This is a conservative policy guard on recorded fit metadata: jitter may make
+        # smaller fits invertible, but then rank is coming mostly from regularization.
         if n_samples <= state_dim + obs_dim:
             raise ValueError("n_samples must exceed state_dim + observation_dim for a full-rank calibration fit")
         if ddof < 0 or n_samples <= ddof:
@@ -203,14 +223,18 @@ def _duplicates(values):
     seen = set()
     dup = []
     for value in values:
-        if value in seen and value not in dup:
-            dup.append(value)
-        seen.add(value)
+        try:
+            already_seen = value in seen
+            if already_seen and value not in dup:
+                dup.append(value)
+            seen.add(value)
+        except TypeError as exc:
+            raise ValueError("split IDs must be hashable") from exc
     return dup
 
 
 def assert_disjoint_ids(left_ids, right_ids, left_name="calibration", right_name="evaluation"):
-    """Raise if split-ID collections overlap or contain duplicate IDs."""
+    """Raise if hashable split-ID collections overlap or contain duplicate IDs."""
     left_values = list(left_ids)
     right_values = list(right_ids)
     for name, values in ((left_name, left_values), (right_name, right_values)):
@@ -250,6 +274,8 @@ def fit_product_kalman_calibration(prior_mean, measurement, target_state, H=None
     state_dim = target.shape[1]
     obs_dim = obs.shape[1]
     total_dim = state_dim + obs_dim
+    # Policy guard: require enough rows that jitter stabilizes the empirical covariance
+    # rather than supplying all of its missing rank.
     if target.shape[0] <= total_dim:
         raise ValueError("calibration rows must exceed state_dim + observation_dim")
 
@@ -285,7 +311,9 @@ def apply_product_kalman_calibration(calibration, prior_mean, measurement, jitte
 
     This uses one zero-mean template update because the Kalman gain, posterior
     covariance, and innovation covariance are independent of row means in the
-    linear-Gaussian model. Tests assert equivalence with rowwise core updates.
+    linear-Gaussian model. The batch mean is equivalent to applying
+    `gaussian_condition_update` independently to each row with the same fitted
+    covariance blocks.
     """
     if not isinstance(calibration, ProductKalmanCalibration):
         raise ValueError("calibration must be a ProductKalmanCalibration")
