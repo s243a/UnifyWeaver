@@ -370,13 +370,13 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    covariance block matrix, and all scalar channels must be passed as explicit `(n, 1)` row matrices rather than
    ambiguous 1-D arrays. Calibration splits must be node-disjoint from training data and from the final evaluation
    split.
-6. Use `product_kalman_table_to_npz.py` to turn explicit CSV/TSV calibration/evaluation rows into the
-   evaluator input NPZ, optionally with a JSON input manifest recording source-table hash, split counts, column
-   groups, dimensions, ID overlap/duplicate counts, and `H` shape/values. Then use `product_kalman_evaluation.py`
-   as the split-safe comparison harness: fit calibration blocks on one split, score prior / zero-cross-covariance
-   / correlated Product-Kalman predictions on a separate split, and keep calibration/evaluation IDs disjoint. Its
-   CLI writes JSON score summaries plus optional row-level NPZ artifacts for later plotting/reanalysis. *(Synthetic
-   harness added; real-corpus comparison pending.)*
+6. Use `product_kalman_table_evaluation.py` as the real-corpus entry point when starting from explicit CSV/TSV
+   calibration/evaluation rows: it writes the evaluator input NPZ, optional JSON input manifest, JSON score summary,
+   and optional row-level evaluation NPZ in one auditable command. Under the hood, `product_kalman_table_to_npz.py`
+   records source-table hash, split counts, column groups, dimensions, ID overlap/duplicate counts, and `H`
+   shape/values; `product_kalman_evaluation.py` then fits calibration blocks on one split, scores prior /
+   zero-cross-covariance / correlated Product-Kalman predictions on a separate split, and keeps
+   calibration/evaluation IDs disjoint. *(Synthetic harness added; real-corpus comparison pending.)*
 7. Fit empirical Product-Kalman variants on those calibration blocks, then compare against `JointPosterior` and
    Sigma-conditioned covariance on a separate node-disjoint evaluation split; do not reuse the calibration
    residuals that set `R_ell` as the comparison set.
@@ -402,6 +402,8 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
 - `product_kalman_table_to_npz.py` and `test_product_kalman_table_to_npz.py` — CSV/TSV-to-NPZ builder for
   evaluator input arrays with explicit split, ID, prior, measurement, and target columns, plus optional JSON input
   manifests for real-corpus provenance checks.
+- `product_kalman_table_evaluation.py` and `test_product_kalman_table_evaluation.py` — one-command table-to-input-artifacts-to-holdout-score
+  runner for real-corpus Product-Kalman comparisons.
 - `product_kalman_evaluation.py` and `test_product_kalman_evaluation.py` — holdout comparison harness for
   prior, zero-cross-covariance, and correlated Product-Kalman scoring on disjoint splits, including JSON summaries
   and row-level NPZ artifacts for reproducible corpus-run diagnostics.
