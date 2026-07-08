@@ -8,16 +8,23 @@ that NPZ format without hand-written Python snippets.
 
 import argparse
 import csv
-import sys
+import hashlib
+import json
 
 import numpy as np
 
 
+TABLE_INPUT_MANIFEST_SCHEMA_VERSION = 1
+
+
 __all__ = [
+    "TABLE_INPUT_MANIFEST_SCHEMA_VERSION",
+    "build_product_kalman_input_manifest",
     "build_product_kalman_npz_from_table",
     "parse_column_list",
     "parse_matrix_literal",
     "read_product_kalman_table",
+    "write_product_kalman_manifest",
     "write_product_kalman_npz",
 ]
 
@@ -102,6 +109,123 @@ def _normalize_split_value(value):
     return str(value).strip().lower()
 
 
+def _normalize_columns(prior_cols, measurement_cols, target_cols):
+    prior_cols = parse_column_list(prior_cols) if isinstance(prior_cols, str) else list(prior_cols)
+    measurement_cols = parse_column_list(measurement_cols) if isinstance(measurement_cols, str) else list(measurement_cols)
+    target_cols = parse_column_list(target_cols) if isinstance(target_cols, str) else list(target_cols)
+    for name, cols in (("prior_cols", prior_cols), ("measurement_cols", measurement_cols), ("target_cols", target_cols)):
+        if not cols:
+            raise ValueError(f"{name} must contain at least one column")
+        if len(cols) != len(set(cols)):
+            raise ValueError(f"{name} contains duplicates: {cols!r}")
+    return prior_cols, measurement_cols, target_cols
+
+
+def _validate_schema_dimensions(prior_cols, measurement_cols, target_cols, H):
+    state_dim = len(target_cols)
+    if len(prior_cols) != state_dim:
+        raise ValueError("prior column count must match target-state column count")
+    if H is None and len(measurement_cols) != state_dim:
+        raise ValueError("H is required when measurement column count differs from target-state column count")
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _array_manifest(arr):
+    arr = np.asarray(arr)
+    return {"shape": [int(v) for v in arr.shape], "dtype": str(arr.dtype)}
+
+
+def _duplicate_count(values):
+    seen = set()
+    duplicates = set()
+    for value in values:
+        if value in seen:
+            duplicates.add(value)
+        seen.add(value)
+    return len(duplicates)
+
+
+def _id_manifest(arrays, id_col):
+    if not id_col or "calibration_ids" not in arrays or "evaluation_ids" not in arrays:
+        return {"present": False, "column": id_col}
+    calibration_ids = [str(v) for v in arrays["calibration_ids"].tolist()]
+    evaluation_ids = [str(v) for v in arrays["evaluation_ids"].tolist()]
+    overlap = set(calibration_ids) & set(evaluation_ids)
+    cal_dupes = _duplicate_count(calibration_ids)
+    eval_dupes = _duplicate_count(evaluation_ids)
+    return {
+        "present": True,
+        "column": id_col,
+        "calibration_count": len(calibration_ids),
+        "evaluation_count": len(evaluation_ids),
+        "calibration_duplicate_count": cal_dupes,
+        "evaluation_duplicate_count": eval_dupes,
+        "overlap_count": len(overlap),
+        "disjoint_and_unique": len(overlap) == 0 and cal_dupes == 0 and eval_dupes == 0,
+    }
+
+
+def build_product_kalman_input_manifest(
+    path,
+    arrays,
+    prior_cols,
+    measurement_cols,
+    target_cols,
+    split_col="split",
+    id_col="id",
+    calibration_value="calibration",
+    evaluation_value="evaluation",
+    delimiter=None,
+    H=None,
+):
+    """Build a JSON-serializable manifest for a table-derived evaluator NPZ."""
+    prior_cols, measurement_cols, target_cols = _normalize_columns(prior_cols, measurement_cols, target_cols)
+    delim = _infer_delimiter(path, delimiter)
+    cal_rows = int(arrays["calibration_target_state"].shape[0])
+    eval_rows = int(arrays["evaluation_target_state"].shape[0])
+    H = arrays.get("H")
+    manifest = {
+        "schema_version": TABLE_INPUT_MANIFEST_SCHEMA_VERSION,
+        "source_table": {
+            "path": str(path),
+            "sha256": _sha256_file(path),
+            "delimiter": delim,
+        },
+        "splits": {
+            "column": split_col,
+            "calibration_value": calibration_value,
+            "evaluation_value": evaluation_value,
+            "calibration_rows": cal_rows,
+            "evaluation_rows": eval_rows,
+        },
+        "columns": {
+            "prior": list(prior_cols),
+            "measurement": list(measurement_cols),
+            "target_state": list(target_cols),
+        },
+        "dimensions": {
+            "state_dim": len(target_cols),
+            "prior_dim": len(prior_cols),
+            "observation_dim": len(measurement_cols),
+        },
+        "ids": _id_manifest(arrays, id_col),
+        "arrays": {name: _array_manifest(value) for name, value in sorted(arrays.items())},
+        "H": {
+            "present": H is not None,
+            "shape": None if H is None else [int(v) for v in np.asarray(H).shape],
+            "values": None if H is None else np.asarray(H, dtype=float).tolist(),
+        },
+    }
+    return manifest
+
+
 def read_product_kalman_table(
     path,
     prior_cols,
@@ -120,14 +244,13 @@ def read_product_kalman_table(
     columns, plus an optional ID column. Split labels are compared
     case-insensitively after trimming whitespace.
     """
-    prior_cols = parse_column_list(prior_cols) if isinstance(prior_cols, str) else list(prior_cols)
-    measurement_cols = parse_column_list(measurement_cols) if isinstance(measurement_cols, str) else list(measurement_cols)
-    target_cols = parse_column_list(target_cols) if isinstance(target_cols, str) else list(target_cols)
+    prior_cols, measurement_cols, target_cols = _normalize_columns(prior_cols, measurement_cols, target_cols)
     calibration_value = _normalize_split_value(calibration_value)
     evaluation_value = _normalize_split_value(evaluation_value)
     if calibration_value == evaluation_value:
         raise ValueError("calibration and evaluation split labels must differ")
     H = parse_matrix_literal(H) if isinstance(H, str) else H
+    _validate_schema_dimensions(prior_cols, measurement_cols, target_cols, H)
 
     split_rows = {
         calibration_value: {"prior": [], "measurement": [], "target": [], "ids": []},
@@ -186,10 +309,20 @@ def write_product_kalman_npz(path, arrays):
     np.savez(path, **arrays)
 
 
-def build_product_kalman_npz_from_table(path, output_npz, **kwargs):
+def write_product_kalman_manifest(path, manifest):
+    """Write a JSON manifest for a table-derived Product-Kalman NPZ."""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def build_product_kalman_npz_from_table(path, output_npz, output_manifest=None, **kwargs):
     """Read a table and write evaluator-ready NPZ arrays."""
     arrays = read_product_kalman_table(path, **kwargs)
     write_product_kalman_npz(output_npz, arrays)
+    if output_manifest is not None:
+        manifest = build_product_kalman_input_manifest(path, arrays, **kwargs)
+        write_product_kalman_manifest(output_manifest, manifest)
     return arrays
 
 
@@ -197,6 +330,7 @@ def _build_arg_parser():
     ap = argparse.ArgumentParser(description="Build Product-Kalman evaluator NPZ input from a CSV/TSV table.")
     ap.add_argument("input_table", help="CSV/TSV table with split, prior, measurement, and target columns")
     ap.add_argument("--output-npz", required=True, help="write evaluator-ready NPZ here")
+    ap.add_argument("--output-manifest", help="optional JSON manifest describing the input table and NPZ schema")
     ap.add_argument("--prior-cols", required=True, help="comma-separated prior mean columns")
     ap.add_argument("--measurement-cols", required=True, help="comma-separated measurement columns")
     ap.add_argument("--target-cols", required=True, help="comma-separated target-state columns")
@@ -216,6 +350,7 @@ def main(argv=None):
         build_product_kalman_npz_from_table(
             args.input_table,
             args.output_npz,
+            output_manifest=args.output_manifest,
             prior_cols=parse_column_list(args.prior_cols),
             measurement_cols=parse_column_list(args.measurement_cols),
             target_cols=parse_column_list(args.target_cols),

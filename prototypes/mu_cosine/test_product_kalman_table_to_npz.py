@@ -5,6 +5,7 @@ Run: `python3 test_product_kalman_table_to_npz.py`.
 """
 
 import csv
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -15,11 +16,14 @@ import numpy as np
 
 from product_kalman_evaluation import run_product_kalman_holdout_npz
 from product_kalman_table_to_npz import (
+    TABLE_INPUT_MANIFEST_SCHEMA_VERSION,
+    build_product_kalman_input_manifest,
     build_product_kalman_npz_from_table,
     main,
     parse_column_list,
     parse_matrix_literal,
     read_product_kalman_table,
+    write_product_kalman_manifest,
 )
 
 
@@ -89,15 +93,50 @@ def test_table_builder_roundtrips_into_evaluator():
         assert result.nll_improvement("independent_kalman", "product_kalman") > 0.05
 
 
+def test_input_manifest_records_schema_and_id_audit():
+    with tempfile.TemporaryDirectory() as tmp:
+        table = Path(tmp) / "holdout.csv"
+        manifest_path = Path(tmp) / "manifest.json"
+        write_table(table)
+        arrays = read_product_kalman_table(
+            table,
+            prior_cols=["prior"],
+            measurement_cols=["measurement"],
+            target_cols=["target"],
+        )
+        manifest = build_product_kalman_input_manifest(
+            table,
+            arrays,
+            prior_cols=["prior"],
+            measurement_cols=["measurement"],
+            target_cols=["target"],
+        )
+        assert manifest["schema_version"] == TABLE_INPUT_MANIFEST_SCHEMA_VERSION
+        assert len(manifest["source_table"]["sha256"]) == 64
+        assert manifest["splits"]["calibration_rows"] == 80
+        assert manifest["splits"]["evaluation_rows"] == 40
+        assert manifest["columns"]["prior"] == ["prior"]
+        assert manifest["dimensions"] == {"state_dim": 1, "prior_dim": 1, "observation_dim": 1}
+        assert manifest["ids"]["disjoint_and_unique"] is True
+        assert manifest["arrays"]["calibration_prior_mean"]["shape"] == [80, 1]
+        assert manifest["H"]["present"] is False
+        write_product_kalman_manifest(manifest_path, manifest)
+        loaded = json.loads(manifest_path.read_text())
+        assert loaded["source_table"]["sha256"] == manifest["source_table"]["sha256"]
+
+
 def test_tsv_delimiter_inference_and_cli():
     with tempfile.TemporaryDirectory() as tmp:
         table = Path(tmp) / "holdout.tsv"
         npz = Path(tmp) / "holdout.npz"
+        manifest = Path(tmp) / "holdout.manifest.json"
         write_table(table, delimiter="	")
         rc = main([
             str(table),
             "--output-npz",
             str(npz),
+            "--output-manifest",
+            str(manifest),
             "--prior-cols",
             "prior",
             "--measurement-cols",
@@ -109,6 +148,9 @@ def test_tsv_delimiter_inference_and_cli():
         with np.load(npz, allow_pickle=False) as data:
             assert data["calibration_prior_mean"].shape == (80, 1)
             assert data["evaluation_ids"].shape == (40,)
+        manifest_data = json.loads(manifest.read_text())
+        assert manifest_data["source_table"]["delimiter"] == "	"
+        assert manifest_data["ids"]["overlap_count"] == 0
 
 
 def test_nonidentity_H_is_stored_and_shape_checked():
@@ -139,6 +181,16 @@ def test_nonidentity_H_is_stored_and_shape_checked():
             H="1,-0.4",
         )
         np.testing.assert_allclose(arrays["H"], [[1.0, -0.4]])
+        manifest = build_product_kalman_input_manifest(
+            table,
+            arrays,
+            prior_cols=["p0", "p1"],
+            measurement_cols=["m0"],
+            target_cols=["t0", "t1"],
+        )
+        assert manifest["H"]["present"] is True
+        assert manifest["H"]["shape"] == [1, 2]
+        assert manifest["H"]["values"] == [[1.0, -0.4]]
         assert_raises(
             read_product_kalman_table,
             table,
@@ -146,6 +198,13 @@ def test_nonidentity_H_is_stored_and_shape_checked():
             measurement_cols=["m0"],
             target_cols=["t0", "t1"],
             H="1,0;0,1",
+        )
+        assert_raises(
+            read_product_kalman_table,
+            table,
+            prior_cols=["p0", "p1"],
+            measurement_cols=["m0"],
+            target_cols=["t0", "t1"],
         )
 
 
@@ -177,6 +236,16 @@ def test_table_builder_rejects_bad_input():
             read_product_kalman_table,
             bad_value,
             prior_cols=["prior"],
+            measurement_cols=["measurement"],
+            target_cols=["target"],
+        )
+
+        bad_prior_dim = Path(tmp) / "bad_prior_dim.csv"
+        bad_prior_dim.write_text("split,id,p0,measurement,target\ncalibration,a,1,1,1\n", encoding="utf-8")
+        assert_raises(
+            read_product_kalman_table,
+            bad_prior_dim,
+            prior_cols=["p0", "missing_prior"],
             measurement_cols=["measurement"],
             target_cols=["target"],
         )
