@@ -354,7 +354,8 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
 
 ## Build path
 
-1. Write a small synthetic test where two sources have known correlation and naive PoE becomes overconfident.
+1. Keep the synthetic overconfidence check in `test_product_kalman_poe_synthetic.py` as the first guardrail:
+   shared expert noise should make naive independent PoE report variance below empirical error.
 2. Implement a product-space transform that exposes `log_mu`, `logit_mu`, or likelihood-ratio coordinates explicitly.
 3. Add the noisy-OR upper proxy and track the width `mu_upper - mu_lower` as a disagreement diagnostic.
 4. Fit scalar/vector product-Kalman updates with learned `P_ell` and `R_ell`.
@@ -370,5 +371,7 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
 - `REPORT_two_judge_posterior.md` — objective-integration discussion: PoE as shrinkage baseline, learned covariance
   correction only when it earns held-out NLL.
 - `DESIGN_transitive_relations.md` — predicted-distribution loss for transitive relations and covariance caveats.
+- `test_product_kalman_poe_synthetic.py` — runnable synthetic check that shared expert noise makes independent
+  Gaussian PoE overconfident unless the full covariance is modeled.
 - `REPORT_sigma_hop_confirmatory.md` and `PAPER_sigma_hop_confirmatory.md` — confirmatory Sigma(hop) result and
   publication scaffold.
