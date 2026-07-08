@@ -356,8 +356,11 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
 
 1. Keep the synthetic overconfidence check in `test_product_kalman_poe_synthetic.py` as the first guardrail:
    shared expert noise should make naive independent PoE report variance below empirical error.
-2. Implement a product-space transform that exposes `log_mu`, `logit_mu`, or likelihood-ratio coordinates explicitly.
-3. Add the noisy-OR upper proxy and track the width `mu_upper - mu_lower` as a disagreement diagnostic.
+2. Keep finite product-space transforms in `product_space.py`: clipped `log_mu`/`logit_mu`, lower/upper
+   product proxies, interval width, and first-order Jacobians for covariance propagation. *(Completed in PR #3529.)*
+3. Use `test_product_space_monte_carlo.py` as the local nonlinear-statistics sanity check: CPU by default,
+   optional CUDA for larger Monte Carlo runs. *(Completed in PR #3529; keep as a prototype diagnostic until a
+   Product-Kalman implementation depends on it enough to promote into CI.)*
 4. Fit scalar/vector product-Kalman updates with learned `P_ell` and `R_ell`.
 5. Compare against `JointPosterior` and Sigma-conditioned covariance on held-out node-disjoint splits.
 6. Only after the held-out comparison, decide whether this belongs in the training objective.
@@ -373,5 +376,7 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
 - `DESIGN_transitive_relations.md` — predicted-distribution loss for transitive relations and covariance caveats.
 - `test_product_kalman_poe_synthetic.py` — runnable synthetic check that shared expert noise makes independent
   Gaussian PoE overconfident unless the full covariance is modeled.
+- `product_space.py`, `test_product_space.py`, and `test_product_space_monte_carlo.py` — finite product-space
+  transform helpers, closed-form Jacobian tests, and CPU/CUDA Monte Carlo checks for nonlinear covariance propagation.
 - `REPORT_sigma_hop_confirmatory.md` and `PAPER_sigma_hop_confirmatory.md` — confirmatory Sigma(hop) result and
   publication scaffold.
