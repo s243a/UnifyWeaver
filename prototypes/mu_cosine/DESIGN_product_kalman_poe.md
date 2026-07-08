@@ -371,9 +371,10 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    ambiguous 1-D arrays. Calibration splits must be node-disjoint from training data and from the final evaluation
    split.
 6. Use `product_kalman_table_evaluation.py` as the real-corpus entry point when starting from explicit CSV/TSV
-   calibration/evaluation rows: it writes the evaluator input NPZ, optional JSON input manifest, JSON score summary,
-   optional row-level evaluation NPZ, and optional Markdown report in one auditable command. Under the hood,
-   `product_kalman_table_to_npz.py` records source-table hash, split counts, column groups, dimensions, ID
+   calibration/evaluation rows: `--output-dir` writes a canonical bundle (`input.npz`, `input.manifest.json`,
+   `scores.json`, `eval_artifacts.npz`, and `report.md`) in one auditable command. Explicit artifact paths may
+   override those defaults. Under the hood, `product_kalman_table_to_npz.py` records source-table hash, split counts,
+   column groups, dimensions, ID
    overlap/duplicate counts, and `H`
    shape/values; `product_kalman_evaluation.py` then fits calibration blocks on one split, scores prior /
    zero-cross-covariance / correlated Product-Kalman predictions on a separate split, and keeps
@@ -407,7 +408,8 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
   evaluator input arrays with explicit split, ID, prior, measurement, and target columns, plus optional JSON input
   manifests for real-corpus provenance checks.
 - `product_kalman_table_evaluation.py` and `test_product_kalman_table_evaluation.py` — one-command table-to-input-
-  artifacts-to-holdout-score/report runner for real-corpus Product-Kalman comparisons.
+  artifacts-to-holdout-score/report runner, with canonical `--output-dir` bundles for real-corpus Product-Kalman
+  comparisons.
 - `product_kalman_report.py` and `test_product_kalman_report.py` — descriptive Markdown report generator for
   Product-Kalman input manifests and score JSON artifacts.
 - `product_kalman_evaluation.py` and `test_product_kalman_evaluation.py` — holdout comparison harness for

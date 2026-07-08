@@ -10,6 +10,7 @@ row-level evaluation artifacts, and optional Markdown report from one command.
 import argparse
 from dataclasses import dataclass
 import json
+from pathlib import Path
 import sys
 
 try:
@@ -40,8 +41,18 @@ except ImportError:  # direct script execution from prototypes/mu_cosine
 
 __all__ = [
     "ProductKalmanTableEvaluation",
+    "default_product_kalman_run_paths",
     "run_product_kalman_table_evaluation",
 ]
+
+
+RUN_DIR_FILENAMES = {
+    "input_npz": "input.npz",
+    "input_manifest": "input.manifest.json",
+    "output_json": "scores.json",
+    "output_npz": "eval_artifacts.npz",
+    "output_md": "report.md",
+}
 
 
 @dataclass(frozen=True)
@@ -70,6 +81,34 @@ def _attach_input_paths(summary, input_table, input_npz, input_manifest=None, ou
         "report_md": None if output_md is None else str(output_md),
     }
     return enriched
+
+
+def default_product_kalman_run_paths(output_dir):
+    """Return canonical artifact paths for one Product-Kalman table run directory."""
+    root = Path(output_dir)
+    return {name: root / filename for name, filename in RUN_DIR_FILENAMES.items()}
+
+
+def _resolve_cli_output_paths(ap, args):
+    if args.output_dir:
+        defaults = default_product_kalman_run_paths(args.output_dir)
+        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+        return {
+            "input_npz": args.input_npz or defaults["input_npz"],
+            "input_manifest": args.input_manifest or defaults["input_manifest"],
+            "output_json": args.output_json or defaults["output_json"],
+            "output_npz": args.output_npz or defaults["output_npz"],
+            "output_md": args.output_md or defaults["output_md"],
+        }
+    if not args.input_npz:
+        ap.error("--input-npz is required unless --output-dir is given")
+    return {
+        "input_npz": args.input_npz,
+        "input_manifest": args.input_manifest,
+        "output_json": args.output_json,
+        "output_npz": args.output_npz,
+        "output_md": args.output_md,
+    }
 
 
 def run_product_kalman_table_evaluation(
@@ -147,7 +186,11 @@ def _build_arg_parser():
         description="Build Product-Kalman input artifacts from a table and run the holdout evaluator.",
     )
     ap.add_argument("input_table", help="CSV/TSV table with split, prior, measurement, and target columns")
-    ap.add_argument("--input-npz", required=True, help="write intermediate evaluator input NPZ here")
+    ap.add_argument(
+        "--output-dir",
+        help="write a canonical artifact bundle here; explicit artifact paths override defaults",
+    )
+    ap.add_argument("--input-npz", help="write intermediate evaluator input NPZ here")
     ap.add_argument("--input-manifest", help="write optional input-provenance JSON manifest here")
     ap.add_argument("--output-json", help="write evaluation JSON summary here instead of stdout")
     ap.add_argument("--output-npz", help="write row-level prediction/covariance artifacts to this NPZ path")
@@ -173,17 +216,18 @@ def _build_arg_parser():
 def main(argv=None):
     ap = _build_arg_parser()
     args = ap.parse_args(argv)
+    paths = _resolve_cli_output_paths(ap, args)
     try:
         run = run_product_kalman_table_evaluation(
             args.input_table,
-            args.input_npz,
+            paths["input_npz"],
             prior_cols=parse_column_list(args.prior_cols),
             measurement_cols=parse_column_list(args.measurement_cols),
             target_cols=parse_column_list(args.target_cols),
-            input_manifest=args.input_manifest,
-            output_json=args.output_json,
-            output_npz=args.output_npz,
-            output_md=args.output_md,
+            input_manifest=paths["input_manifest"],
+            output_json=paths["output_json"],
+            output_npz=paths["output_npz"],
+            output_md=paths["output_md"],
             report_title=args.report_title,
             split_col=args.split_col,
             id_col=args.id_col or None,
@@ -199,7 +243,7 @@ def main(argv=None):
         )
     except ValueError as exc:
         ap.error(str(exc))
-    if not args.output_json:
+    if not paths["output_json"]:
         indent = None if args.indent == 0 else args.indent
         sys.stdout.write(json.dumps(run.summary, indent=indent, sort_keys=True) + "\n")
     return 0
