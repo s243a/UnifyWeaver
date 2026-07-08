@@ -52,6 +52,7 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         input_manifest = Path(tmp) / "input.manifest.json"
         output_json = Path(tmp) / "scores.json"
         output_npz = Path(tmp) / "eval_artifacts.npz"
+        output_md = Path(tmp) / "report.md"
         write_table(table)
 
         run = run_product_kalman_table_evaluation(
@@ -63,6 +64,8 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
             input_manifest=input_manifest,
             output_json=output_json,
             output_npz=output_npz,
+            output_md=output_md,
+            report_title="Synthetic Table Product-Kalman Report",
             jitter=1e-8,
         )
 
@@ -70,6 +73,7 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         assert input_manifest.exists()
         assert output_json.exists()
         assert output_npz.exists()
+        assert output_md.exists()
         assert run.input_arrays["calibration_prior_mean"].shape == (80, 1)
         assert run.result.nll_improvement("prior", "product_kalman") > 0.65
         assert run.result.nll_improvement("independent_kalman", "product_kalman") > 0.05
@@ -79,6 +83,7 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         assert summary["inputs"]["input_npz"] == str(input_npz)
         assert summary["inputs"]["input_manifest"] == str(input_manifest)
         assert summary["inputs"]["evaluation_npz"] == str(output_npz)
+        assert summary["inputs"]["report_md"] == str(output_md)
         assert summary["score_order"] == ["prior", "measurement", "independent_kalman", "product_kalman"]
         assert summary["nll_improvement_vs_prior"]["product_kalman"] > 0.65
 
@@ -86,6 +91,11 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         assert manifest["splits"]["calibration_rows"] == 80
         assert manifest["splits"]["evaluation_rows"] == 40
         assert manifest["ids"]["disjoint_and_unique"] is True
+        report = output_md.read_text()
+        assert report == run.report_text
+        assert "# Synthetic Table Product-Kalman Report" in report
+        assert "## Scores" in report
+        assert "source_table_sha256" in report
 
         with np.load(output_npz, allow_pickle=False) as artifact:
             assert artifact["product_kalman_mean"].shape == (40, 1)
@@ -98,6 +108,7 @@ def test_table_runner_cli_roundtrips_against_npz_evaluator():
         input_npz = Path(tmp) / "input.npz"
         input_manifest = Path(tmp) / "input.manifest.json"
         output_json = Path(tmp) / "scores.json"
+        output_md = Path(tmp) / "scores.md"
         write_table(table, delimiter="\t")
 
         rc = main([
@@ -108,6 +119,10 @@ def test_table_runner_cli_roundtrips_against_npz_evaluator():
             str(input_manifest),
             "--output-json",
             str(output_json),
+            "--output-md",
+            str(output_md),
+            "--report-title",
+            "CLI Table Product-Kalman Report",
             "--prior-cols",
             "prior",
             "--measurement-cols",
@@ -121,6 +136,8 @@ def test_table_runner_cli_roundtrips_against_npz_evaluator():
         ])
 
         assert rc == 0
+        assert output_md.exists()
+        assert "# CLI Table Product-Kalman Report" in output_md.read_text()
         from_table = json.loads(output_json.read_text())
         from_npz = run_product_kalman_holdout_npz(input_npz, jitter=1e-8)
         assert abs(
@@ -130,6 +147,7 @@ def test_table_runner_cli_roundtrips_against_npz_evaluator():
         manifest = json.loads(input_manifest.read_text())
         assert manifest["source_table"]["delimiter"] == "\t"
         assert manifest["ids"]["overlap_count"] == 0
+        assert from_table["inputs"]["report_md"] == str(output_md)
 
 
 if __name__ == "__main__":
