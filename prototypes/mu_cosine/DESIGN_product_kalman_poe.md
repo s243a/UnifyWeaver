@@ -58,6 +58,31 @@ mu_T = H mu_z
 
 where `H` may be a scalar weight vector for one observed channel or a matrix for multiple observed/judge channels.
 
+## Preconditions and implementation boundaries
+
+This is a design note, not an implementation recipe. The closed-form Kalman and Gaussian-PoE formulas below assume
+experts are Gaussian, or are being approximated as Gaussian in the chosen coordinates, and that shared evidence is
+represented in a covariance matrix rather than counted twice.
+
+For independent Gaussian expert densities over the same latent state, PoE reduces to information-form fusion:
+
+```text
+Lambda_fused = sum_j Lambda_j
+mu_fused     = Lambda_fused^-1 * sum_j Lambda_j mu_j
+Sigma_fused  = Lambda_fused^-1
+```
+
+where `Lambda_j = Sigma_j^-1`. This precision-summation identity is exact only under the Gaussian approximation and
+conditional independence of expert noise given the state. Correlated experts require a full joint covariance, a learned
+joint-channel model, or a conservative unknown-correlation method such as generalized/weighted PoE or covariance
+intersection. This note does not implement those mitigations; it points to the joint-channel Kalman variant as the
+preferred direction for this project.
+
+All covariance and precision matrices are assumed symmetric positive-definite after regularization. Implementations
+should clamp near-zero variances to avoid infinite-precision experts, use a finite-evidence convention for `log` and
+`logit` transforms such as `mu <- clip(mu, eps, 1 - eps)`, and preserve covariance validity with Joseph-form updates
+or an SPD projection when floating-point arithmetic nudges a matrix out of range.
+
 ## Additive predicted-error model
 
 The Gaussian/Kalman version treats the observed fuzzy label as:
@@ -97,10 +122,12 @@ The Kalman update follows from the same objects:
 ```text
 K       = P H^T (H P H^T + R)^-1
 mu_post = mu_prior + K (y - H mu_prior)
+P_post  = (I - K H) P (I - K H)^T + K R K^T
 ```
 
-The pseudoinverse appears as a limiting case with weak prior structure and simple noise. With correlated operators or
-correlated judge channels, the covariance-aware update is the relevant generalization.
+The `P_post` line is the Joseph-form covariance update. The pseudoinverse appears as a limiting case with weak prior
+structure and simple noise. With correlated operators or correlated judge channels, the covariance-aware update is the
+relevant generalization.
 
 ## Product-of-experts as a mean/prior mechanism
 
@@ -116,9 +143,13 @@ Replacing the model expert with a judge expert gives a measurement-like channel:
 g_meas = prod_i mu_judge,i ^ alpha_i * prod_j mu_graph,j ^ beta_j
 ```
 
-This can be useful, but it is a different object from `V_y`. In membership space `[0, 1]`, the product is an AND-like
-quantity and is at most 1. Values above 1 only make sense after moving to odds, likelihood ratios, precisions, or
-another positive evidence scale.
+Important: `g_prior` and `g_meas` share the `mu_graph` factor. They must not be fused as independent prior and
+measurement precisions, because that would double-count graph evidence. The split above is expository; an
+implementation should either carry prior-measurement cross-covariance or use the joint-channel Kalman variant below.
+
+This membership-space product can be useful, but it is a different object from a formal product of expert densities
+and from `V_y`. In membership space `[0, 1]`, the product is an AND-like quantity and is at most 1. Values above 1
+only make sense after moving to odds, likelihood ratios, precisions, or another positive evidence scale.
 
 PoE can therefore give a lower-confidence bound or consensus point estimate of membership, but it does not by itself
 say how uncertain that bound is. A calibrated NLL still needs an uncertainty model.
@@ -152,23 +183,24 @@ held-out data.
 
 ## Product error propagation
 
-If a product is used inside the likelihood, its error needs its own variance. For two random estimates:
+If a product is used inside the likelihood, its error needs its own variance. To first order by the delta method around
+the operating point, and with poor accuracy near zero-boundary values:
 
 ```text
-p = x y
-Var(p) ~= y^2 Var(x) + x^2 Var(y) + 2xy Cov(x, y)
+p = u v
+Var(p) ~= v^2 Var(u) + u^2 Var(v) + 2uv Cov(u, v)
 ```
 
 For a geometric mean:
 
 ```text
-g = sqrt(xy)
-Var(log g) ~= 0.25 * [Var(log x) + Var(log y) + 2 Cov(log x, log y)]
+g = sqrt(uv)
+Var(log g) ~= 0.25 * [Var(log u) + Var(log v) + 2 Cov(log u, log v)]
 Var(g)     ~= g^2 Var(log g)
 ```
 
 The covariance term is not optional in this project. Existing reports measured strong correlation among readouts, and
-naive/factored PoE already underperformed joint heads. Dropping `Cov(x, y)` is exactly the overconfidence failure mode.
+naive/factored PoE already underperformed joint heads. Dropping `Cov(u, v)` is exactly the overconfidence failure mode.
 
 ## Product-Kalman update in log space
 
@@ -190,9 +222,23 @@ g_post   = exp(ell_post)
 In vector form:
 
 ```text
-K       = P_ell H^T (H P_ell H^T + R_ell)^-1
+K        = P_ell H^T (H P_ell H^T + R_ell)^-1
 ell_post = ell_prior + K (ell_meas - H ell_prior)
+P_post   = (I - K H) P_ell (I - K H)^T + K R_ell K^T
 ```
+
+`R_ell` is in log-evidence coordinates. If the available predicted-error model is `V(hop)` in `mu`-residual
+coordinates, it must be propagated through the same link function used for `ell`. With link Jacobian `J` at the
+operating point, a local approximation is:
+
+```text
+V_ell ~= J V_mu(hop) J^T
+R_ell ~= C V_ell C^T + R_extra
+```
+
+where `C` projects the vector residual covariance into the scalar or vector product channel, and `R_extra` covers
+measurement noise and linearization error. Treating `R_ell` as a free scalar while citing `V(hop)` would lose the
+bridge from the confirmatory result.
 
 This is a correlated PoE, not an independent PoE. The exponents, source weights, and covariance terms should be
 learned or calibrated on held-out node-disjoint data.
@@ -220,6 +266,11 @@ epsilon ~ N(0, R)
 K = P H^T (H P H^T + R)^-1
 ell_post = ell_prior + K (s - H ell_prior)
 ```
+
+This schematic mixes `logit`, `log`, and raw feature channels, so it is not an exact linear-Gaussian observation
+model as written. Read `H` as a per-channel quasilinear/statistical-linearization map at the current operating point,
+with `R` absorbing both intrinsic noise and linearization residuals. A stricter implementation can instead put every
+channel into one link space, such as all logit or all log-evidence coordinates, before applying a linear Kalman step.
 
 This is the version most aligned with the existing `JointPosterior` lesson: PoE, direct `mu`, and graph/judge signals
 are features of one correlated measurement vector. The Kalman gain should learn how much nonredundant information
@@ -285,7 +336,9 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
 
 ## Guardrails
 
-- Do not assume expert independence. Shared e5/model inputs make independence false by default.
+- Do not assume expert independence. Shared e5/model inputs make independence false by default; use a full learned
+  `R`, generalized/weighted PoE, or covariance intersection rather than naive precision summation when cross-covariance
+  is unknown.
 - Do not use confidence level as a per-item weight; use calibrated margins for routing/abstention.
 - Do not evaluate on the same judge family used to train without naming the alignment confound.
 - Do not treat a constructed product target as ground truth unless the data source actually measured a joint event.
