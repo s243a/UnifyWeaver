@@ -365,10 +365,12 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    estimate residual covariances from calibration residuals, pass cross-covariance when channels share evidence,
    and use the Gaussian-conditioning covariance `P - Cov(x,y) S^-1 Cov(y,x)` rather than independent precision
    summation. *(Core helper added in PR #3530.)*
-5. Fit empirical Product-Kalman variants with `P_ell`, `R_ell`, and prior-measurement cross-covariance on
-   calibration splits that are node-disjoint from training data and from the final evaluation split.
-6. Compare against `JointPosterior` and Sigma-conditioned covariance on a separate node-disjoint evaluation split;
-   do not reuse the calibration residuals that set `R_ell` as the comparison set.
+5. Use `product_kalman_calibration.py` to fit `P_ell`, `R_ell`, and prior-measurement cross-covariance
+   from calibration residuals in linked evidence coordinates. Calibration splits must be node-disjoint from
+   training data and from the final evaluation split.
+6. Fit empirical Product-Kalman variants on those calibration blocks, then compare against `JointPosterior` and
+   Sigma-conditioned covariance on a separate node-disjoint evaluation split; do not reuse the calibration
+   residuals that set `R_ell` as the comparison set.
 7. Only after the held-out comparison, decide whether this belongs in the training objective.
 
 ## Related local artifacts
@@ -386,5 +388,7 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
   transform helpers, closed-form Jacobian tests, and CPU/CUDA Monte Carlo checks for nonlinear covariance propagation.
 - `product_kalman.py` and `test_product_kalman.py` — Gaussian conditioning/update core for scalar/vector
   product-evidence coordinates, with residual covariance fitting and explicit prior-measurement cross-covariance.
+- `product_kalman_calibration.py` and `test_product_kalman_calibration.py` — calibration-split fitting of
+  `P`, `R`, and cross-covariance blocks plus batch application and split-ID leakage guards.
 - `REPORT_sigma_hop_confirmatory.md` and `PAPER_sigma_hop_confirmatory.md` — confirmatory Sigma(hop) result and
   publication scaffold.
