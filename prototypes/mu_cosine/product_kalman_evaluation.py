@@ -41,9 +41,11 @@ __all__ = [
     "GaussianScore",
     "ProductKalmanHoldoutEvaluation",
     "evaluate_product_kalman_holdout",
+    "evaluation_artifact_arrays",
     "evaluation_to_json_dict",
     "run_product_kalman_holdout_npz",
     "score_gaussian_predictions",
+    "write_evaluation_npz",
 ]
 
 
@@ -280,6 +282,49 @@ def evaluate_product_kalman_holdout(
     )
 
 
+def _prefix_update_arrays(prefix, update):
+    return {
+        f"{prefix}_mean": update.mean,
+        f"{prefix}_covariance": update.covariance,
+        f"{prefix}_gain": update.gain,
+        f"{prefix}_innovation": update.innovation,
+        f"{prefix}_innovation_covariance": update.innovation_covariance,
+    }
+
+
+def evaluation_artifact_arrays(result):
+    """Return compact NPZ-ready arrays for row-level evaluation diagnostics.
+
+    The artifact intentionally stores result-side data: fitted covariance blocks,
+    row-level posterior means/innovations, shared gains/covariances, and score
+    vectors. The original input NPZ remains the source of the held-out targets,
+    prior rows, and measurement rows.
+    """
+    score_names = np.array([score.name for score in result.scores])
+    arrays = {
+        "schema_version": np.array(1, dtype=np.int64),
+        "score_names": score_names,
+        "score_mean_nll": np.array([score.mean_nll for score in result.scores], dtype=float),
+        "score_mse": np.array([score.mse for score in result.scores], dtype=float),
+        "score_n": np.array([score.n for score in result.scores], dtype=np.int64),
+        "score_covariance_trace": np.array([score.covariance_trace for score in result.scores], dtype=float),
+        "calibration_n_samples": np.array(result.calibration.n_samples, dtype=np.int64),
+        "calibration_state_covariance": result.calibration.state_covariance,
+        "calibration_observation_covariance": result.calibration.observation_covariance,
+        "calibration_cross_covariance": result.calibration.cross_covariance,
+        "calibration_H": result.calibration.H,
+        "independent_cross_covariance": result.independent_calibration.cross_covariance,
+    }
+    arrays.update(_prefix_update_arrays("product_kalman", result.correlated_update))
+    arrays.update(_prefix_update_arrays("independent_kalman", result.independent_update))
+    return arrays
+
+
+def write_evaluation_npz(path, result):
+    """Write row-level Product-Kalman evaluation artifacts to an NPZ file."""
+    np.savez(path, **evaluation_artifact_arrays(result))
+
+
 def _require_npz_array(npz, path, key):
     if key not in npz.files:
         raise ValueError(f"{path} is missing required array {key!r}")
@@ -382,6 +427,7 @@ def _build_arg_parser():
     )
     ap.add_argument("input_npz", help="NPZ with calibration/evaluation row matrices")
     ap.add_argument("--output-json", help="write JSON summary to this path instead of stdout")
+    ap.add_argument("--output-npz", help="write row-level prediction/covariance artifacts to this NPZ path")
     ap.add_argument("--calibration-prior-key", default="calibration_prior_mean")
     ap.add_argument("--calibration-measurement-key", default="calibration_measurement")
     ap.add_argument("--calibration-target-key", default="calibration_target_state")
@@ -437,6 +483,8 @@ def main(argv=None):
             f.write(text)
     else:
         sys.stdout.write(text)
+    if args.output_npz:
+        write_evaluation_npz(args.output_npz, result)
     return 0
 
 
