@@ -12,7 +12,10 @@ They do not sample data, train a model, or decide that a Product-Kalman variant
 has won; they make the held-out comparison auditable.
 """
 
+import argparse
 from dataclasses import dataclass
+import json
+import sys
 
 import numpy as np
 
@@ -38,6 +41,8 @@ __all__ = [
     "GaussianScore",
     "ProductKalmanHoldoutEvaluation",
     "evaluate_product_kalman_holdout",
+    "evaluation_to_json_dict",
+    "run_product_kalman_holdout_npz",
     "score_gaussian_predictions",
 ]
 
@@ -273,3 +278,167 @@ def evaluate_product_kalman_holdout(
         independent_update=independent_update,
         scores=tuple(scores),
     )
+
+
+def _require_npz_array(npz, path, key):
+    if key not in npz.files:
+        raise ValueError(f"{path} is missing required array {key!r}")
+    return npz[key]
+
+
+def _optional_npz_array(npz, key):
+    return npz[key] if key in npz.files else None
+
+
+def _score_to_json_dict(score):
+    return {
+        "name": score.name,
+        "mean_nll": score.mean_nll,
+        "mse": score.mse,
+        "n": score.n,
+        "covariance_trace": score.covariance_trace,
+    }
+
+
+def evaluation_to_json_dict(result):
+    """Return a JSON-serializable summary for a holdout evaluation result."""
+    scores = {score.name: _score_to_json_dict(score) for score in result.scores}
+    prior = result.score("prior").mean_nll
+    improvements = {name: prior - score["mean_nll"] for name, score in scores.items() if name != "prior"}
+    out = {
+        "score_order": [score.name for score in result.scores],
+        "scores": scores,
+        "nll_improvement_vs_prior": improvements,
+        "calibration": {
+            "n_samples": result.calibration.n_samples,
+            "state_dim": result.calibration.state_dim,
+            "observation_dim": result.calibration.observation_dim,
+            "ddof": result.calibration.ddof,
+            "shrinkage": result.calibration.shrinkage,
+            "shrinkage_target": result.calibration.shrinkage_target,
+            "H": result.calibration.H.tolist(),
+            "state_covariance": result.calibration.state_covariance.tolist(),
+            "observation_covariance": result.calibration.observation_covariance.tolist(),
+            "cross_covariance": result.calibration.cross_covariance.tolist(),
+        },
+    }
+    if "independent_kalman" in scores:
+        independent = scores["independent_kalman"]["mean_nll"]
+        out["nll_improvement_vs_independent_kalman"] = {
+            name: independent - score["mean_nll"]
+            for name, score in scores.items()
+            if name != "independent_kalman"
+        }
+    return out
+
+
+def run_product_kalman_holdout_npz(
+    input_npz,
+    calibration_prior_key="calibration_prior_mean",
+    calibration_measurement_key="calibration_measurement",
+    calibration_target_key="calibration_target_state",
+    evaluation_prior_key="evaluation_prior_mean",
+    evaluation_measurement_key="evaluation_measurement",
+    evaluation_target_key="evaluation_target_state",
+    H_key="H",
+    calibration_ids_key="calibration_ids",
+    evaluation_ids_key="evaluation_ids",
+    shrinkage=0.0,
+    jitter=1e-9,
+    ddof=1,
+    shrinkage_target="diagonal",
+):
+    """Load a single NPZ fixture and run `evaluate_product_kalman_holdout`.
+
+    Required arrays default to the key names in the argument list. Optional `H`,
+    `calibration_ids`, and `evaluation_ids` arrays are used when present. Store
+    scalar channels as explicit `(n, 1)` matrices, matching the calibration API.
+    """
+    path = str(input_npz)
+    with np.load(path, allow_pickle=False) as data:
+        H = _optional_npz_array(data, H_key) if H_key else None
+        calibration_ids = _optional_npz_array(data, calibration_ids_key) if calibration_ids_key else None
+        evaluation_ids = _optional_npz_array(data, evaluation_ids_key) if evaluation_ids_key else None
+        return evaluate_product_kalman_holdout(
+            _require_npz_array(data, path, calibration_prior_key),
+            _require_npz_array(data, path, calibration_measurement_key),
+            _require_npz_array(data, path, calibration_target_key),
+            _require_npz_array(data, path, evaluation_prior_key),
+            _require_npz_array(data, path, evaluation_measurement_key),
+            _require_npz_array(data, path, evaluation_target_key),
+            H=H,
+            calibration_ids=calibration_ids,
+            evaluation_ids=evaluation_ids,
+            shrinkage=shrinkage,
+            jitter=jitter,
+            ddof=ddof,
+            shrinkage_target=shrinkage_target,
+        )
+
+
+def _build_arg_parser():
+    ap = argparse.ArgumentParser(
+        description="Run a split-safe Product-Kalman holdout evaluation from one NPZ fixture.",
+    )
+    ap.add_argument("input_npz", help="NPZ with calibration/evaluation row matrices")
+    ap.add_argument("--output-json", help="write JSON summary to this path instead of stdout")
+    ap.add_argument("--calibration-prior-key", default="calibration_prior_mean")
+    ap.add_argument("--calibration-measurement-key", default="calibration_measurement")
+    ap.add_argument("--calibration-target-key", default="calibration_target_state")
+    ap.add_argument("--evaluation-prior-key", default="evaluation_prior_mean")
+    ap.add_argument("--evaluation-measurement-key", default="evaluation_measurement")
+    ap.add_argument("--evaluation-target-key", default="evaluation_target_state")
+    ap.add_argument("--H-key", default="H", help="optional observation-matrix key; use '' to disable")
+    ap.add_argument(
+        "--calibration-ids-key",
+        default="calibration_ids",
+        help="optional calibration ID key; use '' to disable",
+    )
+    ap.add_argument(
+        "--evaluation-ids-key",
+        default="evaluation_ids",
+        help="optional evaluation ID key; use '' to disable",
+    )
+    ap.add_argument("--shrinkage", type=float, default=0.0)
+    ap.add_argument("--jitter", type=float, default=1e-9)
+    ap.add_argument("--ddof", type=int, default=1)
+    ap.add_argument("--shrinkage-target", default="diagonal", choices=("diagonal", "scaled_identity"))
+    ap.add_argument("--indent", type=int, default=2, help="JSON indentation; use 0 for compact output")
+    return ap
+
+
+def main(argv=None):
+    ap = _build_arg_parser()
+    args = ap.parse_args(argv)
+    try:
+        result = run_product_kalman_holdout_npz(
+            args.input_npz,
+            calibration_prior_key=args.calibration_prior_key,
+            calibration_measurement_key=args.calibration_measurement_key,
+            calibration_target_key=args.calibration_target_key,
+            evaluation_prior_key=args.evaluation_prior_key,
+            evaluation_measurement_key=args.evaluation_measurement_key,
+            evaluation_target_key=args.evaluation_target_key,
+            H_key=args.H_key or None,
+            calibration_ids_key=args.calibration_ids_key or None,
+            evaluation_ids_key=args.evaluation_ids_key or None,
+            shrinkage=args.shrinkage,
+            jitter=args.jitter,
+            ddof=args.ddof,
+            shrinkage_target=args.shrinkage_target,
+        )
+    except ValueError as exc:
+        ap.error(str(exc))
+    data = evaluation_to_json_dict(result)
+    indent = None if args.indent == 0 else args.indent
+    text = json.dumps(data, indent=indent, sort_keys=True) + "\n"
+    if args.output_json:
+        with open(args.output_json, "w", encoding="utf-8") as f:
+            f.write(text)
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

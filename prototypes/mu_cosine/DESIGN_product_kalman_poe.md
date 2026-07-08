@@ -372,7 +372,8 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    split.
 6. Use `product_kalman_evaluation.py` as the split-safe comparison harness: fit calibration blocks on one
    split, score prior / zero-cross-covariance / correlated Product-Kalman predictions on a separate split,
-   and keep calibration/evaluation IDs disjoint. *(Synthetic harness added; real-corpus comparison pending.)*
+   and keep calibration/evaluation IDs disjoint. Its NPZ/JSON CLI is the durable artifact interface for
+   later corpus runs. *(Synthetic harness added; real-corpus comparison pending.)*
 7. Fit empirical Product-Kalman variants on those calibration blocks, then compare against `JointPosterior` and
    Sigma-conditioned covariance on a separate node-disjoint evaluation split; do not reuse the calibration
    residuals that set `R_ell` as the comparison set.
@@ -396,6 +397,7 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
 - `product_kalman_calibration.py` and `test_product_kalman_calibration.py` — calibration-split fitting of
   `P`, `R`, and cross-covariance blocks plus batch application and split-ID leakage guards.
 - `product_kalman_evaluation.py` and `test_product_kalman_evaluation.py` — holdout comparison harness for
-  prior, zero-cross-covariance, and correlated Product-Kalman scoring on disjoint splits.
+  prior, zero-cross-covariance, and correlated Product-Kalman scoring on disjoint splits, including an NPZ/JSON
+  command-line path for reproducible run artifacts.
 - `REPORT_sigma_hop_confirmatory.md` and `PAPER_sigma_hop_confirmatory.md` — confirmatory Sigma(hop) result and
   publication scaffold.
