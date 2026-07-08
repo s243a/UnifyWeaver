@@ -15,10 +15,12 @@ import numpy as np
 
 from product_kalman_evaluation import (
     evaluate_product_kalman_holdout,
+    evaluation_artifact_arrays,
     evaluation_to_json_dict,
     main,
     run_product_kalman_holdout_npz,
     score_gaussian_predictions,
+    write_evaluation_npz,
 )
 
 
@@ -133,6 +135,7 @@ def test_npz_runner_and_json_cli_roundtrip():
     with tempfile.TemporaryDirectory() as tmp:
         input_path = Path(tmp) / "holdout.npz"
         output_path = Path(tmp) / "scores.json"
+        artifact_path = Path(tmp) / "artifacts.npz"
         write_identity_npz(input_path)
         result = run_product_kalman_holdout_npz(input_path)
         data = evaluation_to_json_dict(result)
@@ -141,7 +144,15 @@ def test_npz_runner_and_json_cli_roundtrip():
         assert data["nll_improvement_vs_prior"]["product_kalman"] > 0.85
         assert data["nll_improvement_vs_independent_kalman"]["product_kalman"] > 0.12
 
-        rc = main([str(input_path), "--output-json", str(output_path), "--indent", "0"])
+        rc = main([
+            str(input_path),
+            "--output-json",
+            str(output_path),
+            "--output-npz",
+            str(artifact_path),
+            "--indent",
+            "0",
+        ])
         assert rc == 0
         from_cli = json.loads(output_path.read_text())
         assert from_cli["score_order"] == data["score_order"]
@@ -149,6 +160,43 @@ def test_npz_runner_and_json_cli_roundtrip():
             from_cli["scores"]["product_kalman"]["mean_nll"]
             - data["scores"]["product_kalman"]["mean_nll"]
         ) < 1e-12
+
+        with np.load(artifact_path, allow_pickle=False) as artifact:
+            assert int(artifact["schema_version"]) == 1
+            assert artifact["score_names"].tolist() == data["score_order"]
+            assert artifact["product_kalman_mean"].shape == result.correlated_update.mean.shape
+            np.testing.assert_allclose(artifact["product_kalman_mean"], result.correlated_update.mean)
+            np.testing.assert_allclose(artifact["independent_kalman_mean"], result.independent_update.mean)
+            np.testing.assert_allclose(artifact["calibration_cross_covariance"], result.calibration.cross_covariance)
+            np.testing.assert_allclose(artifact["independent_cross_covariance"], 0.0)
+
+
+def test_evaluation_artifact_arrays_are_npz_ready():
+    cal_prior, cal_measure, cal_target, eval_prior, eval_measure, eval_target = synthetic_identity_split(
+        n_cal=80,
+        n_eval=20,
+    )
+    result = evaluate_product_kalman_holdout(
+        cal_prior,
+        cal_measure,
+        cal_target,
+        eval_prior,
+        eval_measure,
+        eval_target,
+        jitter=1e-8,
+    )
+    arrays = evaluation_artifact_arrays(result)
+    assert arrays["score_names"].tolist() == ["prior", "measurement", "independent_kalman", "product_kalman"]
+    assert arrays["score_mean_nll"].shape == (4,)
+    assert arrays["product_kalman_innovation"].shape == eval_target.shape
+    assert arrays["product_kalman_covariance"].shape == (1, 1)
+    assert arrays["independent_kalman_gain"].shape == (1, 1)
+    with tempfile.TemporaryDirectory() as tmp:
+        artifact_path = Path(tmp) / "artifact.npz"
+        write_evaluation_npz(artifact_path, result)
+        with np.load(artifact_path, allow_pickle=False) as artifact:
+            assert set(arrays).issubset(set(artifact.files))
+            np.testing.assert_allclose(artifact["score_mean_nll"], arrays["score_mean_nll"])
 
 
 def test_npz_runner_validates_required_keys():
