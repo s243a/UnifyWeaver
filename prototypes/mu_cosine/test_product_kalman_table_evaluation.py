@@ -15,7 +15,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 
 from product_kalman_evaluation import run_product_kalman_holdout_npz
-from product_kalman_table_evaluation import main, run_product_kalman_table_evaluation
+from product_kalman_table_evaluation import (
+    default_product_kalman_run_paths,
+    main,
+    run_product_kalman_table_evaluation,
+)
 
 
 def synthetic_identity_split(n_cal=80, n_eval=40, seed=23):
@@ -100,6 +104,76 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         with np.load(output_npz, allow_pickle=False) as artifact:
             assert artifact["product_kalman_mean"].shape == (40, 1)
             assert artifact["score_names"].tolist() == summary["score_order"]
+
+
+def test_table_runner_output_dir_writes_canonical_bundle():
+    with tempfile.TemporaryDirectory() as tmp:
+        table = Path(tmp) / "holdout.csv"
+        output_dir = Path(tmp) / "product_kalman_run"
+        write_table(table)
+
+        rc = main([
+            str(table),
+            "--output-dir",
+            str(output_dir),
+            "--prior-cols",
+            "prior",
+            "--measurement-cols",
+            "measurement",
+            "--target-cols",
+            "target",
+            "--jitter",
+            "1e-8",
+            "--indent",
+            "0",
+        ])
+
+        assert rc == 0
+        paths = default_product_kalman_run_paths(output_dir)
+        for path in paths.values():
+            assert path.exists(), path
+        summary = json.loads(paths["output_json"].read_text())
+        assert summary["inputs"]["input_npz"] == str(paths["input_npz"])
+        assert summary["inputs"]["input_manifest"] == str(paths["input_manifest"])
+        assert summary["inputs"]["evaluation_npz"] == str(paths["output_npz"])
+        assert summary["inputs"]["report_md"] == str(paths["output_md"])
+        assert summary["nll_improvement_vs_prior"]["product_kalman"] > 0.65
+        assert "# Product-Kalman Holdout Report" in paths["output_md"].read_text()
+
+
+def test_table_runner_output_dir_allows_explicit_path_overrides():
+    with tempfile.TemporaryDirectory() as tmp:
+        table = Path(tmp) / "holdout.csv"
+        output_dir = Path(tmp) / "product_kalman_run"
+        custom_scores = Path(tmp) / "custom_scores.json"
+        write_table(table)
+
+        rc = main([
+            str(table),
+            "--output-dir",
+            str(output_dir),
+            "--output-json",
+            str(custom_scores),
+            "--prior-cols",
+            "prior",
+            "--measurement-cols",
+            "measurement",
+            "--target-cols",
+            "target",
+            "--jitter",
+            "1e-8",
+        ])
+
+        assert rc == 0
+        paths = default_product_kalman_run_paths(output_dir)
+        assert custom_scores.exists()
+        assert not paths["output_json"].exists()
+        assert paths["input_npz"].exists()
+        assert paths["input_manifest"].exists()
+        assert paths["output_npz"].exists()
+        assert paths["output_md"].exists()
+        summary = json.loads(custom_scores.read_text())
+        assert summary["inputs"]["report_md"] == str(paths["output_md"])
 
 
 def test_table_runner_cli_roundtrips_against_npz_evaluator():
