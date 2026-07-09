@@ -169,3 +169,32 @@ Deployment picture: model supplies amortized priors → filing DB holds per-rela
 incrementally as evidence arrives → slow timescale distills accumulated posteriors back into the model. In filter
 language, `mu_PoE` is the model *amortizing the update itself* — predicting the filter's posterior so the common
 case needs no explicit algebra.
+
+## What the model can and cannot learn about its own error (user, 2026-07-08)
+
+*User: "means and correlations are something the model could also learn — but perhaps not the means and
+correlations of the error."* Confirmed, and it is the deepest constraint in the design:
+
+- **Signal means/correlations: fully learnable** (the mu heads, the joint structure).
+- **The error MEAN: unlearnable from inside, in a strong sense.** Any predictable component of the model's own
+  error gets absorbed into the mean estimate and *ceases to be error* — so the in-distribution error mean is ~0
+  by construction, and what remains is exactly what the model cannot see. Out-of-distribution the error mean
+  (bias) becomes nonzero precisely where the model has no way to know it; bias is visible only against EXTERNAL
+  measurements (Kalman: bias states are unobservable without measurements).
+- **The error COVARIANCE: learnable, but only from outside the training loop.** Second moments survive mean-
+  fitting, so a `Sigma(hop)`-style head can live in the model — under two conditions the pipeline already
+  respects: (1) fit on HELD-OUT residuals (training residuals are optimistically small; joint mean+variance NLL
+  has the variance-eats-the-loss pathology — fit mean first, then residual covariance, as `fit_hetero`/
+  `sigma_hop_confirmatory` do); (2) in-distribution only — error statistics are the first casualty of shift,
+  which is why the fresh-corpus confirmation mattered most for the ERROR model.
+
+**Crisp form: signal statistics are statistics of the world; error statistics are statistics OF THE MODEL, and
+estimating statistics of the model requires standing outside it** — held-out residuals, innovations, fresh
+corpora. Adaptive Kalman filtering does exactly this: `R`/`Q` are estimated from the innovation sequence
+(residuals against real measurements), never from the filter's own predictions.
+
+**This closes subsume-vs-hybrid with an epistemic argument, not a convenience one:** even under perfect
+distillation, the model's self-estimated error is trained on PAST innovation statistics; when the world shifts,
+only real measurements reveal the new error mean. The innovation loop is the only mechanism that can see the
+model's bias — so the explicit filter (fast timescale) is necessary, and the distillation (slow timescale) can
+absorb everything EXCEPT the role of standing outside.
