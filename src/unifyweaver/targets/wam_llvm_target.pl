@@ -6622,7 +6622,31 @@ len3c:
   %c2 = icmp eq i8 %q2, 61
   %cc = and i1 %c0, %c1
   %is_aeq = and i1 %cc, %c2
-  br i1 %is_aeq, label %r_xfx700, label %none
+  br i1 %is_aeq, label %r_xfx700, label %len3d
+len3d:
+  ; =.. (univ, xfx 700): bytes 61 46 46
+  %d0 = icmp eq i8 %q0, 61
+  %d1 = icmp eq i8 %q1, 46
+  %d2 = icmp eq i8 %q2, 46
+  %dd = and i1 %d0, %d1
+  %is_univ = and i1 %dd, %d2
+  br i1 %is_univ, label %r_xfx700, label %len3e
+len3e:
+  ; arith not-equal (eq backslash eq, xfx 700): bytes 61 92 61
+  %e0 = icmp eq i8 %q0, 61
+  %e1 = icmp eq i8 %q1, 92
+  %e2 = icmp eq i8 %q2, 61
+  %ee = and i1 %e0, %e1
+  %is_aneq = and i1 %ee, %e2
+  br i1 %is_aneq, label %r_xfx700, label %len3f
+len3f:
+  ; term not-equal (backslash eq eq, xfx 700): bytes 92 61 61
+  %f0 = icmp eq i8 %q0, 92
+  %f1 = icmp eq i8 %q1, 61
+  %f2 = icmp eq i8 %q2, 61
+  %ff = and i1 %f0, %f1
+  %is_tneq = and i1 %ff, %f2
+  br i1 %is_tneq, label %r_xfx700, label %none
 r_yfx500:
   ret i32 8002
 r_yfx400:
@@ -12383,8 +12407,13 @@ u.c.walk_init:
   br label %u.c.count_loop
 
 u.c.count_loop:
+  ; deref each spine value: a compiled list links conses through Refs
+  ; (set_variable tail slot + write-mode put_structure binds the fresh
+  ; cell), so raw tail slots are tag-5 Refs, not direct Compounds. The
+  ; old walk never derefed and bailed at the first Ref tail.
   %u.c.count = phi i32 [ 0, %u.c.walk_init ], [ %u.c.count_next, %u.c.count_step ]
-  %u.c.cur = phi %Value [ %u.c.a2, %u.c.walk_init ], [ %u.c.next_tail, %u.c.count_step ]
+  %u.c.cur0 = phi %Value [ %u.c.a2, %u.c.walk_init ], [ %u.c.next_tail, %u.c.count_step ]
+  %u.c.cur = call %Value @wam_deref_value(%WamState* %vm, %Value %u.c.cur0)
   %u.c.cur_tag = call i32 @value_tag(%Value %u.c.cur)
   %u.c.is_cons = icmp eq i32 %u.c.cur_tag, 3
   br i1 %u.c.is_cons, label %u.c.count_body, label %u.c.count_done
@@ -12430,7 +12459,8 @@ u.c.nonempty:
 
 u.c.collect_loop:
   %u.c.ci = phi i32 [ 0, %u.c.nonempty ], [ %u.c.ci_next, %u.c.collect_step ]
-  %u.c.cc = phi %Value [ %u.c.a2, %u.c.nonempty ], [ %u.c.cc_tail, %u.c.collect_step ]
+  %u.c.cc0 = phi %Value [ %u.c.a2, %u.c.nonempty ], [ %u.c.cc_tail, %u.c.collect_step ]
+  %u.c.cc = call %Value @wam_deref_value(%WamState* %vm, %Value %u.c.cc0)
   %u.c.done_c = icmp sge i32 %u.c.ci, %u.c.count
   br i1 %u.c.done_c, label %u.c.build, label %u.c.collect_step
 
@@ -12453,25 +12483,36 @@ u.c.build:
   br i1 %u.c.is_one, label %u.c.bind_atomic, label %u.c.build_compound
 
 u.c.bind_atomic:
-  ; Single-element list → bind A1 directly to element[0].
+  ; Single-element list → bind A1 directly to element[0]. Bind via
+  ; wam_bind_reg, NOT wam_set_reg: when A1 was staged by put_variable it
+  ; holds a Ref shared with a caller permanent register, and the
+  ; binding must write THROUGH the Ref to the heap cell or the caller
+  ; never sees the result (the M9 aggregate-result bug, here in univ).
   %u.c.elem0_ptr = getelementptr %Value, %Value* %u.c.buf, i32 0
-  %u.c.elem0 = load %Value, %Value* %u.c.elem0_ptr
+  %u.c.elem0r = load %Value, %Value* %u.c.elem0_ptr
+  %u.c.elem0 = call %Value @wam_deref_value(%WamState* %vm, %Value %u.c.elem0r)
   call void @wam_trail_binding(%WamState* %vm, i32 0)
-  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %u.c.elem0)
+  call void @wam_bind_reg(%WamState* %vm, i32 0, %Value %u.c.elem0)
   ret i1 true
 
 u.c.build_compound:
-  ; element[0] must be an Atom (tag 0). Arity = count - 1.
+  ; element[0] must be an Atom (tag 0). Arity = count - 1. Deref: the
+  ; head slot may hold a Ref to the atom cell.
   %u.c.f_ptr = getelementptr %Value, %Value* %u.c.buf, i32 0
-  %u.c.f = load %Value, %Value* %u.c.f_ptr
+  %u.c.f0 = load %Value, %Value* %u.c.f_ptr
+  %u.c.f = call %Value @wam_deref_value(%WamState* %vm, %Value %u.c.f0)
   %u.c.f_tag = call i32 @value_tag(%Value %u.c.f)
   %u.c.f_is_atom = icmp eq i32 %u.c.f_tag, 0
   br i1 %u.c.f_is_atom, label %u.c.alloc_compound, label %u.fail
 
 u.c.alloc_compound:
+  ; M100: atoms are id-based -- the payload is an interned atom id, not a
+  ; string pointer. Convert via wam_atom_to_string (the same fix decompose
+  ; and functor/3 received; compose was missed, so it stored a garbage
+  ; functor pointer built by inttoptr of a small id).
   %u.c.new_arity = sub i32 %u.c.count, 1
   %u.c.f_payload = call i64 @value_payload(%Value %u.c.f)
-  %u.c.f_ptr_i8 = inttoptr i64 %u.c.f_payload to i8*
+  %u.c.f_ptr_i8 = call i8* @wam_atom_to_string(i64 %u.c.f_payload)
   %u.c.cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
   %u.c.new_mem = call i8* @wam_arena_alloc(i64 %u.c.cp_size)
   %u.c.new_cp = bitcast i8* %u.c.new_mem to %Compound*
@@ -12502,11 +12543,15 @@ u.c.copy_step:
   br label %u.c.copy_loop
 
 u.c.bind_compound:
+  ; Bind through the Ref (wam_bind_reg, not wam_set_reg) -- see
+  ; u.c.bind_atomic. Overwriting only register A1 left the caller
+  ; aliased permanent register holding the still-unbound cell, so the
+  ; constructed term vanished for every later use of the output var.
   %u.c.new_i64 = ptrtoint %Compound* %u.c.new_cp to i64
   %u.c.new_val0 = insertvalue %Value undef, i32 3, 0
   %u.c.new_val = insertvalue %Value %u.c.new_val0, i64 %u.c.new_i64, 1
   call void @wam_trail_binding(%WamState* %vm, i32 0)
-  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %u.c.new_val)
+  call void @wam_bind_reg(%WamState* %vm, i32 0, %Value %u.c.new_val)
   ret i1 true
 
 builtin_copy_term:
