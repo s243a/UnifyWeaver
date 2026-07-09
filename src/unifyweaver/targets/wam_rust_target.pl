@@ -1757,7 +1757,12 @@ compile_execute_term_builtin_to_rust(Code) :-
     ) -> bool {
         let variable_names = options
             .and_then(|value| self.read_term_option_arg(value, "variable_names"));
-        let parser_entry = if variable_names.is_some() {
+        let variables = options
+            .and_then(|value| self.read_term_option_arg(value, "variables"));
+        let singletons = options
+            .and_then(|value| self.read_term_option_arg(value, "singletons"));
+        let wants_env = variable_names.is_some() || variables.is_some() || singletons.is_some();
+        let parser_entry = if wants_env {
             "parse_term_from_atom/4"
         } else {
             "parse_term_from_atom/3"
@@ -1781,7 +1786,7 @@ compile_execute_term_builtin_to_rust(Code) :-
         parser.set_reg_str("A2", ops);
         parser.set_reg_str("A3", parsed_var.clone());
         let var_env = Value::Unbound("_RP_env".to_string());
-        if variable_names.is_some() {
+        if wants_env {
             parser.set_reg_str("A4", var_env.clone());
         }
         if !parser.run_named_label(parser_entry) {
@@ -1800,10 +1805,24 @@ compile_execute_term_builtin_to_rust(Code) :-
         }
         if let Some(names_target) = variable_names {
             let names = self.copy_variable_names_from_env(&parser, &var_env, &mut var_map);
-            self.unify(&names_target, &names)
-        } else {
-            true
+            if !self.unify(&names_target, &names) {
+                return false;
+            }
         }
+        if let Some(variables_target) = variables {
+            let variable_list = self.variables_from_term(&copied);
+            if !self.unify(&variables_target, &variable_list) {
+                return false;
+            }
+        }
+        if let Some(singletons_target) = singletons {
+            let singleton_list =
+                self.singletons_from_term(&copied, &parser, &var_env, &mut var_map);
+            if !self.unify(&singletons_target, &singleton_list) {
+                return false;
+            }
+        }
+        true
     }
 
     fn run_named_label(&mut self, label: &str) -> bool {

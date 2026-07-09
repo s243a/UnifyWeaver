@@ -100,16 +100,16 @@
         None
     }
 
-    fn copy_variable_names_from_env(
+    fn copy_named_variables_from_env(
         &mut self,
         source: &WamState,
         env: &Value,
         var_map: &mut std::collections::HashMap<String, String>,
-    ) -> Value {
+    ) -> Vec<(String, Value)> {
         let mut pairs = Vec::new();
         let entries = match source.value_as_list(env) {
             Some(entries) => entries,
-            None => return Value::List(pairs),
+            None => return pairs,
         };
         for entry in entries {
             let entry = source.deref_heap(&source.deref_var(&entry));
@@ -122,12 +122,109 @@
                 _ => continue,
             };
             let variable = self.copy_external_term_from(source, &args[1], var_map);
-            pairs.push(Value::Str(
-                "=".to_string(),
-                vec![Value::Atom(name), variable],
-            ));
+            pairs.push((name, variable));
         }
         pairs.reverse();
+        pairs
+    }
+
+    fn copy_variable_names_from_env(
+        &mut self,
+        source: &WamState,
+        env: &Value,
+        var_map: &mut std::collections::HashMap<String, String>,
+    ) -> Value {
+        Value::List(
+            self.copy_named_variables_from_env(source, env, var_map)
+                .into_iter()
+                .map(|(name, variable)| {
+                    Value::Str(
+                        "=".to_string(),
+                        vec![Value::Atom(name), variable],
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn collect_term_variable_names(&self, term: &Value, out: &mut Vec<String>) {
+        let term = self.deref_heap(&self.deref_var(term));
+        match term {
+            Value::Unbound(name) => out.push(name),
+            Value::Str(_, args) => {
+                for arg in args {
+                    self.collect_term_variable_names(&arg, out);
+                }
+            }
+            Value::List(items) => {
+                for item in items {
+                    self.collect_term_variable_names(&item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn variables_from_term(&self, term: &Value) -> Value {
+        let mut occurrences = Vec::new();
+        self.collect_term_variable_names(term, &mut occurrences);
+        let mut seen = std::collections::HashSet::new();
+        Value::List(
+            occurrences
+                .into_iter()
+                .filter(|name| seen.insert(name.clone()))
+                .map(Value::Unbound)
+                .collect(),
+        )
+    }
+
+    fn copied_variable_source_names(
+        &mut self,
+        source: &WamState,
+        env: &Value,
+        var_map: &mut std::collections::HashMap<String, String>,
+    ) -> std::collections::HashMap<String, String> {
+        self.copy_named_variables_from_env(source, env, var_map)
+            .into_iter()
+            .filter_map(|(source_name, variable)| match variable {
+                Value::Unbound(runtime_name) => Some((runtime_name, source_name)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn singletons_from_term(
+        &mut self,
+        term: &Value,
+        source: &WamState,
+        env: &Value,
+        var_map: &mut std::collections::HashMap<String, String>,
+    ) -> Value {
+        let mut occurrences = Vec::new();
+        self.collect_term_variable_names(term, &mut occurrences);
+        let mut counts = std::collections::HashMap::new();
+        for name in &occurrences {
+            *counts.entry(name.clone()).or_insert(0usize) += 1;
+        }
+        let source_names = self.copied_variable_source_names(source, env, var_map);
+        let mut emitted = std::collections::HashSet::new();
+        let mut pairs = Vec::new();
+        for runtime_name in occurrences {
+            if counts.get(&runtime_name).copied() != Some(1) ||
+               !emitted.insert(runtime_name.clone()) {
+                continue;
+            }
+            let source_name = source_names.get(&runtime_name)
+                .cloned()
+                .unwrap_or_else(|| "_".to_string());
+            if source_name != "_" && source_name.starts_with('_') {
+                continue;
+            }
+            pairs.push(Value::Str(
+                "=".to_string(),
+                vec![Value::Atom(source_name), Value::Unbound(runtime_name)],
+            ));
+        }
         Value::List(pairs)
     }
 
