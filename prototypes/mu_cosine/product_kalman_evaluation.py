@@ -40,6 +40,7 @@ except ImportError:  # direct script execution from prototypes/mu_cosine
 __all__ = [
     "GaussianScore",
     "GaussianScoreVectors",
+    "GroupedGaussianScore",
     "GroupResidualCovariances",
     "ProductKalmanHoldoutEvaluation",
     "bootstrap_nll_improvements_from_evaluation_npz",
@@ -55,6 +56,7 @@ __all__ = [
     "run_product_kalman_holdout_npz",
     "score_gaussian_prediction_vectors_rowwise",
     "score_gaussian_prediction_vectors",
+    "score_gaussian_predictions_grouped",
     "score_gaussian_predictions_rowwise",
     "score_gaussian_predictions",
     "write_evaluation_npz",
@@ -403,6 +405,40 @@ class GaussianScoreVectors:
 
 
 @dataclass(frozen=True)
+class GroupedGaussianScore:
+    """Gaussian score plus grouped residual-covariance provenance.
+
+    This bundles the fitted calibration-side group covariance map with the
+    evaluation row covariances actually used by rowwise scoring.
+    """
+
+    score: GaussianScore
+    score_vectors: GaussianScoreVectors
+    residual_covariances: GroupResidualCovariances
+    row_covariances: np.ndarray
+
+    def __post_init__(self):
+        if not isinstance(self.score, GaussianScore):
+            raise ValueError("score must be a GaussianScore")
+        if not isinstance(self.score_vectors, GaussianScoreVectors):
+            raise ValueError("score_vectors must be a GaussianScoreVectors")
+        if not isinstance(self.residual_covariances, GroupResidualCovariances):
+            raise ValueError("residual_covariances must be a GroupResidualCovariances")
+        if self.score.name != self.score_vectors.name:
+            raise ValueError("score and score_vectors names must match")
+        if self.score.n != self.score_vectors.n:
+            raise ValueError("score n must match score_vectors n")
+        row_covariances = _as_row_covariances(
+            "row_covariances",
+            self.row_covariances,
+            self.score_vectors.n,
+            self.score_vectors.dimension,
+        )
+        row_covariances.setflags(write=False)
+        object.__setattr__(self, "row_covariances", row_covariances)
+
+
+@dataclass(frozen=True)
 class ProductKalmanHoldoutEvaluation:
     """One calibration/evaluation split comparison.
 
@@ -713,6 +749,53 @@ def score_gaussian_predictions_rowwise(name, target_state, mean, covariances, ji
     """
     vectors = score_gaussian_prediction_vectors_rowwise(name, target_state, mean, covariances, jitter=jitter)
     return _score_from_vectors_rowwise(vectors, covariances)
+
+
+def score_gaussian_predictions_grouped(
+    name,
+    calibration_target_state,
+    calibration_mean,
+    calibration_groups,
+    evaluation_target_state,
+    evaluation_mean,
+    evaluation_groups,
+    min_group_rows=None,
+    shrinkage=0.0,
+    jitter=1e-9,
+    ddof=1,
+    shrinkage_target="diagonal",
+):
+    """Fit grouped residual covariances on calibration rows and score evaluation rows.
+
+    Means are supplied by the caller. This helper only replaces the shared
+    Gaussian covariance with calibration-fitted group covariances, making it the
+    direct bridge from discrete contexts such as hop labels to rowwise NLL and
+    Mahalanobis diagnostics.
+    """
+    residual_covariances = fit_group_residual_covariances(
+        calibration_mean,
+        calibration_target_state,
+        calibration_groups,
+        min_group_rows=min_group_rows,
+        shrinkage=shrinkage,
+        jitter=jitter,
+        ddof=ddof,
+        shrinkage_target=shrinkage_target,
+    )
+    row_covariances = residual_covariances.row_covariances(evaluation_groups)
+    vectors = score_gaussian_prediction_vectors_rowwise(
+        name,
+        evaluation_target_state,
+        evaluation_mean,
+        row_covariances,
+        jitter=jitter,
+    )
+    return GroupedGaussianScore(
+        score=_score_from_vectors_rowwise(vectors, row_covariances),
+        score_vectors=vectors,
+        residual_covariances=residual_covariances,
+        row_covariances=row_covariances,
+    )
 
 
 def _check_split_ids(calibration_ids, evaluation_ids, n_calibration, n_evaluation):

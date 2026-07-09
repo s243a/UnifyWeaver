@@ -26,6 +26,7 @@ from product_kalman_evaluation import (
     run_product_kalman_holdout_npz,
     score_gaussian_prediction_vectors_rowwise,
     score_gaussian_prediction_vectors,
+    score_gaussian_predictions_grouped,
     score_gaussian_predictions_rowwise,
     score_gaussian_predictions,
     write_evaluation_npz,
@@ -337,6 +338,62 @@ def test_group_residual_covariances_feed_rowwise_scores():
     grouped_score = score_gaussian_predictions_rowwise("grouped", eval_obs, eval_pred, row_covariances, jitter=1e-8)
     assert grouped_score.mean_nll < global_score.mean_nll
     assert grouped_score.covariance_trace == np.mean(np.trace(row_covariances, axis1=1, axis2=2))
+
+
+def test_grouped_gaussian_scorer_matches_manual_grouped_path():
+    rng = np.random.default_rng(19)
+    n_cal_per_group = 180
+    n_eval_per_group = 90
+    cal_groups = np.array([1] * n_cal_per_group + [2] * n_cal_per_group)
+    eval_groups = np.array([1] * n_eval_per_group + [2] * n_eval_per_group)
+    cal_pred = np.zeros((2 * n_cal_per_group, 1))
+    eval_pred = np.zeros((2 * n_eval_per_group, 1))
+    cal_obs = np.concatenate([
+        rng.normal(scale=0.25, size=n_cal_per_group),
+        rng.normal(scale=0.95, size=n_cal_per_group),
+    ])[:, None]
+    eval_obs = np.concatenate([
+        rng.normal(scale=0.25, size=n_eval_per_group),
+        rng.normal(scale=0.95, size=n_eval_per_group),
+    ])[:, None]
+
+    grouped = score_gaussian_predictions_grouped(
+        "hop_grouped",
+        cal_obs,
+        cal_pred,
+        cal_groups,
+        eval_obs,
+        eval_pred,
+        eval_groups,
+        min_group_rows=20,
+        jitter=1e-8,
+    )
+    manual_rows = grouped.residual_covariances.row_covariances(eval_groups)
+    manual_score = score_gaussian_predictions_rowwise("hop_grouped", eval_obs, eval_pred, manual_rows, jitter=1e-8)
+    np.testing.assert_allclose(grouped.row_covariances, manual_rows)
+    assert grouped.row_covariances.flags.writeable is False
+    assert grouped.score.name == "hop_grouped"
+    assert grouped.score_vectors.name == "hop_grouped"
+    assert grouped.score.n == len(eval_obs)
+    assert grouped.score_vectors.n == len(eval_obs)
+    assert abs(grouped.score.mean_nll - manual_score.mean_nll) < 1e-12
+    assert grouped.score.mean_nll < score_gaussian_predictions(
+        "global",
+        eval_obs,
+        eval_pred,
+        grouped.residual_covariances.fallback_covariance,
+        jitter=1e-8,
+    ).mean_nll
+    assert_raises(
+        score_gaussian_predictions_grouped,
+        "bad",
+        cal_obs,
+        cal_pred,
+        cal_groups[:-1],
+        eval_obs,
+        eval_pred,
+        eval_groups,
+    )
 
 
 def test_group_residual_covariance_fallbacks_and_validation():

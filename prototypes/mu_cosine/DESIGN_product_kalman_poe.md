@@ -429,8 +429,8 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
   Product-Kalman input manifests, optional split manifests, and score JSON artifacts.
 - `product_kalman_evaluation.py` and `test_product_kalman_evaluation.py` — holdout comparison harness for
   prior, zero-cross-covariance, and correlated Product-Kalman scoring on disjoint splits, including NLL/MSE,
-  rowwise covariance scoring and grouped residual-covariance maps for future hop-conditioned `V(hop)` audits,
-  Mahalanobis predicted-error scale/tail diagnostics, JSON summaries, and row-level NPZ score artifacts for
-  reproducible bootstrap/tail diagnostics.
+  rowwise covariance scoring, grouped residual-covariance maps, and a grouped scorer for future
+  hop-conditioned `V(hop)` audits, Mahalanobis predicted-error scale/tail diagnostics, JSON summaries, and
+  row-level NPZ score artifacts for reproducible bootstrap/tail diagnostics.
 - `REPORT_sigma_hop_confirmatory.md` and `PAPER_sigma_hop_confirmatory.md` — confirmatory Sigma(hop) result and
   publication scaffold.
