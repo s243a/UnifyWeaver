@@ -412,8 +412,11 @@ loadable along the way.
   `=../2` compose mode broken three ways (no deref of Ref-linked list
   spines, id-based atom payload used as a functor pointer, result bound to
   the register instead of through the Ref); and quadratic accumulator-append
-  allocation exhausting the 16 MiB arena (bumped to 256 MiB virtual; chained
-  arena deferred). See
+  allocation exhausting the 16 MiB arena — fixed for real with the **chained
+  arena** (blocks link on exhaustion and never move; marks are virtual
+  offsets so mark/rewind work across growth; initial block back to 16 MiB
+  with no practical ceiling), covered by a dedicated native driver suite and
+  exercised in production by the fixpoint compile itself. See
   [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
 
 ## The binary-return question, specifically

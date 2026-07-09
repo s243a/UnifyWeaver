@@ -513,21 +513,42 @@ build path (the tail variable is staged directly as the final `set_*` slot).
 accumulator-style grammars (`append` onto a growing list per emitted byte)
 allocate **quadratically** in their output size, and the fixpoint compile
 segfaulted at exactly the 16 MiB boundary (a `%Value` store to the null
-`wam_arena_alloc` result, pinned by gdb). Bumped to 256 MiB (virtual; Linux
-commits lazily, so resident memory only grows with use). The honest fix — a
-chained arena that links a new block instead of returning null (blocks must
-not move; `%Value`s hold raw pointers) — is noted as deferred work, as is
-linearising the accumulator style (difference lists) in the bootstrap
-compiler itself.
+`wam_arena_alloc` result, pinned by gdb). First mitigated by bumping to
+256 MiB virtual; then fixed for real with the **chained arena** (below).
+
+**Chained arena LANDED** (the honest fix for finding no. 8). The bump arena
+now links a new block on exhaustion instead of returning null: each block
+carries a 32-byte header (previous-block pointer, data capacity, virtual
+base offset), the allocation slow path mallocs `max(cap × 2, requested)`
+and chains it, and blocks **never move** — `%Value`s hold raw pointers into
+them, so live terms stay valid across growth. Marks became virtual offsets
+(`base + pos`), globally monotonic across links, so the graph kernels'
+mark/rewind pairs keep working even when the arena grew in between: rewind
+pops (frees) every block newer than the mark and restores the bump position
+in the survivor. `@wam_arena_reset` (per-query cleanup) rewinds to virtual
+offset 0, handing growth blocks back to malloc while keeping the initial
+block mapped. The initial block dropped back to 16 MiB — the default query
+never chains; the self-hosted compiler's quadratic appends now hit growth,
+not a segfault, with no practical ceiling. Covered by a dedicated native
+driver suite (`test_wam_llvm_arena_chain_runtime.pl`): a 64-byte first
+block forced through two links with mark checks at every step, cross-block
+rewinds, block-stability sentinels, first-block reuse after reset, destroy
++ ensure re-init; plus a ~100 MB growth-stress loop through a 1 KiB initial
+block. The fixpoint compile itself (needs > 16 MiB) now exercises chaining
+in production on every suite run. Linearising the accumulator style
+(difference lists) in the bootstrap compiler remains the compile-*time*
+fix — memory is no longer the cliff, but the quadratic work still costs
+seconds as sources grow.
 
 **Remaining toward the full fixpoint:** the serializer was the back end; the
 front/middle (the reader call, `group_clauses`, the codegen walkers) use the
 same constructs plus `keysort`/`pairs_values` (already whitelisted) — but
 compiling the *whole* cgfull source also needs bare cut restated as ITE
-throughout, the `s(At,Fn)` state pair (structures — supported), and above
-all a workable compile-time budget for the quadratic-append behavior. The
-capstone (`compile(SelfSource)` yielding a working compiler object) remains
-open, now with a demonstrated path.
+throughout, the `s(At,Fn)` state pair (structures — supported), and a
+workable compile-time budget for the quadratic-append behavior (the memory
+side is solved by the chained arena; the time side wants difference lists).
+The capstone (`compile(SelfSource)` yielding a working compiler object)
+remains open, now with a demonstrated path.
 
 **Deliverable:** the demonstrable self-host — the compiler compiles itself,
 and `compile(SelfSource)` yields a working compiler object.
