@@ -730,24 +730,56 @@ including the X-temp deferral cases (nested head pattern
 byte-exact by interpreting the same source as Prolog in SWI against
 `cgfull_term/2` (test `selfhost_walkers_logic_in_swi`, checksum 33858).
 
-*Runtime finding (campaign no. 12) — OPEN.* The deferral paths crash
-LOADED: `FATAL: WAM heap oob read` at exactly `heap_top`, i.e. a live
-register chain holds a Ref to a heap cell above the rewound top — read
-by the keep-var deref in a `get_value` at the next call's clause-chain
-entry (the FATAL diagnostics now print the crash PC, added this round,
-which mapped it). Isolated to a minimal pair (~2.5 KB programs, one
-clause differing): a deferred-reads walker whose body is a plain
-conjunction WORKS; the same body wrapped in an if-then-else whose else
-is taken — even with the cond side-effect-free and BOTH branches
-textually identical — CRASHES in the first recursive call after the
-join. Trivial branch bodies do not crash; real branch bodies (a
-predicate call binding outputs used after the join) do. The suspicion
-is the ITE else-entry backtrack (guard-CP restore) interacting with
-values created before the guard and threaded through the join, but the
-mechanism is not yet pinned — next round starts with a
-printf-instrumented `-O0` trace of the minimal pair. The affected
-construct is narrow: an ITE inside a deferral-walker clause whose
-branch bindings feed post-join recursive calls.
+*Runtime finding (campaign no. 12) — ROOT CAUSE ESTABLISHED, fix in
+progress.* The deferral paths crash LOADED with a heap oob read at
+exactly `heap_top`. A printf-instrumented `-O0` trace of the minimal
+pair pinned the mechanism end to end:
+
+1. A goal fails AFTER an earlier call in the same derivation succeeded
+   via a NON-LAST clause of its chain (the walkers' `muarg` succeeded
+   through its `'$VAR'` clause, leaving the chain's try_me_else CP
+   live — correct Prolog re-satisfaction semantics).
+2. The failure cascades backward INTO that stale CP (trace: `BT
+   pc=529` — the alternative points at the predicate's next clause),
+   restoring registers and rewinding the heap to the call-time marks.
+3. The next clause RE-RUNS on the same term — and because the dispatch
+   clauses OVERLAP (`compound('$VAR'(0))` is true, so the
+   compound-defer clause also matches the numbervarred-variable term),
+   execution diverges down a different compile path instead of failing
+   through, and the divergent execution reads a register Ref above the
+   rewound heap top (`TME ht=87` followed by a read of cell 87).
+
+Two layers of fix, one landed conceptually and one still open:
+
+- **Subset-level (validated on the repro):** make dispatch clauses
+  MUTUALLY EXCLUSIVE — the compound clauses of
+  `muarg`/`msarg`/`mopd`/`mharg` gain `functor(C, F, _), F \== '$VAR'`
+  (and cons-exclusion) guards, so stale-CP re-entry fails cleanly and
+  the cascade passes through to the right alternative. On the minimal
+  pair this converts the crash into clean failure. SWI validates the
+  guarded walker logic byte-exact. A residual loaded-vs-SWI divergence
+  remains on the full deferral golden (clean failure loaded, success
+  in SWI; a second crash signature on the nested-build golden), so the
+  guarded walkers source is NOT yet landed — next round continues from
+  the committed trace methodology.
+- **Runtime-level (open):** even with divergence-free re-entry, the
+  trace shows the re-executed path can observe a register Ref above the
+  rewound heap top — the re-entry state reconstruction (CP register
+  snapshot + heap mark + trail unwind + untrailed arena-slot writes) is
+  not fully consistent somewhere. Pinning that inconsistency — with
+  the same instrumented-trace technique, now proven effective — is the
+  next round's opening move, and matters beyond the self-host: ANY
+  loaded program that backtracks into a completed call's chain CP is
+  exposed.
+
+The architectural observation for the design record: the loaded
+subset's "deterministic first solution" philosophy leaves chain CPs of
+completed calls live, so real failures re-enter completed calls.
+That is correct Prolog — SWI does the same and survives because its
+re-entry state is consistent — so the philosophy stands; the runtime's
+re-entry consistency is what must be fixed. First-argument indexing
+(deliberately NOPed in the loader) would mask most instances but is
+not the correctness fix.
 
 **Remaining toward the full fixpoint:** every compiler stage is now
 self-compiled — serializer, single-clause middle, grouping/label/chain
