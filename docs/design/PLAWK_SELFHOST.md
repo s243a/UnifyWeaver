@@ -534,21 +534,64 @@ driver suite (`test_wam_llvm_arena_chain_runtime.pl`): a 64-byte first
 block forced through two links with mark checks at every step, cross-block
 rewinds, block-stability sentinels, first-block reuse after reset, destroy
 + ensure re-init; plus a ~100 MB growth-stress loop through a 1 KiB initial
-block. The fixpoint compile itself (needs > 16 MiB) now exercises chaining
-in production on every suite run. Linearising the accumulator style
-(difference lists) in the bootstrap compiler remains the compile-*time*
-fix — memory is no longer the cliff, but the quadratic work still costs
-seconds as sources grow.
+block. The fixpoint compile itself (needs > 16 MiB before linearisation)
+exercised chaining in production on every suite run.
+
+**Difference-list serializer LANDED** (the compile-*time* fix). The `wz_*`
+emitters flipped from forward accumulators (`append(A0, Cs, B)` — copy the
+ENTIRE output so far, per emitted token) to difference lists: `A0` is the
+open list being built, `A1` its tail after the item, and each emission
+appends only its own codes (`append(Cs, [10|A1], A0)`). The threading
+predicates (`wz_header`/`wz_body`/`wz_funcs`/…) are direction-agnostic and
+did not change; only the leaf emitters and the top wrappers (which now
+close the tail with `[]`) know the representation. The fixpoint source
+restated its serializer the same way — the doubly-compiled serializer is
+linear too, and compiling it exercises open-tail call operands
+(`[10|A1]`, `[32|Mid]`) and `append/3` with partial/unbound tails in the
+loaded subset. Measured on the eval host (loaded `cgfull` compiling scaled
+copies of the fixpoint source):
+
+| source | quadratic (before) | difference lists (after) |
+|---|---|---|
+| 1.4 KB | 0.17 s / 246 MB | 0.01 s / 10 MB |
+| 2.9 KB | 4.5 s / 944 MB | 0.01 s / 10 MB |
+| 5.9 KB | 20.2 s / 3.7 GB | 0.02 s / 17 MB |
+| 11.9 KB | (est. ~15 GB — untested) | 0.04 s / 35 MB |
+
+The compile-time budget for the full self-compile is closed: an 11.9 KB
+source — larger than cgfull's own restated source will be — compiles
+loaded in 40 ms.
+
+*Runtime finding (campaign no. 9):* the difference-list style immediately
+exposed a variable-identity bug in **two** runtime paths, both the same
+shape: using the FULL deref on a value that can be an unbound variable
+collapses Ref-to-unbound-cell into the shared Unbound sentinel `{tag 6,
+payload 0}` — no cell address — so "binding" one side to it silently
+severs the link (the same collapse `wam_strict_eq` had already documented
+for `==`). (a) `get_value` var-var: a head like `wz_funcs([], A, A)`
+called with two unbound arguments left them UNLINKED — the unification
+was a no-op that still succeeded, and every later binding through one
+side was invisible through the other; the serialized output truncated at
+exactly that knot. (b) `builtin_append`'s result-tail seed:
+`append(Cs, T, L)` with `T` an unbound BARE variable seeded the built
+list's tail with the collapsed sentinel instead of `Ref{cell of T}`.
+Fixed via `@wam_deref_keep_var` (variables keep their cell identity):
+`get_value` now classifies each side as variable-with-cell / naked
+register variable / bound, links var-var pairs toward an existing heap
+cell (same-cell guard against the M139 self-reference hazard; a fresh
+shared cell if both sides are naked register variables), and binds
+var-bound through `wam_bind_reg`; the append seed uses the keep-var
+deref. Regression test `get_value_var_var_and_append_var_seed` drives
+both paths through a loaded object.
 
 **Remaining toward the full fixpoint:** the serializer was the back end; the
 front/middle (the reader call, `group_clauses`, the codegen walkers) use the
 same constructs plus `keysort`/`pairs_values` (already whitelisted) — but
 compiling the *whole* cgfull source also needs bare cut restated as ITE
-throughout, the `s(At,Fn)` state pair (structures — supported), and a
-workable compile-time budget for the quadratic-append behavior (the memory
-side is solved by the chained arena; the time side wants difference lists).
-The capstone (`compile(SelfSource)` yielding a working compiler object)
-remains open, now with a demonstrated path.
+throughout and the `s(At,Fn)` state pair (structures — supported). The
+compile budget — both memory (chained arena) and time (difference lists) —
+is solved. The capstone (`compile(SelfSource)` yielding a working compiler
+object) remains open, now with a demonstrated path.
 
 **Deliverable:** the demonstrable self-host — the compiler compiles itself,
 and `compile(SelfSource)` yields a working compiler object.

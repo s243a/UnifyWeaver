@@ -2905,30 +2905,84 @@ wam_llvm_case('get_variable',
   ret i1 true').
 
 wam_llvm_case('get_value',
-'  ; op1 = Xn index, op2 = Ai index — unify. Deref both sides for the
-  ; is_unbound check; bind via wam_bind_reg to propagate through Refs.
+'  ; op1 = Xn index, op2 = Ai index -- full unification of two head
+  ; positions. Campaign finding no. 9: variables must be handled via
+  ; @wam_deref_keep_var, NOT the full deref. The full deref collapses a
+  ; Ref-to-unbound-cell into the shared Unbound sentinel (tag 6, no cell
+  ; address), so the old bind paths stored a detached Unbound instead of
+  ; linking the two variables -- a var-var get_value was a silent no-op
+  ; and every later binding through one side was invisible through the
+  ; other (the difference-list serializer of the self-host fixpoint lost
+  ; its open tail at exactly such a knot: wz_funcs([], A, A)).
+  ; keep_var stops at the last Ref whose cell is unbound, so tag 5 here
+  ; means variable-with-cell and tag 6 means naked register variable.
   %gval.ai = trunc i64 %op2 to i32
   %gval.xn = trunc i64 %op1 to i32
-  %gval.va = call %Value @wam_get_reg_deref(%WamState* %vm, i32 %gval.ai)
-  %gval.vx = call %Value @wam_get_reg_deref(%WamState* %vm, i32 %gval.xn)
-  %gval.a_unb = call i1 @value_is_unbound(%Value %gval.va)
-  br i1 %gval.a_unb, label %gval.bind_a, label %gval.check_x
+  %gval.rawa = call %Value @wam_get_reg(%WamState* %vm, i32 %gval.ai)
+  %gval.rawx = call %Value @wam_get_reg(%WamState* %vm, i32 %gval.xn)
+  %gval.ka = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %gval.rawa)
+  %gval.kx = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %gval.rawx)
+  %gval.ka_tag = extractvalue %Value %gval.ka, 0
+  %gval.kx_tag = extractvalue %Value %gval.kx, 0
+  %gval.ka_isref = icmp eq i32 %gval.ka_tag, 5
+  %gval.ka_isunb = icmp eq i32 %gval.ka_tag, 6
+  %gval.a_var = or i1 %gval.ka_isref, %gval.ka_isunb
+  %gval.kx_isref = icmp eq i32 %gval.kx_tag, 5
+  %gval.kx_isunb = icmp eq i32 %gval.kx_tag, 6
+  %gval.x_var = or i1 %gval.kx_isref, %gval.kx_isunb
+  br i1 %gval.a_var, label %gval.a_is_var, label %gval.a_bound
+
+gval.a_is_var:
+  br i1 %gval.x_var, label %gval.both_var, label %gval.bind_a
+
+gval.both_var:
+  ; same cell already? binding a cell to a Ref to itself would create a
+  ; self-referential cell (the M139 hazard) -- the sides already alias.
+  %gval.ka_pay = extractvalue %Value %gval.ka, 1
+  %gval.kx_pay = extractvalue %Value %gval.kx, 1
+  %gval.both_ref = and i1 %gval.ka_isref, %gval.kx_isref
+  %gval.same_pay = icmp eq i64 %gval.ka_pay, %gval.kx_pay
+  %gval.same_cell = and i1 %gval.both_ref, %gval.same_pay
+  br i1 %gval.same_cell, label %gval.match, label %gval.link
+
+gval.link:
+  ; link the two variables, preferring an existing heap cell as target
+  br i1 %gval.kx_isref, label %gval.link_a_to_x, label %gval.link_x
+
+gval.link_a_to_x:
+  call void @wam_bind_reg(%WamState* %vm, i32 %gval.ai, %Value %gval.kx)
+  br label %gval.match
+
+gval.link_x:
+  br i1 %gval.ka_isref, label %gval.link_x_to_a, label %gval.link_fresh
+
+gval.link_x_to_a:
+  call void @wam_bind_reg(%WamState* %vm, i32 %gval.xn, %Value %gval.ka)
+  br label %gval.match
+
+gval.link_fresh:
+  ; both sides are naked register variables (no heap cell): create a
+  ; shared cell and point both registers at it
+  %gval.unb0 = insertvalue %Value undef, i32 6, 0
+  %gval.unb = insertvalue %Value %gval.unb0, i64 0, 1
+  %gval.addr = call i32 @wam_heap_push(%WamState* %vm, %Value %gval.unb)
+  %gval.ref = call %Value @value_ref(i32 %gval.addr)
+  call void @wam_bind_reg(%WamState* %vm, i32 %gval.ai, %Value %gval.ref)
+  call void @wam_bind_reg(%WamState* %vm, i32 %gval.xn, %Value %gval.ref)
+  br label %gval.match
 
 gval.bind_a:
-  call void @wam_trail_binding(%WamState* %vm, i32 %gval.ai)
-  call void @wam_bind_reg(%WamState* %vm, i32 %gval.ai, %Value %gval.vx)
-  call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true
+  ; A side variable, X side bound: bind through the A chain or register.
+  ; wam_bind_reg trails internally (heap or register as appropriate).
+  call void @wam_bind_reg(%WamState* %vm, i32 %gval.ai, %Value %gval.kx)
+  br label %gval.match
 
-gval.check_x:
-  %gval.x_unb = call i1 @value_is_unbound(%Value %gval.vx)
-  br i1 %gval.x_unb, label %gval.bind_x, label %gval.check_eq
+gval.a_bound:
+  br i1 %gval.x_var, label %gval.bind_x, label %gval.check_eq
 
 gval.bind_x:
-  call void @wam_trail_binding(%WamState* %vm, i32 %gval.xn)
-  call void @wam_bind_reg(%WamState* %vm, i32 %gval.xn, %Value %gval.va)
-  call void @wam_inc_pc(%WamState* %vm)
-  ret i1 true
+  call void @wam_bind_reg(%WamState* %vm, i32 %gval.xn, %Value %gval.ka)
+  br label %gval.match
 
 gval.check_eq:
   ; M138: get_value is a unify instruction, not an equality test.
@@ -2937,7 +2991,7 @@ gval.check_eq:
   ; compounds (binding any unbound args, with trailing). The previous
   ; @value_equals wrongly failed p(X, X) heads called with unifiable
   ; compounds like p(f(A), f(B)).
-  %gval.eq = call i1 @wam_unify_value(%WamState* %vm, %Value %gval.va, %Value %gval.vx)
+  %gval.eq = call i1 @wam_unify_value(%WamState* %vm, %Value %gval.ka, %Value %gval.kx)
   br i1 %gval.eq, label %gval.match, label %gval.fail
 
 gval.match:
@@ -14361,7 +14415,13 @@ builtin_append:
   ; append([], L, L) handled as the count=0 degenerate case (the
   ; build loop never runs, acc stays equal to A2).
   %app.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
-  %app.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  ; A2 seeds the result tail BY VALUE. Deref with keep_var, not the full
+  ; deref: append(Cs, T, L) with T an unbound variable must seed the tail
+  ; with Ref{cell of T} so later bindings of T are visible through L (the
+  ; full deref would collapse T into the detached Unbound sentinel and
+  ; silently sever the difference-list chain -- campaign finding no. 9).
+  %app.a2raw = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  %app.a2 = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %app.a2raw)
   call void @wam_arena_ensure()
   br label %app.c_loop
 app.c_loop:

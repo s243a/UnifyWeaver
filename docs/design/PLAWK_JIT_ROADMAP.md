@@ -401,8 +401,14 @@ loadable along the way.
   + length, matched against the Stage A implementation). The compiler has
   compiled its own back end. The remaining campaign extends this toward
   `compile(SelfSource)` — the full fixpoint.
-  The campaign keeps surfacing and fixing latent runtime bugs — **eight found so
-  far**: a 64-register-file ceiling corrupting memory for large clauses;
+  The compile budget for the full self-compile is closed: the **chained
+  arena** removed the memory cliff (blocks link on exhaustion and never
+  move; marks are virtual offsets so mark/rewind work across growth), and
+  the serializer's **difference-list linearisation** removed the quadratic
+  time/allocation (an 11.9 KB source compiles loaded in 40 ms / 35 MB where
+  the quadratic style took 20 s / 3.7 GB at half that size).
+  The campaign keeps surfacing and fixing latent runtime bugs — **nine found
+  so far**: a 64-register-file ceiling corrupting memory for large clauses;
   `get_structure` not comparing the functor; the choice-point saved-register
   block not widened with the register file (failed clause bodies leaked Y17+
   across backtrack); and `copy_term/2` aliasing instead of copying (Refs
@@ -412,11 +418,12 @@ loadable along the way.
   `=../2` compose mode broken three ways (no deref of Ref-linked list
   spines, id-based atom payload used as a functor pointer, result bound to
   the register instead of through the Ref); and quadratic accumulator-append
-  allocation exhausting the 16 MiB arena — fixed for real with the **chained
-  arena** (blocks link on exhaustion and never move; marks are virtual
-  offsets so mark/rewind work across growth; initial block back to 16 MiB
-  with no practical ceiling), covered by a dedicated native driver suite and
-  exercised in production by the fixpoint compile itself. See
+  allocation exhausting the 16 MiB arena (the chained arena above); and a
+  variable-identity collapse in two paths — `get_value` var-var left the
+  two variables unlinked (a silent no-op unification), and `builtin_append`
+  seeded its result tail with the collapsed Unbound sentinel when the second
+  argument was a bare unbound variable — both fixed via
+  `@wam_deref_keep_var`. See
   [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
 
 ## The binary-return question, specifically

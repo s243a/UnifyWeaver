@@ -262,17 +262,25 @@ wamoserz(_Src, Wamo) :-
         [enc(0,42,65536,0), enc(20,0,0,0)], Codes),
     atom_codes(Wamo, Codes).
 
-% accumulator appenders: each threads a code list, holding few call-spanning
-% vars. wz_i "<int>\n", wz_a "<atom>\n", wz_n "<len> <bytes>\n", wz_si " <int>".
-wz_i(N, A0, A1)  :- number_codes(N, Cs), append(A0, Cs, B), append(B, [10], A1).
-wz_a(X, A0, A1)  :- atom_codes(X, Cs), append(A0, Cs, B), append(B, [10], A1).
+% DIFFERENCE-LIST emitters: A0 is the open list being built, A1 its tail
+% after this item -- so each emission appends only its OWN codes (linear in
+% total output), never copying the accumulated prefix. The old accumulator
+% style (append(A0, Cs, B) -- copy everything emitted so far, per token) is
+% QUADRATIC in output size and was the entire compile-time/memory cliff of
+% the self-host fixpoint (246 MB arena for a 3.6 KB object). Threading
+% predicates (wz_header/wz_body/wz_pcs_rows/...) are direction-agnostic and
+% unchanged; only the leaf emitters and the top wrappers (which now close
+% the tail with []) know the representation.
+% wz_i "<int>\n", wz_a "<atom>\n", wz_n "<len> <bytes>\n", wz_si " <int>".
+wz_i(N, A0, A1)  :- number_codes(N, Cs), append(Cs, [10|A1], A0).
+wz_a(X, A0, A1)  :- atom_codes(X, Cs), append(Cs, [10|A1], A0).
 wz_n(Cs, A0, A1) :- length(Cs, Len), number_codes(Len, LC),
-    append(A0, LC, B), append(B, [32|Cs], C), append(C, [10], A1).
-wz_si(N, A0, A1) :- number_codes(N, Cs), append(A0, [32|Cs], A1).
+    append(LC, [32|Mid], A0), append(Cs, [10|A1], Mid).
+wz_si(N, A0, A1) :- number_codes(N, Cs), append([32|Cs], A1, A0).
 
 wz_serialize(EntryIdx, NameCodes, LabelIdx, NA, NF, PCs, Instrs, Out) :-
-    wz_header(EntryIdx, NameCodes, LabelIdx, NA, NF, [], Hdr),
-    wz_body(PCs, Instrs, Hdr, Out).
+    wz_header(EntryIdx, NameCodes, LabelIdx, NA, NF, Out, Hdr),
+    wz_body(PCs, Instrs, Hdr, []).
 
 % header: WAMO / version 2 / entry index / NE=1 / name / label / NA / NF,
 % split across two clauses so neither holds too many call-spanning vars.
@@ -298,8 +306,8 @@ wz_instr_rows([], A, A).
 wz_instr_rows([enc(T,O1,O2,R)|Is], A0, A2) :-
     wz_row(T, O1, O2, R, A0, A1), wz_instr_rows(Is, A1, A2).
 wz_row(T, O1, O2, R, A0, A5) :-
-    number_codes(T, Tc), append(A0, Tc, A1),
-    wz_si(O1, A1, A2), wz_si(O2, A2, A3), wz_si(R, A3, A4), append(A4, [10], A5).
+    number_codes(T, Tc), append(Tc, A1, A0),
+    wz_si(O1, A1, A2), wz_si(O2, A2, A3), wz_si(R, A3, A4), A4 = [10|A5].
 
 % Milestone 6 (self-host) Stage B: minimal CODEGEN -- source text to a .wamo,
 % end to end. cgcompile/2 is the eval-pipeline entry compile(Src,Wamo): it
@@ -512,10 +520,10 @@ add_unique(Op, Acc, Acc1) :- append(Acc, [Op], Acc1).
 % functor-aware serializer: like wz_serialize but emits the functor table
 % (NF + NF length-prefixed functor name strings) after the (empty) atom table.
 wzf_serialize(EI, NC, LI, Functors, PCs, Instrs, Out) :-
-    wz_a('WAMO', [], A1), wz_i(2, A1, A2), wz_i(EI, A2, A3), wz_i(1, A3, A4),
+    wz_a('WAMO', Out, A1), wz_i(2, A1, A2), wz_i(EI, A2, A3), wz_i(1, A3, A4),
     wz_n(NC, A4, A5), wz_i(LI, A5, A6), wz_i(0, A6, A7),          % NA = 0
     length(Functors, NF), wz_i(NF, A7, A8), wz_funcs(Functors, A8, A9),
-    wz_pcs_sec(PCs, A9, A10), wz_instr_sec(Instrs, A10, A11), wz_i(0, A11, Out).
+    wz_pcs_sec(PCs, A9, A10), wz_instr_sec(Instrs, A10, A11), wz_i(0, A11, []).
 wz_fname(F, A0, A1) :- atom_codes(F, Cs), wz_n(Cs, A0, A1).
 wz_funcs([], A, A).
 wz_funcs([F|Fs], A0, A2) :- wz_fname(F, A0, A1), wz_funcs(Fs, A1, A2).
@@ -916,16 +924,20 @@ defer_builds([d(C,Reg)|Ds], At, FT, Xt0, Xt, In0, In, Is) :-
 % serializer with an atom table: NA + NA length-prefixed atom name strings
 % between the label index and the functor table
 wza_serialize(EI, NC, LI, Atoms, Fs, PCs, Is, Out) :-
-    wz_a('WAMO', [], A1), wz_i(2, A1, A2), wz_i(EI, A2, A3), wz_i(1, A3, A4),
+    wz_a('WAMO', Out, A1), wz_i(2, A1, A2), wz_i(EI, A2, A3), wz_i(1, A3, A4),
     wz_n(NC, A4, A5), wz_i(LI, A5, A6),
     length(Atoms, NA), wz_i(NA, A6, A7), wz_funcs(Atoms, A7, A8),
     length(Fs, NF), wz_i(NF, A8, A9), wz_funcs(Fs, A9, A10),
-    wz_pcs_sec(PCs, A10, A11), wz_instr_sec(Is, A11, A12), wz_i(0, A12, Out).
+    wz_pcs_sec(PCs, A10, A11), wz_instr_sec(Is, A11, A12), wz_i(0, A12, []).
 
 % The fixpoint source: the Stage A serializer (wz_* chain) restated in the
 % accepted subset (cut-free, builtins + calls + list/structure patterns).
-% The entry checksums its own output (byte sum + length).
-fixpoint_serializer_source('[(main0(R) :- serz(Cs), sum_list(Cs, S), length(Cs, L), R is S + L), (serz(Out) :- atom_codes(''ea/1'', NC), wzs(0, NC, 0, 0, 0, [0], [enc(0,42,65536,0), enc(20,0,0,0)], Out)), (wzi(N, A0, A1) :- number_codes(N, Cs), append(A0, Cs, B), append(B, [10], A1)), (wza(X, A0, A1) :- atom_codes(X, Cs), append(A0, Cs, B), append(B, [10], A1)), (wzn(Cs, A0, A1) :- length(Cs, L), number_codes(L, LC), append(A0, LC, B), append(B, [32|Cs], C), append(C, [10], A1)), (wzsi(N, A0, A1) :- number_codes(N, Cs), append(A0, [32|Cs], A1)), (wzs(EI, NC, LI, NA, NF, PCs, Is, Out) :- wzh(EI, NC, LI, NA, NF, [], H), wzb(PCs, Is, H, Out)), (wzh(EI, NC, LI, NA, NF, A0, Out) :- wza(''WAMO'', A0, A1), wzi(2, A1, A2), wzi(EI, A2, A3), wzi(1, A3, A4), wzh2(NC, LI, NA, NF, A4, Out)), (wzh2(NC, LI, NA, NF, A0, Out) :- wzn(NC, A0, A1), wzi(LI, A1, A2), wzi(NA, A2, A3), wzi(NF, A3, Out)), (wzb(PCs, Is, A0, Out) :- wzp(PCs, A0, A1), wzc(Is, A1, A2), wzi(0, A2, Out)), (wzp(PCs, A0, A2) :- length(PCs, NL), wzi(NL, A0, A1), wzpr(PCs, A1, A2)), wzpr([], A, A), (wzpr([P|Ps], A0, A2) :- wzi(P, A0, A1), wzpr(Ps, A1, A2)), (wzc(Is, A0, A2) :- length(Is, NC2), wzi(NC2, A0, A1), wzcr(Is, A1, A2)), wzcr([], A, A), (wzcr([enc(T,O1,O2,Rl)|Is], A0, A2) :- wzr(T, O1, O2, Rl, A0, A1), wzcr(Is, A1, A2)), (wzr(T, O1, O2, Rl, A0, A5) :- number_codes(T, Tc), append(A0, Tc, A1), wzsi(O1, A1, A2), wzsi(O2, A2, A3), wzsi(Rl, A3, A4), append(A4, [10], A5))]').
+% The entry checksums its own output (byte sum + length). Like the Stage A
+% chain above, the emitters are DIFFERENCE LISTS (A0 = open list, A1 = its
+% tail after the item), so the doubly-compiled serializer is linear too --
+% and compiling it exercises open-tail call operands ([10|A1], [32|Mid])
+% and append/3 in construct mode with a partial second argument.
+fixpoint_serializer_source('[(main0(R) :- serz(Cs), sum_list(Cs, S), length(Cs, L), R is S + L), (serz(Out) :- atom_codes(''ea/1'', NC), wzs(0, NC, 0, 0, 0, [0], [enc(0,42,65536,0), enc(20,0,0,0)], Out)), (wzi(N, A0, A1) :- number_codes(N, Cs), append(Cs, [10|A1], A0)), (wza(X, A0, A1) :- atom_codes(X, Cs), append(Cs, [10|A1], A0)), (wzn(Cs, A0, A1) :- length(Cs, L), number_codes(L, LC), append(LC, [32|Mid], A0), append(Cs, [10|A1], Mid)), (wzsi(N, A0, A1) :- number_codes(N, Cs), append([32|Cs], A1, A0)), (wzs(EI, NC, LI, NA, NF, PCs, Is, Out) :- wzh(EI, NC, LI, NA, NF, Out, H), wzb(PCs, Is, H, [])), (wzh(EI, NC, LI, NA, NF, A0, Out) :- wza(''WAMO'', A0, A1), wzi(2, A1, A2), wzi(EI, A2, A3), wzi(1, A3, A4), wzh2(NC, LI, NA, NF, A4, Out)), (wzh2(NC, LI, NA, NF, A0, Out) :- wzn(NC, A0, A1), wzi(LI, A1, A2), wzi(NA, A2, A3), wzi(NF, A3, Out)), (wzb(PCs, Is, A0, Out) :- wzp(PCs, A0, A1), wzc(Is, A1, A2), wzi(0, A2, Out)), (wzp(PCs, A0, A2) :- length(PCs, NL), wzi(NL, A0, A1), wzpr(PCs, A1, A2)), wzpr([], A, A), (wzpr([P|Ps], A0, A2) :- wzi(P, A0, A1), wzpr(Ps, A1, A2)), (wzc(Is, A0, A2) :- length(Is, NC2), wzi(NC2, A0, A1), wzcr(Is, A1, A2)), wzcr([], A, A), (wzcr([enc(T,O1,O2,Rl)|Is], A0, A2) :- wzr(T, O1, O2, Rl, A0, A1), wzcr(Is, A1, A2)), (wzr(T, O1, O2, Rl, A0, A5) :- number_codes(T, Tc), append(Tc, A1, A0), wzsi(O1, A1, A2), wzsi(O2, A2, A3), wzsi(Rl, A3, A4), A4 = [10|A5])]').
 
 % Register-file ceiling regression: manyperm/1 has 20 variables all live
 % across the mp_barrier call, so the compiler assigns them Y1..Y20. Before
@@ -943,6 +955,31 @@ manyperm(R) :-
     R is N1+N2+N3+N4+N5+N6+N7+N8+N9+N10
        + N11+N12+N13+N14+N15+N16+N17+N18+N19+N20.
 mp_barrier.
+
+% Campaign finding no. 9 regression: variable identity through get_value and
+% the append/3 seed. Two runtime paths used the FULL deref on a value that
+% could be an unbound variable, collapsing Ref-to-unbound-cell into the
+% detached Unbound sentinel (no cell address) and silently severing the link:
+%   (a) get_value var-var -- knot9(A, A) called with two unbound args left
+%       them UNLINKED (the head "unification" was a no-op that still
+%       succeeded), so a later binding through one side was invisible
+%       through the other;
+%   (b) builtin append(Cs, T, L) with T an unbound BARE variable seeded the
+%       result tail with the collapsed sentinel instead of Ref{cell of T}.
+% Both severed the difference-list serializer of the self-host fixpoint.
+% Here: L = [1,2,3|H], H knotted to T via get_value, T extended with 4 and
+% closed via the bare-var append seed; sum_list/length see the COMPLETE
+% list only if both links held. R must be 10*100 + 4 = 1004 (on the broken
+% runtime the entry FAILS: sum_list reaches an unbound tail).
+dlknot(R) :-
+    append([1,2], [3|H], L),
+    knot9(H, T),
+    em9(4, T, T2),
+    T2 = [],
+    sum_list(L, S), length(L, N),
+    R is S*100 + N.
+knot9(A, A).
+em9(V, A0, A1) :- append([V], A1, A0).
 
 % Milestone 3b-db PR 3: rule bodies. assertz((H :- B)) stores a rule; calling
 % its head runs the body (deterministic first solution). Bodies handle ,/2,
@@ -1844,6 +1881,20 @@ test(register_file_many_permanents, [condition(clang_available)]) :-
     write_wam_object([user:manyperm/1], [wamo_entry(manyperm/1)], W),
     run_host(Host, W, Out, 0),
     assertion(Out == "210\n"),
+    !.
+
+% Finding no. 9: get_value var-var linking + append bare-var tail seed
+% (see dlknot/1 above). 1004 proves both variable links held through the
+% difference-list chain; the broken runtime fails the entry instead.
+test(get_value_var_var_and_append_var_seed, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    directory_file_path(Dir, 'dlknot.wamo', W),
+    write_wam_object([user:dlknot/1, user:knot9/2, user:em9/3],
+                     [wamo_entry(dlknot/1)], W),
+    run_host(Host, W, Out, 0),
+    assertion(Out == "1004\n"),
     !.
 
 % Milestone 3b-db PR 3: rule bodies in a loaded object. asserted (H :- B)
