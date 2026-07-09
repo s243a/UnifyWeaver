@@ -462,6 +462,42 @@ verify `@wam_functor_is_cons` (byte compare, so reader-built lists match) and
 arity 2 before pushing the UnifyCtx — the fifth latent runtime bug the
 self-host campaign has found and fixed.
 
+**Builtin goals — LANDED.** A whitelist of ~37 builtins the compiler's own
+source uses now compiles as goals: term inspection (`functor/3`, `arg/3`,
+`=../2`, `copy_term/2`), text (`atom_codes`, `number_codes`, `atom_concat`,
+`char_code`, `term_to_atom`, `read_term_from_atom`, …), lists (`length`,
+`append`, `reverse`, `nth0/1`, `msort`, `sort`, `keysort`, `pairs_*`,
+`memberchk`, `between`), type checks (`atom`, `integer`, `var`, `compound`,
+…), `numbervars/3` and `\=`. Each stages its args like a call (`c_operand`
+per arg) and emits `builtin_call(Id, Arity)`. Notably the grammar emits
+`builtin_call arg/3` even for a constant index — the host compiler's
+specialised-`arg` subset gap simply never arises in self-compiled code.
+`=/2` upgraded to full-term operands (either side may be a structure or list
+literal), and the table walk collects data atoms into the atom table.
+Verified end to end (`selfhost_codegen_stage_d_builtins`): functor+arg,
+`=..` construct + structure unify, atom_codes+length over a data atom, and a
+type-check ITE condition — all → `42`.
+
+**Runtime fixes this surfaced (nos. 6–7 of the campaign):**
+
+1. **The loaded reader lacked `=..`, `=\=`, `\==`** in its operator table
+   (`@wam_infix_op`) — `T =.. L` would not even parse in a loaded object.
+   Added as xfx 700 length-3 symbol operators (`.` was already a symbol
+   char, so `=..` tokenizes as one run).
+2. **`=../2` compose mode had never worked** ("most benchmarks only exercise
+   decompose"). Three distinct defects, found by printf-instrumenting the
+   generated IR: (a) the list walk **never dereferenced** — compiled list
+   spines link conses through Refs (`set_variable` tail + write-mode
+   `put_structure`), so the walk bailed at the first tag-5 tail; (b) the
+   functor element was converted by `inttoptr` of its payload — but atoms
+   are id-based since M100, so the built compound carried a garbage functor
+   pointer (the decompose/functor/3 fix had missed compose); (c) the result
+   was bound with `wam_set_reg` — overwriting register A1 only, never
+   binding **through** the Ref shared with the caller's permanent register
+   (the M9 aggregate-result bug, resurfaced in univ), so the constructed
+   term vanished for later goals. All three fixed; construct mode now works
+   in AOT and loaded objects alike.
+
 **Deliverable:** the demonstrable self-host — the compiler compiles itself,
 and `compile(SelfSource)` yields a working compiler object.
 

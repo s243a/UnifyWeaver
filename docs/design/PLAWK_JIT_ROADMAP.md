@@ -391,17 +391,23 @@ loadable along the way.
   `trust_me` with mid-clause else/join labels (codegen is now PC- and
   label-aware; max-of-two exercises both branches → `42`); **general structure
   patterns LANDED**: arbitrary compounds in heads and call args — flat, nested
-  (X-temp deferral), pairs, and the compiler's own `enc/4` shape — all → `42`.
+  (X-temp deferral), pairs, and the compiler's own `enc/4` shape — all → `42`;
+  **builtin goals LANDED**: ~37 whitelisted builtins (term inspection, text,
+  lists, type checks) as staged-args + `builtin_call`, `=/2` upgraded to
+  full-term operands, data atoms collected into the atom table.
   The remaining Stage D campaign widens the
   subset toward the compiler compiling its own source — the self-host fixpoint.
-  The campaign keeps surfacing and fixing latent runtime bugs — **five fixed so
+  The campaign keeps surfacing and fixing latent runtime bugs — **seven fixed so
   far**: a 64-register-file ceiling corrupting memory for large clauses;
   `get_structure` not comparing the functor; the choice-point saved-register
   block not widened with the register file (failed clause bodies leaked Y17+
   across backtrack); and `copy_term/2` aliasing instead of copying (Refs
   returned unchanged, no sharing preservation); and `get_list` read mode
   accepting any compound (no cons/arity check — `[H|T]` wrongly matched
-  `foo(A,B)`). See
+  `foo(A,B)`); the loaded reader missing `=..`/`=\=`/`\==` operators; and
+  `=../2` compose mode broken three ways (no deref of Ref-linked list
+  spines, id-based atom payload used as a functor pointer, result bound to
+  the register instead of through the Ref). See
   [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
 
 ## The binary-return question, specifically

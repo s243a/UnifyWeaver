@@ -625,6 +625,8 @@ walk_term(T, S0, S) :- compound(T), !, T =.. [F|Args],
 skip_fn(':-'). skip_fn(','). skip_fn(';'). skip_fn('->'). skip_fn(is).
 skip_fn(=). skip_fn(>). skip_fn(<). skip_fn(>=). skip_fn(=<).
 skip_fn(=:=). skip_fn(=\=). skip_fn(==). skip_fn(\==).
+walk_term(T, S0, S) :- atom(T), !,          % data atom -> atom table
+    S0 = s(At0, Fn0), add_unique(T, At0, At1), S = s(At1, Fn0).
 walk_term(_, S, S).
 walk_list([], S, S).
 walk_list([A|As], S0, S) :- walk_term(A, S0, S1), walk_list(As, S1, S).
@@ -769,8 +771,13 @@ f_goal(( C -> T ; E ), PL, At, FT, PC0, PC, L0, L, Prs0, Prs, In0, In, Is) :- !,
     append(Front, [enc(32,JoinL,0,0), enc(24,0,0,0)|ElseIs], Is).
 f_goal((L is E), _, _, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In1, Is) :- !,
     a_goal_instrs((L is E), FT, In0, In1, Is), length(Is, N), PC is PC0 + N.
-f_goal((L = R), _, _, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In1, Is) :- !,
-    a_goal_instrs((L = R), FT, In0, In1, Is), length(Is, N), PC is PC0 + N.
+f_goal((L = R), _, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In2, Is) :- !,
+    % full-term unification: either side may be a variable, constant, list
+    % or structure literal (c_operand builds it) -- then builtin =/2
+    c_operand(L, 0, At, FT, In0, In1, IL),
+    c_operand(R, 1, At, FT, In1, In2, IR),
+    append(IL, IR, LR), append(LR, [enc(21,24,2,0)], Is),
+    length(Is, N), PC is PC0 + N.
 f_goal(Cmp, _, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In, Is) :-
     functor(Cmp, Op, 2), cmp_id(Op, Id), !,            % comparison guard
     arg(1, Cmp, A1), arg(2, Cmp, A2),
@@ -778,11 +785,60 @@ f_goal(Cmp, _, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In, Is) :-
     c_operand(A2, 1, At, FT, In1, In, IR),
     append(IL, IR, LR), append(LR, [enc(21,Id,2,0)], Is),
     length(Is, N), PC is PC0 + N.
+f_goal(Goal, _, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In, Is) :-
+    functor(Goal, P, A), bi_id(P, A, Id), !,           % builtin goal
+    call_args(Goal, 1, A, At, FT, In0, In, SetupIs),
+    append(SetupIs, [enc(21, Id, A, 0)], Is),          % builtin_call(Id, A)
+    length(Is, N), PC is PC0 + N.
 f_goal(Goal, PL, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In, Is) :-  % predicate call
     functor(Goal, P, A), lookup_label(P, A, PL, Label),
     call_args(Goal, 1, A, At, FT, In0, In, SetupIs),
     append(SetupIs, [enc(18, Label, A, 0)], Is),       % call(Label, arity)
     length(Is, N), PC is PC0 + N.
+
+% builtin goals the grammar can emit directly: name/arity -> builtin id (the
+% host runtime's builtin_op_to_id table). Staged like a call (c_operand per
+% arg into A1..An) then builtin_call(Id, Arity). NB: the grammar emits
+% builtin_call for arg/3 even with a constant index -- the host tier-2
+% compiler's specialised arg opcode (the known subset gap) is simply never
+% generated here, so loaded objects get the loadable builtin form.
+bi_id(functor, 3, 26).
+bi_id(arg, 3, 27).
+bi_id(=.., 2, 28).
+bi_id(copy_term, 2, 29).
+bi_id(atom_codes, 2, 36).
+bi_id(atom_chars, 2, 38).
+bi_id(char_code, 2, 37).
+bi_id(number_codes, 2, 43).
+bi_id(atom_number, 2, 42).
+bi_id(atom_length, 2, 35).
+bi_id(atom_concat, 3, 40).
+bi_id(length, 2, 31).
+bi_id(append, 3, 55).
+bi_id(reverse, 2, 54).
+bi_id(nth0, 3, 51).
+bi_id(nth1, 3, 52).
+bi_id(last, 2, 53).
+bi_id(memberchk, 2, 56).
+bi_id(between, 3, 39).
+bi_id(msort, 2, 30).
+bi_id(sort, 2, 81).
+bi_id(keysort, 2, 80).
+bi_id(pairs_keys, 2, 70).
+bi_id(pairs_values, 2, 71).
+bi_id(atom, 1, 13).
+bi_id(integer, 1, 14).
+bi_id(number, 1, 16).
+bi_id(compound, 1, 17).
+bi_id(var, 1, 18).
+bi_id(nonvar, 1, 19).
+bi_id(is_list, 1, 20).
+bi_id(ground, 1, 132).
+bi_id(succ, 2, 22).
+bi_id(\=, 2, 25).
+bi_id(numbervars, 3, 124).
+bi_id(term_to_atom, 2, 173).
+bi_id(read_term_from_atom, 2, 174).
 
 call_args(_, I, Ar, _, _, In, In, []) :- I > Ar, !.
 call_args(Goal, I, Ar, At, FT, In0, In, Is) :-
@@ -1693,6 +1749,37 @@ test(selfhost_codegen_stage_d_structures, [condition(clang_available)]) :-
                  '[(main0(R):- p(40-2,R)), (p(A-B,R):- R is A+B)]' - "42\n",
                  '[(main0(R):- d(enc(20,10,7,5),R)), (d(enc(T,O1,O2,Rl),R):- A is T+O1, B is O2+Rl, R is A+B)]' - "42\n" ]),
         ( directory_file_path(Dir, 'cgs_src.txt', SrcPath),
+          setup_call_cleanup(open(SrcPath, write, S0),
+              write(S0, Source), close(S0)),
+          process_create(Host, [CompWamo, SrcPath],
+              [stdout(pipe(S)), stderr(std), process(Pid)]),
+          read_string(S, _, Out),
+          close(S),
+          process_wait(Pid, exit(Status)),
+          assertion(Status == 0),
+          assertion(Out == Expected) )),
+    !.
+
+% Milestone 6 (self-host) Stage D (builtin goals): the whitelisted builtins
+% compile as staged-args + builtin_call. Four programs: (1) functor/3 + arg/3
+% -- NB the grammar emits builtin_call arg/3 even for a constant index, so the
+% host compiler's specialised-arg subset gap never arises; (2) =../2 building
+% a term then unifying against a structure literal (the upgraded =/2 with
+% full-term operands); (3) atom_codes/2 + length/2 over a data atom (exercises
+% atoms-as-data in the atom table); (4) a type-check builtin (integer/1) as an
+% if-then-else condition.
+test(selfhost_codegen_stage_d_builtins, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([user:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    forall(member(Source-Expected,
+               [ '[(main0(R):- T = pt(40,2), functor(T,_,N), arg(1,T,X), R is X+N)]' - "42\n",
+                 '[(main0(R):- T =.. [f,40,2], T = f(A,B), R is A+B)]' - "42\n",
+                 '[(main0(R):- atom_codes(abc,Cs), length(Cs,N), R is N+39)]' - "42\n",
+                 '[(main0(R):- T = 42, ( integer(T) -> R = T ; R = 0 ))]' - "42\n" ]),
+        ( directory_file_path(Dir, 'cgb_src.txt', SrcPath),
           setup_call_cleanup(open(SrcPath, write, S0),
               write(S0, Source), close(S0)),
           process_create(Host, [CompWamo, SrcPath],
