@@ -675,6 +675,9 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                     self.dynamic_retract_call(self.pc + 1)
                 } else if p == "assert/1" {
                     self.execute_assert_builtin("assert/1")
+                } else if p == "read_term/2" {
+                    let options = self.get_reg_raw("A2");
+                    self.execute_read_term_builtin(options.as_ref())
                 } else if self.foreign_predicates.contains(p) {
                     self.cp = self.pc + 1;
                     if self.execute_foreign_predicate(p, *_arity) {
@@ -748,6 +751,12 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
                     self.dynamic_retract_call(self.cp)
                 } else if p == "assert/1" {
                     if self.execute_assert_builtin("assert/1") {
+                        self.pc = self.cp;
+                        true
+                    } else { false }
+                } else if p == "read_term/2" {
+                    let options = self.get_reg_raw("A2");
+                    if self.execute_read_term_builtin(options.as_ref()) {
                         self.pc = self.cp;
                         true
                     } else { false }
@@ -1596,7 +1605,7 @@ compile_execute_term_builtin_to_rust(Code) :-
             "term_to_atom/2" => { self.execute_term_to_atom_builtin() }
             "read_term_from_atom/2" => { self.execute_read_term_from_atom_builtin(2) }
             "read_term_from_atom/3" => { self.execute_read_term_from_atom_builtin(3) }
-            "read/1" | "read_term/1" => { self.execute_read_term_builtin() }
+            "read/1" | "read_term/1" => { self.execute_read_term_builtin(None) }
             "assertz/1" | "asserta/1" => { self.execute_assert_builtin(op) }
             "retractall/1" => { self.execute_retractall_builtin() }
             _ => false,
