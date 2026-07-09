@@ -391,6 +391,29 @@ label; `fact(3)` → 6), both compiled inside a loaded compiler object.
 list patterns in heads (`[C|Cs]`), cut, `==`/`=:=` guards, if-then-else — the
 next Stage D increments, in whatever order the fixpoint attempt surfaces them.
 
+**Lists + atom table — LANDED.** The list-walking shape — a base clause on
+`[]` and a recursive clause destructuring `[H|T]` — now compiles from source:
+`[(main0(R):-suml([10,20,12],0,R)), suml([],A,A), (suml([H|T],A,R):- A1 is
+A+H, suml(T,A1,R))]` → `42`. New pieces, learned from the host golden:
+- **Atom table** (`NA > 0`): a var-safe walk over every clause term collects
+  `[]` and atom constants (plus the cons functor `[|]`); atom constants carry
+  the atom-table *index* with reloc class 1, relocated at load to interned
+  atom ids that unify with reader-built atoms. NB: in SWI `atom([])` is
+  *false* (nil is a special object), so nil has dedicated clauses in each
+  argument compiler; in the loaded runtime nil *is* the atom `"[]"` and the
+  same clauses match it.
+- **Head list patterns**: `[H|T]` → `get_list Ai` (4) + per element
+  `unify_variable` (5, first occurrence) / `unify_value` (6, later) /
+  `unify_constant` (7, integers with tag<<16, atoms with reloc 1).
+- **Repeated head variables**: second occurrence now emits `get_value` (2) —
+  previously a second `get_variable` silently *overwrote* the first binding
+  instead of unifying (`suml([],A,A)` would have been wrong): a latent
+  codegen bug this increment fixed.
+- **List literals in call args**: built top-down like the host — `put_list
+  TARGET` (12), `set_*` for the head, `set_variable Xtemp` (13) for the tail,
+  then `put_structure cons/2` into the temp (write mode binds through). X
+  temps start at reg 16 and live only within the build.
+
 **Deliverable:** the demonstrable self-host — the compiler compiles itself,
 and `compile(SelfSource)` yields a working compiler object.
 

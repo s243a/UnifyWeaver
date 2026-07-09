@@ -538,17 +538,38 @@ wz_funcs([F|Fs], A0, A2) :- wz_fname(F, A0, A1), wz_funcs(Fs, A1, A2).
 % variables are clause-local. Facts (no body) emit head + proceed (no env).
 % Single-clause predicates emit no chain, so the Stage C output (verified
 % byte-identical to the host writer for the mnt program) is unchanged.
+% Stage D (lists): cgfull also compiles LIST PATTERNS in heads, list literals
+% in call arguments, and atom constants -- so list-walking recursion (the shape
+% of every helper in the compiler's own source) compiles from source text.
+% - collect_tables walks every clause term (var-safe) gathering the ATOM table
+%   ('[]' and any atom constants) and the cons functor '[|]'; collect_ops adds
+%   the arithmetic-operator functors. NB: in SWI, nil is NOT an atom
+%   (atom([]) fails), so nil gets dedicated clauses in each argument compiler;
+%   in the loaded runtime nil IS the atom "[]", and those clauses match it the
+%   same way (get_constant on the relocated atom id).
+% - head list pattern [H|T] -> get_list Ai (tag 4) + a unify_* per element:
+%   unify_variable (5) first occurrence / unify_value (6) later /
+%   unify_constant (7) for integers and atoms.
+% - a REPEATED head variable now emits get_value (tag 2), not a second
+%   get_variable (which would have overwritten the first binding unchecked).
+% - a list literal in a call argument builds top-down like the host: put_list
+%   TARGET (12), set_* for the head, set_variable Xtemp (13) for the tail,
+%   then put_structure cons/2 into the temp (write mode binds through the
+%   fresh cell) -- X temps start at reg 16 and live only within the build.
+% - atom constants carry the atom-table INDEX with reloc class 1; the loader
+%   relocates them to interned atom ids (matching the reader's atoms).
 cgfull(Src, Wamo) :-
     read_term_from_atom(Src, Clauses),
     group_clauses(Clauses, Groups),
     group_labels(Groups, 0, PL),
     length(Groups, NP),
-    f_collect_all(Clauses, Functors),
-    g_groups(Groups, PL, Functors, 0, NP, AllIs, EntryPCs, AltPCs),
+    collect_tables(Clauses, s([],[]), s(Atoms, Fn0)),
+    collect_ops(Clauses, Fn0, Functors),
+    g_groups(Groups, PL, Atoms, Functors, 0, NP, AllIs, EntryPCs, AltPCs),
     append(EntryPCs, AltPCs, PCs),
     Clauses = [First|_], clause_hb(First, H0, _), functor(H0, P0, A0),
     pred_name_codes(P0, A0, EntryName),
-    wzf_serialize(0, EntryName, 0, Functors, PCs, AllIs, Codes),
+    wza_serialize(0, EntryName, 0, Atoms, Functors, PCs, AllIs, Codes),
     atom_codes(Wamo, Codes).
 
 % group consecutive clauses with the same name/arity into pred(P,A,Clauses)
@@ -567,74 +588,164 @@ take_same([C|Cs], P, A, Same, Rest) :-
 group_labels([], _, []).
 group_labels([pred(P,A,_)|Gs], I, [key(P,A)-I|R]) :- I1 is I+1, group_labels(Gs, I1, R).
 
+% atom + cons-functor collection: a var-safe walk over every clause term
+walk_term(T, S0, S) :- var(T), !, S = S0.
+walk_term([], S0, S) :- !, S0 = s(At0, Fn0), add_unique('[]', At0, At1), S = s(At1, Fn0).
+walk_term([H|T], S0, S) :- !, S0 = s(At0, Fn0), add_unique('[|]', Fn0, Fn1),
+    walk_term(H, s(At0,Fn1), S1), walk_term(T, S1, S).
+walk_term(T, S0, S) :- compound(T), !, T =.. [_|Args], walk_list(Args, S0, S).
+walk_term(_, S, S).
+walk_list([], S, S).
+walk_list([A|As], S0, S) :- walk_term(A, S0, S1), walk_list(As, S1, S).
+collect_tables([], S, S).
+collect_tables([C|Cs], S0, S) :- walk_term(C, S0, S1), collect_tables(Cs, S1, S).
+collect_ops([], F, F).
+collect_ops([C|Cs], F0, F) :-
+    ( C = (_ :- B) -> conj_list(B, Gs) ; Gs = [] ),
+    ops_goals(Gs, F0, F1), collect_ops(Cs, F1, F).
+ops_goals([], F, F).
+ops_goals([G|Gs], F0, F) :-
+    ( G = (_ is E), functor(E, Op, 2) -> add_unique(Op, F0, F1) ; F1 = F0 ),
+    ops_goals(Gs, F1, F).
+
 % per-group codegen; threads PC and the next alternative-label number, and
 % collects alternative PCs in assignment order (so EntryPCs ++ AltPCs is the
 % label->PC table with labels positional).
-g_groups([], _, _, _, _, [], [], []).
-g_groups([pred(_,_,Cls)|Gs], PL, FT, PC, Alt0, AllIs, [PC|EPCs], AltPCs) :-
-    g_pred(Cls, PL, FT, PC, Alt0, Is, PC1, Alt1, APCs1),
-    g_groups(Gs, PL, FT, PC1, Alt1, RestIs, EPCs, APCs2),
+g_groups([], _, _, _, _, _, [], [], []).
+g_groups([pred(_,_,Cls)|Gs], PL, At, FT, PC, Alt0, AllIs, [PC|EPCs], AltPCs) :-
+    g_pred(Cls, PL, At, FT, PC, Alt0, Is, PC1, Alt1, APCs1),
+    g_groups(Gs, PL, At, FT, PC1, Alt1, RestIs, EPCs, APCs2),
     append(Is, RestIs, AllIs), append(APCs1, APCs2, AltPCs).
 
-g_pred([C], PL, FT, PC, Alt, Is, PC1, Alt, []) :-      % single clause: no chain
-    g_one(C, PL, FT, Is), length(Is, N), PC1 is PC + N.
-g_pred([C1,C2|Rest], PL, FT, PC, Alt0, Is, PCout, AltOut, AltPCs) :-
-    g_one(C1, PL, FT, C1Is),
+g_pred([C], PL, At, FT, PC, Alt, Is, PC1, Alt, []) :-   % single clause: no chain
+    g_one(C, PL, At, FT, Is), length(Is, N), PC1 is PC + N.
+g_pred([C1,C2|Rest], PL, At, FT, PC, Alt0, Is, PCout, AltOut, AltPCs) :-
+    g_one(C1, PL, At, FT, C1Is),
     length(C1Is, N1), PC1 is PC + 1 + N1,
     Alt1 is Alt0 + 1,
-    g_alts([C2|Rest], PL, FT, PC1, Alt1, AltIs, PCout, AltOut, AltPCs),
+    g_alts([C2|Rest], PL, At, FT, PC1, Alt1, AltIs, PCout, AltOut, AltPCs),
     append([enc(22,Alt0,0,0)|C1Is], AltIs, Is).         % try_me_else(Alt0)
 
-g_alts([C], PL, FT, PC, Alt, Is, PCout, Alt, [PC]) :-   % last alternative
-    g_one(C, PL, FT, CIs),
+g_alts([C], PL, At, FT, PC, Alt, Is, PCout, Alt, [PC]) :-   % last alternative
+    g_one(C, PL, At, FT, CIs),
     Is = [enc(24,0,0,0)|CIs],                           % trust_me
     length(Is, N), PCout is PC + N.
-g_alts([C1,C2|Rest], PL, FT, PC, Alt, Is, PCout, AltOut, [PC|AltPCs]) :-
-    g_one(C1, PL, FT, C1Is),
+g_alts([C1,C2|Rest], PL, At, FT, PC, Alt, Is, PCout, AltOut, [PC|AltPCs]) :-
+    g_one(C1, PL, At, FT, C1Is),
     length(C1Is, N1), PC1 is PC + 1 + N1,
     Alt1 is Alt + 1,
-    g_alts([C2|Rest], PL, FT, PC1, Alt1, RestIs, PCout, AltOut, AltPCs),
+    g_alts([C2|Rest], PL, At, FT, PC1, Alt1, RestIs, PCout, AltOut, AltPCs),
     append([enc(23,Alt,0,0)|C1Is], RestIs, Is).         % retry_me_else(Alt)
 
-g_one(C0, PL, FT, Is) :-
+g_one(C0, PL, At, FT, Is) :-
     copy_term(C0, C), numbervars(C, 0, _),
-    f_clause_instrs(C, PL, FT, Is).
+    f_clause_instrs(C, PL, At, FT, Is).
 
-% functor table across all clauses
-f_collect_all([], []).
-f_collect_all([C|Cs], FT) :-
-    ( C = (_ :- B) -> conj_list(B, Gs) ; Gs = [] ),
-    collect_functors(Gs, F1), f_collect_all(Cs, F2), f_merge(F1, F2, FT).
-f_merge([], FT, FT).
-f_merge([F|Fs], A0, FT) :- add_unique(F, A0, A1), f_merge(Fs, A1, FT).
-
-f_clause_instrs(Clause, PL, FT, Instrs) :-
+f_clause_instrs(Clause, PL, At, FT, Instrs) :-
     clause_hb(Clause, Head, Goals), functor(Head, _, Arity),
-    head_args(Head, 1, Arity, [], Init1, HeadIs),
+    h_args(Head, 1, Arity, At, [], Init1, HeadIs),
     (   Goals == []
     ->  append(HeadIs, [enc(20,0,0,0)], Instrs)              % fact: head + proceed
-    ;   f_goals(Goals, PL, FT, Init1, _, GoalIs),
+    ;   f_goals(Goals, PL, At, FT, Init1, _, GoalIs),
         append([enc(16,0,0,0) | HeadIs], GoalIs, B0),
         append(B0, [enc(17,0,0,0), enc(20,0,0,0)], Instrs)
     ).
 
-f_goals([], _, _, In, In, []).
-f_goals([G|Gs], PL, FT, In0, In, Is) :-
-    f_goal(G, PL, FT, In0, In1, GI),
-    f_goals(Gs, PL, FT, In1, In, RI), append(GI, RI, Is).
+% head-argument compilation: vars (first/repeated), integers, atoms, nil,
+% and list patterns [H|T]
+h_args(_, I, Ar, _, In, In, []) :- I > Ar, !.
+h_args(H, I, Ar, At, In0, In, Is) :-
+    arg(I, H, A), Ai is I - 1,
+    head_arg_instrs(A, Ai, At, In0, In1, AIs),
+    I1 is I + 1, h_args(H, I1, Ar, At, In1, In, RIs),
+    append(AIs, RIs, Is).
+head_arg_instrs('$VAR'(N), Ai, _, In0, In1, [I]) :- !,
+    Y is 48 + N,
+    (   is_init(N, In0)
+    ->  I = enc(2, Y, Ai, 0), In1 = In0                 % get_value (repeated var)
+    ;   I = enc(1, Y, Ai, 0), In1 = [N|In0]             % get_variable (first)
+    ).
+head_arg_instrs([], Ai, At, In, In, [enc(0,Idx,Ai,1)]) :- !,   % get_constant []
+    functor_index('[]', At, Idx).
+head_arg_instrs([H|T], Ai, At, In0, In2, [enc(4,Ai,0,0)|Rest]) :- !,  % get_list
+    unify_arg(H, At, In0, In1, UH),
+    unify_arg(T, At, In1, In2, UT),
+    append(UH, UT, Rest).
+head_arg_instrs(V, Ai, _, In, In, [enc(0,V,Op2,0)]) :- integer(V), !, Op2 is (1<<16)\/Ai.
+head_arg_instrs(A, Ai, At, In, In, [enc(0,Idx,Ai,1)]) :- atom(A), functor_index(A, At, Idx).
+unify_arg('$VAR'(N), _, In0, In1, [I]) :- !,
+    Y is 48 + N,
+    (   is_init(N, In0)
+    ->  I = enc(6, Y, 0, 0), In1 = In0                  % unify_value
+    ;   I = enc(5, Y, 0, 0), In1 = [N|In0]              % unify_variable
+    ).
+unify_arg([], At, In, In, [enc(7,Idx,0,1)]) :- !, functor_index('[]', At, Idx).
+unify_arg(V, _, In, In, [enc(7,V,65536,0)]) :- integer(V), !.
+unify_arg(A, At, In, In, [enc(7,Idx,0,1)]) :- atom(A), functor_index(A, At, Idx).
 
-f_goal((L is E), _, FT, In0, In1, Is) :- !, a_goal_instrs((L is E), FT, In0, In1, Is).
-f_goal((L = R),  _, FT, In0, In1, Is) :- !, a_goal_instrs((L = R),  FT, In0, In1, Is).
-f_goal(Goal, PL, _, In0, In, Is) :-               % predicate call
+f_goals([], _, _, _, In, In, []).
+f_goals([G|Gs], PL, At, FT, In0, In, Is) :-
+    f_goal(G, PL, At, FT, In0, In1, GI),
+    f_goals(Gs, PL, At, FT, In1, In, RI), append(GI, RI, Is).
+
+f_goal((L is E), _, _, FT, In0, In1, Is) :- !, a_goal_instrs((L is E), FT, In0, In1, Is).
+f_goal((L = R),  _, _, FT, In0, In1, Is) :- !, a_goal_instrs((L = R),  FT, In0, In1, Is).
+f_goal(Goal, PL, At, FT, In0, In, Is) :-          % predicate call
     functor(Goal, P, A), lookup_label(P, A, PL, Label),
-    call_args(Goal, 1, A, In0, In, SetupIs),
+    call_args(Goal, 1, A, At, FT, In0, In, SetupIs),
     append(SetupIs, [enc(18, Label, A, 0)], Is).   % call(Label, arity)
 
-call_args(_, I, Ar, In, In, []) :- I > Ar, !.
-call_args(Goal, I, Ar, In0, In, Is) :-
+call_args(_, I, Ar, _, _, In, In, []) :- I > Ar, !.
+call_args(Goal, I, Ar, At, FT, In0, In, Is) :-
     arg(I, Goal, Arg), Ai is I - 1,
-    operand_instr(Arg, Ai, In0, In1, AI),
-    I1 is I + 1, call_args(Goal, I1, Ar, In1, In, R), append(AI, R, Is).
+    c_operand(Arg, Ai, At, FT, In0, In1, AI),
+    I1 is I + 1, call_args(Goal, I1, Ar, At, FT, In1, In, R), append(AI, R, Is).
+
+% call-argument staging: vars/ints via operand_instr; nil/atoms as atom
+% constants; list literals built on the heap
+c_operand('$VAR'(N), Ai, _, _, In0, In1, Is) :- !, operand_instr('$VAR'(N), Ai, In0, In1, Is).
+c_operand(V, Ai, _, _, In, In, Is) :- integer(V), !, operand_instr(V, Ai, In, In, Is).
+c_operand([], Ai, At, _, In, In, [enc(8,Idx,Ai,1)]) :- !, functor_index('[]', At, Idx).
+c_operand([H|T], Ai, At, FT, In0, In1, Is) :- !,
+    build_list([H|T], Ai, first, At, FT, 16, _, In0, In1, Is).
+c_operand(A, Ai, At, _, In, In, [enc(8,Idx,Ai,1)]) :- atom(A), functor_index(A, At, Idx).
+
+% top-down list-literal build: the first cell is put_list TARGET; each nested
+% cell is put_structure cons/2 into a fresh X temp created by set_variable
+% (put_structure write mode binds through the fresh cell)
+build_list([E|Rest], TR, Mode, At, FT, Xt0, Xt, In0, In2, Is) :-
+    (   Mode = first
+    ->  Head = [enc(12,TR,0,0)]                          % put_list
+    ;   functor_index('[|]', FT, CI), Op2 is (2<<16)\/TR,
+        Head = [enc(11,CI,Op2,2)]                        % put_structure cons/2
+    ),
+    set_arg(E, At, In0, In1, SE),
+    (   Rest == []
+    ->  functor_index('[]', At, NI), Tail = [enc(15,NI,0,1)],
+        In2 = In1, Xt = Xt0, RestIs = []
+    ;   Tail = [enc(13,Xt0,0,0)],                        % set_variable Xtemp
+        Xt1 is Xt0 + 1,
+        build_list(Rest, Xt0, nested, At, FT, Xt1, Xt, In1, In2, RestIs)
+    ),
+    append(Head, SE, HS), append(HS, Tail, HST), append(HST, RestIs, Is).
+set_arg('$VAR'(N), _, In0, In1, [I]) :- !,
+    Y is 48 + N,
+    (   is_init(N, In0)
+    ->  I = enc(14, Y, 0, 0), In1 = In0                  % set_value
+    ;   I = enc(13, Y, 0, 0), In1 = [N|In0]              % set_variable
+    ).
+set_arg([], At, In, In, [enc(15,Idx,0,1)]) :- !, functor_index('[]', At, Idx).
+set_arg(V, _, In, In, [enc(15,V,1,0)]) :- integer(V), !.
+set_arg(A, At, In, In, [enc(15,Idx,0,1)]) :- atom(A), functor_index(A, At, Idx).
+
+% serializer with an atom table: NA + NA length-prefixed atom name strings
+% between the label index and the functor table
+wza_serialize(EI, NC, LI, Atoms, Fs, PCs, Is, Out) :-
+    wz_a('WAMO', [], A1), wz_i(2, A1, A2), wz_i(EI, A2, A3), wz_i(1, A3, A4),
+    wz_n(NC, A4, A5), wz_i(LI, A5, A6),
+    length(Atoms, NA), wz_i(NA, A6, A7), wz_funcs(Atoms, A7, A8),
+    length(Fs, NF), wz_i(NF, A8, A9), wz_funcs(Fs, A9, A10),
+    wz_pcs_sec(PCs, A10, A11), wz_instr_sec(Is, A11, A12), wz_i(0, A12, Out).
 
 % Register-file ceiling regression: manyperm/1 has 20 variables all live
 % across the mp_barrier call, so the compiler assigns them Y1..Y20. Before
@@ -1393,6 +1504,31 @@ test(selfhost_codegen_stage_d_multiclause, [condition(clang_available)]) :-
           process_wait(Pid, exit(Status)),
           assertion(Status == 0),
           assertion(Out == Expected) )),
+    !.
+
+% Milestone 6 (self-host) Stage D (lists): list patterns in heads, list
+% literals in call args, and the atom table. The classic list-walking shape --
+% a base clause on [] (atom constant, repeated head var A needing get_value)
+% and a recursive clause destructuring [H|T] (get_list + unify_variable) --
+% compiles from source and sums [10,20,12] to 42. This is the shape of every
+% recursive helper in the compiler's own source.
+test(selfhost_codegen_stage_d_lists, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([user:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgl_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R):-suml([10,20,12],0,R)), suml([],A,A), (suml([H|T],A,R):- A1 is A+H, suml(T,A1,R))]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "42\n"),
     !.
 
 % Register-file ceiling fix: a clause with 20 permanent variables (Y1..Y20)
