@@ -558,6 +558,22 @@ wz_funcs([F|Fs], A0, A2) :- wz_fname(F, A0, A1), wz_funcs(Fs, A1, A2).
 %   fresh cell) -- X temps start at reg 16 and live only within the build.
 % - atom constants carry the atom-table INDEX with reloc class 1; the loader
 %   relocates them to interned atom ids (matching the reader's atoms).
+% Stage D (guards): cgfull also compiles COMPARISON GUARDS and IF-THEN-ELSE.
+% A comparison goal (>, <, >=, =<, =:=, =\=, ==, \==) stages A1/A2 and emits
+% builtin_call with the comparison's id. ( Cond -> Then ; Else ) compiles to
+% the host's ITE shape: try_me_else(ElseLabel) pushes the guard CP; the Cond
+% goals run; cut_ite (tag 31, soft cut) pops the guard CP on success; the
+% Then goals run and jump(JoinLabel) (tag 32, label operand) skips the else;
+% at ElseLabel a trust_me pops the CP (reached by backtracking when Cond
+% fails, which also UNDOES Cond's bindings and register writes) and the Else
+% goals run to the join. Codegen is now PC- and label-aware: else/join labels
+% are allocated mid-clause from the same counter as clause-chain alternatives,
+% each recorded as a Label-PC pair; cgfull keysorts the pairs and appends
+% pairs_values after the predicate-entry PCs (labels stay positional).
+% Init-set rule: Then continues from Cond's set (bindings persist on the then
+% path); Else restarts from the pre-ITE set (backtracking undid Cond); after
+% the ITE the set is the INTERSECTION of the two branch out-sets (initialized
+% on both paths). Variables introduced inside one branch are branch-local.
 cgfull(Src, Wamo) :-
     read_term_from_atom(Src, Clauses),
     group_clauses(Clauses, Groups),
@@ -565,12 +581,21 @@ cgfull(Src, Wamo) :-
     length(Groups, NP),
     collect_tables(Clauses, s([],[]), s(Atoms, Fn0)),
     collect_ops(Clauses, Fn0, Functors),
-    g_groups(Groups, PL, Atoms, Functors, 0, NP, AllIs, EntryPCs, AltPCs),
-    append(EntryPCs, AltPCs, PCs),
+    g_groups(Groups, PL, Atoms, Functors, 0, NP, AllIs, EntryPCs, Pairs),
+    keysort(Pairs, SortedPairs), pairs_values(SortedPairs, ExtraPCs),
+    append(EntryPCs, ExtraPCs, PCs),
     Clauses = [First|_], clause_hb(First, H0, _), functor(H0, P0, A0),
     pred_name_codes(P0, A0, EntryName),
     wza_serialize(0, EntryName, 0, Atoms, Functors, PCs, AllIs, Codes),
     atom_codes(Wamo, Codes).
+
+% comparison-guard builtin ids
+cmp_id(>, 1). cmp_id(<, 2). cmp_id(>=, 3). cmp_id(=<, 4).
+cmp_id(=:=, 5). cmp_id(=\=, 6). cmp_id(==, 7). cmp_id(\==, 21).
+
+inter([], _, []).
+inter([X|Xs], Ys, Out) :-
+    ( memberchk_op(X, Ys) -> Out = [X|R] ; Out = R ), inter(Xs, Ys, R).
 
 % group consecutive clauses with the same name/arity into pred(P,A,Clauses)
 group_clauses([], []).
@@ -605,48 +630,60 @@ collect_ops([C|Cs], F0, F) :-
     ops_goals(Gs, F0, F1), collect_ops(Cs, F1, F).
 ops_goals([], F, F).
 ops_goals([G|Gs], F0, F) :-
-    ( G = (_ is E), functor(E, Op, 2) -> add_unique(Op, F0, F1) ; F1 = F0 ),
+    (   G = ( Cnd -> Thn ; Els )
+    ->  conj_list(Cnd, GC), conj_list(Thn, GT), conj_list(Els, GE),
+        ops_goals(GC, F0, Fa), ops_goals(GT, Fa, Fb), ops_goals(GE, Fb, F1)
+    ;   G = (_ is E), functor(E, Op, 2)
+    ->  add_unique(Op, F0, F1)
+    ;   F1 = F0
+    ),
     ops_goals(Gs, F1, F).
 
-% per-group codegen; threads PC and the next alternative-label number, and
-% collects alternative PCs in assignment order (so EntryPCs ++ AltPCs is the
-% label->PC table with labels positional).
+% per-group codegen; threads the absolute PC AND a label counter (chain
+% alternatives and mid-clause ITE labels share it, in codegen order), and
+% collects Label-PC pairs (keysorted by cgfull, so any assignment order works).
 g_groups([], _, _, _, _, _, [], [], []).
-g_groups([pred(_,_,Cls)|Gs], PL, At, FT, PC, Alt0, AllIs, [PC|EPCs], AltPCs) :-
-    g_pred(Cls, PL, At, FT, PC, Alt0, Is, PC1, Alt1, APCs1),
-    g_groups(Gs, PL, At, FT, PC1, Alt1, RestIs, EPCs, APCs2),
-    append(Is, RestIs, AllIs), append(APCs1, APCs2, AltPCs).
+g_groups([pred(_,_,Cls)|Gs], PL, At, FT, PC, L0, AllIs, [PC|EPCs], Prs) :-
+    g_pred(Cls, PL, At, FT, PC, L0, Is, PC1, L1, Prs1),
+    g_groups(Gs, PL, At, FT, PC1, L1, RestIs, EPCs, Prs2),
+    append(Is, RestIs, AllIs), append(Prs1, Prs2, Prs).
 
-g_pred([C], PL, At, FT, PC, Alt, Is, PC1, Alt, []) :-   % single clause: no chain
-    g_one(C, PL, At, FT, Is), length(Is, N), PC1 is PC + N.
-g_pred([C1,C2|Rest], PL, At, FT, PC, Alt0, Is, PCout, AltOut, AltPCs) :-
-    g_one(C1, PL, At, FT, C1Is),
-    length(C1Is, N1), PC1 is PC + 1 + N1,
-    Alt1 is Alt0 + 1,
-    g_alts([C2|Rest], PL, At, FT, PC1, Alt1, AltIs, PCout, AltOut, AltPCs),
-    append([enc(22,Alt0,0,0)|C1Is], AltIs, Is).         % try_me_else(Alt0)
+g_pred([C], PL, At, FT, PC, L0, Is, PCout, L, Prs) :-   % single clause: no chain
+    g_one(C, PL, At, FT, PC, L0, L, Prs, Is), length(Is, N), PCout is PC + N.
+g_pred([C1,C2|Rest], PL, At, FT, PC, L0, Is, PCout, L, Prs) :-
+    ChainL = L0, L1 is L0 + 1,
+    PCc is PC + 1,
+    g_one(C1, PL, At, FT, PCc, L1, L2, Prs1, C1Is),
+    length(C1Is, N1), PC1 is PCc + N1,
+    g_alts([C2|Rest], PL, At, FT, PC1, ChainL, L2, AltIs, PCout, L, Prs2),
+    append(Prs1, Prs2, Prs),
+    append([enc(22,ChainL,0,0)|C1Is], AltIs, Is).       % try_me_else(ChainL)
 
-g_alts([C], PL, At, FT, PC, Alt, Is, PCout, Alt, [PC]) :-   % last alternative
-    g_one(C, PL, At, FT, CIs),
+g_alts([C], PL, At, FT, PC, MyL, L0, Is, PCout, L, [MyL-PC|Prs]) :-  % last alt
+    PCc is PC + 1,
+    g_one(C, PL, At, FT, PCc, L0, L, Prs, CIs),
     Is = [enc(24,0,0,0)|CIs],                           % trust_me
     length(Is, N), PCout is PC + N.
-g_alts([C1,C2|Rest], PL, At, FT, PC, Alt, Is, PCout, AltOut, [PC|AltPCs]) :-
-    g_one(C1, PL, At, FT, C1Is),
-    length(C1Is, N1), PC1 is PC + 1 + N1,
-    Alt1 is Alt + 1,
-    g_alts([C2|Rest], PL, At, FT, PC1, Alt1, RestIs, PCout, AltOut, AltPCs),
-    append([enc(23,Alt,0,0)|C1Is], RestIs, Is).         % retry_me_else(Alt)
+g_alts([C1,C2|Rest], PL, At, FT, PC, MyL, L0, Is, PCout, L, Prs) :-
+    NextL = L0, L1 is L0 + 1,
+    PCc is PC + 1,
+    g_one(C1, PL, At, FT, PCc, L1, L2, Prs1, C1Is),
+    length(C1Is, N1), PC1 is PCc + N1,
+    g_alts([C2|Rest], PL, At, FT, PC1, NextL, L2, RestIs, PCout, L, Prs2),
+    append([MyL-PC|Prs1], Prs2, Prs),
+    append([enc(23,NextL,0,0)|C1Is], RestIs, Is).       % retry_me_else(NextL)
 
-g_one(C0, PL, At, FT, Is) :-
+g_one(C0, PL, At, FT, StartPC, L0, L, Prs, Is) :-
     copy_term(C0, C), numbervars(C, 0, _),
-    f_clause_instrs(C, PL, At, FT, Is).
+    f_clause_instrs(C, PL, At, FT, StartPC, L0, L, Prs, Is).
 
-f_clause_instrs(Clause, PL, At, FT, Instrs) :-
+f_clause_instrs(Clause, PL, At, FT, StartPC, L0, L, Prs, Instrs) :-
     clause_hb(Clause, Head, Goals), functor(Head, _, Arity),
     h_args(Head, 1, Arity, At, [], Init1, HeadIs),
     (   Goals == []
-    ->  append(HeadIs, [enc(20,0,0,0)], Instrs)              % fact: head + proceed
-    ;   f_goals(Goals, PL, At, FT, Init1, _, GoalIs),
+    ->  append(HeadIs, [enc(20,0,0,0)], Instrs), L = L0, Prs = []
+    ;   length(HeadIs, NH), PC0 is StartPC + 1 + NH,     % after allocate + head
+        f_goals(Goals, PL, At, FT, PC0, _, L0, L, [], Prs, Init1, _, GoalIs),
         append([enc(16,0,0,0) | HeadIs], GoalIs, B0),
         append(B0, [enc(17,0,0,0), enc(20,0,0,0)], Instrs)
     ).
@@ -683,17 +720,45 @@ unify_arg([], At, In, In, [enc(7,Idx,0,1)]) :- !, functor_index('[]', At, Idx).
 unify_arg(V, _, In, In, [enc(7,V,65536,0)]) :- integer(V), !.
 unify_arg(A, At, In, In, [enc(7,Idx,0,1)]) :- atom(A), functor_index(A, At, Idx).
 
-f_goals([], _, _, _, In, In, []).
-f_goals([G|Gs], PL, At, FT, In0, In, Is) :-
-    f_goal(G, PL, At, FT, In0, In1, GI),
-    f_goals(Gs, PL, At, FT, In1, In, RI), append(GI, RI, Is).
+% goal codegen, PC- and label-aware:
+% f_goals(Goals, PL, At, FT, PC0,PC, L0,L, Prs0,Prs, In0,In, Is)
+f_goals([], _, _, _, PC, PC, L, L, Prs, Prs, In, In, []).
+f_goals([G|Gs], PL, At, FT, PC0, PC, L0, L, Prs0, Prs, In0, In, Is) :-
+    f_goal(G, PL, At, FT, PC0, PC1, L0, L1, Prs0, Prs1, In0, In1, GI),
+    f_goals(Gs, PL, At, FT, PC1, PC, L1, L, Prs1, Prs, In1, In, RI),
+    append(GI, RI, Is).
 
-f_goal((L is E), _, _, FT, In0, In1, Is) :- !, a_goal_instrs((L is E), FT, In0, In1, Is).
-f_goal((L = R),  _, _, FT, In0, In1, Is) :- !, a_goal_instrs((L = R),  FT, In0, In1, Is).
-f_goal(Goal, PL, At, FT, In0, In, Is) :-          % predicate call
+f_goal(( C -> T ; E ), PL, At, FT, PC0, PC, L0, L, Prs0, Prs, In0, In, Is) :- !,
+    ElseL = L0, JoinL is L0 + 1, L1 is L0 + 2,
+    conj_list(C, CGs), conj_list(T, TGs), conj_list(E, EGs),
+    PC1 is PC0 + 1,                                    % try_me_else(ElseL)
+    f_goals(CGs, PL, At, FT, PC1, PC2, L1, L2, Prs0, Prs1, In0, InC, CondIs),
+    PC3 is PC2 + 1,                                    % cut_ite
+    f_goals(TGs, PL, At, FT, PC3, PC4, L2, L3, Prs1, Prs2, InC, InT, ThenIs),
+    ElsePC is PC4 + 1,                                 % after jump(JoinL)
+    PC5 is ElsePC + 1,                                 % after trust_me
+    f_goals(EGs, PL, At, FT, PC5, JoinPC, L3, L, Prs2, Prs3, In0, InE, ElseIs),
+    PC = JoinPC,
+    append(Prs3, [ElseL-ElsePC, JoinL-JoinPC], Prs),
+    inter(InT, InE, In),
+    append([enc(22,ElseL,0,0)|CondIs], [enc(31,0,0,0)|ThenIs], Front),
+    append(Front, [enc(32,JoinL,0,0), enc(24,0,0,0)|ElseIs], Is).
+f_goal((L is E), _, _, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In1, Is) :- !,
+    a_goal_instrs((L is E), FT, In0, In1, Is), length(Is, N), PC is PC0 + N.
+f_goal((L = R), _, _, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In1, Is) :- !,
+    a_goal_instrs((L = R), FT, In0, In1, Is), length(Is, N), PC is PC0 + N.
+f_goal(Cmp, _, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In, Is) :-
+    functor(Cmp, Op, 2), cmp_id(Op, Id), !,            % comparison guard
+    arg(1, Cmp, A1), arg(2, Cmp, A2),
+    c_operand(A1, 0, At, FT, In0, In1, IL),
+    c_operand(A2, 1, At, FT, In1, In, IR),
+    append(IL, IR, LR), append(LR, [enc(21,Id,2,0)], Is),
+    length(Is, N), PC is PC0 + N.
+f_goal(Goal, PL, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In, Is) :-  % predicate call
     functor(Goal, P, A), lookup_label(P, A, PL, Label),
     call_args(Goal, 1, A, At, FT, In0, In, SetupIs),
-    append(SetupIs, [enc(18, Label, A, 0)], Is).   % call(Label, arity)
+    append(SetupIs, [enc(18, Label, A, 0)], Is),       % call(Label, arity)
+    length(Is, N), PC is PC0 + N.
 
 call_args(_, I, Ar, _, _, In, In, []) :- I > Ar, !.
 call_args(Goal, I, Ar, At, FT, In0, In, Is) :-
@@ -1529,6 +1594,33 @@ test(selfhost_codegen_stage_d_lists, [condition(clang_available)]) :-
     process_wait(Pid, exit(Status)),
     assertion(Status == 0),
     assertion(Out == "42\n"),
+    !.
+
+% Milestone 6 (self-host) Stage D (guards): comparison guards and
+% if-then-else. Three programs: max via ( A >= B -> R = A ; R = B ) taking
+% the THEN branch (40>=2), the same taking the ELSE branch (2>=40 fails, the
+% guard CP backtracks to trust_me), and a plain comparison goal in a
+% conjunction (X > 10). All compile from source in a loaded compiler object.
+test(selfhost_codegen_stage_d_guards, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([user:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    forall(member(Source-Expected,
+               [ '[(main0(R):-maxi(40,2,X), R is X+2), (maxi(A,B,R):-( A >= B -> R = A ; R = B ))]' - "42\n",
+                 '[(main0(R):-maxi(2,40,X), R is X+2), (maxi(A,B,R):-( A >= B -> R = A ; R = B ))]' - "42\n",
+                 '[(main0(R):- p(15,R)), (p(X,R):- X > 10, R = 42)]' - "42\n" ]),
+        ( directory_file_path(Dir, 'cgg_src.txt', SrcPath),
+          setup_call_cleanup(open(SrcPath, write, S0),
+              write(S0, Source), close(S0)),
+          process_create(Host, [CompWamo, SrcPath],
+              [stdout(pipe(S)), stderr(std), process(Pid)]),
+          read_string(S, _, Out),
+          close(S),
+          process_wait(Pid, exit(Status)),
+          assertion(Status == 0),
+          assertion(Out == Expected) )),
     !.
 
 % Register-file ceiling fix: a clause with 20 permanent variables (Y1..Y20)

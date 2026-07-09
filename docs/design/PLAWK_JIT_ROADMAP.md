@@ -386,7 +386,11 @@ loadable along the way.
   (`get_value` — fixing a latent silent-overwrite bug), list literals in call
   args (`put_list`/`set_*`/write-mode `put_structure`), and the atom-table
   section with reloc-1 atom constants; the classic sum-over-a-list compiles
-  from source → `42`. The remaining Stage D campaign widens the
+  from source → `42`; **comparison guards + if-then-else LANDED**: comparison
+  builtins as goals, and `( C -> T ; E )` via `try_me_else`/`cut_ite`/`jump`/
+  `trust_me` with mid-clause else/join labels (codegen is now PC- and
+  label-aware; max-of-two exercises both branches → `42`). The remaining
+  Stage D campaign widens the
   subset toward the compiler compiling its own source — the self-host fixpoint.
   The campaign keeps surfacing and fixing latent runtime bugs — **four fixed so
   far**: a 64-register-file ceiling corrupting memory for large clauses;
