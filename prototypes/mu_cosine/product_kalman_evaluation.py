@@ -20,7 +20,7 @@ import sys
 import numpy as np
 
 try:
-    from .product_kalman import gaussian_nll, regularize_covariance
+    from .product_kalman import fit_residual_covariance, gaussian_nll, regularize_covariance
     from .product_kalman_calibration import (
         ProductKalmanCalibration,
         apply_product_kalman_calibration,
@@ -28,7 +28,7 @@ try:
         fit_product_kalman_calibration,
     )
 except ImportError:  # direct script execution from prototypes/mu_cosine
-    from product_kalman import gaussian_nll, regularize_covariance
+    from product_kalman import fit_residual_covariance, gaussian_nll, regularize_covariance
     from product_kalman_calibration import (
         ProductKalmanCalibration,
         apply_product_kalman_calibration,
@@ -40,15 +40,18 @@ except ImportError:  # direct script execution from prototypes/mu_cosine
 __all__ = [
     "GaussianScore",
     "GaussianScoreVectors",
+    "GroupResidualCovariances",
     "ProductKalmanHoldoutEvaluation",
     "bootstrap_nll_improvements_from_evaluation_npz",
     "bootstrap_nll_improvements_from_score_rows",
     "evaluate_product_kalman_holdout",
     "evaluation_artifact_arrays",
+    "fit_group_residual_covariances",
     "evaluation_npz_score_summary",
     "evaluation_to_json_dict",
     "paired_bootstrap_nll_improvement",
     "paired_bootstrap_nll_improvement_from_score_rows",
+    "row_covariances_from_groups",
     "run_product_kalman_holdout_npz",
     "score_gaussian_prediction_vectors_rowwise",
     "score_gaussian_prediction_vectors",
@@ -87,6 +90,48 @@ def _as_row_covariances(name, value, n, dim):
     return 0.5 * (covariances + np.swapaxes(covariances, 1, 2))
 
 
+def _normalize_group_label(item):
+    if isinstance(item, bytes):
+        item = item.decode("utf-8")
+    elif isinstance(item, np.generic):
+        item = item.item()
+    if item is None:
+        raise ValueError("group labels must not be None")
+    if isinstance(item, float) and not np.isfinite(item):
+        raise ValueError("group labels must be finite")
+    try:
+        hash(item)
+    except TypeError as exc:
+        raise ValueError("group labels must be hashable") from exc
+    return item
+
+
+def _as_group_labels(name, value, n=None):
+    arr = np.asarray(value)
+    if arr.ndim != 1:
+        raise ValueError(f"{name} must be a 1-D label array")
+    if n is not None and arr.size != n:
+        raise ValueError(f"{name} length {arr.size} must match {n}")
+    if arr.size == 0:
+        raise ValueError(f"{name} must be nonempty")
+    return tuple(_normalize_group_label(item) for item in arr.tolist())
+
+
+def _readonly_covariance(value):
+    arr = np.array(value, dtype=float, copy=True)
+    arr.setflags(write=False)
+    return arr
+
+
+def _positive_int(name, value):
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+        raise ValueError(f"{name} must be a positive integer")
+    value = int(value)
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
 def _readonly_vector(name, value, n=None):
     arr = np.array(value, dtype=float, copy=True)
     if arr.ndim != 1:
@@ -99,6 +144,158 @@ def _readonly_vector(name, value, n=None):
         raise ValueError(f"{name} must be finite")
     arr.setflags(write=False)
     return arr
+
+
+@dataclass(frozen=True)
+class GroupResidualCovariances:
+    """Residual covariances fitted by discrete calibration-group label.
+
+    `fallback_covariance` is the global residual covariance. Groups with too few
+    calibration rows are mapped to that fallback so later rowwise scoring does not
+    silently estimate a tiny, unstable covariance block.
+    """
+
+    covariance_by_group: dict
+    fallback_covariance: np.ndarray
+    group_counts: dict
+    min_group_rows: int
+
+    def __post_init__(self):
+        if not self.covariance_by_group:
+            raise ValueError("covariance_by_group must be nonempty")
+        fallback_arr = np.asarray(self.fallback_covariance, dtype=float)
+        if fallback_arr.ndim != 2 or fallback_arr.shape[0] != fallback_arr.shape[1]:
+            raise ValueError("fallback_covariance must be square")
+        fallback = _readonly_covariance(_as_covariance("fallback_covariance", fallback_arr, fallback_arr.shape[0]))
+        dim = fallback.shape[0]
+        covariances = {}
+        for label, cov in self.covariance_by_group.items():
+            normalized = _normalize_group_label(label)
+            if normalized in covariances:
+                raise ValueError("covariance_by_group contains duplicate normalized labels")
+            covariances[normalized] = _readonly_covariance(
+                _as_covariance(f"covariance_by_group[{normalized!r}]", cov, dim)
+            )
+        counts = {}
+        for label, count in self.group_counts.items():
+            normalized = _normalize_group_label(label)
+            if normalized in counts:
+                raise ValueError("group_counts contains duplicate normalized labels")
+            counts[normalized] = _positive_int(f"group_counts[{normalized!r}]", count)
+        missing_counts = set(covariances) - set(counts)
+        if missing_counts:
+            raise ValueError(f"group_counts is missing labels: {sorted(str(x) for x in missing_counts)}")
+        extra_counts = set(counts) - set(covariances)
+        if extra_counts:
+            raise ValueError(f"group_counts has extra labels: {sorted(str(x) for x in extra_counts)}")
+        min_group_rows = _positive_int("min_group_rows", self.min_group_rows)
+        object.__setattr__(self, "covariance_by_group", covariances)
+        object.__setattr__(self, "fallback_covariance", fallback)
+        object.__setattr__(self, "group_counts", counts)
+        object.__setattr__(self, "min_group_rows", min_group_rows)
+
+    def row_covariances(self, groups):
+        """Return `(n, d, d)` row covariances for evaluation rows in group order."""
+        return row_covariances_from_groups(groups, self.covariance_by_group, self.fallback_covariance)
+
+
+def row_covariances_from_groups(groups, covariance_by_group, fallback_covariance=None):
+    """Expand a group->covariance map into one covariance matrix per row."""
+    if not hasattr(covariance_by_group, "items"):
+        raise ValueError("covariance_by_group must be a mapping")
+    normalized = {}
+    dim = None
+    for label, cov in covariance_by_group.items():
+        key = _normalize_group_label(label)
+        if key in normalized:
+            raise ValueError("covariance_by_group contains duplicate normalized labels")
+        arr = np.asarray(cov, dtype=float)
+        if arr.ndim != 2 or arr.shape[0] != arr.shape[1]:
+            raise ValueError(f"covariance_by_group[{key!r}] must be square")
+        if dim is None:
+            dim = arr.shape[0]
+        normalized[key] = _as_covariance(f"covariance_by_group[{key!r}]", arr, dim)
+    fallback = None
+    if fallback_covariance is not None:
+        fallback_arr = np.asarray(fallback_covariance, dtype=float)
+        if fallback_arr.ndim != 2 or fallback_arr.shape[0] != fallback_arr.shape[1]:
+            raise ValueError("fallback_covariance must be square")
+        if dim is None:
+            dim = fallback_arr.shape[0]
+        fallback = _as_covariance("fallback_covariance", fallback_arr, dim)
+    if dim is None:
+        raise ValueError("at least one covariance or fallback_covariance is required")
+    labels = _as_group_labels("groups", groups)
+    out = np.empty((len(labels), dim, dim), dtype=float)
+    for i, label in enumerate(labels):
+        cov = normalized.get(label, fallback)
+        if cov is None:
+            raise ValueError(f"no covariance for group label {label!r} and no fallback_covariance provided")
+        out[i] = cov
+    out.setflags(write=False)
+    return out
+
+
+def fit_group_residual_covariances(
+    predicted,
+    observed,
+    groups,
+    min_group_rows=None,
+    shrinkage=0.0,
+    jitter=1e-9,
+    ddof=1,
+    shrinkage_target="diagonal",
+):
+    """Fit residual covariances by discrete group with a global fallback.
+
+    This is a generic bridge for hop-conditioned or regime-conditioned error
+    models: fit on calibration residuals only, then call `.row_covariances()` for
+    the held-out row order before using rowwise Gaussian scoring.
+    """
+    pred = _as_2d("predicted", predicted)
+    obs = _as_2d("observed", observed)
+    if obs.shape != pred.shape:
+        raise ValueError(f"observed shape {obs.shape} must match predicted shape {pred.shape}")
+    labels = _as_group_labels("groups", groups, n=pred.shape[0])
+    if not isinstance(ddof, (int, np.integer)) or int(ddof) < 0:
+        raise ValueError("ddof must be a nonnegative integer")
+    ddof = int(ddof)
+    if min_group_rows is None:
+        min_group_rows = max(ddof + 1, pred.shape[1] + 1)
+    min_group_rows = _positive_int("min_group_rows", min_group_rows)
+    if min_group_rows <= ddof:
+        raise ValueError("min_group_rows must exceed ddof")
+    residual = obs - pred
+    fallback = fit_residual_covariance(
+        residual,
+        shrinkage=shrinkage,
+        jitter=jitter,
+        ddof=ddof,
+        shrinkage_target=shrinkage_target,
+    )
+    indices_by_group = {}
+    for i, label in enumerate(labels):
+        indices_by_group.setdefault(label, []).append(i)
+    covariances = {}
+    group_counts = {}
+    for label, indices in indices_by_group.items():
+        group_counts[label] = len(indices)
+        if len(indices) >= min_group_rows:
+            covariances[label] = fit_residual_covariance(
+                residual[indices],
+                shrinkage=shrinkage,
+                jitter=jitter,
+                ddof=ddof,
+                shrinkage_target=shrinkage_target,
+            )
+        else:
+            covariances[label] = fallback
+    return GroupResidualCovariances(
+        covariance_by_group=covariances,
+        fallback_covariance=fallback,
+        group_counts=group_counts,
+        min_group_rows=min_group_rows,
+    )
 
 
 @dataclass(frozen=True)
