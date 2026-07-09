@@ -680,15 +680,47 @@ Getting there surfaced three more items:
   ambiguity — a literal `'$VAR'(3)` in user source is still read as a
   marker — is inherent to the numbervars encoding and documented here.
 
-**Remaining toward the full fixpoint:** the serializer, a mini-compiler
-front end, and the single-clause codegen middle are now self-compiled.
-What is left of cgfull: the clause grouping/label front (`group_clauses`,
-`group_labels`, try/retry/trust chains), the general table walk
-(`collect_tables`), the structure-pattern and list codegen (u_seq/s_seq
-deferral), ITE codegen, and the builtin/comparison goal dispatch — plus
-stitching those into one `compile(SelfSource)`. The compile budget —
-memory (chained arena) and time (difference lists) — is solved, and the
-`'$VAR'` convention now permits the walkers themselves to be compiled.
+**THE FRONT LANDED — the compiler compiles its clause-grouping and chains.**
+The loaded cgfull compiled `fixpoint_front_source/1`: the middle plus
+cgfull's whole front restated cut-free — facts vs rules (`mhb` tags facts
+with body `true`), the generic table walk mirroring
+`collect_tables`/`walk_term` (var/nil/integer/atom/compound dispatch with
+the control-functor skip list), `group_clauses`/`take_same`,
+`group_labels` + label lookup, and the `try_me_else`/`retry_me_else`/
+`trust_me` chain builders with PC threading and Label-PC pair collection
+(`keysort` + `pairs_values` close the PC table exactly like cgfull), plus
+integer/atom head constants, predicate-call goals, and `=/2` goals. The
+doubly-compiled compiler compiled a **multi-predicate program** — a rule
+with arithmetic, a rule calling it, and a two-clause fact predicate with
+a try/trust chain — **byte-identically to the production cgfull**
+(checksum 13679). Test `selfhost_codegen_stage_d_front`.
+
+*Runtime finding (campaign no. 11):* compiling the front source tripped
+the **reader variable-dictionary cap**. The var-dict was a fixed
+128-name block; past it, `wam_var_ref` fell back to a FRESH heap cell
+per occurrence — repeated occurrences of the same variable name in later
+clauses silently stopped sharing. The self-hosted compiler thus
+**miscompiled its own serializer**: in `wzr`, the second occurrence of
+the codes list variable became a fresh unbound, `append` copied nothing,
+and every emitted instruction lost its opcode digits (the object stayed
+structurally plausible — headers, tables, and PC rows intact — which
+made the corruption look like a serializer bug rather than a reader
+bug; the emitted-object diff of two near-identical sources pinned it:
+`put_value Y54` in the good compile vs `put_variable Y55` in the bad
+one). Fixed by making the dict growable (`[count][cap][pairs…]`,
+doubling; entries are plain ids/addresses so relocating the block is
+safe). Regression `reader_var_dict_grows_past_128` (130 names, repeated
+variable in the last clause).
+
+**Remaining toward the full fixpoint:** the serializer, the single-clause
+codegen middle, and now the grouping/label/chain front and generic table
+walk are all self-compiled. What is left of cgfull: the
+structure-pattern and list codegen (u_seq/s_seq deferral both
+directions), ITE codegen, the builtin/comparison goal dispatch (the
+whitelist table), and stitching everything into one
+`compile(SelfSource)` whose accepted subset covers its own source. The
+compile budget is solved, the `'$VAR'` convention permits the walkers to
+be compiled, and the front slice proves the chain builders compile.
 
 **Deliverable:** the demonstrable self-host — the compiler compiles itself,
 and `compile(SelfSource)` yields a working compiler object.

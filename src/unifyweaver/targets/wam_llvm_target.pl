@@ -6941,23 +6941,35 @@ pfail:
 ; floats, variables or quoting yet -- follow-up increments.
 ; Resolve a named variable to a Ref, using the reader var-dict on the VM (field
 ; 27) so repeated occurrences of the same name within one term share a cell.
-; The dict block is [count:i64][ (atom_id:i64, heap_addr:i64) x N ]. A miss (or
-; a full/absent dict) pushes a fresh unbound heap cell. Anonymous "_" is handled
-; by the caller (always fresh, never recorded).
+; The dict block is [count:i64][cap:i64][ (atom_id:i64, heap_addr:i64) x cap ].
+; A miss pushes a fresh unbound heap cell and records it; a FULL dict GROWS
+; (doubling; entries are plain ids/addresses, so relocating the block is
+; safe). Campaign finding no. 11: the old fixed 128-name cap fell back to
+; a FRESH variable per occurrence once the source exceeded 128 distinct
+; names -- repeated occurrences of the same variable in later clauses
+; silently stopped sharing, and the self-hosted compiler MISCOMPILED its
+; own serializer (append received a fresh unbound instead of the bound
+; code list; every emitted instruction lost its opcode digits). An absent
+; dict still yields a fresh cell. Anonymous "_" is handled by the caller
+; (always fresh, never recorded).
 define %Value @wam_var_ref(%WamState* %vm, i64 %atom_id) {
 entry:
   %dp = getelementptr %WamState, %WamState* %vm, i32 0, i32 27
+  %dict0 = load i8*, i8** %dp
+  %dnull = icmp eq i8* %dict0, null
+  br i1 %dnull, label %fresh, label %reload
+reload:
   %dict = load i8*, i8** %dp
-  %dnull = icmp eq i8* %dict, null
-  br i1 %dnull, label %fresh, label %have_dict
-have_dict:
   %cntp = bitcast i8* %dict to i64*
   %cnt = load i64, i64* %cntp
-  %ebase = getelementptr i8, i8* %dict, i64 8
+  %capbp = getelementptr i8, i8* %dict, i64 8
+  %capp = bitcast i8* %capbp to i64*
+  %cap = load i64, i64* %capp
+  %ebase = getelementptr i8, i8* %dict, i64 16
   %entries = bitcast i8* %ebase to i64*
   br label %scan
 scan:
-  %i = phi i64 [ 0, %have_dict ], [ %i1, %scan_next ]
+  %i = phi i64 [ 0, %reload ], [ %i1, %scan_next ]
   %done = icmp uge i64 %i, %cnt
   br i1 %done, label %add, label %check
 check:
@@ -6977,8 +6989,21 @@ scan_next:
   %i1 = add i64 %i, 1
   br label %scan
 add:
-  %full = icmp uge i64 %cnt, 128
-  br i1 %full, label %fresh, label %record
+  %full = icmp uge i64 %cnt, %cap
+  br i1 %full, label %grow, label %record
+grow:
+  %newcap = mul i64 %cap, 2
+  %pairbytes = mul i64 %newcap, 16
+  %newsz = add i64 %pairbytes, 16
+  %nd = call i8* @wam_arena_alloc(i64 %newsz)
+  %oldbytes0 = mul i64 %cnt, 16
+  %oldbytes = add i64 %oldbytes0, 16
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %nd, i8* %dict, i64 %oldbytes, i1 false)
+  %ncapbp = getelementptr i8, i8* %nd, i64 8
+  %ncapp = bitcast i8* %ncapbp to i64*
+  store i64 %newcap, i64* %ncapp
+  store i8* %nd, i8** %dp
+  br label %reload
 record:
   %runb = call %Value @value_unbound(i8* null)
   %raddr = call i32 @wam_heap_push(%WamState* %vm, %Value %runb)
@@ -17026,11 +17051,15 @@ rta.parse:
   %rta.len = call i64 @strlen(i8* %rta.str)
   %rta.pos = alloca i64
   store i64 0, i64* %rta.pos
-  ; Install a fresh var-dict on the VM: [count:i64][128 x (atom_id, addr)].
+  ; Install a fresh var-dict on the VM: [count:i64][cap:i64][cap pairs].
+  ; Initial capacity 128 names; @wam_var_ref grows it by doubling.
   call void @wam_arena_ensure()
-  %rta.dict = call i8* @wam_arena_alloc(i64 2056)
+  %rta.dict = call i8* @wam_arena_alloc(i64 2064)
   %rta.dcntp = bitcast i8* %rta.dict to i64*
   store i64 0, i64* %rta.dcntp
+  %rta.dcapb = getelementptr i8, i8* %rta.dict, i64 8
+  %rta.dcapp = bitcast i8* %rta.dcapb to i64*
+  store i64 128, i64* %rta.dcapp
   %rta.vdp = getelementptr %WamState, %WamState* %vm, i32 0, i32 27
   store i8* %rta.dict, i8** %rta.vdp
   %rta.val = call %Value @wam_parse_expr(%WamState* %vm, i8* %rta.str, i64 %rta.len, i64* %rta.pos, i32 1200)

@@ -416,15 +416,20 @@ loadable along the way.
   the production compiler's bytes exactly on an arithmetic clause
   (checksum 8755). The reader gained quoted functor applications, and the
   `'$VAR'` marker clauses now guard on integer arguments so source-level
-  `'$VAR'` patterns compile as ordinary structures. The remaining
-  campaign extends this toward `compile(SelfSource)` — the full fixpoint.
+  `'$VAR'` patterns compile as ordinary structures. **THE FRONT LANDED** —
+  clause grouping, labels, and try/retry/trust chain building
+  self-compiled; the doubly-compiled compiler compiled a multi-predicate
+  program (facts, a two-clause chain, a predicate call, constants,
+  arithmetic) byte-identically to the production cgfull (checksum
+  13679). The remaining campaign extends this toward
+  `compile(SelfSource)` — the full fixpoint.
   The compile budget for the full self-compile is closed: the **chained
   arena** removed the memory cliff (blocks link on exhaustion and never
   move; marks are virtual offsets so mark/rewind work across growth), and
   the serializer's **difference-list linearisation** removed the quadratic
   time/allocation (an 11.9 KB source compiles loaded in 40 ms / 35 MB where
   the quadratic style took 20 s / 3.7 GB at half that size).
-  The campaign keeps surfacing and fixing latent runtime bugs — **ten found
+  The campaign keeps surfacing and fixing latent runtime bugs — **eleven found
   so far**: a 64-register-file ceiling corrupting memory for large clauses;
   `get_structure` not comparing the functor; the choice-point saved-register
   block not widened with the register file (failed clause bodies leaked Y17+
@@ -443,7 +448,10 @@ loadable along the way.
   `@wam_deref_keep_var`; and an uncaught throw behaving as a plain failure
   (`@backtrack` resumed into live choice points over the half-unwound
   state, spinning inside append on corrupted terms) — fixed with an
-  explicit abort flag checked at backtrack entry. See
+  explicit abort flag checked at backtrack entry; and the reader
+  var-dict silently falling back to fresh-per-occurrence variables past
+  128 distinct names (the self-hosted compiler miscompiled its own
+  serializer) — fixed with a growable dict. See
   [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
 
 ## The binary-return question, specifically

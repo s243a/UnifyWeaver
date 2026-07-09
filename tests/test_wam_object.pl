@@ -1006,6 +1006,24 @@ fixpoint_compiler_source('[(main0(R) :- cmp2(''ea(R2) :- R2 = 42'', Cs1), cmp2('
 % dispatch is an ITE -- no cuts anywhere.
 fixpoint_middle_source('[(main0(R) :- cm2(''sum3(A, B, R2) :- T is A + B, R2 is T + 1'', Cs), sum_list(Cs, S), length(Cs, L), R is S + L), (cm2(Src, Out) :- read_term_from_atom(Src, C0), copy_term(C0, C1), numbervars(C1, 0, _), C1 =.. [_, H, B], mgl(B, Gs), functor(H, P, Ar), madd(P, [], FT0), mcol(Gs, FT0, FT), mname(P, Ar, NC), mhead(1, Ar, H, [], In1, HIs), mgoals(Gs, FT, In1, _, GIs), append(HIs, GIs, Body), append([enc(16, 0, 0, 0)|Body], [enc(17, 0, 0, 0), enc(20, 0, 0, 0)], Is), wzs(0, NC, 0, [], FT, [0], Is, Out)), (mgl(G, L) :- (G =.. [F, X, Y], F == '','' -> mgl(X, L1), mgl(Y, L2), append(L1, L2, L) ; L = [G])), mcol([], A, A), (mcol([G|Gs], A0, A2) :- (G =.. [F, _, E], F == is, functor(E, Op, 2) -> madd(Op, A0, A1) ; A1 = A0), mcol(Gs, A1, A2)), (madd(Op, A0, A1) :- (memberchk(Op, A0) -> A1 = A0 ; append(A0, [Op], A1))), (mname(P, Ar, NC) :- atom_codes(P, PC), number_codes(Ar, AC), append(PC, [47|AC], NC)), (mhead(I, Ar, H, In0, In, Is) :- (I > Ar -> In = In0, Is = [] ; arg(I, H, A), mharg(A, I, In0, In1, AI), I1 is I + 1, mhead(I1, Ar, H, In1, In, RIs), append(AI, RIs, Is))), (mharg(''$VAR''(N), I, In0, In1, [enc(T, Y, Ai, 0)]) :- Y is 48 + N, Ai is I - 1, (memberchk(N, In0) -> T = 2, In1 = In0 ; T = 1, In1 = [N|In0])), mgoals([], _, In, In, []), (mgoals([G|Gs], FT, In0, In, Is) :- mgoal(G, FT, In0, In1, GI), mgoals(Gs, FT, In1, In, RI), append(GI, RI, Is)), (mgoal(G, FT, In0, In2, Is) :- G =.. [_, L, E], mop(L, 0, In0, In1, IL), mexpr(E, FT, In1, In2, IE), append(IL, IE, LE), append(LE, [enc(21, 0, 2, 0)], Is)), (mop(''$VAR''(N), Ai, In0, In1, [enc(T, Y, Ai, 0)]) :- Y is 48 + N, (memberchk(N, In0) -> T = 10, In1 = In0 ; T = 9, In1 = [N|In0])), (mexpr(E, FT, In0, In1, Is) :- functor(E, Op, 2), fidx(Op, FT, FI), arg(1, E, X), arg(2, E, Y), mset(X, In0, Ina, SX), mset(Y, Ina, In1, SY), append([enc(11, FI, 131073, 2)|SX], SY, Is)), (mset(''$VAR''(N), In0, In1, [enc(T, Y, 0, 0)]) :- Y is 48 + N, (memberchk(N, In0) -> T = 14, In1 = In0 ; T = 13, In1 = [N|In0])), (mset(V, In, In, [enc(15, V, 1, 0)]) :- integer(V)), (fidx(Op, [F|Fs], I) :- (Op == F -> I = 0 ; fidx(Op, Fs, I1), I is I1 + 1)), (wzi(N, A0, A1) :- number_codes(N, Cs), append(Cs, [10|A1], A0)), (wza(X, A0, A1) :- atom_codes(X, Cs), append(Cs, [10|A1], A0)), (wzn(Cs, A0, A1) :- length(Cs, L), number_codes(L, LC), append(LC, [32|Mid], A0), append(Cs, [10|A1], Mid)), (wzsi(N, A0, A1) :- number_codes(N, Cs), append([32|Cs], A1, A0)), (wzs(EI, NC, LI, As, Fs, PCs, Is, Out) :- wzh(EI, NC, LI, Out, A6), length(As, NA), wzi(NA, A6, A7), wzat(As, A7, A8), length(Fs, NF), wzi(NF, A8, A9), wzat(Fs, A9, A10), wzp(PCs, A10, A11), wzc(Is, A11, A12), wzi(0, A12, [])), (wzh(EI, NC, LI, A0, Out) :- wza(''WAMO'', A0, A1), wzi(2, A1, A2), wzi(EI, A2, A3), wzi(1, A3, A4), wzn(NC, A4, A5), wzi(LI, A5, Out)), wzat([], A, A), (wzat([X|Xs], A0, A2) :- atom_codes(X, Cs), wzn(Cs, A0, A1), wzat(Xs, A1, A2)), (wzp(PCs, A0, A2) :- length(PCs, NL), wzi(NL, A0, A1), wzpr(PCs, A1, A2)), wzpr([], A, A), (wzpr([P|Ps], A0, A2) :- wzi(P, A0, A1), wzpr(Ps, A1, A2)), (wzc(Is, A0, A2) :- length(Is, NC2), wzi(NC2, A0, A1), wzcr(Is, A1, A2)), wzcr([], A, A), (wzcr([enc(T,O1,O2,Rl)|Is], A0, A2) :- wzr(T, O1, O2, Rl, A0, A1), wzcr(Is, A1, A2)), (wzr(T, O1, O2, Rl, A0, A5) :- number_codes(T, Tc), append(Tc, A1, A0), wzsi(O1, A1, A2), wzsi(O2, A2, A3), wzsi(Rl, A3, A4), A4 = [10|A5])]').
 
+% The FRONT source (fixpoint, next slice): cgfull's clause-grouping,
+% label, and chain machinery restated cut-free, on top of the middle.
+% New over fixpoint_middle_source: facts vs rules (mhb tags facts with
+% body atom true), the GENERIC table walk mwt/mwl mirroring
+% collect_tables/walk_term (var/nil/integer/atom/compound dispatch with
+% the control-functor skip list), group_clauses/take_same (mgrp/mtks),
+% group_labels + label lookup (mlbl/mlook), the try_me_else /
+% retry_me_else / trust_me chain builders with PC threading and
+% Label-PC pair collection (mggs/mprd/malt -- keysort + pairs_values
+% close the PC table exactly like cgfull), integer/atom head constants,
+% predicate-call goals (mlook + call), and =/2 goals. The serializer
+% emits BOTH tables. Compiling THIS source is also the regression that
+% found the reader var-dict cap (campaign finding no. 11): it has more
+% than 128 distinct variable names, so before the growable dict the
+% later clauses (the wz chain) silently lost variable sharing and the
+% doubly-compiled serializer dropped every instruction opcode.
+fixpoint_front_source('[(main0(R) :- cm3(''[(dbl(X, Y) :- Y is X + X), (tst(R2) :- dbl(4, R2)), pick(1, a), pick(2, b)]'', Cs), sum_list(Cs, S), length(Cs, L), R is S + L), (cm3(Src, Out) :- read_term_from_atom(Src, Cls), mwl(Cls, [], [], At, FT), mgrp(Cls, Gs), mlbl(Gs, 0, PL), length(Gs, NP0), mggs(Gs, PL, At, FT, 0, NP0, AllIs, EPCs, Prs), keysort(Prs, SPrs), pairs_values(SPrs, XPCs), append(EPCs, XPCs, PCs), Cls = [C1|_], mhb(C1, H1, _), functor(H1, P1, A1), mname(P1, A1, NC), wzs(0, NC, 0, At, FT, PCs, AllIs, Out)), (mhb(C, H, B) :- (C =.. [F, X, Y], F == '':-'' -> H = X, B = Y ; H = C, B = true)), mwl([], A, F, A, F), (mwl([T|Ts], A0, F0, A, F) :- mwt(T, A0, F0, A1, F1), mwl(Ts, A1, F1, A, F)), (mwt(T, A0, F0, A, F) :- (var(T) -> A = A0, F = F0 ; T == [] -> madd(''[]'', A0, A1), A = A1, F = F0 ; integer(T) -> A = A0, F = F0 ; atom(T) -> madd(T, A0, A1), A = A1, F = F0 ; T =.. [Fn|Args], mwf(Fn, F0, F1), mwl(Args, A0, F1, A, F))), (mwf(Fn, F0, F1) :- (mskip(Fn) -> F1 = F0 ; madd(Fn, F0, F1))), (mskip(F) :- memberchk(F, ['':-'', '','', '';'', ''->'', ''is'', ''='', ''>'', ''<'', ''>='', ''=<'', ''=:='', ''=\\='', ''=='', ''\\==''])), (madd(X, L0, L1) :- (memberchk(X, L0) -> L1 = L0 ; append(L0, [X], L1))), mgrp([], []), (mgrp([C|Cs], [g(P, Ar, [C|Same])|Gs]) :- mhb(C, H, _), functor(H, P, Ar), mtks(Cs, P, Ar, Same, Rest), mgrp(Rest, Gs)), mtks([], _, _, [], []), (mtks([C|Cs], P, Ar, Same, Rest) :- mhb(C, H, _), functor(H, P2, A2), (P2 == P, A2 =:= Ar -> Same = [C|S1], mtks(Cs, P, Ar, S1, Rest) ; Same = [], Rest = [C|Cs])), mlbl([], _, []), (mlbl([g(P, Ar, _)|Gs], I, [pl(P, Ar, I)|R]) :- I1 is I + 1, mlbl(Gs, I1, R)), (mlook(P, Ar, [pl(P2, A2, L2)|Ps], L) :- (P == P2, Ar =:= A2 -> L = L2 ; mlook(P, Ar, Ps, L))), mggs([], _, _, _, _, _, [], [], []), (mggs([g(_, _, Cls)|Gs], PL, At, FT, PC, NPin, AllIs, [PC|EPCs], Prs) :- mprd(Cls, PL, At, FT, PC, NPin, Is, PC1, L1, Prs1), mggs(Gs, PL, At, FT, PC1, L1, RestIs, EPCs, Prs2), append(Is, RestIs, AllIs), append(Prs1, Prs2, Prs)), (mprd([C], PL, At, FT, PC, L0, Is, PCout, L, Prs) :- mone(C, PL, At, FT, PC, L0, L, Prs, Is), length(Is, N), PCout is PC + N), (mprd([C1, C2|Rest], PL, At, FT, PC, L0, Is, PCout, L, Prs) :- ChainL = L0, L1 is L0 + 1, PCc is PC + 1, mone(C1, PL, At, FT, PCc, L1, L2, Prs1, C1Is), length(C1Is, N1), PC1 is PCc + N1, malt([C2|Rest], PL, At, FT, PC1, ChainL, L2, AltIs, PCout, L, Prs2), append(Prs1, Prs2, Prs), append([enc(22, ChainL, 0, 0)|C1Is], AltIs, Is)), (malt([C], PL, At, FT, PC, MyL, L0, Is, PCout, L, [MyL-PC|Prs]) :- PCc is PC + 1, mone(C, PL, At, FT, PCc, L0, L, Prs, CIs), Is = [enc(24, 0, 0, 0)|CIs], length(Is, N), PCout is PC + N), (malt([C1, C2|Rest], PL, At, FT, PC, MyL, L0, Is, PCout, L, Prs) :- NextL = L0, L1 is L0 + 1, PCc is PC + 1, mone(C1, PL, At, FT, PCc, L1, L2, Prs1, C1Is), length(C1Is, N1), PC1 is PCc + N1, malt([C2|Rest], PL, At, FT, PC1, NextL, L2, RestIs, PCout, L, Prs2), append([MyL-PC|Prs1], Prs2, Prs), append([enc(23, NextL, 0, 0)|C1Is], RestIs, Is)), (mone(C, PL, At, FT, _, L0, L, Prs, Is) :- copy_term(C, C2), numbervars(C2, 0, _), mhb(C2, H, B), functor(H, _, Ar), mhead(1, Ar, H, At, [], In1, HIs), L = L0, Prs = [], (B == true -> append(HIs, [enc(20, 0, 0, 0)], Is) ; mgl(B, Gs), mgoals(Gs, PL, At, FT, In1, _, GIs), append([enc(16, 0, 0, 0)|HIs], GIs, B0), append(B0, [enc(17, 0, 0, 0), enc(20, 0, 0, 0)], Is))), (mgl(G, L) :- (G =.. [F, X, Y], F == '','' -> mgl(X, L1), mgl(Y, L2), append(L1, L2, L) ; L = [G])), (mhead(I, Ar, H, At, In0, In, Is) :- (I > Ar -> In = In0, Is = [] ; arg(I, H, A), mharg(A, I, At, In0, In1, AI), I1 is I + 1, mhead(I1, Ar, H, At, In1, In, RIs), append(AI, RIs, Is))), (mharg(''$VAR''(N), I, _, In0, In1, [enc(T, Y, Ai, 0)]) :- Y is 48 + N, Ai is I - 1, (memberchk(N, In0) -> T = 2, In1 = In0 ; T = 1, In1 = [N|In0])), (mharg(V, I, _, In, In, [enc(0, V, O2, 0)]) :- integer(V), O2 is 65536 + I - 1), (mharg(A2, I, At, In, In, [enc(0, Idx, Ai, 1)]) :- atom(A2), Ai is I - 1, fidx(A2, At, Idx)), mgoals([], _, _, _, In, In, []), (mgoals([G|Gs], PL, At, FT, In0, In, Is) :- mgoal(G, PL, At, FT, In0, In1, GI), mgoals(Gs, PL, At, FT, In1, In, RI), append(GI, RI, Is)), (mgoal(G, PL, At, FT, In0, In2, Is) :- (G =.. [F, L1a, E1], F == is -> mopd(L1a, 0, At, In0, In1, IL), mexpr(E1, FT, In1, In2, IE), append(IL, IE, LE), append(LE, [enc(21, 0, 2, 0)], Is) ; G =.. [F2, L2a, R2a], F2 == ''='' -> mopd(L2a, 0, At, In0, Inb, IL2), mopd(R2a, 1, At, Inb, In2, IR2), append(IL2, IR2, LR), append(LR, [enc(21, 24, 2, 0)], Is) ; functor(G, P, Ar), mlook(P, Ar, PL, Lbl), mcargs(1, Ar, G, At, In0, In2, SIs), append(SIs, [enc(18, Lbl, Ar, 0)], Is))), (mcargs(I, Ar, G, At, In0, In, Is) :- (I > Ar -> In = In0, Is = [] ; arg(I, G, A), Ai is I - 1, mopd(A, Ai, At, In0, In1, AI), I1 is I + 1, mcargs(I1, Ar, G, At, In1, In, R), append(AI, R, Is))), (mopd(''$VAR''(N), Ai, _, In0, In1, [enc(T, Y, Ai, 0)]) :- Y is 48 + N, (memberchk(N, In0) -> T = 10, In1 = In0 ; T = 9, In1 = [N|In0])), (mopd(V, Ai, _, In, In, [enc(8, V, O2, 0)]) :- integer(V), O2 is 65536 + Ai), (mopd(A2, Ai, At, In, In, [enc(8, Idx, Ai, 1)]) :- atom(A2), fidx(A2, At, Idx)), (mexpr(E, FT, In0, In1, Is) :- functor(E, Op, 2), fidx(Op, FT, FI), arg(1, E, X), arg(2, E, Y), mset(X, In0, Ina, SX), mset(Y, Ina, In1, SY), append([enc(11, FI, 131073, 2)|SX], SY, Is)), (mset(''$VAR''(N), In0, In1, [enc(T, Y, 0, 0)]) :- Y is 48 + N, (memberchk(N, In0) -> T = 14, In1 = In0 ; T = 13, In1 = [N|In0])), (mset(V, In, In, [enc(15, V, 1, 0)]) :- integer(V)), (fidx(Op, [F|Fs], I) :- (Op == F -> I = 0 ; fidx(Op, Fs, I1), I is I1 + 1)), (mname(P, Ar, NC) :- atom_codes(P, PC), number_codes(Ar, AC), append(PC, [47|AC], NC)), (wzi(N, A0, A1) :- number_codes(N, Cs), append(Cs, [10|A1], A0)), (wza(X, A0, A1) :- atom_codes(X, Cs), append(Cs, [10|A1], A0)), (wzn(Cs, A0, A1) :- length(Cs, L), number_codes(L, LC), append(LC, [32|Mid], A0), append(Cs, [10|A1], Mid)), (wzsi(N, A0, A1) :- number_codes(N, Cs), append([32|Cs], A1, A0)), (wzs(EI, NC, LI, As, Fs, PCs, Is, Out) :- wzh(EI, NC, LI, Out, A6), length(As, NA), wzi(NA, A6, A7), wzat(As, A7, A8), length(Fs, NF), wzi(NF, A8, A9), wzat(Fs, A9, A10), wzp(PCs, A10, A11), wzc(Is, A11, A12), wzi(0, A12, [])), (wzh(EI, NC, LI, A0, Out) :- wza(''WAMO'', A0, A1), wzi(2, A1, A2), wzi(EI, A2, A3), wzi(1, A3, A4), wzn(NC, A4, A5), wzi(LI, A5, Out)), wzat([], A, A), (wzat([X|Xs], A0, A2) :- atom_codes(X, Cs), wzn(Cs, A0, A1), wzat(Xs, A1, A2)), (wzp(PCs, A0, A2) :- length(PCs, NL), wzi(NL, A0, A1), wzpr(PCs, A1, A2)), wzpr([], A, A), (wzpr([P|Ps], A0, A2) :- wzi(P, A0, A1), wzpr(Ps, A1, A2)), (wzc(Is, A0, A2) :- length(Is, NC2), wzi(NC2, A0, A1), wzcr(Is, A1, A2)), wzcr([], A, A), (wzcr([enc(T,O1,O2,Rl)|Is], A0, A2) :- wzr(T, O1, O2, Rl, A0, A1), wzcr(Is, A1, A2)), (wzr(T, O1, O2, Rl, A0, A5) :- number_codes(T, Tc), append(Tc, A1, A0), wzsi(O1, A1, A2), wzsi(O2, A2, A3), wzsi(Rl, A3, A4), A4 = [10|A5])]').
+
 % Register-file ceiling regression: manyperm/1 has 20 variables all live
 % across the mp_barrier call, so the compiler assigns them Y1..Y20. Before
 % the register file was enlarged from [64 x %Value] to [128 x %Value], Y17+
@@ -2003,6 +2021,67 @@ test(selfhost_codegen_stage_d_middle, [condition(clang_available)]) :-
     process_wait(Pid, exit(Status)),
     assertion(Status == 0),
     assertion(Out == Expected),
+    !.
+
+% THE FRONT: the loaded compiler compiles its own clause-grouping, label,
+% and chain machinery (plus the middle), and the doubly-compiled compiler
+% compiles a MULTI-PREDICATE program -- facts, a two-clause chain with
+% try/trust and a Label-PC pair, a predicate call, integer/atom head
+% constants, and arithmetic -- byte-identically to the production cgfull.
+test(selfhost_codegen_stage_d_front, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([user:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    cgfull_term([(dbl(X, Y) :- Y is X + X),
+                 (tst(R2) :- dbl(4, R2)),
+                 pick(1, a), pick(2, b)], W),
+    atom_codes(W, WCs),
+    sum_list(WCs, WSum), length(WCs, WLen),
+    ExpectedN is WSum + WLen,
+    format(string(Expected), "~w\n", [ExpectedN]),
+    fixpoint_front_source(Source),
+    directory_file_path(Dir, 'cgfront_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, Source), close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == Expected),
+    !.
+
+% Finding no. 11 regression: the reader var-dict must GROW past 128
+% distinct names. The source below has 130 names: main0's R, 128 filler
+% facts d1(V1)..d128(V128), then eq(Z, Z) whose repeated Z is the 130th.
+% With the old fixed cap, Z stopped being deduplicated -- eq compiled as
+% eq(_, _) with two independent variables -- and main0 printed an
+% unbound result instead of 5.
+test(reader_var_dict_grows_past_128, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([user:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    numlist(1, 128, Ns),
+    findall(F, ( member(I, Ns),
+                 format(atom(F), 'd~w(V~w)', [I, I]) ), Fillers),
+    atomic_list_concat(Fillers, ', ', FillerText),
+    format(atom(Src), '[(main0(R) :- eq(5, R)), ~w, eq(Z, Z)]',
+           [FillerText]),
+    directory_file_path(Dir, 'cgvd_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, Src), close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "5\n"),
     !.
 
 % Nested arithmetic in the loaded compiler: the is-expression is staged
