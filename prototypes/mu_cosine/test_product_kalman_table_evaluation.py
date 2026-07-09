@@ -119,9 +119,19 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         assert summary["inputs"]["input_manifest"] == str(input_manifest)
         assert summary["inputs"]["evaluation_npz"] == str(output_npz)
         assert summary["inputs"]["report_md"] == str(output_md)
-        assert summary["score_order"] == ["prior", "measurement", "independent_kalman", "product_kalman"]
+        assert summary["score_order"] == [
+            "prior",
+            "measurement",
+            "independent_kalman",
+            "product_kalman",
+            "prior_grouped",
+            "measurement_grouped",
+            "independent_kalman_grouped",
+            "product_kalman_grouped",
+        ]
         assert "mahalanobis_per_dim" in summary["scores"]["product_kalman"]
         assert "squared_mahalanobis_q95" in summary["scores"]["product_kalman"]
+        assert "product_kalman_grouped" in summary["grouped_covariances"]
         assert summary["nll_improvement_vs_prior"]["product_kalman"] > 0.65
         boot = summary["nll_improvement_bootstrap_vs_independent_kalman"]["product_kalman"]
         assert boot["n_boot"] == 50
@@ -145,17 +155,20 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         assert "## Scores" in report
         assert "mahalanobis_per_dim" in report
         assert "sq_mahalanobis_q95" in report
+        assert "## Grouped Covariances" in report
+        assert "product_kalman_grouped" in report
         assert "## NLL Improvement Bootstrap Intervals" in report
         assert "source_table_sha256" in report
 
         with np.load(output_npz, allow_pickle=False) as artifact:
             assert artifact["product_kalman_mean"].shape == (40, 1)
             assert artifact["score_names"].tolist() == summary["score_order"]
-            assert artifact["score_mahalanobis_per_dim"].shape == (4,)
-            assert artifact["score_squared_mahalanobis_q95"].shape == (4,)
-            assert artifact["score_row_nll"].shape == (4, 40)
-            assert artifact["score_row_squared_error"].shape == (4, 40)
-            assert artifact["score_row_squared_mahalanobis"].shape == (4, 40)
+            assert artifact["score_mahalanobis_per_dim"].shape == (8,)
+            assert artifact["score_squared_mahalanobis_q95"].shape == (8,)
+            assert artifact["score_row_nll"].shape == (8, 40)
+            assert artifact["score_row_squared_error"].shape == (8, 40)
+            assert artifact["score_row_squared_mahalanobis"].shape == (8, 40)
+            assert artifact["grouped_score_row_covariances"].shape == (4, 40, 1, 1)
 
 
 def test_table_runner_output_dir_writes_canonical_bundle():
@@ -192,6 +205,8 @@ def test_table_runner_output_dir_writes_canonical_bundle():
         assert summary["inputs"]["evaluation_npz"] == str(paths["output_npz"])
         assert summary["inputs"]["report_md"] == str(paths["output_md"])
         assert summary["nll_improvement_vs_prior"]["product_kalman"] > 0.65
+        assert "product_kalman_grouped" in summary["score_order"]
+        assert "product_kalman_grouped" in summary["grouped_covariances"]
         with np.load(paths["input_npz"], allow_pickle=False) as data:
             assert data["calibration_groups"].shape == (80,)
             assert data["evaluation_groups"].shape == (40,)
@@ -341,6 +356,8 @@ def test_table_runner_cli_roundtrips_against_npz_evaluator():
         assert manifest["source_table"]["delimiter"] == "\t"
         assert manifest["ids"]["overlap_count"] == 0
         assert manifest["groups"]["columns"] == ["hop"]
+        assert "product_kalman_grouped" in from_table["score_order"]
+        assert "product_kalman_grouped" in from_table["grouped_covariances"]
         assert from_table["inputs"]["report_md"] == str(output_md)
 
 

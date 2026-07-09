@@ -173,6 +173,7 @@ def run_product_kalman_table_evaluation(
     delimiter=None,
     H=None,
     group_cols=None,
+    min_group_rows=None,
     shrinkage=0.0,
     jitter=1e-9,
     ddof=1,
@@ -200,6 +201,7 @@ def run_product_kalman_table_evaluation(
     )
     result = run_product_kalman_holdout_npz(
         input_npz,
+        min_group_rows=min_group_rows,
         shrinkage=shrinkage,
         jitter=jitter,
         ddof=ddof,
@@ -279,6 +281,7 @@ def _build_arg_parser():
     ap.add_argument("--delimiter", help="input delimiter; defaults to tab for .tsv/.tab, comma otherwise")
     ap.add_argument("--H", help="optional observation matrix literal, e.g. '1,0;0,1'")
     ap.add_argument("--group-cols", help="optional comma-separated discrete group columns to carry into NPZ")
+    ap.add_argument("--min-group-rows", type=int, help="minimum calibration rows before fitting a group covariance")
     ap.add_argument("--shrinkage", type=float, default=0.0)
     ap.add_argument("--jitter", type=float, default=1e-9)
     ap.add_argument("--ddof", type=int, default=1)
@@ -338,6 +341,7 @@ def main(argv=None):
             delimiter=args.delimiter,
             H=args.H,
             group_cols=parse_column_list(args.group_cols) if args.group_cols else None,
+            min_group_rows=args.min_group_rows,
             shrinkage=args.shrinkage,
             jitter=args.jitter,
             ddof=args.ddof,

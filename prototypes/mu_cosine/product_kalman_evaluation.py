@@ -454,6 +454,7 @@ class ProductKalmanHoldoutEvaluation:
     independent_update: object
     scores: tuple
     score_vectors: tuple = ()
+    grouped_scores: tuple = ()
 
     def __post_init__(self):
         if not isinstance(self.calibration, ProductKalmanCalibration):
@@ -468,6 +469,7 @@ class ProductKalmanHoldoutEvaluation:
         if len(names) != len(set(names)):
             raise ValueError("score names must be unique")
         score_vectors = tuple(self.score_vectors)
+        vector_names = []
         if score_vectors:
             for vector in score_vectors:
                 if not isinstance(vector, GaussianScoreVectors):
@@ -478,8 +480,24 @@ class ProductKalmanHoldoutEvaluation:
             for score, vector in zip(scores, score_vectors):
                 if vector.n != score.n:
                     raise ValueError("score vector length must match score n")
+        grouped_scores = tuple(self.grouped_scores)
+        if grouped_scores:
+            grouped_names = []
+            score_name_set = set(names)
+            vector_name_set = set(vector_names)
+            for grouped in grouped_scores:
+                if not isinstance(grouped, GroupedGaussianScore):
+                    raise ValueError("grouped_scores must contain GroupedGaussianScore objects")
+                grouped_names.append(grouped.score.name)
+                if grouped.score.name not in score_name_set:
+                    raise ValueError("grouped score must also appear in scores")
+                if grouped.score_vectors.name not in vector_name_set:
+                    raise ValueError("grouped score vectors must also appear in score_vectors")
+            if len(grouped_names) != len(set(grouped_names)):
+                raise ValueError("grouped score names must be unique")
         object.__setattr__(self, "scores", scores)
         object.__setattr__(self, "score_vectors", score_vectors)
+        object.__setattr__(self, "grouped_scores", grouped_scores)
 
     def score(self, name):
         """Return the named `GaussianScore`."""
@@ -812,6 +830,17 @@ def _check_split_ids(calibration_ids, evaluation_ids, n_calibration, n_evaluatio
     assert_disjoint_ids(calibration_ids, evaluation_ids)
 
 
+def _check_group_labels(calibration_groups, evaluation_groups, n_calibration, n_evaluation):
+    if calibration_groups is None and evaluation_groups is None:
+        return None, None
+    if calibration_groups is None or evaluation_groups is None:
+        raise ValueError("calibration_groups and evaluation_groups must be provided together")
+    return (
+        _as_group_labels("calibration_groups", calibration_groups, n=n_calibration),
+        _as_group_labels("evaluation_groups", evaluation_groups, n=n_evaluation),
+    )
+
+
 def _zero_cross_calibration(calibration):
     return ProductKalmanCalibration(
         state_covariance=calibration.state_covariance,
@@ -841,6 +870,9 @@ def evaluate_product_kalman_holdout(
     H=None,
     calibration_ids=None,
     evaluation_ids=None,
+    calibration_groups=None,
+    evaluation_groups=None,
+    min_group_rows=None,
     shrinkage=0.0,
     jitter=1e-9,
     ddof=1,
@@ -865,6 +897,12 @@ def evaluate_product_kalman_holdout(
     eval_measure = _as_2d("evaluation_measurement", evaluation_measurement)
     eval_target = _as_2d("evaluation_target_state", evaluation_target_state)
     _check_split_ids(calibration_ids, evaluation_ids, cal_target.shape[0], eval_target.shape[0])
+    cal_groups, eval_groups = _check_group_labels(
+        calibration_groups,
+        evaluation_groups,
+        cal_target.shape[0],
+        eval_target.shape[0],
+    )
 
     calibration = fit_product_kalman_calibration(
         cal_prior,
@@ -885,7 +923,8 @@ def evaluate_product_kalman_holdout(
         ("independent_kalman", independent_update.mean, independent_update.covariance),
         ("product_kalman", correlated_update.mean, correlated_update.covariance),
     ]
-    if _has_identity_observation(calibration):
+    identity_observation = _has_identity_observation(calibration)
+    if identity_observation:
         score_inputs.insert(1, ("measurement", eval_measure, calibration.observation_covariance))
 
     score_vectors = [
@@ -897,6 +936,37 @@ def evaluate_product_kalman_holdout(
         for vectors, (_, _, covariance) in zip(score_vectors, score_inputs)
     ]
 
+    grouped_scores = []
+    if cal_groups is not None:
+        cal_correlated_update = apply_product_kalman_calibration(calibration, cal_prior, cal_measure, jitter=jitter)
+        cal_independent_update = apply_product_kalman_calibration(independent, cal_prior, cal_measure, jitter=jitter)
+        grouped_inputs = [
+            ("prior_grouped", cal_prior, eval_prior),
+            ("independent_kalman_grouped", cal_independent_update.mean, independent_update.mean),
+            ("product_kalman_grouped", cal_correlated_update.mean, correlated_update.mean),
+        ]
+        if identity_observation:
+            grouped_inputs.insert(1, ("measurement_grouped", cal_measure, eval_measure))
+        grouped_scores = [
+            score_gaussian_predictions_grouped(
+                name,
+                cal_target,
+                cal_mean,
+                cal_groups,
+                eval_target,
+                eval_mean,
+                eval_groups,
+                min_group_rows=min_group_rows,
+                shrinkage=shrinkage,
+                jitter=jitter,
+                ddof=ddof,
+                shrinkage_target=shrinkage_target,
+            )
+            for name, cal_mean, eval_mean in grouped_inputs
+        ]
+        scores.extend(grouped.score for grouped in grouped_scores)
+        score_vectors.extend(grouped.score_vectors for grouped in grouped_scores)
+
     return ProductKalmanHoldoutEvaluation(
         calibration=calibration,
         independent_calibration=independent,
@@ -904,6 +974,7 @@ def evaluate_product_kalman_holdout(
         independent_update=independent_update,
         scores=tuple(scores),
         score_vectors=tuple(score_vectors),
+        grouped_scores=tuple(grouped_scores),
     )
 
 
@@ -914,6 +985,32 @@ def _prefix_update_arrays(prefix, update):
         f"{prefix}_gain": update.gain,
         f"{prefix}_innovation": update.innovation,
         f"{prefix}_innovation_covariance": update.innovation_covariance,
+    }
+
+
+def _string_keyed_mapping(name, mapping, value_fn):
+    out = {}
+    for label, value in mapping.items():
+        key = str(label)
+        if key in out:
+            raise ValueError(f"{name} has duplicate stringified group label {key!r}")
+        out[key] = value_fn(value)
+    return dict(sorted(out.items()))
+
+
+def _grouped_covariance_to_json_dict(grouped):
+    residuals = grouped.residual_covariances
+    return {
+        "score": grouped.score.name,
+        "min_group_rows": residuals.min_group_rows,
+        "group_counts": _string_keyed_mapping("group_counts", residuals.group_counts, int),
+        "fallback_covariance": residuals.fallback_covariance.tolist(),
+        "covariance_by_group": _string_keyed_mapping(
+            "covariance_by_group",
+            residuals.covariance_by_group,
+            lambda cov: np.asarray(cov, dtype=float).tolist(),
+        ),
+        "row_covariance_shape": [int(v) for v in grouped.row_covariances.shape],
     }
 
 
@@ -964,6 +1061,18 @@ def evaluation_artifact_arrays(result):
             "score_row_squared_mahalanobis": np.vstack([
                 vectors.squared_mahalanobis
                 for vectors in result.score_vectors
+            ]),
+        })
+    if result.grouped_scores:
+        arrays.update({
+            "grouped_score_names": np.array([grouped.score.name for grouped in result.grouped_scores]),
+            "grouped_score_row_covariances": np.stack([
+                grouped.row_covariances
+                for grouped in result.grouped_scores
+            ]),
+            "grouped_score_summary_json": np.array([
+                json.dumps(_grouped_covariance_to_json_dict(grouped), sort_keys=True)
+                for grouped in result.grouped_scores
             ]),
         })
     arrays.update(_prefix_update_arrays("product_kalman", result.correlated_update))
@@ -1092,6 +1201,11 @@ def evaluation_to_json_dict(result, bootstrap_nll=0, bootstrap_seed=0, bootstrap
             for name, score in scores.items()
             if name != "independent_kalman"
         }
+    if result.grouped_scores:
+        out["grouped_covariances"] = {
+            grouped.score.name: _grouped_covariance_to_json_dict(grouped)
+            for grouped in result.grouped_scores
+        }
     if bootstrap_nll:
         out["nll_improvement_bootstrap_vs_prior"] = _bootstrap_improvement_map(
             result,
@@ -1122,6 +1236,9 @@ def run_product_kalman_holdout_npz(
     H_key="H",
     calibration_ids_key="calibration_ids",
     evaluation_ids_key="evaluation_ids",
+    calibration_groups_key="calibration_groups",
+    evaluation_groups_key="evaluation_groups",
+    min_group_rows=None,
     shrinkage=0.0,
     jitter=1e-9,
     ddof=1,
@@ -1130,14 +1247,16 @@ def run_product_kalman_holdout_npz(
     """Load a single NPZ fixture and run `evaluate_product_kalman_holdout`.
 
     Required arrays default to the key names in the argument list. Optional `H`,
-    `calibration_ids`, and `evaluation_ids` arrays are used when present. Store
-    scalar channels as explicit `(n, 1)` matrices, matching the calibration API.
+    split-ID arrays, and group-label arrays are used when present. Store scalar
+    channels as explicit `(n, 1)` matrices, matching the calibration API.
     """
     path = str(input_npz)
     with np.load(path, allow_pickle=False) as data:
         H = _optional_npz_array(data, H_key) if H_key else None
         calibration_ids = _optional_npz_array(data, calibration_ids_key) if calibration_ids_key else None
         evaluation_ids = _optional_npz_array(data, evaluation_ids_key) if evaluation_ids_key else None
+        calibration_groups = _optional_npz_array(data, calibration_groups_key) if calibration_groups_key else None
+        evaluation_groups = _optional_npz_array(data, evaluation_groups_key) if evaluation_groups_key else None
         return evaluate_product_kalman_holdout(
             _require_npz_array(data, path, calibration_prior_key),
             _require_npz_array(data, path, calibration_measurement_key),
@@ -1148,6 +1267,9 @@ def run_product_kalman_holdout_npz(
             H=H,
             calibration_ids=calibration_ids,
             evaluation_ids=evaluation_ids,
+            calibration_groups=calibration_groups,
+            evaluation_groups=evaluation_groups,
+            min_group_rows=min_group_rows,
             shrinkage=shrinkage,
             jitter=jitter,
             ddof=ddof,
@@ -1179,6 +1301,17 @@ def _build_arg_parser():
         default="evaluation_ids",
         help="optional evaluation ID key; use '' to disable",
     )
+    ap.add_argument(
+        "--calibration-groups-key",
+        default="calibration_groups",
+        help="optional calibration group-label key; use '' to disable grouped covariance scores",
+    )
+    ap.add_argument(
+        "--evaluation-groups-key",
+        default="evaluation_groups",
+        help="optional evaluation group-label key; use '' to disable grouped covariance scores",
+    )
+    ap.add_argument("--min-group-rows", type=int, help="minimum calibration rows before fitting a group covariance")
     ap.add_argument("--shrinkage", type=float, default=0.0)
     ap.add_argument("--jitter", type=float, default=1e-9)
     ap.add_argument("--ddof", type=int, default=1)
@@ -1205,6 +1338,9 @@ def main(argv=None):
             H_key=args.H_key or None,
             calibration_ids_key=args.calibration_ids_key or None,
             evaluation_ids_key=args.evaluation_ids_key or None,
+            calibration_groups_key=args.calibration_groups_key or None,
+            evaluation_groups_key=args.evaluation_groups_key or None,
+            min_group_rows=args.min_group_rows,
             shrinkage=args.shrinkage,
             jitter=args.jitter,
             ddof=args.ddof,

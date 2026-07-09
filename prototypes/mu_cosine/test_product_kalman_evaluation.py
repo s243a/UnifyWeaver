@@ -141,6 +141,27 @@ def test_split_ids_are_checked_before_scoring():
         calibration_ids=["dup", "dup"] + [f"cal-{i}" for i in range(8)],
         evaluation_ids=[f"eval-{i}" for i in range(6)],
     )
+    assert_raises(
+        evaluate_product_kalman_holdout,
+        cal_prior,
+        cal_measure,
+        cal_target,
+        eval_prior,
+        eval_measure,
+        eval_target,
+        calibration_groups=["g"] * len(cal_target),
+    )
+    assert_raises(
+        evaluate_product_kalman_holdout,
+        cal_prior,
+        cal_measure,
+        cal_target,
+        eval_prior,
+        eval_measure,
+        eval_target,
+        calibration_groups=["g"] * (len(cal_target) - 1),
+        evaluation_groups=["g"] * len(eval_target),
+    )
 
 
 def write_identity_npz(path, n_cal=8000, n_eval=4000):
@@ -272,6 +293,83 @@ def test_evaluation_artifact_arrays_are_npz_ready():
         with np.load(artifact_path, allow_pickle=False) as artifact:
             assert set(arrays).issubset(set(artifact.files))
             np.testing.assert_allclose(artifact["score_mean_nll"], arrays["score_mean_nll"])
+
+
+def test_npz_runner_scores_grouped_covariances_when_group_labels_present():
+    rng = np.random.default_rng(41)
+    n_cal_per_group = 600
+    n_eval_per_group = 300
+    cal_groups = np.array(["tight"] * n_cal_per_group + ["wide"] * n_cal_per_group)
+    eval_groups = np.array(["tight"] * n_eval_per_group + ["wide"] * n_eval_per_group)
+    n_cal = cal_groups.size
+    n_eval = eval_groups.size
+    cal_target = rng.normal(size=(n_cal, 1))
+    eval_target = rng.normal(size=(n_eval, 1))
+
+    def draw_errors(groups):
+        errors = []
+        for group in groups:
+            if group == "tight":
+                cov = np.array([[0.05, 0.015], [0.015, 0.04]])
+            else:
+                cov = np.array([[1.20, 0.45], [0.45, 0.55]])
+            errors.append(rng.multivariate_normal([0.0, 0.0], cov))
+        return np.asarray(errors)
+
+    cal_errors = draw_errors(cal_groups)
+    eval_errors = draw_errors(eval_groups)
+    cal_prior = cal_target - cal_errors[:, :1]
+    cal_measure = cal_target + cal_errors[:, 1:]
+    eval_prior = eval_target - eval_errors[:, :1]
+    eval_measure = eval_target + eval_errors[:, 1:]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        input_path = Path(tmp) / "grouped_holdout.npz"
+        artifact_path = Path(tmp) / "grouped_artifacts.npz"
+        np.savez(
+            input_path,
+            calibration_prior_mean=cal_prior,
+            calibration_measurement=cal_measure,
+            calibration_target_state=cal_target,
+            evaluation_prior_mean=eval_prior,
+            evaluation_measurement=eval_measure,
+            evaluation_target_state=eval_target,
+            calibration_groups=cal_groups,
+            evaluation_groups=eval_groups,
+        )
+        result = run_product_kalman_holdout_npz(input_path, min_group_rows=50, jitter=1e-8)
+        assert [grouped.score.name for grouped in result.grouped_scores] == [
+            "prior_grouped",
+            "measurement_grouped",
+            "independent_kalman_grouped",
+            "product_kalman_grouped",
+        ]
+        assert "product_kalman_grouped" in [score.name for score in result.scores]
+        assert result.score("product_kalman_grouped").n == n_eval
+        assert result.score("prior_grouped").mean_nll < result.score("prior").mean_nll
+        assert result.score("product_kalman_grouped").mean_nll < result.score("product_kalman").mean_nll
+
+        data = evaluation_to_json_dict(result, bootstrap_nll=20, bootstrap_seed=4)
+        assert data["score_order"][-1] == "product_kalman_grouped"
+        grouped = data["grouped_covariances"]["product_kalman_grouped"]
+        assert grouped["min_group_rows"] == 50
+        assert grouped["group_counts"] == {"tight": n_cal_per_group, "wide": n_cal_per_group}
+        assert grouped["row_covariance_shape"] == [n_eval, 1, 1]
+        assert "product_kalman_grouped" in data["nll_improvement_bootstrap_vs_independent_kalman"]
+
+        write_evaluation_npz(artifact_path, result)
+        with np.load(artifact_path, allow_pickle=False) as artifact:
+            assert artifact["score_names"].shape == (8,)
+            assert artifact["score_row_nll"].shape == (8, n_eval)
+            assert artifact["grouped_score_names"].tolist() == [
+                "prior_grouped",
+                "measurement_grouped",
+                "independent_kalman_grouped",
+                "product_kalman_grouped",
+            ]
+            assert artifact["grouped_score_row_covariances"].shape == (4, n_eval, 1, 1)
+            summary = json.loads(str(artifact["grouped_score_summary_json"][-1]))
+            assert summary["score"] == "product_kalman_grouped"
 
 
 def test_npz_runner_validates_required_keys():
