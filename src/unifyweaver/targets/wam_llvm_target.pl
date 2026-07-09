@@ -4221,6 +4221,16 @@ compile_wam_helpers_to_llvm(Options, LLVMCode) :-
 compile_backtrack_to_llvm(Code) :-
     Code = 'define i1 @backtrack(%WamState* %vm) {
 entry:
+  ; An uncaught throw ABORTS the machine (campaign finding no. 10): refuse
+  ; to resume into live choice points. Without this check, the uncaught
+  ; throw behaved like an ordinary failure -- backtrack cleared halted and
+  ; re-executed over the half-unwound state (catastrophic-backtracking
+  ; hangs and corrupted terms). The flag is cleared per top-level query by
+  ; @wam_catch_reset, so re-satisfaction of completed queries still works.
+  %unc = load i1, i1* @wam_uncaught
+  br i1 %unc, label %fail, label %check_cps
+
+check_cps:
   %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
   %cpn = load i32, i32* %cpn_ptr
   %has_cp = icmp sgt i32 %cpn, 0
@@ -7104,9 +7114,26 @@ q_done:
   %qid = call i64 @wam_intern_atom(i8* %qcontent, i64 %qlen)
   %qpos = add i64 %qi, 1
   store i64 %qpos, i64* %pos
+  ; Quoted FUNCTOR application: an immediately-following open paren makes
+  ; this a compound with a quoted name, as in a canonical term like
+  ; a term with functor $VAR -- required by the self-host middle, whose
+  ; source pattern-matches numbervarred structures. No whitespace is
+  ; allowed between the functor and the paren (standard Prolog).
+  %q_haslp = icmp ult i64 %qpos, %len
+  br i1 %q_haslp, label %q_peek, label %q_atom
+q_peek:
+  %qlpp = getelementptr i8, i8* %s, i64 %qpos
+  %qlpc = load i8, i8* %qlpp
+  %q_islp = icmp eq i8 %qlpc, 40
+  br i1 %q_islp, label %q_compound, label %q_atom
+q_atom:
   %qv0 = insertvalue %Value undef, i32 0, 0
   %qv = insertvalue %Value %qv0, i64 %qid, 1
   ret %Value %qv
+q_compound:
+  %qpp1 = add i64 %qpos, 1
+  store i64 %qpp1, i64* %pos
+  br label %args_shared
 do_list:
   %p0inc = add i64 %p0, 1
   store i64 %p0inc, i64* %pos
@@ -7175,6 +7202,12 @@ atomic:
 compound:
   %pp1 = add i64 %pp, 1
   store i64 %pp1, i64* %pos
+  %unameptr = getelementptr i8, i8* %s, i64 %p0
+  %ufid = call i64 @wam_intern_atom(i8* %unameptr, i64 %namelen)
+  br label %args_shared
+args_shared:
+  ; functor id: from the unquoted name span, or the quoted atom above
+  %ffid = phi i64 [ %ufid, %compound ], [ %qid, %q_compound ]
   call void @wam_arena_ensure()
   %argbuf = call i8* @wam_arena_alloc(i64 4096)
   %argv = bitcast i8* %argbuf to %Value*
@@ -7222,9 +7255,7 @@ args_end:
   br label %build
 build:
   %nargs = phi i64 [ 0, %args_none ], [ %n1, %args_end ]
-  %nameptr = getelementptr i8, i8* %s, i64 %p0
-  %fid = call i64 @wam_intern_atom(i8* %nameptr, i64 %namelen)
-  %fnstr = call i8* @wam_atom_to_string(i64 %fid)
+  %fnstr = call i8* @wam_atom_to_string(i64 %ffid)
   %cpsz = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
   %cpmem = call i8* @wam_arena_alloc(i64 %cpsz)
   %ccp = bitcast i8* %cpmem to %Compound*

@@ -6136,12 +6136,22 @@ pop:
 @wam_catch_count = internal global i32 0
 @wam_catch_cap = internal global i32 0
 @wam_ball = internal global %Value zeroinitializer
+; Set when a throw finds NO catch frame: the machine is ABORTED, not merely
+; failed. @backtrack refuses to resume while this is set -- without it, the
+; run loop treated the uncaught throw as an ordinary failure, backtracked
+; into live choice points (clearing halted), and re-executed over the
+; half-unwound state: at best the old catastrophic-backtracking hang, at
+; worst corrupted terms (campaign finding no. 10 -- an uncaught
+; cg_unsupported_goal from the self-hosted compiler spun forever inside
+; append on a corrupted list). Cleared per top-level query below.
+@wam_uncaught = internal global i1 0
 
 ; Reset the catch side stack -- called at the start of a top-level query so a
 ; frame left over from a previous query (forward-scoping) never matches.
 define void @wam_catch_reset() {
 entry:
   store i32 0, i32* @wam_catch_count
+  store i1 0, i1* @wam_uncaught
   ret void
 }
 
@@ -6299,6 +6309,9 @@ recover:
   %rok = call i1 @wam_dispatch_meta_call(%WamState* %vm, i32 1, i32 %rpc)
   ret i1 %rok
 uncaught:
+  ; Mark the machine ABORTED so @backtrack does not resume into live
+  ; choice points as if this were an ordinary failure (finding no. 10).
+  store i1 1, i1* @wam_uncaught
   call void @wam_set_halted(%WamState* %vm, i1 true)
   ret i1 false
 }

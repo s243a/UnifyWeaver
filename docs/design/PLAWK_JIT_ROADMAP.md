@@ -408,7 +408,15 @@ loadable along the way.
   `is`-expression is staged as an ordinary term through the structure
   builder), and the compiler **fails fast** on unsupported constructs
   (catch-all `throw/1` diagnostics in the goal/operand/head-arg walkers
-  instead of a silent catastrophic-backtracking hang). The remaining
+  instead of a silent catastrophic-backtracking hang). **THE MIDDLE first
+  slice LANDED** — the loaded compiler compiled a cut-free restatement of
+  its own single-clause codegen (numbervars register allocation,
+  first-occurrence init tracking, head/goal/expression compilation,
+  functor-table collection), and the doubly-compiled codegen reproduced
+  the production compiler's bytes exactly on an arithmetic clause
+  (checksum 8755). The reader gained quoted functor applications, and the
+  `'$VAR'` marker clauses now guard on integer arguments so source-level
+  `'$VAR'` patterns compile as ordinary structures. The remaining
   campaign extends this toward `compile(SelfSource)` — the full fixpoint.
   The compile budget for the full self-compile is closed: the **chained
   arena** removed the memory cliff (blocks link on exhaustion and never
@@ -416,7 +424,7 @@ loadable along the way.
   the serializer's **difference-list linearisation** removed the quadratic
   time/allocation (an 11.9 KB source compiles loaded in 40 ms / 35 MB where
   the quadratic style took 20 s / 3.7 GB at half that size).
-  The campaign keeps surfacing and fixing latent runtime bugs — **nine found
+  The campaign keeps surfacing and fixing latent runtime bugs — **ten found
   so far**: a 64-register-file ceiling corrupting memory for large clauses;
   `get_structure` not comparing the functor; the choice-point saved-register
   block not widened with the register file (failed clause bodies leaked Y17+
@@ -432,7 +440,10 @@ loadable along the way.
   two variables unlinked (a silent no-op unification), and `builtin_append`
   seeded its result tail with the collapsed Unbound sentinel when the second
   argument was a bare unbound variable — both fixed via
-  `@wam_deref_keep_var`. See
+  `@wam_deref_keep_var`; and an uncaught throw behaving as a plain failure
+  (`@backtrack` resumed into live choice points over the half-unwound
+  state, spinning inside append on corrupted terms) — fixed with an
+  explicit abort flag checked at backtrack entry. See
   [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
 
 ## The binary-return question, specifically
