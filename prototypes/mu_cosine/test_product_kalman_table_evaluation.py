@@ -109,6 +109,7 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         assert summary["inputs"]["evaluation_npz"] == str(output_npz)
         assert summary["inputs"]["report_md"] == str(output_md)
         assert summary["score_order"] == ["prior", "measurement", "independent_kalman", "product_kalman"]
+        assert "mahalanobis_per_dim" in summary["scores"]["product_kalman"]
         assert summary["nll_improvement_vs_prior"]["product_kalman"] > 0.65
 
         manifest = json.loads(input_manifest.read_text())
@@ -119,11 +120,13 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         assert report == run.report_text
         assert "# Synthetic Table Product-Kalman Report" in report
         assert "## Scores" in report
+        assert "mahalanobis_per_dim" in report
         assert "source_table_sha256" in report
 
         with np.load(output_npz, allow_pickle=False) as artifact:
             assert artifact["product_kalman_mean"].shape == (40, 1)
             assert artifact["score_names"].tolist() == summary["score_order"]
+            assert artifact["score_mahalanobis_per_dim"].shape == (4,)
 
 
 def test_table_runner_output_dir_writes_canonical_bundle():

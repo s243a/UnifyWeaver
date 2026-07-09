@@ -54,6 +54,8 @@ def _score_rows(scores_json):
             score.get("mse"),
             score.get("n"),
             score.get("covariance_trace"),
+            score.get("mean_squared_mahalanobis"),
+            score.get("mahalanobis_per_dim"),
         ])
     return rows
 
@@ -194,7 +196,18 @@ def build_product_kalman_markdown_report(
     lines.extend([
         "## Scores",
         "",
-        _markdown_table(["model", "mean_nll", "mse", "n", "covariance_trace"], _score_rows(scores_json)),
+        _markdown_table(
+            [
+                "model",
+                "mean_nll",
+                "mse",
+                "n",
+                "covariance_trace",
+                "mean_sq_mahalanobis",
+                "mahalanobis_per_dim",
+            ],
+            _score_rows(scores_json),
+        ),
         "",
         "## NLL Improvements",
         "",
@@ -207,6 +220,7 @@ def build_product_kalman_markdown_report(
         "## Guardrails",
         "",
         "- Positive NLL gain means the candidate had lower held-out mean NLL than the named baseline.",
+        "- For a well-scaled d-dimensional Gaussian prediction, mean squared Mahalanobis should be near d; the per-dimension value should be near 1.",
         "- Treat this as a held-out comparison artifact, not as a training-objective decision.",
         "- Product-Kalman should be compared against the registered joint-posterior and Sigma-conditioned baselines before promotion.",
         "- Calibration rows and evaluation rows must remain disjoint; any ID overlap or duplicate count above zero should block interpretation.",

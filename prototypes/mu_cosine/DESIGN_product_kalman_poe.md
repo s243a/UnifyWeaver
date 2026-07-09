@@ -331,6 +331,7 @@ Treat this as a modeling hypothesis, not a paper claim. Compare on held-out node
 Report:
 
 - held-out log loss / NLL;
+- predicted-error scale diagnostics such as mean squared Mahalanobis and Mahalanobis-per-dimension;
 - ECE with stated bins;
 - AURC using margin gating with bootstrap confidence intervals;
 - ablations for model, graph, judge, product, and covariance terms;
@@ -382,8 +383,9 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    `product_kalman_table_to_npz.py` records source-table hash, split counts, column groups, dimensions, ID
    overlap/duplicate counts, and `H`
    shape/values; `product_kalman_evaluation.py` then fits calibration blocks on one split, scores prior /
-   zero-cross-covariance / correlated Product-Kalman predictions on a separate split, and keeps
-   calibration/evaluation IDs disjoint. *(Synthetic harness added; real-corpus comparison pending.)*
+   zero-cross-covariance / correlated Product-Kalman predictions on a separate split, records NLL/MSE plus
+   Mahalanobis calibration-scale diagnostics, and keeps calibration/evaluation IDs disjoint. *(Synthetic harness
+   added; real-corpus comparison pending.)*
 8. Use `product_kalman_report.py` to render the input manifest, optional split manifest, and score JSON into a
    descriptive Markdown run note. The report is an audit artifact only: it records scores and provenance, but does
    not encode a decision rule or promote Product-Kalman without comparison against registered baselines.
@@ -420,7 +422,8 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
 - `product_kalman_report.py` and `test_product_kalman_report.py` — descriptive Markdown report generator for
   Product-Kalman input manifests, optional split manifests, and score JSON artifacts.
 - `product_kalman_evaluation.py` and `test_product_kalman_evaluation.py` — holdout comparison harness for
-  prior, zero-cross-covariance, and correlated Product-Kalman scoring on disjoint splits, including JSON summaries
-  and row-level NPZ artifacts for reproducible corpus-run diagnostics.
+  prior, zero-cross-covariance, and correlated Product-Kalman scoring on disjoint splits, including NLL/MSE,
+  Mahalanobis predicted-error scale diagnostics, JSON summaries, and row-level NPZ artifacts for reproducible
+  corpus-run diagnostics.
 - `REPORT_sigma_hop_confirmatory.md` and `PAPER_sigma_hop_confirmatory.md` — confirmatory Sigma(hop) result and
   publication scaffold.
