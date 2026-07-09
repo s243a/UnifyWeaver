@@ -39,11 +39,13 @@ except ImportError:  # direct script execution from prototypes/mu_cosine
 
 __all__ = [
     "GaussianScore",
+    "GaussianScoreVectors",
     "ProductKalmanHoldoutEvaluation",
     "evaluate_product_kalman_holdout",
     "evaluation_artifact_arrays",
     "evaluation_to_json_dict",
     "run_product_kalman_holdout_npz",
+    "score_gaussian_prediction_vectors",
     "score_gaussian_predictions",
     "write_evaluation_npz",
 ]
@@ -67,6 +69,20 @@ def _as_covariance(name, value, dim):
     if not np.isfinite(cov).all():
         raise ValueError(f"{name} must be finite")
     return 0.5 * (cov + cov.T)
+
+
+def _readonly_vector(name, value, n=None):
+    arr = np.array(value, dtype=float, copy=True)
+    if arr.ndim != 1:
+        raise ValueError(f"{name} must be a 1-D row-score vector")
+    if arr.size == 0:
+        raise ValueError(f"{name} must be nonempty")
+    if n is not None and arr.size != n:
+        raise ValueError(f"{name} length {arr.size} must match {n}")
+    if not np.isfinite(arr).all():
+        raise ValueError(f"{name} must be finite")
+    arr.setflags(write=False)
+    return arr
 
 
 @dataclass(frozen=True)
@@ -137,6 +153,43 @@ class GaussianScore:
 
 
 @dataclass(frozen=True)
+class GaussianScoreVectors:
+    """Per-row Gaussian score diagnostics for one prediction family."""
+
+    name: str
+    nll: np.ndarray
+    squared_error: np.ndarray
+    squared_mahalanobis: np.ndarray
+    dimension: int
+
+    def __post_init__(self):
+        name = str(self.name)
+        if not name:
+            raise ValueError("score-vector name must be nonempty")
+        nll = _readonly_vector("nll", self.nll)
+        squared_error = _readonly_vector("squared_error", self.squared_error, n=nll.size)
+        squared_mahalanobis = _readonly_vector(
+            "squared_mahalanobis",
+            self.squared_mahalanobis,
+            n=nll.size,
+        )
+        dimension = int(self.dimension)
+        if dimension <= 0:
+            raise ValueError("score-vector dimension must be positive")
+        if (squared_error < 0.0).any() or (squared_mahalanobis < 0.0).any():
+            raise ValueError("row score diagnostics must be nonnegative except nll")
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "nll", nll)
+        object.__setattr__(self, "squared_error", squared_error)
+        object.__setattr__(self, "squared_mahalanobis", squared_mahalanobis)
+        object.__setattr__(self, "dimension", dimension)
+
+    @property
+    def n(self):
+        return int(self.nll.size)
+
+
+@dataclass(frozen=True)
 class ProductKalmanHoldoutEvaluation:
     """One calibration/evaluation split comparison.
 
@@ -151,6 +204,7 @@ class ProductKalmanHoldoutEvaluation:
     correlated_update: object
     independent_update: object
     scores: tuple
+    score_vectors: tuple = ()
 
     def __post_init__(self):
         if not isinstance(self.calibration, ProductKalmanCalibration):
@@ -158,10 +212,25 @@ class ProductKalmanHoldoutEvaluation:
         if not isinstance(self.independent_calibration, ProductKalmanCalibration):
             raise ValueError("independent_calibration must be a ProductKalmanCalibration")
         scores = tuple(self.scores)
+        for score in scores:
+            if not isinstance(score, GaussianScore):
+                raise ValueError("scores must contain GaussianScore objects")
         names = [s.name for s in scores]
         if len(names) != len(set(names)):
             raise ValueError("score names must be unique")
+        score_vectors = tuple(self.score_vectors)
+        if score_vectors:
+            for vector in score_vectors:
+                if not isinstance(vector, GaussianScoreVectors):
+                    raise ValueError("score_vectors must contain GaussianScoreVectors objects")
+            vector_names = [v.name for v in score_vectors]
+            if vector_names != names:
+                raise ValueError("score_vectors must appear in the same order as scores")
+            for score, vector in zip(scores, score_vectors):
+                if vector.n != score.n:
+                    raise ValueError("score vector length must match score n")
         object.__setattr__(self, "scores", scores)
+        object.__setattr__(self, "score_vectors", score_vectors)
 
     def score(self, name):
         """Return the named `GaussianScore`."""
@@ -170,13 +239,20 @@ class ProductKalmanHoldoutEvaluation:
                 return score
         raise KeyError(name)
 
+    def score_vector(self, name):
+        """Return the named per-row score vectors."""
+        for vector in self.score_vectors:
+            if vector.name == name:
+                return vector
+        raise KeyError(name)
+
     def nll_improvement(self, baseline, candidate):
         """Positive means `candidate` has lower mean NLL than `baseline`."""
         return self.score(baseline).mean_nll - self.score(candidate).mean_nll
 
 
-def score_gaussian_predictions(name, target_state, mean, covariance, jitter=1e-9):
-    """Score row-wise Gaussian predictions against held-out target states.
+def score_gaussian_prediction_vectors(name, target_state, mean, covariance, jitter=1e-9):
+    """Return per-row Gaussian score vectors against held-out target states.
 
     `target_state` and `mean` must be `(n, d)` row matrices. `covariance` is one
     shared `(d, d)` covariance for the prediction family, matching the current
@@ -187,26 +263,41 @@ def score_gaussian_predictions(name, target_state, mean, covariance, jitter=1e-9
     if pred.shape != target.shape:
         raise ValueError(f"mean shape {pred.shape} must match target_state shape {target.shape}")
     cov = _as_covariance("covariance", covariance, target.shape[1])
-    nll = [gaussian_nll(target[i], pred[i], cov, jitter=jitter) for i in range(target.shape[0])]
+    nll = np.array([gaussian_nll(target[i], pred[i], cov, jitter=jitter) for i in range(target.shape[0])])
     residual = target - pred
     score_cov = regularize_covariance(cov, jitter=jitter, name=f"{name} score covariance")
     solved = np.linalg.solve(score_cov, residual.T).T
-    squared_mahalanobis = np.sum(residual * solved, axis=1)
-    mse = float(np.mean(np.sum(residual * residual, axis=1)))
-    mean_squared_mahalanobis = float(np.mean(squared_mahalanobis))
-    q50, q90, q95 = [float(q) for q in np.quantile(squared_mahalanobis, [0.50, 0.90, 0.95])]
-    return GaussianScore(
+    return GaussianScoreVectors(
         name=name,
-        mean_nll=float(np.mean(nll)),
-        mse=mse,
-        n=int(target.shape[0]),
+        nll=nll,
+        squared_error=np.sum(residual * residual, axis=1),
+        squared_mahalanobis=np.sum(residual * solved, axis=1),
+        dimension=target.shape[1],
+    )
+
+
+def _score_from_vectors(vectors, covariance):
+    cov = _as_covariance("covariance", covariance, vectors.dimension)
+    mean_squared_mahalanobis = float(np.mean(vectors.squared_mahalanobis))
+    q50, q90, q95 = [float(q) for q in np.quantile(vectors.squared_mahalanobis, [0.50, 0.90, 0.95])]
+    return GaussianScore(
+        name=vectors.name,
+        mean_nll=float(np.mean(vectors.nll)),
+        mse=float(np.mean(vectors.squared_error)),
+        n=vectors.n,
         covariance_trace=float(np.trace(cov)),
         mean_squared_mahalanobis=mean_squared_mahalanobis,
-        mahalanobis_per_dim=mean_squared_mahalanobis / float(target.shape[1]),
+        mahalanobis_per_dim=mean_squared_mahalanobis / float(vectors.dimension),
         squared_mahalanobis_q50=q50,
         squared_mahalanobis_q90=q90,
         squared_mahalanobis_q95=q95,
     )
+
+
+def score_gaussian_predictions(name, target_state, mean, covariance, jitter=1e-9):
+    """Return aggregate Gaussian prediction scores for one held-out split."""
+    vectors = score_gaussian_prediction_vectors(name, target_state, mean, covariance, jitter=jitter)
+    return _score_from_vectors(vectors, covariance)
 
 
 def _check_split_ids(calibration_ids, evaluation_ids, n_calibration, n_evaluation):
@@ -291,34 +382,22 @@ def evaluate_product_kalman_holdout(
     correlated_update = apply_product_kalman_calibration(calibration, eval_prior, eval_measure, jitter=jitter)
     independent_update = apply_product_kalman_calibration(independent, eval_prior, eval_measure, jitter=jitter)
 
-    scores = [
-        score_gaussian_predictions("prior", eval_target, eval_prior, calibration.state_covariance, jitter=jitter),
-        score_gaussian_predictions(
-            "independent_kalman",
-            eval_target,
-            independent_update.mean,
-            independent_update.covariance,
-            jitter=jitter,
-        ),
-        score_gaussian_predictions(
-            "product_kalman",
-            eval_target,
-            correlated_update.mean,
-            correlated_update.covariance,
-            jitter=jitter,
-        ),
+    score_inputs = [
+        ("prior", eval_prior, calibration.state_covariance),
+        ("independent_kalman", independent_update.mean, independent_update.covariance),
+        ("product_kalman", correlated_update.mean, correlated_update.covariance),
     ]
     if _has_identity_observation(calibration):
-        scores.insert(
-            1,
-            score_gaussian_predictions(
-                "measurement",
-                eval_target,
-                eval_measure,
-                calibration.observation_covariance,
-                jitter=jitter,
-            ),
-        )
+        score_inputs.insert(1, ("measurement", eval_measure, calibration.observation_covariance))
+
+    score_vectors = [
+        score_gaussian_prediction_vectors(name, eval_target, mean, covariance, jitter=jitter)
+        for name, mean, covariance in score_inputs
+    ]
+    scores = [
+        _score_from_vectors(vectors, covariance)
+        for vectors, (_, _, covariance) in zip(score_vectors, score_inputs)
+    ]
 
     return ProductKalmanHoldoutEvaluation(
         calibration=calibration,
@@ -326,6 +405,7 @@ def evaluate_product_kalman_holdout(
         correlated_update=correlated_update,
         independent_update=independent_update,
         scores=tuple(scores),
+        score_vectors=tuple(score_vectors),
     )
 
 
@@ -379,6 +459,15 @@ def evaluation_artifact_arrays(result):
         "calibration_H": result.calibration.H,
         "independent_cross_covariance": result.independent_calibration.cross_covariance,
     }
+    if result.score_vectors:
+        arrays.update({
+            "score_row_nll": np.vstack([vectors.nll for vectors in result.score_vectors]),
+            "score_row_squared_error": np.vstack([vectors.squared_error for vectors in result.score_vectors]),
+            "score_row_squared_mahalanobis": np.vstack([
+                vectors.squared_mahalanobis
+                for vectors in result.score_vectors
+            ]),
+        })
     arrays.update(_prefix_update_arrays("product_kalman", result.correlated_update))
     arrays.update(_prefix_update_arrays("independent_kalman", result.independent_update))
     return arrays

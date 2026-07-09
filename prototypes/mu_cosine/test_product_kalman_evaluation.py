@@ -19,6 +19,7 @@ from product_kalman_evaluation import (
     evaluation_to_json_dict,
     main,
     run_product_kalman_holdout_npz,
+    score_gaussian_prediction_vectors,
     score_gaussian_predictions,
     write_evaluation_npz,
 )
@@ -73,6 +74,10 @@ def test_correlated_product_kalman_beats_zero_cross_control_on_heldout_nll():
     product_score = result.score("product_kalman")
     assert product_score.squared_mahalanobis_q50 <= product_score.squared_mahalanobis_q90
     assert product_score.squared_mahalanobis_q90 <= product_score.squared_mahalanobis_q95
+    product_vectors = result.score_vector("product_kalman")
+    assert product_vectors.nll.shape == (len(eval_target),)
+    assert abs(float(product_vectors.nll.mean()) - product_score.mean_nll) < 1e-12
+    assert product_vectors.nll.flags.writeable is False
     assert result.correlated_update.mean.flags.writeable is False
     assert result.independent_update.mean.flags.writeable is False
 
@@ -173,6 +178,9 @@ def test_npz_runner_and_json_cli_roundtrip():
             assert artifact["score_names"].tolist() == data["score_order"]
             assert artifact["score_mahalanobis_per_dim"].shape == (4,)
             assert artifact["score_squared_mahalanobis_q95"].shape == (4,)
+            assert artifact["score_row_nll"].shape == (4, 4000)
+            assert artifact["score_row_squared_error"].shape == (4, 4000)
+            assert artifact["score_row_squared_mahalanobis"].shape == (4, 4000)
             assert artifact["product_kalman_mean"].shape == result.correlated_update.mean.shape
             np.testing.assert_allclose(artifact["product_kalman_mean"], result.correlated_update.mean)
             np.testing.assert_allclose(artifact["independent_kalman_mean"], result.independent_update.mean)
@@ -201,6 +209,10 @@ def test_evaluation_artifact_arrays_are_npz_ready():
     assert arrays["score_squared_mahalanobis_q50"].shape == (4,)
     assert arrays["score_squared_mahalanobis_q90"].shape == (4,)
     assert arrays["score_squared_mahalanobis_q95"].shape == (4,)
+    assert arrays["score_row_nll"].shape == (4, 20)
+    assert arrays["score_row_squared_error"].shape == (4, 20)
+    assert arrays["score_row_squared_mahalanobis"].shape == (4, 20)
+    np.testing.assert_allclose(arrays["score_row_nll"].mean(axis=1), arrays["score_mean_nll"])
     assert np.isfinite(arrays["score_mahalanobis_per_dim"]).all()
     assert arrays["product_kalman_innovation"].shape == eval_target.shape
     assert arrays["product_kalman_covariance"].shape == (1, 1)
@@ -250,6 +262,11 @@ def test_nonidentity_observation_omits_measurement_baseline():
 def test_score_gaussian_predictions_validates_shapes_and_reports_mse():
     target = np.array([[1.0], [2.0]])
     mean = np.array([[1.5], [1.5]])
+    vectors = score_gaussian_prediction_vectors("toy", target, mean, [[0.25]], jitter=1e-9)
+    assert vectors.name == "toy"
+    assert np.allclose(vectors.squared_error, [0.25, 0.25])
+    assert np.allclose(vectors.squared_mahalanobis, [1.0, 1.0])
+    assert vectors.nll.flags.writeable is False
     score = score_gaussian_predictions("toy", target, mean, [[0.25]], jitter=1e-9)
     assert score.name == "toy"
     assert score.n == 2

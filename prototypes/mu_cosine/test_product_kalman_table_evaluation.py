@@ -130,6 +130,9 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
             assert artifact["score_names"].tolist() == summary["score_order"]
             assert artifact["score_mahalanobis_per_dim"].shape == (4,)
             assert artifact["score_squared_mahalanobis_q95"].shape == (4,)
+            assert artifact["score_row_nll"].shape == (4, 40)
+            assert artifact["score_row_squared_error"].shape == (4, 40)
+            assert artifact["score_row_squared_mahalanobis"].shape == (4, 40)
 
 
 def test_table_runner_output_dir_writes_canonical_bundle():

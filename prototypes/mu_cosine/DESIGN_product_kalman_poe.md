@@ -384,9 +384,9 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    `product_kalman_table_to_npz.py` records source-table hash, split counts, column groups, dimensions, ID
    overlap/duplicate counts, and `H`
    shape/values; `product_kalman_evaluation.py` then fits calibration blocks on one split, scores prior /
-   zero-cross-covariance / correlated Product-Kalman predictions on a separate split, records NLL/MSE plus
-   Mahalanobis calibration-scale and tail diagnostics, and keeps calibration/evaluation IDs disjoint. *(Synthetic
-   harness added; real-corpus comparison pending.)*
+   zero-cross-covariance / correlated Product-Kalman predictions on a separate split, records aggregate NLL/MSE,
+   Mahalanobis calibration-scale/tail diagnostics, and row-level score vectors for bootstrap or plot diagnostics, and
+   keeps calibration/evaluation IDs disjoint. *(Synthetic harness added; real-corpus comparison pending.)*
 8. Use `product_kalman_report.py` to render the input manifest, optional split manifest, and score JSON into a
    descriptive Markdown run note. The report is an audit artifact only: it records scores and provenance, but does
    not encode a decision rule or promote Product-Kalman without comparison against registered baselines.
@@ -424,7 +424,7 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
   Product-Kalman input manifests, optional split manifests, and score JSON artifacts.
 - `product_kalman_evaluation.py` and `test_product_kalman_evaluation.py` — holdout comparison harness for
   prior, zero-cross-covariance, and correlated Product-Kalman scoring on disjoint splits, including NLL/MSE,
-  Mahalanobis predicted-error scale/tail diagnostics, JSON summaries, and row-level NPZ artifacts for reproducible
-  corpus-run diagnostics.
+  Mahalanobis predicted-error scale/tail diagnostics, JSON summaries, and row-level NPZ score artifacts for
+  reproducible bootstrap/tail diagnostics.
 - `REPORT_sigma_hop_confirmatory.md` and `PAPER_sigma_hop_confirmatory.md` — confirmatory Sigma(hop) result and
   publication scaffold.
