@@ -106,6 +106,7 @@ def test_markdown_report_records_scores_and_guardrails():
         assert "| product_kalman |" in report
         assert "mahalanobis_per_dim" in report
         assert "mean_sq_mahalanobis" in report
+        assert "sq_mahalanobis_q95" in report
         assert "| prior | product_kalman |" in report
         assert "| calibration_rows | 80 |" in report
         assert "| evaluation_rows | 40 |" in report
@@ -159,6 +160,7 @@ def test_markdown_report_cli_writes_file():
         assert "# CLI Product-Kalman Report" in text
         assert "## Scores" in text
         assert "mahalanobis_per_dim" in text
+        assert "sq_mahalanobis_q95" in text
         assert "## NLL Improvements" in text
         assert "## Split Materialization" in text
         assert "source_table_sha256" in text

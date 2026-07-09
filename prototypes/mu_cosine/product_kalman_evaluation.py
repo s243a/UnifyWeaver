@@ -80,6 +80,9 @@ class GaussianScore:
     covariance_trace: float
     mean_squared_mahalanobis: float
     mahalanobis_per_dim: float
+    squared_mahalanobis_q50: float
+    squared_mahalanobis_q90: float
+    squared_mahalanobis_q95: float
 
     def __post_init__(self):
         name = str(self.name)
@@ -89,6 +92,9 @@ class GaussianScore:
         covariance_trace = float(self.covariance_trace)
         mean_squared_mahalanobis = float(self.mean_squared_mahalanobis)
         mahalanobis_per_dim = float(self.mahalanobis_per_dim)
+        squared_mahalanobis_q50 = float(self.squared_mahalanobis_q50)
+        squared_mahalanobis_q90 = float(self.squared_mahalanobis_q90)
+        squared_mahalanobis_q95 = float(self.squared_mahalanobis_q95)
         if not name:
             raise ValueError("score name must be nonempty")
         if n <= 0:
@@ -99,11 +105,25 @@ class GaussianScore:
             ("covariance_trace", covariance_trace),
             ("mean_squared_mahalanobis", mean_squared_mahalanobis),
             ("mahalanobis_per_dim", mahalanobis_per_dim),
+            ("squared_mahalanobis_q50", squared_mahalanobis_q50),
+            ("squared_mahalanobis_q90", squared_mahalanobis_q90),
+            ("squared_mahalanobis_q95", squared_mahalanobis_q95),
         ):
             if not np.isfinite(value):
                 raise ValueError(f"{field} must be finite")
-        if mean_squared_mahalanobis < 0.0 or mahalanobis_per_dim < 0.0:
+        if any(
+            value < 0.0
+            for value in (
+                mean_squared_mahalanobis,
+                mahalanobis_per_dim,
+                squared_mahalanobis_q50,
+                squared_mahalanobis_q90,
+                squared_mahalanobis_q95,
+            )
+        ):
             raise ValueError("Mahalanobis diagnostics must be nonnegative")
+        if not squared_mahalanobis_q50 <= squared_mahalanobis_q90 <= squared_mahalanobis_q95:
+            raise ValueError("Mahalanobis quantiles must be ordered")
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "n", n)
         object.__setattr__(self, "mean_nll", mean_nll)
@@ -111,6 +131,9 @@ class GaussianScore:
         object.__setattr__(self, "covariance_trace", covariance_trace)
         object.__setattr__(self, "mean_squared_mahalanobis", mean_squared_mahalanobis)
         object.__setattr__(self, "mahalanobis_per_dim", mahalanobis_per_dim)
+        object.__setattr__(self, "squared_mahalanobis_q50", squared_mahalanobis_q50)
+        object.__setattr__(self, "squared_mahalanobis_q90", squared_mahalanobis_q90)
+        object.__setattr__(self, "squared_mahalanobis_q95", squared_mahalanobis_q95)
 
 
 @dataclass(frozen=True)
@@ -171,6 +194,7 @@ def score_gaussian_predictions(name, target_state, mean, covariance, jitter=1e-9
     squared_mahalanobis = np.sum(residual * solved, axis=1)
     mse = float(np.mean(np.sum(residual * residual, axis=1)))
     mean_squared_mahalanobis = float(np.mean(squared_mahalanobis))
+    q50, q90, q95 = [float(q) for q in np.quantile(squared_mahalanobis, [0.50, 0.90, 0.95])]
     return GaussianScore(
         name=name,
         mean_nll=float(np.mean(nll)),
@@ -179,6 +203,9 @@ def score_gaussian_predictions(name, target_state, mean, covariance, jitter=1e-9
         covariance_trace=float(np.trace(cov)),
         mean_squared_mahalanobis=mean_squared_mahalanobis,
         mahalanobis_per_dim=mean_squared_mahalanobis / float(target.shape[1]),
+        squared_mahalanobis_q50=q50,
+        squared_mahalanobis_q90=q90,
+        squared_mahalanobis_q95=q95,
     )
 
 
@@ -333,6 +360,18 @@ def evaluation_artifact_arrays(result):
             dtype=float,
         ),
         "score_mahalanobis_per_dim": np.array([score.mahalanobis_per_dim for score in result.scores], dtype=float),
+        "score_squared_mahalanobis_q50": np.array(
+            [score.squared_mahalanobis_q50 for score in result.scores],
+            dtype=float,
+        ),
+        "score_squared_mahalanobis_q90": np.array(
+            [score.squared_mahalanobis_q90 for score in result.scores],
+            dtype=float,
+        ),
+        "score_squared_mahalanobis_q95": np.array(
+            [score.squared_mahalanobis_q95 for score in result.scores],
+            dtype=float,
+        ),
         "calibration_n_samples": np.array(result.calibration.n_samples, dtype=np.int64),
         "calibration_state_covariance": result.calibration.state_covariance,
         "calibration_observation_covariance": result.calibration.observation_covariance,
@@ -369,6 +408,9 @@ def _score_to_json_dict(score):
         "covariance_trace": score.covariance_trace,
         "mean_squared_mahalanobis": score.mean_squared_mahalanobis,
         "mahalanobis_per_dim": score.mahalanobis_per_dim,
+        "squared_mahalanobis_q50": score.squared_mahalanobis_q50,
+        "squared_mahalanobis_q90": score.squared_mahalanobis_q90,
+        "squared_mahalanobis_q95": score.squared_mahalanobis_q95,
     }
 
 
