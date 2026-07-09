@@ -215,7 +215,13 @@ def run_product_kalman_table_evaluation(
     report_text = ""
     if output_md:
         manifest = load_json(input_manifest) if input_manifest else None
-        report_text = build_product_kalman_markdown_report(summary, manifest, title=report_title)
+        split_data = load_json(split_manifest) if split_manifest else None
+        report_text = build_product_kalman_markdown_report(
+            summary,
+            manifest,
+            split_manifest=split_data,
+            title=report_title,
+        )
         write_markdown_report(output_md, report_text)
     if output_json:
         _write_json(output_json, summary, indent=indent)
