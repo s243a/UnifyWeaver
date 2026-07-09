@@ -381,8 +381,8 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    `scores.json`, `eval_artifacts.npz`, and `report.md`) in one auditable command. If given `--split-unit-cols`,
    it first writes `split_table.csv`/`split_table.tsv` and `split.manifest.json` in the same run directory, then
    evaluates that split-labeled table. Explicit artifact paths may override those defaults. Under the hood,
-   `product_kalman_table_to_npz.py` records source-table hash, split counts, column groups, dimensions, ID
-   overlap/duplicate counts, and `H`
+   `product_kalman_table_to_npz.py` records source-table hash, split counts, column groups, optional discrete
+   group labels such as hop/regime buckets, dimensions, ID overlap/duplicate counts, and `H`
    shape/values; `product_kalman_evaluation.py` then fits calibration blocks on one split, scores prior /
    zero-cross-covariance / correlated Product-Kalman predictions on a separate split, records aggregate NLL/MSE,
    Mahalanobis calibration-scale/tail diagnostics, row-level score vectors, and optional paired bootstrap intervals
@@ -419,7 +419,7 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
   `P`, `R`, and cross-covariance blocks plus batch application and split-ID leakage guards.
 - `product_kalman_table_to_npz.py` and `test_product_kalman_table_to_npz.py` — CSV/TSV-to-NPZ builder for
   evaluator input arrays with explicit split, ID, prior, measurement, and target columns, plus optional JSON input
-  manifests for real-corpus provenance checks.
+  manifests and carried-through discrete group labels for real-corpus provenance checks.
 - `product_kalman_split_table.py` and `test_product_kalman_split_table.py` — split-label materializer for explicit
   Product-Kalman tables, with held-out unit sampling, strict boundary-row omission, and a split manifest.
 - `product_kalman_table_evaluation.py` and `test_product_kalman_table_evaluation.py` — one-command table-to-input-

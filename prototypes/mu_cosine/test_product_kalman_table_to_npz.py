@@ -49,7 +49,11 @@ def synthetic_identity_split(n_cal=80, n_eval=40, seed=23):
 def write_table(path, delimiter=","):
     prior, measurement, target, n_cal = synthetic_identity_split()
     with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["split", "id", "prior", "measurement", "target"], delimiter=delimiter)
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["split", "id", "prior", "measurement", "target", "hop"],
+            delimiter=delimiter,
+        )
         writer.writeheader()
         for i in range(len(target)):
             split = "calibration" if i < n_cal else "evaluation"
@@ -59,6 +63,7 @@ def write_table(path, delimiter=","):
                 "prior": f"{prior[i, 0]:.17g}",
                 "measurement": f"{measurement[i, 0]:.17g}",
                 "target": f"{target[i, 0]:.17g}",
+                "hop": str(1 + i % 3),
             })
 
 
@@ -82,10 +87,14 @@ def test_table_builder_roundtrips_into_evaluator():
             prior_cols=["prior"],
             measurement_cols=["measurement"],
             target_cols=["target"],
+            group_cols=["hop"],
         )
         assert arrays["calibration_prior_mean"].shape == (80, 1)
         assert arrays["evaluation_prior_mean"].shape == (40, 1)
         assert arrays["calibration_ids"].shape == (80,)
+        assert arrays["calibration_groups"].shape == (80,)
+        assert arrays["evaluation_groups"].shape == (40,)
+        assert set(arrays["calibration_groups"].tolist()) == {"1", "2", "3"}
         assert npz.exists()
 
         result = run_product_kalman_holdout_npz(npz, jitter=1e-8)
@@ -103,6 +112,7 @@ def test_input_manifest_records_schema_and_id_audit():
             prior_cols=["prior"],
             measurement_cols=["measurement"],
             target_cols=["target"],
+            group_cols=["hop"],
         )
         manifest = build_product_kalman_input_manifest(
             table,
@@ -110,6 +120,7 @@ def test_input_manifest_records_schema_and_id_audit():
             prior_cols=["prior"],
             measurement_cols=["measurement"],
             target_cols=["target"],
+            group_cols=["hop"],
         )
         assert manifest["schema_version"] == TABLE_INPUT_MANIFEST_SCHEMA_VERSION
         assert len(manifest["source_table"]["sha256"]) == 64
@@ -118,7 +129,12 @@ def test_input_manifest_records_schema_and_id_audit():
         assert manifest["columns"]["prior"] == ["prior"]
         assert manifest["dimensions"] == {"state_dim": 1, "prior_dim": 1, "observation_dim": 1}
         assert manifest["ids"]["disjoint_and_unique"] is True
+        assert manifest["groups"]["present"] is True
+        assert manifest["groups"]["columns"] == ["hop"]
+        assert manifest["groups"]["calibration_unique_count"] == 3
+        assert manifest["groups"]["calibration_counts"]["1"] == 27
         assert manifest["arrays"]["calibration_prior_mean"]["shape"] == [80, 1]
+        assert manifest["arrays"]["calibration_groups"]["shape"] == [80]
         assert manifest["H"]["present"] is False
         write_product_kalman_manifest(manifest_path, manifest)
         loaded = json.loads(manifest_path.read_text())
@@ -143,14 +159,19 @@ def test_tsv_delimiter_inference_and_cli():
             "measurement",
             "--target-cols",
             "target",
+            "--group-cols",
+            "hop",
         ])
         assert rc == 0
         with np.load(npz, allow_pickle=False) as data:
             assert data["calibration_prior_mean"].shape == (80, 1)
             assert data["evaluation_ids"].shape == (40,)
+            assert data["calibration_groups"].shape == (80,)
+            assert data["evaluation_groups"].shape == (40,)
         manifest_data = json.loads(manifest.read_text())
         assert manifest_data["source_table"]["delimiter"] == "	"
         assert manifest_data["ids"]["overlap_count"] == 0
+        assert manifest_data["groups"]["columns"] == ["hop"]
 
 
 def test_nonidentity_H_is_stored_and_shape_checked():
@@ -238,6 +259,20 @@ def test_table_builder_rejects_bad_input():
             prior_cols=["prior"],
             measurement_cols=["measurement"],
             target_cols=["target"],
+        )
+
+        bad_group = Path(tmp) / "bad_group.csv"
+        bad_group.write_text(
+            "split,id,prior,measurement,target,hop\ncalibration,a,1,1,1,\n",
+            encoding="utf-8",
+        )
+        assert_raises(
+            read_product_kalman_table,
+            bad_group,
+            prior_cols=["prior"],
+            measurement_cols=["measurement"],
+            target_cols=["target"],
+            group_cols=["hop"],
         )
 
         bad_prior_dim = Path(tmp) / "bad_prior_dim.csv"
