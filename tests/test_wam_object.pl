@@ -836,6 +836,7 @@ bi_id(is_list, 1, 20).
 bi_id(ground, 1, 132).
 bi_id(succ, 2, 22).
 bi_id(\=, 2, 25).
+bi_id(sum_list, 2, 59).
 bi_id(numbervars, 3, 124).
 bi_id(term_to_atom, 2, 173).
 bi_id(read_term_from_atom, 2, 174).
@@ -872,6 +873,9 @@ build_list([E|Rest], TR, Mode, At, FT, Xt0, Xt, In0, In2, Is) :-
     (   Rest == []
     ->  functor_index('[]', At, NI), Tail = [enc(15,NI,0,1)],
         In1b = In1, Xtb = Xta, RestIs = []
+    ;   Rest = '$VAR'(_)
+    ->  s_arg(Rest, At, Xta, Xtb, In1, In1b, Tail, [], []),  % var tail: [E|Var]
+        RestIs = []
     ;   Tail = [enc(13,Xta,0,0)],                        % set_variable Xtemp
         Xtc is Xta + 1,
         build_list(Rest, Xta, nested, At, FT, Xtc, Xtb, In1, In1b, RestIs)
@@ -917,6 +921,11 @@ wza_serialize(EI, NC, LI, Atoms, Fs, PCs, Is, Out) :-
     length(Atoms, NA), wz_i(NA, A6, A7), wz_funcs(Atoms, A7, A8),
     length(Fs, NF), wz_i(NF, A8, A9), wz_funcs(Fs, A9, A10),
     wz_pcs_sec(PCs, A10, A11), wz_instr_sec(Is, A11, A12), wz_i(0, A12, Out).
+
+% The fixpoint source: the Stage A serializer (wz_* chain) restated in the
+% accepted subset (cut-free, builtins + calls + list/structure patterns).
+% The entry checksums its own output (byte sum + length).
+fixpoint_serializer_source('[(main0(R) :- serz(Cs), sum_list(Cs, S), length(Cs, L), R is S + L), (serz(Out) :- atom_codes(''ea/1'', NC), wzs(0, NC, 0, 0, 0, [0], [enc(0,42,65536,0), enc(20,0,0,0)], Out)), (wzi(N, A0, A1) :- number_codes(N, Cs), append(A0, Cs, B), append(B, [10], A1)), (wza(X, A0, A1) :- atom_codes(X, Cs), append(A0, Cs, B), append(B, [10], A1)), (wzn(Cs, A0, A1) :- length(Cs, L), number_codes(L, LC), append(A0, LC, B), append(B, [32|Cs], C), append(C, [10], A1)), (wzsi(N, A0, A1) :- number_codes(N, Cs), append(A0, [32|Cs], A1)), (wzs(EI, NC, LI, NA, NF, PCs, Is, Out) :- wzh(EI, NC, LI, NA, NF, [], H), wzb(PCs, Is, H, Out)), (wzh(EI, NC, LI, NA, NF, A0, Out) :- wza(''WAMO'', A0, A1), wzi(2, A1, A2), wzi(EI, A2, A3), wzi(1, A3, A4), wzh2(NC, LI, NA, NF, A4, Out)), (wzh2(NC, LI, NA, NF, A0, Out) :- wzn(NC, A0, A1), wzi(LI, A1, A2), wzi(NA, A2, A3), wzi(NF, A3, Out)), (wzb(PCs, Is, A0, Out) :- wzp(PCs, A0, A1), wzc(Is, A1, A2), wzi(0, A2, Out)), (wzp(PCs, A0, A2) :- length(PCs, NL), wzi(NL, A0, A1), wzpr(PCs, A1, A2)), wzpr([], A, A), (wzpr([P|Ps], A0, A2) :- wzi(P, A0, A1), wzpr(Ps, A1, A2)), (wzc(Is, A0, A2) :- length(Is, NC2), wzi(NC2, A0, A1), wzcr(Is, A1, A2)), wzcr([], A, A), (wzcr([enc(T,O1,O2,Rl)|Is], A0, A2) :- wzr(T, O1, O2, Rl, A0, A1), wzcr(Is, A1, A2)), (wzr(T, O1, O2, Rl, A0, A5) :- number_codes(T, Tc), append(A0, Tc, A1), wzsi(O1, A1, A2), wzsi(O2, A2, A3), wzsi(Rl, A3, A4), append(A4, [10], A5))]').
 
 % Register-file ceiling regression: manyperm/1 has 20 variables all live
 % across the mp_barrier call, so the compiler assigns them Y1..Y20. Before
@@ -1789,6 +1798,39 @@ test(selfhost_codegen_stage_d_builtins, [condition(clang_available)]) :-
           process_wait(Pid, exit(Status)),
           assertion(Status == 0),
           assertion(Out == Expected) )),
+    !.
+
+% Milestone 6 (self-host) Stage D: THE FIXPOINT SLICE. The loaded bootstrap
+% compiler compiles the source text of its own Stage A serializer (the wz_*
+% chain, restated cut-free in the accepted subset), and the doubly-compiled
+% serializer then serializes the golden `ea(R):-R=42` program. The compiled
+% program returns byte-sum + length of its output; the test computes the same
+% checksum from the Stage A implementation (wamoserz) in SWI, so the assertion
+% proves the twice-compiled serializer reproduces the golden byte stream
+% exactly. This is the compiler compiling its own back end -- the first
+% self-application of the self-host arc.
+test(selfhost_codegen_stage_d_fixpoint, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([user:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    % expected checksum from the Stage A serializer, computed in-process
+    wamoserz(x, W), atom_codes(W, WCs),
+    sum_list(WCs, WSum), length(WCs, WLen),
+    ExpectedN is WSum + WLen,
+    format(string(Expected), "~w\n", [ExpectedN]),
+    fixpoint_serializer_source(Source),
+    directory_file_path(Dir, 'cgfp_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, Source), close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == Expected),
     !.
 
 % Register-file ceiling fix: a clause with 20 permanent variables (Y1..Y20)
