@@ -28,6 +28,7 @@ except ImportError:  # direct script execution from prototypes/mu_cosine
 
 __all__ = [
     "add_artifact_bootstrap_intervals",
+    "add_artifact_validation_summary",
     "build_product_kalman_markdown_report",
     "load_json",
     "validate_artifact_score_consistency",
@@ -149,6 +150,24 @@ def _bootstrap_artifact_rows(scores_json):
         ["confidence", artifact.get("confidence")],
         ["method", artifact.get("method")],
         ["baselines", ", ".join(artifact.get("baselines", []))],
+    ]
+
+
+def _artifact_validation_rows(scores_json):
+    artifact = scores_json.get("evaluation_artifact_validation", {})
+    if not artifact:
+        return []
+    return [
+        ["evaluation_npz", artifact.get("evaluation_npz")],
+        ["evaluation_npz_sha256", artifact.get("evaluation_npz_sha256")],
+        ["validated_against_scores", artifact.get("validated_against_scores")],
+        ["pit_diagnostics_validated", artifact.get("pit_diagnostics_validated")],
+        ["score_order", ", ".join(artifact.get("score_order", []))],
+        ["score_count", artifact.get("score_count")],
+        ["score_rows", ", ".join(f"{name}:{n}" for name, n in artifact.get("score_rows", {}).items())],
+        ["pit_names", ", ".join(artifact.get("pit_names", []))],
+        ["pit_n", artifact.get("pit_n")],
+        ["pit_dimension", artifact.get("pit_dimension")],
     ]
 
 
@@ -557,6 +576,36 @@ def validate_artifact_score_consistency(scores_json, evaluation_npz=None, atol=1
     return artifact
 
 
+def _artifact_validation_metadata(artifact_path, artifact_summary):
+    pit = artifact_summary.get("pit_diagnostics", {})
+    metadata = {
+        "evaluation_npz": str(artifact_path),
+        "evaluation_npz_sha256": _sha256_file(artifact_path),
+        "validated_against_scores": True,
+        "pit_diagnostics_validated": bool(pit.get("present")),
+        "score_order": list(artifact_summary["score_order"]),
+        "score_count": len(artifact_summary["score_order"]),
+        "score_rows": dict(artifact_summary["n"]),
+    }
+    if pit.get("present"):
+        metadata.update({
+            "pit_names": list(pit.get("names", [])),
+            "pit_n": pit.get("n"),
+            "pit_dimension": pit.get("dimension"),
+        })
+    return metadata
+
+
+def add_artifact_validation_summary(scores_json, evaluation_npz=None, overwrite=False):
+    """Return `scores_json` enriched with validation metadata for a row artifact."""
+    artifact_path = _artifact_path(scores_json, evaluation_npz=evaluation_npz)
+    artifact_summary = validate_artifact_score_consistency(scores_json, evaluation_npz=artifact_path)
+    out = dict(scores_json)
+    if overwrite or "evaluation_artifact_validation" not in out:
+        out["evaluation_artifact_validation"] = _artifact_validation_metadata(artifact_path, artifact_summary)
+    return out
+
+
 def _parse_name_list(text):
     names = [part.strip() for part in str(text).split(",") if part.strip()]
     if not names:
@@ -687,6 +736,7 @@ def build_product_kalman_markdown_report(
         ])
     bootstrap_rows = _bootstrap_rows(scores_json)
     bootstrap_artifact_rows = _bootstrap_artifact_rows(scores_json)
+    artifact_validation_rows = _artifact_validation_rows(scores_json)
     pit_rows = _pit_rows(scores_json)
     pit_coverage_rows = _pit_coverage_rows(scores_json)
     grouped_covariance_rows = _grouped_covariance_rows(scores_json)
@@ -766,6 +816,13 @@ def build_product_kalman_markdown_report(
             _markdown_table(["item", "value"], bootstrap_artifact_rows),
             "",
         ])
+    if artifact_validation_rows:
+        lines.extend([
+            "## Evaluation Artifact Validation",
+            "",
+            _markdown_table(["item", "value"], artifact_validation_rows),
+            "",
+        ])
     lines.extend([
         "## Calibration Settings",
         "",
@@ -806,7 +863,10 @@ def _build_arg_parser():
     ap.add_argument("--output-md", help="write Markdown report here instead of stdout")
     ap.add_argument("--output-json", help="write enriched score JSON here")
     ap.add_argument("--title", default="Product-Kalman Holdout Report")
-    ap.add_argument("--evaluation-npz", help="optional row-level evaluation artifact NPZ for post-hoc bootstrap intervals")
+    ap.add_argument(
+        "--evaluation-npz",
+        help="optional row-level evaluation artifact NPZ for validation and post-hoc bootstrap intervals",
+    )
     ap.add_argument("--bootstrap-nll", type=int, default=0, help="paired bootstrap replicates for NLL gains; 0 disables")
     ap.add_argument(
         "--bootstrap-baselines",
@@ -825,6 +885,12 @@ def main(argv=None):
     args = ap.parse_args(argv)
     scores = load_json(args.scores_json)
     try:
+        if args.evaluation_npz:
+            scores = add_artifact_validation_summary(
+                scores,
+                evaluation_npz=args.evaluation_npz,
+                overwrite=True,
+            )
         scores = add_artifact_bootstrap_intervals(
             scores,
             evaluation_npz=args.evaluation_npz,
