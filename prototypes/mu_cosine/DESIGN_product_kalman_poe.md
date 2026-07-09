@@ -370,7 +370,11 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    covariance block matrix, and all scalar channels must be passed as explicit `(n, 1)` row matrices rather than
    ambiguous 1-D arrays. Calibration splits must be node-disjoint from training data and from the final evaluation
    split.
-6. Use `product_kalman_table_evaluation.py` as the real-corpus entry point when starting from explicit CSV/TSV
+6. Use `product_kalman_split_table.py` before real-corpus runs when the table does not already have an audited split.
+   It samples held-out unit values, emits only rows whose split-unit columns stay on one side of the split, and
+   records omitted boundary rows in a manifest. This makes the later calibration/evaluation rows unit-disjoint
+   instead of relying on an ad hoc row split.
+7. Use `product_kalman_table_evaluation.py` as the real-corpus entry point when starting from explicit CSV/TSV
    calibration/evaluation rows: `--output-dir` writes a canonical bundle (`input.npz`, `input.manifest.json`,
    `scores.json`, `eval_artifacts.npz`, and `report.md`) in one auditable command. Explicit artifact paths may
    override those defaults. Under the hood, `product_kalman_table_to_npz.py` records source-table hash, split counts,
@@ -379,13 +383,13 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    shape/values; `product_kalman_evaluation.py` then fits calibration blocks on one split, scores prior /
    zero-cross-covariance / correlated Product-Kalman predictions on a separate split, and keeps
    calibration/evaluation IDs disjoint. *(Synthetic harness added; real-corpus comparison pending.)*
-7. Use `product_kalman_report.py` to render the input manifest plus score JSON into a descriptive Markdown run
+8. Use `product_kalman_report.py` to render the input manifest plus score JSON into a descriptive Markdown run
    note. The report is an audit artifact only: it records scores and provenance, but does not encode a decision
    rule or promote Product-Kalman without comparison against registered baselines.
-8. Fit empirical Product-Kalman variants on those calibration blocks, then compare against `JointPosterior` and
+9. Fit empirical Product-Kalman variants on those calibration blocks, then compare against `JointPosterior` and
    Sigma-conditioned covariance on a separate node-disjoint evaluation split; do not reuse the calibration
    residuals that set `R_ell` as the comparison set.
-9. Only after the held-out comparison, decide whether this belongs in the training objective.
+10. Only after the held-out comparison, decide whether this belongs in the training objective.
 
 ## Related local artifacts
 
@@ -407,6 +411,8 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
 - `product_kalman_table_to_npz.py` and `test_product_kalman_table_to_npz.py` — CSV/TSV-to-NPZ builder for
   evaluator input arrays with explicit split, ID, prior, measurement, and target columns, plus optional JSON input
   manifests for real-corpus provenance checks.
+- `product_kalman_split_table.py` and `test_product_kalman_split_table.py` — split-label materializer for explicit
+  Product-Kalman tables, with held-out unit sampling, strict boundary-row omission, and a split manifest.
 - `product_kalman_table_evaluation.py` and `test_product_kalman_table_evaluation.py` — one-command table-to-input-
   artifacts-to-holdout-score/report runner, with canonical `--output-dir` bundles for real-corpus Product-Kalman
   comparisons.
