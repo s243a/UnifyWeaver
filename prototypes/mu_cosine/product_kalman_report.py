@@ -86,12 +86,24 @@ def _score_rows(scores_json):
     return rows
 
 
+def _baseline_from_improvement_key(key):
+    prefix = "nll_improvement_vs_"
+    if key.startswith(prefix) and not key.startswith("nll_improvement_bootstrap_vs_"):
+        return key[len(prefix):]
+    return None
+
+
+def _baseline_from_bootstrap_key(key):
+    prefix = "nll_improvement_bootstrap_vs_"
+    return key[len(prefix):] if key.startswith(prefix) else None
+
+
 def _improvement_rows(scores_json):
     rows = []
-    for baseline_key, label in (
-        ("nll_improvement_vs_prior", "prior"),
-        ("nll_improvement_vs_independent_kalman", "independent_kalman"),
-    ):
+    for baseline_key in sorted(scores_json):
+        label = _baseline_from_improvement_key(baseline_key)
+        if label is None:
+            continue
         for candidate, gain in sorted(scores_json.get(baseline_key, {}).items()):
             rows.append([label, candidate, gain])
     return rows
@@ -99,10 +111,10 @@ def _improvement_rows(scores_json):
 
 def _bootstrap_rows(scores_json):
     rows = []
-    for baseline_key, label in (
-        ("nll_improvement_bootstrap_vs_prior", "prior"),
-        ("nll_improvement_bootstrap_vs_independent_kalman", "independent_kalman"),
-    ):
+    for baseline_key in sorted(scores_json):
+        label = _baseline_from_bootstrap_key(baseline_key)
+        if label is None:
+            continue
         for candidate, item in sorted(scores_json.get(baseline_key, {}).items()):
             rows.append([
                 label,
@@ -132,6 +144,7 @@ def _bootstrap_artifact_rows(scores_json):
         ["seed", artifact.get("seed")],
         ["confidence", artifact.get("confidence")],
         ["method", artifact.get("method")],
+        ["baselines", ", ".join(artifact.get("baselines", []))],
     ]
 
 
@@ -242,18 +255,42 @@ def validate_artifact_score_consistency(scores_json, evaluation_npz=None, atol=1
     return artifact
 
 
+def _parse_name_list(text):
+    names = [part.strip() for part in str(text).split(",") if part.strip()]
+    if not names:
+        raise ValueError("name list must contain at least one name")
+    if len(names) != len(set(names)):
+        raise ValueError(f"name list contains duplicates: {text!r}")
+    return tuple(names)
+
+
+def _normalize_baselines(baselines):
+    if baselines is None:
+        baselines = ("prior", "independent_kalman")
+    if isinstance(baselines, str):
+        return _parse_name_list(baselines)
+    names = tuple(str(name).strip() for name in baselines if str(name).strip())
+    if not names:
+        raise ValueError("baselines must contain at least one score name")
+    if len(names) != len(set(names)):
+        raise ValueError(f"baselines contains duplicates: {names!r}")
+    return names
+
+
 def add_artifact_bootstrap_intervals(
     scores_json,
     evaluation_npz=None,
     n_boot=0,
     seed=0,
     confidence=0.95,
+    baselines=("prior", "independent_kalman"),
     overwrite=False,
     validate_artifact=True,
 ):
     """Return `scores_json` enriched with post-hoc bootstrap intervals from row artifacts."""
     if not n_boot:
         return scores_json
+    baselines = _normalize_baselines(baselines)
     artifact_path = _artifact_path(scores_json, evaluation_npz=evaluation_npz)
     artifact_summary = evaluation_npz_score_summary(artifact_path)
     if validate_artifact:
@@ -265,6 +302,7 @@ def add_artifact_bootstrap_intervals(
         n_boot=n_boot,
         seed=seed,
         confidence=confidence,
+        baselines=baselines,
     ).items():
         if overwrite or key not in out:
             out[key] = value
@@ -279,6 +317,7 @@ def add_artifact_bootstrap_intervals(
             "seed": int(seed),
             "confidence": float(confidence),
             "method": "paired_row_resample",
+            "baselines": list(baselines),
         }
     return out
 
@@ -449,6 +488,11 @@ def _build_arg_parser():
     ap.add_argument("--title", default="Product-Kalman Holdout Report")
     ap.add_argument("--evaluation-npz", help="optional row-level evaluation artifact NPZ for post-hoc bootstrap intervals")
     ap.add_argument("--bootstrap-nll", type=int, default=0, help="paired bootstrap replicates for NLL gains; 0 disables")
+    ap.add_argument(
+        "--bootstrap-baselines",
+        default="prior,independent_kalman",
+        help="comma-separated score names used as post-hoc bootstrap baselines",
+    )
     ap.add_argument("--bootstrap-seed", type=int, default=0)
     ap.add_argument("--bootstrap-confidence", type=float, default=0.95)
     ap.add_argument("--overwrite-bootstrap", action="store_true", help="replace existing bootstrap sections in scores JSON")
@@ -467,6 +511,7 @@ def main(argv=None):
             n_boot=args.bootstrap_nll,
             seed=args.bootstrap_seed,
             confidence=args.bootstrap_confidence,
+            baselines=_parse_name_list(args.bootstrap_baselines),
             overwrite=args.overwrite_bootstrap,
         )
     except (OSError, ValueError) as exc:

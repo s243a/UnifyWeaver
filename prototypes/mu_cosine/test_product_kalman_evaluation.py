@@ -196,6 +196,7 @@ def test_npz_runner_and_json_cli_roundtrip():
             bootstrap_confidence=0.90,
         )
         assert data["score_order"] == ["prior", "measurement", "independent_kalman", "product_kalman"]
+        assert data["nll_baselines"] == ["prior", "independent_kalman"]
         assert data["calibration"]["state_dim"] == 1
         assert "mean_squared_mahalanobis" in data["scores"]["product_kalman"]
         assert "squared_mahalanobis_q95" in data["scores"]["product_kalman"]
@@ -223,12 +224,17 @@ def test_npz_runner_and_json_cli_roundtrip():
             "3",
             "--bootstrap-confidence",
             "0.90",
+            "--nll-baselines",
+            "prior,independent_kalman,product_kalman",
             "--indent",
             "0",
         ])
         assert rc == 0
         from_cli = json.loads(output_path.read_text())
         assert from_cli["score_order"] == data["score_order"]
+        assert from_cli["nll_baselines"] == ["prior", "independent_kalman", "product_kalman"]
+        assert "nll_improvement_vs_product_kalman" in from_cli
+        assert "nll_improvement_bootstrap_vs_product_kalman" in from_cli
         assert abs(
             from_cli["scores"]["product_kalman"]["mean_nll"]
             - data["scores"]["product_kalman"]["mean_nll"]
@@ -338,6 +344,7 @@ def test_npz_runner_scores_grouped_covariances_when_group_labels_present():
             evaluation_groups=eval_groups,
         )
         result = run_product_kalman_holdout_npz(input_path, min_group_rows=50, jitter=1e-8)
+        assert_raises(evaluation_to_json_dict, result, nll_baselines=["missing_baseline"])
         assert [grouped.score.name for grouped in result.grouped_scores] == [
             "prior_grouped",
             "measurement_grouped",
@@ -349,13 +356,20 @@ def test_npz_runner_scores_grouped_covariances_when_group_labels_present():
         assert result.score("prior_grouped").mean_nll < result.score("prior").mean_nll
         assert result.score("product_kalman_grouped").mean_nll < result.score("product_kalman").mean_nll
 
-        data = evaluation_to_json_dict(result, bootstrap_nll=20, bootstrap_seed=4)
+        data = evaluation_to_json_dict(
+            result,
+            bootstrap_nll=20,
+            bootstrap_seed=4,
+            nll_baselines=("prior", "independent_kalman", "product_kalman"),
+        )
         assert data["score_order"][-1] == "product_kalman_grouped"
         grouped = data["grouped_covariances"]["product_kalman_grouped"]
         assert grouped["min_group_rows"] == 50
         assert grouped["group_counts"] == {"tight": n_cal_per_group, "wide": n_cal_per_group}
         assert grouped["row_covariance_shape"] == [n_eval, 1, 1]
+        assert data["nll_improvement_vs_product_kalman"]["product_kalman_grouped"] > 0.0
         assert "product_kalman_grouped" in data["nll_improvement_bootstrap_vs_independent_kalman"]
+        assert "product_kalman_grouped" in data["nll_improvement_bootstrap_vs_product_kalman"]
 
         write_evaluation_npz(artifact_path, result)
         with np.load(artifact_path, allow_pickle=False) as artifact:
