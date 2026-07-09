@@ -76,3 +76,23 @@ Inputs: the committed loaders (`sigma_hop_confirmatory.py`) over the run artifac
 (multihop_score_in.tsv / multihop_resp.txt / multihop_e5.pt; sigma_hop_fresh_pairs.tsv /
 sigma_hop_fresh_responses_gpt55low.txt / sigma_hop_behavior_slice_e5.pt), `model_prod.pt`, the 100k_cats TSV
 graph and the enwiki_cats_correct scoped LMDB (root Behavior).
+
+## Which mean does "PoE" take? (user question, 2026-07-08)
+
+Two different products are in play and they take DIFFERENT means — the harness's PoE is *not* the lower estimate:
+
+- **Product of DENSITIES (Gaussian PoE = `independent_kalman` here):** multiplying Gaussian densities over the
+  same latent yields the precision-weighted **arithmetic** mean `(Λ1μ1+Λ2μ2)/(Λ1+Λ2)` — a convex combination
+  that INTERPOLATES between experts, never below the min. Semantics: fusion of noisy estimates of one quantity.
+- **Product of VALUES (`mu_lower = Π μi^wi`):** multiplying memberships themselves. Unnormalized (w=1) = strict
+  AND ≤ min; normalized (Σw=1) = weighted **geometric** mean (≤ arithmetic by AM–GM, ≥ min — conservative
+  consensus, not a strict bound). Semantics: conjunction of independent requirements — this is the lower estimate.
+
+**Bridge — it is a choice of coordinates:** density-PoE fused in μ-space → arithmetic mean; in **log-μ** space →
+**geometric** mean; in logit space → geometric mean of odds (multiplying Bayes factors). The DESIGN's log-space
+product-Kalman (`K_ell = P/(P+R)`) IS the geometric-mean fusion with learned precision weights.
+
+In this run: the fusion rule was μ-space density-PoE (arithmetic); config B's lo/hi channels were value-products
+used as features. NOT yet tested: the fusion itself in log/logit coordinates (the geometric-flavor Kalman) —
+`product_space.py` has the links; the comparison needs the change-of-variables Jacobian so NLLs stay comparable
+across coordinate systems. Candidate next rung alongside hop-conditioned V(hop).
