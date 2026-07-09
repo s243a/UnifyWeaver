@@ -414,6 +414,27 @@ A+H, suml(T,A1,R))]` → `42`. New pieces, learned from the host golden:
   then `put_structure cons/2` into the temp (write mode binds through). X
   temps start at reg 16 and live only within the build.
 
+**Comparison guards + if-then-else — LANDED.** Comparison goals (`>`, `<`,
+`>=`, `=<`, `=:=`, `=\=`, `==`, `\==`) stage A1/A2 and emit `builtin_call`
+with the comparison id. `( Cond -> Then ; Else )` compiles to the host's ITE
+shape: `try_me_else(ElseLabel)` pushes the guard CP; Cond runs; `cut_ite`
+(tag 31, soft cut) pops the guard CP on success; Then runs and
+`jump(JoinLabel)` (tag 32, label operand) skips the else; at ElseLabel a
+`trust_me` pops the CP (reached by backtracking when Cond fails, which also
+undoes Cond's bindings) and Else runs to the join. This forced codegen to
+become **PC- and label-aware**: else/join labels are allocated mid-clause
+from the same counter as clause-chain alternatives, each recorded as a
+Label-PC pair, keysorted at the end (`keysort` + `pairs_values`, both
+loadable) into the positional label→PC table. Init-set rule: Then continues
+from Cond's set; Else restarts from the pre-ITE set (backtracking undid
+Cond's register writes); after the ITE the set is the intersection of the
+branch out-sets — variables introduced inside one branch are branch-local
+(the compiler's own helpers bind head-initialized outputs in branches, which
+this covers). Verified end to end
+(`tests/test_wam_object.pl:selfhost_codegen_stage_d_guards`): max-of-two via
+ITE through the THEN branch and through the ELSE branch (both → 42), and a
+plain comparison guard in a conjunction (`X > 10` → 42).
+
 **Deliverable:** the demonstrable self-host — the compiler compiles itself,
 and `compile(SelfSource)` yields a working compiler object.
 
