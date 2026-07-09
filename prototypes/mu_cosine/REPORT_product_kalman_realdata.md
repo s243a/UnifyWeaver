@@ -147,3 +147,28 @@ linear differential or difference equation.* Sharpened, and it explains why the 
   diagnostic above certifies that upgrade for mu-space (JB 2–34 ≈ near-exact-Bayes, Mahalanobis ≈ coverage);
   in log space the same algebra would run but `P` would degrade to second-moment bookkeeping with non-Gaussian
   tails (kurtosis +56).
+
+### CORRECTION: on the interior, logit IS the more natural Gaussian home (user, 2026-07-08)
+
+*User: logit space is defined on (−∞,∞), so it might be the more natural space for a Gaussian.* The a priori
+argument is right — μ∈[0,1] can never be exactly Gaussian (truncated support); logit-normal is the only
+self-consistent family of the three — and the interior-only test VINDICATES it. The earlier "mu wins" verdict
+was driven entirely by boundary ATOMS (LLM labels emit exactly-0/quantized-boundary values, ~7% of D labels;
+the logit link blows atoms into ±logit(eps) spikes, and that kurtosis is partly a clip-eps artifact).
+
+Interior only (labels in [0.05, 0.95]; JB lower = more Gaussian):
+
+| corpus | ch | n_int | JB mu | JB logit | winner |
+|---|---|---|---|---|---|
+| exploratory | D | 233 | 10.2 | 7.7 | logit |
+| exploratory | S | 249 | 35.6 | **0.1** | **logit — textbook Gaussian** (skew +0.01, kurt +0.07) |
+| fresh | D | 233 | 6.3 | 2.6 | logit |
+| fresh | S | 245 | 4.5 | 7.3 | mu (mild) |
+
+**Refined verdict (supersedes "geometric-flavor rung retired"):** the label distribution is a MIXTURE —
+~93% continuous interior (logit-Gaussian) + ~7% boundary atoms. So: naive logit fusion = worst (atoms);
+mu-space fusion = robust compromise (what this report ran); **logit-Gaussian + boundary censoring (Tobit-style
+Kalman: treat 0/1 labels as censored observations of a latent logit-normal) = the principled candidate.** This
+also revives the geometric flavor properly dressed: interior fusion in logit space is the multiplying-Bayes-
+factors update. Next-rung list is now: (a) hop-conditioned V(hop) into the gain; (b) Tobit-logit Kalman vs
+mu-space fusion, scored in one space via the change-of-variables density.
