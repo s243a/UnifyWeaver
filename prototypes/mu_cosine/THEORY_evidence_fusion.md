@@ -208,3 +208,84 @@ metastable/adaptive layer.
 7. Error statistics must be estimated from outside the model (held-out residuals, innovations, fresh corpora) —
    and the parts of a system that CAN be precomputed (autonomous covariance) vs MUST be tracked online
    (innovations, drift) tell you where to put the model/filter boundary.
+
+---
+
+## 11. The fusion-refinement arc (2026-07-09 addendum): mixture, gates, transport, atoms
+
+*Everything below was built and measured after sections 1–10, on two corpora (250 exploratory multihop + 250
+fresh Behavior pairs), 40 descendant-disjoint splits. Reports: `REPORT_product_kalman_realdata/logit/gated/
+statlin/atoms.md`.*
+
+### 11.1 The dual-objective mixture (user) — the champion family
+The fuse-space question (§8) resolved into NOT choosing: the predictive is a two-component mixture over the SAME
+Kalman machinery in two coordinate systems — `w·p_mu + (1−w)·p_logit`, both as mu-densities via
+change-of-variables, `w` fit on calibration. A mixture over NOISE MODELS (additive vs multiplicative); the
+experts share every parameter except the geometry (one extra parameter). Beat both single-space models on both
+corpora. The MoE motif's fourth appearance and first measured win.
+
+### 11.2 Gate taxonomy — three principles, priced (user co-design)
+- The textbook MoE gate IS error weighting in a COMMON space (Gaussian responsibilities = softmax of scaled
+  negative squared errors); the user's sigmoid projection (logit posterior mean → mu space, exactly = pushforward
+  median) is what makes the errors comparable, and errors then ADD LINEARLY under convex combination.
+- Density-trained gates differ from error-trained gates by exactly the change-of-variables term (100% vs 57–66%
+  boundary complementarity — the Jacobian's credit, measured).
+- **Mean vs distribution, separated empirically:** the computed Bates–Granger weight (= scalar Kalman gain for
+  two correlated estimates; ZERO fitted params) chose w=1.00 — for POINT estimates use the mu expert alone —
+  while the density-optimal mixture sits at w≈0.4. **The mixture's entire win is uncertainty-shape value.**
+  Production rule: points from the mu expert, uncertainty from the mixture.
+- Context gates pay only where observable context predicts regime (corpus-dependent; ≤+0.035); unregularized
+  gates saturate to hard routing and fail to transfer. Constant-w stands.
+
+### 11.3 Statistical linearization (user) — the boundary treatments unified
+A boundary report is a NARROW DISTRIBUTION, not a point. The three treatments are rankings of one idea:
+de-quantization (move the point) < Jacobian weighting (zero the weight; rejected — fired at the wrong variable)
+< statistical linearization (average the slope; Stein: `L* = E[g'(x)]`; endpoints keep weight; transport
+variance handled as KNOWN per-row noise in a heteroscedastic MLE). Built: new champion on both corpora (G_sl).
+The robustness asymmetry the user predicted (logit fragile to confidently-wrong evidence — unbounded log-odds
+influence vs mu's bounded innovations) is mathematically real but the affine-calibrated graph channel is
+range-compressed below where it bites; it becomes live when a raw confident judge channel is added (Lever A).
+
+### 11.4 Atoms and the lattice — the completeness pass mostly VINDICATED the champion
+- The champion's implied atom masses were already correct (a learned atom head calibrates the rate perfectly and
+  adds nothing).
+- ALL labels are quantized (0.05 lattice), not just boundaries: under the correct BIN-MASS randomized PIT,
+  exploratory-S passes — earlier continuous-PIT KS numbers overstated miscalibration program-wide. *Diagnostic
+  lesson: test discrete data with mass-based scores; a continuous PIT clumps on the lattice no matter how good
+  the model is.*
+- **The one genuine residual defect: D-channel interior shape = label BIMODALITY vs predictive unimodality.**
+  D labels are directional-or-not; the per-row predictive's two experts share a center. The fix is a
+  relation-CLASS mixture predictive — the JointPosterior discrete class structure from the two-judge arc's
+  result #1, resurfacing. Model-side work; deferred (see 11.5).
+
+### 11.5 Bimodality validity (user question) — deferred future work, with its acceptance gate
+A claimed predictive bimodality is easy to hallucinate; each pair has ONE judge sample, so per-row bimodality is
+unverifiable — only distributional criteria count:
+1. held-out proper scoring (NLL / bin-mass PIT) must improve — invalid bimodality overfits calibration;
+2. the class posterior must CALIBRATE (predicted P(class|context) vs empirical, the atom-head test);
+3. the modes must ANCHOR to independently observable relation classes (directional vs lateral — the LLM's own
+   relation labels, the graph) rather than float free;
+4. distributional shape tests (dip / mixture-vs-unimodal LR) as supporting evidence only.
+The bimodality here is EPISTEMIC (the pair is one thing; the model can't tell which), so new evidence should
+COLLAPSE the modes — which ties it to Lever A: expected mode-collapse from a judge call IS the information value
+that should drive judge routing. Bimodal rows are where the judge is worth the most; Lever A measures where
+bimodality matters before Lever B models it.
+
+### 11.6 Ledger update (supersedes §9's "measured" list)
+- Champion predictive: **G_sl** (mu/hop Kalman ⊕ statlin logit/hop Kalman, constant w). Point estimator: mu/hop
+  expert alone. Scale calibrated (Mahal/dim ≈ 1); atom masses correct; S-shape calibrated under bin-mass PIT
+  (exploratory); D-shape defect diagnosed (bimodality) and deferred.
+- Fusion-refinement axis CLOSED (diminishing returns: +0.10 → +0.03 → +0.03 → +0.00 across rungs).
+- Next: Lever A (LLM judge as second measurement channel + information-value routing), then Lever B (amortize
+  into model heads per `DESIGN_amortized_fusion_heads.md` steps 2–5, now including the class-mixture predictive).
+
+### 11.7 Method lessons added by this arc
+8. Mean-fusion and distribution-fusion optimize different objectives and can want OPPOSITE weights — separate
+   them before tuning anything (the Bates–Granger w=1 vs density w≈0.4 result).
+9. Score discrete/quantized data as MASSES (bin-mass likelihood, randomized PIT); continuous diagnostics
+   overstate miscalibration on a lattice.
+10. When a treatment "fires at the wrong variable" (Jacobian weighting at the interior measurement instead of
+    the boundary label), the fix is usually to relocate the mechanism, not abandon it (→ statistical
+    linearization of the LABEL transport).
+11. Unregularized gates saturate to hard routing and don't transfer; regularized gates degrade gracefully to
+    the constant — always compare against the constant.
