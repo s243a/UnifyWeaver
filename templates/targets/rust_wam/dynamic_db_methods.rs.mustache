@@ -308,6 +308,28 @@
         self.dynamic_retract_attempt(key, 0, pattern, cont_pc)
     }
 
+    fn dynamic_retract_candidate(&self, pattern: &Value, clause: &Value) -> Option<Value> {
+        let pattern_functor = match pattern {
+            Value::Str(f, args) if (f == ":-" || f == ":-/2") && args.len() == 2 => Some(f),
+            _ => None,
+        };
+        match pattern_functor {
+            Some(functor) => match clause {
+                Value::Str(f, args) if (f == ":-" || f == ":-/2") && args.len() == 2 => {
+                    Some(Value::Str(functor.clone(), args.clone()))
+                }
+                fact => Some(Value::Str(
+                    functor.clone(),
+                    vec![fact.clone(), Value::Atom("true".to_string())],
+                )),
+            },
+            None => match clause {
+                Value::Str(f, args) if (f == ":-" || f == ":-/2") && args.len() == 2 => None,
+                fact => Some(fact.clone()),
+            },
+        }
+    }
+
     fn dynamic_retract_attempt(&mut self, key: String, start_idx: usize, pattern: Value, cont_pc: usize) -> bool {
         let clauses = match self.dynamic_db.get(&key) {
             Some(clauses) => clauses.clone(),
@@ -320,11 +342,11 @@
             let cp_stack = self.stack.clone();
             let mut clause_vars = std::collections::HashMap::new();
             let p = pattern.clone();
-            let head = match self.dynamic_clause_head(&clauses[idx]) {
-                Some(head) => Self::copy_term_walk(&mut self.var_counter, &mut clause_vars, &head),
+            let candidate = match self.dynamic_retract_candidate(&pattern, &clauses[idx]) {
+                Some(candidate) => Self::copy_term_walk(&mut self.var_counter, &mut clause_vars, &candidate),
                 None => continue,
             };
-            if self.unify(&p, &head) {
+            if self.unify(&p, &candidate) {
                 if let Some(bucket) = self.dynamic_db.get_mut(&key) {
                     if idx < bucket.len() { bucket.remove(idx); }
                     if bucket.is_empty() { self.dynamic_db.remove(&key); }

@@ -78,6 +78,78 @@ fn retract_removes_one_match_and_binds_pattern() {
 }
 
 #[test]
+fn retract_backtracks_through_each_matching_fact() {
+    let mut vm = WamState::new(vec![Instruction::Call("retract/1".to_string(), 1), Instruction::Proceed], HashMap::new());
+    assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("red")]));
+    assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("blue")]));
+    assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("green")]));
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("dyn", vec![ub("X")]));
+    vm.pc = 1;
+    let mut removed = Vec::new();
+    assert!(vm.run());
+    loop {
+        let x = vm.bindings.get("X").cloned().expect("X bound");
+        removed.push(vm.deref_heap(&vm.deref_var(&x)));
+        if !vm.backtrack() { break; }
+    }
+    assert_eq!(removed, vec![at("red"), at("blue"), at("green")]);
+    assert!(dyn_values(&mut vm).is_empty());
+}
+
+#[test]
+fn retract_distinguishes_fact_patterns_from_rule_patterns() {
+    let mut vm = WamState::new(vec![Instruction::Call("retract/1".to_string(), 1), Instruction::Proceed], HashMap::new());
+    assert_clause(&mut vm, "assertz/1", fact("marker", vec![at("rule")]));
+    assert_clause(
+        &mut vm,
+        "assertz/1",
+        rule(
+            fact("dyn", vec![at("rule")]),
+            fact("marker", vec![at("rule")]),
+        ),
+    );
+    assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("fact")]));
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("dyn", vec![ub("X")]));
+    vm.pc = 1;
+    assert!(vm.run());
+    assert_eq!(vm.bindings.get("X"), Some(&at("fact")));
+    assert_eq!(dyn_values(&mut vm), vec![at("rule")]);
+
+    vm.reset_query();
+    vm.code = vec![Instruction::Call("retract/1".to_string(), 1), Instruction::Proceed];
+    vm.set_reg_str(
+        "A1",
+        rule(
+            fact("dyn", vec![ub("X")]),
+            fact("marker", vec![ub("X")]),
+        ),
+    );
+    vm.pc = 1;
+    assert!(vm.run());
+    assert_eq!(vm.bindings.get("X"), Some(&at("rule")));
+    assert!(dyn_values(&mut vm).is_empty());
+
+    assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("normalized")]));
+    vm.reset_query();
+    vm.code = vec![Instruction::Call("retract/1".to_string(), 1), Instruction::Proceed];
+    vm.set_reg_str(
+        "A1",
+        rule(
+            fact("dyn", vec![ub("X")]),
+            at("true"),
+        ),
+    );
+    vm.pc = 1;
+    assert!(vm.run());
+    assert_eq!(vm.bindings.get("X"), Some(&at("normalized")));
+    assert!(dyn_values(&mut vm).is_empty());
+}
+
+#[test]
 fn asserted_rule_body_calls_dynamic_predicates() {
     let mut vm = WamState::new(vec![], HashMap::new());
     assert_clause(&mut vm, "assertz/1", fact("parent", vec![at("ann"), at("bob")]));
