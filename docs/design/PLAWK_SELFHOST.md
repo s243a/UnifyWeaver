@@ -498,6 +498,37 @@ type-check ITE condition — all → `42`.
    term vanished for later goals. All three fixed; construct mode now works
    in AOT and loaded objects alike.
 
+**THE FIXPOINT — first slice LANDED.** The loaded bootstrap compiler compiled
+the source text of **its own Stage A serializer** (the `wz_*` chain, restated
+cut-free in the accepted subset — 18 clauses, ~1.4 KB), and the
+doubly-compiled serializer then serialized the golden `ea(R):-R=42` program
+**byte-exactly**: the compiled program checksums its own output (byte sum +
+length = 2263) and matches the Stage A implementation computed in SWI. The
+compiler has compiled its own back end — the first self-application.
+Two small subset gaps closed on the way: `sum_list/2` whitelisted, and
+**var-tail list literals** (`[32|Cs]` in a call argument) supported in the
+build path (the tail variable is staged directly as the final `set_*` slot).
+
+*Runtime finding (campaign no. 8):* the 16 MiB arena was still too small —
+accumulator-style grammars (`append` onto a growing list per emitted byte)
+allocate **quadratically** in their output size, and the fixpoint compile
+segfaulted at exactly the 16 MiB boundary (a `%Value` store to the null
+`wam_arena_alloc` result, pinned by gdb). Bumped to 256 MiB (virtual; Linux
+commits lazily, so resident memory only grows with use). The honest fix — a
+chained arena that links a new block instead of returning null (blocks must
+not move; `%Value`s hold raw pointers) — is noted as deferred work, as is
+linearising the accumulator style (difference lists) in the bootstrap
+compiler itself.
+
+**Remaining toward the full fixpoint:** the serializer was the back end; the
+front/middle (the reader call, `group_clauses`, the codegen walkers) use the
+same constructs plus `keysort`/`pairs_values` (already whitelisted) — but
+compiling the *whole* cgfull source also needs bare cut restated as ITE
+throughout, the `s(At,Fn)` state pair (structures — supported), and above
+all a workable compile-time budget for the quadratic-append behavior. The
+capstone (`compile(SelfSource)` yielding a working compiler object) remains
+open, now with a demonstrated path.
+
 **Deliverable:** the demonstrable self-host — the compiler compiles itself,
 and `compile(SelfSource)` yields a working compiler object.
 

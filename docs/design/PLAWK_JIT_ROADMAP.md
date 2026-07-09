@@ -394,10 +394,14 @@ loadable along the way.
   (X-temp deferral), pairs, and the compiler's own `enc/4` shape — all → `42`;
   **builtin goals LANDED**: ~37 whitelisted builtins (term inspection, text,
   lists, type checks) as staged-args + `builtin_call`, `=/2` upgraded to
-  full-term operands, data atoms collected into the atom table.
-  The remaining Stage D campaign widens the
-  subset toward the compiler compiling its own source — the self-host fixpoint.
-  The campaign keeps surfacing and fixing latent runtime bugs — **seven fixed so
+  full-term operands, data atoms collected into the atom table; and **the
+  FIXPOINT first slice LANDED** — the loaded bootstrap compiler compiled the
+  source of its own Stage A serializer, and the doubly-compiled serializer
+  reproduced the golden `.wamo` byte stream exactly (checksum 2263 = byte sum
+  + length, matched against the Stage A implementation). The compiler has
+  compiled its own back end. The remaining campaign extends this toward
+  `compile(SelfSource)` — the full fixpoint.
+  The campaign keeps surfacing and fixing latent runtime bugs — **eight found so
   far**: a 64-register-file ceiling corrupting memory for large clauses;
   `get_structure` not comparing the functor; the choice-point saved-register
   block not widened with the register file (failed clause bodies leaked Y17+
@@ -407,7 +411,9 @@ loadable along the way.
   `foo(A,B)`); the loaded reader missing `=..`/`=\=`/`\==` operators; and
   `=../2` compose mode broken three ways (no deref of Ref-linked list
   spines, id-based atom payload used as a functor pointer, result bound to
-  the register instead of through the Ref). See
+  the register instead of through the Ref); and quadratic accumulator-append
+  allocation exhausting the 16 MiB arena (bumped to 256 MiB virtual; chained
+  arena deferred). See
   [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
 
 ## The binary-return question, specifically

@@ -2554,19 +2554,22 @@ oom:
 }
 
 ; Convenience: init arena if not already initialized, with a default
-; capacity (16 MiB). The arena is transient term-building space for
+; capacity (256 MiB, virtual -- Linux commits pages lazily, so RSS only
+; grows with actual use). The arena is transient term-building space for
 ; put_structure / =.. / the reader; it grows monotonically within a single
-; top-level call (rewound only by the graph kernels), so an allocation-heavy
-; grammar -- e.g. a compiler grammar assembling instruction and code lists
-; via append -- can need well over the old 1 MiB before its call returns.
-; wam_arena_alloc returns null past the cap and most callers do not check, so
-; exhaustion segfaults; 16 MiB gives realistic compiler workloads headroom.
+; top-level call (rewound only by the graph kernels). Accumulator-style
+; grammars (append onto a growing list per emitted byte) allocate
+; QUADRATICALLY in their output size, so a self-hosted compiler compiling a
+; ~1.5 KB source blows through the old 16 MiB. wam_arena_alloc returns null
+; past the cap and most callers do not check, so exhaustion segfaults; a
+; chained-arena (link a new block instead of returning null) is the real
+; fix, deferred -- blocks must not move, since %Values hold raw pointers.
 define void @wam_arena_ensure() {
   %buf = load i8*, i8** @wam_arena_buf
   %need_init = icmp eq i8* %buf, null
   br i1 %need_init, label %do_init, label %done
 do_init:
-  call void @wam_arena_init(i64 16777216)
+  call void @wam_arena_init(i64 268435456)
   br label %done
 done:
   ret void
