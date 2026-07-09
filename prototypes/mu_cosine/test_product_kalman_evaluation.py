@@ -70,6 +70,9 @@ def test_correlated_product_kalman_beats_zero_cross_control_on_heldout_nll():
     assert result.nll_improvement("independent_kalman", "product_kalman") > 0.12
     assert result.score("product_kalman").mse < result.score("independent_kalman").mse
     assert 0.85 < result.score("product_kalman").mahalanobis_per_dim < 1.15
+    product_score = result.score("product_kalman")
+    assert product_score.squared_mahalanobis_q50 <= product_score.squared_mahalanobis_q90
+    assert product_score.squared_mahalanobis_q90 <= product_score.squared_mahalanobis_q95
     assert result.correlated_update.mean.flags.writeable is False
     assert result.independent_update.mean.flags.writeable is False
 
@@ -143,6 +146,7 @@ def test_npz_runner_and_json_cli_roundtrip():
         assert data["score_order"] == ["prior", "measurement", "independent_kalman", "product_kalman"]
         assert data["calibration"]["state_dim"] == 1
         assert "mean_squared_mahalanobis" in data["scores"]["product_kalman"]
+        assert "squared_mahalanobis_q95" in data["scores"]["product_kalman"]
         assert 0.85 < data["scores"]["product_kalman"]["mahalanobis_per_dim"] < 1.15
         assert data["nll_improvement_vs_prior"]["product_kalman"] > 0.85
         assert data["nll_improvement_vs_independent_kalman"]["product_kalman"] > 0.12
@@ -168,6 +172,7 @@ def test_npz_runner_and_json_cli_roundtrip():
             assert int(artifact["schema_version"]) == 1
             assert artifact["score_names"].tolist() == data["score_order"]
             assert artifact["score_mahalanobis_per_dim"].shape == (4,)
+            assert artifact["score_squared_mahalanobis_q95"].shape == (4,)
             assert artifact["product_kalman_mean"].shape == result.correlated_update.mean.shape
             np.testing.assert_allclose(artifact["product_kalman_mean"], result.correlated_update.mean)
             np.testing.assert_allclose(artifact["independent_kalman_mean"], result.independent_update.mean)
@@ -193,6 +198,9 @@ def test_evaluation_artifact_arrays_are_npz_ready():
     assert arrays["score_names"].tolist() == ["prior", "measurement", "independent_kalman", "product_kalman"]
     assert arrays["score_mean_nll"].shape == (4,)
     assert arrays["score_mean_squared_mahalanobis"].shape == (4,)
+    assert arrays["score_squared_mahalanobis_q50"].shape == (4,)
+    assert arrays["score_squared_mahalanobis_q90"].shape == (4,)
+    assert arrays["score_squared_mahalanobis_q95"].shape == (4,)
     assert np.isfinite(arrays["score_mahalanobis_per_dim"]).all()
     assert arrays["product_kalman_innovation"].shape == eval_target.shape
     assert arrays["product_kalman_covariance"].shape == (1, 1)
@@ -249,6 +257,9 @@ def test_score_gaussian_predictions_validates_shapes_and_reports_mse():
     assert score.covariance_trace == 0.25
     assert abs(score.mean_squared_mahalanobis - 1.0) < 1e-12
     assert abs(score.mahalanobis_per_dim - 1.0) < 1e-12
+    assert abs(score.squared_mahalanobis_q50 - 1.0) < 1e-12
+    assert abs(score.squared_mahalanobis_q90 - 1.0) < 1e-12
+    assert abs(score.squared_mahalanobis_q95 - 1.0) < 1e-12
     assert_raises(score_gaussian_predictions, "bad", target[:, 0], mean, [[1.0]])
     assert_raises(score_gaussian_predictions, "bad", target, mean, [[1.0, 0.0]])
 
