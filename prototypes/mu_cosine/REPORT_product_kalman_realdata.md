@@ -96,3 +96,31 @@ In this run: the fusion rule was μ-space density-PoE (arithmetic); config B's l
 used as features. NOT yet tested: the fusion itself in log/logit coordinates (the geometric-flavor Kalman) —
 `product_space.py` has the links; the comparison needs the change-of-variables Jacobian so NLLs stay comparable
 across coordinate systems. Candidate next rung alongside hop-conditioned V(hop).
+
+### Which space are the errors actually Gaussian in? (user refinement + measurement, 2026-07-08)
+
+*User: it's only a coordinate change if the error statistics are defined in a different coordinate system than
+the fuse space — and the Kalman filter runs in any of these spaces.* Both right: exact Bayes is
+reparameterization-invariant, the GAUSSIAN ASSUMPTION is not; a Gaussian in mu is not Gaussian in log-mu. So the
+fuse-space choice = where you assert the noise is Gaussian (mu = additive noise, log = multiplicative, logit =
+noise on odds) — a modeling decision, and empirically decidable: fuse where the residuals ARE most Gaussian.
+
+Measured (affine mean model per space; Jarque–Bera, lower = more Gaussian):
+
+| corpus | space | D skew/kurt/JB | S skew/kurt/JB |
+|---|---|---|---|
+| exploratory | **mu** | **−0.3 / −0.7 / 10** | +0.8 / +0.8 / 34 |
+| exploratory | log | −6.5 / +56 / 34448 | −0.6 / +0.7 / 21 |
+| exploratory | logit | −3.2 / +21 / 4905 | −0.1 / +0.4 / **2** |
+| fresh | **mu** | **+0.2 / −0.6 / 6** | **+0.1 / −0.4 / 2** |
+| fresh | log | −4.7 / +26 / 8208 | −2.2 / +8.2 / 915 |
+| fresh | logit | −3.1 / +15 / 2663 | −1.4 / +4.2 / 261 |
+
+**Verdict: the errors are approximately ADDITIVE — mu-space is the right fuse space for this data** (JB 2–34 vs
+10^2–10^4 elsewhere); the arithmetic fusion above was correctly placed, and a geometric-flavor (log-space) Kalman
+would spend its Gaussianity where it is most violated. Mechanism: fuzzy labels pile up AT the 0/1 boundaries and
+the log/logit links blow those into extreme tails (1/mu, 1/(mu(1−mu)) Jacobians). Nuances: boundary pile-up is
+itself non-Gaussian in ANY unbounded space (mu just keeps it finite); and exploratory-S is mildly better in logit
+(JB 2 vs 34) — the best space can be per-channel/per-corpus, consistent with the corpus-specificity theme. This
+retires the "geometric-flavor Kalman" rung for this data; the space question is settled empirically, not by
+convention.
