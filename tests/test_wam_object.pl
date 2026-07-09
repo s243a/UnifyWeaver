@@ -939,6 +939,23 @@ wza_serialize(EI, NC, LI, Atoms, Fs, PCs, Is, Out) :-
 % and append/3 in construct mode with a partial second argument.
 fixpoint_serializer_source('[(main0(R) :- serz(Cs), sum_list(Cs, S), length(Cs, L), R is S + L), (serz(Out) :- atom_codes(''ea/1'', NC), wzs(0, NC, 0, 0, 0, [0], [enc(0,42,65536,0), enc(20,0,0,0)], Out)), (wzi(N, A0, A1) :- number_codes(N, Cs), append(Cs, [10|A1], A0)), (wza(X, A0, A1) :- atom_codes(X, Cs), append(Cs, [10|A1], A0)), (wzn(Cs, A0, A1) :- length(Cs, L), number_codes(L, LC), append(LC, [32|Mid], A0), append(Cs, [10|A1], Mid)), (wzsi(N, A0, A1) :- number_codes(N, Cs), append([32|Cs], A1, A0)), (wzs(EI, NC, LI, NA, NF, PCs, Is, Out) :- wzh(EI, NC, LI, NA, NF, Out, H), wzb(PCs, Is, H, [])), (wzh(EI, NC, LI, NA, NF, A0, Out) :- wza(''WAMO'', A0, A1), wzi(2, A1, A2), wzi(EI, A2, A3), wzi(1, A3, A4), wzh2(NC, LI, NA, NF, A4, Out)), (wzh2(NC, LI, NA, NF, A0, Out) :- wzn(NC, A0, A1), wzi(LI, A1, A2), wzi(NA, A2, A3), wzi(NF, A3, Out)), (wzb(PCs, Is, A0, Out) :- wzp(PCs, A0, A1), wzc(Is, A1, A2), wzi(0, A2, Out)), (wzp(PCs, A0, A2) :- length(PCs, NL), wzi(NL, A0, A1), wzpr(PCs, A1, A2)), wzpr([], A, A), (wzpr([P|Ps], A0, A2) :- wzi(P, A0, A1), wzpr(Ps, A1, A2)), (wzc(Is, A0, A2) :- length(Is, NC2), wzi(NC2, A0, A1), wzcr(Is, A1, A2)), wzcr([], A, A), (wzcr([enc(T,O1,O2,Rl)|Is], A0, A2) :- wzr(T, O1, O2, Rl, A0, A1), wzcr(Is, A1, A2)), (wzr(T, O1, O2, Rl, A0, A5) :- number_codes(T, Tc), append(Tc, A1, A0), wzsi(O1, A1, A2), wzsi(O2, A2, A3), wzsi(Rl, A3, A4), A4 = [10|A5])]').
 
+% The GEN-3 source: a mini-COMPILER (not just a serializer) in the accepted
+% subset. Where the serializer source above starts from a hard-coded
+% instruction list, cmp2/2 starts from SOURCE TEXT: it runs the runtime
+% reader as a compiled goal (read_term_from_atom/2, builtin id 174),
+% decomposes the clause with =../2 (avoiding a (H :- B) pattern literal --
+% control functors are excluded from the data tables by design), makes a
+% DISPATCHING codegen decision -- ( integer(V) -> int get_constant ; atom
+% get_constant with an ATOM TABLE row emitted from the compiled program,
+% reloc class 1 ) -- assembles the entry name codes ("<pred>/1"), and
+% serializes with the same difference-list wz chain (wzs here takes the
+% atom LIST and emits NA + its rows via wzat). Three generations: the
+% AOT-compiled cgfull (gen 1) compiles THIS source into gen 2; gen 2
+% compiles TWO golden programs (quoted atoms below, which must survive
+% collection into the atom table, relocation, and re-parsing by the
+% loaded reader) into exactly the bytes the Stage A serializer yields.
+fixpoint_compiler_source('[(main0(R) :- cmp2(''ea(R2) :- R2 = 42'', Cs1), cmp2(''eb(R2) :- R2 = foo'', Cs2), sum_list(Cs1, S1), length(Cs1, L1), sum_list(Cs2, S2), length(Cs2, L2), T1 is S1 + L1, T2 is S2 + L2, R is T1 + T2), (cmp2(Src, Out) :- read_term_from_atom(Src, C), C =.. [_, H, B], functor(H, P, 1), B =.. [_, _, V], atom_codes(P, PC), append(PC, [47, 49], NC), (integer(V) -> As = [], Is1 = [enc(0, V, 65536, 0)] ; As = [V], Is1 = [enc(0, 0, 0, 1)]), append(Is1, [enc(20, 0, 0, 0)], Is), wzs(0, NC, 0, As, [0], Is, Out)), (wzi(N, A0, A1) :- number_codes(N, Cs), append(Cs, [10|A1], A0)), (wza(X, A0, A1) :- atom_codes(X, Cs), append(Cs, [10|A1], A0)), (wzn(Cs, A0, A1) :- length(Cs, L), number_codes(L, LC), append(LC, [32|Mid], A0), append(Cs, [10|A1], Mid)), (wzsi(N, A0, A1) :- number_codes(N, Cs), append([32|Cs], A1, A0)), (wzs(EI, NC, LI, As, PCs, Is, Out) :- wzh(EI, NC, LI, Out, A6), length(As, NA), wzi(NA, A6, A7), wzat(As, A7, A8), wzi(0, A8, A9), wzp(PCs, A9, A10), wzc(Is, A10, A11), wzi(0, A11, [])), (wzh(EI, NC, LI, A0, Out) :- wza(''WAMO'', A0, A1), wzi(2, A1, A2), wzi(EI, A2, A3), wzi(1, A3, A4), wzn(NC, A4, A5), wzi(LI, A5, Out)), wzat([], A, A), (wzat([X|Xs], A0, A2) :- atom_codes(X, Cs), wzn(Cs, A0, A1), wzat(Xs, A1, A2)), (wzp(PCs, A0, A2) :- length(PCs, NL), wzi(NL, A0, A1), wzpr(PCs, A1, A2)), wzpr([], A, A), (wzpr([P|Ps], A0, A2) :- wzi(P, A0, A1), wzpr(Ps, A1, A2)), (wzc(Is, A0, A2) :- length(Is, NC2), wzi(NC2, A0, A1), wzcr(Is, A1, A2)), wzcr([], A, A), (wzcr([enc(T,O1,O2,Rl)|Is], A0, A2) :- wzr(T, O1, O2, Rl, A0, A1), wzcr(Is, A1, A2)), (wzr(T, O1, O2, Rl, A0, A5) :- number_codes(T, Tc), append(Tc, A1, A0), wzsi(O1, A1, A2), wzsi(O2, A2, A3), wzsi(Rl, A3, A4), A4 = [10|A5])]').
+
 % Register-file ceiling regression: manyperm/1 has 20 variables all live
 % across the mp_barrier call, so the compiler assigns them Y1..Y20. Before
 % the register file was enlarged from [64 x %Value] to [128 x %Value], Y17+
@@ -1859,6 +1876,41 @@ test(selfhost_codegen_stage_d_fixpoint, [condition(clang_available)]) :-
     format(string(Expected), "~w\n", [ExpectedN]),
     fixpoint_serializer_source(Source),
     directory_file_path(Dir, 'cgfp_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, Source), close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == Expected),
+    !.
+
+% GEN 3: the loaded compiler compiles a COMPILER, and the doubly-compiled
+% compiler compiles TWO golden programs byte-exactly. gen 1 = AOT cgfull;
+% gen 2 = cmp2 (reader + =.. decomposition + a dispatching ITE codegen
+% decision + atom-table emission + wz chain), compiled by gen 1 inside the
+% eval host; gen 3 = gen 2 run on 'ea(R2) :- R2 = 42' (int constant, no
+% tables) and 'eb(R2) :- R2 = foo' (atom constant, one atom-table row,
+% reloc class 1). The combined byte checksum must equal what the Stage A
+% serializers yield in-process (wamoserz for ea; wza_serialize for eb).
+test(selfhost_codegen_stage_d_gen3, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([user:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    wamoserz(x, W), atom_codes(W, WCs),
+    sum_list(WCs, WSum), length(WCs, WLen),
+    atom_codes('eb/1', EbName),
+    wza_serialize(0, EbName, 0, [foo], [], [0],
+        [enc(0,0,0,1), enc(20,0,0,0)], W2Cs),
+    sum_list(W2Cs, W2Sum), length(W2Cs, W2Len),
+    ExpectedN is WSum + WLen + W2Sum + W2Len,
+    format(string(Expected), "~w\n", [ExpectedN]),
+    fixpoint_compiler_source(Source),
+    directory_file_path(Dir, 'cgc2_src.txt', SrcPath),
     setup_call_cleanup(open(SrcPath, write, S0),
         write(S0, Source), close(S0)),
     process_create(Host, [CompWamo, SrcPath],

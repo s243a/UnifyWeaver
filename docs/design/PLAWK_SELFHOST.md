@@ -584,14 +584,45 @@ var-bound through `wam_bind_reg`; the append seed uses the keep-var
 deref. Regression test `get_value_var_var_and_append_var_seed` drives
 both paths through a loaded object.
 
-**Remaining toward the full fixpoint:** the serializer was the back end; the
-front/middle (the reader call, `group_clauses`, the codegen walkers) use the
-same constructs plus `keysort`/`pairs_values` (already whitelisted) — but
-compiling the *whole* cgfull source also needs bare cut restated as ITE
-throughout and the `s(At,Fn)` state pair (structures — supported). The
-compile budget — both memory (chained arena) and time (difference lists) —
-is solved. The capstone (`compile(SelfSource)` yielding a working compiler
-object) remains open, now with a demonstrated path.
+**GEN 3 LANDED — the compiler compiles a compiler.** The next slice after
+the serializer: the loaded `cgfull` (gen 1) compiled a mini-COMPILER
+(gen 2, `fixpoint_compiler_source/1`), and the doubly-compiled compiler
+compiled TWO golden programs byte-exactly (combined checksum 4676,
+verified against the Stage A serializers computed in SWI). Where the
+serializer slice started from a hard-coded instruction list, gen 2 starts
+from **source text**: it runs the runtime reader as a compiled goal
+(`read_term_from_atom/2`), decomposes the clause with `=../2`, makes a
+**dispatching** codegen decision — `( integer(V) -> ` int `get_constant`
+`; ` atom `get_constant` with an **atom-table row emitted from the
+compiled program** (reloc class 1) `)` — assembles the entry-name codes,
+and serializes with the difference-list wz chain. Front-end ground proven
+for the capstone: the embedded program sources are quoted atoms with
+spaces and operators (`'ea(R2) :- R2 = 42'`) that survive collection into
+gen 2's atom table, relocation at load, and re-parsing by the loaded
+reader — two compile generations deep. One representational constraint
+surfaced: control functors (`:-`, `,`, …) are excluded from the data
+tables by design, so a compiler in the subset decomposes clauses with
+`=../2` instead of matching a `(H :- B)` pattern literal.
+
+*Diagnosability note (the round's real lesson):* the first attempt wrote
+`R is S1 + L1 + S2 + L2` in gen 2 — a NESTED arithmetic expression, the
+known deferred gap. In SWI that fails cleanly; **loaded, the codegen
+failure exploded into catastrophic backtracking** through the compile's
+stale choice points (loaded objects run unindexed, cut-free clause
+chains) — a silent multi-minute hang, not an error. Flattening the
+expression (`T1 is S1 + L1, T2 is S2 + L2, R is T1 + T2`) routes around
+it. The nested-arithmetic lift and a compile-failure diagnostic (fail
+fast instead of backtracking into the walkers) are both good next
+increments.
+
+**Remaining toward the full fixpoint:** the serializer and a source-to-
+object mini-compiler are now self-compiled; the full cgfull front/middle
+(`group_clauses`, `collect_tables`, the codegen walkers) additionally
+needs bare cut restated as ITE throughout and the `s(At,Fn)` state pair
+(structures — supported). The compile budget — both memory (chained
+arena) and time (difference lists) — is solved. The capstone
+(`compile(SelfSource)` yielding a working compiler object) remains open,
+with the front end now demonstrated end to end.
 
 **Deliverable:** the demonstrable self-host — the compiler compiles itself,
 and `compile(SelfSource)` yields a working compiler object.
