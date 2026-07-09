@@ -81,6 +81,7 @@ def make_artifacts(tmp, bootstrap_nll=50):
         input_manifest=input_manifest,
         output_json=scores_json,
         output_npz=eval_npz,
+        nll_baselines=["prior", "independent_kalman", "product_kalman"],
         jitter=1e-8,
         **kwargs,
     )
@@ -130,6 +131,7 @@ def test_markdown_report_records_scores_and_guardrails():
         assert "mean_sq_mahalanobis" in report
         assert "sq_mahalanobis_q95" in report
         assert "| prior | product_kalman |" in report
+        assert "| product_kalman | independent_kalman |" in report
         assert "## NLL Improvement Bootstrap Intervals" in report
         assert "observed_gain" in report
         assert "paired row-resampling" in report
@@ -174,6 +176,7 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
             n_boot=50,
             seed=7,
             confidence=0.90,
+            baselines=("prior", "independent_kalman", "product_kalman"),
         )
         artifact_summary = validate_artifact_score_consistency(scores, evaluation_npz=eval_npz)
         assert artifact_summary["score_order"] == scores["score_order"]
@@ -182,6 +185,7 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
             n_boot=50,
             seed=7,
             confidence=0.90,
+            baselines=("prior", "independent_kalman", "product_kalman"),
         )
         assert "nll_improvement_bootstrap_vs_prior" in recorded_path_enriched
         artifact_meta = enriched["bootstrap_artifact"]
@@ -191,6 +195,8 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
         assert artifact_meta["score_order"] == scores["score_order"]
         assert artifact_meta["n_boot"] == 50
         assert artifact_meta["method"] == "paired_row_resample"
+        assert artifact_meta["baselines"] == ["prior", "independent_kalman", "product_kalman"]
+        assert "nll_improvement_bootstrap_vs_product_kalman" in enriched
 
         bad_order = dict(scores)
         bad_order["score_order"] = list(reversed(scores["score_order"]))
@@ -217,6 +223,8 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
             "7",
             "--bootstrap-confidence",
             "0.90",
+            "--bootstrap-baselines",
+            "prior,independent_kalman,product_kalman",
             "--output-md",
             str(output_md),
             "--output-json",
@@ -228,8 +236,10 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
         assert "## Bootstrap Artifact" in text
         assert "evaluation_npz_sha256" in text
         assert "| independent_kalman | product_kalman |" in text
+        assert "| product_kalman | independent_kalman |" in text
         enriched_json = json.loads(output_json.read_text())
         assert enriched_json["nll_improvement_bootstrap_vs_independent_kalman"]["product_kalman"] == boot
+        assert "nll_improvement_bootstrap_vs_product_kalman" in enriched_json
         assert enriched_json["bootstrap_artifact"] == artifact_meta
 
 
