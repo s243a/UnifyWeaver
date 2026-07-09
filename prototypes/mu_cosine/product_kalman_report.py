@@ -74,6 +74,28 @@ def _improvement_rows(scores_json):
     return rows
 
 
+def _bootstrap_rows(scores_json):
+    rows = []
+    for baseline_key, label in (
+        ("nll_improvement_bootstrap_vs_prior", "prior"),
+        ("nll_improvement_bootstrap_vs_independent_kalman", "independent_kalman"),
+    ):
+        for candidate, item in sorted(scores_json.get(baseline_key, {}).items()):
+            rows.append([
+                label,
+                candidate,
+                item.get("observed_mean_gain"),
+                item.get("bootstrap_mean_gain"),
+                item.get("ci_low"),
+                item.get("ci_high"),
+                item.get("confidence"),
+                item.get("n_boot"),
+                item.get("seed"),
+                item.get("n"),
+            ])
+    return rows
+
+
 def _input_rows(scores_json, manifest):
     inputs = scores_json.get("inputs", {})
     rows = [
@@ -196,6 +218,7 @@ def build_product_kalman_markdown_report(
             _markdown_table(["item", "value"], _split_materialization_rows(split_manifest)),
             "",
         ])
+    bootstrap_rows = _bootstrap_rows(scores_json)
     lines.extend([
         "## Scores",
         "",
@@ -219,6 +242,29 @@ def build_product_kalman_markdown_report(
         "",
         _markdown_table(["baseline", "candidate", "mean_nll_gain"], _improvement_rows(scores_json)),
         "",
+    ])
+    if bootstrap_rows:
+        lines.extend([
+            "## NLL Improvement Bootstrap Intervals",
+            "",
+            _markdown_table(
+                [
+                    "baseline",
+                    "candidate",
+                    "observed_gain",
+                    "bootstrap_mean",
+                    "ci_low",
+                    "ci_high",
+                    "confidence",
+                    "n_boot",
+                    "seed",
+                    "n",
+                ],
+                bootstrap_rows,
+            ),
+            "",
+        ])
+    lines.extend([
         "## Calibration Settings",
         "",
         _markdown_table(["item", "value"], _calibration_rows(scores_json)),
@@ -227,6 +273,7 @@ def build_product_kalman_markdown_report(
         "",
         "- Positive NLL gain means the candidate had lower held-out mean NLL than the named baseline.",
         "- For a well-scaled d-dimensional Gaussian prediction, mean squared Mahalanobis should be near d; the per-dimension value should be near 1, with tail quantiles read as empirical diagnostics rather than a decision rule.",
+        "- Bootstrap intervals, when present, are paired row-resampling diagnostics for NLL gains; they are not a preregistered decision rule.",
         "- Treat this as a held-out comparison artifact, not as a training-objective decision.",
         "- Product-Kalman should be compared against the registered joint-posterior and Sigma-conditioned baselines before promotion.",
         "- Calibration rows and evaluation rows must remain disjoint; any ID overlap or duplicate count above zero should block interpretation.",

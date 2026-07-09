@@ -44,6 +44,7 @@ __all__ = [
     "evaluate_product_kalman_holdout",
     "evaluation_artifact_arrays",
     "evaluation_to_json_dict",
+    "paired_bootstrap_nll_improvement",
     "run_product_kalman_holdout_npz",
     "score_gaussian_prediction_vectors",
     "score_gaussian_predictions",
@@ -249,6 +250,58 @@ class ProductKalmanHoldoutEvaluation:
     def nll_improvement(self, baseline, candidate):
         """Positive means `candidate` has lower mean NLL than `baseline`."""
         return self.score(baseline).mean_nll - self.score(candidate).mean_nll
+
+
+def _bootstrap_settings(n_boot, seed, confidence):
+    if isinstance(n_boot, bool) or not isinstance(n_boot, (int, np.integer)):
+        raise ValueError("n_boot must be a nonnegative integer")
+    n_boot = int(n_boot)
+    if n_boot < 0:
+        raise ValueError("n_boot must be nonnegative")
+    if isinstance(seed, bool) or not isinstance(seed, (int, np.integer)):
+        raise ValueError("seed must be an integer")
+    seed = int(seed)
+    confidence = float(confidence)
+    if not 0.0 < confidence < 1.0:
+        raise ValueError("confidence must be in (0, 1)")
+    return n_boot, seed, confidence
+
+
+def paired_bootstrap_nll_improvement(result, baseline, candidate, n_boot=1000, seed=0, confidence=0.95):
+    """Paired bootstrap CI for mean NLL gain, `baseline - candidate`.
+
+    Rows are resampled with replacement from the shared evaluation split, preserving
+    the paired comparison between two prediction families. Positive gain means the
+    candidate has lower held-out NLL than the baseline.
+    """
+    n_boot, seed, confidence = _bootstrap_settings(n_boot, seed, confidence)
+    if n_boot <= 0:
+        raise ValueError("n_boot must be positive for a bootstrap interval")
+    baseline_vec = result.score_vector(baseline)
+    candidate_vec = result.score_vector(candidate)
+    if baseline_vec.n != candidate_vec.n:
+        raise ValueError("baseline and candidate row-score vectors must have the same length")
+    diff = baseline_vec.nll - candidate_vec.nll
+    rng = np.random.default_rng(seed)
+    boot = np.empty(n_boot, dtype=float)
+    for i in range(n_boot):
+        idx = rng.integers(0, diff.size, size=diff.size)
+        boot[i] = float(np.mean(diff[idx]))
+    alpha = (1.0 - confidence) / 2.0
+    ci_low, ci_high = [float(x) for x in np.quantile(boot, [alpha, 1.0 - alpha])]
+    return {
+        "baseline": str(baseline),
+        "candidate": str(candidate),
+        "observed_mean_gain": float(np.mean(diff)),
+        "bootstrap_mean_gain": float(np.mean(boot)),
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+        "confidence": confidence,
+        "n_boot": n_boot,
+        "seed": seed,
+        "n": int(diff.size),
+        "method": "paired_row_resample",
+    }
 
 
 def score_gaussian_prediction_vectors(name, target_state, mean, covariance, jitter=1e-9):
@@ -503,8 +556,28 @@ def _score_to_json_dict(score):
     }
 
 
-def evaluation_to_json_dict(result):
+def _bootstrap_improvement_map(result, baseline, n_boot, seed, confidence):
+    return {
+        score.name: paired_bootstrap_nll_improvement(
+            result,
+            baseline,
+            score.name,
+            n_boot=n_boot,
+            seed=seed,
+            confidence=confidence,
+        )
+        for score in result.scores
+        if score.name != baseline
+    }
+
+
+def evaluation_to_json_dict(result, bootstrap_nll=0, bootstrap_seed=0, bootstrap_confidence=0.95):
     """Return a JSON-serializable summary for a holdout evaluation result."""
+    bootstrap_nll, bootstrap_seed, bootstrap_confidence = _bootstrap_settings(
+        bootstrap_nll,
+        bootstrap_seed,
+        bootstrap_confidence,
+    )
     scores = {score.name: _score_to_json_dict(score) for score in result.scores}
     prior = result.score("prior").mean_nll
     improvements = {name: prior - score["mean_nll"] for name, score in scores.items() if name != "prior"}
@@ -532,6 +605,22 @@ def evaluation_to_json_dict(result):
             for name, score in scores.items()
             if name != "independent_kalman"
         }
+    if bootstrap_nll:
+        out["nll_improvement_bootstrap_vs_prior"] = _bootstrap_improvement_map(
+            result,
+            "prior",
+            bootstrap_nll,
+            bootstrap_seed,
+            bootstrap_confidence,
+        )
+        if "independent_kalman" in scores:
+            out["nll_improvement_bootstrap_vs_independent_kalman"] = _bootstrap_improvement_map(
+                result,
+                "independent_kalman",
+                bootstrap_nll,
+                bootstrap_seed,
+                bootstrap_confidence,
+            )
     return out
 
 
@@ -607,6 +696,9 @@ def _build_arg_parser():
     ap.add_argument("--jitter", type=float, default=1e-9)
     ap.add_argument("--ddof", type=int, default=1)
     ap.add_argument("--shrinkage-target", default="diagonal", choices=("diagonal", "scaled_identity"))
+    ap.add_argument("--bootstrap-nll", type=int, default=0, help="paired bootstrap replicates for NLL gains; 0 disables")
+    ap.add_argument("--bootstrap-seed", type=int, default=0)
+    ap.add_argument("--bootstrap-confidence", type=float, default=0.95)
     ap.add_argument("--indent", type=int, default=2, help="JSON indentation; use 0 for compact output")
     return ap
 
@@ -633,7 +725,15 @@ def main(argv=None):
         )
     except ValueError as exc:
         ap.error(str(exc))
-    data = evaluation_to_json_dict(result)
+    try:
+        data = evaluation_to_json_dict(
+            result,
+            bootstrap_nll=args.bootstrap_nll,
+            bootstrap_seed=args.bootstrap_seed,
+            bootstrap_confidence=args.bootstrap_confidence,
+        )
+    except ValueError as exc:
+        ap.error(str(exc))
     indent = None if args.indent == 0 else args.indent
     text = json.dumps(data, indent=indent, sort_keys=True) + "\n"
     if args.output_json:

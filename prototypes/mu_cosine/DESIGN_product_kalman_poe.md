@@ -330,7 +330,7 @@ Treat this as a modeling hypothesis, not a paper claim. Compare on held-out node
 
 Report:
 
-- held-out log loss / NLL;
+- held-out log loss / NLL, with paired row-resampling intervals when row-score artifacts are available;
 - predicted-error scale diagnostics such as mean squared Mahalanobis, Mahalanobis-per-dimension, and empirical
   squared-Mahalanobis tail quantiles;
 - ECE with stated bins;
@@ -385,8 +385,9 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    overlap/duplicate counts, and `H`
    shape/values; `product_kalman_evaluation.py` then fits calibration blocks on one split, scores prior /
    zero-cross-covariance / correlated Product-Kalman predictions on a separate split, records aggregate NLL/MSE,
-   Mahalanobis calibration-scale/tail diagnostics, and row-level score vectors for bootstrap or plot diagnostics, and
-   keeps calibration/evaluation IDs disjoint. *(Synthetic harness added; real-corpus comparison pending.)*
+   Mahalanobis calibration-scale/tail diagnostics, row-level score vectors, and optional paired bootstrap intervals
+   for NLL gains, and keeps calibration/evaluation IDs disjoint. *(Synthetic harness added; real-corpus comparison
+   pending.)*
 8. Use `product_kalman_report.py` to render the input manifest, optional split manifest, and score JSON into a
    descriptive Markdown run note. The report is an audit artifact only: it records scores and provenance, but does
    not encode a decision rule or promote Product-Kalman without comparison against registered baselines.

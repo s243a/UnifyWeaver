@@ -62,6 +62,9 @@ def make_artifacts(tmp):
         output_json=scores_json,
         output_npz=eval_npz,
         jitter=1e-8,
+        bootstrap_nll=50,
+        bootstrap_seed=7,
+        bootstrap_confidence=0.90,
     )
     return input_manifest, scores_json
 
@@ -108,6 +111,9 @@ def test_markdown_report_records_scores_and_guardrails():
         assert "mean_sq_mahalanobis" in report
         assert "sq_mahalanobis_q95" in report
         assert "| prior | product_kalman |" in report
+        assert "## NLL Improvement Bootstrap Intervals" in report
+        assert "observed_gain" in report
+        assert "paired row-resampling" in report
         assert "| calibration_rows | 80 |" in report
         assert "| evaluation_rows | 40 |" in report
         assert "| ids_disjoint_and_unique | True |" in report
@@ -162,6 +168,7 @@ def test_markdown_report_cli_writes_file():
         assert "mahalanobis_per_dim" in text
         assert "sq_mahalanobis_q95" in text
         assert "## NLL Improvements" in text
+        assert "## NLL Improvement Bootstrap Intervals" in text
         assert "## Split Materialization" in text
         assert "source_table_sha256" in text
 

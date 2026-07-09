@@ -18,6 +18,7 @@ from product_kalman_evaluation import (
     evaluation_artifact_arrays,
     evaluation_to_json_dict,
     main,
+    paired_bootstrap_nll_improvement,
     run_product_kalman_holdout_npz,
     score_gaussian_prediction_vectors,
     score_gaussian_predictions,
@@ -80,6 +81,19 @@ def test_correlated_product_kalman_beats_zero_cross_control_on_heldout_nll():
     assert product_vectors.nll.flags.writeable is False
     assert result.correlated_update.mean.flags.writeable is False
     assert result.independent_update.mean.flags.writeable is False
+    boot = paired_bootstrap_nll_improvement(
+        result,
+        "independent_kalman",
+        "product_kalman",
+        n_boot=200,
+        seed=11,
+        confidence=0.90,
+    )
+    observed_gain = result.nll_improvement("independent_kalman", "product_kalman")
+    assert abs(boot["observed_mean_gain"] - observed_gain) < 1e-12
+    assert boot["ci_low"] < boot["observed_mean_gain"] < boot["ci_high"]
+    assert boot["method"] == "paired_row_resample"
+    assert boot["confidence"] == 0.90
 
 
 def test_split_ids_are_checked_before_scoring():
@@ -147,7 +161,12 @@ def test_npz_runner_and_json_cli_roundtrip():
         artifact_path = Path(tmp) / "artifacts.npz"
         write_identity_npz(input_path)
         result = run_product_kalman_holdout_npz(input_path)
-        data = evaluation_to_json_dict(result)
+        data = evaluation_to_json_dict(
+            result,
+            bootstrap_nll=200,
+            bootstrap_seed=3,
+            bootstrap_confidence=0.90,
+        )
         assert data["score_order"] == ["prior", "measurement", "independent_kalman", "product_kalman"]
         assert data["calibration"]["state_dim"] == 1
         assert "mean_squared_mahalanobis" in data["scores"]["product_kalman"]
@@ -155,6 +174,14 @@ def test_npz_runner_and_json_cli_roundtrip():
         assert 0.85 < data["scores"]["product_kalman"]["mahalanobis_per_dim"] < 1.15
         assert data["nll_improvement_vs_prior"]["product_kalman"] > 0.85
         assert data["nll_improvement_vs_independent_kalman"]["product_kalman"] > 0.12
+        boot = data["nll_improvement_bootstrap_vs_independent_kalman"]["product_kalman"]
+        assert boot["n_boot"] == 200
+        assert boot["seed"] == 3
+        assert boot["confidence"] == 0.90
+        assert abs(
+            boot["observed_mean_gain"]
+            - data["nll_improvement_vs_independent_kalman"]["product_kalman"]
+        ) < 1e-12
 
         rc = main([
             str(input_path),
@@ -162,6 +189,12 @@ def test_npz_runner_and_json_cli_roundtrip():
             str(output_path),
             "--output-npz",
             str(artifact_path),
+            "--bootstrap-nll",
+            "200",
+            "--bootstrap-seed",
+            "3",
+            "--bootstrap-confidence",
+            "0.90",
             "--indent",
             "0",
         ])
@@ -172,6 +205,7 @@ def test_npz_runner_and_json_cli_roundtrip():
             from_cli["scores"]["product_kalman"]["mean_nll"]
             - data["scores"]["product_kalman"]["mean_nll"]
         ) < 1e-12
+        assert from_cli["nll_improvement_bootstrap_vs_independent_kalman"]["product_kalman"] == boot
 
         with np.load(artifact_path, allow_pickle=False) as artifact:
             assert int(artifact["schema_version"]) == 1
