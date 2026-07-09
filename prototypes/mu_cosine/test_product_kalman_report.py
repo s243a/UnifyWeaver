@@ -116,7 +116,6 @@ def split_manifest_fixture():
         },
     }
 
-
 def test_markdown_report_records_scores_and_guardrails():
     with tempfile.TemporaryDirectory() as tmp:
         input_manifest, scores_json, _ = make_artifacts(tmp)
@@ -142,6 +141,27 @@ def test_markdown_report_records_scores_and_guardrails():
         assert "does not encode a decision rule" in report
         assert "should be compared against the registered joint-posterior" in report
 
+def test_markdown_report_records_pit_diagnostics_when_present():
+    with tempfile.TemporaryDirectory() as tmp:
+        input_manifest, scores_json, _ = make_artifacts(tmp)
+        scores = json.loads(scores_json.read_text())
+        manifest = json.loads(input_manifest.read_text())
+        scores["pit_diagnostics"] = {
+            "mix": {
+                "n": 40,
+                "dimension": 2,
+                "channel_names": ["D", "S"],
+                "channel_ks": [0.08, 0.12],
+                "method": "marginal_pit_uniform_ks",
+            }
+        }
+        report = build_product_kalman_markdown_report(scores, manifest)
+
+        assert "## PIT Diagnostics" in report
+        assert "| mix | D | 0.08 | 40 | 2 | marginal_pit_uniform_ks |" in report
+        assert "| mix | S | 0.12 | 40 | 2 | marginal_pit_uniform_ks |" in report
+        assert "PIT diagnostics, when present" in report
+
 def test_markdown_report_records_split_materialization_manifest():
     with tempfile.TemporaryDirectory() as tmp:
         input_manifest, scores_json, _ = make_artifacts(tmp)
@@ -163,7 +183,6 @@ def test_markdown_report_records_split_materialization_manifest():
         assert "| observed_unit_overlap_count | 0 |" in report
         assert "| disjoint_observed_units | True |" in report
         assert "| omitted_crossing_rows | 0 |" in report
-
 
 def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
     with tempfile.TemporaryDirectory() as tmp:
@@ -242,7 +261,6 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
         assert "nll_improvement_bootstrap_vs_product_kalman" in enriched_json
         assert enriched_json["bootstrap_artifact"] == artifact_meta
 
-
 def test_markdown_report_cli_writes_file():
     with tempfile.TemporaryDirectory() as tmp:
         input_manifest, scores_json, _ = make_artifacts(tmp)
@@ -270,7 +288,6 @@ def test_markdown_report_cli_writes_file():
         assert "## NLL Improvement Bootstrap Intervals" in text
         assert "## Split Materialization" in text
         assert "source_table_sha256" in text
-
 
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
