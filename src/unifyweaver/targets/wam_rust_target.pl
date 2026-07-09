@@ -1858,7 +1858,7 @@ compile_execute_term_builtin_to_rust(Code) :-
     fn term_to_atom_text(&self, value: &Value) -> String {
         let derefed = self.deref_heap(&self.deref_var(value));
         match derefed {
-            Value::Atom(s) => s,
+            Value::Atom(s) => Self::term_atom_text(&s),
             Value::Integer(n) => n.to_string(),
             Value::Float(f) => f.to_string(),
             Value::Bool(b) => b.to_string(),
@@ -1874,7 +1874,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                 let rendered: Vec<String> = args.iter()
                     .map(|a| self.term_to_atom_text(a))
                     .collect();
-                format!("{}({})", name, rendered.join(", "))
+                format!("{}({})", Self::term_atom_text(&name), rendered.join(", "))
             }
             Value::Ref(_) => format!("{}", derefed),
             Value::Uninit => "_".to_string(),

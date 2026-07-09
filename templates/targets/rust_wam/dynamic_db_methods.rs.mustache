@@ -62,6 +62,31 @@
         Some((body.trim().to_string(), input.len()))
     }
 
+    fn term_atom_text(atom: &str) -> String {
+        let mut chars = atom.chars();
+        let plain = match chars.next() {
+            Some(first) if first.is_ascii_lowercase() => {
+                chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            }
+            _ => false,
+        };
+        if plain || atom == "!" || atom == "[]" {
+            return atom.to_string();
+        }
+
+        let mut quoted = String::with_capacity(atom.len() + 2);
+        quoted.push('\'');
+        for ch in atom.chars() {
+            match ch {
+                '\\' => quoted.push_str("\\\\"),
+                '\'' => quoted.push_str("\\'"),
+                _ => quoted.push(ch),
+            }
+        }
+        quoted.push('\'');
+        quoted
+    }
+
     fn execute_assert_builtin(&mut self, op: &str) -> bool {
         let raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
         let term = self.deref_heap(&self.deref_var(&raw));

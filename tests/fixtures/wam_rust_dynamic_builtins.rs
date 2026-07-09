@@ -232,3 +232,43 @@ fn read_consumes_buffered_terms_before_end_of_file() {
     assert!(vm.execute_builtin("read/1", 1));
     assert_eq!(vm.bindings.get("End"), Some(&at("end_of_file")));
 }
+
+#[test]
+fn term_to_atom_quotes_and_roundtrips_non_bare_atoms() {
+    let (code, labels) = shared_wam_program();
+    let mut vm = WamState::new(code, labels);
+    let term = fact(
+        "odd functor",
+        vec![
+            at("hello world"),
+            at("42"),
+            at("can't"),
+            at("a\\b"),
+        ],
+    );
+
+    vm.set_reg_str("A1", term.clone());
+    vm.set_reg_str("A2", ub("Text"));
+    assert!(vm.execute_builtin("term_to_atom/2", 2));
+    let rendered = at("'odd functor'('hello world', '42', 'can\\'t', 'a\\\\b')");
+    assert_eq!(vm.bindings.get("Text"), Some(&rendered));
+
+    for (text, expected) in [
+        ("'hello world'", at("hello world")),
+        ("'42'", at("42")),
+        ("'can\\'t'", at("can't")),
+        ("'a\\\\b'", at("a\\b")),
+    ] {
+        vm.reset_query();
+        vm.set_reg_str("A1", ub("Quoted"));
+        vm.set_reg_str("A2", at(text));
+        assert!(vm.execute_builtin("term_to_atom/2", 2), "failed to parse {}", text);
+        assert_eq!(vm.bindings.get("Quoted"), Some(&expected));
+    }
+
+    vm.reset_query();
+    vm.set_reg_str("A1", ub("Parsed"));
+    vm.set_reg_str("A2", rendered);
+    assert!(vm.execute_builtin("term_to_atom/2", 2));
+    assert_eq!(vm.bindings.get("Parsed"), Some(&term));
+}
