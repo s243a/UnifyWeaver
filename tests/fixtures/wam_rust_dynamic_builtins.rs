@@ -51,6 +51,17 @@ fn second_values(vm: &mut WamState, pred: &str, first: Value) -> Vec<Value> {
 }
 
 #[test]
+fn generated_assert_alias_appends_a_dynamic_fact() {
+    let (code, labels) = shared_wam_program();
+    let mut vm = WamState::new(code, labels);
+    vm.pc = *vm.labels
+        .get("rust_assert_alias_demo/0")
+        .expect("generated assert alias label");
+    assert!(vm.run());
+    assert_eq!(dyn_values(&mut vm), vec![at("alias")]);
+}
+
+#[test]
 fn assertz_asserta_query_order_and_retractall() {
     let mut vm = WamState::new(vec![], HashMap::new());
     assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("red")]));
