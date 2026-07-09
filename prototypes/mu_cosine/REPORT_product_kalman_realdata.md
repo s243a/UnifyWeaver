@@ -198,3 +198,37 @@ the Tobit sketch above:
 **Next-rung (b), updated spec:** logit-space fusion with Jacobian-weighted per-row R + boundary de-quantization,
 vs the μ-space fusion above, scored in one space via the change-of-variables density. (Rung (a) unchanged:
 hop-conditioned V(hop) into the gain.)
+
+## Rung (a) BUILT: Sigma(hop) inside the Kalman gain — calibration target hit (2026-07-09)
+
+`run_product_kalman_sigma_hop.py`: the JOINT trivariate error covariance (prior-error D, prior-error S,
+measurement-error) fit as a smooth function of hop via a hop-dependent Cholesky factor (diag `exp(a+b·h)`,
+off-diag `c+d·h`, 12 params, SPD by construction, MLE on the calibration split), driving a per-row correlated
+update with `P(h), R(h), C(h)`. Same splits/protocol as above. (NLL here includes the 2π constant — compare
+within this table, not against the earlier one.)
+
+| corpus | rung | NLL ↓ | Mahal/dim | q95 (ref 5.99) |
+|---|---|---|---|---|
+| exploratory | prior/const | +0.566 | 1.59 | 7.35 |
+| exploratory | prior/hop | +0.297 | **1.00** | 5.07 |
+| exploratory | kalman/const | −0.323 | 1.18 | 6.11 |
+| exploratory | **kalman/hop** | **−0.450** | **1.02** | **5.12** |
+| fresh | prior/const | +0.407 | 1.42 | 8.21 |
+| fresh | prior/hop | +0.278 | 1.08 | 7.03 |
+| fresh | kalman/const | −0.008 | 1.40 | 8.55 |
+| fresh | **kalman/hop** | **−0.172** | **1.09** | 7.06 |
+
+- **The measured overconfidence is eaten, as designed:** kalman Mahal/dim 1.18→1.02 (exploratory) and
+  **1.40→1.09 (fresh — the 1.39→1 target)**. Hop-conditioning the blocks fixes the error bars where the
+  constant blocks were most miscalibrated.
+- **NLL improves too, and MORE on fresh** (+0.164) than exploratory (+0.127): the hop-conditioning matters most
+  exactly where constant covariance was most wrong — consistent with the fresh slice's stronger residual
+  heteroscedasticity.
+- **The two effects compose ~additively:** fusion (prior→kalman at fixed blocks) and hop-conditioning
+  (const→hop at fixed rung) stack to +1.02 (exploratory) / +0.58 (fresh) total NLL gain over the raw prior.
+- Residual q95 ≈ 7 on fresh (ref 5.99): the remaining tail is the boundary-atom / non-Gaussian residue — rung
+  (b)'s Jacobian weighting + de-quantization is the designed treatment.
+
+This closes the designed loop: confirmed `Sigma(hop)` (license) → measured calibration gap under constant
+blocks (motivation) → hop-conditioned blocks in the gain (build) → gap closed (verification). Exploratory
+protocol; same caveats as the rest of this report.
