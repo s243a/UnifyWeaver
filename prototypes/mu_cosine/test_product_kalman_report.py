@@ -248,6 +248,11 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
         )
         artifact_summary = validate_artifact_score_consistency(scores, evaluation_npz=eval_npz)
         assert artifact_summary["score_order"] == scores["score_order"]
+        assert artifact_summary["pit_diagnostics"]["present"] is True
+        assert artifact_summary["pit_diagnostics"]["names"] == scores["score_order"]
+        assert artifact_summary["pit_diagnostics"]["n"] == scores["scores"]["product_kalman"]["n"]
+        assert artifact_summary["pit_diagnostics"]["dimension"] == scores["pit_diagnostics"]["product_kalman"]["dimension"]
+        assert set(artifact_summary["pit_diagnostics"]["central_interval_coverage"]) == set(scores["score_order"])
         recorded_path_enriched = add_artifact_bootstrap_intervals(
             scores,
             n_boot=50,
@@ -260,6 +265,7 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
         assert artifact_meta["evaluation_npz"] == str(eval_npz)
         assert len(artifact_meta["evaluation_npz_sha256"]) == 64
         assert artifact_meta["validated_against_scores"] is True
+        assert artifact_meta["pit_diagnostics_validated"] is True
         assert artifact_meta["score_order"] == scores["score_order"]
         assert artifact_meta["n_boot"] == 50
         assert artifact_meta["method"] == "paired_row_resample"
@@ -272,6 +278,15 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
         bad_mean = json.loads(json.dumps(scores))
         bad_mean["scores"]["product_kalman"]["mean_nll"] += 1.0
         assert_raises(add_artifact_bootstrap_intervals, bad_mean, evaluation_npz=eval_npz, n_boot=10)
+        missing_pit = json.loads(json.dumps(scores))
+        del missing_pit["pit_diagnostics"]
+        assert_raises(validate_artifact_score_consistency, missing_pit, evaluation_npz=eval_npz)
+        bad_pit_ks = json.loads(json.dumps(scores))
+        bad_pit_ks["pit_diagnostics"]["product_kalman"]["channel_ks"][0] += 0.01
+        assert_raises(validate_artifact_score_consistency, bad_pit_ks, evaluation_npz=eval_npz)
+        bad_pit_coverage = json.loads(json.dumps(scores))
+        bad_pit_coverage["pit_diagnostics"]["product_kalman"]["central_interval_coverage"][0][0] += 0.01
+        assert_raises(validate_artifact_score_consistency, bad_pit_coverage, evaluation_npz=eval_npz)
         boot = enriched["nll_improvement_bootstrap_vs_independent_kalman"]["product_kalman"]
         assert boot["n_boot"] == 50
         assert boot["seed"] == 7
@@ -303,6 +318,7 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
         assert "## NLL Improvement Bootstrap Intervals" in text
         assert "## Bootstrap Artifact" in text
         assert "evaluation_npz_sha256" in text
+        assert "| pit_diagnostics_validated | True |" in text
         assert "| independent_kalman | product_kalman |" in text
         assert "| product_kalman | independent_kalman |" in text
         enriched_json = json.loads(output_json.read_text())

@@ -12,6 +12,8 @@ import json
 import math
 import sys
 
+import numpy as np
+
 try:
     from .product_kalman_evaluation import (
         bootstrap_nll_improvements_from_evaluation_npz,
@@ -140,6 +142,7 @@ def _bootstrap_artifact_rows(scores_json):
         ["evaluation_npz", artifact.get("evaluation_npz")],
         ["evaluation_npz_sha256", artifact.get("evaluation_npz_sha256")],
         ["validated_against_scores", artifact.get("validated_against_scores")],
+        ["pit_diagnostics_validated", artifact.get("pit_diagnostics_validated")],
         ["score_order", ", ".join(artifact.get("score_order", []))],
         ["n_boot", artifact.get("n_boot")],
         ["seed", artifact.get("seed")],
@@ -364,10 +367,177 @@ def _artifact_path(scores_json, evaluation_npz=None):
     return artifact_path
 
 
+def _decode_npz_strings(values):
+    arr = np.asarray(values)
+    if arr.ndim != 1:
+        raise ValueError("string array must be 1-D")
+    out = []
+    for value in arr.tolist():
+        if isinstance(value, bytes):
+            out.append(value.decode("utf-8"))
+        else:
+            out.append(str(value))
+    return out
+
+
+def _artifact_pit_summary(artifact_npz):
+    path = str(artifact_npz)
+    with np.load(path, allow_pickle=False) as data:
+        if "pit_names" not in data.files:
+            return {"present": False}
+        required_base = {"pit_names", "pit_values", "pit_channel_ks"}
+        missing_base = sorted(required_base - set(data.files))
+        if missing_base:
+            raise ValueError(f"evaluation artifact missing PIT arrays: {missing_base!r}")
+        names = _decode_npz_strings(data["pit_names"])
+        pit_values = np.asarray(data["pit_values"], dtype=float)
+        channel_ks = np.asarray(data["pit_channel_ks"], dtype=float)
+        if pit_values.ndim != 3 or pit_values.shape[0] != len(names):
+            raise ValueError("evaluation artifact pit_values shape must match pit_names")
+        if not np.isfinite(pit_values).all() or ((pit_values < 0.0) | (pit_values > 1.0)).any():
+            raise ValueError("evaluation artifact pit_values must be finite and in [0, 1]")
+        if channel_ks.ndim != 2 or channel_ks.shape != (len(names), pit_values.shape[2]):
+            raise ValueError("evaluation artifact pit_channel_ks shape must match pit_names and pit_values")
+        if not np.isfinite(channel_ks).all() or ((channel_ks < 0.0) | (channel_ks > 1.0)).any():
+            raise ValueError("evaluation artifact pit_channel_ks values must be finite and in [0, 1]")
+        out = {
+            "present": True,
+            "names": names,
+            "n": int(pit_values.shape[1]),
+            "dimension": int(pit_values.shape[2]),
+            "channel_ks": {name: channel_ks[idx].tolist() for idx, name in enumerate(names)},
+        }
+        coverage_present = {
+            "pit_coverage_levels",
+            "pit_central_interval_coverage",
+            "pit_central_interval_error",
+        } & set(data.files)
+        if coverage_present:
+            required = {"pit_coverage_levels", "pit_central_interval_coverage", "pit_central_interval_error"}
+            if coverage_present != required:
+                missing = sorted(required - coverage_present)
+                raise ValueError(f"evaluation artifact missing PIT coverage arrays: {missing!r}")
+            levels = np.asarray(data["pit_coverage_levels"], dtype=float)
+            coverage = np.asarray(data["pit_central_interval_coverage"], dtype=float)
+            errors = np.asarray(data["pit_central_interval_error"], dtype=float)
+            if levels.ndim != 1 or levels.size == 0:
+                raise ValueError("evaluation artifact pit_coverage_levels must be a nonempty 1-D array")
+            if not np.isfinite(levels).all() or ((levels <= 0.0) | (levels >= 1.0)).any():
+                raise ValueError("evaluation artifact pit_coverage_levels values must lie strictly between 0 and 1")
+            expected_shape = (len(names), levels.size, pit_values.shape[2])
+            if coverage.shape != expected_shape:
+                raise ValueError("evaluation artifact pit_central_interval_coverage shape is inconsistent")
+            if errors.shape != expected_shape:
+                raise ValueError("evaluation artifact pit_central_interval_error shape is inconsistent")
+            if not np.isfinite(coverage).all() or ((coverage < 0.0) | (coverage > 1.0)).any():
+                raise ValueError("evaluation artifact PIT coverage values must be finite and in [0, 1]")
+            if not np.isfinite(errors).all():
+                raise ValueError("evaluation artifact PIT coverage errors must be finite")
+            out.update({
+                "coverage_levels": levels.tolist(),
+                "central_interval_coverage": {name: coverage[idx].tolist() for idx, name in enumerate(names)},
+                "central_interval_error": {name: errors[idx].tolist() for idx, name in enumerate(names)},
+            })
+        return out
+
+
+def _pit_channel_ks_vector(prefix, item, dimension, channel_names):
+    channel_ks = item.get("channel_ks", [])
+    if isinstance(channel_ks, dict):
+        if not channel_names:
+            raise ValueError(f"{prefix}.channel_names are required when channel_ks is a mapping")
+        missing = [name for name in channel_names if name not in channel_ks]
+        extra = sorted(set(channel_ks) - set(channel_names))
+        if missing or extra:
+            raise ValueError(f"{prefix}.channel_ks keys must match channel_names")
+        return [_bounded_float(f"{prefix}.channel_ks[{name!r}]", channel_ks[name]) for name in channel_names]
+    values = _sequence(f"{prefix}.channel_ks", channel_ks)
+    if len(values) != dimension:
+        raise ValueError(f"{prefix}.channel_ks length must match dimension")
+    return [_bounded_float(f"{prefix}.channel_ks[{idx}]", value) for idx, value in enumerate(values)]
+
+
+def _artifact_pit_expected_names(scores_json, diagnostics):
+    ordered = [name for name in scores_json.get("score_order", []) if name in diagnostics]
+    if ordered:
+        missing = sorted(set(diagnostics) - set(ordered))
+        if missing:
+            raise ValueError(f"score_order is missing PIT diagnostic names: {missing!r}")
+        return ordered
+    return sorted(diagnostics)
+
+
+def _validate_artifact_pit_consistency(scores_json, artifact_path, atol=1e-10):
+    artifact = _artifact_pit_summary(artifact_path)
+    diagnostics = scores_json.get("pit_diagnostics", {})
+    if not diagnostics:
+        if artifact.get("present"):
+            raise ValueError("evaluation artifact has PIT diagnostics but scores JSON does not")
+        return artifact
+    if not isinstance(diagnostics, dict):
+        raise ValueError("pit_diagnostics must be a mapping")
+    if not artifact.get("present"):
+        raise ValueError("scores JSON has PIT diagnostics but evaluation artifact does not")
+    expected_names = _artifact_pit_expected_names(scores_json, diagnostics)
+    if artifact["names"] != expected_names:
+        raise ValueError("evaluation artifact pit_names do not match scores JSON PIT diagnostics")
+    has_artifact_coverage = "coverage_levels" in artifact
+    for model, item, prefix, n, dimension, channel_names in _pit_diagnostic_items(scores_json):
+        if model not in expected_names:
+            continue
+        if n != artifact["n"]:
+            raise ValueError(f"evaluation artifact PIT row count for {model!r} does not match scores JSON")
+        if dimension != artifact["dimension"]:
+            raise ValueError(f"evaluation artifact PIT dimension for {model!r} does not match scores JSON")
+        json_ks = np.asarray(_pit_channel_ks_vector(prefix, item, dimension, channel_names), dtype=float)
+        artifact_ks = np.asarray(artifact["channel_ks"][model], dtype=float)
+        if artifact_ks.shape != json_ks.shape or not np.allclose(artifact_ks, json_ks, rtol=0.0, atol=atol):
+            raise ValueError(f"evaluation artifact PIT channel_ks for {model!r} does not match scores JSON")
+        coverage_keys = {"coverage_levels", "central_interval_coverage", "central_interval_error"}
+        json_coverage_present = bool(coverage_keys & set(item))
+        if has_artifact_coverage and not json_coverage_present:
+            raise ValueError(f"evaluation artifact has PIT coverage for {model!r} but scores JSON does not")
+        if json_coverage_present and not has_artifact_coverage:
+            raise ValueError(f"scores JSON has PIT coverage for {model!r} but evaluation artifact does not")
+        if not json_coverage_present:
+            continue
+        # Reuse report-table validation for per-diagnostic schema and error arithmetic.
+        _pit_coverage_rows({"pit_diagnostics": {model: item}})
+        json_levels = np.asarray(_sequence(f"{prefix}.coverage_levels", item["coverage_levels"]), dtype=float)
+        artifact_levels = np.asarray(artifact["coverage_levels"], dtype=float)
+        if json_levels.shape != artifact_levels.shape or not np.allclose(
+            json_levels,
+            artifact_levels,
+            rtol=0.0,
+            atol=atol,
+        ):
+            raise ValueError(f"evaluation artifact PIT coverage levels for {model!r} do not match scores JSON")
+        json_coverage = np.asarray(item["central_interval_coverage"], dtype=float)
+        json_errors = np.asarray(item["central_interval_error"], dtype=float)
+        artifact_coverage = np.asarray(artifact["central_interval_coverage"][model], dtype=float)
+        artifact_errors = np.asarray(artifact["central_interval_error"][model], dtype=float)
+        if json_coverage.shape != artifact_coverage.shape or not np.allclose(
+            json_coverage,
+            artifact_coverage,
+            rtol=0.0,
+            atol=atol,
+        ):
+            raise ValueError(f"evaluation artifact PIT coverage for {model!r} does not match scores JSON")
+        if json_errors.shape != artifact_errors.shape or not np.allclose(
+            json_errors,
+            artifact_errors,
+            rtol=0.0,
+            atol=atol,
+        ):
+            raise ValueError(f"evaluation artifact PIT coverage error for {model!r} does not match scores JSON")
+    return artifact
+
+
 def validate_artifact_score_consistency(scores_json, evaluation_npz=None, atol=1e-10):
     """Raise if a row-level evaluation artifact does not match the score JSON."""
     artifact_path = _artifact_path(scores_json, evaluation_npz=evaluation_npz)
     artifact = evaluation_npz_score_summary(artifact_path)
+    pit_artifact = _validate_artifact_pit_consistency(scores_json, artifact_path, atol=atol)
     scores = scores_json.get("scores", {})
     expected_order = list(scores_json.get("score_order") or sorted(scores))
     if artifact["score_order"] != expected_order:
@@ -383,6 +553,7 @@ def validate_artifact_score_consistency(scores_json, evaluation_npz=None, atol=1
                 raise ValueError(f"evaluation artifact mean_nll for {name!r} does not match scores JSON")
         if "n" in score and int(score["n"]) != artifact["n"][name]:
             raise ValueError(f"evaluation artifact n for {name!r} does not match scores JSON")
+    artifact["pit_diagnostics"] = pit_artifact
     return artifact
 
 
@@ -443,6 +614,7 @@ def add_artifact_bootstrap_intervals(
             "evaluation_npz": str(artifact_path),
             "evaluation_npz_sha256": _sha256_file(artifact_path),
             "validated_against_scores": bool(validate_artifact),
+            "pit_diagnostics_validated": bool(artifact_summary.get("pit_diagnostics", {}).get("present")),
             "score_order": artifact_summary["score_order"],
             "n_boot": int(n_boot),
             "seed": int(seed),
