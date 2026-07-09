@@ -68,7 +68,11 @@
 ;                  0 = sum, 1 = count, 2 = min, 3 = max, 4 = collect, 5 = bag
 %ChoicePoint = type {
     i32,                                   ; 0: next_pc
-    [64 x %Value],                         ; 1: saved registers
+    [128 x %Value],                        ; 1: saved registers (full register file
+                                           ;    incl. Y17..Y48 at 64..95 -- a failed
+                                           ;    clause body writes its own Y regs and
+                                           ;    never reaches deallocate, so backtrack
+                                           ;    must restore the WHOLE file, not 0..63)
     i32,                                   ; 2: trail mark
     i32,                                   ; 3: saved cp
     i32,                                   ; 4: agg_type (-1=normal, -2=foreign iter)

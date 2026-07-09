@@ -377,12 +377,18 @@ loadable along the way.
   labels + register allocation + conjunction + arithmetic + `call(Label,arity)`
   goals; a call whose callee computes, `main0` calls `add1(41,V)` with
   `add1(X,Y):-Y is X+1` → `42`; also enlarged the transient arena 1→16 MiB, which
-  an allocation-heavy compiler grammar needs). Nested expressions and last-call
-  optimization remain — Stage C's mechanisms are all in place; (D) widen toward
-  the compiler's own subset — the self-host fixpoint. Stage A surfaced two
-  loaded-runtime bugs, **both since fixed** (a 64-register-file ceiling that
-  corrupted memory for large clauses; `get_structure` not comparing the functor),
-  so large clauses and tagged-union dispatch both work now. See
+  an allocation-heavy compiler grammar needs); **(D) STARTED — multi-clause
+  predicates LANDED**: clause grouping + `try_me_else`/`retry_me_else`/`trust_me`
+  chains with per-alternative labels, so backtracking dispatch and **recursion**
+  compile from source (two-clause dispatch needing the second clause → `42`;
+  recursive factorial `fact(3)` → `6`). The remaining Stage D campaign widens the
+  subset toward the compiler compiling its own source — the self-host fixpoint.
+  The campaign keeps surfacing and fixing latent runtime bugs — **four fixed so
+  far**: a 64-register-file ceiling corrupting memory for large clauses;
+  `get_structure` not comparing the functor; the choice-point saved-register
+  block not widened with the register file (failed clause bodies leaked Y17+
+  across backtrack); and `copy_term/2` aliasing instead of copying (Refs
+  returned unchanged, no sharing preservation). See
   [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
 
 ## The binary-return question, specifically

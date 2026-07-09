@@ -520,28 +520,85 @@ wz_fname(F, A0, A1) :- atom_codes(F, Cs), wz_n(Cs, A0, A1).
 wz_funcs([], A, A).
 wz_funcs([F|Fs], A0, A2) :- wz_fname(F, A0, A1), wz_funcs(Fs, A1, A2).
 
-% Milestone 6 (self-host) Stage C (non-tail calls): the UNIFIED compiler.
-% cgfull/2 merges every Stage C piece into one multi-clause compiler: labels +
-% PC table (from cgcprog), per-clause register allocation + conjunction (cgconj),
-% runtime arithmetic + functor table (cgarith), and now non-tail predicate-call
-% goals. A call goal p(Args) sets up A1.. with the args (operand_instr) then
+% Milestone 6 (self-host) Stage C (non-tail calls) + Stage D (multi-clause):
+% the UNIFIED compiler. cgfull/2 merges every piece: labels + PC table
+% (from cgcprog), per-clause register allocation + conjunction (cgconj),
+% runtime arithmetic + functor table (cgarith), non-tail predicate-call
+% goals -- and now MULTIPLE CLAUSES PER PREDICATE. Consecutive clauses with
+% the same name/arity group into one predicate (group_clauses); the predicate
+% gets the entry label (its group index), and clauses 2..k get alternative
+% labels laid out after all entry labels. A multi-clause predicate compiles
+% to a try_me_else(Alt1) / retry_me_else(Alt_k+1) / trust_me chain (tags
+% 22/23/24) around the per-clause code, so a failing head match backtracks to
+% the next clause -- backtracking dispatch AND recursion now compile.
+% A call goal p(Args) sets up A1.. with the args (operand_instr) then
 % call(CalleeLabel, arity) (tag 18) -- a non-tail call: cp = the next PC, so
 % execution resumes after the call when the callee proceeds. A permanent holds
-% the result across the call (register allocation makes any variable spanning
-% the call a Y-register). Each clause is copy_term'd + numbervars'd so its
+% the result across the call. Each clause is copy_term'd + numbervars'd so its
 % variables are clause-local. Facts (no body) emit head + proceed (no env).
-% Verified byte-identical to the host writer for
-% [(mnt(R):-helper(A), R=A), helper(42)] -- a non-tail call whose result A is
-% used after the call.
+% Single-clause predicates emit no chain, so the Stage C output (verified
+% byte-identical to the host writer for the mnt program) is unchanged.
 cgfull(Src, Wamo) :-
     read_term_from_atom(Src, Clauses),
-    assign_labels(Clauses, 0, PL),
+    group_clauses(Clauses, Groups),
+    group_labels(Groups, 0, PL),
+    length(Groups, NP),
     f_collect_all(Clauses, Functors),
-    f_codegen_all(Clauses, PL, Functors, 0, AllIs, PCs),
+    g_groups(Groups, PL, Functors, 0, NP, AllIs, EntryPCs, AltPCs),
+    append(EntryPCs, AltPCs, PCs),
     Clauses = [First|_], clause_hb(First, H0, _), functor(H0, P0, A0),
     pred_name_codes(P0, A0, EntryName),
     wzf_serialize(0, EntryName, 0, Functors, PCs, AllIs, Codes),
     atom_codes(Wamo, Codes).
+
+% group consecutive clauses with the same name/arity into pred(P,A,Clauses)
+group_clauses([], []).
+group_clauses([C|Cs], [pred(P,A,[C|Same])|Gs]) :-
+    clause_hb(C, H, _), functor(H, P, A),
+    take_same(Cs, P, A, Same, Rest),
+    group_clauses(Rest, Gs).
+take_same([], _, _, [], []).
+take_same([C|Cs], P, A, Same, Rest) :-
+    clause_hb(C, H, _), functor(H, P2, A2),
+    (   P2 == P, A2 =:= A
+    ->  Same = [C|Same1], take_same(Cs, P, A, Same1, Rest)
+    ;   Same = [], Rest = [C|Cs]
+    ).
+group_labels([], _, []).
+group_labels([pred(P,A,_)|Gs], I, [key(P,A)-I|R]) :- I1 is I+1, group_labels(Gs, I1, R).
+
+% per-group codegen; threads PC and the next alternative-label number, and
+% collects alternative PCs in assignment order (so EntryPCs ++ AltPCs is the
+% label->PC table with labels positional).
+g_groups([], _, _, _, _, [], [], []).
+g_groups([pred(_,_,Cls)|Gs], PL, FT, PC, Alt0, AllIs, [PC|EPCs], AltPCs) :-
+    g_pred(Cls, PL, FT, PC, Alt0, Is, PC1, Alt1, APCs1),
+    g_groups(Gs, PL, FT, PC1, Alt1, RestIs, EPCs, APCs2),
+    append(Is, RestIs, AllIs), append(APCs1, APCs2, AltPCs).
+
+g_pred([C], PL, FT, PC, Alt, Is, PC1, Alt, []) :-      % single clause: no chain
+    g_one(C, PL, FT, Is), length(Is, N), PC1 is PC + N.
+g_pred([C1,C2|Rest], PL, FT, PC, Alt0, Is, PCout, AltOut, AltPCs) :-
+    g_one(C1, PL, FT, C1Is),
+    length(C1Is, N1), PC1 is PC + 1 + N1,
+    Alt1 is Alt0 + 1,
+    g_alts([C2|Rest], PL, FT, PC1, Alt1, AltIs, PCout, AltOut, AltPCs),
+    append([enc(22,Alt0,0,0)|C1Is], AltIs, Is).         % try_me_else(Alt0)
+
+g_alts([C], PL, FT, PC, Alt, Is, PCout, Alt, [PC]) :-   % last alternative
+    g_one(C, PL, FT, CIs),
+    Is = [enc(24,0,0,0)|CIs],                           % trust_me
+    length(Is, N), PCout is PC + N.
+g_alts([C1,C2|Rest], PL, FT, PC, Alt, Is, PCout, AltOut, [PC|AltPCs]) :-
+    g_one(C1, PL, FT, C1Is),
+    length(C1Is, N1), PC1 is PC + 1 + N1,
+    Alt1 is Alt + 1,
+    g_alts([C2|Rest], PL, FT, PC1, Alt1, RestIs, PCout, AltOut, AltPCs),
+    append([enc(23,Alt,0,0)|C1Is], RestIs, Is).         % retry_me_else(Alt)
+
+g_one(C0, PL, FT, Is) :-
+    copy_term(C0, C), numbervars(C, 0, _),
+    f_clause_instrs(C, PL, FT, Is).
 
 % functor table across all clauses
 f_collect_all([], []).
@@ -550,13 +607,6 @@ f_collect_all([C|Cs], FT) :-
     collect_functors(Gs, F1), f_collect_all(Cs, F2), f_merge(F1, F2, FT).
 f_merge([], FT, FT).
 f_merge([F|Fs], A0, FT) :- add_unique(F, A0, A1), f_merge(Fs, A1, FT).
-
-% per-clause codegen, tracking the label->PC list
-f_codegen_all([], _, _, _, [], []).
-f_codegen_all([C0|Cs], PL, FT, PC, All, [PC|PCs]) :-
-    copy_term(C0, C), numbervars(C, 0, _),
-    f_clause_instrs(C, PL, FT, Is), length(Is, N), PC1 is PC + N,
-    f_codegen_all(Cs, PL, FT, PC1, Rest, PCs), append(Is, Rest, All).
 
 f_clause_instrs(Clause, PL, FT, Instrs) :-
     clause_hb(Clause, Head, Goals), functor(Head, _, Arity),
@@ -1314,6 +1364,35 @@ test(selfhost_codegen_stage_c_nontail_call, [condition(clang_available)]) :-
           process_wait(Pid, exit(Status)),
           assertion(Status == 0),
           assertion(Out == "42\n") )),
+    !.
+
+% Milestone 6 (self-host) Stage D (multi-clause predicates): cgfull compiles
+% predicates with MULTIPLE clauses into try_me_else/retry_me_else/trust_me
+% chains -- backtracking dispatch and recursion from source text. Two
+% programs: (1) dispatch -- picku/2 has two clauses; picku(2,R) must FAIL
+% clause 1's head (get_constant 1 vs 2), backtrack through the chain, and
+% match clause 2 -> 42. (2) recursion -- factorial with a base clause and a
+% recursive clause (self-call by label, arithmetic on the way down and up);
+% fact(3) -> 6. Both compile inside a loaded compiler object via the eval host.
+test(selfhost_codegen_stage_d_multiclause, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([user:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    forall(member(Source-Expected,
+               [ '[(main0(R):-picku(2,R)), picku(1,10), picku(2,42)]' - "42\n",
+                 '[(main0(R):-fact(3,R)), fact(0,1), (fact(N,R):- M is N-1, fact(M,F), R is N*F)]' - "6\n" ]),
+        ( directory_file_path(Dir, 'cgmc_src.txt', SrcPath),
+          setup_call_cleanup(open(SrcPath, write, S0),
+              write(S0, Source), close(S0)),
+          process_create(Host, [CompWamo, SrcPath],
+              [stdout(pipe(S)), stderr(std), process(Pid)]),
+          read_string(S, _, Out),
+          close(S),
+          process_wait(Pid, exit(Status)),
+          assertion(Status == 0),
+          assertion(Out == Expected) )),
     !.
 
 % Register-file ceiling fix: a clause with 20 permanent variables (Y1..Y20)
