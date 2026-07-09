@@ -1,6 +1,7 @@
 use dynrt::instructions::Instruction;
 use dynrt::state::WamState;
 use dynrt::value::Value;
+use dynrt::shared_wam_program;
 use std::collections::HashMap;
 
 fn at(s: &str) -> Value { Value::Atom(s.to_string()) }
@@ -206,4 +207,28 @@ fn read_eof_binds_end_of_file() {
     vm.set_reg_str("A1", ub("T"));
     assert!(vm.execute_builtin("read/1", 1));
     assert_eq!(vm.bindings.get("T"), Some(&at("end_of_file")));
+}
+
+#[test]
+fn read_consumes_buffered_terms_before_end_of_file() {
+    let (code, labels) = shared_wam_program();
+    let mut vm = WamState::new(code, labels);
+    vm.set_term_input("first. pair(second, 2).");
+
+    vm.set_reg_str("A1", ub("T1"));
+    assert!(vm.execute_builtin("read/1", 1));
+    assert_eq!(vm.bindings.get("T1"), Some(&at("first")));
+
+    vm.reset_query();
+    vm.set_reg_str("A1", ub("T2"));
+    assert!(vm.execute_builtin("read_term/1", 1));
+    assert_eq!(
+        vm.bindings.get("T2"),
+        Some(&fact("pair", vec![at("second"), Value::Integer(2)])),
+    );
+
+    vm.reset_query();
+    vm.set_reg_str("A1", ub("End"));
+    assert!(vm.execute_builtin("read/1", 1));
+    assert_eq!(vm.bindings.get("End"), Some(&at("end_of_file")));
 }
