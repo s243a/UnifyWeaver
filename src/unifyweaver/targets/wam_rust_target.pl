@@ -1730,12 +1730,15 @@ compile_execute_term_builtin_to_rust(Code) :-
         }
     }
 
-    fn execute_read_term_from_atom_builtin(&mut self, _arity: usize) -> bool {
+    fn execute_read_term_from_atom_builtin(&mut self, arity: usize) -> bool {
         let atom = self.get_reg_raw("A1")
             .map(|v| self.deref_heap(&self.deref_var(&v)));
+        let options = if arity == 3 { self.get_reg_raw("A3") } else { None };
         match atom {
             Some(Value::Atom(text)) => {
-                if self.bind_compiled_parse_atom(&text, "A2") { self.pc += 1; true }
+                if self.bind_compiled_parse_atom_with_options(&text, "A2", options.as_ref()) {
+                    self.pc += 1; true
+                }
                 else { false }
             }
             _ => false,
@@ -1743,8 +1746,24 @@ compile_execute_term_builtin_to_rust(Code) :-
     }
 
     fn bind_compiled_parse_atom(&mut self, atom_text: &str, target_reg: &str) -> bool {
+        self.bind_compiled_parse_atom_with_options(atom_text, target_reg, None)
+    }
+
+    fn bind_compiled_parse_atom_with_options(
+        &mut self,
+        atom_text: &str,
+        target_reg: &str,
+        options: Option<&Value>,
+    ) -> bool {
+        let variable_names = options
+            .and_then(|value| self.read_term_option_arg(value, "variable_names"));
+        let parser_entry = if variable_names.is_some() {
+            "parse_term_from_atom/4"
+        } else {
+            "parse_term_from_atom/3"
+        };
         if !self.labels.contains_key("canonical_op_table/1") ||
-           !self.labels.contains_key("parse_term_from_atom/3") {
+           !self.labels.contains_key(parser_entry) {
             return false;
         }
         let mut parser = WamState::new(self.code.clone(), self.labels.clone());
@@ -1761,16 +1780,29 @@ compile_execute_term_builtin_to_rust(Code) :-
         parser.set_reg_str("A1", Value::Atom(atom_text.to_string()));
         parser.set_reg_str("A2", ops);
         parser.set_reg_str("A3", parsed_var.clone());
-        if !parser.run_named_label("parse_term_from_atom/3") {
+        let var_env = Value::Unbound("_RP_env".to_string());
+        if variable_names.is_some() {
+            parser.set_reg_str("A4", var_env.clone());
+        }
+        if !parser.run_named_label(parser_entry) {
             return false;
         }
 
         let parsed = parser.deref_heap(&parser.deref_var(&parsed_var));
         let mut var_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         let copied = self.copy_external_term_from(&parser, &parsed, &mut var_map);
-        match self.get_reg_raw(target_reg) {
-            Some(target) => self.unify(&target, &copied),
-            None => false,
+        let target = match self.get_reg_raw(target_reg) {
+            Some(target) => target,
+            None => return false,
+        };
+        if !self.unify(&target, &copied) {
+            return false;
+        }
+        if let Some(names_target) = variable_names {
+            let names = self.copy_variable_names_from_env(&parser, &var_env, &mut var_map);
+            self.unify(&names_target, &names)
+        } else {
+            true
         }
     }
 
