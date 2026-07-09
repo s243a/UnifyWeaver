@@ -724,6 +724,8 @@ head_arg_instrs(T, Ai, At, Fn, Xt0, Xt, In0, In2, [enc(3,FI,Op2,2)|Rest]) :-
     u_seq(Args, At, Xt0, Xt1, In0, In1, UIs, [], Defs),
     defer_reads(Defs, At, Fn, Xt1, Xt, In1, In2, DIs),
     append(UIs, DIs, Rest).
+% fail fast: unsupported head-argument kind (see the f_goal catch-all)
+head_arg_instrs(T, _, _, _, _, _, _, _, _) :- throw(cg_unsupported_head_arg(T)).
 % one unify_* per pattern arg; compound/list children deferred to X temps
 u_seq([], _, Xt, Xt, In, In, [], D, D).
 u_seq([A|As], At, Xt0, Xt, In0, In, Is, D0, D) :-
@@ -777,8 +779,17 @@ f_goal(( C -> T ; E ), PL, At, FT, PC0, PC, L0, L, Prs0, Prs, In0, In, Is) :- !,
     inter(InT, InE, In),
     append([enc(22,ElseL,0,0)|CondIs], [enc(31,0,0,0)|ThenIs], Front),
     append(Front, [enc(32,JoinL,0,0), enc(24,0,0,0)|ElseIs], Is).
-f_goal((L is E), _, _, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In1, Is) :- !,
-    a_goal_instrs((L is E), FT, In0, In1, Is), length(Is, N), PC is PC0 + N.
+f_goal((L is E), _, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In2, Is) :- !,
+    % NESTED arithmetic: the expression is just a term -- stage it with
+    % c_operand (build_struct + X-temp deferral handles arbitrary nesting,
+    % e.g. (X + Y) * (X - 1) + 100). The operators land in the functor
+    % table automatically: walk_term skips is/2 itself as a control
+    % functor but walks its argument tree, collecting + / * / ... as data
+    % functors. LHS -> A1, expression term -> A2, builtin is/2 (id 0).
+    c_operand(L, 0, At, FT, In0, In1, IL),
+    c_operand(E, 1, At, FT, In1, In2, IE),
+    append(IL, IE, LE), append(LE, [enc(21, 0, 2, 0)], Is),
+    length(Is, N), PC is PC0 + N.
 f_goal((L = R), _, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In2, Is) :- !,
     % full-term unification: either side may be a variable, constant, list
     % or structure literal (c_operand builds it) -- then builtin =/2
@@ -803,6 +814,15 @@ f_goal(Goal, PL, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In, Is) :-  % predicate
     call_args(Goal, 1, A, At, FT, In0, In, SetupIs),
     append(SetupIs, [enc(18, Label, A, 0)], Is),       % call(Label, arity)
     length(Is, N), PC is PC0 + N.
+% FAIL FAST on anything the subset does not cover. Without this, an
+% unsupported goal makes codegen FAIL, and in the loaded compiler that
+% failure explodes into catastrophic backtracking through the compile's
+% stale choice points (unindexed, cut-free clause chains) -- a silent
+% multi-minute hang instead of an error (the gen-3 round lost real time
+% to exactly this, via a nested `is` before the lift above). throw/1 is
+% loadable (call sentinel), so the loaded compiler aborts immediately.
+f_goal(Goal, _, _, _, _, _, _, _, _, _, _, _, _) :-
+    functor(Goal, P, A), throw(cg_unsupported_goal(P, A)).
 
 % builtin goals the grammar can emit directly: name/arity -> builtin id (the
 % host runtime's builtin_op_to_id table). Staged like a call (c_operand per
@@ -865,6 +885,9 @@ c_operand([H|T], Ai, At, FT, In0, In1, Is) :- !,
 c_operand(A, Ai, At, _, In, In, [enc(8,Idx,Ai,1)]) :- atom(A), !, functor_index(A, At, Idx).
 c_operand(T, Ai, At, FT, In0, In1, Is) :- compound(T),   % structure literal
     build_struct(T, Ai, At, FT, 16, _, In0, In1, Is).
+% fail fast: unsupported operand kind (e.g. a float literal), or a
+% build_struct failure (e.g. a functor missing from the table)
+c_operand(T, _, _, _, _, _, _) :- throw(cg_unsupported_operand(T)).
 
 % top-down term builds. Lists: the first cell is put_list TARGET; each nested
 % cons is put_structure cons/2 into a fresh X temp created by set_variable
@@ -954,7 +977,7 @@ fixpoint_serializer_source('[(main0(R) :- serz(Cs), sum_list(Cs, S), length(Cs, 
 % compiles TWO golden programs (quoted atoms below, which must survive
 % collection into the atom table, relocation, and re-parsing by the
 % loaded reader) into exactly the bytes the Stage A serializer yields.
-fixpoint_compiler_source('[(main0(R) :- cmp2(''ea(R2) :- R2 = 42'', Cs1), cmp2(''eb(R2) :- R2 = foo'', Cs2), sum_list(Cs1, S1), length(Cs1, L1), sum_list(Cs2, S2), length(Cs2, L2), T1 is S1 + L1, T2 is S2 + L2, R is T1 + T2), (cmp2(Src, Out) :- read_term_from_atom(Src, C), C =.. [_, H, B], functor(H, P, 1), B =.. [_, _, V], atom_codes(P, PC), append(PC, [47, 49], NC), (integer(V) -> As = [], Is1 = [enc(0, V, 65536, 0)] ; As = [V], Is1 = [enc(0, 0, 0, 1)]), append(Is1, [enc(20, 0, 0, 0)], Is), wzs(0, NC, 0, As, [0], Is, Out)), (wzi(N, A0, A1) :- number_codes(N, Cs), append(Cs, [10|A1], A0)), (wza(X, A0, A1) :- atom_codes(X, Cs), append(Cs, [10|A1], A0)), (wzn(Cs, A0, A1) :- length(Cs, L), number_codes(L, LC), append(LC, [32|Mid], A0), append(Cs, [10|A1], Mid)), (wzsi(N, A0, A1) :- number_codes(N, Cs), append([32|Cs], A1, A0)), (wzs(EI, NC, LI, As, PCs, Is, Out) :- wzh(EI, NC, LI, Out, A6), length(As, NA), wzi(NA, A6, A7), wzat(As, A7, A8), wzi(0, A8, A9), wzp(PCs, A9, A10), wzc(Is, A10, A11), wzi(0, A11, [])), (wzh(EI, NC, LI, A0, Out) :- wza(''WAMO'', A0, A1), wzi(2, A1, A2), wzi(EI, A2, A3), wzi(1, A3, A4), wzn(NC, A4, A5), wzi(LI, A5, Out)), wzat([], A, A), (wzat([X|Xs], A0, A2) :- atom_codes(X, Cs), wzn(Cs, A0, A1), wzat(Xs, A1, A2)), (wzp(PCs, A0, A2) :- length(PCs, NL), wzi(NL, A0, A1), wzpr(PCs, A1, A2)), wzpr([], A, A), (wzpr([P|Ps], A0, A2) :- wzi(P, A0, A1), wzpr(Ps, A1, A2)), (wzc(Is, A0, A2) :- length(Is, NC2), wzi(NC2, A0, A1), wzcr(Is, A1, A2)), wzcr([], A, A), (wzcr([enc(T,O1,O2,Rl)|Is], A0, A2) :- wzr(T, O1, O2, Rl, A0, A1), wzcr(Is, A1, A2)), (wzr(T, O1, O2, Rl, A0, A5) :- number_codes(T, Tc), append(Tc, A1, A0), wzsi(O1, A1, A2), wzsi(O2, A2, A3), wzsi(Rl, A3, A4), A4 = [10|A5])]').
+fixpoint_compiler_source('[(main0(R) :- cmp2(''ea(R2) :- R2 = 42'', Cs1), cmp2(''eb(R2) :- R2 = foo'', Cs2), sum_list(Cs1, S1), length(Cs1, L1), sum_list(Cs2, S2), length(Cs2, L2), R is S1 + L1 + S2 + L2), (cmp2(Src, Out) :- read_term_from_atom(Src, C), C =.. [_, H, B], functor(H, P, 1), B =.. [_, _, V], atom_codes(P, PC), append(PC, [47, 49], NC), (integer(V) -> As = [], Is1 = [enc(0, V, 65536, 0)] ; As = [V], Is1 = [enc(0, 0, 0, 1)]), append(Is1, [enc(20, 0, 0, 0)], Is), wzs(0, NC, 0, As, [0], Is, Out)), (wzi(N, A0, A1) :- number_codes(N, Cs), append(Cs, [10|A1], A0)), (wza(X, A0, A1) :- atom_codes(X, Cs), append(Cs, [10|A1], A0)), (wzn(Cs, A0, A1) :- length(Cs, L), number_codes(L, LC), append(LC, [32|Mid], A0), append(Cs, [10|A1], Mid)), (wzsi(N, A0, A1) :- number_codes(N, Cs), append([32|Cs], A1, A0)), (wzs(EI, NC, LI, As, PCs, Is, Out) :- wzh(EI, NC, LI, Out, A6), length(As, NA), wzi(NA, A6, A7), wzat(As, A7, A8), wzi(0, A8, A9), wzp(PCs, A9, A10), wzc(Is, A10, A11), wzi(0, A11, [])), (wzh(EI, NC, LI, A0, Out) :- wza(''WAMO'', A0, A1), wzi(2, A1, A2), wzi(EI, A2, A3), wzi(1, A3, A4), wzn(NC, A4, A5), wzi(LI, A5, Out)), wzat([], A, A), (wzat([X|Xs], A0, A2) :- atom_codes(X, Cs), wzn(Cs, A0, A1), wzat(Xs, A1, A2)), (wzp(PCs, A0, A2) :- length(PCs, NL), wzi(NL, A0, A1), wzpr(PCs, A1, A2)), wzpr([], A, A), (wzpr([P|Ps], A0, A2) :- wzi(P, A0, A1), wzpr(Ps, A1, A2)), (wzc(Is, A0, A2) :- length(Is, NC2), wzi(NC2, A0, A1), wzcr(Is, A1, A2)), wzcr([], A, A), (wzcr([enc(T,O1,O2,Rl)|Is], A0, A2) :- wzr(T, O1, O2, Rl, A0, A1), wzcr(Is, A1, A2)), (wzr(T, O1, O2, Rl, A0, A5) :- number_codes(T, Tc), append(Tc, A1, A0), wzsi(O1, A1, A2), wzsi(O2, A2, A3), wzsi(Rl, A3, A4), A4 = [10|A5])]').
 
 % Register-file ceiling regression: manyperm/1 has 20 variables all live
 % across the mp_barrier call, so the compiler assigns them Y1..Y20. Before
@@ -1920,6 +1943,53 @@ test(selfhost_codegen_stage_d_gen3, [condition(clang_available)]) :-
     process_wait(Pid, exit(Status)),
     assertion(Status == 0),
     assertion(Out == Expected),
+    !.
+
+% Nested arithmetic in the loaded compiler: the is-expression is staged
+% with c_operand (build_struct + X-temp deferral), so arbitrarily nested
+% expressions compile. (X + Y) * (X - 1) + 100 with X=3, Y=4 -> 114.
+test(selfhost_codegen_stage_d_nested_arith, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([user:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgna_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- X = 3, Y = 4, R is (X + Y) * (X - 1) + 100)]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "114\n"),
+    !.
+
+% Fail-fast compile diagnostic: an unsupported goal (findall/3 is neither
+% a whitelisted builtin nor a defined predicate) must make the loaded
+% compile ABORT immediately via the f_goal catch-all throw -- not fail
+% into catastrophic backtracking through the compile's stale choice
+% points (a silent multi-minute hang before this guard; this test would
+% time the suite out on the old behavior).
+test(selfhost_codegen_fail_fast_on_unsupported, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([user:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgff_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- findall(X, foo(X), L), length(L, R))]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status \== 0),
+    assertion(Out == ""),
     !.
 
 % Register-file ceiling fix: a clause with 20 permanent variables (Y1..Y20)

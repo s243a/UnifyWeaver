@@ -609,11 +609,28 @@ tables by design, so a compiler in the subset decomposes clauses with
 known deferred gap. In SWI that fails cleanly; **loaded, the codegen
 failure exploded into catastrophic backtracking** through the compile's
 stale choice points (loaded objects run unindexed, cut-free clause
-chains) — a silent multi-minute hang, not an error. Flattening the
-expression (`T1 is S1 + L1, T2 is S2 + L2, R is T1 + T2`) routes around
-it. The nested-arithmetic lift and a compile-failure diagnostic (fail
-fast instead of backtracking into the walkers) are both good next
-increments.
+chains) — a silent multi-minute hang, not an error.
+
+**Both follow-ups LANDED** the next round:
+
+- **Nested arithmetic.** The `is`-expression is just a term, and cgfull
+  already had the machinery: `f_goal`'s `is`-clause now stages the
+  expression with `c_operand` (`build_struct` + X-temp deferral), so
+  `(X + Y) * (X - 1) + 100` compiles; the operators land in the functor
+  table automatically because `walk_term` skips `is/2` itself but walks
+  its argument tree. gen 2's `main0` writes the nested
+  `R is S1 + L1 + S2 + L2` again — the flattening workaround is gone.
+  Test `selfhost_codegen_stage_d_nested_arith` (→ 114). The Stage C
+  `cgarith` chain keeps its historical flat `expr_build` untouched.
+- **Fail-fast compile diagnostic.** Catch-all clauses at the end of
+  `f_goal`, `c_operand`, and `head_arg_instrs` `throw/1` a diagnostic
+  term (`cg_unsupported_goal(P, A)` / `..._operand(T)` /
+  `..._head_arg(T)`) instead of failing — and `throw` is loadable (call
+  sentinel), so the loaded compiler aborts immediately rather than
+  backtracking for minutes. Test
+  `selfhost_codegen_fail_fast_on_unsupported`: a `findall/3` source
+  makes the eval host exit nonzero at once (this test would time the
+  suite out on the old behavior).
 
 **Remaining toward the full fixpoint:** the serializer and a source-to-
 object mini-compiler are now self-compiled; the full cgfull front/middle
