@@ -557,7 +557,8 @@ entry:
   br i1 %ok, label %load, label %abort
 
 abort:
-  call i32 (i8*, ...) @printf(i8* getelementptr ([41 x i8], [41 x i8]* @.fmt_heap_bounds, i32 0, i32 0), i32 %addr, i32 %hs)
+  %pc = call i32 @wam_get_pc(%WamState* %vm)
+  call i32 (i8*, ...) @printf(i8* getelementptr ([48 x i8], [48 x i8]* @.fmt_heap_bounds, i32 0, i32 0), i32 %addr, i32 %hs, i32 %pc)
   call void @exit(i32 3)
   unreachable
 
@@ -569,7 +570,7 @@ load:
   ret %Value %v
 }
 
-@.fmt_heap_bounds = private constant [41 x i8] c"FATAL: WAM heap oob read at %d (cap=%d)\0A\00"
+@.fmt_heap_bounds = private constant [48 x i8] c"FATAL: WAM heap oob read at %d (cap=%d, pc=%d)\0A\00"
 
 define void @wam_heap_set(%WamState* %vm, i32 %addr, %Value %val) alwaysinline nounwind {
 entry:
