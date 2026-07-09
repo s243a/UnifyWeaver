@@ -122,6 +122,12 @@ Record per corpus and graph view:
 These measurements can explain associations but do not identify causes by themselves. A claim that tree-likeness
 offsets title noise requires a within-corpus graph-view or title-view ablation, not only a difference between corpora.
 
+For numeric category LMDBs, run `audit_product_kalman_lmdb_topology.py`. It streams the sorted unique key ranges
+from `category_parent` and `category_child`, uses LMDB duplicate counts for degree, and merges those streams to
+include roots and leaves as degree-zero nodes without materializing an ID set. It joins only the requested scope-root
+title for provenance. The resulting multi-parent fraction is descriptive tree-likeness metadata; node degree must
+not be passed to Product-Kalman or interpreted as calibrated confidence.
+
 ## Fixed Models And Measurements
 
 Use the same model checkpoint, graph-channel construction, judge model, and prompt template across corpora. Compare:
@@ -156,7 +162,8 @@ counts, root IDs, graph-view rules, correction-manifest hash, model/judge identi
 
 1. Use `sample_product_kalman_enwiki_campaign.py` for deterministic branch-stratified sampling against the titled
    scoped LMDB. It traverses numeric IDs, verifies exact shortest upward hop, and joins titles at the output boundary.
-2. Materialize its pair, topology, and title-audit manifests before scoring.
+2. Run `audit_product_kalman_lmdb_topology.py` on the same LMDB snapshot, then materialize the sampler's pair/source
+   and title-audit manifests before scoring.
 3. Add Pearltrees principal-containment and SimpleMind cleaned within-map adapters with the same output schema.
 4. Freeze any title-correction manifests.
 5. Score all raw-title views with the same judge and model, then run matched audited-title sensitivities.
