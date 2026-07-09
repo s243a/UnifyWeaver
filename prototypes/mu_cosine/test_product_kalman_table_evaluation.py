@@ -123,6 +123,7 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         artifact_validation = summary["evaluation_artifact_validation"]
         assert artifact_validation["evaluation_npz"] == str(output_npz)
         assert len(artifact_validation["evaluation_npz_sha256"]) == 64
+        assert artifact_validation["schema_version"] == 1
         assert artifact_validation["validated_against_scores"] is True
         assert artifact_validation["pit_diagnostics_validated"] is True
         assert artifact_validation["score_order"] == summary["score_order"]

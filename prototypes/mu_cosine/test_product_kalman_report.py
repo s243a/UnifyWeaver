@@ -258,6 +258,7 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
         validation_meta = validated["evaluation_artifact_validation"]
         assert validation_meta["evaluation_npz"] == str(eval_npz)
         assert len(validation_meta["evaluation_npz_sha256"]) == 64
+        assert validation_meta["schema_version"] == 1
         assert validation_meta["validated_against_scores"] is True
         assert validation_meta["pit_diagnostics_validated"] is True
         assert validation_meta["score_order"] == scores["score_order"]
@@ -277,6 +278,7 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
         artifact_meta = enriched["bootstrap_artifact"]
         assert artifact_meta["evaluation_npz"] == str(eval_npz)
         assert len(artifact_meta["evaluation_npz_sha256"]) == 64
+        assert artifact_meta["schema_version"] == 1
         assert artifact_meta["validated_against_scores"] is True
         assert artifact_meta["pit_diagnostics_validated"] is True
         assert artifact_meta["score_order"] == scores["score_order"]
@@ -321,6 +323,7 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
         assert rc == 0
         validation_text = validation_md.read_text()
         assert "## Evaluation Artifact Validation" in validation_text
+        assert "| schema_version | 1 |" in validation_text
         assert "| validated_against_scores | True |" in validation_text
         assert "| pit_diagnostics_validated | True |" in validation_text
         validation_payload = json.loads(validation_json.read_text())
