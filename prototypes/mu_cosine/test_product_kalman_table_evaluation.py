@@ -211,6 +211,11 @@ def test_table_runner_output_dir_can_materialize_split_before_evaluation():
         input_manifest = json.loads(paths["input_manifest"].read_text())
         assert input_manifest["source_table"]["path"] == str(split_paths["split_table"])
         assert input_manifest["source_table"]["delimiter"] == "	"
+        report = paths["output_md"].read_text()
+        assert "## Split Materialization" in report
+        assert "| original_table |" in report
+        assert "| split_manifest |" in report
+        assert "| omitted_crossing_rows | 0 |" in report
 
 
 def test_table_runner_output_dir_allows_explicit_path_overrides():

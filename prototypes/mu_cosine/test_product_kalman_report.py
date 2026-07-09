@@ -65,6 +65,34 @@ def make_artifacts(tmp):
     )
     return input_manifest, scores_json
 
+def split_manifest_fixture():
+    return {
+        "source_table": {
+            "path": "raw.tsv",
+            "sha256": "a" * 64,
+            "delimiter": "\t",
+            "rows": 120,
+        },
+        "output_table": {
+            "path": "split_table.tsv",
+            "sha256": "b" * 64,
+            "rows": 120,
+        },
+        "split": {
+            "seed": 5,
+            "evaluation_unit_frac": 0.25,
+            "unit_columns": ["unit"],
+            "sampled_evaluation_unit_count": 30,
+            "observed_calibration_unit_count": 90,
+            "observed_evaluation_unit_count": 30,
+            "observed_unit_overlap_count": 0,
+            "disjoint_observed_units": True,
+            "calibration_rows": 90,
+            "evaluation_rows": 30,
+            "omitted_crossing_rows": 0,
+        },
+    }
+
 
 def test_markdown_report_records_scores_and_guardrails():
     with tempfile.TemporaryDirectory() as tmp:
@@ -84,15 +112,41 @@ def test_markdown_report_records_scores_and_guardrails():
         assert "does not encode a decision rule" in report
         assert "should be compared against the registered joint-posterior" in report
 
+def test_markdown_report_records_split_materialization_manifest():
+    with tempfile.TemporaryDirectory() as tmp:
+        input_manifest, scores_json = make_artifacts(tmp)
+        scores = json.loads(scores_json.read_text())
+        manifest = json.loads(input_manifest.read_text())
+        scores["inputs"]["original_table"] = "raw.tsv"
+        scores["inputs"]["split_manifest"] = "split.manifest.json"
+        report = build_product_kalman_markdown_report(
+            scores,
+            manifest,
+            split_manifest=split_manifest_fixture(),
+            title="Split Product-Kalman Report",
+        )
+
+        assert "## Split Materialization" in report
+        assert "| original_table | raw.tsv |" in report
+        assert "| split_manifest | split.manifest.json |" in report
+        assert "| unit_columns | unit |" in report
+        assert "| observed_unit_overlap_count | 0 |" in report
+        assert "| disjoint_observed_units | True |" in report
+        assert "| omitted_crossing_rows | 0 |" in report
+
 
 def test_markdown_report_cli_writes_file():
     with tempfile.TemporaryDirectory() as tmp:
         input_manifest, scores_json = make_artifacts(tmp)
         output_md = Path(tmp) / "report.md"
+        split_manifest = Path(tmp) / "split.manifest.json"
+        split_manifest.write_text(json.dumps(split_manifest_fixture()), encoding="utf-8")
         rc = main([
             str(scores_json),
             "--input-manifest",
             str(input_manifest),
+            "--split-manifest",
+            str(split_manifest),
             "--output-md",
             str(output_md),
             "--title",
@@ -103,6 +157,7 @@ def test_markdown_report_cli_writes_file():
         assert "# CLI Product-Kalman Report" in text
         assert "## Scores" in text
         assert "## NLL Improvements" in text
+        assert "## Split Materialization" in text
         assert "source_table_sha256" in text
 
 
