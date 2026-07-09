@@ -45,10 +45,11 @@ read_term_from_atom(Atom, Term) :-
 
 %% read_term_from_atom(+Atom, -Term, +Options) is semidet.
 %
-% Options are silently ignored in v1 -- the portable parser does
-% not yet support variable_names/1, character_escapes/1, etc.
-% Documenting this here so the wrapper has a stable surface and
-% the option-handling work has an obvious home for a follow-up.
+% This portable wrapper silently ignores options. Targets may intercept the
+% builtin before wrapper dispatch and implement options around the parser's
+% /4 environment result; the Rust runtime currently supports
+% variable_names/1 this way. Keeping the fallback wrapper permissive preserves
+% a stable surface for targets that have not adopted option handling yet.
 read_term_from_atom(Atom, Term, _Options) :-
     read_term_from_atom(Atom, Term).
 

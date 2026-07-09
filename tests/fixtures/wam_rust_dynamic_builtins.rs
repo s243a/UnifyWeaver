@@ -272,3 +272,35 @@ fn term_to_atom_quotes_and_roundtrips_non_bare_atoms() {
     assert!(vm.execute_builtin("term_to_atom/2", 2));
     assert_eq!(vm.bindings.get("Parsed"), Some(&term));
 }
+
+#[test]
+fn read_term_from_atom_returns_variable_names_with_shared_variables() {
+    let (code, labels) = shared_wam_program();
+    let mut vm = WamState::new(code, labels);
+    vm.set_reg_str("A1", at("p(A, B, A, _)"));
+    vm.set_reg_str("A2", ub("Term"));
+    vm.set_reg_str(
+        "A3",
+        Value::List(vec![fact("variable_names", vec![ub("Names")])]),
+    );
+
+    assert!(vm.execute_builtin("read_term_from_atom/3", 3));
+    let parsed = vm.bindings.get("Term").cloned().expect("Term bound");
+    let args = match parsed {
+        Value::Str(ref functor, ref args) if functor == "p" => args.clone(),
+        other => panic!("unexpected parsed term: {:?}", other),
+    };
+    assert_eq!(args[0], args[2]);
+    assert_ne!(args[0], args[1]);
+    assert_ne!(args[0], args[3]);
+
+    let names_raw = vm.bindings.get("Names").cloned().expect("Names bound");
+    let names = vm.deref_heap(&vm.deref_var(&names_raw));
+    assert_eq!(
+        names,
+        Value::List(vec![
+            fact("=", vec![at("A"), args[0].clone()]),
+            fact("=", vec![at("B"), args[1].clone()]),
+        ]),
+    );
+}
