@@ -39,6 +39,7 @@ except ImportError:  # direct script execution from prototypes/mu_cosine
 
 
 DEFAULT_NLL_BASELINES = ("prior", "independent_kalman")
+DEFAULT_PIT_COVERAGE_LEVELS = (0.50, 0.80, 0.90, 0.95)
 
 
 __all__ = [
@@ -46,6 +47,7 @@ __all__ = [
     "GaussianScoreVectors",
     "GroupedGaussianScore",
     "PITDiagnostics",
+    "DEFAULT_PIT_COVERAGE_LEVELS",
     "GroupResidualCovariances",
     "ProductKalmanHoldoutEvaluation",
     "bootstrap_nll_improvements_from_evaluation_npz",
@@ -59,6 +61,7 @@ __all__ = [
     "paired_bootstrap_nll_improvement_from_score_rows",
     "gaussian_marginal_pit_diagnostics",
     "gaussian_marginal_pit_values",
+    "pit_central_interval_coverage",
     "pit_diagnostics_from_values",
     "pit_uniform_ks_statistic",
     "row_covariances_from_groups",
@@ -420,12 +423,17 @@ class PITDiagnostics:
     `pit` must contain CDF values in `[0, 1]` with shape `(n, d)`. A calibrated
     predictive marginal should have PIT values close to uniform; `channel_ks` is
     the one-sample Kolmogorov-Smirnov distance to `U(0, 1)` for each channel.
+    `central_interval_coverage` reports empirical coverage for central PIT
+    intervals, so under/over-confident marginals are visible in report tables.
     """
 
     name: str
     pit: np.ndarray
     channel_names: tuple = ()
+    coverage_levels: tuple = DEFAULT_PIT_COVERAGE_LEVELS
     channel_ks: np.ndarray = field(init=False)
+    central_interval_coverage: np.ndarray = field(init=False)
+    central_interval_error: np.ndarray = field(init=False)
 
     def __post_init__(self):
         name = str(self.name)
@@ -439,12 +447,19 @@ class PITDiagnostics:
         channel_names = tuple(str(item) for item in self.channel_names)
         if channel_names and len(channel_names) != pit.shape[1]:
             raise ValueError("channel_names length must match pit dimension")
+        coverage_levels = _as_pit_coverage_levels(self.coverage_levels)
         channel_ks = np.array([pit_uniform_ks_statistic(pit[:, j]) for j in range(pit.shape[1])], dtype=float)
         channel_ks.setflags(write=False)
+        central_coverage = pit_central_interval_coverage(pit, coverage_levels=coverage_levels)
+        coverage_error = central_coverage - coverage_levels[:, None]
+        coverage_error.setflags(write=False)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "pit", pit)
         object.__setattr__(self, "channel_names", channel_names)
+        object.__setattr__(self, "coverage_levels", tuple(float(level) for level in coverage_levels))
         object.__setattr__(self, "channel_ks", channel_ks)
+        object.__setattr__(self, "central_interval_coverage", central_coverage)
+        object.__setattr__(self, "central_interval_error", coverage_error)
 
     @property
     def n(self):
@@ -460,6 +475,9 @@ class PITDiagnostics:
             "dimension": self.dimension,
             "channel_names": list(self.channel_names),
             "channel_ks": [float(value) for value in self.channel_ks],
+            "coverage_levels": [float(value) for value in self.coverage_levels],
+            "central_interval_coverage": self.central_interval_coverage.tolist(),
+            "central_interval_error": self.central_interval_error.tolist(),
             "method": "marginal_pit_uniform_ks",
         }
 
@@ -486,13 +504,49 @@ def pit_uniform_ks_statistic(values):
     return float(max(np.max(empirical_hi - x), np.max(x - empirical_lo)))
 
 
-def pit_diagnostics_from_values(name, pit, channel_names=()):
+def _as_pit_coverage_levels(coverage_levels):
+    levels = np.asarray(tuple(coverage_levels), dtype=float)
+    if levels.ndim != 1 or levels.size == 0:
+        raise ValueError("coverage_levels must be a nonempty 1-D sequence")
+    if not np.isfinite(levels).all():
+        raise ValueError("coverage_levels must be finite")
+    if ((levels <= 0.0) | (levels >= 1.0)).any():
+        raise ValueError("coverage_levels must lie strictly between 0 and 1")
+    if len(set(float(level) for level in levels)) != levels.size:
+        raise ValueError("coverage_levels must be unique")
+    levels = np.array(levels, dtype=float, copy=True)
+    levels.setflags(write=False)
+    return levels
+
+
+def pit_central_interval_coverage(pit, coverage_levels=DEFAULT_PIT_COVERAGE_LEVELS):
+    """Return empirical central PIT interval coverage with shape `(levels, d)`."""
+    values = _as_2d("pit", pit)
+    if ((values < 0.0) | (values > 1.0)).any():
+        raise ValueError("pit values must be in [0, 1]")
+    levels = _as_pit_coverage_levels(coverage_levels)
+    coverage = []
+    for level in levels:
+        tail = (1.0 - float(level)) / 2.0
+        inside = (values >= tail) & (values <= 1.0 - tail)
+        coverage.append(np.mean(inside, axis=0))
+    out = np.asarray(coverage, dtype=float)
+    out.setflags(write=False)
+    return out
+
+
+def pit_diagnostics_from_values(name, pit, channel_names=(), coverage_levels=DEFAULT_PIT_COVERAGE_LEVELS):
     """Build JSON-ready PIT calibration diagnostics from precomputed PIT values.
 
     This is the generic path for mixtures: callers can compute mixture CDF values
     row by row, then use this helper for the common validation and KS summary.
     """
-    return PITDiagnostics(name=name, pit=pit, channel_names=tuple(channel_names))
+    return PITDiagnostics(
+        name=name,
+        pit=pit,
+        channel_names=tuple(channel_names),
+        coverage_levels=tuple(coverage_levels),
+    )
 
 
 def _covariance_diagonal_rows(covariance, n, dim, jitter=0.0):
@@ -528,10 +582,18 @@ def gaussian_marginal_pit_values(target_state, mean, covariance, jitter=0.0):
     return pit
 
 
-def gaussian_marginal_pit_diagnostics(name, target_state, mean, covariance, jitter=0.0, channel_names=()):
+def gaussian_marginal_pit_diagnostics(
+    name,
+    target_state,
+    mean,
+    covariance,
+    jitter=0.0,
+    channel_names=(),
+    coverage_levels=DEFAULT_PIT_COVERAGE_LEVELS,
+):
     """Build PIT/KS diagnostics for Gaussian predictive marginals."""
     pit = gaussian_marginal_pit_values(target_state, mean, covariance, jitter=jitter)
-    return pit_diagnostics_from_values(name, pit, channel_names=channel_names)
+    return pit_diagnostics_from_values(name, pit, channel_names=channel_names, coverage_levels=coverage_levels)
 
 
 @dataclass(frozen=True)
@@ -631,6 +693,7 @@ class ProductKalmanHoldoutEvaluation:
             score_by_name = {score.name: score for score in scores}
             vector_by_name = {vector.name: vector for vector in score_vectors}
             pit_names = []
+            pit_coverage_levels = None
             for diagnostic in pit_diagnostics:
                 if not isinstance(diagnostic, PITDiagnostics):
                     raise ValueError("pit_diagnostics must contain PITDiagnostics objects")
@@ -643,6 +706,10 @@ class ProductKalmanHoldoutEvaluation:
                 vector = vector_by_name.get(diagnostic.name)
                 if vector is not None and diagnostic.dimension != vector.dimension:
                     raise ValueError("PIT diagnostic dimension must match score-vector dimension")
+                if pit_coverage_levels is None:
+                    pit_coverage_levels = diagnostic.coverage_levels
+                elif diagnostic.coverage_levels != pit_coverage_levels:
+                    raise ValueError("PIT diagnostics must share coverage_levels for artifact serialization")
             if len(pit_names) != len(set(pit_names)):
                 raise ValueError("PIT diagnostic names must be unique")
         object.__setattr__(self, "scores", scores)
@@ -1265,6 +1332,15 @@ def evaluation_artifact_arrays(result):
             "pit_names": np.array([diagnostic.name for diagnostic in result.pit_diagnostics]),
             "pit_values": np.stack([diagnostic.pit for diagnostic in result.pit_diagnostics]),
             "pit_channel_ks": np.vstack([diagnostic.channel_ks for diagnostic in result.pit_diagnostics]),
+            "pit_coverage_levels": np.array(result.pit_diagnostics[0].coverage_levels, dtype=float),
+            "pit_central_interval_coverage": np.stack([
+                diagnostic.central_interval_coverage
+                for diagnostic in result.pit_diagnostics
+            ]),
+            "pit_central_interval_error": np.stack([
+                diagnostic.central_interval_error
+                for diagnostic in result.pit_diagnostics
+            ]),
             "pit_summary_json": np.array([
                 json.dumps(diagnostic.to_json_dict(), sort_keys=True)
                 for diagnostic in result.pit_diagnostics

@@ -133,7 +133,9 @@ def test_markdown_report_records_scores_and_guardrails():
         assert "| product_kalman | independent_kalman |" in report
         assert "## NLL Improvement Bootstrap Intervals" in report
         assert "## PIT Diagnostics" in report
+        assert "## PIT Central Coverage" in report
         assert "marginal_pit_uniform_ks" in report
+        assert "absolute central-coverage error" in report
         assert "observed_gain" in report
         assert "paired row-resampling" in report
         assert "| calibration_rows | 80 |" in report
@@ -154,14 +156,20 @@ def test_markdown_report_records_pit_diagnostics_when_present():
                 "dimension": 2,
                 "channel_names": ["D", "S"],
                 "channel_ks": [0.08, 0.12],
+                "coverage_levels": [0.8, 0.9],
+                "central_interval_coverage": [[0.70, 0.75], [0.88, 0.91]],
+                "central_interval_error": [[-0.10, -0.05], [-0.02, 0.01]],
                 "method": "marginal_pit_uniform_ks",
             }
         }
         report = build_product_kalman_markdown_report(scores, manifest)
 
         assert "## PIT Diagnostics" in report
+        assert "## PIT Central Coverage" in report
         assert "| mix | D | 0.08 | 40 | 2 | marginal_pit_uniform_ks |" in report
         assert "| mix | S | 0.12 | 40 | 2 | marginal_pit_uniform_ks |" in report
+        assert "| mix | D | 0.8 | 0.7 | -0.1 | 40 |" in report
+        assert "| mix | S | 0.9 | 0.91 | 0.01 | 40 |" in report
         assert "PIT diagnostics, when present" in report
 
 def test_markdown_report_records_split_materialization_manifest():
