@@ -213,6 +213,37 @@ fn conjunction_rule_backtracks_left_subgoal_for_more_body_solutions() {
 }
 
 #[test]
+fn generated_read_term_two_applies_variable_names() {
+    let (code, labels) = shared_wam_program();
+    let mut vm = WamState::new(code, labels);
+    vm.set_term_input("p(A, A, B).");
+    vm.set_reg_str("A1", ub("Term"));
+    vm.set_reg_str("A2", ub("Names"));
+    vm.pc = *vm.labels
+        .get("rust_read_term_options_demo/2")
+        .expect("generated read_term/2 label");
+
+    assert!(vm.run());
+    let parsed = vm.bindings.get("Term").cloned().expect("Term bound");
+    let args = match parsed {
+        Value::Str(ref functor, ref args) if functor == "p" => args.clone(),
+        other => panic!("unexpected parsed term: {:?}", other),
+    };
+    assert_eq!(args[0], args[1]);
+    assert_ne!(args[0], args[2]);
+
+    let names_raw = vm.bindings.get("Names").cloned().expect("Names bound");
+    let names = vm.deref_heap(&vm.deref_var(&names_raw));
+    assert_eq!(
+        names,
+        Value::List(vec![
+            fact("=", vec![at("A"), args[0].clone()]),
+            fact("=", vec![at("B"), args[2].clone()]),
+        ]),
+    );
+}
+
+#[test]
 fn read_eof_binds_end_of_file() {
     let mut vm = WamState::new(vec![], HashMap::new());
     vm.set_reg_str("A1", ub("T"));

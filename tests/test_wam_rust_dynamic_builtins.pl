@@ -12,6 +12,10 @@ rust_dyn_dummy.
 :- dynamic rust_assert_alias_demo/0.
 rust_assert_alias_demo :- assert(dyn(alias)).
 
+:- dynamic rust_read_term_options_demo/2.
+rust_read_term_options_demo(Term, Names) :-
+    read_term(Term, [variable_names(Names)]).
+
 cargo_ok :-
     catch(( process_create(path(cargo), ['--version'],
                            [stdout(null), stderr(null), process(P)]),
@@ -27,7 +31,9 @@ test(assert_retract_dynamic_db,
     Dir = 'output/test_wam_rust_dynamic_builtins',
     safe_rmdir(Dir),
     once(write_wam_rust_project(
-        [user:rust_dyn_dummy/0, user:rust_assert_alias_demo/0],
+        [user:rust_dyn_dummy/0,
+         user:rust_assert_alias_demo/0,
+         user:rust_read_term_options_demo/2],
         [module_name(dynrt), no_kernels(true), runtime_parser(compiled)],
         Dir)),
     atom_concat(Dir, '/tests', TestsDir),

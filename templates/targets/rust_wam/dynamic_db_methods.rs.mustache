@@ -6,7 +6,7 @@
         self.term_input_pos = 0;
     }
 
-    fn execute_read_term_builtin(&mut self) -> bool {
+    fn execute_read_term_builtin(&mut self, options: Option<&Value>) -> bool {
         use std::io::Read;
         if self.term_input_pos >= self.term_input.len() {
             let mut input = String::new();
@@ -24,11 +24,22 @@
                 self.term_input_pos = self.term_input.len();
                 let eof = Value::Atom("end_of_file".to_string());
                 let target = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
-                return if self.unify(&target, &eof) { self.pc += 1; true } else { false };
+                if !self.unify(&target, &eof) {
+                    return false;
+                }
+                if let Some(options) = options {
+                    if !self.bind_empty_read_term_options(options) {
+                        return false;
+                    }
+                }
+                self.pc += 1;
+                return true;
             }
         };
         self.term_input_pos = next_pos;
-        if self.bind_compiled_parse_atom(&text, "A1") { self.pc += 1; true }
+        if self.bind_compiled_parse_atom_with_options(&text, "A1", options) {
+            self.pc += 1; true
+        }
         else { false }
     }
 
@@ -98,6 +109,18 @@
             }
         }
         None
+    }
+
+    fn bind_empty_read_term_options(&mut self, options: &Value) -> bool {
+        let empty = Value::List(Vec::new());
+        for name in ["variable_names", "variables", "singletons"] {
+            if let Some(target) = self.read_term_option_arg(options, name) {
+                if !self.unify(&target, &empty) {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     fn copy_named_variables_from_env(
