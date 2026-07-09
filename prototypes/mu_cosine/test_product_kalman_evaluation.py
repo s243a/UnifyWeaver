@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 
 from product_kalman_evaluation import (
+    bootstrap_nll_improvements_from_evaluation_npz,
     evaluate_product_kalman_holdout,
     evaluation_artifact_arrays,
     evaluation_to_json_dict,
@@ -207,6 +208,14 @@ def test_npz_runner_and_json_cli_roundtrip():
         ) < 1e-12
         assert from_cli["nll_improvement_bootstrap_vs_independent_kalman"]["product_kalman"] == boot
 
+        artifact_boot = bootstrap_nll_improvements_from_evaluation_npz(
+            artifact_path,
+            n_boot=200,
+            seed=3,
+            confidence=0.90,
+        )
+        assert artifact_boot["nll_improvement_bootstrap_vs_independent_kalman"]["product_kalman"] == boot
+
         with np.load(artifact_path, allow_pickle=False) as artifact:
             assert int(artifact["schema_version"]) == 1
             assert artifact["score_names"].tolist() == data["score_order"]
@@ -264,6 +273,7 @@ def test_npz_runner_validates_required_keys():
         input_path = Path(tmp) / "missing.npz"
         np.savez(input_path, calibration_prior_mean=np.zeros((4, 1)))
         assert_raises(run_product_kalman_holdout_npz, input_path)
+        assert_raises(bootstrap_nll_improvements_from_evaluation_npz, input_path, n_boot=10)
 
 
 def test_nonidentity_observation_omits_measurement_baseline():

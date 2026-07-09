@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
 
-from product_kalman_report import build_product_kalman_markdown_report, main
+from product_kalman_report import add_artifact_bootstrap_intervals, build_product_kalman_markdown_report, main
 from product_kalman_table_evaluation import run_product_kalman_table_evaluation
 
 
@@ -45,13 +45,20 @@ def write_table(path):
             })
 
 
-def make_artifacts(tmp):
+def make_artifacts(tmp, bootstrap_nll=50):
     table = Path(tmp) / "holdout.csv"
     input_npz = Path(tmp) / "input.npz"
     input_manifest = Path(tmp) / "input.manifest.json"
     scores_json = Path(tmp) / "scores.json"
     eval_npz = Path(tmp) / "eval_artifacts.npz"
     write_table(table)
+    kwargs = {}
+    if bootstrap_nll:
+        kwargs.update({
+            "bootstrap_nll": bootstrap_nll,
+            "bootstrap_seed": 7,
+            "bootstrap_confidence": 0.90,
+        })
     run_product_kalman_table_evaluation(
         table,
         input_npz,
@@ -62,11 +69,10 @@ def make_artifacts(tmp):
         output_json=scores_json,
         output_npz=eval_npz,
         jitter=1e-8,
-        bootstrap_nll=50,
-        bootstrap_seed=7,
-        bootstrap_confidence=0.90,
+        **kwargs,
     )
-    return input_manifest, scores_json
+    return input_manifest, scores_json, eval_npz
+
 
 def split_manifest_fixture():
     return {
@@ -99,7 +105,7 @@ def split_manifest_fixture():
 
 def test_markdown_report_records_scores_and_guardrails():
     with tempfile.TemporaryDirectory() as tmp:
-        input_manifest, scores_json = make_artifacts(tmp)
+        input_manifest, scores_json, _ = make_artifacts(tmp)
         scores = json.loads(scores_json.read_text())
         manifest = json.loads(input_manifest.read_text())
         report = build_product_kalman_markdown_report(scores, manifest, title="Synthetic Product-Kalman Report")
@@ -123,7 +129,7 @@ def test_markdown_report_records_scores_and_guardrails():
 
 def test_markdown_report_records_split_materialization_manifest():
     with tempfile.TemporaryDirectory() as tmp:
-        input_manifest, scores_json = make_artifacts(tmp)
+        input_manifest, scores_json, _ = make_artifacts(tmp)
         scores = json.loads(scores_json.read_text())
         manifest = json.loads(input_manifest.read_text())
         scores["inputs"]["original_table"] = "raw.tsv"
@@ -144,9 +150,55 @@ def test_markdown_report_records_split_materialization_manifest():
         assert "| omitted_crossing_rows | 0 |" in report
 
 
+def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
+    with tempfile.TemporaryDirectory() as tmp:
+        input_manifest, scores_json, eval_npz = make_artifacts(tmp, bootstrap_nll=0)
+        scores = json.loads(scores_json.read_text())
+        assert "nll_improvement_bootstrap_vs_independent_kalman" not in scores
+        enriched = add_artifact_bootstrap_intervals(
+            scores,
+            evaluation_npz=eval_npz,
+            n_boot=50,
+            seed=7,
+            confidence=0.90,
+        )
+        recorded_path_enriched = add_artifact_bootstrap_intervals(
+            scores,
+            n_boot=50,
+            seed=7,
+            confidence=0.90,
+        )
+        assert "nll_improvement_bootstrap_vs_prior" in recorded_path_enriched
+        boot = enriched["nll_improvement_bootstrap_vs_independent_kalman"]["product_kalman"]
+        assert boot["n_boot"] == 50
+        assert boot["seed"] == 7
+        assert boot["confidence"] == 0.90
+
+        output_md = Path(tmp) / "posthoc.md"
+        rc = main([
+            str(scores_json),
+            "--input-manifest",
+            str(input_manifest),
+            "--evaluation-npz",
+            str(eval_npz),
+            "--bootstrap-nll",
+            "50",
+            "--bootstrap-seed",
+            "7",
+            "--bootstrap-confidence",
+            "0.90",
+            "--output-md",
+            str(output_md),
+        ])
+        assert rc == 0
+        text = output_md.read_text()
+        assert "## NLL Improvement Bootstrap Intervals" in text
+        assert "| independent_kalman | product_kalman |" in text
+
+
 def test_markdown_report_cli_writes_file():
     with tempfile.TemporaryDirectory() as tmp:
-        input_manifest, scores_json = make_artifacts(tmp)
+        input_manifest, scores_json, _ = make_artifacts(tmp)
         output_md = Path(tmp) / "report.md"
         split_manifest = Path(tmp) / "split.manifest.json"
         split_manifest.write_text(json.dumps(split_manifest_fixture()), encoding="utf-8")

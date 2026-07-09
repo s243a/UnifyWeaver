@@ -10,8 +10,14 @@ import argparse
 import json
 import sys
 
+try:
+    from .product_kalman_evaluation import bootstrap_nll_improvements_from_evaluation_npz
+except ImportError:  # direct script execution from prototypes/mu_cosine
+    from product_kalman_evaluation import bootstrap_nll_improvements_from_evaluation_npz
+
 
 __all__ = [
+    "add_artifact_bootstrap_intervals",
     "build_product_kalman_markdown_report",
     "load_json",
     "write_markdown_report",
@@ -158,6 +164,35 @@ def _calibration_rows(scores_json):
     ]
 
 
+def add_artifact_bootstrap_intervals(
+    scores_json,
+    evaluation_npz=None,
+    n_boot=0,
+    seed=0,
+    confidence=0.95,
+    overwrite=False,
+):
+    """Return `scores_json` enriched with post-hoc bootstrap intervals from row artifacts."""
+    if not n_boot:
+        return scores_json
+    artifact_path = evaluation_npz or scores_json.get("inputs", {}).get("evaluation_npz")
+    if not artifact_path:
+        raise ValueError(
+            "--evaluation-npz is required when --bootstrap-nll is set "
+            "and scores JSON has no evaluation_npz input"
+        )
+    out = dict(scores_json)
+    for key, value in bootstrap_nll_improvements_from_evaluation_npz(
+        artifact_path,
+        n_boot=n_boot,
+        seed=seed,
+        confidence=confidence,
+    ).items():
+        if overwrite or key not in out:
+            out[key] = value
+    return out
+
+
 def _split_materialization_rows(split_manifest):
     if not split_manifest:
         return []
@@ -295,6 +330,11 @@ def _build_arg_parser():
     ap.add_argument("--split-manifest", help="optional split manifest JSON from product_kalman_split_table")
     ap.add_argument("--output-md", help="write Markdown report here instead of stdout")
     ap.add_argument("--title", default="Product-Kalman Holdout Report")
+    ap.add_argument("--evaluation-npz", help="optional row-level evaluation artifact NPZ for post-hoc bootstrap intervals")
+    ap.add_argument("--bootstrap-nll", type=int, default=0, help="paired bootstrap replicates for NLL gains; 0 disables")
+    ap.add_argument("--bootstrap-seed", type=int, default=0)
+    ap.add_argument("--bootstrap-confidence", type=float, default=0.95)
+    ap.add_argument("--overwrite-bootstrap", action="store_true", help="replace existing bootstrap sections in scores JSON")
     return ap
 
 
@@ -302,6 +342,17 @@ def main(argv=None):
     ap = _build_arg_parser()
     args = ap.parse_args(argv)
     scores = load_json(args.scores_json)
+    try:
+        scores = add_artifact_bootstrap_intervals(
+            scores,
+            evaluation_npz=args.evaluation_npz,
+            n_boot=args.bootstrap_nll,
+            seed=args.bootstrap_seed,
+            confidence=args.bootstrap_confidence,
+            overwrite=args.overwrite_bootstrap,
+        )
+    except (OSError, ValueError) as exc:
+        ap.error(str(exc))
     manifest = load_json(args.input_manifest) if args.input_manifest else None
     split_manifest = load_json(args.split_manifest) if args.split_manifest else None
     text = build_product_kalman_markdown_report(scores, manifest, split_manifest=split_manifest, title=args.title)

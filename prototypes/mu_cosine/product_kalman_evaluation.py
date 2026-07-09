@@ -41,10 +41,13 @@ __all__ = [
     "GaussianScore",
     "GaussianScoreVectors",
     "ProductKalmanHoldoutEvaluation",
+    "bootstrap_nll_improvements_from_evaluation_npz",
+    "bootstrap_nll_improvements_from_score_rows",
     "evaluate_product_kalman_holdout",
     "evaluation_artifact_arrays",
     "evaluation_to_json_dict",
     "paired_bootstrap_nll_improvement",
+    "paired_bootstrap_nll_improvement_from_score_rows",
     "run_product_kalman_holdout_npz",
     "score_gaussian_prediction_vectors",
     "score_gaussian_predictions",
@@ -267,21 +270,11 @@ def _bootstrap_settings(n_boot, seed, confidence):
     return n_boot, seed, confidence
 
 
-def paired_bootstrap_nll_improvement(result, baseline, candidate, n_boot=1000, seed=0, confidence=0.95):
-    """Paired bootstrap CI for mean NLL gain, `baseline - candidate`.
-
-    Rows are resampled with replacement from the shared evaluation split, preserving
-    the paired comparison between two prediction families. Positive gain means the
-    candidate has lower held-out NLL than the baseline.
-    """
+def _bootstrap_nll_diff(diff, baseline, candidate, n_boot, seed, confidence):
     n_boot, seed, confidence = _bootstrap_settings(n_boot, seed, confidence)
     if n_boot <= 0:
         raise ValueError("n_boot must be positive for a bootstrap interval")
-    baseline_vec = result.score_vector(baseline)
-    candidate_vec = result.score_vector(candidate)
-    if baseline_vec.n != candidate_vec.n:
-        raise ValueError("baseline and candidate row-score vectors must have the same length")
-    diff = baseline_vec.nll - candidate_vec.nll
+    diff = _readonly_vector("nll difference", diff)
     rng = np.random.default_rng(seed)
     boot = np.empty(n_boot, dtype=float)
     for i in range(n_boot):
@@ -302,6 +295,110 @@ def paired_bootstrap_nll_improvement(result, baseline, candidate, n_boot=1000, s
         "n": int(diff.size),
         "method": "paired_row_resample",
     }
+
+
+def paired_bootstrap_nll_improvement(result, baseline, candidate, n_boot=1000, seed=0, confidence=0.95):
+    """Paired bootstrap CI for mean NLL gain, `baseline - candidate`.
+
+    Rows are resampled with replacement from the shared evaluation split, preserving
+    the paired comparison between two prediction families. Positive gain means the
+    candidate has lower held-out NLL than the baseline.
+    """
+    baseline_vec = result.score_vector(baseline)
+    candidate_vec = result.score_vector(candidate)
+    if baseline_vec.n != candidate_vec.n:
+        raise ValueError("baseline and candidate row-score vectors must have the same length")
+    return _bootstrap_nll_diff(
+        baseline_vec.nll - candidate_vec.nll,
+        baseline,
+        candidate,
+        n_boot,
+        seed,
+        confidence,
+    )
+
+
+def _decode_score_names(value):
+    arr = np.asarray(value)
+    if arr.ndim != 1 or arr.size == 0:
+        raise ValueError("score_names must be a nonempty 1-D array")
+    names = []
+    for item in arr:
+        if isinstance(item, bytes):
+            name = item.decode("utf-8")
+        else:
+            name = str(item)
+        if not name:
+            raise ValueError("score_names must not contain empty names")
+        names.append(name)
+    if len(names) != len(set(names)):
+        raise ValueError("score_names must be unique")
+    return tuple(names)
+
+
+def _score_row_nll_inputs(score_names, score_row_nll):
+    names = _decode_score_names(score_names)
+    rows = np.asarray(score_row_nll, dtype=float)
+    if rows.ndim != 2:
+        raise ValueError("score_row_nll must be a 2-D array shaped (models, rows)")
+    if rows.shape[0] != len(names):
+        raise ValueError("score_row_nll first dimension must match score_names")
+    if rows.shape[1] == 0:
+        raise ValueError("score_row_nll must contain at least one held-out row")
+    if not np.isfinite(rows).all():
+        raise ValueError("score_row_nll must be finite")
+    return names, rows
+
+
+def paired_bootstrap_nll_improvement_from_score_rows(
+    score_names,
+    score_row_nll,
+    baseline,
+    candidate,
+    n_boot=1000,
+    seed=0,
+    confidence=0.95,
+):
+    """Paired bootstrap CI from stored row-level NLL artifacts."""
+    names, rows = _score_row_nll_inputs(score_names, score_row_nll)
+    name_to_idx = {name: i for i, name in enumerate(names)}
+    if baseline not in name_to_idx:
+        raise ValueError(f"baseline {baseline!r} is not present in score_names")
+    if candidate not in name_to_idx:
+        raise ValueError(f"candidate {candidate!r} is not present in score_names")
+    diff = rows[name_to_idx[baseline]] - rows[name_to_idx[candidate]]
+    return _bootstrap_nll_diff(diff, baseline, candidate, n_boot, seed, confidence)
+
+
+def bootstrap_nll_improvements_from_score_rows(
+    score_names,
+    score_row_nll,
+    n_boot=1000,
+    seed=0,
+    confidence=0.95,
+    baselines=("prior", "independent_kalman"),
+):
+    """Return JSON-ready paired bootstrap maps from stored row-level NLL artifacts."""
+    names, rows = _score_row_nll_inputs(score_names, score_row_nll)
+    out = {}
+    for baseline in baselines:
+        if baseline not in names:
+            continue
+        key = f"nll_improvement_bootstrap_vs_{baseline}"
+        out[key] = {
+            candidate: paired_bootstrap_nll_improvement_from_score_rows(
+                names,
+                rows,
+                baseline,
+                candidate,
+                n_boot=n_boot,
+                seed=seed,
+                confidence=confidence,
+            )
+            for candidate in names
+            if candidate != baseline
+        }
+    return out
 
 
 def score_gaussian_prediction_vectors(name, target_state, mean, covariance, jitter=1e-9):
@@ -539,6 +636,26 @@ def _require_npz_array(npz, path, key):
 
 def _optional_npz_array(npz, key):
     return npz[key] if key in npz.files else None
+
+
+def bootstrap_nll_improvements_from_evaluation_npz(
+    artifact_npz,
+    n_boot=1000,
+    seed=0,
+    confidence=0.95,
+    baselines=("prior", "independent_kalman"),
+):
+    """Return JSON-ready paired NLL bootstrap maps from an evaluation artifact NPZ."""
+    path = str(artifact_npz)
+    with np.load(path, allow_pickle=False) as data:
+        return bootstrap_nll_improvements_from_score_rows(
+            _require_npz_array(data, path, "score_names"),
+            _require_npz_array(data, path, "score_row_nll"),
+            n_boot=n_boot,
+            seed=seed,
+            confidence=confidence,
+            baselines=baselines,
+        )
 
 
 def _score_to_json_dict(score):
