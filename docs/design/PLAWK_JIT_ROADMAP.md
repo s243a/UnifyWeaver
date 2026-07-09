@@ -399,7 +399,12 @@ loadable along the way.
   source of its own Stage A serializer, and the doubly-compiled serializer
   reproduced the golden `.wamo` byte stream exactly (checksum 2263 = byte sum
   + length, matched against the Stage A implementation). The compiler has
-  compiled its own back end. The remaining campaign extends this toward
+  compiled its own back end. **GEN 3 LANDED** — the loaded compiler compiled
+  a mini-COMPILER (reader as a compiled goal, `=..` clause decomposition, a
+  dispatching ITE codegen decision, atom-table emission), and the
+  doubly-compiled compiler compiled two golden programs byte-exactly
+  (combined checksum 4676): source text in, correct object bytes out, two
+  compile generations deep. The remaining campaign extends this toward
   `compile(SelfSource)` — the full fixpoint.
   The compile budget for the full self-compile is closed: the **chained
   arena** removed the memory cliff (blocks link on exhaustion and never
