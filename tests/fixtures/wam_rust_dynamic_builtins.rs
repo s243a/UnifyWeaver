@@ -274,14 +274,18 @@ fn term_to_atom_quotes_and_roundtrips_non_bare_atoms() {
 }
 
 #[test]
-fn read_term_from_atom_returns_variable_names_with_shared_variables() {
+fn read_term_from_atom_returns_variable_metadata_with_shared_variables() {
     let (code, labels) = shared_wam_program();
     let mut vm = WamState::new(code, labels);
-    vm.set_reg_str("A1", at("p(A, B, A, _)"));
+    vm.set_reg_str("A1", at("p(A, B, A, _, _C, _C, D)"));
     vm.set_reg_str("A2", ub("Term"));
     vm.set_reg_str(
         "A3",
-        Value::List(vec![fact("variable_names", vec![ub("Names")])]),
+        Value::List(vec![
+            fact("variables", vec![ub("Variables")]),
+            fact("variable_names", vec![ub("Names")]),
+            fact("singletons", vec![ub("Singletons")]),
+        ]),
     );
 
     assert!(vm.execute_builtin("read_term_from_atom/3", 3));
@@ -291,8 +295,22 @@ fn read_term_from_atom_returns_variable_names_with_shared_variables() {
         other => panic!("unexpected parsed term: {:?}", other),
     };
     assert_eq!(args[0], args[2]);
+    assert_eq!(args[4], args[5]);
     assert_ne!(args[0], args[1]);
     assert_ne!(args[0], args[3]);
+
+    let variables_raw = vm.bindings.get("Variables").cloned().expect("Variables bound");
+    let variables = vm.deref_heap(&vm.deref_var(&variables_raw));
+    assert_eq!(
+        variables,
+        Value::List(vec![
+            args[0].clone(),
+            args[1].clone(),
+            args[3].clone(),
+            args[4].clone(),
+            args[6].clone(),
+        ]),
+    );
 
     let names_raw = vm.bindings.get("Names").cloned().expect("Names bound");
     let names = vm.deref_heap(&vm.deref_var(&names_raw));
@@ -301,6 +319,19 @@ fn read_term_from_atom_returns_variable_names_with_shared_variables() {
         Value::List(vec![
             fact("=", vec![at("A"), args[0].clone()]),
             fact("=", vec![at("B"), args[1].clone()]),
+            fact("=", vec![at("_C"), args[4].clone()]),
+            fact("=", vec![at("D"), args[6].clone()]),
+        ]),
+    );
+
+    let singletons_raw = vm.bindings.get("Singletons").cloned().expect("Singletons bound");
+    let singletons = vm.deref_heap(&vm.deref_var(&singletons_raw));
+    assert_eq!(
+        singletons,
+        Value::List(vec![
+            fact("=", vec![at("B"), args[1].clone()]),
+            fact("=", vec![at("_"), args[3].clone()]),
+            fact("=", vec![at("D"), args[6].clone()]),
         ]),
     );
 }
