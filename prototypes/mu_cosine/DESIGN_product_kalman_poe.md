@@ -341,6 +341,28 @@ Report:
 A Product-Kalman PoE or joint-channel Kalman variant earns its keep only if it improves held-out log loss and
 calibration against both the naive-PoE controls and the additive/joint covariance baselines.
 
+## Empirical rung status
+
+The real-corpus Product-Kalman arc is now an exploratory evidence ladder, not only a proposal. Read these as
+model-development results, not preregistered claims:
+
+1. `REPORT_product_kalman_realdata.md` tested constant covariance blocks on the exploratory multihop corpus and the
+   fresh Behavior slice. Correlated Product-Kalman beat the prior on both corpora, while the independent/PoE control
+   showed the expected overconfidence failure when correlated product channels were stacked.
+2. `REPORT_product_kalman_realdata.md` also records rung (a): hop-conditioned covariance blocks inside the Kalman
+   gain. This closed the measured Mahalanobis calibration gap left by constant blocks, matching the role predicted
+   by the confirmatory Sigma(hop) result.
+3. `REPORT_product_kalman_logit.md` tested rung (b): logit-space fusion, de-quantization, Jacobian-weighted
+   measurement noise, and a two-component density mixture over the mu-space and logit-space experts. The constant
+   dual-space mixture became the best exploratory NLL model on both corpora.
+4. `REPORT_product_kalman_gated.md` tested context gates for that dual-space mixture. The fixed mixture weight remains
+   the production recommendation; gates can help when observable context predicts regime, but they did not earn a
+   permanent role.
+
+The current open modeling issue is narrower: mixture PIT diagnostics still reject perfect shape calibration, and the
+statistical-linearization idea in `REPORT_product_kalman_gated.md` is a future treatment for transporting covariance
+through nonlinear links without relying on a point Jacobian.
+
 ## Guardrails
 
 - Do not assume expert independence. Shared e5/model inputs make independence false by default; use a full learned
@@ -388,7 +410,8 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    grouped-covariance score variants when calibration/evaluation group labels are present, records aggregate NLL/MSE,
    Mahalanobis calibration-scale/tail diagnostics, row-level score vectors, and optional paired bootstrap intervals
    for NLL gains against configurable baselines such as ungrouped `product_kalman`, and keeps
-   calibration/evaluation IDs disjoint. *(Synthetic harness added; real-corpus comparison pending.)*
+   calibration/evaluation IDs disjoint. *(Harness complete; dedicated real-corpus exploratory runs are recorded in
+   the reports listed below.)*
 8. Use `product_kalman_report.py` to render the input manifest, optional split manifest, and score JSON into a
    descriptive Markdown run note. When row-level `eval_artifacts.npz` exists, the report CLI can add paired bootstrap
    NLL intervals post hoc without rerunning scoring, verifies the row artifact against the score summary, records the
@@ -396,10 +419,14 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    only: it records scores and
    provenance, but does not encode a decision rule or promote Product-Kalman without comparison against registered
    baselines.
-9. Fit empirical Product-Kalman variants on those calibration blocks, then compare against `JointPosterior` and
-   Sigma-conditioned covariance on a separate node-disjoint evaluation split; do not reuse the calibration
-   residuals that set `R_ell` as the comparison set.
-10. Only after the held-out comparison, decide whether this belongs in the training objective.
+9. Keep empirical Product-Kalman rungs auditable: constant blocks (`run_product_kalman_realdata.py`),
+   hop-conditioned blocks (`run_product_kalman_sigma_hop.py`), dual mu/logit density mixtures
+   (`run_product_kalman_logit.py`), and mixture-gate diagnostics (`run_product_kalman_gated.py`) should remain
+   explicitly labeled exploratory unless rerun under a registered decision rule.
+10. Compare the best Product-Kalman rung against `JointPosterior` on a separate node-disjoint evaluation split before
+    using it as a training objective. Do not reuse the calibration residuals that set covariance blocks as the
+    comparison set, and do not let Product-Kalman displace the calibrated joint-head workflow without held-out NLL,
+    calibration, and selective-risk evidence.
 
 ## Related local artifacts
 
@@ -435,5 +462,14 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
   labels are present, Mahalanobis predicted-error scale/tail diagnostics, JSON summaries, configurable paired
   bootstrap baselines for direct grouped-vs-ungrouped comparisons, and row-level NPZ score artifacts for reproducible
   bootstrap/tail diagnostics.
+- `run_product_kalman_realdata.py` and `REPORT_product_kalman_realdata.md` — exploratory real-corpus run showing
+  correlated Product-Kalman beats the prior and that independent/PoE fusion becomes overconfident when correlated
+  product channels are stacked; the same report records Sigma(hop) blocks inside the Kalman gain as rung (a).
+- `run_product_kalman_sigma_hop.py` — reusable rung-(a) machinery for hop-conditioned covariance blocks in the
+  Kalman gain.
+- `run_product_kalman_logit.py` and `REPORT_product_kalman_logit.md` — rung (b) comparison of mu-space, logit-space,
+  and dual-space density mixtures scored in a common mu-density space.
+- `run_product_kalman_gated.py` and `REPORT_product_kalman_gated.md` — gate ladder for the dual-space mixture,
+  including PIT diagnostics and the deferred statistical-linearization treatment.
 - `REPORT_sigma_hop_confirmatory.md` and `PAPER_sigma_hop_confirmatory.md` — confirmatory Sigma(hop) result and
   publication scaffold.
