@@ -14,12 +14,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 
 from product_kalman_evaluation import (
+    GroupResidualCovariances,
     bootstrap_nll_improvements_from_evaluation_npz,
     evaluate_product_kalman_holdout,
     evaluation_artifact_arrays,
     evaluation_to_json_dict,
+    fit_group_residual_covariances,
     main,
     paired_bootstrap_nll_improvement,
+    row_covariances_from_groups,
     run_product_kalman_holdout_npz,
     score_gaussian_prediction_vectors_rowwise,
     score_gaussian_prediction_vectors,
@@ -303,6 +306,63 @@ def test_nonidentity_observation_omits_measurement_baseline():
     assert names == ["prior", "independent_kalman", "product_kalman"]
     assert result.correlated_update.mean.shape == (n_eval, 2)
     assert_raises(result.score, "measurement")
+
+
+def test_group_residual_covariances_feed_rowwise_scores():
+    rng = np.random.default_rng(17)
+    n_cal_per_group = 240
+    n_eval_per_group = 120
+    cal_groups = np.array(["tight"] * n_cal_per_group + ["wide"] * n_cal_per_group)
+    eval_groups = np.array(["tight"] * n_eval_per_group + ["wide"] * n_eval_per_group)
+    cal_pred = np.zeros((2 * n_cal_per_group, 1))
+    eval_pred = np.zeros((2 * n_eval_per_group, 1))
+    cal_obs = np.concatenate([
+        rng.normal(scale=0.20, size=n_cal_per_group),
+        rng.normal(scale=1.10, size=n_cal_per_group),
+    ])[:, None]
+    eval_obs = np.concatenate([
+        rng.normal(scale=0.20, size=n_eval_per_group),
+        rng.normal(scale=1.10, size=n_eval_per_group),
+    ])[:, None]
+
+    fitted = fit_group_residual_covariances(cal_pred, cal_obs, cal_groups, min_group_rows=20, jitter=1e-8)
+    assert fitted.group_counts == {"tight": n_cal_per_group, "wide": n_cal_per_group}
+    assert fitted.covariance_by_group["tight"][0, 0] < fitted.fallback_covariance[0, 0]
+    assert fitted.covariance_by_group["wide"][0, 0] > fitted.fallback_covariance[0, 0]
+    row_covariances = fitted.row_covariances(eval_groups)
+    assert row_covariances.shape == (2 * n_eval_per_group, 1, 1)
+    assert row_covariances.flags.writeable is False
+
+    global_score = score_gaussian_predictions("global", eval_obs, eval_pred, fitted.fallback_covariance, jitter=1e-8)
+    grouped_score = score_gaussian_predictions_rowwise("grouped", eval_obs, eval_pred, row_covariances, jitter=1e-8)
+    assert grouped_score.mean_nll < global_score.mean_nll
+    assert grouped_score.covariance_trace == np.mean(np.trace(row_covariances, axis1=1, axis2=2))
+
+
+def test_group_residual_covariance_fallbacks_and_validation():
+    pred = np.zeros((8, 1))
+    obs = np.array([[0.0], [0.2], [-0.1], [0.1], [1.0], [-1.1], [0.9], [0.05]])
+    groups = np.array(["common", "common", "common", "common", "wide", "wide", "wide", "rare"])
+    fitted = fit_group_residual_covariances(pred, obs, groups, min_group_rows=3, jitter=1e-8)
+    assert fitted.group_counts == {"common": 4, "wide": 3, "rare": 1}
+    np.testing.assert_allclose(fitted.covariance_by_group["rare"], fitted.fallback_covariance)
+    rows = row_covariances_from_groups(
+        ["common", "rare", "unseen"],
+        fitted.covariance_by_group,
+        fallback_covariance=fitted.fallback_covariance,
+    )
+    assert rows.shape == (3, 1, 1)
+    np.testing.assert_allclose(rows[2], fitted.fallback_covariance)
+    assert_raises(row_covariances_from_groups, ["unseen"], fitted.covariance_by_group)
+    assert_raises(fit_group_residual_covariances, pred, obs, ["x"] * 7)
+    assert_raises(fit_group_residual_covariances, pred, obs, ["x"] * 8, min_group_rows=1)
+    assert_raises(
+        GroupResidualCovariances,
+        covariance_by_group={"a": [[1.0]]},
+        fallback_covariance=[[1.0]],
+        group_counts={"a": 1, "extra": 1},
+        min_group_rows=2,
+    )
 
 
 def test_score_gaussian_predictions_validates_shapes_and_reports_mse():
