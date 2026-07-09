@@ -712,15 +712,50 @@ doubling; entries are plain ids/addresses so relocating the block is
 safe). Regression `reader_var_dict_grows_past_128` (130 names, repeated
 variable in the last clause).
 
-**Remaining toward the full fixpoint:** the serializer, the single-clause
-codegen middle, and now the grouping/label/chain front and generic table
-walk are all self-compiled. What is left of cgfull: the
-structure-pattern and list codegen (u_seq/s_seq deferral both
-directions), ITE codegen, the builtin/comparison goal dispatch (the
-whitelist table), and stitching everything into one
-`compile(SelfSource)` whose accepted subset covers its own source. The
-compile budget is solved, the `'$VAR'` convention permits the walkers to
-be compiled, and the front slice proves the chain builders compile.
+**THE WALKERS LANDED (loaded, minus deferral) — ITE codegen, guards,
+builtins self-compiled.** The loaded cgfull compiled
+`fixpoint_walkers_source/1`: the front plus the last codegen walkers —
+**PC/label-threaded goal compilation with full ITE codegen** (`mite`
+mirrors `f_goal`'s ITE clause: else/join labels, `cut_ite`, `jump`,
+Label-PC pairs, init-set intersection), comparison guards (`mcmp`), the
+builtin whitelist dispatch (`mbi`), general operands with list-literal
+builds, and structure/list patterns with X-temp deferral on both sides.
+The doubly-compiled compiler compiled a golden with an if-then-else +
+comparison + atom operands, builtin calls with list-literal arguments,
+and structure head patterns with repeated variables **byte-identically
+to the production cgfull** (checksum 22412; test
+`selfhost_codegen_stage_d_walkers`). The walkers' **complete** logic —
+including the X-temp deferral cases (nested head pattern
+`w(f(g(Z)), Z)`, nested expression build `(A + B) * 2`) — is proven
+byte-exact by interpreting the same source as Prolog in SWI against
+`cgfull_term/2` (test `selfhost_walkers_logic_in_swi`, checksum 33858).
+
+*Runtime finding (campaign no. 12) — OPEN.* The deferral paths crash
+LOADED: `FATAL: WAM heap oob read` at exactly `heap_top`, i.e. a live
+register chain holds a Ref to a heap cell above the rewound top — read
+by the keep-var deref in a `get_value` at the next call's clause-chain
+entry (the FATAL diagnostics now print the crash PC, added this round,
+which mapped it). Isolated to a minimal pair (~2.5 KB programs, one
+clause differing): a deferred-reads walker whose body is a plain
+conjunction WORKS; the same body wrapped in an if-then-else whose else
+is taken — even with the cond side-effect-free and BOTH branches
+textually identical — CRASHES in the first recursive call after the
+join. Trivial branch bodies do not crash; real branch bodies (a
+predicate call binding outputs used after the join) do. The suspicion
+is the ITE else-entry backtrack (guard-CP restore) interacting with
+values created before the guard and threaded through the join, but the
+mechanism is not yet pinned — next round starts with a
+printf-instrumented `-O0` trace of the minimal pair. The affected
+construct is narrow: an ITE inside a deferral-walker clause whose
+branch bindings feed post-join recursive calls.
+
+**Remaining toward the full fixpoint:** every compiler stage is now
+self-compiled — serializer, single-clause middle, grouping/label/chain
+front, generic table walk, and the last walkers (ITE codegen, guards,
+builtins; deferral logic SWI-proven). Left: fix runtime finding no. 12
+(the ITE/deferral interaction above) so the deferral paths run loaded,
+then stitch the slices into one `compile(SelfSource)` whose accepted
+subset covers its own source — the capstone.
 
 **Deliverable:** the demonstrable self-host — the compiler compiles itself,
 and `compile(SelfSource)` yields a working compiler object.

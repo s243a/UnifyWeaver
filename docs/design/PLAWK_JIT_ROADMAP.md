@@ -421,7 +421,14 @@ loadable along the way.
   self-compiled; the doubly-compiled compiler compiled a multi-predicate
   program (facts, a two-clause chain, a predicate call, constants,
   arithmetic) byte-identically to the production cgfull (checksum
-  13679). The remaining campaign extends this toward
+  13679). **THE WALKERS LANDED** — ITE codegen with labels and init-set
+  intersection, comparison guards, and the builtin whitelist
+  self-compiled and byte-exact loaded (22412); the X-temp deferral
+  paths are byte-exact in SWI (33858) but blocked loaded on **finding
+  no. 12 (OPEN)**: an ITE else-entry backtrack interaction leaves a
+  stale heap Ref in the deferral walkers — isolated to a minimal pair,
+  hunt scheduled next round with the new PC-reporting heap-bounds
+  diagnostics. The remaining campaign: fix no. 12, then
   `compile(SelfSource)` — the full fixpoint.
   The compile budget for the full self-compile is closed: the **chained
   arena** removed the memory cliff (blocks link on exhaustion and never
