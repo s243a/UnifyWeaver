@@ -17,6 +17,7 @@ import numpy as np
 from product_kalman_evaluation import run_product_kalman_holdout_npz
 from product_kalman_table_evaluation import (
     default_product_kalman_run_paths,
+    default_product_kalman_split_paths,
     main,
     run_product_kalman_table_evaluation,
 )
@@ -43,6 +44,25 @@ def write_table(path, delimiter=","):
             writer.writerow({
                 "split": split,
                 "id": f"{split}-{i}",
+                "prior": f"{prior[i, 0]:.17g}",
+                "measurement": f"{measurement[i, 0]:.17g}",
+                "target": f"{target[i, 0]:.17g}",
+            })
+
+
+def write_unsplit_unit_table(path, delimiter="	"):
+    prior, measurement, target, _ = synthetic_identity_split(n_cal=90, n_eval=30)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["id", "unit", "prior", "measurement", "target"],
+            delimiter=delimiter,
+        )
+        writer.writeheader()
+        for i in range(len(target)):
+            writer.writerow({
+                "id": f"row-{i}",
+                "unit": f"unit-{i}",
                 "prior": f"{prior[i, 0]:.17g}",
                 "measurement": f"{measurement[i, 0]:.17g}",
                 "target": f"{target[i, 0]:.17g}",
@@ -139,6 +159,58 @@ def test_table_runner_output_dir_writes_canonical_bundle():
         assert summary["inputs"]["report_md"] == str(paths["output_md"])
         assert summary["nll_improvement_vs_prior"]["product_kalman"] > 0.65
         assert "# Product-Kalman Holdout Report" in paths["output_md"].read_text()
+
+
+def test_table_runner_output_dir_can_materialize_split_before_evaluation():
+    with tempfile.TemporaryDirectory() as tmp:
+        table = Path(tmp) / "unsplit.tsv"
+        output_dir = Path(tmp) / "product_kalman_run"
+        write_unsplit_unit_table(table, delimiter="	")
+
+        rc = main([
+            str(table),
+            "--output-dir",
+            str(output_dir),
+            "--split-unit-cols",
+            "unit",
+            "--evaluation-unit-frac",
+            "0.25",
+            "--split-seed",
+            "5",
+            "--prior-cols",
+            "prior",
+            "--measurement-cols",
+            "measurement",
+            "--target-cols",
+            "target",
+            "--jitter",
+            "1e-8",
+        ])
+
+        assert rc == 0
+        paths = default_product_kalman_run_paths(output_dir)
+        split_paths = default_product_kalman_split_paths(output_dir, input_table=table)
+        for path in list(paths.values()) + list(split_paths.values()):
+            assert path.exists(), path
+        assert split_paths["split_table"].name == "split_table.tsv"
+
+        summary = json.loads(paths["output_json"].read_text())
+        assert summary["inputs"]["source_table"] == str(split_paths["split_table"])
+        assert summary["inputs"]["original_table"] == str(table)
+        assert summary["inputs"]["split_manifest"] == str(split_paths["split_manifest"])
+        assert summary["inputs"]["input_manifest"] == str(paths["input_manifest"])
+        assert summary["nll_improvement_vs_prior"]["product_kalman"] > 0.65
+
+        split_manifest = json.loads(split_paths["split_manifest"].read_text())
+        assert split_manifest["source_table"]["path"] == str(table)
+        assert split_manifest["source_table"]["delimiter"] == "	"
+        assert split_manifest["output_table"]["path"] == str(split_paths["split_table"])
+        assert split_manifest["split"]["omitted_crossing_rows"] == 0
+        assert split_manifest["split"]["disjoint_observed_units"] is True
+        assert split_manifest["split"]["evaluation_rows"] == 30
+        input_manifest = json.loads(paths["input_manifest"].read_text())
+        assert input_manifest["source_table"]["path"] == str(split_paths["split_table"])
+        assert input_manifest["source_table"]["delimiter"] == "	"
 
 
 def test_table_runner_output_dir_allows_explicit_path_overrides():
