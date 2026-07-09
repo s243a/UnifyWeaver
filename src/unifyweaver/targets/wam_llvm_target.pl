@@ -7755,7 +7755,15 @@ builtin_is:
   ; of the integer eval_arith''s 0. Everything else still routes
   ; through integer eval_arith (boxed via value_integer).
   %is.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  store i1 0, i1* @wam_arith_err
   %is.result_val = call %Value @eval_arith_value(%WamState* %vm, %Value %is.a2)
+  %is.err = load i1, i1* @wam_arith_err
+  br i1 %is.err, label %is.eval_failed, label %is.eval_ok
+
+is.eval_failed:
+  ret i1 false
+
+is.eval_ok:
   %is.a1d = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
   %is.a1_unb = call i1 @value_is_unbound(%Value %is.a1d)
   br i1 %is.a1_unb, label %is.do_bind, label %is.check_eq
@@ -7777,8 +7785,14 @@ builtin_gt:
   ; otherwise compare integer payloads with icmp.
   %gt.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %gt.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  store i1 0, i1* @wam_arith_err
   %gt.e1 = call %Value @eval_arith_value(%WamState* %vm, %Value %gt.a1)
   %gt.e2 = call %Value @eval_arith_value(%WamState* %vm, %Value %gt.a2)
+  %gt.aerr = load i1, i1* @wam_arith_err
+  br i1 %gt.aerr, label %gt.arith_failed, label %gt.arith_ok
+gt.arith_failed:
+  ret i1 false
+gt.arith_ok:
   %gt.t1 = extractvalue %Value %gt.e1, 0
   %gt.t2 = extractvalue %Value %gt.e2, 0
   %gt.f1 = icmp eq i32 %gt.t1, 2
@@ -7799,8 +7813,14 @@ gt.float:
 builtin_lt:
   %lt.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %lt.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  store i1 0, i1* @wam_arith_err
   %lt.e1 = call %Value @eval_arith_value(%WamState* %vm, %Value %lt.a1)
   %lt.e2 = call %Value @eval_arith_value(%WamState* %vm, %Value %lt.a2)
+  %lt.aerr = load i1, i1* @wam_arith_err
+  br i1 %lt.aerr, label %lt.arith_failed, label %lt.arith_ok
+lt.arith_failed:
+  ret i1 false
+lt.arith_ok:
   %lt.t1 = extractvalue %Value %lt.e1, 0
   %lt.t2 = extractvalue %Value %lt.e2, 0
   %lt.f1 = icmp eq i32 %lt.t1, 2
@@ -7821,8 +7841,14 @@ lt.float:
 builtin_ge:
   %ge.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %ge.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  store i1 0, i1* @wam_arith_err
   %ge.e1 = call %Value @eval_arith_value(%WamState* %vm, %Value %ge.a1)
   %ge.e2 = call %Value @eval_arith_value(%WamState* %vm, %Value %ge.a2)
+  %ge.aerr = load i1, i1* @wam_arith_err
+  br i1 %ge.aerr, label %ge.arith_failed, label %ge.arith_ok
+ge.arith_failed:
+  ret i1 false
+ge.arith_ok:
   %ge.t1 = extractvalue %Value %ge.e1, 0
   %ge.t2 = extractvalue %Value %ge.e2, 0
   %ge.f1 = icmp eq i32 %ge.t1, 2
@@ -7843,8 +7869,14 @@ ge.float:
 builtin_le:
   %le.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %le.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  store i1 0, i1* @wam_arith_err
   %le.e1 = call %Value @eval_arith_value(%WamState* %vm, %Value %le.a1)
   %le.e2 = call %Value @eval_arith_value(%WamState* %vm, %Value %le.a2)
+  %le.aerr = load i1, i1* @wam_arith_err
+  br i1 %le.aerr, label %le.arith_failed, label %le.arith_ok
+le.arith_failed:
+  ret i1 false
+le.arith_ok:
   %le.t1 = extractvalue %Value %le.e1, 0
   %le.t2 = extractvalue %Value %le.e2, 0
   %le.f1 = icmp eq i32 %le.t1, 2
@@ -7865,8 +7897,14 @@ le.float:
 builtin_arith_eq:
   %aeq.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %aeq.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  store i1 0, i1* @wam_arith_err
   %aeq.e1 = call %Value @eval_arith_value(%WamState* %vm, %Value %aeq.a1)
   %aeq.e2 = call %Value @eval_arith_value(%WamState* %vm, %Value %aeq.a2)
+  %aeq.aerr = load i1, i1* @wam_arith_err
+  br i1 %aeq.aerr, label %aeq.arith_failed, label %aeq.arith_ok
+aeq.arith_failed:
+  ret i1 false
+aeq.arith_ok:
   %aeq.t1 = extractvalue %Value %aeq.e1, 0
   %aeq.t2 = extractvalue %Value %aeq.e2, 0
   %aeq.f1 = icmp eq i32 %aeq.t1, 2
@@ -7887,8 +7925,14 @@ aeq.float:
 builtin_arith_ne:
   %ane.a1 = call %Value @wam_get_reg(%WamState* %vm, i32 0)
   %ane.a2 = call %Value @wam_get_reg(%WamState* %vm, i32 1)
+  store i1 0, i1* @wam_arith_err
   %ane.e1 = call %Value @eval_arith_value(%WamState* %vm, %Value %ane.a1)
   %ane.e2 = call %Value @eval_arith_value(%WamState* %vm, %Value %ane.a2)
+  %ane.aerr = load i1, i1* @wam_arith_err
+  br i1 %ane.aerr, label %ane.arith_failed, label %ane.arith_ok
+ane.arith_failed:
+  ret i1 false
+ane.arith_ok:
   %ane.t1 = extractvalue %Value %ane.e1, 0
   %ane.t2 = extractvalue %Value %ane.e2, 0
   %ane.f1 = icmp eq i32 %ane.t1, 2
@@ -17339,6 +17383,201 @@ fail:
 ; the result is Float. The legacy integer-only @eval_arith is kept
 ; for paths that still need an i64 directly (currently none in the
 ; merged tree).
+@wam_arith_err = internal global i1 0
+
+; Capstone finding (part 2): the arith dispatch below routes on the
+; FIRST BYTE of the functor name (plus second/third-byte splits), so
+; an UNKNOWN functor sharing a prefix with a real op silently aliased
+; it -- f(2) evaluated as floor(2), g(5,6) as gcd(5,6). SWI raises a
+; type error for these; parity requires they FAIL. This gate strcmps
+; the full functor name against the exact set of implemented op names
+; per arity BEFORE dispatch; unknown names go to ev_zero, which sets
+; @wam_arith_err so is/2 and the arithmetic comparisons fail cleanly.
+; Names are emitted as raw byte arrays to sidestep string escaping.
+@.aop_b0 = private constant [2 x i8] [i8 43, i8 0]
+@.aop_b1 = private constant [2 x i8] [i8 45, i8 0]
+@.aop_b2 = private constant [2 x i8] [i8 42, i8 0]
+@.aop_b3 = private constant [3 x i8] [i8 42, i8 42, i8 0]
+@.aop_b4 = private constant [2 x i8] [i8 47, i8 0]
+@.aop_b5 = private constant [3 x i8] [i8 47, i8 47, i8 0]
+@.aop_b6 = private constant [3 x i8] [i8 47, i8 92, i8 0]
+@.aop_b7 = private constant [3 x i8] [i8 60, i8 60, i8 0]
+@.aop_b8 = private constant [3 x i8] [i8 62, i8 62, i8 0]
+@.aop_b9 = private constant [3 x i8] [i8 92, i8 47, i8 0]
+@.aop_b10 = private constant [4 x i8] [i8 109, i8 111, i8 100, i8 0]
+@.aop_b11 = private constant [4 x i8] [i8 109, i8 97, i8 120, i8 0]
+@.aop_b12 = private constant [4 x i8] [i8 109, i8 105, i8 110, i8 0]
+@.aop_b13 = private constant [6 x i8] [i8 97, i8 116, i8 97, i8 110, i8 50, i8 0]
+@.aop_b14 = private constant [4 x i8] [i8 103, i8 99, i8 100, i8 0]
+@.aop_b15 = private constant [4 x i8] [i8 108, i8 111, i8 103, i8 0]
+@.aop_b16 = private constant [4 x i8] [i8 120, i8 111, i8 114, i8 0]
+@.aop_u0 = private constant [2 x i8] [i8 45, i8 0]
+@.aop_u1 = private constant [2 x i8] [i8 92, i8 0]
+@.aop_u2 = private constant [4 x i8] [i8 97, i8 98, i8 115, i8 0]
+@.aop_u3 = private constant [5 x i8] [i8 97, i8 115, i8 105, i8 110, i8 0]
+@.aop_u4 = private constant [5 x i8] [i8 97, i8 99, i8 111, i8 115, i8 0]
+@.aop_u5 = private constant [5 x i8] [i8 97, i8 116, i8 97, i8 110, i8 0]
+@.aop_u6 = private constant [6 x i8] [i8 114, i8 111, i8 117, i8 110, i8 100, i8 0]
+@.aop_u7 = private constant [6 x i8] [i8 102, i8 108, i8 111, i8 111, i8 114, i8 0]
+@.aop_u8 = private constant [8 x i8] [i8 99, i8 101, i8 105, i8 108, i8 105, i8 110, i8 103, i8 0]
+@.aop_u9 = private constant [4 x i8] [i8 99, i8 111, i8 115, i8 0]
+@.aop_u10 = private constant [5 x i8] [i8 115, i8 113, i8 114, i8 116, i8 0]
+@.aop_u11 = private constant [5 x i8] [i8 115, i8 105, i8 103, i8 110, i8 0]
+@.aop_u12 = private constant [4 x i8] [i8 115, i8 105, i8 110, i8 0]
+@.aop_u13 = private constant [9 x i8] [i8 116, i8 114, i8 117, i8 110, i8 99, i8 97, i8 116, i8 101, i8 0]
+@.aop_u14 = private constant [4 x i8] [i8 116, i8 97, i8 110, i8 0]
+@.aop_u15 = private constant [4 x i8] [i8 108, i8 111, i8 103, i8 0]
+@.aop_u16 = private constant [4 x i8] [i8 101, i8 120, i8 112, i8 0]
+
+define i1 @wam_arith_name_ok(i8* %fn, i32 %arity) {
+entry:
+  %is2 = icmp eq i32 %arity, 2
+  br i1 %is2, label %b0, label %chk1
+chk1:
+  %is1 = icmp eq i32 %arity, 1
+  br i1 %is1, label %u0, label %no
+b0:
+  %b0.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.aop_b0, i32 0, i32 0))
+  %b0.z = icmp eq i32 %b0.c, 0
+  br i1 %b0.z, label %yes, label %b1
+b1:
+  %b1.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.aop_b1, i32 0, i32 0))
+  %b1.z = icmp eq i32 %b1.c, 0
+  br i1 %b1.z, label %yes, label %b2
+b2:
+  %b2.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.aop_b2, i32 0, i32 0))
+  %b2.z = icmp eq i32 %b2.c, 0
+  br i1 %b2.z, label %yes, label %b3
+b3:
+  %b3.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.aop_b3, i32 0, i32 0))
+  %b3.z = icmp eq i32 %b3.c, 0
+  br i1 %b3.z, label %yes, label %b4
+b4:
+  %b4.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.aop_b4, i32 0, i32 0))
+  %b4.z = icmp eq i32 %b4.c, 0
+  br i1 %b4.z, label %yes, label %b5
+b5:
+  %b5.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.aop_b5, i32 0, i32 0))
+  %b5.z = icmp eq i32 %b5.c, 0
+  br i1 %b5.z, label %yes, label %b6
+b6:
+  %b6.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.aop_b6, i32 0, i32 0))
+  %b6.z = icmp eq i32 %b6.c, 0
+  br i1 %b6.z, label %yes, label %b7
+b7:
+  %b7.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.aop_b7, i32 0, i32 0))
+  %b7.z = icmp eq i32 %b7.c, 0
+  br i1 %b7.z, label %yes, label %b8
+b8:
+  %b8.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.aop_b8, i32 0, i32 0))
+  %b8.z = icmp eq i32 %b8.c, 0
+  br i1 %b8.z, label %yes, label %b9
+b9:
+  %b9.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.aop_b9, i32 0, i32 0))
+  %b9.z = icmp eq i32 %b9.c, 0
+  br i1 %b9.z, label %yes, label %b10
+b10:
+  %b10.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([4 x i8], [4 x i8]* @.aop_b10, i32 0, i32 0))
+  %b10.z = icmp eq i32 %b10.c, 0
+  br i1 %b10.z, label %yes, label %b11
+b11:
+  %b11.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([4 x i8], [4 x i8]* @.aop_b11, i32 0, i32 0))
+  %b11.z = icmp eq i32 %b11.c, 0
+  br i1 %b11.z, label %yes, label %b12
+b12:
+  %b12.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([4 x i8], [4 x i8]* @.aop_b12, i32 0, i32 0))
+  %b12.z = icmp eq i32 %b12.c, 0
+  br i1 %b12.z, label %yes, label %b13
+b13:
+  %b13.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([6 x i8], [6 x i8]* @.aop_b13, i32 0, i32 0))
+  %b13.z = icmp eq i32 %b13.c, 0
+  br i1 %b13.z, label %yes, label %b14
+b14:
+  %b14.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([4 x i8], [4 x i8]* @.aop_b14, i32 0, i32 0))
+  %b14.z = icmp eq i32 %b14.c, 0
+  br i1 %b14.z, label %yes, label %b15
+b15:
+  %b15.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([4 x i8], [4 x i8]* @.aop_b15, i32 0, i32 0))
+  %b15.z = icmp eq i32 %b15.c, 0
+  br i1 %b15.z, label %yes, label %b16
+b16:
+  %b16.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([4 x i8], [4 x i8]* @.aop_b16, i32 0, i32 0))
+  %b16.z = icmp eq i32 %b16.c, 0
+  br i1 %b16.z, label %yes, label %no
+u0:
+  %u0.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.aop_u0, i32 0, i32 0))
+  %u0.z = icmp eq i32 %u0.c, 0
+  br i1 %u0.z, label %yes, label %u1
+u1:
+  %u1.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.aop_u1, i32 0, i32 0))
+  %u1.z = icmp eq i32 %u1.c, 0
+  br i1 %u1.z, label %yes, label %u2
+u2:
+  %u2.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([4 x i8], [4 x i8]* @.aop_u2, i32 0, i32 0))
+  %u2.z = icmp eq i32 %u2.c, 0
+  br i1 %u2.z, label %yes, label %u3
+u3:
+  %u3.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([5 x i8], [5 x i8]* @.aop_u3, i32 0, i32 0))
+  %u3.z = icmp eq i32 %u3.c, 0
+  br i1 %u3.z, label %yes, label %u4
+u4:
+  %u4.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([5 x i8], [5 x i8]* @.aop_u4, i32 0, i32 0))
+  %u4.z = icmp eq i32 %u4.c, 0
+  br i1 %u4.z, label %yes, label %u5
+u5:
+  %u5.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([5 x i8], [5 x i8]* @.aop_u5, i32 0, i32 0))
+  %u5.z = icmp eq i32 %u5.c, 0
+  br i1 %u5.z, label %yes, label %u6
+u6:
+  %u6.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([6 x i8], [6 x i8]* @.aop_u6, i32 0, i32 0))
+  %u6.z = icmp eq i32 %u6.c, 0
+  br i1 %u6.z, label %yes, label %u7
+u7:
+  %u7.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([6 x i8], [6 x i8]* @.aop_u7, i32 0, i32 0))
+  %u7.z = icmp eq i32 %u7.c, 0
+  br i1 %u7.z, label %yes, label %u8
+u8:
+  %u8.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([8 x i8], [8 x i8]* @.aop_u8, i32 0, i32 0))
+  %u8.z = icmp eq i32 %u8.c, 0
+  br i1 %u8.z, label %yes, label %u9
+u9:
+  %u9.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([4 x i8], [4 x i8]* @.aop_u9, i32 0, i32 0))
+  %u9.z = icmp eq i32 %u9.c, 0
+  br i1 %u9.z, label %yes, label %u10
+u10:
+  %u10.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([5 x i8], [5 x i8]* @.aop_u10, i32 0, i32 0))
+  %u10.z = icmp eq i32 %u10.c, 0
+  br i1 %u10.z, label %yes, label %u11
+u11:
+  %u11.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([5 x i8], [5 x i8]* @.aop_u11, i32 0, i32 0))
+  %u11.z = icmp eq i32 %u11.c, 0
+  br i1 %u11.z, label %yes, label %u12
+u12:
+  %u12.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([4 x i8], [4 x i8]* @.aop_u12, i32 0, i32 0))
+  %u12.z = icmp eq i32 %u12.c, 0
+  br i1 %u12.z, label %yes, label %u13
+u13:
+  %u13.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([9 x i8], [9 x i8]* @.aop_u13, i32 0, i32 0))
+  %u13.z = icmp eq i32 %u13.c, 0
+  br i1 %u13.z, label %yes, label %u14
+u14:
+  %u14.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([4 x i8], [4 x i8]* @.aop_u14, i32 0, i32 0))
+  %u14.z = icmp eq i32 %u14.c, 0
+  br i1 %u14.z, label %yes, label %u15
+u15:
+  %u15.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([4 x i8], [4 x i8]* @.aop_u15, i32 0, i32 0))
+  %u15.z = icmp eq i32 %u15.c, 0
+  br i1 %u15.z, label %yes, label %u16
+u16:
+  %u16.c = call i32 @strcmp(i8* %fn, i8* getelementptr inbounds ([4 x i8], [4 x i8]* @.aop_u16, i32 0, i32 0))
+  %u16.z = icmp eq i32 %u16.c, 0
+  br i1 %u16.z, label %yes, label %no
+yes:
+  ret i1 1
+no:
+  ret i1 0
+}
+
 define %Value @eval_arith_value(%WamState* %vm, %Value %expr_raw) {
 entry:
   %expr = call %Value @wam_deref_value(%WamState* %vm, %Value %expr_raw)
@@ -17390,6 +17629,10 @@ ev_compound:
   %fn0 = load i8, i8* %fn_ptr
   %args_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 2
   %args = load %Value*, %Value** %args_slot
+  %aop_ok = call i1 @wam_arith_name_ok(i8* %fn_ptr, i32 %arity)
+  br i1 %aop_ok, label %ev_known_op, label %ev_zero
+
+ev_known_op:
   %is_binary = icmp eq i32 %arity, 2
   br i1 %is_binary, label %ev_eval_binary, label %ev_check_unary
 
@@ -17985,10 +18228,17 @@ ev_sign_f:
   ret %Value %sign_v_f
 
 ev_zero:
-  ; Unknown / fail -- return Integer 0 as a benign placeholder. The
-  ; legacy @eval_arith printed an error to stderr here; for the
-  ; tagged path we just box zero so callers don''t crash on an
-  ; unrecognized expression.
+  ; Unknown / fail -- box Integer 0 so callers do not crash, and SET
+  ; THE ARITHMETIC ERROR FLAG so is/2 and the comparisons FAIL like
+  ; SWI raises a type/evaluation error (capstone finding: without
+  ; this, Y is 48 + F with F a non-arithmetic compound silently
+  ; evaluated to 48, so the self-compiled compiler dispatch clause
+  ; guarded by that failure wrongly succeeded -- the numbervarred
+  ; marker pattern in its own source compiled as a plain variable and
+  ; the self-compile diverged from the production compiler by one
+  ; instruction per marker clause). The flag is cleared by each
+  ; consuming builtin before evaluation.
+  store i1 1, i1* @wam_arith_err
   %z_v = call %Value @value_integer(i64 0)
   ret %Value %z_v
 }'.

@@ -2215,6 +2215,81 @@ test(selfhost_finding12_no_heap_oob, [condition(clang_available)]) :-
     assertion(Out == "6\n"),
     !.
 
+% ============================ THE CAPSTONE ============================
+% compile(SelfSource): the fixpoint. gen 1 = the AOT-compiled cgfull.
+% The SELF-SOURCE is the walkers compiler itself, re-entered through
+% main2(Src, W) :- cm3(Src, Cs), atom_codes(W, Cs) -- the source text
+% arrives as a runtime argument, so no quine trick is needed. gen 2 =
+% gen 1 compiling the self-source (a working compiler object, proven
+% byte-exact against cgfull all campaign). gen 3 = GEN 2 COMPILING ITS
+% OWN SOURCE. Because gen 2 reproduces cgfull's bytes exactly, gen 3
+% must equal gen 2 BYTE-FOR-BYTE: F(F) = F -- the compiler compiles
+% itself and the self-compiled compiler is the same object. The
+% triangle is closed by gen 3 compiling the full walkers golden
+% byte-identically to the production cgfull middle.
+test(selfhost_capstone_fixpoint, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([user:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'dump_host_bin', Dump),
+    ( exists_file(Dump) -> true ; build_dump_host(Dir, Dump) ),
+    fixpoint_walkers_source(Walkers),
+    once(sub_atom(Walkers, BPos, _, _, '), (cm3(')),
+    Skip is BPos + 2,
+    sub_atom(Walkers, Skip, _, 0, Rest),
+    atom_concat('[(main2(Src2, W2) :- cm3(Src2, Cs2), atom_codes(W2, Cs2)),',
+                Rest, SelfSrc),
+    directory_file_path(Dir, 'self_src.txt', SelfPath),
+    setup_call_cleanup(open(SelfPath, write, S0),
+        write(S0, SelfSrc), close(S0)),
+    run_dump(Dump, CompWamo, SelfPath, Gen2Bytes),
+    directory_file_path(Dir, 'gen2.wamo', Gen2Path),
+    setup_call_cleanup(open(Gen2Path, write, S1),
+        write(S1, Gen2Bytes), close(S1)),
+    run_dump(Dump, Gen2Path, SelfPath, Gen3Bytes),
+    assertion(Gen2Bytes == Gen3Bytes),
+    directory_file_path(Dir, 'gen3.wamo', Gen3Path),
+    setup_call_cleanup(open(Gen3Path, write, S2),
+        write(S2, Gen3Bytes), close(S2)),
+    directory_file_path(Dir, 'cap_gold.txt', GoldPath),
+    setup_call_cleanup(open(GoldPath, write, S3),
+        write(S3, '[(cls(N, R2) :- (N >= 10 -> R2 = big ; R2 = small)), (sum2(Xs, R3) :- append(Xs, [7], Ys), sum_list(Ys, R3)), swap(p(X, Y), p(Y, X)), w(f(g(Z)), Z), (tot([A, B], R4) :- R4 is (A + B) * 2)]'),
+        close(S3)),
+    run_dump(Dump, Gen3Path, GoldPath, GoldBytes),
+    cgfull_term([(cls(N, R2) :- (N >= 10 -> R2 = big ; R2 = small)),
+                 (sum2(Xs, R3) :- append(Xs, [7], Ys), sum_list(Ys, R3)),
+                 swap(p(X, Y), p(Y, X)),
+                 w(f(g(Z)), Z),
+                 (tot([A, B], R4) :- R4 is (A + B) * 2)], WGold),
+    atom_string(GoldAtom, GoldBytes),
+    assertion(GoldAtom == WGold),
+    !.
+
+% Capstone finding regression: loaded arithmetic on a NON-ARITHMETIC
+% compound must FAIL (SWI raises a type error) rather than silently
+% evaluating the unknown functor to 0. Before the @wam_arith_err flag,
+% X is 1 + f(2) succeeded with X = 1, so any dispatch clause guarded by
+% an is-failure wrongly committed -- the self-compile diverged from the
+% production compiler at exactly its numbervarred-marker clauses.
+test(selfhost_arith_error_fails_cleanly, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([user:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgae_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- (X is 1 + f(2) -> R = X ; R = 2))]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "2\n"),
+    !.
+
 % Nested arithmetic in the loaded compiler: the is-expression is staged
 % with c_operand (build_struct + X-temp deferral), so arbitrarily nested
 % expressions compile. (X + Y) * (X - 1) + 100 with X=3, Y=4 -> 114.
@@ -2683,6 +2758,64 @@ prn:\n\c
   %fmt = getelementptr [6 x i8], [6 x i8]* @.ev_fmt, i32 0, i32 0\n\c
   %pr = call i32 (i8*, ...) @printf(i8* %fmt, i64 %val)\n  ret i32 0\n\c
 fail:\n  ret i32 21\n}\n').
+
+run_dump(Dump, Comp, Src, Bytes) :-
+    process_create(Dump, [Comp, Src],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Bytes),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    Status == 0.
+
+% A bytes-dump host: load a compiler object, run it on a source file via
+% @wam_object_call_bytes, print the emitted object text. This is stage 1
+% of the eval host in isolation -- it lets the capstone test CHAIN
+% compilers: dump(gen_n, src) emits gen_{n+1}, which is itself loadable.
+build_dump_host(Dir, Host) :-
+    directory_file_path(Dir, 'dump_host.ll', LL),
+    with_output_to(string(_),
+        write_wam_llvm_project([user:answer/1],
+            [module_name(wam_object_dump_host), emit_wamo_loader(true)], LL)),
+    dump_host_main_ir(MainIR),
+    setup_call_cleanup(
+        open(LL, append, S, [encoding(utf8)]),
+        write(S, MainIR),
+        close(S)),
+    directory_file_path(Dir, 'dump_host_bin', Host),
+    clang_link(LL, Host).
+
+dump_host_main_ir(
+'\n@.dh_fmt = private constant [5 x i8] c"%.*s\\00"\n\n\c
+define i32 @main(i32 %argc, i8** %argv) {\n\c
+entry:\n\c
+  %p1 = getelementptr i8*, i8** %argv, i64 1\n  %cp = load i8*, i8** %p1\n\c
+  %p2 = getelementptr i8*, i8** %argv, i64 2\n  %sp = load i8*, i8** %p2\n\c
+  %obj = call { %WamState*, i32 } @wam_object_load(i8* %cp)\n\c
+  %vm = extractvalue { %WamState*, i32 } %obj, 0\n\c
+  %pc = extractvalue { %WamState*, i32 } %obj, 1\n\c
+  %vmn = icmp eq %WamState* %vm, null\n  br i1 %vmn, label %lf, label %rd\n\c
+rd:\n\c
+  %totp = alloca i64\n\c
+  %sbuf = call i8* @wamo_read_file(i8* %sp, i64* %totp)\n\c
+  %sbn = icmp eq i8* %sbuf, null\n  br i1 %sbn, label %lf, label %go\n\c
+go:\n\c
+  %slen = load i64, i64* %totp\n\c
+  %sid = call i64 @wam_intern_atom(i8* %sbuf, i64 %slen)\n\c
+  %v0 = insertvalue %Value undef, i32 0, 0\n\c
+  %sv = insertvalue %Value %v0, i64 %sid, 1\n\c
+  %args = alloca %Value, i32 1\n\c
+  store %Value %sv, %Value* %args\n\c
+  %r = call { i8*, i64, i1 } @wam_object_call_bytes(%WamState* %vm, i32 %pc, i32 1, %Value* %args, i32 1)\n\c
+  %ptr = extractvalue { i8*, i64, i1 } %r, 0\n\c
+  %len = extractvalue { i8*, i64, i1 } %r, 1\n\c
+  %ok = extractvalue { i8*, i64, i1 } %r, 2\n\c
+  br i1 %ok, label %pr, label %rf\n\c
+pr:\n\c
+  %l32 = trunc i64 %len to i32\n\c
+  %f = getelementptr [5 x i8], [5 x i8]* @.dh_fmt, i32 0, i32 0\n\c
+  %x = call i32 (i8*, ...) @printf(i8* %f, i32 %l32, i8* %ptr)\n  ret i32 0\n\c
+lf:\n  ret i32 20\n\c
+rf:\n  ret i32 21\n}\n').
 
 clang_link(LL, Bin) :-
     format(atom(Cmd), 'clang -w -O2 ~w -o ~w -lm 2>&1', [LL, Bin]),
