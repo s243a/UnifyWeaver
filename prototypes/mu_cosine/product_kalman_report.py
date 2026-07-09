@@ -7,6 +7,7 @@ claim that Product-Kalman has won.
 """
 
 import argparse
+import hashlib
 import json
 import sys
 
@@ -36,6 +37,14 @@ def load_json(path):
     """Load a JSON file."""
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _fmt(value):
@@ -108,6 +117,22 @@ def _bootstrap_rows(scores_json):
                 item.get("n"),
             ])
     return rows
+
+
+def _bootstrap_artifact_rows(scores_json):
+    artifact = scores_json.get("bootstrap_artifact", {})
+    if not artifact:
+        return []
+    return [
+        ["evaluation_npz", artifact.get("evaluation_npz")],
+        ["evaluation_npz_sha256", artifact.get("evaluation_npz_sha256")],
+        ["validated_against_scores", artifact.get("validated_against_scores")],
+        ["score_order", ", ".join(artifact.get("score_order", []))],
+        ["n_boot", artifact.get("n_boot")],
+        ["seed", artifact.get("seed")],
+        ["confidence", artifact.get("confidence")],
+        ["method", artifact.get("method")],
+    ]
 
 
 def _input_rows(scores_json, manifest):
@@ -217,9 +242,11 @@ def add_artifact_bootstrap_intervals(
     if not n_boot:
         return scores_json
     artifact_path = _artifact_path(scores_json, evaluation_npz=evaluation_npz)
+    artifact_summary = evaluation_npz_score_summary(artifact_path)
     if validate_artifact:
-        validate_artifact_score_consistency(scores_json, evaluation_npz=artifact_path)
+        artifact_summary = validate_artifact_score_consistency(scores_json, evaluation_npz=artifact_path)
     out = dict(scores_json)
+    changed = False
     for key, value in bootstrap_nll_improvements_from_evaluation_npz(
         artifact_path,
         n_boot=n_boot,
@@ -228,6 +255,18 @@ def add_artifact_bootstrap_intervals(
     ).items():
         if overwrite or key not in out:
             out[key] = value
+            changed = True
+    if changed:
+        out["bootstrap_artifact"] = {
+            "evaluation_npz": str(artifact_path),
+            "evaluation_npz_sha256": _sha256_file(artifact_path),
+            "validated_against_scores": bool(validate_artifact),
+            "score_order": artifact_summary["score_order"],
+            "n_boot": int(n_boot),
+            "seed": int(seed),
+            "confidence": float(confidence),
+            "method": "paired_row_resample",
+        }
     return out
 
 
@@ -292,6 +331,7 @@ def build_product_kalman_markdown_report(
             "",
         ])
     bootstrap_rows = _bootstrap_rows(scores_json)
+    bootstrap_artifact_rows = _bootstrap_artifact_rows(scores_json)
     lines.extend([
         "## Scores",
         "",
@@ -335,6 +375,13 @@ def build_product_kalman_markdown_report(
                 ],
                 bootstrap_rows,
             ),
+            "",
+        ])
+    if bootstrap_artifact_rows:
+        lines.extend([
+            "## Bootstrap Artifact",
+            "",
+            _markdown_table(["item", "value"], bootstrap_artifact_rows),
             "",
         ])
     lines.extend([
