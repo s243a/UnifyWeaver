@@ -1,27 +1,42 @@
 // Dynamic database and source-term input helpers for WamState.
 // Included inside `impl WamState` by wam_rust_target.pl.
 
+    pub fn set_term_input(&mut self, input: impl Into<String>) {
+        self.term_input = input.into();
+        self.term_input_pos = 0;
+    }
+
     fn execute_read_term_builtin(&mut self) -> bool {
         use std::io::Read;
-        let mut input = String::new();
-        if std::io::stdin().read_to_string(&mut input).is_err() {
-            return false;
+        if self.term_input_pos >= self.term_input.len() {
+            let mut input = String::new();
+            if std::io::stdin().read_to_string(&mut input).is_err() {
+                return false;
+            }
+            self.set_term_input(input);
         }
-        let text = match Self::first_dotted_term_text(&input) {
-            Some(text) => text,
+        let (text, next_pos) = match Self::next_dotted_term_text(
+            &self.term_input,
+            self.term_input_pos,
+        ) {
+            Some(next) => next,
             None => {
+                self.term_input_pos = self.term_input.len();
                 let eof = Value::Atom("end_of_file".to_string());
                 let target = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
                 return if self.unify(&target, &eof) { self.pc += 1; true } else { false };
             }
         };
+        self.term_input_pos = next_pos;
         if self.bind_compiled_parse_atom(&text, "A1") { self.pc += 1; true }
         else { false }
     }
 
-    fn first_dotted_term_text(input: &str) -> Option<String> {
-        let trimmed = input.trim_start();
+    fn next_dotted_term_text(input: &str, start: usize) -> Option<(String, usize)> {
+        let suffix = input.get(start..)?;
+        let trimmed = suffix.trim_start();
         if trimmed.is_empty() { return None; }
+        let term_start = start + suffix.len() - trimmed.len();
         let bytes = trimmed.as_bytes();
         let mut in_quote = false;
         let mut escaped = false;
@@ -38,13 +53,179 @@
                     .map(|c| c.is_ascii_whitespace())
                     .unwrap_or(true);
                 if next_is_term_end {
-                    return Some(trimmed[..idx].trim().to_string());
+                    return Some((trimmed[..idx].trim().to_string(), term_start + idx + 1));
                 }
             }
         }
         let body = trimmed.trim_end();
         let body = body.strip_suffix(".").unwrap_or(body);
-        Some(body.trim().to_string())
+        Some((body.trim().to_string(), input.len()))
+    }
+
+    fn term_atom_text(atom: &str) -> String {
+        let mut chars = atom.chars();
+        let plain = match chars.next() {
+            Some(first) if first.is_ascii_lowercase() => {
+                chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            }
+            _ => false,
+        };
+        if plain || atom == "!" || atom == "[]" {
+            return atom.to_string();
+        }
+
+        let mut quoted = String::with_capacity(atom.len() + 2);
+        quoted.push('\'');
+        for ch in atom.chars() {
+            match ch {
+                '\\' => quoted.push_str("\\\\"),
+                '\'' => quoted.push_str("\\'"),
+                _ => quoted.push(ch),
+            }
+        }
+        quoted.push('\'');
+        quoted
+    }
+
+    fn read_term_option_arg(&self, options: &Value, name: &str) -> Option<Value> {
+        for option in self.value_as_list(options)? {
+            let option = self.deref_heap(&self.deref_var(&option));
+            if let Value::Str(functor, args) = option {
+                if args.len() == 1 &&
+                   Self::display_functor_name(&functor, 1) == name {
+                    return Some(args[0].clone());
+                }
+            }
+        }
+        None
+    }
+
+    fn copy_named_variables_from_env(
+        &mut self,
+        source: &WamState,
+        env: &Value,
+        var_map: &mut std::collections::HashMap<String, String>,
+    ) -> Vec<(String, Value)> {
+        let mut pairs = Vec::new();
+        let entries = match source.value_as_list(env) {
+            Some(entries) => entries,
+            None => return pairs,
+        };
+        for entry in entries {
+            let entry = source.deref_heap(&source.deref_var(&entry));
+            let args = match entry {
+                Value::Str(_, args) if args.len() == 2 => args,
+                _ => continue,
+            };
+            let name = match source.deref_heap(&source.deref_var(&args[0])) {
+                Value::Atom(name) if name != "_" => name,
+                _ => continue,
+            };
+            let variable = self.copy_external_term_from(source, &args[1], var_map);
+            pairs.push((name, variable));
+        }
+        pairs.reverse();
+        pairs
+    }
+
+    fn copy_variable_names_from_env(
+        &mut self,
+        source: &WamState,
+        env: &Value,
+        var_map: &mut std::collections::HashMap<String, String>,
+    ) -> Value {
+        Value::List(
+            self.copy_named_variables_from_env(source, env, var_map)
+                .into_iter()
+                .map(|(name, variable)| {
+                    Value::Str(
+                        "=".to_string(),
+                        vec![Value::Atom(name), variable],
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn collect_term_variable_names(&self, term: &Value, out: &mut Vec<String>) {
+        let term = self.deref_heap(&self.deref_var(term));
+        match term {
+            Value::Unbound(name) => out.push(name),
+            Value::Str(_, args) => {
+                for arg in args {
+                    self.collect_term_variable_names(&arg, out);
+                }
+            }
+            Value::List(items) => {
+                for item in items {
+                    self.collect_term_variable_names(&item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn variables_from_term(&self, term: &Value) -> Value {
+        let mut occurrences = Vec::new();
+        self.collect_term_variable_names(term, &mut occurrences);
+        let mut seen = std::collections::HashSet::new();
+        Value::List(
+            occurrences
+                .into_iter()
+                .filter(|name| seen.insert(name.clone()))
+                .map(Value::Unbound)
+                .collect(),
+        )
+    }
+
+    fn copied_variable_source_names(
+        &mut self,
+        source: &WamState,
+        env: &Value,
+        var_map: &mut std::collections::HashMap<String, String>,
+    ) -> std::collections::HashMap<String, String> {
+        self.copy_named_variables_from_env(source, env, var_map)
+            .into_iter()
+            .filter_map(|(source_name, variable)| match variable {
+                Value::Unbound(runtime_name) => Some((runtime_name, source_name)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn singletons_from_term(
+        &mut self,
+        term: &Value,
+        source: &WamState,
+        env: &Value,
+        var_map: &mut std::collections::HashMap<String, String>,
+    ) -> Value {
+        let mut occurrences = Vec::new();
+        self.collect_term_variable_names(term, &mut occurrences);
+        let mut counts = std::collections::HashMap::new();
+        for name in &occurrences {
+            *counts.entry(name.clone()).or_insert(0usize) += 1;
+        }
+        let source_names = self.copied_variable_source_names(source, env, var_map);
+        let mut emitted = std::collections::HashSet::new();
+        let mut pairs = Vec::new();
+        for runtime_name in occurrences {
+            if counts.get(&runtime_name).copied() != Some(1) ||
+               !emitted.insert(runtime_name.clone()) {
+                continue;
+            }
+            let source_name = source_names.get(&runtime_name)
+                .cloned()
+                .unwrap_or_else(|| "_".to_string());
+            if source_name != "_" && source_name.starts_with('_') {
+                continue;
+            }
+            pairs.push(Value::Str(
+                "=".to_string(),
+                vec![Value::Atom(source_name), Value::Unbound(runtime_name)],
+            ));
+        }
+        Value::List(pairs)
     }
 
     fn execute_assert_builtin(&mut self, op: &str) -> bool {
@@ -153,8 +334,24 @@
             let cp_stack = self.stack.clone();
             let mut var_map = std::collections::HashMap::new();
             let clause = Self::copy_term_walk(&mut self.var_counter, &mut var_map, &clauses[idx]);
-            if self.dynamic_apply_clause(&clause) {
+            if self.dynamic_apply_clause_solution(&clause, 0) {
                 if idx + 1 < clauses.len() {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: cont_pc,
+                        saved_args: cp_regs.clone(),
+                        stack: cp_stack.clone(),
+                        cp: self.cp,
+                        trail_len: cp_trail,
+                        heap_len: cp_heap,
+                        builtin_state: Some(BuiltinState {
+                            name: "dynamic_call".to_string(),
+                            args: vec![Value::Atom(key.clone())],
+                            data: vec![Value::Integer((idx + 1) as i64), Value::Integer(cont_pc as i64)],
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                if self.dynamic_clause_has_body(&clause) {
                     self.choice_points.push(ChoicePoint {
                         next_pc: cont_pc,
                         saved_args: cp_regs,
@@ -163,9 +360,9 @@
                         trail_len: cp_trail,
                         heap_len: cp_heap,
                         builtin_state: Some(BuiltinState {
-                            name: "dynamic_call".to_string(),
-                            args: vec![Value::Atom(key.clone())],
-                            data: vec![Value::Integer((idx + 1) as i64), Value::Integer(cont_pc as i64)],
+                            name: "dynamic_rule_body".to_string(),
+                            args: vec![clause.clone()],
+                            data: vec![Value::Integer(1), Value::Integer(cont_pc as i64)],
                         }),
                         cut_barrier: self.cut_barrier,
                     });
@@ -181,29 +378,89 @@
         false
     }
 
-    fn dynamic_apply_clause(&mut self, clause: &Value) -> bool {
+    fn dynamic_clause_has_body(&self, clause: &Value) -> bool {
+        matches!(self.dynamic_clause_head_body(clause), Some((_, Some(_))))
+    }
+
+    fn dynamic_apply_clause_solution(&mut self, clause: &Value, solution_idx: usize) -> bool {
         let (head, body) = match self.dynamic_clause_head_body(clause) {
             Some(parts) => parts,
             None => return false,
         };
         if !self.dynamic_unify_head_args(&head) { return false; }
         match body {
-            None => true,
-            Some(body) => self.dynamic_eval_body(&body),
+            None => solution_idx == 0,
+            Some(body) => self.dynamic_eval_body_solution(&body, solution_idx),
         }
     }
 
-    fn dynamic_eval_body(&mut self, body: &Value) -> bool {
+    fn dynamic_eval_body_solution(&mut self, body: &Value, solution_idx: usize) -> bool {
+        let limit = solution_idx.saturating_add(1);
+        let mut solutions = self.dynamic_body_solutions(body, limit);
+        if solutions.len() <= solution_idx { return false; }
+        *self = solutions.remove(solution_idx);
+        true
+    }
+
+    fn dynamic_body_solutions(&self, body: &Value, limit: usize) -> Vec<WamState> {
+        if limit == 0 { return Vec::new(); }
         let body = self.deref_heap(&self.deref_var(body));
         match body {
-            Value::Atom(ref s) if s == "true" => true,
-            Value::Atom(ref s) if s == "fail" || s == "false" => false,
+            Value::Atom(ref s) if s == "true" => vec![self.clone()],
+            Value::Atom(ref s) if s == "fail" || s == "false" => Vec::new(),
             Value::Str(ref f, ref args) if (f == "," || f == ",/2") && args.len() == 2 => {
-                if !self.dynamic_eval_body(&args[0]) { return false; }
-                self.dynamic_eval_body(&args[1])
+                let mut out = Vec::new();
+                for left in self.dynamic_body_solutions(&args[0], limit) {
+                    let remaining = limit.saturating_sub(out.len());
+                    if remaining == 0 { break; }
+                    out.extend(left.dynamic_body_solutions(&args[1], remaining));
+                    if out.len() >= limit { break; }
+                }
+                out
             }
-            other => self.call_goal_value(&other),
+            other => {
+                let mut vm = self.clone();
+                let cp_depth = vm.choice_points.len();
+                let mut out = Vec::new();
+                if vm.call_goal_value(&other) {
+                    loop {
+                        let mut solution = vm.clone();
+                        solution.choice_points.truncate(cp_depth);
+                        out.push(solution);
+                        if out.len() >= limit { break; }
+                        if vm.choice_points.len() <= cp_depth { break; }
+                        if !vm.backtrack() { break; }
+                    }
+                }
+                out
+            }
         }
+    }
+
+    fn dynamic_rule_body_attempt(&mut self, clause: Value, solution_idx: usize, cont_pc: usize) -> bool {
+        let cp_trail = self.trail.len();
+        let cp_heap = self.heap.len();
+        let cp_regs = self.save_regs();
+        let cp_stack = self.stack.clone();
+        if self.dynamic_apply_clause_solution(&clause, solution_idx) {
+            self.choice_points.push(ChoicePoint {
+                next_pc: cont_pc,
+                saved_args: cp_regs,
+                stack: cp_stack,
+                cp: self.cp,
+                trail_len: cp_trail,
+                heap_len: cp_heap,
+                builtin_state: Some(BuiltinState {
+                    name: "dynamic_rule_body".to_string(),
+                    args: vec![clause],
+                    data: vec![Value::Integer((solution_idx + 1) as i64), Value::Integer(cont_pc as i64)],
+                }),
+                cut_barrier: self.cut_barrier,
+            });
+            self.pc = cont_pc;
+            return true;
+        }
+        false
     }
 
     fn dynamic_unify_head_args(&mut self, head: &Value) -> bool {
@@ -232,6 +489,28 @@
         self.dynamic_retract_attempt(key, 0, pattern, cont_pc)
     }
 
+    fn dynamic_retract_candidate(&self, pattern: &Value, clause: &Value) -> Option<Value> {
+        let pattern_functor = match pattern {
+            Value::Str(f, args) if (f == ":-" || f == ":-/2") && args.len() == 2 => Some(f),
+            _ => None,
+        };
+        match pattern_functor {
+            Some(functor) => match clause {
+                Value::Str(f, args) if (f == ":-" || f == ":-/2") && args.len() == 2 => {
+                    Some(Value::Str(functor.clone(), args.clone()))
+                }
+                fact => Some(Value::Str(
+                    functor.clone(),
+                    vec![fact.clone(), Value::Atom("true".to_string())],
+                )),
+            },
+            None => match clause {
+                Value::Str(f, args) if (f == ":-" || f == ":-/2") && args.len() == 2 => None,
+                fact => Some(fact.clone()),
+            },
+        }
+    }
+
     fn dynamic_retract_attempt(&mut self, key: String, start_idx: usize, pattern: Value, cont_pc: usize) -> bool {
         let clauses = match self.dynamic_db.get(&key) {
             Some(clauses) => clauses.clone(),
@@ -244,11 +523,11 @@
             let cp_stack = self.stack.clone();
             let mut clause_vars = std::collections::HashMap::new();
             let p = pattern.clone();
-            let head = match self.dynamic_clause_head(&clauses[idx]) {
-                Some(head) => Self::copy_term_walk(&mut self.var_counter, &mut clause_vars, &head),
+            let candidate = match self.dynamic_retract_candidate(&pattern, &clauses[idx]) {
+                Some(candidate) => Self::copy_term_walk(&mut self.var_counter, &mut clause_vars, &candidate),
                 None => continue,
             };
-            if self.unify(&p, &head) {
+            if self.unify(&p, &candidate) {
                 if let Some(bucket) = self.dynamic_db.get_mut(&key) {
                     if idx < bucket.len() { bucket.remove(idx); }
                     if bucket.is_empty() { self.dynamic_db.remove(&key); }

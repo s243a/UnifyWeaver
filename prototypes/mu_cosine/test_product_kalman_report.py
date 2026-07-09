@@ -16,6 +16,7 @@ import numpy as np
 
 from product_kalman_report import (
     add_artifact_bootstrap_intervals,
+    add_artifact_validation_summary,
     build_product_kalman_markdown_report,
     main,
     validate_artifact_score_consistency,
@@ -253,6 +254,19 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
         assert artifact_summary["pit_diagnostics"]["n"] == scores["scores"]["product_kalman"]["n"]
         assert artifact_summary["pit_diagnostics"]["dimension"] == scores["pit_diagnostics"]["product_kalman"]["dimension"]
         assert set(artifact_summary["pit_diagnostics"]["central_interval_coverage"]) == set(scores["score_order"])
+        validated = add_artifact_validation_summary(scores, evaluation_npz=eval_npz)
+        validation_meta = validated["evaluation_artifact_validation"]
+        assert validation_meta["evaluation_npz"] == str(eval_npz)
+        assert len(validation_meta["evaluation_npz_sha256"]) == 64
+        assert validation_meta["schema_version"] == 1
+        assert validation_meta["validated_against_scores"] is True
+        assert validation_meta["pit_diagnostics_validated"] is True
+        assert validation_meta["score_order"] == scores["score_order"]
+        assert validation_meta["score_count"] == len(scores["score_order"])
+        assert validation_meta["score_rows"]["product_kalman"] == scores["scores"]["product_kalman"]["n"]
+        assert validation_meta["pit_names"] == scores["score_order"]
+        assert validation_meta["pit_n"] == scores["scores"]["product_kalman"]["n"]
+        assert validation_meta["pit_dimension"] == scores["pit_diagnostics"]["product_kalman"]["dimension"]
         recorded_path_enriched = add_artifact_bootstrap_intervals(
             scores,
             n_boot=50,
@@ -264,6 +278,7 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
         artifact_meta = enriched["bootstrap_artifact"]
         assert artifact_meta["evaluation_npz"] == str(eval_npz)
         assert len(artifact_meta["evaluation_npz_sha256"]) == 64
+        assert artifact_meta["schema_version"] == 1
         assert artifact_meta["validated_against_scores"] is True
         assert artifact_meta["pit_diagnostics_validated"] is True
         assert artifact_meta["score_order"] == scores["score_order"]
@@ -292,6 +307,29 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
         assert boot["seed"] == 7
         assert boot["confidence"] == 0.90
 
+        validation_md = Path(tmp) / "validation.md"
+        validation_json = Path(tmp) / "validation.scores.json"
+        rc = main([
+            str(scores_json),
+            "--input-manifest",
+            str(input_manifest),
+            "--evaluation-npz",
+            str(eval_npz),
+            "--output-md",
+            str(validation_md),
+            "--output-json",
+            str(validation_json),
+        ])
+        assert rc == 0
+        validation_text = validation_md.read_text()
+        assert "## Evaluation Artifact Validation" in validation_text
+        assert "| schema_version | 1 |" in validation_text
+        assert "| validated_against_scores | True |" in validation_text
+        assert "| pit_diagnostics_validated | True |" in validation_text
+        validation_payload = json.loads(validation_json.read_text())
+        assert validation_payload["evaluation_artifact_validation"] == validation_meta
+        assert "nll_improvement_bootstrap_vs_independent_kalman" not in validation_payload
+
         output_md = Path(tmp) / "posthoc.md"
         output_json = Path(tmp) / "posthoc.scores.json"
         rc = main([
@@ -317,6 +355,7 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
         text = output_md.read_text()
         assert "## NLL Improvement Bootstrap Intervals" in text
         assert "## Bootstrap Artifact" in text
+        assert "## Evaluation Artifact Validation" in text
         assert "evaluation_npz_sha256" in text
         assert "| pit_diagnostics_validated | True |" in text
         assert "| independent_kalman | product_kalman |" in text
@@ -325,6 +364,7 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
         assert enriched_json["nll_improvement_bootstrap_vs_independent_kalman"]["product_kalman"] == boot
         assert "nll_improvement_bootstrap_vs_product_kalman" in enriched_json
         assert enriched_json["bootstrap_artifact"] == artifact_meta
+        assert enriched_json["evaluation_artifact_validation"] == validation_meta
 
 def test_markdown_report_cli_writes_file():
     with tempfile.TemporaryDirectory() as tmp:

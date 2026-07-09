@@ -71,7 +71,7 @@ each WAM instruction).
 | **C++**      | ✅ | ✅ | ✅ | `native(parse_term)` | partial — codegen tests in `test_wam_cpp_generator.pl`, one `'42'` parse verified end-to-end during the audit |
 | **R**        | ✅ | ✅ | ✅ | `native(parse_term)` | codegen tests; runtime end-to-end via the R smoke harness |
 | **Elixir**   | ✅ | — | — | `none` | n/a — `runtime_parser(compiled)` correctly throws `domain_error` (since Elixir isn't in the capability table); guarded by `test_runtime_parser_compiled_request_errors` |
-| **Rust**     | ✅ | — | ✅ | `none` | partial — capability and project-expansion wiring; runtime builtin bridge still pending |
+| **Rust**     | ✅ | — | ✅ | `none` | yes — generated-runtime tests cover parser calls, buffered reads, term/atom round-trips, and variable metadata options |
 | **Haskell**  | ✅ | — | ✅ | `none` | partial — capability and project-expansion wiring; generated parser E2E is noted as slow in `docs/SESSION_HASKELL_PARITY_SUMMARY.md` |
 | **Go**       | ✅ | — | — | `none` | n/a (no parser-mode wiring) |
 | **Clojure**  | ✅ | — | — | `none` | n/a (no parser-mode wiring) |

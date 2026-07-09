@@ -1730,12 +1730,15 @@ compile_execute_term_builtin_to_rust(Code) :-
         }
     }
 
-    fn execute_read_term_from_atom_builtin(&mut self, _arity: usize) -> bool {
+    fn execute_read_term_from_atom_builtin(&mut self, arity: usize) -> bool {
         let atom = self.get_reg_raw("A1")
             .map(|v| self.deref_heap(&self.deref_var(&v)));
+        let options = if arity == 3 { self.get_reg_raw("A3") } else { None };
         match atom {
             Some(Value::Atom(text)) => {
-                if self.bind_compiled_parse_atom(&text, "A2") { self.pc += 1; true }
+                if self.bind_compiled_parse_atom_with_options(&text, "A2", options.as_ref()) {
+                    self.pc += 1; true
+                }
                 else { false }
             }
             _ => false,
@@ -1743,8 +1746,29 @@ compile_execute_term_builtin_to_rust(Code) :-
     }
 
     fn bind_compiled_parse_atom(&mut self, atom_text: &str, target_reg: &str) -> bool {
+        self.bind_compiled_parse_atom_with_options(atom_text, target_reg, None)
+    }
+
+    fn bind_compiled_parse_atom_with_options(
+        &mut self,
+        atom_text: &str,
+        target_reg: &str,
+        options: Option<&Value>,
+    ) -> bool {
+        let variable_names = options
+            .and_then(|value| self.read_term_option_arg(value, "variable_names"));
+        let variables = options
+            .and_then(|value| self.read_term_option_arg(value, "variables"));
+        let singletons = options
+            .and_then(|value| self.read_term_option_arg(value, "singletons"));
+        let wants_env = variable_names.is_some() || variables.is_some() || singletons.is_some();
+        let parser_entry = if wants_env {
+            "parse_term_from_atom/4"
+        } else {
+            "parse_term_from_atom/3"
+        };
         if !self.labels.contains_key("canonical_op_table/1") ||
-           !self.labels.contains_key("parse_term_from_atom/3") {
+           !self.labels.contains_key(parser_entry) {
             return false;
         }
         let mut parser = WamState::new(self.code.clone(), self.labels.clone());
@@ -1761,17 +1785,44 @@ compile_execute_term_builtin_to_rust(Code) :-
         parser.set_reg_str("A1", Value::Atom(atom_text.to_string()));
         parser.set_reg_str("A2", ops);
         parser.set_reg_str("A3", parsed_var.clone());
-        if !parser.run_named_label("parse_term_from_atom/3") {
+        let var_env = Value::Unbound("_RP_env".to_string());
+        if wants_env {
+            parser.set_reg_str("A4", var_env.clone());
+        }
+        if !parser.run_named_label(parser_entry) {
             return false;
         }
 
         let parsed = parser.deref_heap(&parser.deref_var(&parsed_var));
         let mut var_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         let copied = self.copy_external_term_from(&parser, &parsed, &mut var_map);
-        match self.get_reg_raw(target_reg) {
-            Some(target) => self.unify(&target, &copied),
-            None => false,
+        let target = match self.get_reg_raw(target_reg) {
+            Some(target) => target,
+            None => return false,
+        };
+        if !self.unify(&target, &copied) {
+            return false;
         }
+        if let Some(names_target) = variable_names {
+            let names = self.copy_variable_names_from_env(&parser, &var_env, &mut var_map);
+            if !self.unify(&names_target, &names) {
+                return false;
+            }
+        }
+        if let Some(variables_target) = variables {
+            let variable_list = self.variables_from_term(&copied);
+            if !self.unify(&variables_target, &variable_list) {
+                return false;
+            }
+        }
+        if let Some(singletons_target) = singletons {
+            let singleton_list =
+                self.singletons_from_term(&copied, &parser, &var_env, &mut var_map);
+            if !self.unify(&singletons_target, &singleton_list) {
+                return false;
+            }
+        }
+        true
     }
 
     fn run_named_label(&mut self, label: &str) -> bool {
@@ -1858,7 +1909,7 @@ compile_execute_term_builtin_to_rust(Code) :-
     fn term_to_atom_text(&self, value: &Value) -> String {
         let derefed = self.deref_heap(&self.deref_var(value));
         match derefed {
-            Value::Atom(s) => s,
+            Value::Atom(s) => Self::term_atom_text(&s),
             Value::Integer(n) => n.to_string(),
             Value::Float(f) => f.to_string(),
             Value::Bool(b) => b.to_string(),
@@ -1874,7 +1925,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                 let rendered: Vec<String> = args.iter()
                     .map(|a| self.term_to_atom_text(a))
                     .collect();
-                format!("{}({})", name, rendered.join(", "))
+                format!("{}({})", Self::term_atom_text(&name), rendered.join(", "))
             }
             Value::Ref(_) => format!("{}", derefed),
             Value::Uninit => "_".to_string(),
@@ -3569,6 +3620,21 @@ compile_resume_builtin_to_rust(Code) :-
                     _ => return false,
                 };
                 self.dynamic_retract_attempt(key, start_idx, pattern, cont_pc)
+            }
+            "dynamic_rule_body" => {
+                let clause = match state.args.get(0) {
+                    Some(clause) => clause.clone(),
+                    _ => return false,
+                };
+                let solution_idx = match state.data.get(0) {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return false,
+                };
+                let cont_pc = match state.data.get(1) {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return false,
+                };
+                self.dynamic_rule_body_attempt(clause, solution_idx, cont_pc)
             }
             "foreign_results" => {
                 let pred_key = match state.args.get(0) {

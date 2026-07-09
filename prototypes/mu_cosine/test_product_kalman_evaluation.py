@@ -14,10 +14,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 
 from product_kalman_evaluation import (
+    EVALUATION_ARTIFACT_SCHEMA_VERSION,
     GroupResidualCovariances,
     bootstrap_nll_improvements_from_evaluation_npz,
     evaluate_product_kalman_holdout,
     evaluation_artifact_arrays,
+    evaluation_npz_score_summary,
     evaluation_to_json_dict,
     fit_group_residual_covariances,
     main,
@@ -274,7 +276,7 @@ def test_npz_runner_and_json_cli_roundtrip():
         assert artifact_boot["nll_improvement_bootstrap_vs_independent_kalman"]["product_kalman"] == boot
 
         with np.load(artifact_path, allow_pickle=False) as artifact:
-            assert int(artifact["schema_version"]) == 1
+            assert int(artifact["schema_version"]) == EVALUATION_ARTIFACT_SCHEMA_VERSION
             assert artifact["score_names"].tolist() == data["score_order"]
             assert artifact["score_mahalanobis_per_dim"].shape == (4,)
             assert artifact["score_squared_mahalanobis_q95"].shape == (4,)
@@ -308,6 +310,7 @@ def test_evaluation_artifact_arrays_are_npz_ready():
         jitter=1e-8,
     )
     arrays = evaluation_artifact_arrays(result)
+    assert int(arrays["schema_version"]) == EVALUATION_ARTIFACT_SCHEMA_VERSION
     assert arrays["score_names"].tolist() == ["prior", "measurement", "independent_kalman", "product_kalman"]
     assert arrays["score_mean_nll"].shape == (4,)
     assert arrays["score_mean_squared_mahalanobis"].shape == (4,)
@@ -335,6 +338,42 @@ def test_evaluation_artifact_arrays_are_npz_ready():
         with np.load(artifact_path, allow_pickle=False) as artifact:
             assert set(arrays).issubset(set(artifact.files))
             np.testing.assert_allclose(artifact["score_mean_nll"], arrays["score_mean_nll"])
+        summary = evaluation_npz_score_summary(artifact_path)
+        assert summary["schema_version"] == EVALUATION_ARTIFACT_SCHEMA_VERSION
+
+
+def test_evaluation_artifact_readers_reject_incompatible_schema():
+    cal_prior, cal_measure, cal_target, eval_prior, eval_measure, eval_target = synthetic_identity_split(
+        n_cal=80,
+        n_eval=20,
+    )
+    result = evaluate_product_kalman_holdout(
+        cal_prior,
+        cal_measure,
+        cal_target,
+        eval_prior,
+        eval_measure,
+        eval_target,
+        jitter=1e-8,
+    )
+    base = evaluation_artifact_arrays(result)
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, schema_value in (
+            ("missing", None),
+            ("future", np.array(EVALUATION_ARTIFACT_SCHEMA_VERSION + 1, dtype=np.int64)),
+            ("vector", np.array([EVALUATION_ARTIFACT_SCHEMA_VERSION], dtype=np.int64)),
+            ("float", np.array(float(EVALUATION_ARTIFACT_SCHEMA_VERSION))),
+        ):
+            arrays = dict(base)
+            if schema_value is None:
+                del arrays["schema_version"]
+            else:
+                arrays["schema_version"] = schema_value
+            path = Path(tmp) / f"{name}.npz"
+            np.savez(path, **arrays)
+            assert_raises(evaluation_npz_score_summary, path)
+            assert_raises(bootstrap_nll_improvements_from_evaluation_npz, path, n_boot=10)
+
 
 def test_npz_runner_scores_grouped_covariances_when_group_labels_present():
     rng = np.random.default_rng(41)
