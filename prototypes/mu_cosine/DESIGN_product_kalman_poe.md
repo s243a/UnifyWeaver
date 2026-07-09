@@ -486,3 +486,30 @@ remaining D-channel shape defect as model-side relation-class structure rather t
   masses were already priced correctly and the remaining D-channel defect is bimodality rather than boundary mass.
 - `REPORT_sigma_hop_confirmatory.md` and `PAPER_sigma_hop_confirmatory.md` — confirmatory Sigma(hop) result and
   publication scaffold.
+
+## Numerical hygiene addendum: square-root filtering for the production filter (user, 2026-07-09)
+
+*Prompted by the B1 training collapse — audited whether any instability was Kalman-side. Verdict: no (that was
+neural-training pathology: saturated readout under lr 5e-3; fixed by 5e-4 + gradient clipping). But the audit
+found hygiene gaps worth recording, and the user's suggestion — Potter's method (matrix square root +
+Householder transforms) — is the right prescription for the DEPLOYED filter.*
+
+**Audit of update forms in the current code:**
+- `gaussian_condition_update` (core): subtraction form `P − Cov S⁻¹ Cov`, symmetrized + jittered after — NOTE:
+  this DESIGN doc prescribes Joseph form above; the implementation drifted to subtraction-plus-guards.
+- Research runners (`run_product_kalman_*`): raw `P − K S Kᵀ`, no symmetrization. Benign at our scale (2x2
+  states, single-shot updates, shrinkage-conditioned inputs; Mahal/dim diagnostics would catch covariance rot).
+- The `Sigma(h)` fits already use the square-root philosophy: `chol_of_hop` parametrizes by the Cholesky
+  factor, SPD by construction.
+- The one numerical event in the program (the logit-arc NaN) was a MODELING error (mixed-space blocks ⇒
+  genuinely non-PSD joint), not finite precision — but a square-root implementation would have failed LOUDLY at
+  the factorization instead of silently propagating NaN. Early refusal is a diagnostic feature.
+
+**Prescription for the production sequential filter** (the filing DB's per-relation `(mu, P)` under thousands
+of incremental updates + the metastable L1 layer with adaptive fading — the classic accumulation regime):
+- **Potter square-root filter:** propagate `S` with `P = S Sᵀ`; scalar measurements update `S` directly
+  (process vector observations sequentially); PSD unconditionally guaranteed; effective precision doubles
+  (`κ(S) = √κ(P)`). Householder transformations for the time-update/propagation (or the full SRIF).
+- **Bierman UDUᵀ** as the alternative: square-root-free, cheapest per update, the standard for small embedded
+  filters — a good match for our tiny states.
+- Either replaces the subtraction form; Joseph form is the minimum upgrade if staying in full-covariance land.
