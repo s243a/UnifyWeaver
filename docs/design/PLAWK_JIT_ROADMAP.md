@@ -389,15 +389,19 @@ loadable along the way.
   from source → `42`; **comparison guards + if-then-else LANDED**: comparison
   builtins as goals, and `( C -> T ; E )` via `try_me_else`/`cut_ite`/`jump`/
   `trust_me` with mid-clause else/join labels (codegen is now PC- and
-  label-aware; max-of-two exercises both branches → `42`). The remaining
-  Stage D campaign widens the
+  label-aware; max-of-two exercises both branches → `42`); **general structure
+  patterns LANDED**: arbitrary compounds in heads and call args — flat, nested
+  (X-temp deferral), pairs, and the compiler's own `enc/4` shape — all → `42`.
+  The remaining Stage D campaign widens the
   subset toward the compiler compiling its own source — the self-host fixpoint.
-  The campaign keeps surfacing and fixing latent runtime bugs — **four fixed so
+  The campaign keeps surfacing and fixing latent runtime bugs — **five fixed so
   far**: a 64-register-file ceiling corrupting memory for large clauses;
   `get_structure` not comparing the functor; the choice-point saved-register
   block not widened with the register file (failed clause bodies leaked Y17+
   across backtrack); and `copy_term/2` aliasing instead of copying (Refs
-  returned unchanged, no sharing preservation). See
+  returned unchanged, no sharing preservation); and `get_list` read mode
+  accepting any compound (no cons/arity check — `[H|T]` wrongly matched
+  `foo(A,B)`). See
   [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
 
 ## The binary-return question, specifically

@@ -542,7 +542,7 @@ wz_funcs([F|Fs], A0, A2) :- wz_fname(F, A0, A1), wz_funcs(Fs, A1, A2).
 % in call arguments, and atom constants -- so list-walking recursion (the shape
 % of every helper in the compiler's own source) compiles from source text.
 % - collect_tables walks every clause term (var-safe) gathering the ATOM table
-%   ('[]' and any atom constants) and the cons functor '[|]'; collect_ops adds
+%   ('[]' and any atom constants) and every data functor incl. '[|]' and
 %   the arithmetic-operator functors. NB: in SWI, nil is NOT an atom
 %   (atom([]) fails), so nil gets dedicated clauses in each argument compiler;
 %   in the loaded runtime nil IS the atom "[]", and those clauses match it the
@@ -579,8 +579,7 @@ cgfull(Src, Wamo) :-
     group_clauses(Clauses, Groups),
     group_labels(Groups, 0, PL),
     length(Groups, NP),
-    collect_tables(Clauses, s([],[]), s(Atoms, Fn0)),
-    collect_ops(Clauses, Fn0, Functors),
+    collect_tables(Clauses, s([],[]), s(Atoms, Functors)),
     g_groups(Groups, PL, Atoms, Functors, 0, NP, AllIs, EntryPCs, Pairs),
     keysort(Pairs, SortedPairs), pairs_values(SortedPairs, ExtraPCs),
     append(EntryPCs, ExtraPCs, PCs),
@@ -618,26 +617,19 @@ walk_term(T, S0, S) :- var(T), !, S = S0.
 walk_term([], S0, S) :- !, S0 = s(At0, Fn0), add_unique('[]', At0, At1), S = s(At1, Fn0).
 walk_term([H|T], S0, S) :- !, S0 = s(At0, Fn0), add_unique('[|]', Fn0, Fn1),
     walk_term(H, s(At0,Fn1), S1), walk_term(T, S1, S).
-walk_term(T, S0, S) :- compound(T), !, T =.. [_|Args], walk_list(Args, S0, S).
+walk_term(T, S0, S) :- compound(T), !, T =.. [F|Args],
+    S0 = s(At0, Fn0),
+    ( skip_fn(F) -> Fn1 = Fn0 ; add_unique(F, Fn0, Fn1) ),
+    walk_list(Args, s(At0, Fn1), S).
+% control / goal functors never appear as data terms in instructions
+skip_fn(':-'). skip_fn(','). skip_fn(';'). skip_fn('->'). skip_fn(is).
+skip_fn(=). skip_fn(>). skip_fn(<). skip_fn(>=). skip_fn(=<).
+skip_fn(=:=). skip_fn(=\=). skip_fn(==). skip_fn(\==).
 walk_term(_, S, S).
 walk_list([], S, S).
 walk_list([A|As], S0, S) :- walk_term(A, S0, S1), walk_list(As, S1, S).
 collect_tables([], S, S).
 collect_tables([C|Cs], S0, S) :- walk_term(C, S0, S1), collect_tables(Cs, S1, S).
-collect_ops([], F, F).
-collect_ops([C|Cs], F0, F) :-
-    ( C = (_ :- B) -> conj_list(B, Gs) ; Gs = [] ),
-    ops_goals(Gs, F0, F1), collect_ops(Cs, F1, F).
-ops_goals([], F, F).
-ops_goals([G|Gs], F0, F) :-
-    (   G = ( Cnd -> Thn ; Els )
-    ->  conj_list(Cnd, GC), conj_list(Thn, GT), conj_list(Els, GE),
-        ops_goals(GC, F0, Fa), ops_goals(GT, Fa, Fb), ops_goals(GE, Fb, F1)
-    ;   G = (_ is E), functor(E, Op, 2)
-    ->  add_unique(Op, F0, F1)
-    ;   F1 = F0
-    ),
-    ops_goals(Gs, F1, F).
 
 % per-group codegen; threads the absolute PC AND a label counter (chain
 % alternatives and mid-clause ITE labels share it, in codegen order), and
@@ -679,7 +671,7 @@ g_one(C0, PL, At, FT, StartPC, L0, L, Prs, Is) :-
 
 f_clause_instrs(Clause, PL, At, FT, StartPC, L0, L, Prs, Instrs) :-
     clause_hb(Clause, Head, Goals), functor(Head, _, Arity),
-    h_args(Head, 1, Arity, At, [], Init1, HeadIs),
+    h_args(Head, 1, Arity, At, FT, 16, [], Init1, HeadIs),
     (   Goals == []
     ->  append(HeadIs, [enc(20,0,0,0)], Instrs), L = L0, Prs = []
     ;   length(HeadIs, NH), PC0 is StartPC + 1 + NH,     % after allocate + head
@@ -689,36 +681,68 @@ f_clause_instrs(Clause, PL, At, FT, StartPC, L0, L, Prs, Instrs) :-
     ).
 
 % head-argument compilation: vars (first/repeated), integers, atoms, nil,
-% and list patterns [H|T]
-h_args(_, I, Ar, _, In, In, []) :- I > Ar, !.
-h_args(H, I, Ar, At, In0, In, Is) :-
+% list patterns [H|T], and GENERAL STRUCTURE PATTERNS f(...). A compound or
+% list CHILD inside a pattern is deferred: unify_variable saves it into a
+% fresh X temp during the parent's unify sequence, and after the parent
+% completes the child is read out of the temp (get_structure / get_list into
+% the temp -- the host's canonical nesting shape). X temps thread from reg 16
+% through the whole head.
+h_args(_, I, Ar, _, _, _, In, In, []) :- I > Ar, !.
+h_args(H, I, Ar, At, Fn, Xt0, In0, In, Is) :-
     arg(I, H, A), Ai is I - 1,
-    head_arg_instrs(A, Ai, At, In0, In1, AIs),
-    I1 is I + 1, h_args(H, I1, Ar, At, In1, In, RIs),
+    head_arg_instrs(A, Ai, At, Fn, Xt0, Xt1, In0, In1, AIs),
+    I1 is I + 1, h_args(H, I1, Ar, At, Fn, Xt1, In1, In, RIs),
     append(AIs, RIs, Is).
-head_arg_instrs('$VAR'(N), Ai, _, In0, In1, [I]) :- !,
+head_arg_instrs('$VAR'(N), Ai, _, _, Xt, Xt, In0, In1, [I]) :- !,
     Y is 48 + N,
     (   is_init(N, In0)
     ->  I = enc(2, Y, Ai, 0), In1 = In0                 % get_value (repeated var)
     ;   I = enc(1, Y, Ai, 0), In1 = [N|In0]             % get_variable (first)
     ).
-head_arg_instrs([], Ai, At, In, In, [enc(0,Idx,Ai,1)]) :- !,   % get_constant []
+head_arg_instrs([], Ai, At, _, Xt, Xt, In, In, [enc(0,Idx,Ai,1)]) :- !,  % get_constant []
     functor_index('[]', At, Idx).
-head_arg_instrs([H|T], Ai, At, In0, In2, [enc(4,Ai,0,0)|Rest]) :- !,  % get_list
-    unify_arg(H, At, In0, In1, UH),
-    unify_arg(T, At, In1, In2, UT),
-    append(UH, UT, Rest).
-head_arg_instrs(V, Ai, _, In, In, [enc(0,V,Op2,0)]) :- integer(V), !, Op2 is (1<<16)\/Ai.
-head_arg_instrs(A, Ai, At, In, In, [enc(0,Idx,Ai,1)]) :- atom(A), functor_index(A, At, Idx).
-unify_arg('$VAR'(N), _, In0, In1, [I]) :- !,
+head_arg_instrs([H|T], Ai, At, Fn, Xt0, Xt, In0, In2, [enc(4,Ai,0,0)|Rest]) :- !,  % get_list
+    u_seq([H,T], At, Xt0, Xt1, In0, In1, UIs, [], Defs),
+    defer_reads(Defs, At, Fn, Xt1, Xt, In1, In2, DIs),
+    append(UIs, DIs, Rest).
+head_arg_instrs(V, Ai, _, _, Xt, Xt, In, In, [enc(0,V,Op2,0)]) :- integer(V), !, Op2 is (1<<16)\/Ai.
+head_arg_instrs(A, Ai, At, _, Xt, Xt, In, In, [enc(0,Idx,Ai,1)]) :- atom(A), !, functor_index(A, At, Idx).
+head_arg_instrs(T, Ai, At, Fn, Xt0, Xt, In0, In2, [enc(3,FI,Op2,2)|Rest]) :-
+    compound(T),                                        % general structure pattern
+    functor(T, F, N), functor_index(F, Fn, FI), Op2 is (N<<16)\/Ai,
+    T =.. [_|Args],
+    u_seq(Args, At, Xt0, Xt1, In0, In1, UIs, [], Defs),
+    defer_reads(Defs, At, Fn, Xt1, Xt, In1, In2, DIs),
+    append(UIs, DIs, Rest).
+% one unify_* per pattern arg; compound/list children deferred to X temps
+u_seq([], _, Xt, Xt, In, In, [], D, D).
+u_seq([A|As], At, Xt0, Xt, In0, In, Is, D0, D) :-
+    u_arg(A, At, Xt0, Xt1, In0, In1, AIs, D0, D1),
+    u_seq(As, At, Xt1, Xt, In1, In, RIs, D1, D), append(AIs, RIs, Is).
+u_arg('$VAR'(N), _, Xt, Xt, In0, In1, [I], D, D) :- !,
     Y is 48 + N,
     (   is_init(N, In0)
     ->  I = enc(6, Y, 0, 0), In1 = In0                  % unify_value
     ;   I = enc(5, Y, 0, 0), In1 = [N|In0]              % unify_variable
     ).
-unify_arg([], At, In, In, [enc(7,Idx,0,1)]) :- !, functor_index('[]', At, Idx).
-unify_arg(V, _, In, In, [enc(7,V,65536,0)]) :- integer(V), !.
-unify_arg(A, At, In, In, [enc(7,Idx,0,1)]) :- atom(A), functor_index(A, At, Idx).
+u_arg([], At, Xt, Xt, In, In, [enc(7,Idx,0,1)], D, D) :- !, functor_index('[]', At, Idx).
+u_arg(V, _, Xt, Xt, In, In, [enc(7,V,65536,0)], D, D) :- integer(V), !.
+u_arg(A, At, Xt, Xt, In, In, [enc(7,Idx,0,1)], D, D) :- atom(A), !, functor_index(A, At, Idx).
+u_arg(C, _, Xt0, Xt1, In, In, [enc(5,Xt0,0,0)], D0, D) :-   % compound/list child
+    Xt1 is Xt0 + 1, append(D0, [d(C,Xt0)], D).
+defer_reads([], _, _, Xt, Xt, In, In, []).
+defer_reads([d(C,Reg)|Ds], At, Fn, Xt0, Xt, In0, In, Is) :-
+    (   C = [H|T]
+    ->  u_seq([H,T], At, Xt0, Xt1, In0, In1, UIs, [], Defs),
+        CIs = [enc(4,Reg,0,0)|UIs]                       % get_list Xtemp
+    ;   functor(C, F, N), functor_index(F, Fn, FI), Op2 is (N<<16)\/Reg,
+        C =.. [_|Args],
+        u_seq(Args, At, Xt0, Xt1, In0, In1, UIs, [], Defs),
+        CIs = [enc(3,FI,Op2,2)|UIs]                      % get_structure Xtemp
+    ),
+    defer_reads(Defs, At, Fn, Xt1, Xt2, In1, In2, DIs),
+    defer_reads(Ds, At, Fn, Xt2, Xt, In2, In, RIs),
+    append(CIs, DIs, A1s), append(A1s, RIs, Is).
 
 % goal codegen, PC- and label-aware:
 % f_goals(Goals, PL, At, FT, PC0,PC, L0,L, Prs0,Prs, In0,In, Is)
@@ -773,35 +797,61 @@ c_operand(V, Ai, _, _, In, In, Is) :- integer(V), !, operand_instr(V, Ai, In, In
 c_operand([], Ai, At, _, In, In, [enc(8,Idx,Ai,1)]) :- !, functor_index('[]', At, Idx).
 c_operand([H|T], Ai, At, FT, In0, In1, Is) :- !,
     build_list([H|T], Ai, first, At, FT, 16, _, In0, In1, Is).
-c_operand(A, Ai, At, _, In, In, [enc(8,Idx,Ai,1)]) :- atom(A), functor_index(A, At, Idx).
+c_operand(A, Ai, At, _, In, In, [enc(8,Idx,Ai,1)]) :- atom(A), !, functor_index(A, At, Idx).
+c_operand(T, Ai, At, FT, In0, In1, Is) :- compound(T),   % structure literal
+    build_struct(T, Ai, At, FT, 16, _, In0, In1, Is).
 
-% top-down list-literal build: the first cell is put_list TARGET; each nested
-% cell is put_structure cons/2 into a fresh X temp created by set_variable
-% (put_structure write mode binds through the fresh cell)
+% top-down term builds. Lists: the first cell is put_list TARGET; each nested
+% cons is put_structure cons/2 into a fresh X temp created by set_variable
+% (write mode binds through the fresh cell). Structures: put_structure F/N
+% into the target, one set_* per arg, with compound/list CHILDREN deferred to
+% X temps and built after the parent (the mirror of the head-side deferral).
 build_list([E|Rest], TR, Mode, At, FT, Xt0, Xt, In0, In2, Is) :-
     (   Mode = first
     ->  Head = [enc(12,TR,0,0)]                          % put_list
     ;   functor_index('[|]', FT, CI), Op2 is (2<<16)\/TR,
         Head = [enc(11,CI,Op2,2)]                        % put_structure cons/2
     ),
-    set_arg(E, At, In0, In1, SE),
+    s_arg(E, At, Xt0, Xta, In0, In1, SE, [], DefsE),
     (   Rest == []
     ->  functor_index('[]', At, NI), Tail = [enc(15,NI,0,1)],
-        In2 = In1, Xt = Xt0, RestIs = []
-    ;   Tail = [enc(13,Xt0,0,0)],                        % set_variable Xtemp
-        Xt1 is Xt0 + 1,
-        build_list(Rest, Xt0, nested, At, FT, Xt1, Xt, In1, In2, RestIs)
+        In1b = In1, Xtb = Xta, RestIs = []
+    ;   Tail = [enc(13,Xta,0,0)],                        % set_variable Xtemp
+        Xtc is Xta + 1,
+        build_list(Rest, Xta, nested, At, FT, Xtc, Xtb, In1, In1b, RestIs)
     ),
-    append(Head, SE, HS), append(HS, Tail, HST), append(HST, RestIs, Is).
-set_arg('$VAR'(N), _, In0, In1, [I]) :- !,
+    defer_builds(DefsE, At, FT, Xtb, Xt, In1b, In2, DIs),
+    append(Head, SE, HS), append(HS, Tail, HST),
+    append(HST, RestIs, HSTR), append(HSTR, DIs, Is).
+build_struct(T, TR, At, FT, Xt0, Xt, In0, In2, [enc(11,FI,Op2,2)|Rest]) :-
+    functor(T, F, N), functor_index(F, FT, FI), Op2 is (N<<16)\/TR,
+    T =.. [_|Args],
+    s_seq(Args, At, Xt0, Xt1, In0, In1, SIs, [], Defs),
+    defer_builds(Defs, At, FT, Xt1, Xt, In1, In2, DIs),
+    append(SIs, DIs, Rest).
+s_seq([], _, Xt, Xt, In, In, [], D, D).
+s_seq([A|As], At, Xt0, Xt, In0, In, Is, D0, D) :-
+    s_arg(A, At, Xt0, Xt1, In0, In1, AIs, D0, D1),
+    s_seq(As, At, Xt1, Xt, In1, In, RIs, D1, D), append(AIs, RIs, Is).
+s_arg('$VAR'(N), _, Xt, Xt, In0, In1, [I], D, D) :- !,
     Y is 48 + N,
     (   is_init(N, In0)
     ->  I = enc(14, Y, 0, 0), In1 = In0                  % set_value
     ;   I = enc(13, Y, 0, 0), In1 = [N|In0]              % set_variable
     ).
-set_arg([], At, In, In, [enc(15,Idx,0,1)]) :- !, functor_index('[]', At, Idx).
-set_arg(V, _, In, In, [enc(15,V,1,0)]) :- integer(V), !.
-set_arg(A, At, In, In, [enc(15,Idx,0,1)]) :- atom(A), functor_index(A, At, Idx).
+s_arg([], At, Xt, Xt, In, In, [enc(15,Idx,0,1)], D, D) :- !, functor_index('[]', At, Idx).
+s_arg(V, _, Xt, Xt, In, In, [enc(15,V,1,0)], D, D) :- integer(V), !.
+s_arg(A, At, Xt, Xt, In, In, [enc(15,Idx,0,1)], D, D) :- atom(A), !, functor_index(A, At, Idx).
+s_arg(C, _, Xt0, Xt1, In, In, [enc(13,Xt0,0,0)], D0, D) :-  % compound/list child
+    Xt1 is Xt0 + 1, append(D0, [d(C,Xt0)], D).
+defer_builds([], _, _, Xt, Xt, In, In, []).
+defer_builds([d(C,Reg)|Ds], At, FT, Xt0, Xt, In0, In, Is) :-
+    (   C = [_|_]
+    ->  build_list(C, Reg, nested, At, FT, Xt0, Xt1, In0, In1, CIs)
+    ;   build_struct(C, Reg, At, FT, Xt0, Xt1, In0, In1, CIs)
+    ),
+    defer_builds(Ds, At, FT, Xt1, Xt, In1, In, RIs),
+    append(CIs, RIs, Is).
 
 % serializer with an atom table: NA + NA length-prefixed atom name strings
 % between the label index and the functor table
@@ -1612,6 +1662,37 @@ test(selfhost_codegen_stage_d_guards, [condition(clang_available)]) :-
                  '[(main0(R):-maxi(2,40,X), R is X+2), (maxi(A,B,R):-( A >= B -> R = A ; R = B ))]' - "42\n",
                  '[(main0(R):- p(15,R)), (p(X,R):- X > 10, R = 42)]' - "42\n" ]),
         ( directory_file_path(Dir, 'cgg_src.txt', SrcPath),
+          setup_call_cleanup(open(SrcPath, write, S0),
+              write(S0, Source), close(S0)),
+          process_create(Host, [CompWamo, SrcPath],
+              [stdout(pipe(S)), stderr(std), process(Pid)]),
+          read_string(S, _, Out),
+          close(S),
+          process_wait(Pid, exit(Status)),
+          assertion(Status == 0),
+          assertion(Out == Expected) )),
+    !.
+
+% Milestone 6 (self-host) Stage D (structures): general compound terms in
+% heads and call arguments. Four programs: (1) flat -- mk(pt(40,2)) builds a
+% structure in WRITE mode (fact head, unbound caller arg) and un(pt(X,Y),R)
+% destructures it in READ mode (get_structure + unify_variable); (2) nested --
+% f(g(40)) built and f(g(X)) matched via the X-temp deferral (unify_variable
+% Xt then get_structure into Xt); (3) pair sugar 40-2 / A-B ('-'/2 is just a
+% compound); (4) the compiler's own instruction-term shape enc(T,O1,O2,Rl)
+% destructured in a head -- the exact pattern the fixpoint needs.
+test(selfhost_codegen_stage_d_structures, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([user:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    forall(member(Source-Expected,
+               [ '[(main0(R):- mk(P), un(P,R)), mk(pt(40,2)), (un(pt(X,Y),R):- R is X+Y)]' - "42\n",
+                 '[(main0(R):- wn(f(g(40)),R)), (wn(f(g(X)),R):- R is X+2)]' - "42\n",
+                 '[(main0(R):- p(40-2,R)), (p(A-B,R):- R is A+B)]' - "42\n",
+                 '[(main0(R):- d(enc(20,10,7,5),R)), (d(enc(T,O1,O2,Rl),R):- A is T+O1, B is O2+Rl, R is A+B)]' - "42\n" ]),
+        ( directory_file_path(Dir, 'cgs_src.txt', SrcPath),
           setup_call_cleanup(open(SrcPath, write, S0),
               write(S0, Source), close(S0)),
           process_create(Host, [CompWamo, SrcPath],
