@@ -447,6 +447,9 @@ remaining D-channel shape defect as model-side relation-class structure rather t
   sensitivity analyses.
 - `sample_product_kalman_enwiki_campaign.py` and `test_product_kalman_enwiki_campaign.py` - deterministic numeric
   Main-topic branch sampler, endpoint title join, exact shortest-hop verification, and campaign provenance audit.
+- `audit_product_kalman_lmdb_topology.py` and `test_product_kalman_lmdb_topology.py` - streaming numeric LMDB
+  degree audit with exact all-node denominators; topology is descriptive and is never used as a confidence input.
+- `REPORT_product_kalman_enwiki_topology.md` - durable pre-scoring enwiki topology summary and source fingerprint.
 - `DESIGN_uncertainty_estimation_playbook.md` — current rule: learned calibrated combiner, held-out node-disjoint,
   margin gate, and PoE as a control rather than an independence assumption.
 - `REPORT_mu_posterior.md` — empirical evidence that joint heads beat factored PoE under correlated readouts.
