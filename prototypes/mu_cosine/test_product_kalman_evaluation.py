@@ -21,7 +21,11 @@ from product_kalman_evaluation import (
     evaluation_to_json_dict,
     fit_group_residual_covariances,
     main,
+    gaussian_marginal_pit_diagnostics,
+    gaussian_marginal_pit_values,
     paired_bootstrap_nll_improvement,
+    pit_diagnostics_from_values,
+    pit_uniform_ks_statistic,
     row_covariances_from_groups,
     run_product_kalman_holdout_npz,
     score_gaussian_prediction_vectors_rowwise,
@@ -57,7 +61,6 @@ def synthetic_identity_split(n_cal=8000, n_eval=4000, seed=23):
         measurement[n_cal:],
         target[n_cal:],
     )
-
 
 def test_correlated_product_kalman_beats_zero_cross_control_on_heldout_nll():
     cal_prior, cal_measure, cal_target, eval_prior, eval_measure, eval_target = synthetic_identity_split()
@@ -101,7 +104,6 @@ def test_correlated_product_kalman_beats_zero_cross_control_on_heldout_nll():
     assert boot["ci_low"] < boot["observed_mean_gain"] < boot["ci_high"]
     assert boot["method"] == "paired_row_resample"
     assert boot["confidence"] == 0.90
-
 
 def test_split_ids_are_checked_before_scoring():
     cal_prior, cal_measure, cal_target, eval_prior, eval_measure, eval_target = synthetic_identity_split(
@@ -180,7 +182,6 @@ def write_identity_npz(path, n_cal=8000, n_eval=4000):
         calibration_ids=np.array([f"cal-{i}" for i in range(n_cal)]),
         evaluation_ids=np.array([f"eval-{i}" for i in range(n_eval)]),
     )
-
 
 def test_npz_runner_and_json_cli_roundtrip():
     with tempfile.TemporaryDirectory() as tmp:
@@ -263,7 +264,6 @@ def test_npz_runner_and_json_cli_roundtrip():
             np.testing.assert_allclose(artifact["calibration_cross_covariance"], result.calibration.cross_covariance)
             np.testing.assert_allclose(artifact["independent_cross_covariance"], 0.0)
 
-
 def test_evaluation_artifact_arrays_are_npz_ready():
     cal_prior, cal_measure, cal_target, eval_prior, eval_measure, eval_target = synthetic_identity_split(
         n_cal=80,
@@ -299,7 +299,6 @@ def test_evaluation_artifact_arrays_are_npz_ready():
         with np.load(artifact_path, allow_pickle=False) as artifact:
             assert set(arrays).issubset(set(artifact.files))
             np.testing.assert_allclose(artifact["score_mean_nll"], arrays["score_mean_nll"])
-
 
 def test_npz_runner_scores_grouped_covariances_when_group_labels_present():
     rng = np.random.default_rng(41)
@@ -385,14 +384,12 @@ def test_npz_runner_scores_grouped_covariances_when_group_labels_present():
             summary = json.loads(str(artifact["grouped_score_summary_json"][-1]))
             assert summary["score"] == "product_kalman_grouped"
 
-
 def test_npz_runner_validates_required_keys():
     with tempfile.TemporaryDirectory() as tmp:
         input_path = Path(tmp) / "missing.npz"
         np.savez(input_path, calibration_prior_mean=np.zeros((4, 1)))
         assert_raises(run_product_kalman_holdout_npz, input_path)
         assert_raises(bootstrap_nll_improvements_from_evaluation_npz, input_path, n_boot=10)
-
 
 def test_nonidentity_observation_omits_measurement_baseline():
     rng = np.random.default_rng(5)
@@ -419,7 +416,6 @@ def test_nonidentity_observation_omits_measurement_baseline():
     assert names == ["prior", "independent_kalman", "product_kalman"]
     assert result.correlated_update.mean.shape == (n_eval, 2)
     assert_raises(result.score, "measurement")
-
 
 def test_group_residual_covariances_feed_rowwise_scores():
     rng = np.random.default_rng(17)
@@ -450,7 +446,6 @@ def test_group_residual_covariances_feed_rowwise_scores():
     grouped_score = score_gaussian_predictions_rowwise("grouped", eval_obs, eval_pred, row_covariances, jitter=1e-8)
     assert grouped_score.mean_nll < global_score.mean_nll
     assert grouped_score.covariance_trace == np.mean(np.trace(row_covariances, axis1=1, axis2=2))
-
 
 def test_grouped_gaussian_scorer_matches_manual_grouped_path():
     rng = np.random.default_rng(19)
@@ -507,7 +502,6 @@ def test_grouped_gaussian_scorer_matches_manual_grouped_path():
         eval_groups,
     )
 
-
 def test_group_residual_covariance_fallbacks_and_validation():
     pred = np.zeros((8, 1))
     obs = np.array([[0.0], [0.2], [-0.1], [0.1], [1.0], [-1.1], [0.9], [0.05]])
@@ -533,7 +527,6 @@ def test_group_residual_covariance_fallbacks_and_validation():
         min_group_rows=2,
     )
 
-
 def test_score_gaussian_predictions_validates_shapes_and_reports_mse():
     target = np.array([[1.0], [2.0]])
     mean = np.array([[1.5], [1.5]])
@@ -554,7 +547,6 @@ def test_score_gaussian_predictions_validates_shapes_and_reports_mse():
     assert abs(score.squared_mahalanobis_q95 - 1.0) < 1e-12
     assert_raises(score_gaussian_predictions, "bad", target[:, 0], mean, [[1.0]])
     assert_raises(score_gaussian_predictions, "bad", target, mean, [[1.0, 0.0]])
-
 
 def test_rowwise_gaussian_scoring_supports_variable_covariances():
     target = np.array([[1.0], [2.0]])
@@ -589,6 +581,37 @@ def test_rowwise_gaussian_scoring_supports_variable_covariances():
     bad_covariances[1, 0, 0] = np.nan
     assert_raises(score_gaussian_predictions_rowwise, "bad", target, mean, bad_covariances)
 
+def test_pit_diagnostics_validate_uniform_ks_and_json_shape():
+    pit = np.array([[0.25, 0.10], [0.75, 0.90]])
+    diag = pit_diagnostics_from_values("mix", pit, channel_names=("D", "S"))
+    np.testing.assert_allclose(diag.channel_ks, [0.25, 0.40])
+    assert diag.pit.flags.writeable is False
+    assert diag.channel_ks.flags.writeable is False
+    assert diag.to_json_dict() == {
+        "n": 2,
+        "dimension": 2,
+        "channel_names": ["D", "S"],
+        "channel_ks": [0.25, 0.4],
+        "method": "marginal_pit_uniform_ks",
+    }
+    assert abs(pit_uniform_ks_statistic([0.25, 0.75]) - 0.25) < 1e-12
+    assert_raises(pit_diagnostics_from_values, "bad", np.array([0.5, 0.6]))
+    assert_raises(pit_diagnostics_from_values, "bad", np.array([[1.2]]))
+    assert_raises(pit_diagnostics_from_values, "bad", np.array([[0.5]]), channel_names=("D", "S"))
+
+def test_gaussian_marginal_pit_values_support_fixed_and_rowwise_covariances():
+    target = np.array([[0.0], [1.0], [-1.0]])
+    mean = np.zeros((3, 1))
+    fixed = gaussian_marginal_pit_values(target, mean, np.array([[1.0]]))
+    np.testing.assert_allclose(fixed[:, 0], [0.5, 0.841344746, 0.158655254], atol=1e-8)
+    rowwise_cov = np.array([[[1.0]], [[4.0]], [[4.0]]])
+    rowwise = gaussian_marginal_pit_values(target, mean, rowwise_cov)
+    np.testing.assert_allclose(rowwise[:, 0], [0.5, 0.691462461, 0.308537539], atol=1e-8)
+    diag = gaussian_marginal_pit_diagnostics("gaussian", target, mean, rowwise_cov, channel_names=("D",))
+    assert diag.to_json_dict()["channel_names"] == ["D"]
+    assert diag.to_json_dict()["n"] == 3
+    assert_raises(gaussian_marginal_pit_values, target, mean[:, :0], np.array([[1.0]]))
+    assert_raises(gaussian_marginal_pit_values, target, mean, np.array([[0.0]]))
 
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

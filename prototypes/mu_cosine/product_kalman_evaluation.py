@@ -13,8 +13,9 @@ has won; they make the held-out comparison auditable.
 """
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
+import math
 import sys
 
 import numpy as np
@@ -44,6 +45,7 @@ __all__ = [
     "GaussianScore",
     "GaussianScoreVectors",
     "GroupedGaussianScore",
+    "PITDiagnostics",
     "GroupResidualCovariances",
     "ProductKalmanHoldoutEvaluation",
     "bootstrap_nll_improvements_from_evaluation_npz",
@@ -55,6 +57,10 @@ __all__ = [
     "evaluation_to_json_dict",
     "paired_bootstrap_nll_improvement",
     "paired_bootstrap_nll_improvement_from_score_rows",
+    "gaussian_marginal_pit_diagnostics",
+    "gaussian_marginal_pit_values",
+    "pit_diagnostics_from_values",
+    "pit_uniform_ks_statistic",
     "row_covariances_from_groups",
     "run_product_kalman_holdout_npz",
     "score_gaussian_prediction_vectors_rowwise",
@@ -405,6 +411,127 @@ class GaussianScoreVectors:
     @property
     def n(self):
         return int(self.nll.size)
+
+
+@dataclass(frozen=True)
+class PITDiagnostics:
+    """Per-channel probability integral transform diagnostics.
+
+    `pit` must contain CDF values in `[0, 1]` with shape `(n, d)`. A calibrated
+    predictive marginal should have PIT values close to uniform; `channel_ks` is
+    the one-sample Kolmogorov-Smirnov distance to `U(0, 1)` for each channel.
+    """
+
+    name: str
+    pit: np.ndarray
+    channel_names: tuple = ()
+    channel_ks: np.ndarray = field(init=False)
+
+    def __post_init__(self):
+        name = str(self.name)
+        if not name:
+            raise ValueError("PIT diagnostic name must be nonempty")
+        pit = _as_2d("pit", self.pit)
+        if ((pit < 0.0) | (pit > 1.0)).any():
+            raise ValueError("pit values must be in [0, 1]")
+        pit = np.array(pit, dtype=float, copy=True)
+        pit.setflags(write=False)
+        channel_names = tuple(str(item) for item in self.channel_names)
+        if channel_names and len(channel_names) != pit.shape[1]:
+            raise ValueError("channel_names length must match pit dimension")
+        channel_ks = np.array([pit_uniform_ks_statistic(pit[:, j]) for j in range(pit.shape[1])], dtype=float)
+        channel_ks.setflags(write=False)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "pit", pit)
+        object.__setattr__(self, "channel_names", channel_names)
+        object.__setattr__(self, "channel_ks", channel_ks)
+
+    @property
+    def n(self):
+        return int(self.pit.shape[0])
+
+    @property
+    def dimension(self):
+        return int(self.pit.shape[1])
+
+    def to_json_dict(self):
+        return {
+            "n": self.n,
+            "dimension": self.dimension,
+            "channel_names": list(self.channel_names),
+            "channel_ks": [float(value) for value in self.channel_ks],
+            "method": "marginal_pit_uniform_ks",
+        }
+
+
+def _normal_cdf(value):
+    arr = np.asarray(value, dtype=float)
+    erf = np.vectorize(math.erf, otypes=[float])
+    return 0.5 * (1.0 + erf(arr / math.sqrt(2.0)))
+
+
+def pit_uniform_ks_statistic(values):
+    """Return the one-sample KS distance between PIT values and `U(0, 1)`."""
+    arr = np.asarray(values, dtype=float)
+    if arr.ndim != 1 or arr.size == 0:
+        raise ValueError("PIT values must be a nonempty 1-D array")
+    if not np.isfinite(arr).all():
+        raise ValueError("PIT values must be finite")
+    if ((arr < 0.0) | (arr > 1.0)).any():
+        raise ValueError("PIT values must be in [0, 1]")
+    x = np.sort(arr)
+    n = float(x.size)
+    empirical_hi = np.arange(1, x.size + 1, dtype=float) / n
+    empirical_lo = np.arange(0, x.size, dtype=float) / n
+    return float(max(np.max(empirical_hi - x), np.max(x - empirical_lo)))
+
+
+def pit_diagnostics_from_values(name, pit, channel_names=()):
+    """Build JSON-ready PIT calibration diagnostics from precomputed PIT values.
+
+    This is the generic path for mixtures: callers can compute mixture CDF values
+    row by row, then use this helper for the common validation and KS summary.
+    """
+    return PITDiagnostics(name=name, pit=pit, channel_names=tuple(channel_names))
+
+
+def _covariance_diagonal_rows(covariance, n, dim, jitter=0.0):
+    jitter = float(jitter)
+    if not np.isfinite(jitter) or jitter < 0.0:
+        raise ValueError("jitter must be finite and nonnegative")
+    cov = np.asarray(covariance, dtype=float)
+    if cov.ndim == 2:
+        diag = np.diag(_as_covariance("covariance", cov, dim))[None, :]
+        diag = np.repeat(diag, n, axis=0)
+    elif cov.ndim == 3:
+        diag = np.diagonal(_as_row_covariances("covariances", cov, n, dim), axis1=1, axis2=2)
+    else:
+        raise ValueError("covariance must be a covariance matrix or row-covariance array")
+    diag = np.array(diag, dtype=float, copy=True)
+    if jitter:
+        diag += jitter
+    if (diag <= 0.0).any():
+        raise ValueError("marginal covariance variances must be positive")
+    return diag
+
+
+def gaussian_marginal_pit_values(target_state, mean, covariance, jitter=0.0):
+    """Return per-row, per-channel PIT values for Gaussian predictive marginals."""
+    target = _as_2d("target_state", target_state)
+    pred = _as_2d("mean", mean)
+    if pred.shape != target.shape:
+        raise ValueError(f"mean shape {pred.shape} must match target_state shape {target.shape}")
+    variances = _covariance_diagonal_rows(covariance, target.shape[0], target.shape[1], jitter=jitter)
+    z = (target - pred) / np.sqrt(variances)
+    pit = _normal_cdf(z)
+    pit.setflags(write=False)
+    return pit
+
+
+def gaussian_marginal_pit_diagnostics(name, target_state, mean, covariance, jitter=0.0, channel_names=()):
+    """Build PIT/KS diagnostics for Gaussian predictive marginals."""
+    pit = gaussian_marginal_pit_values(target_state, mean, covariance, jitter=jitter)
+    return pit_diagnostics_from_values(name, pit, channel_names=channel_names)
 
 
 @dataclass(frozen=True)
