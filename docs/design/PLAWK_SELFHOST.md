@@ -435,6 +435,33 @@ this covers). Verified end to end
 ITE through the THEN branch and through the ELSE branch (both → 42), and a
 plain comparison guard in a conjunction (`X > 10` → 42).
 
+**General structure patterns — LANDED.** Arbitrary compound terms now compile
+in heads and call arguments — `pt(X,Y)`, nested `f(g(X))`, pair sugar `A-B`,
+and the compiler's own instruction shape `enc(T,O1,O2,Rl)`. Head side:
+`get_structure F/N Ai` + one `unify_*` per arg, with compound/list **children
+deferred**: `unify_variable Xtemp` saves the child during the parent's unify
+sequence, and after the parent completes a `get_structure`/`get_list` into
+the temp reads it (the host's canonical nesting shape). Build side is the
+mirror: `put_structure F/N` + `set_*` per arg, children deferred via
+`set_variable Xtemp` and built after the parent with write-mode
+`put_structure` binding through the fresh cell. One X-temp counter (from reg
+16) threads through each head or build. The table walk now collects **every
+data functor** (subsuming the old is-operator collection; control/goal
+functors are skipped). Verified end to end
+(`tests/test_wam_object.pl:selfhost_codegen_stage_d_structures`): write-mode
+build via a fact head (`mk(pt(40,2))` called with unbound), read-mode
+destructuring, nesting, pairs, and `enc/4` — all → `42`.
+
+*Runtime bug this surfaced — the `get_structure` fix's sibling:* **`get_list`
+read mode accepted ANY compound** — no cons-functor check, no arity check —
+so a `[H|T]` clause head wrongly matched e.g. `foo(A,B)`, reading its args as
+list head/tail. Unexercised until arbitrary compounds started reaching
+list-matching clauses (the grammar's own `walk_term([H|T],…)` clause matched
+every compound, silently corrupting the functor table). Fixed like #3511:
+verify `@wam_functor_is_cons` (byte compare, so reader-built lists match) and
+arity 2 before pushing the UnifyCtx — the fifth latent runtime bug the
+self-host campaign has found and fixed.
+
 **Deliverable:** the demonstrable self-host — the compiler compiles itself,
 and `compile(SelfSource)` yields a working compiler object.
 

@@ -3053,9 +3053,26 @@ gl.check_unb:
   br i1 %gl.unb_p, label %gl.write, label %gl.fail
 
 gl.read:
-  ; Compound: load args pointer, push UnifyCtx with arity 2.
+  ; Compound: it only matches if it actually IS a cons cell -- functor
+  ; "[|]" (byte compare via @wam_functor_is_cons, so reader-built lists
+  ; match too) AND arity 2. Historically this block accepted ANY compound
+  ; (the get_structure sibling of the missing-functor-check bug): a [H|T]
+  ; clause head wrongly matched e.g. foo(A,B), reading its args as if they
+  ; were list head/tail.
   %gl.cp_bits = extractvalue %Value %gl.val, 1
   %gl.cp_ptr = inttoptr i64 %gl.cp_bits to %Compound*
+  %gl.rfn_slot = getelementptr %Compound, %Compound* %gl.cp_ptr, i32 0, i32 0
+  %gl.rfn = load i8*, i8** %gl.rfn_slot
+  %gl.is_cons = call i1 @wam_functor_is_cons(i8* %gl.rfn)
+  br i1 %gl.is_cons, label %gl.read_ar, label %gl.fail
+
+gl.read_ar:
+  %gl.rar_slot = getelementptr %Compound, %Compound* %gl.cp_ptr, i32 0, i32 1
+  %gl.rar = load i32, i32* %gl.rar_slot
+  %gl.ar_ok = icmp eq i32 %gl.rar, 2
+  br i1 %gl.ar_ok, label %gl.read_ok, label %gl.fail
+
+gl.read_ok:
   %gl.args_slot = getelementptr %Compound, %Compound* %gl.cp_ptr, i32 0, i32 2
   %gl.args = load %Value*, %Value** %gl.args_slot
   call void @wam_push_unify_ctx(%WamState* %vm, %Value* %gl.args, i32 2)
