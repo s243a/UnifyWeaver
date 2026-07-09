@@ -384,7 +384,8 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    `product_kalman_table_to_npz.py` records source-table hash, split counts, column groups, optional discrete
    group labels such as hop/regime buckets, dimensions, ID overlap/duplicate counts, and `H`
    shape/values; `product_kalman_evaluation.py` then fits calibration blocks on one split, scores prior /
-   zero-cross-covariance / correlated Product-Kalman predictions on a separate split, records aggregate NLL/MSE,
+   zero-cross-covariance / correlated Product-Kalman predictions on a separate split, optionally appends
+   grouped-covariance score variants when calibration/evaluation group labels are present, records aggregate NLL/MSE,
    Mahalanobis calibration-scale/tail diagnostics, row-level score vectors, and optional paired bootstrap intervals
    for NLL gains, and keeps calibration/evaluation IDs disjoint. *(Synthetic harness added; real-corpus comparison
    pending.)*
@@ -423,14 +424,14 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
 - `product_kalman_split_table.py` and `test_product_kalman_split_table.py` — split-label materializer for explicit
   Product-Kalman tables, with held-out unit sampling, strict boundary-row omission, and a split manifest.
 - `product_kalman_table_evaluation.py` and `test_product_kalman_table_evaluation.py` — one-command table-to-input-
-  artifacts-to-holdout-score/report runner, with optional split materialization and canonical `--output-dir` bundles
-  for real-corpus Product-Kalman comparisons.
+  artifacts-to-holdout-score/report runner, with optional split materialization, optional group-label carry-through into
+  grouped covariance scores, and canonical `--output-dir` bundles for real-corpus Product-Kalman comparisons.
 - `product_kalman_report.py` and `test_product_kalman_report.py` — descriptive Markdown report generator for
   Product-Kalman input manifests, optional split manifests, and score JSON artifacts.
 - `product_kalman_evaluation.py` and `test_product_kalman_evaluation.py` — holdout comparison harness for
   prior, zero-cross-covariance, and correlated Product-Kalman scoring on disjoint splits, including NLL/MSE,
-  rowwise covariance scoring, grouped residual-covariance maps, and a grouped scorer for future
-  hop-conditioned `V(hop)` audits, Mahalanobis predicted-error scale/tail diagnostics, JSON summaries, and
-  row-level NPZ score artifacts for reproducible bootstrap/tail diagnostics.
+  rowwise covariance scoring, grouped residual-covariance maps, automatic grouped score variants when NPZ group
+  labels are present, Mahalanobis predicted-error scale/tail diagnostics, JSON summaries, and row-level NPZ score
+  artifacts for reproducible bootstrap/tail diagnostics.
 - `REPORT_sigma_hop_confirmatory.md` and `PAPER_sigma_hop_confirmatory.md` — confirmatory Sigma(hop) result and
   publication scaffold.

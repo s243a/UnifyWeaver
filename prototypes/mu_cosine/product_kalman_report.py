@@ -197,6 +197,19 @@ def _calibration_rows(scores_json):
     ]
 
 
+def _grouped_covariance_rows(scores_json):
+    rows = []
+    for name, item in sorted(scores_json.get("grouped_covariances", {}).items()):
+        counts = item.get("group_counts", {})
+        rows.append([
+            name,
+            item.get("min_group_rows"),
+            ", ".join(f"{label}:{count}" for label, count in sorted(counts.items())),
+            item.get("row_covariance_shape"),
+        ])
+    return rows
+
+
 def _artifact_path(scores_json, evaluation_npz=None):
     artifact_path = evaluation_npz or scores_json.get("inputs", {}).get("evaluation_npz")
     if not artifact_path:
@@ -332,6 +345,17 @@ def build_product_kalman_markdown_report(
         ])
     bootstrap_rows = _bootstrap_rows(scores_json)
     bootstrap_artifact_rows = _bootstrap_artifact_rows(scores_json)
+    grouped_covariance_rows = _grouped_covariance_rows(scores_json)
+    if grouped_covariance_rows:
+        lines.extend([
+            "## Grouped Covariances",
+            "",
+            _markdown_table(
+                ["score", "min_group_rows", "group_counts", "row_covariance_shape"],
+                grouped_covariance_rows,
+            ),
+            "",
+        ])
     lines.extend([
         "## Scores",
         "",
