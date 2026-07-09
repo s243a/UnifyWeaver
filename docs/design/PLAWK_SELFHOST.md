@@ -632,14 +632,63 @@ chains) — a silent multi-minute hang, not an error.
   makes the eval host exit nonzero at once (this test would time the
   suite out on the old behavior).
 
-**Remaining toward the full fixpoint:** the serializer and a source-to-
-object mini-compiler are now self-compiled; the full cgfull front/middle
-(`group_clauses`, `collect_tables`, the codegen walkers) additionally
-needs bare cut restated as ITE throughout and the `s(At,Fn)` state pair
-(structures — supported). The compile budget — both memory (chained
-arena) and time (difference lists) — is solved. The capstone
-(`compile(SelfSource)` yielding a working compiler object) remains open,
-with the front end now demonstrated end to end.
+**THE MIDDLE, first slice LANDED — the compiler compiles its own codegen.**
+The loaded cgfull compiled `fixpoint_middle_source/1` (mid2): a cut-free
+restatement of the single-clause codegen — `copy_term` + `numbervars`
+(both loadable builtins) to make variables matchable, conjunction
+splitting via `=..`/`==` (control functors cannot be pattern literals),
+functor-table collection in first-occurrence order (head functor first,
+then the is-expression operators — matching `collect_tables`), a head
+walk with variable-index `arg/3` emitting `get_variable`/`get_value` by
+first occurrence, and `L is E` compiled the way `f_goal` does it
+post-nested-lift (operand → A1, `put_structure op/2` + `set_*` → A2,
+builtin `is/2`). The init-set threads as a plain N-list with `memberchk`;
+every dispatch is an ITE. The doubly-compiled codegen compiled
+`sum3(A, B, R2) :- T is A + B, R2 is T + 1` **byte-identically to the
+production cgfull middle** (`cgfull_term/2`, the reader split off so SWI
+can compute the golden bytes) — real register allocation, two compile
+generations deep, checksum 8755. Test `selfhost_codegen_stage_d_middle`.
+
+Getting there surfaced three more items:
+
+- *Runtime finding (campaign no. 10):* an **uncaught throw behaved as a
+  plain failure** — `wam_throw` set halted and returned false, but
+  `@backtrack` resumed into live choice points and **cleared halted
+  unconditionally** (it must, for re-satisfaction of completed queries),
+  re-executing over the half-unwound state: with enough choice-point
+  structure the corrupted terms spun forever inside the `append` builtin
+  (gdb-pinned: an inlined cons-building loop bump-allocating endlessly).
+  This silently defeated the fail-fast diagnostics in exactly the
+  compiles they were added for. Fixed with an explicit abort flag
+  (`@wam_uncaught`): set on the uncaught path, checked at `@backtrack`
+  entry (refuse resumption), cleared per top-level query by
+  `@wam_catch_reset`. Regression `selfhost_uncaught_throw_aborts` (hung
+  for minutes before; must exit nonzero immediately).
+- *Reader lift:* **quoted functor applications** — `'$VAR'(N)` parsed as
+  the atom `$VAR` and then failed on the paren. The quoted-atom lexer
+  now peeks for an immediately-following `(` and routes into the shared
+  argument parser (functor id phi: quoted or unquoted name span).
+- *Compiler convention:* cgfull uses `'$VAR'(N)` as its numbervars
+  marker, so a **source-level** `'$VAR'(Pattern)` (exactly what mid2's
+  clause heads need to match numbervarred terms) was misread as a
+  marker — after numbervars the pattern is `'$VAR'('$VAR'(0))` and
+  `Y is 48 + N` crashed. The marker clauses in `head_arg_instrs`,
+  `u_arg`, `c_operand`, and `s_arg` now guard on `integer(N)`; a
+  `'$VAR'` structure with a non-integer argument compiles as an ordinary
+  structure pattern (`get_structure '$VAR'/1` + inner marker), which is
+  precisely the semantics a self-compiled middle needs. The residual
+  ambiguity — a literal `'$VAR'(3)` in user source is still read as a
+  marker — is inherent to the numbervars encoding and documented here.
+
+**Remaining toward the full fixpoint:** the serializer, a mini-compiler
+front end, and the single-clause codegen middle are now self-compiled.
+What is left of cgfull: the clause grouping/label front (`group_clauses`,
+`group_labels`, try/retry/trust chains), the general table walk
+(`collect_tables`), the structure-pattern and list codegen (u_seq/s_seq
+deferral), ITE codegen, and the builtin/comparison goal dispatch — plus
+stitching those into one `compile(SelfSource)`. The compile budget —
+memory (chained arena) and time (difference lists) — is solved, and the
+`'$VAR'` convention now permits the walkers themselves to be compiled.
 
 **Deliverable:** the demonstrable self-host — the compiler compiles itself,
 and `compile(SelfSource)` yields a working compiler object.

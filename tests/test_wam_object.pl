@@ -584,6 +584,11 @@ wz_funcs([F|Fs], A0, A2) :- wz_fname(F, A0, A1), wz_funcs(Fs, A1, A2).
 % on both paths). Variables introduced inside one branch are branch-local.
 cgfull(Src, Wamo) :-
     read_term_from_atom(Src, Clauses),
+    cgfull_term(Clauses, Wamo).
+% Split off the reader call so the middle+back end can run in SWI too
+% (read_term_from_atom/2 exists only in the loaded runtime): tests
+% compute expected golden bytes by feeding cgfull_term/2 clause TERMS.
+cgfull_term(Clauses, Wamo) :-
     group_clauses(Clauses, Groups),
     group_labels(Groups, 0, PL),
     length(Groups, NP),
@@ -703,7 +708,7 @@ h_args(H, I, Ar, At, Fn, Xt0, In0, In, Is) :-
     head_arg_instrs(A, Ai, At, Fn, Xt0, Xt1, In0, In1, AIs),
     I1 is I + 1, h_args(H, I1, Ar, At, Fn, Xt1, In1, In, RIs),
     append(AIs, RIs, Is).
-head_arg_instrs('$VAR'(N), Ai, _, _, Xt, Xt, In0, In1, [I]) :- !,
+head_arg_instrs('$VAR'(N), Ai, _, _, Xt, Xt, In0, In1, [I]) :- integer(N), !,
     Y is 48 + N,
     (   is_init(N, In0)
     ->  I = enc(2, Y, Ai, 0), In1 = In0                 % get_value (repeated var)
@@ -731,7 +736,7 @@ u_seq([], _, Xt, Xt, In, In, [], D, D).
 u_seq([A|As], At, Xt0, Xt, In0, In, Is, D0, D) :-
     u_arg(A, At, Xt0, Xt1, In0, In1, AIs, D0, D1),
     u_seq(As, At, Xt1, Xt, In1, In, RIs, D1, D), append(AIs, RIs, Is).
-u_arg('$VAR'(N), _, Xt, Xt, In0, In1, [I], D, D) :- !,
+u_arg('$VAR'(N), _, Xt, Xt, In0, In1, [I], D, D) :- integer(N), !,
     Y is 48 + N,
     (   is_init(N, In0)
     ->  I = enc(6, Y, 0, 0), In1 = In0                  % unify_value
@@ -877,7 +882,7 @@ call_args(Goal, I, Ar, At, FT, In0, In, Is) :-
 
 % call-argument staging: vars/ints via operand_instr; nil/atoms as atom
 % constants; list literals built on the heap
-c_operand('$VAR'(N), Ai, _, _, In0, In1, Is) :- !, operand_instr('$VAR'(N), Ai, In0, In1, Is).
+c_operand('$VAR'(N), Ai, _, _, In0, In1, Is) :- integer(N), !, operand_instr('$VAR'(N), Ai, In0, In1, Is).
 c_operand(V, Ai, _, _, In, In, Is) :- integer(V), !, operand_instr(V, Ai, In, In, Is).
 c_operand([], Ai, At, _, In, In, [enc(8,Idx,Ai,1)]) :- !, functor_index('[]', At, Idx).
 c_operand([H|T], Ai, At, FT, In0, In1, Is) :- !,
@@ -924,7 +929,7 @@ s_seq([], _, Xt, Xt, In, In, [], D, D).
 s_seq([A|As], At, Xt0, Xt, In0, In, Is, D0, D) :-
     s_arg(A, At, Xt0, Xt1, In0, In1, AIs, D0, D1),
     s_seq(As, At, Xt1, Xt, In1, In, RIs, D1, D), append(AIs, RIs, Is).
-s_arg('$VAR'(N), _, Xt, Xt, In0, In1, [I], D, D) :- !,
+s_arg('$VAR'(N), _, Xt, Xt, In0, In1, [I], D, D) :- integer(N), !,
     Y is 48 + N,
     (   is_init(N, In0)
     ->  I = enc(14, Y, 0, 0), In1 = In0                  % set_value
@@ -978,6 +983,28 @@ fixpoint_serializer_source('[(main0(R) :- serz(Cs), sum_list(Cs, S), length(Cs, 
 % collection into the atom table, relocation, and re-parsing by the
 % loaded reader) into exactly the bytes the Stage A serializer yields.
 fixpoint_compiler_source('[(main0(R) :- cmp2(''ea(R2) :- R2 = 42'', Cs1), cmp2(''eb(R2) :- R2 = foo'', Cs2), sum_list(Cs1, S1), length(Cs1, L1), sum_list(Cs2, S2), length(Cs2, L2), R is S1 + L1 + S2 + L2), (cmp2(Src, Out) :- read_term_from_atom(Src, C), C =.. [_, H, B], functor(H, P, 1), B =.. [_, _, V], atom_codes(P, PC), append(PC, [47, 49], NC), (integer(V) -> As = [], Is1 = [enc(0, V, 65536, 0)] ; As = [V], Is1 = [enc(0, 0, 0, 1)]), append(Is1, [enc(20, 0, 0, 0)], Is), wzs(0, NC, 0, As, [0], Is, Out)), (wzi(N, A0, A1) :- number_codes(N, Cs), append(Cs, [10|A1], A0)), (wza(X, A0, A1) :- atom_codes(X, Cs), append(Cs, [10|A1], A0)), (wzn(Cs, A0, A1) :- length(Cs, L), number_codes(L, LC), append(LC, [32|Mid], A0), append(Cs, [10|A1], Mid)), (wzsi(N, A0, A1) :- number_codes(N, Cs), append([32|Cs], A1, A0)), (wzs(EI, NC, LI, As, PCs, Is, Out) :- wzh(EI, NC, LI, Out, A6), length(As, NA), wzi(NA, A6, A7), wzat(As, A7, A8), wzi(0, A8, A9), wzp(PCs, A9, A10), wzc(Is, A10, A11), wzi(0, A11, [])), (wzh(EI, NC, LI, A0, Out) :- wza(''WAMO'', A0, A1), wzi(2, A1, A2), wzi(EI, A2, A3), wzi(1, A3, A4), wzn(NC, A4, A5), wzi(LI, A5, Out)), wzat([], A, A), (wzat([X|Xs], A0, A2) :- atom_codes(X, Cs), wzn(Cs, A0, A1), wzat(Xs, A1, A2)), (wzp(PCs, A0, A2) :- length(PCs, NL), wzi(NL, A0, A1), wzpr(PCs, A1, A2)), wzpr([], A, A), (wzpr([P|Ps], A0, A2) :- wzi(P, A0, A1), wzpr(Ps, A1, A2)), (wzc(Is, A0, A2) :- length(Is, NC2), wzi(NC2, A0, A1), wzcr(Is, A1, A2)), wzcr([], A, A), (wzcr([enc(T,O1,O2,Rl)|Is], A0, A2) :- wzr(T, O1, O2, Rl, A0, A1), wzcr(Is, A1, A2)), (wzr(T, O1, O2, Rl, A0, A5) :- number_codes(T, Tc), append(Tc, A1, A0), wzsi(O1, A1, A2), wzsi(O2, A2, A3), wzsi(Rl, A3, A4), A4 = [10|A5])]').
+
+% The MIDDLE source (fixpoint, next slice): cgfull's own single-clause
+% CODEGEN restated cut-free in the accepted subset. Where gen 2 above
+% hard-coded its instruction templates, mid2 performs real register
+% allocation and instruction generation, mirroring the cgfull middle
+% exactly so its output is byte-identical:
+%   - copy_term + numbervars (both loadable builtins) turn the read
+%     clause's variables into matchable ''$VAR''(N) structures;
+%   - mgl splits the ,/2 conjunction via =.. + == (control functors
+%     cannot be pattern literals in the subset);
+%   - mcol collects is-expression operators into the functor table
+%     (first occurrence order, like collect_tables);
+%   - mhead walks the head with arg/3 (variable index -- the loadable
+%     form) emitting get_variable/get_value by first-occurrence, exactly
+%     like head_arg_instrs;
+%   - mgoal compiles `L is E` the way f_goal does post-nested-lift:
+%     operand to A1 (put_variable/put_value), expression to A2
+%     (put_structure op/2 + set_value/set_constant), builtin is/2;
+%   - wzs/wzat serialize with BOTH tables (atoms + functors).
+% The init-set threads as a plain N-list with memberchk, and every
+% dispatch is an ITE -- no cuts anywhere.
+fixpoint_middle_source('[(main0(R) :- cm2(''sum3(A, B, R2) :- T is A + B, R2 is T + 1'', Cs), sum_list(Cs, S), length(Cs, L), R is S + L), (cm2(Src, Out) :- read_term_from_atom(Src, C0), copy_term(C0, C1), numbervars(C1, 0, _), C1 =.. [_, H, B], mgl(B, Gs), functor(H, P, Ar), madd(P, [], FT0), mcol(Gs, FT0, FT), mname(P, Ar, NC), mhead(1, Ar, H, [], In1, HIs), mgoals(Gs, FT, In1, _, GIs), append(HIs, GIs, Body), append([enc(16, 0, 0, 0)|Body], [enc(17, 0, 0, 0), enc(20, 0, 0, 0)], Is), wzs(0, NC, 0, [], FT, [0], Is, Out)), (mgl(G, L) :- (G =.. [F, X, Y], F == '','' -> mgl(X, L1), mgl(Y, L2), append(L1, L2, L) ; L = [G])), mcol([], A, A), (mcol([G|Gs], A0, A2) :- (G =.. [F, _, E], F == is, functor(E, Op, 2) -> madd(Op, A0, A1) ; A1 = A0), mcol(Gs, A1, A2)), (madd(Op, A0, A1) :- (memberchk(Op, A0) -> A1 = A0 ; append(A0, [Op], A1))), (mname(P, Ar, NC) :- atom_codes(P, PC), number_codes(Ar, AC), append(PC, [47|AC], NC)), (mhead(I, Ar, H, In0, In, Is) :- (I > Ar -> In = In0, Is = [] ; arg(I, H, A), mharg(A, I, In0, In1, AI), I1 is I + 1, mhead(I1, Ar, H, In1, In, RIs), append(AI, RIs, Is))), (mharg(''$VAR''(N), I, In0, In1, [enc(T, Y, Ai, 0)]) :- Y is 48 + N, Ai is I - 1, (memberchk(N, In0) -> T = 2, In1 = In0 ; T = 1, In1 = [N|In0])), mgoals([], _, In, In, []), (mgoals([G|Gs], FT, In0, In, Is) :- mgoal(G, FT, In0, In1, GI), mgoals(Gs, FT, In1, In, RI), append(GI, RI, Is)), (mgoal(G, FT, In0, In2, Is) :- G =.. [_, L, E], mop(L, 0, In0, In1, IL), mexpr(E, FT, In1, In2, IE), append(IL, IE, LE), append(LE, [enc(21, 0, 2, 0)], Is)), (mop(''$VAR''(N), Ai, In0, In1, [enc(T, Y, Ai, 0)]) :- Y is 48 + N, (memberchk(N, In0) -> T = 10, In1 = In0 ; T = 9, In1 = [N|In0])), (mexpr(E, FT, In0, In1, Is) :- functor(E, Op, 2), fidx(Op, FT, FI), arg(1, E, X), arg(2, E, Y), mset(X, In0, Ina, SX), mset(Y, Ina, In1, SY), append([enc(11, FI, 131073, 2)|SX], SY, Is)), (mset(''$VAR''(N), In0, In1, [enc(T, Y, 0, 0)]) :- Y is 48 + N, (memberchk(N, In0) -> T = 14, In1 = In0 ; T = 13, In1 = [N|In0])), (mset(V, In, In, [enc(15, V, 1, 0)]) :- integer(V)), (fidx(Op, [F|Fs], I) :- (Op == F -> I = 0 ; fidx(Op, Fs, I1), I is I1 + 1)), (wzi(N, A0, A1) :- number_codes(N, Cs), append(Cs, [10|A1], A0)), (wza(X, A0, A1) :- atom_codes(X, Cs), append(Cs, [10|A1], A0)), (wzn(Cs, A0, A1) :- length(Cs, L), number_codes(L, LC), append(LC, [32|Mid], A0), append(Cs, [10|A1], Mid)), (wzsi(N, A0, A1) :- number_codes(N, Cs), append([32|Cs], A1, A0)), (wzs(EI, NC, LI, As, Fs, PCs, Is, Out) :- wzh(EI, NC, LI, Out, A6), length(As, NA), wzi(NA, A6, A7), wzat(As, A7, A8), length(Fs, NF), wzi(NF, A8, A9), wzat(Fs, A9, A10), wzp(PCs, A10, A11), wzc(Is, A11, A12), wzi(0, A12, [])), (wzh(EI, NC, LI, A0, Out) :- wza(''WAMO'', A0, A1), wzi(2, A1, A2), wzi(EI, A2, A3), wzi(1, A3, A4), wzn(NC, A4, A5), wzi(LI, A5, Out)), wzat([], A, A), (wzat([X|Xs], A0, A2) :- atom_codes(X, Cs), wzn(Cs, A0, A1), wzat(Xs, A1, A2)), (wzp(PCs, A0, A2) :- length(PCs, NL), wzi(NL, A0, A1), wzpr(PCs, A1, A2)), wzpr([], A, A), (wzpr([P|Ps], A0, A2) :- wzi(P, A0, A1), wzpr(Ps, A1, A2)), (wzc(Is, A0, A2) :- length(Is, NC2), wzi(NC2, A0, A1), wzcr(Is, A1, A2)), wzcr([], A, A), (wzcr([enc(T,O1,O2,Rl)|Is], A0, A2) :- wzr(T, O1, O2, Rl, A0, A1), wzcr(Is, A1, A2)), (wzr(T, O1, O2, Rl, A0, A5) :- number_codes(T, Tc), append(Tc, A1, A0), wzsi(O1, A1, A2), wzsi(O2, A2, A3), wzsi(Rl, A3, A4), A4 = [10|A5])]').
 
 % Register-file ceiling regression: manyperm/1 has 20 variables all live
 % across the mp_barrier call, so the compiler assigns them Y1..Y20. Before
@@ -1945,6 +1972,39 @@ test(selfhost_codegen_stage_d_gen3, [condition(clang_available)]) :-
     assertion(Out == Expected),
     !.
 
+% THE MIDDLE, first slice: the loaded compiler compiles its own CODEGEN.
+% gen 1 = AOT cgfull; gen 2 = mid2 (fixpoint_middle_source/1 -- real
+% register allocation: numbervars, first-occurrence init tracking,
+% head/operand/expression compilation, functor-table collection, both
+% serializer tables); gen 3 = mid2 run on the arithmetic clause
+% 'sum3(A, B, R2) :- T is A + B, R2 is T + 1'. Byte-exactness target:
+% the REAL cgfull middle (cgfull_term/2, reader split off) run on the
+% same clause TERM in SWI -- the doubly-compiled codegen must reproduce
+% the production compiler's bytes exactly, not just a fixed template.
+test(selfhost_codegen_stage_d_middle, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([user:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    cgfull_term([(sum3(A, B, R2) :- T is A + B, R2 is T + 1)], W),
+    atom_codes(W, WCs),
+    sum_list(WCs, WSum), length(WCs, WLen),
+    ExpectedN is WSum + WLen,
+    format(string(Expected), "~w\n", [ExpectedN]),
+    fixpoint_middle_source(Source),
+    directory_file_path(Dir, 'cgmid_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, Source), close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == Expected),
+    !.
+
 % Nested arithmetic in the loaded compiler: the is-expression is staged
 % with c_operand (build_struct + X-temp deferral), so arbitrarily nested
 % expressions compile. (X + Y) * (X - 1) + 100 with X=3, Y=4 -> 114.
@@ -1982,6 +2042,34 @@ test(selfhost_codegen_fail_fast_on_unsupported, [condition(clang_available)]) :-
     directory_file_path(Dir, 'cgff_src.txt', SrcPath),
     setup_call_cleanup(open(SrcPath, write, S0),
         write(S0, '[(main0(R) :- findall(X, foo(X), L), length(L, R))]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status \== 0),
+    assertion(Out == ""),
+    !.
+
+% Finding no. 10 regression: an UNCAUGHT throw must ABORT the machine, not
+% act as a failure. Before the @wam_uncaught flag, the run loop backtracked
+% into live choice points (clearing halted) and re-executed over the
+% half-unwound state; with enough choice-point structure (the mgl clause
+% below adds an ITE-recursive predicate compiled before the throwing one)
+% the corrupted state spun forever inside the append builtin. The compile
+% of this source throws cg_unsupported_goal(madd, 3) -- madd is undefined
+% here -- and the eval host must exit nonzero IMMEDIATELY (this test hung
+% for minutes on the old behavior).
+test(selfhost_uncaught_throw_aborts, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([user:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgut_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- R = 5), (mgl(G, L) :- (G =.. [F, X, Y], F == '','' -> mgl(X, L1), mgl(Y, L2), append(L1, L2, L) ; L = [G])), mcol([], A, A), (mcol([G|Gs], A0, A2) :- (G =.. [F, _, E], F == is, functor(E, Op, 2) -> madd(Op, A0, A1) ; A1 = A0), mcol(Gs, A1, A2))]'),
         close(S0)),
     process_create(Host, [CompWamo, SrcPath],
         [stdout(pipe(S)), stderr(std), process(Pid)]),
