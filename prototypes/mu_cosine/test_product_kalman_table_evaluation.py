@@ -37,7 +37,11 @@ def synthetic_identity_split(n_cal=80, n_eval=40, seed=23):
 def write_table(path, delimiter=","):
     prior, measurement, target, n_cal = synthetic_identity_split()
     with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["split", "id", "prior", "measurement", "target"], delimiter=delimiter)
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["split", "id", "prior", "measurement", "target", "hop"],
+            delimiter=delimiter,
+        )
         writer.writeheader()
         for i in range(len(target)):
             split = "calibration" if i < n_cal else "evaluation"
@@ -47,6 +51,7 @@ def write_table(path, delimiter=","):
                 "prior": f"{prior[i, 0]:.17g}",
                 "measurement": f"{measurement[i, 0]:.17g}",
                 "target": f"{target[i, 0]:.17g}",
+                "hop": str(1 + i % 2),
             })
 
 
@@ -90,6 +95,7 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
             output_npz=output_npz,
             output_md=output_md,
             report_title="Synthetic Table Product-Kalman Report",
+            group_cols=["hop"],
             jitter=1e-8,
             bootstrap_nll=50,
             bootstrap_seed=7,
@@ -102,6 +108,8 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         assert output_npz.exists()
         assert output_md.exists()
         assert run.input_arrays["calibration_prior_mean"].shape == (80, 1)
+        assert run.input_arrays["calibration_groups"].shape == (80,)
+        assert run.input_arrays["evaluation_groups"].shape == (40,)
         assert run.result.nll_improvement("prior", "product_kalman") > 0.65
         assert run.result.nll_improvement("independent_kalman", "product_kalman") > 0.05
 
@@ -128,6 +136,9 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         assert manifest["splits"]["calibration_rows"] == 80
         assert manifest["splits"]["evaluation_rows"] == 40
         assert manifest["ids"]["disjoint_and_unique"] is True
+        assert manifest["groups"]["present"] is True
+        assert manifest["groups"]["columns"] == ["hop"]
+        assert manifest["groups"]["calibration_counts"] == {"1": 40, "2": 40}
         report = output_md.read_text()
         assert report == run.report_text
         assert "# Synthetic Table Product-Kalman Report" in report
@@ -163,6 +174,8 @@ def test_table_runner_output_dir_writes_canonical_bundle():
             "measurement",
             "--target-cols",
             "target",
+            "--group-cols",
+            "hop",
             "--jitter",
             "1e-8",
             "--indent",
@@ -179,6 +192,12 @@ def test_table_runner_output_dir_writes_canonical_bundle():
         assert summary["inputs"]["evaluation_npz"] == str(paths["output_npz"])
         assert summary["inputs"]["report_md"] == str(paths["output_md"])
         assert summary["nll_improvement_vs_prior"]["product_kalman"] > 0.65
+        with np.load(paths["input_npz"], allow_pickle=False) as data:
+            assert data["calibration_groups"].shape == (80,)
+            assert data["evaluation_groups"].shape == (40,)
+        manifest = json.loads(paths["input_manifest"].read_text())
+        assert manifest["groups"]["present"] is True
+        assert manifest["groups"]["columns"] == ["hop"]
         assert "# Product-Kalman Holdout Report" in paths["output_md"].read_text()
 
 
@@ -301,6 +320,8 @@ def test_table_runner_cli_roundtrips_against_npz_evaluator():
             "measurement",
             "--target-cols",
             "target",
+            "--group-cols",
+            "hop",
             "--jitter",
             "1e-8",
             "--indent",
@@ -319,6 +340,7 @@ def test_table_runner_cli_roundtrips_against_npz_evaluator():
         manifest = json.loads(input_manifest.read_text())
         assert manifest["source_table"]["delimiter"] == "\t"
         assert manifest["ids"]["overlap_count"] == 0
+        assert manifest["groups"]["columns"] == ["hop"]
         assert from_table["inputs"]["report_md"] == str(output_md)
 
 

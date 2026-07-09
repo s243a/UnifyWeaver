@@ -70,13 +70,14 @@ def _infer_delimiter(path, explicit):
     return ","
 
 
-def _required_columns(split_col, id_col, prior_cols, measurement_cols, target_cols):
+def _required_columns(split_col, id_col, prior_cols, measurement_cols, target_cols, group_cols=()):
     cols = [split_col]
     if id_col:
         cols.append(id_col)
     cols.extend(prior_cols)
     cols.extend(measurement_cols)
     cols.extend(target_cols)
+    cols.extend(group_cols or [])
     return cols
 
 
@@ -94,6 +95,18 @@ def _row_vector(row, cols, row_num):
             raise ValueError(f"row {row_num}: nonfinite value {value!r} for column {col!r}")
         values.append(parsed)
     return values
+
+
+def _row_group_label(row, cols, row_num):
+    values = []
+    for col in cols:
+        value = row.get(col)
+        if value is None or str(value).strip() == "":
+            raise ValueError(f"row {row_num}: missing group value for column {col!r}")
+        values.append(str(value).strip())
+    if len(values) == 1:
+        return values[0]
+    return json.dumps(values, separators=(",", ":"))
 
 
 def _as_2d_rows(name, rows, width):
@@ -119,6 +132,15 @@ def _normalize_columns(prior_cols, measurement_cols, target_cols):
         if len(cols) != len(set(cols)):
             raise ValueError(f"{name} contains duplicates: {cols!r}")
     return prior_cols, measurement_cols, target_cols
+
+
+def _normalize_group_columns(group_cols):
+    if group_cols is None or group_cols == "":
+        return []
+    group_cols = parse_column_list(group_cols) if isinstance(group_cols, str) else list(group_cols)
+    if len(group_cols) != len(set(group_cols)):
+        raise ValueError(f"group_cols contains duplicates: {group_cols!r}")
+    return group_cols
 
 
 def _validate_schema_dimensions(prior_cols, measurement_cols, target_cols, H):
@@ -172,6 +194,30 @@ def _id_manifest(arrays, id_col):
     }
 
 
+def _label_counts(values):
+    counts = {}
+    for value in values:
+        key = str(value)
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _group_manifest(arrays, group_cols):
+    group_cols = _normalize_group_columns(group_cols)
+    if not group_cols or "calibration_groups" not in arrays or "evaluation_groups" not in arrays:
+        return {"present": False, "columns": group_cols}
+    calibration_groups = [str(v) for v in arrays["calibration_groups"].tolist()]
+    evaluation_groups = [str(v) for v in arrays["evaluation_groups"].tolist()]
+    return {
+        "present": True,
+        "columns": group_cols,
+        "calibration_unique_count": len(set(calibration_groups)),
+        "evaluation_unique_count": len(set(evaluation_groups)),
+        "calibration_counts": _label_counts(calibration_groups),
+        "evaluation_counts": _label_counts(evaluation_groups),
+    }
+
+
 def build_product_kalman_input_manifest(
     path,
     arrays,
@@ -184,9 +230,11 @@ def build_product_kalman_input_manifest(
     evaluation_value="evaluation",
     delimiter=None,
     H=None,
+    group_cols=None,
 ):
     """Build a JSON-serializable manifest for a table-derived evaluator NPZ."""
     prior_cols, measurement_cols, target_cols = _normalize_columns(prior_cols, measurement_cols, target_cols)
+    group_cols = _normalize_group_columns(group_cols)
     delim = _infer_delimiter(path, delimiter)
     cal_rows = int(arrays["calibration_target_state"].shape[0])
     eval_rows = int(arrays["evaluation_target_state"].shape[0])
@@ -216,6 +264,7 @@ def build_product_kalman_input_manifest(
             "observation_dim": len(measurement_cols),
         },
         "ids": _id_manifest(arrays, id_col),
+        "groups": _group_manifest(arrays, group_cols),
         "arrays": {name: _array_manifest(value) for name, value in sorted(arrays.items())},
         "H": {
             "present": H is not None,
@@ -237,14 +286,16 @@ def read_product_kalman_table(
     evaluation_value="evaluation",
     delimiter=None,
     H=None,
+    group_cols=None,
 ):
     """Read a CSV/TSV table into evaluator-ready arrays.
 
     Required columns are: split, prior columns, measurement columns, target
-    columns, plus an optional ID column. Split labels are compared
-    case-insensitively after trimming whitespace.
+    columns, optional group columns, plus an optional ID column. Split labels
+    are compared case-insensitively after trimming whitespace.
     """
     prior_cols, measurement_cols, target_cols = _normalize_columns(prior_cols, measurement_cols, target_cols)
+    group_cols = _normalize_group_columns(group_cols)
     calibration_value = _normalize_split_value(calibration_value)
     evaluation_value = _normalize_split_value(evaluation_value)
     if calibration_value == evaluation_value:
@@ -253,16 +304,19 @@ def read_product_kalman_table(
     _validate_schema_dimensions(prior_cols, measurement_cols, target_cols, H)
 
     split_rows = {
-        calibration_value: {"prior": [], "measurement": [], "target": [], "ids": []},
-        evaluation_value: {"prior": [], "measurement": [], "target": [], "ids": []},
+        calibration_value: {"prior": [], "measurement": [], "target": [], "ids": [], "groups": []},
+        evaluation_value: {"prior": [], "measurement": [], "target": [], "ids": [], "groups": []},
     }
     delim = _infer_delimiter(path, delimiter)
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter=delim)
         if reader.fieldnames is None:
             raise ValueError(f"{path} has no header row")
-        missing = [col for col in _required_columns(split_col, id_col, prior_cols, measurement_cols, target_cols)
-                   if col not in reader.fieldnames]
+        missing = [
+            col
+            for col in _required_columns(split_col, id_col, prior_cols, measurement_cols, target_cols, group_cols)
+            if col not in reader.fieldnames
+        ]
         if missing:
             raise ValueError(f"{path} missing required columns: {', '.join(missing)}")
         for row_num, row in enumerate(reader, start=2):
@@ -280,6 +334,8 @@ def read_product_kalman_table(
                 if raw_id is None or str(raw_id).strip() == "":
                     raise ValueError(f"row {row_num}: missing ID value for column {id_col!r}")
                 bucket["ids"].append(str(raw_id))
+            if group_cols:
+                bucket["groups"].append(_row_group_label(row, group_cols, row_num))
 
     cal = split_rows[calibration_value]
     ev = split_rows[evaluation_value]
@@ -294,6 +350,9 @@ def read_product_kalman_table(
     if id_col:
         arrays["calibration_ids"] = np.asarray(cal["ids"], dtype=str)
         arrays["evaluation_ids"] = np.asarray(ev["ids"], dtype=str)
+    if group_cols:
+        arrays["calibration_groups"] = np.asarray(cal["groups"], dtype=str)
+        arrays["evaluation_groups"] = np.asarray(ev["groups"], dtype=str)
     if H is not None:
         H = np.asarray(H, dtype=float)
         if H.shape != (len(measurement_cols), len(target_cols)):
@@ -340,6 +399,7 @@ def _build_arg_parser():
     ap.add_argument("--evaluation-value", default="evaluation")
     ap.add_argument("--delimiter", help="input delimiter; defaults to tab for .tsv/.tab, comma otherwise")
     ap.add_argument("--H", help="optional observation matrix literal, e.g. '1,0;0,1'")
+    ap.add_argument("--group-cols", help="optional comma-separated discrete group columns to carry into NPZ")
     return ap
 
 
@@ -360,6 +420,7 @@ def main(argv=None):
             evaluation_value=args.evaluation_value,
             delimiter=args.delimiter,
             H=args.H,
+            group_cols=parse_column_list(args.group_cols) if args.group_cols else None,
         )
     except ValueError as exc:
         ap.error(str(exc))
