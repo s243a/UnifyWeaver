@@ -89,6 +89,15 @@ def test_correlated_product_kalman_beats_zero_cross_control_on_heldout_nll():
     assert product_vectors.nll.shape == (len(eval_target),)
     assert abs(float(product_vectors.nll.mean()) - product_score.mean_nll) < 1e-12
     assert product_vectors.nll.flags.writeable is False
+    product_pit = result.pit_diagnostic("product_kalman")
+    assert product_pit.n == len(eval_target)
+    assert product_pit.dimension == 1
+    assert product_pit.pit.shape == (len(eval_target), 1)
+    assert product_pit.channel_ks.shape == (1,)
+    assert 0.0 <= product_pit.channel_ks[0] <= 1.0
+    assert product_pit.pit.flags.writeable is False
+    assert product_pit.channel_ks.flags.writeable is False
+    assert_raises(result.pit_diagnostic, "missing")
     assert result.correlated_update.mean.flags.writeable is False
     assert result.independent_update.mean.flags.writeable is False
     boot = paired_bootstrap_nll_improvement(
@@ -199,6 +208,10 @@ def test_npz_runner_and_json_cli_roundtrip():
         assert data["score_order"] == ["prior", "measurement", "independent_kalman", "product_kalman"]
         assert data["nll_baselines"] == ["prior", "independent_kalman"]
         assert data["calibration"]["state_dim"] == 1
+        assert data["pit_diagnostics"]["product_kalman"]["n"] == 4000
+        assert data["pit_diagnostics"]["product_kalman"]["dimension"] == 1
+        assert data["pit_diagnostics"]["product_kalman"]["method"] == "marginal_pit_uniform_ks"
+        assert len(data["pit_diagnostics"]["product_kalman"]["channel_ks"]) == 1
         assert "mean_squared_mahalanobis" in data["scores"]["product_kalman"]
         assert "squared_mahalanobis_q95" in data["scores"]["product_kalman"]
         assert 0.85 < data["scores"]["product_kalman"]["mahalanobis_per_dim"] < 1.15
@@ -234,6 +247,7 @@ def test_npz_runner_and_json_cli_roundtrip():
         from_cli = json.loads(output_path.read_text())
         assert from_cli["score_order"] == data["score_order"]
         assert from_cli["nll_baselines"] == ["prior", "independent_kalman", "product_kalman"]
+        assert from_cli["pit_diagnostics"]["product_kalman"] == data["pit_diagnostics"]["product_kalman"]
         assert "nll_improvement_vs_product_kalman" in from_cli
         assert "nll_improvement_bootstrap_vs_product_kalman" in from_cli
         assert abs(
@@ -258,6 +272,9 @@ def test_npz_runner_and_json_cli_roundtrip():
             assert artifact["score_row_nll"].shape == (4, 4000)
             assert artifact["score_row_squared_error"].shape == (4, 4000)
             assert artifact["score_row_squared_mahalanobis"].shape == (4, 4000)
+            assert artifact["pit_names"].tolist() == data["score_order"]
+            assert artifact["pit_values"].shape == (4, 4000, 1)
+            assert artifact["pit_channel_ks"].shape == (4, 1)
             assert artifact["product_kalman_mean"].shape == result.correlated_update.mean.shape
             np.testing.assert_allclose(artifact["product_kalman_mean"], result.correlated_update.mean)
             np.testing.assert_allclose(artifact["independent_kalman_mean"], result.independent_update.mean)
@@ -288,6 +305,10 @@ def test_evaluation_artifact_arrays_are_npz_ready():
     assert arrays["score_row_nll"].shape == (4, 20)
     assert arrays["score_row_squared_error"].shape == (4, 20)
     assert arrays["score_row_squared_mahalanobis"].shape == (4, 20)
+    assert arrays["pit_names"].tolist() == ["prior", "measurement", "independent_kalman", "product_kalman"]
+    assert arrays["pit_values"].shape == (4, 20, 1)
+    assert arrays["pit_channel_ks"].shape == (4, 1)
+    assert arrays["pit_summary_json"].shape == (4,)
     np.testing.assert_allclose(arrays["score_row_nll"].mean(axis=1), arrays["score_mean_nll"])
     assert np.isfinite(arrays["score_mahalanobis_per_dim"]).all()
     assert arrays["product_kalman_innovation"].shape == eval_target.shape
@@ -367,6 +388,8 @@ def test_npz_runner_scores_grouped_covariances_when_group_labels_present():
         assert grouped["group_counts"] == {"tight": n_cal_per_group, "wide": n_cal_per_group}
         assert grouped["row_covariance_shape"] == [n_eval, 1, 1]
         assert data["nll_improvement_vs_product_kalman"]["product_kalman_grouped"] > 0.0
+        assert "product_kalman_grouped" in data["pit_diagnostics"]
+        assert data["pit_diagnostics"]["product_kalman_grouped"]["n"] == n_eval
         assert "product_kalman_grouped" in data["nll_improvement_bootstrap_vs_independent_kalman"]
         assert "product_kalman_grouped" in data["nll_improvement_bootstrap_vs_product_kalman"]
 
@@ -374,6 +397,9 @@ def test_npz_runner_scores_grouped_covariances_when_group_labels_present():
         with np.load(artifact_path, allow_pickle=False) as artifact:
             assert artifact["score_names"].shape == (8,)
             assert artifact["score_row_nll"].shape == (8, n_eval)
+            assert artifact["pit_names"].shape == (8,)
+            assert artifact["pit_values"].shape == (8, n_eval, 1)
+            assert artifact["pit_channel_ks"].shape == (8, 1)
             assert artifact["grouped_score_names"].tolist() == [
                 "prior_grouped",
                 "measurement_grouped",

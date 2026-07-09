@@ -585,6 +585,7 @@ class ProductKalmanHoldoutEvaluation:
     scores: tuple
     score_vectors: tuple = ()
     grouped_scores: tuple = ()
+    pit_diagnostics: tuple = ()
 
     def __post_init__(self):
         if not isinstance(self.calibration, ProductKalmanCalibration):
@@ -625,9 +626,29 @@ class ProductKalmanHoldoutEvaluation:
                     raise ValueError("grouped score vectors must also appear in score_vectors")
             if len(grouped_names) != len(set(grouped_names)):
                 raise ValueError("grouped score names must be unique")
+        pit_diagnostics = tuple(self.pit_diagnostics)
+        if pit_diagnostics:
+            score_by_name = {score.name: score for score in scores}
+            vector_by_name = {vector.name: vector for vector in score_vectors}
+            pit_names = []
+            for diagnostic in pit_diagnostics:
+                if not isinstance(diagnostic, PITDiagnostics):
+                    raise ValueError("pit_diagnostics must contain PITDiagnostics objects")
+                pit_names.append(diagnostic.name)
+                if diagnostic.name not in score_by_name:
+                    raise ValueError("PIT diagnostic name must also appear in scores")
+                score = score_by_name[diagnostic.name]
+                if diagnostic.n != score.n:
+                    raise ValueError("PIT diagnostic row count must match score n")
+                vector = vector_by_name.get(diagnostic.name)
+                if vector is not None and diagnostic.dimension != vector.dimension:
+                    raise ValueError("PIT diagnostic dimension must match score-vector dimension")
+            if len(pit_names) != len(set(pit_names)):
+                raise ValueError("PIT diagnostic names must be unique")
         object.__setattr__(self, "scores", scores)
         object.__setattr__(self, "score_vectors", score_vectors)
         object.__setattr__(self, "grouped_scores", grouped_scores)
+        object.__setattr__(self, "pit_diagnostics", pit_diagnostics)
 
     def score(self, name):
         """Return the named `GaussianScore`."""
@@ -641,6 +662,13 @@ class ProductKalmanHoldoutEvaluation:
         for vector in self.score_vectors:
             if vector.name == name:
                 return vector
+        raise KeyError(name)
+
+    def pit_diagnostic(self, name):
+        """Return the named PIT calibration diagnostic."""
+        for diagnostic in self.pit_diagnostics:
+            if diagnostic.name == name:
+                return diagnostic
         raise KeyError(name)
 
     def nll_improvement(self, baseline, candidate):
@@ -1088,6 +1116,10 @@ def evaluate_product_kalman_holdout(
         _score_from_vectors(vectors, covariance)
         for vectors, (_, _, covariance) in zip(score_vectors, score_inputs)
     ]
+    pit_diagnostics = [
+        gaussian_marginal_pit_diagnostics(name, eval_target, mean, covariance, jitter=jitter)
+        for name, mean, covariance in score_inputs
+    ]
 
     grouped_scores = []
     if cal_groups is not None:
@@ -1119,6 +1151,17 @@ def evaluate_product_kalman_holdout(
         ]
         scores.extend(grouped.score for grouped in grouped_scores)
         score_vectors.extend(grouped.score_vectors for grouped in grouped_scores)
+        grouped_eval_means = {name: eval_mean for name, _cal_mean, eval_mean in grouped_inputs}
+        for grouped in grouped_scores:
+            pit_diagnostics.append(
+                gaussian_marginal_pit_diagnostics(
+                    grouped.score.name,
+                    eval_target,
+                    grouped_eval_means[grouped.score.name],
+                    grouped.row_covariances,
+                    jitter=jitter,
+                )
+            )
 
     return ProductKalmanHoldoutEvaluation(
         calibration=calibration,
@@ -1128,6 +1171,7 @@ def evaluate_product_kalman_holdout(
         scores=tuple(scores),
         score_vectors=tuple(score_vectors),
         grouped_scores=tuple(grouped_scores),
+        pit_diagnostics=tuple(pit_diagnostics),
     )
 
 
@@ -1214,6 +1258,16 @@ def evaluation_artifact_arrays(result):
             "score_row_squared_mahalanobis": np.vstack([
                 vectors.squared_mahalanobis
                 for vectors in result.score_vectors
+            ]),
+        })
+    if result.pit_diagnostics:
+        arrays.update({
+            "pit_names": np.array([diagnostic.name for diagnostic in result.pit_diagnostics]),
+            "pit_values": np.stack([diagnostic.pit for diagnostic in result.pit_diagnostics]),
+            "pit_channel_ks": np.vstack([diagnostic.channel_ks for diagnostic in result.pit_diagnostics]),
+            "pit_summary_json": np.array([
+                json.dumps(diagnostic.to_json_dict(), sort_keys=True)
+                for diagnostic in result.pit_diagnostics
             ]),
         })
     if result.grouped_scores:
@@ -1395,6 +1449,11 @@ def evaluation_to_json_dict(
         out["grouped_covariances"] = {
             grouped.score.name: _grouped_covariance_to_json_dict(grouped)
             for grouped in result.grouped_scores
+        }
+    if result.pit_diagnostics:
+        out["pit_diagnostics"] = {
+            diagnostic.name: diagnostic.to_json_dict()
+            for diagnostic in result.pit_diagnostics
         }
     if bootstrap_nll:
         out.update(_bootstrap_improvement_maps(
