@@ -673,6 +673,8 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                     true
                 } else if p == "retract/1" {
                     self.dynamic_retract_call(self.pc + 1)
+                } else if p == "assert/1" {
+                    self.execute_assert_builtin("assert/1")
                 } else if self.foreign_predicates.contains(p) {
                     self.cp = self.pc + 1;
                     if self.execute_foreign_predicate(p, *_arity) {
@@ -744,6 +746,11 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
                     true
                 } else if p == "retract/1" {
                     self.dynamic_retract_call(self.cp)
+                } else if p == "assert/1" {
+                    if self.execute_assert_builtin("assert/1") {
+                        self.pc = self.cp;
+                        true
+                    } else { false }
                 } else if self.foreign_predicates.contains(p) {
                     self.execute_foreign_predicate(p, 0)
                 } else if let Some(__ftr) = crate::fact_table_call(self, p, self.cp) {
