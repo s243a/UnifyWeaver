@@ -71,6 +71,44 @@ def load_dataset(name):
     return dict(pairs=list(pairs), D=np.array(D), S=np.array(S), d=d, tok=tok, tr=tr, he=he)
 
 
+CAMPAIGN_SCORED = "/tmp/mu_data/campaign_scored.tsv"
+CAMPAIGN_E5_100K = "/tmp/mu_data/campaign_100k_e5.pt"
+
+
+def load_campaign_datasets():
+    """The stratified campaign, split by corpus membership. Same ds-dict shape as load_dataset; strata tags
+    kept so eval can slice by pair type (the S channel should now have VARIANCE on sib/cous rows)."""
+    DIRR = ["subcategory", "subtopic", "element_of", "super_category"]; SYMM = ["see_also", "assoc"]
+    rows = []
+    with open(CAMPAIGN_SCORED, encoding="utf-8") as f:
+        header = f.readline().lstrip("#").strip().split("\t")
+        col = {c: i for i, c in enumerate(header)}
+        for ln in f:
+            c = ln.rstrip("\n").split("\t")
+            if len(c) < len(header):
+                continue
+            D = max(float(c[col[f"mu[{r}]"]]) for r in DIRR)
+            S = max(float(c[col[f"mu[{r}]"]]) for r in SYMM)
+            rows.append((c[col["node"]], c[col["root"]], c[col["neighborhood"]], D, S))
+    out = {}
+    for name, e5 in (("exploratory", CAMPAIGN_E5_100K), ("fresh", DATASETS["fresh"]["e5_cache"])):
+        parents, children, deg, _ = load_feature_graph(FeatureGraphConfig(**DATASETS[name]["graph"]))
+        in_graph = set(parents) | {c for kids in children.values() for c in kids}
+        sub = [r for r in rows if r[0] in in_graph and r[1] in in_graph]
+        pairs = [(r[0], r[1]) for r in sub]
+        hop = np.zeros(len(pairs))                            # dummy — campaign rows carry strata, not hops
+        D = np.array([r[3] for r in sub]); S = np.array([r[4] for r in sub])
+        cache, idx, pairs, hop, D, S = load_e5_cache_and_filter(pairs, hop, D, S, e5)
+        kept = set(pairs)
+        tags = [r[2] for r in sub if (r[0], r[1]) in kept]
+        tok = Tokenizer(cache["query"], cache["passage"], idx, parents, deg)
+        d = np.array([hit_prob(parents, x, y) for x, y in pairs])
+        tr, he = descendant_disjoint_split(list(pairs), 0, held_frac=0.30)
+        out[f"{name}-campaign"] = dict(pairs=list(pairs), D=D, S=S, d=d, tok=tok, tr=tr, he=he, tags=tags)
+        print(f"{name}-campaign: {len(pairs)} scored pairs kept")
+    return out
+
+
 def channel_rows(ds, idxs):
     """(item5, target) rows for the three channels."""
     rows = []
@@ -116,6 +154,8 @@ def main():
     ap.add_argument("--unfreeze-last", action="store_true",
                     help="B1b: also train the LAST encoder layer + readout (capacity for the missing S channel); "
                          "trunk honesty then enforced by the agnostic-anchor loss instead of by construction")
+    ap.add_argument("--data", choices=["multihop", "campaign"], default="multihop",
+                    help="campaign = the 2,000-pair stratified set (B1-retry: the S channel gets variance)")
     ap.add_argument("--anchor-weight", type=float, default=1.0,
                     help="B1b: weight of the agnostic-anchor distillation loss (readouts on 3-tuple rows must "
                          "match the frozen reference)")
@@ -145,7 +185,10 @@ def main():
     n_tr = sum(p.numel() for p in trainable)
     print(f"trainable params: {n_tr} ({'judge_emb + last layer + readout (B1b, anchored)' if a.unfreeze_last else 'judge_emb only; trunk FROZEN'})")
 
-    dss = {n: load_dataset(n) for n in ("exploratory", "fresh")}
+    if a.data == "campaign":
+        dss = load_campaign_datasets()
+    else:
+        dss = {n: load_dataset(n) for n in ("exploratory", "fresh")}
     train_rows = {n: channel_rows(ds, ds["tr"]) for n, ds in dss.items()}
     for n, r in train_rows.items():
         print(f"{n}: {len(r)} channel rows (train), {len(dss[n]['he'])} held pairs")
