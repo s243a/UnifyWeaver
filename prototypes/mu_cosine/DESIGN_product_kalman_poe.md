@@ -389,8 +389,10 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    for NLL gains, and keeps calibration/evaluation IDs disjoint. *(Synthetic harness added; real-corpus comparison
    pending.)*
 8. Use `product_kalman_report.py` to render the input manifest, optional split manifest, and score JSON into a
-   descriptive Markdown run note. The report is an audit artifact only: it records scores and provenance, but does
-   not encode a decision rule or promote Product-Kalman without comparison against registered baselines.
+   descriptive Markdown run note. When row-level `eval_artifacts.npz` exists, the report CLI can add paired bootstrap
+   NLL intervals post hoc without rerunning scoring. The report is an audit artifact only: it records scores and
+   provenance, but does not encode a decision rule or promote Product-Kalman without comparison against registered
+   baselines.
 9. Fit empirical Product-Kalman variants on those calibration blocks, then compare against `JointPosterior` and
    Sigma-conditioned covariance on a separate node-disjoint evaluation split; do not reuse the calibration
    residuals that set `R_ell` as the comparison set.
