@@ -172,3 +172,29 @@ Kalman: treat 0/1 labels as censored observations of a latent logit-normal) = th
 also revives the geometric flavor properly dressed: interior fusion in logit space is the multiplying-Bayes-
 factors update. Next-rung list is now: (a) hop-conditioned V(hop) into the gain; (b) Tobit-logit Kalman vs
 mu-space fusion, scored in one space via the change-of-variables density.
+
+### Boundary atoms via Jacobian weighting — simpler than Tobit (user, 2026-07-08)
+
+*User: we can't be 100% certain a point is on the boundary (the label is itself an uncertain estimate); let the
+weighting/measure live in logit space, so a boundary point carries zero weight.* Formalized — and it supersedes
+the Tobit sketch above:
+
+- Treat the judge label as a noisy μ-estimate with uncertainty `σ_μ` (at minimum the quantization half-step: a
+  reported 0.0 means "≤ 0.025", not certainty). Propagate through the link Jacobian:
+  `σ_logit ≈ σ_μ / (μ(1−μ))` ⇒ logit-space precision `∝ (μ(1−μ))²` — full weight at μ=0.5, **vanishing at the
+  boundary**. The boundary point self-downweights INSIDE the ordinary Kalman update; no censored likelihood.
+- **Rigorous form (classical identity):** the Fisher information a Bernoulli-type observation carries about its
+  own log-odds is exactly `μ(1−μ)` — near-deterministic observations are nearly uninformative about their logit.
+  The GLM variance function for the canonical logistic link, rederived from the filing problem.
+- vs Tobit: censoring reads "0.0" as one-sided info (latent ≤ boundary) — more efficient IF the censoring model
+  is true; Jacobian weighting reads it as ~zero info — robust to quantization junk, and implementable with plain
+  per-row heteroscedastic `R_j = (σ_μ/(μ_j(1−μ_j)))²` (`gaussian_condition_update` already takes per-call
+  observation covariance).
+- **Practical middle: de-quantize the boundary** — place a reported 0.0 at the half-step (0.025) with its
+  large-but-finite logit variance, so boundary labels keep a small weight (they still whisper "low") rather than
+  exactly zero. This also keeps the likelihood fully continuous (no discrete/continuous mixture density), which
+  makes fair cross-space NLL comparison via change-of-variables straightforward.
+
+**Next-rung (b), updated spec:** logit-space fusion with Jacobian-weighted per-row R + boundary de-quantization,
+vs the μ-space fusion above, scored in one space via the change-of-variables density. (Rung (a) unchanged:
+hop-conditioned V(hop) into the gain.)
