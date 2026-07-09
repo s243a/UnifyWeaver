@@ -172,6 +172,45 @@ def test_markdown_report_records_pit_diagnostics_when_present():
         assert "| mix | S | 0.9 | 0.91 | 0.01 | 40 |" in report
         assert "PIT diagnostics, when present" in report
 
+def test_markdown_report_rejects_malformed_pit_diagnostics():
+    base = {
+        "score_order": [],
+        "scores": {},
+        "pit_diagnostics": {
+            "mix": {
+                "n": 40,
+                "dimension": 2,
+                "channel_names": ["D", "S"],
+                "channel_ks": [0.08, 0.12],
+                "coverage_levels": [0.8, 0.9],
+                "central_interval_coverage": [[0.70, 0.75], [0.88, 0.91]],
+                "central_interval_error": [[-0.10, -0.05], [-0.02, 0.01]],
+                "method": "marginal_pit_uniform_ks",
+            }
+        },
+    }
+
+    malformed = json.loads(json.dumps(base))
+    malformed["pit_diagnostics"]["mix"]["channel_ks"] = [0.08]
+    assert_raises(build_product_kalman_markdown_report, malformed)
+
+    malformed = json.loads(json.dumps(base))
+    del malformed["pit_diagnostics"]["mix"]["central_interval_error"]
+    assert_raises(build_product_kalman_markdown_report, malformed)
+
+    malformed = json.loads(json.dumps(base))
+    malformed["pit_diagnostics"]["mix"]["central_interval_coverage"][0] = [0.70]
+    assert_raises(build_product_kalman_markdown_report, malformed)
+
+    malformed = json.loads(json.dumps(base))
+    malformed["pit_diagnostics"]["mix"]["central_interval_coverage"][0][0] = 1.2
+    assert_raises(build_product_kalman_markdown_report, malformed)
+
+    malformed = json.loads(json.dumps(base))
+    malformed["pit_diagnostics"]["mix"]["central_interval_error"][0][0] = 0.0
+    assert_raises(build_product_kalman_markdown_report, malformed)
+
+
 def test_markdown_report_records_split_materialization_manifest():
     with tempfile.TemporaryDirectory() as tmp:
         input_manifest, scores_json, _ = make_artifacts(tmp)
