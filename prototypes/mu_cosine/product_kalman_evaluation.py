@@ -50,7 +50,9 @@ __all__ = [
     "paired_bootstrap_nll_improvement",
     "paired_bootstrap_nll_improvement_from_score_rows",
     "run_product_kalman_holdout_npz",
+    "score_gaussian_prediction_vectors_rowwise",
     "score_gaussian_prediction_vectors",
+    "score_gaussian_predictions_rowwise",
     "score_gaussian_predictions",
     "write_evaluation_npz",
 ]
@@ -74,6 +76,15 @@ def _as_covariance(name, value, dim):
     if not np.isfinite(cov).all():
         raise ValueError(f"{name} must be finite")
     return 0.5 * (cov + cov.T)
+
+
+def _as_row_covariances(name, value, n, dim):
+    covariances = np.asarray(value, dtype=float)
+    if covariances.shape != (n, dim, dim):
+        raise ValueError(f"{name} shape {covariances.shape} must be ({n}, {dim}, {dim})")
+    if not np.isfinite(covariances).all():
+        raise ValueError(f"{name} must be finite")
+    return 0.5 * (covariances + np.swapaxes(covariances, 1, 2))
 
 
 def _readonly_vector(name, value, n=None):
@@ -427,6 +438,35 @@ def score_gaussian_prediction_vectors(name, target_state, mean, covariance, jitt
     )
 
 
+def score_gaussian_prediction_vectors_rowwise(name, target_state, mean, covariances, jitter=1e-9):
+    """Return per-row Gaussian score vectors with one covariance per row.
+
+    This is the scoring primitive needed by hop-conditioned or regime-conditioned
+    error models. `target_state` and `mean` must be `(n, d)` row matrices, and
+    `covariances` must be `(n, d, d)` in the same row order.
+    """
+    target = _as_2d("target_state", target_state)
+    pred = _as_2d("mean", mean)
+    if pred.shape != target.shape:
+        raise ValueError(f"mean shape {pred.shape} must match target_state shape {target.shape}")
+    covs = _as_row_covariances("covariances", covariances, target.shape[0], target.shape[1])
+    residual = target - pred
+    nll = np.empty(target.shape[0], dtype=float)
+    squared_mahalanobis = np.empty(target.shape[0], dtype=float)
+    for i in range(target.shape[0]):
+        nll[i] = gaussian_nll(target[i], pred[i], covs[i], jitter=jitter)
+        score_cov = regularize_covariance(covs[i], jitter=jitter, name=f"{name} row {i} score covariance")
+        solved = np.linalg.solve(score_cov, residual[i])
+        squared_mahalanobis[i] = float(residual[i] @ solved)
+    return GaussianScoreVectors(
+        name=name,
+        nll=nll,
+        squared_error=np.sum(residual * residual, axis=1),
+        squared_mahalanobis=squared_mahalanobis,
+        dimension=target.shape[1],
+    )
+
+
 def _score_from_vectors(vectors, covariance):
     cov = _as_covariance("covariance", covariance, vectors.dimension)
     mean_squared_mahalanobis = float(np.mean(vectors.squared_mahalanobis))
@@ -445,10 +485,37 @@ def _score_from_vectors(vectors, covariance):
     )
 
 
+def _score_from_vectors_rowwise(vectors, covariances):
+    covs = _as_row_covariances("covariances", covariances, vectors.n, vectors.dimension)
+    mean_squared_mahalanobis = float(np.mean(vectors.squared_mahalanobis))
+    q50, q90, q95 = [float(q) for q in np.quantile(vectors.squared_mahalanobis, [0.50, 0.90, 0.95])]
+    return GaussianScore(
+        name=vectors.name,
+        mean_nll=float(np.mean(vectors.nll)),
+        mse=float(np.mean(vectors.squared_error)),
+        n=vectors.n,
+        covariance_trace=float(np.mean(np.trace(covs, axis1=1, axis2=2))),
+        mean_squared_mahalanobis=mean_squared_mahalanobis,
+        mahalanobis_per_dim=mean_squared_mahalanobis / float(vectors.dimension),
+        squared_mahalanobis_q50=q50,
+        squared_mahalanobis_q90=q90,
+        squared_mahalanobis_q95=q95,
+    )
+
+
 def score_gaussian_predictions(name, target_state, mean, covariance, jitter=1e-9):
     """Return aggregate Gaussian prediction scores for one held-out split."""
     vectors = score_gaussian_prediction_vectors(name, target_state, mean, covariance, jitter=jitter)
     return _score_from_vectors(vectors, covariance)
+
+
+def score_gaussian_predictions_rowwise(name, target_state, mean, covariances, jitter=1e-9):
+    """Return aggregate Gaussian scores when each row has its own covariance.
+
+    `GaussianScore.covariance_trace` is the mean trace across row covariances.
+    """
+    vectors = score_gaussian_prediction_vectors_rowwise(name, target_state, mean, covariances, jitter=jitter)
+    return _score_from_vectors_rowwise(vectors, covariances)
 
 
 def _check_split_ids(calibration_ids, evaluation_ids, n_calibration, n_evaluation):
