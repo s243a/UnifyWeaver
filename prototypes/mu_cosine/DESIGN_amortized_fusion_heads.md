@@ -198,3 +198,37 @@ distillation, the model's self-estimated error is trained on PAST innovation sta
 only real measurements reveal the new error mean. The innovation loop is the only mechanism that can see the
 model's bias — so the explicit filter (fast timescale) is necessary, and the distillation (slow timescale) can
 absorb everything EXCEPT the role of standing outside.
+
+## Error statistics as metastable random-walk states (user, 2026-07-08)
+
+*User: the dynamic errors aren't learnable, but their STATISTICS can be modeled as a metastable state with drift
+(a random walk).* Yes — this is the classical closure: **promote the error statistics into the state vector with
+random-walk dynamics**, converting "unlearnable constants estimated offline" into *trackable states estimated
+online from innovations*:
+
+```text
+b_{t+1}     = b_t     + w_b       (error MEAN/bias as random-walk state — classical "bias augmentation")
+log s_{t+1} = log s_t + w_s       (error VARIANCE as random-walk state — stochastic volatility)
+rho_{t+1}   = rho_t   + w_rho     (error correlation likewise)
+```
+
+The epistemic constraint survives: these states are observable only THROUGH the innovation stream (real
+measurements). But the "standing outside" is now wired into the filter as a timescale hierarchy:
+
+- **Level 0:** relation state `z` — fast, per-pair.
+- **Level 1:** error statistics `(b, sigma, rho)` — slow random walk (the metastable state with drift).
+- **Level 2:** drift rates `Q_1` of level 1 — quasi-fixed (how fast do my error statistics wander?).
+
+`Sigma(hop, corpus)` slots in as the ATTRACTOR MAP: **the model learns the metastable attractors from pooled
+history; the online filter random-walks around the current attractor; distillation periodically updates the
+attractor map.** The two-timescale hybrid restated at the meta-level — the model holds the climate, the filter
+tracks the weather.
+
+**Jumps vs drift (the "metastable" refinement):** a pure random walk is diffusion and over-smooths JUMPS, and this
+system has known jump sources — a judge version change (gpt-5.5 → gpt-6) is a STEP in `R_LLM`, not a drift; a
+category reorganization is a step in the corpus Sigma. Metastability = plateaus + occasional transitions, which
+wants either heavy-tailed process noise (Student-t `w`, jump-tolerant) or a switching state-space model (regime
+variable + per-regime statistics). A switching Kalman filter IS a mixture of experts over regimes — the MoE hunch
+in its natural home (third appearance: lattice middle, gate-from-covariances, regime routing). Practical middle
+ground: random walk + innovation-consistency test (normalized-innovation-squared chi-square; sustained excess ⇒
+temporarily inflate `Q` — classical adaptive fading), handling jumps without full switching machinery.
