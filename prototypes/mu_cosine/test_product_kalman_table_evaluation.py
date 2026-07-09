@@ -120,6 +120,17 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         assert summary["inputs"]["input_manifest"] == str(input_manifest)
         assert summary["inputs"]["evaluation_npz"] == str(output_npz)
         assert summary["inputs"]["report_md"] == str(output_md)
+        artifact_validation = summary["evaluation_artifact_validation"]
+        assert artifact_validation["evaluation_npz"] == str(output_npz)
+        assert len(artifact_validation["evaluation_npz_sha256"]) == 64
+        assert artifact_validation["validated_against_scores"] is True
+        assert artifact_validation["pit_diagnostics_validated"] is True
+        assert artifact_validation["score_order"] == summary["score_order"]
+        assert artifact_validation["score_count"] == len(summary["score_order"])
+        assert artifact_validation["score_rows"]["product_kalman"] == 40
+        assert artifact_validation["pit_names"] == summary["score_order"]
+        assert artifact_validation["pit_n"] == 40
+        assert artifact_validation["pit_dimension"] == 1
         assert summary["nll_baselines"] == ["prior", "independent_kalman", "product_kalman"]
         assert summary["score_order"] == [
             "prior",
@@ -161,6 +172,9 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         assert "## Grouped Covariances" in report
         assert "product_kalman_grouped" in report
         assert "## NLL Improvement Bootstrap Intervals" in report
+        assert "## Evaluation Artifact Validation" in report
+        assert "| validated_against_scores | True |" in report
+        assert "| pit_diagnostics_validated | True |" in report
         assert "source_table_sha256" in report
 
         with np.load(output_npz, allow_pickle=False) as artifact:
@@ -209,6 +223,9 @@ def test_table_runner_output_dir_writes_canonical_bundle():
         assert summary["inputs"]["input_manifest"] == str(paths["input_manifest"])
         assert summary["inputs"]["evaluation_npz"] == str(paths["output_npz"])
         assert summary["inputs"]["report_md"] == str(paths["output_md"])
+        assert summary["evaluation_artifact_validation"]["evaluation_npz"] == str(paths["output_npz"])
+        assert summary["evaluation_artifact_validation"]["validated_against_scores"] is True
+        assert summary["evaluation_artifact_validation"]["pit_diagnostics_validated"] is True
         assert summary["nll_improvement_vs_prior"]["product_kalman"] > 0.65
         assert summary["nll_baselines"] == ["prior", "independent_kalman", "product_kalman"]
         assert "product_kalman_grouped" in summary["score_order"]
@@ -220,7 +237,9 @@ def test_table_runner_output_dir_writes_canonical_bundle():
         manifest = json.loads(paths["input_manifest"].read_text())
         assert manifest["groups"]["present"] is True
         assert manifest["groups"]["columns"] == ["hop"]
-        assert "# Product-Kalman Holdout Report" in paths["output_md"].read_text()
+        report = paths["output_md"].read_text()
+        assert "# Product-Kalman Holdout Report" in report
+        assert "## Evaluation Artifact Validation" in report
 
 
 def test_table_runner_output_dir_can_materialize_split_before_evaluation():
@@ -370,6 +389,8 @@ def test_table_runner_cli_roundtrips_against_npz_evaluator():
         assert "product_kalman_grouped" in from_table["grouped_covariances"]
         assert "product_kalman_grouped" in from_table["nll_improvement_vs_product_kalman"]
         assert from_table["inputs"]["report_md"] == str(output_md)
+        assert "evaluation_artifact_validation" not in from_table
+        assert "## Evaluation Artifact Validation" not in output_md.read_text()
 
 
 if __name__ == "__main__":

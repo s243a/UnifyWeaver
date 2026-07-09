@@ -416,9 +416,12 @@ remaining D-channel shape defect as model-side relation-class structure rather t
    grouped-covariance score variants when calibration/evaluation group labels are present, records aggregate NLL/MSE,
    Mahalanobis calibration-scale/tail diagnostics, row-level score vectors, and optional paired bootstrap intervals
    for NLL gains against configurable baselines such as ungrouped `product_kalman`, and keeps
-   calibration/evaluation IDs disjoint. PIT diagnostics include marginal KS-vs-uniform and central-interval
-   coverage summaries so interval under/over-coverage is visible without changing score selection. *(Harness
-   complete; dedicated real-corpus exploratory runs are recorded in the reports listed below.)*
+   calibration/evaluation IDs disjoint. When the runner writes `eval_artifacts.npz`, it validates the artifact's
+   score ordering, row counts, mean NLL, and PIT summaries against the score JSON before writing the canonical
+   `scores.json` and `report.md`, and records the artifact hash plus validation dimensions in both outputs. PIT
+   diagnostics include marginal KS-vs-uniform and central-interval coverage summaries so interval
+   under/over-coverage is visible without changing score selection. *(Harness complete; dedicated real-corpus
+   exploratory runs are recorded in the reports listed below.)*
 8. Use `product_kalman_report.py` to render the input manifest, optional split manifest, and score JSON into a
    descriptive Markdown run note. When row-level `eval_artifacts.npz` exists, the report CLI can add paired bootstrap
    NLL intervals post hoc without rerunning scoring, verifies the row artifact against the score summary, records the
