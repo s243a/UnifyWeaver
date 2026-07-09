@@ -124,3 +124,26 @@ itself non-Gaussian in ANY unbounded space (mu just keeps it finite); and explor
 (JB 2 vs 34) — the best space can be per-channel/per-corpus, consistent with the corpus-specificity theme. This
 retires the "geometric-flavor Kalman" rung for this data; the space question is settled empirically, not by
 convention.
+
+### Why Gaussianity matters to the FILTER specifically: autonomous covariance propagation (user, 2026-07-08)
+
+*User: Gaussian statistics are relevant to the Kalman filter because the covariance can then be propagated as a
+linear differential or difference equation.* Sharpened, and it explains why the architecture is possible:
+
+- **Closure:** linear + Gaussian ⇒ the posterior stays Gaussian, two moments suffice, and `P` evolves by its own
+  autonomous matrix equation (`P_{k+1} = A P A^T + Q`, `P+ = (I−KH)P`; continuous: the Riccati ODE).
+- **The key consequence: `P`'s evolution is DATA-INDEPENDENT** — measurements never appear in it; only structure
+  (`A, H, Q, R`) does. Error bars follow a deterministic, precomputable schedule (classically: steady-state
+  Riccati/gain); only the mean is data-driven.
+- **That is the license for the `Sigma(hop)` head:** covariance-as-a-function-of-structure is a precomputed
+  Riccati trajectory along the hop axis — predictable from graph position without seeing labels, BECAUSE
+  covariance propagates autonomously in the linear-Gaussian regime. The confirmed Sigma(hop) result is an
+  empirical instance. Conversely, where autonomy breaks (adaptive `R` from innovations, the metastable drift
+  layer, EKF-style state-dependent linearization) is exactly what stays with the ONLINE filter. **The
+  two-timescale split follows the mathematical fault line: precomputable covariance schedule → model head;
+  data-dependent statistics tracking → filter.**
+- **Precision:** the covariance difference equation needs only linearity + second moments (Kalman = LMMSE for
+  any noise). Gaussianity upgrades best-linear to EXACT BAYES, making `P` an honest credible region. The JB
+  diagnostic above certifies that upgrade for mu-space (JB 2–34 ≈ near-exact-Bayes, Mahalanobis ≈ coverage);
+  in log space the same algebra would run but `P` would degrade to second-moment bookkeeping with non-Gaussian
+  tails (kurtosis +56).
