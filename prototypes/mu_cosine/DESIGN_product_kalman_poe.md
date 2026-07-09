@@ -445,6 +445,8 @@ remaining D-channel shape defect as model-side relation-class structure rather t
 - `DESIGN_product_kalman_cross_corpus_campaign.md` - pre-scoring protocol for separate enwiki, Pearltrees, and
   SimpleMind comparisons, including principal-parent versus DAG structure and raw-title versus audited-title
   sensitivity analyses.
+- `sample_product_kalman_enwiki_campaign.py` and `test_product_kalman_enwiki_campaign.py` - deterministic numeric
+  Main-topic branch sampler, endpoint title join, exact shortest-hop verification, and campaign provenance audit.
 - `DESIGN_uncertainty_estimation_playbook.md` — current rule: learned calibrated combiner, held-out node-disjoint,
   margin gate, and PoE as a control rather than an independence assumption.
 - `REPORT_mu_posterior.md` — empirical evidence that joint heads beat factored PoE under correlated readouts.
