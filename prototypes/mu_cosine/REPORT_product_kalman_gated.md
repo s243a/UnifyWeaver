@@ -78,3 +78,34 @@ NOT replicate on fresh). The ridge version keeps a smaller gain with sane coeffi
 python3 run_product_kalman_gated.py        # both corpora
 ```
 Requires the merged rung-(a)/(b) machinery and `/tmp/mu_data/` artifacts.
+
+## Future work: statistical linearization of the mu↔logit transport (user, 2026-07-09)
+
+Two additions from post-merge discussion:
+
+**Gate taxonomy, settled.** The textbook MoE gate IS error weighting in a common space: classical
+responsibilities with Gaussian experts are a softmax over scaled negative squared errors, well-defined only once
+the errors are projected into one space. In this ladder H2 is the textbook gate; the density-trained gates
+(G/H1) are the mixture-model-matched variant differing by exactly the change-of-variables term (hence 100% vs
+57–66% boundary complementarity); H3 is not a gate but the optimal GLOBAL point-blend (Bates–Granger).
+
+**Quasilinearization / statistical linearization (user refinement, deferred).** Replace the POINT Jacobian used
+to transport random variables between direct and logit space with the linearization that minimizes expected
+squared error over the variable's (narrow) uncertainty distribution — statistical linearization (Kazakov; the
+statistically-linearized filter; the unscented transform is its sigma-point implementation). For Gaussian x,
+Stein's lemma gives the closed form:
+
+```text
+L* = Cov(x, g(x)) / Var(x) = E[g'(x)]     (the distribution-averaged Jacobian)
+```
+
+Consequences:
+- **Endpoints are no longer zero-weight** (user's point): in the logit→mu direction the weight becomes
+  E[sigmoid'(ell)] > 0 for any finite-width distribution — the point-Jacobian's boundary zero was an artifact of
+  treating an uncertain report as a point.
+- **Subsumes de-quantization:** moving the point (0.0 → 0.025) was a hack for the same fact (boundary reports
+  are uncertain); statistical linearization smooths the SLOPE using the report's actual width (the quantization
+  half-step is the natural input distribution). One mechanism replaces two.
+- **Fixes variance transport:** the point Jacobian under-propagates uncertainty where the link's curvature is
+  extreme (the boundary); minimizing over the distribution adds the curvature-induced spread (the UT
+  correction). This is also a candidate treatment for the PIT shape-miscalibration left open above.
