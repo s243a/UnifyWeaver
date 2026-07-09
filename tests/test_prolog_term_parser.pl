@@ -28,6 +28,18 @@ test(atom_quoted_with_space) :-
     canon_parse_atom('\'hello world\'', T),
     T == 'hello world'.
 
+test(atom_quoted_with_apostrophe_escape) :-
+    atom_codes(Input, [39, 99, 97, 110, 92, 39, 116, 39]),
+    atom_codes(Expected, [99, 97, 110, 39, 116]),
+    canon_parse_atom(Input, T),
+    T == Expected.
+
+test(atom_quoted_with_backslash_escape) :-
+    atom_codes(Input, [39, 97, 92, 92, 98, 39]),
+    atom_codes(Expected, [97, 92, 98]),
+    canon_parse_atom(Input, T),
+    T == Expected.
+
 test(int_unsigned) :-
     canon_parse_atom('42', T),
     T == 42.
