@@ -358,10 +358,16 @@ model-development results, not preregistered claims:
 4. `REPORT_product_kalman_gated.md` tested context gates for that dual-space mixture. The fixed mixture weight remains
    the production recommendation; gates can help when observable context predicts regime, but they did not earn a
    permanent role.
+5. `REPORT_product_kalman_statlin.md` built the statistical-linearization refinement for the logit component. The
+   statistically linearized mu/logit mixture became the new exploratory NLL champion and improved S-channel PIT shape,
+   while leaving a D-channel shape defect.
+6. `REPORT_product_kalman_atoms.md` checked whether the remaining D-channel defect was just atom/lattice accounting.
+   Atom masses were already priced correctly; the residual defect is D-label bimodality, which points back to a
+   relation-class mixture or JointPosterior-style discrete structure rather than another fusion patch.
 
-The current open modeling issue is narrower: mixture PIT diagnostics still reject perfect shape calibration, and the
-statistical-linearization idea in `REPORT_product_kalman_gated.md` is a future treatment for transporting covariance
-through nonlinear links without relying on a point Jacobian.
+The fusion-refinement axis is therefore mostly complete for this exploratory pass: use the statistically-linearized
+dual-space mixture as the predictive distribution, use the mu/hop expert as the point estimate, and treat the
+remaining D-channel shape defect as model-side relation-class structure rather than a covariance-transport problem.
 
 ## Guardrails
 
@@ -421,8 +427,9 @@ through nonlinear links without relying on a point Jacobian.
    baselines.
 9. Keep empirical Product-Kalman rungs auditable: constant blocks (`run_product_kalman_realdata.py`),
    hop-conditioned blocks (`run_product_kalman_sigma_hop.py`), dual mu/logit density mixtures
-   (`run_product_kalman_logit.py`), and mixture-gate diagnostics (`run_product_kalman_gated.py`) should remain
-   explicitly labeled exploratory unless rerun under a registered decision rule.
+   (`run_product_kalman_logit.py`), mixture-gate diagnostics (`run_product_kalman_gated.py`), statistically
+   linearized transport (`run_product_kalman_statlin.py`), and atom/lattice checks (`run_product_kalman_atoms.py`)
+   should remain explicitly labeled exploratory unless rerun under a registered decision rule.
 10. Compare the best Product-Kalman rung against `JointPosterior` on a separate node-disjoint evaluation split before
     using it as a training objective. Do not reuse the calibration residuals that set covariance blocks as the
     comparison set, and do not let Product-Kalman displace the calibrated joint-head workflow without held-out NLL,
@@ -455,13 +462,14 @@ through nonlinear links without relying on a point Jacobian.
   grouped covariance scores, configurable NLL-gain baselines, and canonical `--output-dir` bundles for real-corpus
   Product-Kalman comparisons.
 - `product_kalman_report.py` and `test_product_kalman_report.py` — descriptive Markdown report generator for
-  Product-Kalman input manifests, optional split manifests, and score JSON artifacts.
+  Product-Kalman input manifests, optional split manifests, score JSON artifacts, and optional PIT calibration
+  diagnostics.
 - `product_kalman_evaluation.py` and `test_product_kalman_evaluation.py` — holdout comparison harness for
   prior, zero-cross-covariance, and correlated Product-Kalman scoring on disjoint splits, including NLL/MSE,
   rowwise covariance scoring, grouped residual-covariance maps, automatic grouped score variants when NPZ group
   labels are present, Mahalanobis predicted-error scale/tail diagnostics, JSON summaries, configurable paired
-  bootstrap baselines for direct grouped-vs-ungrouped comparisons, and row-level NPZ score artifacts for reproducible
-  bootstrap/tail diagnostics.
+  bootstrap baselines for direct grouped-vs-ungrouped comparisons, reusable PIT/KS marginal calibration helpers, and
+  row-level NPZ score artifacts for reproducible bootstrap/tail diagnostics.
 - `run_product_kalman_realdata.py` and `REPORT_product_kalman_realdata.md` — exploratory real-corpus run showing
   correlated Product-Kalman beats the prior and that independent/PoE fusion becomes overconfident when correlated
   product channels are stacked; the same report records Sigma(hop) blocks inside the Kalman gain as rung (a).
@@ -470,6 +478,10 @@ through nonlinear links without relying on a point Jacobian.
 - `run_product_kalman_logit.py` and `REPORT_product_kalman_logit.md` — rung (b) comparison of mu-space, logit-space,
   and dual-space density mixtures scored in a common mu-density space.
 - `run_product_kalman_gated.py` and `REPORT_product_kalman_gated.md` — gate ladder for the dual-space mixture,
-  including PIT diagnostics and the deferred statistical-linearization treatment.
+  including PIT diagnostics and the motivation for the statistical-linearization follow-up.
+- `run_product_kalman_statlin.py` and `REPORT_product_kalman_statlin.md` — statistical-linearization refinement of
+  the logit transport, making the statistically linearized dual-space mixture the current exploratory NLL champion.
+- `run_product_kalman_atoms.py` and `REPORT_product_kalman_atoms.md` — atom/lattice accounting check showing atom
+  masses were already priced correctly and the remaining D-channel defect is bimodality rather than boundary mass.
 - `REPORT_sigma_hop_confirmatory.md` and `PAPER_sigma_hop_confirmatory.md` — confirmatory Sigma(hop) result and
   publication scaffold.
