@@ -429,11 +429,14 @@ loadable along the way.
   a post-success failure backtracks into the stale chain CP of a
   completed call, re-runs an OVERLAPPING dispatch clause on the same
   term, and the divergent re-execution observes a register Ref above
-  the rewound heap top. Mutually-exclusive dispatch guards convert the
-  crash into clean failure (validated on the minimal pair); a residual
-  re-entry state inconsistency in the runtime remains under
-  investigation. The remaining campaign: finish no. 12, then
-  `compile(SelfSource)` — the full fixpoint.
+  the rewound heap top. The runtime half is FIXED: backtrack no
+  longer rewinds heap_top (the heap is monotonic per top-level call,
+  like the arena), eliminating the dangling-Ref class — arena compound
+  slots are raw pointers the trail cannot cover, so heap rewind
+  deallocated cells that surviving slots still referenced. The open
+  tail is a loaded-vs-SWI semantic divergence that makes the first
+  derivation fail where SWI succeeds. The remaining campaign: close
+  the divergence, then `compile(SelfSource)` — the full fixpoint.
   The compile budget for the full self-compile is closed: the **chained
   arena** removed the memory cliff (blocks link on exhaustion and never
   move; marks are virtual offsets so mark/rewind work across growth), and

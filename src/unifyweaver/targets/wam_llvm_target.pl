@@ -4299,12 +4299,25 @@ restore:
   %tm = load i32, i32* %tm_ptr
   call void @unwind_trail(%WamState* %vm, i32 %tm)
 
-  ; Rewind heap_top to the saved value so put_variable allocations
-  ; from the failing alternative do not leak as garbage cells.
+  ; Campaign finding no. 12: do NOT rewind heap_top here. The heap is
+  ; MONOTONIC within a top-level call, exactly like the arena. The old
+  ; rewind (restore heap_top from the CP) deallocated every cell the
+  ; failed attempt created -- but compounds live in the ARENA, and their
+  ; argument slots are raw pointers that the trail cannot cover: a
+  ; post-CP first-binding of a pre-CP compound''s unbound slot survived
+  ; the trail unwind while the heap cell it referenced was deallocated.
+  ; Re-satisfaction (backtracking into a completed call''s chain CP,
+  ; which is correct Prolog and how SWI recovers from divergent
+  ; alternatives) then re-read the compound in READ mode and followed
+  ; the dangling Ref above the rewound top -- the self-hosted
+  ; compiler''s deferral walkers crashed exactly there (heap oob read
+  ; at heap_top, trace-proven). Bindings ARE still undone (the trail
+  ; handles that above); only the CELLS persist, unreferenced, until
+  ; the per-call reclamation -- the same lifetime the arena already
+  ; has. The CP still SAVES heap_top (field 11) for diagnostics, but
+  ; nothing restores it.
   %saved_ht_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 11
   %saved_ht = load i32, i32* %saved_ht_ptr
-  %ht_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
-  store i32 %saved_ht, i32* %ht_ptr
   ; Restore stack_size so failed clauses cannot leave EnvFrames that
   ; confuse the caller or the next alternative.
   %saved_ss_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 13
