@@ -20,6 +20,7 @@ __all__ = [
     "add_artifact_bootstrap_intervals",
     "build_product_kalman_markdown_report",
     "load_json",
+    "write_json",
     "write_markdown_report",
 ]
 
@@ -317,6 +318,13 @@ def build_product_kalman_markdown_report(
     return "\n".join(lines)
 
 
+def write_json(path, data, indent=2):
+    """Write a JSON artifact with stable key ordering."""
+    text = json.dumps(data, indent=None if indent == 0 else indent, sort_keys=True) + "\n"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
 def write_markdown_report(path, text):
     """Write a Markdown report."""
     with open(path, "w", encoding="utf-8") as f:
@@ -329,12 +337,14 @@ def _build_arg_parser():
     ap.add_argument("--input-manifest", help="optional input manifest JSON from product_kalman_table_to_npz")
     ap.add_argument("--split-manifest", help="optional split manifest JSON from product_kalman_split_table")
     ap.add_argument("--output-md", help="write Markdown report here instead of stdout")
+    ap.add_argument("--output-json", help="write enriched score JSON here")
     ap.add_argument("--title", default="Product-Kalman Holdout Report")
     ap.add_argument("--evaluation-npz", help="optional row-level evaluation artifact NPZ for post-hoc bootstrap intervals")
     ap.add_argument("--bootstrap-nll", type=int, default=0, help="paired bootstrap replicates for NLL gains; 0 disables")
     ap.add_argument("--bootstrap-seed", type=int, default=0)
     ap.add_argument("--bootstrap-confidence", type=float, default=0.95)
     ap.add_argument("--overwrite-bootstrap", action="store_true", help="replace existing bootstrap sections in scores JSON")
+    ap.add_argument("--indent", type=int, default=2, help="JSON indentation for --output-json; use 0 for compact output")
     return ap
 
 
@@ -356,6 +366,8 @@ def main(argv=None):
     manifest = load_json(args.input_manifest) if args.input_manifest else None
     split_manifest = load_json(args.split_manifest) if args.split_manifest else None
     text = build_product_kalman_markdown_report(scores, manifest, split_manifest=split_manifest, title=args.title)
+    if args.output_json:
+        write_json(args.output_json, scores, indent=args.indent)
     if args.output_md:
         write_markdown_report(args.output_md, text)
     else:

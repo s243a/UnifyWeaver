@@ -175,6 +175,7 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
         assert boot["confidence"] == 0.90
 
         output_md = Path(tmp) / "posthoc.md"
+        output_json = Path(tmp) / "posthoc.scores.json"
         rc = main([
             str(scores_json),
             "--input-manifest",
@@ -189,11 +190,15 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
             "0.90",
             "--output-md",
             str(output_md),
+            "--output-json",
+            str(output_json),
         ])
         assert rc == 0
         text = output_md.read_text()
         assert "## NLL Improvement Bootstrap Intervals" in text
         assert "| independent_kalman | product_kalman |" in text
+        enriched_json = json.loads(output_json.read_text())
+        assert enriched_json["nll_improvement_bootstrap_vs_independent_kalman"]["product_kalman"] == boot
 
 
 def test_markdown_report_cli_writes_file():
