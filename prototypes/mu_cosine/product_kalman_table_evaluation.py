@@ -176,6 +176,9 @@ def run_product_kalman_table_evaluation(
     jitter=1e-9,
     ddof=1,
     shrinkage_target="diagonal",
+    bootstrap_nll=0,
+    bootstrap_seed=0,
+    bootstrap_confidence=0.95,
     indent=2,
 ):
     """Build evaluator input artifacts from a table and score the held-out split."""
@@ -203,7 +206,12 @@ def run_product_kalman_table_evaluation(
     if output_npz:
         write_evaluation_npz(output_npz, result)
     summary = _attach_input_paths(
-        evaluation_to_json_dict(result),
+        evaluation_to_json_dict(
+            result,
+            bootstrap_nll=bootstrap_nll,
+            bootstrap_seed=bootstrap_seed,
+            bootstrap_confidence=bootstrap_confidence,
+        ),
         input_table,
         input_npz,
         input_manifest=input_manifest,
@@ -272,6 +280,14 @@ def _build_arg_parser():
     ap.add_argument("--jitter", type=float, default=1e-9)
     ap.add_argument("--ddof", type=int, default=1)
     ap.add_argument("--shrinkage-target", default="diagonal", choices=("diagonal", "scaled_identity"))
+    ap.add_argument(
+        "--bootstrap-nll",
+        type=int,
+        default=0,
+        help="paired bootstrap replicates for NLL gains; 0 disables",
+    )
+    ap.add_argument("--bootstrap-seed", type=int, default=0)
+    ap.add_argument("--bootstrap-confidence", type=float, default=0.95)
     ap.add_argument("--indent", type=int, default=2, help="JSON indentation; use 0 for compact output")
     return ap
 
@@ -322,6 +338,9 @@ def main(argv=None):
             jitter=args.jitter,
             ddof=args.ddof,
             shrinkage_target=args.shrinkage_target,
+            bootstrap_nll=args.bootstrap_nll,
+            bootstrap_seed=args.bootstrap_seed,
+            bootstrap_confidence=args.bootstrap_confidence,
             indent=args.indent,
         )
     except ValueError as exc:

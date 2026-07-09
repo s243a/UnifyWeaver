@@ -91,6 +91,9 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
             output_md=output_md,
             report_title="Synthetic Table Product-Kalman Report",
             jitter=1e-8,
+            bootstrap_nll=50,
+            bootstrap_seed=7,
+            bootstrap_confidence=0.90,
         )
 
         assert input_npz.exists()
@@ -112,6 +115,14 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         assert "mahalanobis_per_dim" in summary["scores"]["product_kalman"]
         assert "squared_mahalanobis_q95" in summary["scores"]["product_kalman"]
         assert summary["nll_improvement_vs_prior"]["product_kalman"] > 0.65
+        boot = summary["nll_improvement_bootstrap_vs_independent_kalman"]["product_kalman"]
+        assert boot["n_boot"] == 50
+        assert boot["seed"] == 7
+        assert boot["confidence"] == 0.90
+        assert abs(
+            boot["observed_mean_gain"]
+            - summary["nll_improvement_vs_independent_kalman"]["product_kalman"]
+        ) < 1e-12
 
         manifest = json.loads(input_manifest.read_text())
         assert manifest["splits"]["calibration_rows"] == 80
@@ -123,6 +134,7 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         assert "## Scores" in report
         assert "mahalanobis_per_dim" in report
         assert "sq_mahalanobis_q95" in report
+        assert "## NLL Improvement Bootstrap Intervals" in report
         assert "source_table_sha256" in report
 
         with np.load(output_npz, allow_pickle=False) as artifact:
@@ -130,6 +142,9 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
             assert artifact["score_names"].tolist() == summary["score_order"]
             assert artifact["score_mahalanobis_per_dim"].shape == (4,)
             assert artifact["score_squared_mahalanobis_q95"].shape == (4,)
+            assert artifact["score_row_nll"].shape == (4, 40)
+            assert artifact["score_row_squared_error"].shape == (4, 40)
+            assert artifact["score_row_squared_mahalanobis"].shape == (4, 40)
 
 
 def test_table_runner_output_dir_writes_canonical_bundle():
