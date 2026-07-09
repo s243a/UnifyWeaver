@@ -154,7 +154,8 @@ counts, root IDs, graph-view rules, correction-manifest hash, model/judge identi
 
 ## Execution Order
 
-1. Build and test the enwiki branch-stratified sampler against the titled scoped LMDB.
+1. Use `sample_product_kalman_enwiki_campaign.py` for deterministic branch-stratified sampling against the titled
+   scoped LMDB. It traverses numeric IDs, verifies exact shortest upward hop, and joins titles at the output boundary.
 2. Materialize its pair, topology, and title-audit manifests before scoring.
 3. Add Pearltrees principal-containment and SimpleMind cleaned within-map adapters with the same output schema.
 4. Freeze any title-correction manifests.
