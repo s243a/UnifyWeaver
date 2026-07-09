@@ -425,10 +425,14 @@ loadable along the way.
   intersection, comparison guards, and the builtin whitelist
   self-compiled and byte-exact loaded (22412); the X-temp deferral
   paths are byte-exact in SWI (33858) but blocked loaded on **finding
-  no. 12 (OPEN)**: an ITE else-entry backtrack interaction leaves a
-  stale heap Ref in the deferral walkers — isolated to a minimal pair,
-  hunt scheduled next round with the new PC-reporting heap-bounds
-  diagnostics. The remaining campaign: fix no. 12, then
+  no. 12 (root cause established)**: an instrumented trace proved that
+  a post-success failure backtracks into the stale chain CP of a
+  completed call, re-runs an OVERLAPPING dispatch clause on the same
+  term, and the divergent re-execution observes a register Ref above
+  the rewound heap top. Mutually-exclusive dispatch guards convert the
+  crash into clean failure (validated on the minimal pair); a residual
+  re-entry state inconsistency in the runtime remains under
+  investigation. The remaining campaign: finish no. 12, then
   `compile(SelfSource)` — the full fixpoint.
   The compile budget for the full self-compile is closed: the **chained
   arena** removed the memory cliff (blocks link on exhaustion and never
