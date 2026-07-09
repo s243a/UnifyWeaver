@@ -809,16 +809,52 @@ re-entry consistency is what must be fixed. First-argument indexing
 (deliberately NOPed in the loader) would mask most instances but is
 not the correctness fix.
 
-**Remaining toward the full fixpoint:** every compiler stage is now
-self-compiled AND byte-exact loaded — serializer, single-clause middle,
-grouping/label/chain front, generic table walk, and the complete
-walkers including both deferral directions. Finding no. 12 is closed
-(monotonic heap + fact environments). What is left is the capstone
-itself: stitch the slices into one `compile(SelfSource)` whose accepted
-subset covers its own source, and run the fixpoint.
+**THE CAPSTONE — the fixpoint runs (milestone 6 COMPLETE).** The
+self-source is the full walkers compiler with entry
+`main2(Src, W) :- cm3(Src, Cs), atom_codes(W, Cs)` — the source to
+compile arrives as a *runtime argument*, so no quine construction is
+needed; the same 12.7 KB text is both the program being compiled and
+the program doing the compiling. The chain
+(`selfhost_capstone_fixpoint`):
 
-**Deliverable:** the demonstrable self-host — the compiler compiles itself,
-and `compile(SelfSource)` yields a working compiler object.
+1. **gen1** — the AOT-compiled `cgfull.wamo` (production
+   `wam_llvm_target` output) — compiles the self-source → **gen2**
+   (36151 bytes, ~54 ms/generation);
+2. **gen2**, loaded through `@wam_object_eval`, compiles the *same*
+   self-source → **gen3**;
+3. `gen2 == gen3` **byte-identical** — F(F) = F, the fixpoint;
+4. the triangle closes: **gen3** compiles a fresh golden (ITE +
+   comparison guard, library builtins, repeated-variable structure
+   head, nested-pattern and nested-expression deferral) byte-identical
+   to the production `cgfull_term/2` on the same clauses.
+
+*Capstone finding (campaign no. 13) — the arithmetic error channel.*
+The first fixpoint attempt drifted by one instruction per
+numbervarred-marker clause (gen3 emitted `get_variable` where gen2 had
+`get_structure '$VAR'/1`). The loaded `eval_arith_value` had **no
+failure channel**: unknown functors returned a benign Integer 0, so the
+walkers' `Y is 48 + N` guard *succeeded* with 48 when `N` was the term
+`'$VAR'(0)` — where SWI raises a type error and the dispatch clause
+fails through. Two layers:
+
+- **ev_zero is now an error, not a zero:** a `@wam_arith_err` flag set
+  on every unknown/failing evaluation path, cleared and checked by
+  `is/2` and all six arithmetic comparisons, which fail cleanly when
+  it is raised.
+- **first-byte dispatch aliasing:** the evaluator routed on the first
+  functor byte (plus second/third-byte splits), so unknown functors
+  sharing a prefix with a real op silently *aliased* it — `f(2)`
+  evaluated as `floor(2)`, `g(5, 6)` as `gcd(5, 6)` — bypassing
+  ev_zero entirely. A whitelist gate (`wam_arith_name_ok`) now strcmps
+  the full functor name against the exact implemented-op set per arity
+  before dispatch; unknown names fail through the error flag.
+  Regression: `selfhost_arith_error_fails_cleanly`
+  (`X is 1 + f(2)` must fail into the else branch, as in SWI).
+
+**Deliverable (met):** the demonstrable self-host — the compiler
+compiles itself, the self-compiled compiler compiles itself to the
+byte, and the object it produces compiles fresh programs identically
+to the production compiler.
 
 ## Risks and open questions
 

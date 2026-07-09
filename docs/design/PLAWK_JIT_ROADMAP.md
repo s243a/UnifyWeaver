@@ -354,7 +354,7 @@ loadable along the way.
   and memoizes the compiler object (the `DYNCACHE` role). Verified end to end
   with a stand-in (echo) compiler: source text → emitted bytes → load → run →
   `42`. A real source-to-bytecode compiler is milestone 6.
-- **Milestone 6** (self-host) — *design landed.* A **minimal** Prolog→`.wamo`
+- **Milestone 6** (self-host) — **COMPLETE — the fixpoint runs.** A **minimal** Prolog→`.wamo`
   compiler written in the loadable subset (not the full ~22 000-line host
   compiler), run through the existing `@wam_object_eval` pipeline. The key
   enabler: `.wamo` is a **text** format, so emitting it is string assembly —
@@ -439,15 +439,21 @@ loadable along the way.
   invisible for tail-position fact calls (all earlier slices), fatal
   for the walkers' first non-tail fact call. Facts now allocate. The
   FULL walkers golden — deferral included — is byte-exact loaded
-  (35309). The remaining campaign: the capstone `compile(SelfSource)` —
-  the full fixpoint.
+  (35309). **THE CAPSTONE LANDED — the fixpoint runs**: the AOT-compiled
+  cgfull (gen1) compiles the compiler's own source (entry
+  `main2(Src, W)` — the source is a runtime argument, no quine needed)
+  to gen2 (36151 bytes); gen2, loaded, compiles the same source to
+  gen3; **gen2 == gen3 byte-identical** (F(F) = F), and gen3 compiles a
+  fresh golden byte-identically to the production `cgfull_term/2` —
+  the self-compiled compiler is behaviorally the compiler
+  (`selfhost_capstone_fixpoint`).
   The compile budget for the full self-compile is closed: the **chained
   arena** removed the memory cliff (blocks link on exhaustion and never
   move; marks are virtual offsets so mark/rewind work across growth), and
   the serializer's **difference-list linearisation** removed the quadratic
   time/allocation (an 11.9 KB source compiles loaded in 40 ms / 35 MB where
   the quadratic style took 20 s / 3.7 GB at half that size).
-  The campaign keeps surfacing and fixing latent runtime bugs — **eleven found
+  The campaign keeps surfacing and fixing latent runtime bugs — **thirteen found
   so far**: a 64-register-file ceiling corrupting memory for large clauses;
   `get_structure` not comparing the functor; the choice-point saved-register
   block not widened with the register file (failed clause bodies leaked Y17+
@@ -469,7 +475,13 @@ loadable along the way.
   explicit abort flag checked at backtrack entry; and the reader
   var-dict silently falling back to fresh-per-occurrence variables past
   128 distinct names (the self-hosted compiler miscompiled its own
-  serializer) — fixed with a growable dict. See
+  serializer) — fixed with a growable dict; plus the re-entry pair
+  above (no. 12: monotonic heap + fact environments), and the capstone
+  finding (no. 13): loaded arithmetic had **no error channel** — unknown
+  functors evaluated to a benign 0, and the first-byte dispatch let
+  unknown names *alias* real ops (`f(2)` ran as `floor(2)`) — fixed
+  with an arith-error flag failing `is/2` and the comparisons, plus a
+  full-name whitelist gate before dispatch. See
   [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
 
 ## The binary-return question, specifically
