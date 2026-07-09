@@ -381,7 +381,12 @@ loadable along the way.
   predicates LANDED**: clause grouping + `try_me_else`/`retry_me_else`/`trust_me`
   chains with per-alternative labels, so backtracking dispatch and **recursion**
   compile from source (two-clause dispatch needing the second clause → `42`;
-  recursive factorial `fact(3)` → `6`). The remaining Stage D campaign widens the
+  recursive factorial `fact(3)` → `6`); **lists + atom table LANDED**: head
+  patterns `[]`/`[H|T]` (`get_list` + `unify_*`), repeated head vars
+  (`get_value` — fixing a latent silent-overwrite bug), list literals in call
+  args (`put_list`/`set_*`/write-mode `put_structure`), and the atom-table
+  section with reloc-1 atom constants; the classic sum-over-a-list compiles
+  from source → `42`. The remaining Stage D campaign widens the
   subset toward the compiler compiling its own source — the self-host fixpoint.
   The campaign keeps surfacing and fixing latent runtime bugs — **four fixed so
   far**: a 64-register-file ceiling corrupting memory for large clauses;
