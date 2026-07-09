@@ -762,15 +762,31 @@ Two layers of fix, one landed conceptually and one still open:
   in SWI; a second crash signature on the nested-build golden), so the
   guarded walkers source is NOT yet landed — next round continues from
   the committed trace methodology.
-- **Runtime-level (open):** even with divergence-free re-entry, the
-  trace shows the re-executed path can observe a register Ref above the
-  rewound heap top — the re-entry state reconstruction (CP register
-  snapshot + heap mark + trail unwind + untrailed arena-slot writes) is
-  not fully consistent somewhere. Pinning that inconsistency — with
-  the same instrumented-trace technique, now proven effective — is the
-  next round's opening move, and matters beyond the self-host: ANY
-  loaded program that backtracks into a completed call's chain CP is
-  exposed.
+- **Runtime-level (FIXED — the monotonic heap):** a second
+  instrumented trace (heap-set vs trail logging) pinned the
+  inconsistency exactly: compounds live in the ARENA, and their
+  argument slots are raw pointers the trail cannot cover. A post-CP
+  first-binding of a pre-CP compound's unbound slot survived the trail
+  unwind while the heap cell it referenced was deallocated by the
+  backtrack heap rewind; re-satisfaction then read the compound in
+  READ mode (the trace shows the same code path pushing 5 cells in the
+  first incarnation and 1 in the second — the write→read mode flip)
+  and followed the dangling Ref. The fix: **backtrack no longer
+  rewinds `heap_top`** — the heap is monotonic within a top-level
+  call, exactly like the arena; bindings are still undone by the
+  trail, only the cells persist unreferenced. This eliminates the
+  entire dangling-Ref class (crash reproduced → gone; regression
+  `selfhost_finding12_no_heap_oob` on the minimal pair). The full
+  battery — including the choicepoint-restore, findall, stream, and
+  reentrant-run-loop suites — passes unchanged.
+- **Semantic divergence (open tail):** with consistent re-entry, the
+  deferral compiles now COMPLETE loaded, but their output differs from
+  SWI (e.g. 31891 vs 33858 on the full walkers golden): some goal
+  fails in the loaded first derivation where SWI succeeds, triggering
+  a re-satisfaction that lands on a divergent (wrong-output)
+  derivation. Finding the loaded-vs-SWI semantic difference that
+  causes the initial failure is the next hunt — the trace harness and
+  the byte-diff methodology are both in place.
 
 The architectural observation for the design record: the loaded
 subset's "deterministic first solution" philosophy leaves chain CPs of
