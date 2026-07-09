@@ -45,6 +45,7 @@ __all__ = [
     "bootstrap_nll_improvements_from_score_rows",
     "evaluate_product_kalman_holdout",
     "evaluation_artifact_arrays",
+    "evaluation_npz_score_summary",
     "evaluation_to_json_dict",
     "paired_bootstrap_nll_improvement",
     "paired_bootstrap_nll_improvement_from_score_rows",
@@ -636,6 +637,28 @@ def _require_npz_array(npz, path, key):
 
 def _optional_npz_array(npz, key):
     return npz[key] if key in npz.files else None
+
+
+def evaluation_npz_score_summary(artifact_npz):
+    """Return score-order, mean-NLL, and row-count summaries from an evaluation artifact NPZ."""
+    path = str(artifact_npz)
+    with np.load(path, allow_pickle=False) as data:
+        names = _decode_score_names(_require_npz_array(data, path, "score_names"))
+        mean_nll = np.asarray(_require_npz_array(data, path, "score_mean_nll"), dtype=float)
+        score_n = np.asarray(_require_npz_array(data, path, "score_n"), dtype=np.int64)
+    if mean_nll.shape != (len(names),):
+        raise ValueError("score_mean_nll length must match score_names")
+    if score_n.shape != (len(names),):
+        raise ValueError("score_n length must match score_names")
+    if not np.isfinite(mean_nll).all():
+        raise ValueError("score_mean_nll must be finite")
+    if (score_n <= 0).any():
+        raise ValueError("score_n values must be positive")
+    return {
+        "score_order": list(names),
+        "mean_nll": {name: float(mean_nll[i]) for i, name in enumerate(names)},
+        "n": {name: int(score_n[i]) for i, name in enumerate(names)},
+    }
 
 
 def bootstrap_nll_improvements_from_evaluation_npz(

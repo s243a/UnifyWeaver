@@ -14,8 +14,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
 
-from product_kalman_report import add_artifact_bootstrap_intervals, build_product_kalman_markdown_report, main
+from product_kalman_report import (
+    add_artifact_bootstrap_intervals,
+    build_product_kalman_markdown_report,
+    main,
+    validate_artifact_score_consistency,
+)
 from product_kalman_table_evaluation import run_product_kalman_table_evaluation
+
+
+def assert_raises(fn, *args, **kwargs):
+    try:
+        fn(*args, **kwargs)
+    except (OSError, ValueError):
+        return
+    raise AssertionError(f"{fn.__name__} should have raised")
 
 
 def synthetic_identity_split(n_cal=80, n_eval=40, seed=23):
@@ -162,6 +175,8 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
             seed=7,
             confidence=0.90,
         )
+        artifact_summary = validate_artifact_score_consistency(scores, evaluation_npz=eval_npz)
+        assert artifact_summary["score_order"] == scores["score_order"]
         recorded_path_enriched = add_artifact_bootstrap_intervals(
             scores,
             n_boot=50,
@@ -169,6 +184,13 @@ def test_posthoc_bootstrap_intervals_can_be_loaded_from_evaluation_npz():
             confidence=0.90,
         )
         assert "nll_improvement_bootstrap_vs_prior" in recorded_path_enriched
+
+        bad_order = dict(scores)
+        bad_order["score_order"] = list(reversed(scores["score_order"]))
+        assert_raises(add_artifact_bootstrap_intervals, bad_order, evaluation_npz=eval_npz, n_boot=10)
+        bad_mean = json.loads(json.dumps(scores))
+        bad_mean["scores"]["product_kalman"]["mean_nll"] += 1.0
+        assert_raises(add_artifact_bootstrap_intervals, bad_mean, evaluation_npz=eval_npz, n_boot=10)
         boot = enriched["nll_improvement_bootstrap_vs_independent_kalman"]["product_kalman"]
         assert boot["n_boot"] == 50
         assert boot["seed"] == 7

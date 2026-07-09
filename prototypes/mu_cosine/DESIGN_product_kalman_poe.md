@@ -390,8 +390,8 @@ calibration against both the naive-PoE controls and the additive/joint covarianc
    pending.)*
 8. Use `product_kalman_report.py` to render the input manifest, optional split manifest, and score JSON into a
    descriptive Markdown run note. When row-level `eval_artifacts.npz` exists, the report CLI can add paired bootstrap
-   NLL intervals post hoc without rerunning scoring and can write the enriched score JSON beside the Markdown report.
-   The report is an audit artifact only: it records scores and
+   NLL intervals post hoc without rerunning scoring, verifies the row artifact against the score summary, and can write
+   the enriched score JSON beside the Markdown report. The report is an audit artifact only: it records scores and
    provenance, but does not encode a decision rule or promote Product-Kalman without comparison against registered
    baselines.
 9. Fit empirical Product-Kalman variants on those calibration blocks, then compare against `JointPosterior` and
