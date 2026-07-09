@@ -3570,6 +3570,21 @@ compile_resume_builtin_to_rust(Code) :-
                 };
                 self.dynamic_retract_attempt(key, start_idx, pattern, cont_pc)
             }
+            "dynamic_rule_body" => {
+                let clause = match state.args.get(0) {
+                    Some(clause) => clause.clone(),
+                    _ => return false,
+                };
+                let solution_idx = match state.data.get(0) {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return false,
+                };
+                let cont_pc = match state.data.get(1) {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return false,
+                };
+                self.dynamic_rule_body_attempt(clause, solution_idx, cont_pc)
+            }
             "foreign_results" => {
                 let pred_key = match state.args.get(0) {
                     Some(Value::Atom(pred_key)) => pred_key.clone(),

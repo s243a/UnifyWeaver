@@ -107,6 +107,28 @@ fn asserted_rule_body_calls_dynamic_predicates() {
 }
 
 #[test]
+fn conjunction_rule_backtracks_left_subgoal_for_more_body_solutions() {
+    let mut vm = WamState::new(vec![], HashMap::new());
+    assert_clause(&mut vm, "assertz/1", fact("parent", vec![at("ann"), at("bob")]));
+    assert_clause(&mut vm, "assertz/1", fact("parent", vec![at("ann"), at("beth")]));
+    assert_clause(&mut vm, "assertz/1", fact("likes", vec![at("bob"), at("pizza")]));
+    assert_clause(&mut vm, "assertz/1", fact("likes", vec![at("beth"), at("salad")]));
+    assert_clause(
+        &mut vm,
+        "assertz/1",
+        rule(
+            fact("favorite", vec![ub("X"), ub("Z")]),
+            conj(
+                fact("parent", vec![ub("X"), ub("Y")]),
+                fact("likes", vec![ub("Y"), ub("Z")]),
+            ),
+        ),
+    );
+
+    assert_eq!(second_values(&mut vm, "favorite/2", at("ann")), vec![at("pizza"), at("salad")]);
+}
+
+#[test]
 fn read_eof_binds_end_of_file() {
     let mut vm = WamState::new(vec![], HashMap::new());
     vm.set_reg_str("A1", ub("T"));
