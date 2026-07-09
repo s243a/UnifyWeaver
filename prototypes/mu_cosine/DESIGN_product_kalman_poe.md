@@ -416,8 +416,9 @@ remaining D-channel shape defect as model-side relation-class structure rather t
    grouped-covariance score variants when calibration/evaluation group labels are present, records aggregate NLL/MSE,
    Mahalanobis calibration-scale/tail diagnostics, row-level score vectors, and optional paired bootstrap intervals
    for NLL gains against configurable baselines such as ungrouped `product_kalman`, and keeps
-   calibration/evaluation IDs disjoint. *(Harness complete; dedicated real-corpus exploratory runs are recorded in
-   the reports listed below.)*
+   calibration/evaluation IDs disjoint. PIT diagnostics include marginal KS-vs-uniform and central-interval
+   coverage summaries so interval under/over-coverage is visible without changing score selection. *(Harness
+   complete; dedicated real-corpus exploratory runs are recorded in the reports listed below.)*
 8. Use `product_kalman_report.py` to render the input manifest, optional split manifest, and score JSON into a
    descriptive Markdown run note. When row-level `eval_artifacts.npz` exists, the report CLI can add paired bootstrap
    NLL intervals post hoc without rerunning scoring, verifies the row artifact against the score summary, records the
@@ -463,13 +464,13 @@ remaining D-channel shape defect as model-side relation-class structure rather t
   Product-Kalman comparisons.
 - `product_kalman_report.py` and `test_product_kalman_report.py` — descriptive Markdown report generator for
   Product-Kalman input manifests, optional split manifests, score JSON artifacts, and optional PIT calibration
-  diagnostics.
+  diagnostics including central-interval coverage tables.
 - `product_kalman_evaluation.py` and `test_product_kalman_evaluation.py` — holdout comparison harness for
   prior, zero-cross-covariance, and correlated Product-Kalman scoring on disjoint splits, including NLL/MSE,
   rowwise covariance scoring, grouped residual-covariance maps, automatic grouped score variants when NPZ group
   labels are present, Mahalanobis predicted-error scale/tail diagnostics, JSON summaries, configurable paired
-  bootstrap baselines for direct grouped-vs-ungrouped comparisons, reusable PIT/KS marginal calibration helpers, and
-  row-level NPZ score artifacts for reproducible bootstrap/tail diagnostics.
+  bootstrap baselines for direct grouped-vs-ungrouped comparisons, reusable PIT/KS marginal calibration helpers,
+  central PIT coverage summaries, and row-level NPZ score artifacts for reproducible bootstrap/tail diagnostics.
 - `run_product_kalman_realdata.py` and `REPORT_product_kalman_realdata.md` — exploratory real-corpus run showing
   correlated Product-Kalman beats the prior and that independent/PoE fusion becomes overconfident when correlated
   product channels are stacked; the same report records Sigma(hop) blocks inside the Kalman gain as rung (a).

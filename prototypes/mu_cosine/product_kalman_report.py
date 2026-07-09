@@ -179,6 +179,32 @@ def _pit_rows(scores_json):
     return rows
 
 
+def _pit_coverage_rows(scores_json):
+    rows = []
+    diagnostics = scores_json.get("pit_diagnostics", {})
+    if not diagnostics:
+        return rows
+    if not isinstance(diagnostics, dict):
+        raise ValueError("pit_diagnostics must be a mapping")
+    for model, item in sorted(diagnostics.items()):
+        if not isinstance(item, dict):
+            raise ValueError("pit_diagnostics entries must be mappings")
+        levels = list(item.get("coverage_levels", []))
+        coverage = item.get("central_interval_coverage", [])
+        errors = item.get("central_interval_error", [])
+        channel_names = list(item.get("channel_names", []))
+        if not levels or not coverage:
+            continue
+        for level_idx, level in enumerate(levels):
+            row_coverage = coverage[level_idx] if level_idx < len(coverage) else []
+            row_errors = errors[level_idx] if level_idx < len(errors) else []
+            for channel_idx, observed in enumerate(row_coverage):
+                channel = channel_names[channel_idx] if channel_idx < len(channel_names) else channel_idx
+                error = row_errors[channel_idx] if channel_idx < len(row_errors) else None
+                rows.append([model, channel, level, observed, error, item.get("n")])
+    return rows
+
+
 def _input_rows(scores_json, manifest):
     inputs = scores_json.get("inputs", {})
     rows = [
@@ -416,6 +442,7 @@ def build_product_kalman_markdown_report(
     bootstrap_rows = _bootstrap_rows(scores_json)
     bootstrap_artifact_rows = _bootstrap_artifact_rows(scores_json)
     pit_rows = _pit_rows(scores_json)
+    pit_coverage_rows = _pit_coverage_rows(scores_json)
     grouped_covariance_rows = _grouped_covariance_rows(scores_json)
     if grouped_covariance_rows:
         lines.extend([
@@ -458,6 +485,13 @@ def build_product_kalman_markdown_report(
             _markdown_table(["model", "channel", "ks_uniform", "n", "dimension", "method"], pit_rows),
             "",
         ])
+    if pit_coverage_rows:
+        lines.extend([
+            "## PIT Central Coverage",
+            "",
+            _markdown_table(["model", "channel", "nominal", "observed", "error", "n"], pit_coverage_rows),
+            "",
+        ])
     if bootstrap_rows:
         lines.extend([
             "## NLL Improvement Bootstrap Intervals",
@@ -495,7 +529,7 @@ def build_product_kalman_markdown_report(
         "",
         "- Positive NLL gain means the candidate had lower held-out mean NLL than the named baseline.",
         "- For a well-scaled d-dimensional Gaussian prediction, mean squared Mahalanobis should be near d; the per-dimension value should be near 1, with tail quantiles read as empirical diagnostics rather than a decision rule.",
-        "- PIT diagnostics, when present, summarize marginal CDF calibration; lower KS-vs-uniform is better, but it is still an exploratory shape diagnostic.",
+        "- PIT diagnostics, when present, summarize marginal CDF calibration; lower KS-vs-uniform and smaller absolute central-coverage error are better, but they are still exploratory shape diagnostics.",
         "- Bootstrap intervals, when present, are paired row-resampling diagnostics for NLL gains; they are not a preregistered decision rule.",
         "- Treat this as a held-out comparison artifact, not as a training-objective decision.",
         "- Product-Kalman should be compared against the registered joint-posterior and Sigma-conditioned baselines before promotion.",

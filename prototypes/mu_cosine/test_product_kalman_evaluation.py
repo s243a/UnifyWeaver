@@ -24,6 +24,7 @@ from product_kalman_evaluation import (
     gaussian_marginal_pit_diagnostics,
     gaussian_marginal_pit_values,
     paired_bootstrap_nll_improvement,
+    pit_central_interval_coverage,
     pit_diagnostics_from_values,
     pit_uniform_ks_statistic,
     row_covariances_from_groups,
@@ -94,9 +95,14 @@ def test_correlated_product_kalman_beats_zero_cross_control_on_heldout_nll():
     assert product_pit.dimension == 1
     assert product_pit.pit.shape == (len(eval_target), 1)
     assert product_pit.channel_ks.shape == (1,)
+    assert product_pit.coverage_levels == (0.5, 0.8, 0.9, 0.95)
+    assert product_pit.central_interval_coverage.shape == (4, 1)
+    assert product_pit.central_interval_error.shape == (4, 1)
     assert 0.0 <= product_pit.channel_ks[0] <= 1.0
     assert product_pit.pit.flags.writeable is False
     assert product_pit.channel_ks.flags.writeable is False
+    assert product_pit.central_interval_coverage.flags.writeable is False
+    assert product_pit.central_interval_error.flags.writeable is False
     assert_raises(result.pit_diagnostic, "missing")
     assert result.correlated_update.mean.flags.writeable is False
     assert result.independent_update.mean.flags.writeable is False
@@ -211,7 +217,10 @@ def test_npz_runner_and_json_cli_roundtrip():
         assert data["pit_diagnostics"]["product_kalman"]["n"] == 4000
         assert data["pit_diagnostics"]["product_kalman"]["dimension"] == 1
         assert data["pit_diagnostics"]["product_kalman"]["method"] == "marginal_pit_uniform_ks"
+        assert data["pit_diagnostics"]["product_kalman"]["coverage_levels"] == [0.5, 0.8, 0.9, 0.95]
         assert len(data["pit_diagnostics"]["product_kalman"]["channel_ks"]) == 1
+        assert len(data["pit_diagnostics"]["product_kalman"]["central_interval_coverage"]) == 4
+        assert len(data["pit_diagnostics"]["product_kalman"]["central_interval_coverage"][0]) == 1
         assert "mean_squared_mahalanobis" in data["scores"]["product_kalman"]
         assert "squared_mahalanobis_q95" in data["scores"]["product_kalman"]
         assert 0.85 < data["scores"]["product_kalman"]["mahalanobis_per_dim"] < 1.15
@@ -275,6 +284,9 @@ def test_npz_runner_and_json_cli_roundtrip():
             assert artifact["pit_names"].tolist() == data["score_order"]
             assert artifact["pit_values"].shape == (4, 4000, 1)
             assert artifact["pit_channel_ks"].shape == (4, 1)
+            np.testing.assert_allclose(artifact["pit_coverage_levels"], [0.5, 0.8, 0.9, 0.95])
+            assert artifact["pit_central_interval_coverage"].shape == (4, 4, 1)
+            assert artifact["pit_central_interval_error"].shape == (4, 4, 1)
             assert artifact["product_kalman_mean"].shape == result.correlated_update.mean.shape
             np.testing.assert_allclose(artifact["product_kalman_mean"], result.correlated_update.mean)
             np.testing.assert_allclose(artifact["independent_kalman_mean"], result.independent_update.mean)
@@ -308,6 +320,9 @@ def test_evaluation_artifact_arrays_are_npz_ready():
     assert arrays["pit_names"].tolist() == ["prior", "measurement", "independent_kalman", "product_kalman"]
     assert arrays["pit_values"].shape == (4, 20, 1)
     assert arrays["pit_channel_ks"].shape == (4, 1)
+    np.testing.assert_allclose(arrays["pit_coverage_levels"], [0.5, 0.8, 0.9, 0.95])
+    assert arrays["pit_central_interval_coverage"].shape == (4, 4, 1)
+    assert arrays["pit_central_interval_error"].shape == (4, 4, 1)
     assert arrays["pit_summary_json"].shape == (4,)
     np.testing.assert_allclose(arrays["score_row_nll"].mean(axis=1), arrays["score_mean_nll"])
     assert np.isfinite(arrays["score_mahalanobis_per_dim"]).all()
@@ -400,6 +415,9 @@ def test_npz_runner_scores_grouped_covariances_when_group_labels_present():
             assert artifact["pit_names"].shape == (8,)
             assert artifact["pit_values"].shape == (8, n_eval, 1)
             assert artifact["pit_channel_ks"].shape == (8, 1)
+            np.testing.assert_allclose(artifact["pit_coverage_levels"], [0.5, 0.8, 0.9, 0.95])
+            assert artifact["pit_central_interval_coverage"].shape == (8, 4, 1)
+            assert artifact["pit_central_interval_error"].shape == (8, 4, 1)
             assert artifact["grouped_score_names"].tolist() == [
                 "prior_grouped",
                 "measurement_grouped",
@@ -611,19 +629,29 @@ def test_pit_diagnostics_validate_uniform_ks_and_json_shape():
     pit = np.array([[0.25, 0.10], [0.75, 0.90]])
     diag = pit_diagnostics_from_values("mix", pit, channel_names=("D", "S"))
     np.testing.assert_allclose(diag.channel_ks, [0.25, 0.40])
+    np.testing.assert_allclose(diag.central_interval_coverage, [[1.0, 0.0], [1.0, 1.0], [1.0, 1.0], [1.0, 1.0]])
+    np.testing.assert_allclose(diag.central_interval_error[0], [0.5, -0.5])
     assert diag.pit.flags.writeable is False
     assert diag.channel_ks.flags.writeable is False
-    assert diag.to_json_dict() == {
-        "n": 2,
-        "dimension": 2,
-        "channel_names": ["D", "S"],
-        "channel_ks": [0.25, 0.4],
-        "method": "marginal_pit_uniform_ks",
-    }
+    assert diag.central_interval_coverage.flags.writeable is False
+    assert diag.central_interval_error.flags.writeable is False
+    payload = diag.to_json_dict()
+    assert payload["n"] == 2
+    assert payload["dimension"] == 2
+    assert payload["channel_names"] == ["D", "S"]
+    assert payload["channel_ks"] == [0.25, 0.4]
+    assert payload["coverage_levels"] == [0.5, 0.8, 0.9, 0.95]
+    assert payload["method"] == "marginal_pit_uniform_ks"
+    np.testing.assert_allclose(payload["central_interval_coverage"], diag.central_interval_coverage)
+    np.testing.assert_allclose(payload["central_interval_error"], diag.central_interval_error)
+    custom = pit_central_interval_coverage(pit, coverage_levels=(0.5, 0.8))
+    np.testing.assert_allclose(custom, [[1.0, 0.0], [1.0, 1.0]])
     assert abs(pit_uniform_ks_statistic([0.25, 0.75]) - 0.25) < 1e-12
     assert_raises(pit_diagnostics_from_values, "bad", np.array([0.5, 0.6]))
     assert_raises(pit_diagnostics_from_values, "bad", np.array([[1.2]]))
     assert_raises(pit_diagnostics_from_values, "bad", np.array([[0.5]]), channel_names=("D", "S"))
+    assert_raises(pit_central_interval_coverage, pit, coverage_levels=(0.5, 0.5))
+    assert_raises(pit_central_interval_coverage, pit, coverage_levels=(0.0,))
 
 def test_gaussian_marginal_pit_values_support_fixed_and_rowwise_covariances():
     target = np.array([[0.0], [1.0], [-1.0]])
