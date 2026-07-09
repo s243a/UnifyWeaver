@@ -2472,68 +2472,150 @@ exit:
 ;   4 = transitive_distance3
 ;   5 = weighted_shortest_path3
 ;   6 = astar_shortest_path4
-; === M5.14: Bump arena allocator ===
+; === M5.14: Bump arena allocator (chained blocks since M6 self-host) ===
 ; WASM-portable arena for transient kernel allocations. Kernel helpers
 ; (BFS, Dijkstra, A*) allocate scratch buffers at the start and free
 ; everything at the end — a pattern that maps perfectly to bump allocation.
 ;
-; Native: the arena is backed by a single malloc'd buffer.
-; WASM:   swap @wam_arena_init/@wam_arena_destroy to use linear memory.
+; Native: the arena is a CHAIN of malloc'd blocks. Allocation bumps within
+; the current block; on exhaustion a new block (geometric doubling) is
+; LINKED rather than returning null. Blocks never move — %Values hold raw
+; pointers into them — so growth is safe for live terms. This removes the
+; hard capacity cliff that segfaulted the self-hosted compiler (runtime
+; finding no. 8): accumulator-style grammars allocate quadratically in
+; their output size, and unchecked callers dereferenced the null that the
+; single-block arena returned past its cap.
+;
+; Each block starts with a 32-byte header (data stays 16-aligned):
+;   +0  i8* prev   — previous block's header, or null for the first block
+;   +8  i64 cap    — data capacity of this block (excludes the header)
+;   +16 i64 base   — virtual offset of this block's data start
+;   +24 (reserved)
+; A block's virtual base is the previous block's base + its bump position
+; at link time, so marks (base + pos) are globally monotonic and
+; mark/rewind keep working across block boundaries: rewind pops (frees)
+; every block newer than the mark, then restores the bump position.
+;
+; WASM:   swap @wam_arena_init/@wam_arena_destroy to use linear memory
+;         (a single non-chaining block reproduces the old behavior).
 ;
 ; Usage:  mark → alloc … alloc → rewind (restores to mark).
 ; NOTE: The arena implementation below uses module-level global state
 ; and is NOT thread-safe. Multiple concurrent WamState instances
 ; will race on these globals.
 
-@wam_arena_buf = internal global i8* null
-@wam_arena_pos = internal global i64 0
-@wam_arena_cap = internal global i64 0
+@wam_arena_hdr  = internal global i8* null   ; current block header
+@wam_arena_buf  = internal global i8* null   ; current block data start (hdr+32)
+@wam_arena_pos  = internal global i64 0      ; bump position within current block
+@wam_arena_cap  = internal global i64 0      ; current block data capacity
+@wam_arena_base = internal global i64 0      ; virtual offset of current data start
 
 define void @wam_arena_init(i64 %cap) {
-  %buf = call i8* @malloc(i64 %cap)
-  store i8* %buf, i8** @wam_arena_buf
+  %alloc_sz = add i64 %cap, 32
+  %blk = call i8* @malloc(i64 %alloc_sz)
+  %prev_slot = bitcast i8* %blk to i8**
+  store i8* null, i8** %prev_slot
+  %cap_raw = getelementptr i8, i8* %blk, i64 8
+  %cap_slot = bitcast i8* %cap_raw to i64*
+  store i64 %cap, i64* %cap_slot
+  %base_raw = getelementptr i8, i8* %blk, i64 16
+  %base_slot = bitcast i8* %base_raw to i64*
+  store i64 0, i64* %base_slot
+  %data = getelementptr i8, i8* %blk, i64 32
+  store i8* %blk, i8** @wam_arena_hdr
+  store i8* %data, i8** @wam_arena_buf
   store i64 0, i64* @wam_arena_pos
   store i64 %cap, i64* @wam_arena_cap
+  store i64 0, i64* @wam_arena_base
   ret void
 }
 
 define void @wam_arena_destroy() {
-  %buf = load i8*, i8** @wam_arena_buf
-  %is_null = icmp eq i8* %buf, null
+entry:
+  %hdr0 = load i8*, i8** @wam_arena_hdr
+  br label %loop
+loop:
+  %hdr = phi i8* [ %hdr0, %entry ], [ %prev, %do_free ]
+  %is_null = icmp eq i8* %hdr, null
   br i1 %is_null, label %done, label %do_free
 do_free:
-  call void @free(i8* %buf)
+  %prev_slot = bitcast i8* %hdr to i8**
+  %prev = load i8*, i8** %prev_slot
+  call void @free(i8* %hdr)
+  br label %loop
+done:
+  store i8* null, i8** @wam_arena_hdr
   store i8* null, i8** @wam_arena_buf
   store i64 0, i64* @wam_arena_pos
   store i64 0, i64* @wam_arena_cap
-  br label %done
-done:
+  store i64 0, i64* @wam_arena_base
   ret void
 }
 
+; A mark is a virtual offset (base + pos): monotonic across block links,
+; so mark/rewind pairs stay valid even when the arena grew in between.
 define i64 @wam_arena_mark() alwaysinline nounwind {
   %pos = load i64, i64* @wam_arena_pos
-  ret i64 %pos
+  %base = load i64, i64* @wam_arena_base
+  %mark = add i64 %base, %pos
+  ret i64 %mark
 }
 
-define void @wam_arena_rewind(i64 %mark) alwaysinline nounwind {
-  store i64 %mark, i64* @wam_arena_pos
+; Pops (frees) every block whose data lies entirely past the mark, then
+; restores the bump position inside the surviving block. Everything
+; allocated after the mark is discarded, exactly as before chaining.
+define void @wam_arena_rewind(i64 %mark) nounwind {
+entry:
+  br label %check
+check:
+  %base = load i64, i64* @wam_arena_base
+  %in_block = icmp uge i64 %mark, %base
+  br i1 %in_block, label %set, label %pop
+set:
+  %pos = sub i64 %mark, %base
+  store i64 %pos, i64* @wam_arena_pos
   ret void
-}
-
-; Reset the bump pointer to 0 without releasing the underlying buffer.
-; Cheaper than @wam_arena_destroy + next-iteration @wam_arena_init pair
-; (which does free + malloc of a 1 MiB buffer per query). Used by
-; @wam_cleanup so callers that loop over queries don't pay the
-; per-iteration alloc/free.
-define void @wam_arena_reset() alwaysinline nounwind {
+pop:
+  %hdr = load i8*, i8** @wam_arena_hdr
+  %prev_slot = bitcast i8* %hdr to i8**
+  %prev = load i8*, i8** %prev_slot
+  ; Defensive: a mark below the first block's base (0) cannot happen; if
+  ; it somehow does, keep the first block and clamp to position 0.
+  %no_prev = icmp eq i8* %prev, null
+  br i1 %no_prev, label %clamp, label %do_pop
+clamp:
   store i64 0, i64* @wam_arena_pos
   ret void
+do_pop:
+  call void @free(i8* %hdr)
+  %pcap_raw = getelementptr i8, i8* %prev, i64 8
+  %pcap_slot = bitcast i8* %pcap_raw to i64*
+  %pcap = load i64, i64* %pcap_slot
+  %pbase_raw = getelementptr i8, i8* %prev, i64 16
+  %pbase_slot = bitcast i8* %pbase_raw to i64*
+  %pbase = load i64, i64* %pbase_slot
+  %pdata = getelementptr i8, i8* %prev, i64 32
+  store i8* %prev, i8** @wam_arena_hdr
+  store i8* %pdata, i8** @wam_arena_buf
+  store i64 %pcap, i64* @wam_arena_cap
+  store i64 %pbase, i64* @wam_arena_base
+  br label %check
 }
 
-; Bump-allocates %size bytes (8-byte aligned). Returns null if arena
-; is exhausted — callers that need more than the arena provides should
-; fall back to malloc (not yet implemented; current kernels fit easily).
+; Reset the arena to empty without releasing the first block. Frees any
+; chained growth blocks (so a query that ballooned the arena hands the
+; extra blocks back to malloc) but keeps the initial block mapped, so
+; callers that loop over queries don't pay a per-iteration alloc/free.
+; Used by @wam_cleanup. Equivalent to rewinding to virtual offset 0.
+define void @wam_arena_reset() alwaysinline nounwind {
+  call void @wam_arena_rewind(i64 0)
+  ret void
+}
+
+; Bump-allocates %size bytes (8-byte aligned). On block exhaustion, links
+; a new block of max(current cap * 2, requested size) — geometric growth
+; keeps the block count logarithmic and the total waste bounded. Returns
+; null only if malloc itself fails (true OOM).
 define i8* @wam_arena_alloc(i64 %size) {
 entry:
   ; Align size up to 8.
@@ -2543,33 +2625,59 @@ entry:
   %new_pos = add i64 %pos, %aligned
   %cap = load i64, i64* @wam_arena_cap
   %overflow = icmp ugt i64 %new_pos, %cap
-  br i1 %overflow, label %oom, label %ok
+  br i1 %overflow, label %grow, label %ok
 ok:
   store i64 %new_pos, i64* @wam_arena_pos
   %buf = load i8*, i8** @wam_arena_buf
   %ptr = getelementptr i8, i8* %buf, i64 %pos
   ret i8* %ptr
+grow:
+  ; Link a new block; the old block keeps its live terms (never moves).
+  %cap2 = shl i64 %cap, 1
+  %need_bigger = icmp ugt i64 %aligned, %cap2
+  %new_cap = select i1 %need_bigger, i64 %aligned, i64 %cap2
+  %alloc_sz = add i64 %new_cap, 32
+  %blk = call i8* @malloc(i64 %alloc_sz)
+  %malloc_failed = icmp eq i8* %blk, null
+  br i1 %malloc_failed, label %oom, label %link
+link:
+  %old_hdr = load i8*, i8** @wam_arena_hdr
+  %prev_slot = bitcast i8* %blk to i8**
+  store i8* %old_hdr, i8** %prev_slot
+  %cap_raw = getelementptr i8, i8* %blk, i64 8
+  %cap_slot = bitcast i8* %cap_raw to i64*
+  store i64 %new_cap, i64* %cap_slot
+  %old_base = load i64, i64* @wam_arena_base
+  %new_base = add i64 %old_base, %pos
+  %base_raw = getelementptr i8, i8* %blk, i64 16
+  %base_slot = bitcast i8* %base_raw to i64*
+  store i64 %new_base, i64* %base_slot
+  %data = getelementptr i8, i8* %blk, i64 32
+  store i8* %blk, i8** @wam_arena_hdr
+  store i8* %data, i8** @wam_arena_buf
+  store i64 %new_cap, i64* @wam_arena_cap
+  store i64 %new_base, i64* @wam_arena_base
+  store i64 %aligned, i64* @wam_arena_pos
+  ret i8* %data
 oom:
   ret i8* null
 }
 
-; Convenience: init arena if not already initialized, with a default
-; capacity (256 MiB, virtual -- Linux commits pages lazily, so RSS only
-; grows with actual use). The arena is transient term-building space for
-; put_structure / =.. / the reader; it grows monotonically within a single
-; top-level call (rewound only by the graph kernels). Accumulator-style
-; grammars (append onto a growing list per emitted byte) allocate
-; QUADRATICALLY in their output size, so a self-hosted compiler compiling a
-; ~1.5 KB source blows through the old 16 MiB. wam_arena_alloc returns null
-; past the cap and most callers do not check, so exhaustion segfaults; a
-; chained-arena (link a new block instead of returning null) is the real
-; fix, deferred -- blocks must not move, since %Values hold raw pointers.
+; Convenience: init arena if not already initialized. The initial block is
+; 16 MiB — enough for every normal query — and the chain grows on demand
+; (doubling), so the self-hosted compiler's quadratic accumulator-append
+; behavior (runtime finding no. 8) hits growth, not a segfault. The arena
+; is transient term-building space for put_structure / =.. / the reader;
+; it grows monotonically within a single top-level call (rewound only by
+; the graph kernels) and @wam_cleanup returns growth blocks to malloc.
+; Linearising the accumulator style in the bootstrap compiler (difference
+; lists) remains the compile-time fix; this makes memory a non-cliff.
 define void @wam_arena_ensure() {
   %buf = load i8*, i8** @wam_arena_buf
   %need_init = icmp eq i8* %buf, null
   br i1 %need_init, label %do_init, label %done
 do_init:
-  call void @wam_arena_init(i64 268435456)
+  call void @wam_arena_init(i64 16777216)
   br label %done
 done:
   ret void
@@ -2593,10 +2701,10 @@ define void @wam_cleanup() alwaysinline nounwind {
   ret void
 }
 
-; Full release: hands the arena buffer back to malloc. Idempotent —
-; a second call is a no-op because @wam_arena_destroy checks the
-; null sentinel. Use this on module unload or process shutdown for
-; long-running hosts that want to reclaim the 1 MiB arena.
+; Full release: hands the whole arena block chain back to malloc.
+; Idempotent — a second call is a no-op because @wam_arena_destroy checks
+; the null sentinel. Use this on module unload or process shutdown for
+; long-running hosts that want to reclaim the arena entirely.
 define void @wam_full_shutdown() nounwind {
   call void @wam_arena_destroy()
   ret void
