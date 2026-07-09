@@ -404,8 +404,12 @@ loadable along the way.
   dispatching ITE codegen decision, atom-table emission), and the
   doubly-compiled compiler compiled two golden programs byte-exactly
   (combined checksum 4676): source text in, correct object bytes out, two
-  compile generations deep. The remaining campaign extends this toward
-  `compile(SelfSource)` — the full fixpoint.
+  compile generations deep. **Nested arithmetic** now compiles (the
+  `is`-expression is staged as an ordinary term through the structure
+  builder), and the compiler **fails fast** on unsupported constructs
+  (catch-all `throw/1` diagnostics in the goal/operand/head-arg walkers
+  instead of a silent catastrophic-backtracking hang). The remaining
+  campaign extends this toward `compile(SelfSource)` — the full fixpoint.
   The compile budget for the full self-compile is closed: the **chained
   arena** removed the memory cliff (blocks link on exhaustion and never
   move; marks are virtual offsets so mark/rewind work across growth), and
