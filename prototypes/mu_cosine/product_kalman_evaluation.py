@@ -20,7 +20,7 @@ import sys
 import numpy as np
 
 try:
-    from .product_kalman import gaussian_nll
+    from .product_kalman import gaussian_nll, regularize_covariance
     from .product_kalman_calibration import (
         ProductKalmanCalibration,
         apply_product_kalman_calibration,
@@ -28,7 +28,7 @@ try:
         fit_product_kalman_calibration,
     )
 except ImportError:  # direct script execution from prototypes/mu_cosine
-    from product_kalman import gaussian_nll
+    from product_kalman import gaussian_nll, regularize_covariance
     from product_kalman_calibration import (
         ProductKalmanCalibration,
         apply_product_kalman_calibration,
@@ -78,6 +78,8 @@ class GaussianScore:
     mse: float
     n: int
     covariance_trace: float
+    mean_squared_mahalanobis: float
+    mahalanobis_per_dim: float
 
     def __post_init__(self):
         name = str(self.name)
@@ -85,18 +87,30 @@ class GaussianScore:
         mean_nll = float(self.mean_nll)
         mse = float(self.mse)
         covariance_trace = float(self.covariance_trace)
+        mean_squared_mahalanobis = float(self.mean_squared_mahalanobis)
+        mahalanobis_per_dim = float(self.mahalanobis_per_dim)
         if not name:
             raise ValueError("score name must be nonempty")
         if n <= 0:
             raise ValueError("score n must be positive")
-        for field, value in (("mean_nll", mean_nll), ("mse", mse), ("covariance_trace", covariance_trace)):
+        for field, value in (
+            ("mean_nll", mean_nll),
+            ("mse", mse),
+            ("covariance_trace", covariance_trace),
+            ("mean_squared_mahalanobis", mean_squared_mahalanobis),
+            ("mahalanobis_per_dim", mahalanobis_per_dim),
+        ):
             if not np.isfinite(value):
                 raise ValueError(f"{field} must be finite")
+        if mean_squared_mahalanobis < 0.0 or mahalanobis_per_dim < 0.0:
+            raise ValueError("Mahalanobis diagnostics must be nonnegative")
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "n", n)
         object.__setattr__(self, "mean_nll", mean_nll)
         object.__setattr__(self, "mse", mse)
         object.__setattr__(self, "covariance_trace", covariance_trace)
+        object.__setattr__(self, "mean_squared_mahalanobis", mean_squared_mahalanobis)
+        object.__setattr__(self, "mahalanobis_per_dim", mahalanobis_per_dim)
 
 
 @dataclass(frozen=True)
@@ -152,13 +166,19 @@ def score_gaussian_predictions(name, target_state, mean, covariance, jitter=1e-9
     cov = _as_covariance("covariance", covariance, target.shape[1])
     nll = [gaussian_nll(target[i], pred[i], cov, jitter=jitter) for i in range(target.shape[0])]
     residual = target - pred
+    score_cov = regularize_covariance(cov, jitter=jitter, name=f"{name} score covariance")
+    solved = np.linalg.solve(score_cov, residual.T).T
+    squared_mahalanobis = np.sum(residual * solved, axis=1)
     mse = float(np.mean(np.sum(residual * residual, axis=1)))
+    mean_squared_mahalanobis = float(np.mean(squared_mahalanobis))
     return GaussianScore(
         name=name,
         mean_nll=float(np.mean(nll)),
         mse=mse,
         n=int(target.shape[0]),
         covariance_trace=float(np.trace(cov)),
+        mean_squared_mahalanobis=mean_squared_mahalanobis,
+        mahalanobis_per_dim=mean_squared_mahalanobis / float(target.shape[1]),
     )
 
 
@@ -308,6 +328,11 @@ def evaluation_artifact_arrays(result):
         "score_mse": np.array([score.mse for score in result.scores], dtype=float),
         "score_n": np.array([score.n for score in result.scores], dtype=np.int64),
         "score_covariance_trace": np.array([score.covariance_trace for score in result.scores], dtype=float),
+        "score_mean_squared_mahalanobis": np.array(
+            [score.mean_squared_mahalanobis for score in result.scores],
+            dtype=float,
+        ),
+        "score_mahalanobis_per_dim": np.array([score.mahalanobis_per_dim for score in result.scores], dtype=float),
         "calibration_n_samples": np.array(result.calibration.n_samples, dtype=np.int64),
         "calibration_state_covariance": result.calibration.state_covariance,
         "calibration_observation_covariance": result.calibration.observation_covariance,
@@ -342,6 +367,8 @@ def _score_to_json_dict(score):
         "mse": score.mse,
         "n": score.n,
         "covariance_trace": score.covariance_trace,
+        "mean_squared_mahalanobis": score.mean_squared_mahalanobis,
+        "mahalanobis_per_dim": score.mahalanobis_per_dim,
     }
 
 
