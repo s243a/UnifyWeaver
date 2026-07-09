@@ -40,6 +40,7 @@ except ImportError:  # direct script execution from prototypes/mu_cosine
 
 DEFAULT_NLL_BASELINES = ("prior", "independent_kalman")
 DEFAULT_PIT_COVERAGE_LEVELS = (0.50, 0.80, 0.90, 0.95)
+EVALUATION_ARTIFACT_SCHEMA_VERSION = 1
 
 
 __all__ = [
@@ -48,6 +49,7 @@ __all__ = [
     "GroupedGaussianScore",
     "PITDiagnostics",
     "DEFAULT_PIT_COVERAGE_LEVELS",
+    "EVALUATION_ARTIFACT_SCHEMA_VERSION",
     "GroupResidualCovariances",
     "ProductKalmanHoldoutEvaluation",
     "bootstrap_nll_improvements_from_evaluation_npz",
@@ -1288,7 +1290,7 @@ def evaluation_artifact_arrays(result):
     """
     score_names = np.array([score.name for score in result.scores])
     arrays = {
-        "schema_version": np.array(1, dtype=np.int64),
+        "schema_version": np.array(EVALUATION_ARTIFACT_SCHEMA_VERSION, dtype=np.int64),
         "score_names": score_names,
         "score_mean_nll": np.array([score.mean_nll for score in result.scores], dtype=float),
         "score_mse": np.array([score.mse for score in result.scores], dtype=float),
@@ -1378,10 +1380,24 @@ def _optional_npz_array(npz, key):
     return npz[key] if key in npz.files else None
 
 
+def _evaluation_npz_schema_version(npz, path):
+    value = np.asarray(_require_npz_array(npz, path, "schema_version"))
+    if value.shape != () or value.dtype.kind not in "iu":
+        raise ValueError("evaluation artifact schema_version must be a scalar integer")
+    version = int(value.item())
+    if version != EVALUATION_ARTIFACT_SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported evaluation artifact schema_version {version}; "
+            f"expected {EVALUATION_ARTIFACT_SCHEMA_VERSION}"
+        )
+    return version
+
+
 def evaluation_npz_score_summary(artifact_npz):
     """Return score-order, mean-NLL, and row-count summaries from an evaluation artifact NPZ."""
     path = str(artifact_npz)
     with np.load(path, allow_pickle=False) as data:
+        schema_version = _evaluation_npz_schema_version(data, path)
         names = _decode_score_names(_require_npz_array(data, path, "score_names"))
         mean_nll = np.asarray(_require_npz_array(data, path, "score_mean_nll"), dtype=float)
         score_n = np.asarray(_require_npz_array(data, path, "score_n"), dtype=np.int64)
@@ -1394,6 +1410,7 @@ def evaluation_npz_score_summary(artifact_npz):
     if (score_n <= 0).any():
         raise ValueError("score_n values must be positive")
     return {
+        "schema_version": schema_version,
         "score_order": list(names),
         "mean_nll": {name: float(mean_nll[i]) for i, name in enumerate(names)},
         "n": {name: int(score_n[i]) for i, name in enumerate(names)},
@@ -1410,6 +1427,7 @@ def bootstrap_nll_improvements_from_evaluation_npz(
     """Return JSON-ready paired NLL bootstrap maps from an evaluation artifact NPZ."""
     path = str(artifact_npz)
     with np.load(path, allow_pickle=False) as data:
+        _evaluation_npz_schema_version(data, path)
         return bootstrap_nll_improvements_from_score_rows(
             _require_npz_array(data, path, "score_names"),
             _require_npz_array(data, path, "score_row_nll"),

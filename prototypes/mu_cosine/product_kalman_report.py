@@ -142,6 +142,7 @@ def _bootstrap_artifact_rows(scores_json):
     return [
         ["evaluation_npz", artifact.get("evaluation_npz")],
         ["evaluation_npz_sha256", artifact.get("evaluation_npz_sha256")],
+        ["schema_version", artifact.get("schema_version")],
         ["validated_against_scores", artifact.get("validated_against_scores")],
         ["pit_diagnostics_validated", artifact.get("pit_diagnostics_validated")],
         ["score_order", ", ".join(artifact.get("score_order", []))],
@@ -160,6 +161,7 @@ def _artifact_validation_rows(scores_json):
     return [
         ["evaluation_npz", artifact.get("evaluation_npz")],
         ["evaluation_npz_sha256", artifact.get("evaluation_npz_sha256")],
+        ["schema_version", artifact.get("schema_version")],
         ["validated_against_scores", artifact.get("validated_against_scores")],
         ["pit_diagnostics_validated", artifact.get("pit_diagnostics_validated")],
         ["score_order", ", ".join(artifact.get("score_order", []))],
@@ -581,6 +583,7 @@ def _artifact_validation_metadata(artifact_path, artifact_summary):
     metadata = {
         "evaluation_npz": str(artifact_path),
         "evaluation_npz_sha256": _sha256_file(artifact_path),
+        "schema_version": artifact_summary["schema_version"],
         "validated_against_scores": True,
         "pit_diagnostics_validated": bool(pit.get("present")),
         "score_order": list(artifact_summary["score_order"]),
@@ -662,6 +665,7 @@ def add_artifact_bootstrap_intervals(
         out["bootstrap_artifact"] = {
             "evaluation_npz": str(artifact_path),
             "evaluation_npz_sha256": _sha256_file(artifact_path),
+            "schema_version": artifact_summary["schema_version"],
             "validated_against_scores": bool(validate_artifact),
             "pit_diagnostics_validated": bool(artifact_summary.get("pit_diagnostics", {}).get("present")),
             "score_order": artifact_summary["score_order"],

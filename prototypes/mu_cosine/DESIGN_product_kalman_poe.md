@@ -418,7 +418,8 @@ remaining D-channel shape defect as model-side relation-class structure rather t
    for NLL gains against configurable baselines such as ungrouped `product_kalman`, and keeps
    calibration/evaluation IDs disjoint. When the runner writes `eval_artifacts.npz`, it validates the artifact's
    score ordering, row counts, mean NLL, and PIT summaries against the score JSON before writing the canonical
-   `scores.json` and `report.md`, and records the artifact hash plus validation dimensions in both outputs. PIT
+   `scores.json` and `report.md`, rejects unsupported artifact schema versions, and records the schema version,
+   artifact hash, and validation dimensions in both outputs. PIT
    diagnostics include marginal KS-vs-uniform and central-interval coverage summaries so interval
    under/over-coverage is visible without changing score selection. *(Harness complete; dedicated real-corpus
    exploratory runs are recorded in the reports listed below.)*
