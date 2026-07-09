@@ -779,14 +779,26 @@ Two layers of fix, one landed conceptually and one still open:
   `selfhost_finding12_no_heap_oob` on the minimal pair). The full
   battery — including the choicepoint-restore, findall, stream, and
   reentrant-run-loop suites — passes unchanged.
-- **Semantic divergence (open tail):** with consistent re-entry, the
-  deferral compiles now COMPLETE loaded, but their output differs from
-  SWI (e.g. 31891 vs 33858 on the full walkers golden): some goal
-  fails in the loaded first derivation where SWI succeeds, triggering
-  a re-satisfaction that lands on a divergent (wrong-output)
-  derivation. Finding the loaded-vs-SWI semantic difference that
-  causes the initial failure is the next hunt — the trace harness and
-  the byte-diff methodology are both in place.
+- **Semantic divergence (CLOSED — the fact Y-window clobber):** a
+  call-sequence diff (instrumented loaded trace vs an SWI
+  meta-interpreter over the same source) pinned the initial failure to
+  a two-clause repro: `main0(R) :- q(18, X2), R = X2` with fact
+  `q(Xt, Xt)` returned an unbound R. cgfull assigns ALL clause
+  variables to Y registers (the numbervars scheme) — but FACTS emitted
+  no allocate/deallocate, so a fact's `get_variable` Y-writes CLOBBER
+  THE CALLER'S Y WINDOW. Tail-position fact calls hide it (the caller
+  reads nothing afterward — every fact call in the earlier slices was
+  tail-position); the walkers' deferred-reads nil fact was the
+  campaign's first NON-TAIL fact call, and the clobbered permanents
+  made the caller's next goal fail — triggering the re-satisfaction
+  cascade. (The host AOT compiler routes fact variables through X
+  registers instead, which is why AOT objects never showed it.) Fix:
+  cgfull (and the restated `mone` in the front/walkers sources) wraps
+  variable-bearing facts in allocate/deallocate — correctness bought
+  with an environment. With both halves fixed, the FULL walkers golden
+  — deferral included — is **byte-exact loaded** (35309, matching
+  `cgfull_term` exactly), and the finding-12 regression asserts the
+  exact minimal-pair output.
 
 The architectural observation for the design record: the loaded
 subset's "deterministic first solution" philosophy leaves chain CPs of
@@ -798,12 +810,12 @@ re-entry consistency is what must be fixed. First-argument indexing
 not the correctness fix.
 
 **Remaining toward the full fixpoint:** every compiler stage is now
-self-compiled — serializer, single-clause middle, grouping/label/chain
-front, generic table walk, and the last walkers (ITE codegen, guards,
-builtins; deferral logic SWI-proven). Left: fix runtime finding no. 12
-(the ITE/deferral interaction above) so the deferral paths run loaded,
-then stitch the slices into one `compile(SelfSource)` whose accepted
-subset covers its own source — the capstone.
+self-compiled AND byte-exact loaded — serializer, single-clause middle,
+grouping/label/chain front, generic table walk, and the complete
+walkers including both deferral directions. Finding no. 12 is closed
+(monotonic heap + fact environments). What is left is the capstone
+itself: stitch the slices into one `compile(SelfSource)` whose accepted
+subset covers its own source, and run the fixpoint.
 
 **Deliverable:** the demonstrable self-host — the compiler compiles itself,
 and `compile(SelfSource)` yields a working compiler object.

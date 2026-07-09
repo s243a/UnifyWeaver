@@ -433,10 +433,14 @@ loadable along the way.
   longer rewinds heap_top (the heap is monotonic per top-level call,
   like the arena), eliminating the dangling-Ref class — arena compound
   slots are raw pointers the trail cannot cover, so heap rewind
-  deallocated cells that surviving slots still referenced. The open
-  tail is a loaded-vs-SWI semantic divergence that makes the first
-  derivation fail where SWI succeeds. The remaining campaign: close
-  the divergence, then `compile(SelfSource)` — the full fixpoint.
+  deallocated cells that surviving slots still referenced. The semantic
+  divergence is also CLOSED: cgfull's FACTS emitted no environment, so
+  their Y-register head variables clobbered the caller's Y window —
+  invisible for tail-position fact calls (all earlier slices), fatal
+  for the walkers' first non-tail fact call. Facts now allocate. The
+  FULL walkers golden — deferral included — is byte-exact loaded
+  (35309). The remaining campaign: the capstone `compile(SelfSource)` —
+  the full fixpoint.
   The compile budget for the full self-compile is closed: the **chained
   arena** removed the memory cliff (blocks link on exhaustion and never
   move; marks are virtual offsets so mark/rewind work across growth), and
