@@ -20,6 +20,8 @@
     plawk_program_dyncall_at_blob_arities/2,
     plawk_program_dyncache_mode/2,
     plawk_program_dynload_path/2,
+    plawk_program_evalc_path/2,
+    plawk_program_compile_sites/2,
     plawk_prolog_block_preds/2
 ]).
 
@@ -690,9 +692,34 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
             plawk_dyncall_at_support_ir(CacheMode, DynAtArities, DynAtFArities,
                 DynAtBArities, DyncallAtSupportIR)
         ),
+        % The eval surface: compile(...) sites need @plawk_compile plus
+        % the bootstrap-compiler object path (BEGIN { EVALC = "..." }
+        % or the CLI-provided evalc_path option). The handle lives in
+        % the dyncall_at cache registry, so mode "off" cannot carry it.
+        (   plawk_program_compile_sites(Program, CompileSites),
+            CompileSites \== []
+        ->  plawk_program_dyncache_mode(Program, CMode),
+            (   CMode == "off"
+            ->  throw(error(plawk_compile_requires_cache,
+                    context(plawk_program_native_driver_ir,
+                        'compile(...) requires DYNCACHE "on" or "mtime" (the grammar handle lives in the cache)')))
+            ;   true
+            ),
+            (   plawk_program_evalc_path(Program, EvalcPath)
+            ->  true
+            ;   memberchk(evalc_path(EvalcPath), Options)
+            ->  true
+            ;   throw(error(plawk_compile_without_evalc,
+                    context(plawk_program_native_driver_ir,
+                        'compile(...) needs a compiler object: BEGIN { EVALC = "file.wamo" } or the CLI evalc_path option')))
+            ),
+            plawk_compile_support_ir(EvalcPath, CompileSupportIR)
+        ;   CompileSupportIR = ''
+        ),
         plawk_program_native_driver_ir(Program, InputPath, MainIR),
         exclude(==(''),
-            [ForeignSupportIR, DyncallSupportIR, DyncallAtSupportIR, MainIR],
+            [ForeignSupportIR, DyncallSupportIR, DyncallAtSupportIR,
+             CompileSupportIR, MainIR],
             Parts),
         atomic_list_concat(Parts, '\n\n', DriverIR)
     ).
@@ -1679,11 +1706,37 @@ plawk_dyncache_globals_ir(Kind, IR) :-
 plawk_dyncall_at_get_on_ir(
 'define { %WamState*, i32 } @plawk_dyncall_at_get(i8* %path, i64 %len) {
 entry:
+  ; compile(...) handles travel as (null, handle-id): a null path is the
+  ; discriminator -- resolve the 1-based cache index directly, with no
+  ; interning and no filesystem. See @plawk_compile.
+  %is_h = icmp eq i8* %path, null
+  br i1 %is_h, label %hentry, label %pentry
+hentry:
+  %hid = trunc i64 %len to i32
+  %hn = load i32, i32* @plawk_dyncache_n
+  %h_lo = icmp sge i32 %hid, 1
+  %h_hi = icmp sle i32 %hid, %hn
+  %h_ok = and i1 %h_lo, %h_hi
+  br i1 %h_ok, label %hload, label %hfail
+hload:
+  %hix = sub i32 %hid, 1
+  %hvmp = getelementptr [64 x %WamState*], [64 x %WamState*]* @plawk_dyncache_vms, i32 0, i32 %hix
+  %hvm = load %WamState*, %WamState** %hvmp
+  %hpcp = getelementptr [64 x i32], [64 x i32]* @plawk_dyncache_pcs, i32 0, i32 %hix
+  %hpc = load i32, i32* %hpcp
+  %hh0 = insertvalue { %WamState*, i32 } undef, %WamState* %hvm, 0
+  %hh1 = insertvalue { %WamState*, i32 } %hh0, i32 %hpc, 1
+  ret { %WamState*, i32 } %hh1
+hfail:
+  %hf0 = insertvalue { %WamState*, i32 } undef, %WamState* null, 0
+  %hf1 = insertvalue { %WamState*, i32 } %hf0, i32 0, 1
+  ret { %WamState*, i32 } %hf1
+pentry:
   %id = call i64 @wam_intern_atom(i8* %path, i64 %len)
   %n = load i32, i32* @plawk_dyncache_n
   br label %scan
 scan:
-  %i = phi i32 [ 0, %entry ], [ %i1, %next ]
+  %i = phi i32 [ 0, %pentry ], [ %i1, %next ]
   %done = icmp sge i32 %i, %n
   br i1 %done, label %miss, label %check
 check:
@@ -1728,6 +1781,32 @@ ret_obj:
 plawk_dyncall_at_get_mtime_ir(
 'define { %WamState*, i32 } @plawk_dyncall_at_get(i8* %path, i64 %len) {
 entry:
+  ; compile(...) handles travel as (null, handle-id) -- resolved from
+  ; the cache index directly, never stat-ed (a handle has no file, so
+  ; the mtime-bust path does not apply). See @plawk_compile.
+  %is_h = icmp eq i8* %path, null
+  br i1 %is_h, label %hentry, label %pentry
+hentry:
+  %hid = trunc i64 %len to i32
+  %hn = load i32, i32* @plawk_dyncache_n
+  %h_lo = icmp sge i32 %hid, 1
+  %h_hi = icmp sle i32 %hid, %hn
+  %h_ok = and i1 %h_lo, %h_hi
+  br i1 %h_ok, label %hload, label %hfail
+hload:
+  %hix = sub i32 %hid, 1
+  %hvmp = getelementptr [64 x %WamState*], [64 x %WamState*]* @plawk_dyncache_vms, i32 0, i32 %hix
+  %hvm = load %WamState*, %WamState** %hvmp
+  %hpcp = getelementptr [64 x i32], [64 x i32]* @plawk_dyncache_pcs, i32 0, i32 %hix
+  %hpc = load i32, i32* %hpcp
+  %hh0 = insertvalue { %WamState*, i32 } undef, %WamState* %hvm, 0
+  %hh1 = insertvalue { %WamState*, i32 } %hh0, i32 %hpc, 1
+  ret { %WamState*, i32 } %hh1
+hfail:
+  %hf0 = insertvalue { %WamState*, i32 } undef, %WamState* null, 0
+  %hf1 = insertvalue { %WamState*, i32 } %hf0, i32 0, 1
+  ret { %WamState*, i32 } %hf1
+pentry:
   %id = call i64 @wam_intern_atom(i8* %path, i64 %len)
   %statbuf = alloca [256 x i8]
   %sbp = getelementptr [256 x i8], [256 x i8]* %statbuf, i32 0, i32 0
@@ -1745,7 +1824,7 @@ read_mtime:
   %mtime_r = add i64 %sec_ns, %nsec
   br label %have_mtime
 have_mtime:
-  %mtime = phi i64 [ %mtime_r, %read_mtime ], [ 0, %entry ]
+  %mtime = phi i64 [ %mtime_r, %read_mtime ], [ 0, %pentry ]
   %n = load i32, i32* @plawk_dyncache_n
   br label %scan
 scan:
@@ -1813,6 +1892,84 @@ mstore:
 mret:
   ret { %WamState*, i32 } %obj
 }').
+
+%% plawk_compile_support_ir(+EvalcPath, -IR)
+%
+%  The eval-surface runtime (JIT roadmap item 5 payoff):
+%  @plawk_compile(src, len) compiles Prolog source text through the
+%  shipped bootstrap-compiler object and returns a HANDLE (1-based
+%  index into the dyncall_at cache registry; 0 on failure). Flow:
+%    1. intern the source text; scan the cache for that id -- same
+%       source compiles ONCE, later calls are a registry hit;
+%    2. miss: lazy-load the compiler object (@wam_object_load_cached,
+%       its own one-shot cache -- the DYNCACHE role), run it on the
+%       source via @wam_object_eval (compiler entry cgfull(Src, Wamo);
+%       the emitted .wamo bytes load into a fresh VM), and record the
+%       loaded grammar in the registry under the source id.
+%  The handle is consumed by @plawk_dyncall_at_get as (null, handle).
+%  Requires the dyncache globals (any compile(...) site lives inside a
+%  dyncall_at, so they are always emitted together) and cache mode
+%  on/mtime -- mode "off" has no registry and is rejected at codegen.
+plawk_compile_support_ir(EvalcPath, IR) :-
+    llvm_emit_c_string_global(plawk_evalc_path, EvalcPath, PathGlobal,
+        _StrLen, BytesLen),
+    format(atom(IR),
+'~w
+
+define i64 @plawk_compile(i8* %src, i64 %len) {
+entry:
+  %id = call i64 @wam_intern_atom(i8* %src, i64 %len)
+  %n = load i32, i32* @plawk_dyncache_n
+  br label %scan
+scan:
+  %i = phi i32 [ 0, %entry ], [ %i1, %next ]
+  %done = icmp sge i32 %i, %n
+  br i1 %done, label %miss, label %check
+check:
+  %idp = getelementptr [64 x i64], [64 x i64]* @plawk_dyncache_ids, i32 0, i32 %i
+  %cid = load i64, i64* %idp
+  %match = icmp eq i64 %cid, %id
+  br i1 %match, label %hit, label %next
+next:
+  %i1 = add i32 %i, 1
+  br label %scan
+hit:
+  %h = add i32 %i, 1
+  %h64 = sext i32 %h to i64
+  ret i64 %h64
+miss:
+  ; a full registry cannot hand out a stable handle -- fail rather
+  ; than hand back an index that later loads would shift under
+  %room = icmp slt i32 %n, 64
+  br i1 %room, label %doload, label %fail
+doload:
+  %cpath = getelementptr [~w x i8], [~w x i8]* @.plawk_evalc_path, i32 0, i32 0
+  %comp = call { %WamState*, i32 } @wam_object_load_cached(i8* %cpath)
+  %cvm = extractvalue { %WamState*, i32 } %comp, 0
+  %cvm_ok = icmp ne %WamState* %cvm, null
+  br i1 %cvm_ok, label %doeval, label %fail
+doeval:
+  %cpc = extractvalue { %WamState*, i32 } %comp, 1
+  %g = call { %WamState*, i32 } @wam_object_eval(%WamState* %cvm, i32 %cpc, i8* %src, i64 %len)
+  %gvm = extractvalue { %WamState*, i32 } %g, 0
+  %gok = icmp ne %WamState* %gvm, null
+  br i1 %gok, label %record, label %fail
+record:
+  %gpc = extractvalue { %WamState*, i32 } %g, 1
+  %sidp = getelementptr [64 x i64], [64 x i64]* @plawk_dyncache_ids, i32 0, i32 %n
+  store i64 %id, i64* %sidp
+  %svmp = getelementptr [64 x %WamState*], [64 x %WamState*]* @plawk_dyncache_vms, i32 0, i32 %n
+  store %WamState* %gvm, %WamState** %svmp
+  %spcp = getelementptr [64 x i32], [64 x i32]* @plawk_dyncache_pcs, i32 0, i32 %n
+  store i32 %gpc, i32* %spcp
+  %n1 = add i32 %n, 1
+  store i32 %n1, i32* @plawk_dyncache_n
+  %h64m = sext i32 %n1 to i64
+  ret i64 %h64m
+fail:
+  ret i64 0
+}',
+        [PathGlobal, BytesLen, BytesLen]).
 
 % shim for cached modes (on / mtime): resolve via @plawk_dyncall_at_get
 plawk_dyncall_at_shim_cached_ir(NArgs, IR) :-
@@ -2006,6 +2163,24 @@ plawk_dyncall_source_ir(string(Str), _FieldSeparator, Base, _GlobalBase,
         'getelementptr ([~w x i8], [~w x i8]* @.~w, i32 0, i32 0)',
         [BytesLen, BytesLen, GName]),
     PathLenIR = StrLen.
+% compile(field-or-string): marshal the Prolog source text exactly like
+% a path (the two clauses above), then run it through @plawk_compile --
+% the shipped bootstrap-compiler object compiles it and the freshly
+% loaded grammar is cached, deduplicated by source text. The resulting
+% HANDLE travels to the shim as (null path, handle id); the null
+% pointer is the discriminator @plawk_dyncall_at_get uses to resolve
+% from the cache registry instead of the filesystem.
+plawk_dyncall_source_ir(compile_src(Arg), FieldSeparator, Base, GlobalBase,
+        PathPtrIR, PathLenIR, GlobalParts, SetupParts) :-
+    format(atom(CBase), '~w_csrc', [Base]),
+    plawk_dyncall_source_ir(Arg, FieldSeparator, CBase, GlobalBase,
+        SrcPtrIR, SrcLenIR, GlobalParts, SrcSetup),
+    format(atom(CallIR),
+        '  %~w_h = call i64 @plawk_compile(i8* ~w, i64 ~w)',
+        [Base, SrcPtrIR, SrcLenIR]),
+    PathPtrIR = null,
+    format(atom(PathLenIR), '%~w_h', [Base]),
+    append(SrcSetup, [CallIR], SetupParts).
 
 %% plawk_blob_expr_ir(+Expr, +FieldSeparator, +Base, -LenIR, -PtrIR,
 %%     -GlobalParts, -SetupParts)
@@ -2099,6 +2274,34 @@ plawk_program_dyncache_mode(program(BeginClauses, _Rules, _End), Mode) :-
     ->  Mode = M
     ;   Mode = "on"
     ).
+
+%% plawk_program_evalc_path(+Program, -Path)
+%  The bootstrap-compiler .wamo path from BEGIN { EVALC = "..." }, or
+%  fails if absent (the CLI then ships its own compiler object next to
+%  the binary and passes the path through the evalc_path/1 option).
+plawk_program_evalc_path(program(BeginClauses, _Rules, _End), Path) :-
+    member(begin(Actions), BeginClauses),
+    member(set(var('EVALC'), string(Path)), Actions),
+    !.
+
+%% plawk_program_compile_sites(+Program, -Sources)
+%  The deduplicated compile(...) source args across every dyncall_at
+%  variant (i64 / float / blob). Non-empty means the program uses the
+%  eval surface: @plawk_compile must be emitted and a bootstrap-compiler
+%  object must exist at the evalc path when the binary runs.
+plawk_program_compile_sites(program(_Begin, Rules, EndClauses), Sites) :-
+    findall(Arg,
+        ( ( member(rule(_Pattern, Actions), Rules)
+          ; member(end(Actions), EndClauses)
+          ),
+          ( plawk_actions_dyncall_at(Actions, compile_src(Arg), _)
+          ; plawk_actions_float_dyncall_at(Actions, compile_src(Arg), _)
+          ; member(Action, Actions),
+            plawk_action_blob_field(Action, blob_dyncall_at(compile_src(Arg), _))
+          )
+        ),
+        Sites0),
+    sort(Sites0, Sites).
 
 plawk_actions_dyncall_at(Actions, Source, Args) :-
     member(Action, Actions),
@@ -5735,9 +5938,17 @@ plawk_dyncall_named_expr(dyncall_named(Name, Args)) :-
 %  dyncall_at(Source, args...) is the dynamic-source form: Source (a
 %  field or string literal) names the .wamo object at runtime, args... are
 %  the entry inputs. Same yield semantics as dyncall (i64, 0 on failure).
+%  Source may also be compile_src(field-or-string) -- the eval surface:
+%  the Prolog source text compiles at runtime to a grammar handle.
 plawk_dyncall_at_expr(dyncall_at(Source, Args)) :-
-    plawk_foreign_arg(Source),
+    plawk_dyncall_at_source_ok(Source),
     maplist(plawk_foreign_arg, Args).
+
+plawk_dyncall_at_source_ok(compile_src(Arg)) :-
+    !,
+    plawk_foreign_arg(Arg).
+plawk_dyncall_at_source_ok(Source) :-
+    plawk_foreign_arg(Source).
 
 %% float(dyncall(...)) / float(dyncall_at(...)) -- double-returning
 %  runtime-object calls: the grammar's numeric output keeps its fraction.
@@ -5749,7 +5960,7 @@ plawk_float_dyncall_named_expr(float_dyncall_named(Name, Args)) :-
     Args = [_ | _],
     maplist(plawk_foreign_arg, Args).
 plawk_float_dyncall_at_expr(float_dyncall_at(Source, Args)) :-
-    plawk_foreign_arg(Source),
+    plawk_dyncall_at_source_ok(Source),
     maplist(plawk_foreign_arg, Args).
 
 %% plawk_dynrec_bind_ok(+Action) is semidet.

@@ -856,6 +856,15 @@ compiles itself, the self-compiled compiler compiles itself to the
 byte, and the object it produces compiles fresh programs identically
 to the production compiler.
 
+**Shipped (the payoff):** the bootstrap compiler is promoted out of the
+test file into `src/unifyweaver/targets/wam_bootstrap_compiler.pl`
+(module `wam_bootstrap_compiler`, staged history intact; the tests
+import it), and the plawk CLI ships it as `<bin>.evalc.wamo` for the
+eval surface — `dyncall_at(compile("<source>"), $1)` compiles a grammar
+from source text inside the running binary. See
+PLAWK_EVAL_BOOTSTRAP.md ("The landed surface") and
+`tests/test_plawk_eval_compile.pl`.
+
 ## Risks and open questions
 
 - **Operand encoding is the crux.** The register/argument packing (the

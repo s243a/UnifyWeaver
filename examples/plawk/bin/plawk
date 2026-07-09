@@ -25,6 +25,7 @@
 :- use_module('../parser/plawk_parser').
 :- use_module('../codegen/plawk_native_codegen').
 :- use_module('../../../src/unifyweaver/targets/wam_llvm_target').
+:- use_module('../../../src/unifyweaver/targets/wam_bootstrap_compiler').
 
 % keeps write_wam_llvm_project fed when a program has no embedded
 % Prolog at all (the module wants at least one predicate)
@@ -129,6 +130,24 @@ build(File, Out0, KeepLL) :-
     ->  ProjectOptions = [module_name(OutBase), emit_wamo_loader(true)]
     ;   ProjectOptions = [module_name(OutBase)]
     ),
+    % A program using the eval surface -- compile(...) inside a
+    % dyncall_at -- needs the bootstrap-compiler object shipped next to
+    % the binary (pay-for-what-you-use: emitted only when compile sites
+    % exist). BEGIN { EVALC = "..." } points at an existing object
+    % instead and skips the emission.
+    (   plawk_program_compile_sites(Program, CompileSites),
+        CompileSites \== [],
+        \+ plawk_program_evalc_path(Program, _)
+    ->  absolute_file_name(Out, OutAbs),
+        atom_concat(OutAbs, '.evalc.wamo', EvalcPath),
+        catch(
+            write_wam_object([wam_bootstrap_compiler:cgfull/2],
+                [wamo_entry(cgfull/2)], EvalcPath),
+            EvalcErr,
+            ( report_error('compile error', File, EvalcErr), halt(3) )),
+        EvalcOptions = [evalc_path(EvalcPath)]
+    ;   EvalcOptions = []
+    ),
     (   catch(
             ( % the compiler narrates on user_output; keep the CLI's
               % stdout clean for the compiled program's own output
@@ -136,7 +155,7 @@ build(File, Out0, KeepLL) :-
                   write_wam_llvm_project(Preds, ProjectOptions, LLPath)),
               wam_llvm_last_compile_counts(InstrCount, LabelCount),
               (   plawk_program_native_driver_ir(Program, stdin_or_argv,
-                      [wam_vm(InstrCount, LabelCount)], DriverIR)
+                      [wam_vm(InstrCount, LabelCount) | EvalcOptions], DriverIR)
               ->  true
               ;   format(user_error,
                       'plawk: ~w parses but is outside the compilable surface~n',

@@ -280,7 +280,7 @@ byte-return primitive and the "output is a term, not a scalar" plumbing),
 and benefits from item 1 (float constants) for grammars that build float
 fields.
 
-### 5. Source-`eval` via the compiler-as-`.wamo` bootstrap — *largest, STARTED*
+### 5. Source-`eval` via the compiler-as-`.wamo` bootstrap — **LANDED (the payoff runs)**
 
 **What:** compile a grammar from **source text at runtime** — `g =
 compile($1); total += dyncall_at(g, $2)` — by shipping the WAM compiler
@@ -297,11 +297,19 @@ subset — the compiler leans on `findall`/`assert`/`read_term`/meta-call,
 which are outside the subset today. Items 1 (float constants) and the
 broader builtin/subset work are stepping stones; this is genuinely last.
 
-**Status:** design + first subset increment landed. The full plan and its
-six milestones live in [PLAWK_EVAL_BOOTSTRAP.md](./PLAWK_EVAL_BOOTSTRAP.md).
-Item 5 is a **subset-expansion campaign** with the bootstrap as its payoff;
-each milestone is its own PR(s) and richer hand-written grammars become
-loadable along the way.
+**Status:** ALL SIX MILESTONES LANDED, and the payoff surface runs:
+`dyncall_at(compile("<prolog source>"), $1)` compiles a grammar from
+source text INSIDE the running binary — the CLI ships the self-hosted
+bootstrap compiler (promoted to
+`src/unifyweaver/targets/wam_bootstrap_compiler.pl`) as
+`<bin>.evalc.wamo` when a program has compile sites, `@plawk_compile`
+dedups by source text and hands out registry handles, and the existing
+dyncall_at shims consume them as `(null, handle)`. See
+[PLAWK_EVAL_BOOTSTRAP.md](./PLAWK_EVAL_BOOTSTRAP.md) ("The landed
+surface") and `tests/test_plawk_eval_compile.pl`. The full plan and its
+six milestones live in the same doc; item 5 was a **subset-expansion
+campaign** with the bootstrap as its payoff, and each milestone was its
+own PR(s).
 
 - **Milestone 1 — clause indexing — LANDED.** Every `switch_on_*` dispatch
   variant (matched by prefix, so the `_fallthrough` and `_a2` forms are

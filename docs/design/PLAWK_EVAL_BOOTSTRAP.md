@@ -6,8 +6,8 @@ Copyright (c) 2026 John William Creighton (@s243a)
 # plawk eval bootstrap (JIT roadmap item 5)
 
 Compiling a grammar from **source text at runtime** — the endgame of the
-dynamic-grammar arc. This is the plan and the milestone sequence; it is a
-multi-PR effort, not a single change.
+dynamic-grammar arc. This was the plan and the milestone sequence; **the
+payoff has landed** (see "The landed surface" below).
 
 ## The goal
 
@@ -34,6 +34,51 @@ a buffer. The `mtime` cache-invalidation path (#3465) is the natural home for
 "recompile when the source changes." **The hard part is step 1**: getting the
 compiler to run *as a loaded object*, which needs the loadable WAM subset
 expanded to cover what the compiler leans on.
+
+## The landed surface
+
+```awk
+{ total += dyncall_at(compile("[(sq(X2, R2) :- atom_number(X2, N2), R2 is N2 * N2)]"), $1) }
+END { print total }
+```
+
+`compile(field-or-string)` in the **dyncall_at source position** compiles
+the Prolog source text at runtime and yields a grammar HANDLE. It is the
+goal snippet minus the intermediate variable: `compile` **deduplicates by
+source text** (interned atom id), so a per-record `compile(...)` compiles
+each distinct grammar once and reuses the loaded VM thereafter — the
+two-step `g = compile(...)` form adds only variable plumbing (plawk
+scalars are numeric; a handle-in-scalar surface is a possible follow-up).
+
+How it works:
+
+- The CLI ships the **bootstrap compiler** — the self-hosted `cgfull`
+  (see PLAWK_SELFHOST.md; it lives in
+  `src/unifyweaver/targets/wam_bootstrap_compiler.pl`) — as
+  `<bin>.evalc.wamo` next to the output binary, ONLY when the program has
+  compile sites (pay-for-what-you-use). `BEGIN { EVALC = "path.wamo" }`
+  points at an existing compiler object instead and skips the emission.
+- `@plawk_compile(src, len)` interns the source, dedups against the
+  dyncall_at cache registry, and on miss runs
+  `@wam_object_load_cached(evalc)` → `@wam_object_eval(cvm, cpc, src,
+  len)` (compiler entry `cgfull(Src, Wamo)`; the emitted `.wamo` bytes
+  load into a fresh VM) and records the grammar under the source id.
+  The handle is the 1-based registry index; 0 means compile failure.
+- The handle reaches the existing `@plawk_dyncall_at_N` shims as
+  `(null path, handle)` — a null path is the discriminator
+  `@plawk_dyncall_at_get` uses to resolve from the registry instead of
+  the filesystem. All three shim families (i64 / float / blob) accept
+  handles for free.
+- `DYNCACHE "off"` cannot carry a handle (no registry), so compile sites
+  under it are a **build error**, not a silent miscompile.
+- Text-mode fields marshal as ATOMS (awk strings), so a numeric grammar
+  converts with `atom_number/2` before arithmetic — the loaded runtime,
+  like SWI, fails (rather than coerces) arithmetic on atoms.
+
+End-to-end tests: `tests/test_plawk_eval_compile.pl` — a grammar compiled
+from source text inside the binary sums `sq(x)` over input records; two
+distinct runtime-compiled grammars coexist with per-source dedup; the
+cache-off build error.
 
 ## Why it is genuinely last
 
