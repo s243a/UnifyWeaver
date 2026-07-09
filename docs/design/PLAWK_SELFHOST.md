@@ -342,6 +342,55 @@ compiler grammar can compile a source copy of itself and the re-compiled
 object behaves identically. This is the self-host fixpoint. It is a campaign,
 not a single PR — each construct added is a small, tested increment.
 
+**Multi-clause predicates — LANDED (the Stage D opener).** The biggest
+structural gap between `cgfull` and real Prolog was one-clause-per-predicate.
+Now consecutive clauses with the same name/arity group into a predicate
+(`group_clauses`); the predicate owns the entry label, clauses 2..k get
+**alternative labels** (laid out after all entry labels, so the label→PC table
+is simply `EntryPCs ++ AltPCs`), and a multi-clause predicate compiles to a
+`try_me_else(Alt1)` / `retry_me_else(Alt_k+1)` / `trust_me` chain (tags
+22/23/24) around the per-clause code. A failing head match backtracks to the
+next clause — **backtracking dispatch and recursion now compile from source**.
+Verified end to end
+(`tests/test_wam_object.pl:selfhost_codegen_stage_d_multiclause`): a two-clause
+dispatch whose caller needs the *second* clause (→ 42), and **recursive
+factorial** (base clause + recursive clause with arithmetic and a self-call by
+label; `fact(3)` → 6), both compiled inside a loaded compiler object.
+
+**Two more runtime bugs this stage surfaced — both FIXED:**
+
+1. **Choice-point saved-register block not widened with the register file.**
+   The register-file fix (PR #3510) grew the file to `[128 x %Value]` and the
+   env `y_save` to 48 permanents, but the `%ChoicePoint` register block stayed
+   `[64 x %Value]` — so `try_me_else` saved and `backtrack` restored only regs
+   0–63. A **failed clause body** writes its own Y registers and never reaches
+   `deallocate` (the env snapshot is bypassed); backtrack restored Y1–Y16
+   (48–63) from the CP but left Y17–Y48 (64–95) holding the failed clause's
+   junk — corrupting the backtracked-to alternative's permanents. The
+   multi-clause compiler was the first backtracking-heavy client with clauses
+   big enough (the new `cgfull/2` entry holds 17 permanents) to hit it.
+   Fixed: CP block `[128 x %Value]`, save/restore copies 2048 bytes (the
+   deliberate 512-byte *iterator* restores are untouched).
+
+2. **`copy_term/2` aliased instead of copying.** The runtime
+   `@wam_copy_term_value` was documented as naive: a `Ref` fell into the
+   atomic default and was returned **unchanged**, so the "copy" shared the
+   source heap cells — `numbervars`/unification on the copy bound the
+   *original* through them — and unbound sharing was not preserved
+   (`p(X,X)` copied to `p(_A,_B)`). The compiler grammar hit this squarely:
+   clauses parsed from one source string share variables by name, and
+   `numbervars` on clause 1's "copy" contaminated clause 3, making two
+   different variables compile to the same Y register. Fixed with a
+   var-mapped deep copy (the `@wam_dyn_copy_var` technique):
+   `@wam_deref_keep_var` keys each distinct unbound cell by heap address,
+   each maps to exactly one fresh heap cell — sharing preserved, zero
+   aliasing.
+
+**Remaining for the fixpoint:** first-arg **indexed** dispatch is not needed
+(chains suffice, correctness-first), but the compiler's own source also uses
+list patterns in heads (`[C|Cs]`), cut, `==`/`=:=` guards, if-then-else — the
+next Stage D increments, in whatever order the fixpoint attempt surfaces them.
+
 **Deliverable:** the demonstrable self-host — the compiler compiles itself,
 and `compile(SelfSource)` yields a working compiler object.
 

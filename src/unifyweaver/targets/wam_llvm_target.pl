@@ -3731,12 +3731,13 @@ wam_llvm_case('try_me_else',
   ; Set next_pc
   %tme.npc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 0
   store i32 %tme.next_pc, i32* %tme.npc_ptr
-  ; Save registers (copy 32 x %Value)
+  ; Save the FULL register file (128 x %Value = 2048 bytes) so backtrack
+  ; can restore Y17..Y48 (regs 64..95) clobbered by a failed clause body
   %tme.dst_regs = getelementptr %ChoicePoint, %ChoicePoint* %tme.cp_slot, i32 0, i32 1, i32 0
   %tme.src_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
   %tme.dst_raw = bitcast %Value* %tme.dst_regs to i8*
   %tme.src_raw = bitcast %Value* %tme.src_regs to i8*
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %tme.dst_raw, i8* %tme.src_raw, i64 1024, i1 false)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %tme.dst_raw, i8* %tme.src_raw, i64 2048, i1 false)
   ; Save trail mark
   %tme.ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
   %tme.ts = load i32, i32* %tme.ts_ptr
@@ -3958,7 +3959,7 @@ ba.setup:
   %ba.src_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
   %ba.dst_raw = bitcast %Value* %ba.dst_regs to i8*
   %ba.src_raw = bitcast %Value* %ba.src_regs to i8*
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %ba.dst_raw, i8* %ba.src_raw, i64 1024, i1 false)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %ba.dst_raw, i8* %ba.src_raw, i64 2048, i1 false)
 
   ; Save trail mark
   %ba.ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
@@ -4235,7 +4236,7 @@ restore:
   %src_regs = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 1, i32 0
   %dst_raw = bitcast %Value* %dst_regs to i8*
   %src_raw = bitcast %Value* %src_regs to i8*
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst_raw, i8* %src_raw, i64 1024, i1 false)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst_raw, i8* %src_raw, i64 2048, i1 false)
 
   ; Restore PC from choice point next_pc
   %npc_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 0
@@ -17798,31 +17799,91 @@ ev_zero:
 }'.
 
 compile_copy_term_to_llvm(Code) :-
-    Code = '; Recursively copy a %Value, allocating fresh %Compound cells from
-; the arena for any compound encountered. Atomic values (Atom / Integer /
-; Float / Bool) are returned by value. Unbound values return a fresh
-; Unbound sentinel — a proper impl would use a variable-map to preserve
-; sharing and create fresh Refs, but the current bench corpus has no
-; shared unbound vars and this naive pass is enough for the flat and
-; nested compound cases. Cons-cell lists fall out automatically since
-; they are just compounds with functor "." / arity 2.
+    Code = '; Recursively copy a %Value with a variable map: fresh %Compound cells
+; (arena), fresh heap cells for variables, and sharing preserved -- each
+; distinct source variable maps to exactly ONE fresh cell. Atomic values
+; (Atom / Integer / Float / Bool) copy by value. Cons-cell lists fall out
+; automatically since they are just compounds with functor "." / arity 2.
 define %Value @wam_copy_term_value(%WamState* %vm, %Value %v) {
 entry:
-  %tag = call i32 @value_tag(%Value %v)
+  call void @wam_arena_ensure()
+  %map_mem = call i8* @wam_arena_alloc(i64 2048)
+  %map = bitcast i8* %map_mem to i64*
+  %fresh_mem = call i8* @wam_arena_alloc(i64 4096)
+  %freshes = bitcast i8* %fresh_mem to %Value*
+  %countp = alloca i32
+  store i32 0, i32* %countp
+  %r = call %Value @wam_copy_term_rec(%WamState* %vm, %Value %v, i64* %map, %Value* %freshes, i32* %countp)
+  ret %Value %r
+}
+
+; The recursive worker behind copy_term/2. Derefs via @wam_deref_keep_var
+; (follows Ref chains but keeps the final Ref, so an unbound variable has
+; an ADDRESS to key the map on). tag 5 Ref (an unbound var): look the heap
+; index up in the map; a hit reuses the fresh cell already made for that
+; source variable (sharing preserved: p(X,X) copies with ONE fresh var), a
+; miss pushes a fresh heap cell and records the pair (map capacity 256;
+; beyond it, extra vars copy fresh-but-unshared, never aliased). The OLD
+; implementation returned Refs unchanged (they fell into the atomic
+; default), so the "copy" aliased the source heap cells and numbervars /
+; unification on the copy bound the ORIGINAL term through them.
+define %Value @wam_copy_term_rec(%WamState* %vm, %Value %v, i64* %map, %Value* %freshes, i32* %countp) {
+entry:
+  %kv = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %v)
+  %tag = call i32 @value_tag(%Value %kv)
   switch i32 %tag, label %atomic [
     i32 3, label %ct_compound
+    i32 5, label %ct_var
     i32 6, label %ct_unbound
   ]
 
 atomic:
-  ret %Value %v
+  ret %Value %kv
 
 ct_unbound:
-  %fresh = call %Value @value_unbound(i8* null)
-  ret %Value %fresh
+  ; a bare Unbound value with no heap identity: cannot share, copy fresh.
+  %fresh_unb = call %Value @value_unbound(i8* null)
+  ret %Value %fresh_unb
+
+ct_var:
+  %addr = call i64 @value_payload(%Value %kv)
+  %count = load i32, i32* %countp
+  br label %scan
+scan:
+  %i = phi i32 [ 0, %ct_var ], [ %inext, %scan_cont ]
+  %seen_all = icmp sge i32 %i, %count
+  br i1 %seen_all, label %miss, label %probe
+probe:
+  %mp = getelementptr i64, i64* %map, i32 %i
+  %ma = load i64, i64* %mp
+  %hit = icmp eq i64 %ma, %addr
+  br i1 %hit, label %use, label %scan_cont
+scan_cont:
+  %inext = add i32 %i, 1
+  br label %scan
+use:
+  %fp = getelementptr %Value, %Value* %freshes, i32 %i
+  %fv0 = load %Value, %Value* %fp
+  ret %Value %fv0
+miss:
+  %unb = call %Value @value_unbound(i8* null)
+  %ha = call i32 @wam_heap_push(%WamState* %vm, %Value %unb)
+  %fv = call %Value @value_ref(i32 %ha)
+  %room = icmp slt i32 %count, 256
+  br i1 %room, label %record, label %no_record
+record:
+  %mp2 = getelementptr i64, i64* %map, i32 %count
+  store i64 %addr, i64* %mp2
+  %fp2 = getelementptr %Value, %Value* %freshes, i32 %count
+  store %Value %fv, %Value* %fp2
+  %count1 = add i32 %count, 1
+  store i32 %count1, i32* %countp
+  br label %no_record
+no_record:
+  ret %Value %fv
 
 ct_compound:
-  %cp_bits = call i64 @value_payload(%Value %v)
+  %cp_bits = call i64 @value_payload(%Value %kv)
   %cp_ptr = inttoptr i64 %cp_bits to %Compound*
   %fn_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 0
   %fn_ptr = load i8*, i8** %fn_slot
@@ -17831,7 +17892,6 @@ ct_compound:
   %args_slot = getelementptr %Compound, %Compound* %cp_ptr, i32 0, i32 2
   %src_args = load %Value*, %Value** %args_slot
 
-  call void @wam_arena_ensure()
   %cp_size = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
   %new_mem = call i8* @wam_arena_alloc(i64 %cp_size)
   %new_cp = bitcast i8* %new_mem to %Compound*
@@ -17854,13 +17914,13 @@ ct_loop_entry:
   br label %ct_loop
 
 ct_loop:
-  %i = phi i32 [ 0, %ct_loop_entry ], [ %i_next, %ct_loop_step ]
-  %src_ptr = getelementptr %Value, %Value* %src_args, i32 %i
+  %i2 = phi i32 [ 0, %ct_loop_entry ], [ %i_next, %ct_loop_step ]
+  %src_ptr = getelementptr %Value, %Value* %src_args, i32 %i2
   %src_val = load %Value, %Value* %src_ptr
-  %dst_val = call %Value @wam_copy_term_value(%WamState* %vm, %Value %src_val)
-  %dst_ptr = getelementptr %Value, %Value* %new_args, i32 %i
+  %dst_val = call %Value @wam_copy_term_rec(%WamState* %vm, %Value %src_val, i64* %map, %Value* %freshes, i32* %countp)
+  %dst_ptr = getelementptr %Value, %Value* %new_args, i32 %i2
   store %Value %dst_val, %Value* %dst_ptr
-  %i_next = add i32 %i, 1
+  %i_next = add i32 %i2, 1
   %more = icmp slt i32 %i_next, %arity
   br i1 %more, label %ct_loop_step, label %ct_done
 
