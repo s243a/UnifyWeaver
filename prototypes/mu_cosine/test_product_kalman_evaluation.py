@@ -21,7 +21,9 @@ from product_kalman_evaluation import (
     main,
     paired_bootstrap_nll_improvement,
     run_product_kalman_holdout_npz,
+    score_gaussian_prediction_vectors_rowwise,
     score_gaussian_prediction_vectors,
+    score_gaussian_predictions_rowwise,
     score_gaussian_predictions,
     write_evaluation_npz,
 )
@@ -323,6 +325,40 @@ def test_score_gaussian_predictions_validates_shapes_and_reports_mse():
     assert abs(score.squared_mahalanobis_q95 - 1.0) < 1e-12
     assert_raises(score_gaussian_predictions, "bad", target[:, 0], mean, [[1.0]])
     assert_raises(score_gaussian_predictions, "bad", target, mean, [[1.0, 0.0]])
+
+
+def test_rowwise_gaussian_scoring_supports_variable_covariances():
+    target = np.array([[1.0], [2.0]])
+    mean = np.array([[1.5], [1.5]])
+    shared_covariances = np.array([[[0.25]], [[0.25]]])
+    shared_vectors = score_gaussian_prediction_vectors("shared", target, mean, [[0.25]], jitter=1e-9)
+    rowwise_shared = score_gaussian_prediction_vectors_rowwise(
+        "shared",
+        target,
+        mean,
+        shared_covariances,
+        jitter=1e-9,
+    )
+    np.testing.assert_allclose(rowwise_shared.nll, shared_vectors.nll)
+    np.testing.assert_allclose(rowwise_shared.squared_mahalanobis, shared_vectors.squared_mahalanobis)
+
+    row_covariances = np.array([[[0.25]], [[1.0]]])
+    row_vectors = score_gaussian_prediction_vectors_rowwise("rowwise", target, mean, row_covariances, jitter=1e-9)
+    assert row_vectors.name == "rowwise"
+    assert np.allclose(row_vectors.squared_error, [0.25, 0.25])
+    assert np.allclose(row_vectors.squared_mahalanobis, [1.0, 0.25])
+    assert row_vectors.nll.flags.writeable is False
+    row_score = score_gaussian_predictions_rowwise("rowwise", target, mean, row_covariances, jitter=1e-9)
+    assert row_score.n == 2
+    assert abs(row_score.mse - 0.25) < 1e-12
+    assert abs(row_score.covariance_trace - 0.625) < 1e-12
+    assert abs(row_score.mean_squared_mahalanobis - 0.625) < 1e-12
+    assert abs(row_score.mahalanobis_per_dim - 0.625) < 1e-12
+    assert_raises(score_gaussian_predictions_rowwise, "bad", target, mean, row_covariances[:1])
+    assert_raises(score_gaussian_predictions_rowwise, "bad", target, mean, row_covariances[:, :, 0])
+    bad_covariances = row_covariances.copy()
+    bad_covariances[1, 0, 0] = np.nan
+    assert_raises(score_gaussian_predictions_rowwise, "bad", target, mean, bad_covariances)
 
 
 if __name__ == "__main__":
