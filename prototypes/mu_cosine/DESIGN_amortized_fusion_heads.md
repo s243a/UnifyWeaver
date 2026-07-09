@@ -130,3 +130,42 @@ Two refinements:
 4. **Function-name embeddings** — swap the embedding table for the e5-translation, ablate vs indexed embeddings.
 5. **Wire `V(hop)`** as the gain for an explicit at-inference update over the per-channel heads; compare
    filter-at-inference vs `mu_PoE`-head-only on held-out fresh data (the two-timescale question, measured).
+
+## Where the Kalman filter fits (user follow-up, 2026-07-08)
+
+*(`mu_MOE` above was a typo for `mu_PoE`; the mixture row in the bound lattice is kept because MoE is genuinely the
+middle of the lattice — and see the gate note below.)*
+
+**The filter does not learn — it is the closed-form algebra that USES what the model learned.** The gain
+`K = P H^T (H P H^T + R)^-1` and the posterior are fixed math; everything learnable lives in its inputs:
+
+| Kalman object | supplied by | learned? |
+|---|---|---|
+| prior mean | mu heads (model readouts) | yes — amortized per-channel estimates |
+| prior covariance `P` | `Sigma(hop, corpus)` head | yes — the confirmed result IS "P is predictable from graph position" |
+| measurement `y` | graph walk / LLM judge at inference | no — evidence |
+| measurement noise `R` (+ cross-channel corr) | residual calibration (`fit_residual_covariance`, calibration diagnostics) | yes — from held-out residuals |
+| gain `K` | computed | never |
+
+So the division of labor is: **the model learns the mean and correlation statistics; the Kalman update is the
+closed-form use of them.** Architectural bet, stated crisply: *learn the uncertainty, derive the fusion weights
+for free* — vs an attention/gating network that learns weights directly. Kalman form = sample-efficient +
+interpretable where the Gaussian approximation holds; keep it as structure and learn the statistics feeding it.
+(MoE note: the Kalman gain IS a mixture-of-experts gate, just computed from covariances rather than learned;
+true learned MoE would enter later as regime routing, e.g. per-corpus experts.)
+
+**Single update vs the actual filter.** A pair scored once uses only the measurement-update step (= Gaussian
+conditioning, one Bayes step). The *filter* — the recursion — earns its name on a SEQUENCE, and the filing system
+is one:
+
+- **State:** stored `(mu, P)` per relation/membership in the filing DB.
+- **Measurements over time:** user files an item, a judge scores a pair, a graph edge appears — each is one
+  incremental update on the stored `(mu, P)`, NO retraining.
+- **Static state (`Q=0`):** reduces to recursive least squares — `P` shrinks ~1/n as evidence accumulates.
+- **Drift (`Q>0`):** ontology evolves / categories reorganized / judge calibration shifts — process noise gives
+  exponential forgetting; **`Q` is the learnable drift-rate statistic** (classical adaptive filtering).
+
+Deployment picture: model supplies amortized priors → filing DB holds per-relation `(mu, P)` posteriors updated
+incrementally as evidence arrives → slow timescale distills accumulated posteriors back into the model. In filter
+language, `mu_PoE` is the model *amortizing the update itself* — predicting the filter's posterior so the common
+case needs no explicit algebra.
