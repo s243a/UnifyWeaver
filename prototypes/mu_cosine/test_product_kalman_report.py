@@ -132,6 +132,8 @@ def test_markdown_report_records_scores_and_guardrails():
         assert "| prior | product_kalman |" in report
         assert "| product_kalman | independent_kalman |" in report
         assert "## NLL Improvement Bootstrap Intervals" in report
+        assert "## PIT Diagnostics" in report
+        assert "marginal_pit_uniform_ks" in report
         assert "observed_gain" in report
         assert "paired row-resampling" in report
         assert "| calibration_rows | 80 |" in report
