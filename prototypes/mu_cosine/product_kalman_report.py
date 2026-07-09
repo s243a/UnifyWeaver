@@ -11,15 +11,22 @@ import json
 import sys
 
 try:
-    from .product_kalman_evaluation import bootstrap_nll_improvements_from_evaluation_npz
+    from .product_kalman_evaluation import (
+        bootstrap_nll_improvements_from_evaluation_npz,
+        evaluation_npz_score_summary,
+    )
 except ImportError:  # direct script execution from prototypes/mu_cosine
-    from product_kalman_evaluation import bootstrap_nll_improvements_from_evaluation_npz
+    from product_kalman_evaluation import (
+        bootstrap_nll_improvements_from_evaluation_npz,
+        evaluation_npz_score_summary,
+    )
 
 
 __all__ = [
     "add_artifact_bootstrap_intervals",
     "build_product_kalman_markdown_report",
     "load_json",
+    "validate_artifact_score_consistency",
     "write_json",
     "write_markdown_report",
 ]
@@ -165,6 +172,38 @@ def _calibration_rows(scores_json):
     ]
 
 
+def _artifact_path(scores_json, evaluation_npz=None):
+    artifact_path = evaluation_npz or scores_json.get("inputs", {}).get("evaluation_npz")
+    if not artifact_path:
+        raise ValueError(
+            "--evaluation-npz is required when --bootstrap-nll is set "
+            "and scores JSON has no evaluation_npz input"
+        )
+    return artifact_path
+
+
+def validate_artifact_score_consistency(scores_json, evaluation_npz=None, atol=1e-10):
+    """Raise if a row-level evaluation artifact does not match the score JSON."""
+    artifact_path = _artifact_path(scores_json, evaluation_npz=evaluation_npz)
+    artifact = evaluation_npz_score_summary(artifact_path)
+    scores = scores_json.get("scores", {})
+    expected_order = list(scores_json.get("score_order") or sorted(scores))
+    if artifact["score_order"] != expected_order:
+        raise ValueError("evaluation artifact score_names do not match scores JSON score_order")
+    for name in expected_order:
+        if name not in scores:
+            raise ValueError(f"scores JSON is missing score {name!r}")
+        score = scores[name]
+        if "mean_nll" in score:
+            observed = float(score["mean_nll"])
+            artifact_value = artifact["mean_nll"][name]
+            if abs(observed - artifact_value) > atol:
+                raise ValueError(f"evaluation artifact mean_nll for {name!r} does not match scores JSON")
+        if "n" in score and int(score["n"]) != artifact["n"][name]:
+            raise ValueError(f"evaluation artifact n for {name!r} does not match scores JSON")
+    return artifact
+
+
 def add_artifact_bootstrap_intervals(
     scores_json,
     evaluation_npz=None,
@@ -172,16 +211,14 @@ def add_artifact_bootstrap_intervals(
     seed=0,
     confidence=0.95,
     overwrite=False,
+    validate_artifact=True,
 ):
     """Return `scores_json` enriched with post-hoc bootstrap intervals from row artifacts."""
     if not n_boot:
         return scores_json
-    artifact_path = evaluation_npz or scores_json.get("inputs", {}).get("evaluation_npz")
-    if not artifact_path:
-        raise ValueError(
-            "--evaluation-npz is required when --bootstrap-nll is set "
-            "and scores JSON has no evaluation_npz input"
-        )
+    artifact_path = _artifact_path(scores_json, evaluation_npz=evaluation_npz)
+    if validate_artifact:
+        validate_artifact_score_consistency(scores_json, evaluation_npz=artifact_path)
     out = dict(scores_json)
     for key, value in bootstrap_nll_improvements_from_evaluation_npz(
         artifact_path,
