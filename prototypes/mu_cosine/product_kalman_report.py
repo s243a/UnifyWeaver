@@ -9,6 +9,7 @@ claim that Product-Kalman has won.
 import argparse
 import hashlib
 import json
+import math
 import sys
 
 try:
@@ -148,60 +149,133 @@ def _bootstrap_artifact_rows(scores_json):
     ]
 
 
-def _pit_rows(scores_json):
-    rows = []
+def _finite_float(name, value):
+    try:
+        out = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be numeric") from exc
+    if not math.isfinite(out):
+        raise ValueError(f"{name} must be finite")
+    return out
+
+
+def _bounded_float(name, value, low=0.0, high=1.0):
+    out = _finite_float(name, value)
+    if out < low or out > high:
+        raise ValueError(f"{name} must be in [{low}, {high}]")
+    return out
+
+
+def _positive_int(name, value):
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    try:
+        out = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError(f"{name} must be an integer")
+    if out <= 0:
+        raise ValueError(f"{name} must be positive")
+    return out
+
+
+def _sequence(name, value):
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{name} must be a sequence")
+    return list(value)
+
+
+def _pit_diagnostic_items(scores_json):
     diagnostics = scores_json.get("pit_diagnostics", {})
     if not diagnostics:
-        return rows
+        return []
     if not isinstance(diagnostics, dict):
         raise ValueError("pit_diagnostics must be a mapping")
+    out = []
     for model, item in sorted(diagnostics.items()):
         if not isinstance(item, dict):
             raise ValueError("pit_diagnostics entries must be mappings")
-        channel_ks = item.get("channel_ks", [])
-        channel_names = list(item.get("channel_names", []))
-        if isinstance(channel_ks, dict):
-            pairs = sorted(channel_ks.items())
-        else:
-            pairs = []
-            for idx, value in enumerate(channel_ks):
-                channel = channel_names[idx] if idx < len(channel_names) else idx
-                pairs.append((channel, value))
-        for channel, ks in pairs:
-            rows.append([
-                model,
-                channel,
-                ks,
-                item.get("n"),
-                item.get("dimension"),
-                item.get("method"),
-            ])
+        prefix = f"pit_diagnostics[{model!r}]"
+        n = _positive_int(f"{prefix}.n", item.get("n"))
+        dimension = _positive_int(f"{prefix}.dimension", item.get("dimension"))
+        channel_names = _sequence(f"{prefix}.channel_names", item.get("channel_names", []))
+        if channel_names and len(channel_names) != dimension:
+            raise ValueError(f"{prefix}.channel_names length must match dimension")
+        out.append((model, item, prefix, n, dimension, channel_names))
+    return out
+
+
+def _pit_channel_pairs(prefix, channel_ks, dimension, channel_names):
+    if isinstance(channel_ks, dict):
+        pairs = sorted(channel_ks.items())
+        if len(pairs) != dimension:
+            raise ValueError(f"{prefix}.channel_ks length must match dimension")
+        return [(channel, _bounded_float(f"{prefix}.channel_ks[{channel!r}]", value)) for channel, value in pairs]
+    values = _sequence(f"{prefix}.channel_ks", channel_ks)
+    if len(values) != dimension:
+        raise ValueError(f"{prefix}.channel_ks length must match dimension")
+    pairs = []
+    for idx, value in enumerate(values):
+        channel = channel_names[idx] if channel_names else idx
+        pairs.append((channel, _bounded_float(f"{prefix}.channel_ks[{idx}]", value)))
+    return pairs
+
+
+def _pit_rows(scores_json):
+    rows = []
+    for model, item, prefix, n, dimension, channel_names in _pit_diagnostic_items(scores_json):
+        for channel, ks in _pit_channel_pairs(prefix, item.get("channel_ks", []), dimension, channel_names):
+            rows.append([model, channel, ks, n, dimension, item.get("method")])
     return rows
 
 
 def _pit_coverage_rows(scores_json):
     rows = []
-    diagnostics = scores_json.get("pit_diagnostics", {})
-    if not diagnostics:
-        return rows
-    if not isinstance(diagnostics, dict):
-        raise ValueError("pit_diagnostics must be a mapping")
-    for model, item in sorted(diagnostics.items()):
-        if not isinstance(item, dict):
-            raise ValueError("pit_diagnostics entries must be mappings")
-        levels = list(item.get("coverage_levels", []))
-        coverage = item.get("central_interval_coverage", [])
-        errors = item.get("central_interval_error", [])
-        channel_names = list(item.get("channel_names", []))
-        if not levels or not coverage:
+    for model, item, prefix, n, dimension, channel_names in _pit_diagnostic_items(scores_json):
+        coverage_keys = {"coverage_levels", "central_interval_coverage", "central_interval_error"}
+        present = coverage_keys & set(item)
+        if not present:
             continue
-        for level_idx, level in enumerate(levels):
-            row_coverage = coverage[level_idx] if level_idx < len(coverage) else []
-            row_errors = errors[level_idx] if level_idx < len(errors) else []
-            for channel_idx, observed in enumerate(row_coverage):
-                channel = channel_names[channel_idx] if channel_idx < len(channel_names) else channel_idx
-                error = row_errors[channel_idx] if channel_idx < len(row_errors) else None
-                rows.append([model, channel, level, observed, error, item.get("n")])
+        if present != coverage_keys:
+            missing = sorted(coverage_keys - present)
+            raise ValueError(f"{prefix} missing PIT coverage fields: {missing!r}")
+        levels = _sequence(f"{prefix}.coverage_levels", item["coverage_levels"])
+        coverage = _sequence(f"{prefix}.central_interval_coverage", item["central_interval_coverage"])
+        errors = _sequence(f"{prefix}.central_interval_error", item["central_interval_error"])
+        if not levels:
+            raise ValueError(f"{prefix}.coverage_levels must be nonempty")
+        if len(coverage) != len(levels):
+            raise ValueError(f"{prefix}.central_interval_coverage length must match coverage_levels")
+        if len(errors) != len(levels):
+            raise ValueError(f"{prefix}.central_interval_error length must match coverage_levels")
+        seen_levels = set()
+        for level_idx, raw_level in enumerate(levels):
+            level = _bounded_float(f"{prefix}.coverage_levels[{level_idx}]", raw_level, low=0.0, high=1.0)
+            if level <= 0.0 or level >= 1.0:
+                raise ValueError(f"{prefix}.coverage_levels values must lie strictly between 0 and 1")
+            if level in seen_levels:
+                raise ValueError(f"{prefix}.coverage_levels values must be unique")
+            seen_levels.add(level)
+            row_coverage = _sequence(f"{prefix}.central_interval_coverage[{level_idx}]", coverage[level_idx])
+            row_errors = _sequence(f"{prefix}.central_interval_error[{level_idx}]", errors[level_idx])
+            if len(row_coverage) != dimension:
+                raise ValueError(f"{prefix}.central_interval_coverage row length must match dimension")
+            if len(row_errors) != dimension:
+                raise ValueError(f"{prefix}.central_interval_error row length must match dimension")
+            for channel_idx, raw_observed in enumerate(row_coverage):
+                channel = channel_names[channel_idx] if channel_names else channel_idx
+                observed = _bounded_float(
+                    f"{prefix}.central_interval_coverage[{level_idx}][{channel_idx}]",
+                    raw_observed,
+                )
+                error = _finite_float(
+                    f"{prefix}.central_interval_error[{level_idx}][{channel_idx}]",
+                    row_errors[channel_idx],
+                )
+                if abs(error - (observed - level)) > 1e-8:
+                    raise ValueError(f"{prefix}.central_interval_error must equal observed minus nominal")
+                rows.append([model, channel, level, observed, error, n])
     return rows
 
 
