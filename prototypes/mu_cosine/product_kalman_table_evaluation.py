@@ -20,6 +20,7 @@ try:
         write_evaluation_npz,
     )
     from .product_kalman_report import (
+        add_artifact_validation_summary,
         build_product_kalman_markdown_report,
         load_json,
         write_markdown_report,
@@ -33,6 +34,7 @@ except ImportError:  # direct script execution from prototypes/mu_cosine
         write_evaluation_npz,
     )
     from product_kalman_report import (
+        add_artifact_validation_summary,
         build_product_kalman_markdown_report,
         load_json,
         write_markdown_report,
@@ -226,6 +228,12 @@ def run_product_kalman_table_evaluation(
         original_table=original_table,
         split_manifest=split_manifest,
     )
+    if output_npz:
+        summary = add_artifact_validation_summary(
+            summary,
+            evaluation_npz=output_npz,
+            overwrite=True,
+        )
     report_text = ""
     if output_md:
         manifest = load_json(input_manifest) if input_manifest else None
