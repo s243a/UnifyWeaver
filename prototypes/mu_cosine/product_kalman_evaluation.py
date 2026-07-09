@@ -37,6 +37,9 @@ except ImportError:  # direct script execution from prototypes/mu_cosine
     )
 
 
+DEFAULT_NLL_BASELINES = ("prior", "independent_kalman")
+
+
 __all__ = [
     "GaussianScore",
     "GaussianScoreVectors",
@@ -518,6 +521,28 @@ class ProductKalmanHoldoutEvaluation:
         return self.score(baseline).mean_nll - self.score(candidate).mean_nll
 
 
+def _parse_name_list(text):
+    names = [part.strip() for part in str(text).split(",") if part.strip()]
+    if not names:
+        raise ValueError("name list must contain at least one name")
+    if len(names) != len(set(names)):
+        raise ValueError(f"name list contains duplicates: {text!r}")
+    return tuple(names)
+
+
+def _normalize_baselines(baselines):
+    if baselines is None:
+        baselines = DEFAULT_NLL_BASELINES
+    if isinstance(baselines, str):
+        return _parse_name_list(baselines)
+    names = tuple(str(name).strip() for name in baselines if str(name).strip())
+    if not names:
+        raise ValueError("nll_baselines must contain at least one score name")
+    if len(names) != len(set(names)):
+        raise ValueError(f"nll_baselines contains duplicates: {names!r}")
+    return names
+
+
 def _bootstrap_settings(n_boot, seed, confidence):
     if isinstance(n_boot, bool) or not isinstance(n_boot, (int, np.integer)):
         raise ValueError("n_boot must be a nonnegative integer")
@@ -639,10 +664,11 @@ def bootstrap_nll_improvements_from_score_rows(
     n_boot=1000,
     seed=0,
     confidence=0.95,
-    baselines=("prior", "independent_kalman"),
+    baselines=DEFAULT_NLL_BASELINES,
 ):
     """Return JSON-ready paired bootstrap maps from stored row-level NLL artifacts."""
     names, rows = _score_row_nll_inputs(score_names, score_row_nll)
+    baselines = _normalize_baselines(baselines)
     out = {}
     for baseline in baselines:
         if baseline not in names:
@@ -1122,7 +1148,7 @@ def bootstrap_nll_improvements_from_evaluation_npz(
     n_boot=1000,
     seed=0,
     confidence=0.95,
-    baselines=("prior", "independent_kalman"),
+    baselines=DEFAULT_NLL_BASELINES,
 ):
     """Return JSON-ready paired NLL bootstrap maps from an evaluation artifact NPZ."""
     path = str(artifact_npz)
@@ -1167,20 +1193,63 @@ def _bootstrap_improvement_map(result, baseline, n_boot, seed, confidence):
     }
 
 
-def evaluation_to_json_dict(result, bootstrap_nll=0, bootstrap_seed=0, bootstrap_confidence=0.95):
+def _score_names(result):
+    return {score.name for score in result.scores}
+
+
+def _validate_result_baselines(result, baselines):
+    baselines = _normalize_baselines(baselines)
+    names = _score_names(result)
+    missing = [baseline for baseline in baselines if baseline not in names]
+    if missing:
+        raise ValueError(f"nll_baselines are not present in scores: {missing!r}")
+    return baselines
+
+
+def _nll_improvement_maps(result, baselines):
+    out = {}
+    for baseline in _validate_result_baselines(result, baselines):
+        baseline_nll = result.score(baseline).mean_nll
+        out[f"nll_improvement_vs_{baseline}"] = {
+            score.name: baseline_nll - score.mean_nll
+            for score in result.scores
+            if score.name != baseline
+        }
+    return out
+
+
+def _bootstrap_improvement_maps(result, baselines, n_boot, seed, confidence):
+    return {
+        f"nll_improvement_bootstrap_vs_{baseline}": _bootstrap_improvement_map(
+            result,
+            baseline,
+            n_boot,
+            seed,
+            confidence,
+        )
+        for baseline in _validate_result_baselines(result, baselines)
+    }
+
+
+def evaluation_to_json_dict(
+    result,
+    bootstrap_nll=0,
+    bootstrap_seed=0,
+    bootstrap_confidence=0.95,
+    nll_baselines=DEFAULT_NLL_BASELINES,
+):
     """Return a JSON-serializable summary for a holdout evaluation result."""
     bootstrap_nll, bootstrap_seed, bootstrap_confidence = _bootstrap_settings(
         bootstrap_nll,
         bootstrap_seed,
         bootstrap_confidence,
     )
+    nll_baselines = _validate_result_baselines(result, nll_baselines)
     scores = {score.name: _score_to_json_dict(score) for score in result.scores}
-    prior = result.score("prior").mean_nll
-    improvements = {name: prior - score["mean_nll"] for name, score in scores.items() if name != "prior"}
     out = {
         "score_order": [score.name for score in result.scores],
         "scores": scores,
-        "nll_improvement_vs_prior": improvements,
+        "nll_baselines": list(nll_baselines),
         "calibration": {
             "n_samples": result.calibration.n_samples,
             "state_dim": result.calibration.state_dim,
@@ -1194,34 +1263,20 @@ def evaluation_to_json_dict(result, bootstrap_nll=0, bootstrap_seed=0, bootstrap
             "cross_covariance": result.calibration.cross_covariance.tolist(),
         },
     }
-    if "independent_kalman" in scores:
-        independent = scores["independent_kalman"]["mean_nll"]
-        out["nll_improvement_vs_independent_kalman"] = {
-            name: independent - score["mean_nll"]
-            for name, score in scores.items()
-            if name != "independent_kalman"
-        }
+    out.update(_nll_improvement_maps(result, nll_baselines))
     if result.grouped_scores:
         out["grouped_covariances"] = {
             grouped.score.name: _grouped_covariance_to_json_dict(grouped)
             for grouped in result.grouped_scores
         }
     if bootstrap_nll:
-        out["nll_improvement_bootstrap_vs_prior"] = _bootstrap_improvement_map(
+        out.update(_bootstrap_improvement_maps(
             result,
-            "prior",
+            nll_baselines,
             bootstrap_nll,
             bootstrap_seed,
             bootstrap_confidence,
-        )
-        if "independent_kalman" in scores:
-            out["nll_improvement_bootstrap_vs_independent_kalman"] = _bootstrap_improvement_map(
-                result,
-                "independent_kalman",
-                bootstrap_nll,
-                bootstrap_seed,
-                bootstrap_confidence,
-            )
+        ))
     return out
 
 
@@ -1316,6 +1371,11 @@ def _build_arg_parser():
     ap.add_argument("--jitter", type=float, default=1e-9)
     ap.add_argument("--ddof", type=int, default=1)
     ap.add_argument("--shrinkage-target", default="diagonal", choices=("diagonal", "scaled_identity"))
+    ap.add_argument(
+        "--nll-baselines",
+        default=",".join(DEFAULT_NLL_BASELINES),
+        help="comma-separated score names used as NLL-gain baselines",
+    )
     ap.add_argument("--bootstrap-nll", type=int, default=0, help="paired bootstrap replicates for NLL gains; 0 disables")
     ap.add_argument("--bootstrap-seed", type=int, default=0)
     ap.add_argument("--bootstrap-confidence", type=float, default=0.95)
@@ -1354,6 +1414,7 @@ def main(argv=None):
             bootstrap_nll=args.bootstrap_nll,
             bootstrap_seed=args.bootstrap_seed,
             bootstrap_confidence=args.bootstrap_confidence,
+            nll_baselines=_parse_name_list(args.nll_baselines),
         )
     except ValueError as exc:
         ap.error(str(exc))

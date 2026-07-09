@@ -178,6 +178,7 @@ def run_product_kalman_table_evaluation(
     jitter=1e-9,
     ddof=1,
     shrinkage_target="diagonal",
+    nll_baselines=("prior", "independent_kalman"),
     bootstrap_nll=0,
     bootstrap_seed=0,
     bootstrap_confidence=0.95,
@@ -215,6 +216,7 @@ def run_product_kalman_table_evaluation(
             bootstrap_nll=bootstrap_nll,
             bootstrap_seed=bootstrap_seed,
             bootstrap_confidence=bootstrap_confidence,
+            nll_baselines=nll_baselines,
         ),
         input_table,
         input_npz,
@@ -287,6 +289,11 @@ def _build_arg_parser():
     ap.add_argument("--ddof", type=int, default=1)
     ap.add_argument("--shrinkage-target", default="diagonal", choices=("diagonal", "scaled_identity"))
     ap.add_argument(
+        "--nll-baselines",
+        default="prior,independent_kalman",
+        help="comma-separated score names used as NLL-gain baselines",
+    )
+    ap.add_argument(
         "--bootstrap-nll",
         type=int,
         default=0,
@@ -346,6 +353,7 @@ def main(argv=None):
             jitter=args.jitter,
             ddof=args.ddof,
             shrinkage_target=args.shrinkage_target,
+            nll_baselines=parse_column_list(args.nll_baselines),
             bootstrap_nll=args.bootstrap_nll,
             bootstrap_seed=args.bootstrap_seed,
             bootstrap_confidence=args.bootstrap_confidence,

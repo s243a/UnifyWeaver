@@ -96,6 +96,7 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
             output_md=output_md,
             report_title="Synthetic Table Product-Kalman Report",
             group_cols=["hop"],
+            nll_baselines=["prior", "independent_kalman", "product_kalman"],
             jitter=1e-8,
             bootstrap_nll=50,
             bootstrap_seed=7,
@@ -119,6 +120,7 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         assert summary["inputs"]["input_manifest"] == str(input_manifest)
         assert summary["inputs"]["evaluation_npz"] == str(output_npz)
         assert summary["inputs"]["report_md"] == str(output_md)
+        assert summary["nll_baselines"] == ["prior", "independent_kalman", "product_kalman"]
         assert summary["score_order"] == [
             "prior",
             "measurement",
@@ -132,6 +134,7 @@ def test_table_runner_writes_input_and_evaluation_artifacts():
         assert "mahalanobis_per_dim" in summary["scores"]["product_kalman"]
         assert "squared_mahalanobis_q95" in summary["scores"]["product_kalman"]
         assert "product_kalman_grouped" in summary["grouped_covariances"]
+        assert "product_kalman_grouped" in summary["nll_improvement_vs_product_kalman"]
         assert summary["nll_improvement_vs_prior"]["product_kalman"] > 0.65
         boot = summary["nll_improvement_bootstrap_vs_independent_kalman"]["product_kalman"]
         assert boot["n_boot"] == 50
@@ -189,6 +192,8 @@ def test_table_runner_output_dir_writes_canonical_bundle():
             "target",
             "--group-cols",
             "hop",
+            "--nll-baselines",
+            "prior,independent_kalman,product_kalman",
             "--jitter",
             "1e-8",
             "--indent",
@@ -205,8 +210,10 @@ def test_table_runner_output_dir_writes_canonical_bundle():
         assert summary["inputs"]["evaluation_npz"] == str(paths["output_npz"])
         assert summary["inputs"]["report_md"] == str(paths["output_md"])
         assert summary["nll_improvement_vs_prior"]["product_kalman"] > 0.65
+        assert summary["nll_baselines"] == ["prior", "independent_kalman", "product_kalman"]
         assert "product_kalman_grouped" in summary["score_order"]
         assert "product_kalman_grouped" in summary["grouped_covariances"]
+        assert "product_kalman_grouped" in summary["nll_improvement_vs_product_kalman"]
         with np.load(paths["input_npz"], allow_pickle=False) as data:
             assert data["calibration_groups"].shape == (80,)
             assert data["evaluation_groups"].shape == (40,)
@@ -337,6 +344,8 @@ def test_table_runner_cli_roundtrips_against_npz_evaluator():
             "target",
             "--group-cols",
             "hop",
+            "--nll-baselines",
+            "prior,independent_kalman,product_kalman",
             "--jitter",
             "1e-8",
             "--indent",
@@ -356,8 +365,10 @@ def test_table_runner_cli_roundtrips_against_npz_evaluator():
         assert manifest["source_table"]["delimiter"] == "\t"
         assert manifest["ids"]["overlap_count"] == 0
         assert manifest["groups"]["columns"] == ["hop"]
+        assert from_table["nll_baselines"] == ["prior", "independent_kalman", "product_kalman"]
         assert "product_kalman_grouped" in from_table["score_order"]
         assert "product_kalman_grouped" in from_table["grouped_covariances"]
+        assert "product_kalman_grouped" in from_table["nll_improvement_vs_product_kalman"]
         assert from_table["inputs"]["report_md"] == str(output_md)
 
 
