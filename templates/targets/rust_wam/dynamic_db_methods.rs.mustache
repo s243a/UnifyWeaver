@@ -1,27 +1,42 @@
 // Dynamic database and source-term input helpers for WamState.
 // Included inside `impl WamState` by wam_rust_target.pl.
 
+    pub fn set_term_input(&mut self, input: impl Into<String>) {
+        self.term_input = input.into();
+        self.term_input_pos = 0;
+    }
+
     fn execute_read_term_builtin(&mut self) -> bool {
         use std::io::Read;
-        let mut input = String::new();
-        if std::io::stdin().read_to_string(&mut input).is_err() {
-            return false;
+        if self.term_input_pos >= self.term_input.len() {
+            let mut input = String::new();
+            if std::io::stdin().read_to_string(&mut input).is_err() {
+                return false;
+            }
+            self.set_term_input(input);
         }
-        let text = match Self::first_dotted_term_text(&input) {
-            Some(text) => text,
+        let (text, next_pos) = match Self::next_dotted_term_text(
+            &self.term_input,
+            self.term_input_pos,
+        ) {
+            Some(next) => next,
             None => {
+                self.term_input_pos = self.term_input.len();
                 let eof = Value::Atom("end_of_file".to_string());
                 let target = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
                 return if self.unify(&target, &eof) { self.pc += 1; true } else { false };
             }
         };
+        self.term_input_pos = next_pos;
         if self.bind_compiled_parse_atom(&text, "A1") { self.pc += 1; true }
         else { false }
     }
 
-    fn first_dotted_term_text(input: &str) -> Option<String> {
-        let trimmed = input.trim_start();
+    fn next_dotted_term_text(input: &str, start: usize) -> Option<(String, usize)> {
+        let suffix = input.get(start..)?;
+        let trimmed = suffix.trim_start();
         if trimmed.is_empty() { return None; }
+        let term_start = start + suffix.len() - trimmed.len();
         let bytes = trimmed.as_bytes();
         let mut in_quote = false;
         let mut escaped = false;
@@ -38,13 +53,13 @@
                     .map(|c| c.is_ascii_whitespace())
                     .unwrap_or(true);
                 if next_is_term_end {
-                    return Some(trimmed[..idx].trim().to_string());
+                    return Some((trimmed[..idx].trim().to_string(), term_start + idx + 1));
                 }
             }
         }
         let body = trimmed.trim_end();
         let body = body.strip_suffix(".").unwrap_or(body);
-        Some(body.trim().to_string())
+        Some((body.trim().to_string(), input.len()))
     }
 
     fn execute_assert_builtin(&mut self, op: &str) -> bool {
