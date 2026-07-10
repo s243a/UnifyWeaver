@@ -244,6 +244,57 @@ fn generated_read_term_two_applies_variable_names() {
 }
 
 #[test]
+fn asserted_rule_body_can_call_read_term_two() {
+    let (code, labels) = shared_wam_program();
+    let mut vm = WamState::new(code, labels);
+    assert_clause(
+        &mut vm,
+        "assertz/1",
+        rule(
+            fact("parse_meta", vec![ub("T"), ub("Names")]),
+            fact(
+                "read_term",
+                vec![
+                    ub("T"),
+                    Value::List(vec![fact("variable_names", vec![ub("Names")])]),
+                ],
+            ),
+        ),
+    );
+
+    vm.reset_query();
+    vm.set_term_input("p(A, A, B).");
+    let query_pc = vm.code.len() + 1;
+    vm.code.extend([
+        Instruction::Call("parse_meta/2".to_string(), 2),
+        Instruction::Proceed,
+    ]);
+    vm.set_reg_str("A1", ub("Term"));
+    vm.set_reg_str("A2", ub("Names"));
+    vm.pc = query_pc;
+
+    assert!(vm.run());
+    let parsed_raw = vm.bindings.get("Term").cloned().expect("Term bound");
+    let parsed = vm.deref_heap(&vm.deref_var(&parsed_raw));
+    let args = match parsed {
+        Value::Str(ref functor, ref args) if functor == "p" => args.clone(),
+        other => panic!("unexpected parsed term: {:?}", other),
+    };
+    assert_eq!(args[0], args[1]);
+    assert_ne!(args[0], args[2]);
+
+    let names_raw = vm.bindings.get("Names").cloned().expect("Names bound");
+    let names = vm.deref_heap(&vm.deref_var(&names_raw));
+    assert_eq!(
+        names,
+        Value::List(vec![
+            fact("=", vec![at("A"), args[0].clone()]),
+            fact("=", vec![at("B"), args[2].clone()]),
+        ]),
+    );
+}
+
+#[test]
 fn generated_atom_to_term_preserves_variables_and_bindings() {
     let (code, labels) = shared_wam_program();
     let mut vm = WamState::new(code, labels);

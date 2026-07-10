@@ -1606,6 +1606,10 @@ compile_execute_term_builtin_to_rust(Code) :-
             "term_to_atom/2" => { self.execute_term_to_atom_builtin() }
             "read_term_from_atom/2" => { self.execute_read_term_from_atom_builtin(2) }
             "read_term_from_atom/3" => { self.execute_read_term_from_atom_builtin(3) }
+            "read_term/2" => {
+                let options = self.get_reg_raw("A2");
+                self.execute_read_term_builtin(options.as_ref())
+            }
             "read/1" | "read_term/1" => { self.execute_read_term_builtin(None) }
             "assertz/1" | "asserta/1" => { self.execute_assert_builtin(op) }
             "retractall/1" => { self.execute_retractall_builtin() }
