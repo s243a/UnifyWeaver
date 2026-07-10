@@ -51,9 +51,29 @@ of the D-channel quality gap to expensive labels for free. Combined with §1 (lu
 the cheap-judge pipeline is live: luna labels + Kalman fusion + conflict-routed 5.5 calls (Lever A) is the
 deployment recipe to beat.
 
+## 3b. Multi-seed hardening (seeds 0–2, full-pipeline reseed: split + covariance fit + init + batches)
+
+Fused vs raw-luna channel head, D WITHIN-stratum, held rows:
+
+| seed | expl fused/luna/5.5h | fresh fused/luna/5.5h |
+|---|---|---|
+| 0 | +0.396 / +0.351 / +0.411 | +0.451 / +0.407 / +0.503 |
+| 1 | +0.607 / +0.594 / +0.600 | +0.411 / +0.401 / +0.465 |
+| 2 | +0.538 / +0.491 / +0.542 | +0.434 / +0.381 / +0.449 |
+
+- **Fused > raw-luna in 6/6 corpus×seed cells** (mean Δ +0.035, sd 0.020) — the win's SIGN is robust;
+  its magnitude varies with the split (seed 1 exploratory nearly ties).
+- Refinement of the §3 claim: on EXPLORATORY the fused head effectively TIES the expensive-label 5.5 head
+  (Δ −0.015/+0.007/−0.004); on FRESH it recovers ~half the gap (−0.052/−0.054/−0.015). "Half the gap" was
+  the conservative read; on the denser corpus fusion closes it entirely.
+- The analytic luna channel value is stable across seeds: +0.766/+0.767/+0.805 (expl), +0.721/+0.700/+0.640
+  (fresh) NLL over prior+graph.
+- Level differences between seeds reflect the split (descendant-disjoint held sets differ in composition) —
+  comparisons are valid within a seed row, which is why the paired Δ is the reported statistic.
+
 ## Caveats
 
-Single seed, single split per corpus for the trained heads (the analytic ladder is held-out but one split);
+Single split per corpus per seed for the trained heads (the paired Δ handles level shifts);
 target = the 5.5 operating judge, not ground truth (same-family privilege — a human-verified subset remains
 the gold-standard upgrade); 14 non-dict response objects skipped at ingest (the §3 format-discipline guard);
 luna's fitted R absorbs its tilt as variance (bias-augmented state would price it properly).
