@@ -468,6 +468,20 @@ foreign_args_rest([]) -->
 %  of the same source reuse one loaded grammar). "compile" is reserved
 %  in this position only; elsewhere it still parses as an ordinary
 %  identifier.
+% compile_file(field-or-string): the path names a grammar SOURCE file
+% read at runtime; its contents compile through the same handle
+% registry as compile(...), so editing the file changes behaviour with
+% no rebuild (content dedup recompiles exactly when the bytes differ).
+% Parsed before compile: they share a prefix.
+dyncall_at_source(compile_file_src(Arg)) -->
+    "compile_file",
+    ws,
+    "(",
+    ws,
+    foreign_arg(Arg),
+    ws,
+    ")",
+    !.
 dyncall_at_source(compile_src(Arg)) -->
     "compile",
     ws,

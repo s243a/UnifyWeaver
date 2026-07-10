@@ -89,6 +89,49 @@ test(two_runtime_grammars_coexist, [condition(clang_available)]) :-
     assertion(Out == "194\n"),
     !.
 
+% compile_file(path) parses to its own node and counts as a compile
+% site (needs the shipped compiler object like compile(...)).
+test(compile_file_parses_and_collects) :-
+    plawk_parse_source(
+        "{ t += dyncall_at(compile_file($2), $1) }\nEND { print t }\n",
+        Program, _),
+    Program = program(_, Rules, _),
+    memberchk(rule(_, Actions), Rules),
+    memberchk(add(var(t), dyncall_at(compile_file_src(field(2)), [field(1)])),
+              Actions),
+    plawk_program_compile_sites(Program, Sites),
+    assertion(Sites == [field(2)]),
+    !.
+
+% compile_file(path): the grammar SOURCE lives in a file the binary
+% reads at runtime. Editing the file changes behaviour on the NEXT RUN
+% of the SAME binary -- no rebuild -- because content dedup treats the
+% edited text as a fresh source (the query/userspace redefinition
+% story, by content rather than mtime).
+test(compile_file_edit_changes_behavior_no_rebuild,
+     [condition(clang_available)]) :-
+    ev_dir(Dir),
+    directory_file_path(Dir, 'gram.pl', GramPath),
+    write_prog(Dir, 'gram.pl',
+        '[(sq(X2, R2) :- atom_number(X2, N2), R2 is N2 * N2)]'),
+    format(string(Src),
+        "{ total += dyncall_at(compile_file(\"~w\"), $1) }\n\c
+         END { print total }\n", [GramPath]),
+    write_prog(Dir, 'evfile.plawk', Src),
+    directory_file_path(Dir, 'evfile.plawk', Prog),
+    directory_file_path(Dir, 'evfile_bin', Bin),
+    cli([build, Prog, '-o', Bin], _, 0),
+    directory_file_path(Dir, 'nums.txt', Input),
+    write_num_lines(Input, [3, 4, 5, 10]),
+    run_bin(Bin, [Input], Out1, 0),
+    assertion(Out1 == "150\n"),                   % squares: 9+16+25+100
+    % swap the grammar source; same binary, no rebuild
+    write_prog(Dir, 'gram.pl',
+        '[(dbl(X3, R3) :- atom_number(X3, N3), R3 is N3 * 2)]'),
+    run_bin(Bin, [Input], Out2, 0),
+    assertion(Out2 == "44\n"),                    % doubles: 6+8+10+20
+    !.
+
 % compile(...) with the cache disabled is a build error (exit 3), not a
 % silent miscompile: the grammar handle lives in the cache registry.
 test(compile_with_cache_off_fails_build, [condition(clang_available)]) :-

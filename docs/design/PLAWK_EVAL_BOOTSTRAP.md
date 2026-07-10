@@ -30,8 +30,9 @@ BEGIN { DYNLOAD = "..." }
 
 Steps 3–5 already have their primitives: `@wam_object_call_bytes` returns a
 byte slice, and `@wam_object_load_bytes` + `@wam_object_call_i64` load and run
-a buffer. The `mtime` cache-invalidation path (#3465) is the natural home for
-"recompile when the source changes." **The hard part is step 1**: getting the
+a buffer. "Recompile when the source changes" landed as `compile_file(path)`
+with CONTENT dedup rather than the anticipated mtime path (#3465) -- see
+"The landed surface" below. **The hard part is step 1**: getting the
 compiler to run *as a loaded object*, which needs the loadable WAM subset
 expanded to cover what the compiler leans on.
 
@@ -75,10 +76,29 @@ How it works:
   converts with `atom_number/2` before arithmetic — the loaded runtime,
   like SWI, fails (rather than coerces) arithmetic on atoms.
 
+**`compile_file(path)`** — the grammar SOURCE lives in a file the binary
+reads at runtime (per call, via `@wamo_read_file`) and compiles through
+the same registry. Content dedup makes it change-rebust with **no mtime
+bookkeeping**: an edited file is new source text (fresh compile, fresh
+handle); unchanged bytes hit the registry. This is the query/userspace
+redefinition story by content rather than mtime — the same binary,
+rerun after editing the grammar file, behaves differently with no
+rebuild (and mid-run edits become visible on the next record).
+
+Descoped from the polish round, with rationale: **named entries on
+compile handles** (`dyncall_at@name(compile(...), ...)`) would need the
+bootstrap compiler to emit multi-entry tables and the loader to retain
+name→label maps per handle — the bootstrap emits single-entry objects
+by design, and a dispatch argument in the grammar covers the need.
+**Handle-in-scalar** (`g = compile($1)`) stays skipped: per-source
+dedup makes the nested form equivalent, and threading a handle kind
+through the SSA scalar plan buys no new capability.
+
 End-to-end tests: `tests/test_plawk_eval_compile.pl` — a grammar compiled
 from source text inside the binary sums `sq(x)` over input records; two
 distinct runtime-compiled grammars coexist with per-source dedup; the
-cache-off build error.
+cache-off build error; and the compile_file edit-without-rebuild round
+trip (squares 150 → edit the file → doubles 44, same binary).
 
 ## Why it is genuinely last
 
