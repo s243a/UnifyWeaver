@@ -174,6 +174,8 @@ counts, root IDs, graph-view rules, correction-manifest hash, model/judge identi
 4. Use `sample_product_kalman_simplemind_campaign.py` for the cleaned within-map SimpleMind primary view. It
    classifies structural labels case-insensitively, excludes secondary ancestry, preserves identity aliases, and
    emits the same hop-balanced unscored campaign schema.
-5. Freeze any title-correction manifests.
+5. Freeze the hash-bound policies in `title_policies/product_kalman_*_titles.json`, then use
+   `materialize_product_kalman_title_sensitivity.py` to produce matched audited pair and score-input views. The
+   materializer preserves pair/endpoint IDs, hop, and graph provenance and records canonical identity closure.
 6. Score all raw-title views with the same judge and model, then run matched audited-title sensitivities.
 7. Evaluate each corpus separately, followed by explicit cross-corpus and domain-transfer summaries.

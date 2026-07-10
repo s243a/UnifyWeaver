@@ -9,6 +9,10 @@ The primary SimpleMind view is the plain parent hierarchy within each map. Blank
 do not enter the primary lineage. Structural labels are classified case-insensitively because the source maps use
 variants such as `super Categories` and `via link`.
 
+The primary classifier also treats `subtopics` as a pass-through container, `super Topic` as a secondary
+super-category container, and `Root Node` as an organizational sentinel. These labels were found during the
+pre-scoring title audit and are removed before candidate pairs are formed.
+
 Only chains ending at the map's content root are retained. A private topic removes its entire raw subtree before
 endpoint metadata is assembled. Maps with private, sentinel, or conflicted-copy roots are excluded. Repeated
 consecutive title identities collapse; nonconsecutive repeats and endpoint pairs with conflicting direction or hop
@@ -50,18 +54,19 @@ python3 prototypes/mu_cosine/sample_product_kalman_simplemind_campaign.py \
 | --- | ---: |
 | maps retained | 6 of 6 |
 | raw topics | 685 |
-| primary-view real topics | 521 |
-| structural containers | 161 |
-| content-rooted path records | 370 |
-| cross-map link annotations retained as provenance, not edges | 150 |
+| primary-view real topics | 513 |
+| structural containers | 164 |
+| organizational sentinel topics | 5 |
+| content-rooted path records | 361 |
+| cross-map link annotations counted in the source audit, not used as edges | 150 |
 | explicit relations excluded from the primary view | 7 |
 | wiki anchors excluded as nodes, retained as endpoint aliases | 3 |
 | see-also ancestry rejections | 62 |
-| super-category ancestry rejections | 33 |
+| super-category ancestry rejections | 34 |
 | endpoint pairs rejected for direction conflict | 1 |
 | endpoint pairs rejected for hop conflict | 11 |
 
-The eligible pools after conflict removal contain 334, 296, 244, 171, and 106 pairs at hops 1 through 5.
+The eligible pools after conflict removal contain 329, 292, 241, 169, and 104 pairs at hops 1 through 5.
 No structural endpoint (`via link`, `see also`, `related`, or super-category label) remains in the selected table.
 
 ## Sample
@@ -71,18 +76,18 @@ Sampling is deterministic and round-robins across maps while a map has eligible 
 
 | hop | eligible pool | maps represented | largest map contribution |
 | ---: | ---: | ---: | ---: |
-| 1 | 334 | 6 | 10 |
-| 2 | 296 | 6 | 11 |
-| 3 | 244 | 6 | 22 |
-| 4 | 171 | 5 | 34 |
-| 5 | 106 | 5 | 38 |
+| 1 | 329 | 6 | 10 |
+| 2 | 292 | 6 | 11 |
+| 3 | 241 | 6 | 25 |
+| 4 | 169 | 5 | 36 |
+| 5 | 104 | 5 | 40 |
 
-Engineering contributes 38 of the 50 hop-5 rows. This concentration is a property of the available clean deep
+Engineering contributes 40 of the 50 hop-5 rows. This concentration is a property of the available clean deep
 paths, not a confidence signal. Later evaluation must report per-map sensitivity and must not interpret a pooled
 deep-hop effect as map-invariant.
 
 The selected rows contain 174 unique endpoint identities, 174 unique normalized titles, and 174 unique raw titles.
-Their identity overlay contains 145 Pearltrees slugs, three raw-title aliases, and one selected enwiki alias.
+Their identity overlay contains 148 Pearltrees slugs, two raw-title aliases, and one selected enwiki alias.
 The deterministic formatting audit found no duplicate normalized-title groups or encoding defects. That audit is
 not a spelling checker: raw typos such as `Differentail Equation` remain deliberately unchanged. Pearltrees slugs,
 enwiki aliases, raw topic IDs, source-map IDs, and title aliases are preserved for later identity closure and
@@ -92,9 +97,9 @@ audited-title sensitivity analysis. No semantic corrections were applied.
 
 | artifact | SHA-256 |
 | --- | --- |
-| `/tmp/mu_data/simplemind_campaign_pairs_unscored.tsv` | `2a81438a51360d48fe8b3a4a74e17850fc61e4e61a2e1be0d06b6b2a530eb43e` |
-| `/tmp/mu_data/simplemind_campaign_score_in_unscored.tsv` | `1768dbc2ebbba6a38b5036daf704e30594bbf86ce6e84120ecf89c377c750b7f` |
-| `/tmp/mu_data/simplemind_campaign_manifest_unscored.json` | `cea70e1b89865da27fc5e62a6217fde90fb7f4c8bf407943684e994a62bbc3af` |
+| `/tmp/mu_data/simplemind_campaign_pairs_unscored.tsv` | `9e53e73493a98d5361282ab1a5f8553a7ef2d0b196ba8ce09c3eee9651ce74e3` |
+| `/tmp/mu_data/simplemind_campaign_score_in_unscored.tsv` | `79fa5044e825c4daf127b2f400d3a6da89c423120c324ea26a5c5aea9b8d5e3e` |
+| `/tmp/mu_data/simplemind_campaign_manifest_unscored.json` | `cf4b7fc3cc33995e53796b49f596aafa625e064c19d922c5169fe035bcb9a033` |
 
 These files are local and ephemeral. The committed sampler, source fingerprints, seed, and command are the durable
 regeneration anchors.

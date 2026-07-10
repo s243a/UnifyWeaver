@@ -459,6 +459,10 @@ remaining D-channel shape defect as model-side relation-class structure rather t
   direction/hop conflicts excluded while raw title and cross-corpus identity metadata remain auditable.
 - `REPORT_product_kalman_simplemind_sampling.md` - durable unscored SimpleMind pilot sampling and source-audit
   summary, including deep-hop map concentration and raw-title typo guardrails.
+- `materialize_product_kalman_title_sensitivity.py` and its focused test - hash-bound matched audited-title
+  materialization that changes titles only and emits canonical identity-closure groups for later splits.
+- `title_policies/product_kalman_*_titles.json` and `REPORT_product_kalman_title_policies.md` - frozen
+  pre-scoring enwiki, Pearltrees, and SimpleMind correction policies and durable sensitivity-audit summary.
 - `DESIGN_uncertainty_estimation_playbook.md` — current rule: learned calibrated combiner, held-out node-disjoint,
   margin gate, and PoE as a control rather than an independence assumption.
 - `REPORT_mu_posterior.md` — empirical evidence that joint heads beat factored PoE under correlated readouts.
