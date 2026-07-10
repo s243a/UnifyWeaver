@@ -121,6 +121,47 @@ fn asserted_rule_body_can_call_retract() {
 }
 
 #[test]
+fn asserted_rule_body_retract_backtracks_without_skipping() {
+    let mut vm = WamState::new(vec![], HashMap::new());
+    for value in ["red", "blue", "green"] {
+        assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at(value)]));
+    }
+    assert_clause(
+        &mut vm,
+        "assertz/1",
+        rule(
+            fact("take", vec![ub("X")]),
+            fact("retract", vec![fact("dyn", vec![ub("X")])]),
+        ),
+    );
+
+    vm.reset_query();
+    vm.code = vec![
+        Instruction::Call("take/1".to_string(), 1),
+        Instruction::Proceed,
+    ];
+    vm.labels = HashMap::new();
+    vm.set_reg_str("A1", ub("X"));
+    vm.pc = 1;
+
+    let mut removed = Vec::new();
+    assert!(vm.run());
+    loop {
+        let result_raw = vm.bindings.get("X").cloned().expect("X bound");
+        removed.push(vm.deref_heap(&vm.deref_var(&result_raw)));
+        if !vm.backtrack() {
+            break;
+        }
+    }
+
+    assert_eq!(
+        removed,
+        vec![at("red"), at("blue"), at("green")],
+    );
+    assert!(dyn_values(&mut vm).is_empty());
+}
+
+#[test]
 fn retract_backtracks_through_each_matching_fact() {
     let mut vm = WamState::new(vec![Instruction::Call("retract/1".to_string(), 1), Instruction::Proceed], HashMap::new());
     assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("red")]));
