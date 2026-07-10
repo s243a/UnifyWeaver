@@ -171,7 +171,9 @@ counts, root IDs, graph-view rules, correction-manifest hash, model/judge identi
    and title-audit manifests before scoring.
 3. Use `sample_product_kalman_pearltrees_campaign.py` for the path-local Pearltrees primary view; keep its
    cross-record conflict exclusions and title aliases in the manifest.
-4. Add the SimpleMind cleaned within-map adapter with the same campaign output schema.
+4. Use `sample_product_kalman_simplemind_campaign.py` for the cleaned within-map SimpleMind primary view. It
+   classifies structural labels case-insensitively, excludes secondary ancestry, preserves identity aliases, and
+   emits the same hop-balanced unscored campaign schema.
 5. Freeze any title-correction manifests.
 6. Score all raw-title views with the same judge and model, then run matched audited-title sensitivities.
 7. Evaluate each corpus separately, followed by explicit cross-corpus and domain-transfer summaries.

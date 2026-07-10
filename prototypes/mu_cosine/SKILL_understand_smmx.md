@@ -117,6 +117,15 @@ Read `map_edges.tsv` instead of eyeballing the XML. (Run with no `--out-prefix` 
 edges on stdout.) The tool applies exactly the rules above; use it to avoid mistakes on large maps, and use
 the by-hand rules to sanity-check or when only XML is pasted to you.
 
+### Product-Kalman campaign primary view
+
+For the cross-corpus campaign, use `sample_product_kalman_simplemind_campaign.py`, not the parser's full typed-edge
+union. Its primary graph is only the plain, content-rooted within-map parent hierarchy, with blank containers
+bypassed. It excludes `See Also`/`Via Link`/`Related`, super-category, navigation, wiki-anchor, explicit-relation,
+and cross-map edges from hop calculations. Structural labels are matched case-insensitively because real maps use
+mixed-case variants. Raw titles, topic IDs, Pearltrees slugs, enwiki aliases, and title aliases remain in the output for
+identity closure and audited-title sensitivity; title typos are not silently corrected.
+
 ---
 
 ## For vision-capable models: render the map to an image
