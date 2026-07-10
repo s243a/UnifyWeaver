@@ -136,3 +136,18 @@ zero-init rows, `num_embeddings >= 9` forward-compat; `load_expanded` in fine_tu
 6. Acceptance: probe re-run — existing judges' readouts unchanged at init; after training, a held-out judge's
    zero-residual readout should beat the old zero-init-row baseline (the transfer test).
 7. Same procedure applies verbatim to OPS (operators) and CORPORA when their turn comes — one mechanism.
+
+## 7. Luna verdict: middle case — different judge, weak on S; stay on gpt-5.5-low (three-way, n=250)
+
+| channel | 5.5 self-consistency (ceiling) | luna vs 5.5 (two runs) | bias |
+|---|---|---|---|
+| D | 0.954 (MAE 0.064) | 0.78 / 0.83 (MAE ~0.17) | +0.07..+0.09 — luna reads MORE hierarchy |
+| S | 0.766 (MAE 0.071) | **0.35 / 0.44** (MAE ~0.16) | −0.11..−0.13 — luna reads LESS association |
+
+Not interchangeable: systematic opposite-direction biases per channel, and S — the channel the campaign
+exists to feed — at barely half the ceiling. Per the disposition criterion (§6): luna is NOT added under the
+indexed scheme and NOT used for campaign scoring (cheap labels for the wrong distribution are expensive).
+Re-enters consideration when the name architecture lands in B2 (onboards at the 0.97 family prior; the
+residual learns the +D/−S tilt), possibly at medium effort. Salvageable niche meanwhile: D-only bulk labeling
+with bias correction (0.83), but D is not the bottleneck. Judge-economics thread CLOSED for now:
+**gpt-5.5-low remains the campaign judge.**
