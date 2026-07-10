@@ -76,3 +76,13 @@ mostly-from-haiku/opus; a new vendor from the LLM centroid) instead of a zero ve
 out of the name geometry. Caveat: raw e5 cosines are baseline-inflated (~0.8); the learned translation W's job
 is to amplify the relative block structure. Strengthens the case for migrating judge conditioning to the
 name-function when B2 lands.
+
+**Luna disposition criterion (user, superseding the plain three-way rule):** the indexed judge_emb scheme only
+offers binary choices — reuse 5.5's row (contaminates its calibration if luna differs) or a new zero-init row
+(discards the 0.97 family prior; the probe showed zero-init rows barely learn). A similar-but-not-identical
+judge falls in the gap. So: **interchangeable** ⇒ map luna to the gpt-5.5-low row, take the cheap data, defer
+the architecture; **middle case** ⇒ do NOT add luna under the indexed scheme — either migrate to
+name-conditioning first (B2, now with a forcing use-case) or use the pragmatic bridge: a new index WARM-STARTED
+as a copy of 5.5's row (hand-made name-prior; inherit family calibration, learn only the deviation);
+**degenerate** ⇒ stay on 5.5. General principle: the indexed scheme is adequate while the judge set is static;
+the first similar-but-not-identical judge is the forcing function for the general judge/source architecture.
