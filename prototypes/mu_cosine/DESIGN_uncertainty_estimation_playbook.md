@@ -9,7 +9,7 @@ for "confidence weighting." This encodes lessons the project learned the slow wa
 **Don't hand-set independent confidence weights over correlated sources. Fit a LEARNED, CALIBRATED combiner
 (`JointPosterior`) on HELD-OUT data, and use confidence as a MARGIN GATE, not a per-item weight.**
 
-## The six pitfalls (each one we actually hit)
+## The seven pitfalls (each one we actually hit)
 
 1. **Sources are not independent → naive/inverse-variance fusion over-confidences.** In this project every
    model readout *consumes frozen e5*, so `e5`, `μ_SYM`, `μ_HIER`, `μ_ELEM` are correlated (measured **+0.751**,
@@ -38,6 +38,12 @@ for "confidence weighting." This encodes lessons the project learned the slow wa
    train/eval-share-a-judge confound; `REPORT_blend_judge_sweep.md` — a +0.41→+0.79 SYM "gain" on a haiku-scored
    eval, driven by adding LLM training data). To claim a *general* improvement, evaluate against an
    **independent** target (a different judge, graph-structural, human, or a downstream task).
+7. **Distributional calibration is not per-query discrimination.** A covariance model can improve held-out NLL,
+   PIT, and interval coverage while failing to rank which individual predictions will have larger errors. The
+   hop-conditioned Product-Kalman covariance did exactly this on the public holdouts: continuous NLL improved on
+   every valid split, but `trace(V(hop))` failed the frozen cross-corpus selective-risk gate
+   (`REPORT_product_kalman_continuous_selective_risk.md`). *Fix:* use covariance for likelihood and confidence
+   regions; before using it to route or abstain, separately require held-out risk-coverage discrimination.
 
 ## The workflow (what "doing it right" looks like)
 
