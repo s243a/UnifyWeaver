@@ -1,0 +1,9 @@
+{
+  "corpus": "enwiki",
+  "corrections": [],
+  "frozen_date": "2026-07-09",
+  "review_method": "MediaWiki titles retained as the canonical raw and audited view; no sampled title met the correction rule.",
+  "schema_version": 1,
+  "source_pairs_sha256": "e6bcb7c64704c9f69a854267648b9d3fb40bf7084cdbe35e51d1c5d5544a1e1b",
+  "status": "frozen_pre_scoring"
+}

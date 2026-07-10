@@ -60,7 +60,8 @@ def canonical_title(title):
 
 
 SEE_ALSO_IDENTITIES = {canonical_title(title) for title in SEE_ALSO}
-SUPER_IDENTITIES = {canonical_title(title) for title in SUPER}
+SUPER_IDENTITIES = {canonical_title(title) for title in SUPER} | {"super topic"}
+PASS_THROUGH_IDENTITIES = {"subtopics"}
 
 
 def structural_kind(title):
@@ -71,6 +72,8 @@ def structural_kind(title):
         return "see_also"
     if identity in SUPER_IDENTITIES:
         return "super_category"
+    if identity in PASS_THROUGH_IDENTITIES:
+        return "pass_through"
     return None
 
 
@@ -178,7 +181,11 @@ def parse_primary_map(path):
         if structural_kind(label(topic)) is not None
     }
     navigation_ids = {topic_id for topic_id, topic in topics.items() if NAV_LABEL.match(label(topic))}
-    real_ids = set(topics) - private_ids - anchor_ids - container_ids - navigation_ids
+    sentinel_ids = {
+        topic_id for topic_id, topic in topics.items()
+        if canonical_title(label(topic)) in SENTINEL_ROOTS
+    }
+    real_ids = set(topics) - private_ids - anchor_ids - container_ids - navigation_ids - sentinel_ids
     if root_id not in real_ids:
         source["status"] = "excluded_noncontent_root"
         return [], source, {"map_excluded_noncontent_root": 1}
@@ -225,6 +232,9 @@ def parse_primary_map(path):
             seen.add(parent_id)
             if parent_id in private_ids:
                 reason = "private_ancestry"
+                break
+            if parent_id in sentinel_ids:
+                reason = "sentinel_ancestry"
                 break
             if parent_id in navigation_ids:
                 reason = "navigation_ancestry"
@@ -300,6 +310,7 @@ def parse_primary_map(path):
         "structural_containers": len(container_ids),
         "wiki_anchor_topics": len(anchor_ids),
         "navigation_topics": len(navigation_ids),
+        "sentinel_topics": len(sentinel_ids),
         "cross_map_link_topics": sum(bool(cloud_of(topic)[0]) for topic in topics.values()),
         "explicit_relations": len(root.findall(".//relation")),
         "primary_parent_edges": len(primary_parent),

@@ -122,9 +122,10 @@ the by-hand rules to sanity-check or when only XML is pasted to you.
 For the cross-corpus campaign, use `sample_product_kalman_simplemind_campaign.py`, not the parser's full typed-edge
 union. Its primary graph is only the plain, content-rooted within-map parent hierarchy, with blank containers
 bypassed. It excludes `See Also`/`Via Link`/`Related`, super-category, navigation, wiki-anchor, explicit-relation,
-and cross-map edges from hop calculations. Structural labels are matched case-insensitively because real maps use
-mixed-case variants. Raw titles, topic IDs, Pearltrees slugs, enwiki aliases, and title aliases remain in the output for
-identity closure and audited-title sensitivity; title typos are not silently corrected.
+and cross-map edges from hop calculations. It also bypasses `subtopics`, treats `super Topic` as a secondary
+super-category container, and removes `Root Node` sentinels before forming paths. Structural labels are matched case-insensitively because real maps
+use mixed-case variants. Raw titles, topic IDs, Pearltrees slugs, enwiki aliases, and title aliases remain in the
+output for identity closure and audited-title sensitivity; title typos are not silently corrected.
 
 ---
 
