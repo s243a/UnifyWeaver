@@ -983,10 +983,12 @@ break_action(break) -->
 %  pairs populates a plawk assoc array.
 %
 %      arr = dyncall@tally($1) as assoc
+%      arr = dyncall($1) as assoc          % DYNLOAD object's default entry
 %
-%  desugars to dynassoc_bind(var(arr), dyncall_named(tally, [field(1)])); per
-%  record the returned [K-V, ...] pairs are inserted into arr's i64 table, so
-%  END `arr[key]` lookups see the accumulated result.
+%  desugars to dynassoc_bind(var(arr), dyncall_named(tally, [field(1)]))
+%  (or dynassoc_bind(var(arr), dyncall([field(1)])) for the default-entry
+%  form); per record the returned [K-V, ...] pairs are inserted into arr's
+%  i64 table, so END `arr[key]` lookups see the accumulated result.
 dynassoc_bind_action(dynassoc_bind(var(Name), Call)) -->
     identifier(Name),
     ws,

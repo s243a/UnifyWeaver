@@ -13,6 +13,7 @@
     plawk_program_dyncall_rec_arities/2,
     plawk_program_dyncall_named_rec_entries/2,
     plawk_program_dyncall_named_assoc_entries/2,
+    plawk_program_dyncall_assoc_arities/2,
     plawk_program_dyncall_at_arities/2,
     plawk_program_dyncall_float_arities/2,
     plawk_program_dyncall_at_float_arities/2,
@@ -638,6 +639,7 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
     plawk_program_dyncall_rec_arities(Program, DynRecArities),
     plawk_program_dyncall_named_rec_entries(Program, DynNamedRec),
     plawk_program_dyncall_named_assoc_entries(Program, DynNamedAssoc),
+    plawk_program_dyncall_assoc_arities(Program, DynAssocArities),
     plawk_program_dyncall_at_arities(Program, DynAtArities),
     plawk_program_dyncall_float_arities(Program, DynFArities),
     plawk_program_dyncall_at_float_arities(Program, DynAtFArities),
@@ -653,6 +655,7 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
         DynRecArities == [],
         DynNamedRec == [],
         DynNamedAssoc == [],
+        DynAssocArities == [],
         DynAtArities == [],
         DynFArities == [],
         DynAtFArities == [],
@@ -672,7 +675,8 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
         % blob(dyncall(...)) sites, plus the shared .wamo object handle.
         (   DynArities == [], DynFArities == [], DynBArities == [],
             DynNamed == [], DynNamedF == [], DynNamedB == [],
-            DynRecArities == [], DynNamedRec == [], DynNamedAssoc == []
+            DynRecArities == [], DynNamedRec == [], DynNamedAssoc == [],
+            DynAssocArities == []
         ->  DyncallSupportIR = ''
         ;   ( plawk_program_dynload_path(Program, DynPath)
             ->  true
@@ -682,7 +686,8 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
             ),
             plawk_dyncall_support_ir(DynPath, DynArities, DynFArities,
                 DynBArities, DynNamed, DynNamedF, DynNamedB,
-                DynRecArities, DynNamedRec, DynNamedAssoc, DyncallSupportIR)
+                DynRecArities, DynNamedRec, DynNamedAssoc, DynAssocArities,
+                DyncallSupportIR)
         ),
         % Dynamic-source shims for dyncall_at(...) / float(dyncall_at(...)) /
         % blob(dyncall_at(...)) sites + the shared path cache.
@@ -905,6 +910,24 @@ plawk_program_dyncall_named_assoc_entries(program(_Begin, Rules, EndClauses),
         ),
         Entries0),
     sort(Entries0, Entries).
+
+%% plawk_program_dyncall_assoc_arities(+Program, -Arities)
+%  Default-entry `arr = dyncall(args) as assoc` sites (deferred small
+%  item) -- one @plawk_dyncall_assoc_default_<N> shim per arity; the
+%  entry is the DYNLOAD object's default (wamo_entry), resolved like a
+%  plain dyncall.
+plawk_program_dyncall_assoc_arities(program(_Begin, Rules, EndClauses),
+        Arities) :-
+    findall(NArgs,
+        ( ( member(rule(_Pattern, Actions), Rules)
+          ; member(end(Actions), EndClauses)
+          ),
+          member(Action, Actions),
+          plawk_subterm_dynassoc_call(Action, dyncall(Args)),
+          length(Args, NArgs)
+        ),
+        A0),
+    sort(A0, Arities).
 
 plawk_subterm_dynassoc_call(dynassoc_bind(_Var, Call), Call).
 plawk_subterm_dynassoc_call(Term, Call) :-
@@ -1234,11 +1257,15 @@ plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
 plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
         NamedI, NamedF, NamedB, RecArities, NamedRec, IR) :-
     plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
-        NamedI, NamedF, NamedB, RecArities, NamedRec, [], IR).
+        NamedI, NamedF, NamedB, RecArities, NamedRec, [], [], IR).
+plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
+        NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc, IR) :-
+    plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
+        NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc, [], IR).
 
 %% plawk_dyncall_support_ir(+Path, +IArities, +FArities, +BArities,
 %%                          +NamedI, +NamedF, +NamedB, +RecArities,
-%%                          +NamedRec, -IR)
+%%                          +NamedRec, +NamedAssoc, +AssocArities, -IR)
 %  IArities -> i64 @plawk_dyncall_N shims; FArities -> double
 %  @plawk_dyncall_f_N shims (float(dyncall(...))); BArities -> byte-slice
 %  @plawk_dyncall_b_N shims (blob(dyncall(...))). NamedI/NamedF/NamedB are
@@ -1250,10 +1277,13 @@ plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
 %  @wam_object_call_*. RecArities -> i1 @plawk_dyncall_rec_N record shims
 %  (default entry) and NamedRec -> @plawk_dyncall_named_rec_<Name>_<N>
 %  record shims, both forwarding to @wam_object_call_record for structured
-%  destructure binds (they also feed the resolver union). All share the
-%  single lazily loaded object handle + @plawk_dyncall_get.
+%  destructure binds (they also feed the resolver union). NamedAssoc ->
+%  @plawk_dyncall_assoc_<Name>_<N> assoc-populating shims and AssocArities
+%  -> their default-entry @plawk_dyncall_assoc_default_<N> counterparts.
+%  All share the single lazily loaded object handle + @plawk_dyncall_get.
 plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
-        NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc, IR) :-
+        NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc,
+        AssocArities, IR) :-
     llvm_emit_c_string_global('plawk_dyncall_path', Path, PathGlobal,
         _StrLen, BytesLen),
     format(atom(GetterIR),
@@ -1320,9 +1350,13 @@ load:
         ( member(NAName-NANArgs, NamedAssoc),
           plawk_dyncall_named_assoc_shim_ir(NAName, NANArgs, NAShim) ),
         NAShims),
+    findall(DAShim,
+        ( member(DAN, AssocArities),
+          plawk_dyncall_assoc_default_shim_ir(DAN, DAShim) ),
+        DAShims),
     append([[PathGlobal, GetterIR], IShims, FShims, BShims,
             Resolvers, NIShims, NFShims, NBShims, RecShims, NRecShims,
-            NAShims], Parts),
+            NAShims, DAShims], Parts),
     atomic_list_concat(Parts, '\n\n', IR).
 
 %% plawk_dyncall_named_assoc_shim_ir(+Name, +NArgs, -IR)
@@ -1352,6 +1386,34 @@ fail:
   ret i1 false
 }',
         [Sym, ParamsIR, Sym, NArgs, StoreIR, NArgs, NArgs]).
+
+%% plawk_dyncall_assoc_default_shim_ir(+NArgs, -IR)
+%  Assoc shim for `arr = dyncall(args) as assoc` against the DYNLOAD
+%  object's default entry: load the shared object handle, take the entry
+%  PC recorded at load time (no resolver), box args, and forward the
+%  caller's assoc table to @wam_object_call_assoc.
+plawk_dyncall_assoc_default_shim_ir(NArgs, IR) :-
+    plawk_foreign_wrapper_params(NArgs, ParamsIR),
+    plawk_dyncall_store_lines(NArgs, StoreLines),
+    atomic_list_concat(StoreLines, '\n', StoreIR),
+    format(atom(IR),
+'define i1 @plawk_dyncall_assoc_default_~w(~w, %WamAssocI64Table* %table) {
+entry:
+  %vm = call %WamState* @plawk_dyncall_get()
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+
+do_call:
+  %pc = load i32, i32* @plawk_dyncall_pc
+  %args = alloca %Value, i32 ~w
+~w
+  %r = call i1 @wam_object_call_assoc(%WamState* %vm, i32 %pc, i32 ~w, %Value* %args, i32 ~w, %WamAssocI64Table* %table)
+  ret i1 %r
+
+fail:
+  ret i1 false
+}',
+        [NArgs, ParamsIR, NArgs, StoreIR, NArgs, NArgs]).
 
 %% plawk_dyncall_rec_shim_ir(+NArgs, -IR)
 %  Record shim for a default-entry destructure bind: resolve vm/pc from the
@@ -6383,6 +6445,11 @@ plawk_dynassoc_call_parts(dyncall_named(Name, Args), Args, ShimName) :-
     length(Args, NArgs),
     plawk_dyncall_named_symbol(Name, NArgs, Sym),
     format(atom(ShimName), 'plawk_dyncall_assoc_~w', [Sym]).
+% default entry: arr = dyncall(args) as assoc -- the DYNLOAD object's
+% wamo_entry, resolved like a plain dyncall (deferred small item).
+plawk_dynassoc_call_parts(dyncall(Args), Args, ShimName) :-
+    length(Args, NArgs),
+    format(atom(ShimName), 'plawk_dyncall_assoc_default_~w', [NArgs]).
 
 plawk_dynrec_field_load_lines([], [], _Base, []).
 plawk_dynrec_field_load_lines([F | Fs], [Type | Ts], Base, [Line | Lines]) :-

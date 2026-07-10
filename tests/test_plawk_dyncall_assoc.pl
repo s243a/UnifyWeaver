@@ -111,6 +111,46 @@ test(assoc_atom_keys_string_lookup, [condition(clang_available)]) :-
     assertion(Out == "4 4\n"),
     !.
 
+% Default-entry variant (deferred small item): `arr = dyncall(...) as assoc`
+% runs the DYNLOAD object's wamo_entry -- no @name, no resolver.
+test(assoc_default_entry_parses) :-
+    plawk_parse_string(
+        "BEGIN { DYNLOAD = \"lib.wamo\" }\n\c
+         { arr = dyncall($1) as assoc }\nEND { print arr[1] }\n",
+        program(_, [rule(_, Actions)], _)),
+    memberchk(dynassoc_bind(var(arr), dyncall([field(1)])), Actions),
+    !.
+
+% The default-entry arity is collected and its shim is emitted (taking the
+% entry PC recorded at object-load time, not a named resolver).
+test(assoc_default_entry_ir_emitted) :-
+    plawk_parse_string(
+        "BEGIN { BINFMT = \"i64\" ; DYNLOAD = \"lib.wamo\" }\n\c
+         { arr = dyncall($1) as assoc }\nEND { print arr[1] }\n",
+        Program),
+    plawk_program_dyncall_assoc_arities(Program, Arities),
+    assertion(Arities == [1]),
+    plawk_program_native_driver_ir(Program, stdin_or_argv,
+        [wam_vm(10, 10)], IR),
+    sub_atom(IR, _, _, _, '@plawk_dyncall_assoc_default_1'),
+    sub_atom(IR, _, _, _, '@wam_object_call_assoc'),
+    \+ sub_atom(IR, _, _, _, '@plawk_dyncall_resolve_'),
+    !.
+
+% Full round trip against the object's DEFAULT entry: same tally grammar,
+% same accumulation, without naming it at the call site.
+test(assoc_default_entry_populates_and_reads, [condition(clang_available)]) :-
+    da_dir(Dir),
+    directory_file_path(Dir, 'libdef.wamo', Wamo),
+    write_wam_object([user:tally/2], [wamo_entry(tally/2)], Wamo),
+    format(string(Src),
+        "BEGIN { BINFMT = \"i64\" ; DYNLOAD = \"~w\" }\n\c
+         { arr = dyncall($1) as assoc }\n\c
+         END { print arr[1], arr[2] }\n", [Wamo]),
+    build_run(Dir, 'dadef', Src, [5, 7], Out),
+    assertion(Out == "12 200\n"),
+    !.
+
 :- end_tests(plawk_dyncall_assoc).
 
 % --- helpers ---------------------------------------------------------------
