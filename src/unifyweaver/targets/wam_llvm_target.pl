@@ -6853,6 +6853,33 @@ entry:
   ret %Value %v
 }
 
+; Unary compound builder (the prefix-operator counterpart of
+; @wam_build_binop): functor from the token bytes, arity 1, one arg.
+define %Value @wam_build_unop(i8* %s, i64 %opstart, i64 %oplen, %Value %a) {
+entry:
+  %nameptr = getelementptr i8, i8* %s, i64 %opstart
+  %fid = call i64 @wam_intern_atom(i8* %nameptr, i64 %oplen)
+  %fnstr = call i8* @wam_atom_to_string(i64 %fid)
+  call void @wam_arena_ensure()
+  %cpsz = ptrtoint %Compound* getelementptr (%Compound, %Compound* null, i32 1) to i64
+  %cpmem = call i8* @wam_arena_alloc(i64 %cpsz)
+  %cp = bitcast i8* %cpmem to %Compound*
+  %fnsl = getelementptr %Compound, %Compound* %cp, i32 0, i32 0
+  store i8* %fnstr, i8** %fnsl
+  %arsl = getelementptr %Compound, %Compound* %cp, i32 0, i32 1
+  store i32 1, i32* %arsl
+  %argsmem = call i8* @wam_arena_alloc(i64 16)
+  %args = bitcast i8* %argsmem to %Value*
+  %argssl = getelementptr %Compound, %Compound* %cp, i32 0, i32 2
+  store %Value* %args, %Value** %argssl
+  %a0 = getelementptr %Value, %Value* %args, i64 0
+  store %Value %a, %Value* %a0
+  %cpi = ptrtoint %Compound* %cp to i64
+  %v0 = insertvalue %Value undef, i32 3, 0
+  %v = insertvalue %Value %v0, i64 %cpi, 1
+  ret %Value %v
+}
+
 ; Parse a term of priority <= maxprec: a primary, then a left-associative
 ; infix-operator loop (precedence climbing). yfx/xfx parse the right operand at
 ; prio-1, xfy at prio, giving correct associativity.
@@ -7137,7 +7164,53 @@ chk_paren:
   br i1 %is_lp0, label %do_paren, label %chk_quote
 chk_quote:
   %is_q = icmp eq i8 %c, 39
-  br i1 %is_q, label %do_quoted, label %chk_digit
+  br i1 %is_q, label %do_quoted, label %chk_bang
+chk_bang:
+  ; `!` is a SOLO token (neither a symbol-run nor an alnum char), read
+  ; as the atom ! -- the cut goal. Demand-driven subset growth: grammars
+  ; fed to compile(...) use cut freely; before this case the reader
+  ; simply failed on it.
+  %is_bang = icmp eq i8 %c, 33
+  br i1 %is_bang, label %do_bang, label %chk_backslash
+chk_backslash:
+  %is_bsl = icmp eq i8 %c, 92
+  br i1 %is_bsl, label %chk_nplus, label %chk_digit
+do_bang:
+  %bangp = getelementptr i8, i8* %s, i64 %p0
+  %bang_id = call i64 @wam_intern_atom(i8* %bangp, i64 1)
+  %bang1 = add i64 %p0, 1
+  store i64 %bang1, i64* %pos
+  %bv0 = insertvalue %Value undef, i32 0, 0
+  %bv = insertvalue %Value %bv0, i64 %bang_id, 1
+  ret %Value %bv
+chk_nplus:
+  ; prefix negation-as-failure (backslash-plus, fy 900): the only
+  ; prefix operator the reader knows -- parse the operand at 900 and
+  ; build the arity-1 compound. Guarded on exactly the two bytes 92,43
+  ; with no third symbol char, so a longer symbol run still reads as an
+  ; ordinary name token.
+  %np1 = add i64 %p0, 1
+  %np_has2 = icmp ult i64 %np1, %len
+  br i1 %np_has2, label %chk_nplus2, label %read_ident
+chk_nplus2:
+  %np1p = getelementptr i8, i8* %s, i64 %np1
+  %np1c = load i8, i8* %np1p
+  %np_is_plus = icmp eq i8 %np1c, 43
+  br i1 %np_is_plus, label %chk_nplus3, label %read_ident
+chk_nplus3:
+  %np2 = add i64 %p0, 2
+  %np_has3 = icmp ult i64 %np2, %len
+  br i1 %np_has3, label %chk_nplus4, label %do_nplus
+chk_nplus4:
+  %np2p = getelementptr i8, i8* %s, i64 %np2
+  %np2c = load i8, i8* %np2p
+  %np2_sym = call i1 @wam_is_symbol_char(i8 %np2c)
+  br i1 %np2_sym, label %read_ident, label %do_nplus
+do_nplus:
+  store i64 %np2, i64* %pos
+  %np_arg = call %Value @wam_parse_expr(%WamState* %vm, i8* %s, i64 %len, i64* %pos, i32 900)
+  %np_v = call %Value @wam_build_unop(i8* %s, i64 %p0, i64 2, %Value %np_arg)
+  ret %Value %np_v
 chk_digit:
   %c_ge0 = icmp uge i8 %c, 48
   %c_le9 = icmp ule i8 %c, 57

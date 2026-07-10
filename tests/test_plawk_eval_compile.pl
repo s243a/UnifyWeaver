@@ -132,6 +132,27 @@ test(compile_file_edit_changes_behavior_no_rebuild,
     assertion(Out2 == "44\n"),                    % doubles: 6+8+10+20
     !.
 
+% Demand-driven subset growth: real Prolog idioms -- committed choice
+% (cut), bare backtrackable disjunction -- now compile AT RUNTIME.
+% cls2(3): guard fails, second clause, first branch (7); cls2(4):
+% first branch fails, BACKTRACKS to the second (1); cls2(5)/cls2(10):
+% guard passes, cut commits (100 each). 7+1+100+100 = 208.
+test(compile_runs_grammar_with_cut_and_disjunction,
+     [condition(clang_available)]) :-
+    ev_dir(Dir),
+    format(string(Src),
+        "{ total += dyncall_at(compile(\"[(cls(X2, R2) :- atom_number(X2, N2), cls2(N2, R2)), (cls2(N3, R3) :- N3 > 4, !, R3 = 100), (cls2(N4, R4) :- (N4 == 3, R4 = 7 ; R4 = 1))]\"), $1) }\n\c
+         END { print total }\n", []),
+    write_prog(Dir, 'cutdisj.plawk', Src),
+    directory_file_path(Dir, 'cutdisj.plawk', Prog),
+    directory_file_path(Dir, 'cutdisj_bin', Bin),
+    cli([build, Prog, '-o', Bin], _, 0),
+    directory_file_path(Dir, 'nums.txt', Input),
+    write_num_lines(Input, [3, 4, 5, 10]),
+    run_bin(Bin, [Input], Out, 0),
+    assertion(Out == "208\n"),
+    !.
+
 % compile(...) with the cache disabled is a build error (exit 3), not a
 % silent miscompile: the grammar handle lives in the cache registry.
 test(compile_with_cache_off_fails_build, [condition(clang_available)]) :-

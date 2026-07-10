@@ -492,7 +492,7 @@ walk_term(T, S0, S) :- compound(T), !, T =.. [F|Args],
 % control / goal functors never appear as data terms in instructions
 skip_fn(':-'). skip_fn(','). skip_fn(';'). skip_fn('->'). skip_fn(is).
 skip_fn(=). skip_fn(>). skip_fn(<). skip_fn(>=). skip_fn(=<).
-skip_fn(=:=). skip_fn(=\=). skip_fn(==). skip_fn(\==).
+skip_fn(=:=). skip_fn(=\=). skip_fn(==). skip_fn(\==). skip_fn(\+).
 walk_term(T, S0, S) :- atom(T), !,          % data atom -> atom table
     S0 = s(At0, Fn0), add_unique(T, At0, At1), S = s(At1, Fn0).
 walk_term(_, S, S).
@@ -650,6 +650,30 @@ f_goal(( C -> T ; E ), PL, At, FT, PC0, PC, L0, L, Prs0, Prs, In0, In, Is) :- !,
     inter(InT, InE, In),
     append([enc(22,ElseL,0,0)|CondIs], [enc(31,0,0,0)|ThenIs], Front),
     append(Front, [enc(32,JoinL,0,0), enc(24,0,0,0)|ElseIs], Is).
+% BARE disjunction ( A ; B ) -- the ITE shape WITHOUT the soft cut, so
+% the alternatives stay backtrackable: a failure after the first branch
+% succeeds re-enters at the second (try_me_else's CP is still live).
+% Demand-driven subset growth: common in real grammars fed to
+% compile(...). Placed after the ITE clause, so ( C -> T ; E ) keeps
+% its committed-choice compilation.
+f_goal(( A ; B ), PL, At, FT, PC0, PC, L0, L, Prs0, Prs, In0, In, Is) :- !,
+    ElseL = L0, JoinL is L0 + 1, L1 is L0 + 2,
+    conj_list(A, AGs), conj_list(B, BGs),
+    PC1 is PC0 + 1,                                    % try_me_else(ElseL)
+    f_goals(AGs, PL, At, FT, PC1, PC2, L1, L2, Prs0, Prs1, In0, InA, AIs),
+    ElsePC is PC2 + 1,                                 % after jump(JoinL)
+    PC5 is ElsePC + 1,                                 % after trust_me
+    f_goals(BGs, PL, At, FT, PC5, JoinPC, L2, L, Prs1, Prs2, In0, InB, BIs),
+    PC = JoinPC,
+    append(Prs2, [ElseL-ElsePC, JoinL-JoinPC], Prs),
+    inter(InA, InB, In),
+    append([enc(22,ElseL,0,0)|AIs],
+        [enc(32,JoinL,0,0), enc(24,0,0,0)|BIs], Is).
+% Negation as failure: \+ G desugars to ( G -> fail ; true ) and rides
+% the ITE machinery unchanged (fail/0 and true/0 are runtime builtins).
+f_goal((\+ G), PL, At, FT, PC0, PC, L0, L, Prs0, Prs, In0, In, Is) :- !,
+    f_goal(( G -> fail ; true ), PL, At, FT, PC0, PC, L0, L, Prs0, Prs,
+        In0, In, Is).
 f_goal((L is E), _, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In2, Is) :- !,
     % NESTED arithmetic: the expression is just a term -- stage it with
     % c_operand (build_struct + X-temp deferral handles arbitrary nesting,
@@ -737,6 +761,24 @@ bi_id(succ, 2, 22).
 bi_id(\=, 2, 25).
 bi_id(sum_list, 2, 59).
 bi_id(numbervars, 3, 124).
+% demand-driven subset growth: control atoms and the text/string family
+% (all existing runtime builtins -- these rows only let source-level
+% grammars reach them). Plain `!` is the runtime's clause-level cut
+% builtin; true/fail anchor the \+ desugar above. assertz-family ids
+% exist in the runtime but stay unlisted until call/N emission lands (a
+% grammar cannot read the store back without it).
+bi_id(!, 0, 10).
+bi_id(true, 0, 8).
+bi_id(fail, 0, 9).
+bi_id(sub_atom, 5, 41).
+bi_id(upcase_atom, 2, 45).
+bi_id(downcase_atom, 2, 46).
+bi_id(string_concat, 3, 47).
+bi_id(atom_string, 2, 49).
+bi_id(split_string, 4, 85).
+bi_id(term_to_atom, 2, 173).
+bi_id(char_type, 2, 75).
+bi_id(code_type, 2, 172).
 bi_id(term_to_atom, 2, 173).
 bi_id(read_term_from_atom, 2, 174).
 
