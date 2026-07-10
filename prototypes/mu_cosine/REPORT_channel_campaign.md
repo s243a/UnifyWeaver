@@ -151,3 +151,17 @@ Re-enters consideration when the name architecture lands in B2 (onboards at the 
 residual learns the +D/−S tilt), possibly at medium effort. Salvageable niche meanwhile: D-only bulk labeling
 with bias correction (0.83), but D is not the bottleneck. Judge-economics thread CLOSED for now:
 **gpt-5.5-low remains the campaign judge.**
+
+## 8. The caveat quantified: within-stratum vs between-strata S correlation (closes §2's open number)
+
+| | pooled | between-strata | WITHIN-stratum |
+|---|---|---|---|
+| exploratory | +0.740 | +0.998 | **+0.355** |
+| fresh | +0.613 | +0.969 | **+0.306** |
+
+Per-stratum within: cousins **+0.59/+0.50**, siblings +0.33/+0.31, transitive +0.18/+0.13, random ≈0 (correct —
+no S variance exists there). Honest restatement of the headline: the S head learned (a) the stratum ordering
+near-perfectly — real deployable knowledge, but partly inferable from graph position alone — and (b) a genuine
+within-stratum SEMANTIC signal of ~+0.3 (cousins +0.5), versus the old data's flat zero. The channel is real
+but the pooled +0.74 overstates the semantic component; +0.31–0.36 (within) is the number the e5 features earn
+beyond graph structure. B2's distillation targets should be evaluated with this same decomposition.
