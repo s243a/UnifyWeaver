@@ -1469,6 +1469,25 @@ i64_factor_expr(var(Name)) -->
 % freshly compiled grammar. compile() dedups by source text, so a
 % per-record `dyncall_at(compile($1), $2)` compiles each distinct
 % grammar once and reuses it from the cache thereafter.
+% dyncall_at@name(Source, args...) selects a NAMED entry of the
+% runtime-chosen object -- the composition of the two selection axes:
+% the source is runtime data (a path expression or a compile() handle),
+% the entry name is a compile-time token. Because the object is not
+% fixed, the name resolves per call against the loaded VM's
+% materialized entry table (@wam_object_vm_entry_pc) rather than a
+% startup-cached PC. Parsed before the bare dyncall_at so the @ form
+% wins.
+prolog_call_expr(dyncall_at_named(Name, Source, Args)) -->
+    "dyncall_at@",
+    identifier(Name),
+    ws,
+    "(",
+    ws,
+    dyncall_at_source(Source),
+    foreign_args_rest(Args),
+    ws,
+    ")",
+    !.
 prolog_call_expr(dyncall_at(Source, Args)) -->
     "dyncall_at",
     ws,

@@ -114,6 +114,14 @@ define %WamState* @wam_state_new(%Instruction* %code, i32 %code_len, i32* %label
   %vardict_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 27
   store i8* null, i8** %vardict_ptr
 
+  ; obj_entries = null, obj_entries_count = 0. Host VMs never carry an
+  ; object entry-name table; the .wamo loader installs one after
+  ; wam_state_new (mirroring the meta-call table above).
+  %objent_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 28
+  store %WamEntryRow* null, %WamEntryRow** %objent_ptr
+  %objentc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 29
+  store i32 0, i32* %objentc_ptr
+
   ret %WamState* %vm
 }
 
@@ -188,6 +196,31 @@ cp_done_label:
   %objmeta = load %WamMetaRow*, %WamMetaRow** %objmeta_fp
   %objmeta_i8 = bitcast %WamMetaRow* %objmeta to i8*
   call void @free(i8* %objmeta_i8)
+
+  ; Free the loaded-object entry-name table, if any: each row owns a
+  ; malloc'd name copy, then the row array itself.
+  %objent_fp = getelementptr %WamState, %WamState* %vm, i32 0, i32 28
+  %objent = load %WamEntryRow*, %WamEntryRow** %objent_fp
+  %objentc_fp = getelementptr %WamState, %WamState* %vm, i32 0, i32 29
+  %objentc = load i32, i32* %objentc_fp
+  br label %ent_loop
+
+ent_loop:
+  %ei = phi i32 [ 0, %cp_done_label ], [ %ei_next, %ent_free ]
+  %ent_done = icmp uge i32 %ei, %objentc
+  br i1 %ent_done, label %ent_done_label, label %ent_free
+
+ent_free:
+  %ent_row = getelementptr %WamEntryRow, %WamEntryRow* %objent, i32 %ei
+  %ent_name_p = getelementptr %WamEntryRow, %WamEntryRow* %ent_row, i32 0, i32 0
+  %ent_name = load i8*, i8** %ent_name_p
+  call void @free(i8* %ent_name)
+  %ei_next = add i32 %ei, 1
+  br label %ent_loop
+
+ent_done_label:
+  %objent_i8 = bitcast %WamEntryRow* %objent to i8*
+  call void @free(i8* %objent_i8)
 
   %vm_i8 = bitcast %WamState* %vm to i8*
   call void @free(i8* %vm_i8)
