@@ -139,9 +139,25 @@ return position resolves once and shares the cached PC — no duplicate globals.
 Verified: `float(dyncall@halve($1))` summing `N/2` over 3,5 → `4`;
 `blob(dyncall@greet($1))` echoing a field.
 
-**Deferred follow-on:** `dyncall_at@name(Src, ...)` (named entry on a
-*runtime* source), which needs the PC cached per (object, name) pair rather
-than per entry. And surface **B** below.
+**`dyncall_at@name(Src, ...)` — LANDED (i64):** a named entry on a
+*runtime* source. The loader now MATERIALIZES the `.wamo` entry-name
+table into the loaded VM (`%WamEntryRow` rows on two new `%WamState`
+fields, mirroring the milestone-2 meta-call table), and
+`@wam_object_vm_entry_pc(vm, name, len)` resolves a name against an
+already-loaded VM — no file re-scan, so it works uniformly for path
+sources AND `compile(...)` handles (verified:
+`dyncall_at@sq(compile("[(sq(...)...)]"), $1)` resolves the entry of a
+runtime-compiled grammar). Resolution is per call (a short in-memory
+scan; caching a PC by VM pointer would go stale across an mtime-mode
+reload at the same address). One `@plawk_dyncall_at_named_<Sym>` shim
+per Name-NArgs, in cached and off modes (the off variant frees the
+fresh VM on the resolve-miss path too). Note: the bootstrap compiler's
+serializer emits ONE named entry (the first predicate), so a compiled
+handle exposes exactly that name today — emitting all predicate
+entries is a follow-up whose blast radius is the self-host
+byte-identity goldens. `float`/`blob` named-at variants are the other
+follow-up, mirroring how surface A landed i64-first. Surface **B**
+below stays planned.
 
 **Surface B — declaration-bound library names (planned):** for a fixed
 `DYNLOAD` shipping a known family, bind entries once at declaration and call

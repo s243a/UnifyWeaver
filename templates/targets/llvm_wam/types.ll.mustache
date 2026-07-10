@@ -118,9 +118,26 @@
                                            ;     table; null for host VMs -- see
                                            ;     PLAWK_EVAL_BOOTSTRAP.md milestone 2)
     i32,                                   ; 26: obj_meta_count
-    i8*                                    ; 27: reader var-dict scratch (transient,
+    i8*,                                   ; 27: reader var-dict scratch (transient,
                                            ;     set by read_term_from_atom while
                                            ;     parsing; null otherwise)
+    %WamEntryRow*,                         ; 28: obj_entries (loaded-object named-
+                                           ;     entry table; null for host VMs --
+                                           ;     lets dyncall_at@name resolve entries
+                                           ;     on runtime sources and compile()
+                                           ;     handles with no file re-read)
+    i32                                    ; 29: obj_entries_count
+}
+
+; One row of a loaded object's named-entry table ("name/arity" -> label
+; index), materialized by the .wamo loader from the early entry table so a
+; call site can resolve a name against an already-loaded VM (through
+; @wam_object_vm_entry_pc) -- file loads, in-memory loads, and eval-compiled
+; handles alike. name is a malloc'd NUL-terminated copy owned by the VM.
+%WamEntryRow = type {
+    i8*,                                   ; 0: name (malloc'd copy, "p/2" form)
+    i64,                                   ; 1: name_len
+    i32                                    ; 2: label_index (object-relative)
 }
 
 ; One row of a loaded object's meta-call dispatch table: a predicate the

@@ -22826,28 +22826,50 @@ parse:
   %pe = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %cur_v)
   %entry_idx64 = extractvalue { i64, i64 } %pe, 0
   %cur_e = extractvalue { i64, i64 } %pe, 1
-  ; named-entry table: skip it (name-string, label-index) x E. The table is
-  ; placed early so this loader can step past it without a full parse; the
-  ; separate @wam_object_entries_load reads it when a call site names an entry.
+  ; named-entry table: (name-string, label-index) x E. Formerly skipped;
+  ; now MATERIALIZED into %WamEntryRow rows installed on the VM (fields
+  ; 28/29), so a call site can resolve an entry name against an
+  ; already-loaded VM (@wam_object_vm_entry_pc) -- the piece that lets
+  ; dyncall_at@name work on runtime sources and compile() handles, where
+  ; no file is available to re-scan.
   %pne = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %cur_e)
   %nentries = extractvalue { i64, i64 } %pne, 0
   %cur_ne = extractvalue { i64, i64 } %pne, 1
-  br label %eskip_loop
-eskip_loop:
-  %ei = phi i64 [ 0, %parse ], [ %ei1, %eskip_step ]
-  %ecur = phi i64 [ %cur_ne, %parse ], [ %ecur2, %eskip_step ]
+  %ent_row_sz = ptrtoint %WamEntryRow* getelementptr (%WamEntryRow, %WamEntryRow* null, i32 1) to i64
+  %ent_bytes = mul i64 %nentries, %ent_row_sz
+  %ent_mem = call i8* @malloc(i64 %ent_bytes)
+  %entRows = bitcast i8* %ent_mem to %WamEntryRow*
+  br label %ebuild_loop
+ebuild_loop:
+  %ei = phi i64 [ 0, %parse ], [ %ei1, %ebuild_step ]
+  %ecur = phi i64 [ %cur_ne, %parse ], [ %ecur2, %ebuild_step ]
   %edone = icmp uge i64 %ei, %nentries
-  br i1 %edone, label %after_entries, label %eskip_step
-eskip_step:
+  br i1 %edone, label %after_entries, label %ebuild_step
+ebuild_step:
   %elen_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %ecur)
   %elen = extractvalue { i64, i64 } %elen_r, 0
   %ecur_d = extractvalue { i64, i64 } %elen_r, 1
   %estr_off = add i64 %ecur_d, 1
+  %estr = getelementptr i8, i8* %bufc, i64 %estr_off
+  %ecopy_sz = add i64 %elen, 1
+  %ecopy = call i8* @malloc(i64 %ecopy_sz)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %ecopy, i8* %estr, i64 %elen, i1 false)
+  %enul = getelementptr i8, i8* %ecopy, i64 %elen
+  store i8 0, i8* %enul
   %eafter_str = add i64 %estr_off, %elen
   %eidx_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %eafter_str)
+  %eidx = extractvalue { i64, i64 } %eidx_r, 0
   %ecur2 = extractvalue { i64, i64 } %eidx_r, 1
+  %erow = getelementptr %WamEntryRow, %WamEntryRow* %entRows, i64 %ei
+  %erow_name = getelementptr %WamEntryRow, %WamEntryRow* %erow, i32 0, i32 0
+  store i8* %ecopy, i8** %erow_name
+  %erow_len = getelementptr %WamEntryRow, %WamEntryRow* %erow, i32 0, i32 1
+  store i64 %elen, i64* %erow_len
+  %erow_lbl = getelementptr %WamEntryRow, %WamEntryRow* %erow, i32 0, i32 2
+  %eidx32 = trunc i64 %eidx to i32
+  store i32 %eidx32, i32* %erow_lbl
   %ei1 = add i64 %ei, 1
-  br label %eskip_loop
+  br label %ebuild_loop
 after_entries:
   ; atom count
   %pa = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %ecur)
@@ -23151,6 +23173,12 @@ build_vm:
   %vm_metac_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 26
   %nmeta32 = trunc i64 %nmeta to i32
   store i32 %nmeta32, i32* %vm_metac_ptr
+  ; install the object''s named-entry table (fields 28/29)
+  %vm_ent_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 28
+  store %WamEntryRow* %entRows, %WamEntryRow** %vm_ent_ptr
+  %vm_entc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 29
+  %nent32 = trunc i64 %nentries to i32
+  store i32 %nent32, i32* %vm_entc_ptr
   %ret0 = insertvalue { %WamState*, i32 } undef, %WamState* %vm, 0
   %ret1 = insertvalue { %WamState*, i32 } %ret0, i32 %entry_pc, 1
   ret { %WamState*, i32 } %ret1
@@ -23806,6 +23834,56 @@ ok:
   call void @free(i8* %bufc)
   ret i32 %idx
 fail:
+  ret i32 -1
+}
+
+; Resolve an entry name against an ALREADY-LOADED VM: scan the object''s
+; materialized entry table (fields 28/29, installed by the loader) and
+; convert the matching row''s label index to a PC via @wam_label_pc. This
+; is the runtime-source counterpart of the two file scanners above -- it
+; needs no buffer and no file, so it works uniformly for path loads,
+; in-memory loads, and eval-compiled handles (dyncall_at@name). Returns
+; the PC, or -1 when the VM is null, carries no entry table, or has no
+; entry of that name. Cost is a short scan + memcmp per call -- cheap
+; enough per record that call sites need no PC cache (and caching by VM
+; pointer would go stale across an mtime-mode reload at the same
+; address).
+define i32 @wam_object_vm_entry_pc(%WamState* %vm, i8* %name, i64 %namelen) {
+entry:
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %miss, label %load_tab
+load_tab:
+  %ent_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 28
+  %rows = load %WamEntryRow*, %WamEntryRow** %ent_ptr
+  %entc_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 29
+  %nrows = load i32, i32* %entc_ptr
+  %rows_null = icmp eq %WamEntryRow* %rows, null
+  br i1 %rows_null, label %miss, label %scan
+scan:
+  %i = phi i32 [ 0, %load_tab ], [ %i1, %next ]
+  %done = icmp sge i32 %i, %nrows
+  br i1 %done, label %miss, label %check_len
+check_len:
+  %row = getelementptr %WamEntryRow, %WamEntryRow* %rows, i32 %i
+  %len_p = getelementptr %WamEntryRow, %WamEntryRow* %row, i32 0, i32 1
+  %rlen = load i64, i64* %len_p
+  %len_eq = icmp eq i64 %rlen, %namelen
+  br i1 %len_eq, label %check_name, label %next
+check_name:
+  %name_p = getelementptr %WamEntryRow, %WamEntryRow* %row, i32 0, i32 0
+  %rname = load i8*, i8** %name_p
+  %cmp = call i32 @memcmp(i8* %rname, i8* %name, i64 %namelen)
+  %eq = icmp eq i32 %cmp, 0
+  br i1 %eq, label %hit, label %next
+next:
+  %i1 = add i32 %i, 1
+  br label %scan
+hit:
+  %lbl_p = getelementptr %WamEntryRow, %WamEntryRow* %row, i32 0, i32 2
+  %lbl = load i32, i32* %lbl_p
+  %pc = call i32 @wam_label_pc(%WamState* %vm, i32 %lbl)
+  ret i32 %pc
+miss:
   ret i32 -1
 }
 
