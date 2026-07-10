@@ -454,6 +454,11 @@ remaining D-channel shape defect as model-side relation-class structure rather t
   hop-balanced sampling within recorded principal paths, with cross-record conflicts excluded and source title
   aliases preserved.
 - `REPORT_product_kalman_pearltrees_sampling.md` - durable unscored Pearltrees sampling and source-audit summary.
+- `sample_product_kalman_simplemind_campaign.py` and `test_product_kalman_simplemind_campaign.py` - deterministic,
+  hop-balanced sampling from content-rooted within-map principal paths, with structural/secondary ancestry and
+  direction/hop conflicts excluded while raw title and cross-corpus identity metadata remain auditable.
+- `REPORT_product_kalman_simplemind_sampling.md` - durable unscored SimpleMind pilot sampling and source-audit
+  summary, including deep-hop map concentration and raw-title typo guardrails.
 - `DESIGN_uncertainty_estimation_playbook.md` — current rule: learned calibrated combiner, held-out node-disjoint,
   margin gate, and PoE as a control rather than an independence assumption.
 - `REPORT_mu_posterior.md` — empirical evidence that joint heads beat factored PoE under correlated readouts.
