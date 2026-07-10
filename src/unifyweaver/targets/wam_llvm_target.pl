@@ -4710,6 +4710,86 @@ inc.fail:
   ret i64 0
 }
 
+; Insert-or-REPLACE variant: a repeated key takes the latest value instead
+; of accumulating. This is the write primitive for str-valued tables, whose
+; i64 payloads are atom-registry ids -- adding two ids is meaningless, so
+; last-write-wins is the accumulate analogue for labels.
+define i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %key, i64 %value) {
+entry:
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %set.fail, label %set.load
+
+set.load:
+  %cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  %cap = load i64, i64* %cap_slot
+  %cap_zero = icmp eq i64 %cap, 0
+  br i1 %cap_zero, label %set.fail, label %set.start
+
+set.start:
+  %entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %entries_slot
+  %entries_null = icmp eq %WamAssocI64Entry* %entries, null
+  br i1 %entries_null, label %set.fail, label %set.hash
+
+set.hash:
+  %start = urem i64 %key, %cap
+  br label %set.loop
+
+set.loop:
+  %idx = phi i64 [ %start, %set.hash ], [ %next_idx, %set.next ]
+  %probes = phi i64 [ 0, %set.hash ], [ %next_probes, %set.next ]
+  %assoc_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %idx
+  %occupied_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 2
+  %occupied = load i1, i1* %occupied_slot
+  br i1 %occupied, label %set.check_key, label %set.insert
+
+set.check_key:
+  %key_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 0
+  %found_key = load i64, i64* %key_slot
+  %key_match = icmp eq i64 %found_key, %key
+  br i1 %key_match, label %set.update, label %set.next_check
+
+set.update:
+  %value_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 1
+  store i64 %value, i64* %value_slot
+  ret i64 %value
+
+set.insert:
+  %count_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 0
+  %old_count = load i64, i64* %count_slot
+  %new_count = add i64 %old_count, 1
+  %half_cap = lshr i64 %cap, 1
+  %needs_grow = icmp ugt i64 %new_count, %half_cap
+  br i1 %needs_grow, label %set.grow, label %set.insert_store
+
+set.grow:
+  %grew = call i1 @wam_assoc_i64_resize(%WamAssocI64Table* %table)
+  br i1 %grew, label %set.load, label %set.insert_store
+
+set.insert_store:
+  %insert_key_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 0
+  store i64 %key, i64* %insert_key_slot
+  %insert_value_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 1
+  store i64 %value, i64* %insert_value_slot
+  store i1 true, i1* %occupied_slot
+  store i64 %new_count, i64* %count_slot
+  ret i64 %value
+
+set.next_check:
+  %next_probes = add i64 %probes, 1
+  %full = icmp uge i64 %next_probes, %cap
+  br i1 %full, label %set.fail, label %set.next
+
+set.next:
+  %idx_plus = add i64 %idx, 1
+  %wrap = icmp uge i64 %idx_plus, %cap
+  %next_idx = select i1 %wrap, i64 0, i64 %idx_plus
+  br label %set.loop
+
+set.fail:
+  ret i64 0
+}
+
 define void @wam_assoc_i64_free(%WamAssocI64Table* %table) {
 entry:
   %table_null = icmp eq %WamAssocI64Table* %table, null
@@ -23489,6 +23569,119 @@ insert:
   %kval = call i64 @value_payload(%Value %kv)
   %vval = call i64 @value_payload(%Value %vv)
   %ignored = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %table, i64 %kval, i64 %vval)
+  br label %next
+next:
+  %tail_d = call %Value @wam_deref_value(%WamState* %vm, %Value %t_raw)
+  br label %walk
+walk_done:
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  ret i1 true
+rewind_fail:
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  br label %fail
+fail:
+  ret i1 false
+}
+
+; The SECOND table kind: string values. Same [K1-V1, K2-V2, ...] walk as
+; @wam_object_call_assoc, but each value must be an ATOM and its id (a
+; global-registry id, the keyspace text-mode slices intern into) is stored
+; via @wam_assoc_i64_set -- REPLACE semantics, since accumulating ids is
+; meaningless; a repeated key keeps the latest label. Keys stay Integer or
+; Atom as in the i64 kind. The table layout is the shared i64 table; only
+; the declared value kind (surface: `as assoc(str)`) tells the reader to
+; resolve values back to text. Returns i1 ok; false on call failure, a
+; non-list output, a non-pair element, a bad key, or a non-Atom value.
+define i1 @wam_object_call_assoc_str(%WamState* %vm, i32 %entry_pc, i32 %nargs, %Value* %args, i32 %out_reg, %WamAssocI64Table* %table) {
+entry:
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+do_call:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs_saved = load i32, i32* %hs_ptr
+  %unb = call %Value @value_unbound(i8* null)
+  %out_addr = call i32 @wam_heap_push(%WamState* %vm, %Value %unb)
+  %out_ref = call %Value @value_ref(i32 %out_addr)
+  call void @wam_prepare_call(%WamState* %vm, i32 %entry_pc)
+  br label %argloop
+argloop:
+  %ai = phi i32 [ 0, %do_call ], [ %ai1, %argstep ]
+  %adone = icmp sge i32 %ai, %nargs
+  br i1 %adone, label %args_done, label %argstep
+argstep:
+  %aidx64 = sext i32 %ai to i64
+  %ap = getelementptr %Value, %Value* %args, i64 %aidx64
+  %av = load %Value, %Value* %ap
+  call void @wam_set_reg(%WamState* %vm, i32 %ai, %Value %av)
+  %ai1 = add i32 %ai, 1
+  br label %argloop
+args_done:
+  call void @wam_set_reg(%WamState* %vm, i32 %out_reg, %Value %out_ref)
+  %ok = call i1 @run_loop(%WamState* %vm)
+  br i1 %ok, label %walk_init, label %rewind_fail
+walk_init:
+  %consfn = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  %head0 = call %Value @wam_deref_value(%WamState* %vm, %Value %out_ref)
+  br label %walk
+walk:
+  %cur = phi %Value [ %head0, %walk_init ], [ %tail_d, %next ]
+  %ctag = call i32 @value_tag(%Value %cur)
+  %is_comp = icmp eq i32 %ctag, 3
+  br i1 %is_comp, label %check_cons, label %walk_done
+check_cons:
+  %cbits = call i64 @value_payload(%Value %cur)
+  %ccp = inttoptr i64 %cbits to %Compound*
+  %cfn_slot = getelementptr %Compound, %Compound* %ccp, i32 0, i32 0
+  %cfn = load i8*, i8** %cfn_slot
+  %car_slot = getelementptr %Compound, %Compound* %ccp, i32 0, i32 1
+  %car = load i32, i32* %car_slot
+  %car_ok = icmp eq i32 %car, 2
+  br i1 %car_ok, label %cmp_cons, label %walk_done
+cmp_cons:
+  %fncmp = call i32 @strcmp(i8* %cfn, i8* %consfn)
+  %is_cons = icmp eq i32 %fncmp, 0
+  br i1 %is_cons, label %have_cell, label %walk_done
+have_cell:
+  %cargs_slot = getelementptr %Compound, %Compound* %ccp, i32 0, i32 2
+  %cargs = load %Value*, %Value** %cargs_slot
+  %h_ptr = getelementptr %Value, %Value* %cargs, i64 0
+  %h_raw = load %Value, %Value* %h_ptr
+  %t_ptr = getelementptr %Value, %Value* %cargs, i64 1
+  %t_raw = load %Value, %Value* %t_ptr
+  %pair = call %Value @wam_deref_value(%WamState* %vm, %Value %h_raw)
+  %ptag = call i32 @value_tag(%Value %pair)
+  %p_is_comp = icmp eq i32 %ptag, 3
+  br i1 %p_is_comp, label %pair_arity, label %rewind_fail
+pair_arity:
+  %pbits = call i64 @value_payload(%Value %pair)
+  %pcp = inttoptr i64 %pbits to %Compound*
+  %par_slot = getelementptr %Compound, %Compound* %pcp, i32 0, i32 1
+  %par = load i32, i32* %par_slot
+  %par_ok = icmp eq i32 %par, 2
+  br i1 %par_ok, label %pair_args, label %rewind_fail
+pair_args:
+  %pargs_slot = getelementptr %Compound, %Compound* %pcp, i32 0, i32 2
+  %pargs = load %Value*, %Value** %pargs_slot
+  %k_ptr = getelementptr %Value, %Value* %pargs, i64 0
+  %k_raw = load %Value, %Value* %k_ptr
+  %v_ptr = getelementptr %Value, %Value* %pargs, i64 1
+  %v_raw = load %Value, %Value* %v_ptr
+  %kv = call %Value @wam_deref_value(%WamState* %vm, %Value %k_raw)
+  %vv = call %Value @wam_deref_value(%WamState* %vm, %Value %v_raw)
+  %ktag = call i32 @value_tag(%Value %kv)
+  %vtag = call i32 @value_tag(%Value %vv)
+  %k_is_int = icmp eq i32 %ktag, 1
+  %k_is_atom = icmp eq i32 %ktag, 0
+  %k_ok = or i1 %k_is_int, %k_is_atom
+  %v_is_atom = icmp eq i32 %vtag, 0
+  %kv_ok = and i1 %k_ok, %v_is_atom
+  br i1 %kv_ok, label %insert, label %rewind_fail
+insert:
+  %kval = call i64 @value_payload(%Value %kv)
+  %vval = call i64 @value_payload(%Value %vv)
+  %ignored = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %kval, i64 %vval)
   br label %next
 next:
   %tail_d = call %Value @wam_deref_value(%WamState* %vm, %Value %t_raw)

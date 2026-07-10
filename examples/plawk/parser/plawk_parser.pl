@@ -983,11 +983,18 @@ break_action(break) -->
 %  pairs populates a plawk assoc array.
 %
 %      arr = dyncall@tally($1) as assoc
+%      arr = dyncall($1) as assoc          % DYNLOAD object's default entry
+%      arr = dyncall@label($1) as assoc(str)   % string VALUES
 %
-%  desugars to dynassoc_bind(var(arr), dyncall_named(tally, [field(1)])); per
-%  record the returned [K-V, ...] pairs are inserted into arr's i64 table, so
-%  END `arr[key]` lookups see the accumulated result.
-dynassoc_bind_action(dynassoc_bind(var(Name), Call)) -->
+%  desugars to dynassoc_bind(var(arr), dyncall_named(tally, [field(1)]))
+%  (or dynassoc_bind(var(arr), dyncall([field(1)])) for the default-entry
+%  form); per record the returned [K-V, ...] pairs are inserted into arr's
+%  i64 table, so END `arr[key]` lookups see the accumulated result.
+%
+%  The `(str)` value kind yields dynassoc_bind_str(var(arr), Call): the
+%  grammar returns ATOM values, stored by registry id with replace (not
+%  accumulate) semantics, and reads print the text.
+dynassoc_bind_action(Action) -->
     identifier(Name),
     ws,
     "=",
@@ -997,7 +1004,18 @@ dynassoc_bind_action(dynassoc_bind(var(Name), Call)) -->
     "as",
     identifier_boundary,
     ws,
-    "assoc".
+    "assoc",
+    dynassoc_value_kind(Kind),
+    { Kind == str
+    ->  Action = dynassoc_bind_str(var(Name), Call)
+    ;   Action = dynassoc_bind(var(Name), Call)
+    }.
+
+dynassoc_value_kind(str) -->
+    ws, "(", ws, "str", ws, ")",
+    !.
+dynassoc_value_kind(i64) -->
+    [].
 
 dynrec_view_action(dynrec_view(Call, Types, Body)) -->
     dynrec_call_expr(Call),

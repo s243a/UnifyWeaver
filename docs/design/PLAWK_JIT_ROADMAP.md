@@ -7,6 +7,10 @@ Copyright (c) 2026 John William Creighton (@s243a)
 
 Where the runtime-loadable-grammar (JIT) arc stands, and what comes next.
 
+> **Top-level map:** for a one-stop architecture summary of the whole
+> eval arc — the layers, how they compose, and where each design doc
+> fits — see [PLAWK_EVAL_ARCHITECTURE.md](./PLAWK_EVAL_ARCHITECTURE.md).
+
 ## What has landed
 
 The dynamic-grammar surface is feature-complete for numeric work:
@@ -255,10 +259,20 @@ different plawk containers — this is the through-line for the rest of item 4:
   emitter DISCARDED its arg-marshal globals (text-mode field args emit
   a fallback constant each), leaving the IR referencing undefined
   values; they now ride the apply path's global channel (added in the
-  blob-consumers round). **Deferred:** the default-entry
-  `dyncall(...) as assoc` (named only for now), for-in iteration over a
-  grammar-populated table inside rule bodies, and string VALUES (the
-  table is an i64 accumulator).
+  blob-consumers round). **Default-entry LANDED:**
+  `arr = dyncall(args) as assoc` runs the DYNLOAD object's `wamo_entry`
+  through `@plawk_dyncall_assoc_default_<N>` (entry PC recorded at
+  object-load time, no resolver). **String VALUES LANDED — the second
+  table kind:** `arr = dyncall[@name](args) as assoc(str)` declares a
+  str-valued table; the grammar returns `[K-Atom, ...]` pairs,
+  `@wam_object_call_assoc_str` stores each value's registry id via
+  `@wam_assoc_i64_set` (insert-or-REPLACE — accumulating ids is
+  meaningless, a repeated key keeps the latest label), and reads
+  (for-in value prints, END `arr["literal"]` lookups) resolve the id
+  back to text through `@wam_atom_to_string`, exactly as key prints
+  already did. Same table layout; only the declared value kind differs.
+  **Still deferred:** for-in iteration over a grammar-populated table
+  inside rule bodies.
 - **Positional array** — fields by numeric index into one array value.
 
 Each target reuses one marshaller over the same walked compound; they differ
@@ -287,9 +301,8 @@ scalar. Verified: `info(X) -> tag(X, big/small)` over 5,200,7 prints
 
 The **destructure** target still rejects string fields by design (no
 scalar to bind them to — the record view is the string surface); the
-**assoc** target now takes interned atom keys (see above), leaving
-string VALUES as the one string shape without a container (an i64
-table cannot hold them).
+**assoc** target takes interned atom keys AND, with the `(str)` value
+kind, atom values (see above) — every string shape now has a container.
 
 **Why:** this is the *other half* of your binary-return idea — the case
 that **does** need deserialization. It is also the endgame that closes the
@@ -532,7 +545,12 @@ own PR(s).
   functors evaluated to a benign 0, and the first-byte dispatch let
   unknown names *alias* real ops (`f(2)` ran as `floor(2)`) — fixed
   with an arith-error flag failing `is/2` and the comparisons, plus a
-  full-name whitelist gate before dispatch. See
+  full-name whitelist gate before dispatch. A follow-up closed the last
+  aliasing residue *inside* the whitelist: `//` (integer division)
+  shares its first byte with `/` and ran as float division — the `/`
+  branch now checks the second byte and routes `//` to a truncating
+  `sdiv` (SWI's default), with float operands and division by zero
+  failing through the same error flag. See
   [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
 
 ## The binary-return question, specifically

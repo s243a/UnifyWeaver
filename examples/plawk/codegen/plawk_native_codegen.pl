@@ -13,6 +13,9 @@
     plawk_program_dyncall_rec_arities/2,
     plawk_program_dyncall_named_rec_entries/2,
     plawk_program_dyncall_named_assoc_entries/2,
+    plawk_program_dyncall_assoc_arities/2,
+    plawk_program_dyncall_named_assoc_str_entries/2,
+    plawk_program_dyncall_assoc_str_arities/2,
     plawk_program_dyncall_at_arities/2,
     plawk_program_dyncall_float_arities/2,
     plawk_program_dyncall_at_float_arities/2,
@@ -638,6 +641,9 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
     plawk_program_dyncall_rec_arities(Program, DynRecArities),
     plawk_program_dyncall_named_rec_entries(Program, DynNamedRec),
     plawk_program_dyncall_named_assoc_entries(Program, DynNamedAssoc),
+    plawk_program_dyncall_assoc_arities(Program, DynAssocArities),
+    plawk_program_dyncall_named_assoc_str_entries(Program, DynNamedAssocS),
+    plawk_program_dyncall_assoc_str_arities(Program, DynAssocSArities),
     plawk_program_dyncall_at_arities(Program, DynAtArities),
     plawk_program_dyncall_float_arities(Program, DynFArities),
     plawk_program_dyncall_at_float_arities(Program, DynAtFArities),
@@ -653,6 +659,9 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
         DynRecArities == [],
         DynNamedRec == [],
         DynNamedAssoc == [],
+        DynAssocArities == [],
+        DynNamedAssocS == [],
+        DynAssocSArities == [],
         DynAtArities == [],
         DynFArities == [],
         DynAtFArities == [],
@@ -672,7 +681,9 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
         % blob(dyncall(...)) sites, plus the shared .wamo object handle.
         (   DynArities == [], DynFArities == [], DynBArities == [],
             DynNamed == [], DynNamedF == [], DynNamedB == [],
-            DynRecArities == [], DynNamedRec == [], DynNamedAssoc == []
+            DynRecArities == [], DynNamedRec == [], DynNamedAssoc == [],
+            DynAssocArities == [], DynNamedAssocS == [],
+            DynAssocSArities == []
         ->  DyncallSupportIR = ''
         ;   ( plawk_program_dynload_path(Program, DynPath)
             ->  true
@@ -682,7 +693,8 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
             ),
             plawk_dyncall_support_ir(DynPath, DynArities, DynFArities,
                 DynBArities, DynNamed, DynNamedF, DynNamedB,
-                DynRecArities, DynNamedRec, DynNamedAssoc, DyncallSupportIR)
+                DynRecArities, DynNamedRec, DynNamedAssoc, DynAssocArities,
+                DynNamedAssocS, DynAssocSArities, DyncallSupportIR)
         ),
         % Dynamic-source shims for dyncall_at(...) / float(dyncall_at(...)) /
         % blob(dyncall_at(...)) sites + the shared path cache.
@@ -906,11 +918,67 @@ plawk_program_dyncall_named_assoc_entries(program(_Begin, Rules, EndClauses),
         Entries0),
     sort(Entries0, Entries).
 
+%% plawk_program_dyncall_assoc_arities(+Program, -Arities)
+%  Default-entry `arr = dyncall(args) as assoc` sites (deferred small
+%  item) -- one @plawk_dyncall_assoc_default_<N> shim per arity; the
+%  entry is the DYNLOAD object's default (wamo_entry), resolved like a
+%  plain dyncall.
+plawk_program_dyncall_assoc_arities(program(_Begin, Rules, EndClauses),
+        Arities) :-
+    findall(NArgs,
+        ( ( member(rule(_Pattern, Actions), Rules)
+          ; member(end(Actions), EndClauses)
+          ),
+          member(Action, Actions),
+          plawk_subterm_dynassoc_call(Action, dyncall(Args)),
+          length(Args, NArgs)
+        ),
+        A0),
+    sort(A0, Arities).
+
+%% plawk_program_dyncall_named_assoc_str_entries(+Program, -Entries)
+%% plawk_program_dyncall_assoc_str_arities(+Program, -Arities)
+%  The str-valued table kind: `arr = dyncall@name(args) as assoc(str)`
+%  sites get @plawk_dyncall_assoc_str_<Name>_<N> shims, default-entry
+%  sites @plawk_dyncall_assoc_str_default_<N> -- both forwarding to
+%  @wam_object_call_assoc_str (atom values, replace semantics).
+plawk_program_dyncall_named_assoc_str_entries(
+        program(_Begin, Rules, EndClauses), Entries) :-
+    findall(Name-NArgs,
+        ( ( member(rule(_Pattern, Actions), Rules)
+          ; member(end(Actions), EndClauses)
+          ),
+          member(Action, Actions),
+          plawk_subterm_dynassoc_str_call(Action, dyncall_named(Name, Args)),
+          length(Args, NArgs)
+        ),
+        Entries0),
+    sort(Entries0, Entries).
+
+plawk_program_dyncall_assoc_str_arities(program(_Begin, Rules, EndClauses),
+        Arities) :-
+    findall(NArgs,
+        ( ( member(rule(_Pattern, Actions), Rules)
+          ; member(end(Actions), EndClauses)
+          ),
+          member(Action, Actions),
+          plawk_subterm_dynassoc_str_call(Action, dyncall(Args)),
+          length(Args, NArgs)
+        ),
+        A0),
+    sort(A0, Arities).
+
 plawk_subterm_dynassoc_call(dynassoc_bind(_Var, Call), Call).
 plawk_subterm_dynassoc_call(Term, Call) :-
     compound(Term),
     arg(_, Term, Sub),
     plawk_subterm_dynassoc_call(Sub, Call).
+
+plawk_subterm_dynassoc_str_call(dynassoc_bind_str(_Var, Call), Call).
+plawk_subterm_dynassoc_str_call(Term, Call) :-
+    compound(Term),
+    arg(_, Term, Sub),
+    plawk_subterm_dynassoc_str_call(Sub, Call).
 
 plawk_subterm_dynrec_call(dynrec_bind(_Vars, Call, _Types), Call).
 plawk_subterm_dynrec_call(dynrec_view(Call, _Types, _Body), Call).
@@ -1234,11 +1302,23 @@ plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
 plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
         NamedI, NamedF, NamedB, RecArities, NamedRec, IR) :-
     plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
-        NamedI, NamedF, NamedB, RecArities, NamedRec, [], IR).
+        NamedI, NamedF, NamedB, RecArities, NamedRec, [], [], [], [], IR).
+plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
+        NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc, IR) :-
+    plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
+        NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc,
+        [], [], [], IR).
+plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
+        NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc,
+        AssocArities, IR) :-
+    plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
+        NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc,
+        AssocArities, [], [], IR).
 
 %% plawk_dyncall_support_ir(+Path, +IArities, +FArities, +BArities,
 %%                          +NamedI, +NamedF, +NamedB, +RecArities,
-%%                          +NamedRec, -IR)
+%%                          +NamedRec, +NamedAssoc, +AssocArities,
+%%                          +NamedAssocStr, +AssocStrArities, -IR)
 %  IArities -> i64 @plawk_dyncall_N shims; FArities -> double
 %  @plawk_dyncall_f_N shims (float(dyncall(...))); BArities -> byte-slice
 %  @plawk_dyncall_b_N shims (blob(dyncall(...))). NamedI/NamedF/NamedB are
@@ -1250,10 +1330,16 @@ plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
 %  @wam_object_call_*. RecArities -> i1 @plawk_dyncall_rec_N record shims
 %  (default entry) and NamedRec -> @plawk_dyncall_named_rec_<Name>_<N>
 %  record shims, both forwarding to @wam_object_call_record for structured
-%  destructure binds (they also feed the resolver union). All share the
-%  single lazily loaded object handle + @plawk_dyncall_get.
+%  destructure binds (they also feed the resolver union). NamedAssoc ->
+%  @plawk_dyncall_assoc_<Name>_<N> assoc-populating shims and AssocArities
+%  -> their default-entry @plawk_dyncall_assoc_default_<N> counterparts.
+%  NamedAssocStr / AssocStrArities are the str-valued table kind
+%  (@plawk_dyncall_assoc_str_* shims forwarding to
+%  @wam_object_call_assoc_str). All share the single lazily loaded object
+%  handle + @plawk_dyncall_get.
 plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
-        NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc, IR) :-
+        NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc,
+        AssocArities, NamedAssocStr, AssocStrArities, IR) :-
     llvm_emit_c_string_global('plawk_dyncall_path', Path, PathGlobal,
         _StrLen, BytesLen),
     format(atom(GetterIR),
@@ -1291,7 +1377,8 @@ load:
     % one shared resolver per named entry, over the union of the kinds
     % (record binds that name an entry feed the union too, so their
     % resolver exists even when the entry is used nowhere else)
-    append([NamedI, NamedF, NamedB, NamedRec, NamedAssoc], NamedAll0),
+    append([NamedI, NamedF, NamedB, NamedRec, NamedAssoc, NamedAssocStr],
+        NamedAll0),
     sort(NamedAll0, NamedAll),
     findall(ResIR,
         ( member(REName-RENArgs, NamedAll),
@@ -1320,9 +1407,21 @@ load:
         ( member(NAName-NANArgs, NamedAssoc),
           plawk_dyncall_named_assoc_shim_ir(NAName, NANArgs, NAShim) ),
         NAShims),
+    findall(DAShim,
+        ( member(DAN, AssocArities),
+          plawk_dyncall_assoc_default_shim_ir(DAN, DAShim) ),
+        DAShims),
+    findall(NSShim,
+        ( member(NSName-NSNArgs, NamedAssocStr),
+          plawk_dyncall_named_assoc_str_shim_ir(NSName, NSNArgs, NSShim) ),
+        NSShims),
+    findall(DSShim,
+        ( member(DSN, AssocStrArities),
+          plawk_dyncall_assoc_default_str_shim_ir(DSN, DSShim) ),
+        DSShims),
     append([[PathGlobal, GetterIR], IShims, FShims, BShims,
             Resolvers, NIShims, NFShims, NBShims, RecShims, NRecShims,
-            NAShims], Parts),
+            NAShims, DAShims, NSShims, DSShims], Parts),
     atomic_list_concat(Parts, '\n\n', IR).
 
 %% plawk_dyncall_named_assoc_shim_ir(+Name, +NArgs, -IR)
@@ -1352,6 +1451,88 @@ fail:
   ret i1 false
 }',
         [Sym, ParamsIR, Sym, NArgs, StoreIR, NArgs, NArgs]).
+
+%% plawk_dyncall_assoc_default_shim_ir(+NArgs, -IR)
+%  Assoc shim for `arr = dyncall(args) as assoc` against the DYNLOAD
+%  object's default entry: load the shared object handle, take the entry
+%  PC recorded at load time (no resolver), box args, and forward the
+%  caller's assoc table to @wam_object_call_assoc.
+plawk_dyncall_assoc_default_shim_ir(NArgs, IR) :-
+    plawk_foreign_wrapper_params(NArgs, ParamsIR),
+    plawk_dyncall_store_lines(NArgs, StoreLines),
+    atomic_list_concat(StoreLines, '\n', StoreIR),
+    format(atom(IR),
+'define i1 @plawk_dyncall_assoc_default_~w(~w, %WamAssocI64Table* %table) {
+entry:
+  %vm = call %WamState* @plawk_dyncall_get()
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+
+do_call:
+  %pc = load i32, i32* @plawk_dyncall_pc
+  %args = alloca %Value, i32 ~w
+~w
+  %r = call i1 @wam_object_call_assoc(%WamState* %vm, i32 %pc, i32 ~w, %Value* %args, i32 ~w, %WamAssocI64Table* %table)
+  ret i1 %r
+
+fail:
+  ret i1 false
+}',
+        [NArgs, ParamsIR, NArgs, StoreIR, NArgs, NArgs]).
+
+%% plawk_dyncall_named_assoc_str_shim_ir(+Name, +NArgs, -IR)
+%  Str-valued table kind, named entry: same shape as the i64 assoc shim
+%  but forwarding to @wam_object_call_assoc_str, which requires ATOM
+%  values and stores their registry ids with replace semantics.
+plawk_dyncall_named_assoc_str_shim_ir(Name, NArgs, IR) :-
+    plawk_dyncall_named_symbol(Name, NArgs, Sym),
+    plawk_foreign_wrapper_params(NArgs, ParamsIR),
+    plawk_dyncall_store_lines(NArgs, StoreLines),
+    atomic_list_concat(StoreLines, '\n', StoreIR),
+    format(atom(IR),
+'define i1 @plawk_dyncall_assoc_str_~w(~w, %WamAssocI64Table* %table) {
+entry:
+  %pc = call i32 @plawk_dyncall_resolve_~w()
+  %bad = icmp slt i32 %pc, 0
+  br i1 %bad, label %fail, label %do_call
+
+do_call:
+  %vm = call %WamState* @plawk_dyncall_get()
+  %args = alloca %Value, i32 ~w
+~w
+  %r = call i1 @wam_object_call_assoc_str(%WamState* %vm, i32 %pc, i32 ~w, %Value* %args, i32 ~w, %WamAssocI64Table* %table)
+  ret i1 %r
+
+fail:
+  ret i1 false
+}',
+        [Sym, ParamsIR, Sym, NArgs, StoreIR, NArgs, NArgs]).
+
+%% plawk_dyncall_assoc_default_str_shim_ir(+NArgs, -IR)
+%  Str-valued table kind, default entry: entry PC recorded at object-load
+%  time, values forwarded to @wam_object_call_assoc_str.
+plawk_dyncall_assoc_default_str_shim_ir(NArgs, IR) :-
+    plawk_foreign_wrapper_params(NArgs, ParamsIR),
+    plawk_dyncall_store_lines(NArgs, StoreLines),
+    atomic_list_concat(StoreLines, '\n', StoreIR),
+    format(atom(IR),
+'define i1 @plawk_dyncall_assoc_str_default_~w(~w, %WamAssocI64Table* %table) {
+entry:
+  %vm = call %WamState* @plawk_dyncall_get()
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+
+do_call:
+  %pc = load i32, i32* @plawk_dyncall_pc
+  %args = alloca %Value, i32 ~w
+~w
+  %r = call i1 @wam_object_call_assoc_str(%WamState* %vm, i32 %pc, i32 ~w, %Value* %args, i32 ~w, %WamAssocI64Table* %table)
+  ret i1 %r
+
+fail:
+  ret i1 false
+}',
+        [NArgs, ParamsIR, NArgs, StoreIR, NArgs, NArgs]).
 
 %% plawk_dyncall_rec_shim_ir(+NArgs, -IR)
 %  Record shim for a default-entry destructure bind: resolve vm/pc from the
@@ -2702,14 +2883,28 @@ plawk_forin_body_print_lines([assoc(var(LookupArrayName), var(LoopVar)) | Rest],
               '  %forin_value_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_key_id)',
               [PrintIndex, LookupTableIndex])
       ),
-      format(atom(FmtVar), 'forin_i64_fmt_~w', [PrintIndex]),
-      format(atom(PrintVar), 'forin_printed_i64_~w', [PrintIndex]),
       format(atom(ValueIR), '%forin_value_~w', [PrintIndex]),
-      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
-          [FmtPtr, PrintCall]),
+      (   plawk_assoc_plan_str_array(AssocPlan, LookupArrayName)
+      ->  % str-valued table: the stored i64 is an atom-registry id --
+          % resolve it to text, like the key print does.
+          format(atom(ValueString),
+              '  %forin_value_s_~w = call i8* @wam_atom_to_string(i64 ~w)',
+              [PrintIndex, ValueIR]),
+          format(atom(FmtVar), 'forin_str_fmt_~w', [PrintIndex]),
+          format(atom(PrintVar), 'forin_printed_str_~w', [PrintIndex]),
+          format(atom(PtrIR), '%forin_value_s_~w', [PrintIndex]),
+          llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar,
+              PtrIR, [FmtPtr, PrintCall]),
+          ValueLines = [Value, ValueString, FmtPtr, PrintCall]
+      ;   format(atom(FmtVar), 'forin_i64_fmt_~w', [PrintIndex]),
+          format(atom(PrintVar), 'forin_printed_i64_~w', [PrintIndex]),
+          llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
+              ValueIR, [FmtPtr, PrintCall]),
+          ValueLines = [Value, FmtPtr, PrintCall]
+      ),
       NextPrintIndex is PrintIndex + 1
     },
-    [Value, FmtPtr, PrintCall],
+    plawk_emit_lines(ValueLines),
     plawk_forin_body_print_lines(Rest, LoopVar, ArrayName, TableIndex, AssocPlan,
         Descriptor, OutputSeparator, NextPrintIndex).
 plawk_forin_body_print_lines([string(Value) | Rest], LoopVar, ArrayName,
@@ -3401,6 +3596,13 @@ plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), Blob),
     plawk_assoc_blob_key_ok(Blob).
 plawk_assoc_body_action_spec(dynassoc_bind(var(ArrayName), Call),
         dynassoc(ArrayName, Call)) :-
+    plawk_dynrec_call_ok(Call).
+% str-valued table kind: the call rides the same dynassoc spec wrapped in
+% str(...), so planning and the apply emitter reuse the same action --
+% only the shim name (via plawk_dynassoc_call_parts) and the table's
+% declared value kind differ.
+plawk_assoc_body_action_spec(dynassoc_bind_str(var(ArrayName), Call),
+        dynassoc(ArrayName, str(Call))) :-
     plawk_dynrec_call_ok(Call).
 
 plawk_assoc_increment_action(inc_assoc(var(ArrayName), field(KeyIndex)), ArrayName-KeyIndex) :-
@@ -5739,14 +5941,27 @@ plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], AssocPl
       format(atom(Value),
           '  %assoc_end_value_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %assoc_end_key_~w_id)',
           [PrintIndex, TableIndex, PrintIndex]),
-      format(atom(FmtVar), 'assoc_end_i64_fmt_~w', [PrintIndex]),
-      format(atom(PrintVar), 'printed_assoc_end_i64_~w', [PrintIndex]),
       format(atom(ValueIR), '%assoc_end_value_~w', [PrintIndex]),
-      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
-          [FmtPtr, PrintCall]),
+      (   plawk_assoc_plan_str_array(AssocPlan, ArrayName)
+      ->  % str-valued table: resolve the stored atom-registry id to text.
+          format(atom(ValueString),
+              '  %assoc_end_value_s_~w = call i8* @wam_atom_to_string(i64 ~w)',
+              [PrintIndex, ValueIR]),
+          format(atom(FmtVar), 'assoc_end_str_fmt_~w', [PrintIndex]),
+          format(atom(PrintVar), 'printed_assoc_end_str_~w', [PrintIndex]),
+          format(atom(PtrIR), '%assoc_end_value_s_~w', [PrintIndex]),
+          llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar,
+              PtrIR, [FmtPtr, PrintCall]),
+          ValueLines = [KeyPtr, KeyId, Value, ValueString, FmtPtr, PrintCall]
+      ;   format(atom(FmtVar), 'assoc_end_i64_fmt_~w', [PrintIndex]),
+          format(atom(PrintVar), 'printed_assoc_end_i64_~w', [PrintIndex]),
+          llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
+              ValueIR, [FmtPtr, PrintCall]),
+          ValueLines = [KeyPtr, KeyId, Value, FmtPtr, PrintCall]
+      ),
       NextPrintIndex is PrintIndex + 1
     },
-    [KeyPtr, KeyId, Value, FmtPtr, PrintCall],
+    plawk_emit_lines(ValueLines),
     plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, NextPrintIndex).
 plawk_assoc_end_print_lines([string(Value) | Rest], AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
@@ -5756,6 +5971,17 @@ plawk_assoc_end_print_lines([string(Value) | Rest], AssocPlan, Descriptor, Outpu
 
 plawk_assoc_table_index(assoc_plan(Tables, _Actions), ArrayName, TableIndex) :-
     nth0(TableIndex, Tables, ArrayName).
+
+%% plawk_assoc_plan_str_array(+AssocPlan, +ArrayName) is semidet.
+%  ArrayName's table holds STRING values: some rule populates it through
+%  an `as assoc(str)` bind (the planned action carries the str(...)
+%  wrapper), so reads resolve the stored i64 back to atom text instead
+%  of printing it numerically.
+plawk_assoc_plan_str_array(assoc_plan(_Tables, Rules), ArrayName) :-
+    member(assoc_rule(_RuleIndex, _Pattern, Actions, _Control), Rules),
+    member(assoc_dyn_action(_Index, ArrayName, _TableIndex, str(_Call)),
+        Actions),
+    !.
 
 % Binary record modes: assoc keys are raw i64 field values (no
 % interning), so END key handling prints them numerically.
@@ -5813,14 +6039,27 @@ plawk_mixed_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], ScalarP
       format(atom(Value),
           '  %assoc_end_value_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %assoc_end_key_~w_id)',
           [PrintIndex, TableIndex, PrintIndex]),
-      format(atom(FmtVar), 'assoc_end_i64_fmt_~w', [PrintIndex]),
-      format(atom(PrintVar), 'printed_assoc_end_i64_~w', [PrintIndex]),
       format(atom(ValueIR), '%assoc_end_value_~w', [PrintIndex]),
-      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
-          [FmtPtr, PrintCall]),
+      (   plawk_assoc_plan_str_array(AssocPlan, ArrayName)
+      ->  % str-valued table: resolve the stored atom-registry id to text.
+          format(atom(ValueString),
+              '  %assoc_end_value_s_~w = call i8* @wam_atom_to_string(i64 ~w)',
+              [PrintIndex, ValueIR]),
+          format(atom(FmtVar), 'assoc_end_str_fmt_~w', [PrintIndex]),
+          format(atom(PrintVar), 'printed_assoc_end_str_~w', [PrintIndex]),
+          format(atom(PtrIR), '%assoc_end_value_s_~w', [PrintIndex]),
+          llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar,
+              PtrIR, [FmtPtr, PrintCall]),
+          ValueLines = [KeyPtr, KeyId, Value, ValueString, FmtPtr, PrintCall]
+      ;   format(atom(FmtVar), 'assoc_end_i64_fmt_~w', [PrintIndex]),
+          format(atom(PrintVar), 'printed_assoc_end_i64_~w', [PrintIndex]),
+          llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
+              ValueIR, [FmtPtr, PrintCall]),
+          ValueLines = [KeyPtr, KeyId, Value, FmtPtr, PrintCall]
+      ),
       NextPrintIndex is PrintIndex + 1
     },
-    [KeyPtr, KeyId, Value, FmtPtr, PrintCall],
+    plawk_emit_lines(ValueLines),
     plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
 plawk_mixed_end_print_lines([special('NR') | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
@@ -6383,6 +6622,20 @@ plawk_dynassoc_call_parts(dyncall_named(Name, Args), Args, ShimName) :-
     length(Args, NArgs),
     plawk_dyncall_named_symbol(Name, NArgs, Sym),
     format(atom(ShimName), 'plawk_dyncall_assoc_~w', [Sym]).
+% default entry: arr = dyncall(args) as assoc -- the DYNLOAD object's
+% wamo_entry, resolved like a plain dyncall (deferred small item).
+plawk_dynassoc_call_parts(dyncall(Args), Args, ShimName) :-
+    length(Args, NArgs),
+    format(atom(ShimName), 'plawk_dyncall_assoc_default_~w', [NArgs]).
+% str-valued table kind (`as assoc(str)`): the spec wraps the call in
+% str(...); route to the @wam_object_call_assoc_str shims.
+plawk_dynassoc_call_parts(str(dyncall_named(Name, Args)), Args, ShimName) :-
+    length(Args, NArgs),
+    plawk_dyncall_named_symbol(Name, NArgs, Sym),
+    format(atom(ShimName), 'plawk_dyncall_assoc_str_~w', [Sym]).
+plawk_dynassoc_call_parts(str(dyncall(Args)), Args, ShimName) :-
+    length(Args, NArgs),
+    format(atom(ShimName), 'plawk_dyncall_assoc_str_default_~w', [NArgs]).
 
 plawk_dynrec_field_load_lines([], [], _Base, []).
 plawk_dynrec_field_load_lines([F | Fs], [Type | Ts], Base, [Line | Lines]) :-
