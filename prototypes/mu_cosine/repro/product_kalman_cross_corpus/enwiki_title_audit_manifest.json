@@ -1,0 +1,21 @@
+{
+  "audited_pairs": "/tmp/mu_data/enwiki_campaign_pairs_audited.tsv",
+  "audited_pairs_sha256": "5ed4ab5003c6aa7eb470b4eb9e60c2a03bbb46b1af4827998b060d22df55dfde",
+  "canonical_identity_collision_groups": [],
+  "corpus": "enwiki",
+  "corrected_endpoint_count": 0,
+  "corrected_endpoint_occurrences": {},
+  "corrected_pair_count": 0,
+  "guardrail": "pair IDs, hops, endpoint IDs, and graph provenance unchanged; titles only",
+  "pair_count": 250,
+  "pair_id_sha256": "c9864410ec3627454f78277160b94c5d260af8c3d1512997fd917e09cc33e741",
+  "policy": "prototypes/mu_cosine/title_policies/product_kalman_enwiki_titles.json",
+  "policy_sha256": "8e4d997784fa75669eeaffc1a6c328ba8396b9ed72a2352f84ed1e0ef8fa02cd",
+  "reviewed_endpoint_count": 413,
+  "schema_version": 1,
+  "score_in": "/tmp/mu_data/enwiki_campaign_score_in_audited.tsv",
+  "score_in_sha256": "400fba7feab3028f8181177fafd36ad07269c3e121640bf50ca809c64ec04b7b",
+  "source_pairs": "/tmp/mu_data/enwiki_campaign_pairs_unscored.tsv",
+  "source_pairs_sha256": "e6bcb7c64704c9f69a854267648b9d3fb40bf7084cdbe35e51d1c5d5544a1e1b",
+  "view": "audited_title_sensitivity"
+}

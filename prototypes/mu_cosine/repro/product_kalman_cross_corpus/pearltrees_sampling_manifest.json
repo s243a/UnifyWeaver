@@ -1,0 +1,778 @@
+{
+  "accepted_by_hop_component": {
+    "1": {
+      "s243a:10311488": 1,
+      "s243a:10323424": 1,
+      "s243a:10343209": 1,
+      "s243a:10369712": 1,
+      "s243a:10369724": 1,
+      "s243a:10371461": 1,
+      "s243a:10371821": 1,
+      "s243a:10381169": 1,
+      "s243a:10390751": 1,
+      "s243a:10390752": 1,
+      "s243a:10390825": 1,
+      "s243a:10390869": 1,
+      "s243a:10391040": 1,
+      "s243a:10399690": 1,
+      "s243a:10400867": 1,
+      "s243a:10455231": 1,
+      "s243a:10455428": 1,
+      "s243a:10455430": 1,
+      "s243a:10459350": 1,
+      "s243a:10489978": 1,
+      "s243a:10489980": 1,
+      "s243a:10490022": 1,
+      "s243a:10490508": 1,
+      "s243a:10518564": 1,
+      "s243a:10518894": 1,
+      "s243a:10541842": 1,
+      "s243a:10646352": 1,
+      "s243a:10646429": 1,
+      "s243a:10658342": 1,
+      "s243a:10676595": 1,
+      "s243a:10892135": 1,
+      "s243a:10908042": 1,
+      "s243a:10908045": 1,
+      "s243a:10950002": 1,
+      "s243a:10995538": 1,
+      "s243a:11027045": 1,
+      "s243a:11056503": 1,
+      "s243a:11257760": 1,
+      "s243a:11549294": 1,
+      "s243a:11636363": 1,
+      "s243a:11727684": 1,
+      "s243a:11820376": 1,
+      "s243a:23549372": 1,
+      "s243a:52520927": 1,
+      "s243a:60480986": 1,
+      "s243a:61837122": 1,
+      "s243a:68982620": 1,
+      "s243a:69093604": 1,
+      "s243a:70315977": 1,
+      "s243a:72195805": 1
+    },
+    "2": {
+      "s243a:10311488": 1,
+      "s243a:10323424": 1,
+      "s243a:10343209": 1,
+      "s243a:10369712": 1,
+      "s243a:10369724": 1,
+      "s243a:10371461": 1,
+      "s243a:10371821": 1,
+      "s243a:10381169": 1,
+      "s243a:10390751": 1,
+      "s243a:10390752": 1,
+      "s243a:10390825": 1,
+      "s243a:10390869": 1,
+      "s243a:10391040": 1,
+      "s243a:10399690": 1,
+      "s243a:10400867": 1,
+      "s243a:10455231": 2,
+      "s243a:10455428": 1,
+      "s243a:10455430": 2,
+      "s243a:10459350": 1,
+      "s243a:10489978": 1,
+      "s243a:10489980": 2,
+      "s243a:10490022": 1,
+      "s243a:10518564": 1,
+      "s243a:10518894": 2,
+      "s243a:10541842": 1,
+      "s243a:10646352": 2,
+      "s243a:10646429": 1,
+      "s243a:10658342": 2,
+      "s243a:10892135": 2,
+      "s243a:10908042": 1,
+      "s243a:10908045": 1,
+      "s243a:10950002": 1,
+      "s243a:10995538": 1,
+      "s243a:11027045": 1,
+      "s243a:11056503": 1,
+      "s243a:11257760": 1,
+      "s243a:11549294": 1,
+      "s243a:11636363": 1,
+      "s243a:11727684": 1,
+      "s243a:11820376": 2,
+      "s243a:60480986": 2
+    },
+    "3": {
+      "s243a:10311488": 1,
+      "s243a:10323424": 2,
+      "s243a:10343209": 2,
+      "s243a:10369712": 1,
+      "s243a:10369724": 2,
+      "s243a:10371461": 2,
+      "s243a:10371821": 1,
+      "s243a:10381169": 2,
+      "s243a:10390751": 2,
+      "s243a:10390752": 2,
+      "s243a:10390825": 2,
+      "s243a:10390869": 2,
+      "s243a:10391040": 2,
+      "s243a:10399690": 1,
+      "s243a:10455231": 2,
+      "s243a:10455430": 2,
+      "s243a:10459350": 2,
+      "s243a:10489980": 2,
+      "s243a:10490022": 2,
+      "s243a:10518894": 2,
+      "s243a:10541842": 2,
+      "s243a:10646352": 2,
+      "s243a:10646429": 2,
+      "s243a:10892135": 1,
+      "s243a:11027045": 1,
+      "s243a:11056503": 1,
+      "s243a:11549294": 1,
+      "s243a:11727684": 1,
+      "s243a:11820376": 2,
+      "s243a:60480986": 1
+    },
+    "4": {
+      "s243a:10311488": 2,
+      "s243a:10323424": 2,
+      "s243a:10343209": 2,
+      "s243a:10369712": 2,
+      "s243a:10369724": 3,
+      "s243a:10371461": 3,
+      "s243a:10371821": 2,
+      "s243a:10381169": 2,
+      "s243a:10390751": 2,
+      "s243a:10390752": 3,
+      "s243a:10390825": 2,
+      "s243a:10390869": 2,
+      "s243a:10391040": 2,
+      "s243a:10399690": 2,
+      "s243a:10455231": 3,
+      "s243a:10455430": 1,
+      "s243a:10459350": 1,
+      "s243a:10489980": 1,
+      "s243a:10490022": 2,
+      "s243a:10518894": 2,
+      "s243a:10541842": 2,
+      "s243a:10646352": 3,
+      "s243a:11549294": 1,
+      "s243a:11727684": 2,
+      "s243a:11820376": 1
+    },
+    "5": {
+      "s243a:10311488": 3,
+      "s243a:10323424": 4,
+      "s243a:10369712": 3,
+      "s243a:10369724": 4,
+      "s243a:10371461": 4,
+      "s243a:10371821": 3,
+      "s243a:10381169": 3,
+      "s243a:10390752": 4,
+      "s243a:10390825": 4,
+      "s243a:10390869": 4,
+      "s243a:10391040": 4,
+      "s243a:10399690": 3,
+      "s243a:10518894": 1,
+      "s243a:10541842": 1,
+      "s243a:10646352": 2,
+      "s243a:11727684": 3
+    }
+  },
+  "account_record_counts": {
+    "s243a": 752
+  },
+  "candidate_conflict_examples": [
+    {
+      "endpoint_ids": [
+        "10311488",
+        "10391040"
+      ],
+      "kind": "direction",
+      "observation_count": 70,
+      "orientations": [
+        {
+          "ancestor_id": "10391040",
+          "descendant_id": "10311488",
+          "observation_count": 29,
+          "observed_hops": [
+            1
+          ]
+        },
+        {
+          "ancestor_id": "10311488",
+          "descendant_id": "10391040",
+          "observation_count": 41,
+          "observed_hops": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10343207",
+        "10369712"
+      ],
+      "kind": "direction",
+      "observation_count": 92,
+      "orientations": [
+        {
+          "ancestor_id": "10369712",
+          "descendant_id": "10343207",
+          "observation_count": 59,
+          "observed_hops": [
+            4
+          ]
+        },
+        {
+          "ancestor_id": "10343207",
+          "descendant_id": "10369712",
+          "observation_count": 33,
+          "observed_hops": [
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10343207",
+        "10369724"
+      ],
+      "kind": "direction",
+      "observation_count": 92,
+      "orientations": [
+        {
+          "ancestor_id": "10369724",
+          "descendant_id": "10343207",
+          "observation_count": 86,
+          "observed_hops": [
+            3
+          ]
+        },
+        {
+          "ancestor_id": "10343207",
+          "descendant_id": "10369724",
+          "observation_count": 6,
+          "observed_hops": [
+            3
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10343207",
+        "10371461"
+      ],
+      "kind": "direction",
+      "observation_count": 92,
+      "orientations": [
+        {
+          "ancestor_id": "10371461",
+          "descendant_id": "10343207",
+          "observation_count": 90,
+          "observed_hops": [
+            2
+          ]
+        },
+        {
+          "ancestor_id": "10343207",
+          "descendant_id": "10371461",
+          "observation_count": 2,
+          "observed_hops": [
+            4
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10343207",
+        "10390869"
+      ],
+      "kind": "direction",
+      "observation_count": 92,
+      "orientations": [
+        {
+          "ancestor_id": "10390869",
+          "descendant_id": "10343207",
+          "observation_count": 51,
+          "observed_hops": [
+            5
+          ]
+        },
+        {
+          "ancestor_id": "10343207",
+          "descendant_id": "10390869",
+          "observation_count": 41,
+          "observed_hops": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10369712",
+        "10369724"
+      ],
+      "kind": "direction",
+      "observation_count": 92,
+      "orientations": [
+        {
+          "ancestor_id": "10369724",
+          "descendant_id": "10369712",
+          "observation_count": 27,
+          "observed_hops": [
+            5
+          ]
+        },
+        {
+          "ancestor_id": "10369712",
+          "descendant_id": "10369724",
+          "observation_count": 65,
+          "observed_hops": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10369712",
+        "10371461"
+      ],
+      "kind": "direction",
+      "observation_count": 92,
+      "orientations": [
+        {
+          "ancestor_id": "10371461",
+          "descendant_id": "10369712",
+          "observation_count": 31,
+          "observed_hops": [
+            4
+          ]
+        },
+        {
+          "ancestor_id": "10369712",
+          "descendant_id": "10371461",
+          "observation_count": 61,
+          "observed_hops": [
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10369712",
+        "10381169"
+      ],
+      "kind": "direction",
+      "observation_count": 92,
+      "orientations": [
+        {
+          "ancestor_id": "10381169",
+          "descendant_id": "10369712",
+          "observation_count": 33,
+          "observed_hops": [
+            3
+          ]
+        },
+        {
+          "ancestor_id": "10369712",
+          "descendant_id": "10381169",
+          "observation_count": 59,
+          "observed_hops": [
+            3
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10369712",
+        "10390869"
+      ],
+      "kind": "direction",
+      "observation_count": 92,
+      "orientations": [
+        {
+          "ancestor_id": "10390869",
+          "descendant_id": "10369712",
+          "observation_count": 84,
+          "observed_hops": [
+            1
+          ]
+        },
+        {
+          "ancestor_id": "10369712",
+          "descendant_id": "10390869",
+          "observation_count": 8,
+          "observed_hops": [
+            5
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10369724",
+        "10371461"
+      ],
+      "kind": "direction",
+      "observation_count": 92,
+      "orientations": [
+        {
+          "ancestor_id": "10371461",
+          "descendant_id": "10369724",
+          "observation_count": 4,
+          "observed_hops": [
+            5
+          ]
+        },
+        {
+          "ancestor_id": "10369724",
+          "descendant_id": "10371461",
+          "observation_count": 88,
+          "observed_hops": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10369724",
+        "10381169"
+      ],
+      "kind": "direction",
+      "observation_count": 92,
+      "orientations": [
+        {
+          "ancestor_id": "10381169",
+          "descendant_id": "10369724",
+          "observation_count": 6,
+          "observed_hops": [
+            4
+          ]
+        },
+        {
+          "ancestor_id": "10369724",
+          "descendant_id": "10381169",
+          "observation_count": 86,
+          "observed_hops": [
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10369724",
+        "10390869"
+      ],
+      "kind": "direction",
+      "observation_count": 92,
+      "orientations": [
+        {
+          "ancestor_id": "10390869",
+          "descendant_id": "10369724",
+          "observation_count": 57,
+          "observed_hops": [
+            2
+          ]
+        },
+        {
+          "ancestor_id": "10369724",
+          "descendant_id": "10390869",
+          "observation_count": 35,
+          "observed_hops": [
+            4
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10371461",
+        "10381169"
+      ],
+      "kind": "direction",
+      "observation_count": 92,
+      "orientations": [
+        {
+          "ancestor_id": "10381169",
+          "descendant_id": "10371461",
+          "observation_count": 2,
+          "observed_hops": [
+            5
+          ]
+        },
+        {
+          "ancestor_id": "10371461",
+          "descendant_id": "10381169",
+          "observation_count": 90,
+          "observed_hops": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10371461",
+        "10390869"
+      ],
+      "kind": "direction",
+      "observation_count": 92,
+      "orientations": [
+        {
+          "ancestor_id": "10390869",
+          "descendant_id": "10371461",
+          "observation_count": 53,
+          "observed_hops": [
+            3
+          ]
+        },
+        {
+          "ancestor_id": "10371461",
+          "descendant_id": "10390869",
+          "observation_count": 39,
+          "observed_hops": [
+            3
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10381169",
+        "10390869"
+      ],
+      "kind": "direction",
+      "observation_count": 92,
+      "orientations": [
+        {
+          "ancestor_id": "10390869",
+          "descendant_id": "10381169",
+          "observation_count": 51,
+          "observed_hops": [
+            4
+          ]
+        },
+        {
+          "ancestor_id": "10381169",
+          "descendant_id": "10390869",
+          "observation_count": 41,
+          "observed_hops": [
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10390751",
+        "10390752"
+      ],
+      "kind": "direction",
+      "observation_count": 103,
+      "orientations": [
+        {
+          "ancestor_id": "10390752",
+          "descendant_id": "10390751",
+          "observation_count": 89,
+          "observed_hops": [
+            1
+          ]
+        },
+        {
+          "ancestor_id": "10390751",
+          "descendant_id": "10390752",
+          "observation_count": 14,
+          "observed_hops": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10455428",
+        "10455430"
+      ],
+      "kind": "direction",
+      "observation_count": 3,
+      "orientations": [
+        {
+          "ancestor_id": "10455430",
+          "descendant_id": "10455428",
+          "observation_count": 2,
+          "observed_hops": [
+            1
+          ]
+        },
+        {
+          "ancestor_id": "10455428",
+          "descendant_id": "10455430",
+          "observation_count": 1,
+          "observed_hops": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10489978",
+        "10489980"
+      ],
+      "kind": "direction",
+      "observation_count": 2,
+      "orientations": [
+        {
+          "ancestor_id": "10489980",
+          "descendant_id": "10489978",
+          "observation_count": 1,
+          "observed_hops": [
+            1
+          ]
+        },
+        {
+          "ancestor_id": "10489978",
+          "descendant_id": "10489980",
+          "observation_count": 1,
+          "observed_hops": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10908042",
+        "10908045"
+      ],
+      "kind": "direction",
+      "observation_count": 2,
+      "orientations": [
+        {
+          "ancestor_id": "10908045",
+          "descendant_id": "10908042",
+          "observation_count": 1,
+          "observed_hops": [
+            1
+          ]
+        },
+        {
+          "ancestor_id": "10908042",
+          "descendant_id": "10908045",
+          "observation_count": 1,
+          "observed_hops": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "endpoint_ids": [
+        "10995538",
+        "11549294"
+      ],
+      "kind": "direction",
+      "observation_count": 2,
+      "orientations": [
+        {
+          "ancestor_id": "11549294",
+          "descendant_id": "10995538",
+          "observation_count": 1,
+          "observed_hops": [
+            1
+          ]
+        },
+        {
+          "ancestor_id": "10995538",
+          "descendant_id": "11549294",
+          "observation_count": 1,
+          "observed_hops": [
+            1
+          ]
+        }
+      ]
+    }
+  ],
+  "candidate_pool_counts": {
+    "1": 1077,
+    "2": 965,
+    "3": 738,
+    "4": 492,
+    "5": 352
+  },
+  "candidate_rejections": {
+    "direction_conflict_observations": 1470,
+    "direction_conflict_pairs": 20,
+    "duplicate_consistent_observations": 3073,
+    "records_missing_component_title": 92
+  },
+  "corpus": "pearltrees",
+  "cross_record_conflict_policy": "exclude endpoint pairs whose direction or hop differs across path records",
+  "exclude_graph": null,
+  "excluded_title_count": 0,
+  "forest_stats": {
+    "merged_parent_conflict_nodes": 0,
+    "missing_title_nodes": 70,
+    "path_records_private": 129,
+    "path_records_retained": 752,
+    "path_records_total": 881,
+    "principal_path_edge_observations": 2920,
+    "principal_path_nodes": 1294,
+    "principal_path_unique_edges": 1188,
+    "record_title_alias_nodes": 152,
+    "record_title_aliases": 152,
+    "record_vs_table_title_mismatches": 152,
+    "title_covered_nodes": 1224
+  },
+  "graph_view": "principal_path_lineage",
+  "hmax": 5,
+  "hop_counts": {
+    "1": 50,
+    "2": 50,
+    "3": 50,
+    "4": 50,
+    "5": 50
+  },
+  "pairs": 250,
+  "pairs_tsv": "/tmp/mu_data/pearltrees_campaign_pairs_unscored.tsv",
+  "paths_jsonl": "<local-public-source>/api_tree_paths_v8.jsonl",
+  "paths_jsonl_mtime_ns": 1769651833578690785,
+  "paths_jsonl_sha256": "89c1ceff7ef95293a9771eb343c21f5a01fe88a1b1e0efab41840f19b998ebc5",
+  "paths_jsonl_size": 347589,
+  "principal_path_rule": "sample within each recorded non-account path_ids lineage",
+  "privacy_rule": "drop an entire record when target_text masks private ancestry or any known title is private",
+  "sampling_method": "canonical component for consistent duplicate observations; deterministic hash order; component round-robin",
+  "schema_version": 1,
+  "score_in": "/tmp/mu_data/pearltrees_campaign_score_in_unscored.tsv",
+  "secondary_edge_policy": "assembled DAG aliases and secondary references excluded from primary view",
+  "seed": 0,
+  "target_hop_counts": {
+    "1": 50,
+    "2": 50,
+    "3": 50,
+    "4": 50,
+    "5": 50
+  },
+  "title_audit": {
+    "duplicate_normalized_title_groups": 3,
+    "duplicate_normalized_title_ids": 6,
+    "normalization": "NFKC; underscore-to-space; whitespace-collapse; casefold",
+    "quality_flag_counts": {},
+    "semantic_corrections_applied": false,
+    "unique_endpoint_ids": 284,
+    "unique_normalized_titles": 281,
+    "unique_raw_titles": 282
+  },
+  "title_normalization": "NFKC; underscore-to-space; whitespace-collapse; casefold (matching only)",
+  "title_policy": "assembled raw title; retained path-record differences preserved as aliases; no semantic correction",
+  "title_table_stats": {},
+  "titles_tsv": "<local-public-source>/pearltrees_api/assembled_titles.tsv",
+  "titles_tsv_mtime_ns": 1782970573157666345,
+  "titles_tsv_sha256": "65bd587b680f2092bd4e3cac586bf80d54ed2804515be221946159b8c5316ded",
+  "titles_tsv_size": 472564
+}

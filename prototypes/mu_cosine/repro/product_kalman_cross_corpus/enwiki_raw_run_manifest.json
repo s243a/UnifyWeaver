@@ -1,0 +1,169 @@
+{
+  "batch_count": 25,
+  "batch_size": 10,
+  "batches": [
+    {
+      "batch_index": 0,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0000.json",
+      "checkpoint_sha256": "ad61444071b3361b80156db79f4038f534a76a0ae92de9ce8b33f01f0370e8c6",
+      "row_count": 10
+    },
+    {
+      "batch_index": 1,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0001.json",
+      "checkpoint_sha256": "86b6bff65000c433e4921fac8ddccd421facba2a166ac7cf4767c9c3c1d1794f",
+      "row_count": 10
+    },
+    {
+      "batch_index": 2,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0002.json",
+      "checkpoint_sha256": "8cea9ccc680f39e527e26cd50019d14cf184ebfdf8190087222b36460c25c2ec",
+      "row_count": 10
+    },
+    {
+      "batch_index": 3,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0003.json",
+      "checkpoint_sha256": "6afd02165ea3589089b9da7c5a4a02334aae9ebb8a12eb36304e1da8e84e28c7",
+      "row_count": 10
+    },
+    {
+      "batch_index": 4,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0004.json",
+      "checkpoint_sha256": "74ce8ccf58650139c0e7f3ce0236c0b44156110e3cae5dcf9191ea03cf9ba9a9",
+      "row_count": 10
+    },
+    {
+      "batch_index": 5,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0005.json",
+      "checkpoint_sha256": "dbcdece3940264bfd7d4b5f1128bf2adaf15577ab3ef25f0a6c48d696f8df9b9",
+      "row_count": 10
+    },
+    {
+      "batch_index": 6,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0006.json",
+      "checkpoint_sha256": "7c1a511e3847eb6b02a4b202604e86611e01ff622ea3f75badcac9e5b97983ae",
+      "row_count": 10
+    },
+    {
+      "batch_index": 7,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0007.json",
+      "checkpoint_sha256": "7844df48099cf75c1d07edf115e8d2b5144124dda972acfad25a04862dbce6b6",
+      "row_count": 10
+    },
+    {
+      "batch_index": 8,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0008.json",
+      "checkpoint_sha256": "3c5e790d12c2c2f3aec8a759ec239c3518fcad8c2eaf2bcd227221f86865a966",
+      "row_count": 10
+    },
+    {
+      "batch_index": 9,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0009.json",
+      "checkpoint_sha256": "d91aa530268f07a0aa9f6962cd10f6fd44cc9f2528b1d8c549c5d61d01424dfa",
+      "row_count": 10
+    },
+    {
+      "batch_index": 10,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0010.json",
+      "checkpoint_sha256": "f0a471921b283d6fba8285c26cb490436a58884abccf0f0779da12a9881fcff3",
+      "row_count": 10
+    },
+    {
+      "batch_index": 11,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0011.json",
+      "checkpoint_sha256": "dd5fa1bc7647b8fe7ce6b4d9b7e9ce78afd243323824749bd1cb18ce7ebcad69",
+      "row_count": 10
+    },
+    {
+      "batch_index": 12,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0012.json",
+      "checkpoint_sha256": "00aef8c37bec464b3a04619f9510aa85e6843bdce8f1ce2a5f4225265f33abb8",
+      "row_count": 10
+    },
+    {
+      "batch_index": 13,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0013.json",
+      "checkpoint_sha256": "d5104ae095dfc65bd1226278cebbecad79085c0255b07f96b29328f12e6355c8",
+      "row_count": 10
+    },
+    {
+      "batch_index": 14,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0014.json",
+      "checkpoint_sha256": "85047bbd994fac564b0710513155ffa0bbf1609198bb230b144c6f170bcff07a",
+      "row_count": 10
+    },
+    {
+      "batch_index": 15,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0015.json",
+      "checkpoint_sha256": "487fc4d983f214706ec67d792de32b716987f4b06c160ef8e801fa33383472be",
+      "row_count": 10
+    },
+    {
+      "batch_index": 16,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0016.json",
+      "checkpoint_sha256": "af68ea8a132241d1d65a639a6e87d8a965476a7e01bcf5e61419614fa15b72ea",
+      "row_count": 10
+    },
+    {
+      "batch_index": 17,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0017.json",
+      "checkpoint_sha256": "75de6b9630612db70e9f743a12931ed83dbfe592ef236521af0c0b6d82afd1bf",
+      "row_count": 10
+    },
+    {
+      "batch_index": 18,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0018.json",
+      "checkpoint_sha256": "4cf0ebf3bc2bf8d91ac034c9815209e6dc0cdd35c71000f4bdce00d5fcfb8465",
+      "row_count": 10
+    },
+    {
+      "batch_index": 19,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0019.json",
+      "checkpoint_sha256": "b5583bbabc1c1c1b658f0f72e734d1d3e6444f1640bbcca504f43f22bfcf5fc6",
+      "row_count": 10
+    },
+    {
+      "batch_index": 20,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0020.json",
+      "checkpoint_sha256": "411a47c41eaca4028c00fe84a3bc670eea35f33f1669379881995a8bd656aac4",
+      "row_count": 10
+    },
+    {
+      "batch_index": 21,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0021.json",
+      "checkpoint_sha256": "941a50fb34b36e7506c5c1607143807cad2177f3c3354cc12bd5e7510c68a413",
+      "row_count": 10
+    },
+    {
+      "batch_index": 22,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0022.json",
+      "checkpoint_sha256": "405634b8ba7ee9414cfc18ab8708c963768d485d422f30fe1876638ad797f0c8",
+      "row_count": 10
+    },
+    {
+      "batch_index": 23,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0023.json",
+      "checkpoint_sha256": "eec70cdf07218abdd156a772da1c0133c9dba8a48607cf01b6b4f6ab6661ca7c",
+      "row_count": 10
+    },
+    {
+      "batch_index": 24,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches/batch_0024.json",
+      "checkpoint_sha256": "e96128b3a8ad85f62d809a48941b5260461d416986089846ea70222c9214c65e",
+      "row_count": 10
+    }
+  ],
+  "checkpoint_dir": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_batches",
+  "effort": "low",
+  "judge": "gpt-5.5-low",
+  "model": "gpt-5.5",
+  "responses": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_responses.txt",
+  "responses_sha256": "382c4c3038e1811e1ff5ff9fb24977fcc3ff3050e20ad634f98dac28f80aa733",
+  "row_count": 250,
+  "sandbox": "read-only",
+  "schema_version": 1,
+  "scored": "/tmp/mu_data/product_kalman_scoring/enwiki_raw_scored.tsv",
+  "scored_sha256": "ee767a60d9eb2c4f49c7687533d5036efc8e123798ed5eef4cc37592899b435b",
+  "source_pairs": "/tmp/mu_data/enwiki_campaign_score_in_unscored.tsv",
+  "source_pairs_sha256": "400fba7feab3028f8181177fafd36ad07269c3e121640bf50ca809c64ec04b7b"
+}

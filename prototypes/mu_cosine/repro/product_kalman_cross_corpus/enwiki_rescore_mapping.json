@@ -1,0 +1,15 @@
+{
+  "audited_pairs": "/tmp/mu_data/enwiki_campaign_pairs_audited.tsv",
+  "audited_pairs_sha256": "5ed4ab5003c6aa7eb470b4eb9e60c2a03bbb46b1af4827998b060d22df55dfde",
+  "corpus": "enwiki",
+  "guardrail": "only rows with at least one pre-scoring title correction are selected",
+  "rows": [],
+  "schema_version": 1,
+  "source_row_count": 250,
+  "source_score_in": "/tmp/mu_data/enwiki_campaign_score_in_audited.tsv",
+  "source_score_in_sha256": "400fba7feab3028f8181177fafd36ad07269c3e121640bf50ca809c64ec04b7b",
+  "subset_row_count": 0,
+  "subset_score_in": "/tmp/mu_data/product_kalman_scoring/enwiki_audited_rescore_in.tsv",
+  "subset_score_in_sha256": "bdcf37614c1462bc2b4bf5f67f75603b26d6ade3fc5afd89c8b1fd4075ca6e55",
+  "view": "audited_title_rescore_subset"
+}
