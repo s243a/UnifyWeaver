@@ -9,6 +9,9 @@ Compiling a grammar from **source text at runtime** — the endgame of the
 dynamic-grammar arc. This was the plan and the milestone sequence; **the
 payoff has landed** (see "The landed surface" below).
 
+> **Top-level map:** how this layer fits the whole eval arc is
+> summarized in [PLAWK_EVAL_ARCHITECTURE.md](./PLAWK_EVAL_ARCHITECTURE.md).
+
 ## The goal
 
 ```awk

@@ -11,6 +11,9 @@ grammar entirely inside the running binary. This is the design pass —
 scoping *what* to build and *in what testable stages* — not an
 implementation PR.
 
+> **Top-level map:** how this layer fits the whole eval arc is
+> summarized in [PLAWK_EVAL_ARCHITECTURE.md](./PLAWK_EVAL_ARCHITECTURE.md).
+
 ## What "self-host" means here (and what it does not)
 
 Milestone 5 landed the eval loop at the runtime layer: `@wam_object_eval`
