@@ -370,6 +370,31 @@ dlknot(R) :-
 knot9(A, A).
 em9(V, A0, A1) :- append([V], A1, A0).
 
+% Loaded clause indexing: swkey/2 is an atom-keyed multi-clause predicate
+% large enough for the tier-2 compiler to emit switch_on_constant --
+% including writeq-QUOTED keys ('=:=', '\==') whose table entries only
+% match if the writer unquotes them (switch_entry_unquote/2; a quoted key
+% interns its quote characters into the atom name and NEVER matches).
+% swmain probes: two quoted keys, a bare key, a MISSING key inside an
+% if-then-else (a strict switch miss backtracks -- the call must fail
+% cleanly into the else branch), and an UNBOUND first argument (the
+% switch skips and the try_me_else chain runs -- first clause binds).
+swkey(functor, 26).
+swkey(arg, 27).
+swkey('=:=', 5).
+swkey('\\==', 21).
+swkey(append, 55).
+swkey(length, 31).
+swkey(sort, 81).
+swkey(between, 23).
+swmain(R) :-
+    swkey('=:=', A),
+    swkey('\\==', B),
+    swkey(append, C),
+    ( swkey(nosuchkey, _) -> D = 1 ; D = 2 ),
+    ( swkey(K0, 26), K0 == functor -> E = 3 ; E = 4 ),
+    R is (((A * 100 + B) * 100 + C) * 10 + D) * 10 + E.  % 5215523
+
 % Milestone 3b-db PR 3: rule bodies. assertz((H :- B)) stores a rule; calling
 % its head runs the body (deterministic first solution). Bodies handle ,/2,
 % builtins (is/2, comparisons, =/2), and predicate calls; head<->body variable
@@ -1651,6 +1676,27 @@ test(register_file_many_permanents, [condition(clang_available)]) :-
     write_wam_object([user:manyperm/1], [wamo_entry(manyperm/1)], W),
     run_host(Host, W, Out, 0),
     assertion(Out == "210\n"),
+    !.
+
+% Loaded clause indexing: switch_on_constant is REAL dispatch in loaded
+% objects now (tag 25 + a trailing key->label table the loader turns
+% into the same %SwitchEntry shape the AOT dispatcher uses). swmain/1
+% exercises quoted-key entries ('=:=', '\==' -- only match if the writer
+% unquoted them), a strict switch MISS failing cleanly into an ITE else
+% branch, and an unbound first argument skipping the switch into the
+% try_me_else chain. The structural assertions pin the encoding: a real
+% tag-25 row (not the old nop 26) and the trailing section present.
+test(loaded_switch_on_constant_dispatch, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'host_bin', Host),
+    ( exists_file(Host) -> true ; build_host(Dir, Host) ),
+    directory_file_path(Dir, 'swkey.wamo', W),
+    write_wam_object([user:swmain/1, user:swkey/2],
+                     [wamo_entry(swmain/1)], W),
+    read_file_to_string(W, WS, [encoding(octet)]),
+    assertion(sub_string(WS, _, _, _, "\n25 0 0 0\n")),
+    run_host(Host, W, Out, 0),
+    assertion(Out == "5215523\n"),
     !.
 
 % Finding no. 9: get_value var-var linking + append bare-var tail seed
