@@ -16,13 +16,18 @@ typos, duplicate variants, or organizational labels. Either advantage can domina
 | corpus | primary graph view | title source | primary risk |
 | --- | --- | --- | --- |
 | enwiki | category DAG below Main_topic_classifications | MediaWiki page titles | multi-parent and generic-apex ambiguity |
-| Pearltrees | principal Collection containment (subtopic) | harvested collection titles | typos, incomplete harvests, and secondary annotations |
+| Pearltrees | recorded principal path lineages (subtopic) | harvested collection titles | cross-record cycles, typos, incomplete harvests, and secondary annotations |
 | SimpleMind | within-map principal parent, content-rooted only | raw node text after duplicate-title cleanup | typos, conflicted copies, and organizational super-layers |
 
 Primary results use these views separately. Pearltrees section relations, shortcuts, and bridges are secondary
 edges, not replacements for principal containment. SimpleMind cross-map and organizational ancestors are secondary
 views. They may be evaluated as within-corpus sensitivity analyses, but must not be silently mixed into the primary
 tree view.
+
+Pearltrees paths are tree-like individually, but the current path-record union is not globally a tree: some records
+reverse the direction of shared endpoint pairs. The primary campaign therefore samples within each recorded
+principal lineage and excludes cross-record direction/hop conflicts. It does not merge the paths and break cycles
+post hoc. The assembled multi-parent DAG remains an explicit sensitivity view.
 
 ## Verified Enwiki Starting Point
 
@@ -71,7 +76,7 @@ campaign source.
    as pair endpoints.
 4. For enwiki, allocate each hop in deterministic round-robin order across eligible direct children of
    Main_topic_classifications; do not let the already-studied Behavior branch dominate the campaign.
-5. For Pearltrees, stratify over harvested principal trees and record account/tree provenance. For SimpleMind,
+5. For Pearltrees, stratify over recorded principal-path components and retain account/tree provenance. For SimpleMind,
    stratify over maps and retain only content-rooted chains after duplicate-title and organizational-layer cleanup.
 6. Preserve raw IDs, raw titles, corpus, graph view, source branch/tree/map, hop, and every endpoint alias in the
    pair manifest.
@@ -164,7 +169,9 @@ counts, root IDs, graph-view rules, correction-manifest hash, model/judge identi
    scoped LMDB. It traverses numeric IDs, verifies exact shortest upward hop, and joins titles at the output boundary.
 2. Run `audit_product_kalman_lmdb_topology.py` on the same LMDB snapshot, then materialize the sampler's pair/source
    and title-audit manifests before scoring.
-3. Add Pearltrees principal-containment and SimpleMind cleaned within-map adapters with the same output schema.
-4. Freeze any title-correction manifests.
-5. Score all raw-title views with the same judge and model, then run matched audited-title sensitivities.
-6. Evaluate each corpus separately, followed by explicit cross-corpus and domain-transfer summaries.
+3. Use `sample_product_kalman_pearltrees_campaign.py` for the path-local Pearltrees primary view; keep its
+   cross-record conflict exclusions and title aliases in the manifest.
+4. Add the SimpleMind cleaned within-map adapter with the same campaign output schema.
+5. Freeze any title-correction manifests.
+6. Score all raw-title views with the same judge and model, then run matched audited-title sensitivities.
+7. Evaluate each corpus separately, followed by explicit cross-corpus and domain-transfer summaries.

@@ -38,6 +38,11 @@ A Pearltrees account is a forest of **trees** (collections). The harvest stores 
   `left_index`/`right_index` are these; the parser reads pearls in `left_index` order so each section
   header scopes the pearls after it.
 
+**Path-local caveat.** An API path record is a single principal lineage, but the union of records need not be a
+global tree. The current snapshot includes shared endpoint pairs in opposite directions (and therefore cycles when
+the records are merged). For the Product-Kalman primary campaign, sample within each recorded lineage and exclude
+direction/hop conflicts across records. Do not choose a cycle-breaking parent from judge labels or model residuals.
+
 ---
 
 ## Section headers retype what follows (like SimpleMind containers)
