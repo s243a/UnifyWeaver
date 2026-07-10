@@ -20,6 +20,11 @@
 square(X, R) :- atom_number(X, N), R is N * N.
 cube(X, R)   :- atom_number(X, N), R is N * N * N.
 
+% float / blob named-at variants: a halving grammar (keeps fractions)
+% and a greeting grammar (returns an atom = a byte string)
+halve(X, R) :- atom_number(X, N), R is N / 2.
+greet(X, R) :- atom_concat('hi-', X, R).
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -116,6 +121,36 @@ test(named_entry_on_compile_handle, [condition(clang_available)]) :-
          END { print total }\n", []),
     build_run(Dir, 'anh', Src, "3\n4\n5\n10\n", Out),
     assertion(Out == "150\n"),
+    !.
+
+% float(dyncall_at@name(...)): the named entry's numeric output read as
+% a double. halve over 3,4 -> 1.5 + 2 = 3.5.
+test(float_named_at_entry, [condition(clang_available)]) :-
+    an_dir(Dir),
+    directory_file_path(Dir, 'fb.wamo', Wamo),
+    write_wam_object([user:halve/2, user:greet/2],
+        [wamo_entries([halve/2, greet/2])], Wamo),
+    format(string(Src),
+        "{ total += float(dyncall_at@halve(\"~w\", $1)) }\n\c
+         END { print total }\n", [Wamo]),
+    build_run(Dir, 'anf', Src, "3\n4\n", Out),
+    assertion(Out == "3.5\n"),
+    !.
+
+% blob(dyncall_at@name(...)): the named entry's Atom output read as a
+% byte slice and printed per record.
+test(blob_named_at_entry, [condition(clang_available)]) :-
+    an_dir(Dir),
+    directory_file_path(Dir, 'fb.wamo', Wamo),
+    ( exists_file(Wamo)
+    -> true
+    ;  write_wam_object([user:halve/2, user:greet/2],
+           [wamo_entries([halve/2, greet/2])], Wamo)
+    ),
+    format(string(Src),
+        "{ print blob(dyncall_at@greet(\"~w\", $1)) }\n", [Wamo]),
+    build_run(Dir, 'anb', Src, "bob\neve\n", Out),
+    assertion(Out == "hi-bob\nhi-eve\n"),
     !.
 
 % THE FAMILY PAYOFF: one compile() source holding TWO grammars, called

@@ -1563,6 +1563,26 @@ float_literal_expr(float_const(Mantissa, Denominator)) -->
 %  variants: the loaded grammar's numeric output is read as a double.
 %  These must precede the generic clause, whose inner prolog_call_expr
 %  would otherwise parse `dyncall` as an ordinary identifier call.
+% float(dyncall_at@name(Source, args...)): a named entry on a runtime
+% source, read as a double -- parsed before the bare at form so the @
+% form wins.
+float_call_expr(float_dyncall_at_named(Name, Source, Args)) -->
+    "float",
+    ws,
+    "(",
+    ws,
+    "dyncall_at@",
+    identifier(Name),
+    ws,
+    "(",
+    ws,
+    dyncall_at_source(Source),
+    foreign_args_rest(Args),
+    ws,
+    ")",
+    ws,
+    ")",
+    !.
 float_call_expr(float_dyncall_at(Source, Args)) -->
     "float",
     ws,
@@ -1624,6 +1644,25 @@ float_call_expr(float_call(Name, Args)) -->
 %  blob(dyncall(...)) / blob(dyncall_at(...)): read the runtime grammar's
 %  Atom output as opaque bytes (a slice), for print / writebin positions.
 %  Reserved like the dyncall forms; the inner keyword disambiguates.
+% blob(dyncall_at@name(Source, args...)): a named entry on a runtime
+% source, read as opaque bytes -- parsed before the bare at form.
+blob_call_expr(blob_dyncall_at_named(Name, Source, Args)) -->
+    "blob",
+    ws,
+    "(",
+    ws,
+    "dyncall_at@",
+    identifier(Name),
+    ws,
+    "(",
+    ws,
+    dyncall_at_source(Source),
+    foreign_args_rest(Args),
+    ws,
+    ")",
+    ws,
+    ")",
+    !.
 blob_call_expr(blob_dyncall_at(Source, Args)) -->
     "blob",
     ws,

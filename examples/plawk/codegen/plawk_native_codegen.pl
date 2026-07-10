@@ -18,6 +18,8 @@
     plawk_program_dyncall_assoc_str_arities/2,
     plawk_program_dyncall_at_arities/2,
     plawk_program_dyncall_at_named_entries/2,
+    plawk_program_dyncall_at_named_float_entries/2,
+    plawk_program_dyncall_at_named_blob_entries/2,
     plawk_program_dyncall_float_arities/2,
     plawk_program_dyncall_at_float_arities/2,
     plawk_program_dyncall_blob_arities/2,
@@ -647,6 +649,8 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
     plawk_program_dyncall_assoc_str_arities(Program, DynAssocSArities),
     plawk_program_dyncall_at_arities(Program, DynAtArities),
     plawk_program_dyncall_at_named_entries(Program, DynAtNamed),
+    plawk_program_dyncall_at_named_float_entries(Program, DynAtNamedF),
+    plawk_program_dyncall_at_named_blob_entries(Program, DynAtNamedB),
     plawk_program_dyncall_float_arities(Program, DynFArities),
     plawk_program_dyncall_at_float_arities(Program, DynAtFArities),
     plawk_program_dyncall_blob_arities(Program, DynBArities),
@@ -666,6 +670,8 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
         DynAssocSArities == [],
         DynAtArities == [],
         DynAtNamed == [],
+        DynAtNamedF == [],
+        DynAtNamedB == [],
         DynFArities == [],
         DynAtFArities == [],
         DynBArities == [],
@@ -702,11 +708,12 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
         % Dynamic-source shims for dyncall_at(...) / float(dyncall_at(...)) /
         % blob(dyncall_at(...)) sites + the shared path cache.
         (   DynAtArities == [], DynAtFArities == [], DynAtBArities == [],
-            DynAtNamed == []
+            DynAtNamed == [], DynAtNamedF == [], DynAtNamedB == []
         ->  DyncallAtSupportIR = ''
         ;   plawk_program_dyncache_mode(Program, CacheMode),
             plawk_dyncall_at_support_ir(CacheMode, DynAtArities, DynAtFArities,
-                DynAtBArities, DynAtNamed, DyncallAtSupportIR)
+                DynAtBArities, DynAtNamed, DynAtNamedF, DynAtNamedB,
+                DyncallAtSupportIR)
         ),
         % The eval surface: compile(...) sites need @plawk_compile plus
         % the bootstrap-compiler object path (BEGIN { EVALC = "..." }
@@ -1850,49 +1857,65 @@ plawk_dyncall_store_lines(NArgs, Lines) :-
 %  Cache capacity is 64 distinct grammars; beyond that "on"/"mtime" load
 %  without caching (correct, just not reused).
 plawk_dyncall_at_support_ir(Mode, Arities, IR) :-
-    plawk_dyncall_at_support_ir(Mode, Arities, [], [], [], IR).
+    plawk_dyncall_at_support_ir(Mode, Arities, [], [], [], [], [], IR).
 plawk_dyncall_at_support_ir(Mode, IArities, FArities, IR) :-
-    plawk_dyncall_at_support_ir(Mode, IArities, FArities, [], [], IR).
+    plawk_dyncall_at_support_ir(Mode, IArities, FArities, [], [], [], [], IR).
 plawk_dyncall_at_support_ir(Mode, IArities, FArities, BArities, IR) :-
-    plawk_dyncall_at_support_ir(Mode, IArities, FArities, BArities, [], IR).
+    plawk_dyncall_at_support_ir(Mode, IArities, FArities, BArities,
+        [], [], [], IR).
+plawk_dyncall_at_support_ir(Mode, IArities, FArities, BArities,
+        NamedEntries, IR) :-
+    plawk_dyncall_at_support_ir(Mode, IArities, FArities, BArities,
+        NamedEntries, [], [], IR).
 
 %% plawk_dyncall_at_support_ir(+Mode, +IArities, +FArities, +BArities,
-%%                             +NamedEntries, -IR)
+%%                             +NamedI, +NamedF, +NamedB, -IR)
 %  IArities -> i64 @plawk_dyncall_at_N shims; FArities -> double
 %  @plawk_dyncall_at_f_N shims (float(dyncall_at(...))); BArities ->
 %  byte-slice @plawk_dyncall_at_b_N shims (blob(dyncall_at(...))).
-%  NamedEntries (Name-NArgs) -> @plawk_dyncall_at_named_<Sym> shims for
-%  dyncall_at@name sites, resolving the entry per call against the loaded
-%  VM's entry table. All share the cache + @plawk_dyncall_at_get emitted
-%  per Mode.
+%  NamedI/NamedF/NamedB (Name-NArgs) -> @plawk_dyncall_at_named[_f/_b]
+%  shims for dyncall_at@name sites in each return kind, resolving the
+%  entry per call against the loaded VM's entry table. All share the
+%  cache + @plawk_dyncall_at_get emitted per Mode.
 plawk_dyncall_at_support_ir(Mode, IArities, FArities, BArities,
-        NamedEntries, IR) :-
+        NamedI, NamedF, NamedB, IR) :-
     (   Mode == "off"
     ->  Globals = '', GetIR = '',
         ICShim = plawk_dyncall_at_shim_off_ir,
         FCShim = plawk_dyncall_at_shim_off_f_ir,
         BCShim = plawk_dyncall_at_shim_off_b_ir,
-        NShim = plawk_dyncall_at_named_shim_off_ir
+        NShim = plawk_dyncall_at_named_shim_off_ir,
+        NFShim = plawk_dyncall_at_named_shim_off_f_ir,
+        NBShim = plawk_dyncall_at_named_shim_off_b_ir
     ;   Mode == "mtime"
     ->  plawk_dyncache_globals_ir(mtime, Globals),
         plawk_dyncall_at_get_mtime_ir(GetIR),
         ICShim = plawk_dyncall_at_shim_cached_ir,
         FCShim = plawk_dyncall_at_shim_cached_f_ir,
         BCShim = plawk_dyncall_at_shim_cached_b_ir,
-        NShim = plawk_dyncall_at_named_shim_cached_ir
+        NShim = plawk_dyncall_at_named_shim_cached_ir,
+        NFShim = plawk_dyncall_at_named_shim_cached_f_ir,
+        NBShim = plawk_dyncall_at_named_shim_cached_b_ir
     ;   plawk_dyncache_globals_ir(plain, Globals),
         plawk_dyncall_at_get_on_ir(GetIR),
         ICShim = plawk_dyncall_at_shim_cached_ir,
         FCShim = plawk_dyncall_at_shim_cached_f_ir,
         BCShim = plawk_dyncall_at_shim_cached_b_ir,
-        NShim = plawk_dyncall_at_named_shim_cached_ir
+        NShim = plawk_dyncall_at_named_shim_cached_ir,
+        NFShim = plawk_dyncall_at_named_shim_cached_f_ir,
+        NBShim = plawk_dyncall_at_named_shim_cached_b_ir
     ),
     findall(S,  ( member(N, IArities),  call(ICShim, N, S) ), IShims),
     findall(FS, ( member(FN, FArities), call(FCShim, FN, FS) ), FShims),
     findall(BS, ( member(BN, BArities), call(BCShim, BN, BS) ), BShims),
-    findall(NS, ( member(NName-NN, NamedEntries), call(NShim, NName, NN, NS) ),
+    findall(NS, ( member(NName-NN, NamedI), call(NShim, NName, NN, NS) ),
         NShims),
-    append([[Globals, GetIR], IShims, FShims, BShims, NShims], Parts0),
+    findall(NFS, ( member(NFName-NFN, NamedF), call(NFShim, NFName, NFN, NFS) ),
+        NFShims),
+    findall(NBS, ( member(NBName-NBN, NamedB), call(NBShim, NBName, NBN, NBS) ),
+        NBShims),
+    append([[Globals, GetIR], IShims, FShims, BShims, NShims, NFShims,
+        NBShims], Parts0),
     exclude(==(''), Parts0, Parts),
     atomic_list_concat(Parts, '\n\n', IR).
 
@@ -2444,6 +2467,175 @@ fail:
 }',
         [NArgs, ParamsIR, ArgsSetupIR, NArgs, ArgsPtrIR, NArgs]).
 
+% double / byte-slice named-at shims (float(dyncall_at@name(...)) /
+% blob(dyncall_at@name(...))): the i64 named-at shape with the other
+% call primitives -- fetch the VM per the mode, resolve the entry name
+% against its materialized entry table per call, then read the output
+% as a double or byte slice.
+plawk_dyncall_at_named_shim_cached_f_ir(Name, NArgs, IR) :-
+    plawk_dyncall_named_symbol(Name, NArgs, Sym),
+    EntryArity is NArgs + 1,
+    format(atom(EntryName), '~w/~w', [Name, EntryArity]),
+    format(atom(ENameGlobal), 'plawk_at_ename_f_~w', [Sym]),
+    llvm_emit_c_string_global(ENameGlobal, EntryName, ENameGlobalIR,
+        ENameLen, ENameBytesLen),
+    plawk_dyncall_at_params(NArgs, ParamsIR),
+    plawk_dyncall_at_argsetup(NArgs, ArgsPtrIR, ArgsSetupIR),
+    format(atom(IR),
+'~w
+
+define { double, i1 } @plawk_dyncall_at_named_f_~w(~w) {
+entry:
+  %obj = call { %WamState*, i32 } @plawk_dyncall_at_get(i8* %path, i64 %len)
+  %vm = extractvalue { %WamState*, i32 } %obj, 0
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %resolve
+
+resolve:
+  %namep = getelementptr [~w x i8], [~w x i8]* @.plawk_at_ename_f_~w, i32 0, i32 0
+  %pc = call i32 @wam_object_vm_entry_pc(%WamState* %vm, i8* %namep, i64 ~w)
+  %bad = icmp slt i32 %pc, 0
+  br i1 %bad, label %fail, label %do_call
+
+do_call:
+~w
+  %r = call { double, i1 } @wam_object_call_f64(%WamState* %vm, i32 %pc, i32 ~w, %Value* ~w, i32 ~w)
+  ret { double, i1 } %r
+
+fail:
+  %f0 = insertvalue { double, i1 } undef, double 0.0, 0
+  %f1 = insertvalue { double, i1 } %f0, i1 false, 1
+  ret { double, i1 } %f1
+}',
+        [ENameGlobalIR, Sym, ParamsIR, ENameBytesLen, ENameBytesLen, Sym,
+         ENameLen, ArgsSetupIR, NArgs, ArgsPtrIR, NArgs]).
+
+plawk_dyncall_at_named_shim_off_f_ir(Name, NArgs, IR) :-
+    plawk_dyncall_named_symbol(Name, NArgs, Sym),
+    EntryArity is NArgs + 1,
+    format(atom(EntryName), '~w/~w', [Name, EntryArity]),
+    format(atom(ENameGlobal), 'plawk_at_ename_f_~w', [Sym]),
+    llvm_emit_c_string_global(ENameGlobal, EntryName, ENameGlobalIR,
+        ENameLen, ENameBytesLen),
+    plawk_dyncall_at_params(NArgs, ParamsIR),
+    plawk_dyncall_at_argsetup(NArgs, ArgsPtrIR, ArgsSetupIR),
+    format(atom(IR),
+'~w
+
+define { double, i1 } @plawk_dyncall_at_named_f_~w(~w) {
+entry:
+  %obj = call { %WamState*, i32 } @wam_object_load(i8* %path)
+  %vm = extractvalue { %WamState*, i32 } %obj, 0
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %resolve
+
+resolve:
+  %namep = getelementptr [~w x i8], [~w x i8]* @.plawk_at_ename_f_~w, i32 0, i32 0
+  %pc = call i32 @wam_object_vm_entry_pc(%WamState* %vm, i8* %namep, i64 ~w)
+  %bad = icmp slt i32 %pc, 0
+  br i1 %bad, label %free_fail, label %do_call
+
+do_call:
+~w
+  %r = call { double, i1 } @wam_object_call_f64(%WamState* %vm, i32 %pc, i32 ~w, %Value* ~w, i32 ~w)
+  call void @wam_state_free(%WamState* %vm)
+  ret { double, i1 } %r
+
+free_fail:
+  call void @wam_state_free(%WamState* %vm)
+  br label %fail
+
+fail:
+  %f0 = insertvalue { double, i1 } undef, double 0.0, 0
+  %f1 = insertvalue { double, i1 } %f0, i1 false, 1
+  ret { double, i1 } %f1
+}',
+        [ENameGlobalIR, Sym, ParamsIR, ENameBytesLen, ENameBytesLen, Sym,
+         ENameLen, ArgsSetupIR, NArgs, ArgsPtrIR, NArgs]).
+
+plawk_dyncall_at_named_shim_cached_b_ir(Name, NArgs, IR) :-
+    plawk_dyncall_named_symbol(Name, NArgs, Sym),
+    EntryArity is NArgs + 1,
+    format(atom(EntryName), '~w/~w', [Name, EntryArity]),
+    format(atom(ENameGlobal), 'plawk_at_ename_b_~w', [Sym]),
+    llvm_emit_c_string_global(ENameGlobal, EntryName, ENameGlobalIR,
+        ENameLen, ENameBytesLen),
+    plawk_dyncall_at_params(NArgs, ParamsIR),
+    plawk_dyncall_at_argsetup(NArgs, ArgsPtrIR, ArgsSetupIR),
+    format(atom(IR),
+'~w
+
+define { i8*, i64, i1 } @plawk_dyncall_at_named_b_~w(~w) {
+entry:
+  %obj = call { %WamState*, i32 } @plawk_dyncall_at_get(i8* %path, i64 %len)
+  %vm = extractvalue { %WamState*, i32 } %obj, 0
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %resolve
+
+resolve:
+  %namep = getelementptr [~w x i8], [~w x i8]* @.plawk_at_ename_b_~w, i32 0, i32 0
+  %pc = call i32 @wam_object_vm_entry_pc(%WamState* %vm, i8* %namep, i64 ~w)
+  %bad = icmp slt i32 %pc, 0
+  br i1 %bad, label %fail, label %do_call
+
+do_call:
+~w
+  %r = call { i8*, i64, i1 } @wam_object_call_bytes(%WamState* %vm, i32 %pc, i32 ~w, %Value* ~w, i32 ~w)
+  ret { i8*, i64, i1 } %r
+
+fail:
+  %f0 = insertvalue { i8*, i64, i1 } undef, i8* null, 0
+  %f1 = insertvalue { i8*, i64, i1 } %f0, i64 0, 1
+  %f2 = insertvalue { i8*, i64, i1 } %f1, i1 false, 2
+  ret { i8*, i64, i1 } %f2
+}',
+        [ENameGlobalIR, Sym, ParamsIR, ENameBytesLen, ENameBytesLen, Sym,
+         ENameLen, ArgsSetupIR, NArgs, ArgsPtrIR, NArgs]).
+
+plawk_dyncall_at_named_shim_off_b_ir(Name, NArgs, IR) :-
+    plawk_dyncall_named_symbol(Name, NArgs, Sym),
+    EntryArity is NArgs + 1,
+    format(atom(EntryName), '~w/~w', [Name, EntryArity]),
+    format(atom(ENameGlobal), 'plawk_at_ename_b_~w', [Sym]),
+    llvm_emit_c_string_global(ENameGlobal, EntryName, ENameGlobalIR,
+        ENameLen, ENameBytesLen),
+    plawk_dyncall_at_params(NArgs, ParamsIR),
+    plawk_dyncall_at_argsetup(NArgs, ArgsPtrIR, ArgsSetupIR),
+    format(atom(IR),
+'~w
+
+define { i8*, i64, i1 } @plawk_dyncall_at_named_b_~w(~w) {
+entry:
+  %obj = call { %WamState*, i32 } @wam_object_load(i8* %path)
+  %vm = extractvalue { %WamState*, i32 } %obj, 0
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %resolve
+
+resolve:
+  %namep = getelementptr [~w x i8], [~w x i8]* @.plawk_at_ename_b_~w, i32 0, i32 0
+  %pc = call i32 @wam_object_vm_entry_pc(%WamState* %vm, i8* %namep, i64 ~w)
+  %bad = icmp slt i32 %pc, 0
+  br i1 %bad, label %free_fail, label %do_call
+
+do_call:
+~w
+  %r = call { i8*, i64, i1 } @wam_object_call_bytes(%WamState* %vm, i32 %pc, i32 ~w, %Value* ~w, i32 ~w)
+  call void @wam_state_free(%WamState* %vm)
+  ret { i8*, i64, i1 } %r
+
+free_fail:
+  call void @wam_state_free(%WamState* %vm)
+  br label %fail
+
+fail:
+  %f0 = insertvalue { i8*, i64, i1 } undef, i8* null, 0
+  %f1 = insertvalue { i8*, i64, i1 } %f0, i64 0, 1
+  %f2 = insertvalue { i8*, i64, i1 } %f1, i1 false, 2
+  ret { i8*, i64, i1 } %f2
+}',
+        [ENameGlobalIR, Sym, ParamsIR, ENameBytesLen, ENameBytesLen, Sym,
+         ENameLen, ArgsSetupIR, NArgs, ArgsPtrIR, NArgs]).
+
 plawk_dyncall_at_params(0, 'i8* %path, i64 %len') :- !.
 plawk_dyncall_at_params(NArgs, ParamsIR) :-
     plawk_foreign_wrapper_params(NArgs, ValParams),
@@ -2561,6 +2753,25 @@ plawk_blob_expr_ir(blob_dyncall_at(Source, Args), FieldSeparator, Base,
     append(SrcGlobals, ArgGlobals, GlobalParts),
     append(SrcSetup, ArgSetup, PreSetup),
     plawk_blob_tail_ir(Base, ResIR, PreSetup, LenIR, PtrIR, SetupParts).
+plawk_blob_expr_ir(blob_dyncall_at_named(Name, Source, Args), FieldSeparator,
+        Base, LenIR, PtrIR, GlobalParts, SetupParts) :-
+    length(Args, NArgs),
+    plawk_dyncall_named_symbol(Name, NArgs, Sym),
+    plawk_dyncall_source_ir(Source, FieldSeparator, Base, Base,
+        PathPtrIR, PathLenIR, SrcGlobals, SrcSetup),
+    plawk_foreign_args_ir(Args, FieldSeparator, Base, ArgValueIRs,
+        ArgGlobals, ArgSetup),
+    ( ArgValueIRs == []
+    -> CallArgsSuffix = ''
+    ;  plawk_foreign_call_args_ir(ArgValueIRs, AV),
+       format(atom(CallArgsSuffix), ', ~w', [AV])
+    ),
+    format(atom(ResIR),
+        '  %~w_res = call { i8*, i64, i1 } @plawk_dyncall_at_named_b_~w(i8* ~w, i64 ~w~w)',
+        [Base, Sym, PathPtrIR, PathLenIR, CallArgsSuffix]),
+    append(SrcGlobals, ArgGlobals, GlobalParts),
+    append(SrcSetup, ArgSetup, PreSetup),
+    plawk_blob_tail_ir(Base, ResIR, PreSetup, LenIR, PtrIR, SetupParts).
 
 plawk_blob_tail_ir(Base, ResIR, PreSetup, LenIR, PtrIR, SetupParts) :-
     format(atom(OkIR),
@@ -2651,11 +2862,15 @@ plawk_program_compile_sites(Program, Sites) :-
           ( plawk_actions_dyncall_at(Actions, CSrc, _)
           ; plawk_actions_dyncall_at_named(Actions, _NName, CSrc, _)
           ; plawk_actions_float_dyncall_at(Actions, CSrc, _)
+          ; plawk_actions_float_dyncall_at_named(Actions, _FName, CSrc, _)
           ),
           plawk_compile_source_node(CSrc, Arg)
         ;   % blob positions via the generic walk (print fields, writebin
             % slots, assoc keys, blob_eq patterns)
-            plawk_program_blob_node(Program, blob_dyncall_at(CSrc, _)),
+            ( plawk_program_blob_node(Program, blob_dyncall_at(CSrc, _))
+            ; plawk_program_blob_node(Program,
+                  blob_dyncall_at_named(_BName, CSrc, _))
+            ),
             plawk_compile_source_node(CSrc, Arg)
         ),
         Sites0),
@@ -2779,6 +2994,47 @@ plawk_expr_float_dyncall_at(Expr, S, A) :-
     ; plawk_expr_float_dyncall_at(Right, S, A)
     ).
 
+%% plawk_program_dyncall_at_named_float_entries(+Program, -Entries)
+%  Name-NArgs pairs across float(dyncall_at@name(...)) sites -- the
+%  double-returning named-at shims.
+plawk_program_dyncall_at_named_float_entries(
+        program(_Begin, Rules, EndClauses), Entries) :-
+    findall(Name-NArgs,
+        ( ( member(rule(_Pattern, Actions), Rules)
+          ; member(end(Actions), EndClauses)
+          ),
+          plawk_actions_float_dyncall_at_named(Actions, Name, _Source, Args),
+          length(Args, NArgs)
+        ),
+        Entries0),
+    sort(Entries0, Entries).
+
+plawk_actions_float_dyncall_at_named(Actions, Name, Source, Args) :-
+    member(Action, Actions),
+    plawk_action_float_dyncall_at_named(Action, Name, Source, Args).
+plawk_action_float_dyncall_at_named(add(_Var, Expr), N, S, A) :-
+    plawk_expr_float_dyncall_at_named(Expr, N, S, A).
+plawk_action_float_dyncall_at_named(set(_Var, Expr), N, S, A) :-
+    plawk_expr_float_dyncall_at_named(Expr, N, S, A).
+plawk_action_float_dyncall_at_named(print(Fields), N, S, A) :-
+    member(Field, Fields),
+    plawk_expr_float_dyncall_at_named(Field, N, S, A).
+plawk_action_float_dyncall_at_named(printf(_Format, PrintfArgs), N, S, A) :-
+    member(Field, PrintfArgs),
+    plawk_expr_float_dyncall_at_named(Field, N, S, A).
+plawk_action_float_dyncall_at_named(if(_Pattern, ThenActions, ElseActions),
+        N, S, A) :-
+    ( plawk_actions_float_dyncall_at_named(ThenActions, N, S, A)
+    ; plawk_actions_float_dyncall_at_named(ElseActions, N, S, A)
+    ).
+plawk_expr_float_dyncall_at_named(float_dyncall_at_named(Name, Source, Args),
+    Name, Source, Args).
+plawk_expr_float_dyncall_at_named(Expr, N, S, A) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    ( plawk_expr_float_dyncall_at_named(Left, N, S, A)
+    ; plawk_expr_float_dyncall_at_named(Right, N, S, A)
+    ).
+
 %% blob(dyncall(...)) / blob(dyncall_at(...)) arity collectors -- one
 %  byte-slice shim per distinct call-arg count. blob only appears as a
 %  print/writebin field (not inside arithmetic), so the walkers scan
@@ -2794,7 +3050,8 @@ plawk_program_blob_node(program(_Begin, Rules, EndClauses), Blob) :-
 plawk_subterm_blob(Term, Term) :-
     compound(Term),
     functor(Term, F, _),
-    memberchk(F, [blob_dyncall, blob_dyncall_named, blob_dyncall_at]).
+    memberchk(F, [blob_dyncall, blob_dyncall_named, blob_dyncall_at,
+        blob_dyncall_at_named]).
 plawk_subterm_blob(Term, Blob) :-
     compound(Term),
     arg(_, Term, Sub),
@@ -2815,6 +3072,18 @@ plawk_program_dyncall_at_blob_arities(Program, Arities) :-
         ),
         A0),
     sort(A0, Arities).
+
+%% plawk_program_dyncall_at_named_blob_entries(+Program, -Entries)
+%  Name-NArgs pairs across blob(dyncall_at@name(...)) sites, found by
+%  the same generic blob-node walk as the other blob kinds.
+plawk_program_dyncall_at_named_blob_entries(Program, Entries) :-
+    findall(Name-NArgs,
+        ( plawk_program_blob_node(Program,
+              blob_dyncall_at_named(Name, _Source, Args)),
+          length(Args, NArgs)
+        ),
+        E0),
+    sort(E0, Entries).
 
 plawk_action_blob_field(print(Fields), Blob) :- member(Blob, Fields).
 plawk_action_blob_field(printf(_Format, PrintfArgs), Blob) :- member(Blob, PrintfArgs).
@@ -4791,6 +5060,7 @@ plawk_writebin_str_arg(Blob, _Width) :-
 plawk_blob_node_shape(blob_dyncall(_)).
 plawk_blob_node_shape(blob_dyncall_named(_, _)).
 plawk_blob_node_shape(blob_dyncall_at(_, _)).
+plawk_blob_node_shape(blob_dyncall_at_named(_, _, _)).
 
 %% plawk_blob_call_arg_ok(+Expr) is semidet.
 %  Shape plus argument validation (same checks as the float variants;
@@ -4801,6 +5071,8 @@ plawk_blob_call_arg_ok(blob_dyncall_named(Name, Args)) :-
     plawk_float_dyncall_named_expr(float_dyncall_named(Name, Args)).
 plawk_blob_call_arg_ok(blob_dyncall_at(Source, Args)) :-
     plawk_float_dyncall_at_expr(float_dyncall_at(Source, Args)).
+plawk_blob_call_arg_ok(blob_dyncall_at_named(Name, Source, Args)) :-
+    plawk_float_dyncall_at_expr(float_dyncall_at_named(Name, Source, Args)).
 
 plawk_writebin_i64_arg(special('NR')).
 plawk_writebin_i64_arg(special('NF')).
@@ -6487,6 +6759,8 @@ plawk_rule_body_print_field(blob_dyncall_named(Name, Args)) :-
     plawk_float_dyncall_named_expr(float_dyncall_named(Name, Args)).
 plawk_rule_body_print_field(blob_dyncall_at(Source, Args)) :-
     plawk_float_dyncall_at_expr(float_dyncall_at(Source, Args)).
+plawk_rule_body_print_field(blob_dyncall_at_named(Name, Source, Args)) :-
+    plawk_float_dyncall_at_expr(float_dyncall_at_named(Name, Source, Args)).
 plawk_rule_body_print_field(Expr) :-
     plawk_f64_print_expr(Expr).
 plawk_rule_body_print_field(length(field(_))).
@@ -6590,6 +6864,10 @@ plawk_float_dyncall_named_expr(float_dyncall_named(Name, Args)) :-
     Args = [_ | _],
     maplist(plawk_foreign_arg, Args).
 plawk_float_dyncall_at_expr(float_dyncall_at(Source, Args)) :-
+    plawk_dyncall_at_source_ok(Source),
+    maplist(plawk_foreign_arg, Args).
+plawk_float_dyncall_at_expr(float_dyncall_at_named(Name, Source, Args)) :-
+    atom(Name),
     plawk_dyncall_at_source_ok(Source),
     maplist(plawk_foreign_arg, Args).
 
@@ -7118,6 +7396,8 @@ plawk_f64_scalar_read_operand_expr(float_dyncall_named(Name, Args)) :-
     plawk_float_dyncall_named_expr(float_dyncall_named(Name, Args)).
 plawk_f64_scalar_read_operand_expr(float_dyncall_at(Source, Args)) :-
     plawk_float_dyncall_at_expr(float_dyncall_at(Source, Args)).
+plawk_f64_scalar_read_operand_expr(float_dyncall_at_named(Name, Source, Args)) :-
+    plawk_float_dyncall_at_expr(float_dyncall_at_named(Name, Source, Args)).
 plawk_f64_scalar_read_operand_expr(Expr) :-
     plawk_i64_operand_expr(Expr).
 plawk_f64_scalar_read_operand_expr(Expr) :-
@@ -7700,6 +7980,7 @@ plawk_expr_is_double(float_call(_Name, _Args)).
 plawk_expr_is_double(float_dyncall(_Args)).
 plawk_expr_is_double(float_dyncall_named(_Name, _Args)).
 plawk_expr_is_double(float_dyncall_at(_Source, _Args)).
+plawk_expr_is_double(float_dyncall_at_named(_Name, _Source, _Args)).
 % A substituted read of a double scalar slot (see
 % plawk_substitute_scalar_reads/4).
 plawk_expr_is_double(ssa_f64(_Value)).
@@ -7731,6 +8012,8 @@ plawk_f64_operand_expr(float_dyncall_named(Name, Args)) :-
     plawk_float_dyncall_named_expr(float_dyncall_named(Name, Args)).
 plawk_f64_operand_expr(float_dyncall_at(Source, Args)) :-
     plawk_float_dyncall_at_expr(float_dyncall_at(Source, Args)).
+plawk_f64_operand_expr(float_dyncall_at_named(Name, Source, Args)) :-
+    plawk_float_dyncall_at_expr(float_dyncall_at_named(Name, Source, Args)).
 plawk_f64_operand_expr(Expr) :-
     plawk_i64_operand_expr(Expr).
 plawk_f64_operand_expr(Expr) :-
@@ -7806,6 +8089,26 @@ plawk_f64_expr_ir(float_dyncall_at(Source, Args), FieldSeparator, Base, GlobalBa
     format(atom(ResIR),
         '  %~w_res = call { double, i1 } @plawk_dyncall_at_f_~w(i8* ~w, i64 ~w~w)',
         [Base, NArgs, PathPtrIR, PathLenIR, CallArgsSuffix]),
+    append(SrcGlobals, ArgGlobals, GlobalParts),
+    append(SrcSetup, ArgSetup, PreSetup),
+    plawk_f64_call_tail_ir(Base, ResIR, PreSetup, ValueIR, SetupParts).
+plawk_f64_expr_ir(float_dyncall_at_named(Name, Source, Args), FieldSeparator,
+        Base, GlobalBase, ValueIR, GlobalParts, SetupParts) :-
+    !,
+    length(Args, NArgs),
+    plawk_dyncall_named_symbol(Name, NArgs, Sym),
+    plawk_dyncall_source_ir(Source, FieldSeparator, Base, GlobalBase,
+        PathPtrIR, PathLenIR, SrcGlobals, SrcSetup),
+    plawk_foreign_args_ir(Args, FieldSeparator, GlobalBase, ArgValueIRs,
+        ArgGlobals, ArgSetup),
+    ( ArgValueIRs == []
+    -> CallArgsSuffix = ''
+    ;  plawk_foreign_call_args_ir(ArgValueIRs, AV),
+       format(atom(CallArgsSuffix), ', ~w', [AV])
+    ),
+    format(atom(ResIR),
+        '  %~w_res = call { double, i1 } @plawk_dyncall_at_named_f_~w(i8* ~w, i64 ~w~w)',
+        [Base, Sym, PathPtrIR, PathLenIR, CallArgsSuffix]),
     append(SrcGlobals, ArgGlobals, GlobalParts),
     append(SrcSetup, ArgSetup, PreSetup),
     plawk_f64_call_tail_ir(Base, ResIR, PreSetup, ValueIR, SetupParts).
@@ -8965,6 +9268,13 @@ plawk_emit_print_expr_for_context(blob_dyncall_at(Source, Args), FieldSeparator,
     plawk_print_expr_output_names(Context, blob, FmtPrefix, PrintPrefix),
     plawk_blob_expr_ir(blob_dyncall_at(Source, Args), FieldSeparator, Base,
         LenIR, PtrIR, GlobalParts, SetupParts).
+plawk_emit_print_expr_for_context(blob_dyncall_at_named(Name, Source, Args),
+        FieldSeparator, Context,
+        slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), GlobalParts, SetupParts) :-
+    plawk_print_expr_value_base(Context, blob, Base),
+    plawk_print_expr_output_names(Context, blob, FmtPrefix, PrintPrefix),
+    plawk_blob_expr_ir(blob_dyncall_at_named(Name, Source, Args),
+        FieldSeparator, Base, LenIR, PtrIR, GlobalParts, SetupParts).
 
 plawk_emit_print_expr_for_context(length(field(FieldIndex)), FieldSeparator, Context,
         i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
