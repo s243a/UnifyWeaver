@@ -55,7 +55,7 @@ OPS = {"SYM": 0, "HIER": 1, "_DEPRECATED_LLM": 2, "ELEM": 3, "LINEAGE": 4, "LINE
 # (off-manifold noise, exactly like an absent ancestor slot); masking ⇒ provenance-AGNOSTIC μ, which is
 # the DEFAULT inference path (marginalize over sources). Reserved entries (enwiki) are for later corpora.
 CORPORA = {"simplewiki": 0, "enwiki": 1, "pearltrees": 2, "mindmap": 3}
-JUDGES = {"haiku": 0, "graph": 1, "human": 2, "sonnet": 3, "opus": 4, "gemini": 5, "gpt-5.5-low": 6, "blend": 7, "dir-blend": 8}    # learned judge_emb; each = own calibration row. "blend" = SYM DUAL judge (2 inputs, emit_blend_judge.py); "dir-blend" = 3-ESTIMATOR cross-judge DIRECTION superposition (graph-discrim ⊕ LLM-element ⊕ LLM-subcat, emit_direction_blend.py). Checkpoints saved after this row expect judge_emb num_embeddings >= 9; older checkpoints load fine (new row is zero-init, unreferenced). Rationale in DESIGN_calibrated_judges.md.
+JUDGES = {"haiku": 0, "graph": 1, "human": 2, "sonnet": 3, "opus": 4, "gemini": 5, "gpt-5.5-low": 6, "blend": 7, "dir-blend": 8}    # learned judge_emb; each = own calibration row. "blend" = SYM DUAL judge (2 inputs, emit_blend_judge.py); "dir-blend" = 3-ESTIMATOR cross-judge DIRECTION superposition (graph-discrim ⊕ LLM-element ⊕ LLM-subcat, emit_direction_blend.py). Checkpoints saved after this row expect judge_emb num_embeddings >= 9; older checkpoints load fine (new row is zero-init, unreferenced). Rationale in DESIGN_calibrated_judges.md. Post-migration (NameFunctionCond) every judge also needs a card in judge_cards.py.
                                          # (SYM/LLM); graph = a Wikipedia edge / non-edge (WIKI, free μ=0 SYM
                                          # negatives); human = a hand-curated edge (mindmap/pearltrees);
                                          # sonnet/opus = stronger-model judgments (escalated tie-breaks, §14)
@@ -365,11 +365,38 @@ class Tokenizer:
 # --------------------------------------------------------------------------------------------------
 # the model
 # --------------------------------------------------------------------------------------------------
+class NameFunctionCond(nn.Module):
+    """Identity conditioning as a FUNCTION of a frozen e5 name-card embedding — cond_j = W·e_j + r_j
+    (REPORT_channel_campaign.md §5-6; DESIGN_amortized_fusion_heads.md). The anchored-basis idiom
+    (anchored_basis.py) applied to provenance: e_j (the judge-card embedding, judge_cards.py) is FROZEN —
+    the pinned interpretable part; W is a learned translation amplifying the calibration-relevant axes of
+    name space; r_j holds only what the card doesn't say (regularize ‖r‖ toward 0 so the name prior stays
+    the default — resid_penalty(), the anchor-KL's anti-drift role here). A NEW judge onboards at r=0 =
+    pure name prior, so family-graded transfer falls out of the name geometry (luna starts at 0.97 of
+    gpt-5.5's conditioning instead of a zero row that barely learns — the probe's zero-init finding).
+    Migration from an indexed judge_emb is behavior-preserving: migrate_judge_names.py fits W by ridge
+    least squares to the old rows and sets r_j = judge_emb[j] − W·e_j (exact reproduction at init).
+    Same mechanism applies verbatim to OPS/CORPORA when their turn comes."""
+
+    def __init__(self, name_e5, d_model):
+        super().__init__()
+        self.register_buffer("name_e5", name_e5.clone())     # FROZEN cards (like AnchoredBasis values)
+        self.W = nn.Linear(name_e5.shape[1], d_model, bias=False)
+        self.resid = nn.Embedding(name_e5.shape[0], d_model)
+        nn.init.zeros_(self.resid.weight)                    # default = pure name prior
+
+    def forward(self, idx):
+        return self.W(self.name_e5[idx]) + self.resid(idx)
+
+    def resid_penalty(self):
+        return self.resid.weight.pow(2).sum(-1).mean()
+
+
 class MuAttention(nn.Module):
     def __init__(self, d_model=384, n_ops=len(OPS), n_heads=4, n_layers=1, max_gen=5,
                  dim_ff=None, dropout=0.0, n_corpus=len(CORPORA), n_judge=len(JUDGES),
                  n_nodetype=len(NODETYPE), n_account=len(ACCOUNTS), struct_blend="inside", n_struct=1,
-                 c_dist=1.0, c_mem_ceiling=1.0, c_subcat=1.0, c_elem=1.0):
+                 c_dist=1.0, c_mem_ceiling=1.0, c_subcat=1.0, c_elem=1.0, judge_name_e5=None):
         # NB c_subcat/c_elem default to a NEUTRAL 1.0 here — the measured +0.72/+0.82 are LEAKAGE-INFLATED
         # (training-pair measurement, PR #3488 review) and are supplied ONLY via the CLI on the superseded
         # `membership` ablation path (see DESIGN_sym_estimation_integration.md), not baked into the module.
@@ -391,6 +418,15 @@ class MuAttention(nn.Module):
         # can locate "the provenance input" regardless of whether its source is revealed.
         self.corpus_emb = nn.Embedding(n_corpus, d_model)
         self.judge_emb = nn.Embedding(n_judge, d_model)
+        # NAME-FUNCTION judge conditioning (post-migration): when a card table is supplied, the judge
+        # condition is NameFunctionCond (W·e5(card) + residual) and judge_emb is BYPASSED in forward —
+        # kept in the module so pre-migration checkpoints load and the migration can read its rows.
+        if judge_name_e5 is not None:
+            assert judge_name_e5.shape[0] == n_judge, \
+                f"judge card table has {judge_name_e5.shape[0]} rows, n_judge={n_judge}"
+            self.judge_name = NameFunctionCond(judge_name_e5, d_model)
+        else:
+            self.judge_name = None
         # ACCOUNT: a 2nd factored provenance axis on the SAME maskable token. Zero-init ⇒ a no-op at warm
         # start (and whenever items carry no account), so the signal is learned only once both accounts exist.
         self.account_emb = nn.Embedding(n_account, d_model)
@@ -458,7 +494,9 @@ class MuAttention(nn.Module):
             if corpus_of is not None:                                    # add factored source (if revealed)
                 cmask = (corpus_of >= 0).unsqueeze(-1)
                 emb = emb + self.corpus_emb(corpus_of.clamp(min=0)) * cmask
-                emb = emb + self.judge_emb(judge_of.clamp(min=0)) * cmask
+                jcond = (self.judge_name(judge_of.clamp(min=0)) if self.judge_name is not None
+                         else self.judge_emb(judge_of.clamp(min=0)))
+                emb = emb + jcond * cmask
             if account_of is not None:                                   # 2nd provenance axis (account)
                 amask = (account_of >= 0).unsqueeze(-1)
                 emb = emb + self.account_emb(account_of.clamp(min=0)) * amask
