@@ -62,6 +62,30 @@ fn generated_assert_alias_appends_a_dynamic_fact() {
 }
 
 #[test]
+fn asserted_rule_body_can_call_assert_alias() {
+    let mut vm = WamState::new(vec![], HashMap::new());
+    assert_clause(
+        &mut vm,
+        "assertz/1",
+        rule(
+            at("seed_alias"),
+            fact("assert", vec![fact("dyn", vec![at("meta_alias")])]),
+        ),
+    );
+
+    vm.reset_query();
+    vm.code = vec![
+        Instruction::Call("seed_alias/0".to_string(), 0),
+        Instruction::Proceed,
+    ];
+    vm.labels = HashMap::new();
+    vm.pc = 1;
+
+    assert!(vm.run());
+    assert_eq!(dyn_values(&mut vm), vec![at("meta_alias")]);
+}
+
+#[test]
 fn assertz_asserta_query_order_and_retractall() {
     let mut vm = WamState::new(vec![], HashMap::new());
     assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("red")]));

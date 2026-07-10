@@ -1611,6 +1611,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                 self.execute_read_term_builtin(options.as_ref())
             }
             "read/1" | "read_term/1" => { self.execute_read_term_builtin(None) }
+            "assert/1" => { self.execute_assert_builtin("assert/1") }
             "assertz/1" | "asserta/1" => { self.execute_assert_builtin(op) }
             "retractall/1" => { self.execute_retractall_builtin() }
             _ => false,
