@@ -440,6 +440,28 @@ foreign_args_rest([Arg | Args]) -->
 foreign_args_rest([]) -->
     [].
 
+%% dyncall_at_source(-Source)//
+%
+%  The first argument of dyncall_at(...): either a path (field / string
+%  literal, as before), or compile(field-or-string) -- the eval surface.
+%  compile(Src) runs the shipped bootstrap-compiler .wamo on the Prolog
+%  source text Src at runtime and yields a HANDLE to the freshly
+%  compiled grammar (deduplicated by source text, so repeated compiles
+%  of the same source reuse one loaded grammar). "compile" is reserved
+%  in this position only; elsewhere it still parses as an ordinary
+%  identifier.
+dyncall_at_source(compile_src(Arg)) -->
+    "compile",
+    ws,
+    "(",
+    ws,
+    foreign_arg(Arg),
+    ws,
+    ")",
+    !.
+dyncall_at_source(Source) -->
+    foreign_arg(Source).
+
 foreign_arg(field(Index)) -->
     "$",
     integer_codes(IndexCodes),
@@ -1391,12 +1413,18 @@ i64_factor_expr(var(Name)) -->
 % or string literal) names the .wamo object at runtime, chosen per call,
 % and args... are the entry's inputs. Reserved like dyncall; parsed before
 % it so the longer keyword wins.
+% The source may also be compile(field-or-string): compile the Prolog
+% source text through the shipped bootstrap-compiler object at runtime
+% (the eval surface -- JIT roadmap item 5 payoff) and dyncall the
+% freshly compiled grammar. compile() dedups by source text, so a
+% per-record `dyncall_at(compile($1), $2)` compiles each distinct
+% grammar once and reuses it from the cache thereafter.
 prolog_call_expr(dyncall_at(Source, Args)) -->
     "dyncall_at",
     ws,
     "(",
     ws,
-    foreign_arg(Source),
+    dyncall_at_source(Source),
     foreign_args_rest(Args),
     ws,
     ")",
@@ -1475,7 +1503,7 @@ float_call_expr(float_dyncall_at(Source, Args)) -->
     ws,
     "(",
     ws,
-    foreign_arg(Source),
+    dyncall_at_source(Source),
     foreign_args_rest(Args),
     ws,
     ")",
@@ -1536,7 +1564,7 @@ blob_call_expr(blob_dyncall_at(Source, Args)) -->
     ws,
     "(",
     ws,
-    foreign_arg(Source),
+    dyncall_at_source(Source),
     foreign_args_rest(Args),
     ws,
     ")",
