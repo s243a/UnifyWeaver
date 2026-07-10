@@ -35,6 +35,7 @@ wam_target_runtime_parser(Target, Options, Mode) :-
 parser_dependent_builtin(read/1).
 parser_dependent_builtin(read/2).
 parser_dependent_builtin(read_term/1).
+parser_dependent_builtin(read_term/2).
 parser_dependent_builtin(read_term_from_atom/2).
 parser_dependent_builtin(read_term_from_atom/3).
 parser_dependent_builtin(atom_to_term/3).
