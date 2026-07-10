@@ -23361,13 +23361,17 @@ fail:
 
 ; Associative-array variant (JIT roadmap #4): the entry output cell must bind
 ; to a proper list of 2-arg pairs -- e.g. [K1-V1, K2-V2, ...] -- and each
-; pair''s (Integer key, Integer value) is inserted into the caller''s i64
-; assoc table via @wam_assoc_i64_inc (add semantics: a fresh key ends at its
-; value; a repeated key accumulates, matching a tally). The walk reads the
-; cons cells (functor "[|]", arity 2) and pairs (any arity-2 compound; arg0 =
-; key, arg1 = value) BEFORE the arena rewind, since they live in the arena.
-; Returns i1 ok; false on call failure, a non-list output, a non-pair
-; element, or a non-Integer key/value.
+; pair''s (Integer-or-Atom key, Integer value) is inserted into the caller''s
+; i64 assoc table via @wam_assoc_i64_inc (add semantics: a fresh key ends at
+; its value; a repeated key accumulates, matching a tally). An Atom key''s id
+; is a global-registry id -- the same keyspace text-mode field slices and
+; blob keys intern into -- so for-in reports and string-literal lookups
+; resolve it like any other key (one key kind per table; integer keys
+; collide with atom ids, the documented text-mode ambiguity). The walk reads
+; the cons cells (functor "[|]", arity 2) and pairs (any arity-2 compound;
+; arg0 = key, arg1 = value) BEFORE the arena rewind, since they live in the
+; arena. Returns i1 ok; false on call failure, a non-list output, a non-pair
+; element, a non-Integer/non-Atom key, or a non-Integer value.
 define i1 @wam_object_call_assoc(%WamState* %vm, i32 %entry_pc, i32 %nargs, %Value* %args, i32 %out_reg, %WamAssocI64Table* %table) {
 entry:
   %vm_null = icmp eq %WamState* %vm, null
@@ -23446,9 +23450,19 @@ pair_args:
   %vv = call %Value @wam_deref_value(%WamState* %vm, %Value %v_raw)
   %ktag = call i32 @value_tag(%Value %kv)
   %vtag = call i32 @value_tag(%Value %vv)
+  ; Keys: Integer (payload as-is) or Atom (JIT roadmap item 4 string
+  ; fields -- the atom id IS a global-registry id, the same keyspace the
+  ; text-mode assoc pipeline interns field slices and blob keys into, so
+  ; for-in reports and "literal" lookups resolve it like any other key).
+  ; Values stay Integer: the table is an i64 accumulator. Mixing integer
+  ; and atom keys in ONE table is the documented text-mode ambiguity
+  ; (integer keys collide with atom ids) -- a grammar should return one
+  ; key kind per table.
   %k_is_int = icmp eq i32 %ktag, 1
+  %k_is_atom = icmp eq i32 %ktag, 0
+  %k_ok = or i1 %k_is_int, %k_is_atom
   %v_is_int = icmp eq i32 %vtag, 1
-  %kv_ok = and i1 %k_is_int, %v_is_int
+  %kv_ok = and i1 %k_ok, %v_is_int
   br i1 %kv_ok, label %insert, label %rewind_fail
 insert:
   %kval = call i64 @value_payload(%Value %kv)

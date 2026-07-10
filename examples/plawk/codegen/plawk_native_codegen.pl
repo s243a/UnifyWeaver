@@ -3521,14 +3521,20 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
       format(atom(Base), 'assoc_rule_~w_action_~w_dyn', [RuleIndex, Index]),
       plawk_dynassoc_call_parts(Call, Args, ShimName),
+      % arg-marshal globals (text-mode field args emit an _empty
+      % fallback constant each) ride the line stream as global(G)
+      % markers, partitioned into the rule's global channel by the
+      % apply emitter -- discarding them left the emitted IR
+      % referencing undefined constants in text mode.
       plawk_foreign_args_ir(Args, FieldSeparator, Base, ArgValueIRs,
-          _Globals, Setup),
+          Globals, Setup),
+      findall(global(G), member(G, Globals), GlobalMarkers),
       plawk_foreign_call_args_ir(ArgValueIRs, CallArgsIR),
       format(atom(CallLine),
           '  %~w_ok = call i1 @~w(~w, %WamAssocI64Table* %plawk_assoc_table_~w)',
           [Base, ShimName, CallArgsIR, TableIndex]),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
-      append([[Label], Setup, [CallLine, Next, '']], Lines)
+      append([GlobalMarkers, [Label], Setup, [CallLine, Next, '']], Lines)
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).

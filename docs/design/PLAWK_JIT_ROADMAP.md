@@ -182,7 +182,7 @@ Purely additive; no dependency on the other items.
 **Effort:** A landed. B is moderate (declaration table + a resolution pass +
 the reserved-name check). **Depends on:** nothing.
 
-### 4. Binary-data returns — structured records (deserialization) — *mechanism + destructure surface LANDED (numeric fields)*
+### 4. Binary-data returns — structured records (deserialization) — **LANDED (all string surfaces; string values deferred)**
 
 **What:** let a grammar return a **compound term** (e.g. `rec(42, 3.14,
 "name")`) that plawk **deserializes** into typed fields against a declared
@@ -243,9 +243,22 @@ different plawk containers — this is the through-line for the rest of item 4:
   fills `arr`'s table each record, keyed into the same assoc plan as
   `arr[k]++`, so END `arr[k]` lookups see the accumulated result. Verified:
   `tally($1) -> [1-$1, 2-100]` over inputs 5,7 gives `arr[1]=12`,
-  `arr[2]=200`. **Deferred:** the default-entry `dyncall(...) as assoc` (named
-  only for now), for-in iteration over a grammar-populated table, and
-  atom/string keys (interned — an extension of the integer-key mechanism).
+  `arr[2]=200`. **Atom/string keys LANDED:** a grammar returning
+  `[Atom-V, ...]` pairs populates the table under the atom's
+  global-registry id — the same keyspace text-mode field slices and blob
+  keys intern into — so END `for (k in arr)` reports resolve the key
+  names and `arr["literal"]` lookups intern to the same ids (verified:
+  a bucketing grammar over text records reports `big 4 / small 2 /
+  seen 4` and answers literal lookups). One key kind per table (integer
+  keys collide with atom ids — the documented text-mode ambiguity).
+  Landing this also fixed a latent text-mode bug: the dynassoc action
+  emitter DISCARDED its arg-marshal globals (text-mode field args emit
+  a fallback constant each), leaving the IR referencing undefined
+  values; they now ride the apply path's global channel (added in the
+  blob-consumers round). **Deferred:** the default-entry
+  `dyncall(...) as assoc` (named only for now), for-in iteration over a
+  grammar-populated table inside rule bodies, and string VALUES (the
+  table is an i64 accumulator).
 - **Positional array** — fields by numeric index into one array value.
 
 Each target reuses one marshaller over the same walked compound; they differ
@@ -272,9 +285,11 @@ reads (it didn't before), which now lets any rule-body print reference a
 scalar. Verified: `info(X) -> tag(X, big/small)` over 5,200,7 prints
 `small/big/small` and sums `$1` to 212.
 
-The **destructure** target still rejects string fields (no scalar to bind
-them to); the **assoc** target (string values / interned keys) is the
-remaining container.
+The **destructure** target still rejects string fields by design (no
+scalar to bind them to — the record view is the string surface); the
+**assoc** target now takes interned atom keys (see above), leaving
+string VALUES as the one string shape without a container (an i64
+table cannot hold them).
 
 **Why:** this is the *other half* of your binary-return idea — the case
 that **does** need deserialization. It is also the endgame that closes the
