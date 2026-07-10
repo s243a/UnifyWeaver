@@ -12,6 +12,10 @@ rust_dyn_dummy.
 :- dynamic rust_assert_alias_demo/0.
 rust_assert_alias_demo :- assert(dyn(alias)).
 
+:- dynamic rust_clause_demo/2.
+rust_clause_demo(X, Body) :-
+    clause(dyn(X), Body).
+
 :- dynamic rust_read_term_options_demo/2.
 rust_read_term_options_demo(Term, Names) :-
     read_term(Term, [variable_names(Names)]).
@@ -44,6 +48,7 @@ test(assert_retract_dynamic_db,
     once(write_wam_rust_project(
         [user:rust_dyn_dummy/0,
          user:rust_assert_alias_demo/0,
+         user:rust_clause_demo/2,
          user:rust_read_term_options_demo/2,
          user:rust_atom_to_term_demo/2,
          user:rust_syntax_error_demo/1],

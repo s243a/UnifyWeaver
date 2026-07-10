@@ -656,6 +656,84 @@
         self.dynamic_retract_attempt(key, 0, pattern, cont_pc)
     }
 
+    fn dynamic_clause_call(&mut self, cont_pc: usize) -> bool {
+        let head_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let head = self.deref_heap(&self.deref_var(&head_raw));
+        if matches!(head, Value::Unbound(_) | Value::Uninit) { return false; }
+        let key = match self.dynamic_head_key(&head) {
+            Some(key) => key,
+            None => return false,
+        };
+        let body_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let body = self.deref_heap(&self.deref_var(&body_raw));
+        self.dynamic_clause_attempt(key, 0, head, body, cont_pc)
+    }
+
+    fn dynamic_clause_attempt(
+        &mut self,
+        key: String,
+        start_idx: usize,
+        head_pattern: Value,
+        body_pattern: Value,
+        cont_pc: usize,
+    ) -> bool {
+        let clauses = match self.dynamic_db.get(&key) {
+            Some(clauses) => clauses.clone(),
+            None => return false,
+        };
+        for idx in start_idx..clauses.len() {
+            let cp_trail = self.trail.len();
+            let cp_heap = self.heap.len();
+            let cp_regs = self.save_regs();
+            let cp_stack = self.stack.clone();
+            let mut clause_vars = std::collections::HashMap::new();
+            let clause = Self::copy_term_walk(
+                &mut self.var_counter,
+                &mut clause_vars,
+                &clauses[idx],
+            );
+            let (head, body) = match self.dynamic_clause_head_body(&clause) {
+                Some((head, body)) => (
+                    head,
+                    body.unwrap_or_else(|| Value::Atom("true".to_string())),
+                ),
+                None => continue,
+            };
+            if self.unify(&head_pattern, &head) && self.unify(&body_pattern, &body) {
+                if idx + 1 < clauses.len() {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: cont_pc,
+                        saved_args: cp_regs,
+                        stack: cp_stack,
+                        cp: self.cp,
+                        trail_len: cp_trail,
+                        heap_len: cp_heap,
+                        builtin_state: Some(BuiltinState {
+                            name: "dynamic_clause".to_string(),
+                            args: vec![
+                                Value::Atom(key.clone()),
+                                head_pattern.clone(),
+                                body_pattern.clone(),
+                            ],
+                            data: vec![
+                                Value::Integer((idx + 1) as i64),
+                                Value::Integer(cont_pc as i64),
+                            ],
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                self.pc = cont_pc;
+                return true;
+            }
+            self.unwind_trail_to(cp_trail);
+            self.heap.truncate(cp_heap);
+            self.restore_regs(&cp_regs);
+            self.stack = cp_stack;
+        }
+        false
+    }
+
     fn dynamic_retract_candidate(&self, pattern: &Value, clause: &Value) -> Option<Value> {
         let pattern_functor = match pattern {
             Value::Str(f, args) if (f == ":-" || f == ":-/2") && args.len() == 2 => Some(f),
