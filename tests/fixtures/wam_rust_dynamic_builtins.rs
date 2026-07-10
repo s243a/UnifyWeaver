@@ -411,7 +411,7 @@ fn read_consumes_buffered_terms_before_end_of_file() {
     let mut vm = WamState::new(code, labels);
     vm.set_term_input(
         "/* block header . */% header\nfirst./* block between . */% between terms\n\
-         pair(second, % ignored . full stop\n 2).");
+         pair(second, '/* kept */', /* ignored . block */ % ignored . full stop\n 2).");
 
     vm.set_reg_str("A1", ub("T1"));
     assert!(vm.execute_builtin("read/1", 1));
@@ -422,7 +422,10 @@ fn read_consumes_buffered_terms_before_end_of_file() {
     assert!(vm.execute_builtin("read_term/1", 1));
     assert_eq!(
         vm.bindings.get("T2"),
-        Some(&fact("pair", vec![at("second"), Value::Integer(2)])),
+        Some(&fact(
+            "pair",
+            vec![at("second"), at("/* kept */"), Value::Integer(2)],
+        )),
     );
 
     vm.reset_query();

@@ -67,18 +67,28 @@
         }
     }
 
-    fn strip_term_line_comments(text: &str) -> String {
-        if !text.as_bytes().contains(&b'%') {
+    fn strip_term_comments(text: &str) -> String {
+        if !text.as_bytes().contains(&b'%') && !text.contains("/*") {
             return text.trim().to_string();
         }
         let mut out = String::with_capacity(text.len());
         let mut in_quote = false;
         let mut escaped = false;
-        let mut in_comment = false;
-        for ch in text.chars() {
-            if in_comment {
+        let mut in_line_comment = false;
+        let mut in_block_comment = false;
+        let mut chars = text.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if in_line_comment {
                 if ch == '\n' {
-                    in_comment = false;
+                    in_line_comment = false;
+                    out.push(' ');
+                }
+                continue;
+            }
+            if in_block_comment {
+                if ch == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    in_block_comment = false;
                     out.push(' ');
                 }
                 continue;
@@ -98,7 +108,10 @@
                 in_quote = true;
                 out.push(ch);
             } else if ch == '%' {
-                in_comment = true;
+                in_line_comment = true;
+            } else if ch == '/' && chars.peek() == Some(&'*') {
+                chars.next();
+                in_block_comment = true;
             } else {
                 out.push(ch);
             }
@@ -114,7 +127,10 @@
         let mut in_quote = false;
         let mut escaped = false;
         let mut in_line_comment = false;
+        let mut in_block_comment = false;
+        let mut skip_next = false;
         for (idx, &b) in bytes.iter().enumerate() {
+            if skip_next { skip_next = false; continue; }
             if in_quote {
                 if escaped { escaped = false; continue; }
                 if b == 92 { escaped = true; continue; }
@@ -124,6 +140,16 @@
             if in_line_comment {
                 if b == 10 { in_line_comment = false; }
                 continue;
+            }
+            if in_block_comment {
+                if b == b'*' && bytes.get(idx + 1) == Some(&b'/') {
+                    in_block_comment = false;
+                    skip_next = true;
+                }
+                continue;
+            }
+            if b == b'/' && bytes.get(idx + 1) == Some(&b'*') {
+                in_block_comment = true; skip_next = true; continue;
             }
             if b == 37 { in_line_comment = true; continue; }
             if b == 39 { in_quote = true; continue; }
@@ -136,7 +162,7 @@
                 };
                 if next_is_term_end {
                     return Some((
-                        Self::strip_term_line_comments(&trimmed[..idx]),
+                        Self::strip_term_comments(&trimmed[..idx]),
                         term_start + idx + 1,
                     ));
                 }
@@ -144,7 +170,7 @@
         }
         let body = trimmed.trim_end();
         let body = body.strip_suffix(".").unwrap_or(body);
-        Some((Self::strip_term_line_comments(body), input.len()))
+        Some((Self::strip_term_comments(body), input.len()))
     }
 
     fn term_atom_text(atom: &str) -> String {
