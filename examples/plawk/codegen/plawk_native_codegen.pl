@@ -1975,6 +1975,27 @@ record:
   ret i64 %h64m
 fail:
   ret i64 0
+}
+
+define i64 @plawk_compile_file(i8* %path) {
+entry:
+  ; compile_file(path): read the grammar SOURCE file and compile its
+  ; contents through @plawk_compile. Content dedup makes this
+  ; change-rebust with no mtime bookkeeping: an edited file is new
+  ; source text (fresh compile, fresh handle); unchanged bytes hit the
+  ; registry. The read is per call -- cheap next to a compile, and it
+  ; keeps mid-run edits visible on the next record.
+  %totp = alloca i64
+  %buf = call i8* @wamo_read_file(i8* %path, i64* %totp)
+  %buf_null = icmp eq i8* %buf, null
+  br i1 %buf_null, label %fail, label %compile
+compile:
+  %total = load i64, i64* %totp
+  %h = call i64 @plawk_compile(i8* %buf, i64 %total)
+  call void @free(i8* %buf)
+  ret i64 %h
+fail:
+  ret i64 0
 }',
         [PathGlobal, BytesLen, BytesLen]).
 
@@ -2188,6 +2209,22 @@ plawk_dyncall_source_ir(compile_src(Arg), FieldSeparator, Base, GlobalBase,
     PathPtrIR = null,
     format(atom(PathLenIR), '%~w_h', [Base]),
     append(SrcSetup, [CallIR], SetupParts).
+% compile_file(path): marshal the path like any dyncall_at source, read
+% the named grammar SOURCE file at runtime, and compile its contents
+% through the same handle registry -- @plawk_compile_file delegates to
+% @plawk_compile, so content dedup gives change-rebust for free (an
+% edited file is new source text; unchanged bytes hit the registry).
+plawk_dyncall_source_ir(compile_file_src(Arg), FieldSeparator, Base, GlobalBase,
+        PathPtrIR, PathLenIR, GlobalParts, SetupParts) :-
+    format(atom(FBase), '~w_cfile', [Base]),
+    plawk_dyncall_source_ir(Arg, FieldSeparator, FBase, GlobalBase,
+        PPtrIR, _PLenIR, GlobalParts, PSetup),
+    format(atom(CallIR),
+        '  %~w_h = call i64 @plawk_compile_file(i8* ~w)',
+        [Base, PPtrIR]),
+    PathPtrIR = null,
+    format(atom(PathLenIR), '%~w_h', [Base]),
+    append(PSetup, [CallIR], SetupParts).
 
 %% plawk_blob_expr_ir(+Expr, +FieldSeparator, +Base, -LenIR, -PtrIR,
 %%     -GlobalParts, -SetupParts)
@@ -2302,15 +2339,22 @@ plawk_program_compile_sites(Program, Sites) :-
         ( ( member(rule(_Pattern, Actions), Rules)
           ; member(end(Actions), EndClauses)
           ),
-          ( plawk_actions_dyncall_at(Actions, compile_src(Arg), _)
-          ; plawk_actions_float_dyncall_at(Actions, compile_src(Arg), _)
-          )
+          ( plawk_actions_dyncall_at(Actions, CSrc, _)
+          ; plawk_actions_float_dyncall_at(Actions, CSrc, _)
+          ),
+          plawk_compile_source_node(CSrc, Arg)
         ;   % blob positions via the generic walk (print fields, writebin
             % slots, assoc keys, blob_eq patterns)
-            plawk_program_blob_node(Program, blob_dyncall_at(compile_src(Arg), _))
+            plawk_program_blob_node(Program, blob_dyncall_at(CSrc, _)),
+            plawk_compile_source_node(CSrc, Arg)
         ),
         Sites0),
     sort(Sites0, Sites).
+
+% both eval-source forms count as compile sites (they need the shipped
+% compiler object and the @plawk_compile support IR)
+plawk_compile_source_node(compile_src(Arg), Arg).
+plawk_compile_source_node(compile_file_src(Arg), Arg).
 
 plawk_actions_dyncall_at(Actions, Source, Args) :-
     member(Action, Actions),
@@ -6121,6 +6165,13 @@ plawk_dyncall_at_expr(dyncall_at(Source, Args)) :-
     maplist(plawk_foreign_arg, Args).
 
 plawk_dyncall_at_source_ok(compile_src(Arg)) :-
+    !,
+    plawk_foreign_arg(Arg).
+% compile_file(path): the path names a grammar SOURCE file read at
+% runtime; its contents compile through the same registry as
+% compile(...), so an edited file is a new source text and recompiles
+% (change-rebust by content dedup, no mtime bookkeeping).
+plawk_dyncall_at_source_ok(compile_file_src(Arg)) :-
     !,
     plawk_foreign_arg(Arg).
 plawk_dyncall_at_source_ok(Source) :-
