@@ -71,6 +71,25 @@ correlated against luna's labels:
   +0.05-vs-−0.10 direction is the signal, not the absolute size; a lateral-strata luna set would raise the
   ceiling (step 3 material).
 
+## 3b. Luna onboarding (B2 step 3) — residual captures the tilt, touches nothing else
+
+`fine_tune_luna_resid.py`: luna at JUDGES index 9, residual-only training (lr 1e-2, 300 steps) on its 250
+labelled fresh pairs (175 train / 75 held, descendant-disjoint).
+
+| | D corr (held) | S corr (held) | tilt μ_luna − μ_5.5 |
+|---|---|---|---|
+| r=0 name prior (before) | +0.662 | +0.052 | — |
+| after residual training | +0.665 | +0.050 | D **+0.174** (expect +), S **−0.107** (expect −, measured −0.11..−0.13) |
+
+- **Isolation verified**: max residual drift on every other judge = 0.00e+00 (gradient flow — only luna's
+  row appears in batches; W and trunk frozen).
+- The residual learned exactly what §7 measured about luna: the +D/−S calibration tilt. Correlations don't
+  move because the name prior already put luna at its family ceiling on this slice, and a bias offset is
+  correlation-invariant — the residual's job here IS the bias.
+- Bounds: the 250 pairs are all-transitive (S variance tiny — the campaign's B1 lesson applies to the S
+  number); luna's residual norm grew to 4.05 with a mid-training dip (single seed, no early stop) — a
+  deployment-grade luna row wants the stratified-data treatment and light early stopping.
+
 ## 4. Status & handoff
 
 - B2 step 1 CLOSED: `model_channel_heads_namecond_r0.pt` is the recommended working checkpoint (parity
