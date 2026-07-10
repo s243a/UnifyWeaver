@@ -849,8 +849,15 @@ plawk_program_dyncall_named_entries(Program, Entries) :-
 %  Same Name-NArgs shape; all three kinds share one per-entry PC resolver.
 plawk_program_dyncall_named_float_entries(Program, Entries) :-
     plawk_program_named_entries_of(float_dyncall_named, Program, Entries).
+% blob named entries via the generic blob walk (covers patterns,
+% writebin slots and assoc keys too, not just action fields).
 plawk_program_dyncall_named_blob_entries(Program, Entries) :-
-    plawk_program_named_entries_of(blob_dyncall_named, Program, Entries).
+    findall(Name-NArgs,
+        ( plawk_program_blob_node(Program, blob_dyncall_named(Name, Args)),
+          length(Args, NArgs)
+        ),
+        E0),
+    sort(E0, Entries).
 
 %% plawk_program_dyncall_rec_arities(+Program, -Arities)
 %% plawk_program_dyncall_named_rec_entries(+Program, -Entries)
@@ -2289,16 +2296,18 @@ plawk_program_evalc_path(program(BeginClauses, _Rules, _End), Path) :-
 %  variant (i64 / float / blob). Non-empty means the program uses the
 %  eval surface: @plawk_compile must be emitted and a bootstrap-compiler
 %  object must exist at the evalc path when the binary runs.
-plawk_program_compile_sites(program(_Begin, Rules, EndClauses), Sites) :-
+plawk_program_compile_sites(Program, Sites) :-
+    Program = program(_Begin, Rules, EndClauses),
     findall(Arg,
         ( ( member(rule(_Pattern, Actions), Rules)
           ; member(end(Actions), EndClauses)
           ),
           ( plawk_actions_dyncall_at(Actions, compile_src(Arg), _)
           ; plawk_actions_float_dyncall_at(Actions, compile_src(Arg), _)
-          ; member(Action, Actions),
-            plawk_action_blob_field(Action, blob_dyncall_at(compile_src(Arg), _))
           )
+        ;   % blob positions via the generic walk (print fields, writebin
+            % slots, assoc keys, blob_eq patterns)
+            plawk_program_blob_node(Program, blob_dyncall_at(compile_src(Arg), _))
         ),
         Sites0),
     sort(Sites0, Sites).
@@ -2393,21 +2402,34 @@ plawk_expr_float_dyncall_at(Expr, S, A) :-
 %  byte-slice shim per distinct call-arg count. blob only appears as a
 %  print/writebin field (not inside arithmetic), so the walkers scan
 %  print/printf fields directly.
-plawk_program_dyncall_blob_arities(program(_Begin, Rules, EndClauses), Arities) :-
+% One generic walk finds blob nodes ANYWHERE in a rule -- print fields,
+% writebin string slots, assoc keys, blob_eq patterns, if-branches --
+% so the collectors need not mirror each structural walker (the shims
+% must exist for every position that evaluates a blob).
+plawk_program_blob_node(program(_Begin, Rules, EndClauses), Blob) :-
+    ( member(Rule, Rules) ; member(Rule, EndClauses) ),
+    plawk_subterm_blob(Rule, Blob).
+
+plawk_subterm_blob(Term, Term) :-
+    compound(Term),
+    functor(Term, F, _),
+    memberchk(F, [blob_dyncall, blob_dyncall_named, blob_dyncall_at]).
+plawk_subterm_blob(Term, Blob) :-
+    compound(Term),
+    arg(_, Term, Sub),
+    plawk_subterm_blob(Sub, Blob).
+
+plawk_program_dyncall_blob_arities(Program, Arities) :-
     findall(NArgs,
-        ( ( member(rule(_P, Actions), Rules) ; member(end(Actions), EndClauses) ),
-          member(Action, Actions),
-          plawk_action_blob_field(Action, blob_dyncall(Args)),
+        ( plawk_program_blob_node(Program, blob_dyncall(Args)),
           length(Args, NArgs)
         ),
         A0),
     sort(A0, Arities).
 
-plawk_program_dyncall_at_blob_arities(program(_Begin, Rules, EndClauses), Arities) :-
+plawk_program_dyncall_at_blob_arities(Program, Arities) :-
     findall(NArgs,
-        ( ( member(rule(_P, Actions), Rules) ; member(end(Actions), EndClauses) ),
-          member(Action, Actions),
-          plawk_action_blob_field(Action, blob_dyncall_at(_Source, Args)),
+        ( plawk_program_blob_node(Program, blob_dyncall_at(_Source, Args)),
           length(Args, NArgs)
         ),
         A0),
@@ -3104,6 +3126,8 @@ plawk_mixed_branch_body_actions(Actions) :-
 
 plawk_assoc_update_action(inc_assoc(var(_ArrayName), field(KeyIndex))) :-
     KeyIndex > 0.
+plawk_assoc_update_action(inc_assoc(var(_ArrayName), Blob)) :-
+    plawk_assoc_blob_key_ok(Blob).
 
 plawk_scalar_conditional_action(if(_Pattern, ThenActions, ElseActions)) :-
     append(ThenActions, ElseActions, Actions),
@@ -3326,12 +3350,26 @@ plawk_assoc_rule_action_specs(rule(Pattern, Actions), rule(Pattern, ActionSpecs,
 plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), field(KeyIndex)),
         ArrayName-KeyIndex) :-
     KeyIndex > 0.
+% counts[blob(dyncall...)]++ -- key the table by a runtime grammar's
+% byte output (interned like a field slice).
+plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), Blob),
+        ArrayName-blob_key(Blob)) :-
+    plawk_assoc_blob_key_ok(Blob).
 plawk_assoc_body_action_spec(dynassoc_bind(var(ArrayName), Call),
         dynassoc(ArrayName, Call)) :-
     plawk_dynrec_call_ok(Call).
 
 plawk_assoc_increment_action(inc_assoc(var(ArrayName), field(KeyIndex)), ArrayName-KeyIndex) :-
     KeyIndex > 0.
+plawk_assoc_increment_action(inc_assoc(var(ArrayName), Blob),
+        ArrayName-blob_key(Blob)) :-
+    plawk_assoc_blob_key_ok(Blob).
+
+%% plawk_assoc_blob_key_ok(+Blob) is semidet.
+%  Blob-key shapes: the same validation as any blob call position (the
+%  marshal's global constants ride the apply stream as global markers).
+plawk_assoc_blob_key_ok(Blob) :-
+    plawk_blob_call_arg_ok(Blob).
 
 plawk_assoc_print_array(assoc(var(ArrayName), string(_Key)), ArrayName).
 plawk_assoc_print_array(assoc(var(ArrayName), int(_Key)), ArrayName).
@@ -3396,7 +3434,8 @@ plawk_assoc_rule_chain_lines([assoc_rule(Index, Pattern, Actions, Control) | Res
       plawk_rule_target(Control, NextLabel, RuleTargetLabel),
       % tagged-union rules carry their arm's field types with them
       plawk_rule_descriptor(Pattern, FieldSeparator, RuleDescriptor),
-      plawk_assoc_rule_apply_ir(Index, Actions, RuleTargetLabel, RuleDescriptor, ApplyIR),
+      plawk_assoc_rule_apply_ir(Index, Actions, RuleTargetLabel, RuleDescriptor,
+          ApplyGlobalIR, ApplyIR),
       ( Index =:= 0
       -> EntryIR = '  br label %assoc_rule_0_match\n\n'
       ;  EntryIR = ''
@@ -3409,7 +3448,8 @@ plawk_assoc_rule_chain_lines([assoc_rule(Index, Pattern, Actions, Control) | Res
 ~w:
 ~w',
           [BranchIR, ApplyLabel, ApplyIR]),
-      Pair = GuardGlobalIR-RuleIR
+      format(atom(RuleGlobalIR), '~w~w', [GuardGlobalIR, ApplyGlobalIR]),
+      Pair = RuleGlobalIR-RuleIR
     },
     [Pair],
     plawk_assoc_rule_chain_lines(Rest, FieldSeparator, NextIndex).
@@ -3434,12 +3474,29 @@ plawk_assoc_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel, NextLabel,
   br i1 %~w, label %~w, label %~w',
         [EntryIR, RuleLabel, GuardCallIR, MatchVar, ApplyLabel, NextLabel]).
 
-plawk_assoc_rule_apply_ir(_RuleIndex, [], NextLabel, _FieldSeparator, IR) :-
+% The apply stream may carry global(G) marker items (e.g. blob-key arg
+% marshaling emits per-arg constants); they partition out into the
+% rule's global-constant channel alongside the guard globals.
+plawk_assoc_rule_apply_ir(_RuleIndex, [], NextLabel, _FieldSeparator, '', IR) :-
     !,
     format(atom(IR), '  br label %~w', [NextLabel]).
-plawk_assoc_rule_apply_ir(RuleIndex, Actions, NextLabel, FieldSeparator, IR) :-
-    phrase(plawk_assoc_rule_action_lines(RuleIndex, Actions, NextLabel, FieldSeparator), Lines),
-    atomic_list_concat(Lines, '\n', IR).
+plawk_assoc_rule_apply_ir(RuleIndex, Actions, NextLabel, FieldSeparator,
+        GlobalIR, IR) :-
+    phrase(plawk_assoc_rule_action_lines(RuleIndex, Actions, NextLabel, FieldSeparator), Lines0),
+    plawk_partition_global_lines(Lines0, Globals, Lines),
+    atomic_list_concat(Lines, '\n', IR),
+    (   Globals == []
+    ->  GlobalIR = ''
+    ;   atomic_list_concat(Globals, '\n', Gs),
+        atom_concat('\n', Gs, GlobalIR)
+    ).
+
+plawk_partition_global_lines([], [], []).
+plawk_partition_global_lines([global(G) | Rest], [G | Gs], Lines) :-
+    !,
+    plawk_partition_global_lines(Rest, Gs, Lines).
+plawk_partition_global_lines([L | Rest], Gs, [L | Lines]) :-
+    plawk_partition_global_lines(Rest, Gs, Lines).
 
 plawk_assoc_rule_action_lines(RuleIndex, Actions, NextLabel, FieldSeparator) -->
     { Actions = [_ | _],
@@ -3472,6 +3529,45 @@ plawk_assoc_rule_action_blocks(RuleIndex,
           [Base, ShimName, CallArgsIR, TableIndex]),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[Label], Setup, [CallLine, Next, '']], Lines)
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% blob keys: evaluate the runtime grammar's byte output and intern it,
+% exactly as the text-field path interns its slice; a failed call (null
+% pointer) skips the increment, like a missing field. Works in text and
+% binfmt modes alike (the blob's args marshal per the separator). The
+% marshal's global constants ride the line stream as global(G) markers,
+% partitioned into the rule's global channel by the apply emitter.
+plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, TableIndex, blob_key(Blob)) | Rest], NextLabel, FieldSeparator) -->
+    { !,
+      ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(KeyBase), 'assoc_rule_~w_action_~w_bkey', [RuleIndex, Index]),
+      plawk_blob_expr_ir(Blob, FieldSeparator, KeyBase, _LenIR, _PtrIR,
+          GParts, SetupParts),
+      findall(global(G), member(G, GParts), GlobalMarkers),
+      format(atom(HaveLabelName), 'assoc_rule_~w_action_~w_have_bkey',
+          [RuleIndex, Index]),
+      format(atom(HaveLabel), '~w:', [HaveLabelName]),
+      format(atom(Missing),
+          '  %~w_missing = icmp eq i8* %~w_ptr, null', [KeyBase, KeyBase]),
+      format(atom(Branch),
+          '  br i1 %~w_missing, label %~w, label %~w',
+          [KeyBase, ActionNextLabel, HaveLabelName]),
+      format(atom(KeyId),
+          '  %~w_id = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len64)',
+          [KeyBase, KeyBase, KeyBase]),
+      format(atom(Inc),
+          '  %~w_count = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_id, i64 1)',
+          [KeyBase, TableIndex, KeyBase]),
+      format(atom(Next), '  br label %~w', [ActionNextLabel]),
+      append([GlobalMarkers, [Label], SetupParts,
+              [Missing, Branch, '', HaveLabel, KeyId, Inc, Next, '']], Lines)
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
@@ -4277,6 +4373,26 @@ plawk_writebin_str_arg(string(Value), Width) :-
 plawk_writebin_str_arg(field(FieldIndex), _Width) :-
     integer(FieldIndex),
     FieldIndex >= 1.
+% a runtime grammar's byte output fills an sN/lpsN slot (clamped to the
+% slot width/cap at runtime; a failed call writes an empty payload)
+plawk_writebin_str_arg(Blob, _Width) :-
+    plawk_blob_call_arg_ok(Blob).
+
+%% plawk_blob_node_shape(+Expr) is semidet.
+%  Structural test: Expr is one of the three blob call nodes.
+plawk_blob_node_shape(blob_dyncall(_)).
+plawk_blob_node_shape(blob_dyncall_named(_, _)).
+plawk_blob_node_shape(blob_dyncall_at(_, _)).
+
+%% plawk_blob_call_arg_ok(+Expr) is semidet.
+%  Shape plus argument validation (same checks as the float variants;
+%  the arg shapes are identical across the shim families).
+plawk_blob_call_arg_ok(blob_dyncall(Args)) :-
+    plawk_float_dyncall_expr(float_dyncall(Args)).
+plawk_blob_call_arg_ok(blob_dyncall_named(Name, Args)) :-
+    plawk_float_dyncall_named_expr(float_dyncall_named(Name, Args)).
+plawk_blob_call_arg_ok(blob_dyncall_at(Source, Args)) :-
+    plawk_float_dyncall_at_expr(float_dyncall_at(Source, Args)).
 
 plawk_writebin_i64_arg(special('NR')).
 plawk_writebin_i64_arg(special('NF')).
@@ -4590,6 +4706,28 @@ plawk_writebin_lps_source_lines(field(FieldIndex), binfmt(Types), Cap, Base,
     format(atom(LenLine),
         '  ~w = call i64 @strnlen(i8* ~w, i64 ~w)',
         [LenIR, PtrIR, SourceWidth]).
+plawk_writebin_lps_source_lines(Blob, FieldSeparator, Cap, Base,
+        BasePtr, PtrIR, LenIR, Lines, GParts) :-
+    plawk_blob_node_shape(Blob),
+    !,
+    % A runtime grammar's byte output as the lps payload: the blob tail
+    % leaves %Base_ptr (null on failure) + %Base_len64; clamp to the
+    % cap and substitute a safe pointer/zero length on failure.
+    plawk_blob_expr_ir(Blob, FieldSeparator, Base, _L, _P, GParts, SetupParts),
+    format(atom(PtrIR), '%~w_srcp', [Base]),
+    format(atom(LenIR), '%~w_srclen', [Base]),
+    format(atom(ClampIR),
+'  %~w_bnull = icmp eq i8* %~w_ptr, null
+  %~w_blen0 = select i1 %~w_bnull, i64 0, i64 %~w_len64
+  %~w_bover = icmp ugt i64 %~w_blen0, ~w
+  ~w = select i1 %~w_bover, i64 ~w, i64 %~w_blen0
+  ~w = select i1 %~w_bnull, i8* ~w, i8* %~w_ptr',
+        [Base, Base,
+         Base, Base, Base,
+         Base, Base, Cap,
+         LenIR, Base, Cap, Base,
+         PtrIR, Base, BasePtr, Base]),
+    append(SetupParts, [ClampIR], Lines).
 plawk_writebin_lps_source_lines(field(FieldIndex), FieldSeparator, Cap, Base,
         BasePtr, PtrIR, LenIR, [SliceIR, ClampIR], []) :-
     FieldIndex >= 1,
@@ -4672,6 +4810,38 @@ plawk_writebin_slot_lines(s(Width), field(FieldIndex), binfmt(Types), Base,
         '  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %~w_dst, i8* %~w_src, i64 ~w, i1 false)',
         [Base, Base, SourceWidth]),
     append([[Dst, Src], ZeroLines, [Copy]], Lines).
+plawk_writebin_slot_lines(s(Width), Blob, FieldSeparator, Base,
+        BasePtr, Offset, Lines, GParts) :-
+    plawk_blob_node_shape(Blob),
+    !,
+    % A runtime grammar's byte output: evaluate the blob (the tail IR
+    % leaves %Base_ptr -- null on failure -- and %Base_len64), then
+    % zero-fill and clamped-copy exactly like a text field slice.
+    plawk_blob_expr_ir(Blob, FieldSeparator, Base, _LenIR, _PtrIR,
+        GParts, SetupParts),
+    format(atom(Dst),
+        '  %~w_dst = getelementptr i8, i8* ~w, i64 ~w', [Base, BasePtr, Offset]),
+    format(atom(Zero),
+        '  call void @llvm.memset.p0i8.i64(i8* %~w_dst, i8 0, i64 ~w, i1 false)',
+        [Base, Width]),
+    format(atom(Guard),
+'  %~w_bnull = icmp eq i8* %~w_ptr, null
+  %~w_bover = icmp ugt i64 %~w_len64, ~w
+  %~w_bcap = select i1 %~w_bover, i64 ~w, i64 %~w_len64
+  br i1 %~w_bnull, label %~w_bdone, label %~w_bcopy
+
+~w_bcopy:
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %~w_dst, i8* %~w_ptr, i64 %~w_bcap, i1 false)
+  br label %~w_bdone
+
+~w_bdone:',
+        [Base, Base,
+         Base, Base, Width,
+         Base, Base, Width, Base,
+         Base, Base, Base,
+         Base, Base, Base, Base, Base,
+         Base]),
+    append(SetupParts, [Dst, Zero, Guard], Lines).
 plawk_writebin_slot_lines(s(Width), field(FieldIndex), FieldSeparator, Base,
         BasePtr, Offset, Lines, []) :-
     !,
@@ -7509,6 +7679,9 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, ''-GuardCall
 plawk_pattern_guard_ir(field_match(Index, Regex), FieldSeparator, GuardIR) :-
     llvm_emit_regex_field_match_guard(plawk_surface_regex, '%line', Index,
         Regex, FieldSeparator, '%is_match', GuardIR).
+plawk_pattern_guard_ir(blob_eq(Blob, Value), FieldSeparator, GuardIR) :-
+    plawk_pattern_guard_ir(blob_eq(Blob, Value), FieldSeparator,
+        plawk_surface_blob_eq, '%is_match', GuardIR).
 plawk_pattern_guard_ir(prolog_guard(Name, Args), FieldSeparator, GuardIR) :-
     plawk_foreign_guard_call_ir(Name, Args, FieldSeparator,
         plawk_surface_prolog_guard, '%is_match', GuardIR).
@@ -7580,6 +7753,43 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, _GlobalBase,
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, MatchValue, GuardCallIR).
+% blob(dyncall...) == "literal" -- equality between a runtime grammar's
+% byte output and a string literal: length check + memcmp. A failed
+% call (null slice) never matches; the memcmp pointer is substituted
+% with the literal itself under null so the comparison stays defined
+% (its result is masked by the null flag).
+plawk_pattern_guard_ir(blob_eq(Blob, Value), FieldSeparator, GlobalBase,
+        MatchValue, GuardIR) :-
+    format(atom(Base), '~w_beq', [GlobalBase]),
+    plawk_blob_expr_ir(Blob, FieldSeparator, Base, _LenIR, _PtrIR,
+        BlobGlobals, SetupParts),
+    format(atom(LitName), '~w_lit', [Base]),
+    llvm_emit_c_string_global(LitName, Value, LitGlobalIR, StrLen, BytesLen),
+    format(atom(LitGep),
+        'getelementptr ([~w x i8], [~w x i8]* @.~w, i32 0, i32 0)',
+        [BytesLen, BytesLen, LitName]),
+    format(atom(CmpIR),
+'  %~w_bnull = icmp eq i8* %~w_ptr, null
+  %~w_safep = select i1 %~w_bnull, i8* ~w, i8* %~w_ptr
+  %~w_cmp = call i32 @memcmp(i8* %~w_safep, i8* ~w, i64 ~w)
+  %~w_cmp_ok = icmp eq i32 %~w_cmp, 0
+  %~w_len_ok = icmp eq i64 %~w_len64, ~w
+  %~w_not_null = xor i1 %~w_bnull, true
+  %~w_m0 = and i1 %~w_len_ok, %~w_cmp_ok
+  ~w = and i1 %~w_m0, %~w_not_null',
+        [Base, Base,
+         Base, Base, LitGep, Base,
+         Base, Base, LitGep, StrLen,
+         Base, Base,
+         Base, Base, StrLen,
+         Base, Base,
+         Base, Base, Base,
+         MatchValue, Base, Base]),
+    append(SetupParts, [CmpIR], AllLines),
+    atomic_list_concat(AllLines, '\n', GuardCallIR),
+    append(BlobGlobals, [LitGlobalIR], AllGlobals),
+    atomic_list_concat(AllGlobals, '\n', GlobalsIR),
+    GuardIR = GlobalsIR-GuardCallIR.
 
 plawk_binfmt_field_cmp_guard_ir(Descriptor, field_cmp(Index, Op, Value),
         GlobalBase, MatchValue, ''-GuardCallIR) :-

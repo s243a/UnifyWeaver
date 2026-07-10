@@ -63,7 +63,7 @@ a grammar could only *reach* a Float by computation (`R is X / 2`), not by
 writing one. This closes that gap and is the first step of the subset
 expansion that item 5 (source-eval) needs.
 
-### 2. Binary-data returns — opaque bytes — *LANDED (print position)*
+### 2. Binary-data returns — opaque bytes — **LANDED (all consumer positions)**
 
 **What:** a grammar returns a **byte string** (its entry binds the output
 to an Atom, a byte string here), read by `blob(dyncall(...))` /
@@ -83,10 +83,21 @@ bytes are opaque, consumed as a string/blob. Opens grammars that *emit*
 encoded/textual output rather than a single number, and is the foundation
 for item 4.
 
-**Still to do within item 2:** the slice currently plugs into `print`;
-`writebin` into an `sN`/`lpsN` slot, equality guards, and assoc keys reuse
-the same `(ptr,len)` shape and are the natural follow-on (each needs the
-blob node wired into that consumer's path).
+**Follow-ons LANDED — the slice now feeds every listed consumer:**
+`writebin` into `sN`/`lpsN` slots (zero-filled clamped copy for fixed
+slots, clamped pointer+length for lps payloads; a failed call writes an
+empty payload), **equality guards** (`blob(dyncall...) == "literal"` as
+a rule pattern — length check + memcmp, null-safe, usable wherever
+`field_eq` patterns go), and **assoc keys**
+(`counts[blob(dyncall...)]++` interns the returned bytes exactly like a
+text-field slice; a failed call skips the increment like a missing
+field). A generic blob-node walk feeds the shim-arity collectors from
+every position (print fields, writebin slots, assoc keys, patterns), so
+the eval surface composes too: `compile(...)` sources inside any blob
+position ship the compiler object. The assoc apply path gained a
+global-constant channel (marker lines partitioned into the rule's
+existing guard-globals stream) so blob-key argument marshaling can emit
+its per-arg constants. Tests: `tests/test_plawk_blob_consumers.pl`.
 
 ### 3. Multi-entry objects — *LANDED (mechanism + surface A)*
 
