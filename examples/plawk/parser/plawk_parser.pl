@@ -391,8 +391,26 @@ base_pattern(Pattern) -->
 base_pattern(Pattern) -->
     tag_eq_pattern(Pattern),
     !.
+% blob(dyncall...) == "literal" -- an equality guard on a runtime
+% grammar's byte output (JIT roadmap item 2 follow-on). Must precede
+% prolog_guard_pattern: blob(...) would otherwise parse as a foreign
+% guard call named blob.
+base_pattern(Pattern) -->
+    blob_eq_pattern(Pattern),
+    !.
 base_pattern(Pattern) -->
     prolog_guard_pattern(Pattern).
+
+%% blob_eq_pattern(-Pattern)//
+blob_eq_pattern(blob_eq(Blob, Value)) -->
+    blob_call_expr(Blob),
+    ws,
+    "==",
+    ws,
+    quoted_string(ValueCodes),
+    { ValueCodes \== [],
+      string_codes(Value, ValueCodes)
+    }.
 
 %% tag_eq_pattern(-Pattern)//
 %
@@ -1674,6 +1692,12 @@ assoc_key_expr(string(Value)) -->
     { ValueCodes \== [],
       string_codes(Value, ValueCodes)
     }.
+% counts[blob(dyncall...)]++ -- key an assoc table by a runtime
+% grammar's byte output (JIT roadmap item 2 follow-on). Must precede
+% var(Name): identifier would otherwise eat "blob".
+assoc_key_expr(Blob) -->
+    blob_call_expr(Blob),
+    !.
 assoc_key_expr(var(Name)) -->
     identifier(Name).
 
