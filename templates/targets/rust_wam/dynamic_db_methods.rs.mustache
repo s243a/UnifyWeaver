@@ -484,12 +484,32 @@
         }
     }
 
+    fn dynamic_clause_body_is_direct_retract(&self, clause: &Value) -> bool {
+        let body = match self.dynamic_clause_head_body(clause) {
+            Some((_, Some(body))) => self.deref_heap(&self.deref_var(&body)),
+            _ => return false,
+        };
+        matches!(
+            body,
+            Value::Str(ref functor, ref args)
+                if args.len() == 1 &&
+                   Self::display_functor_name(functor, 1) == "retract"
+        )
+    }
+
     fn dynamic_rule_body_attempt(&mut self, clause: Value, solution_idx: usize, cont_pc: usize) -> bool {
         let cp_trail = self.trail.len();
         let cp_heap = self.heap.len();
         let cp_regs = self.save_regs();
         let cp_stack = self.stack.clone();
-        if self.dynamic_apply_clause_solution(&clause, solution_idx) {
+        // retract/1 mutates its candidate set, so retry from the first
+        // remaining match instead of skipping by the historical index.
+        let effective_idx = if self.dynamic_clause_body_is_direct_retract(&clause) {
+            0
+        } else {
+            solution_idx
+        };
+        if self.dynamic_apply_clause_solution(&clause, effective_idx) {
             self.choice_points.push(ChoicePoint {
                 next_pc: cont_pc,
                 saved_args: cp_regs,
