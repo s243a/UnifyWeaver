@@ -94,3 +94,24 @@ dashes fragment on tokenizer boundaries; spaces give clean gpt/5.6/luna tokens).
 correctly subordinate: 5.5-low ↔ 5.5-high = 0.948 (separates more than model variants, far less than providers
 at 0.83) — an effort change inherits most-but-not-all of its judge's calibration. Convention: descriptive,
 space-separated, effort-bearing names, e.g. "gpt 5.6 luna judge, low reasoning effort".
+
+**Judge-card schema (user suggestions + measured; design details delegated):** the name-function description is
+a structured card rendered as natural language. Measured hierarchy (perfectly nested): same vendor 0.956 >
+cross-vendor-same-architecture 0.899 (MoE affinity across vendors +0.025 — architecture metadata registers) >
+cross-vendor 0.875 > JUDGE TYPE boundary 0.831 (the user's LLM-vs-embedding-model-vs-human distinction = the
+coarsest, first partition; keeps structural/human judges from inheriting LLM calibration).
+
+Schema (most calibration-predictive first):
+  "<TYPE> judge <provider> <family> <version> <variant>, <architecture>, <size number + tier word>,
+   <effort> reasoning effort, <access>"
+  e.g. "LLM judge gpt 5.6 luna, mixture of experts architecture, low reasoning effort"
+       "deterministic structural judge, graph walk, no language model"
+       "human curator judge"
+
+Policies: (1) TYPE first — LLM / embedding model / human curator / deterministic structural. (2) Spaces not
+dashes; effort in the description (both measured above). (3) TRUTHFULNESS: only vendor-confirmed metadata —
+closed-model parameter counts are rumors and wrong metadata manufactures false priors; OMIT unknowns rather
+than guess (variable-length cards are fine). (4) DECLARED vs MEASURED boundary: the card carries declared
+identity (the prior); measured behavior (R, bias, format discipline) lives in calibration/R estimates (the
+posterior) and is NOT fed back into the identity embedding — that would create an identity-drift feedback loop.
+The residual embedding absorbs what the card doesn't know.
