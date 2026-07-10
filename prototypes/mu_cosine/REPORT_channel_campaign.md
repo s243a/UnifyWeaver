@@ -86,3 +86,11 @@ name-conditioning first (B2, now with a forcing use-case) or use the pragmatic b
 as a copy of 5.5's row (hand-made name-prior; inherit family calibration, learn only the deviation);
 **degenerate** ⇒ stay on 5.5. General principle: the indexed scheme is adequate while the judge set is static;
 the first similar-but-not-identical judge is the forcing function for the general judge/source architecture.
+
+**Naming convention for the name-function (user, measured):** use SPACES not dashes, and include the EFFORT
+level in the description. Measured (provider contrast = within − cross): spaced 0.107 vs dashed 0.103, and the
+within-family fine structure improves distinctly with spaces (version 0.957→0.968, luna↔tera 0.951→0.963 —
+dashes fragment on tokenizer boundaries; spaces give clean gpt/5.6/luna tokens). The effort axis lands
+correctly subordinate: 5.5-low ↔ 5.5-high = 0.948 (separates more than model variants, far less than providers
+at 0.83) — an effort change inherits most-but-not-all of its judge's calibration. Convention: descriptive,
+space-separated, effort-bearing names, e.g. "gpt 5.6 luna judge, low reasoning effort".
