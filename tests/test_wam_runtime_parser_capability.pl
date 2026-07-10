@@ -81,6 +81,7 @@ test(parser_dependent_builtin_catalogue) :-
                       read_term/1,
                       read_term_from_atom/2,
                       read_term_from_atom/3,
+                      atom_to_term/3,
                       term_to_atom/2]).
 
 test(parser_dependent_goal_read_default_stream) :-
@@ -92,6 +93,9 @@ test(parser_dependent_goal_read) :-
 test(parser_dependent_goal_module_qualified) :-
     once(parser_dependent_goal(user:read_term_from_atom('f(a)', _),
                                read_term_from_atom/2)).
+
+test(parser_dependent_goal_atom_to_term) :-
+    once(parser_dependent_goal(atom_to_term('f(A)', _, _), atom_to_term/3)).
 
 test(parser_dependent_goal_term_to_atom_forward_fails, [fail]) :-
     parser_dependent_goal(term_to_atom(f(a), _), _).

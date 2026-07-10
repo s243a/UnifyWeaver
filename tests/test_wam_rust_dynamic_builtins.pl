@@ -16,6 +16,10 @@ rust_assert_alias_demo :- assert(dyn(alias)).
 rust_read_term_options_demo(Term, Names) :-
     read_term(Term, [variable_names(Names)]).
 
+:- dynamic rust_atom_to_term_demo/2.
+rust_atom_to_term_demo(Term, Bindings) :-
+    atom_to_term('p(A, A, B)', Term, Bindings).
+
 :- dynamic rust_syntax_error_demo/1.
 rust_syntax_error_demo(Result) :-
     catch(
@@ -41,6 +45,7 @@ test(assert_retract_dynamic_db,
         [user:rust_dyn_dummy/0,
          user:rust_assert_alias_demo/0,
          user:rust_read_term_options_demo/2,
+         user:rust_atom_to_term_demo/2,
          user:rust_syntax_error_demo/1],
         [module_name(dynrt), no_kernels(true), runtime_parser(compiled)],
         Dir)),
