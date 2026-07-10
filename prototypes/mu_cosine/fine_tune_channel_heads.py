@@ -170,9 +170,10 @@ def main():
     ap.add_argument("--anchor-weight", type=float, default=1.0,
                     help="B1b: weight of the agnostic-anchor distillation loss (readouts on 3-tuple rows must "
                          "match the frozen reference)")
-    ap.add_argument("--resid-weight", type=float, default=1e-2,
-                    help="name-cond checkpoints only: L2 pull of the per-judge residuals toward 0, keeping "
-                         "the name prior the default (REPORT_channel_campaign §6.5)")
+    ap.add_argument("--resid-weight", type=float, default=0.0,
+                    help="name-cond checkpoints only: L2 pull of the per-judge residuals toward 0 (§6.5). "
+                         "Default 0: measured at 1e-2 it cost fresh-S within-stratum (-0.08) with no "
+                         "transfer gain (REPORT_judge_name_migration.md)")
     a = ap.parse_args()
     dev = "cpu"
     torch.manual_seed(0)
