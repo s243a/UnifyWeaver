@@ -43,11 +43,28 @@
         else { false }
     }
 
+    fn skip_term_layout(input: &str, mut pos: usize) -> usize {
+        loop {
+            let suffix = match input.get(pos..) {
+                Some(suffix) => suffix,
+                None => return input.len(),
+            };
+            let trimmed = suffix.trim_start();
+            pos += suffix.len() - trimmed.len();
+            if !trimmed.starts_with('%') {
+                return pos;
+            }
+            match trimmed.find('\n') {
+                Some(end) => pos += end + 1,
+                None => return input.len(),
+            }
+        }
+    }
+
     fn next_dotted_term_text(input: &str, start: usize) -> Option<(String, usize)> {
-        let suffix = input.get(start..)?;
-        let trimmed = suffix.trim_start();
+        let term_start = Self::skip_term_layout(input, start);
+        let trimmed = input.get(term_start..)?;
         if trimmed.is_empty() { return None; }
-        let term_start = start + suffix.len() - trimmed.len();
         let bytes = trimmed.as_bytes();
         let mut in_quote = false;
         let mut escaped = false;
@@ -61,7 +78,7 @@
             if b == 39 { in_quote = true; continue; }
             if b == 46 {
                 let next_is_term_end = bytes.get(idx + 1)
-                    .map(|c| c.is_ascii_whitespace())
+                    .map(|c| c.is_ascii_whitespace() || *c == b'%')
                     .unwrap_or(true);
                 if next_is_term_end {
                     return Some((trimmed[..idx].trim().to_string(), term_start + idx + 1));
