@@ -61,6 +61,45 @@
         }
     }
 
+    fn strip_term_line_comments(text: &str) -> String {
+        if !text.as_bytes().contains(&b'%') {
+            return text.trim().to_string();
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut in_quote = false;
+        let mut escaped = false;
+        let mut in_comment = false;
+        for ch in text.chars() {
+            if in_comment {
+                if ch == '\n' {
+                    in_comment = false;
+                    out.push(' ');
+                }
+                continue;
+            }
+            if in_quote {
+                out.push(ch);
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '\'' {
+                    in_quote = false;
+                }
+                continue;
+            }
+            if ch == '\'' {
+                in_quote = true;
+                out.push(ch);
+            } else if ch == '%' {
+                in_comment = true;
+            } else {
+                out.push(ch);
+            }
+        }
+        out.trim().to_string()
+    }
+
     fn next_dotted_term_text(input: &str, start: usize) -> Option<(String, usize)> {
         let term_start = Self::skip_term_layout(input, start);
         let trimmed = input.get(term_start..)?;
@@ -68,6 +107,7 @@
         let bytes = trimmed.as_bytes();
         let mut in_quote = false;
         let mut escaped = false;
+        let mut in_line_comment = false;
         for (idx, &b) in bytes.iter().enumerate() {
             if in_quote {
                 if escaped { escaped = false; continue; }
@@ -75,19 +115,27 @@
                 if b == 39 { in_quote = false; }
                 continue;
             }
+            if in_line_comment {
+                if b == 10 { in_line_comment = false; }
+                continue;
+            }
+            if b == 37 { in_line_comment = true; continue; }
             if b == 39 { in_quote = true; continue; }
             if b == 46 {
                 let next_is_term_end = bytes.get(idx + 1)
                     .map(|c| c.is_ascii_whitespace() || *c == b'%')
                     .unwrap_or(true);
                 if next_is_term_end {
-                    return Some((trimmed[..idx].trim().to_string(), term_start + idx + 1));
+                    return Some((
+                        Self::strip_term_line_comments(&trimmed[..idx]),
+                        term_start + idx + 1,
+                    ));
                 }
             }
         }
         let body = trimmed.trim_end();
         let body = body.strip_suffix(".").unwrap_or(body);
-        Some((body.trim().to_string(), input.len()))
+        Some((Self::strip_term_line_comments(body), input.len()))
     }
 
     fn term_atom_text(atom: &str) -> String {
