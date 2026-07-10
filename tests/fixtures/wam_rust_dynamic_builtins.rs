@@ -90,6 +90,37 @@ fn retract_removes_one_match_and_binds_pattern() {
 }
 
 #[test]
+fn asserted_rule_body_can_call_retract() {
+    let mut vm = WamState::new(vec![], HashMap::new());
+    assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("taken")]));
+    assert_clause(
+        &mut vm,
+        "assertz/1",
+        rule(
+            fact("take", vec![ub("X")]),
+            fact("retract", vec![fact("dyn", vec![ub("X")])]),
+        ),
+    );
+
+    vm.reset_query();
+    vm.code = vec![
+        Instruction::Call("take/1".to_string(), 1),
+        Instruction::Proceed,
+    ];
+    vm.labels = HashMap::new();
+    vm.set_reg_str("A1", ub("X"));
+    vm.pc = 1;
+
+    assert!(vm.run());
+    let result_raw = vm.bindings.get("X").cloned().expect("X bound");
+    assert_eq!(
+        vm.deref_heap(&vm.deref_var(&result_raw)),
+        at("taken"),
+    );
+    assert!(dyn_values(&mut vm).is_empty());
+}
+
+#[test]
 fn retract_backtracks_through_each_matching_fact() {
     let mut vm = WamState::new(vec![Instruction::Call("retract/1".to_string(), 1), Instruction::Proceed], HashMap::new());
     assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("red")]));

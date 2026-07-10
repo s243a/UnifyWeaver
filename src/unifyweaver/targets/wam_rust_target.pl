@@ -4856,6 +4856,9 @@ compile_execute_meta_builtin_to_rust(Code) :-
             self.set_reg(&format!("A{}", i + 1), arg.clone());
         }
         let saved_pc = self.pc;
+        if key == "retract/1" {
+            return self.dynamic_retract_call(saved_pc);
+        }
         if self.execute_builtin(key, arity) {
             self.pc = saved_pc;
             return true;
