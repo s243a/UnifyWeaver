@@ -244,6 +244,37 @@ fn generated_read_term_two_applies_variable_names() {
 }
 
 #[test]
+fn generated_atom_to_term_preserves_variables_and_bindings() {
+    let (code, labels) = shared_wam_program();
+    let mut vm = WamState::new(code, labels);
+    vm.set_reg_str("A1", ub("Term"));
+    vm.set_reg_str("A2", ub("Bindings"));
+    vm.pc = *vm
+        .labels
+        .get("rust_atom_to_term_demo/2")
+        .expect("generated atom_to_term/3 label");
+
+    assert!(vm.run());
+    let parsed = vm.bindings.get("Term").cloned().expect("Term bound");
+    let args = match parsed {
+        Value::Str(ref functor, ref args) if functor == "p" => args.clone(),
+        other => panic!("unexpected parsed term: {:?}", other),
+    };
+    assert_eq!(args[0], args[1]);
+    assert_ne!(args[0], args[2]);
+
+    let bindings_raw = vm.bindings.get("Bindings").cloned().expect("Bindings bound");
+    let bindings = vm.deref_heap(&vm.deref_var(&bindings_raw));
+    assert_eq!(
+        bindings,
+        Value::List(vec![
+            fact("=", vec![at("A"), args[0].clone()]),
+            fact("=", vec![at("B"), args[2].clone()]),
+        ]),
+    );
+}
+
+#[test]
 fn read_eof_binds_end_of_file() {
     let mut vm = WamState::new(vec![], HashMap::new());
     vm.set_reg_str("A1", ub("T"));

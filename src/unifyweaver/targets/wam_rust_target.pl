@@ -1602,6 +1602,7 @@ compile_execute_term_builtin_to_rust(Code) :-
             "reverse/2" => { self.execute_reverse_builtin() }
             "atom_codes/2" => { self.execute_atom_codes_builtin() }
             "number_codes/2" => { self.execute_number_codes_builtin() }
+            "atom_to_term/3" => { self.execute_atom_to_term_builtin() }
             "term_to_atom/2" => { self.execute_term_to_atom_builtin() }
             "read_term_from_atom/2" => { self.execute_read_term_from_atom_builtin(2) }
             "read_term_from_atom/3" => { self.execute_read_term_from_atom_builtin(3) }
@@ -1720,6 +1721,27 @@ compile_execute_term_builtin_to_rust(Code) :-
                         }
                     }
                     None => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn execute_atom_to_term_builtin(&mut self) -> bool {
+        let atom = self.get_reg_raw("A1")
+            .map(|value| self.deref_heap(&self.deref_var(&value)));
+        let bindings = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+        let options = Value::List(vec![Value::Str(
+            "variable_names".to_string(),
+            vec![bindings],
+        )]);
+        match atom {
+            Some(Value::Atom(text)) => {
+                if self.bind_compiled_parse_atom_with_options(&text, "A2", Some(&options)) {
+                    self.pc += 1;
+                    true
+                } else {
+                    false
                 }
             }
             _ => false,
