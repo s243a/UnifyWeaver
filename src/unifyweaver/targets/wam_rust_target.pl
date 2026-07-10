@@ -1798,6 +1798,7 @@ compile_execute_term_builtin_to_rust(Code) :-
         target_reg: &str,
         options: Option<&Value>,
     ) -> bool {
+        let atom_text = Self::strip_term_comments(atom_text);
         let variable_names = options
             .and_then(|value| self.read_term_option_arg(value, "variable_names"));
         let variables = options
@@ -1834,7 +1835,7 @@ compile_execute_term_builtin_to_rust(Code) :-
 
         parser.reset_query();
         let parsed_var = Value::Unbound("_RP_term".to_string());
-        parser.set_reg_str("A1", Value::Atom(atom_text.to_string()));
+        parser.set_reg_str("A1", Value::Atom(atom_text));
         parser.set_reg_str("A2", ops);
         parser.set_reg_str("A3", parsed_var.clone());
         let var_env = Value::Unbound("_RP_env".to_string());

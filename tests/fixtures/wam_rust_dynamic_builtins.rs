@@ -502,7 +502,10 @@ fn term_to_atom_quotes_and_roundtrips_non_bare_atoms() {
 fn read_term_from_atom_returns_variable_metadata_with_shared_variables() {
     let (code, labels) = shared_wam_program();
     let mut vm = WamState::new(code, labels);
-    vm.set_reg_str("A1", at("p(A, B, A, _, _C, _C, D)"));
+    vm.set_reg_str(
+        "A1",
+        at("p(A, /* ignored . block */ B, A, _, _C, _C, D)"),
+    );
     vm.set_reg_str("A2", ub("Term"));
     vm.set_reg_str(
         "A3",
