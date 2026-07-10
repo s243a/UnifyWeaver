@@ -28,6 +28,13 @@ tallyc(X, R) :-
     atom_number(X, N),
     ( N > 100 -> R = [big-2, seen-1] ; R = [small-1, seen-1] ).
 
+% labeler(X) returns ATOM values (the str table kind): a size label that
+% every record overwrites (replace semantics -- the LAST record wins) and
+% the record text itself under last.
+labeler(X, R) :-
+    atom_number(X, N),
+    ( N > 100 -> R = [size-big, last-X] ; R = [size-small, last-X] ).
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -149,6 +156,70 @@ test(assoc_default_entry_populates_and_reads, [condition(clang_available)]) :-
          END { print arr[1], arr[2] }\n", [Wamo]),
     build_run(Dir, 'dadef', Src, [5, 7], Out),
     assertion(Out == "12 200\n"),
+    !.
+
+% String VALUES (the second table kind, deferred small item):
+% `arr = dyncall@name(...) as assoc(str)` parses to its own node.
+test(assoc_str_bind_parses) :-
+    plawk_parse_string(
+        "BEGIN { DYNLOAD = \"lib.wamo\" }\n\c
+         { arr = dyncall@labeler($1) as assoc(str) }\nEND { print arr[\"size\"] }\n",
+        program(_, [rule(_, Actions)], _)),
+    memberchk(dynassoc_bind_str(var(arr), dyncall_named(labeler, [field(1)])),
+        Actions),
+    !.
+
+% The str entry is collected separately from the i64 kind, and the emitted
+% IR routes through the str shim + primitive and resolves the value back
+% to text at the read site.
+test(assoc_str_ir_emitted) :-
+    plawk_parse_string(
+        "BEGIN { DYNLOAD = \"lib.wamo\" }\n\c
+         { arr = dyncall@labeler($1) as assoc(str) }\nEND { print arr[\"size\"] }\n",
+        Program),
+    plawk_program_dyncall_named_assoc_str_entries(Program, StrEntries),
+    assertion(StrEntries == [labeler-1]),
+    plawk_program_dyncall_named_assoc_entries(Program, I64Entries),
+    assertion(I64Entries == []),
+    plawk_program_native_driver_ir(Program, stdin_or_argv,
+        [wam_vm(10, 10)], IR),
+    sub_atom(IR, _, _, _, '@plawk_dyncall_assoc_str_labeler_1'),
+    sub_atom(IR, _, _, _, '@wam_object_call_assoc_str'),
+    sub_atom(IR, _, _, _, '@wam_atom_to_string'),
+    !.
+
+% Full round trip: atom values land by registry id, the for-in report
+% resolves them to text, and a repeated key REPLACES (size flips
+% small/big/big/small over the records -- the last record wins).
+test(assoc_str_values_populate_and_report, [condition(clang_available)]) :-
+    da_dir(Dir),
+    directory_file_path(Dir, 'libs.wamo', Wamo),
+    write_wam_object([user:labeler/2], [wamo_entries([labeler/2])], Wamo),
+    format(string(Src),
+        "BEGIN { DYNLOAD = \"~w\" }\n\c
+         { arr = dyncall@labeler($1) as assoc(str) }\n\c
+         END { for (k in arr) print k, arr[k] }\n", [Wamo]),
+    build_run_text(Dir, 'das', Src, "50\n200\n300\n7\n", Out),
+    split_string(Out, "\n", "", Lines0),
+    exclude(==(""), Lines0, Lines),
+    msort(Lines, Sorted),
+    assertion(Sorted == ["last 7", "size small"]),
+    !.
+
+% A str-valued table answers END string-literal lookups with text too.
+test(assoc_str_values_literal_lookup, [condition(clang_available)]) :-
+    da_dir(Dir),
+    directory_file_path(Dir, 'libs.wamo', Wamo),
+    ( exists_file(Wamo)
+    -> true
+    ;  write_wam_object([user:labeler/2], [wamo_entries([labeler/2])], Wamo)
+    ),
+    format(string(Src),
+        "BEGIN { DYNLOAD = \"~w\" }\n\c
+         { arr = dyncall@labeler($1) as assoc(str) }\n\c
+         END { print arr[\"size\"], arr[\"last\"] }\n", [Wamo]),
+    build_run_text(Dir, 'dasl', Src, "50\n200\n300\n7\n", Out),
+    assertion(Out == "small 7\n"),
     !.
 
 :- end_tests(plawk_dyncall_assoc).
