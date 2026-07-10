@@ -207,8 +207,14 @@ Deliberately deferred, in rough value order:
   `DYNENTRY parse, score` reserves the names and rewrites bare calls
   to the named-entry nodes (startup-cached PC); shadowing a userspace
   or builtin name is a parse error.
-- **Handle-in-scalar** — storing a compile handle in a plawk variable
-  across records (today the dedup makes the nested form equivalent).
+- ~~**Handle-in-scalar**~~ — LANDED: `compile(src)` / `compile_file(path)`
+  as i64 expressions (the value IS the registry handle), stored in an
+  ordinary scalar and used as a `dyncall_at[@name]` source
+  (`h = compile("[...]") ; total += dyncall_at@sq(h, $1)`). Names a
+  compiled family once instead of repeating the source per call site;
+  per-record re-assignment is a registry hit (content dedup). No
+  runtime changes — the handle travels as the (null, handle) pair the
+  cache getter already spoke.
 - **Further compiler-subset growth** — demand-driven. The first
   demand round probed common grammar shapes and landed the ones real
   eval grammars hit: **cut** (`!` — committed choice; the loaded
