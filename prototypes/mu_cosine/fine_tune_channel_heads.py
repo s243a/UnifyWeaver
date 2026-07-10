@@ -42,17 +42,32 @@ NEW_KEYS = ("account_emb.weight", "prefix_emb.weight", "sym_struct_w", "struct_l
             "prec_g", "prec_h", "c_dist", "c_mem_ceiling", "c_subcat", "c_elem")
 
 
-def load_expanded(ckpt, n_judge=9, dev="cpu"):
-    """build_model, but with judge_emb expanded to n_judge rows (old rows copied, new zero-init)."""
+def load_expanded(ckpt, n_judge=None, dev="cpu"):
+    """build_model, but with judge_emb expanded to n_judge rows (old rows copied, new zero-init).
+    n_judge=None → max(len(JUDGES), checkpoint rows), so old callers survive JUDGES growing and newer
+    checkpoints never get truncated (size-mismatched keys crash even strict=False loads).
+    Post-migration checkpoints (migrate_judge_names.py) carry judge_name.* keys → the model is built with
+    the name-function pathway; NEW judge rows there get their card's e5 (name prior) + a ZERO residual —
+    the onboarding story the migration exists for."""
     ck = torch.load(ckpt, map_location=dev, weights_only=False)
     sd = dict(ck["state"]); cfg = ck.get("cfg", {"d_model": 384, "heads": 4, "layers": 3})
     old = sd["judge_emb.weight"]
+    if n_judge is None:
+        n_judge = max(len(JUDGES), old.shape[0])
     if old.shape[0] < n_judge:
         sd["judge_emb.weight"] = torch.cat([old, torch.zeros(n_judge - old.shape[0], old.shape[1])], 0)
+    jn_e5 = sd.get("judge_name.name_e5")
+    if jn_e5 is not None and jn_e5.shape[0] < n_judge:
+        from judge_cards import judge_card_e5
+        E, _ = judge_card_e5()                                # full JUDGES-order card table
+        sd["judge_name.name_e5"] = jn_e5 = E[:n_judge]
+        r = sd["judge_name.resid.weight"]
+        sd["judge_name.resid.weight"] = torch.cat([r, torch.zeros(n_judge - r.shape[0], r.shape[1])], 0)
     sz = lambda k, d: sd[k].shape[0] if k in sd else d
     m = MuAttention(d_model=cfg["d_model"], n_heads=cfg["heads"], n_layers=cfg["layers"],
                     n_ops=sz("op_emb.weight", len(OPS)), n_corpus=sz("corpus_emb.weight", 2),
-                    n_judge=n_judge, n_nodetype=sz("nodetype_emb.weight", 4)).to(dev)
+                    n_judge=n_judge, n_nodetype=sz("nodetype_emb.weight", 4),
+                    judge_name_e5=jn_e5).to(dev)
     miss, unexp = m.load_state_dict(sd, strict=False)
     assert not unexp, f"unexpected keys: {unexp}"
     bad = [k for k in miss if not any(k.endswith(n) for n in NEW_KEYS)]
@@ -159,19 +174,30 @@ def main():
     ap.add_argument("--anchor-weight", type=float, default=1.0,
                     help="B1b: weight of the agnostic-anchor distillation loss (readouts on 3-tuple rows must "
                          "match the frozen reference)")
+    ap.add_argument("--resid-weight", type=float, default=0.0,
+                    help="name-cond checkpoints only: L2 pull of the per-judge residuals toward 0 (§6.5). "
+                         "Default 0: measured at 1e-2 it cost fresh-S within-stratum (-0.08) with no "
+                         "transfer gain (REPORT_judge_name_migration.md)")
     a = ap.parse_args()
     dev = "cpu"
     torch.manual_seed(0)
     rng = np.random.default_rng(0)
 
-    model, cfg = load_expanded(a.ckpt, n_judge=9, dev=dev)
+    model, cfg = load_expanded(a.ckpt, dev=dev)
     ref = None
     for p in model.parameters():
         p.requires_grad = False
-    model.judge_emb.weight.requires_grad = True
-    trainable = [model.judge_emb.weight]
+    if model.judge_name is not None:
+        # post-migration: judge condition = W·e5(card) + r — train the translation + residuals
+        # (‖r‖ regularized toward 0 below, so the name prior stays the default; §6.5)
+        model.judge_name.W.weight.requires_grad = True
+        model.judge_name.resid.weight.requires_grad = True
+        trainable = [model.judge_name.W.weight, model.judge_name.resid.weight]
+    else:
+        model.judge_emb.weight.requires_grad = True
+        trainable = [model.judge_emb.weight]
     if a.unfreeze_last:
-        ref, _ = load_expanded(a.ckpt, n_judge=9, dev=dev)   # frozen reference for the anchor loss
+        ref, _ = load_expanded(a.ckpt, dev=dev)   # frozen reference for the anchor loss
         ref.eval()
         for p in ref.parameters():
             p.requires_grad = False
@@ -183,7 +209,8 @@ def main():
         trainable += list(last.parameters()) + [model.readout_w, model.readout_b]
     opt = torch.optim.Adam(trainable, lr=a.lr)
     n_tr = sum(p.numel() for p in trainable)
-    print(f"trainable params: {n_tr} ({'judge_emb + last layer + readout (B1b, anchored)' if a.unfreeze_last else 'judge_emb only; trunk FROZEN'})")
+    cond = "judge_name (W + resid)" if model.judge_name is not None else "judge_emb"
+    print(f"trainable params: {n_tr} ({cond} {'+ last layer + readout (B1b, anchored)' if a.unfreeze_last else 'only; trunk FROZEN'})")
 
     if a.data == "campaign":
         dss = load_campaign_datasets()
@@ -210,6 +237,8 @@ def main():
         tgt = torch.tensor([rows[j][1] for j in sel], dtype=torch.float32, device=dev)
         mu = mu_batch(model, dss[n]["tok"], items, dev, train=True, rng=np.random)
         loss = torch.mean((mu - tgt) ** 2)
+        if model.judge_name is not None:
+            loss = loss + a.resid_weight * model.judge_name.resid_penalty()
         if ref is not None:
             # agnostic-anchor: on 3-tuple (provenance-masked) versions of the same pairs, the readouts must
             # match the frozen reference — the explicit replacement for the frozen-trunk guarantee
