@@ -61,6 +61,7 @@ def main():
     ap.add_argument("--sandbox", default="read-only", help="codex -s sandbox mode (review #10)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--responses", default="/tmp/mu_data/codex_responses.txt")
+    ap.add_argument("--judge", default=JUDGE, help="provenance tag for ingest (must be a JUDGES key, e.g. gpt-5.6-luna)")
     a = ap.parse_args()
     os.makedirs(os.path.dirname(a.responses) or ".", exist_ok=True)
 
@@ -97,9 +98,9 @@ def main():
             f.write("\n".join(header + data) + "\n")
     else:
         ing_path = a.pairs
-    ingest(ing_path, a.responses, a.out, judge=JUDGE)
+    ingest(ing_path, a.responses, a.out, judge=a.judge)
     print("DONE: %d/%d batches scored, %d failed (%.0f%%), %.0fs total → %s  (judge=%s)"
-          % (ok, len(prompts), fail, 100.0 * fail / max(1, len(prompts)), time.time() - t0, a.out, JUDGE),
+          % (ok, len(prompts), fail, 100.0 * fail / max(1, len(prompts)), time.time() - t0, a.out, a.judge),
           flush=True)
 
 
