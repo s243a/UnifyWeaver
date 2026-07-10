@@ -36,8 +36,11 @@ JUDGE_CARDS = {
     "blend": "composite dual judge, e5 embedding model and graph walk blend, symmetric association channel",
     "dir-blend": "composite blend judge, graph walk and LLM element and subcategory estimators, "
                  "direction superposition",
-    # not in JUDGES yet — B2 step 3 onboarding candidate (card matches the §5 worked example):
+    # card matches the §5 worked example; onboarded at index 9 (r=0 name prior, B2 step 3):
     "gpt-5.6-luna": "LLM judge openai gpt 5.6 luna, mixture of experts architecture, low reasoning effort",
+    # the amortized-filter head (DESIGN_amortized_fusion_heads three-way learn; B2 step 2), index 10:
+    "kalman-fused": "composite fused judge, kalman filter posterior of graph walk and LLM judge "
+                    "measurement channels",
 }
 
 CARDS_CACHE = "/tmp/mu_data/judge_cards_e5.pt"
@@ -57,7 +60,7 @@ def judge_card_e5(names=None, cache_path=CARDS_CACHE):
 
 
 def main():
-    names = sorted(JUDGES, key=JUDGES.get) + ["gpt-5.6-luna"]
+    names = sorted(JUDGES, key=JUDGES.get)
     E, _ = judge_card_e5(names, cache_path="/tmp/mu_data/judge_cards_e5_all.pt")
     for n in names:
         print(f"{n:14s} {JUDGE_CARDS[n]}")

@@ -42,14 +42,18 @@ NEW_KEYS = ("account_emb.weight", "prefix_emb.weight", "sym_struct_w", "struct_l
             "prec_g", "prec_h", "c_dist", "c_mem_ceiling", "c_subcat", "c_elem")
 
 
-def load_expanded(ckpt, n_judge=9, dev="cpu"):
+def load_expanded(ckpt, n_judge=None, dev="cpu"):
     """build_model, but with judge_emb expanded to n_judge rows (old rows copied, new zero-init).
+    n_judge=None → max(len(JUDGES), checkpoint rows), so old callers survive JUDGES growing and newer
+    checkpoints never get truncated (size-mismatched keys crash even strict=False loads).
     Post-migration checkpoints (migrate_judge_names.py) carry judge_name.* keys → the model is built with
     the name-function pathway; NEW judge rows there get their card's e5 (name prior) + a ZERO residual —
     the onboarding story the migration exists for."""
     ck = torch.load(ckpt, map_location=dev, weights_only=False)
     sd = dict(ck["state"]); cfg = ck.get("cfg", {"d_model": 384, "heads": 4, "layers": 3})
     old = sd["judge_emb.weight"]
+    if n_judge is None:
+        n_judge = max(len(JUDGES), old.shape[0])
     if old.shape[0] < n_judge:
         sd["judge_emb.weight"] = torch.cat([old, torch.zeros(n_judge - old.shape[0], old.shape[1])], 0)
     jn_e5 = sd.get("judge_name.name_e5")
@@ -179,7 +183,7 @@ def main():
     torch.manual_seed(0)
     rng = np.random.default_rng(0)
 
-    model, cfg = load_expanded(a.ckpt, n_judge=9, dev=dev)
+    model, cfg = load_expanded(a.ckpt, dev=dev)
     ref = None
     for p in model.parameters():
         p.requires_grad = False
@@ -193,7 +197,7 @@ def main():
         model.judge_emb.weight.requires_grad = True
         trainable = [model.judge_emb.weight]
     if a.unfreeze_last:
-        ref, _ = load_expanded(a.ckpt, n_judge=9, dev=dev)   # frozen reference for the anchor loss
+        ref, _ = load_expanded(a.ckpt, dev=dev)   # frozen reference for the anchor loss
         ref.eval()
         for p in ref.parameters():
             p.requires_grad = False

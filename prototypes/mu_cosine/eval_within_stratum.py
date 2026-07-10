@@ -45,7 +45,7 @@ def decompose(mu, tgt, groups):
 
 
 def eval_ckpt(ckpt, dss, dev="cpu"):
-    model, _ = load_expanded(ckpt, n_judge=9, dev=dev)
+    model, _ = load_expanded(ckpt, dev=dev)
     model.eval()
     print(f"\n=== {os.path.basename(ckpt)} ({'name-cond' if model.judge_name is not None else 'indexed'}) ===")
     for name, ds in dss.items():

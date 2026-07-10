@@ -53,13 +53,16 @@ def main():
     a = ap.parse_args()
     dev = "cpu"
 
-    names = sorted(JUDGES, key=JUDGES.get) + ["gpt-5.6-luna"]
+    names = sorted(JUDGES, key=JUDGES.get)
+    if "gpt-5.6-luna" not in names:                           # pre-onboarding JUDGES: append as extra row
+        names.append("gpt-5.6-luna")
     E, _ = judge_card_e5(names, cache_path="/tmp/mu_data/judge_cards_e5_all.pt")
-    LUNA = len(names) - 1
+    LUNA = names.index("gpt-5.6-luna")
 
     ck = torch.load(a.ckpt, map_location=dev, weights_only=False)
     sd = dict(ck["state"]); cfg = ck["cfg"]
-    assert torch.allclose(sd["judge_name.name_e5"], E[:len(JUDGES)], atol=1e-6), "card table drifted vs ckpt"
+    n0 = sd["judge_name.name_e5"].shape[0]
+    assert torch.allclose(sd["judge_name.name_e5"], E[:n0], atol=1e-6), "card table drifted vs ckpt"
     sd["judge_name.name_e5"] = E
     r = sd["judge_name.resid.weight"]
     sd["judge_name.resid.weight"] = torch.cat([r, torch.zeros(len(names) - r.shape[0], r.shape[1])], 0)
