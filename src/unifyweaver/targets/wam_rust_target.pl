@@ -675,6 +675,8 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                     self.dynamic_retract_call(self.pc + 1)
                 } else if p == "clause/2" {
                     self.dynamic_clause_call(self.pc + 1)
+                } else if p == "current_predicate/1" {
+                    self.current_predicate_call(self.pc + 1)
                 } else if p == "assert/1" {
                     self.execute_assert_builtin("assert/1")
                 } else if p == "read_term/2" {
@@ -753,6 +755,8 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
                     self.dynamic_retract_call(self.cp)
                 } else if p == "clause/2" {
                     self.dynamic_clause_call(self.cp)
+                } else if p == "current_predicate/1" {
+                    self.current_predicate_call(self.cp)
                 } else if p == "assert/1" {
                     if self.execute_assert_builtin("assert/1") {
                         self.pc = self.cp;
@@ -3704,6 +3708,29 @@ compile_resume_builtin_to_rust(Code) :-
                 };
                 self.dynamic_clause_attempt(key, start_idx, head, body, cont_pc)
             }
+            "current_predicate" => {
+                let keys = match state.args.get(0) {
+                    Some(Value::List(keys)) => keys.clone(),
+                    _ => return false,
+                };
+                let name = match state.args.get(1) {
+                    Some(name) => name.clone(),
+                    _ => return false,
+                };
+                let arity = match state.args.get(2) {
+                    Some(arity) => arity.clone(),
+                    _ => return false,
+                };
+                let start_idx = match state.data.get(0) {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return false,
+                };
+                let cont_pc = match state.data.get(1) {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return false,
+                };
+                self.current_predicate_attempt(keys, start_idx, name, arity, cont_pc)
+            }
             "dynamic_rule_body" => {
                 let clause = match state.args.get(0) {
                     Some(clause) => clause.clone(),
@@ -4890,6 +4917,9 @@ compile_execute_meta_builtin_to_rust(Code) :-
         }
         if key == "clause/2" {
             return self.dynamic_clause_call(saved_pc);
+        }
+        if key == "current_predicate/1" {
+            return self.current_predicate_call(saved_pc);
         }
         if self.execute_builtin(key, arity) {
             self.pc = saved_pc;
