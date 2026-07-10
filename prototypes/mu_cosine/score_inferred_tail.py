@@ -165,7 +165,12 @@ def ingest(pairs_path, responses_path, out, judge="haiku"):
             break
         val, i = dec.raw_decode(raw, i)
         objs.extend(val if isinstance(val, list) else [val])
-    by_id = {int(o["id"]): o for o in objs if "id" in o}
+    # guard: judges occasionally emit stray non-dict tokens (bare ints) inside/between JSON arrays — a single
+    # one crashed the whole ingest of a 2,000-pair campaign (responses were safe on disk; re-ingested). Skip them.
+    n_bad = sum(1 for o in objs if not isinstance(o, dict))
+    if n_bad:
+        print(f"  ingest: skipped {n_bad} non-dict response objects")
+    by_id = {int(o["id"]): o for o in objs if isinstance(o, dict) and "id" in o}
     cells = NAMED_DIR + NAMED_SYM + ["unknown", "none"]
     with open(out, "w", encoding="utf-8") as f:
         f.write("# node\troot\tcur_rel\tneighborhood\tjudge\t" + "\t".join(f"P[{c}]" for c in cells)
