@@ -192,17 +192,21 @@ plus a compile site is a **build error**, not a silent miscompile.
 
 Deliberately deferred, in rough value order:
 
-- **for-in over grammar-populated tables inside rule bodies** (END
-  works today).
-- ~~**`dyncall_at@name(...)`**~~ — LANDED (i64): named entries on
-  runtime sources and `compile(...)` handles, resolved per call
-  against the VM's materialized entry table. Compiled handles expose
-  their whole predicate family: the CLI ships `cgfullm` (cgfull's core
-  + a multi-entry name table; byte-identical on single-predicate
-  sources, so `cgfull` stays the self-host oracle). Remaining
-  follow-up: `float`/`blob` named-at variants.
-- **Surface B (`DYNENTRY`)** — declaration-bound library names with
-  static PC bake (see the roadmap's namespace-rule discussion).
+- ~~**for-in over grammar-populated tables inside rule bodies**~~ —
+  LANDED: `for (k in arr) print ...` runs per record inside the rule's
+  action chain, over the table as accumulated so far (str-valued
+  tables print text there too).
+- ~~**`dyncall_at@name(...)`**~~ — LANDED (all three return kinds:
+  i64, `float(...)`, `blob(...)`): named entries on runtime sources
+  and `compile(...)` handles, resolved per call against the VM's
+  materialized entry table. Compiled handles expose their whole
+  predicate family: the CLI ships `cgfullm` (cgfull's core + a
+  multi-entry name table; byte-identical on single-predicate sources,
+  so `cgfull` stays the self-host oracle).
+- ~~**Surface B (`DYNENTRY`)**~~ — LANDED as parse-time sugar:
+  `DYNENTRY parse, score` reserves the names and rewrites bare calls
+  to the named-entry nodes (startup-cached PC); shadowing a userspace
+  or builtin name is a parse error.
 - **Handle-in-scalar** — storing a compile handle in a plawk variable
   across records (today the dedup makes the nested form equivalent).
 - **Further compiler-subset growth** — the bootstrap compiler covers

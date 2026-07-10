@@ -163,22 +163,26 @@ two grammars in one source, two named call sites, one content-deduped
 handle → 194). Single-predicate sources serialize byte-identically to
 `cgfull` (NE=1, first predicate named), so handles, dedup, and every
 existing compile are unchanged — and `cgfull` stays the untouched
-self-host fixpoint subject. `float`/`blob` named-at variants remain
-the follow-up, mirroring how surface A landed i64-first. Surface **B**
-below stays planned.
+self-host fixpoint subject. The `float`/`blob` named-at variants have
+LANDED too (`float(dyncall_at@name(...))` / `blob(dyncall_at@name(...))`
+— the i64 shim shape with the f64/bytes call primitives, cached and
+off modes), so the named-at surface covers all three return kinds.
+Surface **B** below has landed as well (see next section).
 
-**Surface B — declaration-bound library names (planned):** for a fixed
+**Surface B — declaration-bound library names — LANDED:** for a fixed
 `DYNLOAD` shipping a known family, bind entries once at declaration and call
-them like ordinary functions: `DYNENTRY parse` → `parse($1)`. Cleaner call
-sites than A, and resolution stays static (baked PC) because the object is
-compile-time-fixed. **A is for the userspace/dynamic case (call site says
-`@name`, cost is visible); B is for the pre-compiled library case (bare
-call, cost read from the declaration).** The rule that makes B coherent:
-*entry resolution inherits the object's sourcing* — fixed `DYNLOAD` ⇒ static
-PC bake; a runtime source ⇒ per-load resolution. Build B when a real
-multi-entry library exists and A's `@name` call sites feel noisy.
+them like ordinary functions: `DYNENTRY parse, score` → `parse($1)`,
+`float(score($2))`. Implemented as PARSE-TIME sugar: a declared name's
+bare-call nodes rewrite to the named-entry nodes (`dyncall_named` /
+`float_dyncall_named`), so the whole surface-A machinery — the shared
+startup-resolved cached-PC resolver — carries B with zero new codegen.
+**A is for the userspace/dynamic case (call site says `@name`, cost is
+visible); B is for the pre-compiled library case (bare call, cost read
+from the declaration).** The rule that makes B coherent: *entry
+resolution inherits the object's sourcing* — fixed `DYNLOAD` ⇒ static
+PC bake; a runtime source ⇒ per-load resolution (`dyncall_at@name`).
 
-**Namespace rule for B (settled):** `DYNENTRY name` **reserves** `name` for
+**Namespace rule for B (implemented as settled):** `DYNENTRY name` **reserves** `name` for
 the compiled object — it removes that identifier from userspace, so the two
 name sets are disjoint *by construction*. A bare `name(...)` call resolves
 by set membership: in the `DYNENTRY` set → compiled entry; otherwise →

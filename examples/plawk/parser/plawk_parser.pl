@@ -65,8 +65,46 @@ plawk_parse_source(Source, Program, PrologClauses) :-
     maplist(plawk_read_block_clauses, BlockTexts, ClausesNested),
     append(ClausesNested, BlockClauses),
     string_codes(Stripped, Codes),
-    phrase(plawk_program(Program, FunctionClauses), Codes),
-    append(BlockClauses, FunctionClauses, PrologClauses).
+    phrase(plawk_program(Program, FunctionClauses, DynEntries), Codes),
+    append(BlockClauses, FunctionClauses, PrologClauses),
+    plawk_dynentry_reserved_check(DynEntries, PrologClauses).
+
+%% plawk_dynentry_reserved_check(+DynEntries, +PrologClauses)
+%
+%  DYNENTRY reserves a name for the compiled object -- declaring one
+%  that an @prolog block or `function` definition also defines, or a
+%  surface builtin/keyword name, throws (a parse error at the CLI):
+%  never silent shadowing in either direction.
+plawk_dynentry_reserved_check([], _) :- !.
+plawk_dynentry_reserved_check(DynEntries, PrologClauses) :-
+    findall(Defined,
+        ( member(Clause, PrologClauses),
+          plawk_clause_head_name(Clause, Defined)
+        ),
+        DefinedNames),
+    forall(member(Name, DynEntries),
+        (   memberchk(Name, DefinedNames)
+        ->  throw(error(plawk_dynentry_reserved(Name),
+                context(plawk_parse_source/3,
+                    'DYNENTRY name is also defined by an @prolog block or function -- reservation forbids shadowing')))
+        ;   plawk_surface_reserved_name(Name)
+        ->  throw(error(plawk_dynentry_reserved(Name),
+                context(plawk_parse_source/3,
+                    'DYNENTRY name collides with a surface builtin/keyword')))
+        ;   true
+        )).
+
+plawk_clause_head_name((Head :- _Body), Name) :-
+    !,
+    functor(Head, Name, _).
+plawk_clause_head_name(Head, Name) :-
+    compound(Head),
+    functor(Head, Name, _).
+
+plawk_surface_reserved_name(Name) :-
+    memberchk(Name, [length, index, substr, int, tolower, toupper,
+        float, blob, dyncall, dyncall_at, compile, compile_file,
+        print, printf, function, for, in, if, else, next, break]).
 
 plawk_split_prolog_blocks(Source, Stripped, BlockTexts) :-
     split_string(Source, "\n", "", Lines),
@@ -121,13 +159,101 @@ plawk_read_stream_clauses(Stream, Clauses) :-
 plawk_program(Program) -->
     plawk_program(Program, _FunctionClauses).
 
-plawk_program(program(BeginClauses, Rules, EndClauses), FunctionClauses) -->
+plawk_program(Program, FunctionClauses) -->
+    plawk_program(Program, FunctionClauses, _DynEntries).
+
+plawk_program(program(BeginClauses, Rules, EndClauses), FunctionClauses,
+        DynEntries) -->
     ws,
     begin_clauses(BeginClauses),
     function_defs(FunctionClauses),
-    program_rules(Rules),
-    end_clauses(EndClauses),
-    eos.
+    dynentry_decls(DynEntries),
+    program_rules(Rules0),
+    end_clauses(EndClauses0),
+    eos,
+    { plawk_dynentry_rewrite_all(Rules0, DynEntries, Rules),
+      plawk_dynentry_rewrite_all(EndClauses0, DynEntries, EndClauses)
+    }.
+
+%% dynentry_decls(-Names)//
+%
+%  Surface B (declaration-bound library names): for a fixed DYNLOAD
+%  shipping a known entry family, bind names once at declaration and
+%  call them like ordinary functions:
+%
+%      DYNENTRY parse, score
+%      { total += parse($1) + score($2) }
+%
+%  A declared name is RESERVED for the compiled object: every bare
+%  `name(args)` call site (and `float(name(args))`) rewrites at parse
+%  time to the named-entry node (dyncall_named / float_dyncall_named),
+%  so resolution stays static -- the entry's PC resolves once at
+%  startup and is cached, exactly like an explicit dyncall@name site.
+%  Reservation makes the name sets disjoint by construction: declaring
+%  a name that an @prolog block or `function` definition also defines,
+%  or a surface builtin name, is a PARSE ERROR (never silent
+%  shadowing) -- checked in plawk_parse_source once the block clauses
+%  are known.
+dynentry_decls(Names) -->
+    dynentry_decl(First),
+    !,
+    dynentry_decls(Rest),
+    { append(First, Rest, Names) }.
+dynentry_decls([]) -->
+    [].
+
+dynentry_decl(Names) -->
+    "DYNENTRY",
+    identifier_boundary,
+    ws,
+    dynentry_names(Names),
+    ws.
+
+dynentry_names([Name | Names]) -->
+    identifier(Name),
+    dynentry_names_rest(Names).
+
+dynentry_names_rest([Name | Names]) -->
+    ws,
+    ",",
+    ws,
+    !,
+    identifier(Name),
+    dynentry_names_rest(Names).
+dynentry_names_rest([]) -->
+    [].
+
+%% plawk_dynentry_rewrite_all(+Terms0, +Names, -Terms)
+%
+%  Substitute bare-call nodes over declared names with their
+%  named-entry counterparts, everywhere in the parsed rules/END:
+%  prolog_call -> dyncall_named, float_call -> float_dyncall_named.
+%  A declared name in a position the named machinery does not compile
+%  (e.g. a guard pattern) yields the ordinary
+%  outside-the-compilable-surface build error rather than silently
+%  calling userspace.
+plawk_dynentry_rewrite_all(Terms, [], Terms) :- !.
+plawk_dynentry_rewrite_all(Terms0, Names, Terms) :-
+    plawk_dynentry_rewrite(Terms0, Names, Terms).
+
+plawk_dynentry_rewrite(Term0, Names, Term) :-
+    (   Term0 = prolog_call(Name, Args0),
+        memberchk(Name, Names)
+    ->  plawk_dynentry_rewrite(Args0, Names, Args),
+        Term = dyncall_named(Name, Args)
+    ;   Term0 = float_call(Name, Args0),
+        memberchk(Name, Names)
+    ->  plawk_dynentry_rewrite(Args0, Names, Args),
+        Term = float_dyncall_named(Name, Args)
+    ;   compound(Term0)
+    ->  Term0 =.. [F | Args0],
+        maplist(plawk_dynentry_rewrite_arg(Names), Args0, Args),
+        Term =.. [F | Args]
+    ;   Term = Term0
+    ).
+
+plawk_dynentry_rewrite_arg(Names, Arg0, Arg) :-
+    plawk_dynentry_rewrite(Arg0, Names, Arg).
 
 %% function_defs(-Clauses)//
 %
