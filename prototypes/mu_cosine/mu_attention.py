@@ -388,6 +388,11 @@ class NameFunctionCond(nn.Module):
     def forward(self, idx):
         return self.W(self.name_e5[idx]) + self.resid(idx)
 
+    def table(self):
+        """The full conditioning matrix [n, d_model] — for consumers that need every row at once
+        (the blended-operator path `op_weights @ table`, DESIGN_inferred_operator_superposition)."""
+        return self.W(self.name_e5) + self.resid.weight
+
     def resid_penalty(self):
         return self.resid.weight.pow(2).sum(-1).mean()
 
@@ -396,7 +401,8 @@ class MuAttention(nn.Module):
     def __init__(self, d_model=384, n_ops=len(OPS), n_heads=4, n_layers=1, max_gen=5,
                  dim_ff=None, dropout=0.0, n_corpus=len(CORPORA), n_judge=len(JUDGES),
                  n_nodetype=len(NODETYPE), n_account=len(ACCOUNTS), struct_blend="inside", n_struct=1,
-                 c_dist=1.0, c_mem_ceiling=1.0, c_subcat=1.0, c_elem=1.0, judge_name_e5=None):
+                 c_dist=1.0, c_mem_ceiling=1.0, c_subcat=1.0, c_elem=1.0, judge_name_e5=None,
+                 op_name_e5=None, corpus_name_e5=None):
         # NB c_subcat/c_elem default to a NEUTRAL 1.0 here — the measured +0.72/+0.82 are LEAKAGE-INFLATED
         # (training-pair measurement, PR #3488 review) and are supplied ONLY via the CLI on the superseded
         # `membership` ablation path (see DESIGN_sym_estimation_integration.md), not baked into the module.
@@ -427,6 +433,18 @@ class MuAttention(nn.Module):
             self.judge_name = NameFunctionCond(judge_name_e5, d_model)
         else:
             self.judge_name = None
+        # same mechanism for OPS/CORPORA (§6.7): when a card table is supplied the indexed embedding is
+        # bypassed in forward (kept for pre-migration checkpoints). The per-operator READOUT stays indexed.
+        if op_name_e5 is not None:
+            assert op_name_e5.shape[0] == n_ops
+            self.op_name = NameFunctionCond(op_name_e5, d_model)
+        else:
+            self.op_name = None
+        if corpus_name_e5 is not None:
+            assert corpus_name_e5.shape[0] == n_corpus
+            self.corpus_name = NameFunctionCond(corpus_name_e5, d_model)
+        else:
+            self.corpus_name = None
         # ACCOUNT: a 2nd factored provenance axis on the SAME maskable token. Zero-init ⇒ a no-op at warm
         # start (and whenever items carry no account), so the signal is learned only once both accounts exist.
         self.account_emb = nn.Embedding(n_account, d_model)
@@ -485,15 +503,18 @@ class MuAttention(nn.Module):
         if prefix_of is not None:                            # e5 prefix regime (query:/passage:/none); zero-init no-op
             emb = emb + self.prefix_emb(prefix_of.clamp(min=0)) * (prefix_of >= 0).unsqueeze(-1)
         omask = (op_pos >= 0).unsqueeze(-1)
+        opT = self.op_name.table() if self.op_name is not None else self.op_emb.weight
         if op_weights is None:
-            emb = emb + self.op_emb(op_pos.clamp(min=0)) * omask                     # indexed (one-hot) op token
+            emb = emb + opT[op_pos.clamp(min=0)] * omask                             # indexed (one-hot) op token
         else:
-            emb = emb + (op_weights @ self.op_emb.weight).unsqueeze(1) * omask       # blended op token
+            emb = emb + (op_weights @ opT).unsqueeze(1) * omask                      # blended op token
         if is_prov is not None:
             emb = emb + self.prov_tag * is_prov.unsqueeze(-1)            # mark the provenance slot
             if corpus_of is not None:                                    # add factored source (if revealed)
                 cmask = (corpus_of >= 0).unsqueeze(-1)
-                emb = emb + self.corpus_emb(corpus_of.clamp(min=0)) * cmask
+                ccond = (self.corpus_name(corpus_of.clamp(min=0)) if self.corpus_name is not None
+                         else self.corpus_emb(corpus_of.clamp(min=0)))
+                emb = emb + ccond * cmask
                 jcond = (self.judge_name(judge_of.clamp(min=0)) if self.judge_name is not None
                          else self.judge_emb(judge_of.clamp(min=0)))
                 emb = emb + jcond * cmask

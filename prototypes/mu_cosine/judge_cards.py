@@ -45,6 +45,46 @@ JUDGE_CARDS = {
 
 CARDS_CACHE = "/tmp/mu_data/judge_cards_e5.pt"
 
+# Operator cards (§6.7 "one mechanism"; descriptive phrases per DESIGN_amortized_fusion_heads' function-name
+# refinement 1 — e5 can't place opaque tokens, give it words). The per-operator READOUT stays indexed; these
+# cards cover the operator TOKEN embedding, including the blended path op_weights @ table.
+OP_CARDS = {
+    "SYM": "symmetric association operator, undirected relatedness between two concepts",
+    "HIER": "hierarchical direction operator, degree the node lies under the root category",
+    "_DEPRECATED_LLM": "deprecated operator slot, unused",
+    "ELEM": "element membership operator, degree the node is an element of the root container",
+    "LINEAGE": "lineage path operator, graded membership along a materialized ancestor path",
+    "LINEAGE_RANK": "lineage ranking operator, candidate ordering along ancestor paths",
+}
+
+CORPUS_CARDS = {
+    "simplewiki": "simple english wikipedia category graph corpus",
+    "enwiki": "english wikipedia category graph corpus",
+    "pearltrees": "pearltrees bookmark collection corpus, user filing hierarchy",
+    "mindmap": "simplemind mind map corpus, personal knowledge graph",
+}
+
+
+def _card_e5(cards, index, cache_path, names=None):
+    if names is None:
+        names = sorted(index, key=index.get)
+    missing = [n for n in names if n not in cards]
+    assert not missing, f"no card for: {missing} (truthful metadata only)"
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    _, passage, _ = build_e5_tables(list(names), cache_path=cache_path,
+                                    texts={n: cards[n] for n in names})
+    return passage, list(names)
+
+
+def op_card_e5(names=None, cache_path="/tmp/mu_data/op_cards_e5.pt"):
+    from mu_attention import OPS
+    return _card_e5(OP_CARDS, OPS, cache_path, names)
+
+
+def corpus_card_e5(names=None, cache_path="/tmp/mu_data/corpus_cards_e5.pt"):
+    from mu_attention import CORPORA
+    return _card_e5(CORPUS_CARDS, CORPORA, cache_path, names)
+
 
 def judge_card_e5(names=None, cache_path=CARDS_CACHE):
     """[J, 384] frozen e5 card embeddings, one row per judge, in JUDGES index order by default.
