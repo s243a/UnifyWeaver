@@ -469,7 +469,15 @@ own PR(s).
   move; marks are virtual offsets so mark/rewind work across growth), and
   the serializer's **difference-list linearisation** removed the quadratic
   time/allocation (an 11.9 KB source compiles loaded in 40 ms / 35 MB where
-  the quadratic style took 20 s / 3.7 GB at half that size).
+  the quadratic style took 20 s / 3.7 GB at half that size). The
+  table-collection walk's dedup scan now uses the NATIVE memberchk
+  builtin instead of an interpreted hand-rolled scan — on an atom-rich
+  20 KB synthetic fact-table grammar (the pathological shape for table
+  building) the loaded compile drops ~23% with byte-identical output;
+  typical grammars are hundreds of bytes and compile in single-digit
+  milliseconds, once per distinct source (the compile() surface dedups),
+  so the remaining mildly-superlinear tail is not worth further
+  restatement.
   The campaign keeps surfacing and fixing latent runtime bugs — **thirteen found
   so far**: a 64-register-file ceiling corrupting memory for large clauses;
   `get_structure` not comparing the functor; the choice-point saved-register

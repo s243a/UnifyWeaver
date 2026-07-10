@@ -99,9 +99,119 @@ test_full_module_validates :-
     catch(delete_file(BCPath), _, true).
 
 :- use_module(library(process)).
+:- use_module(library(pcre)).
+:- use_module(library(readutil)).
+
+% --- Quoted-key dispatch EXECUTION regression ------------------------------
+% The switch-entry parser used to split "key:label" at the FIRST colon and
+% never unquoted writeq-style keys, so table entries for quoted atoms like
+% '=:=' or '\==' sheared in half or interned their quote characters into
+% the key -- the entry never matched the runtime atom and a strict switch
+% silently FAILED the call (this binary exits 255 instead of 33 on the
+% broken parser). Fixed by switch_entry_split/3 + switch_entry_unquote/2.
+:- dynamic qk/2.
+qk('=:=', 5).
+qk('\\==', 21).
+qk(plainkey, 7).
+qk(other1, 1).
+qk(other2, 2).
+qk(other3, 3).
+qk(other4, 4).
+qk(other5, 6).
+:- dynamic qkmain/1.
+qkmain(R) :-
+    qk('=:=', A),
+    qk('\\==', B),
+    qk(plainkey, C),
+    R is A + B + C.                          % 5 + 21 + 7 = 33
+
+test_quoted_key_dispatch_executes :-
+    format('--- quoted-key switch dispatch executes ---~n'),
+    ( clang_on_path
+    -> run_qk_case
+    ;  format('  SKIP: clang not found~n')
+    ).
+
+clang_on_path :-
+    catch(
+        ( process_create(path(clang), ['--version'],
+              [stdout(null), stderr(null), process(PID)]),
+          process_wait(PID, exit(0))
+        ),
+        _, fail).
+
+qk_instr_count(Src, C) :-
+    re_matchsub("@module_code = private constant \\[(?<n>\\d+) x %Instruction\\]",
+                Src, M, []),
+    get_dict(n, M, NS), number_string(C, NS).
+qk_label_count(Src, C) :-
+    re_matchsub("@module_labels = private constant \\[(?<n>\\d+) x i32\\]",
+                Src, M, []),
+    get_dict(n, M, NS), number_string(C, NS).
+
+run_qk_case :-
+    tmp_file_stream(text, LLPath, Stream), close(Stream),
+    % qkmain first in the list -> its code starts at PC 0
+    write_wam_llvm_project([user:qkmain/1, user:qk/2],
+        [module_name('qk_exec')], LLPath),
+    read_file_to_string(LLPath, Src, []),
+    ( sub_atom_or_string(Src, _, _, _, 'qk_switch_')
+    -> format('  PASS: qk switch table emitted~n')
+    ;  format('  FAIL: qk switch table missing~n'),
+       throw(missing_qk_switch_table)
+    ),
+    qk_instr_count(Src, IC),
+    qk_label_count(Src, LC),
+    % A1 = unbound result slot (tag 6); entry starts at PC 0 (qkmain).
+    format(atom(DriverIR),
+'define i32 @main() {
+entry:
+  %a1_0 = insertvalue %Value undef, i32 6, 0
+  %a1 = insertvalue %Value %a1_0, i64 0, 1
+  %vm = call %WamState* @wam_state_new(
+      %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
+      i32 ~w,
+      i32* getelementptr ([~w x i32], [~w x i32]* @module_labels, i32 0, i32 0),
+      i32 ~w)
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  %ok = call i1 @run_loop(%WamState* %vm)
+  br i1 %ok, label %hit, label %miss
+hit:
+  %r = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %r32 = trunc i64 %r to i32
+  ret i32 %r32
+miss:
+  ret i32 255
+}
+',
+        [IC, IC, IC, LC, LC, LC]),
+    setup_call_cleanup(
+        open(LLPath, append, Out),
+        ( write(Out, '\n'), write(Out, DriverIR) ),
+        close(Out)),
+    atom_concat(LLPath, '.out', BinPath),
+    % -x ir: the tmp file has no .ll extension, so clang needs telling
+    format(atom(ClangCmd), 'clang -w -O0 -x ir ~w -o ~w -lm 2>~w.clang.err',
+        [LLPath, BinPath, LLPath]),
+    shell(ClangCmd, ClangExit),
+    ( ClangExit =\= 0
+    -> format('  FAIL: clang exit=~w (see ~w.clang.err)~n', [ClangExit, LLPath]),
+       throw(qk_clang_failed)
+    ;  true
+    ),
+    shell(BinPath, ExitCode),
+    catch(delete_file(LLPath), _, true),
+    catch(delete_file(BinPath), _, true),
+    ( ExitCode =:= 33
+    -> format('  PASS: quoted-key dispatch returned 33~n')
+    ;  format('  FAIL: quoted-key dispatch returned ~w (expected 33; 255 = the entry FAILED, the pre-fix symptom)~n',
+           [ExitCode]),
+       throw(quoted_key_dispatch_failed(ExitCode))
+    ).
 
 test_all :-
     test_switch_on_constant_compiles,
+    test_quoted_key_dispatch_executes,
     catch(test_full_module_llvm_as, E,
         format('  ERROR running llvm-as test: ~w~n', [E])).
 
