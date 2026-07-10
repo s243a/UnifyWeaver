@@ -14,6 +14,9 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 
+# Archived judge inputs preserve an empty final TSV field as a trailing tab.
+prototypes/mu_cosine/repro/product_kalman_cross_corpus/*.tsv whitespace=-blank-at-eol
+
 # Shell scripts must have LF (required for Unix/Linux/macOS)
 *.sh text eol=lf
 *.bash text eol=lf

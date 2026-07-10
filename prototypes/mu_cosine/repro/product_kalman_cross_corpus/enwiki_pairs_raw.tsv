@@ -1,0 +1,251 @@
+pair_id	corpus	graph_view	branch_id	branch_title	descendant_id	descendant_title	descendant_normalized_title	ancestor_id	ancestor_title	ancestor_normalized_title	hop
+enwiki-h1-0000	enwiki	category_dag	693763	Academic_disciplines	12730741	Applied_philosophy	applied philosophy	19470381	Applied_disciplines	applied disciplines	1
+enwiki-h1-0001	enwiki	category_dag	737037	Behavior	47564932	Works_about_competitions	works about competitions	67746871	Works_about_behavior	works about behavior	1
+enwiki-h1-0002	enwiki	category_dag	771152	Business	1226607	Business_theorists	business theorists	56870004	People_in_business-related_occupations	people in business-related occupations	1
+enwiki-h1-0003	enwiki	category_dag	709243	Communication	39012309	Works_about_information	works about information	1009209	Information	information	1
+enwiki-h1-0004	enwiki	category_dag	24980271	Concepts	58615859	Techniques_and_principles_related_to_heraldic_tinctures	techniques and principles related to heraldic tinctures	5922972	Principles	principles	1
+enwiki-h1-0005	enwiki	category_dag	694861	Culture	37435625	Korean_cuisine-related_lists	korean cuisine-related lists	47025435	Cuisine-related_lists	cuisine-related lists	1
+enwiki-h1-0006	enwiki	category_dag	47397287	Economy	6649447	Cultural_economics	cultural economics	72679348	Culture_and_economy	culture and economy	1
+enwiki-h1-0007	enwiki	category_dag	696763	Education	47131507	New_York_State_Education_Department	new york state education department	23681922	State_departments_of_education_of_the_United_States	state departments of education of the united states	1
+enwiki-h1-0008	enwiki	category_dag	865456	Energy	27794402	Steam_turbines	steam turbines	966100	Turbines	turbines	1
+enwiki-h1-0009	enwiki	category_dag	692903	Engineering	14661580	Engineering_organizations	engineering organizations	692903	Engineering	engineering	1
+enwiki-h1-0010	enwiki	category_dag	60023454	Entities	9074974	Former_entities	former entities	60023454	Entities	entities	1
+enwiki-h1-0011	enwiki	category_dag	694860	Food_and_drink	6347960	Food_allergy_organizations	food allergy organizations	15702781	Food_allergies	food allergies	1
+enwiki-h1-0012	enwiki	category_dag	693800	Geography	705498	Deserts	deserts	693800	Geography	geography	1
+enwiki-h1-0013	enwiki	category_dag	697609	Government	25363736	Former_government_ministries	former government ministries	4677126	Government_ministries	government ministries	1
+enwiki-h1-0014	enwiki	category_dag	751381	Health	15335883	Paraphilias	paraphilias	28264853	Sexual_disorders	sexual disorders	1
+enwiki-h1-0015	enwiki	category_dag	693555	History	79482448	New_Zealand_male_biographers	new zealand male biographers	46687935	Male_biographers	male biographers	1
+enwiki-h1-0016	enwiki	category_dag	1004110	Humanities	27624683	Humanities_education	humanities education	1004110	Humanities	humanities	1
+enwiki-h1-0017	enwiki	category_dag	1009209	Information	54649010	Pragmatics_works	pragmatics works	37691471	Academic_works_about_semiotics	academic works about semiotics	1
+enwiki-h1-0018	enwiki	category_dag	700914	Knowledge	45111777	Guinness_World_Records	guinness world records	5752924	Trivia_books	trivia books	1
+enwiki-h1-0019	enwiki	category_dag	8017451	Language	744038	Philosophy_of_language	philosophy of language	8017451	Language	language	1
+enwiki-h1-0020	enwiki	category_dag	691928	Law	61887783	Expansion_of_slavery_in_the_United_States	expansion of slavery in the united states	3376896	History_of_United_States_expansionism	history of united states expansionism	1
+enwiki-h1-0021	enwiki	category_dag	2389032	Life	56730835	Types_of_trauma	types of trauma	10158091	Injuries	injuries	1
+enwiki-h1-0022	enwiki	category_dag	696790	Mass_media	52177459	Marketing_strategy	marketing strategy	784409	Marketing	marketing	1
+enwiki-h1-0023	enwiki	category_dag	690747	Mathematics	25169417	Lists_of_things_named_after_mathematicians	lists of things named after mathematicians	4684939	Mathematics-related_lists	mathematics-related lists	1
+enwiki-h1-0024	enwiki	category_dag	696603	Nature	28962801	Nanotechnology_and_the_environment	nanotechnology and the environment	15877642	Environmental_issues	environmental issues	1
+enwiki-h1-0025	enwiki	category_dag	691810	Philosophy	32026258	Women_and_philosophy	women and philosophy	691810	Philosophy	philosophy	1
+enwiki-h1-0026	enwiki	category_dag	695027	Politics	6222478	Political_communication	political communication	695027	Politics	politics	1
+enwiki-h1-0027	enwiki	category_dag	692694	Religion	59768190	Weekly_Torah_readings_in_Tammuz_(Hebrew_month)	weekly torah readings in tammuz (hebrew month)	44724959	Tammuz_(Hebrew_month)	tammuz (hebrew month)	1
+enwiki-h1-0028	enwiki	category_dag	691182	Science	24244487	Forensic_occupations	forensic occupations	1003632	Science_occupations	science occupations	1
+enwiki-h1-0029	enwiki	category_dag	1633936	Society	36952510	Sectarianism	sectarianism	19307992	Social_conflict	social conflict	1
+enwiki-h1-0030	enwiki	category_dag	696648	Technology	5209409	Telerehabilitation	telerehabilitation	25737110	Telehealth	telehealth	1
+enwiki-h1-0031	enwiki	category_dag	744728	Time	67825444	22nd-century_lunar_eclipses	22nd-century lunar eclipses	74786281	22nd-century_astronomical_events	22nd-century astronomical events	1
+enwiki-h1-0032	enwiki	category_dag	48005914	Universe	22037957	Physical_objects	physical objects	1926287	Matter	matter	1
+enwiki-h1-0033	enwiki	category_dag	693763	Academic_disciplines	28366894	Specific_University_Curricula	specific university curricula	15457132	Curricula	curricula	1
+enwiki-h1-0034	enwiki	category_dag	737037	Behavior	40410448	Object_manipulation	object manipulation	2952834	Sleight_of_hand	sleight of hand	1
+enwiki-h1-0035	enwiki	category_dag	771152	Business	53902901	Agricultural_organisations_based_in_Malaysia	agricultural organisations based in malaysia	49503799	Business_organisations_based_in_Malaysia	business organisations based in malaysia	1
+enwiki-h1-0036	enwiki	category_dag	709243	Communication	1754736	Cybernetics	cybernetics	54039168	Feedback	feedback	1
+enwiki-h1-0037	enwiki	category_dag	24980271	Concepts	52604981	Alien_language	alien language	62327389	Linguistic_theories_and_hypotheses	linguistic theories and hypotheses	1
+enwiki-h1-0038	enwiki	category_dag	694861	Culture	55631230	Politics_in_culture	politics in culture	55426707	Topics_in_culture	topics in culture	1
+enwiki-h1-0039	enwiki	category_dag	47397287	Economy	30948147	Conservative_Party_(UK)-related_lists	conservative party (uk)-related lists	11405707	Conservative_Party_(UK)	conservative party (uk)	1
+enwiki-h1-0040	enwiki	category_dag	696763	Education	65391518	Outlines_of_education	outlines of education	696763	Education	education	1
+enwiki-h1-0041	enwiki	category_dag	865456	Energy	11034434	Energy_sources	energy sources	865456	Energy	energy	1
+enwiki-h1-0042	enwiki	category_dag	692903	Engineering	60261297	Presidents_of_the_Women's_Engineering_Society	presidents of the women's engineering society	60235506	Women's_Engineering_Society	women's engineering society	1
+enwiki-h1-0043	enwiki	category_dag	60023454	Entities	20083363	Mathematical_structures	mathematical structures	5183917	Structure	structure	1
+enwiki-h1-0044	enwiki	category_dag	694860	Food_and_drink	14685785	Sports_drinks	sports drinks	70516127	Sports_nutrition	sports nutrition	1
+enwiki-h1-0045	enwiki	category_dag	693800	Geography	40848917	Desertification	desertification	705498	Deserts	deserts	1
+enwiki-h1-0046	enwiki	category_dag	697609	Government	15180762	New_College_of_Florida	new college of florida	48057409	Public_honors_colleges	public honors colleges	1
+enwiki-h1-0047	enwiki	category_dag	751381	Health	22253589	Diet_food_writers	diet food writers	1329934	Health_and_wellness_writers	health and wellness writers	1
+enwiki-h1-0048	enwiki	category_dag	693555	History	702708	Historians	historians	693555	History	history	1
+enwiki-h1-0049	enwiki	category_dag	1004110	Humanities	28771580	Mormon_studies	mormon studies	50033767	Christianity_studies	christianity studies	1
+enwiki-h2-0000	enwiki	category_dag	693763	Academic_disciplines	12730741	Applied_philosophy	applied philosophy	693763	Academic_disciplines	academic disciplines	2
+enwiki-h2-0001	enwiki	category_dag	737037	Behavior	51151941	Films_about_sexism	films about sexism	63445351	Works_about_sex	works about sex	2
+enwiki-h2-0002	enwiki	category_dag	771152	Business	50682347	Finance_occupations	finance occupations	771152	Business	business	2
+enwiki-h2-0003	enwiki	category_dag	709243	Communication	857453	Winnie-the-Pooh	winnie-the-pooh	78445454	Short_stories_about_talking_objects	short stories about talking objects	2
+enwiki-h2-0004	enwiki	category_dag	24980271	Concepts	57223209	Nostratic_languages	nostratic languages	1963117	Theories	theories	2
+enwiki-h2-0005	enwiki	category_dag	694861	Culture	61435038	Cheating_in_gambling	cheating in gambling	694861	Culture	culture	2
+enwiki-h2-0006	enwiki	category_dag	47397287	Economy	35746569	Forestry-related_lists	forestry-related lists	50772364	Economy-related_lists	economy-related lists	2
+enwiki-h2-0007	enwiki	category_dag	696763	Education	8398611	Student_mass_media	student mass media	696763	Education	education	2
+enwiki-h2-0008	enwiki	category_dag	865456	Energy	6745479	Directed-energy_weapons	directed-energy weapons	865456	Energy	energy	2
+enwiki-h2-0009	enwiki	category_dag	692903	Engineering	43999884	Human_Genome_Project_scientists	human genome project scientists	692903	Engineering	engineering	2
+enwiki-h2-0010	enwiki	category_dag	60023454	Entities	27291257	Sinkholes	sinkholes	14372289	Objects	objects	2
+enwiki-h2-0011	enwiki	category_dag	694860	Food_and_drink	39565398	Eating_parties	eating parties	53638516	Dining	dining	2
+enwiki-h2-0012	enwiki	category_dag	693800	Geography	34088982	National_Geospatial-Intelligence_Agency	national geospatial-intelligence agency	51209050	Geographic_data_and_information_organizations	geographic data and information organizations	2
+enwiki-h2-0013	enwiki	category_dag	697609	Government	81890787	Vassal_rulers	vassal rulers	697609	Government	government	2
+enwiki-h2-0014	enwiki	category_dag	751381	Health	46845184	Hospitals_in_Guinea-Bissau	hospitals in guinea-bissau	69481574	Healthcare_in_Guinea-Bissau	healthcare in guinea-bissau	2
+enwiki-h2-0015	enwiki	category_dag	693555	History	34088419	History_portal	history portal	693555	History	history	2
+enwiki-h2-0016	enwiki	category_dag	1004110	Humanities	7687074	Language_teachers	language teachers	27624683	Humanities_education	humanities education	2
+enwiki-h2-0017	enwiki	category_dag	1009209	Information	78603869	Mathematics_occupations	mathematics occupations	1009209	Information	information	2
+enwiki-h2-0018	enwiki	category_dag	700914	Knowledge	2380601	Parables_of_Jesus	parables of jesus	20497537	Wisdom_literature	wisdom literature	2
+enwiki-h2-0019	enwiki	category_dag	8017451	Language	5561744	ISO_639	iso 639	8017451	Language	language	2
+enwiki-h2-0020	enwiki	category_dag	691928	Law	24660679	Medical_jurisprudence	medical jurisprudence	691928	Law	law	2
+enwiki-h2-0021	enwiki	category_dag	2389032	Life	70615160	Films_about_phoenixes	films about phoenixes	62800924	Phoenix_birds	phoenix birds	2
+enwiki-h2-0022	enwiki	category_dag	696790	Mass_media	34625890	Religious_software	religious software	79467678	Spiritual_media	spiritual media	2
+enwiki-h2-0023	enwiki	category_dag	696603	Nature	45617574	Pharmacognosists	pharmacognosists	697022	Natural_sciences	natural sciences	2
+enwiki-h2-0024	enwiki	category_dag	691810	Philosophy	81827602	Faculties_of_philosophy_in_Brazil	faculties of philosophy in brazil	14561344	Philosophy_organizations	philosophy organizations	2
+enwiki-h2-0025	enwiki	category_dag	695027	Politics	48423981	Democratic_Party_presidential_debates	democratic party presidential debates	37436748	Leaders'_debates	leaders' debates	2
+enwiki-h2-0026	enwiki	category_dag	692694	Religion	33071521	Biblical_dreams_and_visions	biblical dreams and visions	692694	Religion	religion	2
+enwiki-h2-0027	enwiki	category_dag	691182	Science	18441870	Polar_exploration	polar exploration	691182	Science	science	2
+enwiki-h2-0028	enwiki	category_dag	1633936	Society	38823017	Town_and_country_planning_in_Turkey	town and country planning in turkey	49142553	Rural_society_in_Europe	rural society in europe	2
+enwiki-h2-0029	enwiki	category_dag	696648	Technology	16585181	Technology_evangelists	technology evangelists	696648	Technology	technology	2
+enwiki-h2-0030	enwiki	category_dag	744728	Time	24148745	Time_signals	time signals	744728	Time	time	2
+enwiki-h2-0031	enwiki	category_dag	48005914	Universe	39353807	Christian_Old_Earth_creationists	christian old earth creationists	919511	Creationism	creationism	2
+enwiki-h2-0032	enwiki	category_dag	693763	Academic_disciplines	81529797	Constitutional_history_of_Russia	constitutional history of russia	707341	Legal_history	legal history	2
+enwiki-h2-0033	enwiki	category_dag	737037	Behavior	14567412	Sexual_selection	sexual selection	737037	Behavior	behavior	2
+enwiki-h2-0034	enwiki	category_dag	771152	Business	22898960	Spouses_of_Australian_politicians	spouses of australian politicians	18113789	Official_social_partners_of_politicians	official social partners of politicians	2
+enwiki-h2-0035	enwiki	category_dag	709243	Communication	18793873	Data_and_information_visualization_experts	data and information visualization experts	1009209	Information	information	2
+enwiki-h2-0036	enwiki	category_dag	24980271	Concepts	17320449	Difference	difference	24980271	Concepts	concepts	2
+enwiki-h2-0037	enwiki	category_dag	694861	Culture	27340252	British_Pakistani_mass_media	british pakistani mass media	43041456	Ethnic_mass_media	ethnic mass media	2
+enwiki-h2-0038	enwiki	category_dag	47397287	Economy	1229089	Supply_chain_management	supply chain management	68721914	Supply_networks	supply networks	2
+enwiki-h2-0039	enwiki	category_dag	696763	Education	56689328	Semester_at_sea_programs	semester at sea programs	696763	Education	education	2
+enwiki-h2-0040	enwiki	category_dag	865456	Energy	81861200	Wind_energy_cooperatives	wind energy cooperatives	11875229	Energy_cooperatives	energy cooperatives	2
+enwiki-h2-0041	enwiki	category_dag	692903	Engineering	42482578	Graphene	graphene	8058041	Nanomaterials	nanomaterials	2
+enwiki-h2-0042	enwiki	category_dag	60023454	Entities	1196890	Singularitarianism	singularitarianism	772259	Philosophy_of_mind	philosophy of mind	2
+enwiki-h2-0043	enwiki	category_dag	694860	Food_and_drink	71545070	Cake_decorating	cake decorating	694860	Food_and_drink	food and drink	2
+enwiki-h2-0044	enwiki	category_dag	693800	Geography	724833	Geocodes	geocodes	9962372	Geography_terminology	geography terminology	2
+enwiki-h2-0045	enwiki	category_dag	697609	Government	27423924	Religion_in_the_Israel_Defense_Forces	religion in the israel defense forces	44449531	Religion_and_government	religion and government	2
+enwiki-h2-0046	enwiki	category_dag	751381	Health	63464250	Health_and_video_gaming	health and video gaming	751381	Health	health	2
+enwiki-h2-0047	enwiki	category_dag	693555	History	52616792	Books_about_economic_crises	books about economic crises	50238042	Works_about_economic_history	works about economic history	2
+enwiki-h2-0048	enwiki	category_dag	1004110	Humanities	22811075	Museum_education	museum education	1004110	Humanities	humanities	2
+enwiki-h2-0049	enwiki	category_dag	1009209	Information	39071818	Internet_privacy_organizations	internet privacy organizations	44363114	Information_privacy	information privacy	2
+enwiki-h3-0000	enwiki	category_dag	693763	Academic_disciplines	11764402	Liberal_arts_colleges_in_the_Philippines	liberal arts colleges in the philippines	693763	Academic_disciplines	academic disciplines	3
+enwiki-h3-0001	enwiki	category_dag	737037	Behavior	13609231	Mimicry	mimicry	737037	Behavior	behavior	3
+enwiki-h3-0002	enwiki	category_dag	771152	Business	15445793	Labor_relations_boards	labor relations boards	11424082	Labour_law	labour law	3
+enwiki-h3-0003	enwiki	category_dag	709243	Communication	47421055	Comparison_of_Germanic_languages_and_dialects	comparison of germanic languages and dialects	1009209	Information	information	3
+enwiki-h3-0004	enwiki	category_dag	24980271	Concepts	9833053	String_metrics	string metrics	24980271	Concepts	concepts	3
+enwiki-h3-0005	enwiki	category_dag	694861	Culture	52233752	Christian_orders,_decorations,_and_medals	christian orders, decorations, and medals	694861	Culture	culture	3
+enwiki-h3-0006	enwiki	category_dag	47397287	Economy	4988891	Vacuum_cleaners	vacuum cleaners	916951	Consumer_goods	consumer goods	3
+enwiki-h3-0007	enwiki	category_dag	696763	Education	64081633	Western_University_of_Health_Sciences	western university of health sciences	10246702	Learning_methods	learning methods	3
+enwiki-h3-0008	enwiki	category_dag	865456	Energy	34437575	King_Fahd_University_of_Petroleum_and_Minerals_alumni	king fahd university of petroleum and minerals alumni	55537452	Energy_education	energy education	3
+enwiki-h3-0009	enwiki	category_dag	692903	Engineering	30735500	Lime_kilns	lime kilns	692903	Engineering	engineering	3
+enwiki-h3-0010	enwiki	category_dag	60023454	Entities	24909288	Mental_disorders	mental disorders	60023454	Entities	entities	3
+enwiki-h3-0011	enwiki	category_dag	694860	Food_and_drink	9302840	Military_food_of_Canada	military food of canada	694860	Food_and_drink	food and drink	3
+enwiki-h3-0012	enwiki	category_dag	693800	Geography	47913116	Titles_in_Bosnia	titles in bosnia	49222776	Geographical_regions	geographical regions	3
+enwiki-h3-0013	enwiki	category_dag	697609	Government	32009329	Motorcycle_standards	motorcycle standards	697609	Government	government	3
+enwiki-h3-0014	enwiki	category_dag	751381	Health	25326754	Exercise_television_shows	exercise television shows	751381	Health	health	3
+enwiki-h3-0015	enwiki	category_dag	693555	History	75352499	Marathi-language_biographical_films	marathi-language biographical films	32136051	Indian_history_in_popular_culture	indian history in popular culture	3
+enwiki-h3-0016	enwiki	category_dag	1004110	Humanities	11119769	Casual_script_typefaces	casual script typefaces	1004110	Humanities	humanities	3
+enwiki-h3-0017	enwiki	category_dag	1009209	Information	5154927	Telephone_directory_publishing_companies	telephone directory publishing companies	1009209	Information	information	3
+enwiki-h3-0018	enwiki	category_dag	700914	Knowledge	5353483	Consulting	consulting	700914	Knowledge	knowledge	3
+enwiki-h3-0019	enwiki	category_dag	691928	Law	34742377	Legal_professional_privilege	legal professional privilege	691928	Law	law	3
+enwiki-h3-0020	enwiki	category_dag	2389032	Life	31303793	Lithophiles	lithophiles	42501585	Speculative_evolution	speculative evolution	3
+enwiki-h3-0021	enwiki	category_dag	696790	Mass_media	37591464	Audiovisual_ephemera	audiovisual ephemera	60926601	Stock_media	stock media	3
+enwiki-h3-0022	enwiki	category_dag	690747	Mathematics	51270028	Awards_and_prizes_of_the_Association_for_Women_in_Mathematics	awards and prizes of the association for women in mathematics	690747	Mathematics	mathematics	3
+enwiki-h3-0023	enwiki	category_dag	696603	Nature	30994459	Community_gardening	community gardening	696603	Nature	nature	3
+enwiki-h3-0024	enwiki	category_dag	691008	People	75554042	John_James_Audubon	john james audubon	691008	People	people	3
+enwiki-h3-0025	enwiki	category_dag	691810	Philosophy	52579201	Ancient_Greek_philosophers_of_language	ancient greek philosophers of language	2016110	History_of_logic	history of logic	3
+enwiki-h3-0026	enwiki	category_dag	692694	Religion	53595198	Christianity-related_lists_of_superlatives	christianity-related lists of superlatives	692694	Religion	religion	3
+enwiki-h3-0027	enwiki	category_dag	691182	Science	50836823	Subtraction	subtraction	3674304	Scientific_terminology	scientific terminology	3
+enwiki-h3-0028	enwiki	category_dag	1633936	Society	71777427	Pre-Columbian_civilizations	pre-columbian civilizations	1633936	Society	society	3
+enwiki-h3-0029	enwiki	category_dag	696648	Technology	70286432	Electrical_safety_standards_organizations	electrical safety standards organizations	696648	Technology	technology	3
+enwiki-h3-0030	enwiki	category_dag	48005914	Universe	36217605	Cosmology_books	cosmology books	48005914	Universe	universe	3
+enwiki-h3-0031	enwiki	category_dag	693763	Academic_disciplines	41637439	Former_medical_research_facilities_of_the_United_States_Army	former medical research facilities of the united states army	707333	History_of_science	history of science	3
+enwiki-h3-0032	enwiki	category_dag	737037	Behavior	72614371	Oneirologists	oneirologists	910767	Sleep	sleep	3
+enwiki-h3-0033	enwiki	category_dag	771152	Business	37559651	Vancouver_Whitecaps_(1974–1984)_coaches	vancouver whitecaps (1974–1984) coaches	78546757	Canadian_soccer_clubs_in_American_leagues	canadian soccer clubs in american leagues	3
+enwiki-h3-0034	enwiki	category_dag	709243	Communication	4166442	Mountain_meteorology	mountain meteorology	54039168	Feedback	feedback	3
+enwiki-h3-0035	enwiki	category_dag	24980271	Concepts	10939195	Systems	systems	24980271	Concepts	concepts	3
+enwiki-h3-0036	enwiki	category_dag	694861	Culture	1600172	Oaths	oaths	694861	Culture	culture	3
+enwiki-h3-0037	enwiki	category_dag	47397287	Economy	22374294	Visual_arts_publishing_companies	visual arts publishing companies	6649447	Cultural_economics	cultural economics	3
+enwiki-h3-0038	enwiki	category_dag	696763	Education	79726393	Academic_freedom_case_law	academic freedom case law	696763	Education	education	3
+enwiki-h3-0039	enwiki	category_dag	865456	Energy	50920954	Energy_production_in_Asia	energy production in asia	865456	Energy	energy	3
+enwiki-h3-0040	enwiki	category_dag	692903	Engineering	78421391	American_women_electrical_engineers	american women electrical engineers	32651224	Women_in_engineering	women in engineering	3
+enwiki-h3-0041	enwiki	category_dag	60023454	Entities	58444296	Free_software_project_foundations_based_in_the_United_States	free software project foundations based in the united states	1274414	Foundations	foundations	3
+enwiki-h3-0042	enwiki	category_dag	694860	Food_and_drink	54965224	Jewish_agrarian_laws	jewish agrarian laws	694860	Food_and_drink	food and drink	3
+enwiki-h3-0043	enwiki	category_dag	693800	Geography	61766199	Maritime_timelines	maritime timelines	693800	Geography	geography	3
+enwiki-h3-0044	enwiki	category_dag	751381	Health	27913326	Dental_enamel	dental enamel	38173171	Medical_terminology	medical terminology	3
+enwiki-h3-0045	enwiki	category_dag	693555	History	74134279	Temple_of_Artemis	temple of artemis	9907663	Heritage_registers	heritage registers	3
+enwiki-h3-0046	enwiki	category_dag	1004110	Humanities	58187963	Social_problems_in_medicine	social problems in medicine	1004110	Humanities	humanities	3
+enwiki-h3-0047	enwiki	category_dag	1009209	Information	34875542	Clinical_data_management	clinical data management	1009209	Information	information	3
+enwiki-h3-0048	enwiki	category_dag	700914	Knowledge	47626893	Apollo_in_art	apollo in art	709152	Knowledge_deities	knowledge deities	3
+enwiki-h3-0049	enwiki	category_dag	8017451	Language	10752808	Spelling_reform	spelling reform	8017451	Language	language	3
+enwiki-h4-0000	enwiki	category_dag	693763	Academic_disciplines	66348877	Demographics_indicators	demographics indicators	691182	Science	science	4
+enwiki-h4-0001	enwiki	category_dag	737037	Behavior	46591830	Esports_films	esports films	737037	Behavior	behavior	4
+enwiki-h4-0002	enwiki	category_dag	771152	Business	26518822	Survey_methodologists	survey methodologists	771152	Business	business	4
+enwiki-h4-0003	enwiki	category_dag	709243	Communication	33299917	1970s_United_States_command_and_control_aircraft	1970s united states command and control aircraft	709243	Communication	communication	4
+enwiki-h4-0004	enwiki	category_dag	24980271	Concepts	11159030	Eurabia_conspiracy_theory	eurabia conspiracy theory	24980271	Concepts	concepts	4
+enwiki-h4-0005	enwiki	category_dag	694861	Culture	38052934	OpenOffice	openoffice	694861	Culture	culture	4
+enwiki-h4-0006	enwiki	category_dag	47397287	Economy	57324496	Lists_of_telecommunications_companies	lists of telecommunications companies	47397287	Economy	economy	4
+enwiki-h4-0007	enwiki	category_dag	696763	Education	6895846	Balamory	balamory	12094024	Early_childhood_education	early childhood education	4
+enwiki-h4-0008	enwiki	category_dag	865456	Energy	15722876	Carts	carts	12893848	Energetic_materials	energetic materials	4
+enwiki-h4-0009	enwiki	category_dag	60023454	Entities	34625653	URL	url	60023454	Entities	entities	4
+enwiki-h4-0010	enwiki	category_dag	697609	Government	33775486	Age_of_Enlightenment	age of enlightenment	697609	Government	government	4
+enwiki-h4-0011	enwiki	category_dag	693555	History	50159885	Thanksgiving_(United_States)	thanksgiving (united states)	3287927	Days_of_the_week	days of the week	4
+enwiki-h4-0012	enwiki	category_dag	1009209	Information	43314346	3D_printer_companies	3d printer companies	2978151	Information_systems	information systems	4
+enwiki-h4-0013	enwiki	category_dag	700914	Knowledge	75983001	Algebraic_identities	algebraic identities	51600594	Decision-making	decision-making	4
+enwiki-h4-0014	enwiki	category_dag	8017451	Language	1249335	Samoyedic_languages	samoyedic languages	8017451	Language	language	4
+enwiki-h4-0015	enwiki	category_dag	2389032	Life	71710645	Deep_learning_software_applications	deep learning software applications	4289067	Computational_neuroscience	computational neuroscience	4
+enwiki-h4-0016	enwiki	category_dag	691008	People	51107408	Biographical_graphic_novels	biographical graphic novels	691008	People	people	4
+enwiki-h4-0017	enwiki	category_dag	691810	Philosophy	33070115	Ancient_physicists	ancient physicists	691810	Philosophy	philosophy	4
+enwiki-h4-0018	enwiki	category_dag	695027	Politics	36981703	Hunger_relief_organizations	hunger relief organizations	695027	Politics	politics	4
+enwiki-h4-0019	enwiki	category_dag	692694	Religion	76016008	Tarmidas	tarmidas	692694	Religion	religion	4
+enwiki-h4-0020	enwiki	category_dag	691182	Science	82115954	INHIGEO_members	inhigeo members	691182	Science	science	4
+enwiki-h4-0021	enwiki	category_dag	1633936	Society	45099010	Rural_communities_in_New_Brunswick	rural communities in new brunswick	1633936	Society	society	4
+enwiki-h4-0022	enwiki	category_dag	696648	Technology	65639428	World_War_II_propaganda_radio_stations	world war ii propaganda radio stations	47642171	Science_and_technology	science and technology	4
+enwiki-h4-0023	enwiki	category_dag	744728	Time	58297797	Saint_George's_Day	saint george's day	744728	Time	time	4
+enwiki-h4-0024	enwiki	category_dag	48005914	Universe	18420851	Silver_objects	silver objects	48005914	Universe	universe	4
+enwiki-h4-0025	enwiki	category_dag	737037	Behavior	74447671	Are_You_Afraid_of_the_Dark?_episode_redirects_to_lists	are you afraid of the dark? episode redirects to lists	910767	Sleep	sleep	4
+enwiki-h4-0026	enwiki	category_dag	709243	Communication	35112647	Defunct_telecommunications_companies_of_the_United_Kingdom	defunct telecommunications companies of the united kingdom	709243	Communication	communication	4
+enwiki-h4-0027	enwiki	category_dag	24980271	Concepts	1232310	Customer_experience	customer experience	24980271	Concepts	concepts	4
+enwiki-h4-0028	enwiki	category_dag	47397287	Economy	77518733	National_Farmers'_Union_of_England_and_Wales_officials	national farmers' union of england and wales officials	937845	Employers'_organizations	employers' organizations	4
+enwiki-h4-0029	enwiki	category_dag	696763	Education	71241614	Films_set_in_Columbia_University	films set in columbia university	696763	Education	education	4
+enwiki-h4-0030	enwiki	category_dag	60023454	Entities	64473822	Defunct_airports_in_Finland	defunct airports in finland	9074974	Former_entities	former entities	4
+enwiki-h4-0031	enwiki	category_dag	693800	Geography	70520026	Southern_Andean_Yungas	southern andean yungas	44465360	Geographical_zones	geographical zones	4
+enwiki-h4-0032	enwiki	category_dag	697609	Government	17646733	Laws_of_Shabbat	laws of shabbat	697609	Government	government	4
+enwiki-h4-0033	enwiki	category_dag	751381	Health	59772834	Ultra-distance_cyclists	ultra-distance cyclists	57502439	Physical_fitness	physical fitness	4
+enwiki-h4-0034	enwiki	category_dag	693555	History	37964642	Disasters_in_Niue	disasters in niue	693555	History	history	4
+enwiki-h4-0035	enwiki	category_dag	1009209	Information	76475541	People_named_in_the_Offshore_Leaks_report	people named in the offshore leaks report	16989227	Data	data	4
+enwiki-h4-0036	enwiki	category_dag	700914	Knowledge	82274335	Directors_of_the_National_Institute_of_Allergy_and_Infectious_Diseases	directors of the national institute of allergy and infectious diseases	1395115	Research	research	4
+enwiki-h4-0037	enwiki	category_dag	8017451	Language	36794168	Free_speech_synthesis_software	free speech synthesis software	14285085	Speech–language_pathology	speech–language pathology	4
+enwiki-h4-0038	enwiki	category_dag	696790	Mass_media	71976569	Nazi_propaganda_radio	nazi propaganda radio	696790	Mass_media	mass media	4
+enwiki-h4-0039	enwiki	category_dag	690747	Mathematics	63512391	People_from_Želino_Municipality	people from želino municipality	65542683	Statistical_regions	statistical regions	4
+enwiki-h4-0040	enwiki	category_dag	696603	Nature	7481631	Mitochondrial_diseases	mitochondrial diseases	18835615	Natural_events	natural events	4
+enwiki-h4-0041	enwiki	category_dag	691810	Philosophy	70704929	Bertrand_Russell_Professors_of_Philosophy	bertrand russell professors of philosophy	691810	Philosophy	philosophy	4
+enwiki-h4-0042	enwiki	category_dag	1633936	Society	25412596	Linguistic_history_of_Pakistan	linguistic history of pakistan	4831571	Social_history	social history	4
+enwiki-h4-0043	enwiki	category_dag	744728	Time	60506202	Burned_buildings_and_structures_in_China	burned buildings and structures in china	35054847	Disestablishments	disestablishments	4
+enwiki-h4-0044	enwiki	category_dag	48005914	Universe	41044196	Dolmens_in_the_United_Kingdom	dolmens in the united kingdom	22037957	Physical_objects	physical objects	4
+enwiki-h4-0045	enwiki	category_dag	693763	Academic_disciplines	76700750	Mathematics_curricula_in_the_United_States	mathematics curricula in the united states	76025994	Pedagogical_disciplines	pedagogical disciplines	4
+enwiki-h4-0046	enwiki	category_dag	737037	Behavior	34607748	Bird_sonation	bird sonation	737037	Behavior	behavior	4
+enwiki-h4-0047	enwiki	category_dag	709243	Communication	33710294	Music_sequencers	music sequencers	709243	Communication	communication	4
+enwiki-h4-0048	enwiki	category_dag	24980271	Concepts	23787033	Epithets_of_Hecate	epithets of hecate	6596457	Classical_elements	classical elements	4
+enwiki-h4-0049	enwiki	category_dag	694861	Culture	43051319	Kyiv_National_I._K._Karpenko-Kary_Theatre,_Cinema_and_Television_University	kyiv national i. k. karpenko-kary theatre, cinema and television university	694861	Culture	culture	4
+enwiki-h5-0000	enwiki	category_dag	694861	Culture	63050636	Alumni_of_the_European_Schools	alumni of the european schools	54239032	Cultural_policy	cultural policy	5
+enwiki-h5-0001	enwiki	category_dag	60023454	Entities	692694	Religion	religion	60023454	Entities	entities	5
+enwiki-h5-0002	enwiki	category_dag	751381	Health	22872061	Danish_medical_researchers	danish medical researchers	751381	Health	health	5
+enwiki-h5-0003	enwiki	category_dag	700914	Knowledge	74000184	Children's_books_about_fairies	children's books about fairies	36224853	Sociology_of_knowledge	sociology of knowledge	5
+enwiki-h5-0004	enwiki	category_dag	691928	Law	62468818	Television_series_about_abuse	television series about abuse	691928	Law	law	5
+enwiki-h5-0005	enwiki	category_dag	696790	Mass_media	51519177	Australian_children's_radio_programs	australian children's radio programs	696790	Mass_media	mass media	5
+enwiki-h5-0006	enwiki	category_dag	690747	Mathematics	74700081	Curvature_tensors	curvature tensors	2301927	Differential_calculus	differential calculus	5
+enwiki-h5-0007	enwiki	category_dag	695027	Politics	40601713	Border_barriers	border barriers	695027	Politics	politics	5
+enwiki-h5-0008	enwiki	category_dag	691182	Science	77940553	Environmental_racism_in_the_United_States	environmental racism in the united states	691182	Science	science	5
+enwiki-h5-0009	enwiki	category_dag	744728	Time	37132964	Text_publication_societies	text publication societies	744728	Time	time	5
+enwiki-h5-0010	enwiki	category_dag	48005914	Universe	61963629	Serapeum	serapeum	894849	Cosmology	cosmology	5
+enwiki-h5-0011	enwiki	category_dag	737037	Behavior	68303191	Cultural_depictions_of_Alice_Liddell	cultural depictions of alice liddell	737037	Behavior	behavior	5
+enwiki-h5-0012	enwiki	category_dag	709243	Communication	18253615	Michael_Bloomberg	michael bloomberg	709243	Communication	communication	5
+enwiki-h5-0013	enwiki	category_dag	694861	Culture	47246961	Germany_at_the_1938_FIFA_World_Cup	germany at the 1938 fifa world cup	23508439	Cultural_exchange	cultural exchange	5
+enwiki-h5-0014	enwiki	category_dag	696763	Education	73741572	Musicals_set_at_parties	musicals set at parties	4174841	Students	students	5
+enwiki-h5-0015	enwiki	category_dag	865456	Energy	32295909	Documentary_films_about_peak_oil	documentary films about peak oil	865456	Energy	energy	5
+enwiki-h5-0016	enwiki	category_dag	60023454	Entities	45205698	Women_video_game_designers	women video game designers	5183917	Structure	structure	5
+enwiki-h5-0017	enwiki	category_dag	693800	Geography	36091943	Novels_set_in_Lagos	novels set in lagos	693800	Geography	geography	5
+enwiki-h5-0018	enwiki	category_dag	700914	Knowledge	8876046	People_of_the_Albigensian_Crusade	people of the albigensian crusade	700914	Knowledge	knowledge	5
+enwiki-h5-0019	enwiki	category_dag	8017451	Language	16690063	Theodicy	theodicy	13887504	Statements	statements	5
+enwiki-h5-0020	enwiki	category_dag	691928	Law	59106244	Croatian_judges_of_international_courts_and_tribunals	croatian judges of international courts and tribunals	4153592	Legal_systems	legal systems	5
+enwiki-h5-0021	enwiki	category_dag	696790	Mass_media	43599513	British_Christian_hymns	british christian hymns	34113453	Poetry_about_spirituality	poetry about spirituality	5
+enwiki-h5-0022	enwiki	category_dag	690747	Mathematics	38942767	Olivetti_products	olivetti products	838036	Mathematical_tools	mathematical tools	5
+enwiki-h5-0023	enwiki	category_dag	691008	People	76706894	Depictions_of_Grand_Duchess_Anastasia_Nikolaevna_of_Russia_on_film	depictions of grand duchess anastasia nikolaevna of russia on film	31041500	Christian_monarchs	christian monarchs	5
+enwiki-h5-0024	enwiki	category_dag	1633936	Society	40150591	20th-century_disestablishments_in_Newfoundland	20th-century disestablishments in newfoundland	944455	Former_monarchies	former monarchies	5
+enwiki-h5-0025	enwiki	category_dag	744728	Time	50801248	Parental_leave_in_the_United_States	parental leave in the united states	28085738	Time_management	time management	5
+enwiki-h5-0026	enwiki	category_dag	694861	Culture	33738135	Live_albums_recorded_at_the_Royal_Albert_Hall	live albums recorded at the royal albert hall	71331132	Venues	venues	5
+enwiki-h5-0027	enwiki	category_dag	47397287	Economy	61510163	Software_that_uses_VTK	software that uses vtk	47397287	Economy	economy	5
+enwiki-h5-0028	enwiki	category_dag	60023454	Entities	34357718	Former_subdivisions_of_Canada	former subdivisions of canada	41729540	Territorial_entities	territorial entities	5
+enwiki-h5-0029	enwiki	category_dag	693800	Geography	4047438	Seafaring_films	seafaring films	48925265	Works_about_geography	works about geography	5
+enwiki-h5-0030	enwiki	category_dag	751381	Health	21111942	Documentary_films_about_drugs	documentary films about drugs	751381	Health	health	5
+enwiki-h5-0031	enwiki	category_dag	700914	Knowledge	63982587	Easter_egg_(media)	easter egg (media)	1215520	Sociology_of_scientific_knowledge	sociology of scientific knowledge	5
+enwiki-h5-0032	enwiki	category_dag	691928	Law	61302444	Clerks_of_the_New_Zealand_House_of_Representatives	clerks of the new zealand house of representatives	691928	Law	law	5
+enwiki-h5-0033	enwiki	category_dag	2389032	Life	80072806	1970s_murders_in_El_Salvador	1970s murders in el salvador	921954	Death	death	5
+enwiki-h5-0034	enwiki	category_dag	696603	Nature	77651568	Power_outages_in_North_America	power outages in north america	16305327	Power_control	power control	5
+enwiki-h5-0035	enwiki	category_dag	692694	Religion	24525232	Converts_to_the_Bahá'i_Faith_from_Protestantism	converts to the bahá'i faith from protestantism	1883977	Religion_and_society	religion and society	5
+enwiki-h5-0036	enwiki	category_dag	1633936	Society	35870304	Crucifixion_of_Jesus_in_art	crucifixion of jesus in art	1633936	Society	society	5
+enwiki-h5-0037	enwiki	category_dag	693763	Academic_disciplines	75226508	21st-century_Indian_women_educational_theorists	21st-century indian women educational theorists	70318517	Education_studies	education studies	5
+enwiki-h5-0038	enwiki	category_dag	24980271	Concepts	34232097	Films_based_on_Persuasion_(novel)	films based on persuasion (novel)	51137756	Change	change	5
+enwiki-h5-0039	enwiki	category_dag	47397287	Economy	24111984	High-technology_business_districts_in_Chennai	high-technology business districts in chennai	47397287	Economy	economy	5
+enwiki-h5-0040	enwiki	category_dag	693800	Geography	52239583	Birds_of_the_Yungas	birds of the yungas	53137668	Geographic_classifications	geographic classifications	5
+enwiki-h5-0041	enwiki	category_dag	751381	Health	55129602	Parasitic_nematodes_of_tetrapods	parasitic nematodes of tetrapods	751381	Health	health	5
+enwiki-h5-0042	enwiki	category_dag	693555	History	31856034	Beer_Hall_Putsch_participants	beer hall putsch participants	895940	Historiography	historiography	5
+enwiki-h5-0043	enwiki	category_dag	700914	Knowledge	52547299	Plant_nothogenera	plant nothogenera	700905	Procedural_knowledge	procedural knowledge	5
+enwiki-h5-0044	enwiki	category_dag	8017451	Language	67086452	Scholars_of_Syriac_Christianity	scholars of syriac christianity	8017451	Language	language	5
+enwiki-h5-0045	enwiki	category_dag	2389032	Life	20029087	Apocarotenoids	apocarotenoids	33118759	Hypothetical_life_forms	hypothetical life forms	5
+enwiki-h5-0046	enwiki	category_dag	696603	Nature	29849723	Flavonol_glycosides	flavonol glycosides	933036	Glycosides	glycosides	5
+enwiki-h5-0047	enwiki	category_dag	695027	Politics	63795697	20th-century_women_MEPs_for_Greece	20th-century women meps for greece	8575650	Politics_of_the_European_Union	politics of the european union	5
+enwiki-h5-0048	enwiki	category_dag	692694	Religion	8875398	Sculptures_of_Hermes	sculptures of hermes	69291147	Dreams_in_religion	dreams in religion	5
+enwiki-h5-0049	enwiki	category_dag	691182	Science	40888943	Jewish_Canadian_sociologists	jewish canadian sociologists	694953	Scientists	scientists	5

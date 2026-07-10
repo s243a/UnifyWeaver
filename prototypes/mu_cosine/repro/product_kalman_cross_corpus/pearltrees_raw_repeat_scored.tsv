@@ -1,0 +1,54 @@
+# node	root	cur_rel	neighborhood	judge	P[element_of]	P[subcategory]	P[subtopic]	P[super_category]	P[see_also]	P[assoc]	P[unknown]	P[none]	mu[element_of]	mu[subcategory]	mu[subtopic]	mu[super_category]	mu[see_also]	mu[assoc]	mu[unknown]	mu[none]	E_mu_fwd	E_mu_rev
+Anti-Democractic Think Tank Positions	Power & Motivation (Political Philosophy)	subtopic	principal_h1	gpt-5.5-low	0.059	0.147	0.353	0.029	0.088	0.206	0.059	0.059	0.100	0.250	0.550	0.000	0.150	0.350	0.100	0.000	0.328	0.110
+Holonomic system	Constraints (Clasical Mechanics)	subtopic	principal_h1	gpt-5.5-low	0.115	0.207	0.392	0.023	0.092	0.138	0.023	0.009	0.250	0.450	0.850	0.000	0.200	0.300	0.050	0.000	0.516	0.106
+We the corperations	Byfracating legislation & lichpins	subtopic	principal_h1	gpt-5.5-low	0.073	0.098	0.268	0.024	0.098	0.268	0.098	0.073	0.150	0.200	0.550	0.000	0.200	0.550	0.200	0.000	0.365	0.193
+news.EFF.Patent	Intelectual Property	subtopic	principal_h1	gpt-5.5-low	0.066	0.154	0.351	0.022	0.132	0.219	0.044	0.013	0.150	0.350	0.800	0.000	0.300	0.500	0.100	0.000	0.498	0.172
+Criticism of relegion	Relegion	subtopic	principal_h1	gpt-5.5-low	0.025	0.126	0.455	0.010	0.126	0.227	0.025	0.005	0.050	0.250	0.900	0.000	0.250	0.450	0.050	0.000	0.577	0.159
+Symbols of Satinism (Documentary)	eyes-symbols-history-s243a	subtopic	principal_h1	gpt-5.5-low	0.205	0.068	0.250	0.009	0.159	0.205	0.068	0.036	0.450	0.150	0.550	0.000	0.350	0.450	0.150	0.000	0.398	0.164
+MPs (Canadian Politicans)	Canadian Politicians	subtopic	principal_h1	gpt-5.5-low	0.100	0.319	0.299	0.020	0.139	0.100	0.020	0.004	0.250	0.800	0.750	0.000	0.350	0.250	0.050	0.000	0.579	0.102
+Acountability	Social Forces	subtopic	principal_h1	gpt-5.5-low	0.027	0.081	0.270	0.027	0.108	0.297	0.108	0.081	0.050	0.150	0.500	0.050	0.200	0.550	0.200	0.000	0.357	0.212
+The Afganastan Media	Media in _ country	subtopic	principal_h1	gpt-5.5-low	0.101	0.263	0.344	0.020	0.121	0.121	0.020	0.008	0.250	0.650	0.850	0.000	0.300	0.300	0.050	0.000	0.563	0.098
+The MOVE bombing	The Militerization of the Police	subtopic	principal_h1	gpt-5.5-low	0.187	0.062	0.311	0.012	0.145	0.228	0.041	0.012	0.450	0.150	0.750	0.000	0.350	0.550	0.100	0.000	0.507	0.195
+Constraints (Clasical Mechanics)	Physics	subtopic	principal_h2	gpt-5.5-low	0.226	0.126	0.452	0.010	0.025	0.126	0.025	0.010	0.350	0.150	0.900	0.000	0.050	0.300	0.050	0.000	0.545	0.054
+Business process	Acounting	subtopic	principal_h2	gpt-5.5-low	0.044	0.082	0.302	0.044	0.066	0.330	0.066	0.066	0.050	0.100	0.450	0.050	0.100	0.550	0.100	0.000	0.343	0.217
+Intelectual Property	copyright	subtopic	principal_h2	gpt-5.5-low	0.011	0.016	0.134	0.481	0.134	0.187	0.027	0.011	0.000	0.000	0.150	0.850	0.200	0.350	0.050	0.000	0.523	0.201
+adiction	Political Psycology	subtopic	principal_h2	gpt-5.5-low	0.016	0.033	0.179	0.016	0.033	0.341	0.098	0.285	0.000	0.020	0.150	0.000	0.030	0.350	0.080	0.000	0.156	0.126
+Culture (Sociology)	Relegion	subtopic	principal_h2	gpt-5.5-low	0.009	0.013	0.215	0.300	0.129	0.279	0.043	0.013	0.000	0.000	0.350	0.650	0.250	0.600	0.080	0.000	0.473	0.322
+Symbols of Satinism (Documentary)	symbols-history	subtopic	principal_h2	gpt-5.5-low	0.073	0.039	0.341	0.010	0.195	0.244	0.059	0.039	0.100	0.050	0.650	0.000	0.350	0.450	0.100	0.000	0.415	0.198
+1984 immages	Collective Moods & dispositions	subtopic	principal_h2	gpt-5.5-low	0.029	0.029	0.206	0.015	0.059	0.309	0.132	0.221	0.020	0.020	0.200	0.000	0.060	0.350	0.150	0.000	0.174	0.123
+Blaming the Victum	philosophy	subtopic	principal_h2	gpt-5.5-low	0.025	0.050	0.342	0.012	0.093	0.311	0.093	0.075	0.020	0.050	0.450	0.000	0.120	0.450	0.120	0.000	0.319	0.161
+The Militerization of the Police	The Dividing of People's with lines on the map	subtopic	principal_h2	gpt-5.5-low	0.014	0.028	0.222	0.014	0.069	0.333	0.125	0.194	0.000	0.020	0.250	0.000	0.080	0.400	0.150	0.000	0.214	0.150
+Electricity & Magnitism (Physics)	Antenna	subtopic	principal_h2	gpt-5.5-low	0.010	0.010	0.040	0.452	0.151	0.302	0.025	0.010	0.000	0.000	0.050	0.850	0.250	0.550	0.050	0.000	0.591	0.231
+Managerial Science	Acounting	subtopic	principal_h2	gpt-5.5-low	0.051	0.077	0.231	0.051	0.128	0.333	0.051	0.077	0.050	0.100	0.350	0.050	0.200	0.550	0.100	0.000	0.308	0.233
+news.EFF.Patent	Copyright & Free Speach	subtopic	principal_h2	gpt-5.5-low	0.043	0.130	0.283	0.022	0.196	0.261	0.043	0.022	0.050	0.200	0.550	0.000	0.350	0.550	0.100	0.000	0.400	0.230
+The Crises in Democarcy	Literary Portrayals of Totalitarianism	subtopic	principal_h3	gpt-5.5-low	0.119	0.048	0.262	0.024	0.190	0.238	0.071	0.048	0.200	0.050	0.450	0.000	0.350	0.450	0.150	0.000	0.329	0.192
+Criticism of relegion	History by Region / place	subtopic	principal_h3	gpt-5.5-low	0.034	0.069	0.103	0.034	0.069	0.241	0.138	0.310	0.000	0.050	0.100	0.000	0.050	0.250	0.150	0.000	0.098	0.072
+Cynacism on Justice & Inequality	s243a-cynicism	subtopic	principal_h3	gpt-5.5-low	0.147	0.179	0.277	0.016	0.163	0.179	0.033	0.007	0.350	0.450	0.750	0.000	0.450	0.500	0.100	0.000	0.506	0.182
+Arthur Schopenhauer	Intelectuals & Notable Non-Fiction Writers	subtopic	principal_h3	gpt-5.5-low	0.408	0.021	0.236	0.009	0.129	0.172	0.021	0.004	0.900	0.050	0.450	0.000	0.250	0.350	0.050	0.000	0.568	0.093
+transparancy	Illusions	subtopic	principal_h3	gpt-5.5-low	0.056	0.083	0.194	0.028	0.111	0.250	0.139	0.139	0.050	0.100	0.250	0.000	0.150	0.350	0.200	0.000	0.192	0.131
+Constraints (Clasical Mechanics)	Electricity & Magnitism (Physics)	subtopic	principal_h3	gpt-5.5-low	0.057	0.057	0.200	0.029	0.114	0.371	0.086	0.086	0.050	0.050	0.250	0.000	0.150	0.550	0.150	0.000	0.290	0.237
+Dec 9, 2013 Standford pres Bitcoin, Bobby C. Lee, BTC China	Bitcoin 2.0	subtopic	principal_h3	gpt-5.5-low	0.232	0.036	0.268	0.007	0.196	0.214	0.036	0.011	0.550	0.050	0.650	0.000	0.450	0.550	0.100	0.000	0.513	0.222
+Monsto's connections	Corruption & Retribution	subtopic	principal_h3	gpt-5.5-low	0.087	0.065	0.196	0.022	0.152	0.261	0.130	0.087	0.150	0.100	0.350	0.000	0.250	0.500	0.250	0.000	0.289	0.192
+George Wilhelm Fredrich Hegel	Intelectuals & Notable Non-Fiction Writers	subtopic	principal_h3	gpt-5.5-low	0.337	0.131	0.243	0.019	0.075	0.169	0.019	0.007	0.850	0.250	0.550	0.010	0.150	0.350	0.050	0.000	0.525	0.087
+The Crises in Democarcy	Animal Farm	subtopic	principal_h4	gpt-5.5-low	0.043	0.016	0.241	0.016	0.187	0.294	0.107	0.096	0.050	0.020	0.350	0.010	0.250	0.450	0.150	0.000	0.282	0.208
+Alcohol	Relegion	subtopic	principal_h4	gpt-5.5-low	0.045	0.067	0.251	0.022	0.101	0.363	0.084	0.067	0.050	0.080	0.350	0.020	0.120	0.550	0.120	0.000	0.318	0.227
+LOGO	Net Nutrality and Society	subtopic	principal_h4	gpt-5.5-low	0.033	0.026	0.079	0.013	0.119	0.265	0.166	0.298	0.030	0.020	0.080	0.010	0.120	0.300	0.180	0.000	0.132	0.109
+Ukrain	History by Region / place	subtopic	principal_h4	gpt-5.5-low	0.169	0.244	0.308	0.019	0.056	0.169	0.023	0.011	0.350	0.550	0.750	0.010	0.100	0.350	0.050	0.000	0.491	0.082
+Constraints (Clasical Mechanics)	Signals & communication	subtopic	principal_h4	gpt-5.5-low	0.023	0.039	0.094	0.016	0.062	0.195	0.141	0.430	0.020	0.030	0.080	0.010	0.050	0.180	0.120	0.000	0.064	0.046
+Showtime	Net Nutrality and Society	subtopic	principal_h4	gpt-5.5-low	0.027	0.020	0.120	0.013	0.120	0.300	0.147	0.253	0.030	0.020	0.120	0.010	0.120	0.350	0.150	0.000	0.157	0.130
+Holonomic system	Electricity & Magnitism (Physics)	subtopic	principal_h4	gpt-5.5-low	0.022	0.045	0.134	0.022	0.060	0.224	0.134	0.358	0.020	0.040	0.120	0.010	0.050	0.220	0.120	0.000	0.087	0.060
+Miss Representation	Relegion	subtopic	principal_h4	gpt-5.5-low	0.024	0.016	0.065	0.016	0.065	0.202	0.145	0.468	0.020	0.010	0.050	0.010	0.050	0.180	0.120	0.000	0.061	0.047
+Symbols of Satinism (Documentary)	history	subtopic	principal_h4	gpt-5.5-low	0.072	0.036	0.299	0.018	0.090	0.269	0.096	0.120	0.080	0.040	0.400	0.010	0.100	0.350	0.120	0.000	0.242	0.116
+Constraints (Clasical Mechanics)	Antenna	subtopic	principal_h5	gpt-5.5-low	0.019	0.019	0.046	0.009	0.028	0.111	0.074	0.694	0.010	0.010	0.030	0.000	0.020	0.080	0.050	0.000	0.015	0.011
+Corporate Facism	philosophy	subtopic	principal_h5	gpt-5.5-low	0.064	0.203	0.321	0.011	0.080	0.214	0.064	0.043	0.080	0.350	0.550	0.000	0.120	0.350	0.080	0.000	0.342	0.092
+Books by Peter Kropotkin	Intelectuals & Notable Non-Fiction Writers	subtopic	principal_h5	gpt-5.5-low	0.227	0.103	0.281	0.004	0.132	0.207	0.033	0.012	0.550	0.220	0.650	0.000	0.280	0.450	0.060	0.000	0.462	0.136
+Money in Tennesse Politics	Illusions	subtopic	principal_h5	gpt-5.5-low	0.017	0.025	0.067	0.008	0.042	0.200	0.183	0.458	0.010	0.020	0.050	0.000	0.030	0.180	0.150	0.000	0.069	0.047
+Cynacism & History Sterotypes	eyes-symbols-history-s243a	subtopic	principal_h5	gpt-5.5-low	0.082	0.100	0.265	0.014	0.183	0.251	0.068	0.037	0.150	0.200	0.550	0.010	0.350	0.500	0.120	0.000	0.376	0.206
+Cynacism	wikis	subtopic	principal_h5	gpt-5.5-low	0.072	0.051	0.109	0.007	0.072	0.203	0.159	0.326	0.080	0.050	0.120	0.000	0.080	0.220	0.180	0.000	0.101	0.058
+The Phenomenology of Spirit, Hagel	people	subtopic	principal_h5	gpt-5.5-low	0.023	0.016	0.078	0.008	0.078	0.217	0.271	0.310	0.020	0.010	0.080	0.000	0.080	0.220	0.300	0.000	0.142	0.068
+Part 5 - Drone Nation (counter intellegence)	Social Media	subtopic	principal_h5	gpt-5.5-low	0.023	0.038	0.115	0.008	0.076	0.321	0.153	0.267	0.020	0.030	0.120	0.000	0.080	0.350	0.160	0.000	0.158	0.126
+The Isreal Palistine Conflict	History by Region / place	subtopic	principal_h5	gpt-5.5-low	0.092	0.200	0.325	0.008	0.133	0.208	0.025	0.008	0.180	0.450	0.750	0.000	0.280	0.450	0.050	0.000	0.483	0.138
+Symbols of Satinism (Documentary)	Mythology	subtopic	principal_h5	gpt-5.5-low	0.052	0.129	0.320	0.005	0.155	0.247	0.062	0.031	0.080	0.220	0.600	0.000	0.250	0.420	0.100	0.000	0.373	0.151
+Part 4 - IV - Necrophilous (Counter Intellegence)	Social Media	subtopic	principal_h5	gpt-5.5-low	0.023	0.015	0.137	0.008	0.092	0.344	0.191	0.191	0.020	0.010	0.120	0.000	0.080	0.350	0.200	0.000	0.183	0.137
+Transitions to Totalitarism	Political Philosophy	subtopic	principal_h5	gpt-5.5-low	0.029	0.172	0.417	0.025	0.098	0.196	0.049	0.015	0.050	0.250	0.750	0.000	0.150	0.350	0.080	0.000	0.444	0.086
+1984 immages	s243a-wikispaces	subtopic	principal_h5	gpt-5.5-low	0.306	0.067	0.194	0.017	0.083	0.167	0.111	0.056	0.450	0.080	0.250	0.000	0.100	0.250	0.150	0.000	0.258	0.054
