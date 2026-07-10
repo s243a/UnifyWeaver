@@ -115,3 +115,24 @@ than guess (variable-length cards are fine). (4) DECLARED vs MEASURED boundary: 
 identity (the prior); measured behavior (R, bias, format discipline) lives in calibration/R estimates (the
 posterior) and is NOT fed back into the identity embedding — that would create an identity-drift feedback loop.
 The residual embedding absorbs what the card doesn't know.
+
+## 6. Judge/source architecture migration — DEFERRED to B2, procedure documented now (user delegation)
+
+**Decision:** migrate the judge conditioning to the name-function WITH B2 (it touches `mu_attention.py` shared
+code and is effectively a training migration), not now. **Correction of the record:** the name-function was
+DESIGNED for functions/operators (`DESIGN_amortized_fusion_heads`) but never built — no migration has happened
+yet for any token type; what exists is the indexed-table EXPANSION procedure (JUDGES comment in mu_attention.py:
+zero-init rows, `num_embeddings >= 9` forward-compat; `load_expanded` in fine_tune_channel_heads.py).
+
+**The migration procedure (written now so it exists when B2 starts):**
+1. Compute cards for all existing judges (the schema above) and their e5 embeddings `e_j`.
+2. Add the name pathway: `cond_j = W·e_j + r_j` (`W` a learned d×d translation, `r_j` a per-judge residual row).
+3. **Behavior-preserving initialization (the key trick):** fit `W` by least squares over existing judges
+   (`min_W Σ‖W·e_j − judge_emb[j]‖²`), then set `r_j = judge_emb[j] − W·e_j` — the new pathway reproduces the
+   old rows EXACTLY at init. Zero behavior change, verifiable bit-wise by the channel-heads probe.
+4. New judges onboard with `r = 0` → pure name prior (luna starts as 0.97-of-gpt-5.5's calibration).
+5. Train under B2: `W` learns to amplify the calibration-relevant axes of name space; residuals learn only
+   per-judge deviations (regularize `‖r‖` toward 0 so the name prior remains the default).
+6. Acceptance: probe re-run — existing judges' readouts unchanged at init; after training, a held-out judge's
+   zero-residual readout should beat the old zero-init-row baseline (the transfer test).
+7. Same procedure applies verbatim to OPS (operators) and CORPORA when their turn comes — one mechanism.
