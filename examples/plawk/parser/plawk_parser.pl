@@ -886,6 +886,14 @@ action(Action) -->
 action(Action) -->
     dynrec_bind_action(Action),
     !.
+% for (k in arr) { ... } as a RULE-BODY action: per-record iteration
+% over an assoc table (e.g. one a grammar just populated via
+% `arr = dyncall@t($1) as assoc`), not just the END report. The body
+% grammar is shared with the END form; what compiles is gated by the
+% assoc-route codegen (a print body over the loop key / lookups).
+action(Action) -->
+    for_in_action(Action),
+    !.
 action(Action) -->
     add_assign_action(Action),
     !.

@@ -3112,12 +3112,37 @@ plawk_forin_assoc_plan(Rules, ArrayName, LookupArrays,
     RuleSpecs \== [],
     findall(RuleArrayName,
         ( member(rule(_Pattern, ActionSpecs, _Control), RuleSpecs),
-          member(RuleArrayName-_KeyIndex, ActionSpecs)
+          ( member(RuleArrayName-_KeyIndex, ActionSpecs)
+          ; member(dynassoc(RuleArrayName, _Call), ActionSpecs)
+          ; plawk_assoc_spec_forin_array(ActionSpecs, RuleArrayName)
+          )
         ),
         ActionArrays),
     append([ActionArrays, [ArrayName], LookupArrays], ArrayNames0),
     sort(ArrayNames0, Tables),
-    phrase(plawk_assoc_planned_rules(RuleSpecs, Tables, 0), PlannedRules).
+    plawk_assoc_specs_str_arrays(RuleSpecs, StrArrays),
+    phrase(plawk_assoc_planned_rules(RuleSpecs, Tables, StrArrays, 0),
+        PlannedRules).
+
+%% plawk_assoc_spec_forin_array(+ActionSpecs, -ArrayName)
+%  Arrays a rule-body for-in touches: the iterated table and every
+%  lookup array in its print fields -- all need table slots.
+plawk_assoc_spec_forin_array(ActionSpecs, ArrayName) :-
+    member(forin(_LoopVar, FA, FFields), ActionSpecs),
+    ( ArrayName = FA
+    ; member(assoc(var(ArrayName), var(_)), FFields)
+    ).
+
+%% plawk_assoc_specs_str_arrays(+RuleSpecs, -StrArrays)
+%  Names of tables populated through `as assoc(str)` binds -- their
+%  values are atom-registry ids, so for-in value reads resolve to text.
+plawk_assoc_specs_str_arrays(RuleSpecs, StrArrays) :-
+    findall(A,
+        ( member(rule(_P, ActionSpecs, _C), RuleSpecs),
+          member(dynassoc(A, str(_Call)), ActionSpecs)
+        ),
+        As0),
+    sort(As0, StrArrays).
 
 plawk_forin_print_field(LoopVar, var(LoopVar)).
 plawk_forin_print_field(LoopVar, assoc(var(_ArrayName), var(LoopVar))).
@@ -3757,7 +3782,10 @@ plawk_mixed_planned_rules([rule(Pattern, Actions) | Rest], assoc_plan(Tables, Ac
          NextIndex = Index,
          PlannedAssocActions = []
       ;  HasActions = true,
-         phrase(plawk_assoc_planned_actions(AssocSpecs, Tables, 0), PlannedAssocActions),
+         % the mixed route plans increment specs only (no dynassoc-str
+         % binds reach it), so the str-array set is empty here
+         phrase(plawk_assoc_planned_actions(AssocSpecs, Tables, [], 0),
+             PlannedAssocActions),
          NextIndex is Index + 1
       )
     },
@@ -3990,12 +4018,15 @@ plawk_assoc_runtime_count_plan(
         ( member(rule(_Pattern, ActionSpecs, _Control), RuleSpecs),
           ( member(ArrayName-_KeyIndex, ActionSpecs)
           ; member(dynassoc(ArrayName, _Call), ActionSpecs)
+          ; plawk_assoc_spec_forin_array(ActionSpecs, ArrayName)
           )
         ),
         ActionArrays),
     append(ActionArrays, PrintArrays, ArrayNames0),
     sort(ArrayNames0, Tables),
-    phrase(plawk_assoc_planned_rules(RuleSpecs, Tables, 0), PlannedRules).
+    plawk_assoc_specs_str_arrays(RuleSpecs, StrArrays),
+    phrase(plawk_assoc_planned_rules(RuleSpecs, Tables, StrArrays, 0),
+        PlannedRules).
 
 plawk_assoc_rule_controls(assoc_plan(_Tables, Rules), Controls) :-
     findall(Control, member(assoc_rule(_Index, _Pattern, _Actions, Control), Rules), Controls).
@@ -4029,6 +4060,16 @@ plawk_assoc_body_action_spec(dynassoc_bind(var(ArrayName), Call),
 plawk_assoc_body_action_spec(dynassoc_bind_str(var(ArrayName), Call),
         dynassoc(ArrayName, str(Call))) :-
     plawk_dynrec_call_ok(Call).
+% rule-body for-in: per-record iteration over an assoc table with a
+% print body -- the END for-in's field shapes (loop key / lookups keyed
+% by it / string literals), emitted as a loop inside the rule's action
+% chain. Field plans (table indexes, i64-vs-str value kinds) resolve at
+% planning time.
+plawk_assoc_body_action_spec(for_in(var(LoopVar), var(ArrayName), Body),
+        forin(LoopVar, ArrayName, Fields)) :-
+    Body = [print(Fields)],
+    Fields = [_ | _],
+    maplist(plawk_forin_print_field(LoopVar), Fields).
 
 plawk_assoc_increment_action(inc_assoc(var(ArrayName), field(KeyIndex)), ArrayName-KeyIndex) :-
     KeyIndex > 0.
@@ -4045,29 +4086,62 @@ plawk_assoc_blob_key_ok(Blob) :-
 plawk_assoc_print_array(assoc(var(ArrayName), string(_Key)), ArrayName).
 plawk_assoc_print_array(assoc(var(ArrayName), int(_Key)), ArrayName).
 
-plawk_assoc_planned_rules([], _Tables, _Index) -->
+plawk_assoc_planned_rules([], _Tables, _StrArrays, _Index) -->
     [].
-plawk_assoc_planned_rules([rule(Pattern, ActionSpecs, Control) | Rest], Tables, Index) -->
-    { phrase(plawk_assoc_planned_actions(ActionSpecs, Tables, 0), PlannedActions),
+plawk_assoc_planned_rules([rule(Pattern, ActionSpecs, Control) | Rest], Tables,
+        StrArrays, Index) -->
+    { phrase(plawk_assoc_planned_actions(ActionSpecs, Tables, StrArrays, 0),
+          PlannedActions),
       NextIndex is Index + 1
     },
     [assoc_rule(Index, Pattern, PlannedActions, Control)],
-    plawk_assoc_planned_rules(Rest, Tables, NextIndex).
+    plawk_assoc_planned_rules(Rest, Tables, StrArrays, NextIndex).
 
-plawk_assoc_planned_actions([], _Tables, _Index) -->
+plawk_assoc_planned_actions([], _Tables, _StrArrays, _Index) -->
     [].
-plawk_assoc_planned_actions([ArrayName-KeyIndex | Rest], Tables, Index) -->
+plawk_assoc_planned_actions([ArrayName-KeyIndex | Rest], Tables, StrArrays,
+        Index) -->
     { nth0(TableIndex, Tables, ArrayName),
       NextIndex is Index + 1
     },
     [assoc_action(Index, ArrayName, TableIndex, KeyIndex)],
-    plawk_assoc_planned_actions(Rest, Tables, NextIndex).
-plawk_assoc_planned_actions([dynassoc(ArrayName, Call) | Rest], Tables, Index) -->
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, NextIndex).
+plawk_assoc_planned_actions([dynassoc(ArrayName, Call) | Rest], Tables,
+        StrArrays, Index) -->
     { nth0(TableIndex, Tables, ArrayName),
       NextIndex is Index + 1
     },
     [assoc_dyn_action(Index, ArrayName, TableIndex, Call)],
-    plawk_assoc_planned_actions(Rest, Tables, NextIndex).
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, NextIndex).
+% rule-body for-in: resolve each print field to a plan (loop key /
+% iterated-table value / lookup by key / literal), with the value kind
+% (i64 vs str) baked in from the str-array set, so the emitter needs no
+% program context.
+plawk_assoc_planned_actions([forin(LoopVar, ArrayName, Fields) | Rest],
+        Tables, StrArrays, Index) -->
+    { nth0(TableIndex, Tables, ArrayName),
+      maplist(plawk_forin_rule_field_plan(LoopVar, ArrayName, TableIndex,
+          Tables, StrArrays), Fields, FieldPlans),
+      NextIndex is Index + 1
+    },
+    [assoc_forin_action(Index, TableIndex, FieldPlans)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, NextIndex).
+
+plawk_forin_rule_field_plan(LoopVar, _ArrayName, _TableIndex, _Tables,
+        _StrArrays, var(LoopVar), key) :- !.
+plawk_forin_rule_field_plan(LoopVar, ArrayName, TableIndex, _Tables,
+        StrArrays, assoc(var(ArrayName), var(LoopVar)),
+        value_self(TableIndex, Kind)) :-
+    !,
+    ( memberchk(ArrayName, StrArrays) -> Kind = str ; Kind = i64 ).
+plawk_forin_rule_field_plan(LoopVar, _ArrayName, _TableIndex, Tables,
+        StrArrays, assoc(var(LookupName), var(LoopVar)),
+        value_lookup(LookupIndex, Kind)) :-
+    !,
+    nth0(LookupIndex, Tables, LookupName),
+    ( memberchk(LookupName, StrArrays) -> Kind = str ; Kind = i64 ).
+plawk_forin_rule_field_plan(_LoopVar, _ArrayName, _TableIndex, _Tables,
+        _StrArrays, string(Value), lit(Value)).
 
 plawk_assoc_entry_setup_ir(assoc_plan(Tables, _Actions), IR) :-
     phrase(plawk_assoc_entry_setup_lines(Tables, 0), Lines),
@@ -4209,6 +4283,130 @@ plawk_assoc_rule_action_blocks(RuleIndex,
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% Rule-body for-in: a per-record loop over an assoc table's occupied
+% slots, printing the planned fields (loop key resolved to text, table
+% values numeric or str-resolved per the plan, literals) one line per
+% key -- the END for-in loop shape with rule/action-scoped labels so it
+% nests in the action chain. Literal-field constants ride the global
+% channel like blob-key marshals.
+plawk_assoc_rule_action_blocks(RuleIndex,
+        [assoc_forin_action(Index, TableIndex, FieldPlans) | Rest],
+        NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(B), 'arfi_~w_~w', [RuleIndex, Index]),
+      format(atom(HeadBr), '  br label %~w_head', [B]),
+      format(atom(HeadLbl), '~w_head:', [B]),
+      format(atom(Phi),
+          '  %~w_idx = phi i64 [0, %assoc_rule_~w_action_~w], [%~w_next, %~w_done]',
+          [B, RuleIndex, Index, B, B]),
+      format(atom(Slot),
+          '  %~w_slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_idx)',
+          [B, TableIndex, B]),
+      format(atom(DoneC), '  %~w_done_c = icmp slt i64 %~w_slot, 0', [B, B]),
+      format(atom(BrBody),
+          '  br i1 %~w_done_c, label %~w_after, label %~w_body', [B, B, B]),
+      format(atom(BodyLbl), '~w_body:', [B]),
+      format(atom(Key),
+          '  %~w_key = call i64 @wam_assoc_i64_key_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_slot)',
+          [B, TableIndex, B]),
+      phrase(plawk_forin_rule_field_lines(FieldPlans, B, 0), FieldLines),
+      format(atom(NL), '  %~w_nl = call i32 @putchar(i32 10)', [B]),
+      format(atom(BrDone), '  br label %~w_done', [B]),
+      format(atom(DoneLbl), '~w_done:', [B]),
+      format(atom(Next), '  %~w_next = add i64 %~w_slot, 1', [B, B]),
+      format(atom(BrHead), '  br label %~w_head', [B]),
+      format(atom(AfterLbl), '~w_after:', [B]),
+      format(atom(BrNext), '  br label %~w', [ActionNextLabel]),
+      append([[Label, HeadBr, '', HeadLbl, Phi, Slot, DoneC, BrBody, '',
+               BodyLbl, Key],
+              FieldLines,
+              [NL, BrDone, '', DoneLbl, Next, BrHead, '', AfterLbl, BrNext,
+               '']],
+          Lines)
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+
+plawk_forin_rule_field_lines([], _B, _N) -->
+    [].
+plawk_forin_rule_field_lines([Plan | Rest], B, N) -->
+    ( { N > 0 }
+    ->  { format(atom(Sep), '  %~w_sep_~w = call i32 @putchar(i32 32)',
+              [B, N]) },
+        [Sep]
+    ;   []
+    ),
+    plawk_forin_rule_field_value(Plan, B, N),
+    { N1 is N + 1 },
+    plawk_forin_rule_field_lines(Rest, B, N1).
+
+% loop key: a text-mode table key is a registry id -- resolve to text.
+plawk_forin_rule_field_value(key, B, N) -->
+    { format(atom(KeyS),
+          '  %~w_key_s_~w = call i8* @wam_atom_to_string(i64 %~w_key)',
+          [B, N, B]),
+      format(atom(FmtVar), '~w_key_fmt_~w', [B, N]),
+      format(atom(PrintVar), '~w_key_p_~w', [B, N]),
+      format(atom(PtrIR), '%~w_key_s_~w', [B, N]),
+      llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar,
+          PtrIR, [FmtPtr, PrintCall])
+    },
+    [KeyS, FmtPtr, PrintCall].
+plawk_forin_rule_field_value(value_self(TableIndex, Kind), B, N) -->
+    { format(atom(Value),
+          '  %~w_v_~w = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_slot)',
+          [B, N, TableIndex, B])
+    },
+    [Value],
+    plawk_forin_rule_value_print(Kind, B, N).
+plawk_forin_rule_field_value(value_lookup(LookupIndex, Kind), B, N) -->
+    { format(atom(Value),
+          '  %~w_v_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key)',
+          [B, N, LookupIndex, B])
+    },
+    [Value],
+    plawk_forin_rule_value_print(Kind, B, N).
+plawk_forin_rule_field_value(lit(Value), B, N) -->
+    { format(atom(GName), 'plawk_~w_lit_~w', [B, N]),
+      llvm_emit_c_string_global(GName, Value, Global, _StrLen, BytesLen),
+      format(atom(Ptr),
+          '  %~w_lit_~w = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+          [B, N, BytesLen, BytesLen, GName]),
+      format(atom(FmtVar), '~w_lit_fmt_~w', [B, N]),
+      format(atom(PrintVar), '~w_lit_p_~w', [B, N]),
+      format(atom(PtrIR), '%~w_lit_~w', [B, N]),
+      llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar,
+          PtrIR, [FmtPtr, PrintCall])
+    },
+    [global(Global), Ptr, FmtPtr, PrintCall].
+
+plawk_forin_rule_value_print(i64, B, N) -->
+    { format(atom(FmtVar), '~w_v_fmt_~w', [B, N]),
+      format(atom(PrintVar), '~w_v_p_~w', [B, N]),
+      format(atom(ValueIR), '%~w_v_~w', [B, N]),
+      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
+          ValueIR, [FmtPtr, PrintCall])
+    },
+    [FmtPtr, PrintCall].
+% str-valued table: the stored i64 is an atom-registry id.
+plawk_forin_rule_value_print(str, B, N) -->
+    { format(atom(ValueS),
+          '  %~w_vs_~w = call i8* @wam_atom_to_string(i64 %~w_v_~w)',
+          [B, N, B, N]),
+      format(atom(FmtVar), '~w_vs_fmt_~w', [B, N]),
+      format(atom(PrintVar), '~w_vs_p_~w', [B, N]),
+      format(atom(PtrIR), '%~w_vs_~w', [B, N]),
+      llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar,
+          PtrIR, [FmtPtr, PrintCall])
+    },
+    [ValueS, FmtPtr, PrintCall].
+
 % blob keys: evaluate the runtime grammar's byte output and intern it,
 % exactly as the text-field path interns its slice; a failed call (null
 % pointer) skips the increment, like a missing field. Works in text and
