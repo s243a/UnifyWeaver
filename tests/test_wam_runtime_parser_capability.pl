@@ -79,6 +79,7 @@ test(parser_dependent_builtin_catalogue) :-
     assertion(PIs == [read/1,
                       read/2,
                       read_term/1,
+                      read_term/2,
                       read_term_from_atom/2,
                       read_term_from_atom/3,
                       atom_to_term/3,
@@ -89,6 +90,9 @@ test(parser_dependent_goal_read_default_stream) :-
 
 test(parser_dependent_goal_read) :-
     parser_dependent_goal(read(_, _), read/2).
+
+test(parser_dependent_goal_read_term_options) :-
+    once(parser_dependent_goal(read_term(_, [variable_names(_)]), read_term/2)).
 
 test(parser_dependent_goal_module_qualified) :-
     once(parser_dependent_goal(user:read_term_from_atom('f(a)', _),
@@ -109,6 +113,10 @@ test(parser_dependent_goal_term_to_atom_both_bound) :-
 test(parser_dependent_body_goal_conjunction) :-
     parser_dependent_body_goal((true, read_term_from_atom('f(a)', _)),
                                read_term_from_atom/2).
+
+test(parser_dependent_body_goal_read_term_options) :-
+    parser_dependent_body_goal(once(read_term(_, [singletons(_)])),
+                               read_term/2).
 
 test(parser_dependent_body_goal_disjunction) :-
     parser_dependent_body_goal((fail ; read(_, _)), read/2).
