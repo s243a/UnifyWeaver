@@ -377,3 +377,27 @@ fn read_term_from_atom_returns_variable_metadata_with_shared_variables() {
         ]),
     );
 }
+
+#[test]
+fn read_term_syntax_errors_error_throws_and_quiet_fails() {
+    let (code, labels) = shared_wam_program();
+    let mut vm = WamState::new(code.clone(), labels.clone());
+    vm.set_reg_str("A1", ub("Result"));
+    vm.pc = *vm
+        .labels
+        .get("rust_syntax_error_demo/1")
+        .expect("missing syntax error demo");
+    assert!(vm.run());
+    assert_eq!(vm.bindings.get("Result"), Some(&at("caught")));
+    assert!(vm.thrown_ball.is_none());
+
+    let mut quiet = WamState::new(code, labels);
+    quiet.set_reg_str("A1", at("p("));
+    quiet.set_reg_str("A2", ub("Term"));
+    quiet.set_reg_str(
+        "A3",
+        Value::List(vec![fact("syntax_errors", vec![at("quiet")])]),
+    );
+    assert!(!quiet.execute_builtin("read_term_from_atom/3", 3));
+    assert!(quiet.thrown_ball.is_none());
+}

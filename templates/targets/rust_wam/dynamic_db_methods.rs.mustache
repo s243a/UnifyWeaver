@@ -111,6 +111,30 @@
         None
     }
 
+    fn read_term_option_atom(&self, options: &Value, name: &str) -> Option<String> {
+        let value = self.read_term_option_arg(options, name)?;
+        match self.deref_heap(&self.deref_var(&value)) {
+            Value::Atom(atom) => Some(atom),
+            _ => None,
+        }
+    }
+
+    fn raise_read_syntax_error(&mut self) -> bool {
+        self.var_counter += 1;
+        let context = Value::Unbound(format!("_SE{}", self.var_counter));
+        self.thrown_ball = Some(Value::Str(
+            "error/2".to_string(),
+            vec![
+                Value::Str(
+                    "syntax_error/1".to_string(),
+                    vec![Value::Atom("end_of_clause".to_string())],
+                ),
+                context,
+            ],
+        ));
+        false
+    }
+
     fn bind_empty_read_term_options(&mut self, options: &Value) -> bool {
         let empty = Value::List(Vec::new());
         for name in ["variable_names", "variables", "singletons"] {

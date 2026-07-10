@@ -1777,6 +1777,9 @@ compile_execute_term_builtin_to_rust(Code) :-
             .and_then(|value| self.read_term_option_arg(value, "variables"));
         let singletons = options
             .and_then(|value| self.read_term_option_arg(value, "singletons"));
+        let syntax_errors_error = options
+            .and_then(|value| self.read_term_option_atom(value, "syntax_errors"))
+            .as_deref() == Some("error");
         let wants_env = variable_names.is_some() || variables.is_some() || singletons.is_some();
         let parser_entry = if wants_env {
             "parse_term_from_atom/4"
@@ -1785,6 +1788,9 @@ compile_execute_term_builtin_to_rust(Code) :-
         };
         if !self.labels.contains_key("canonical_op_table/1") ||
            !self.labels.contains_key(parser_entry) {
+            if syntax_errors_error {
+                return self.raise_read_syntax_error();
+            }
             return false;
         }
         let mut parser = WamState::new(self.code.clone(), self.labels.clone());
@@ -1792,6 +1798,9 @@ compile_execute_term_builtin_to_rust(Code) :-
         let ops_var = Value::Unbound("_RP_ops".to_string());
         parser.set_reg_str("A1", ops_var.clone());
         if !parser.run_named_label("canonical_op_table/1") {
+            if syntax_errors_error {
+                return self.raise_read_syntax_error();
+            }
             return false;
         }
         let ops = parser.deref_heap(&parser.deref_var(&ops_var));
@@ -1806,6 +1815,9 @@ compile_execute_term_builtin_to_rust(Code) :-
             parser.set_reg_str("A4", var_env.clone());
         }
         if !parser.run_named_label(parser_entry) {
+            if syntax_errors_error {
+                return self.raise_read_syntax_error();
+            }
             return false;
         }
 
