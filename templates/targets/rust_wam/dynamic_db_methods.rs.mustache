@@ -51,12 +51,18 @@
             };
             let trimmed = suffix.trim_start();
             pos += suffix.len() - trimmed.len();
-            if !trimmed.starts_with('%') {
+            if trimmed.starts_with('%') {
+                match trimmed.find('\n') {
+                    Some(end) => pos += end + 1,
+                    None => return input.len(),
+                }
+            } else if let Some(block) = trimmed.strip_prefix("/*") {
+                match block.find("*/") {
+                    Some(end) => pos += end + 4,
+                    None => return input.len(),
+                }
+            } else {
                 return pos;
-            }
-            match trimmed.find('\n') {
-                Some(end) => pos += end + 1,
-                None => return input.len(),
             }
         }
     }
@@ -122,9 +128,12 @@
             if b == 37 { in_line_comment = true; continue; }
             if b == 39 { in_quote = true; continue; }
             if b == 46 {
-                let next_is_term_end = bytes.get(idx + 1)
-                    .map(|c| c.is_ascii_whitespace() || *c == b'%')
-                    .unwrap_or(true);
+                let next_is_term_end = match bytes.get(idx + 1) {
+                    None => true,
+                    Some(c) if c.is_ascii_whitespace() || *c == b'%' => true,
+                    Some(b'/') => bytes.get(idx + 2) == Some(&b'*'),
+                    _ => false,
+                };
                 if next_is_term_end {
                     return Some((
                         Self::strip_term_line_comments(&trimmed[..idx]),

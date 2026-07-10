@@ -410,7 +410,8 @@ fn read_consumes_buffered_terms_before_end_of_file() {
     let (code, labels) = shared_wam_program();
     let mut vm = WamState::new(code, labels);
     vm.set_term_input(
-        "% header\nfirst.% between terms\npair(second, % ignored . full stop\n 2).");
+        "/* block header . */% header\nfirst./* block between . */% between terms\n\
+         pair(second, % ignored . full stop\n 2).");
 
     vm.set_reg_str("A1", ub("T1"));
     assert!(vm.execute_builtin("read/1", 1));
