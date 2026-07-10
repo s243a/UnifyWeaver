@@ -59,3 +59,20 @@ python3 score_with_codex.py --pairs /tmp/mu_data/campaign_pairs.tsv --batch 10 -
 python3 check_campaign_strata.py
 python3 fine_tune_channel_heads.py --data campaign --steps 800 --lr 5e-4 --unfreeze-last
 ```
+
+## 5. Judge identity as an e5-name function — measured (user, 2026-07-09)
+
+Current scheme: distinct learned `judge_emb` rows (a new judge = zero-init, no prior — luna's onboarding
+problem). The designed alternative (`DESIGN_amortized_fusion_heads`: `cond(f) = W·e5(name) + residual`) predicts
+family/version structure in the names. MEASURED (e5 cosine of judge-name embeddings):
+
+| | within GPT family | claude family | GPT vs other LLMs | GPT vs non-LLM |
+|---|---|---|---|---|
+| cosine | **0.969** | 0.897 | 0.792 | 0.809 |
+
+e5 reads vendor+version exactly as predicted (user): `5.5-low ↔ 5.6-luna` = 0.968. Under name-conditioning a
+new judge onboards with a family-graded prior (luna ≈ full transfer from gpt-5.5-low; a new Claude judge
+mostly-from-haiku/opus; a new vendor from the LLM centroid) instead of a zero vector — borrowing strength falls
+out of the name geometry. Caveat: raw e5 cosines are baseline-inflated (~0.8); the learned translation W's job
+is to amplify the relative block structure. Strengthens the case for migrating judge conditioning to the
+name-function when B2 lands.
