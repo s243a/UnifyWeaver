@@ -196,9 +196,11 @@ Deliberately deferred, in rough value order:
   works today).
 - ~~**`dyncall_at@name(...)`**~~ — LANDED (i64): named entries on
   runtime sources and `compile(...)` handles, resolved per call
-  against the VM's materialized entry table. Follow-ups: `float`/`blob`
-  named-at variants, and multi-entry name tables from the bootstrap
-  serializer (today a compiled handle names its first predicate only).
+  against the VM's materialized entry table. Compiled handles expose
+  their whole predicate family: the CLI ships `cgfullm` (cgfull's core
+  + a multi-entry name table; byte-identical on single-predicate
+  sources, so `cgfull` stays the self-host oracle). Remaining
+  follow-up: `float`/`blob` named-at variants.
 - **Surface B (`DYNENTRY`)** — declaration-bound library names with
   static PC bake (see the roadmap's namespace-rule discussion).
 - **Handle-in-scalar** — storing a compile handle in a plawk variable

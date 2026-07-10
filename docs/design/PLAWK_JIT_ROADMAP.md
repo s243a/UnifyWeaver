@@ -151,12 +151,20 @@ runtime-compiled grammar). Resolution is per call (a short in-memory
 scan; caching a PC by VM pointer would go stale across an mtime-mode
 reload at the same address). One `@plawk_dyncall_at_named_<Sym>` shim
 per Name-NArgs, in cached and off modes (the off variant frees the
-fresh VM on the resolve-miss path too). Note: the bootstrap compiler's
-serializer emits ONE named entry (the first predicate), so a compiled
-handle exposes exactly that name today — emitting all predicate
-entries is a follow-up whose blast radius is the self-host
-byte-identity goldens. `float`/`blob` named-at variants are the other
-follow-up, mirroring how surface A landed i64-first. Surface **B**
+fresh VM on the resolve-miss path too). **Multi-entry compiled handles
+LANDED via `cgfullm/2`:** rather than changing `cgfull`'s header (whose
+bytes every self-host golden compares against), the bootstrap module
+gained a second entry sharing the whole compilation core
+(`cgfull_core`) with a multi-entry serializer (`wzam_serialize`) — one
+"name/arity" → group-label row per predicate. The plawk CLI ships
+`cgfullm` as `<bin>.evalc.wamo`, so a `compile(...)` source holding a
+grammar FAMILY exposes every predicate to `dyncall_at@name` (verified:
+two grammars in one source, two named call sites, one content-deduped
+handle → 194). Single-predicate sources serialize byte-identically to
+`cgfull` (NE=1, first predicate named), so handles, dedup, and every
+existing compile are unchanged — and `cgfull` stays the untouched
+self-host fixpoint subject. `float`/`blob` named-at variants remain
+the follow-up, mirroring how surface A landed i64-first. Surface **B**
 below stays planned.
 
 **Surface B — declaration-bound library names (planned):** for a fixed

@@ -44,7 +44,10 @@
     cgarith/2,         % +Src, -Wamo  (Stage C: arithmetic + functor table)
     cgfull/2,          % +Src, -Wamo  (Stage D: the unified compiler)
     cgfull_term/2,     % +Clauses, -Wamo (cgfull minus the reader; SWI oracle)
-    wza_serialize/8    % low-level serializer (golden-byte construction)
+    cgfullm/2,         % +Src, -Wamo  (cgfull + MULTI-ENTRY name table)
+    cgfullm_term/2,    % +Clauses, -Wamo (cgfullm minus the reader)
+    wza_serialize/8,   % low-level serializer (golden-byte construction)
+    wzam_serialize/7   % multi-entry serializer (cgfullm back end)
 ]).
 
 :- discontiguous walk_term/3.
@@ -409,18 +412,49 @@ cgfull(Src, Wamo) :-
 % Split off the reader call so the middle+back end can run in SWI too
 % (read_term_from_atom/2 exists only in the loaded runtime): tests
 % compute expected golden bytes by feeding cgfull_term/2 clause TERMS.
+% The compilation core is shared with cgfullm_term below; cgfull_term's
+% output stays BYTE-IDENTICAL (the single-entry header, first predicate
+% named) -- it is the oracle every self-host golden compares against.
 cgfull_term(Clauses, Wamo) :-
+    cgfull_core(Clauses, _Groups, Atoms, Functors, PCs, AllIs),
+    Clauses = [First|_], clause_hb(First, H0, _), functor(H0, P0, A0),
+    pred_name_codes(P0, A0, EntryName),
+    wza_serialize(0, EntryName, 0, Atoms, Functors, PCs, AllIs, Codes),
+    atom_codes(Wamo, Codes).
+
+% the shared front+middle: grouping, labels, tables, per-group codegen,
+% and the closed PC table -- everything up to the header choice.
+cgfull_core(Clauses, Groups, Atoms, Functors, PCs, AllIs) :-
     group_clauses(Clauses, Groups),
     group_labels(Groups, 0, PL),
     length(Groups, NP),
     collect_tables(Clauses, s([],[]), s(Atoms, Functors)),
     g_groups(Groups, PL, Atoms, Functors, 0, NP, AllIs, EntryPCs, Pairs),
     keysort(Pairs, SortedPairs), pairs_values(SortedPairs, ExtraPCs),
-    append(EntryPCs, ExtraPCs, PCs),
-    Clauses = [First|_], clause_hb(First, H0, _), functor(H0, P0, A0),
-    pred_name_codes(P0, A0, EntryName),
-    wza_serialize(0, EntryName, 0, Atoms, Functors, PCs, AllIs, Codes),
+    append(EntryPCs, ExtraPCs, PCs).
+
+% cgfullm: cgfull with a MULTI-ENTRY name table -- every predicate group
+% gets an entry row ("name/arity" -> its group label), so a runtime-
+% compiled object exposes its whole predicate family to dyncall_at@name.
+% For a single-predicate source the header is byte-identical to cgfull's
+% (NE=1, first predicate named, label 0), so content-dedup handles and
+% every existing single-grammar compile are unchanged. This is the entry
+% the plawk CLI ships as <bin>.evalc.wamo; cgfull stays the self-host
+% fixpoint subject (the goldens compare against ITS bytes).
+cgfullm(Src, Wamo) :-
+    read_term_from_atom(Src, Clauses),
+    cgfullm_term(Clauses, Wamo).
+cgfullm_term(Clauses, Wamo) :-
+    cgfull_core(Clauses, Groups, Atoms, Functors, PCs, AllIs),
+    group_entries(Groups, 0, Entries),
+    wzam_serialize(0, Entries, Atoms, Functors, PCs, AllIs, Codes),
     atom_codes(Wamo, Codes).
+
+group_entries([], _, []).
+group_entries([pred(P, A, _)|Gs], I, [NC-I|R]) :-
+    pred_name_codes(P, A, NC),
+    I1 is I + 1,
+    group_entries(Gs, I1, R).
 
 % comparison-guard builtin ids
 cmp_id(>, 1). cmp_id(<, 2). cmp_id(>=, 3). cmp_id(=<, 4).
@@ -789,3 +823,17 @@ wza_serialize(EI, NC, LI, Atoms, Fs, PCs, Is, Out) :-
     length(Atoms, NA), wz_i(NA, A6, A7), wz_funcs(Atoms, A7, A8),
     length(Fs, NF), wz_i(NF, A8, A9), wz_funcs(Fs, A9, A10),
     wz_pcs_sec(PCs, A10, A11), wz_instr_sec(Is, A11, A12), wz_i(0, A12, []).
+
+% multi-entry variant: NE from the Entries list (NameCodes-LabelIdx
+% pairs), one name/label row per entry. With a single entry the emitted
+% bytes equal wza_serialize's -- the header shape is the same, only the
+% count and rows generalize.
+wzam_serialize(EI, Entries, Atoms, Fs, PCs, Is, Out) :-
+    wz_a('WAMO', Out, A1), wz_i(2, A1, A2), wz_i(EI, A2, A3),
+    length(Entries, NE), wz_i(NE, A3, A4), wz_entry_rows(Entries, A4, A5),
+    length(Atoms, NA), wz_i(NA, A5, A6), wz_funcs(Atoms, A6, A7),
+    length(Fs, NF), wz_i(NF, A7, A8), wz_funcs(Fs, A8, A9),
+    wz_pcs_sec(PCs, A9, A10), wz_instr_sec(Is, A10, A11), wz_i(0, A11, []).
+wz_entry_rows([], A, A).
+wz_entry_rows([NC-LI|Es], A0, A3) :-
+    wz_n(NC, A0, A1), wz_i(LI, A1, A2), wz_entry_rows(Es, A2, A3).
