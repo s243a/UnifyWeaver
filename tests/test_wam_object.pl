@@ -1615,6 +1615,93 @@ test(selfhost_intdiv_truncates, [condition(clang_available)]) :-
     assertion(Out == "3034\n"),
     !.
 
+% Demand-driven subset growth: plain CUT compiles from source and runs
+% loaded with committed-choice semantics. pick(7) commits to the first
+% clause (guard passed, cut fired -> 1); pick(3) fails the guard BEFORE
+% the cut and falls to the second clause (-> 2). R = 12.
+test(selfhost_cut_commits, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([wam_bootstrap_compiler:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgcut_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- pick(7, A), pick(3, B), R is A * 10 + B), (pick(X, R2) :- X > 5, !, R2 = 1), pick(_, 2)]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "12\n"),
+    !.
+
+% BARE disjunction stays backtrackable: d(a) takes the first branch;
+% d(b) enters it, fails the ==, and BACKTRACKS into the second (the
+% try_me_else CP is live -- no soft cut). R = 12.
+test(selfhost_bare_disjunction_backtracks, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([wam_bootstrap_compiler:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgdisj_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- d(a, A), d(b, B), R is A * 10 + B), (d(X, R2) :- (X == a, R2 = 1 ; R2 = 2))]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "12\n"),
+    !.
+
+% Negation as failure: \+ G desugars to ( G -> fail ; true ). good is
+% not bad (1); bad is (2). R = 12.
+test(selfhost_negation_as_failure, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([wam_bootstrap_compiler:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgneg_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- n(good, A), n(bad, B), R is A * 10 + B), (n(X, R2) :- (\\+ X == bad -> R2 = 1 ; R2 = 2))]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "12\n"),
+    !.
+
+% Text-family whitelist: sub_atom slices, the slice compares, and its
+% length feeds arithmetic. sub_atom(hello, 1, 3, _, ell) -> 3 + 10.
+test(selfhost_sub_atom_slices, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([wam_bootstrap_compiler:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgsub_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- sub_atom(hello, 1, 3, _, S), atom_length(S, L), (S == ell -> R is L + 10 ; R = 0))]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "13\n"),
+    !.
+
 % cgfullm: cgfull + a MULTI-ENTRY name table (the eval compiler the
 % plawk CLI ships). Byte-compat guard: a single-predicate source
 % serializes IDENTICALLY through both (NE=1, first predicate named,

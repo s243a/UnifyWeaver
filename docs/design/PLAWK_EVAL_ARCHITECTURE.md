@@ -209,6 +209,17 @@ Deliberately deferred, in rough value order:
   or builtin name is a parse error.
 - **Handle-in-scalar** — storing a compile handle in a plawk variable
   across records (today the dedup makes the nested form equivalent).
-- **Further compiler-subset growth** — the bootstrap compiler covers
-  the grammar shapes the eval surface targets; widening it is
-  demand-driven.
+- **Further compiler-subset growth** — demand-driven. The first
+  demand round probed common grammar shapes and landed the ones real
+  eval grammars hit: **cut** (`!` — committed choice; the loaded
+  reader also learned the solo `!` token), **bare disjunction**
+  (`(A ; B)` with live backtracking into the second branch),
+  **negation as failure** (`\+ G`, desugared to the ITE machinery;
+  the reader gained its one prefix operator), and the text-family
+  builtin whitelist (`sub_atom`, case mapping, `string_concat`,
+  `atom_string`, `split_string`, `term_to_atom`, `char_type`,
+  `code_type`). Known next demands, deliberately deferred: `findall`
+  emission (aggregate opcodes are loadable; the bootstrap does not
+  emit them yet) and `call/N` meta-call emission — which also gates
+  the assert-family whitelist, since a grammar cannot read the
+  dynamic store back without it.
