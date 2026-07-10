@@ -17775,11 +17775,32 @@ ev_pow_pos_finish:
 
 ev_div:
   ; M85: second-byte check disambiguates ``/'' (division) from
-  ; ``/\\'' (bitwise AND). ``/\\'' has fn_ptr[1] = ''\\'' (92).
+  ; ``/\\'' (bitwise AND, fn_ptr[1] = ''\\'' = 92) and ``//''
+  ; (truncating integer division, fn_ptr[1] = ''/'' = 47 -- it used to
+  ; silently alias float-capable /, so 7 // 2 evaluated to 3.5 where
+  ; SWI yields 3).
   %div.fn1_ptr = getelementptr i8, i8* %fn_ptr, i32 1
   %div.fn1 = load i8, i8* %div.fn1_ptr
   %div.is_band = icmp eq i8 %div.fn1, 92
-  br i1 %div.is_band, label %ev_band, label %ev_div_normal
+  br i1 %div.is_band, label %ev_band, label %ev_div_chk_int
+ev_div_chk_int:
+  %div.is_intdiv = icmp eq i8 %div.fn1, 47
+  br i1 %div.is_intdiv, label %ev_intdiv, label %ev_div_normal
+ev_intdiv:
+  ; // -- truncating integer division (LLVM sdiv truncates toward
+  ; zero, matching SWI). Integer operands only: a float operand is an
+  ; evaluation error, like SWI''s type check. Division by zero fails
+  ; through the arith-error channel.
+  br i1 %either_float, label %ev_zero, label %ev_intdiv_chk0
+ev_intdiv_chk0:
+  %idv.a_i = extractvalue %Value %a, 1
+  %idv.b_i = extractvalue %Value %b, 1
+  %idv.b_zero = icmp eq i64 %idv.b_i, 0
+  br i1 %idv.b_zero, label %ev_zero, label %ev_intdiv_go
+ev_intdiv_go:
+  %idv.r = sdiv i64 %idv.a_i, %idv.b_i
+  %idv.v = call %Value @value_integer(i64 %idv.r)
+  ret %Value %idv.v
 ev_band:
   ; M85: /\\ -- integer bitwise AND.
   %band.a_i = extractvalue %Value %a, 1

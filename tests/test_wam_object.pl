@@ -1590,6 +1590,31 @@ test(selfhost_arith_error_fails_cleanly, [condition(clang_available)]) :-
     assertion(Out == "2\n"),
     !.
 
+% Loaded truncating integer division (deferred small item): // used to
+% alias float-capable / (7 // 2 evaluated to 3.5 where SWI yields 3).
+% It now truncates toward zero (sdiv, matching SWI's default
+% integer_rounding_function), and division by zero fails through the
+% arith-error channel into the else branch. 7//2=3, -7//2=-3,
+% (3*100+3)*10+4 = 3034.
+test(selfhost_intdiv_truncates, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([wam_bootstrap_compiler:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgid_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- A is 7 // 2, B is 0 - 7, C is B // 2, (D is 5 // 0 -> E = D ; E = 4), R is (A * 100 + (0 - C)) * 10 + E)]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "3034\n"),
+    !.
+
 % Nested arithmetic in the loaded compiler: the is-expression is staged
 % with c_operand (build_struct + X-temp deferral), so arbitrarily nested
 % expressions compile. (X + Y) * (X - 1) + 100 with X=3, Y=4 -> 114.
