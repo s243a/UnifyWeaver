@@ -409,7 +409,7 @@ fn read_eof_binds_end_of_file() {
 fn read_consumes_buffered_terms_before_end_of_file() {
     let (code, labels) = shared_wam_program();
     let mut vm = WamState::new(code, labels);
-    vm.set_term_input("first. pair(second, 2).");
+    vm.set_term_input("% header\nfirst.% between terms\npair(second, 2).");
 
     vm.set_reg_str("A1", ub("T1"));
     assert!(vm.execute_builtin("read/1", 1));
