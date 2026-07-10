@@ -207,6 +207,70 @@ fn retract_backtracks_through_each_matching_fact() {
 }
 
 #[test]
+fn clause_backtracks_over_facts_and_rules_without_removing_them() {
+    let mut vm = WamState::new(
+        vec![Instruction::Call("clause/2".to_string(), 2), Instruction::Proceed],
+        HashMap::new(),
+    );
+    assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("red")]));
+    assert_clause(&mut vm, "assertz/1", fact("marker", vec![at("blue")]));
+    assert_clause(
+        &mut vm,
+        "assertz/1",
+        rule(
+            fact("dyn", vec![at("blue")]),
+            fact("marker", vec![at("blue")]),
+        ),
+    );
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("dyn", vec![ub("X")]));
+    vm.set_reg_str("A2", ub("Body"));
+    vm.pc = 1;
+
+    let mut clauses = Vec::new();
+    assert!(vm.run());
+    loop {
+        let x = vm.bindings.get("X").cloned().expect("X bound");
+        let body = vm.bindings.get("Body").cloned().expect("Body bound");
+        clauses.push((
+            vm.deref_heap(&vm.deref_var(&x)),
+            vm.deref_heap(&vm.deref_var(&body)),
+        ));
+        if !vm.backtrack() { break; }
+    }
+
+    assert_eq!(
+        clauses,
+        vec![
+            (at("red"), at("true")),
+            (at("blue"), fact("marker", vec![at("blue")]))
+        ],
+    );
+    assert_eq!(dyn_values(&mut vm), vec![at("red"), at("blue")]);
+}
+
+#[test]
+fn generated_tail_clause_call_reads_dynamic_facts() {
+    let (code, labels) = shared_wam_program();
+    let mut vm = WamState::new(code, labels);
+    assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("tail")]));
+
+    vm.reset_query();
+    vm.set_reg_str("A1", ub("X"));
+    vm.set_reg_str("A2", ub("Body"));
+    vm.pc = *vm.labels
+        .get("rust_clause_demo/2")
+        .expect("generated clause demo label");
+
+    assert!(vm.run());
+    let x = vm.bindings.get("X").cloned().expect("X bound");
+    let body = vm.bindings.get("Body").cloned().expect("Body bound");
+    assert_eq!(vm.deref_heap(&vm.deref_var(&x)), at("tail"));
+    assert_eq!(vm.deref_heap(&vm.deref_var(&body)), at("true"));
+}
+
+#[test]
 fn retract_distinguishes_fact_patterns_from_rule_patterns() {
     let mut vm = WamState::new(vec![Instruction::Call("retract/1".to_string(), 1), Instruction::Proceed], HashMap::new());
     assert_clause(&mut vm, "assertz/1", fact("marker", vec![at("rule")]));
