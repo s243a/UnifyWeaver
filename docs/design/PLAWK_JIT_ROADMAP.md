@@ -311,14 +311,23 @@ six milestones live in the same doc; item 5 was a **subset-expansion
 campaign** with the bootstrap as its payoff, and each milestone was its
 own PR(s).
 
-- **Milestone 1 — clause indexing — LANDED.** Every `switch_on_*` dispatch
-  variant (matched by prefix, so the `_fallthrough` and `_a2` forms are
-  covered) is now in the loadable `.wamo` subset as a nop-fallthrough. Safe
-  because the tier-2 compiler emits every indexing instruction *inline at the
-  head of the predicate*, immediately before the `try_me_else` chain it
-  dispatches into; dropping the switch and falling through runs every clause
-  in order — correct, just unindexed. Lets atom-keyed multi-clause predicates
-  (pervasive in the compiler) load.
+- **Milestone 1 — clause indexing — LANDED, now REAL dispatch.** Every
+  `switch_on_*` dispatch variant first entered the loadable `.wamo` subset
+  as a nop-fallthrough — safe because the tier-2 compiler emits every
+  indexing instruction *inline at the head of the predicate*, immediately
+  before the `try_me_else` chain it dispatches into, so falling through
+  runs every clause in order (correct, just unindexed). That let
+  atom-keyed multi-clause predicates (pervasive in the compiler) load
+  early. Post-fixpoint, `switch_on_constant`/`_a2` are REAL indexed
+  dispatch in loaded objects: the writer carries their key→label tables
+  in a trailing section (emitted only when non-empty — switch-free and
+  bootstrap-emitted objects stay byte-identical), and the loader builds
+  the same `%SwitchEntry` arrays the AOT dispatcher feeds
+  `@wam_switch_on_constant`, so the shared step cases run them with no
+  new dispatch code (7.6× on a 200-clause fact-table probe; the lift
+  also fixed a latent quoted-key parsing bug shared with the AOT switch
+  tables — see PLAWK_EVAL_BOOTSTRAP.md). `switch_on_term`/`_structure`
+  and `*_fallthrough` remain nops, matching the AOT dispatcher.
 - **Milestone 2 — `call/N` meta-call in objects — LANDED.** A meta-call
   encodes `op1 = -1`; dispatch resolves the runtime goal through a new
   **per-object meta-call table** (format version 2) hung off two new

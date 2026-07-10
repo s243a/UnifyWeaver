@@ -21530,11 +21530,13 @@ wam_line_to_llvm_literal_resolved(Parts, _LabelMap, Lit) :-
 parse_switch_entries([], _, []).
 parse_switch_entries([Part | Rest], LabelMap, [Entry | RestEntries]) :-
     clean_comma(Part, Clean),
-    ( sub_string(Clean, Before, 1, After, ":")
-    -> sub_string(Clean, 0, Before, _, KeyStr),
-       sub_string(Clean, _, After, 0, LabelStr)
-    ;  KeyStr = Clean, LabelStr = ""
-    ),
+    % Split at the LAST colon and unquote writeq-style keys (see
+    % switch_entry_split/3 -- a first-colon split sheared quoted keys
+    % like '=:=' in half, and un-unquoted keys interned their quote
+    % characters into the atom name; either way the table entry never
+    % matched the runtime atom and dispatch silently failed).
+    switch_entry_split(Clean, KeyStr0, LabelStr),
+    switch_entry_unquote(KeyStr0, KeyStr),
     % Pack the key: integer keys use tag=1, atom keys use tag=0 with interned id.
     ( number_string(N, KeyStr)
     -> KeyTag = 1, KeyPayload = N
@@ -22014,9 +22016,10 @@ wam_object_encode(Predicates, Options0, Codes) :-
     wamo_entries_list(Predicates, Options, LabelMap, Entries),
     wamo_all_instr_parts(Records, AllParts),
     foldl(wamo_encode_step(LabelMap), AllParts,
-          ws([], tab([], 0), tab([], 0)),
-          ws(RevEnc, ATab0, FTab)),
+          ws([], 0, tab([], 0), tab([], 0), []),
+          ws(RevEnc, _, ATab0, FTab, RevSw)),
     reverse(RevEnc, EncInstrs),
+    reverse(RevSw, SwTabs),
     % A meta-call table is only needed if the object actually contains a
     % call/N meta-call (op1 = -1); interning predicate names for objects that
     % never meta-call would bloat them for no benefit (pay-for-what-you-use).
@@ -22028,7 +22031,7 @@ wam_object_encode(Predicates, Options0, Codes) :-
     wamo_table_list(FTab, Functors),
     findall(PC, member(_-PC, NamePCPairs), PCs),
     wamo_serialize(EntryIndex, Entries, Atoms, Functors, PCs, EncInstrs,
-                   MetaRows, Codes).
+                   MetaRows, SwTabs, Codes).
 
 %% wamo_has_meta_call(+EncInstrs) is semidet.
 %  True if any encoded call/execute dispatches a goal through the object's
@@ -22155,8 +22158,94 @@ wamo_table_list(tab(Pairs, _), List) :-
 
 % --- per-instruction encoding ---------------------------------------------
 
-wamo_encode_step(LabelMap, Parts, ws(E0, A0, F0), ws([Enc|E0], A1, F1)) :-
-    wamo_enc(Parts, LabelMap, A0, A1, F0, F1, Enc).
+% The fold threads the instruction PC (one WAM line = one row = one PC
+% slot, the invariant the label map depends on) and a switch-table
+% accumulator. switch_on_constant / _a2 encode as REAL dispatch rows
+% (tags 25 / 27 -- the same step cases the AOT dispatcher uses) with
+% op1/op2 left 0; their key->label tables ride a TRAILING SECTION (like
+% the meta-call table) keyed by this PC, so the code/PC/label layout is
+% untouched and the loader patches op1 = table pointer, op2 = count.
+% The *_fallthrough variants and switch_on_term / _structure stay nops,
+% exactly matching the AOT dispatcher.
+wamo_encode_step(LabelMap, Parts, ws(E0, PC, A0, F0, S0),
+                 ws([Enc|E0], PC1, A1, F1, S1)) :-
+    PC1 is PC + 1,
+    (   Parts = [Op | EntryParts],
+        wamo_switch_tag(Op, Tag)
+    ->  wamo_switch_entries(EntryParts, LabelMap, A0, A1, SwEntries),
+        F1 = F0,
+        Enc = enc(Tag, 0, 0, none),
+        S1 = [sw(PC, SwEntries) | S0]
+    ;   wamo_enc(Parts, LabelMap, A0, A1, F0, F1, Enc),
+        S1 = S0
+    ).
+
+wamo_switch_tag("switch_on_constant", 25).
+wamo_switch_tag("switch_on_constant_a2", 27).
+
+%% wamo_switch_entries(+Parts, +LabelMap, +A0, -A1, -Entries)
+%  Parse "key:label" switch entries into se(Kind, Key, LabelIdx) rows.
+%  Kind 1 = integer key (Key is the value); Kind 0 = atom key (Key is an
+%  ATOM-TABLE index -- the loader resolves it through the same relocated
+%  atomIds array as any reloc-1 operand, so the runtime payload compares
+%  equal to a relocated get_constant/A-register atom id). "default" and
+%  unresolvable labels encode as -1, the fall-through sentinel
+%  @wam_switch_on_constant already maps to "advance PC".
+wamo_switch_entries([], _, A, A, []).
+wamo_switch_entries([Part | Rest], LabelMap, A0, A,
+                    [se(Kind, Key, LabelIdx) | Es]) :-
+    clean_comma(Part, Clean),
+    switch_entry_split(Clean, KeyStr0, LabelStr),
+    switch_entry_unquote(KeyStr0, KeyStr),
+    (   number_string(N, KeyStr), integer(N)
+    ->  Kind = 1, Key = N, A1 = A0
+    ;   Kind = 0, tab_intern(KeyStr, A0, Key, A1)
+    ),
+    (   LabelStr == "default"
+    ->  LabelIdx = -1
+    ;   lookup_label_index(LabelStr, LabelMap, LabelIdx)
+    ->  true
+    ;   LabelIdx = -1
+    ),
+    wamo_switch_entries(Rest, LabelMap, A1, A, Es).
+
+%% switch_entry_split(+Part, -KeyStr, -LabelStr)
+%  Split "key:label" at the LAST colon: labels never contain colons, but
+%  quoted atom keys can ('=:=' -- a first-colon split would shear the
+%  key in half and treat its remainder as the label).
+switch_entry_split(Clean, KeyStr, LabelStr) :-
+    string_length(Clean, Len),
+    (   between(1, Len, Back),
+        Pos is Len - Back,
+        sub_string(Clean, Pos, 1, _, ":")
+    ->  sub_string(Clean, 0, Pos, _, KeyStr),
+        P1 is Pos + 1,
+        sub_string(Clean, P1, _, 0, LabelStr)
+    ;   KeyStr = Clean, LabelStr = ""
+    ).
+
+%% switch_entry_unquote(+KeyStr0, -KeyStr)
+%  The tier-2 compiler writes atom keys writeq-style: atoms needing
+%  quotes arrive as '...' with backslash escapes doubled ('=\\=').
+%  Strip the quotes and undo the escapes so the interned key matches
+%  the runtime atom exactly -- a still-quoted key would intern the
+%  quote characters into the name and the switch entry would NEVER
+%  match at dispatch time (a silent no-match means the call FAILS,
+%  since a strict switch backtracks on miss).
+switch_entry_unquote(KeyStr0, KeyStr) :-
+    (   string_concat("'", R1, KeyStr0),
+        string_concat(Body, "'", R1)
+    ->  string_codes(Body, Cs),
+        switch_unescape_codes(Cs, OutCs),
+        string_codes(KeyStr, OutCs)
+    ;   KeyStr = KeyStr0
+    ).
+
+switch_unescape_codes([], []).
+switch_unescape_codes([0'\\, C | R], [C | T]) :- !,
+    switch_unescape_codes(R, T).
+switch_unescape_codes([C | R], [C | T]) :-
+    switch_unescape_codes(R, T).
 
 %% wamo_enc(+Parts, +LabelMap, +A0, -A1, +F0, -F1, -enc(Tag,Op1,Op2,Reloc))
 %  Encode one parsed WAM instruction into the object's triple form,
@@ -22281,10 +22370,12 @@ wamo_enc(["end_aggregate", ValRegStr], _, A, A, F, F, enc(29, ValIdx, 0, none)) 
 % switch_on_term. Lifting these is the first subset-expansion step toward
 % the eval bootstrap (item 5) -- the WAM compiler's own predicates lean
 % heavily on atom-keyed clause indexing.
-% Every switch_on_* variant is an indexing optimization sitting inline before
-% the clause chain -- including the *_fallthrough forms (no-match falls through
-% to the next clause) and the first/second-argument (_a2) variants. A prefix
-% match covers the whole family; the loader runs them all as nops.
+% The remaining switch_on_* variants stay nops -- switch_on_constant and
+% switch_on_constant_a2 are intercepted upstream (wamo_encode_step) and
+% encode as REAL indexed dispatch with a trailing-section table. What
+% reaches here: the *_fallthrough forms and switch_on_term / _structure,
+% which the AOT dispatcher also runs as nop fallthroughs, so loaded
+% semantics stay exactly host semantics.
 wamo_enc([Op | _], _, A, A, F, F, enc(26, 0, 0, none)) :-
     string_concat("switch_on_", _, Op), !.
 wamo_enc(["try" | _],   _, A, A, F, F, enc(26, 0, 0, none)) :- !.
@@ -22364,9 +22455,11 @@ wamo_reloc_id(atom, 1).
 wamo_reloc_id(functor, 2).
 wamo_reloc_id(float, 3).
 
-wamo_serialize(EntryIndex, Entries, Atoms, Functors, PCs, EncInstrs, MetaRows, Codes) :-
+wamo_serialize(EntryIndex, Entries, Atoms, Functors, PCs, EncInstrs, MetaRows,
+               SwTabs, Codes) :-
     length(Entries, NE), length(Atoms, NA), length(Functors, NF),
     length(PCs, NL), length(EncInstrs, NC), length(MetaRows, NM),
+    length(SwTabs, NS),
     % header: magic, version, default-entry index, then the named-entry
     % table (early, so @wam_object_load can skip it without a full parse).
     % Version 2 adds a trailing meta-call table section (milestone 2 of the
@@ -22384,9 +22477,31 @@ wamo_serialize(EntryIndex, Entries, Atoms, Functors, PCs, EncInstrs, MetaRows, C
     % meta-call table: <count>\n then <atomIdx> <funIdx> <arity> <labelIdx>\n
     format(codes(MHdr), "~w\n", [NM]),
     maplist(wamo_meta_row_codes, MetaRows, MetaChunks),
+    % switch-table section (loaded clause indexing): <count>\n then per
+    % table "<pc> <n>\n" and n entry rows "<kind> <key> <labelIdx>\n".
+    % Trails the meta table, and is emitted ONLY when non-empty: the
+    % loader's wamo_next_int reads 0 at EOF, so switch-free objects stay
+    % byte-identical to the pre-section format -- which the bootstrap
+    % compiler's serializer (and its byte-exact goldens) still emit.
+    (   NS =:= 0
+    ->  SwSection = []
+    ;   format(codes(SHdr), "~w\n", [NS]),
+        maplist(wamo_switch_codes, SwTabs, SwChunks),
+        SwSection = [SHdr | SwChunks]
+    ),
     append([[Head], EntryChunks, [AHdr], AtomChunks, [FHdr], FunChunks,
-            [LHdr], PCChunks, [CHdr], InstrChunks, [MHdr], MetaChunks], Lists),
+            [LHdr], PCChunks, [CHdr], InstrChunks, [MHdr], MetaChunks,
+            SwSection], Lists),
     append(Lists, Codes).
+
+%% wamo_switch_codes(+sw(PC, Entries), -Codes)
+wamo_switch_codes(sw(PC, Entries), Codes) :-
+    length(Entries, N),
+    format(codes(Hdr), "~w ~w\n", [PC, N]),
+    maplist([se(Kind, Key, LabelIdx), Cs]>>
+                format(codes(Cs), "~w ~w ~w\n", [Kind, Key, LabelIdx]),
+            Entries, EntryChunks),
+    append([Hdr | EntryChunks], Codes).
 
 %% wamo_meta_row_codes(+row(AtomIdx,FunIdx,Arity,LabelIdx), -Codes)
 wamo_meta_row_codes(row(AtomIdx, FunIdx, Arity, LabelIdx), Cs) :-
@@ -22797,7 +22912,7 @@ mloop:
   %mi = phi i64 [ 0, %meta_init ], [ %mi1, %mstore ]
   %mcur = phi i64 [ %cur_m0, %meta_init ], [ %mcur4, %mstore ]
   %mdone = icmp uge i64 %mi, %nmeta
-  br i1 %mdone, label %build_vm, label %mstep
+  br i1 %mdone, label %sw_init, label %mstep
 mstep:
   %matom_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %mcur)
   %matomIdx = extractvalue { i64, i64 } %matom_r, 0
@@ -22836,6 +22951,86 @@ mstore:
   store i32 %mlabel32, i32* %mrow_lbl
   %mi1 = add i64 %mi, 1
   br label %mloop
+sw_init:
+  ; --- switch-table section (loaded clause indexing) ----------------------
+  ; One count NS, then per table a "pc n" pair and n entry rows of
+  ; "kind key labelIdx" (all newline-separated ints).
+  ; kind 0 = atom key (key is an atom-table index, resolved through the same
+  ; relocated atomIds array as any reloc-1 operand, so it compares equal to
+  ; relocated register payloads); kind 1 = integer key. Each table
+  ; materializes as a malloc-ed [n x %SwitchEntry] whose pointer patches
+  ; op1 (and op2 = n) of the tag-25/27 instruction at <pc> -- the exact
+  ; shape the AOT dispatcher feeds @wam_switch_on_constant(_a2), so the
+  ; SHARED step cases run loaded switches with no new dispatch code, and
+  ; label indices resolve through the loaded VM own label table via
+  ; @wam_label_pc. Objects without the section (the bootstrap compiler
+  ; emits none; pre-section v2 objects end here) read NS = 0 at EOF.
+  ; Tables follow the code array lifetime (not freed by wam_state_free,
+  ; same policy as the code/labels/meta allocations).
+  %ps = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %mcur)
+  %nsw = extractvalue { i64, i64 } %ps, 0
+  %cur_s0 = extractvalue { i64, i64 } %ps, 1
+  br label %swloop
+swloop:
+  %si = phi i64 [ 0, %sw_init ], [ %si1, %swpatch ]
+  %scur = phi i64 [ %cur_s0, %sw_init ], [ %secur, %swpatch ]
+  %sdone = icmp uge i64 %si, %nsw
+  br i1 %sdone, label %build_vm, label %swtab
+swtab:
+  %spc_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %scur)
+  %spc = extractvalue { i64, i64 } %spc_r, 0
+  %scur1 = extractvalue { i64, i64 } %spc_r, 1
+  %sn_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %scur1)
+  %sn = extractvalue { i64, i64 } %sn_r, 0
+  %scur2 = extractvalue { i64, i64 } %sn_r, 1
+  %se_sz = ptrtoint %SwitchEntry* getelementptr (%SwitchEntry, %SwitchEntry* null, i32 1) to i64
+  %stab_bytes = mul i64 %sn, %se_sz
+  %stab_mem = call i8* @malloc(i64 %stab_bytes)
+  %stab = bitcast i8* %stab_mem to %SwitchEntry*
+  br label %seloop
+seloop:
+  %sei = phi i64 [ 0, %swtab ], [ %sei1, %sestore ]
+  %secur = phi i64 [ %scur2, %swtab ], [ %secur3, %sestore ]
+  %sedone = icmp uge i64 %sei, %sn
+  br i1 %sedone, label %swpatch, label %sestep
+sestep:
+  %sk_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %secur)
+  %skind = extractvalue { i64, i64 } %sk_r, 0
+  %secur1 = extractvalue { i64, i64 } %sk_r, 1
+  %skey_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %secur1)
+  %skey = extractvalue { i64, i64 } %skey_r, 0
+  %secur2 = extractvalue { i64, i64 } %skey_r, 1
+  %slbl_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %secur2)
+  %slbl = extractvalue { i64, i64 } %slbl_r, 0
+  %secur3 = extractvalue { i64, i64 } %slbl_r, 1
+  %sk_is_atom = icmp eq i64 %skind, 0
+  br i1 %sk_is_atom, label %se_atom, label %sestore
+se_atom:
+  %sa_slot = getelementptr i64, i64* %atomIds, i64 %skey
+  %sa_id = load i64, i64* %sa_slot
+  br label %sestore
+sestore:
+  %skey_final = phi i64 [ %sa_id, %se_atom ], [ %skey, %sestep ]
+  %stag_final = phi i32 [ 0, %se_atom ], [ 1, %sestep ]
+  %sep = getelementptr %SwitchEntry, %SwitchEntry* %stab, i64 %sei
+  %sep_tag = getelementptr %SwitchEntry, %SwitchEntry* %sep, i32 0, i32 0
+  store i32 %stag_final, i32* %sep_tag
+  %sep_pay = getelementptr %SwitchEntry, %SwitchEntry* %sep, i32 0, i32 1
+  store i64 %skey_final, i64* %sep_pay
+  %sep_lbl = getelementptr %SwitchEntry, %SwitchEntry* %sep, i32 0, i32 2
+  %slbl32 = trunc i64 %slbl to i32
+  store i32 %slbl32, i32* %sep_lbl
+  %sei1 = add i64 %sei, 1
+  br label %seloop
+swpatch:
+  %swip = getelementptr %Instruction, %Instruction* %code, i64 %spc
+  %swip_op1 = getelementptr %Instruction, %Instruction* %swip, i32 0, i32 1
+  %stab_i = ptrtoint %SwitchEntry* %stab to i64
+  store i64 %stab_i, i64* %swip_op1
+  %swip_op2 = getelementptr %Instruction, %Instruction* %swip, i32 0, i32 2
+  store i64 %sn, i64* %swip_op2
+  %si1 = add i64 %si, 1
+  br label %swloop
 build_vm:
   ; entry pc = labels[entry_idx]
   %eslot = getelementptr i32, i32* %labels, i64 %entry_idx64

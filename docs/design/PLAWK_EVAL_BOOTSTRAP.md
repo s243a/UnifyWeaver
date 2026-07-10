@@ -118,10 +118,38 @@ L_col_2_3: trust_me
 The switch is an *optimization*: its entries only point deeper into the same
 `try_me_else`/`retry`/`trust` chain that follows it inline. Dropping the
 switch and falling through runs every clause in order — correct, just
-unindexed. The loader already did this for `switch_on_term`; extending it to
-`switch_on_constant`/`_a2` (this PR) means grammars with atom-keyed clauses —
-pervasive in the compiler — now load. Cost: unindexed dispatch in loaded
-objects (an optimization gap, not a correctness one).
+unindexed. The loader did this for the whole family through the eval
+campaign — the "optimization gap, not a correctness one" that let
+atom-keyed grammars (pervasive in the compiler) load early.
+
+**The gap is now closed for `switch_on_constant` / `_a2`** (loaded clause
+indexing): the writer encodes them as REAL dispatch rows (tags 25/27 —
+the same step cases the AOT dispatcher uses) with their key→label tables
+in a trailing `.wamo` section (emitted only when non-empty, so
+switch-free objects — including everything the bootstrap compiler's own
+serializer emits — stay byte-identical to the pre-section format, and
+old objects load with the new loader unchanged). At load time each table
+materializes as the `%SwitchEntry` array `@wam_switch_on_constant`
+already consumes, with atom keys resolved through the object's relocated
+atom ids and label indices resolved against the loaded VM's own label
+table via `@wam_label_pc` — no new dispatch code at all. A strict switch
+miss backtracks (exactly the AOT semantics), an unbound argument skips
+into the chain. On a 200-clause atom-keyed fact table probed 20 000
+times at its last key, the indexed object runs **7.6× faster** than the
+same object with its tables stripped (25 ms vs 189 ms end to end),
+byte-identical results. `switch_on_term`/`_structure` and the
+`*_fallthrough` variants stay nops — matching the AOT dispatcher, which
+nops them too.
+
+The lift also fixed a latent AOT bug the loaded path inherited: the
+switch-entry parser split `key:label` at the FIRST colon and never
+unquoted writeq-style keys, so entries for atoms like `'=:='` or `'\=='`
+sheared in half or interned their quote characters — either way the
+table entry never matched at runtime and a strict switch silently
+FAILED the call. Both parsers now split at the last colon and unquote
+(`switch_entry_split/3`, `switch_entry_unquote/2`); regression
+`loaded_switch_on_constant_dispatch` pins quoted-key dispatch, the
+clean miss-into-else, and the unbound skip.
 
 ## Milestones (subset expansion → bootstrap)
 
@@ -338,10 +366,12 @@ independently useful (richer hand-written grammars load sooner).
 - **Pay-for-what-you-use holds:** the compiler object (large) loads only when
   an `eval`/`compile` surface is compiled into the program, riding
   `emit_wamo_loader(true)` like every other dynamic capability.
-- **Correctness-first, speed-later:** loaded objects run unindexed (milestone
-  1). If the eval loop becomes hot, a real switch-table in the loader is a
-  later optimization — the format already carries the switch operands we
-  currently drop.
+- **Correctness-first, speed-later — the "later" arrived:** loaded objects
+  ran unindexed through the whole campaign (milestone 1's nop lift); with
+  the fixpoint closed, `switch_on_constant`/`_a2` are now REAL dispatch in
+  loaded objects (see "Why indexing dispatch is a safe nop" above for the
+  landed design: a trailing table section, loader-built `%SwitchEntry`
+  arrays, shared step cases, 7.6× on a wide-fact-table probe).
 - **Milestones 1–5 have landed, and the dynamic store is complete through rule
   bodies (3b-db PR 3);** milestone 6 is self-host. The reader (3b), byte-buffer
   output (4), dynamic store incl. rule bodies + catch/throw (3b-db/3c), and the
