@@ -149,7 +149,10 @@ table entry never matched at runtime and a strict switch silently
 FAILED the call. Both parsers now split at the last colon and unquote
 (`switch_entry_split/3`, `switch_entry_unquote/2`); regression
 `loaded_switch_on_constant_dispatch` pins quoted-key dispatch, the
-clean miss-into-else, and the unbound skip.
+clean miss-into-else, and the unbound skip on the loaded path, and
+`test_quoted_key_dispatch_executes` (tests/core/test_wam_llvm_switch.pl)
+pins it on the AOT path with an executed native binary — verified to
+fail against the pre-fix parser and pass with it.
 
 ## Milestones (subset expansion → bootstrap)
 
