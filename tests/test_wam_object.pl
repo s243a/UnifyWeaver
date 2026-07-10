@@ -1615,6 +1615,34 @@ test(selfhost_intdiv_truncates, [condition(clang_available)]) :-
     assertion(Out == "3034\n"),
     !.
 
+% cgfullm: cgfull + a MULTI-ENTRY name table (the eval compiler the
+% plawk CLI ships). Byte-compat guard: a single-predicate source
+% serializes IDENTICALLY through both (NE=1, first predicate named,
+% label 0), so content-dedup handles and every existing single-grammar
+% compile are unchanged -- and cgfull stays the self-host oracle.
+test(cgfullm_single_pred_byte_identical) :-
+    Clauses = [(sq(X, R) :- R is X * X)],
+    cgfull_term(Clauses, W1),
+    cgfullm_term(Clauses, W2),
+    assertion(W1 == W2),
+    !.
+
+% A multi-predicate source gains one entry row per predicate group
+% ("name/arity" -> its group label), which is what lets dyncall_at@name
+% resolve ANY predicate of a runtime-compiled object, not just the
+% first.
+test(cgfullm_multi_pred_entry_table) :-
+    Clauses = [(sq(X, R) :- R is X * X), (dbl(X2, R2) :- R2 is X2 * 2)],
+    cgfullm_term(Clauses, Wamo),
+    atomic_list_concat(Lines, '\n', Wamo),
+    Lines = ['WAMO', '2', '0', NE, E1Name, E1Lbl, E2Name, E2Lbl | _],
+    assertion(NE == '2'),
+    assertion(E1Name == '4 sq/2'),
+    assertion(E1Lbl == '0'),
+    assertion(E2Name == '5 dbl/2'),
+    assertion(E2Lbl == '1'),
+    !.
+
 % Nested arithmetic in the loaded compiler: the is-expression is staged
 % with c_operand (build_struct + X-temp deferral), so arbitrarily nested
 % expressions compile. (X + Y) * (X - 1) + 100 with X=3, Y=4 -> 114.

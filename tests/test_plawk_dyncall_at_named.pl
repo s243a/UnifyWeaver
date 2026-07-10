@@ -118,6 +118,21 @@ test(named_entry_on_compile_handle, [condition(clang_available)]) :-
     assertion(Out == "150\n"),
     !.
 
+% THE FAMILY PAYOFF: one compile() source holding TWO grammars, called
+% by name at two sites. The source text is identical at both sites, so
+% content dedup yields ONE handle (one compile, one loaded VM), and the
+% multi-entry name table the shipped cgfullm compiler emits resolves
+% both predicates against it. Squares 150 + doubles 44 over 3,4,5,10.
+test(compile_handle_exposes_family, [condition(clang_available)]) :-
+    an_dir(Dir),
+    GramSrc = "[(sq(X2, R2) :- atom_number(X2, N2), R2 is N2 * N2), (dbl(X3, R3) :- atom_number(X3, N3), R3 is N3 * 2)]",
+    format(string(Src),
+        "{ total += dyncall_at@sq(compile(\"~w\"), $1) + dyncall_at@dbl(compile(\"~w\"), $1) }\n\c
+         END { print total }\n", [GramSrc, GramSrc]),
+    build_run(Dir, 'anfam', Src, "3\n4\n5\n10\n", Out),
+    assertion(Out == "194\n"),
+    !.
+
 :- end_tests(plawk_dyncall_at_named).
 
 % --- helpers ---------------------------------------------------------------

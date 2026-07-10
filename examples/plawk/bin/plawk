@@ -144,9 +144,13 @@ build(File, Out0, KeepLL) :-
         \+ plawk_program_evalc_path(Program, _)
     ->  absolute_file_name(Out, OutAbs),
         atom_concat(OutAbs, '.evalc.wamo', EvalcPath),
+        % cgfullm = cgfull + a multi-entry name table, so a runtime-
+        % compiled object exposes its whole predicate family to
+        % dyncall_at@name (single-predicate sources emit byte-identical
+        % objects, so handles and content-dedup are unchanged).
         catch(
-            write_wam_object([wam_bootstrap_compiler:cgfull/2],
-                [wamo_entry(cgfull/2)], EvalcPath),
+            write_wam_object([wam_bootstrap_compiler:cgfullm/2],
+                [wamo_entry(cgfullm/2)], EvalcPath),
             EvalcErr,
             ( report_error('compile error', File, EvalcErr), halt(3) )),
         EvalcOptions = [evalc_path(EvalcPath)]
