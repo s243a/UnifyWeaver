@@ -18,6 +18,8 @@
     plawk_program_dyncall_assoc_str_arities/2,
     plawk_program_dyncall_named_posarray_entries/2,
     plawk_program_dyncall_posarray_arities/2,
+    plawk_program_dyncall_named_posarray_str_entries/2,
+    plawk_program_dyncall_posarray_str_arities/2,
     plawk_program_dyncall_at_arities/2,
     plawk_program_dyncall_at_named_entries/2,
     plawk_program_dyncall_at_named_float_entries/2,
@@ -651,6 +653,8 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
     plawk_program_dyncall_assoc_str_arities(Program, DynAssocSArities),
     plawk_program_dyncall_named_posarray_entries(Program, DynNamedPosarr),
     plawk_program_dyncall_posarray_arities(Program, DynPosarrArities),
+    plawk_program_dyncall_named_posarray_str_entries(Program, DynNamedPosarrS),
+    plawk_program_dyncall_posarray_str_arities(Program, DynPosarrSArities),
     plawk_program_dyncall_at_arities(Program, DynAtArities),
     plawk_program_dyncall_at_named_entries(Program, DynAtNamed),
     plawk_program_dyncall_at_named_float_entries(Program, DynAtNamedF),
@@ -675,6 +679,8 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
         DynAssocSArities == [],
         DynNamedPosarr == [],
         DynPosarrArities == [],
+        DynNamedPosarrS == [],
+        DynPosarrSArities == [],
         DynAtArities == [],
         DynAtNamed == [],
         DynAtNamedF == [],
@@ -701,7 +707,8 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
             DynRecArities == [], DynNamedRec == [], DynNamedAssoc == [],
             DynAssocArities == [], DynNamedAssocS == [],
             DynAssocSArities == [], DynNamedPosarr == [],
-            DynPosarrArities == []
+            DynPosarrArities == [], DynNamedPosarrS == [],
+            DynPosarrSArities == []
         ->  DyncallSupportIR = ''
         ;   ( plawk_program_dynload_path(Program, DynPath)
             ->  true
@@ -713,7 +720,8 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
                 DynBArities, DynNamed, DynNamedF, DynNamedB,
                 DynRecArities, DynNamedRec, DynNamedAssoc, DynAssocArities,
                 DynNamedAssocS, DynAssocSArities, DynNamedPosarr,
-                DynPosarrArities, DyncallSupportIR)
+                DynPosarrArities, DynNamedPosarrS, DynPosarrSArities,
+                DyncallSupportIR)
         ),
         % Dynamic-source shims for dyncall_at(...) / float(dyncall_at(...)) /
         % blob(dyncall_at(...)) sites + the shared path cache. A compile
@@ -1042,6 +1050,45 @@ plawk_subterm_dynposarray_call(Term, Call) :-
     compound(Term),
     arg(_, Term, Sub),
     plawk_subterm_dynposarray_call(Sub, Call).
+
+%% plawk_program_dyncall_named_posarray_str_entries(+Program, -Entries)
+%% plawk_program_dyncall_posarray_str_arities(+Program, -Arities)
+%  Str-valued positional array (`arr = dyncall[@name](args) as array(str)`):
+%  named sites get @plawk_dyncall_posarray_str_<Name>_<N> shims,
+%  default-entry sites @plawk_dyncall_posarray_str_default_<N> -- both
+%  forwarding to @wam_object_call_posarray_str (flat [Atom..] list, atom
+%  ids stored by position, resolved to text on read).
+plawk_program_dyncall_named_posarray_str_entries(
+        program(_Begin, Rules, EndClauses), Entries) :-
+    findall(Name-NArgs,
+        ( ( member(rule(_Pattern, Actions), Rules)
+          ; member(end(Actions), EndClauses)
+          ),
+          member(Action, Actions),
+          plawk_subterm_dynposarray_str_call(Action, dyncall_named(Name, Args)),
+          length(Args, NArgs)
+        ),
+        Entries0),
+    sort(Entries0, Entries).
+
+plawk_program_dyncall_posarray_str_arities(program(_Begin, Rules, EndClauses),
+        Arities) :-
+    findall(NArgs,
+        ( ( member(rule(_Pattern, Actions), Rules)
+          ; member(end(Actions), EndClauses)
+          ),
+          member(Action, Actions),
+          plawk_subterm_dynposarray_str_call(Action, dyncall(Args)),
+          length(Args, NArgs)
+        ),
+        A0),
+    sort(A0, Arities).
+
+plawk_subterm_dynposarray_str_call(dynposarray_bind_str(_Var, Call), Call).
+plawk_subterm_dynposarray_str_call(Term, Call) :-
+    compound(Term),
+    arg(_, Term, Sub),
+    plawk_subterm_dynposarray_str_call(Sub, Call).
 
 plawk_subterm_dynrec_call(dynrec_bind(_Vars, Call, _Types), Call).
 plawk_subterm_dynrec_call(dynrec_view(Call, _Types, _Body), Call).
@@ -1403,7 +1450,8 @@ plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
 plawk_dyncall_support_ir(Path, IArities, FArities, BArities,
         NamedI, NamedF, NamedB, RecArities, NamedRec, NamedAssoc,
         AssocArities, NamedAssocStr, AssocStrArities,
-        NamedPosarray, PosarrayArities, IR) :-
+        NamedPosarray, PosarrayArities,
+        NamedPosarrayStr, PosarrayStrArities, IR) :-
     llvm_emit_c_string_global('plawk_dyncall_path', Path, PathGlobal,
         _StrLen, BytesLen),
     format(atom(GetterIR),
@@ -1442,7 +1490,7 @@ load:
     % (record binds that name an entry feed the union too, so their
     % resolver exists even when the entry is used nowhere else)
     append([NamedI, NamedF, NamedB, NamedRec, NamedAssoc, NamedAssocStr,
-            NamedPosarray],
+            NamedPosarray, NamedPosarrayStr],
         NamedAll0),
     sort(NamedAll0, NamedAll),
     findall(ResIR,
@@ -1492,9 +1540,18 @@ load:
         ( member(DPN, PosarrayArities),
           plawk_dyncall_posarray_default_shim_ir(DPN, DPShim) ),
         DPShims),
+    findall(NPSShim,
+        ( member(NPSName-NPSNArgs, NamedPosarrayStr),
+          plawk_dyncall_named_posarray_str_shim_ir(NPSName, NPSNArgs, NPSShim) ),
+        NPSShims),
+    findall(DPSShim,
+        ( member(DPSN, PosarrayStrArities),
+          plawk_dyncall_posarray_str_default_shim_ir(DPSN, DPSShim) ),
+        DPSShims),
     append([[PathGlobal, GetterIR], IShims, FShims, BShims,
             Resolvers, NIShims, NFShims, NBShims, RecShims, NRecShims,
-            NAShims, DAShims, NSShims, DSShims, NPShims, DPShims], Parts),
+            NAShims, DAShims, NSShims, DSShims, NPShims, DPShims,
+            NPSShims, DPSShims], Parts),
     atomic_list_concat(Parts, '\n\n', IR).
 
 %% plawk_dyncall_named_assoc_shim_ir(+Name, +NArgs, -IR)
@@ -1654,6 +1711,58 @@ do_call:
   %args = alloca %Value, i32 ~w
 ~w
   %r = call i1 @wam_object_call_posarray(%WamState* %vm, i32 %pc, i32 ~w, %Value* %args, i32 ~w, %WamAssocI64Table* %table)
+  ret i1 %r
+
+fail:
+  ret i1 false
+}',
+        [NArgs, ParamsIR, NArgs, StoreIR, NArgs, NArgs]).
+
+%% plawk_dyncall_named_posarray_str_shim_ir(+Name, +NArgs, -IR)
+%  Str-valued positional array, named entry: same shape as the posarray
+%  shim but forwarding to @wam_object_call_posarray_str (atom elements).
+plawk_dyncall_named_posarray_str_shim_ir(Name, NArgs, IR) :-
+    plawk_dyncall_named_symbol(Name, NArgs, Sym),
+    plawk_foreign_wrapper_params(NArgs, ParamsIR),
+    plawk_dyncall_store_lines(NArgs, StoreLines),
+    atomic_list_concat(StoreLines, '\n', StoreIR),
+    format(atom(IR),
+'define i1 @plawk_dyncall_posarray_str_~w(~w, %WamAssocI64Table* %table) {
+entry:
+  %pc = call i32 @plawk_dyncall_resolve_~w()
+  %bad = icmp slt i32 %pc, 0
+  br i1 %bad, label %fail, label %do_call
+
+do_call:
+  %vm = call %WamState* @plawk_dyncall_get()
+  %args = alloca %Value, i32 ~w
+~w
+  %r = call i1 @wam_object_call_posarray_str(%WamState* %vm, i32 %pc, i32 ~w, %Value* %args, i32 ~w, %WamAssocI64Table* %table)
+  ret i1 %r
+
+fail:
+  ret i1 false
+}',
+        [Sym, ParamsIR, Sym, NArgs, StoreIR, NArgs, NArgs]).
+
+%% plawk_dyncall_posarray_str_default_shim_ir(+NArgs, -IR)
+%  Str-valued positional array, default entry.
+plawk_dyncall_posarray_str_default_shim_ir(NArgs, IR) :-
+    plawk_foreign_wrapper_params(NArgs, ParamsIR),
+    plawk_dyncall_store_lines(NArgs, StoreLines),
+    atomic_list_concat(StoreLines, '\n', StoreIR),
+    format(atom(IR),
+'define i1 @plawk_dyncall_posarray_str_default_~w(~w, %WamAssocI64Table* %table) {
+entry:
+  %vm = call %WamState* @plawk_dyncall_get()
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+
+do_call:
+  %pc = load i32, i32* @plawk_dyncall_pc
+  %args = alloca %Value, i32 ~w
+~w
+  %r = call i1 @wam_object_call_posarray_str(%WamState* %vm, i32 %pc, i32 ~w, %Value* %args, i32 ~w, %WamAssocI64Table* %table)
   ret i1 %r
 
 fail:
@@ -3278,7 +3387,9 @@ plawk_assoc_spec_forin_array(ActionSpecs, ArrayName) :-
 plawk_assoc_specs_str_arrays(RuleSpecs, StrArrays) :-
     findall(A,
         ( member(rule(_P, ActionSpecs, _C), RuleSpecs),
-          member(dynassoc(A, str(_Call)), ActionSpecs)
+          ( member(dynassoc(A, str(_Call)), ActionSpecs)
+          ; member(dynassoc(A, posarray_str(_Call)), ActionSpecs)
+          )
         ),
         As0),
     sort(As0, StrArrays).
@@ -3290,7 +3401,9 @@ plawk_assoc_specs_str_arrays(RuleSpecs, StrArrays) :-
 plawk_assoc_specs_posarray_arrays(RuleSpecs, PosArrays) :-
     findall(A,
         ( member(rule(_P, ActionSpecs, _C), RuleSpecs),
-          member(dynassoc(A, posarray(_Call)), ActionSpecs)
+          ( member(dynassoc(A, posarray(_Call)), ActionSpecs)
+          ; member(dynassoc(A, posarray_str(_Call)), ActionSpecs)
+          )
         ),
         As0),
     sort(As0, PosArrays).
@@ -4220,6 +4333,13 @@ plawk_assoc_body_action_spec(dynassoc_bind_str(var(ArrayName), Call),
 plawk_assoc_body_action_spec(dynposarray_bind(var(ArrayName), Call),
         dynassoc(ArrayName, posarray(Call))) :-
     plawk_dynrec_call_ok(Call).
+% str-valued positional array: the call rides the dynassoc spec wrapped
+% in posarray_str(...) -- integer position KEYS (like posarray) and atom
+% VALUES resolved to text (like str), so the array name joins BOTH the
+% posarray set and the str-array set.
+plawk_assoc_body_action_spec(dynposarray_bind_str(var(ArrayName), Call),
+        dynassoc(ArrayName, posarray_str(Call))) :-
+    plawk_dynrec_call_ok(Call).
 % rule-body for-in: per-record iteration over an assoc table with a
 % print body -- the END for-in's field shapes (loop key / lookups keyed
 % by it / string literals), emitted as a loop inside the rule's action
@@ -4744,6 +4864,7 @@ plawk_program_posarray_arrays(Rules, Names) :-
     sort(Names0, Names).
 
 plawk_posarray_bind_name(dynposarray_bind(var(Name), _Call), Name).
+plawk_posarray_bind_name(dynposarray_bind_str(var(Name), _Call), Name).
 plawk_posarray_bind_name(Term, Name) :-
     compound(Term),
     arg(_, Term, Sub),
@@ -4761,6 +4882,10 @@ plawk_binfmt_assoc_action_ok(Descriptor, dynassoc_bind(var(_Name), Call)) :-
 plawk_binfmt_assoc_action_ok(Descriptor, dynposarray_bind(var(_Name), Call)) :-
     !,
     plawk_dynassoc_call_parts(posarray(Call), Args, _Shim),
+    plawk_binfmt_foreign_args_ok(Descriptor, Args).
+plawk_binfmt_assoc_action_ok(Descriptor, dynposarray_bind_str(var(_Name), Call)) :-
+    !,
+    plawk_dynassoc_call_parts(posarray_str(Call), Args, _Shim),
     plawk_binfmt_foreign_args_ok(Descriptor, Args).
 
 plawk_record_program_ok(binfmt(Types), Rules, _EndPrintFields) :-
@@ -6748,14 +6873,27 @@ plawk_assoc_end_print_lines([assoc(var(ArrayName), int(Key)) | Rest], AssocPlan,
       format(atom(Value),
           '  %assoc_end_value_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
           [PrintIndex, TableIndex, Key]),
-      format(atom(FmtVar), 'assoc_end_i64_fmt_~w', [PrintIndex]),
-      format(atom(PrintVar), 'printed_assoc_end_i64_~w', [PrintIndex]),
       format(atom(ValueIR), '%assoc_end_value_~w', [PrintIndex]),
-      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
-          [FmtPtr, PrintCall]),
+      (   plawk_assoc_plan_str_array(AssocPlan, ArrayName)
+      ->  % str-valued positional table: resolve the stored id to text.
+          format(atom(ValueString),
+              '  %assoc_end_value_s_~w = call i8* @wam_atom_to_string(i64 ~w)',
+              [PrintIndex, ValueIR]),
+          format(atom(FmtVar), 'assoc_end_str_fmt_~w', [PrintIndex]),
+          format(atom(PrintVar), 'printed_assoc_end_str_~w', [PrintIndex]),
+          format(atom(PtrIR), '%assoc_end_value_s_~w', [PrintIndex]),
+          llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar,
+              PtrIR, [FmtPtr, PrintCall]),
+          ValueLines = [Value, ValueString, FmtPtr, PrintCall]
+      ;   format(atom(FmtVar), 'assoc_end_i64_fmt_~w', [PrintIndex]),
+          format(atom(PrintVar), 'printed_assoc_end_i64_~w', [PrintIndex]),
+          llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
+              ValueIR, [FmtPtr, PrintCall]),
+          ValueLines = [Value, FmtPtr, PrintCall]
+      ),
       NextPrintIndex is PrintIndex + 1
     },
-    [Value, FmtPtr, PrintCall],
+    plawk_emit_lines(ValueLines),
     plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, NextPrintIndex).
 plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
@@ -6810,8 +6948,11 @@ plawk_assoc_table_index(assoc_plan(Tables, _Actions), ArrayName, TableIndex) :-
 %  of printing it numerically.
 plawk_assoc_plan_str_array(assoc_plan(_Tables, Rules), ArrayName) :-
     member(assoc_rule(_RuleIndex, _Pattern, Actions, _Control), Rules),
-    member(assoc_dyn_action(_Index, ArrayName, _TableIndex, str(_Call)),
-        Actions),
+    ( member(assoc_dyn_action(_Index, ArrayName, _TableIndex, str(_Call)),
+        Actions)
+    ; member(assoc_dyn_action(_Index2, ArrayName, _TableIndex2,
+        posarray_str(_Call2)), Actions)
+    ),
     !.
 
 %% plawk_assoc_plan_posarray_array(+AssocPlan, +ArrayName) is semidet.
@@ -6821,8 +6962,11 @@ plawk_assoc_plan_str_array(assoc_plan(_Tables, Rules), ArrayName) :-
 %  even in text mode.
 plawk_assoc_plan_posarray_array(assoc_plan(_Tables, Rules), ArrayName) :-
     member(assoc_rule(_RuleIndex, _Pattern, Actions, _Control), Rules),
-    member(assoc_dyn_action(_Index, ArrayName, _TableIndex, posarray(_Call)),
-        Actions),
+    ( member(assoc_dyn_action(_Index, ArrayName, _TableIndex, posarray(_Call)),
+        Actions)
+    ; member(assoc_dyn_action(_Index2, ArrayName, _TableIndex2,
+        posarray_str(_Call2)), Actions)
+    ),
     !.
 
 % Binary record modes: assoc keys are raw i64 field values (no
@@ -7506,6 +7650,14 @@ plawk_dynassoc_call_parts(posarray(dyncall_named(Name, Args)), Args, ShimName) :
 plawk_dynassoc_call_parts(posarray(dyncall(Args)), Args, ShimName) :-
     length(Args, NArgs),
     format(atom(ShimName), 'plawk_dyncall_posarray_default_~w', [NArgs]).
+% str-valued positional array (`as array(str)`): posarray_str(...) wrapper.
+plawk_dynassoc_call_parts(posarray_str(dyncall_named(Name, Args)), Args, ShimName) :-
+    length(Args, NArgs),
+    plawk_dyncall_named_symbol(Name, NArgs, Sym),
+    format(atom(ShimName), 'plawk_dyncall_posarray_str_~w', [Sym]).
+plawk_dynassoc_call_parts(posarray_str(dyncall(Args)), Args, ShimName) :-
+    length(Args, NArgs),
+    format(atom(ShimName), 'plawk_dyncall_posarray_str_default_~w', [NArgs]).
 
 plawk_dynrec_field_load_lines([], [], _Base, []).
 plawk_dynrec_field_load_lines([F | Fs], [Type | Ts], Base, [Line | Lines]) :-

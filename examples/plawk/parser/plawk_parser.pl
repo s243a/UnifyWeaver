@@ -1181,7 +1181,7 @@ dynassoc_value_kind(i64) -->
 %  table as `as assoc`, but filled from a flat [V1, ..., Vn] list instead
 %  of key-value pairs, so END `arr[1]`, `arr[2]`, ... and for-in read the
 %  positional values.
-dynposarray_bind_action(dynposarray_bind(var(Name), Call)) -->
+dynposarray_bind_action(Action) -->
     identifier(Name),
     ws,
     "=",
@@ -1191,7 +1191,12 @@ dynposarray_bind_action(dynposarray_bind(var(Name), Call)) -->
     "as",
     identifier_boundary,
     ws,
-    "array".
+    "array",
+    dynassoc_value_kind(Kind),
+    { Kind == str
+    ->  Action = dynposarray_bind_str(var(Name), Call)
+    ;   Action = dynposarray_bind(var(Name), Call)
+    }.
 
 dynrec_view_action(dynrec_view(Call, Types, Body)) -->
     dynrec_call_expr(Call),

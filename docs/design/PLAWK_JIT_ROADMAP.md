@@ -302,7 +302,7 @@ different plawk containers — this is the through-line for the rest of item 4:
   **Rule-body for-in LANDED:** `for (k in arr)` iterates a
   grammar-populated table inside the rule''s action chain (a per-record
   running snapshot), not only in END.
-- **Positional array — LANDED (named + default entry, i64 values):**
+- **Positional array — LANDED (named + default entry, i64 AND str values):**
   `arr = dyncall[@name](args) as array` binds a FLAT returned list
   `[V1, ..., Vn]` into one array value by POSITION — element i at key i
   (1-indexed, the awk `split` convention). `@wam_object_call_posarray`
@@ -314,9 +314,14 @@ different plawk containers — this is the through-line for the rest of item 4:
   never interned atom ids, so int-key reads (`arr[1]`, and a for-in loop
   key) are unambiguous and permitted in TEXT mode too, unlike a regular
   integer-keyed assoc (which stays binary-only to avoid the atom-id
-  collision). Value binding uses whatever the entry returns; string
-  values (`[Atom, ...]` elements) are a natural follow-on, deferred like
-  the assoc `(str)` kind was. Tests:
+  collision). **String values (`as array(str)`):** a grammar returning a
+  flat `[Atom, ...]` list gives a str-valued positional table — the
+  element atoms' registry ids are stored by position
+  (`@wam_object_call_posarray_str`), and reads (END `arr[1]`, for-in
+  values) resolve them back to text through `@wam_atom_to_string`. Such a
+  table is BOTH positional-keyed (int positions, int reads work in text
+  mode) and str-valued (its name joins both the posarray set and the
+  str-array set), completing the container × value-kind matrix. Tests:
   `tests/test_plawk_dyncall_posarray.pl`.
 
 Each target reuses one marshaller over the same walked compound; they differ

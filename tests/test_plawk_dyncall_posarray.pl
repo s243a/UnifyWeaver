@@ -29,6 +29,14 @@ splitc(X, R) :-
     R2 is N * 100,
     R = [N, R1, R2].
 
+% label a number as a 2-element positional list of ATOMS (str values):
+% a size bucket and a parity tag.
+labelc(X, R) :-
+    atom_number(X, N),
+    ( N > 5 -> Size = big ; Size = small ),
+    ( 0 is N mod 2 -> Parity = even ; Parity = odd ),
+    R = [Size, Parity].
+
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
                            [stdout(null), stderr(null), process(Pid)]),
@@ -112,6 +120,51 @@ test(posarray_forin_rule_body, [condition(clang_available)]) :-
     exclude(==(""), Lines0, Lines),
     msort(Lines, Sorted),
     assertion(Sorted == ["1 2", "2 20", "20", "3 200"]),
+    !.
+
+% `... as array(str)` parses to a dynposarray_bind_str action.
+test(posarray_str_parses) :-
+    plawk_parse_string(
+        "BEGIN { DYNLOAD = \"lib.wamo\" }\n\c
+         { arr = dyncall@labelc($1) as array(str) }\n\c
+         END { print arr[1], arr[2] }\n",
+        program(_, [rule(_, Actions)], _)),
+    memberchk(dynposarray_bind_str(var(arr),
+        dyncall_named(labelc, [field(1)])), Actions),
+    !.
+
+% NAMED entry, str values end to end: a grammar returns a flat list of
+% ATOMS [Size, Parity]; each lands at its position and reads resolve back
+% to text. Last record 8 -> [big, even]; END prints arr[1], arr[2].
+test(posarray_str_named_running, [condition(clang_available)]) :-
+    pa_dir(Dir),
+    directory_file_path(Dir, 'labelc.wamo', Wamo),
+    write_wam_object([user:labelc/2], [wamo_entries([labelc/2])], Wamo),
+    format(string(Src),
+        "BEGIN { DYNLOAD = \"~w\" }\n\c
+         { arr = dyncall@labelc($1) as array(str) }\n\c
+         END { print arr[1], arr[2] }\n", [Wamo]),
+    build_run(Dir, 'pans', Src, "3\n8\n", Out),
+    assertion(Out == "big even\n"),
+    !.
+
+% for-in over a str-valued positional array: the loop key is the integer
+% position (numeric), the value resolves to text. One record 3 ->
+% [small, odd]; slot order.
+test(posarray_str_forin, [condition(clang_available)]) :-
+    pa_dir(Dir),
+    directory_file_path(Dir, 'labelc.wamo', Wamo),
+    ( exists_file(Wamo) -> true
+    ; write_wam_object([user:labelc/2], [wamo_entries([labelc/2])], Wamo) ),
+    format(string(Src),
+        "BEGIN { DYNLOAD = \"~w\" }\n\c
+         { arr = dyncall@labelc($1) as array(str) ; for (k in arr) print k, arr[k] }\n\c
+         END { print arr[1] }\n", [Wamo]),
+    build_run(Dir, 'pafs', Src, "3\n", Out),
+    split_string(Out, "\n", "", Lines0),
+    exclude(==(""), Lines0, Lines),
+    msort(Lines, Sorted),
+    assertion(Sorted == ["1 small", "2 odd", "small"]),
     !.
 
 :- end_tests(plawk_dyncall_posarray).

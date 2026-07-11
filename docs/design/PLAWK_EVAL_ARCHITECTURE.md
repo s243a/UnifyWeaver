@@ -203,7 +203,9 @@ Deliberately deferred, in rough value order:
   reusing the whole assoc pipeline via a `posarray(...)` spec wrapper
   and a new `@wam_object_call_posarray` walk. Its integer position keys
   read unambiguously in text mode (unlike a regular integer-keyed
-  assoc). String values deferred, like the assoc `(str)` kind was.
+  assoc). String values LANDED too (`as array(str)`, a flat `[Atom,...]`
+  list stored by position and resolved back to text on read), so the
+  container × value-kind matrix is complete.
 - ~~**`dyncall_at@name(...)`**~~ — LANDED (all three return kinds:
   i64, `float(...)`, `blob(...)`): named entries on runtime sources
   and `compile(...)` handles, resolved per call against the VM's
