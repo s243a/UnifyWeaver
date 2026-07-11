@@ -97,6 +97,27 @@ The practical
 recipe stands: luna everywhere + small random 5.5 overlap + graph channels in the fusion + routed 5.5 on
 conflict + sonnet-5 tiebreaks on disagreement.
 
+## 3. Positioning vs the JointPosterior dense baseline (control) — deferred comparison
+
+The correlated-Gaussian conditioner used here (`correlated_update_H` / `gaussian_condition_update`) is the
+**interpretable dense baseline** in the project's uncertainty playbook
+(`DESIGN_uncertainty_estimation_playbook.md`, `THEORY_evidence_fusion.md`): it fits the full cross-channel
+error covariance on held/overlap rows and prices every correlation explicitly (`K = (PHᵀ + C)S⁻¹`), which
+is exactly the playbook's remedy for "sources are not independent → naive PoE over-confidences." Its role
+here is a **control**: it is the honest, few-parameter (~20 numbers) fusion whose gains any learned combiner
+must beat to justify its opacity. The playbook's champion learned combiner, `JointPosterior` (mu_posterior.py),
+is a calibrated softmax over RELATION classes; it down-weights redundant e5-shared signal automatically
+rather than through a hand-fit covariance.
+
+**Why the head-to-head is deferred (explicit TODO).** JointPosterior outputs a relation-class distribution;
+the Kalman conditioner outputs a continuous (D, S) Gaussian posterior. A fair same-held-split comparison
+needs a metric bridge (map relation-class probabilities to D/S, or evaluate both by a common
+decision/AURC/NLL surrogate) — that wiring is > 1h and is deferred. TODO(blocker 6): implement
+`JointPosterior.fit` on the campaign overlap features and compare AURC + decision-flip accuracy against the
+correlated-Gaussian posterior on the same descendant-disjoint held split, using the playbook's margin-gate
+evaluation. Until then, treat the correlated-Gaussian numbers above as the dense-baseline control, not as a
+claim that the explicit filter beats a learned joint head.
+
 ## Repro
 
 ```
