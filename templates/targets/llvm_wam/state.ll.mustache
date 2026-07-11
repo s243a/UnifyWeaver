@@ -6226,6 +6226,26 @@ done:
 }
 
 ; Push a catch frame snapshotting the current VM marks.
+; Read a catch/3 argument register for frame storage: deref to the
+; bound value, EXCEPT when the cell is still unbound and the register
+; holds a Ref -- then keep the chain-end Ref so the frame retains the
+; variable's ADDRESS (the throw-side unify binds through it).
+define %Value @wam_catch_arg(%WamState* %vm, i32 %idx) {
+entry:
+  %raw = call %Value @wam_get_reg(%WamState* %vm, i32 %idx)
+  %d = call %Value @wam_deref_value(%WamState* %vm, %Value %raw)
+  %unb = call i1 @value_is_unbound(%Value %d)
+  %rtag = extractvalue %Value %raw, 0
+  %isref = icmp eq i32 %rtag, 5
+  %keep = and i1 %unb, %isref
+  br i1 %keep, label %kv, label %use_d
+kv:
+  %chain_end = call %Value @wam_deref_keep_var(%WamState* %vm, %Value %raw)
+  ret %Value %chain_end
+use_d:
+  ret %Value %d
+}
+
 define void @wam_catch_push(%WamState* %vm, %Value %catcher, %Value %recovery, i32 %return_pc) {
 entry:
   %count = load i32, i32* @wam_catch_count
@@ -6283,10 +6303,16 @@ have:
 ; catch(Goal, Catcher, Recovery): A1=Goal, A2=Catcher, A3=Recovery. Push a
 ; frame, then meta-call Goal (reg 0 already holds it) with continuation
 ; return_pc. If Goal cannot be dispatched, pop the frame and fail.
+; Finding no. 15: an UNBOUND catcher (the common ``catch(G, E, Rec)``
+; shape) must be stored as its chain-end Ref, not the full deref --
+; @wam_get_reg_deref collapses it to the addressless Unbound sentinel,
+; which @wam_unify_value cannot bind through (its bind_a arm requires a
+; Ref), so the throw-side catcher match failed and EVERY ball sailed
+; past a variable catcher to the uncaught halt.
 define i1 @wam_catch_setup(%WamState* %vm, i32 %return_pc) {
 entry:
-  %catcher = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
-  %recovery = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %catcher = call %Value @wam_catch_arg(%WamState* %vm, i32 1)
+  %recovery = call %Value @wam_catch_arg(%WamState* %vm, i32 2)
   call void @wam_catch_push(%WamState* %vm, %Value %catcher, %Value %recovery, i32 %return_pc)
   %ok = call i1 @wam_dispatch_meta_call(%WamState* %vm, i32 1, i32 %return_pc)
   br i1 %ok, label %done, label %goalfail
