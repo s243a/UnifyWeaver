@@ -357,6 +357,23 @@ out into the same fixed access layout `BINFMT` describes. Bytes-in +
 record-out = a grammar-driven reader for formats too irregular for the
 native Tier-1 reader, without leaving the compiled loop.
 
+**Grammar-driven reader capstone — LANDED (proven, no new code):** the
+endgame above composes today, and now has a standing end-to-end test
+(`tests/test_plawk_grammar_reader.pl`). A `BINFMT` `blobN` field frames
+a binary payload natively; the payload flows — as a transient atom,
+constant-memory, no interning — into a grammar shipped as a `.wamo`
+(`(s, c) = dyncall@parse($2) as (i64 i64)`), which parses the bytes with
+a real WAM DCG (choice points and all) and returns a `pair(Sum, Count)`
+compound; `@wam_object_call_record` deserializes that into the typed
+plawk scalars. The novelty is routing bytes-in + record-out **through a
+loaded object** rather than a compiled-in foreign predicate, so the
+reader grammar is a shippable, swappable artifact. It fell out of the
+existing pieces — item 2's blob→transient-atom arg marshalling
+(`plawk_foreign_args_ir`, `≤1` blob per call) meeting this item's record
+destructure (`dynrec_bind`, legal as a binary-mode action) — with no
+connecting code needed; a scalar id field can still guard the record
+while the grammar reads the payload.
+
 **Effort:** large — a return-shape surface, a term-walking marshaller in
 the call primitive, and typed materialization. **Depends on:** item 2 (the
 byte-return primitive and the "output is a term, not a scalar" plumbing),
