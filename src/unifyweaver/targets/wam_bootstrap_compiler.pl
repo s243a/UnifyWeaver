@@ -425,21 +425,27 @@ cgfull_term(Clauses, Wamo) :-
     atom_codes(Wamo, Codes).
 
 % The meta-call table (pay-for-what-you-use, mirroring the host writer):
-% emitted only when the instruction stream contains a meta-call
-% (op1 = -1 on a call), so call-free programs serialize byte-identically
-% to before -- every self-host golden is call-free. One row per
-% predicate group: <atomIdx> <funIdx> <arity> <labelIdx>. The predicate
-% name joins the ATOM table (appended, so existing reloc indices are
-% unchanged); funIdx points at the name's functor-table row when the
-% object builds such a compound (call(k(V)) collected k into the table
-% already), else -1.
+% emitted only when the instruction stream contains a meta-dispatching
+% call -- a plain meta-call (op1 = -1), or catch/3 (-5) / throw/1 (-6)
+% whose Goal and Recovery resolve through the same path, exactly the
+% host's wamo_has_meta_call set (retract's -3 consults the store
+% directly and needs no table). Call-free programs serialize
+% byte-identically to before -- every self-host golden is call-free.
+% One row per predicate group: <atomIdx> <funIdx> <arity> <labelIdx>.
+% The predicate name joins the ATOM table (appended, so existing reloc
+% indices are unchanged); funIdx points at the name's functor-table row
+% when the object builds such a compound (call(k(V)) collected k into
+% the table already), else -1.
 cg_meta_rows(AllIs, Groups, Atoms0, Functors, Atoms, Rows) :-
-    ( memberchk(enc(18, -1, _, _), AllIs)
+    ( cg_has_meta(AllIs)
     -> cg_meta_names(Groups, 0, Names),
        cg_meta_atoms(Names, Atoms0, Atoms),
        cg_meta_rows_list(Names, Atoms, Functors, Rows)
     ;  Atoms = Atoms0, Rows = []
     ).
+cg_has_meta(AllIs) :- memberchk(enc(18, -1, _, _), AllIs).
+cg_has_meta(AllIs) :- memberchk(enc(18, -5, _, _), AllIs).
+cg_has_meta(AllIs) :- memberchk(enc(18, -6, _, _), AllIs).
 cg_meta_names([], _, []).
 cg_meta_names([pred(P, A, _)|Gs], I, [mp(P, A, I)|R]) :-
     I1 is I + 1, cg_meta_names(Gs, I1, R).
@@ -719,9 +725,33 @@ f_goal(Goal, _, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In, Is) :-
     call_args(Goal, 1, A, At, FT, In0, In, SetupIs),
     append(SetupIs, [enc(18, -1, A, 0)], Is),
     length(Is, N), PC is PC0 + N.
+% retract/1 (nondeterministic): the clause pattern stages into A1 and
+% the call carries sentinel -3 -- the runtime's consult+remove+
+% backtrack iterator over the dynamic store (agg -4 frames), so
+% re-satisfaction removes and yields the next match and exhaustion
+% fails cleanly.
+f_goal(retract(Cl), _, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In, Is) :- !,
+    c_operand(Cl, 0, At, FT, In0, In, IC),
+    append(IC, [enc(18, -3, 1, 0)], Is),
+    length(Is, N), PC is PC0 + N.
+% catch/3: A1=Goal, A2=Catcher, A3=Recovery, sentinel -5; throw/1: the
+% ball in A1, sentinel -6. Goal and Recovery dispatch through the
+% object's meta-call table, so -5/-6 trigger its emission exactly as
+% the host writer does (see cg_meta_rows).
+f_goal(catch(G, C, Rc), _, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In, Is) :- !,
+    c_operand(G, 0, At, FT, In0, In1, IG),
+    c_operand(C, 1, At, FT, In1, In2, ICt),
+    c_operand(Rc, 2, At, FT, In2, In, IR),
+    append(IG, ICt, GC), append(GC, IR, Setup),
+    append(Setup, [enc(18, -5, 3, 0)], Is),
+    length(Is, N), PC is PC0 + N.
+f_goal(throw(B), _, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In, Is) :- !,
+    c_operand(B, 0, At, FT, In0, In, IB),
+    append(IB, [enc(18, -6, 1, 0)], Is),
+    length(Is, N), PC is PC0 + N.
 % findall(Template, Goal, List) with a VARIABLE template and result
-% (the dominant shape; compound templates stay outside the subset and
-% throw). Emits the host's aggregate bracket: initialize the template
+% (the dominant shape; a COMPOUND template has its own clause below).
+% Emits the host's aggregate bracket: initialize the template
 % and result registers if fresh, begin_aggregate(collect,
 % valreg<<16|resreg), the goal inline, end_aggregate(valreg) -- the
 % runtime collects one frozen copy per solution and binds the list on
@@ -747,6 +777,35 @@ f_goal(findall('$VAR'(TN), G, '$VAR'(LN)), PL, At, FT, PC0, PC, L0, L,
     append(Inits, [enc(28, 4, Op2, 0) | GIs], Front),
     append(Front, [enc(29, TY, 0, 0)], Is),
     In = In2.
+% COMPOUND template: findall(p(X, Y), Goal, List) -- the host's shape.
+% Fresh template variables self-init BEFORE begin (the frame saves the
+% registers; each solution's backtrack restores them and the trail
+% unwind resets their cells, so every iteration starts fresh). AFTER
+% the goal succeeds, the template structure is BUILT into A1 with the
+% goal's in-set (the just-bound solution values), and
+% end_aggregate(A1) freezes it -- value register 0.
+f_goal(findall(T, G, '$VAR'(LN)), PL, At, FT, PC0, PC, L0, L,
+        Prs0, Prs, In0, In, Is) :-
+    compound(T), T \= '$VAR'(_), integer(LN), !,
+    LY is 48 + LN,
+    cg_template_vars(T, TVars),
+    cg_template_inits(TVars, In0, In1, TInits),
+    ( memberchk(LN, In1) -> LInit = [], In2 = In1
+    ; LInit = [enc(9, LY, LY, 0)], In2 = [LN | In1] ),
+    append(TInits, LInit, Inits),
+    length(Inits, NI),
+    GoalPC is PC0 + NI + 1,
+    conj_list(G, Gs),
+    f_goals(Gs, PL, At, FT, GoalPC, PCg, L0, L, Prs0, Prs, In2, InG, GIs),
+    c_operand(T, 0, At, FT, InG, _InB, BIs),
+    length(BIs, NB),
+    PC is PCg + NB + 1,
+    Op2 is LY,
+    append(GIs, BIs, Body),
+    append(Inits, [enc(28, 4, Op2, 0) | Body], Front),
+    append(Front, [enc(29, 0, 0, 0)], Is),
+    In = In2.
+
 f_goal((L is E), _, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In2, Is) :- !,
     % NESTED arithmetic: the expression is just a term -- stage it with
     % c_operand (build_struct + X-temp deferral handles arbitrary nesting,
@@ -791,6 +850,23 @@ f_goal(Goal, PL, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In, Is) :-  % predicate
 % loadable (call sentinel), so the loaded compiler aborts immediately.
 f_goal(Goal, _, _, _, _, _, _, _, _, _, _, _, _) :-
     functor(Goal, P, A), throw(cg_unsupported_goal(P, A)).
+
+% distinct '$VAR' indices of a findall template term, first-occurrence
+% order -- the compound-template clause self-inits each fresh one.
+cg_template_vars(T, Vs) :- cg_tv(T, [], Vs).
+cg_tv('$VAR'(N), Acc, Out) :- integer(N), !,
+    ( memberchk(N, Acc) -> Out = Acc ; append(Acc, [N], Out) ).
+cg_tv(T, Acc, Out) :- compound(T), !, T =.. [_|As], cg_tvl(As, Acc, Out).
+cg_tv(_, Acc, Acc).
+cg_tvl([], A, A).
+cg_tvl([X|Xs], A0, A) :- cg_tv(X, A0, A1), cg_tvl(Xs, A1, A).
+
+cg_template_inits([], In, In, []).
+cg_template_inits([N|Ns], In0, In, Is) :-
+    ( memberchk(N, In0) -> In1 = In0, Head = []
+    ; Y is 48 + N, Head = [enc(9, Y, Y, 0)], In1 = [N | In0] ),
+    cg_template_inits(Ns, In1, In, Rest),
+    append(Head, Rest, Is).
 
 % builtin goals the grammar can emit directly: name/arity -> builtin id (the
 % host runtime's builtin_op_to_id table). Staged like a call (c_operand per

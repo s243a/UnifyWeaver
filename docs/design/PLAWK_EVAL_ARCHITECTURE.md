@@ -236,5 +236,23 @@ Deliberately deferred, in rough value order:
   aggregate frame never saved/restored `stack_size` (an allocating
   inner goal that failed left an orphaned environment frame), and
   finalize restored only 512 of the 2048 saved register bytes.
-  Remaining recorded demands: nondet `retract/1` emission (call
-  sentinel −3) and compound `findall` templates.
+  The third round landed the recorded next demands: nondet
+  **`retract/1`** (pattern staged into A1, call sentinel −3 — the
+  runtime's consult+remove+backtrack iterator, so re-satisfaction
+  yields the next match and exhaustion fails cleanly), **compound
+  `findall` templates** (`findall(p(X, Y), G, L)` — fresh template
+  variables self-init before `begin_aggregate`, and the template
+  structure is BUILT into the value register after each solution),
+  and **`catch/3`/`throw/1`** (sentinels −5/−6; Goal and Recovery
+  resolve through the meta-call table, whose emission now also
+  triggers on −5/−6). Catcher and Recovery must be PLAIN operands:
+  a control construct (conjunction, `=/2`, …) as Recovery is
+  rejected at compile time with `cg_unsupported_operand` — wrap it
+  in a helper predicate. Landing the catch tests surfaced campaign
+  finding **no. 15**: `wam_catch_setup` stored the fully-deref'd
+  catcher, collapsing an unbound catcher — the common
+  `catch(G, E, Rec)` shape — to the addressless Unbound sentinel
+  that the throw-side unify cannot bind through, so every ball
+  sailed past a variable catcher to the uncaught halt (all prior
+  runtime tests used compound catchers). The frame now keeps the
+  chain-end Ref.
