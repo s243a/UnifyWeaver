@@ -271,6 +271,51 @@ fn generated_tail_clause_call_reads_dynamic_facts() {
 }
 
 #[test]
+fn current_predicate_backtracks_over_matching_dynamic_arities() {
+    let mut vm = WamState::new(
+        vec![
+            Instruction::Call("current_predicate/1".to_string(), 1),
+            Instruction::Proceed,
+        ],
+        HashMap::new(),
+    );
+    assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("one")]));
+    assert_clause(
+        &mut vm,
+        "assertz/1",
+        fact("dyn", vec![at("one"), at("two")]),
+    );
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("/", vec![at("dyn"), ub("Arity")]));
+    vm.pc = 1;
+
+    let mut arities = Vec::new();
+    assert!(vm.run());
+    loop {
+        let arity = vm.bindings.get("Arity").cloned().expect("Arity bound");
+        arities.push(vm.deref_heap(&vm.deref_var(&arity)));
+        if !vm.backtrack() { break; }
+    }
+    assert_eq!(arities, vec![Value::Integer(1), Value::Integer(2)]);
+}
+
+#[test]
+fn generated_tail_current_predicate_call_reads_static_labels() {
+    let (code, labels) = shared_wam_program();
+    let mut vm = WamState::new(code, labels);
+    vm.set_reg_str("A1", at("rust_clause_demo"));
+    vm.set_reg_str("A2", ub("Arity"));
+    vm.pc = *vm.labels
+        .get("rust_current_predicate_demo/2")
+        .expect("generated current_predicate demo label");
+
+    assert!(vm.run());
+    let arity = vm.bindings.get("Arity").cloned().expect("Arity bound");
+    assert_eq!(vm.deref_heap(&vm.deref_var(&arity)), Value::Integer(2));
+}
+
+#[test]
 fn retract_distinguishes_fact_patterns_from_rule_patterns() {
     let mut vm = WamState::new(vec![Instruction::Call("retract/1".to_string(), 1), Instruction::Proceed], HashMap::new());
     assert_clause(&mut vm, "assertz/1", fact("marker", vec![at("rule")]));

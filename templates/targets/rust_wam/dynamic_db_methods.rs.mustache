@@ -656,6 +656,120 @@
         self.dynamic_retract_attempt(key, 0, pattern, cont_pc)
     }
 
+    fn current_predicate_call(&mut self, cont_pc: usize) -> bool {
+        let spec_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let spec = self.deref_heap(&self.deref_var(&spec_raw));
+        let (name, arity) = match spec {
+            Value::Str(functor, args)
+                if args.len() == 2 && Self::display_functor_name(&functor, 2) == "/" =>
+            {
+                (
+                    self.deref_heap(&self.deref_var(&args[0])),
+                    self.deref_heap(&self.deref_var(&args[1])),
+                )
+            }
+            _ => return false,
+        };
+        if !matches!(&name, Value::Atom(_) | Value::Unbound(_)) {
+            return false;
+        }
+        if !matches!(&arity, Value::Integer(n) if *n >= 0) &&
+            !matches!(&arity, Value::Unbound(_))
+        {
+            return false;
+        }
+
+        let mut all_keys = std::collections::BTreeSet::new();
+        all_keys.extend(self.labels.keys().cloned());
+        all_keys.extend(self.dynamic_db.keys().cloned());
+        let keys: Vec<Value> = all_keys
+            .into_iter()
+            .filter(|key| {
+                let (candidate_name, candidate_arity) = match key.rsplit_once('/') {
+                    Some((candidate_name, candidate_arity)) => {
+                        match candidate_arity.parse::<i64>() {
+                            Ok(candidate_arity) => (candidate_name, candidate_arity),
+                            Err(_) => return false,
+                        }
+                    }
+                    None => return false,
+                };
+                let name_matches = match &name {
+                    Value::Atom(expected) => expected == candidate_name,
+                    _ => true,
+                };
+                let arity_matches = match &arity {
+                    Value::Integer(expected) => *expected == candidate_arity,
+                    _ => true,
+                };
+                name_matches && arity_matches
+            })
+            .map(Value::Atom)
+            .collect();
+        self.current_predicate_attempt(keys, 0, name, arity, cont_pc)
+    }
+
+    fn current_predicate_attempt(
+        &mut self,
+        keys: Vec<Value>,
+        start_idx: usize,
+        name_pattern: Value,
+        arity_pattern: Value,
+        cont_pc: usize,
+    ) -> bool {
+        for idx in start_idx..keys.len() {
+            let key = match &keys[idx] {
+                Value::Atom(key) => key,
+                _ => continue,
+            };
+            let (name, arity) = match key.rsplit_once('/') {
+                Some((name, arity)) => match arity.parse::<i64>() {
+                    Ok(arity) => (name, arity),
+                    Err(_) => continue,
+                },
+                None => continue,
+            };
+            let cp_trail = self.trail.len();
+            let cp_heap = self.heap.len();
+            let cp_regs = self.save_regs();
+            let cp_stack = self.stack.clone();
+            if self.unify(&name_pattern, &Value::Atom(name.to_string())) &&
+                self.unify(&arity_pattern, &Value::Integer(arity))
+            {
+                if idx + 1 < keys.len() {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: cont_pc,
+                        saved_args: cp_regs,
+                        stack: cp_stack,
+                        cp: self.cp,
+                        trail_len: cp_trail,
+                        heap_len: cp_heap,
+                        builtin_state: Some(BuiltinState {
+                            name: "current_predicate".to_string(),
+                            args: vec![
+                                Value::List(keys.clone()),
+                                name_pattern.clone(),
+                                arity_pattern.clone(),
+                            ],
+                            data: vec![
+                                Value::Integer((idx + 1) as i64),
+                                Value::Integer(cont_pc as i64),
+                            ],
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                self.pc = cont_pc;
+                return true;
+            }
+            self.unwind_trail_to(cp_trail);
+            self.heap.truncate(cp_heap);
+            self.restore_regs(&cp_regs);
+            self.stack = cp_stack;
+        }
+        false
+    }
+
     fn dynamic_clause_call(&mut self, cont_pc: usize) -> bool {
         let head_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
         let head = self.deref_heap(&self.deref_var(&head_raw));
