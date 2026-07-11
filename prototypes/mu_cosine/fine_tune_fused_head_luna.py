@@ -33,6 +33,7 @@ from product_kalman import fit_residual_covariance
 from run_judge_channel import H_ALL, correlated_update_H, nll_mahal
 from run_product_kalman_logit import dequant
 from run_product_kalman_realdata import affine_calibrate
+from run_sym_channel_fusion import calibrate_luna
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 LUNA_CAMPAIGN = "/tmp/mu_data/campaign_scored_luna.tsv"
@@ -87,7 +88,8 @@ def main():
         y = dequant(np.column_stack([ds["D"], ds["S"]]))
         prior = np.column_stack([ro["prior_D"], ro["prior_S"]])
         m = affine_calibrate(ds["d"][tr_l], y[tr_l, 0], ds["d"])
-        meas = np.column_stack([m, luna[:, 0], luna[:, 1]])
+        luna_c = calibrate_luna(luna, y, tr_l)          # bias first (blocker 3 / DESIGN §2)
+        meas = np.column_stack([m, luna_c[:, 0], luna_c[:, 1]])
         E5 = np.column_stack([y - prior, meas - y[:, [0, 0, 1]]])[tr_l]
         C5 = fit_residual_covariance(E5, shrinkage=a.shrink)
         P0, C_pm, R0 = C5[:2, :2], C5[:2, 2:], C5[2:, 2:]

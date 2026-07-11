@@ -29,7 +29,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from product_kalman import fit_residual_covariance
+from product_kalman import fit_residual_covariance, gaussian_condition_update
 from run_product_kalman_realdata import DATASETS, affine_calibrate
 from run_product_kalman_logit import dequant
 from run_product_kalman_sigma_hop import LOG2PI
@@ -47,10 +47,16 @@ H_ALL = np.array([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]])      # graph→D, judgeD�
 
 
 def correlated_update_H(x, P, y, R, C, Hm):
-    S = Hm @ P @ Hm.T + R + Hm @ C + (Hm @ C).T
-    K = (P @ Hm.T + C) @ np.linalg.inv(S)
-    xp = x + (K @ (y - Hm @ x)).ravel()
-    return xp, P - K @ S @ K.T
+    """Correlated Kalman / Gaussian-conditioning update with prior<->measurement cross-covariance C.
+
+    State x ~ N(x, P); observation y = Hm x + v, Cov(v)=R, Cov(x-x, v)=C (shape state_dim x obs_dim).
+    Delegates to product_kalman.gaussian_condition_update (blocker 7): ONE Cholesky-based implementation,
+    replacing the former np.linalg.inv path. The algebra is identical --
+      S = Hm P Hmᵀ + R + Hm C + Cᵀ Hmᵀ;  K = (P Hmᵀ + C) S⁻¹;  xp = x + K(y - Hm x);  Pp = P - K S Kᵀ
+    -- but solved via Cholesky with SPD regularization instead of an explicit inverse. Returns writable
+    copies so callers may mutate the results."""
+    upd = gaussian_condition_update(x, P, y, R, H=Hm, cross_covariance=C)
+    return np.array(upd.mean), np.array(upd.covariance)
 
 
 def nll_mahal(r, V):
