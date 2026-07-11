@@ -224,8 +224,17 @@ Deliberately deferred, in rough value order:
   the reader gained its one prefix operator), and the text-family
   builtin whitelist (`sub_atom`, case mapping, `string_concat`,
   `atom_string`, `split_string`, `term_to_atom`, `char_type`,
-  `code_type`). Known next demands, deliberately deferred: `findall`
-  emission (aggregate opcodes are loadable; the bootstrap does not
-  emit them yet) and `call/N` meta-call emission — which also gates
-  the assert-family whitelist, since a grammar cannot read the
-  dynamic store back without it.
+  `code_type`). The second round landed the recorded next demands:
+  **`call/N`** (goal staged into A1 with the meta sentinel; the
+  serializer emits the meta-call table — pay-for-what-you-use, so
+  call-free programs stay byte-identical), **`findall/3`** with a
+  variable template (the host's `begin_aggregate(collect)` bracket),
+  and the **assert family** (`assertz`/`asserta`/`retractall`) —
+  readable back through `call/1`'s dynamic-store fallback, so a
+  runtime-compiled grammar can keep CROSS-RECORD STATE. Landing the
+  empty-findall case surfaced campaign finding **no. 14**: the
+  aggregate frame never saved/restored `stack_size` (an allocating
+  inner goal that failed left an orphaned environment frame), and
+  finalize restored only 512 of the 2048 saved register bytes.
+  Remaining recorded demands: nondet `retract/1` emission (call
+  sentinel −3) and compound `findall` templates.

@@ -416,11 +416,43 @@ cgfull(Src, Wamo) :-
 % output stays BYTE-IDENTICAL (the single-entry header, first predicate
 % named) -- it is the oracle every self-host golden compares against.
 cgfull_term(Clauses, Wamo) :-
-    cgfull_core(Clauses, _Groups, Atoms, Functors, PCs, AllIs),
+    cgfull_core(Clauses, Groups, Atoms0, Functors, PCs, AllIs),
+    cg_meta_rows(AllIs, Groups, Atoms0, Functors, Atoms, MetaRows),
     Clauses = [First|_], clause_hb(First, H0, _), functor(H0, P0, A0),
     pred_name_codes(P0, A0, EntryName),
-    wza_serialize(0, EntryName, 0, Atoms, Functors, PCs, AllIs, Codes),
+    wza_serialize_m(0, EntryName, 0, Atoms, Functors, PCs, AllIs,
+        MetaRows, Codes),
     atom_codes(Wamo, Codes).
+
+% The meta-call table (pay-for-what-you-use, mirroring the host writer):
+% emitted only when the instruction stream contains a meta-call
+% (op1 = -1 on a call), so call-free programs serialize byte-identically
+% to before -- every self-host golden is call-free. One row per
+% predicate group: <atomIdx> <funIdx> <arity> <labelIdx>. The predicate
+% name joins the ATOM table (appended, so existing reloc indices are
+% unchanged); funIdx points at the name's functor-table row when the
+% object builds such a compound (call(k(V)) collected k into the table
+% already), else -1.
+cg_meta_rows(AllIs, Groups, Atoms0, Functors, Atoms, Rows) :-
+    ( memberchk(enc(18, -1, _, _), AllIs)
+    -> cg_meta_names(Groups, 0, Names),
+       cg_meta_atoms(Names, Atoms0, Atoms),
+       cg_meta_rows_list(Names, Atoms, Functors, Rows)
+    ;  Atoms = Atoms0, Rows = []
+    ).
+cg_meta_names([], _, []).
+cg_meta_names([pred(P, A, _)|Gs], I, [mp(P, A, I)|R]) :-
+    I1 is I + 1, cg_meta_names(Gs, I1, R).
+cg_meta_atoms([], At, At).
+cg_meta_atoms([mp(P, _, _)|Ms], At0, At) :-
+    add_unique(P, At0, At1), cg_meta_atoms(Ms, At1, At).
+cg_meta_rows_list([], _, _, []).
+cg_meta_rows_list([mp(P, A, I)|Ms], At, FT, [mr(AI, FI, A, I)|R]) :-
+    cg_idx_of(P, At, AI),
+    ( cg_idx_of(P, FT, FI0) -> FI = FI0 ; FI = -1 ),
+    cg_meta_rows_list(Ms, At, FT, R).
+cg_idx_of(X, [Y|Ys], I) :-
+    ( X == Y -> I = 0 ; cg_idx_of(X, Ys, I1), I is I1 + 1 ).
 
 % the shared front+middle: grouping, labels, tables, per-group codegen,
 % and the closed PC table -- everything up to the header choice.
@@ -445,9 +477,11 @@ cgfullm(Src, Wamo) :-
     read_term_from_atom(Src, Clauses),
     cgfullm_term(Clauses, Wamo).
 cgfullm_term(Clauses, Wamo) :-
-    cgfull_core(Clauses, Groups, Atoms, Functors, PCs, AllIs),
+    cgfull_core(Clauses, Groups, Atoms0, Functors, PCs, AllIs),
+    cg_meta_rows(AllIs, Groups, Atoms0, Functors, Atoms, MetaRows),
     group_entries(Groups, 0, Entries),
-    wzam_serialize(0, Entries, Atoms, Functors, PCs, AllIs, Codes),
+    wzam_serialize_m(0, Entries, Atoms, Functors, PCs, AllIs, MetaRows,
+        Codes),
     atom_codes(Wamo, Codes).
 
 group_entries([], _, []).
@@ -674,6 +708,45 @@ f_goal(( A ; B ), PL, At, FT, PC0, PC, L0, L, Prs0, Prs, In0, In, Is) :- !,
 f_goal((\+ G), PL, At, FT, PC0, PC, L0, L, Prs0, Prs, In0, In, Is) :- !,
     f_goal(( G -> fail ; true ), PL, At, FT, PC0, PC, L0, L, Prs0, Prs,
         In0, In, Is).
+% call/N meta-call (demand-driven subset growth): stage the goal term
+% into A1 and the extra args into A2.., then call with the meta
+% sentinel (op1 = -1, op2 = total arity). Dispatch resolves the runtime
+% goal through the object's meta-call table (emitted by the serializer
+% when any meta-call is present -- see cg_meta_rows) with the dynamic
+% clause store as fallback, so call/1 also reaches assertz'd facts.
+f_goal(Goal, _, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In, Is) :-
+    functor(Goal, call, A), A >= 1, !,
+    call_args(Goal, 1, A, At, FT, In0, In, SetupIs),
+    append(SetupIs, [enc(18, -1, A, 0)], Is),
+    length(Is, N), PC is PC0 + N.
+% findall(Template, Goal, List) with a VARIABLE template and result
+% (the dominant shape; compound templates stay outside the subset and
+% throw). Emits the host's aggregate bracket: initialize the template
+% and result registers if fresh, begin_aggregate(collect,
+% valreg<<16|resreg), the goal inline, end_aggregate(valreg) -- the
+% runtime collects one frozen copy per solution and binds the list on
+% finalize (begin scans forward for its matching end, so no label is
+% needed). Register inits made INSIDE the goal are discarded from the
+% out-set: backtracking rewinds them per solution.
+f_goal(findall('$VAR'(TN), G, '$VAR'(LN)), PL, At, FT, PC0, PC, L0, L,
+        Prs0, Prs, In0, In, Is) :-
+    integer(TN), integer(LN), !,
+    TY is 48 + TN,
+    LY is 48 + LN,
+    ( memberchk(TN, In0) -> TInit = [], In1 = In0
+    ; TInit = [enc(9, TY, TY, 0)], In1 = [TN | In0] ),
+    ( memberchk(LN, In1) -> LInit = [], In2 = In1
+    ; LInit = [enc(9, LY, LY, 0)], In2 = [LN | In1] ),
+    append(TInit, LInit, Inits),
+    length(Inits, NI),
+    GoalPC is PC0 + NI + 1,
+    conj_list(G, Gs),
+    f_goals(Gs, PL, At, FT, GoalPC, PCg, L0, L, Prs0, Prs, In2, _InG, GIs),
+    PC is PCg + 1,
+    Op2 is (TY << 16) \/ LY,
+    append(Inits, [enc(28, 4, Op2, 0) | GIs], Front),
+    append(Front, [enc(29, TY, 0, 0)], Is),
+    In = In2.
 f_goal((L is E), _, At, FT, PC0, PC, Lb, Lb, Prs, Prs, In0, In2, Is) :- !,
     % NESTED arithmetic: the expression is just a term -- stage it with
     % c_operand (build_struct + X-temp deferral handles arbitrary nesting,
@@ -770,6 +843,12 @@ bi_id(numbervars, 3, 124).
 bi_id(!, 0, 10).
 bi_id(true, 0, 8).
 bi_id(fail, 0, 9).
+% assert family -- readable now that call/N emission lands (call/1
+% reaches assertz'd facts through the dynamic-store fallback of the
+% meta-call dispatch). Nondet retract/1 (call sentinel -3) stays out.
+bi_id(assertz, 1, 175).
+bi_id(asserta, 1, 176).
+bi_id(retractall, 1, 177).
 bi_id(sub_atom, 5, 41).
 bi_id(upcase_atom, 2, 45).
 bi_id(downcase_atom, 2, 46).
@@ -860,22 +939,40 @@ defer_builds([d(C,Reg)|Ds], At, FT, Xt0, Xt, In0, In, Is) :-
 % serializer with an atom table: NA + NA length-prefixed atom name strings
 % between the label index and the functor table
 wza_serialize(EI, NC, LI, Atoms, Fs, PCs, Is, Out) :-
+    wza_serialize_m(EI, NC, LI, Atoms, Fs, PCs, Is, [], Out).
+
+% +MetaRows variant: the trailing section carries the meta-call rows
+% (count, then <atomIdx> <funIdx> <arity> <labelIdx> per row). An empty
+% list emits the count 0 -- exactly the old trailing byte, so call-free
+% programs are byte-identical.
+wza_serialize_m(EI, NC, LI, Atoms, Fs, PCs, Is, MetaRows, Out) :-
     wz_a('WAMO', Out, A1), wz_i(2, A1, A2), wz_i(EI, A2, A3), wz_i(1, A3, A4),
     wz_n(NC, A4, A5), wz_i(LI, A5, A6),
     length(Atoms, NA), wz_i(NA, A6, A7), wz_funcs(Atoms, A7, A8),
     length(Fs, NF), wz_i(NF, A8, A9), wz_funcs(Fs, A9, A10),
-    wz_pcs_sec(PCs, A10, A11), wz_instr_sec(Is, A11, A12), wz_i(0, A12, []).
+    wz_pcs_sec(PCs, A10, A11), wz_instr_sec(Is, A11, A12),
+    wz_meta_sec(MetaRows, A12, []).
 
 % multi-entry variant: NE from the Entries list (NameCodes-LabelIdx
 % pairs), one name/label row per entry. With a single entry the emitted
 % bytes equal wza_serialize's -- the header shape is the same, only the
 % count and rows generalize.
 wzam_serialize(EI, Entries, Atoms, Fs, PCs, Is, Out) :-
+    wzam_serialize_m(EI, Entries, Atoms, Fs, PCs, Is, [], Out).
+wzam_serialize_m(EI, Entries, Atoms, Fs, PCs, Is, MetaRows, Out) :-
     wz_a('WAMO', Out, A1), wz_i(2, A1, A2), wz_i(EI, A2, A3),
     length(Entries, NE), wz_i(NE, A3, A4), wz_entry_rows(Entries, A4, A5),
     length(Atoms, NA), wz_i(NA, A5, A6), wz_funcs(Atoms, A6, A7),
     length(Fs, NF), wz_i(NF, A7, A8), wz_funcs(Fs, A8, A9),
-    wz_pcs_sec(PCs, A9, A10), wz_instr_sec(Is, A10, A11), wz_i(0, A11, []).
+    wz_pcs_sec(PCs, A9, A10), wz_instr_sec(Is, A10, A11),
+    wz_meta_sec(MetaRows, A11, []).
 wz_entry_rows([], A, A).
 wz_entry_rows([NC-LI|Es], A0, A3) :-
     wz_n(NC, A0, A1), wz_i(LI, A1, A2), wz_entry_rows(Es, A2, A3).
+
+wz_meta_sec(Rows, A0, A2) :-
+    length(Rows, NM), wz_i(NM, A0, A1), wz_meta_rows(Rows, A1, A2).
+wz_meta_rows([], A, A).
+wz_meta_rows([mr(AI, FI, Ar, LI)|Rs], A0, A5) :-
+    wz_i(AI, A0, A1), wz_i(FI, A1, A2), wz_i(Ar, A2, A3), wz_i(LI, A3, A4),
+    wz_meta_rows(Rs, A4, A5).

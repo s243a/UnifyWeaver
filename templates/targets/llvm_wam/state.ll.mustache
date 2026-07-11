@@ -4641,12 +4641,24 @@ do_finalize:
   %tm = load i32, i32* %tm_ptr
   call void @unwind_trail(%WamState* %vm, i32 %tm)
 
-  ; Restore registers from CP
+  ; Restore registers from CP -- the FULL register file (campaign
+  ; finding no. 14, second half): begin_aggregate saves 2048 bytes (128
+  ; registers) but this restore copied only 512, leaving X17..X32 and
+  ; every Y register holding whatever the failed goal wrote -- the same
+  ; narrow-saved-block class as campaign finding no. 3.
   %dst_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
   %src_regs = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 1, i32 0
   %dst_raw = bitcast %Value* %dst_regs to i8*
   %src_raw = bitcast %Value* %src_regs to i8*
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst_raw, i8* %src_raw, i64 512, i1 false)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst_raw, i8* %src_raw, i64 2048, i1 false)
+
+  ; Restore stack_size (finding no. 14): pop any environment frames the
+  ; failed inner goal left allocated, exactly as ordinary backtrack does
+  ; from try_me_else CPs.
+  %fin_sss_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 13
+  %fin_sss = load i32, i32* %fin_sss_ptr
+  %vm_sss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  store i32 %fin_sss, i32* %vm_sss_ptr
 
   ; M9: bind via wam_bind_reg so the result propagates through Refs
   ; — when the caller's L is an unbound var (Ref to a heap cell), the

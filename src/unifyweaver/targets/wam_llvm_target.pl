@@ -4060,6 +4060,18 @@ ba.setup:
   %ba.sht_ptr = getelementptr %ChoicePoint, %ChoicePoint* %ba.cp_slot, i32 0, i32 11
   store i32 %ba.hs, i32* %ba.sht_ptr
 
+  ; Save stack_size (campaign finding no. 14): an inner goal that
+  ; ALLOCATES an environment and then fails leaves its frame orphaned --
+  ; ordinary CPs save/restore stack_size (try_me_else / backtrack), but
+  ; the aggregate frame did not, so the caller''s later deallocate popped
+  ; the orphan instead of its own frame. Masked when every inner clause
+  ; is allocate-free (simple fact bodies); fatal for any rule-bodied
+  ; inner goal that fails -- the empty-findall case.
+  %ba.sss_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 3
+  %ba.sss = load i32, i32* %ba.sss_ptr
+  %ba.csss_ptr = getelementptr %ChoicePoint, %ChoicePoint* %ba.cp_slot, i32 0, i32 13
+  store i32 %ba.sss, i32* %ba.csss_ptr
+
   ; Increment choice point count
   %ba.new_cpn = add i32 %ba.cpn, 1
   store i32 %ba.new_cpn, i32* %ba.cpn_ptr
