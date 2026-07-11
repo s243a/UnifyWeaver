@@ -51,11 +51,12 @@ from emit_transitive_hops import hit_prob
 from fine_tune_channel_heads import load_campaign_datasets, load_expanded
 from fine_tune_fused_head import agnostic_readouts
 from mu_posterior import JointPosterior, MuPosterior, _eval, aurc, margin_conf, pearson
+from node_disjoint_eval import node_disjoint_pair_split
 from product_kalman import fit_residual_covariance
 from run_judge_channel import correlated_update_H
 from run_product_kalman_logit import dequant
 from run_product_kalman_realdata import DATASETS, affine_calibrate
-from sample_channel_campaign import ancestors
+from run_sym_channel_fusion import H4, calibrate_luna, sym_graph_features
 from sigma_hop_confirmatory import FeatureGraphConfig, load_feature_graph
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -68,7 +69,6 @@ GROUPS = {
     "other": ("unknown", "none"),
 }
 SOURCES = ("prior_D", "prior_S", "graph_D", "graph_S", "luna_D", "luna_S")
-H4 = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 0.0], [0.0, 1.0]])
 GAUSSIAN_RUNGS = {
     "gaussian/prior": (),
     "gaussian/+graph": (0, 1),
@@ -94,38 +94,6 @@ class SplitData:
     P0: np.ndarray
     C_pm: np.ndarray
     R0: np.ndarray
-
-
-def sym_graph_features(parents, pairs, hmax=6, cap=13):
-    """#3648 graph-S features, kept local so this follow-up is independently runnable."""
-    feats = np.zeros((len(pairs), 4))
-    cache = {}
-
-    def anc(node):
-        if node not in cache:
-            values = ancestors(parents, node, hmax)
-            values[node] = 0
-            cache[node] = values
-        return cache[node]
-
-    for i, (x, y) in enumerate(pairs):
-        ax, ay = anc(x), anc(y)
-        common = set(ax) & set(ay)
-        distance = min((ax[c] + ay[c] for c in common), default=cap)
-        px, py = set(parents.get(x, ())), set(parents.get(y, ()))
-        gx = {g for p in px for g in parents.get(p, ())}
-        gy = {g for p in py for g in parents.get(p, ())}
-        feats[i] = (1.0 / (1.0 + distance), float(bool(px & py)), float(bool(gx & gy)),
-                    float(y in ax or x in ay))
-    return feats
-
-
-def calibrate_luna(luna, y_ds, train):
-    """Global train-only affine correction for each Luna channel."""
-    return np.column_stack([
-        affine_calibrate(luna[train, 0], y_ds[train, 0], luna[:, 0]),
-        affine_calibrate(luna[train, 1], y_ds[train, 1], luna[:, 1]),
-    ])
 
 
 def aggregate_decision_probabilities(row, col):
@@ -240,28 +208,6 @@ def load_within_judge_pooling_states(path=CAMPAIGN, temperature=0.10):
                 raise ValueError(f"conflicting duplicate pooling state for {pair!r}")
             out[pair] = value
     return out
-
-
-def strict_node_disjoint_split(pairs, seed=0, held_frac=0.40):
-    """Random node partition; retain only within-side pairs and drop every crossing pair.
-
-    This is stricter than ``descendant_disjoint_split``: no endpoint in the held rows can occur in a
-    training row.  The split is based only on sorted node identities and ``seed``, never targets.
-    """
-    if not 0.0 < held_frac < 1.0:
-        raise ValueError("held_frac must be strictly between 0 and 1")
-    nodes = sorted({n for pair in pairs for n in pair})
-    rng = np.random.default_rng(seed)
-    rng.shuffle(nodes)
-    n_held = min(max(1, int(round(held_frac * len(nodes)))), len(nodes) - 1)
-    held_nodes = set(nodes[:n_held])
-    train = np.array([i for i, (a, b) in enumerate(pairs) if a not in held_nodes and b not in held_nodes], int)
-    held = np.array([i for i, (a, b) in enumerate(pairs) if a in held_nodes and b in held_nodes], int)
-    train_nodes = {n for i in train for n in pairs[i]}
-    eval_nodes = {n for i in held for n in pairs[i]}
-    if train_nodes & eval_nodes:
-        raise AssertionError("strict node-disjoint split leaked an endpoint")
-    return train, held
 
 
 def endpoint_components(pairs):
@@ -452,14 +398,27 @@ def run_corpus(name, ds, target_by_pair, pooling_by_pair, luna_by_pair, checkpoi
     if not np.allclose(y_ds, pooling_states["hard_max"]):
         raise AssertionError("campaign loader's D/S differs from audited hard-max relation pooling")
 
-    train, held = strict_node_disjoint_split(pairs, seed=args.seed, held_frac=args.held_frac)
+    split_spec = node_disjoint_pair_split(
+        pairs,
+        args.seed,
+        held_node_fraction=args.held_frac,
+        strata=hard_target,
+        candidates=args.split_candidates,
+        minimum_per_stratum=args.min_class,
+    )
+    train, held = split_spec.train, split_spec.held
+    train_nodes = {node for i in train for node in pairs[i]}
+    held_nodes = {node for i in held for node in pairs[i]}
+    if train_nodes & held_nodes:
+        raise AssertionError("audited node-disjoint split leaked an endpoint")
     train_counts, held_counts = Counter(hard_target[train]), Counter(hard_target[held])
     if min((train_counts[c] for c in CLASSES), default=0) < args.min_class:
         raise ValueError(f"{name}: seed {args.seed} has too few training rows per class: {train_counts}")
     if min((held_counts[c] for c in CLASSES), default=0) < args.min_class:
         raise ValueError(f"{name}: seed {args.seed} has too few held rows per class: {held_counts}")
-    print(f"\n=== {name}: combiner/calibration node-disjoint seed={args.seed}; train={len(train)} held={len(held)} "
-          f"cross-dropped={len(pairs)-len(train)-len(held)} ===")
+    print(f"\n=== {name}: combiner/calibration node-disjoint seed={args.seed}; "
+          f"candidate={split_spec.selected_candidate}/{split_spec.candidates}; "
+          f"train={len(train)} held={len(held)} cross-dropped={len(split_spec.cross)} ===")
     print(f"  train classes {dict(train_counts)}; held classes {dict(held_counts)}")
 
     split = calibrate_sources(prior, graph_raw, graph_features, luna, y_ds, train)
@@ -556,7 +515,10 @@ def run_corpus(name, ds, target_by_pair, pooling_by_pair, luna_by_pair, checkpoi
             "held_fraction_nodes": args.held_frac,
             "train_rows": len(train),
             "held_rows": len(held),
-            "cross_rows_dropped": len(pairs) - len(train) - len(held),
+            "cross_rows_dropped": len(split_spec.cross),
+            "candidates": split_spec.candidates,
+            "selected_candidate": split_spec.selected_candidate,
+            "retained_fraction": split_spec.retained_fraction,
             "train_classes": dict(train_counts),
             "held_classes": dict(held_counts),
         },
@@ -590,6 +552,8 @@ def main():
     ap.add_argument("--luna", default=LUNA_CAMPAIGN)
     ap.add_argument("--seed", type=int, default=0, help="node partition and model-init seed")
     ap.add_argument("--held-frac", type=float, default=0.40, help="fraction of nodes assigned held")
+    ap.add_argument("--split-candidates", type=int, default=64,
+                    help="deterministic coverage-aware node partitions considered per seed")
     ap.add_argument("--min-class", type=int, default=5)
     ap.add_argument("--epochs", type=int, default=400)
     ap.add_argument("--hidden", type=int, default=0,

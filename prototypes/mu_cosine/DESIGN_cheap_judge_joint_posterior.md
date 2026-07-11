@@ -56,11 +56,12 @@ ablation remains follow-up work if a preregistered, paired diagnostic materially
 
 ## Same-split comparison
 
-For each corpus, a seeded random partition assigns nodes—not rows—to combiner/calibration train or held sets.
-Pairs crossing the node partition are dropped. Thus no held endpoint enters this follow-up's calibration or
-combiner fit. The partition uses only sorted node identifiers and the seed, never labels. This does not prove
-the upstream `model_prod_namecond.pt` checkpoint never saw those node identities; its campaign independence is
-audited, but endpoint independence from all earlier training is not.
+For each corpus, the shared `node_disjoint_pair_split` considers 64 seeded node—not row—assignments and chooses
+one using retained-pair coverage plus macro-class strata. Pairs crossing the node partition are dropped. Thus
+no held endpoint enters this follow-up's calibration or combiner fit. Candidate selection never inspects model
+outcomes. This endpoint split is not edge-disjoint or k-hop-isolated from the ambient parent graph used for graph
+features. It also does not prove the upstream `model_prod_namecond.pt` checkpoint never saw those node identities;
+its campaign independence is audited, but endpoint independence from all earlier training is not.
 
 Every calibration is fit on the same training rows:
 
@@ -120,6 +121,10 @@ AURC intervals resample endpoint-connected components. Every row sharing either 
 block, avoiding the false independence assumption of a row bootstrap. The report includes the number of
 blocks and largest block size; a corpus dominated by one component cannot support a useful block-bootstrap
 interval and must be reported as such.
+
+AURC is retained as the registered selective-risk metric, but it can over-weight early high-confidence errors
+and has finite-sample estimator bias. Report conclusions require the paired interval and effective block counts;
+an AUGRC calculation is a separately named robustness check rather than a post-hoc replacement.
 
 Source separability and the full Pearson correlation matrix are printed from training rows only. A source earns
 its keep through a same-held-set rung/ablation improvement, not through a training correlation alone.

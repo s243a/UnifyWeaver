@@ -10,8 +10,8 @@ from run_cheap_judge_joint_posterior import (
     gaussian_bridge_proba,
     macro_decision,
     pool_relation_values,
-    strict_node_disjoint_split,
 )
+from node_disjoint_eval import node_disjoint_pair_split
 
 
 def test_macro_decision_aggregation_is_normalised_and_ordered():
@@ -48,17 +48,24 @@ def test_within_judge_pooling_is_bounded_and_not_expert_selection():
     assert soft > prob_weighted  # different within-judge reductions of the same three relation values
 
 
-def test_strict_node_split_has_no_endpoint_leakage_and_is_deterministic():
+def test_audited_node_split_has_no_endpoint_leakage_and_is_deterministic():
     pairs = [(f"n{i}", f"n{(i + 1) % 20}") for i in range(20)] + [
         (f"n{i}", f"n{(i + 7) % 20}") for i in range(20)
     ]
-    tr1, he1 = strict_node_disjoint_split(pairs, seed=7, held_frac=0.40)
-    tr2, he2 = strict_node_disjoint_split(pairs, seed=7, held_frac=0.40)
-    assert np.array_equal(tr1, tr2) and np.array_equal(he1, he2)
-    train_nodes = {n for i in tr1 for n in pairs[i]}
-    held_nodes = {n for i in he1 for n in pairs[i]}
+    strata = ["even" if i % 2 == 0 else "odd" for i in range(len(pairs))]
+    split1 = node_disjoint_pair_split(
+        pairs, 7, held_node_fraction=0.40, strata=strata, candidates=16,
+    )
+    split2 = node_disjoint_pair_split(
+        pairs, 7, held_node_fraction=0.40, strata=strata, candidates=16,
+    )
+    assert np.array_equal(split1.train, split2.train)
+    assert np.array_equal(split1.held, split2.held)
+    assert split1.selected_candidate == split2.selected_candidate
+    train_nodes = {n for i in split1.train for n in pairs[i]}
+    held_nodes = {n for i in split1.held for n in pairs[i]}
     assert train_nodes.isdisjoint(held_nodes)
-    assert len(tr1) + len(he1) < len(pairs)  # crossing rows are deliberately dropped
+    assert len(split1.cross) > 0
 
 
 def test_endpoint_components_keep_shared_node_rows_together():

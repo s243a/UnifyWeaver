@@ -239,15 +239,22 @@ def conditional_measurement_model(prior_precision_root, H, observation_covarianc
 
 
 def whiten_measurement_block(measurement_matrix, measurement_covariance, measurement_rhs,
-                             jitter=1e-9):
-    """Whiten one independent likelihood block with a Cholesky solve."""
+                             jitter=1e-9, *, covariance_is_regularized=False):
+    """Whiten one independent likelihood block with a Cholesky solve.
+
+    Set ``covariance_is_regularized`` only when the covariance came directly
+    from :func:`conditional_measurement_model`; this avoids applying the
+    jitter/PSD policy twice in the composed conditioner.
+    """
     J = _matrix("measurement_matrix", measurement_matrix)
     m, _ = J.shape
-    Rc = regularize_covariance(
-        _matrix("measurement_covariance", measurement_covariance, m, m),
-        jitter=jitter,
-        name="measurement covariance",
-    )
+    Rc = _matrix("measurement_covariance", measurement_covariance, m, m)
+    if not covariance_is_regularized:
+        Rc = regularize_covariance(
+            Rc,
+            jitter=jitter,
+            name="measurement covariance",
+        )
     r = _vector("measurement_rhs", measurement_rhs, m)
     chol = np.linalg.cholesky(Rc)
     return np.linalg.solve(chol, J), np.linalg.solve(chol, r), Rc
@@ -280,6 +287,7 @@ def condition_correlated_gaussian_qr(mean, prior_precision_root, observation,
         conditional_R,
         innovation,
         jitter=jitter,
+        covariance_is_regularized=True,
     )
     info = householder_information_update(U, np.zeros(len(x)), A, b)
     posterior_mean = x + np.asarray(info.solution)

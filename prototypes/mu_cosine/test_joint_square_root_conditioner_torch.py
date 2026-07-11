@@ -153,7 +153,7 @@ def test_compiled_dense_gain_matches_compiled_qr(dtype, rtol, atol):
     )
 
 
-def test_compiled_conditioners_snapshot_H_against_caller_mutation():
+def test_compiled_conditioners_snapshot_coefficients_against_caller_mutation():
     P, C, R, H, mean, observation = _problem(48, 3, 5)
     Pt, Ct, Rt, Ht, mt, yt = _as_torch(P, C, R, H, mean, observation)
     root = precision_root_from_covariance_torch(Pt)
@@ -162,6 +162,8 @@ def test_compiled_conditioners_snapshot_H_against_caller_mutation():
     qr_before = qr.condition(mt, yt).mean.clone()
     dense_before = dense.condition(mt, yt).mean.clone()
     Ht.add_(100.0)
+    Rt.add_(100.0)
+    Ct.add_(100.0)
     torch.testing.assert_close(qr.condition(mt, yt).mean, qr_before)
     torch.testing.assert_close(dense.condition(mt, yt).mean, dense_before)
 
@@ -207,7 +209,14 @@ def test_dense_gain_accepts_equivalent_nontriangular_precision_factor():
     torch.testing.assert_close(actual.covariance, reference.covariance)
 
 
-def test_batched_distinct_designs_match_unbatched_calls():
+@pytest.mark.parametrize("device", [
+    "cpu",
+    pytest.param(
+        "cuda",
+        marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable"),
+    ),
+])
+def test_batched_distinct_designs_match_unbatched_calls(device):
     rng = np.random.default_rng(53)
     batch, n, m = 4, 3, 5
     roots, matrices, prior_rhs, measurement_rhs = [], [], [], []
@@ -222,6 +231,7 @@ def test_batched_distinct_designs_match_unbatched_calls():
         np.stack(matrices),
         np.stack(prior_rhs),
         np.stack(measurement_rhs),
+        device=device,
     )
     actual = householder_information_update_torch(
         roots, prior_rhs, matrices, measurement_rhs
@@ -235,7 +245,14 @@ def test_batched_distinct_designs_match_unbatched_calls():
         torch.testing.assert_close(actual.solution[index], expected.solution)
 
 
-def test_full_correlated_conditioner_batches_distinct_designs():
+@pytest.mark.parametrize("device", [
+    "cpu",
+    pytest.param(
+        "cuda",
+        marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable"),
+    ),
+])
+def test_full_correlated_conditioner_batches_distinct_designs(device):
     batch, n, m = 4, 3, 5
     problems = [_problem(55 + index, n, m) for index in range(batch)]
     roots = [precision_root_from_covariance(item[0], jitter=0.0) for item in problems]
@@ -246,6 +263,7 @@ def test_full_correlated_conditioner_batches_distinct_designs():
         np.stack([item[1] for item in problems]),
         np.stack([item[4] for item in problems]),
         np.stack([item[5] for item in problems]),
+        device=device,
     )
     actual = condition_correlated_gaussian_qr_torch(
         mean, root, observation, R, H, C, jitter=0.0
@@ -264,7 +282,26 @@ def test_full_correlated_conditioner_batches_distinct_designs():
         torch.testing.assert_close(actual.covariance[index], expected.covariance)
 
 
-def test_sequential_state_threads_updated_root_and_matches_batch_update():
+def test_batched_rank_failure_identifies_offending_design():
+    roots = torch.stack([torch.eye(2), torch.zeros(2, 2)])
+    matrices = torch.zeros(2, 1, 2)
+    with pytest.raises(torch.linalg.LinAlgError, match=r"batch indices \[\[1\]\]"):
+        householder_information_update_torch(
+            roots,
+            torch.zeros(2, 2),
+            matrices,
+            torch.zeros(2, 1),
+        )
+
+
+@pytest.mark.parametrize("device", [
+    "cpu",
+    pytest.param(
+        "cuda",
+        marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable"),
+    ),
+])
+def test_sequential_state_threads_updated_root_and_matches_batch_update(device):
     rng = np.random.default_rng(61)
     n = 4
     root_np = precision_root_from_covariance(
@@ -272,13 +309,15 @@ def test_sequential_state_threads_updated_root_and_matches_batch_update():
     )
     A1, b1 = rng.standard_normal((3, n)), rng.standard_normal(3)
     A2, b2 = rng.standard_normal((6, n)), rng.standard_normal(6)
-    root, A1t, b1t, A2t, b2t = _as_torch(root_np, A1, b1, A2, b2)
-    initial = SquareRootInformationStateTorch(root, torch.zeros(n, dtype=root.dtype))
+    root, A1t, b1t, A2t, b2t = _as_torch(root_np, A1, b1, A2, b2, device=device)
+    initial = SquareRootInformationStateTorch(
+        root, torch.zeros(n, dtype=root.dtype, device=root.device)
+    )
     after_first, _ = initial.update(A1t, b1t)
     after_second, streamed = after_first.update(A2t, b2t)
     batch = householder_information_update_torch(
         root,
-        torch.zeros(n, dtype=root.dtype),
+        torch.zeros(n, dtype=root.dtype, device=root.device),
         torch.cat([A1t, A2t]),
         torch.cat([b1t, b2t]),
     )

@@ -119,8 +119,14 @@ def _check_root_rank(pre_array: torch.Tensor, root: torch.Tensor) -> None:
     scale = torch.maximum(scale, torch.ones_like(scale))
     tolerance = torch.finfo(pre_array.dtype).eps * max(pre_array.shape[-2:]) * scale
     smallest = torch.amin(torch.abs(torch.diagonal(root, dim1=-2, dim2=-1)), dim=-1)
-    if bool(torch.any(smallest <= tolerance).item()):
-        raise torch.linalg.LinAlgError("information pre-array is rank deficient")
+    failed = smallest <= tolerance
+    if bool(torch.any(failed).item()):
+        if failed.ndim:
+            indices = torch.nonzero(failed, as_tuple=False).detach().cpu().tolist()
+            detail = f" at batch indices {indices}"
+        else:
+            detail = " for the unbatched design"
+        raise torch.linalg.LinAlgError(f"information pre-array is rank deficient{detail}")
 
 
 @dataclass(frozen=True)
@@ -440,7 +446,13 @@ def condition_correlated_gaussian_qr_torch(
     *,
     jitter: float = 1e-9,
 ) -> JointSquareRootUpdateTorch:
-    """Condition a Gaussian with batched tensors and compact Householder QR."""
+    """Condition a Gaussian with batched tensors and compact Householder QR.
+
+    This functional entry point validates and factorizes the design on every
+    call, including an eigendecomposition and device synchronization in the
+    covariance guard. Repeated fixed-design throughput should use
+    :class:`CompiledCorrelatedConditionerTorch`.
+    """
     root = _matrix("prior_precision_root", prior_precision_root)
     if root.shape[-2] != root.shape[-1] or root.shape[-1] == 0:
         raise ValueError("prior_precision_root must be nonempty and square")

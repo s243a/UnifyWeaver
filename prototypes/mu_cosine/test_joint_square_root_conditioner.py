@@ -2,6 +2,7 @@
 """Property tests for the joint square-root / Householder-QR conditioner."""
 
 import numpy as np
+import joint_square_root_conditioner as square_root_module
 
 from joint_square_root_conditioner import (
     condition_correlated_gaussian_qr,
@@ -103,3 +104,23 @@ def test_materially_invalid_conditional_covariance_raises():
         assert "conditional observation covariance" in str(exc)
     else:
         raise AssertionError("invalid joint covariance should fail")
+
+
+def test_composed_conditioner_regularizes_conditional_covariance_once(monkeypatch):
+    mean = np.array([0.2])
+    P = np.array([[2.0]])
+    R = np.array([[1.0]])
+    C = np.array([[0.5]])
+    H = np.array([[1.0]])
+    y = np.array([1.2])
+    root = precision_root_from_covariance(P, jitter=0.0)
+    original = square_root_module.regularize_covariance
+    calls = []
+
+    def tracked(*args, **kwargs):
+        calls.append(kwargs.get("name"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(square_root_module, "regularize_covariance", tracked)
+    condition_correlated_gaussian_qr(mean, root, y, R, H, C, jitter=0.0)
+    assert calls == ["conditional observation covariance R - C.T P^-1 C"]

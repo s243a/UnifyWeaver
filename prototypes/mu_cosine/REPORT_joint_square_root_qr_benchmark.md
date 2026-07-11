@@ -19,7 +19,8 @@ are also implemented, but only the fixed-design path can share the factorisation
 
 For the matched static baseline, `CompiledDenseGainConditionerTorch` derives the same conditional `(J,Rc)`
 model, computes the dense correlated gain and posterior covariance once, and batches only the per-row affine
-mean update. It cannot reuse that gain after a sequential block changes the posterior.
+mean update. Here “compiled” means **design-cached**, not `torch.compile` or kernel fusion. It cannot reuse that
+gain after a sequential block changes the posterior.
 
 ## Hardware and protocol
 
@@ -28,6 +29,8 @@ mean update. It cannot reuse that gain after a sequential block changes the post
 - PyTorch 2.4.1+cu121; CUDA runtime 12.1; float32.
 - Selected cells were run in isolation with 20 warmups, 500 conditioning repeats, and 50 factorisation
   repeats; explicit CUDA synchronisation around timings.
+- Timings are on-device compute point measurements from one process run. They exclude host/device transfer and
+  report a mean over repeats, not median/MAD across independent trials.
 - `compile_ms` and `condition_ms` are deliberately separate. Rows/s measures only repeated conditioning after
   compilation. Dense compile time includes checking/regularising the subtraction-form posterior covariance;
   without that check a highly informative float32 update can round the dense covariance to singular zero.
@@ -81,10 +84,10 @@ python3 -u prototypes/mu_cosine/benchmark_joint_square_root_qr.py \
   --compile-repeats 50 --cpu-threads 8
 ```
 
-The combined NumPy/PyTorch suite passes 24 tests, including dense-gain/QR float32/float64 parity, CUDA parity,
-full distinct-design batches, nonzero-`C` block-diagonal-`Rc` streaming, and both fixed-coordinate and recentered
-sequential blocks. Compiled conditioners also snapshot their fixed design so later caller-side mutation cannot
-silently mix stale factors with a changed `H`.
+The combined NumPy/PyTorch suite passes 29 tests, including dense-gain/QR float32/float64 parity, CUDA parity,
+CPU/CUDA distinct-design batches, nonzero-`C` block-diagonal-`Rc` streaming, and CPU/CUDA fixed-coordinate root
+threading plus recentered sequential blocks. Compiled conditioners also snapshot their fixed design so later
+caller-side mutation cannot silently mix stale factors with changed `H`, `R`, or `C` inputs.
 
 Next benchmark: compare end-to-end latency, memory, and numerical drift under genuinely sequential block
 workloads where each update changes the carried posterior root. Add multi-trial median/MAD timings, host/device

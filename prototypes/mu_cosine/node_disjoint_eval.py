@@ -63,7 +63,13 @@ class NodeDisjointSplit:
 
 @dataclass(frozen=True)
 class NodeBootstrapInterval:
-    """Percentile interval for a mean paired gain on one fixed held split."""
+    """Percentile interval for a mean paired gain on one fixed held split.
+
+    ``estimate`` is the empirical plug-in row mean (equivalently, the
+    pigeonhole ratio statistic when every observed node has multiplicity one).
+    Bootstrap replicates use sampled endpoint multiplicities; their finite-
+    sample mean can differ, so ``bootstrap_mean`` is retained for auditing.
+    """
 
     estimate: float
     low: float
@@ -252,6 +258,9 @@ def paired_node_bootstrap_ci(
     draw samples the held nodes with replacement.  A pair's weight is the
     product of its endpoint multiplicities; self-pairs use the single endpoint
     multiplicity.  Draws containing none of the observed pairs are retried.
+    The reported point is the empirical plug-in row mean; resampled intervals
+    use multiplicity-weighted ratio means and agree with that estimand only in
+    expectation under the bootstrap law.
     """
     pairs = list(pairs)
     values = np.asarray(paired_values, dtype=float)
