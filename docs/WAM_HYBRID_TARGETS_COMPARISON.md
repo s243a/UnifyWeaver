@@ -41,68 +41,106 @@ Pick by **axis**, not a single score:
 
 | Prefer | When |
 |---|---|
-| **Rust** | Single-core tight graph kernels; u32-interned FFI |
+| **Rust** | Single-core tight graph kernels; u32-interned FFI; boundary cache |
 | **Haskell** | Multi-core fanout + LMDB scale + GHC fusion |
-| **F#** | .NET deploy; richest LMDB eager/lazy/cached (+ L1/L2) |
+| **F#** | .NET deploy; richest LMDB eager/lazy/cached/auto (+ L1/L2) |
 | **LLVM** | Portable native binary or WASM from one IR pipeline |
 | **C++** | ISO `catch`/`throw` / `is_iso` fidelity |
 
-Elixir remains the **architectural reference** (dual lowering default,
-ISO reference, conformance default CI, all 7 kernels) but still lacks
-mmap LMDB. Scala anchors **generalization** (classics suite).
+Elixir remains the **architectural reference** (ISO reference,
+conformance default CI, all 7 kernels, FactSource including LMDB
+adaptor) but lacks F#-style lazy/cached two-level policies; codegen
+default is still `interpreter` while tests pass `emit_mode(lowered)`.
+Scala anchors **generalization** (classics suite). **C** is
+underestimated historically — it ships 7+bi kernels + reverse CSR.
 
 ## Fleet inventory
 
-Seventeen `wam_*_target.pl` modules. Line counts are approximate
-(codegen Prolog only; runtime templates extra). Conformance =
-registered in `tests/test_wam_cross_target_conformance.pl`.
+Seventeen `wam_*_target.pl` modules. Line counts ≈ codegen Prolog
+only. **Tests≈ = test *files*** (not plunit cases — e.g. C++ has ~6
+files but ~400 cases in the generator; ILAsm has 2 files / ~45 cases).
+Conformance = registered in `tests/test_wam_cross_target_conformance.pl`.
 
 | Target | target.pl | lowered | Tests≈ | Conformance | Kernels | LMDB / facts | ISO | Maturity band |
 |---|---:|---:|---:|---|---|---|---|---|
-| **Elixir** | ~6.8k | ~2.3k | 7 | **default CI** | all 7 | FactSource (no mmap) | **reference** | Reference / primary |
-| **Haskell** | ~7.0k | ~1.3k | 14 | opt-in ✓ | 7 + bi + parMap | FactSource eager/cached | substrate | Primary (scale) |
-| **Rust** | ~7.1k | ~0.8k | 44 | opt-in ✓ | 7 + matrix + bi + CSR | LookupSource partial | — | Primary (kernels) |
-| **F#** | ~5.3k | ~1.6k | 27 | **no** | 7 + bi + CSR | **eager/lazy/cached** | partial | Primary (.NET) |
-| **LLVM** | ~20.6k | ~2.1k | 52 | **no** | 7 foreign kinds | arena only | — | Primary (portable) |
-| **C++** | ~11.0k | ~0.8k | 6 | opt-in ✓ | foreign surface | arity-2 LMDB v1 | **reference** | Primary (ISO) |
-| **Scala** | ~1.4k | ~0.8k | 10 | **default CI** | all 7 opt-in | 4 backends + arity-N LMDB | — | Primary (breadth) |
-| **C** | ~6.6k | — | 23 | opt-in ✓ | all 7 | TSV + LMDB | — | Strong systems |
-| **Go** | ~3.7k | ~0.8k | 12 | opt-in ✓ | category_ancestor+ | TSV/LMDB atom facts | — | Strong runtime |
-| **R** | ~2.0k | ~1.0k | 49 | **no** | all 7 | optional LMDB | tryCatch only | Strong (campaign) |
-| **Python** | ~2.8k | ~1.3k | 7 | opt-in ✓ | — | — | partial | Mid (parity) |
-| **WAT** | ~6.7k | ~0.5k | 6 | opt-in ✓ | — | — | — | Mid (WASM) |
-| **Clojure** | ~0.9k | ~1.5k | 6 | **no** | — | LMDB JNI + caches | — | Mid (LMDB niche) |
-| **Lua** | ~0.8k | ~0.6k | 5 | **no** | — | — | — | Mid (builtins) |
-| **ILAsm** | ~2.0k | — | 2 | **no** | — | — | — | Early |
+| **Elixir** | ~6.8k | ~2.3k | 7† | **default CI** | all 7 | FactSource incl. LMDB | **reference** | Reference / primary |
+| **Haskell** | ~7.0k | ~1.3k | 14 | opt-in ✓ | 7 + bi (templates) | `use_lmdb` + cache_mode tiers | substrate | Primary (scale) |
+| **Rust** | ~7.1k | ~0.8k | 44 | opt-in ✓ | 7 + matrix + bi + **boundary** | LookupSource; lazy/cached in matrix path | weak | Primary (kernels) |
+| **F#** | ~5.3k | ~1.6k | 27 | **no**‡ | detector all; **templates: 2** (CA + bi) | **eager/lazy/cached/auto** | partial | Primary (.NET) |
+| **LLVM** | ~19.2k | ~2.0k | 52 | **no** | **LLVM-7** (≠ shared-7) | arena only | — | Primary (portable) |
+| **C++** | ~10.7k | ~0.7k | 6† | opt-in ✓ | foreign surface only | arity-2 LMDB v1 | **reference** | Primary (ISO) |
+| **Scala** | ~1.4k | ~0.8k | 10† | **default CI** | all 7 opt-in | 4 backends + arity-N LMDB | — | Primary (breadth) |
+| **C** | ~6.1k | — | 9 | opt-in ✓ | **7 + bi** + reverse CSR | TSV + LMDB | — | Strong systems |
+| **Go** | ~3.5k | ~0.7k | 12 | opt-in ✓§ | **all 7** FFI | TSV/LMDB atom facts | — | Strong runtime |
+| **R** | ~1.9k | ~0.9k | 4† | **no** | all 7 | optional LMDB | tryCatch only | Strong (campaign) |
+| **Python** | ~2.5k | ~1.2k | 7† | opt-in ✓ | interpreter graph ops only | — | partial | Mid (parity) |
+| **WAT** | ~6.4k | ~0.5k | 6 | opt-in ✓ | — | — | — | Mid (WASM) |
+| **Clojure** | ~0.8k | ~1.4k | 6 | **no** | foreign CA handlers | LMDB JNI + caches | — | Mid (LMDB niche) |
+| **Lua** | ~0.8k | ~0.5k | 5 | **no** | — | — | — | Mid (builtins) |
+| **ILAsm** | ~1.9k | — | 2† | **no** | — | — | — | Early |
 | **JVM** | ~0.7k | — | 1 | **no** | — | — | — | Early |
-| **Kotlin** | ~0.5k | — | 1 | **no** | — | — | — | Early |
+| **Kotlin** | ~0.4k | — | 1† | **no** | — | — | — | Early |
 
-Shared kernel kinds (detector): `transitive_closure2`,
-`category_ancestor`, `transitive_distance3`,
-`transitive_parent_distance4`, `transitive_step_parent_distance5`,
-`weighted_shortest_path3`, `astar_shortest_path4`.
+† File count understates cases (Elixir classics 50; C++ generator ~400;
+R generator ~94; ILAsm ~45; Kotlin includes Gradle e2e).  
+‡ F# has a **dedicated** main-workflow + LMDB oracle job, but is absent
+from classic conformance matrix.  
+§ Go conformance requires `prefer_wam(true)` (default Go path is
+non-WAM `go_target`).
+
+**Shared-7** detector kinds: `transitive_closure2`, `category_ancestor`,
+`transitive_distance3`, `transitive_parent_distance4`,
+`transitive_step_parent_distance5`, `weighted_shortest_path3`,
+`astar_shortest_path4`.
+
+**LLVM-7** differs: drops parent/step-distance + bidirectional; adds
+`countdown_sum2`, `list_suffix2`.
+
+## Corrections from parallel source review (2026-07-11)
+
+Four explore subagents (Haskell/Rust, LLVM/C++/C, F#/Elixir/Scala,
+remaining nine) re-checked SOURCE against this doc. High-signal fixes
+already applied above / in STATUS pages:
+
+1. **Rust lazy/cached LMDB is implemented** (templates + matrix benches);
+   STATUS “R7/R8 planned” was stale.
+2. **Haskell `lmdb_materialisation` does not drive emit** — real knobs
+   are `use_lmdb` + `lmdb_cache_mode`.
+3. **F# “7 kernels” overstated** — only CA + bidirectional templates
+   exist; bi off by default; `lmdb_materialisation(auto)` shipped.
+4. **LLVM-7 ≠ shared-7** — do not equate kernel counts across rows.
+5. **C has 7+bi + reverse CSR**; roadmap “907 lines / less-developed”
+   was wrong.
+6. **Go has all 7 FFI kernels**, not “category_ancestor+”.
+7. **Elixir has LMDB FactSource**; gap is rich lazy/cached policies, not
+   absence of mmap. Lowered is test/production path, not unresolved
+   codegen default.
+8. **Clojure** strips `switch_on_constant` prefixes for T4 — it is not
+   “no switch handling,” just no emitted switch table.
+9. **Test≈ column** is file counts; several suites are much denser.
 
 ## Tier A — primary hybrid backends
 
 ### Haskell / Rust / LLVM / C++ / F#
 
-Deep profiles live in the STATUS docs linked above. Snapshot:
+Deep profiles: STATUS docs. Snapshot after source review:
 
 | | Haskell | Rust | LLVM | C++ | F# |
 |---|---|---|---|---|---|
 | Role | scale + fusion | single-core kernels | native/WASM IR | ISO reference | .NET + LMDB modes |
-| Lowered | dual, clause-1 | deterministic only | M1–M4 hybrid | det / clause-1 / ITE | dual (Haskell-like) |
-| State | immutable + IntMap | `&mut` Vec | SSA + arena | mutable maps/cells | record + in-place regs |
+| Lowered | dual, clause-1 + Phase I | det / T4–T6 / ITE | M1–M4 hybrid | det / clause-1 / ITE / T4–T6 | dual (default interpreter) |
+| Kernels | shared-7 + bi (mustache) | shared-7 + bi + boundary + matrix | LLVM-7 | foreign trampoline only | templates: CA + bi only |
+| LMDB | use_lmdb + cache_mode | LookupSource; matrix eager/lazy/cached | none | arity-2 v1 | eager/lazy/cached/**auto** |
 | Scale-300 query | 32 ms (4c) / 107 ms (1c) | **17 ms** | microbench-class | not on matrix | **11 ms** (startup↑ total) |
-| Status doc | ✅ new | ✅ new | ✅ new | ✅ new | ✅ new |
 
 ### Elixir — reference baseline
 
 See [`design/WAM_ELIXIR_STATUS.md`](design/WAM_ELIXIR_STATUS.md).
-Dual lowering **default**; full indexed dispatch; ISO three-form;
-aggregates with witness-group bagof/setof; all 7 kernels; Y-regs
-fix ~30–55× on chain bench. Deferred: mmap LMDB, atom interning
-(deprioritized), Items API for lowered path.
+Tests use `emit_mode(lowered)`; unresolved codegen default remains
+`interpreter`. Full indexed dispatch; ISO three-form; aggregates with
+witness-group bagof/setof; all 7 kernels; FactSource including
+**LMDB** / LmdbIntIds; Y-regs fix ~30–55× on chain bench. Deferred:
+rich LMDB policies, Items API for lowered path, IEEE-754 lax divide.
 
 ### Scala — generalization anchor
 
@@ -117,46 +155,48 @@ backend alongside Elixir.
 ### C (`wam_c_target`)
 
 Living checklist: [`WAM_C_TARGET_NEXT_STEPS.md`](../WAM_C_TARGET_NEXT_STEPS.md).
-All 7 kernels, LMDB FactSource, aggregates/bagof/setof meta-goals,
+**All 7 shared kernels + `bidirectional_ancestor`**, reverse-CSR
+child-index paths, LMDB FactSource, aggregates/bagof/setof meta-goals,
 lowered **helpers** prototype (no separate `wam_c_lowered_emitter.pl`).
-Roadmap Table 2 historically understated size (~907 lines cited;
-codegen is ~6.6k). Conformance green. Useful FFI/glue substrate.
+Conformance green. Useful FFI/glue substrate; historically undercounted
+as “907 lines.”
 
 ### Go (`wam_go_target`)
 
 [`design/WAM_GO_PARITY_AUDIT.md`](design/WAM_GO_PARITY_AUDIT.md):
-broad builtin/IO/aggregate surface; `category_ancestor` FFI (roadmap
-cites ~52× at scale-300); TSV/LMDB atom-fact paths; conformance green.
-Default Go product path is still non-WAM `go_target.pl` — WAM via
-`prefer_wam(true)`.
+**all 7 FFI kernels** via `go_foreign_lowering` / shared detector;
+broad builtin/IO/aggregate surface; TSV/LMDB atom-fact paths;
+conformance green **with `prefer_wam(true)`**. Default Go product path
+is still non-WAM `go_target.pl`.
 
 ### R (`wam_r_target`)
 
 [`WAM_R_TARGET.md`](WAM_R_TARGET.md) + session handoff: ~30-PR parity
-campaign; **7/7 kernels**; rich builtins; native parser default;
-optional LMDB (load-everything). Large generator test count; **not**
-in conformance harness yet.
+campaign; **7/7 kernels**; rich builtins; **native parser default**;
+optional LMDB (load-everything). Generator suite ~94 plunit cases;
+**not** in conformance harness yet.
 
 ## Tier C — mid maturity
 
 ### Python
 
 Parity audit + partial ISO (catch/throw, `is_iso`, compares, succ).
-Conformance registered. No graph kernels / LMDB. Packaged
-`WamRuntime.py` is the parity surface.
+Conformance registered. No **FFI** graph-kernel set; still has
+interpreter-level indexed-fact / `base_category_ancestor*` ops.
+Packaged `WamRuntime.py` (~3.6k) is the parity surface.
 
 ### WAT (WebAssembly text)
 
-[`targets/wam-wat.md`](targets/wam-wat.md): 73-instruction fused
-bytecode; hybrid clause-1 lowered + `$run_loop` fallback; conformance
-green after cons/`is`/indexing fixes. Browser/sandboxed deploy.
-Interpreter-bound (dispatch still hot).
+[`targets/wam-wat.md`](targets/wam-wat.md): ~6.4k-line fused bytecode
+VM; T4–T6 hybrid + `$run_loop` fallback; conformance green. Browser /
+sandboxed deploy. Interpreter-bound (dispatch still hot).
 
 ### Clojure
 
-LMDB JNI + cache policies; lowered emitter **deterministic-prefix
-only** (no `switch_on_constant` lowering yet); no kernels; no
-conformance registration. Docs are proposals, not STATUS.
+LMDB JNI + cache policies; lowered emitter larger than target.pl;
+T4 with **`switch_on_constant` prefix stripping** (no emitted switch
+table). Foreign handlers for category_parent/ancestor — not shared-7
+FFI. No conformance registration.
 
 ### Lua
 
@@ -168,9 +208,9 @@ IO. No kernels/LMDB/conformance.
 
 | Target | Shape | Missing |
 |---|---|---|
-| **ILAsm** | .NET CIL from WAM (`switch` dispatch) | lowered emitter, kernels, conformance |
+| **ILAsm** | .NET CIL from WAM (`switch` dispatch) | lowered emitter, kernels, conformance; **~45** plunit cases in 2 files |
 | **JVM** | Jamaica/Krakatau bytecode dual emit | lowered emitter; third JVM route after Scala/Clojure |
-| **Kotlin** | hybrid partition + WAM fallback | lowered emitter; tiny test surface |
+| **Kotlin** | hybrid partition + WAM fallback | lowered emitter; 9 plunit incl. **Gradle e2e** when available |
 
 ## Workload → target cheat sheet
 
@@ -191,12 +231,12 @@ IO. No kernels/LMDB/conformance.
 
 Do **not** collapse into one ranking:
 
-1. **Kernel / graph perf:** Rust ≈ F# ≈ Haskell ≈ Elixir ≈ Scala/R/C > Go > LLVM > C++ > others  
-2. **Materialisation:** F# ≥ Haskell ≈ Scala > Rust > C/C++/Clojure > Elixir (no mmap) > LLVM  
+1. **Kernel / graph perf:** Rust ≈ Haskell ≈ Elixir ≈ Scala/R/C/Go > F# (templates thin) > LLVM > C++ > others  
+2. **Materialisation:** F# ≥ Haskell ≈ Scala > Rust (matrix path) > C/C++/Clojure/Elixir > LLVM  
 3. **ISO / exceptions:** C++ ≈ Elixir > F# ≈ Python > Haskell (substrate) > rest  
 4. **Portable codegen:** LLVM > WAT > Rust/C/C++ > Haskell > F#/.NET  
 5. **Conformance harness:** Scala + Elixir (default) > haskell/rust/c/cpp/go/python/wat > unregistered (F#, LLVM, R, Clojure, Lua, …)  
-6. **Architectural completeness:** Elixir > Haskell/F#/Rust > Scala > Go/R/C > …
+6. **Architectural completeness:** Elixir > Haskell/Rust > F#/Scala > Go/R/C > …
 
 ## Effective-distance snapshot (scale 300)
 
@@ -220,16 +260,16 @@ not all are on this exact matrix.
 |---|---|
 | No Haskell/Rust/LLVM/C++ STATUS | Added `WAM_*_STATUS.md` |
 | F# STATUS scattered across TARGET + PARITY | Added `WAM_FSHARP_STATUS.md` + link from TARGET |
-| Comparison covered only five targets | This doc now inventories all 17 |
-| Roadmap F# “LMDB none” / Elixir “kernels none” | Corrected in `WAM_TARGET_ROADMAP.md` |
-| Roadmap omitted C++ primary row | Added |
+| Comparison covered only five targets | Fleet inventory of all 17 |
+| Stale / wrong claims vs source | Parallel subagent review corrections (§ above) |
+| Roadmap F# LMDB / Elixir kernels / C “907 lines” | Corrected in `WAM_TARGET_ROADMAP.md` |
 
 Still optional: dedicated `WAM_SCALA_STATUS.md`, `WAM_CLOJURE_STATUS.md`,
-`WAM_C_STATUS.md` (C next-steps already serves), conformance adapters
-for F# / LLVM / R.
+`WAM_GO_STATUS.md`, `WAM_C_STATUS.md`; conformance adapters for F# /
+LLVM / R; finish F# kernel templates.
 
 ## Document status
 
-Descriptive snapshot for the hybrid comparison branch. Work items
-live in PRs and `docs/proposals/`. Prefer updating per-target STATUS
-docs when milestones land, then refresh the fleet table here.
+Descriptive snapshot after parallel source exploration (Grok 4.5 +
+Composer 2.5 explore agents). Prefer updating per-target STATUS docs
+when milestones land, then refresh the fleet table here.

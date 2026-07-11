@@ -54,15 +54,20 @@ conventions already present. CLI via `emit_main(true)` → `main.cpp`
 exit 0/1.
 
 **Foreign surface.** `call_foreign` trampolines and lowered foreign
-comments; **not** the full shared seven-kernel perf set that
-Rust/Haskell/F#/Elixir/Scala/R/C ship.
+comments; **no** `recursive_kernel_detection` / shared graph-kernel
+set (unlike C, which ships all 7 + bidirectional). Graph-kernel
+density and effective-distance matrix presence lag Rust/Haskell/C.
+
+**Test surface.** Few dedicated kernel e2e *files*, but
+`tests/test_wam_cpp_generator.pl` alone carries on the order of
+**~400** `test/1` clauses spanning ISO + LMDB + e2e — do not read
+“~6 files” as a thin suite.
 
 ## Gaps
 
-- Graph-kernel density and effective-distance matrix presence lag
-  Rust/Haskell/F#.
-- Few dedicated kernel e2e tests relative to LLVM/Rust.
-- Compiled runtime-parser path is a compile-time cost hazard.
+- Graph-kernel density lags Rust/Haskell/C (no shared-kernel detector).
+- Compiled runtime-parser path is a compile-time cost hazard (~11 min
+  for parser-bundled projects).
 - ISO implementation lives in C++ rather than solely in the shared
   `iso_errors.pl` Prolog module used by F#/Python/Elixir.
 
@@ -78,11 +83,14 @@ Rust/Haskell/F#/Elixir/Scala/R/C ship.
 
 ## Related: WAM-C
 
-The sibling **C** target (`wam_c_target.pl`, no separate lowered
-emitter module) has a living checklist in
+The sibling **C** target (`wam_c_target.pl` ~6.1k lines, no separate
+lowered-emitter module) has a living checklist in
 [`WAM_C_TARGET_NEXT_STEPS.md`](../WAM_C_TARGET_NEXT_STEPS.md) —
-all seven kernels, LMDB FactSource, aggregates/bagof/setof,
-lowered-helper prototype. Do not confuse C and C++ maturity axes.
+**all 7 shared kernels + `bidirectional_ancestor`**, reverse-CSR
+child-index paths, LMDB FactSource, aggregates/bagof/setof, lowered
+**helpers** prototype (fact/filter shapes, not a full WAM lowered
+emitter). Conformance registered. Do not confuse C and C++ maturity
+axes: C leads on kernels/CSR; C++ leads on ISO + runtime parser.
 
 ## Document status
 

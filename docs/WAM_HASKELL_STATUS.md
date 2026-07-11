@@ -43,18 +43,22 @@ instructions; inline get/put/set/cut optimizations — PR #2509).
 (PRs #2514–#2518).
 
 **Materialisation.** LMDB FactSource on the safe key/value API
-(raw-pointer path abandoned). Eager + cached modes; lazy is
-degenerate (cap 0). Edge-store + auto materialisation resolvers
-(PR #2519). Compile-time `atom_intern_id` table.
+(raw-pointer path abandoned). Emit path is driven by `use_lmdb(true)`
+plus `lmdb_cache_mode` tiers (raw / memoize≈sharded / L1 / L2 /
+two_level) in `lmdb_fact_source.hs.mustache` — **not** by the
+`lmdb_materialisation(eager|lazy|cached)` option, which is resolved
+but currently unused by `generate_lmdb_wiring`. Edge-store + auto
+resolvers (PR #2519). Compile-time `atom_intern_id` table.
 
 **Parallelism.** `parMap rdeepseq` on fork-eligible paths; nested
 spark explosion guarded. Negation race-to-true available.
 
 **ISO substrate.** `WamException`, `throw/1`, `catch/3`, `is_iso/2`,
-ISO comparison variants, succ variants (PRs #2510, #2526). Not yet
-listed as a cross-target ISO *reference* adopter in
-`WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` (C++/Elixir remain the
-documented references).
+ISO comparison variants, succ variants (PRs #2510, #2526) with smoke
+coverage in `test_wam_haskell_iso_smoke.pl`. Cross-target ISO status
+doc historically said Haskell was “mostly missing” — that is
+**stale** relative to the substrate; C++/Elixir remain the documented
+*reference* adopters in `WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md`.
 
 **Runtime parser.** Opt-in `runtime_parser(compiled)`; default off.
 E2E generation ~60s for ~50 parser predicates (PR #2522).
@@ -67,6 +71,8 @@ green. Cabal compile cost makes it opt-in rather than default CI.
 - Scale-300 effective-distance (FFI): ~32 ms query / 75 ms total on
   4 cores; ~107 / 193 ms single-core
   ([`design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md`](design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md)).
+- Enwiki-ish handoff also reports larger-scale timings
+  ([`handoff/wam_haskell_enwiki_benchmark_handoff.md`](handoff/wam_haskell_enwiki_benchmark_handoff.md)).
 - Workload fit: pure recursive numeric aggregation within ~1–2× of
   Rust when fusion fires; parallel fanout is the differentiator.
 
@@ -74,10 +80,12 @@ green. Cabal compile cost makes it opt-in rather than default CI.
 
 - Generated `Main.hs` always pulls LMDB types even when unused —
   blocks GHC without the lmdb package.
-- Lazy LMDB mode degenerate; scan/segregation not yet.
+- `lmdb_materialisation(...)` option does not yet drive codegen;
+  wire emit to it or drop the dead resolver.
+- Scan/segregation LMDB modes not yet.
 - Classic conformance builds are heavy (cabal per program).
 - Runtime parser E2E is slow when enabled.
-- ISO adoption not fully mirrored in the shared ISO status table.
+- Align shared ISO status table with the shipped substrate.
 
 ## Path forward
 

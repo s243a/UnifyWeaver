@@ -33,17 +33,27 @@ query times competitive with Rust FFI at scale 300.
 **Dual lowering.** Interpreter + `emit_mode(functions)` lowered path
 (mirrors Haskell; deterministic clause-1 for choicepoint-heavy bodies).
 
-**Kernels.** Shared graph-kernel set + **bidirectional_ancestor**
-upgrade path; CSR reverse-index reader (`CsrLookupSource`); cost
-analyzer for strategy selection.
+**Kernels.** Shared detector can fire for all kinds, but **only two
+F# mustache templates exist** on disk
+(`kernel_category_ancestor.fs.mustache`,
+`kernel_bidirectional_ancestor.fs.mustache`). Other kinds fall through
+to a `// Kernel …: template not found` stub at codegen
+(`render_kernel_function_fs/2`). Benchmarks centre on
+`category_ancestor/4`. **Bidirectional** upgrade is computed but
+**off by default** — requires `allow_bidirectional_kernel_swap(true)`.
+CSR reverse-index reader (`CsrLookupSource`) and cost/strategy
+analyzers ship.
 
 **LMDB.** LightningDB 0.21; `ILookupSource` with eager, lazy, cached,
-two-level cache, Dict unwrap; `lmdb_materialisation(...)` and
-`lmdb_l2_capacity(...)` options. Scale sweep: at 40k edges, lazy
-~86× faster than eager Map materialisation for partial demand
-(parity audit / e2e benches).
+two-level cache, Dict unwrap; `lmdb_materialisation(...)` including
+**`auto` resolver** (`resolve_auto_lmdb_materialisation_fs/2` —
+parity audit “future” wording is stale) and `lmdb_l2_capacity(...)`.
+Scale sweep: at 40k edges, lazy ~86× faster than eager Map
+materialisation for partial demand.
 
-**Parallelism.** TPL `Parallel.map` / `runNegationParallel` race-to-true.
+**Parallelism.** TPL `Array.Parallel.map` / `runNegationParallel`
+(`forkMinBranches = 3`). No Elixir-style `forkMinCost` /
+`runtime_cost_probe` yet.
 
 **ISO.** Partial adopter: catch/throw substrate, constructors,
 `is_iso`/`is_lax`, arith compares, `succ` family; shared
@@ -52,20 +62,27 @@ two-level cache, Dict unwrap; `lmdb_materialisation(...)` and
 **Runtime parser.** Opt-in compiled mode; **42/42** smoke
 (`test_wam_fsharp_parser_smoke.pl`). Default off.
 
+**Emit modes.** Codegen default is **`interpreter`**;
+`emit_mode(functions)` is opt-in and only ~1.0–1.07× on documented
+best cases — kernels/LMDB dominate, not lowered emit.
+
 **Perf fix.** In-place `WsRegs` mutation (PR #2428) — ~2–3× on
 parser-heavy benches; pattern unique to F# among WAM targets
 (`WAM_PERF_CROSS_TARGET.md`).
 
+**CI note.** Dedicated main-workflow job
+(`run_wam_fsharp_tests.pl` + LMDB oracle) — but **not** in the
+classic `wam_conformance_smoke` matrix with Scala/Elixir.
+
 ## Gaps
 
-- **Not registered** in classic conformance harness (roadmap: add
-  adapter).
+- Finish F# kernel templates for the remaining shared kinds (or stop
+  claiming “7 kernels” without the templates).
+- Bidirectional off by default; enable after cost-model confidence.
+- **Not registered** in classic conformance harness.
 - Dynamic database partial (facts via lowered mutation; prefer Python
   for full dynamic-DB semantics — target doc).
 - LMDB scan-mode / workload-segregation wait on Rust R9/R10 reference.
-- Roadmap historically said materialisation “none documented” — that
-  is **stale**; modes above are shipped (corrected in
-  `WAM_TARGET_ROADMAP.md` on the hybrid comparison branch).
 
 ## Performance notes
 

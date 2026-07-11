@@ -100,7 +100,13 @@ These choices are load-bearing and worth understanding before working on the tar
 
 **Heap as Map keyed by integer address.** Compounds are `{:ref, addr}` where `state.heap[addr] = {:str, "name/arity"}` and args at `heap[addr+1..addr+arity]` — contiguous. This contiguity assumption was the source of the `bagof_with_quantifier` bug (interleaved nested-put_structure broke it); the `args_first_emission` flag in the WAM compiler (now default per PR #2285) ensures args are emitted before nested structures.
 
-**Lowered mode is the default.** Per-predicate `clause_<Name><N>` functions, no per-instruction fetch loop, BEAM TCO via tail-calls. Interpreter mode (`emit_mode(interpreter)`) still works but is not exercised by the e2e tests.
+**Lowered mode is the production path in tests.** Per-predicate
+`clause_<Name><N>` functions, no per-instruction fetch loop, BEAM TCO
+via tail-calls. Codegen’s unresolved default is still
+`emit_mode(interpreter)` (`wam_elixir_resolve_emit_mode/2`); classic
+programs / conformance / e2e pass **`emit_mode(lowered)`**
+explicitly. Do not confuse “tests use lowered” with “codegen default
+is lowered.”
 
 **Side-stack catcher frames.** `catch/3` snapshots regs/y_regs/stack/trail-mark/cp-count into `state.catcher_frames`. `throw/1` raises `{:wam_throw, term, heap, heap_len}` as a BEAM throw — bundling the heap is critical for compound thrown terms (deep_copy creates cells in a state that gets discarded before the throw fires).
 

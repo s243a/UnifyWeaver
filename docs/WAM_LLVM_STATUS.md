@@ -41,11 +41,16 @@ heap. `@wam_cleanup` is an arena **reset** (not destroy) — ~18%
 per-query win on the dispatch microbench after removing per-iter
 `malloc(1 MiB)` (`WAM_PERF_CROSS_TARGET.md`).
 
-**Foreign kernels.** Seven kinds with `foreign_lowering(true)`
-autodetect: `transitive_distance3`, `weighted_shortest_path3`,
-`astar_shortest_path4`, `transitive_closure2`, `category_ancestor`,
-`countdown_sum2`, `list_suffix2`. Execution smokes for BFS / Dijkstra /
-A* / TC / category ancestor.
+**Foreign kernels.** Seven LLVM-specific kinds with
+`foreign_lowering(true)` autodetect — **not the same set** as the
+shared detector’s seven:
+
+| In LLVM set | Shared-only (missing here) | LLVM-only extras |
+|---|---|---|
+| `category_ancestor`, `transitive_closure2`, `transitive_distance3`, `weighted_shortest_path3`, `astar_shortest_path4` | `transitive_parent_distance4`, `transitive_step_parent_distance5`, `bidirectional_ancestor` | `countdown_sum2`, `list_suffix2` |
+
+Execution smokes: BFS / Dijkstra / A* / TC / category ancestor /
+countdown / list_suffix.
 
 **Deploy shapes.** Native `.ll` projects and WASM project writer
 (`write_wam_llvm_wasm_project/3`).
