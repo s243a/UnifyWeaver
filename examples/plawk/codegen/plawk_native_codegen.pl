@@ -7738,6 +7738,19 @@ plawk_resolve_dynrec_view_action(if(Pattern, Then0, Else0), K0, K,
     !,
     plawk_resolve_dynrec_view_actions(Then0, K0, K1, Then),
     plawk_resolve_dynrec_view_actions(Else0, K1, K, Else).
+% A view nested in a loop body: recurse so its `$k` rewrite happens
+% wherever the view sits. `foreach` runs before its own foreach-resolve
+% pass (which rebinds a naked `$k` to the current element), so a view's
+% block `$k` become the view's hidden temps here and only unrewritten
+% `$k` reach the element rebind -- and the view's Call args (e.g. `$1`
+% passing the current element into the grammar) are left for that pass.
+plawk_resolve_dynrec_view_action(foreach(Body0), K0, K, [foreach(Body)]) :-
+    !,
+    plawk_resolve_dynrec_view_actions(Body0, K0, K, Body).
+plawk_resolve_dynrec_view_action(for_in(V, A, Body0), K0, K,
+        [for_in(V, A, Body)]) :-
+    !,
+    plawk_resolve_dynrec_view_actions(Body0, K0, K, Body).
 plawk_resolve_dynrec_view_action(Action, K, K, [Action]).
 
 %% plawk_dynrec_view_specs(+K, +I, +Types, -Bindings, -FieldTargets)
