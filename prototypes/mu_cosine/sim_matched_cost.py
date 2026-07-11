@@ -39,6 +39,21 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 LUNA_CAMPAIGN = "/tmp/mu_data/campaign_scored_luna.tsv"
 
 
+def budget_plan(n, k, n_ov, avail):
+    """Matched-cost bulk sizing (blocker 2), as a pure/testable unit. The overlap is dual-scored (5.5 +
+    luna) at cost 1+1/k per row; the bulk is luna-only at 1/k. From the matched budget n:
+        spend(overlap) = n_ov*(1+1/k);  n_bulk = k*(n - n_ov*(1+1/k)) = k*n - n_ov*(k+1).
+    Realized spend equals n exactly when the cell is feasible and untruncated, and is < n otherwise.
+    Returns (n_bulk_want, n_bulk_used, truncated, spend, feasible)."""
+    spend_ov = n_ov * (1.0 + 1.0 / k)
+    feasible = spend_ov <= n + 1e-6                 # can we even afford the dual-scored overlap?
+    n_bulk = int(k * n - n_ov * (k + 1))
+    trunc = feasible and n_bulk > avail
+    n_bulk_used = max(0, min(n_bulk, avail)) if feasible else 0
+    spend = spend_ov + n_bulk_used / k
+    return n_bulk, n_bulk_used, trunc, spend, feasible
+
+
 def ridge_fit_predict(X, y, Xq, lams=(3.0, 30.0, 300.0, 3000.0)):
     """Ridge with λ selected on an inner 80/20 holdout — a fixed λ sits near the interpolation
     threshold (n ≈ 768 features) at the large-n grid points and double-descent wrecks the curve."""
@@ -117,15 +132,9 @@ def main():
             avail = len(tr) - n_ov                          # bulk rows available in the pool (const/rep)
             acct = {}                                       # k -> (n_bulk_want, n_bulk_used, trunc, spend, feasible)
             for k in a.k:
-                spend_ov = n_ov * (1.0 + 1.0 / k)
-                feasible = spend_ov <= n + 1e-6             # can we even afford the dual-scored overlap?
-                n_bulk = int(k * n - n_ov * (k + 1))
-                trunc = feasible and n_bulk > avail
-                n_bulk_used = max(0, min(n_bulk, avail)) if feasible else 0
-                spend = spend_ov + n_bulk_used / k
-                if feasible:
-                    assert spend <= n + 1e-6, f"arm B overspends: n={n} k={k} spend={spend:.2f} > {n}"
-                acct[k] = (n_bulk, n_bulk_used, trunc, spend, feasible)
+                acct[k] = budget_plan(n, k, n_ov, avail)
+                if acct[k][4]:
+                    assert acct[k][3] <= n + 1e-6, f"arm B overspends: n={n} k={k} spend={acct[k][3]:.2f} > {n}"
             print(f"  n={n}: overlap n_ov={n_ov}; " + "  ".join(
                 (f"k={k:g}:INFEASIBLE" if not acct[k][4] else
                  f"k={k:g}:n_bulk={acct[k][0]}" + (f"*TRUNC->{acct[k][1]}" if acct[k][2] else "")
