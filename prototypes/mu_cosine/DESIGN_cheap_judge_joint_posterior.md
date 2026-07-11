@@ -77,6 +77,18 @@ The common source vector is:
 [prior_D, prior_S, graph_D, graph_S, luna_D, luna_S]
 ```
 
+### Graph supervision has two roles
+
+The graph judge is not only a last-mile measurement for the final posterior. Its nearly free structural labels
+can also familiarize or adapt a model to a particular dataset: its entities, vocabulary, topology, and recurring
+relation patterns. That representation-learning role may improve later priors or features even when graph_S has
+little incremental value after Luna in a fixed downstream fusion ladder.
+
+The held-row graph ablations in this work estimate only the first role: the immediate value of graph channels as
+posterior inputs. They do not estimate the value of graph-generated supervision for dataset adaptation. A small
+post-Luna increment must therefore not be interpreted as a reason to remove graph supervision from the broader
+dataset-learning pipeline; that second role needs its own frozen-initialisation, matched-training ablation.
+
 The methods are:
 
 - **JointPosterior:** multinomial LR over the full source vector. This is the train-standardized learned

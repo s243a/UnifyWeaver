@@ -11,7 +11,8 @@ matched-cost proxy, Gaussian NLL, and macro-decision AURC answer different quest
    `n=160,k=2`, S is nominally worse on both corpora.
 2. **Free graph_S is real, but mostly a pre-Luna channel.** Its free-only S-NLL gain is positive across all 40
    node partitions and the fixed held-node interval excludes zero on both corpora. Its increment after debiased
-   Luna is small and both fixed intervals include zero.
+   Luna is small and both fixed intervals include zero. This tests graph_S as a final-posterior input, not the
+   graph judge's separate role in familiarizing or adapting a model to the dataset.
 3. **Debiased Luna is still valuable, but task- and partition-dependent.** It dominates the analytic D/S
    Gaussian ladder. Macro-decision AURC favours it on seed 0, but one fresh seed-1 Joint interval includes zero.
    The leakage-free matched-cost ridge proxy does not show a general spending advantage for cheap labels.
@@ -95,7 +96,11 @@ seed-0 interval uses paired two-endpoint/pigeonhole node resampling on the held 
 | fresh, after Luna | +0.0765 ± 0.0417 | 39/40 | +0.0219 [-0.1759,+0.2067] |
 
 This confirms graph_S as useful free supervision. It does not confirm a material increment once debiased Luna
-is present.
+is present. That conclusion is deliberately narrow: the graph judge can also provide broad, nearly free
+structural supervision that teaches a model a dataset's entities, vocabulary, topology, and relation patterns.
+This evaluation holds the upstream representation fixed and therefore does not measure that dataset-
+familiarization benefit. Removing graph supervision based on the post-Luna fusion increment would be an invalid
+inference; a matched adaptation ablation is separate future work.
 
 ## 3. Corrected Luna campaign
 
