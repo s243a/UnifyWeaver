@@ -49,14 +49,16 @@ self-contained so a single coding agent can pick it up in isolation.
 | KERN-FSHARP | Finish F# kernel templates | F# | L | — |
 | EMIT-ILASM | Lowered emitter | ILAsm | L | — |
 | EMIT-JVM | Lowered emitter | JVM | L | — |
-| EMIT-KOTLIN | Lowered emitter | Kotlin | M | — |
+| EMIT-KOTLIN ⭐ | Lowered emitter | Kotlin | M | — (recommended first task) |
 | BENCH-LLVM | Effective-distance bench row | LLVM | L | — |
 | BENCH-CPP | Effective-distance bench row | C++ | L | — |
 | BENCH-C | Effective-distance bench row | C | M | — |
 | BENCH-GO | Effective-distance bench row | Go | M | — |
 | BENCH-R | Effective-distance bench row | R | L | — |
 
-Suggested ordering: the **S** parser cards are quick wins; **conformance
+Suggested ordering: **start with `EMIT-KOTLIN`** — lowest-risk (least-mature
+target, plumbing already present) and fully spec'd below as the first
+hand-off. Then the **S** parser cards are quick wins; **conformance
 adapters** for F#/LLVM/R give the biggest correctness-visibility return;
 LMDB and ISO cards for C/R carry prerequisites; the F# kernel-template
 card unblocks a Primary-tier target's headline gap.
@@ -486,19 +488,47 @@ fallback) to the three Tier-D targets. Reference small emitters:
   4. Partition in `write_wam_jvm_project/4`: lowerable → native method, rest → existing tableswitch interpreter (unchanged).
 - **Acceptance:** `swipl -q -g run_tests -t halt tests/core/test_wam_jvm_lowered_smoke.pl` passes for BOTH `jamaica` and `krakatau` formats (lowered method emitted; interpreted predicate still uses `tableswitch`), existing JVM tests still green.
 
-### EMIT-KOTLIN: Add Kotlin lowered emitter reusing its hybrid partition
+### EMIT-KOTLIN: Add Kotlin WAM-lowered emitter (deterministic clause-1 native dispatch)
 - **Lever:** Lowered emitters for early scaffolds  **Target:** Kotlin  **Size:** M  **Depends on:** —
-- **Goal:** Add a lowered emitter that produces a deterministic clause-1 fast path in Kotlin for predicates the existing hybrid partitioner routes as "native," keeping WAM text fallback for the rest.
+- **Status:** ⭐ **First hand-off — fully scoped below.** Lowest-risk target: least mature, and the plumbing already exists.
+
+**Context — read this first (verified against source 2026-07-11).** The Kotlin target is NOT missing its partition. `wam_kotlin_target.pl` already ships:
+- `wam_kotlin_resolve_emit_mode/2` (`interpreter` | `functions` | `mixed(List)`) — lines 57–69; default `interpreter`.
+- `wam_kotlin_partition_predicates/5` → `native(PI,Code)` / `wam(PI,WamText)` / `failed(PI)` buckets — lines 71–99.
+- A WAM-fallback path that already works end-to-end: `compile_wam_predicate_to_kotlin/4` registers an `Instruction` list on `WamProgram`, and `WamRuntime.run` interprets it (the passing gradle test `generated_project_compiles_and_runs_fact_variable_and_terms` proves this).
+
+**The actual gap.** The *native* bucket is a dead end. `should_attempt_native/2` (lines 101–103) routes lowerable predicates to the **non-WAM** `kotlin_target:compile_predicate_to_kotlin/3` (line 85), and `compile_native_parts/2` (lines 312–323) then emits that code **only as an audit block comment** — `/* Native Kotlin lowering selected … Direct native dispatch wiring is a follow-up … */`. A predicate placed in the Native bucket is therefore neither natively dispatched nor WAM-registered: **it is not runnable.** (The existing `functions_mode_partitions_native_when_available` test only checks the *partition*, not that the project runs the native predicate.) This task closes that: emit a real Kotlin function from WAM and dispatch to it.
+
+- **Goal:** Add `wam_kotlin_lowered_emitter.pl` that lowers a **deterministic single-clause** predicate's WAM text into a native Kotlin function operating on the existing `WamState`, and wire it into `WamProgram`/`WamRuntime` so that predicate runs natively (bypassing the bytecode loop), with the WAM interpreter as the safety fallback for everything else.
+
+- **Which hybrid targets to use as reference (ranked):**
+  1. **Lua — PRIMARY.** `src/unifyweaver/targets/wam_lua_lowered_emitter.pl` (~590 lines) is the smallest dedicated *WAM-text → native-function* emitter and Lua's runtime model is structurally identical to Kotlin's (a `WamState` with registers + `run_predicate`, vs Kotlin's `WamState` + `WamRuntime.run`). Copy: its module shape and exports (`wam_lua_lowerable/3`, `lower_predicate_to_lua/4`, `lua_lowered_func_name/2`); `build_emission_plan/2` → `classify_clause_shape/2` (start with just the `multi_clause_1`/single-clause arm); and **crucially the wrapper wiring** — `wam_lua_target.pl:526–530` (partition calls `wam_lua_lowerable` then `lower_predicate_to_lua`) and `emit_lua_lowered_wrapper/4` (`wam_lua_target.pl:692`), which emits the public entry that builds a state, loads args into registers, and calls the lowered native fn. Kotlin needs the exact same two-step.
+  2. **WAT — SECONDARY.** `src/unifyweaver/targets/wam_wat_lowered_emitter.pl` (~518 lines) for the **fallback-safety replay idiom** its header describes: "try the lowered clause-1 path first, and if it fails the generated public entry reinitialises state and falls back to the complete bytecode interpreter." Adopt this so a mis-lowered predicate stays correct — lowered failure must re-init and hand off to `WamRuntime.run`, not silently fail.
+  3. Rust / Haskell / F# lowered emitters — reference **only** for richer clause shapes (T4–T6 / ITE) in a *later* pass; they are large and their native paths are more entangled. Do not model the first cut on them.
+
+- **Shared machinery to reuse (already used by Lua):** `wam_ite_structurer` (`structure_ite/2`), `wam_clause_chain` (`clause_chain/2`), `wam_text_parser` (`wam_tokenize_line/2`, `wam_classify_constant_token/2` — already imported by `wam_kotlin_target.pl`). Do not re-parse WAM by hand.
+
+- **Runtime seam (all in `templates/targets/kotlin_wam/`):**
+  - `WamRuntime.kt.mustache` — `sealed class Value { Atom, IntVal, FloatVal, Var, Ref, Struct, ListVal }` (line 11), `data class Instruction` (21), `class WamState` with `registers`, `readRegister`/`writeRegister`/`bind`/`deref`/`resolve`/environment frames (lines 60+), `class WamProgram` (`register(key, listOf(Instruction))`, `predicateNames()`), and `class WamRuntime(program).run(predicate, state)`.
+  - `Main.kt.mustache` — `buildProgram()` emits `{{native_predicates}}` / `{{wam_predicates}}` then `{{registrar_calls}}`. The generated `main` calls `WamRuntime(program).run(predicate, stateFromCliArgs(...))`.
+  - **Recommended wiring:** add a native-dispatch seam to the runtime template — e.g. `WamProgram.registerNative(key, (WamState) -> Boolean)` plus a check at the top of `WamRuntime.run` that invokes the native fn (with WAT-style fall-through to the interpreter on `false`). Then `compile_native_parts` emits (a) the lowered `fun` and (b) a `program.registerNative("p/2", ::p_2_native)` line into the registrar list — replacing the audit comment. (verify: confirm `WamProgram`/`WamRuntime` exact API names in the .kt template before editing; keep the change additive so the interpreter path is untouched.)
+
 - **Files to touch:**
-  - `src/unifyweaver/targets/wam_kotlin_lowered_emitter.pl` (new)
-  - `src/unifyweaver/targets/wam_kotlin_target.pl` (feed lowered output into the native branch of `wam_kotlin_partition_predicates/5`, line 19; `write_wam_kotlin_project/3`, line 17)
-  - `tests/core/test_wam_kotlin_lowered_smoke.pl` (new)
-- **Reference to copy from:** `wam_lua_lowered_emitter.pl` for the classifier/lowering shape. Kotlin is the easiest of the three: it ALREADY has the hybrid split via `wam_kotlin_partition_predicates/5` (Native/Wam/Failed, lines 17–19, 40–58) — this card only adds the actual native clause-1 code generation for the "Native" bucket, which currently falls back. Mirror how `wam_lua_target.pl` (526–527) calls the lowered emitter inside its partition loop.
+  - `src/unifyweaver/targets/wam_kotlin_lowered_emitter.pl` (new — mirror `wam_lua_lowered_emitter.pl`)
+  - `src/unifyweaver/targets/wam_kotlin_target.pl` — replace the audit-comment body of `compile_native_parts/2` (lines 312–323) with real lowering + a `registerNative` registrar entry; call `wam_kotlin_lowerable/3` + `lower_predicate_to_kotlin/4` in `partition_predicates_/8` (lines 84–88) instead of delegating to `kotlin_target:compile_predicate_to_kotlin/3` (or keep that as a secondary path but stop discarding it to a comment)
+  - `templates/targets/kotlin_wam/WamRuntime.kt.mustache` + `Main.kt.mustache` — add the `registerNative`/native-dispatch seam
+  - `tests/test_wam_kotlin_target.pl` — extend (do NOT create a new core file; Kotlin's tests live here with a ready-made `gradle_available/0` guard + `run_gradle/5` helper at lines 24–47)
+
+- **Scope of the first cut (keep it small):** support only the **deterministic single-clause** shape (facts and single-clause rules — e.g. the existing `kt_guard/2`, `kt_fact/2`, `kt_same/2` test predicates). Anything else must decline in `wam_kotlin_lowerable/3` and stay on the WAM-register path. No T4/T5/ITE, no multi-clause, no aggregates in this task.
+
 - **Steps:**
-  1. Create module `wam_kotlin_lowered_emitter` exporting `wam_kotlin_lowerable/3`, `lower_predicate_to_kotlin/4`.
-  2. Port the deterministic clause-1 / clause-chain classifier over WAM text.
-  3. In `wam_kotlin_partition_predicates/5` / `write_wam_kotlin_project/3`, emit lowered Kotlin for the Native bucket; leave the WAM-text fallback wrapper (lines 44–46) untouched for Wam/Failed buckets.
-- **Acceptance:** `swipl -q -g run_tests -t halt tests/core/test_wam_kotlin_lowered_smoke.pl` passes (a clause-1 predicate emits native Kotlin, a hard predicate still emits the WAM fallback wrapper); existing Kotlin partition tests still pass.
+  1. Create `wam_kotlin_lowered_emitter` exporting `wam_kotlin_lowerable/3`, `lower_predicate_to_kotlin/4`, `kotlin_lowered_func_name/2`; reuse `wam_text_parser`/`wam_clause_chain`/`wam_ite_structurer`. Port Lua's `build_emission_plan`/`classify_clause_shape` but keep only the single-clause arm.
+  2. Emit a native `fun <name>(state: WamState): Boolean` implementing the clause head unifications + deterministic body against the `WamState` API (`readRegister`/`writeRegister`/`bind`/`deref`/`resolve`, `Value.*`). Return `false` on any unification failure so the caller can fall back.
+  3. Add the `registerNative` seam to `WamRuntime.kt.mustache` + `Main.kt.mustache`; check native dispatch first in `run`, WAT-style: on `false`, re-init state and run the interpreter.
+  4. In `wam_kotlin_target.pl`, wire lowering into the Native bucket and emit both the `fun` and its `registerNative(...)` registrar line; leave `compile_wam_parts`/`registrar_names` (the WAM fallback, lines 325–354) untouched.
+  5. Extend `tests/test_wam_kotlin_target.pl`: a unit test asserting a `functions`-mode project for a single-clause predicate emits a real `fun …(state: WamState)` + `registerNative` (NOT `/* Native Kotlin lowering selected`), and — under `[condition(gradle_available)]` — a gradle `run` of that predicate producing the same result as the interpreter path (compare against an `emit_mode(interpreter)` run of the same predicate).
+- **Acceptance:** `swipl -q -g run_tests -t halt tests/test_wam_kotlin_target.pl` passes including the new native-dispatch cases; the existing interpreter gradle test still passes; a `functions`-mode single-clause predicate is now actually runnable (native), and a non-lowerable predicate still round-trips through the WAM interpreter.
+- **Out of scope / follow-ups (leave as new cards):** T4/T5/ITE/multi-clause Kotlin lowering; deciding whether to also surface `kotlin_target.pl`'s non-WAM native output through this seam.
 
 ---
 
