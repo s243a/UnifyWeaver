@@ -152,7 +152,6 @@ F# now has all three materialisation modes from
   wording is obsolete.
 - **Scan-mode** and **workload-segregation** contract: Rust R9/R10;
   out of scope for F# until Rust ships the reference.
-  out of scope for F# until Rust ships the reference.
 - **L2 cache sizing**: defaults to `auto` (runtime memory-based
   formula matching Haskell). Also supports named sizes (`tiny`,
   `small`, `medium`, `large`), corpus presets (`enwiki`,

@@ -25,15 +25,17 @@ are cited from existing bench docs — not re-run in this PR.
 | **C++** | [`WAM_CPP_STATUS.md`](WAM_CPP_STATUS.md) | Living status; ISO + LMDB design docs |
 | **F#** | [`WAM_FSHARP_STATUS.md`](WAM_FSHARP_STATUS.md) | Living status; usage in [`WAM_FSHARP_TARGET.md`](WAM_FSHARP_TARGET.md) + [`design/WAM_FSHARP_PARITY_AUDIT.md`](design/WAM_FSHARP_PARITY_AUDIT.md) |
 | **Elixir** | [`design/WAM_ELIXIR_STATUS.md`](design/WAM_ELIXIR_STATUS.md) | Architectural reference baseline |
-| **Scala** | [`WAM_SCALA_TARGET.md`](WAM_SCALA_TARGET.md) | Usage guide (no separate STATUS yet) |
-| **R** | [`WAM_R_TARGET.md`](WAM_R_TARGET.md) | Usage + [`handoff/wam_r_session_handoff.md`](handoff/wam_r_session_handoff.md) |
-| **Go** | [`design/WAM_GO_PARITY_AUDIT.md`](design/WAM_GO_PARITY_AUDIT.md) | Parity audit vs Rust/Haskell |
-| **Python** | [`design/WAM_PYTHON_PARITY_AUDIT.md`](design/WAM_PYTHON_PARITY_AUDIT.md) | Parity + partial ISO |
-| **Lua** | [`design/WAM_LUA_PARITY_AUDIT.md`](design/WAM_LUA_PARITY_AUDIT.md) | 2026 builtin parity pass |
-| **WAT** | [`targets/wam-wat.md`](targets/wam-wat.md) | Overview + architecture |
-| **C** | [`WAM_C_TARGET_NEXT_STEPS.md`](../WAM_C_TARGET_NEXT_STEPS.md) | Living checklist (functions as status) |
-| **Clojure** | proposals only (`WAM_CLOJURE_*`) | No STATUS yet |
-| **JVM / ILAsm / Kotlin** | plans / family overview | Early scaffolds |
+| **Scala** | [`WAM_SCALA_STATUS.md`](WAM_SCALA_STATUS.md) | Living status; usage in [`WAM_SCALA_TARGET.md`](WAM_SCALA_TARGET.md) |
+| **R** | [`WAM_R_STATUS.md`](WAM_R_STATUS.md) | Living status; usage + [`handoff/wam_r_session_handoff.md`](handoff/wam_r_session_handoff.md) |
+| **Go** | [`WAM_GO_STATUS.md`](WAM_GO_STATUS.md) | Living status; [`design/WAM_GO_PARITY_AUDIT.md`](design/WAM_GO_PARITY_AUDIT.md) |
+| **Python** | [`WAM_PYTHON_STATUS.md`](WAM_PYTHON_STATUS.md) | Living status; [`design/WAM_PYTHON_PARITY_AUDIT.md`](design/WAM_PYTHON_PARITY_AUDIT.md) |
+| **Lua** | [`WAM_LUA_STATUS.md`](WAM_LUA_STATUS.md) | Living status; [`design/WAM_LUA_PARITY_AUDIT.md`](design/WAM_LUA_PARITY_AUDIT.md) |
+| **WAT** | [`WAM_WAT_STATUS.md`](WAM_WAT_STATUS.md) | Living status; [`targets/wam-wat.md`](targets/wam-wat.md) |
+| **C** | [`WAM_C_STATUS.md`](WAM_C_STATUS.md) | Living status; checklist [`WAM_C_TARGET_NEXT_STEPS.md`](../WAM_C_TARGET_NEXT_STEPS.md) |
+| **Clojure** | [`WAM_CLOJURE_STATUS.md`](WAM_CLOJURE_STATUS.md) | Living status; proposals `WAM_CLOJURE_*` |
+| **ILAsm** | [`WAM_ILASM_STATUS.md`](WAM_ILASM_STATUS.md) | Living status (early scaffold) |
+| **JVM** | [`WAM_JVM_STATUS.md`](WAM_JVM_STATUS.md) | Living status (early scaffold) |
+| **Kotlin** | [`WAM_KOTLIN_STATUS.md`](WAM_KOTLIN_STATUS.md) | Living status (early scaffold) |
 
 Cross-cutting: [`WAM_CROSS_TARGET_CONFORMANCE.md`](WAM_CROSS_TARGET_CONFORMANCE.md),
 [`WAM_BACKEND_CONVENTIONS.md`](WAM_BACKEND_CONVENTIONS.md),
@@ -75,17 +77,17 @@ Conformance = registered in `tests/test_wam_cross_target_conformance.pl`.
 | **F#** | ~5.3k | ~1.6k | 27 | **no**‡ | detector all; **templates: 2** (CA + bi) | **eager/lazy/cached/auto** | partial | Primary (.NET) |
 | **LLVM** | ~19.2k | ~2.0k | 52 | **no** | **LLVM-7** (≠ shared-7) | arena only | — | Primary (portable) |
 | **C++** | ~10.7k | ~0.7k | 6† | opt-in ✓ | foreign surface only | arity-2 LMDB v1 | **reference** | Primary (ISO) |
-| **Scala** | ~1.4k | ~0.8k | 10† | **default CI** | all 7 opt-in | 4 backends + arity-N LMDB | — | Primary (breadth) |
-| **C** | ~6.1k | — | 9 | opt-in ✓ | **7 + bi** + reverse CSR | TSV + LMDB | — | Strong systems |
-| **Go** | ~3.5k | ~0.7k | 12 | opt-in ✓§ | **all 7** FFI | TSV/LMDB atom facts | — | Strong runtime |
-| **R** | ~1.9k | ~0.9k | 4† | **no** | all 7 | optional LMDB | tryCatch only | Strong (campaign) |
-| **Python** | ~2.5k | ~1.2k | 7† | opt-in ✓ | interpreter graph ops only | — | partial | Mid (parity) |
-| **WAT** | ~6.4k | ~0.5k | 6 | opt-in ✓ | — | — | — | Mid (WASM) |
-| **Clojure** | ~0.8k | ~1.4k | 6 | **no** | foreign CA handlers | LMDB JNI + caches | — | Mid (LMDB niche) |
-| **Lua** | ~0.8k | ~0.5k | 5 | **no** | — | — | — | Mid (builtins) |
+| **Scala** | ~1.4k | ~0.8k | 11† | **default CI** | all 7 opt-in | 4 backends + arity-N LMDB | — | Primary (breadth) |
+| **C** | ~6.6k | — | 9 | opt-in ✓ | **7 + bi** + reverse CSR | TSV + LMDB | — | Strong systems |
+| **Go** | ~3.7k | ~0.8k | 13 | opt-in ✓§ | **all 7** FFI | TSV/LMDB atom facts | — | Strong runtime |
+| **R** | ~2.0k | ~1.0k | 7† | **no** | all 7 | optional LMDB | tryCatch only | Strong (campaign) |
+| **Python** | ~2.8k | ~1.3k | 8† | opt-in ✓ | interpreter graph ops only | — | partial | Mid (parity) |
+| **WAT** | ~6.7k | ~0.5k | 6 | opt-in ✓ | — | — | — | Mid (WASM) |
+| **Clojure** | ~0.9k | ~1.5k | 5 | **no** | foreign CA handlers | LMDB JNI + caches | — | Mid (LMDB niche) |
+| **Lua** | ~0.8k | ~0.6k | 5 | **no** | — | — | — | Mid (builtins) |
 | **ILAsm** | ~1.9k | — | 2† | **no** | — | — | — | Early |
 | **JVM** | ~0.7k | — | 1 | **no** | — | — | — | Early |
-| **Kotlin** | ~0.4k | — | 1† | **no** | — | — | — | Early |
+| **Kotlin** | ~0.5k | — | 1† | **no** | — | — | — | Early |
 
 † File count understates cases (Elixir classics 50; C++ generator ~400;
 R generator ~94; ILAsm ~45; Kotlin includes Gradle e2e).  
@@ -261,6 +263,27 @@ From [`design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md`](design/WAM_CROSS_TARGET_BE
 LLVM/C++/Elixir/Scala/Go appear in other benches or roadmap notes;
 not all are on this exact matrix.
 
+## Future-work scope (whole fleet)
+
+Aggregated from each target's STATUS "Path forward". Grouped by the
+lever that moves the most targets at once; per-target detail lives in
+the linked STATUS docs.
+
+| Lever | Targets it unblocks | Notes |
+|---|---|---|
+| **Conformance adapters** | F#, LLVM, R, Clojure, Lua | F#/LLVM/R are otherwise mature; registering them closes the biggest correctness-visibility gap. |
+| **Two-level lazy/cached LMDB policies** | C, Go, Scala, R (Elixir too) | FactSource exists; the F#/Haskell policy tier is the missing piece for >~100k facts. |
+| **ISO three-form error contract** | C, Go, Scala, R (finish Python, F#) | C++/Elixir are the references to copy. |
+| **Finish foreign kernel templates** | F# (2 of 7 templated) | Detector fires for all kinds; only CA + bidirectional are emitted. |
+| **Lowered emitters** | ILAsm, JVM, Kotlin | Early scaffolds — decide invest-vs-retire given Scala/Clojure/F# cover .NET+JVM maturely. |
+| **Effective-distance bench rows** | LLVM, C++, C, Go, R | Perf-matrix coverage thinner than Rust/Haskell/F#. |
+| **Runtime-parser capability entries** | C, Go, Scala, Clojure, Lua | Only R/C++ are native-default; Python/F#/Haskell/Rust have compiled opt-in. |
+
+Maturity bands for prioritisation: **Primary** (Elixir, Haskell, Rust,
+F#, LLVM, C++, Scala) → polish/parity; **Strong** (C, Go, R) →
+conformance + LMDB tiers; **Mid** (Python, WAT, Clojure, Lua) →
+targeted gaps; **Early** (ILAsm, JVM, Kotlin) → invest-or-retire.
+
 ## Documentation gaps closed by this branch
 
 | Gap | Action |
@@ -268,12 +291,17 @@ not all are on this exact matrix.
 | No Haskell/Rust/LLVM/C++ STATUS | Added `WAM_*_STATUS.md` |
 | F# STATUS scattered across TARGET + PARITY | Added `WAM_FSHARP_STATUS.md` + link from TARGET |
 | Comparison covered only five targets | Fleet inventory of all 17 |
+| **No STATUS for the other 12 hybrid targets** | Added `WAM_{C,GO,SCALA,R,PYTHON,WAT,CLOJURE,LUA,ILASM,JVM,KOTLIN}_STATUS.md` — every hybrid WAM target now has a living STATUS doc |
 | Stale / wrong claims vs source | Parallel subagent review corrections (§ above) |
 | Roadmap F# LMDB / Elixir kernels / C “907 lines” | Corrected in `WAM_TARGET_ROADMAP.md` |
 
-Still optional: dedicated `WAM_SCALA_STATUS.md`, `WAM_CLOJURE_STATUS.md`,
-`WAM_GO_STATUS.md`, `WAM_C_STATUS.md`; conformance adapters for F# /
-LLVM / R; finish F# kernel templates.
+Every `wam_*_target.pl` module now has a dedicated `WAM_*_STATUS.md`.
+Remaining scope-out work (tracked per-target under each STATUS "Path
+forward"): conformance adapters for **F# / LLVM / R / Clojure / Lua**;
+finish **F# kernel templates**; two-level lazy/cached LMDB policies for
+**C / Go / Scala / R**; lowered emitters for **ILAsm / JVM / Kotlin**;
+ISO three-form adoption for **C / Go / Scala / R** and completion for
+**Python / F#**.
 
 ## Document status
 
