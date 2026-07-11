@@ -72,7 +72,9 @@ def s_marginal_nll(r, v):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", default=os.path.join(ROOT, "model_channel_heads_namecond_r0.pt"))
+    # Campaign-INDEPENDENT prior (blocker 1): model_prod_namecond.pt was NOT fine-tuned on the campaign
+    # train split, so P0 is not optimistic on the fit rows. The r0 checkpoint memorized the fit split.
+    ap.add_argument("--ckpt", default=os.path.join(ROOT, "model_prod_namecond.pt"))
     ap.add_argument("--seeds", type=int, default=40)
     ap.add_argument("--shrink", type=float, default=0.05)
     a = ap.parse_args()

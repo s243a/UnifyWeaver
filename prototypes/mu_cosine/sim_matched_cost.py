@@ -67,7 +67,8 @@ def fused_targets(prior, meas, y, fit_idx, shrink=0.05):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", default=os.path.join(ROOT, "model_channel_heads_namecond_r0.pt"))
+    # Campaign-INDEPENDENT prior (blocker 1) — see run_sym_channel_fusion.py.
+    ap.add_argument("--ckpt", default=os.path.join(ROOT, "model_prod_namecond.pt"))
     ap.add_argument("--k", type=float, nargs="+", default=[2.0, 4.0, 8.0])
     ap.add_argument("--n", type=int, nargs="+", default=[80, 160, 320, 640])
     ap.add_argument("--reps", type=int, default=10)
