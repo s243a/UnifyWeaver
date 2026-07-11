@@ -66,6 +66,16 @@ def sym_graph_features(parents, pairs, hmax=6, cap=13):
     return feats
 
 
+def calibrate_luna(luna, y, fit_idx):
+    """Global per-channel affine (luna' = a·luna + b), fit on the train/overlap rows only, applied to ALL
+    rows BEFORE the residual-covariance fit (blocker 3 / DESIGN §2 'bias first'). Removes luna's tilt
+    (−S universal, +D on transitives) as a mean shift rather than leaving it folded into R as variance
+    (the Mahal-1.55 overconfidence). fit_idx are train indices into the full row array."""
+    cal_D = affine_calibrate(luna[fit_idx, 0], y[fit_idx, 0], luna[:, 0])
+    cal_S = affine_calibrate(luna[fit_idx, 1], y[fit_idx, 1], luna[:, 1])
+    return np.column_stack([cal_D, cal_S])
+
+
 def s_marginal_nll(r, v):
     return 0.5 * (r * r / v + np.log(v) + LOG2PI)
 
@@ -111,7 +121,8 @@ def main():
             X = np.column_stack([F, np.ones(len(F))])
             beta, *_ = np.linalg.lstsq(X[tr], y[tr, 1], rcond=None)   # graph_S: linear fit to S on train
             gs = X @ beta
-            meas = np.column_stack([m, gs, luna[:, 0], luna[:, 1]])
+            luna_c = calibrate_luna(luna, y, tr)                      # bias first (blocker 3 / DESIGN §2)
+            meas = np.column_stack([m, gs, luna_c[:, 0], luna_c[:, 1]])
             E = np.column_stack([y - prior, meas - y[:, [0, 1, 0, 1]]])[tr]
             C6 = fit_residual_covariance(E, shrinkage=a.shrink)
             P0, C_pm, R0 = C6[:2, :2], C6[:2, 2:], C6[2:, 2:]

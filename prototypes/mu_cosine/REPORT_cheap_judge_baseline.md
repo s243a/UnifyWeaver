@@ -7,7 +7,8 @@ trunk was fine-tuned on the campaign train split, giving an optimistic P0 on the
 were regenerated against the campaign-independent checkpoint. The qualitative findings survive; the exact
 NLLs moved. Note (against the pre-registered expectation that the graph channels would GROW once the prior
 was de-memorized): graph_S's free-only value actually SHRANK modestly (+0.53/+0.84 → +0.41/+0.64), because
-the honest prior is itself a better S predictor on held rows; the ordering claims below still hold.
+the honest prior is itself a better S predictor on held rows. A second correction (blocker 3, luna
+bias-correction) then FLIPPED the free-tier-vs-cheap-judge ordering on S — see §1.
 
 ## 1. The symmetric-graph S channel (user's point) — the free tier now measures S
 
@@ -16,18 +17,25 @@ shared-parent, shared-grandparent, is-ancestor), calibrated to S on the train sp
 analog of the d→D affine calibration. Added as an S measurement row (H=[0,1]); 6×6 joint blocks per split,
 40 descendant-disjoint splits. S-MARGINAL NLL (the channel under test):
 
+Luna is bias-corrected first (global train-split affine, blocker 3 / DESIGN §2) before entering the
+covariance fit, so the two luna rungs below reflect the debiased cheap judge.
+
 | rung | expl | fresh |
 |---|---|---|
 | prior | −0.282 | +0.230 |
 | +graph_D | −0.359 | +0.186 |
 | **+graph_D+graph_S (free-only)** | **−0.765** | **−0.454** |
-| +graph_D+luna | −0.611 | −0.031 |
-| ALL | −0.861 | −0.482 |
+| +graph_D+luna | −0.799 | −0.506 |
+| ALL | −0.896 | −0.579 |
 
-- **graph_S free-only value: +0.41/+0.64 NLL** (row-SE 0.008/0.011) — and the FREE-ONLY rung BEATS the
-  prior+graph+luna rung on S on BOTH corpora (expl −0.765 < −0.611; fresh −0.454 < −0.031): the graph's
-  lateral structure is a better S measurement than the cheap judge.
-- **Still adds after luna: +0.25/+0.45** — not redundant with the judge.
+- **graph_S free-only value: +0.41/+0.64 NLL** (row-SE 0.008/0.011) — the free tier goes from
+  prior+graph_D to a genuine S measurement; graph_S is a real, zero-cost S channel.
+- **CLAIM FLIP (blocker 3):** the earlier draft said the free-only tier BEATS prior+graph+luna on S on
+  both corpora. That was an ARTIFACT of leaving luna's tilt folded into R as variance. Once luna is
+  bias-corrected as DESIGN §2 specifies, the **cheap judge is the better S measurement**: +graph_D+luna
+  now beats free-only on both corpora (expl −0.799 < −0.765; fresh −0.506 < −0.454).
+- **graph_S still adds after luna, but only +0.10/+0.07** (row-SE 0.005/0.005; was +0.25/+0.45 with the
+  uncalibrated luna) — small but positive, so graph_S is not redundant with the debiased judge.
 - Raw feature strength: corr(1/(1+d_sym), S) = +0.60/+0.43; shared-parent +0.62/+0.48.
 - Honesty note: part of graph_S's power is reproducing the stratum ordering (the strata are graph-built);
   that is deployable signal for fusion NLL (deployment has the same features), but a within-stratum ladder
@@ -50,11 +58,13 @@ sized from n_ov (not 0.3n) so realized spend is exactly n. Cells whose bulk exce
 flagged **TRUNC** and excluded from matched-cost claims (they understate arm B). Truncated: expl n=160 k=8,
 n=320 k≥4, n=640 all; fresh n=160 k=8, n=320 k≥4.
 
+Arm-B luna is bias-corrected (blocker 3) inside the fused targets, matching §1.
+
 | budget n | best NON-truncated arm (expl D/S) | best NON-truncated arm (fresh D/S) |
 |---|---|---|
-| 80 | **B k=8** (+0.590/+0.687 vs A +0.552/+0.669); k=4 best S +0.698; **k=2 LOSES S** (+0.643) | **B k=8** (+0.426/+0.416 vs A +0.382/+0.369); all k win both |
-| 160 | **B k=2/k=4 ≥ A** both channels (+0.582/+0.683 vs A +0.555/+0.651) | mixed: A on D (+0.461 vs +0.399–0.438), B on S (+0.424–0.437 vs +0.399) |
-| 320 | B k=2 D +0.590 vs A +0.586; A S +0.702 vs B +0.698 (parity) | A ahead D (+0.466), ~parity S |
+| 80 | **B k=8** (+0.599/+0.695 vs A +0.552/+0.669); **k=2 LOSES S** (+0.639) | **B k=8** (+0.442/+0.402 vs A +0.382/+0.369); **k=2 LOSES S** (+0.360) |
+| 160 | **B k=2/k=4 ≥ A** both channels (+0.580/+0.681 vs A +0.555/+0.651) | mixed: A on D (+0.461 vs +0.400–0.441), B on S (+0.416–0.431 vs +0.399) |
+| 320 | B k=2 ~parity D (+0.584 vs +0.586); A S +0.702 vs B +0.696 | A ahead both (+0.466/+0.434 vs +0.434/+0.419) |
 | 640 | all B TRUNC — no matched-cost claim | — (n > pool, skipped) |
 
 - **Low-budget regime (n=80–160): the scheme wins at every k on both corpora**, biggest at k=8 — exactly

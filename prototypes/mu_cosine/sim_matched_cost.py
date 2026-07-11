@@ -32,7 +32,7 @@ from product_kalman import fit_residual_covariance
 from run_judge_channel import correlated_update_H
 from run_product_kalman_logit import dequant
 from run_product_kalman_realdata import DATASETS, affine_calibrate
-from run_sym_channel_fusion import H4, sym_graph_features
+from run_sym_channel_fusion import H4, calibrate_luna, sym_graph_features
 from sigma_hop_confirmatory import FeatureGraphConfig, descendant_disjoint_split, load_feature_graph
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -143,7 +143,8 @@ def main():
                 m_cal = affine_calibrate(d[ov], y[ov, 0], d)
                 X = np.column_stack([F, np.ones(len(F))])
                 beta, *_ = np.linalg.lstsq(X[ov], y[ov, 1], rcond=None)
-                meas = np.column_stack([m_cal, X @ beta, luna[:, 0], luna[:, 1]])
+                luna_c = calibrate_luna(luna, y, ov)                  # bias first (blocker 3 / DESIGN §2)
+                meas = np.column_stack([m_cal, X @ beta, luna_c[:, 0], luna_c[:, 1]])
                 post = fused_targets(prior, meas, y, ov)
                 for k in a.k:
                     if not acct[k][4]:
