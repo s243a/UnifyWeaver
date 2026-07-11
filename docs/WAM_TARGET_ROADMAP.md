@@ -110,7 +110,7 @@ Gaps relative to the lessons from other targets:
   older “no kernel-based lowering” gap list below this section was
   stale and is retained only as historical context in older commits.
 - **Atom interning** is opt-in (`intern_atoms(true)`) and
-  deprioritized for perf (string compares &lt;1% post Y-regs fix).
+  deprioritized for perf (string compares <1% post Y-regs fix).
 
 ## Table 1 — primary targets (Elixir-relevant lessons)
 
