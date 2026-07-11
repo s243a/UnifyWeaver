@@ -1702,6 +1702,99 @@ test(selfhost_sub_atom_slices, [condition(clang_available)]) :-
     assertion(Out == "13\n"),
     !.
 
+% call/N meta-call emission: the goal stages into A1 (extras A2..) with
+% the meta sentinel (op1 = -1), and the serializer emits the meta-call
+% table so dispatch resolves the object's OWN predicates -- a compound
+% goal built at runtime (add1(5) -> 6) and an atom goal with an extra
+% arg (seven -> 7). R = 67.
+test(selfhost_call_n_meta, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([wam_bootstrap_compiler:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgcall_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- G = add1(5), call(G, V), call(seven, W), R is V * 10 + W), (add1(X, Y) :- Y is X + 1), seven(7)]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "67\n"),
+    !.
+
+% The assert family reads back through call/1's dynamic-store fallback:
+% k/1 is not in the object's meta table, so dispatch consults the
+% process-global clause store. The COMPLETE-goal form is the supported
+% idiom (the store iterator reads the goal from reg0; a call/N closure
+% with extra args fails cleanly there by design -- see the dispatcher's
+% atom_consult note). assertz(k(41)), G = k(V), call(G) -> 42.
+test(selfhost_assertz_call_readback, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([wam_bootstrap_compiler:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgaz_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- assertz(k(41)), G = k(V), call(G), R is V + 1)]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "42\n"),
+    !.
+
+% findall emission: begin_aggregate(collect) / goal / end_aggregate
+% compile from source and collect over a fact table. Sum 6, length 3
+% -> 63.
+test(selfhost_findall_collects, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([wam_bootstrap_compiler:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgfa_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- findall(X, m(X), L), sum_list(L, S), length(L, N2), R is S * 10 + N2), m(1), m(2), m(3)]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "63\n"),
+    !.
+
+% Zero solutions is begin_aggregate's edge case (the continuation PC is
+% computed by the forward scan at begin time, since end_aggregate never
+% runs): an empty findall binds [] and execution continues. -> 100.
+test(selfhost_findall_empty, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([wam_bootstrap_compiler:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgfe_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- findall(X, m(X), L), length(L, N2), (L == [] -> R is N2 + 100 ; R = 0)), (m(1) :- fail)]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "100\n"),
+    !.
+
 % cgfullm: cgfull + a MULTI-ENTRY name table (the eval compiler the
 % plawk CLI ships). Byte-compat guard: a single-predicate source
 % serializes IDENTICALLY through both (NE=1, first predicate named,

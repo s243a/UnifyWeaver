@@ -153,6 +153,25 @@ test(compile_runs_grammar_with_cut_and_disjunction,
     assertion(Out == "208\n"),
     !.
 
+% CROSS-RECORD STATE in a runtime-compiled grammar: each record asserts
+% its value into the process-global clause store, then findall over
+% call/1 (the store consult) reads the whole history back -- a running
+% sum computed inside the grammar. 3, 4, 5 -> 3 + 7 + 12 = 22.
+test(compile_runs_stateful_grammar, [condition(clang_available)]) :-
+    ev_dir(Dir),
+    format(string(Src),
+        "{ total += dyncall_at(compile(\"[(cnt(X2, R2) :- atom_number(X2, N2), assertz(v(N2)), G = v(Q), findall(Q, call(G), L), sum_list(L, R2))]\"), $1) }\n\c
+         END { print total }\n", []),
+    write_prog(Dir, 'stateful.plawk', Src),
+    directory_file_path(Dir, 'stateful.plawk', Prog),
+    directory_file_path(Dir, 'stateful_bin', Bin),
+    cli([build, Prog, '-o', Bin], _, 0),
+    directory_file_path(Dir, 'nums3.txt', Input),
+    write_num_lines(Input, [3, 4, 5]),
+    run_bin(Bin, [Input], Out, 0),
+    assertion(Out == "22\n"),
+    !.
+
 % compile(...) with the cache disabled is a build error (exit 3), not a
 % silent miscompile: the grammar handle lives in the cache registry.
 test(compile_with_cache_off_fails_build, [condition(clang_available)]) :-

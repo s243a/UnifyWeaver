@@ -545,7 +545,7 @@ own PR(s).
   milliseconds, once per distinct source (the compile() surface dedups),
   so the remaining mildly-superlinear tail is not worth further
   restatement.
-  The campaign keeps surfacing and fixing latent runtime bugs — **thirteen found
+  The campaign keeps surfacing and fixing latent runtime bugs — **fourteen found
   so far**: a 64-register-file ceiling corrupting memory for large clauses;
   `get_structure` not comparing the functor; the choice-point saved-register
   block not widened with the register file (failed clause bodies leaked Y17+
@@ -578,7 +578,14 @@ own PR(s).
   shares its first byte with `/` and ran as float division — the `/`
   branch now checks the second byte and routes `//` to a truncating
   `sdiv` (SWI's default), with float operands and division by zero
-  failing through the same error flag. See
+  failing through the same error flag. Finding **no. 14** came from the
+  subset-growth campaign's empty-findall case: the AGGREGATE frame
+  never saved/restored `stack_size` — an inner goal that allocated an
+  environment and then failed left its frame orphaned, so the caller's
+  later `deallocate` popped the orphan (masked whenever every inner
+  clause was allocate-free) — and `wam_finalize_aggregate` restored
+  only 512 of the 2048 register bytes `begin_aggregate` saves (the
+  finding-no.-3 narrow-block class again). See
   [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
 
 ## The binary-return question, specifically
