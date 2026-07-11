@@ -379,6 +379,24 @@ destructure (`dynrec_bind`, legal as a binary-mode action) — with no
 connecting code needed; a scalar id field can still guard the record
 while the grammar reads the payload.
 
+**Fully-JIT reader — LANDED (runtime-compiled grammar):** the record
+destructure now also works over a RUNTIME source
+(`(s, c) = dyncall_at@parse(compile("[...]"), $2) as (i64 i64)`), so the
+reader grammar itself is compiled from source text inside the running
+binary (via the shipped bootstrap-compiler object) and loaded into a
+fresh VM; its named entry resolves per record against that VM's
+materialized entry table (`@wam_object_vm_entry_pc`). A new at-record
+shim family (`@plawk_dyncall_at[_named]_rec_*`, cached + off cache modes)
+threads the source `(path, len)` ahead of the boxed args into
+`@wam_object_call_record`, mirroring the i64 `dyncall_at` call site; a
+`compile(...)` handle travels as the `(null, handle-id)` pair the
+registry getter already speaks. Kept separate from the i64/float/blob
+at-collectors so a record-only entry emits no spurious scalar shim. The
+reader source stays inside the bootstrap compiler's subset (a constant
+char literal in a list head — e.g. a comma separator — is a documented
+bootstrap-subset gap, so the test reader parses one number per record).
+Test: `tests/test_plawk_jit_reader.pl`.
+
 **Effort:** large — a return-shape surface, a term-walking marshaller in
 the call primitive, and typed materialization. **Depends on:** item 2 (the
 byte-return primitive and the "output is a term, not a scalar" plumbing),
