@@ -7483,6 +7483,12 @@ plawk_scalar_branch_body_actions(Actions) :-
 
 plawk_scalar_rule_body_plain_action(Action) :-
     plawk_scalar_action_update(Action, _Name, _Operation).
+% a structured-return destructure inside a branch body: the sequence
+% walker lowers dynrec_bind wherever it appears (its slots/call IR is
+% branch-position-independent), so branch-body validation accepts it
+% exactly as the top-level body does.
+plawk_scalar_rule_body_plain_action(Action) :-
+    plawk_dynrec_bind_ok(Action).
 plawk_scalar_rule_body_plain_action(Action) :-
     plawk_rule_body_print_action(Action).
 plawk_scalar_rule_body_plain_action(writebin_out(Types, Fields)) :-

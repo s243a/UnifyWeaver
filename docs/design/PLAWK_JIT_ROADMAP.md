@@ -257,9 +257,16 @@ different plawk containers — this is the through-line for the rest of item 4:
   every `$k` (1≤k≤nfields) rewritten to the k-th temporary — so it rides the
   destructure machinery with no field-pointer repoint. A body field outside
   1..nfields (including `$0`) leaves the view uncompilable (the record has no
-  such field). Recurses into if-branches; a view nested in a for-in body is a
-  follow-on. Verified: `dyncall@rec($1) as (i64 f64) { total += $1 }` sums
+  such field). Verified: `dyncall@rec($1) as (i64 f64) { total += $1 }` sums
   the i64 field to 30; `{ sum += $2 }` sums the f64 field to 31.
+  **Binds/views inside if-branches LANDED:** a record destructure or view
+  can sit inside `if { ... } else { ... }`. The sequence walker already
+  lowered `dynrec_bind` in any position; the gap was branch-body
+  VALIDATION (`plawk_scalar_rule_body_plain_action` did not list the bind
+  among a branch's allowed actions), now closed. Test:
+  `tests/test_plawk_dyncall_rec_if.pl`. A view nested in a for-in / foreach
+  loop body is the next step (the loop-body drivers, unlike the scalar-if
+  path, do not yet route through the record-bind emitter).
 - **Associative array** (`arr = dyncall@name(...) as assoc`) — *mechanism +
   surface LANDED (named entry, integer keys).* A grammar returning a list of
   pairs (`[K1-V1, K2-V2, ...]`) materializes into an i64 assoc table via
