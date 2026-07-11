@@ -228,6 +228,14 @@ ctcompute(R) :- X is 6*7, throw(result(X)), R = X.
 ctgrab(V, V).
 ct_ball(R)    :- catch(ctcompute(R), result(V), ctgrab(V, R)).               % 42 (recovery uses ball)
 ct_uncaught(R) :- throw(oops), R = 1.                                        % uncaught -> fails
+% Finding no. 15: a VARIABLE catcher. wam_catch_setup stored the fully
+% deref'd catcher, so an unbound one collapsed to the addressless Unbound
+% sentinel; the throw-side unify cannot bind through that (its bind arm
+% needs a Ref) and every ball sailed past to the uncaught halt. The frame
+% now keeps the chain-end Ref: E binds to the whole ball, the recovery
+% destructures it.
+ctunwrap(myerr(V), V).
+ct_varcatch(R) :- catch(ctrisky(R), E, ctunwrap(E, R)).                       % 42 (var catcher)
 
 % Milestone 5 (eval/compile pipeline): a loaded compiler object runs on source
 % text and emits .wamo bytes, which @wam_object_eval loads into a fresh VM in
@@ -907,6 +915,7 @@ test(catch_and_throw_in_object, [condition(clang_available)]) :-
               ct_nothrow-[ctok/1, ctnorec/1]-"5\n"-0,
               ct_nested-[ctmid/1, ctthrower/1, cthia/1, cthb/2]-"9\n"-0,
               ct_ball-[ctcompute/1, ctgrab/2]-"42\n"-0,
+              ct_varcatch-[ctrisky/1, ctunwrap/2]-"42\n"-0,
               ct_uncaught-[]-""-21 ],
     forall(member(Name-Deps-Expected-ExpStatus, Cases),
            ( findall(user:P, member(P, Deps), DepPIs),
@@ -1793,6 +1802,101 @@ test(selfhost_findall_empty, [condition(clang_available)]) :-
     process_wait(Pid, exit(Status)),
     assertion(Status == 0),
     assertion(Out == "100\n"),
+    !.
+
+% retract/1 emission (call sentinel -3): nondeterministic consult +
+% REMOVE over the dynamic store. Two asserts, two retracts pull 1 then
+% 2 (assert order), and a third attempt finds the store EMPTY -- the
+% ITE else branch proves exhaustion fails cleanly. (1*10+2)*10+7 = 127.
+test(selfhost_retract_nondet, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([wam_bootstrap_compiler:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgrt_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- assertz(k(1)), assertz(k(2)), retract(k(V)), retract(k(W)), (retract(k(Z)) -> E = Z ; E = 7), R is (V * 10 + W) * 10 + E)]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "127\n"),
+    !.
+
+% COMPOUND findall template: p(X, Y) self-inits its fresh variables
+% before begin_aggregate, the goal binds them per solution, and the
+% template structure is BUILT into A1 after each success (value
+% register 0) -- one frozen p/2 per row. The q/2 clause head then
+% decodes the pair list back to digits: 1234.
+test(selfhost_findall_compound_template, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([wam_bootstrap_compiler:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgct_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- findall(p(X, Y), m(X, Y), L), q(L, R)), m(1, 2), m(3, 4), (q([p(A, B), p(C, D)], R2) :- R2 is ((A * 10 + B) * 10 + C) * 10 + D)]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "1234\n"),
+    !.
+
+% catch/throw emission (call sentinels -5/-6): boom/1 throws oops(1),
+% the catcher unifies, and the SIMPLE-CALL recovery goal rec/2 computes
+% 42. Recovery must be a plain callable (atom or compound) -- a control
+% construct like a conjunction is rejected at compile time with
+% cg_unsupported_operand (documented subset restriction).
+test(selfhost_catch_throw_recovers, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([wam_bootstrap_compiler:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgcth_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- catch(boom(1), E, rec(E, R))), (boom(N) :- X = oops(N), throw(X)), (rec(oops(V), R) :- R is V + 41)]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "42\n"),
+    !.
+
+% catch with NO throw: the goal succeeds, the catch frame is discarded,
+% and the recovery never runs. ok(3) -> R = 3. (The recovery is a
+% helper predicate, not V = 0: recovery must be a PLAIN CALLABLE --
+% =/2 is a control functor outside the operand builder, same
+% restriction as conjunction recoveries.)
+test(selfhost_catch_no_throw, [condition(clang_available)]) :-
+    obj_dir(Dir),
+    directory_file_path(Dir, 'cgfull.wamo', CompWamo),
+    write_wam_object([wam_bootstrap_compiler:cgfull/2], [wamo_entry(cgfull/2)], CompWamo),
+    directory_file_path(Dir, 'eval_host_bin', Host),
+    ( exists_file(Host) -> true ; build_eval_host(Dir, Host) ),
+    directory_file_path(Dir, 'cgcnt_src.txt', SrcPath),
+    setup_call_cleanup(open(SrcPath, write, S0),
+        write(S0, '[(main0(R) :- catch(ok(V), _, zrec(V)), R = V), ok(3), zrec(0)]'),
+        close(S0)),
+    process_create(Host, [CompWamo, SrcPath],
+        [stdout(pipe(S)), stderr(std), process(Pid)]),
+    read_string(S, _, Out),
+    close(S),
+    process_wait(Pid, exit(Status)),
+    assertion(Status == 0),
+    assertion(Out == "3\n"),
     !.
 
 % cgfullm: cgfull + a MULTI-ENTRY name table (the eval compiler the

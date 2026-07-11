@@ -545,7 +545,7 @@ own PR(s).
   milliseconds, once per distinct source (the compile() surface dedups),
   so the remaining mildly-superlinear tail is not worth further
   restatement.
-  The campaign keeps surfacing and fixing latent runtime bugs — **fourteen found
+  The campaign keeps surfacing and fixing latent runtime bugs — **fifteen found
   so far**: a 64-register-file ceiling corrupting memory for large clauses;
   `get_structure` not comparing the functor; the choice-point saved-register
   block not widened with the register file (failed clause bodies leaked Y17+
@@ -585,7 +585,16 @@ own PR(s).
   later `deallocate` popped the orphan (masked whenever every inner
   clause was allocate-free) — and `wam_finalize_aggregate` restored
   only 512 of the 2048 register bytes `begin_aggregate` saves (the
-  finding-no.-3 narrow-block class again). See
+  finding-no.-3 narrow-block class again). Finding **no. 15** came from
+  the catch/throw emission round: `wam_catch_setup` stored the
+  fully-deref'd catcher in the catch frame, so an UNBOUND catcher — the
+  common `catch(G, E, Rec)` shape — collapsed to the addressless Unbound
+  sentinel, which the throw-side `wam_unify_value` cannot bind through
+  (its bind arm requires a Ref); every ball sailed past a variable
+  catcher to the uncaught halt. Masked because every prior catch test
+  used a compound catcher (`myerr(V)` keeps its struct identity). The
+  frame now stores the chain-end Ref (`@wam_deref_keep_var`, the same
+  helper that closed the earlier variable-identity collapses). See
   [PLAWK_SELFHOST.md](./PLAWK_SELFHOST.md).
 
 ## The binary-return question, specifically
