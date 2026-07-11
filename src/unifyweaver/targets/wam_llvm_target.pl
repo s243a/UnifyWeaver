@@ -22761,6 +22761,9 @@ wamo_utf8_bytes([C|Cs], Bytes) :-
 %    @wam_object_call_posarray - call the entry and materialize a returned
 %                           FLAT list [V1..Vn] into an i64 table by POSITION
 %                           (element i -> key i, 1-indexed, @wam_assoc_i64_set)
+%    @wam_object_call_posarray_str - like call_posarray but the elements are
+%                           ATOMS; their registry ids are stored per position
+%                           (reads resolve back to text)
 %    @wam_object_entry_index / @wam_object_entry_index_bytes
 %                        - resolve a named entry to its label index (or -1)
 %                          for multi-entry objects; @wam_label_pc turns that
@@ -23885,6 +23888,93 @@ have_cell:
 insert:
   %eval = call i64 @value_payload(%Value %elem)
   %ignored = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %pos, i64 %eval)
+  br label %next
+next:
+  %pos1 = add i64 %pos, 1
+  %tail_d = call %Value @wam_deref_value(%WamState* %vm, %Value %t_raw)
+  br label %walk
+walk_done:
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  ret i1 true
+rewind_fail:
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  br label %fail
+fail:
+  ret i1 false
+}
+
+; Positional array, STRING values: same flat-list walk as
+; @wam_object_call_posarray, but each element must be an ATOM and its
+; registry id is stored at its position via @wam_assoc_i64_set -- the
+; str-valued positional table (reads resolve the id back to text through
+; @wam_atom_to_string, exactly as the assoc(str) kind does). Returns i1
+; ok; false on call failure, a non-list output, or a non-Atom element.
+define i1 @wam_object_call_posarray_str(%WamState* %vm, i32 %entry_pc, i32 %nargs, %Value* %args, i32 %out_reg, %WamAssocI64Table* %table) {
+entry:
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+do_call:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs_saved = load i32, i32* %hs_ptr
+  %unb = call %Value @value_unbound(i8* null)
+  %out_addr = call i32 @wam_heap_push(%WamState* %vm, %Value %unb)
+  %out_ref = call %Value @value_ref(i32 %out_addr)
+  call void @wam_prepare_call(%WamState* %vm, i32 %entry_pc)
+  br label %argloop
+argloop:
+  %ai = phi i32 [ 0, %do_call ], [ %ai1, %argstep ]
+  %adone = icmp sge i32 %ai, %nargs
+  br i1 %adone, label %args_done, label %argstep
+argstep:
+  %aidx64 = sext i32 %ai to i64
+  %ap = getelementptr %Value, %Value* %args, i64 %aidx64
+  %av = load %Value, %Value* %ap
+  call void @wam_set_reg(%WamState* %vm, i32 %ai, %Value %av)
+  %ai1 = add i32 %ai, 1
+  br label %argloop
+args_done:
+  call void @wam_set_reg(%WamState* %vm, i32 %out_reg, %Value %out_ref)
+  %ok = call i1 @run_loop(%WamState* %vm)
+  br i1 %ok, label %walk_init, label %rewind_fail
+walk_init:
+  %consfn = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  %head0 = call %Value @wam_deref_value(%WamState* %vm, %Value %out_ref)
+  br label %walk
+walk:
+  %cur = phi %Value [ %head0, %walk_init ], [ %tail_d, %next ]
+  %pos = phi i64 [ 1, %walk_init ], [ %pos1, %next ]
+  %ctag = call i32 @value_tag(%Value %cur)
+  %is_comp = icmp eq i32 %ctag, 3
+  br i1 %is_comp, label %check_cons, label %walk_done
+check_cons:
+  %cbits = call i64 @value_payload(%Value %cur)
+  %ccp = inttoptr i64 %cbits to %Compound*
+  %cfn_slot = getelementptr %Compound, %Compound* %ccp, i32 0, i32 0
+  %cfn = load i8*, i8** %cfn_slot
+  %car_slot = getelementptr %Compound, %Compound* %ccp, i32 0, i32 1
+  %car = load i32, i32* %car_slot
+  %car_ok = icmp eq i32 %car, 2
+  br i1 %car_ok, label %cmp_cons, label %walk_done
+cmp_cons:
+  %fncmp = call i32 @strcmp(i8* %cfn, i8* %consfn)
+  %is_cons = icmp eq i32 %fncmp, 0
+  br i1 %is_cons, label %have_cell, label %walk_done
+have_cell:
+  %cargs_slot = getelementptr %Compound, %Compound* %ccp, i32 0, i32 2
+  %cargs = load %Value*, %Value** %cargs_slot
+  %h_ptr = getelementptr %Value, %Value* %cargs, i64 0
+  %h_raw = load %Value, %Value* %h_ptr
+  %t_ptr = getelementptr %Value, %Value* %cargs, i64 1
+  %t_raw = load %Value, %Value* %t_ptr
+  %elem = call %Value @wam_deref_value(%WamState* %vm, %Value %h_raw)
+  %etag = call i32 @value_tag(%Value %elem)
+  %e_is_atom = icmp eq i32 %etag, 0
+  br i1 %e_is_atom, label %insert, label %rewind_fail
+insert:
+  %eid = call i64 @value_payload(%Value %elem)
+  %ignored = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %pos, i64 %eid)
   br label %next
 next:
   %pos1 = add i64 %pos, 1
