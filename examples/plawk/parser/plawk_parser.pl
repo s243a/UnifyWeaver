@@ -617,6 +617,17 @@ dyncall_at_source(compile_src(Arg)) -->
     ws,
     ")",
     !.
+% a bare identifier: a grammar HANDLE stored in a scalar --
+%
+%     { h = compile("[(sq(...)...)]") ; total += dyncall_at@sq(h, $1) }
+%
+% names the compiled source once instead of repeating it per call
+% site. The handle IS an i64 (a registry index), so it rides the
+% scalar machinery; the source marshals as (null path, handle id), the
+% registry discriminator @plawk_dyncall_at_get already speaks.
+dyncall_at_source(handle_src(var(Name))) -->
+    identifier(Name),
+    !.
 dyncall_at_source(Source) -->
     foreign_arg(Source).
 
@@ -1611,6 +1622,30 @@ i64_factor_expr(var(Name)) -->
 % materialized entry table (@wam_object_vm_entry_pc) rather than a
 % startup-cached PC. Parsed before the bare dyncall_at so the @ form
 % wins.
+% compile(src) / compile_file(path) as EXPRESSIONS: yield the grammar
+% HANDLE (an i64 registry index; 0 on failure) for storing in a scalar.
+% Content dedup makes a per-record re-assignment a registry hit, so
+% `h = compile("...")` in a rule body costs one compile per distinct
+% source. Reserved like dyncall; `compilex(...)` still parses as an
+% ordinary identifier call.
+prolog_call_expr(compile_file_handle(Arg)) -->
+    "compile_file",
+    ws,
+    "(",
+    ws,
+    foreign_arg(Arg),
+    ws,
+    ")",
+    !.
+prolog_call_expr(compile_handle(Arg)) -->
+    "compile",
+    ws,
+    "(",
+    ws,
+    foreign_arg(Arg),
+    ws,
+    ")",
+    !.
 prolog_call_expr(dyncall_at_named(Name, Source, Args)) -->
     "dyncall_at@",
     identifier(Name),

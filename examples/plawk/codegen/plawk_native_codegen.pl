@@ -655,6 +655,7 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
     plawk_program_dyncall_at_float_arities(Program, DynAtFArities),
     plawk_program_dyncall_blob_arities(Program, DynBArities),
     plawk_program_dyncall_at_blob_arities(Program, DynAtBArities),
+    plawk_program_compile_sites(Program, CompileSites),
     (   GuardSpecs == [],
         CallSpecs == [],
         FCallSpecs == [],
@@ -675,7 +676,8 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
         DynFArities == [],
         DynAtFArities == [],
         DynBArities == [],
-        DynAtBArities == []
+        DynAtBArities == [],
+        CompileSites == []
     ->  plawk_program_native_driver_ir(Program, InputPath, DriverIR)
     ;   % Compiled-foreign support (shared VM + per-predicate wrappers)
         % only when the program actually calls a compiled predicate; it
@@ -706,9 +708,13 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
                 DynNamedAssocS, DynAssocSArities, DyncallSupportIR)
         ),
         % Dynamic-source shims for dyncall_at(...) / float(dyncall_at(...)) /
-        % blob(dyncall_at(...)) sites + the shared path cache.
+        % blob(dyncall_at(...)) sites + the shared path cache. A compile
+        % site with NO dyncall_at site (a handle expression --
+        % h = compile(...)) still needs the cache GLOBALS: @plawk_compile
+        % records the loaded grammar in the registry.
         (   DynAtArities == [], DynAtFArities == [], DynAtBArities == [],
-            DynAtNamed == [], DynAtNamedF == [], DynAtNamedB == []
+            DynAtNamed == [], DynAtNamedF == [], DynAtNamedB == [],
+            CompileSites == []
         ->  DyncallAtSupportIR = ''
         ;   plawk_program_dyncache_mode(Program, CacheMode),
             plawk_dyncall_at_support_ir(CacheMode, DynAtArities, DynAtFArities,
@@ -719,8 +725,7 @@ plawk_program_native_driver_ir(Program, InputPath, Options, DriverIR) :-
         % the bootstrap-compiler object path (BEGIN { EVALC = "..." }
         % or the CLI-provided evalc_path option). The handle lives in
         % the dyncall_at cache registry, so mode "off" cannot carry it.
-        (   plawk_program_compile_sites(Program, CompileSites),
-            CompileSites \== []
+        (   CompileSites \== []
         ->  plawk_program_dyncache_mode(Program, CMode),
             (   CMode == "off"
             ->  throw(error(plawk_compile_requires_cache,
@@ -2707,6 +2712,12 @@ plawk_dyncall_source_ir(compile_file_src(Arg), FieldSeparator, Base, GlobalBase,
     PathPtrIR = null,
     format(atom(PathLenIR), '%~w_h', [Base]),
     append(PSetup, [CallIR], SetupParts).
+% a handle read from a scalar (substituted to its slot SSA value by the
+% apply pass): (null path, handle id), no marshaling -- the handle IS
+% the i64. An unset or failed-compile handle is 0, which the registry
+% range check rejects, so the call contributes its failure value.
+plawk_dyncall_source_ir(handle_src(ssa(Value)), _FieldSeparator, _Base,
+        _GlobalBase, null, Value, [], []).
 
 %% plawk_blob_expr_ir(+Expr, +FieldSeparator, +Base, -LenIR, -PtrIR,
 %%     -GlobalParts, -SetupParts)
@@ -2859,12 +2870,16 @@ plawk_program_compile_sites(Program, Sites) :-
         ( ( member(rule(_Pattern, Actions), Rules)
           ; member(end(Actions), EndClauses)
           ),
-          ( plawk_actions_dyncall_at(Actions, CSrc, _)
-          ; plawk_actions_dyncall_at_named(Actions, _NName, CSrc, _)
-          ; plawk_actions_float_dyncall_at(Actions, CSrc, _)
-          ; plawk_actions_float_dyncall_at_named(Actions, _FName, CSrc, _)
-          ),
-          plawk_compile_source_node(CSrc, Arg)
+          ( ( plawk_actions_dyncall_at(Actions, CSrc, _)
+            ; plawk_actions_dyncall_at_named(Actions, _NName, CSrc, _)
+            ; plawk_actions_float_dyncall_at(Actions, CSrc, _)
+            ; plawk_actions_float_dyncall_at_named(Actions, _FName, CSrc, _)
+            ),
+            plawk_compile_source_node(CSrc, Arg)
+          ; % handle expressions (h = compile(...)) -- compile sites
+            % OUTSIDE any dyncall_at source position
+            plawk_actions_compile_handle(Actions, Arg)
+          )
         ;   % blob positions via the generic walk (print fields, writebin
             % slots, assoc keys, blob_eq patterns)
             ( plawk_program_blob_node(Program, blob_dyncall_at(CSrc, _))
@@ -2880,6 +2895,18 @@ plawk_program_compile_sites(Program, Sites) :-
 % compiler object and the @plawk_compile support IR)
 plawk_compile_source_node(compile_src(Arg), Arg).
 plawk_compile_source_node(compile_file_src(Arg), Arg).
+
+% handle-expression walker: h = compile(src) / compile_file(path) in
+% set positions (incl. if-branches) are compile sites too.
+plawk_actions_compile_handle(Actions, Arg) :-
+    member(Action, Actions),
+    plawk_action_compile_handle(Action, Arg).
+plawk_action_compile_handle(set(_Var, compile_handle(Arg)), Arg).
+plawk_action_compile_handle(set(_Var, compile_file_handle(Arg)), Arg).
+plawk_action_compile_handle(if(_Pattern, ThenActions, ElseActions), Arg) :-
+    ( plawk_actions_compile_handle(ThenActions, Arg)
+    ; plawk_actions_compile_handle(ElseActions, Arg)
+    ).
 
 plawk_actions_dyncall_at(Actions, Source, Args) :-
     member(Action, Actions),
@@ -7049,6 +7076,11 @@ plawk_dyncall_at_source_ok(compile_src(Arg)) :-
 plawk_dyncall_at_source_ok(compile_file_src(Arg)) :-
     !,
     plawk_foreign_arg(Arg).
+% a grammar handle read from a scalar (h = compile("..."); the handle
+% is an i64 registry index and travels as (null path, handle id))
+plawk_dyncall_at_source_ok(handle_src(var(Name))) :-
+    !,
+    atom(Name).
 plawk_dyncall_at_source_ok(Source) :-
     plawk_foreign_arg(Source).
 
@@ -7412,6 +7444,39 @@ plawk_substitute_scalar_reads(blob_slice_vars(A0, B0), Slots, Values,
     !,
     plawk_substitute_scalar_reads(A0, Slots, Values, A),
     plawk_substitute_scalar_reads(B0, Slots, Values, B).
+% dyncall_at sources may hold a scalar HANDLE read (handle_src(var(h)))
+% -- substitute it to the slot's SSA value so the source marshal sees a
+% concrete i64, like any other scalar read.
+plawk_substitute_scalar_reads(dyncall_at(Source0, Args), Slots, Values,
+        dyncall_at(Source, Args)) :-
+    !,
+    plawk_substitute_handle_source(Source0, Slots, Values, Source).
+plawk_substitute_scalar_reads(dyncall_at_named(Name, Source0, Args), Slots,
+        Values, dyncall_at_named(Name, Source, Args)) :-
+    !,
+    plawk_substitute_handle_source(Source0, Slots, Values, Source).
+plawk_substitute_scalar_reads(float_dyncall_at(Source0, Args), Slots, Values,
+        float_dyncall_at(Source, Args)) :-
+    !,
+    plawk_substitute_handle_source(Source0, Slots, Values, Source).
+plawk_substitute_scalar_reads(float_dyncall_at_named(Name, Source0, Args),
+        Slots, Values, float_dyncall_at_named(Name, Source, Args)) :-
+    !,
+    plawk_substitute_handle_source(Source0, Slots, Values, Source).
+plawk_substitute_scalar_reads(blob_dyncall_at(Source0, Args), Slots, Values,
+        blob_dyncall_at(Source, Args)) :-
+    !,
+    plawk_substitute_handle_source(Source0, Slots, Values, Source).
+plawk_substitute_scalar_reads(blob_dyncall_at_named(Name, Source0, Args),
+        Slots, Values, blob_dyncall_at_named(Name, Source, Args)) :-
+    !,
+    plawk_substitute_handle_source(Source0, Slots, Values, Source).
+
+plawk_substitute_handle_source(handle_src(var(Name)), Slots, Values,
+        handle_src(Substituted)) :-
+    !,
+    plawk_substitute_scalar_reads(var(Name), Slots, Values, Substituted).
+plawk_substitute_handle_source(Source, _Slots, _Values, Source).
 plawk_substitute_scalar_reads(Expr0, Slots, Values, Expr) :-
     plawk_i64_binary_expr(Expr0, _LLVMOp, _NamePart, Left0, Right0),
     !,
@@ -7565,6 +7630,14 @@ plawk_scalar_action_update(set(var(Name), dyncall_at(Source, Args)), Name,
 plawk_scalar_action_update(set(var(Name), dyncall_at_named(E, Source, Args)),
         Name, set(dyncall_at_named(E, Source, Args))) :-
     plawk_dyncall_at_expr(dyncall_at_named(E, Source, Args)).
+% h = compile(src) / compile_file(path): store the grammar handle in a
+% scalar (only set makes sense -- a handle is an opaque registry index).
+plawk_scalar_action_update(set(var(Name), compile_handle(Arg)), Name,
+        set(compile_handle(Arg))) :-
+    plawk_foreign_arg(Arg).
+plawk_scalar_action_update(set(var(Name), compile_file_handle(Arg)), Name,
+        set(compile_file_handle(Arg))) :-
+    plawk_foreign_arg(Arg).
 % Double-typed update expressions: float literals, float($N), and
 % binary trees mixing them with i64 operands or scalar reads. The
 % written slot becomes a double via plawk_scalar_typed_slots/3.
@@ -7932,6 +8005,18 @@ plawk_scalar_numeric_expr_ir(dyncall_at_named(Name, Source, Args),
         [Prefix, SlotIndex, OpIndex]),
     plawk_i64_expr_ir_parts(dyncall_at_named(Name, Source, Args),
         FieldSeparator, DynAtBase, DynAtBase, ValueIR, GlobalIR, IR).
+plawk_scalar_numeric_expr_ir(compile_handle(Arg), FieldSeparator, Prefix,
+        SlotIndex, OpIndex, ValueIR, GlobalIR, IR) :-
+    format(atom(CHBase), '~w_slot_~w_op_~w_compile_h',
+        [Prefix, SlotIndex, OpIndex]),
+    plawk_i64_expr_ir_parts(compile_handle(Arg), FieldSeparator, CHBase,
+        CHBase, ValueIR, GlobalIR, IR).
+plawk_scalar_numeric_expr_ir(compile_file_handle(Arg), FieldSeparator, Prefix,
+        SlotIndex, OpIndex, ValueIR, GlobalIR, IR) :-
+    format(atom(CFBase), '~w_slot_~w_op_~w_compile_fh',
+        [Prefix, SlotIndex, OpIndex]),
+    plawk_i64_expr_ir_parts(compile_file_handle(Arg), FieldSeparator, CFBase,
+        CFBase, ValueIR, GlobalIR, IR).
 plawk_scalar_numeric_expr_ir(const(Value), _FieldSeparator, _Prefix, _SlotIndex,
         _OpIndex, ValueIR, GlobalIR, IR) :-
     plawk_i64_expr_ir_parts(const(Value), 0, scalar_const, scalar_const_global,
@@ -8059,6 +8144,17 @@ plawk_i64_expr_ir(dyncall_at(Source, Args), FieldSeparator, Base, GlobalBase,
     append(SrcGlobals, ArgGlobals, GlobalParts),
     append(SrcSetup, ArgSetup, PreSetup),
     append(PreSetup, [ResIR, ValIR, OkIR, SelIR], SetupParts).
+% compile(src) / compile_file(path) as i64 expressions: the value IS
+% the handle -- reuse the source marshal, whose (null, handle) pair's
+% second half is exactly the handle SSA value.
+plawk_i64_expr_ir(compile_handle(Arg), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts) :-
+    plawk_dyncall_source_ir(compile_src(Arg), FieldSeparator, Base,
+        GlobalBase, _NullPtr, ValueIR, GlobalParts, SetupParts).
+plawk_i64_expr_ir(compile_file_handle(Arg), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts) :-
+    plawk_dyncall_source_ir(compile_file_src(Arg), FieldSeparator, Base,
+        GlobalBase, _NullPtr, ValueIR, GlobalParts, SetupParts).
 plawk_i64_expr_ir(dyncall_at_named(Name, Source, Args), FieldSeparator, Base,
         GlobalBase, ValueIR, GlobalParts, SetupParts) :-
     length(Args, NArgs),
