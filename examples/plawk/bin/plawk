@@ -132,6 +132,8 @@ build(File, Out0, KeepLL) :-
         ; plawk_program_dyncall_assoc_arities(Program, DynAssocArities), DynAssocArities \== []
         ; plawk_program_dyncall_named_assoc_str_entries(Program, DynNamedAssocS), DynNamedAssocS \== []
         ; plawk_program_dyncall_assoc_str_arities(Program, DynAssocSArities), DynAssocSArities \== []
+        ; plawk_program_dyncall_named_posarray_entries(Program, DynNamedPosarr), DynNamedPosarr \== []
+        ; plawk_program_dyncall_posarray_arities(Program, DynPosarrArities), DynPosarrArities \== []
         )
     ->  ProjectOptions = [module_name(OutBase), emit_wamo_loader(true)]
     ;   ProjectOptions = [module_name(OutBase)]

@@ -1021,6 +1021,9 @@ action(Action) -->
     dynassoc_bind_action(Action),
     !.
 action(Action) -->
+    dynposarray_bind_action(Action),
+    !.
+action(Action) -->
     dynrec_bind_action(Action),
     !.
 % for (k in arr) { ... } as a RULE-BODY action: per-record iteration
@@ -1161,6 +1164,34 @@ dynassoc_value_kind(str) -->
     !.
 dynassoc_value_kind(i64) -->
     [].
+
+%% dynposarray_bind_action(-Action)//
+%
+%  Positional-array return: a grammar returning a FLAT list of integers
+%  populates a plawk array by POSITION -- element i lands at key i
+%  (1-indexed, the awk `split` convention), replace semantics (the array
+%  reflects the most recent record's list).
+%
+%      arr = dyncall@fields($1) as array
+%      arr = dyncall($1) as array          % DYNLOAD object's default entry
+%
+%  desugars to dynposarray_bind(var(arr), dyncall_named(fields, [field(1)]))
+%  (or dynposarray_bind(var(arr), dyncall([field(1)])) for the default
+%  entry). The last target container of JIT roadmap item 4: same i64
+%  table as `as assoc`, but filled from a flat [V1, ..., Vn] list instead
+%  of key-value pairs, so END `arr[1]`, `arr[2]`, ... and for-in read the
+%  positional values.
+dynposarray_bind_action(dynposarray_bind(var(Name), Call)) -->
+    identifier(Name),
+    ws,
+    "=",
+    ws,
+    dynrec_call_expr(Call),
+    ws,
+    "as",
+    identifier_boundary,
+    ws,
+    "array".
 
 dynrec_view_action(dynrec_view(Call, Types, Body)) -->
     dynrec_call_expr(Call),

@@ -214,7 +214,7 @@ Purely additive; no dependency on the other items.
 **Effort:** A landed. B is moderate (declaration table + a resolution pass +
 the reserved-name check). **Depends on:** nothing.
 
-### 4. Binary-data returns — structured records (deserialization) — **LANDED (all string surfaces; string values deferred)**
+### 4. Binary-data returns — structured records (deserialization) — **LANDED (all target containers; posarray/assoc string values deferred)**
 
 **What:** let a grammar return a **compound term** (e.g. `rec(42, 3.14,
 "name")`) that plawk **deserializes** into typed fields against a declared
@@ -299,9 +299,25 @@ different plawk containers — this is the through-line for the rest of item 4:
   (for-in value prints, END `arr["literal"]` lookups) resolve the id
   back to text through `@wam_atom_to_string`, exactly as key prints
   already did. Same table layout; only the declared value kind differs.
-  **Still deferred:** for-in iteration over a grammar-populated table
-  inside rule bodies.
-- **Positional array** — fields by numeric index into one array value.
+  **Rule-body for-in LANDED:** `for (k in arr)` iterates a
+  grammar-populated table inside the rule''s action chain (a per-record
+  running snapshot), not only in END.
+- **Positional array — LANDED (named + default entry, i64 values):**
+  `arr = dyncall[@name](args) as array` binds a FLAT returned list
+  `[V1, ..., Vn]` into one array value by POSITION — element i at key i
+  (1-indexed, the awk `split` convention). `@wam_object_call_posarray`
+  walks the list into the shared i64 table via `@wam_assoc_i64_set`
+  (REPLACE semantics, so the array reflects the most recent record), and
+  the `posarray(...)` spec wrapper rides the whole assoc pipeline
+  (planning, table, for-in, lookups) — only the shim name and the
+  runtime walk differ. A positional table''s keys are integer positions,
+  never interned atom ids, so int-key reads (`arr[1]`, and a for-in loop
+  key) are unambiguous and permitted in TEXT mode too, unlike a regular
+  integer-keyed assoc (which stays binary-only to avoid the atom-id
+  collision). Value binding uses whatever the entry returns; string
+  values (`[Atom, ...]` elements) are a natural follow-on, deferred like
+  the assoc `(str)` kind was. Tests:
+  `tests/test_plawk_dyncall_posarray.pl`.
 
 Each target reuses one marshaller over the same walked compound; they differ
 only in where fields are written (scalar slots, the line record, an assoc

@@ -196,6 +196,14 @@ Deliberately deferred, in rough value order:
   LANDED: `for (k in arr) print ...` runs per record inside the rule's
   action chain, over the table as accumulated so far (str-valued
   tables print text there too).
+- ~~**Positional-array target (`as array`)**~~ — LANDED (named +
+  default entry, i64 values): the last of item 4's target containers.
+  `arr = dyncall[@name](args) as array` lands a flat returned list
+  `[V1..Vn]` into one array by position (element i → key i, 1-indexed),
+  reusing the whole assoc pipeline via a `posarray(...)` spec wrapper
+  and a new `@wam_object_call_posarray` walk. Its integer position keys
+  read unambiguously in text mode (unlike a regular integer-keyed
+  assoc). String values deferred, like the assoc `(str)` kind was.
 - ~~**`dyncall_at@name(...)`**~~ — LANDED (all three return kinds:
   i64, `float(...)`, `blob(...)`): named entries on runtime sources
   and `compile(...)` handles, resolved per call against the VM's
