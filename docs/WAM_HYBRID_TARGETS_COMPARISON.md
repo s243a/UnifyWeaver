@@ -267,7 +267,9 @@ not all are on this exact matrix.
 
 Aggregated from each target's STATUS "Path forward". Grouped by the
 lever that moves the most targets at once; per-target detail lives in
-the linked STATUS docs.
+the linked STATUS docs. **Atomic, hand-off-ready task cards** (files to
+touch, reference to copy from, steps, acceptance) for every cell below
+are in [`WAM_FLEET_GAP_TASKS.md`](WAM_FLEET_GAP_TASKS.md).
 
 | Lever | Targets it unblocks | Notes |
 |---|---|---|
