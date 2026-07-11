@@ -206,6 +206,22 @@ length `L` (validated `0 ≤ L ≤ 16` unsigned), then `L` payload bytes.
    the ordinary slot-type fixpoint. Constraints: one blob argument per
    call (one shared buffer), NUL-free payloads (the transient atom is
    a C string), blob output is a later slice.
+5. **Grammar-driven reader through a LOADED object (landed):** the same
+   `blobN` payload can flow into a grammar shipped as a `.wamo` rather
+   than a compiled-in predicate, and that grammar can return a
+   **structured record**: `(s, c) = dyncall@parse($2) as (i64 i64)`
+   frames the payload natively, marshals it as the transient atom (same
+   `@wam_transient_atom_from_bytes` path, one blob per call), and
+   `@wam_object_call_record` deserializes the returned compound into the
+   typed scalars. This is the JIT-roadmap item-4 endgame — bytes-in +
+   record-out — with the reader grammar as a swappable artifact (the
+   object can be a shipped `DYNLOAD` library or a runtime `compile(...)`
+   handle). It composes from the item-2 blob bridge and item-4 record
+   destructure with no new codegen; standing test
+   `tests/test_plawk_grammar_reader.pl`. Tier-3 (a full DCG engine in
+   the loop) remains the only unbuilt rung, and stays deliberately out
+   of scope — the loaded-grammar reader covers the irregular-format
+   cases without one.
 
 ## Embedded Prolog blocks (landed)
 
