@@ -1242,7 +1242,11 @@ dynrec_var_list_rest([]) -->
 
 dynrec_call_expr(Call) -->
     prolog_call_expr(Call),
-    { ( Call = dyncall(_) ; Call = dyncall_named(_, _) ) }.
+    { ( Call = dyncall(_)
+      ; Call = dyncall_named(_, _)
+      ; Call = dyncall_at(_, _)                % runtime source (JIT reader)
+      ; Call = dyncall_at_named(_, _, _)
+      ) }.
 
 dynrec_type_list([Type | Rest]) -->
     dynrec_type(Type),
