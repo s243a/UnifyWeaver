@@ -2,9 +2,16 @@
 
 ## Mission
 
-For a focused comparison of the five most mature hybrid WAM backends
-(Haskell, Rust, LLVM, C++, F#), see
+For a focused comparison of hybrid WAM backends (all 17 modules, with
+deep coverage of Haskell / Rust / LLVM / C++ / F#), see
 [`WAM_HYBRID_TARGETS_COMPARISON.md`](WAM_HYBRID_TARGETS_COMPARISON.md).
+Per-target living status for the mature set:
+[`WAM_HASKELL_STATUS.md`](WAM_HASKELL_STATUS.md),
+[`WAM_RUST_STATUS.md`](WAM_RUST_STATUS.md),
+[`WAM_LLVM_STATUS.md`](WAM_LLVM_STATUS.md),
+[`WAM_CPP_STATUS.md`](WAM_CPP_STATUS.md),
+[`WAM_FSHARP_STATUS.md`](WAM_FSHARP_STATUS.md)
+(Elixir: [`design/WAM_ELIXIR_STATUS.md`](design/WAM_ELIXIR_STATUS.md)).
 
 Two intertwined goals for the graph-algorithm pipeline:
 
@@ -107,7 +114,7 @@ on a specific architectural question.
 
 | Target | Architectural question | Generalization | Lowering | Materialization | Kernels | Path forward |
 |---|---|---|---|---|---|---|
-| **Elixir** | reference baseline | Phase 3/4 + comprehensive builtins | dual: WAM-instr + per-predicate emitter | FactSource facade (ETS/SQLite/TSV); no memory-mapped | none | LMDB integration (high-value for >100k); hot-path graph kernels |
+| **Elixir** | reference baseline | Phase 3/4 + comprehensive builtins | dual: WAM-instr + per-predicate emitter | FactSource facade (ETS/SQLite/TSV); no memory-mapped | all 7 shared kernel kinds (PRs #1799–#1826) | LMDB integration (high-value for >100k); emitter-driven Tier-2 fanout |
 | **Haskell** | how to make materialisation cheap at scale | broad WAM, parMap parallel | dual: WAM-instr + emitter | LMDB key/value (memory-mapped under the hood); raw-pointer interface abandoned due to crashes | parMap rdeepseq | calibrate fork-min-cost like Elixir; investigate cost-aware probing |
 | **C#** | SQL/LINQ-as-substrate; the optimisation-inspiration target | broadest aggregate/join/negation coverage | LINQ pipeline (not WAM-shaped); split into `csharp_target` + `csharp_query_target` + `csharp_native_target` | source-mode sweeps measure cost; memory-mapped file in flight | n/a (LINQ-inspired lineage) | continue source-mode benchmark sweep; tighten cost model |
 | **Scala** | how aggressive can compile-time atom interning + classic-program coverage be | classic programs (n-queens, Ackermann, Fibonacci) — sets the generalisation upper bound | dual: WAM-instr + per-predicate emitter (`wam_scala_lowered_emitter.pl`, `emit_mode(functions)`) — clause-1 fast path with interpreter fallback | 4 backends (inline / file CSV / grouped TSV / **arity-N LMDB**, validated end-to-end); auto-inline ≤128 rows | all 7 kinds: `transitive_closure2`, `transitive_distance3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, `category_ancestor`, `weighted_shortest_path3`, `astar_shortest_path4` (opt-in `kernel_dispatch(true)`); intra-Scala mode benchmark (`benchmarks/wam_scala_mode_bench.md`) shows kernel ~4×@depth100, ~9×@depth300 | full kernel parity with Rust/Haskell/Elixir/Go; LMDB sidecar (Phase S8) shipping for any arity >= 2, validated end-to-end; next: cross-target benchmark vs Elixir/Haskell |

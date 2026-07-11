@@ -20,6 +20,9 @@ Companion docs:
 - `WAM_CROSS_TARGET_BENCHMARK_RESULTS.md` — per-target perf comparison
   numbers; Elixir is now competitive on the chain workload (see
   Performance below).
+- [`../WAM_HYBRID_TARGETS_COMPARISON.md`](../WAM_HYBRID_TARGETS_COMPARISON.md)
+  — fleet comparison (Elixir is the architectural reference baseline;
+  sibling STATUS docs for Haskell/Rust/LLVM/C++/F#).
 
 ## Series Overview
 
