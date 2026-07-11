@@ -28,14 +28,20 @@ covariance fit, so the two luna rungs below reflect the debiased cheap judge.
 | +graph_D+luna | −0.799 | −0.506 |
 | ALL | −0.896 | −0.579 |
 
-- **graph_S free-only value: +0.41/+0.64 NLL** (row-SE 0.008/0.011) — the free tier goes from
-  prior+graph_D to a genuine S measurement; graph_S is a real, zero-cost S channel.
+- **graph_S free-only value: +0.41/+0.64 NLL** (per-split SE 0.006/0.009, 40/40 splits positive; blocker 4)
+  — the free tier goes from prior+graph_D to a genuine S measurement; graph_S is a real, zero-cost S channel.
 - **CLAIM FLIP (blocker 3):** the earlier draft said the free-only tier BEATS prior+graph+luna on S on
   both corpora. That was an ARTIFACT of leaving luna's tilt folded into R as variance. Once luna is
   bias-corrected as DESIGN §2 specifies, the **cheap judge is the better S measurement**: +graph_D+luna
   now beats free-only on both corpora (expl −0.799 < −0.765; fresh −0.506 < −0.454).
-- **graph_S still adds after luna, but only +0.10/+0.07** (row-SE 0.005/0.005; was +0.25/+0.45 with the
-  uncalibrated luna) — small but positive, so graph_S is not redundant with the debiased judge.
+- **graph_S still adds after luna, but only +0.10/+0.07** (per-split SE 0.005/0.005, 40/40 & 38/40 splits
+  positive; was +0.25/+0.45 with the uncalibrated luna) — small but positive, so graph_S is not redundant
+  with the debiased judge.
+- **Stats caveat (blocker 4):** the SEs above are now PAIRED per-split (mean of per-split value differences
+  ± across-split SE), not the earlier pooled row-SE — held rows repeat across the 40 splits, so a pooled
+  row-SE is not an independent-sample SE. And `descendant_disjoint_split` is descendant-disjoint, not
+  node-disjoint, so these ladders are **EXPLORATORY** (a node-disjoint / block-disjoint split would be the
+  confirmatory design). The sim §2 numbers are resample SDs over 10 draws and are likewise exploratory.
 - Raw feature strength: corr(1/(1+d_sym), S) = +0.60/+0.43; shared-parent +0.62/+0.48.
 - Honesty note: part of graph_S's power is reproducing the stratum ordering (the strata are graph-built);
   that is deployable signal for fusion NLL (deployment has the same features), but a within-stratum ladder

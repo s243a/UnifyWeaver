@@ -111,12 +111,14 @@ def main():
               f"corr(shared_parent, S) = {r(F[:, 1], y[:, 1]):+.3f} ===")
 
         acc = {rn: {"j": [], "s": []} for rn in RUNGS}
+        split_s = {rn: [] for rn in RUNGS}   # per-split mean S-marginal NLL (blocker 4: paired per-split)
         used = 0
         for seed in range(a.seeds):
             tr, he = descendant_disjoint_split(pairs, seed, held_frac=0.30)
             if len(tr) < 30 or len(he) < 12:
                 continue
             used += 1
+            cur_s = {rn: [] for rn in RUNGS}
             m = affine_calibrate(d[tr], y[tr, 0], d)
             X = np.column_stack([F, np.ones(len(F))])
             beta, *_ = np.linalg.lstsq(X[tr], y[tr, 1], rcond=None)   # graph_S: linear fit to S on train
@@ -134,17 +136,26 @@ def main():
                     else:
                         xp, Pp = correlated_update_H(x, P0, meas[i][sel], R0[np.ix_(sel, sel)],
                                                      C_pm[:, sel], H4[sel])
+                    sv = s_marginal_nll(y[i, 1] - xp[1], Pp[1, 1])
                     acc[rn]["j"].append(nll_mahal(y[i] - xp, Pp)[0])
-                    acc[rn]["s"].append(s_marginal_nll(y[i, 1] - xp[1], Pp[1, 1]))
+                    acc[rn]["s"].append(sv)
+                    cur_s[rn].append(sv)
+            for rn in RUNGS:
+                split_s[rn].append(float(np.mean(cur_s[rn])))
 
         print(f"ladder ({used} splits; NLL ↓):")
         print(f"    {'rung':22s} {'joint':>8s} {'S-marginal':>11s}")
         for rn in RUNGS:
             print(f"    {rn:22s} {np.mean(acc[rn]['j']):+8.4f} {np.mean(acc[rn]['s']):+11.4f}")
+        # Blocker 4: held rows repeat across the 40 splits, so a pooled row-SE is NOT an independent-sample
+        # SE. Report the PAIRED per-split value (mean of per-split differences) ± across-split SE instead.
+        # descendant_disjoint_split is descendant-disjoint, not node-disjoint → treat as EXPLORATORY.
         for nm, base, plus in [("graph_S free-only (S)", "+graph_D", "+graph_D+graph_S"),
                                ("graph_S after luna (S)", "+graph_D+luna", "ALL")]:
-            g = np.array(acc[base]["s"]) - np.array(acc[plus]["s"])
-            print(f"    value of {nm:24s}: {g.mean():+.4f} (row-SE {g.std()/np.sqrt(len(g)):.4f})")
+            g = np.array(split_s[base]) - np.array(split_s[plus])          # paired per-split differences
+            se = g.std(ddof=1) / np.sqrt(len(g)) if len(g) > 1 else float("nan")
+            print(f"    value of {nm:24s}: {g.mean():+.4f} (per-split SE {se:.4f}, "
+                  f"{int((g > 0).sum())}/{len(g)} splits +; EXPLORATORY — descendant-disjoint)")
 
 
 if __name__ == "__main__":
