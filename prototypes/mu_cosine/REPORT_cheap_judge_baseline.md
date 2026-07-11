@@ -93,9 +93,8 @@ Arm-B luna is bias-corrected (blocker 3) inside the fused targets, matching §1.
 
 **Reading for the budget decision:** at new-corpus scale (coverage low relative to corpus), k≥4 wins
 outright while k=2 is marginal (ties D, can lose S); the scheme's advantage shrinks as coverage saturates.
-The practical
-recipe stands: luna everywhere + small random 5.5 overlap + graph channels in the fusion + routed 5.5 on
-conflict + sonnet-5 tiebreaks on disagreement.
+The practical recipe stands: luna everywhere + small random 5.5 overlap + graph channels in the fusion +
+routed 5.5 on conflict + sonnet-5 tiebreaks on disagreement.
 
 ## 3. Positioning vs the JointPosterior dense baseline (control) — deferred comparison
 
@@ -122,6 +121,7 @@ claim that the explicit filter beats a learned joint head.
 
 ```
 python3 make_pipeline_diagrams.py          # figures/pipeline_dataflow.png, figures/fusion_architecture.png
-python3 run_sym_channel_fusion.py
+python3 run_sym_channel_fusion.py          # default --ckpt model_prod_namecond.pt (campaign-independent)
 python3 sim_matched_cost.py --k 2 4 8
+python3 test_cheap_judge_blockers.py       # blocker 2 + 7 unit tests (torch-free)
 ```
