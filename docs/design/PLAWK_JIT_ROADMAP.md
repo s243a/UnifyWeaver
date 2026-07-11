@@ -264,9 +264,20 @@ different plawk containers — this is the through-line for the rest of item 4:
   lowered `dynrec_bind` in any position; the gap was branch-body
   VALIDATION (`plawk_scalar_rule_body_plain_action` did not list the bind
   among a branch's allowed actions), now closed. Test:
-  `tests/test_plawk_dyncall_rec_if.pl`. A view nested in a for-in / foreach
-  loop body is the next step (the loop-body drivers, unlike the scalar-if
-  path, do not yet route through the record-bind emitter).
+  `tests/test_plawk_dyncall_rec_if.pl`.
+  **Binds/views inside a `foreach` loop body LANDED:** a `foreach { ... }`
+  over a record's repetition elements can call a grammar per element and
+  destructure or view the returned record. The foreach body already lowers
+  through the scalar action-sequence walker, so the branch-body validation
+  fix carried it, and the record-view desugar now recurses into `foreach`
+  (and `for_in`) bodies so a view there desugars in place — its block `$k`
+  become the view's hidden temps while the view's Call args (e.g. `$1`
+  passing the current element) ride the later foreach-element rebind. Test:
+  `tests/test_plawk_dyncall_rec_loop.pl` (destructure, view, and
+  view-in-if-in-foreach). The `for (k in arr)` assoc for-in stays
+  print-only by construction (its body is a per-key print plan, not a
+  scalar action sequence), so record binds there remain a separate driver
+  concern.
 - **Associative array** (`arr = dyncall@name(...) as assoc`) — *mechanism +
   surface LANDED (named entry, integer keys).* A grammar returning a list of
   pairs (`[K1-V1, K2-V2, ...]`) materializes into an i64 assoc table via
