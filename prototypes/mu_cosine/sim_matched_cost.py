@@ -3,9 +3,13 @@
 labels or the cheap-judge scheme (0.3n overlap + luna bulk with fused targets) train a better predictor?
 
 Budget accounting (in 5.5-call units, price ratio k): arm A spends n on n 5.5-labeled pairs. Arm B spends
-0.3n·(1+1/k) on a dual-scored overlap and the remaining budget on luna-only bulk at 1/k per pair:
-n_bulk = k·(0.7n − 0.3n/k) = 0.7kn − 0.3n. Fusion blocks (prior ⊕ graph_D ⊕ graph_S ⊕ luna, correlated)
-fit on the overlap; the bulk trains on fused posteriors; the overlap trains on its 5.5 labels.
+n_ov·(1+1/k) on a dual-scored overlap (n_ov = max(30, 0.3n): a 30-row floor for a stable block fit) and
+the rest on luna-only bulk at 1/k per pair: n_bulk = k·(n − n_ov·(1+1/k)) = k·n − n_ov·(k+1). (Blocker 2:
+the floor makes n_ov > 0.3n at n=80, so the bulk MUST be sized with n_ov, not 0.3n — the old
+0.7kn−0.3n form overspent arm B at n=80.) Realized spend is asserted == n and printed per cell; cells that
+would need more bulk rows than the pool holds are flagged TRUNC and excluded from matched-cost claims.
+Fusion blocks (prior ⊕ graph_D ⊕ graph_S ⊕ luna, correlated) fit on the overlap; the bulk trains on fused
+posteriors; the overlap trains on its 5.5 labels.
 
 Downstream estimator: ridge regression from frozen e5 pair-features (p_x⊙q_y ++ |p_x−q_y|) — a fast proxy
 for the head fine-tune; both arms use the SAME estimator so the comparison is about label quality×quantity,
@@ -104,6 +108,28 @@ def main():
         for n in a.n:
             if n > len(tr):
                 continue
+            # Budget accounting (blocker 2). The overlap is dual-scored (5.5 + luna) at cost 1+1/k per row;
+            # the bulk is luna-only at 1/k. The overlap size uses a 30-row FLOOR, so it can exceed 0.3n at
+            # small n (n=80: n_ov=30 = 0.375n). Prior code sized the bulk with 0.3n instead of len(ov),
+            # which OVERSPENT arm B whenever the floor bound. Correct, from the matched budget n:
+            #   spend(overlap) = n_ov*(1+1/k);  n_bulk = k*(n - n_ov*(1+1/k)) = k*n - n_ov*(k+1).
+            n_ov = max(30, int(0.3 * n))
+            avail = len(tr) - n_ov                          # bulk rows available in the pool (const/rep)
+            acct = {}                                       # k -> (n_bulk_want, n_bulk_used, trunc, spend, feasible)
+            for k in a.k:
+                spend_ov = n_ov * (1.0 + 1.0 / k)
+                feasible = spend_ov <= n + 1e-6             # can we even afford the dual-scored overlap?
+                n_bulk = int(k * n - n_ov * (k + 1))
+                trunc = feasible and n_bulk > avail
+                n_bulk_used = max(0, min(n_bulk, avail)) if feasible else 0
+                spend = spend_ov + n_bulk_used / k
+                if feasible:
+                    assert spend <= n + 1e-6, f"arm B overspends: n={n} k={k} spend={spend:.2f} > {n}"
+                acct[k] = (n_bulk, n_bulk_used, trunc, spend, feasible)
+            print(f"  n={n}: overlap n_ov={n_ov}; " + "  ".join(
+                (f"k={k:g}:INFEASIBLE" if not acct[k][4] else
+                 f"k={k:g}:n_bulk={acct[k][0]}" + (f"*TRUNC->{acct[k][1]}" if acct[k][2] else "")
+                 + f"(spend {acct[k][3]:.1f})") for k in a.k))
             res = {}
             for rep in range(a.reps):
                 sel = rngs.permutation(tr)
@@ -112,16 +138,17 @@ def main():
                 for ch, col in (("D", 0), ("S", 1)):
                     pred = ridge_fit_predict(feat[A_idx], y[A_idx, col], feat[he])
                     res.setdefault(("A: 5.5 only", ch), []).append(np.corrcoef(pred, y[he, col])[0, 1])
-                # arm B per k: overlap 0.3n (5.5 labels) + bulk fused targets
-                m_cal = affine_calibrate(d[sel[:max(30, int(0.3 * n))]], y[sel[:max(30, int(0.3 * n))], 0], d)
+                # arm B per k: overlap n_ov (5.5 labels) + luna bulk with fused targets
+                ov = sel[:n_ov]
+                m_cal = affine_calibrate(d[ov], y[ov, 0], d)
                 X = np.column_stack([F, np.ones(len(F))])
-                ov = sel[:max(30, int(0.3 * n))]
                 beta, *_ = np.linalg.lstsq(X[ov], y[ov, 1], rcond=None)
                 meas = np.column_stack([m_cal, X @ beta, luna[:, 0], luna[:, 1]])
                 post = fused_targets(prior, meas, y, ov)
                 for k in a.k:
-                    n_bulk = int(0.7 * k * n - 0.3 * n)
-                    B_bulk = sel[len(ov):len(ov) + min(n_bulk, len(sel) - len(ov))]
+                    if not acct[k][4]:
+                        continue
+                    B_bulk = sel[n_ov:n_ov + acct[k][1]]
                     idx = np.concatenate([ov, B_bulk])
                     for ch, col in (("D", 0), ("S", 1)):
                         tgt = np.concatenate([y[ov, col], post[B_bulk, col]])
@@ -131,8 +158,13 @@ def main():
             arms = sorted({arm for arm, _ in res})
             for arm in arms:
                 cd = np.array(res[(arm, "D")]); cs = np.array(res[(arm, "S")])
+                flag = ""
+                if arm.startswith("B: scheme"):
+                    kv = float(arm.split("k=")[1])
+                    if acct[kv][2]:
+                        flag = "  [TRUNC: pool-limited, excluded from matched-cost claim]"
                 print(f"{n:>5d} {arm:>14s} {cd.mean():+8.3f} {cs.mean():+8.3f}"
-                      f"   (±{cd.std():.3f}/±{cs.std():.3f})")
+                      f"   (±{cd.std():.3f}/±{cs.std():.3f}){flag}")
 
 
 if __name__ == "__main__":

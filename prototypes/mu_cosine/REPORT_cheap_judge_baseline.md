@@ -45,12 +45,17 @@ luna). Downstream estimator: ridge on frozen e5 pair-features, λ by inner holdo
 768-feature interpolation threshold — double descent — an instructive proxy artifact). Held corr vs 5.5
 labels, 10 resamples:
 
-| budget n | best arm (expl D/S) | best arm (fresh D/S) |
+Budget accounting (blocker 2): the overlap uses a 30-row floor, so at n=80 n_ov=30 > 0.3n=24; the bulk is
+sized from n_ov (not 0.3n) so realized spend is exactly n. Cells whose bulk exceeds the scored pool are
+flagged **TRUNC** and excluded from matched-cost claims (they understate arm B). Truncated: expl n=160 k=8,
+n=320 k≥4, n=640 all; fresh n=160 k=8, n=320 k≥4.
+
+| budget n | best NON-truncated arm (expl D/S) | best NON-truncated arm (fresh D/S) |
 |---|---|---|
-| 80 | **B k=8** (+0.598/+0.696 vs A +0.552/+0.669) | **B k=8 D / k=4 S** (+0.426/+0.416 vs A +0.382/+0.369) |
-| 160 | **B** all k ≥ A | mixed: A on D, B on S |
-| 320 | B k=4 +0.602 vs A +0.586 D; A +0.702 vs B +0.699 S (parity) | A ahead D, ~parity S |
-| 640 | A +0.610 vs B +0.596 D (truncated), parity S | — (n>pool, skipped) |
+| 80 | **B k=8** (+0.590/+0.687 vs A +0.552/+0.669); k=4 best S +0.698; **k=2 LOSES S** (+0.643) | **B k=8** (+0.426/+0.416 vs A +0.382/+0.369); all k win both |
+| 160 | **B k=2/k=4 ≥ A** both channels (+0.582/+0.683 vs A +0.555/+0.651) | mixed: A on D (+0.461 vs +0.399–0.438), B on S (+0.424–0.437 vs +0.399) |
+| 320 | B k=2 D +0.590 vs A +0.586; A S +0.702 vs B +0.698 (parity) | A ahead D (+0.466), ~parity S |
+| 640 | all B TRUNC — no matched-cost claim | — (n > pool, skipped) |
 
 - **Low-budget regime (n=80–160): the scheme wins at every k on both corpora**, biggest at k=8 — exactly
   the regime it targets (a new corpus with a limited budget: Pearltrees, mindmap).
