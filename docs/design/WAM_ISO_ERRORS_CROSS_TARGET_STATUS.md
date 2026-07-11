@@ -78,8 +78,12 @@ now matches that adoption surface (substrate + config/rewrite/audit +
 `is_iso/2` / `is_lax/2` + six arithmetic-compare ISO/lax variants +
 `succ/2` family). Neither Python nor F# should be described as fully
 ISO-error compatible until remaining concrete builtins also adopt three-form
-keys. R, Lua, Haskell, Rust, and the remaining targets are still mostly missing
-or partial on this stack.
+keys. R, Lua, Rust, and the remaining targets are still mostly missing
+ISO three-form adoption. **Haskell** now has a catch/throw + `is_iso`
+substrate and smoke tests (`test_wam_haskell_iso_smoke.pl`, PRs
+#2510/#2526) but is not yet listed as a reference adopter alongside
+C++/Elixir/F#/Python — treat it as partial until the shared status
+table is refreshed end-to-end.
 
 ## What Counts As Adoption
 
