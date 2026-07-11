@@ -4,6 +4,12 @@ Compare every UnifyWeaver **hybrid WAM** backend (Prolog → WAM →
 target-language VM, optionally plus lowered emitters / foreign
 kernels). Companion to [`WAM_TARGET_ROADMAP.md`](WAM_TARGET_ROADMAP.md).
 
+**Confidence:** High-risk rows (F# kernel templates, Rust LMDB matrix
+path, Haskell LMDB emit knobs, LLVM-7 vs shared-7, C 7+bi, Go all-7
+FFI, Elixir LMDB + emit-mode default, conformance registration) were
+re-checked against SOURCE with Composer explore agents. Perf numbers
+are cited from existing bench docs — not re-run in this PR.
+
 **Not covered here:** non-WAM direct compilers (`haskell_target.pl`,
 `rust_target.pl`, `llvm_target.pl`, `fsharp_target.pl`, `go_target.pl`,
 …). Those have separate docs (`HASKELL_TARGET.md`, `RUST_TARGET.md`,
@@ -13,11 +19,11 @@ kernels). Companion to [`WAM_TARGET_ROADMAP.md`](WAM_TARGET_ROADMAP.md).
 
 | Target | Status / primary doc | Notes |
 |---|---|---|
-| **Haskell** | [`WAM_HASKELL_STATUS.md`](WAM_HASKELL_STATUS.md) | **New** living status; session summary + `design/WAM_HASKELL_*` |
-| **Rust** | [`WAM_RUST_STATUS.md`](WAM_RUST_STATUS.md) | **New**; `design/WAM_RUST_*` + reports |
-| **LLVM** | [`WAM_LLVM_STATUS.md`](WAM_LLVM_STATUS.md) | **New**; transpilation trilogy |
-| **C++** | [`WAM_CPP_STATUS.md`](WAM_CPP_STATUS.md) | **New**; ISO + LMDB design docs |
-| **F#** | [`WAM_FSHARP_STATUS.md`](WAM_FSHARP_STATUS.md) | **New** status extract; usage in [`WAM_FSHARP_TARGET.md`](WAM_FSHARP_TARGET.md) + [`design/WAM_FSHARP_PARITY_AUDIT.md`](design/WAM_FSHARP_PARITY_AUDIT.md) |
+| **Haskell** | [`WAM_HASKELL_STATUS.md`](WAM_HASKELL_STATUS.md) | Living status; session summary + `design/WAM_HASKELL_*` |
+| **Rust** | [`WAM_RUST_STATUS.md`](WAM_RUST_STATUS.md) | Living status; `design/WAM_RUST_*` + reports |
+| **LLVM** | [`WAM_LLVM_STATUS.md`](WAM_LLVM_STATUS.md) | Living status; transpilation trilogy |
+| **C++** | [`WAM_CPP_STATUS.md`](WAM_CPP_STATUS.md) | Living status; ISO + LMDB design docs |
+| **F#** | [`WAM_FSHARP_STATUS.md`](WAM_FSHARP_STATUS.md) | Living status; usage in [`WAM_FSHARP_TARGET.md`](WAM_FSHARP_TARGET.md) + [`design/WAM_FSHARP_PARITY_AUDIT.md`](design/WAM_FSHARP_PARITY_AUDIT.md) |
 | **Elixir** | [`design/WAM_ELIXIR_STATUS.md`](design/WAM_ELIXIR_STATUS.md) | Architectural reference baseline |
 | **Scala** | [`WAM_SCALA_TARGET.md`](WAM_SCALA_TARGET.md) | Usage guide (no separate STATUS yet) |
 | **R** | [`WAM_R_TARGET.md`](WAM_R_TARGET.md) | Usage + [`handoff/wam_r_session_handoff.md`](handoff/wam_r_session_handoff.md) |
@@ -85,8 +91,9 @@ Conformance = registered in `tests/test_wam_cross_target_conformance.pl`.
 R generator ~94; ILAsm ~45; Kotlin includes Gradle e2e).  
 ‡ F# has a **dedicated** main-workflow + LMDB oracle job, but is absent
 from classic conformance matrix.  
-§ Go conformance requires `prefer_wam(true)` (default Go path is
-non-WAM `go_target`).
+§ Go has all 7 via `go_foreign_lowering` / FFI dispatch (`go_supported_shared_kernel/1`
+lists 5; weighted/A* are separate arms). Conformance requires
+`prefer_wam(true)` — default Go path is non-WAM `go_target`.
 
 **Shared-7** detector kinds: `transitive_closure2`, `category_ancestor`,
 `transitive_distance3`, `transitive_parent_distance4`,
