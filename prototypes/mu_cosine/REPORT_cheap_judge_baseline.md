@@ -53,11 +53,15 @@ judge.
 
 ## 2. Matched-cost simulation — the scheme wins where it's meant to (low coverage)
 
-`sim_matched_cost.py`: equal 5.5-call budget n; arm A = n pure 5.5 labels; arm B = 0.3n dual-scored
-overlap (labels + block fit) + `0.7kn − 0.3n` luna-bulk pairs with FUSED targets (prior⊕graph_D⊕graph_S⊕
-luna). Downstream estimator: ridge on frozen e5 pair-features, λ by inner holdout (fixed λ hit the
-768-feature interpolation threshold — double descent — an instructive proxy artifact). Held corr vs 5.5
-labels, 10 resamples:
+`sim_matched_cost.py`: equal 5.5-call budget n; arm A = n pure 5.5 labels; arm B = an n_ov = max(30, 0.3n)
+dual-scored overlap (labels + block fit) + `k·n − n_ov·(k+1)` luna-bulk pairs with FUSED targets
+(prior⊕graph_D⊕graph_S⊕luna, luna debiased per §1). Downstream estimator: ridge on frozen e5 pair-features,
+λ by inner holdout (fixed λ hit the 768-feature interpolation threshold — double descent — an instructive
+proxy artifact). Held corr vs 5.5 labels, 10 resamples.
+
+**Evaluation frame (uniform):** every number in this report measures FIDELITY TO THE gpt-5.5-low operating
+judge (the current production target), not agreement with independent ground truth. "Wins" mean "recovers
+the operating judge's labels better at equal cost".
 
 Budget accounting (blocker 2): the overlap uses a 30-row floor, so at n=80 n_ov=30 > 0.3n=24; the bulk is
 sized from n_ov (not 0.3n) so realized spend is exactly n. Cells whose bulk exceeds the scored pool are
@@ -73,18 +77,23 @@ Arm-B luna is bias-corrected (blocker 3) inside the fused targets, matching §1.
 | 320 | B k=2 ~parity D (+0.584 vs +0.586); A S +0.702 vs B +0.696 | A ahead both (+0.466/+0.434 vs +0.434/+0.419) |
 | 640 | all B TRUNC — no matched-cost claim | — (n > pool, skipped) |
 
-- **Low-budget regime (n=80–160): the scheme wins at every k on both corpora**, biggest at k=8 — exactly
-  the regime it targets (a new corpus with a limited budget: Pearltrees, mindmap).
+- **Low-budget regime: the scheme wins at n=80 on both corpora; at n=160 it wins expl, mixed fresh (A on
+  D, B on S).** NOT "wins at every k" — the earlier headline was false: at fresh n=160 the best B on D
+  (+0.441) still trails A (+0.461), and at n=80 the k=2 arm now loses S on both corpora (the win is carried
+  by the higher-k arms, biggest at k=8). This is the regime the scheme targets (a new corpus with a limited
+  budget: Pearltrees, mindmap).
 - High-budget convergence is partly REAL (with enough 5.5 labels, pure labels win on D — fused targets
   carry luna noise) and partly ARTIFACT: the bulk purchase truncates at the scored pool (at n=320, k=4
   already wants more luna rows than exist), so large-n·k cells understate arm B.
-- S favors the scheme almost everywhere — graph_S inside the fused targets does the work (§1).
+- S favors the scheme at low budget (n≤160 on both corpora); at n=320 the pure-5.5 arm reaches parity/ahead
+  on S. graph_S inside the fused targets does the work at low budget (§1).
 - Proxy caveat: ridge-on-e5 is not the transformer head; both arms share it, so the ORDERING is the
   claim, not the magnitudes. One full-head confirmation at a single grid point is the upgrade if a real
   budget decision hangs on this.
 
-**Reading for the budget decision:** at new-corpus scale (coverage low relative to corpus), even k=2
-suffices to tie and k≥4 wins outright; the scheme's advantage shrinks as coverage saturates. The practical
+**Reading for the budget decision:** at new-corpus scale (coverage low relative to corpus), k≥4 wins
+outright while k=2 is marginal (ties D, can lose S); the scheme's advantage shrinks as coverage saturates.
+The practical
 recipe stands: luna everywhere + small random 5.5 overlap + graph channels in the fusion + routed 5.5 on
 conflict + sonnet-5 tiebreaks on disagreement.
 
