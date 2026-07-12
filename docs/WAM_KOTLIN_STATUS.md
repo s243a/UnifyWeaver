@@ -31,16 +31,20 @@ module in the fleet.
 - **Gradle e2e** hook — the test suite includes a Gradle end-to-end
   path when the toolchain is available.
 - **WAM-lowered native dispatch (first cut):** `wam_kotlin_lowered_emitter.pl`
-  lowers deterministic single-clause predicates to `fun (state: WamState): Boolean`,
-  registered via `WamProgram.registerNative`. `WamRuntime.run` tries native
-  first and falls back to the bytecode interpreter on `false` (WAT-style snapshot
-  restore). `functions` / `mixed` modes route lowerable preds through this path;
-  everything else stays on the interpreter registrars.
+  lowers **flat single-clause facts + register unification** (no structure/list
+  construction — see below) to `fun (state: WamState): Boolean`, registered via
+  `WamProgram.registerNative`. `WamRuntime.run` tries native first and falls back
+  to the bytecode interpreter on `false` (WAT-style snapshot restore). `functions`
+  / `mixed` modes route lowerable preds through this path; everything else
+  (including any structure/list builder) stays on the interpreter registrars.
 
 ## Gaps
 
-- **Lowered emitter scope** — only deterministic single-clause facts/simple
-  rules; no T4/T5 multi-clause, ITE, or `call`/`execute` in lowered bodies.
+- **Lowered emitter scope** — only flat single-clause facts + register
+  unification. Structure/list **construction** was silently wrong in the first
+  cut (unbound vars in the result) and now declines to the interpreter; fixing it
+  is follow-up **EMIT-KOTLIN-2**. No T4/T5 multi-clause, ITE, or `call`/`execute`
+  in lowered bodies.
 - **No foreign kernels, no LMDB / fact source, no ISO contract.**
 - **No conformance registration** — no `conformance_target(kotlin)`.
 - **No runtime-parser capability entry.**

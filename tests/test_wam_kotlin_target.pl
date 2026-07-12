@@ -263,6 +263,44 @@ test(functions_mode_gradle_runs_lowered_fact, [condition(gradle_available), nond
         retractall(user:kt_fact(_, _))
     ).
 
+% Regression guard for the silent-wrong-answer bug: write-mode structure/list
+% construction was lowered incorrectly (unbound vars in the result). Such
+% predicates must DECLINE lowering and stay on the correct bytecode interpreter.
+test(functions_mode_declines_structure_lowering) :-
+    setup_call_cleanup(
+        (   retractall(user:kt_wrap(_, _)),
+            assertz(user:(kt_wrap(X, wrap(X))))
+        ),
+        (   wam_kotlin_target:wam_kotlin_partition_predicates(functions, [user:kt_wrap/2], Native, Wam, Failed),
+            assertion(Native == []),
+            assertion(Wam = [wam(kt_wrap/2, _)]),
+            assertion(Failed == [])
+        ),
+        retractall(user:kt_wrap(_, _))
+    ).
+
+% End-to-end: a list-building single-clause predicate under functions mode must
+% produce the SAME bindings as the interpreter (it declines lowering and runs
+% via the WAM fallback). Before the narrowing fix this returned [X1,X2] with
+% unbound vars instead of [alpha,beta].
+test(functions_mode_gradle_list_matches_interpreter, [condition(gradle_available), nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_functions_list',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    setup_call_cleanup(
+        (   retractall(user:kt_make_list(_, _, _)),
+            assertz(user:(kt_make_list(A, B, [A, B])))
+        ),
+        (   wam_kotlin_target:write_wam_kotlin_project([user:kt_make_list/3], [emit_mode(functions)], TmpDir),
+            run_gradle(TmpDir, ['-q', 'compileKotlin'], _CompileOut, _CompileErr, CompileStatus),
+            assertion(CompileStatus == exit(0)),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_make_list/3 alpha beta'], ListOut, _ListErr, ListStatus),
+            assertion(ListStatus == exit(0)),
+            assertion(has_substring(ListOut, 'A3=Struct(functor=[|]/2, args=[Atom(name=alpha), Struct(functor=[|]/2, args=[Atom(name=beta), Atom(name=[])])])'))
+        ),
+        retractall(user:kt_make_list(_, _, _))
+    ).
+
 test(registry_exposes_wam_kotlin_target, [nondet]) :-
     target_registry:target_exists(wam_kotlin),
     target_registry:target_family(wam_kotlin, jvm),

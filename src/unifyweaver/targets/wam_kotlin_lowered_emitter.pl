@@ -59,6 +59,10 @@ line_supported(Line) :-
     ;   parts_supported(Parts)
     ).
 
+% NOTE: structure/list construction (get_structure/get_list/put_structure/
+% put_list/set_*/unify_*) is intentionally NOT lowerable in this first cut:
+% write-mode term building was silently wrong (unbound vars in the result).
+% Such predicates decline and stay on the correct bytecode interpreter.
 parts_supported(["allocate"]).
 parts_supported(["deallocate"]).
 parts_supported(["proceed"]).
@@ -66,26 +70,13 @@ parts_supported(["fail"]).
 parts_supported(["get_constant", _, _]).
 parts_supported(["get_variable", _, _]).
 parts_supported(["get_value", _, _]).
-parts_supported(["get_structure", _, _]).
-parts_supported(["get_list", _]).
 parts_supported(["get_nil", _]).
 parts_supported(["get_integer", _, _]).
 parts_supported(["put_constant", _, _]).
 parts_supported(["put_variable", _, _]).
 parts_supported(["put_value", _, _]).
-parts_supported(["put_structure", _, _]).
-parts_supported(["put_list", _]).
 parts_supported(["put_nil", _]).
 parts_supported(["put_integer", _, _]).
-parts_supported(["unify_variable", _]).
-parts_supported(["unify_value", _]).
-parts_supported(["unify_constant", _]).
-parts_supported(["unify_nil"]).
-parts_supported(["set_variable", _]).
-parts_supported(["set_value", _]).
-parts_supported(["set_constant", _]).
-parts_supported(["set_nil"]).
-parts_supported(["set_integer", _]).
 
 kotlin_lowered_func_name(Functor/Arity, Name) :-
     atom_string(Functor, S),
