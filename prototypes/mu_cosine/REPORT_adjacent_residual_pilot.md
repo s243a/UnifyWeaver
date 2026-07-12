@@ -205,12 +205,19 @@ python3 -m pytest -q \
   prototypes/mu_cosine/test_run_adjacent_residual_pilot.py
 ```
 
-The real run completed in 119.0 seconds; runtime is printed to stdout and excluded from the deterministic
-scientific JSON.  Ten focused tests pass; including the inherited structured-covariance, covariance-sensitivity,
-and NumPy/Torch square-root-conditioner suites gives `120 passed, 9 skipped`.  Full output SHA-256 values are:
+The original real run completed in 119.0 seconds; the portable-provenance rerun completed in 113.1 seconds.
+Runtime and runtime paths are printed only to stdout and excluded from the deterministic scientific JSON.
+Payload schema v2 stores role-keyed byte sizes and content hashes, not checkout/input/output locators.  Two
+complete synthetic runs written to different output paths were byte-identical, and the schema-v2 real run
+reproduced every prior scientific field exactly.
 
-- real pilot: `61b4b3c15bf509e70df0c2e39ed5edfbb28dec54887d399e9b036ac8e001564e`;
-- synthetic mechanism: `c736e25bc210ff3cd2b9f4385e80afe4c568093d1f1a024d6411e8436ef98057`.
+Thirteen focused tests pass; including the inherited structured-covariance, covariance-sensitivity, and
+NumPy/Torch square-root-conditioner suites gives `123 passed, 9 skipped`.  Portable full-output SHA-256 values
+are:
 
-The compact tracked record is `repro/adjacent_residual_pilot/summary.json`.  Across numerical stacks, compare
-scientific fields within tolerance rather than assuming byte-identical floating-point output.
+- real pilot: `407d52d8fe64df3bf9220da95976bee5c046c5d806d676aa38aafa4a475e100a`;
+- synthetic mechanism: `62695568b1eae247ece2d3e37a18250c756b57536bdf6fe7e0ec7a91f8b8c18e`.
+
+The compact tracked record is `repro/adjacent_residual_pilot/summary.json`.  Relocated inputs with identical
+content now produce identical provenance.  Across different numerical stacks, still compare scientific fields
+within tolerance rather than assuming byte-identical floating-point output.

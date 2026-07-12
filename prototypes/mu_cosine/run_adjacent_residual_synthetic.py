@@ -28,7 +28,14 @@ def _file_record(path):
     with open(path, "rb") as stream:
         for chunk in iter(lambda: stream.read(1 << 20), b""):
             digest.update(chunk)
-    return {"path": path, "size_bytes": os.path.getsize(path), "sha256": digest.hexdigest()}
+    return {"size_bytes": os.path.getsize(path), "sha256": digest.hexdigest()}
+
+
+def _scientific_configuration(args):
+    """Return outcome-determining options without the output locator."""
+    configuration = vars(args).copy()
+    configuration.pop("out", None)
+    return configuration
 
 
 def simulate_component_contrasts(components, coupling, seed):
@@ -163,7 +170,7 @@ def main():
             ),
         }
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "KNOWN-MEAN/KNOWN-B MECHANISM AUDIT; END-TO-END POWER NOT IMPLEMENTED",
         "mechanism_scope": (
             "one equal-weight contrast with two anchor controls per independent component; "
@@ -179,7 +186,7 @@ def main():
             )),
             "runner": _file_record(os.path.abspath(__file__)),
         },
-        "configuration": vars(args),
+        "configuration": _scientific_configuration(args),
         "component_counts": list(args.component_counts),
         "couplings": list(args.couplings),
         "scenarios": scenarios,

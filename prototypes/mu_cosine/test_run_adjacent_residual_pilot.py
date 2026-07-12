@@ -6,9 +6,16 @@ import pytest
 
 from run_adjacent_residual_pilot import (
     ADJACENCY_ALPHAS,
+    _content_provenance,
+    _portable_artifact_provenance,
+    _scientific_configuration,
     _validate_args,
     _write_payload,
     aggregate_results,
+)
+from run_adjacent_residual_synthetic import (
+    _file_record as synthetic_file_record,
+    _scientific_configuration as synthetic_scientific_configuration,
 )
 
 
@@ -70,3 +77,83 @@ def test_payload_writer_is_byte_deterministic_and_rejects_nan(tmp_path):
     with pytest.raises(ValueError, match="Out of range float"):
         _write_payload(output, {"bad": float("nan")})
     assert output.read_bytes() == first
+
+
+def test_content_provenance_is_portable_across_identical_files(tmp_path):
+    first = tmp_path / "first" / "input.bin"
+    second = tmp_path / "second" / "renamed.bin"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_bytes(b"portable-input")
+    second.write_bytes(b"portable-input")
+
+    expected = {"size_bytes": 14, "sha256": synthetic_file_record(first)["sha256"]}
+    assert synthetic_file_record(first) == expected
+    assert synthetic_file_record(second) == expected
+    assert _content_provenance(first) == expected
+    assert "path" not in expected
+
+
+def test_scientific_configuration_excludes_runtime_locators():
+    scientific = dict(
+        assignments=10,
+        folds=5,
+        ridge_grid=[0.1, 1.0],
+        stability_confidence=0.95,
+    )
+    first = SimpleNamespace(
+        **scientific,
+        artifact_repo="/checkout/a",
+        ckpt="/models/a.pt",
+        campaign="/data/a.tsv",
+        luna="/data/luna-a.tsv",
+        out="/tmp/a.json",
+        resume=False,
+    )
+    second = SimpleNamespace(
+        **scientific,
+        artifact_repo="/checkout/b",
+        ckpt="/models/b.pt",
+        campaign="/data/b.tsv",
+        luna="/data/luna-b.tsv",
+        out="/other/b.json",
+        resume=True,
+    )
+    assert (
+        _scientific_configuration(first)
+        == _scientific_configuration(second)
+        == scientific
+    )
+
+    synthetic_first = SimpleNamespace(replicates=2, seed=7, out="/tmp/a.json")
+    synthetic_second = SimpleNamespace(replicates=2, seed=7, out="/other/b.json")
+    assert (
+        synthetic_scientific_configuration(synthetic_first)
+        == synthetic_scientific_configuration(synthetic_second)
+        == {"replicates": 2, "seed": 7}
+    )
+
+
+def test_artifact_provenance_drops_repository_and_directory_locators():
+    record = {
+        "repository": "/checkout/private",
+        "exploratory_graph": {
+            "path": "/checkout/private/graph.tsv",
+            "size_bytes": 10,
+            "sha256": "a",
+        },
+        "fresh_lmdb_directory": "/checkout/private/lmdb",
+        "fresh_lmdb_data": {
+            "path": "/checkout/private/lmdb/data.mdb",
+            "size_bytes": 20,
+            "sha256": "b",
+        },
+        "fresh_lmdb_lock_excluded": "lock.mdb is process state",
+    }
+    portable = _portable_artifact_provenance(record)
+    assert portable == {
+        "exploratory_graph": {"size_bytes": 10, "sha256": "a"},
+        "fresh_lmdb_data": {"size_bytes": 20, "sha256": "b"},
+        "fresh_lmdb_lock_excluded": "lock.mdb is process state",
+    }
+    assert "/checkout/private" not in repr(portable)

@@ -1,6 +1,8 @@
 {
   "status": "descriptively strong adjacency-plus-hop signal; synthetic power and repeated-judge gates fail; no QR deployment",
   "design": "DESIGN_adjacent_residual_pilot.md",
+  "artifact_schema_version": 2,
+  "portable_content_addressed_provenance": true,
   "configuration": {
     "assignment_seeds": [20, 21, 22, 23, 24, 25, 26, 27, 28, 29],
     "component_folds": 5,
@@ -88,7 +90,7 @@
     "recommended_next": "purpose-built balanced adjacency/distant triples with at least three independent judge draws and more than 320 independent components for a simultaneous/full-procedure target"
   },
   "full_output_sha256": {
-    "real_pilot": "61b4b3c15bf509e70df0c2e39ed5edfbb28dec54887d399e9b036ac8e001564e",
-    "synthetic_mechanism": "c736e25bc210ff3cd2b9f4385e80afe4c568093d1f1a024d6411e8436ef98057"
+    "real_pilot": "407d52d8fe64df3bf9220da95976bee5c046c5d806d676aa38aafa4a475e100a",
+    "synthetic_mechanism": "62695568b1eae247ece2d3e37a18250c756b57536bdf6fe7e0ec7a91f8b8c18e"
   }
 }

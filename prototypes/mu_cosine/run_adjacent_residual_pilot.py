@@ -47,6 +47,7 @@ from structured_residual_covariance import gaussian_joint_nll
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ADJACENCY_ALPHAS = (0.0, 0.025, 0.05, 0.10, 0.20, 0.35, 0.50)
+LOCATOR_ARGUMENTS = ("artifact_repo", "ckpt", "campaign", "luna", "out", "resume")
 
 
 def _jsonable(value):
@@ -68,6 +69,35 @@ def _write_payload(path, payload):
     with open(temporary, "w", encoding="utf-8", newline="\n") as stream:
         stream.write(serialized)
     os.replace(temporary, path)
+
+
+def _content_provenance(path):
+    """Byte identity for a file, deliberately excluding its machine-local locator."""
+    record = file_provenance(path)
+    return {"size_bytes": record["size_bytes"], "sha256": record["sha256"]}
+
+
+def _scientific_configuration(args):
+    """Return outcome-determining options without input/output locators."""
+    configuration = vars(args).copy()
+    for name in LOCATOR_ARGUMENTS:
+        configuration.pop(name, None)
+    return configuration
+
+
+def _portable_artifact_provenance(artifacts):
+    """Keep content identity and the LMDB exclusion contract, not checkout paths."""
+    return {
+        "exploratory_graph": {
+            "size_bytes": artifacts["exploratory_graph"]["size_bytes"],
+            "sha256": artifacts["exploratory_graph"]["sha256"],
+        },
+        "fresh_lmdb_data": {
+            "size_bytes": artifacts["fresh_lmdb_data"]["size_bytes"],
+            "sha256": artifacts["fresh_lmdb_data"]["sha256"],
+        },
+        "fresh_lmdb_lock_excluded": artifacts["fresh_lmdb_lock_excluded"],
+    }
 
 
 def _undirected_neighbors(parents):
@@ -510,20 +540,19 @@ def main():
             "neighbors": _undirected_neighbors(parents),
             "degrees": dataset["tok"].deg,
         }
-    configuration = vars(args).copy()
-    configuration.pop("resume")
+    configuration = _scientific_configuration(args)
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "DESCRIPTIVE EXISTING-DATA PILOT; NO POPULATION CI OR QR DEPLOYMENT GATE",
         "design": "DESIGN_adjacent_residual_pilot.md",
         "target_scope": "GPT-5.5 operating-judge fidelity; not independent ground truth",
         "estimand": "same-descendant adjacency plus local-hop proximity predictive contrast",
         "implementation": {
-            "design": file_provenance(os.path.join(ROOT, "DESIGN_adjacent_residual_pilot.md")),
-            "core": file_provenance(os.path.join(ROOT, "adjacent_residual_pilot.py")),
-            "runner": file_provenance(os.path.abspath(__file__)),
+            "design": _content_provenance(os.path.join(ROOT, "DESIGN_adjacent_residual_pilot.md")),
+            "core": _content_provenance(os.path.join(ROOT, "adjacent_residual_pilot.py")),
+            "runner": _content_provenance(os.path.abspath(__file__)),
             "dependencies": {
-                name: file_provenance(os.path.join(ROOT, name))
+                name: _content_provenance(os.path.join(ROOT, name))
                 for name in (
                     "fine_tune_channel_heads.py",
                     "run_cheap_judge_joint_posterior.py",
@@ -534,13 +563,13 @@ def main():
             },
         },
         "inputs": {
-            "checkpoint": file_provenance(args.ckpt),
-            "campaign": file_provenance(args.campaign),
-            "luna": file_provenance(args.luna),
-            "artifact_paths": artifacts,
+            "checkpoint": _content_provenance(args.ckpt),
+            "campaign": _content_provenance(args.campaign),
+            "luna": _content_provenance(args.luna),
+            "graph_artifacts": _portable_artifact_provenance(artifacts),
             "e5_caches": {
-                "exploratory": file_provenance(CAMPAIGN_E5_100K),
-                "fresh": file_provenance(DATASETS["fresh"]["e5_cache"]),
+                "exploratory": _content_provenance(CAMPAIGN_E5_100K),
+                "fresh": _content_provenance(DATASETS["fresh"]["e5_cache"]),
             },
             "campaign_cur_rel_counts": dict(cur_rel),
         },
