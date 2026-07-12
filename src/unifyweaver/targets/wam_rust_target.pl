@@ -1610,6 +1610,7 @@ compile_execute_term_builtin_to_rust(Code) :-
             "reverse/2" => { self.execute_reverse_builtin() }
             "atom_codes/2" => { self.execute_atom_codes_builtin() }
             "number_codes/2" => { self.execute_number_codes_builtin() }
+            "number_chars/2" => { self.execute_number_chars_builtin() }
             "atom_to_term/3" => { self.execute_atom_to_term_builtin() }
             "term_to_atom/2" => { self.execute_term_to_atom_builtin() }
             "read_term_from_atom/2" => { self.execute_read_term_from_atom_builtin(2) }
@@ -1733,6 +1734,61 @@ compile_execute_term_builtin_to_rust(Code) :-
                             }
                             None => false,
                         }
+                    }
+                    None => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn execute_number_chars_builtin(&mut self) -> bool {
+        let num_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let chars_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let num = self.deref_heap(&self.deref_var(&num_raw));
+        let chars = self.deref_heap(&self.deref_var(&chars_raw));
+        match (num, chars) {
+            (Value::Integer(n), _) => {
+                let list = Value::List(
+                    n.to_string()
+                        .chars()
+                        .map(|ch| Value::Atom(ch.to_string()))
+                        .collect(),
+                );
+                if self.unify(&chars_raw, &list) { self.pc += 1; true }
+                else { false }
+            }
+            (Value::Float(f), _) => {
+                let list = Value::List(
+                    f.to_string()
+                        .chars()
+                        .map(|ch| Value::Atom(ch.to_string()))
+                        .collect(),
+                );
+                if self.unify(&chars_raw, &list) { self.pc += 1; true }
+                else { false }
+            }
+            (Value::Unbound(_), Value::List(items)) => {
+                let mut text = String::new();
+                for item in &items {
+                    match self.deref_heap(&self.deref_var(item)) {
+                        Value::Atom(atom) if atom.chars().count() == 1 => {
+                            text.push(atom.chars().next().unwrap());
+                        }
+                        _ => return false,
+                    }
+                }
+                let parsed = if let Ok(n) = text.parse::<i64>() {
+                    Some(Value::Integer(n))
+                } else if let Ok(f) = text.parse::<f64>() {
+                    Some(Value::Float(f))
+                } else {
+                    None
+                };
+                match parsed {
+                    Some(value) => {
+                        if self.unify(&num_raw, &value) { self.pc += 1; true }
+                        else { false }
                     }
                     None => false,
                 }

@@ -579,6 +579,22 @@ fn test_atom_text_ops() {
     assert!(ok10);
     assert_eq!(read_var(&vm10, "A"), a("7"));
     assert!(!call2("atom_number/2", a("notanum"), ub("N")).0);
+    let (ok_chars, vm_chars) = call2("number_chars/2", i(-42), ub("Cs"));
+    assert!(ok_chars);
+    assert_eq!(
+        read_var(&vm_chars, "Cs"),
+        Value::List(vec![a("-"), a("4"), a("2")]),
+    );
+    let (ok_float, vm_float) = call2(
+        "number_chars/2",
+        ub("N"),
+        Value::List(vec![a("3"), a("."), a("5")]),
+    );
+    assert!(ok_float);
+    assert_eq!(read_var(&vm_float, "N"), Value::Float(3.5));
+    assert!(!call2("number_chars/2", ub("N"), Value::List(vec![])).0);
+    assert!(!call2("number_chars/2", ub("N"), Value::List(vec![a("12")])).0);
+    assert!(!call2("number_chars/2", ub("N"), Value::List(vec![a("x")])).0);
     let (ok11, vm11) = call2("atom_string/2", a("x"), ub("S"));
     assert!(ok11);
     assert_eq!(read_var(&vm11, "S"), a("x"));
