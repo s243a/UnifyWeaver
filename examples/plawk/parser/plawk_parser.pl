@@ -897,6 +897,33 @@ begin_assignment_name('FS') -->
 begin_assignment_name('OFS') -->
     "OFS".
 
+% END decode-into-struct (assoc for-in, stage 3): a for-in whose body
+% destructures the iterated value `arr[k]` through a grammar into typed
+% fields, then prints them. `END { for (k in arr) { (n, m) =
+% dyncall@decode(arr[k]) as (i64 i64) ; print k, n, m } }`. The decode
+% argument is the for-in value `arr[k]` (array/key must match the loop);
+% the destructured variables are for-in-scoped and read back in the print.
+% Tried before the accumulate and single-action END clauses -- the
+% `for (...) { ( vars ) = dyncall@... }` shape is unambiguous. See
+% PLAWK_ASSOC_FORIN.md.
+end_clauses([end([for_in(var(LoopVar), var(ArrayName),
+                  [dynrec_bind(Vars, dyncall_named(Name, [forin_val(ArrayName)]),
+                       Types),
+                   print(PrintFields)])])]) -->
+    "END", ws, "{", ws,
+    "for", ws, "(", ws,
+    identifier(LoopVar), ws, "in", identifier_boundary, ws,
+    identifier(ArrayName), ws, ")", ws,
+    "{", ws,
+    "(", ws, dynrec_var_list(Vars), ws, ")", ws, "=", ws,
+    "dyncall@", identifier(Name), ws, "(", ws,
+    identifier(ArrayName), ws, "[", ws, identifier(LoopVar), ws, "]", ws, ")", ws,
+    "as", identifier_boundary, ws, "(", ws, dynrec_type_list(Types), ws, ")", ws,
+    action_sep, ws,
+    print_action(print(PrintFields)), ws,
+    "}", ws,
+    "}", ws,
+    !.
 % END accumulate-then-print (assoc for-in, stage 2): a for-in that folds
 % the hash into a scalar, followed by a print that reads the accumulator.
 % `END { for (k in arr) acc += arr[k] ; print acc }`. The for-in body is a
