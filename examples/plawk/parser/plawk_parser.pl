@@ -897,6 +897,25 @@ begin_assignment_name('FS') -->
 begin_assignment_name('OFS') -->
     "OFS".
 
+% END accumulate-then-print (assoc for-in, stage 2): a for-in that folds
+% the hash into a scalar, followed by a print that reads the accumulator.
+% `END { for (k in arr) acc += arr[k] ; print acc }`. The for-in body is a
+% single `acc += OPERAND` where OPERAND is the iterated value `arr[k]`, the
+% loop key `k`, or an integer; the trailing print reads `acc` (the
+% loop-carried total). Tried before the single-action END clause -- the
+% two-statement shape (for-in `;` print) is unambiguous. See
+% PLAWK_ASSOC_FORIN.md.
+end_clauses([end([for_in(var(LoopVar), var(ArrayName), [AccAction]),
+                  print(PrintFields)])]) -->
+    "END", ws, "{", ws,
+    "for", ws, "(", ws,
+    identifier(LoopVar), ws, "in", identifier_boundary, ws,
+    identifier(ArrayName), ws, ")", ws,
+    forin_accum_action(ArrayName, LoopVar, AccAction), ws,
+    action_sep, ws,
+    print_action(print(PrintFields)), ws,
+    "}", ws,
+    !.
 end_clauses([end([Action])]) -->
     "END",
     ws,
@@ -909,6 +928,22 @@ end_clauses([end([Action])]) -->
     !.
 end_clauses([]) -->
     [].
+
+% `acc += OPERAND` inside a for-in accumulate body. The operand is
+% for-in-scoped: `arr[k]` (the iterated value; array/key must match the
+% loop), `k` (the loop key), or an integer literal.
+forin_accum_action(Array, Key, add(var(Acc), Operand)) -->
+    identifier(Acc), ws, "+=", ws,
+    forin_accum_operand(Array, Key, Operand).
+
+forin_accum_operand(Array, Key, forin_val(Array)) -->
+    identifier(Array), ws, "[", ws, identifier(Key), ws, "]",
+    !.
+forin_accum_operand(_Array, Key, forin_key) -->
+    identifier(Key),
+    !.
+forin_accum_operand(_Array, _Key, int(Value)) -->
+    signed_integer_value(Value).
 
 end_action(Action) -->
     for_in_action(Action),
