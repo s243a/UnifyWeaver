@@ -289,6 +289,57 @@ that feeds the next `over prev` pass, or `writebin` to a file). Reader +
 writer per pass is exactly the Reader/Writer decoupling the philosophy doc
 describes, now instantiated per stage of an in-process pipeline.
 
+### 3.5 Secondary indexes (deferred)
+
+A table is primary-key indexed (the assoc key is the store key). A
+**secondary index** lets a table be looked up by a non-key field, declared
+alongside the table:
+
+```awk
+BEGIN cache("sales.lmdb" as sales) {
+    declare orders                    # records keyed by order id (primary key)
+    index orders by cust              # non-unique secondary index
+    index orders by sku unique        # unique secondary index
+}
+```
+
+Indexing a field requires the table's values to be **records with named
+fields** (the record-value encoding tracked in §6), so the indexed field is
+addressable.
+
+**Unique vs non-unique — and why aggregation is mandatory.** A unique
+secondary key identifies at most one record, so a lookup is a deterministic
+single result. A non-unique key matches a *set* of records — inherently
+multi-valued, and therefore exactly the nondeterminism §1 insists be
+"contained and annotated." So a non-unique lookup **must be consumed by an
+aggregation** that collapses the set to a deterministic value or a
+deterministically-ordered array; using it raw (as a scalar) is a
+compile-time error. This is not just ergonomics — it is what keeps the
+multi-valued lookup from leaking a choicepoint into the hot loop.
+
+```awk
+# unique index: one record
+(cust, amt) = orders[sku: s]
+
+# non-unique index: MUST aggregate
+for (o in collect(orders[cust: c])) { ... }   # collect -> array, then iterate
+n   = count(orders[cust: c])                    # how many match
+tot = sum(orders[cust: c], amount)              # fold a field over the matches
+```
+
+`collect` yields the matches in a defined order (primary-key order), so the
+`for`/`foreach` over the resulting array is deterministic — the same move
+`foreach` / `for (k in arr)` already make. `count` / `sum` / `min` / `max` /
+`avg` fold to a scalar directly.
+
+**Store mapping.** A unique index is a plain sub-DB (secondary value →
+primary key); a non-unique index is an `MDB_DUPSORT` sub-DB (secondary value
+→ the set of primary keys), so `count` uses the cursor's dup count and
+`collect` walks the dups. Indexes are maintained on write — a `put` also
+updates the table's index sub-DBs (a write-amplification cost to keep in
+mind). Deferred to a phase past v1; captured here so the surface is coherent
+when it lands.
+
 ## 4. Runtime: the cache ABI (the first build step)
 
 The LLVM target has no persistence layer. We add a small **backend-agnostic
@@ -403,6 +454,14 @@ single-pass test before any driver surgery).
   deterministic; surface the closure-based "compute-once, reuse" pattern;
   confirm commit-barrier snapshot semantics in a test.
 
+- **Phase 7 — secondary indexes (§3.5).** `index TABLE by FIELD [unique]` on
+  record-valued tables; unique lookups return one record; non-unique
+  lookups require an aggregation (`collect` → array, `count`, `sum`/`min`/
+  `max`/`avg` over a field). Backed by plain / `MDB_DUPSORT` index sub-DBs,
+  maintained on write. The aggregation requirement is the determinism
+  containment for a multi-valued lookup. Rides Phase 5 (needs the LMDB
+  sub-DB backend) and record-valued cache entries.
+
 ## 6. Open questions
 
 - **Input re-scan for pass N.** Re-open a seekable file is trivial; stdin is
@@ -427,11 +486,9 @@ single-pass test before any driver surgery).
 - **`eager` granularity.** `eager` is proposed per-table inside a backed
   block. Open: also allow a whole block `BEGIN cache("db") eager { … }` when
   every table is small/hot? Cheap to add if wanted.
-- **Secondary indexes (deferred).** Tables are primary-key indexed (the
-  assoc key is the LMDB key). Looking a table up by a non-key field would
-  need a companion index sub-DB or `MDB_DUPSORT`, plus a surface to declare
-  the indexed field. A real feature with its own design — out of scope until
-  a use appears; noted so the primary-key-only choice is explicit.
+- **Secondary indexes.** Sketched in §3.5 (`index TABLE by FIELD [unique]`;
+  non-unique lookups must be aggregated — `collect`/`count`/`sum`). Deferred
+  to a phase past v1; primary-key-only until then, made explicit here.
 - **Concurrency.** Single-process, single-threaded for v1 — LMDB's
   multi-reader story is out of scope until a use appears.
 
