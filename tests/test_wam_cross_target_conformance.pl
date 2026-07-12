@@ -69,6 +69,8 @@
 :- use_module(library(pairs)).
 :- use_module('../src/unifyweaver/targets/wam_cpp_target',
               [write_wam_cpp_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_kotlin_target',
+              [write_wam_kotlin_project/3]).
 
 % ============================================================
 % Target registry + known-divergence (xfail) registry
@@ -83,15 +85,15 @@ conformance_target(go).
 conformance_target(rust).
 conformance_target(c).
 conformance_target(cpp).
+conformance_target(kotlin).
+conformance_target(kotlin_functions).
 
 %% ct_default_target(Target): runs unless CONFORMANCE_TARGETS overrides.
 %  Only scala and elixir run by default. Every other registered backend
-%  (wat, haskell, python, go, rust, c, cpp) is conformant — each passes the
-%  whole spec with no ct_xfail/ct_skip entries — but stays opt-in via
-%  CONFORMANCE_TARGETS because it builds a per-program project with an
-%  external toolchain (wat2wasm+node / cabal / python3 / go / cargo / gcc /
-%  g++) that a default run should not require or pay for. Haskell is the
-%  slowest (a cabal compile per program); audited green 2026-06.
+%  (wat, haskell, python, go, rust, c, cpp, kotlin, kotlin_functions) is
+%  opt-in via CONFORMANCE_TARGETS because it builds a per-program project
+%  with an external toolchain. Kotlin is especially slow (gradle compile
+%  per program) and stays opt-in like Haskell.
 ct_default_target(scala).
 ct_default_target(elixir).
 
@@ -276,6 +278,29 @@ ct_default_target(elixir).
 %  is now recursive and cons-aware ($unify_addrs). Both are conformant;
 %  the skips are removed.
 
+%  Kotlin (CONF-KOTLIN, 2026-07-12). Adapter registered (opt-in). append/3
+%  is GREEN. Remaining classic programs xfail on measured interpreter gaps
+%  (not adapter bugs) — follow-ups tracked in WAM_FLEET_GAP_TASKS.md:
+%   - member/reverse: heap-built list CDRs are Var(Xn) placeholders; later
+%     unify_variable Xn in a recursive clause overwrites that register and
+%     corrupts the shared Struct under backtracking (b/c in [a,b,c] → false).
+%   - builtins: evalArith splits functor on '/' so '///2' (// arity 2) yields
+%     name="" and 17//5 fails closed (same class WAT/Haskell already fixed);
+%     cbi_cmp/cbi_eq already pass.
+%   - fib/ack: permanent Y-registers use scoped names (Y5@E9); after recursive
+%     call, is/2 sees unbound scoped vars in the +/2 tree (environment /
+%     bind-through gap across call/execute).
+ct_xfail(kotlin, member).
+ct_xfail(kotlin, reverse).
+ct_xfail(kotlin, builtins).
+ct_xfail(kotlin, fib).
+ct_xfail(kotlin, ack).
+ct_xfail(kotlin_functions, member).
+ct_xfail(kotlin_functions, reverse).
+ct_xfail(kotlin_functions, builtins).
+ct_xfail(kotlin_functions, fib).
+ct_xfail(kotlin_functions, ack).
+
 % ============================================================
 % Toolchain probes
 % ============================================================
@@ -289,6 +314,8 @@ ct_toolchain(go,     [go]).
 ct_toolchain(rust,   [cargo]).
 ct_toolchain(c,      [gcc]).
 ct_toolchain(cpp,    ['g++']).
+ct_toolchain(kotlin, [gradle]).
+ct_toolchain(kotlin_functions, [gradle]).
 
 ct_available(scala) :-
     ct_enabled(scala),
@@ -330,6 +357,9 @@ test(go,     [condition(ct_available(go))])     :- run_target_conformance(go).
 test(rust,   [condition(ct_available(rust))])   :- run_target_conformance(rust).
 test(c,      [condition(ct_available(c))])      :- run_target_conformance(c).
 test(cpp,    [condition(ct_available(cpp))])    :- run_target_conformance(cpp).
+test(kotlin, [condition(ct_available(kotlin))]) :- run_target_conformance(kotlin).
+test(kotlin_functions, [condition(ct_available(kotlin_functions))]) :-
+    run_target_conformance(kotlin_functions).
 
 :- end_tests(wam_cross_target_conformance).
 
@@ -960,6 +990,59 @@ ct_run(cpp, cpp_ctx(Dir, Map), K, A, Bool) :-
     ; throw(cpp_run_failed(KeyAtom, Status)) ).
 
 ct_teardown(cpp, cpp_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: Kotlin  (0-arity wrapper -> gradle run --args=<key> -> true/false)
+%
+% write_wam_kotlin_project/3 emits a Gradle Kotlin project. The human-facing
+% Main prints "Ran <pred>" + registers; for conformance we pass
+% conformance_main(true) so Main uses WamRuntime.tryRun and prints true/false
+% (additive — default Main output for existing e2e tests is unchanged).
+%
+% Two opt-in targets share this adapter:
+%   kotlin            — emit_mode(interpreter)
+%   kotlin_functions  — emit_mode(functions) (native-first + WAM fallback)
+% Classic multi-clause programs (member/append/fib/…) decline lowering and
+% stay on the interpreter under kotlin_functions; that is expected until
+% EMIT-KOTLIN-3 (multi-clause / call in lowered bodies).
+% ============================================================
+
+ct_build(kotlin, Preds, Queries, kotlin_ctx(Dir, Map)) :-
+    kotlin_ct_build(interpreter, Preds, Queries, Dir, Map).
+
+ct_build(kotlin_functions, Preds, Queries, kotlin_ctx(Dir, Map)) :-
+    kotlin_ct_build(functions, Preds, Queries, Dir, Map).
+
+kotlin_ct_build(EmitMode, Preds, Queries, Dir, Map) :-
+    ct_tmp_dir('tmp_ct_kotlin', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_kotlin_project(AllPreds,
+        [module_name(wam_ct),
+         emit_mode(EmitMode),
+         conformance_main(true)], Dir),
+    run_proc(gradle, ['-q', 'compileKotlin'], Dir, BExit, BErr),
+    ( BExit =:= 0 -> true ; throw(kotlin_build_failed(BExit, BErr)) ).
+
+ct_run(kotlin, Ctx, K, A, Bool) :-
+    kotlin_ct_run(Ctx, K, A, Bool).
+ct_run(kotlin_functions, Ctx, K, A, Bool) :-
+    kotlin_ct_run(Ctx, K, A, Bool).
+
+kotlin_ct_run(kotlin_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    format(atom(ArgsOpt), '--args=~w', [KeyStr]),
+    run_proc_out(gradle, ['-q', 'run', ArgsOpt], Dir, _Exit, OutStr),
+    normalize_space(string(Out), OutStr),
+    bool_of_string(Out, Bool).
+
+ct_teardown(kotlin, kotlin_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+ct_teardown(kotlin_functions, kotlin_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
 
 %% c_copy_runtime_header(+Dir) — copy the static wam_runtime.h into Dir.

@@ -299,12 +299,14 @@ write_wam_kotlin_project(Predicates, Options, ProjectDir) :-
     compile_wam_parts(WamParts, Options, WamCode),
     compile_failed_parts(FailedParts, FailedCode),
     registrar_calls(NativeParts, WamParts, Registrars),
+    option(conformance_main(ConfMain), Options, false),
     render_kotlin_wam_template('Main.kt.mustache', [
         package=Package,
         native_predicates=NativeCode,
         wam_predicates=WamCode,
         failed_predicates=FailedCode,
-        registrar_calls=Registrars
+        registrar_calls=Registrars,
+        conformance_main=ConfMain
     ], MainCode),
     directory_file_path(SrcDir, 'Main.kt', MainPath),
     write_file(MainPath, MainCode),

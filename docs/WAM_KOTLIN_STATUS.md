@@ -42,17 +42,21 @@ module in the fleet.
 
 - **Lowered emitter scope** — deterministic single-clause only. No T4/T5
   multi-clause, ITE, or `call`/`execute` in lowered bodies (separate cards).
+- **Conformance (opt-in)** — `conformance_target(kotlin)` /
+  `kotlin_functions` registered. **append/3 green**; member/reverse/builtins/fib/ack
+  are `ct_xfail` on measured interpreter gaps (list placeholder clobber under
+  backtrack; `///2` arith functor parse; Y-register bind-through across recursion).
 - **No foreign kernels, no LMDB / fact source, no ISO contract.**
-- **No conformance registration** — no `conformance_target(kotlin)`.
 - **No runtime-parser capability entry.**
 
 ## Path forward
 
-1. Extend lowered emitter (T4/T5/ITE) following Lua/Scala models.
-2. Add conformance adapter if Kotlin graduates beyond scaffold.
+1. Retire kotlin `ct_xfail`s (list structure-sharing, `//` functor strip, Y-env).
+2. Extend lowered emitter (T4/T5/ITE) following Lua/Scala models.
+3. Add ISO / kernels if Kotlin graduates beyond scaffold.
 
 ## Document status
 
 Fleet-aligned snapshot; source-verified against `wam_kotlin_target.pl`,
 `wam_kotlin_lowered_emitter.pl`, and `tests/test_wam_kotlin_target.pl`
-(2026-07-12). EMIT-KOTLIN-2 write-mode structure/list lowering landed.
+(2026-07-12). EMIT-KOTLIN-2 + CONF-KOTLIN landed.

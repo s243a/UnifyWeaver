@@ -336,26 +336,37 @@ class WamRuntime(private val program: WamProgram) {
     private lateinit var currentCode: PredicateCode
 
     fun run(predicate: String, initialState: WamState = WamState()): WamState {
+        if (!tryRun(predicate, initialState)) {
+            error("WAM predicate failed: $predicate")
+        }
+        return initialState
+    }
+
+    // Conformance / boolean entry: native-first, then bytecode; false on
+    // exhaustion (no throw). Used by conformance_main projects so ct_run
+    // can map stdout true/false without relying on exceptions.
+    fun tryRun(predicate: String, initialState: WamState = WamState()): Boolean {
         program.findNative(predicate)?.let { nativeFn ->
             val snapshot = initialState.snapshotForNative()
             if (nativeFn(initialState)) {
-                return initialState
+                return true
             }
             if (program.findCode(predicate) == null) {
                 initialState.restoreFromSnapshot(snapshot)
-                return initialState
+                return false
             }
             initialState.restoreFromSnapshot(snapshot)
         }
-        currentCode = program.codeFor(predicate)
+        val code = program.findCode(predicate) ?: return false
+        currentCode = code
         initialState.pc = 0
         while (initialState.pc in currentCode.instructions.indices) {
             val instruction = currentCode.instructions[initialState.pc]
             if (!step(initialState, instruction) && !restoreChoicePoint(initialState)) {
-                error("WAM instruction failed at pc=${initialState.pc}: $instruction")
+                return false
             }
         }
-        return initialState
+        return true
     }
 
     fun restoreChoicePoint(state: WamState): Boolean {

@@ -29,6 +29,10 @@ self-contained so a single coding agent can pick it up in isolation.
 | CONF-R | Conformance adapter | R | M | — |
 | CONF-CLOJURE | Conformance adapter | Clojure | L | — |
 | CONF-LUA | Conformance adapter | Lua | M | — |
+| CONF-KOTLIN ✅ | Conformance adapter | Kotlin | M | done — opt-in (`cursor/conf-kotlin-f421`); append green, 5 xfails |
+| KT-LIST-BACKTRACK | Conformance gap fix | Kotlin | M | CONF-KOTLIN |
+| KT-ARITH-SLASH-FUNCTOR | Conformance gap fix | Kotlin | S | CONF-KOTLIN |
+| KT-Y-ENV-RECURSION | Conformance gap fix | Kotlin | M | CONF-KOTLIN |
 | PARSE-C | Runtime-parser entry | C | S | — |
 | PARSE-GO | Runtime-parser entry | Go | S | — |
 | PARSE-SCALA | Runtime-parser entry | Scala | S | — |
@@ -149,6 +153,26 @@ external toolchain.
   6. `ct_teardown(lua, lua_ctx(Dir, Map)) :- cleanup_dir(Dir), abolish_wrappers(Map).`
   7. Add `test(lua, [condition(ct_available(lua))]) :- run_target_conformance(lua).`
 - **Acceptance:** `CONFORMANCE_TARGETS=lua swipl -g run_tests tests/test_wam_cross_target_conformance.pl` passes (skips if `lua` absent).
+
+### CONF-KOTLIN: Register Kotlin in the cross-target conformance harness
+- **Lever:** Conformance adapters  **Target:** Kotlin  **Size:** M  **Depends on:** EMIT-KOTLIN-2
+- **Status:** ✅ **Landed** on `cursor/conf-kotlin-f421` (2026-07-12). Opt-in `conformance_target(kotlin)` + `kotlin_functions` (interpreter vs `emit_mode(functions)`). Added `WamRuntime.tryRun` + `conformance_main(true)` so Main prints `true`/`false` without changing the human-facing register dump. Gradle `compileKotlin` build gate. **Measured:** `append/3` green; `ct_xfail` for member/reverse (list CDR `Var(Xn)` clobber under backtrack), builtins (`///2` functor split in `evalArith`), fib/ack (scoped Y-regs unbound after recursive call). Follow-ups: KT-LIST-BACKTRACK, KT-ARITH-SLASH-FUNCTOR, KT-Y-ENV-RECURSION.
+- **Goal:** Add a Kotlin adapter so the shared WAM classic-program spec runs against the Kotlin hybrid backend (interpreter and functions modes).
+- **Files to touch:** `tests/test_wam_cross_target_conformance.pl`, `templates/targets/kotlin_wam/WamRuntime.kt.mustache`, `templates/targets/kotlin_wam/Main.kt.mustache`, `src/unifyweaver/targets/wam_kotlin_target.pl`.
+- **Acceptance:** `CONFORMANCE_TARGETS=kotlin,kotlin_functions LANG=C.UTF-8 swipl -q -g run_tests -t halt tests/test_wam_cross_target_conformance.pl` runs both adapters (skips if `gradle` absent); xfails documented; append passes.
+
+### KT-LIST-BACKTRACK: Fix list placeholder clobber under backtracking (Kotlin)
+- **Lever:** Conformance gap fix  **Target:** Kotlin  **Size:** M  **Depends on:** CONF-KOTLIN
+- **Goal:** Retire `ct_xfail(kotlin, member)` / `reverse`. Heap-built lists store CDR as `Var(Xn)`; recursive clauses reuse `Xn` via `unify_variable` and overwrite the binding that shared Structs still reference.
+- **Hint:** deep-copy structs at choice points, or heap refs instead of register-named vars for structure args (same class Haskell fixed with cons-cell finalize).
+
+### KT-ARITH-SLASH-FUNCTOR: Parse `//` functor without split-on-`/` (Kotlin)
+- **Lever:** Conformance gap fix  **Target:** Kotlin  **Size:** S  **Depends on:** CONF-KOTLIN
+- **Goal:** Retire builtins xfail for `cbi_arith`. `evalArith` does `functor.split("/")` so `///2` yields empty name. Strip only a trailing `/<digits>` (WAT/Haskell `bareArithOp` / last-component fix).
+
+### KT-Y-ENV-RECURSION: Y-register bind-through across recursive call (Kotlin)
+- **Lever:** Conformance gap fix  **Target:** Kotlin  **Size:** M  **Depends on:** CONF-KOTLIN
+- **Goal:** Retire fib/ack xfails. After recursive `call`/`execute`, `is/2` sees unbound scoped temps (`Y5@E9`) inside `+/2` trees — permanent-variable / environment bank gap.
 
 ---
 
