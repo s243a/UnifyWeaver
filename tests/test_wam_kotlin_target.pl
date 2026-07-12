@@ -87,6 +87,7 @@ test(runtime_template_exposes_executable_wam_abi) :-
     assertion(has_substring(Code, '"put_value", "put_unsafe_value"')),
     assertion(has_substring(Code, 'fun registerNative(key: String, fn: (WamState) -> Boolean)')),
     assertion(has_substring(Code, 'fun snapshotForNative(): WamNativeSnapshot')),
+    assertion(has_substring(Code, 'fun tryRun(predicate: String, initialState: WamState')),
     assertion(has_substring(Code, 'fun kotlinLoGetConstant(state: WamState')),
     assertion(has_substring(Code, 'fun stateFromCliArgs(values: List<String>): WamState')).
 
@@ -384,5 +385,36 @@ test(registry_exposes_wam_kotlin_target, [nondet]) :-
     target_registry:target_family(wam_kotlin, jvm),
     target_registry:target_has_capability(wam_kotlin, wam),
     target_registry:target_module(wam_kotlin, wam_kotlin_target).
+
+test(conformance_main_prints_true_false, [condition(gradle_available), nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_conformance_main',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    setup_call_cleanup(
+        (   retractall(user:kt_fact(_, _)),
+            assertz(user:kt_fact(alpha, beta))
+        ),
+        (   wam_kotlin_target:write_wam_kotlin_project(
+                [user:kt_fact/2],
+                [emit_mode(functions), conformance_main(true)], TmpDir),
+            read_file_to_string(
+                'output/test_wam_kotlin_conformance_main/src/main/kotlin/generated/wam/Main.kt',
+                Main, []),
+            assertion(has_substring(Main, 'tryRun')),
+            assertion(has_substring(Main, 'println(if (ok) "true" else "false")')),
+            assertion(\+ has_substring(Main, 'Ran $predicate')),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_fact/2 alpha beta'],
+                       OkOut, _OkErr, OkStatus),
+            assertion(OkStatus == exit(0)),
+            normalize_space(string(OkTrim), OkOut),
+            assertion(OkTrim == "true"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_fact/2 alpha gamma'],
+                       BadOut, _BadErr, BadStatus),
+            assertion(BadStatus == exit(0)),
+            normalize_space(string(BadTrim), BadOut),
+            assertion(BadTrim == "false")
+        ),
+        retractall(user:kt_fact(_, _))
+    ).
 
 :- end_tests(wam_kotlin_target).

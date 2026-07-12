@@ -16,13 +16,24 @@ fun main(args: Array<String>) {
     val program = buildProgram()
     val predicate = args.firstOrNull() ?: program.predicateNames().firstOrNull()
     if (predicate == null) {
+{{#conformance_main}}
+        println("false")
+{{/conformance_main}}
+{{^conformance_main}}
         println("No WAM predicates registered")
+{{/conformance_main}}
         return
     }
     val runtime = WamRuntime(program)
+{{#conformance_main}}
+    val ok = runtime.tryRun(predicate, stateFromCliArgs(args.drop(1)))
+    println(if (ok) "true" else "false")
+{{/conformance_main}}
+{{^conformance_main}}
     val state = runtime.run(predicate, stateFromCliArgs(args.drop(1)))
     println("Ran $predicate")
     state.snapshotRegisters().forEach { (name, value) ->
         println("$name=$value")
     }
+{{/conformance_main}}
 }
