@@ -92,12 +92,13 @@ build(File, Out0, KeepLL) :-
     ;   Out = Out0
     ),
     read_file_to_string(File, Src, []),
-    (   catch(plawk_parse_source(Src, Program, Clauses), ParseErr,
+    (   catch(plawk_parse_source(Src, Program0, Clauses), ParseErr,
             ( report_error('parse error', File, ParseErr), halt(2) ))
     ->  true
     ;   format(user_error, 'plawk: parse error in ~w~n', [File]),
         halt(2)
     ),
+    normalize_passes(File, Program0, Program),
     (   Clauses == []
     ->  Preds = [user:plawk_cli_marker/0]
     ;   (   plawk_prolog_block_preds(Clauses, Preds)
@@ -223,6 +224,23 @@ lmdb_c_runtime_file(CFile) :-
     module_property(wam_llvm_target, file(TargetPl)),
     file_directory_name(TargetPl, Dir),
     directory_file_path(Dir, 'wam_cache_lmdb.c', CFile).
+
+% Multi-pass normalisation (PLAWK_MULTIPASS_CACHE.md phase 2). A single
+% `pass { ... }` block is exactly today's main loop, so it lowers to the
+% ordinary single-pass program and the whole existing pipeline applies. Two
+% or more passes need the multi-pass driver (a focused follow-on); until it
+% lands they are reported as unsupported rather than mis-compiled.
+normalize_passes(_File, program_passes(Begin, [pass(Rules)], End),
+        program(Begin, Rules, End)) :-
+    !.
+normalize_passes(File, program_passes(_Begin, Passes, _End), _) :-
+    is_list(Passes), length(Passes, N), N >= 2,
+    !,
+    format(user_error,
+        'plawk: ~w uses ~w pass blocks; multi-pass execution is not yet \c
+         implemented (single `pass { }` works today)~n', [File, N]),
+    halt(3).
+normalize_passes(_File, Program, Program).
 
 ll_path(Out, true, LLPath) :-
     !,

@@ -162,6 +162,25 @@ plawk_program(Program) -->
 plawk_program(Program, FunctionClauses) -->
     plawk_program(Program, FunctionClauses, _DynEntries).
 
+% Multi-pass form (PLAWK_MULTIPASS_CACHE.md, phase 2): one or more explicit
+% `pass { ... }` blocks between BEGIN and END, each a full record loop with
+% its own actions. Produces program_passes(Begin, [pass(Rules), ...], End).
+% Tried before the single implicit-main form; the `pass` keyword is
+% unambiguous, and a program with no `pass` block falls through (the guard
+% requires at least one) to the ordinary program(...) clause.
+plawk_program(program_passes(BeginClauses, Passes, EndClauses),
+        FunctionClauses, DynEntries) -->
+    ws,
+    begin_clauses(BeginClauses),
+    function_defs(FunctionClauses),
+    dynentry_decls(DynEntries),
+    pass_clauses(Passes0),
+    { Passes0 = [_ | _] },
+    end_clauses(EndClauses0),
+    eos,
+    { maplist(plawk_pass_dynentry_rewrite(DynEntries), Passes0, Passes),
+      plawk_dynentry_rewrite_all(EndClauses0, DynEntries, EndClauses)
+    }.
 plawk_program(program(BeginClauses, Rules, EndClauses), FunctionClauses,
         DynEntries) -->
     ws,
@@ -174,6 +193,17 @@ plawk_program(program(BeginClauses, Rules, EndClauses), FunctionClauses,
     { plawk_dynentry_rewrite_all(Rules0, DynEntries, Rules),
       plawk_dynentry_rewrite_all(EndClauses0, DynEntries, EndClauses)
     }.
+
+% A `pass { ACTIONS }` block is one pass carrying a single always-rule with
+% those actions (per-pattern rules within a pass are a later extension).
+pass_clauses([pass([rule(always, Actions)]) | Rest]) -->
+    "pass", identifier_boundary, ws, action_block(Actions), ws,
+    pass_clauses(Rest).
+pass_clauses([]) -->
+    [].
+
+plawk_pass_dynentry_rewrite(DynEntries, pass(Rules0), pass(Rules)) :-
+    plawk_dynentry_rewrite_all(Rules0, DynEntries, Rules).
 
 %% dynentry_decls(-Names)//
 %
