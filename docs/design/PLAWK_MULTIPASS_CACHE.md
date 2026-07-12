@@ -32,9 +32,9 @@ the payoff — **loaded `.wamo` objects and compiled predicates persist
 across all passes** because it is one process, one VM, one set of shims.
 
 ```awk
-BEGIN { CACHE = "run.lmdb" }
+BEGIN cache("run.lmdb") { declare total }
 
-pass { total[$1] += $2 }              # pass 1: accumulate into the cache
+pass { total[$1] += $2 }              # pass 1: accumulate into the store
 
 pass { print $1, $2 / total[$1] }     # pass 2: normalise each record by the
                                        #         now-complete per-key total
@@ -140,47 +140,85 @@ END   { ... }        # once, after the last pass
   main. Determinism is per-pass; nothing about multi-pass relaxes §1.
 - **Loaded objects / compiled predicates persist across passes** (§2).
 
-### 3.2 Variable scoping and persistence
+### 3.2 Variable scoping, and stores as backed `BEGIN` blocks
 
 Two orthogonal properties — a scoping property (does a variable survive
-into the next pass?) and a storage property (is it durable / shareable?):
+into the next pass?) and a storage property (is it durable / shareable?) —
+are expressed through **where** a variable is declared:
 
 - **Pass-local by default.** A variable first used inside a `pass { }` is
   local to that pass and reset at the start of each pass. Its in-loop state
   lives in native SSA slots, as today.
 - **`BEGIN`-declared variables persist across passes** (they are
   program-global). This is the in-memory cross-pass channel — fast,
-  process-lifetime, RAM-bound. `sum` or an assoc `arr` introduced in
+  process-lifetime, RAM-bound. `sum` or an assoc `arr` introduced in a plain
   `BEGIN` carries its accumulated value from one pass into the next with no
   DB involved.
-- **Backing is a separate, opt-in property.** A persistent variable can
-  additionally be **DB-backed** with `as cache`, which makes it durable
-  (survives process exit) and larger-than-RAM. `as cache` uses the default
-  store (`BEGIN { CACHE = "..." }`); **`as cache("path.lmdb")` names the
-  store**, so coordinating processes can point one variable at a shared DB
-  while the rest stay local. Persistence (BEGIN scope) and backing
-  (`as cache`) compose independently:
+- **Backing is declared at the `BEGIN`-block level.** awk already permits
+  multiple `BEGIN` blocks (they run in source order); here a `BEGIN` block
+  optionally carries a **store**, and every variable declared in that block
+  is durably backed by that store. A backed block is, in effect, "open this
+  DB and bind these variables to it":
 
-| declaration | survives passes? | durable / cross-process? |
+```awk
+BEGIN { FS = "," }                       # plain: setup only, no backing
+
+BEGIN cache("users.lmdb") {              # a backed scope: seen/total are
+    declare seen                          # durable, bound to users.lmdb, and
+    declare total                         # reflect its contents on open
+}
+BEGIN cache("stats.lmdb") { declare hist }   # a second store, a second scope
+
+pass { seen[$1]++ ; total += $2 }        # writes route to users.lmdb
+pass { hist[bucket($2)]++ }              # writes route to stats.lmdb
+END  { for (k in hist) print k, hist[k] }
+```
+
+The store name **is** the cross-process coordination unit: two programs
+that open a `BEGIN cache("shared.lmdb")` block with the same declarations
+are, by construction, sharing that store. This replaces the earlier
+per-variable `as cache(...)` annotation — group by block instead of tagging
+each variable, which is both DRY and awk-idiomatic.
+
+| declaration site | survives passes? | durable / cross-process? |
 |---|---|---|
-| `x` used inside a pass | no (pass-local) | no |
-| `x` set in `BEGIN` | yes (in-memory) | no |
-| `x` in `BEGIN` `as cache` | yes | yes — default DB (`CACHE`) |
-| `x` in `BEGIN` `as cache("shared.lmdb")` | yes | yes — **named** DB |
+| used inside a `pass { }` | no (pass-local) | no |
+| plain `BEGIN { … }` | yes (in-memory) | no |
+| `BEGIN cache("db") { … }` | yes | yes — bound to `db` |
 
-This corrects an earlier conflation: declaring in `BEGIN` does **not** by
-itself put a variable in the cache; it makes it persist *in memory*.
-Backing is the explicit `as cache[(db)]` opt-in.
+**Rules.**
+
+1. **One store ↔ one backing block** within a program (two blocks on the
+   same DB would silently share a keyspace). Cross-*process* sharing is
+   fine — different programs each open the same store.
+2. **Load-on-open.** Entering a backed block opens the store and binds its
+   variables to the live contents, so a resumed run or a peer process sees
+   what is already there.
+3. **Materialisation is lazy by default** (the `WAM_LMDB_LAZY_*` axis):
+   values are fetched from the store on access, not slurped at open — the
+   larger-than-RAM story. A specific variable can be marked **`eager`** to
+   load fully at open when it is small and hot:
+
+   ```awk
+   BEGIN cache("users.lmdb") {
+       declare total eager       # small scalar/table: load into memory at open
+       declare seen              # large table: lazy (fetch per access)
+   }
+   ```
+
+A backed `BEGIN` block may still contain setup statements (initialise
+defaults for its own variables); it is not restricted to declarations.
 
 ### 3.3 The cache as an associative array
 
-A DB-backed table reads/writes through the persistent store instead of the
-in-memory hash, reusing the assoc-array ergonomics users already know:
+A table declared in a backed `BEGIN` block reads/writes through its store
+instead of the in-memory hash, reusing the assoc-array ergonomics users
+already know:
 
 ```awk
-BEGIN { CACHE = "run.lmdb" ; declare total as cache }
+BEGIN cache("run.lmdb") { declare total }
 
-pass { total[$1] += $2 }              # persistent accumulate
+pass { total[$1] += $2 }              # persistent accumulate (routes to run.lmdb)
 pass { print $1, $2 / total[$1] }     # persistent read (pass 1 committed)
 ```
 
@@ -244,7 +282,8 @@ C ABI** the generated code calls, mirroring the shape of the existing
 change:
 
 ```
-; open/close a named store (path from BEGIN { CACHE = "..." })
+; open/close a named store (path from a BEGIN cache("...") block); flags
+; carry the materialisation mode (lazy default, eager per-variable)
 @wam_cache_open(i8* path, i32 flags) -> i8*        ; handle, null on failure
 @wam_cache_close(i8* handle) -> void
 
@@ -280,8 +319,8 @@ change:
   so codegen never branches on the backend. This lets Phase 1 land the
   surface without hard-coupling the build to LMDB.
 
-**Performance invariant preserved:** a program with no `CACHE` and no
-cache-backed table emits **zero** cache IR and links nothing new — the same
+**Performance invariant preserved:** a program with no backed `BEGIN` block
+emits **zero** cache IR and links nothing new — the same
 "pay only for what you use" rule that gates every dynamic capability behind
 per-site collection.
 
@@ -302,12 +341,12 @@ single-pass test before any driver surgery).
 
 - **Phase 1 — the cache runtime primitive + single-pass surface.** Add the
   `@wam_cache_*` ABI and the fallback (file-backed) backend; wire a
-  `BEGIN { CACHE = "..." }` setting and a `declare NAME as cache`
-  table so `arr[k]++` / `arr[k]=v` / `arr[k]` / `for (k in arr)` route
-  through the store **within a single pass**. Proves the primitive end to
-  end (write, commit at `END`, read back in a second run) with no
-  multi-pass machinery yet. Test: a histogram whose counts survive across
-  two separate binary invocations against the same cache file.
+  `BEGIN cache("...") { declare NAME }` block so `arr[k]++` / `arr[k]=v` /
+  `arr[k]` / `for (k in arr)` route through the store **within a single
+  pass** (lazy materialisation; `eager` deferred to a later phase). Proves
+  the primitive end to end (write, commit at `END`, read back in a second
+  run) with no multi-pass machinery yet. Test: a histogram whose counts
+  survive across two separate binary invocations against the same store.
 
 - **Phase 2 — variable scoping + multiple `pass { }` blocks.** Parser:
   `program(Begin, Passes, End)` where `Passes` is a list of rule-sets.
@@ -321,11 +360,11 @@ single-pass test before any driver surgery).
   needed for this phase — it exercises in-memory cross-pass persistence.)
 
 - **Phase 3 — cache as the inter-pass channel (durable payoff).** Combine
-  1+2: a `BEGIN`-declared `as cache` table written in pass 1 and read in
-  pass 2, with the commit barrier between passes; and `as cache("path")`
-  for a named store. Test: `total[$1] += $2` in pass 1; `print $1, $2 /
-  total[$1]` in pass 2, verifying pass 2 sees complete, durably-committed
-  totals.
+  1+2: a table declared in a `BEGIN cache("db")` block written in pass 1 and
+  read in pass 2, with the commit barrier between passes; plus the
+  one-store-per-block and load-on-open rules. Test: `total[$1] += $2` in
+  pass 1; `print $1, $2 / total[$1]` in pass 2, verifying pass 2 sees
+  complete, durably-committed totals.
 
 - **Phase 4 — configurable readers.** `over TABLE` (iterate a table as the
   record source) and `over prev` (the previous pass's sink spools into this
@@ -333,9 +372,11 @@ single-pass test before any driver surgery).
   gain the spool sink. Test: pass 1 emits a filtered/derived stream, pass 2
   `over prev` consumes it.
 
-- **Phase 5 — LMDB backend + larger-than-RAM story.** Swap the fallback for
+- **Phase 5 — LMDB backend + materialisation modes.** Swap the fallback for
   `liblmdb` behind the build flag; add a test that exceeds a small RAM cap
-  to demonstrate the memory-mapped path.
+  to demonstrate the lazy memory-mapped path, and wire the per-variable
+  `eager` marker (load fully at open). Test: an `eager` scalar/table reads
+  without a per-access store hit; a lazy table stays memory-mapped.
 
 - **Phase 6 — `over query(Goal)` + determinism guarantees.** The
   query-driven reader (each solution a record, on the `call/1` + dynamic-DB
@@ -358,10 +399,15 @@ single-pass test before any driver surgery).
   serialization. v1: i64 and blob-bytes only; structured records reuse the
   existing record (de)serialization (`@wam_object_call_record` typecodes)
   keyed by the same layout — deferred to when a use needs it.
-- **Cache lifetime / cleanup.** Is the cache file ephemeral (temp, deleted
-  at exit) or durable (named, survives)? Proposal: durable when `CACHE` is
-  an explicit path, ephemeral (temp) when a program uses a cache-backed
-  table without naming one.
+- **Cache lifetime / cleanup.** A backed `BEGIN cache("path")` block names
+  an explicit path, so the store is durable by construction (survives exit).
+  Open: do we also want an *unnamed* backed block (`BEGIN cache { … }`) that
+  gets an ephemeral temp store deleted at exit — useful for a pure
+  spill-to-disk larger-than-RAM pass with no cross-run intent? Leaning yes,
+  as a convenience.
+- **`eager` granularity.** `eager` is proposed per-variable inside a backed
+  block. Open: also allow a whole block `BEGIN cache("db") eager { … }` when
+  every variable is small/hot? Cheap to add if wanted.
 - **Concurrency.** Single-process, single-threaded for v1 — LMDB's
   multi-reader story is out of scope until a use appears.
 
