@@ -83,6 +83,28 @@ def test_independent_blocks_batch_equals_streaming_update():
     assert np.allclose(batch.solution, streamed.solution, atol=1e-10)
 
 
+def test_information_qr_rank_check_is_invariant_to_uniform_small_scale():
+    rng = np.random.default_rng(21)
+    n = 3
+    A = rng.standard_normal((5, n))
+    z = rng.standard_normal(n)
+    b = rng.standard_normal(5)
+    reference = householder_information_update(np.eye(n), z, A, b)
+
+    scale = 1e-20
+    scaled = householder_information_update(
+        scale * np.eye(n), scale * z, scale * A, scale * b
+    )
+
+    np.testing.assert_allclose(scaled.solution, reference.solution, atol=2e-12)
+    np.testing.assert_allclose(
+        scaled.precision_root.T @ scaled.precision_root,
+        scale**2 * (reference.precision_root.T @ reference.precision_root),
+        rtol=2e-12,
+        atol=0.0,
+    )
+
+
 def test_householder_update_is_row_permutation_invariant():
     rng = np.random.default_rng(23)
     n, m = 4, 9

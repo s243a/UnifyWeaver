@@ -70,12 +70,88 @@ A = L^-1 J
 b = L^-1 r.
 ```
 
+This is the precise correlation-to-inverse-root step.  If the **conditional** measurement-error model is
+supplied as a correlation matrix `Kc` and marginal conditional standard deviations `s`, construct
+
+```
+Rc = diag(s) Kc diag(s).
+```
+
+If instead calibration supplies the raw joint correlation of prior error `e` and measurement noise `v`, first
+restore covariance units blockwise,
+
+```
+P = diag(s_e) K_ee diag(s_e)
+C = diag(s_e) K_ev diag(s_v)
+R = diag(s_v) K_vv diag(s_v),
+```
+
+and only then form the Schur complement `Rc = R - C^T P^-1 C`.  With nonzero `C`, raw measurement correlation
+`K_vv` is not generally the conditional correlation `Kc` that must be whitened.
+
+The operator `W = L^-1` is a left square root of the measurement precision because
+
+```
+W^T W = Rc^-1
+W Rc W^T = I.
+```
+
+The implementation should normally **apply** `W` with triangular solves (`solve(L, J)` and `solve(L, r)`) rather
+than materialise either `W` or `Rc^-1`.  An explicit inverse square root is useful for inspection or interchange,
+but is unnecessary work in the update itself.
+
+There is one related multiplication that *is* valid: converting an existing state-covariance root into
+standardized correlation coordinates.  If `P = D K D` and `U_P^T U_P = P^-1`, then
+`U_K = U_P D` satisfies `U_K^T U_K = K^-1`.  This is a coordinate change within the same state space; it is not
+how a new likelihood is assimilated.
+
+The prior and measurement roots are stacked, not multiplied:
+
+```
+[ U ]^T [ U ] = U^T U + J^T Rc^-1 J.
+[ WJ]   [ WJ]
+```
+
+Multiplying a Cholesky factor of `Rc^-1` by the previous root is generally dimensionally invalid (`Rc` lives in
+measurement space while `U` lives in state space) and, even when the dimensions happen to match, represents a
+product of precisions rather than the Bayesian sum.  `W @ J` is the valid multiplication; QR of the vertical
+stack performs the required addition without forming normal equations.
+
+### Diagonal loading
+
+Near-singular empirical correlations can require a small diagonal load before Cholesky.  Loading must be in
+covariance units and visible in diagnostics.  A scale-aware policy uses
+
+```
+scale = max(abs(eig(Rc)))
+target = max(absolute_floor, relative_floor * scale)
+delta = max(0, target - min(eig(Rc)))
+Rc_stable = Rc + delta I
+```
+
+Here `target` is the desired minimum eigenvalue and `delta` is the amount actually added; they must not be
+conflated.  Machine epsilon alone is not a scale-independent policy.  A tiny negative eigenvalue consistent with
+round-off may be lifted; a materially indefinite `Rc` is evidence that the fitted joint covariance or the Schur
+complement is invalid and must be rejected.  Reports and benchmark output should include `scale`, the raw
+minimum eigenvalue, `target`, and `delta`, since increasing `delta` weakens the measurement statistically as
+well as stabilising the factorisation.
+
 For a zero-mean prior error, `z_prior = 0`. More generally `z_prior = U m_prior`. Form
 
 ```
 [ U_prior   z_prior ]
 [ A         b       ].
 ```
+
+`z` is the **square-root information RHS**, not the canonical information vector.  The identities are
+
+```
+eta = U^T z
+z   = U m
+m   = solve(U, z).
+```
+
+Passing `eta` where this API expects `z` gives the wrong posterior mean.
 
 Apply Householder reflectors to the coefficient columns and the RHS together, without forming `Q`:
 
@@ -110,6 +186,12 @@ Therefore raw measurement families can be uncorrelated while their conditional r
 the shared prior. Estimate and test the off-block entries of `Rc` on held-out, node-disjoint calibration data
 before enabling streamed bundle updates. The state prior is inserted exactly once; never repeat a complete
 `[[P,C_i],[C_i^T,R_i]]` block for every bundle.
+
+For an empirical approximate partition, report at least the conditional correlation matrix, relative off-block
+Frobenius mass, and the largest whitened off-block spectral norm
+`||Rc_ii^-1/2 Rc_ij Rc_jj^-1/2||_2`.  Select any approximation threshold before the confirmatory evaluation and
+validate its posterior/NLL sensitivity against full-`Rc` whitening.  The present streamed API assumes the caller
+has already accepted that contract; automatic partition selection is future work.
 
 The streamed `(U_post,z_post)` state remains in one fixed state coordinate. If every `b_i` is formed relative
 to the original prior origin, carry both `U_post` and `z_post`. If instead the state is recentered at the first

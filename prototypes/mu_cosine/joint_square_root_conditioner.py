@@ -84,7 +84,11 @@ def _matrix(name, value, rows=None, cols=None):
 
 @dataclass(frozen=True)
 class InformationRootUpdate:
-    """Result of one Householder information-root update."""
+    """Result of one Householder information-root update.
+
+    ``information_rhs`` is the square-root RHS ``z``.  The canonical
+    information vector is ``eta = precision_root.T @ z``.
+    """
 
     precision_root: np.ndarray
     information_rhs: np.ndarray
@@ -137,6 +141,15 @@ def _normalise_root_signs(root, rhs):
     return root, rhs
 
 
+def _scaled_norm(value):
+    """Euclidean norm without overflow/underflow from squaring raw entries."""
+    value = np.asarray(value, dtype=float)
+    scale = float(np.max(np.abs(value), initial=0.0))
+    if scale == 0.0:
+        return 0.0
+    return scale * float(np.linalg.norm(value / scale))
+
+
 def householder_information_update(prior_precision_root, prior_information_rhs,
                                    measurement_matrix, measurement_rhs):
     """Triangularise a prior information root plus whitened measurement rows.
@@ -158,20 +171,22 @@ def householder_information_update(prior_precision_root, prior_information_rhs,
         np.column_stack([U, z]),
         np.column_stack([A, b]),
     ]).astype(float, copy=False)
-    scale = max(float(np.linalg.norm(work[:, :n])), 1.0)
+    scale = float(np.max(np.abs(work[:, :n]), initial=0.0))
+    if scale == 0.0:
+        raise np.linalg.LinAlgError("information pre-array is rank deficient")
     tol = np.finfo(float).eps * max(work.shape) * scale
 
     # Apply each reflector directly to the remaining coefficient/RHS array;
     # Q is never formed.  This is the standard numerically stable QR update.
     for col in range(n):
         x = work[col:, col].copy()
-        norm_x = float(np.linalg.norm(x))
+        norm_x = _scaled_norm(x)
         if norm_x <= tol:
             raise np.linalg.LinAlgError("information pre-array is rank deficient")
         first_sign = 1.0 if x[0] >= 0.0 else -1.0
         alpha = -first_sign * norm_x
         x[0] -= alpha
-        norm_v = float(np.linalg.norm(x))
+        norm_v = _scaled_norm(x)
         if norm_v <= tol:
             raise np.linalg.LinAlgError("cannot construct a stable Householder reflector")
         v = x / norm_v

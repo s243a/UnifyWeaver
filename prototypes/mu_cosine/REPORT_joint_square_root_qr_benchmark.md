@@ -32,8 +32,9 @@ gain after a sequential block changes the posterior.
 - Timings are on-device compute point measurements from one process run. They exclude host/device transfer and
   report a mean over repeats, not median/MAD across independent trials.
 - `compile_ms` and `condition_ms` are deliberately separate. Rows/s measures only repeated conditioning after
-  compilation. Dense compile time includes checking/regularising the subtraction-form posterior covariance;
-  without that check a highly informative float32 update can round the dense covariance to singular zero.
+  compilation. At the time of this run, dense compilation checked/regularised a subtraction-form posterior
+  covariance. The implementation now uses the algebraically equivalent Joseph form to avoid that catastrophic
+  subtraction; the conditioning timings are unaffected, but the historical setup timings were not rerun.
 
 The matched baseline, `CompiledDenseGainConditionerTorch`, validates the same Schur-complement model and
 precomputes the correlated gain `K` and posterior covariance. Each row then needs only the affine innovation

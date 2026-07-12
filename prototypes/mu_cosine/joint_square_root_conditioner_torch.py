@@ -37,15 +37,19 @@ __all__ = [
     "CompiledCorrelatedConditionerTorch",
     "CompiledDenseGainConditionerTorch",
     "CompiledInformationQRTorch",
+    "CovarianceLoadingDiagnosticsTorch",
     "DenseGaussianUpdateTorch",
     "InformationRootUpdateTorch",
     "JointSquareRootUpdateTorch",
+    "NoiseWhitenerTorch",
     "SquareRootInformationStateTorch",
     "compile_information_update_torch",
     "condition_correlated_gaussian_qr_torch",
     "conditional_measurement_model_torch",
+    "conditional_measurement_whitener_torch",
     "householder_information_update_torch",
     "precision_root_from_covariance_torch",
+    "prepare_noise_whitener_torch",
     "regularize_covariance_torch",
 ]
 
@@ -114,9 +118,34 @@ def _normalised_root_from_packed(
     return raw_root * signs.unsqueeze(-1), signs
 
 
+def _pre_array_scale(pre_array: torch.Tensor) -> torch.Tensor:
+    # Use a homogeneous scale: clamping it to one falsely labels a perfectly
+    # conditioned factor such as 1e-20 * I as rank deficient.  Max-entry scale
+    # also avoids squaring underflow in a Frobenius norm.
+    scale = torch.amax(torch.abs(pre_array), dim=(-2, -1))
+    nonfinite = ~torch.isfinite(scale)
+    if bool(torch.any(nonfinite).item()):
+        raise ValueError(
+            "information pre-array must be finite"
+            + _batch_failure_detail(nonfinite)
+        )
+    zero = scale == 0
+    if bool(torch.any(zero).item()):
+        raise torch.linalg.LinAlgError(
+            "information pre-array is rank deficient (zero scale)"
+            + _batch_failure_detail(zero)
+        )
+    subnormal = scale < torch.finfo(pre_array.dtype).tiny
+    if bool(torch.any(subnormal).item()):
+        raise torch.linalg.LinAlgError(
+            "information pre-array scale is subnormal; rescale before QR"
+            + _batch_failure_detail(subnormal)
+        )
+    return scale
+
+
 def _check_root_rank(pre_array: torch.Tensor, root: torch.Tensor) -> None:
-    scale = torch.linalg.matrix_norm(pre_array, ord="fro", dim=(-2, -1))
-    scale = torch.maximum(scale, torch.ones_like(scale))
+    scale = _pre_array_scale(pre_array)
     tolerance = torch.finfo(pre_array.dtype).eps * max(pre_array.shape[-2:]) * scale
     smallest = torch.amin(torch.abs(torch.diagonal(root, dim1=-2, dim2=-1)), dim=-1)
     failed = smallest <= tolerance
@@ -131,7 +160,11 @@ def _check_root_rank(pre_array: torch.Tensor, root: torch.Tensor) -> None:
 
 @dataclass(frozen=True)
 class InformationRootUpdateTorch:
-    """One information-root update, possibly batched or with multiple RHSs."""
+    """One information-root update, possibly batched or with multiple RHSs.
+
+    ``information_rhs`` is the square-root RHS ``z``.  The canonical
+    information vector is ``eta = precision_root.mT @ z``.
+    """
 
     precision_root: torch.Tensor
     information_rhs: torch.Tensor
@@ -151,6 +184,7 @@ class JointSquareRootUpdateTorch:
     innovation: torch.Tensor
     effective_observation_matrix: torch.Tensor
     conditional_observation_covariance: torch.Tensor
+    conditional_loading_diagnostics: CovarianceLoadingDiagnosticsTorch
     whitened_observation_matrix: torch.Tensor
     whitened_innovation: torch.Tensor
     residual_sum_squares: torch.Tensor
@@ -165,6 +199,103 @@ class DenseGaussianUpdateTorch:
     gain: torch.Tensor
     innovation: torch.Tensor
     innovation_covariance: torch.Tensor
+    conditional_loading_diagnostics: CovarianceLoadingDiagnosticsTorch
+
+
+@dataclass(frozen=True)
+class CovarianceLoadingDiagnosticsTorch:
+    """Observable contract for scale-relative covariance diagonal loading.
+
+    Tensor fields have the covariance batch shape.  ``minimum_eigenvalue`` is
+    measured before loading; ``target_minimum_eigenvalue`` and
+    ``diagonal_loading`` state exactly what was added.  A materially indefinite
+    input is rejected instead of appearing here as a large silent repair.
+    """
+
+    matrix_scale: torch.Tensor
+    minimum_eigenvalue: torch.Tensor
+    target_minimum_eigenvalue: torch.Tensor
+    diagonal_loading: torch.Tensor
+    relative_diagonal_loading: torch.Tensor
+    relative_symmetry_error: torch.Tensor
+    was_loaded: torch.Tensor
+    relative_eigenvalue_floor: float
+    negative_eigenvalue_tolerance: float
+    maximum_relative_loading: float
+    source: str
+
+
+@dataclass(frozen=True)
+class NoiseWhitenerTorch:
+    """Implicit Cholesky inverse factor for one or a batch of noise models.
+
+    If ``covariance = L L.T``, this object stores ``L`` and applies the
+    whitening factor ``L^-1`` exclusively with triangular solves.  It never
+    materialises an explicit matrix inverse.  Use :meth:`apply_vectors` for
+    ``(..., dimension)`` samples and :meth:`apply_columns` for
+    ``(..., dimension, nrhs)`` right-hand-side matrices.
+    """
+
+    covariance: torch.Tensor
+    cholesky_factor: torch.Tensor
+    diagnostics: CovarianceLoadingDiagnosticsTorch
+
+    @property
+    def dimension(self) -> int:
+        return self.cholesky_factor.shape[-1]
+
+    @property
+    def batch_shape(self) -> torch.Size:
+        return self.cholesky_factor.shape[:-2]
+
+    def apply_columns(self, value: torch.Tensor) -> torch.Tensor:
+        """Apply ``L^-1`` to ``(..., dimension, nrhs)`` with a solve."""
+        value = _matrix("value", value, rows=self.dimension)
+        _same_backend(self.cholesky_factor, value=value)
+        batch_shape = torch.broadcast_shapes(self.batch_shape, value.shape[:-2])
+        factor = self.cholesky_factor.expand(
+            batch_shape + self.cholesky_factor.shape[-2:]
+        )
+        value = value.expand(batch_shape + value.shape[-2:])
+        return torch.linalg.solve_triangular(
+            factor, value.contiguous(), upper=False
+        )
+
+    def apply_vectors(self, value: torch.Tensor) -> torch.Tensor:
+        """Apply ``L^-1`` to a vector or an arbitrary vector batch."""
+        value = _vector("value", value, length=self.dimension)
+        _same_backend(self.cholesky_factor, value=value)
+        vector_batch = value.shape[:-1]
+        if len(self.batch_shape) == 0:
+            count = math.prod(vector_batch) if vector_batch else 1
+            columns = value.reshape(count, self.dimension).transpose(0, 1)
+            whitened = self.apply_columns(columns)
+            return whitened.transpose(0, 1).reshape(
+                vector_batch + (self.dimension,)
+            )
+        batch_shape = torch.broadcast_shapes(self.batch_shape, vector_batch)
+        value = value.expand(batch_shape + (self.dimension,))
+        return self.apply_columns(value.unsqueeze(-1)).squeeze(-1)
+
+    def materialize_precision_root(self) -> torch.Tensor:
+        """Materialise ``L^-1`` with a solve for inspection or interop.
+
+        The result ``U = L^-1`` is a lower-triangular *row root* satisfying
+        ``covariance^-1 = U.T @ U``; it is not the canonical upper Cholesky
+        factor of the precision.  QR-triangularise it if an upper root is
+        required.  Hot paths should use :meth:`apply_vectors` or
+        :meth:`apply_columns`; both avoid allocating this dense factor.  This
+        method still uses a triangular solve and never calls a matrix-inverse
+        routine.
+        """
+        identity = torch.eye(
+            self.dimension,
+            dtype=self.cholesky_factor.dtype,
+            device=self.cholesky_factor.device,
+        ).expand(self.batch_shape + (self.dimension, self.dimension))
+        return torch.linalg.solve_triangular(
+            self.cholesky_factor, identity, upper=False
+        )
 
 
 @dataclass(frozen=True)
@@ -295,6 +426,7 @@ def compile_information_update_torch(
     _same_backend(root, measurement_matrix=matrix)
     root, matrix = _broadcast_matrices(root, matrix)
     pre_array = torch.cat([root, matrix], dim=-2).contiguous()
+    _pre_array_scale(pre_array)
     packed, tau = torch.geqrf(pre_array)
     posterior_root, signs = _normalised_root_from_packed(packed, n)
     _check_root_rank(pre_array, posterior_root)
@@ -321,17 +453,274 @@ def householder_information_update_torch(
     return compiled.apply_vectors(prior_information_rhs, measurement_rhs)
 
 
+def _batch_failure_detail(failed: torch.Tensor) -> str:
+    if failed.ndim == 0:
+        return " for the unbatched input"
+    indices = torch.nonzero(failed, as_tuple=False).detach().cpu().tolist()
+    return f" at batch indices {indices}"
+
+
+def _nonnegative_finite(name: str, value: float) -> float:
+    value = float(value)
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be finite and nonnegative")
+    return value
+
+
+def prepare_noise_whitener_torch(
+    covariance: torch.Tensor | None = None,
+    *,
+    correlation: torch.Tensor | None = None,
+    stddev: torch.Tensor | None = None,
+    relative_eigenvalue_floor: float | None = None,
+    absolute_eigenvalue_floor: float = 0.0,
+    negative_eigenvalue_tolerance: float | None = None,
+    maximum_relative_loading: float = 1e-3,
+    symmetry_tolerance: float | None = None,
+    correlation_tolerance: float | None = None,
+    name: str = "noise covariance",
+) -> NoiseWhitenerTorch:
+    """Validate, minimally load, and Cholesky-factor a noise model.
+
+    Supply exactly one of:
+
+    - ``covariance``; or
+    - ``correlation`` plus strictly positive ``stddev``, which constructs
+      ``diag(stddev) @ correlation @ diag(stddev)``.
+
+    Loading is relative to the covariance spectral scale.  A nearly singular
+    positive-semidefinite matrix is lifted to a documented eigenvalue floor;
+    a materially indefinite matrix or a repair exceeding
+    ``maximum_relative_loading`` is rejected.  All loading is returned in
+    :class:`CovarianceLoadingDiagnosticsTorch`, including one value per batch
+    element.  This preparation step intentionally synchronises to make invalid
+    input observable; repeated hot-path whitening does not.
+
+    The returned object represents ``L^-1`` implicitly and applies it only via
+    :func:`torch.linalg.solve_triangular`.
+
+    By default the relative eigenvalue floor is
+    ``max(sqrt(machine_epsilon), 8 * dimension * machine_epsilon)``.  The
+    ``sqrt(eps)`` term intentionally caps the loaded covariance condition
+    number near ``1/sqrt(eps)`` (about ``2.9e3`` in float32 and ``6.7e7`` in
+    float64).  The float32 load can be statistically material; it is exposed
+    in diagnostics and may be lowered explicitly when a caller has validated
+    a tighter numerical error budget.
+    """
+    covariance_mode = covariance is not None
+    correlation_mode = correlation is not None or stddev is not None
+    if covariance_mode == correlation_mode:
+        raise ValueError(
+            "supply either covariance or correlation plus stddev, but not both"
+        )
+
+    source: str
+    if covariance_mode:
+        if correlation is not None or stddev is not None:
+            raise ValueError("stddev/correlation cannot accompany covariance")
+        raw = _matrix(name, covariance)
+        if raw.shape[-2] != raw.shape[-1] or raw.shape[-1] == 0:
+            raise ValueError(f"{name} must be nonempty and square")
+        raw = raw.clone()
+        source = "covariance"
+    else:
+        if correlation is None or stddev is None:
+            raise ValueError("correlation and stddev must be supplied together")
+        corr = _matrix("correlation", correlation)
+        if corr.shape[-2] != corr.shape[-1] or corr.shape[-1] == 0:
+            raise ValueError("correlation must be nonempty and square")
+        standard_deviation = _vector(
+            "stddev", stddev, length=corr.shape[-1]
+        )
+        _same_backend(corr, stddev=standard_deviation)
+        batch_shape = torch.broadcast_shapes(
+            corr.shape[:-2], standard_deviation.shape[:-1]
+        )
+        corr = corr.expand(batch_shape + corr.shape[-2:]).clone()
+        standard_deviation = standard_deviation.expand(
+            batch_shape + standard_deviation.shape[-1:]
+        ).clone()
+        if not bool(torch.isfinite(corr).all().item()):
+            raise ValueError("correlation must be finite")
+        if not bool(torch.isfinite(standard_deviation).all().item()):
+            raise ValueError("stddev must be finite")
+        nonpositive = torch.any(standard_deviation <= 0, dim=-1)
+        if bool(torch.any(nonpositive).item()):
+            raise ValueError(
+                "stddev must be strictly positive"
+                + _batch_failure_detail(nonpositive)
+            )
+        n = corr.shape[-1]
+        eps = torch.finfo(corr.dtype).eps
+        corr_tol = (
+            64.0 * n * eps
+            if correlation_tolerance is None
+            else _nonnegative_finite("correlation_tolerance", correlation_tolerance)
+        )
+        diagonal_error = torch.amax(
+            torch.abs(torch.diagonal(corr, dim1=-2, dim2=-1) - 1.0), dim=-1
+        )
+        bad_diagonal = diagonal_error > corr_tol
+        if bool(torch.any(bad_diagonal).item()):
+            worst = float(torch.amax(diagonal_error).detach().cpu())
+            raise ValueError(
+                f"correlation diagonal must be one within tolerance {corr_tol:g}; "
+                f"maximum error={worst:g}"
+                + _batch_failure_detail(bad_diagonal)
+            )
+        maximum_entry = torch.amax(torch.abs(corr), dim=(-2, -1))
+        bad_entry = maximum_entry > 1.0 + corr_tol
+        if bool(torch.any(bad_entry).item()):
+            worst = float(torch.amax(maximum_entry).detach().cpu())
+            raise ValueError(
+                f"correlation entries must satisfy |rho| <= 1 within tolerance "
+                f"{corr_tol:g}; maximum |rho|={worst:g}"
+                + _batch_failure_detail(bad_entry)
+            )
+        raw = (
+            standard_deviation.unsqueeze(-1)
+            * corr
+            * standard_deviation.unsqueeze(-2)
+        )
+        name = "noise covariance from correlation"
+        source = "correlation+stddev"
+
+    if not bool(torch.isfinite(raw).all().item()):
+        raise ValueError(f"{name} must be finite")
+    n = raw.shape[-1]
+    eps = torch.finfo(raw.dtype).eps
+    relative_floor = (
+        max(math.sqrt(eps), 8.0 * n * eps)
+        if relative_eigenvalue_floor is None
+        else _nonnegative_finite(
+            "relative_eigenvalue_floor", relative_eigenvalue_floor
+        )
+    )
+    absolute_floor = _nonnegative_finite(
+        "absolute_eigenvalue_floor", absolute_eigenvalue_floor
+    )
+    negative_tolerance = (
+        64.0 * n * eps
+        if negative_eigenvalue_tolerance is None
+        else _nonnegative_finite(
+            "negative_eigenvalue_tolerance", negative_eigenvalue_tolerance
+        )
+    )
+    maximum_loading = _nonnegative_finite(
+        "maximum_relative_loading", maximum_relative_loading
+    )
+    symmetry_limit = (
+        64.0 * n * eps
+        if symmetry_tolerance is None
+        else _nonnegative_finite("symmetry_tolerance", symmetry_tolerance)
+    )
+
+    entry_scale = torch.amax(torch.abs(raw), dim=(-2, -1))
+    symmetry_error = torch.amax(
+        torch.abs(raw - raw.transpose(-2, -1)), dim=(-2, -1)
+    )
+    relative_symmetry_error = symmetry_error / torch.clamp(
+        entry_scale, min=torch.finfo(raw.dtype).tiny
+    )
+    nonsymmetric = relative_symmetry_error > symmetry_limit
+    if bool(torch.any(nonsymmetric).item()):
+        worst = float(torch.amax(relative_symmetry_error).detach().cpu())
+        raise ValueError(
+            f"{name} is not symmetric within relative tolerance "
+            f"{symmetry_limit:g}; maximum relative error={worst:g}"
+            + _batch_failure_detail(nonsymmetric)
+        )
+
+    symmetric = 0.5 * (raw + raw.transpose(-2, -1))
+    eigenvalues = torch.linalg.eigvalsh(symmetric)
+    minimum = eigenvalues[..., 0]
+    matrix_scale = torch.amax(torch.abs(eigenvalues), dim=-1)
+    zero_scale = matrix_scale == 0
+    if absolute_floor == 0.0 and bool(torch.any(zero_scale).item()):
+        raise ValueError(
+            f"{name} has zero spectral scale; supply positive variances, or "
+            "provide absolute_eigenvalue_floor > 0 together with "
+            "maximum_relative_loading >= 1 to authorize a full-scale repair"
+            + _batch_failure_detail(zero_scale)
+        )
+
+    materially_indefinite = minimum < -negative_tolerance * matrix_scale
+    if bool(torch.any(materially_indefinite).item()):
+        relative_negative = -minimum / torch.clamp(
+            matrix_scale, min=torch.finfo(raw.dtype).tiny
+        )
+        worst = float(torch.amax(relative_negative).detach().cpu())
+        raise ValueError(
+            f"{name} is genuinely indefinite: worst relative negative "
+            f"eigenvalue={worst:g} exceeds tolerance {negative_tolerance:g}"
+            + _batch_failure_detail(materially_indefinite)
+        )
+
+    absolute_floor_tensor = torch.as_tensor(
+        absolute_floor, dtype=raw.dtype, device=raw.device
+    )
+    target_minimum = torch.maximum(
+        relative_floor * matrix_scale, absolute_floor_tensor
+    )
+    loading = torch.clamp(target_minimum - minimum, min=0.0)
+    loading_reference = torch.where(
+        matrix_scale > 0, matrix_scale, target_minimum
+    )
+    relative_loading = loading / torch.clamp(
+        loading_reference, min=torch.finfo(raw.dtype).tiny
+    )
+    excessive_loading = relative_loading > maximum_loading
+    if bool(torch.any(excessive_loading).item()):
+        worst = float(torch.amax(relative_loading).detach().cpu())
+        raise ValueError(
+            f"{name} requires relative diagonal loading {worst:g}, exceeding "
+            f"maximum_relative_loading={maximum_loading:g}"
+            + _batch_failure_detail(excessive_loading)
+        )
+
+    identity = torch.eye(n, dtype=raw.dtype, device=raw.device)
+    loaded_covariance = symmetric + loading[..., None, None] * identity
+    cholesky, info = torch.linalg.cholesky_ex(loaded_covariance, check_errors=False)
+    failed_cholesky = info != 0
+    if bool(torch.any(failed_cholesky).item()):
+        raise torch.linalg.LinAlgError(
+            f"{name} remained non-positive-definite after declared loading; "
+            "increase relative_eigenvalue_floor"
+            + _batch_failure_detail(failed_cholesky)
+        )
+
+    diagnostics = CovarianceLoadingDiagnosticsTorch(
+        matrix_scale=matrix_scale,
+        minimum_eigenvalue=minimum,
+        target_minimum_eigenvalue=target_minimum,
+        diagonal_loading=loading,
+        relative_diagonal_loading=relative_loading,
+        relative_symmetry_error=relative_symmetry_error,
+        was_loaded=loading > 0,
+        relative_eigenvalue_floor=relative_floor,
+        negative_eigenvalue_tolerance=negative_tolerance,
+        maximum_relative_loading=maximum_loading,
+        source=source,
+    )
+    return NoiseWhitenerTorch(
+        covariance=loaded_covariance,
+        cholesky_factor=cholesky,
+        diagnostics=diagnostics,
+    )
+
+
 def regularize_covariance_torch(
     covariance: torch.Tensor,
     *,
     jitter: float = 1e-9,
     name: str = "covariance",
 ) -> torch.Tensor:
-    """Symmetrise and minimally lift a PSD covariance, in batch.
+    """Compatibility helper using an absolute covariance floor.
 
-    The effective floor is at least machine epsilon.  Thus float64 matches the
-    NumPy prototype's default ``1e-9`` floor, while float32 automatically uses
-    a representable stability floor.
+    New square-root and noise-conditioning paths use
+    :func:`prepare_noise_whitener_torch`, whose loading is scale-relative and
+    observable.  Keep this helper only for callers that explicitly depend on
+    the historical absolute-unit policy.
     """
     if jitter < 0:
         raise ValueError("jitter must be nonnegative")
@@ -353,18 +742,29 @@ def regularize_covariance_torch(
 
 
 def precision_root_from_covariance_torch(
-    covariance: torch.Tensor, *, jitter: float = 1e-9
+    covariance: torch.Tensor,
+    *,
+    jitter: float = 0.0,
+    relative_eigenvalue_floor: float | None = None,
+    negative_eigenvalue_tolerance: float | None = None,
+    maximum_relative_loading: float = 1e-3,
 ) -> torch.Tensor:
-    """Return upper ``U`` with ``P^-1 = U.T @ U`` without forming ``P^-1``."""
-    covariance = regularize_covariance_torch(
-        covariance, jitter=jitter, name="prior covariance"
+    """Return upper ``U`` with ``P^-1 = U.T @ U`` without forming ``P^-1``.
+
+    ``jitter`` is an optional absolute floor in covariance units; it defaults
+    to zero so the scale-relative policy remains valid under unit changes.
+    """
+    whitener = prepare_noise_whitener_torch(
+        covariance,
+        relative_eigenvalue_floor=relative_eigenvalue_floor,
+        absolute_eigenvalue_floor=jitter,
+        negative_eigenvalue_tolerance=negative_eigenvalue_tolerance,
+        maximum_relative_loading=maximum_relative_loading,
+        name="prior covariance",
     )
-    n = covariance.shape[-1]
-    chol = torch.linalg.cholesky(covariance)
-    identity = torch.eye(n, dtype=chol.dtype, device=chol.device).expand(
-        chol.shape[:-2] + (n, n)
-    )
-    inverse_factor = torch.linalg.solve_triangular(chol, identity, upper=False)
+    inverse_factor = whitener.materialize_precision_root()
+    n = inverse_factor.shape[-1]
+    _pre_array_scale(inverse_factor)
     packed, _ = torch.geqrf(inverse_factor.contiguous())
     root, _ = _normalised_root_from_packed(packed, n)
     _check_root_rank(inverse_factor, root)
@@ -377,9 +777,43 @@ def conditional_measurement_model_torch(
     observation_covariance: torch.Tensor,
     cross_covariance: torch.Tensor,
     *,
-    jitter: float = 1e-9,
+    jitter: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return the decorrelated ``(J, Rc)`` likelihood in information form."""
+    """Return the loaded decorrelated ``(J, Rc)`` likelihood.
+
+    For loading diagnostics and the reusable implicit inverse factor, call
+    :func:`conditional_measurement_whitener_torch` directly.
+    """
+    effective_H, whitener = conditional_measurement_whitener_torch(
+        prior_precision_root,
+        H,
+        observation_covariance,
+        cross_covariance,
+        jitter=jitter,
+    )
+    return effective_H, whitener.covariance
+
+
+def conditional_measurement_whitener_torch(
+    prior_precision_root: torch.Tensor,
+    H: torch.Tensor,
+    observation_covariance: torch.Tensor,
+    cross_covariance: torch.Tensor,
+    *,
+    jitter: float = 0.0,
+    relative_eigenvalue_floor: float | None = None,
+    negative_eigenvalue_tolerance: float | None = None,
+    maximum_relative_loading: float = 1e-3,
+) -> tuple[torch.Tensor, NoiseWhitenerTorch]:
+    """Decorrelate a measurement block and prepare its implicit whitener.
+
+    ``jitter`` is an absolute eigenvalue floor in the measurement's units;
+    the scale-relative floor and repair diagnostics come from
+    :func:`prepare_noise_whitener_torch`.  A bad Schur complement is rejected,
+    not silently converted into a plausible covariance.
+    """
+    if jitter < 0:
+        raise ValueError("jitter must be nonnegative")
     root = _matrix("prior_precision_root", prior_precision_root)
     if root.shape[-2] != root.shape[-1] or root.shape[-1] == 0:
         raise ValueError("prior_precision_root must be nonempty and square")
@@ -403,16 +837,19 @@ def conditional_measurement_model_torch(
     )
     root_cross = root @ cross_covariance
     effective_H = H + root_cross.transpose(-2, -1) @ root
-    conditional_R = (
+    raw_conditional_R = (
         observation_covariance
         - root_cross.transpose(-2, -1) @ root_cross
     )
-    conditional_R = regularize_covariance_torch(
-        conditional_R,
-        jitter=jitter,
+    whitener = prepare_noise_whitener_torch(
+        raw_conditional_R,
+        relative_eigenvalue_floor=relative_eigenvalue_floor,
+        absolute_eigenvalue_floor=jitter,
+        negative_eigenvalue_tolerance=negative_eigenvalue_tolerance,
+        maximum_relative_loading=maximum_relative_loading,
         name="conditional observation covariance R - C.T P^-1 C",
     )
-    return effective_H, conditional_R
+    return effective_H, whitener
 
 
 def _posterior_covariance(root: torch.Tensor) -> torch.Tensor:
@@ -444,7 +881,7 @@ def condition_correlated_gaussian_qr_torch(
     H: torch.Tensor,
     cross_covariance: torch.Tensor,
     *,
-    jitter: float = 1e-9,
+    jitter: float = 0.0,
 ) -> JointSquareRootUpdateTorch:
     """Condition a Gaussian with batched tensors and compact Householder QR.
 
@@ -463,13 +900,14 @@ def condition_correlated_gaussian_qr_torch(
     observation = _vector("observation", observation, length=m)
     _same_backend(root, mean=mean, H=H, observation=observation)
 
-    effective_H, conditional_R = conditional_measurement_model_torch(
+    effective_H, conditional_whitener = conditional_measurement_whitener_torch(
         root,
         H,
         observation_covariance,
         cross_covariance,
         jitter=jitter,
     )
+    conditional_R = conditional_whitener.covariance
     design_batch = torch.broadcast_shapes(
         root.shape[:-2], H.shape[:-2], effective_H.shape[:-2]
     )
@@ -480,10 +918,8 @@ def condition_correlated_gaussian_qr_torch(
     H_design = H.expand(design_batch + (m, n))
     effective_H = effective_H.expand(design_batch + (m, n))
     conditional_R = conditional_R.expand(design_batch + (m, m))
-    chol = torch.linalg.cholesky(conditional_R)
-    whitened_H = torch.linalg.solve_triangular(
-        chol, effective_H, upper=False
-    )
+    chol = conditional_whitener.cholesky_factor
+    whitened_H = conditional_whitener.apply_columns(effective_H)
     compiled = compile_information_update_torch(root, whitened_H)
 
     mean = mean.expand(result_batch + (n,))
@@ -507,6 +943,7 @@ def condition_correlated_gaussian_qr_torch(
         conditional_observation_covariance=conditional_R.expand(
             result_batch + (m, m)
         ),
+        conditional_loading_diagnostics=conditional_whitener.diagnostics,
         whitened_observation_matrix=whitened_H.expand(result_batch + (m, n)),
         whitened_innovation=whitened_innovation,
         residual_sum_squares=information.residual_sum_squares,
@@ -521,6 +958,7 @@ class CompiledCorrelatedConditionerTorch:
     H: torch.Tensor
     effective_observation_matrix: torch.Tensor
     conditional_observation_covariance: torch.Tensor
+    conditional_loading_diagnostics: CovarianceLoadingDiagnosticsTorch
     conditional_cholesky: torch.Tensor
     whitened_observation_matrix: torch.Tensor
     information_qr: CompiledInformationQRTorch
@@ -534,7 +972,7 @@ class CompiledCorrelatedConditionerTorch:
         observation_covariance: torch.Tensor,
         cross_covariance: torch.Tensor,
         *,
-        jitter: float = 1e-9,
+        jitter: float = 0.0,
     ) -> "CompiledCorrelatedConditionerTorch":
         """Compile an unbatched fixed design.
 
@@ -550,22 +988,23 @@ class CompiledCorrelatedConditionerTorch:
         ):
             if not isinstance(value, torch.Tensor) or value.ndim != 2:
                 raise ValueError(f"{name} must be one unbatched matrix")
-        # Compiled objects own a snapshot of coefficient inputs. Otherwise an
-        # in-place caller mutation of H would combine a new innovation with
-        # stale QR reflectors.
+        # Compiled objects own a snapshot of every design input. Otherwise an
+        # in-place caller mutation could combine a new innovation with stale
+        # QR reflectors (or race an asynchronous device operation).
         prior_precision_root = prior_precision_root.clone()
         H = H.clone()
-        effective_H, conditional_R = conditional_measurement_model_torch(
+        observation_covariance = observation_covariance.clone()
+        cross_covariance = cross_covariance.clone()
+        effective_H, conditional_whitener = conditional_measurement_whitener_torch(
             prior_precision_root,
             H,
             observation_covariance,
             cross_covariance,
             jitter=jitter,
         )
-        chol = torch.linalg.cholesky(conditional_R)
-        whitened_H = torch.linalg.solve_triangular(
-            chol, effective_H, upper=False
-        )
+        conditional_R = conditional_whitener.covariance
+        chol = conditional_whitener.cholesky_factor
+        whitened_H = conditional_whitener.apply_columns(effective_H)
         information_qr = compile_information_update_torch(
             prior_precision_root, whitened_H
         )
@@ -574,6 +1013,7 @@ class CompiledCorrelatedConditionerTorch:
             H=H,
             effective_observation_matrix=effective_H,
             conditional_observation_covariance=conditional_R,
+            conditional_loading_diagnostics=conditional_whitener.diagnostics,
             conditional_cholesky=chol,
             whitened_observation_matrix=whitened_H,
             information_qr=information_qr,
@@ -621,6 +1061,7 @@ class CompiledCorrelatedConditionerTorch:
                     batch_shape + (m, m)
                 )
             ),
+            conditional_loading_diagnostics=self.conditional_loading_diagnostics,
             whitened_observation_matrix=self.whitened_observation_matrix.expand(
                 batch_shape + (m, n)
             ),
@@ -648,6 +1089,7 @@ class CompiledDenseGainConditionerTorch:
     gain: torch.Tensor
     posterior_covariance: torch.Tensor
     innovation_covariance: torch.Tensor
+    conditional_loading_diagnostics: CovarianceLoadingDiagnosticsTorch
 
     @classmethod
     def compile(
@@ -657,7 +1099,7 @@ class CompiledDenseGainConditionerTorch:
         observation_covariance: torch.Tensor,
         cross_covariance: torch.Tensor,
         *,
-        jitter: float = 1e-9,
+        jitter: float = 0.0,
     ) -> "CompiledDenseGainConditionerTorch":
         """Compile an unbatched fixed design into a dense correlated gain."""
         for name, value in (
@@ -673,18 +1115,21 @@ class CompiledDenseGainConditionerTorch:
             raise ValueError("prior_precision_root must be nonempty and square")
         n = root.shape[-1]
         H = _matrix("H", H, cols=n).clone()
+        observation_covariance = observation_covariance.clone()
+        cross_covariance = cross_covariance.clone()
         _same_backend(root, H=H)
 
         # Use the same Schur-complement model as QR.  This both validates the
         # proposed joint covariance and makes jitter behavior directly
         # comparable between the two static implementations.
-        effective_H, conditional_R = conditional_measurement_model_torch(
+        effective_H, conditional_whitener = conditional_measurement_whitener_torch(
             root,
             H,
             observation_covariance,
             cross_covariance,
             jitter=jitter,
         )
+        conditional_R = conditional_whitener.covariance
         # The first precision factor need not already be triangular: left
         # orthogonal rotations preserve U.T U.  Use a general solve here;
         # posterior QR roots use the cheaper triangular helper above.
@@ -700,26 +1145,24 @@ class CompiledDenseGainConditionerTorch:
         gain = torch.cholesky_solve(
             state_innovation_cross.mT, innovation_chol
         ).mT
+        # Joseph form avoids the catastrophic subtraction in
+        # ``P - K S K.T`` when an observation is much more precise than the
+        # prior.  Both summands are PSD and preserve the covariance's units.
+        identity = torch.eye(n, dtype=root.dtype, device=root.device)
+        residual_map = identity - gain @ effective_H
         posterior_covariance = (
-            prior_covariance - gain @ state_innovation_cross.mT
+            residual_map @ prior_covariance @ residual_map.mT
+            + gain @ conditional_R @ gain.mT
         )
         posterior_covariance = 0.5 * (
             posterior_covariance + posterior_covariance.mT
-        )
-        # The dense subtraction can lose the last positive bits when a very
-        # informative observation makes P_post tiny.  Keep this baseline a
-        # valid Gaussian rather than returning a singular/negative covariance;
-        # the square-root path is positive definite by construction.
-        posterior_covariance = regularize_covariance_torch(
-            posterior_covariance,
-            jitter=jitter,
-            name="dense posterior covariance",
         )
         return cls(
             H=H,
             gain=gain,
             posterior_covariance=posterior_covariance,
             innovation_covariance=innovation_covariance,
+            conditional_loading_diagnostics=conditional_whitener.diagnostics,
         )
 
     def condition(
@@ -746,6 +1189,7 @@ class CompiledDenseGainConditionerTorch:
             innovation_covariance=self.innovation_covariance.expand(
                 batch_shape + (m, m)
             ),
+            conditional_loading_diagnostics=self.conditional_loading_diagnostics,
         )
 
 
@@ -753,7 +1197,9 @@ class CompiledDenseGainConditionerTorch:
 class SquareRootInformationStateTorch:
     """Sequential information state in one fixed coordinate system.
 
-    Each block threads ``U_post`` and ``z``, so every measurement RHS must use
+    ``information_rhs`` is the square-root RHS ``z``, not the canonical
+    information vector ``eta``; ``eta = U.T @ z``. Each block threads
+    ``U_post`` and ``z``, so every measurement RHS must use
     the same state origin.  To recenter at the current posterior mean, instead
     reset ``z`` to zero and shift each later RHS by ``-A @ current_solution``;
     do not both carry ``z`` and recenter the likelihood.
@@ -777,3 +1223,23 @@ class SquareRootInformationStateTorch:
             information_rhs=result.information_rhs,
         )
         return state, result
+
+    def update_noise_block(
+        self,
+        measurement_matrix: torch.Tensor,
+        measurement_rhs: torch.Tensor,
+        whitener: NoiseWhitenerTorch,
+    ) -> tuple["SquareRootInformationStateTorch", InformationRootUpdateTorch]:
+        """Whiten one noise block consistently, then absorb it with QR.
+
+        ``measurement_matrix`` is the unwhitened conditional design ``J`` and
+        ``measurement_rhs`` is its matching innovation ``r``.  Both are acted
+        on from the left by the same implicit ``L^-1``.  This convenience
+        avoids materialising an inverse root or accidentally applying the
+        whitening factor with the wrong orientation.
+        """
+        if not isinstance(whitener, NoiseWhitenerTorch):
+            raise TypeError("whitener must be a NoiseWhitenerTorch")
+        whitened_matrix = whitener.apply_columns(measurement_matrix)
+        whitened_rhs = whitener.apply_vectors(measurement_rhs)
+        return self.update(whitened_matrix, whitened_rhs)
