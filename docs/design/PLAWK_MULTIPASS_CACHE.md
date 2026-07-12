@@ -139,23 +139,43 @@ END   { ... }        # once, after the last pass
 - Each pass runs the **same deterministic per-record contract** as today's
   main. Determinism is per-pass; nothing about multi-pass relaxes §1.
 - **Loaded objects / compiled predicates persist across passes** (§2).
-- **In-memory scalar slots and assoc tables are per-pass by default**
-  (reset between passes). Durable cross-pass state goes through the cache
-  **explicitly** — this matches the determinism stance (the cross-pass
-  channel is named, not implicit) and keeps each pass's in-loop state in
-  native slots.
-- **Input for pass N.** v1: each pass re-reads the same input source
-  (re-open the file; stdin is buffered to a temp on first pass so it can be
-  re-scanned — or, simpler for v1, require a seekable input for multi-pass).
-  A later option lets a pass iterate the **cache** itself instead of the
-  input (`pass over CACHE { ... }`), which is the natural "process what pass
-  1 stored" shape.
 
-### 3.2 The cache as an associative array
+### 3.2 Variable scoping and persistence
 
-The cache surface reuses the assoc-array ergonomics users already know. A
-table declared cache-backed reads/writes through the persistent store
-instead of the in-memory hash:
+Two orthogonal properties — a scoping property (does a variable survive
+into the next pass?) and a storage property (is it durable / shareable?):
+
+- **Pass-local by default.** A variable first used inside a `pass { }` is
+  local to that pass and reset at the start of each pass. Its in-loop state
+  lives in native SSA slots, as today.
+- **`BEGIN`-declared variables persist across passes** (they are
+  program-global). This is the in-memory cross-pass channel — fast,
+  process-lifetime, RAM-bound. `sum` or an assoc `arr` introduced in
+  `BEGIN` carries its accumulated value from one pass into the next with no
+  DB involved.
+- **Backing is a separate, opt-in property.** A persistent variable can
+  additionally be **DB-backed** with `as cache`, which makes it durable
+  (survives process exit) and larger-than-RAM. `as cache` uses the default
+  store (`BEGIN { CACHE = "..." }`); **`as cache("path.lmdb")` names the
+  store**, so coordinating processes can point one variable at a shared DB
+  while the rest stay local. Persistence (BEGIN scope) and backing
+  (`as cache`) compose independently:
+
+| declaration | survives passes? | durable / cross-process? |
+|---|---|---|
+| `x` used inside a pass | no (pass-local) | no |
+| `x` set in `BEGIN` | yes (in-memory) | no |
+| `x` in `BEGIN` `as cache` | yes | yes — default DB (`CACHE`) |
+| `x` in `BEGIN` `as cache("shared.lmdb")` | yes | yes — **named** DB |
+
+This corrects an earlier conflation: declaring in `BEGIN` does **not** by
+itself put a variable in the cache; it makes it persist *in memory*.
+Backing is the explicit `as cache[(db)]` opt-in.
+
+### 3.3 The cache as an associative array
+
+A DB-backed table reads/writes through the persistent store instead of the
+in-memory hash, reusing the assoc-array ergonomics users already know:
 
 ```awk
 BEGIN { CACHE = "run.lmdb" ; declare total as cache }
@@ -176,6 +196,45 @@ pass { print $1, $2 / total[$1] }     # persistent read (pass 1 committed)
   This is what preserves "deterministic within the iteration brackets":
   the cache a pass reads is a fixed snapshot for the duration of that pass
   (except its own writes), not a racing target.
+
+### 3.4 The reader for each pass
+
+awk hardcodes one reader: records from the input stream. `PLAWK_PHILOSOPHY
+§3` already abstracts this into a decoupled **Reader** role ("how to obtain
+the next item"). Multi-pass makes that role **selectable per pass**, so a
+pass is not forced to re-scan the original input:
+
+```awk
+pass { ... }                    # default: re-scan the original input
+pass over total { ... }         # iterate a table (cache-backed or in-memory)
+pass over prev { ... }          # consume the previous pass's emitted records
+pass over query(Goal) { ... }   # each solution of a query is a record
+```
+
+- **`over input`** (the default) — re-open and re-scan the program's input.
+- **`over TABLE`** — iterate a table's entries as records (the `for (k in
+  arr)` iteration, but as the pass's record source). This is the natural
+  "process what the previous pass stored" shape when the previous pass
+  accumulated into a table.
+- **`over prev`** — the previous pass's **sink becomes this pass's source**.
+  When pass N declares `over prev`, pass N−1's `print`/`writebin` no longer
+  go to stdout; they **spool** (to a cache table or a temp stream) and pass
+  N scans that spool after the barrier. This is the `awk | awk` pipeline
+  semantics **in-process** — no text `|`, no re-serialization, artifacts
+  stay hot — and, crucially, it does **not** need coroutines or break the
+  "finish pass N−1, then start pass N" barrier: `over prev` is sugar over
+  `over <spool>`, so it reuses the cache/spool machinery rather than adding
+  a new mechanism. The final pass (no successor consuming it) prints to
+  stdout as usual.
+- **`over query(Goal)`** — drive the pass from the solutions of a Prolog
+  query (riding the `call/1` meta-call + dynamic-DB machinery the JIT arc
+  built): each solution is a record. This is the most "beyond awk" reader
+  and the most advanced; staged last.
+
+Writers mirror readers (a pass emits to stdout by default, or to the spool
+that feeds the next `over prev` pass, or `writebin` to a file). Reader +
+writer per pass is exactly the Reader/Writer decoupling the philosophy doc
+describes, now instantiated per stage of an in-process pipeline.
 
 ## 4. Runtime: the cache ABI (the first build step)
 
@@ -250,43 +309,51 @@ single-pass test before any driver surgery).
   multi-pass machinery yet. Test: a histogram whose counts survive across
   two separate binary invocations against the same cache file.
 
-- **Phase 2 — multiple `pass { }` blocks.** Parser: `program(Begin, Passes,
-  End)` where `Passes` is a list of rule-sets. Driver: run the record loop
-  once per pass, re-opening the input between passes, threading the loaded
-  objects / foreign wrappers / resolved entries across passes (they already
-  live in process-global state, so this is mostly *not resetting* them).
-  In-memory scalars/assoc reset per pass; the cache persists. Test: the
-  normalise-by-total example (§3.1) with an **in-memory** total is
-  impossible single-pass; here pass 1 fills it, pass 2 divides.
+- **Phase 2 — variable scoping + multiple `pass { }` blocks.** Parser:
+  `program(Begin, Passes, End)` where `Passes` is a list of rule-sets.
+  Scoping (§3.2): pass-local by default (reset per pass); `BEGIN`-introduced
+  variables persist in memory across passes. Driver: run the record loop
+  once per pass, re-scanning input between passes, threading loaded objects
+  / foreign wrappers / resolved entries across passes (they already live in
+  process-global state, so this is mostly *not resetting* them). Test: the
+  normalise-by-total example with an **in-memory, `BEGIN`-declared** total —
+  impossible single-pass; here pass 1 fills it, pass 2 divides. (No cache
+  needed for this phase — it exercises in-memory cross-pass persistence.)
 
-- **Phase 3 — cache as the inter-pass channel (the payoff).** Combine 1+2:
-  a cache-backed table written in pass 1 and read in pass 2, with the
-  commit barrier between passes. Test: `total[$1] += $2` in pass 1;
-  `print $1, $2 / total[$1]` in pass 2, verifying pass 2 sees complete
+- **Phase 3 — cache as the inter-pass channel (durable payoff).** Combine
+  1+2: a `BEGIN`-declared `as cache` table written in pass 1 and read in
+  pass 2, with the commit barrier between passes; and `as cache("path")`
+  for a named store. Test: `total[$1] += $2` in pass 1; `print $1, $2 /
+  total[$1]` in pass 2, verifying pass 2 sees complete, durably-committed
   totals.
 
-- **Phase 4 — LMDB backend + larger-than-RAM story.** Swap the fallback for
-  `liblmdb` behind the build flag; add a test that exceeds a small RAM cap
-  to demonstrate the memory-mapped path. Optional: `pass over CACHE { ... }`
-  to iterate the store directly instead of re-reading input.
+- **Phase 4 — configurable readers.** `over TABLE` (iterate a table as the
+  record source) and `over prev` (the previous pass's sink spools into this
+  pass — the in-process `awk | awk`, sugar over `over <spool>`). Writers
+  gain the spool sink. Test: pass 1 emits a filtered/derived stream, pass 2
+  `over prev` consumes it.
 
-- **Phase 5 — determinism guarantees.** Document and (optionally) check that
-  pass bodies remain deterministic; surface the closure-based
-  "compute-once, reuse" pattern for the rare in-pass need, and confirm the
-  commit-barrier snapshot semantics in a test (a pass does not see another
-  pass's uncommitted writes).
+- **Phase 5 — LMDB backend + larger-than-RAM story.** Swap the fallback for
+  `liblmdb` behind the build flag; add a test that exceeds a small RAM cap
+  to demonstrate the memory-mapped path.
+
+- **Phase 6 — `over query(Goal)` + determinism guarantees.** The
+  query-driven reader (each solution a record, on the `call/1` + dynamic-DB
+  machinery); document and (optionally) check that pass bodies remain
+  deterministic; surface the closure-based "compute-once, reuse" pattern;
+  confirm commit-barrier snapshot semantics in a test.
 
 ## 6. Open questions
 
 - **Input re-scan for pass N.** Re-open a seekable file is trivial; stdin is
   not seekable. Options: (a) require seekable input for multi-pass; (b)
-  spool stdin to a temp file on pass 1; (c) only allow `pass over CACHE` for
-  the non-first pass. Leaning (a)+(c) for v1, (b) later.
-- **Per-pass vs persistent in-memory state.** This design resets in-memory
-  scalars/assoc between passes (durable state must be explicit, via the
-  cache). An alternative keeps them; rejected for v1 because implicit
-  cross-pass memory state blurs the "explicit channel" line and complicates
-  the determinism story.
+  spool stdin to a temp file on pass 1; (c) only allow `over TABLE` /
+  `over prev` (not `over input`) for the non-first pass. Leaning (a)+(c) for
+  v1, (b) later.
+- **`over prev` sink vs stdout.** When a pass is consumed by `over prev`,
+  its `print` feeds the spool instead of stdout. Does it *also* echo to
+  stdout (tee), or only feed the next pass? Proposal: only feed the next
+  pass (a true pipeline stage); the final, unconsumed pass prints to stdout.
 - **Value encoding for non-i64 cache values.** Records/blobs need a
   serialization. v1: i64 and blob-bytes only; structured records reuse the
   existing record (de)serialization (`@wam_object_call_record` typecodes)
