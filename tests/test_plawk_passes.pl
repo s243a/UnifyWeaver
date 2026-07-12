@@ -64,15 +64,24 @@ test(single_pass_runs_like_main, [condition(clang_available)]) :-
     assertion(Out == ["a 2", "b 1"]),
     !.
 
-% Two passes are diagnosed as not-yet-implemented (exit 3), not mis-built.
-test(two_passes_reported_unsupported) :-
+% Two passes now compile and run (the multi-pass driver, plus per-record
+% print in a pass): pass 1 counts, pass 2 prints each record, END dumps the
+% table. Over `a a b`: pass 2 emits a a b, then END emits a 2 / b 1.
+test(two_pass_print_pass_runs, [condition(clang_available)]) :-
     pdir(Dir),
     Src = "pass { c[$1]++ }\npass { print $1 }\nEND { for (k in c) print k, c[k] }\n",
     directory_file_path(Dir, 'two.plawk', Prog),
     setup_call_cleanup(open(Prog, write, S, [encoding(utf8)]),
         write(S, Src), close(S)),
     directory_file_path(Dir, 'two_bin', Bin),
-    cli([build, Prog, '-o', Bin], 3),
+    cli([build, Prog, '-o', Bin], 0),
+    directory_file_path(Dir, 'twoin.txt', In),
+    setup_call_cleanup(open(In, write, SI, [encoding(utf8)]),
+        write(SI, "a\na\nb\n"), close(SI)),
+    process_create(Bin, [In], [stdout(pipe(PS)), stderr(std), process(Pid)]),
+    read_string(PS, _, Out), close(PS), process_wait(Pid, exit(0)),
+    split_string(Out, "\n", "", L0), exclude(==(""), L0, L), msort(L, Srt),
+    assertion(Srt == ["a", "a", "a 2", "b", "b 1"]),
     !.
 
 :- end_tests(plawk_passes).

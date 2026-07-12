@@ -8,11 +8,13 @@ Copyright (c) 2026 John William Creighton (@s243a)
 **Status**: partially implemented. Captures the determinism rationale, the
 surface, the runtime ABI, and a phased rollout. **Landed:** the persistent
 cache (file backend + `BEGIN cache("path") { declare NAME }` surface, phase
-1); the LMDB backend (`backend "lmdb"`, phase 5, eager); and multi-pass
-execution (`pass { }` blocks over a shared assoc table, phase 2). **Not yet:**
-cross-pass scalars, configurable readers (phase 4), the query reader
-(phase 6), namespaces / `eager` / secondary indexes. See the per-phase
-status tags in §5.
+1); the LMDB backend (`backend "lmdb"`, phase 5, eager); multi-pass
+execution (`pass { }` blocks over a shared assoc table, phase 2); and
+per-record output in assoc programs (`print $N` / `print arr[$N]` in the
+record loop), which gives the "normalise" shape — pass 2 prints each record
+from pass 1's table. **Not yet:** cross-pass scalars, configurable readers
+(phase 4), the query reader (phase 6), namespaces / `eager` / secondary
+indexes, string-literal print fields. See the per-phase status tags in §5.
 
 ## Implemented surface (quick reference)
 
@@ -29,14 +31,24 @@ pass { c[$1]++ }        # input re-read; counts accumulate across passes
 END { for (k in c) print k, c[k] }
 ```
 
+```awk
+# the "normalise" shape now works: pass 2 prints each record using the
+# table pass 1 built (per-record output in an assoc program)
+pass { c[$1]++ }
+pass { print $1, c[$1] }     # over `a a b`: a 2 / a 2 / b 1
+```
+
 Multi-pass v1 lowers each `pass` to its own function (fixed per-record SSA
 `%line` / loop labels are then function-local and cannot collide), creates
 the shared assoc table once in `main`, threads it to each pass as a
-parameter, and reads it back in the END for-in. It requires a **file**
-argument (each pass re-opens it; stdin is not re-openable), a single shared
-table, and always-rule pass bodies. Combining a cache-backed table with
-multi-pass, cross-pass scalars, per-record output passes, and reader
-selection are follow-ons.
+parameter, and (for an END for-in) reads it back. **Per-record output** in
+an assoc program is supported — a `print` in the record loop with a text
+field `$N` or a table lookup `arr[$N]` — which is what makes pass-2 emit one
+line per record from pass-1's table. It requires a **file** argument (each
+pass re-opens it; stdin is not re-openable), a single shared table, and
+always-rule pass bodies. Combining a cache-backed table with multi-pass,
+cross-pass *scalars*, string-literal print fields, multiple tables, and
+reader selection are follow-ons.
 
 ## TL;DR
 

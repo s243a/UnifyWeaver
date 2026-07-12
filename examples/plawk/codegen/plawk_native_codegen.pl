@@ -3762,6 +3762,94 @@ end_print:
 ',
         [RuntimeGlobals, PassFnsIR, CombinedEntrySetupIR, CallsIR, EndPrintIR]).
 
+% Multi-pass with NO END block: at least one pass emits per-record output
+% (e.g. `pass { c[$1]++ }  pass { print $1, c[$1] }` -- the normalise shape,
+% where pass 2 reads the table pass 1 built). Same per-pass-function model
+% and shared table; the difference is there is no END for-in, and the shared
+% table is discovered from the passes rather than an END loop.
+plawk_program_multipass_driver_ir(
+    program_passes(BeginClauses, Passes, []),
+    DriverIR
+) :-
+    Passes = [_, _ | _],
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    integer(FieldSeparator),
+    plawk_passes_shared_table(Passes, ArrayName),
+    findall(R, ( member(pass(PassRules), Passes), member(R, PassRules) ), AllRules),
+    plawk_forin_assoc_plan(AllRules, ArrayName, [], AssocPlan),
+    AssocPlan = assoc_plan([ArrayName], _),
+    findall(GlobalIR-ChainIR,
+        ( member(pass(PassRules), Passes),
+          plawk_forin_assoc_plan(PassRules, ArrayName, [], PassPlan),
+          plawk_assoc_rule_controls(PassPlan, PassControls),
+          plawk_assoc_break_close_ir(PassControls, ''),
+          plawk_assoc_rule_chain_ir(PassPlan, FieldSeparator, GlobalIR, ChainIR)
+        ),
+        PassPairs),
+    pairs_keys_values(PassPairs, ChainGlobals, Chains),
+    findall(FnIR,
+        ( nth0(I, Chains, Chain), plawk_multipass_pass_fn_ir(I, Chain, FnIR) ),
+        FnIRs),
+    atomic_list_concat(FnIRs, '\n', PassFnsIR),
+    findall(CallLine,
+        ( nth0(I, Chains, _),
+          format(atom(CallLine),
+              '  call void @plawk_pass_~w(%Value %mp_path, %WamAssocI64Table* %plawk_assoc_table_0)',
+              [I]) ),
+        CallLines),
+    atomic_list_concat(CallLines, '\n', CallsIR),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
+    sort(ChainGlobals, ChainGlobalsSorted),
+    atomic_list_concat(ChainGlobalsSorted, '\n', ChainGlobalsIR),
+    plawk_i64_end_print_globals(ChainGlobalsIR, RuntimeGlobals),
+    phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
+    atomic_list_concat(FreeLines, '\n', FreeIR),
+    format(atom(DriverIR),
+'@.wam_stream_eof = private constant [12 x i8] c"end_of_file\\00"
+~w
+~w
+
+define i32 @main(i32 %argc, i8** %argv) {
+entry:
+~w
+  %have_arg = icmp sgt i32 %argc, 1
+  br i1 %have_arg, label %get_path, label %no_arg
+
+no_arg:
+  ret i32 20
+
+get_path:
+  %argv1_ptr = getelementptr i8*, i8** %argv, i64 1
+  %argv1 = load i8*, i8** %argv1_ptr
+  %argv1_len = call i64 @strlen(i8* %argv1)
+  %mp_path_id = call i64 @wam_intern_atom(i8* %argv1, i64 %argv1_len)
+  %mp_path0 = insertvalue %Value undef, i32 0, 0
+  %mp_path = insertvalue %Value %mp_path0, i64 %mp_path_id, 1
+~w
+~w
+  ret i32 0
+}
+',
+        [RuntimeGlobals, PassFnsIR, CombinedEntrySetupIR, CallsIR, FreeIR]).
+
+%% plawk_passes_shared_table(+Passes, -TableName)
+%  The single assoc table a multi-pass program shares (v1). Discovered from
+%  the passes' actions: a counted key `arr[$k]++` or a print lookup
+%  `arr[$k]`. Exactly one distinct table across all passes.
+plawk_passes_shared_table(Passes, TableName) :-
+    findall(Name,
+        ( member(pass(Rules), Passes), member(rule(_, Actions), Rules),
+          member(Action, Actions), plawk_action_table_name(Action, Name) ),
+        Names0),
+    sort(Names0, [TableName]).
+
+plawk_action_table_name(inc_assoc(var(Name), _Key), Name).
+plawk_action_table_name(print(Fields), Name) :-
+    member(assoc(var(Name), _Key), Fields).
+
 %% plawk_multipass_pass_fn_ir(+Index, +RecordIR, -IR)
 %  One pass as a self-contained function: open the shared input path, loop
 %  reading transient line records, run RecordIR per record (it branches to
@@ -5187,6 +5275,78 @@ plawk_assoc_body_action_spec(dynposarray_bind_str(var(ArrayName), Call),
 % by it / string literals), emitted as a loop inside the rule's action
 % chain. Field plans (table indexes, i64-vs-str value kinds) resolve at
 % planning time.
+% Per-record output in an assoc program: `print` inside the record loop
+% (alongside table updates), so a program can emit one line per record while
+% maintaining/reading a table -- e.g. `{ c[$1]++ ; print $1, c[$1] }`, and
+% (with multi-pass) a pass-2 that reads a table pass-1 built. Fields are a
+% text field `$N`, or a table lookup `arr[$N]` (the table's i64 value at the
+% key interned from field N). String-literal fields are a follow-on.
+plawk_assoc_body_action_spec(print(Fields), assoc_print(FieldSpecs)) :-
+    Fields = [_ | _],
+    maplist(plawk_assoc_print_field_spec, Fields, FieldSpecs).
+
+plawk_assoc_print_field_spec(field(N), fld(N)) :-
+    integer(N), N > 0.
+plawk_assoc_print_field_spec(assoc(var(Arr), field(N)), lookup(Arr, N)) :-
+    integer(N), N > 0.
+
+% Resolve a print field's lookup array to its table index in the plan.
+plawk_assoc_print_plan_field(_Tables, fld(N), fld(N)).
+plawk_assoc_print_plan_field(Tables, lookup(Arr, N), lookup(TableIndex, N)) :-
+    nth0(TableIndex, Tables, Arr).
+
+%% plawk_assoc_print_field_lines(+PlannedFields, +Base, +FieldSep, +Index, -Lines)
+%  Emit the per-record print: each field preceded by a space separator
+%  (except the first). `fld(N)` prints field N's text (slice, %.*s); a
+%  `lookup(TableIndex, N)` interns field N and prints the table's i64 value
+%  there (%ld, 0 if absent).
+plawk_assoc_print_field_lines([], _Base, _FieldSep, _Index, []).
+plawk_assoc_print_field_lines([Field | Rest], Base, FieldSep, Index, Lines) :-
+    ( Index =:= 0
+    ->  SepLines = []
+    ;   format(atom(SepLine),
+            '  %~w_sep~w = call i32 @putchar(i32 32)', [Base, Index]),
+        SepLines = [SepLine]
+    ),
+    plawk_assoc_print_one_field(Field, Base, Index, FieldSep, FieldLs),
+    NextIndex is Index + 1,
+    plawk_assoc_print_field_lines(Rest, Base, FieldSep, NextIndex, RestLs),
+    append([SepLines, FieldLs, RestLs], Lines).
+
+plawk_assoc_print_one_field(fld(N), Base, Index, FieldSep, Lines) :-
+    format(atom(P), '~w_f~w', [Base, Index]),
+    format(atom(SliceL),
+        '  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+        [P, N, FieldSep]),
+    format(atom(PtrL), '  %~w_ptr = extractvalue %WamSlice %~w_slice, 0', [P, P]),
+    format(atom(LenL), '  %~w_len = extractvalue %WamSlice %~w_slice, 1', [P, P]),
+    format(atom(LenwL), '  %~w_lenw = trunc i64 %~w_len to i32', [P, P]),
+    format(atom(FmtL),
+        '  %~w_fmt = getelementptr [5 x i8], [5 x i8]* @.plawk_surface_print_slice, i32 0, i32 0',
+        [P]),
+    format(atom(PrL),
+        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i32 %~w_lenw, i8* %~w_ptr)',
+        [P, P, P, P]),
+    Lines = [SliceL, PtrL, LenL, LenwL, FmtL, PrL].
+plawk_assoc_print_one_field(lookup(TableIndex, N), Base, Index, FieldSep, Lines) :-
+    format(atom(P), '~w_f~w', [Base, Index]),
+    format(atom(SliceL),
+        '  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+        [P, N, FieldSep]),
+    format(atom(PtrL), '  %~w_ptr = extractvalue %WamSlice %~w_slice, 0', [P, P]),
+    format(atom(LenL), '  %~w_len = extractvalue %WamSlice %~w_slice, 1', [P, P]),
+    format(atom(KidL),
+        '  %~w_kid = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len)', [P, P, P]),
+    format(atom(ValL),
+        '  %~w_val = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_kid)',
+        [P, TableIndex, P]),
+    format(atom(FmtL),
+        '  %~w_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
+        [P]),
+    format(atom(PrL),
+        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i64 %~w_val)', [P, P, P]),
+    Lines = [SliceL, PtrL, LenL, KidL, ValL, FmtL, PrL].
+
 plawk_assoc_body_action_spec(for_in(var(LoopVar), var(ArrayName), Body),
         forin(LoopVar, ArrayName, Fields)) :-
     Body = [print(Fields)],
@@ -5254,6 +5414,13 @@ plawk_assoc_planned_actions([dynassoc(ArrayName, Call) | Rest], Tables,
 % (i64 vs str) baked in from the str-array set, so the emitter needs no
 % program context. A positional-array iterated table gives a numeric loop
 % key (key_int) instead of the atom-resolved default.
+plawk_assoc_planned_actions([assoc_print(FieldSpecs) | Rest],
+        Tables, StrArrays, PosArrays, Index) -->
+    { maplist(plawk_assoc_print_plan_field(Tables), FieldSpecs, PlannedFields),
+      NextIndex is Index + 1
+    },
+    [assoc_print_action(Index, PlannedFields)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 plawk_assoc_planned_actions([forin(LoopVar, ArrayName, Fields) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
     { nth0(TableIndex, Tables, ArrayName),
@@ -5521,6 +5688,26 @@ plawk_assoc_rule_action_blocks(RuleIndex,
           [Base, ShimName, CallArgsIR, TableIndex]),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([GlobalMarkers, [Label], Setup, [CallLine, Next, '']], Lines)
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% Per-record print: one output line per record, fields being a text field
+% ($N, printed via its slice) or a table lookup (arr[$N], the i64 value at
+% the key interned from field N). Space-separated, newline-terminated.
+plawk_assoc_rule_action_blocks(RuleIndex,
+        [assoc_print_action(Index, Fields) | Rest], NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(Base), 'assoc_rule_~w_action_~w_pr', [RuleIndex, Index]),
+      plawk_assoc_print_field_lines(Fields, Base, FieldSeparator, 0, FieldLines),
+      format(atom(NLLine), '  %~w_nl = call i32 @putchar(i32 10)', [Base]),
+      format(atom(NextLine), '  br label %~w', [ActionNextLabel]),
+      append([[Label], FieldLines, [NLLine, NextLine, '']], Lines)
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
