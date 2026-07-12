@@ -935,11 +935,31 @@ for_in_action(for_in(var(LoopVar), var(ArrayName), Body)) -->
 for_in_body(Actions) -->
     action_block(Actions),
     !.
+% for-in filter (assoc for-in, stage 1): `{ if (GUARD) print ... }` where
+% GUARD compares the loop key `k` or the value `arr[k]` to an integer.
+% A for-in-scoped condition -- k / arr[k] are only meaningful inside the
+% loop, so the operands live here rather than in the global pattern
+% grammar. Gates the per-key print; no cross-iteration state.
+for_in_body([if(Guard, [PrintAction], [])]) -->
+    "{", ws, "if", ws, "(", ws, forin_guard(Guard), ws, ")", ws,
+    print_action(PrintAction), ws, "}",
+    !.
 for_in_body([WritebinAction]) -->
     writebin_action(WritebinAction),
     !.
 for_in_body([PrintAction]) -->
     print_action(PrintAction).
+
+% arr[k] CMP int -- value comparison (tried before the bare-key form,
+% since `arr[` also starts with an identifier).
+forin_guard(forin_val_cmp(Array, LoopVar, Op, Value)) -->
+    identifier(Array), ws, "[", ws, identifier(LoopVar), ws, "]", ws,
+    numeric_cmp_op(Op), ws, signed_integer_value(Value),
+    !.
+% k CMP int -- loop-key comparison.
+forin_guard(forin_key_cmp(LoopVar, Op, Value)) -->
+    identifier(LoopVar), ws, numeric_cmp_op(Op), ws,
+    signed_integer_value(Value).
 
 actions([Action | Actions]) -->
     action(Action),

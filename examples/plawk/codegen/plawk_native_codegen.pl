@@ -3587,6 +3587,11 @@ plawk_assoc_spec_forin_array(ActionSpecs, ArrayName) :-
     ( ArrayName = FA
     ; member(assoc(var(ArrayName), var(_)), FFields)
     ).
+plawk_assoc_spec_forin_array(ActionSpecs, ArrayName) :-
+    member(forin_guarded(_LoopVar, FA, _Guard, FFields), ActionSpecs),
+    ( ArrayName = FA
+    ; member(assoc(var(ArrayName), var(_)), FFields)
+    ).
 
 %% plawk_assoc_specs_str_arrays(+RuleSpecs, -StrArrays)
 %  Names of tables populated through `as assoc(str)` binds -- their
@@ -4557,6 +4562,20 @@ plawk_assoc_body_action_spec(for_in(var(LoopVar), var(ArrayName), Body),
     Body = [print(Fields)],
     Fields = [_ | _],
     maplist(plawk_forin_print_field(LoopVar), Fields).
+% for-in FILTER (assoc for-in stage 1): a per-key print gated by a guard
+% on the loop key or the iterated value. `k` / `arr[k]` are for-in-scoped
+% operands (see PLAWK_ASSOC_FORIN.md).
+plawk_assoc_body_action_spec(
+        for_in(var(LoopVar), var(ArrayName), [if(Guard, [print(Fields)], [])]),
+        forin_guarded(LoopVar, ArrayName, Guard, Fields)) :-
+    plawk_forin_guard_ok(Guard, LoopVar, ArrayName),
+    Fields = [_ | _],
+    maplist(plawk_forin_print_field(LoopVar), Fields).
+
+% Stage 1 guards: `arr[k] CMP int` where arr is the iterated table
+% (value_self), or `k CMP int` (the raw loop key).
+plawk_forin_guard_ok(forin_val_cmp(Array, LoopVar, _Op, _V), LoopVar, Array).
+plawk_forin_guard_ok(forin_key_cmp(LoopVar, _Op, _V), LoopVar, _Array).
 
 plawk_assoc_increment_action(inc_assoc(var(ArrayName), field(KeyIndex)), ArrayName-KeyIndex) :-
     KeyIndex > 0.
@@ -4614,6 +4633,22 @@ plawk_assoc_planned_actions([forin(LoopVar, ArrayName, Fields) | Rest],
     },
     [assoc_forin_action(Index, TableIndex, FieldPlans)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+plawk_assoc_planned_actions(
+        [forin_guarded(LoopVar, ArrayName, Guard, Fields) | Rest],
+        Tables, StrArrays, PosArrays, Index) -->
+    { nth0(TableIndex, Tables, ArrayName),
+      plawk_forin_guard_plan(Guard, GuardPlan),
+      maplist(plawk_forin_rule_field_plan(LoopVar, ArrayName, TableIndex,
+          Tables, StrArrays, PosArrays), Fields, FieldPlans),
+      NextIndex is Index + 1
+    },
+    [assoc_forin_guarded_action(Index, TableIndex, GuardPlan, FieldPlans)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+
+% guard operand: the iterated table's value at the current slot, or the
+% raw loop key; both compared to an integer literal.
+plawk_forin_guard_plan(forin_val_cmp(_A, _K, Op, V), guard_value(Op, V)).
+plawk_forin_guard_plan(forin_key_cmp(_K, Op, V), guard_key(Op, V)).
 
 plawk_forin_rule_field_plan(LoopVar, ArrayName, _TableIndex, _Tables,
         _StrArrays, PosArrays, var(LoopVar), KeyPlan) :- !,
@@ -4821,6 +4856,87 @@ plawk_assoc_rule_action_blocks(RuleIndex,
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% Guarded for-in (stage 1 filter): same slot-iteration loop, but a guard
+% on the key or the iterated value gates the per-key print. Passing
+% entries print; the rest fall straight through to the loop-continue.
+plawk_assoc_rule_action_blocks(RuleIndex,
+        [assoc_forin_guarded_action(Index, TableIndex, GuardPlan, FieldPlans)
+         | Rest],
+        NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(B), 'arfg_~w_~w', [RuleIndex, Index]),
+      format(atom(HeadBr), '  br label %~w_head', [B]),
+      format(atom(HeadLbl), '~w_head:', [B]),
+      format(atom(Phi),
+          '  %~w_idx = phi i64 [0, %assoc_rule_~w_action_~w], [%~w_next, %~w_done]',
+          [B, RuleIndex, Index, B, B]),
+      format(atom(Slot),
+          '  %~w_slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_idx)',
+          [B, TableIndex, B]),
+      format(atom(DoneC), '  %~w_done_c = icmp slt i64 %~w_slot, 0', [B, B]),
+      format(atom(BrBody),
+          '  br i1 %~w_done_c, label %~w_after, label %~w_body', [B, B, B]),
+      format(atom(BodyLbl), '~w_body:', [B]),
+      format(atom(Key),
+          '  %~w_key = call i64 @wam_assoc_i64_key_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_slot)',
+          [B, TableIndex, B]),
+      plawk_forin_guard_lines(GuardPlan, B, TableIndex, GuardLines, CondVar),
+      format(atom(BrGuard),
+          '  br i1 ~w, label %~w_print, label %~w_skip', [CondVar, B, B]),
+      format(atom(PrintLbl), '~w_print:', [B]),
+      phrase(plawk_forin_rule_field_lines(FieldPlans, B, 0), FieldLines),
+      format(atom(NL), '  %~w_nl = call i32 @putchar(i32 10)', [B]),
+      format(atom(BrDoneP), '  br label %~w_done', [B]),
+      format(atom(SkipLbl), '~w_skip:', [B]),
+      format(atom(BrDoneS), '  br label %~w_done', [B]),
+      format(atom(DoneLbl), '~w_done:', [B]),
+      format(atom(Next), '  %~w_next = add i64 %~w_slot, 1', [B, B]),
+      format(atom(BrHead), '  br label %~w_head', [B]),
+      format(atom(AfterLbl), '~w_after:', [B]),
+      format(atom(BrNext), '  br label %~w', [ActionNextLabel]),
+      append([[Label, HeadBr, '', HeadLbl, Phi, Slot, DoneC, BrBody, '',
+               BodyLbl, Key],
+              GuardLines,
+              [BrGuard, '', PrintLbl],
+              FieldLines,
+              [NL, BrDoneP, '', SkipLbl, BrDoneS, '', DoneLbl, Next, BrHead,
+               '', AfterLbl, BrNext, '']],
+          Lines)
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+
+% Guard operand load + comparison. guard_value reads the iterated table's
+% value at the current slot; guard_key uses the raw key. Both icmp against
+% the integer literal.
+plawk_forin_guard_lines(guard_value(Op, V), B, TableIndex, Lines, CondVar) :-
+    plawk_forin_cmp_pred(Op, Pred),
+    format(atom(ValLine),
+        '  %~w_gval = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_slot)',
+        [B, TableIndex, B]),
+    format(atom(CmpLine),
+        '  %~w_gcmp = icmp ~w i64 %~w_gval, ~w', [B, Pred, B, V]),
+    format(atom(CondVar), '%~w_gcmp', [B]),
+    Lines = [ValLine, CmpLine].
+plawk_forin_guard_lines(guard_key(Op, V), B, _TableIndex, Lines, CondVar) :-
+    plawk_forin_cmp_pred(Op, Pred),
+    format(atom(CmpLine),
+        '  %~w_gcmp = icmp ~w i64 %~w_key, ~w', [B, Pred, B, V]),
+    format(atom(CondVar), '%~w_gcmp', [B]),
+    Lines = [CmpLine].
+
+plawk_forin_cmp_pred(eq, eq).
+plawk_forin_cmp_pred(ne, ne).
+plawk_forin_cmp_pred(lt, slt).
+plawk_forin_cmp_pred(le, sle).
+plawk_forin_cmp_pred(gt, sgt).
+plawk_forin_cmp_pred(ge, sge).
 
 plawk_forin_rule_field_lines([], _B, _N) -->
     [].
