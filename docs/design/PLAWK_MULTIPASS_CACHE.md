@@ -163,22 +163,26 @@ are expressed through **where** a variable is declared:
 ```awk
 BEGIN { FS = "," }                       # plain: setup only, no backing
 
-BEGIN cache("users.lmdb") {              # a backed scope: seen/total are
-    declare seen                          # durable, bound to users.lmdb, and
-    declare total                         # reflect its contents on open
+BEGIN cache("users.lmdb") {              # backed, NO alias -> global names:
+    declare seen                          # seen / total are durable and
+    declare total                         # referenced bare everywhere
 }
-BEGIN cache("stats.lmdb") { declare hist }   # a second store, a second scope
+BEGIN cache("stats.lmdb" as stats) {     # backed, aliased -> a NAMESPACE:
+    declare work                          # tables are stats.work / stats.hist
+    declare hist
+    global runs                           # ...except `runs`, lifted to global
+}
 
-pass { seen[$1]++ ; total += $2 }        # writes route to users.lmdb
-pass { hist[bucket($2)]++ }              # writes route to stats.lmdb
-END  { for (k in hist) print k, hist[k] }
+pass          { seen[$1]++ ; total += $2 }        # bare globals -> users.lmdb
+pass          { stats.work[$1]++ ; runs++ }       # qualified table; bare global
+END           { for (k in stats.hist) print k, stats.hist[k] }
 ```
 
 The store name **is** the cross-process coordination unit: two programs
-that open a `BEGIN cache("shared.lmdb")` block with the same declarations
-are, by construction, sharing that store. This replaces the earlier
-per-variable `as cache(...)` annotation — group by block instead of tagging
-each variable, which is both DRY and awk-idiomatic.
+that open a `cache("shared.lmdb")` block with the same tables are, by
+construction, sharing that store. This replaces the earlier per-variable
+`as cache(...)` annotation — group by block, which is both DRY and
+awk-idiomatic.
 
 | declaration site | survives passes? | durable / cross-process? |
 |---|---|---|
@@ -186,28 +190,39 @@ each variable, which is both DRY and awk-idiomatic.
 | plain `BEGIN { … }` | yes (in-memory) | no |
 | `BEGIN cache("db") { … }` | yes | yes — bound to `db` |
 
+**Namespacing is opt-in via `as`.** Backing (durability) and namespacing
+(name resolution) are separate axes:
+
+- **No alias → global names.** A backed block without `as` contributes its
+  tables to the **global** namespace — referenced bare everywhere, exactly
+  as awk variables are today (just durable). Global names must be unique
+  program-wide.
+- **`as ns` → a namespace.** `cache("db" as ns)` makes `ns` a namespace; its
+  tables are referenced **`ns.table`** from passes / `END` / other blocks
+  (the module model — this is what lets a store hold many tables without
+  name collisions, each a primary-key-indexed sub-database of the one
+  environment). The alias may sit inside `cache(... as ns)` or after it
+  (`cache("db") as ns`); both parse.
+- **`global` escapes the prefix.** A declaration marked `global` inside a
+  namespaced block is lifted to the global namespace — usable bare, no
+  `ns.` prefix. So you namespace the bulk and hand-pick the few hot tables
+  to use bare.
+
 **Rules.**
 
 1. **One store ↔ one backing block** within a program (two blocks on the
    same DB would silently share a keyspace). Cross-*process* sharing is
    fine — different programs each open the same store.
 2. **Load-on-open.** Entering a backed block opens the store and binds its
-   variables to the live contents, so a resumed run or a peer process sees
+   tables to the live contents, so a resumed run or a peer process sees
    what is already there.
 3. **Materialisation is lazy by default** (the `WAM_LMDB_LAZY_*` axis):
    values are fetched from the store on access, not slurped at open — the
-   larger-than-RAM story. A specific variable can be marked **`eager`** to
-   load fully at open when it is small and hot:
-
-   ```awk
-   BEGIN cache("users.lmdb") {
-       declare total eager       # small scalar/table: load into memory at open
-       declare seen              # large table: lazy (fetch per access)
-   }
-   ```
+   larger-than-RAM story. A specific table can be marked **`eager`** to load
+   fully at open when it is small and hot (`declare total eager`).
 
 A backed `BEGIN` block may still contain setup statements (initialise
-defaults for its own variables); it is not restricted to declarations.
+defaults for its own tables); it is not restricted to declarations.
 
 ### 3.3 The cache as an associative array
 
@@ -362,9 +377,13 @@ single-pass test before any driver surgery).
 - **Phase 3 — cache as the inter-pass channel (durable payoff).** Combine
   1+2: a table declared in a `BEGIN cache("db")` block written in pass 1 and
   read in pass 2, with the commit barrier between passes; plus the
-  one-store-per-block and load-on-open rules. Test: `total[$1] += $2` in
+  one-store-per-block and load-on-open rules. Also introduce the name
+  resolution surface: `as ns` namespaces a store (tables `ns.table`,
+  mapping to LMDB named sub-databases), no-alias blocks stay global, and
+  `global` lifts a namespaced table to bare. Test: `total[$1] += $2` in
   pass 1; `print $1, $2 / total[$1]` in pass 2, verifying pass 2 sees
-  complete, durably-committed totals.
+  complete, durably-committed totals; plus a namespaced `stats.work` table
+  addressed from a pass and a `global` table used bare.
 
 - **Phase 4 — configurable readers.** `over TABLE` (iterate a table as the
   record source) and `over prev` (the previous pass's sink spools into this
@@ -405,9 +424,14 @@ single-pass test before any driver surgery).
   gets an ephemeral temp store deleted at exit — useful for a pure
   spill-to-disk larger-than-RAM pass with no cross-run intent? Leaning yes,
   as a convenience.
-- **`eager` granularity.** `eager` is proposed per-variable inside a backed
+- **`eager` granularity.** `eager` is proposed per-table inside a backed
   block. Open: also allow a whole block `BEGIN cache("db") eager { … }` when
-  every variable is small/hot? Cheap to add if wanted.
+  every table is small/hot? Cheap to add if wanted.
+- **Secondary indexes (deferred).** Tables are primary-key indexed (the
+  assoc key is the LMDB key). Looking a table up by a non-key field would
+  need a companion index sub-DB or `MDB_DUPSORT`, plus a surface to declare
+  the indexed field. A real feature with its own design — out of scope until
+  a use appears; noted so the primary-key-only choice is explicit.
 - **Concurrency.** Single-process, single-threaded for v1 — LMDB's
   multi-reader story is out of scope until a use appears.
 
