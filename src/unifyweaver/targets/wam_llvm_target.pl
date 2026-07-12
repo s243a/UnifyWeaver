@@ -4923,47 +4923,56 @@ vat.miss:
 ; @wam_cache_close frees it. The i64 fast path (inc/get/set/iterate) reuses
 ; the assoc helpers directly on the handle. internal linkage so an unused
 ; cache is dead-code eliminated -- zero cost when no store is opened.
-define internal %WamAssocI64Table* @wam_cache_open(i8* %path) {
+; Load (key,value) i64 pairs from the file at %path INTO an existing table
+; (merging over whatever it already holds). A missing/short file is a no-op,
+; so an unseeded store starts empty and a pre-populated one is read in.
+define internal void @wam_cache_load(%WamAssocI64Table* %table, i8* %path) {
 entry:
   %cbuf = alloca i64
   %pbuf = alloca [2 x i64]
-  %table = call %WamAssocI64Table* @wam_assoc_i64_new(i64 64)
   %fd = call i32 @open(i8* %path, i32 0, i32 0)
   %fd_ok = icmp sge i32 %fd, 0
-  br i1 %fd_ok, label %co.readcount, label %co.done
+  br i1 %fd_ok, label %cl.readcount, label %cl.done
 
-co.readcount:
+cl.readcount:
   %cbuf_i8 = bitcast i64* %cbuf to i8*
   %cn = call i64 @read(i32 %fd, i8* %cbuf_i8, i64 8)
   %cn_ok = icmp eq i64 %cn, 8
-  br i1 %cn_ok, label %co.loop, label %co.close
+  br i1 %cn_ok, label %cl.loop, label %cl.close
 
-co.loop:
-  %i = phi i64 [ 0, %co.readcount ], [ %i.next, %co.store ]
+cl.loop:
+  %i = phi i64 [ 0, %cl.readcount ], [ %i.next, %cl.store ]
   %count = load i64, i64* %cbuf
   %i.done = icmp uge i64 %i, %count
-  br i1 %i.done, label %co.close, label %co.readpair
+  br i1 %i.done, label %cl.close, label %cl.readpair
 
-co.readpair:
+cl.readpair:
   %pbuf_i8 = bitcast [2 x i64]* %pbuf to i8*
   %pn = call i64 @read(i32 %fd, i8* %pbuf_i8, i64 16)
   %pn_ok = icmp eq i64 %pn, 16
-  br i1 %pn_ok, label %co.store, label %co.close
+  br i1 %pn_ok, label %cl.store, label %cl.close
 
-co.store:
+cl.store:
   %kp = getelementptr [2 x i64], [2 x i64]* %pbuf, i64 0, i64 0
   %k = load i64, i64* %kp
   %vp = getelementptr [2 x i64], [2 x i64]* %pbuf, i64 0, i64 1
   %v = load i64, i64* %vp
   %setrc = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %k, i64 %v)
   %i.next = add i64 %i, 1
-  br label %co.loop
+  br label %cl.loop
 
-co.close:
+cl.close:
   %crc = call i32 @close(i32 %fd)
-  br label %co.done
+  br label %cl.done
 
-co.done:
+cl.done:
+  ret void
+}
+
+define internal %WamAssocI64Table* @wam_cache_open(i8* %path) {
+entry:
+  %table = call %WamAssocI64Table* @wam_assoc_i64_new(i64 64)
+  call void @wam_cache_load(%WamAssocI64Table* %table, i8* %path)
   ret %WamAssocI64Table* %table
 }
 
