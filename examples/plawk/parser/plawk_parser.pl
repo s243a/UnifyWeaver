@@ -849,10 +849,11 @@ quoted_string_escape_codes([0'\\, Code]) -->
 % commits it at END. Tried before the plain BEGIN clause. See
 % PLAWK_MULTIPASS_CACHE.md.
 begin_clauses([begin(Actions)]) -->
-    "BEGIN", ws, "cache", ws, "(", ws, quoted_string(PathCodes), ws, ")", ws,
+    "BEGIN", ws, "cache", ws, "(", ws, quoted_string(PathCodes), ws,
+    cache_backend(Backend), ws, ")", ws,
     "{", ws,
     { string_codes(Path, PathCodes) },
-    cache_decl_list(Path, Actions),
+    cache_decl_list(Path, Backend, Actions),
     ws, "}", ws,
     !.
 begin_clauses([begin(Actions)]) -->
@@ -868,14 +869,23 @@ begin_clauses([begin(Actions)]) -->
 begin_clauses([]) -->
     [].
 
-cache_decl_list(Path, [cache_table(Name, Path) | Rest]) -->
+% Optional backend selector inside cache(...): `backend "lmdb"` (durable
+% LMDB store) or `backend "file"` (the default portable file backend).
+cache_backend(Backend) -->
+    ws, "backend", required_ws, quoted_string(BCodes),
+    { atom_codes(Backend, BCodes) },
+    !.
+cache_backend(file) -->
+    [].
+
+cache_decl_list(Path, Backend, [cache_table(Name, Path, Backend) | Rest]) -->
     "declare", required_ws, identifier(Name),
-    cache_decl_list_rest(Path, Rest).
-cache_decl_list_rest(Path, [cache_table(Name, Path) | Rest]) -->
+    cache_decl_list_rest(Path, Backend, Rest).
+cache_decl_list_rest(Path, Backend, [cache_table(Name, Path, Backend) | Rest]) -->
     ws, cache_decl_sep, ws, "declare", required_ws, identifier(Name),
     !,
-    cache_decl_list_rest(Path, Rest).
-cache_decl_list_rest(_Path, []) -->
+    cache_decl_list_rest(Path, Backend, Rest).
+cache_decl_list_rest(_Path, _Backend, []) -->
     [].
 cache_decl_sep --> ";", !.
 cache_decl_sep --> [].

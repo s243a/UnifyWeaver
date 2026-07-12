@@ -5167,10 +5167,11 @@ plawk_assoc_entry_setup_lines([_ArrayName | Rest], Index, CacheEntries) -->
     { format(atom(NewLine),
           '  %plawk_assoc_table_~w = call %WamAssocI64Table* @wam_assoc_i64_new(i64 4096)',
           [Index]),
-      ( memberchk(cache(Index, BytesLen), CacheEntries)
-      ->  format(atom(LoadLine),
-              '  call void @wam_cache_load(%WamAssocI64Table* %plawk_assoc_table_~w, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_cache_path_~w, i64 0, i64 0))',
-              [Index, BytesLen, BytesLen, Index]),
+      ( memberchk(cache(Index, BytesLen, Backend), CacheEntries)
+      ->  plawk_cache_fn(Backend, load, LoadFn),
+          format(atom(LoadLine),
+              '  call void @~w(%WamAssocI64Table* %plawk_assoc_table_~w, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_cache_path_~w, i64 0, i64 0))',
+              [LoadFn, Index, BytesLen, BytesLen, Index]),
           Lines = [NewLine, LoadLine]
       ;   Lines = [NewLine]
       ),
@@ -5182,39 +5183,58 @@ plawk_assoc_entry_setup_lines([_ArrayName | Rest], Index, CacheEntries) -->
 %% plawk_program_cache_tables(+BeginClauses, -NamePaths)
 %  Name-Path pairs for every table declared in a `BEGIN cache("path") {
 %  declare NAME ... }` block.
-plawk_program_cache_tables(BeginClauses, NamePaths) :-
-    findall(Name-Path,
+plawk_program_cache_tables(BeginClauses, Triples) :-
+    findall(ct(Name, Path, Backend),
         ( member(begin(Actions), BeginClauses),
-          member(cache_table(Name, Path), Actions)
+          member(cache_table(Name, Path, Backend), Actions)
         ),
-        NamePaths).
+        Triples).
 
-%% plawk_cache_entries(+Tables, +NamePaths, -CacheEntries, -PathGlobalsIR)
+%% plawk_cache_fn(+Backend, +Op, -FnName)
+%  The runtime function for a cache Op (load|commit) under a backend. The
+%  `file` backend uses the always-present LLVM-IR helpers; `lmdb` uses the
+%  external C functions linked from wam_cache_lmdb.c (+ -llmdb) when the
+%  build detects an lmdb-backed store.
+plawk_cache_fn(lmdb, load, wam_cache_load_lmdb) :- !.
+plawk_cache_fn(lmdb, commit, wam_cache_commit_lmdb) :- !.
+plawk_cache_fn(_File, load, wam_cache_load).
+plawk_cache_fn(_File, commit, wam_cache_commit).
+
+%% plawk_cache_entries(+Tables, +Triples, -CacheEntries, -PathGlobalsIR)
 %  Resolve each cache-backed table name to its index in the plan's table
 %  list, emit a private string global @.plawk_cache_path_<idx> for its path,
-%  and record cache(Index, BytesLen) so setup/commit can reference the
-%  global. A declared name absent from the plan (never used) is skipped.
-plawk_cache_entries(Tables, NamePaths, CacheEntries, PathGlobalsIR) :-
-    findall(cache(Index, BytesLen)-Global,
-        ( member(Name-Path, NamePaths),
+%  and record cache(Index, BytesLen, Backend) so setup/commit can reference
+%  the global and pick the backend function. A declared name absent from the
+%  plan (never used) is skipped. PathGlobalsIR also carries external declares
+%  for any lmdb backend functions in use.
+plawk_cache_entries(Tables, Triples, CacheEntries, PathGlobalsIR) :-
+    findall(cache(Index, BytesLen, Backend)-Global,
+        ( member(ct(Name, Path, Backend), Triples),
           nth0(Index, Tables, Name),
           format(atom(GName), 'plawk_cache_path_~w', [Index]),
           llvm_emit_c_string_global(GName, Path, Global, _Len, BytesLen)
         ),
         Pairs),
     pairs_keys_values(Pairs, CacheEntries, Globals),
-    atomic_list_concat(Globals, '\n', PathGlobalsIR).
+    ( memberchk(cache(_, _, lmdb), CacheEntries)
+    ->  LmdbDecls = ['declare void @wam_cache_load_lmdb(%WamAssocI64Table*, i8*)',
+                     'declare void @wam_cache_commit_lmdb(%WamAssocI64Table*, i8*)']
+    ;   LmdbDecls = []
+    ),
+    append(Globals, LmdbDecls, AllGlobals),
+    atomic_list_concat(AllGlobals, '\n', PathGlobalsIR).
 
 %% plawk_cache_commit_lines(+CacheEntries, -IR)
-%  A @wam_cache_commit call per cache-backed table, writing the final table
-%  back to its store. Emitted at the top of the END phase (after the record
-%  loop, table still live), so the committed state is the completed pass.
+%  A commit call per cache-backed table, writing the final table back to its
+%  store. Emitted at the top of the END phase (after the record loop, table
+%  still live), so the committed state is the completed pass.
 plawk_cache_commit_lines(CacheEntries, IR) :-
     findall(Line,
-        ( member(cache(Index, BytesLen), CacheEntries),
+        ( member(cache(Index, BytesLen, Backend), CacheEntries),
+          plawk_cache_fn(Backend, commit, CommitFn),
           format(atom(Line),
-              '  call void @wam_cache_commit(%WamAssocI64Table* %plawk_assoc_table_~w, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_cache_path_~w, i64 0, i64 0))',
-              [Index, BytesLen, BytesLen, Index])
+              '  call void @~w(%WamAssocI64Table* %plawk_assoc_table_~w, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_cache_path_~w, i64 0, i64 0))',
+              [CommitFn, Index, BytesLen, BytesLen, Index])
         ),
         Lines),
     atomic_list_concat(Lines, '\n', IR).

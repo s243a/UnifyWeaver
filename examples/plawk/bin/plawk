@@ -189,7 +189,12 @@ build(File, Out0, KeepLL) :-
         open(LLPath, append, S, [encoding(utf8)]),
         ( nl(S), write(S, DriverIR) ),
         close(S)),
-    format(atom(Cmd), 'clang -w -O2 ~w -o ~w -lm 2>&1', [LLPath, Out]),
+    (   plawk_program_uses_lmdb_cache(Program)
+    ->  lmdb_c_runtime_file(CFile),
+        format(atom(Cmd),
+            'clang -w -O2 ~w ~w -o ~w -lm -llmdb 2>&1', [LLPath, CFile, Out])
+    ;   format(atom(Cmd), 'clang -w -O2 ~w -o ~w -lm 2>&1', [LLPath, Out])
+    ),
     process_create(path(sh), ['-c', Cmd],
         [stdout(pipe(CS)), stderr(std), process(Pid)]),
     read_string(CS, _, ClangOut),
@@ -204,6 +209,20 @@ build(File, Out0, KeepLL) :-
     ;   format(user_error, 'plawk: clang failed:~n~w~n', [ClangOut]),
         halt(4)
     ).
+
+% A program uses the LMDB cache backend if any declared cache table names
+% it. Such a build links the C LMDB runtime (wam_cache_lmdb.c) and -llmdb;
+% the default file backend links neither.
+plawk_program_uses_lmdb_cache(program(BeginClauses, _, _)) :-
+    member(begin(Actions), BeginClauses),
+    member(cache_table(_Name, _Path, lmdb), Actions),
+    !.
+
+% The C LMDB runtime ships beside wam_llvm_target.pl.
+lmdb_c_runtime_file(CFile) :-
+    module_property(wam_llvm_target, file(TargetPl)),
+    file_directory_name(TargetPl, Dir),
+    directory_file_path(Dir, 'wam_cache_lmdb.c', CFile).
 
 ll_path(Out, true, LLPath) :-
     !,

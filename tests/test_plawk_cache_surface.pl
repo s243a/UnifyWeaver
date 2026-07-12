@@ -30,7 +30,7 @@ test(cache_block_parses) :-
         "BEGIN cache(\"h.db\") { declare c }\n\c
          { c[$1]++ }\n\c
          END { for (k in c) print k, c[k] }\n",
-        program([begin([cache_table(c, "h.db")])],
+        program([begin([cache_table(c, "h.db", file)])],
             [rule(always, [inc_assoc(var(c), field(1))])],
             [end([for_in(var(k), var(c),
                 [print([var(k), assoc(var(c), var(k))])])])])),
@@ -40,7 +40,7 @@ test(cache_block_parses) :-
 test(multi_declare_parses) :-
     plawk_parse_string(
         "BEGIN cache(\"s.db\") { declare a ; declare b }\n{ a[$1]++ }\n",
-        program([begin([cache_table(a, "s.db"), cache_table(b, "s.db")])],
+        program([begin([cache_table(a, "s.db", file), cache_table(b, "s.db", file)])],
             _, _)),
     !.
 
