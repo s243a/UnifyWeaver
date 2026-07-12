@@ -49,7 +49,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | KERN-FSHARP | Finish F# kernel templates | F# | L | — |
 | EMIT-ILASM | Lowered emitter | ILAsm | L | — |
 | EMIT-JVM | Lowered emitter | JVM | L | — |
-| EMIT-KOTLIN ⭐ | Lowered emitter | Kotlin | M | — (recommended first task) — **in progress** (`cursor/emit-kotlin-lowered-f421`) |
+| EMIT-KOTLIN ⭐ | Lowered emitter | Kotlin | M | — | **done** (`cursor/emit-kotlin-lowered-f421`) |
 | BENCH-LLVM | Effective-distance bench row | LLVM | L | — |
 | BENCH-CPP | Effective-distance bench row | C++ | L | — |
 | BENCH-C | Effective-distance bench row | C | M | — |
