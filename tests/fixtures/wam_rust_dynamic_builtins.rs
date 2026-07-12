@@ -298,6 +298,12 @@ fn current_predicate_backtracks_over_matching_dynamic_arities() {
         if !vm.backtrack() { break; }
     }
     assert_eq!(arities, vec![Value::Integer(1), Value::Integer(2)]);
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("/", vec![at("dyn"), Value::Integer(-1)]));
+    vm.pc = 1;
+    assert!(!vm.run());
+    assert!(vm.thrown_ball.is_none());
 }
 
 #[test]
@@ -313,6 +319,30 @@ fn generated_tail_current_predicate_call_reads_static_labels() {
     assert!(vm.run());
     let arity = vm.bindings.get("Arity").cloned().expect("Arity bound");
     assert_eq!(vm.deref_heap(&vm.deref_var(&arity)), Value::Integer(2));
+}
+
+#[test]
+fn generated_current_predicate_errors_are_catchable() {
+    let (code, labels) = shared_wam_program();
+    for pred in [
+        "rust_current_predicate_instantiation_demo/1",
+        "rust_current_predicate_type_demo/1",
+        "rust_current_predicate_name_type_demo/1",
+        "rust_current_predicate_arity_type_demo/1",
+    ] {
+        let mut vm = WamState::new(code.clone(), labels.clone());
+        vm.set_reg_str("A1", ub("Result"));
+        vm.pc = *vm.labels.get(pred).expect("generated error demo label");
+
+        assert!(vm.run(), "{} should catch its error", pred);
+        assert_eq!(
+            vm.bindings.get("Result"),
+            Some(&at("caught")),
+            "{} recovery should run",
+            pred,
+        );
+        assert!(vm.thrown_ball.is_none(), "{} should consume the error", pred);
+    }
 }
 
 #[test]

@@ -219,6 +219,18 @@
         }
     }
 
+    fn raise_iso_error(&mut self, formal: Value) -> bool {
+        self.var_counter += 1;
+        self.thrown_ball = Some(Value::Str(
+            "error/2".to_string(),
+            vec![
+                formal,
+                Value::Unbound(format!("_EC{}", self.var_counter)),
+            ],
+        ));
+        false
+    }
+
     fn raise_read_syntax_error(&mut self) -> bool {
         self.var_counter += 1;
         let context = Value::Unbound(format!("_SE{}", self.var_counter));
@@ -698,24 +710,41 @@
     fn current_predicate_call(&mut self, cont_pc: usize) -> bool {
         let spec_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
         let spec = self.deref_heap(&self.deref_var(&spec_raw));
-        let (name, arity) = match spec {
+        let (name, arity) = match &spec {
+            Value::Unbound(_) | Value::Uninit => {
+                return self.raise_iso_error(Value::Atom(
+                    "instantiation_error".to_string(),
+                ));
+            }
             Value::Str(functor, args)
-                if args.len() == 2 && Self::display_functor_name(&functor, 2) == "/" =>
+                if args.len() == 2 && Self::display_functor_name(functor, 2) == "/" =>
             {
                 (
                     self.deref_heap(&self.deref_var(&args[0])),
                     self.deref_heap(&self.deref_var(&args[1])),
                 )
             }
-            _ => return false,
+            _ => {
+                return self.raise_iso_error(Value::Str(
+                    "type_error/2".to_string(),
+                    vec![
+                        Value::Atom("predicate_indicator".to_string()),
+                        spec,
+                    ],
+                ));
+            }
         };
         if !matches!(&name, Value::Atom(_) | Value::Unbound(_)) {
-            return false;
+            return self.raise_iso_error(Value::Str(
+                "type_error/2".to_string(),
+                vec![Value::Atom("atom".to_string()), name],
+            ));
         }
-        if !matches!(&arity, Value::Integer(n) if *n >= 0) &&
-            !matches!(&arity, Value::Unbound(_))
-        {
-            return false;
+        if !matches!(&arity, Value::Integer(_) | Value::Unbound(_)) {
+            return self.raise_iso_error(Value::Str(
+                "type_error/2".to_string(),
+                vec![Value::Atom("integer".to_string()), arity],
+            ));
         }
 
         let mut all_keys = std::collections::BTreeSet::new();
