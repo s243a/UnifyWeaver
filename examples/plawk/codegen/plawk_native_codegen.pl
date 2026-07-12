@@ -598,6 +598,44 @@ plawk_program_native_driver_ir(
             AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+% accumulate-then-print END for-in (assoc for-in, stage 2): fold the FINAL
+% hash into a loop-carried scalar, then print it --
+% `END { for (k in arr) acc += OPERAND ; print acc }`. The for-in loop
+% threads a second phi (the accumulator) beside the slot index; the trailing
+% print reads the accumulated total after the loop. Distinct two-action END
+% shape, so ordering among the END clauses is unambiguous.
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules,
+        [end([for_in(var(LoopVar), var(ArrayName), [add(var(Acc), Operand)]),
+              print(PrintFields)])]),
+    InputPath,
+    DriverIR
+) :-
+    plawk_forin_end_accum_plan(Rules, ArrayName, Operand, AssocPlan),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    plawk_assoc_record_program_ok(FieldSeparator, Rules, PrintFields),
+    plawk_end_print_string_globals(PrintFields, StringGlobalIR),
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR, AssocChainIR),
+    plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
+    plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
+    plawk_forin_end_accum_ir(LoopVar, ArrayName, Acc, Operand, PrintFields,
+        AssocPlan, FieldSeparator, OutputSeparator, EndPrintIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, AssocRuleGlobalIR]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
+    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w',
+        [EndPrintIR]),
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
+            AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
 % guarded END for-in (stage 1b): iterate the FINAL hash and filter --
 % `END { for (k in arr) { if (GUARD) print ... } }`. Matched before the
 % generic END for-in clause so the guarded body routes to the guarded
@@ -3608,6 +3646,22 @@ plawk_forin_end_plan(Rules, LoopVar, ArrayName,
         LookupArrays),
     plawk_forin_assoc_plan(Rules, ArrayName, LookupArrays, AssocPlan).
 
+%% plawk_forin_end_accum_plan(+Rules, +ArrayName, +Operand, -AssocPlan)
+%  Plan the END accumulate for-in (stage 2): the record rules populate the
+%  hash, the loop folds it into a scalar. The accumulator itself is
+%  loop-carried (not a hash table), so the only tables are the iterated
+%  array and whatever the rules touch -- no print-lookup arrays.
+plawk_forin_end_accum_plan(Rules, ArrayName, Operand, AssocPlan) :-
+    plawk_forin_accum_operand_ok(Operand, ArrayName),
+    plawk_forin_assoc_plan(Rules, ArrayName, [], AssocPlan).
+
+%% plawk_forin_accum_operand_ok(+Operand, +ArrayName)
+%  A for-in accumulate operand is the iterated value `arr[k]` (array must
+%  be the loop's own table), the loop key `k`, or an integer literal.
+plawk_forin_accum_operand_ok(forin_val(ArrayName), ArrayName).
+plawk_forin_accum_operand_ok(forin_key, _ArrayName).
+plawk_forin_accum_operand_ok(int(_Value), _ArrayName).
+
 plawk_forin_assoc_plan(Rules, ArrayName, LookupArrays,
         assoc_plan(Tables, PlannedRules)) :-
     maplist(plawk_assoc_rule_action_specs, Rules, RuleSpecs),
@@ -3875,6 +3929,96 @@ plawk_forin_end_guard_lines(guard_key(Op, V), _TableIndex, Lines, CondVar) :-
         '  %forin_gcmp = icmp ~w i64 %forin_key_id, ~w', [Pred, V]),
     CondVar = '%forin_gcmp',
     Lines = [CmpLine].
+
+%% plawk_forin_end_accum_ir(+LoopVar, +ArrayName, +Acc, +Operand,
+%%     +PrintFields, +AssocPlan, +Descriptor, +OutputSeparator, -IR)
+%
+%  Emit the END accumulate for-in (stage 2): walk the iterated table's
+%  occupied slots carrying a scalar accumulator as a second loop phi, add
+%  the per-entry operand (the value `arr[k]`, the key `k`, or a constant) to
+%  it each iteration, then -- after the loop -- print the fields (the
+%  accumulator variable resolves to the folded total, string literals print
+%  verbatim) and free every table.
+plawk_forin_end_accum_ir(_LoopVar, ArrayName, Acc, Operand, PrintFields,
+        AssocPlan, _Descriptor, OutputSeparator, IR) :-
+    plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+    plawk_forin_accum_operand_line(Operand, TableIndex, OperandVar, OperandLine),
+    phrase(plawk_forin_accum_print_lines(PrintFields, Acc, OutputSeparator, 0),
+        PrintLines),
+    atomic_list_concat(PrintLines, '\n', PrintIR),
+    phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
+    atomic_list_concat(FreeLines, '\n', FreeIR),
+    format(atom(IR),
+'  br label %forin_head
+
+forin_head:
+  %forin_idx = phi i64 [0, %end_print], [%forin_next_idx, %forin_body_done]
+  %forin_acc = phi i64 [0, %end_print], [%forin_next_acc, %forin_body_done]
+  %forin_slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_idx)
+  %forin_done = icmp slt i64 %forin_slot, 0
+  br i1 %forin_done, label %forin_after, label %forin_body
+
+forin_body:
+  %forin_key_id = call i64 @wam_assoc_i64_key_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)
+~w
+  %forin_next_acc = add i64 %forin_acc, ~w
+  br label %forin_body_done
+
+forin_body_done:
+  %forin_next_idx = add i64 %forin_slot, 1
+  br label %forin_head
+
+forin_after:
+~w
+  %forin_out_newline = call i32 @putchar(i32 10)
+~w
+  ret i32 0',
+        [TableIndex, TableIndex, OperandLine, OperandVar, PrintIR, FreeIR]).
+
+%% plawk_forin_accum_operand_line(+Operand, +TableIndex, -OperandVar, -Line)
+%  The per-iteration operand added to the accumulator. `arr[k]` loads the
+%  slot value (a fresh line); `k` reuses the already-loaded key id; a
+%  constant needs no line.
+plawk_forin_accum_operand_line(forin_val(_Array), TableIndex,
+        '%forin_acc_val', Line) :-
+    format(atom(Line),
+        '  %forin_acc_val = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
+        [TableIndex]).
+plawk_forin_accum_operand_line(forin_key, _TableIndex, '%forin_key_id', '').
+plawk_forin_accum_operand_line(int(Value), _TableIndex, Value, '').
+
+%% plawk_forin_accum_print_lines(+PrintFields, +Acc, +OutputSeparator, +Index)//
+%  The trailing END print, emitted in the post-loop block. The accumulator
+%  variable prints the folded total (%forin_acc); string literals print
+%  verbatim. Distinct label prefix (forin_out_*) -- there is no per-entry
+%  print in an accumulate body, so nothing else uses these names.
+plawk_forin_accum_print_lines([], _Acc, _OutputSeparator, _Index) -->
+    [].
+plawk_forin_accum_print_lines([var(Acc) | Rest], Acc, OutputSeparator, Index) -->
+    plawk_forin_accum_separator_lines(Index, OutputSeparator),
+    { format(atom(FmtVar), 'forin_out_fmt_~w', [Index]),
+      format(atom(PrintVar), 'forin_out_printed_~w', [Index]),
+      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
+          '%forin_acc', [FmtPtr, PrintCall]),
+      NextIndex is Index + 1
+    },
+    [FmtPtr, PrintCall],
+    plawk_forin_accum_print_lines(Rest, Acc, OutputSeparator, NextIndex).
+plawk_forin_accum_print_lines([string(Value) | Rest], Acc, OutputSeparator, Index) -->
+    plawk_forin_accum_separator_lines(Index, OutputSeparator),
+    plawk_end_string_print_lines(Value, Index),
+    { NextIndex is Index + 1 },
+    plawk_forin_accum_print_lines(Rest, Acc, OutputSeparator, NextIndex).
+
+plawk_forin_accum_separator_lines(0, _OutputSeparator) -->
+    !,
+    [].
+plawk_forin_accum_separator_lines(Index, OutputSeparator) -->
+    { format(atom(SpaceCall),
+          '  %forin_out_separator_~w = call i32 @putchar(i32 ~w)',
+          [Index, OutputSeparator])
+    },
+    [SpaceCall].
 
 plawk_forin_body_print_lines([], _LoopVar, _ArrayName, _TableIndex, _AssocPlan,
         _Descriptor, _OutputSeparator, _) -->

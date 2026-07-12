@@ -102,20 +102,28 @@ Each stage is a shippable PR with tests.
   forms; `tests/test_plawk_forin_filter.pl`).
 
 - **Stage 2 — scalar accumulation.** `for (k in arr) total += arr[k]`.
-  The canonical "sum/aggregate the hash" idiom and the largest driver
-  piece. Two concrete blockers scoped it out of the filter PR (both
-  confirmed empirically):
-  1. **The END for-in is a whole-END construct.** The driver matches
+  The canonical "sum/aggregate the hash" idiom. **LANDED** (END form;
+  `tests/test_plawk_forin_accum.pl`). Two concrete blockers, both closed:
+  1. **The END for-in was a whole-END construct.** The driver matched
      exactly `[end([for_in(...)])]`; `END { for (k in c) ... ; print sum }`
-     (a for-in *plus* a later action to read the accumulator) is a parse
-     error today. Reading an accumulator therefore needs the END grammar
-     + driver to allow a for-in among multiple END actions.
-  2. **Loop-carried scalar threading.** The assoc driver *does* carry
-     scalar slots (a record-loop `s += 1` alongside `c[$1]++` works and
-     survives to END), but the for-in loop does not thread a slot as a
-     head phi, so a scalar mutated per entry is not carried out. Stage 2
-     brings `foreach`'s head-phi threading to the for-in loop and lets the
-     mutated slot flow to the following END action.
+     (a for-in *plus* a later action to read the accumulator) was a parse
+     error. Closed by a two-action END clause
+     (`end_clauses([end([for_in(...,[add(var(Acc),Operand)]), print(...)])])`)
+     tried before the single-action clause — the for-in `;` print shape is
+     unambiguous. The accumulate body is `acc += OPERAND` where OPERAND is
+     the iterated value `arr[k]`, the loop key `k`, or an integer.
+  2. **Loop-carried scalar threading.** The END for-in loop now threads a
+     second phi (`%forin_acc`, init 0, `%forin_next_acc` fed back) beside
+     the slot index; each iteration adds the operand to it. After the loop
+     the accumulator dominates the exit block, so the trailing print reads
+     the folded total directly (`%forin_acc`) — no separate scalar-slot
+     plan in the assoc driver. This is the loop-carried-accumulator move
+     `foreach` uses (a head phi per slot), specialized to one accumulator.
+
+  The scope here is deliberately the single-accumulator END fold (the
+  common case). A general multi-slot for-in body — several accumulators,
+  or an accumulate mixed with per-entry prints — would generalize this to
+  `foreach`'s full head-phi harness; deferred until a use needs it.
 
 - **Stage 3 — decode a value into a struct.** `for (k in arr) {
   (n, m) = dyncall@decode(arr[k]) as (i64 i64) ; ... }`. Once the body is
