@@ -1,0 +1,94 @@
+{
+  "status": "descriptively strong adjacency-plus-hop signal; synthetic power and repeated-judge gates fail; no QR deployment",
+  "design": "DESIGN_adjacent_residual_pilot.md",
+  "configuration": {
+    "assignment_seeds": [20, 21, 22, 23, 24, 25, 26, 27, 28, 29],
+    "component_folds": 5,
+    "maximum_anchor_controls": 3,
+    "multiplier_draws": 9999,
+    "conditional_stability_level": 0.95,
+    "alpha_grid": [0.0, 0.025, 0.05, 0.1, 0.2, 0.35, 0.5]
+  },
+  "real_pilot": {
+    "exploratory": {
+      "matched_rows": 1000,
+      "positive_pairs_total": 84,
+      "positive_pairs_eligible": 83,
+      "eligible_positive_components": 28,
+      "primary_trace_over_4_mean": 0.27987733286977634,
+      "primary_trace_over_4_sd": 0.007426452035645393,
+      "primary_trace_over_4_min": 0.26559243382494074,
+      "primary_trace_over_4_max": 0.29188834757049376,
+      "positive_assignments": 10,
+      "positive_folds_out_of_50": 41,
+      "minimum_leave_one_component_out_positive_fraction": 1.0,
+      "diagnostic_pointwise_lower_positive_assignments": 10,
+      "diagnostic_simultaneous_lower_positive_assignments": 0,
+      "ci_like_gate_evaluable": false,
+      "held_oracle_alpha_nondeployable": 0.5,
+      "held_adjacency_gain_vs_block_at_0_5": 0.01467267984808314,
+      "held_deranged_gain_vs_block_at_0_5": 0.003215770521771962
+    },
+    "fresh": {
+      "matched_rows": 700,
+      "positive_pairs_total": 206,
+      "positive_pairs_eligible": 206,
+      "eligible_positive_components": 40,
+      "primary_trace_over_4_mean": 0.16973974007708037,
+      "primary_trace_over_4_sd": 0.01106544878737865,
+      "primary_trace_over_4_min": 0.15417615648879876,
+      "primary_trace_over_4_max": 0.19126403123463268,
+      "positive_assignments": 10,
+      "positive_folds_out_of_50": 46,
+      "minimum_leave_one_component_out_positive_fraction": 1.0,
+      "diagnostic_pointwise_lower_positive_assignments": 10,
+      "diagnostic_simultaneous_lower_positive_assignments": 6,
+      "ci_like_gate_evaluable": true,
+      "held_oracle_alpha_nondeployable": 0.5,
+      "held_adjacency_gain_vs_block_at_0_5": 0.021166766116193808,
+      "held_deranged_gain_vs_block_at_0_5": 0.01002999697234894
+    }
+  },
+  "known_mean_known_B_mechanism": {
+    "replicates": 200,
+    "components_28": {
+      "block_null_pointwise_false_positive_rate": 0.035,
+      "coupling_0_10_pointwise_detection_rate": 0.18,
+      "coupling_0_20_pointwise_detection_rate": 0.45,
+      "frozen_80pct_power_gate": false
+    },
+    "components_40": {
+      "block_null_pointwise_false_positive_rate": 0.005,
+      "coupling_0_10_pointwise_detection_rate": 0.195,
+      "coupling_0_20_pointwise_detection_rate": 0.61,
+      "frozen_80pct_power_gate": false
+    },
+    "diagnostic_component_sizing_for_coupling_0_10": {
+      "components_160_pointwise_detection_rate": 0.58,
+      "components_240_pointwise_detection_rate": 0.755,
+      "components_320_pointwise_detection_rate": 0.81,
+      "components_400_pointwise_detection_rate": 0.915,
+      "components_320_simultaneous_detection_rate": 0.54,
+      "components_400_simultaneous_detection_rate": 0.65,
+      "favorable_pointwise_80pct_lower_bound_components": 320,
+      "simultaneous_80pct_components": null
+    },
+    "end_to_end_nuisance_control_implemented": false
+  },
+  "decision": {
+    "formal_design_outcome": "not resolved by existing data",
+    "observed_descriptive_contrast_strong": true,
+    "synthetic_mechanism_power_gate_passed": false,
+    "pure_adjacency_identified_separately_from_hop": false,
+    "advance_gate_passed": false,
+    "qr_covariance_deployment": false,
+    "distance_separated_batching_certified": false,
+    "deployment_confidence_level": 0.95,
+    "lower_confidence_use": "80-90% pointwise bands may screen discovery candidates only; they cannot modify covariance, QR batching, or production decisions",
+    "recommended_next": "purpose-built balanced adjacency/distant triples with at least three independent judge draws and more than 320 independent components for a simultaneous/full-procedure target"
+  },
+  "full_output_sha256": {
+    "real_pilot": "61b4b3c15bf509e70df0c2e39ed5edfbb28dec54887d399e9b036ac8e001564e",
+    "synthetic_mechanism": "c736e25bc210ff3cd2b9f4385e80afe4c568093d1f1a024d6411e8436ef98057"
+  }
+}
