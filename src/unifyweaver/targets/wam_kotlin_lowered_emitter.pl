@@ -59,10 +59,8 @@ line_supported(Line) :-
     ;   parts_supported(Parts)
     ).
 
-% NOTE: structure/list construction (get_structure/get_list/put_structure/
-% put_list/set_*/unify_*) is intentionally NOT lowerable in this first cut:
-% write-mode term building was silently wrong (unbound vars in the result).
-% Such predicates decline and stay on the correct bytecode interpreter.
+% Structure/list + unify/set ops are lowerable. get_variable/put_variable must
+% emit `run { ... }` (not a bare block) — see emit_line_parts/2 note.
 parts_supported(["allocate"]).
 parts_supported(["deallocate"]).
 parts_supported(["proceed"]).
@@ -70,13 +68,26 @@ parts_supported(["fail"]).
 parts_supported(["get_constant", _, _]).
 parts_supported(["get_variable", _, _]).
 parts_supported(["get_value", _, _]).
+parts_supported(["get_structure", _, _]).
+parts_supported(["get_list", _]).
 parts_supported(["get_nil", _]).
 parts_supported(["get_integer", _, _]).
 parts_supported(["put_constant", _, _]).
 parts_supported(["put_variable", _, _]).
 parts_supported(["put_value", _, _]).
+parts_supported(["put_structure", _, _]).
+parts_supported(["put_list", _]).
 parts_supported(["put_nil", _]).
 parts_supported(["put_integer", _, _]).
+parts_supported(["unify_variable", _]).
+parts_supported(["unify_value", _]).
+parts_supported(["unify_constant", _]).
+parts_supported(["unify_nil"]).
+parts_supported(["set_variable", _]).
+parts_supported(["set_value", _]).
+parts_supported(["set_constant", _]).
+parts_supported(["set_nil"]).
+parts_supported(["set_integer", _]).
 
 kotlin_lowered_func_name(Functor/Arity, Name) :-
     atom_string(Functor, S),
@@ -131,9 +142,13 @@ emit_line_parts(["get_integer", C, R], I) :- !,
 emit_line_parts(["get_nil", R], I) :- !,
     kotlin_register_lit(R, RL),
     format("~wif (!kotlinLoGetConstant(state, Value.Atom(\"[]\"), ~w)) return false~n", [I, RL]).
+% NOTE: must use `run { ... }`, not a bare `{ ... }` block. In Kotlin a
+% standalone lambda literal is NOT invoked, so get_variable/put_variable
+% would silently no-op — write-mode unify_value then saw null registers and
+% fabricated unbound vars (kt_make_list → [X1,X2] instead of [alpha,beta]).
 emit_line_parts(["get_variable", X, A], I) :- !,
     kotlin_register_lit(X, XL), kotlin_register_lit(A, AL),
-    format("~w{~n", [I]),
+    format("~wrun {~n", [I]),
     format("~w    val v = state.deref(state.readRegister(~w)) ?: state.newVariable(~w)~n", [I, AL, XL]),
     format("~w    state.writeRegister(~w, v)~n", [I, XL]),
     format("~w    state.writeRegister(~w, v)~n", [I, AL]),
@@ -161,7 +176,7 @@ emit_line_parts(["put_nil", R], I) :- !,
     format("~wstate.writeRegister(~w, Value.Atom(\"[]\"))~n", [I, RL]).
 emit_line_parts(["put_variable", X, A], I) :- !,
     kotlin_register_lit(X, XL), kotlin_register_lit(A, AL),
-    format("~w{~n", [I]),
+    format("~wrun {~n", [I]),
     format("~w    val v = state.newVariable(~w)~n", [I, XL]),
     format("~w    state.writeRegister(~w, v)~n", [I, XL]),
     format("~w    state.writeRegister(~w, v)~n", [I, AL]),
@@ -181,7 +196,8 @@ emit_line_parts(["set_variable", X], I) :- !,
     format("~wif (!state.pushWriteArg(state.newVariable(~w))) return false~n", [I, XL]).
 emit_line_parts(["set_value", X], I) :- !,
     kotlin_register_lit(X, XL),
-    format("~wif (!state.pushWriteArg(state.deref(state.readRegister(~w)))) return false~n", [I, XL]).
+    % Mirror interpreter set_value: missing register → fail (not push null).
+    format("~wif (!state.pushWriteArg(state.deref(state.readRegister(~w)) ?: return false)) return false~n", [I, XL]).
 emit_line_parts(["set_constant", C], I) :- !,
     kotlin_constant_expr(C, Expr),
     format("~wif (!state.pushWriteArg(~w)) return false~n", [I, Expr]).

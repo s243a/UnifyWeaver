@@ -11,6 +11,7 @@
 :- dynamic kt_eq/2.
 :- dynamic kt_wrap/2.
 :- dynamic kt_make_list/3.
+:- dynamic kt_nested/3.
 :- dynamic kt_match_pair/3.
 :- dynamic kt_color/1.
 :- dynamic kt_parent/2.
@@ -263,42 +264,119 @@ test(functions_mode_gradle_runs_lowered_fact, [condition(gradle_available), nond
         retractall(user:kt_fact(_, _))
     ).
 
-% Regression guard for the silent-wrong-answer bug: write-mode structure/list
-% construction was lowered incorrectly (unbound vars in the result). Such
-% predicates must DECLINE lowering and stay on the correct bytecode interpreter.
-test(functions_mode_declines_structure_lowering) :-
+% Structure/list builders must LOWER under functions mode (Native partition),
+% not decline. Regression guard for the silent-wrong-answer bug where a bare
+% Kotlin `{ ... }` block around get_variable was a no-op lambda.
+test(functions_mode_lowers_structure_builders) :-
     setup_call_cleanup(
         (   retractall(user:kt_wrap(_, _)),
-            assertz(user:(kt_wrap(X, wrap(X))))
+            retractall(user:kt_make_list(_, _, _)),
+            assertz(user:(kt_wrap(X, wrap(X)))),
+            assertz(user:(kt_make_list(A, B, [A, B])))
         ),
-        (   wam_kotlin_target:wam_kotlin_partition_predicates(functions, [user:kt_wrap/2], Native, Wam, Failed),
-            assertion(Native == []),
-            assertion(Wam = [wam(kt_wrap/2, _)]),
-            assertion(Failed == [])
+        (   wam_kotlin_target:wam_kotlin_partition_predicates(
+                functions, [user:kt_wrap/2, user:kt_make_list/3], Native, Wam, Failed),
+            assertion(Failed == []),
+            assertion(memberchk(native(kt_wrap/2, _), Native)),
+            assertion(memberchk(native(kt_make_list/3, _), Native)),
+            assertion(memberchk(wam(kt_wrap/2, _), Wam)),
+            assertion(memberchk(wam(kt_make_list/3, _), Wam)),
+            memberchk(native(kt_wrap/2, lowered(_, _, WrapCode)), Native),
+            assertion(has_substring(WrapCode, 'fun lowered_kt_wrap_2')),
+            assertion(has_substring(WrapCode, 'beginStructure')),
+            memberchk(native(kt_make_list/3, lowered(_, _, ListCode)), Native),
+            assertion(has_substring(ListCode, 'fun lowered_kt_make_list_3')),
+            assertion(has_substring(ListCode, 'run {'))
         ),
-        retractall(user:kt_wrap(_, _))
+        (   retractall(user:kt_wrap(_, _)),
+            retractall(user:kt_make_list(_, _, _))
+        )
     ).
 
-% End-to-end: a list-building single-clause predicate under functions mode must
-% produce the SAME bindings as the interpreter (it declines lowering and runs
-% via the WAM fallback). Before the narrowing fix this returned [X1,X2] with
-% unbound vars instead of [alpha,beta].
+% End-to-end: list builder under functions mode must LOWER and produce the
+% SAME bindings as emit_mode(interpreter). Before the run{} fix this returned
+% [X1,X2] unbound vars while still returning true (no interpreter fallback).
 test(functions_mode_gradle_list_matches_interpreter, [condition(gradle_available), nondet]) :-
     TmpDir = 'output/test_wam_kotlin_functions_list',
     make_directory_path('output'),
     clean_dir(TmpDir),
+    Expected = 'A3=Struct(functor=[|]/2, args=[Atom(name=alpha), Struct(functor=[|]/2, args=[Atom(name=beta), Atom(name=[])])])',
     setup_call_cleanup(
         (   retractall(user:kt_make_list(_, _, _)),
             assertz(user:(kt_make_list(A, B, [A, B])))
         ),
-        (   wam_kotlin_target:write_wam_kotlin_project([user:kt_make_list/3], [emit_mode(functions)], TmpDir),
+        (   wam_kotlin_target:write_wam_kotlin_project([user:kt_make_list/3], [emit_mode(interpreter)], TmpDir),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_make_list/3 alpha beta'], InterpOut, _InterpErr, InterpStatus),
+            assertion(InterpStatus == exit(0)),
+            assertion(has_substring(InterpOut, Expected)),
+            clean_dir(TmpDir),
+            wam_kotlin_target:write_wam_kotlin_project([user:kt_make_list/3], [emit_mode(functions)], TmpDir),
+            assertion(exists_file('output/test_wam_kotlin_functions_list/src/main/kotlin/generated/wam/Main.kt')),
+            read_file_to_string('output/test_wam_kotlin_functions_list/src/main/kotlin/generated/wam/Main.kt', Main, []),
+            assertion(has_substring(Main, 'fun lowered_kt_make_list_3')),
+            assertion(has_substring(Main, 'registerNative("kt_make_list/3"')),
             run_gradle(TmpDir, ['-q', 'compileKotlin'], _CompileOut, _CompileErr, CompileStatus),
             assertion(CompileStatus == exit(0)),
             run_gradle(TmpDir, ['-q', 'run', '--args=kt_make_list/3 alpha beta'], ListOut, _ListErr, ListStatus),
             assertion(ListStatus == exit(0)),
-            assertion(has_substring(ListOut, 'A3=Struct(functor=[|]/2, args=[Atom(name=alpha), Struct(functor=[|]/2, args=[Atom(name=beta), Atom(name=[])])])'))
+            assertion(has_substring(ListOut, Expected))
         ),
         retractall(user:kt_make_list(_, _, _))
+    ).
+
+% Structure builder: p(X, wrap(X)) lowers and matches interpreter bindings.
+test(functions_mode_gradle_wrap_matches_interpreter, [condition(gradle_available), nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_functions_wrap',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    Expected = 'A2=Struct(functor=wrap/1, args=[Atom(name=alpha)])',
+    setup_call_cleanup(
+        (   retractall(user:kt_wrap(_, _)),
+            assertz(user:(kt_wrap(X, wrap(X))))
+        ),
+        (   wam_kotlin_target:write_wam_kotlin_project([user:kt_wrap/2], [emit_mode(interpreter)], TmpDir),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_wrap/2 alpha'], InterpOut, _InterpErr, InterpStatus),
+            assertion(InterpStatus == exit(0)),
+            assertion(has_substring(InterpOut, Expected)),
+            clean_dir(TmpDir),
+            wam_kotlin_target:write_wam_kotlin_project([user:kt_wrap/2], [emit_mode(functions)], TmpDir),
+            read_file_to_string('output/test_wam_kotlin_functions_wrap/src/main/kotlin/generated/wam/Main.kt', Main, []),
+            assertion(has_substring(Main, 'fun lowered_kt_wrap_2')),
+            assertion(has_substring(Main, 'registerNative("kt_wrap/2"')),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_wrap/2 alpha'], WrapOut, _WrapErr, WrapStatus),
+            assertion(WrapStatus == exit(0)),
+            assertion(has_substring(WrapOut, Expected))
+        ),
+        retractall(user:kt_wrap(_, _))
+    ).
+
+% Nested/mixed structure+list: p(X, Y, foo(X, [Y])) lowers == interpreter.
+test(functions_mode_gradle_nested_matches_interpreter, [condition(gradle_available), nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_functions_nested',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    Expected = 'A3=Struct(functor=foo/2, args=[Atom(name=alpha), Struct(functor=[|]/2, args=[Atom(name=beta), Atom(name=[])])])',
+    setup_call_cleanup(
+        (   retractall(user:kt_nested(_, _, _)),
+            assertz(user:(kt_nested(X, Y, foo(X, [Y]))))
+        ),
+        (   wam_kotlin_target:wam_kotlin_partition_predicates(functions, [user:kt_nested/3], Native, _Wam, Failed),
+            assertion(Failed == []),
+            assertion(memberchk(native(kt_nested/3, _), Native)),
+            wam_kotlin_target:write_wam_kotlin_project([user:kt_nested/3], [emit_mode(interpreter)], TmpDir),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_nested/3 alpha beta'], InterpOut, _InterpErr, InterpStatus),
+            assertion(InterpStatus == exit(0)),
+            assertion(has_substring(InterpOut, Expected)),
+            clean_dir(TmpDir),
+            wam_kotlin_target:write_wam_kotlin_project([user:kt_nested/3], [emit_mode(functions)], TmpDir),
+            read_file_to_string('output/test_wam_kotlin_functions_nested/src/main/kotlin/generated/wam/Main.kt', Main, []),
+            assertion(has_substring(Main, 'fun lowered_kt_nested_3')),
+            assertion(has_substring(Main, 'registerNative("kt_nested/3"')),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_nested/3 alpha beta'], NestedOut, _NestedErr, NestedStatus),
+            assertion(NestedStatus == exit(0)),
+            assertion(has_substring(NestedOut, Expected))
+        ),
+        retractall(user:kt_nested(_, _, _))
     ).
 
 test(registry_exposes_wam_kotlin_target, [nondet]) :-
