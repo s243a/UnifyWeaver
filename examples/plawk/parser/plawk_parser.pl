@@ -842,6 +842,19 @@ quoted_string_escape_codes([0'\\, Code]) -->
     [Code],
     { Code =\= 0'\n, Code =\= 0'\r }.
 
+% Backed BEGIN block (multi-pass persistent cache, phase 1b): `BEGIN
+% cache("path") { declare NAME ... }` declares one or more tables backed by
+% the store at "path". Each `declare NAME` becomes a cache_table(NAME,
+% "path") begin action; the codegen opens the store into NAME at setup and
+% commits it at END. Tried before the plain BEGIN clause. See
+% PLAWK_MULTIPASS_CACHE.md.
+begin_clauses([begin(Actions)]) -->
+    "BEGIN", ws, "cache", ws, "(", ws, quoted_string(PathCodes), ws, ")", ws,
+    "{", ws,
+    { string_codes(Path, PathCodes) },
+    cache_decl_list(Path, Actions),
+    ws, "}", ws,
+    !.
 begin_clauses([begin(Actions)]) -->
     "BEGIN",
     ws,
@@ -854,6 +867,18 @@ begin_clauses([begin(Actions)]) -->
     !.
 begin_clauses([]) -->
     [].
+
+cache_decl_list(Path, [cache_table(Name, Path) | Rest]) -->
+    "declare", required_ws, identifier(Name),
+    cache_decl_list_rest(Path, Rest).
+cache_decl_list_rest(Path, [cache_table(Name, Path) | Rest]) -->
+    ws, cache_decl_sep, ws, "declare", required_ws, identifier(Name),
+    !,
+    cache_decl_list_rest(Path, Rest).
+cache_decl_list_rest(_Path, []) -->
+    [].
+cache_decl_sep --> ";", !.
+cache_decl_sep --> [].
 
 begin_actions([Action | Actions]) -->
     begin_action(Action),

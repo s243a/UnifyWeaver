@@ -721,26 +721,31 @@ plawk_program_native_driver_ir(
     DriverIR
 ) :-
     plawk_forin_end_plan(Rules, LoopVar, ArrayName, BodyActions, AssocPlan, PrintFields),
+    AssocPlan = assoc_plan(Tables, _),
+    plawk_program_cache_tables(BeginClauses, CacheNamePaths),
+    plawk_cache_entries(Tables, CacheNamePaths, CacheEntries, CachePathGlobals),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_record_descriptor(BeginClauses, FieldSeparator),
     plawk_assoc_record_program_ok(FieldSeparator, Rules, PrintFields),
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
-    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_assoc_entry_setup_ir(AssocPlan, CacheEntries, EntrySetupIR),
     plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR, AssocChainIR),
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
     plawk_forin_end_print_ir(LoopVar, ArrayName, PrintFields, AssocPlan,
         FieldSeparator, OutputSeparator, EndPrintIR),
-    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
-        [BeginGlobalIR, StringGlobalIR, AssocRuleGlobalIR]),
+    plawk_cache_commit_lines(CacheEntries, CommitIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, AssocRuleGlobalIR, CachePathGlobals]),
     plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
     plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
 'end_print:
+~w
 ~w',
-        [EndPrintIR]),
+        [CommitIR, EndPrintIR]),
     plawk_emit_record_driver_ir(FieldSeparator, InputPath,
         driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
             AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
@@ -5143,8 +5148,75 @@ plawk_forin_rule_field_plan(LoopVar, _ArrayName, _TableIndex, Tables,
 plawk_forin_rule_field_plan(_LoopVar, _ArrayName, _TableIndex, _Tables,
         _StrArrays, _PosArrays, string(Value), lit(Value)).
 
-plawk_assoc_entry_setup_ir(assoc_plan(Tables, _Actions), IR) :-
-    phrase(plawk_assoc_entry_setup_lines(Tables, 0), Lines),
+plawk_assoc_entry_setup_ir(Plan, IR) :-
+    plawk_assoc_entry_setup_ir(Plan, [], IR).
+
+%% plawk_assoc_entry_setup_ir(+Plan, +CacheEntries, -IR)
+%  CacheEntries is a list of cache(TableIndex, PathGlobalBytesLen) for tables
+%  backed by a persistent store (multi-pass cache, phase 1b). A cache-backed
+%  table is created like any assoc table, then loaded from its store file so
+%  a pre-populated or prior-run store is read in. [] => no cache (the /2
+%  form), so non-cache programs emit exactly the old IR.
+plawk_assoc_entry_setup_ir(assoc_plan(Tables, _Actions), CacheEntries, IR) :-
+    phrase(plawk_assoc_entry_setup_lines(Tables, 0, CacheEntries), Lines),
+    atomic_list_concat(Lines, '\n', IR).
+
+plawk_assoc_entry_setup_lines([], _, _CacheEntries) -->
+    [].
+plawk_assoc_entry_setup_lines([_ArrayName | Rest], Index, CacheEntries) -->
+    { format(atom(NewLine),
+          '  %plawk_assoc_table_~w = call %WamAssocI64Table* @wam_assoc_i64_new(i64 4096)',
+          [Index]),
+      ( memberchk(cache(Index, BytesLen), CacheEntries)
+      ->  format(atom(LoadLine),
+              '  call void @wam_cache_load(%WamAssocI64Table* %plawk_assoc_table_~w, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_cache_path_~w, i64 0, i64 0))',
+              [Index, BytesLen, BytesLen, Index]),
+          Lines = [NewLine, LoadLine]
+      ;   Lines = [NewLine]
+      ),
+      NextIndex is Index + 1
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_entry_setup_lines(Rest, NextIndex, CacheEntries).
+
+%% plawk_program_cache_tables(+BeginClauses, -NamePaths)
+%  Name-Path pairs for every table declared in a `BEGIN cache("path") {
+%  declare NAME ... }` block.
+plawk_program_cache_tables(BeginClauses, NamePaths) :-
+    findall(Name-Path,
+        ( member(begin(Actions), BeginClauses),
+          member(cache_table(Name, Path), Actions)
+        ),
+        NamePaths).
+
+%% plawk_cache_entries(+Tables, +NamePaths, -CacheEntries, -PathGlobalsIR)
+%  Resolve each cache-backed table name to its index in the plan's table
+%  list, emit a private string global @.plawk_cache_path_<idx> for its path,
+%  and record cache(Index, BytesLen) so setup/commit can reference the
+%  global. A declared name absent from the plan (never used) is skipped.
+plawk_cache_entries(Tables, NamePaths, CacheEntries, PathGlobalsIR) :-
+    findall(cache(Index, BytesLen)-Global,
+        ( member(Name-Path, NamePaths),
+          nth0(Index, Tables, Name),
+          format(atom(GName), 'plawk_cache_path_~w', [Index]),
+          llvm_emit_c_string_global(GName, Path, Global, _Len, BytesLen)
+        ),
+        Pairs),
+    pairs_keys_values(Pairs, CacheEntries, Globals),
+    atomic_list_concat(Globals, '\n', PathGlobalsIR).
+
+%% plawk_cache_commit_lines(+CacheEntries, -IR)
+%  A @wam_cache_commit call per cache-backed table, writing the final table
+%  back to its store. Emitted at the top of the END phase (after the record
+%  loop, table still live), so the committed state is the completed pass.
+plawk_cache_commit_lines(CacheEntries, IR) :-
+    findall(Line,
+        ( member(cache(Index, BytesLen), CacheEntries),
+          format(atom(Line),
+              '  call void @wam_cache_commit(%WamAssocI64Table* %plawk_assoc_table_~w, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_cache_path_~w, i64 0, i64 0))',
+              [Index, BytesLen, BytesLen, Index])
+        ),
+        Lines),
     atomic_list_concat(Lines, '\n', IR).
 
 plawk_assoc_entry_setup_lines([], _) -->
