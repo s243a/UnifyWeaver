@@ -4916,6 +4916,108 @@ vat.miss:
   ret i64 0
 }
 
+; ---- persistent cache: a file-backed assoc table -------------------------
+; The cache handle IS a %WamAssocI64Table*. @wam_cache_open builds a table
+; and loads (key,value) i64 pairs from a flat little-endian file laid out as
+; [count:i64][key:i64 value:i64]...; @wam_cache_commit writes the table back;
+; @wam_cache_close frees it. The i64 fast path (inc/get/set/iterate) reuses
+; the assoc helpers directly on the handle. internal linkage so an unused
+; cache is dead-code eliminated -- zero cost when no store is opened.
+define internal %WamAssocI64Table* @wam_cache_open(i8* %path) {
+entry:
+  %cbuf = alloca i64
+  %pbuf = alloca [2 x i64]
+  %table = call %WamAssocI64Table* @wam_assoc_i64_new(i64 64)
+  %fd = call i32 @open(i8* %path, i32 0, i32 0)
+  %fd_ok = icmp sge i32 %fd, 0
+  br i1 %fd_ok, label %co.readcount, label %co.done
+
+co.readcount:
+  %cbuf_i8 = bitcast i64* %cbuf to i8*
+  %cn = call i64 @read(i32 %fd, i8* %cbuf_i8, i64 8)
+  %cn_ok = icmp eq i64 %cn, 8
+  br i1 %cn_ok, label %co.loop, label %co.close
+
+co.loop:
+  %i = phi i64 [ 0, %co.readcount ], [ %i.next, %co.store ]
+  %count = load i64, i64* %cbuf
+  %i.done = icmp uge i64 %i, %count
+  br i1 %i.done, label %co.close, label %co.readpair
+
+co.readpair:
+  %pbuf_i8 = bitcast [2 x i64]* %pbuf to i8*
+  %pn = call i64 @read(i32 %fd, i8* %pbuf_i8, i64 16)
+  %pn_ok = icmp eq i64 %pn, 16
+  br i1 %pn_ok, label %co.store, label %co.close
+
+co.store:
+  %kp = getelementptr [2 x i64], [2 x i64]* %pbuf, i64 0, i64 0
+  %k = load i64, i64* %kp
+  %vp = getelementptr [2 x i64], [2 x i64]* %pbuf, i64 0, i64 1
+  %v = load i64, i64* %vp
+  %setrc = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %k, i64 %v)
+  %i.next = add i64 %i, 1
+  br label %co.loop
+
+co.close:
+  %crc = call i32 @close(i32 %fd)
+  br label %co.done
+
+co.done:
+  ret %WamAssocI64Table* %table
+}
+
+define internal void @wam_cache_commit(%WamAssocI64Table* %table, i8* %path) {
+entry:
+  %cbuf = alloca i64
+  %pbuf = alloca [2 x i64]
+  %fd = call i32 @open(i8* %path, i32 577, i32 420)
+  %fd_ok = icmp sge i32 %fd, 0
+  br i1 %fd_ok, label %cc.writecount, label %cc.done
+
+cc.writecount:
+  %count_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 0
+  %count = load i64, i64* %count_slot
+  store i64 %count, i64* %cbuf
+  %cbuf_i8 = bitcast i64* %cbuf to i8*
+  %cw = call i64 @write(i32 %fd, i8* %cbuf_i8, i64 8)
+  br label %cc.loop
+
+cc.loop:
+  %cur = phi i64 [ 0, %cc.writecount ], [ %cur.next, %cc.wrote ]
+  %slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %table, i64 %cur)
+  %slot.done = icmp slt i64 %slot, 0
+  br i1 %slot.done, label %cc.close, label %cc.emit
+
+cc.emit:
+  %k = call i64 @wam_assoc_i64_key_at(%WamAssocI64Table* %table, i64 %slot)
+  %v = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %table, i64 %slot)
+  %kp = getelementptr [2 x i64], [2 x i64]* %pbuf, i64 0, i64 0
+  store i64 %k, i64* %kp
+  %vp = getelementptr [2 x i64], [2 x i64]* %pbuf, i64 0, i64 1
+  store i64 %v, i64* %vp
+  %pbuf_i8 = bitcast [2 x i64]* %pbuf to i8*
+  %pw = call i64 @write(i32 %fd, i8* %pbuf_i8, i64 16)
+  br label %cc.wrote
+
+cc.wrote:
+  %cur.next = add i64 %slot, 1
+  br label %cc.loop
+
+cc.close:
+  %crc = call i32 @close(i32 %fd)
+  br label %cc.done
+
+cc.done:
+  ret void
+}
+
+define internal void @wam_cache_close(%WamAssocI64Table* %table) {
+entry:
+  call void @wam_assoc_i64_free(%WamAssocI64Table* %table)
+  ret void
+}
+
 ; POSIX ERE matching over atom-backed text records. Patterns are
 ; compile-time constants; each match site owns a cache slot holding a
 ; lazily regcomp()ed regex_t. The regex_t is malloc''d at 512 bytes,
