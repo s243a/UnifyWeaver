@@ -49,7 +49,8 @@ self-contained so a single coding agent can pick it up in isolation.
 | KERN-FSHARP | Finish F# kernel templates | F# | L | — |
 | EMIT-ILASM | Lowered emitter | ILAsm | L | — |
 | EMIT-JVM | Lowered emitter | JVM | L | — |
-| EMIT-KOTLIN ⭐ | Lowered emitter | Kotlin | M | — (recommended first task) |
+| EMIT-KOTLIN ✅ | Lowered emitter | Kotlin | M | done — flat facts/unify (`cursor/emit-kotlin-lowered-f421`) |
+| EMIT-KOTLIN-2 | Lowered emitter (structures) | Kotlin | M | EMIT-KOTLIN |
 | BENCH-LLVM | Effective-distance bench row | LLVM | L | — |
 | BENCH-CPP | Effective-distance bench row | C++ | L | — |
 | BENCH-C | Effective-distance bench row | C | M | — |
@@ -490,7 +491,7 @@ fallback) to the three Tier-D targets. Reference small emitters:
 
 ### EMIT-KOTLIN: Add Kotlin WAM-lowered emitter (deterministic clause-1 native dispatch)
 - **Lever:** Lowered emitters for early scaffolds  **Target:** Kotlin  **Size:** M  **Depends on:** —
-- **Status:** ⭐ **First hand-off — fully scoped below.** Lowest-risk target: least mature, and the plumbing already exists.
+- **Status:** ✅ **Landed (narrowed)** on `cursor/emit-kotlin-lowered-f421` (2026-07-12). The `registerNative` runtime seam + native-first dispatch with interpreter fallback shipped and work. **Correctness caveat found in review:** write-mode structure/list construction lowered to unbound vars (silent wrong answer, returned `true` so fallback never fired). Fix narrows the lowerable set to **flat facts + register unification only** (`get/put_constant|integer|nil`, `get_variable`, `get_value`, `put_variable`, `put_value`); any predicate that constructs or unifies a structure/list declines and stays on the correct bytecode interpreter. See follow-up **EMIT-KOTLIN-2**. Historical context below retained.
 
 **Context — read this first (verified against source 2026-07-11).** The Kotlin target is NOT missing its partition. `wam_kotlin_target.pl` already ships:
 - `wam_kotlin_resolve_emit_mode/2` (`interpreter` | `functions` | `mixed(List)`) — lines 57–69; default `interpreter`.
@@ -529,6 +530,19 @@ fallback) to the three Tier-D targets. Reference small emitters:
   5. Extend `tests/test_wam_kotlin_target.pl`: a unit test asserting a `functions`-mode project for a single-clause predicate emits a real `fun …(state: WamState)` + `registerNative` (NOT `/* Native Kotlin lowering selected`), and — under `[condition(gradle_available)]` — a gradle `run` of that predicate producing the same result as the interpreter path (compare against an `emit_mode(interpreter)` run of the same predicate).
 - **Acceptance:** `swipl -q -g run_tests -t halt tests/test_wam_kotlin_target.pl` passes including the new native-dispatch cases; the existing interpreter gradle test still passes; a `functions`-mode single-clause predicate is now actually runnable (native), and a non-lowerable predicate still round-trips through the WAM interpreter.
 - **Out of scope / follow-ups (leave as new cards):** T4/T5/ITE/multi-clause Kotlin lowering; deciding whether to also surface `kotlin_target.pl`'s non-WAM native output through this seam.
+
+### EMIT-KOTLIN-2: Lower write-mode structure/list construction (Kotlin)
+- **Lever:** Lowered emitters for early scaffolds  **Target:** Kotlin  **Size:** M  **Depends on:** EMIT-KOTLIN
+- **Goal:** Extend the Kotlin lowered emitter to correctly build structures/lists in the head (write mode), then re-enable those ops in `parts_supported` so predicates like `p(X, wrap(X))` / `p(X,Y,[X,Y])` lower instead of declining to the interpreter.
+- **Why deferred:** EMIT-KOTLIN's first cut lowered `put_structure`/`put_list`/`set_*`/`unify_*` incorrectly — write-mode arg pushes read the register *before* the head variable was bound, so the built term contained unbound vars (e.g. `kt_make_list(X,Y,[X,Y])` with `alpha beta` produced `[X1,X2]` not `[alpha,beta]`), and the lowered fn returned `true` so the interpreter fallback never fired. The fix narrowed the lowerable set; this card does it properly.
+- **Files to touch:** `src/unifyweaver/targets/wam_kotlin_lowered_emitter.pl` (re-add the `parts_supported/1` facts for `get/put_structure`, `get/put_list`, `set_*`, `unify_*`; fix `emit_line_parts/2` for the write-mode ops), `templates/targets/kotlin_wam/WamRuntime.kt.mustache` (the `kotlinLoUnify*` helpers + `pushWriteArg`/`beginStructure*` already exist — audit their read-vs-write-mode contract), `tests/test_wam_kotlin_target.pl`.
+- **Reference to copy from:** the WAM-register interpreter already in `WamRuntime.kt.mustache` (`beginStructure`/`beginStructurePut`/`pushWriteArg`/`nextReadArg`, and the main `run` loop's handling of `get_structure`/`unify_*`) — the lowered emit must reproduce exactly that read/write-mode sequencing. Lua's `wam_lua_lowered_emitter.pl` structure handling is the cross-target analog.
+- **Steps:**
+  1. Reproduce the bug: generate `kt_make_list/3` under `emit_mode(functions)`, gradle-run `kt_make_list/3 alpha beta`, confirm `A3` has unbound vars.
+  2. Fix the emitted write-mode sequence so head-variable bindings are visible before the arg push (mirror the interpreter's ordering; likely the `set_value`/`unify_value` register read must deref through the just-bound register, and `get_variable` must bind before any subsequent `put_structure`).
+  3. Re-add the declined `parts_supported/1` facts; keep the read-mode path (which already worked) intact.
+  4. Add gradle e2e tests asserting lowered output == interpreter output for a structure builder AND a list builder (the regression tests added in EMIT-KOTLIN already assert the *decline* path; convert/extend them to assert the *lowered* path once fixed).
+- **Acceptance:** `swipl -q -g run_tests -t halt tests/test_wam_kotlin_target.pl` passes with structure/list predicates lowering (not declining) and producing bindings identical to `emit_mode(interpreter)`.
 
 ---
 

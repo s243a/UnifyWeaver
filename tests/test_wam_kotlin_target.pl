@@ -84,6 +84,9 @@ test(runtime_template_exposes_executable_wam_abi) :-
     assertion(has_substring(Code, '"get_structure"')),
     assertion(has_substring(Code, '"unify_variable"')),
     assertion(has_substring(Code, '"put_value", "put_unsafe_value"')),
+    assertion(has_substring(Code, 'fun registerNative(key: String, fn: (WamState) -> Boolean)')),
+    assertion(has_substring(Code, 'fun snapshotForNative(): WamNativeSnapshot')),
+    assertion(has_substring(Code, 'fun kotlinLoGetConstant(state: WamState')),
     assertion(has_substring(Code, 'fun stateFromCliArgs(values: List<String>): WamState')).
 
 test(interpreter_project_writes_gradle_and_sources, [nondet]) :-
@@ -210,15 +213,92 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
 
 test(functions_mode_partitions_native_when_available) :-
     setup_call_cleanup(
-        (   retractall(user:kt_guard(_, _)),
-            assertz(user:(kt_guard(X, yes) :- X > 0))
+        (   retractall(user:kt_fact(_, _)),
+            assertz(user:kt_fact(alpha, beta))
         ),
-        (   wam_kotlin_target:wam_kotlin_partition_predicates(functions, [user:kt_guard/2], Native, Wam, Failed),
-            assertion(Native = [native(kt_guard/2, _)]),
-            assertion(Wam == []),
+        (   wam_kotlin_target:wam_kotlin_partition_predicates(functions, [user:kt_fact/2], Native, Wam, Failed),
+            assertion(Native = [native(kt_fact/2, lowered(_PredKey, lowered_kt_fact_2, _))]),
+            assertion(Wam = [wam(kt_fact/2, _)]),
             assertion(Failed == [])
         ),
-        retractall(user:kt_guard(_, _))
+        retractall(user:kt_fact(_, _))
+    ).
+
+test(functions_mode_emits_lowered_fun_and_register_native, [nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_functions_fact',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    setup_call_cleanup(
+        (   retractall(user:kt_fact(_, _)),
+            assertz(user:kt_fact(alpha, beta))
+        ),
+        (   wam_kotlin_target:write_wam_kotlin_project([user:kt_fact/2], [emit_mode(functions)], TmpDir),
+            read_file_to_string('output/test_wam_kotlin_functions_fact/src/main/kotlin/generated/wam/Main.kt', Main, []),
+            assertion(has_substring(Main, 'fun lowered_kt_fact_2(state: WamState): Boolean')),
+            assertion(has_substring(Main, 'program.registerNative("kt_fact/2", ::lowered_kt_fact_2)')),
+            assertion(has_substring(Main, 'register_kt_fact(program)')),
+            assertion(\+ has_substring(Main, 'Native Kotlin lowering selected'))
+        ),
+        retractall(user:kt_fact(_, _))
+    ).
+
+test(functions_mode_gradle_runs_lowered_fact, [condition(gradle_available), nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_functions_gradle_fact',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    setup_call_cleanup(
+        (   retractall(user:kt_fact(_, _)),
+            assertz(user:kt_fact(alpha, beta))
+        ),
+        (   wam_kotlin_target:write_wam_kotlin_project([user:kt_fact/2], [emit_mode(functions)], TmpDir),
+            run_gradle(TmpDir, ['-q', 'compileKotlin'], _CompileOut, CompileErr, CompileStatus),
+            assertion(CompileStatus == exit(0)),
+            assertion(CompileErr == ""),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_fact/2 alpha beta'], FactOut, _FactErr, FactStatus),
+            assertion(FactStatus == exit(0)),
+            assertion(has_substring(FactOut, 'Ran kt_fact/2')),
+            assertion(has_substring(FactOut, 'A1=Atom(name=alpha)')),
+            assertion(has_substring(FactOut, 'A2=Atom(name=beta)'))
+        ),
+        retractall(user:kt_fact(_, _))
+    ).
+
+% Regression guard for the silent-wrong-answer bug: write-mode structure/list
+% construction was lowered incorrectly (unbound vars in the result). Such
+% predicates must DECLINE lowering and stay on the correct bytecode interpreter.
+test(functions_mode_declines_structure_lowering) :-
+    setup_call_cleanup(
+        (   retractall(user:kt_wrap(_, _)),
+            assertz(user:(kt_wrap(X, wrap(X))))
+        ),
+        (   wam_kotlin_target:wam_kotlin_partition_predicates(functions, [user:kt_wrap/2], Native, Wam, Failed),
+            assertion(Native == []),
+            assertion(Wam = [wam(kt_wrap/2, _)]),
+            assertion(Failed == [])
+        ),
+        retractall(user:kt_wrap(_, _))
+    ).
+
+% End-to-end: a list-building single-clause predicate under functions mode must
+% produce the SAME bindings as the interpreter (it declines lowering and runs
+% via the WAM fallback). Before the narrowing fix this returned [X1,X2] with
+% unbound vars instead of [alpha,beta].
+test(functions_mode_gradle_list_matches_interpreter, [condition(gradle_available), nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_functions_list',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    setup_call_cleanup(
+        (   retractall(user:kt_make_list(_, _, _)),
+            assertz(user:(kt_make_list(A, B, [A, B])))
+        ),
+        (   wam_kotlin_target:write_wam_kotlin_project([user:kt_make_list/3], [emit_mode(functions)], TmpDir),
+            run_gradle(TmpDir, ['-q', 'compileKotlin'], _CompileOut, _CompileErr, CompileStatus),
+            assertion(CompileStatus == exit(0)),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_make_list/3 alpha beta'], ListOut, _ListErr, ListStatus),
+            assertion(ListStatus == exit(0)),
+            assertion(has_substring(ListOut, 'A3=Struct(functor=[|]/2, args=[Atom(name=alpha), Struct(functor=[|]/2, args=[Atom(name=beta), Atom(name=[])])])'))
+        ),
+        retractall(user:kt_make_list(_, _, _))
     ).
 
 test(registry_exposes_wam_kotlin_target, [nondet]) :-
