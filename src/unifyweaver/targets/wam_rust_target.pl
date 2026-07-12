@@ -4225,6 +4225,21 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                 if self.unify(&a3, &Value::List(kept)) { self.pc += 1; true } else { false }
             }
+            "subtract/3" => {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let excluded = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let kept: Vec<Value> = list.into_iter()
+                    .filter(|item| !excluded.contains(item))
+                    .collect();
+                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                if self.unify(&a3, &Value::List(kept)) { self.pc += 1; true } else { false }
+            }
             "select/3" => {
                 let x_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
                 let list = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {

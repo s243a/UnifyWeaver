@@ -493,6 +493,25 @@ fn test_list_utilities() {
         Value::List(vec![a("a"), a("b"), a("a"), a("c")]), a("a"), ub("R"));
     assert!(ok5);
     assert_eq!(read_var(&vm5, "R"), Value::List(vec![a("b"), a("c")]));
+    let (ok6, vm6) = call3(
+        "subtract/3",
+        Value::List(vec![a("a"), a("b"), a("a"), a("c"), a("d")]),
+        Value::List(vec![a("a"), a("d")]),
+        ub("R"),
+    );
+    assert!(ok6);
+    assert_eq!(read_var(&vm6, "R"), Value::List(vec![a("b"), a("c")]));
+    let pair = Value::Str("pair/2".to_string(), vec![a("x"), i(1)]);
+    let (ok7, vm7) = call3(
+        "subtract/3",
+        Value::List(vec![pair.clone(), a("keep")]),
+        Value::List(vec![pair]),
+        ub("R"),
+    );
+    assert!(ok7);
+    assert_eq!(read_var(&vm7, "R"), Value::List(vec![a("keep")]));
+    assert!(!call3("subtract/3", a("not_a_list"), Value::List(vec![]), ub("R")).0);
+    assert!(!call3("subtract/3", Value::List(vec![]), a("not_a_list"), ub("R")).0);
 }
 
 #[test]
