@@ -465,13 +465,19 @@ single-pass test before any driver surgery).
 ## 6. Open questions
 
 - **Input re-scan for pass N — decided.** A **seekable** input is simply
-  **re-opened** for each pass. A **non-seekable stream** (stdin, a pipe, a
-  socket) is *not re-openable* — but it can be **written to a cache** on
-  pass 1 and re-scanned from there by later passes. This unifies with the
-  rest of the design: the stream→cache spool is just a backed table (or the
-  `over prev` spool), so a non-re-openable source becomes re-scannable
-  through the same store mechanism, with no new machinery. (So there is no
-  hard "seekable-only" restriction; a stream program simply spools first.)
+  **re-opened** for each pass (automatic). A **non-seekable stream** (stdin,
+  a pipe, a socket) is *not re-openable*, and the runtime **never silently
+  spools it** — hidden buffering of an unbounded stream is exactly the kind
+  of implicit cost this design avoids. To get a second pass over stream
+  data, the program must **explicitly capture it into a store**: pass 1
+  writes the records to a declared backed table, and a later pass reads them
+  with `over TABLE`. The stream→cache spool is thus a *declared* step, not a
+  default — it reuses the ordinary store mechanism, so no new machinery, but
+  the memory/disk cost is always visible in the source. A second `over
+  input` pass on a non-seekable stream *without* such a capture is an error
+  (diagnosed at compile time when the input is known to be a stream,
+  otherwise at runtime). `over prev` is likewise explicit — it spools the
+  previous pass's *emitted* records, which the program chose to emit.
 - **`over prev` sink vs stdout.** When a pass is consumed by `over prev`,
   its `print` feeds the spool instead of stdout. Does it *also* echo to
   stdout (tee), or only feed the next pass? Proposal: only feed the next
