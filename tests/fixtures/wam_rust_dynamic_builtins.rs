@@ -384,6 +384,25 @@ fn generated_predicate_property_reads_static_labels() {
 }
 
 #[test]
+fn generated_predicate_property_errors_are_catchable() {
+    let (code, labels) = shared_wam_program();
+    for pred in [
+        "rust_predicate_property_head_instantiation_demo/1",
+        "rust_predicate_property_head_type_demo/1",
+        "rust_predicate_property_property_instantiation_demo/1",
+        "rust_predicate_property_domain_demo/1",
+    ] {
+        let mut vm = WamState::new(code.clone(), labels.clone());
+        vm.set_reg_str("A1", ub("Result"));
+        vm.pc = *vm.labels.get(pred).expect("generated error demo label");
+
+        assert!(vm.run(), "{} should catch its error", pred);
+        assert_eq!(vm.bindings.get("Result"), Some(&at("caught")));
+        assert!(vm.thrown_ball.is_none(), "{} should consume the error", pred);
+    }
+}
+
+#[test]
 fn predicate_property_reports_dynamic_status_and_clause_count() {
     let mut vm = WamState::new(vec![], HashMap::new());
     assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("red")]));
