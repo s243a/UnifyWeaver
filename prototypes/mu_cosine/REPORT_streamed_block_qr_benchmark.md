@@ -15,6 +15,10 @@ usually faster, but in the conditioning stress test their float32 Cholesky faile
 stack blocks that are already available, stream only genuinely online/adaptive blocks, retain QR for its
 stability, and use CUDA after measuring the actual shared-versus-distinct design shape.
 
+The CUDA crossover is a **local, compute-only, hardware-specific** result: trajectory timing excludes transfers,
+and the corrected pre-cast transfer benchmark has not been rerun, so no transfer-inclusive crossover is
+established. It is not a general `B=4096` recommendation for other GPUs or deployment pipelines.
+
 This square-root conditioner is not `JointPosterior`. `JointPosterior` is a learned nonlinear decision model;
 the conditioner is a numerical backend for a correlated linear-Gaussian posterior. They can be used together.
 
@@ -71,22 +75,45 @@ the required output.
 
 - CPU: Intel Core i7-10700KF, eight PyTorch threads.
 - GPU: NVIDIA GeForce GTX 1660 SUPER, 6 GiB.
+- NVIDIA lists no Tensor Cores for this consumer Turing card. That specification alone does not predict QR
+  throughput, so its crossover and float64 results remain device- and backend-specific measurements. See NVIDIA's
+  [GeForce comparison table](https://www.nvidia.com/en-us/geforce/graphics-cards/compare/?section=compare-specs).
 - PyTorch 2.4.1+cu121; CUDA runtime 12.1; WSL2.
 - Nominal workload: float32, target prior/within-block covariance condition number 10, conditional-noise scale
   1, seed `20260711`.
 - CUDA timing synchronizes around every trial. Tables report median ± median absolute deviation (MAD).
+- QR trajectory timing also includes finite/scale/rank validation and its device synchronizations for every
+  factorization. Streamed QR repeats that cost once per block, whereas stacked QR pays it once. A fixed,
+  prevalidated design can hoist these guards and reuse a compiled factor, so the streamed/stacked ratios measure
+  this harness's complete conditioner-core path, not pure `geqrf`/kernel-launch arithmetic.
 - Input H2D and result D2H copies are timed separately and excluded from trajectory latency. The current harness
   pre-casts on the host so H2D measures transfer rather than transfer plus a CUDA-only dtype conversion.
 - Peak CUDA memory is incremental temporary allocation, not the allocator's reserved pool; it excludes any
   compiled object already resident at the start of a conditioning trial.
+- CPU peak memory was not measured; the reported memory/latency trade-off is characterized only on CUDA.
 - The final `n=128,B=128` CUDA cells use 11 trials and CPU cells use 7; the smaller-state table uses 11. The
   `B=4096` crossover uses 11 trials. All have warmups. Exact commands appear below.
+
+The named CUDA paths executed locally to produce the timing tables, but the CUDA-gated correctness tests were
+skipped in the available non-CUDA validation environment and are not presently verified by CI. The GTX 1660
+SUPER results should therefore be treated as local prototype evidence, not cross-device validation.
 
 ### Authoritative-run policy
 
 The compute tables use the **final recorded runs**: compute receives the configured warmups and CUDA's caching
 allocator is not emptied between timed trials. Peak allocation is measured with `reset_peak_memory_stats`
 without changing that steady-state timing protocol.
+
+The recorded timing tables predate the post-review rank-guard cleanup, which removed a duplicate scale check
+and restored a stable Frobenius rank scale. They have not been rebaselined against that code change, so their
+absolute values describe the pre-review conditioner path; the per-factorization guard/synchronization caveat
+above still applies to the current path.
+
+The reported error rows also predate the switch from a float64 normal-equations reference solve to the current
+direct stacked least-squares reference. On the two seeded problems with target prior/within-block covariance
+condition number `1e6`, the old and new float64 solutions differ by only `1.21e-14` and `2.51e-13` relatively,
+respectively; this independently confirms that the historical error magnitudes remain representative, but the
+CUDA rows themselves were not rerun.
 
 These runs supersede exploratory figures produced while the harness still called `empty_cache()` before each
 trial and before transfer timing had a warmup. In particular, do not mix the superseded
@@ -96,8 +123,8 @@ tables below. The authoritative corresponding compute values are `3.424 / 193.24
 
 The recorded `H2D=4.855 ms` value also included float64-to-float32 conversion. A post-review harness correction
 now pre-casts identically for CPU and CUDA, so that value is retained below only as a conservative historical
-upper bound; the current command must be rerun on a CUDA host for a transfer-only number. Compute timings are
-unaffected by this correction.
+upper bound; the current command must be rerun on a CUDA host before establishing a transfer-inclusive
+crossover. Compute timings are unaffected by this correction.
 
 ## `n=128`, `m_block=32`, `B=128`
 
@@ -135,7 +162,7 @@ Streaming trades substantially more time for bounded memory as `T` grows.
 
 ## The shared-design CUDA crossover: `B=4096`
 
-At `n=128,m_block=32,T=16`, increasing the shared RHS batch from 128 to 4096 produces the expected GPU
+At `n=128,m_block=32,T=16`, increasing the shared RHS batch from 128 to 4096 produces a local compute-only GPU
 crossover:
 
 | algorithm | CPU trajectory ms | CUDA trajectory ms | CUDA peak MiB |
@@ -148,7 +175,7 @@ crossover:
 The historical cast-plus-input-transfer upper bound is `4.855 ± .171 ms`; output transfer is `.74–.93 ms`.
 Even with that conservative surcharge, stacked QR barely wins end-to-end if every batch begins and ends on the
 host; device residency materially strengthens the CUDA case. The current pre-cast harness needs a CUDA rerun
-before quoting a transfer-only crossover. Cached dense loses its end-to-end CUDA advantage under the historical
+before quoting a transfer-inclusive crossover. Cached dense loses its end-to-end CUDA advantage under the historical
 cast-plus-transfer protocol.
 
 ## Smaller states
@@ -166,10 +193,12 @@ the number of independent RHSs, distinct versus common designs, GPU generation, 
 
 ## Numerical behavior
 
-Every output is compared with a float64 dense full-trajectory reference. The CSV reports:
+Current benchmark runs compare every output with a float64 full-trajectory reference. The reference solves the original stacked
+least-squares system directly and obtains its root by a separate reduced QR; it does not solve normal equations.
+The CSV reports:
 
 - relative final-solution error;
-- relative root error against the positive-diagonal float64 Cholesky root;
+- relative root error against the positive-diagonal float64 QR reference root;
 - relative Gram error `||U.T U - Lambda_ref|| / ||Lambda_ref||`; and
 - solution and Gram changes after reversing block order.
 
@@ -177,7 +206,8 @@ In the nominal `n=128,B=128,T=16` float32 runs, QR solution errors were below `7
 `3.0e-7`, and reverse-order solution changes below `1.1e-6`. At `B=4096`, streamed QR's solution error was
 `1.06e-6` and its reverse-order change was `1.50e-6`.
 
-A focused `condition=1e6` CUDA stress run demonstrates why the root method remains useful:
+A focused CUDA stress run with target prior/within-block covariance condition number `1e6` illustrates why the
+root method remains useful:
 
 | noise scale | dtype | stacked QR solution / Gram error | streamed QR solution / Gram error | dense solution / Gram error |
 |---:|---|---:|---:|---:|
@@ -189,6 +219,10 @@ A focused `condition=1e6` CUDA stress run demonstrates why the root method remai
 The dense baseline forms normal equations. Its tiny Gram error does not guarantee an accurate solution when
 conditioning is poor, and its mathematically positive precision can become non-positive in float32. The
 benchmark records per-algorithm execution failures as CSV rows rather than aborting that cell.
+
+These stability figures are one seeded synthetic instance (`20260711`) per reported setting. They demonstrate
+a concrete failure mode but do not estimate its frequency or error distribution; a multi-seed, independently
+generated condition/scale sweep remains required before making a probabilistic reliability claim.
 
 ## What “blocks on the diagonal” permits
 
@@ -294,8 +328,8 @@ python3 prototypes/mu_cosine/benchmark_streamed_block_qr.py \
   --cpu-threads 1
 ```
 
-All smoke cells completed with `status=ok`; the expected dense float32 algorithm failure was captured as
-`failed_LinAlgError`. Per-algorithm execution failures are emitted as CSV status rows after a problem and its
-reference have been constructed. Problem generation, reference construction, or device-transfer/OOM failures
-can still abort the sweep and should be handled by the outer job runner. The complete condition/scale grid is
-deliberately opt-in because it multiplies an already large shape grid.
+All nominal smoke cells completed with `status=ok`. In the separately reported ill-conditioned stress run, the
+dense failure was emitted as `failed_LinAlgError`. Per-algorithm execution failures are emitted as CSV status
+rows after a problem and its reference have been constructed. Problem generation, reference construction, or
+device-transfer/OOM failures can still abort the sweep and should be handled by the outer job runner. The
+complete condition/scale grid is deliberately opt-in because it multiplies an already large shape grid.

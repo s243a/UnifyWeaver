@@ -105,6 +105,53 @@ def test_information_qr_rank_check_is_invariant_to_uniform_small_scale():
     )
 
 
+def test_information_qr_rank_boundary_preserves_frobenius_sensitivity():
+    n, m = 128, 32
+    boundary = np.finfo(float).eps * (n + m) * np.sqrt(m * n)
+    measurement = np.ones((m, n))
+
+    with np.testing.assert_raises(np.linalg.LinAlgError):
+        householder_information_update(
+            np.eye(n) * (0.5 * boundary),
+            np.zeros(n),
+            measurement,
+            np.zeros(m),
+        )
+
+    accepted = householder_information_update(
+        np.eye(n) * (2.0 * boundary),
+        np.zeros(n),
+        measurement,
+        np.zeros(m),
+    )
+    assert np.isfinite(accepted.precision_root).all()
+
+
+def test_information_qr_rank_scale_does_not_overflow_near_dtype_max():
+    n = 16
+    scale = np.finfo(float).max / 2.0
+    update = householder_information_update(
+        np.eye(n) * scale,
+        np.zeros(n),
+        np.zeros((0, n)),
+        np.zeros(0),
+    )
+    np.testing.assert_allclose(update.precision_root / scale, np.eye(n))
+
+
+def test_information_qr_rejects_subnormal_scale_with_rescale_message():
+    scale = np.finfo(float).tiny / 2.0
+    with np.testing.assert_raises_regex(
+        np.linalg.LinAlgError, "subnormal; rescale"
+    ):
+        householder_information_update(
+            np.eye(2) * scale,
+            np.zeros(2),
+            np.zeros((0, 2)),
+            np.zeros(0),
+        )
+
+
 def test_householder_update_is_row_permutation_invariant():
     rng = np.random.default_rng(23)
     n, m = 4, 9

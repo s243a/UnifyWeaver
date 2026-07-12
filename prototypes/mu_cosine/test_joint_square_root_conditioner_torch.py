@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Correctness tests for the batched CPU/CUDA Householder-QR backend."""
 
+import math
+
 import numpy as np
 import pytest
 
@@ -69,7 +71,7 @@ def test_noise_whitener_correlation_and_covariance_are_equivalent(dtype, rtol, a
         rtol=rtol,
         atol=atol,
     )
-    precision_root = from_correlation.materialize_precision_root()
+    precision_root = from_correlation.materialize_row_root()
     identity = torch.eye(3, dtype=dtype)
     torch.testing.assert_close(
         precision_root.mT @ precision_root @ from_correlation.covariance,
@@ -107,7 +109,7 @@ def test_noise_whitener_nearly_singular_psd_loading_is_scale_relative(dtype):
         rtol=0.08,
         atol=8 * torch.finfo(dtype).eps,
     )
-    root = whitener.materialize_precision_root()
+    root = whitener.materialize_row_root()
     identity = torch.eye(2, dtype=dtype).expand(3, 2, 2)
     torch.testing.assert_close(
         root.transpose(-2, -1) @ root @ whitener.covariance,
@@ -202,7 +204,7 @@ def test_noise_whitener_never_calls_explicit_inverse(monkeypatch):
     whitener = prepare_noise_whitener_torch(covariance)
     whitener.apply_vectors(torch.tensor([0.3, -0.4], dtype=torch.float64))
     whitener.apply_columns(torch.eye(2, dtype=torch.float64))
-    whitener.materialize_precision_root()
+    whitener.materialize_row_root()
 
 
 @pytest.mark.parametrize("device", [
@@ -277,6 +279,41 @@ def test_information_qr_rank_check_is_scale_homogeneous(dtype, scales):
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_information_qr_rank_boundary_preserves_frobenius_sensitivity(dtype):
+    n, m = 128, 32
+    eps = torch.finfo(dtype).eps
+    expected_frobenius_scale = math.sqrt(m * n)
+    boundary = eps * (n + m) * expected_frobenius_scale
+    measurement = torch.ones(m, n, dtype=dtype)
+
+    with pytest.raises(torch.linalg.LinAlgError, match="rank deficient"):
+        compile_information_update_torch(
+            torch.eye(n, dtype=dtype) * (0.5 * boundary), measurement
+        )
+
+    accepted = compile_information_update_torch(
+        torch.eye(n, dtype=dtype) * (2.0 * boundary), measurement
+    )
+    assert torch.isfinite(accepted.precision_root).all()
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_information_qr_rank_scale_does_not_overflow_near_dtype_max(dtype):
+    n = 16
+    scale = torch.finfo(dtype).max / 2.0
+    compiled = compile_information_update_torch(
+        torch.eye(n, dtype=dtype) * scale,
+        torch.zeros(0, n, dtype=dtype),
+    )
+    torch.testing.assert_close(
+        compiled.precision_root / scale,
+        torch.eye(n, dtype=dtype),
+        rtol=20 * torch.finfo(dtype).eps,
+        atol=20 * torch.finfo(dtype).eps,
+    )
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 def test_information_qr_rejects_subnormal_scale_with_rescale_message(dtype):
     scale = torch.finfo(dtype).tiny / 2.0
     with pytest.raises(torch.linalg.LinAlgError, match="subnormal; rescale"):
@@ -335,6 +372,54 @@ def test_default_covariance_roots_and_conditioner_are_scale_relative(dtype, scal
             update.conditional_observation_covariance, covariance
         )
         assert not bool(update.conditional_loading_diagnostics.was_loaded)
+
+
+def test_float32_large_n_negative_tolerance_fits_loading_budget():
+    n = 128
+    dtype = torch.float32
+    maximum_loading = 1e-3
+    eps = torch.finfo(dtype).eps
+    relative_floor = max(math.sqrt(eps), 8.0 * n * eps)
+    expected_negative_tolerance = min(
+        64.0 * n * eps,
+        0.5 * (maximum_loading - relative_floor),
+    )
+    covariance = torch.eye(n, dtype=dtype)
+    covariance[-1, -1] = -0.9 * expected_negative_tolerance
+
+    whitener = prepare_noise_whitener_torch(
+        covariance, maximum_relative_loading=maximum_loading
+    )
+    assert whitener.diagnostics.negative_eigenvalue_tolerance == pytest.approx(
+        expected_negative_tolerance
+    )
+    assert float(whitener.diagnostics.relative_diagonal_loading) < maximum_loading
+
+    too_negative = covariance.clone()
+    too_negative[-1, -1] = -1.1 * expected_negative_tolerance
+    with pytest.raises(ValueError, match="genuinely indefinite"):
+        prepare_noise_whitener_torch(
+            too_negative, maximum_relative_loading=maximum_loading
+        )
+
+
+def test_zero_covariance_full_scale_repair_requires_explicit_budget():
+    whitener = prepare_noise_whitener_torch(
+        torch.zeros(2, 2, dtype=torch.float64),
+        relative_eigenvalue_floor=0.0,
+        absolute_eigenvalue_floor=1e-4,
+        maximum_relative_loading=1.0,
+    )
+    torch.testing.assert_close(
+        whitener.covariance, torch.eye(2, dtype=torch.float64) * 1e-4
+    )
+    assert float(whitener.diagnostics.relative_diagonal_loading) == pytest.approx(1.0)
+
+
+def test_information_state_update_noise_block_rejects_wrong_whitener_type():
+    state = SquareRootInformationStateTorch(torch.eye(2), torch.zeros(2))
+    with pytest.raises(TypeError, match="NoiseWhitenerTorch"):
+        state.update_noise_block(torch.eye(2), torch.zeros(2), object())
 
 
 @pytest.mark.parametrize("n,m", [(1, 1), (2, 4), (4, 5)])

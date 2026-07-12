@@ -117,6 +117,13 @@ measurement space while `U` lives in state space) and, even when the dimensions 
 product of precisions rather than the Bayesian sum.  `W @ J` is the valid multiplication; QR of the vertical
 stack performs the required addition without forming normal equations.
 
+This vertical-stack construction is the classical square-root-information pattern.  A
+[CERFACS sequential-least-squares presentation](https://cerfacs.fr/wp-content/uploads/2017/05/Alina_presentation_kf.pdf)
+explicitly triangularises a prior information root/RHS together with new measurement rows, and
+[Tracy (2022)](https://arxiv.org/abs/2208.06452) gives a QR-only square-root Kalman construction.  These
+references support the orthogonal stacking pattern; they do not by themselves establish this conditioner's
+nonzero-`C` Schur-complement reduction, which is the model-specific preprocessing derived above.
+
 ### Diagonal loading
 
 Near-singular empirical correlations can require a small diagonal load before Cholesky.  Loading must be in
@@ -135,6 +142,20 @@ round-off may be lifted; a materially indefinite `Rc` is evidence that the fitte
 complement is invalid and must be rejected.  Reports and benchmark output should include `scale`, the raw
 minimum eigenvalue, `target`, and `delta`, since increasing `delta` weakens the measurement statistically as
 well as stabilising the factorisation.
+
+There are deliberately two rejection gates.  The negative-eigenvalue tolerance is a **hard validity gate**
+applied before loading; `maximum_relative_loading` is a separate **repair budget**.  Their defaults are coupled:
+the negative tolerance is capped at half of the budget remaining after the relative floor, so a
+round-off-negative matrix accepted by the default validity gate remains repairable within the default budget.
+An explicitly supplied negative tolerance may override that coupling and can still pass the first gate but fail
+the repair-budget gate.  This is preferable to silently weakening a measurement; a caller that changes either
+gate must justify the statistical and numerical budget together.
+
+The Torch square-root and conditional-conditioning APIs now default `jitter` to `0.0`, rather than applying the
+historical absolute `1e-9` floor.  The scale-relative floor remains active and observable, while an absolute
+floor is opt-in and expressed in covariance units.  Consequently, a near-singular covariance that the old
+absolute jitter happened to repair can now be rejected by the hard-validity or loading-budget gate.  The
+compatibility helper `regularize_covariance_torch` retains its explicitly absolute policy.
 
 For a zero-mean prior error, `z_prior = 0`. More generally `z_prior = U m_prior`. Form
 
@@ -170,6 +191,45 @@ x_post      = x_prior + e_post.
 
 The implementation normalises the diagonal of `U_post` to be non-negative, making the root deterministic
 under row permutations up to floating-point error.
+
+### Rank and input-validation contract
+
+For an `M x N` information pre-array `G`, the NumPy and Torch implementations first compute `a = max(abs(G))` for
+finite/zero/subnormal validation, then evaluates the rank comparison without materialising a possibly
+unrepresentable Frobenius scale:
+
+```
+rho = ||G / a||_F
+min(abs(diag(U_post))) / a <= eps(dtype) * max(M, N) * rho
+```
+
+This is algebraically the test with `s_F = a * rho` and
+`tau = eps(dtype) * max(M, N) * s_F`, but avoids overflow in `s_F`.  The Frobenius scale is a conservative,
+cheap upper bound on `sigma_max(G)`, not an exact singular-value or rank-revealing-QR test.  It preserves the
+previous normal-scale sensitivity without the old unit-scale clamp, and the predicate is homogeneous when the
+**entire** pre-array is multiplied by one nonzero finite scalar.  It does not promise invariance to independent
+per-column/per-direction rescaling; mixed-unit state coordinates should be explicitly standardized or
+equilibrated and still require condition-number tests.
+
+Both implementations reject non-finite coefficients, zero scale, and subnormal global scale.  In the Torch
+backend these design-time checks intentionally synchronize a CUDA stream.  Repeated Torch hot-RHS application
+does not perform a per-call finiteness reduction, so a non-finite innovation/RHS can propagate as a non-finite
+result.  Production callers that require fail-fast behavior should validate observations once at batch ingress
+(or enable a debug boundary check), rather than inserting device synchronizations into every compiled update.
+
+### Dense covariance companion
+
+When the compiled dense-gain baseline must return a covariance, it uses the effective conditional model and
+the Joseph form
+
+```
+P_post = (I - K J) P (I - K J)^T + K Rc K^T
+```
+
+rather than the cancellation-prone subtraction `P - K S K^T`.  Each summand is positive semidefinite in exact
+arithmetic.  [Tracy (2022)](https://arxiv.org/abs/2208.06452) likewise starts from Joseph-form covariance
+algebra in deriving a QR square-root update; here that citation motivates the numerical form, while the tests
+establish equivalence for this implementation's correlated conditional model.
 
 ## 3. Block updates
 

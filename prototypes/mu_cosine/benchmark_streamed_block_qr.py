@@ -441,28 +441,58 @@ def _compile_cached_dense_full(problem: Problem) -> CachedDenseFull:
 
 
 def _reference(problem: Problem) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Float64 dense full-trajectory reference on CPU."""
+    """Float64 stacked least-squares/QR reference on CPU.
+
+    Solve the original augmented system directly instead of solving its Gram
+    system.  Keeping the reference off the normal-equations path makes the
+    reported stability comparison independent of the failure mode being
+    measured.  A separate reduced QR supplies the unique upper precision root
+    after normalising its diagonal positive.
+    """
     batch, block_count, block_size = problem.rhs.shape
     n = problem.root.shape[-1]
+    stacked_rhs = problem.rhs.reshape(batch, block_count * block_size)
     if problem.shared_design:
         blocks = problem.blocks.reshape(block_count * block_size, n)
-        precision = problem.root.mT @ problem.root + blocks.mT @ blocks
-        eta = torch.einsum(
-            "mn,bm->bn", blocks, problem.rhs.reshape(batch, block_count * block_size)
+        stacked = torch.cat((problem.root, blocks), dim=0)
+        augmented_rhs = torch.cat(
+            (
+                torch.zeros(
+                    n,
+                    batch,
+                    dtype=problem.root.dtype,
+                    device=problem.root.device,
+                ),
+                stacked_rhs.mT,
+            ),
+            dim=0,
         )
-        solution = torch.linalg.solve(
-            precision, eta.transpose(0, 1)
-        ).transpose(0, 1)
+        solution = torch.linalg.lstsq(stacked, augmented_rhs).solution.mT
     else:
         blocks = problem.blocks.reshape(batch, block_count * block_size, n)
-        precision = (
-            problem.root.mT @ problem.root
-        ).expand(batch, n, n) + blocks.mT @ blocks
-        eta = torch.einsum(
-            "bmn,bm->bn", blocks, problem.rhs.reshape(batch, block_count * block_size)
+        stacked = torch.cat(
+            (problem.root.expand(batch, n, n), blocks), dim=1
         )
-        solution = torch.linalg.solve(precision, eta.unsqueeze(-1)).squeeze(-1)
-    root = torch.linalg.cholesky(precision).mT
+        augmented_rhs = torch.cat(
+            (
+                torch.zeros(
+                    batch,
+                    n,
+                    1,
+                    dtype=problem.root.dtype,
+                    device=problem.root.device,
+                ),
+                stacked_rhs.unsqueeze(-1),
+            ),
+            dim=1,
+        )
+        solution = torch.linalg.lstsq(stacked, augmented_rhs).solution.squeeze(-1)
+
+    _, root = torch.linalg.qr(stacked, mode="r")
+    diagonal = torch.diagonal(root, dim1=-2, dim2=-1)
+    signs = torch.where(diagonal < 0, -torch.ones_like(diagonal), torch.ones_like(diagonal))
+    root = root * signs.unsqueeze(-1)
+    precision = root.mT @ root
     return precision, root, solution
 
 

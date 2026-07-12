@@ -22,7 +22,10 @@ when a later block changes the posterior, which is the root-threading QR case.
 All functions require real floating PyTorch tensors and preserve their dtype
 and device.  The implementation is inference-oriented.  In particular,
 ``geqrf``/``ormqr`` backend and autograd coverage is narrower than
-``torch.linalg.qr`` on some PyTorch/device combinations.
+``torch.linalg.qr`` on some PyTorch/device combinations.  One-time covariance
+and coefficient preparation validates finiteness; repeated RHS hot paths avoid
+device-synchronising finiteness checks, so NaN/Inf observations propagate and
+must be gated by the caller when that is not acceptable.
 """
 
 from __future__ import annotations
@@ -118,37 +121,53 @@ def _normalised_root_from_packed(
     return raw_root * signs.unsqueeze(-1), signs
 
 
-def _pre_array_scale(pre_array: torch.Tensor) -> torch.Tensor:
-    # Use a homogeneous scale: clamping it to one falsely labels a perfectly
-    # conditioned factor such as 1e-20 * I as rank deficient.  Max-entry scale
-    # also avoids squaring underflow in a Frobenius norm.
-    scale = torch.amax(torch.abs(pre_array), dim=(-2, -1))
-    nonfinite = ~torch.isfinite(scale)
+def _pre_array_scale(
+    pre_array: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    # Preserve the prior Frobenius-scale rank sensitivity without its unit
+    # clamp. Return ``(a, ||G/a||_F)`` instead of materialising
+    # ``a * ||G/a||_F``: the latter can overflow even when every entry and QR
+    # diagonal is representable. The pair remains homogeneous under a
+    # *global* scalar rescaling when used by ``_check_root_rank``.
+    entry_scale = torch.amax(torch.abs(pre_array), dim=(-2, -1))
+    nonfinite = ~torch.isfinite(entry_scale)
     if bool(torch.any(nonfinite).item()):
         raise ValueError(
             "information pre-array must be finite"
             + _batch_failure_detail(nonfinite)
         )
-    zero = scale == 0
+    zero = entry_scale == 0
     if bool(torch.any(zero).item()):
         raise torch.linalg.LinAlgError(
             "information pre-array is rank deficient (zero scale)"
             + _batch_failure_detail(zero)
         )
-    subnormal = scale < torch.finfo(pre_array.dtype).tiny
+    subnormal = entry_scale < torch.finfo(pre_array.dtype).tiny
     if bool(torch.any(subnormal).item()):
         raise torch.linalg.LinAlgError(
             "information pre-array scale is subnormal; rescale before QR"
             + _batch_failure_detail(subnormal)
         )
-    return scale
+    normalised = pre_array / entry_scale[..., None, None]
+    relative_frobenius = torch.linalg.vector_norm(normalised, dim=(-2, -1))
+    return entry_scale, relative_frobenius
 
 
-def _check_root_rank(pre_array: torch.Tensor, root: torch.Tensor) -> None:
-    scale = _pre_array_scale(pre_array)
-    tolerance = torch.finfo(pre_array.dtype).eps * max(pre_array.shape[-2:]) * scale
+def _check_root_rank(
+    pre_array: torch.Tensor,
+    root: torch.Tensor,
+    scale: tuple[torch.Tensor, torch.Tensor],
+) -> None:
+    entry_scale, relative_frobenius = scale
+    relative_tolerance = (
+        torch.finfo(pre_array.dtype).eps
+        * max(pre_array.shape[-2:])
+        * relative_frobenius
+    )
     smallest = torch.amin(torch.abs(torch.diagonal(root, dim1=-2, dim2=-1)), dim=-1)
-    failed = smallest <= tolerance
+    failed = (~torch.isfinite(smallest)) | (
+        smallest / entry_scale <= relative_tolerance
+    )
     if bool(torch.any(failed).item()):
         if failed.ndim:
             indices = torch.nonzero(failed, as_tuple=False).detach().cpu().tolist()
@@ -255,7 +274,7 @@ class NoiseWhitenerTorch:
         batch_shape = torch.broadcast_shapes(self.batch_shape, value.shape[:-2])
         factor = self.cholesky_factor.expand(
             batch_shape + self.cholesky_factor.shape[-2:]
-        )
+        ).contiguous()
         value = value.expand(batch_shape + value.shape[-2:])
         return torch.linalg.solve_triangular(
             factor, value.contiguous(), upper=False
@@ -277,7 +296,7 @@ class NoiseWhitenerTorch:
         value = value.expand(batch_shape + (self.dimension,))
         return self.apply_columns(value.unsqueeze(-1)).squeeze(-1)
 
-    def materialize_precision_root(self) -> torch.Tensor:
+    def materialize_row_root(self) -> torch.Tensor:
         """Materialise ``L^-1`` with a solve for inspection or interop.
 
         The result ``U = L^-1`` is a lower-triangular *row root* satisfying
@@ -426,10 +445,10 @@ def compile_information_update_torch(
     _same_backend(root, measurement_matrix=matrix)
     root, matrix = _broadcast_matrices(root, matrix)
     pre_array = torch.cat([root, matrix], dim=-2).contiguous()
-    _pre_array_scale(pre_array)
+    scale = _pre_array_scale(pre_array)
     packed, tau = torch.geqrf(pre_array)
     posterior_root, signs = _normalised_root_from_packed(packed, n)
-    _check_root_rank(pre_array, posterior_root)
+    _check_root_rank(pre_array, posterior_root, scale)
     return CompiledInformationQRTorch(
         packed=packed,
         tau=tau,
@@ -505,7 +524,12 @@ def prepare_noise_whitener_torch(
     number near ``1/sqrt(eps)`` (about ``2.9e3`` in float32 and ``6.7e7`` in
     float64).  The float32 load can be statistically material; it is exposed
     in diagnostics and may be lowered explicitly when a caller has validated
-    a tighter numerical error budget.
+    a tighter numerical error budget.  The default negative-eigenvalue
+    tolerance is capped at half of the remaining loading budget, so any
+    round-off-negative input accepted by the hard indefiniteness gate remains
+    repairable within ``maximum_relative_loading``.  An explicitly supplied
+    tolerance may intentionally override that coupling and still be rejected
+    by the separate loading-budget gate.
     """
     covariance_mode = covariance is not None
     correlation_mode = correlation is not None or stddev is not None
@@ -599,16 +623,16 @@ def prepare_noise_whitener_torch(
     absolute_floor = _nonnegative_finite(
         "absolute_eigenvalue_floor", absolute_eigenvalue_floor
     )
-    negative_tolerance = (
-        64.0 * n * eps
-        if negative_eigenvalue_tolerance is None
-        else _nonnegative_finite(
-            "negative_eigenvalue_tolerance", negative_eigenvalue_tolerance
-        )
-    )
     maximum_loading = _nonnegative_finite(
         "maximum_relative_loading", maximum_relative_loading
     )
+    if negative_eigenvalue_tolerance is None:
+        repair_budget = max(maximum_loading - relative_floor, 0.0)
+        negative_tolerance = min(64.0 * n * eps, 0.5 * repair_budget)
+    else:
+        negative_tolerance = _nonnegative_finite(
+            "negative_eigenvalue_tolerance", negative_eigenvalue_tolerance
+        )
     symmetry_limit = (
         64.0 * n * eps
         if symmetry_tolerance is None
@@ -762,12 +786,12 @@ def precision_root_from_covariance_torch(
         maximum_relative_loading=maximum_relative_loading,
         name="prior covariance",
     )
-    inverse_factor = whitener.materialize_precision_root()
+    inverse_factor = whitener.materialize_row_root()
     n = inverse_factor.shape[-1]
-    _pre_array_scale(inverse_factor)
+    scale = _pre_array_scale(inverse_factor)
     packed, _ = torch.geqrf(inverse_factor.contiguous())
     root, _ = _normalised_root_from_packed(packed, n)
-    _check_root_rank(inverse_factor, root)
+    _check_root_rank(inverse_factor, root, scale)
     return root
 
 
@@ -918,7 +942,6 @@ def condition_correlated_gaussian_qr_torch(
     H_design = H.expand(design_batch + (m, n))
     effective_H = effective_H.expand(design_batch + (m, n))
     conditional_R = conditional_R.expand(design_batch + (m, m))
-    chol = conditional_whitener.cholesky_factor
     whitened_H = conditional_whitener.apply_columns(effective_H)
     compiled = compile_information_update_torch(root, whitened_H)
 
@@ -926,10 +949,7 @@ def condition_correlated_gaussian_qr_torch(
     observation = observation.expand(result_batch + (m,))
     H_result = H_design.expand(result_batch + (m, n))
     innovation = observation - (H_result @ mean.unsqueeze(-1)).squeeze(-1)
-    chol_result = chol.expand(result_batch + (m, m))
-    whitened_innovation = torch.linalg.solve_triangular(
-        chol_result, innovation.unsqueeze(-1), upper=False
-    ).squeeze(-1)
+    whitened_innovation = conditional_whitener.apply_vectors(innovation)
     information = compiled.apply_vectors(
         torch.zeros_like(mean), whitened_innovation
     )
@@ -1236,7 +1256,9 @@ class SquareRootInformationStateTorch:
         ``measurement_rhs`` is its matching innovation ``r``.  Both are acted
         on from the left by the same implicit ``L^-1``.  This convenience
         avoids materialising an inverse root or accidentally applying the
-        whitening factor with the wrong orientation.
+        whitening factor with the wrong orientation.  This hot path does not
+        recheck ``measurement_matrix`` or ``measurement_rhs`` for finiteness;
+        callers that cannot tolerate NaN/Inf propagation must gate them first.
         """
         if not isinstance(whitener, NoiseWhitenerTorch):
             raise TypeError("whitener must be a NoiseWhitenerTorch")
