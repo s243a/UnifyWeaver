@@ -84,7 +84,11 @@ def _matrix(name, value, rows=None, cols=None):
 
 @dataclass(frozen=True)
 class InformationRootUpdate:
-    """Result of one Householder information-root update."""
+    """Result of one Householder information-root update.
+
+    ``information_rhs`` is the square-root RHS ``z``.  The canonical
+    information vector is ``eta = precision_root.T @ z``.
+    """
 
     precision_root: np.ndarray
     information_rhs: np.ndarray
@@ -137,6 +141,15 @@ def _normalise_root_signs(root, rhs):
     return root, rhs
 
 
+def _scaled_norm(value):
+    """Euclidean norm without overflow/underflow from squaring raw entries."""
+    value = np.asarray(value, dtype=float)
+    scale = float(np.max(np.abs(value), initial=0.0))
+    if scale == 0.0:
+        return 0.0
+    return scale * float(np.linalg.norm(value / scale))
+
+
 def householder_information_update(prior_precision_root, prior_information_rhs,
                                    measurement_matrix, measurement_rhs):
     """Triangularise a prior information root plus whitened measurement rows.
@@ -158,21 +171,31 @@ def householder_information_update(prior_precision_root, prior_information_rhs,
         np.column_stack([U, z]),
         np.column_stack([A, b]),
     ]).astype(float, copy=False)
-    scale = max(float(np.linalg.norm(work[:, :n])), 1.0)
-    tol = np.finfo(float).eps * max(work.shape) * scale
+    pre_array = work[:, :n]
+    entry_scale = float(np.max(np.abs(pre_array), initial=0.0))
+    if entry_scale == 0.0:
+        raise np.linalg.LinAlgError("information pre-array is rank deficient")
+    if entry_scale < np.finfo(float).tiny:
+        raise np.linalg.LinAlgError(
+            "information pre-array scale is subnormal; rescale before QR"
+        )
+    relative_frobenius = float(np.linalg.norm(pre_array / entry_scale))
+    relative_tol = (
+        np.finfo(float).eps * max(pre_array.shape) * relative_frobenius
+    )
 
     # Apply each reflector directly to the remaining coefficient/RHS array;
     # Q is never formed.  This is the standard numerically stable QR update.
     for col in range(n):
         x = work[col:, col].copy()
-        norm_x = float(np.linalg.norm(x))
-        if norm_x <= tol:
+        norm_x = _scaled_norm(x)
+        if not np.isfinite(norm_x) or norm_x / entry_scale <= relative_tol:
             raise np.linalg.LinAlgError("information pre-array is rank deficient")
         first_sign = 1.0 if x[0] >= 0.0 else -1.0
         alpha = -first_sign * norm_x
         x[0] -= alpha
-        norm_v = float(np.linalg.norm(x))
-        if norm_v <= tol:
+        norm_v = _scaled_norm(x)
+        if not np.isfinite(norm_v) or norm_v / entry_scale <= relative_tol:
             raise np.linalg.LinAlgError("cannot construct a stable Householder reflector")
         v = x / norm_v
         tail = work[col:, col:]
@@ -183,7 +206,10 @@ def householder_information_update(prior_precision_root, prior_information_rhs,
     root = np.triu(work[:n, :n])
     rhs = work[:n, n]
     root, rhs = _normalise_root_signs(root, rhs)
-    if np.any(np.abs(np.diag(root)) <= tol):
+    diagonal = np.abs(np.diag(root))
+    if np.any(~np.isfinite(diagonal)) or np.any(
+        diagonal / entry_scale <= relative_tol
+    ):
         raise np.linalg.LinAlgError("posterior information root is singular")
     solution = np.linalg.solve(root, rhs)
     residual = work[n:, n]

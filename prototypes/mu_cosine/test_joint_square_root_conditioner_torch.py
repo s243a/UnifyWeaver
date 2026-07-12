@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Correctness tests for the batched CPU/CUDA Householder-QR backend."""
 
+import math
+
 import numpy as np
 import pytest
 
@@ -20,6 +22,7 @@ from joint_square_root_conditioner_torch import (  # noqa: E402
     conditional_measurement_model_torch,
     householder_information_update_torch,
     precision_root_from_covariance_torch,
+    prepare_noise_whitener_torch,
 )
 
 
@@ -40,6 +43,383 @@ def _problem(seed=7, n=4, m=5):
 
 def _as_torch(*arrays, device="cpu", dtype=torch.float64):
     return tuple(torch.as_tensor(a, dtype=dtype, device=device) for a in arrays)
+
+
+@pytest.mark.parametrize("dtype,rtol,atol", [
+    (torch.float32, 2e-5, 2e-6),
+    (torch.float64, 2e-12, 2e-13),
+])
+def test_noise_whitener_correlation_and_covariance_are_equivalent(dtype, rtol, atol):
+    correlation = torch.tensor(
+        [[1.0, 0.25, -0.1], [0.25, 1.0, 0.2], [-0.1, 0.2, 1.0]],
+        dtype=dtype,
+    )
+    stddev = torch.tensor([2.0, 0.5, 1.5], dtype=dtype)
+    covariance = stddev[:, None] * correlation * stddev[None, :]
+    from_correlation = prepare_noise_whitener_torch(
+        correlation=correlation, stddev=stddev
+    )
+    from_covariance = prepare_noise_whitener_torch(covariance)
+    torch.testing.assert_close(
+        from_correlation.covariance, from_covariance.covariance, rtol=rtol, atol=atol
+    )
+
+    rhs = torch.arange(12, dtype=dtype).reshape(4, 3) / 7.0
+    torch.testing.assert_close(
+        from_correlation.apply_vectors(rhs),
+        from_covariance.apply_vectors(rhs),
+        rtol=rtol,
+        atol=atol,
+    )
+    precision_root = from_correlation.materialize_row_root()
+    identity = torch.eye(3, dtype=dtype)
+    torch.testing.assert_close(
+        precision_root.mT @ precision_root @ from_correlation.covariance,
+        identity,
+        rtol=10 * rtol,
+        atol=10 * atol,
+    )
+    assert from_correlation.diagnostics.source == "correlation+stddev"
+    assert from_covariance.diagnostics.source == "covariance"
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_noise_whitener_nearly_singular_psd_loading_is_scale_relative(dtype):
+    scales = torch.tensor([1e-6, 1.0, 1e6], dtype=dtype)
+    singular = torch.tensor([[1.0, 1.0], [1.0, 1.0]], dtype=dtype)
+    covariance = scales[:, None, None] * singular
+    whitener = prepare_noise_whitener_torch(covariance)
+    diagnostics = whitener.diagnostics
+    assert diagnostics.was_loaded.shape == (3,)
+    assert bool(torch.all(diagnostics.was_loaded))
+    assert bool(torch.all(diagnostics.diagonal_loading > 0))
+    expected = torch.full_like(
+        diagnostics.relative_diagonal_loading,
+        diagnostics.relative_eigenvalue_floor,
+    )
+    assert diagnostics.relative_eigenvalue_floor == pytest.approx(
+        max(
+            np.sqrt(torch.finfo(dtype).eps),
+            8.0 * 2 * torch.finfo(dtype).eps,
+        )
+    )
+    torch.testing.assert_close(
+        diagnostics.relative_diagonal_loading,
+        expected,
+        rtol=0.08,
+        atol=8 * torch.finfo(dtype).eps,
+    )
+    root = whitener.materialize_row_root()
+    identity = torch.eye(2, dtype=dtype).expand(3, 2, 2)
+    torch.testing.assert_close(
+        root.transpose(-2, -1) @ root @ whitener.covariance,
+        identity,
+        rtol=3e-3 if dtype == torch.float32 else 2e-9,
+        atol=3e-3 if dtype == torch.float32 else 2e-9,
+    )
+
+
+def test_noise_whitener_rejects_indefinite_and_excessive_loading():
+    indefinite = torch.tensor([[1.0, 0.0], [0.0, -0.05]], dtype=torch.float64)
+    with pytest.raises(ValueError, match="genuinely indefinite"):
+        prepare_noise_whitener_torch(indefinite)
+
+    singular = torch.tensor([[1.0, 1.0], [1.0, 1.0]], dtype=torch.float64)
+    with pytest.raises(ValueError, match="exceeding maximum_relative_loading"):
+        prepare_noise_whitener_torch(
+            singular,
+            relative_eigenvalue_floor=1e-3,
+            maximum_relative_loading=1e-4,
+        )
+
+
+@pytest.mark.parametrize("device", [
+    "cpu",
+    pytest.param(
+        "cuda",
+        marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable"),
+    ),
+])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_noise_whitener_batched_dtype_device_and_solve(device, dtype):
+    correlation = torch.tensor(
+        [
+            [[1.0, 0.2, 0.0], [0.2, 1.0, 0.1], [0.0, 0.1, 1.0]],
+            [[1.0, -0.3, 0.05], [-0.3, 1.0, 0.15], [0.05, 0.15, 1.0]],
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    stddev = torch.tensor(
+        [[1.0, 0.5, 2.0], [0.7, 1.4, 0.9]], dtype=dtype, device=device
+    )
+    whitener = prepare_noise_whitener_torch(
+        correlation=correlation, stddev=stddev
+    )
+    values = torch.arange(24, dtype=dtype, device=device).reshape(4, 2, 3) / 11.0
+    actual = whitener.apply_vectors(values)
+    expected = torch.stack([
+        torch.stack([
+            torch.linalg.solve_triangular(
+                whitener.cholesky_factor[batch],
+                values[sample, batch, :, None],
+                upper=False,
+            ).squeeze(-1)
+            for batch in range(2)
+        ])
+        for sample in range(4)
+    ])
+    torch.testing.assert_close(actual, expected)
+    assert actual.dtype == dtype
+    assert actual.device.type == device
+    assert whitener.diagnostics.diagonal_loading.shape == (2,)
+
+
+def test_noise_whitener_validates_correlation_and_positive_stddev():
+    correlation = torch.eye(2, dtype=torch.float64)
+    with pytest.raises(ValueError, match="strictly positive"):
+        prepare_noise_whitener_torch(
+            correlation=correlation,
+            stddev=torch.tensor([1.0, 0.0], dtype=torch.float64),
+        )
+    with pytest.raises(ValueError, match="diagonal must be one"):
+        prepare_noise_whitener_torch(
+            correlation=torch.tensor([[0.9, 0.0], [0.0, 1.0]]),
+            stddev=torch.ones(2),
+        )
+    with pytest.raises(ValueError, match=r"\|rho\| <= 1"):
+        prepare_noise_whitener_torch(
+            correlation=torch.tensor([[1.0, 1.01], [1.01, 1.0]]),
+            stddev=torch.ones(2),
+        )
+
+
+def test_noise_whitener_never_calls_explicit_inverse(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("explicit inverse called")
+
+    monkeypatch.setattr(torch.linalg, "inv", forbidden)
+    monkeypatch.setattr(torch, "inverse", forbidden)
+    covariance = torch.tensor([[1.2, 0.2], [0.2, 0.8]], dtype=torch.float64)
+    whitener = prepare_noise_whitener_torch(covariance)
+    whitener.apply_vectors(torch.tensor([0.3, -0.4], dtype=torch.float64))
+    whitener.apply_columns(torch.eye(2, dtype=torch.float64))
+    whitener.materialize_row_root()
+
+
+@pytest.mark.parametrize("device", [
+    "cpu",
+    pytest.param(
+        "cuda",
+        marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable"),
+    ),
+])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_information_state_update_noise_block_matches_normal_equations(device, dtype):
+    correlation = torch.tensor(
+        [
+            [[1.0, 0.2, -0.1], [0.2, 1.0, 0.15], [-0.1, 0.15, 1.0]],
+            [[1.0, -0.25, 0.0], [-0.25, 1.0, 0.1], [0.0, 0.1, 1.0]],
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    stddev = torch.tensor(
+        [[0.8, 1.2, 0.6], [1.1, 0.7, 1.4]], dtype=dtype, device=device
+    )
+    whitener = prepare_noise_whitener_torch(
+        correlation=correlation, stddev=stddev
+    )
+    matrix = torch.tensor(
+        [
+            [[1.0, 0.2], [0.1, -0.7], [0.4, 0.9]],
+            [[0.5, -0.1], [0.3, 0.8], [-0.6, 0.2]],
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    rhs = torch.tensor(
+        [[0.4, -0.2, 0.9], [-0.1, 0.7, 0.3]], dtype=dtype, device=device
+    )
+    root = torch.eye(2, dtype=dtype, device=device)
+    state = SquareRootInformationStateTorch(
+        root, torch.zeros(2, dtype=dtype, device=device)
+    )
+    _, actual = state.update_noise_block(matrix, rhs, whitener)
+
+    whitened_matrix = whitener.apply_columns(matrix)
+    whitened_rhs = whitener.apply_vectors(rhs)
+    precision = (
+        torch.eye(2, dtype=dtype, device=device).expand(2, 2, 2)
+        + whitened_matrix.transpose(-2, -1) @ whitened_matrix
+    )
+    information = (
+        whitened_matrix.transpose(-2, -1) @ whitened_rhs.unsqueeze(-1)
+    )
+    expected = torch.linalg.solve(precision, information).squeeze(-1)
+    torch.testing.assert_close(actual.solution, expected, rtol=2e-4, atol=2e-5)
+
+
+@pytest.mark.parametrize("dtype,scales", [
+    (torch.float32, (1e-20, 1.0, 1e20)),
+    (torch.float64, (1e-150, 1.0, 1e150)),
+])
+def test_information_qr_rank_check_is_scale_homogeneous(dtype, scales):
+    for scale in scales:
+        root = torch.eye(3, dtype=dtype) * scale
+        compiled = compile_information_update_torch(
+            root, torch.zeros(0, 3, dtype=dtype)
+        )
+        torch.testing.assert_close(
+            compiled.precision_root / scale,
+            torch.eye(3, dtype=dtype),
+            rtol=20 * torch.finfo(dtype).eps,
+            atol=20 * torch.finfo(dtype).eps,
+        )
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_information_qr_rank_boundary_preserves_frobenius_sensitivity(dtype):
+    n, m = 128, 32
+    eps = torch.finfo(dtype).eps
+    expected_frobenius_scale = math.sqrt(m * n)
+    boundary = eps * (n + m) * expected_frobenius_scale
+    measurement = torch.ones(m, n, dtype=dtype)
+
+    with pytest.raises(torch.linalg.LinAlgError, match="rank deficient"):
+        compile_information_update_torch(
+            torch.eye(n, dtype=dtype) * (0.5 * boundary), measurement
+        )
+
+    accepted = compile_information_update_torch(
+        torch.eye(n, dtype=dtype) * (2.0 * boundary), measurement
+    )
+    assert torch.isfinite(accepted.precision_root).all()
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_information_qr_rank_scale_does_not_overflow_near_dtype_max(dtype):
+    n = 16
+    scale = torch.finfo(dtype).max / 2.0
+    compiled = compile_information_update_torch(
+        torch.eye(n, dtype=dtype) * scale,
+        torch.zeros(0, n, dtype=dtype),
+    )
+    torch.testing.assert_close(
+        compiled.precision_root / scale,
+        torch.eye(n, dtype=dtype),
+        rtol=20 * torch.finfo(dtype).eps,
+        atol=20 * torch.finfo(dtype).eps,
+    )
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_information_qr_rejects_subnormal_scale_with_rescale_message(dtype):
+    scale = torch.finfo(dtype).tiny / 2.0
+    with pytest.raises(torch.linalg.LinAlgError, match="subnormal; rescale"):
+        compile_information_update_torch(
+            torch.eye(2, dtype=dtype) * scale,
+            torch.zeros(0, 2, dtype=dtype),
+        )
+
+
+def test_conditioner_exposes_loading_without_absolute_float32_eps_inflation():
+    dtype = torch.float32
+    root = torch.eye(2, dtype=dtype)
+    H = torch.zeros(2, 2, dtype=dtype)
+    R = torch.eye(2, dtype=dtype) * 1e-9
+    C = torch.zeros(2, 2, dtype=dtype)
+    mean = torch.zeros(2, dtype=dtype)
+    observation = torch.ones(2, dtype=dtype) * 1e-4
+    update = condition_correlated_gaussian_qr_torch(
+        mean, root, observation, R, H, C
+    )
+    compiled = CompiledCorrelatedConditionerTorch.compile(root, H, R, C)
+    torch.testing.assert_close(
+        update.conditional_observation_covariance,
+        R,
+        rtol=2e-6,
+        atol=1e-15,
+    )
+    assert not bool(update.conditional_loading_diagnostics.was_loaded)
+    assert not bool(compiled.conditional_loading_diagnostics.was_loaded)
+
+
+@pytest.mark.parametrize("dtype,scales", [
+    (torch.float32, (1e-20, 1e-12, 1.0, 1e20)),
+    (torch.float64, (1e-150, 1e-30, 1.0, 1e150)),
+])
+def test_default_covariance_roots_and_conditioner_are_scale_relative(dtype, scales):
+    for scale in scales:
+        covariance = torch.eye(2, dtype=dtype) * scale
+        root = precision_root_from_covariance_torch(covariance)
+        torch.testing.assert_close(
+            root.mT @ root @ covariance,
+            torch.eye(2, dtype=dtype),
+            rtol=5e-5 if dtype == torch.float32 else 2e-12,
+            atol=5e-6 if dtype == torch.float32 else 2e-13,
+        )
+
+        update = condition_correlated_gaussian_qr_torch(
+            torch.zeros(2, dtype=dtype),
+            torch.eye(2, dtype=dtype),
+            torch.zeros(2, dtype=dtype),
+            covariance,
+            torch.zeros(2, 2, dtype=dtype),
+            torch.zeros(2, 2, dtype=dtype),
+        )
+        torch.testing.assert_close(
+            update.conditional_observation_covariance, covariance
+        )
+        assert not bool(update.conditional_loading_diagnostics.was_loaded)
+
+
+def test_float32_large_n_negative_tolerance_fits_loading_budget():
+    n = 128
+    dtype = torch.float32
+    maximum_loading = 1e-3
+    eps = torch.finfo(dtype).eps
+    relative_floor = max(math.sqrt(eps), 8.0 * n * eps)
+    expected_negative_tolerance = min(
+        64.0 * n * eps,
+        0.5 * (maximum_loading - relative_floor),
+    )
+    covariance = torch.eye(n, dtype=dtype)
+    covariance[-1, -1] = -0.9 * expected_negative_tolerance
+
+    whitener = prepare_noise_whitener_torch(
+        covariance, maximum_relative_loading=maximum_loading
+    )
+    assert whitener.diagnostics.negative_eigenvalue_tolerance == pytest.approx(
+        expected_negative_tolerance
+    )
+    assert float(whitener.diagnostics.relative_diagonal_loading) < maximum_loading
+
+    too_negative = covariance.clone()
+    too_negative[-1, -1] = -1.1 * expected_negative_tolerance
+    with pytest.raises(ValueError, match="genuinely indefinite"):
+        prepare_noise_whitener_torch(
+            too_negative, maximum_relative_loading=maximum_loading
+        )
+
+
+def test_zero_covariance_full_scale_repair_requires_explicit_budget():
+    whitener = prepare_noise_whitener_torch(
+        torch.zeros(2, 2, dtype=torch.float64),
+        relative_eigenvalue_floor=0.0,
+        absolute_eigenvalue_floor=1e-4,
+        maximum_relative_loading=1.0,
+    )
+    torch.testing.assert_close(
+        whitener.covariance, torch.eye(2, dtype=torch.float64) * 1e-4
+    )
+    assert float(whitener.diagnostics.relative_diagonal_loading) == pytest.approx(1.0)
+
+
+def test_information_state_update_noise_block_rejects_wrong_whitener_type():
+    state = SquareRootInformationStateTorch(torch.eye(2), torch.zeros(2))
+    with pytest.raises(TypeError, match="NoiseWhitenerTorch"):
+        state.update_noise_block(torch.eye(2), torch.zeros(2), object())
 
 
 @pytest.mark.parametrize("n,m", [(1, 1), (2, 4), (4, 5)])
@@ -161,6 +541,7 @@ def test_compiled_conditioners_snapshot_coefficients_against_caller_mutation():
     dense = CompiledDenseGainConditionerTorch.compile(root, Ht, Rt, Ct)
     qr_before = qr.condition(mt, yt).mean.clone()
     dense_before = dense.condition(mt, yt).mean.clone()
+    root.add_(100.0)
     Ht.add_(100.0)
     Rt.add_(100.0)
     Ct.add_(100.0)
@@ -168,11 +549,12 @@ def test_compiled_conditioners_snapshot_coefficients_against_caller_mutation():
     torch.testing.assert_close(dense.condition(mt, yt).mean, dense_before)
 
 
-def test_dense_gain_keeps_positive_covariance_under_float32_cancellation():
+@pytest.mark.parametrize("noise_scale", [1e-12, 1e-9])
+def test_dense_gain_joseph_covariance_matches_qr_below_float32_epsilon(noise_scale):
     dtype = torch.float32
     P = torch.eye(2, dtype=dtype)
     H = torch.eye(2, dtype=dtype)
-    R = torch.eye(2, dtype=dtype) * 1e-9
+    R = torch.eye(2, dtype=dtype) * noise_scale
     C = torch.zeros(2, 2, dtype=dtype)
     root = precision_root_from_covariance_torch(P, jitter=0.0)
     dense = CompiledDenseGainConditionerTorch.compile(
@@ -185,8 +567,8 @@ def test_dense_gain_keeps_positive_covariance_under_float32_cancellation():
     torch.testing.assert_close(
         dense.posterior_covariance,
         qr.posterior_covariance,
-        rtol=2e-6,
-        atol=torch.finfo(dtype).eps,
+        rtol=5e-4,
+        atol=noise_scale * 5e-5,
     )
 
 
