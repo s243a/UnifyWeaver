@@ -50,7 +50,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | EMIT-ILASM | Lowered emitter | ILAsm | L | — |
 | EMIT-JVM | Lowered emitter | JVM | L | — |
 | EMIT-KOTLIN ✅ | Lowered emitter | Kotlin | M | done — flat facts/unify (`cursor/emit-kotlin-lowered-f421`) |
-| EMIT-KOTLIN-2 | Lowered emitter (structures) | Kotlin | M | EMIT-KOTLIN |
+| EMIT-KOTLIN-2 ✅ | Lowered emitter (structures) | Kotlin | M | done — write-mode structures (`cursor/emit-kotlin-structures-f421`) |
 | BENCH-LLVM | Effective-distance bench row | LLVM | L | — |
 | BENCH-CPP | Effective-distance bench row | C++ | L | — |
 | BENCH-C | Effective-distance bench row | C | M | — |
@@ -533,6 +533,7 @@ fallback) to the three Tier-D targets. Reference small emitters:
 
 ### EMIT-KOTLIN-2: Lower write-mode structure/list construction (Kotlin)
 - **Lever:** Lowered emitters for early scaffolds  **Target:** Kotlin  **Size:** M  **Depends on:** EMIT-KOTLIN
+- **Status:** ✅ **Landed** on `cursor/emit-kotlin-structures-f421` (2026-07-12). Root cause was not a write-mode register-ordering bug in the helpers: the emitter wrapped `get_variable`/`put_variable` in a bare Kotlin `{ ... }` block, which is a **discarded lambda** (never invoked). Head vars stayed unbound; `kotlinLoUnifyValue` then fabricated fresh `Var(Xn)` via `?: newVariable`, producing silent wrong answers (`[X1,X2]` instead of `[alpha,beta]`). Fix: emit `run { ... }` so the block executes; re-enable `parts_supported` for structure/list/`set_*`/`unify_*`. Runtime helpers were already correct. Tests assert structure/list/nested builders LOWER and match `emit_mode(interpreter)` via gradle.
 - **Goal:** Extend the Kotlin lowered emitter to correctly build structures/lists in the head (write mode), then re-enable those ops in `parts_supported` so predicates like `p(X, wrap(X))` / `p(X,Y,[X,Y])` lower instead of declining to the interpreter.
 - **Why deferred:** EMIT-KOTLIN's first cut lowered `put_structure`/`put_list`/`set_*`/`unify_*` incorrectly — write-mode arg pushes read the register *before* the head variable was bound, so the built term contained unbound vars (e.g. `kt_make_list(X,Y,[X,Y])` with `alpha beta` produced `[X1,X2]` not `[alpha,beta]`), and the lowered fn returned `true` so the interpreter fallback never fired. The fix narrowed the lowerable set; this card does it properly.
 - **Files to touch:** `src/unifyweaver/targets/wam_kotlin_lowered_emitter.pl` (re-add the `parts_supported/1` facts for `get/put_structure`, `get/put_list`, `set_*`, `unify_*`; fix `emit_line_parts/2` for the write-mode ops), `templates/targets/kotlin_wam/WamRuntime.kt.mustache` (the `kotlinLoUnify*` helpers + `pushWriteArg`/`beginStructure*` already exist — audit their read-vs-write-mode contract), `tests/test_wam_kotlin_target.pl`.
