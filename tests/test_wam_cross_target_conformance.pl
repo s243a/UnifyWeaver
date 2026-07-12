@@ -278,6 +278,29 @@ ct_default_target(elixir).
 %  is now recursive and cons-aware ($unify_addrs). Both are conformant;
 %  the skips are removed.
 
+%  Kotlin (CONF-KOTLIN, 2026-07-12). Adapter registered (opt-in). append/3
+%  is GREEN. Remaining classic programs xfail on measured interpreter gaps
+%  (not adapter bugs) — follow-ups tracked in WAM_FLEET_GAP_TASKS.md:
+%   - member/reverse: heap-built list CDRs are Var(Xn) placeholders; later
+%     unify_variable Xn in a recursive clause overwrites that register and
+%     corrupts the shared Struct under backtracking (b/c in [a,b,c] → false).
+%   - builtins: evalArith splits functor on '/' so '///2' (// arity 2) yields
+%     name="" and 17//5 fails closed (same class WAT/Haskell already fixed);
+%     cbi_cmp/cbi_eq already pass.
+%   - fib/ack: permanent Y-registers use scoped names (Y5@E9); after recursive
+%     call, is/2 sees unbound scoped vars in the +/2 tree (environment /
+%     bind-through gap across call/execute).
+ct_xfail(kotlin, member).
+ct_xfail(kotlin, reverse).
+ct_xfail(kotlin, builtins).
+ct_xfail(kotlin, fib).
+ct_xfail(kotlin, ack).
+ct_xfail(kotlin_functions, member).
+ct_xfail(kotlin_functions, reverse).
+ct_xfail(kotlin_functions, builtins).
+ct_xfail(kotlin_functions, fib).
+ct_xfail(kotlin_functions, ack).
+
 % ============================================================
 % Toolchain probes
 % ============================================================
