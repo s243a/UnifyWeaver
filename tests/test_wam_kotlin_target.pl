@@ -24,6 +24,9 @@
 :- dynamic kt_mem_b/0.
 :- dynamic kt_mem_c/0.
 :- dynamic kt_mem_z/0.
+:- dynamic kt_fib/2.
+:- dynamic kt_fib_ok/0.
+:- dynamic kt_fib_bad/0.
 
 :- begin_tests(wam_kotlin_target).
 
@@ -486,6 +489,41 @@ test(list_backtrack_member, [condition(gradle_available), nondet]) :-
             retractall(user:kt_mem_b),
             retractall(user:kt_mem_c),
             retractall(user:kt_mem_z)
+        )
+    ).
+
+% KT-Y-ENV-RECURSION: recursive arithmetic must see Y-register bindings
+% after call returns (heap-identity vars, not scoped Y@E names).
+test(y_env_recursion_fib, [condition(gradle_available), nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_y_env_fib',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    setup_call_cleanup(
+        (   retractall(user:kt_fib(_, _)),
+            retractall(user:kt_fib_ok),
+            retractall(user:kt_fib_bad),
+            assertz(user:kt_fib(0, 0)),
+            assertz(user:kt_fib(1, 1)),
+            assertz(user:(kt_fib(N, R) :- N > 1, N1 is N - 1, N2 is N - 2,
+                kt_fib(N1, R1), kt_fib(N2, R2), R is R1 + R2)),
+            assertz(user:(kt_fib_ok :- kt_fib(10, 55))),
+            assertz(user:(kt_fib_bad :- kt_fib(10, 54)))
+        ),
+        (   wam_kotlin_target:write_wam_kotlin_project(
+                [user:kt_fib_ok/0, user:kt_fib_bad/0, user:kt_fib/2],
+                [emit_mode(interpreter), conformance_main(true)], TmpDir),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_fib_ok/0'], OkOut, _OkErr, OkStatus),
+            assertion(OkStatus == exit(0)),
+            normalize_space(string(OkTrim), OkOut),
+            assertion(OkTrim == "true"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_fib_bad/0'], BadOut, _BadErr, BadStatus),
+            assertion(BadStatus == exit(0)),
+            normalize_space(string(BadTrim), BadOut),
+            assertion(BadTrim == "false")
+        ),
+        (   retractall(user:kt_fib(_, _)),
+            retractall(user:kt_fib_ok),
+            retractall(user:kt_fib_bad)
         )
     ).
 
