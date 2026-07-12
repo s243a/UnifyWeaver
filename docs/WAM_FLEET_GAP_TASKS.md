@@ -49,7 +49,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | KERN-FSHARP | Finish F# kernel templates | F# | L | — |
 | EMIT-ILASM | Lowered emitter | ILAsm | L | — |
 | EMIT-JVM | Lowered emitter | JVM | L | — |
-| EMIT-KOTLIN ⭐ | Lowered emitter | Kotlin | M | — (recommended first task) |
+| EMIT-KOTLIN ⭐ | Lowered emitter | Kotlin | M | — (recommended first task) — **in progress** (`cursor/emit-kotlin-lowered-f421`) |
 | BENCH-LLVM | Effective-distance bench row | LLVM | L | — |
 | BENCH-CPP | Effective-distance bench row | C++ | L | — |
 | BENCH-C | Effective-distance bench row | C | M | — |
@@ -490,7 +490,7 @@ fallback) to the three Tier-D targets. Reference small emitters:
 
 ### EMIT-KOTLIN: Add Kotlin WAM-lowered emitter (deterministic clause-1 native dispatch)
 - **Lever:** Lowered emitters for early scaffolds  **Target:** Kotlin  **Size:** M  **Depends on:** —
-- **Status:** ⭐ **First hand-off — fully scoped below.** Lowest-risk target: least mature, and the plumbing already exists.
+- **Status:** ⭐ **In progress** on branch `cursor/emit-kotlin-lowered-f421` — deterministic single-clause lowered emitter + `registerNative` runtime seam landed; T4/T5/ITE deferred.
 
 **Context — read this first (verified against source 2026-07-11).** The Kotlin target is NOT missing its partition. `wam_kotlin_target.pl` already ships:
 - `wam_kotlin_resolve_emit_mode/2` (`interpreter` | `functions` | `mixed(List)`) — lines 57–69; default `interpreter`.

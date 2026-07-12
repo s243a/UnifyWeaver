@@ -248,10 +248,63 @@ class WamState(
     }
 
     fun restoreChoicePoint(): Boolean = restoreChoicePointFrame() != null
+
+    fun snapshotForNative(): WamNativeSnapshot =
+        WamNativeSnapshot(
+            registers = LinkedHashMap(registers),
+            trail = trail.toList(),
+            choicePoints = choicePoints.map { cp ->
+                ChoicePoint(
+                    cp.code,
+                    cp.pc,
+                    LinkedHashMap(cp.registers),
+                    cp.trailSize,
+                    cp.context,
+                    cp.callStack.toList(),
+                    cp.environmentStack.map { EnvironmentFrame(it.id, LinkedHashMap(it.slots)) },
+                )
+            },
+            callStack = callStack.map { frame ->
+                CallFrame(
+                    frame.code,
+                    frame.returnPc,
+                    frame.context,
+                    frame.environmentStack.map { EnvironmentFrame(it.id, LinkedHashMap(it.slots)) },
+                )
+            },
+            environmentStack = snapshotEnvironmentStack(),
+            context = context,
+            pc = pc,
+        )
+
+    fun restoreFromSnapshot(snapshot: WamNativeSnapshot) {
+        registers.clear()
+        registers.putAll(snapshot.registers)
+        trail.clear()
+        trail.addAll(snapshot.trail)
+        choicePoints.clear()
+        choicePoints.addAll(snapshot.choicePoints)
+        callStack.clear()
+        callStack.addAll(snapshot.callStack)
+        restoreEnvironmentStack(snapshot.environmentStack)
+        context = snapshot.context
+        pc = snapshot.pc
+    }
 }
+
+data class WamNativeSnapshot(
+    val registers: Map<String, Value?>,
+    val trail: List<String>,
+    val choicePoints: List<ChoicePoint>,
+    val callStack: List<CallFrame>,
+    val environmentStack: List<EnvironmentFrame>,
+    val context: WamContext?,
+    val pc: Int,
+)
 
 class WamProgram {
     private val predicates: MutableMap<String, PredicateCode> = linkedMapOf()
+    private val natives: MutableMap<String, (WamState) -> Boolean> = linkedMapOf()
 
     fun register(name: String, instructions: List<Instruction>) {
         val labels = linkedMapOf<String, Int>()
@@ -262,6 +315,12 @@ class WamProgram {
         }
         predicates[name] = PredicateCode(instructions, labels)
     }
+
+    fun registerNative(key: String, fn: (WamState) -> Boolean) {
+        natives[key] = fn
+    }
+
+    fun findNative(key: String): ((WamState) -> Boolean)? = natives[key]
 
     fun findCode(name: String): PredicateCode? = predicates[name]
 
@@ -277,6 +336,17 @@ class WamRuntime(private val program: WamProgram) {
     private lateinit var currentCode: PredicateCode
 
     fun run(predicate: String, initialState: WamState = WamState()): WamState {
+        program.findNative(predicate)?.let { nativeFn ->
+            val snapshot = initialState.snapshotForNative()
+            if (nativeFn(initialState)) {
+                return initialState
+            }
+            if (program.findCode(predicate) == null) {
+                initialState.restoreFromSnapshot(snapshot)
+                return initialState
+            }
+            initialState.restoreFromSnapshot(snapshot)
+        }
         currentCode = program.codeFor(predicate)
         initialState.pc = 0
         while (initialState.pc in currentCode.instructions.indices) {
@@ -764,4 +834,57 @@ fun stateFromCliArgs(values: List<String>): WamState {
         state.writeRegister("A${index + 1}", parseWamCliValue(raw))
     }
     return state
+}
+
+// Lowered-predicate helpers (single-clause WAM fast path).
+fun kotlinLoGetConstant(state: WamState, expected: Value, register: String): Boolean {
+    val current = state.deref(state.readRegister(register))
+    return when {
+        current == null -> {
+            state.bind(register, expected)
+            true
+        }
+        current is Value.Var -> {
+            state.bind(current.name, expected)
+            true
+        }
+        current == expected -> true
+        else -> false
+    }
+}
+
+fun kotlinLoGetValue(state: WamState, variable: String, argument: String): Boolean {
+    val left = state.readRegister(variable) ?: state.newVariable(variable)
+    val right = state.readRegister(argument) ?: state.newVariable(argument)
+    return state.unify(left, right)
+}
+
+fun kotlinLoUnifyVariable(state: WamState, variable: String): Boolean {
+  return when (val ctx = state.context) {
+        is WamContext.Write -> state.pushWriteArg(state.newVariable(variable))
+        else -> {
+            val value = state.nextReadArg() ?: return false
+            state.writeRegister(variable, state.deref(value))
+            true
+        }
+    }
+}
+
+fun kotlinLoUnifyValue(state: WamState, register: String): Boolean {
+    return when (val ctx = state.context) {
+        is WamContext.Write ->
+            state.pushWriteArg(state.deref(state.readRegister(register)) ?: state.newVariable(register))
+        else -> {
+            val value = state.nextReadArg() ?: return false
+            val regValue = state.readRegister(register) ?: state.newVariable(register)
+            state.unify(regValue, value)
+        }
+    }
+}
+
+fun kotlinLoUnifyConstant(state: WamState, value: Value): Boolean {
+    return when (state.context) {
+        is WamContext.Write -> state.pushWriteArg(value)
+        else -> state.unify(state.nextReadArg(), value)
+    }
 }
