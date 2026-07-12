@@ -98,13 +98,24 @@ Each stage is a shippable PR with tests.
   and an `if` wrapper around the existing per-key print. No scalar
   accumulation, so no head-phi threading yet — the guard just gates the
   print inside the current bespoke loop. Smallest useful slice: "print
-  the histogram entries above a threshold."
+  the histogram entries above a threshold." **LANDED** (rule-body and END
+  forms; `tests/test_plawk_forin_filter.pl`).
 
 - **Stage 2 — scalar accumulation.** `for (k in arr) total += arr[k]`.
-  Gives the assoc driver a scalar `Slots` plan and threads it through the
-  record loop and the for-in loop (head phis), so a scalar mutated per
-  entry survives to END. This is the canonical "sum/aggregate the hash"
-  idiom and the largest driver piece.
+  The canonical "sum/aggregate the hash" idiom and the largest driver
+  piece. Two concrete blockers scoped it out of the filter PR (both
+  confirmed empirically):
+  1. **The END for-in is a whole-END construct.** The driver matches
+     exactly `[end([for_in(...)])]`; `END { for (k in c) ... ; print sum }`
+     (a for-in *plus* a later action to read the accumulator) is a parse
+     error today. Reading an accumulator therefore needs the END grammar
+     + driver to allow a for-in among multiple END actions.
+  2. **Loop-carried scalar threading.** The assoc driver *does* carry
+     scalar slots (a record-loop `s += 1` alongside `c[$1]++` works and
+     survives to END), but the for-in loop does not thread a slot as a
+     head phi, so a scalar mutated per entry is not carried out. Stage 2
+     brings `foreach`'s head-phi threading to the for-in loop and lets the
+     mutated slot flow to the following END action.
 
 - **Stage 3 — decode a value into a struct.** `for (k in arr) {
   (n, m) = dyncall@decode(arr[k]) as (i64 i64) ; ... }`. Once the body is
