@@ -42,6 +42,31 @@ pass { print $1, $2 / total[$1] }     # pass 2: normalise each record by the
 END   { }
 ```
 
+## Status (implemented so far)
+
+- **Phase 1 — cache primitive + single-pass surface: LANDED.** A backed
+  block `BEGIN cache("path") { declare NAME }` makes an assoc table durable:
+  the codegen creates the table as usual, loads the store into it at setup,
+  and commits it at the top of the END phase. A histogram accumulates across
+  separate runs / rebuilds against the same store. Tables only for now
+  (scalars unimplemented); single pass; the generic END-for-in driver.
+- **Phase 5 — LMDB backend: LANDED.** `BEGIN cache("x.lmdb" backend "lmdb")`
+  stores in a real single-file LMDB database instead of the flat file. A
+  small C runtime (`src/unifyweaver/targets/wam_cache_lmdb.c`) is linked with
+  `-llmdb` only when a program selects it; the file backend links nothing
+  new. Install liblmdb with `scripts/setup/setup_lmdb.sh`.
+
+The runtime as built differs from the aspirational ABI in §4: rather than a
+full byte-span get/put/iterate ABI, the cache handle **is** the in-memory
+`%WamAssocI64Table`, and each backend supplies just `load` (store → table)
+and `commit` (table → store); the assoc helpers drive the in-loop i64 ops.
+This is eager materialisation — correct and simple, RAM-bound. The lazy,
+per-access, larger-than-RAM path (and the multi-table / namespace / secondary
+-index designs below) will grow the ABI toward §4 as those phases land.
+
+**Not yet:** multiple `pass { }` blocks (Phase 2), configurable readers
+(Phase 4), the query reader (Phase 6), namespaces/`eager`/secondary indexes.
+
 ## 1. The determinism model (the reminder, and why it constrains this)
 
 `PLAWK_PHILOSOPHY.md §2` states the stance precisely; the operative facts:
@@ -405,8 +430,8 @@ Each phase is a shippable PR with tests. Phases 1–2 are independent enough
 to land in either order, but 1 first is lower-risk (a primitive with a
 single-pass test before any driver surgery).
 
-- **Phase 1 — the cache runtime primitive + single-pass surface.** Add the
-  `@wam_cache_*` ABI and the fallback (file-backed) backend; wire a
+- **Phase 1 — the cache runtime primitive + single-pass surface. LANDED.**
+  Add the `@wam_cache_*` ABI and the fallback (file-backed) backend; wire a
   `BEGIN cache("...") { declare NAME }` block so `arr[k]++` / `arr[k]=v` /
   `arr[k]` / `for (k in arr)` route through the store **within a single
   pass** (lazy materialisation; `eager` deferred to a later phase). Proves
@@ -442,7 +467,7 @@ single-pass test before any driver surgery).
   gain the spool sink. Test: pass 1 emits a filtered/derived stream, pass 2
   `over prev` consumes it.
 
-- **Phase 5 — LMDB backend + materialisation modes.** Swap the fallback for
+- **Phase 5 — LMDB backend + materialisation modes. LANDED (eager).** Swap the fallback for
   `liblmdb` behind the build flag; add a test that exceeds a small RAM cap
   to demonstrate the lazy memory-mapped path, and wire the per-variable
   `eager` marker (load fully at open). Test: an `eager` scalar/table reads
