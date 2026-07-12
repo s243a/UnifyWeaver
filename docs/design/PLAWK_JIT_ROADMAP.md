@@ -274,10 +274,24 @@ different plawk containers — this is the through-line for the rest of item 4:
   become the view's hidden temps while the view's Call args (e.g. `$1`
   passing the current element) ride the later foreach-element rebind. Test:
   `tests/test_plawk_dyncall_rec_loop.pl` (destructure, view, and
-  view-in-if-in-foreach). The `for (k in arr)` assoc for-in stays
-  print-only by construction (its body is a per-key print plan, not a
-  scalar action sequence), so record binds there remain a separate driver
-  concern.
+  view-in-if-in-foreach).
+  **Recommended "iterate a collection, object per item" pattern:** a
+  `foreach` over a repetition field whose elements have MORE THAN ONE
+  field iterates TUPLES — element `$1, $2, …` are the tuple's fields (a
+  (key, value) pair for `rep(i64 i64)`) — and the body can decode any
+  field into a structured record via a grammar. So "loop and process each
+  item as an object" is served today for list-shaped (repeating-field)
+  data. Test: `tests/test_plawk_foreach_tuples.pl` (tuple fields;
+  tuple→struct destructure; tuple→struct view).
+  **The `for (k in arr)` assoc for-in stays print-only** by construction
+  (its body is a per-key print plan, not a scalar action sequence), so
+  record binds there remain a separate, larger surface. Iterating a HASH
+  table with real per-entry work needs two read forms plumbed through the
+  expression model — the loop key `k` as a readable value and the `arr[k]`
+  value-lookup — plus loop-carried state for accumulation, and a surface
+  answer for referencing the current value as a grammar argument. Deferred
+  as a distinct feature; `foreach`-over-tuples covers the list-shaped case
+  without it.
 - **Associative array** (`arr = dyncall@name(...) as assoc`) — *mechanism +
   surface LANDED (named entry, integer keys).* A grammar returning a list of
   pairs (`[K1-V1, K2-V2, ...]`) materializes into an i64 assoc table via
