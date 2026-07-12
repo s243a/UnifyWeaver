@@ -257,9 +257,41 @@ different plawk containers — this is the through-line for the rest of item 4:
   every `$k` (1≤k≤nfields) rewritten to the k-th temporary — so it rides the
   destructure machinery with no field-pointer repoint. A body field outside
   1..nfields (including `$0`) leaves the view uncompilable (the record has no
-  such field). Recurses into if-branches; a view nested in a for-in body is a
-  follow-on. Verified: `dyncall@rec($1) as (i64 f64) { total += $1 }` sums
+  such field). Verified: `dyncall@rec($1) as (i64 f64) { total += $1 }` sums
   the i64 field to 30; `{ sum += $2 }` sums the f64 field to 31.
+  **Binds/views inside if-branches LANDED:** a record destructure or view
+  can sit inside `if { ... } else { ... }`. The sequence walker already
+  lowered `dynrec_bind` in any position; the gap was branch-body
+  VALIDATION (`plawk_scalar_rule_body_plain_action` did not list the bind
+  among a branch's allowed actions), now closed. Test:
+  `tests/test_plawk_dyncall_rec_if.pl`.
+  **Binds/views inside a `foreach` loop body LANDED:** a `foreach { ... }`
+  over a record's repetition elements can call a grammar per element and
+  destructure or view the returned record. The foreach body already lowers
+  through the scalar action-sequence walker, so the branch-body validation
+  fix carried it, and the record-view desugar now recurses into `foreach`
+  (and `for_in`) bodies so a view there desugars in place — its block `$k`
+  become the view's hidden temps while the view's Call args (e.g. `$1`
+  passing the current element) ride the later foreach-element rebind. Test:
+  `tests/test_plawk_dyncall_rec_loop.pl` (destructure, view, and
+  view-in-if-in-foreach).
+  **Recommended "iterate a collection, object per item" pattern:** a
+  `foreach` over a repetition field whose elements have MORE THAN ONE
+  field iterates TUPLES — element `$1, $2, …` are the tuple's fields (a
+  (key, value) pair for `rep(i64 i64)`) — and the body can decode any
+  field into a structured record via a grammar. So "loop and process each
+  item as an object" is served today for list-shaped (repeating-field)
+  data. Test: `tests/test_plawk_foreach_tuples.pl` (tuple fields;
+  tuple→struct destructure; tuple→struct view).
+  **The `for (k in arr)` assoc for-in stays print-only** by construction
+  (its body is a per-key print plan, not a scalar action sequence), so
+  record binds there remain a separate, larger surface. Iterating a HASH
+  table with real per-entry work needs two read forms plumbed through the
+  expression model — the loop key `k` as a readable value and the `arr[k]`
+  value-lookup — plus loop-carried state for accumulation, and a surface
+  answer for referencing the current value as a grammar argument. Deferred
+  as a distinct feature; `foreach`-over-tuples covers the list-shaped case
+  without it.
 - **Associative array** (`arr = dyncall@name(...) as assoc`) — *mechanism +
   surface LANDED (named entry, integer keys).* A grammar returning a list of
   pairs (`[K1-V1, K2-V2, ...]`) materializes into an i64 assoc table via
