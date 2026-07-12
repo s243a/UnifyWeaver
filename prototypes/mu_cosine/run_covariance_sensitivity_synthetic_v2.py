@@ -831,12 +831,17 @@ def _validate_args(args):
         raise ValueError("--shrinkage must be in [0,1]")
 
 
-def _write_payload(path, payload):
+def _write_scientific_payload(path, payload):
+    """Write only deterministic scientific results, never runtime metadata."""
+    if "wall_seconds" in payload:
+        raise ValueError("wall_seconds belongs in stdout, not the reproducible artifact")
+    serialized = json.dumps(
+        _jsonable(payload), indent=2, sort_keys=True, allow_nan=False
+    ) + "\n"
     path = os.path.abspath(path)
     temporary = path + ".tmp"
-    with open(temporary, "w", encoding="utf-8") as stream:
-        json.dump(_jsonable(payload), stream, indent=2, sort_keys=True)
-        stream.write("\n")
+    with open(temporary, "w", encoding="utf-8", newline="\n") as stream:
+        stream.write(serialized)
     os.replace(temporary, path)
 
 
@@ -1016,16 +1021,16 @@ def main():
             "end_to_end_krr": end_records,
             "oracle_mean_known_B_mechanism": mechanism_records,
         },
-        "wall_seconds": time.perf_counter() - started,
     }
-    _write_payload(args.out, payload)
+    wall_seconds = time.perf_counter() - started
+    _write_scientific_payload(args.out, payload)
     print(json.dumps({
         "output": os.path.abspath(args.out),
         "null_calibrations": null_report,
         "v1_failure_attribution_audit": audit,
         "end_to_end_krr": payload["end_to_end_krr"],
         "oracle_mean_known_B_mechanism": payload["oracle_mean_known_B_mechanism"],
-        "wall_seconds": payload["wall_seconds"],
+        "wall_seconds": wall_seconds,
     }, indent=2, sort_keys=True))
 
 

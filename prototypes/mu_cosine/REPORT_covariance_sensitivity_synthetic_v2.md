@@ -158,18 +158,21 @@ the real fitted paths fixed is only a conditional diagnostic and is one reason n
 ```bash
 python3 prototypes/mu_cosine/run_covariance_sensitivity_synthetic_v2.py \
   --replicates 100 --calibration-draws 2000 --audit-draws 1000 \
-  --summary-only --out /tmp/covariance_sensitivity_synthetic_v2_corrected_final.json
+  --summary-only --out /tmp/covariance_sensitivity_synthetic_v2_corrected_deterministic.json
 ```
 
-The corrected run took 170.1 seconds.  The four focused covariance-sensitivity test files have 34 passing
-tests (55 when the two inherited structured-covariance suites are included).  Real v1
+The observed runtime was 175.9 seconds; runtime is printed to stdout and deliberately excluded from the
+reproducible scientific JSON.  The four focused covariance-sensitivity test files have 35 passing tests
+(56 when the two inherited structured-covariance suites are included).  Real v1
 multi-seed inference is explicitly blocked unless requested as a descriptive legacy run; no real-data v2
 full-procedure selector has been implemented.
 
 Corrected summary-only output SHA-256:
-`6bbe4fdd35bc70fae71dcb4dfade8bbaed143d310dd26a75469350c2f670997f`.  The compact tracked record is
+`bb4b81c6bd182ebe89bee3360345491b8068aecd56e3ff59d49da9ceac56a9ca`.  The compact tracked record is
 `repro/covariance_sensitivity/synthetic_v2_summary.json`; the full `/tmp` JSON also contains the audit tables
-and exact configuration but is not a durable repository artifact.
+and exact configuration but is not a durable repository artifact.  The byte hash is a reference for the
+documented numerical stack; across Python/NumPy/BLAS platforms, compare the scientific fields within numerical
+tolerance rather than assuming identical floating-point bytes.
 
 ```bash
 python3 -m pytest -q \

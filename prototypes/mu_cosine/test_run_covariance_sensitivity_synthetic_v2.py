@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Regressions for versioned family-wise synthetic selection."""
+import json
+
 import numpy as np
 import pytest
 
@@ -19,6 +21,7 @@ from run_covariance_sensitivity_synthetic_v2 import (
     _full_records,
     _procedure_scorers,
     _threshold_ratio,
+    _write_scientific_payload,
     calibrate_nulls,
     run_mechanism_replicate_pair,
     run_replicate_pair,
@@ -82,6 +85,21 @@ def test_zero_fixed_path_threshold_has_undefined_safe_ratio():
     assert _threshold_ratio(0.25, 0.10) == pytest.approx(2.5)
     with pytest.raises(ValueError, match="nonnegative"):
         _threshold_ratio(0.25, -0.10)
+
+
+def test_scientific_artifact_is_deterministic_and_excludes_runtime(tmp_path):
+    output = tmp_path / "artifact.json"
+    _write_scientific_payload(output, {"z": 1.0, "a": [2, 3]})
+    first = output.read_bytes()
+    _write_scientific_payload(output, {"a": [2, 3], "z": 1.0})
+
+    assert output.read_bytes() == first
+    assert json.loads(first) == {"a": [2, 3], "z": 1.0}
+    with pytest.raises(ValueError, match="stdout"):
+        _write_scientific_payload(output, {"wall_seconds": 1.23})
+    with pytest.raises(ValueError, match="Out of range float"):
+        _write_scientific_payload(output, {"not_finite": float("nan")})
+    assert output.read_bytes() == first
 
 
 def test_search_filters_have_frozen_candidate_capacities():
