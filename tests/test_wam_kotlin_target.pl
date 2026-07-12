@@ -20,6 +20,10 @@
 :- dynamic kt_two_step/2.
 :- dynamic kt_chain/2.
 :- dynamic kt_arith/1.
+:- dynamic kt_member/2.
+:- dynamic kt_mem_b/0.
+:- dynamic kt_mem_c/0.
+:- dynamic kt_mem_z/0.
 
 :- begin_tests(wam_kotlin_target).
 
@@ -442,6 +446,47 @@ test(arith_slash_functor_integer_div, [condition(gradle_available), nondet]) :-
             assertion(BadTrim == "false")
         ),
         retractall(user:kt_arith(_, _))
+    ).
+
+% KT-LIST-BACKTRACK: recursive member must survive backtracking over a
+% heap-built list (CDR placeholders must not share the unify_variable Xn
+% register name).
+test(list_backtrack_member, [condition(gradle_available), nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_list_backtrack',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    setup_call_cleanup(
+        (   retractall(user:kt_member(_, _)),
+            retractall(user:kt_mem_b),
+            retractall(user:kt_mem_c),
+            retractall(user:kt_mem_z),
+            assertz(user:kt_member(X, [X|_])),
+            assertz(user:(kt_member(X, [_|T]) :- kt_member(X, T))),
+            assertz(user:(kt_mem_b :- kt_member(b, [a,b,c]))),
+            assertz(user:(kt_mem_c :- kt_member(c, [a,b,c]))),
+            assertz(user:(kt_mem_z :- kt_member(z, [a,b,c])))
+        ),
+        (   wam_kotlin_target:write_wam_kotlin_project(
+                [user:kt_mem_b/0, user:kt_mem_c/0, user:kt_mem_z/0, user:kt_member/2],
+                [emit_mode(interpreter), conformance_main(true)], TmpDir),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_mem_b/0'], BOut, _BErr, BStatus),
+            assertion(BStatus == exit(0)),
+            normalize_space(string(BTrim), BOut),
+            assertion(BTrim == "true"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_mem_c/0'], COut, _CErr, CStatus),
+            assertion(CStatus == exit(0)),
+            normalize_space(string(CTrim), COut),
+            assertion(CTrim == "true"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_mem_z/0'], ZOut, _ZErr, ZStatus),
+            assertion(ZStatus == exit(0)),
+            normalize_space(string(ZTrim), ZOut),
+            assertion(ZTrim == "false")
+        ),
+        (   retractall(user:kt_member(_, _)),
+            retractall(user:kt_mem_b),
+            retractall(user:kt_mem_c),
+            retractall(user:kt_mem_z)
+        )
     ).
 
 :- end_tests(wam_kotlin_target).

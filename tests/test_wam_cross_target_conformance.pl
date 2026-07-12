@@ -279,22 +279,14 @@ ct_default_target(elixir).
 %  the skips are removed.
 
 %  Kotlin (CONF-KOTLIN, 2026-07-12). Adapter registered (opt-in). append/3
-%  is GREEN. Remaining classic programs xfail on measured interpreter gaps
-%  (not adapter bugs) — follow-ups tracked in WAM_FLEET_GAP_TASKS.md:
-%   - member/reverse: heap-built list CDRs are Var(Xn) placeholders; later
-%     unify_variable Xn in a recursive clause overwrites that register and
-%     corrupts the shared Struct under backtracking (b/c in [a,b,c] → false).
-%   - builtins: FIXED in KT-ARITH-SLASH-FUNCTOR — evalArith now strips only
-%     the trailing /<digits> so '///2' → name "//".
-%   - fib/ack: permanent Y-registers use scoped names (Y5@E9); after recursive
-%     call, is/2 sees unbound scoped vars in the +/2 tree (environment /
-%     bind-through gap across call/execute).
-ct_xfail(kotlin, member).
-ct_xfail(kotlin, reverse).
+%  + builtins green. Remaining xfails:
+%   - member/reverse: FIXED in KT-LIST-BACKTRACK — X-register structure
+%     placeholders now use heap identities (H<n>), not Var("Xn").
+%   - fib/ack: permanent Y-registers still use scoped names (Y5@E9); after
+%     recursive call, is/2 sees unbound scoped vars in the +/2 tree
+%     (KT-Y-ENV-RECURSION).
 ct_xfail(kotlin, fib).
 ct_xfail(kotlin, ack).
-ct_xfail(kotlin_functions, member).
-ct_xfail(kotlin_functions, reverse).
 ct_xfail(kotlin_functions, fib).
 ct_xfail(kotlin_functions, ack).
 

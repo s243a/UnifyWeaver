@@ -67,6 +67,7 @@ class WamState(
     val environmentStack: MutableList<EnvironmentFrame> = mutableListOf(),
     var context: WamContext? = null,
     private var nextEnvironmentId: Int = 0,
+    private var nextHeapVarId: Int = 0,
 ) {
     fun isEnvironmentRegister(register: String): Boolean =
         register.startsWith("Y")
@@ -93,10 +94,19 @@ class WamState(
     }
 
     fun newVariable(register: String): Value.Var {
-        val scopedName = scopedRegisterName(register)
-        val value = Value.Var(scopedName)
+        // X registers: heap identity (KT-LIST-BACKTRACK). Y registers: keep
+        // scoped names for now (KT-Y-ENV-RECURSION handles those separately).
+        if (isEnvironmentRegister(register)) {
+            val scopedName = scopedRegisterName(register)
+            val value = Value.Var(scopedName)
+            writeRegister(register, value)
+            if (scopedName != register) writeRegister(scopedName, value)
+            return value
+        }
+        val heapName = "H${nextHeapVarId++}"
+        val value = Value.Var(heapName)
+        registers[heapName] = value
         writeRegister(register, value)
-        if (scopedName != register) writeRegister(scopedName, value)
         return value
     }
 
