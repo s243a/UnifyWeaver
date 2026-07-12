@@ -490,7 +490,7 @@ fallback) to the three Tier-D targets. Reference small emitters:
 
 ### EMIT-KOTLIN: Add Kotlin WAM-lowered emitter (deterministic clause-1 native dispatch)
 - **Lever:** Lowered emitters for early scaffolds  **Target:** Kotlin  **Size:** M  **Depends on:** —
-- **Status:** ⭐ **In progress** on branch `cursor/emit-kotlin-lowered-f421` — deterministic single-clause lowered emitter + `registerNative` runtime seam landed; T4/T5/ITE deferred.
+- **Status:** ✅ **Done** on branch `cursor/emit-kotlin-lowered-f421` (2026-07-12) — deterministic single-clause lowered emitter + `registerNative` runtime seam landed; T4/T5/ITE deferred as follow-up cards. Historical context below retained for future implementers.
 
 **Context — read this first (verified against source 2026-07-11).** The Kotlin target is NOT missing its partition. `wam_kotlin_target.pl` already ships:
 - `wam_kotlin_resolve_emit_mode/2` (`interpreter` | `functions` | `mixed(List)`) — lines 57–69; default `interpreter`.
