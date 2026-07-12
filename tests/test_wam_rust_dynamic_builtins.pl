@@ -20,6 +20,34 @@ rust_clause_demo(X, Body) :-
 rust_current_predicate_demo(Name, Arity) :-
     current_predicate(Name/Arity).
 
+:- dynamic rust_current_predicate_instantiation_demo/1.
+rust_current_predicate_instantiation_demo(Result) :-
+    catch(
+        current_predicate(_),
+        error(instantiation_error, _),
+        Result = caught).
+
+:- dynamic rust_current_predicate_type_demo/1.
+rust_current_predicate_type_demo(Result) :-
+    catch(
+        current_predicate(not_an_indicator),
+        error(type_error(predicate_indicator, _), _),
+        Result = caught).
+
+:- dynamic rust_current_predicate_name_type_demo/1.
+rust_current_predicate_name_type_demo(Result) :-
+    catch(
+        current_predicate(7/1),
+        error(type_error(atom, _), _),
+        Result = caught).
+
+:- dynamic rust_current_predicate_arity_type_demo/1.
+rust_current_predicate_arity_type_demo(Result) :-
+    catch(
+        current_predicate(named/not_an_arity),
+        error(type_error(integer, _), _),
+        Result = caught).
+
 :- dynamic rust_predicate_property_demo/2.
 rust_predicate_property_demo(Head, Property) :-
     predicate_property(Head, Property).
@@ -58,6 +86,10 @@ test(assert_retract_dynamic_db,
          user:rust_assert_alias_demo/0,
          user:rust_clause_demo/2,
          user:rust_current_predicate_demo/2,
+         user:rust_current_predicate_instantiation_demo/1,
+         user:rust_current_predicate_type_demo/1,
+         user:rust_current_predicate_name_type_demo/1,
+         user:rust_current_predicate_arity_type_demo/1,
          user:rust_predicate_property_demo/2,
          user:rust_read_term_options_demo/2,
          user:rust_atom_to_term_demo/2,
