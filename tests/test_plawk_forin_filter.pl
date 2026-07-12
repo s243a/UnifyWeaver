@@ -71,6 +71,38 @@ test(value_filter_excludes_all, [condition(clang_available)]) :-
     assertion(Out == "2\n"),
     !.
 
+% Stage 1b: the same filter on the END for-in -- iterate the FINAL hash
+% (the common use). Parses to a guarded END for-in body.
+test(end_value_guard_parses) :-
+    plawk_parse_string(
+        "{ c[$1]++ }\n\c
+         END { for (k in c) { if (c[k] >= 2) print k, c[k] } }\n",
+        program(_, _, [end([for_in(var(k), var(c),
+            [if(forin_val_cmp(c, k, ge, 2),
+                [print([var(k), assoc(var(c), var(k))])], [])])])])),
+    !.
+
+% END value filter, end to end. Final hash a=3, b=2, c=1; guard >= 2
+% keeps a and b (order-independent): "a 3", "b 2".
+test(end_value_filter_runs, [condition(clang_available)]) :-
+    ff_dir(Dir),
+    Src = "{ c[$1]++ }\n\c
+           END { for (k in c) { if (c[k] >= 2) print k, c[k] } }\n",
+    build_run_text(Dir, 'efv', Src, "a\na\nb\na\nc\nb\n", Out),
+    split_string(Out, "\n", "", L0), exclude(==(""), L0, L), msort(L, S),
+    assertion(S == ["a 3", "b 2"]),
+    !.
+
+% END filter that keeps nothing (threshold above every count) prints
+% nothing at all.
+test(end_value_filter_empty, [condition(clang_available)]) :-
+    ff_dir(Dir),
+    Src = "{ c[$1]++ }\n\c
+           END { for (k in c) { if (c[k] >= 9) print k, c[k] } }\n",
+    build_run_text(Dir, 'efe', Src, "a\na\nb\n", Out),
+    assertion(Out == ""),
+    !.
+
 :- end_tests(plawk_forin_filter).
 
 % --- helpers ---------------------------------------------------------------
