@@ -31,7 +31,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | CONF-LUA | Conformance adapter | Lua | M | — |
 | CONF-KOTLIN ✅ | Conformance adapter | Kotlin | M | done — opt-in (`cursor/conf-kotlin-f421`); append green, 5 xfails |
 | KT-LIST-BACKTRACK | Conformance gap fix | Kotlin | M | CONF-KOTLIN |
-| KT-ARITH-SLASH-FUNCTOR | Conformance gap fix | Kotlin | S | CONF-KOTLIN |
+| KT-ARITH-SLASH-FUNCTOR ✅ | Conformance gap fix | Kotlin | S | done — `///2` last-slash parse (`cursor/kt-arith-slash-functor-f421`) |
 | KT-Y-ENV-RECURSION | Conformance gap fix | Kotlin | M | CONF-KOTLIN |
 | PARSE-C | Runtime-parser entry | C | S | — |
 | PARSE-GO | Runtime-parser entry | Go | S | — |
@@ -168,6 +168,7 @@ external toolchain.
 
 ### KT-ARITH-SLASH-FUNCTOR: Parse `//` functor without split-on-`/` (Kotlin)
 - **Lever:** Conformance gap fix  **Target:** Kotlin  **Size:** S  **Depends on:** CONF-KOTLIN
+- **Status:** ✅ **Landed** on `cursor/kt-arith-slash-functor-f421` (2026-07-12). `evalArith` now uses `functorName` (strip trailing `/<digits>` via `substringBeforeLast`) so `"///2"` → `"//"`. Removed `ct_xfail` for builtins; append+builtins green under kotlin and kotlin_functions.
 - **Goal:** Retire builtins xfail for `cbi_arith`. `evalArith` does `functor.split("/")` so `///2` yields empty name. Strip only a trailing `/<digits>` (WAT/Haskell `bareArithOp` / last-component fix).
 
 ### KT-Y-ENV-RECURSION: Y-register bind-through across recursive call (Kotlin)

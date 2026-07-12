@@ -439,8 +439,10 @@ class WamRuntime(private val program: WamProgram) {
             is Value.IntVal -> d
             is Value.FloatVal -> d
             is Value.Struct -> {
-                val parts = d.functor.split("/")
-                val name = parts.getOrNull(0) ?: return null
+                // Functor keys are "name/arity". Strip only the trailing
+                // "/<digits>" — a naive split("/") breaks slash-bearing ops
+                // like "//" (key "///2") and "/" (key "//2").
+                val name = functorName(d.functor)
                 if (d.args.size == 2) {
                     val a = evalArith(state, d.args[0]) ?: return null
                     val b = evalArith(state, d.args[1]) ?: return null
@@ -823,6 +825,11 @@ class WamRuntime(private val program: WamProgram) {
 
 fun functorArity(functor: String): Int? =
     functor.substringAfterLast('/', missingDelimiterValue = "").toIntOrNull()
+
+// Companion to functorArity: name is everything before the LAST '/', so
+// "///2" → "//", "//2" → "/", "+/2" → "+".
+fun functorName(functor: String): String =
+    functor.substringBeforeLast('/', missingDelimiterValue = functor)
 
 fun parseWamCliValue(token: String): Value =
     parseStructToken(token)
