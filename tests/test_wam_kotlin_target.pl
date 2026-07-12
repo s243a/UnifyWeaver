@@ -19,6 +19,7 @@
 :- dynamic kt_edge/2.
 :- dynamic kt_two_step/2.
 :- dynamic kt_chain/2.
+:- dynamic kt_arith/1.
 
 :- begin_tests(wam_kotlin_target).
 
@@ -88,6 +89,7 @@ test(runtime_template_exposes_executable_wam_abi) :-
     assertion(has_substring(Code, 'fun registerNative(key: String, fn: (WamState) -> Boolean)')),
     assertion(has_substring(Code, 'fun snapshotForNative(): WamNativeSnapshot')),
     assertion(has_substring(Code, 'fun tryRun(predicate: String, initialState: WamState')),
+    assertion(has_substring(Code, 'fun functorName(functor: String): String')),
     assertion(has_substring(Code, 'fun kotlinLoGetConstant(state: WamState')),
     assertion(has_substring(Code, 'fun stateFromCliArgs(values: List<String>): WamState')).
 
@@ -415,6 +417,31 @@ test(conformance_main_prints_true_false, [condition(gradle_available), nondet]) 
             assertion(BadTrim == "false")
         ),
         retractall(user:kt_fact(_, _))
+    ).
+
+% KT-ARITH-SLASH-FUNCTOR: integer division // (functor key "///2") must
+% evaluate — a naive functor.split("/") yielded name="" and failed closed.
+test(arith_slash_functor_integer_div, [condition(gradle_available), nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_arith_slash',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    setup_call_cleanup(
+        (   retractall(user:kt_arith(_, _)),
+            assertz(user:(kt_arith(R) :- A is 17 // 5, B is 17 mod 5, R is A + B))
+        ),
+        (   wam_kotlin_target:write_wam_kotlin_project(
+                [user:kt_arith/1],
+                [emit_mode(interpreter), conformance_main(true)], TmpDir),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_arith/1 5'], OkOut, _OkErr, OkStatus),
+            assertion(OkStatus == exit(0)),
+            normalize_space(string(OkTrim), OkOut),
+            assertion(OkTrim == "true"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_arith/1 4'], BadOut, _BadErr, BadStatus),
+            assertion(BadStatus == exit(0)),
+            normalize_space(string(BadTrim), BadOut),
+            assertion(BadTrim == "false")
+        ),
+        retractall(user:kt_arith(_, _))
     ).
 
 :- end_tests(wam_kotlin_target).
