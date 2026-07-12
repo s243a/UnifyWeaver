@@ -4,6 +4,7 @@
 :- module(plawk_native_codegen, [
     plawk_program_native_driver_ir/3,
     plawk_program_native_driver_ir/4,
+    plawk_program_multipass_driver_ir/2,
     plawk_program_foreign_specs/3,
     plawk_program_foreign_specs/4,
     plawk_program_dyncall_arities/2,
@@ -3666,6 +3667,154 @@ plawk_action_blob_field(printf(_Format, PrintfArgs), Blob) :- member(Blob, Print
 plawk_action_blob_field(if(_Pattern, ThenActions, ElseActions), Blob) :-
     ( member(A, ThenActions) ; member(A, ElseActions) ),
     plawk_action_blob_field(A, Blob).
+
+%% plawk_program_multipass_driver_ir(+Program, -DriverIR) is semidet.
+%
+%  The multi-pass execution driver (PLAWK_MULTIPASS_CACHE.md phase 2, PR-B).
+%  A program with 2+ `pass { }` blocks runs the record loop once per pass
+%  over the (re-opened) input, then END. Each pass is emitted as its OWN
+%  function -- the per-record SSA (%line) and loop labels are fixed names,
+%  so N loops in one function would redefine them; a function per pass makes
+%  them function-local. Shared assoc tables are created once in main and
+%  threaded to each pass as a parameter (named %plawk_assoc_table_0 so the
+%  reused rule-chain IR references it unchanged); the END for-in reads the
+%  same tables back in main. Cross-pass state therefore lives in the shared
+%  table object, mutated by every pass.
+%
+%  v1 scope: text mode; a single shared assoc table; passes are always-rule
+%  bodies (no break/next); an `END { for (k in arr) print ... }`. The input
+%  must be a file argument (re-opened per pass); stdin is not re-openable
+%  (the design requires an explicit spool, a later phase).
+plawk_program_multipass_driver_ir(
+    program_passes(BeginClauses, Passes,
+        [end([for_in(var(LoopVar), var(ArrayName), [print(PrintFields)])])]),
+    DriverIR
+) :-
+    Passes = [_, _ | _],
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    integer(FieldSeparator),                 % text mode only (v1)
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    findall(R, ( member(pass(PassRules), Passes), member(R, PassRules) ), AllRules),
+    plawk_forin_end_plan(AllRules, LoopVar, ArrayName, [print(PrintFields)],
+        AssocPlan, PrintFields),
+    AssocPlan = assoc_plan([ArrayName], _),  % v1: one shared table
+    % Per-pass RecordIR (rule chain) against the single shared table.
+    findall(GlobalIR-ChainIR,
+        ( member(pass(PassRules), Passes),
+          plawk_forin_assoc_plan(PassRules, ArrayName, [], PassPlan),
+          plawk_assoc_rule_controls(PassPlan, PassControls),
+          plawk_assoc_break_close_ir(PassControls, ''),  % no break/next in v1
+          plawk_assoc_rule_chain_ir(PassPlan, FieldSeparator, GlobalIR, ChainIR)
+        ),
+        PassPairs),
+    pairs_keys_values(PassPairs, ChainGlobals, Chains),
+    % One function per pass; index them.
+    findall(FnIR,
+        ( nth0(I, Chains, Chain),
+          plawk_multipass_pass_fn_ir(I, Chain, FnIR) ),
+        FnIRs),
+    atomic_list_concat(FnIRs, '\n', PassFnsIR),
+    % main's pass-call sequence.
+    findall(CallLine,
+        ( nth0(I, Chains, _),
+          format(atom(CallLine),
+              '  call void @plawk_pass_~w(%Value %mp_path, %WamAssocI64Table* %plawk_assoc_table_0)',
+              [I]) ),
+        CallLines),
+    atomic_list_concat(CallLines, '\n', CallsIR),
+    % Setup (create the shared table), BEGIN, and the END for-in print.
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
+    plawk_forin_end_print_ir(LoopVar, ArrayName, PrintFields, AssocPlan,
+        FieldSeparator, OutputSeparator, EndPrintIR),
+    % Module globals: the chains' string/format globals, deduplicated.
+    sort(ChainGlobals, ChainGlobalsSorted),
+    atomic_list_concat(ChainGlobalsSorted, '\n', ChainGlobalsIR),
+    plawk_i64_end_print_globals(ChainGlobalsIR, RuntimeGlobals),
+    format(atom(DriverIR),
+'@.wam_stream_eof = private constant [12 x i8] c"end_of_file\\00"
+~w
+~w
+
+define i32 @main(i32 %argc, i8** %argv) {
+entry:
+~w
+  %have_arg = icmp sgt i32 %argc, 1
+  br i1 %have_arg, label %get_path, label %no_arg
+
+no_arg:
+  ret i32 20
+
+get_path:
+  %argv1_ptr = getelementptr i8*, i8** %argv, i64 1
+  %argv1 = load i8*, i8** %argv1_ptr
+  %argv1_len = call i64 @strlen(i8* %argv1)
+  %mp_path_id = call i64 @wam_intern_atom(i8* %argv1, i64 %argv1_len)
+  %mp_path0 = insertvalue %Value undef, i32 0, 0
+  %mp_path = insertvalue %Value %mp_path0, i64 %mp_path_id, 1
+~w
+  br label %end_print
+
+end_print:
+~w
+}
+',
+        [RuntimeGlobals, PassFnsIR, CombinedEntrySetupIR, CallsIR, EndPrintIR]).
+
+%% plawk_multipass_pass_fn_ir(+Index, +RecordIR, -IR)
+%  One pass as a self-contained function: open the shared input path, loop
+%  reading transient line records, run RecordIR per record (it branches to
+%  %continue_loop and references the %plawk_assoc_table_0 parameter), and
+%  return. Function-local labels/SSA, so passes never collide.
+plawk_multipass_pass_fn_ir(Index, RecordIR, IR) :-
+    format(atom(IR),
+'define void @plawk_pass_~w(%Value %mp_path, %WamAssocI64Table* %plawk_assoc_table_0) {
+entry:
+  %handle = call %Value @wam_stream_open_value(%Value %mp_path)
+  %handle_tag = extractvalue %Value %handle, 0
+  %handle_is_int = icmp eq i32 %handle_tag, 1
+  br i1 %handle_is_int, label %check_handle, label %ret_void
+
+check_handle:
+  %handle_payload = extractvalue %Value %handle, 1
+  %handle_ok = icmp sgt i64 %handle_payload, 0
+  br i1 %handle_ok, label %loop, label %ret_void
+
+loop:
+  %line = call %Value @wam_stream_read_line_transient_value(%Value %handle)
+  %line_tag = extractvalue %Value %line, 0
+  %line_payload = extractvalue %Value %line, 1
+  %line_is_int = icmp eq i32 %line_tag, 1
+  %line_bad_payload = icmp slt i64 %line_payload, 0
+  %line_bad = and i1 %line_is_int, %line_bad_payload
+  br i1 %line_bad, label %close_stream, label %check_line_atom
+
+check_line_atom:
+  %line_is_atom = icmp eq i32 %line_tag, 0
+  br i1 %line_is_atom, label %check_eof, label %close_stream
+
+check_eof:
+  %line_s = call i8* @wam_atom_to_string(i64 %line_payload)
+  %eof_s = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof, i32 0, i32 0
+  %eof_cmp = call i32 @strcmp(i8* %line_s, i8* %eof_s)
+  %is_eof = icmp eq i32 %eof_cmp, 0
+  br i1 %is_eof, label %close_stream, label %lowered_assoc
+
+lowered_assoc:
+~w
+
+continue_loop:
+  br label %loop
+
+close_stream:
+  %close_ok = call i1 @wam_stream_close_value(%Value %handle)
+  br label %ret_void
+
+ret_void:
+  ret void
+}
+', [Index, RecordIR]).
 
 %% plawk_forin_end_plan(+Rules, +LoopVar, +ArrayName, +BodyActions, -AssocPlan, -PrintFields)
 %

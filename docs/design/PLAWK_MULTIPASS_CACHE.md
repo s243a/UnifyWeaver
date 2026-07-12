@@ -5,10 +5,38 @@ Copyright (c) 2026 John William Creighton (@s243a)
 
 # plawk multi-pass processing over a persistent cache
 
-**Status**: design. No implementation yet. Captures the determinism
-rationale, the surface, the runtime ABI, and a phased rollout so the
-context survives across sessions. The LLVM target has **no cache/LMDB
-layer today** — that runtime primitive is the first build step.
+**Status**: partially implemented. Captures the determinism rationale, the
+surface, the runtime ABI, and a phased rollout. **Landed:** the persistent
+cache (file backend + `BEGIN cache("path") { declare NAME }` surface, phase
+1); the LMDB backend (`backend "lmdb"`, phase 5, eager); and multi-pass
+execution (`pass { }` blocks over a shared assoc table, phase 2). **Not yet:**
+cross-pass scalars, configurable readers (phase 4), the query reader
+(phase 6), namespaces / `eager` / secondary indexes. See the per-phase
+status tags in §5.
+
+## Implemented surface (quick reference)
+
+```awk
+# persistent cache (phase 1/5): counts survive across runs of the binary
+BEGIN cache("hist.db") { declare c }                 # file backend (default)
+BEGIN cache("hist.lmdb" backend "lmdb") { declare c } # LMDB backend
+{ c[$1]++ }
+END { for (k in c) print k, c[k] }
+
+# multi-pass (phase 2): read the input once per pass into a shared table
+pass { c[$1]++ }
+pass { c[$1]++ }        # input re-read; counts accumulate across passes
+END { for (k in c) print k, c[k] }
+```
+
+Multi-pass v1 lowers each `pass` to its own function (fixed per-record SSA
+`%line` / loop labels are then function-local and cannot collide), creates
+the shared assoc table once in `main`, threads it to each pass as a
+parameter, and reads it back in the END for-in. It requires a **file**
+argument (each pass re-opens it; stdin is not re-openable), a single shared
+table, and always-rule pass bodies. Combining a cache-backed table with
+multi-pass, cross-pass scalars, per-record output passes, and reader
+selection are follow-ons.
 
 ## TL;DR
 
@@ -414,16 +442,19 @@ single-pass test before any driver surgery).
   run) with no multi-pass machinery yet. Test: a histogram whose counts
   survive across two separate binary invocations against the same store.
 
-- **Phase 2 — variable scoping + multiple `pass { }` blocks.** Parser:
-  `program(Begin, Passes, End)` where `Passes` is a list of rule-sets.
-  Scoping (§3.2): pass-local by default (reset per pass); `BEGIN`-introduced
-  variables persist in memory across passes. Driver: run the record loop
-  once per pass, re-scanning input between passes, threading loaded objects
-  / foreign wrappers / resolved entries across passes (they already live in
-  process-global state, so this is mostly *not resetting* them). Test: the
-  normalise-by-total example with an **in-memory, `BEGIN`-declared** total —
-  impossible single-pass; here pass 1 fills it, pass 2 divides. (No cache
-  needed for this phase — it exercises in-memory cross-pass persistence.)
+- **Phase 2 — multiple `pass { }` blocks. LANDED (v1).** Parser:
+  `program_passes(Begin, [pass(Rules), ...], End)` (PR-A). Driver (PR-B):
+  each pass is emitted as its own function so the fixed per-record SSA
+  (`%line`) and loop labels are function-local and cannot collide; `main`
+  creates the shared assoc table once, threads it to each pass as a
+  parameter, re-opens the input file per pass, and reads the table back in
+  the END for-in. Verified: reading the input twice into a shared counter
+  doubles the counts (`tests/test_plawk_multipass.pl`). v1 scope: text mode,
+  a single shared table, always-rule pass bodies, `END { for (k in arr)
+  print ... }`, a file argument. **Deferred:** cross-pass *scalars* (need
+  loop-phi threading between pass functions, or scalar globals), per-record
+  *output* passes (per-record `arr[k]` reads), multiple tables, and pairing
+  multi-pass with a cache-backed / `BEGIN`-declared table.
 
 - **Phase 3 — cache as the inter-pass channel (durable payoff).** Combine
   1+2: a table declared in a `BEGIN cache("db")` block written in pass 1 and

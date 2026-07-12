@@ -109,7 +109,13 @@ build(File, Out0, KeepLL) :-
             halt(2)
         )
     ),
-    check_foreign_calls(File, Program, Preds),
+    % Multi-pass programs (program_passes) do not go through the foreign /
+    % dyncall surfaces in v1; the program(...) predicates below only match
+    % single-pass programs, so skip the foreign-call check for passes.
+    (   Program = program_passes(_, _, _)
+    ->  true
+    ;   check_foreign_calls(File, Program, Preds)
+    ),
     ll_path(Out, KeepLL, LLPath),
     file_base_name(Out, OutBase),
     % A program that uses dyncall(...) or dyncall_at(...) needs the .wamo
@@ -171,7 +177,15 @@ build(File, Out0, KeepLL) :-
               with_output_to(string(_CompilerChatter),
                   write_wam_llvm_project(Preds, ProjectOptions, LLPath)),
               wam_llvm_last_compile_counts(InstrCount, LabelCount),
-              (   plawk_program_native_driver_ir(Program, stdin_or_argv,
+              (   Program = program_passes(_, _, _)
+              ->  (   plawk_program_multipass_driver_ir(Program, DriverIR)
+                  ->  true
+                  ;   format(user_error,
+                          'plawk: ~w uses multi-pass features outside the \c
+                           current multi-pass surface~n', [File]),
+                      halt(3)
+                  )
+              ;   plawk_program_native_driver_ir(Program, stdin_or_argv,
                       [wam_vm(InstrCount, LabelCount) | EvalcOptions], DriverIR)
               ->  true
               ;   format(user_error,
@@ -233,13 +247,8 @@ lmdb_c_runtime_file(CFile) :-
 normalize_passes(_File, program_passes(Begin, [pass(Rules)], End),
         program(Begin, Rules, End)) :-
     !.
-normalize_passes(File, program_passes(_Begin, Passes, _End), _) :-
-    is_list(Passes), length(Passes, N), N >= 2,
-    !,
-    format(user_error,
-        'plawk: ~w uses ~w pass blocks; multi-pass execution is not yet \c
-         implemented (single `pass { }` works today)~n', [File, N]),
-    halt(3).
+% Two or more passes stay as program_passes and are lowered by the
+% dedicated multi-pass driver (see the compile step below).
 normalize_passes(_File, Program, Program).
 
 ll_path(Out, true, LLPath) :-
