@@ -126,11 +126,33 @@ Each stage is a shippable PR with tests.
   `foreach`'s full head-phi harness; deferred until a use needs it.
 
 - **Stage 3 — decode a value into a struct.** `for (k in arr) {
-  (n, m) = dyncall@decode(arr[k]) as (i64 i64) ; ... }`. Once the body is
-  a real scalar sequence (Stage 2), record binds/views already lower
-  inside it (as they do in `foreach` bodies today); the remaining piece
-  is a surface for passing `arr[k]` — the current value — as a grammar
-  argument (the staging field 2 read, marshalled like any i64 arg).
+  (n, m) = dyncall@decode(arr[k]) as (i64 i64) ; print k, n, m }`.
+  **LANDED** (END form, i64 fields; `tests/test_plawk_forin_decode.pl`).
+  The genuinely new surface was passing `arr[k]` — the current value — as
+  a grammar argument: a for-in-scoped `forin_val` operand that boxes the
+  already-loaded slot value (`%forin_slot_value`) as an integer `%Value`,
+  marshalled like any other dyncall arg. Everything downstream is reused:
+  the record shim, typecodes, slot alloca, and field loads are the same
+  `dyncall@name(...) as (...)` destructure machinery that runs in rule and
+  `foreach` bodies, and the shim + object handle are emitted by the
+  program-wide dyncall support IR the outer driver already assembles — the
+  collectors recurse into the for-in body and find the destructure, so no
+  new support-IR wiring was needed. The per-entry loop loads the value,
+  boxes it, calls the shim into a fresh slot array, loads the typed fields,
+  and prints the loop key and/or the decoded fields.
+
+  Scope is i64 fields with an END for-in (the demonstrable slice). f64 /
+  string decoded fields ride the same shim (they already work in `foreach`
+  bodies) and a rule-body decode for-in would reuse the same emitter over
+  the assoc rule chain; both deferred until a use needs them.
+
+## Parity reached
+
+With stages 1/1b (filter), 2 (accumulate), and 3 (decode) landed, the
+hash-shaped collection (`for (k in arr)`) has the per-entry expressiveness
+the list-shaped collection (`foreach`) already had: iterate, read the entry
+(key + value), filter it, fold it into a scalar, and decode it into a
+struct — all in native WAM/LLVM.
 
 ## Parser notes
 

@@ -598,6 +598,48 @@ plawk_program_native_driver_ir(
             AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+% decode-into-struct END for-in (assoc for-in, stage 3): destructure each
+% iterated value `arr[k]` through a grammar into typed fields, then print
+% them -- `END { for (k in arr) { (n,m) = dyncall@decode(arr[k]) as (T..) ;
+% print k, n, m } }`. The per-entry value is boxed and passed as the
+% grammar argument (the `forin_val` operand); the record shim + object
+% handle come from the program-wide dyncall support IR the outer driver
+% assembles (the collectors recurse into the for-in body and find the
+% destructure). Distinct four-part body shape, so ordering is unambiguous.
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules,
+        [end([for_in(var(LoopVar), var(ArrayName),
+            [dynrec_bind(Vars, Call, Types), print(PrintFields)])])]),
+    InputPath,
+    DriverIR
+) :-
+    Call = dyncall_named(_Name, [forin_val(ArrayName)]),
+    plawk_forin_end_decode_plan(Rules, ArrayName, AssocPlan),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    plawk_assoc_record_program_ok(FieldSeparator, Rules, PrintFields),
+    plawk_end_print_string_globals(PrintFields, StringGlobalIR),
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR, AssocChainIR),
+    plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
+    plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
+    plawk_forin_end_decode_ir(LoopVar, ArrayName, Vars, Call, Types,
+        PrintFields, AssocPlan, FieldSeparator, OutputSeparator,
+        DecodeGlobalIR, EndPrintIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, AssocRuleGlobalIR, DecodeGlobalIR]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
+    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w',
+        [EndPrintIR]),
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
+            AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
 % accumulate-then-print END for-in (assoc for-in, stage 2): fold the FINAL
 % hash into a loop-carried scalar, then print it --
 % `END { for (k in arr) acc += OPERAND ; print acc }`. The for-in loop
@@ -3662,6 +3704,14 @@ plawk_forin_accum_operand_ok(forin_val(ArrayName), ArrayName).
 plawk_forin_accum_operand_ok(forin_key, _ArrayName).
 plawk_forin_accum_operand_ok(int(_Value), _ArrayName).
 
+%% plawk_forin_end_decode_plan(+Rules, +ArrayName, -AssocPlan)
+%  Plan the END decode for-in (stage 3): the record rules populate the hash,
+%  the loop destructures each value. The decoded fields are for-in-scoped
+%  (loaded fresh each iteration), so the only tables are the iterated array
+%  and whatever the rules touch -- like the accumulate plan.
+plawk_forin_end_decode_plan(Rules, ArrayName, AssocPlan) :-
+    plawk_forin_assoc_plan(Rules, ArrayName, [], AssocPlan).
+
 plawk_forin_assoc_plan(Rules, ArrayName, LookupArrays,
         assoc_plan(Tables, PlannedRules)) :-
     maplist(plawk_assoc_rule_action_specs, Rules, RuleSpecs),
@@ -4019,6 +4069,164 @@ plawk_forin_accum_separator_lines(Index, OutputSeparator) -->
           [Index, OutputSeparator])
     },
     [SpaceCall].
+
+%% plawk_forin_end_decode_ir(+LoopVar, +ArrayName, +Vars, +Call, +Types,
+%%     +PrintFields, +AssocPlan, +Descriptor, +OutputSeparator,
+%%     -GlobalIR, -IR)
+%
+%  Emit the END decode for-in (stage 3): walk the iterated table's occupied
+%  slots, load each value, box it as the grammar argument (`forin_val`),
+%  destructure the returned record into typed fields via the shared record
+%  shim, then print the loop key and the decoded fields. Fields are i64
+%  (the demonstrable slice; f64/string decode into a for-in body would ride
+%  the same shim -- deferred). GlobalIR carries the field-typecode constant.
+plawk_forin_end_decode_ir(LoopVar, ArrayName, Vars, Call, Types, PrintFields,
+        AssocPlan, Descriptor, OutputSeparator, GlobalIR, IR) :-
+    forall(member(T, Types), T == i64),
+    length(Types, NFields),
+    length(Vars, NFields),
+    plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+    % The record shim call, arg-boxing and field loads, base `forin_dec`.
+    maplist(plawk_dynrec_type_code, Types, Codes),
+    plawk_dynrec_typecodes_escaped(Codes, Escaped),
+    format(atom(GlobalIR),
+        '@.forin_dec_tc = private constant [~w x i8] c"~w"',
+        [NFields, Escaped]),
+    plawk_dynrec_call_ir(Call, Descriptor, forin_dec, CallArgsIR,
+        _ArgGlobals, ArgSetup, ShimName),
+    NLast is NFields - 1,
+    numlist(0, NLast, Fields),
+    findall(ZLine,
+        ( member(FZ, Fields),
+          format(atom(ZLine),
+              '  %forin_dec_z~wp = getelementptr i64, i64* %forin_dec_slots, i64 ~w\n  store i64 0, i64* %forin_dec_z~wp\n  %forin_dec_zl~wp = getelementptr i64, i64* %forin_dec_lens, i64 ~w\n  store i64 0, i64* %forin_dec_zl~wp',
+              [FZ, FZ, FZ, FZ, FZ, FZ]) ),
+        ZeroLines),
+    plawk_dynrec_field_load_lines(Fields, Types, forin_dec, LoadLines),
+    atomic_list_concat(ArgSetup, '\n', ArgSetupIR),
+    atomic_list_concat(ZeroLines, '\n', ZeroIR),
+    atomic_list_concat(LoadLines, '\n', LoadIR),
+    format(atom(CallIR),
+        '  %forin_dec_ok = call i1 @~w(~w, i32 ~w, i8* %forin_dec_tcp, i64* %forin_dec_slots, i64* %forin_dec_lens)',
+        [ShimName, CallArgsIR, NFields]),
+    % Map each decoded variable to its loaded-field SSA for the print.
+    findall(V-SSA,
+        ( nth0(I, Vars, V), format(atom(SSA), '%forin_dec_f~w', [I]) ),
+        VarSSAs),
+    phrase(plawk_forin_decode_print_lines(PrintFields, LoopVar, VarSSAs,
+        Descriptor, OutputSeparator, 0), PrintLineList),
+    atomic_list_concat(PrintLineList, '\n', PrintIR),
+    phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
+    atomic_list_concat(FreeLines, '\n', FreeIR),
+    format(atom(IR),
+'  br label %forin_head
+
+forin_head:
+  %forin_idx = phi i64 [0, %end_print], [%forin_next_idx, %forin_body_done]
+  %forin_slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_idx)
+  %forin_done = icmp slt i64 %forin_slot, 0
+  br i1 %forin_done, label %forin_after, label %forin_body
+
+forin_body:
+  %forin_key_id = call i64 @wam_assoc_i64_key_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)
+  %forin_slot_value = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)
+~w
+  %forin_dec_slots = alloca i64, i32 ~w
+  %forin_dec_lens = alloca i64, i32 ~w
+~w
+  %forin_dec_tcp = getelementptr [~w x i8], [~w x i8]* @.forin_dec_tc, i32 0, i32 0
+~w
+~w
+~w
+  %forin_dec_newline = call i32 @putchar(i32 10)
+  br label %forin_body_done
+
+forin_body_done:
+  %forin_next_idx = add i64 %forin_slot, 1
+  br label %forin_head
+
+forin_after:
+~w
+  ret i32 0',
+        [TableIndex, TableIndex, TableIndex, ArgSetupIR, NFields, NFields,
+         ZeroIR, NFields, NFields, CallIR, LoadIR, PrintIR, FreeIR]).
+
+%% plawk_forin_decode_print_lines(+PrintFields, +LoopVar, +VarSSAs,
+%%     +Descriptor, +OutputSeparator, +Index)//
+%  The per-entry print in an END decode body: the loop key (text, or
+%  numeric for a binary descriptor), a decoded field (its loaded i64 SSA),
+%  or a string literal. Distinct label prefix (forin_dprint_*).
+plawk_forin_decode_print_lines([], _LoopVar, _VarSSAs, _Descriptor,
+        _OutputSeparator, _Index) -->
+    [].
+plawk_forin_decode_print_lines([var(LoopVar) | Rest], LoopVar, VarSSAs,
+        Descriptor, OutputSeparator, Index) -->
+    { \+ memberchk(LoopVar-_, VarSSAs) },
+    % The loop key.
+    plawk_forin_decode_separator_lines(Index, OutputSeparator),
+    { plawk_descriptor_is_binary(Descriptor)
+    ->  format(atom(FmtVar), 'forin_dprint_key_fmt_~w', [Index]),
+        format(atom(PrintVar), 'forin_dprint_key_~w', [Index]),
+        llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
+            '%forin_key_id', Lines)
+    ;   format(atom(KeyStr),
+            '  %forin_dprint_key_s_~w = call i8* @wam_atom_to_string(i64 %forin_key_id)',
+            [Index]),
+        format(atom(FmtVar), 'forin_dprint_key_fmt_~w', [Index]),
+        format(atom(PrintVar), 'forin_dprint_key_~w', [Index]),
+        format(atom(PtrIR), '%forin_dprint_key_s_~w', [Index]),
+        llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar,
+            PtrIR, [FmtPtr, PrintCall]),
+        Lines = [KeyStr, FmtPtr, PrintCall]
+    },
+    plawk_emit_lines(Lines),
+    { NextIndex is Index + 1 },
+    plawk_forin_decode_print_lines(Rest, LoopVar, VarSSAs, Descriptor,
+        OutputSeparator, NextIndex).
+plawk_forin_decode_print_lines([var(Var) | Rest], LoopVar, VarSSAs, Descriptor,
+        OutputSeparator, Index) -->
+    { memberchk(Var-SSA, VarSSAs) },
+    % A decoded field.
+    plawk_forin_decode_separator_lines(Index, OutputSeparator),
+    { format(atom(FmtVar), 'forin_dprint_fld_fmt_~w', [Index]),
+      format(atom(PrintVar), 'forin_dprint_fld_~w', [Index]),
+      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, SSA,
+          [FmtPtr, PrintCall]),
+      NextIndex is Index + 1
+    },
+    [FmtPtr, PrintCall],
+    plawk_forin_decode_print_lines(Rest, LoopVar, VarSSAs, Descriptor,
+        OutputSeparator, NextIndex).
+plawk_forin_decode_print_lines([string(Value) | Rest], LoopVar, VarSSAs,
+        Descriptor, OutputSeparator, Index) -->
+    plawk_forin_decode_separator_lines(Index, OutputSeparator),
+    plawk_end_string_print_lines(Value, Index),
+    { NextIndex is Index + 1 },
+    plawk_forin_decode_print_lines(Rest, LoopVar, VarSSAs, Descriptor,
+        OutputSeparator, NextIndex).
+
+plawk_forin_decode_separator_lines(0, _OutputSeparator) -->
+    !,
+    [].
+plawk_forin_decode_separator_lines(Index, OutputSeparator) -->
+    { format(atom(SpaceCall),
+          '  %forin_dprint_separator_~w = call i32 @putchar(i32 ~w)',
+          [Index, OutputSeparator])
+    },
+    [SpaceCall].
+
+%% plawk_foreign_arg_ir(forin_val(_), ...) -- a for-in-scoped grammar arg:
+%  the current iterated value, already loaded into %forin_slot_value by the
+%  decode loop, boxed as an integer %Value. (Clause lives beside the other
+%  plawk_foreign_arg_ir clauses via discontiguous; kept here next to the
+%  for-in decode emitter that relies on the fixed %forin_slot_value name.)
+:- discontiguous plawk_foreign_arg_ir/6.
+plawk_foreign_arg_ir(forin_val(_Array), _FieldSeparator, ArgBase, ArgValueIR,
+        [], [IntIR]) :-
+    format(atom(IntIR),
+        '  %~w_v = call %Value @value_integer(i64 %forin_slot_value)',
+        [ArgBase]),
+    format(atom(ArgValueIR), '%~w_v', [ArgBase]).
 
 plawk_forin_body_print_lines([], _LoopVar, _ArrayName, _TableIndex, _AssocPlan,
         _Descriptor, _OutputSeparator, _) -->
