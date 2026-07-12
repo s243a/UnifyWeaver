@@ -414,6 +414,45 @@
         true
     }
 
+    fn execute_predicate_property_builtin(&mut self) -> bool {
+        let head_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let head = self.deref_heap(&self.deref_var(&head_raw));
+        let key = match self.dynamic_head_key(&head) {
+            Some(key) => key,
+            None => return false,
+        };
+        let in_labels = self.labels.contains_key(&key);
+        let dynamic_count = self.dynamic_db.get(&key).map(Vec::len);
+        let property_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let property = self.deref_heap(&self.deref_var(&property_raw));
+        let succeeds = match property {
+            Value::Atom(name) => match name.as_str() {
+                "defined" => in_labels || dynamic_count.is_some(),
+                "dynamic" => dynamic_count.is_some(),
+                "static" => in_labels && dynamic_count.is_none(),
+                _ => false,
+            },
+            Value::Str(functor, args)
+                if args.len() == 1 &&
+                    Self::display_functor_name(&functor, 1) == "number_of_clauses" =>
+            {
+                let count = match dynamic_count {
+                    Some(count) => count,
+                    None if in_labels => 1,
+                    None => return false,
+                };
+                self.unify(&args[0], &Value::Integer(count as i64))
+            }
+            _ => false,
+        };
+        if succeeds {
+            self.pc += 1;
+            true
+        } else {
+            false
+        }
+    }
+
     fn dynamic_clause_key(&self, clause: &Value) -> Option<String> {
         let head = self.dynamic_clause_head(clause)?;
         self.dynamic_head_key(&head)

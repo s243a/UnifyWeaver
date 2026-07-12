@@ -1622,6 +1622,7 @@ compile_execute_term_builtin_to_rust(Code) :-
             "assert/1" => { self.execute_assert_builtin("assert/1") }
             "assertz/1" | "asserta/1" => { self.execute_assert_builtin(op) }
             "retractall/1" => { self.execute_retractall_builtin() }
+            "predicate_property/2" => { self.execute_predicate_property_builtin() }
             _ => false,
         }
     }

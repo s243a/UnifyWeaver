@@ -316,6 +316,71 @@ fn generated_tail_current_predicate_call_reads_static_labels() {
 }
 
 #[test]
+fn generated_predicate_property_reads_static_labels() {
+    let (code, labels) = shared_wam_program();
+    let mut vm = WamState::new(code, labels);
+    vm.set_reg_str("A1", fact("rust_clause_demo", vec![ub("_"), ub("_")]));
+    vm.set_reg_str("A2", at("static"));
+    assert!(vm.execute_builtin("predicate_property/2", 2));
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("rust_clause_demo", vec![ub("_"), ub("_")]));
+    vm.set_reg_str("A2", at("static"));
+    vm.pc = *vm.labels
+        .get("rust_predicate_property_demo/2")
+        .expect("generated predicate_property demo label");
+
+    assert!(vm.run());
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("rust_clause_demo", vec![ub("_"), ub("_")]));
+    vm.set_reg_str("A2", at("defined"));
+    assert!(vm.execute_builtin("predicate_property/2", 2));
+
+    vm.reset_query();
+    vm.set_reg_str(
+        "A1",
+        fact("rust_clause_demo", vec![ub("_"), ub("_")]),
+    );
+    vm.set_reg_str("A2", fact("number_of_clauses", vec![ub("Count")]));
+    assert!(vm.execute_builtin("predicate_property/2", 2));
+    let count = vm.bindings.get("Count").cloned().expect("Count bound");
+    assert_eq!(vm.deref_heap(&vm.deref_var(&count)), Value::Integer(1));
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("missing", vec![ub("_")]));
+    vm.set_reg_str("A2", at("defined"));
+    assert!(!vm.execute_builtin("predicate_property/2", 2));
+}
+
+#[test]
+fn predicate_property_reports_dynamic_status_and_clause_count() {
+    let mut vm = WamState::new(vec![], HashMap::new());
+    assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("red")]));
+    assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("blue")]));
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("dyn", vec![ub("_")]));
+    vm.set_reg_str("A2", at("dynamic"));
+    assert!(vm.execute_builtin("predicate_property/2", 2));
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("dyn", vec![ub("_")]));
+    vm.set_reg_str(
+        "A2",
+        fact("number_of_clauses", vec![ub("Count")]),
+    );
+    assert!(vm.execute_builtin("predicate_property/2", 2));
+    let count = vm.bindings.get("Count").cloned().expect("Count bound");
+    assert_eq!(vm.deref_heap(&vm.deref_var(&count)), Value::Integer(2));
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("dyn", vec![ub("_")]));
+    vm.set_reg_str("A2", at("static"));
+    assert!(!vm.execute_builtin("predicate_property/2", 2));
+}
+
+#[test]
 fn retract_distinguishes_fact_patterns_from_rule_patterns() {
     let mut vm = WamState::new(vec![Instruction::Call("retract/1".to_string(), 1), Instruction::Proceed], HashMap::new());
     assert_clause(&mut vm, "assertz/1", fact("marker", vec![at("rule")]));

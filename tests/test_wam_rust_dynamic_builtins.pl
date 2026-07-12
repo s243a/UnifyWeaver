@@ -20,6 +20,10 @@ rust_clause_demo(X, Body) :-
 rust_current_predicate_demo(Name, Arity) :-
     current_predicate(Name/Arity).
 
+:- dynamic rust_predicate_property_demo/2.
+rust_predicate_property_demo(Head, Property) :-
+    predicate_property(Head, Property).
+
 :- dynamic rust_read_term_options_demo/2.
 rust_read_term_options_demo(Term, Names) :-
     read_term(Term, [variable_names(Names)]).
@@ -54,6 +58,7 @@ test(assert_retract_dynamic_db,
          user:rust_assert_alias_demo/0,
          user:rust_clause_demo/2,
          user:rust_current_predicate_demo/2,
+         user:rust_predicate_property_demo/2,
          user:rust_read_term_options_demo/2,
          user:rust_atom_to_term_demo/2,
          user:rust_syntax_error_demo/1],
