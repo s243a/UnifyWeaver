@@ -872,10 +872,22 @@
     fn dynamic_clause_call(&mut self, cont_pc: usize) -> bool {
         let head_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
         let head = self.deref_heap(&self.deref_var(&head_raw));
-        if matches!(head, Value::Unbound(_) | Value::Uninit) { return false; }
+        if matches!(&head, Value::Unbound(_) | Value::Uninit) {
+            return self.raise_iso_error(Value::Atom(
+                "instantiation_error".to_string(),
+            ));
+        }
         let key = match self.dynamic_head_key(&head) {
             Some(key) => key,
-            None => return false,
+            None => {
+                return self.raise_iso_error(Value::Str(
+                    "type_error/2".to_string(),
+                    vec![
+                        Value::Atom("callable".to_string()),
+                        head,
+                    ],
+                ));
+            }
         };
         let body_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
         let body = self.deref_heap(&self.deref_var(&body_raw));

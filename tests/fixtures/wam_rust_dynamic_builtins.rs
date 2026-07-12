@@ -271,6 +271,23 @@ fn generated_tail_clause_call_reads_dynamic_facts() {
 }
 
 #[test]
+fn generated_clause_errors_are_catchable() {
+    let (code, labels) = shared_wam_program();
+    for pred in [
+        "rust_clause_instantiation_demo/1",
+        "rust_clause_type_demo/1",
+    ] {
+        let mut vm = WamState::new(code.clone(), labels.clone());
+        vm.set_reg_str("A1", ub("Result"));
+        vm.pc = *vm.labels.get(pred).expect("generated clause error label");
+
+        assert!(vm.run(), "{} should catch its error", pred);
+        assert_eq!(vm.bindings.get("Result"), Some(&at("caught")));
+        assert!(vm.thrown_ball.is_none(), "{} should consume the error", pred);
+    }
+}
+
+#[test]
 fn current_predicate_backtracks_over_matching_dynamic_arities() {
     let mut vm = WamState::new(
         vec![
