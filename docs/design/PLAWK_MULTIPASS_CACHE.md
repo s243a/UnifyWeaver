@@ -12,9 +12,13 @@ cache (file backend + `BEGIN cache("path") { declare NAME }` surface, phase
 execution (`pass { }` blocks over a shared assoc table, phase 2); and
 per-record output in assoc programs (`print $N` / `print arr[$N]` in the
 record loop), which gives the "normalise" shape — pass 2 prints each record
-from pass 1's table. **Not yet:** cross-pass scalars, configurable readers
-(phase 4), the query reader (phase 6), namespaces / `eager` / secondary
-indexes, string-literal print fields. See the per-phase status tags in §5.
+from pass 1's table; and cross-pass scalars (`acc += 1` / `acc += $N`
+folded in one pass and read in a later pass, backed by a zero-initialised
+module global). **Not yet:** pure-scalar (no-table) multi-pass and
+arithmetic in prints (`$2 / total`) — together these complete grand-total
+normalise; configurable readers (phase 4); the query reader (phase 6);
+namespaces / `eager` / secondary indexes; string-literal print fields. See
+the per-phase status tags in §5.
 
 ## Implemented surface (quick reference)
 

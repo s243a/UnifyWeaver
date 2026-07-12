@@ -5285,15 +5285,37 @@ plawk_assoc_body_action_spec(print(Fields), assoc_print(FieldSpecs)) :-
     Fields = [_ | _],
     maplist(plawk_assoc_print_field_spec, Fields, FieldSpecs).
 
+% Scalar accumulator in an assoc program: `acc += 1` (count) or `acc += $N`
+% (sum a field). Backed by a module global (zero-initialised), so in a
+% multi-pass program the accumulator persists across passes -- pass 1 folds,
+% a later pass reads it (`print $1, acc`). One line per record semantics.
+plawk_assoc_body_action_spec(add(var(Name), int(V)), scalar_add(Name, int(V))) :-
+    integer(V).
+plawk_assoc_body_action_spec(add(var(Name), field(K)), scalar_add(Name, field(K))) :-
+    integer(K), K > 0.
+
 plawk_assoc_print_field_spec(field(N), fld(N)) :-
     integer(N), N > 0.
 plawk_assoc_print_field_spec(assoc(var(Arr), field(N)), lookup(Arr, N)) :-
     integer(N), N > 0.
+% A scalar accumulator read in a per-record print.
+plawk_assoc_print_field_spec(var(Name), svar(Name)) :-
+    atom(Name).
 
 % Resolve a print field's lookup array to its table index in the plan.
 plawk_assoc_print_plan_field(_Tables, fld(N), fld(N)).
 plawk_assoc_print_plan_field(Tables, lookup(Arr, N), lookup(TableIndex, N)) :-
     nth0(TableIndex, Tables, Arr).
+plawk_assoc_print_plan_field(_Tables, svar(Name), svar(Name)).
+
+% The per-record source value added to a scalar accumulator: a constant, or
+% field N converted to i64.
+plawk_assoc_scalar_src_lines(int(V), _Base, _FieldSep, V, []).
+plawk_assoc_scalar_src_lines(field(K), Base, FieldSep, SrcVar, [Line]) :-
+    format(atom(Line),
+        '  %~w_fv = call i64 @wam_atom_field_i64_value(%Value %line, i64 ~w, i8 ~w)',
+        [Base, K, FieldSep]),
+    format(atom(SrcVar), '%~w_fv', [Base]).
 
 %% plawk_assoc_print_field_lines(+PlannedFields, +Base, +FieldSep, +Index, -Lines)
 %  Emit the per-record print: each field preceded by a space separator
@@ -5346,6 +5368,15 @@ plawk_assoc_print_one_field(lookup(TableIndex, N), Base, Index, FieldSep, Lines)
     format(atom(PrL),
         '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i64 %~w_val)', [P, P, P]),
     Lines = [SliceL, PtrL, LenL, KidL, ValL, FmtL, PrL].
+plawk_assoc_print_one_field(svar(Name), Base, Index, _FieldSep, Lines) :-
+    format(atom(P), '~w_f~w', [Base, Index]),
+    format(atom(LoadL), '  %~w_sv = load i64, i64* @plawk_scalar_~w', [P, Name]),
+    format(atom(FmtL),
+        '  %~w_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
+        [P]),
+    format(atom(PrL),
+        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i64 %~w_sv)', [P, P, P]),
+    Lines = [LoadL, FmtL, PrL].
 
 plawk_assoc_body_action_spec(for_in(var(LoopVar), var(ArrayName), Body),
         forin(LoopVar, ArrayName, Fields)) :-
@@ -5420,6 +5451,11 @@ plawk_assoc_planned_actions([assoc_print(FieldSpecs) | Rest],
       NextIndex is Index + 1
     },
     [assoc_print_action(Index, PlannedFields)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+plawk_assoc_planned_actions([scalar_add(Name, Src) | Rest],
+        Tables, StrArrays, PosArrays, Index) -->
+    { NextIndex is Index + 1 },
+    [assoc_scalar_add_action(Index, Name, Src)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 plawk_assoc_planned_actions([forin(LoopVar, ArrayName, Fields) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
@@ -5640,7 +5676,8 @@ plawk_assoc_rule_apply_ir(RuleIndex, Actions, NextLabel, FieldSeparator,
     atomic_list_concat(Lines, '\n', IR),
     (   Globals == []
     ->  GlobalIR = ''
-    ;   atomic_list_concat(Globals, '\n', Gs),
+    ;   sort(Globals, GlobalsDedup),   % identical scalar-global decls collapse
+        atomic_list_concat(GlobalsDedup, '\n', Gs),
         atom_concat('\n', Gs, GlobalIR)
     ).
 
@@ -5688,6 +5725,32 @@ plawk_assoc_rule_action_blocks(RuleIndex,
           [Base, ShimName, CallArgsIR, TableIndex]),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([GlobalMarkers, [Label], Setup, [CallLine, Next, '']], Lines)
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% Scalar accumulator: `acc += 1` / `acc += $N`, folded into a module global
+% (@plawk_scalar_<acc>, zero-init), so the value persists across multi-pass
+% passes. Emits the global declaration on the global channel (deduped by the
+% rule/driver), then load/add/store per record.
+plawk_assoc_rule_action_blocks(RuleIndex,
+        [assoc_scalar_add_action(Index, Name, Src) | Rest], NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(Base), 'assoc_rule_~w_action_~w_sadd', [RuleIndex, Index]),
+      format(atom(GlobalDecl),
+          '@plawk_scalar_~w = internal global i64 0', [Name]),
+      plawk_assoc_scalar_src_lines(Src, Base, FieldSeparator, SrcVar, SrcLines),
+      format(atom(LoadL), '  %~w_cur = load i64, i64* @plawk_scalar_~w', [Base, Name]),
+      format(atom(AddL), '  %~w_new = add i64 %~w_cur, ~w', [Base, Base, SrcVar]),
+      format(atom(StoreL), '  store i64 %~w_new, i64* @plawk_scalar_~w', [Base, Name]),
+      format(atom(Next), '  br label %~w', [ActionNextLabel]),
+      append([[global(GlobalDecl), Label], SrcLines,
+              [LoadL, AddL, StoreL, Next, '']], Lines)
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
