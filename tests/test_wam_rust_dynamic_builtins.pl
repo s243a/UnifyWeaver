@@ -16,6 +16,20 @@ rust_assert_alias_demo :- assert(dyn(alias)).
 rust_clause_demo(X, Body) :-
     clause(dyn(X), Body).
 
+:- dynamic rust_clause_instantiation_demo/1.
+rust_clause_instantiation_demo(Result) :-
+    catch(
+        clause(_, _),
+        error(instantiation_error, _),
+        Result = caught).
+
+:- dynamic rust_clause_type_demo/1.
+rust_clause_type_demo(Result) :-
+    catch(
+        clause(7, _),
+        error(type_error(callable, _), _),
+        Result = caught).
+
 :- dynamic rust_current_predicate_demo/2.
 rust_current_predicate_demo(Name, Arity) :-
     current_predicate(Name/Arity).
@@ -113,6 +127,8 @@ test(assert_retract_dynamic_db,
         [user:rust_dyn_dummy/0,
          user:rust_assert_alias_demo/0,
          user:rust_clause_demo/2,
+         user:rust_clause_instantiation_demo/1,
+         user:rust_clause_type_demo/1,
          user:rust_current_predicate_demo/2,
          user:rust_current_predicate_instantiation_demo/1,
          user:rust_current_predicate_type_demo/1,
