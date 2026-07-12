@@ -32,7 +32,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | CONF-KOTLIN ✅ | Conformance adapter | Kotlin | M | done — opt-in (`cursor/conf-kotlin-f421`); append green, 5 xfails |
 | KT-LIST-BACKTRACK ✅ | Conformance gap fix | Kotlin | M | done — X heap-identity vars (`cursor/kt-list-backtrack-f421`) |
 | KT-ARITH-SLASH-FUNCTOR ✅ | Conformance gap fix | Kotlin | S | done — `///2` last-slash parse (`cursor/kt-arith-slash-functor-f421`) |
-| KT-Y-ENV-RECURSION | Conformance gap fix | Kotlin | M | CONF-KOTLIN |
+| KT-Y-ENV-RECURSION ✅ | Conformance gap fix | Kotlin | M | done — Y heap-identity vars (`cursor/kt-y-env-recursion-f421`) |
 | PARSE-C | Runtime-parser entry | C | S | — |
 | PARSE-GO | Runtime-parser entry | Go | S | — |
 | PARSE-SCALA | Runtime-parser entry | Scala | S | — |
@@ -174,6 +174,7 @@ external toolchain.
 
 ### KT-Y-ENV-RECURSION: Y-register bind-through across recursive call (Kotlin)
 - **Lever:** Conformance gap fix  **Target:** Kotlin  **Size:** M  **Depends on:** CONF-KOTLIN
+- **Status:** ✅ **Landed** on `cursor/kt-y-env-recursion-f421` (2026-07-12; stacks on KT-LIST-BACKTRACK). Extends heap-identity `newVariable` to Y-registers (drops scoped `Y@E` Var names that recursive `allocate`/`call` could miss on deref). Removed fib/ack `ct_xfail`s; **all classic programs green**, no remaining Kotlin xfails.
 - **Goal:** Retire fib/ack xfails. After recursive `call`/`execute`, `is/2` sees unbound scoped temps (`Y5@E9`) inside `+/2` trees — permanent-variable / environment bank gap.
 
 ---

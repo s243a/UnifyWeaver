@@ -278,17 +278,9 @@ ct_default_target(elixir).
 %  is now recursive and cons-aware ($unify_addrs). Both are conformant;
 %  the skips are removed.
 
-%  Kotlin (CONF-KOTLIN, 2026-07-12). Adapter registered (opt-in). append/3
-%  + builtins green. Remaining xfails:
-%   - member/reverse: FIXED in KT-LIST-BACKTRACK — X-register structure
-%     placeholders now use heap identities (H<n>), not Var("Xn").
-%   - fib/ack: permanent Y-registers still use scoped names (Y5@E9); after
-%     recursive call, is/2 sees unbound scoped vars in the +/2 tree
-%     (KT-Y-ENV-RECURSION).
-ct_xfail(kotlin, fib).
-ct_xfail(kotlin, ack).
-ct_xfail(kotlin_functions, fib).
-ct_xfail(kotlin_functions, ack).
+%  Kotlin (CONF-KOTLIN, 2026-07-12). Adapter registered (opt-in). All classic
+%  programs green after KT-ARITH-SLASH-FUNCTOR + KT-LIST-BACKTRACK +
+%  KT-Y-ENV-RECURSION (no remaining kotlin ct_xfail entries).
 
 % ============================================================
 % Toolchain probes

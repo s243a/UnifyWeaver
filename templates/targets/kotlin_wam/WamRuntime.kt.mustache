@@ -94,15 +94,13 @@ class WamState(
     }
 
     fun newVariable(register: String): Value.Var {
-        // X registers: heap identity (KT-LIST-BACKTRACK). Y registers: keep
-        // scoped names for now (KT-Y-ENV-RECURSION handles those separately).
-        if (isEnvironmentRegister(register)) {
-            val scopedName = scopedRegisterName(register)
-            val value = Value.Var(scopedName)
-            writeRegister(register, value)
-            if (scopedName != register) writeRegister(scopedName, value)
-            return value
-        }
+        // Heap identity independent of the register name (Xn or Yn).
+        // Structure/list cells and arithmetic trees store this Var; later
+        // unify_variable/writeRegister on the register must not clobber
+        // already-built terms, and bindings must survive recursive
+        // call/execute across allocate frames (KT-LIST-BACKTRACK +
+        // KT-Y-ENV-RECURSION). Scoped Y@E names lived in environment
+        // slots that recursive allocate/call could miss on deref.
         val heapName = "H${nextHeapVarId++}"
         val value = Value.Var(heapName)
         registers[heapName] = value
