@@ -141,10 +141,12 @@ Each stage is a shippable PR with tests.
   boxes it, calls the shim into a fresh slot array, loads the typed fields,
   and prints the loop key and/or the decoded fields.
 
-  Scope is i64 fields with an END for-in (the demonstrable slice). f64 /
-  string decoded fields ride the same shim (they already work in `foreach`
-  bodies) and a rule-body decode for-in would reuse the same emitter over
-  the assoc rule chain; both deferred until a use needs them.
+  **i64 and f64 decoded fields LANDED** (`(a, b) = dyncall@decf(arr[k]) as
+  (f64 f64)`, and mixed `as (i64 f64)`): each is one scalar slot loaded
+  directly, and the per-entry print emits `%g` for a decoded f64 and the
+  integer printf for an i64. **String decoded fields** (a `(ptr,len)` pair
+  of slots) and a **rule-body (non-END) decode for-in** are deferred — both
+  reuse the same shim/emitter and can follow when a use needs them.
 
 ## Parity reached
 

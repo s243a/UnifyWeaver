@@ -11,7 +11,8 @@
 % IR (the collectors recurse into the for-in body and find the destructure).
 % This is the hash-shaped counterpart to record destructure inside a
 % `foreach` body -- iterate, read the entry, decode it into a struct.
-% i64 fields are the demonstrable slice; see PLAWK_ASSOC_FORIN.md.
+% i64 and f64 fields decode into one scalar slot each; string fields (a
+% (ptr,len) pair) are a separate round. See PLAWK_ASSOC_FORIN.md.
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -22,6 +23,9 @@
 
 % grammar object: decode(N) -> r(N, N+100)
 decode(N, r(N, M)) :- M is N + 100.
+% f64 fields: decf(N) -> r(N*1.5, N+0.25); mixed: decm(N) -> r(N, N*1.5)
+decf(N, r(F1, F2)) :- F1 is N * 1.5, F2 is N + 0.25.
+decm(N, r(N, F)) :- F is N * 1.5.
 
 clang_available :-
     catch(( process_create(path(clang), ['--version'],
@@ -87,6 +91,35 @@ test(decode_labeled_runs, [condition(clang_available)]) :-
     assertion(S == ["e 1 101", "e 2 102"]),
     !.
 
+% f64 decoded fields: decf(N) = r(N*1.5, N+0.25). Counts a=3,b=2,c=1 ->
+% a:(4.5,3.25) b:(3,2.25) c:(1.5,1.25) (%g drops the trailing .0).
+test(decode_f64_runs, [condition(clang_available)]) :-
+    fd_dir(Dir),
+    named_wamo(Dir, decf, Wamo),
+    format(string(Src),
+        "BEGIN { DYNLOAD = \"~w\" }\n\c
+         { c[$1]++ }\n\c
+         END { for (k in c) { (a, b) = dyncall@decf(c[k]) as (f64 f64) ; print k, a, b } }\n",
+        [Wamo]),
+    build_run_text(Dir, 'decff', Src, "a\na\na\nb\nb\nc\n", Out),
+    split_string(Out, "\n", "", L0), exclude(==(""), L0, L), msort(L, S),
+    assertion(S == ["a 4.5 3.25", "b 3 2.25", "c 1.5 1.25"]),
+    !.
+
+% Mixed i64 + f64 fields in one destructure: decm(N) = r(N, N*1.5).
+test(decode_mixed_runs, [condition(clang_available)]) :-
+    fd_dir(Dir),
+    named_wamo(Dir, decm, Wamo),
+    format(string(Src),
+        "BEGIN { DYNLOAD = \"~w\" }\n\c
+         { c[$1]++ }\n\c
+         END { for (k in c) { (n, f) = dyncall@decm(c[k]) as (i64 f64) ; print k, n, f } }\n",
+        [Wamo]),
+    build_run_text(Dir, 'decmm', Src, "a\na\na\nb\nb\nc\n", Out),
+    split_string(Out, "\n", "", L0), exclude(==(""), L0, L), msort(L, S),
+    assertion(S == ["a 3 4.5", "b 2 3", "c 1 1.5"]),
+    !.
+
 :- end_tests(plawk_forin_decode).
 
 % --- helpers ---------------------------------------------------------------
@@ -100,6 +133,13 @@ decode_wamo(Dir, Wamo) :-
     directory_file_path(Dir, 'decode.wamo', Wamo),
     ( exists_file(Wamo) -> true
     ; write_wam_object([user:decode/2], [wamo_entries([decode/2])], Wamo) ).
+
+% A .wamo exporting Name/2 (e.g. decf, decm), built on first use.
+named_wamo(Dir, Name, Wamo) :-
+    atom_concat(Name, '.wamo', File),
+    directory_file_path(Dir, File, Wamo),
+    ( exists_file(Wamo) -> true
+    ; write_wam_object([user:Name/2], [wamo_entries([Name/2])], Wamo) ).
 
 build_run_text(Dir, Name, Src, InputText, Out) :-
     directory_file_path(Dir, Name, Prog0),

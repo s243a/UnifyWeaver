@@ -4077,12 +4077,13 @@ plawk_forin_accum_separator_lines(Index, OutputSeparator) -->
 %  Emit the END decode for-in (stage 3): walk the iterated table's occupied
 %  slots, load each value, box it as the grammar argument (`forin_val`),
 %  destructure the returned record into typed fields via the shared record
-%  shim, then print the loop key and the decoded fields. Fields are i64
-%  (the demonstrable slice; f64/string decode into a for-in body would ride
-%  the same shim -- deferred). GlobalIR carries the field-typecode constant.
+%  shim, then print the loop key and the decoded fields. Fields are i64 or
+%  f64 -- one scalar slot each, loaded directly (string fields take a
+%  (ptr,len) pair and are a separate round). GlobalIR carries the
+%  field-typecode constant.
 plawk_forin_end_decode_ir(LoopVar, ArrayName, Vars, Call, Types, PrintFields,
         AssocPlan, Descriptor, OutputSeparator, GlobalIR, IR) :-
-    forall(member(T, Types), T == i64),
+    forall(member(T, Types), memberchk(T, [i64, f64])),
     length(Types, NFields),
     length(Vars, NFields),
     plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
@@ -4109,9 +4110,11 @@ plawk_forin_end_decode_ir(LoopVar, ArrayName, Vars, Call, Types, PrintFields,
     format(atom(CallIR),
         '  %forin_dec_ok = call i1 @~w(~w, i32 ~w, i8* %forin_dec_tcp, i64* %forin_dec_slots, i64* %forin_dec_lens)',
         [ShimName, CallArgsIR, NFields]),
-    % Map each decoded variable to its loaded-field SSA for the print.
-    findall(V-SSA,
-        ( nth0(I, Vars, V), format(atom(SSA), '%forin_dec_f~w', [I]) ),
+    % Map each decoded variable to its loaded-field SSA and type for the
+    % print (i64 -> integer printf, f64 -> %g).
+    findall(V-(SSA-Type),
+        ( nth0(I, Vars, V), nth0(I, Types, Type),
+          format(atom(SSA), '%forin_dec_f~w', [I]) ),
         VarSSAs),
     phrase(plawk_forin_decode_print_lines(PrintFields, LoopVar, VarSSAs,
         Descriptor, OutputSeparator, 0), PrintLineList),
@@ -4154,15 +4157,17 @@ forin_after:
 %% plawk_forin_decode_print_lines(+PrintFields, +LoopVar, +VarSSAs,
 %%     +Descriptor, +OutputSeparator, +Index)//
 %  The per-entry print in an END decode body: the loop key (text, or
-%  numeric for a binary descriptor), a decoded field (its loaded i64 SSA),
-%  or a string literal. Distinct label prefix (forin_dprint_*).
+%  numeric for a binary descriptor), a decoded field (its loaded SSA, as
+%  i64 or f64 per its type), or a string literal. Distinct label prefix
+%  (forin_dprint_*).
 plawk_forin_decode_print_lines([], _LoopVar, _VarSSAs, _Descriptor,
         _OutputSeparator, _Index) -->
     [].
 plawk_forin_decode_print_lines([var(LoopVar) | Rest], LoopVar, VarSSAs,
         Descriptor, OutputSeparator, Index) -->
     { \+ memberchk(LoopVar-_, VarSSAs) },
-    % The loop key.
+    % The loop key (a decoded var never shadows the loop key -- distinct
+    % identifiers by construction).
     plawk_forin_decode_separator_lines(Index, OutputSeparator),
     { plawk_descriptor_is_binary(Descriptor)
     ->  format(atom(FmtVar), 'forin_dprint_key_fmt_~w', [Index]),
@@ -4185,15 +4190,22 @@ plawk_forin_decode_print_lines([var(LoopVar) | Rest], LoopVar, VarSSAs,
         OutputSeparator, NextIndex).
 plawk_forin_decode_print_lines([var(Var) | Rest], LoopVar, VarSSAs, Descriptor,
         OutputSeparator, Index) -->
-    { memberchk(Var-SSA, VarSSAs) },
-    % A decoded field.
+    { memberchk(Var-(SSA-Type), VarSSAs) },
+    % A decoded field: i64 via the integer printf, f64 via %g.
     plawk_forin_decode_separator_lines(Index, OutputSeparator),
-    { format(atom(FmtVar), 'forin_dprint_fld_fmt_~w', [Index]),
-      format(atom(PrintVar), 'forin_dprint_fld_~w', [Index]),
-      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, SSA,
-          [FmtPtr, PrintCall]),
-      NextIndex is Index + 1
+    { Type == f64
+    ->  format(atom(FmtPtr),
+            '  %forin_dprint_fld_fmt_~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
+            [Index]),
+        format(atom(PrintCall),
+            '  %forin_dprint_fld_~w = call i32 (i8*, ...) @printf(i8* %forin_dprint_fld_fmt_~w, double ~w)',
+            [Index, Index, SSA])
+    ;   format(atom(FmtVar), 'forin_dprint_fld_fmt_~w', [Index]),
+        format(atom(PrintVar), 'forin_dprint_fld_~w', [Index]),
+        llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, SSA,
+            [FmtPtr, PrintCall])
     },
+    { NextIndex is Index + 1 },
     [FmtPtr, PrintCall],
     plawk_forin_decode_print_lines(Rest, LoopVar, VarSSAs, Descriptor,
         OutputSeparator, NextIndex).
