@@ -3698,6 +3698,11 @@ plawk_program_multipass_driver_ir(
     plawk_forin_end_plan(AllRules, LoopVar, ArrayName, [print(PrintFields)],
         AssocPlan, PrintFields),
     AssocPlan = assoc_plan([ArrayName], _),  % v1: one shared table
+    % A `BEGIN cache("path") { declare NAME }` table shared by the passes:
+    % load the store into the shared table before pass 1, commit it after the
+    % last pass. Non-cache programs get [] and behave exactly as before.
+    plawk_program_cache_tables(BeginClauses, CacheTriples),
+    plawk_cache_entries([ArrayName], CacheTriples, CacheEntries, CachePathGlobals),
     % Per-pass RecordIR (rule chain) against the single shared table.
     findall(GlobalIR-ChainIR,
         ( member(pass(PassRules), Passes),
@@ -3723,15 +3728,18 @@ plawk_program_multipass_driver_ir(
               '  call void @plawk_pass_~w(%Value %mp_path~w)', [I, TableArgsIR]) ),
         CallLines),
     atomic_list_concat(CallLines, '\n', CallsIR),
-    % Setup (create the shared table), BEGIN, and the END for-in print.
-    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    % Setup (create + load the shared table), BEGIN, and the END for-in print.
+    plawk_assoc_entry_setup_ir(AssocPlan, CacheEntries, EntrySetupIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
+    plawk_cache_commit_lines(CacheEntries, CommitIR),
     plawk_forin_end_print_ir(LoopVar, ArrayName, PrintFields, AssocPlan,
-        FieldSeparator, OutputSeparator, EndPrintIR),
-    % Module globals: the chains' string/format globals, deduplicated.
+        FieldSeparator, OutputSeparator, EndPrintIR0),
+    atomic_list_concat([CommitIR, EndPrintIR0], '\n', EndPrintIR),
+    % Module globals: the chains' string/format globals + cache path globals.
     sort(ChainGlobals, ChainGlobalsSorted),
-    atomic_list_concat(ChainGlobalsSorted, '\n', ChainGlobalsIR),
+    atomic_list_concat(ChainGlobalsSorted, '\n', ChainGlobalsIR0),
+    atomic_list_concat([ChainGlobalsIR0, CachePathGlobals], '\n', ChainGlobalsIR),
     plawk_i64_end_print_globals(ChainGlobalsIR, RuntimeGlobals),
     format(atom(DriverIR),
 '@.wam_stream_eof = private constant [12 x i8] c"end_of_file\\00"
@@ -3779,6 +3787,10 @@ plawk_program_multipass_driver_ir(
     findall(R, ( member(pass(PassRules), Passes), member(R, PassRules) ), AllRules),
     plawk_multipass_pass_plan(AllRules, Tables, AssocPlan),  % validates surface
     plawk_multipass_table_params(Tables, TableParamsIR, TableArgsIR),
+    % A `BEGIN cache(...)`-declared shared table: load before pass 1, commit
+    % after the last pass. Empty for pure-scalar / non-cache programs.
+    plawk_program_cache_tables(BeginClauses, CacheTriples),
+    plawk_cache_entries(Tables, CacheTriples, CacheEntries, CachePathGlobals),
     findall(GlobalIR-ChainIR,
         ( member(pass(PassRules), Passes),
           plawk_multipass_pass_plan(PassRules, Tables, PassPlan),
@@ -3800,14 +3812,16 @@ plawk_program_multipass_driver_ir(
         CallLines),
     atomic_list_concat(CallLines, '\n', CallsIR),
     plawk_output_separator(BeginClauses, OutputSeparator),
-    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_assoc_entry_setup_ir(AssocPlan, CacheEntries, EntrySetupIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
     sort(ChainGlobals, ChainGlobalsSorted),
-    atomic_list_concat(ChainGlobalsSorted, '\n', ChainGlobalsIR),
+    atomic_list_concat(ChainGlobalsSorted, '\n', ChainGlobalsIR0),
+    atomic_list_concat([ChainGlobalsIR0, CachePathGlobals], '\n', ChainGlobalsIR),
     plawk_i64_end_print_globals(ChainGlobalsIR, RuntimeGlobals),
+    plawk_cache_commit_lines(CacheEntries, CommitIR),
     phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
-    atomic_list_concat(FreeLines, '\n', FreeIR),
+    atomic_list_concat([CommitIR | FreeLines], '\n', FreeIR),
     format(atom(DriverIR),
 '@.wam_stream_eof = private constant [12 x i8] c"end_of_file\\00"
 ~w

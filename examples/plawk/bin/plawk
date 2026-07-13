@@ -232,6 +232,10 @@ plawk_program_uses_lmdb_cache(program(BeginClauses, _, _)) :-
     member(begin(Actions), BeginClauses),
     member(cache_table(_Name, _Path, lmdb), Actions),
     !.
+plawk_program_uses_lmdb_cache(program_passes(BeginClauses, _, _)) :-
+    member(begin(Actions), BeginClauses),
+    member(cache_table(_Name, _Path, lmdb), Actions),
+    !.
 
 % The C LMDB runtime ships beside wam_llvm_target.pl.
 lmdb_c_runtime_file(CFile) :-
