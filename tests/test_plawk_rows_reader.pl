@@ -52,6 +52,15 @@ test(rows_single_col, [condition(clang_available)]) :-
     assertion(S == ["k1", "k2"]),
     !.
 
+% Arithmetic over positional columns, in f64: field2 / field3 per row.
+% Over "a 10 4" / "b 9 2": 10/4 = 2.5, 9/2 = 4.5.
+test(rows_column_arith, [condition(clang_available)]) :-
+    wdir(Dir),
+    Src = "pass { t[$1] = $0 }\npass rows of t as r { print r[1], r[2] / r[3] }\n",
+    run_sorted(Dir, 'rca', Src, "a 10 4\nb 9 2\n", S),
+    assertion(S == ["a 2.5", "b 4.5"]),
+    !.
+
 :- end_tests(plawk_rows_reader).
 
 % --- helpers ---------------------------------------------------------------

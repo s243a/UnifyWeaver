@@ -79,6 +79,29 @@ test(records_unknown_column_unsupported, [condition(clang_available)]) :-
     cli([build, Prog, '-o', Bin], 3),
     !.
 
+% Arithmetic over a named column, evaluated in f64 and printed with %g:
+% `r["amount"] * 2` doubles the (last) amount per key. a=10,20 -> a's row
+% amount 20 -> 40; b=5 -> 10.
+test(records_column_arith, [condition(clang_available)]) :-
+    rdir(Dir),
+    Src = "BEGIN cache(\"$STORE\") { declare orders(cust str, amount i64) }\n\c
+           pass { orders[$1] = $0 }\n\c
+           pass records of orders as r { print r[\"cust\"], r[\"amount\"] * 2 }\n",
+    run_sorted(Dir, 'rar', Src, "a 10\nb 5\na 20\n", S),
+    assertion(S == ["a 40", "b 10"]),
+    !.
+
+% Fractional column arithmetic (the surface `/` is integer, so the print
+% expression is evaluated in f64): `r["amount"] / 4`.
+test(records_column_fraction, [condition(clang_available)]) :-
+    rdir(Dir),
+    Src = "BEGIN cache(\"$STORE\") { declare orders(cust str, amount i64) }\n\c
+           pass { orders[$1] = $0 }\n\c
+           pass records of orders as r { print r[\"cust\"], r[\"amount\"] / 4 }\n",
+    run_sorted(Dir, 'rfr', Src, "a 10\nb 6\n", S),
+    assertion(S == ["a 2.5", "b 1.5"]),
+    !.
+
 :- end_tests(plawk_records_reader).
 
 % --- helpers ---------------------------------------------------------------

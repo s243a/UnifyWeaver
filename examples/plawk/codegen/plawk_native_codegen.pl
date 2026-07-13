@@ -3943,14 +3943,26 @@ plawk_multipass_pass_fn(Index, pass_records(var(Var), var(Table), Body), Tables,
     Body = [print(PrintFields)],
     PrintFields = [_ | _],
     memberchk(cache_schema(Table, Columns), Schemas),
-    maplist(plawk_records_field_index(Var, Columns), PrintFields, ColIndexes),
+    maplist(plawk_records_field_plan(Var, Columns), PrintFields, FieldPlans),
     nth0(TableIndex, Tables, Table),
-    plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, ColIndexes,
+    plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, FieldPlans,
         FieldSep, OutputSep, FnIR).
 
-% Resolve a `records of` print field VAR["col"] to the column's 1-based
-% position in the schema. Name-only: a non-string / non-VAR field fails.
-plawk_records_field_index(Var, Columns, assoc(var(Var), string(Col)), Index) :-
+% Resolve a `records of` print field to a plan: a plain column VAR["col"] ->
+% col(Index) (its 1-based schema position, printed as text), or an arithmetic
+% expression over columns/constants -> arith(F64Op, L, R) (evaluated in f64,
+% printed with %g -- the surface `/` is integer). Name-only operands.
+plawk_records_field_plan(Var, Columns, assoc(var(Var), string(Col)), col(Index)) :-
+    plawk_records_col_index(Columns, Col, Index).
+plawk_records_field_plan(Var, Columns, Expr, arith(F64Op, LPlan, RPlan)) :-
+    Expr =.. [Op, L, R],
+    plawk_i64_op_f64(Op, F64Op),
+    plawk_records_operand(Var, Columns, L, LPlan),
+    plawk_records_operand(Var, Columns, R, RPlan).
+plawk_records_operand(Var, Columns, assoc(var(Var), string(Col)), col(Index)) :-
+    plawk_records_col_index(Columns, Col, Index).
+plawk_records_operand(_Var, _Columns, int(V), aint(V)) :- integer(V).
+plawk_records_col_index(Columns, Col, Index) :-
     atom_string(ColAtom, Col),
     nth1(Index, Columns, col(ColAtom, _Type)).
 % The positional row reader: iterate TABLE's rows, print columns addressed
@@ -3961,15 +3973,22 @@ plawk_multipass_pass_fn(Index, pass_rows(var(Var), var(Table), Body), Tables,
         _StrArrays, _Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, '') :-
     Body = [print(PrintFields)],
     PrintFields = [_ | _],
-    maplist(plawk_rows_field_index(Var), PrintFields, ColIndexes),
+    maplist(plawk_rows_field_plan(Var), PrintFields, FieldPlans),
     nth0(TableIndex, Tables, Table),
-    plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, ColIndexes,
+    plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, FieldPlans,
         FieldSep, OutputSep, FnIR).
 
-% A `rows of` print field VAR[N] is the row's Nth field (1-indexed).
-% Positional only: a string / non-VAR field fails (that is `records of`).
-plawk_rows_field_index(Var, assoc(var(Var), int(N)), N) :-
+% A `rows of` print field: a plain position VAR[N] -> col(N), or arithmetic
+% over positions/constants -> arith(...), evaluated in f64. Positional only.
+plawk_rows_field_plan(Var, assoc(var(Var), int(N)), col(N)) :-
     integer(N), N > 0.
+plawk_rows_field_plan(Var, Expr, arith(F64Op, LPlan, RPlan)) :-
+    Expr =.. [Op, L, R],
+    plawk_i64_op_f64(Op, F64Op),
+    plawk_rows_operand(Var, L, LPlan),
+    plawk_rows_operand(Var, R, RPlan).
+plawk_rows_operand(Var, assoc(var(Var), int(N)), col(N)) :- integer(N), N > 0.
+plawk_rows_operand(_Var, int(V), aint(V)) :- integer(V).
 
 % Over-reader print fields (v1): the loop key, or a lookup of the iterated
 % table keyed by it. String literals / other tables are follow-ons.
@@ -4057,38 +4076,68 @@ rec_after:
 }
 ', [Index, TableParamsIR, TableIndex, TableIndex, ColIR]).
 
-%% plawk_records_col_lines(+ColIndexes, +FieldSep, +OutputSep, +PrintIndex)//
-%  Per-column print for the named row reader: a separator before each column
-%  after the first, then extract field <ColIndex> of the row (%rec_row_v) and
-%  print its text (%.*s).
+%% plawk_records_col_lines(+FieldPlans, +FieldSep, +OutputSep, +PrintIndex)//
+%  Per-field print for the row readers: a separator before each field after
+%  the first, then either a plain column col(Index) -- extract field Index of
+%  the row (%rec_row_v) and print its text (%.*s) -- or an arithmetic
+%  expression arith(F64Op, L, R) over columns/constants, evaluated in f64 (a
+%  column via @wam_atom_field_f64_value, a constant via sitofp) and printed
+%  with %g.
 plawk_records_col_lines([], _FieldSep, _OutputSep, _PrintIndex) --> [].
-plawk_records_col_lines([ColIndex | Rest], FieldSep, OutputSep, PrintIndex) -->
+plawk_records_col_lines([Plan | Rest], FieldSep, OutputSep, PrintIndex) -->
     { ( PrintIndex =:= 0
       ->  SepLines = []
       ;   format(atom(SepLine),
               '  %rec_sep~w = call i32 @putchar(i32 ~w)', [PrintIndex, OutputSep]),
           SepLines = [SepLine]
       ),
-      format(atom(Slice),
-          '  %rec_f~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %rec_row_v, i64 ~w, i8 ~w)',
-          [PrintIndex, ColIndex, FieldSep]),
-      format(atom(Ptr), '  %rec_f~w_ptr = extractvalue %WamSlice %rec_f~w_slice, 0',
-          [PrintIndex, PrintIndex]),
-      format(atom(Len), '  %rec_f~w_len = extractvalue %WamSlice %rec_f~w_slice, 1',
-          [PrintIndex, PrintIndex]),
-      format(atom(Lenw), '  %rec_f~w_lenw = trunc i64 %rec_f~w_len to i32',
-          [PrintIndex, PrintIndex]),
-      format(atom(Fmt),
-          '  %rec_f~w_fmt = getelementptr [5 x i8], [5 x i8]* @.plawk_surface_print_slice, i32 0, i32 0',
-          [PrintIndex]),
-      format(atom(Pr),
-          '  %rec_f~w_pr = call i32 (i8*, ...) @printf(i8* %rec_f~w_fmt, i32 %rec_f~w_lenw, i8* %rec_f~w_ptr)',
-          [PrintIndex, PrintIndex, PrintIndex, PrintIndex]),
-      append([SepLines, [Slice, Ptr, Len, Lenw, Fmt, Pr]], Lines),
+      plawk_records_field_lines(Plan, PrintIndex, FieldSep, FieldLines),
+      append([SepLines, FieldLines], Lines),
       NextPrintIndex is PrintIndex + 1
     },
     plawk_emit_lines(Lines),
     plawk_records_col_lines(Rest, FieldSep, OutputSep, NextPrintIndex).
+
+% A plain column: extract its slice from the row and print as text.
+plawk_records_field_lines(col(ColIndex), PrintIndex, FieldSep, Lines) :-
+    format(atom(Slice),
+        '  %rec_f~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %rec_row_v, i64 ~w, i8 ~w)',
+        [PrintIndex, ColIndex, FieldSep]),
+    format(atom(Ptr), '  %rec_f~w_ptr = extractvalue %WamSlice %rec_f~w_slice, 0',
+        [PrintIndex, PrintIndex]),
+    format(atom(Len), '  %rec_f~w_len = extractvalue %WamSlice %rec_f~w_slice, 1',
+        [PrintIndex, PrintIndex]),
+    format(atom(Lenw), '  %rec_f~w_lenw = trunc i64 %rec_f~w_len to i32',
+        [PrintIndex, PrintIndex]),
+    format(atom(Fmt),
+        '  %rec_f~w_fmt = getelementptr [5 x i8], [5 x i8]* @.plawk_surface_print_slice, i32 0, i32 0',
+        [PrintIndex]),
+    format(atom(Pr),
+        '  %rec_f~w_pr = call i32 (i8*, ...) @printf(i8* %rec_f~w_fmt, i32 %rec_f~w_lenw, i8* %rec_f~w_ptr)',
+        [PrintIndex, PrintIndex, PrintIndex, PrintIndex]),
+    Lines = [Slice, Ptr, Len, Lenw, Fmt, Pr].
+% Arithmetic over columns, in f64, printed with %g.
+plawk_records_field_lines(arith(F64Op, LPlan, RPlan), PrintIndex, FieldSep, Lines) :-
+    format(atom(B), 'rec_f~w', [PrintIndex]),
+    plawk_records_operand_lines(LPlan, B, l, FieldSep, LVar, LLines),
+    plawk_records_operand_lines(RPlan, B, r, FieldSep, RVar, RLines),
+    format(atom(OpL), '  %~w_res = ~w double ~w, ~w', [B, F64Op, LVar, RVar]),
+    format(atom(FmtL),
+        '  %~w_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
+        [B]),
+    format(atom(PrL),
+        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, double %~w_res)', [B, B, B]),
+    append([LLines, RLines, [OpL, FmtL, PrL]], Lines).
+
+% A row-arithmetic operand as a double: a column read as f64, or a constant.
+plawk_records_operand_lines(col(ColIndex), B, Slot, FieldSep, ValVar, [Line]) :-
+    format(atom(ValVar), '%~w_~w', [B, Slot]),
+    format(atom(Line),
+        '  ~w = call double @wam_atom_field_f64_value(%Value %rec_row_v, i64 ~w, i8 ~w)',
+        [ValVar, ColIndex, FieldSep]).
+plawk_records_operand_lines(aint(V), B, Slot, _FieldSep, ValVar, [Line]) :-
+    format(atom(ValVar), '%~w_~w', [B, Slot]),
+    format(atom(Line), '  ~w = sitofp i64 ~w to double', [ValVar, V]).
 
 %% plawk_multipass_pass_fn_ir(+Index, +RecordIR, -IR)
 %  One pass as a self-contained function: open the shared input path, loop
