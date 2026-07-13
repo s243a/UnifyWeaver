@@ -623,6 +623,32 @@ fn test_atom_text_ops() {
 }
 
 #[test]
+fn test_term_variables_direct() {
+    let term = Value::Str(
+        "outer/3".to_string(),
+        vec![
+            ub("X"),
+            Value::Str("inner/3".to_string(), vec![ub("Y"), ub("X"), ub("Z")]),
+            Value::List(vec![ub("Z"), ub("Y")]),
+        ],
+    );
+    let (ok, vm) = call2("term_variables/2", term, ub("Vars"));
+    assert!(ok);
+    assert_eq!(
+        read_var(&vm, "Vars"),
+        Value::List(vec![ub("X"), ub("Y"), ub("Z")]),
+    );
+    let (ground_ok, ground_vm) = call2(
+        "term_variables/2",
+        Value::Str("ground/2".to_string(), vec![a("x"), i(1)]),
+        ub("Vars"),
+    );
+    assert!(ground_ok);
+    assert_eq!(read_var(&ground_vm, "Vars"), Value::List(vec![]));
+    assert!(!call2("term_variables/2", ub("X"), Value::List(vec![])).0);
+}
+
+#[test]
 fn test_ground() {
     assert!(call1("ground/1", a("x")).0);
     assert!(call1("ground/1", Value::List(vec![i(1), a("b")])).0);

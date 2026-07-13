@@ -1624,6 +1624,13 @@ compile_execute_term_builtin_to_rust(Code) :-
             "assertz/1" | "asserta/1" => { self.execute_assert_builtin(op) }
             "retractall/1" => { self.execute_retractall_builtin() }
             "predicate_property/2" => { self.execute_predicate_property_builtin() }
+            "term_variables/2" => {
+                let term = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let variables = self.variables_from_term(&term);
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.unify(&output, &variables) { self.pc += 1; true }
+                else { false }
+            }
             _ => false,
         }
     }
