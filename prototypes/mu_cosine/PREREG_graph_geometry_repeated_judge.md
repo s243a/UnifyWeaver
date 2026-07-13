@@ -223,7 +223,7 @@ every primary lower bound must exceed zero.  Secondary requirements are:
 
 - posterior calibration/coverage and Mahalanobis diagnostics do not worsen;
 - decision log-loss and margin-gated AURC degradation are each at most `.01`;
-- ECE uses ten fixed equal-width bins and AURC uses component bootstrap intervals;
+- ECE uses ten fixed equal-width bins and AURC uses prompt-block bootstrap intervals;
 - graph/Nomic source correlations and same-split ablations are reported;
 - topology benefit exceeds derangement/hard negatives;
 - statistical and numerical loading remain below frozen report-only limits.
@@ -241,20 +241,31 @@ whitened coordinates,
 
 ```text
 C_safe = (1-s_safe) I + s_safe C_hat,
-R_safe = (I_N tensor L_B)
-         [C_safe tensor I_m + delta_95 I_(N*m)]
-         (I_N tensor L_B)^T
-         + I_N tensor W_call/R_eff.
+L = I_N tensor L_B,
+R_safe = L [C_safe tensor I_m
+            + T_call + T_prompt + T_wave
+            + delta_95 I_(N*m)] L^T.
 ```
 
 `C_hat` is the already rho-matched selected `C(K_gamma,rho_max)`, `B=L_B L_B^T` is the persistent channel
-covariance, and `R_eff` is the number of independent calls averaged for that deployed measurement.  Thus
-`s_safe` is distinguishable from the kernel path coefficient `alpha(K,rho)` and call noise is not silently
-absorbed into persistent covariance.
+covariance, and `R_eff` is the number of independent calls averaged for that deployed measurement.  In the
+same whitened coordinates,
+
+```text
+T_call   = L^-1 [I_N tensor (W_call/R_eff)] L^-T,
+R_prompt = sum_q Z_q V_prompt,f(q) Z_q^T,
+T_prompt = L^-1 R_prompt L^-T.
+```
+
+`Z_q` is the frozen request-incidence/channel matrix including the actual repeat-mean aggregation weights;
+it is zero for observations not in request `q`.  `T_wave` is defined analogously from retained wave effects
+and is zero only when their fitted removal plus uncertainty envelope is demonstrated.  Missing calls change
+the recorded `Z_q` weights rather than being replaced by a nominal common `R`.  Thus `s_safe` is
+distinguishable from the kernel path coefficient `alpha(K,rho)`, and neither row-specific call noise nor
+shared prompt/wave covariance is silently absorbed into persistent `B`.
 
 For each inner split, whiten with training-only `B`, form the inner-held repeat-mean residual second moment
-`S_held`, include the correspondingly whitened `W_call/R_eff` term in `T_model`, and record the positive
-missing-mass statistic
+`S_held`, include `T_call`, `T_prompt`, and `T_wave` in `T_model`, and record the positive missing-mass statistic
 
 ```text
 e_delta = max(0, lambda_max(S_held - T_model)).
@@ -267,6 +278,10 @@ loading are distinct and reported separately.  Distance-separated batching addit
 simultaneous 95% upper bound on every proposed cross-batch whitened block norm below
 `epsilon_batch=.025`, the smallest nonzero coupling resolved by the frozen selector grid; neither small
 `alpha`, large distance, nor added loading establishes independence.
+
+The schedule-dependent prompt term need not commute with `C_safe tensor B`.  Dense joint QR remains valid;
+the single-item-kernel eigenmode shortcut is eligible only when the extra terms are block separable or their
+commutation is proved for the deployed schedule.
 
 ## Decision outcomes
 

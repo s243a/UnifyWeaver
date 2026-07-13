@@ -162,3 +162,15 @@ individual components as if the request induced no dependence.
 **Reason:** single-row requests waste tokens; unmodelled shared prompts invalidate component-only uncertainty.
 Stable bounded blocks preserve token amortization, prevent requests crossing held-out boundaries, and make the
 remaining dependence explicit in the power calculation and inference.
+
+## 2026-07-12 — include prompt incidence in the conditioner
+
+**Decision:** construct the fitted prompt covariance from immutable request-incidence matrices and add it,
+along with row-call and retained wave terms, to the safe measurement covariance before dense QR.
+
+**Rejected:** use prompt blocks only for bootstrap clustering while omitting their shared random effect from
+the covariance supplied to the conditioner.
+
+**Reason:** repeated averaging reduces but does not erase a shared prompt effect.  Its schedule-dependent
+incidence term can couple multiple components and may not commute with the selected graph kernel.  Dense QR
+handles the general sum; the eigenmode shortcut requires a separately proved block/commutation condition.
