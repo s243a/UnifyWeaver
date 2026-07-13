@@ -5027,6 +5027,119 @@ entry:
   ret void
 }
 
+; ---- byte-valued cache for STRING (row) values ---------------------------
+; A str-valued table stores an atom-registry id as its i64 value -- that id is
+; process-local, so the plain i64 cache (which stores the id) does not survive
+; across runs. The str variant stores the VALUE BYTES instead: commit resolves
+; each value id to its bytes and writes [count][key:i64 vallen:i64
+; valbytes...]; load reads the bytes and re-interns them to a fresh (valid
+; this-process) id. Keys stay i64 ids (content-stable interning reproduces
+; them; row readers only iterate, and a re-writing pass re-interns the same
+; key). internal linkage, so this is dead-code eliminated unless a str-valued
+; store is used.
+define internal void @wam_cache_commit_str(%WamAssocI64Table* %table, i8* %path) {
+entry:
+  %cbuf = alloca i64
+  %hbuf = alloca [2 x i64]
+  %fd = call i32 @open(i8* %path, i32 577, i32 420)
+  %fd_ok = icmp sge i32 %fd, 0
+  br i1 %fd_ok, label %ccs.writecount, label %ccs.done
+
+ccs.writecount:
+  %count_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 0
+  %count = load i64, i64* %count_slot
+  store i64 %count, i64* %cbuf
+  %cbuf_i8 = bitcast i64* %cbuf to i8*
+  %cw = call i64 @write(i32 %fd, i8* %cbuf_i8, i64 8)
+  br label %ccs.loop
+
+ccs.loop:
+  %cur = phi i64 [ 0, %ccs.writecount ], [ %cur.next, %ccs.wrote ]
+  %slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %table, i64 %cur)
+  %slot.done = icmp slt i64 %slot, 0
+  br i1 %slot.done, label %ccs.close, label %ccs.emit
+
+ccs.emit:
+  %k = call i64 @wam_assoc_i64_key_at(%WamAssocI64Table* %table, i64 %slot)
+  %v = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %table, i64 %slot)
+  %vptr = call i8* @wam_atom_to_string(i64 %v)
+  %vlen = call i64 @strlen(i8* %vptr)
+  %kp = getelementptr [2 x i64], [2 x i64]* %hbuf, i64 0, i64 0
+  store i64 %k, i64* %kp
+  %lp = getelementptr [2 x i64], [2 x i64]* %hbuf, i64 0, i64 1
+  store i64 %vlen, i64* %lp
+  %hbuf_i8 = bitcast [2 x i64]* %hbuf to i8*
+  %hw = call i64 @write(i32 %fd, i8* %hbuf_i8, i64 16)
+  %bw = call i64 @write(i32 %fd, i8* %vptr, i64 %vlen)
+  br label %ccs.wrote
+
+ccs.wrote:
+  %cur.next = add i64 %slot, 1
+  br label %ccs.loop
+
+ccs.close:
+  %crc = call i32 @close(i32 %fd)
+  br label %ccs.done
+
+ccs.done:
+  ret void
+}
+
+define internal void @wam_cache_load_str(%WamAssocI64Table* %table, i8* %path) {
+entry:
+  %cbuf = alloca i64
+  %hbuf = alloca [2 x i64]
+  %fd = call i32 @open(i8* %path, i32 0, i32 0)
+  %fd_ok = icmp sge i32 %fd, 0
+  br i1 %fd_ok, label %cls.readcount, label %cls.done
+
+cls.readcount:
+  %cbuf_i8 = bitcast i64* %cbuf to i8*
+  %cn = call i64 @read(i32 %fd, i8* %cbuf_i8, i64 8)
+  %cn_ok = icmp eq i64 %cn, 8
+  br i1 %cn_ok, label %cls.loop, label %cls.close
+
+cls.loop:
+  %i = phi i64 [ 0, %cls.readcount ], [ %i.next, %cls.store ]
+  %count = load i64, i64* %cbuf
+  %i.done = icmp uge i64 %i, %count
+  br i1 %i.done, label %cls.close, label %cls.readhdr
+
+cls.readhdr:
+  %hbuf_i8 = bitcast [2 x i64]* %hbuf to i8*
+  %hn = call i64 @read(i32 %fd, i8* %hbuf_i8, i64 16)
+  %hn_ok = icmp eq i64 %hn, 16
+  br i1 %hn_ok, label %cls.readbytes, label %cls.close
+
+cls.readbytes:
+  %kp = getelementptr [2 x i64], [2 x i64]* %hbuf, i64 0, i64 0
+  %k = load i64, i64* %kp
+  %lp = getelementptr [2 x i64], [2 x i64]* %hbuf, i64 0, i64 1
+  %vlen = load i64, i64* %lp
+  %vbuf = call i8* @malloc(i64 %vlen)
+  %rn = call i64 @read(i32 %fd, i8* %vbuf, i64 %vlen)
+  %rn_ok = icmp eq i64 %rn, %vlen
+  br i1 %rn_ok, label %cls.store, label %cls.freeclose
+
+cls.store:
+  %vid = call i64 @wam_intern_atom(i8* %vbuf, i64 %vlen)
+  call void @free(i8* %vbuf)
+  %setrc = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %k, i64 %vid)
+  %i.next = add i64 %i, 1
+  br label %cls.loop
+
+cls.freeclose:
+  call void @free(i8* %vbuf)
+  br label %cls.close
+
+cls.close:
+  %crc = call i32 @close(i32 %fd)
+  br label %cls.done
+
+cls.done:
+  ret void
+}
+
 ; POSIX ERE matching over atom-backed text records. Patterns are
 ; compile-time constants; each match site owns a cache slot holding a
 ; lazily regcomp()ed regex_t. The regex_t is malloc''d at 512 bytes,
