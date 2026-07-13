@@ -649,6 +649,49 @@ fn test_term_variables_direct() {
 }
 
 #[test]
+fn test_numbervars_direct() {
+    let term = Value::Str(
+        "outer/3".to_string(),
+        vec![
+            ub("X"),
+            Value::Str("inner/2".to_string(), vec![ub("Y"), ub("X")]),
+            ub("Z"),
+        ],
+    );
+    let (ok, vm) = call3("numbervars/3", term, i(3), ub("End"));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "X"), Value::Str("$VAR".to_string(), vec![i(3)]));
+    assert_eq!(read_var(&vm, "Y"), Value::Str("$VAR".to_string(), vec![i(4)]));
+    assert_eq!(read_var(&vm, "Z"), Value::Str("$VAR".to_string(), vec![i(5)]));
+    assert_eq!(read_var(&vm, "End"), i(6));
+
+    let (ground_ok, ground_vm) = call3(
+        "numbervars/3",
+        Value::Str("ground/2".to_string(), vec![a("x"), i(1)]),
+        i(7),
+        ub("End"),
+    );
+    assert!(ground_ok);
+    assert_eq!(read_var(&ground_vm, "End"), i(7));
+    assert!(!call3("numbervars/3", ub("X"), ub("Start"), ub("End")).0);
+
+    let (mismatch_ok, mismatch_vm) = call3(
+        "numbervars/3",
+        Value::Str("pair/2".to_string(), vec![ub("X"), ub("Y")]),
+        i(0),
+        i(9),
+    );
+    assert!(!mismatch_ok);
+    assert_eq!(read_var(&mismatch_vm, "X"), ub("X"));
+    assert_eq!(read_var(&mismatch_vm, "Y"), ub("Y"));
+
+    let (overflow_ok, overflow_vm) =
+        call3("numbervars/3", ub("X"), i(i64::MAX), ub("End"));
+    assert!(!overflow_ok);
+    assert_eq!(read_var(&overflow_vm, "X"), ub("X"));
+}
+
+#[test]
 fn test_ground() {
     assert!(call1("ground/1", a("x")).0);
     assert!(call1("ground/1", Value::List(vec![i(1), a("b")])).0);

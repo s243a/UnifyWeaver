@@ -1631,6 +1631,42 @@ compile_execute_term_builtin_to_rust(Code) :-
                 if self.unify(&output, &variables) { self.pc += 1; true }
                 else { false }
             }
+            "numbervars/3" => {
+                let start = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(n)) => n,
+                    _ => return false,
+                };
+                let term = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let variables = match self.variables_from_term(&term) {
+                    Value::List(items) => items,
+                    _ => return false,
+                };
+                let mark = self.trail.len();
+                let mut next_number = start;
+                for variable in variables {
+                    let following = match next_number.checked_add(1) {
+                        Some(n) => n,
+                        None => { self.unwind_trail_to(mark); return false; }
+                    };
+                    let numbered = Value::Str(
+                        "$VAR/1".to_string(),
+                        vec![Value::Integer(next_number)],
+                    );
+                    if !self.unify(&variable, &numbered) {
+                        self.unwind_trail_to(mark);
+                        return false;
+                    }
+                    next_number = following;
+                }
+                let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                if self.unify(&output, &Value::Integer(next_number)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
             _ => false,
         }
     }
