@@ -66,7 +66,8 @@ layout over already collected measurements.
 Repeats are not averaged before variance decomposition.  The analysis reports:
 
 1. within-call D/S covariance and judge-specific sampling variance from repeat deviations;
-2. persistent item/judge covariance from repeat means with the `W_call/R` diagonal correction;
+2. persistent item/judge covariance from repeat means after subtracting the full fitted repeat-mean sampling
+   covariance (`R_call + R_prompt + R_wave`), not only a diagonal `W_call/R` term;
 3. cross-repeat U-statistic covariance;
 4. same-wave covariance after fitted wave-effect removal; and
 5. the same-wave-minus-cross-wave contrast.
@@ -252,29 +253,40 @@ covariance, and `R_eff` is the number of independent calls averaged for that dep
 same whitened coordinates,
 
 ```text
-T_call   = L^-1 [I_N tensor (W_call/R_eff)] L^-T,
+R_call   = sum_t A_t W_call,f(t) A_t^T,
+T_call   = L^-1 R_call L^-T,
 R_prompt = sum_q Z_q V_prompt,f(q) Z_q^T,
 T_prompt = L^-1 R_prompt L^-T.
 ```
 
-`Z_q` is the frozen request-incidence/channel matrix including the actual repeat-mean aggregation weights;
-it is zero for observations not in request `q`.  `T_wave` is defined analogously from retained wave effects
-and is zero only when their fitted removal plus uncertainty envelope is demonstrated.  Missing calls change
-the recorded `Z_q` weights rather than being replaced by a nominal common `R`.  Thus `s_safe` is
+Here `t` indexes an observed row-specific call and `q` an actual family/role/wave prompt request.  `A_t` and
+`Z_q` have shape `(N*m, m_f)`, map the affected family channels into the full observation vector, and contain
+the actual repeat-mean aggregation weights; they are zero for unaffected observations.  `T_wave` is defined
+analogously from retained wave effects and is zero only when their fitted removal plus uncertainty envelope is
+demonstrated.  Missing calls change the recorded `A_t` and `Z_q` weights rather than being replaced by a nominal
+common `R`.  Thus `s_safe` is
 distinguishable from the kernel path coefficient `alpha(K,rho)`, and neither row-specific call noise nor
 shared prompt/wave covariance is silently absorbed into persistent `B`.
 
-For each inner split, whiten with training-only `B`, form the inner-held repeat-mean residual second moment
-`S_held`, include `T_call`, `T_prompt`, and `T_wave` in `T_model`, and record the positive missing-mass statistic
+For each inner split/corpus index `j`, whiten with training-only `B`, form the inner-held repeat-mean residual
+second moment `S_held,j`, include `T_call`, `T_prompt`, and `T_wave` in `T_model,j`, and record
 
 ```text
-e_delta = max(0, lambda_max(S_held - T_model)).
+theta_hat_j = lambda_max(S_held,j - T_model,j).
 ```
 
-`delta_95` is the simultaneous one-sided 95% upper prompt-block-bootstrap bound on the maximum `e_delta` across
-inner splits and required corpora, with the whole mean/covariance/selector refit inside each resample.  If that
-bound is not finite and identified, deployment fails closed.  Statistical `delta_95` and numerical Cholesky
-loading are distinct and reported separately.  Distance-separated batching additionally requires a
+Under exchangeable prompt blocks, refit the whole mean/covariance/selector in every block-bootstrap resample
+and compute
+
+```text
+c_95 = quantile_.95(max_j(theta_hat_j - theta_hat_star_j)),
+delta_95 = max(0, max_j(theta_hat_j + c_95)).
+```
+
+This is the centered simultaneous one-sided missing-mass bound; an uncentered percentile of `theta_hat` is not
+substituted.  If prompt blocks are not exchangeable or the bound is not finite and identified, deployment fails
+closed.  Statistical `delta_95` and numerical Cholesky loading are distinct and reported separately.
+Distance-separated batching additionally requires a
 simultaneous 95% upper bound on every proposed cross-batch whitened block norm below
 `epsilon_batch=.025`, the smallest nonzero coupling resolved by the frozen selector grid; neither small
 `alpha`, large distance, nor added loading establishes independence.
@@ -282,6 +294,12 @@ simultaneous 95% upper bound on every proposed cross-batch whitened block norm b
 The schedule-dependent prompt term need not commute with `C_safe tensor B`.  Dense joint QR remains valid;
 the single-item-kernel eigenmode shortcut is eligible only when the extra terms are block separable or their
 commutation is proved for the deployed schedule.
+
+This campaign's local covariance blocks contain three rows.  Its `delta_95` is not extrapolated to a coherent
+128-item block: omitted spectral mass can grow with block size.  An `N_item=128` conditioner may be tested for
+numerical equivalence against stipulated covariance, but statistical deployment at that scale additionally
+requires an `N=128` full-procedure simulation/validation or an explicit N-aware matrix-concentration/row-sum
+envelope.
 
 ## Decision outcomes
 

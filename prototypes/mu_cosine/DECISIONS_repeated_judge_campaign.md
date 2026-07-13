@@ -174,3 +174,14 @@ the covariance supplied to the conditioner.
 **Reason:** repeated averaging reduces but does not erase a shared prompt effect.  Its schedule-dependent
 incidence term can couple multiple components and may not commute with the selected graph kernel.  Dense QR
 handles the general sum; the eigenmode shortcut requires a separately proved block/commutation condition.
+
+## 2026-07-12 — do not extrapolate a three-row spectral envelope to 128 items
+
+**Decision:** validate the numerical `N_item=128` conditioner against stipulated dense covariance only.  Require
+an N-aware simulation, direct validation, or concentration/row-sum envelope before calling its statistical
+covariance Loewner-safe.
+
+**Rejected:** reuse the three-row campaign's scalar `delta_95` unchanged at 128 items.
+
+**Reason:** coherent missing covariance can accumulate with block size, so local entry/block accuracy does not
+imply a dimension-free spectral bound.
