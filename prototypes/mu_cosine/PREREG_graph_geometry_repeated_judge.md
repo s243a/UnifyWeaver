@@ -41,8 +41,8 @@ selector rejects a requested per-corpus total that cannot preserve those frozen 
 
 ## Repeated-call estimand
 
-For component `g`, row `i`, judge family `f`, independent call wave `r`, and prompt block `p(g)`, the
-conditional residual model is
+For component `g`, row `i`, judge family `f`, independent call wave `r`, and prompt block `p(g)`, the D/S
+conditional residual vector `q_gifr in R^2` follows
 
 ```text
 q_gifr = m(x_gi, f) + u_gif + w_fr + b_f,r,role(i),p(g) + epsilon_gifr.
@@ -60,8 +60,9 @@ components and a single row role.  Prompt-block membership is stable across role
 request-connected dependence clusters remain bounded.  A block and all of its rows remain wholly inside one
 corpus, outer fold, and global inner-fold label; no request crosses an analysis boundary.  The prompt block,
 not an individual component, is the conservative inference/resampling cluster.  Request and block effects are
-refit inside training folds.  The later `N_item=128,M_channel=32` numerical batch is a different conditioning
-layout over already collected measurements.
+integrated as held random effects using covariance fit inside training folds; their realized held values are
+not estimated from training data.  The later `N_item=128,M_channel=32` numerical batch is a different
+conditioning layout over already collected measurements.
 
 Repeats are not averaged before variance decomposition.  The analysis reports:
 
@@ -126,13 +127,19 @@ zoo requires a new preregistration and recalibrated null before outcomes.
 
 ## Component-disjoint fitting contract
 
-Each corpus uses five deterministic outer folds and three inner component folds.  Fold totals differ by at most
-one, and each feasible stratum margin is distributed as evenly as integer counts allow; equal per-cell counts
-inside every fold are not required.  Every row, repeat, and judge from one endpoint component remains in one
-fold.  Endpoint IDs and normalized titles are disjoint across folds.  For every outer-held fold the selector
-also materializes the three inner-fold assignments of its outer-training components, before outcomes exist.
+Each corpus uses five deterministic outer folds and three inner component folds.  **Outer** fold totals differ
+by at most one, and each feasible stratum margin is distributed as evenly as integer counts allow; equal
+per-cell counts inside every fold are not required.  A single stable global inner label keeps prompt requests
+from crossing any nested split.  On the frozen G grid, each leave-one-outer training set's inner totals differ
+by at most two; at `G=160` a 44/42/42 split is the unavoidable integer optimum, so a false at-most-one rule is
+not imposed.  Every row, repeat, and judge from one endpoint component remains in one fold.  Endpoint IDs and
+normalized titles are disjoint across folds.  For every outer-held fold the selector also materializes the
+three inner-fold assignments of its outer-training components, before outcomes exist.
 Prompt blocks are then formed only among components with the same corpus/outer/inner signature, and whole
 prompt blocks—not component rows—are the resampling units for uncertainty intervals.
+Every `(corpus, source_component)` group is also wholly contained in one outer and global inner fold.  Primary
+intervals use prompt blocks; a two-way prompt-block/source-component multiplier sensitivity must also pass,
+unless source-component dependence is proved absent from training-only residual diagnostics.
 All outcome-dependent objects are refit inside the appropriate training components:
 
 - judge calibration and conditionalization;
@@ -146,7 +153,7 @@ All outcome-dependent objects are refit inside the appropriate training componen
 If the graph judge/model is trained on the adjacent-positive/distant-negative curriculum, training is restricted
 to outer-training components and repeated inside each outer fold.  Held components never teach the mean model.
 
-## Frozen full-procedure simulation
+## Frozen synthetic primary-event simulation
 
 The primary sample-size grid per required corpus is
 
@@ -167,11 +174,13 @@ epsilon_gir ~ Normal(0, I_item tensor W_call).
 ```
 
 `w`, `b`, and request-level missingness are generated and refit; uncertainty resamples stable prompt blocks.
-Candidate item covariances are explicit feature Grams.  Frozen scenarios are block null, smooth-mean only,
+The **block null** sets graph-local persistent item coupling to zero while retaining fitted prompt, wave, and
+row-call incidence covariance; it is not full independence of every row in `R`.  Candidate item covariances
+are explicit feature Grams.  Frozen scenarios are block null, smooth-mean only,
 cumulative truth, Nomic truth, convex-mixture truth, and equal-energy derangement at `rho_max=.04,.10,.20`.
 An optional shared-wave scenario is labelled separately.  Nulls preserve component topology, regional mean,
-repeat heteroskedasticity, within-call D/S covariance, missingness, and any wave strata while removing cross-item
-coupling.
+repeat heteroskedasticity, within-call D/S covariance, missingness, and any wave/prompt strata while removing
+only graph-local persistent coupling.
 
 Every null and alternative replicate repeats component splitting, mean/ridge selection, repeat decomposition,
 `W_call`, `B`, kernel/mixture/coupling selection, loading, and endpoint scoring.  Cache only outcome-blind feature
@@ -186,28 +195,37 @@ and at least two of three inner folds are positive.  Ties prefer larger gain, th
 `W_call`, `B`, mean, wave, request, heteroskedasticity, and missingness constants; its content hash is recorded
 before a reported run and changing it requires a new preregistered run.
 
-The finite familywise threshold is the upper-95% null order statistic at one-based rank
+For synthetic sizing, the finite familywise threshold is the upper-95% null order statistic at one-based rank
 
 ```text
 ceil(.95 * (K_null + 1)).
 ```
 
-with strict `observed > threshold` promotion.  Calibration and evaluation null seeds are disjoint.
+with strict `observed > threshold` promotion.  Calibration and evaluation null seeds are disjoint.  This
+synthetic threshold is never transferred to real residuals.  Inside every real outer fold, recalibrate the same
+complete selector from outer-training prompt blocks under a graph-local block null that retains fitted
+mean/call/prompt/wave/missingness/source structure; rerun every nuisance fit and inner selection in each null
+draw, and apply the resulting threshold only to that fold's untouched held blocks.
 
-## Simulation sizing gate
+## Synthetic primary-event sizing gate
 
-The recommended count is the smallest `G` for which, at `rho_max=.10` and `.20`:
+The reported primary-event count is the smallest `G` for which the joint two-corpus simulation, at
+`rho_max=.10` and `.20`, satisfies:
 
-1. independent block-null false deployment does not reject `p<=.05` in a one-sided exact binomial test at 5%,
+1. graph-local block-null false primary promotion does not reject `p<=.05` in a one-sided exact binomial test at 5%,
    and its observed rate is at most 10%;
-2. full deployment-event power is at least 80% for cumulative, Nomic, and mixture truths;
+2. simultaneous residual/posterior primary-event power is at least 80% for cumulative, Nomic, and mixture
+   truths in both corpora;
 3. mean selected outer-held residual NLL gain is positive;
 4. mean harm is nonpositive under block-null and smooth-mean controls;
 5. topology truth beats the equal-energy derangement in at least 80% of replicates; and
 6. the procedure does not pass with an incomplete scenario grid.
 
-If no grid value passes, increase independent components.  Do not reduce confidence, drop a difficult truth,
-or use additional repeats as a substitute for components.
+This is not yet the final campaign `G`: decision calibration, margin-AURC/noninferiority, source-component
+sensitivity, `s_safe/delta_95`, and cross-batch safety are unsimulated secondary gates and therefore fail
+closed in this PR.  A final count requires their own power/feasibility bridge and is at least the primary-event
+count.  If no grid value passes, increase prompt-block/source-component information.  Do not reduce confidence,
+drop a difficult truth, or use additional repeats as a substitute for independent structure.
 
 ## Real-data endpoints and simultaneous inference
 
@@ -220,14 +238,17 @@ d_posterior,g = posterior_NLL_block,g - posterior_NLL_structured,g.
 
 Use a preregistered one-sided prompt-block multiplier/max-statistic construction for simultaneous 95% lower bounds
 across both primary endpoints and every corpus required to pass.  The familywise selector must reject block and
-every primary lower bound must exceed zero.  Secondary requirements are:
+every primary lower bound must exceed zero both before and after the complete `R_safe` adapter (including
+`delta_95` and numerical loading).  Secondary requirements are:
 
 - posterior calibration/coverage and Mahalanobis diagnostics do not worsen;
 - decision log-loss and margin-gated AURC degradation are each at most `.01`;
 - ECE uses ten fixed equal-width bins and AURC uses prompt-block bootstrap intervals;
 - graph/Nomic source correlations and same-split ablations are reported;
 - topology benefit exceeds derangement/hard negatives;
-- statistical and numerical loading remain below frozen report-only limits.
+- the two-way prompt-block/source-component sensitivity also passes;
+- statistical loading is reported, and relative numerical loading
+  `max(load_i / max_j R_jj)` is at most `1e-6`.
 
 JointPosterior is a learned decision comparator; it is not the covariance factorization.  Factored independent
 PoE is retained only as a control.
@@ -248,9 +269,8 @@ R_safe = L [C_safe tensor I_m
             + delta_95 I_(N*m)] L^T.
 ```
 
-`C_hat` is the already rho-matched selected `C(K_gamma,rho_max)`, `B=L_B L_B^T` is the persistent channel
-covariance, and `R_eff` is the number of independent calls averaged for that deployed measurement.  In the
-same whitened coordinates,
+`C_hat` is the already rho-matched selected `C(K_gamma,rho_max)` and `B=L_B L_B^T` is the persistent channel
+covariance.  In the same whitened coordinates,
 
 ```text
 R_call   = sum_t A_t W_call,f(t) A_t^T,
@@ -268,10 +288,13 @@ common `R`.  Thus `s_safe` is
 distinguishable from the kernel path coefficient `alpha(K,rho)`, and neither row-specific call noise nor
 shared prompt/wave covariance is silently absorbed into persistent `B`.
 
-For each inner split/corpus index `j`, whiten with training-only `B`, form the inner-held repeat-mean residual
-second moment `S_held,j`, include `T_call`, `T_prompt`, and `T_wave` in `T_model,j`, and record
+For each inner split/corpus index `j`, stack each held component's three row residuals into a `3m` vector and
+form the equal-component pooled `3m x 3m` second moment `S_held,j`; the block bootstrap resamples whole prompt
+blocks containing those vectors.  Whiten with training-only `B`, include the matching local restrictions of
+`T_call`, `T_prompt`, and `T_wave` in `T_model,j`, and record
 
 ```text
+T_model,j = C_safe,j tensor I_m + T_call,j + T_prompt,j + T_wave,j,
 theta_hat_j = lambda_max(S_held,j - T_model,j).
 ```
 

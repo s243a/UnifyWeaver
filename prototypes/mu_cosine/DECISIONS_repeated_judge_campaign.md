@@ -5,7 +5,7 @@ the conditions under which they may be reconsidered.
 
 ## 2026-07-12 — freeze a no-spend campaign layer before fresh judgments
 
-**Decision:** implement and audit the sampler, scoring schema, repeat estimand, full-procedure simulation, and
+**Decision:** implement and audit the sampler, scoring schema, repeat estimand, synthetic primary-event simulation, and
 decision gates before making any judge call.  A scorer pilot needs a preregistered amendment and is excluded
 from confirmation.
 
@@ -137,8 +137,8 @@ analysis.
 ## 2026-07-12 — freeze the PSD safety adapter completely
 
 **Decision:** use shrinkage multipliers `s_safe in {0,.25,.50,.75,1}`, define missing spectral mass from
-inner-held whitened repeat-mean residual second moments including `W_call/R_eff`, and set the cross-batch
-omission tolerance to `epsilon_batch=.025`.
+inner-held whitened repeat-mean residual second moments including the full fitted call/prompt/wave sampling
+covariance, and set the cross-batch omission tolerance to `epsilon_batch=.025`.
 
 **Rejected:** an unspecified “lower covariance confidence bound,” entrywise lower bounds, or tuning the
 batch-independence tolerance after observing residuals.
@@ -185,3 +185,37 @@ covariance Loewner-safe.
 
 **Reason:** coherent missing covariance can accumulate with block size, so local entry/block accuracy does not
 imply a dimension-free spectral bound.
+
+## 2026-07-12 — distinguish synthetic primary sizing from deployment power
+
+**Decision:** let the synthetic harness report only the smallest joint-two-corpus `G` passing the simultaneous
+residual/posterior primary event.  Keep final campaign `G` and every deployment flag unset until decision-space,
+source-component, spectral-safety, and batching gates receive their own power/feasibility bridge.
+
+**Rejected:** call two Gaussian NLL endpoints a full deployment event or transfer its synthetic null threshold
+to unknown real-data nuisance scale.
+
+**Reason:** calibration, AURC/noninferiority, and spectral safety are meaningful real gates but are not made
+representative merely by inventing a synthetic class-label process.  Real selector nulls are recalibrated from
+outer-training prompt blocks with the complete refit.
+
+## 2026-07-12 — contain and stress-test graph source components
+
+**Decision:** keep each selected graph source component inside one outer/global-inner fold and require a
+two-way prompt-block/source-component multiplier sensitivity in addition to primary prompt-block inference.
+
+**Rejected:** assume endpoint disjointness alone removes every graph-component-level random effect.
+
+**Reason:** prompt blocks capture shared requests, while connected graph components can carry a different
+dependence path.  Fold containment prevents leakage; the two-way sensitivity exposes remaining held dependence.
+
+## 2026-07-12 — retain stable inner labels with the minimax integer balance
+
+**Decision:** freeze one global inner label per component/source group and accept a maximum inner-total spread
+of two in each leave-one-outer training set on the registered G grid.
+
+**Rejected:** independently rebalance inner labels for each outer fold or claim an impossible spread of one.
+
+**Reason:** stable labels keep shared prompts out of train/held crossings.  At `G=160`, five outer folds of 32
+force one leave-one-outer inner allocation to be 44/42/42; changing labels by outer split would break the stable
+prompt-block contract.
