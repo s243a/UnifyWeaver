@@ -55,6 +55,8 @@ self-contained so a single coding agent can pick it up in isolation.
 | EMIT-JVM | Lowered emitter | JVM | L | — |
 | EMIT-KOTLIN ✅ | Lowered emitter | Kotlin | M | done — flat facts/unify (`cursor/emit-kotlin-lowered-f421`) |
 | EMIT-KOTLIN-2 ✅ | Lowered emitter (structures) | Kotlin | M | done — write-mode structures (`cursor/emit-kotlin-structures-f421`) |
+| EMIT-KOTLIN-3 | Multi-clause deterministic | Kotlin | M | T5 chain + T4 all-clauses-inline (no call/execute) |
+| EMIT-KOTLIN-4 | Recursion in lowered bodies | Kotlin | M | call/execute → inter-predicate / recursion |
 | BENCH-LLVM | Effective-distance bench row | LLVM | L | — |
 | BENCH-CPP | Effective-distance bench row | C++ | L | — |
 | BENCH-C | Effective-distance bench row | C | M | — |
@@ -571,6 +573,24 @@ fallback) to the three Tier-D targets. Reference small emitters:
   3. Re-add the declined `parts_supported/1` facts; keep the read-mode path (which already worked) intact.
   4. Add gradle e2e tests asserting lowered output == interpreter output for a structure builder AND a list builder (the regression tests added in EMIT-KOTLIN already assert the *decline* path; convert/extend them to assert the *lowered* path once fixed).
 - **Acceptance:** `swipl -q -g run_tests -t halt tests/test_wam_kotlin_target.pl` passes with structure/list predicates lowering (not declining) and producing bindings identical to `emit_mode(interpreter)`.
+
+### EMIT-KOTLIN-3: Deterministic multi-clause clause selection (Kotlin)
+- **Lever:** Lowered emitters for early scaffolds  **Target:** Kotlin  **Size:** M  **Depends on:** EMIT-KOTLIN-2
+- **Status:** In progress on `cursor/emit-kotlin-multi-clause-f421` (2026-07-12).
+- **Goal:** Extend `wam_kotlin_lowered_emitter.pl` so **deterministic multi-clause** predicates whose bodies contain only unification/builtins (NO `call`/`execute`) lower to native clause selection instead of declining. Mirror Lua's T5 `clause_chain` (first-arg constant dispatch) and T4 `multi_clause_n` (all clauses inline with trail/register restore between attempts).
+- **Boundary (this card):**
+  - **Lowers:** multi-clause facts (`p(a). p(b). p(c).`), first-arg-indexed constant chains (T5), and other multi-clause deterministic bodies without inter-predicate calls (T4).
+  - **Still declines:** any clause with `call`/`execute` (member/append/reverse/fib/ack stay on the interpreter) — see **EMIT-KOTLIN-4**. ITE/soft-cut, cut, aggregates also out of scope.
+- **Native mechanics:** per clause: `snapshotForNative`, try head + body, on failure `restoreFromSnapshot` and try next; return true on first success, false if all fail (T5 unbound A1 returns false so `tryRun` falls back to the interpreter).
+- **Files to touch:** `src/unifyweaver/targets/wam_kotlin_lowered_emitter.pl`, `tests/test_wam_kotlin_target.pl`, `docs/WAM_KOTLIN_STATUS.md`, this card.
+- **Reference:** `wam_lua_lowered_emitter.pl` `build_emission_plan`/`classify_clause_shape`; shared `wam_clause_chain`.
+- **Acceptance:** multi-clause facts + T4/T5 preds LOWER under `emit_mode(functions)` and match `emit_mode(interpreter)` true/false (incl. non-matching); call/execute preds still decline; unit suite + `CONFORMANCE_TARGETS=kotlin,kotlin_functions` stay green.
+
+### EMIT-KOTLIN-4: Lower `call`/`execute` in bodies (recursion / inter-predicate)
+- **Lever:** Lowered emitters for early scaffolds  **Target:** Kotlin  **Size:** M  **Depends on:** EMIT-KOTLIN-3
+- **Goal:** Allow lowered bodies to invoke other predicates (native or interpreter) so recursive/multi-clause programs like member/append/reverse/fib/ack can lower instead of declining.
+- **Out of scope here:** ITE/soft-cut, cut, aggregates (separate cards if needed).
+- **Acceptance:** member/append (or equivalent) LOWER under `emit_mode(functions)` and match interpreter; conformance `kotlin_functions` remains green.
 
 ---
 

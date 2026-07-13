@@ -27,6 +27,10 @@
 :- dynamic kt_fib/2.
 :- dynamic kt_fib_ok/0.
 :- dynamic kt_fib_bad/0.
+:- dynamic kt3_color/1.
+:- dynamic kt3_pair/2.
+:- dynamic kt3_t4/2.
+:- dynamic kt3_mem/2.
 
 :- begin_tests(wam_kotlin_target).
 
@@ -525,6 +529,149 @@ test(y_env_recursion_fib, [condition(gradle_available), nondet]) :-
             retractall(user:kt_fib_ok),
             retractall(user:kt_fib_bad)
         )
+    ).
+
+% EMIT-KOTLIN-3: deterministic multi-clause (no call/execute) lowers;
+% recursion still declines.
+test(functions_mode_multi_clause_partition, [nondet]) :-
+    setup_call_cleanup(
+        (   retractall(user:kt3_color(_)),
+            retractall(user:kt3_pair(_, _)),
+            retractall(user:kt3_t4(_, _)),
+            retractall(user:kt3_mem(_, _)),
+            assertz(user:kt3_color(a)),
+            assertz(user:kt3_color(b)),
+            assertz(user:kt3_color(c)),
+            assertz(user:kt3_pair(a, 1)),
+            assertz(user:kt3_pair(b, 2)),
+            assertz(user:kt3_t4(_, a)),
+            assertz(user:kt3_t4(_, b)),
+            assertz(user:(kt3_mem(X, [X|_]))),
+            assertz(user:(kt3_mem(X, [_|T]) :- kt3_mem(X, T)))
+        ),
+        (   wam_kotlin_partition_predicates(functions,
+                [user:kt3_color/1, user:kt3_pair/2, user:kt3_t4/2, user:kt3_mem/2],
+                Native, Wam, Failed),
+            assertion(Failed == []),
+            assertion(memberchk(native(kt3_color/1, _), Native)),
+            assertion(memberchk(native(kt3_pair/2, _), Native)),
+            assertion(memberchk(native(kt3_t4/2, _), Native)),
+            assertion(\+ memberchk(native(kt3_mem/2, _), Native)),
+            assertion(memberchk(wam(kt3_mem/2, _), Wam)),
+            memberchk(native(kt3_color/1, lowered(_, _, ColorCode)), Native),
+            assertion(has_substring(ColorCode, 'T5 first-argument dispatch')),
+            assertion(has_substring(ColorCode, 'Value.Atom("a")')),
+            memberchk(native(kt3_t4/2, lowered(_, _, T4Code)), Native),
+            assertion(has_substring(T4Code, 'T4 all-clauses inline')),
+            assertion(has_substring(T4Code, 'snapshotForNative')),
+            assertion(has_substring(T4Code, 'restoreFromSnapshot'))
+        ),
+        (   retractall(user:kt3_color(_)),
+            retractall(user:kt3_pair(_, _)),
+            retractall(user:kt3_t4(_, _)),
+            retractall(user:kt3_mem(_, _))
+        )
+    ).
+
+% EMIT-KOTLIN-3: multi-clause facts (T5) — functions == interpreter.
+test(functions_mode_gradle_multi_clause_facts, [condition(gradle_available), nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_multi_clause_facts',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    setup_call_cleanup(
+        (   retractall(user:kt3_color(_)),
+            assertz(user:kt3_color(a)),
+            assertz(user:kt3_color(b)),
+            assertz(user:kt3_color(c))
+        ),
+        (   wam_kotlin_target:write_wam_kotlin_project(
+                [user:kt3_color/1],
+                [emit_mode(interpreter), conformance_main(true)], TmpDir),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt3_color/1 a'], IA, _E1, S1),
+            assertion(S1 == exit(0)),
+            normalize_space(string(IATrim), IA),
+            assertion(IATrim == "true"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt3_color/1 z'], IZ, _E2, S2),
+            assertion(S2 == exit(0)),
+            normalize_space(string(IZTrim), IZ),
+            assertion(IZTrim == "false"),
+            wam_kotlin_target:write_wam_kotlin_project(
+                [user:kt3_color/1],
+                [emit_mode(functions), conformance_main(true)], TmpDir),
+            read_file_to_string(
+                'output/test_wam_kotlin_multi_clause_facts/src/main/kotlin/generated/wam/Main.kt',
+                Main, []),
+            assertion(has_substring(Main, 'fun lowered_kt3_color_1')),
+            assertion(has_substring(Main, 'registerNative("kt3_color/1"')),
+            assertion(has_substring(Main, 'T5 first-argument dispatch')),
+            run_gradle(TmpDir, ['-q', 'compileKotlin'], _CO, _CE, CS),
+            assertion(CS == exit(0)),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt3_color/1 a'], FA, _E3, S3),
+            assertion(S3 == exit(0)),
+            normalize_space(string(FATrim), FA),
+            assertion(FATrim == IATrim),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt3_color/1 z'], FZ, _E4, S4),
+            assertion(S4 == exit(0)),
+            normalize_space(string(FZTrim), FZ),
+            assertion(FZTrim == IZTrim),
+            % Unbound A1: T5 returns false → tryRun falls back to interpreter.
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt3_color/1'], FU, _E5, S5),
+            assertion(S5 == exit(0)),
+            normalize_space(string(FUTrim), FU),
+            assertion(FUTrim == "true")
+        ),
+        retractall(user:kt3_color(_))
+    ).
+
+% EMIT-KOTLIN-3: T4 all-clauses-inline (non-first-arg-constant chain).
+test(functions_mode_gradle_multi_clause_t4, [condition(gradle_available), nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_multi_clause_t4',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    setup_call_cleanup(
+        (   retractall(user:kt3_t4(_, _)),
+            assertz(user:kt3_t4(_, a)),
+            assertz(user:kt3_t4(_, b))
+        ),
+        (   wam_kotlin_target:write_wam_kotlin_project(
+                [user:kt3_t4/2],
+                [emit_mode(interpreter), conformance_main(true)], TmpDir),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt3_t4/2 x a'], IA, _E1, S1),
+            assertion(S1 == exit(0)),
+            normalize_space(string(IATrim), IA),
+            assertion(IATrim == "true"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt3_t4/2 x b'], IB, _E2, S2),
+            assertion(S2 == exit(0)),
+            normalize_space(string(IBTrim), IB),
+            assertion(IBTrim == "true"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt3_t4/2 x z'], IZ, _E3, S3),
+            assertion(S3 == exit(0)),
+            normalize_space(string(IZTrim), IZ),
+            assertion(IZTrim == "false"),
+            wam_kotlin_target:write_wam_kotlin_project(
+                [user:kt3_t4/2],
+                [emit_mode(functions), conformance_main(true)], TmpDir),
+            read_file_to_string(
+                'output/test_wam_kotlin_multi_clause_t4/src/main/kotlin/generated/wam/Main.kt',
+                Main, []),
+            assertion(has_substring(Main, 'T4 all-clauses inline')),
+            assertion(has_substring(Main, 'registerNative("kt3_t4/2"')),
+            run_gradle(TmpDir, ['-q', 'compileKotlin'], _CO, _CE, CS),
+            assertion(CS == exit(0)),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt3_t4/2 x a'], FA, _E4, S4),
+            assertion(S4 == exit(0)),
+            normalize_space(string(FATrim), FA),
+            assertion(FATrim == IATrim),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt3_t4/2 x b'], FB, _E5, S5),
+            assertion(S5 == exit(0)),
+            normalize_space(string(FBTrim), FB),
+            assertion(FBTrim == IBTrim),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt3_t4/2 x z'], FZ, _E6, S6),
+            assertion(S6 == exit(0)),
+            normalize_space(string(FZTrim), FZ),
+            assertion(FZTrim == IZTrim)
+        ),
+        retractall(user:kt3_t4(_, _))
     ).
 
 :- end_tests(wam_kotlin_target).
