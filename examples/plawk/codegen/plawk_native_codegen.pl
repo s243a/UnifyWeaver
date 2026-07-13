@@ -3691,6 +3691,7 @@ plawk_program_multipass_driver_ir(
     DriverIR
 ) :-
     Passes = [_, _ | _],
+    \+ member(pass_over(_, _, _), Passes),   % over-readers use the no-END driver
     plawk_record_descriptor(BeginClauses, FieldSeparator),
     integer(FieldSeparator),                 % text mode only (v1)
     plawk_output_separator(BeginClauses, OutputSeparator),
@@ -3791,27 +3792,25 @@ plawk_program_multipass_driver_ir(
     % after the last pass. Empty for pure-scalar / non-cache programs.
     plawk_program_cache_tables(BeginClauses, CacheTriples),
     plawk_cache_entries(Tables, CacheTriples, CacheEntries, CachePathGlobals),
-    findall(GlobalIR-ChainIR,
-        ( member(pass(PassRules), Passes),
-          plawk_multipass_pass_plan(PassRules, Tables, PassPlan),
-          plawk_assoc_rule_controls(PassPlan, PassControls),
-          plawk_assoc_break_close_ir(PassControls, ''),
-          plawk_assoc_rule_chain_ir(PassPlan, FieldSeparator, GlobalIR, ChainIR)
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    % One function per pass, in order -- dispatching on the pass shape:
+    % an input-scanning `pass { }` or a table-iterating `pass over T as V`.
+    % nth0 enumerates in order, so FnIRs/GlobalIRs line up with the call
+    % sequence by index.
+    findall(FnIR-GlobalIR,
+        ( nth0(I, Passes, Pass),
+          plawk_multipass_pass_fn(I, Pass, Tables, TableParamsIR,
+              FieldSeparator, OutputSeparator, FnIR, GlobalIR)
         ),
-        PassPairs),
-    pairs_keys_values(PassPairs, ChainGlobals, Chains),
-    findall(FnIR,
-        ( nth0(I, Chains, Chain),
-          plawk_multipass_pass_fn_ir(I, TableParamsIR, Chain, FnIR) ),
-        FnIRs),
+        FnPairs),
+    pairs_keys_values(FnPairs, FnIRs, ChainGlobals),
     atomic_list_concat(FnIRs, '\n', PassFnsIR),
     findall(CallLine,
-        ( nth0(I, Chains, _),
+        ( nth0(I, Passes, _),
           format(atom(CallLine),
               '  call void @plawk_pass_~w(%Value %mp_path~w)', [I, TableArgsIR]) ),
         CallLines),
     atomic_list_concat(CallLines, '\n', CallsIR),
-    plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_assoc_entry_setup_ir(AssocPlan, CacheEntries, EntrySetupIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
@@ -3853,11 +3852,14 @@ get_path:
 %% plawk_passes_tables(+Passes, -Tables)
 %  The assoc tables a multi-pass program shares (v1: zero or one). Discovered
 %  from the passes' actions: a counted key `arr[$k]++` or a print lookup
-%  `arr[$k]`. A pure-scalar program (e.g. `pass { total += $2 }`) has none.
+%  `arr[$k]`; and from an `over TABLE` reader (phase 4), which names the table
+%  it iterates. A pure-scalar program (e.g. `pass { total += $2 }`) has none.
 plawk_passes_tables(Passes, Tables) :-
     findall(Name,
         ( member(pass(Rules), Passes), member(rule(_, Actions), Rules),
-          member(Action, Actions), plawk_action_table_name(Action, Name) ),
+          member(Action, Actions), plawk_action_table_name(Action, Name)
+        ; member(pass_over(_Var, var(Name), _Body), Passes)
+        ),
         Names0),
     sort(Names0, Tables),
     length(Tables, N),
@@ -3886,6 +3888,75 @@ plawk_multipass_pass_plan(Rules, Tables, assoc_plan(Tables, PlannedRules)) :-
     plawk_assoc_specs_posarray_arrays(RuleSpecs, PosArrays),
     phrase(plawk_assoc_planned_rules(RuleSpecs, Tables, StrArrays, PosArrays, 0),
         PlannedRules).
+
+%% plawk_multipass_pass_fn(+Index, +Pass, +Tables, +TableParamsIR,
+%%     +FieldSep, +OutputSep, -FnIR, -GlobalIR)
+%  Emit one pass function, dispatching on the pass shape. An input-scanning
+%  `pass { }` compiles its rule chain and scans the input per record; an
+%  `over TABLE as VAR` reader (phase 4) iterates the table's entries instead
+%  of the input. GlobalIR carries any module globals the pass's body needs
+%  (rule chains emit format/string globals; the over reader emits none in
+%  v1 -- key + lookup print fields use the shared runtime constants).
+plawk_multipass_pass_fn(Index, pass(PassRules), Tables, TableParamsIR,
+        FieldSep, _OutputSep, FnIR, GlobalIR) :-
+    plawk_multipass_pass_plan(PassRules, Tables, PassPlan),
+    plawk_assoc_rule_controls(PassPlan, PassControls),
+    plawk_assoc_break_close_ir(PassControls, ''),   % no break/next in v1
+    plawk_assoc_rule_chain_ir(PassPlan, FieldSep, GlobalIR, ChainIR),
+    plawk_multipass_pass_fn_ir(Index, TableParamsIR, ChainIR, FnIR).
+plawk_multipass_pass_fn(Index, pass_over(var(Var), var(Table), Body), Tables,
+        TableParamsIR, FieldSep, OutputSep, FnIR, '') :-
+    Body = [print(PrintFields)],
+    PrintFields = [_ | _],
+    maplist(plawk_over_print_field_ok(Var), PrintFields),
+    AssocPlan = assoc_plan(Tables, []),
+    plawk_multipass_over_fn_ir(Index, TableParamsIR, Var, Table, PrintFields,
+        AssocPlan, FieldSep, OutputSep, FnIR).
+
+% Over-reader print fields (v1): the loop key, or a lookup of the iterated
+% table keyed by it. String literals / other tables are follow-ons.
+plawk_over_print_field_ok(Var, var(Var)).
+plawk_over_print_field_ok(Var, assoc(var(_Table), var(Var))).
+
+%% plawk_multipass_over_fn_ir(+Index, +TableParamsIR, +Var, +Table,
+%%     +PrintFields, +AssocPlan, +FieldSep, +OutputSep, -IR)
+%  An `over TABLE as VAR` pass as a self-contained void function: it does
+%  NOT open the input -- it walks the shared table's occupied slots
+%  (@wam_assoc_i64_iter_next) and prints each entry's fields (the same body
+%  emitter the END for-in uses, so key text / TABLE[VAR] value / separators
+%  are identical), one line per entry, then returns. The table is freed /
+%  committed by main, not here.
+plawk_multipass_over_fn_ir(Index, TableParamsIR, Var, Table, PrintFields,
+        AssocPlan, FieldSep, OutputSep, IR) :-
+    plawk_assoc_table_index(AssocPlan, Table, TableIndex),
+    phrase(plawk_forin_body_print_lines(PrintFields, Var, Table, TableIndex,
+        AssocPlan, FieldSep, OutputSep, 0), BodyLines),
+    atomic_list_concat(BodyLines, '\n', BodyIR),
+    format(atom(IR),
+'define void @plawk_pass_~w(%Value %mp_path~w) {
+entry:
+  br label %forin_head
+
+forin_head:
+  %forin_idx = phi i64 [0, %entry], [%forin_next_idx, %forin_body_done]
+  %forin_slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_idx)
+  %forin_done = icmp slt i64 %forin_slot, 0
+  br i1 %forin_done, label %forin_after, label %forin_body
+
+forin_body:
+  %forin_key_id = call i64 @wam_assoc_i64_key_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)
+~w
+  %forin_printed_newline = call i32 @putchar(i32 10)
+  br label %forin_body_done
+
+forin_body_done:
+  %forin_next_idx = add i64 %forin_slot, 1
+  br label %forin_head
+
+forin_after:
+  ret void
+}
+', [Index, TableParamsIR, TableIndex, TableIndex, BodyIR]).
 
 %% plawk_multipass_pass_fn_ir(+Index, +RecordIR, -IR)
 %  One pass as a self-contained function: open the shared input path, loop
