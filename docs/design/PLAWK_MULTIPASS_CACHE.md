@@ -546,6 +546,54 @@ table currently rides the i64 lmdb path, i.e. in-run only).
    joined by the field separator so both readers recover the columns.
    Field-wise writes (`r["col"] = …`) remain a follow-on.
 
+### 3.7 Table lifecycle: open-or-create, and selecting an existing table
+
+**`declare` is open-or-create, not create-only.** `declare NAME` /
+`declare NAME(col type, …)` inside `BEGIN cache("path") { … }` (a) always
+builds a fresh in-memory table at startup, (b) if the store file at `"path"`
+**already exists, loads it into that table** — a missing/empty file just
+starts empty — and (c) commits the table back to the path at the end
+(read-modify-write). So opening an existing store is not an error and does
+not clobber on open: its contents are read in (this is the durability
+mechanism), and the final commit overwrites the file with the merged result.
+
+Two properties follow that are worth stating plainly, because they bound what
+a "select an existing table" surface would mean:
+
+- **The schema is source-only; it is not (yet) recorded in the store.** The
+  column names/types come from `declare(cols)` in the program text. A store
+  written by one program and read by another must repeat the same
+  `declare(cols)`; nothing validates the stored bytes against it, so a
+  mismatched re-declare silently mis-reads field offsets.
+- **One store path ≈ one table.** The flat-file (and current byte-valued)
+  format holds a single table's entries; multiple `declare`s in one
+  `cache("path")` block all target the same file and would overwrite each
+  other on commit. Genuine multi-table storage needs the namespace / LMDB
+  named-sub-DB design (§3.5), still deferred.
+
+**Should there be a `select` / `use` statement?** Yes, but it is only
+meaningful once one of the two properties above changes, so it is planned as
+a short sequence rather than a lone keyword:
+
+- **(a) Persist the schema in the store.** Write the column names/types into
+  the store header on commit and read them on load, making a store
+  *self-describing*. Immediately useful on its own: an open can then
+  **validate** that the program's `declare(cols)` matches the stored schema
+  and fail cleanly on mismatch (closing the silent-mis-read hole above).
+- **(b) `use TABLE as r` (the `select`).** A reader that **attaches to an
+  existing store and takes its schema from (a)** — no re-`declare`. This is
+  the "query an existing database" surface the `declare`-everywhere model
+  lacks; today `declare NAME` already *opens* the existing table, so `use`
+  only adds value once the schema no longer has to be restated.
+- **(c) Multiple named tables per store.** With the namespace design (§3.5,
+  LMDB named sub-DBs), a store holds several tables and `use ns.orders`
+  selects among them. This is the point at which `select` becomes load-bearing
+  rather than sugar.
+
+Ordering: (a) is the enabler and closes a correctness gap; (b) is the
+`select`/`use` reader; (c) generalises to many tables. Recorded as phases
+8.7–8.9 in §5.
+
 ## 4. Runtime: the cache ABI (the first build step)
 
 The LLVM target has no persistence layer. We add a small **backend-agnostic
@@ -729,7 +777,12 @@ single-pass test before any driver surgery).
   (`tests/test_plawk_rows_reader.pl`; its `unsafe` / inline check-or-rename
   spec remain a follow-on); (8.6) richer row producers (`row(...)` /
   field-wise). Foundational for Phase 7 (secondary indexes need addressable
-  named fields).
+  named fields). Table lifecycle / selecting an existing table (§3.7):
+  (8.7) persist the schema in the store + validate it on open (self-describing
+  store, closes the schema-mismatch hole); (8.8) `use TABLE as r` reader that
+  attaches to an existing store and takes its schema from 8.7 — the `select`
+  surface, no re-`declare`; (8.9) multiple named tables per store (namespaces
+  / LMDB named sub-DBs, §3.5) so `use ns.table` selects among them.
 
 ## 6. Open questions
 
