@@ -241,11 +241,17 @@ python3 prototypes/mu_cosine/run_graph_geometry_inventory.py \
   --out /tmp/graph_geometry_inventory_cumulative_final.json
 ```
 
-Portable output SHA-256:
+Same-environment output-integrity SHA-256:
 
 - v1 mechanism: `9cd6c0b6f6e7b4efdbf6e8afcff88607b871348fc3a8c212c421a8c8e5d2ee51`;
 - v2 mechanism: `24333d08941ac2c356bb33fdd602a0009317de0daa6d0f7788e176c6bcc33969`;
 - outcome-blind inventory: `81c35eaa8f9fa82afbbcf6a9040f4905f97140b4b91d7134ecfb69957b9fb9a1`.
+
+These hashes exclude wall-clock timing and absolute paths, but they are not a promise of byte-identical output
+across NumPy/BLAS stacks.  Floating-point drift can change the weakest `walk_decay` selection count by about one
+replicate in 200 while leaving every frozen gate unchanged.  Cross-environment reproduction should therefore
+compare the reported scientific fields and gate booleans within their stated precision; use the hashes only to
+check artifact integrity within a matched numerical environment.
 
 The graph-geometry focused suite has 34 passing tests.  Including the inherited adjacent-residual,
 structured-covariance, covariance-sensitivity, and NumPy/Torch square-root-conditioner suites gives
