@@ -5358,13 +5358,27 @@ plawk_i64_op_f64(mod_i64, frem).
 plawk_assoc_arith_operand(field(N), afield(N)) :- integer(N), N > 0.
 plawk_assoc_arith_operand(var(Name), asvar(Name)) :- atom(Name).
 plawk_assoc_arith_operand(int(V), aint(V)) :- integer(V).
+% A table lookup `arr[$N]` as an operand, e.g. `$2 / total[$1]` (per-key
+% normalise). The array is resolved to a table index at planning time.
+plawk_assoc_arith_operand(assoc(var(Arr), field(N)), alookup(Arr, N)) :-
+    atom(Arr), integer(N), N > 0.
 
 % Resolve a print field's lookup array to its table index in the plan.
 plawk_assoc_print_plan_field(_Tables, fld(N), fld(N)).
 plawk_assoc_print_plan_field(Tables, lookup(Arr, N), lookup(TableIndex, N)) :-
     nth0(TableIndex, Tables, Arr).
 plawk_assoc_print_plan_field(_Tables, svar(Name), svar(Name)).
-plawk_assoc_print_plan_field(_Tables, farith(Op, L, R), farith(Op, L, R)).
+plawk_assoc_print_plan_field(Tables, farith(Op, L, R), farith(Op, L2, R2)) :-
+    plawk_assoc_arith_operand_plan(Tables, L, L2),
+    plawk_assoc_arith_operand_plan(Tables, R, R2).
+
+% Resolve an arithmetic operand against the table set: a lookup operand
+% binds its array to a table index; field/scalar/int operands pass through.
+plawk_assoc_arith_operand_plan(Tables, alookup(Arr, N), alookup_at(TableIndex, N)) :-
+    nth0(TableIndex, Tables, Arr).
+plawk_assoc_arith_operand_plan(_Tables, afield(N), afield(N)).
+plawk_assoc_arith_operand_plan(_Tables, asvar(Name), asvar(Name)).
+plawk_assoc_arith_operand_plan(_Tables, aint(V), aint(V)).
 
 % The per-record source value added to a scalar accumulator: a constant, or
 % field N converted to i64.
@@ -5466,6 +5480,23 @@ plawk_assoc_arith_operand_lines(asvar(Name), P, Slot, _FieldSep, ValVar, [LoadL,
 plawk_assoc_arith_operand_lines(aint(V), P, Slot, _FieldSep, ValVar, [Line]) :-
     format(atom(ValVar), '%~w_~w', [P, Slot]),
     format(atom(Line), '  ~w = sitofp i64 ~w to double', [ValVar, V]).
+% Table lookup operand: intern field N, read the table's i64 value there
+% (0 if absent), promote to double.
+plawk_assoc_arith_operand_lines(alookup_at(TableIndex, N), P, Slot, FieldSep, ValVar,
+        [SliceL, PtrL, LenL, KidL, ValL, PromL]) :-
+    format(atom(B), '~w_~w', [P, Slot]),
+    format(atom(ValVar), '%~w_lu', [B]),
+    format(atom(SliceL),
+        '  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+        [B, N, FieldSep]),
+    format(atom(PtrL), '  %~w_ptr = extractvalue %WamSlice %~w_slice, 0', [B, B]),
+    format(atom(LenL), '  %~w_len = extractvalue %WamSlice %~w_slice, 1', [B, B]),
+    format(atom(KidL),
+        '  %~w_kid = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len)', [B, B, B]),
+    format(atom(ValL),
+        '  %~w_val = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_kid)',
+        [B, TableIndex, B]),
+    format(atom(PromL), '  ~w = sitofp i64 %~w_val to double', [ValVar, B]).
 
 plawk_assoc_body_action_spec(for_in(var(LoopVar), var(ArrayName), Body),
         forin(LoopVar, ArrayName, Fields)) :-

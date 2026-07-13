@@ -16,11 +16,14 @@ from pass 1's table; cross-pass scalars (`acc += 1` / `acc += $N`
 folded in one pass and read in a later pass, backed by a zero-initialised
 module global); pure-scalar (no-table) multi-pass, where a program carries
 no assoc table at all and passes coordinate only through scalar globals;
-and arithmetic in prints (`$2 / total`) evaluated in f64 (the surface `/`
+arithmetic in prints (`$2 / total`) evaluated in f64 (the surface `/`
 is integer, so a print expression is promoted to double and printed with
-`%g`). Together the last two complete **grand-total normalise**
-(`pass { total += $2 } pass { print $1, $2 / total }`). **Not yet:**
-configurable readers (phase 4); the query reader (phase 6);
+`%g`), which completes **grand-total normalise**
+(`pass { total += $2 } pass { print $1, $2 / total }`); and per-key
+aggregation via associative add-assign (`total[$1] += $2`) plus a table
+lookup as an arithmetic operand (`$2 / total[$1]`), which completes
+**per-key normalise** — each record divided by its own key's total. **Not
+yet:** configurable readers (phase 4); the query reader (phase 6);
 namespaces / `eager` / secondary indexes; string-literal print fields. See
 the per-phase status tags in §5.
 
@@ -483,9 +486,15 @@ single-pass test before any driver surgery).
   `@wam_atom_field_f64_value`, a scalar via `load`+`sitofp`, an int constant
   via `sitofp`) and prints with `%g`. Grand-total normalise
   (`pass { total += $2 } pass { print $1, $2 / total }`) now works with no
-  assoc table at all. **Deferred:** multiple tables, arithmetic operands
-  that are table lookups, and pairing multi-pass with a cache-backed /
-  `BEGIN`-declared table.
+  assoc table at all. **Landed since:** per-key aggregation — associative
+  add-assign `arr[$k] += DELTA` (`tests/test_plawk_perkey.pl`, the general
+  form of `arr[$k]++`, mapping to `@wam_assoc_i64_inc` with the record's
+  delta) folds a per-key sum in pass 1, and a table lookup as an arithmetic
+  operand (`$2 / total[$1]`, interned key → `@wam_assoc_i64_get` → `sitofp`)
+  lets pass 2 divide each record by its own key's total. Grand-total and
+  per-key normalise both work end to end. **Deferred:** multiple tables,
+  non-field keys / deltas in add-assign, and pairing multi-pass with a
+  cache-backed / `BEGIN`-declared table.
 
 - **Phase 3 — cache as the inter-pass channel (durable payoff).** Combine
   1+2: a table declared in a `BEGIN cache("db")` block written in pass 1 and
