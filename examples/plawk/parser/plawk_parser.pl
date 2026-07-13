@@ -1496,6 +1496,26 @@ assoc_add_delta(int(Value)) -->
       number_codes(Value, ValueCodes)
     }.
 
+% Row capture (PLAWK_MULTIPASS_CACHE.md §3.6): `TABLE[$k] = $0` stores the
+% whole current record ($0) as a row value in TABLE, keyed by field k -- the
+% first, minimal producer of row-valued tables. The row is a str-value (the
+% record's bytes); a later pass reads it back (`over TABLE`, and, with a
+% schema, `records of TABLE as r`). v1 stores $0 only (a `row(...)`
+% constructor is a follow-on). Tried before the scalar `set` -- the `[`
+% distinguishes them.
+assignment_action(set_row(var(Name), KeyExpr)) -->
+    identifier(Name),
+    ws,
+    "[",
+    ws,
+    assoc_key_expr(KeyExpr),
+    ws,
+    "]",
+    !,
+    ws,
+    "=",
+    ws,
+    "$0".
 assignment_action(set(var(Name), Value)) -->
     identifier(Name),
     ws,

@@ -3788,6 +3788,11 @@ plawk_program_multipass_driver_ir(
     findall(R, ( member(pass(PassRules), Passes), member(R, PassRules) ), AllRules),
     plawk_multipass_pass_plan(AllRules, Tables, AssocPlan),  % validates surface
     plawk_multipass_table_params(Tables, TableParamsIR, TableArgsIR),
+    % Program-wide str-valued (row) tables: a table a writer pass populates
+    % via `arr[$k] = $0` holds string values, so an `over`/`records` reader
+    % must resolve the stored id to the row's bytes. Threaded to each reader.
+    maplist(plawk_assoc_rule_action_specs, AllRules, AllRuleSpecs),
+    plawk_assoc_specs_str_arrays(AllRuleSpecs, StrArrays),
     % A `BEGIN cache(...)`-declared shared table: load before pass 1, commit
     % after the last pass. Empty for pure-scalar / non-cache programs.
     plawk_program_cache_tables(BeginClauses, CacheTriples),
@@ -3799,7 +3804,7 @@ plawk_program_multipass_driver_ir(
     % sequence by index.
     findall(FnIR-GlobalIR,
         ( nth0(I, Passes, Pass),
-          plawk_multipass_pass_fn(I, Pass, Tables, TableParamsIR,
+          plawk_multipass_pass_fn(I, Pass, Tables, StrArrays, TableParamsIR,
               FieldSeparator, OutputSeparator, FnIR, GlobalIR)
         ),
         FnPairs),
@@ -3867,6 +3872,7 @@ plawk_passes_tables(Passes, Tables) :-
 
 plawk_action_table_name(inc_assoc(var(Name), _Key), Name).
 plawk_action_table_name(add_assoc(var(Name), _Key, _Delta), Name).
+plawk_action_table_name(set_row(var(Name), _Key), Name).
 plawk_action_table_name(print(Fields), Name) :-
     member(assoc(var(Name), _Key), Fields).
 
@@ -3897,7 +3903,7 @@ plawk_multipass_pass_plan(Rules, Tables, assoc_plan(Tables, PlannedRules)) :-
 %  of the input. GlobalIR carries any module globals the pass's body needs
 %  (rule chains emit format/string globals; the over reader emits none in
 %  v1 -- key + lookup print fields use the shared runtime constants).
-plawk_multipass_pass_fn(Index, pass(PassRules), Tables, TableParamsIR,
+plawk_multipass_pass_fn(Index, pass(PassRules), Tables, _StrArrays, TableParamsIR,
         FieldSep, _OutputSep, FnIR, GlobalIR) :-
     plawk_multipass_pass_plan(PassRules, Tables, PassPlan),
     plawk_assoc_rule_controls(PassPlan, PassControls),
@@ -3905,11 +3911,13 @@ plawk_multipass_pass_fn(Index, pass(PassRules), Tables, TableParamsIR,
     plawk_assoc_rule_chain_ir(PassPlan, FieldSep, GlobalIR, ChainIR),
     plawk_multipass_pass_fn_ir(Index, TableParamsIR, ChainIR, FnIR).
 plawk_multipass_pass_fn(Index, pass_over(var(Var), var(Table), Body), Tables,
-        TableParamsIR, FieldSep, OutputSep, FnIR, '') :-
+        StrArrays, TableParamsIR, FieldSep, OutputSep, FnIR, '') :-
     Body = [print(PrintFields)],
     PrintFields = [_ | _],
     maplist(plawk_over_print_field_ok(Var), PrintFields),
-    AssocPlan = assoc_plan(Tables, []),
+    % Carry the program's str-valued tables so a lookup of a row-valued table
+    % (`TABLE[k]` = a stored row) resolves the id to the row's bytes.
+    AssocPlan = assoc_plan(Tables, [str_arrays(StrArrays)]),
     plawk_multipass_over_fn_ir(Index, TableParamsIR, Var, Table, PrintFields,
         AssocPlan, FieldSep, OutputSep, FnIR).
 
@@ -4103,6 +4111,7 @@ plawk_assoc_specs_str_arrays(RuleSpecs, StrArrays) :-
         ( member(rule(_P, ActionSpecs, _C), RuleSpecs),
           ( member(dynassoc(A, str(_Call)), ActionSpecs)
           ; member(dynassoc(A, posarray_str(_Call)), ActionSpecs)
+          ; member(assoc_set_row(A, _Key), ActionSpecs)   % row-valued (str)
           )
         ),
         As0),
@@ -5364,6 +5373,14 @@ plawk_assoc_body_action_spec(add_assoc(var(ArrayName), field(KeyIndex), Delta),
 
 plawk_assoc_add_delta_ok(field(V)) :- integer(V), V > 0.
 plawk_assoc_add_delta_ok(int(V)) :- integer(V).
+% Row capture `arr[$k] = $0` (§3.6): store the whole current record ($0) as a
+% str-value (the record's bytes, interned) in the table at the key interned
+% from field k. The first producer of row-valued tables; a later pass reads
+% the row back (`over TABLE`, or `records of` with a schema). The table is
+% marked str-valued so value reads resolve to text.
+plawk_assoc_body_action_spec(set_row(var(ArrayName), field(KeyIndex)),
+        assoc_set_row(ArrayName, KeyIndex)) :-
+    integer(KeyIndex), KeyIndex > 0.
 plawk_assoc_body_action_spec(dynassoc_bind(var(ArrayName), Call),
         dynassoc(ArrayName, Call)) :-
     plawk_dynrec_call_ok(Call).
@@ -5644,6 +5661,13 @@ plawk_assoc_planned_actions([assoc_add(ArrayName, KeyIndex, Delta) | Rest],
       NextIndex is Index + 1
     },
     [assoc_add_action(Index, ArrayName, TableIndex, KeyIndex, Delta)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+plawk_assoc_planned_actions([assoc_set_row(ArrayName, KeyIndex) | Rest],
+        Tables, StrArrays, PosArrays, Index) -->
+    { nth0(TableIndex, Tables, ArrayName),
+      NextIndex is Index + 1
+    },
+    [assoc_set_row_action(Index, ArrayName, TableIndex, KeyIndex)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 plawk_assoc_planned_actions([dynassoc(ArrayName, Call) | Rest], Tables,
         StrArrays, PosArrays, Index) -->
@@ -6333,6 +6357,55 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId],
               DeltaLines, [Inc, Next, '']], Lines)
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% Row capture `arr[$k] = $0`: same key-intern + missing-key skip, then intern
+% the whole current record (field 0, a stable copy of the transient line) and
+% store that atom id as the table's value (str-value / replace semantics via
+% @wam_assoc_i64_set). A later pass resolves the id back to the row's bytes.
+plawk_assoc_rule_action_blocks(RuleIndex,
+        [assoc_set_row_action(Index, _ArrayName, TableIndex, KeyIndex) | Rest],
+        NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(HaveLabelName), 'assoc_rule_~w_action_~w_have_key',
+          [RuleIndex, Index]),
+      format(atom(HaveLabel), 'assoc_rule_~w_action_~w_have_key:',
+          [RuleIndex, Index]),
+      format(atom(B), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
+      format(atom(Slice),
+          '  %~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+          [B, KeyIndex, FieldSeparator]),
+      format(atom(Ptr), '  %~w_key_ptr = extractvalue %WamSlice %~w_key_slice, 0', [B, B]),
+      format(atom(Len), '  %~w_key_len = extractvalue %WamSlice %~w_key_slice, 1', [B, B]),
+      format(atom(Missing), '  %~w_key_missing = icmp eq i8* %~w_key_ptr, null', [B, B]),
+      format(atom(Branch), '  br i1 %~w_key_missing, label %~w, label %~w',
+          [B, ActionNextLabel, HaveLabelName]),
+      format(atom(KeyId),
+          '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_ptr, i64 %~w_key_len)',
+          [B, B, B]),
+      % the row value: the whole record ($0 is %line, the record atom). The
+      % transient line buffer is reused, so intern a stable copy of its bytes
+      % (atom -> string -> re-intern) and store that id as the table's value.
+      format(atom(RowLineId), '  %~w_row_lineid = extractvalue %Value %line, 1', [B]),
+      format(atom(RowPtr),
+          '  %~w_row_ptr = call i8* @wam_atom_to_string(i64 %~w_row_lineid)', [B, B]),
+      format(atom(RowLen), '  %~w_row_len = call i64 @strlen(i8* %~w_row_ptr)', [B, B]),
+      format(atom(RowId),
+          '  %~w_row_id = call i64 @wam_intern_atom(i8* %~w_row_ptr, i64 %~w_row_len)',
+          [B, B, B]),
+      format(atom(Set),
+          '  %~w_setrc = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id, i64 %~w_row_id)',
+          [B, TableIndex, B, B]),
+      format(atom(Next), '  br label %~w', [ActionNextLabel]),
+      Lines = [Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId,
+               RowLineId, RowPtr, RowLen, RowId, Set, Next, '']
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
@@ -8494,6 +8567,13 @@ plawk_assoc_plan_str_array(assoc_plan(_Tables, Rules), ArrayName) :-
     ; member(assoc_dyn_action(_Index2, ArrayName, _TableIndex2,
         posarray_str(_Call2)), Actions)
     ),
+    !.
+% A reader plan (e.g. the multi-pass `over`/`records` reader) carries the
+% program's str-valued table names directly, since the populating writer is
+% in a different pass function than this reader.
+plawk_assoc_plan_str_array(assoc_plan(_Tables, Rules), ArrayName) :-
+    member(str_arrays(StrArrays), Rules),
+    memberchk(ArrayName, StrArrays),
     !.
 
 %% plawk_assoc_plan_posarray_array(+AssocPlan, +ArrayName) is semidet.
