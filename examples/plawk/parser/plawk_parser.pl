@@ -212,6 +212,22 @@ pass_clauses([pass_records(var(Var), var(Table), Body) | Rest]) -->
     for_in_body(Body),
     ws,
     pass_clauses(Rest).
+% A `pass rows of TABLE as VAR { print VAR[N], ... }` block: the POSITIONAL
+% row reader (PLAWK_MULTIPASS_CACHE.md §3.6, phase 8.5). Like `records of`,
+% but columns are addressed BY POSITION (`VAR[1]`, 1-indexed) instead of by
+% schema name -- for raw / schema-less stores. Tried before `over` / plain
+% `pass`; the `rows of` keyword pair is unambiguous. (The `unsafe` modifier
+% and an inline check-or-rename spec are a follow-on; core is positional.)
+pass_clauses([pass_rows(var(Var), var(Table), Body) | Rest]) -->
+    "pass", identifier_boundary, ws,
+    "rows", identifier_boundary, ws,
+    "of", identifier_boundary, ws,
+    identifier(Table), ws,
+    "as", identifier_boundary, ws,
+    identifier(Var), ws,
+    for_in_body(Body),
+    ws,
+    pass_clauses(Rest).
 % A `pass over TABLE as VAR { print ... }` block: a configurable reader
 % (PLAWK_MULTIPASS_CACHE.md phase 4). Instead of re-scanning the input, the
 % pass iterates TABLE's entries as records, binding each key to VAR -- the
@@ -242,6 +258,8 @@ plawk_pass_dynentry_rewrite(DynEntries, pass(Rules0), pass(Rules)) :-
 plawk_pass_dynentry_rewrite(_DynEntries, pass_over(V, T, Body), pass_over(V, T, Body)).
 % A `records of TABLE` reader likewise has no rule actions -- pass it through.
 plawk_pass_dynentry_rewrite(_DynEntries, pass_records(V, T, Body), pass_records(V, T, Body)).
+% A `rows of TABLE` reader likewise has no rule actions -- pass it through.
+plawk_pass_dynentry_rewrite(_DynEntries, pass_rows(V, T, Body), pass_rows(V, T, Body)).
 
 %% dynentry_decls(-Names)//
 %
