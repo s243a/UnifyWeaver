@@ -492,15 +492,15 @@ with a column operand read via `@wam_atom_field_f64_value` on the row.
 Tests: `tests/test_plawk_records_reader.pl`, `tests/test_plawk_rows_reader.pl`.
 
 **Write side.** How a pass *builds* a row touches multi-column value
-assembly and the commit path. The **first, minimal writer has LANDED**:
-`TABLE[$k] = $0` captures the whole current record as a row value (its bytes,
-interned to a stable id; replace semantics), keyed by field k. This is the
-natural "capture / index / dedup records by a key" producer and needs no new
-storage runtime — the row rides the existing str-value assoc mechanism (the
-i64 value is the row's atom id). A later pass reads it back (`over TABLE as
-k` today; `records of TABLE as r` once the named reader lands). A richer
-producer (`orders[$1] = row($1, $2)`, field-wise `orders[$1]["amount"] =
-$2`) remains a follow-on.
+assembly and the commit path. Two producers have **LANDED**, both riding the
+existing str-value assoc mechanism (the i64 value is the row's atom id), no
+new storage runtime: `TABLE[$k] = $0` captures the whole current record
+(the "capture / index / dedup by a key" case), and `TABLE[$k] = row($a, $b,
+…)` builds a row from chosen input fields, in that order (project / reorder),
+joined by the field separator so a reader recovers the columns. Both are
+replace semantics, keyed by field k. A later pass reads the row back (`over
+TABLE as k`, or `records of` / `rows of`). Field-wise writes
+(`orders[$1]["amount"] = $2`) remain a follow-on.
 
 **In-run vs durable — a limitation to note.** Because the stored value is an
 atom **id** (process-local), captured rows are correct **in-run** (multi-pass
@@ -527,6 +527,11 @@ non-i64 cache values" open question — deferred to its own runtime round.
    (`tests/test_plawk_rows_reader.pl`). Its `unsafe` modifier + inline
    check-or-rename spec remain a follow-on.
 6. **Richer row producers** — `row(...)` constructor / field-wise writes.
+   The `row($a, $b, …)` constructor is **LANDED**
+   (`tests/test_plawk_row_cons.pl`): `TABLE[$k] = row($a, $b, …)` stores a row
+   built from the chosen input fields, in that order (projected / reordered),
+   joined by the field separator so both readers recover the columns.
+   Field-wise writes (`r["col"] = …`) remain a follow-on.
 
 ## 4. Runtime: the cache ABI (the first build step)
 
