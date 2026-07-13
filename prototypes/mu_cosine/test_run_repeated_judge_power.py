@@ -373,3 +373,27 @@ def test_start_of_run_provenance_is_rechecked(monkeypatch):
     monkeypatch.setattr(runner, "_provenance", lambda: changed)
     with pytest.raises(RuntimeError, match="changed during the run"):
         runner._assert_provenance_unchanged(snapshot)
+
+
+def test_blas_provenance_is_portable_and_thread_policy_is_honest():
+    common = {
+        "user_api": "blas",
+        "internal_api": "openblas",
+        "prefix": "libopenblas",
+        "version": "0.3.26",
+        "threading_layer": "pthreads",
+        "architecture": "Haswell",
+    }
+    first = runner._portable_blas_runtime([{
+        **common, "filepath": "/machine-a/lib/libopenblas.so",
+    }])
+    second = runner._portable_blas_runtime([{
+        **common, "filepath": "/different-prefix/lib/libopenblas.so",
+    }])
+    assert first == second
+    assert "filepath" not in first[0]
+    provenance = runner._provenance()
+    assert "worker_blas_threads" not in provenance
+    assert provenance["blas_thread_limit_policy"].startswith(
+        "child workers request one thread"
+    )

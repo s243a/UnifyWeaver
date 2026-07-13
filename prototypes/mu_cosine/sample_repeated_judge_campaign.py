@@ -185,6 +185,8 @@ def build_campaign(args):
     historical, historical_artifacts = load_historical_endpoints(args.historical_endpoints)
     if args.repeats < 3:
         raise CampaignInputError("repeats must be at least three")
+    if not 1 <= args.batch_size <= 10:
+        raise CampaignInputError("batch_size must be between one and ten rows")
     safe_judges = [_safe_judge(judge) for judge in args.judges]
     if len(safe_judges) != len(set(safe_judges)):
         raise CampaignInputError("judge names collide after safe artifact-name normalization")

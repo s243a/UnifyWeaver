@@ -124,7 +124,7 @@ checks.  A changed preregistration, implementation, configuration, or checkpoint
 
 ## Verification
 
-- repeated-campaign/sampler/power/runner suites: 67 passed;
+- repeated-campaign/sampler/power/runner suites: 68 passed;
 - inherited graph geometry, synthetic-v2, structured covariance, JointPosterior, and square-root conditioner
   suites: 97 passed, 9 optional CUDA skips;
 - Python compilation and `git diff --check`: clean.

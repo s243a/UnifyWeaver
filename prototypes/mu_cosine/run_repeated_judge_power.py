@@ -697,19 +697,24 @@ def _file_digest(path):
     return {"bytes": size, "sha256": digest.hexdigest()}
 
 
+def _portable_blas_runtime(records):
+    """Keep numerical BLAS identity while excluding host-specific paths."""
+    fields = (
+        "user_api", "internal_api", "prefix", "version",
+        "threading_layer", "architecture",
+    )
+    return sorted(
+        ({field: record.get(field) for field in fields} for record in records),
+        key=lambda record: tuple(str(record[field]) for field in fields),
+    )
+
+
 def _blas_runtime_identity():
     try:
         from threadpoolctl import threadpool_info
     except ImportError:
         return []
-    fields = (
-        "user_api", "internal_api", "prefix", "filepath", "version",
-        "threading_layer", "architecture",
-    )
-    return sorted(
-        ({field: record.get(field) for field in fields} for record in threadpool_info()),
-        key=lambda record: tuple(str(record[field]) for field in fields),
-    )
+    return _portable_blas_runtime(threadpool_info())
 
 
 def _provenance():
@@ -723,7 +728,10 @@ def _provenance():
         "python_version": sys.version,
         "numpy_version": np.__version__,
         "blas_runtime": _blas_runtime_identity(),
-        "worker_blas_threads": 1,
+        "blas_thread_limit_policy": (
+            "child workers request one thread via environment; serial execution "
+            "uses threadpoolctl when available"
+        ),
         "seed_derivation": "sha256(base,G,R,scenario,replicate); null namespace is disjoint",
     }
 

@@ -1075,8 +1075,8 @@ def build_scoring_schedule(
     rows = tuple(rows)
     if repeats < 3:
         raise CampaignInputError("repeats must be at least three for repeated-judge covariance")
-    if batch_size < 1:
-        raise CampaignInputError("batch_size must be positive")
+    if not 1 <= batch_size <= 10:
+        raise CampaignInputError("batch_size must be between one and ten rows")
     if len(set(judges)) != len(tuple(judges)) or not judges:
         raise CampaignInputError("judges must be non-empty and unique")
     if not isinstance(judge_specs, dict) or set(judge_specs) != set(judges):

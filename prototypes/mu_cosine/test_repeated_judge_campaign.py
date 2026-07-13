@@ -294,6 +294,14 @@ def test_source_cap_and_repeats_below_three_fail_loudly(tmp_path):
             batch_size=3,
             judge_specs=judge_specs(),
         )
+    with pytest.raises(CampaignInputError, match="between one and ten"):
+        build_scoring_schedule(
+            campaign_rows(folded),
+            judges=("judge-a",),
+            repeats=3,
+            batch_size=11,
+            judge_specs=judge_specs(),
+        )
 
 
 def test_unknown_cells_are_rejected_not_silently_dropped(tmp_path):
