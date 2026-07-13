@@ -56,7 +56,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | EMIT-KOTLIN ✅ | Lowered emitter | Kotlin | M | done — flat facts/unify (`cursor/emit-kotlin-lowered-f421`) |
 | EMIT-KOTLIN-2 ✅ | Lowered emitter (structures) | Kotlin | M | done — write-mode structures (`cursor/emit-kotlin-structures-f421`) |
 | EMIT-KOTLIN-3 ✅ | Multi-clause deterministic | Kotlin | M | done — T5/T4 no call (`cursor/emit-kotlin-multi-clause-f421`) |
-| EMIT-KOTLIN-4 | Last-call `execute` | Kotlin | M | tail-recursive member/append (no mid-body `call`) |
+| EMIT-KOTLIN-4 ✅ | Last-call `execute` | Kotlin | M | done — tail execute (`cursor/emit-kotlin-execute-f421`) |
 | EMIT-KOTLIN-5 | Mid-body `call` | Kotlin | M | fib/ack / non-tail continuation |
 | BENCH-LLVM | Effective-distance bench row | LLVM | L | — |
 | BENCH-CPP | Effective-distance bench row | C++ | L | — |
@@ -589,7 +589,7 @@ fallback) to the three Tier-D targets. Reference small emitters:
 
 ### EMIT-KOTLIN-4: Lower last-call `execute` (tail recursion / inter-predicate)
 - **Lever:** Lowered emitters for early scaffolds  **Target:** Kotlin  **Size:** M  **Depends on:** EMIT-KOTLIN-3
-- **Status:** In progress on `cursor/emit-kotlin-execute-f421` (2026-07-13).
+- **Status:** ✅ **Landed** on `cursor/emit-kotlin-execute-f421` (2026-07-13). Dispatch seam `(state, dispatch)` + `return dispatch("P/N", state)`. member/append/acc-reverse LOWER; fib/ack with mid-body `call` still decline.
 - **Goal:** Allow a clause's final `execute P/N` in lowered bodies so tail-recursive predicates (`member/2`, `append/3`, accumulator `reverse`) LOWER under `emit_mode(functions)`. Mid-body `call` stays declined → **EMIT-KOTLIN-5**.
 - **Dispatch seam:** native fn signature is `(WamState, dispatch:(String,WamState)->Boolean) -> Boolean`; `tryRun` passes `this::tryRun` so `return dispatch("P/N", state)` is native-first then bytecode.
 - **Boundary:**
