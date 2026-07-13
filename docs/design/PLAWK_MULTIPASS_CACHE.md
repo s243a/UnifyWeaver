@@ -29,12 +29,14 @@ pass, so it is both the in-memory channel between passes and durable across
 runs (file and LMDB backends); and the `over TABLE` reader (phase 4):
 `pass over TABLE as VAR { print ... }` iterates a table's entries as the
 pass's record source (named fields — key bound to `VAR`, value via
-`TABLE[VAR]`) instead of re-scanning the input. **Not yet:** row-oriented /
-record-valued tables (phase 8 — a table whose value is a named-field row,
-`records of TABLE as r` / `r["col"]`; designed in §3.6); the `over prev`
-reader (phase 4 follow-on); the query reader (phase 6); namespaces / `eager`
-/ secondary indexes; string-literal print fields. See the per-phase status
-tags in §5.
+`TABLE[VAR]`) instead of re-scanning the input; and row-oriented / record-valued tables
+(phase 8, §3.6): a table whose value is a named-field **row** — captured with
+`TABLE[$k] = $0` and read back by column name with `records of TABLE as r`
+(`r["col"]`, resolved through the `declare TABLE(col type, …)` schema), in-run.
+**Not yet:** durable rows across runs (byte-valued cache storage, phase 8.4);
+the positional `rows of` reader (phase 8.5); the `over prev` reader (phase 4
+follow-on); the query reader (phase 6); namespaces / `eager` / secondary
+indexes; string-literal print fields. See the per-phase status tags in §5.
 
 ## Implemented surface (quick reference)
 
@@ -445,10 +447,12 @@ list) stays exactly today's `i64`-valued table.
 Reader role (§3.4) but for row values, and they have deliberately distinct
 contracts so neither is a grab-bag of modifiers:
 
-- **`records of TABLE as r` — safe, named, schema-required.** Columns are
-  addressed **by name only**: `r["cust"]`. **Numeric addressing is a parse
-  error** here. Requires a declared schema (that is what supplies the names
-  and the decode layout). This is the recommended, everyday form.
+- **`records of TABLE as r` — safe, named, schema-required. LANDED.**
+  Columns are addressed **by name only**: `r["cust"]`. Requires a declared
+  schema (that is what supplies the names and the decode layout — `r["col"]`
+  resolves to the column's position and extracts that field of the stored
+  row). This is the recommended, everyday form. Numeric addressing is not
+  accepted here (that is the positional `rows of` reader's job, below).
 
 - **`rows of TABLE as r` — positional.** Columns are addressed **by position**
   (`r[1]`, `r[2]`, 1-indexed), for raw or ad-hoc stores. A schema spec may
@@ -498,7 +502,11 @@ non-i64 cache values" open question — deferred to its own runtime round.
 2. **Row capture writer** — `TABLE[$k] = $0` stores the record as a row
    value; read back via `over TABLE`. In-run. **LANDED.**
 3. **`records of TABLE as r`** — decode a stored row by the schema, name-only
-   `r["col"]` read path (the safe, named reader).
+   `r["col"]` read path (the safe, named reader). **LANDED**
+   (`tests/test_plawk_records_reader.pl`): `r["col"]` resolves through the
+   `declare TABLE(col type, …)` schema to the column's position and extracts
+   that field of the stored row; an unknown column is unsupported (clean
+   compile-time failure). In-run (rides the row-capture writer's storage).
 4. **Byte-valued cache storage** — durable rows across runs (store row bytes,
    not the id).
 5. **`rows of` + `unsafe` + inline spec** — the positional reader and the
@@ -679,8 +687,9 @@ single-pass test before any driver surgery).
   `declare NAME(col type, …)` schema surface — **LANDED**; (8.2) the row
   capture writer `TABLE[$k] = $0` (str-value; in-run), read back via `over
   TABLE` — **LANDED** (`tests/test_plawk_row_capture.pl`); (8.3) the safe
-  `records of TABLE as r` reader with name-only `r["col"]` decode by schema;
-  (8.4) byte-valued cache storage for durable rows across runs; (8.5) the
+  `records of TABLE as r` reader with name-only `r["col"]` decode by schema —
+  **LANDED** (`tests/test_plawk_records_reader.pl`); (8.4) byte-valued cache
+  storage for durable rows across runs; (8.5) the
   positional `rows of` reader with `unsafe` / inline check-or-rename spec;
   (8.6) richer row producers (`row(...)` / field-wise). Foundational for
   Phase 7 (secondary indexes need addressable named fields).

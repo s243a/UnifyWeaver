@@ -3793,6 +3793,13 @@ plawk_program_multipass_driver_ir(
     % must resolve the stored id to the row's bytes. Threaded to each reader.
     maplist(plawk_assoc_rule_action_specs, AllRules, AllRuleSpecs),
     plawk_assoc_specs_str_arrays(AllRuleSpecs, StrArrays),
+    % Row schemas (from `declare NAME(col type, ...)`) for the named
+    % `records of` reader: column name -> position. Empty for schema-less
+    % programs (the reader requires a schema and fails without one).
+    findall(cache_schema(ST, SC),
+        ( member(begin(BActions), BeginClauses),
+          member(cache_schema(ST, SC), BActions) ),
+        Schemas),
     % A `BEGIN cache(...)`-declared shared table: load before pass 1, commit
     % after the last pass. Empty for pure-scalar / non-cache programs.
     plawk_program_cache_tables(BeginClauses, CacheTriples),
@@ -3804,10 +3811,15 @@ plawk_program_multipass_driver_ir(
     % sequence by index.
     findall(FnIR-GlobalIR,
         ( nth0(I, Passes, Pass),
-          plawk_multipass_pass_fn(I, Pass, Tables, StrArrays, TableParamsIR,
-              FieldSeparator, OutputSeparator, FnIR, GlobalIR)
+          plawk_multipass_pass_fn(I, Pass, Tables, StrArrays, Schemas,
+              TableParamsIR, FieldSeparator, OutputSeparator, FnIR, GlobalIR)
         ),
         FnPairs),
+    % Every pass must yield exactly one function; if any pass shape is
+    % outside the supported surface, fail the whole driver (bin/plawk then
+    % reports it unsupported) rather than emit a call to a missing function.
+    length(Passes, NPasses),
+    length(FnPairs, NPasses),
     pairs_keys_values(FnPairs, FnIRs, ChainGlobals),
     atomic_list_concat(FnIRs, '\n', PassFnsIR),
     findall(CallLine,
@@ -3864,6 +3876,7 @@ plawk_passes_tables(Passes, Tables) :-
         ( member(pass(Rules), Passes), member(rule(_, Actions), Rules),
           member(Action, Actions), plawk_action_table_name(Action, Name)
         ; member(pass_over(_Var, var(Name), _Body), Passes)
+        ; member(pass_records(_RVar, var(Name), _RBody), Passes)
         ),
         Names0),
     sort(Names0, Tables),
@@ -3903,15 +3916,15 @@ plawk_multipass_pass_plan(Rules, Tables, assoc_plan(Tables, PlannedRules)) :-
 %  of the input. GlobalIR carries any module globals the pass's body needs
 %  (rule chains emit format/string globals; the over reader emits none in
 %  v1 -- key + lookup print fields use the shared runtime constants).
-plawk_multipass_pass_fn(Index, pass(PassRules), Tables, _StrArrays, TableParamsIR,
-        FieldSep, _OutputSep, FnIR, GlobalIR) :-
+plawk_multipass_pass_fn(Index, pass(PassRules), Tables, _StrArrays, _Schemas,
+        TableParamsIR, FieldSep, _OutputSep, FnIR, GlobalIR) :-
     plawk_multipass_pass_plan(PassRules, Tables, PassPlan),
     plawk_assoc_rule_controls(PassPlan, PassControls),
     plawk_assoc_break_close_ir(PassControls, ''),   % no break/next in v1
     plawk_assoc_rule_chain_ir(PassPlan, FieldSep, GlobalIR, ChainIR),
     plawk_multipass_pass_fn_ir(Index, TableParamsIR, ChainIR, FnIR).
 plawk_multipass_pass_fn(Index, pass_over(var(Var), var(Table), Body), Tables,
-        StrArrays, TableParamsIR, FieldSep, OutputSep, FnIR, '') :-
+        StrArrays, _Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, '') :-
     Body = [print(PrintFields)],
     PrintFields = [_ | _],
     maplist(plawk_over_print_field_ok(Var), PrintFields),
@@ -3920,6 +3933,25 @@ plawk_multipass_pass_fn(Index, pass_over(var(Var), var(Table), Body), Tables,
     AssocPlan = assoc_plan(Tables, [str_arrays(StrArrays)]),
     plawk_multipass_over_fn_ir(Index, TableParamsIR, Var, Table, PrintFields,
         AssocPlan, FieldSep, OutputSep, FnIR).
+% The named row reader: iterate TABLE's row entries, decode each stored row by
+% the declared schema, print the named columns. Requires a cache_schema for
+% TABLE; each print field must be VAR["col"] with col in the schema (name-only
+% -- numeric/other fields fail the clause, so the driver reports unsupported).
+plawk_multipass_pass_fn(Index, pass_records(var(Var), var(Table), Body), Tables,
+        _StrArrays, Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, '') :-
+    Body = [print(PrintFields)],
+    PrintFields = [_ | _],
+    memberchk(cache_schema(Table, Columns), Schemas),
+    maplist(plawk_records_field_index(Var, Columns), PrintFields, ColIndexes),
+    nth0(TableIndex, Tables, Table),
+    plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, ColIndexes,
+        FieldSep, OutputSep, FnIR).
+
+% Resolve a `records of` print field VAR["col"] to the column's 1-based
+% position in the schema. Name-only: a non-string / non-VAR field fails.
+plawk_records_field_index(Var, Columns, assoc(var(Var), string(Col)), Index) :-
+    atom_string(ColAtom, Col),
+    nth1(Index, Columns, col(ColAtom, _Type)).
 
 % Over-reader print fields (v1): the loop key, or a lookup of the iterated
 % table keyed by it. String literals / other tables are follow-ons.
@@ -3965,6 +3997,80 @@ forin_after:
   ret void
 }
 ', [Index, TableParamsIR, TableIndex, TableIndex, BodyIR]).
+
+%% plawk_multipass_records_fn_ir(+Index, +TableParamsIR, +TableIndex,
+%%     +ColIndexes, +FieldSep, +OutputSep, -IR)
+%  The named row reader as a void function: walk the shared table's occupied
+%  slots; for each, the value is the stored row's atom id. Build a row %Value
+%  from it and print the requested columns -- each `r["col"]` resolved to the
+%  column's schema position, extracted as field N of the row via
+%  @wam_atom_field_slice_value (the same field projection the input record
+%  uses), printed as text. Does not open the input; the table is freed by
+%  main.
+plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, ColIndexes,
+        FieldSep, OutputSep, IR) :-
+    phrase(plawk_records_col_lines(ColIndexes, FieldSep, OutputSep, 0), ColLines),
+    atomic_list_concat(ColLines, '\n', ColIR),
+    format(atom(IR),
+'define void @plawk_pass_~w(%Value %mp_path~w) {
+entry:
+  br label %rec_head
+
+rec_head:
+  %rec_idx = phi i64 [0, %entry], [%rec_next_idx, %rec_body_done]
+  %rec_slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %rec_idx)
+  %rec_done = icmp slt i64 %rec_slot, 0
+  br i1 %rec_done, label %rec_after, label %rec_body
+
+rec_body:
+  %rec_row_id = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %rec_slot)
+  %rec_row_v0 = insertvalue %Value undef, i32 0, 0
+  %rec_row_v = insertvalue %Value %rec_row_v0, i64 %rec_row_id, 1
+~w
+  %rec_printed_newline = call i32 @putchar(i32 10)
+  br label %rec_body_done
+
+rec_body_done:
+  %rec_next_idx = add i64 %rec_slot, 1
+  br label %rec_head
+
+rec_after:
+  ret void
+}
+', [Index, TableParamsIR, TableIndex, TableIndex, ColIR]).
+
+%% plawk_records_col_lines(+ColIndexes, +FieldSep, +OutputSep, +PrintIndex)//
+%  Per-column print for the named row reader: a separator before each column
+%  after the first, then extract field <ColIndex> of the row (%rec_row_v) and
+%  print its text (%.*s).
+plawk_records_col_lines([], _FieldSep, _OutputSep, _PrintIndex) --> [].
+plawk_records_col_lines([ColIndex | Rest], FieldSep, OutputSep, PrintIndex) -->
+    { ( PrintIndex =:= 0
+      ->  SepLines = []
+      ;   format(atom(SepLine),
+              '  %rec_sep~w = call i32 @putchar(i32 ~w)', [PrintIndex, OutputSep]),
+          SepLines = [SepLine]
+      ),
+      format(atom(Slice),
+          '  %rec_f~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %rec_row_v, i64 ~w, i8 ~w)',
+          [PrintIndex, ColIndex, FieldSep]),
+      format(atom(Ptr), '  %rec_f~w_ptr = extractvalue %WamSlice %rec_f~w_slice, 0',
+          [PrintIndex, PrintIndex]),
+      format(atom(Len), '  %rec_f~w_len = extractvalue %WamSlice %rec_f~w_slice, 1',
+          [PrintIndex, PrintIndex]),
+      format(atom(Lenw), '  %rec_f~w_lenw = trunc i64 %rec_f~w_len to i32',
+          [PrintIndex, PrintIndex]),
+      format(atom(Fmt),
+          '  %rec_f~w_fmt = getelementptr [5 x i8], [5 x i8]* @.plawk_surface_print_slice, i32 0, i32 0',
+          [PrintIndex]),
+      format(atom(Pr),
+          '  %rec_f~w_pr = call i32 (i8*, ...) @printf(i8* %rec_f~w_fmt, i32 %rec_f~w_lenw, i8* %rec_f~w_ptr)',
+          [PrintIndex, PrintIndex, PrintIndex, PrintIndex]),
+      append([SepLines, [Slice, Ptr, Len, Lenw, Fmt, Pr]], Lines),
+      NextPrintIndex is PrintIndex + 1
+    },
+    plawk_emit_lines(Lines),
+    plawk_records_col_lines(Rest, FieldSep, OutputSep, NextPrintIndex).
 
 %% plawk_multipass_pass_fn_ir(+Index, +RecordIR, -IR)
 %  One pass as a self-contained function: open the shared input path, loop
