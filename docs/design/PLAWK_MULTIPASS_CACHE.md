@@ -473,21 +473,37 @@ contracts so neither is a grab-bag of modifiers:
 `arr[N]` key surface already exists; what is new is that `r` resolves against
 the row schema / positional slots rather than being a separate table.
 
-**Write side — separate design round.** Reading rows is the tractable half.
-How a pass *builds* a row (`orders[$1] = row($1, $2)`, field-wise
-`orders[$1]["amount"] = $2`, or an insert form) touches multi-column value
-assembly and the commit path, and is deferred to its own design step. The
-first implementation targets the **read path** over rows a prior pass or a
-pre-populated store produced.
+**Write side.** How a pass *builds* a row touches multi-column value
+assembly and the commit path. The **first, minimal writer has LANDED**:
+`TABLE[$k] = $0` captures the whole current record as a row value (its bytes,
+interned to a stable id; replace semantics), keyed by field k. This is the
+natural "capture / index / dedup records by a key" producer and needs no new
+storage runtime — the row rides the existing str-value assoc mechanism (the
+i64 value is the row's atom id). A later pass reads it back (`over TABLE as
+k` today; `records of TABLE as r` once the named reader lands). A richer
+producer (`orders[$1] = row($1, $2)`, field-wise `orders[$1]["amount"] =
+$2`) remains a follow-on.
+
+**In-run vs durable — a limitation to note.** Because the stored value is an
+atom **id** (process-local), captured rows are correct **in-run** (multi-pass
+within one process, the primary use). They do **not** survive across separate
+runs of the binary: the current cache format persists `[key:i64 value:i64]`,
+so a committed row id is stale on reload. **Durable rows need a byte-valued
+cache format** (store the row's bytes, not the id) — the "value encoding for
+non-i64 cache values" open question — deferred to its own runtime round.
 
 **Phasing** (each its own PR):
 1. **Schema surface** — `declare NAME(col type, …)` parses and carries a row
-   schema; bare `declare NAME` unchanged. No behavior change yet.
-2. **`records of TABLE as r`** — decode row blobs by schema, `r["col"]` read
-   path (the safe, named reader; model A).
-3. **Row write surface** — how a pass populates rows (own design round).
-4. **`rows of` + `unsafe` + inline spec** — the positional reader and the
+   schema; bare `declare NAME` unchanged. No behavior change yet. **LANDED.**
+2. **Row capture writer** — `TABLE[$k] = $0` stores the record as a row
+   value; read back via `over TABLE`. In-run. **LANDED.**
+3. **`records of TABLE as r`** — decode a stored row by the schema, name-only
+   `r["col"]` read path (the safe, named reader).
+4. **Byte-valued cache storage** — durable rows across runs (store row bytes,
+   not the id).
+5. **`rows of` + `unsafe` + inline spec** — the positional reader and the
    check/rename semantics above.
+6. **Richer row producers** — `row(...)` constructor / field-wise writes.
 
 ## 4. Runtime: the cache ABI (the first build step)
 
@@ -659,12 +675,15 @@ single-pass test before any driver surgery).
   sub-DB backend) and record-valued cache entries (Phase 8).
 
 - **Phase 8 — row-oriented records (record-valued tables) (§3.6).** A table
-  whose value is a named-field **row**, stored as one serialized record per
-  key (model A). Sub-phases: (8.1) the `declare NAME(col type, …)` schema
-  surface; (8.2) the safe `records of TABLE as r` reader with name-only
-  `r["col"]` access; (8.3) the row write surface (own design); (8.4) the
-  positional `rows of` reader with `unsafe` / inline check-or-rename spec.
-  Foundational for Phase 7 (secondary indexes need addressable named fields).
+  whose value is a named-field **row** (model A). Sub-phases: (8.1) the
+  `declare NAME(col type, …)` schema surface — **LANDED**; (8.2) the row
+  capture writer `TABLE[$k] = $0` (str-value; in-run), read back via `over
+  TABLE` — **LANDED** (`tests/test_plawk_row_capture.pl`); (8.3) the safe
+  `records of TABLE as r` reader with name-only `r["col"]` decode by schema;
+  (8.4) byte-valued cache storage for durable rows across runs; (8.5) the
+  positional `rows of` reader with `unsafe` / inline check-or-rename spec;
+  (8.6) richer row producers (`row(...)` / field-wise). Foundational for
+  Phase 7 (secondary indexes need addressable named fields).
 
 ## 6. Open questions
 
