@@ -3877,6 +3877,7 @@ plawk_passes_tables(Passes, Tables) :-
           member(Action, Actions), plawk_action_table_name(Action, Name)
         ; member(pass_over(_Var, var(Name), _Body), Passes)
         ; member(pass_records(_RVar, var(Name), _RBody), Passes)
+        ; member(pass_rows(_PVar, var(Name), _PBody), Passes)
         ),
         Names0),
     sort(Names0, Tables),
@@ -3952,6 +3953,23 @@ plawk_multipass_pass_fn(Index, pass_records(var(Var), var(Table), Body), Tables,
 plawk_records_field_index(Var, Columns, assoc(var(Var), string(Col)), Index) :-
     atom_string(ColAtom, Col),
     nth1(Index, Columns, col(ColAtom, _Type)).
+% The positional row reader: iterate TABLE's rows, print columns addressed
+% BY POSITION (`VAR[N]`, 1-indexed = field N of the stored row). No schema
+% needed -- for raw stores. Reuses the same row-decode function emitter as
+% `records of`, just sourcing the field indices from the literal positions.
+plawk_multipass_pass_fn(Index, pass_rows(var(Var), var(Table), Body), Tables,
+        _StrArrays, _Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, '') :-
+    Body = [print(PrintFields)],
+    PrintFields = [_ | _],
+    maplist(plawk_rows_field_index(Var), PrintFields, ColIndexes),
+    nth0(TableIndex, Tables, Table),
+    plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, ColIndexes,
+        FieldSep, OutputSep, FnIR).
+
+% A `rows of` print field VAR[N] is the row's Nth field (1-indexed).
+% Positional only: a string / non-VAR field fails (that is `records of`).
+plawk_rows_field_index(Var, assoc(var(Var), int(N)), N) :-
+    integer(N), N > 0.
 
 % Over-reader print fields (v1): the loop key, or a lookup of the iterated
 % table keyed by it. String literals / other tables are follow-ons.

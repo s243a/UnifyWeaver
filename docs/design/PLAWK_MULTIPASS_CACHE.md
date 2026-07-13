@@ -32,11 +32,13 @@ pass's record source (named fields — key bound to `VAR`, value via
 `TABLE[VAR]`) instead of re-scanning the input; and row-oriented / record-valued tables
 (phase 8, §3.6): a table whose value is a named-field **row** — captured with
 `TABLE[$k] = $0` and read back by column name with `records of TABLE as r`
-(`r["col"]`, resolved through the `declare TABLE(col type, …)` schema), in-run.
+(`r["col"]`, resolved through the `declare TABLE(col type, …)` schema), or by
+position with `rows of TABLE as r` (`r[N]`, no schema), in-run.
 **Not yet:** durable rows across runs (byte-valued cache storage, phase 8.4);
-the positional `rows of` reader (phase 8.5); the `over prev` reader (phase 4
-follow-on); the query reader (phase 6); namespaces / `eager` / secondary
-indexes; string-literal print fields. See the per-phase status tags in §5.
+`rows of`'s `unsafe` / inline check-or-rename spec; the `over prev` reader
+(phase 4 follow-on); the query reader (phase 6); namespaces / `eager` /
+secondary indexes; string-literal print fields. See the per-phase status tags
+in §5.
 
 ## Implemented surface (quick reference)
 
@@ -454,10 +456,14 @@ contracts so neither is a grab-bag of modifiers:
   row). This is the recommended, everyday form. Numeric addressing is not
   accepted here (that is the positional `rows of` reader's job, below).
 
-- **`rows of TABLE as r` — positional.** Columns are addressed **by position**
-  (`r[1]`, `r[2]`, 1-indexed), for raw or ad-hoc stores. A schema spec may
-  appear at the read site, and its role depends on whether an authoritative
-  (`declare`d) schema already exists:
+- **`rows of TABLE as r` — positional. Core LANDED.** Columns are addressed
+  **by position** (`r[1]`, `r[2]`, 1-indexed = field N of the stored row),
+  for raw or ad-hoc stores; **no schema required**
+  (`tests/test_plawk_rows_reader.pl`). Reuses the same row-decode function as
+  `records of`, sourcing field indices from the literal positions. The
+  `unsafe` modifier and inline check-or-rename spec below are a **follow-on**.
+  A schema spec may appear at the read site, and its role depends on whether
+  an authoritative (`declare`d) schema already exists:
   - **schema present →** the spec is a **check**: the store's row shape
     (arity / types / names) must match, diagnosed at open, not as silent
     garbage later.
@@ -509,8 +515,9 @@ non-i64 cache values" open question — deferred to its own runtime round.
    compile-time failure). In-run (rides the row-capture writer's storage).
 4. **Byte-valued cache storage** — durable rows across runs (store row bytes,
    not the id).
-5. **`rows of` + `unsafe` + inline spec** — the positional reader and the
-   check/rename semantics above.
+5. **`rows of` positional reader** — `r[N]` by position, no schema. **LANDED**
+   (`tests/test_plawk_rows_reader.pl`). Its `unsafe` modifier + inline
+   check-or-rename spec remain a follow-on.
 6. **Richer row producers** — `row(...)` constructor / field-wise writes.
 
 ## 4. Runtime: the cache ABI (the first build step)
@@ -689,10 +696,12 @@ single-pass test before any driver surgery).
   TABLE` — **LANDED** (`tests/test_plawk_row_capture.pl`); (8.3) the safe
   `records of TABLE as r` reader with name-only `r["col"]` decode by schema —
   **LANDED** (`tests/test_plawk_records_reader.pl`); (8.4) byte-valued cache
-  storage for durable rows across runs; (8.5) the
-  positional `rows of` reader with `unsafe` / inline check-or-rename spec;
-  (8.6) richer row producers (`row(...)` / field-wise). Foundational for
-  Phase 7 (secondary indexes need addressable named fields).
+  storage for durable rows across runs; (8.5) the positional `rows of`
+  reader (`r[N]`, no schema) — **LANDED**
+  (`tests/test_plawk_rows_reader.pl`; its `unsafe` / inline check-or-rename
+  spec remain a follow-on); (8.6) richer row producers (`row(...)` /
+  field-wise). Foundational for Phase 7 (secondary indexes need addressable
+  named fields).
 
 ## 6. Open questions
 
