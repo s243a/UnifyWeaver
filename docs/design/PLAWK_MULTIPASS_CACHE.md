@@ -19,10 +19,13 @@ no assoc table at all and passes coordinate only through scalar globals;
 and arithmetic in prints (`$2 / total`) evaluated in f64 (the surface `/`
 is integer, so a print expression is promoted to double and printed with
 `%g`). Together the last two complete **grand-total normalise**
-(`pass { total += $2 } pass { print $1, $2 / total }`). **Not yet:**
-configurable readers (phase 4); the query reader (phase 6);
-namespaces / `eager` / secondary indexes; string-literal print fields. See
-the per-phase status tags in §5.
+(`pass { total += $2 } pass { print $1, $2 / total }`); and the cache as the
+inter-pass channel (phase 3): a `BEGIN cache("path") { declare NAME }` table
+shared by the passes is loaded before pass 1 and committed after the last
+pass, so it is both the in-memory channel between passes and durable across
+runs (file and LMDB backends). **Not yet:** configurable readers (phase 4);
+the query reader (phase 6); namespaces / `eager` / secondary indexes;
+string-literal print fields. See the per-phase status tags in §5.
 
 ## Implemented surface (quick reference)
 
@@ -54,9 +57,11 @@ an assoc program is supported — a `print` in the record loop with a text
 field `$N` or a table lookup `arr[$N]` — which is what makes pass-2 emit one
 line per record from pass-1's table. It requires a **file** argument (each
 pass re-opens it; stdin is not re-openable), a single shared table, and
-always-rule pass bodies. Combining a cache-backed table with multi-pass,
-cross-pass *scalars*, string-literal print fields, multiple tables, and
-reader selection are follow-ons.
+always-rule pass bodies. A **cache-backed** shared table (`BEGIN
+cache("path") { declare NAME }`) now works with multi-pass too (phase 3):
+loaded before pass 1, committed after the last pass, durable across runs.
+String-literal print fields, multiple tables, and reader selection are
+follow-ons.
 
 ## TL;DR
 
@@ -483,15 +488,29 @@ single-pass test before any driver surgery).
   `@wam_atom_field_f64_value`, a scalar via `load`+`sitofp`, an int constant
   via `sitofp`) and prints with `%g`. Grand-total normalise
   (`pass { total += $2 } pass { print $1, $2 / total }`) now works with no
-  assoc table at all. **Deferred:** multiple tables, arithmetic operands
-  that are table lookups, and pairing multi-pass with a cache-backed /
-  `BEGIN`-declared table.
+  assoc table at all. **Deferred:** multiple tables, and arithmetic operands
+  that are table lookups.
 
-- **Phase 3 — cache as the inter-pass channel (durable payoff).** Combine
-  1+2: a table declared in a `BEGIN cache("db")` block written in pass 1 and
-  read in pass 2, with the commit barrier between passes; plus the
-  one-store-per-block and load-on-open rules. Also introduce the name
-  resolution surface: `as ns` namespaces a store (tables `ns.table`,
+- **Phase 3 — cache as the inter-pass channel (durable payoff). LANDED
+  (v1).** A table declared in a `BEGIN cache("path") { declare NAME }` block
+  and shared by the passes is loaded from its store before pass 1 and
+  committed after the last pass — so the same table is both the in-memory
+  channel between passes and durable between separate runs of the binary;
+  re-running loads the prior committed state and accumulates onto it. Wired
+  into both multi-pass driver shapes (no-END normalise and END for-in) by
+  reusing the single-pass cache machinery (`plawk_program_cache_tables` /
+  `plawk_cache_entries` / the cache-aware `plawk_assoc_entry_setup_ir/3` /
+  `plawk_cache_commit_lines`); the passes themselves are unchanged (they
+  already reference the shared table). Works for the file backend and, when
+  liblmdb is present, `backend "lmdb"` (`bin/plawk` links the C runtime and
+  `-llmdb` for a multi-pass program too). Verified: a cache-backed per-key
+  sum / histogram persists and accumulates across runs
+  (`tests/test_plawk_multipass_cache.pl`). **Deferred:** the commit *barrier*
+  between passes (v1 commits once, after the last pass — the in-memory table
+  IS the live channel between passes, so an intermediate commit is only
+  needed for cross-process coordination); the name resolution surface below;
+  and one-store-per-block with multiple stores. Follow-on: `as ns`
+  namespaces a store (tables `ns.table`,
   mapping to LMDB named sub-databases), no-alias blocks stay global, and
   `global` lifts a namespaced table to bare. Test: `total[$1] += $2` in
   pass 1; `print $1, $2 / total[$1]` in pass 2, verifying pass 2 sees
