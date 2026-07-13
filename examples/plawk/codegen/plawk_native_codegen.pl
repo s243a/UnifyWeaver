@@ -3850,6 +3850,7 @@ plawk_passes_tables(Passes, Tables) :-
     N =< 1.
 
 plawk_action_table_name(inc_assoc(var(Name), _Key), Name).
+plawk_action_table_name(add_assoc(var(Name), _Key, _Delta), Name).
 plawk_action_table_name(print(Fields), Name) :-
     member(assoc(var(Name), _Key), Fields).
 
@@ -5267,6 +5268,17 @@ plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), field(KeyIndex)),
 plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), Blob),
         ArrayName-blob_key(Blob)) :-
     plawk_assoc_blob_key_ok(Blob).
+% Associative add-assign `arr[$k] += DELTA`: fold DELTA (a field value or an
+% integer constant) into the table at the key interned from field k. The
+% general form of `arr[$k]++` and the pass-1 half of per-key normalise. v1
+% keys on a field (`arr[$k]`); other key shapes are a follow-on.
+plawk_assoc_body_action_spec(add_assoc(var(ArrayName), field(KeyIndex), Delta),
+        assoc_add(ArrayName, KeyIndex, Delta)) :-
+    integer(KeyIndex), KeyIndex > 0,
+    plawk_assoc_add_delta_ok(Delta).
+
+plawk_assoc_add_delta_ok(field(V)) :- integer(V), V > 0.
+plawk_assoc_add_delta_ok(int(V)) :- integer(V).
 plawk_assoc_body_action_spec(dynassoc_bind(var(ArrayName), Call),
         dynassoc(ArrayName, Call)) :-
     plawk_dynrec_call_ok(Call).
@@ -5509,6 +5521,13 @@ plawk_assoc_planned_actions([ArrayName-KeyIndex | Rest], Tables, StrArrays,
       NextIndex is Index + 1
     },
     [assoc_action(Index, ArrayName, TableIndex, KeyIndex)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+plawk_assoc_planned_actions([assoc_add(ArrayName, KeyIndex, Delta) | Rest],
+        Tables, StrArrays, PosArrays, Index) -->
+    { nth0(TableIndex, Tables, ArrayName),
+      NextIndex is Index + 1
+    },
+    [assoc_add_action(Index, ArrayName, TableIndex, KeyIndex, Delta)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 plawk_assoc_planned_actions([dynassoc(ArrayName, Call) | Rest], Tables,
         StrArrays, PosArrays, Index) -->
@@ -6161,6 +6180,45 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, Table
       format(atom(Next), '  br label %~w', [ActionNextLabel])
     },
     [Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId, Inc, Next, ''],
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% Associative add-assign `arr[$k] += DELTA`: same key-intern + missing-key
+% skip as the counted inc, but the inc delta is the record's DELTA (a field
+% value via @wam_atom_field_i64_value, or an integer constant) rather than 1.
+plawk_assoc_rule_action_blocks(RuleIndex,
+        [assoc_add_action(Index, _ArrayName, TableIndex, KeyIndex, Delta) | Rest],
+        NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(HaveLabelName), 'assoc_rule_~w_action_~w_have_key',
+          [RuleIndex, Index]),
+      format(atom(HaveLabel), 'assoc_rule_~w_action_~w_have_key:',
+          [RuleIndex, Index]),
+      format(atom(B), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
+      format(atom(Slice),
+          '  %~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+          [B, KeyIndex, FieldSeparator]),
+      format(atom(Ptr), '  %~w_key_ptr = extractvalue %WamSlice %~w_key_slice, 0', [B, B]),
+      format(atom(Len), '  %~w_key_len = extractvalue %WamSlice %~w_key_slice, 1', [B, B]),
+      format(atom(Missing), '  %~w_key_missing = icmp eq i8* %~w_key_ptr, null', [B, B]),
+      format(atom(Branch), '  br i1 %~w_key_missing, label %~w, label %~w',
+          [B, ActionNextLabel, HaveLabelName]),
+      format(atom(KeyId),
+          '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_ptr, i64 %~w_key_len)',
+          [B, B, B]),
+      plawk_assoc_scalar_src_lines(Delta, B, FieldSeparator, DeltaVar, DeltaLines),
+      format(atom(Inc),
+          '  %~w_sum = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id, i64 ~w)',
+          [B, TableIndex, B, DeltaVar]),
+      format(atom(Next), '  br label %~w', [ActionNextLabel]),
+      append([[Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId],
+              DeltaLines, [Inc, Next, '']], Lines)
+    },
+    plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
 
 %% plawk_record_program_ok(+Descriptor, +Rules, +EndPrintFields) is semidet.

@@ -1407,12 +1407,45 @@ dynrec_type(i64) --> "i64".
 dynrec_type(f64) --> "f64".
 dynrec_type(string) --> "string".
 
+% Associative add-assign: `arr[k] += DELTA` folds DELTA into the table at
+% the key. The natural pass-1 half of per-key normalise (`total[$1] += $2`),
+% and the general form of `arr[k]++` (which is `+= 1`). DELTA is a field or
+% an integer literal (i64 table values); other deltas are a follow-on. Tried
+% before the scalar clause -- the `[` distinguishes them.
+add_assign_action(add_assoc(var(Name), KeyExpr, Delta)) -->
+    identifier(Name),
+    ws,
+    "[",
+    ws,
+    assoc_key_expr(KeyExpr),
+    ws,
+    "]",
+    !,
+    ws,
+    "+=",
+    ws,
+    assoc_add_delta(Delta).
 add_assign_action(add(var(Name), Delta)) -->
     identifier(Name),
     ws,
     "+=",
     ws,
     scalar_delta_expr(Delta).
+
+% Delta for an assoc add-assign: a numeric field or an integer literal.
+assoc_add_delta(field(Index)) -->
+    "$",
+    integer_codes(IndexCodes),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index >= 0
+    },
+    !.
+assoc_add_delta(int(Value)) -->
+    integer_codes(ValueCodes),
+    { ValueCodes \== [],
+      number_codes(Value, ValueCodes)
+    }.
 
 assignment_action(set(var(Name), Value)) -->
     identifier(Name),
