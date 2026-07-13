@@ -926,17 +926,48 @@ cache_backend(Backend) -->
 cache_backend(file) -->
     [].
 
-cache_decl_list(Path, Backend, [cache_table(Name, Path, Backend) | Rest]) -->
-    "declare", required_ws, identifier(Name),
-    cache_decl_list_rest(Path, Backend, Rest).
-cache_decl_list_rest(Path, Backend, [cache_table(Name, Path, Backend) | Rest]) -->
-    ws, cache_decl_sep, ws, "declare", required_ws, identifier(Name),
+cache_decl_list(Path, Backend, Actions) -->
+    cache_decl(Path, Backend, First),
+    cache_decl_list_rest(Path, Backend, Rest),
+    { append(First, Rest, Actions) }.
+cache_decl_list_rest(Path, Backend, Actions) -->
+    ws, cache_decl_sep, ws, cache_decl(Path, Backend, First),
     !,
-    cache_decl_list_rest(Path, Backend, Rest).
+    cache_decl_list_rest(Path, Backend, Rest),
+    { append(First, Rest, Actions) }.
 cache_decl_list_rest(_Path, _Backend, []) -->
     [].
 cache_decl_sep --> ";", !.
 cache_decl_sep --> [].
+
+% One `declare` in a backed BEGIN block. A bare `declare NAME` is today's
+% i64-valued table (one begin action, cache_table/3). `declare NAME(col type,
+% ...)` (PLAWK_MULTIPASS_CACHE.md §3.6, row-oriented records) additionally
+% carries a ROW SCHEMA -- named columns with types -- emitted as a separate
+% cache_schema(NAME, Columns) action, so the existing cache_table/3 consumers
+% are untouched and the schema is available to the record readers. Columns are
+% col(Name, Type) with Type in {str, i64}. The column-list clause is tried
+% first; a bare declare falls through.
+cache_decl(Path, Backend,
+        [cache_table(Name, Path, Backend), cache_schema(Name, Columns)]) -->
+    "declare", required_ws, identifier(Name), ws,
+    cache_col_list(Columns),
+    !.
+cache_decl(Path, Backend, [cache_table(Name, Path, Backend)]) -->
+    "declare", required_ws, identifier(Name).
+
+cache_col_list(Columns) -->
+    "(", ws, cache_cols(Columns), ws, ")".
+cache_cols([col(Name, Type) | Rest]) -->
+    identifier(Name), required_ws, cache_col_type(Type),
+    cache_cols_rest(Rest).
+cache_cols_rest([col(Name, Type) | Rest]) -->
+    ws, ",", ws, identifier(Name), required_ws, cache_col_type(Type),
+    !,
+    cache_cols_rest(Rest).
+cache_cols_rest([]) --> [].
+cache_col_type(str) --> "str".
+cache_col_type(i64) --> "i64".
 
 begin_actions([Action | Actions]) -->
     begin_action(Action),
