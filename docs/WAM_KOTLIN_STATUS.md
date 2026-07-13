@@ -43,21 +43,20 @@ module in the fleet.
 - **Lowered emitter scope** — deterministic single-clause only. No T4/T5
   multi-clause, ITE, or `call`/`execute` in lowered bodies (separate cards).
 - **Conformance (opt-in)** — `conformance_target(kotlin)` /
-  `kotlin_functions` registered. **append + builtins green**; member/reverse/fib/ack
-  remain `ct_xfail` (list placeholder clobber under backtrack; Y-register
-  bind-through across recursion). `///2` arith functor parse fixed
-  (KT-ARITH-SLASH-FUNCTOR).
+  `kotlin_functions` registered. **All classic programs green** (append,
+  member, reverse, builtins, fib, ack) — no remaining `ct_xfail`s after
+  KT-ARITH-SLASH-FUNCTOR + KT-LIST-BACKTRACK + KT-Y-ENV-RECURSION.
 - **No foreign kernels, no LMDB / fact source, no ISO contract.**
 - **No runtime-parser capability entry.**
 
 ## Path forward
 
-1. Retire remaining kotlin `ct_xfail`s (list structure-sharing, Y-env).
-2. Extend lowered emitter (T4/T5/ITE) following Lua/Scala models.
-3. Add ISO / kernels if Kotlin graduates beyond scaffold.
+1. Extend lowered emitter (T4/T5/ITE) following Lua/Scala models.
+2. Add ISO / kernels if Kotlin graduates beyond scaffold.
 
 ## Document status
 
 Fleet-aligned snapshot; source-verified against `wam_kotlin_target.pl`,
 `wam_kotlin_lowered_emitter.pl`, and `tests/test_wam_kotlin_target.pl`
-(2026-07-12). EMIT-KOTLIN-2 + CONF-KOTLIN + KT-ARITH-SLASH-FUNCTOR landed.
+(2026-07-12). EMIT-KOTLIN-2 + CONF-KOTLIN + KT-ARITH-SLASH-FUNCTOR +
+KT-LIST-BACKTRACK + KT-Y-ENV-RECURSION landed.
