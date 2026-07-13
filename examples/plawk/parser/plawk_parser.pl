@@ -1534,26 +1534,39 @@ assoc_add_delta(int(Value)) -->
       number_codes(Value, ValueCodes)
     }.
 
-% Row capture (PLAWK_MULTIPASS_CACHE.md §3.6): `TABLE[$k] = $0` stores the
-% whole current record ($0) as a row value in TABLE, keyed by field k -- the
-% first, minimal producer of row-valued tables. The row is a str-value (the
-% record's bytes); a later pass reads it back (`over TABLE`, and, with a
-% schema, `records of TABLE as r`). v1 stores $0 only (a `row(...)`
-% constructor is a follow-on). Tried before the scalar `set` -- the `[`
-% distinguishes them.
-assignment_action(set_row(var(Name), KeyExpr)) -->
+% Row store (PLAWK_MULTIPASS_CACHE.md §3.6): `TABLE[$k] = RHS` stores a row
+% value in TABLE, keyed by field k. RHS is either `$0` (capture the whole
+% current record -- set_row/2) or `row($a, $b, ...)` (construct a row from
+% chosen fields, in that order -- set_row_cons/3), the producer of row-valued
+% tables. A later pass reads it back (`over TABLE`, and, with a schema,
+% `records of TABLE as r`). Tried before the scalar `set` -- the `[`
+% distinguishes them; the `!` commits once `TABLE[key] =` is seen.
+assignment_action(Action) -->
     identifier(Name),
-    ws,
-    "[",
-    ws,
-    assoc_key_expr(KeyExpr),
-    ws,
-    "]",
+    ws, "[", ws, assoc_key_expr(KeyExpr), ws, "]", ws, "=", ws,
     !,
-    ws,
-    "=",
-    ws,
-    "$0".
+    assoc_row_rhs(var(Name), KeyExpr, Action).
+
+assoc_row_rhs(VarName, KeyExpr, set_row(VarName, KeyExpr)) -->
+    "$0",
+    !.
+assoc_row_rhs(VarName, KeyExpr, set_row_cons(VarName, KeyExpr, Fields)) -->
+    "row", ws, "(", ws, row_field_list(Fields), ws, ")".
+
+% Row constructor fields: one or more `$N` field references.
+row_field_list([F | Fs]) -->
+    row_field(F),
+    row_field_list_rest(Fs).
+row_field_list_rest([F | Fs]) -->
+    ws, ",", ws, row_field(F),
+    !,
+    row_field_list_rest(Fs).
+row_field_list_rest([]) --> [].
+row_field(field(Index)) -->
+    "$",
+    integer_codes(Codes),
+    { Codes \== [], number_codes(Index, Codes), Index >= 0 }.
+
 assignment_action(set(var(Name), Value)) -->
     identifier(Name),
     ws,

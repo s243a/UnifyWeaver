@@ -3887,6 +3887,7 @@ plawk_passes_tables(Passes, Tables) :-
 plawk_action_table_name(inc_assoc(var(Name), _Key), Name).
 plawk_action_table_name(add_assoc(var(Name), _Key, _Delta), Name).
 plawk_action_table_name(set_row(var(Name), _Key), Name).
+plawk_action_table_name(set_row_cons(var(Name), _Key, _Fields), Name).
 plawk_action_table_name(print(Fields), Name) :-
     member(assoc(var(Name), _Key), Fields).
 
@@ -4285,6 +4286,7 @@ plawk_assoc_specs_str_arrays(RuleSpecs, StrArrays) :-
           ( member(dynassoc(A, str(_Call)), ActionSpecs)
           ; member(dynassoc(A, posarray_str(_Call)), ActionSpecs)
           ; member(assoc_set_row(A, _Key), ActionSpecs)   % row-valued (str)
+          ; member(assoc_set_row_cons(A, _Key2, _Fs), ActionSpecs)  % row (str)
           )
         ),
         As0),
@@ -5554,6 +5556,16 @@ plawk_assoc_add_delta_ok(int(V)) :- integer(V).
 plawk_assoc_body_action_spec(set_row(var(ArrayName), field(KeyIndex)),
         assoc_set_row(ArrayName, KeyIndex)) :-
     integer(KeyIndex), KeyIndex > 0.
+% Row constructor `arr[$k] = row($a, $b, ...)`: store a row built from the
+% chosen fields (in that order), joined by the field separator so a reader's
+% field projection recovers the columns. Like set_row, a str-value.
+plawk_assoc_body_action_spec(set_row_cons(var(ArrayName), field(KeyIndex), Fields),
+        assoc_set_row_cons(ArrayName, KeyIndex, Indexes)) :-
+    integer(KeyIndex), KeyIndex > 0,
+    Fields = [_ | _],
+    maplist(plawk_row_cons_field, Fields, Indexes).
+
+plawk_row_cons_field(field(N), N) :- integer(N), N > 0.
 plawk_assoc_body_action_spec(dynassoc_bind(var(ArrayName), Call),
         dynassoc(ArrayName, Call)) :-
     plawk_dynrec_call_ok(Call).
@@ -5841,6 +5853,13 @@ plawk_assoc_planned_actions([assoc_set_row(ArrayName, KeyIndex) | Rest],
       NextIndex is Index + 1
     },
     [assoc_set_row_action(Index, ArrayName, TableIndex, KeyIndex)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+plawk_assoc_planned_actions([assoc_set_row_cons(ArrayName, KeyIndex, Fields) | Rest],
+        Tables, StrArrays, PosArrays, Index) -->
+    { nth0(TableIndex, Tables, ArrayName),
+      NextIndex is Index + 1
+    },
+    [assoc_set_row_cons_action(Index, ArrayName, TableIndex, KeyIndex, Fields)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 plawk_assoc_planned_actions([dynassoc(ArrayName, Call) | Rest], Tables,
         StrArrays, PosArrays, Index) -->
@@ -6582,6 +6601,111 @@ plawk_assoc_rule_action_blocks(RuleIndex,
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% Row constructor `arr[$k] = row($a, $b, ...)`: same key-intern + missing-key
+% skip, then build the row as the chosen fields joined by the field separator
+% (so a reader's field projection recovers them), intern it, and store the id.
+% The join is a single snprintf with a compile-time format ("%.*s<sep>..."),
+% each field made null-safe (empty on a missing field), into a fixed buffer.
+plawk_assoc_rule_action_blocks(RuleIndex,
+        [assoc_set_row_cons_action(Index, _ArrayName, TableIndex, KeyIndex, Fields) | Rest],
+        NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(HaveLabelName), 'assoc_rule_~w_action_~w_have_key', [RuleIndex, Index]),
+      format(atom(HaveLabel), 'assoc_rule_~w_action_~w_have_key:', [RuleIndex, Index]),
+      format(atom(B), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
+      format(atom(Slice),
+          '  %~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+          [B, KeyIndex, FieldSeparator]),
+      format(atom(Ptr), '  %~w_key_ptr = extractvalue %WamSlice %~w_key_slice, 0', [B, B]),
+      format(atom(Len), '  %~w_key_len = extractvalue %WamSlice %~w_key_slice, 1', [B, B]),
+      format(atom(Missing), '  %~w_key_missing = icmp eq i8* %~w_key_ptr, null', [B, B]),
+      format(atom(Branch), '  br i1 %~w_key_missing, label %~w, label %~w',
+          [B, ActionNextLabel, HaveLabelName]),
+      format(atom(KeyId),
+          '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_ptr, i64 %~w_key_len)',
+          [B, B, B]),
+      % empty-atom fallback for a missing field, and the join format string.
+      format(atom(EmptyName), '~w_empty', [B]),
+      format(atom(EmptyGlobal),
+          '@.~w = private constant [1 x i8] zeroinitializer', [EmptyName]),
+      plawk_row_cons_format_atom(Fields, FieldSeparator, FmtAtom),
+      format(atom(FmtName), '~w_fmt', [B]),
+      llvm_emit_c_string_global(FmtName, FmtAtom, FmtGlobal, _FmtLen, _FmtBytes),
+      plawk_row_cons_field_lines(Fields, B, EmptyName, FieldSeparator, 0,
+          FieldLines, ArgFrags),
+      atomic_list_concat(ArgFrags, ', ', ArgsIR),
+      format(atom(BufA), '  %~w_buf = alloca [4096 x i8]', [B]),
+      format(atom(BufP),
+          '  %~w_bufp = getelementptr [4096 x i8], [4096 x i8]* %~w_buf, i64 0, i64 0',
+          [B, B]),
+      format(atom(FmtP),
+          '  %~w_fmtp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+          [B, _FmtBytes, _FmtBytes, FmtName]),
+      format(atom(Snp),
+          '  %~w_wrote = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %~w_bufp, i64 4096, i8* %~w_fmtp, ~w)',
+          [B, B, B, ArgsIR]),
+      format(atom(RowLen), '  %~w_row_len = call i64 @strlen(i8* %~w_bufp)', [B, B]),
+      format(atom(RowId),
+          '  %~w_row_id = call i64 @wam_intern_atom(i8* %~w_bufp, i64 %~w_row_len)',
+          [B, B, B]),
+      format(atom(Set),
+          '  %~w_setrc = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id, i64 %~w_row_id)',
+          [B, TableIndex, B, B]),
+      format(atom(Next), '  br label %~w', [ActionNextLabel]),
+      append([[global(EmptyGlobal), global(FmtGlobal), Label, Slice, Ptr, Len,
+               Missing, Branch, '', HaveLabel, KeyId],
+              FieldLines,
+              [BufA, BufP, FmtP, Snp, RowLen, RowId, Set, Next, '']], Lines)
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+
+%% plawk_row_cons_format_atom(+Indexes, +FieldSep, -FmtAtom)
+%  The snprintf format joining N fields: "%.*s" per field, the field
+%  separator byte between, so a reader splitting on that separator recovers
+%  the columns.
+plawk_row_cons_format_atom(Indexes, FieldSep, FmtAtom) :-
+    length(Indexes, N),
+    length(Slots, N),
+    maplist(=('%.*s'), Slots),
+    atom_codes(SepAtom, [FieldSep]),
+    atomic_list_concat(Slots, SepAtom, FmtAtom).
+
+%% plawk_row_cons_field_lines(+Indexes, +Base, +EmptyName, +FieldSep, +Pos,
+%%     -Lines, -ArgFrags)
+%  Per constructor field: project field N of the current record, null-safe
+%  (empty on a missing field), yielding an `i32 <len>, i8* <ptr>` snprintf
+%  argument pair for the `%.*s` slot.
+plawk_row_cons_field_lines([], _B, _Empty, _FieldSep, _Pos, [], []).
+plawk_row_cons_field_lines([N | Rest], B, EmptyName, FieldSep, Pos,
+        Lines, [Frag | Frags]) :-
+    format(atom(Slice),
+        '  %~w_c~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+        [B, Pos, N, FieldSep]),
+    format(atom(Ptr), '  %~w_c~w_ptr = extractvalue %WamSlice %~w_c~w_slice, 0',
+        [B, Pos, B, Pos]),
+    format(atom(Len), '  %~w_c~w_len = extractvalue %WamSlice %~w_c~w_slice, 1',
+        [B, Pos, B, Pos]),
+    format(atom(Null), '  %~w_c~w_null = icmp eq i8* %~w_c~w_ptr, null',
+        [B, Pos, B, Pos]),
+    format(atom(SafePtr),
+        '  %~w_c~w_sptr = select i1 %~w_c~w_null, i8* getelementptr ([1 x i8], [1 x i8]* @.~w, i64 0, i64 0), i8* %~w_c~w_ptr',
+        [B, Pos, B, Pos, EmptyName, B, Pos]),
+    format(atom(SafeLen), '  %~w_c~w_slen = select i1 %~w_c~w_null, i64 0, i64 %~w_c~w_len',
+        [B, Pos, B, Pos, B, Pos]),
+    format(atom(Lenw), '  %~w_c~w_lenw = trunc i64 %~w_c~w_slen to i32',
+        [B, Pos, B, Pos]),
+    format(atom(Frag), 'i32 %~w_c~w_lenw, i8* %~w_c~w_sptr', [B, Pos, B, Pos]),
+    ThisLines = [Slice, Ptr, Len, Null, SafePtr, SafeLen, Lenw],
+    Pos1 is Pos + 1,
+    plawk_row_cons_field_lines(Rest, B, EmptyName, FieldSep, Pos1, RestLines, Frags),
+    append(ThisLines, RestLines, Lines).
 
 %% plawk_record_program_ok(+Descriptor, +Rules, +EndPrintFields) is semidet.
 %
