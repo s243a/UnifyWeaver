@@ -1667,6 +1667,22 @@ compile_execute_term_builtin_to_rust(Code) :-
                     false
                 }
             }
+            "=@=/2" | "\\\\=@=/2" => {
+                let left_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let right_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let left = self.deref_heap(&self.deref_var(&left_raw));
+                let right = self.deref_heap(&self.deref_var(&right_raw));
+                let mut left_vars = std::collections::HashMap::new();
+                let mut right_vars = std::collections::HashMap::new();
+                let equivalent = Self::variant_terms(
+                    &left,
+                    &right,
+                    &mut left_vars,
+                    &mut right_vars,
+                );
+                let succeeds = if op == "=@=/2" { equivalent } else { !equivalent };
+                if succeeds { self.pc += 1; true } else { false }
+            }
             "unifiable/3" => {
                 let left = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
                 let right = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
@@ -1733,6 +1749,51 @@ compile_execute_term_builtin_to_rust(Code) :-
                 Value::List(new_items)
             }
             _ => v.clone(),
+        }
+    }
+
+    fn variant_terms(
+        left: &Value,
+        right: &Value,
+        left_vars: &mut std::collections::HashMap<String, String>,
+        right_vars: &mut std::collections::HashMap<String, String>,
+    ) -> bool {
+        match (left, right) {
+            (Value::Unbound(a), Value::Unbound(b)) => {
+                if let Some(mapped) = left_vars.get(a) {
+                    return mapped == b && right_vars.get(b) == Some(a);
+                }
+                if right_vars.contains_key(b) { return false; }
+                left_vars.insert(a.clone(), b.clone());
+                right_vars.insert(b.clone(), a.clone());
+                true
+            }
+            (Value::Atom(a), Value::Atom(b)) => a == b,
+            (Value::Integer(a), Value::Integer(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::List(items), Value::Atom(atom))
+            | (Value::Atom(atom), Value::List(items))
+                if items.is_empty() && atom == "[]" => true,
+            (Value::Str(f1, args1), Value::Str(f2, args2)) => {
+                if f1 != f2 || args1.len() != args2.len() { return false; }
+                for (a, b) in args1.iter().zip(args2.iter()) {
+                    if !Self::variant_terms(a, b, left_vars, right_vars) {
+                        return false;
+                    }
+                }
+                true
+            }
+            (Value::List(items1), Value::List(items2)) => {
+                if items1.len() != items2.len() { return false; }
+                for (a, b) in items1.iter().zip(items2.iter()) {
+                    if !Self::variant_terms(a, b, left_vars, right_vars) {
+                        return false;
+                    }
+                }
+                true
+            }
+            _ => false,
         }
     }
 
