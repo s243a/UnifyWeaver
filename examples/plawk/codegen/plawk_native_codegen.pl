@@ -3708,18 +3708,19 @@ plawk_program_multipass_driver_ir(
         ),
         PassPairs),
     pairs_keys_values(PassPairs, ChainGlobals, Chains),
-    % One function per pass; index them.
+    % One function per pass; index them. The END for-in always has one
+    % shared table, threaded to each pass.
+    plawk_multipass_table_params([ArrayName], TableParamsIR, TableArgsIR),
     findall(FnIR,
         ( nth0(I, Chains, Chain),
-          plawk_multipass_pass_fn_ir(I, Chain, FnIR) ),
+          plawk_multipass_pass_fn_ir(I, TableParamsIR, Chain, FnIR) ),
         FnIRs),
     atomic_list_concat(FnIRs, '\n', PassFnsIR),
     % main's pass-call sequence.
     findall(CallLine,
         ( nth0(I, Chains, _),
           format(atom(CallLine),
-              '  call void @plawk_pass_~w(%Value %mp_path, %WamAssocI64Table* %plawk_assoc_table_0)',
-              [I]) ),
+              '  call void @plawk_pass_~w(%Value %mp_path~w)', [I, TableArgsIR]) ),
         CallLines),
     atomic_list_concat(CallLines, '\n', CallsIR),
     % Setup (create the shared table), BEGIN, and the END for-in print.
@@ -3774,13 +3775,13 @@ plawk_program_multipass_driver_ir(
     Passes = [_, _ | _],
     plawk_record_descriptor(BeginClauses, FieldSeparator),
     integer(FieldSeparator),
-    plawk_passes_shared_table(Passes, ArrayName),
+    plawk_passes_tables(Passes, Tables),        % 0 or 1 table (v1)
     findall(R, ( member(pass(PassRules), Passes), member(R, PassRules) ), AllRules),
-    plawk_forin_assoc_plan(AllRules, ArrayName, [], AssocPlan),
-    AssocPlan = assoc_plan([ArrayName], _),
+    plawk_multipass_pass_plan(AllRules, Tables, AssocPlan),  % validates surface
+    plawk_multipass_table_params(Tables, TableParamsIR, TableArgsIR),
     findall(GlobalIR-ChainIR,
         ( member(pass(PassRules), Passes),
-          plawk_forin_assoc_plan(PassRules, ArrayName, [], PassPlan),
+          plawk_multipass_pass_plan(PassRules, Tables, PassPlan),
           plawk_assoc_rule_controls(PassPlan, PassControls),
           plawk_assoc_break_close_ir(PassControls, ''),
           plawk_assoc_rule_chain_ir(PassPlan, FieldSeparator, GlobalIR, ChainIR)
@@ -3788,14 +3789,14 @@ plawk_program_multipass_driver_ir(
         PassPairs),
     pairs_keys_values(PassPairs, ChainGlobals, Chains),
     findall(FnIR,
-        ( nth0(I, Chains, Chain), plawk_multipass_pass_fn_ir(I, Chain, FnIR) ),
+        ( nth0(I, Chains, Chain),
+          plawk_multipass_pass_fn_ir(I, TableParamsIR, Chain, FnIR) ),
         FnIRs),
     atomic_list_concat(FnIRs, '\n', PassFnsIR),
     findall(CallLine,
         ( nth0(I, Chains, _),
           format(atom(CallLine),
-              '  call void @plawk_pass_~w(%Value %mp_path, %WamAssocI64Table* %plawk_assoc_table_0)',
-              [I]) ),
+              '  call void @plawk_pass_~w(%Value %mp_path~w)', [I, TableArgsIR]) ),
         CallLines),
     atomic_list_concat(CallLines, '\n', CallsIR),
     plawk_output_separator(BeginClauses, OutputSeparator),
@@ -3835,29 +3836,50 @@ get_path:
 ',
         [RuntimeGlobals, PassFnsIR, CombinedEntrySetupIR, CallsIR, FreeIR]).
 
-%% plawk_passes_shared_table(+Passes, -TableName)
-%  The single assoc table a multi-pass program shares (v1). Discovered from
-%  the passes' actions: a counted key `arr[$k]++` or a print lookup
-%  `arr[$k]`. Exactly one distinct table across all passes.
-plawk_passes_shared_table(Passes, TableName) :-
+%% plawk_passes_tables(+Passes, -Tables)
+%  The assoc tables a multi-pass program shares (v1: zero or one). Discovered
+%  from the passes' actions: a counted key `arr[$k]++` or a print lookup
+%  `arr[$k]`. A pure-scalar program (e.g. `pass { total += $2 }`) has none.
+plawk_passes_tables(Passes, Tables) :-
     findall(Name,
         ( member(pass(Rules), Passes), member(rule(_, Actions), Rules),
           member(Action, Actions), plawk_action_table_name(Action, Name) ),
         Names0),
-    sort(Names0, [TableName]).
+    sort(Names0, Tables),
+    length(Tables, N),
+    N =< 1.
 
 plawk_action_table_name(inc_assoc(var(Name), _Key), Name).
 plawk_action_table_name(print(Fields), Name) :-
     member(assoc(var(Name), _Key), Fields).
+
+%% plawk_multipass_table_params(+Tables, -ParamsIR, -ArgsIR)
+%  The LLVM parameter/argument suffix threading the shared table(s) into a
+%  pass function. Zero tables (pure scalar) -> empty; one table -> the
+%  %plawk_assoc_table_0 parameter the rule chain references.
+plawk_multipass_table_params([], '', '').
+plawk_multipass_table_params([_Table],
+    ', %WamAssocI64Table* %plawk_assoc_table_0',
+    ', %WamAssocI64Table* %plawk_assoc_table_0').
+
+%% plawk_multipass_pass_plan(+Rules, +Tables, -AssocPlan)
+%  Plan a pass's rules against the (already discovered) shared table set, so
+%  table indices are consistent across passes. Works with zero tables.
+plawk_multipass_pass_plan(Rules, Tables, assoc_plan(Tables, PlannedRules)) :-
+    maplist(plawk_assoc_rule_action_specs, Rules, RuleSpecs),
+    plawk_assoc_specs_str_arrays(RuleSpecs, StrArrays),
+    plawk_assoc_specs_posarray_arrays(RuleSpecs, PosArrays),
+    phrase(plawk_assoc_planned_rules(RuleSpecs, Tables, StrArrays, PosArrays, 0),
+        PlannedRules).
 
 %% plawk_multipass_pass_fn_ir(+Index, +RecordIR, -IR)
 %  One pass as a self-contained function: open the shared input path, loop
 %  reading transient line records, run RecordIR per record (it branches to
 %  %continue_loop and references the %plawk_assoc_table_0 parameter), and
 %  return. Function-local labels/SSA, so passes never collide.
-plawk_multipass_pass_fn_ir(Index, RecordIR, IR) :-
+plawk_multipass_pass_fn_ir(Index, TableParamsIR, RecordIR, IR) :-
     format(atom(IR),
-'define void @plawk_pass_~w(%Value %mp_path, %WamAssocI64Table* %plawk_assoc_table_0) {
+'define void @plawk_pass_~w(%Value %mp_path~w) {
 entry:
   %handle = call %Value @wam_stream_open_value(%Value %mp_path)
   %handle_tag = extractvalue %Value %handle, 0
@@ -3902,7 +3924,7 @@ close_stream:
 ret_void:
   ret void
 }
-', [Index, RecordIR]).
+', [Index, TableParamsIR, RecordIR]).
 
 %% plawk_forin_end_plan(+Rules, +LoopVar, +ArrayName, +BodyActions, -AssocPlan, -PrintFields)
 %
@@ -5301,12 +5323,36 @@ plawk_assoc_print_field_spec(assoc(var(Arr), field(N)), lookup(Arr, N)) :-
 % A scalar accumulator read in a per-record print.
 plawk_assoc_print_field_spec(var(Name), svar(Name)) :-
     atom(Name).
+% Arithmetic in a per-record print, e.g. `$2 / total` (normalise). The
+% surface `/` is integer (div_i64), which truncates fractions to 0, so a
+% print arithmetic expression is evaluated in f64 and printed with %g:
+% fields via @wam_atom_field_f64_value, a scalar via load+sitofp, an int
+% constant as a double literal. Operands are field/scalar/int (a table
+% lookup in arithmetic is a follow-on).
+plawk_assoc_print_field_spec(Expr, farith(F64Op, LOperand, ROperand)) :-
+    Expr =.. [Op, L, R],
+    plawk_i64_op_f64(Op, F64Op),
+    plawk_assoc_arith_operand(L, LOperand),
+    plawk_assoc_arith_operand(R, ROperand).
+
+% Surface i64 arithmetic operator -> the f64 LLVM opcode for print arithmetic.
+plawk_i64_op_f64(add_i64, fadd).
+plawk_i64_op_f64(sub_i64, fsub).
+plawk_i64_op_f64(mul_i64, fmul).
+plawk_i64_op_f64(div_i64, fdiv).
+plawk_i64_op_f64(mod_i64, frem).
+
+% An arithmetic operand in a print expression.
+plawk_assoc_arith_operand(field(N), afield(N)) :- integer(N), N > 0.
+plawk_assoc_arith_operand(var(Name), asvar(Name)) :- atom(Name).
+plawk_assoc_arith_operand(int(V), aint(V)) :- integer(V).
 
 % Resolve a print field's lookup array to its table index in the plan.
 plawk_assoc_print_plan_field(_Tables, fld(N), fld(N)).
 plawk_assoc_print_plan_field(Tables, lookup(Arr, N), lookup(TableIndex, N)) :-
     nth0(TableIndex, Tables, Arr).
 plawk_assoc_print_plan_field(_Tables, svar(Name), svar(Name)).
+plawk_assoc_print_plan_field(_Tables, farith(Op, L, R), farith(Op, L, R)).
 
 % The per-record source value added to a scalar accumulator: a constant, or
 % field N converted to i64.
@@ -5377,6 +5423,37 @@ plawk_assoc_print_one_field(svar(Name), Base, Index, _FieldSep, Lines) :-
     format(atom(PrL),
         '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i64 %~w_sv)', [P, P, P]),
     Lines = [LoadL, FmtL, PrL].
+% Print arithmetic in f64: evaluate both operands as doubles, apply the op,
+% print with %g.
+plawk_assoc_print_one_field(farith(F64Op, LOperand, ROperand), Base, Index, FieldSep, Lines) :-
+    format(atom(P), '~w_f~w', [Base, Index]),
+    plawk_assoc_arith_operand_lines(LOperand, P, l, FieldSep, LVar, LLines),
+    plawk_assoc_arith_operand_lines(ROperand, P, r, FieldSep, RVar, RLines),
+    format(atom(OpL), '  %~w_res = ~w double ~w, ~w', [P, F64Op, LVar, RVar]),
+    format(atom(FmtL),
+        '  %~w_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
+        [P]),
+    format(atom(PrL),
+        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, double %~w_res)', [P, P, P]),
+    append([LLines, RLines, [OpL, FmtL, PrL]], Lines).
+
+%% plawk_assoc_arith_operand_lines(+Operand, +P, +Slot, +FieldSep, -ValVar, -Lines)
+%  Emit IR computing a print-arithmetic operand as a double. `afield(N)`
+%  reads field N as f64; `asvar(Name)` loads the scalar global and promotes
+%  it (sitofp); `aint(V)` promotes the integer constant.
+plawk_assoc_arith_operand_lines(afield(N), P, Slot, FieldSep, ValVar, [Line]) :-
+    format(atom(ValVar), '%~w_~w', [P, Slot]),
+    format(atom(Line),
+        '  ~w = call double @wam_atom_field_f64_value(%Value %line, i64 ~w, i8 ~w)',
+        [ValVar, N, FieldSep]).
+plawk_assoc_arith_operand_lines(asvar(Name), P, Slot, _FieldSep, ValVar, [LoadL, PromL]) :-
+    format(atom(IVar), '%~w_~w_i', [P, Slot]),
+    format(atom(ValVar), '%~w_~w', [P, Slot]),
+    format(atom(LoadL), '  ~w = load i64, i64* @plawk_scalar_~w', [IVar, Name]),
+    format(atom(PromL), '  ~w = sitofp i64 ~w to double', [ValVar, IVar]).
+plawk_assoc_arith_operand_lines(aint(V), P, Slot, _FieldSep, ValVar, [Line]) :-
+    format(atom(ValVar), '%~w_~w', [P, Slot]),
+    format(atom(Line), '  ~w = sitofp i64 ~w to double', [ValVar, V]).
 
 plawk_assoc_body_action_spec(for_in(var(LoopVar), var(ArrayName), Body),
         forin(LoopVar, ArrayName, Fields)) :-
