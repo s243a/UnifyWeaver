@@ -48,6 +48,17 @@ test(single_pass_add_assign, [condition(clang_available)]) :-
     assertion(S == ["a 30", "b 5"]),
     !.
 
+% Fractional per-key normalise: a table lookup as an arithmetic operand in a
+% print (`$2 / total[$1]`), evaluated in f64. Each record is divided by its
+% OWN key's total. Over a=10,30 (total 40) and b=5 (total 5):
+% 0.25, 0.75, 1.
+test(perkey_normalise, [condition(clang_available)]) :-
+    kdir(Dir),
+    Src = "pass { total[$1] += $2 }\npass { print $1, $2 / total[$1] }\n",
+    run_sorted(Dir, 'pkn', Src, "a 10\na 30\nb 5\n", S),
+    assertion(S == ["a 0.25", "a 0.75", "b 1"]),
+    !.
+
 :- end_tests(plawk_perkey).
 
 % --- helpers ---------------------------------------------------------------
