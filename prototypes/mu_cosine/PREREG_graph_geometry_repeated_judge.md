@@ -3,9 +3,11 @@
 ## Status and authorization boundary
 
 **Frozen before running the new power harness, selecting any new endpoint, or making any fresh judge call.**
-This PR is deliberately no-spend: it freezes the candidate capacity, outcome-blind sampler, repeat-aware data
-contract, simulation, estimands, and decision rules.  It creates no labels, authorizes no API/judge calls, and
-cannot unlock covariance deployment, independent batching, QR specialization, or CUDA claims.
+This PR is deliberately no-spend: it freezes the **planned** candidate-capacity grid, outcome-blind selector
+contract, repeat-aware data contract, simulation, estimands, and decision rules.  It creates no labels,
+authorizes no API/judge calls, and cannot unlock covariance deployment, independent batching, QR
+specialization, or CUDA claims.  The candidate builder and approved live request contract are not included;
+caller-supplied hashes make a dry-run reproducible but do not verify those missing artifacts.
 
 If a named judge or prompt is unavailable, this document must be amended before any fresh response exists.
 Operational dry runs may use synthetic responses only.  A 64-component live engineering pilot is permitted
@@ -57,12 +59,18 @@ stratum and are never pooled silently.
 
 To amortize the system prompt, one confirmatory request contains up to ten rows from distinct endpoint
 components and a single row role.  Prompt-block membership is stable across roles, judges, and repeats, so the
-request-connected dependence clusters remain bounded.  A block and all of its rows remain wholly inside one
+request-connected dependence clusters remain bounded.  Each role-by-judge measurement gets an independent
+deterministic base order and evenly spaced repeat rotations.  Exact serialized request-input bytes are hashed
+into request identity, and provider call identities may not be reused across logical attempts.  A block and all
+of its rows remain wholly inside one
 corpus, outer fold, and global inner-fold label; no request crosses an analysis boundary.  The prompt block,
 not an individual component, is the conservative inference/resampling cluster.  Request and block effects are
 integrated as held random effects using covariance fit inside training folds; their realized held values are
 not estimated from training data.  The later `N_item=128,M_channel=32` numerical batch is a different
 conditioning layout over already collected measurements.
+
+Every submitted score row includes a stable `row_id`; the eventual approved prompt/parser must return that key.
+Responses join on `(request_id,row_id)` and never infer identity from list position.
 
 Repeats are not averaged before variance decomposition.  The analysis reports:
 
@@ -177,6 +185,9 @@ epsilon_gir ~ Normal(0, I_item tensor W_call).
 ```
 
 `w`, `b`, and request-level missingness are generated and refit; uncertainty resamples stable prompt blocks.
+The synthetic sizing model does **not** generate arbitrary list-position effects.  Counterbalanced scheduling
+mitigates but does not identify that nuisance: live approval requires an engineering pilot, a frozen
+position-by-role-by-judge train-only adjustment, and a position-effect power sensitivity in a later amendment.
 The **block null** sets graph-local persistent item coupling to zero while retaining fitted prompt, wave, and
 row-call incidence covariance; it is not full independence of every row in `R`.  Candidate item covariances
 are explicit feature Grams.  Frozen scenarios are block null, smooth-mean only,
@@ -187,7 +198,9 @@ only graph-local persistent coupling.
 
 Every null and alternative replicate repeats component splitting, mean/ridge selection, repeat decomposition,
 `W_call`, `B`, kernel/mixture/coupling selection, loading, and endpoint scoring.  Cache only outcome-blind feature
-Grams, folds, eigensystems, and linear-system structure.  Seeds derive from `(G,R,scenario,replicate)`; scientific
+Grams, folds, eigensystems, and linear-system structure across replicates.  Ephemeral factor memoization is
+permitted only within one fitted nuisance object and may not cross a fit, fold, replicate, scenario, or corpus.
+Seeds derive from `(G,R,scenario,replicate)`; scientific
 JSON excludes wall time and output paths.
 
 The frozen implementation details are: prompt-block capacity 10; five outer and three inner folds; mean-ridge
@@ -215,8 +228,8 @@ draw, and apply the resulting threshold only to that fold's untouched held block
 The reported primary-event count is the smallest `G` for which the joint two-corpus simulation, at
 `rho_max=.10` and `.20`, satisfies:
 
-1. graph-local block-null false primary promotion does not reject `p<=.05` in a one-sided exact binomial test at 5%,
-   and its observed rate is at most 10%;
+1. for **both** the graph-local block null and zero-coupling smooth-mean-only control, false primary promotion
+   does not reject `p<=.05` in a one-sided exact binomial test at 5%, and the observed rate is at most 10%;
 2. simultaneous residual/posterior primary-event power is at least 80% for cumulative, Nomic, and mixture
    truths in both corpora;
 3. mean selected outer-held residual NLL gain is positive;

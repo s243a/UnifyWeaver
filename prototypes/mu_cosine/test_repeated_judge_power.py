@@ -1,10 +1,12 @@
 import os
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import repeated_judge_power as power
 from repeated_judge_power import (
     BLOCK_CANDIDATE,
     CALL_CHANNEL_COVARIANCE,
@@ -50,6 +52,66 @@ def geometry_and_splits(component_count=48, seed=1):
         component_count, seed=seed + 1, prompt_blocks=splits.prompt_blocks
     )
     return geometry, splits
+
+
+def shared_varying_schedule(component_count):
+    shared = np.zeros((3, 5, 2), dtype=bool)
+    shared[0, :, 0] = True
+    shared[0, :4, 1] = True
+    shared[1, (0, 2, 4), 0] = True
+    shared[1, :, 1] = True
+    shared[2, :4, 0] = True
+    shared[2, :2, 1] = True
+    return np.repeat(shared[None], component_count, axis=0)
+
+
+def score_only_nuisance(observed):
+    counts = np.sum(observed, axis=2)
+    return SimpleNamespace(
+        persistent_covariance=power.PERSISTENT_CHANNEL_COVARIANCE.copy(),
+        call_covariance=CALL_CHANNEL_COVARIANCE.copy(),
+        request_covariance=REQUEST_CHANNEL_COVARIANCE.copy(),
+        repeat_covariance=(
+            CALL_CHANNEL_COVARIANCE + REQUEST_CHANNEL_COVARIANCE
+        ),
+        evaluate_repeat_counts=counts,
+        evaluate_observed_calls=observed,
+    )
+
+
+def dense_prompt_score_reference(residuals, nuisance, kernel, rho, states):
+    positions = np.arange(len(residuals))
+    covariance = prompt_block_candidate_covariance(
+        nuisance, kernel, rho, positions
+    )
+    residual_vector = residuals.reshape(-1)
+    residual_score = 0.5 * (
+        residual_vector @ np.linalg.solve(covariance, residual_vector)
+        + np.linalg.slogdet(covariance)[1]
+        + len(residual_vector) * np.log(2.0 * np.pi)
+    ) / len(residual_vector)
+
+    component_design = np.kron(np.eye(3), power.MEASUREMENT_DESIGN)
+    component_prior = np.kron(
+        np.eye(3), power.PRIOR_STATE_COVARIANCE
+    )
+    design = np.kron(np.eye(len(residuals)), component_design)
+    prior = np.kron(np.eye(len(residuals)), component_prior)
+    truth = states.reshape(-1)
+    observed = design @ truth + residual_vector
+    solved_design = np.linalg.solve(covariance, design)
+    precision = np.linalg.solve(prior, np.eye(len(prior))) + design.T @ solved_design
+    posterior_covariance = np.linalg.solve(precision, np.eye(len(precision)))
+    posterior_mean = posterior_covariance @ (
+        design.T @ np.linalg.solve(covariance, observed)
+    )
+    delta = truth - posterior_mean
+    posterior_score = 0.5 * (
+        delta @ precision @ delta
+        + np.linalg.slogdet(posterior_covariance)[1]
+        + len(delta) * np.log(2.0 * np.pi)
+    ) / len(delta)
+    return residual_score, posterior_score
 
 
 def test_frozen_grids_scenarios_and_psd_geometry_are_exact():
@@ -226,6 +288,143 @@ def test_candidate_marginal_and_prompt_schedule_covariances_are_both_present():
     assert np.max(np.abs(cross)) > 0.0
 
 
+@pytest.mark.parametrize("component_count", [1, 2, 10])
+def test_compound_symmetric_fast_scores_match_dense_for_shared_varying_counts(
+    component_count,
+    monkeypatch,
+):
+    observed = shared_varying_schedule(component_count)
+    nuisance = score_only_nuisance(observed)
+    rng = np.random.default_rng(3100 + component_count)
+    residuals = rng.standard_normal((component_count, 3, 4))
+    states = rng.standard_normal((component_count, 3, 2))
+    blocks = np.zeros(component_count, dtype=int)
+    kernel = gamma_item_kernel(0.75)
+    rho = 0.10
+    dense_residual, dense_posterior = dense_prompt_score_reference(
+        residuals, nuisance, kernel, rho, states
+    )
+
+    def forbidden_dense_fallback(*_args, **_kwargs):
+        raise AssertionError("exchangeable schedule used the dense fallback")
+
+    monkeypatch.setattr(
+        power, "_dense_prompt_block_gaussian_score", forbidden_dense_fallback
+    )
+    monkeypatch.setattr(
+        power,
+        "_dense_prompt_block_posterior_state_score",
+        forbidden_dense_fallback,
+    )
+    fast_residual = prompt_block_gaussian_nll(
+        residuals, nuisance, kernel, rho, blocks
+    )
+    fast_posterior = prompt_block_posterior_state_nll(
+        residuals, nuisance, kernel, rho, states, blocks
+    )
+    np.testing.assert_allclose(
+        fast_residual,
+        np.full(component_count, dense_residual),
+        rtol=2e-12,
+        atol=2e-12,
+    )
+    np.testing.assert_allclose(
+        fast_posterior,
+        np.full(component_count, dense_posterior),
+        rtol=2e-12,
+        atol=2e-12,
+    )
+
+
+@pytest.mark.parametrize("schedule_case", ["unequal_counts", "different_schedule"])
+def test_nonexchangeable_schedules_use_dense_fallback_and_remain_exact(
+    schedule_case,
+    monkeypatch,
+):
+    observed = shared_varying_schedule(3)
+    if schedule_case == "unequal_counts":
+        observed[1, 0, 4, 0] = False
+    else:
+        # Preserve the count while changing which repeat was recorded.  With
+        # three components this creates nonconstant pairwise overlaps.
+        observed[1, 0, 0, 1] = False
+        observed[1, 0, 4, 1] = True
+    nuisance = score_only_nuisance(observed)
+    rng = np.random.default_rng(3200 + int(schedule_case == "different_schedule"))
+    residuals = rng.standard_normal((3, 3, 4))
+    states = rng.standard_normal((3, 3, 2))
+    blocks = np.zeros(3, dtype=int)
+    kernel = gamma_item_kernel(0.25)
+    rho = 0.05
+    dense_residual, dense_posterior = dense_prompt_score_reference(
+        residuals, nuisance, kernel, rho, states
+    )
+    assert power._exchangeable_prompt_schedule(nuisance, np.arange(3)) is None
+
+    fallback_calls = {"residual": 0, "posterior": 0}
+    original_residual = power._dense_prompt_block_gaussian_score
+    original_posterior = power._dense_prompt_block_posterior_state_score
+
+    def residual_spy(*args, **kwargs):
+        fallback_calls["residual"] += 1
+        return original_residual(*args, **kwargs)
+
+    def posterior_spy(*args, **kwargs):
+        fallback_calls["posterior"] += 1
+        return original_posterior(*args, **kwargs)
+
+    monkeypatch.setattr(power, "_dense_prompt_block_gaussian_score", residual_spy)
+    monkeypatch.setattr(
+        power, "_dense_prompt_block_posterior_state_score", posterior_spy
+    )
+    actual_residual = prompt_block_gaussian_nll(
+        residuals, nuisance, kernel, rho, blocks
+    )
+    actual_posterior = prompt_block_posterior_state_nll(
+        residuals, nuisance, kernel, rho, states, blocks
+    )
+    assert fallback_calls == {"residual": 1, "posterior": 1}
+    np.testing.assert_allclose(
+        actual_residual, np.full(3, dense_residual), rtol=2e-12, atol=2e-12
+    )
+    np.testing.assert_allclose(
+        actual_posterior, np.full(3, dense_posterior), rtol=2e-12, atol=2e-12
+    )
+
+
+def test_exchangeable_mode_factorizations_are_cached_by_exact_signature(monkeypatch):
+    observed = shared_varying_schedule(4)
+    nuisance = score_only_nuisance(observed)
+    rng = np.random.default_rng(3300)
+    residuals = rng.standard_normal((4, 3, 4))
+    states = rng.standard_normal((4, 3, 2))
+    blocks = np.repeat(np.arange(2), 2)
+    kernel = gamma_item_kernel(0.5)
+    calls = {"residual": 0, "posterior": 0}
+    original_residual = power._factor_compound_symmetric_gaussian_modes
+    original_posterior = power._factor_compound_symmetric_posterior_modes
+
+    def residual_spy(*args, **kwargs):
+        calls["residual"] += 1
+        return original_residual(*args, **kwargs)
+
+    def posterior_spy(*args, **kwargs):
+        calls["posterior"] += 1
+        return original_posterior(*args, **kwargs)
+
+    monkeypatch.setattr(
+        power, "_factor_compound_symmetric_gaussian_modes", residual_spy
+    )
+    monkeypatch.setattr(
+        power, "_factor_compound_symmetric_posterior_modes", posterior_spy
+    )
+    prompt_block_gaussian_nll(residuals, nuisance, kernel, 0.10, blocks)
+    prompt_block_posterior_state_nll(
+        residuals, nuisance, kernel, 0.10, states, blocks
+    )
+    assert calls == {"residual": 1, "posterior": 1}
+
+
 def test_component_nll_matches_direct_dense_formula():
     rng = np.random.default_rng(33)
     residuals = rng.standard_normal((4, 3, 4))
@@ -295,6 +494,120 @@ def test_inner_search_uses_complete_grid_three_folds_and_frozen_tie_break():
         row.candidate.gamma,
     ))
     assert chosen.candidate == Candidate(0.5, 0.05)
+
+
+def test_inner_search_recomputes_dense_before_a_last_bit_zero_decision(monkeypatch):
+    geometry, splits = geometry_and_splits(36, seed=61)
+    field = draw_repeated_field(
+        geometry, SCENARIO_BY_NAME["block_null"], repeats=3, seed=62
+    )
+    tolerance = power.DENSE_DECISION_RECHECK_ATOL
+    dense_calls = 0
+
+    def fast_score(residuals, _nuisance, _kernel, rho, _blocks):
+        value = -0.5 * tolerance if rho > 0.0 else 0.0
+        return np.full(len(residuals), value)
+
+    def dense_score(residuals, _nuisance, _kernel, rho, _blocks):
+        nonlocal dense_calls
+        dense_calls += 1
+        value = 0.5 * tolerance if rho > 0.0 else 0.0
+        return np.full(len(residuals), value)
+
+    monkeypatch.setattr(power, "prompt_block_gaussian_nll", fast_score)
+    monkeypatch.setattr(power, "_dense_prompt_block_gaussian_nll", dense_score)
+    search = inner_candidate_search(
+        field,
+        geometry,
+        splits.outer[0],
+        gammas=(0.5,),
+        rhos=(0.0, 0.10),
+    )
+    candidate_summary = next(
+        row for row in search.summaries if not row.candidate.is_block
+    )
+    assert dense_calls == 6  # block and candidate in each of three folds
+    assert candidate_summary.fold_gains == pytest.approx(
+        (-0.5 * tolerance,) * 3
+    )
+    assert candidate_summary.positive_folds == 0
+    assert search.selected == BLOCK_CANDIDATE
+
+
+def test_dense_zero_guard_is_a_trigger_not_a_changed_threshold(monkeypatch):
+    geometry, splits = geometry_and_splits(36, seed=63)
+    field = draw_repeated_field(
+        geometry, SCENARIO_BY_NAME["block_null"], repeats=3, seed=64
+    )
+    gain = 2.0 * power.DENSE_DECISION_RECHECK_ATOL
+
+    def fast_score(residuals, _nuisance, _kernel, rho, _blocks):
+        return np.full(len(residuals), -gain if rho > 0.0 else 0.0)
+
+    def forbidden_dense_score(*_args, **_kwargs):
+        raise AssertionError("a gain outside the numerical guard was recomputed")
+
+    monkeypatch.setattr(power, "prompt_block_gaussian_nll", fast_score)
+    monkeypatch.setattr(
+        power, "_dense_prompt_block_gaussian_nll", forbidden_dense_score
+    )
+    search = inner_candidate_search(
+        field,
+        geometry,
+        splits.outer[0],
+        gammas=(0.5,),
+        rhos=(0.0, 0.10),
+    )
+    assert search.selected == Candidate(0.5, 0.10)
+    assert search.maximum_eligible_gain == pytest.approx(gain)
+
+
+@pytest.mark.parametrize(
+    ("seed", "scenario_name"),
+    [
+        (71, "block_null"),
+        (72, "cumulative_rho_0.10"),
+        (73, "mixture_rho_0.20"),
+    ],
+)
+def test_inner_search_selection_matches_forced_dense_scoring(
+    seed,
+    scenario_name,
+    monkeypatch,
+):
+    geometry, splits = geometry_and_splits(36, seed=seed)
+    field = draw_repeated_field(
+        geometry,
+        SCENARIO_BY_NAME[scenario_name],
+        repeats=4,
+        seed=seed + 200,
+        missing_rate=0.15,
+    )
+    fast = inner_candidate_search(field, geometry, splits.outer[0])
+    with monkeypatch.context() as context:
+        context.setattr(
+            power,
+            "_exchangeable_prompt_schedule",
+            lambda _nuisance, _positions: None,
+        )
+        dense = inner_candidate_search(field, geometry, splits.outer[0])
+
+    assert fast.selected == dense.selected
+    assert fast.maximum_eligible_gain == pytest.approx(
+        dense.maximum_eligible_gain, abs=1e-12
+    )
+    for fast_summary, dense_summary in zip(fast.summaries, dense.summaries):
+        assert fast_summary.candidate == dense_summary.candidate
+        assert fast_summary.positive_folds == dense_summary.positive_folds
+        assert fast_summary.macro_gain == pytest.approx(
+            dense_summary.macro_gain, abs=1e-12
+        )
+        np.testing.assert_allclose(
+            fast_summary.fold_gains,
+            dense_summary.fold_gains,
+            rtol=0.0,
+            atol=1e-12,
+        )
 
 
 def test_prompt_block_multiplier_uses_clusters_and_constant_bounds_are_exact():

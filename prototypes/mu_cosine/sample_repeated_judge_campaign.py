@@ -84,6 +84,7 @@ SCHEDULE_COLUMNS = (
     "batch_row",
     "global_position",
     "request_id",
+    "request_input_sha256",
     "prompt_block_id",
     "inference_cluster_id",
     "corpus",
@@ -163,8 +164,14 @@ def _configuration_classification(args, request_specs):
         deviations.append("prompt blocks exceed the frozen maximum of 10 rows")
     if any(not spec["stateless"] for spec in request_specs.values()):
         deviations.append("request contract is not stateless")
+    # This repository does not yet contain the candidate builder or the exact
+    # approved prompt/settings artifacts.  A caller-supplied content hash is
+    # useful for reproducibility but is not independent verification, so even
+    # an otherwise frozen-shaped materialization must not be labeled
+    # confirmatory-ready.
     classification = (
-        "confirmatory-compatible-no-spend" if not deviations else "exploratory-smoke-only"
+        "protocol-shape-compatible-no-spend-inputs-unverified"
+        if not deviations else "exploratory-smoke-only"
     )
     return classification, deviations
 
@@ -270,6 +277,10 @@ def build_campaign(args):
                     request_artifact = _artifact(
                         temporary, request_relative, score_input_bytes(request_rows)
                     )
+                    if request_artifact["sha256"] != request_schedule[0]["request_input_sha256"]:
+                        raise AssertionError(
+                            "request ID input hash differs from materialized request bytes"
+                        )
                     request_artifacts.append({
                         "request_id": request_id,
                         "prompt_block_id": request_schedule[0]["prompt_block_id"],
@@ -294,6 +305,8 @@ def build_campaign(args):
             "status": "OUTCOME-BLIND CAMPAIGN MATERIALIZATION; NO JUDGE OR MODEL CALLS",
             "classification": classification,
             "call_authorized": False,
+            "candidate_builder_verified_by_repository": False,
+            "request_contract_approved_for_live_use": False,
             "configuration_deviations": deviations,
             "algorithm": ALGORITHM,
             "configuration": {
@@ -341,6 +354,11 @@ def build_campaign(args):
                 "request_split_signature": ["corpus", "outer_fold", "global_inner_fold"],
                 "prompt_block_is_inference_cluster": True,
                 "prompt_block_membership_stable_across_roles_judges_repeats": True,
+                "row_position_schedule": (
+                    "independent deterministic base per role-by-judge; "
+                    "evenly spaced rotations across repeats"
+                ),
+                "list_position_effect_power_sensitivity_implemented": False,
                 "wave_files": wave_files,
             },
             "outputs": sorted(artifacts, key=lambda value: value["name"]),
@@ -348,7 +366,10 @@ def build_campaign(args):
                 "materialization does not establish covariance",
                 "component folds do not consume outcomes",
                 "score inputs have not been submitted to any judge",
-                "materialization never authorizes fresh calls, including confirmatory-compatible output",
+                "candidate-builder hashes are caller-supplied provenance, not repository verification",
+                "model revision, prompt hash, and settings have not been approved for live use",
+                "list-position effects require a pilot and later frozen sensitivity before live use",
+                "materialization never authorizes fresh calls, including protocol-shaped output",
             ],
         }
         manifest_payload = json_bytes(manifest)

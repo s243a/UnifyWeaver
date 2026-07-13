@@ -72,6 +72,15 @@ a final sample size.
 **Reason:** simultaneous inference plus calibration, mean, marginal covariance, and selector fitting consumes
 more information.  If 800 fails, increase components rather than lower 95% confidence.
 
+## 2026-07-13 — both zero-coupling controls must pass the false-promotion gate
+
+**Decision:** apply the same observed primary-event rate at most 10% and one-sided exact-binomial
+non-rejection gate to both the graph-local block null and the zero-coupling smooth-mean-only control.  Retain
+the held residual no-harm checks as separate requirements.
+
+**Rejected:** allowing smooth-mean-only to pass merely because its average residual gain is nonnegative.  That
+would permit an arbitrarily high structured false-promotion rate under a zero-coupling control.
+
 ## 2026-07-12 — use PSD-path shrinkage and a spectral envelope
 
 **Decision:** choose `alpha_safe` by multiplicity-adjusted held benefit on a PSD path and add a separately
@@ -221,3 +230,60 @@ realized global and leave-one-outer totals, and does not claim the synthetic bou
 **Reason:** stable labels keep shared prompts out of train/held crossings.  At `G=160`, five outer folds of 32
 force one leave-one-outer inner allocation to be 44/42/42; changing labels by outer split would break the stable
 prompt-block contract.
+
+## 2026-07-12 — distinguish reproducible declarations from verified campaign inputs
+
+**Decision:** let the no-spend selector validate and hash an externally materialized candidate pool and request
+contract, but label even a frozen-shaped output `protocol-shape-compatible-no-spend-inputs-unverified` until a
+repository-owned candidate builder and an approved exact model-revision/prompt/settings contract exist.
+
+**Rejected:** interpret a caller-supplied implementation or artifact hash as independent attestation, or let a
+dry-run manifest authorize live judge calls.
+
+**Reason:** content addressing makes the supplied bytes reproducible; it does not prove how those bytes were
+created or that a prompt was approved.  Conflating those properties would turn a useful dry-run tool into a
+false confirmatory readiness claim.
+
+## 2026-07-12 — counterbalance prompt position and bind exact request bytes
+
+**Decision:** keep prompt-block membership stable, give each role-by-judge measurement an independently hashed
+base order, and spread its repeat rotations across the available positions.  Hash the exact serialized
+request-input bytes into the logical request ID, and require provider request/nonempty response IDs to be
+unique across logical attempts.  Treat a position-effect pilot, train-only adjustment, and power sensitivity
+as prerequisites for live approval rather than claims of this synthetic harness.
+
+**Rejected:** keep each component at one list position, identify a request only by normalized endpoint IDs, or
+accept one provider call as evidence for multiple nominal repeats.
+
+**Reason:** a persistent list-position effect could otherwise follow a component and masquerade as cross-item
+or cross-role covariance.  Independent bases plus spread rotations reduce that alignment but cannot identify
+an arbitrary position nuisance with only three repeats.  Normalized identity deliberately ignores presentation
+changes that alter actual prompt bytes, while reused provider IDs destroy the fresh-call estimand.  Membership
+stability preserves the inference cluster; the remaining position question is explicitly fail-closed.
+
+## 2026-07-12 — treat smooth mean misspecification as a false-promotion null
+
+**Decision:** require the smooth-mean-only, zero-coupling control to pass the same at-most-10% joint primary
+promotion and exact-binomial no-excess gate as the simpler block null, in addition to its no-harm diagnostic.
+
+**Rejected:** let improved held likelihood alone validate a structured covariance under mean-only truth.
+
+**Reason:** a covariance kernel can absorb a misspecified mean and improve prediction while still being a
+false covariance discovery.  The scientific question is residual coupling after mean removal, so robustness
+to the frozen nonlinear mean control is part of false-promotion control, not merely a predictive diagnostic.
+
+## 2026-07-12 — use exact prompt-block eigenmodes with a dense fallback
+
+**Decision:** when every component in a prompt block has the identical observed request schedule, write its
+joint covariance as `I_m tensor A + J_m tensor B` and score one collective mode `A+mB` plus `m-1` contrast
+modes `A`.  Validate the exact boolean schedule, use the dense overlap-aware solve otherwise, and densely
+recompute candidates within `1e-12` of a strict-zero eligibility decision.  Permit factor caching only inside
+one fitted nuisance object.
+
+**Rejected:** infer exchangeability from repeat counts alone, apply the shortcut to arbitrary real incidence
+matrices, reuse fitted factors across folds/replicates, or round gains at the decision boundary.
+
+**Reason:** shared request-level missingness makes the reduction algebraically exact in the current synthetic
+blocks and reduces 120-dimensional factorizations to 12-dimensional collective/contrast systems.  Equal counts
+can hide different overlap schedules, while real prompt incidence need not commute with the item kernel; dense
+joint QR therefore remains the general correctness reference.

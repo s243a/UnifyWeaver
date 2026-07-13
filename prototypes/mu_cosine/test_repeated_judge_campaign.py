@@ -197,6 +197,20 @@ def test_historical_filter_selection_folds_and_schedule_are_deterministic(tmp_pa
         request_blocks[(record["prompt_block_id"], record["role"])].add(record["component_id"])
     assert all(len(values) == 1 for values in request_signatures.values())
     assert all(record["prompt_block_id"] == record["inference_cluster_id"] for record in schedule)
+    assert all(len(record["request_input_sha256"]) == 64 for record in schedule)
+
+    positions = defaultdict(Counter)
+    batch_sizes = {}
+    for record in schedule:
+        key = (
+            record["prompt_block_id"], record["component_id"],
+            record["role"], record["judge"],
+        )
+        positions[key][record["batch_row"]] += 1
+        batch_sizes[key] = record["batch_size"]
+    for key, counts in positions.items():
+        values = [counts[position] for position in range(batch_sizes[key])]
+        assert max(values) - min(values) <= 1
 
     changed_specs = judge_specs()
     changed_specs["judge-a"]["model_revision"] = "revision-2"
@@ -210,6 +224,21 @@ def test_historical_filter_selection_folds_and_schedule_are_deterministic(tmp_pa
     )
     assert {record["request_id"] for record in schedule}.isdisjoint(
         {record["request_id"] for record in changed_schedule}
+    )
+    presentation_changed = [dict(row) for row in rows]
+    for row in presentation_changed:
+        row["node_title"] = row["node_title"].upper()
+        row["root_title"] = row["root_title"].upper()
+    presentation_schedule, _ = build_scoring_schedule(
+        presentation_changed,
+        judges=("judge-a",),
+        repeats=3,
+        batch_size=2,
+        seed=23,
+        judge_specs=judge_specs(),
+    )
+    assert {record["request_id"] for record in schedule}.isdisjoint(
+        {record["request_id"] for record in presentation_schedule}
     )
     seeded_specs = judge_specs()
     seeded_specs["judge-a"]["call_seed_base"] = 7
@@ -432,6 +461,20 @@ def test_response_ingestion_joins_by_keys_and_preserves_retries():
     bad[0]["model_revision"] = "wrong"
     with pytest.raises(CampaignInputError, match="immutable model_revision"):
         validate_response_records(schedule, bad)
+
+    reused_provider_request = [dict(record) for record in responses]
+    reused_provider_request[2]["provider_request_id"] = reused_provider_request[0][
+        "provider_request_id"
+    ]
+    with pytest.raises(CampaignInputError, match="provider_request_id.*reused"):
+        validate_response_records(schedule, reused_provider_request)
+
+    reused_provider_response = [dict(record) for record in responses]
+    reused_provider_response[2]["provider_response_id"] = reused_provider_response[0][
+        "provider_response_id"
+    ]
+    with pytest.raises(CampaignInputError, match="provider_response_id.*reused"):
+        validate_response_records(schedule, reused_provider_response)
 
     terminal = {
         "request_id": "request-b",

@@ -40,6 +40,12 @@ def test_configuration_parser_and_full_preregistration_contract_are_exact():
     assert (320, 4) in FULL_CONFIGURATIONS
     assert (800, 4) in FULL_CONFIGURATIONS
     assert (160, 4) not in FULL_CONFIGURATIONS
+    operational = build_arg_parser().parse_args([
+        "--full-prereg",
+        "--workers", "2",
+        "--checkpoint-dir", "/tmp/operational-only",
+    ])
+    assert resolve_configuration(operational) == resolved
 
 
 @pytest.mark.parametrize(
@@ -133,7 +139,19 @@ def test_decision_fails_on_incomplete_grid_or_either_primary_endpoint():
     assert _configuration_decision(rows, FULL_SCENARIOS)["pass"] is False
 
 
-def test_smallest_r3_passing_G_is_recommendation_and_r4_stays_sensitivity(monkeypatch):
+def test_mean_only_false_promotions_fail_the_same_null_gate():
+    rows = passing_rows()
+    mean_only = next(row for row in rows if row["scenario"] == "mean_only")
+    mean_only["joint_synthetic_primary_events"] = 200
+    mean_only["joint_synthetic_primary_event_rate"] = 1.0
+    decision = _configuration_decision(rows, FULL_SCENARIOS)
+    assert decision["pass"] is False
+    assert decision["controls"]["mean_only"][
+        "does_not_reject_p_at_most_0_05_and_observed_at_most_0_10"
+    ] is False
+
+
+def test_custom_complete_grid_cannot_emit_a_sizing_recommendation(monkeypatch):
     resolved = resolve_configuration(build_arg_parser().parse_args([]))
     resolved["configurations"] = ((160, 3), (320, 3), (320, 4), (800, 4))
     resolved["scenarios"] = FULL_SCENARIOS
@@ -149,13 +167,37 @@ def test_smallest_r3_passing_G_is_recommendation_and_r4_stays_sensitivity(monkey
 
     monkeypatch.setattr(runner, "run_configuration", fake_configuration)
     payload = build_scientific_payload(resolved)
-    assert payload["gate"]["smallest_passing_synthetic_primary_event_G_per_corpus"] == 320
-    assert payload["gate"]["synthetic_primary_event_pass"] is True
+    assert payload["gate"]["smallest_passing_synthetic_primary_event_G_per_corpus"] is None
+    assert payload["gate"]["synthetic_primary_event_sizing_evaluable"] is False
+    assert payload["gate"]["synthetic_primary_event_pass"] is False
     assert payload["gate"]["final_campaign_G_recommendation"] is None
     assert payload["gate"]["deployment_pass"] is False
     assert [row["repeats"] for row in payload["primary_r3_results"]] == [3, 3]
     assert [row["repeats"] for row in payload["repeat4_sensitivity_results"]] == [4, 4]
     assert payload["gate"]["real_covariance_deployment"] is False
+    assert "diagnostic only" in payload["gate"]["reason"]
+
+
+def test_exact_full_prereg_can_emit_smallest_passing_synthetic_G(monkeypatch):
+    resolved = resolve_configuration(
+        build_arg_parser().parse_args(["--full-prereg"])
+    )
+
+    def fake_configuration(configuration, _resolved):
+        components, repeats = configuration
+        return {
+            "components_per_required_corpus": components,
+            "repeats": repeats,
+            "decision": {
+                "evaluable": True,
+                "pass": components >= 320 and repeats == 3,
+            },
+        }
+
+    monkeypatch.setattr(runner, "run_configuration", fake_configuration)
+    payload = build_scientific_payload(resolved)
+    assert payload["gate"]["synthetic_primary_event_sizing_evaluable"] is True
+    assert payload["gate"]["smallest_passing_synthetic_primary_event_G_per_corpus"] == 320
 
 
 def tiny_resolved():
@@ -171,6 +213,34 @@ def tiny_resolved():
         "--missing-rate", "0",
         "--seed", "81000",
     ]))
+
+
+def test_indexed_null_units_match_the_original_monolithic_calibrator():
+    resolved = tiny_resolved()
+    components, repeats = resolved["configurations"][0]
+    null_seed = runner.derive_seed(
+        resolved["seed"], components, repeats, "block_null_calibration"
+    )
+    expected, _threshold, _rank = runner.calibrate_synthetic_selector_null(
+        components,
+        repeats=repeats,
+        draws=2,
+        seed=null_seed,
+        gammas=resolved["gammas"],
+        rhos=resolved["rhos"],
+        mean_ridges=resolved["mean_ridges"],
+        shrinkage=resolved["shrinkage"],
+        confidence=resolved["confidence"],
+        missing_rate=resolved["missing_rate"],
+        max_prompt_rows=resolved["prompt_batch_rows"],
+    )
+    observed = [
+        runner._compute_null_draw(
+            components, repeats, draw, null_seed, resolved
+        )
+        for draw in range(2)
+    ]
+    assert observed == expected.tolist()
 
 
 def test_small_scientific_payload_is_deterministic_and_provenanced():
@@ -192,6 +262,11 @@ def test_small_scientific_payload_is_deterministic_and_provenanced():
     assert set(scenario["endpoint_mean_gain_per_scalar"]) == {
         "synthetic_corpus_1", "synthetic_corpus_2"
     }
+    assert {
+        "list-position engineering pilot",
+        "frozen train-only position×role×judge adjustment",
+        "position-effect power sensitivity",
+    }.issubset(first["unsimulated_required_gates"])
 
 
 def test_cli_atomically_creates_parent_and_output_is_path_independent(tmp_path):
@@ -215,3 +290,86 @@ def test_cli_atomically_creates_parent_and_output_is_path_independent(tmp_path):
     assert not list(tmp_path.rglob("*.tmp"))
     payload = json.loads(first_path.read_text())
     assert payload["gate"]["synthetic_primary_event_sizing_evaluable"] is False
+
+
+def test_serial_parallel_and_checkpoint_resume_are_canonical(tmp_path, monkeypatch):
+    resolved = tiny_resolved()
+    serial = build_scientific_payload(resolved, workers=1)
+    parallel = build_scientific_payload(resolved, workers=2)
+    assert serialize_payload(parallel) == serialize_payload(serial)
+
+    checkpoint_dir = tmp_path / "checkpoint"
+    first = build_scientific_payload(
+        resolved, workers=1, checkpoint_dir=str(checkpoint_dir)
+    )
+    original_null_worker = runner._null_worker
+    original_power_worker = runner._power_worker
+
+    def unexpected_task(_task):
+        raise AssertionError("a complete checkpoint should not recompute work")
+
+    monkeypatch.setattr(runner, "_null_worker", unexpected_task)
+    monkeypatch.setattr(runner, "_power_worker", unexpected_task)
+    resumed = build_scientific_payload(
+        resolved, workers=1, checkpoint_dir=str(checkpoint_dir)
+    )
+    assert serialize_payload(resumed) == serialize_payload(first) == serialize_payload(serial)
+    assert not list(checkpoint_dir.rglob("*.tmp"))
+
+    next(checkpoint_dir.rglob("null_barrier.json")).unlink()
+    next(checkpoint_dir.rglob("draw_*.json")).unlink()
+    next(checkpoint_dir.rglob("replicate_*.json")).unlink()
+    recomputed = {"null": 0, "power": 0}
+
+    def count_null(task):
+        recomputed["null"] += 1
+        return original_null_worker(task)
+
+    def count_power(task):
+        recomputed["power"] += 1
+        return original_power_worker(task)
+
+    monkeypatch.setattr(runner, "_null_worker", count_null)
+    monkeypatch.setattr(runner, "_power_worker", count_power)
+    partial = build_scientific_payload(
+        resolved, workers=1, checkpoint_dir=str(checkpoint_dir)
+    )
+    assert recomputed == {"null": 1, "power": 1}
+    assert serialize_payload(partial) == serialize_payload(serial)
+
+
+def test_checkpoint_integrity_and_configuration_mismatches_fail_closed(tmp_path):
+    resolved = tiny_resolved()
+    checkpoint_dir = tmp_path / "checkpoint"
+    build_scientific_payload(
+        resolved, workers=1, checkpoint_dir=str(checkpoint_dir)
+    )
+
+    power_path = next(checkpoint_dir.rglob("replicate_*.json"))
+    envelope = json.loads(power_path.read_text())
+    envelope["payload"]["record"]["promoted"] = not envelope["payload"][
+        "record"
+    ]["promoted"]
+    power_path.write_text(json.dumps(envelope))
+    with pytest.raises(ValueError, match="integrity hash mismatch"):
+        build_scientific_payload(
+            resolved, workers=1, checkpoint_dir=str(checkpoint_dir)
+        )
+
+    other_dir = tmp_path / "other-checkpoint"
+    build_scientific_payload(resolved, workers=1, checkpoint_dir=str(other_dir))
+    changed = dict(resolved)
+    changed["seed"] = int(resolved["seed"]) + 1
+    with pytest.raises(ValueError, match="fingerprint/configuration mismatch"):
+        build_scientific_payload(
+            changed, workers=1, checkpoint_dir=str(other_dir)
+        )
+
+
+def test_start_of_run_provenance_is_rechecked(monkeypatch):
+    snapshot = runner._provenance()
+    changed = json.loads(json.dumps(snapshot))
+    changed["files"]["power_runner"]["sha256"] = "0" * 64
+    monkeypatch.setattr(runner, "_provenance", lambda: changed)
+    with pytest.raises(RuntimeError, match="changed during the run"):
+        runner._assert_provenance_unchanged(snapshot)

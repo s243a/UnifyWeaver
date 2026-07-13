@@ -181,7 +181,11 @@ def test_cli_materializes_reproducible_content_addressed_campaign(tmp_path, caps
     assert manifest["schedule"]["records"] == 11520
     assert manifest["schedule"]["same_component_per_request_max"] == 1
     assert manifest["schedule"]["prompt_block_is_inference_cluster"] is True
-    assert manifest["classification"] == "confirmatory-compatible-no-spend"
+    assert manifest["classification"] == (
+        "protocol-shape-compatible-no-spend-inputs-unverified"
+    )
+    assert manifest["candidate_builder_verified_by_repository"] is False
+    assert manifest["request_contract_approved_for_live_use"] is False
     assert manifest["call_authorized"] is False
     assert str(tmp_path) not in json.dumps(manifest)
     assert "elapsed" not in json.dumps(manifest).lower()
@@ -214,6 +218,7 @@ def test_cli_materializes_reproducible_content_addressed_campaign(tmp_path, caps
     score_inputs = sorted((first / "score_inputs").glob("*.tsv"))
     assert len(score_inputs) == 6
     assert all(len(data_rows(path)) == 1920 for path in score_inputs)
+    assert all(path.read_text(encoding="utf-8").startswith("# row_id\t") for path in score_inputs)
     assert (first / "nested_component_folds.tsv").exists()
     assert (first / "response_ingestion_schema.json").exists()
     request_inputs = sorted((first / "request_inputs").rglob("*.tsv"))
@@ -326,7 +331,7 @@ def test_nonfrozen_selector_seed_is_exploratory_only():
         },
     }
     assert sampler._configuration_classification(args, specs)[0] == (
-        "confirmatory-compatible-no-spend"
+        "protocol-shape-compatible-no-spend-inputs-unverified"
     )
     args.seed = 1
     classification, deviations = sampler._configuration_classification(args, specs)

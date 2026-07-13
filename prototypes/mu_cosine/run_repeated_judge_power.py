@@ -10,9 +10,12 @@ not part of the unit-test suite.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import contextmanager
 import hashlib
 import json
 import math
+import multiprocessing
 import os
 import sys
 import tempfile
@@ -24,17 +27,23 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from repeated_judge_power import (  # noqa: E402
+    Candidate,
     DEFAULT_GAMMAS,
     DEFAULT_MEAN_RIDGES,
     DEFAULT_RHOS,
     MAX_PROMPT_ROWS,
     PRIMARY_ENDPOINTS,
+    PowerReplicate,
     SCENARIOS,
     SCENARIO_BY_NAME,
     SYNTHETIC_CORPORA,
+    _replicate_geometry_and_splits,
     aggregate_power_records,
     calibrate_synthetic_selector_null,
     derive_seed,
+    draw_repeated_field,
+    finite_null_maximum_threshold,
+    inner_candidate_search,
     run_power_replicate,
     summary,
 )
@@ -66,6 +75,17 @@ FULL_INNER_FOLDS = 3
 FULL_SHRINKAGE = 0.05
 FULL_MISSING_RATE = 0.02
 FULL_SEED = 1207000
+
+CHECKPOINT_SCHEMA_VERSION = 1
+_BLAS_ENVIRONMENT_VARIABLES = (
+    "OPENBLAS_NUM_THREADS",
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "BLIS_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+)
+_WORKER_THREADPOOL_LIMIT = None
 
 SCIENCE_ARGUMENTS = (
     "config",
@@ -127,6 +147,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--missing-rate", type=float, default=None)
     parser.add_argument("--prompt-batch-rows", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="operational worker-process count; does not change the scientific design",
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        default=None,
+        help="operational atomic checkpoint directory; an exact matching run resumes",
+    )
     parser.add_argument("--out", default="/tmp/repeated_judge_power_smoke.json")
     return parser
 
@@ -259,22 +290,25 @@ def _configuration_decision(
             "reason": "the complete frozen scenario grid is required",
         }
 
-    null = by_name["block_null"]
-    null_trials = int(null["replicates"])
-    null_promotions = int(null.get(
-        "joint_synthetic_primary_events",
-        round(float(null["joint_synthetic_primary_event_rate"]) * null_trials),
-    ))
-    null_pvalue = _one_sided_exact_binomial_pvalue(null_promotions, null_trials)
-    null_gate = bool(
-        float(null["joint_synthetic_primary_event_rate"]) <= 0.10
-        and null_pvalue >= 0.05
-    )
-
     control_gates = {}
     for name in ("block_null", "mean_only"):
-        gains = _mean_endpoint_gains(by_name[name], "residual_nll")
+        row = by_name[name]
+        trials = int(row["replicates"])
+        event_rate = float(row["joint_synthetic_primary_event_rate"])
+        promotions = int(row.get(
+            "joint_synthetic_primary_events", round(event_rate * trials)
+        ))
+        pvalue = _one_sided_exact_binomial_pvalue(promotions, trials)
+        false_promotion_gate = bool(event_rate <= 0.10 and pvalue >= 0.05)
+        gains = _mean_endpoint_gains(row, "residual_nll")
         control_gates[name] = {
+            "promotions": promotions,
+            "replicates": trials,
+            "joint_synthetic_primary_event_rate": event_rate,
+            "one_sided_exact_binomial_excess_pvalue_at_p_0_05": pvalue,
+            "does_not_reject_p_at_most_0_05_and_observed_at_most_0_10": (
+                false_promotion_gate
+            ),
             "mean_selected_residual_nll_gain_by_synthetic_corpus": gains,
             "mean_harm_nonpositive_in_both_synthetic_corpora": bool(
                 all(gain >= 0.0 for gain in gains.values())
@@ -319,9 +353,9 @@ def _configuration_decision(
             }
 
     passed = bool(
-        null_gate
-        and all(
-            row["mean_harm_nonpositive_in_both_synthetic_corpora"]
+        all(
+            row["does_not_reject_p_at_most_0_05_and_observed_at_most_0_10"]
+            and row["mean_harm_nonpositive_in_both_synthetic_corpora"]
             for row in control_gates.values()
         )
         and all(
@@ -335,13 +369,14 @@ def _configuration_decision(
         "evaluable": True,
         "repeat_design": int(repeats),
         "block_null": {
-            "promotions": null_promotions,
-            "replicates": null_trials,
-            "joint_synthetic_primary_event_rate": float(
-                null["joint_synthetic_primary_event_rate"]
-            ),
-            "one_sided_exact_binomial_excess_pvalue_at_p_0_05": null_pvalue,
-            "does_not_reject_p_at_most_0_05_and_observed_at_most_0_10": null_gate,
+            key: control_gates["block_null"][key]
+            for key in (
+                "promotions",
+                "replicates",
+                "joint_synthetic_primary_event_rate",
+                "one_sided_exact_binomial_excess_pvalue_at_p_0_05",
+                "does_not_reject_p_at_most_0_05_and_observed_at_most_0_10",
+            )
         },
         "controls": control_gates,
         "required_truths": truth_gates,
@@ -349,48 +384,284 @@ def _configuration_decision(
     }
 
 
-def run_configuration(configuration: Tuple[int, int], resolved: dict) -> dict:
-    components, repeats = map(int, configuration)
-    null_seed = derive_seed(
-        resolved["seed"], components, repeats, "block_null_calibration"
+def _compute_null_draw(components, repeats, draw, null_seed, resolved):
+    """Compute one indexed draw exactly as the monolithic calibrator does."""
+    replicate_seed = derive_seed(null_seed, "null", int(draw))
+    joint_search_maxima = []
+    for corpus in SYNTHETIC_CORPORA:
+        corpus_seed = derive_seed(replicate_seed, corpus)
+        geometry, splits = _replicate_geometry_and_splits(
+            components, corpus_seed, resolved["prompt_batch_rows"]
+        )
+        field = draw_repeated_field(
+            geometry,
+            SCENARIO_BY_NAME["block_null"],
+            repeats,
+            derive_seed(corpus_seed, "field"),
+            missing_rate=resolved["missing_rate"],
+        )
+        searches = [
+            inner_candidate_search(
+                field,
+                geometry,
+                fold,
+                gammas=resolved["gammas"],
+                rhos=resolved["rhos"],
+                mean_ridges=resolved["mean_ridges"],
+                shrinkage=resolved["shrinkage"],
+            )
+            for fold in splits.outer
+        ]
+        joint_search_maxima.extend(
+            search.maximum_eligible_gain for search in searches
+        )
+    return float(max(joint_search_maxima))
+
+
+def _null_worker(task):
+    components, repeats, draw, null_seed, resolved = task
+    return int(draw), _compute_null_draw(
+        components, repeats, draw, null_seed, resolved
     )
-    null_maxima, threshold, rank = calibrate_synthetic_selector_null(
+
+
+def _power_worker(task):
+    components, repeats, scenario_index, replicate, threshold, resolved = task
+    scenario_name = resolved["scenarios"][scenario_index]
+    replicate_seed = derive_seed(
+        resolved["seed"], components, repeats, scenario_name, replicate
+    )
+    record = run_power_replicate(
         components,
+        SCENARIO_BY_NAME[scenario_name],
         repeats=repeats,
-        draws=resolved["null_draws"],
-        seed=null_seed,
+        seed=replicate_seed,
+        null_threshold=threshold,
         gammas=resolved["gammas"],
         rhos=resolved["rhos"],
         mean_ridges=resolved["mean_ridges"],
         shrinkage=resolved["shrinkage"],
         confidence=resolved["confidence"],
+        multiplier_draws=resolved["multiplier_draws"],
         missing_rate=resolved["missing_rate"],
         max_prompt_rows=resolved["prompt_batch_rows"],
     )
-    scenario_results = []
-    for scenario_name in resolved["scenarios"]:
-        scenario = SCENARIO_BY_NAME[scenario_name]
-        records = []
-        for replicate in range(resolved["power_replicates"]):
-            replicate_seed = derive_seed(
-                resolved["seed"], components, repeats, scenario_name, replicate
-            )
-            records.append(run_power_replicate(
+    return int(replicate), record
+
+
+def _initialize_worker_blas(expected_provenance=None):
+    global _WORKER_THREADPOOL_LIMIT
+    for name in _BLAS_ENVIRONMENT_VARIABLES:
+        os.environ[name] = "1"
+    if expected_provenance is not None:
+        _assert_provenance_unchanged(expected_provenance)
+    try:
+        from threadpoolctl import threadpool_limits
+    except ImportError:
+        return
+    _WORKER_THREADPOOL_LIMIT = threadpool_limits(limits=1, user_api="blas")
+    _WORKER_THREADPOOL_LIMIT.__enter__()
+
+
+@contextmanager
+def _single_thread_current_blas():
+    try:
+        from threadpoolctl import threadpool_limits
+    except ImportError:
+        yield
+        return
+    with threadpool_limits(limits=1, user_api="blas"):
+        yield
+
+
+@contextmanager
+def _single_thread_child_environment():
+    previous = {name: os.environ.get(name) for name in _BLAS_ENVIRONMENT_VARIABLES}
+    try:
+        for name in _BLAS_ENVIRONMENT_VARIABLES:
+            os.environ[name] = "1"
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+@contextmanager
+def _process_pool(workers, provenance_snapshot=None):
+    if workers == 1:
+        yield None
+        return
+    with _single_thread_child_environment():
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=multiprocessing.get_context("spawn"),
+            initializer=_initialize_worker_blas,
+            initargs=(provenance_snapshot,),
+        ) as executor:
+            yield executor
+
+
+def _execute_tasks(tasks, worker, executor):
+    if executor is None:
+        with _single_thread_current_blas():
+            for task in tasks:
+                yield worker(task)
+        return
+    futures = [executor.submit(worker, task) for task in tasks]
+    for future in as_completed(futures):
+        yield future.result()
+
+
+def run_configuration(
+    configuration: Tuple[int, int],
+    resolved: dict,
+    *,
+    configuration_index=0,
+    workers=1,
+    checkpoint_store=None,
+    provenance_snapshot=None,
+) -> dict:
+    components, repeats = map(int, configuration)
+    null_seed = derive_seed(
+        resolved["seed"], components, repeats, "block_null_calibration"
+    )
+
+    barrier = (
+        checkpoint_store.load_null_barrier(
+            configuration_index,
+            components,
+            repeats,
+            null_seed,
+            resolved["confidence"],
+            resolved["null_draws"],
+        )
+        if checkpoint_store is not None
+        else None
+    )
+    if barrier is None:
+        maxima_by_draw = {}
+        if checkpoint_store is not None:
+            for draw in range(resolved["null_draws"]):
+                value = checkpoint_store.load_null_draw(
+                    configuration_index, components, repeats, draw, null_seed
+                )
+                if value is not None:
+                    maxima_by_draw[draw] = value
+        missing_draws = [
+            draw for draw in range(resolved["null_draws"])
+            if draw not in maxima_by_draw
+        ]
+        null_tasks = [
+            (components, repeats, draw, null_seed, resolved)
+            for draw in missing_draws
+        ]
+        if provenance_snapshot is not None:
+            _assert_provenance_unchanged(provenance_snapshot)
+        with _process_pool(workers, provenance_snapshot) as executor:
+            for draw, value in _execute_tasks(null_tasks, _null_worker, executor):
+                maxima_by_draw[draw] = value
+                if checkpoint_store is not None:
+                    checkpoint_store.save_null_draw(
+                        configuration_index,
+                        components,
+                        repeats,
+                        draw,
+                        null_seed,
+                        value,
+                    )
+        null_maxima = np.asarray([
+            maxima_by_draw[draw] for draw in range(resolved["null_draws"])
+        ])
+        threshold, rank = finite_null_maximum_threshold(
+            null_maxima, resolved["confidence"]
+        )
+        if checkpoint_store is not None:
+            checkpoint_store.save_null_barrier(
+                configuration_index,
                 components,
-                scenario,
-                repeats=repeats,
-                seed=replicate_seed,
-                null_threshold=threshold,
-                gammas=resolved["gammas"],
-                rhos=resolved["rhos"],
-                mean_ridges=resolved["mean_ridges"],
-                shrinkage=resolved["shrinkage"],
-                confidence=resolved["confidence"],
-                multiplier_draws=resolved["multiplier_draws"],
-                missing_rate=resolved["missing_rate"],
-                max_prompt_rows=resolved["prompt_batch_rows"],
-            ))
-        scenario_results.append(aggregate_power_records(records))
+                repeats,
+                null_seed,
+                null_maxima,
+                threshold,
+                rank,
+                resolved["confidence"],
+            )
+    else:
+        null_maxima, threshold, rank = barrier
+
+    scenario_results = []
+    if provenance_snapshot is not None:
+        _assert_provenance_unchanged(provenance_snapshot)
+    with _process_pool(workers, provenance_snapshot) as executor:
+        for scenario_index, scenario_name in enumerate(resolved["scenarios"]):
+            records_by_replicate = {}
+            if checkpoint_store is not None:
+                for replicate in range(resolved["power_replicates"]):
+                    replicate_seed = derive_seed(
+                        resolved["seed"],
+                        components,
+                        repeats,
+                        scenario_name,
+                        replicate,
+                    )
+                    record = checkpoint_store.load_power_record(
+                        configuration_index,
+                        components,
+                        repeats,
+                        scenario_index,
+                        scenario_name,
+                        replicate,
+                        threshold,
+                        replicate_seed,
+                    )
+                    if record is not None:
+                        records_by_replicate[replicate] = record
+            missing_replicates = [
+                replicate for replicate in range(resolved["power_replicates"])
+                if replicate not in records_by_replicate
+            ]
+            tasks = [
+                (
+                    components,
+                    repeats,
+                    scenario_index,
+                    replicate,
+                    threshold,
+                    resolved,
+                )
+                for replicate in missing_replicates
+            ]
+            for replicate, record in _execute_tasks(tasks, _power_worker, executor):
+                records_by_replicate[replicate] = record
+                if checkpoint_store is not None:
+                    replicate_seed = derive_seed(
+                        resolved["seed"],
+                        components,
+                        repeats,
+                        scenario_name,
+                        replicate,
+                    )
+                    checkpoint_store.save_power_record(
+                        configuration_index,
+                        components,
+                        repeats,
+                        scenario_index,
+                        scenario_name,
+                        replicate,
+                        threshold,
+                        replicate_seed,
+                        record,
+                    )
+            records = [
+                records_by_replicate[replicate]
+                for replicate in range(resolved["power_replicates"])
+            ]
+            scenario_results.append(aggregate_power_records(records))
+    if provenance_snapshot is not None:
+        _assert_provenance_unchanged(provenance_snapshot)
     return {
         "components_per_required_corpus": components,
         "repeats": repeats,
@@ -426,6 +697,21 @@ def _file_digest(path):
     return {"bytes": size, "sha256": digest.hexdigest()}
 
 
+def _blas_runtime_identity():
+    try:
+        from threadpoolctl import threadpool_info
+    except ImportError:
+        return []
+    fields = (
+        "user_api", "internal_api", "prefix", "filepath", "version",
+        "threading_layer", "architecture",
+    )
+    return sorted(
+        ({field: record.get(field) for field in fields} for record in threadpool_info()),
+        key=lambda record: tuple(str(record[field]) for field in fields),
+    )
+
+
 def _provenance():
     files = {
         "preregistration": os.path.join(HERE, "PREREG_graph_geometry_repeated_judge.md"),
@@ -434,38 +720,361 @@ def _provenance():
     }
     return {
         "files": {name: _file_digest(path) for name, path in files.items()},
+        "python_version": sys.version,
         "numpy_version": np.__version__,
+        "blas_runtime": _blas_runtime_identity(),
+        "worker_blas_threads": 1,
         "seed_derivation": "sha256(base,G,R,scenario,replicate); null namespace is disjoint",
     }
 
 
-def build_scientific_payload(resolved: dict) -> dict:
-    configurations = [
-        run_configuration(configuration, resolved)
-        for configuration in resolved["configurations"]
-    ]
-    primary_r3 = [row for row in configurations if row["repeats"] == 3]
-    repeat4 = [row for row in configurations if row["repeats"] == 4]
-    passing_r3 = sorted(
-        (
-            row["components_per_required_corpus"]
-            for row in primary_r3
-            if row["decision"]["evaluable"] and row["decision"]["pass"]
-        )
-    )
-    synthetic_smallest_passing_G = passing_r3[0] if passing_r3 else None
-    sizing_evaluable = bool(primary_r3) and all(
-        row["decision"]["evaluable"] for row in primary_r3
-    )
-
-    configuration_record = {
-        key: value for key, value in resolved.items() if key != "configurations"
-    }
-    configuration_record["configurations"] = [
+def _configuration_record(resolved):
+    record = {key: value for key, value in resolved.items() if key != "configurations"}
+    record["configurations"] = [
         {"components_per_required_corpus": int(value[0]), "repeats": int(value[1])}
         for value in resolved["configurations"]
     ]
+    return json.loads(json.dumps(record, allow_nan=False))
+
+
+def _canonical_digest(value):
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _run_fingerprint(resolved, provenance):
+    return _canonical_digest({
+        "checkpoint_schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "configuration": _configuration_record(resolved),
+        "provenance": provenance,
+    })
+
+
+def _assert_provenance_unchanged(expected):
+    observed = _provenance()
+    if observed != expected:
+        raise RuntimeError(
+            "preregistration or implementation changed during the run; refusing output"
+        )
+
+
+def _checkpoint_envelope(payload):
+    return {"payload": payload, "payload_sha256": _canonical_digest(payload)}
+
+
+def _read_checkpoint(path):
+    try:
+        with open(path, "r", encoding="utf-8") as stream:
+            envelope = json.load(stream)
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid checkpoint file: {path}") from error
+    if not isinstance(envelope, dict) or set(envelope) != {
+        "payload", "payload_sha256"
+    }:
+        raise ValueError(f"invalid checkpoint envelope: {path}")
+    if _canonical_digest(envelope["payload"]) != envelope["payload_sha256"]:
+        raise ValueError(f"checkpoint integrity hash mismatch: {path}")
+    return envelope["payload"]
+
+
+def _candidate_to_json(candidate):
+    return {"gamma": float(candidate.gamma), "rho": float(candidate.rho)}
+
+
+def _power_record_to_json(record):
+    # Persist only fields consumed by aggregate_power_records.  The full
+    # component arrays would make the preregistered checkpoint set enormous.
     return {
+        "record_schema": "aggregate_inputs_v1",
+        "scenario": record.scenario,
+        "selected": [
+            [_candidate_to_json(candidate) for candidate in corpus]
+            for corpus in record.selected
+        ],
+        "corpus_selector_rejected": list(record.corpus_selector_rejected),
+        "familywise_rejected": bool(record.familywise_rejected),
+        "maximum_inner_gain": float(record.maximum_inner_gain),
+        "endpoint_mean_gains": record.endpoint_mean_gains.tolist(),
+        "endpoint_lower_bounds": record.endpoint_lower_bounds.tolist(),
+        "multiplier_critical_value": float(record.multiplier_critical_value),
+        "inference_prompt_blocks": list(record.inference_prompt_blocks),
+        "topology_truth_beats_derangement": record.topology_truth_beats_derangement,
+        "promoted": bool(record.promoted),
+        "call_loading": float(record.call_loading),
+        "persistent_loading": float(record.persistent_loading),
+        "request_loading": float(record.request_loading),
+    }
+
+
+def _power_record_from_json(value):
+    if value.get("record_schema") != "aggregate_inputs_v1":
+        raise ValueError("unsupported power checkpoint record schema")
+    return PowerReplicate(
+        str(value["scenario"]),
+        tuple(tuple(
+            Candidate(float(candidate["gamma"]), float(candidate["rho"]))
+            for candidate in corpus
+        ) for corpus in value["selected"]),
+        tuple(map(bool, value["corpus_selector_rejected"])),
+        bool(value["familywise_rejected"]),
+        float(value["maximum_inner_gain"]),
+        np.empty((0, 0, 0), dtype=float),
+        np.asarray(value["endpoint_mean_gains"], dtype=float),
+        np.asarray(value["endpoint_lower_bounds"], dtype=float),
+        float(value["multiplier_critical_value"]),
+        tuple(map(int, value["inference_prompt_blocks"])),
+        None,
+        value["topology_truth_beats_derangement"],
+        bool(value["promoted"]),
+        float(value["call_loading"]),
+        float(value["persistent_loading"]),
+        float(value["request_loading"]),
+    )
+
+
+class CheckpointStore:
+    def __init__(self, root, resolved, provenance, fingerprint):
+        self.root = os.path.abspath(root)
+        self.fingerprint = fingerprint
+        manifest = {
+            "schema_version": CHECKPOINT_SCHEMA_VERSION,
+            "fingerprint": fingerprint,
+            "configuration": _configuration_record(resolved),
+            "provenance": provenance,
+        }
+        manifest_path = os.path.join(self.root, "manifest.json")
+        if os.path.exists(manifest_path):
+            if _read_checkpoint(manifest_path) != manifest:
+                raise ValueError(
+                    "checkpoint fingerprint/configuration mismatch; use a new directory"
+                )
+        else:
+            if os.path.isdir(self.root) and os.listdir(self.root):
+                raise ValueError("nonempty checkpoint directory has no valid manifest")
+            write_payload(manifest_path, _checkpoint_envelope(manifest))
+
+    def _configuration_dir(self, index, components, repeats):
+        return os.path.join(
+            self.root, f"configuration_{index:03d}_G{components}_R{repeats}"
+        )
+
+    def _metadata(self, kind, index, components, repeats):
+        return {
+            "schema_version": CHECKPOINT_SCHEMA_VERSION,
+            "fingerprint": self.fingerprint,
+            "kind": kind,
+            "configuration_index": int(index),
+            "components": int(components),
+            "repeats": int(repeats),
+        }
+
+    def _load_optional(self, path, expected):
+        if not os.path.exists(path):
+            return None
+        payload = _read_checkpoint(path)
+        for key, value in expected.items():
+            if payload.get(key) != value:
+                raise ValueError(f"checkpoint hash/config mismatch: {path}")
+        return payload
+
+    def load_null_draw(self, index, components, repeats, draw, null_seed):
+        path = os.path.join(
+            self._configuration_dir(index, components, repeats),
+            "null",
+            f"draw_{draw:06d}.json",
+        )
+        expected = self._metadata("null_draw", index, components, repeats)
+        expected.update({"draw": int(draw), "null_seed": int(null_seed)})
+        payload = self._load_optional(path, expected)
+        return None if payload is None else float(payload["maximum"])
+
+    def save_null_draw(
+        self, index, components, repeats, draw, null_seed, maximum
+    ):
+        path = os.path.join(
+            self._configuration_dir(index, components, repeats),
+            "null",
+            f"draw_{draw:06d}.json",
+        )
+        payload = self._metadata("null_draw", index, components, repeats)
+        payload.update({
+            "draw": int(draw),
+            "null_seed": int(null_seed),
+            "maximum": float(maximum),
+        })
+        write_payload(path, _checkpoint_envelope(payload))
+
+    def load_null_barrier(
+        self, index, components, repeats, null_seed, confidence, draws
+    ):
+        path = os.path.join(
+            self._configuration_dir(index, components, repeats),
+            "null_barrier.json",
+        )
+        expected = self._metadata("null_barrier", index, components, repeats)
+        expected.update({
+            "null_seed": int(null_seed),
+            "confidence": float(confidence),
+            "draws": int(draws),
+        })
+        payload = self._load_optional(path, expected)
+        if payload is None:
+            return None
+        maxima = np.asarray(payload["maxima"], dtype=float)
+        if maxima.shape != (int(draws),):
+            raise ValueError(f"checkpoint null barrier has wrong draw count: {path}")
+        threshold, rank = finite_null_maximum_threshold(
+            maxima, float(confidence)
+        )
+        if threshold != float(payload["threshold"]) or rank != int(payload["rank"]):
+            raise ValueError(f"checkpoint null barrier is inconsistent: {path}")
+        return maxima, threshold, rank
+
+    def save_null_barrier(
+        self, index, components, repeats, null_seed, maxima, threshold, rank,
+        confidence
+    ):
+        path = os.path.join(
+            self._configuration_dir(index, components, repeats),
+            "null_barrier.json",
+        )
+        payload = self._metadata("null_barrier", index, components, repeats)
+        payload.update({
+            "null_seed": int(null_seed),
+            "confidence": float(confidence),
+            "draws": int(len(maxima)),
+            "maxima": np.asarray(maxima, dtype=float).tolist(),
+            "threshold": float(threshold),
+            "rank": int(rank),
+        })
+        write_payload(path, _checkpoint_envelope(payload))
+
+    def _power_path(self, index, components, repeats, scenario_index, replicate):
+        return os.path.join(
+            self._configuration_dir(index, components, repeats),
+            "power",
+            f"scenario_{scenario_index:03d}",
+            f"replicate_{replicate:06d}.json",
+        )
+
+    def load_power_record(
+        self, index, components, repeats, scenario_index, scenario_name,
+        replicate, threshold, replicate_seed
+    ):
+        path = self._power_path(
+            index, components, repeats, scenario_index, replicate
+        )
+        expected = self._metadata("power_replicate", index, components, repeats)
+        expected.update({
+            "scenario_index": int(scenario_index),
+            "scenario": scenario_name,
+            "replicate": int(replicate),
+            "threshold": float(threshold),
+            "replicate_seed": int(replicate_seed),
+        })
+        payload = self._load_optional(path, expected)
+        return None if payload is None else _power_record_from_json(payload["record"])
+
+    def save_power_record(
+        self, index, components, repeats, scenario_index, scenario_name,
+        replicate, threshold, replicate_seed, record
+    ):
+        path = self._power_path(
+            index, components, repeats, scenario_index, replicate
+        )
+        payload = self._metadata("power_replicate", index, components, repeats)
+        payload.update({
+            "scenario_index": int(scenario_index),
+            "scenario": scenario_name,
+            "replicate": int(replicate),
+            "threshold": float(threshold),
+            "replicate_seed": int(replicate_seed),
+            "record": _power_record_to_json(record),
+        })
+        write_payload(path, _checkpoint_envelope(payload))
+
+
+def _is_exact_full_preregistration(resolved):
+    return bool(
+        resolved.get("full_preregistration") is True
+        and tuple(resolved["configurations"]) == FULL_CONFIGURATIONS
+        and tuple(resolved["scenarios"]) == FULL_SCENARIOS
+        and tuple(resolved["gammas"]) == DEFAULT_GAMMAS
+        and tuple(resolved["rhos"]) == DEFAULT_RHOS
+        and tuple(resolved["mean_ridges"]) == DEFAULT_MEAN_RIDGES
+        and resolved["null_draws"] == FULL_NULL_DRAWS
+        and resolved["power_replicates"] == FULL_POWER_REPLICATES
+        and resolved["multiplier_draws"] == FULL_MULTIPLIER_DRAWS
+        and resolved["confidence"] == FULL_CONFIDENCE
+        and resolved["outer_folds"] == FULL_OUTER_FOLDS
+        and resolved["inner_folds"] == FULL_INNER_FOLDS
+        and resolved["shrinkage"] == FULL_SHRINKAGE
+        and resolved["missing_rate"] == FULL_MISSING_RATE
+        and resolved["prompt_batch_rows"] == MAX_PROMPT_ROWS
+        and resolved["seed"] == FULL_SEED
+    )
+
+
+def build_scientific_payload(
+    resolved: dict,
+    *,
+    workers=1,
+    checkpoint_dir=None,
+    provenance_snapshot=None,
+    run_fingerprint=None,
+) -> dict:
+    if int(workers) < 1:
+        raise ValueError("workers must be positive")
+    provenance_snapshot = _provenance() if provenance_snapshot is None else provenance_snapshot
+    expected_fingerprint = _run_fingerprint(resolved, provenance_snapshot)
+    if run_fingerprint is not None and run_fingerprint != expected_fingerprint:
+        raise ValueError("run fingerprint does not match configuration/provenance")
+    run_fingerprint = expected_fingerprint
+    checkpoint_store = (
+        None if checkpoint_dir is None
+        else CheckpointStore(
+            checkpoint_dir, resolved, provenance_snapshot, run_fingerprint
+        )
+    )
+    configurations = []
+    for index, configuration in enumerate(resolved["configurations"]):
+        _assert_provenance_unchanged(provenance_snapshot)
+        if workers == 1 and checkpoint_store is None:
+            row = run_configuration(configuration, resolved)
+        else:
+            row = run_configuration(
+                configuration,
+                resolved,
+                configuration_index=index,
+                workers=int(workers),
+                checkpoint_store=checkpoint_store,
+                provenance_snapshot=provenance_snapshot,
+            )
+        configurations.append(row)
+    primary_r3 = [row for row in configurations if row["repeats"] == 3]
+    repeat4 = [row for row in configurations if row["repeats"] == 4]
+    exact_full_preregistration = _is_exact_full_preregistration(resolved)
+    passing_r3 = sorted((
+        row["components_per_required_corpus"]
+        for row in primary_r3
+        if row["decision"]["evaluable"] and row["decision"]["pass"]
+    )) if exact_full_preregistration else []
+    synthetic_smallest_passing_G = passing_r3[0] if passing_r3 else None
+    sizing_evaluable = exact_full_preregistration and bool(primary_r3) and all(
+        row["decision"]["evaluable"] for row in primary_r3
+    )
+    gate_reason = (
+        "R=3 can identify only a smallest passing two-corpus synthetic-primary-event "
+        "grid point; R=4 is reported separately. No final campaign G or deployment "
+        "recommendation is emitted until the unsimulated real-data gates pass."
+        if exact_full_preregistration
+        else "Smoke or customized runs are diagnostic only. Synthetic sizing is evaluable "
+        "only for --full-prereg with the exact frozen grid, counts, and seed."
+    )
+
+    payload = {
         "schema_version": 2,
         "status": "SYNTHETIC SIZING ONLY; NO REAL COVARIANCE DEPLOYMENT",
         "scope": (
@@ -474,8 +1083,8 @@ def build_scientific_payload(resolved: dict) -> dict:
             "request effects, repeated four-channel measurements, five-fold outer "
             "cross-fitting, and distinct residual and latent-state posterior NLL endpoints"
         ),
-        "configuration": configuration_record,
-        "provenance": _provenance(),
+        "configuration": _configuration_record(resolved),
+        "provenance": provenance_snapshot,
         "primary_r3_results": primary_r3,
         "repeat4_sensitivity_results": repeat4,
         "gate": {
@@ -489,11 +1098,7 @@ def build_scientific_payload(resolved: dict) -> dict:
             "final_campaign_G_recommendation": None,
             "deployment_pass": False,
             "real_covariance_deployment": False,
-            "reason": (
-                "R=3 can identify only a smallest passing two-corpus synthetic-primary-event "
-                "grid point; R=4 is reported separately. No final campaign G or deployment "
-                "recommendation is emitted until the unsimulated real-data gates pass."
-            ),
+            "reason": gate_reason,
         },
         "real_campaign_selector_requirement": (
             "Each outer-training prompt-block set must recalibrate its own block-null "
@@ -507,10 +1112,15 @@ def build_scientific_payload(resolved: dict) -> dict:
             "ten-bin ECE and prompt-block-bootstrap AURC intervals",
             "real graph/Nomic source-correlation and same-split ablations",
             "real topology benefit over derangement and hard negatives",
+            "list-position engineering pilot",
+            "frozen train-only position×role×judge adjustment",
+            "position-effect power sensitivity",
             "s_safe spectral adapter, full call/prompt/wave incidence covariance, and delta_95",
             "statistical/numerical loading limits and cross-batch independence bound",
         ],
     }
+    _assert_provenance_unchanged(provenance_snapshot)
+    return payload
 
 
 def serialize_payload(payload: dict) -> str:
@@ -543,9 +1153,21 @@ def write_payload(path: str, payload: dict) -> None:
 def main(argv: Iterable[str] | None = None) -> dict:
     args = build_arg_parser().parse_args(argv)
     resolved = resolve_configuration(args)
+    if args.workers < 1:
+        raise ValueError("--workers must be positive")
+    provenance_snapshot = _provenance()
+    run_fingerprint = _run_fingerprint(resolved, provenance_snapshot)
     started = time.perf_counter()
-    payload = build_scientific_payload(resolved)
+    payload = build_scientific_payload(
+        resolved,
+        workers=args.workers,
+        checkpoint_dir=args.checkpoint_dir,
+        provenance_snapshot=provenance_snapshot,
+        run_fingerprint=run_fingerprint,
+    )
+    _assert_provenance_unchanged(provenance_snapshot)
     serialized = serialize_payload(payload).encode("utf-8")
+    _assert_provenance_unchanged(provenance_snapshot)
     write_payload(args.out, payload)
     print(json.dumps({
         "content_sha256": hashlib.sha256(serialized).hexdigest(),

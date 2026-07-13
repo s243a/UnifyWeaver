@@ -29,6 +29,9 @@ DEFAULT_MEAN_RIDGES = (0.0, 0.01, 0.10, 1.0, 10.0)
 PRIMARY_ENDPOINTS = ("residual_nll", "posterior_state_nll")
 MAX_PROMPT_ROWS = 10
 SYNTHETIC_CORPORA = ("synthetic_corpus_1", "synthetic_corpus_2")
+# This is only a trigger for canonical dense recomputation near a strict-zero
+# selector decision.  Dense-recomputed gains are still compared to exactly 0.
+DENSE_DECISION_RECHECK_ATOL = 1e-12
 
 
 def derive_seed(base: int, *parts) -> int:
@@ -662,7 +665,14 @@ def fit_repeat_nuisance(
     )
 
 
-def candidate_covariance(nuisance, item_kernel, rho, repeat_counts=None):
+def _candidate_covariance(
+    nuisance,
+    item_kernel,
+    rho,
+    repeat_counts=None,
+    *,
+    validate=True,
+):
     item = rho_matched_correlation(item_kernel, rho)
     counts = nuisance.evaluate_repeat_counts if repeat_counts is None else np.asarray(repeat_counts, dtype=float)
     if counts.ndim == 2 and counts.shape == (ROWS_PER_COMPONENT, 2):
@@ -683,8 +693,15 @@ def candidate_covariance(nuisance, item_kernel, rho, repeat_counts=None):
     output = 0.5 * (output + np.swapaxes(output, -1, -2))
     # The batched Cholesky is both a fail-closed PSD check and substantially
     # cheaper than a Python loop at the preregistered G=800 ceiling.
-    np.linalg.cholesky(output)
+    if validate:
+        np.linalg.cholesky(output)
     return output
+
+
+def candidate_covariance(nuisance, item_kernel, rho, repeat_counts=None):
+    return _candidate_covariance(
+        nuisance, item_kernel, rho, repeat_counts, validate=True
+    )
 
 
 def component_gaussian_nll(residuals, covariance):
@@ -709,11 +726,13 @@ def component_gaussian_nll(residuals, covariance):
     ) / flat.shape[1]
 
 
-def prompt_block_candidate_covariance(
+def _prompt_block_candidate_covariance(
     nuisance,
     item_kernel,
     rho,
     positions,
+    *,
+    validate=True,
 ):
     """Joint repeat-mean covariance for one stable prompt block.
 
@@ -726,11 +745,12 @@ def prompt_block_candidate_covariance(
     positions = np.asarray(positions, dtype=int)
     if positions.ndim != 1 or not len(positions):
         raise ValueError("positions must identify at least one component")
-    marginal = candidate_covariance(
+    marginal = _candidate_covariance(
         nuisance,
         item_kernel,
         rho,
         nuisance.evaluate_repeat_counts[positions],
+        validate=False,
     )
     component_dimension = ROWS_PER_COMPONENT * CHANNELS
     output = np.zeros((
@@ -762,8 +782,21 @@ def prompt_block_candidate_covariance(
                     output[left_sl, right_sl] = cross
                     output[right_sl, left_sl] = cross.T
     output = _symmetric(output)
-    np.linalg.cholesky(output)
+    if validate:
+        np.linalg.cholesky(output)
     return output
+
+
+def prompt_block_candidate_covariance(
+    nuisance,
+    item_kernel,
+    rho,
+    positions,
+):
+    """Joint repeat-mean covariance for one stable prompt block."""
+    return _prompt_block_candidate_covariance(
+        nuisance, item_kernel, rho, positions, validate=True
+    )
 
 
 def _prompt_block_positions(prompt_block_ids):
@@ -771,6 +804,168 @@ def _prompt_block_positions(prompt_block_ids):
     if prompt_block_ids.ndim != 1:
         raise ValueError("prompt block IDs must be a vector")
     return tuple(np.flatnonzero(prompt_block_ids == block) for block in np.unique(prompt_block_ids))
+
+
+def _cholesky_solve(factor, value):
+    return np.linalg.solve(factor.T, np.linalg.solve(factor, value))
+
+
+def _cholesky_logdet(factor):
+    return 2.0 * float(np.sum(np.log(np.diag(factor))))
+
+
+def _exchangeable_prompt_schedule(nuisance, positions):
+    """Return a shared schedule and exact cache signature, else ``None``."""
+    positions = np.asarray(positions, dtype=int)
+    observed = nuisance.evaluate_observed_calls[positions]
+    counts = nuisance.evaluate_repeat_counts[positions]
+    if not (
+        np.all(observed == observed[0])
+        and np.all(counts == counts[0])
+    ):
+        return None
+    shared_observed = observed[0]
+    shared_counts = np.asarray(counts[0], dtype=float)
+    signature = (
+        len(positions),
+        shared_counts.tobytes(),
+        shared_observed.shape,
+        np.packbits(shared_observed).tobytes(),
+    )
+    return shared_counts, shared_observed, signature
+
+
+def _compound_symmetric_prompt_covariances(
+    nuisance,
+    item_kernel,
+    rho,
+    positions,
+    schedule=None,
+):
+    """Return contrast/collective covariance blocks, or ``None`` if unsafe.
+
+    Request-level missingness gives every component in one stable prompt block
+    the same recorded repeat schedule.  Conditional on that exact invariant,
+    the joint covariance is ``I_m kron A + J_m kron B`` and has one collective
+    mode ``A + m B`` plus ``m - 1`` contrast modes ``A``.  Public callers may
+    also provide arbitrary fields, so nonexchangeable schedules deliberately
+    fall back to the dense overlap-aware covariance.
+    """
+    positions = np.asarray(positions, dtype=int)
+    schedule = (
+        _exchangeable_prompt_schedule(nuisance, positions)
+        if schedule is None else schedule
+    )
+    if schedule is None:
+        return None
+    counts, observed, _signature = schedule
+
+    marginal = _candidate_covariance(
+        nuisance,
+        item_kernel,
+        rho,
+        counts,
+        validate=False,
+    )[0]
+    shared_request = np.zeros_like(marginal)
+    for row in range(ROWS_PER_COMPONENT):
+        for family, channel_start in enumerate((0, 2)):
+            start = row * CHANNELS + channel_start
+            sl = slice(start, start + 2)
+            family_sl = slice(channel_start, channel_start + 2)
+            overlap = float(np.sum(observed[row, :, family]))
+            coefficient = overlap / float(counts[row, family] ** 2)
+            shared_request[sl, sl] = (
+                nuisance.request_covariance[family_sl, family_sl] * coefficient
+            )
+
+    # The marginal already contains the diagonal request variance.  Removing
+    # one shared-request block gives the contrast covariance; adding the other
+    # m - 1 copies gives the normalized collective-mode covariance.
+    contrast = _symmetric(marginal - shared_request)
+    collective = _symmetric(
+        marginal + (len(positions) - 1.0) * shared_request
+    )
+    return contrast, collective
+
+
+def _dense_prompt_block_gaussian_score(
+    residuals,
+    nuisance,
+    item_kernel,
+    rho,
+    positions,
+):
+    covariance = _prompt_block_candidate_covariance(
+        nuisance, item_kernel, rho, positions, validate=False
+    )
+    vector = residuals[positions].reshape(-1)
+    factor = np.linalg.cholesky(covariance)
+    whitened = np.linalg.solve(factor, vector)
+    return 0.5 * (
+        whitened @ whitened
+        + _cholesky_logdet(factor)
+        + len(vector) * math.log(2.0 * math.pi)
+    ) / len(vector)
+
+
+def _dense_prompt_block_gaussian_nll(
+    residuals,
+    nuisance,
+    item_kernel,
+    rho,
+    prompt_block_ids,
+):
+    """Force the canonical dense block score without eigenmode shortcuts."""
+    residuals = np.asarray(residuals, dtype=float)
+    output = np.empty(len(residuals), dtype=float)
+    for positions in _prompt_block_positions(prompt_block_ids):
+        output[positions] = _dense_prompt_block_gaussian_score(
+            residuals, nuisance, item_kernel, rho, positions
+        )
+    return output
+
+
+def _factor_compound_symmetric_gaussian_modes(
+    contrast_covariance,
+    collective_covariance,
+    component_count,
+):
+    collective_factor = np.linalg.cholesky(collective_covariance)
+    contrast_factor = (
+        np.linalg.cholesky(contrast_covariance)
+        if component_count > 1 else None
+    )
+    logdet = _cholesky_logdet(collective_factor)
+    if contrast_factor is not None:
+        logdet += (component_count - 1) * _cholesky_logdet(contrast_factor)
+    return contrast_factor, collective_factor, logdet
+
+
+def _compound_symmetric_prompt_block_gaussian_score(
+    residuals,
+    positions,
+    factored_modes,
+):
+    values = residuals[positions].reshape(len(positions), -1)
+    component_count, component_dimension = values.shape
+    mean = np.mean(values, axis=0)
+    contrast_factor, collective_factor, logdet = factored_modes
+
+    collective_whitened = np.linalg.solve(
+        collective_factor, math.sqrt(component_count) * mean
+    )
+    quadratic = float(collective_whitened @ collective_whitened)
+
+    if component_count > 1:
+        centered = values - mean
+        contrast_whitened = np.linalg.solve(contrast_factor, centered.T)
+        quadratic += float(np.sum(contrast_whitened * contrast_whitened))
+
+    dimension = component_count * component_dimension
+    return 0.5 * (
+        quadratic + logdet + dimension * math.log(2.0 * math.pi)
+    ) / dimension
 
 
 def prompt_block_gaussian_nll(
@@ -783,19 +978,28 @@ def prompt_block_gaussian_nll(
     """Joint composite residual NLL, returned on an equal-component scale."""
     residuals = np.asarray(residuals, dtype=float)
     output = np.empty(len(residuals), dtype=float)
+    candidate = rho_matched_correlation(item_kernel, rho)
+    mode_cache = {}
     for positions in _prompt_block_positions(prompt_block_ids):
-        covariance = prompt_block_candidate_covariance(
-            nuisance, item_kernel, rho, positions
-        )
-        vector = residuals[positions].reshape(-1)
-        factor = np.linalg.cholesky(covariance)
-        whitened = np.linalg.solve(factor, vector)
-        logdet = 2.0 * float(np.sum(np.log(np.diag(factor))))
-        score = 0.5 * (
-            whitened @ whitened
-            + logdet
-            + len(vector) * math.log(2.0 * math.pi)
-        ) / len(vector)
+        schedule = _exchangeable_prompt_schedule(nuisance, positions)
+        if schedule is None:
+            score = _dense_prompt_block_gaussian_score(
+                residuals, nuisance, item_kernel, rho, positions
+            )
+        else:
+            cache_key = (candidate.shape, candidate.tobytes(), schedule[2])
+            factored_modes = mode_cache.get(cache_key)
+            if factored_modes is None:
+                modes = _compound_symmetric_prompt_covariances(
+                    nuisance, item_kernel, rho, positions, schedule
+                )
+                factored_modes = _factor_compound_symmetric_gaussian_modes(
+                    *modes, len(positions)
+                )
+                mode_cache[cache_key] = factored_modes
+            score = _compound_symmetric_prompt_block_gaussian_score(
+                residuals, positions, factored_modes
+            )
         output[positions] = score
     return output
 
@@ -839,6 +1043,126 @@ def posterior_state_nll(residuals, covariance, states):
     return np.asarray(output)
 
 
+def _dense_prompt_block_posterior_state_score(
+    residuals,
+    nuisance,
+    item_kernel,
+    rho,
+    states,
+    positions,
+    component_design,
+    component_prior_precision,
+):
+    noise_covariance = _prompt_block_candidate_covariance(
+        nuisance, item_kernel, rho, positions, validate=False
+    )
+    component_count = len(positions)
+    design = np.kron(np.eye(component_count), component_design)
+    prior_precision = np.kron(
+        np.eye(component_count), component_prior_precision
+    )
+    truth = states[positions].reshape(-1)
+    observed = design @ truth + residuals[positions].reshape(-1)
+
+    noise_factor = np.linalg.cholesky(noise_covariance)
+    solved_design = _cholesky_solve(noise_factor, design)
+    precision = _symmetric(prior_precision + design.T @ solved_design)
+    precision_factor = np.linalg.cholesky(precision)
+    posterior_mean = _cholesky_solve(
+        precision_factor, solved_design.T @ observed
+    )
+    delta = truth - posterior_mean
+    quadratic = float(np.sum((delta @ precision_factor) ** 2))
+    posterior_logdet = -_cholesky_logdet(precision_factor)
+    return 0.5 * (
+        quadratic
+        + posterior_logdet
+        + len(delta) * math.log(2.0 * math.pi)
+    ) / len(delta)
+
+
+def _factor_posterior_mode(noise_covariance, design, prior_precision):
+    noise_factor = np.linalg.cholesky(noise_covariance)
+    solved_design = _cholesky_solve(noise_factor, design)
+    precision = _symmetric(prior_precision + design.T @ solved_design)
+    precision_factor = np.linalg.cholesky(precision)
+    return solved_design, precision_factor
+
+
+def _factor_compound_symmetric_posterior_modes(
+    contrast_covariance,
+    collective_covariance,
+    component_count,
+    design,
+    prior_precision,
+):
+    collective = _factor_posterior_mode(
+        collective_covariance, design, prior_precision
+    )
+    contrast = (
+        _factor_posterior_mode(contrast_covariance, design, prior_precision)
+        if component_count > 1 else None
+    )
+    posterior_logdet = -_cholesky_logdet(collective[1])
+    if contrast is not None:
+        posterior_logdet -= (
+            (component_count - 1) * _cholesky_logdet(contrast[1])
+        )
+    return contrast, collective, posterior_logdet
+
+
+def _compound_symmetric_prompt_block_posterior_state_score(
+    residuals,
+    states,
+    positions,
+    design,
+    factored_modes,
+):
+    component_count = len(positions)
+    truth = states[positions].reshape(component_count, -1)
+    errors = residuals[positions].reshape(component_count, -1)
+    observed = truth @ design.T + errors
+    truth_mean = np.mean(truth, axis=0)
+    observed_mean = np.mean(observed, axis=0)
+    contrast, collective, posterior_logdet = factored_modes
+
+    collective_design, collective_precision_factor = collective
+    collective_information = (
+        collective_design.T
+        @ (math.sqrt(component_count) * observed_mean)
+    )
+    collective_posterior_mean = _cholesky_solve(
+        collective_precision_factor, collective_information
+    )
+    collective_delta = (
+        math.sqrt(component_count) * truth_mean
+        - collective_posterior_mean
+    )
+    quadratic = float(np.sum(
+        (collective_delta @ collective_precision_factor) ** 2
+    ))
+
+    if contrast is not None:
+        contrast_design, contrast_precision_factor = contrast
+        centered_observed = observed - observed_mean
+        centered_truth = truth - truth_mean
+        contrast_information = contrast_design.T @ centered_observed.T
+        contrast_posterior_mean = _cholesky_solve(
+            contrast_precision_factor, contrast_information
+        ).T
+        contrast_delta = centered_truth - contrast_posterior_mean
+        quadratic += float(np.sum(
+            (contrast_delta @ contrast_precision_factor) ** 2
+        ))
+
+    dimension = component_count * truth.shape[1]
+    return 0.5 * (
+        quadratic
+        + posterior_logdet
+        + dimension * math.log(2.0 * math.pi)
+    ) / dimension
+
+
 def prompt_block_posterior_state_nll(
     residuals,
     nuisance,
@@ -854,31 +1178,46 @@ def prompt_block_posterior_state_nll(
         raise ValueError("states must have shape [G,3,2]")
     component_design = np.kron(np.eye(ROWS_PER_COMPONENT), MEASUREMENT_DESIGN)
     component_prior = np.kron(np.eye(ROWS_PER_COMPONENT), PRIOR_STATE_COVARIANCE)
+    component_prior_precision = np.linalg.solve(
+        component_prior, np.eye(len(component_prior))
+    )
     output = np.empty(len(residuals), dtype=float)
+    candidate = rho_matched_correlation(item_kernel, rho)
+    mode_cache = {}
     for positions in _prompt_block_positions(prompt_block_ids):
-        noise_covariance = prompt_block_candidate_covariance(
-            nuisance, item_kernel, rho, positions
-        )
-        design = np.kron(np.eye(len(positions)), component_design)
-        prior = np.kron(np.eye(len(positions)), component_prior)
-        prior_precision = np.linalg.solve(prior, np.eye(len(prior)))
-        truth = states[positions].reshape(-1)
-        observed = design @ truth + residuals[positions].reshape(-1)
-        solved_design = np.linalg.solve(noise_covariance, design)
-        precision = prior_precision + design.T @ solved_design
-        posterior_covariance = np.linalg.solve(precision, np.eye(len(precision)))
-        posterior_mean = posterior_covariance @ (
-            design.T @ np.linalg.solve(noise_covariance, observed)
-        )
-        delta = truth - posterior_mean
-        sign, logdet = np.linalg.slogdet(posterior_covariance)
-        if sign <= 0:
-            raise np.linalg.LinAlgError("posterior covariance is not positive definite")
-        score = 0.5 * (
-            delta @ precision @ delta
-            + logdet
-            + len(delta) * math.log(2.0 * math.pi)
-        ) / len(delta)
+        schedule = _exchangeable_prompt_schedule(nuisance, positions)
+        if schedule is None:
+            score = _dense_prompt_block_posterior_state_score(
+                residuals,
+                nuisance,
+                item_kernel,
+                rho,
+                states,
+                positions,
+                component_design,
+                component_prior_precision,
+            )
+        else:
+            cache_key = (candidate.shape, candidate.tobytes(), schedule[2])
+            factored_modes = mode_cache.get(cache_key)
+            if factored_modes is None:
+                modes = _compound_symmetric_prompt_covariances(
+                    nuisance, item_kernel, rho, positions, schedule
+                )
+                factored_modes = _factor_compound_symmetric_posterior_modes(
+                    *modes,
+                    len(positions),
+                    component_design,
+                    component_prior_precision,
+                )
+                mode_cache[cache_key] = factored_modes
+            score = _compound_symmetric_prompt_block_posterior_state_score(
+                residuals,
+                states,
+                positions,
+                component_design,
+                factored_modes,
+            )
         output[positions] = score
     return output
 
@@ -928,6 +1267,18 @@ def candidate_grid(gammas=DEFAULT_GAMMAS, rhos=DEFAULT_RHOS):
     return tuple(output)
 
 
+def _candidate_gain_needs_dense_recheck(
+    fold_gains,
+    tolerance=DENSE_DECISION_RECHECK_ATOL,
+):
+    """Flag only numerical proximity to a strict fold/macro zero boundary."""
+    values = np.asarray(fold_gains, dtype=float)
+    return bool(
+        np.any(np.abs(values) <= tolerance)
+        or abs(float(np.mean(values))) <= tolerance
+    )
+
+
 def inner_candidate_search(
     field,
     geometry,
@@ -940,15 +1291,18 @@ def inner_candidate_search(
 ):
     candidates = candidate_grid(gammas, rhos)
     gains: Dict[Candidate, list] = {candidate: [] for candidate in candidates}
+    fold_contexts = []
+    block_kernel = gamma_item_kernel(0.5, geometry.kernels)
     for fit, held in outer_fold.inner:
         nuisance = fit_repeat_nuisance(
             field, geometry, fit, held, mean_ridges=mean_ridges, shrinkage=shrinkage
         )
         held_prompt_blocks = geometry.prompt_block_index[held]
+        fold_contexts.append((nuisance, held_prompt_blocks))
         block_nll = prompt_block_gaussian_nll(
             nuisance.evaluate_centered_means,
             nuisance,
-            gamma_item_kernel(0.5, geometry.kernels),
+            block_kernel,
             0.0,
             held_prompt_blocks,
         )
@@ -964,6 +1318,42 @@ def inner_candidate_search(
                     held_prompt_blocks,
                 )
             gains[candidate].append(float(np.mean(block_nll - candidate_nll)))
+
+    # Eigenmode and dense factorizations are algebraically equivalent, but a
+    # last-bit difference must not decide the preregistered strict `> 0`
+    # eligibility rule.  Near either a fold zero or the macro zero, recompute
+    # all three gains with the canonical dense scorer.  The tolerance triggers
+    # recomputation only: dense values remain unrounded and face the same exact
+    # zero comparison below.
+    dense_block_nll = [None] * len(fold_contexts)
+    for candidate in candidates:
+        if candidate.is_block or not _candidate_gain_needs_dense_recheck(
+            gains[candidate]
+        ):
+            continue
+        candidate_kernel = gamma_item_kernel(candidate.gamma, geometry.kernels)
+        dense_values = []
+        for fold_index, (nuisance, held_prompt_blocks) in enumerate(fold_contexts):
+            if dense_block_nll[fold_index] is None:
+                dense_block_nll[fold_index] = _dense_prompt_block_gaussian_nll(
+                    nuisance.evaluate_centered_means,
+                    nuisance,
+                    block_kernel,
+                    0.0,
+                    held_prompt_blocks,
+                )
+            candidate_nll = _dense_prompt_block_gaussian_nll(
+                nuisance.evaluate_centered_means,
+                nuisance,
+                candidate_kernel,
+                candidate.rho,
+                held_prompt_blocks,
+            )
+            dense_values.append(float(np.mean(
+                dense_block_nll[fold_index] - candidate_nll
+            )))
+        gains[candidate] = dense_values
+
     summaries = tuple(CandidateSummary(
         candidate,
         float(np.mean(values)),

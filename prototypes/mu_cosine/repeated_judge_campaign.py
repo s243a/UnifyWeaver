@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Outcome-blind selection and scoring schedules for a repeated-judge campaign.
 
-The module deliberately stops at immutable score-input files.  It never loads a
-model, calls a judge, or consumes a response.  A separate candidate builder must
-freeze the graph/Nomic candidate pool before this selector is run.
+The selection/scheduling path deliberately stops at immutable score-input
+files.  It never loads a model or calls a judge.  The response helper validates
+only transport/schema integrity; it does not analyze scores.  A separate
+candidate builder must freeze the graph/Nomic candidate pool before this
+selector is run.
 """
 
 from __future__ import annotations
@@ -195,7 +197,12 @@ def _canonical_bool(value, *, label):
 
 
 def load_candidate_builder_manifest(path, candidate_artifact):
-    """Validate content-addressed graph/Nomic candidate-builder provenance."""
+    """Validate a caller-supplied, content-addressed provenance declaration.
+
+    This checks internal consistency and frozen geometry identifiers.  It does
+    not attest that the declared builder, graph, or embedding artifacts were
+    produced by repository code; that builder remains a future prerequisite.
+    """
     value, artifact = _load_json_object(path, label="candidate-builder manifest")
     try:
         pool = value["candidate_pool"]
@@ -1127,10 +1134,18 @@ def build_scoring_schedule(
             ))
             ordered_rows = []
             for batch_index, (prompt_block_id, signature, role, batch) in enumerate(requests):
+                # Membership is stable, while each role x judge gets an
+                # independent deterministic base order.  Evenly spaced repeat
+                # rotations spread each measurement across list positions.
                 batch = sorted(batch, key=lambda row: (
-                    _stable_digest(seed, prompt_block_id, "within", row["component_id"]),
+                    _stable_digest(
+                        seed, prompt_block_id, "position-base", judge, role,
+                        row["component_id"],
+                    ),
                     row["component_id"],
                 ))
+                rotation = (repeat * len(batch)) // repeats
+                batch = batch[rotation:] + batch[:rotation]
                 if len({row["component_id"] for row in batch}) != len(batch):
                     raise AssertionError("a request repeats a component")
                 if {
@@ -1149,11 +1164,13 @@ def build_scoring_schedule(
                     "call_seed_base": spec["call_seed_base"],
                     "shared_session_id": spec["shared_session_id"],
                 }
+                request_input_sha256 = sha256_bytes(score_input_bytes(batch))
                 request_preimage = (
                     wave_id,
                     role,
                     prompt_block_id,
                     [row["row_id"] for row in batch],
+                    request_input_sha256,
                     immutable_contract,
                 )
                 call_seed = ""
@@ -1186,6 +1203,7 @@ def build_scoring_schedule(
                         "batch_row": batch_row,
                         "global_position": position,
                         "request_id": request_id,
+                        "request_input_sha256": request_input_sha256,
                         "prompt_block_id": prompt_block_id,
                         "inference_cluster_id": prompt_block_id,
                         "corpus": signature[0],
@@ -1212,10 +1230,12 @@ def response_ingestion_schema():
         "parse_statuses": ["parsed", "parse_failure", ""],
         "rules": [
             "responses join by request_id + row_id, never by row position",
+            "the scorer must echo the row_id supplied in each score-input row",
             "every attempt is retained and attempts are unique non-negative integers",
             "every scheduled row has exactly one terminal outcome: success or terminal_failure",
             "attempts are contiguous from zero and every batched row records every call attempt",
             "provider-call identity, status, timestamps, and raw response are common within an attempt",
+            "provider request and nonempty response identities are unique across logical call attempts",
             "immutable model, prompt, and settings identities must match the schedule",
             "successful raw response bytes are SHA-256 authenticated",
         ],
@@ -1348,6 +1368,8 @@ def validate_response_records(schedule, responses):
         "provider_request_id", "provider_response_id", "started_at_utc", "completed_at_utc",
         "status", "raw_response_sha256", "raw_response", "error_type",
     )
+    provider_request_owners = {}
+    provider_response_owners = {}
     for request_id, expected_rows in sorted(scheduled_by_request.items()):
         request_attempts = sorted(
             attempt for at_request, attempt in response_batches if at_request == request_id
@@ -1367,6 +1389,22 @@ def validate_response_records(schedule, responses):
                 if len({str(record[field]) for record in batch}) != 1:
                     raise CampaignInputError(
                         f"request {request_id!r} attempt {attempt} has inconsistent provider {field}"
+                    )
+            owner = (request_id, attempt)
+            provider_request_id = str(batch[0]["provider_request_id"])
+            previous = provider_request_owners.setdefault(provider_request_id, owner)
+            if previous != owner:
+                raise CampaignInputError(
+                    f"provider_request_id {provider_request_id!r} is reused across "
+                    f"logical call attempts {previous!r} and {owner!r}"
+                )
+            provider_response_id = str(batch[0]["provider_response_id"])
+            if provider_response_id:
+                previous = provider_response_owners.setdefault(provider_response_id, owner)
+                if previous != owner:
+                    raise CampaignInputError(
+                        f"provider_response_id {provider_response_id!r} is reused across "
+                        f"logical call attempts {previous!r} and {owner!r}"
                     )
     duplicate_success = [key for key, count in successes.items() if count > 1]
     if duplicate_success:
@@ -1412,7 +1450,7 @@ def tsv_bytes(columns, rows):
 
 def score_input_bytes(rows):
     columns = (
-        "node_title", "root_title", "cur_relation", "conf", "neighborhood",
+        "row_id", "node_title", "root_title", "cur_relation", "conf", "neighborhood",
         "node_type", "root_type", "raw",
     )
     body = tsv_bytes(columns, rows).decode("utf-8")
