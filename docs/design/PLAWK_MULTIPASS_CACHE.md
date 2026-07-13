@@ -483,6 +483,14 @@ contracts so neither is a grab-bag of modifiers:
 `arr[N]` key surface already exists; what is new is that `r` resolves against
 the row schema / positional slots rather than being a separate table.
 
+**Column arithmetic (LANDED).** A print field in either reader may be an
+arithmetic expression over columns and integer constants, e.g.
+`r["amount"] * 2`, `r["amount"] / 4`, `r[2] / r[3]`. It is evaluated in **f64**
+and printed with `%g` (the surface `/` is integer, so a bare column ratio
+would truncate) — the same print-arithmetic path grand-total normalise uses,
+with a column operand read via `@wam_atom_field_f64_value` on the row.
+Tests: `tests/test_plawk_records_reader.pl`, `tests/test_plawk_rows_reader.pl`.
+
 **Write side.** How a pass *builds* a row touches multi-column value
 assembly and the commit path. The **first, minimal writer has LANDED**:
 `TABLE[$k] = $0` captures the whole current record as a row value (its bytes,
