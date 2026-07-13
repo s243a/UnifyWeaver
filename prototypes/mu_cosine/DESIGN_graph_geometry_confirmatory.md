@@ -269,5 +269,8 @@ K_cumulative(r,s) = <Phi_cumulative(r), Phi_cumulative(s)>
 ```
 
 It is an explicit Gram and therefore PSD.  Nonnegative weights keep its diffusion interpretation.  The frozen
-topology grids remain `local=(1,1)`, `two_hop=(1,1,1)`, and `decay=(1,1/2,1/4,1/8)`.  Adding it to a covariance
-selector requires a separately calibrated v3 mechanism audit; v1/v2 outputs are not rewritten.
+topology grids remain `local=(1,1)`, `two_hop=(1,1,1)`, and `decay=(1,1/2,1/4,1/8)`.  Campaign collection does
+not require a standalone cumulative-only v3.  Before any campaign residual is inspected, cumulative decay
+replaces same-hop walk inside the single deployment-capable convex cumulative/Nomic family frozen in
+`PREREG_graph_geometry_repeated_judge.md`; its complete mixture-by-coupling search receives one full-procedure
+familywise calibration.  V1/v2 outputs are not rewritten, and the near-equivalent kernel zoo remains diagnostic.
