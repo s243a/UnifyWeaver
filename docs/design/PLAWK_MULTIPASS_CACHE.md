@@ -33,11 +33,14 @@ pass's record source (named fields — key bound to `VAR`, value via
 (phase 8, §3.6): a table whose value is a named-field **row** — captured with
 `TABLE[$k] = $0` and read back by column name with `records of TABLE as r`
 (`r["col"]`, resolved through the `declare TABLE(col type, …)` schema), or by
-position with `rows of TABLE as r` (`r[N]`, no schema), in-run.
-**Not yet:** durable rows across runs (byte-valued cache storage, phase 8.4);
-`rows of`'s `unsafe` / inline check-or-rename spec; the `over prev` reader
-(phase 4 follow-on); the query reader (phase 6); namespaces / `eager` /
-secondary indexes; string-literal print fields. See the per-phase status tags
+position with `rows of TABLE as r` (`r[N]`, no schema); a column may be an
+arithmetic expression (`r["amt"] / 2`, f64); the row is written with
+`TABLE[$k] = $0` or `TABLE[$k] = row($a, $b)`; and rows are **durable across
+runs** on the file backend (the row bytes are persisted, phase 8.4).
+**Not yet:** durable rows over the LMDB backend; `rows of`'s `unsafe` /
+inline check-or-rename spec; the `over prev` reader (phase 4 follow-on); the
+query reader (phase 6); namespaces / `eager` / secondary indexes;
+string-literal print fields. See the per-phase status tags
 in §5.
 
 ## Implemented surface (quick reference)
@@ -502,13 +505,16 @@ replace semantics, keyed by field k. A later pass reads the row back (`over
 TABLE as k`, or `records of` / `rows of`). Field-wise writes
 (`orders[$1]["amount"] = $2`) remain a follow-on.
 
-**In-run vs durable — a limitation to note.** Because the stored value is an
-atom **id** (process-local), captured rows are correct **in-run** (multi-pass
-within one process, the primary use). They do **not** survive across separate
-runs of the binary: the current cache format persists `[key:i64 value:i64]`,
-so a committed row id is stale on reload. **Durable rows need a byte-valued
-cache format** (store the row's bytes, not the id) — the "value encoding for
-non-i64 cache values" open question — deferred to its own runtime round.
+**In-run and durable.** A row value is an atom **id** (process-local), so the
+plain i64 cache — which persists the id — cannot restore a row in a fresh
+process. On the **file** backend a str-valued (row) table therefore commits
+the value **bytes** (`@wam_cache_commit_str`) and re-interns them on load
+(`@wam_cache_load_str`), so rows are **durable across runs** (phase 8.4,
+`tests/test_plawk_row_durable.pl`): a reader pass in a later run sees rows a
+prior run committed. Keys stay i64 ids (content-stable interning reproduces
+them; readers only iterate, and a re-writing pass re-interns the same key).
+Durable str values over the **LMDB** backend remain a follow-on (an lmdb row
+table currently rides the i64 lmdb path, i.e. in-run only).
 
 **Phasing** (each its own PR):
 1. **Schema surface** — `declare NAME(col type, …)` parses and carries a row
@@ -522,7 +528,14 @@ non-i64 cache values" open question — deferred to its own runtime round.
    that field of the stored row; an unknown column is unsupported (clean
    compile-time failure). In-run (rides the row-capture writer's storage).
 4. **Byte-valued cache storage** — durable rows across runs (store row bytes,
-   not the id).
+   not the id). **LANDED (file backend)** (`tests/test_plawk_row_durable.pl`):
+   a str-valued (row) table on the file backend commits the value BYTES
+   (`@wam_cache_commit_str`) and re-interns them on load
+   (`@wam_cache_load_str`), so a row committed by one run is read by a later
+   run — proven with a reader-pass-then-writer program run twice. Keys stay
+   i64 ids (content-stable interning reproduces them). Durable str values over
+   the **LMDB** backend remain a follow-on (an lmdb row table currently rides
+   the i64 lmdb path).
 5. **`rows of` positional reader** — `r[N]` by position, no schema. **LANDED**
    (`tests/test_plawk_rows_reader.pl`). Its `unsafe` modifier + inline
    check-or-rename spec remain a follow-on.
@@ -709,7 +722,9 @@ single-pass test before any driver surgery).
   TABLE` — **LANDED** (`tests/test_plawk_row_capture.pl`); (8.3) the safe
   `records of TABLE as r` reader with name-only `r["col"]` decode by schema —
   **LANDED** (`tests/test_plawk_records_reader.pl`); (8.4) byte-valued cache
-  storage for durable rows across runs; (8.5) the positional `rows of`
+  storage for durable rows across runs — **LANDED (file backend)**
+  (`tests/test_plawk_row_durable.pl`; LMDB durable rows are a follow-on);
+  (8.5) the positional `rows of`
   reader (`r[N]`, no schema) — **LANDED**
   (`tests/test_plawk_rows_reader.pl`; its `unsafe` / inline check-or-rename
   spec remain a follow-on); (8.6) richer row producers (`row(...)` /
