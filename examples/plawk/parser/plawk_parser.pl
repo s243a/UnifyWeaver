@@ -194,6 +194,24 @@ plawk_program(program(BeginClauses, Rules, EndClauses), FunctionClauses,
       plawk_dynentry_rewrite_all(EndClauses0, DynEntries, EndClauses)
     }.
 
+% A `pass records of TABLE as VAR { print VAR["col"], ... }` block: the safe,
+% named row reader (PLAWK_MULTIPASS_CACHE.md §3.6, phase 8.3). Iterates
+% TABLE's row entries, binding each row to VAR; columns are addressed BY NAME
+% only (`VAR["col"]`), resolved through TABLE's declared schema. Distinct from
+% `pass over ... as k` (which binds a scalar key). Tried before `over` and the
+% plain `pass`; the `records of` keyword pair is unambiguous. Body reuses the
+% for-in print body, so numeric column addressing (`VAR[1]`) never appears
+% here -- that is the positional `rows of` reader's job.
+pass_clauses([pass_records(var(Var), var(Table), Body) | Rest]) -->
+    "pass", identifier_boundary, ws,
+    "records", identifier_boundary, ws,
+    "of", identifier_boundary, ws,
+    identifier(Table), ws,
+    "as", identifier_boundary, ws,
+    identifier(Var), ws,
+    for_in_body(Body),
+    ws,
+    pass_clauses(Rest).
 % A `pass over TABLE as VAR { print ... }` block: a configurable reader
 % (PLAWK_MULTIPASS_CACHE.md phase 4). Instead of re-scanning the input, the
 % pass iterates TABLE's entries as records, binding each key to VAR -- the
@@ -222,6 +240,8 @@ plawk_pass_dynentry_rewrite(DynEntries, pass(Rules0), pass(Rules)) :-
     plawk_dynentry_rewrite_all(Rules0, DynEntries, Rules).
 % An `over TABLE` pass has no rule actions to rewrite -- pass it through.
 plawk_pass_dynentry_rewrite(_DynEntries, pass_over(V, T, Body), pass_over(V, T, Body)).
+% A `records of TABLE` reader likewise has no rule actions -- pass it through.
+plawk_pass_dynentry_rewrite(_DynEntries, pass_records(V, T, Body), pass_records(V, T, Body)).
 
 %% dynentry_decls(-Names)//
 %
