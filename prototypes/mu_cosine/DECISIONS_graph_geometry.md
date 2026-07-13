@@ -1,0 +1,193 @@
+# Graph-geometry covariance decision log
+
+This is the append-only companion to `DESIGN_graph_geometry_confirmatory.md`.  Record a decision when it is
+made, the evidence available at that time, alternatives rejected or deferred, and what result would reverse it.
+Do not silently rewrite rationale after outcomes are known.
+
+## 2026-07-12 — separate distance, kernel, and covariance
+
+**Decision:** use scalar graph distance for sampling/interpretation, but admit a covariance geometry only with
+an explicit PSD certificate.
+
+**Reason:** an arbitrary graph shortest-path RBF need not be PSD.  The conditioner needs a valid covariance,
+not merely a plausible similarity score.
+
+**Accepted:** feature Grams, symmetric-Laplacian spectral kernels, nonnegative sums, and Schur products.
+
+**Rejected:** clipping negative eigenvalues of an otherwise indefinite candidate as the primary construction.
+Clipping hides a model error and changes the intended geometry.
+
+**Reconsider if:** a proposed graph metric is proved negative type on the exact graph family and its kernel
+passes the same held gates.
+
+## 2026-07-12 — scalable graph family
+
+**Decision:** make finite-hop walk-feature diffusion the primary scalable family; retain exact heat and
+regularized-Laplacian kernels as small-graph references.
+
+**Reason:** `Phi Phi.T` is PSD by construction, nonnegative hop weights are easy to constrain, and local sparse
+walk features avoid whole-graph eigendecomposition.  Heat/resolvent references test whether the finite feature
+family loses important spectral behavior.
+
+**Rejected for now:** immediate CUDA work on exact full-graph diagonalization.
+
+**Reconsider if:** a statistically validated component routinely exceeds CPU/sparse-feature budgets and matched
+timing shows the exact spectral form improves held predictions enough to justify it.
+
+## 2026-07-12 — independent semantic geometry
+
+**Decision:** preregister Nomic `nomic-embed-text-v1.5` with the `clustering:` prefix as the primary frozen
+external semantic candidate and MiniLM `all-MiniLM-L6-v2` as the lower-capacity comparator.  Pin exact model
+revisions and cache content.
+
+**Reason:** current mu readouts consume e5, so using e5 again would make redundancy likely and attribution weak.
+Nomic and MiniLM provide a representation channel not used by the operating pipeline.  Nomic's clustering
+prefix matches symmetric topic geometry; query/document prefixes would inject an unnecessary retrieval role.
+
+**Not claimed:** either embedder is statistically independent of all language-model priors or superior on this
+corpus.  Independence is an empirical correlation/ablation question.
+
+**Rejected as primary:** e5 semantic geometry.  Keep it as a shared-input control because it is scientifically
+useful to measure how much apparent benefit comes from reusing the model's own representation.
+
+**Reconsider if:** an independent embedder has inadequate title coverage or fails held likelihood while e5 adds
+incremental benefit under an honest redundancy ablation.
+
+## 2026-07-12 — judge-derived distance
+
+**Decision:** exclude distances computed from the same observed judge calls.  Allow cross-fitted `mu_hat`
+distance only as a future leave-one-judge-out diagnostic.
+
+**Reason:** same-call noise otherwise enters both the geometry and the residual, exaggerating correlation.  A
+cross-fitted prediction can be a valid conditional covariate, but it is not independent evidence.
+
+**Reconsider if:** a complete generative model jointly specifies the observation-dependent covariance and wins
+outer-held likelihood/calibration without leakage.
+
+## 2026-07-12 — graph plus embedding combination
+
+**Decision:** nonnegative convex sums are primary; Schur products are secondary.
+
+**Reason:** a sum lets either geometry explain an independent covariance mode.  A product is conservative but
+can erase real graph-local structure whenever a general-purpose embedder misses domain-specific similarity.
+
+**Rejected:** unconstrained signed kernel weights and post-hoc choice of a large mixture grid.
+
+**Reconsider if:** a preregistered multiple-kernel learner with nonnegative weights passes full-procedure null
+calibration and outer-held gates.
+
+## 2026-07-12 — evidence order
+
+**Decision:** mechanism audit, then outcome-blind campaign construction, then repeated-judge confirmation, then
+QR integration/optimization.
+
+**Reason:** the merged pilot showed that stable covariance-looking structure can coexist with inadequate power
+and identification.  Numerical sophistication cannot repair weak covariance evidence.
+
+**Rejected:** lowering the 95% deployment bound to use more apparent correlation.
+
+**Reconsider if:** additional independent components and repeated calls tighten the simultaneous bound while
+held posterior/calibration metrics remain favorable.
+
+## 2026-07-12 — v1 mechanism audit failed: common alpha was not matched effect
+
+**Observed:** the preregistered v1 family-wise selector controlled the block-null nonzero rate, but selected held
+gain was usually negative.  Common `alpha` planted 4.25 times more off-diagonal RMS energy in the closed kernel
+than the walk kernel.  Heat and resolvent were 0.999 correlated on the fixed graph, so exact family recovery was
+also unidentifiable.
+
+**Decision:** preserve v1 as failed.  Freeze v2 around matched maximum off-item coupling `rho`, which is the
+operational batching quantity, and score predictive equivalence classes rather than requiring arbitrary labels
+for nearly identical kernels.
+
+**Rejected:** deleting weak families, shrinking the candidate grid after seeing v1, or calling larger training
+field counts a successful primary result.
+
+**Reconsider if:** a different outcome-blind graph makes the spectral kernels distinguishable; equivalence
+classes must then be recomputed before outcomes on that graph.
+
+## 2026-07-12 — same-hop walk concatenation rejected by outcome-blind topology inventory
+
+**Observed without residual outcomes:** the separate-hop feature Gram was almost identity and did not make
+directly adjacent campaign roots closer than nonadjacent roots.  It only compares equal-hop landing
+distributions and misses the important `p_0(a)` versus `p_1(b)` overlap.
+
+**Decision:** retain it as a negative/control geometry and add a cumulative-walk Gram that sums hop
+distributions in one feature space.  This preserves PSD and sparse execution while admitting cross-hop overlap.
+
+**Rejected:** tuning hop weights against residuals to rescue the original construction.
+
+**Reconsider if:** a different estimand specifically requires equal diffusion time rather than local adjacency;
+the same-hop version can then be preregistered for that estimand.
+
+## 2026-07-12 — independent embeddings are distinct models but not independent geometry
+
+**Observed without residual outcomes:** Nomic versus shared-e5 distance Spearman correlation was 0.776
+exploratory and 0.838 fresh; MiniLM versus e5 was 0.810 and 0.868.  Nomic and MiniLM were themselves 0.894 and
+0.907 correlated.  All three semantic models made adjacent roots closer on average.
+
+**Decision:** keep Nomic as the primary external semantic candidate because it is modestly less redundant with
+e5; keep MiniLM as a lower-cost sensitivity comparator, not a separate high-capacity selector branch.  Sample
+the graph/semantic disagreement cells deliberately (about 4% exploratory and 10% fresh in the first inventory).
+
+**Rejected:** describing either external embedding as independent ground truth, or treating Nomic plus MiniLM
+as two independent votes.
+
+**Reconsider if:** residual-held ablation demonstrates incremental benefit from both after full search/null
+calibration.
+
+## 2026-07-12 — cumulative walk accepted as the scalable local representative
+
+**Observed without residual outcomes:** cumulative walk restores the intended adjacency ordering: mean distance
+adjacent/nonadjacent was `0.857/0.996` exploratory and `0.770/0.982` fresh.  Its distance correlation with the
+closed-neighborhood baseline was 0.730 / 0.885 Spearman.  On the fixed synthetic graph it was 0.962--0.972
+correlated with closed, heat, and resolvent kernels, placing it in the same local/spectral predictive class.
+
+**Decision:** use closed neighborhood as the cheapest fixed baseline and cumulative walk as the scalable
+learnable representative.  Keep exact heat/resolvent as mathematical references, not three extra selector
+branches unless a future outcome-blind graph makes them distinguishable.  Do not create a v3 selector merely
+to add a nearly equivalent kernel; that would increase null multiplicity without adding identified geometry.
+
+**Independent-embedding update:** relative to cumulative walk, graph/semantic disagreement cells are only
+`13/764` exploratory and `22/777` fresh for Nomic (1.7% / 2.8%).  Existing data are thin for interaction
+estimation, so the new campaign must oversample disagreement rather than rely on natural frequency.
+
+**Rejected:** interpreting a larger candidate count as broader evidence, and treating heat/resolvent/cumulative
+as independent votes on this topology.
+
+**Reconsider if:** outcome-blind kernel correlation falls below the preregistered equivalence threshold on a new
+corpus or graph representation.
+
+## 2026-07-12 — prefer one selected item kernel before numerical diagonalization
+
+**Decision:** the first structured covariance promoted to the conditioner should have one selected item kernel,
+
+```text
+R = I_n tensor B0 + K_theta tensor Bg.
+```
+
+If `K_theta=U Lambda U.T`, the item transform `U tensor I_m` reduces `R` to `n` independent channel blocks
+`B0 + lambda_i Bg`.  For the proposed `n=128,m=32` regime, this exposes one 128-dimensional eigendecomposition
+plus 128 parallel 32-dimensional factorizations, which is a plausible CPU/GPU path after statistical validation.
+
+**Rejected for the first optimized path:** several independently weighted, noncommuting item kernels
+`sum_g K_g tensor Bg`.  They generally cannot be simultaneously diagonalized.  Select a nonnegative convex
+item-kernel mixture first; retain dense LMC as a statistical reference.
+
+**Not yet authorized:** CUDA performance claims or a specialized inverse-root implementation.  The existing
+dense QR conditioner remains the correctness baseline until real repeated-judge covariance passes its gates.
+
+**Reconsider if:** multiple item kernels show separately identified held benefit large enough to justify a
+joint/block diagonalization or iterative solver.
+
+## 2026-07-12 — distinguish rank deficiency from positive-spectrum conditioning
+
+**Decision:** report both exact numerical rank and `positive_spectrum_condition_number`.  The latter describes
+the ratio among nonzero eigenvalues only; it is not the ordinary condition number of a singular matrix.
+Closed-neighborhood Gram kernels can be rank deficient by construction, so a finite value must never imply
+that the full kernel is invertible.
+
+**Rejected:** silently dropping zero eigenvalues while labelling the remaining ratio `condition_number`.
+
+**Operational consequence:** downstream covariance construction still adds the separately selected nugget or
+block-noise term before whitening.  Kernel diagnostics do not authorize directly inverting a singular kernel.
