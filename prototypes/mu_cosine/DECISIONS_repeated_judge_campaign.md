@@ -136,8 +136,9 @@ analysis.
 
 ## 2026-07-12 — freeze the PSD safety adapter completely
 
-**Decision:** use shrinkage multipliers `{0,.25,.50,.75,1}`, define missing spectral mass from inner-held
-whitened residual second moments, and set the cross-batch omission tolerance to `epsilon_batch=.025`.
+**Decision:** use shrinkage multipliers `s_safe in {0,.25,.50,.75,1}`, define missing spectral mass from
+inner-held whitened repeat-mean residual second moments including `W_call/R_eff`, and set the cross-batch
+omission tolerance to `epsilon_batch=.025`.
 
 **Rejected:** an unspecified “lower covariance confidence bound,” entrywise lower bounds, or tuning the
 batch-independence tolerance after observing residuals.
@@ -145,3 +146,19 @@ batch-independence tolerance after observing residuals.
 **Reason:** covariance safety is an eigenvalue/PSD-order question.  The `.025` tolerance equals the smallest
 nonzero coupling the registered selector attempts to resolve; anything larger must remain in the conditioning
 matrix.
+
+## 2026-07-12 — supersede single-row calls with explicit prompt blocks
+
+**Decision:** amortize the system prompt over at most ten same-role rows from distinct components.  Keep stable
+prompt-block membership across judges/repeats/roles, contain every block within one corpus/outer/inner split
+signature, fit request effects, and use whole prompt blocks as the conservative inference clusters.
+
+**Supersedes:** the earlier same-day single-row-request decision, before any campaign selection, simulation
+result, or fresh judge response existed.
+
+**Rejected:** either repay the full system prompt for every row or batch rows while continuing to bootstrap
+individual components as if the request induced no dependence.
+
+**Reason:** single-row requests waste tokens; unmodelled shared prompts invalidate component-only uncertainty.
+Stable bounded blocks preserve token amortization, prevent requests crossing held-out boundaries, and make the
+remaining dependence explicit in the power calculation and inference.

@@ -14,8 +14,8 @@ only under a separate amendment and must be permanently excluded from confirmati
 ## Question and experimental unit
 
 The question is whether an outcome-blind graph/semantic geometry predicts transferable cross-item conditional
-measurement error after calibration and mean removal.  The independent unit is an endpoint-disjoint component
-containing three rows with a shared descendant `x`:
+measurement error after calibration and mean removal.  The structural sampling unit is an endpoint-disjoint
+component containing three rows with a shared descendant `x`:
 
 ```text
 anchor:             (x, a)
@@ -41,21 +41,27 @@ selector rejects a requested per-corpus total that cannot preserve those frozen 
 
 ## Repeated-call estimand
 
-For component `g`, row `i`, judge family `f`, and independent call wave `r`, the conditional residual model is
+For component `g`, row `i`, judge family `f`, independent call wave `r`, and prompt block `p(g)`, the
+conditional residual model is
 
 ```text
-q_gifr = m(x_gi, f) + u_gif + w_fr + epsilon_gifr.
+q_gifr = m(x_gi, f) + u_gif + w_fr + b_f,r,role(i),p(g) + epsilon_gifr.
 ```
 
-`u` is persistent item-by-judge error, `w` is an optional recorded repeat-wave effect, and `epsilon` is fresh
-call noise.  Every selected row is crossed with at least three fresh, stateless requests per judge family.
+`u` is persistent item-by-judge error, `w` is an optional recorded repeat-wave effect, `b` is a fresh shared
+prompt-request effect, and `epsilon` is row-specific call noise.  Every selected row is crossed with at least
+three fresh, stateless request waves per judge family.
 Four waves are a frozen sensitivity design.  Wave, request, batch, model revision, prompt hash, settings/seed,
 timestamp, raw response, retry, and failure identity are retained.  Model or prompt changes create a new
 stratum and are never pooled silently.
 
-One confirmatory request contains exactly one campaign row.  Grouping several rows into a scorer prompt would
-add an unmodelled request-level dependence and is prohibited.  The later `N_item=128,M_channel=32` numerical
-batch is a conditioning layout over already collected measurements, not a multi-row judge request.
+To amortize the system prompt, one confirmatory request contains up to ten rows from distinct endpoint
+components and a single row role.  Prompt-block membership is stable across roles, judges, and repeats, so the
+request-connected dependence clusters remain bounded.  A block and all of its rows remain wholly inside one
+corpus, outer fold, and global inner-fold label; no request crosses an analysis boundary.  The prompt block,
+not an individual component, is the conservative inference/resampling cluster.  Request and block effects are
+refit inside training folds.  The later `N_item=128,M_channel=32` numerical batch is a different conditioning
+layout over already collected measurements.
 
 Repeats are not averaged before variance decomposition.  The analysis reports:
 
@@ -82,13 +88,14 @@ Each produces the frozen D/S response schema.  Luna is a second measurement fami
 An operating-judge fidelity claim needs repeated operating-judge targets.  A generality/truth claim additionally
 requires a preregistered blinded third-family, human, graph-structural, or downstream target subset.
 
-For `G` selected components, three rows, `F` judge families, and `R` repeats, the planned evaluation count is
+For `G` selected components, three rows, `F` judge families, and `R` repeats, the planned item-evaluation count is
 
 ```text
-calls = 3 * G * F * R.
+item_evaluations = 3 * G * F * R.
 ```
 
-The sampler emits this count but never performs a call.
+The sampler emits this count and the smaller prompt-request count implied by the split-contained blocks, but
+never performs a call.
 
 ## One deployment-capable geometry family
 
@@ -123,6 +130,8 @@ one, and each feasible stratum margin is distributed as evenly as integer counts
 inside every fold are not required.  Every row, repeat, and judge from one endpoint component remains in one
 fold.  Endpoint IDs and normalized titles are disjoint across folds.  For every outer-held fold the selector
 also materializes the three inner-fold assignments of its outer-training components, before outcomes exist.
+Prompt blocks are then formed only among components with the same corpus/outer/inner signature, and whole
+prompt blocks—not component rows—are the resampling units for uncertainty intervals.
 All outcome-dependent objects are refit inside the appropriate training components:
 
 - judge calibration and conditionalization;
@@ -151,11 +160,12 @@ smoke tests may use smaller explicit CLI values but cannot set the reported reco
 The repeat-aware generator uses two judge families by D/S channels (`m=4`) and three rows per component:
 
 ```text
-q_gir = X_gi beta + u_gi + epsilon_gir,
+q_gir = X_gi beta + u_gi + w_r + b_r,role(i),p(g) + epsilon_gir,
 u_g ~ Normal(0, C_theta,g tensor B_persistent),
 epsilon_gir ~ Normal(0, I_item tensor W_call).
 ```
 
+`w`, `b`, and request-level missingness are generated and refit; uncertainty resamples stable prompt blocks.
 Candidate item covariances are explicit feature Grams.  Frozen scenarios are block null, smooth-mean only,
 cumulative truth, Nomic truth, convex-mixture truth, and equal-energy derangement at `rho_max=.04,.10,.20`.
 An optional shared-wave scenario is labelled separately.  Nulls preserve component topology, regional mean,
@@ -166,6 +176,14 @@ Every null and alternative replicate repeats component splitting, mean/ridge sel
 `W_call`, `B`, kernel/mixture/coupling selection, loading, and endpoint scoring.  Cache only outcome-blind feature
 Grams, folds, eigensystems, and linear-system structure.  Seeds derive from `(G,R,scenario,replicate)`; scientific
 JSON excludes wall time and output paths.
+
+The frozen implementation details are: prompt-block capacity 10; five outer and three inner folds; mean-ridge
+grid `{0,.01,.1,1,10}`; 5% shrinkage toward channel-diagonal targets for `W_call` and `B`; and a relative
+numerical SPD floor of `1e-8`.  A non-block candidate is inner-eligible only when its macro held gain is positive
+and at least two of three inner folds are positive.  Ties prefer larger gain, then smaller `rho_max`, then
+`gamma` closest to `.5`, then smaller `gamma`.  The committed simulation module freezes the numeric generative
+`W_call`, `B`, mean, wave, request, heteroskedasticity, and missingness constants; its content hash is recorded
+before a reported run and changing it requires a new preregistered run.
 
 The finite familywise threshold is the upper-95% null order statistic at one-based rank
 
@@ -179,7 +197,8 @@ with strict `observed > threshold` promotion.  Calibration and evaluation null s
 
 The recommended count is the smallest `G` for which, at `rho_max=.10` and `.20`:
 
-1. independent block-null false deployment is consistent with the nominal 5% familywise rule and at most 10%;
+1. independent block-null false deployment does not reject `p<=.05` in a one-sided exact binomial test at 5%,
+   and its observed rate is at most 10%;
 2. full deployment-event power is at least 80% for cumulative, Nomic, and mixture truths;
 3. mean selected outer-held residual NLL gain is positive;
 4. mean harm is nonpositive under block-null and smooth-mean controls;
@@ -198,7 +217,7 @@ d_residual,g  = NLL_block,g - NLL_structured,g
 d_posterior,g = posterior_NLL_block,g - posterior_NLL_structured,g.
 ```
 
-Use a preregistered one-sided component multiplier/max-statistic construction for simultaneous 95% lower bounds
+Use a preregistered one-sided prompt-block multiplier/max-statistic construction for simultaneous 95% lower bounds
 across both primary endpoints and every corpus required to pass.  The familywise selector must reject block and
 every primary lower bound must exceed zero.  Secondary requirements are:
 
@@ -215,26 +234,33 @@ PoE is retained only as a control.
 ## PSD-safe deployment adapter and batching
 
 No elementwise covariance lower bound is called conservative.  Select the shrinkage multiplier
-`alpha_safe` from `{0,.25,.50,.75,1}` inside outer training, using only its inner-held components, as the
+`s_safe` from `{0,.25,.50,.75,1}` inside outer training, using only its inner-held components, as the
 largest value whose multiplicity-adjusted benefit lower bound is positive; otherwise use zero.  It multiplies
 the already selected, rho-matched correlation path and is not a second unconstrained covariance fit.  In
 whitened coordinates,
 
 ```text
-C_alpha = (1-alpha_safe) I + alpha_safe C_hat,
+C_safe = (1-s_safe) I + s_safe C_hat,
 R_safe = (I_N tensor L_B)
-         [C_alpha tensor I_m + delta_95 I_(N*m)]
-         (I_N tensor L_B)^T.
+         [C_safe tensor I_m + delta_95 I_(N*m)]
+         (I_N tensor L_B)^T
+         + I_N tensor W_call/R_eff.
 ```
 
-For each inner split, whiten with training-only `B`, form the inner-held residual second moment `S_held`, and
-record the positive missing-mass statistic
+`C_hat` is the already rho-matched selected `C(K_gamma,rho_max)`, `B=L_B L_B^T` is the persistent channel
+covariance, and `R_eff` is the number of independent calls averaged for that deployed measurement.  Thus
+`s_safe` is distinguishable from the kernel path coefficient `alpha(K,rho)` and call noise is not silently
+absorbed into persistent covariance.
+
+For each inner split, whiten with training-only `B`, form the inner-held repeat-mean residual second moment
+`S_held`, include the correspondingly whitened `W_call/R_eff` term in `T_model`, and record the positive
+missing-mass statistic
 
 ```text
-e_delta = max(0, lambda_max(S_held - C_alpha)).
+e_delta = max(0, lambda_max(S_held - T_model)).
 ```
 
-`delta_95` is the simultaneous one-sided 95% upper component-bootstrap bound on the maximum `e_delta` across
+`delta_95` is the simultaneous one-sided 95% upper prompt-block-bootstrap bound on the maximum `e_delta` across
 inner splits and required corpora, with the whole mean/covariance/selector refit inside each resample.  If that
 bound is not finite and identified, deployment fails closed.  Statistical `delta_95` and numerical Cholesky
 loading are distinct and reported separately.  Distance-separated batching additionally requires a
