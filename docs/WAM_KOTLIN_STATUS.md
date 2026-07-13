@@ -69,5 +69,5 @@ module in the fleet.
 Fleet-aligned snapshot; source-verified against `wam_kotlin_target.pl`,
 `wam_kotlin_lowered_emitter.pl`, and `tests/test_wam_kotlin_target.pl`
 (2026-07-12). EMIT-KOTLIN-2 + CONF-KOTLIN + KT-ARITH-SLASH-FUNCTOR +
-KT-LIST-BACKTRACK + KT-Y-ENV-RECURSION landed; EMIT-KOTLIN-3 in flight
-(T4/T5 multi-clause without call/execute).
+KT-LIST-BACKTRACK + KT-Y-ENV-RECURSION + EMIT-KOTLIN-3 landed
+(T4/T5 multi-clause without call/execute; EMIT-KOTLIN-4 next).

@@ -55,7 +55,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | EMIT-JVM | Lowered emitter | JVM | L | — |
 | EMIT-KOTLIN ✅ | Lowered emitter | Kotlin | M | done — flat facts/unify (`cursor/emit-kotlin-lowered-f421`) |
 | EMIT-KOTLIN-2 ✅ | Lowered emitter (structures) | Kotlin | M | done — write-mode structures (`cursor/emit-kotlin-structures-f421`) |
-| EMIT-KOTLIN-3 | Multi-clause deterministic | Kotlin | M | T5 chain + T4 all-clauses-inline (no call/execute) |
+| EMIT-KOTLIN-3 ✅ | Multi-clause deterministic | Kotlin | M | done — T5/T4 no call/execute (`cursor/emit-kotlin-multi-clause-f421`) |
 | EMIT-KOTLIN-4 | Recursion in lowered bodies | Kotlin | M | call/execute → inter-predicate / recursion |
 | BENCH-LLVM | Effective-distance bench row | LLVM | L | — |
 | BENCH-CPP | Effective-distance bench row | C++ | L | — |
