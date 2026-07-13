@@ -35,6 +35,10 @@ consuming selection.  Structural near/far defines the sampling contrast; cumulat
 are retained continuously.  The target count is determined by the power procedure below, separately for every
 corpus required to pass.
 
+`G` is the component count **per required corpus**.  Each corpus has 32 joint cells (four hop transitions by
+four degree quartiles by two agreement classes), so every frozen `G` supports exact equal cell counts.  The
+selector rejects a requested per-corpus total that cannot preserve those frozen quotas.
+
 ## Repeated-call estimand
 
 For component `g`, row `i`, judge family `f`, and independent call wave `r`, the conditional residual model is
@@ -110,8 +114,11 @@ zoo requires a new preregistration and recalibrated null before outcomes.
 
 ## Component-disjoint fitting contract
 
-Each corpus uses five deterministic outer folds and three inner component folds.  Every row, repeat, and judge
-from one endpoint component remains in one fold.  Endpoint IDs and normalized titles are disjoint across folds.
+Each corpus uses five deterministic outer folds and three inner component folds.  Fold totals differ by at most
+one, and each feasible stratum margin is distributed as evenly as integer counts allow; equal per-cell counts
+inside every fold are not required.  Every row, repeat, and judge from one endpoint component remains in one
+fold.  Endpoint IDs and normalized titles are disjoint across folds.  For every outer-held fold the selector
+also materializes the three inner-fold assignments of its outer-training components, before outcomes exist.
 All outcome-dependent objects are refit inside the appropriate training components:
 
 - judge calibration and conditionalization;

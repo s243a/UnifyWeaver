@@ -110,3 +110,15 @@ and identifying JointPosterior with a matrix factorization.
 
 **Reason:** JointPosterior is the calibrated decision comparator.  The eigenmode/QR conditioner is a numerical
 implementation of an already validated covariance model.
+
+## 2026-07-12 — distinguish campaign quotas from fold apportionment
+
+**Decision:** interpret `G` as the count per required corpus.  Preserve exact equal quotas across each corpus's
+32 joint cells, then apportion those selected components across five outer folds and three nested inner folds
+as evenly as integer counts allow.  Materialize all assignments before outcomes.
+
+**Rejected:** require every cell to divide equally across every fold.
+
+**Reason:** all frozen `G` values divide by 32, so campaign-cell balance is exact.  At `G=512`, however, each
+cell has 16 components and cannot divide equally over five outer folds.  Requiring impossible fold equality or
+silently changing `G` would invalidate the power recommendation; near-balanced fold apportionment preserves it.
