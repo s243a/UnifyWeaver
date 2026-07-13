@@ -262,7 +262,7 @@ test(functions_mode_emits_lowered_fun_and_register_native, [nondet]) :-
         ),
         (   wam_kotlin_target:write_wam_kotlin_project([user:kt_fact/2], [emit_mode(functions)], TmpDir),
             read_file_to_string('output/test_wam_kotlin_functions_fact/src/main/kotlin/generated/wam/Main.kt', Main, []),
-            assertion(has_substring(Main, 'fun lowered_kt_fact_2(state: WamState): Boolean')),
+            assertion(has_substring(Main, 'fun lowered_kt_fact_2(state: WamState, dispatch: (String, WamState) -> Boolean): Boolean')),
             assertion(has_substring(Main, 'program.registerNative("kt_fact/2", ::lowered_kt_fact_2)')),
             assertion(has_substring(Main, 'register_kt_fact(program)')),
             assertion(\+ has_substring(Main, 'Native Kotlin lowering selected'))
