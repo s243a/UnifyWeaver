@@ -692,6 +692,90 @@ fn test_numbervars_direct() {
 }
 
 #[test]
+fn test_unifiable_direct() {
+    let display_eq = |left: Value, right: Value| {
+        Value::Str("=".to_string(), vec![left, right])
+    };
+    let raw_eq = |left: Value, right: Value| {
+        Value::Str("=/2".to_string(), vec![left, right])
+    };
+
+    let (simple_ok, simple_vm) = call3(
+        "unifiable/3",
+        ub("X"),
+        Value::Str("foo/1".to_string(), vec![a("a")]),
+        ub("Bindings"),
+    );
+    assert!(simple_ok);
+    assert_eq!(read_var(&simple_vm, "X"), ub("X"));
+    assert_eq!(
+        read_var(&simple_vm, "Bindings"),
+        Value::List(vec![display_eq(
+            ub("X"),
+            Value::Str("foo".to_string(), vec![a("a")]),
+        )]),
+    );
+
+    let (two_ok, two_vm) = call3(
+        "unifiable/3",
+        Value::Str("p/2".to_string(), vec![ub("X"), ub("Y")]),
+        Value::Str("p/2".to_string(), vec![i(1), i(2)]),
+        ub("Bindings"),
+    );
+    assert!(two_ok);
+    assert_eq!(
+        read_var(&two_vm, "Bindings"),
+        Value::List(vec![display_eq(ub("X"), i(1)), display_eq(ub("Y"), i(2))]),
+    );
+    assert_eq!(read_var(&two_vm, "X"), ub("X"));
+    assert_eq!(read_var(&two_vm, "Y"), ub("Y"));
+
+    let (alias_ok, alias_vm) = call3("unifiable/3", ub("X"), ub("Y"), ub("Bindings"));
+    assert!(alias_ok);
+    assert_eq!(
+        read_var(&alias_vm, "Bindings"),
+        Value::List(vec![display_eq(ub("X"), ub("Y"))]),
+    );
+    assert_eq!(read_var(&alias_vm, "X"), ub("X"));
+    assert_eq!(read_var(&alias_vm, "Y"), ub("Y"));
+
+    let (ground_ok, ground_vm) = call3("unifiable/3", a("same"), a("same"), ub("B"));
+    assert!(ground_ok);
+    assert_eq!(read_var(&ground_vm, "B"), Value::List(vec![]));
+
+    let (fail_ok, fail_vm) = call3(
+        "unifiable/3",
+        Value::Str("p/2".to_string(), vec![ub("X"), a("a")]),
+        Value::Str("p/2".to_string(), vec![i(1), a("b")]),
+        ub("Bindings"),
+    );
+    assert!(!fail_ok);
+    assert_eq!(read_var(&fail_vm, "X"), ub("X"));
+
+    let constrained = Value::List(vec![raw_eq(ub("X"), a("foo"))]);
+    let (constrained_ok, constrained_vm) =
+        call3("unifiable/3", ub("X"), ub("Y"), constrained);
+    assert!(constrained_ok);
+    assert_eq!(read_var(&constrained_vm, "X"), ub("X"));
+    assert_eq!(read_var(&constrained_vm, "Y"), a("foo"));
+
+    let mismatched = Value::List(vec![
+        raw_eq(ub("Capture"), i(1)),
+        raw_eq(ub("Y"), i(9)),
+    ]);
+    let (mismatch_ok, mismatch_vm) = call3(
+        "unifiable/3",
+        Value::Str("p/2".to_string(), vec![ub("X"), ub("Y")]),
+        Value::Str("p/2".to_string(), vec![i(1), i(2)]),
+        mismatched,
+    );
+    assert!(!mismatch_ok);
+    assert_eq!(read_var(&mismatch_vm, "X"), ub("X"));
+    assert_eq!(read_var(&mismatch_vm, "Y"), ub("Y"));
+    assert_eq!(read_var(&mismatch_vm, "Capture"), ub("Capture"));
+}
+
+#[test]
 fn test_ground() {
     assert!(call1("ground/1", a("x")).0);
     assert!(call1("ground/1", Value::List(vec![i(1), a("b")])).0);

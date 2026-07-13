@@ -1667,6 +1667,35 @@ compile_execute_term_builtin_to_rust(Code) :-
                     false
                 }
             }
+            "unifiable/3" => {
+                let left = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let right = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if !self.unify(&left, &right) {
+                    self.unwind_trail_to(mark);
+                    return false;
+                }
+                // Keep raw values so alias substitutions remain X=Y after
+                // the trial bindings are unwound.
+                let pairs: Vec<Value> = self.trail[mark..].iter()
+                    .filter_map(|entry| {
+                        let name = entry.key.strip_prefix("__binding__")?;
+                        let bound = self.bindings.get(name)?.clone();
+                        Some(Value::Str(
+                            "=/2".to_string(),
+                            vec![Value::Unbound(name.to_string()), bound],
+                        ))
+                    })
+                    .collect();
+                self.unwind_trail_to(mark);
+                let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                if self.unify(&output, &Value::List(pairs)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
             _ => false,
         }
     }
