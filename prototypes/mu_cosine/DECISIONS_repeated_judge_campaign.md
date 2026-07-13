@@ -122,3 +122,26 @@ as evenly as integer counts allow.  Materialize all assignments before outcomes.
 **Reason:** all frozen `G` values divide by 32, so campaign-cell balance is exact.  At `G=512`, however, each
 cell has 16 components and cannot divide equally over five outer folds.  Requiring impossible fold equality or
 silently changing `G` would invalidate the power recommendation; near-balanced fold apportionment preserves it.
+
+## 2026-07-12 — isolate every confirmatory judge request
+
+**Decision:** send one campaign row per stateless judge request and retain request identity.  Numerical batches
+used later by the conditioner are formed only after measurement collection.
+
+**Rejected:** score ten campaign rows in one prompt while treating endpoint components as independent.
+
+**Reason:** a shared prompt can induce request-level covariance and connects otherwise endpoint-disjoint
+components.  The frozen simulator has no such cluster effect, so shared requests would invalidate its unit of
+analysis.
+
+## 2026-07-12 — freeze the PSD safety adapter completely
+
+**Decision:** use shrinkage multipliers `{0,.25,.50,.75,1}`, define missing spectral mass from inner-held
+whitened residual second moments, and set the cross-batch omission tolerance to `epsilon_batch=.025`.
+
+**Rejected:** an unspecified “lower covariance confidence bound,” entrywise lower bounds, or tuning the
+batch-independence tolerance after observing residuals.
+
+**Reason:** covariance safety is an eigenvalue/PSD-order question.  The `.025` tolerance equals the smallest
+nonzero coupling the registered selector attempts to resolve; anything larger must remain in the conditioning
+matrix.

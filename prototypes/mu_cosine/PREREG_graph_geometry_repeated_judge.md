@@ -53,6 +53,10 @@ Four waves are a frozen sensitivity design.  Wave, request, batch, model revisio
 timestamp, raw response, retry, and failure identity are retained.  Model or prompt changes create a new
 stratum and are never pooled silently.
 
+One confirmatory request contains exactly one campaign row.  Grouping several rows into a scorer prompt would
+add an unmodelled request-level dependence and is prohibited.  The later `N_item=128,M_channel=32` numerical
+batch is a conditioning layout over already collected measurements, not a multi-row judge request.
+
 Repeats are not averaged before variance decomposition.  The analysis reports:
 
 1. within-call D/S covariance and judge-specific sampling variance from repeat deviations;
@@ -210,9 +214,11 @@ PoE is retained only as a control.
 
 ## PSD-safe deployment adapter and batching
 
-No elementwise covariance lower bound is called conservative.  Select `alpha_safe` inside outer training,
-using only its inner-held components, as the largest frozen-grid value whose multiplicity-adjusted benefit
-lower bound is positive; otherwise use zero.  In whitened coordinates,
+No elementwise covariance lower bound is called conservative.  Select the shrinkage multiplier
+`alpha_safe` from `{0,.25,.50,.75,1}` inside outer training, using only its inner-held components, as the
+largest value whose multiplicity-adjusted benefit lower bound is positive; otherwise use zero.  It multiplies
+the already selected, rho-matched correlation path and is not a second unconstrained covariance fit.  In
+whitened coordinates,
 
 ```text
 C_alpha = (1-alpha_safe) I + alpha_safe C_hat,
@@ -221,10 +227,20 @@ R_safe = (I_N tensor L_B)
          (I_N tensor L_B)^T.
 ```
 
-`delta_95` is the full-procedure 95th percentile of maximum missing spectral mass.  Statistical `delta_95` and
-numerical Cholesky loading are distinct and reported separately.  Distance-separated batching additionally
-requires a simultaneous 95% upper bound on every proposed cross-batch whitened block norm below a separately
-frozen `epsilon_batch`; neither small `alpha` nor added loading establishes independence.
+For each inner split, whiten with training-only `B`, form the inner-held residual second moment `S_held`, and
+record the positive missing-mass statistic
+
+```text
+e_delta = max(0, lambda_max(S_held - C_alpha)).
+```
+
+`delta_95` is the simultaneous one-sided 95% upper component-bootstrap bound on the maximum `e_delta` across
+inner splits and required corpora, with the whole mean/covariance/selector refit inside each resample.  If that
+bound is not finite and identified, deployment fails closed.  Statistical `delta_95` and numerical Cholesky
+loading are distinct and reported separately.  Distance-separated batching additionally requires a
+simultaneous 95% upper bound on every proposed cross-batch whitened block norm below
+`epsilon_batch=.025`, the smallest nonzero coupling resolved by the frozen selector grid; neither small
+`alpha`, large distance, nor added loading establishes independence.
 
 ## Decision outcomes
 
