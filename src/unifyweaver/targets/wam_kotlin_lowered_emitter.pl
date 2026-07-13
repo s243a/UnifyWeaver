@@ -9,12 +9,17 @@
 
 :- use_module(library(lists)).
 :- use_module(wam_text_parser, [wam_classify_constant_token/2]).
+:- use_module(wam_clause_chain, [clause_chain/2]).
 
-build_emission_plan(WamCode, plan(deterministic, none, ClauseLines)) :-
+% ============================================================================
+% Emission plan (T5 clause_chain → T4 multi_clause_n → T1 deterministic)
+% ============================================================================
+
+build_emission_plan(WamCode, Plan) :-
     atom_string(WamCode, S),
     split_string(S, "\n", "", Lines),
     skip_to_first_real_instr(Lines, Filtered),
-    deterministic_single_clause(Filtered, ClauseLines).
+    classify_clause_shape(Filtered, Plan).
 
 skip_to_first_real_instr([], []).
 skip_to_first_real_instr([Line|Rest], Out) :-
@@ -30,8 +35,27 @@ skippable_prefix_line(["switch_on_constant"|_]).
 skippable_prefix_line(["switch_on_constant_a2"|_]).
 skippable_prefix_line(["switch_on_structure"|_]).
 skippable_prefix_line(["switch_on_term"|_]).
+skippable_prefix_line(["switch_on_term_a2"|_]).
 
-deterministic_single_clause(Lines, Lines) :-
+% T5: distinct first-arg get_constant discriminators.
+classify_clause_shape([FirstLine|Rest],
+                     plan(clause_chain, none, chain_payload(Guards))) :-
+    wam_kotlin_target:tokenize_wam_line(FirstLine, ["try_me_else", _AltStr]),
+    kotlin_chain_terms([FirstLine|Rest], Terms),
+    clause_chain(Terms, chain(Guards)),
+    forall(member(guard(_, Rem), Guards), kotlin_chain_rem_supported(Rem)),
+    !.
+% T4: multi-clause with only supported deterministic bodies (no call/execute).
+classify_clause_shape([FirstLine|Rest], plan(multi_clause_n, none, Clauses)) :-
+    wam_kotlin_target:tokenize_wam_line(FirstLine, ["try_me_else", _AltStr]),
+    kotlin_split_clause_lines([FirstLine|Rest], Clauses),
+    Clauses = [_, _ | _],
+    forall(member(Cl, Clauses),
+           ( forall(member(Line, Cl), kotlin_t4_clause_line_supported(Line)),
+             last(Cl, LastLine), kotlin_t4_terminal_line(LastLine) )),
+    !.
+% T1: deterministic single-clause (no try_me_else / cut_ite / jump).
+classify_clause_shape(Lines, plan(deterministic, none, Lines)) :-
     \+ has_unsupported_shape(Lines),
     forall(member(Line, Lines), line_supported(Line)).
 
@@ -46,9 +70,83 @@ unsupported_shape_parts(["trust_me"]).
 unsupported_shape_parts(["cut_ite"]).
 unsupported_shape_parts(["jump"|_]).
 
-wam_kotlin_lowerable(_PI, WamCode, deterministic) :-
-    catch(build_emission_plan(WamCode, plan(deterministic, _, Payload)), _, fail),
-    forall(member(Line, Payload), line_supported(Line)).
+% --- T5 chain term parse -------------------------------------------------
+kotlin_chain_terms([], []).
+kotlin_chain_terms([Line|Rest], Terms) :-
+    wam_kotlin_target:tokenize_wam_line(Line, Parts),
+    (   Parts == []
+    ->  kotlin_chain_terms(Rest, Terms)
+    ;   Parts = [First|_], sub_string(First, _, 1, 0, ":")
+    ->  kotlin_chain_terms(Rest, Terms)
+    ;   kotlin_chain_term(Parts, T),
+        Terms = [T|More],
+        kotlin_chain_terms(Rest, More)
+    ).
+
+kotlin_chain_term(["try_me_else", L], try_me_else(L)) :- !.
+kotlin_chain_term(["retry_me_else", L], retry_me_else(L)) :- !.
+kotlin_chain_term(["trust_me"], trust_me) :- !.
+kotlin_chain_term(["get_constant", V, A], get_constant(V, A)) :- !.
+kotlin_chain_term(Parts, line(Parts)).
+
+kotlin_chain_rem_supported([]).
+kotlin_chain_rem_supported([T|Rest]) :-
+    (   T = get_constant(_, _)
+    ->  true
+    ;   T = line(Parts)
+    ->  parts_supported(Parts)
+    ),
+    kotlin_chain_rem_supported(Rest).
+
+% --- T4 clause splitting -------------------------------------------------
+kotlin_split_clause_lines(AllLines, Clauses) :-
+    include(kotlin_t4_instr_line, AllLines, InstrLines),
+    kotlin_split_at_terminal(InstrLines, Clauses).
+
+kotlin_t4_instr_line(Line) :-
+    wam_kotlin_target:tokenize_wam_line(Line, Parts),
+    Parts \== [],
+    Parts = [F|_],
+    \+ sub_string(F, _, 1, 0, ":"),
+    \+ member(F, ["try_me_else", "retry_me_else", "trust_me",
+                  "switch_on_constant", "switch_on_constant_a2",
+                  "switch_on_structure", "switch_on_term",
+                  "switch_on_term_a2"]).
+
+kotlin_split_at_terminal([], []).
+kotlin_split_at_terminal([L|Ls], [Clause|Rest]) :-
+    kotlin_take_to_terminal([L|Ls], Clause, After),
+    ( After == [] -> Rest = [] ; kotlin_split_at_terminal(After, Rest) ).
+
+kotlin_take_to_terminal([Line|Rest], [Line], Rest) :-
+    wam_kotlin_target:tokenize_wam_line(Line, Parts),
+    ( Parts == ["proceed"] ; Parts == ["fail"] ), !.
+kotlin_take_to_terminal([Line|Rest], [Line|More], After) :-
+    kotlin_take_to_terminal(Rest, More, After).
+kotlin_take_to_terminal([], [], []).
+
+kotlin_t4_clause_line_supported(Line) :-
+    wam_kotlin_target:tokenize_wam_line(Line, Parts),
+    ( Parts == [] -> true ; parts_supported(Parts) ),
+    Parts \= ["cut_ite"|_],
+    Parts \= ["jump"|_],
+    \+ (Parts = ["call"|_]),
+    \+ (Parts = ["execute"|_]).
+
+kotlin_t4_terminal_line(Line) :-
+    wam_kotlin_target:tokenize_wam_line(Line, Parts),
+    ( Parts == ["proceed"] ; Parts == ["fail"] ).
+
+wam_kotlin_lowerable(_PI, WamCode, Reason) :-
+    catch(build_emission_plan(WamCode, plan(Reason, _, Payload)), _, fail),
+    (   Reason == clause_chain
+    ->  Payload = chain_payload(Guards),
+        forall(member(guard(_, Rem), Guards), kotlin_chain_rem_supported(Rem))
+    ;   Reason == multi_clause_n
+    ->  forall(member(Cl, Payload),
+               forall(member(Line, Cl), line_supported(Line)))
+    ;   forall(member(Line, Payload), line_supported(Line))
+    ).
 
 line_supported(Line) :-
     wam_kotlin_target:tokenize_wam_line(Line, Parts),
@@ -59,8 +157,8 @@ line_supported(Line) :-
     ;   parts_supported(Parts)
     ).
 
-% Structure/list + unify/set ops are lowerable. get_variable/put_variable must
-% emit `run { ... }` (not a bare block) — see emit_line_parts/2 note.
+% Structure/list + unify/set ops are lowerable. NO call/execute (EMIT-KOTLIN-4).
+% get_variable/put_variable must emit `run { ... }` — see emit_line_parts/2.
 parts_supported(["allocate"]).
 parts_supported(["deallocate"]).
 parts_supported(["proceed"]).
@@ -104,11 +202,17 @@ lower_predicate_to_kotlin(PI, WamCode, _Options, lowered(PredName, FuncName, Cod
     (PI = _M:Pred/Arity -> true ; PI = Pred/Arity),
     format(atom(PredName), '~w/~w', [Pred, Arity]),
     kotlin_lowered_func_name(Pred/Arity, FuncName),
-    build_emission_plan(WamCode, plan(deterministic, _, Payload)),
-    emit_deterministic_function(PredName, FuncName, Payload, Code).
+    build_emission_plan(WamCode, plan(Mode, _, Payload)),
+    (   Mode == clause_chain
+    ->  Payload = chain_payload(Guards),
+        emit_clause_chain_function(PredName, FuncName, Guards, Code)
+    ;   Mode == multi_clause_n
+    ->  emit_multi_clause_n_function(PredName, FuncName, Payload, Code)
+    ;   emit_deterministic_function(PredName, FuncName, Payload, Code)
+    ).
 
 emit_deterministic_function(PredName, FuncName, Lines, Code) :-
-    with_output_to(string(Body), emit_lines(Lines, "    ")),
+    with_output_to(string(Body), emit_lines(Lines, "    ", comment)),
     format(string(Code),
 '// Lowered: ~w (deterministic single-clause)
 fun ~w(state: WamState): Boolean {
@@ -116,14 +220,72 @@ fun ~w(state: WamState): Boolean {
 }
 ', [PredName, FuncName, Body]).
 
-emit_lines([], _).
-emit_lines([Line|Rest], Ind) :-
+% T4: try each clause as a local fun; restore snapshot between attempts.
+emit_multi_clause_n_function(PredName, FuncName, Clauses, Code) :-
+    with_output_to(string(Body), emit_kotlin_t4_clauses(Clauses, 0)),
+    format(string(Code),
+'// Lowered: ~w (T4 all-clauses inline)
+fun ~w(state: WamState): Boolean {
+    val _t4 = state.snapshotForNative()
+~w    return false
+}
+', [PredName, FuncName, Body]).
+
+emit_kotlin_t4_clauses([], _).
+emit_kotlin_t4_clauses([Clause|Rest], N) :-
+    N1 is N + 1,
+    format(atom(CName), 'clause_~w', [N1]),
+    format("    fun ~w(): Boolean {~n", [CName]),
+    % proceed → return true; fail → return false (via emit_line_parts).
+    emit_lines(Clause, "        ", return_true),
+    format("    }~n", []),
+    format("    if (~w()) return true~n", [CName]),
+    format("    state.restoreFromSnapshot(_t4)~n", []),
+    emit_kotlin_t4_clauses(Rest, N1).
+
+% T5: bound first-arg if-cascade; unbound → false (tryRun → interpreter).
+emit_clause_chain_function(PredName, FuncName, Guards, Code) :-
+    with_output_to(string(Dispatch), emit_kotlin_t5_guards(Guards)),
+    format(string(Code),
+'// Lowered: ~w (T5 first-argument dispatch)
+fun ~w(state: WamState): Boolean {
+    val t5a1 = state.deref(state.readRegister("A1"))
+    if (t5a1 is Value.Var) return false
+~w    return false
+}
+', [PredName, FuncName, Dispatch]).
+
+emit_kotlin_t5_guards([]).
+emit_kotlin_t5_guards([guard(V, Rem)|Rest]) :-
+    kotlin_constant_expr(V, Expr),
+    format("    if (t5a1 == ~w) {~n", [Expr]),
+    emit_kotlin_t5_rem(Rem, "        "),
+    format("        return true~n", []),
+    format("    }~n", []),
+    emit_kotlin_t5_guards(Rest).
+
+emit_kotlin_t5_rem([], _).
+emit_kotlin_t5_rem([get_constant(C, R)|Rest], Ind) :- !,
+    emit_line_parts(["get_constant", C, R], Ind),
+    emit_kotlin_t5_rem(Rest, Ind).
+emit_kotlin_t5_rem([line(Parts)|Rest], Ind) :- !,
+    (   Parts == ["proceed"]
+    ->  true
+    ;   emit_line_parts(Parts, Ind)
+    ),
+    emit_kotlin_t5_rem(Rest, Ind).
+
+% ProceedMode = comment | return_true
+emit_lines([], _, _).
+emit_lines([Line|Rest], Ind, ProceedMode) :-
     wam_kotlin_target:tokenize_wam_line(Line, Parts),
     (   Parts == [] -> true
     ;   Parts = [F|_], sub_string(F, _, 1, 0, ":") -> true
+    ;   Parts == ["proceed"], ProceedMode == return_true
+    ->  format("~wreturn true~n", [Ind])
     ;   emit_line_parts(Parts, Ind)
     ),
-    emit_lines(Rest, Ind).
+    emit_lines(Rest, Ind, ProceedMode).
 
 emit_line_parts(["proceed"], I) :- !, format("~w// proceed~n", [I]).
 emit_line_parts(["fail"], I) :- !, format("~wreturn false~n", [I]).

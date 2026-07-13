@@ -30,9 +30,9 @@ self-contained so a single coding agent can pick it up in isolation.
 | CONF-CLOJURE | Conformance adapter | Clojure | L | — |
 | CONF-LUA | Conformance adapter | Lua | M | — |
 | CONF-KOTLIN ✅ | Conformance adapter | Kotlin | M | done — opt-in (`cursor/conf-kotlin-f421`); append green, 5 xfails |
-| KT-LIST-BACKTRACK | Conformance gap fix | Kotlin | M | CONF-KOTLIN |
+| KT-LIST-BACKTRACK ✅ | Conformance gap fix | Kotlin | M | done — X heap-identity vars (`cursor/kt-list-backtrack-f421`) |
 | KT-ARITH-SLASH-FUNCTOR ✅ | Conformance gap fix | Kotlin | S | done — `///2` last-slash parse (`cursor/kt-arith-slash-functor-f421`) |
-| KT-Y-ENV-RECURSION | Conformance gap fix | Kotlin | M | CONF-KOTLIN |
+| KT-Y-ENV-RECURSION ✅ | Conformance gap fix | Kotlin | M | done — Y heap-identity vars (`cursor/kt-y-env-recursion-f421`) |
 | PARSE-C | Runtime-parser entry | C | S | — |
 | PARSE-GO | Runtime-parser entry | Go | S | — |
 | PARSE-SCALA | Runtime-parser entry | Scala | S | — |
@@ -55,6 +55,8 @@ self-contained so a single coding agent can pick it up in isolation.
 | EMIT-JVM | Lowered emitter | JVM | L | — |
 | EMIT-KOTLIN ✅ | Lowered emitter | Kotlin | M | done — flat facts/unify (`cursor/emit-kotlin-lowered-f421`) |
 | EMIT-KOTLIN-2 ✅ | Lowered emitter (structures) | Kotlin | M | done — write-mode structures (`cursor/emit-kotlin-structures-f421`) |
+| EMIT-KOTLIN-3 ✅ | Multi-clause deterministic | Kotlin | M | done — T5/T4 no call/execute (`cursor/emit-kotlin-multi-clause-f421`) |
+| EMIT-KOTLIN-4 | Recursion in lowered bodies | Kotlin | M | call/execute → inter-predicate / recursion |
 | BENCH-LLVM | Effective-distance bench row | LLVM | L | — |
 | BENCH-CPP | Effective-distance bench row | C++ | L | — |
 | BENCH-C | Effective-distance bench row | C | M | — |
@@ -163,6 +165,7 @@ external toolchain.
 
 ### KT-LIST-BACKTRACK: Fix list placeholder clobber under backtracking (Kotlin)
 - **Lever:** Conformance gap fix  **Target:** Kotlin  **Size:** M  **Depends on:** CONF-KOTLIN
+- **Status:** ✅ **Landed** on `cursor/kt-list-backtrack-f421` (2026-07-12; stacks on KT-ARITH-SLASH-FUNCTOR). `newVariable` for X-registers now allocates a heap identity `H<n>` (Struct/list cells hold `Var(H<n>)`); rebinding `Xn` via `unify_variable` no longer mutates already-built terms. Y-registers still use scoped names (KT-Y-ENV-RECURSION). Removed member/reverse `ct_xfail`s.
 - **Goal:** Retire `ct_xfail(kotlin, member)` / `reverse`. Heap-built lists store CDR as `Var(Xn)`; recursive clauses reuse `Xn` via `unify_variable` and overwrite the binding that shared Structs still reference.
 - **Hint:** deep-copy structs at choice points, or heap refs instead of register-named vars for structure args (same class Haskell fixed with cons-cell finalize).
 
@@ -173,6 +176,7 @@ external toolchain.
 
 ### KT-Y-ENV-RECURSION: Y-register bind-through across recursive call (Kotlin)
 - **Lever:** Conformance gap fix  **Target:** Kotlin  **Size:** M  **Depends on:** CONF-KOTLIN
+- **Status:** ✅ **Landed** on `cursor/kt-y-env-recursion-f421` (2026-07-12; stacks on KT-LIST-BACKTRACK). Extends heap-identity `newVariable` to Y-registers (drops scoped `Y@E` Var names that recursive `allocate`/`call` could miss on deref). Removed fib/ack `ct_xfail`s; **all classic programs green**, no remaining Kotlin xfails.
 - **Goal:** Retire fib/ack xfails. After recursive `call`/`execute`, `is/2` sees unbound scoped temps (`Y5@E9`) inside `+/2` trees — permanent-variable / environment bank gap.
 
 ---
@@ -569,6 +573,24 @@ fallback) to the three Tier-D targets. Reference small emitters:
   3. Re-add the declined `parts_supported/1` facts; keep the read-mode path (which already worked) intact.
   4. Add gradle e2e tests asserting lowered output == interpreter output for a structure builder AND a list builder (the regression tests added in EMIT-KOTLIN already assert the *decline* path; convert/extend them to assert the *lowered* path once fixed).
 - **Acceptance:** `swipl -q -g run_tests -t halt tests/test_wam_kotlin_target.pl` passes with structure/list predicates lowering (not declining) and producing bindings identical to `emit_mode(interpreter)`.
+
+### EMIT-KOTLIN-3: Deterministic multi-clause clause selection (Kotlin)
+- **Lever:** Lowered emitters for early scaffolds  **Target:** Kotlin  **Size:** M  **Depends on:** EMIT-KOTLIN-2
+- **Status:** In progress on `cursor/emit-kotlin-multi-clause-f421` (2026-07-12).
+- **Goal:** Extend `wam_kotlin_lowered_emitter.pl` so **deterministic multi-clause** predicates whose bodies contain only unification/builtins (NO `call`/`execute`) lower to native clause selection instead of declining. Mirror Lua's T5 `clause_chain` (first-arg constant dispatch) and T4 `multi_clause_n` (all clauses inline with trail/register restore between attempts).
+- **Boundary (this card):**
+  - **Lowers:** multi-clause facts (`p(a). p(b). p(c).`), first-arg-indexed constant chains (T5), and other multi-clause deterministic bodies without inter-predicate calls (T4).
+  - **Still declines:** any clause with `call`/`execute` (member/append/reverse/fib/ack stay on the interpreter) — see **EMIT-KOTLIN-4**. ITE/soft-cut, cut, aggregates also out of scope.
+- **Native mechanics:** per clause: `snapshotForNative`, try head + body, on failure `restoreFromSnapshot` and try next; return true on first success, false if all fail (T5 unbound A1 returns false so `tryRun` falls back to the interpreter).
+- **Files to touch:** `src/unifyweaver/targets/wam_kotlin_lowered_emitter.pl`, `tests/test_wam_kotlin_target.pl`, `docs/WAM_KOTLIN_STATUS.md`, this card.
+- **Reference:** `wam_lua_lowered_emitter.pl` `build_emission_plan`/`classify_clause_shape`; shared `wam_clause_chain`.
+- **Acceptance:** multi-clause facts + T4/T5 preds LOWER under `emit_mode(functions)` and match `emit_mode(interpreter)` true/false (incl. non-matching); call/execute preds still decline; unit suite + `CONFORMANCE_TARGETS=kotlin,kotlin_functions` stay green.
+
+### EMIT-KOTLIN-4: Lower `call`/`execute` in bodies (recursion / inter-predicate)
+- **Lever:** Lowered emitters for early scaffolds  **Target:** Kotlin  **Size:** M  **Depends on:** EMIT-KOTLIN-3
+- **Goal:** Allow lowered bodies to invoke other predicates (native or interpreter) so recursive/multi-clause programs like member/append/reverse/fib/ack can lower instead of declining.
+- **Out of scope here:** ITE/soft-cut, cut, aggregates (separate cards if needed).
+- **Acceptance:** member/append (or equivalent) LOWER under `emit_mode(functions)` and match interpreter; conformance `kotlin_functions` remains green.
 
 ---
 
