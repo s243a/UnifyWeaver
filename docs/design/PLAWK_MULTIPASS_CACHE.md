@@ -29,7 +29,9 @@ pass, so it is both the in-memory channel between passes and durable across
 runs (file and LMDB backends); and the `over TABLE` reader (phase 4):
 `pass over TABLE as VAR { print ... }` iterates a table's entries as the
 pass's record source (named fields — key bound to `VAR`, value via
-`TABLE[VAR]`) instead of re-scanning the input. **Not yet:** the `over prev`
+`TABLE[VAR]`) instead of re-scanning the input. **Not yet:** row-oriented /
+record-valued tables (phase 8 — a table whose value is a named-field row,
+`records of TABLE as r` / `r["col"]`; designed in §3.6); the `over prev`
 reader (phase 4 follow-on); the query reader (phase 6); namespaces / `eager`
 / secondary indexes; string-literal print fields. See the per-phase status
 tags in §5.
@@ -402,6 +404,91 @@ updates the table's index sub-DBs (a write-amplification cost to keep in
 mind). Deferred to a phase past v1; captured here so the surface is coherent
 when it lands.
 
+### 3.6 Row-oriented records (record-valued tables)
+
+Everything above keys a table to a single `i64` value. The next step is a
+table whose value is a **row** — a record with several named columns — so a
+lookup returns the row and a program addresses a field by **column name**,
+exactly as if the row were an associative array:
+
+```awk
+BEGIN cache("orders.db") { declare orders(cust str, amount i64) }   # schema
+
+pass records of orders as r {          # iterate rows; r is a named-field row
+    print r["cust"], r["amount"]       # field = row/column intersection
+}
+```
+
+This is the "retrieve by key, get the row back as an assoc array keyed by
+column name" shape the surface has been building toward — it is the
+concrete meaning of the "record-valued tables" that §3.5 (secondary indexes)
+and Phase 7 already depend on.
+
+**Storage model (decided): a row-blob per key.** Each primary key maps to
+one serialized record; a field read decodes that column from the blob using
+the declared schema. One store entry per row keeps it aligned with the
+durable / LMDB / larger-than-RAM direction (a row is one key→value pair, not
+N fanned-out tables) and reuses the existing record (de)serialization
+(`@wam_object_call_record` typecodes, the decode-into-struct machinery from
+the for-in stage-3 work) rather than adding a parallel encoding. The rejected
+alternative — one assoc table per column sharing a row-id key space — is
+less new runtime but costs N store round-trips and N commits per row and
+fights the single-entry-per-row durable model.
+
+**The schema lives with the table.** `declare NAME(col type, …)` extends the
+backed-`BEGIN` declaration with a column list (names + types; `str` / `i64`
+to start). The schema is the single source of truth used to (de)serialize
+and to resolve a column name to its slot. A bare `declare NAME` (no column
+list) stays exactly today's `i64`-valued table.
+
+**Two readers — a safe named one and a positional one.** These mirror the
+Reader role (§3.4) but for row values, and they have deliberately distinct
+contracts so neither is a grab-bag of modifiers:
+
+- **`records of TABLE as r` — safe, named, schema-required.** Columns are
+  addressed **by name only**: `r["cust"]`. **Numeric addressing is a parse
+  error** here. Requires a declared schema (that is what supplies the names
+  and the decode layout). This is the recommended, everyday form.
+
+- **`rows of TABLE as r` — positional.** Columns are addressed **by position**
+  (`r[1]`, `r[2]`, 1-indexed), for raw or ad-hoc stores. A schema spec may
+  appear at the read site, and its role depends on whether an authoritative
+  (`declare`d) schema already exists:
+  - **schema present →** the spec is a **check**: the store's row shape
+    (arity / types / names) must match, diagnosed at open, not as silent
+    garbage later.
+  - **no schema →** the reader must be marked **`unsafe`**, and the spec then
+    **defines/renames** the positional columns into names (so `r["a"]`
+    becomes usable even though the store carried no declared schema). The
+    same spec syntax thus *checks* in the safe case and *names* in the
+    unsafe case. `rows of` with named access but neither a declared schema
+    nor `unsafe` is an error (you are naming columns you never defined).
+
+  `unsafe` means precisely "I have no trusted schema — trust mine / skip the
+  check"; it is confined to `rows of`. `records of` never takes `unsafe` and
+  never addresses columns positionally.
+
+**Field access.** `r["col"]` (string-literal column key) for named access;
+`r[N]` (integer) for positional access under `rows of`. The `arr["str"]` /
+`arr[N]` key surface already exists; what is new is that `r` resolves against
+the row schema / positional slots rather than being a separate table.
+
+**Write side — separate design round.** Reading rows is the tractable half.
+How a pass *builds* a row (`orders[$1] = row($1, $2)`, field-wise
+`orders[$1]["amount"] = $2`, or an insert form) touches multi-column value
+assembly and the commit path, and is deferred to its own design step. The
+first implementation targets the **read path** over rows a prior pass or a
+pre-populated store produced.
+
+**Phasing** (each its own PR):
+1. **Schema surface** — `declare NAME(col type, …)` parses and carries a row
+   schema; bare `declare NAME` unchanged. No behavior change yet.
+2. **`records of TABLE as r`** — decode row blobs by schema, `r["col"]` read
+   path (the safe, named reader; model A).
+3. **Row write surface** — how a pass populates rows (own design round).
+4. **`rows of` + `unsafe` + inline spec** — the positional reader and the
+   check/rename semantics above.
+
 ## 4. Runtime: the cache ABI (the first build step)
 
 The LLVM target has no persistence layer. We add a small **backend-agnostic
@@ -569,7 +656,15 @@ single-pass test before any driver surgery).
   `max`/`avg` over a field). Backed by plain / `MDB_DUPSORT` index sub-DBs,
   maintained on write. The aggregation requirement is the determinism
   containment for a multi-valued lookup. Rides Phase 5 (needs the LMDB
-  sub-DB backend) and record-valued cache entries.
+  sub-DB backend) and record-valued cache entries (Phase 8).
+
+- **Phase 8 — row-oriented records (record-valued tables) (§3.6).** A table
+  whose value is a named-field **row**, stored as one serialized record per
+  key (model A). Sub-phases: (8.1) the `declare NAME(col type, …)` schema
+  surface; (8.2) the safe `records of TABLE as r` reader with name-only
+  `r["col"]` access; (8.3) the row write surface (own design); (8.4) the
+  positional `rows of` reader with `unsafe` / inline check-or-rename spec.
+  Foundational for Phase 7 (secondary indexes need addressable named fields).
 
 ## 6. Open questions
 
@@ -591,10 +686,11 @@ single-pass test before any driver surgery).
   its `print` feeds the spool instead of stdout. Does it *also* echo to
   stdout (tee), or only feed the next pass? Proposal: only feed the next
   pass (a true pipeline stage); the final, unconsumed pass prints to stdout.
-- **Value encoding for non-i64 cache values.** Records/blobs need a
-  serialization. v1: i64 and blob-bytes only; structured records reuse the
-  existing record (de)serialization (`@wam_object_call_record` typecodes)
-  keyed by the same layout — deferred to when a use needs it.
+- **Value encoding for non-i64 cache values — direction set (§3.6).**
+  Records/blobs need a serialization. v1: i64 and blob-bytes only.
+  Structured **row** values (Phase 8) reuse the existing record
+  (de)serialization (`@wam_object_call_record` typecodes) as one blob per
+  key, decoded by the table's declared `declare NAME(col type, …)` schema.
 - **Cache lifetime / cleanup.** A backed `BEGIN cache("path")` block names
   an explicit path, so the store is durable by construction (survives exit).
   Open: do we also want an *unnamed* backed block (`BEGIN cache { … }`) that
