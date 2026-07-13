@@ -26,9 +26,13 @@ arithmetic operand (`$2 / total[$1]`), which completes **per-key normalise**
 inter-pass channel (phase 3): a `BEGIN cache("path") { declare NAME }` table
 shared by the passes is loaded before pass 1 and committed after the last
 pass, so it is both the in-memory channel between passes and durable across
-runs (file and LMDB backends). **Not yet:** configurable readers (phase 4);
-the query reader (phase 6); namespaces / `eager` / secondary indexes;
-string-literal print fields. See the per-phase status tags in §5.
+runs (file and LMDB backends); and the `over TABLE` reader (phase 4):
+`pass over TABLE as VAR { print ... }` iterates a table's entries as the
+pass's record source (named fields — key bound to `VAR`, value via
+`TABLE[VAR]`) instead of re-scanning the input. **Not yet:** the `over prev`
+reader (phase 4 follow-on); the query reader (phase 6); namespaces / `eager`
+/ secondary indexes; string-literal print fields. See the per-phase status
+tags in §5.
 
 ## Implemented surface (quick reference)
 
@@ -314,17 +318,19 @@ the next item"). Multi-pass makes that role **selectable per pass**, so a
 pass is not forced to re-scan the original input:
 
 ```awk
-pass { ... }                    # default: re-scan the original input
-pass over total { ... }         # iterate a table (cache-backed or in-memory)
-pass over prev { ... }          # consume the previous pass's emitted records
-pass over query(Goal) { ... }   # each solution of a query is a record
+pass { ... }                          # default: re-scan the original input
+pass over total as k { print k, total[k] }  # iterate a table (LANDED)
+pass over prev { ... }                # consume the previous pass's records
+pass over query(Goal) { ... }         # each solution of a query is a record
 ```
 
 - **`over input`** (the default) — re-open and re-scan the program's input.
-- **`over TABLE`** — iterate a table's entries as records (the `for (k in
-  arr)` iteration, but as the pass's record source). This is the natural
-  "process what the previous pass stored" shape when the previous pass
-  accumulated into a table.
+- **`over TABLE`** (LANDED) — iterate a table's entries as records (the
+  `for (k in arr)` iteration, but as the pass's record source), written
+  `pass over TABLE as VAR { ... }`. Fields are **named** (name lookup): the
+  loop key binds to `VAR`, its value reads as `TABLE[VAR]` — no positional
+  `$1`/`$2`. The natural "process what the previous pass stored" shape,
+  emitting one line per distinct key.
 - **`over prev`** — the previous pass's **sink becomes this pass's source**.
   When pass N declares `over prev`, pass N−1's `print`/`writebin` no longer
   go to stdout; they **spool** (to a cache table or a temp stream) and pass
@@ -527,11 +533,23 @@ single-pass test before any driver surgery).
   complete, durably-committed totals; plus a namespaced `stats.work` table
   addressed from a pass and a `global` table used bare.
 
-- **Phase 4 — configurable readers.** `over TABLE` (iterate a table as the
-  record source) and `over prev` (the previous pass's sink spools into this
-  pass — the in-process `awk | awk`, sugar over `over <spool>`). Writers
-  gain the spool sink. Test: pass 1 emits a filtered/derived stream, pass 2
-  `over prev` consumes it.
+- **Phase 4 — configurable readers.** `over TABLE` **LANDED (v1)**;
+  `over prev` deferred. `pass over TABLE as VAR { print ... }` iterates the
+  table's occupied slots as the pass's record source instead of re-scanning
+  the input — the "process what a previous pass stored" shape, emitting one
+  line per distinct key rather than per input record. Fields are **named**
+  (name lookup): the loop key binds to `VAR` and its value reads as
+  `TABLE[VAR]` (no positional `$1`/`$2`). Implemented by dispatching the
+  multi-pass driver's per-pass emission on the pass shape — a plain
+  `pass { }` scans input, a `pass over` walks the shared table with the same
+  body emitter the END for-in uses (`@wam_assoc_i64_iter_next` /
+  `key_at` / `value_at`), as a `void` function `main` calls in sequence. It
+  pairs with a cache-backed table (durable across runs) like the
+  input-scanning passes. Test: `tests/test_plawk_over_table.pl`.
+  **Deferred:** `over prev` (the previous pass's sink spools into this pass —
+  the in-process `awk | awk`, sugar over `over <spool>`; needs a spool sink +
+  redirect of the prior pass's writer); guarded / writebin over-bodies;
+  string-literal print fields; multiple tables.
 
 - **Phase 5 — LMDB backend + materialisation modes.** Swap the fallback for
   `liblmdb` behind the build flag; add a test that exceeds a small RAM cap

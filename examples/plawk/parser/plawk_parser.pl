@@ -194,6 +194,22 @@ plawk_program(program(BeginClauses, Rules, EndClauses), FunctionClauses,
       plawk_dynentry_rewrite_all(EndClauses0, DynEntries, EndClauses)
     }.
 
+% A `pass over TABLE as VAR { print ... }` block: a configurable reader
+% (PLAWK_MULTIPASS_CACHE.md phase 4). Instead of re-scanning the input, the
+% pass iterates TABLE's entries as records, binding each key to VAR -- the
+% "process what a previous pass stored" shape. The body reuses the for-in
+% print body (key / TABLE[VAR] / literal). Tried before the plain `pass`
+% (the `over` keyword is unambiguous). Represented as pass_over/3 so the
+% driver can emit a table-iterating pass function rather than an input scan.
+pass_clauses([pass_over(var(Var), var(Table), Body) | Rest]) -->
+    "pass", identifier_boundary, ws,
+    "over", identifier_boundary, ws,
+    identifier(Table), ws,
+    "as", identifier_boundary, ws,
+    identifier(Var), ws,
+    for_in_body(Body),
+    ws,
+    pass_clauses(Rest).
 % A `pass { ACTIONS }` block is one pass carrying a single always-rule with
 % those actions (per-pattern rules within a pass are a later extension).
 pass_clauses([pass([rule(always, Actions)]) | Rest]) -->
@@ -204,6 +220,8 @@ pass_clauses([]) -->
 
 plawk_pass_dynentry_rewrite(DynEntries, pass(Rules0), pass(Rules)) :-
     plawk_dynentry_rewrite_all(Rules0, DynEntries, Rules).
+% An `over TABLE` pass has no rule actions to rewrite -- pass it through.
+plawk_pass_dynentry_rewrite(_DynEntries, pass_over(V, T, Body), pass_over(V, T, Body)).
 
 %% dynentry_decls(-Names)//
 %
