@@ -1,0 +1,486 @@
+{
+  "algorithm": "repeated-judge-candidate-capacity-preflight-v1",
+  "authorization": {
+    "candidate_builder_unlocked": false,
+    "candidate_enumeration_unlocked": false,
+    "covariance_deployment_unlocked": false,
+    "cuda_claim_unlocked": false,
+    "judge_calls_authorized": false,
+    "live_campaign_authorized": false,
+    "nomic_embedding_unlocked": false,
+    "qr_specialization_unlocked": false
+  },
+  "configuration": {
+    "distinct_graph_endpoints_per_campaign_component": 4,
+    "guaranteed_endpoints_charged_to_declared_source": 1,
+    "registered_components_per_corpus": [
+      160,
+      320,
+      512,
+      800
+    ],
+    "source_component_cap_fraction": 0.1,
+    "source_components_frozen_before_endpoint_exclusions": true,
+    "source_definition": "weak connected component of the canonical retained graph"
+  },
+  "decision": {
+    "all_registered_sizes_feasible": false,
+    "candidate_builder_must_stop": true,
+    "capacity_gate_passed": false,
+    "reason": "the conservative one-endpoint/source-cap upper bound is below G for at least one registered size in at least one required corpus; hop cells, degree matching, graph/Nomic agreement, history exclusions, and actual packing can only reduce capacity when source components remain frozen",
+    "required_next_action": "amend the preregistered dependency/source partition outcome-blindly; do not silently relabel branches as connected components or relax the cap"
+  },
+  "implementation": {
+    "lmdb_id.py": {
+      "sha256": "2ea3fa8e105e905b1c52147c1f7bd0cb61e524aae507e8091a85f2d50fba9eb0",
+      "size_bytes": 580
+    },
+    "mu_attention.py": {
+      "sha256": "60d187c7ed539097889ab05cfcc6e26d7717e37f6f08afb126bc9636f527a363",
+      "size_bytes": 39873
+    },
+    "repeated_judge_campaign.py": {
+      "sha256": "22d0469bee4bd49aaff484dd6f939246888c61319be6db27c6209c37c142ea74",
+      "size_bytes": 63443
+    },
+    "repeated_judge_candidate_capacity.py": {
+      "sha256": "2a0c15ae06d3c6145ae5c89977b3e33db26ce660486bd046fb68940e26055617",
+      "size_bytes": 8436
+    },
+    "run_product_kalman_realdata.py": {
+      "sha256": "7ce2396132e4568f73f24de846cb8de2407c8f3790bbc8960812647fce230ed2",
+      "size_bytes": 7653
+    },
+    "run_repeated_judge_candidate_capacity.py": {
+      "sha256": "03be42981d55296c0b9652288b3f41d13471de0314144a6ea92c38037094377f",
+      "size_bytes": 11937
+    },
+    "run_structured_residual_covariance.py": {
+      "sha256": "2c7aabc0c73679ba34b88c44361235e859a06474aafc7b5054ee2b9fad4e3f2d",
+      "size_bytes": 28232
+    },
+    "sample_sigma_hop_fresh_corpus.py": {
+      "sha256": "41c9b4b04bc02330b70e01b09d2b15d5d3f300a103fdfe6f071605264173caec",
+      "size_bytes": 30300
+    },
+    "sigma_hop_confirmatory.py": {
+      "sha256": "b31e34362ab1f2aa9250e505f21d36c1c4b9f40e2279ecc44501e7c54f4ab4d9",
+      "size_bytes": 21589
+    }
+  },
+  "inputs": {
+    "graph_bundle": {
+      "sha256": "e451d4b090dba2013b115aae2f80f40211776b240974777f6663f861d1a373bd",
+      "size_bytes": 823
+    },
+    "graphs": {
+      "exploratory": {
+        "artifacts": {
+          "category_parent": {
+            "sha256": "4881beedfd876e3abb9f1783cbc3fb8a7350e108e3f531cc4de28ef9956dc8ec",
+            "size_bytes": 10126922
+          },
+          "dataset_metadata": {
+            "sha256": "15a632799adebd8b4f736c8420add8969bb5e5e4f20aa21ecaae9e2d95a61577",
+            "size_bytes": 308
+          }
+        },
+        "corpus_identity": "SimpleWiki 100k category graph",
+        "format": "UTF-8 child-parent TSV"
+      },
+      "fresh": {
+        "artifacts": {
+          "category_lmdb_data": {
+            "sha256": "3bcfe59a3f85870f377fad1ea77547f7c3566370f6172e27748f4f7ceba5d690",
+            "size_bytes": 1319403520
+          },
+          "exploratory_title_exclusion_graph": {
+            "sha256": "4881beedfd876e3abb9f1783cbc3fb8a7350e108e3f531cc4de28ef9956dc8ec",
+            "size_bytes": 10126922
+          }
+        },
+        "corpus_identity": "enwiki category LMDB retained under Behavior",
+        "excluded_runtime_artifact": "lock.mdb is process state, not graph content",
+        "format": "LMDB uint32 graph with UTF-8 title layer"
+      }
+    },
+    "historical_inventory_consumed": false,
+    "nomic_cache_consumed": false,
+    "outcomes_consumed": false
+  },
+  "joint_grid": {
+    "160": {
+      "joint_necessary_capacity_gate_passes": false,
+      "passing_corpora": [],
+      "required_corpora": [
+        "exploratory",
+        "fresh"
+      ]
+    },
+    "320": {
+      "joint_necessary_capacity_gate_passes": false,
+      "passing_corpora": [],
+      "required_corpora": [
+        "exploratory",
+        "fresh"
+      ]
+    },
+    "512": {
+      "joint_necessary_capacity_gate_passes": false,
+      "passing_corpora": [],
+      "required_corpora": [
+        "exploratory",
+        "fresh"
+      ]
+    },
+    "800": {
+      "joint_necessary_capacity_gate_passes": false,
+      "passing_corpora": [],
+      "required_corpora": [
+        "exploratory",
+        "fresh"
+      ]
+    }
+  },
+  "loader_metadata": {
+    "exploratory": {
+      "feature_graph_source": "child-parent TSV"
+    },
+    "fresh": {
+      "feature_graph_lmdb_stats": {
+        "admin_node": 4022,
+        "child_edges_examined": 105825,
+        "missing_title_nodes": 60,
+        "overlap_node": 1757,
+        "parent_edges_examined": 274545,
+        "retained_edges": 99986,
+        "title_lookups": 509416
+      },
+      "feature_graph_root": "Behavior",
+      "feature_graph_slice_nodes": 75901,
+      "feature_graph_source": "lmdb"
+    }
+  },
+  "non_claims": [
+    "this preflight did not enumerate or select candidate triples",
+    "this preflight did not create or consume a Nomic embedding cache",
+    "this preflight did not build a historical endpoint inventory",
+    "this preflight did not consume judge scores or residuals",
+    "an optimistic upper bound is not evidence that a passing graph is actually packable",
+    "no branch/source partition has been substituted for connected components",
+    "the sharper four-endpoint sensitivity is not used as the blocking proof because the preregistration permits a disconnected distant comparator"
+  ],
+  "results": {
+    "exploratory": {
+      "all_registered_sizes_pass_necessary_gate": false,
+      "connected_component_count": 34,
+      "connected_component_sizes_descending": [
+        83194,
+        767,
+        77,
+        19,
+        5,
+        4,
+        4,
+        4,
+        4,
+        4,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        3,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        1
+      ],
+      "edge_count": 196876,
+      "largest_connected_component_fraction": 0.9888038413996387,
+      "node_count": 84136,
+      "registered_grid": {
+        "160": {
+          "components_per_corpus": 160,
+          "endpoints_per_component": 1,
+          "largest_source_contributions": [
+            16,
+            16,
+            16,
+            16,
+            5,
+            4,
+            4,
+            4,
+            4,
+            4
+          ],
+          "necessary_capacity_gate_passes": false,
+          "nonzero_source_components": 34,
+          "optimistic_capacity_upper_bound": 143,
+          "source_component_cap": 16
+        },
+        "320": {
+          "components_per_corpus": 320,
+          "endpoints_per_component": 1,
+          "largest_source_contributions": [
+            32,
+            32,
+            32,
+            19,
+            5,
+            4,
+            4,
+            4,
+            4,
+            4
+          ],
+          "necessary_capacity_gate_passes": false,
+          "nonzero_source_components": 34,
+          "optimistic_capacity_upper_bound": 194,
+          "source_component_cap": 32
+        },
+        "512": {
+          "components_per_corpus": 512,
+          "endpoints_per_component": 1,
+          "largest_source_contributions": [
+            51,
+            51,
+            51,
+            19,
+            5,
+            4,
+            4,
+            4,
+            4,
+            4
+          ],
+          "necessary_capacity_gate_passes": false,
+          "nonzero_source_components": 34,
+          "optimistic_capacity_upper_bound": 251,
+          "source_component_cap": 51
+        },
+        "800": {
+          "components_per_corpus": 800,
+          "endpoints_per_component": 1,
+          "largest_source_contributions": [
+            80,
+            80,
+            77,
+            19,
+            5,
+            4,
+            4,
+            4,
+            4,
+            4
+          ],
+          "necessary_capacity_gate_passes": false,
+          "nonzero_source_components": 34,
+          "optimistic_capacity_upper_bound": 335,
+          "source_component_cap": 80
+        }
+      },
+      "same_source_four_endpoint_sensitivity_grid": {
+        "160": {
+          "components_per_corpus": 160,
+          "endpoints_per_component": 4,
+          "largest_source_contributions": [
+            16,
+            16,
+            16,
+            4,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "necessary_capacity_gate_passes": false,
+          "nonzero_source_components": 10,
+          "optimistic_capacity_upper_bound": 58,
+          "source_component_cap": 16
+        },
+        "320": {
+          "components_per_corpus": 320,
+          "endpoints_per_component": 4,
+          "largest_source_contributions": [
+            32,
+            32,
+            19,
+            4,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "necessary_capacity_gate_passes": false,
+          "nonzero_source_components": 10,
+          "optimistic_capacity_upper_bound": 93,
+          "source_component_cap": 32
+        },
+        "512": {
+          "components_per_corpus": 512,
+          "endpoints_per_component": 4,
+          "largest_source_contributions": [
+            51,
+            51,
+            19,
+            4,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "necessary_capacity_gate_passes": false,
+          "nonzero_source_components": 10,
+          "optimistic_capacity_upper_bound": 131,
+          "source_component_cap": 51
+        },
+        "800": {
+          "components_per_corpus": 800,
+          "endpoints_per_component": 4,
+          "largest_source_contributions": [
+            80,
+            80,
+            19,
+            4,
+            1,
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "necessary_capacity_gate_passes": false,
+          "nonzero_source_components": 10,
+          "optimistic_capacity_upper_bound": 189,
+          "source_component_cap": 80
+        }
+      }
+    },
+    "fresh": {
+      "all_registered_sizes_pass_necessary_gate": false,
+      "connected_component_count": 1,
+      "connected_component_sizes_descending": [
+        75901
+      ],
+      "edge_count": 99971,
+      "largest_connected_component_fraction": 1.0,
+      "node_count": 75901,
+      "registered_grid": {
+        "160": {
+          "components_per_corpus": 160,
+          "endpoints_per_component": 1,
+          "largest_source_contributions": [
+            16
+          ],
+          "necessary_capacity_gate_passes": false,
+          "nonzero_source_components": 1,
+          "optimistic_capacity_upper_bound": 16,
+          "source_component_cap": 16
+        },
+        "320": {
+          "components_per_corpus": 320,
+          "endpoints_per_component": 1,
+          "largest_source_contributions": [
+            32
+          ],
+          "necessary_capacity_gate_passes": false,
+          "nonzero_source_components": 1,
+          "optimistic_capacity_upper_bound": 32,
+          "source_component_cap": 32
+        },
+        "512": {
+          "components_per_corpus": 512,
+          "endpoints_per_component": 1,
+          "largest_source_contributions": [
+            51
+          ],
+          "necessary_capacity_gate_passes": false,
+          "nonzero_source_components": 1,
+          "optimistic_capacity_upper_bound": 51,
+          "source_component_cap": 51
+        },
+        "800": {
+          "components_per_corpus": 800,
+          "endpoints_per_component": 1,
+          "largest_source_contributions": [
+            80
+          ],
+          "necessary_capacity_gate_passes": false,
+          "nonzero_source_components": 1,
+          "optimistic_capacity_upper_bound": 80,
+          "source_component_cap": 80
+        }
+      },
+      "same_source_four_endpoint_sensitivity_grid": {
+        "160": {
+          "components_per_corpus": 160,
+          "endpoints_per_component": 4,
+          "largest_source_contributions": [
+            16
+          ],
+          "necessary_capacity_gate_passes": false,
+          "nonzero_source_components": 1,
+          "optimistic_capacity_upper_bound": 16,
+          "source_component_cap": 16
+        },
+        "320": {
+          "components_per_corpus": 320,
+          "endpoints_per_component": 4,
+          "largest_source_contributions": [
+            32
+          ],
+          "necessary_capacity_gate_passes": false,
+          "nonzero_source_components": 1,
+          "optimistic_capacity_upper_bound": 32,
+          "source_component_cap": 32
+        },
+        "512": {
+          "components_per_corpus": 512,
+          "endpoints_per_component": 4,
+          "largest_source_contributions": [
+            51
+          ],
+          "necessary_capacity_gate_passes": false,
+          "nonzero_source_components": 1,
+          "optimistic_capacity_upper_bound": 51,
+          "source_component_cap": 51
+        },
+        "800": {
+          "components_per_corpus": 800,
+          "endpoints_per_component": 4,
+          "largest_source_contributions": [
+            80
+          ],
+          "necessary_capacity_gate_passes": false,
+          "nonzero_source_components": 1,
+          "optimistic_capacity_upper_bound": 80,
+          "source_component_cap": 80
+        }
+      }
+    }
+  },
+  "schema_version": 1,
+  "status": "NO-SPEND STRUCTURAL CAPACITY PREFLIGHT; CANDIDATE BUILDER BLOCKED"
+}

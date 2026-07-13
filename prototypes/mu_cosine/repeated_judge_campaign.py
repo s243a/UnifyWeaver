@@ -36,7 +36,9 @@ FROZEN_COMPONENT_REPEAT_GRID = frozenset({
 })
 FROZEN_NOMIC_MODEL = "nomic-ai/nomic-embed-text-v1.5"
 FROZEN_NOMIC_REVISION = "e9b6763023c676ca8431644204f50c2b100d9aab"
-FROZEN_NOMIC_PREFIX = "clustering:"
+# Exact bytes prepended by the revision-pinned Nomic cache builder.  The
+# trailing space is semantic input, not presentation whitespace.
+FROZEN_NOMIC_PREFIX = "clustering: "
 FROZEN_WALK_WEIGHTS = (1.0, 0.5, 0.25, 0.125)
 
 CANDIDATE_REQUIRED_COLUMNS = (

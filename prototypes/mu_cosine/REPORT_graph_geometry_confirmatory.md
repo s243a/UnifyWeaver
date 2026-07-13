@@ -91,7 +91,7 @@ shape/dtype, package versions, and content hashes.  Evaluation never downloads a
 
 | candidate | exact revision | role |
 |---|---|---|
-| Nomic `nomic-embed-text-v1.5` | `e9b6763023c676ca8431644204f50c2b100d9aab` | primary external semantic geometry; `clustering:` title prefix |
+| Nomic `nomic-embed-text-v1.5` | `e9b6763023c676ca8431644204f50c2b100d9aab` | primary external semantic geometry; exact `"clustering: "` prefix, including trailing U+0020 |
 | MiniLM `all-MiniLM-L6-v2` | `c9745ed1d9f207416be6d2e6f8de32d1f16199bf` | lower-cost sensitivity comparator |
 | e5 | existing frozen caches | shared-input redundancy control, not an independent candidate |
 
