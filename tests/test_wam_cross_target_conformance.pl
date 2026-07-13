@@ -984,9 +984,9 @@ ct_teardown(cpp, cpp_ctx(Dir, Map)) :-
 % Two opt-in targets share this adapter:
 %   kotlin            — emit_mode(interpreter)
 %   kotlin_functions  — emit_mode(functions) (native-first + WAM fallback)
-% Classic multi-clause programs (member/append/fib/…) decline lowering and
-% stay on the interpreter under kotlin_functions; that is expected until
-% EMIT-KOTLIN-3 (multi-clause / call in lowered bodies).
+% Classic multi-clause programs with last-call execute (member/append/acc-reverse)
+% lower under kotlin_functions (EMIT-KOTLIN-4). Mid-body call (fib/ack) still
+% declines to the interpreter until EMIT-KOTLIN-5.
 % ============================================================
 
 ct_build(kotlin, Preds, Queries, kotlin_ctx(Dir, Map)) :-

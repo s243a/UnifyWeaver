@@ -45,7 +45,8 @@ classify_clause_shape([FirstLine|Rest],
     clause_chain(Terms, chain(Guards)),
     forall(member(guard(_, Rem), Guards), kotlin_chain_rem_supported(Rem)),
     !.
-% T4: multi-clause with only supported deterministic bodies (no call/execute).
+% T4: multi-clause with only supported deterministic bodies (no mid-body call).
+% Last-call `execute` is allowed (EMIT-KOTLIN-4); mid-body `call` is EMIT-KOTLIN-5.
 classify_clause_shape([FirstLine|Rest], plan(multi_clause_n, none, Clauses)) :-
     wam_kotlin_target:tokenize_wam_line(FirstLine, ["try_me_else", _AltStr]),
     kotlin_split_clause_lines([FirstLine|Rest], Clauses),
@@ -94,7 +95,10 @@ kotlin_chain_rem_supported([T|Rest]) :-
     (   T = get_constant(_, _)
     ->  true
     ;   T = line(Parts)
-    ->  parts_supported(Parts)
+    ->  (   Parts = ["call"|_]
+        ->  fail
+        ;   parts_supported(Parts)
+        )
     ),
     kotlin_chain_rem_supported(Rest).
 
@@ -120,22 +124,26 @@ kotlin_split_at_terminal([L|Ls], [Clause|Rest]) :-
 
 kotlin_take_to_terminal([Line|Rest], [Line], Rest) :-
     wam_kotlin_target:tokenize_wam_line(Line, Parts),
-    ( Parts == ["proceed"] ; Parts == ["fail"] ), !.
+    kotlin_is_terminal_parts(Parts), !.
 kotlin_take_to_terminal([Line|Rest], [Line|More], After) :-
     kotlin_take_to_terminal(Rest, More, After).
 kotlin_take_to_terminal([], [], []).
+
+kotlin_is_terminal_parts(["proceed"]).
+kotlin_is_terminal_parts(["fail"]).
+kotlin_is_terminal_parts(["execute"|_]).
 
 kotlin_t4_clause_line_supported(Line) :-
     wam_kotlin_target:tokenize_wam_line(Line, Parts),
     ( Parts == [] -> true ; parts_supported(Parts) ),
     Parts \= ["cut_ite"|_],
     Parts \= ["jump"|_],
-    \+ (Parts = ["call"|_]),
-    \+ (Parts = ["execute"|_]).
+    % Mid-body call needs a continuation — EMIT-KOTLIN-5.
+    \+ (Parts = ["call"|_]).
 
 kotlin_t4_terminal_line(Line) :-
     wam_kotlin_target:tokenize_wam_line(Line, Parts),
-    ( Parts == ["proceed"] ; Parts == ["fail"] ).
+    kotlin_is_terminal_parts(Parts).
 
 wam_kotlin_lowerable(_PI, WamCode, Reason) :-
     catch(build_emission_plan(WamCode, plan(Reason, _, Payload)), _, fail),
@@ -144,9 +152,15 @@ wam_kotlin_lowerable(_PI, WamCode, Reason) :-
         forall(member(guard(_, Rem), Guards), kotlin_chain_rem_supported(Rem))
     ;   Reason == multi_clause_n
     ->  forall(member(Cl, Payload),
-               forall(member(Line, Cl), line_supported(Line)))
-    ;   forall(member(Line, Payload), line_supported(Line))
+               ( forall(member(Line, Cl), line_supported(Line)),
+                 \+ kotlin_clause_has_call(Cl) ))
+    ;   forall(member(Line, Payload), line_supported(Line)),
+        \+ kotlin_clause_has_call(Payload)
     ).
+
+kotlin_clause_has_call(Lines) :-
+    member(Line, Lines),
+    wam_kotlin_target:tokenize_wam_line(Line, ["call"|_]).
 
 line_supported(Line) :-
     wam_kotlin_target:tokenize_wam_line(Line, Parts),
@@ -154,15 +168,19 @@ line_supported(Line) :-
     ->  true
     ;   Parts = [F|_], sub_string(F, _, 1, 0, ":")
     ->  true
+    ;   Parts = ["call"|_]
+    ->  fail
     ;   parts_supported(Parts)
     ).
 
-% Structure/list + unify/set ops are lowerable. NO call/execute (EMIT-KOTLIN-4).
+% Structure/list + unify/set + last-call execute. Mid-body call → EMIT-KOTLIN-5.
 % get_variable/put_variable must emit `run { ... }` — see emit_line_parts/2.
 parts_supported(["allocate"]).
 parts_supported(["deallocate"]).
 parts_supported(["proceed"]).
 parts_supported(["fail"]).
+parts_supported(["execute", _]).
+parts_supported(["execute", _, _]).
 parts_supported(["get_constant", _, _]).
 parts_supported(["get_variable", _, _]).
 parts_supported(["get_value", _, _]).
@@ -212,12 +230,11 @@ lower_predicate_to_kotlin(PI, WamCode, _Options, lowered(PredName, FuncName, Cod
     ).
 
 emit_deterministic_function(PredName, FuncName, Lines, Code) :-
-    with_output_to(string(Body), emit_lines(Lines, "    ", comment)),
+    with_output_to(string(Body), emit_lines(Lines, "    ", return_true)),
     format(string(Code),
 '// Lowered: ~w (deterministic single-clause)
-fun ~w(state: WamState): Boolean {
-~w    return true
-}
+fun ~w(state: WamState, dispatch: (String, WamState) -> Boolean): Boolean {
+~w}
 ', [PredName, FuncName, Body]).
 
 % T4: try each clause as a local fun; restore snapshot between attempts.
@@ -225,7 +242,7 @@ emit_multi_clause_n_function(PredName, FuncName, Clauses, Code) :-
     with_output_to(string(Body), emit_kotlin_t4_clauses(Clauses, 0)),
     format(string(Code),
 '// Lowered: ~w (T4 all-clauses inline)
-fun ~w(state: WamState): Boolean {
+fun ~w(state: WamState, dispatch: (String, WamState) -> Boolean): Boolean {
     val _t4 = state.snapshotForNative()
 ~w    return false
 }
@@ -236,7 +253,7 @@ emit_kotlin_t4_clauses([Clause|Rest], N) :-
     N1 is N + 1,
     format(atom(CName), 'clause_~w', [N1]),
     format("    fun ~w(): Boolean {~n", [CName]),
-    % proceed → return true; fail → return false (via emit_line_parts).
+    % proceed → return true; execute → return dispatch(...); fail → return false.
     emit_lines(Clause, "        ", return_true),
     format("    }~n", []),
     format("    if (~w()) return true~n", [CName]),
@@ -248,7 +265,7 @@ emit_clause_chain_function(PredName, FuncName, Guards, Code) :-
     with_output_to(string(Dispatch), emit_kotlin_t5_guards(Guards)),
     format(string(Code),
 '// Lowered: ~w (T5 first-argument dispatch)
-fun ~w(state: WamState): Boolean {
+fun ~w(state: WamState, dispatch: (String, WamState) -> Boolean): Boolean {
     val t5a1 = state.deref(state.readRegister("A1"))
     if (t5a1 is Value.Var) return false
 ~w    return false
@@ -259,21 +276,27 @@ emit_kotlin_t5_guards([]).
 emit_kotlin_t5_guards([guard(V, Rem)|Rest]) :-
     kotlin_constant_expr(V, Expr),
     format("    if (t5a1 == ~w) {~n", [Expr]),
-    emit_kotlin_t5_rem(Rem, "        "),
-    format("        return true~n", []),
+    emit_kotlin_t5_rem(Rem, "        ", Ended),
+    (   Ended == true
+    ->  true
+    ;   format("        return true~n", [])
+    ),
     format("    }~n", []),
     emit_kotlin_t5_guards(Rest).
 
-emit_kotlin_t5_rem([], _).
-emit_kotlin_t5_rem([get_constant(C, R)|Rest], Ind) :- !,
+emit_kotlin_t5_rem([], _, false).
+emit_kotlin_t5_rem([get_constant(C, R)|Rest], Ind, Ended) :- !,
     emit_line_parts(["get_constant", C, R], Ind),
-    emit_kotlin_t5_rem(Rest, Ind).
-emit_kotlin_t5_rem([line(Parts)|Rest], Ind) :- !,
+    emit_kotlin_t5_rem(Rest, Ind, Ended).
+emit_kotlin_t5_rem([line(Parts)|Rest], Ind, Ended) :- !,
     (   Parts == ["proceed"]
-    ->  true
-    ;   emit_line_parts(Parts, Ind)
-    ),
-    emit_kotlin_t5_rem(Rest, Ind).
+    ->  emit_kotlin_t5_rem(Rest, Ind, Ended)
+    ;   Parts = ["execute"|_]
+    ->  emit_line_parts(Parts, Ind),
+        Ended = true
+    ;   emit_line_parts(Parts, Ind),
+        emit_kotlin_t5_rem(Rest, Ind, Ended)
+    ).
 
 % ProceedMode = comment | return_true
 emit_lines([], _, _).
@@ -289,6 +312,15 @@ emit_lines([Line|Rest], Ind, ProceedMode) :-
 
 emit_line_parts(["proceed"], I) :- !, format("~w// proceed~n", [I]).
 emit_line_parts(["fail"], I) :- !, format("~wreturn false~n", [I]).
+emit_line_parts(["execute", PredArity], I) :- !,
+    kotlin_execute_pred_key(PredArity, Key),
+    escape_kotlin_string(Key, Esc),
+    format("~wreturn dispatch(\"~w\", state)~n", [I, Esc]).
+emit_line_parts(["execute", Pred, ArityStr], I) :- !,
+    strip_arity_token(Pred, Name),
+    format(string(PA), '~w/~w', [Name, ArityStr]),
+    escape_kotlin_string(PA, Esc),
+    format("~wreturn dispatch(\"~w\", state)~n", [I, Esc]).
 emit_line_parts(["allocate"], I) :- !,
     format("~wstate.allocateEnvironment()~n", [I]).
 emit_line_parts(["deallocate"], I) :- !,
@@ -379,6 +411,22 @@ emit_line_parts(["unify_constant", C], I) :- !,
     format("~wif (!kotlinLoUnifyConstant(state, ~w)) return false~n", [I, Expr]).
 emit_line_parts(["unify_nil"], I) :- !,
     format("~wif (!kotlinLoUnifyConstant(state, Value.Atom(\"[]\"))) return false~n", [I]).
+
+% execute target key: "foo/2" or already-slashed token.
+kotlin_execute_pred_key(Tok, Key) :-
+    atom_string_like(Tok, S),
+    (   sub_string(S, _, 1, _, "/")
+    ->  Key = S
+    ;   Key = S
+    ).
+
+strip_arity_token(Tok, Name) :-
+    atom_string_like(Tok, S),
+    (   sub_string(S, B, 1, _, "/"),
+        sub_string(S, 0, B, _, Name)
+    ->  true
+    ;   Name = S
+    ).
 
 kotlin_register_lit(Reg, Lit) :-
     atom_string_like(Reg, S),
