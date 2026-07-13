@@ -462,6 +462,7 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, '"=../2"'),
         sub_string(S, _, _, _, '"copy_term/2"'),
         sub_string(S, _, _, _, '"term_variables/2"'),
+        sub_string(S, _, _, _, '"numbervars/3"'),
         sub_string(S, _, _, _, '"subtract/3"'),
         %% copy_term_walk helper (sharing-preserving recursive copy).
         sub_string(S, _, _, _, 'copy_term_walk'),
