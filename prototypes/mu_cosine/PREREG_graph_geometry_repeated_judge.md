@@ -130,9 +130,12 @@ zoo requires a new preregistration and recalibrated null before outcomes.
 Each corpus uses five deterministic outer folds and three inner component folds.  **Outer** fold totals differ
 by at most one, and each feasible stratum margin is distributed as evenly as integer counts allow; equal
 per-cell counts inside every fold are not required.  A single stable global inner label keeps prompt requests
-from crossing any nested split.  On the frozen G grid, each leave-one-outer training set's inner totals differ
-by at most two; at `G=160` a 44/42/42 split is the unavoidable integer optimum, so a false at-most-one rule is
-not imposed.  Every row, repeat, and judge from one endpoint component remains in one fold.  Endpoint IDs and
+from crossing any nested split.  In the synthetic sizing model, where components are the dependency atoms,
+each leave-one-outer training set's inner totals differ by at most two; at `G=160` a 44/42/42 split is the
+unavoidable integer optimum, so a false at-most-one rule is not imposed.  In the real sampler,
+`(corpus, source_component)` groups are indivisible and their realized leave-one-outer imbalance is recorded;
+it is not silently described as the synthetic optimum.  Every row, repeat, and judge from one endpoint
+component remains in one fold.  Endpoint IDs and
 normalized titles are disjoint across folds.  For every outer-held fold the selector also materializes the
 three inner-fold assignments of its outer-training components, before outcomes exist.
 Prompt blocks are then formed only among components with the same corpus/outer/inner signature, and whole

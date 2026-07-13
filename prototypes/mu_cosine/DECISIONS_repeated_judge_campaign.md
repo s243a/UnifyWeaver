@@ -211,8 +211,10 @@ dependence path.  Fold containment prevents leakage; the two-way sensitivity exp
 
 ## 2026-07-12 — retain stable inner labels with the minimax integer balance
 
-**Decision:** freeze one global inner label per component/source group and accept a maximum inner-total spread
-of two in each leave-one-outer training set on the registered G grid.
+**Decision:** freeze one global inner label per component/source group.  The synthetic sizing model, whose
+dependency atom is one component, accepts a maximum inner-total spread of two in each leave-one-outer training
+set on the registered G grid.  The real selector instead balances indivisible source groups, records the
+realized global and leave-one-outer totals, and does not claim the synthetic bound for those grouped data.
 
 **Rejected:** independently rebalance inner labels for each outer fold or claim an impossible spread of one.
 
