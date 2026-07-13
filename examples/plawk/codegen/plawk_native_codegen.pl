@@ -724,7 +724,7 @@ plawk_program_native_driver_ir(
     plawk_forin_end_plan(Rules, LoopVar, ArrayName, BodyActions, AssocPlan, PrintFields),
     AssocPlan = assoc_plan(Tables, _),
     plawk_program_cache_tables(BeginClauses, CacheNamePaths),
-    plawk_cache_entries(Tables, [], CacheNamePaths, CacheEntries, CachePathGlobals),
+    plawk_cache_entries(Tables, [], [], CacheNamePaths, CacheEntries, CachePathGlobals),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
@@ -3705,7 +3705,11 @@ plawk_program_multipass_driver_ir(
     plawk_program_cache_tables(BeginClauses, CacheTriples),
     maplist(plawk_assoc_rule_action_specs, AllRules, AllRuleSpecs),
     plawk_assoc_specs_str_arrays(AllRuleSpecs, StrArrays),
-    plawk_cache_entries([ArrayName], StrArrays, CacheTriples, CacheEntries,
+    findall(cache_schema(ST, SC),
+        ( member(begin(BActions), BeginClauses),
+          member(cache_schema(ST, SC), BActions) ),
+        Schemas),
+    plawk_cache_entries([ArrayName], StrArrays, Schemas, CacheTriples, CacheEntries,
         CachePathGlobals),
     % Per-pass RecordIR (rule chain) against the single shared table.
     findall(GlobalIR-ChainIR,
@@ -3806,7 +3810,7 @@ plawk_program_multipass_driver_ir(
     % A `BEGIN cache(...)`-declared shared table: load before pass 1, commit
     % after the last pass. Empty for pure-scalar / non-cache programs.
     plawk_program_cache_tables(BeginClauses, CacheTriples),
-    plawk_cache_entries(Tables, StrArrays, CacheTriples, CacheEntries,
+    plawk_cache_entries(Tables, StrArrays, Schemas, CacheTriples, CacheEntries,
         CachePathGlobals),
     plawk_output_separator(BeginClauses, OutputSeparator),
     % One function per pass, in order -- dispatching on the pass shape:
@@ -5951,11 +5955,9 @@ plawk_assoc_entry_setup_lines([_ArrayName | Rest], Index, CacheEntries) -->
     { format(atom(NewLine),
           '  %plawk_assoc_table_~w = call %WamAssocI64Table* @wam_assoc_i64_new(i64 4096)',
           [Index]),
-      ( memberchk(cache(Index, BytesLen, Backend, ValueKind), CacheEntries)
+      ( memberchk(cache(Index, BytesLen, Backend, ValueKind, SchemaRef), CacheEntries)
       ->  plawk_cache_fn(Backend, load, ValueKind, LoadFn),
-          format(atom(LoadLine),
-              '  call void @~w(%WamAssocI64Table* %plawk_assoc_table_~w, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_cache_path_~w, i64 0, i64 0))',
-              [LoadFn, Index, BytesLen, BytesLen, Index]),
+          plawk_cache_call_ir(LoadFn, Index, BytesLen, ValueKind, SchemaRef, LoadLine),
           Lines = [NewLine, LoadLine]
       ;   Lines = [NewLine]
       ),
@@ -5988,24 +5990,39 @@ plawk_cache_fn(lmdb, commit, _Kind, wam_cache_commit_lmdb) :- !.
 plawk_cache_fn(_File, load, _Kind, wam_cache_load).
 plawk_cache_fn(_File, commit, _Kind, wam_cache_commit).
 
-%% plawk_cache_entries(+Tables, +Triples, -CacheEntries, -PathGlobalsIR)
+%% plawk_cache_entries(+Tables, +StrArrays, +Schemas, +Triples, -CacheEntries,
+%%     -PathGlobalsIR)
 %  Resolve each cache-backed table name to its index in the plan's table
 %  list, emit a private string global @.plawk_cache_path_<idx> for its path,
-%  and record cache(Index, BytesLen, Backend) so setup/commit can reference
-%  the global and pick the backend function. A declared name absent from the
-%  plan (never used) is skipped. PathGlobalsIR also carries external declares
-%  for any lmdb backend functions in use.
-plawk_cache_entries(Tables, StrArrays, Triples, CacheEntries, PathGlobalsIR) :-
-    findall(cache(Index, BytesLen, Backend, ValueKind)-Global,
+%  and record cache(Index, BytesLen, Backend, ValueKind, SchemaRef) so
+%  setup/commit can reference the global, pick the backend function, and (for
+%  a str/row table with a declared schema) pass the schema so the store is
+%  self-describing and validated on open. SchemaRef is an `i8*` operand: a
+%  getelementptr to the schema-string global, or `null` when no schema. A
+%  declared name absent from the plan (never used) is skipped. PathGlobalsIR
+%  carries the path/schema globals plus any lmdb backend declares in use.
+plawk_cache_entries(Tables, StrArrays, Schemas, Triples, CacheEntries, PathGlobalsIR) :-
+    findall(cache(Index, BytesLen, Backend, ValueKind, SchemaRef)-GroupIR,
         ( member(ct(Name, Path, Backend), Triples),
           nth0(Index, Tables, Name),
           ( memberchk(Name, StrArrays) -> ValueKind = str ; ValueKind = i64 ),
           format(atom(GName), 'plawk_cache_path_~w', [Index]),
-          llvm_emit_c_string_global(GName, Path, Global, _Len, BytesLen)
+          llvm_emit_c_string_global(GName, Path, PathGlobal, _Len, BytesLen),
+          ( ValueKind == str, memberchk(cache_schema(Name, Cols), Schemas)
+          ->  plawk_schema_string(Cols, SchemaStr),
+              format(atom(SGName), 'plawk_cache_schema_~w', [Index]),
+              llvm_emit_c_string_global(SGName, SchemaStr, SchemaGlobal, _SLen, SBytes),
+              format(atom(SchemaRef),
+                  'getelementptr inbounds ([~w x i8], [~w x i8]* @.~w, i64 0, i64 0)',
+                  [SBytes, SBytes, SGName]),
+              atomic_list_concat([PathGlobal, SchemaGlobal], '\n', GroupIR)
+          ;   SchemaRef = 'null',
+              GroupIR = PathGlobal
+          )
         ),
         Pairs),
     pairs_keys_values(Pairs, CacheEntries, Globals),
-    ( memberchk(cache(_, _, lmdb, _), CacheEntries)
+    ( memberchk(cache(_, _, lmdb, _, _), CacheEntries)
     ->  LmdbDecls = ['declare void @wam_cache_load_lmdb(%WamAssocI64Table*, i8*)',
                      'declare void @wam_cache_commit_lmdb(%WamAssocI64Table*, i8*)']
     ;   LmdbDecls = []
@@ -6013,17 +6030,37 @@ plawk_cache_entries(Tables, StrArrays, Triples, CacheEntries, PathGlobalsIR) :-
     append(Globals, LmdbDecls, AllGlobals),
     atomic_list_concat(AllGlobals, '\n', PathGlobalsIR).
 
+%% plawk_schema_string(+Columns, -Str)
+%  Canonical schema string for a row table: `name:type,name:type,...`. Written
+%  into the store header and compared on open (must match byte-for-byte).
+plawk_schema_string(Columns, Str) :-
+    findall(CS, ( member(col(Name, Type), Columns),
+                  format(atom(CS), '~w:~w', [Name, Type]) ), Parts),
+    atomic_list_concat(Parts, ',', Str).
+
+%% plawk_cache_call_ir(+Fn, +Index, +BytesLen, +ValueKind, +SchemaRef, -Line)
+%  A load/commit call. The byte-valued (str) file helpers take an extra i8*
+%  schema argument (a getelementptr or null); the i64 / lmdb helpers do not.
+plawk_cache_call_ir(Fn, Index, BytesLen, str, SchemaRef, Line) :-
+    ( Fn == wam_cache_load_str ; Fn == wam_cache_commit_str ),
+    !,
+    format(atom(Line),
+        '  call void @~w(%WamAssocI64Table* %plawk_assoc_table_~w, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_cache_path_~w, i64 0, i64 0), i8* ~w)',
+        [Fn, Index, BytesLen, BytesLen, Index, SchemaRef]).
+plawk_cache_call_ir(Fn, Index, BytesLen, _ValueKind, _SchemaRef, Line) :-
+    format(atom(Line),
+        '  call void @~w(%WamAssocI64Table* %plawk_assoc_table_~w, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_cache_path_~w, i64 0, i64 0))',
+        [Fn, Index, BytesLen, BytesLen, Index]).
+
 %% plawk_cache_commit_lines(+CacheEntries, -IR)
 %  A commit call per cache-backed table, writing the final table back to its
 %  store. Emitted at the top of the END phase (after the record loop, table
 %  still live), so the committed state is the completed pass.
 plawk_cache_commit_lines(CacheEntries, IR) :-
     findall(Line,
-        ( member(cache(Index, BytesLen, Backend, ValueKind), CacheEntries),
+        ( member(cache(Index, BytesLen, Backend, ValueKind, SchemaRef), CacheEntries),
           plawk_cache_fn(Backend, commit, ValueKind, CommitFn),
-          format(atom(Line),
-              '  call void @~w(%WamAssocI64Table* %plawk_assoc_table_~w, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_cache_path_~w, i64 0, i64 0))',
-              [CommitFn, Index, BytesLen, BytesLen, Index])
+          plawk_cache_call_ir(CommitFn, Index, BytesLen, ValueKind, SchemaRef, Line)
         ),
         Lines),
     atomic_list_concat(Lines, '\n', IR).

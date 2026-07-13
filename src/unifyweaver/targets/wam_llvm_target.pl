@@ -5037,13 +5037,34 @@ entry:
 ; them; row readers only iterate, and a re-writing pass re-interns the same
 ; key). internal linkage, so this is dead-code eliminated unless a str-valued
 ; store is used.
-define internal void @wam_cache_commit_str(%WamAssocI64Table* %table, i8* %path) {
+@.wam_cache_schema_err = private constant [29 x i8] c"plawk: cache schema mismatch\00"
+
+define internal void @wam_cache_commit_str(%WamAssocI64Table* %table, i8* %path, i8* %schema) {
 entry:
   %cbuf = alloca i64
   %hbuf = alloca [2 x i64]
   %fd = call i32 @open(i8* %path, i32 577, i32 420)
   %fd_ok = icmp sge i32 %fd, 0
-  br i1 %fd_ok, label %ccs.writecount, label %ccs.done
+  br i1 %fd_ok, label %ccs.schema, label %ccs.done
+
+; header: [schemalen:i64][schemabytes...] -- 0 length when no schema is given.
+ccs.schema:
+  %schema_null = icmp eq i8* %schema, null
+  br i1 %schema_null, label %ccs.noschema, label %ccs.haveschema
+
+ccs.haveschema:
+  %slen = call i64 @strlen(i8* %schema)
+  store i64 %slen, i64* %cbuf
+  %cbuf_i8a = bitcast i64* %cbuf to i8*
+  %sw1 = call i64 @write(i32 %fd, i8* %cbuf_i8a, i64 8)
+  %sw2 = call i64 @write(i32 %fd, i8* %schema, i64 %slen)
+  br label %ccs.writecount
+
+ccs.noschema:
+  store i64 0, i64* %cbuf
+  %cbuf_i8b = bitcast i64* %cbuf to i8*
+  %sw0 = call i64 @write(i32 %fd, i8* %cbuf_i8b, i64 8)
+  br label %ccs.writecount
 
 ccs.writecount:
   %count_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 0
@@ -5085,13 +5106,63 @@ ccs.done:
   ret void
 }
 
-define internal void @wam_cache_load_str(%WamAssocI64Table* %table, i8* %path) {
+define internal void @wam_cache_load_str(%WamAssocI64Table* %table, i8* %path, i8* %schema) {
 entry:
   %cbuf = alloca i64
   %hbuf = alloca [2 x i64]
+  %slbuf = alloca i64
   %fd = call i32 @open(i8* %path, i32 0, i32 0)
   %fd_ok = icmp sge i32 %fd, 0
-  br i1 %fd_ok, label %cls.readcount, label %cls.done
+  br i1 %fd_ok, label %cls.readschemalen, label %cls.done
+
+; header: read [schemalen][schemabytes]. When both the stored schema and the
+; program schema are present, they must match, else the store was written for
+; a different row shape -- fail loudly rather than mis-read field offsets.
+cls.readschemalen:
+  %slbuf_i8 = bitcast i64* %slbuf to i8*
+  %sln = call i64 @read(i32 %fd, i8* %slbuf_i8, i64 8)
+  %sln_ok = icmp eq i64 %sln, 8
+  br i1 %sln_ok, label %cls.checkschemalen, label %cls.close
+
+cls.checkschemalen:
+  %schemalen = load i64, i64* %slbuf
+  %has_schema = icmp sgt i64 %schemalen, 0
+  br i1 %has_schema, label %cls.readschema, label %cls.readcount
+
+cls.readschema:
+  %sbuf = call i8* @malloc(i64 %schemalen)
+  %srn = call i64 @read(i32 %fd, i8* %sbuf, i64 %schemalen)
+  %srn_ok = icmp eq i64 %srn, %schemalen
+  br i1 %srn_ok, label %cls.validate, label %cls.sfreeclose
+
+cls.validate:
+  %expect_null = icmp eq i8* %schema, null
+  br i1 %expect_null, label %cls.sfree_ok, label %cls.cmplen
+
+cls.cmplen:
+  %explen = call i64 @strlen(i8* %schema)
+  %len_eq = icmp eq i64 %explen, %schemalen
+  br i1 %len_eq, label %cls.cmpbytes, label %cls.mismatch
+
+cls.cmpbytes:
+  %cmp = call i32 @memcmp(i8* %sbuf, i8* %schema, i64 %schemalen)
+  %cmp_eq = icmp eq i32 %cmp, 0
+  br i1 %cmp_eq, label %cls.sfree_ok, label %cls.mismatch
+
+cls.mismatch:
+  call void @free(i8* %sbuf)
+  %errp = getelementptr [29 x i8], [29 x i8]* @.wam_cache_schema_err, i64 0, i64 0
+  %eprc = call i32 (i8*, ...) @printf(i8* %errp)
+  call void @exit(i32 3)
+  unreachable
+
+cls.sfree_ok:
+  call void @free(i8* %sbuf)
+  br label %cls.readcount
+
+cls.sfreeclose:
+  call void @free(i8* %sbuf)
+  br label %cls.close
 
 cls.readcount:
   %cbuf_i8 = bitcast i64* %cbuf to i8*
