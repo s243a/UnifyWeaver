@@ -1809,6 +1809,17 @@ i64_factor_expr(field(Index)) -->
 i64_factor_expr(Expr) -->
     prolog_call_expr(Expr),
     !.
+% An assoc lookup `arr[k]` as an arithmetic operand, e.g. `$2 / total[$1]`
+% (per-key normalise). Tried before the bare identifier -- the `[` commits.
+i64_factor_expr(assoc(var(Name), KeyExpr)) -->
+    identifier(Name),
+    ws,
+    "[",
+    ws,
+    assoc_key_expr(KeyExpr),
+    ws,
+    "]",
+    !.
 i64_factor_expr(var(Name)) -->
     identifier(Name).
 
