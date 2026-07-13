@@ -203,13 +203,15 @@ PoE is retained only as a control.
 
 ## PSD-safe deployment adapter and batching
 
-No elementwise covariance lower bound is called conservative.  Select `alpha_safe` inside outer training as
-the largest frozen-grid value whose multiplicity-adjusted held-benefit lower bound is positive; otherwise use
-zero.  In whitened coordinates,
+No elementwise covariance lower bound is called conservative.  Select `alpha_safe` inside outer training,
+using only its inner-held components, as the largest frozen-grid value whose multiplicity-adjusted benefit
+lower bound is positive; otherwise use zero.  In whitened coordinates,
 
 ```text
 C_alpha = (1-alpha_safe) I + alpha_safe C_hat,
-R_safe = (I tensor L_B) [C_alpha + delta_95 I] (I tensor L_B)^T.
+R_safe = (I_N tensor L_B)
+         [C_alpha tensor I_m + delta_95 I_(N*m)]
+         (I_N tensor L_B)^T.
 ```
 
 `delta_95` is the full-procedure 95th percentile of maximum missing spectral mass.  Statistical `delta_95` and
