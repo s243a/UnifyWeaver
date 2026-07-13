@@ -222,8 +222,9 @@ The mechanism audit does not identify real stochastic covariance.  The next data
 3. stratify outcome-blind graph-kernel similarity and independent-embedding similarity so their disagreement is
    observed, not extrapolated;
 4. obtain at least three independent calls per judge family and preserve call identity;
-5. use more than 400 independent endpoint components, with the final count chosen by a full-procedure power
-   simulation rather than computational convenience;
+5. use at least the per-corpus component count chosen by the later frozen synthetic primary-event power grid in
+   `PREREG_graph_geometry_repeated_judge.md`, then complete its unsimulated secondary sizing gates; this
+   supersedes the earlier heuristic “more than 400” floor;
 6. split whole endpoint components and refit mean, marginal covariance, kernel weights, amplitude, and any
    selector inside each outer fold;
 7. include a different judge family or non-LLM target for generality claims.
@@ -269,5 +270,9 @@ K_cumulative(r,s) = <Phi_cumulative(r), Phi_cumulative(s)>
 ```
 
 It is an explicit Gram and therefore PSD.  Nonnegative weights keep its diffusion interpretation.  The frozen
-topology grids remain `local=(1,1)`, `two_hop=(1,1,1)`, and `decay=(1,1/2,1/4,1/8)`.  Adding it to a covariance
-selector requires a separately calibrated v3 mechanism audit; v1/v2 outputs are not rewritten.
+topology grids remain `local=(1,1)`, `two_hop=(1,1,1)`, and `decay=(1,1/2,1/4,1/8)`.  Campaign collection does
+not require a standalone cumulative-only v3.  Before any campaign residual is inspected, cumulative decay
+replaces same-hop walk inside the single deployment-capable convex cumulative/Nomic family frozen in
+`PREREG_graph_geometry_repeated_judge.md`; its complete mixture-by-coupling search receives one synthetic
+primary-event familywise calibration and a separate training-only real-data null calibration.  V1/v2 outputs
+are not rewritten, and the near-equivalent kernel zoo remains diagnostic.

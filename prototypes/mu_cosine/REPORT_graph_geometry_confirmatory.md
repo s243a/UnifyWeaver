@@ -203,9 +203,12 @@ The append-only rationale and reconsideration conditions are in `DECISIONS_graph
 
 ## Next confirmatory campaign
 
-1. Sample more than 400 independent endpoint components; use a full-procedure simulation to set the final count.
+1. Use the repeated-judge full-procedure simulation to size the registered `G={160,320,512,800}` grid; do not
+   carry forward the earlier informal “more than 400” estimate as a fixed campaign count.
 2. Within components, balance anchor, direct/local positive, and matched distant/hard-negative triples.
-3. Obtain at least three independent calls per judge family and retain call identity.
+3. Obtain at least three independent call waves per judge family and retain call identity.  Amortize the system
+   prompt over stable split-contained blocks of at most ten same-role rows, retain request identity, and model
+   the resulting shared-prompt covariance; do not treat rows from one request as independent.
 4. Oversample graph/Nomic disagreement cells rather than relying on their 1.7--2.8% natural frequency.
 5. Primary covariance candidates: block, closed-neighborhood, cumulative-walk, Nomic, and one nonnegative
    graph-plus-Nomic mixture.  MiniLM and e5 are sensitivity/redundancy controls, not extra selector votes.
