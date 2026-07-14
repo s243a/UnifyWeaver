@@ -97,12 +97,13 @@ embedding or outcome in this PR because Nomic was not run.
 | define deterministic exclusive branch/source groups | candidate amendment | potentially feasible, but must name them as source groups, handle multi-branch nodes outcome-blindly, and retain true connected-component diagnostics |
 | retain one giant source and model/resample its dependence explicitly | defer | requires a new power model, fold contract, and effective-sample-size justification |
 
-The most promising next design is an explicit, deterministic **source-group** partition based on frozen graph
-branches, not a relabeling of connected components.  A later amendment must specify exclusive assignment for
-multi-branch nodes, concentration caps, fold containment, and source-group-aware inference before rerunning
-this preflight.
+**Subsequent result:** `REPORT_repeated_judge_source_regions.md` tested a stricter deterministic exclusive
+source-region family with exact connected count and three-hop-safe cores.  No frozen `K={64,96,128}` passed:
+hard local-support isolation removed too much core mass, and exploratory also failed the larger-`G`
+four-endpoint capacity bounds.  The pipeline therefore remains blocked.  The preferred next fork is a
+prospectively powered dependence-aware source design, not post-hoc relaxation of either audit.
 
-Only after that necessary gate passes should work resume in this order: construct the attempted-input historical
+Only after a replacement necessary gate passes should work resume in this order: construct the attempted-input historical
 inventory, enumerate the structural universe, generate a revision-pinned Nomic cache over that universe,
 freeze agreement/degree/tag rules, and run exact packability checks for every registered `G`.
 

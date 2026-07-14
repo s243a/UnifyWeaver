@@ -324,3 +324,43 @@ candidate pool is produced.
 
 **Reason:** a trailing space changes model input bytes and therefore belongs in reproducibility provenance.
 This correction was made before a new candidate-universe cache or any outcome was produced.
+
+## 2026-07-13 — distinguish source regions from true weak components
+
+**Decision:** test a topology-only `source_region` as the exclusive 10% concentration, fold, and sensitivity
+unit, while retaining `weak_component_id` as a separate immutable diagnostic.  Freeze `K={64,96,128}` and use
+deterministic metric-rooted spanning-tree cuts that return exactly `K` induced-connected regions.  Define the
+three-hop core exactly as nodes whose complete undirected radius-three ball stays inside the assigned region.
+Require all four candidate endpoints in one core, a finite distant-root hop at least three, 50% core retention,
+20 effective regions, and the optimistic four-endpoint capacity gate for every registered `G` in both corpora.
+
+**Supersedes conditionally:** the old use of `source_component` as both weak component and planned
+concentration unit.  The selector schema would migrate to the unambiguous pair `source_region` and
+`weak_component_id` only after the topology gate passes.
+
+**Rejected:** silently calling branches connected components; overlapping region ownership; partitions based
+on outcomes, judge residuals, history exclusions, or Nomic; disconnected distant comparators under a
+same-core rule; and weak-component-atomic folds on a corpus with one weak component.
+
+**Reason:** weak components are structurally real but infeasible concentration units.  A named exclusive
+region can be a useful design unit without making a false independence claim.  The exact halo isolates the
+support of the frozen radius-three graph feature; it does not remove global, semantic, prompt, judge, or
+within-weak-component dependence.
+
+## 2026-07-13 — fail the hard three-hop source-region family without post-hoc relaxation
+
+**Decision:** select no source-region partition.  Every frozen `K` fails the joint gate.  Exploratory retains
+at most 2.95% core nodes and fails the larger-`G` four-endpoint capacity bounds; fresh retains at most 32.66%
+despite passing the capacity bounds.  Keep history, candidate enumeration, Nomic, builder verification, judge
+calls, covariance deployment, QR specialization, and CUDA locked.
+
+**Rejected:** lowering the 50% gate, shortening/removing the halo, choosing a new `K`, or swapping in a
+community algorithm after seeing this audit and reporting it as the preregistered result.  Lowering retention
+alone would not rescue exploratory capacity.
+
+**Reason:** the negative result is evidence that strict three-hop isolation is structurally destructive on
+these hub/small-world graphs, not evidence that cross-item correlation is absent.  Hard partitions are not
+the only way to control dependence.  The preferred next fork is a prospectively powered dependence-aware
+source design that keeps exclusive concentration labels but estimates or bounds cross-region graph exposure
+and carries the promoted covariance into the dense joint QR conditioner.  A portable low-boundary community
+family remains an explicitly exploratory alternative and needs its own frozen audit.
