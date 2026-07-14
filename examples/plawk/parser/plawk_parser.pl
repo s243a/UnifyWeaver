@@ -287,6 +287,20 @@ query_var_list_rest([V | Vs]) -->
     query_var_list_rest(Vs).
 query_var_list_rest([]) -->
     [].
+% A `gen { BODY } as name` generator block (PLAWK_GENERATOR_BLOCKS.md): a
+% producer whose `emit E` statements define a relation `name/1`, callable from
+% a Prolog goal (e.g. a query pass's `over query(name(X))`). The producer dual
+% of the query reader. Parses to gen_block(name(Name), Body); the runtime
+% (materialise-then-iterate, mirroring the reader) lands in a later PR, so PR 1
+% is the surface + a clean not-yet compile error. The `gen` keyword is
+% unambiguous (distinct from `pass`); tried before the plain `pass` clause. The
+% optional input iterator (`gen over SOURCE as v { ... }`) is a follow-on.
+pass_clauses([gen_block(name(Name), Body) | Rest]) -->
+    "gen", identifier_boundary, ws,
+    action_block(Body), ws,
+    "as", identifier_boundary, ws,
+    identifier(Name), ws,
+    pass_clauses(Rest).
 % A `pass { ACTIONS }` block is one pass carrying a single always-rule with
 % those actions (per-pattern rules within a pass are a later extension).
 pass_clauses([pass([rule(always, Actions)]) | Rest]) -->
@@ -307,6 +321,9 @@ plawk_pass_dynentry_rewrite(_DynEntries, pass_rows(V, T, Body), pass_rows(V, T, 
 plawk_pass_dynentry_rewrite(_DynEntries, pass_rows_anon(T, Body), pass_rows_anon(T, Body)).
 % The `over query(...)` reader has no rule actions to rewrite -- pass it through.
 plawk_pass_dynentry_rewrite(_DynEntries, pass_query(Q, Body), pass_query(Q, Body)).
+% A `gen { ... } as name` generator block -- pass it through (its body is
+% lowered by the generator runtime in a later PR).
+plawk_pass_dynentry_rewrite(_DynEntries, gen_block(N, Body), gen_block(N, Body)).
 
 %% dynentry_decls(-Names)//
 %
@@ -1382,6 +1399,9 @@ action(Action) -->
     printf_action(Action),
     !.
 action(Action) -->
+    emit_action(Action),
+    !.
+action(Action) -->
     writebin_action(Action),
     !.
 action(Action) -->
@@ -1787,6 +1807,26 @@ print_action(print(Fields)) -->
     "print",
     required_ws,
     print_fields(Fields).
+
+% `emit E` -- the producer counterpart of `print` inside a generator block
+% (PLAWK_GENERATOR_BLOCKS.md). Instead of writing a record to stdout, it
+% contributes the value of E to the generated relation's solution set. Parses
+% to emit(Expr) reusing the print field-expression grammar (a field, number,
+% string, or arithmetic expression). Explicit emission keeps the value typed
+% (design doc section 2.1); a tuple emit (`emit (A, B)` -> arity 2) is a
+% follow-on. `emit` is only meaningful inside a `gen { ... }` block; the
+% codegen (bin/plawk) rejects it elsewhere until the runtime lands.
+emit_action(emit(Expr)) -->
+    "emit",
+    required_ws,
+    field_expr(Expr).
+% A bare numeric literal (`emit 1`) -- the canonical generator form. field_expr
+% (above) covers fields, strings, NR/NF and arithmetic but not a leading bare
+% integer, so fall back to an integer literal, carried as int(N).
+emit_action(emit(int(N))) -->
+    "emit",
+    required_ws,
+    signed_integer_value(N).
 
 printf_action(printf(string(Format), Args)) -->
     "printf",

@@ -5,7 +5,7 @@ Copyright (c) 2026 John William Creighton (@s243a)
 
 # plawk generator blocks — `gen { … } as name` (design)
 
-**Status**: design sketch, not yet implemented. This is the **producer dual**
+**Status**: PR 1 (surface + AST) landed; runtime pending. This is the **producer dual**
 of the `over query(Goal)` reader (`PLAWK_QUERY_READER_IMPLEMENTATION_PLAN.md`,
 phase 6). Where the query reader lets a **Prolog goal drive a plawk pass**
 (Prolog → plawk records), a generator block lets a **plawk `{}` block be called
@@ -207,9 +207,17 @@ columns, snapshot test): it shares their materialise-then-iterate runtime and
 the per-column mechanism, so it is largely a matter of running that machinery in
 the producer direction plus the `emit` collection. A rough PR shape:
 
-1. **Surface + AST** — parse `gen { BODY } as name` (and the optional
-   `gen over SOURCE as v { BODY }`) to a `gen_block` term; `emit` action; a
-   clean not-yet error until the runtime lands.
+1. **Surface + AST — LANDED.** `gen { BODY } as name` parses to
+   `gen_block(name(Name), Body)` (a new `pass_clauses` clause, tried before the
+   plain `pass`); `emit E` parses to an `emit(Expr)` action (the print
+   field-expression grammar plus a bare-integer-literal fallback `emit(int(N))`,
+   the canonical `emit 1` form). `plawk_pass_dynentry_rewrite` gains a
+   passthrough clause; `check_generator_blocks/2` in `bin/plawk` emits a clean,
+   specific compile error (naming the generated relation) until the runtime
+   lands. `tests/test_plawk_gen_blocks.pl`: parse (integer literals, field /
+   string emit, `pass` unchanged), the not-yet error (exit 2), and a non-gen
+   program unaffected. The optional input iterator (`gen over SOURCE as v`) is
+   deferred to step 3. No runtime.
 2. **Collection runtime** — compile the block to an emit-collecting function;
    expose `name/1` as `member` over the collected list; verify a pure arity-1
    generator feeds a query pass.
