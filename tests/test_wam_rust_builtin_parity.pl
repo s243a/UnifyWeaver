@@ -65,6 +65,18 @@ t_output_aliases :- print(alias), writeln(done).
 :- dynamic t_tab/0.
 t_tab :- tab(2).
 
+:- dynamic t_pairs_project/2.
+t_pairs_project(Keys, Values) :-
+    Pairs = [a-1, b-2],
+    pairs_keys(Pairs, Keys),
+    pairs_values(Pairs, Values).
+
+:- dynamic t_pairs_split/2.
+t_pairs_split(Keys, Values) :- pairs_keys_values([a-1, b-2], Keys, Values).
+
+:- dynamic t_pairs_zip/1.
+t_pairs_zip(Pairs) :- pairs_keys_values(Pairs, [a, b], [1, 2]).
+
 %% catch/throw + succ predicates (ISO meta-builtin Call fallback path).
 :- dynamic t_thrower/0.
 t_thrower :- throw(oops(42)).
@@ -158,6 +170,7 @@ test_builtin_parity_execution :-
              user:t_string_code/1,
              user:t_output_aliases/0,
              user:t_tab/0,
+             user:t_pairs_project/2, user:t_pairs_split/2, user:t_pairs_zip/1,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
              user:t_catch_nomatch/0, user:t_catch_nothrow/1,
@@ -181,6 +194,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_
     t_string_code_1,
     t_output_aliases_0,
     t_tab_0,
+    t_pairs_project_2, t_pairs_split_2, t_pairs_zip_1,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
     t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
     t_maplist_1, t_maplist_check_0, t_maplist_fail_0, t_include_1, t_exclude_1,
@@ -315,6 +329,26 @@ fn test_output_aliases_compiled() {
 
     let mut tab_vm = vmnew();
     assert!(t_tab_0(&mut tab_vm));
+}
+
+#[test]
+fn test_pairs_family_compiled() {
+    let mut project_vm = vmnew();
+    assert!(t_pairs_project_2(&mut project_vm, ub("Keys"), ub("Values")));
+    assert_eq!(read_var(&project_vm, "Keys"), Value::List(vec![a("a"), a("b")]));
+    assert_eq!(read_var(&project_vm, "Values"), Value::List(vec![i(1), i(2)]));
+
+    let mut split_vm = vmnew();
+    assert!(t_pairs_split_2(&mut split_vm, ub("Keys"), ub("Values")));
+    assert_eq!(read_var(&split_vm, "Keys"), Value::List(vec![a("a"), a("b")]));
+    assert_eq!(read_var(&split_vm, "Values"), Value::List(vec![i(1), i(2)]));
+
+    let mut zip_vm = vmnew();
+    assert!(t_pairs_zip_1(&mut zip_vm, ub("Pairs")));
+    assert_eq!(read_var(&zip_vm, "Pairs"), Value::List(vec![
+        Value::Str("-".to_string(), vec![a("a"), i(1)]),
+        Value::Str("-".to_string(), vec![a("b"), i(2)]),
+    ]));
 }
 
 #[test]
@@ -543,6 +577,64 @@ fn test_keysort() {
     assert_eq!(read_var(&vm, "S"), Value::List(vec![
         dpair(a("a"), i(2)), dpair(a("b"), i(1)), dpair(a("b"), i(0)),
     ]), "stable by key, payload order preserved");
+}
+
+#[test]
+fn test_pairs_family_direct() {
+    let pair = |k: Value, v: Value| Value::Str("-/2".to_string(), vec![k, v]);
+    let pairs = Value::List(vec![pair(a("a"), i(1)), pair(a("b"), i(2))]);
+
+    let (keys_ok, keys_vm) = call2("pairs_keys/2", pairs.clone(), ub("Keys"));
+    assert!(keys_ok);
+    assert_eq!(read_var(&keys_vm, "Keys"), Value::List(vec![a("a"), a("b")]));
+
+    let (values_ok, values_vm) = call2("pairs_values/2", pairs.clone(), ub("Values"));
+    assert!(values_ok);
+    assert_eq!(read_var(&values_vm, "Values"), Value::List(vec![i(1), i(2)]));
+
+    let (split_ok, split_vm) = call3(
+        "pairs_keys_values/3", pairs, ub("Keys"), ub("Values"));
+    assert!(split_ok);
+    assert_eq!(read_var(&split_vm, "Keys"), Value::List(vec![a("a"), a("b")]));
+    assert_eq!(read_var(&split_vm, "Values"), Value::List(vec![i(1), i(2)]));
+
+    let (zip_ok, zip_vm) = call3(
+        "pairs_keys_values/3",
+        ub("Pairs"),
+        Value::List(vec![a("a"), a("b")]),
+        Value::List(vec![i(1), i(2)]),
+    );
+    assert!(zip_ok);
+    assert_eq!(read_var(&zip_vm, "Pairs"), Value::List(vec![
+        Value::Str("-".to_string(), vec![a("a"), i(1)]),
+        Value::Str("-".to_string(), vec![a("b"), i(2)]),
+    ]));
+
+    let (empty_ok, empty_vm) = call3(
+        "pairs_keys_values/3", ub("Pairs"), Value::List(vec![]), Value::List(vec![]));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Pairs"), Value::List(vec![]));
+
+    assert!(!call3(
+        "pairs_keys_values/3",
+        ub("Pairs"),
+        Value::List(vec![a("a")]),
+        Value::List(vec![i(1), i(2)]),
+    ).0);
+    assert!(!call2(
+        "pairs_keys/2",
+        Value::List(vec![Value::Str("other/2".to_string(), vec![a("a"), i(1)])]),
+        ub("Keys"),
+    ).0);
+
+    let (rollback_ok, rollback_vm) = call3(
+        "pairs_keys_values/3",
+        Value::List(vec![pair(ub("X"), i(1))]),
+        Value::List(vec![a("bound")]),
+        Value::List(vec![i(2)]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "X"), ub("X"));
 }
 
 #[test]
