@@ -1226,18 +1226,33 @@ forin_guard(forin_key_cmp(LoopVar, Op, Value)) -->
 % (which fail cleanly on a non-identifier key / `$`, then backtrack here).
 forin_guard(rcol_cmp(Var, Col, Op, Value)) -->
     identifier(Var), ws, "[", ws, quoted_string(CCodes), ws, "]", ws,
-    numeric_cmp_op(Op), ws, signed_integer_value(Value),
+    numeric_cmp_op(Op), ws, guard_rhs(Value),
     { string_codes(Col, CCodes) },
     !.
 forin_guard(rpos_cmp(Var, N, Op, Value)) -->
     identifier(Var), ws, "[", ws, integer_codes(NCodes), ws, "]", ws,
-    numeric_cmp_op(Op), ws, signed_integer_value(Value),
+    numeric_cmp_op(Op), ws, guard_rhs(Value),
     { NCodes \== [], number_codes(N, NCodes), N > 0 },
     !.
 forin_guard(rfield_cmp(N, Op, Value)) -->
     "$", integer_codes(NCodes), ws,
-    numeric_cmp_op(Op), ws, signed_integer_value(Value),
+    numeric_cmp_op(Op), ws, guard_rhs(Value),
     { NCodes \== [], number_codes(N, NCodes), N > 0 }.
+
+% A reader-guard right-hand side: a bare signed integer (an i64 comparison,
+% unchanged) or a signed decimal float literal (`3.5`, an f64 comparison,
+% carried as float_const(Mantissa, Denominator) like other float literals).
+% The float clauses are tried first; a bare integer has no `.` and falls
+% through. (String-literal comparisons are a follow-on.)
+guard_rhs(float_const(M, D)) -->
+    "-", float_literal_expr(float_const(M0, D)),
+    !,
+    { M is -M0 }.
+guard_rhs(FloatConst) -->
+    float_literal_expr(FloatConst),
+    !.
+guard_rhs(Value) -->
+    signed_integer_value(Value).
 
 actions([Action | Actions]) -->
     action(Action),

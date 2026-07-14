@@ -34,10 +34,13 @@ surface, the runtime ABI, and a phased rollout.
   validated on open (phase 8.7); and `use NAME` to attach to an existing
   store without re-`declare` (phase 8.8).
 - **Reader guards** (a `WHERE`-style row filter): any of the three row readers
-  may wrap its `print` in `if (COND) …`, where `COND` compares a column to an
-  integer literal — `r["col"] CMP int` (records), `r[N] CMP int` (positional),
-  or `$N CMP int` (anon). The six operators are `== != < <= > >=`; filtered
-  rows never reach the print block (`tests/test_plawk_reader_guards.pl`).
+  may wrap its `print` in `if (COND) …`, where `COND` compares a column to a
+  numeric literal — `r["col"] CMP N` (records), `r[N] CMP N` (positional),
+  or `$N CMP N` (anon). The six operators are `== != < <= > >=`. The literal is
+  an **integer** (i64 compare) or a **decimal float** (`3.5`, `-1.5`; the column
+  is read as a double and compared with `fcmp`), so fractional thresholds and
+  fractional column values work. Filtered rows never reach the print block
+  (`tests/test_plawk_reader_guards.pl`, `tests/test_plawk_guard_float.pl`).
 
 **Not yet:** `rows of`'s `unsafe` / inline check-or-rename spec;
 the `over prev` reader (phase 4
@@ -1107,12 +1110,14 @@ single-pass test before any driver surgery).
   (`tests/test_plawk_namespace.pl`); and `use ns.table` attaches to a
   multi-table store with no re-`declare`, reading each sub-DB's schema at build
   time (`tests/test_plawk_use_namespace.pl`). (8.10) **reader guards** — a
-  `WHERE`-style row filter on any of the three readers: `if (r["col"] CMP int)`
-  (records), `if (r[N] CMP int)` (positional), `if ($N CMP int)` (anon), for
-  the six operators `== != < <= > >=`. The guard lowers to an i64 field extract
-  + `icmp` + conditional branch, so filtered rows never reach the print block —
-  **LANDED** (`tests/test_plawk_reader_guards.pl`; a guard against a
-  non-integer literal / a boolean combination of guards remain a follow-on).
+  `WHERE`-style row filter on any of the three readers: `if (r["col"] CMP N)`
+  (records), `if (r[N] CMP N)` (positional), `if ($N CMP N)` (anon), for
+  the six operators `== != < <= > >=`. An integer literal lowers to an i64
+  field extract + `icmp`; a decimal float literal (`3.5`) to an f64 extract +
+  `fcmp` — filtered rows never reach the print block — **LANDED**
+  (`tests/test_plawk_reader_guards.pl`, `tests/test_plawk_guard_float.pl`; a
+  string-literal comparison and boolean `&&`/`||` combinations remain a
+  follow-on).
 
 ## 6. Open questions
 
