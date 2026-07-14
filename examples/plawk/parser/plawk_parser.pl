@@ -993,6 +993,15 @@ cache_decl(Path, Backend,
     !.
 cache_decl(Path, Backend, [cache_table(Name, Path, Backend)]) -->
     "declare", required_ws, identifier(Name).
+% `use NAME` (PLAWK_MULTIPASS_CACHE.md §3.7, phase 8.8): attach to an EXISTING
+% store without re-stating its columns -- the schema is taken from the store's
+% persisted header (§8.7). Parses to cache_use(NAME, Path, Backend); the plawk
+% build reads the store's schema and expands it into the same
+% cache_table/cache_schema a matching `declare NAME(cols)` would produce, so
+% the readers need no new machinery. Tried after `declare`; `use` is
+% unambiguous.
+cache_decl(Path, Backend, [cache_use(Name, Path, Backend)]) -->
+    "use", required_ws, identifier(Name).
 
 cache_col_list(Columns) -->
     "(", ws, cache_cols(Columns), ws, ")".

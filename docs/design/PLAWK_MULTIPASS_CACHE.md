@@ -581,11 +581,14 @@ a short sequence rather than a lone keyword:
   stored schema and the program's `declare(cols)` are present and differ, the
   open **fails cleanly** (`plawk: cache schema mismatch`, exit 3) instead of
   silently mis-reading field offsets. `tests/test_plawk_row_durable.pl`.
-- **(b) `use TABLE as r` (the `select`).** A reader that **attaches to an
-  existing store and takes its schema from (a)** — no re-`declare`. This is
-  the "query an existing database" surface the `declare`-everywhere model
-  lacks; today `declare NAME` already *opens* the existing table, so `use`
-  only adds value once the schema no longer has to be restated.
+- **(b) `use NAME` (the `select`). LANDED (file backend).** A backed-BEGIN
+  `use NAME` **attaches to an existing store and takes its schema from (a)** —
+  no re-`declare(cols)`. The plawk build reads the store's persisted schema
+  header at **compile time** and expands `use NAME` into the same
+  `cache_table` + `cache_schema` a matching `declare NAME(cols)` would produce,
+  so `records of` / `rows of` and the runtime schema check work unchanged. A
+  missing / schema-less store is a compile error.
+  `tests/test_plawk_use_table.pl`.
 - **(c) Multiple named tables per store.** With the namespace design (§3.5,
   LMDB named sub-DBs), a store holds several tables and `use ns.orders`
   selects among them. This is the point at which `select` becomes load-bearing
@@ -791,10 +794,12 @@ single-pass test before any driver surgery).
   named fields). Table lifecycle / selecting an existing table (§3.7):
   (8.7) persist the schema in the store + validate it on open (self-describing
   store, closes the schema-mismatch hole) — **LANDED (file backend)**
-  (`tests/test_plawk_row_durable.pl`); (8.8) `use TABLE as r` reader that
-  attaches to an existing store and takes its schema from 8.7 — the `select`
-  surface, no re-`declare`; (8.9) multiple named tables per store (namespaces
-  / LMDB named sub-DBs, §3.5) so `use ns.table` selects among them.
+  (`tests/test_plawk_row_durable.pl`); (8.8) `use NAME` that attaches to an
+  existing store and takes its schema from 8.7 (read at build time) — the
+  `select` surface, no re-`declare` — **LANDED (file backend)**
+  (`tests/test_plawk_use_table.pl`); (8.9) multiple named tables per store
+  (namespaces / LMDB named sub-DBs, §3.5, per `PLAWK_CACHE_BACKENDS.md`) so
+  `use ns.table` selects among them.
 
 ## 6. Open questions
 

@@ -98,7 +98,8 @@ build(File, Out0, KeepLL) :-
     ;   format(user_error, 'plawk: parse error in ~w~n', [File]),
         halt(2)
     ),
-    normalize_passes(File, Program0, Program),
+    normalize_passes(File, Program0, Program1),
+    resolve_cache_use(File, Program1, Program),
     (   Clauses == []
     ->  Preds = [user:plawk_cli_marker/0]
     ;   (   plawk_prolog_block_preds(Clauses, Preds)
@@ -254,6 +255,84 @@ normalize_passes(_File, program_passes(Begin, [pass(Rules)], End),
 % Two or more passes stay as program_passes and are lowered by the
 % dedicated multi-pass driver (see the compile step below).
 normalize_passes(_File, Program, Program).
+
+% `use NAME` expansion (PLAWK_MULTIPASS_CACHE.md §3.7, phase 8.8). A
+% cache_use(Name, Path, Backend) begin action means "attach to the existing
+% store, take its schema from the store". At BUILD time we read the store's
+% persisted schema header (§8.7) and rewrite the action into the same
+% cache_table + cache_schema a matching `declare NAME(cols)` would have
+% produced, so every downstream reader (records of / rows of) and the runtime
+% schema check work unchanged. The store must exist and carry a schema at
+% build time; otherwise it is a compile error.
+resolve_cache_use(File, program(B0, R, E), program(B, R, E)) :-
+    !, maplist(resolve_use_begin(File), B0, B).
+resolve_cache_use(File, program_passes(B0, P, E), program_passes(B, P, E)) :-
+    !, maplist(resolve_use_begin(File), B0, B).
+resolve_cache_use(_File, Program, Program).
+
+resolve_use_begin(File, begin(As0), begin(As)) :-
+    !,
+    findall(Xs, ( member(A, As0), expand_cache_use(File, A, Xs) ), Nested),
+    append(Nested, As).
+resolve_use_begin(_File, Clause, Clause).
+
+expand_cache_use(File, cache_use(Name, Path, Backend),
+        [cache_table(Name, Path, Backend), cache_schema(Name, Cols)]) :-
+    !,
+    (   store_schema_columns(Path, Cols)
+    ->  true
+    ;   format(user_error,
+            'plawk: cannot `use ~w` in ~w: store "~w" is missing or has no schema~n',
+            [Name, File, Path]),
+        halt(2)
+    ).
+expand_cache_use(_File, Action, [Action]).
+
+% Read a byte-valued row store's persisted schema header and parse it into
+% col(Name, Type) columns. Header layout (§8.7): [schemalen:i64 (LE)]
+% [schemabytes: "name:type,name:type,..."][count]... A missing file, a
+% non-positive/absurd length, or an unparseable schema fails (-> compile
+% error at the call site).
+store_schema_columns(Path, Cols) :-
+    atom_string(PathA, Path),
+    exists_file(PathA),
+    setup_call_cleanup(
+        open(PathA, read, S, [type(binary)]),
+        read_store_schema_string(S, SchemaStr),
+        close(S)),
+    parse_schema_string(SchemaStr, Cols),
+    Cols = [_ | _].
+
+read_store_schema_string(S, SchemaStr) :-
+    read_le_i64(S, SchemaLen),
+    SchemaLen > 0,
+    SchemaLen =< 1048576,               % sanity cap: not a schema-bearing store
+    read_n_bytes(S, SchemaLen, Bytes),
+    atom_codes(SchemaAtom, Bytes),
+    atom_string(SchemaAtom, SchemaStr).
+
+read_le_i64(S, V) :-
+    read_n_bytes(S, 8, [B0, B1, B2, B3, B4, B5, B6, B7]),
+    V is B0 \/ (B1 << 8) \/ (B2 << 16) \/ (B3 << 24)
+       \/ (B4 << 32) \/ (B5 << 40) \/ (B6 << 48) \/ (B7 << 56).
+
+read_n_bytes(_S, 0, []) :- !.
+read_n_bytes(S, N, [B | Bs]) :-
+    N > 0,
+    get_byte(S, B),
+    B \== -1,
+    N1 is N - 1,
+    read_n_bytes(S, N1, Bs).
+
+% "cust:str,amount:i64" -> [col(cust,str), col(amount,i64)].
+parse_schema_string(Str, Cols) :-
+    split_string(Str, ",", "", Parts),
+    maplist(parse_schema_col, Parts, Cols).
+parse_schema_col(Part, col(NameA, TypeA)) :-
+    split_string(Part, ":", "", [NameS, TypeS]),
+    atom_string(NameA, NameS),
+    atom_string(TypeA, TypeS),
+    memberchk(TypeA, [str, i64]).
 
 ll_path(Out, true, LLPath) :-
     !,
