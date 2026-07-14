@@ -3887,10 +3887,14 @@ get_path:
         [RuntimeGlobals, PassFnsIR, CombinedEntrySetupIR, CallsIR, FreeIR]).
 
 %% plawk_passes_tables(+Passes, -Tables)
-%  The assoc tables a multi-pass program shares (v1: zero or one). Discovered
-%  from the passes' actions: a counted key `arr[$k]++` or a print lookup
-%  `arr[$k]`; and from an `over TABLE` reader (phase 4), which names the table
-%  it iterates. A pure-scalar program (e.g. `pass { total += $2 }`) has none.
+%  The assoc tables a multi-pass program shares. Discovered from the passes'
+%  actions: a counted key `arr[$k]++` or a print lookup `arr[$k]`; and from an
+%  `over TABLE` / `records of` / `rows of` reader, which names the table it
+%  iterates. A pure-scalar program (e.g. `pass { total += $2 }`) has none.
+%  `sort/2` dedups and fixes a stable order, so each table's position is its
+%  `%plawk_assoc_table_<i>` index consistently across setup, params, and every
+%  pass's rule/reader planning. Multiple tables (phase 8.9, PR 1) share this
+%  one in-memory set; durable multi-table storage (named sub-DBs) is a later PR.
 plawk_passes_tables(Passes, Tables) :-
     findall(Name,
         ( member(pass(Rules), Passes), member(rule(_, Actions), Rules),
@@ -3901,9 +3905,7 @@ plawk_passes_tables(Passes, Tables) :-
         ; member(pass_rows_anon(var(Name), _ABody), Passes)
         ),
         Names0),
-    sort(Names0, Tables),
-    length(Tables, N),
-    N =< 1.
+    sort(Names0, Tables).
 
 plawk_action_table_name(inc_assoc(var(Name), _Key), Name).
 plawk_action_table_name(add_assoc(var(Name), _Key, _Delta), Name).
@@ -3914,12 +3916,21 @@ plawk_action_table_name(print(Fields), Name) :-
 
 %% plawk_multipass_table_params(+Tables, -ParamsIR, -ArgsIR)
 %  The LLVM parameter/argument suffix threading the shared table(s) into a
-%  pass function. Zero tables (pure scalar) -> empty; one table -> the
-%  %plawk_assoc_table_0 parameter the rule chain references.
-plawk_multipass_table_params([], '', '').
-plawk_multipass_table_params([_Table],
-    ', %WamAssocI64Table* %plawk_assoc_table_0',
-    ', %WamAssocI64Table* %plawk_assoc_table_0').
+%  pass function. Zero tables (pure scalar) -> empty; N tables -> one
+%  `%plawk_assoc_table_<i>` per table, indexed by position in the (sorted)
+%  Tables list, so every pass function receives the whole table set and a
+%  rule/reader references its table by that index. Param and arg strings are
+%  identical (same SSA names in main and in the callee signature).
+plawk_multipass_table_params(Tables, ParamsIR, ParamsIR) :-
+    plawk_multipass_table_params_parts(Tables, 0, Parts),
+    atomic_list_concat(Parts, '', ParamsIR).
+
+plawk_multipass_table_params_parts([], _, []).
+plawk_multipass_table_params_parts([_Table | Rest], Index, [Part | Parts]) :-
+    format(atom(Part),
+        ', %WamAssocI64Table* %plawk_assoc_table_~w', [Index]),
+    NextIndex is Index + 1,
+    plawk_multipass_table_params_parts(Rest, NextIndex, Parts).
 
 %% plawk_multipass_pass_plan(+Rules, +Tables, -AssocPlan)
 %  Plan a pass's rules against the (already discovered) shared table set, so
