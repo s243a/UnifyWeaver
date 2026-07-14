@@ -6054,9 +6054,9 @@ plawk_assoc_entry_setup_lines([_ArrayName | Rest], Index, CacheEntries) -->
     { format(atom(NewLine),
           '  %plawk_assoc_table_~w = call %WamAssocI64Table* @wam_assoc_i64_new(i64 4096)',
           [Index]),
-      ( memberchk(cache(Index, BytesLen, Backend, ValueKind, SchemaRef), CacheEntries)
-      ->  plawk_cache_fn(Backend, load, ValueKind, LoadFn),
-          plawk_cache_call_ir(LoadFn, Index, BytesLen, ValueKind, SchemaRef, LoadLine),
+      ( memberchk(cache(Index, BytesLen, Backend, ValueKind, SchemaRef, SubDb), CacheEntries)
+      ->  plawk_cache_fn(Backend, load, ValueKind, SubDb, LoadFn),
+          plawk_cache_call_ir(LoadFn, Index, BytesLen, ValueKind, SchemaRef, SubDb, LoadLine),
           Lines = [NewLine, LoadLine]
       ;   Lines = [NewLine]
       ),
@@ -6075,22 +6075,29 @@ plawk_program_cache_tables(BeginClauses, Triples) :-
         ),
         Triples).
 
-%% plawk_cache_fn(+Backend, +Op, +ValueKind, -FnName)
-%  The runtime function for a cache Op (load|commit) under a backend and value
-%  kind. A str-valued (row) table on the `file` backend uses the byte-valued
-%  helpers so the row bytes survive across runs (an i64 store would persist a
-%  process-local atom id). i64 tables use the plain file helpers. `lmdb` has
-%  both: a str-valued (row) table uses the byte-valued external C helpers
-%  (`_lmdb_str`, which store the row bytes + a validated schema entry), while
-%  an i64 table uses the plain `_lmdb` helpers.
-plawk_cache_fn(file, load, str, wam_cache_load_str) :- !.
-plawk_cache_fn(file, commit, str, wam_cache_commit_str) :- !.
-plawk_cache_fn(lmdb, load, str, wam_cache_load_lmdb_str) :- !.
-plawk_cache_fn(lmdb, commit, str, wam_cache_commit_lmdb_str) :- !.
-plawk_cache_fn(lmdb, load, _Kind, wam_cache_load_lmdb) :- !.
-plawk_cache_fn(lmdb, commit, _Kind, wam_cache_commit_lmdb) :- !.
-plawk_cache_fn(_File, load, _Kind, wam_cache_load).
-plawk_cache_fn(_File, commit, _Kind, wam_cache_commit).
+%% plawk_cache_fn(+Backend, +Op, +ValueKind, +SubDb, -FnName)
+%  The runtime function for a cache Op (load|commit) under a backend, value
+%  kind, and store mode (SubDb = `none` for a single-table store's default DB,
+%  or `subdb(_)` for a multi-table store, phase 8.9). A str-valued (row) table
+%  on the `file` backend uses the byte-valued helpers so the row bytes survive
+%  across runs (an i64 store would persist a process-local atom id). i64 tables
+%  use the plain file helpers. `lmdb` has both value kinds, and each in a
+%  single-table (`_lmdb` / `_lmdb_str`, unnamed default DB) or multi-table
+%  (`_lmdb_sub` / `_lmdb_str_sub`, a named sub-DB) form. The file backend is
+%  never multi-table (a compile error, checked earlier), so file never sees
+%  subdb(_).
+plawk_cache_fn(lmdb, load, str, subdb(_), wam_cache_load_lmdb_str_sub) :- !.
+plawk_cache_fn(lmdb, commit, str, subdb(_), wam_cache_commit_lmdb_str_sub) :- !.
+plawk_cache_fn(lmdb, load, _Kind, subdb(_), wam_cache_load_lmdb_sub) :- !.
+plawk_cache_fn(lmdb, commit, _Kind, subdb(_), wam_cache_commit_lmdb_sub) :- !.
+plawk_cache_fn(file, load, str, _Sub, wam_cache_load_str) :- !.
+plawk_cache_fn(file, commit, str, _Sub, wam_cache_commit_str) :- !.
+plawk_cache_fn(lmdb, load, str, _Sub, wam_cache_load_lmdb_str) :- !.
+plawk_cache_fn(lmdb, commit, str, _Sub, wam_cache_commit_lmdb_str) :- !.
+plawk_cache_fn(lmdb, load, _Kind, _Sub, wam_cache_load_lmdb) :- !.
+plawk_cache_fn(lmdb, commit, _Kind, _Sub, wam_cache_commit_lmdb) :- !.
+plawk_cache_fn(_File, load, _Kind, _Sub, wam_cache_load).
+plawk_cache_fn(_File, commit, _Kind, _Sub, wam_cache_commit).
 
 %% plawk_cache_entries(+Tables, +StrArrays, +Schemas, +Triples, -CacheEntries,
 %%     -PathGlobalsIR)
@@ -6104,7 +6111,8 @@ plawk_cache_fn(_File, commit, _Kind, wam_cache_commit).
 %  declared name absent from the plan (never used) is skipped. PathGlobalsIR
 %  carries the path/schema globals plus any lmdb backend declares in use.
 plawk_cache_entries(Tables, StrArrays, Schemas, Triples, CacheEntries, PathGlobalsIR) :-
-    findall(cache(Index, BytesLen, Backend, ValueKind, SchemaRef)-GroupIR,
+    plawk_multitable_paths(Triples, MultiPaths),
+    findall(cache(Index, BytesLen, Backend, ValueKind, SchemaRef, SubDb)-GroupIR,
         ( member(ct(Name, Path, Backend), Triples),
           nth0(Index, Tables, Name),
           ( memberchk(Name, StrArrays) -> ValueKind = str ; ValueKind = i64 ),
@@ -6117,26 +6125,73 @@ plawk_cache_entries(Tables, StrArrays, Schemas, Triples, CacheEntries, PathGloba
               format(atom(SchemaRef),
                   'getelementptr inbounds ([~w x i8], [~w x i8]* @.~w, i64 0, i64 0)',
                   [SBytes, SBytes, SGName]),
-              atomic_list_concat([PathGlobal, SchemaGlobal], '\n', GroupIR)
+              SchemaGlobals = [SchemaGlobal]
           ;   SchemaRef = 'null',
-              GroupIR = PathGlobal
-          )
+              SchemaGlobals = []
+          ),
+          % A multi-table LMDB store routes each table to its own named sub-DB
+          % (phase 8.9); the sub-DB name is the plawk table name. Single-table
+          % stores (and the file backend, which is never multi-table) use the
+          % unnamed default DB.
+          ( Backend == lmdb, memberchk(Path, MultiPaths)
+          ->  format(atom(SubGName), 'plawk_cache_subdb_~w', [Index]),
+              atom_string(Name, NameStr),
+              llvm_emit_c_string_global(SubGName, NameStr, SubGlobal, _SubLen, SubBytes),
+              format(atom(SubRef),
+                  'getelementptr inbounds ([~w x i8], [~w x i8]* @.~w, i64 0, i64 0)',
+                  [SubBytes, SubBytes, SubGName]),
+              SubDb = subdb(SubRef),
+              SubGlobals = [SubGlobal]
+          ;   SubDb = none,
+              SubGlobals = []
+          ),
+          append([[PathGlobal], SchemaGlobals, SubGlobals], GroupParts),
+          atomic_list_concat(GroupParts, '\n', GroupIR)
         ),
         Pairs),
     pairs_keys_values(Pairs, CacheEntries, Globals),
-    ( memberchk(cache(_, _, lmdb, _, _), CacheEntries)
-    ->  BaseLmdbDecls = ['declare void @wam_cache_load_lmdb(%WamAssocI64Table*, i8*)',
-                         'declare void @wam_cache_commit_lmdb(%WamAssocI64Table*, i8*)'],
-        ( memberchk(cache(_, _, lmdb, str, _), CacheEntries)
-        ->  StrLmdbDecls = ['declare void @wam_cache_load_lmdb_str(%WamAssocI64Table*, i8*, i8*)',
-                            'declare void @wam_cache_commit_lmdb_str(%WamAssocI64Table*, i8*, i8*)']
-        ;   StrLmdbDecls = []
-        ),
-        append(BaseLmdbDecls, StrLmdbDecls, LmdbDecls)
-    ;   LmdbDecls = []
-    ),
+    plawk_lmdb_decls(CacheEntries, LmdbDecls),
     append(Globals, LmdbDecls, AllGlobals),
     atomic_list_concat(AllGlobals, '\n', PathGlobalsIR).
+
+%% plawk_multitable_paths(+Triples, -MultiPaths)
+%  Store paths that carry two or more distinct table names -- i.e. multi-table
+%  stores, whose tables route to named sub-DBs. (A multi-table *file* store is
+%  rejected earlier as a compile error, so in practice these are lmdb.)
+plawk_multitable_paths(Triples, MultiPaths) :-
+    findall(Path,
+        ( member(ct(_, Path, _), Triples),
+          findall(N, member(ct(N, Path, _), Triples), Ns0),
+          sort(Ns0, Ns), Ns = [_, _ | _] ),
+        MultiPaths0),
+    sort(MultiPaths0, MultiPaths).
+
+%% plawk_lmdb_decls(+CacheEntries, -Decls)
+%  `declare`s for the external LMDB helpers actually referenced: the plain
+%  (unnamed-DB) i64/str helpers when any lmdb table is present, plus the
+%  named-sub-DB (`_sub`) helpers when a multi-table lmdb store is in use.
+plawk_lmdb_decls(CacheEntries, Decls) :-
+    ( memberchk(cache(_, _, lmdb, _, _, _), CacheEntries)
+    ->  Base = ['declare void @wam_cache_load_lmdb(%WamAssocI64Table*, i8*)',
+                'declare void @wam_cache_commit_lmdb(%WamAssocI64Table*, i8*)'],
+        ( memberchk(cache(_, _, lmdb, str, _, _), CacheEntries)
+        ->  Str = ['declare void @wam_cache_load_lmdb_str(%WamAssocI64Table*, i8*, i8*)',
+                   'declare void @wam_cache_commit_lmdb_str(%WamAssocI64Table*, i8*, i8*)']
+        ;   Str = []
+        ),
+        ( memberchk(cache(_, _, lmdb, i64, _, subdb(_)), CacheEntries)
+        ->  SubI = ['declare void @wam_cache_load_lmdb_sub(%WamAssocI64Table*, i8*, i8*)',
+                    'declare void @wam_cache_commit_lmdb_sub(%WamAssocI64Table*, i8*, i8*)']
+        ;   SubI = []
+        ),
+        ( memberchk(cache(_, _, lmdb, str, _, subdb(_)), CacheEntries)
+        ->  SubS = ['declare void @wam_cache_load_lmdb_str_sub(%WamAssocI64Table*, i8*, i8*, i8*)',
+                    'declare void @wam_cache_commit_lmdb_str_sub(%WamAssocI64Table*, i8*, i8*, i8*)']
+        ;   SubS = []
+        ),
+        append([Base, Str, SubI, SubS], Decls)
+    ;   Decls = []
+    ).
 
 %% plawk_schema_string(+Columns, -Str)
 %  Canonical schema string for a row table: `name:type,name:type,...`. Written
@@ -6146,18 +6201,32 @@ plawk_schema_string(Columns, Str) :-
                   format(atom(CS), '~w:~w', [Name, Type]) ), Parts),
     atomic_list_concat(Parts, ',', Str).
 
-%% plawk_cache_call_ir(+Fn, +Index, +BytesLen, +ValueKind, +SchemaRef, -Line)
-%  A load/commit call. The byte-valued (str) helpers -- both the file
-%  (`_str`) and lmdb (`_lmdb_str`) variants -- take an extra i8* schema
-%  argument (a getelementptr or null); the plain i64 / i64-lmdb helpers do not.
-plawk_cache_call_ir(Fn, Index, BytesLen, str, SchemaRef, Line) :-
+%% plawk_cache_call_ir(+Fn, +Index, +BytesLen, +ValueKind, +SchemaRef, +SubDb, -Line)
+%  A load/commit call. Four shapes by (value kind x store mode):
+%   - str, named sub-DB: (table, path, subname, schema)  -- lmdb multi-table
+%   - i64, named sub-DB: (table, path, subname)          -- lmdb multi-table
+%   - str, default DB:   (table, path, schema)           -- file / lmdb single
+%   - i64, default DB:   (table, path)                    -- file / lmdb single
+%  The byte-valued (str) helpers carry the i8* schema (a getelementptr or
+%  null); the named-sub-DB helpers carry the i8* sub-DB name before it.
+plawk_cache_call_ir(Fn, Index, BytesLen, str, SchemaRef, subdb(SubRef), Line) :-
+    !,
+    format(atom(Line),
+        '  call void @~w(%WamAssocI64Table* %plawk_assoc_table_~w, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_cache_path_~w, i64 0, i64 0), i8* ~w, i8* ~w)',
+        [Fn, Index, BytesLen, BytesLen, Index, SubRef, SchemaRef]).
+plawk_cache_call_ir(Fn, Index, BytesLen, _ValueKind, _SchemaRef, subdb(SubRef), Line) :-
+    !,
+    format(atom(Line),
+        '  call void @~w(%WamAssocI64Table* %plawk_assoc_table_~w, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_cache_path_~w, i64 0, i64 0), i8* ~w)',
+        [Fn, Index, BytesLen, BytesLen, Index, SubRef]).
+plawk_cache_call_ir(Fn, Index, BytesLen, str, SchemaRef, none, Line) :-
     ( Fn == wam_cache_load_str ; Fn == wam_cache_commit_str
     ; Fn == wam_cache_load_lmdb_str ; Fn == wam_cache_commit_lmdb_str ),
     !,
     format(atom(Line),
         '  call void @~w(%WamAssocI64Table* %plawk_assoc_table_~w, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_cache_path_~w, i64 0, i64 0), i8* ~w)',
         [Fn, Index, BytesLen, BytesLen, Index, SchemaRef]).
-plawk_cache_call_ir(Fn, Index, BytesLen, _ValueKind, _SchemaRef, Line) :-
+plawk_cache_call_ir(Fn, Index, BytesLen, _ValueKind, _SchemaRef, none, Line) :-
     format(atom(Line),
         '  call void @~w(%WamAssocI64Table* %plawk_assoc_table_~w, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_cache_path_~w, i64 0, i64 0))',
         [Fn, Index, BytesLen, BytesLen, Index]).
@@ -6168,9 +6237,9 @@ plawk_cache_call_ir(Fn, Index, BytesLen, _ValueKind, _SchemaRef, Line) :-
 %  still live), so the committed state is the completed pass.
 plawk_cache_commit_lines(CacheEntries, IR) :-
     findall(Line,
-        ( member(cache(Index, BytesLen, Backend, ValueKind, SchemaRef), CacheEntries),
-          plawk_cache_fn(Backend, commit, ValueKind, CommitFn),
-          plawk_cache_call_ir(CommitFn, Index, BytesLen, ValueKind, SchemaRef, Line)
+        ( member(cache(Index, BytesLen, Backend, ValueKind, SchemaRef, SubDb), CacheEntries),
+          plawk_cache_fn(Backend, commit, ValueKind, SubDb, CommitFn),
+          plawk_cache_call_ir(CommitFn, Index, BytesLen, ValueKind, SchemaRef, SubDb, Line)
         ),
         Lines),
     atomic_list_concat(Lines, '\n', IR).

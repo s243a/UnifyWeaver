@@ -245,31 +245,21 @@ lmdb_c_runtime_file(CFile) :-
     file_directory_name(TargetPl, Dir),
     directory_file_path(Dir, 'wam_cache_lmdb.c', CFile).
 
-% Phase 8.9 (PLAWK_MULTITABLE_IMPLEMENTATION_PLAN.md PR 2): when several
-% declared tables share ONE cache store path, apply the per-backend rule
+% Phase 8.9 (PLAWK_MULTITABLE_IMPLEMENTATION_PLAN.md): when several declared
+% tables share ONE cache store path, apply the per-backend rule
 % (PLAWK_CACHE_BACKENDS.md). A `file` store (class A) is single-table -- a
-% permanent compile error. An `lmdb` store (class B) will hold each table in
-% its own named sub-DB, but that routing is not wired yet (PR 3), so a
-% multi-table lmdb store is a clear "not yet" error rather than a silent
-% overwrite of every table into the one unnamed DB. In-memory tables (no cache
-% backing) are unaffected -- they are not cache_table entries, so a store with
-% one backed table plus bare in-memory tables is fine.
+% permanent compile error. An `lmdb` store (class B, PR 3) holds each table in
+% its own named sub-DB, so multi-table is allowed there. In-memory tables (no
+% cache backing) are unaffected -- they are not cache_table entries, so a store
+% with one backed table plus bare in-memory tables is fine.
 check_multitable_store(File, Program) :-
-    (   multitable_store(Program, Path, Backend, Names)
-    ->  ( Backend == file
-        ->  format(user_error,
-                'plawk: ~w declares multiple tables ~w in one file store "~w". \c
-                 The file backend is single-table (class A); use a `backend \c
-                 "lmdb"` store for multiple named tables.~n',
-                [File, Names, Path]),
-            halt(2)
-        ;   format(user_error,
-                'plawk: ~w declares multiple tables ~w in one ~w store "~w". \c
-                 Multiple named tables per store are not yet implemented for \c
-                 this backend (phase 8.9).~n',
-                [File, Names, Backend, Path]),
-            halt(2)
-        )
+    (   multitable_store(Program, Path, file, Names)
+    ->  format(user_error,
+            'plawk: ~w declares multiple tables ~w in one file store "~w". \c
+             The file backend is single-table (class A); use a `backend \c
+             "lmdb"` store for multiple named tables.~n',
+            [File, Names, Path]),
+        halt(2)
     ;   true
     ).
 

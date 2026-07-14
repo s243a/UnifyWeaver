@@ -26,10 +26,11 @@ driver rejects multi-table programs before storage is ever reached.
   two-`declare` program failed the driver match and the build reported
   *"uses multi-pass features outside the current multi-pass surface"*, before
   any cache/storage code ran.)
-- **One store path ≈ one table (storage).** Even once the driver accepts N
-  tables, the LMDB backend writes every table to the **unnamed** DB, so several
-  tables sharing a `cache("store.lmdb")` path overwrite each other on commit
-  (`PLAWK_MULTIPASS_CACHE.md` §3.7). Multi-table storage needs named sub-DBs.
+- **One store path ≈ one table (storage) — FIXED (PR 3).** A multi-table LMDB
+  store now routes each table to its own named sub-DB (`mdb_env_set_maxdbs` +
+  named `mdb_dbi_open`), so tables sharing a `cache("store.lmdb")` path are
+  isolated and durable. A multi-table *file* store stays a compile error (class
+  A, PR 2).
 
 Much of the plumbing was already list-shaped, which is why PR 1 was small: the
 setup/free helpers and `plawk_cache_entries/6` iterate the table list, and the
@@ -87,16 +88,26 @@ schema'd tables in one file store — now correctly an error — with a
 named-plus-bare mix.) Small and low-risk; it also fixes the confusing generic
 rejection.
 
-### PR 3 — LMDB named sub-DB storage routing
+### PR 3 — LMDB named sub-DB storage routing — **LANDED**
 
-The storage payoff. Add sub-DB-aware commit/load to `wam_cache_lmdb.c`
-(`…_lmdb_sub` / `…_lmdb_str_sub`, factored over a shared core taking a
-`const char *subname`, NULL = unnamed): `mdb_env_set_maxdbs` + a named
-`mdb_dbi_open` with `MDB_CREATE` on commit. Codegen routes a multi-table
-store's tables to their sub-DB helpers (single-table stores keep the unnamed
-path, so existing stores stay byte-compatible). Durable multi-table over LMDB,
-both i64 and row (`_str`) values. Test mirrors the durable-rows suites with two
-tables.
+The storage payoff. `wam_cache_lmdb.c` was refactored so each op has a core
+taking `const char *subname` (NULL = unnamed default DB); a shared
+`wam_cache_lmdb_open` sets `mdb_env_set_maxdbs` and opens the named
+`mdb_dbi_open` (`MDB_CREATE` on commit) when a subname is given. Public
+`…_lmdb_sub` / `…_lmdb_str_sub` entry points expose the named-sub-DB form; the
+existing `…_lmdb` / `…_lmdb_str` are the `subname = NULL` case, so single-table
+stores are byte-identical. The schema is stored under its distinguished key
+**inside each named sub-DB**, so every table is independently self-describing
+and validated. Codegen threads a `SubDb` field (`none` | `subdb(Ref)`) through
+the cache entries: `plawk_multitable_paths/2` marks paths with ≥2 tables, each
+such table gets a sub-DB-name global (the table name) and routes to the `_sub`
+helpers; `plawk_cache_fn/5`, `plawk_cache_call_ir/7`, and the decls gained the
+`SubDb` dimension. The bin/plawk gate now allows lmdb multi-table (only file
+stays an error). Tests: `tests/test_plawk_multitable_lmdb.pl` (two row tables
+durable across runs in separate sub-DBs; two i64 counter tables accumulating
+independently; per-sub-DB schema-mismatch → exit 3). The PR-2
+`lmdb_multitable_is_not_yet_error` test flips to `lmdb_multitable_builds_and_runs`.
+Durable multi-table over LMDB, both i64 and row values.
 
 ### PR 4 — `as ns` namespace + `ns.table` references (parser)
 
