@@ -108,6 +108,56 @@ test(while_runtime_accumulate_to_end, [condition(clang_available)]) :-
     assertion(Out == "6\n"),
     !.
 
+% GENERAL CONDITION (PR 3): the right side of a comparison may be another loop
+% variable, not just an integer -- `while (i < n)`.
+test(while_condition_var_bound, [condition(clang_available)]) :-
+    wdir(Dir),
+    Src = "{ n = 3; i = 0; while (i < n) { print i; i++ } }\n",
+    build_run(Dir, 'wcv', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "0\n1\n2\n"),
+    !.
+
+% `&&` combines comparisons (both must hold): `i < 5 && i < 3` stops at 3.
+test(while_condition_and, [condition(clang_available)]) :-
+    wdir(Dir),
+    Src = "{ i = 0; while (i < 5 && i < 3) { print i; i++ } }\n",
+    build_run(Dir, 'wca', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "0\n1\n2\n"),
+    !.
+
+% `||` combines comparisons (either may hold): `i < 2 || i < 3` runs while the
+% weaker bound holds, stopping at 3.
+test(while_condition_or, [condition(clang_available)]) :-
+    wdir(Dir),
+    Src = "{ i = 0; while (i < 2 || i < 3) { print i; i++ } }\n",
+    build_run(Dir, 'wco', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "0\n1\n2\n"),
+    !.
+
+% do-while with a variable bound.
+test(do_while_condition_var_bound, [condition(clang_available)]) :-
+    wdir(Dir),
+    Src = "{ n = 2; i = 0; do { print i; i++ } while (i < n) }\n",
+    build_run(Dir, 'dwcv', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "0\n1\n"),
+    !.
+
+% The general condition parses to and/or/cmp AST; a single comparison stays a
+% bare cmp (the PR 2 subset is unchanged).
+test(while_condition_ast_shapes) :-
+    plawk_parse_string("{ while (i < n && j > 0) { i++ } }\n",
+        program([], [rule(always,
+            [while_loop(and(cmp(var(i), lt, var(n)), cmp(var(j), gt, int(0))),
+                 [inc(var(i))])])], [])),
+    plawk_parse_string("{ while (i < 3) { i++ } }\n",
+        program([], [rule(always,
+            [while_loop(cmp(var(i), lt, int(3)), [inc(var(i))])])], [])),
+    !.
+
 % A program with no while loop is unaffected (no false trigger).
 test(non_while_program_builds, [condition(clang_available)]) :-
     wdir(Dir),

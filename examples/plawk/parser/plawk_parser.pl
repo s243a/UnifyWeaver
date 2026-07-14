@@ -1547,10 +1547,10 @@ action(Action) -->
 % the general action block, and the codegen (bin/plawk) rejects it with a clean
 % not-yet diagnostic until the loop runtime lands. The condition is a scalar
 % comparison for now; a general boolean condition is a follow-on.
-while_action(while_loop(cmp(var(V), Op, int(N)), Body)) -->
+while_action(while_loop(Cond, Body)) -->
     "while", identifier_boundary, ws,
     "(", ws,
-    identifier(V), ws, numeric_cmp_op(Op), ws, signed_integer_value(N), ws,
+    while_condition(Cond), ws,
     ")", ws,
     action_block(Body).
 
@@ -1559,13 +1559,50 @@ while_action(while_loop(cmp(var(V), Op, int(N)), Body)) -->
 % to do_while_loop(Body, cmp(var(V), Op, int(N))). Surface only, like `while`;
 % both share the same loop runtime (a later PR). Tried via its own action
 % clause; the leading `do` keyword distinguishes it.
-do_while_action(do_while_loop(Body, cmp(var(V), Op, int(N)))) -->
+do_while_action(do_while_loop(Body, Cond)) -->
     "do", identifier_boundary, ws,
     action_block(Body), ws,
     "while", identifier_boundary, ws,
     "(", ws,
-    identifier(V), ws, numeric_cmp_op(Op), ws, signed_integer_value(N), ws,
+    while_condition(Cond), ws,
     ")".
+
+% A loop condition: scalar comparisons (`VAR CMP int` or `VAR CMP VAR`) combined
+% with `&&` / `||`. `&&` binds tighter than `||` (awk precedence). A single
+% `VAR CMP int` still parses to the bare `cmp(...)` term, so the earlier runtime
+% is a strict subset. (PLAWK_CONTROL_FLOW_PLAN.md PR 3.)
+while_condition(Cond) -->
+    while_cond_and(First),
+    while_cond_or_rest(First, Cond).
+
+while_cond_or_rest(Acc, Cond) -->
+    ws, "||", ws, !,
+    while_cond_and(Next),
+    while_cond_or_rest(or(Acc, Next), Cond).
+while_cond_or_rest(Cond, Cond) -->
+    [].
+
+while_cond_and(Cond) -->
+    while_cmp(First),
+    while_cond_and_rest(First, Cond).
+
+while_cond_and_rest(Acc, Cond) -->
+    ws, "&&", ws, !,
+    while_cmp(Next),
+    while_cond_and_rest(and(Acc, Next), Cond).
+while_cond_and_rest(Cond, Cond) -->
+    [].
+
+% A scalar comparison: the left side is a loop variable; the right side is an
+% integer literal or another loop variable.
+while_cmp(cmp(var(V), Op, Rhs)) -->
+    identifier(V), ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
+
+while_cmp_rhs(int(N)) -->
+    signed_integer_value(N),
+    !.
+while_cmp_rhs(var(W)) -->
+    identifier(W).
 
 if_action(if(Pattern, ThenActions, ElseActions)) -->
     "if",
