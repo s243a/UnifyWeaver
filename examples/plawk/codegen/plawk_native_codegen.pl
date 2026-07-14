@@ -12958,6 +12958,22 @@ plawk_print_expr_output_ir(f64(FmtPrefix, PrintPrefix, ValueIR), Index, [FmtPtr,
         '  %~w = call i32 (i8*, ...) @printf(i8* %~w, double ~w)',
         [PrintVar, FmtVar, ValueIR]).
 
+% A string-literal print field: the setup already built a pointer to the
+% interned C string (%..._ptr); print it with "%s". This is what lets a
+% constant field appear in a print (`print "hi"`, `print $1, "x"`, and -- via
+% the print grammar's bare-integer-to-string lowering -- `print 1`). The
+% "%s" format global (@.plawk_surface_print_string) is in the driver's runtime
+% globals.
+plawk_print_expr_output_ir(string(Base, PtrIR), Index, [FmtPtr, PrintCall]) :-
+    format(atom(FmtVar), '~w_fmt_~w', [Base, Index]),
+    format(atom(PrintVar), 'printed_~w_~w', [Base, Index]),
+    format(atom(FmtPtr),
+        '  %~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0',
+        [FmtVar]),
+    format(atom(PrintCall),
+        '  %~w = call i32 (i8*, ...) @printf(i8* %~w, i8* ~w)',
+        [PrintVar, FmtVar, PtrIR]).
+
 plawk_print_expr_output_ir(case_slice(Mode, PrintBase, LenIR, PtrIR), _Index, [PrintCall]) :-
     llvm_emit_ascii_case_slice_print(Mode, PtrIR, LenIR, PrintBase, PrintCall).
 
