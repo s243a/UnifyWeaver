@@ -58,6 +58,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | EMIT-KOTLIN-3 ✅ | Multi-clause deterministic | Kotlin | M | done — T5/T4 no call (`cursor/emit-kotlin-multi-clause-f421`) |
 | EMIT-KOTLIN-4 ✅ | Last-call `execute` | Kotlin | M | done — tail execute (`cursor/emit-kotlin-execute-f421`) |
 | EMIT-KOTLIN-5 | Mid-body `call` | Kotlin | M | fib/ack / non-tail continuation |
+| BENCH-KOTLIN ✅ | Lowered vs interpreter timing | Kotlin | S | done — mostly no win (`cursor/bench-kotlin-f421`) |
 | BENCH-LLVM | Effective-distance bench row | LLVM | L | — |
 | BENCH-CPP | Effective-distance bench row | C++ | L | — |
 | BENCH-C | Effective-distance bench row | C | M | — |
@@ -602,7 +603,16 @@ fallback) to the three Tier-D targets. Reference small emitters:
 - **Lever:** Lowered emitters for early scaffolds  **Target:** Kotlin  **Size:** M  **Depends on:** EMIT-KOTLIN-4
 - **Goal:** Emit non-tail `call` with saved continuation / environment so fib/ack and non-tail reverse lower.
 - **Out of scope here:** cut, ITE/soft-cut, aggregates, multi-solution enumeration.
+- **Note from BENCH-KOTLIN:** today's `tryRun`+snapshot dispatch makes even tail `execute` slower than the interpreter for append; EMIT-KOTLIN-5 should cheapen dispatch (or accept correctness-only value) before expecting a win.
 - **Acceptance:** fib (or equivalent) LOWERS under `emit_mode(functions)` and matches interpreter; conformance remains green.
+
+### BENCH-KOTLIN: Measure lowered vs interpreter (in-process)
+- **Lever:** Effective-distance / perf evidence  **Target:** Kotlin  **Size:** S  **Depends on:** EMIT-KOTLIN-4
+- **Status:** ✅ **Landed** on `cursor/bench-kotlin-f421` (2026-07-14). See [`docs/WAM_KOTLIN_BENCH.md`](WAM_KOTLIN_BENCH.md).
+- **Goal:** Answer whether `emit_mode(functions)` pays off vs the bytecode interpreter — timing **execution**, not JVM/`gradle` startup.
+- **Design:** `benchmark_main(Pred, Iterations)` project option (warmup + median of timed `tryRun` batches). Harness `examples/benchmark/run_wam_kotlin_lowered_vs_interpreter.pl` builds each program in both modes, asserts `registerNative` under functions, reports speedup.
+- **Finding (honest):** lowering does **not** broadly win. Facts/T5/list-builder/append regress (~0.5–0.8×); T4 and member are modest wins (~1.07–1.19×). Likely `tryRun` snapshot cost on every native/recursive entry.
+- **Acceptance:** harness runnable; results table documented; unit + kotlin/kotlin_functions conformance stay green.
 
 ---
 

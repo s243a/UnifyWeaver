@@ -10,6 +10,7 @@ Companion docs:
 - [`WAM_SCALA_STATUS.md`](WAM_SCALA_STATUS.md),
   [`WAM_CLOJURE_STATUS.md`](WAM_CLOJURE_STATUS.md) — mature JVM routes.
 - [`WAM_HYBRID_TARGETS_COMPARISON.md`](WAM_HYBRID_TARGETS_COMPARISON.md).
+- [`WAM_KOTLIN_BENCH.md`](WAM_KOTLIN_BENCH.md) — interpreter vs lowered timing.
 
 ## Role
 
@@ -47,10 +48,20 @@ module in the fleet.
   Registered via `WamProgram.registerNative`. `functions` / `mixed`
   modes route lowerable preds through this path.
 
+## Perf signal (BENCH-KOTLIN)
+
+In-process `tryRun` timing (not JVM startup) — see
+[`WAM_KOTLIN_BENCH.md`](WAM_KOTLIN_BENCH.md). **Lowering does not broadly
+beat the interpreter** today: facts/T5/list-builder/append regress;
+member/T4 are modest wins (~1.1×). Recursive `execute` pays a
+`tryRun`+snapshot tax. Use that before prioritizing EMIT-KOTLIN-5 for
+speed.
+
 ## Gaps
 
 - **Mid-body `call`** — still declined (fib, ack with non-tail call).
-  Follow-up **EMIT-KOTLIN-5**.
+  Follow-up **EMIT-KOTLIN-5** (correctness); cheapen dispatch first if
+  the goal is performance.
 - **ITE/soft-cut, cut, aggregates** — not lowered.
 - **Native recursion depth:** `execute` uses the JVM call stack.
   Measured ~1000 peano-depth OK, ~2000 → `StackOverflowError` on the
@@ -64,7 +75,8 @@ module in the fleet.
 
 ## Path forward
 
-1. EMIT-KOTLIN-5: mid-body `call` with continuation (fib/ack).
+1. Cheapen native/recursive dispatch (snapshot-free same-pred execute)
+   if performance is the goal; else EMIT-KOTLIN-5 for correctness only.
 2. Optional: ITE/soft-cut lowering; ISO / kernels if Kotlin graduates
    beyond scaffold.
 
@@ -72,5 +84,4 @@ module in the fleet.
 
 Fleet-aligned snapshot; source-verified against `wam_kotlin_target.pl`,
 `wam_kotlin_lowered_emitter.pl`, and `tests/test_wam_kotlin_target.pl`
-(2026-07-13). Through EMIT-KOTLIN-4 (last-call execute); EMIT-KOTLIN-5
-next for mid-body call.
+(2026-07-14). Through EMIT-KOTLIN-4 + BENCH-KOTLIN.

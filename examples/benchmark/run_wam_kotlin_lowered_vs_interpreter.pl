@@ -141,12 +141,13 @@ run_case(OutDir, row(Name, InterpMs, LowerMs, Speedup, NativeOk, Status)) :-
     confirm_native(FunDir, NativeKeys, NativeOk),
     (   InterpOk == true, LowerOk == true, NativeOk == true,
         number(InterpMs), number(LowerMs), LowerMs > 0
-    ->  Speedup is InterpMs / LowerMs,
+    ->  Speedup0 is InterpMs / LowerMs,
+        format(atom(Speedup), '~2f', [Speedup0]),
         Status = ok
     ;   Speedup = nan,
         Status = fail
     ),
-    format('  interpreter median_ms=~w  lowered median_ms=~w  speedup=~w  native=~w  status=~w~n',
+    format('  interpreter median_ms=~2f  lowered median_ms=~2f  speedup=~w×  native=~w  status=~w~n',
            [InterpMs, LowerMs, Speedup, NativeOk, Status]).
 
 time_mode(Mode, Preds, BenchOpts, Dir, MedianMs, Ok) :-
