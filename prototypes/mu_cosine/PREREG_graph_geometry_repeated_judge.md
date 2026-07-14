@@ -43,6 +43,20 @@ for the frozen radius-three graph feature.  It does **not** make source regions 
 prompt, weak-component, and residual dependence may cross their boundaries.  See
 `REPORT_repeated_judge_source_regions.md`.
 
+**2026-07-13 dependence-aware bridge amendment (frozen before computing its exposure matrices):** retire hard
+three-hop cores as the proposed campaign construction and retain the full exclusive source regions.  Define a
+PSD region exposure Gram from normalized region-average cumulative-walk features, lift it through a
+deterministic cap-constrained exposure-aware greedy component allocation, and audit
+`C_rho=(1-rho)I+rho H E H.T` at `rho in {0,.025,.05,.10,.20}`.  The audit reports full-region four-endpoint
+capacity, exposure spectrum/effective rank, per-hop outside-region landing mass, and exact equal-mean
+design-effect/ESS diagnostics.
+It does not choose `K`, estimate residual covariance, set an ESS cutoff, claim power, or unlock history.
+Passing matrices become frozen inputs to a separate source-dependent full-procedure simulation; only its
+family-wise null/power gate may unlock the attempted-input identity inventory.  Exact candidates, realized
+exposure, source-atomic folds, and two-way prompt/source inference remain mandatory before candidate selection
+or spending.  The frozen construction and rejected alternatives are specified in
+`DESIGN_repeated_judge_source_dependence.md`.
+
 ## Question and experimental unit
 
 The question is whether an outcome-blind graph/semantic geometry predicts transferable cross-item conditional

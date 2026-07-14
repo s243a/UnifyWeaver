@@ -171,6 +171,13 @@ exact packability, prompt/position pilots, repeated judge collection, covariance
 square-root/QR/CUDA implementation.  `JointPosterior` remains the learned decision comparator; the QR
 conditioner remains the numerical implementation of a statistically promoted covariance model.
 
+**Subsequent result:** `REPORT_repeated_judge_source_dependence.md` retains these exclusive regions but replaces
+the failed cores with a PSD dependence bridge over full-region cumulative-walk landing profiles.  All
+`K={64,96,128}` pass its narrow two-corpus structural grid, without selecting a winner.  That later audit
+still unlocks nothing: its fixed matrices and registered allocations now feed a Stage-A source-dependent
+full-procedure null/power simulation.  Only a passing simulation may unlock attempted-input identities; exact
+post-exclusion candidate exposure and prompt incidence are then a separate Stage-B recheck.
+
 Verification passes 25 focused source-region/runner tests, 117 repeated-judge regressions, and 15 graph-
 geometry tests.  Python compilation and `git diff --check` are clean.  The multiprocessing repeated-judge and
 graph-geometry suites are run in separate pytest processes so their BLAS-runtime provenance is not affected by
