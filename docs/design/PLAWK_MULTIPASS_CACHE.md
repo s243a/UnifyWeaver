@@ -1068,7 +1068,13 @@ single-pass test before any driver surgery).
   query-driven reader (each solution a record, on the `call/1` + dynamic-DB
   machinery); document and (optionally) check that pass bodies remain
   deterministic; surface the closure-based "compute-once, reuse" pattern;
-  confirm commit-barrier snapshot semantics in a test.
+  confirm commit-barrier snapshot semantics in a test. **Planned** in
+  `PLAWK_QUERY_READER_IMPLEMENTATION_PLAN.md`: a code-grounded four-PR sequence.
+  The key finding is that the goal-call surface is single-solution only, so the
+  reader **materialises** the solution set (a `findall` collapse at the reader
+  boundary — bounded-multiplicity, `UNIFYWEAVER_LANGUAGE_PRINCIPLES.md`
+  Principle 1) and iterates it like `over TABLE`, rather than retaining live
+  choicepoints (which §1 forbids in the hot loop).
 
 - **Phase 7 — secondary indexes (§3.5).** `index TABLE by FIELD [unique]` on
   record-valued tables; unique lookups return one record; non-unique
