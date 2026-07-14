@@ -1359,12 +1359,19 @@ compile_execute_arith_builtin_to_rust(Code) :-
 compile_execute_io_builtin_to_rust(Code) :-
     Code = '    fn execute_io_builtin(&mut self, op: &str, _arity: usize) -> bool {
         match op {
-            "write/1" | "display/1" => {
-                // Both use Display for now. Standard Prolog differentiates them:
-                // write/1 suppresses quoting, display/1 uses functional notation.
+            "write/1" | "display/1" | "print/1" => {
+                // These share Display rendering for now. Standard Prolog
+                // differentiates write/1, display/1, and print/1.
                 if let Some(val) = self.get_reg_raw("A1") {
                     let derefed = self.deref_heap(&val);
                     print!("{}", derefed);
+                    self.pc += 1; true
+                } else { false }
+            }
+            "writeln/1" => {
+                if let Some(val) = self.get_reg_raw("A1") {
+                    let derefed = self.deref_heap(&val);
+                    println!("{}", derefed);
                     self.pc += 1; true
                 } else { false }
             }

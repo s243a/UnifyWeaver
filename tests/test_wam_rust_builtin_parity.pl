@@ -59,6 +59,9 @@ t_string_chars(Chars) :- string_chars(hi, Chars).
 :- dynamic t_string_code/1.
 t_string_code(Code) :- string_code(2, hello, Code).
 
+:- dynamic t_output_aliases/0.
+t_output_aliases :- print(alias), writeln(done).
+
 %% catch/throw + succ predicates (ISO meta-builtin Call fallback path).
 :- dynamic t_thrower/0.
 t_thrower :- throw(oops(42)).
@@ -150,6 +153,7 @@ test_builtin_parity_execution :-
              user:t_atomic/1, user:t_atomic_number/1,
              user:t_string_codes/1, user:t_string_chars/1,
              user:t_string_code/1,
+             user:t_output_aliases/0,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
              user:t_catch_nomatch/0, user:t_catch_nothrow/1,
@@ -171,6 +175,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_
     t_atomic_1, t_atomic_number_1,
     t_string_codes_1, t_string_chars_1,
     t_string_code_1,
+    t_output_aliases_0,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
     t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
     t_maplist_1, t_maplist_check_0, t_maplist_fail_0, t_include_1, t_exclude_1,
@@ -296,6 +301,12 @@ fn test_string_codes_chars_compiled() {
     let mut code_vm = vmnew();
     assert!(t_string_code_1(&mut code_vm, ub("Code")));
     assert_eq!(read_var(&code_vm, "Code"), i(101));
+}
+
+#[test]
+fn test_output_aliases_compiled() {
+    let mut vm = vmnew();
+    assert!(t_output_aliases_0(&mut vm));
 }
 
 #[test]
