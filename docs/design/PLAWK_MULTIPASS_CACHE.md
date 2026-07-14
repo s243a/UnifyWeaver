@@ -614,6 +614,49 @@ Ordering: (a) is the enabler and closes a correctness gap; (b) is the
 `select`/`use` reader; (c) generalises to many tables. Recorded as phases
 8.7–8.9 in §5.
 
+### 3.8 Nested pass blocks (future TODO — brief spec, not planned)
+
+Passes are a **flat, ordered sequence** today. A future extension is
+**nested** `pass` blocks — a pass inside a pass. Recorded here as a sketch,
+**not** on the near-term roadmap.
+
+The key observation is that a nested pass is essentially a **loop**: the inner
+block runs (repeatedly) within each step of the outer. That splits the idea
+into two concerns that should not be conflated:
+
+- **Iteration.** "Run this inner work N times" is what a general loop
+  statement expresses. plawk today has `for (k in arr)` (assoc iteration) but
+  **no C-style `while` / `for(;;)`** in the per-record body. A loop statement
+  is the more natural, lighter-weight primitive for iteration, and is the
+  likely near-term path if per-record looping is wanted — independent of the
+  multi-pass / interaction-block model. Nesting `pass` blocks *just to loop*
+  would be using the heavier construct for the lighter job.
+- **Nested interaction scope.** The distinctive thing a nested `pass` block
+  could add over a loop is its own *interaction scope* — potentially its own
+  reader (`over` / `records of`) and/or its own cache/store per outer
+  iteration. That is the only case where nesting earns its weight; it is
+  advanced and rare.
+
+**If pursued, the sketch:**
+- **Scoping / shadowing.** An inner block introduces a nested variable scope:
+  a name declared inside **shadows** the same name in the enclosing block
+  (as in most block-scoped languages).
+- **Reaching the parent.** A qualifier reads the enclosing block's namespace
+  when a name is shadowed — e.g. `parent.name` or `parent[name]` (spelling
+  TBD; `parent[…]` reads naturally alongside the existing `arr[key]`
+  subscript). Multiple levels would chain (`parent.parent.name`) or index by
+  depth.
+- **Determinism.** The invariant of §1 still holds inside every block: work
+  within the (possibly nested) iteration brackets is deterministic; nesting
+  adds scopes, not choicepoints.
+
+**Recommendation:** if a looping need arises first, add a `while` / loop
+statement to the per-record body (the general primitive) rather than nested
+`pass` blocks. Reserve nested `pass` blocks for genuine nested *interaction
+scopes* (own reader/store), and design the shadowing + `parent.` reference
+then. Neither is scheduled; this note exists so the surface stays coherent if
+either is taken up.
+
 ## 4. Runtime: the cache ABI (the first build step)
 
 The LLVM target has no persistence layer. We add a small **backend-agnostic
