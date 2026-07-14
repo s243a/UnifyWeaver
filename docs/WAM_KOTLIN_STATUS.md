@@ -51,11 +51,15 @@ module in the fleet.
 ## Perf signal (BENCH-KOTLIN)
 
 In-process `tryRun` timing (not JVM startup) — see
-[`WAM_KOTLIN_BENCH.md`](WAM_KOTLIN_BENCH.md). **Lowering does not broadly
-beat the interpreter** today: facts/T5/list-builder/append regress;
-member/T4 are modest wins (~1.1×). Recursive `execute` pays a
-`tryRun`+snapshot tax. Use that before prioritizing EMIT-KOTLIN-5 for
-speed.
+[`WAM_KOTLIN_BENCH.md`](WAM_KOTLIN_BENCH.md). One **reproducible** signal
+(3 runs): **deep tail-recursion regresses** — `append` is ~0.6–0.8×
+(lowered slower), worsening with depth, from the per-hop
+`tryRun`+snapshot tax on the recursive `execute` dispatch. Short,
+non-recursive cases (facts/T5/list-builder/member/T4) are
+**noise-dominated / inconclusive** at these batch sizes (they swing up to
+8× run-to-run). Fix follow-ups **KT-DISPATCH-SNAPSHOT-OPT** (the snapshot
+tax) and benchmark hardening before drawing more conclusions or
+prioritizing EMIT-KOTLIN-5 for speed.
 
 ## Gaps
 
