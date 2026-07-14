@@ -20,17 +20,25 @@ clang_available :-
 test(functions_desugar_to_prolog_clauses) :-
     plawk_parse_source("BEGIN { BINFMT = \"i64\" }\nfunction f(a, b) { return a + b * 2 }\n{ n++ }\nEND { print n }\n",
         _, [Clause]),
-    % awk precedence: * binds tighter than +
-    assertion(Clause = (f(_A, _B, R) :- R is _ + _ * 2)),
+    % auto-coerce prefixes the body with per-param numeric coercion goals; the
+    % final conjunct is the arithmetic. awk precedence: * binds tighter than +.
+    Clause = (f(_A, _B, R) :- Body),
+    fn_body_last(Body, (R is Arith)),
+    assertion(Arith = _ + _ * 2),
     Clause = (f(3, 4, Result) :- Goal),
     call(Goal),
     assertion(Result =:= 11).
 
 test(percent_maps_to_mod_and_parens_group) :-
     plawk_parse_source("BEGIN { BINFMT = \"i64\" }\nfunction g(a, b) { return (a + b) % 7 }\n{ n++ }\nEND { print n }\n",
-        _, [(g(A, B, R) :- R is Goal)]),
-    assertion(Goal == mod(A + B, 7)),
-    ( A = 5, B = 9, V is Goal, assertion(V =:= 0) ).
+        _, [Clause]),
+    Clause = (g(_A, _B, R) :- Body),
+    fn_body_last(Body, (R is Goal)),
+    % % maps to mod and the parens group the sum: mod(_+_, 7)
+    assertion(Goal = mod(_ + _, 7)),
+    Clause = (g(5, 9, V) :- CallGoal),
+    call(CallGoal),
+    assertion(V =:= 0).
 
 test(function_rejections) :-
     % identifiers must be parameters
@@ -49,9 +57,54 @@ test(surface_functions_mix_with_prolog_blocks) :-
     Src = "@prolog\nplawk_fnt_hot(X) :- X > 10.\n@end\nBEGIN { BINFMT = \"i64 f64\" }\nfunction plawk_fnt_twice(a) { return a * 2 }\nplawk_fnt_hot($1) { s += plawk_fnt_twice($1) }\nEND { print s }\n",
     run_fn_smoke(Src, [rec(3, 0.25), rec(20, 0.25), rec(11, 0.25)], "62\n").
 
+% --- auto-coerce (awk semantics): a function called on TEXT fields -----------
+% In text mode (no BINFMT) `$1` is an atom. awk auto-coerces a value used
+% numerically, so `print dbl($1)` must coerce the field to a number before the
+% arithmetic. The synthesized clause wraps each param in
+% `(number(H) -> V = H ; atom_number(H, V))`, so text fields Just Work.
+
+test(auto_coerce_unary_text_field) :-
+    Src = "function dbl(x) { return x * 2 }\n{ print dbl($1) }\n",
+    build_run_text('acdbl', Src, "5\n10\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "10\n20\n").
+
+test(auto_coerce_binary_text_fields) :-
+    Src = "function add(a, b) { return a + b }\n{ print add($1, $2) }\n",
+    build_run_text('acadd', Src, "5 7\n10 23\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "12\n33\n").
+
 :- end_tests(plawk_functions).
 
 % --- helpers ---------------------------------------------------------------
+
+% Peel a body conjunction down to its final conjunct.
+fn_body_last((_, Rest), Last) :- !, fn_body_last(Rest, Last).
+fn_body_last(Goal, Goal).
+
+% Build a text-mode plawk program via the CLI and run it on Input (stdin),
+% capturing stdout. Used for the auto-coerce end-to-end checks.
+build_run_text(Name, Src, Input, Out, RunStatus) :-
+    tmp_root(Root),
+    directory_file_path(Root, 'uw_plawk_functions', Dir),
+    ( exists_directory(Dir) -> true ; make_directory_path(Dir) ),
+    directory_file_path(Dir, Name, Prog0),
+    atom_concat(Prog0, '.plawk', Prog),
+    setup_call_cleanup(open(Prog, write, S, [encoding(utf8)]),
+        write(S, Src), close(S)),
+    atom_concat(Prog0, '_bin', Bin),
+    process_create(path(swipl),
+        ['examples/plawk/bin/plawk', build, Prog, '-o', Bin],
+        [stdout(null), stderr(null), process(BPid)]),
+    process_wait(BPid, exit(0)),
+    process_create(Bin, [],
+        [stdin(pipe(In)), stdout(pipe(RS)), stderr(std), process(RPid)]),
+    format(In, "~w", [Input]),
+    close(In),
+    read_string(RS, _, Out),
+    close(RS),
+    process_wait(RPid, exit(RunStatus)).
 
 write_i64_le(Out, V) :-
     V64 is V /\ 0xFFFFFFFFFFFFFFFF,
