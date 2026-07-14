@@ -29,8 +29,8 @@ surface, the runtime ABI, and a phased rollout.
   `TABLE[$k] = $0` and `TABLE[$k] = row($a, $b)`; readers `records of TABLE
   as r` (`r["col"]`, by schema name), `rows of TABLE as r` (`r[N]`, by
   position), and `rows of TABLE` (no `as` → awk-native `$N`); column
-  arithmetic in f64 (`r["amt"] / 2`); durable rows on the file backend (row
-  bytes persisted, phase 8.4); self-describing store — schema persisted and
+  arithmetic in f64 (`r["amt"] / 2`); durable rows on the file **and LMDB**
+  backends (row bytes persisted, phase 8.4); self-describing store — schema persisted and
   validated on open (phase 8.7); and `use NAME` to attach to an existing
   store without re-`declare` (phase 8.8).
 - **Reader guards** (a `WHERE`-style row filter): any of the three row readers
@@ -39,9 +39,10 @@ surface, the runtime ABI, and a phased rollout.
   or `$N CMP int` (anon). The six operators are `== != < <= > >=`; filtered
   rows never reach the print block (`tests/test_plawk_reader_guards.pl`).
 
-**Not yet:** durable rows over the
-LMDB backend; `rows of`'s `unsafe` / inline check-or-rename spec; multiple
-named tables per store (phase 8.9); the `over prev` reader (phase 4
+**Not yet:** `use NAME` over an LMDB store (the build-time schema resolver
+reads the file-backend header, not the LMDB schema key — a follow-on; `declare`
+works over LMDB today); `rows of`'s `unsafe` / inline check-or-rename spec;
+multiple named tables per store (phase 8.9); the `over prev` reader (phase 4
 follow-on); the query reader (phase 6); `eager` / secondary indexes;
 string-literal print fields. Future sketches: nested pass blocks (§3.8),
 `while`/loop statements (§3.8), views (§3.9), contained non-determinism / a
@@ -524,14 +525,19 @@ TABLE as k`, or `records of` / `rows of`). Field-wise writes
 
 **In-run and durable.** A row value is an atom **id** (process-local), so the
 plain i64 cache — which persists the id — cannot restore a row in a fresh
-process. On the **file** backend a str-valued (row) table therefore commits
-the value **bytes** (`@wam_cache_commit_str`) and re-interns them on load
-(`@wam_cache_load_str`), so rows are **durable across runs** (phase 8.4,
-`tests/test_plawk_row_durable.pl`): a reader pass in a later run sees rows a
-prior run committed. Keys stay i64 ids (content-stable interning reproduces
-them; readers only iterate, and a re-writing pass re-interns the same key).
-Durable str values over the **LMDB** backend remain a follow-on (an lmdb row
-table currently rides the i64 lmdb path, i.e. in-run only).
+process. A str-valued (row) table therefore commits the value **bytes** and
+re-interns them on load, so rows are **durable across runs** (phase 8.4). This
+holds on **both** backends: the file backend uses `@wam_cache_commit_str` /
+`@wam_cache_load_str` (`tests/test_plawk_row_durable.pl`), and the **LMDB**
+backend uses `wam_cache_commit_lmdb_str` / `wam_cache_load_lmdb_str`
+(`tests/test_plawk_row_durable_lmdb.pl`), which `mdb_put` the row bytes under
+the i64 key and store the declared schema under a distinguished non-8-byte key
+(validated on open; data rows are skipped-by-size). A reader pass in a later
+run sees rows a prior run committed. Keys stay i64 ids (content-stable
+interning reproduces them; readers only iterate, and a re-writing pass
+re-interns the same key). One gap remains on LMDB: `use NAME` (attach without
+re-`declare`) needs a build-time resolver that reads the LMDB schema key —
+`declare` works over LMDB today.
 
 **Phasing** (each its own PR):
 1. **Schema surface** — `declare NAME(col type, …)` parses and carries a row
@@ -545,10 +551,12 @@ table currently rides the i64 lmdb path, i.e. in-run only).
    that field of the stored row; an unknown column is unsupported (clean
    compile-time failure). In-run (rides the row-capture writer's storage).
 4. **Byte-valued cache storage** — durable rows across runs (store row bytes,
-   not the id). **LANDED (file backend)** (`tests/test_plawk_row_durable.pl`):
-   a str-valued (row) table on the file backend commits the value BYTES
-   (`@wam_cache_commit_str`) and re-interns them on load
-   (`@wam_cache_load_str`), so a row committed by one run is read by a later
+   not the id). **LANDED (file + LMDB backends)**
+   (`tests/test_plawk_row_durable.pl`, `tests/test_plawk_row_durable_lmdb.pl`):
+   a str-valued (row) table commits the value BYTES and re-interns them on load
+   — the file backend via `@wam_cache_commit_str` / `@wam_cache_load_str`, LMDB
+   via `wam_cache_commit_lmdb_str` / `wam_cache_load_lmdb_str` — so a row
+   committed by one run is read by a later
    run — proven with a reader-pass-then-writer program run twice. Keys stay
    i64 ids (content-stable interning reproduces them). Durable str values over
    the **LMDB** backend remain a follow-on (an lmdb row table currently rides
@@ -1071,9 +1079,12 @@ single-pass test before any driver surgery).
   TABLE` — **LANDED** (`tests/test_plawk_row_capture.pl`); (8.3) the safe
   `records of TABLE as r` reader with name-only `r["col"]` decode by schema —
   **LANDED** (`tests/test_plawk_records_reader.pl`); (8.4) byte-valued cache
-  storage for durable rows across runs — **LANDED (file backend)**
-  (`tests/test_plawk_row_durable.pl`; LMDB durable rows are a follow-on);
-  (8.5) the positional `rows of`
+  storage for durable rows across runs — **LANDED (file + LMDB backends)**
+  (`tests/test_plawk_row_durable.pl` for the file backend,
+  `tests/test_plawk_row_durable_lmdb.pl` for LMDB via
+  `wam_cache_{commit,load}_lmdb_str` — schema stored under a distinguished key
+  and validated on open; `use NAME` over an LMDB store still awaits a
+  build-time LMDB schema resolver); (8.5) the positional `rows of`
   reader (`r[N]`, no schema) — **LANDED**
   (`tests/test_plawk_rows_reader.pl`; its `unsafe` / inline check-or-rename
   spec remain a follow-on); (8.6) richer row producers (`row(...)` /
