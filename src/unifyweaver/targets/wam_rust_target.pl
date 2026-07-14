@@ -682,6 +682,8 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                 } else if p == "read_term/2" {
                     let options = self.get_reg_raw("A2");
                     self.execute_read_term_builtin(options.as_ref())
+                } else if p == "atomic/1" {
+                    self.execute_builtin(p, *_arity)
                 } else if self.foreign_predicates.contains(p) {
                     self.cp = self.pc + 1;
                     if self.execute_foreign_predicate(p, *_arity) {
@@ -765,6 +767,11 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
                 } else if p == "read_term/2" {
                     let options = self.get_reg_raw("A2");
                     if self.execute_read_term_builtin(options.as_ref()) {
+                        self.pc = self.cp;
+                        true
+                    } else { false }
+                } else if p == "atomic/1" {
+                    if self.execute_builtin(p, 1) {
                         self.pc = self.cp;
                         true
                     } else { false }
@@ -1374,6 +1381,12 @@ compile_execute_type_builtin_to_rust(Code) :-
                 "integer/1" => matches!(val, Value::Integer(_)),
                 "float/1" => matches!(val, Value::Float(_)),
                 "number/1" => val.is_number(),
+                "atomic/1" => {
+                    let derefed = self.deref_heap(&self.deref_var(&val));
+                    matches!(&derefed,
+                        Value::Atom(_) | Value::Integer(_) | Value::Float(_) | Value::Bool(_))
+                        || matches!(&derefed, Value::List(items) if items.is_empty())
+                }
                 "compound/1" => val.is_compound(),
                 "var/1" => val.is_unbound(),
                 "nonvar/1" => !val.is_unbound(),
