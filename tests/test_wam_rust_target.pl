@@ -451,6 +451,7 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, '!/0'),
         sub_string(S, _, _, _, '"write/1" | "display/1" | "print/1"'),
         sub_string(S, _, _, _, '"writeln/1"'),
+        sub_string(S, _, _, _, '"tab/1"'),
         sub_string(S, _, _, _, 'print!("{}", derefed)'),
         sub_string(S, _, _, _, 'nl/0'),
         sub_string(S, _, _, _, 'atom/1'),

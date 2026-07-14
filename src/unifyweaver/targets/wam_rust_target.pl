@@ -1375,6 +1375,26 @@ compile_execute_io_builtin_to_rust(Code) :-
                     self.pc += 1; true
                 } else { false }
             }
+            "tab/1" => {
+                let mut remaining = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(n)) if n >= 0 => match usize::try_from(n) {
+                        Ok(count) => count,
+                        Err(_) => return false,
+                    },
+                    _ => return false,
+                };
+                let spaces = [b'' ''; 64];
+                let mut stdout = std::io::stdout().lock();
+                while remaining > 0 {
+                    let count = remaining.min(spaces.len());
+                    if std::io::Write::write_all(&mut stdout, &spaces[..count]).is_err() {
+                        return false;
+                    }
+                    remaining -= count;
+                }
+                self.pc += 1; true
+            }
             "nl/0" => { println!(); self.pc += 1; true }
             _ => false,
         }
