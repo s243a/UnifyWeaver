@@ -4164,17 +4164,29 @@ rec_after:
 
 %% plawk_records_guard_ir(+GuardPlan, +FieldSep, -IR)
 %  The transition out of rec_body: unguarded readers fall straight into
-%  rec_print; a guard extracts its column as i64 (@wam_atom_field_i64_value on
-%  the row %Value), compares to the constant, and branches to rec_print or
-%  skips the row (rec_body_done).
+%  rec_print; a guard extracts its column and compares to the constant, then
+%  branches to rec_print or skips the row (rec_body_done). A bare-integer RHS
+%  extracts the column as i64 (@wam_atom_field_i64_value) and uses icmp; a float
+%  literal (float_const, e.g. `3.5`) extracts it as double
+%  (@wam_atom_field_f64_value) and uses fcmp against the exact decimal ratio.
 plawk_records_guard_ir(none, _FieldSep, '  br label %rec_print').
 plawk_records_guard_ir(guard(ColIndex, Op, Value), FieldSep, IR) :-
+    integer(Value),
+    !,
     plawk_icmp_pred(Op, Pred),
     format(atom(IR),
 '  %rec_gv = call i64 @wam_atom_field_i64_value(%Value %rec_row_v, i64 ~w, i8 ~w)
   %rec_gcmp = icmp ~w i64 %rec_gv, ~w
   br i1 %rec_gcmp, label %rec_print, label %rec_body_done',
         [ColIndex, FieldSep, Pred, Value]).
+plawk_records_guard_ir(guard(ColIndex, Op, float_const(M, D)), FieldSep, IR) :-
+    plawk_fcmp_pred(Op, Pred),
+    format(atom(IR),
+'  %rec_gcst = fdiv double ~w.0, ~w.0
+  %rec_gv = call double @wam_atom_field_f64_value(%Value %rec_row_v, i64 ~w, i8 ~w)
+  %rec_gcmp = fcmp ~w double %rec_gv, %rec_gcst
+  br i1 %rec_gcmp, label %rec_print, label %rec_body_done',
+        [M, D, ColIndex, FieldSep, Pred]).
 
 % Surface comparison op -> signed LLVM icmp predicate.
 plawk_icmp_pred(eq, eq).
@@ -4183,6 +4195,15 @@ plawk_icmp_pred(lt, slt).
 plawk_icmp_pred(le, sle).
 plawk_icmp_pred(gt, sgt).
 plawk_icmp_pred(ge, sge).
+
+% Surface comparison op -> ordered LLVM fcmp predicate (row values are finite,
+% so ordered comparisons are correct; a NaN column fails every guard).
+plawk_fcmp_pred(eq, oeq).
+plawk_fcmp_pred(ne, one).
+plawk_fcmp_pred(lt, olt).
+plawk_fcmp_pred(le, ole).
+plawk_fcmp_pred(gt, ogt).
+plawk_fcmp_pred(ge, oge).
 
 %% plawk_records_col_lines(+FieldPlans, +FieldSep, +OutputSep, +PrintIndex)//
 %  Per-field print for the row readers: a separator before each field after
