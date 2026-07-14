@@ -50,6 +50,12 @@ t_atomic(X) :- atomic(X).
 :- dynamic t_atomic_number/1.
 t_atomic_number(X) :- atomic(X), number(X).
 
+:- dynamic t_string_codes/1.
+t_string_codes(Codes) :- string_codes(hello, Codes).
+
+:- dynamic t_string_chars/1.
+t_string_chars(Chars) :- string_chars(hi, Chars).
+
 %% catch/throw + succ predicates (ISO meta-builtin Call fallback path).
 :- dynamic t_thrower/0.
 t_thrower :- throw(oops(42)).
@@ -139,6 +145,7 @@ test_builtin_parity_execution :-
             [user:t_between/1, user:t_msort/1, user:t_sort/1,
              user:t_concat_split/2, user:t_select/2,
              user:t_atomic/1, user:t_atomic_number/1,
+             user:t_string_codes/1, user:t_string_chars/1,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
              user:t_catch_nomatch/0, user:t_catch_nothrow/1,
@@ -158,6 +165,7 @@ use builtin_parity_test::state::WamState;
 use builtin_parity_test::value::Value;
 use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_select_2,
     t_atomic_1, t_atomic_number_1,
+    t_string_codes_1, t_string_chars_1,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
     t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
     t_maplist_1, t_maplist_check_0, t_maplist_fail_0, t_include_1, t_exclude_1,
@@ -267,6 +275,18 @@ fn test_atomic_compiled() {
     assert!(t_atomic_number_1(&mut non_tail_ok_vm, i(42)));
     let mut non_tail_fail_vm = vmnew();
     assert!(!t_atomic_number_1(&mut non_tail_fail_vm, a("x")));
+}
+
+#[test]
+fn test_string_codes_chars_compiled() {
+    let mut codes_vm = vmnew();
+    assert!(t_string_codes_1(&mut codes_vm, ub("Codes")));
+    assert_eq!(read_var(&codes_vm, "Codes"),
+        Value::List(vec![i(104), i(101), i(108), i(108), i(111)]));
+
+    let mut chars_vm = vmnew();
+    assert!(t_string_chars_1(&mut chars_vm, ub("Chars")));
+    assert_eq!(read_var(&chars_vm, "Chars"), Value::List(vec![a("h"), a("i")]));
 }
 
 #[test]
@@ -611,6 +631,20 @@ fn test_atom_text_ops() {
     let (ok6, vm6) = call2("atom_chars/2", ub("A"), Value::List(vec![a("h"), a("i")]));
     assert!(ok6);
     assert_eq!(read_var(&vm6, "A"), a("hi"));
+    let (string_codes_ok, string_codes_vm) = call2("string_codes/2", a("hi"), ub("Codes"));
+    assert!(string_codes_ok);
+    assert_eq!(read_var(&string_codes_vm, "Codes"), Value::List(vec![i(104), i(105)]));
+    let (string_codes_rev_ok, string_codes_rev_vm) = call2(
+        "string_codes/2", ub("String"), Value::List(vec![i(111), i(107)]));
+    assert!(string_codes_rev_ok);
+    assert_eq!(read_var(&string_codes_rev_vm, "String"), a("ok"));
+    let (string_chars_ok, string_chars_vm) = call2("string_chars/2", a("hi"), ub("Chars"));
+    assert!(string_chars_ok);
+    assert_eq!(read_var(&string_chars_vm, "Chars"), Value::List(vec![a("h"), a("i")]));
+    let (string_chars_rev_ok, string_chars_rev_vm) = call2(
+        "string_chars/2", ub("String"), Value::List(vec![a("o"), a("k")]));
+    assert!(string_chars_rev_ok);
+    assert_eq!(read_var(&string_chars_rev_vm, "String"), a("ok"));
     let (ok7, vm7) = call2("upcase_atom/2", a("aBc"), ub("U"));
     assert!(ok7);
     assert_eq!(read_var(&vm7, "U"), a("ABC"));
