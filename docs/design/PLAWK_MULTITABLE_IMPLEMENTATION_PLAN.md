@@ -66,18 +66,26 @@ params to one `%plawk_assoc_table_<i>` per table — indexed by position in the
 sorted list, so setup / params / per-pass planning stay consistent — is the
 whole change. Every pass function now takes the full table set; a rule or reader
 references its table by index. `tests/test_plawk_multitable.pl`: two bare
-(schema-less) row tables with no cache; two schema'd `records of` tables in one
-store; a mixed i64-counter + row program; three row tables. The full plawk
-row/cache suite stays green (N=1 lowers exactly as before — the single-table
-clause is just the N=1 case of the general one). No storage, no new syntax.
+(schema-less) row tables with no cache; a schema'd `records of` table alongside
+a bare positional table; a mixed i64-counter + row program; three row tables.
+The full plawk row/cache suite stays green (N=1 lowers exactly as before — the
+single-table clause is just the N=1 case of the general one). No storage, no new
+syntax.
 
-### PR 2 — Per-store table grouping + class-A compile error
+### PR 2 — Per-store table grouping + class-A compile error — **LANDED**
 
-Compile-time bookkeeping the storage step needs: group cache tables by store
-path; when a store has ≥2 tables, mark it multi-table and assign each table its
-sub-DB name (the table name). On the **file** backend, a multi-table store is a
-clean compile error citing the class-A rule (replacing the generic driver
-rejection). Small, low-risk, and it fixes the confusing error today.
+`check_multitable_store/2` in `examples/plawk/bin/plawk` groups declared cache
+tables by store path; when a path carries ≥2 distinct table names it applies the
+backend rule (`PLAWK_CACHE_BACKENDS.md`): a **file** store (class A) is
+single-table — a permanent compile error pointing at `backend "lmdb"`; an
+**lmdb** store is a clear *"not yet"* error (its named-sub-DB routing is PR 3)
+rather than a silent overwrite of every table into the one unnamed DB. In-memory
+tables (no `cache_table` entry) are untouched, so multiple bare tables, or one
+backed table plus bare ones, still build. `tests/test_plawk_multitable_store.pl`
+covers all four cases. (Note: this replaced the PR-1 test that had put two
+schema'd tables in one file store — now correctly an error — with a
+named-plus-bare mix.) Small and low-risk; it also fixes the confusing generic
+rejection.
 
 ### PR 3 — LMDB named sub-DB storage routing
 

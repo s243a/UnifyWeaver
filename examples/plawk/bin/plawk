@@ -100,6 +100,7 @@ build(File, Out0, KeepLL) :-
     ),
     normalize_passes(File, Program0, Program1),
     resolve_cache_use(File, Program1, Program),
+    check_multitable_store(File, Program),
     (   Clauses == []
     ->  Preds = [user:plawk_cli_marker/0]
     ;   (   plawk_prolog_block_preds(Clauses, Preds)
@@ -243,6 +244,53 @@ lmdb_c_runtime_file(CFile) :-
     module_property(wam_llvm_target, file(TargetPl)),
     file_directory_name(TargetPl, Dir),
     directory_file_path(Dir, 'wam_cache_lmdb.c', CFile).
+
+% Phase 8.9 (PLAWK_MULTITABLE_IMPLEMENTATION_PLAN.md PR 2): when several
+% declared tables share ONE cache store path, apply the per-backend rule
+% (PLAWK_CACHE_BACKENDS.md). A `file` store (class A) is single-table -- a
+% permanent compile error. An `lmdb` store (class B) will hold each table in
+% its own named sub-DB, but that routing is not wired yet (PR 3), so a
+% multi-table lmdb store is a clear "not yet" error rather than a silent
+% overwrite of every table into the one unnamed DB. In-memory tables (no cache
+% backing) are unaffected -- they are not cache_table entries, so a store with
+% one backed table plus bare in-memory tables is fine.
+check_multitable_store(File, Program) :-
+    (   multitable_store(Program, Path, Backend, Names)
+    ->  ( Backend == file
+        ->  format(user_error,
+                'plawk: ~w declares multiple tables ~w in one file store "~w". \c
+                 The file backend is single-table (class A); use a `backend \c
+                 "lmdb"` store for multiple named tables.~n',
+                [File, Names, Path]),
+            halt(2)
+        ;   format(user_error,
+                'plawk: ~w declares multiple tables ~w in one ~w store "~w". \c
+                 Multiple named tables per store are not yet implemented for \c
+                 this backend (phase 8.9).~n',
+                [File, Names, Backend, Path]),
+            halt(2)
+        )
+    ;   true
+    ).
+
+% True when some cache store PATH is declared with two or more distinct table
+% NAMES; binds that path, its backend, and the sorted name list.
+multitable_store(Program, Path, Backend, Names) :-
+    program_begin_clauses(Program, BeginClauses),
+    findall(N-P-B,
+        ( member(begin(Actions), BeginClauses),
+          member(cache_table(N, P, B), Actions) ),
+        Triples),
+    setof(P0, N0^B0^member(N0-P0-B0, Triples), Paths),
+    member(Path, Paths),
+    findall(N1, member(N1-Path-_, Triples), Names0),
+    sort(Names0, Names),
+    Names = [_, _ | _],
+    once(member(_-Path-Backend, Triples)),
+    !.
+
+program_begin_clauses(program(BeginClauses, _, _), BeginClauses).
+program_begin_clauses(program_passes(BeginClauses, _, _), BeginClauses).
 
 % Multi-pass normalisation (PLAWK_MULTIPASS_CACHE.md phase 2). A single
 % `pass { ... }` block is exactly today's main loop, so it lowers to the

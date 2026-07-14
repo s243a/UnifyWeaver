@@ -37,21 +37,22 @@ test(two_bare_row_tables, [condition(clang_available)]) :-
     assertion(S == ["10 x", "20 y", "x 10", "y 20"]),
     !.
 
-% Two schema'd row tables in one cache store, populated in one pass and read
-% back by name in separate passes. (One file store holds both in-memory tables
-% for the run; durable per-table storage is a later PR, so this asserts the
-% single-run in-memory behaviour.)
-test(two_named_row_tables, [condition(clang_available)]) :-
+% A schema'd (backed) `records of` table alongside a bare positional table, in
+% one program, populated together and read by name and by position. Two schema'd
+% tables cannot share one store (a class-A file store is single-table; LMDB
+% named sub-DBs are a later PR), so a named + a bare table is the valid mix that
+% exercises the driver's N-table plumbing across reader kinds.
+test(named_plus_bare_tables, [condition(clang_available)]) :-
     mdir(Dir),
     directory_file_path(Dir, 'mt.db', Store),
     ( exists_file(Store) -> delete_file(Store) ; true ),
     format(atom(Src),
-        "BEGIN cache(\"~w\") { declare orders(k str, v str); declare customers(k str, v str) }\n\c
-         pass { orders[$1] = row($1, $2); customers[$1] = row($2, $1) }\n\c
+        "BEGIN cache(\"~w\") { declare orders(k str, v str) }\n\c
+         pass { orders[$1] = row($1, $2); b[$1] = $0 }\n\c
          pass records of orders as r { print r[\"k\"], r[\"v\"] }\n\c
-         pass records of customers as r { print r[\"k\"], r[\"v\"] }\n", [Store]),
+         pass rows of b as r { print r[2], r[1] }\n", [Store]),
     run_sorted(Dir, 'named', Src, "a 1\nb 2\n", S),
-    % orders: key=$1 val=$2 ; customers: key=$1 col1=$2 col2=$1
+    % orders (by name): key=$1 val=$2 ; b (positional): col2,col1 of $0
     assertion(S == ["1 a", "2 b", "a 1", "b 2"]),
     !.
 
