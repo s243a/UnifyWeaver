@@ -465,6 +465,12 @@ contracts so neither is a grab-bag of modifiers:
   (`tests/test_plawk_rows_reader.pl`). Reuses the same row-decode function as
   `records of`, sourcing field indices from the literal positions. The
   `unsafe` modifier and inline check-or-rename spec below are a **follow-on**.
+  - **`rows of TABLE` — no `as`, awk-native `$N`. LANDED.** Omitting the
+    `as VAR` binding switches to awk field addressing: `pass rows of t {
+    print $1, $2 }` — a stored row is a field-separated record, so `$N`
+    addresses its Nth column (and arithmetic over `$N` works, in f64). The
+    two spellings do not mix: no `as` ⇒ `$N`; `as VAR` ⇒ `VAR[N]`. This makes
+    the schemaless positional reader read like plain awk over the stored rows.
   A schema spec may appear at the read site, and its role depends on whether
   an authoritative (`declare`d) schema already exists:
   - **schema present →** the spec is a **check**: the store's row shape

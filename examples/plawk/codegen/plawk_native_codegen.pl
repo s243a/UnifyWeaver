@@ -3813,6 +3813,7 @@ plawk_program_multipass_driver_ir(
     findall(RT,
         ( member(pass_records(_RV, var(RT), _RB), Passes)
         ; member(pass_rows(_PV, var(RT), _PB), Passes)
+        ; member(pass_rows_anon(var(RT), _AB), Passes)
         ; member(cache_schema(RT, _), Schemas)
         ),
         ReaderStr),
@@ -3897,6 +3898,7 @@ plawk_passes_tables(Passes, Tables) :-
         ; member(pass_over(_Var, var(Name), _Body), Passes)
         ; member(pass_records(_RVar, var(Name), _RBody), Passes)
         ; member(pass_rows(_PVar, var(Name), _PBody), Passes)
+        ; member(pass_rows_anon(var(Name), _ABody), Passes)
         ),
         Names0),
     sort(Names0, Tables),
@@ -4009,6 +4011,27 @@ plawk_rows_field_plan(Var, Expr, arith(F64Op, LPlan, RPlan)) :-
     plawk_rows_operand(Var, R, RPlan).
 plawk_rows_operand(Var, assoc(var(Var), int(N)), col(N)) :- integer(N), N > 0.
 plawk_rows_operand(_Var, int(V), aint(V)) :- integer(V).
+
+% The no-`as` positional reader (`pass rows of T { print $1, $2 }`): awk-native
+% `$N` field addressing over the stored row. Mirrors plawk_rows_field_plan but
+% sources positions from `field(N)` ($N) rather than `VAR[N]`.
+plawk_multipass_pass_fn(Index, pass_rows_anon(var(Table), Body), Tables,
+        _StrArrays, _Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, '') :-
+    Body = [print(PrintFields)],
+    PrintFields = [_ | _],
+    maplist(plawk_rows_anon_field_plan, PrintFields, FieldPlans),
+    nth0(TableIndex, Tables, Table),
+    plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, FieldPlans,
+        FieldSep, OutputSep, FnIR).
+
+plawk_rows_anon_field_plan(field(N), col(N)) :- integer(N), N > 0.
+plawk_rows_anon_field_plan(Expr, arith(F64Op, LPlan, RPlan)) :-
+    Expr =.. [Op, L, R],
+    plawk_i64_op_f64(Op, F64Op),
+    plawk_rows_anon_operand(L, LPlan),
+    plawk_rows_anon_operand(R, RPlan).
+plawk_rows_anon_operand(field(N), col(N)) :- integer(N), N > 0.
+plawk_rows_anon_operand(int(V), aint(V)) :- integer(V).
 
 % Over-reader print fields (v1): the loop key, or a lookup of the iterated
 % table keyed by it. String literals / other tables are follow-ons.

@@ -61,6 +61,34 @@ test(rows_column_arith, [condition(clang_available)]) :-
     assertion(S == ["a 2.5", "b 4.5"]),
     !.
 
+% Awk-native `$N` field addressing WITHOUT an `as VAR` binding: `pass rows of
+% t { print $1, $2 }`. A stored row is a field-separated record, so $N maps to
+% its Nth column directly.
+test(rows_anon_field_addressing, [condition(clang_available)]) :-
+    wdir(Dir),
+    Src = "pass { t[$1] = $0 }\npass rows of t { print $1, $2 }\n",
+    run_sorted(Dir, 'anon', Src, "a 10\nb 5\n", S),
+    assertion(S == ["a 10", "b 5"]),
+    !.
+
+% `$N` parses to pass_rows_anon (no `as`), distinct from the `as VAR` form.
+test(rows_anon_parses) :-
+    plawk_parse_string(
+        "pass { t[$1] = $0 }\npass rows of t { print $1, $2 }\n",
+        program_passes([],
+            [pass([rule(always, [set_row(var(t), field(1))])]),
+             pass_rows_anon(var(t), [print([field(1), field(2)])])],
+            [])),
+    !.
+
+% Awk-native arithmetic over `$N` (f64): `$2 / 2`.
+test(rows_anon_arith, [condition(clang_available)]) :-
+    wdir(Dir),
+    Src = "pass { t[$1] = $0 }\npass rows of t { print $1, $2 / 2 }\n",
+    run_sorted(Dir, 'anar', Src, "a 10\nb 6\n", S),
+    assertion(S == ["a 5", "b 3"]),
+    !.
+
 :- end_tests(plawk_rows_reader).
 
 % --- helpers ---------------------------------------------------------------
