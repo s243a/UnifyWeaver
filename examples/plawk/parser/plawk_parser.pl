@@ -1923,7 +1923,7 @@ printf_args_rest([]) -->
     [].
 
 print_fields([Field | Fields]) -->
-    field_expr(Field),
+    print_field_expr(Field),
     print_fields_rest(Fields).
 
 print_fields_rest([Field | Fields]) -->
@@ -1931,10 +1931,26 @@ print_fields_rest([Field | Fields]) -->
     ",",
     ws,
     !,
-    field_expr(Field),
+    print_field_expr(Field),
     print_fields_rest(Fields).
 print_fields_rest([]) -->
     [].
+
+% A print field: the general field expression, or a bare numeric literal
+% (`print 1`, `print -5`). awk prints a number as its text, and a string
+% literal print field is now compilable, so a bare integer literal lowers to
+% the string of its digits (`print 1` == `print "1"`) -- correct output with no
+% codegen change. This is PRINT-specific: `field_expr` (shared with `emit`,
+% arithmetic, ...) is left untouched, so a bare integer keeps its numeric
+% meaning there (`emit 1` stays the integer 1, not the atom '1'). field_expr is
+% tried first, so arithmetic (`print 1 + 2`) and floats are unaffected; only a
+% lone integer falls through to the literal clause.
+print_field_expr(Field) -->
+    field_expr(Field),
+    !.
+print_field_expr(string(Text)) -->
+    signed_integer_value(N),
+    { format(string(Text), '~w', [N]) }.
 
 field_expr(Expr) -->
     i64_binary_surface_expr(Expr).
