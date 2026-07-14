@@ -4876,3 +4876,14 @@ path. At small/medium scale where the edge map fits RAM, eager's in-memory
 at the scales and deployments where holding all edges resident is not an option.
 
 
+
+
+## Kotlin — KT-DISPATCH-SNAPSHOT-OPT (2026-07-14)
+
+Recursive native `tryRun` no longer calls `snapshotForNative` on every
+`execute` hop (default `skipRecursiveNativeSnapshot`). Profile on
+`append_500`: snapshot was ~31% of wall with snap_count == native_entries;
+after skip, snap_fraction ~0 and append_500 speedup vs interpreter rose
+from ~0.55× to ~0.85× (append_100 ~1.03×). Remaining cost: T4 `_t4`
+per-entry map copy. Details: `docs/design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md`,
+`docs/WAM_PERF_CROSS_TARGET.md` (Kotlin case study), `docs/WAM_KOTLIN_BENCH.md`.

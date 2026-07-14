@@ -334,8 +334,8 @@ kotlin_benchmark_main_bindings(Options, Bindings) :-
         PredAtom = '',
         Iters = 1000
     ),
-    option(benchmark_warmup(Warmup), Options, 2),
-    option(benchmark_batches(Batches), Options, 5),
+    option(benchmark_warmup(Warmup), Options, 5),
+    option(benchmark_batches(Batches), Options, 15),
     option(benchmark_state_setup(StateSetup0), Options,
            'stateFromCliArgs(emptyList())'),
     atom_string_like(StateSetup0, StateSetup),

@@ -1,0 +1,101 @@
+<!--
+SPDX-License-Identifier: MIT OR Apache-2.0
+-->
+# WAM-Kotlin optimization history
+
+Log of profiling-driven runtime optimizations for the Kotlin hybrid WAM
+target. Mirrors the structure of
+[`WAM_WAT_OPTIMIZATION_HISTORY.md`](WAM_WAT_OPTIMIZATION_HISTORY.md):
+**what we did** (with rationale) and **what we skipped** (and why).
+
+Complements [`../WAM_KOTLIN_BENCH.md`](../WAM_KOTLIN_BENCH.md) (numbers)
+and [`../WAM_PERF_CROSS_TARGET.md`](../WAM_PERF_CROSS_TARGET.md) (fleet
+case-study style).
+
+---
+
+## Baseline (BENCH-KOTLIN, 2026-07-14)
+
+In-process `tryRun` timing showed a **reproducible** regression on deep
+tail recursion under `emit_mode(functions)`:
+
+| program | speedup (lowered / interpreter, ≈) |
+|---|---:|
+| append_100 | 0.71–0.80× |
+| append_500 | 0.55–0.64× |
+
+Short non-recursive cases were noise-dominated (up to 8× run-to-run) at
+2 warmup / 5 batches. Hypothesis: `tryRun` called `snapshotForNative()`
+on **every** native/recursive `execute`→`dispatch` hop, deep-copying the
+register/heap map while `H<n>` vars accumulate → ≈O(depth²).
+
+---
+
+## KT-DISPATCH-SNAPSHOT-OPT (this change)
+
+### Prior art consulted
+
+| Source | What we took |
+|---|---|
+| `WAM_PERF_CROSS_TARGET.md` (F# `putReg`, PR #2428) | **Method**: profile → find the copy-the-world-per-op antipattern → remove it. Pattern only — F# mutated arrays in place; we skip redundant snapshots. |
+| `WAM_RUST_STATE_MANAGEMENT_RETROSPECTIVE.md` | Trail-based undo as the long-term model for option (b); not implemented here. |
+| `WAM_WAT_OPTIMIZATION_HISTORY.md` | Doc shape: did / skipped+why; profile-then-fix for dispatch overhead. |
+| `wam_go_dispatch_t6_perf.md`, bind-through sweep | Cross-target reminder that dispatch/bind costs are target-specific. |
+| `WAM_ELIXIR_STATUS.md` (Y-reg) | Register representation can dominate; here the hot cost was snapshot copy volume, not Y naming. |
+| `PROLOG_TARGET_OPTIMIZATION.md` | Semantics-preserving divergence of the compiled/fast path (cited for the idea only). |
+
+### Profile (append_500, functions mode, 80 iters × 5 timed batches)
+
+| config | min_ms | snap_fraction_of_wall | snap_count | native_entries |
+|---|---:|---:|---:|---:|
+| **BEFORE** `SKIP_RECURSIVE_SNAP=0` | 419.7 | **0.307** | 200 400 | 200 400 |
+| **AFTER** skip recursive snap (default) | 270.9 | **0.000** | 400 | 200 400 |
+
+Snapshot was ~31% of timed wall and ran once per native entry (every
+recursive hop). After the fix, snaps drop to one per top-level query
+(400 = 80 × 5 batches).
+
+### What we did
+
+1. **`nativeDepth` + `skipRecursiveNativeSnapshot` (default true)** in
+   `WamRuntime.tryRun`: recursive native hops call the native fn
+   **without** `snapshotForNative` and **without** bytecode fallback.
+   Top-level still snapshots + falls back (T5 unbound A1, incomplete
+   lowering safety net).
+2. **Hardened bench**: default 5 warmup / 15 timed batches; report
+   **min** and median batch-ms (`Main.kt.mustache` + harness).
+3. Optional `WAM_KT_PROFILE=1` / `PROFILE=1` and
+   `SKIP_RECURSIVE_SNAP=0` for A/B profiling.
+
+### Hardened bench after fix (min speedup)
+
+| program | speedup_min |
+|---|---:|
+| append_100 | **1.03×** |
+| append_500 | **0.85×** (was ~0.55×) |
+| member_100 / 500 | 1.44–1.56× |
+| short cases | see bench doc — still variable |
+
+### What we skipped (and why)
+
+| Idea | Why not now |
+|---|---|
+| **(b) Trail-based undo for T4 `_t4`** | Trail currently stores names only; CP restore replaces the whole register map. Real trail-undo needs old values (interpreter-wide change) or a native-only side trail. |
+| **(c) Heap outside snapshotted map** | Larger representation change; correct long-term but out of scope for this card. |
+| **Skip T4 `_t4` entirely** | Unsafe between clauses when clause 1 mutates then fails; recursive child failure relies on parent restore, but intra-pred clause choice still needs a restore point. |
+| **COW register map** | First write after snap still copies O(heap) per depth when clause 2 mutates — same asymptotics for append. |
+
+### Remaining gap (append_500 ≈0.85×)
+
+Each lowered T4 entry still does `val _t4 = state.snapshotForNative()` for
+clause backtracking. Recursive append therefore still copies the growing
+`H<n>` map once per depth. **tryRun** no longer doubles that. Follow-up:
+cheapen T4 restore (trail-with-old-values or heap separation).
+
+---
+
+## Correctness gates
+
+Differential unit suite + `CONFORMANCE_TARGETS=kotlin,kotlin_functions`
+must stay green whenever this seam changes. Top-level snapshot+fallback
+preserved deliberately for T5 unbound.
