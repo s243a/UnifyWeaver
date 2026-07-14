@@ -366,13 +366,22 @@ check_generator_blocks(_File, _Program).
 
 % A generator block whose clauses can be synthesised at build time:
 %  - a pure block (`Source == none`) whose every action is a constant `emit`
-%    (integer or string literal) -> facts;
+%    (an integer/string literal -> a unary fact, or a tuple of literals -> an
+%    arity-n fact);
 %  - an input iterator over a query source whose body passes the bound var
 %    through (`emit v`), optionally gated by an integer reader guard over `v`
 %    -> a derived rule.
 gen_block_supported(none, Body) :-
-    forall(member(Action, Body),
-        ( Action = emit(int(_)) ; Action = emit(string(_)) )).
+    forall(member(Action, Body), gen_const_emit(Action)).
+gen_block_supported(over(query(_Src, [_SrcVar]), LoopVar), Body) :-
+    gen_over_body_ok(Body, LoopVar).
+
+% A constant emit: a bare integer/string literal, or a tuple whose elements are
+% all integer/string literals.
+gen_const_emit(emit(int(_))).
+gen_const_emit(emit(string(_))).
+gen_const_emit(emit(tuple(Values))) :-
+    forall(member(V, Values), ( V = int(_) ; V = string(_) )).
 gen_block_supported(over(query(_Src, [_SrcVar]), LoopVar), Body) :-
     gen_over_body_ok(Body, LoopVar).
 
@@ -446,13 +455,22 @@ gen_cmp_op(le, =<).
 gen_cmp_op(eq, =:=).
 gen_cmp_op(ne, =\=).
 
-% A constant emit -> a unary fact for the generated relation. An integer emits
-% itself; a string emits the corresponding atom (so `emit "red"` -> `g(red)`).
+% A constant emit -> a fact for the generated relation. A bare integer/string
+% emits a unary fact (an integer itself; a string as the corresponding atom, so
+% `emit "red"` -> `g(red)`); a tuple emits an arity-n fact, one column per
+% element (`emit (1, "a")` -> `g(1, a)`).
 gen_emit_fact(Name, int(N), Fact) :-
     Fact =.. [Name, N].
 gen_emit_fact(Name, string(S), Fact) :-
     atom_string(Atom, S),
     Fact =.. [Name, Atom].
+gen_emit_fact(Name, tuple(Values), Fact) :-
+    maplist(gen_emit_value_arg, Values, Args),
+    Fact =.. [Name | Args].
+
+gen_emit_value_arg(int(N), N).
+gen_emit_value_arg(string(S), Atom) :-
+    atom_string(Atom, S).
 
 % The findall-wrapper clauses to inject into a query program's @prolog
 % predicate set: one `__plawk_query_pred_C(L) :- findall(VC, pred(V1..Vn), L)`
