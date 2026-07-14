@@ -1088,7 +1088,11 @@ single-pass test before any driver surgery).
   per-column reads. A query pass may run **mixed with ordinary passes** in one
   program (integrated into the general multi-pass driver; the shared `%WamState`
   the goal runs on is spliced in once), passes executing in program order.
-  String (non-integer) columns are the next PR.
+  Columns may be **integers or strings** (a tagged `@wam_object_call_posarray_value`
+  primitive records each value's kind, so print branches to `%ld` or resolves
+  the atom to text — no build-time type), and a tuple may mix the two. The core
+  `over query(Goal)` reader is **complete**; the producer dual (`gen { … } as
+  name`, `PLAWK_GENERATOR_BLOCKS.md`) is the natural next arc.
 
 - **Phase 7 — secondary indexes (§3.5).** `index TABLE by FIELD [unique]` on
   record-valued tables; unique lookups return one record; non-unique

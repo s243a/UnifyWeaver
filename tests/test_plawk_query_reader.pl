@@ -198,6 +198,39 @@ test(query_reader_determinism_two_passes, [condition(clang_available)]) :-
     assertion(Out == "7\n8\n9\n7\n8\n9\n"),
     !.
 
+% String (atom) columns: a goal binding an atom materialises via the tagged
+% primitive and prints the resolved text (no build-time type needed).
+test(query_reader_string_column_run, [condition(clang_available)]) :-
+    qdir(Dir),
+    Src = "@prolog\ncolor(red).\ncolor(green).\ncolor(blue).\n@end\n\c
+           pass over query(color(C)) { print $1 }\n",
+    build_run(Dir, 'strcol', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "red\ngreen\nblue\n"),
+    !.
+
+% A goal mixing a string column and an integer column in one tuple: each field
+% branches on its own kind (atom -> text, integer -> %ld).
+test(query_reader_mixed_types_run, [condition(clang_available)]) :-
+    qdir(Dir),
+    Src = "@prolog\nitem(apple, 3).\nitem(pear, 5).\n@end\n\c
+           pass over query(item(Name, Qty)) { print $1, $2 }\n",
+    build_run(Dir, 'mixtype', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "apple 3\npear 5\n"),
+    !.
+
+% A guard on the integer column of a string+integer goal filters correctly
+% (the guard reads the raw i64 value; string columns just print).
+test(query_reader_string_guard_run, [condition(clang_available)]) :-
+    qdir(Dir),
+    Src = "@prolog\nitem(apple, 3).\nitem(pear, 5).\nitem(plum, 2).\n@end\n\c
+           pass over query(item(Name, Qty)) { if ($2 >= 3) print $1, $2 }\n",
+    build_run(Dir, 'strguard', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "apple 3\npear 5\n"),
+    !.
+
 % A program that does NOT use the query reader is unaffected (no false trigger).
 test(non_query_program_builds, [condition(clang_available)]) :-
     qdir(Dir),
