@@ -3920,7 +3920,8 @@ plawk_query_mixed_support_ir(Program, Options, SupportIR) :-
     ->  SupportIR = ''
     ;   memberchk(wam_vm(InstrCount, LabelCount), Options),
         plawk_query_foreign_vm_ir(InstrCount, LabelCount, VmIR),
-        format(atom(SupportIR), '~w\n\n', [VmIR])
+        plawk_query_posarray_value_ir(ValueIR),
+        format(atom(SupportIR), '~w\n\n~w\n\n', [VmIR, ValueIR])
     ).
 
 %% plawk_program_query_passes(+Program, -QueryPasses) is det.
@@ -4023,6 +4024,7 @@ plawk_program_query_driver_ir(
     memberchk(wam_vm(InstrCount, LabelCount), Options),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_query_foreign_vm_ir(InstrCount, LabelCount, VmIR),
+    plawk_query_posarray_value_ir(ValueIR),
     findall(FnIR,
         ( nth0(I, Passes, pass_query(query(Pred, Vars), Body)),
           length(Vars, Arity),
@@ -4039,6 +4041,9 @@ plawk_program_query_driver_ir(
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     format(atom(DriverIR),
 '@.plawk_surface_print_i64 = private constant [4 x i8] c"%ld\\00"
+@.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"
+~w
+
 ~w
 
 ~w
@@ -4050,7 +4055,7 @@ entry:
   ret i32 0
 }
 ',
-        [VmIR, PassFnsIR, BeginIR, CallsIR]).
+        [VmIR, ValueIR, PassFnsIR, BeginIR, CallsIR]).
 
 %% plawk_query_foreign_vm_ir(+InstrCount, +LabelCount, -IR)
 %  The lazily created process-wide %WamState the query readers run their
@@ -4083,18 +4088,122 @@ make:
         [InstrCount, InstrCount, InstrCount, LabelCount, LabelCount,
          LabelCount]).
 
+%% plawk_query_posarray_value_ir(-IR)
+%  The tagged materialisation primitive the query reader uses (phase 6, PR 6):
+%  like @wam_object_call_posarray, but each flat-list element may be an Integer
+%  OR an Atom, and its kind is recorded alongside its value. Element i (1-indexed
+%  by position) stores its i64 value into %table[i] and its kind into
+%  %kindtable[i] -- 0 for an integer (the payload) or 1 for an atom (its
+%  registry id, resolved to text at print via @wam_atom_to_string). So a goal
+%  column can carry integers or strings without a build-time type. Any other
+%  element kind fails the call (empty tables). Emitted with the query support
+%  (all-query driver / mixed splice), self-contained -- references only runtime
+%  helpers already present in any WAM module.
+plawk_query_posarray_value_ir(
+'define i1 @wam_object_call_posarray_value(%WamState* %vm, i32 %entry_pc, i32 %nargs, %Value* %args, i32 %out_reg, %WamAssocI64Table* %table, %WamAssocI64Table* %kindtable) {
+entry:
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+do_call:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs_saved = load i32, i32* %hs_ptr
+  %unb = call %Value @value_unbound(i8* null)
+  %out_addr = call i32 @wam_heap_push(%WamState* %vm, %Value %unb)
+  %out_ref = call %Value @value_ref(i32 %out_addr)
+  call void @wam_prepare_call(%WamState* %vm, i32 %entry_pc)
+  br label %argloop
+argloop:
+  %ai = phi i32 [ 0, %do_call ], [ %ai1, %argstep ]
+  %adone = icmp sge i32 %ai, %nargs
+  br i1 %adone, label %args_done, label %argstep
+argstep:
+  %aidx64 = sext i32 %ai to i64
+  %ap = getelementptr %Value, %Value* %args, i64 %aidx64
+  %av = load %Value, %Value* %ap
+  call void @wam_set_reg(%WamState* %vm, i32 %ai, %Value %av)
+  %ai1 = add i32 %ai, 1
+  br label %argloop
+args_done:
+  call void @wam_set_reg(%WamState* %vm, i32 %out_reg, %Value %out_ref)
+  %ok = call i1 @run_loop(%WamState* %vm)
+  br i1 %ok, label %walk_init, label %rewind_fail
+walk_init:
+  %consfn = getelementptr [4 x i8], [4 x i8]* @.fn__5B_7C_5D, i32 0, i32 0
+  %head0 = call %Value @wam_deref_value(%WamState* %vm, %Value %out_ref)
+  br label %walk
+walk:
+  %cur = phi %Value [ %head0, %walk_init ], [ %tail_d, %next ]
+  %pos = phi i64 [ 1, %walk_init ], [ %pos1, %next ]
+  %ctag = call i32 @value_tag(%Value %cur)
+  %is_comp = icmp eq i32 %ctag, 3
+  br i1 %is_comp, label %check_cons, label %walk_done
+check_cons:
+  %cbits = call i64 @value_payload(%Value %cur)
+  %ccp = inttoptr i64 %cbits to %Compound*
+  %cfn_slot = getelementptr %Compound, %Compound* %ccp, i32 0, i32 0
+  %cfn = load i8*, i8** %cfn_slot
+  %car_slot = getelementptr %Compound, %Compound* %ccp, i32 0, i32 1
+  %car = load i32, i32* %car_slot
+  %car_ok = icmp eq i32 %car, 2
+  br i1 %car_ok, label %cmp_cons, label %walk_done
+cmp_cons:
+  %fncmp = call i32 @strcmp(i8* %cfn, i8* %consfn)
+  %is_cons = icmp eq i32 %fncmp, 0
+  br i1 %is_cons, label %have_cell, label %walk_done
+have_cell:
+  %cargs_slot = getelementptr %Compound, %Compound* %ccp, i32 0, i32 2
+  %cargs = load %Value*, %Value** %cargs_slot
+  %h_ptr = getelementptr %Value, %Value* %cargs, i64 0
+  %h_raw = load %Value, %Value* %h_ptr
+  %t_ptr = getelementptr %Value, %Value* %cargs, i64 1
+  %t_raw = load %Value, %Value* %t_ptr
+  %elem = call %Value @wam_deref_value(%WamState* %vm, %Value %h_raw)
+  %etag = call i32 @value_tag(%Value %elem)
+  %e_is_int = icmp eq i32 %etag, 1
+  br i1 %e_is_int, label %insert_int, label %check_atom
+check_atom:
+  %e_is_atom = icmp eq i32 %etag, 0
+  br i1 %e_is_atom, label %insert_atom, label %rewind_fail
+insert_int:
+  %ival = call i64 @value_payload(%Value %elem)
+  %ii = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %pos, i64 %ival)
+  %ik = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %kindtable, i64 %pos, i64 0)
+  br label %next
+insert_atom:
+  %aval = call i64 @value_payload(%Value %elem)
+  %aset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %pos, i64 %aval)
+  %ak = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %kindtable, i64 %pos, i64 1)
+  br label %next
+next:
+  %pos1 = add i64 %pos, 1
+  %tail_d = call %Value @wam_deref_value(%WamState* %vm, %Value %t_raw)
+  br label %walk
+walk_done:
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  ret i1 true
+rewind_fail:
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  br label %fail
+fail:
+  ret i1 false
+}').
+
 %% plawk_multipass_query_fn_ir(+Index, +ParamsIR, +Pred, +Arity, +Fields,
 %%     +Guard, +OutputSep, -IR)
 %  A query pass as a self-contained void function: materialise each goal column
-%  into its own assoc table (`%qtable_C`, keys 1..N by position) via
-%  @wam_object_call_posarray against the shared VM -- calling the per-column
-%  findall wrapper `@__plawk_query_pred_C_start_pc` with no input args and the
-%  list output in register 0 (the flat-list walk the `as array` posarray target
-%  uses). Then walk keys in order (1..count of column 1, not hash-slot order,
-%  so the print is deterministic), binding $K to `%qtable_K[pos]`. An optional
-%  reader guard (`if (COND)`) is evaluated over the per-column values -- pure
-%  i64 reads combined with i1 and/or (no short-circuit branching needed) --
-%  gating the print. All tables are freed at pass end (nothing persists).
+%  into TWO assoc tables (`%qval_C` = the value, `%qkind_C` = 0 for an integer /
+%  1 for an atom, keys 1..N by position) via @wam_object_call_posarray_value
+%  against the shared VM -- calling the per-column findall wrapper
+%  `@__plawk_query_pred_C_start_pc` with no input args and the list output in
+%  register 0. Then walk keys in order (1..count of column 1, not hash-slot
+%  order, so the print is deterministic), binding $K to `%qval_K[pos]`. Each
+%  printed field branches on its kind: an integer prints as `%ld`, an atom is
+%  resolved to text (@wam_atom_to_string) and printed as `%s` -- so a column may
+%  carry integers or strings without a build-time type. An optional reader guard
+%  (`if (COND)`) compares the raw i64 value (integer columns); pure i64 reads
+%  combined with i1 and/or gate the print. All tables are freed at pass end.
 %
 %  `ParamsIR` is the function's parameter list content: empty for the all-query
 %  driver (`@plawk_pass_N()`), or the standard multi-pass signature
@@ -4109,10 +4218,11 @@ plawk_multipass_query_fn_ir(Index, ParamsIR, Pred, Arity, Fields, Guard,
         ( member(C, Cols),
           plawk_query_helper_name(Pred, C, Sym),
           format(atom(MatLine),
-'  %qtable_~w = call %WamAssocI64Table* @wam_assoc_i64_new(i64 64)
+'  %qval_~w = call %WamAssocI64Table* @wam_assoc_i64_new(i64 64)
+  %qkind_~w = call %WamAssocI64Table* @wam_assoc_i64_new(i64 64)
   %qpc_~w = load i32, i32* @~w_start_pc
-  %qok_~w = call i1 @wam_object_call_posarray(%WamState* %vm, i32 %qpc_~w, i32 0, %Value* null, i32 0, %WamAssocI64Table* %qtable_~w)',
-              [C, C, Sym, C, C, C]) ),
+  %qok_~w = call i1 @wam_object_call_posarray_value(%WamState* %vm, i32 %qpc_~w, i32 0, %Value* null, i32 0, %WamAssocI64Table* %qval_~w, %WamAssocI64Table* %qkind_~w)',
+              [C, C, C, Sym, C, C, C, C]) ),
         MatLines),
     atomic_list_concat(MatLines, '\n', MaterializeIR),
     plawk_query_print_lines(Fields, OutputSep, PrintIR),
@@ -4120,8 +4230,9 @@ plawk_multipass_query_fn_ir(Index, ParamsIR, Pred, Arity, Fields, Guard,
     findall(FreeLine,
         ( member(C, Cols),
           format(atom(FreeLine),
-              '  call void @wam_assoc_i64_free(%WamAssocI64Table* %qtable_~w)',
-              [C]) ),
+'  call void @wam_assoc_i64_free(%WamAssocI64Table* %qval_~w)
+  call void @wam_assoc_i64_free(%WamAssocI64Table* %qkind_~w)',
+              [C, C]) ),
         FreeLines),
     atomic_list_concat(FreeLines, '\n', FreeIR),
     format(atom(IR),
@@ -4129,7 +4240,7 @@ plawk_multipass_query_fn_ir(Index, ParamsIR, Pred, Arity, Fields, Guard,
 entry:
   %vm = call %WamState* @plawk_foreign_vm_get()
 ~w
-  %count_ptr = getelementptr %WamAssocI64Table, %WamAssocI64Table* %qtable_1, i32 0, i32 0
+  %count_ptr = getelementptr %WamAssocI64Table, %WamAssocI64Table* %qval_1, i32 0, i32 0
   %count = load i64, i64* %count_ptr
   br label %q_head
 
@@ -4172,10 +4283,11 @@ q_print:
         [GuardIR, ResSSA, PrintIR]).
 
 %% plawk_query_guard_ir(+Guard, +N0, -N, -ResultSSA, -Lines)
-%  Lower a reader guard over the per-column tables to a single i1 result.
-%  A leaf `$K CMP int` reads `%qtable_K[pos]` and compares it; `and` / `or`
-%  combine child i1s. SSA names are suffixed by a threaded counter so leaves
-%  never collide. Reads are side-effect-free, so and/or need not short-circuit.
+%  Lower a reader guard over the per-column value tables to a single i1 result.
+%  A leaf `$K CMP int` reads `%qval_K[pos]` (the raw i64 value -- integer
+%  columns) and compares it; `and` / `or` combine child i1s. SSA names are
+%  suffixed by a threaded counter so leaves never collide. Reads are
+%  side-effect-free, so and/or need not short-circuit.
 plawk_query_guard_ir(and(L, R), N0, N, Res, Lines) :-
     plawk_query_guard_ir(L, N0, N1, LRes, LLines),
     plawk_query_guard_ir(R, N1, N2, RRes, RLines),
@@ -4197,27 +4309,40 @@ plawk_query_guard_ir(rfield_cmp(K, Op, Value), N0, N, Res, [LoadLine, CmpLine]) 
     format(atom(ValSSA), '%qgv~w', [N0]),
     format(atom(Res), '%qgc~w', [N0]),
     format(atom(LoadLine),
-        '  ~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %qtable_~w, i64 %pos)',
+        '  ~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %qval_~w, i64 %pos)',
         [ValSSA, K]),
     format(atom(CmpLine),
         '  ~w = icmp ~w i64 ~w, ~w', [Res, Pred, ValSSA, Value]).
 
 %% plawk_query_print_lines(+Fields, +OutputSep, -IR)
-%  The per-record print body: each `field(K)` reads `%qtable_K[pos]` and prints
-%  it as an integer; fields are joined by the output separator (a putchar
-%  between them) and terminated by a newline. SSA names are keyed by the
-%  field's ordinal in the list, so a repeated column (`print $1, $1`) stays
-%  unique.
+%  The per-record print body: each `field(K)` reads `%qval_K[pos]` and its kind
+%  `%qkind_K[pos]`, then branches -- an integer prints as `%ld`, an atom is
+%  resolved to text (@wam_atom_to_string) and printed as `%s`. Fields are joined
+%  by the output separator (a putchar between them) and terminated by a newline.
+%  SSA names and the per-field branch labels are keyed by the field's ordinal,
+%  so a repeated column (`print $1, $1`) stays unique.
 plawk_query_print_lines(Fields, OutputSep, IR) :-
     length(Fields, NF),
     Last is NF - 1,
     findall(Line,
         ( nth0(J, Fields, field(K)),
+          length(RestJs, 20), maplist(=(J), RestJs),
           format(atom(FieldBlock),
-'  %qf_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %qtable_~w, i64 %pos)
-  %qfmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0
-  %qpr_~w = call i32 (i8*, ...) @printf(i8* %qfmt_~w, i64 %qf_~w)',
-              [J, K, J, J, J, J]),
+'  %qf_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %qval_~w, i64 %pos)
+  %qk_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %qkind_~w, i64 %pos)
+  %qisatom_~w = icmp eq i64 %qk_~w, 1
+  br i1 %qisatom_~w, label %qatom_~w, label %qint_~w
+qint_~w:
+  %qfi_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0
+  %qpri_~w = call i32 (i8*, ...) @printf(i8* %qfi_~w, i64 %qf_~w)
+  br label %qpd_~w
+qatom_~w:
+  %qas_~w = call i8* @wam_atom_to_string(i64 %qf_~w)
+  %qfa_~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0
+  %qpra_~w = call i32 (i8*, ...) @printf(i8* %qfa_~w, i8* %qas_~w)
+  br label %qpd_~w
+qpd_~w:',
+              [J, K, J, K | RestJs]),
           ( J < Last
           ->  format(atom(Line),
                   '~w\n  %qsep_~w = call i32 @putchar(i32 ~w)',

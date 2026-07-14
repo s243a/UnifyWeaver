@@ -5,9 +5,10 @@ Copyright (c) 2026 John William Creighton (@s243a)
 
 # plawk `over query(Goal)` reader — implementation plan (phase 6)
 
-**Status**: PRs 1–5 landed; a goal of any arity with a `print $K...` body —
-optionally gated by an `if ($K CMP int)` reader guard — runs end-to-end, in an
-all-query program or mixed with ordinary passes.
+**Status**: PRs 1–6 landed; a goal of any arity with a `print $K...` body over
+integer *or* string columns — optionally gated by an `if ($K CMP int)` reader
+guard — runs end-to-end, in an all-query program or mixed with ordinary passes.
+The core `over query(Goal)` reader is complete.
 Sequences the work for the query-driven reader (`PLAWK_MULTIPASS_CACHE.md`
 §3.4, phase 6): a pass whose records are the **solutions of a Prolog goal**.
 This is the "most beyond awk" reader and the first place plawk admits
@@ -208,13 +209,30 @@ pass { print $1 }                               # scans the input file
 - **Verified.** `tests/test_plawk_query_reader.pl`: query-then-ordinary,
   ordinary-then-guarded-query, and the two-pass determinism check.
 
-### PR 6 — String columns
+### PR 6 — String columns — **LANDED**
 
-Non-integer (atom / string) goal columns via the posarray-str path. The open
-question is per-column typing: columns are i64 today, and the goal's arguments
-are untyped at build. Likely a tagged materialisation primitive
-(`@wam_object_call_posarray_value` storing int-or-atom-id with a tag) so a
-column can carry either without a surface type annotation — its own PR.
+Goal columns may now bind atoms (strings), not just integers, with **no
+build-time type**:
+
+```
+pass over query(item(Name, Qty)) { print $1, $2 }   # Name a string, Qty an int
+```
+
+- **Tagged materialisation.** A new `@wam_object_call_posarray_value` primitive
+  (emitted with the query support, self-contained) walks the solution list and
+  stores, per position, the value **and** its kind into two tables (`%qval_C`,
+  `%qkind_C`) — `0` for an integer (the payload), `1` for an atom (its registry
+  id). So the same column mechanism carries either type; the build needs no
+  per-column type annotation and the goal's arguments stay untyped.
+- **Kind-branched print.** Each printed field reads its kind and branches — an
+  integer prints as `%ld`, an atom is resolved to text (`@wam_atom_to_string`)
+  and printed as `%s`. A tuple may mix a string and an integer column
+  (`item(apple, 3)` → `apple 3`).
+- **Guards stay integer.** A reader guard compares the raw i64 value, so it
+  applies to integer columns (the natural WHERE); the guard reads `%qval_K`
+  while string columns print via the kind branch.
+- **Verified.** `tests/test_plawk_query_reader.pl`: a pure string column, a
+  mixed string+integer tuple, and a guard on the integer column of such a goal.
 
 ### PR 4 — Determinism guarantees + snapshot test + docs
 
