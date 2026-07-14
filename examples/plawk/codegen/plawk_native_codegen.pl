@@ -6135,7 +6135,8 @@ plawk_cache_entries(Tables, StrArrays, Schemas, Triples, CacheEntries, PathGloba
           % unnamed default DB.
           ( Backend == lmdb, memberchk(Path, MultiPaths)
           ->  format(atom(SubGName), 'plawk_cache_subdb_~w', [Index]),
-              atom_string(Name, NameStr),
+              plawk_local_table_name(Name, Local),
+              atom_string(Local, NameStr),
               llvm_emit_c_string_global(SubGName, NameStr, SubGlobal, _SubLen, SubBytes),
               format(atom(SubRef),
                   'getelementptr inbounds ([~w x i8], [~w x i8]* @.~w, i64 0, i64 0)',
@@ -6155,16 +6156,32 @@ plawk_cache_entries(Tables, StrArrays, Schemas, Triples, CacheEntries, PathGloba
     atomic_list_concat(AllGlobals, '\n', PathGlobalsIR).
 
 %% plawk_multitable_paths(+Triples, -MultiPaths)
-%  Store paths that carry two or more distinct table names -- i.e. multi-table
-%  stores, whose tables route to named sub-DBs. (A multi-table *file* store is
+%  Store paths whose tables route to named sub-DBs -- either a path carrying two
+%  or more distinct table names, OR a path with a namespaced (`ns.table`) table
+%  (phase 8.9 PR 4): `as ns` asks for sub-databases, so a namespaced store uses
+%  named sub-DBs even with a single table. (A multi-table *file* store is
 %  rejected earlier as a compile error, so in practice these are lmdb.)
 plawk_multitable_paths(Triples, MultiPaths) :-
     findall(Path,
         ( member(ct(_, Path, _), Triples),
-          findall(N, member(ct(N, Path, _), Triples), Ns0),
-          sort(Ns0, Ns), Ns = [_, _ | _] ),
+          ( findall(N, member(ct(N, Path, _), Triples), Ns0),
+            sort(Ns0, Ns), Ns = [_, _ | _]
+          ; member(ct(TN, Path, _), Triples), plawk_is_namespaced(TN)
+          ) ),
         MultiPaths0),
     sort(MultiPaths0, MultiPaths).
+
+%% plawk_is_namespaced(+TableName) / plawk_local_table_name(+Name, -Local)
+%  A namespaced table name is the dotted atom `ns.local` (phase 8.9 PR 4); its
+%  LOCAL part (after the last dot) is the sub-DB it routes to. A bare name has
+%  no dot and is its own local name.
+plawk_is_namespaced(Name) :-
+    sub_atom(Name, _, _, _, '.'),
+    !.
+
+plawk_local_table_name(Name, Local) :-
+    atomic_list_concat(Parts, '.', Name),
+    last(Parts, Local).
 
 %% plawk_lmdb_decls(+CacheEntries, -Decls)
 %  `declare`s for the external LMDB helpers actually referenced: the plain

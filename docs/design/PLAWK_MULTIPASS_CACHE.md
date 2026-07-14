@@ -1098,13 +1098,16 @@ single-pass test before any driver surgery).
   (`tests/test_plawk_use_table.pl`); (8.9) multiple named tables per store
   (namespaces / LMDB named sub-DBs, §3.5, per `PLAWK_CACHE_BACKENDS.md`) so
   `use ns.table` selects among them — **in progress**, sequenced into five
-  PRs in `PLAWK_MULTITABLE_IMPLEMENTATION_PLAN.md`. PRs 1–3 **LANDED**: the
+  PRs in `PLAWK_MULTITABLE_IMPLEMENTATION_PLAN.md`. PRs 1–4 **LANDED**: the
   multi-pass driver takes N tables (`tests/test_plawk_multitable.pl`); a
   multi-table *file* store is a class-A compile error while an *lmdb* store
   routes each table to its own named sub-DB — durable and isolated, both i64 and
   row values (`tests/test_plawk_multitable_store.pl`,
-  `tests/test_plawk_multitable_lmdb.pl`). Remaining: the `as ns` namespace and
-  `use ns.table` selection (PRs 4–5). (8.10) **reader guards** — a
+  `tests/test_plawk_multitable_lmdb.pl`); and `cache("db" as ns)` namespaces a
+  store so its tables are referenced `ns.table` (the local part is the sub-DB),
+  a namespaced file store being a class-A error
+  (`tests/test_plawk_namespace.pl`). Remaining: `use ns.table` selection (PR 5,
+  reads each sub-DB's schema so no re-`declare`). (8.10) **reader guards** — a
   `WHERE`-style row filter on any of the three readers: `if (r["col"] CMP int)`
   (records), `if (r[N] CMP int)` (positional), `if ($N CMP int)` (anon), for
   the six operators `== != < <= > >=`. The guard lowers to an i64 field extract
