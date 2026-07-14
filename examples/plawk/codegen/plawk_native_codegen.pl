@@ -4847,26 +4847,86 @@ plawk_icmp_pred(ge, sge).
 
 %% plawk_while_cond_ok(+Cond) is semidet.
 %
-%  A supported loop condition: `VAR CMP int(N)` over an i64 comparison.
-plawk_while_cond_ok(cmp(var(_V), Op, int(N))) :-
-    integer(N),
-    plawk_icmp_pred(Op, _Pred).
+%  A supported loop condition: scalar comparisons (`VAR CMP int` or
+%  `VAR CMP VAR`) combined with `and` / `or` (PLAWK_CONTROL_FLOW_PLAN.md PR 3).
+plawk_while_cond_ok(and(A, B)) :-
+    !,
+    plawk_while_cond_ok(A),
+    plawk_while_cond_ok(B).
+plawk_while_cond_ok(or(A, B)) :-
+    !,
+    plawk_while_cond_ok(A),
+    plawk_while_cond_ok(B).
+plawk_while_cond_ok(cmp(var(_V), Op, Rhs)) :-
+    plawk_icmp_pred(Op, _Pred),
+    plawk_while_cond_rhs_ok(Rhs).
+
+plawk_while_cond_rhs_ok(int(N)) :- integer(N).
+plawk_while_cond_rhs_ok(var(_W)).
+
+%% plawk_while_cond_vars(+Cond, -Vars)
+%
+%  Every scalar variable named in the condition (both sides of every
+%  comparison) -- each must get an i64 slot.
+plawk_while_cond_vars(and(A, B), Vars) :-
+    !,
+    plawk_while_cond_vars(A, VA),
+    plawk_while_cond_vars(B, VB),
+    append(VA, VB, Vars).
+plawk_while_cond_vars(or(A, B), Vars) :-
+    !,
+    plawk_while_cond_vars(A, VA),
+    plawk_while_cond_vars(B, VB),
+    append(VA, VB, Vars).
+plawk_while_cond_vars(cmp(var(V), _Op, int(_N)), [V]) :- !.
+plawk_while_cond_vars(cmp(var(V), _Op, var(W)), [V, W]).
 
 %% plawk_while_cond_ir(+Cond, +Slots, +CondValues, +Base, -CondVar, -IR)
 %
-%  Emit the loop-condition icmp. The condition variable's current value is the
-%  slot value in CondValues (head-phi values for `while`, body-output values
-%  for `do-while`); compare it against the integer bound.
-plawk_while_cond_ir(cmp(var(CondName), Op, int(N)), Slots, CondValues, Base,
-        CondVar, IR) :-
-    nth0(Idx, Slots, Slot),
-    plawk_slot_name(Slot, CondName),
+%  Emit the loop-condition test as a block of IR lines ending in an i1 value
+%  (CondVar). Each variable's current value is its slot value in CondValues
+%  (head-phi values for `while`, body-output values for `do-while`);
+%  comparisons are i64 icmps, combined with `and`/`or i1`.
+plawk_while_cond_ir(Cond, Slots, CondValues, Base, CondVar, IR) :-
+    plawk_while_cond_build(Cond, Slots, CondValues, Base, '', CondVar, Lines),
+    atomic_list_concat(Lines, '\n', IR).
+
+plawk_while_cond_build(and(A, B), Slots, CV, Base, Path, CondVar, Lines) :-
     !,
-    nth0(Idx, CondValues, CondValRef),
+    atom_concat(Path, 'l', PA),
+    atom_concat(Path, 'r', PB),
+    plawk_while_cond_build(A, Slots, CV, Base, PA, VA, LA),
+    plawk_while_cond_build(B, Slots, CV, Base, PB, VB, LB),
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(Line), '  ~w = and i1 ~w, ~w', [CondVar, VA, VB]),
+    append([LA, LB, [Line]], Lines).
+plawk_while_cond_build(or(A, B), Slots, CV, Base, Path, CondVar, Lines) :-
+    !,
+    atom_concat(Path, 'l', PA),
+    atom_concat(Path, 'r', PB),
+    plawk_while_cond_build(A, Slots, CV, Base, PA, VA, LA),
+    plawk_while_cond_build(B, Slots, CV, Base, PB, VB, LB),
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(Line), '  ~w = or i1 ~w, ~w', [CondVar, VA, VB]),
+    append([LA, LB, [Line]], Lines).
+plawk_while_cond_build(cmp(var(CondName), Op, Rhs), Slots, CondValues, Base,
+        Path, CondVar, [Line]) :-
+    plawk_while_cond_operand(var(CondName), Slots, CondValues, LOperand),
+    plawk_while_cond_operand(Rhs, Slots, CondValues, ROperand),
     plawk_icmp_pred(Op, Pred),
-    format(atom(CondVar), '%~w_cond', [Base]),
-    format(atom(IR), '  ~w = icmp ~w i64 ~w, ~w',
-        [CondVar, Pred, CondValRef, N]).
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(Line), '  ~w = icmp ~w i64 ~w, ~w',
+        [CondVar, Pred, LOperand, ROperand]).
+
+% An operand is either an integer literal (emitted inline) or a loop variable
+% (read from its slot's current SSA value).
+plawk_while_cond_operand(int(N), _Slots, _CondValues, N) :-
+    !.
+plawk_while_cond_operand(var(Name), Slots, CondValues, Ref) :-
+    nth0(Idx, Slots, Slot),
+    plawk_slot_name(Slot, Name),
+    !,
+    nth0(Idx, CondValues, Ref).
 
 % Surface comparison op -> ordered LLVM fcmp predicate (row values are finite,
 % so ordered comparisons are correct; a NaN column fails every guard).
@@ -5933,14 +5993,14 @@ plawk_scalar_update_name_expr(if(_Pattern, ThenActions, ElseActions), Name, Expr
 plawk_scalar_update_name_expr(foreach_loop(_Layout, Body), Name, Expr) :-
     member(Action, Body),
     plawk_scalar_update_name_expr(Action, Name, Expr).
-% while/do-while: the condition variable gets an i64 slot (it is compared with
-% an integer), plus any scalar the body updates.
-plawk_scalar_update_name_expr(while_loop(cmp(var(CondVar), _Op, _N), Body), Name, Expr) :-
-    ( Name = CondVar, Expr = int(0)
+% while/do-while: every condition variable gets an i64 slot (each is compared
+% numerically), plus any scalar the body updates.
+plawk_scalar_update_name_expr(while_loop(Cond, Body), Name, Expr) :-
+    ( plawk_while_cond_vars(Cond, CondVars), member(Name, CondVars), Expr = int(0)
     ; member(Action, Body), plawk_scalar_update_name_expr(Action, Name, Expr)
     ).
-plawk_scalar_update_name_expr(do_while_loop(Body, cmp(var(CondVar), _Op, _N)), Name, Expr) :-
-    ( Name = CondVar, Expr = int(0)
+plawk_scalar_update_name_expr(do_while_loop(Body, Cond), Name, Expr) :-
+    ( plawk_while_cond_vars(Cond, CondVars), member(Name, CondVars), Expr = int(0)
     ; member(Action, Body), plawk_scalar_update_name_expr(Action, Name, Expr)
     ).
 
@@ -10878,12 +10938,12 @@ plawk_scalar_update_action_name(if(_Pattern, ThenActions, ElseActions), Name) :-
 plawk_scalar_update_action_name(foreach_loop(_Layout, Body), Name) :-
     member(Action, Body),
     plawk_scalar_update_action_name(Action, Name).
-plawk_scalar_update_action_name(while_loop(cmp(var(CondVar), _Op, _N), Body), Name) :-
-    ( Name = CondVar
+plawk_scalar_update_action_name(while_loop(Cond, Body), Name) :-
+    ( plawk_while_cond_vars(Cond, CondVars), member(Name, CondVars)
     ; member(Action, Body), plawk_scalar_update_action_name(Action, Name)
     ).
-plawk_scalar_update_action_name(do_while_loop(Body, cmp(var(CondVar), _Op, _N)), Name) :-
-    ( Name = CondVar
+plawk_scalar_update_action_name(do_while_loop(Body, Cond), Name) :-
+    ( plawk_while_cond_vars(Cond, CondVars), member(Name, CondVars)
     ; member(Action, Body), plawk_scalar_update_action_name(Action, Name)
     ).
 

@@ -84,8 +84,30 @@ while.after.N:
    scalar var** (`print i` — substituted to the slot's SSA value) and a
    **body-printing scalar chain with no `END`** driver clause (all output from
    the per-record body). Tests: `tests/test_plawk_while.pl`.
-3. **General condition + `break`/`continue`.** A boolean/expression condition
-   (reuse the guard grammar) and loop-control statements.
+3. **General condition — LANDED.** The loop condition is now a boolean
+   combination of scalar comparisons: each comparison is `VAR CMP (int | VAR)`
+   (the right side may be another loop variable, not just a literal), combined
+   with `&&` / `||` (`&&` binds tighter). Lowered as a block of i64 `icmp`s
+   folded by `and`/`or i1` at the loop's condition point (`plawk_while_cond_ir`
+   / `plawk_while_cond_build`); every named variable must be an i64 slot
+   (`plawk_while_cond_vars` registers them). A single `VAR CMP int` still parses
+   to a bare `cmp(...)`, so PR 2 is a strict subset. Tests:
+   `tests/test_plawk_while.pl` (var-bound, `&&`, `||`, do-while var-bound).
+3b. **`break` / `continue` — DEFERRED (own PR).** Loop-control statements are a
+   separate, design-sensitive change and were intentionally split out:
+   - **SSA phi merge.** A `break` jumps to the loop's `after`; that block then
+     needs a phi merging the normal exit (head-phi values, condition false) with
+     the value set at *each* break point. A `continue` adds a back-edge into the
+     head phi (`while`) / body-condition (`do-while`) from each continue point.
+     The loop emitter would collect the body's `branch_break` / `branch_next`
+     exits (it already receives them as `InnerNextExits`) and build these merge
+     phis, rather than letting them propagate to the record loop.
+   - **`break` semantics.** plawk currently uses `break` at *rule-body* level to
+     mean "stop the record stream" (`break_close_stream`) — non-standard awk. In
+     a loop, `break` must mean *loop* break instead, so the loop has to intercept
+     its own body's break exits. That contextual re-meaning (plus adding a
+     `continue` keyword, and defining `next`-inside-loop = next record) is the
+     design call this PR defers.
 4. **Nested loops / loop in multi-pass `pass { }`.** Unique slot naming per loop
    nesting; the multi-pass driver's scalar handling.
 
