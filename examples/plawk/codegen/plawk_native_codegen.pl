@@ -9,6 +9,7 @@
     plawk_query_helper_name/3,
     plawk_query_helper_clause/4,
     plawk_program_query_passes/2,
+    plawk_program_materialize_views/2,
     plawk_program_gen_blocks/2,
     plawk_query_pass_supported/1,
     plawk_program_foreign_specs/3,
@@ -3984,6 +3985,13 @@ plawk_query_mixed_support_ir(Program, Options, SupportIR) :-
 plawk_program_query_passes(program_passes(_, Passes, _), QueryPasses) :-
     findall(pass_query(Q, B), member(pass_query(Q, B), Passes), QueryPasses).
 plawk_program_query_passes(program(_, _, _), []).
+
+%% plawk_program_materialize_views(+Program, -Names) is det.
+%  The names declared by `materialize NAME` (PLAWK_MULTIPASS_CACHE.md §3.9),
+%  in program order (empty if none). Surface-first: the runtime is a follow-on.
+plawk_program_materialize_views(program_passes(_, Passes, _), Names) :-
+    findall(Name, member(materialize(Name), Passes), Names).
+plawk_program_materialize_views(program(_, _, _), []).
 
 %% plawk_program_gen_blocks(+Program, -GenBlocks) is det.
 %  The `gen { ... } as name` generator blocks of a program (empty if none).
