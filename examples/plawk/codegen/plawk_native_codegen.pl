@@ -9,6 +9,7 @@
     plawk_query_helper_name/3,
     plawk_query_helper_clause/4,
     plawk_program_query_passes/2,
+    plawk_program_gen_blocks/2,
     plawk_query_pass_supported/1,
     plawk_program_foreign_specs/3,
     plawk_program_foreign_specs/4,
@@ -3929,6 +3930,14 @@ plawk_query_mixed_support_ir(Program, Options, SupportIR) :-
 plawk_program_query_passes(program_passes(_, Passes, _), QueryPasses) :-
     findall(pass_query(Q, B), member(pass_query(Q, B), Passes), QueryPasses).
 plawk_program_query_passes(program(_, _, _), []).
+
+%% plawk_program_gen_blocks(+Program, -GenBlocks) is det.
+%  The `gen { ... } as name` generator blocks of a program (empty if none).
+%  The producer dual of the query reader (PLAWK_GENERATOR_BLOCKS.md); collected
+%  alongside the passes at parse time.
+plawk_program_gen_blocks(program_passes(_, Passes, _), GenBlocks) :-
+    findall(gen_block(N, B), member(gen_block(N, B), Passes), GenBlocks).
+plawk_program_gen_blocks(program(_, _, _), []).
 
 %% plawk_query_pass_supported(+Pass) is semidet.
 %  The query-reader surface a build can lower today (phase 6, PRs 2-4): a goal

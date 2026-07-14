@@ -102,6 +102,7 @@ build(File, Out0, KeepLL) :-
     resolve_cache_use(File, Program1, Program),
     check_multitable_store(File, Program),
     check_query_reader(File, Program),
+    check_generator_blocks(File, Program),
     % A query-reader program contributes synthesised findall-wrapper clauses
     % (one per goal predicate) so its enumeration compiles into the binary
     % alongside the user's @prolog predicates. Non-query programs add nothing.
@@ -332,6 +333,24 @@ check_query_reader(File, Program) :-
         [File, Pred, N]),
     halt(2).
 check_query_reader(_File, _Program).
+
+% Generator blocks (PLAWK_GENERATOR_BLOCKS.md): `gen { emit ... } as name`
+% parses (PR 1) but its runtime -- collect the emitted values into a
+% materialised set exposed as a non-deterministic relation `name/1` -- is not
+% wired yet, so a program that defines one gets a clear, specific diagnostic
+% rather than the generic "outside the multi-pass surface". The surface stays
+% stable while the runtime lands.
+check_generator_blocks(File, Program) :-
+    plawk_program_gen_blocks(Program, GenBlocks),
+    GenBlocks = [gen_block(name(Name), _) | _],
+    !,
+    format(user_error,
+        'plawk: ~w defines a generator block `gen { ... } as ~w`. Generator \c
+         blocks parse but their runtime is not yet implemented; see \c
+         PLAWK_GENERATOR_BLOCKS.md.~n',
+        [File, Name]),
+    halt(2).
+check_generator_blocks(_File, _Program).
 
 % The findall-wrapper clauses to inject into a query program's @prolog
 % predicate set: one `__plawk_query_pred_C(L) :- findall(VC, pred(V1..Vn), L)`
