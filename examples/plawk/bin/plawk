@@ -102,9 +102,14 @@ build(File, Out0, KeepLL) :-
     resolve_cache_use(File, Program1, Program),
     check_multitable_store(File, Program),
     check_query_reader(File, Program),
-    (   Clauses == []
+    % A query-reader program contributes synthesised findall-wrapper clauses
+    % (one per goal predicate) so its enumeration compiles into the binary
+    % alongside the user's @prolog predicates. Non-query programs add nothing.
+    plawk_program_query_helper_clauses(Program, QueryHelperClauses),
+    append(Clauses, QueryHelperClauses, ClausesForPreds),
+    (   ClausesForPreds == []
     ->  Preds = [user:plawk_cli_marker/0]
-    ;   (   plawk_prolog_block_preds(Clauses, Preds)
+    ;   (   plawk_prolog_block_preds(ClausesForPreds, Preds)
         ->  true
         ;   format(user_error,
                 'plawk: invalid @prolog block in ~w (directives are not clauses)~n',
@@ -148,6 +153,9 @@ build(File, Out0, KeepLL) :-
         ; plawk_program_dyncall_posarray_arities(Program, DynPosarrArities), DynPosarrArities \== []
         ; plawk_program_dyncall_named_posarray_str_entries(Program, DynNamedPosarrS), DynNamedPosarrS \== []
         ; plawk_program_dyncall_posarray_str_arities(Program, DynPosarrSArities), DynPosarrSArities \== []
+        % A query reader materialises its goal's solutions via
+        % @wam_object_call_posarray, which lives in the .wamo loader section.
+        ; ( plawk_program_query_passes(Program, QueryPassesG), QueryPassesG \== [] )
         )
     ->  ProjectOptions = [module_name(OutBase), emit_wamo_loader(true)]
     ;   ProjectOptions = [module_name(OutBase)]
@@ -181,7 +189,8 @@ build(File, Out0, KeepLL) :-
                   write_wam_llvm_project(Preds, ProjectOptions, LLPath)),
               wam_llvm_last_compile_counts(InstrCount, LabelCount),
               (   Program = program_passes(_, _, _)
-              ->  (   plawk_program_multipass_driver_ir(Program, DriverIR)
+              ->  (   plawk_program_multipass_driver_ir(Program,
+                          [wam_vm(InstrCount, LabelCount)], DriverIR)
                   ->  true
                   ;   format(user_error,
                           'plawk: ~w uses multi-pass features outside the \c
@@ -301,21 +310,50 @@ program_begin_clauses(program(BeginClauses, _, _), BeginClauses).
 program_begin_clauses(program_passes(BeginClauses, _, _), BeginClauses).
 
 % Phase 6 (PLAWK_QUERY_READER_IMPLEMENTATION_PLAN.md): the `over query(...)`
-% reader parses (PR 1) but its runtime materialisation is not wired yet, so a
-% program that uses it gets a clear, specific diagnostic rather than the generic
-% "outside the multi-pass surface". The surface stays stable while the runtime
-% (PRs 2-3) lands.
-check_query_reader(File, program_passes(_, Passes, _)) :-
-    member(pass_query(query(Pred, Vars), _Body), Passes),
+% reader. PR 2 lands the runtime for the first supported shape -- an all-query
+% program whose goals are single-output and whose bodies are `print $1`. Any
+% query program OUTSIDE that surface (higher arity, a richer body, an END
+% block, or a query pass mixed with ordinary passes) still gets a clear,
+% specific not-yet diagnostic rather than the generic "outside the multi-pass
+% surface", while the supported shape flows on to the query driver.
+check_query_reader(File, Program) :-
+    plawk_program_query_passes(Program, QueryPasses),
+    QueryPasses \== [],
+    \+ query_program_supported(Program),
     !,
+    QueryPasses = [pass_query(query(Pred, Vars), _) | _],
     length(Vars, N),
     format(user_error,
-        'plawk: ~w uses `over query(~w/~w)`. The query-driven reader parses but \c
-         its runtime is not yet implemented (phase 6); see \c
+        'plawk: ~w uses `over query(~w/~w)` outside the supported query-reader \c
+         surface (v1: an all-query program, single-output goals, body `print \c
+         $1`); this shape is not yet implemented (phase 6); see \c
          PLAWK_QUERY_READER_IMPLEMENTATION_PLAN.md.~n',
         [File, Pred, N]),
     halt(2).
 check_query_reader(_File, _Program).
+
+% A query program the PR-2 driver can lower end-to-end: every pass is a
+% supported `pass over query(...)` and there is no END block.
+query_program_supported(program_passes(_, Passes, End)) :-
+    End == [],
+    Passes = [_ | _],
+    forall(member(P, Passes), P = pass_query(_, _)),
+    forall(member(P, Passes), plawk_query_pass_supported(P)).
+
+% The findall-wrapper clauses to inject into a query program's @prolog
+% predicate set: one `__plawk_query_pred(L) :- findall(V, pred(V), L)` per
+% distinct goal predicate/arity, so write_wam_llvm_project compiles the
+% enumeration into the same binary the query pass-fn calls.
+plawk_program_query_helper_clauses(Program, HelperClauses) :-
+    plawk_program_query_passes(Program, QueryPasses),
+    findall(Pred-A,
+        ( member(pass_query(query(Pred, Vars), _), QueryPasses),
+          length(Vars, A) ),
+        PA0),
+    sort(PA0, PA),
+    findall(HC,
+        ( member(Pred-A, PA), plawk_query_helper_clause(Pred, A, HC) ),
+        HelperClauses).
 
 % Multi-pass normalisation (PLAWK_MULTIPASS_CACHE.md phase 2). A single
 % `pass { ... }` block is exactly today's main loop, so it lowers to the

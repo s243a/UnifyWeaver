@@ -5,6 +5,11 @@
     plawk_program_native_driver_ir/3,
     plawk_program_native_driver_ir/4,
     plawk_program_multipass_driver_ir/2,
+    plawk_program_multipass_driver_ir/3,
+    plawk_query_helper_name/2,
+    plawk_query_helper_clause/3,
+    plawk_program_query_passes/2,
+    plawk_query_pass_supported/1,
     plawk_program_foreign_specs/3,
     plawk_program_foreign_specs/4,
     plawk_program_dyncall_arities/2,
@@ -3885,6 +3890,183 @@ get_path:
 }
 ',
         [RuntimeGlobals, PassFnsIR, CombinedEntrySetupIR, CallsIR, FreeIR]).
+
+%% plawk_program_multipass_driver_ir(+Program, +Options, -DriverIR) is semidet.
+%
+%  Options-carrying entry point (PLAWK_QUERY_READER_IMPLEMENTATION_PLAN.md,
+%  phase 6). `Options` carries `wam_vm(InstrCount, LabelCount)` -- the sizes
+%  of the module's @module_code / @module_labels arrays, needed to build the
+%  shared %WamState a query reader runs its goal on. A query-reader program
+%  (`pass over query(pred(X)) { print $1 }`) is lowered by the query driver;
+%  everything else delegates to the /2 driver unchanged.
+plawk_program_multipass_driver_ir(Program, Options, DriverIR) :-
+    (   plawk_program_query_driver_ir(Program, Options, DriverIR)
+    ->  true
+    ;   plawk_program_multipass_driver_ir(Program, DriverIR)
+    ).
+
+%% plawk_program_query_passes(+Program, -QueryPasses) is det.
+%  The `pass over query(...)` passes of a program (empty if none).
+plawk_program_query_passes(program_passes(_, Passes, _), QueryPasses) :-
+    findall(pass_query(Q, B), member(pass_query(Q, B), Passes), QueryPasses).
+plawk_program_query_passes(program(_, _, _), []).
+
+%% plawk_query_pass_supported(+Pass) is semidet.
+%  The query-reader surface a build can lower today (phase 6, PR 2): a
+%  single-output goal whose body is exactly `print $1`. Each solution's one
+%  argument is a ground integer materialised at $1. Higher arities and richer
+%  bodies (guards, $2..) are follow-ons; an unsupported shape yields a clean
+%  not-yet compile error rather than a miscompile.
+plawk_query_pass_supported(pass_query(query(_Pred, [_V]), Body)) :-
+    Body == [print([field(1)])].
+
+%% plawk_query_helper_name(+Pred, -Name) is det.
+%  The synthesised findall-wrapper predicate name for a query on `Pred`. The
+%  reserved `__plawk_query_` prefix cannot collide with a user predicate (the
+%  surface parser forbids `$`-free reserved names), so the name is unique per
+%  goal predicate and both the clause injector (bin/plawk) and the pass-fn
+%  emitter derive the same LLVM symbol (`@<Name>_start_pc`) from it.
+plawk_query_helper_name(Pred, Name) :-
+    atom_concat('__plawk_query_', Pred, Name).
+
+%% plawk_query_helper_clause(+Pred, +Arity, -Clause) is semidet.
+%  The Prolog clause that turns the goal's solution set into a materialisable
+%  list: `__plawk_query_pred(L) :- findall(V, pred(V), L)`. findall drives the
+%  goal to exhaustion (the enumeration the plan delegates to the builtin), so
+%  L is the ordered, ground list of first-argument bindings. Injected into the
+%  program's @prolog predicate set so write_wam_llvm_project compiles it into
+%  the same binary; the query pass-fn then calls it and walks L into a table.
+%  v1: arity 1 (single-output generator); the template is a flat list.
+plawk_query_helper_clause(Pred, 1, Clause) :-
+    plawk_query_helper_name(Pred, Name),
+    Goal =.. [Pred, V],
+    Head =.. [Name, L],
+    Clause = (Head :- findall(V, Goal, L)).
+
+%% plawk_program_query_driver_ir(+Program, +Options, -DriverIR) is semidet.
+%
+%  The query-reader execution driver (phase 6, PR 2). Fires only for an
+%  all-query program (every pass is a supported `pass over query(...)`), the
+%  first slice of controlled non-determinism: each pass runs its goal to a
+%  materialised solution set and iterates it -- no input file is read (the
+%  records come from the goal, not stdin). Each pass is its own void function
+%  (materialise-then-iterate, mirroring `over TABLE`); a shared %WamState
+%  (@plawk_foreign_vm) runs the findall-wrapper predicate the injector added.
+%  The materialised list lands in a fresh assoc table by position (keys 1..N),
+%  walked in key order for a deterministic, ordered print (§1 intact -- the
+%  multiplicity is collapsed at the boundary before the body runs).
+plawk_program_query_driver_ir(
+    program_passes(BeginClauses, Passes, End),
+    Options,
+    DriverIR
+) :-
+    Passes = [_ | _],
+    forall(member(P, Passes), P = pass_query(_, _)),   % all-query program (v1)
+    forall(member(P, Passes), plawk_query_pass_supported(P)),
+    End == [],                                          % v1: no END block
+    memberchk(wam_vm(InstrCount, LabelCount), Options),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_query_foreign_vm_ir(InstrCount, LabelCount, VmIR),
+    findall(FnIR,
+        ( nth0(I, Passes, pass_query(query(Pred, _Vars), _Body)),
+          plawk_query_helper_name(Pred, Sym),
+          plawk_multipass_query_fn_ir(I, Sym, FnIR) ),
+        FnIRs),
+    atomic_list_concat(FnIRs, '\n', PassFnsIR),
+    findall(CallLine,
+        ( nth0(I, Passes, _),
+          format(atom(CallLine), '  call void @plawk_pass_~w()', [I]) ),
+        CallLines),
+    atomic_list_concat(CallLines, '\n', CallsIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    format(atom(DriverIR),
+'@.plawk_surface_print_i64 = private constant [4 x i8] c"%ld\\00"
+~w
+
+~w
+
+define i32 @main(i32 %argc, i8** %argv) {
+entry:
+~w
+~w
+  ret i32 0
+}
+',
+        [VmIR, PassFnsIR, BeginIR, CallsIR]).
+
+%% plawk_query_foreign_vm_ir(+InstrCount, +LabelCount, -IR)
+%  The lazily created process-wide %WamState the query readers run their
+%  goals on -- identical to the foreign-call support VM, emitted standalone
+%  here because a query-reader program has no foreign-call sites to trigger
+%  plawk_foreign_support_ir. References @module_code / @module_labels (the
+%  compiled @prolog + findall-wrapper predicates) sized by the passed counts.
+plawk_query_foreign_vm_ir(InstrCount, LabelCount, IR) :-
+    format(atom(IR),
+'@plawk_foreign_vm = internal global %WamState* null
+
+define %WamState* @plawk_foreign_vm_get() {
+entry:
+  %cur = load %WamState*, %WamState** @plawk_foreign_vm
+  %have = icmp ne %WamState* %cur, null
+  br i1 %have, label %ret_cur, label %make
+
+ret_cur:
+  ret %WamState* %cur
+
+make:
+  %vm = call %WamState* @wam_state_new(
+      %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
+      i32 ~w,
+      i32* getelementptr ([~w x i32], [~w x i32]* @module_labels, i32 0, i32 0),
+      i32 ~w)
+  store %WamState* %vm, %WamState** @plawk_foreign_vm
+  ret %WamState* %vm
+}',
+        [InstrCount, InstrCount, InstrCount, LabelCount, LabelCount,
+         LabelCount]).
+
+%% plawk_multipass_query_fn_ir(+Index, +Sym, -IR)
+%  A query pass as a self-contained void function: materialise the goal's
+%  solution list into a fresh assoc table (keys 1..N by position), then walk
+%  keys in order printing each solution's integer at $1. Materialisation
+%  routes through @wam_object_call_posarray against the shared VM, calling the
+%  findall-wrapper `@<Sym>_start_pc` with no input args and the list output in
+%  register 0 -- the same flat-list walk the `as array` posarray target uses.
+%  Ordered by key (1..count) rather than hash-slot order, so the print is
+%  deterministic. The table is freed at pass end (nothing persists).
+plawk_multipass_query_fn_ir(Index, Sym, IR) :-
+    format(atom(IR),
+'define void @plawk_pass_~w() {
+entry:
+  %qtable = call %WamAssocI64Table* @wam_assoc_i64_new(i64 64)
+  %vm = call %WamState* @plawk_foreign_vm_get()
+  %pc = load i32, i32* @~w_start_pc
+  %ok = call i1 @wam_object_call_posarray(%WamState* %vm, i32 %pc, i32 0, %Value* null, i32 0, %WamAssocI64Table* %qtable)
+  %count_ptr = getelementptr %WamAssocI64Table, %WamAssocI64Table* %qtable, i32 0, i32 0
+  %count = load i64, i64* %count_ptr
+  br label %q_head
+
+q_head:
+  %pos = phi i64 [ 1, %entry ], [ %pos1, %q_body_done ]
+  %q_done = icmp sgt i64 %pos, %count
+  br i1 %q_done, label %q_after, label %q_body
+
+q_body:
+  %val = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %qtable, i64 %pos)
+  %fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0
+  %pr = call i32 (i8*, ...) @printf(i8* %fmt, i64 %val)
+  %nl = call i32 @putchar(i32 10)
+  br label %q_body_done
+
+q_body_done:
+  %pos1 = add i64 %pos, 1
+  br label %q_head
+
+q_after:
+  call void @wam_assoc_i64_free(%WamAssocI64Table* %qtable)
+  ret void
+}',
+        [Index, Sym]).
 
 %% plawk_passes_tables(+Passes, -Tables)
 %  The assoc tables a multi-pass program shares. Discovered from the passes'
