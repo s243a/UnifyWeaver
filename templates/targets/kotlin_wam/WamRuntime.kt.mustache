@@ -868,6 +868,15 @@ fun stateFromCliArgs(values: List<String>): WamState {
     return state
 }
 
+/** Build `[1,2,...,n]` as nested `[|]/2` cons cells (benchmark / CLI helper). */
+fun intRangeList(n: Int): Value {
+    var acc: Value = Value.Atom("[]")
+    for (i in n downTo 1) {
+        acc = Value.Struct("[|]/2", listOf(Value.IntVal(i.toLong()), acc))
+    }
+    return acc
+}
+
 // Lowered-predicate helpers (single-clause WAM fast path).
 fun kotlinLoGetConstant(state: WamState, expected: Value, register: String): Boolean {
     val current = state.deref(state.readRegister(register))
