@@ -1097,10 +1097,12 @@ single-pass test before any driver surgery).
   `select` surface, no re-`declare` — **LANDED (file backend)**
   (`tests/test_plawk_use_table.pl`); (8.9) multiple named tables per store
   (namespaces / LMDB named sub-DBs, §3.5, per `PLAWK_CACHE_BACKENDS.md`) so
-  `use ns.table` selects among them — **planned**, sequenced into five
-  PRs in `PLAWK_MULTITABLE_IMPLEMENTATION_PLAN.md` (the first is generalising
-  the single-table multi-pass driver to N tables; storage routing and the
-  `as ns` / `use ns.table` surface follow). (8.10) **reader guards** — a
+  `use ns.table` selects among them — **in progress**, sequenced into five
+  PRs in `PLAWK_MULTITABLE_IMPLEMENTATION_PLAN.md`. PR 1 **LANDED**: the
+  multi-pass driver is generalised from one shared table to N, so a program
+  with several in-memory tables builds and runs (`tests/test_plawk_multitable.pl`);
+  durable storage routing (LMDB named sub-DBs) and the `as ns` / `use ns.table`
+  surface follow. (8.10) **reader guards** — a
   `WHERE`-style row filter on any of the three readers: `if (r["col"] CMP int)`
   (records), `if (r[N] CMP int)` (positional), `if ($N CMP int)` (anon), for
   the six operators `== != < <= > >=`. The guard lowers to an i64 field extract

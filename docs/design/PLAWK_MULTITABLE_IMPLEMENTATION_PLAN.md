@@ -17,25 +17,26 @@ Two independent single-table assumptions must fall, and they are *not* in the
 order the surface suggests. Storage routing is **not** the first obstacle — the
 driver rejects multi-table programs before storage is ever reached.
 
-- **The multi-pass driver is hardwired to one shared table.** In
-  `examples/plawk/codegen/plawk_native_codegen.pl`, every
-  `plawk_program_multipass_driver_ir/2` clause discovers a single table and
-  threads it as one parameter: the END-for-in driver asserts
-  `AssocPlan = assoc_plan([ArrayName], _)` and calls
-  `plawk_cache_entries([ArrayName], …)` / `plawk_multipass_table_params([ArrayName], …)`;
-  the no-END and reader drivers make the same one-table assumption. A program
-  with two `declare`s therefore fails the driver match and the build reports
-  *"uses multi-pass features outside the current multi-pass surface"* — before
-  any cache/storage code runs. **This is the first thing to fix.**
+- **The multi-pass driver was hardwired to one shared table — FIXED (PR 1).**
+  The no-END reader driver in
+  `examples/plawk/codegen/plawk_native_codegen.pl` now threads N tables (see PR
+  1 below); a program with several `declare`s / row tables builds and runs
+  in-memory. The END-for-in driver still assumes its single END-loop table,
+  which is fine — a multi-table program takes the reader driver. (Before PR 1 a
+  two-`declare` program failed the driver match and the build reported
+  *"uses multi-pass features outside the current multi-pass surface"*, before
+  any cache/storage code ran.)
 - **One store path ≈ one table (storage).** Even once the driver accepts N
   tables, the LMDB backend writes every table to the **unnamed** DB, so several
   tables sharing a `cache("store.lmdb")` path overwrite each other on commit
   (`PLAWK_MULTIPASS_CACHE.md` §3.7). Multi-table storage needs named sub-DBs.
 
-Encouragingly, some plumbing is already list-shaped: `plawk_multipass_table_params/3`
-takes a *list* of tables, and the row readers (`records of` / `rows of`)
-already resolve their table by name via `nth0(TableIndex, Tables, Table)`. The
-work is to stop hardcoding `[ArrayName]` and thread the full table set.
+Much of the plumbing was already list-shaped, which is why PR 1 was small: the
+setup/free helpers and `plawk_cache_entries/6` iterate the table list, and the
+row readers (`records of` / `rows of`) resolve their table by name via
+`nth0(TableIndex, Tables, Table)`. PR 1 only had to drop the artificial
+single-table cap and generalise `plawk_multipass_table_params/3` (which had had
+clauses only for `[]` and `[_Table]`) to N tables.
 
 ## 2. The backend rule (fixed, from PLAWK_CACHE_BACKENDS.md)
 
@@ -52,16 +53,23 @@ work is to stop hardcoding `[ArrayName]` and thread the full table set.
 
 Each step is its own PR, green regressions required before the next.
 
-### PR 1 — Generalise the multi-pass driver to N in-memory tables
+### PR 1 — Generalise the multi-pass driver to N in-memory tables — **LANDED**
 
-The foundational refactor; no durability yet. Stop hardcoding a single table:
-collect every table referenced by the passes/readers/END into a `Tables` list;
-create, thread (as N params), and free each; route each pass's writes/reads and
-each reader to its table by index. The END-for-in still iterates the one table
-its loop names; the others simply live alongside. Deliverable: a **purely
-in-memory** program with two `declare`d row tables, each written and read back
-in one run. Highest regression risk (touches the core driver) — run the full
-plawk row/cache suite each iteration. No storage, no new syntax.
+The foundational refactor; no durability yet. Much of the no-END reader driver
+was already list-shaped (`plawk_passes_tables/2` collected and `sort/2`-ed every
+referenced table; the setup/free helpers and `plawk_cache_entries/6` iterate the
+list; the row-reader pass-fns resolve their table by `nth0`). Only two spots
+hardcoded a single table: an artificial `N =< 1` cap in `plawk_passes_tables/2`,
+and `plawk_multipass_table_params/3` (clauses only for `[]` and `[_Table]`,
+emitting one `%plawk_assoc_table_0`). Dropping the cap and generalising the
+params to one `%plawk_assoc_table_<i>` per table — indexed by position in the
+sorted list, so setup / params / per-pass planning stay consistent — is the
+whole change. Every pass function now takes the full table set; a rule or reader
+references its table by index. `tests/test_plawk_multitable.pl`: two bare
+(schema-less) row tables with no cache; two schema'd `records of` tables in one
+store; a mixed i64-counter + row program; three row tables. The full plawk
+row/cache suite stays green (N=1 lowers exactly as before — the single-table
+clause is just the N=1 case of the general one). No storage, no new syntax.
 
 ### PR 2 — Per-store table grouping + class-A compile error
 
