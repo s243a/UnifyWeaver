@@ -34,8 +34,8 @@ only (runtime pending) · ❌ missing.
 | var assignment, `+=`, `++`, `//` | ✅ | indexed native scalar slots |
 | `if` / `else` (chains) | ✅ | |
 | `for (k in arr)` | ✅ | assoc for-in (rule body + END) |
-| `while (VAR CMP int)` | ⏳ | surface parses; runtime pending — `PLAWK_CONTROL_FLOW_PLAN.md` |
-| `do { } while (VAR CMP int)` | ⏳ | surface parses; shares the loop runtime |
+| `while (VAR CMP int)` | ✅ | runtime landed (loop-header phis) — `PLAWK_CONTROL_FLOW_PLAN.md` PR 2 |
+| `do { } while (VAR CMP int)` | ✅ | runtime landed; body runs at least once |
 | `next` | ✅ | structural (guarded clause per rule) |
 | `break` / `continue` | ◐ | present in some loop contexts |
 | `if` with a plain (non-accumulator) body | ❌ | `{ if (c) { print $1 } }` is exit 3 — the scalar `if` lowering assumes branch bodies update scalars; blocks regex-in-`if` too |
@@ -88,11 +88,13 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
 
 ## Prioritised gaps (recommended order)
 
-1. **`while` / `do-while` loop runtime** — the surfaces just landed; wire the
-   loop (mutable scalar state to a fixed point). **Plan:**
-   `PLAWK_CONTROL_FLOW_PLAN.md` — bracket each loop with a memory slot (SSA →
-   mem → loop → SSA) so the existing forward-phi scalar machinery is untouched.
-   The most-requested basic control structure still missing at runtime.
+1. **`while` / `do-while` loop runtime — LANDED (PR 2).** The loop iterates its
+   mutable scalar state via **loop-header phis** (reusing `foreach_loop`'s head
+   phis — no memory slots needed after all; see `PLAWK_CONTROL_FLOW_PLAN.md`).
+   Body: `set` / `inc` / `+=` over i64 + `print`; condition `VAR CMP int`.
+   Enablers landed with it: **bare scalar-var print** (`print i`) and a
+   **body-printing scalar chain with no `END`**. PRs 3–4 (general condition,
+   `break`/`continue`, nested/multi-pass loops) remain.
 2. **User-function call in text/print context** — `print f($1)` returns `0`: a
    text field is passed to the foreign call as an *atom*, so the synthesised
    `f(X,R) :- R is X*2` fails `is`. Works in `BINFMT`/typed mode.

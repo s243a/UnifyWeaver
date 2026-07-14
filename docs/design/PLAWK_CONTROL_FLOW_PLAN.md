@@ -5,11 +5,20 @@ Copyright (c) 2026 John William Creighton (@s243a)
 
 # plawk control-flow runtime — implementation plan
 
-**Status**: plan. The `while` and `do-while` **surfaces** parse (they lower to
-`while_loop(Cond, Body)` / `do_while_loop(Body, Cond)` and today emit a clean
-not-yet error); this doc scopes the **runtime**, grounded in how the single-pass
-driver actually lowers scalar state. Prioritised #1 in
-`PLAWK_AWK_FEATURE_AUDIT.md`.
+**Status**: PR 2 **LANDED**. The `while` and `do-while` **surfaces** parse (they
+lower to `while_loop(Cond, Body)` / `do_while_loop(Body, Cond)`) and their
+**runtime** now compiles: an arithmetic/`print` body over an i64 counter,
+condition `VAR CMP int`. PRs 3–4 (general condition, `break`/`continue`, nested
+loops in multi-pass) remain. This doc scopes the runtime, grounded in how the
+single-pass driver lowers scalar state.
+
+> **Implementation note (what actually shipped).** The §2 "bracket with memory"
+> sketch (alloca/load/store) turned out to be unnecessary: the emitter already
+> has a working **loop-header phi** for exactly this shape — `foreach_loop`'s
+> head phis (`plawk_foreach_head_phi_lines`). The while/do-while lowering reuses
+> that machinery directly (SSA back-edge phis, no memory slots), which is
+> simpler and matches the existing style. §2 is kept below as the original
+> reasoning; the head-phi route is what landed.
 
 ## 1. The blocking fact: scalar state is SSA/phi, not memory
 
@@ -64,10 +73,17 @@ while.after.N:
 
 1. **Surface — LANDED.** `while (VAR CMP int) { BODY }` and
    `do { BODY } while (VAR CMP int)` parse; not-yet compile error.
-2. **Runtime, arithmetic body.** Bracket-with-memory lowering for a body of
-   `set` / `inc` / `+=` over i64 scalars + `print`, condition `VAR CMP int`.
-   Deliverable: `{ i = 0; while (i < 3) { print i; i++ } }` prints `0/1/2`, and
-   the `do-while` mirror runs the body once even when the condition starts false.
+2. **Runtime, arithmetic body — LANDED.** Loop-header-phi lowering (reusing
+   `foreach_loop`'s head phis, **not** memory slots) for a body of `set` /
+   `inc` / `+=` over i64 scalars + `print`, condition `VAR CMP int`. `while`
+   tests before the body (exit values are the head phis, so zero iterations is
+   fine); `do-while` tests after (exit values are the body outputs, so the body
+   always runs once). Deliverable met: `{ i = 0; while (i < 3) { print i; i++ }
+   }` prints `0/1/2`; the `do-while` mirror runs the body once even when the
+   condition starts false. Two enablers landed alongside: **printing a bare
+   scalar var** (`print i` — substituted to the slot's SSA value) and a
+   **body-printing scalar chain with no `END`** driver clause (all output from
+   the per-record body). Tests: `tests/test_plawk_while.pl`.
 3. **General condition + `break`/`continue`.** A boolean/expression condition
    (reuse the guard grammar) and loop-control statements.
 4. **Nested loops / loop in multi-pass `pass { }`.** Unique slot naming per loop
