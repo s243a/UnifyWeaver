@@ -245,7 +245,7 @@ fun ~w(state: WamState, dispatch: (String, WamState) -> Boolean): Boolean {
 emit_multi_clause_n_function(PredName, FuncName, Clauses, Code) :-
     (   kotlin_t4_peelable_get_constant(Clauses, ConstTok, Reg, FirstBody, RestClauses)
     ->  emit_multi_clause_n_peeled(PredName, FuncName, ConstTok, Reg, FirstBody, RestClauses, Code)
-    ;   with_output_to(string(Body), emit_kotlin_t4_clauses(Clauses, 0, _t4)),
+    ;   with_output_to(string(Body), emit_kotlin_t4_clauses(Clauses, 0, '_t4')),
         format(string(Code),
 '// Lowered: ~w (T4 all-clauses inline)
 fun ~w(state: WamState, dispatch: (String, WamState) -> Boolean): Boolean {
@@ -291,7 +291,7 @@ fun ~w(state: WamState, dispatch: (String, WamState) -> Boolean): Boolean {
 ~w    return false
 }
 ', [PredName, FuncName, RL, Expr, FirstFun, RestBody])
-    ;   with_output_to(string(RestBody), emit_kotlin_t4_clauses(RestClauses, 1, _t4b)),
+    ;   with_output_to(string(RestBody), emit_kotlin_t4_clauses(RestClauses, 1, '_t4b')),
         format(string(Code),
 '// Lowered: ~w (T4 peel leading get_constant — skip snap on closed fail)
 fun ~w(state: WamState, dispatch: (String, WamState) -> Boolean): Boolean {
