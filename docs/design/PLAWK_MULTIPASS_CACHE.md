@@ -39,9 +39,7 @@ surface, the runtime ABI, and a phased rollout.
   or `$N CMP int` (anon). The six operators are `== != < <= > >=`; filtered
   rows never reach the print block (`tests/test_plawk_reader_guards.pl`).
 
-**Not yet:** `use NAME` over an LMDB store (the build-time schema resolver
-reads the file-backend header, not the LMDB schema key — a follow-on; `declare`
-works over LMDB today); `rows of`'s `unsafe` / inline check-or-rename spec;
+**Not yet:** `rows of`'s `unsafe` / inline check-or-rename spec;
 multiple named tables per store (phase 8.9); the `over prev` reader (phase 4
 follow-on); the query reader (phase 6); `eager` / secondary indexes;
 string-literal print fields. Future sketches: nested pass blocks (§3.8),
@@ -535,9 +533,11 @@ the i64 key and store the declared schema under a distinguished non-8-byte key
 (validated on open; data rows are skipped-by-size). A reader pass in a later
 run sees rows a prior run committed. Keys stay i64 ids (content-stable
 interning reproduces them; readers only iterate, and a re-writing pass
-re-interns the same key). One gap remains on LMDB: `use NAME` (attach without
-re-`declare`) needs a build-time resolver that reads the LMDB schema key —
-`declare` works over LMDB today.
+re-interns the same key). `use NAME` (attach without re-`declare`) works over
+both backends: on the file backend the build reads the schema header directly;
+on LMDB the schema lives under a key inside the B-tree, so the build compiles
+and runs a small liblmdb probe (`wam_cache_lmdb_schema.c`) to extract it
+(phase 8.8, `tests/test_plawk_use_table_lmdb.pl`).
 
 **Phasing** (each its own PR):
 1. **Schema surface** — `declare NAME(col type, …)` parses and carries a row
@@ -606,14 +606,18 @@ a short sequence rather than a lone keyword:
   stored schema and the program's `declare(cols)` are present and differ, the
   open **fails cleanly** (`plawk: cache schema mismatch`, exit 3) instead of
   silently mis-reading field offsets. `tests/test_plawk_row_durable.pl`.
-- **(b) `use NAME` (the `select`). LANDED (file backend).** A backed-BEGIN
+- **(b) `use NAME` (the `select`). LANDED (file + LMDB backends).** A
+  backed-BEGIN
   `use NAME` **attaches to an existing store and takes its schema from (a)** —
-  no re-`declare(cols)`. The plawk build reads the store's persisted schema
-  header at **compile time** and expands `use NAME` into the same
+  no re-`declare(cols)`. At **compile time** the plawk build reads the store's
+  persisted schema and expands `use NAME` into the same
   `cache_table` + `cache_schema` a matching `declare NAME(cols)` would produce,
-  so `records of` / `rows of` and the runtime schema check work unchanged. A
-  missing / schema-less store is a compile error.
-  `tests/test_plawk_use_table.pl`.
+  so `records of` / `rows of` and the runtime schema check work unchanged. On
+  the file backend the build reads the schema header directly; on LMDB the
+  schema is under a B-tree key, so the build compiles and runs a small liblmdb
+  probe (`wam_cache_lmdb_schema.c`) to extract it. A missing / schema-less
+  store is a compile error.
+  `tests/test_plawk_use_table.pl`, `tests/test_plawk_use_table_lmdb.pl`.
 - **(c) Multiple named tables per store.** With the namespace design (§3.5,
   LMDB named sub-DBs), a store holds several tables and `use ns.orders`
   selects among them. This is the point at which `select` becomes load-bearing
@@ -1083,8 +1087,7 @@ single-pass test before any driver surgery).
   (`tests/test_plawk_row_durable.pl` for the file backend,
   `tests/test_plawk_row_durable_lmdb.pl` for LMDB via
   `wam_cache_{commit,load}_lmdb_str` — schema stored under a distinguished key
-  and validated on open; `use NAME` over an LMDB store still awaits a
-  build-time LMDB schema resolver); (8.5) the positional `rows of`
+  and validated on open); (8.5) the positional `rows of`
   reader (`r[N]`, no schema) — **LANDED**
   (`tests/test_plawk_rows_reader.pl`; its `unsafe` / inline check-or-rename
   spec remain a follow-on); (8.6) richer row producers (`row(...)` /
@@ -1094,8 +1097,10 @@ single-pass test before any driver surgery).
   store, closes the schema-mismatch hole) — **LANDED (file backend)**
   (`tests/test_plawk_row_durable.pl`); (8.8) `use NAME` that attaches to an
   existing store and takes its schema from 8.7 (read at build time) — the
-  `select` surface, no re-`declare` — **LANDED (file backend)**
-  (`tests/test_plawk_use_table.pl`); (8.9) multiple named tables per store
+  `select` surface, no re-`declare` — **LANDED (file + LMDB backends)**
+  (`tests/test_plawk_use_table.pl`; `tests/test_plawk_use_table_lmdb.pl` for
+  LMDB, where the build extracts the schema with a small liblmdb probe,
+  `wam_cache_lmdb_schema.c`); (8.9) multiple named tables per store
   (namespaces / LMDB named sub-DBs, §3.5, per `PLAWK_CACHE_BACKENDS.md`) so
   `use ns.table` selects among them. (8.10) **reader guards** — a
   `WHERE`-style row filter on any of the three readers: `if (r["col"] CMP int)`
