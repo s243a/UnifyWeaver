@@ -4437,6 +4437,27 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     false
                 }
             }
+            "list_to_set/2" => {
+                let items = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let mark = self.trail.len();
+                let mut unique = Vec::with_capacity(items.len());
+                for item in &items {
+                    if !self.builtin_unify_member(item, &unique) {
+                        unique.push(item.clone());
+                    }
+                }
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.unify(&output, &Value::List(unique)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
             "select/3" => {
                 let x_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
                 let list = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
