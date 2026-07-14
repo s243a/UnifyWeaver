@@ -778,22 +778,44 @@ materialise it twice. `materialize NAME` lifts that to **once, shared**:
 1. **Shared tables.** For each materialised relation, emit **global** column
    tables (`@qval_<NAME>_<C>` / `@qkind_<NAME>_<C>`) instead of pass-local ones.
 2. **One-time fill.** Emit a `@plawk_materialize_<NAME>()` that runs the
-   per-column findall wrappers against the shared VM and fills the globals; call
-   it once from `main` **before** the pass calls (or lazily behind a
-   done-flag). Do not free the globals per pass.
+   per-column findall wrappers against the shared VM and fills the globals **on
+   first access** (behind a done-flag), then reuse. Do not free the globals per
+   pass.
 3. **Consumer rewiring.** A `pass over query(NAME(...))` reads the shared
    globals instead of materialising locally and skips the free.
 
-**Refresh policy — resolved for the intra-run case.** The open question was
-eager/lazy/explicit refresh. For the current sources — @prolog facts and
-generator-derived relations are **static within a program run** — the answer is
-**eager-once, no refresh**: materialise on first need, reuse for the rest of the
-run; the source cannot change mid-run, so there is nothing to invalidate. A
-refresh policy only re-enters when a materialised view is backed by a **mutable
-durable cache** across runs (the LMDB / inter-pass-channel case, Phase 3), which
-is where eager-on-write vs lazy-on-read vs explicit becomes a real choice. So
-the runtime splits cleanly: the intra-run share above is unblocked and needs no
-policy; the cross-run persistent view waits on Phase 3.
+**Two separate axes — don't conflate them.** "Materialise once and reuse" (the
+cache win) is one decision; *when* and *how completely* to build the table is
+another. Keeping them apart:
+
+- **Invalidation / refresh — resolved (none, intra-run).** @prolog facts and
+  generator-derived relations are **static within a program run**, so a
+  materialised view never needs recomputing mid-run. A refresh policy
+  (eager-on-write / lazy-on-read / explicit) only re-enters when a view is backed
+  by a **mutable durable cache** across runs (the LMDB / inter-pass-channel case,
+  Phase 3). This axis is genuinely settled for the current sources.
+
+- **Materialisation strategy — lazy by default, `eager` declared.** An earlier
+  draft called this "eager-once"; that over-generalised. The project already
+  fixed this convention elsewhere: **materialisation is lazy by default, with an
+  opt-in `eager` marker** (§3.3 "Materialisation is lazy by default … a table
+  can be marked **`eager`**", `declare total eager`; the LMDB phase wires the
+  per-variable `eager` load-at-open). Views take the **same** rule — a view is
+  lazy (materialise on first consumer access, then reuse), and `eager` is a
+  declaration (`materialize NAME eager`) for a small, hot view you want built up
+  front. This is also the **awk-faithful** default: stream processing is lazy —
+  a record/relation is touched only as it flows — so lazy-by-default matches the
+  language's grain, and eager is the deliberate exception. On the merits, lazy
+  also *dominates* eager: same cross-consumer dedup, nothing paid for a view
+  that is never reached or short-circuited, only a done-flag; eager is merely
+  simpler codegen, not faster. **And the real ceiling is completeness:**
+  materialising the *whole* relation into in-memory assoc tables breaks on
+  memory at scale regardless of lazy-vs-eager — it wins at low scale and loses
+  at high. The scaling path is **demand-driven materialisation that spills to
+  the durable backend** (LMDB), i.e. exactly the Phase 3 / Phase 5 machinery. So:
+  lazy in-memory whole-relation is the **low-scale default** (simple, correct, a
+  clear win when several passes rescan a bounded set); large or unbounded views
+  want the spilling, demand-driven path and wait on Phase 3.
 
 #### Original sketch (retained)
 
