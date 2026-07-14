@@ -108,6 +108,7 @@ build(File, Out0, KeepLL) :-
     % removed; `GenFactClauses` are the synthesised facts.
     check_generator_blocks(File, Program2),
     resolve_generator_blocks(Program2, Program, GenFactClauses),
+    check_while_loops(File, Program),
     check_multitable_store(File, Program),
     check_query_reader(File, Program),
     % A query-reader program contributes synthesised findall-wrapper clauses
@@ -363,6 +364,30 @@ check_generator_blocks(File, Program) :-
         [File, Name]),
     halt(2).
 check_generator_blocks(_File, _Program).
+
+% while loops (plawk roadmap): `while (VAR CMP int) { BODY }` parses but its
+% loop runtime -- mutable scalar state iterated to a fixed point -- is not wired
+% yet, so a program that uses one gets a clear, specific diagnostic rather than
+% the generic "outside the multi-pass surface". Surface-first, mirroring the
+% query reader / generator arcs.
+check_while_loops(File, Program) :-
+    program_has_while(Program),
+    !,
+    format(user_error,
+        'plawk: ~w uses a `while` loop. while loops parse but their runtime is \c
+         not yet implemented; see the plawk roadmap.~n',
+        [File]),
+    halt(2).
+check_while_loops(_File, _Program).
+
+% True if the program term contains a while_loop/2 anywhere (rule body, BEGIN,
+% END, pass, ...). A plain structural walk over the AST.
+program_has_while(while_loop(_, _)) :- !.
+program_has_while(Term) :-
+    compound(Term),
+    Term =.. [_ | Args],
+    member(Arg, Args),
+    program_has_while(Arg).
 
 % A generator block whose clauses can be synthesised at build time:
 %  - a pure block (`Source == none`) whose every action is a constant `emit`
