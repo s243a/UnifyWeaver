@@ -204,6 +204,11 @@ sketch, of which this is the first concrete step.
 
 ## 6. Future sketch: generator blocks (the producer dual)
 
+> Now a standalone design: **`docs/design/PLAWK_GENERATOR_BLOCKS.md`** covers
+> the surface (including the *optional* input iterator), materialise-don't-stream
+> semantics, modes/arity, composition with this reader, and a PR sequence. The
+> summary below remains for context.
+
 The query reader is the **consumer** side of the plawk/Prolog boundary: a
 Prolog goal *drives* a plawk pass (Prolog → plawk records). The natural dual is
 the **producer** side — a plawk `{}` block that a Prolog goal can *call*
