@@ -781,6 +781,33 @@ projection table; the surface (`view NAME as records of T where …`) is
 uniform, and only the evaluation strategy is backend-specific. Depends on
 reader guards (the `WHERE`) and, for multi-table sources, phase 8.9.
 
+**Views before general auto-caching (recommended).** Auto-caching retrieved
+items transparently is convenient, but it caches *whole rows* — often more than
+a pass needs. A view is precisely the "cache only the columns/rows I need"
+construct: a materialised view **is** an auto-cache scoped to a projection +
+filter. So the recommended order is **views first, then (optionally) auto-caching
+layered on the view abstraction** ("auto-cache = materialise this view on first
+access, refresh per policy") rather than a standalone whole-row cache. That
+keeps the cached footprint lean by construction and gives auto-caching a
+principled unit to operate on.
+
+**Most of a view already exists.** A view is a *named, derived, materialised
+relation* — and the phase-6 work built the pieces:
+- the **`over query(Goal)`** reader already evaluates a derived relation, with
+  **reader guards** as the `WHERE`;
+- the **generator input iterator** (`gen over query(src(V)) as v { if (v CMP c)
+  emit v } as name`, `PLAWK_GENERATOR_BLOCKS.md` PR 3) already names a
+  **filtered derived relation** (`name(A) :- src(A), A CMP c`) — a filtered view
+  in all but name and materialisation;
+- the query reader's **per-column tagged materialisation** (PR 6) is exactly the
+  projection engine.
+So the net-new work for views is narrow: **column projection** (select a subset
+of columns, not the whole row — the "we might not need a whole row" point) and
+**materialise-and-cache** (write the projected/filtered set to its own row
+table, with a refresh policy — eager/lazy/explicit, the one genuinely open
+question). Both build directly on shipped machinery, which is the other reason
+to do views before a from-scratch auto-cache.
+
 ### 3.10 Contained non-determinism — a search construct (future TODO — sketch)
 
 The loops discussion (§3.8) draws a line: a `while` gives back *unboundedness*
