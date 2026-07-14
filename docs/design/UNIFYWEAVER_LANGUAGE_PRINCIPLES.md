@@ -116,4 +116,58 @@ the hot loop stays choicepoint-free.
 
 ---
 
+## Principle 2 — Static structure elides coercion and serialization
+
+**When the compiler statically knows a value's type or a boundary's shape, it
+can carry the value in its native representation — skipping the runtime
+coercion, parsing, or serialize/deserialize round-trip a dynamically-typed
+crossing would pay.** The unit of work you *don't* do is the point.
+
+UnifyWeaver compiles a dynamic-feeling surface (awk-like text fields, Prolog
+terms) onto a **typed** substrate (typed WAM values, typed LLVM). Every place
+the surface would otherwise force a value through text or an untyped box is an
+opportunity: if the type/shape is known at compile time, the crossing is free;
+if it is not, a runtime coercion pays for the dynamism. So the design lever is
+**push type/shape knowledge to compile time**, and let the dynamic path remain
+the correct-but-slower default.
+
+### The same principle, several faces
+
+- **Explicit `emit` vs implicit field-separator yield** (`PLAWK_GENERATOR_BLOCKS.md`
+  §2.1): `emit E` materialises a *typed* value straight into the tagged column
+  table — no text exists. An FS-split yield would `print` to text and re-parse
+  it, a serialize→text→deserialize cost per value. Known type ⇒ no round-trip.
+- **Optional function-arg typing over auto-coerce**
+  (`PLAWK_AWK_FEATURE_AUDIT.md` gap 2): the awk-faithful default auto-coerces a
+  text field used numerically (`atom → number` every call); a declared
+  `function f(num x)` lets the compiler pass an already-typed value and skip the
+  coercion — the typed-fast path over the dynamic-correct default. (It also
+  turns a type mismatch into a compile error — the safety face of the same
+  knowledge.)
+- **Typed binary records (`BINFMT`)** vs text fields: a declared record layout
+  reads fields as native `i64`/`f64` with no per-field string parse.
+- **The query reader's per-column tagged materialisation**
+  (`PLAWK_QUERY_READER_IMPLEMENTATION_PLAN.md` PR 6): each column carries its
+  kind (int/atom), so consumers read the native value rather than re-typing text.
+
+### Relationship to gradual typing
+
+This is why **gradual typing fits UnifyWeaver naturally** rather than as a
+bolt-on: the substrate is already typed, so an *optional* annotation is not new
+machinery — it is a compile-time assertion that unlocks the representation the
+compiler can already emit. The dynamic default stays ergonomic (no annotations
+required, awk semantics preserved); the annotation buys the elision. Correctness
+comes from the dynamic path; performance and static checking come from the typed
+path layered on top — never one instead of the other.
+
+### The tension with Principle 1
+
+Principle 1 (collapse multiplicity at a boundary) and Principle 2 (elide work
+when the shape is known) pull the same direction: a **boundary with a known
+shape** is both where non-determinism is contained *and* where representation is
+fixed, so the compiler can specialise it. A well-typed collapse boundary is the
+cheapest one.
+
+---
+
 *Add further principles below as they recur across surfaces.*

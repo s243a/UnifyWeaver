@@ -72,8 +72,18 @@ per-column integer/string kinds end to end (the tagged materialisation of
 `print` + `FS`, every value would round-trip through text and arrive as a
 string, throwing away exactly that typing — the consumer would have to re-parse.
 `emit E` keeps the term's type (an integer stays an integer, an atom an atom),
-mirroring how the reader materialises columns. Three more reasons:
+mirroring how the reader materialises columns. Four more reasons:
 
+- **No serialize/deserialize round-trip (performance).** With explicit `emit`,
+  the compiler knows each emitted value's type, so it materialises the *typed
+  WAM value* straight into the tagged column table — no text ever exists.
+  Implicit-FS yield would `print` the value to **text** and the consumer would
+  **re-parse** it (`atom → number`), a serialise→text→deserialise cost on every
+  value that explicit `emit` avoids entirely. This is the *same* principle as
+  optional function-arg typing (`PLAWK_AWK_FEATURE_AUDIT.md` gap 2): **static
+  type/structure knowledge lets the compiler elide coercion and serialisation.**
+  It recurs across plawk — typed `BINFMT` records skip parsing, the reader's
+  per-column kinds skip re-typing, and `emit` skips the text round-trip.
 - **Emission ≠ stdout.** Overloading `print` to *also* mean "produce a solution"
   conflates two jobs — a gen block may legitimately want to write to stdout
   (debug/log) without that becoming a solution. `emit` keeps them separate.
