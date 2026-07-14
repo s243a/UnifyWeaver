@@ -51,12 +51,45 @@ test(pass_unchanged) :-
             [])),
     !.
 
-% Building a generator-block program is a clean compile error (exit 2) until
-% the runtime lands; the message names the generated relation.
-test(gen_block_is_not_yet_error) :-
+% A pure generator with constant integer emits compiles to facts and feeds a
+% query pass: `gen { emit 1; emit 2; emit 3 } as small` -> the query prints the
+% three solutions (the producer dual, closing the plawk<->Prolog loop).
+test(gen_block_int_run, [condition(clang_available)]) :-
     gdir(Dir),
-    Src = "gen { emit 1; emit 2 } as small\npass over query(small(X)) { print $1 }\n",
-    build_status(Dir, 'g', Src, St),
+    Src = "gen { emit 1; emit 2; emit 3 } as small\n\c
+           pass over query(small(X)) { print $1 }\n",
+    build_run(Dir, 'genint', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "1\n2\n3\n"),
+    !.
+
+% String emits become atoms (`emit "red"` -> `color(red)`); the query reader
+% resolves them to text via its tagged column materialisation.
+test(gen_block_string_run, [condition(clang_available)]) :-
+    gdir(Dir),
+    Src = "gen { emit \"red\"; emit \"green\"; emit \"blue\" } as color\n\c
+           pass over query(color(C)) { print $1 }\n",
+    build_run(Dir, 'genstr', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "red\ngreen\nblue\n"),
+    !.
+
+% A reader guard on the consuming query pass composes with a generator source.
+test(gen_block_guarded_consume_run, [condition(clang_available)]) :-
+    gdir(Dir),
+    Src = "gen { emit 10; emit 20; emit 30 } as weight\n\c
+           pass over query(weight(W)) { if ($1 > 10) print $1 }\n",
+    build_run(Dir, 'genguard', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "20\n30\n"),
+    !.
+
+% A computed emit (a field, not a constant) needs runtime collection -- not yet
+% implemented -- so it is a clean not-yet compile error (exit 2).
+test(gen_block_computed_emit_not_yet) :-
+    gdir(Dir),
+    Src = "gen { emit $1 } as g\npass over query(g(X)) { print $1 }\n",
+    build_status(Dir, 'gencomp', Src, St),
     assertion(St == 2),
     !.
 
@@ -91,3 +124,19 @@ build_status(Dir, Name, Src, Status) :-
     process_create(path(swipl), ['examples/plawk/bin/plawk', build, Prog, '-o', Bin],
         [stdout(null), stderr(null), process(Pid)]),
     process_wait(Pid, exit(Status)).
+
+% Build a program, then run the resulting binary with Args, capturing stdout.
+build_run(Dir, Name, Src, Args, Out, RunStatus) :-
+    directory_file_path(Dir, Name, Prog0),
+    atom_concat(Prog0, '.plawk', Prog),
+    setup_call_cleanup(open(Prog, write, S, [encoding(utf8)]),
+        write(S, Src), close(S)),
+    atom_concat(Prog0, '_bin', Bin),
+    process_create(path(swipl), ['examples/plawk/bin/plawk', build, Prog, '-o', Bin],
+        [stdout(null), stderr(null), process(BPid)]),
+    process_wait(BPid, exit(0)),
+    process_create(Bin, Args,
+        [stdout(pipe(RS)), stderr(std), process(RPid)]),
+    read_string(RS, _, Out),
+    close(RS),
+    process_wait(RPid, exit(RunStatus)).

@@ -5,7 +5,8 @@ Copyright (c) 2026 John William Creighton (@s243a)
 
 # plawk generator blocks — `gen { … } as name` (design)
 
-**Status**: PR 1 (surface + AST) landed; runtime pending. This is the **producer dual**
+**Status**: PRs 1–2 landed — a pure generator with constant emits feeds a query
+pass end-to-end. This is the **producer dual**
 of the `over query(Goal)` reader (`PLAWK_QUERY_READER_IMPLEMENTATION_PLAN.md`,
 phase 6). Where the query reader lets a **Prolog goal drive a plawk pass**
 (Prolog → plawk records), a generator block lets a **plawk `{}` block be called
@@ -218,9 +219,26 @@ the producer direction plus the `emit` collection. A rough PR shape:
    string emit, `pass` unchanged), the not-yet error (exit 2), and a non-gen
    program unaffected. The optional input iterator (`gen over SOURCE as v`) is
    deferred to step 3. No runtime.
-2. **Collection runtime** — compile the block to an emit-collecting function;
-   expose `name/1` as `member` over the collected list; verify a pure arity-1
-   generator feeds a query pass.
+2. **Collection runtime (first shape) — LANDED.** A **pure** generator whose
+   body is only *constant* emits (`gen { emit 1; emit 2 } as name`) compiles to
+   Prolog facts — each `emit int(N)` → `name(N)`, each `emit "s"` →
+   `name(s)` — injected into the program's `@prolog` set (`resolve_generator_blocks`
+   in `bin/plawk`), and the generator block is lifted out of the pass list. The
+   *existing* query reader then consumes `name/1` unchanged (its findall wrapper
+   enumerates the facts), so `gen { emit 1; emit 2; emit 3 } as small` +
+   `pass over query(small(X)) { print $1 }` prints `1/2/3` — no new runtime
+   primitive, the mirror of the query reader's clause injection run in the
+   producer direction. Integer and string emits both work (strings resolve via
+   the reader's tagged column materialisation), and a reader guard on the
+   consumer composes. A *computed* emit (a field / arithmetic) or a non-emit
+   action needs the demand-driven collection runtime and is a clean not-yet
+   error. `tests/test_plawk_gen_blocks.pl`: int, string, guarded-consume runs,
+   and the computed-emit not-yet error.
+
+   *Follow-on (this same PR line):* computed / input-dependent emits, which
+   cannot be facts — the block runs and collects at runtime. The proven path is
+   `assertz` into the dynamic DB + `findall` (the `test_plawk_eval_compile.pl`
+   stateful-grammar pattern), driven from the emit sites.
 3. **Optional input iterator** — `gen over SOURCE as v { … }` for a table /
    `over query` source (flat-map / filter).
 4. **Tuples + durability** — `emit (A, B)` → `name/2`; optional cache/LMDB-backed

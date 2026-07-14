@@ -99,15 +99,23 @@ build(File, Out0, KeepLL) :-
         halt(2)
     ),
     normalize_passes(File, Program0, Program1),
-    resolve_cache_use(File, Program1, Program),
+    resolve_cache_use(File, Program1, Program2),
+    % Generator blocks (PLAWK_GENERATOR_BLOCKS.md): reject unsupported ones,
+    % then lift the supported ones out of the pass list -- a pure generator
+    % with constant emits (`gen { emit 1; emit 2 } as name`) compiles to
+    % Prolog facts (`name(1). name(2).`), consumed by the query reader exactly
+    % like any other relation. `Program` is the program with generator blocks
+    % removed; `GenFactClauses` are the synthesised facts.
+    check_generator_blocks(File, Program2),
+    resolve_generator_blocks(Program2, Program, GenFactClauses),
     check_multitable_store(File, Program),
     check_query_reader(File, Program),
-    check_generator_blocks(File, Program),
     % A query-reader program contributes synthesised findall-wrapper clauses
     % (one per goal predicate) so its enumeration compiles into the binary
-    % alongside the user's @prolog predicates. Non-query programs add nothing.
+    % alongside the user's @prolog predicates; a generator block contributes
+    % its emitted facts. Non-query / non-generator programs add nothing.
     plawk_program_query_helper_clauses(Program, QueryHelperClauses),
-    append(Clauses, QueryHelperClauses, ClausesForPreds),
+    append([Clauses, GenFactClauses, QueryHelperClauses], ClausesForPreds),
     (   ClausesForPreds == []
     ->  Preds = [user:plawk_cli_marker/0]
     ;   (   plawk_prolog_block_preds(ClausesForPreds, Preds)
@@ -334,23 +342,57 @@ check_query_reader(File, Program) :-
     halt(2).
 check_query_reader(_File, _Program).
 
-% Generator blocks (PLAWK_GENERATOR_BLOCKS.md): `gen { emit ... } as name`
-% parses (PR 1) but its runtime -- collect the emitted values into a
-% materialised set exposed as a non-deterministic relation `name/1` -- is not
-% wired yet, so a program that defines one gets a clear, specific diagnostic
-% rather than the generic "outside the multi-pass surface". The surface stays
-% stable while the runtime lands.
+% Generator blocks (PLAWK_GENERATOR_BLOCKS.md). PR 2 supports the first shape:
+% a PURE generator whose body is only constant `emit`s (`gen { emit 1; emit 2 }
+% as name`), which compiles to Prolog facts. A generator whose body has a
+% computed emit (a field, arithmetic) or a non-emit action needs runtime
+% collection (a later PR), so it gets a clear, specific not-yet diagnostic
+% rather than the generic "outside the multi-pass surface".
 check_generator_blocks(File, Program) :-
     plawk_program_gen_blocks(Program, GenBlocks),
-    GenBlocks = [gen_block(name(Name), _) | _],
+    member(gen_block(name(Name), Body), GenBlocks),
+    \+ gen_block_supported(Body),
     !,
     format(user_error,
-        'plawk: ~w defines a generator block `gen { ... } as ~w`. Generator \c
-         blocks parse but their runtime is not yet implemented; see \c
-         PLAWK_GENERATOR_BLOCKS.md.~n',
+        'plawk: ~w defines a generator block `gen { ... } as ~w` with a \c
+         computed or non-constant body; only constant `emit`s (`emit 1`, \c
+         `emit "x"`) are supported yet -- see PLAWK_GENERATOR_BLOCKS.md.~n',
         [File, Name]),
     halt(2).
 check_generator_blocks(_File, _Program).
+
+% A generator block the PR-2 fact synthesis can lower: every action is a
+% constant `emit` (an integer or string literal). Computed emits (a field /
+% arithmetic) and non-emit actions are follow-ons (runtime collection).
+gen_block_supported(Body) :-
+    forall(member(Action, Body),
+        ( Action = emit(int(_)) ; Action = emit(string(_)) )).
+
+% Lift generator blocks out of the pass list: each supported block's constant
+% emits become facts for its relation (`gen { emit 1; emit 2 } as g` ->
+% `g(1). g(2).`), so the query reader consumes `g/1` like any relation. The
+% returned program has the generator blocks removed.
+resolve_generator_blocks(program_passes(Begin, Passes, End),
+        program_passes(Begin, Passes1, End), FactClauses) :-
+    !,
+    exclude(is_gen_block, Passes, Passes1),
+    include(is_gen_block, Passes, GenBlocks),
+    findall(Fact,
+        ( member(gen_block(name(Name), Body), GenBlocks),
+          member(emit(Value), Body),
+          gen_emit_fact(Name, Value, Fact) ),
+        FactClauses).
+resolve_generator_blocks(Program, Program, []).
+
+is_gen_block(gen_block(_, _)).
+
+% A constant emit -> a unary fact for the generated relation. An integer emits
+% itself; a string emits the corresponding atom (so `emit "red"` -> `g(red)`).
+gen_emit_fact(Name, int(N), Fact) :-
+    Fact =.. [Name, N].
+gen_emit_fact(Name, string(S), Fact) :-
+    atom_string(Atom, S),
+    Fact =.. [Name, Atom].
 
 % The findall-wrapper clauses to inject into a query program's @prolog
 % predicate set: one `__plawk_query_pred_C(L) :- findall(VC, pred(V1..Vn), L)`
