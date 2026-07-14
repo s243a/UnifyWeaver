@@ -468,6 +468,7 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, '"unifiable/3"'),
         sub_string(S, _, _, _, '"subtract/3"'),
         sub_string(S, _, _, _, '"intersection/3"'),
+        sub_string(S, _, _, _, '"union/3"'),
         sub_string(S, _, _, _, 'builtin_unify_member'),
         %% copy_term_walk helper (sharing-preserving recursive copy).
         sub_string(S, _, _, _, 'copy_term_walk'),

@@ -882,6 +882,83 @@ fn test_intersection_direct() {
 }
 
 #[test]
+fn test_union_direct() {
+    let (ok, vm) = call3(
+        "union/3",
+        Value::List(vec![a("a"), a("b"), a("c")]),
+        Value::List(vec![a("b"), a("d"), a("e")]),
+        ub("Union"),
+    );
+    assert!(ok);
+    assert_eq!(
+        read_var(&vm, "Union"),
+        Value::List(vec![a("a"), a("b"), a("c"), a("d"), a("e")]),
+    );
+
+    let (dupes_ok, dupes_vm) = call3(
+        "union/3",
+        Value::List(vec![a("a"), a("a"), a("b")]),
+        Value::List(vec![a("a"), a("c")]),
+        ub("Union"),
+    );
+    assert!(dupes_ok);
+    assert_eq!(
+        read_var(&dupes_vm, "Union"),
+        Value::List(vec![a("a"), a("a"), a("b"), a("c")]),
+    );
+
+    let (empty_ok, empty_vm) = call3(
+        "union/3",
+        Value::List(vec![]),
+        Value::List(vec![a("x"), a("y")]),
+        ub("Union"),
+    );
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Union"), Value::List(vec![a("x"), a("y")]));
+    assert!(!call3("union/3", a("bad"), Value::List(vec![]), ub("R")).0);
+    assert!(!call3("union/3", Value::List(vec![]), a("bad"), ub("R")).0);
+
+    let (vars_ok, vars_vm) = call3(
+        "union/3",
+        Value::List(vec![ub("X")]),
+        Value::List(vec![a("a"), a("b")]),
+        ub("Union"),
+    );
+    assert!(vars_ok);
+    assert_eq!(read_var(&vars_vm, "X"), a("a"));
+    assert_eq!(read_var(&vars_vm, "Union"), Value::List(vec![a("a"), a("b")]));
+
+    let (miss_ok, miss_vm) = call3(
+        "union/3",
+        Value::List(vec![Value::Str("f/2".to_string(), vec![ub("X"), a("a")])]),
+        Value::List(vec![
+            Value::Str("f/2".to_string(), vec![a("bound"), a("b")]),
+            a("keep"),
+        ]),
+        ub("Union"),
+    );
+    assert!(miss_ok);
+    assert_eq!(read_var(&miss_vm, "X"), ub("X"));
+    assert_eq!(
+        read_var(&miss_vm, "Union"),
+        Value::List(vec![
+            Value::Str("f".to_string(), vec![ub("X"), a("a")]),
+            Value::Str("f".to_string(), vec![a("bound"), a("b")]),
+            a("keep"),
+        ]),
+    );
+
+    let (mismatch_ok, mismatch_vm) = call3(
+        "union/3",
+        Value::List(vec![ub("X")]),
+        Value::List(vec![a("a")]),
+        Value::List(vec![]),
+    );
+    assert!(!mismatch_ok);
+    assert_eq!(read_var(&mismatch_vm, "X"), ub("X"));
+}
+
+#[test]
 fn test_ground() {
     assert!(call1("ground/1", a("x")).0);
     assert!(call1("ground/1", Value::List(vec![i(1), a("b")])).0);
