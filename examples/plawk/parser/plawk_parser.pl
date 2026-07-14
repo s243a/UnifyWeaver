@@ -1422,6 +1422,9 @@ action_sep_scan(yes) -->
     [].
 
 action(Action) -->
+    do_while_action(Action),
+    !.
+action(Action) -->
     while_action(Action),
     !.
 action(Action) -->
@@ -1496,6 +1499,19 @@ while_action(while_loop(cmp(var(V), Op, int(N)), Body)) -->
     identifier(V), ws, numeric_cmp_op(Op), ws, signed_integer_value(N), ws,
     ")", ws,
     action_block(Body).
+
+% A `do { BODY } while (VAR CMP int)` loop -- the body runs at least once, then
+% repeats while the condition holds (the awk do-while control structure). Parses
+% to do_while_loop(Body, cmp(var(V), Op, int(N))). Surface only, like `while`;
+% both share the same loop runtime (a later PR). Tried via its own action
+% clause; the leading `do` keyword distinguishes it.
+do_while_action(do_while_loop(Body, cmp(var(V), Op, int(N)))) -->
+    "do", identifier_boundary, ws,
+    action_block(Body), ws,
+    "while", identifier_boundary, ws,
+    "(", ws,
+    identifier(V), ws, numeric_cmp_op(Op), ws, signed_integer_value(N), ws,
+    ")".
 
 if_action(if(Pattern, ThenActions, ElseActions)) -->
     "if",

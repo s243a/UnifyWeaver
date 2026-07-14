@@ -40,12 +40,32 @@ test(while_operators_parse) :-
                   [])) )),
     !.
 
+% `do { BODY } while (VAR CMP int)` parses to do_while_loop(Body, cmp(...)).
+test(do_while_parses) :-
+    plawk_parse_string(
+        "{ i = 0; do { print i; i++ } while (i < 3) }\n",
+        program([],
+            [rule(always,
+                 [set(var(i), int(0)),
+                  do_while_loop([print([var(i)]), inc(var(i))],
+                      cmp(var(i), lt, int(3)))])],
+            [])),
+    !.
+
 % Building a program with a while loop is a clean compile error (exit 2) until
 % the loop runtime lands.
 test(while_is_not_yet_error) :-
     wdir(Dir),
     Src = "{ i = 0; while (i < 3) { print i; i++ } }\n",
     build_status(Dir, 'w', Src, St),
+    assertion(St == 2),
+    !.
+
+% A do-while loop is likewise a clean not-yet error (shares the loop runtime).
+test(do_while_is_not_yet_error) :-
+    wdir(Dir),
+    Src = "{ i = 0; do { print i; i++ } while (i < 3) }\n",
+    build_status(Dir, 'dw', Src, St),
     assertion(St == 2),
     !.
 

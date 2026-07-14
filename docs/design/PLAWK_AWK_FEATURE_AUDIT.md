@@ -34,12 +34,15 @@ only (runtime pending) · ❌ missing.
 | var assignment, `+=`, `++`, `//` | ✅ | indexed native scalar slots |
 | `if` / `else` (chains) | ✅ | |
 | `for (k in arr)` | ✅ | assoc for-in (rule body + END) |
-| `while (VAR CMP int)` | ⏳ | **surface parses; runtime pending** (this arc) |
+| `while (VAR CMP int)` | ⏳ | surface parses; runtime pending — `PLAWK_CONTROL_FLOW_PLAN.md` |
+| `do { } while (VAR CMP int)` | ⏳ | surface parses; shares the loop runtime |
 | `next` | ✅ | structural (guarded clause per rule) |
 | `break` / `continue` | ◐ | present in some loop contexts |
+| `if` with a plain (non-accumulator) body | ❌ | `{ if (c) { print $1 } }` is exit 3 — the scalar `if` lowering assumes branch bodies update scalars; blocks regex-in-`if` too |
+| regex in `if` (`if ($0 ~ /re/)`) | ◐ | condition parses (`~` ok); blocked by the guarded-print body above, not the regex |
+| brace-less `if`/loop body | ❌ | `if (c) print` (no braces) doesn't parse |
 | field assignment (`$2 = expr`) | ❌ | rebuilding `$0` from mutated fields not wired |
 | C-style `for (;;)` | ❌ | |
-| `do { } while` | ❌ | |
 | `exit [n]` | ❌ | |
 | `delete arr[k]` | ❌ | |
 | `getline` | ❌ | the multi-pass / `over` readers cover much of its use |
@@ -85,12 +88,20 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
 
 ## Prioritised gaps (recommended order)
 
-1. **`while` loop runtime** — the surface just landed; wire the loop (mutable
-   scalar state to a fixed point). The most-requested basic control structure
-   still missing at runtime.
-2. **User-function call in text/print context** — `print f($1)` should coerce
-   the text field like the accumulator path already does; small, high-value fix
-   that makes the *existing* function feature usable in the obvious spot.
+1. **`while` / `do-while` loop runtime** — the surfaces just landed; wire the
+   loop (mutable scalar state to a fixed point). **Plan:**
+   `PLAWK_CONTROL_FLOW_PLAN.md` — bracket each loop with a memory slot (SSA →
+   mem → loop → SSA) so the existing forward-phi scalar machinery is untouched.
+   The most-requested basic control structure still missing at runtime.
+2. **User-function call in text/print context** — `print f($1)` returns `0`: a
+   text field is passed to the foreign call as an *atom*, so the synthesised
+   `f(X,R) :- R is X*2` fails `is`. Works in `BINFMT`/typed mode. A **type-model
+   decision** (auto-coerce a numerically-used field arg to i64, or an explicit
+   `num($1)` at the call site — `int(...)` is not accepted as a call arg today);
+   wants a small design call before coding. See `PLAWK_CONTROL_FLOW_PLAN.md` §4.
+2b. **`if` with a plain guarded body** — `{ if (c) { print $1 } }` doesn't
+   compile (the scalar `if` lowering assumes branch bodies update scalars); this
+   is what actually blocks regex-in-`if`. Fix the `if`-body lowering.
 3. **`printf` format coverage** — add `%f`/`%g` (f64 exists), `%c`, `%x`, and
    width/precision; the current subset is thin for real formatting.
 4. **`exit [n]`** — common and cheap; a flagged early-terminate of the record
