@@ -3795,18 +3795,29 @@ plawk_program_multipass_driver_ir(
     findall(R, ( member(pass(PassRules), Passes), member(R, PassRules) ), AllRules),
     plawk_multipass_pass_plan(AllRules, Tables, AssocPlan),  % validates surface
     plawk_multipass_table_params(Tables, TableParamsIR, TableArgsIR),
-    % Program-wide str-valued (row) tables: a table a writer pass populates
-    % via `arr[$k] = $0` holds string values, so an `over`/`records` reader
-    % must resolve the stored id to the row's bytes. Threaded to each reader.
-    maplist(plawk_assoc_rule_action_specs, AllRules, AllRuleSpecs),
-    plawk_assoc_specs_str_arrays(AllRuleSpecs, StrArrays),
-    % Row schemas (from `declare NAME(col type, ...)`) for the named
-    % `records of` reader: column name -> position. Empty for schema-less
-    % programs (the reader requires a schema and fails without one).
+    % Row schemas (from `declare NAME(col type, ...)` or a `use NAME` whose
+    % store schema was read at build time): column name -> position for the
+    % named `records of` reader. Empty for schema-less programs.
     findall(cache_schema(ST, SC),
         ( member(begin(BActions), BeginClauses),
           member(cache_schema(ST, SC), BActions) ),
         Schemas),
+    % Program-wide str-valued (ROW) tables: a table holds string (row) values
+    % if a writer populates it (`arr[$k] = $0` / `= row(...)`), if a row
+    % reader consumes it (`records of` / `rows of`), or if it carries a row
+    % schema (so a pure `use` reader with no writer is still byte-valued).
+    % Str tables use the byte-valued cache load/commit, so this must be
+    % complete or a durable row store is (mis)read with the i64 loader.
+    maplist(plawk_assoc_rule_action_specs, AllRules, AllRuleSpecs),
+    plawk_assoc_specs_str_arrays(AllRuleSpecs, WriterStr),
+    findall(RT,
+        ( member(pass_records(_RV, var(RT), _RB), Passes)
+        ; member(pass_rows(_PV, var(RT), _PB), Passes)
+        ; member(cache_schema(RT, _), Schemas)
+        ),
+        ReaderStr),
+    append(WriterStr, ReaderStr, StrArrays0),
+    sort(StrArrays0, StrArrays),
     % A `BEGIN cache(...)`-declared shared table: load before pass 1, commit
     % after the last pass. Empty for pure-scalar / non-cache programs.
     plawk_program_cache_tables(BeginClauses, CacheTriples),
