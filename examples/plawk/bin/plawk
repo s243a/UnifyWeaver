@@ -342,49 +342,109 @@ check_query_reader(File, Program) :-
     halt(2).
 check_query_reader(_File, _Program).
 
-% Generator blocks (PLAWK_GENERATOR_BLOCKS.md). PR 2 supports the first shape:
-% a PURE generator whose body is only constant `emit`s (`gen { emit 1; emit 2 }
-% as name`), which compiles to Prolog facts. A generator whose body has a
-% computed emit (a field, arithmetic) or a non-emit action needs runtime
-% collection (a later PR), so it gets a clear, specific not-yet diagnostic
-% rather than the generic "outside the multi-pass surface".
+% Generator blocks (PLAWK_GENERATOR_BLOCKS.md). Two shapes compile to Prolog
+% clauses today: a PURE generator whose body is only constant `emit`s
+% (`gen { emit 1; emit 2 } as name` -> facts), and an INPUT-ITERATOR generator
+% over a query source (`gen over query(src(V)) as v { [if (v CMP int)] emit v }
+% as name` -> a derived rule `name(V) :- src(V) [, V CMP int]`). Anything else
+% -- a pure block with a computed/non-constant emit, or an over-block that
+% transforms rather than passes through the bound var -- needs runtime
+% collection (a later PR), so it gets a clear, specific not-yet diagnostic.
 check_generator_blocks(File, Program) :-
     plawk_program_gen_blocks(Program, GenBlocks),
-    member(gen_block(name(Name), Body), GenBlocks),
-    \+ gen_block_supported(Body),
+    member(gen_block(name(Name), Source, Body), GenBlocks),
+    \+ gen_block_supported(Source, Body),
     !,
     format(user_error,
-        'plawk: ~w defines a generator block `gen { ... } as ~w` with a \c
-         computed or non-constant body; only constant `emit`s (`emit 1`, \c
-         `emit "x"`) are supported yet -- see PLAWK_GENERATOR_BLOCKS.md.~n',
+        'plawk: ~w defines a generator block `... as ~w` outside the supported \c
+         surface (a pure block of constant `emit`s, or `gen over query(src(V)) \c
+         as v { [if (v CMP int)] emit v }`); this shape needs runtime \c
+         collection -- see PLAWK_GENERATOR_BLOCKS.md.~n',
         [File, Name]),
     halt(2).
 check_generator_blocks(_File, _Program).
 
-% A generator block the PR-2 fact synthesis can lower: every action is a
-% constant `emit` (an integer or string literal). Computed emits (a field /
-% arithmetic) and non-emit actions are follow-ons (runtime collection).
-gen_block_supported(Body) :-
+% A generator block whose clauses can be synthesised at build time:
+%  - a pure block (`Source == none`) whose every action is a constant `emit`
+%    (integer or string literal) -> facts;
+%  - an input iterator over a query source whose body passes the bound var
+%    through (`emit v`), optionally gated by an integer reader guard over `v`
+%    -> a derived rule.
+gen_block_supported(none, Body) :-
     forall(member(Action, Body),
         ( Action = emit(int(_)) ; Action = emit(string(_)) )).
+gen_block_supported(over(query(_Src, [_SrcVar]), LoopVar), Body) :-
+    gen_over_body_ok(Body, LoopVar).
 
-% Lift generator blocks out of the pass list: each supported block's constant
-% emits become facts for its relation (`gen { emit 1; emit 2 } as g` ->
-% `g(1). g(2).`), so the query reader consumes `g/1` like any relation. The
-% returned program has the generator blocks removed.
+% A supported input-iterator body: `emit v` (passthrough), optionally filtered
+% by `if (GUARD) emit v` where GUARD is an integer comparison over `v`.
+gen_over_body_ok([emit(var(LoopVar))], LoopVar).
+gen_over_body_ok([if(Guard, [emit(var(LoopVar))], [])], LoopVar) :-
+    gen_over_guard_ok(Guard, LoopVar).
+gen_over_guard_ok(and(L, R), LoopVar) :-
+    gen_over_guard_ok(L, LoopVar), gen_over_guard_ok(R, LoopVar).
+gen_over_guard_ok(forin_key_cmp(LoopVar, _Op, Value), LoopVar) :-
+    integer(Value).
+
+% Lift generator blocks out of the pass list, synthesising each one's clauses:
+% a pure block's constant emits become facts (`gen { emit 1; emit 2 } as g` ->
+% `g(1). g(2).`); an input iterator becomes a derived rule
+% (`gen over query(src(V)) as v { if (v > 2) emit v } as g` ->
+% `g(A) :- src(A), A > 2.`). The query reader then consumes `g/1` like any
+% relation. The returned program has the generator blocks removed.
 resolve_generator_blocks(program_passes(Begin, Passes, End),
-        program_passes(Begin, Passes1, End), FactClauses) :-
+        program_passes(Begin, Passes1, End), Clauses) :-
     !,
     exclude(is_gen_block, Passes, Passes1),
     include(is_gen_block, Passes, GenBlocks),
-    findall(Fact,
-        ( member(gen_block(name(Name), Body), GenBlocks),
-          member(emit(Value), Body),
-          gen_emit_fact(Name, Value, Fact) ),
-        FactClauses).
+    findall(Clause,
+        ( member(GB, GenBlocks), gen_block_clause(GB, Clause) ),
+        Clauses).
 resolve_generator_blocks(Program, Program, []).
 
-is_gen_block(gen_block(_, _)).
+is_gen_block(gen_block(_, _, _)).
+
+% The Prolog clause(s) a generator block contributes.
+% Pure block: one fact per constant emit.
+gen_block_clause(gen_block(name(Name), none, Body), Fact) :-
+    member(emit(Value), Body),
+    gen_emit_fact(Name, Value, Fact).
+% Input iterator: a single derived rule over the source goal.
+gen_block_clause(gen_block(name(Name), over(query(Src, [_SrcVar]), LoopVar),
+        Body), Clause) :-
+    % Arg is a fresh logic variable shared by the head, the source goal, and
+    % the filter -- so `g(A) :- src(A), A > 2` unifies across the three.
+    SrcGoal =.. [Src, Arg],
+    Head =.. [Name, Arg],
+    gen_over_body_goal(Body, LoopVar, Arg, FilterGoal),
+    ( FilterGoal == true
+    ->  Clause = (Head :- SrcGoal)
+    ;   Clause = (Head :- SrcGoal, FilterGoal)
+    ).
+
+% The Prolog goal an input-iterator body adds after the source goal: `true`
+% for a bare passthrough, or the translated guard for a filtered one.
+gen_over_body_goal([emit(var(_LoopVar))], _LoopVar, _Arg, true).
+gen_over_body_goal([if(Guard, [emit(var(_LoopVar))], [])], LoopVar, Arg,
+        Goal) :-
+    gen_guard_goal(Guard, LoopVar, Arg, Goal).
+
+% Translate an integer reader guard over the bound var into a Prolog arithmetic
+% comparison over the head argument.
+gen_guard_goal(and(L, R), LoopVar, Arg, (GL, GR)) :-
+    gen_guard_goal(L, LoopVar, Arg, GL),
+    gen_guard_goal(R, LoopVar, Arg, GR).
+gen_guard_goal(forin_key_cmp(LoopVar, Op, Value), LoopVar, Arg, Goal) :-
+    gen_cmp_op(Op, PrologOp),
+    Goal =.. [PrologOp, Arg, Value].
+
+% Surface comparison op -> Prolog arithmetic comparison.
+gen_cmp_op(gt, >).
+gen_cmp_op(lt, <).
+gen_cmp_op(ge, >=).
+gen_cmp_op(le, =<).
+gen_cmp_op(eq, =:=).
+gen_cmp_op(ne, =\=).
 
 % A constant emit -> a unary fact for the generated relation. An integer emits
 % itself; a string emits the corresponding atom (so `emit "red"` -> `g(red)`).
