@@ -1422,6 +1422,9 @@ action_sep_scan(yes) -->
     [].
 
 action(Action) -->
+    while_action(Action),
+    !.
+action(Action) -->
     if_action(Action),
     !.
 action(Action) -->
@@ -1480,6 +1483,20 @@ action(Action) -->
 %  awk conditionals: `else` is optional (an absent else parses as an
 %  empty branch), and `else if` chains nest as a single-element else
 %  branch containing the next if.
+% A `while (VAR CMP int) { BODY }` loop -- iterate the body while a scalar
+% variable compares to an integer bound (the awk `while` control structure).
+% Parses to while_loop(cmp(var(V), Op, int(N)), Body). This is the SURFACE
+% (mirrors the query reader / generator surface-first PRs): the loop body reuses
+% the general action block, and the codegen (bin/plawk) rejects it with a clean
+% not-yet diagnostic until the loop runtime lands. The condition is a scalar
+% comparison for now; a general boolean condition is a follow-on.
+while_action(while_loop(cmp(var(V), Op, int(N)), Body)) -->
+    "while", identifier_boundary, ws,
+    "(", ws,
+    identifier(V), ws, numeric_cmp_op(Op), ws, signed_integer_value(N), ws,
+    ")", ws,
+    action_block(Body).
+
 if_action(if(Pattern, ThenActions, ElseActions)) -->
     "if",
     ws,
