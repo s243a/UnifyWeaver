@@ -4,6 +4,9 @@
 The command uses the repository's canonical graph loaders and emits a portable,
 content-addressed JSON result.  It consumes no scores, residuals, embeddings, or
 judge responses and cannot authorize a live call.
+
+An infeasible gate exits with status 2 after writing the audit.  ``--audit-only``
+is the explicit reporting-mode escape hatch when a zero exit is required.
 """
 
 from __future__ import annotations
@@ -293,9 +296,12 @@ def build_arg_parser():
     parser.add_argument("--out", required=True)
     parser.add_argument("--lmdb-no-lock", action="store_true")
     parser.add_argument(
-        "--require-feasible",
+        "--audit-only",
         action="store_true",
-        help="return status 2 when the necessary structural capacity gate fails",
+        help=(
+            "return zero after a completed audit even when infeasible; "
+            "does not unlock anything"
+        ),
     )
     return parser
 
@@ -312,7 +318,7 @@ def main(argv=None):
         "artifact": artifact,
         "candidate_builder_must_stop": payload["decision"]["candidate_builder_must_stop"],
     }, indent=2, sort_keys=True))
-    if args.require_feasible and payload["decision"]["candidate_builder_must_stop"]:
+    if not args.audit_only and payload["decision"]["candidate_builder_must_stop"]:
         return 2
     return 0
 

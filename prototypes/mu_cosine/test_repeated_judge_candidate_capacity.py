@@ -230,7 +230,7 @@ def test_mixed_grid_reports_at_least_one_failure_without_overclaiming():
     assert "every registered size" not in payload["decision"]["reason"]
 
 
-def test_require_feasible_returns_two_for_blocked_audit(monkeypatch, tmp_path):
+def test_blocked_audit_returns_two_by_default(monkeypatch, tmp_path):
     graph = graph_from_component_sizes((16,))
     graphs = {
         corpus: {"parents": graph[0], "children": graph[1]}
@@ -246,11 +246,109 @@ def test_require_feasible_returns_two_for_blocked_audit(monkeypatch, tmp_path):
         [
             "--artifact-repo", "unused",
             "--out", str(output),
-            "--require-feasible",
         ]
     )
     assert status == 2
     assert json.loads(output.read_text())["decision"]["candidate_builder_must_stop"] is True
+
+
+def test_audit_only_explicitly_returns_zero_for_blocked_audit(monkeypatch, tmp_path):
+    graph = graph_from_component_sizes((16,))
+    graphs = {
+        corpus: {"parents": graph[0], "children": graph[1]}
+        for corpus in ("exploratory", "fresh")
+    }
+    monkeypatch.setattr(
+        runner,
+        "load_frozen_graphs",
+        lambda *_args, **_kwargs: (graphs, fake_inputs(), {}),
+    )
+    blocked_output = tmp_path / "blocked.json"
+    blocked_status = runner.main(
+        [
+            "--artifact-repo", "unused",
+            "--out", str(blocked_output),
+        ]
+    )
+    output = tmp_path / "audit-only.json"
+    status = runner.main(
+        [
+            "--artifact-repo", "unused",
+            "--out", str(output),
+            "--audit-only",
+        ]
+    )
+    assert blocked_status == 2
+    assert status == 0
+    assert output.read_bytes() == blocked_output.read_bytes()
+    payload = json.loads(output.read_text())
+    assert payload["decision"]["candidate_builder_must_stop"] is True
+    assert all(value is False for value in payload["authorization"].values())
+
+
+def test_passing_audit_returns_zero_by_default(monkeypatch, tmp_path):
+    graph = graph_from_component_sizes((1,) * 800)
+    graphs = {
+        corpus: {"parents": graph[0], "children": graph[1]}
+        for corpus in ("exploratory", "fresh")
+    }
+    monkeypatch.setattr(
+        runner,
+        "load_frozen_graphs",
+        lambda *_args, **_kwargs: (graphs, fake_inputs(), {}),
+    )
+    output = tmp_path / "capacity.json"
+    status = runner.main(
+        [
+            "--artifact-repo", "unused",
+            "--out", str(output),
+        ]
+    )
+    assert status == 0
+    assert json.loads(output.read_text())["decision"]["capacity_gate_passed"] is True
+
+
+def test_audit_only_does_not_swallow_load_errors(monkeypatch, tmp_path):
+    def fail_load(*_args, **_kwargs):
+        raise RuntimeError("fixture load failure")
+
+    monkeypatch.setattr(runner, "load_frozen_graphs", fail_load)
+    output = tmp_path / "capacity.json"
+    with pytest.raises(RuntimeError, match="fixture load failure"):
+        runner.main(
+            [
+                "--artifact-repo", "unused",
+                "--out", str(output),
+                "--audit-only",
+            ]
+        )
+    assert not output.exists()
+
+
+def test_audit_only_does_not_swallow_write_errors(monkeypatch, tmp_path):
+    graph = graph_from_component_sizes((16,))
+    graphs = {
+        corpus: {"parents": graph[0], "children": graph[1]}
+        for corpus in ("exploratory", "fresh")
+    }
+    monkeypatch.setattr(
+        runner,
+        "load_frozen_graphs",
+        lambda *_args, **_kwargs: (graphs, fake_inputs(), {}),
+    )
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("fixture write failure")
+
+    monkeypatch.setattr(runner, "_atomic_write", fail_write)
+    with pytest.raises(OSError, match="fixture write failure"):
+        runner.main(
+            [
+                "--artifact-repo", "unused",
+                "--out", str(tmp_path / "capacity.json"),
+                "--audit-only",
+            ]
+        )
 
 
 def test_graph_input_sets_must_match_exactly():

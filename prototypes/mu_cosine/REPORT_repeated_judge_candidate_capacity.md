@@ -111,13 +111,15 @@ freeze agreement/degree/tag rules, and run exact packability checks for every re
 ```bash
 python prototypes/mu_cosine/run_repeated_judge_candidate_capacity.py \
   --artifact-repo /path/to/UnifyWeaver-with-ignored-graph-artifacts \
-  --out /tmp/repeated_judge_candidate_capacity.json \
-  --require-feasible
+  --out /tmp/repeated_judge_candidate_capacity.json
 ```
 
-For the frozen inputs, `--require-feasible` writes the complete audit and exits with status 2.  Omitting that
-flag exits zero to mean only “audit completed”; downstream automation must then inspect
-`decision.candidate_builder_must_stop`.  The tracked reproduction artifact is
+For the frozen inputs, the default command writes the complete audit and exits with status 2.  This makes a
+shell caller fail closed without needing to remember an extra flag.  Explicit reporting workflows may pass
+`--audit-only` to return zero after writing the same blocked JSON; they must then inspect
+`decision.candidate_builder_must_stop`.  Pipeline automation should not use `--audit-only`.  Exit 2 is also
+used by `argparse` for command-line errors, so the presence of a completed artifact and its decision field
+distinguish a capacity block from invalid invocation.  The tracked reproduction artifact is
 `repro/repeated_judge_candidate_capacity/summary.json`: 14,322 bytes, SHA-256
-`0524769b708ec0270fa288ac914b93509cca1a5d8648fa8d5e4390b7ec092406`.  The focused capacity suite passes
-20 tests; the broader repeated-judge regression set passes 88 tests.
+`403b1a59b6e53c87f881dad65ab6af2f401e046c0c7009a1efd220eb3899cdd8`.  The focused capacity suite passes
+24 tests; the broader repeated-judge regression set passes 92 tests.
