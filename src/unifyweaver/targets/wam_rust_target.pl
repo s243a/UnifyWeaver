@@ -4410,6 +4410,33 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     false
                 }
             }
+            "union/3" => {
+                let left = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let right = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let mark = self.trail.len();
+                let mut union = Vec::with_capacity(left.len() + right.len());
+                union.extend(left.iter().cloned());
+                for item in &right {
+                    if !self.builtin_unify_member(item, &left) {
+                        union.push(item.clone());
+                    }
+                }
+                let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                if self.unify(&output, &Value::List(union)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
             "select/3" => {
                 let x_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
                 let list = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {

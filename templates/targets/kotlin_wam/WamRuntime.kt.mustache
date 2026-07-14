@@ -310,9 +310,13 @@ data class WamNativeSnapshot(
     val pc: Int,
 )
 
+// Native lowered predicates. The dispatch callback is WamRuntime.tryRun —
+// used for last-call `execute P/N` (EMIT-KOTLIN-4). Non-execute bodies ignore it.
+typealias WamNativeFn = (WamState, (String, WamState) -> Boolean) -> Boolean
+
 class WamProgram {
     private val predicates: MutableMap<String, PredicateCode> = linkedMapOf()
-    private val natives: MutableMap<String, (WamState) -> Boolean> = linkedMapOf()
+    private val natives: MutableMap<String, WamNativeFn> = linkedMapOf()
 
     fun register(name: String, instructions: List<Instruction>) {
         val labels = linkedMapOf<String, Int>()
@@ -324,11 +328,11 @@ class WamProgram {
         predicates[name] = PredicateCode(instructions, labels)
     }
 
-    fun registerNative(key: String, fn: (WamState) -> Boolean) {
+    fun registerNative(key: String, fn: WamNativeFn) {
         natives[key] = fn
     }
 
-    fun findNative(key: String): ((WamState) -> Boolean)? = natives[key]
+    fun findNative(key: String): WamNativeFn? = natives[key]
 
     fun findCode(name: String): PredicateCode? = predicates[name]
 
@@ -356,7 +360,9 @@ class WamRuntime(private val program: WamProgram) {
     fun tryRun(predicate: String, initialState: WamState = WamState()): Boolean {
         program.findNative(predicate)?.let { nativeFn ->
             val snapshot = initialState.snapshotForNative()
-            if (nativeFn(initialState)) {
+            // Thread tryRun as dispatch so lowered `execute P` can tail-call
+            // (native-first, then bytecode) without a separate runtime handle.
+            if (nativeFn(initialState, this::tryRun)) {
                 return true
             }
             if (program.findCode(predicate) == null) {

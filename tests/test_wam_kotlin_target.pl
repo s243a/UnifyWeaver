@@ -31,6 +31,17 @@
 :- dynamic kt3_pair/2.
 :- dynamic kt3_t4/2.
 :- dynamic kt3_mem/2.
+:- dynamic kt4_mem/2.
+:- dynamic kt4_mem_ok/0.
+:- dynamic kt4_mem_bad/0.
+:- dynamic kt4_app/3.
+:- dynamic kt4_app_ok/0.
+:- dynamic kt4_app_bad/0.
+:- dynamic kt4_rev_acc/3.
+:- dynamic kt4_rev/2.
+:- dynamic kt4_rev_ok/0.
+:- dynamic kt4_rev_bad/0.
+:- dynamic kt4_fib/2.
 
 :- begin_tests(wam_kotlin_target).
 
@@ -97,9 +108,11 @@ test(runtime_template_exposes_executable_wam_abi) :-
     assertion(has_substring(Code, '"get_structure"')),
     assertion(has_substring(Code, '"unify_variable"')),
     assertion(has_substring(Code, '"put_value", "put_unsafe_value"')),
-    assertion(has_substring(Code, 'fun registerNative(key: String, fn: (WamState) -> Boolean)')),
+    assertion(has_substring(Code, 'typealias WamNativeFn')),
+    assertion(has_substring(Code, 'fun registerNative(key: String, fn: WamNativeFn)')),
     assertion(has_substring(Code, 'fun snapshotForNative(): WamNativeSnapshot')),
     assertion(has_substring(Code, 'fun tryRun(predicate: String, initialState: WamState')),
+    assertion(has_substring(Code, 'this::tryRun')),
     assertion(has_substring(Code, 'fun functorName(functor: String): String')),
     assertion(has_substring(Code, 'fun kotlinLoGetConstant(state: WamState')),
     assertion(has_substring(Code, 'fun stateFromCliArgs(values: List<String>): WamState')).
@@ -249,7 +262,7 @@ test(functions_mode_emits_lowered_fun_and_register_native, [nondet]) :-
         ),
         (   wam_kotlin_target:write_wam_kotlin_project([user:kt_fact/2], [emit_mode(functions)], TmpDir),
             read_file_to_string('output/test_wam_kotlin_functions_fact/src/main/kotlin/generated/wam/Main.kt', Main, []),
-            assertion(has_substring(Main, 'fun lowered_kt_fact_2(state: WamState): Boolean')),
+            assertion(has_substring(Main, 'fun lowered_kt_fact_2(state: WamState, dispatch: (String, WamState) -> Boolean): Boolean')),
             assertion(has_substring(Main, 'program.registerNative("kt_fact/2", ::lowered_kt_fact_2)')),
             assertion(has_substring(Main, 'register_kt_fact(program)')),
             assertion(\+ has_substring(Main, 'Native Kotlin lowering selected'))
@@ -531,8 +544,8 @@ test(y_env_recursion_fib, [condition(gradle_available), nondet]) :-
         )
     ).
 
-% EMIT-KOTLIN-3: deterministic multi-clause (no call/execute) lowers;
-% recursion still declines.
+% EMIT-KOTLIN-3: deterministic multi-clause (no mid-body call) lowers;
+% EMIT-KOTLIN-4: last-call execute (member) also lowers; fib stays declined.
 test(functions_mode_multi_clause_partition, [nondet]) :-
     setup_call_cleanup(
         (   retractall(user:kt3_color(_)),
@@ -556,7 +569,7 @@ test(functions_mode_multi_clause_partition, [nondet]) :-
             assertion(memberchk(native(kt3_color/1, _), Native)),
             assertion(memberchk(native(kt3_pair/2, _), Native)),
             assertion(memberchk(native(kt3_t4/2, _), Native)),
-            assertion(\+ memberchk(native(kt3_mem/2, _), Native)),
+            assertion(memberchk(native(kt3_mem/2, _), Native)),
             assertion(memberchk(wam(kt3_mem/2, _), Wam)),
             memberchk(native(kt3_color/1, lowered(_, _, ColorCode)), Native),
             assertion(has_substring(ColorCode, 'T5 first-argument dispatch')),
@@ -564,7 +577,10 @@ test(functions_mode_multi_clause_partition, [nondet]) :-
             memberchk(native(kt3_t4/2, lowered(_, _, T4Code)), Native),
             assertion(has_substring(T4Code, 'T4 all-clauses inline')),
             assertion(has_substring(T4Code, 'snapshotForNative')),
-            assertion(has_substring(T4Code, 'restoreFromSnapshot'))
+            assertion(has_substring(T4Code, 'restoreFromSnapshot')),
+            memberchk(native(kt3_mem/2, lowered(_, _, MemCode)), Native),
+            assertion(has_substring(MemCode, 'return dispatch("kt3_mem/2"')),
+            assertion(has_substring(MemCode, 'dispatch: (String, WamState) -> Boolean'))
         ),
         (   retractall(user:kt3_color(_)),
             retractall(user:kt3_pair(_, _)),
@@ -672,6 +688,180 @@ test(functions_mode_gradle_multi_clause_t4, [condition(gradle_available), nondet
             assertion(FZTrim == IZTrim)
         ),
         retractall(user:kt3_t4(_, _))
+    ).
+
+% EMIT-KOTLIN-4: last-call execute — member/append/acc-reverse LOWER;
+% mid-body call (fib) still declines.
+test(functions_mode_execute_partition, [nondet]) :-
+    setup_call_cleanup(
+        (   retractall(user:kt4_mem(_, _)),
+            retractall(user:kt4_app(_, _, _)),
+            retractall(user:kt4_rev_acc(_, _, _)),
+            retractall(user:kt4_rev(_, _)),
+            retractall(user:kt4_fib(_, _)),
+            assertz(user:kt4_mem(X, [X|_])),
+            assertz(user:(kt4_mem(X, [_|T]) :- kt4_mem(X, T))),
+            assertz(user:kt4_app([], L, L)),
+            assertz(user:(kt4_app([H|T], L, [H|R]) :- kt4_app(T, L, R))),
+            assertz(user:kt4_rev_acc([], A, A)),
+            assertz(user:(kt4_rev_acc([H|T], A, R) :- kt4_rev_acc(T, [H|A], R))),
+            assertz(user:(kt4_rev(L, R) :- kt4_rev_acc(L, [], R))),
+            assertz(user:kt4_fib(0, 0)),
+            assertz(user:kt4_fib(1, 1)),
+            assertz(user:(kt4_fib(N, R) :- N > 1, N1 is N - 1, N2 is N - 2,
+                kt4_fib(N1, R1), kt4_fib(N2, R2), R is R1 + R2))
+        ),
+        (   wam_kotlin_partition_predicates(functions,
+                [user:kt4_mem/2, user:kt4_app/3, user:kt4_rev_acc/3,
+                 user:kt4_rev/2, user:kt4_fib/2],
+                Native, _Wam, Failed),
+            assertion(Failed == []),
+            assertion(memberchk(native(kt4_mem/2, _), Native)),
+            assertion(memberchk(native(kt4_app/3, _), Native)),
+            assertion(memberchk(native(kt4_rev_acc/3, _), Native)),
+            assertion(memberchk(native(kt4_rev/2, _), Native)),
+            assertion(\+ memberchk(native(kt4_fib/2, _), Native)),
+            memberchk(native(kt4_mem/2, lowered(_, _, MemCode)), Native),
+            assertion(has_substring(MemCode, 'return dispatch("kt4_mem/2"')),
+            memberchk(native(kt4_app/3, lowered(_, _, AppCode)), Native),
+            assertion(has_substring(AppCode, 'return dispatch("kt4_app/3"'))
+        ),
+        (   retractall(user:kt4_mem(_, _)),
+            retractall(user:kt4_app(_, _, _)),
+            retractall(user:kt4_rev_acc(_, _, _)),
+            retractall(user:kt4_rev(_, _)),
+            retractall(user:kt4_fib(_, _))
+        )
+    ).
+
+test(functions_mode_gradle_execute_member_append, [condition(gradle_available), nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_execute_mem_app',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    Preds = [user:kt4_mem_ok/0, user:kt4_mem_bad/0, user:kt4_mem/2,
+             user:kt4_app_ok/0, user:kt4_app_bad/0, user:kt4_app/3],
+    setup_call_cleanup(
+        (   retractall(user:kt4_mem(_, _)),
+            retractall(user:kt4_mem_ok),
+            retractall(user:kt4_mem_bad),
+            retractall(user:kt4_app(_, _, _)),
+            retractall(user:kt4_app_ok),
+            retractall(user:kt4_app_bad),
+            assertz(user:kt4_mem(X, [X|_])),
+            assertz(user:(kt4_mem(X, [_|T]) :- kt4_mem(X, T))),
+            assertz(user:(kt4_mem_ok :- kt4_mem(b, [a,b,c]))),
+            assertz(user:(kt4_mem_bad :- kt4_mem(z, [a,b,c]))),
+            assertz(user:kt4_app([], L, L)),
+            assertz(user:(kt4_app([H|T], L, [H|R]) :- kt4_app(T, L, R))),
+            assertz(user:(kt4_app_ok :- kt4_app([a,b], [c], [a,b,c]))),
+            assertz(user:(kt4_app_bad :- kt4_app([a], [b], [a,c])))
+        ),
+        (   wam_kotlin_target:write_wam_kotlin_project(
+                Preds, [emit_mode(interpreter), conformance_main(true)], TmpDir),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt4_mem_ok/0'], IMO, _, SM1),
+            assertion(SM1 == exit(0)),
+            normalize_space(string(IMOTrim), IMO),
+            assertion(IMOTrim == "true"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt4_mem_bad/0'], IMB, _, SM2),
+            assertion(SM2 == exit(0)),
+            normalize_space(string(IMBTrim), IMB),
+            assertion(IMBTrim == "false"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt4_app_ok/0'], IAO, _, SA1),
+            assertion(SA1 == exit(0)),
+            normalize_space(string(IAOTrim), IAO),
+            assertion(IAOTrim == "true"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt4_app_bad/0'], IAB, _, SA2),
+            assertion(SA2 == exit(0)),
+            normalize_space(string(IABTrim), IAB),
+            assertion(IABTrim == "false"),
+            wam_kotlin_target:write_wam_kotlin_project(
+                Preds, [emit_mode(functions), conformance_main(true)], TmpDir),
+            read_file_to_string(
+                'output/test_wam_kotlin_execute_mem_app/src/main/kotlin/generated/wam/Main.kt',
+                Main, []),
+            assertion(has_substring(Main, 'fun lowered_kt4_mem_2')),
+            assertion(has_substring(Main, 'registerNative("kt4_mem/2"')),
+            assertion(has_substring(Main, 'fun lowered_kt4_app_3')),
+            assertion(has_substring(Main, 'return dispatch("kt4_mem/2"')),
+            assertion(has_substring(Main, 'return dispatch("kt4_app/3"')),
+            run_gradle(TmpDir, ['-q', 'compileKotlin'], _, _, CS),
+            assertion(CS == exit(0)),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt4_mem_ok/0'], FMO, _, SM3),
+            assertion(SM3 == exit(0)),
+            normalize_space(string(FMOTrim), FMO),
+            assertion(FMOTrim == IMOTrim),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt4_mem_bad/0'], FMB, _, SM4),
+            assertion(SM4 == exit(0)),
+            normalize_space(string(FMBTrim), FMB),
+            assertion(FMBTrim == IMBTrim),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt4_app_ok/0'], FAO, _, SA3),
+            assertion(SA3 == exit(0)),
+            normalize_space(string(FAOTrim), FAO),
+            assertion(FAOTrim == IAOTrim),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt4_app_bad/0'], FAB, _, SA4),
+            assertion(SA4 == exit(0)),
+            normalize_space(string(FABTrim), FAB),
+            assertion(FABTrim == IABTrim)
+        ),
+        (   retractall(user:kt4_mem(_, _)),
+            retractall(user:kt4_mem_ok),
+            retractall(user:kt4_mem_bad),
+            retractall(user:kt4_app(_, _, _)),
+            retractall(user:kt4_app_ok),
+            retractall(user:kt4_app_bad)
+        )
+    ).
+
+test(functions_mode_gradle_execute_acc_reverse, [condition(gradle_available), nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_execute_rev',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    Preds = [user:kt4_rev_ok/0, user:kt4_rev_bad/0, user:kt4_rev/2, user:kt4_rev_acc/3],
+    setup_call_cleanup(
+        (   retractall(user:kt4_rev_acc(_, _, _)),
+            retractall(user:kt4_rev(_, _)),
+            retractall(user:kt4_rev_ok),
+            retractall(user:kt4_rev_bad),
+            assertz(user:kt4_rev_acc([], A, A)),
+            assertz(user:(kt4_rev_acc([H|T], A, R) :- kt4_rev_acc(T, [H|A], R))),
+            assertz(user:(kt4_rev(L, R) :- kt4_rev_acc(L, [], R))),
+            assertz(user:(kt4_rev_ok :- kt4_rev([a,b,c], [c,b,a]))),
+            assertz(user:(kt4_rev_bad :- kt4_rev([a,b,c], [a,b,c])))
+        ),
+        (   wam_kotlin_target:write_wam_kotlin_project(
+                Preds, [emit_mode(interpreter), conformance_main(true)], TmpDir),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt4_rev_ok/0'], IO, _, S1),
+            assertion(S1 == exit(0)),
+            normalize_space(string(IOTrim), IO),
+            assertion(IOTrim == "true"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt4_rev_bad/0'], IB, _, S2),
+            assertion(S2 == exit(0)),
+            normalize_space(string(IBTrim), IB),
+            assertion(IBTrim == "false"),
+            wam_kotlin_target:write_wam_kotlin_project(
+                Preds, [emit_mode(functions), conformance_main(true)], TmpDir),
+            read_file_to_string(
+                'output/test_wam_kotlin_execute_rev/src/main/kotlin/generated/wam/Main.kt',
+                Main, []),
+            assertion(has_substring(Main, 'registerNative("kt4_rev_acc/3"')),
+            assertion(has_substring(Main, 'registerNative("kt4_rev/2"')),
+            assertion(has_substring(Main, 'return dispatch("kt4_rev_acc/3"')),
+            run_gradle(TmpDir, ['-q', 'compileKotlin'], _, _, CS),
+            assertion(CS == exit(0)),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt4_rev_ok/0'], FO, _, S3),
+            assertion(S3 == exit(0)),
+            normalize_space(string(FOTrim), FO),
+            assertion(FOTrim == IOTrim),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt4_rev_bad/0'], FB, _, S4),
+            assertion(S4 == exit(0)),
+            normalize_space(string(FBTrim), FB),
+            assertion(FBTrim == IBTrim)
+        ),
+        (   retractall(user:kt4_rev_acc(_, _, _)),
+            retractall(user:kt4_rev(_, _)),
+            retractall(user:kt4_rev_ok),
+            retractall(user:kt4_rev_bad)
+        )
     ).
 
 :- end_tests(wam_kotlin_target).
