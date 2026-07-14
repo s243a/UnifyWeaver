@@ -488,10 +488,31 @@ function_def((Head :- Body)) -->
     function_expr(Params, Pairs, ArithTerm),
     action_block_close,
     { pairs_values(Pairs, Vars),
-      append(Vars, [Result], HeadArgs),
+      % awk auto-coercion: a function body is `Result is ArithTerm`, so every
+      % parameter is used numerically. Text fields arrive as atoms (e.g. '5'),
+      % which `is/2` would reject -- so the head takes a fresh var per param and
+      % coerces it to a number (`number(H) -> V = H ; atom_number(H, V)`) before
+      % the arithmetic. A typed i64 arg (BINFMT mode) is already a number, so it
+      % passes through unchanged; a text field is parsed. No engine change; the
+      % coercion is local to the synthesised clause (PLAWK_AWK_FEATURE_AUDIT.md
+      % gap 2, decision: auto-coerce).
+      length(Vars, NParams),
+      length(HeadVars, NParams),
+      maplist(plawk_fn_coerce_goal, HeadVars, Vars, CoerceGoals),
+      append(HeadVars, [Result], HeadArgs),
       Head =.. [Name | HeadArgs],
-      Body = (Result is ArithTerm)
+      append(CoerceGoals, [Result is ArithTerm], BodyGoals),
+      plawk_conjunction(BodyGoals, Body)
     }.
+
+% The per-parameter numeric coercion goal: pass a number through, parse an atom.
+plawk_fn_coerce_goal(Head, Value,
+    (number(Head) -> Value = Head ; atom_number(Head, Value))).
+
+% Fold a non-empty goal list into a Prolog conjunction.
+plawk_conjunction([Goal], Goal) :- !.
+plawk_conjunction([Goal | Goals], (Goal, Rest)) :-
+    plawk_conjunction(Goals, Rest).
 
 function_params([Param | Params]) -->
     identifier(Param),

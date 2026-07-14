@@ -51,7 +51,7 @@ only (runtime pending) · ❌ missing.
 
 | Feature | Status | Notes |
 |---|---|---|
-| user functions (`function f(a) { return … }`) | ◐ | compile to Prolog clauses; work in accumulator / typed-field (`BINFMT`) contexts. **Gap: `print f($1)` in text mode returns 0** — the text field isn't coerced into the call. Prioritised below. |
+| user functions (`function f(a) { return … }`) | ✅ | compile to Prolog clauses; work in accumulator / typed-field (`BINFMT`) contexts **and text mode** — `print f($1)` auto-coerces the field (awk semantics). |
 | string: `length` `substr` `index` `tolower` `toupper` | ✅ | native, allocation-free |
 | string: `split` `sub` `gsub` `match` `sprintf` | ❌ | |
 | numeric: `int` | ✅ | `sin`/`cos`/`sqrt`/`rand`/… ❌ (f64 machinery exists) |
