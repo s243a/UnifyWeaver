@@ -776,6 +776,47 @@ fn test_unifiable_direct() {
 }
 
 #[test]
+fn test_variant_equivalence_direct() {
+    assert!(call2("=@=/2", ub("X"), ub("Y")).0);
+    assert!(call2("=@=/2", a("same"), a("same")).0);
+    assert!(!call2("=@=/2", a("left"), a("right")).0);
+
+    let shared_left = Value::Str("f/2".to_string(), vec![ub("X"), ub("X")]);
+    let shared_right = Value::Str("f/2".to_string(), vec![ub("A"), ub("A")]);
+    let distinct_right = Value::Str("f/2".to_string(), vec![ub("A"), ub("B")]);
+    let (shared_ok, shared_vm) = call2("=@=/2", shared_left.clone(), shared_right);
+    assert!(shared_ok);
+    assert_eq!(read_var(&shared_vm, "X"), ub("X"));
+    assert_eq!(read_var(&shared_vm, "A"), ub("A"));
+    assert!(!call2("=@=/2", shared_left.clone(), distinct_right.clone()).0);
+    assert!(!call2("=@=/2", distinct_right, shared_left).0);
+
+    let nested_left = Value::Str(
+        "outer/2".to_string(),
+        vec![ub("X"), Value::List(vec![ub("Y"), ub("X")])],
+    );
+    let nested_right = Value::Str(
+        "outer/2".to_string(),
+        vec![ub("A"), Value::List(vec![ub("B"), ub("A")])],
+    );
+    assert!(call2("=@=/2", nested_left.clone(), nested_right.clone()).0);
+    assert!(!call2(
+        "=@=/2",
+        nested_left.clone(),
+        Value::Str("other/2".to_string(), vec![ub("A"), ub("B")]),
+    ).0);
+    assert!(call2("\\\\=@=/2", nested_left, a("different")).0);
+    assert!(!call2("\\\\=@=/2", nested_right.clone(), nested_right).0);
+
+    assert!(call2("=@=/2", Value::List(vec![]), a("[]")).0);
+    assert!(call2(
+        "=@=/2",
+        Value::List(vec![ub("X")]),
+        Value::Str("[|]/2".to_string(), vec![ub("Y"), a("[]")]),
+    ).0);
+}
+
+#[test]
 fn test_ground() {
     assert!(call1("ground/1", a("x")).0);
     assert!(call1("ground/1", Value::List(vec![i(1), a("b")])).0);
