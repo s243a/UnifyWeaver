@@ -33,8 +33,13 @@ surface, the runtime ABI, and a phased rollout.
   bytes persisted, phase 8.4); self-describing store — schema persisted and
   validated on open (phase 8.7); and `use NAME` to attach to an existing
   store without re-`declare` (phase 8.8).
+- **Reader guards** (a `WHERE`-style row filter): any of the three row readers
+  may wrap its `print` in `if (COND) …`, where `COND` compares a column to an
+  integer literal — `r["col"] CMP int` (records), `r[N] CMP int` (positional),
+  or `$N CMP int` (anon). The six operators are `== != < <= > >=`; filtered
+  rows never reach the print block (`tests/test_plawk_reader_guards.pl`).
 
-**Not yet:** reader guards (a `WHERE`-style row filter); durable rows over the
+**Not yet:** durable rows over the
 LMDB backend; `rows of`'s `unsafe` / inline check-or-rename spec; multiple
 named tables per store (phase 8.9); the `over prev` reader (phase 4
 follow-on); the query reader (phase 6); `eager` / secondary indexes;
@@ -659,7 +664,8 @@ either is taken up.
 constructs line up with pieces we already have: a `do { … }` block is almost
 exactly a `pass { … }` block — a block of actions run (repeatedly) over a
 record stream — and a `while (cond)` clause is essentially a **filter**, a
-narrower cousin of the `WHERE`-style reader guard (§3.9-adjacent): the guard
+narrower cousin of the `WHERE`-style reader guard (now landed — see the Status
+list): the guard
 selects which rows a reader emits, while the `while` selects how long a loop
 continues. That symmetry suggests the eventual `do`/`while` should share the
 guard/condition machinery (a boolean predicate over the current record's
@@ -668,8 +674,8 @@ fields) rather than grow a parallel one.
 ### 3.9 Views (future TODO — brief spec, not planned)
 
 A **view** is a named, derived query over one or more tables — conceptually a
-stored `records of … WHERE … ` (once reader guards, §status, land) with a
-projection. Recorded as a sketch, **not** scheduled.
+stored `records of … WHERE … ` (reader guards have landed; a view would pair
+one with a projection). Recorded as a sketch, **not** scheduled.
 
 Backend-adaptive, mirroring `PLAWK_CACHE_BACKENDS.md`:
 
@@ -879,7 +885,13 @@ single-pass test before any driver surgery).
   `select` surface, no re-`declare` — **LANDED (file backend)**
   (`tests/test_plawk_use_table.pl`); (8.9) multiple named tables per store
   (namespaces / LMDB named sub-DBs, §3.5, per `PLAWK_CACHE_BACKENDS.md`) so
-  `use ns.table` selects among them.
+  `use ns.table` selects among them. (8.10) **reader guards** — a
+  `WHERE`-style row filter on any of the three readers: `if (r["col"] CMP int)`
+  (records), `if (r[N] CMP int)` (positional), `if ($N CMP int)` (anon), for
+  the six operators `== != < <= > >=`. The guard lowers to an i64 field extract
+  + `icmp` + conditional branch, so filtered rows never reach the print block —
+  **LANDED** (`tests/test_plawk_reader_guards.pl`; a guard against a
+  non-integer literal / a boolean combination of guards remain a follow-on).
 
 ## 6. Open questions
 
