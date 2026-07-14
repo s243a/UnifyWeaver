@@ -1074,15 +1074,17 @@ single-pass test before any driver surgery).
   reader **materialises** the solution set (a `findall` collapse at the reader
   boundary — bounded-multiplicity, `UNIFYWEAVER_LANGUAGE_PRINCIPLES.md`
   Principle 1) and iterates it like `over TABLE`, rather than retaining live
-  choicepoints (which §1 forbids in the hot loop). **PRs 1–2 landed**: the
-  surface parses to `pass_query(query(Pred, Vars), Body)`, and the runtime for
-  the first shape (an all-query program, single-output goal, body `print $1`)
-  runs end-to-end — the build injects `__plawk_query_pred(L) :- findall(V,
-  pred(V), L)`, materialises the list into a table by position via
-  `@wam_object_call_posarray` on the shared `%WamState`, and prints each
-  solution's integer in key order (ordered, deterministic; a disjunctive goal
-  yields every solution). Higher arity, richer bodies, and mixed passes are the
-  next PRs.
+  choicepoints (which §1 forbids in the hot loop). **PRs 1–3 landed**: the
+  surface parses to `pass_query(query(Pred, Vars), Body)`, and an all-query
+  program of any goal arity with a `print $K...` body runs end-to-end — the
+  build injects a per-column wrapper `__plawk_query_pred_C(L) :- findall(VC,
+  pred(V1..Vn), L)`, materialises each column into a table by position via
+  `@wam_object_call_posarray` on the shared `%WamState`, and walks keys in
+  order binding `$1..$n` (ordered, deterministic; a disjunctive goal yields
+  every solution; columns stay aligned across the per-column runs for a pure
+  goal). The body may reorder, repeat, or subset the printed columns. Guards
+  in the body, mixed query + ordinary passes, and string columns are the next
+  PRs.
 
 - **Phase 7 — secondary indexes (§3.5).** `index TABLE by FIELD [unique]` on
   record-valued tables; unique lookups return one record; non-unique
