@@ -1200,7 +1200,7 @@ for_in_body(Actions) -->
 % loop, so the operands live here rather than in the global pattern
 % grammar. Gates the per-key print; no cross-iteration state.
 for_in_body([if(Guard, [PrintAction], [])]) -->
-    "{", ws, "if", ws, "(", ws, forin_guard(Guard), ws, ")", ws,
+    "{", ws, "if", ws, "(", ws, guard_expr(Guard), ws, ")", ws,
     print_action(PrintAction), ws, "}",
     !.
 for_in_body([WritebinAction]) -->
@@ -1208,6 +1208,38 @@ for_in_body([WritebinAction]) -->
     !.
 for_in_body([PrintAction]) -->
     print_action(PrintAction).
+
+% A guard expression: one or more comparisons combined with `&&` / `||`
+% (short-circuit, `&&` binding tighter than `||`, left-associative, parens
+% allowed). A single comparison parses to the bare guard term (unchanged), so
+% existing single-guard `if`s are untouched; combinations parse to and(L, R) /
+% or(L, R). The leaves are the same forin_guard comparisons (reader guards
+% `r["col"] CMP L` etc.); boolean combination is supported by the row readers.
+guard_expr(Expr) -->
+    guard_or(Expr).
+guard_or(Expr) -->
+    guard_and(Left),
+    guard_or_rest(Left, Expr).
+guard_or_rest(Left, Expr) -->
+    ws, "||", ws, guard_and(Right),
+    !,
+    guard_or_rest(or(Left, Right), Expr).
+guard_or_rest(Expr, Expr) -->
+    [].
+guard_and(Expr) -->
+    guard_atom(Left),
+    guard_and_rest(Left, Expr).
+guard_and_rest(Left, Expr) -->
+    ws, "&&", ws, guard_atom(Right),
+    !,
+    guard_and_rest(and(Left, Right), Expr).
+guard_and_rest(Expr, Expr) -->
+    [].
+guard_atom(Expr) -->
+    "(", ws, guard_expr(Expr), ws, ")",
+    !.
+guard_atom(Guard) -->
+    forin_guard(Guard).
 
 % arr[k] CMP int -- value comparison (tried before the bare-key form,
 % since `arr[` also starts with an identifier).
