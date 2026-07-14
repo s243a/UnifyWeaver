@@ -3912,18 +3912,44 @@ plawk_program_query_passes(program_passes(_, Passes, _), QueryPasses) :-
 plawk_program_query_passes(program(_, _, _), []).
 
 %% plawk_query_pass_supported(+Pass) is semidet.
-%  The query-reader surface a build can lower today (phase 6, PRs 2-3): a goal
-%  of any arity >= 1 whose body is a single `print` of `$K` fields, each `K` a
-%  column of the goal (1..arity). Every solution's arguments are ground
-%  integers materialised at $1..$n. Guards, mixed passes, and non-integer
-%  columns are follow-ons; an unsupported shape yields a clean not-yet compile
-%  error rather than a miscompile.
-plawk_query_pass_supported(pass_query(query(_Pred, Vars), [print(Fields)])) :-
+%  The query-reader surface a build can lower today (phase 6, PRs 2-4): a goal
+%  of any arity >= 1 whose body is a single `print` of `$K` fields (each `K` a
+%  column of the goal, 1..arity), optionally gated by a reader guard
+%  `if (COND)` comparing `$K` columns to integers (`&&` / `||` combinations
+%  allowed). Every solution's arguments are ground integers materialised at
+%  $1..$n. Mixed passes and non-integer columns are follow-ons; an unsupported
+%  shape yields a clean not-yet compile error rather than a miscompile.
+plawk_query_pass_supported(pass_query(query(_Pred, Vars), Body)) :-
     Vars = [_ | _],
     length(Vars, Arity),
+    plawk_query_body_plan(Body, Fields, Guard),
     Fields = [_ | _],
     forall(member(F, Fields),
-        ( F = field(K), integer(K), K >= 1, K =< Arity )).
+        ( F = field(K), integer(K), K >= 1, K =< Arity )),
+    plawk_query_guard_ok(Guard, Arity).
+
+%% plawk_query_body_plan(+Body, -Fields, -Guard) is semidet.
+%  Split a query pass body into its print field list and an optional reader
+%  guard. A bare `print` has guard `none`; an `if (COND) print ...` (which
+%  `for_in_body` parses to `[if(Guard, [print(Fields)], [])]`) carries the
+%  condition. No other body shape is a query reader today.
+plawk_query_body_plan([print(Fields)], Fields, none).
+plawk_query_body_plan([if(Guard, [print(Fields)], [])], Fields, Guard).
+
+%% plawk_query_guard_ok(+Guard, +Arity) is semidet.
+%  A reader guard a query pass can lower: `&&` / `||` over `$K CMP int` leaves
+%  (`rfield_cmp`), each column in range. Columns are i64, so only integer
+%  comparisons are meaningful in v1 (float/string RHS are a follow-on).
+plawk_query_guard_ok(none, _Arity).
+plawk_query_guard_ok(and(L, R), Arity) :-
+    plawk_query_guard_ok(L, Arity),
+    plawk_query_guard_ok(R, Arity).
+plawk_query_guard_ok(or(L, R), Arity) :-
+    plawk_query_guard_ok(L, Arity),
+    plawk_query_guard_ok(R, Arity).
+plawk_query_guard_ok(rfield_cmp(N, _Op, Value), Arity) :-
+    integer(N), N >= 1, N =< Arity,
+    integer(Value).
 
 %% plawk_query_helper_name(+Pred, +Col, -Name) is det.
 %  The synthesised findall-wrapper predicate name for column `Col` of a query
@@ -3980,10 +4006,11 @@ plawk_program_query_driver_ir(
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_query_foreign_vm_ir(InstrCount, LabelCount, VmIR),
     findall(FnIR,
-        ( nth0(I, Passes, pass_query(query(Pred, Vars), [print(Fields)])),
+        ( nth0(I, Passes, pass_query(query(Pred, Vars), Body)),
           length(Vars, Arity),
-          plawk_multipass_query_fn_ir(I, Pred, Arity, Fields, OutputSeparator,
-              FnIR) ),
+          plawk_query_body_plan(Body, Fields, Guard),
+          plawk_multipass_query_fn_ir(I, Pred, Arity, Fields, Guard,
+              OutputSeparator, FnIR) ),
         FnIRs),
     atomic_list_concat(FnIRs, '\n', PassFnsIR),
     findall(CallLine,
@@ -4038,17 +4065,19 @@ make:
         [InstrCount, InstrCount, InstrCount, LabelCount, LabelCount,
          LabelCount]).
 
-%% plawk_multipass_query_fn_ir(+Index, +Pred, +Arity, +Fields, +OutputSep, -IR)
+%% plawk_multipass_query_fn_ir(+Index, +Pred, +Arity, +Fields, +Guard,
+%%     +OutputSep, -IR)
 %  A query pass as a self-contained void function: materialise each goal column
 %  into its own assoc table (`%qtable_C`, keys 1..N by position) via
 %  @wam_object_call_posarray against the shared VM -- calling the per-column
 %  findall wrapper `@__plawk_query_pred_C_start_pc` with no input args and the
 %  list output in register 0 (the flat-list walk the `as array` posarray target
 %  uses). Then walk keys in order (1..count of column 1, not hash-slot order,
-%  so the print is deterministic), binding $K to `%qtable_K[pos]` and printing
-%  the requested fields joined by the output separator. All tables are freed at
-%  pass end (nothing persists).
-plawk_multipass_query_fn_ir(Index, Pred, Arity, Fields, OutputSep, IR) :-
+%  so the print is deterministic), binding $K to `%qtable_K[pos]`. An optional
+%  reader guard (`if (COND)`) is evaluated over the per-column values -- pure
+%  i64 reads combined with i1 and/or (no short-circuit branching needed) --
+%  gating the print. All tables are freed at pass end (nothing persists).
+plawk_multipass_query_fn_ir(Index, Pred, Arity, Fields, Guard, OutputSep, IR) :-
     numlist(1, Arity, Cols),
     findall(MatLine,
         ( member(C, Cols),
@@ -4061,6 +4090,7 @@ plawk_multipass_query_fn_ir(Index, Pred, Arity, Fields, OutputSep, IR) :-
         MatLines),
     atomic_list_concat(MatLines, '\n', MaterializeIR),
     plawk_query_print_lines(Fields, OutputSep, PrintIR),
+    plawk_query_body_ir(Guard, PrintIR, BodyIR),
     findall(FreeLine,
         ( member(C, Cols),
           format(atom(FreeLine),
@@ -4084,7 +4114,6 @@ q_head:
 
 q_body:
 ~w
-  br label %q_body_done
 
 q_body_done:
   %pos1 = add i64 %pos, 1
@@ -4094,7 +4123,58 @@ q_after:
 ~w
   ret void
 }',
-        [Index, MaterializeIR, PrintIR, FreeIR]).
+        [Index, MaterializeIR, BodyIR, FreeIR]).
+
+%% plawk_query_body_ir(+Guard, +PrintIR, -BodyIR)
+%  The `q_body` block content. Unguarded: print then fall to `q_body_done`.
+%  Guarded: evaluate the guard to an i1, branch to a `q_print` block on true
+%  (else straight to `q_body_done`). The guard reads are pure, so the tree is
+%  plain and/or over leaf comparisons -- no short-circuit control flow.
+plawk_query_body_ir(none, PrintIR, BodyIR) :-
+    format(atom(BodyIR), '~w\n  br label %q_body_done', [PrintIR]).
+plawk_query_body_ir(Guard, PrintIR, BodyIR) :-
+    Guard \== none,
+    plawk_query_guard_ir(Guard, 0, _C, ResSSA, GuardLines),
+    atomic_list_concat(GuardLines, '\n', GuardIR),
+    format(atom(BodyIR),
+'~w
+  br i1 ~w, label %q_print, label %q_body_done
+
+q_print:
+~w
+  br label %q_body_done',
+        [GuardIR, ResSSA, PrintIR]).
+
+%% plawk_query_guard_ir(+Guard, +N0, -N, -ResultSSA, -Lines)
+%  Lower a reader guard over the per-column tables to a single i1 result.
+%  A leaf `$K CMP int` reads `%qtable_K[pos]` and compares it; `and` / `or`
+%  combine child i1s. SSA names are suffixed by a threaded counter so leaves
+%  never collide. Reads are side-effect-free, so and/or need not short-circuit.
+plawk_query_guard_ir(and(L, R), N0, N, Res, Lines) :-
+    plawk_query_guard_ir(L, N0, N1, LRes, LLines),
+    plawk_query_guard_ir(R, N1, N2, RRes, RLines),
+    N is N2 + 1,
+    format(atom(Res), '%qgand~w', [N2]),
+    format(atom(Line), '  ~w = and i1 ~w, ~w', [Res, LRes, RRes]),
+    append([LLines, RLines, [Line]], Lines).
+plawk_query_guard_ir(or(L, R), N0, N, Res, Lines) :-
+    plawk_query_guard_ir(L, N0, N1, LRes, LLines),
+    plawk_query_guard_ir(R, N1, N2, RRes, RLines),
+    N is N2 + 1,
+    format(atom(Res), '%qgor~w', [N2]),
+    format(atom(Line), '  ~w = or i1 ~w, ~w', [Res, LRes, RRes]),
+    append([LLines, RLines, [Line]], Lines).
+plawk_query_guard_ir(rfield_cmp(K, Op, Value), N0, N, Res, [LoadLine, CmpLine]) :-
+    integer(Value),
+    plawk_icmp_pred(Op, Pred),
+    N is N0 + 1,
+    format(atom(ValSSA), '%qgv~w', [N0]),
+    format(atom(Res), '%qgc~w', [N0]),
+    format(atom(LoadLine),
+        '  ~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %qtable_~w, i64 %pos)',
+        [ValSSA, K]),
+    format(atom(CmpLine),
+        '  ~w = icmp ~w i64 ~w, ~w', [Res, Pred, ValSSA, Value]).
 
 %% plawk_query_print_lines(+Fields, +OutputSep, -IR)
 %  The per-record print body: each `field(K)` reads `%qtable_K[pos]` and prints

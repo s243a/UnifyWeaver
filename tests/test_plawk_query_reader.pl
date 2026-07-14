@@ -125,6 +125,38 @@ test(query_reader_bad_column_not_yet) :-
     assertion(St == 2),
     !.
 
+% A reader guard filters the solution set: `if ($1 > 2)` keeps only the
+% matching solutions (a WHERE over the query's columns).
+test(query_reader_guard_run, [condition(clang_available)]) :-
+    qdir(Dir),
+    Src = "@prolog\nedge(1, 10).\nedge(2, 20).\nedge(3, 30).\nedge(4, 40).\n@end\n\c
+           pass over query(edge(X, Y)) { if ($1 > 2) print $1, $2 }\n",
+    build_run(Dir, 'guard', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "3 30\n4 40\n"),
+    !.
+
+% `&&` short-circuits at the surface but lowers to pure i1 and over the
+% per-column reads; the guard may read a column the body does not print.
+test(query_reader_guard_and_run, [condition(clang_available)]) :-
+    qdir(Dir),
+    Src = "@prolog\nedge(1, 10).\nedge(2, 20).\nedge(3, 30).\nedge(4, 40).\n@end\n\c
+           pass over query(edge(X, Y)) { if ($1 >= 2 && $2 < 40) print $1 }\n",
+    build_run(Dir, 'guard_and', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "2\n3\n"),
+    !.
+
+% `||` combines two column comparisons.
+test(query_reader_guard_or_run, [condition(clang_available)]) :-
+    qdir(Dir),
+    Src = "@prolog\nedge(1, 10).\nedge(2, 20).\nedge(3, 30).\n@end\n\c
+           pass over query(edge(X, Y)) { if ($1 == 1 || $2 == 30) print $1, $2 }\n",
+    build_run(Dir, 'guard_or', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "1 10\n3 30\n"),
+    !.
+
 % A query pass mixed with an ordinary pass is also outside v1 (all-query
 % only) and gets the same clean not-yet error rather than the generic one.
 test(query_reader_mixed_not_yet) :-

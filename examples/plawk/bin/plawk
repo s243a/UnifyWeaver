@@ -326,7 +326,8 @@ check_query_reader(File, Program) :-
     format(user_error,
         'plawk: ~w uses `over query(~w/~w)` outside the supported query-reader \c
          surface (v1: an all-query program whose body is a single `print` of \c
-         $K fields); this shape is not yet implemented (phase 6); see \c
+         $K fields, optionally gated by an `if ($K CMP int)` reader guard); \c
+         this shape is not yet implemented (phase 6); see \c
          PLAWK_QUERY_READER_IMPLEMENTATION_PLAN.md.~n',
         [File, Pred, N]),
     halt(2).
