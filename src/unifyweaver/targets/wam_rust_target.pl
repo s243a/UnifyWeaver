@@ -2180,6 +2180,29 @@ compile_execute_term_builtin_to_rust(Code) :-
         }
     }
 
+    fn pair_list_columns(
+        &self,
+        value: &Value,
+        take_keys: bool,
+        take_values: bool,
+    ) -> Option<(Vec<Value>, Vec<Value>)> {
+        let items = self.value_as_list(value)?;
+        let mut keys = if take_keys { Vec::with_capacity(items.len()) } else { Vec::new() };
+        let mut values = if take_values { Vec::with_capacity(items.len()) } else { Vec::new() };
+        for item in &items {
+            match self.deref_heap(&self.deref_var(item)) {
+                Value::Str(functor, args)
+                    if args.len() == 2
+                        && Self::display_functor_name(&functor, 2) == "-" => {
+                    if take_keys { keys.push(args[0].clone()); }
+                    if take_values { values.push(args[1].clone()); }
+                }
+                _ => return None,
+            }
+        }
+        Some((keys, values))
+    }
+
     fn string_to_codes_value(text: &str) -> Value {
         Value::List(text.chars()
             .map(|c| Value::Integer(c as i64))
@@ -4333,6 +4356,65 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let sorted: Vec<Value> = keyed.into_iter().map(|kv| kv.1).collect();
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 if self.unify(&a2, &Value::List(sorted)) { self.pc += 1; true } else { false }
+            }
+            "pairs_keys/2" | "pairs_values/2" => {
+                let pairs = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let take_keys = op == "pairs_keys/2";
+                let (keys, values) = match self.pair_list_columns(&pairs, take_keys, !take_keys) {
+                    Some(parts) => parts,
+                    None => return false,
+                };
+                let projected = if op == "pairs_keys/2" { keys } else { values };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::List(projected)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "pairs_keys_values/3" => {
+                let pairs_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let keys_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let values_raw = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                let pairs = self.deref_heap(&self.deref_var(&pairs_raw));
+                if matches!(pairs, Value::Unbound(_)) {
+                    let keys = match self.value_as_list(&keys_raw) {
+                        Some(items) => items,
+                        None => return false,
+                    };
+                    let values = match self.value_as_list(&values_raw) {
+                        Some(items) if items.len() == keys.len() => items,
+                        _ => return false,
+                    };
+                    let zipped: Vec<Value> = keys.into_iter().zip(values)
+                        .map(|(key, value)| Value::Str("-".to_string(), vec![key, value]))
+                        .collect();
+                    let mark = self.trail.len();
+                    if self.unify(&pairs_raw, &Value::List(zipped)) {
+                        self.pc += 1; true
+                    } else {
+                        self.unwind_trail_to(mark);
+                        false
+                    }
+                } else {
+                    let (keys, values) = match self.pair_list_columns(&pairs_raw, true, true) {
+                        Some(parts) => parts,
+                        None => return false,
+                    };
+                    let mark = self.trail.len();
+                    if !self.unify(&keys_raw, &Value::List(keys)) {
+                        self.unwind_trail_to(mark);
+                        return false;
+                    }
+                    if self.unify(&values_raw, &Value::List(values)) {
+                        self.pc += 1; true
+                    } else {
+                        self.unwind_trail_to(mark);
+                        false
+                    }
+                }
             }
             "memberchk/2" => {
                 // First element that unifies wins, deterministically;

@@ -474,6 +474,9 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, '"union/3"'),
         sub_string(S, _, _, _, '"list_to_set/2"'),
         sub_string(S, _, _, _, 'builtin_unify_member'),
+        sub_string(S, _, _, _, '"pairs_keys/2" | "pairs_values/2"'),
+        sub_string(S, _, _, _, '"pairs_keys_values/3"'),
+        sub_string(S, _, _, _, 'pair_list_columns'),
         %% copy_term_walk helper (sharing-preserving recursive copy).
         sub_string(S, _, _, _, 'copy_term_walk'),
         %% Runtime-parser bridge support and the parser-required text/list builtins.
