@@ -4098,6 +4098,17 @@ compile_execute_ext_builtin_to_rust(Code) :-
         }
     }
 
+    /// Test list membership by unification. Failed candidates are
+    /// unwound; the first successful candidate keeps its bindings.
+    fn builtin_unify_member(&mut self, item: &Value, candidates: &[Value]) -> bool {
+        for candidate in candidates {
+            let mark = self.trail.len();
+            if self.unify(item, candidate) { return true; }
+            self.unwind_trail_to(mark);
+        }
+        false
+    }
+
     /// One alternative of between/3 enumeration: bind X to N, leaving a
     /// choice point for N+1..High. Called from the first builtin
     /// dispatch and from resume_builtin on backtrack.
@@ -4372,6 +4383,32 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     .collect();
                 let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                 if self.unify(&a3, &Value::List(kept)) { self.pc += 1; true } else { false }
+            }
+            "intersection/3" => {
+                let left = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let right = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let mark = self.trail.len();
+                let mut common = Vec::with_capacity(left.len());
+                for item in &left {
+                    if self.builtin_unify_member(item, &right) {
+                        common.push(item.clone());
+                    }
+                }
+                let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                if self.unify(&output, &Value::List(common)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
             }
             "select/3" => {
                 let x_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
