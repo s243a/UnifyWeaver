@@ -238,18 +238,88 @@ fun ~w(state: WamState, dispatch: (String, WamState) -> Boolean): Boolean {
 ', [PredName, FuncName, Body]).
 
 % T4: try each clause as a local fun; restore snapshot between attempts.
+% KT-HEAP-SNAPSHOT-OPT-2: when clause 1 starts with get_constant/get_nil/
+% get_integer, peel that discriminant so a closed fail (ground mismatch)
+% jumps to later clauses with *no* entry snapshot. Deep list recursion
+% (append cons path) therefore avoids the O(depth) map copy per hop.
 emit_multi_clause_n_function(PredName, FuncName, Clauses, Code) :-
-    with_output_to(string(Body), emit_kotlin_t4_clauses(Clauses, 0)),
-    format(string(Code),
+    (   kotlin_t4_peelable_get_constant(Clauses, ConstTok, Reg, FirstBody, RestClauses)
+    ->  emit_multi_clause_n_peeled(PredName, FuncName, ConstTok, Reg, FirstBody, RestClauses, Code)
+    ;   with_output_to(string(Body), emit_kotlin_t4_clauses(Clauses, 0, _t4)),
+        format(string(Code),
 '// Lowered: ~w (T4 all-clauses inline)
 fun ~w(state: WamState, dispatch: (String, WamState) -> Boolean): Boolean {
     val _t4 = state.snapshotForNative()
 ~w    return false
 }
-', [PredName, FuncName, Body]).
+', [PredName, FuncName, Body])
+    ).
 
-emit_kotlin_t4_clauses([], _).
-emit_kotlin_t4_clauses([Clause|Rest], N) :-
+% Peel leading get_constant when ≥2 clauses (need an alternative after miss).
+kotlin_t4_peelable_get_constant([First|Rest], ConstTok, Reg, FirstBody, Rest) :-
+    Rest = [_|_],
+    First = [HeadLine|FirstBody],
+    wam_kotlin_target:tokenize_wam_line(HeadLine, Parts),
+    kotlin_t4_peel_head(Parts, ConstTok, Reg).
+
+kotlin_t4_peel_head(["get_constant", C, R], C, R) :- !.
+kotlin_t4_peel_head(["get_integer", C, R], C, R) :- !.
+kotlin_t4_peel_head(["get_nil", R], '[]', R) :- !.
+
+emit_multi_clause_n_peeled(PredName, FuncName, ConstTok, Reg, FirstBody, RestClauses, Code) :-
+    kotlin_constant_expr(ConstTok, Expr),
+    kotlin_register_lit(Reg, RL),
+    with_output_to(string(FirstFun), (
+        format("        fun clause_1(): Boolean {~n", []),
+        format("            if (!kotlinLoGetConstant(state, ~w, ~w)) return false~n", [Expr, RL]),
+        emit_lines(FirstBody, "            ", return_true),
+        format("        }~n", []),
+        format("        if (clause_1()) return true~n", []),
+        format("        state.restoreFromSnapshot(_t4)~n", [])
+    )),
+    (   RestClauses = [_]
+    ->  % Single remaining clause: last-clause path — no snapshot.
+        with_output_to(string(RestBody), emit_kotlin_t4_last_clauses(RestClauses, 1)),
+        format(string(Code),
+'// Lowered: ~w (T4 peel leading get_constant — skip snap on closed fail)
+fun ~w(state: WamState, dispatch: (String, WamState) -> Boolean): Boolean {
+    val _peel = state.deref(state.readRegister(~w))
+    val _peelHit = _peel == ~w || _peel == null || _peel is Value.Var
+    if (_peelHit) {
+        val _t4 = state.snapshotForNative()
+~w    }
+~w    return false
+}
+', [PredName, FuncName, RL, Expr, FirstFun, RestBody])
+    ;   with_output_to(string(RestBody), emit_kotlin_t4_clauses(RestClauses, 1, _t4b)),
+        format(string(Code),
+'// Lowered: ~w (T4 peel leading get_constant — skip snap on closed fail)
+fun ~w(state: WamState, dispatch: (String, WamState) -> Boolean): Boolean {
+    val _peel = state.deref(state.readRegister(~w))
+    val _peelHit = _peel == ~w || _peel == null || _peel is Value.Var
+    if (_peelHit) {
+        val _t4 = state.snapshotForNative()
+~w    }
+    val _t4b = state.snapshotForNative()
+~w    return false
+}
+', [PredName, FuncName, RL, Expr, FirstFun, RestBody])
+    ).
+
+% Emit remaining clauses without a shared entry snapshot (last-clause / peel miss).
+emit_kotlin_t4_last_clauses([], _).
+emit_kotlin_t4_last_clauses([Clause|Rest], N) :-
+    N1 is N + 1,
+    format(atom(CName), 'clause_~w', [N1]),
+    format("    fun ~w(): Boolean {~n", [CName]),
+    emit_lines(Clause, "        ", return_true),
+    format("    }~n", []),
+    format("    if (~w()) return true~n", [CName]),
+    emit_kotlin_t4_last_clauses(Rest, N1).
+
+% SnapVar is the Kotlin local holding the restore point (_t4 / _t4b).
+emit_kotlin_t4_clauses([], _, _).
+emit_kotlin_t4_clauses([Clause|Rest], N, SnapVar) :-
     N1 is N + 1,
     format(atom(CName), 'clause_~w', [N1]),
     format("    fun ~w(): Boolean {~n", [CName]),
@@ -257,8 +327,11 @@ emit_kotlin_t4_clauses([Clause|Rest], N) :-
     emit_lines(Clause, "        ", return_true),
     format("    }~n", []),
     format("    if (~w()) return true~n", [CName]),
-    format("    state.restoreFromSnapshot(_t4)~n", []),
-    emit_kotlin_t4_clauses(Rest, N1).
+    (   Rest == []
+    ->  true  % last clause: no restore before return false
+    ;   format("    state.restoreFromSnapshot(~w)~n", [SnapVar])
+    ),
+    emit_kotlin_t4_clauses(Rest, N1, SnapVar).
 
 % T5: bound first-arg if-cascade; unbound → false (tryRun → interpreter).
 emit_clause_chain_function(PredName, FuncName, Guards, Code) :-

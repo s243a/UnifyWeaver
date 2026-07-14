@@ -46,10 +46,12 @@ fun main(args: Array<String>) {
     for (b in 0 until timedBatches) {
         val t0 = System.nanoTime()
         repeat(iterations) {
-            if (!runtime.tryRun(predicate, freshState())) {
+            val st = freshState()
+            if (!runtime.tryRun(predicate, st)) {
                 println("BENCH predicate=$predicate ok=false (timed failure)")
                 return
             }
+            runtime.noteStateProfile(st)
         }
         batchMs[b] = (System.nanoTime() - t0) / 1_000_000.0
     }
@@ -65,10 +67,17 @@ fun main(args: Array<String>) {
         val snapMs = runtime.profileSnapNs / 1_000_000.0
         val wallMs = batchMs.sum()
         val frac = if (wallMs > 0.0) snapMs / wallMs else 0.0
+        val avgMap = if (runtime.profileSnapCount > 0L) {
+            runtime.profileSumRegisterMapSize.toDouble() / runtime.profileSnapCount.toDouble()
+        } else {
+            0.0
+        }
         println(
             "PROFILE snap_ms=${"%.3f".format(snapMs)} timed_wall_ms=${"%.3f".format(wallMs)} " +
                 "snap_fraction_of_wall=${"%.3f".format(frac)} snap_count=${runtime.profileSnapCount} " +
-                "native_entries=${runtime.profileNativeEntries}"
+                "native_entries=${runtime.profileNativeEntries} " +
+                "max_register_map_size=${runtime.profileMaxRegisterMapSize} " +
+                "avg_register_map_size_at_snap=${"%.1f".format(avgMap)}"
         )
     }
 {{/benchmark_main}}
