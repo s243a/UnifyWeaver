@@ -111,6 +111,13 @@ GNU time reports the monitored process's maximum RSS; it is not an asserted sum 
 and checkpoints live under `/tmp` and are not committed.  Because the pilot has only one draw and one
 replicate, its observed rates and selected candidates are meaningless and every authorization is false.
 
+The full-output SHA is an integrity check for a matched numerical stack, not a portable scientific digest.
+The payload intentionally records `python_version`, `numpy_version`, and the portable BLAS version/threading
+identity; floating-point reductions and serialization may also drift across stacks.  Cross-stack reproductions
+should first explain the recorded runtime-provenance difference, then compare scientific fields within
+numerical tolerance and require the registered gate booleans to agree.  Use exact SHA equality only when the
+recorded numerical stack and scientific inputs match.
+
 The exact discovery has 18 registered configurations.  With corpus-world reuse it still requires 1,223,640
 expensive corpus worlds, 1,799,100 cheap null-pair combinations, and 1,260,000 joint power-pair combinations.
 A selected-pair confirmation adds 67,980 corpus worlds, 99,950 null-pair combinations, and 70,000 power-pair
@@ -122,7 +129,7 @@ review and report its observed resource use rather than extrapolating an ETA fro
 
 ## Verification
 
-Three fresh pytest processes passed 188 related tests: 55 source-power science/bundle/runner tests, 84 inherited
+Three fresh pytest processes passed 189 related tests: 56 source-power science/bundle/runner tests, 84 inherited
 source-dependence/source-region/capacity tests, and 49 inherited baseline science/runner tests.  The separation
 is intentional: the inherited baseline spawn test fingerprints the BLAS libraries loaded in its process, so
 collecting unrelated numerical modules into that same process can give the parent and spawned child different

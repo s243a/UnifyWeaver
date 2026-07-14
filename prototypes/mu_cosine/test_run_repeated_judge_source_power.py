@@ -699,6 +699,58 @@ def test_checkpoint_integrity_schema_and_conflicting_overwrite_fail_closed(tmp_p
         runner._read_checkpoint(path)
 
 
+def test_checkpoint_store_reopen_rejects_changed_config_seed_and_provenance(
+    tmp_path,
+):
+    bundle = load_bundle()
+    resolved = tiny_resolved()
+    provenance = runner._provenance(bundle)
+    fingerprint = runner._run_fingerprint(resolved, provenance)
+    checkpoint_root = tmp_path / "checkpoint"
+
+    runner.CheckpointStore(checkpoint_root, resolved, provenance, fingerprint)
+    reopened = runner.CheckpointStore(
+        checkpoint_root, resolved, provenance, fingerprint
+    )
+    assert reopened.fingerprint == fingerprint
+
+    changed_configuration = copy.deepcopy(resolved)
+    changed_configuration["null_draws"] += 1
+    with pytest.raises(
+        ValueError, match="checkpoint fingerprint/configuration mismatch"
+    ):
+        runner.CheckpointStore(
+            checkpoint_root,
+            changed_configuration,
+            provenance,
+            runner._run_fingerprint(changed_configuration, provenance),
+        )
+
+    changed_seed = copy.deepcopy(resolved)
+    changed_seed["seed"] += 1
+    with pytest.raises(
+        ValueError, match="checkpoint fingerprint/configuration mismatch"
+    ):
+        runner.CheckpointStore(
+            checkpoint_root,
+            changed_seed,
+            provenance,
+            runner._run_fingerprint(changed_seed, provenance),
+        )
+
+    changed_provenance = copy.deepcopy(provenance)
+    changed_provenance["files"]["source_science"]["sha256"] = "0" * 64
+    with pytest.raises(
+        ValueError, match="checkpoint fingerprint/configuration mismatch"
+    ):
+        runner.CheckpointStore(
+            checkpoint_root,
+            resolved,
+            changed_provenance,
+            runner._run_fingerprint(resolved, changed_provenance),
+        )
+
+
 def test_power_checkpoint_record_roundtrip_and_extra_key_rejection():
     record = fake_power_record("cumulative_rho_0.10", 0.025, 0.10)
     encoded = runner._power_record_to_json(record)
