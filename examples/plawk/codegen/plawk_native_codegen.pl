@@ -6068,11 +6068,14 @@ plawk_program_cache_tables(BeginClauses, Triples) :-
 %  The runtime function for a cache Op (load|commit) under a backend and value
 %  kind. A str-valued (row) table on the `file` backend uses the byte-valued
 %  helpers so the row bytes survive across runs (an i64 store would persist a
-%  process-local atom id). i64 tables use the plain file helpers. `lmdb` uses
-%  the external C functions (durable str values over lmdb are a follow-on, so
-%  an lmdb str table currently rides the i64 lmdb path).
+%  process-local atom id). i64 tables use the plain file helpers. `lmdb` has
+%  both: a str-valued (row) table uses the byte-valued external C helpers
+%  (`_lmdb_str`, which store the row bytes + a validated schema entry), while
+%  an i64 table uses the plain `_lmdb` helpers.
 plawk_cache_fn(file, load, str, wam_cache_load_str) :- !.
 plawk_cache_fn(file, commit, str, wam_cache_commit_str) :- !.
+plawk_cache_fn(lmdb, load, str, wam_cache_load_lmdb_str) :- !.
+plawk_cache_fn(lmdb, commit, str, wam_cache_commit_lmdb_str) :- !.
 plawk_cache_fn(lmdb, load, _Kind, wam_cache_load_lmdb) :- !.
 plawk_cache_fn(lmdb, commit, _Kind, wam_cache_commit_lmdb) :- !.
 plawk_cache_fn(_File, load, _Kind, wam_cache_load).
@@ -6111,8 +6114,14 @@ plawk_cache_entries(Tables, StrArrays, Schemas, Triples, CacheEntries, PathGloba
         Pairs),
     pairs_keys_values(Pairs, CacheEntries, Globals),
     ( memberchk(cache(_, _, lmdb, _, _), CacheEntries)
-    ->  LmdbDecls = ['declare void @wam_cache_load_lmdb(%WamAssocI64Table*, i8*)',
-                     'declare void @wam_cache_commit_lmdb(%WamAssocI64Table*, i8*)']
+    ->  BaseLmdbDecls = ['declare void @wam_cache_load_lmdb(%WamAssocI64Table*, i8*)',
+                         'declare void @wam_cache_commit_lmdb(%WamAssocI64Table*, i8*)'],
+        ( memberchk(cache(_, _, lmdb, str, _), CacheEntries)
+        ->  StrLmdbDecls = ['declare void @wam_cache_load_lmdb_str(%WamAssocI64Table*, i8*, i8*)',
+                            'declare void @wam_cache_commit_lmdb_str(%WamAssocI64Table*, i8*, i8*)']
+        ;   StrLmdbDecls = []
+        ),
+        append(BaseLmdbDecls, StrLmdbDecls, LmdbDecls)
     ;   LmdbDecls = []
     ),
     append(Globals, LmdbDecls, AllGlobals),
@@ -6127,10 +6136,12 @@ plawk_schema_string(Columns, Str) :-
     atomic_list_concat(Parts, ',', Str).
 
 %% plawk_cache_call_ir(+Fn, +Index, +BytesLen, +ValueKind, +SchemaRef, -Line)
-%  A load/commit call. The byte-valued (str) file helpers take an extra i8*
-%  schema argument (a getelementptr or null); the i64 / lmdb helpers do not.
+%  A load/commit call. The byte-valued (str) helpers -- both the file
+%  (`_str`) and lmdb (`_lmdb_str`) variants -- take an extra i8* schema
+%  argument (a getelementptr or null); the plain i64 / i64-lmdb helpers do not.
 plawk_cache_call_ir(Fn, Index, BytesLen, str, SchemaRef, Line) :-
-    ( Fn == wam_cache_load_str ; Fn == wam_cache_commit_str ),
+    ( Fn == wam_cache_load_str ; Fn == wam_cache_commit_str
+    ; Fn == wam_cache_load_lmdb_str ; Fn == wam_cache_commit_lmdb_str ),
     !,
     format(atom(Line),
         '  call void @~w(%WamAssocI64Table* %plawk_assoc_table_~w, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_cache_path_~w, i64 0, i64 0), i8* ~w)',
