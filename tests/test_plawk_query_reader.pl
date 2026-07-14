@@ -157,14 +157,45 @@ test(query_reader_guard_or_run, [condition(clang_available)]) :-
     assertion(Out == "1 10\n3 30\n"),
     !.
 
-% A query pass mixed with an ordinary pass is also outside v1 (all-query
-% only) and gets the same clean not-yet error rather than the generic one.
-test(query_reader_mixed_not_yet) :-
+% A query pass mixed with an ordinary input-reading pass: the query pass
+% materialises its goal (no input), the ordinary pass scans the input file.
+% Both run in one program (PR 5) -- query solutions first, then the ordinary
+% pass echoes column 1 of each input line.
+test(query_reader_mixed_run, [condition(clang_available)]) :-
     qdir(Dir),
-    Src = "@prolog\nnode(1).\n@end\n\c
-           pass over query(node(N)) { print $1 }\npass { c[$1]++ }\n",
-    build_status(Dir, 'mixed', Src, St),
-    assertion(St == 2),
+    Src = "@prolog\nedge(1, 10).\nedge(2, 20).\n@end\n\c
+           pass over query(edge(X, Y)) { print $1, $2 }\n\c
+           pass { print $1 }\n",
+    build_run_input(Dir, 'mixed', Src, "a b\nc d\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "1 10\n2 20\na\nc\n"),
+    !.
+
+% Reverse order (ordinary pass first) with a guarded query pass: the ordinary
+% pass builds a table off the input, the query pass filters its goal.
+test(query_reader_mixed_reverse_run, [condition(clang_available)]) :-
+    qdir(Dir),
+    Src = "@prolog\nedge(5, 50).\nedge(6, 60).\n@end\n\c
+           pass { c[$1]++ }\n\c
+           pass over query(edge(X, Y)) { if ($1 == 6) print $1, $2 }\n",
+    build_run_input(Dir, 'mixrev', Src, "x\ny\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "6 60\n"),
+    !.
+
+% Determinism: the same query run in two passes yields byte-identical output
+% both times -- the collapse to a materialised set is order-stable and
+% repeatable (the multiplicity is fixed at the boundary; §1 intact). A
+% disjunctive (non-deterministic) goal still appears in the same solution
+% order in each pass.
+test(query_reader_determinism_two_passes, [condition(clang_available)]) :-
+    qdir(Dir),
+    Src = "@prolog\ng(A) :- (A = 7 ; A = 8 ; A = 9).\n@end\n\c
+           pass over query(g(X)) { print $1 }\n\c
+           pass over query(g(X)) { print $1 }\n",
+    build_run(Dir, 'determ', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "7\n8\n9\n7\n8\n9\n"),
     !.
 
 % A program that does NOT use the query reader is unaffected (no false trigger).
@@ -214,3 +245,12 @@ build_run(Dir, Name, Src, Args, Out, RunStatus) :-
     read_string(RS, _, Out),
     close(RS),
     process_wait(RPid, exit(RunStatus)).
+
+% Build a program, write Input to a file, and run the binary over that file
+% (for mixed programs whose ordinary passes scan an input file).
+build_run_input(Dir, Name, Src, Input, Out, RunStatus) :-
+    directory_file_path(Dir, Name, Prog0),
+    atom_concat(Prog0, '_in.txt', InPath),
+    setup_call_cleanup(open(InPath, write, IS, [encoding(utf8)]),
+        write(IS, Input), close(IS)),
+    build_run(Dir, Name, Src, [InPath], Out, RunStatus).

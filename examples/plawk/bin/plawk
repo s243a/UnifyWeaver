@@ -310,36 +310,28 @@ program_begin_clauses(program(BeginClauses, _, _), BeginClauses).
 program_begin_clauses(program_passes(BeginClauses, _, _), BeginClauses).
 
 % Phase 6 (PLAWK_QUERY_READER_IMPLEMENTATION_PLAN.md): the `over query(...)`
-% reader. PR 2 lands the runtime for the first supported shape -- an all-query
-% program whose goals are single-output and whose bodies are `print $1`. Any
-% query program OUTSIDE that surface (higher arity, a richer body, an END
-% block, or a query pass mixed with ordinary passes) still gets a clear,
-% specific not-yet diagnostic rather than the generic "outside the multi-pass
-% surface", while the supported shape flows on to the query driver.
+% reader. The runtime supports a goal of any arity with a `print $K...` body,
+% optionally gated by an `if ($K CMP int)` reader guard, in an all-query
+% program OR mixed with ordinary passes (PR 5). A query pass whose OWN shape is
+% outside that surface (bad arity/body, an out-of-range `$K`, a float/string
+% guard RHS) still gets a clear, specific not-yet diagnostic rather than the
+% generic "outside the multi-pass surface"; supported query passes flow on to
+% the driver.
 check_query_reader(File, Program) :-
     plawk_program_query_passes(Program, QueryPasses),
-    QueryPasses \== [],
-    \+ query_program_supported(Program),
+    member(pass_query(query(Pred, Vars), Body), QueryPasses),
+    \+ plawk_query_pass_supported(pass_query(query(Pred, Vars), Body)),
     !,
-    QueryPasses = [pass_query(query(Pred, Vars), _) | _],
     length(Vars, N),
     format(user_error,
         'plawk: ~w uses `over query(~w/~w)` outside the supported query-reader \c
-         surface (v1: an all-query program whose body is a single `print` of \c
-         $K fields, optionally gated by an `if ($K CMP int)` reader guard); \c
-         this shape is not yet implemented (phase 6); see \c
+         surface (v1: a `print` of $K fields over the goal columns, optionally \c
+         gated by an `if ($K CMP int)` reader guard); this shape is not yet \c
+         implemented (phase 6); see \c
          PLAWK_QUERY_READER_IMPLEMENTATION_PLAN.md.~n',
         [File, Pred, N]),
     halt(2).
 check_query_reader(_File, _Program).
-
-% A query program the PR-2 driver can lower end-to-end: every pass is a
-% supported `pass over query(...)` and there is no END block.
-query_program_supported(program_passes(_, Passes, End)) :-
-    End == [],
-    Passes = [_ | _],
-    forall(member(P, Passes), P = pass_query(_, _)),
-    forall(member(P, Passes), plawk_query_pass_supported(P)).
 
 % The findall-wrapper clauses to inject into a query program's @prolog
 % predicate set: one `__plawk_query_pred_C(L) :- findall(VC, pred(V1..Vn), L)`
