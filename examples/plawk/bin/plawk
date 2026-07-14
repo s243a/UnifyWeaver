@@ -320,28 +320,106 @@ normalize_passes(_File, Program, Program).
 % schema check work unchanged. The store must exist and carry a schema at
 % build time; otherwise it is a compile error.
 resolve_cache_use(File, program(B0, R, E), program(B, R, E)) :-
-    !, maplist(resolve_use_begin(File), B0, B).
+    !, resolve_uses(File, B0, B).
 resolve_cache_use(File, program_passes(B0, P, E), program_passes(B, P, E)) :-
-    !, maplist(resolve_use_begin(File), B0, B).
+    !, resolve_uses(File, B0, B).
 resolve_cache_use(_File, Program, Program).
 
-resolve_use_begin(File, begin(As0), begin(As)) :-
-    !,
-    findall(Xs, ( member(A, As0), expand_cache_use(File, A, Xs) ), Nested),
-    append(Nested, As).
-resolve_use_begin(_File, Clause, Clause).
+resolve_uses(File, B0, B) :-
+    use_multitable_paths(B0, MultiPaths),
+    maplist(resolve_use_begin(File, MultiPaths), B0, B).
 
-expand_cache_use(File, cache_use(Name, Path, Backend),
+resolve_use_begin(File, MultiPaths, begin(As0), begin(As)) :-
+    !,
+    findall(Xs, ( member(A, As0), expand_cache_use(File, MultiPaths, A, Xs) ), Nested),
+    append(Nested, As).
+resolve_use_begin(_File, _MultiPaths, Clause, Clause).
+
+% Store paths that hold named sub-tables (phase 8.9): a path with two or more
+% declared/used tables, or any namespaced (`ns.table`) one -- the same rule the
+% codegen uses to route to sub-DBs. A `use` on such a path reads its schema from
+% the named sub-DB (the table's LOCAL name).
+use_multitable_paths(BeginClauses, MultiPaths) :-
+    findall(Name-Path,
+        ( member(begin(As), BeginClauses),
+          ( member(cache_table(Name, Path, _), As)
+          ; member(cache_use(Name, Path, _), As) ) ),
+        NPs),
+    findall(Path,
+        ( member(_-Path, NPs),
+          ( findall(N, member(N-Path, NPs), Ns0), sort(Ns0, Ns), Ns = [_, _ | _]
+          ; member(TN-Path, NPs), sub_atom(TN, _, _, _, '.') ) ),
+        MP0),
+    sort(MP0, MultiPaths).
+
+expand_cache_use(File, MultiPaths, cache_use(Name, Path, Backend),
         [cache_table(Name, Path, Backend), cache_schema(Name, Cols)]) :-
     !,
-    (   store_schema_columns(Path, Cols)
+    ( memberchk(Path, MultiPaths) -> use_local_name(Name, Sub) ; Sub = none ),
+    (   store_schema_columns_for(Backend, Path, Sub, Cols)
     ->  true
     ;   format(user_error,
             'plawk: cannot `use ~w` in ~w: store "~w" is missing or has no schema~n',
             [Name, File, Path]),
         halt(2)
     ).
-expand_cache_use(_File, Action, [Action]).
+expand_cache_use(_File, _MultiPaths, Action, [Action]).
+
+% The sub-DB a `use` reads: a namespaced `ns.table` reads from sub-DB `table`
+% (its LOCAL part); a bare name in a multi-table store reads from sub-DB `name`.
+use_local_name(Name, Sub) :-
+    atomic_list_concat(Parts, '.', Name),
+    last(Parts, Sub).
+
+% Read a store's persisted schema, dispatching on backend and store mode. The
+% file backend's schema is a plain header this process reads directly (file is
+% single-table, so Sub is ignored); the LMDB backend keeps it under a key inside
+% the B-tree -- in the unnamed DB (Sub = none) or a named sub-DB -- so a tiny
+% liblmdb probe (compiled by the build, which already needs clang + liblmdb for
+% lmdb stores) extracts it.
+store_schema_columns_for(lmdb, Path, Sub, Cols) :-
+    !, store_schema_columns_lmdb(Path, Sub, Cols).
+store_schema_columns_for(_Backend, Path, _Sub, Cols) :-
+    store_schema_columns(Path, Cols).
+
+% Build-time schema read for an LMDB row store: compile the schema probe
+% (wam_cache_lmdb_schema.c) once into the build tmp dir, run it against the
+% store (passing the sub-DB name when reading a named sub-DB), and parse the
+% schema string it prints. A missing store/sub-DB, a probe that cannot link/run,
+% or an empty/unparseable schema fails (-> compile error).
+store_schema_columns_lmdb(Path, Sub, Cols) :-
+    atom_string(PathA, Path),
+    exists_file(PathA),
+    lmdb_schema_probe_bin(ProbeBin),
+    ( Sub == none -> ProbeArgs = [PathA] ; ProbeArgs = [PathA, Sub] ),
+    process_create(ProbeBin, ProbeArgs,
+        [stdout(pipe(PS)), stderr(null), process(Pid)]),
+    read_string(PS, _, Out), close(PS),
+    process_wait(Pid, exit(0)),
+    parse_schema_string(Out, Cols),
+    Cols = [_ | _].
+
+% Compile the LMDB schema probe once per build invocation, memoised.
+:- dynamic lmdb_schema_probe_bin_cache/1.
+lmdb_schema_probe_bin(ProbeBin) :-
+    ( lmdb_schema_probe_bin_cache(ProbeBin)
+    ->  true
+    ;   lmdb_schema_probe_source(CFile),
+        tmp_build_dir(Dir),
+        directory_file_path(Dir, 'wam_cache_lmdb_schema_probe', ProbeBin),
+        format(atom(Cmd), 'clang -w -O2 ~w -o ~w -llmdb 2>&1', [CFile, ProbeBin]),
+        process_create(path(sh), ['-c', Cmd],
+            [stdout(pipe(CS)), stderr(std), process(Pid)]),
+        read_string(CS, _, _), close(CS),
+        process_wait(Pid, exit(0)),
+        assertz(lmdb_schema_probe_bin_cache(ProbeBin))
+    ).
+
+% The schema probe source ships beside the LMDB C runtime.
+lmdb_schema_probe_source(CFile) :-
+    module_property(wam_llvm_target, file(TargetPl)),
+    file_directory_name(TargetPl, Dir),
+    directory_file_path(Dir, 'wam_cache_lmdb_schema.c', CFile).
 
 % Read a byte-valued row store's persisted schema header and parse it into
 % col(Name, Type) columns. Header layout (§8.7): [schemalen:i64 (LE)]

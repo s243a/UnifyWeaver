@@ -39,10 +39,8 @@ surface, the runtime ABI, and a phased rollout.
   or `$N CMP int` (anon). The six operators are `== != < <= > >=`; filtered
   rows never reach the print block (`tests/test_plawk_reader_guards.pl`).
 
-**Not yet:** `use NAME` over an LMDB store (the build-time schema resolver
-reads the file-backend header, not the LMDB schema key — a follow-on; `declare`
-works over LMDB today); `rows of`'s `unsafe` / inline check-or-rename spec;
-multiple named tables per store (phase 8.9); the `over prev` reader (phase 4
+**Not yet:** `rows of`'s `unsafe` / inline check-or-rename spec;
+the `over prev` reader (phase 4
 follow-on); the query reader (phase 6); `eager` / secondary indexes;
 string-literal print fields. Future sketches: nested pass blocks (§3.8),
 `while`/loop statements (§3.8), views (§3.9), contained non-determinism / a
@@ -1083,8 +1081,9 @@ single-pass test before any driver surgery).
   (`tests/test_plawk_row_durable.pl` for the file backend,
   `tests/test_plawk_row_durable_lmdb.pl` for LMDB via
   `wam_cache_{commit,load}_lmdb_str` — schema stored under a distinguished key
-  and validated on open; `use NAME` over an LMDB store still awaits a
-  build-time LMDB schema resolver); (8.5) the positional `rows of`
+  and validated on open; `use NAME` over an LMDB store reads that schema at
+  build time via a small liblmdb probe, single- and multi-table); (8.5) the
+  positional `rows of`
   reader (`r[N]`, no schema) — **LANDED**
   (`tests/test_plawk_rows_reader.pl`; its `unsafe` / inline check-or-rename
   spec remain a follow-on); (8.6) richer row producers (`row(...)` /
@@ -1097,17 +1096,17 @@ single-pass test before any driver surgery).
   `select` surface, no re-`declare` — **LANDED (file backend)**
   (`tests/test_plawk_use_table.pl`); (8.9) multiple named tables per store
   (namespaces / LMDB named sub-DBs, §3.5, per `PLAWK_CACHE_BACKENDS.md`) so
-  `use ns.table` selects among them — **in progress**, sequenced into five
-  PRs in `PLAWK_MULTITABLE_IMPLEMENTATION_PLAN.md`. PRs 1–4 **LANDED**: the
-  multi-pass driver takes N tables (`tests/test_plawk_multitable.pl`); a
-  multi-table *file* store is a class-A compile error while an *lmdb* store
-  routes each table to its own named sub-DB — durable and isolated, both i64 and
-  row values (`tests/test_plawk_multitable_store.pl`,
-  `tests/test_plawk_multitable_lmdb.pl`); and `cache("db" as ns)` namespaces a
-  store so its tables are referenced `ns.table` (the local part is the sub-DB),
-  a namespaced file store being a class-A error
-  (`tests/test_plawk_namespace.pl`). Remaining: `use ns.table` selection (PR 5,
-  reads each sub-DB's schema so no re-`declare`). (8.10) **reader guards** — a
+  `use ns.table` selects among them — **LANDED** (all five PRs in
+  `PLAWK_MULTITABLE_IMPLEMENTATION_PLAN.md`): the multi-pass driver takes N
+  tables (`tests/test_plawk_multitable.pl`); a multi-table *file* store is a
+  class-A compile error while an *lmdb* store routes each table to its own named
+  sub-DB — durable and isolated, both i64 and row values
+  (`tests/test_plawk_multitable_store.pl`, `tests/test_plawk_multitable_lmdb.pl`);
+  `cache("db" as ns)` namespaces a store so its tables are referenced `ns.table`
+  (the local part is the sub-DB), a namespaced file store being a class-A error
+  (`tests/test_plawk_namespace.pl`); and `use ns.table` attaches to a
+  multi-table store with no re-`declare`, reading each sub-DB's schema at build
+  time (`tests/test_plawk_use_namespace.pl`). (8.10) **reader guards** — a
   `WHERE`-style row filter on any of the three readers: `if (r["col"] CMP int)`
   (records), `if (r[N] CMP int)` (positional), `if ($N CMP int)` (anon), for
   the six operators `== != < <= > >=`. The guard lowers to an i64 field extract

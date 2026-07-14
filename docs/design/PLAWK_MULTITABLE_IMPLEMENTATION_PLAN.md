@@ -130,14 +130,34 @@ without a namespace; `as ns` is the collision-avoidance sugar. **Deferred**: the
 namespaced tables in an `END` for-in — noted follow-ons, none needed for the
 core surface.
 
-### PR 5 — `use ns.table` selection (resolver)
+### PR 5 — `use ns.table` selection (resolver) — **LANDED**
 
-Extends the build-time `use` resolver (`examples/plawk/bin/plawk`,
-`expand_cache_use`) so `use ns.table` attaches to one named sub-DB of an
-existing multi-table store. The LMDB schema probe (`wam_cache_lmdb_schema.c`,
-added for single-table `use` over LMDB) gains a sub-DB argument so it reads the
-schema from the named sub-DB rather than the unnamed default. Depends on the
-single-table `use`-over-LMDB work (PR #3727) and PR 3.
+The finale: attach to a multi-table store with **no `declare`**, taking each
+table's schema from its sub-DB at build time. This PR is self-contained (it
+subsumes the never-merged single-table `use`-over-LMDB PR #3727): it ships the
+LMDB schema probe (`wam_cache_lmdb_schema.c`) with an **optional sub-DB
+argument** — given a sub-DB name it opens that named DB (`mdb_env_set_maxdbs` +
+named `mdb_dbi_open`) and reads its `__wam_schema__` key, else the unnamed
+default DB. The resolver (`examples/plawk/bin/plawk`) computes the store's
+multi-table paths exactly as the codegen does (≥2 tables, or any namespaced
+`ns.table`), and for a `use` on such a path passes the table's LOCAL name to the
+probe; single-table `use` reads the unnamed DB (file backend unchanged, reads
+its header directly). So `BEGIN cache("db" backend "lmdb" as ns) { use orders;
+use items }` attaches both tables by reading each sub-DB's schema — the
+"avoid-declare" surface for multi-table stores. Tests:
+`tests/test_plawk_use_table_lmdb.pl` (single-table `use` over LMDB, from #3727)
+and `tests/test_plawk_use_namespace.pl` (namespaced multi-table `use` with
+**three-column** tables, including column arithmetic over the schema-read
+fields). Depends on PR 3's per-sub-DB schema storage.
+
+---
+
+**Arc complete.** All five PRs have landed: multi-table stores work end to end —
+the driver takes N tables, an lmdb store routes them to named sub-DBs, `as ns`
+namespaces the references, and `use ns.table` attaches by reading each sub-DB's
+schema. A multi-table *file* store is a clean class-A compile error throughout.
+Deferred sugar (noted in PR 4): the `cache("db") as ns` spelling, the `global`
+modifier, and namespaced tables in an `END` for-in.
 
 ## 4. Risks / decisions
 
