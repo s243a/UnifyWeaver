@@ -62,6 +62,9 @@ t_string_code(Code) :- string_code(2, hello, Code).
 :- dynamic t_output_aliases/0.
 t_output_aliases :- print(alias), writeln(done).
 
+:- dynamic t_tab/0.
+t_tab :- tab(2).
+
 %% catch/throw + succ predicates (ISO meta-builtin Call fallback path).
 :- dynamic t_thrower/0.
 t_thrower :- throw(oops(42)).
@@ -154,6 +157,7 @@ test_builtin_parity_execution :-
              user:t_string_codes/1, user:t_string_chars/1,
              user:t_string_code/1,
              user:t_output_aliases/0,
+             user:t_tab/0,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
              user:t_catch_nomatch/0, user:t_catch_nothrow/1,
@@ -176,6 +180,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_
     t_string_codes_1, t_string_chars_1,
     t_string_code_1,
     t_output_aliases_0,
+    t_tab_0,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
     t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
     t_maplist_1, t_maplist_check_0, t_maplist_fail_0, t_include_1, t_exclude_1,
@@ -307,6 +312,9 @@ fn test_string_codes_chars_compiled() {
 fn test_output_aliases_compiled() {
     let mut vm = vmnew();
     assert!(t_output_aliases_0(&mut vm));
+
+    let mut tab_vm = vmnew();
+    assert!(t_tab_0(&mut tab_vm));
 }
 
 #[test]
@@ -1135,6 +1143,15 @@ fn test_atomic_direct() {
     assert!(!call1("atomic/1", Value::List(vec![a("x")])).0);
     assert!(!call1("atomic/1", Value::Str("f".to_string(), vec![a("x")])).0);
     assert!(!call1("atomic/1", ub("X")).0);
+}
+
+#[test]
+fn test_tab_direct() {
+    assert!(call1("tab/1", i(3)).0);
+    assert!(call1("tab/1", i(0)).0);
+    assert!(!call1("tab/1", i(-1)).0);
+    assert!(!call1("tab/1", ub("N")).0);
+    assert!(!call1("tab/1", a("three")).0);
 }
 ',
         setup_call_cleanup(
