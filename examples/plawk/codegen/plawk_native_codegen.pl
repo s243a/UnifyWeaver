@@ -3901,8 +3901,26 @@ get_path:
 %  everything else delegates to the /2 driver unchanged.
 plawk_program_multipass_driver_ir(Program, Options, DriverIR) :-
     (   plawk_program_query_driver_ir(Program, Options, DriverIR)
-    ->  true
-    ;   plawk_program_multipass_driver_ir(Program, DriverIR)
+    ->  true                                       % all-query: self-contained
+    ;   plawk_program_multipass_driver_ir(Program, BaseIR),
+        plawk_query_mixed_support_ir(Program, Options, SupportIR),
+        atom_concat(SupportIR, BaseIR, DriverIR)
+    ).
+
+%% plawk_query_mixed_support_ir(+Program, +Options, -SupportIR)
+%  Extra module-level IR a general multi-pass program needs when it also
+%  contains a query pass (phase 6, PR 5): the shared %WamState getter the query
+%  reader runs its goal on, which the ordinary multi-pass driver does not emit.
+%  Sized by the module code/label counts in Options. Empty when the program has
+%  no query pass (ordinary multi-pass is unchanged). The i64 print-format global
+%  the query body uses is already emitted by the driver's runtime globals.
+plawk_query_mixed_support_ir(Program, Options, SupportIR) :-
+    plawk_program_query_passes(Program, QueryPasses),
+    (   QueryPasses == []
+    ->  SupportIR = ''
+    ;   memberchk(wam_vm(InstrCount, LabelCount), Options),
+        plawk_query_foreign_vm_ir(InstrCount, LabelCount, VmIR),
+        format(atom(SupportIR), '~w\n\n', [VmIR])
     ).
 
 %% plawk_program_query_passes(+Program, -QueryPasses) is det.
@@ -4009,7 +4027,7 @@ plawk_program_query_driver_ir(
         ( nth0(I, Passes, pass_query(query(Pred, Vars), Body)),
           length(Vars, Arity),
           plawk_query_body_plan(Body, Fields, Guard),
-          plawk_multipass_query_fn_ir(I, Pred, Arity, Fields, Guard,
+          plawk_multipass_query_fn_ir(I, '', Pred, Arity, Fields, Guard,
               OutputSeparator, FnIR) ),
         FnIRs),
     atomic_list_concat(FnIRs, '\n', PassFnsIR),
@@ -4065,8 +4083,8 @@ make:
         [InstrCount, InstrCount, InstrCount, LabelCount, LabelCount,
          LabelCount]).
 
-%% plawk_multipass_query_fn_ir(+Index, +Pred, +Arity, +Fields, +Guard,
-%%     +OutputSep, -IR)
+%% plawk_multipass_query_fn_ir(+Index, +ParamsIR, +Pred, +Arity, +Fields,
+%%     +Guard, +OutputSep, -IR)
 %  A query pass as a self-contained void function: materialise each goal column
 %  into its own assoc table (`%qtable_C`, keys 1..N by position) via
 %  @wam_object_call_posarray against the shared VM -- calling the per-column
@@ -4077,7 +4095,15 @@ make:
 %  reader guard (`if (COND)`) is evaluated over the per-column values -- pure
 %  i64 reads combined with i1 and/or (no short-circuit branching needed) --
 %  gating the print. All tables are freed at pass end (nothing persists).
-plawk_multipass_query_fn_ir(Index, Pred, Arity, Fields, Guard, OutputSep, IR) :-
+%
+%  `ParamsIR` is the function's parameter list content: empty for the all-query
+%  driver (`@plawk_pass_N()`), or the standard multi-pass signature
+%  (`%Value %mp_path` + the shared-table params) when a query pass runs inside
+%  the general multi-pass driver alongside ordinary passes -- the params are
+%  ignored (a query reads no input and shares no table), but the signature must
+%  match main's call.
+plawk_multipass_query_fn_ir(Index, ParamsIR, Pred, Arity, Fields, Guard,
+        OutputSep, IR) :-
     numlist(1, Arity, Cols),
     findall(MatLine,
         ( member(C, Cols),
@@ -4099,7 +4125,7 @@ plawk_multipass_query_fn_ir(Index, Pred, Arity, Fields, Guard, OutputSep, IR) :-
         FreeLines),
     atomic_list_concat(FreeLines, '\n', FreeIR),
     format(atom(IR),
-'define void @plawk_pass_~w() {
+'define void @plawk_pass_~w(~w) {
 entry:
   %vm = call %WamState* @plawk_foreign_vm_get()
 ~w
@@ -4123,7 +4149,7 @@ q_after:
 ~w
   ret void
 }',
-        [Index, MaterializeIR, BodyIR, FreeIR]).
+        [Index, ParamsIR, MaterializeIR, BodyIR, FreeIR]).
 
 %% plawk_query_body_ir(+Guard, +PrintIR, -BodyIR)
 %  The `q_body` block content. Unguarded: print then fall to `q_body_done`.
@@ -4383,6 +4409,21 @@ plawk_multipass_pass_fn(Index, pass_rows_anon(var(Table), Body), Tables,
     nth0(TableIndex, Tables, Table),
     plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, FieldPlans,
         GuardPlan, FieldSep, OutputSep, FnIR, GuardGlobals).
+% A query pass inside a general multi-pass program (phase 6, PR 5: mixed
+% query + ordinary passes). The query reader needs no input and no shared
+% table, but must adopt the standard pass-function signature so main's call
+% site is uniform; the params are ignored. The shared %WamState the goal runs
+% on (@plawk_foreign_vm) is emitted once by the driver (it has the module
+% code/label counts); this clause only emits the pass body. No per-pass string
+% globals (the i64 print format comes from the driver's runtime globals).
+plawk_multipass_pass_fn(Index, pass_query(query(Pred, Vars), Body), _Tables,
+        _StrArrays, _Schemas, TableParamsIR, _FieldSep, OutputSep, FnIR, '') :-
+    plawk_query_pass_supported(pass_query(query(Pred, Vars), Body)),
+    length(Vars, Arity),
+    plawk_query_body_plan(Body, Fields, Guard),
+    atom_concat('%Value %mp_path', TableParamsIR, ParamsIR),
+    plawk_multipass_query_fn_ir(Index, ParamsIR, Pred, Arity, Fields, Guard,
+        OutputSep, FnIR).
 
 % Resolve a no-`as` guard (`$N CMP int`) -> guard(N, Op, Value); none passes.
 plawk_rows_anon_guard(none, none).

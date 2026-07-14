@@ -1085,8 +1085,10 @@ single-pass test before any driver surgery).
   goal). The body may reorder, repeat, or subset the printed columns, and may
   be gated by an `if ($K CMP int)` reader guard (`&&` / `||` combinations) — a
   WHERE over the query's solutions, lowered to pure i1 and/or over the
-  per-column reads. Mixed query + ordinary passes and string columns are the
-  next PRs.
+  per-column reads. A query pass may run **mixed with ordinary passes** in one
+  program (integrated into the general multi-pass driver; the shared `%WamState`
+  the goal runs on is spliced in once), passes executing in program order.
+  String (non-integer) columns are the next PR.
 
 - **Phase 7 — secondary indexes (§3.5).** `index TABLE by FIELD [unique]` on
   record-valued tables; unique lookups return one record; non-unique

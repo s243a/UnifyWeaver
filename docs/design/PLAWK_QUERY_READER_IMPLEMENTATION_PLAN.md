@@ -5,9 +5,9 @@ Copyright (c) 2026 John William Creighton (@s243a)
 
 # plawk `over query(Goal)` reader — implementation plan (phase 6)
 
-**Status**: PRs 1–4 landed; an all-query program of any goal arity with a
-`print $K...` body — optionally gated by an `if ($K CMP int)` reader guard —
-runs end-to-end.
+**Status**: PRs 1–5 landed; a goal of any arity with a `print $K...` body —
+optionally gated by an `if ($K CMP int)` reader guard — runs end-to-end, in an
+all-query program or mixed with ordinary passes.
 Sequences the work for the query-driven reader (`PLAWK_MULTIPASS_CACHE.md`
 §3.4, phase 6): a pass whose records are the **solutions of a Prolog goal**.
 This is the "most beyond awk" reader and the first place plawk admits
@@ -175,10 +175,46 @@ pass over query(edge(X, Y)) { if ($1 >= 2 && $2 < 40) print $1 }
 - **Verified.** `tests/test_plawk_query_reader.pl`: a `>` filter, an `&&`
   reading a non-printed column, and an `||`.
 
-### PR 5 — Mixed passes + string columns + determinism/snapshot test
+### PR 5 — Mixed passes + determinism test — **LANDED**
 
-A query pass mixed with ordinary passes in one program; non-integer (string)
-columns via the posarray-str path. Plus the determinism/snapshot test below.
+A query pass may now run **alongside ordinary passes** in one program:
+
+```
+pass over query(edge(X, Y)) { print $1, $2 }   # materialised from the goal
+pass { print $1 }                               # scans the input file
+```
+
+- **Integrated into the general multi-pass driver.** A `pass_query` clause on
+  `plawk_multipass_pass_fn` emits the query pass-fn with the *standard*
+  multi-pass signature (`%Value %mp_path` + shared-table params, all ignored —
+  a query reads no input and shares no table), so main's call site is uniform.
+  Query passes contribute no table (`plawk_passes_tables` skips them), so the
+  table/cache machinery is untouched.
+- **VM getter spliced once.** The general driver does not emit the shared
+  `%WamState` a query goal runs on; `plawk_query_mixed_support_ir` adds it (sized
+  by the module code/label counts in `Options`) when a query pass is present.
+  The i64 print-format global the body uses is already among the driver's
+  runtime globals.
+- **Order preserved.** Passes run in program order; a query pass emits its
+  solutions, an ordinary pass scans the input — in either order, with guards on
+  the query pass composing as in PR 4.
+- **Determinism.** A test that the same query in two passes yields byte-identical
+  output (the collapse to a materialised set is order-stable and repeatable; a
+  disjunctive goal appears in the same solution order each pass). A *write*-
+  snapshot test (a pass mutating state the goal reads) is deferred: goals reach
+  the `@prolog` predicate universe, not mutable plawk tables, so there is no
+  path yet for a pass write to perturb a goal's solution set — that awaits goals
+  reading mutable plawk state (a later capability).
+- **Verified.** `tests/test_plawk_query_reader.pl`: query-then-ordinary,
+  ordinary-then-guarded-query, and the two-pass determinism check.
+
+### PR 6 — String columns
+
+Non-integer (atom / string) goal columns via the posarray-str path. The open
+question is per-column typing: columns are i64 today, and the goal's arguments
+are untyped at build. Likely a tagged materialisation primitive
+(`@wam_object_call_posarray_value` storing int-or-atom-id with a tag) so a
+column can carry either without a surface type annotation — its own PR.
 
 ### PR 4 — Determinism guarantees + snapshot test + docs
 
