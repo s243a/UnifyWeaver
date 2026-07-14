@@ -58,6 +58,8 @@ self-contained so a single coding agent can pick it up in isolation.
 | EMIT-KOTLIN-3 ✅ | Multi-clause deterministic | Kotlin | M | done — T5/T4 no call (`cursor/emit-kotlin-multi-clause-f421`) |
 | EMIT-KOTLIN-4 ✅ | Last-call `execute` | Kotlin | M | done — tail execute (`cursor/emit-kotlin-execute-f421`) |
 | EMIT-KOTLIN-5 | Mid-body `call` | Kotlin | M | fib/ack / non-tail continuation |
+| BENCH-KOTLIN ✅ | Lowered vs interpreter timing | Kotlin | S | done — recursion regresses; short cases noise (`cursor/bench-kotlin-f421`) |
+| KT-DISPATCH-SNAPSHOT-OPT | Perf: cheapen recursive dispatch | Kotlin | M | BENCH-KOTLIN |
 | BENCH-LLVM | Effective-distance bench row | LLVM | L | — |
 | BENCH-CPP | Effective-distance bench row | C++ | L | — |
 | BENCH-C | Effective-distance bench row | C | M | — |
@@ -602,7 +604,26 @@ fallback) to the three Tier-D targets. Reference small emitters:
 - **Lever:** Lowered emitters for early scaffolds  **Target:** Kotlin  **Size:** M  **Depends on:** EMIT-KOTLIN-4
 - **Goal:** Emit non-tail `call` with saved continuation / environment so fib/ack and non-tail reverse lower.
 - **Out of scope here:** cut, ITE/soft-cut, aggregates, multi-solution enumeration.
+- **Note from BENCH-KOTLIN:** the one reproducible perf finding is that tail `execute` recursion (append) is ~0.6–0.8× (slower) from the per-hop `tryRun`+snapshot tax; mid-body `call` adds more of the same recursion. **Do `KT-DISPATCH-SNAPSHOT-OPT` first**, or treat EMIT-KOTLIN-5 as correctness-only with no perf claim.
 - **Acceptance:** fib (or equivalent) LOWERS under `emit_mode(functions)` and matches interpreter; conformance remains green.
+
+### BENCH-KOTLIN: Measure lowered vs interpreter (in-process)
+- **Lever:** Effective-distance / perf evidence  **Target:** Kotlin  **Size:** S  **Depends on:** EMIT-KOTLIN-4
+- **Status:** ✅ **Landed** on `cursor/bench-kotlin-f421` (2026-07-14). See [`docs/WAM_KOTLIN_BENCH.md`](WAM_KOTLIN_BENCH.md).
+- **Goal:** Answer whether `emit_mode(functions)` pays off vs the bytecode interpreter — timing **execution**, not JVM/`gradle` startup.
+- **Design:** `benchmark_main(Pred, Iterations)` project option (warmup + median of timed `tryRun` batches). Harness `examples/benchmark/run_wam_kotlin_lowered_vs_interpreter.pl` builds each program in both modes, asserts `registerNative` under functions, reports speedup.
+- **Finding (honest, reproduction-corrected):** the only **reproducible** signal (3 runs) is that **deep tail-recursion regresses** — `append` ~0.6–0.8× (lowered slower), worsening with depth, from the per-hop `tryRun`+snapshot tax. Short non-recursive cases (facts/T5/list-builder/member/T4) are **noise-dominated** — they swing up to 8× run-to-run (`fact` 0.46×→3.77×) and support no conclusion. The original "facts/T5/list-builder regress" reading did not reproduce.
+- **Acceptance:** harness runnable; results table documented; unit + kotlin/kotlin_functions conformance stay green.
+
+### KT-DISPATCH-SNAPSHOT-OPT: Cheapen recursive native dispatch (Kotlin)
+- **Lever:** Perf / lowered-path payoff  **Target:** Kotlin  **Size:** M  **Depends on:** BENCH-KOTLIN
+- **Motivation:** BENCH-KOTLIN's one solid regression — lowered tail recursion (`append`) is ~0.6–0.8× and worsens with depth. Root cause (by shape, confirm by profiling): `tryRun` calls `snapshotForNative` on **every** native/recursive `execute`→`dispatch` hop, deep-copying the register/heap map; heap vars (`H<n>`) accumulate unbounded within a query, so per-hop snapshot cost grows with depth (≈O(depth²) for a length-`depth` recursion). The interpreter uses an explicit WAM stack + trail — no per-call heap snapshot.
+- **Steps:**
+  1. **Profile first** — instrument/measure to confirm `snapshotForNative` (map copy) dominates the recursive path (async-profiler, or a cheap manual counter/timer around snapshot vs body). Don't optimize on the hypothesis alone.
+  2. Cheapen the seam: options — (a) skip the snapshot on a same-predicate tail `execute` (the common recursion case) since a failed clause already restores via the T4 `_t4` snapshot; (b) replace full-map snapshot with **trail-based undo** like the interpreter; (c) bound/reclaim heap vars so the copied map doesn't grow unboundedly.
+  3. Keep correctness: the differential harness (lowered == interpreter) and full conformance (both modes) must stay green.
+- **Also: harden BENCH-KOTLIN** so short cases become measurable — more warmup/timed batches and report **min** batch-ms (robust estimator for JIT'd code) alongside median; only then re-judge facts/T5/list-builder.
+- **Acceptance:** `append_500` speedup improves toward ≥1.0× (or a documented, profiled reason it can't); differential + conformance green; a re-run bench table (with the hardened harness) replaces the noisy short-case rows.
 
 ---
 

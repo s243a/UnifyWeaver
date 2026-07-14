@@ -300,20 +300,60 @@ write_wam_kotlin_project(Predicates, Options, ProjectDir) :-
     compile_failed_parts(FailedParts, FailedCode),
     registrar_calls(NativeParts, WamParts, Registrars),
     option(conformance_main(ConfMain), Options, false),
-    render_kotlin_wam_template('Main.kt.mustache', [
+    kotlin_benchmark_main_bindings(Options, BenchBindings),
+    append([
         package=Package,
         native_predicates=NativeCode,
         wam_predicates=WamCode,
         failed_predicates=FailedCode,
         registrar_calls=Registrars,
         conformance_main=ConfMain
-    ], MainCode),
+    ], BenchBindings, MainBindings),
+    render_kotlin_wam_template('Main.kt.mustache', MainBindings, MainCode),
     directory_file_path(SrcDir, 'Main.kt', MainPath),
     write_file(MainPath, MainCode),
     format('WAM Kotlin project created at: ~w~n', [ProjectDir]),
     format('  Mode: ~w~n', [Mode]),
     format('  Native predicates: ~w~n', [NativeParts]),
     format('  WAM predicates: ~w~n', [WamParts]).
+
+%% kotlin_benchmark_main_bindings(+Options, -Bindings)
+%  Supports benchmark_main(Pred, Iterations) or benchmark_main(true) (CLI pred).
+%  Optional: benchmark_warmup/1, benchmark_batches/1, benchmark_state_setup/1
+%  (Kotlin expression returning WamState; default empty CLI state).
+kotlin_benchmark_main_bindings(Options, Bindings) :-
+    (   option(benchmark_main(Pred0, Iters0), Options)
+    ->  kotlin_bench_pred_atom(Pred0, PredAtom),
+        ( number(Iters0) -> Iters = Iters0 ; atom_number(Iters0, Iters) ),
+        Enabled = true
+    ;   option(benchmark_main(true), Options)
+    ->  PredAtom = '',
+        option(benchmark_iterations(Iters), Options, 1000),
+        Enabled = true
+    ;   Enabled = false,
+        PredAtom = '',
+        Iters = 1000
+    ),
+    option(benchmark_warmup(Warmup), Options, 2),
+    option(benchmark_batches(Batches), Options, 5),
+    option(benchmark_state_setup(StateSetup0), Options,
+           'stateFromCliArgs(emptyList())'),
+    atom_string_like(StateSetup0, StateSetup),
+    (   Enabled == true
+    ->  Bindings = [
+            benchmark_main=true,
+            benchmark_predicate=PredAtom,
+            benchmark_iterations=Iters,
+            benchmark_warmup=Warmup,
+            benchmark_batches=Batches,
+            benchmark_state_setup=StateSetup
+        ]
+    ;   Bindings = [benchmark_main=false]
+    ).
+
+kotlin_bench_pred_atom(Pred/Arity, Atom) :- !,
+    format(atom(Atom), '~w/~w', [Pred, Arity]).
+kotlin_bench_pred_atom(Atom, Atom) :- atomic(Atom).
 
 compile_native_parts([], '// No native Kotlin predicates selected.').
 compile_native_parts(NativeParts, Code) :-

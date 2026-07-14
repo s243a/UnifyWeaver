@@ -113,6 +113,7 @@ test(runtime_template_exposes_executable_wam_abi) :-
     assertion(has_substring(Code, 'fun snapshotForNative(): WamNativeSnapshot')),
     assertion(has_substring(Code, 'fun tryRun(predicate: String, initialState: WamState')),
     assertion(has_substring(Code, 'this::tryRun')),
+    assertion(has_substring(Code, 'fun intRangeList(n: Int): Value')),
     assertion(has_substring(Code, 'fun functorName(functor: String): String')),
     assertion(has_substring(Code, 'fun kotlinLoGetConstant(state: WamState')),
     assertion(has_substring(Code, 'fun stateFromCliArgs(values: List<String>): WamState')).
@@ -439,6 +440,38 @@ test(conformance_main_prints_true_false, [condition(gradle_available), nondet]) 
             assertion(BadStatus == exit(0)),
             normalize_space(string(BadTrim), BadOut),
             assertion(BadTrim == "false")
+        ),
+        retractall(user:kt_fact(_, _))
+    ).
+
+% BENCH-KOTLIN: benchmark_main emits in-process tryRun timing (not gradle startup).
+test(benchmark_main_emits_inprocess_timing_loop, [nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_benchmark_main',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    setup_call_cleanup(
+        (   retractall(user:kt_fact(_, _)),
+            assertz(user:kt_fact(alpha, beta))
+        ),
+        (   wam_kotlin_target:write_wam_kotlin_project(
+                [user:kt_fact/2],
+                [emit_mode(functions),
+                 benchmark_main('kt_fact/2', 1000),
+                 benchmark_warmup(1),
+                 benchmark_batches(3),
+                 benchmark_state_setup('stateFromCliArgs(listOf("alpha", "beta"))')],
+                TmpDir),
+            read_file_to_string(
+                'output/test_wam_kotlin_benchmark_main/src/main/kotlin/generated/wam/Main.kt',
+                Main, []),
+            assertion(has_substring(Main, 'BENCH predicate=')),
+            assertion(has_substring(Main, 'median_ms=')),
+            assertion(has_substring(Main, 'warmupBatches')),
+            assertion(has_substring(Main, 'timedBatches')),
+            assertion(has_substring(Main, 'kt_fact/2')),
+            assertion(has_substring(Main, 'stateFromCliArgs(listOf("alpha", "beta"))')),
+            assertion(\+ has_substring(Main, 'Ran $predicate')),
+            assertion(\+ has_substring(Main, 'println(if (ok) "true" else "false")'))
         ),
         retractall(user:kt_fact(_, _))
     ).

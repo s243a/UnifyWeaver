@@ -14,6 +14,47 @@ fun buildProgram(): WamProgram {
 
 fun main(args: Array<String>) {
     val program = buildProgram()
+    val runtime = WamRuntime(program)
+{{#benchmark_main}}
+    // In-process timing (warmup + median of timed batches). Does NOT include JVM/gradle startup.
+    val predicate = "{{benchmark_predicate}}"
+    val iterations = args.getOrNull(0)?.toIntOrNull() ?: {{benchmark_iterations}}
+    val warmupBatches = args.getOrNull(1)?.toIntOrNull() ?: {{benchmark_warmup}}
+    val timedBatches = args.getOrNull(2)?.toIntOrNull() ?: {{benchmark_batches}}
+    fun freshState(): WamState = {{benchmark_state_setup}}
+    // Correctness smoke before timing.
+    val probeOk = runtime.tryRun(predicate, freshState())
+    if (!probeOk) {
+        println("BENCH predicate=$predicate ok=false (probe failed; refusing to time)")
+        return
+    }
+    repeat(warmupBatches) {
+        repeat(iterations) {
+            if (!runtime.tryRun(predicate, freshState())) {
+                println("BENCH predicate=$predicate ok=false (warmup failure)")
+                return
+            }
+        }
+    }
+    val batchMs = DoubleArray(timedBatches)
+    for (b in 0 until timedBatches) {
+        val t0 = System.nanoTime()
+        repeat(iterations) {
+            if (!runtime.tryRun(predicate, freshState())) {
+                println("BENCH predicate=$predicate ok=false (timed failure)")
+                return
+            }
+        }
+        batchMs[b] = (System.nanoTime() - t0) / 1_000_000.0
+    }
+    batchMs.sort()
+    val median = batchMs[timedBatches / 2]
+    println(
+        "BENCH predicate=$predicate iterations=$iterations warmup_batches=$warmupBatches " +
+            "timed_batches=$timedBatches median_ms=${"%.3f".format(median)} ok=true"
+    )
+{{/benchmark_main}}
+{{^benchmark_main}}
     val predicate = args.firstOrNull() ?: program.predicateNames().firstOrNull()
     if (predicate == null) {
 {{#conformance_main}}
@@ -24,7 +65,6 @@ fun main(args: Array<String>) {
 {{/conformance_main}}
         return
     }
-    val runtime = WamRuntime(program)
 {{#conformance_main}}
     val ok = runtime.tryRun(predicate, stateFromCliArgs(args.drop(1)))
     println(if (ok) "true" else "false")
@@ -36,4 +76,5 @@ fun main(args: Array<String>) {
         println("$name=$value")
     }
 {{/conformance_main}}
+{{/benchmark_main}}
 }
