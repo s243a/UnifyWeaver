@@ -665,6 +665,40 @@ continues. That symmetry suggests the eventual `do`/`while` should share the
 guard/condition machinery (a boolean predicate over the current record's
 fields) rather than grow a parallel one.
 
+**Two iteration surfaces — `pass` vs `for-in`.** Iteration is not unique to
+`pass`: `for (k in arr)` already loops, and the two share one underlying
+iterator primitive. Documenting the difference now (even though nested `pass`
+is unbuilt) keeps the surface coherent, because a future nested `pass` sits
+squarely on this axis.
+
+Both walk a table's occupied slots one step at a time; they differ in **what
+each step binds** and **where the scope boundary sits**:
+
+| | `pass … of TABLE as r { }` | `for (k in TABLE) { }` |
+|---|---|---|
+| **binds** | the whole **record** (`r["col"]` / `r[N]` / `$N`) | a single **key** `k` |
+| **scope** | a fresh namespace per pass | shares the enclosing namespace |
+| **host** | a top-level pass (its own reader/store) | a statement inside a body |
+
+The **key-vs-record distinction is not fundamental**: a key is sufficient,
+because you can always look the record back up (`TABLE[k]`) — so `for (k in
+TABLE) { … TABLE[k] … }` and `pass records of TABLE as r { … r["col"] … }`
+reach the same data. What differs is **ergonomics vs. flexibility**:
+
+- **Returning a record** (the `pass … as r` reader) is **less verbose** — the
+  fields are in hand, no re-lookup, and the guard/`WHERE` filter reads
+  naturally (`if (r["amt"] > 100)`). The cost is a fixed shape: you get *this
+  record*, decoded by *this* schema/position.
+- **Returning a key** (`for-in`) is **more flexible** — the key can index
+  *any* table (join across tables, cross-reference, dereference indirectly),
+  or be used without ever materialising the record. The cost is the explicit
+  `TABLE[k]` lookup (and its verbosity) at every use.
+
+So neither subsumes the other: the record reader trades flexibility for
+brevity, the key iterator trades brevity for reach. A nested `pass` (§3.8), if
+built, is the record-returning form gaining its own nested scope — the natural
+extension of the left column, not a new mechanism.
+
 ### 3.9 Views (future TODO — brief spec, not planned)
 
 A **view** is a named, derived query over one or more tables — conceptually a
