@@ -65,6 +65,13 @@ t_output_aliases :- print(alias), writeln(done).
 :- dynamic t_tab/0.
 t_tab :- tab(2).
 
+:- dynamic t_output_family/0.
+t_output_family :-
+    put_char(x),
+    put_code(121),
+    write_canonical('two words'),
+    write_canonical(node('has space', 7)).
+
 :- dynamic t_pairs_project/2.
 t_pairs_project(Keys, Values) :-
     Pairs = [a-1, b-2],
@@ -155,6 +162,34 @@ cargo_available :-
          process_wait(Pid, exit(0))),
         _, fail).
 
+write_output_probe(TmpDir) :-
+    directory_file_path(TmpDir, 'src/bin', BinDir),
+    make_directory_path(BinDir),
+    directory_file_path(BinDir, 'output_probe.rs', ProbePath),
+    ProbeContent = '
+use builtin_parity_test::state::WamState;
+use builtin_parity_test::t_output_family_0;
+use std::collections::HashMap;
+
+fn main() {
+    let mut vm = WamState::new(vec![], HashMap::new());
+    if !t_output_family_0(&mut vm) {
+        std::process::exit(1);
+    }
+}
+',
+    setup_call_cleanup(
+        open(ProbePath, write, Out, [encoding(utf8)]),
+        write(Out, ProbeContent),
+        close(Out)).
+
+run_output_probe(TmpDir, ExitCode, Output) :-
+    process_create(path(cargo), ['run', '--quiet', '--bin', 'output_probe'],
+                   [cwd(TmpDir), stdout(pipe(Stream)), stderr(null), process(Pid)]),
+    read_string(Stream, _, Output),
+    close(Stream),
+    process_wait(Pid, exit(ExitCode)).
+
 test_builtin_parity_execution :-
     Test = 'WAM-Rust builtin parity: end-to-end execution (cargo test)',
     TmpDir = 'output/test_wam_rust_builtin_parity',
@@ -170,6 +205,7 @@ test_builtin_parity_execution :-
              user:t_string_code/1,
              user:t_output_aliases/0,
              user:t_tab/0,
+             user:t_output_family/0,
              user:t_pairs_project/2, user:t_pairs_split/2, user:t_pairs_zip/1,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
@@ -182,6 +218,7 @@ test_builtin_parity_execution :-
              user:t_foldl/1, user:t_alc_join/1, user:t_alc_split/1],
             [module_name('builtin_parity_test'), wam_fallback(true)],
             TmpDir),
+        write_output_probe(TmpDir),
         directory_file_path(TmpDir, 'tests', TestsDir),
         make_directory_path(TestsDir),
         directory_file_path(TestsDir, 'integration_test.rs', TestPath),
@@ -194,6 +231,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_
     t_string_code_1,
     t_output_aliases_0,
     t_tab_0,
+    t_output_family_0,
     t_pairs_project_2, t_pairs_split_2, t_pairs_zip_1,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
     t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
@@ -329,6 +367,9 @@ fn test_output_aliases_compiled() {
 
     let mut tab_vm = vmnew();
     assert!(t_tab_0(&mut tab_vm));
+
+    let mut output_vm = vmnew();
+    assert!(t_output_family_0(&mut output_vm));
 }
 
 #[test]
@@ -1245,6 +1286,28 @@ fn test_tab_direct() {
     assert!(!call1("tab/1", ub("N")).0);
     assert!(!call1("tab/1", a("three")).0);
 }
+
+#[test]
+fn test_single_term_output_direct() {
+    assert!(call1("put_char/1", a("x")).0);
+    assert!(call1("put_char/1", a("é")).0);
+    assert!(!call1("put_char/1", a("")).0);
+    assert!(!call1("put_char/1", a("xy")).0);
+    assert!(!call1("put_char/1", i(120)).0);
+    assert!(!call1("put_char/1", ub("C")).0);
+
+    assert!(call1("put_code/1", i(121)).0);
+    assert!(!call1("put_code/1", i(-1)).0);
+    assert!(!call1("put_code/1", i(0x110000)).0);
+    assert!(!call1("put_code/1", i(0xd800)).0);
+    assert!(!call1("put_code/1", a("x")).0);
+    assert!(!call1("put_code/1", ub("Code")).0);
+
+    assert!(call1("write_canonical/1",
+        Value::Str("node/2".to_string(), vec![a("has space"), i(7)])).0);
+    let mut vm = vmnew();
+    assert!(!vm.execute_builtin("write_canonical/1", 1));
+}
 ',
         setup_call_cleanup(
             open(TestPath, write, Out, [encoding(utf8)]),
@@ -1258,7 +1321,15 @@ fn test_tab_direct() {
         process_wait(Pid, exit(ExitCode)),
         (   ExitCode == 0,
             sub_string(Output, _, _, _, "test result: ok")
-        ->  pass(Test)
+        ->  run_output_probe(TmpDir, ProbeExitCode, ProbeOutput),
+            ExpectedOutput = "xy'two words'node('has space', 7)",
+            (   ProbeExitCode == 0,
+                ProbeOutput == ExpectedOutput
+            ->  pass(Test)
+            ;   format('--- output probe ---~nexpected: ~q~nactual:   ~q~n--- end ---~n',
+                       [ExpectedOutput, ProbeOutput]),
+                fail_test(Test, 'output probe failed')
+            )
         ;   format('--- cargo test output ---~n~w~n--- end ---~n', [Output]),
             fail_test(Test, 'cargo test failed')
         )
