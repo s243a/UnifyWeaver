@@ -44,7 +44,8 @@ LMDB backend; `rows of`'s `unsafe` / inline check-or-rename spec; multiple
 named tables per store (phase 8.9); the `over prev` reader (phase 4
 follow-on); the query reader (phase 6); `eager` / secondary indexes;
 string-literal print fields. Future sketches: nested pass blocks (§3.8),
-`while`/loop statements, views (§3.9). See the per-phase status tags in §5.
+`while`/loop statements (§3.8), views (§3.9), contained non-determinism / a
+search construct (§3.10). See the per-phase status tags in §5.
 
 ## Implemented surface (quick reference)
 
@@ -671,6 +672,35 @@ continues. That symmetry suggests the eventual `do`/`while` should share the
 guard/condition machinery (a boolean predicate over the current record's
 fields) rather than grow a parallel one.
 
+**Loops and determinism — what a `while` actually gives back.** It is tempting
+to say a loop "reintroduces non-determinism" that passes gave up. It does not,
+and the precise version is worth recording because it clarifies what the
+determinism invariant (§1) protects. Two independent axes were bundled when we
+made passes deterministic:
+
+- **Determinism vs non-determinism** — one well-defined result, no
+  choicepoints / no backtracking, vs. a goal with *many* solutions that a
+  solver searches.
+- **Bounded vs unbounded** — a fixed structural sweep (one step per
+  record/row, guaranteed to finish) vs. data-dependent iteration that runs
+  until a runtime condition (and might not terminate).
+
+A `pass` is **both** deterministic **and** bounded. A `while` loop keeps
+determinism — same input, same output, still no backtracking — but drops
+**boundedness**: the program decides how many times to run from runtime
+values. So a loop does not hand back *non-determinism*; it hands back the
+*expressive power non-determinism buys for free* — search, fixpoint,
+enumerate-until — but under explicit, deterministic, step-by-step control. A
+Prolog solver explores a solution space implicitly; a `while` lets you do the
+same thing by hand. This is the same containment as Phase 6's aggregation
+rule, seen from the other side: a multi-solution goal is tamed either by
+**folding it** (`collect`/`count` → one value, enumeration implicit) or by
+**looping over it** (enumeration explicit, one deterministic step at a time).
+The cost the loop pays is exactly the boundedness it drops: the
+"constant-work-per-record, guaranteed-termination" property that made passes
+analyzable. So if loops are added, the *default* should stay bounded and the
+unbounded form be opt-in.
+
 **Two iteration surfaces — `pass` vs `for-in`.** Iteration is not unique to
 `pass`: `for (k in arr)` already loops, and the two share one underlying
 iterator primitive. Documenting the difference now (even though nested `pass`
@@ -727,6 +757,115 @@ So a view is either delegated to the backend or lowered to a cached
 projection table; the surface (`view NAME as records of T where …`) is
 uniform, and only the evaluation strategy is backend-specific. Depends on
 reader guards (the `WHERE`) and, for multi-table sources, phase 8.9.
+
+### 3.10 Contained non-determinism — a search construct (future TODO — sketch)
+
+The loops discussion (§3.8) draws a line: a `while` gives back *unboundedness*
+but stays deterministic. The natural question is whether we ever want the
+*other* axis back — genuine **non-determinism** (choicepoints, backtracking,
+multiple solutions) — and, if so, how to admit it without breaking the
+inter-pass determinism invariant (§1). This section sketches a design. It is a
+**future TODO, not scheduled**, recorded because the substrate makes it cheap
+and the containment rule falls out of principles already in this document.
+
+**Why it is worth wanting.** plawk compiles through the WAM — a machine whose
+entire reason for existing is choicepoints, the trail, and backtracking. Today
+we suppress all of that to get constant-memory streaming. But *search* problems
+(constraint solving, combinatorial enumeration, joins expressed as relations,
+rule evaluation — "find an assignment satisfying these facts") are exactly what
+that machinery does well and what awk/SQL express badly. And the efficiency
+intuition — "determinism is faster" — is only true for straight-line data
+processing. For search, backtracking with first-argument **clause indexing**
+(which this project already built, see the loader-side indexing work) is often
+both terser *and* faster than a hand-rolled nest of loops carrying explicit
+state. So the payoff is real, and it is the one place the logic-programming
+interior earns its keep at the surface.
+
+**The idea (the user's, refined).** Keep `=` as today: deterministic
+assignment / bind-to-ground, committed, no choicepoint. Add a **second binding
+mode** — spelled here `in`, e.g. `X in domain(...)` — that introduces a *logic
+variable* ranging over a domain rather than a value. (The user suggested `is`;
+that spelling collides with Prolog's arithmetic `is/2`, so `in` — echoing
+CLP(FD)'s `X in 1..10` — reads better; final choice open.) Logic variables are
+consumed by a **search construct** over a cartesian product of such variables,
+pruned by constraints — idiomatically the encapsulated-search meta-predicates
+Prolog already uses to make non-determinism safe (`findall/3`, `aggregate_all/3`,
+`forall/2`). Two quantifier shapes, which the informal "forall / forevery"
+naming blurs and which the design must keep distinct:
+
+- **Existential (∃) — enumerate / pick.** `find` (first solution),
+  `collect` (all solutions → an array, in solution order), `the` (require
+  *exactly one*, else error). This is where search bridges back to the loop
+  discussion: `collect` is precisely "materialise the solution set", after
+  which an ordinary `for-in` or `pass` walks it deterministically.
+- **Universal (∀) — test.** `forall(Gen, Cond)` = "every solution of `Gen`
+  satisfies `Cond`", yielding a boolean. Standard Prolog `\+ (Gen, \+ Cond)`;
+  a pure guard, no bindings escape.
+
+**The containment invariant (the crux — the user's rules, and they are
+right).** Non-determinism lives *strictly inside* a search construct inside a
+single pass, and must be **collapsed to a deterministic value before the pass
+boundary**. Concretely:
+
+1. **Choicepoints never cross a pass boundary.** A pass still succeeds exactly
+   once and leaves none behind — the §1 invariant is untouched *between*
+   passes and in the streaming hot loop. All backtracking is confined to the
+   search construct's brackets.
+2. **A logic variable must be resolved before it leaves the search.** Either
+   bound to a ground value (an existential `find`/`the`) or aggregated over its
+   solutions (`collect`/`count`/`forall`). This is the *same* discipline as
+   Phase 6's "a multi-valued lookup must be contained by an aggregation" — here
+   promoted to a language-level rule.
+3. **Unbound logic variables cannot enter imperative plawk.** They may be
+   passed only to Prolog goals (predicates defined in a `BEGIN` block) and to
+   the search construct's own constraints — never printed, stored in a table,
+   or used in `=` arithmetic while unbound. Only the **ground projection** of a
+   solved search flows into ordinary plawk values. In type terms, "unbound
+   logic var" is a distinct kind that the collapse operators are the only way
+   to eliminate.
+
+**Termination.** A general `while` (§3.8) is deterministic but may not
+terminate. This search is the mirror image: non-deterministic but **bounded
+when the domains are finite** — the solution space is a subset of the
+cartesian product, so a finite `in`-domain gives a finite (if large) search
+and guaranteed termination. That gives three well-understood computation
+shapes, each giving up exactly one of the two guarantees:
+
+| shape | determinism | boundedness | collapse at pass edge |
+|---|---|---|---|
+| `pass` / `for-in` | deterministic | bounded (one sweep) | — |
+| `while` loop | deterministic | **unbounded** (data-driven) | must terminate |
+| search (`in` + `find`/`collect`/`forall`) | **non-deterministic** | bounded (finite domains) | must resolve/aggregate |
+
+**Sketch of the surface (illustrative, not final):**
+
+```awk
+BEGIN {
+  # Prolog predicates supply the domains and the relation being searched
+  adjacent(X, Y) :- ...
+}
+pass over graph as g {
+  # search inside the pass; A,B are logic vars over a finite domain,
+  # constrained by a BEGIN predicate; collapse to a ground array before print
+  paths = collect (A, B) where { A in nodes(g); B in nodes(g); adjacent(A, B) }
+  for (p in paths) print p          # pure plawk again: paths is ground
+}
+```
+
+Everything left of the collapse operator (`collect`) is logic; everything
+right of it is ordinary deterministic plawk. The pass exits with no
+choicepoints.
+
+**Assessment.** The idea has real merit and is well-formed: it is the standard
+Prolog pattern (encapsulated search via `findall`/`aggregate_all`) surfaced as
+a language feature, with the containment rule matching principles already in
+this design (Phase 6 aggregation, §1 iteration-bracket determinism). It is also
+clearly **advanced and not near-term** — it needs a logic-variable kind in the
+type system, the collapse operators, a search evaluator over WAM choicepoints,
+and finite-domain analysis for termination. Recorded as a sketch so the surface
+stays coherent; sequenced *after* the `over query(Goal)` reader (Phase 6),
+which introduces the first controlled non-determinism (a goal's solution set)
+and is the smaller, prerequisite step.
 
 ## 4. Runtime: the cache ABI (the first build step)
 
