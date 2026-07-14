@@ -57,6 +57,68 @@ exposure, source-atomic folds, and two-way prompt/source inference remain mandat
 or spending.  The frozen construction and rejected alternatives are specified in
 `DESIGN_repeated_judge_source_dependence.md`.
 
+**2026-07-14 Stage-A source-power amendment (frozen before any source-dependent synthetic outcome):** consume
+the exact reviewed exposure matrices and registered allocation sequences through the canonical Stage-A source
+bundle, not the tracked projection alone.  Mathematical prose uses corpus-specific
+`eta_source,c in {0,.025,.05,.10,.20}`; Python uses `source_eta_by_corpus`, serialized generator records use
+`generator_source_eta_by_corpus`, the compact bundle uses `source_eta_grid`, and the within-component family
+remains `rho_item`.  The legacy parent `rho_grid` name is validated only at the bundle boundary and is not
+propagated.  The joint nuisance family contains all 25 ordered corpus-specific pairs, not only the five
+equal-strength pairs.  The `.20` member is not a covariance upper
+bound for arbitrary contrasts: in every frozen cell `G>K`, `rank(H E H.T)<=K`, and `diag(H E H.T)=1`, so
+`H E H.T-I` has both a `-1` eigenvalue and a positive eigenvalue at least `G/K-1`.  The complete five-point
+family therefore enters null calibration and simultaneous inference.
+
+Generate persistent error by the exact region-factor representation
+`sqrt(1-eta_source,c) epsilon + sqrt(eta_source,c) H z`, make complete source regions atomic in the five outer
+and stable three global-inner folds, and form split-contained prompts by source-spreading registered components
+across blocks of at most ten.  The point estimator is an equal-component marginal quasi-NLL with the complete fitted
+call/request marginal; cross-component source and prompt uncertainty enters a conservative graph-aware
+multiplier with added source and prompt perturbations and no intersection subtraction.  One max statistic
+spans both endpoints, both corpora, and every registered `eta_source,c`.  Its inflated working covariance is
+PSD but is not claimed to Loewner-dominate the unknown data covariance; acceptability comes from the frozen
+complete-procedure null calibration.  The synthetic corpora have independent streams.  A realized Stage-B
+cross-corpus incidence audit must reject that assumption if revision drift, a wave, request/session,
+calibration-fit uncertainty, endpoint/source overlap, or another random or estimated nuisance spans corpora;
+any such shared path requires a prospectively added DGP and multiplier term followed by a new full run.  A
+common revision-pinned model and prompt are fixed conditioned-on strata and do not fail the gate by themselves.
+
+For each `(K,G,R)`, calibrate the strict selector against both the block null and a source-smooth-mean null at
+every ordered `eta_source,c` pair, using 1,999 draws per cell and the maximum of their finite one-based
+position-1,900 thresholds.  Discovery uses 200 replicates per scenario/pair, exact one-sided
+Clopper--Pearson gates,
+the smallest passing `G`, and then
+the coarsest passing `K`.  That result is provisional: only a seed-disjoint, fixed-design confirmation with
+simultaneous Bonferroni-adjusted exact bounds over the frozen `M=425` gates may unlock the attempted-input
+**identity** inventory.  A custom,
+smoke, timing, incomplete, or discovery-only run unlocks nothing.  Stage B must rerun the fixed-design
+procedure at the selected pair on realized `H`, exposure, folds, and prompt incidence; scalar ESS or row-sum
+comparisons are not substitutes.
+The complete procedure and rejected alternatives are frozen in `DESIGN_repeated_judge_source_power.md`.
+
+A failed confirmation is terminal under this preregistration.  Any future retry must prospectively spend alpha
+across the failed and proposed attempts before drawing new seeds; seed disjointness alone is insufficient.
+
+If confirmation passes, Stage B is ordered: unlock identities only; apply history exclusions and enumerate
+the topology-only universe; pass its capacity/provenance gates; build a revision-pinned Nomic cache solely for
+the frozen agreement-cell quotas; freeze exact 32-cell packing; only then compute the Nomic Gram on those fixed
+components, with no repacking or continuous-value candidate optimization; freeze realized dependence objects;
+then rerun the full fixed-design procedure at the already selected `(K,G,R=3)`: its own 1,999-draw null
+calibration and 200-replicate evaluation, followed by a second seed-disjoint 1,999-draw calibration and
+200-replicate confirmation.  Stage B does not reselect the grid.  Judge calls remain locked throughout, and no
+earlier step may inspect or optimize against Nomic.
+
+For Stage A, this amendment supersedes the inherited component-atomic synthetic folds, prompt-only primary
+inference, block-null-only calibration, raw-rate sizing, and three-hop-core candidate clauses below.  Those
+clauses remain as the historical independent-component harness.  Stage A uses full exclusive source regions,
+source-atomic folds, graph-aware prompt-plus-source inference, two null families, nominal max-t lower gates,
+and exact Clopper--Pearson rate bounds.  “Nomic truth” is the inherited fixed synthetic semantic kernel, not a
+real Nomic cache.  The scenario
+grid has three cumulative-kernel deranged-DGP controls total; each of the six primary truths also has its own
+within-replicate deterministic topology-over-derangement comparison.  Its `R=4` sensitivity exists only at
+`G={320,800}`, retains all 25 source-strength pairs and all scenarios, and cannot rescue or select an `R=3`
+design.
+
 ## Question and experimental unit
 
 The question is whether an outcome-blind graph/semantic geometry predicts transferable cross-item conditional
@@ -72,12 +134,12 @@ matched negative:   (x, c), where finite distance(a,c) >= 3
 The positive and negative roots must match on shortest descendant-to-root hop, campaign tag, and root-degree
 quartile.  The sampler balances anchor-to-comparator hop transition, anchor-degree quartile, corpus, and frozen
 graph/Nomic agreement class.  No graph endpoint ID or normalized endpoint title may occur in two selected
-components or in the historical scored campaigns.  Under the attempted v3 contract, all four endpoints must
-belong to one three-hop-safe `source_region` core and each source region contributes at most 10% of a corpus
-sample.  `weak_component_id` remains a distinct diagnostic and is never used as an alias for that cap or fold
-unit.  The source-region audit found no jointly feasible frozen partition, so this remains a blocking
-amendment point rather than an executable selection rule; current v2 `source_component` selector artifacts
-are historical and do not satisfy the proposed contract.
+components or in the historical scored campaigns.  The current Stage-A/realized-Stage-B contract assigns all
+four endpoints to one **full exclusive** `source_region`; there is no core, halo, or three-hop-safe membership
+requirement.  Each source region still contributes at most 10% of a corpus sample.  `weak_component_id`
+remains a separate immutable diagnostic and is never used as an alias for that cap, fold unit, or independence
+claim.  Exact feasibility remains a Stage-B packing gate; current v2 `source_component` selector artifacts are
+historical and do not satisfy this proposed contract.
 
 Graph/Nomic thresholds are computed and recorded on the frozen structural candidate universe before endpoint-
 consuming selection.  Structural near/far defines the sampling contrast; cumulative-walk and Nomic similarities
