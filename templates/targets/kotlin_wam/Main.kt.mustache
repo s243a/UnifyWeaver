@@ -16,11 +16,16 @@ fun main(args: Array<String>) {
     val program = buildProgram()
     val runtime = WamRuntime(program)
 {{#benchmark_main}}
-    // In-process timing (warmup + median of timed batches). Does NOT include JVM/gradle startup.
+    // In-process timing (warmup + min/median of timed batches). Does NOT include JVM/gradle startup.
     val predicate = "{{benchmark_predicate}}"
     val iterations = args.getOrNull(0)?.toIntOrNull() ?: {{benchmark_iterations}}
     val warmupBatches = args.getOrNull(1)?.toIntOrNull() ?: {{benchmark_warmup}}
     val timedBatches = args.getOrNull(2)?.toIntOrNull() ?: {{benchmark_batches}}
+    // Optional: PROFILE=1 enables nanoTime counters; SKIP_RECURSIVE_SNAP=0 forces legacy per-hop snapshot.
+    val profile = args.contains("PROFILE=1") || System.getenv("WAM_KT_PROFILE") == "1"
+    val skipRecursive = !(args.contains("SKIP_RECURSIVE_SNAP=0") || System.getenv("WAM_KT_SKIP_RECURSIVE_SNAP") == "0")
+    runtime.skipRecursiveNativeSnapshot = skipRecursive
+    runtime.profileNativeDispatch = profile
     fun freshState(): WamState = {{benchmark_state_setup}}
     // Correctness smoke before timing.
     val probeOk = runtime.tryRun(predicate, freshState())
@@ -36,6 +41,7 @@ fun main(args: Array<String>) {
             }
         }
     }
+    if (profile) runtime.resetProfileCounters()
     val batchMs = DoubleArray(timedBatches)
     for (b in 0 until timedBatches) {
         val t0 = System.nanoTime()
@@ -48,11 +54,23 @@ fun main(args: Array<String>) {
         batchMs[b] = (System.nanoTime() - t0) / 1_000_000.0
     }
     batchMs.sort()
+    val minMs = batchMs[0]
     val median = batchMs[timedBatches / 2]
     println(
         "BENCH predicate=$predicate iterations=$iterations warmup_batches=$warmupBatches " +
-            "timed_batches=$timedBatches median_ms=${"%.3f".format(median)} ok=true"
+            "timed_batches=$timedBatches min_ms=${"%.3f".format(minMs)} " +
+            "median_ms=${"%.3f".format(median)} skip_recursive_snap=$skipRecursive ok=true"
     )
+    if (profile) {
+        val snapMs = runtime.profileSnapNs / 1_000_000.0
+        val wallMs = batchMs.sum()
+        val frac = if (wallMs > 0.0) snapMs / wallMs else 0.0
+        println(
+            "PROFILE snap_ms=${"%.3f".format(snapMs)} timed_wall_ms=${"%.3f".format(wallMs)} " +
+                "snap_fraction_of_wall=${"%.3f".format(frac)} snap_count=${runtime.profileSnapCount} " +
+                "native_entries=${runtime.profileNativeEntries}"
+        )
+    }
 {{/benchmark_main}}
 {{^benchmark_main}}
     val predicate = args.firstOrNull() ?: program.predicateNames().firstOrNull()

@@ -46,7 +46,7 @@ main :-
     cleanup_benchmark_predicates,
     print_results(Rows),
     write_results_markdown(OutDir, Rows),
-    (   forall(member(row(_, _, _, _, _, ok), Rows), true)
+    (   forall(member(row(_, _, _, _, _, _, _, _, ok), Rows), true)
     ->  halt(0)
     ;   halt(1)
     ).
@@ -123,7 +123,8 @@ bench_case(append_500,
            'run { val st = WamState(); val a = intRangeList(500); val b = intRangeList(500); st.writeRegister("A1", a); st.writeRegister("A2", b); st.writeRegister("A3", st.newVariable("R")); st }',
            ['bk_append/3']).
 
-run_case(OutDir, row(Name, InterpMs, LowerMs, Speedup, NativeOk, Status)) :-
+%% row(Name, IMin, IMed, LMin, LMed, SpeedupMin, SpeedupMed, NativeOk, Status)
+run_case(OutDir, row(Name, IMin, IMed, LMin, LMed, SpMin, SpMed, NativeOk, Status)) :-
     bench_case(Name, Preds, PredKey, Iters, StateSetup, NativeKeys),
     format(atom(CaseDir), '~w/~w', [OutDir, Name]),
     make_directory_path(CaseDir),
@@ -132,25 +133,27 @@ run_case(OutDir, row(Name, InterpMs, LowerMs, Speedup, NativeOk, Status)) :-
     format('~n=== case ~w (~w iters) ===~n', [Name, Iters]),
     BenchOpts = [
         benchmark_main(PredKey, Iters),
-        benchmark_warmup(2),
-        benchmark_batches(5),
+        benchmark_warmup(5),
+        benchmark_batches(15),
         benchmark_state_setup(StateSetup)
     ],
-    time_mode(interpreter, Preds, BenchOpts, InterpDir, InterpMs, InterpOk),
-    time_mode(functions, Preds, BenchOpts, FunDir, LowerMs, LowerOk),
+    time_mode(interpreter, Preds, BenchOpts, InterpDir, IMin, IMed, InterpOk),
+    time_mode(functions, Preds, BenchOpts, FunDir, LMin, LMed, LowerOk),
     confirm_native(FunDir, NativeKeys, NativeOk),
     (   InterpOk == true, LowerOk == true, NativeOk == true,
-        number(InterpMs), number(LowerMs), LowerMs > 0
-    ->  Speedup0 is InterpMs / LowerMs,
-        format(atom(Speedup), '~2f', [Speedup0]),
+        number(IMin), number(LMin), LMin > 0, number(IMed), number(LMed), LMed > 0
+    ->  SpMin0 is IMin / LMin,
+        SpMed0 is IMed / LMed,
+        format(atom(SpMin), '~2f', [SpMin0]),
+        format(atom(SpMed), '~2f', [SpMed0]),
         Status = ok
-    ;   Speedup = nan,
+    ;   SpMin = nan, SpMed = nan,
         Status = fail
     ),
-    format('  interpreter median_ms=~2f  lowered median_ms=~2f  speedup=~w×  native=~w  status=~w~n',
-           [InterpMs, LowerMs, Speedup, NativeOk, Status]).
+    format('  interpreter min/med=~2f/~2f  lowered min/med=~2f/~2f  speedup_min=~w× speedup_med=~w×  native=~w  status=~w~n',
+           [IMin, IMed, LMin, LMed, SpMin, SpMed, NativeOk, Status]).
 
-time_mode(Mode, Preds, BenchOpts, Dir, MedianMs, Ok) :-
+time_mode(Mode, Preds, BenchOpts, Dir, MinMs, MedianMs, Ok) :-
     ( exists_directory(Dir) -> delete_directory_and_contents(Dir) ; true ),
     make_directory_path(Dir),
     append([emit_mode(Mode)], BenchOpts, Options),
@@ -162,14 +165,14 @@ time_mode(Mode, Preds, BenchOpts, Dir, MedianMs, Ok) :-
     !,
     run_gradle_bench(Dir, Out, Status),
     (   Status == exit(0),
-        parse_bench_line(Out, MedianMs)
+        parse_bench_line(Out, MinMs, MedianMs)
     ->  Ok = true
     ;   format(user_error, 'bench run failed mode=~w status=~q out=~w~n',
                [Mode, Status, Out]),
-        MedianMs = nan,
+        MinMs = nan, MedianMs = nan,
         Ok = false
     ).
-time_mode(_, _, _, _, nan, false).
+time_mode(_, _, _, _, nan, nan, false).
 
 run_gradle_bench(Dir, Out, Status) :-
     setup_call_cleanup(
@@ -183,19 +186,23 @@ run_gradle_bench(Dir, Out, Status) :-
         (   close(O), close(E) )
     ).
 
-parse_bench_line(Out, MedianMs) :-
+parse_bench_line(Out, MinMs, MedianMs) :-
     split_string(Out, "\n", "", Lines),
     member(Line, Lines),
     sub_string(Line, _, _, _, "BENCH "),
+    sub_string(Line, _, _, _, "min_ms="),
     sub_string(Line, _, _, _, "median_ms="),
     sub_string(Line, _, _, _, "ok=true"),
-    once(( sub_string(Line, B, _, After, "median_ms="),
-           sub_string(Line, B, Len, After, _),
-           Start is B + Len,
-           sub_string(Line, Start, _, 0, Rest),
-           split_string(Rest, " \t", " \t", [MsStr|_]),
-           number_string(MedianMs, MsStr)
-         )).
+    bench_field(Line, "min_ms=", MinMs),
+    bench_field(Line, "median_ms=", MedianMs).
+
+bench_field(Line, Key, Num) :-
+    sub_string(Line, B, _, After, Key),
+    sub_string(Line, B, Len, After, _),
+    Start is B + Len,
+    sub_string(Line, Start, _, 0, Rest),
+    split_string(Rest, " \t", " \t", [MsStr|_]),
+    number_string(Num, MsStr).
 
 confirm_native(FunDir, Keys, Ok) :-
     directory_file_path(FunDir,
@@ -217,11 +224,11 @@ confirm_native(FunDir, Keys, Ok) :-
 
 print_results(Rows) :-
     nl,
-    format('~w~n', ['program                  | interpreter ms | lowered ms | speedup | native | status']),
-    format('~w~n', ['-------------------------|----------------|------------|---------|--------|-------']),
-    forall(member(row(Name, I, L, S, N, St), Rows),
-           format('~w~t~25+| ~w~t~15+| ~w~t~11+| ~w~t~8+| ~w~t~7+| ~w~n',
-                  [Name, I, L, S, N, St])).
+    format('~w~n', ['program | i_min | i_med | l_min | l_med | speedup_min | speedup_med | native | status']),
+    format('~w~n', ['--------|------:|------:|------:|------:|------------:|------------:|:------:|:------:']),
+    forall(member(row(Name, IMin, IMed, LMin, LMed, SpMin, SpMed, N, St), Rows),
+           format('~w | ~2f | ~2f | ~2f | ~2f | ~w× | ~w× | ~w | ~w~n',
+                  [Name, IMin, IMed, LMin, LMed, SpMin, SpMed, N, St])).
 
 write_results_markdown(OutDir, Rows) :-
     directory_file_path(OutDir, 'RESULTS.md', Path),
@@ -230,14 +237,14 @@ write_results_markdown(OutDir, Rows) :-
         (   format(Stream,
 '# Kotlin WAM: interpreter vs lowered (in-process)~n~n', []),
             format(Stream,
-'Measured via `benchmark_main` — warmup + median of timed `tryRun` batches inside one JVM.~n~n', []),
+'Measured via `benchmark_main` — 5 warmup + 15 timed `tryRun` batches; report **min** (robust for JIT) and median.~n~n', []),
             format(Stream,
-'| program | interpreter ms | lowered ms | speedup | native registered | status |~n', []),
+'| program | interp min | interp med | lowered min | lowered med | speedup min | speedup med | native | status |~n', []),
             format(Stream,
-'|---|---:|---:|---:|:---:|:---:|~n', []),
-            forall(member(row(Name, I, L, S, N, St), Rows),
-                   format(Stream, '| ~w | ~w | ~w | ~w | ~w | ~w |~n',
-                          [Name, I, L, S, N, St]))
+'|---|---:|---:|---:|---:|---:|---:|:---:|:---:|~n', []),
+            forall(member(row(Name, IMin, IMed, LMin, LMed, SpMin, SpMed, N, St), Rows),
+                   format(Stream, '| ~w | ~2f | ~2f | ~2f | ~2f | ~w× | ~w× | ~w | ~w |~n',
+                          [Name, IMin, IMed, LMin, LMed, SpMin, SpMed, N, St]))
         ),
         close(Stream)
     ),

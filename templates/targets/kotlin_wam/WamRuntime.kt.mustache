@@ -347,6 +347,29 @@ class WamProgram {
 class WamRuntime(private val program: WamProgram) {
     private lateinit var currentCode: PredicateCode
 
+    // Depth of nested native tryRun entries. Top-level (=0→1) keeps the
+    // WAT-style snapshot+bytecode fallback (T5 unbound A1, incomplete
+    // lowering). Recursive hops (execute→dispatch→tryRun) skip it when
+    // skipRecursiveNativeSnapshot is true (KT-DISPATCH-SNAPSHOT-OPT):
+    // T4 already snapshots per clause (`_t4`).
+    private var nativeDepth: Int = 0
+
+    /** When true (default), recursive native hops skip snapshotForNative. */
+    var skipRecursiveNativeSnapshot: Boolean = true
+
+    // Optional nanoTime counters for dispatch profiling (append_500 etc.).
+    // Compare profileSnapNs to the BENCH batch wall to get snapshot fraction.
+    var profileNativeDispatch: Boolean = false
+    var profileSnapNs: Long = 0L
+    var profileSnapCount: Long = 0L
+    var profileNativeEntries: Long = 0L
+
+    fun resetProfileCounters() {
+        profileSnapNs = 0L
+        profileSnapCount = 0L
+        profileNativeEntries = 0L
+    }
+
     fun run(predicate: String, initialState: WamState = WamState()): WamState {
         if (!tryRun(predicate, initialState)) {
             error("WAM predicate failed: $predicate")
@@ -359,12 +382,25 @@ class WamRuntime(private val program: WamProgram) {
     // can map stdout true/false without relying on exceptions.
     fun tryRun(predicate: String, initialState: WamState = WamState()): Boolean {
         program.findNative(predicate)?.let { nativeFn ->
-            val snapshot = initialState.snapshotForNative()
-            // Thread tryRun as dispatch so lowered `execute P` can tail-call
-            // (native-first, then bytecode) without a separate runtime handle.
-            if (nativeFn(initialState, this::tryRun)) {
-                return true
+            profileNativeEntries++
+            val recursive = nativeDepth > 0
+            // Recursive native hop: no full-state snapshot, no bytecode
+            // fallback. Clause-level backtracking is owned by the lowered
+            // T4 `_t4` snapshot; a native `false` here is a genuine fail.
+            if (recursive && skipRecursiveNativeSnapshot) {
+                return nativeFn(initialState, this::tryRun)
             }
+            // Top-level (or recursive with skip disabled for A/B profile):
+            // snapshot so a native false can restore before falling back
+            // to bytecode (T5 unbound → interpreter, etc.).
+            val snapshot = takeNativeSnapshot(initialState)
+            nativeDepth++
+            val ok = try {
+                nativeFn(initialState, this::tryRun)
+            } finally {
+                nativeDepth--
+            }
+            if (ok) return true
             if (program.findCode(predicate) == null) {
                 initialState.restoreFromSnapshot(snapshot)
                 return false
@@ -381,6 +417,19 @@ class WamRuntime(private val program: WamProgram) {
             }
         }
         return true
+    }
+
+    private fun takeNativeSnapshot(state: WamState): WamNativeSnapshot {
+        return if (profileNativeDispatch) {
+            val t0 = System.nanoTime()
+            val snap = state.snapshotForNative()
+            profileSnapNs += System.nanoTime() - t0
+            profileSnapCount++
+            snap
+        } else {
+            profileSnapCount++
+            state.snapshotForNative()
+        }
     }
 
     fun restoreChoicePoint(state: WamState): Boolean {
