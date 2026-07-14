@@ -228,6 +228,19 @@ pass_clauses([pass_rows(var(Var), var(Table), Body) | Rest]) -->
     for_in_body(Body),
     ws,
     pass_clauses(Rest).
+% `pass rows of TABLE { print $1, $2 }` -- the positional reader WITHOUT an
+% `as VAR` binding uses awk-native field addressing: a stored row is a
+% field-separated record, so `$N` addresses its Nth column directly. Tried
+% after the `as` form (which owns `VAR[N]`); the two spellings do not mix --
+% no `as` => `$N`, `as VAR` => `VAR[N]`. Represented as pass_rows_anon/2.
+pass_clauses([pass_rows_anon(var(Table), Body) | Rest]) -->
+    "pass", identifier_boundary, ws,
+    "rows", identifier_boundary, ws,
+    "of", identifier_boundary, ws,
+    identifier(Table), ws,
+    for_in_body(Body),
+    ws,
+    pass_clauses(Rest).
 % A `pass over TABLE as VAR { print ... }` block: a configurable reader
 % (PLAWK_MULTIPASS_CACHE.md phase 4). Instead of re-scanning the input, the
 % pass iterates TABLE's entries as records, binding each key to VAR -- the
@@ -260,6 +273,8 @@ plawk_pass_dynentry_rewrite(_DynEntries, pass_over(V, T, Body), pass_over(V, T, 
 plawk_pass_dynentry_rewrite(_DynEntries, pass_records(V, T, Body), pass_records(V, T, Body)).
 % A `rows of TABLE` reader likewise has no rule actions -- pass it through.
 plawk_pass_dynentry_rewrite(_DynEntries, pass_rows(V, T, Body), pass_rows(V, T, Body)).
+% The no-`as` (`$N`) positional reader likewise has no rule actions.
+plawk_pass_dynentry_rewrite(_DynEntries, pass_rows_anon(T, Body), pass_rows_anon(T, Body)).
 
 %% dynentry_decls(-Names)//
 %
