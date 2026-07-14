@@ -44,6 +44,12 @@ t_concat_split(A, B) :- atom_concat(A, B, abc).
 :- dynamic t_select/2.
 t_select(X, R) :- select(X, [a, b, c], R).
 
+:- dynamic t_atomic/1.
+t_atomic(X) :- atomic(X).
+
+:- dynamic t_atomic_number/1.
+t_atomic_number(X) :- atomic(X), number(X).
+
 %% catch/throw + succ predicates (ISO meta-builtin Call fallback path).
 :- dynamic t_thrower/0.
 t_thrower :- throw(oops(42)).
@@ -132,6 +138,7 @@ test_builtin_parity_execution :-
         write_wam_rust_project(
             [user:t_between/1, user:t_msort/1, user:t_sort/1,
              user:t_concat_split/2, user:t_select/2,
+             user:t_atomic/1, user:t_atomic_number/1,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
              user:t_catch_nomatch/0, user:t_catch_nothrow/1,
@@ -150,6 +157,7 @@ test_builtin_parity_execution :-
 use builtin_parity_test::state::WamState;
 use builtin_parity_test::value::Value;
 use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_select_2,
+    t_atomic_1, t_atomic_number_1,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
     t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
     t_maplist_1, t_maplist_check_0, t_maplist_fail_0, t_include_1, t_exclude_1,
@@ -241,6 +249,24 @@ fn test_select_enumeration_compiled() {
         ("b".to_string(), "a,c".to_string()),
         ("c".to_string(), "a,b".to_string()),
     ]);
+}
+
+#[test]
+fn test_atomic_compiled() {
+    let mut atom_vm = vmnew();
+    assert!(t_atomic_1(&mut atom_vm, a("x")));
+    let mut number_vm = vmnew();
+    assert!(t_atomic_1(&mut number_vm, i(42)));
+    let mut compound_vm = vmnew();
+    assert!(!t_atomic_1(&mut compound_vm,
+        Value::Str("f".to_string(), vec![a("x")])));
+    let mut var_vm = vmnew();
+    assert!(!t_atomic_1(&mut var_vm, ub("X")));
+
+    let mut non_tail_ok_vm = vmnew();
+    assert!(t_atomic_number_1(&mut non_tail_ok_vm, i(42)));
+    let mut non_tail_fail_vm = vmnew();
+    assert!(!t_atomic_number_1(&mut non_tail_fail_vm, a("x")));
 }
 
 #[test]
@@ -1035,6 +1061,17 @@ fn test_ground() {
     assert!(!call1("ground/1", ub("V")).0);
     assert!(!call1("ground/1", Value::List(vec![i(1), ub("V")])).0);
     assert!(!call1("ground/1", Value::Str("f/1".to_string(), vec![ub("V")])).0);
+}
+
+#[test]
+fn test_atomic_direct() {
+    assert!(call1("atomic/1", a("x")).0);
+    assert!(call1("atomic/1", i(1)).0);
+    assert!(call1("atomic/1", Value::Float(1.5)).0);
+    assert!(call1("atomic/1", Value::List(vec![])).0);
+    assert!(!call1("atomic/1", Value::List(vec![a("x")])).0);
+    assert!(!call1("atomic/1", Value::Str("f".to_string(), vec![a("x")])).0);
+    assert!(!call1("atomic/1", ub("X")).0);
 }
 ',
         setup_call_cleanup(
