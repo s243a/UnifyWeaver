@@ -49,21 +49,19 @@ module in the fleet.
   Registered via `WamProgram.registerNative`. `functions` / `mixed`
   modes route lowerable preds through this path.
 
-## Perf signal (BENCH-KOTLIN + KT-DISPATCH-SNAPSHOT-OPT)
+## Perf signal (BENCH-KOTLIN → KT-HEAP-SNAPSHOT-OPT-2)
 
 In-process `tryRun` timing (not JVM startup) — see
 [`WAM_KOTLIN_BENCH.md`](WAM_KOTLIN_BENCH.md) and
 [`design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md`](design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md).
-Recursive native hops **skip** `snapshotForNative` (top-level fallback
-kept). Profile: snaps were ~31% of `append_500` wall. **After:**
-append_100 ~1.03×, append_500 ~0.85× (was ~0.55×); member ~1.4–1.6×.
-Remaining recursive tax: T4 `_t4` map copy per entry.
+Recursive tryRun snaps skipped; T4 peels leading `get_constant` so append’s
+cons path is snap-free. **After KT-HEAP-SNAPSHOT-OPT-2:** append_100
+~**7.2×**, append_500 ~**30×**; member ~1.4×.
 
 ## Gaps
 
 - **Mid-body `call`** — still declined (fib, ack with non-tail call).
   Follow-up **EMIT-KOTLIN-5** (correctness; re-measure after).
-- **T4 `_t4` snapshot cost** on deep recursion (blocks append_500 ≥1.0×).
 - **ITE/soft-cut, cut, aggregates** — not lowered.
 - **Native recursion depth:** `execute` uses the JVM call stack.
   Measured ~1000 peano-depth OK, ~2000 → `StackOverflowError` on the
@@ -77,13 +75,13 @@ Remaining recursive tax: T4 `_t4` map copy per entry.
 
 ## Path forward
 
-1. Cheapen T4 `_t4` restore (trail-with-old-values / heap separation) if
-   append_500 must reach ≥1.0×.
-2. EMIT-KOTLIN-5 for mid-body `call` (correctness; re-measure perf).
+1. EMIT-KOTLIN-5 for mid-body `call` (correctness; re-measure perf).
+2. Optional: heap-outside-map / trail-with-old-values if non-peeled T4 or
+   CP snapshots dominate a new workload.
 3. Optional: ITE/soft-cut; ISO / kernels if Kotlin graduates beyond scaffold.
 
 ## Document status
 
 Fleet-aligned snapshot; source-verified against `wam_kotlin_target.pl`,
 `wam_kotlin_lowered_emitter.pl`, and `tests/test_wam_kotlin_target.pl`
-(2026-07-14). Through KT-DISPATCH-SNAPSHOT-OPT.
+(2026-07-14). Through KT-HEAP-SNAPSHOT-OPT-2.

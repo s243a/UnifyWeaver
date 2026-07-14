@@ -1,3 +1,6 @@
+<!--
+SPDX-License-Identifier: MIT OR Apache-2.0
+-->
 # Kotlin WAM — interpreter vs lowered (BENCH-KOTLIN)
 
 **Question:** does `emit_mode(functions)` (native lowering) beat the bytecode
@@ -13,66 +16,58 @@ Harness: `examples/benchmark/run_wam_kotlin_lowered_vs_interpreter.pl`
 LANG=C.UTF-8 swipl -q -s examples/benchmark/run_wam_kotlin_lowered_vs_interpreter.pl -g main -t halt
 ```
 
-Profiling A/B (functions mode only):
+Profiling (functions mode; attributes **all** `snapshotForNative`, incl. T4 `_t4`):
 
 ```bash
-WAM_KT_PROFILE=1 gradle -q run --args='SKIP_RECURSIVE_SNAP=0'   # legacy per-hop snap
-WAM_KT_PROFILE=1 gradle -q run --args='SKIP_RECURSIVE_SNAP=1'   # optimized (default)
+WAM_KT_PROFILE=1 gradle -q run --args='80 2 5 PROFILE=1'
 ```
 
-## Results after KT-DISPATCH-SNAPSHOT-OPT (2026-07-14)
+## Results after KT-HEAP-SNAPSHOT-OPT-2 (2026-07-14)
 
 Hardened harness (5/15, min + median). All functions-mode cases confirmed
 `registerNative` / `lowered_*`.
 
 | program | interp min | lowered min | **speedup min** | speedup med | notes |
 |---|---:|---:|---:|---:|---|
-| fact | 3.23 | 3.43 | 0.94× | 0.87× | ~parity (short) |
-| list_builder | 6.22 | 5.53 | 1.13× | 1.10× | slight win |
-| t5_color | 8.66 | 2.72 | 3.19× | 1.79× | win (still noisy med) |
-| t4_second_arg | 6.25 | 5.51 | 1.14× | 0.92× | ~parity |
-| member_100 | 68.48 | 43.83 | **1.56×** | 1.55× | win |
-| member_500 | 64.45 | 44.62 | **1.44×** | 1.44× | win |
-| append_100 | 222.85 | 216.14 | **1.03×** | 1.04× | ~parity (was ~0.75×) |
-| append_500 | 841.41 | 985.75 | **0.85×** | 0.85× | improved; still under 1.0× |
+| fact | 3.64 | 3.92 | 0.93× | 0.75× | ~parity (short) |
+| list_builder | 6.28 | 5.58 | 1.13× | 1.01× | slight win |
+| t5_color | 8.63 | 3.35 | 2.58× | 1.96× | win |
+| t4_second_arg | 6.62 | 6.12 | 1.08× | 0.97× | ~parity |
+| member_100 | 65.68 | 46.94 | **1.40×** | 1.37× | win |
+| member_500 | 66.12 | 48.34 | **1.37×** | 1.31× | win |
+| append_100 | 235.26 | 32.63 | **7.21×** | 6.88× | win (was ~1.03×) |
+| append_500 | 884.52 | 29.16 | **30.33×** | 28.94× | win (was ~0.85×) |
 
 Speedup = interpreter_ms / lowered_ms (min batch).
 
 ## Before → after (append, the real signal)
 
-| program | before (BENCH-KOTLIN, ~median) | after (speedup min) |
-|---|---:|---:|
-| append_100 | ~0.75× | **1.03×** |
-| append_500 | ~0.55–0.64× | **0.85×** |
+| program | BENCH-KOTLIN | + KT-DISPATCH | **+ KT-HEAP-SNAPSHOT-OPT-2** |
+|---|---:|---:|---:|
+| append_100 | ~0.75× | ~1.03× | **7.21×** |
+| append_500 | ~0.55–0.64× | ~0.85× | **30.33×** |
 
-Functions-only self-speedup on append_500 profile run (80×5): legacy
-per-hop snap **419.7 ms** min → skip-recursive **270.9 ms** min (~1.55×
-faster native path).
+### Profile evidence (append_500, 80×5, functions)
 
-### Profile evidence
-
-| config | snap_fraction_of_wall | snap_count / native_entries |
-|---|---:|---|
-| BEFORE (`SKIP_RECURSIVE_SNAP=0`) | **30.7%** | 200400 / 200400 |
-| AFTER (default skip) | **~0%** | 400 / 200400 |
+| config | snap_fraction_of_wall | snap_count / native_entries | max_register_map_size |
+|---|---:|---|---:|
+| AFTER KT-DISPATCH (entry `_t4` every hop) | **48.1%** | 200800 / 200400 | 508 |
+| AFTER peel leading `get_constant` | **8.6%** | 800 / 200400 | 508 |
 
 See [`design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md`](design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md).
 
 ## Honest readout
 
-- **tryRun per-hop snapshot was the dominant recursive tax** (~31% of wall;
-  one snap per native entry). Skipping it on recursive hops fixes
-  append_100 to parity and lifts append_500 from ~0.55× to ~0.85×.
-- **append_500 still does not beat the interpreter.** Remaining cost:
-  T4’s `val _t4 = snapshotForNative()` once per recursive lowered entry
-  (still copies the growing `H<n>` map). Documented follow-up in the
-  optimization history (trail-with-old-values / heap separation).
-- Short cases are more stable with 5/15 + min, but treat sub-10ms rows
-  cautiously; member/append are the durable signals.
+- **tryRun per-hop snapshot** was the first recursive tax (~31% of wall);
+  KT-DISPATCH fixed that and left append_500 at ~0.85×.
+- **T4 `_t4` per-entry map copy** was the residual (~48% of wall once
+  properly attributed). Peeling a leading fail-closed `get_constant` makes
+  append’s cons path snap-free → **≥1.0× with large margin**.
+- Member stays ~1.4× (first instr is `get_list`, not peeled).
+- Short cases: treat sub-10ms rows cautiously; member/append are durable.
 
 ## Implications for EMIT-KOTLIN-5
 
-Mid-body `call` still adds continuation machinery on top of this seam.
-Dispatch is cheaper now for tail `execute`, but EMIT-KOTLIN-5 should not
-claim a win until measured; T4 snapshot cost remains on multi-clause
-recursion.
+Mid-body `call` still needs continuation machinery. Tail `execute`
+recursion is no longer snapshot-bound for peelable T4 heads; re-measure
+after EMIT-KOTLIN-5 lands.

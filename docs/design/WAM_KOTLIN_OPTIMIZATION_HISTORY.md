@@ -31,7 +31,7 @@ register/heap map while `H<n>` vars accumulate → ≈O(depth²).
 
 ---
 
-## KT-DISPATCH-SNAPSHOT-OPT (this change)
+## KT-DISPATCH-SNAPSHOT-OPT
 
 ### Prior art consulted
 
@@ -90,7 +90,65 @@ recursive hop). After the fix, snaps drop to one per top-level query
 Each lowered T4 entry still does `val _t4 = state.snapshotForNative()` for
 clause backtracking. Recursive append therefore still copies the growing
 `H<n>` map once per depth. **tryRun** no longer doubles that. Follow-up:
-cheapen T4 restore (trail-with-old-values or heap separation).
+**KT-HEAP-SNAPSHOT-OPT-2** (below).
+
+---
+
+## KT-HEAP-SNAPSHOT-OPT-2 (this change)
+
+### Prior art consulted
+
+| Source | What we took |
+|---|---|
+| `WAM_PERF_CROSS_TARGET.md` (F# `putReg`, KT-DISPATCH case study) | Profile → remove copy-the-world on the hot path. |
+| `WAM_RUST_STATE_MANAGEMENT_RETROSPECTIVE.md` | Trail undo as the long-term model for option (b); not chosen here. |
+| `WAM_WAT_OPTIMIZATION_HISTORY.md` | Doc shape: did / skipped+why. |
+| KT-DISPATCH-SNAPSHOT-OPT (above) | Residual `_t4` cost; hardened min/median bench. |
+
+### Profile (append_500, functions, 80 iters × 5 timed batches, `WAM_KT_PROFILE=1`)
+
+Counters now live inside `WamState.snapshotForNative` so **T4 `_t4`** is
+attributed (KT-DISPATCH’s post-fix “~0% snap” only measured tryRun snaps).
+
+| config | min_ms | snap_fraction_of_wall | snap_count | native_entries | max_register_map_size |
+|---|---:|---:|---:|---:|---:|
+| **BEFORE** (entry `_t4` every hop) | 305.6 | **0.481** | 200 800 | 200 400 | **508** |
+| **AFTER** (peel leading `get_constant`) | 17.0 | **0.086** | 800 | 200 400 | 508 |
+
+`avg_register_map_size_at_snap` ≈257 before/after at the remaining snaps
+(top-level tryRun + base-case nil path). The win is **not** shrinking the
+heap — it is **not copying it on every cons hop**.
+
+### What we did
+
+1. **Peel leading `get_constant` / `get_nil` / `get_integer` in T4 emit**
+   (`wam_kotlin_lowered_emitter.pl`): closed discriminant miss (ground
+   mismatch) jumps to later clauses with **no** entry snapshot. Bindable
+   cases (`null` / `Var` / exact match) still snapshot before committing
+   clause 1. Last remaining clause needs no snapshot.
+2. **PROFILE** aggregates all `snapshotForNative` cost + max/avg register
+   map size at snap (`Main.kt.mustache` / `WamRuntime.kt.mustache`).
+3. Skip restore after the last failed T4 clause (no next alternative).
+
+Append’s recursive cons path is therefore snap-free → append_500
+~**30×** vs interpreter (hardened 5/15 min harness).
+
+### Hardened bench after fix (min speedup)
+
+| program | speedup_min |
+|---|---:|
+| append_100 | **7.21×** (was ~1.03×) |
+| append_500 | **30.33×** (was ~0.85×) |
+| member_100 / 500 | 1.37–1.40× (unchanged class — first instr is `get_list`) |
+
+### What we skipped (and why)
+
+| Idea | Why not now |
+|---|---|
+| **(a) Bound/reclaim `H<n>` outside snapshotted map** | Highest leverage for *every* snapshot, but peel already removed the hot-path copy for append. Larger representation change; keep as follow-up if CP / non-peeled T4 snaps dominate. |
+| **(b) Trail-based undo for T4** | Trail still stores names only; needs old values or a native side trail. Bigger than peel; defer. |
+| **(c) Blind “skip `_t4` on last clause” only** | Entry snapshot still ran before clause 1; peel is the stronger form of (c) for fail-closed discriminants. |
+| **Peel `get_structure` / `get_list`** | Not fail-closed on vars (enters write mode); member already wins without it. |
 
 ---
 

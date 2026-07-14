@@ -60,6 +60,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | EMIT-KOTLIN-5 | Mid-body `call` | Kotlin | M | fib/ack / non-tail continuation |
 | BENCH-KOTLIN ✅ | Lowered vs interpreter timing | Kotlin | S | done — recursion regresses; short cases noise (`cursor/bench-kotlin-f421`) |
 | KT-DISPATCH-SNAPSHOT-OPT ✅ | Perf: cheapen recursive dispatch | Kotlin | M | done — skip recursive tryRun snap (`cursor/kt-dispatch-snapshot-opt-f421`) |
+| KT-HEAP-SNAPSHOT-OPT-2 ✅ | Perf: eliminate residual T4 `_t4` copy | Kotlin | M | done — peel leading get_constant (`cursor/kt-heap-snapshot-opt-2-f421`) |
 | BENCH-LLVM | Effective-distance bench row | LLVM | L | — |
 | BENCH-CPP | Effective-distance bench row | C++ | L | — |
 | BENCH-C | Effective-distance bench row | C | M | — |
@@ -620,6 +621,12 @@ fallback) to the three Tier-D targets. Reference small emitters:
 - **Status:** ✅ **Landed** on `cursor/kt-dispatch-snapshot-opt-f421` (2026-07-14). Profile: `snapshotForNative` was **~31%** of `append_500` wall with one snap per native entry. Fix: skip snapshot+bytecode-fallback on recursive `tryRun` hops (`skipRecursiveNativeSnapshot`); keep top-level WAT fallback. Bench hardened to 5/15 + min/median. **append_100 ~1.03×**, **append_500 ~0.85×** (from ~0.55×). Remaining: T4 `_t4` per-entry map copy — see `docs/design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md`.
 - **Motivation:** BENCH-KOTLIN's reproducible regression — lowered tail recursion (`append`) ~0.6–0.8×, worsening with depth — from per-hop `tryRun`→`snapshotForNative` copying the growing `H<n>` map.
 - **Acceptance:** profile evidence in PR; append improves materially; differential + conformance green; bench doc updated.
+
+### KT-HEAP-SNAPSHOT-OPT-2: Eliminate residual T4 `_t4` snapshot on recursion (Kotlin)
+- **Lever:** Perf / lowered-path payoff  **Target:** Kotlin  **Size:** M  **Depends on:** KT-DISPATCH-SNAPSHOT-OPT
+- **Status:** ✅ **Landed** on `cursor/kt-heap-snapshot-opt-2-f421` (2026-07-14). Profile (all `snapshotForNative`, incl. `_t4`): **~48%** of `append_500` wall; `max_register_map_size≈508`. Fix: peel leading T4 `get_constant`/`get_nil`/`get_integer` so closed discriminant fails skip the entry snapshot. **append_100 ~7.2×**, **append_500 ~30×**. Skipped heap-reclaim / trail-undo — peel removed the hot path. Docs: `WAM_KOTLIN_OPTIMIZATION_HISTORY.md`, `WAM_KOTLIN_BENCH.md`, `WAM_PERF_CROSS_TARGET.md`.
+- **Motivation:** After KT-DISPATCH, append_500 stayed ~0.85× because each recursive T4 entry still deep-copied the growing `H<n>` map.
+- **Acceptance:** profile evidence in PR; append_100/500 ≥1.0× (or profiled reason); differential + both conformance modes + unit suite green; history/perf docs updated.
 
 ---
 
