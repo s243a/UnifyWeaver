@@ -5,8 +5,9 @@ Copyright (c) 2026 John William Creighton (@s243a)
 
 # plawk generator blocks — `gen { … } as name` (design)
 
-**Status**: PRs 1–2 landed — a pure generator with constant emits feeds a query
-pass end-to-end. This is the **producer dual**
+**Status**: PRs 1–3 landed — a pure generator with constant emits, and an input
+iterator that passes through / filters a query source, both feed a query pass
+end-to-end (via synthesised facts / a derived rule). This is the **producer dual**
 of the `over query(Goal)` reader (`PLAWK_QUERY_READER_IMPLEMENTATION_PLAN.md`,
 phase 6). Where the query reader lets a **Prolog goal drive a plawk pass**
 (Prolog → plawk records), a generator block lets a **plawk `{}` block be called
@@ -239,7 +240,20 @@ the producer direction plus the `emit` collection. A rough PR shape:
    cannot be facts — the block runs and collects at runtime. The proven path is
    `assertz` into the dynamic DB + `findall` (the `test_plawk_eval_compile.pl`
    stateful-grammar pattern), driven from the emit sites.
-3. **Optional input iterator** — `gen over SOURCE as v { … }` for a table /
-   `over query` source (flat-map / filter).
+3. **Optional input iterator (query source) — LANDED.** `gen over query(SRC(V))
+   as v { emit v } as name` compiles to a **derived Prolog rule**
+   `name(A) :- src(A)` (a relation alias / pass-through), and
+   `gen over query(SRC(V)) as v { if (v CMP int [&& …]) emit v } as name` to a
+   filtered rule `name(A) :- src(A), A CMP int [, …]` — again pure clause
+   synthesis (`resolve_generator_blocks` in `bin/plawk`, translating the reader
+   guard to a Prolog arithmetic comparison over the head arg), consumed by the
+   query reader unchanged. So `gen over query(num(V)) as v { if (v > 2) emit v }
+   as big` + `pass over query(big(X)) { print $1 }` prints the source solutions
+   `> 2`. A *transforming* emit (`emit v * 2`, an expression over `v` rather
+   than the bound var itself) or a non-query source needs the runtime
+   collection and is a clean not-yet error. `tests/test_plawk_gen_blocks.pl`:
+   passthrough, `>` filter, `&&` filter, and the transform / computed-emit
+   not-yet errors. The AST unified to `gen_block(name(Name), Source, Body)`
+   with `Source` = `none` (pure) or `over(query(Src, Vars), LoopVar)`.
 4. **Tuples + durability** — `emit (A, B)` → `name/2`; optional cache/LMDB-backed
    collected set.

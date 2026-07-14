@@ -3936,7 +3936,7 @@ plawk_program_query_passes(program(_, _, _), []).
 %  The producer dual of the query reader (PLAWK_GENERATOR_BLOCKS.md); collected
 %  alongside the passes at parse time.
 plawk_program_gen_blocks(program_passes(_, Passes, _), GenBlocks) :-
-    findall(gen_block(N, B), member(gen_block(N, B), Passes), GenBlocks).
+    findall(gen_block(N, S, B), member(gen_block(N, S, B), Passes), GenBlocks).
 plawk_program_gen_blocks(program(_, _, _), []).
 
 %% plawk_query_pass_supported(+Pass) is semidet.

@@ -287,20 +287,49 @@ query_var_list_rest([V | Vs]) -->
     query_var_list_rest(Vs).
 query_var_list_rest([]) -->
     [].
+% A `gen over query(SRC(V)) as v { BODY } as name` generator with an input
+% iterator (PLAWK_GENERATOR_BLOCKS.md, PR 3): a producer that transforms another
+% relation. Each solution of the source goal binds `v`; the body emits from it.
+% Parses to gen_block(name(Name), over(query(Src, SrcVars), LoopVar), Body).
+% Tried before the pure `gen { ... }` form -- the `over` keyword distinguishes
+% them. The body is emit-based (`emit v`, or `if (v CMP int) emit v` to filter),
+% so it uses the reader-guard body grammar rather than a general action block.
+pass_clauses([gen_block(name(Name),
+        over(query(Src, SrcVars), LoopVar), Body) | Rest]) -->
+    "gen", identifier_boundary, ws,
+    "over", identifier_boundary, ws,
+    "query", ws, "(", ws,
+    identifier(Src), ws, "(", ws, query_var_list(SrcVars), ws, ")", ws,
+    ")", ws,
+    "as", identifier_boundary, ws, identifier(LoopVar), ws,
+    gen_over_body(Body), ws,
+    "as", identifier_boundary, ws, identifier(Name), ws,
+    pass_clauses(Rest).
 % A `gen { BODY } as name` generator block (PLAWK_GENERATOR_BLOCKS.md): a
 % producer whose `emit E` statements define a relation `name/1`, callable from
 % a Prolog goal (e.g. a query pass's `over query(name(X))`). The producer dual
-% of the query reader. Parses to gen_block(name(Name), Body); the runtime
-% (materialise-then-iterate, mirroring the reader) lands in a later PR, so PR 1
-% is the surface + a clean not-yet compile error. The `gen` keyword is
-% unambiguous (distinct from `pass`); tried before the plain `pass` clause. The
-% optional input iterator (`gen over SOURCE as v { ... }`) is a follow-on.
-pass_clauses([gen_block(name(Name), Body) | Rest]) -->
+% of the query reader. Parses to gen_block(name(Name), none, Body) (`none` =
+% no input source, distinguishing it from the `gen over ...` input iterator).
+% A pure block of constant emits compiles to facts; the `gen` keyword is
+% unambiguous (distinct from `pass`); tried after the `gen over` form and
+% before the plain `pass` clause.
+pass_clauses([gen_block(name(Name), none, Body) | Rest]) -->
     "gen", identifier_boundary, ws,
     action_block(Body), ws,
     "as", identifier_boundary, ws,
     identifier(Name), ws,
     pass_clauses(Rest).
+
+% The body of an input-iterator generator: an `emit E` (transform each source
+% solution), optionally gated by an `if (COND)` reader guard (filter). Mirrors
+% for_in_body's if-print shape, but emit-based -- the guard uses the same
+% guard_expr (so `if (v > 3)` compares the bound var `v` via forin_key_cmp).
+gen_over_body([if(Guard, [emit(Emit)], [])]) -->
+    "{", ws, "if", ws, "(", ws, guard_expr(Guard), ws, ")", ws,
+    emit_action(emit(Emit)), ws, "}",
+    !.
+gen_over_body([emit(Emit)]) -->
+    "{", ws, emit_action(emit(Emit)), ws, "}".
 % A `pass { ACTIONS }` block is one pass carrying a single always-rule with
 % those actions (per-pattern rules within a pass are a later extension).
 pass_clauses([pass([rule(always, Actions)]) | Rest]) -->
@@ -323,7 +352,7 @@ plawk_pass_dynentry_rewrite(_DynEntries, pass_rows_anon(T, Body), pass_rows_anon
 plawk_pass_dynentry_rewrite(_DynEntries, pass_query(Q, Body), pass_query(Q, Body)).
 % A `gen { ... } as name` generator block -- pass it through (its body is
 % lowered by the generator runtime in a later PR).
-plawk_pass_dynentry_rewrite(_DynEntries, gen_block(N, Body), gen_block(N, Body)).
+plawk_pass_dynentry_rewrite(_DynEntries, gen_block(N, S, Body), gen_block(N, S, Body)).
 
 %% dynentry_decls(-Names)//
 %
