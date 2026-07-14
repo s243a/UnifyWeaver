@@ -80,14 +80,48 @@ test(query_reader_nondet_run, [condition(clang_available)]) :-
     assertion(Out == "5\n6\n7\n"),
     !.
 
-% A query OUTSIDE the supported surface -- here a two-argument goal -- is a
-% clean not-yet compile error (exit 2), not a miscompile; the message names
-% the goal as pred/arity.
-test(query_reader_higher_arity_not_yet) :-
+% A two-argument goal: each solution's arguments bind to $1, $2 from their
+% per-column materialised tables and print joined by the output separator.
+test(query_reader_arity2_run, [condition(clang_available)]) :-
+    qdir(Dir),
+    Src = "@prolog\nedge(1, 10).\nedge(2, 20).\nedge(3, 30).\n@end\n\c
+           pass over query(edge(X, Y)) { print $1, $2 }\n",
+    build_run(Dir, 'arity2', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "1 10\n2 20\n3 30\n"),
+    !.
+
+% Fields may be reordered and a non-deterministic three-arg goal still binds
+% every column correctly (columns stay aligned across the per-column findall
+% runs): `print $3, $1, $2` over two disjunctive solutions.
+test(query_reader_arity3_reorder_run, [condition(clang_available)]) :-
+    qdir(Dir),
+    Src = "@prolog\ntri(A, B, C) :- (A = 1, B = 2, C = 3 ; A = 4, B = 5, C = 6).\n@end\n\c
+           pass over query(tri(X, Y, Z)) { print $3, $1, $2 }\n",
+    build_run(Dir, 'arity3', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "3 1 2\n6 4 5\n"),
+    !.
+
+% A column may be printed more than once, or a subset printed: field ordinals
+% keep the SSA names unique and each `$K` reads its own column table.
+test(query_reader_repeat_and_subset_run, [condition(clang_available)]) :-
+    qdir(Dir),
+    Src = "@prolog\nedge(1, 10).\nedge(2, 20).\n@end\n\c
+           pass over query(edge(X, Y)) { print $1, $1, $2 }\n",
+    build_run(Dir, 'repeat', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "1 1 10\n2 2 20\n"),
+    !.
+
+% A goal-body reference outside the goal's columns ($3 for a 2-arg goal) is
+% outside the surface: a clean not-yet compile error (exit 2), not a
+% miscompile that would read an absent column table.
+test(query_reader_bad_column_not_yet) :-
     qdir(Dir),
     Src = "@prolog\npair(1, 2).\n@end\n\c
-           pass over query(pair(X, Y)) { print $1, $2 }\n",
-    build_status(Dir, 'arity2', Src, St),
+           pass over query(pair(X, Y)) { print $1, $3 }\n",
+    build_status(Dir, 'badcol', Src, St),
     assertion(St == 2),
     !.
 

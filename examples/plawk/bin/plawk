@@ -325,8 +325,8 @@ check_query_reader(File, Program) :-
     length(Vars, N),
     format(user_error,
         'plawk: ~w uses `over query(~w/~w)` outside the supported query-reader \c
-         surface (v1: an all-query program, single-output goals, body `print \c
-         $1`); this shape is not yet implemented (phase 6); see \c
+         surface (v1: an all-query program whose body is a single `print` of \c
+         $K fields); this shape is not yet implemented (phase 6); see \c
          PLAWK_QUERY_READER_IMPLEMENTATION_PLAN.md.~n',
         [File, Pred, N]),
     halt(2).
@@ -341,9 +341,9 @@ query_program_supported(program_passes(_, Passes, End)) :-
     forall(member(P, Passes), plawk_query_pass_supported(P)).
 
 % The findall-wrapper clauses to inject into a query program's @prolog
-% predicate set: one `__plawk_query_pred(L) :- findall(V, pred(V), L)` per
-% distinct goal predicate/arity, so write_wam_llvm_project compiles the
-% enumeration into the same binary the query pass-fn calls.
+% predicate set: one `__plawk_query_pred_C(L) :- findall(VC, pred(V1..Vn), L)`
+% per distinct goal predicate/arity and column C, so write_wam_llvm_project
+% compiles the enumeration into the same binary the query pass-fn calls.
 plawk_program_query_helper_clauses(Program, HelperClauses) :-
     plawk_program_query_passes(Program, QueryPasses),
     findall(Pred-A,
@@ -352,7 +352,8 @@ plawk_program_query_helper_clauses(Program, HelperClauses) :-
         PA0),
     sort(PA0, PA),
     findall(HC,
-        ( member(Pred-A, PA), plawk_query_helper_clause(Pred, A, HC) ),
+        ( member(Pred-A, PA), between(1, A, Col),
+          plawk_query_helper_clause(Pred, A, Col, HC) ),
         HelperClauses).
 
 % Multi-pass normalisation (PLAWK_MULTIPASS_CACHE.md phase 2). A single

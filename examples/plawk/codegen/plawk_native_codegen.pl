@@ -6,8 +6,8 @@
     plawk_program_native_driver_ir/4,
     plawk_program_multipass_driver_ir/2,
     plawk_program_multipass_driver_ir/3,
-    plawk_query_helper_name/2,
-    plawk_query_helper_clause/3,
+    plawk_query_helper_name/3,
+    plawk_query_helper_clause/4,
     plawk_program_query_passes/2,
     plawk_query_pass_supported/1,
     plawk_program_foreign_specs/3,
@@ -3912,49 +3912,61 @@ plawk_program_query_passes(program_passes(_, Passes, _), QueryPasses) :-
 plawk_program_query_passes(program(_, _, _), []).
 
 %% plawk_query_pass_supported(+Pass) is semidet.
-%  The query-reader surface a build can lower today (phase 6, PR 2): a
-%  single-output goal whose body is exactly `print $1`. Each solution's one
-%  argument is a ground integer materialised at $1. Higher arities and richer
-%  bodies (guards, $2..) are follow-ons; an unsupported shape yields a clean
-%  not-yet compile error rather than a miscompile.
-plawk_query_pass_supported(pass_query(query(_Pred, [_V]), Body)) :-
-    Body == [print([field(1)])].
+%  The query-reader surface a build can lower today (phase 6, PRs 2-3): a goal
+%  of any arity >= 1 whose body is a single `print` of `$K` fields, each `K` a
+%  column of the goal (1..arity). Every solution's arguments are ground
+%  integers materialised at $1..$n. Guards, mixed passes, and non-integer
+%  columns are follow-ons; an unsupported shape yields a clean not-yet compile
+%  error rather than a miscompile.
+plawk_query_pass_supported(pass_query(query(_Pred, Vars), [print(Fields)])) :-
+    Vars = [_ | _],
+    length(Vars, Arity),
+    Fields = [_ | _],
+    forall(member(F, Fields),
+        ( F = field(K), integer(K), K >= 1, K =< Arity )).
 
-%% plawk_query_helper_name(+Pred, -Name) is det.
-%  The synthesised findall-wrapper predicate name for a query on `Pred`. The
-%  reserved `__plawk_query_` prefix cannot collide with a user predicate (the
-%  surface parser forbids `$`-free reserved names), so the name is unique per
-%  goal predicate and both the clause injector (bin/plawk) and the pass-fn
-%  emitter derive the same LLVM symbol (`@<Name>_start_pc`) from it.
-plawk_query_helper_name(Pred, Name) :-
-    atom_concat('__plawk_query_', Pred, Name).
+%% plawk_query_helper_name(+Pred, +Col, -Name) is det.
+%  The synthesised findall-wrapper predicate name for column `Col` of a query
+%  on `Pred`. The reserved `__plawk_query_` prefix cannot collide with a user
+%  predicate (the surface parser forbids `$`-free reserved names), so the name
+%  is unique per goal predicate/column and both the clause injector (bin/plawk)
+%  and the pass-fn emitter derive the same LLVM symbol (`@<Name>_start_pc`).
+plawk_query_helper_name(Pred, Col, Name) :-
+    atomic_list_concat(['__plawk_query_', Pred, '_', Col], Name).
 
-%% plawk_query_helper_clause(+Pred, +Arity, -Clause) is semidet.
-%  The Prolog clause that turns the goal's solution set into a materialisable
-%  list: `__plawk_query_pred(L) :- findall(V, pred(V), L)`. findall drives the
-%  goal to exhaustion (the enumeration the plan delegates to the builtin), so
-%  L is the ordered, ground list of first-argument bindings. Injected into the
-%  program's @prolog predicate set so write_wam_llvm_project compiles it into
-%  the same binary; the query pass-fn then calls it and walks L into a table.
-%  v1: arity 1 (single-output generator); the template is a flat list.
-plawk_query_helper_clause(Pred, 1, Clause) :-
-    plawk_query_helper_name(Pred, Name),
-    Goal =.. [Pred, V],
+%% plawk_query_helper_clause(+Pred, +Arity, +Col, -Clause) is det.
+%  The Prolog clause that turns column `Col` of the goal's solution set into a
+%  materialisable list: `__plawk_query_pred_Col(L) :- findall(VCol, pred(V1,
+%  ..., Vn), L)`. findall drives the goal to exhaustion (the enumeration the
+%  plan delegates to the builtin), so L is the ordered, ground list of that
+%  column's bindings. One wrapper per column keeps materialisation on the
+%  existing flat-list posarray path; findall preserves solution order and
+%  multiplicity identically across columns, so column i's k-th element is the
+%  k-th solution's i-th argument -- correct as long as the goal is a pure
+%  generator (no writes interleaved between the per-column findall runs, which
+%  the reader's snapshot boundary already assumes). Injected into the program's
+%  @prolog set so write_wam_llvm_project compiles it into the same binary.
+plawk_query_helper_clause(Pred, Arity, Col, Clause) :-
+    length(Vars, Arity),
+    nth1(Col, Vars, V),
+    Goal =.. [Pred | Vars],
+    plawk_query_helper_name(Pred, Col, Name),
     Head =.. [Name, L],
     Clause = (Head :- findall(V, Goal, L)).
 
 %% plawk_program_query_driver_ir(+Program, +Options, -DriverIR) is semidet.
 %
-%  The query-reader execution driver (phase 6, PR 2). Fires only for an
+%  The query-reader execution driver (phase 6, PRs 2-3). Fires only for an
 %  all-query program (every pass is a supported `pass over query(...)`), the
 %  first slice of controlled non-determinism: each pass runs its goal to a
 %  materialised solution set and iterates it -- no input file is read (the
 %  records come from the goal, not stdin). Each pass is its own void function
 %  (materialise-then-iterate, mirroring `over TABLE`); a shared %WamState
-%  (@plawk_foreign_vm) runs the findall-wrapper predicate the injector added.
-%  The materialised list lands in a fresh assoc table by position (keys 1..N),
-%  walked in key order for a deterministic, ordered print (§1 intact -- the
-%  multiplicity is collapsed at the boundary before the body runs).
+%  (@plawk_foreign_vm) runs the findall-wrapper predicates the injector added.
+%  Each goal column materialises into its own assoc table (keys 1..N by
+%  position); the pass walks keys in order, binding $1..$n from the per-column
+%  tables and printing the requested fields (§1 intact -- the multiplicity is
+%  collapsed at the boundary before the body runs).
 plawk_program_query_driver_ir(
     program_passes(BeginClauses, Passes, End),
     Options,
@@ -3968,9 +3980,10 @@ plawk_program_query_driver_ir(
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_query_foreign_vm_ir(InstrCount, LabelCount, VmIR),
     findall(FnIR,
-        ( nth0(I, Passes, pass_query(query(Pred, _Vars), _Body)),
-          plawk_query_helper_name(Pred, Sym),
-          plawk_multipass_query_fn_ir(I, Sym, FnIR) ),
+        ( nth0(I, Passes, pass_query(query(Pred, Vars), [print(Fields)])),
+          length(Vars, Arity),
+          plawk_multipass_query_fn_ir(I, Pred, Arity, Fields, OutputSeparator,
+              FnIR) ),
         FnIRs),
     atomic_list_concat(FnIRs, '\n', PassFnsIR),
     findall(CallLine,
@@ -4025,24 +4038,42 @@ make:
         [InstrCount, InstrCount, InstrCount, LabelCount, LabelCount,
          LabelCount]).
 
-%% plawk_multipass_query_fn_ir(+Index, +Sym, -IR)
-%  A query pass as a self-contained void function: materialise the goal's
-%  solution list into a fresh assoc table (keys 1..N by position), then walk
-%  keys in order printing each solution's integer at $1. Materialisation
-%  routes through @wam_object_call_posarray against the shared VM, calling the
-%  findall-wrapper `@<Sym>_start_pc` with no input args and the list output in
-%  register 0 -- the same flat-list walk the `as array` posarray target uses.
-%  Ordered by key (1..count) rather than hash-slot order, so the print is
-%  deterministic. The table is freed at pass end (nothing persists).
-plawk_multipass_query_fn_ir(Index, Sym, IR) :-
+%% plawk_multipass_query_fn_ir(+Index, +Pred, +Arity, +Fields, +OutputSep, -IR)
+%  A query pass as a self-contained void function: materialise each goal column
+%  into its own assoc table (`%qtable_C`, keys 1..N by position) via
+%  @wam_object_call_posarray against the shared VM -- calling the per-column
+%  findall wrapper `@__plawk_query_pred_C_start_pc` with no input args and the
+%  list output in register 0 (the flat-list walk the `as array` posarray target
+%  uses). Then walk keys in order (1..count of column 1, not hash-slot order,
+%  so the print is deterministic), binding $K to `%qtable_K[pos]` and printing
+%  the requested fields joined by the output separator. All tables are freed at
+%  pass end (nothing persists).
+plawk_multipass_query_fn_ir(Index, Pred, Arity, Fields, OutputSep, IR) :-
+    numlist(1, Arity, Cols),
+    findall(MatLine,
+        ( member(C, Cols),
+          plawk_query_helper_name(Pred, C, Sym),
+          format(atom(MatLine),
+'  %qtable_~w = call %WamAssocI64Table* @wam_assoc_i64_new(i64 64)
+  %qpc_~w = load i32, i32* @~w_start_pc
+  %qok_~w = call i1 @wam_object_call_posarray(%WamState* %vm, i32 %qpc_~w, i32 0, %Value* null, i32 0, %WamAssocI64Table* %qtable_~w)',
+              [C, C, Sym, C, C, C]) ),
+        MatLines),
+    atomic_list_concat(MatLines, '\n', MaterializeIR),
+    plawk_query_print_lines(Fields, OutputSep, PrintIR),
+    findall(FreeLine,
+        ( member(C, Cols),
+          format(atom(FreeLine),
+              '  call void @wam_assoc_i64_free(%WamAssocI64Table* %qtable_~w)',
+              [C]) ),
+        FreeLines),
+    atomic_list_concat(FreeLines, '\n', FreeIR),
     format(atom(IR),
 'define void @plawk_pass_~w() {
 entry:
-  %qtable = call %WamAssocI64Table* @wam_assoc_i64_new(i64 64)
   %vm = call %WamState* @plawk_foreign_vm_get()
-  %pc = load i32, i32* @~w_start_pc
-  %ok = call i1 @wam_object_call_posarray(%WamState* %vm, i32 %pc, i32 0, %Value* null, i32 0, %WamAssocI64Table* %qtable)
-  %count_ptr = getelementptr %WamAssocI64Table, %WamAssocI64Table* %qtable, i32 0, i32 0
+~w
+  %count_ptr = getelementptr %WamAssocI64Table, %WamAssocI64Table* %qtable_1, i32 0, i32 0
   %count = load i64, i64* %count_ptr
   br label %q_head
 
@@ -4052,10 +4083,7 @@ q_head:
   br i1 %q_done, label %q_after, label %q_body
 
 q_body:
-  %val = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %qtable, i64 %pos)
-  %fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0
-  %pr = call i32 (i8*, ...) @printf(i8* %fmt, i64 %val)
-  %nl = call i32 @putchar(i32 10)
+~w
   br label %q_body_done
 
 q_body_done:
@@ -4063,10 +4091,36 @@ q_body_done:
   br label %q_head
 
 q_after:
-  call void @wam_assoc_i64_free(%WamAssocI64Table* %qtable)
+~w
   ret void
 }',
-        [Index, Sym]).
+        [Index, MaterializeIR, PrintIR, FreeIR]).
+
+%% plawk_query_print_lines(+Fields, +OutputSep, -IR)
+%  The per-record print body: each `field(K)` reads `%qtable_K[pos]` and prints
+%  it as an integer; fields are joined by the output separator (a putchar
+%  between them) and terminated by a newline. SSA names are keyed by the
+%  field's ordinal in the list, so a repeated column (`print $1, $1`) stays
+%  unique.
+plawk_query_print_lines(Fields, OutputSep, IR) :-
+    length(Fields, NF),
+    Last is NF - 1,
+    findall(Line,
+        ( nth0(J, Fields, field(K)),
+          format(atom(FieldBlock),
+'  %qf_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %qtable_~w, i64 %pos)
+  %qfmt_~w = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0
+  %qpr_~w = call i32 (i8*, ...) @printf(i8* %qfmt_~w, i64 %qf_~w)',
+              [J, K, J, J, J, J]),
+          ( J < Last
+          ->  format(atom(Line),
+                  '~w\n  %qsep_~w = call i32 @putchar(i32 ~w)',
+                  [FieldBlock, J, OutputSep])
+          ;   Line = FieldBlock )
+        ),
+        Lines),
+    atomic_list_concat(Lines, '\n', Body0),
+    format(atom(IR), '~w\n  %qnl = call i32 @putchar(i32 10)', [Body0]).
 
 %% plawk_passes_tables(+Passes, -Tables)
 %  The assoc tables a multi-pass program shares. Discovered from the passes'

@@ -5,7 +5,8 @@ Copyright (c) 2026 John William Creighton (@s243a)
 
 # plawk `over query(Goal)` reader — implementation plan (phase 6)
 
-**Status**: PRs 1–2 landed; the arity-1 `print $1` slice runs end-to-end.
+**Status**: PRs 1–3 landed; an all-query program of any goal arity with a
+`print $K...` body runs end-to-end.
 Sequences the work for the query-driven reader (`PLAWK_MULTIPASS_CACHE.md`
 §3.4, phase 6): a pass whose records are the **solutions of a Prolog goal**.
 This is the "most beyond awk" reader and the first place plawk admits
@@ -127,14 +128,35 @@ shape (arity-1 goal, body `print $1`) so the materialisation is observable:
   higher-arity and mixed-pass shapes hit the not-yet error; a non-query program
   is unaffected.
 
-### PR 3 — Higher arity + richer bodies (tuple templates, guards)
+### PR 3 — Higher arity + positional fields — **LANDED**
 
-Generalise beyond the arity-1 flat-list slice. For `pred(X, Y)` the `findall`
-template becomes a tuple, so the wrapper returns a list of compounds; each
-element is deserialised into `$1..$n` (reuse the record/posarray element
-machinery). Then let the body be more than `print $1`: `print $1, $2`,
-reader-guards (`if (…)`) — composing for free if the body reuses the row-reader
-emitter. Mixed query + ordinary passes in one program is the other axis here.
+Generalise beyond the arity-1 flat-list slice to a goal of any arity with a
+`print` of `$K` fields:
+
+- **Per-column materialisation.** Rather than a tuple template + a new
+  list-of-compounds walker, each goal column gets its own findall wrapper
+  `__plawk_query_pred_C(L) :- findall(VC, pred(V1..Vn), L)` and materialises
+  into its own assoc table via the *existing* flat-list posarray path. `findall`
+  preserves solution order and multiplicity identically across columns, so
+  column *i*'s *k*-th element is the *k*-th solution's *i*-th argument — correct
+  for a pure generator (the reader's snapshot boundary already assumes no
+  interleaved writes).
+- **Positional body.** The pass walks keys `1..count` (of column 1) in order
+  and binds `$K` to `%qtable_K[pos]`; the body's `print` may list the fields in
+  any order, repeat a column (`print $1, $1`), or print a subset (`print $2`) —
+  joined by the output separator. Deliverable met: `pass over query(pred(X, Y))
+  { print $1, $2 }` prints one line per solution.
+- **Guard.** A field referencing a column outside the goal (`$3` for a 2-arg
+  goal) stays a clean not-yet error, not a read of an absent column table.
+- **Verified end-to-end.** `tests/test_plawk_query_reader.pl`: arity-2 facts,
+  a reordered arity-3 disjunctive goal, repeated/subset columns, and the
+  out-of-range-column not-yet error.
+
+### PR 4 — Determinism guarantees + richer bodies + mixed passes
+
+Reader-guards (`if (…)`) in the query body; a query pass mixed with ordinary
+passes in one program; non-integer (string) columns via the posarray-str path.
+Plus the determinism/snapshot test below.
 
 ### PR 4 — Determinism guarantees + snapshot test + docs
 
