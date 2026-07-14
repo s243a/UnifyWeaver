@@ -40,9 +40,12 @@ surface, the runtime ABI, and a phased rollout.
   operators `== != < <= > >=`), a **decimal float** (`3.5`, `-1.5`; the column
   is read as a double and compared with `fcmp`, so fractional thresholds and
   values work), or a **string** (`"alice"`, `==` / `!=` only — a
-  length-then-`memcmp` byte comparison). Filtered rows never reach the print
-  block (`tests/test_plawk_reader_guards.pl`, `tests/test_plawk_guard_float.pl`,
-  `tests/test_plawk_guard_string.pl`).
+  length-then-`memcmp` byte comparison). Comparisons combine with **`&&` / `||`**
+  (short-circuit, `&&` tighter than `||`, left-associative, parens allowed),
+  e.g. `if (r["amt"] > 100 && r["cust"] == "alice")`. Filtered rows never reach
+  the print block (`tests/test_plawk_reader_guards.pl`,
+  `tests/test_plawk_guard_float.pl`, `tests/test_plawk_guard_string.pl`,
+  `tests/test_plawk_guard_bool.pl`).
 
 **Not yet:** `rows of`'s `unsafe` / inline check-or-rename spec;
 the `over prev` reader (phase 4
@@ -1117,10 +1120,11 @@ single-pass test before any driver surgery).
   the six operators `== != < <= > >=`. An integer literal lowers to an i64
   field extract + `icmp`; a decimal float literal (`3.5`) to an f64 extract +
   `fcmp`; a string literal (`"alice"`, `==`/`!=`) to a length-then-`memcmp`
-  byte comparison — filtered rows never reach the print block — **LANDED**
+  byte comparison; and comparisons combine with `&&`/`||` (short-circuit
+  branches). Filtered rows never reach the print block — **LANDED**
   (`tests/test_plawk_reader_guards.pl`, `tests/test_plawk_guard_float.pl`,
-  `tests/test_plawk_guard_string.pl`; string ordering and boolean `&&`/`||`
-  combinations remain a follow-on).
+  `tests/test_plawk_guard_string.pl`, `tests/test_plawk_guard_bool.pl`; string
+  *ordering* (`<`/`>` on text) remains a follow-on).
 
 ## 6. Open questions
 

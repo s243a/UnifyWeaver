@@ -3991,6 +3991,12 @@ plawk_reader_body([if(Guard, [print(Fields)], [])], Fields, Guard).
 % Resolve a `records of` guard (name column) to guard(ColIndex, Op, Value),
 % the schema position compared to an integer; `none` passes through.
 plawk_records_guard(none, _Var, _Columns, none).
+plawk_records_guard(and(L, R), Var, Columns, and(PL, PR)) :-
+    plawk_records_guard(L, Var, Columns, PL),
+    plawk_records_guard(R, Var, Columns, PR).
+plawk_records_guard(or(L, R), Var, Columns, or(PL, PR)) :-
+    plawk_records_guard(L, Var, Columns, PL),
+    plawk_records_guard(R, Var, Columns, PR).
 plawk_records_guard(rcol_cmp(Var, Col, Op, Value), Var, Columns,
         guard(Index, Op, Value)) :-
     plawk_records_col_index(Columns, Col, Index).
@@ -4028,6 +4034,12 @@ plawk_multipass_pass_fn(Index, pass_rows(var(Var), var(Table), Body), Tables,
 
 % Resolve a `rows of` guard (positional) -> guard(N, Op, Value); none passes.
 plawk_rows_guard(none, _Var, none).
+plawk_rows_guard(and(L, R), Var, and(PL, PR)) :-
+    plawk_rows_guard(L, Var, PL),
+    plawk_rows_guard(R, Var, PR).
+plawk_rows_guard(or(L, R), Var, or(PL, PR)) :-
+    plawk_rows_guard(L, Var, PL),
+    plawk_rows_guard(R, Var, PR).
 plawk_rows_guard(rpos_cmp(Var, N, Op, Value), Var, guard(N, Op, Value)) :-
     integer(N), N > 0.
 
@@ -4058,6 +4070,12 @@ plawk_multipass_pass_fn(Index, pass_rows_anon(var(Table), Body), Tables,
 
 % Resolve a no-`as` guard (`$N CMP int`) -> guard(N, Op, Value); none passes.
 plawk_rows_anon_guard(none, none).
+plawk_rows_anon_guard(and(L, R), and(PL, PR)) :-
+    plawk_rows_anon_guard(L, PL),
+    plawk_rows_anon_guard(R, PR).
+plawk_rows_anon_guard(or(L, R), or(PL, PR)) :-
+    plawk_rows_anon_guard(L, PL),
+    plawk_rows_anon_guard(R, PR).
 plawk_rows_anon_guard(rfield_cmp(N, Op, Value), guard(N, Op, Value)) :-
     integer(N), N > 0.
 
@@ -4170,53 +4188,109 @@ rec_after:
 %  literal (float_const, e.g. `3.5`) extracts it as double
 %  (@wam_atom_field_f64_value) and uses fcmp against the exact decimal ratio.
 plawk_records_guard_ir(none, _FieldSep, _Index, '  br label %rec_print', '').
-plawk_records_guard_ir(guard(ColIndex, Op, Value), FieldSep, _Index, IR, '') :-
+plawk_records_guard_ir(Guard, FieldSep, Index, IR, Globals) :-
+    Guard \== none,
+    plawk_guard_tree_lines(Guard, FieldSep, Index, 0, 'rec_print',
+        'rec_body_done', Lines, GlobalList, _N),
+    atomic_list_concat(Lines, '\n', IR),
+    atomic_list_concat(GlobalList, '\n', Globals).
+
+%% plawk_guard_tree_lines(+Guard, +FieldSep, +Index, +N0, +TrueLbl, +FalseLbl,
+%%     -Lines, -Globals, -N1)
+%  Lower a (possibly boolean) reader-guard tree to short-circuit branches: a
+%  leaf comparison branches to TrueLbl (match) / FalseLbl (skip); `and(L, R)`
+%  runs R only when L is true (L's true-target is a fresh block holding R);
+%  `or(L, R)` runs R only when L is false. N threads a counter so every leaf's
+%  SSA names and every join-block label are unique within the function.
+plawk_guard_tree_lines(and(L, R), FieldSep, Index, N0, TrueLbl, FalseLbl,
+        Lines, Globals, N2) :-
+    !,
+    format(atom(Mid), 'grand_~w_~w', [Index, N0]),
+    N1 is N0 + 1,
+    plawk_guard_tree_lines(L, FieldSep, Index, N1, Mid, FalseLbl, LLines, LG, Nm),
+    plawk_guard_tree_lines(R, FieldSep, Index, Nm, TrueLbl, FalseLbl, RLines, RG, N2),
+    format(atom(MidLabel), '~w:', [Mid]),
+    append([LLines, [MidLabel], RLines], Lines),
+    append(LG, RG, Globals).
+plawk_guard_tree_lines(or(L, R), FieldSep, Index, N0, TrueLbl, FalseLbl,
+        Lines, Globals, N2) :-
+    !,
+    format(atom(Mid), 'gror_~w_~w', [Index, N0]),
+    N1 is N0 + 1,
+    plawk_guard_tree_lines(L, FieldSep, Index, N1, TrueLbl, Mid, LLines, LG, Nm),
+    plawk_guard_tree_lines(R, FieldSep, Index, Nm, TrueLbl, FalseLbl, RLines, RG, N2),
+    format(atom(MidLabel), '~w:', [Mid]),
+    append([LLines, [MidLabel], RLines], Lines),
+    append(LG, RG, Globals).
+plawk_guard_tree_lines(guard(ColIndex, Op, Value), FieldSep, Index, N0,
+        TrueLbl, FalseLbl, [LeafIR], Globals, N1) :-
+    N1 is N0 + 1,
+    plawk_guard_leaf_ir(guard(ColIndex, Op, Value), FieldSep, Index, N0,
+        TrueLbl, FalseLbl, LeafIR, GlobalIR),
+    ( GlobalIR == '' -> Globals = [] ; Globals = [GlobalIR] ).
+
+%% plawk_guard_leaf_ir(+guard(Col,Op,Value), +FieldSep, +Index, +N,
+%%     +TrueLbl, +FalseLbl, -IR, -GlobalIR)
+%  One leaf comparison branching to TrueLbl (match) or FalseLbl (skip). SSA
+%  names are suffixed by N so multiple leaves of one boolean guard never
+%  collide. Integer -> i64 icmp; float_const -> f64 fcmp; str -> length + memcmp
+%  (the memcmp runs only when the lengths match, never reading past the field).
+plawk_guard_leaf_ir(guard(ColIndex, Op, Value), FieldSep, _Index, N,
+        TrueLbl, FalseLbl, IR, '') :-
     integer(Value),
     !,
     plawk_icmp_pred(Op, Pred),
     format(atom(IR),
-'  %rec_gv = call i64 @wam_atom_field_i64_value(%Value %rec_row_v, i64 ~w, i8 ~w)
-  %rec_gcmp = icmp ~w i64 %rec_gv, ~w
-  br i1 %rec_gcmp, label %rec_print, label %rec_body_done',
-        [ColIndex, FieldSep, Pred, Value]).
-plawk_records_guard_ir(guard(ColIndex, Op, float_const(M, D)), FieldSep, _Index, IR, '') :-
+'  %rec_gv_~w = call i64 @wam_atom_field_i64_value(%Value %rec_row_v, i64 ~w, i8 ~w)
+  %rec_gcmp_~w = icmp ~w i64 %rec_gv_~w, ~w
+  br i1 %rec_gcmp_~w, label %~w, label %~w',
+        [N, ColIndex, FieldSep, N, Pred, N, Value, N, TrueLbl, FalseLbl]).
+plawk_guard_leaf_ir(guard(ColIndex, Op, float_const(M, D)), FieldSep, _Index, N,
+        TrueLbl, FalseLbl, IR, '') :-
     !,
     plawk_fcmp_pred(Op, Pred),
     format(atom(IR),
-'  %rec_gcst = fdiv double ~w.0, ~w.0
-  %rec_gv = call double @wam_atom_field_f64_value(%Value %rec_row_v, i64 ~w, i8 ~w)
-  %rec_gcmp = fcmp ~w double %rec_gv, %rec_gcst
-  br i1 %rec_gcmp, label %rec_print, label %rec_body_done',
-        [M, D, ColIndex, FieldSep, Pred]).
-% String equality guard (`== "lit"` / `!= "lit"`): extract the column as a byte
-% slice, and match on length THEN memcmp -- the memcmp runs only when the
-% lengths are equal, so it never reads past the field. Ordering (< > …) on
-% strings is unsupported (no clause), so such a guard fails the reader shape.
-plawk_records_guard_ir(guard(ColIndex, Op, str(S)), FieldSep, Index, IR, GlobalIR) :-
-    plawk_str_guard_targets(Op, EqTarget, NeTarget, LenFailTarget),
-    format(atom(GName), 'plawk_guard_lit_~w', [Index]),
+'  %rec_gcst_~w = fdiv double ~w.0, ~w.0
+  %rec_gv_~w = call double @wam_atom_field_f64_value(%Value %rec_row_v, i64 ~w, i8 ~w)
+  %rec_gcmp_~w = fcmp ~w double %rec_gv_~w, %rec_gcst_~w
+  br i1 %rec_gcmp_~w, label %~w, label %~w',
+        [N, M, D, N, ColIndex, FieldSep, N, Pred, N, N, N, TrueLbl, FalseLbl]).
+plawk_guard_leaf_ir(guard(ColIndex, Op, str(S)), FieldSep, Index, N,
+        TrueLbl, FalseLbl, IR, GlobalIR) :-
+    plawk_str_leaf_targets(Op, TrueLbl, FalseLbl, EqT, NeT, LenFailT),
+    format(atom(GName), 'plawk_guard_lit_~w_~w', [Index, N]),
     llvm_emit_c_string_global(GName, S, GlobalIR, StrLen, BytesLen),
     format(atom(Gep),
         'getelementptr inbounds ([~w x i8], [~w x i8]* @.~w, i64 0, i64 0)',
         [BytesLen, BytesLen, GName]),
     format(atom(IR),
-'  %rec_gslice = call %WamSlice @wam_atom_field_slice_value(%Value %rec_row_v, i64 ~w, i8 ~w)
-  %rec_gptr = extractvalue %WamSlice %rec_gslice, 0
-  %rec_glen = extractvalue %WamSlice %rec_gslice, 1
-  %rec_glen_ok = icmp eq i64 %rec_glen, ~w
-  br i1 %rec_glen_ok, label %rec_gmemcmp, label %rec_glenfail
-rec_gmemcmp:
-  %rec_gmc = call i32 @memcmp(i8* %rec_gptr, i8* ~w, i64 ~w)
-  %rec_gmc_eq = icmp eq i32 %rec_gmc, 0
-  br i1 %rec_gmc_eq, label %~w, label %~w
-rec_glenfail:
+'  %rec_gslice_~w = call %WamSlice @wam_atom_field_slice_value(%Value %rec_row_v, i64 ~w, i8 ~w)
+  %rec_gptr_~w = extractvalue %WamSlice %rec_gslice_~w, 0
+  %rec_glen_~w = extractvalue %WamSlice %rec_gslice_~w, 1
+  %rec_glen_ok_~w = icmp eq i64 %rec_glen_~w, ~w
+  br i1 %rec_glen_ok_~w, label %rec_gmemcmp_~w, label %rec_glenfail_~w
+rec_gmemcmp_~w:
+  %rec_gmc_~w = call i32 @memcmp(i8* %rec_gptr_~w, i8* ~w, i64 ~w)
+  %rec_gmc_eq_~w = icmp eq i32 %rec_gmc_~w, 0
+  br i1 %rec_gmc_eq_~w, label %~w, label %~w
+rec_glenfail_~w:
   br label %~w',
-        [ColIndex, FieldSep, StrLen, Gep, StrLen, EqTarget, NeTarget, LenFailTarget]).
+        [N, ColIndex, FieldSep,
+         N, N,
+         N, N,
+         N, N, StrLen,
+         N, N, N,
+         N,
+         N, N, Gep, StrLen,
+         N, N,
+         N, EqT, NeT,
+         N,
+         LenFailT]).
 
-% Where each outcome of a string-equality guard branches. For `==`: equal
-% bytes -> print, unequal or different length -> skip. For `!=`: the mirror.
-plawk_str_guard_targets(eq, 'rec_print', 'rec_body_done', 'rec_body_done').
-plawk_str_guard_targets(ne, 'rec_body_done', 'rec_print', 'rec_print').
+% For a string leaf, map the True/False guard targets onto the memcmp outcomes.
+% `==`: equal bytes -> True, unequal or wrong length -> False. `!=`: the mirror.
+plawk_str_leaf_targets(eq, TrueLbl, FalseLbl, TrueLbl, FalseLbl, FalseLbl).
+plawk_str_leaf_targets(ne, TrueLbl, FalseLbl, FalseLbl, TrueLbl, TrueLbl).
 
 % Surface comparison op -> signed LLVM icmp predicate.
 plawk_icmp_pred(eq, eq).
