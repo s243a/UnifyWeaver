@@ -1,0 +1,108 @@
+<!--
+SPDX-License-Identifier: MIT OR Apache-2.0
+Copyright (c) 2026 John William Creighton (@s243a)
+-->
+
+# plawk — AWK feature audit & roadmap
+
+**Status**: living checklist (audited 2026-07). plawk is a *specialised* awk-like
+front-end for the hybrid WAM/LLVM target, not a full AWK clone — it adds things
+POSIX AWK has no notion of (multi-pass caches, `over query(Goal)` readers,
+generator blocks, durable LMDB stores, a Prolog foreign-call surface). This doc
+tracks how much of the *basic* AWK surface exists, so the DSL stays familiar to
+AWK users, and prioritises the gaps. Legend: ✅ done · ◐ partial · ⏳ surface
+only (runtime pending) · ❌ missing.
+
+## Patterns
+
+| Feature | Status | Notes |
+|---|---|---|
+| `BEGIN` / `END` | ✅ | incl. constant `print` (BEGIN/END literal print) |
+| `/regex/` | ◐ | leading `^` prefix + literal-contains; general ERE metachars limited |
+| `$N == "v"`, `$3 > 100` | ✅ | field-equality + numeric field guards |
+| `&& \|\| !` combinators | ✅ | awk precedence, parens, single-block lowering |
+| `~` / `!~` match | ✅ | POSIX ERE |
+| expression pattern (bare `NR==1`) | ◐ | comparison guards yes; arbitrary expr no |
+| range pattern (`/a/,/b/`) | ❌ | |
+
+## Actions & control flow
+
+| Feature | Status | Notes |
+|---|---|---|
+| `print` (fields, literals, `NR`/`NF`, `length`/`substr`/`index`/`tolower`/`toupper`, arithmetic) | ✅ | constant fields (`print 1`, `print "x"`) landed |
+| `printf` | ◐ | subset `%%`,`%s`,`%d`,`%i`,`%ld`; no `%f`/`%c`/`%x`/width/precision |
+| var assignment, `+=`, `++`, `//` | ✅ | indexed native scalar slots |
+| `if` / `else` (chains) | ✅ | |
+| `for (k in arr)` | ✅ | assoc for-in (rule body + END) |
+| `while (VAR CMP int)` | ⏳ | **surface parses; runtime pending** (this arc) |
+| `next` | ✅ | structural (guarded clause per rule) |
+| `break` / `continue` | ◐ | present in some loop contexts |
+| field assignment (`$2 = expr`) | ❌ | rebuilding `$0` from mutated fields not wired |
+| C-style `for (;;)` | ❌ | |
+| `do { } while` | ❌ | |
+| `exit [n]` | ❌ | |
+| `delete arr[k]` | ❌ | |
+| `getline` | ❌ | the multi-pass / `over` readers cover much of its use |
+
+## Functions
+
+| Feature | Status | Notes |
+|---|---|---|
+| user functions (`function f(a) { return … }`) | ◐ | compile to Prolog clauses; work in accumulator / typed-field (`BINFMT`) contexts. **Gap: `print f($1)` in text mode returns 0** — the text field isn't coerced into the call. Prioritised below. |
+| string: `length` `substr` `index` `tolower` `toupper` | ✅ | native, allocation-free |
+| string: `split` `sub` `gsub` `match` `sprintf` | ❌ | |
+| numeric: `int` | ✅ | `sin`/`cos`/`sqrt`/`rand`/… ❌ (f64 machinery exists) |
+| Prolog foreign calls (`pred($1)`, `float(pred(…))`) | ✅ | plawk-specific, beyond AWK |
+
+## Variables & operators
+
+| Feature | Status | Notes |
+|---|---|---|
+| `$0` `$N` `NR` `NF` `FS` `OFS` | ✅ | |
+| `FNR` `FILENAME` `ARGV` `ARGC` `RS` `ORS` `SUBSEP` `RSTART` `RLENGTH` | ❌ | single newline-delimited record model |
+| arithmetic `+ - * / % //` | ✅ | i64, awk precedence, safe div/mod |
+| comparison, `~`/`!~` | ✅ | |
+| ternary `?:` | ❌ | does not parse |
+| string concatenation (juxtaposition `$1 $2`) | ❌ | does not parse |
+| exponentiation `^` / `**` | ❌ | |
+
+## Arrays
+
+| Feature | Status | Notes |
+|---|---|---|
+| assoc arrays `arr[k]` | ✅ | native assoc tables |
+| `k in arr` (membership / for-in) | ✅ | |
+| multi-dim `arr[i,j]` (SUBSEP) | ❌ | |
+| `delete` | ❌ | |
+
+## plawk-specific surface (beyond AWK)
+
+Multi-pass `pass { }` blocks · `cache(...)` (file / LMDB, namespaces, multi-table)
+· `over TABLE` / `records of` / `rows of` / `over query(Goal)` readers · reader
+guards · generator blocks (`gen { emit … } as name`, input iterators) ·
+`@prolog` blocks · `compile(...)` / `dyncall` eval surface · binary records
+(`BINFMT`) / DCG readers.
+
+## Prioritised gaps (recommended order)
+
+1. **`while` loop runtime** — the surface just landed; wire the loop (mutable
+   scalar state to a fixed point). The most-requested basic control structure
+   still missing at runtime.
+2. **User-function call in text/print context** — `print f($1)` should coerce
+   the text field like the accumulator path already does; small, high-value fix
+   that makes the *existing* function feature usable in the obvious spot.
+3. **`printf` format coverage** — add `%f`/`%g` (f64 exists), `%c`, `%x`, and
+   width/precision; the current subset is thin for real formatting.
+4. **`exit [n]`** — common and cheap; a flagged early-terminate of the record
+   loop + END.
+5. **String concatenation & ternary `?:`** — the two most-missed *expression*
+   forms; both are parser + expression-lowering work.
+6. **`delete arr[k]`** — rounds out the assoc-array story (paired with the
+   existing for-in / `in`).
+7. **`split` / `sub` / `gsub` / `match` / `sprintf`** — the string-builtin
+   family; larger, lower priority for the DSL's data-pipeline focus.
+
+Deferred by design (the DSL's model diverges here): `RS`/multi-char record
+separators, `getline` (the `over`/multi-pass readers subsume most uses),
+multi-file `ARGV`/`FILENAME`/`FNR`, C-style `for(;;)` / `do-while` (the `while`
+runtime + for-in cover the loop needs).
