@@ -5,8 +5,9 @@ Copyright (c) 2026 John William Creighton (@s243a)
 
 # plawk `over query(Goal)` reader — implementation plan (phase 6)
 
-**Status**: PRs 1–3 landed; an all-query program of any goal arity with a
-`print $K...` body runs end-to-end.
+**Status**: PRs 1–4 landed; an all-query program of any goal arity with a
+`print $K...` body — optionally gated by an `if ($K CMP int)` reader guard —
+runs end-to-end.
 Sequences the work for the query-driven reader (`PLAWK_MULTIPASS_CACHE.md`
 §3.4, phase 6): a pass whose records are the **solutions of a Prolog goal**.
 This is the "most beyond awk" reader and the first place plawk admits
@@ -152,11 +153,32 @@ Generalise beyond the arity-1 flat-list slice to a goal of any arity with a
   a reordered arity-3 disjunctive goal, repeated/subset columns, and the
   out-of-range-column not-yet error.
 
-### PR 4 — Determinism guarantees + richer bodies + mixed passes
+### PR 4 — Reader guards in the query body — **LANDED**
 
-Reader-guards (`if (…)`) in the query body; a query pass mixed with ordinary
-passes in one program; non-integer (string) columns via the posarray-str path.
-Plus the determinism/snapshot test below.
+A query pass body may now be gated by an `if (COND)` reader guard — a WHERE over
+the goal's solutions:
+
+```
+pass over query(edge(X, Y)) { if ($1 >= 2 && $2 < 40) print $1 }
+```
+
+- **Reuses the surface grammar.** `for_in_body` already parses `if (GUARD)
+  print ...` to `[if(Guard, [print(Fields)], [])]` with `$K CMP int` leaves
+  (`rfield_cmp`) combined by `&&` / `||`; the query driver just consumes it.
+- **Pure evaluation.** Each leaf reads `%qtable_K[pos]` (an i64) and compares
+  it (`plawk_icmp_pred`); `and` / `or` combine child i1s. Because the reads are
+  side-effect-free, the tree lowers to plain i1 `and`/`or` with a single branch
+  to a `q_print` block — no short-circuit control flow. The guard may read a
+  column the body does not print.
+- **Guard.** Only integer comparisons are meaningful (columns are i64); a
+  float/string RHS or an out-of-range column stays a not-yet error.
+- **Verified.** `tests/test_plawk_query_reader.pl`: a `>` filter, an `&&`
+  reading a non-printed column, and an `||`.
+
+### PR 5 — Mixed passes + string columns + determinism/snapshot test
+
+A query pass mixed with ordinary passes in one program; non-integer (string)
+columns via the posarray-str path. Plus the determinism/snapshot test below.
 
 ### PR 4 — Determinism guarantees + snapshot test + docs
 
@@ -179,3 +201,49 @@ sketch, of which this is the first concrete step.
 - **If `findall/3` is not a usable builtin here**, PR 2 becomes a direct
   engine-driven collector (drive `retry_me_else` to exhaustion, capturing each
   solution's registers) — deeper, but the surface (PRs 1, 3, 4) is unchanged.
+
+## 6. Future sketch: generator blocks (the producer dual)
+
+The query reader is the **consumer** side of the plawk/Prolog boundary: a
+Prolog goal *drives* a plawk pass (Prolog → plawk records). The natural dual is
+the **producer** side — a plawk `{}` block that a Prolog goal can *call*
+(plawk → Prolog solutions):
+
+```
+gen { ... emit E ... } as edges     # defines a callable relation edges/1
+
+pass over query(path(edges, A, B)) { print $1, $2 }
+```
+
+Here `gen { … } as edges` is a block that produces a stream of values; naming
+it exposes a predicate `edges(X)` reachable from any goal — including a query
+reader's, so the two features compose (a gen block feeds a query pass).
+
+**Why blocks, not lazy functions (the user's framing).** AWK users read `{}`
+as "streaming work" and functions as eager call-and-return; making a *function*
+lazy would violate that intuition, whereas a `{}` block that emits is already
+the AWK mental model for producing a stream. So streaming is driven from block
+syntax, not from function laziness. Iterating an iterable (array, assoc, DB
+column) is a third, orthogonal producer, but the block form is the one that
+reads as AWK.
+
+**Why it fits the architecture (materialise, don't stream).** A gen block need
+not retain a live choicepoint (which §1 forbids in the hot loop). It runs to
+completion collecting each `emit E` into a list, then exposes that set as an
+ordinary non-deterministic relation — effectively `edges(X) :- member(X,
+Collected)`. That is exactly the **bounded-multiplicity** move
+(`UNIFYWEAVER_LANGUAGE_PRINCIPLES.md` Principle 1) this reader already makes,
+run in the other direction: the block's multiplicity is collapsed to a
+materialised set at definition time, and consumers (findall in a query pass)
+iterate it deterministically. The runtime is the mirror of PR 2 — where the
+query reader *reads* a findall list into a table, a gen block *writes* an
+emitted list into one and wraps it as a callable relation.
+
+**Open questions.** When the block runs (once at load, or per call with
+arguments as inputs — the mode story connects to the §3.10 `X in domain`
+producer and the "inputs bound from the record" follow-on above); whether
+`emit` carries a tuple (arity > 1, matching the per-column materialisation of
+PR 3); and lifetime/caching of the collected set (a durable gen block could
+back its set with a cache/LMDB store, reusing phase 5). Sequenced after the
+query reader's remaining PRs — it shares their materialisation runtime and is
+best built on top of it.

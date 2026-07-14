@@ -1082,9 +1082,11 @@ single-pass test before any driver surgery).
   `@wam_object_call_posarray` on the shared `%WamState`, and walks keys in
   order binding `$1..$n` (ordered, deterministic; a disjunctive goal yields
   every solution; columns stay aligned across the per-column runs for a pure
-  goal). The body may reorder, repeat, or subset the printed columns. Guards
-  in the body, mixed query + ordinary passes, and string columns are the next
-  PRs.
+  goal). The body may reorder, repeat, or subset the printed columns, and may
+  be gated by an `if ($K CMP int)` reader guard (`&&` / `||` combinations) — a
+  WHERE over the query's solutions, lowered to pure i1 and/or over the
+  per-column reads. Mixed query + ordinary passes and string columns are the
+  next PRs.
 
 - **Phase 7 — secondary indexes (§3.5).** `index TABLE by FIELD [unique]` on
   record-valued tables; unique lookups return one record; non-unique
