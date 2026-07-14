@@ -3972,7 +3972,7 @@ plawk_multipass_pass_fn(Index, pass_over(var(Var), var(Table), Body), Tables,
 % TABLE; each print field must be VAR["col"] with col in the schema (name-only
 % -- numeric/other fields fail the clause, so the driver reports unsupported).
 plawk_multipass_pass_fn(Index, pass_records(var(Var), var(Table), Body), Tables,
-        _StrArrays, Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, '') :-
+        _StrArrays, Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, GuardGlobals) :-
     plawk_reader_body(Body, PrintFields, GuardTerm),
     PrintFields = [_ | _],
     memberchk(cache_schema(Table, Columns), Schemas),
@@ -3980,7 +3980,7 @@ plawk_multipass_pass_fn(Index, pass_records(var(Var), var(Table), Body), Tables,
     plawk_records_guard(GuardTerm, Var, Columns, GuardPlan),
     nth0(TableIndex, Tables, Table),
     plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, FieldPlans,
-        GuardPlan, FieldSep, OutputSep, FnIR).
+        GuardPlan, FieldSep, OutputSep, FnIR, GuardGlobals).
 
 % A row-reader body is either a bare `{ print ... }` or a guarded
 % `{ if (GUARD) print ... }` (a WHERE-style filter). Extract the print fields
@@ -4017,14 +4017,14 @@ plawk_records_col_index(Columns, Col, Index) :-
 % needed -- for raw stores. Reuses the same row-decode function emitter as
 % `records of`, just sourcing the field indices from the literal positions.
 plawk_multipass_pass_fn(Index, pass_rows(var(Var), var(Table), Body), Tables,
-        _StrArrays, _Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, '') :-
+        _StrArrays, _Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, GuardGlobals) :-
     plawk_reader_body(Body, PrintFields, GuardTerm),
     PrintFields = [_ | _],
     maplist(plawk_rows_field_plan(Var), PrintFields, FieldPlans),
     plawk_rows_guard(GuardTerm, Var, GuardPlan),
     nth0(TableIndex, Tables, Table),
     plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, FieldPlans,
-        GuardPlan, FieldSep, OutputSep, FnIR).
+        GuardPlan, FieldSep, OutputSep, FnIR, GuardGlobals).
 
 % Resolve a `rows of` guard (positional) -> guard(N, Op, Value); none passes.
 plawk_rows_guard(none, _Var, none).
@@ -4047,14 +4047,14 @@ plawk_rows_operand(_Var, int(V), aint(V)) :- integer(V).
 % `$N` field addressing over the stored row. Mirrors plawk_rows_field_plan but
 % sources positions from `field(N)` ($N) rather than `VAR[N]`.
 plawk_multipass_pass_fn(Index, pass_rows_anon(var(Table), Body), Tables,
-        _StrArrays, _Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, '') :-
+        _StrArrays, _Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, GuardGlobals) :-
     plawk_reader_body(Body, PrintFields, GuardTerm),
     PrintFields = [_ | _],
     maplist(plawk_rows_anon_field_plan, PrintFields, FieldPlans),
     plawk_rows_anon_guard(GuardTerm, GuardPlan),
     nth0(TableIndex, Tables, Table),
     plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, FieldPlans,
-        GuardPlan, FieldSep, OutputSep, FnIR).
+        GuardPlan, FieldSep, OutputSep, FnIR, GuardGlobals).
 
 % Resolve a no-`as` guard (`$N CMP int`) -> guard(N, Op, Value); none passes.
 plawk_rows_anon_guard(none, none).
@@ -4127,10 +4127,10 @@ forin_after:
 %  constant, only emitting the row when it passes. Does not open the input;
 %  the table is freed by main.
 plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, ColIndexes,
-        GuardPlan, FieldSep, OutputSep, IR) :-
+        GuardPlan, FieldSep, OutputSep, IR, Globals) :-
     phrase(plawk_records_col_lines(ColIndexes, FieldSep, OutputSep, 0), ColLines),
     atomic_list_concat(ColLines, '\n', ColIR),
-    plawk_records_guard_ir(GuardPlan, FieldSep, GuardIR),
+    plawk_records_guard_ir(GuardPlan, FieldSep, Index, GuardIR, Globals),
     format(atom(IR),
 'define void @plawk_pass_~w(%Value %mp_path~w) {
 entry:
@@ -4169,8 +4169,8 @@ rec_after:
 %  extracts the column as i64 (@wam_atom_field_i64_value) and uses icmp; a float
 %  literal (float_const, e.g. `3.5`) extracts it as double
 %  (@wam_atom_field_f64_value) and uses fcmp against the exact decimal ratio.
-plawk_records_guard_ir(none, _FieldSep, '  br label %rec_print').
-plawk_records_guard_ir(guard(ColIndex, Op, Value), FieldSep, IR) :-
+plawk_records_guard_ir(none, _FieldSep, _Index, '  br label %rec_print', '').
+plawk_records_guard_ir(guard(ColIndex, Op, Value), FieldSep, _Index, IR, '') :-
     integer(Value),
     !,
     plawk_icmp_pred(Op, Pred),
@@ -4179,7 +4179,8 @@ plawk_records_guard_ir(guard(ColIndex, Op, Value), FieldSep, IR) :-
   %rec_gcmp = icmp ~w i64 %rec_gv, ~w
   br i1 %rec_gcmp, label %rec_print, label %rec_body_done',
         [ColIndex, FieldSep, Pred, Value]).
-plawk_records_guard_ir(guard(ColIndex, Op, float_const(M, D)), FieldSep, IR) :-
+plawk_records_guard_ir(guard(ColIndex, Op, float_const(M, D)), FieldSep, _Index, IR, '') :-
+    !,
     plawk_fcmp_pred(Op, Pred),
     format(atom(IR),
 '  %rec_gcst = fdiv double ~w.0, ~w.0
@@ -4187,6 +4188,35 @@ plawk_records_guard_ir(guard(ColIndex, Op, float_const(M, D)), FieldSep, IR) :-
   %rec_gcmp = fcmp ~w double %rec_gv, %rec_gcst
   br i1 %rec_gcmp, label %rec_print, label %rec_body_done',
         [M, D, ColIndex, FieldSep, Pred]).
+% String equality guard (`== "lit"` / `!= "lit"`): extract the column as a byte
+% slice, and match on length THEN memcmp -- the memcmp runs only when the
+% lengths are equal, so it never reads past the field. Ordering (< > …) on
+% strings is unsupported (no clause), so such a guard fails the reader shape.
+plawk_records_guard_ir(guard(ColIndex, Op, str(S)), FieldSep, Index, IR, GlobalIR) :-
+    plawk_str_guard_targets(Op, EqTarget, NeTarget, LenFailTarget),
+    format(atom(GName), 'plawk_guard_lit_~w', [Index]),
+    llvm_emit_c_string_global(GName, S, GlobalIR, StrLen, BytesLen),
+    format(atom(Gep),
+        'getelementptr inbounds ([~w x i8], [~w x i8]* @.~w, i64 0, i64 0)',
+        [BytesLen, BytesLen, GName]),
+    format(atom(IR),
+'  %rec_gslice = call %WamSlice @wam_atom_field_slice_value(%Value %rec_row_v, i64 ~w, i8 ~w)
+  %rec_gptr = extractvalue %WamSlice %rec_gslice, 0
+  %rec_glen = extractvalue %WamSlice %rec_gslice, 1
+  %rec_glen_ok = icmp eq i64 %rec_glen, ~w
+  br i1 %rec_glen_ok, label %rec_gmemcmp, label %rec_glenfail
+rec_gmemcmp:
+  %rec_gmc = call i32 @memcmp(i8* %rec_gptr, i8* ~w, i64 ~w)
+  %rec_gmc_eq = icmp eq i32 %rec_gmc, 0
+  br i1 %rec_gmc_eq, label %~w, label %~w
+rec_glenfail:
+  br label %~w',
+        [ColIndex, FieldSep, StrLen, Gep, StrLen, EqTarget, NeTarget, LenFailTarget]).
+
+% Where each outcome of a string-equality guard branches. For `==`: equal
+% bytes -> print, unequal or different length -> skip. For `!=`: the mirror.
+plawk_str_guard_targets(eq, 'rec_print', 'rec_body_done', 'rec_body_done').
+plawk_str_guard_targets(ne, 'rec_body_done', 'rec_print', 'rec_print').
 
 % Surface comparison op -> signed LLVM icmp predicate.
 plawk_icmp_pred(eq, eq).
