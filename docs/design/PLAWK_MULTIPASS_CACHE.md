@@ -575,11 +575,12 @@ a "select an existing table" surface would mean:
 meaningful once one of the two properties above changes, so it is planned as
 a short sequence rather than a lone keyword:
 
-- **(a) Persist the schema in the store.** Write the column names/types into
-  the store header on commit and read them on load, making a store
-  *self-describing*. Immediately useful on its own: an open can then
-  **validate** that the program's `declare(cols)` matches the stored schema
-  and fail cleanly on mismatch (closing the silent-mis-read hole above).
+- **(a) Persist the schema in the store. LANDED (file backend).** The
+  byte-valued store header now carries the row schema
+  (`name:type,name:type,…`); commit writes it, load reads it. When both the
+  stored schema and the program's `declare(cols)` are present and differ, the
+  open **fails cleanly** (`plawk: cache schema mismatch`, exit 3) instead of
+  silently mis-reading field offsets. `tests/test_plawk_row_durable.pl`.
 - **(b) `use TABLE as r` (the `select`).** A reader that **attaches to an
   existing store and takes its schema from (a)** — no re-`declare`. This is
   the "query an existing database" surface the `declare`-everywhere model
@@ -779,7 +780,8 @@ single-pass test before any driver surgery).
   field-wise). Foundational for Phase 7 (secondary indexes need addressable
   named fields). Table lifecycle / selecting an existing table (§3.7):
   (8.7) persist the schema in the store + validate it on open (self-describing
-  store, closes the schema-mismatch hole); (8.8) `use TABLE as r` reader that
+  store, closes the schema-mismatch hole) — **LANDED (file backend)**
+  (`tests/test_plawk_row_durable.pl`); (8.8) `use TABLE as r` reader that
   attaches to an existing store and takes its schema from 8.7 — the `select`
   surface, no re-`declare`; (8.9) multiple named tables per store (namespaces
   / LMDB named sub-DBs, §3.5) so `use ns.table` selects among them.

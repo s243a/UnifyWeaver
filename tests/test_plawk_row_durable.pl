@@ -58,6 +58,30 @@ test(rows_persist_positional, [condition(clang_available)]) :-
     run_sorted(Bin, In, S2), assertion(S2 == ["p 1", "q 2"]),
     !.
 
+% Self-describing store: the schema is persisted, so reopening the same store
+% with a DIFFERENT declared schema fails cleanly (exit 3) rather than silently
+% mis-reading field offsets. Run 1 writes with schema (a,b); a second program
+% opening it with schema (a,c) mismatches.
+test(schema_mismatch_errors, [condition(clang_available)]) :-
+    ddir(Dir),
+    directory_file_path(Dir, 'scm.db', Store),
+    ( exists_file(Store) -> delete_file(Store) ; true ),
+    format(atom(SrcA),
+        "BEGIN cache(\"~w\") { declare t(a str, b str) }\n\c
+         pass records of t as r { print r[\"a\"], r[\"b\"] }\n\c
+         pass { t[$1] = row($1, $2) }\n", [Store]),
+    build(Dir, 'scma', SrcA, BinA, InA, "x 10\n"),
+    run_sorted(BinA, InA, _),                   % run 1: populate + commit schema
+    format(atom(SrcB),
+        "BEGIN cache(\"~w\") { declare t(a str, c str) }\n\c
+         pass records of t as r { print r[\"a\"], r[\"c\"] }\n\c
+         pass { t[$1] = row($1, $2) }\n", [Store]),
+    build(Dir, 'scmb', SrcB, BinB, InB, "x 10\n"),
+    process_create(BinB, [InB], [stdout(null), stderr(null), process(Pid)]),
+    process_wait(Pid, exit(Code)),
+    assertion(Code == 3),                       % schema mismatch -> clean fail
+    !.
+
 :- end_tests(plawk_row_durable).
 
 % --- helpers ---------------------------------------------------------------
