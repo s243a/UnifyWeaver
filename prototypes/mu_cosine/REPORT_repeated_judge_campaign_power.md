@@ -133,10 +133,13 @@ No ignored artifact, checkpoint, smoke JSON, or generated score input is committ
 
 ## Required next work
 
-The first item was attempted by the repository-owned structural capacity preflight and failed before candidate
-enumeration: every registered `G` violates the literal 10% connected-component cap.  See
-`REPORT_repeated_judge_candidate_capacity.md`.  Work now stops at an outcome-blind source-partition amendment;
-the remaining ordering is unchanged after that gate passes.
+The first item was attempted by the repository-owned structural capacity preflight and by the subsequent
+topology-only source-region/core audit.  Both failed before candidate enumeration: literal weak components
+violate the 10% cap, while every frozen source-region grid point loses too much three-hop core mass and
+exploratory also fails larger-`G` four-endpoint capacity.  See
+`REPORT_repeated_judge_candidate_capacity.md` and `REPORT_repeated_judge_source_regions.md`.  Work now stops at
+a prospectively powered dependence-aware source design; the remaining ordering is unchanged after that gate
+passes.
 
 1. Implement and review the repository-owned candidate builder, then freeze graph/Nomic/historical artifacts.
 2. Freeze the exact approved live prompt, model revisions, settings, and keyed response parser.

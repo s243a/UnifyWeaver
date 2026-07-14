@@ -22,6 +22,27 @@ exclusions; they are not recomputed to create more cap slots.  A separate outcom
 define and power a feasible dependency/source partition; graph branches are not silently relabelled connected
 components.  See `REPORT_repeated_judge_candidate_capacity.md`.
 
+**2026-07-13 source-region amendment and audit:** replace the infeasible weak-component concentration unit in
+the *planned v3 candidate contract* with an explicit `source_region`, while retaining `weak_component_id` as
+a separate immutable graph diagnostic.  Starting with one region per true weak component, allocate each next
+region to the eligible component maximizing `node_count/current_region_count`, with canonical-component ties,
+then recursively cut a graph-distance-rooted spanning tree into exactly `K in {64,96,128}` exclusive
+induced-connected regions.
+For support radius three, a node belongs to a region core exactly when its complete undirected three-hop ball
+stays in that region.  All four candidate endpoints must later belong to one core; consequently the distant
+root must have a finite canonical distance at least three and `anchor_distant_disconnected=false`.  Every
+registered `G` must satisfy the 10% source-region cap's optimistic four-endpoint bound, at least 50% of graph
+nodes must remain in cores, and at least 20 regions must have four core nodes, in both corpora.  The coarsest
+jointly passing `K` would be selected without fallback outside the grid.
+
+The audit found no passing `K`: exploratory core retention is below 3.0% and its four-endpoint capacity fails
+at the larger registered sizes; fresh capacity passes but core retention remains below 32.7%.  Therefore the
+v3 selector migration, historical inventory, candidate enumeration, Nomic cache, builder, and every live or
+numerical-deployment authorization remain blocked.  Three-hop core separation proves only disjoint support
+for the frozen radius-three graph feature.  It does **not** make source regions independent: Nomic, global,
+prompt, weak-component, and residual dependence may cross their boundaries.  See
+`REPORT_repeated_judge_source_regions.md`.
+
 ## Question and experimental unit
 
 The question is whether an outcome-blind graph/semantic geometry predicts transferable cross-item conditional
@@ -31,16 +52,18 @@ component containing three rows with a shared descendant `x`:
 ```text
 anchor:             (x, a)
 adjacent positive:  (x, b), where a--b is a direct undirected graph edge
-matched negative:   (x, c), where distance(a,c) >= 3 or c is disconnected
+matched negative:   (x, c), where finite distance(a,c) >= 3
 ```
 
 The positive and negative roots must match on shortest descendant-to-root hop, campaign tag, and root-degree
 quartile.  The sampler balances anchor-to-comparator hop transition, anchor-degree quartile, corpus, and frozen
 graph/Nomic agreement class.  No graph endpoint ID or normalized endpoint title may occur in two selected
-components or in the historical scored campaigns.  Any graph connected component contributes at most 10% of
-a corpus sample where topology permits; otherwise the shortfall is reported and the campaign does not silently
-weaken this rule.  The structural preflight found that the current frozen graphs do not permit any registered
-campaign size, so this is now a blocking amendment point rather than an executable selection rule.
+components or in the historical scored campaigns.  Under the attempted v3 contract, all four endpoints must
+belong to one three-hop-safe `source_region` core and each source region contributes at most 10% of a corpus
+sample.  `weak_component_id` remains a distinct diagnostic and is never used as an alias for that cap or fold
+unit.  The source-region audit found no jointly feasible frozen partition, so this remains a blocking
+amendment point rather than an executable selection rule; current v2 `source_component` selector artifacts
+are historical and do not satisfy the proposed contract.
 
 Graph/Nomic thresholds are computed and recorded on the frozen structural candidate universe before endpoint-
 consuming selection.  Structural near/far defines the sampling contrast; cumulative-walk and Nomic similarities
@@ -150,17 +173,19 @@ by at most one, and each feasible stratum margin is distributed as evenly as int
 per-cell counts inside every fold are not required.  A single stable global inner label keeps prompt requests
 from crossing any nested split.  In the synthetic sizing model, where components are the dependency atoms,
 each leave-one-outer training set's inner totals differ by at most two; at `G=160` a 44/42/42 split is the
-unavoidable integer optimum, so a false at-most-one rule is not imposed.  In the real sampler,
-`(corpus, source_component)` groups are indivisible and their realized leave-one-outer imbalance is recorded;
+unavoidable integer optimum, so a false at-most-one rule is not imposed.  In the planned v3 real sampler,
+`(corpus, source_region)` groups are indivisible and their realized leave-one-outer imbalance is recorded;
 it is not silently described as the synthetic optimum.  Every row, repeat, and judge from one endpoint
 component remains in one fold.  Endpoint IDs and
 normalized titles are disjoint across folds.  For every outer-held fold the selector also materializes the
 three inner-fold assignments of its outer-training components, before outcomes exist.
 Prompt blocks are then formed only among components with the same corpus/outer/inner signature, and whole
 prompt blocks—not component rows—are the resampling units for uncertainty intervals.
-Every `(corpus, source_component)` group is also wholly contained in one outer and global inner fold.  Primary
-intervals use prompt blocks; a two-way prompt-block/source-component multiplier sensitivity must also pass,
-unless source-component dependence is proved absent from training-only residual diagnostics.
+Every `(corpus, source_region)` group is also wholly contained in one outer and global inner fold.  Primary
+intervals use prompt blocks; a two-way prompt-block/source-region multiplier sensitivity must also pass,
+unless source-region dependence is proved absent from training-only residual diagnostics.  True weak
+components are reported but are not required to be fold-atomic because one frozen corpus has a single weak
+component.  No selector migration is authorized until a source-region construction passes its upstream gate.
 All outcome-dependent objects are refit inside the appropriate training components:
 
 - judge calibration and conditionalization;
@@ -247,10 +272,10 @@ The reported primary-event count is the smallest `G` for which the joint two-cor
 5. topology truth beats the equal-energy derangement in at least 80% of replicates; and
 6. the procedure does not pass with an incomplete scenario grid.
 
-This is not yet the final campaign `G`: decision calibration, margin-AURC/noninferiority, source-component
+This is not yet the final campaign `G`: decision calibration, margin-AURC/noninferiority, source-region
 sensitivity, `s_safe/delta_95`, and cross-batch safety are unsimulated secondary gates and therefore fail
 closed in this PR.  A final count requires their own power/feasibility bridge and is at least the primary-event
-count.  If no grid value passes, increase prompt-block/source-component information.  Do not reduce confidence,
+count.  If no grid value passes, increase prompt-block/source-region information.  Do not reduce confidence,
 drop a difficult truth, or use additional repeats as a substitute for independent structure.
 
 ## Real-data endpoints and simultaneous inference
@@ -272,7 +297,7 @@ every primary lower bound must exceed zero both before and after the complete `R
 - ECE uses ten fixed equal-width bins and AURC uses prompt-block bootstrap intervals;
 - graph/Nomic source correlations and same-split ablations are reported;
 - topology benefit exceeds derangement/hard negatives;
-- the two-way prompt-block/source-component sensitivity also passes;
+- the two-way prompt-block/source-region sensitivity also passes;
 - statistical loading is reported, and relative numerical loading
   `max(load_i / max_j R_jj)` is at most `1e-6`.
 
