@@ -114,6 +114,50 @@ the hot loop stays choicepoint-free.
   first-class surface — the Prolog/comprehension face, with the collapse
   operator as the boundary.
 
+### Worked example: MapReduce is producer / scope / eliminator
+
+MapReduce is a fifth face of the same shape — worth writing out because it is
+the one whose vocabulary already *names* the three parts, and because it points
+at where parallelism belongs.
+
+| MapReduce stage | shape role | what it is |
+|---|---|---|
+| **map** | producer (+ per-item transform) | emit `(key, value)` pairs from each input record |
+| **shuffle / group-by-key** | scope | gather all values sharing a key — the bracket in which one key's multiplicity exists |
+| **reduce** | eliminator | fold each key's value-set to a deterministic result |
+
+So `map` is the generator, the shuffle is the `GROUP BY` / `where` scope, and
+`reduce` is `collect`/`sum`/`count` — a per-group fold. A MapReduce job *is* a
+distributed `GROUP BY`, which is why it lowers to the same producer / scope /
+eliminator decomposition as every other face above.
+
+### Parallelization corollary
+
+Naming the three parts also locates where a computation is safe to parallelize —
+the boundary is the seam:
+
+- **The producer is data-parallel.** `map` over independent input records has no
+  cross-record dependency, so it shards freely — one worker per partition.
+- **The eliminator parallelizes *when the fold is associative* (and ideally
+  commutative).** An associative reduce is a tree: fold shards independently,
+  then combine partial results. `count`, `sum`, `min`, `max`, set-union are
+  associative and shard cleanly; a fold that depends on order (or on the whole
+  set at once) does not, and must run after a barrier.
+- **The scope is the shard boundary.** The shuffle/group-by is exactly the
+  repartition step — the point where the framework moves data so each key's
+  values land together. It is the barrier between the parallel producer and the
+  parallel-if-associative eliminator.
+
+This is a design signpost, not a current feature: UnifyWeaver's surfaces are
+single-process today. But it says *where* parallelism would attach if added —
+map-side sharding before the scope, tree-reduction after it, gated on the
+eliminator's associativity — and it explains why the associativity of an
+aggregate (`sum` vs. a fold that reads the whole ordered set) is the property
+that decides whether a collapse can be distributed. The same reasoning applies
+to the contained-search sketch (§3.10): independent generator branches are the
+map-parallel part, and an associative collapse (`count`/`exists`/`collect`)
+is the tree-reducible part.
+
 ---
 
 *Add further principles below as they recur across surfaces.*
