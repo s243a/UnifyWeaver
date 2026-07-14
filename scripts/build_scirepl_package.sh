@@ -41,10 +41,12 @@ cp init.pl "$STAGING_DIR/init.pl"
 
 # ---- 3. Copy education init.pl(s) ----
 echo "  Copying education init files..."
-find education -name 'init.pl' -type f 2>/dev/null | while read -r f; do
-    mkdir -p "$STAGING_DIR/$(dirname "$f")"
-    cp "$f" "$STAGING_DIR/$f"
-done
+if [ -d education ]; then
+    find education -name 'init.pl' -type f | while read -r f; do
+        mkdir -p "$STAGING_DIR/$(dirname "$f")"
+        cp "$f" "$STAGING_DIR/$f"
+    done
+fi
 
 # ---- 4. Copy education notebooks ----
 echo "  Copying education notebooks..."
