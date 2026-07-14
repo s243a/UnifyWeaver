@@ -88,6 +88,27 @@ test(gen_block_string_run, [condition(clang_available)]) :-
     assertion(Out == "red\ngreen\nblue\n"),
     !.
 
+% A tuple emit produces an arity-n fact per row: `emit (1, 10)` -> `edge(1,10)`,
+% consumed by a two-column query.
+test(gen_block_tuple_run, [condition(clang_available)]) :-
+    gdir(Dir),
+    Src = "gen { emit (1, 10); emit (2, 20); emit (3, 30) } as edge\n\c
+           pass over query(edge(X, Y)) { print $1, $2 }\n",
+    build_run(Dir, 'gentup', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "1 10\n2 20\n3 30\n"),
+    !.
+
+% A tuple may mix string and integer columns (`emit ("a", 1)` -> `kv(a, 1)`).
+test(gen_block_tuple_mixed_run, [condition(clang_available)]) :-
+    gdir(Dir),
+    Src = "gen { emit (\"a\", 1); emit (\"b\", 2) } as kv\n\c
+           pass over query(kv(K, V)) { print $1, $2 }\n",
+    build_run(Dir, 'gentupmix', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "a 1\nb 2\n"),
+    !.
+
 % A reader guard on the consuming query pass composes with a generator source.
 test(gen_block_guarded_consume_run, [condition(clang_available)]) :-
     gdir(Dir),

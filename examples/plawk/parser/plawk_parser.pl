@@ -1842,9 +1842,18 @@ print_action(print(Fields)) -->
 % contributes the value of E to the generated relation's solution set. Parses
 % to emit(Expr) reusing the print field-expression grammar (a field, number,
 % string, or arithmetic expression). Explicit emission keeps the value typed
-% (design doc section 2.1); a tuple emit (`emit (A, B)` -> arity 2) is a
-% follow-on. `emit` is only meaningful inside a `gen { ... }` block; the
-% codegen (bin/plawk) rejects it elsewhere until the runtime lands.
+% (design doc section 2.1). `emit` is only meaningful inside a `gen { ... }`
+% block; the codegen (bin/plawk) rejects it elsewhere.
+%
+% A TUPLE emit (`emit (A, B, ...)` -> a row of the generated relation, arity n)
+% parses to emit(tuple([V1, ..., Vn])). Tried first -- the `(` after `emit`
+% distinguishes it. Tuple elements are constants (integer or string literals);
+% a computed tuple element is a runtime-collection follow-on.
+emit_action(emit(tuple([V0, V1 | Vs]))) -->
+    "emit", required_ws, "(", ws,
+    emit_tuple_value(V0), ws, ",", ws, emit_tuple_value(V1),
+    emit_tuple_rest(Vs), ws, ")",
+    !.
 emit_action(emit(Expr)) -->
     "emit",
     required_ws,
@@ -1856,6 +1865,21 @@ emit_action(emit(int(N))) -->
     "emit",
     required_ws,
     signed_integer_value(N).
+
+% The remaining elements of a tuple emit, comma-separated.
+emit_tuple_rest([V | Vs]) -->
+    ws, ",", ws, emit_tuple_value(V),
+    !,
+    emit_tuple_rest(Vs).
+emit_tuple_rest([]) -->
+    [].
+% A tuple element: an integer or string literal (constants only for now).
+emit_tuple_value(int(N)) -->
+    signed_integer_value(N),
+    !.
+emit_tuple_value(string(S)) -->
+    quoted_string(Codes),
+    { string_codes(S, Codes) }.
 
 printf_action(printf(string(Format), Args)) -->
     "printf",

@@ -255,5 +255,21 @@ the producer direction plus the `emit` collection. A rough PR shape:
    passthrough, `>` filter, `&&` filter, and the transform / computed-emit
    not-yet errors. The AST unified to `gen_block(name(Name), Source, Body)`
    with `Source` = `none` (pure) or `over(query(Src, Vars), LoopVar)`.
-4. **Tuples + durability** — `emit (A, B)` → `name/2`; optional cache/LMDB-backed
-   collected set.
+4. **Tuples — LANDED (constant tuples).** `emit (A, B, …)` parses to
+   `emit(tuple([…]))` and a pure block of constant tuples compiles to arity-n
+   facts (`gen { emit (1, 10); emit (2, 20) } as edge` → `edge(1, 10).
+   edge(2, 20).`), consumed by a multi-column query
+   (`pass over query(edge(X, Y)) { print $1, $2 }`). Elements may mix integer
+   and string literals. A *computed* tuple element, and a durable (cache/LMDB-
+   backed) collected set, remain follow-ons — they need the runtime collection
+   below. `tests/test_plawk_gen_blocks.pl`: an int tuple and a mixed
+   string+int tuple.
+
+### Still open — runtime collection
+
+The remaining generator shapes — a pure block with a *computed* emit, a
+transforming input iterator (`emit v * 2`), a table/non-query source, and
+durability — all need the block to *run and collect* at build/run time rather
+than synthesise clauses. The proven path is `assertz` into the dynamic DB +
+`findall` (the `tests/test_plawk_eval_compile.pl` stateful-grammar pattern),
+driven from the emit sites. That is the next generator PR.
