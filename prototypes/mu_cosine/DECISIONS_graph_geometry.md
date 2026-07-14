@@ -217,3 +217,36 @@ covariance bounds for inference.
 two-way prompt/source inference, followed by history exclusions, exact structural enumeration, and realized-
 design revalidation.  The ordering is Stage A power on the registered diagnostic allocation, then identity-
 only history if it passes, then Stage B exact candidate enumeration and revalidation.
+
+## 2026-07-14 — calibrate source power over the complete dependence family
+
+**Decision:** treat each corpus-specific `eta_source,c={0,.025,.05,.10,.20}` as five nuisance environments,
+not an ordered covariance confidence band, and cover their full 25-pair Cartesian product.  Use source-atomic
+folds, split-contained source-spreading prompts, a component-marginal quasi-NLL, and one conservative
+graph-aware prompt-plus-source multiplier spanning both endpoints, both corpora, and all five values per
+corpus.  Calibrate the selector against both block and source-smooth-mean nulls in every pair.
+
+**Reason:** `H E H.T-I` has positive and negative eigenvalues.  Increasing `eta_source,c` raises the variance of
+the equal-weight mean in these audited allocations, but it does not Loewner-dominate every nonlinear selector
+or endpoint contrast.  Calling `.20` a universal upper dependence envelope would therefore be
+anti-conservative for some directions.  Nor must the exploratory and fresh corpora share one coupling
+strength, so five equal-strength worlds do not establish joint power.  The marginal score keeps the
+within-component covariance question identified; source and prompt dependence are handled by atomic fitting,
+robust inference, and the complete finite-null procedure.
+
+**Selection and authorization:** a complete discovery run may choose the smallest passing `G`, then the
+coarsest passing `K`, but unlocks nothing.  Only a seed-disjoint confirmation at that fixed pair, using
+simultaneous Bonferroni-adjusted exact binomial bounds, may unlock attempted-input identities.  Stage B must
+rerun the fixed-design procedure for the realized candidate exposure and prompt incidence.  A failed
+confirmation is terminal absent a prospective cross-attempt alpha-spending amendment; new seeds alone do not
+reset multiplicity.
+
+Stage B is ordered: identity-only history, topology-only enumeration and capacity/provenance gates, a
+revision-pinned Nomic cache first used only for agreement-cell quotas, immutable exact packing at the selected
+`(K,G,R=3)`, then the Nomic Gram on those fixed components and fixed-design realized revalidation.  Continuous
+Nomic values cannot trigger repacking or candidate optimization, and judge calls stay locked throughout.
+
+**Rejected:** `.20`-only error control; equal-strength-only corpus worlds; prompt-only clustering;
+source/prompt inclusion-exclusion with an indefinite subtraction; inverse-variance component weights; observed
+power of exactly `.80` without an exact lower bound; automatic fallback after failed confirmation; and scalar
+ESS/row-sum certification of the realized design.

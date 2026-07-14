@@ -1,5 +1,18 @@
 # Repeated-judge source dependence — topology bridge report
 
+## 2026-07-14 successor status
+
+The Stage-A source-power harness now consumes the exact matrices and allocations from this bridge through the
+content-addressed compact bundle in `repro/repeated_judge_source_power/source_design.json`.  Its preregistered
+runner covers source-atomic folds, split-contained prompts, component-marginal scoring, graph-aware
+prompt-plus-source inference, two null families, and all 25 corpus-specific source-strength pairs.  This is an
+implemented **harness**, not a completed full-run power result; history, Nomic data, candidates, judge calls,
+covariance deployment, QR specialization, and CUDA remain locked.
+
+One earlier next-work sentence below is superseded: `.20` is not a universal covariance upper envelope.
+For every frozen `G>K`, `H E H.T-I` is indefinite, so Stage A calibrates and evaluates the complete five-value
+family independently in each corpus.  The historical bridge results remain unchanged.
+
 ## Bottom line
 
 The hard three-hop-core design failed because it discarded too much of both graphs.  The dependence-aware

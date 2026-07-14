@@ -1,5 +1,13 @@
 # Repeated-judge graph covariance — no-spend campaign and power-harness report
 
+## 2026-07-14 successor status
+
+The intervening source-capacity, source-region, and topology-exposure PRs are now followed by the Stage-A
+source-power harness in `DESIGN_repeated_judge_source_power.md`.  It replaces independent/component-atomic
+sizing for this next gate with full-region source-atomic folds, corpus-specific source-dependence sensitivity,
+and graph-aware prompt-plus-source inference.  The complete power run is still pending, so this remains a
+tooling/protocol lineage and no downstream authorization has changed.
+
 ## Bottom line
 
 This PR produces **protocol and tooling, not a covariance result**.  It made no judge/model calls, selected no
