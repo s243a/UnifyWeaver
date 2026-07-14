@@ -13,6 +13,15 @@ If a named judge or prompt is unavailable, this document must be amended before 
 Operational dry runs may use synthetic responses only.  A 64-component live engineering pilot is permitted
 only under a separate amendment and must be permanently excluded from confirmation.
 
+**2026-07-13 structural preflight:** the literal 10% undirected-connected-component source cap makes every
+registered `G` infeasible on both frozen corpora.  The primary optimistic proof charges only one endpoint to
+each declared source before cells, history, or Nomic; the sharper four-endpoint sensitivity also fails every
+registered `G`, so the conclusion does not depend on how the permitted disconnected negative is interpreted.
+Candidate enumeration is therefore blocked.  Source-component identities remain frozen through later endpoint
+exclusions; they are not recomputed to create more cap slots.  A separate outcome-blind amendment must
+define and power a feasible dependency/source partition; graph branches are not silently relabelled connected
+components.  See `REPORT_repeated_judge_candidate_capacity.md`.
+
 ## Question and experimental unit
 
 The question is whether an outcome-blind graph/semantic geometry predicts transferable cross-item conditional
@@ -30,7 +39,8 @@ quartile.  The sampler balances anchor-to-comparator hop transition, anchor-degr
 graph/Nomic agreement class.  No graph endpoint ID or normalized endpoint title may occur in two selected
 components or in the historical scored campaigns.  Any graph connected component contributes at most 10% of
 a corpus sample where topology permits; otherwise the shortfall is reported and the campaign does not silently
-weaken this rule.
+weaken this rule.  The structural preflight found that the current frozen graphs do not permit any registered
+campaign size, so this is now a blocking amendment point rather than an executable selection rule.
 
 Graph/Nomic thresholds are computed and recorded on the frozen structural candidate universe before endpoint-
 consuming selection.  Structural near/far defines the sampling contrast; cumulative-walk and Nomic similarities

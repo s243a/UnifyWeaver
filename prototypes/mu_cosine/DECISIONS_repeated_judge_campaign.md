@@ -287,3 +287,40 @@ matrices, reuse fitted factors across folds/replicates, or round gains at the de
 blocks and reduces 120-dimensional factorizations to 12-dimensional collective/contrast systems.  Equal counts
 can hide different overlap schedules, while real prompt incidence need not commute with the item kernel; dense
 joint QR therefore remains the general correctness reference.
+
+## 2026-07-13 — stop candidate construction at the connected-component capacity gate
+
+**Decision:** interpret the existing 10% `source_component` cap literally as an undirected graph connected-
+component cap for this preflight.  Before enumerating triples or generating Nomic embeddings, compute the
+optimistic endpoint-disjoint upper bound
+`U_1(G)=sum_s min(|V_s|, max(1,floor(.10 G)))`, charging only one distinct endpoint to its declared source.
+Block the candidate builder whenever `U_1(G)<G` for a required corpus.  Both frozen corpora fail every
+registered `G`.  Also report the sharper four-endpoint same-source sensitivity, but do not require its
+interpretation for the blocking proof.
+
+**Rejected:** silently substitute top-level branches for connected components, relax the 10% cap after seeing
+capacity, or continue to Nomic/history/candidate work after the structural impossibility is known.
+
+**Reason:** endpoint disjointness requires at least one distinct endpoint from every candidate's declared
+source, and later filters cannot add endpoints when the audited source components remain frozen.  This loose
+bound avoids relying on whether a permitted disconnected distant comparator belongs to the same component.
+When all three descendant-to-root paths are finite in the same canonical graph, all four endpoints do share a
+weak component and the sharper `/4` bound applies.  The future builder must reject a finite-hop/disconnected
+combination that is impossible under its graph semantics.  The fresh `Behavior` closure is one connected
+component; the exploratory graph is 98.88% one giant component.  A branch-based dependency partition may be
+scientifically preferable, but it is a preregistration amendment and must be named and validated as such
+rather than hidden behind the old term.
+
+**Reconsider if:** an outcome-blind amendment freezes deterministic exclusive source groups (including
+multi-branch assignment, concentration caps, fold containment, and group-aware inference), or replaces the
+source-cap design with a powered dependence model.  Rerun this necessary gate before any Nomic cache or
+candidate pool is produced.
+
+## 2026-07-13 — bind the exact Nomic task-prefix bytes
+
+**Decision:** use `"clustering: "`, including the trailing U+0020 space, as the frozen Nomic input prefix.
+
+**Rejected:** compare or hash the display token `"clustering:"` while the cache builder encodes different text.
+
+**Reason:** a trailing space changes model input bytes and therefore belongs in reproducibility provenance.
+This correction was made before a new candidate-universe cache or any outcome was produced.

@@ -140,7 +140,8 @@ semantic geometry.  Two locally available candidates are frozen:
 - `sentence-transformers/all-MiniLM-L6-v2`, revision
   `c9745ed1d9f207416be6d2e6f8de32d1f16199bf`, symmetric title encoding;
 - `nomic-ai/nomic-embed-text-v1.5`, revision
-  `e9b6763023c676ca8431644204f50c2b100d9aab`, using the model-card `clustering:` prefix because the task is
+  `e9b6763023c676ca8431644204f50c2b100d9aab`, using the exact `"clustering: "` prefix (including its trailing
+  U+0020 space) because the task is
   symmetric semantic grouping, not query/document retrieval.  Nomic's open embedding design is described in
   [Nussbaum et al. (2024)](https://arxiv.org/abs/2402.01613).
 

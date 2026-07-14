@@ -133,6 +133,11 @@ No ignored artifact, checkpoint, smoke JSON, or generated score input is committ
 
 ## Required next work
 
+The first item was attempted by the repository-owned structural capacity preflight and failed before candidate
+enumeration: every registered `G` violates the literal 10% connected-component cap.  See
+`REPORT_repeated_judge_candidate_capacity.md`.  Work now stops at an outcome-blind source-partition amendment;
+the remaining ordering is unchanged after that gate passes.
+
 1. Implement and review the repository-owned candidate builder, then freeze graph/Nomic/historical artifacts.
 2. Freeze the exact approved live prompt, model revisions, settings, and keyed response parser.
 3. Run a list-position engineering pilot; preregister a train-only position-by-role-by-judge adjustment and add
