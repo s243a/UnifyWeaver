@@ -817,6 +817,71 @@ fn test_variant_equivalence_direct() {
 }
 
 #[test]
+fn test_intersection_direct() {
+    let (ok, vm) = call3(
+        "intersection/3",
+        Value::List(vec![a("a"), a("b"), a("c"), a("b")]),
+        Value::List(vec![a("b"), a("d")]),
+        ub("Common"),
+    );
+    assert!(ok);
+    assert_eq!(read_var(&vm, "Common"), Value::List(vec![a("b"), a("b")]));
+
+    let (empty_ok, empty_vm) = call3(
+        "intersection/3",
+        Value::List(vec![]),
+        Value::List(vec![a("a")]),
+        ub("Common"),
+    );
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Common"), Value::List(vec![]));
+    assert!(!call3("intersection/3", a("bad"), Value::List(vec![]), ub("R")).0);
+    assert!(!call3("intersection/3", Value::List(vec![]), a("bad"), ub("R")).0);
+
+    let (vars_ok, vars_vm) = call3(
+        "intersection/3",
+        Value::List(vec![ub("X"), ub("Y")]),
+        Value::List(vec![a("a")]),
+        ub("Common"),
+    );
+    assert!(vars_ok);
+    assert_eq!(read_var(&vars_vm, "X"), a("a"));
+    assert_eq!(read_var(&vars_vm, "Y"), a("a"));
+    assert_eq!(read_var(&vars_vm, "Common"), Value::List(vec![a("a"), a("a")]));
+
+    let (retry_ok, retry_vm) = call3(
+        "intersection/3",
+        Value::List(vec![Value::Str("f/1".to_string(), vec![ub("X")])]),
+        Value::List(vec![
+            Value::Str("g/1".to_string(), vec![a("wrong")]),
+            Value::Str("f/1".to_string(), vec![a("right")]),
+        ]),
+        ub("Common"),
+    );
+    assert!(retry_ok);
+    assert_eq!(read_var(&retry_vm, "X"), a("right"));
+
+    let (miss_ok, miss_vm) = call3(
+        "intersection/3",
+        Value::List(vec![Value::Str("f/2".to_string(), vec![ub("X"), a("a")])]),
+        Value::List(vec![Value::Str("f/2".to_string(), vec![a("bound"), a("b")])]),
+        ub("Common"),
+    );
+    assert!(miss_ok);
+    assert_eq!(read_var(&miss_vm, "X"), ub("X"));
+    assert_eq!(read_var(&miss_vm, "Common"), Value::List(vec![]));
+
+    let (mismatch_ok, mismatch_vm) = call3(
+        "intersection/3",
+        Value::List(vec![ub("X")]),
+        Value::List(vec![a("a")]),
+        Value::List(vec![]),
+    );
+    assert!(!mismatch_ok);
+    assert_eq!(read_var(&mismatch_vm, "X"), ub("X"));
+}
+
+#[test]
 fn test_ground() {
     assert!(call1("ground/1", a("x")).0);
     assert!(call1("ground/1", Value::List(vec![i(1), a("b")])).0);
