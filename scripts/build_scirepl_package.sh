@@ -5,9 +5,12 @@
 #   - scirepl.json manifest
 #   - prelude.pl (UnifyWeaver environment init for swipl-wasm)
 #   - src/unifyweaver/**/*.pl (all Prolog source modules)
-#   - education/notebooks/*.ipynb (tutorial notebooks)
 #   - examples/*.pl (selected example programs)
 #   - init.pl (project initializer)
+#
+# Workbooks are distributed separately by SciREPL's UnifyWeaver bundle. The
+# SCIREPL_BUNDLE_WORKBOOKS list below remains the source of truth for that set;
+# this package intentionally contains runtime/library files only.
 #
 # Usage:
 #   ./scripts/build_scirepl_package.sh [output.zip]
@@ -48,14 +51,27 @@ if [ -d education ]; then
     done
 fi
 
-# ---- 4. Copy education notebooks ----
-echo "  Copying education notebooks..."
-mkdir -p "$STAGING_DIR/education/notebooks"
-for nb in education/notebooks/*.ipynb; do
-    [ -f "$nb" ] && cp "$nb" "$STAGING_DIR/$nb"
+# ---- 4. Declare the separate SciREPL workbook bundle ----
+# Paths are relative to PROJECT_ROOT. Keep SciREPL's catalog bundle in sync
+# with this list; these files are deliberately not copied into the package.
+SCIREPL_BUNDLE_WORKBOOKS=(
+    "education/notebooks/01_family_tree_tutorial.ipynb"
+    "education/notebooks/02_recursion_patterns.ipynb"
+    "education/notebooks/03_call_graph_analysis.ipynb"
+    "examples/sci-repl/prototype/www/workbooks/prolog-generates-r.srwb"
+)
+
+echo "  Checking separate SciREPL bundle assets..."
+BUNDLE_WB_COUNT=0
+for wb in "${SCIREPL_BUNDLE_WORKBOOKS[@]}"; do
+    if [ -f "$wb" ]; then
+        echo "    + $wb"
+        BUNDLE_WB_COUNT=$((BUNDLE_WB_COUNT + 1))
+    else
+        echo "    ! MISSING: $wb"
+    fi
 done
-NB_COUNT=$(find "$STAGING_DIR/education/notebooks" -name '*.ipynb' 2>/dev/null | wc -l)
-echo "    $NB_COUNT notebooks"
+echo "    $BUNDLE_WB_COUNT of ${#SCIREPL_BUNDLE_WORKBOOKS[@]} bundle workbooks present (not packaged)"
 
 # ---- 5. Copy selected examples ----
 echo "  Copying examples/*.pl..."
@@ -65,27 +81,6 @@ for f in examples/*.pl; do
 done
 EX_COUNT=$(find "$STAGING_DIR/examples" -name '*.pl' 2>/dev/null | wc -l)
 echo "    $EX_COUNT examples"
-
-# ---- 5b. Copy workbooks listed in PACKAGE_WORKBOOKS ----
-# Each entry is: source_path
-# Paths are relative to PROJECT_ROOT.
-PACKAGE_WORKBOOKS=(
-    "examples/sci-repl/prototype/www/workbooks/prolog-generates-r.srwb"
-)
-
-echo "  Copying workbooks..."
-mkdir -p "$STAGING_DIR/workbooks"
-WB_COUNT=0
-for wb in "${PACKAGE_WORKBOOKS[@]}"; do
-    if [ -f "$wb" ]; then
-        cp "$wb" "$STAGING_DIR/workbooks/$(basename "$wb")"
-        echo "    + $(basename "$wb")"
-        WB_COUNT=$((WB_COUNT + 1))
-    else
-        echo "    ! MISSING: $wb"
-    fi
-done
-echo "    $WB_COUNT workbooks"
 
 # ---- 5c. Copy template files (mustache, tmpl.sh) ----
 echo "  Copying templates/..."
@@ -201,43 +196,20 @@ PRELUDE_EOF
 # ---- 7. Generate scirepl.json manifest ----
 echo "  Generating scirepl.json..."
 
-# Build notebook entries as a JSON array using a temp file
-NB_TMP="$STAGING_DIR/_nb_entries.txt"
-: > "$NB_TMP"
-for nb in "$STAGING_DIR"/education/notebooks/*.ipynb; do
-    [ -f "$nb" ] || continue
-    basename_nb=$(basename "$nb")
-    name=$(echo "$basename_nb" | sed 's/\.ipynb$//' | sed 's/_/ /g' | sed 's/^[0-9]* //')
-    echo "    { \"file\": \"education/notebooks/${basename_nb}\", \"name\": \"${name}\", \"kernel\": \"prolog\" }" >> "$NB_TMP"
-done
-# Add workbook entries (.srwb files from workbooks/)
-for wb in "$STAGING_DIR"/workbooks/*.srwb; do
-    [ -f "$wb" ] || continue
-    basename_wb=$(basename "$wb")
-    name=$(echo "$basename_wb" | sed 's/\.srwb$//' | sed 's/-/ /g' | sed 's/\b\(.\)/\u\1/g')
-    echo "    { \"file\": \"workbooks/${basename_wb}\", \"name\": \"${name}\", \"type\": \"srwb\" }" >> "$NB_TMP"
-done
-# Join lines with commas (all but last get a trailing comma)
-NB_ENTRIES=$(sed '$!s/$/,/' "$NB_TMP")
-rm -f "$NB_TMP"
-
 # Build file entries for VFS mounting
 cat > "$STAGING_DIR/scirepl.json" << MANIFEST_EOF
 {
   "format_version": "1.0",
   "name": "UnifyWeaver",
   "version": "0.5.0",
-  "description": "A Prolog transpiler that compiles logic programs into multi-language data pipelines. Includes source modules, tutorials, and examples.",
-  "notebooks": [
-$NB_ENTRIES
-  ],
+  "description": "A Prolog transpiler that compiles logic programs into multi-language data pipelines. Includes source modules and examples.",
+  "notebooks": [],
   "files": [
     { "src": "prelude.pl", "dest": "/user/uw_prelude.pl" },
     { "src": "init.pl", "dest": "/user/init.pl" },
     { "src": "src/", "dest": "/user/src/" },
     { "src": "examples/", "dest": "/user/examples/" },
     { "src": "education/", "dest": "/user/education/" },
-    { "src": "workbooks/", "dest": "/user/workbooks/" },
     { "src": "templates/", "dest": "/user/templates/" }
   ],
   "search_paths": [
@@ -270,9 +242,8 @@ echo "  - scirepl.json (manifest)"
 echo "  - prelude.pl (WASM environment init)"
 echo "  - init.pl (project initializer)"
 echo "  - src/unifyweaver/ ($SRC_COUNT .pl modules)"
-echo "  - education/notebooks/ ($NB_COUNT notebooks)"
 echo "  - examples/ ($EX_COUNT examples)"
-echo "  - workbooks/ ($WB_COUNT workbooks)"
 echo "  - templates/ ($TMPL_COUNT template files)"
+echo "  - SciREPL bundle workbooks: $BUNDLE_WB_COUNT of ${#SCIREPL_BUNDLE_WORKBOOKS[@]} present, excluded from package"
 echo ""
 echo "To use: Import in SciREPL via Menu > Import Package"
