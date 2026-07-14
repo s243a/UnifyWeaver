@@ -35,12 +35,14 @@ surface, the runtime ABI, and a phased rollout.
   store without re-`declare` (phase 8.8).
 - **Reader guards** (a `WHERE`-style row filter): any of the three row readers
   may wrap its `print` in `if (COND) …`, where `COND` compares a column to a
-  numeric literal — `r["col"] CMP N` (records), `r[N] CMP N` (positional),
-  or `$N CMP N` (anon). The six operators are `== != < <= > >=`. The literal is
-  an **integer** (i64 compare) or a **decimal float** (`3.5`, `-1.5`; the column
-  is read as a double and compared with `fcmp`), so fractional thresholds and
-  fractional column values work. Filtered rows never reach the print block
-  (`tests/test_plawk_reader_guards.pl`, `tests/test_plawk_guard_float.pl`).
+  literal — `r["col"] CMP L` (records), `r[N] CMP L` (positional),
+  or `$N CMP L` (anon). The literal is an **integer** (i64 compare, six
+  operators `== != < <= > >=`), a **decimal float** (`3.5`, `-1.5`; the column
+  is read as a double and compared with `fcmp`, so fractional thresholds and
+  values work), or a **string** (`"alice"`, `==` / `!=` only — a
+  length-then-`memcmp` byte comparison). Filtered rows never reach the print
+  block (`tests/test_plawk_reader_guards.pl`, `tests/test_plawk_guard_float.pl`,
+  `tests/test_plawk_guard_string.pl`).
 
 **Not yet:** `rows of`'s `unsafe` / inline check-or-rename spec;
 the `over prev` reader (phase 4
@@ -1114,10 +1116,11 @@ single-pass test before any driver surgery).
   (records), `if (r[N] CMP N)` (positional), `if ($N CMP N)` (anon), for
   the six operators `== != < <= > >=`. An integer literal lowers to an i64
   field extract + `icmp`; a decimal float literal (`3.5`) to an f64 extract +
-  `fcmp` — filtered rows never reach the print block — **LANDED**
-  (`tests/test_plawk_reader_guards.pl`, `tests/test_plawk_guard_float.pl`; a
-  string-literal comparison and boolean `&&`/`||` combinations remain a
-  follow-on).
+  `fcmp`; a string literal (`"alice"`, `==`/`!=`) to a length-then-`memcmp`
+  byte comparison — filtered rows never reach the print block — **LANDED**
+  (`tests/test_plawk_reader_guards.pl`, `tests/test_plawk_guard_float.pl`,
+  `tests/test_plawk_guard_string.pl`; string ordering and boolean `&&`/`||`
+  combinations remain a follow-on).
 
 ## 6. Open questions
 

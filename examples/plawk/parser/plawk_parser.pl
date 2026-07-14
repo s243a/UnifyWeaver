@@ -1240,10 +1240,15 @@ forin_guard(rfield_cmp(N, Op, Value)) -->
     { NCodes \== [], number_codes(N, NCodes), N > 0 }.
 
 % A reader-guard right-hand side: a bare signed integer (an i64 comparison,
-% unchanged) or a signed decimal float literal (`3.5`, an f64 comparison,
-% carried as float_const(Mantissa, Denominator) like other float literals).
-% The float clauses are tried first; a bare integer has no `.` and falls
-% through. (String-literal comparisons are a follow-on.)
+% unchanged); a signed decimal float literal (`3.5`, an f64 comparison, carried
+% as float_const(Mantissa, Denominator) like other float literals); or a string
+% literal (`"alice"`, a byte comparison, carried as str(Text) -- only `==` /
+% `!=` are meaningful). A string starts with `"`, a float has a `.`, and a bare
+% integer is the fallthrough, so the clauses are unambiguous.
+guard_rhs(str(Text)) -->
+    quoted_string(Codes),
+    !,
+    { string_codes(Text, Codes) }.
 guard_rhs(float_const(M, D)) -->
     "-", float_literal_expr(float_const(M0, D)),
     !,
