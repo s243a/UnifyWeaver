@@ -478,6 +478,7 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, '"atom_codes/2"'),
         sub_string(S, _, _, _, '"string_codes/2"'),
         sub_string(S, _, _, _, '"string_chars/2"'),
+        sub_string(S, _, _, _, '"string_code/3"'),
         sub_string(S, _, _, _, '"number_codes/2"'),
         sub_string(S, _, _, _, '"number_chars/2"'),
         sub_string(S, _, _, _, '"reverse/2"'),

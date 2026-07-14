@@ -56,6 +56,9 @@ t_string_codes(Codes) :- string_codes(hello, Codes).
 :- dynamic t_string_chars/1.
 t_string_chars(Chars) :- string_chars(hi, Chars).
 
+:- dynamic t_string_code/1.
+t_string_code(Code) :- string_code(2, hello, Code).
+
 %% catch/throw + succ predicates (ISO meta-builtin Call fallback path).
 :- dynamic t_thrower/0.
 t_thrower :- throw(oops(42)).
@@ -146,6 +149,7 @@ test_builtin_parity_execution :-
              user:t_concat_split/2, user:t_select/2,
              user:t_atomic/1, user:t_atomic_number/1,
              user:t_string_codes/1, user:t_string_chars/1,
+             user:t_string_code/1,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
              user:t_catch_nomatch/0, user:t_catch_nothrow/1,
@@ -166,6 +170,7 @@ use builtin_parity_test::value::Value;
 use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_select_2,
     t_atomic_1, t_atomic_number_1,
     t_string_codes_1, t_string_chars_1,
+    t_string_code_1,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
     t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
     t_maplist_1, t_maplist_check_0, t_maplist_fail_0, t_include_1, t_exclude_1,
@@ -287,6 +292,10 @@ fn test_string_codes_chars_compiled() {
     let mut chars_vm = vmnew();
     assert!(t_string_chars_1(&mut chars_vm, ub("Chars")));
     assert_eq!(read_var(&chars_vm, "Chars"), Value::List(vec![a("h"), a("i")]));
+
+    let mut code_vm = vmnew();
+    assert!(t_string_code_1(&mut code_vm, ub("Code")));
+    assert_eq!(read_var(&code_vm, "Code"), i(101));
 }
 
 #[test]
@@ -625,6 +634,15 @@ fn test_atom_text_ops() {
     let (ok4, vm4) = call2("char_code/2", ub("Ch"), i(98));
     assert!(ok4);
     assert_eq!(read_var(&vm4, "Ch"), a("b"));
+    let (string_code_ok, string_code_vm) = call3("string_code/3", i(2), a("abc"), ub("Code"));
+    assert!(string_code_ok);
+    assert_eq!(read_var(&string_code_vm, "Code"), i(98));
+    assert!(call3("string_code/3", i(1), a("é"), i(233)).0);
+    assert!(!call3("string_code/3", i(0), a("abc"), ub("Code")).0);
+    assert!(!call3("string_code/3", i(4), a("abc"), ub("Code")).0);
+    assert!(!call3("string_code/3", ub("Index"), a("abc"), ub("Code")).0);
+    assert!(!call3("string_code/3", i(1), ub("String"), ub("Code")).0);
+    assert!(!call3("string_code/3", i(1), a("abc"), i(98)).0);
     let (ok5, vm5) = call2("atom_chars/2", a("hi"), ub("Cs"));
     assert!(ok5);
     assert_eq!(read_var(&vm5, "Cs"), Value::List(vec![a("h"), a("i")]));

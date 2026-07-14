@@ -4606,6 +4606,27 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let a2_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 self.builtin_atom_concat_attempt(&a1_raw, &a2_raw, &chars, 0)
             }
+            "string_code/3" => {
+                let offset = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(n)) if n >= 1 => match usize::try_from(n - 1) {
+                        Ok(i) => i,
+                        Err(_) => return false,
+                    },
+                    _ => return false,
+                };
+                let text = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(s)) => s,
+                    _ => return false,
+                };
+                let code = match text.chars().nth(offset) {
+                    Some(ch) => Value::Integer(ch as i64),
+                    None => return false,
+                };
+                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                if self.unify(&a3, &code) { self.pc += 1; true } else { false }
+            }
             "char_code/2" => {
                 let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
                 match &v1 {
