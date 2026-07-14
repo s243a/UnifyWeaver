@@ -52,21 +52,60 @@ test(do_while_parses) :-
             [])),
     !.
 
-% Building a program with a while loop is a clean compile error (exit 2) until
-% the loop runtime lands.
-test(while_is_not_yet_error) :-
+% RUNTIME (PLAWK_CONTROL_FLOW_PLAN.md PR 2): a `while` loop iterates its
+% mutable scalar state via loop-carried head phis. `{ i = 0; while (i < 3) {
+% print i; i++ } }` prints 0/1/2 and stops.
+test(while_runtime_counts, [condition(clang_available)]) :-
     wdir(Dir),
     Src = "{ i = 0; while (i < 3) { print i; i++ } }\n",
-    build_status(Dir, 'w', Src, St),
-    assertion(St == 2),
+    build_run(Dir, 'w', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "0\n1\n2\n"),
     !.
 
-% A do-while loop is likewise a clean not-yet error (shares the loop runtime).
-test(do_while_is_not_yet_error) :-
+% A `while` whose condition is false at entry runs the body ZERO times.
+test(while_runtime_zero_iterations, [condition(clang_available)]) :-
+    wdir(Dir),
+    Src = "{ i = 5; while (i < 3) { print i; i++ } }\n",
+    build_run(Dir, 'wz', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == ""),
+    !.
+
+% `do-while` runs the body at least once even when the condition starts false.
+test(do_while_runtime_runs_once, [condition(clang_available)]) :-
+    wdir(Dir),
+    Src = "{ i = 5; do { print i; i++ } while (i < 3) }\n",
+    build_run(Dir, 'dw1', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "5\n"),
+    !.
+
+% `do-while` iterates when the condition holds.
+test(do_while_runtime_counts, [condition(clang_available)]) :-
     wdir(Dir),
     Src = "{ i = 0; do { print i; i++ } while (i < 3) }\n",
-    build_status(Dir, 'dw', Src, St),
-    assertion(St == 2),
+    build_run(Dir, 'dw', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "0\n1\n2\n"),
+    !.
+
+% The loop restarts per record (mutable state does not leak between records).
+test(while_runtime_per_record, [condition(clang_available)]) :-
+    wdir(Dir),
+    Src = "{ i = 0; while (i < 2) { print i; i++ } }\n",
+    build_run(Dir, 'wpr', Src, "a\nb\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "0\n1\n0\n1\n"),
+    !.
+
+% A loop that accumulates into a scalar read from END.
+test(while_runtime_accumulate_to_end, [condition(clang_available)]) :-
+    wdir(Dir),
+    Src = "{ s = 0; i = 0; while (i < 4) { s += i; i++ } }\nEND { print s }\n",
+    build_run(Dir, 'wacc', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "6\n"),
     !.
 
 % A program with no while loop is unaffected (no false trigger).
@@ -100,3 +139,21 @@ build_status(Dir, Name, Src, Status) :-
     process_create(path(swipl), ['examples/plawk/bin/plawk', build, Prog, '-o', Bin],
         [stdout(null), stderr(null), process(Pid)]),
     process_wait(Pid, exit(Status)).
+
+% Build a program, then run the binary on Input (stdin), capturing stdout.
+build_run(Dir, Name, Src, Input, Out, RunStatus) :-
+    directory_file_path(Dir, Name, Prog0),
+    atom_concat(Prog0, '.plawk', Prog),
+    setup_call_cleanup(open(Prog, write, S, [encoding(utf8)]),
+        write(S, Src), close(S)),
+    atom_concat(Prog0, '_bin', Bin),
+    process_create(path(swipl), ['examples/plawk/bin/plawk', build, Prog, '-o', Bin],
+        [stdout(null), stderr(null), process(BPid)]),
+    process_wait(BPid, exit(0)),
+    process_create(Bin, [],
+        [stdin(pipe(In)), stdout(pipe(RS)), stderr(std), process(RPid)]),
+    format(In, "~w", [Input]),
+    close(In),
+    read_string(RS, _, Out),
+    close(RS),
+    process_wait(RPid, exit(RunStatus)).

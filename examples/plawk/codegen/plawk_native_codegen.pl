@@ -207,6 +207,60 @@ print_line:
             success, 'success:\n  ret i32 0'),
         DriverIR).
 
+% A body-printing scalar rule chain with NO END block: all output comes from
+% the per-record body (e.g. `{ i = 0; while (i < 3) { print i; i++ } }`). Same
+% lowering as the scalar END-print chain but with an empty print list and NO
+% end_print body -- the end_print block just returns 0 (no trailing newline).
+% Requires a genuine scalar plan (a rule that updates state or prints in its
+% body); writebin-only / query / single-action programs match their own
+% clauses above.
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules0, []),
+    InputPath,
+    DriverIR
+) :-
+    \+ plawk_begin_has_binfmt(BeginClauses),
+    is_list(Rules0),
+    plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules1, WritebinPlan),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    plawk_resolve_dynrec_view_rules(Rules1, Rules1b),
+    plawk_resolve_foreach_rules(FieldSeparator, Rules1b, Rules),
+    plawk_scalar_state_plan(Rules, [], StatePlan),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR0),
+    plawk_writebin_entry_lines(WritebinPlan, WritebinEntryIR),
+    plawk_join_nonempty_ir([BeginIR0, WritebinEntryIR], BeginIR),
+    plawk_record_program_ok(FieldSeparator, Rules, []),
+    plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator,
+        RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    plawk_rules_writebin_exprs(Rules, WritebinExprs),
+    append(BodyPrintFields, WritebinExprs, PrintExprs0),
+    append(PrintExprs0, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
+    plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
+    plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
+    plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
+    plawk_scalar_rule_controls(Rules, ScalarRuleControls),
+    plawk_scalar_next_phi_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, NextPhiIR),
+    plawk_break_close_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, done,
+        BreakCloseIR, FinalStatePhiIR),
+    plawk_writebin_globals(WritebinPlan, WritebinGlobalIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
+        [BeginGlobalIR, RuleGlobalIR, WritebinGlobalIR]),
+    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w
+  ret i32 0',
+        [FinalStatePhiIR]),
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
+        driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
+            NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
 plawk_program_native_driver_ir(
     program(BeginClauses, Rules, [end([print(PrintFields)])]),
     InputPath,
@@ -4791,6 +4845,29 @@ plawk_icmp_pred(le, sle).
 plawk_icmp_pred(gt, sgt).
 plawk_icmp_pred(ge, sge).
 
+%% plawk_while_cond_ok(+Cond) is semidet.
+%
+%  A supported loop condition: `VAR CMP int(N)` over an i64 comparison.
+plawk_while_cond_ok(cmp(var(_V), Op, int(N))) :-
+    integer(N),
+    plawk_icmp_pred(Op, _Pred).
+
+%% plawk_while_cond_ir(+Cond, +Slots, +CondValues, +Base, -CondVar, -IR)
+%
+%  Emit the loop-condition icmp. The condition variable's current value is the
+%  slot value in CondValues (head-phi values for `while`, body-output values
+%  for `do-while`); compare it against the integer bound.
+plawk_while_cond_ir(cmp(var(CondName), Op, int(N)), Slots, CondValues, Base,
+        CondVar, IR) :-
+    nth0(Idx, Slots, Slot),
+    plawk_slot_name(Slot, CondName),
+    !,
+    nth0(Idx, CondValues, CondValRef),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(CondVar), '%~w_cond', [Base]),
+    format(atom(IR), '  ~w = icmp ~w i64 ~w, ~w',
+        [CondVar, Pred, CondValRef, N]).
+
 % Surface comparison op -> ordered LLVM fcmp predicate (row values are finite,
 % so ordered comparisons are correct; a NaN column fails every guard).
 plawk_fcmp_pred(eq, oeq).
@@ -5676,6 +5753,10 @@ plawk_action_has_control(if(_Pattern, ThenActions, ElseActions)) :-
     ).
 plawk_action_has_control(foreach_loop(_Layout, Body)) :-
     plawk_branch_actions_have_unsupported_control(Body).
+plawk_action_has_control(while_loop(_Cond, Body)) :-
+    plawk_branch_actions_have_unsupported_control(Body).
+plawk_action_has_control(do_while_loop(Body, _Cond)) :-
+    plawk_branch_actions_have_unsupported_control(Body).
 
 plawk_branch_actions_have_unsupported_control(Actions) :-
     plawk_trim_control_tails(Actions, TrimmedActions),
@@ -5852,6 +5933,16 @@ plawk_scalar_update_name_expr(if(_Pattern, ThenActions, ElseActions), Name, Expr
 plawk_scalar_update_name_expr(foreach_loop(_Layout, Body), Name, Expr) :-
     member(Action, Body),
     plawk_scalar_update_name_expr(Action, Name, Expr).
+% while/do-while: the condition variable gets an i64 slot (it is compared with
+% an integer), plus any scalar the body updates.
+plawk_scalar_update_name_expr(while_loop(cmp(var(CondVar), _Op, _N), Body), Name, Expr) :-
+    ( Name = CondVar, Expr = int(0)
+    ; member(Action, Body), plawk_scalar_update_name_expr(Action, Name, Expr)
+    ).
+plawk_scalar_update_name_expr(do_while_loop(Body, cmp(var(CondVar), _Op, _N)), Name, Expr) :-
+    ( Name = CondVar, Expr = int(0)
+    ; member(Action, Body), plawk_scalar_update_name_expr(Action, Name, Expr)
+    ).
 
 plawk_scalar_double_fixpoint(Updates, Doubles0, Doubles) :-
     findall(Name,
@@ -5978,6 +6069,10 @@ plawk_action_body_print_field(if(_Pattern, ThenActions, ElseActions), Field) :-
     ;   plawk_actions_body_print_field(ElseActions, Field)
     ).
 plawk_action_body_print_field(foreach_loop(_Layout, Body), Field) :-
+    plawk_actions_body_print_field(Body, Field).
+plawk_action_body_print_field(while_loop(_Cond, Body), Field) :-
+    plawk_actions_body_print_field(Body, Field).
+plawk_action_body_print_field(do_while_loop(Body, _Cond), Field) :-
     plawk_actions_body_print_field(Body, Field).
 
 plawk_mixed_planned_rules([], _AssocPlan, _Index) -->
@@ -7733,6 +7828,12 @@ plawk_binfmt_action_ok(Descriptor, writebin_arm_out(_Tag, ArmTypes, Fields)) :-
     !,
     plawk_binfmt_writebin_args_ok(Descriptor, ArmTypes, Fields).
 plawk_binfmt_action_ok(Descriptor, foreach_loop(_Layout, Body)) :-
+    !,
+    plawk_binfmt_actions_ok(Descriptor, Body).
+plawk_binfmt_action_ok(Descriptor, while_loop(_Cond, Body)) :-
+    !,
+    plawk_binfmt_actions_ok(Descriptor, Body).
+plawk_binfmt_action_ok(Descriptor, do_while_loop(Body, _Cond)) :-
     !,
     plawk_binfmt_actions_ok(Descriptor, Body).
 
@@ -10040,6 +10141,12 @@ plawk_scalar_rule_body_action(writebin_arm_out(_Tag, ArmTypes, Fields)) :-
     plawk_writebin_args_ok(ArmTypes, Fields).
 plawk_scalar_rule_body_action(foreach_loop(_Layout, Body)) :-
     plawk_scalar_branch_body_actions(Body).
+plawk_scalar_rule_body_action(while_loop(Cond, Body)) :-
+    plawk_while_cond_ok(Cond),
+    plawk_scalar_branch_body_actions(Body).
+plawk_scalar_rule_body_action(do_while_loop(Body, Cond)) :-
+    plawk_while_cond_ok(Cond),
+    plawk_scalar_branch_body_actions(Body).
 plawk_scalar_rule_body_action(if(_Pattern, ThenActions, ElseActions)) :-
     append(ThenActions, ElseActions, Actions),
     Actions \== [],
@@ -10078,6 +10185,10 @@ plawk_rule_body_print_action(printf(string(Format), Args)) :-
 
 plawk_rule_body_print_field(field(_)).
 plawk_rule_body_print_field(string(_)).
+% a bare scalar variable read (`print i`): substitution rewrites var(Name) to
+% the slot's SSA value at emit time, so a scalar can be printed directly. Only
+% names that resolve to a slot compile; a non-slot var fails substitution.
+plawk_rule_body_print_field(var(_)).
 plawk_rule_body_print_field(special('NR')).
 plawk_rule_body_print_field(special('NF')).
 plawk_rule_body_print_field(int(field(_))).
@@ -10767,6 +10878,14 @@ plawk_scalar_update_action_name(if(_Pattern, ThenActions, ElseActions), Name) :-
 plawk_scalar_update_action_name(foreach_loop(_Layout, Body), Name) :-
     member(Action, Body),
     plawk_scalar_update_action_name(Action, Name).
+plawk_scalar_update_action_name(while_loop(cmp(var(CondVar), _Op, _N), Body), Name) :-
+    ( Name = CondVar
+    ; member(Action, Body), plawk_scalar_update_action_name(Action, Name)
+    ).
+plawk_scalar_update_action_name(do_while_loop(Body, cmp(var(CondVar), _Op, _N)), Name) :-
+    ( Name = CondVar
+    ; member(Action, Body), plawk_scalar_update_action_name(Action, Name)
+    ).
 
 plawk_expr_scalar_read_name(var(Name), Name).
 plawk_expr_scalar_read_name(Expr, Name) :-
@@ -11064,6 +11183,139 @@ plawk_scalar_action_sequence_pairs([foreach_loop(Layout, Body) | Rest],
     [GlobalIR-IR],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, AfterLabel, RuleIndex,
         NextOpIndex, HeadValues, Values, FinalOpIndex, ExitLabel, RestNextExits),
+    { append(InnerNextExits, RestNextExits, NextExits) }.
+% while_loop: a surface loop. Loop-carried head phis for every scalar slot
+% (modelled on foreach_loop's head-phi machinery -- no memory slots needed).
+% The condition tests the condition variable's head-phi value BEFORE the body,
+% so the loop may run zero times; the exit values are the head phis themselves.
+% (PLAWK_CONTROL_FLOW_PLAN.md PR 2.)
+plawk_scalar_action_sequence_pairs([while_loop(Cond, Body) | Rest],
+        Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { format(atom(Base), '~w_while_~w', [Prefix, OpIndex]),
+      format(atom(EntryLabel), '~w_entry', [Base]),
+      format(atom(HeadLabel), '~w_head', [Base]),
+      format(atom(BodyLabel), '~w_body', [Base]),
+      format(atom(BodyDoneLabel), '~w_body_done', [Base]),
+      format(atom(AfterLabel), '~w_after', [Base]),
+      findall(PhiValue,
+          ( nth0(SlotIndex, Slots, _Slot),
+            format(atom(PhiValue), '%~w_slot_~w', [Base, SlotIndex])
+          ),
+          HeadValues),
+      phrase(plawk_scalar_action_sequence_pairs(Body, Slots, AssocPlan,
+          FieldSeparator, OutputSeparator, Base, BodyLabel, RuleIndex, 0,
+          HeadValues, BodyOutValues, _InnerOpIndex, InnerExitLabel,
+          InnerNextExits), BodyPairs),
+      pairs_keys_values(BodyPairs, BodyGlobalParts, BodyLineParts),
+      atomic_list_concat(BodyGlobalParts, '\n', GlobalIR),
+      atomic_list_concat(BodyLineParts, '\n', BodyIR),
+      plawk_branch_to_done_ir(InnerExitLabel, BodyDoneLabel, BodyDoneBrIR),
+      phrase(plawk_foreach_head_phi_lines(Slots, Values0, BodyOutValues,
+          Base, EntryLabel, BodyDoneLabel, 0), HeadPhiLines),
+      atomic_list_concat(HeadPhiLines, '\n', HeadPhiIR),
+      % the condition reads the head-phi value of the condition variable
+      plawk_while_cond_ir(Cond, Slots, HeadValues, Base, CondVar, CondIR),
+      format(atom(IR),
+'  br label %~w
+
+~w:
+  br label %~w
+
+~w:
+~w
+~w
+  br i1 ~w, label %~w, label %~w
+
+~w:
+~w
+~w
+
+~w:
+  br label %~w
+
+~w:',
+          [EntryLabel,
+           EntryLabel,
+           HeadLabel,
+           HeadLabel,
+           HeadPhiIR,
+           CondIR,
+           CondVar, BodyLabel, AfterLabel,
+           BodyLabel,
+           BodyIR,
+           BodyDoneBrIR,
+           BodyDoneLabel,
+           HeadLabel,
+           AfterLabel]),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, AfterLabel, RuleIndex,
+        NextOpIndex, HeadValues, Values, FinalOpIndex, ExitLabel, RestNextExits),
+    { append(InnerNextExits, RestNextExits, NextExits) }.
+% do_while_loop: like while_loop but the condition tests AFTER the body, so the
+% body always runs at least once. The head phi sits at the top of the body
+% block; the condition reads the body's OUTPUT values (the exit values), since
+% control reaches `after` from the post-body condition test.
+plawk_scalar_action_sequence_pairs([do_while_loop(Body, Cond) | Rest],
+        Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { format(atom(Base), '~w_dowhile_~w', [Prefix, OpIndex]),
+      format(atom(EntryLabel), '~w_entry', [Base]),
+      format(atom(BodyLabel), '~w_body', [Base]),
+      format(atom(BodyDoneLabel), '~w_body_done', [Base]),
+      format(atom(AfterLabel), '~w_after', [Base]),
+      findall(PhiValue,
+          ( nth0(SlotIndex, Slots, _Slot),
+            format(atom(PhiValue), '%~w_slot_~w', [Base, SlotIndex])
+          ),
+          HeadValues),
+      phrase(plawk_scalar_action_sequence_pairs(Body, Slots, AssocPlan,
+          FieldSeparator, OutputSeparator, Base, BodyLabel, RuleIndex, 0,
+          HeadValues, BodyOutValues, _InnerOpIndex, InnerExitLabel,
+          InnerNextExits), BodyPairs),
+      pairs_keys_values(BodyPairs, BodyGlobalParts, BodyLineParts),
+      atomic_list_concat(BodyGlobalParts, '\n', GlobalIR),
+      atomic_list_concat(BodyLineParts, '\n', BodyIR),
+      plawk_branch_to_done_ir(InnerExitLabel, BodyDoneLabel, BodyDoneBrIR),
+      phrase(plawk_foreach_head_phi_lines(Slots, Values0, BodyOutValues,
+          Base, EntryLabel, BodyDoneLabel, 0), HeadPhiLines),
+      atomic_list_concat(HeadPhiLines, '\n', HeadPhiIR),
+      % the condition reads the body's output value of the condition variable
+      plawk_while_cond_ir(Cond, Slots, BodyOutValues, Base, CondVar, CondIR),
+      format(atom(IR),
+'  br label %~w
+
+~w:
+  br label %~w
+
+~w:
+~w
+~w
+~w
+
+~w:
+~w
+  br i1 ~w, label %~w, label %~w
+
+~w:',
+          [EntryLabel,
+           EntryLabel,
+           BodyLabel,
+           BodyLabel,
+           HeadPhiIR,
+           BodyIR,
+           BodyDoneBrIR,
+           BodyDoneLabel,
+           CondIR,
+           CondVar, BodyLabel, AfterLabel,
+           AfterLabel]),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, AfterLabel, RuleIndex,
+        NextOpIndex, BodyOutValues, Values, FinalOpIndex, ExitLabel, RestNextExits),
     { append(InnerNextExits, RestNextExits, NextExits) }.
 plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest],
         Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex, OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
@@ -12710,6 +12962,14 @@ plawk_emit_print_expr_for_context(int(field(FieldIndex)), FieldSeparator, Contex
     plawk_print_expr_value_base(Context, int, Base),
     plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
     plawk_i64_expr_ir(field_i64(FieldIndex), FieldSeparator, Base, Base,
+        ValueIR, GlobalParts, SetupParts).
+% a substituted scalar read (var(Name) -> ssa(SlotValue)): print the i64 SSA
+% value directly. This is what makes `print i` work for a scalar slot.
+plawk_emit_print_expr_for_context(ssa(Value), FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
+    plawk_print_expr_value_base(Context, int, Base),
+    plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
+    plawk_i64_expr_ir(ssa(Value), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
 
 plawk_emit_print_expr_for_context(Expr, FieldSeparator, Context,
