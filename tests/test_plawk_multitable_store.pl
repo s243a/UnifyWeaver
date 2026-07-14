@@ -21,6 +21,17 @@ clang_available :-
                            [stdout(null), stderr(null), process(Pid)]),
             process_wait(Pid, exit(0)) ), _, fail).
 
+clang_lmdb_available :-
+    catch(( current_prolog_flag(tmp_dir, Tmp),
+            directory_file_path(Tmp, 'uw_mts_lmdb_probe.c', C),
+            directory_file_path(Tmp, 'uw_mts_lmdb_probe', Bin),
+            setup_call_cleanup(open(C, write, S),
+                write(S, "#include <lmdb.h>\nint main(void){MDB_env*e;return mdb_env_create(&e);}\n"),
+                close(S)),
+            format(atom(Cmd), 'clang -w ~w -o ~w -llmdb 2>/dev/null', [C, Bin]),
+            process_create(path(sh), ['-c', Cmd], [process(Pid)]),
+            process_wait(Pid, exit(0)) ), _, fail).
+
 :- begin_tests(plawk_multitable_store).
 
 % Two tables in one FILE store -> class-A compile error (exit 2). The check
@@ -36,17 +47,23 @@ test(file_multitable_is_compile_error) :-
     assertion(St == 2),
     !.
 
-% Two tables in one LMDB store -> "not yet" compile error (exit 2) until the
-% sub-DB routing (PR 3) lands.
-test(lmdb_multitable_is_not_yet_error) :-
+% Two tables in one LMDB store now build and run (PR 3): each table routes to
+% its own named sub-DB, so they stay isolated. (Durability across runs is
+% covered by test_plawk_multitable_lmdb.pl; here we assert one-run correctness
+% and that it is no longer a compile error.)
+test(lmdb_multitable_builds_and_runs, [condition(clang_lmdb_available)]) :-
     sdir(Dir),
     directory_file_path(Dir, 'ml.lmdb', Store),
+    ( exists_file(Store) -> delete_file(Store) ; true ),
+    atom_concat(Store, '-lock', Lock),
+    ( exists_file(Lock) -> delete_file(Lock) ; true ),
     format(atom(Src),
         "BEGIN cache(\"~w\" backend \"lmdb\") { declare orders(k str, v str); declare customers(k str, v str) }\n\c
-         pass records of orders as r { print r[\"k\"] }\n\c
-         pass records of customers as r { print r[\"k\"] }\n", [Store]),
-    build_status(Dir, 'ml', Src, St),
-    assertion(St == 2),
+         pass { orders[$1] = row($1, $2); customers[$1] = row($2, $1) }\n\c
+         pass records of orders as r { print r[\"k\"], r[\"v\"] }\n\c
+         pass records of customers as r { print r[\"k\"], r[\"v\"] }\n", [Store]),
+    run_sorted(Dir, 'ml', Src, "a 1\nb 2\n", S),
+    assertion(S == ["1 a", "2 b", "a 1", "b 2"]),
     !.
 
 % Multiple IN-MEMORY tables (no cache) are not a store at all -> still builds
