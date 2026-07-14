@@ -190,7 +190,9 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
                 [emit_mode(interpreter)], TmpDir),
             run_gradle(TmpDir, ['-q', 'compileKotlin'], _CompileOut, CompileErr, CompileStatus),
             assertion(CompileStatus == exit(0)),
-            assertion(CompileErr == ""),
+            % No kotlinc compile errors. (Not `== ""`: gradle daemon emits
+            % benign stderr like `Already watching path` / JAVA_TOOL_OPTIONS.)
+            assertion(\+ has_substring(CompileErr, "error:")),
             run_gradle(TmpDir, ['-q', 'run', '--args=kt_fact/2 alpha beta'], FactOut, _FactErr, FactStatus),
             assertion(FactStatus == exit(0)),
             assertion(has_substring(FactOut, 'Ran kt_fact/2')),
@@ -284,7 +286,9 @@ test(functions_mode_gradle_runs_lowered_fact, [condition(gradle_available), nond
         (   wam_kotlin_target:write_wam_kotlin_project([user:kt_fact/2], [emit_mode(functions)], TmpDir),
             run_gradle(TmpDir, ['-q', 'compileKotlin'], _CompileOut, CompileErr, CompileStatus),
             assertion(CompileStatus == exit(0)),
-            assertion(CompileErr == ""),
+            % No kotlinc compile errors. (Not `== ""`: gradle daemon emits
+            % benign stderr like `Already watching path` / JAVA_TOOL_OPTIONS.)
+            assertion(\+ has_substring(CompileErr, "error:")),
             run_gradle(TmpDir, ['-q', 'run', '--args=kt_fact/2 alpha beta'], FactOut, _FactErr, FactStatus),
             assertion(FactStatus == exit(0)),
             assertion(has_substring(FactOut, 'Ran kt_fact/2')),
