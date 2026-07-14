@@ -64,6 +64,35 @@ test(print_arithmetic_runs, [condition(clang_available)]) :-
     assertion(Out == "3\n"),
     !.
 
+% BEGIN literals: `BEGIN { print ... }` routes through the same print grammar,
+% so a bare integer and a string literal both compile and print once, before
+% the records. (Locks in the BEGIN/END follow-on of the print-literal fix.)
+test(begin_integer_literal_runs, [condition(clang_available)]) :-
+    run_prog("BEGIN { print 1 }\n{ print $1 }\n", "a\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "1\na\n"),
+    !.
+
+test(begin_string_and_mixed_literal_runs, [condition(clang_available)]) :-
+    run_prog("BEGIN { print \"n\", 5 }\n{ print $1 }\n", "a\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "n 5\na\n"),
+    !.
+
+% END literals: `END { print ... }` prints after the records; a bare integer,
+% a string, and a mix of literal + a computed scalar all print.
+test(end_integer_literal_runs, [condition(clang_available)]) :-
+    run_prog("{ n++ }\nEND { print 42 }\n", "a\nb\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "42\n"),
+    !.
+
+test(end_string_literal_runs, [condition(clang_available)]) :-
+    run_prog("{ n++ }\nEND { print \"done\" }\n", "a\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "done\n"),
+    !.
+
 :- end_tests(plawk_print_literals).
 
 % --- helpers ---------------------------------------------------------------
