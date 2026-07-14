@@ -107,6 +107,7 @@ build(File, Out0, KeepLL) :-
     % like any other relation. `Program` is the program with generator blocks
     % removed; `GenFactClauses` are the synthesised facts.
     check_generator_blocks(File, Program2),
+    check_materialized_views(File, Program2, Clauses),
     resolve_generator_blocks(Program2, Program, GenFactClauses),
     check_multitable_store(File, Program),
     check_query_reader(File, Program),
@@ -363,6 +364,45 @@ check_generator_blocks(File, Program) :-
         [File, Name]),
     halt(2).
 check_generator_blocks(_File, _Program).
+
+% `materialize NAME` (PLAWK_MULTIPASS_CACHE.md §3.9): mark a view / relation to
+% be materialised-and-cached (computed once, reused by every query pass that
+% reads it). Surface-first, mirroring the query-reader / generator / while arcs:
+% the declaration parses and its reference is validated against the program's
+% defined relations (a `gen ... as NAME` view or a @prolog predicate), but the
+% materialise-and-cache runtime is a follow-on, so a program that uses it gets a
+% clear, specific diagnostic. An unknown reference is a distinct, earlier error.
+check_materialized_views(File, Program, Clauses) :-
+    plawk_program_materialize_views(Program, Names),
+    Names \== [],
+    !,
+    plawk_program_gen_blocks(Program, GenBlocks),
+    findall(GN, member(gen_block(name(GN), _, _), GenBlocks), ViewNames),
+    findall(PN, ( member(Clause, Clauses), materialize_clause_pred(Clause, PN) ),
+        PrologNames),
+    append(ViewNames, PrologNames, Defined),
+    (   member(N, Names), \+ memberchk(N, Defined)
+    ->  format(user_error,
+            'plawk: ~w declares `materialize ~w`, but no view (`gen ... as ~w`) \c
+             or @prolog relation named ~w is defined.~n',
+            [File, N, N, N]),
+        halt(2)
+    ;   format(user_error,
+            'plawk: ~w uses `materialize NAME` (a cached view). The surface \c
+             parses but its materialise-and-cache runtime is not yet \c
+             implemented; see PLAWK_MULTIPASS_CACHE.md section 3.9.~n',
+            [File]),
+        halt(2)
+    ).
+check_materialized_views(_File, _Program, _Clauses).
+
+% The predicate name a @prolog clause defines (a rule head or a bare fact).
+materialize_clause_pred((Head :- _Body), Name) :-
+    !,
+    functor(Head, Name, _).
+materialize_clause_pred(Head, Name) :-
+    callable(Head),
+    functor(Head, Name, _).
 
 % A generator block whose clauses can be synthesised at build time:
 %  - a pure block (`Source == none`) whose every action is a constant `emit`

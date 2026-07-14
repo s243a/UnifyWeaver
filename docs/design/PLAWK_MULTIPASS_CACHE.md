@@ -758,7 +758,44 @@ brevity, the key iterator trades brevity for reach. A nested `pass` (§3.8), if
 built, is the record-returning form gaining its own nested scope — the natural
 extension of the left column, not a new mechanism.
 
-### 3.9 Views (future TODO — brief spec, not planned)
+### 3.9 Views (column projection LANDED; `materialize` surface LANDED, runtime planned)
+
+**Status.** Column projection landed (`PLAWK_GENERATOR_BLOCKS.md` PR 5): a
+generator over a multi-column source projects/reorders columns into a derived
+relation. The **`materialize NAME`** surface landed (surface-first, like the
+query-reader / generator / while arcs): it parses to a `materialize(Name)`
+program item and its reference is validated against the program's defined
+relations (a `gen ... as NAME` view or a @prolog predicate); the
+materialise-and-cache **runtime** is the follow-on planned here.
+
+#### Runtime plan (materialise-and-cache)
+
+A query pass today materialises its goal's columns into **pass-local** tagged
+tables (`%qval_C` / `%qkind_C`), iterates, and frees them at pass end
+(`plawk_multipass_query_fn_ir`). So two passes over the same relation
+materialise it twice. `materialize NAME` lifts that to **once, shared**:
+
+1. **Shared tables.** For each materialised relation, emit **global** column
+   tables (`@qval_<NAME>_<C>` / `@qkind_<NAME>_<C>`) instead of pass-local ones.
+2. **One-time fill.** Emit a `@plawk_materialize_<NAME>()` that runs the
+   per-column findall wrappers against the shared VM and fills the globals; call
+   it once from `main` **before** the pass calls (or lazily behind a
+   done-flag). Do not free the globals per pass.
+3. **Consumer rewiring.** A `pass over query(NAME(...))` reads the shared
+   globals instead of materialising locally and skips the free.
+
+**Refresh policy — resolved for the intra-run case.** The open question was
+eager/lazy/explicit refresh. For the current sources — @prolog facts and
+generator-derived relations are **static within a program run** — the answer is
+**eager-once, no refresh**: materialise on first need, reuse for the rest of the
+run; the source cannot change mid-run, so there is nothing to invalidate. A
+refresh policy only re-enters when a materialised view is backed by a **mutable
+durable cache** across runs (the LMDB / inter-pass-channel case, Phase 3), which
+is where eager-on-write vs lazy-on-read vs explicit becomes a real choice. So
+the runtime splits cleanly: the intra-run share above is unblocked and needs no
+policy; the cross-run persistent view waits on Phase 3.
+
+#### Original sketch (retained)
 
 A **view** is a named, derived query over one or more tables — conceptually a
 stored `records of … WHERE … ` (reader guards have landed; a view would pair
@@ -801,12 +838,13 @@ relation* — and the phase-6 work built the pieces:
   in all but name and materialisation;
 - the query reader's **per-column tagged materialisation** (PR 6) is exactly the
   projection engine.
-So the net-new work for views is narrow: **column projection** (select a subset
+So the net-new work for views was narrow: **column projection** (select a subset
 of columns, not the whole row — the "we might not need a whole row" point) and
-**materialise-and-cache** (write the projected/filtered set to its own row
-table, with a refresh policy — eager/lazy/explicit, the one genuinely open
-question). Both build directly on shipped machinery, which is the other reason
-to do views before a from-scratch auto-cache.
+**materialise-and-cache** (compute the projected/filtered set once, reuse it).
+Projection **landed** (`PLAWK_GENERATOR_BLOCKS.md` PR 5); the `materialize NAME`
+**surface landed** (this doc's §3.9 status), and the runtime is the plan above.
+Both build directly on shipped machinery, which is the other reason views come
+before a from-scratch auto-cache.
 
 ### 3.10 Contained non-determinism — a search construct (future TODO — sketch)
 

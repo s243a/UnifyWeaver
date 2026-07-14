@@ -342,6 +342,17 @@ gen_over_binding(Vars) -->
     !.
 gen_over_binding([V]) -->
     identifier(V).
+% A `materialize NAME` declaration (PLAWK_MULTIPASS_CACHE.md §3.9): mark a
+% derived relation (a view produced by a `gen ... as NAME` block, or a @prolog
+% relation) as materialised-and-cached -- its projected/filtered rows are
+% computed once into a shared table and reused by every query pass that reads
+% it, instead of re-running the goal per consumer. Parses to materialize(Name);
+% the runtime is a follow-on (surface-first, like the query-reader / generator
+% arcs), so bin/plawk currently emits a clean not-yet diagnostic.
+pass_clauses([materialize(Name) | Rest]) -->
+    "materialize", identifier_boundary, ws,
+    identifier(Name), ws,
+    pass_clauses(Rest).
 % A `pass { ACTIONS }` block is one pass carrying a single always-rule with
 % those actions (per-pattern rules within a pass are a later extension).
 pass_clauses([pass([rule(always, Actions)]) | Rest]) -->
@@ -365,6 +376,8 @@ plawk_pass_dynentry_rewrite(_DynEntries, pass_query(Q, Body), pass_query(Q, Body
 % A `gen { ... } as name` generator block -- pass it through (its body is
 % lowered by the generator runtime in a later PR).
 plawk_pass_dynentry_rewrite(_DynEntries, gen_block(N, S, Body), gen_block(N, S, Body)).
+% A `materialize NAME` declaration has no rule actions -- pass it through.
+plawk_pass_dynentry_rewrite(_DynEntries, materialize(Name), materialize(Name)).
 
 %% dynentry_decls(-Names)//
 %
