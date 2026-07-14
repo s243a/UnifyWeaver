@@ -275,6 +275,21 @@ the producer direction plus the `emit` collection. A rough PR shape:
    below. `tests/test_plawk_gen_blocks.pl`: an int tuple and a mixed
    string+int tuple.
 
+5. **Multi-column source + projection (views) — LANDED.** The input iterator
+   now binds a loop var per source column (`as (a, b)`) and the body emits a
+   **projection** of them: `gen over query(edge(A, B)) as (a, b) { if (a > 1)
+   emit a } as srcs` → `srcs(A) :- edge(A, _B), A > 1` (only the needed column
+   materialises — the "don't carry the whole row" point), and `emit (b, a)` →
+   `flipped(B, A) :- edge(A, B)` (reorder). This is the **column-projection
+   engine for views** (`PLAWK_MULTIPASS_CACHE.md` §3.9): a filtered/projected
+   derived relation. The AST generalised to `over(query(Src, SrcVars),
+   LoopVars)` with `LoopVars` a list; `emit` tuple elements may now be bound
+   vars. What remains for a full *view* is **materialise-and-cache** (write the
+   projected set to its own row table with a refresh policy) — the generator
+   gives the *derived-relation* half; materialisation is the cache half.
+   `tests/test_plawk_gen_blocks.pl`: a filtered single-column projection and a
+   reordering tuple projection.
+
 ### Still open — runtime collection
 
 The remaining generator shapes — a pure block with a *computed* emit, a

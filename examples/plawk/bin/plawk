@@ -400,8 +400,11 @@ program_has_while(Term) :-
 %    -> a derived rule.
 gen_block_supported(none, Body) :-
     forall(member(Action, Body), gen_const_emit(Action)).
-gen_block_supported(over(query(_Src, [_SrcVar]), LoopVar), Body) :-
-    gen_over_body_ok(Body, LoopVar).
+% Input iterator over a query source: one loop var per source column, and the
+% body emits a projection of the bound vars (optionally filtered).
+gen_block_supported(over(query(_Src, SrcVars), LoopVars), Body) :-
+    same_length(SrcVars, LoopVars),
+    gen_over_body_ok(Body, LoopVars).
 
 % A constant emit: a bare integer/string literal, or a tuple whose elements are
 % all integer/string literals.
@@ -409,18 +412,32 @@ gen_const_emit(emit(int(_))).
 gen_const_emit(emit(string(_))).
 gen_const_emit(emit(tuple(Values))) :-
     forall(member(V, Values), ( V = int(_) ; V = string(_) )).
-gen_block_supported(over(query(_Src, [_SrcVar]), LoopVar), Body) :-
-    gen_over_body_ok(Body, LoopVar).
 
-% A supported input-iterator body: `emit v` (passthrough), optionally filtered
-% by `if (GUARD) emit v` where GUARD is an integer comparison over `v`.
-gen_over_body_ok([emit(var(LoopVar))], LoopVar).
-gen_over_body_ok([if(Guard, [emit(var(LoopVar))], [])], LoopVar) :-
-    gen_over_guard_ok(Guard, LoopVar).
-gen_over_guard_ok(and(L, R), LoopVar) :-
-    gen_over_guard_ok(L, LoopVar), gen_over_guard_ok(R, LoopVar).
-gen_over_guard_ok(forin_key_cmp(LoopVar, _Op, Value), LoopVar) :-
-    integer(Value).
+% A supported input-iterator body: emit a projection of the bound loop vars
+% (`emit a` -> one column; `emit (a, b)` -> a tuple, columns reorderable and
+% mixable with literals), optionally filtered by `if (GUARD) emit ...` where
+% GUARD is an integer comparison over the bound vars.
+gen_over_body_ok([emit(Emit)], LoopVars) :-
+    gen_emit_projection_ok(Emit, LoopVars).
+gen_over_body_ok([if(Guard, [emit(Emit)], [])], LoopVars) :-
+    gen_emit_projection_ok(Emit, LoopVars),
+    gen_over_guard_ok(Guard, LoopVars).
+
+% The emitted projection references only bound loop vars (plus literals in a
+% tuple).
+gen_emit_projection_ok(var(V), LoopVars) :-
+    memberchk(V, LoopVars).
+gen_emit_projection_ok(tuple(Vals), LoopVars) :-
+    Vals = [_, _ | _],
+    forall(member(Val, Vals), gen_emit_elem_ok(Val, LoopVars)).
+gen_emit_elem_ok(var(V), LoopVars) :- memberchk(V, LoopVars).
+gen_emit_elem_ok(int(_), _LoopVars).
+gen_emit_elem_ok(string(_), _LoopVars).
+
+gen_over_guard_ok(and(L, R), LoopVars) :-
+    gen_over_guard_ok(L, LoopVars), gen_over_guard_ok(R, LoopVars).
+gen_over_guard_ok(forin_key_cmp(V, _Op, Value), LoopVars) :-
+    memberchk(V, LoopVars), integer(Value).
 
 % Lift generator blocks out of the pass list, synthesising each one's clauses:
 % a pure block's constant emits become facts (`gen { emit 1; emit 2 } as g` ->
@@ -445,32 +462,53 @@ is_gen_block(gen_block(_, _, _)).
 gen_block_clause(gen_block(name(Name), none, Body), Fact) :-
     member(emit(Value), Body),
     gen_emit_fact(Name, Value, Fact).
-% Input iterator: a single derived rule over the source goal.
-gen_block_clause(gen_block(name(Name), over(query(Src, [_SrcVar]), LoopVar),
+% Input iterator: a single derived rule over the source goal. Each source column
+% binds a fresh variable; the loop-var names map to those fresh vars positionally
+% (Bindings). The head is the emitted projection over those vars; unused source
+% columns stay as anonymous fresh vars (a projection). So
+% `gen over query(edge(A, B)) as (a, b) { if (a > 2) emit a } as g` ->
+% `g(A) :- edge(A, _B), A > 2`, and `emit (b, a)` -> `g(B, A) :- edge(A, B)`.
+gen_block_clause(gen_block(name(Name), over(query(Src, SrcVars), LoopVars),
         Body), Clause) :-
-    % Arg is a fresh logic variable shared by the head, the source goal, and
-    % the filter -- so `g(A) :- src(A), A > 2` unifies across the three.
-    SrcGoal =.. [Src, Arg],
-    Head =.. [Name, Arg],
-    gen_over_body_goal(Body, LoopVar, Arg, FilterGoal),
+    same_length(SrcVars, SrcArgs),          % fresh vars, one per source column
+    SrcGoal =.. [Src | SrcArgs],
+    pairs_keys_values(Bindings, LoopVars, SrcArgs),
+    gen_over_body_head(Body, Name, Bindings, Head, FilterGoal),
     ( FilterGoal == true
     ->  Clause = (Head :- SrcGoal)
     ;   Clause = (Head :- SrcGoal, FilterGoal)
     ).
 
-% The Prolog goal an input-iterator body adds after the source goal: `true`
-% for a bare passthrough, or the translated guard for a filtered one.
-gen_over_body_goal([emit(var(_LoopVar))], _LoopVar, _Arg, true).
-gen_over_body_goal([if(Guard, [emit(var(_LoopVar))], [])], LoopVar, Arg,
-        Goal) :-
-    gen_guard_goal(Guard, LoopVar, Arg, Goal).
+% The head (emitted projection) and the post-source filter goal for an input
+% iterator body.
+gen_over_body_head([emit(Emit)], Name, Bindings, Head, true) :-
+    gen_emit_head_args(Emit, Bindings, Args),
+    Head =.. [Name | Args].
+gen_over_body_head([if(Guard, [emit(Emit)], [])], Name, Bindings, Head,
+        FilterGoal) :-
+    gen_emit_head_args(Emit, Bindings, Args),
+    Head =.. [Name | Args],
+    gen_over_filter_goal(Guard, Bindings, FilterGoal).
 
-% Translate an integer reader guard over the bound var into a Prolog arithmetic
-% comparison over the head argument.
-gen_guard_goal(and(L, R), LoopVar, Arg, (GL, GR)) :-
-    gen_guard_goal(L, LoopVar, Arg, GL),
-    gen_guard_goal(R, LoopVar, Arg, GR).
-gen_guard_goal(forin_key_cmp(LoopVar, Op, Value), LoopVar, Arg, Goal) :-
+% Map an emitted projection to the head's argument list, resolving each bound
+% var to its fresh source variable (literals pass through).
+gen_emit_head_args(var(V), Bindings, [Arg]) :-
+    memberchk(V-Arg, Bindings).
+gen_emit_head_args(tuple(Vals), Bindings, Args) :-
+    maplist(gen_emit_head_arg(Bindings), Vals, Args).
+gen_emit_head_arg(Bindings, var(V), Arg) :-
+    memberchk(V-Arg, Bindings).
+gen_emit_head_arg(_Bindings, int(N), N).
+gen_emit_head_arg(_Bindings, string(S), Atom) :-
+    atom_string(Atom, S).
+
+% Translate an integer reader guard over the bound vars into a Prolog arithmetic
+% comparison over the corresponding source variables.
+gen_over_filter_goal(and(L, R), Bindings, (GL, GR)) :-
+    gen_over_filter_goal(L, Bindings, GL),
+    gen_over_filter_goal(R, Bindings, GR).
+gen_over_filter_goal(forin_key_cmp(V, Op, Value), Bindings, Goal) :-
+    memberchk(V-Arg, Bindings),
     gen_cmp_op(Op, PrologOp),
     Goal =.. [PrologOp, Arg, Value].
 
