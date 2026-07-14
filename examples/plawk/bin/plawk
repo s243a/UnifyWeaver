@@ -260,8 +260,25 @@ check_multitable_store(File, Program) :-
              "lmdb"` store for multiple named tables.~n',
             [File, Names, Path]),
         halt(2)
+    ;   namespaced_file_store(Program, Path, NS)
+    ->  format(user_error,
+            'plawk: ~w namespaces the file store "~w" (`as ~w`). A namespace \c
+             uses named sub-tables, which the file backend (class A) does not \c
+             support; use a `backend "lmdb"` store.~n',
+            [File, Path, NS]),
+        halt(2)
     ;   true
     ).
+
+% A file store carrying a namespaced (`ns.table`) table -- `as ns` asks for
+% named sub-tables, unsupported on the single-table file backend (class A).
+namespaced_file_store(Program, Path, NS) :-
+    program_begin_clauses(Program, BeginClauses),
+    member(begin(Actions), BeginClauses),
+    member(cache_table(Name, Path, file), Actions),
+    sub_atom(Name, Before, _, _, '.'),
+    sub_atom(Name, 0, Before, _, NS),
+    !.
 
 % True when some cache store PATH is declared with two or more distinct table
 % NAMES; binds that path, its backend, and the sorted name list.

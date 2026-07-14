@@ -206,7 +206,7 @@ pass_clauses([pass_records(var(Var), var(Table), Body) | Rest]) -->
     "pass", identifier_boundary, ws,
     "records", identifier_boundary, ws,
     "of", identifier_boundary, ws,
-    identifier(Table), ws,
+    table_ident(Table), ws,
     "as", identifier_boundary, ws,
     identifier(Var), ws,
     for_in_body(Body),
@@ -222,7 +222,7 @@ pass_clauses([pass_rows(var(Var), var(Table), Body) | Rest]) -->
     "pass", identifier_boundary, ws,
     "rows", identifier_boundary, ws,
     "of", identifier_boundary, ws,
-    identifier(Table), ws,
+    table_ident(Table), ws,
     "as", identifier_boundary, ws,
     identifier(Var), ws,
     for_in_body(Body),
@@ -237,7 +237,7 @@ pass_clauses([pass_rows_anon(var(Table), Body) | Rest]) -->
     "pass", identifier_boundary, ws,
     "rows", identifier_boundary, ws,
     "of", identifier_boundary, ws,
-    identifier(Table), ws,
+    table_ident(Table), ws,
     for_in_body(Body),
     ws,
     pass_clauses(Rest).
@@ -251,7 +251,7 @@ pass_clauses([pass_rows_anon(var(Table), Body) | Rest]) -->
 pass_clauses([pass_over(var(Var), var(Table), Body) | Rest]) -->
     "pass", identifier_boundary, ws,
     "over", identifier_boundary, ws,
-    identifier(Table), ws,
+    table_ident(Table), ws,
     "as", identifier_boundary, ws,
     identifier(Var), ws,
     for_in_body(Body),
@@ -951,10 +951,10 @@ quoted_string_escape_codes([0'\\, Code]) -->
 % PLAWK_MULTIPASS_CACHE.md.
 begin_clauses([begin(Actions)]) -->
     "BEGIN", ws, "cache", ws, "(", ws, quoted_string(PathCodes), ws,
-    cache_backend(Backend), ws, ")", ws,
+    cache_backend(Backend), cache_namespace(NS), ws, ")", ws,
     "{", ws,
     { string_codes(Path, PathCodes) },
-    cache_decl_list(Path, Backend, Actions),
+    cache_decl_list(Path, Backend, NS, Actions),
     ws, "}", ws,
     !.
 begin_clauses([begin(Actions)]) -->
@@ -979,16 +979,34 @@ cache_backend(Backend) -->
 cache_backend(file) -->
     [].
 
-cache_decl_list(Path, Backend, Actions) -->
-    cache_decl(Path, Backend, First),
-    cache_decl_list_rest(Path, Backend, Rest),
+% Optional namespace alias inside cache(...): `cache("db" as ns)` (phase 8.9
+% PR 4, PLAWK_MULTIPASS_CACHE.md §3.7). `ns` prefixes the store's tables so
+% they are referenced `ns.table` and never collide with global names; the
+% store holds them as named sub-DBs (each a `ns.table` internal name whose
+% LOCAL part is the sub-DB name). No alias -> `none` (global bare names).
+cache_namespace(NS) -->
+    ws, "as", required_ws, identifier(NS),
+    !.
+cache_namespace(none) -->
+    [].
+
+% A namespace-qualified table name: bare `Local` stays `Local`; under a
+% namespace `NS` it becomes the dotted atom `'NS.Local'`, matching how a
+% `ns.table` reference (table_ident) parses.
+plawk_qualify(none, Local, Local) :- !.
+plawk_qualify(NS, Local, QName) :-
+    atomic_list_concat([NS, '.', Local], QName).
+
+cache_decl_list(Path, Backend, NS, Actions) -->
+    cache_decl(Path, Backend, NS, First),
+    cache_decl_list_rest(Path, Backend, NS, Rest),
     { append(First, Rest, Actions) }.
-cache_decl_list_rest(Path, Backend, Actions) -->
-    ws, cache_decl_sep, ws, cache_decl(Path, Backend, First),
+cache_decl_list_rest(Path, Backend, NS, Actions) -->
+    ws, cache_decl_sep, ws, cache_decl(Path, Backend, NS, First),
     !,
-    cache_decl_list_rest(Path, Backend, Rest),
+    cache_decl_list_rest(Path, Backend, NS, Rest),
     { append(First, Rest, Actions) }.
-cache_decl_list_rest(_Path, _Backend, []) -->
+cache_decl_list_rest(_Path, _Backend, _NS, []) -->
     [].
 cache_decl_sep --> ";", !.
 cache_decl_sep --> [].
@@ -1001,13 +1019,15 @@ cache_decl_sep --> [].
 % are untouched and the schema is available to the record readers. Columns are
 % col(Name, Type) with Type in {str, i64}. The column-list clause is tried
 % first; a bare declare falls through.
-cache_decl(Path, Backend,
+cache_decl(Path, Backend, NS,
         [cache_table(Name, Path, Backend), cache_schema(Name, Columns)]) -->
-    "declare", required_ws, identifier(Name), ws,
+    "declare", required_ws, identifier(Local), ws,
     cache_col_list(Columns),
-    !.
-cache_decl(Path, Backend, [cache_table(Name, Path, Backend)]) -->
-    "declare", required_ws, identifier(Name).
+    !,
+    { plawk_qualify(NS, Local, Name) }.
+cache_decl(Path, Backend, NS, [cache_table(Name, Path, Backend)]) -->
+    "declare", required_ws, identifier(Local),
+    { plawk_qualify(NS, Local, Name) }.
 % `use NAME` (PLAWK_MULTIPASS_CACHE.md §3.7, phase 8.8): attach to an EXISTING
 % store without re-stating its columns -- the schema is taken from the store's
 % persisted header (§8.7). Parses to cache_use(NAME, Path, Backend); the plawk
@@ -1015,8 +1035,9 @@ cache_decl(Path, Backend, [cache_table(Name, Path, Backend)]) -->
 % cache_table/cache_schema a matching `declare NAME(cols)` would produce, so
 % the readers need no new machinery. Tried after `declare`; `use` is
 % unambiguous.
-cache_decl(Path, Backend, [cache_use(Name, Path, Backend)]) -->
-    "use", required_ws, identifier(Name).
+cache_decl(Path, Backend, NS, [cache_use(Name, Path, Backend)]) -->
+    "use", required_ws, identifier(Local),
+    { plawk_qualify(NS, Local, Name) }.
 
 cache_col_list(Columns) -->
     "(", ws, cache_cols(Columns), ws, ")".
@@ -1358,7 +1379,7 @@ condition_pattern(Pattern) -->
     or_pattern(Pattern).
 
 increment_action(inc_assoc(var(Name), KeyExpr)) -->
-    identifier(Name),
+    table_ident(Name),
     ws,
     "[",
     ws,
@@ -1543,7 +1564,7 @@ dynrec_type(string) --> "string".
 % an integer literal (i64 table values); other deltas are a follow-on. Tried
 % before the scalar clause -- the `[` distinguishes them.
 add_assign_action(add_assoc(var(Name), KeyExpr, Delta)) -->
-    identifier(Name),
+    table_ident(Name),
     ws,
     "[",
     ws,
@@ -1585,7 +1606,7 @@ assoc_add_delta(int(Value)) -->
 % `records of TABLE as r`). Tried before the scalar `set` -- the `[`
 % distinguishes them; the `!` commits once `TABLE[key] =` is seen.
 assignment_action(Action) -->
-    identifier(Name),
+    table_ident(Name),
     ws, "[", ws, assoc_key_expr(KeyExpr), ws, "]", ws, "=", ws,
     !,
     assoc_row_rhs(var(Name), KeyExpr, Action).
@@ -1833,7 +1854,7 @@ field_expr(toupper(Field)) -->
     ")",
     { Field = field(_) }.
 field_expr(assoc(var(Name), KeyExpr)) -->
-    identifier(Name),
+    table_ident(Name),
     ws,
     "[",
     ws,
@@ -1975,7 +1996,7 @@ i64_factor_expr(Expr) -->
 % An assoc lookup `arr[k]` as an arithmetic operand, e.g. `$2 / total[$1]`
 % (per-key normalise). Tried before the bare identifier -- the `[` commits.
 i64_factor_expr(assoc(var(Name), KeyExpr)) -->
-    identifier(Name),
+    table_ident(Name),
     ws,
     "[",
     ws,
@@ -2358,6 +2379,20 @@ identifier(Name) -->
     identifier_start(Start),
     identifier_rest(Rest),
     { atom_codes(Name, [Start | Rest]) }.
+
+% A table name, optionally namespace-qualified (`ns.table`, phase 8.9 PR 4,
+% PLAWK_MULTIPASS_CACHE.md §3.7). A bare name stays the atom `table`; the
+% qualified form is the dotted atom `'ns.table'`, matching how a namespaced
+% `declare` qualifies it (plawk_qualify). The dotted form's LOCAL part (after
+% the dot) is the sub-DB it routes to. Falls back to a bare identifier, so
+% existing programs are unchanged. Used only in TABLE-name positions (readers
+% and assoc write/read targets), never for scalars or loop variables.
+table_ident(Name) -->
+    identifier(NS), ".", identifier(Local),
+    !,
+    { atomic_list_concat([NS, '.', Local], Name) }.
+table_ident(Name) -->
+    identifier(Name).
 
 identifier_start(Code) -->
     [Code],

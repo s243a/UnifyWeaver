@@ -109,15 +109,26 @@ independently; per-sub-DB schema-mismatch → exit 3). The PR-2
 `lmdb_multitable_is_not_yet_error` test flips to `lmdb_multitable_builds_and_runs`.
 Durable multi-table over LMDB, both i64 and row values.
 
-### PR 4 — `as ns` namespace + `ns.table` references (parser)
+### PR 4 — `as ns` namespace + `ns.table` references (parser) — **LANDED**
 
-The name-resolution surface (`PLAWK_MULTIPASS_CACHE.md` §3.7): `cache("db" as
-ns)` (and `cache("db") as ns`) declares a namespace; tables are referenced
-`ns.table` from passes / `END`; a `global`-marked declaration lifts to the bare
-namespace. Parser + name resolution only; lowers onto the PR-1..3 machinery
-(the qualified name maps to a table + its sub-DB name). Bare-but-unique
-multi-table (PRs 1–3) already works without this; `as ns` is collision-avoidance
-sugar.
+The name-resolution surface (`PLAWK_MULTIPASS_CACHE.md` §3.7). `cache("db" as
+ns) { declare orders … }` qualifies each declared table to the dotted atom
+`ns.orders` (parse-time, `plawk_qualify/3`); a `table_ident//1` rule parses
+`ns.table` references to the same atom in every table-name position (the three
+row readers, `over`, and the assoc write/inc/add + print-lookup targets). So the
+qualified name flows uniformly as an ordinary table name, and the codegen only
+needed two small changes: the sub-DB name is now the **local part** (after the
+dot, `plawk_local_table_name/2`), and `plawk_multitable_paths/2` treats a
+namespaced store as multi-table even with one table (so `as ns` really uses
+sub-DBs). A namespaced *file* store is a compile error (class A can't hold named
+sub-tables), alongside the ≥2-table file error. `tests/test_plawk_namespace.pl`:
+parse (qualified declare, namespaced write, bare unchanged); a two-table
+namespaced lmdb store durable across runs; a single-table namespace durable;
+namespaced-file → exit 2. Bare-but-unique multi-table (PRs 1–3) still works
+without a namespace; `as ns` is the collision-avoidance sugar. **Deferred**: the
+`cache("db") as ns` (alias after the paren) spelling, the `global` modifier, and
+namespaced tables in an `END` for-in — noted follow-ons, none needed for the
+core surface.
 
 ### PR 5 — `use ns.table` selection (resolver)
 
