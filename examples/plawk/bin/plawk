@@ -101,6 +101,7 @@ build(File, Out0, KeepLL) :-
     normalize_passes(File, Program0, Program1),
     resolve_cache_use(File, Program1, Program),
     check_multitable_store(File, Program),
+    check_query_reader(File, Program),
     (   Clauses == []
     ->  Preds = [user:plawk_cli_marker/0]
     ;   (   plawk_prolog_block_preds(Clauses, Preds)
@@ -298,6 +299,23 @@ multitable_store(Program, Path, Backend, Names) :-
 
 program_begin_clauses(program(BeginClauses, _, _), BeginClauses).
 program_begin_clauses(program_passes(BeginClauses, _, _), BeginClauses).
+
+% Phase 6 (PLAWK_QUERY_READER_IMPLEMENTATION_PLAN.md): the `over query(...)`
+% reader parses (PR 1) but its runtime materialisation is not wired yet, so a
+% program that uses it gets a clear, specific diagnostic rather than the generic
+% "outside the multi-pass surface". The surface stays stable while the runtime
+% (PRs 2-3) lands.
+check_query_reader(File, program_passes(_, Passes, _)) :-
+    member(pass_query(query(Pred, Vars), _Body), Passes),
+    !,
+    length(Vars, N),
+    format(user_error,
+        'plawk: ~w uses `over query(~w/~w)`. The query-driven reader parses but \c
+         its runtime is not yet implemented (phase 6); see \c
+         PLAWK_QUERY_READER_IMPLEMENTATION_PLAN.md.~n',
+        [File, Pred, N]),
+    halt(2).
+check_query_reader(_File, _Program).
 
 % Multi-pass normalisation (PLAWK_MULTIPASS_CACHE.md phase 2). A single
 % `pass { ... }` block is exactly today's main loop, so it lowers to the

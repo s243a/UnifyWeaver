@@ -75,14 +75,19 @@ unavailable or too costly; the plan keeps the surface identical either way.)
 
 Each step its own PR, green regressions before the next.
 
-### PR 1 — Surface + AST (parser), codegen stub
+### PR 1 — Surface + AST (parser), codegen stub — **LANDED**
 
-Parse `pass over query(GOAL) { BODY }` to a `pass_query(Goal, Body)` clause
-(GOAL a `pred(args)` term reusing the existing prolog-call parsing). Codegen
-emits a clean, specific "query reader not yet implemented" compile error (like
-the class-A multi-table error) rather than the generic "outside surface". No
-runtime. Deliverable: the surface parses and is diagnosed; parse tests + the
-error test. Low risk, establishes the shape.
+`pass over query(PRED(V1, …, Vn)) { BODY }` parses to `pass_query(query(Pred,
+Vars), Body)` (a new `pass_clauses` clause, tried before `pass over TABLE` — the
+`(` after the predicate name distinguishes a query from a bare table). `Vars` is
+the goal's positional output-variable list; the body's `$1..$n` will address the
+solution's bindings. `plawk_pass_dynentry_rewrite` gains a passthrough clause so
+the top-level program parse accepts it. `check_query_reader/2` in
+`examples/plawk/bin/plawk` emits a clean, specific compile error (naming the
+goal as `pred/arity`) until the runtime lands, rather than the generic "outside
+the multi-pass surface". `tests/test_plawk_query_reader.pl`: parse (two-arg,
+one-arg, `over TABLE` unchanged), the not-yet error (exit 2), and a non-query
+program unaffected. No runtime.
 
 ### PR 2 — `findall` wrapper + solution materialisation (runtime/build)
 

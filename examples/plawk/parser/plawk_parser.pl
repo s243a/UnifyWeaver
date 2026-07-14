@@ -248,6 +248,23 @@ pass_clauses([pass_rows_anon(var(Table), Body) | Rest]) -->
 % print body (key / TABLE[VAR] / literal). Tried before the plain `pass`
 % (the `over` keyword is unambiguous). Represented as pass_over/3 so the
 % driver can emit a table-iterating pass function rather than an input scan.
+% A `pass over query(PRED(V1, ..., Vn)) { print $1, ... }` block: the
+% query-driven reader (PLAWK_MULTIPASS_CACHE.md §3.4, phase 6;
+% PLAWK_QUERY_READER_IMPLEMENTATION_PLAN.md). Each SOLUTION of the goal is a
+% record; the goal's argument variables (V1..Vn) are its output fields, mapped
+% positionally to `$1..$n`. Parses to pass_query(query(Pred, Vars), Body). Tried
+% before `pass over TABLE` (the `(` after the predicate name distinguishes a
+% query from a bare table name). The codegen surface is staged (PR 1 diagnoses
+% it; the runtime materialisation lands later).
+pass_clauses([pass_query(query(Pred, Vars), Body) | Rest]) -->
+    "pass", identifier_boundary, ws,
+    "over", identifier_boundary, ws,
+    "query", ws, "(", ws,
+    identifier(Pred), ws, "(", ws, query_var_list(Vars), ws, ")", ws,
+    ")", ws,
+    for_in_body(Body),
+    ws,
+    pass_clauses(Rest).
 pass_clauses([pass_over(var(Var), var(Table), Body) | Rest]) -->
     "pass", identifier_boundary, ws,
     "over", identifier_boundary, ws,
@@ -257,6 +274,19 @@ pass_clauses([pass_over(var(Var), var(Table), Body) | Rest]) -->
     for_in_body(Body),
     ws,
     pass_clauses(Rest).
+
+% The output-variable list of a query goal: one or more identifiers. Their
+% NAMES are placeholders; their POSITION is what maps a solution's bindings to
+% `$1..$n`.
+query_var_list([V | Vs]) -->
+    identifier(V),
+    query_var_list_rest(Vs).
+query_var_list_rest([V | Vs]) -->
+    ws, ",", ws, identifier(V),
+    !,
+    query_var_list_rest(Vs).
+query_var_list_rest([]) -->
+    [].
 % A `pass { ACTIONS }` block is one pass carrying a single always-rule with
 % those actions (per-pattern rules within a pass are a later extension).
 pass_clauses([pass([rule(always, Actions)]) | Rest]) -->
@@ -275,6 +305,8 @@ plawk_pass_dynentry_rewrite(_DynEntries, pass_records(V, T, Body), pass_records(
 plawk_pass_dynentry_rewrite(_DynEntries, pass_rows(V, T, Body), pass_rows(V, T, Body)).
 % The no-`as` (`$N`) positional reader likewise has no rule actions.
 plawk_pass_dynentry_rewrite(_DynEntries, pass_rows_anon(T, Body), pass_rows_anon(T, Body)).
+% The `over query(...)` reader has no rule actions to rewrite -- pass it through.
+plawk_pass_dynentry_rewrite(_DynEntries, pass_query(Q, Body), pass_query(Q, Body)).
 
 %% dynentry_decls(-Names)//
 %
