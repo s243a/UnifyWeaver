@@ -53,6 +53,43 @@ gen over SOURCE as v { BODY } as name     # optional input iterator (see §4)
 - **`emit E`** is the producer counterpart of `print` — instead of writing a
   record to stdout, it contributes `E` to the relation's solution set.
 
+### 2.1 Explicit `emit` vs implicit yield via the field separator
+
+A generator has to signal "here is one solution." Two options:
+
+- **Explicit `emit E`** — a dedicated statement, one call per solution.
+- **Implicit via FS** — the block's `print` output *is* the stream: each printed
+  record becomes a solution, split into a tuple by `FS`/`RS` (maximally AWK, no
+  new keyword).
+
+**Decision: explicit `emit` is the default; implicit-FS is opt-in sugar.** The
+deciding factor is **typing**. A generator feeds Prolog goals, which consume
+*ground typed terms* — and the query reader (the consumer dual) now carries
+per-column integer/string kinds end to end (the tagged materialisation of
+`PLAWK_QUERY_READER_IMPLEMENTATION_PLAN.md` PR 6). If a generator yielded via
+`print` + `FS`, every value would round-trip through text and arrive as a
+string, throwing away exactly that typing — the consumer would have to re-parse.
+`emit E` keeps the term's type (an integer stays an integer, an atom an atom),
+mirroring how the reader materialises columns. Three more reasons:
+
+- **Emission ≠ stdout.** Overloading `print` to *also* mean "produce a solution"
+  conflates two jobs — a gen block may legitimately want to write to stdout
+  (debug/log) without that becoming a solution. `emit` keeps them separate.
+- **Arity is explicit.** `emit (A, B)` says arity 2 (`name/2`); an FS-split line
+  makes arity depend on the runtime field count, which is fragile.
+- **No separator/buffering ambiguity.** `emit` is one solution per call; there
+  is no "was that a partial record?" question, and `FS`/`RS` keep their meaning
+  as **input** parsing, not emission.
+
+**Implicit-FS as opt-in.** The FS idea is genuinely convenient for the "each
+line of text → a record" case, so keep it — as an explicit opt-in, not the
+default. A gen block that emits whole text lines can request FS-splitting into a
+tuple (spelling TBD, e.g. `gen ... as name split FS`), with the understanding
+that those fields are text-typed. That preserves the AWK ergonomics for the
+text case without making the default lossy. (Symmetrically, splitting is really
+a *consumer* concern — a query reader could offer `split by FS` on a text
+column — so this may land on the reader side instead; noted, not yet decided.)
+
 ## 3. Semantics: materialise, don't stream
 
 A generator block **does not** retain a live choicepoint across `emit`s. That
