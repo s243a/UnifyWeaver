@@ -476,7 +476,7 @@ function_def((Head :- Body)) -->
     ws,
     "(",
     ws,
-    function_params(Params),
+    function_params(Params, ParamTypes),
     ws,
     ")",
     ws,
@@ -488,45 +488,66 @@ function_def((Head :- Body)) -->
     function_expr(Params, Pairs, ArithTerm),
     action_block_close,
     { pairs_values(Pairs, Vars),
-      % awk auto-coercion: a function body is `Result is ArithTerm`, so every
-      % parameter is used numerically. Text fields arrive as atoms (e.g. '5'),
-      % which `is/2` would reject -- so the head takes a fresh var per param and
-      % coerces it to a number (`number(H) -> V = H ; atom_number(H, V)`) before
-      % the arithmetic. A typed i64 arg (BINFMT mode) is already a number, so it
-      % passes through unchanged; a text field is parsed. No engine change; the
-      % coercion is local to the synthesised clause (PLAWK_AWK_FEATURE_AUDIT.md
-      % gap 2, decision: auto-coerce).
-      length(Vars, NParams),
-      length(HeadVars, NParams),
-      maplist(plawk_fn_coerce_goal, HeadVars, Vars, CoerceGoals),
+      % awk auto-coercion (PLAWK_AWK_FEATURE_AUDIT.md gap 2): a function body is
+      % `Result is ArithTerm`, so every parameter is used numerically. Text
+      % fields arrive as atoms (e.g. '5'), which `is/2` would reject -- so an
+      % UNTYPED parameter takes a fresh head var that is coerced to a number
+      % (`number(H) -> V = H ; atom_number(H, V)`) before the arithmetic.
+      %
+      % An OPTIONAL type annotation (`function f(num x)`) is a typed-fast path:
+      % the declared param is already numeric, so the head var IS the value var
+      % -- no coercion goal at all (Principle 2: static type knowledge elides
+      % the runtime coercion). The dynamic default (auto-coerce) stays for
+      % unannotated params; the annotation buys the elision, layered on top.
+      maplist(plawk_fn_param_binding, ParamTypes, Vars, HeadVars, CoerceGoals0),
+      exclude(==(true), CoerceGoals0, CoerceGoals),
       append(HeadVars, [Result], HeadArgs),
       Head =.. [Name | HeadArgs],
       append(CoerceGoals, [Result is ArithTerm], BodyGoals),
       plawk_conjunction(BodyGoals, Body)
     }.
 
-% The per-parameter numeric coercion goal: pass a number through, parse an atom.
-plawk_fn_coerce_goal(Head, Value,
+% Per-parameter head-var binding. Untyped: a fresh head var coerced to a number.
+% Typed (numeric): the head var IS the value var, so no coercion goal (`true`,
+% filtered out) -- the declared arg is already the right type.
+plawk_fn_param_binding(untyped, Value, Head,
     (number(Head) -> Value = Head ; atom_number(Head, Value))).
+plawk_fn_param_binding(number, Value, Value, true).
 
 % Fold a non-empty goal list into a Prolog conjunction.
 plawk_conjunction([Goal], Goal) :- !.
 plawk_conjunction([Goal | Goals], (Goal, Rest)) :-
     plawk_conjunction(Goals, Rest).
 
-function_params([Param | Params]) -->
-    identifier(Param),
-    function_params_rest(Params).
+function_params([Param | Params], [Type | Types]) -->
+    function_param(Param, Type),
+    function_params_rest(Params, Types).
 
-function_params_rest([Param | Params]) -->
+function_params_rest([Param | Params], [Type | Types]) -->
     ws,
     ",",
     ws,
     !,
-    identifier(Param),
-    function_params_rest(Params).
-function_params_rest([]) -->
+    function_param(Param, Type),
+    function_params_rest(Params, Types).
+function_params_rest([], []) -->
     [].
+
+% A parameter is an identifier, optionally prefixed by a numeric type keyword
+% (`num` / `int` / `float`). The typed form is tried first; it backtracks to an
+% untyped param when the keyword is actually the parameter's own name (e.g.
+% `function f(num)` -- `num` is the name, not a type).
+function_param(Name, number) -->
+    param_type_keyword,
+    identifier_boundary,
+    ws,
+    identifier(Name).
+function_param(Name, untyped) -->
+    identifier(Name).
+
+param_type_keyword --> "num".
+param_type_keyword --> "int".
+param_type_keyword --> "float".
 
 % arithmetic over the parameters, with awk precedence: * / % bind
 % tighter than + -, both associate left, parentheses group

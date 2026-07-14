@@ -51,7 +51,7 @@ only (runtime pending) · ❌ missing.
 
 | Feature | Status | Notes |
 |---|---|---|
-| user functions (`function f(a) { return … }`) | ✅ | compile to Prolog clauses; work in accumulator / typed-field (`BINFMT`) contexts **and text mode** — `print f($1)` auto-coerces the field (awk semantics). |
+| user functions (`function f(a) { return … }`) | ✅ | compile to Prolog clauses; work in accumulator / typed-field (`BINFMT`) contexts **and text mode** — `print f($1)` auto-coerces the field (awk semantics). Optional numeric arg typing (`function f(num x)`) skips the coercion (typed-fast path). |
 | string: `length` `substr` `index` `tolower` `toupper` | ✅ | native, allocation-free |
 | string: `split` `sub` `gsub` `match` `sprintf` | ❌ | |
 | numeric: `int` | ✅ | `sin`/`cos`/`sqrt`/`rand`/… ❌ (f64 machinery exists) |
@@ -95,29 +95,27 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    Enablers landed with it: **bare scalar-var print** (`print i`) and a
    **body-printing scalar chain with no `END`**. PRs 3–4 (general condition,
    `break`/`continue`, nested/multi-pass loops) remain.
-2. **User-function call in text/print context** — `print f($1)` returns `0`: a
-   text field is passed to the foreign call as an *atom*, so the synthesised
-   `f(X,R) :- R is X*2` fails `is`. Works in `BINFMT`/typed mode.
-   **Decision: auto-coerce (awk semantics).** A field (a string) used in a
-   numeric context coerces to a number, matching AWK. Implementation options
-   (a design call for the PR, not the surface): coerce in the WAM arithmetic
-   builtins (an atom operand of `is`/`>`/`*`/… parses to a number — most
-   awk-faithful, but the WAM engine is shared, so scope/gate it to avoid
-   changing Prolog `is/2` for non-plawk callers), or coerce the field arg at the
-   plawk call boundary when the callee uses it numerically (needs light body
-   inference). No explicit `num($1)` is required of the user.
-   *Future direction — a **performance** lever, not just safety:* **optional
-   type annotations** on function inputs (e.g. `function f(num x)` / a `:- ftype`
-   directive). Because plawk compiles to **typed WAM**, a declared arg type would
-   (a) **skip the runtime coercion** — the value is already the right type, so
-   the hot path pays nothing (auto-coerce parses `atom → number` on every call),
-   and (b) enable **compile-time type checking** (a mismatched call is an error).
-   This is the same principle as explicit `emit` in generators
-   (`PLAWK_GENERATOR_BLOCKS.md` §2.1): **static type knowledge lets the compiler
-   elide coercion and serialisation.** Given the per-call coercion cost, this
-   ranks higher than a pure nice-to-have — it is the typed-fast path over the
-   dynamic-correct default. Layered *on* auto-coerce (which stays the annotation-
-   free default), not instead of it; whether/when to build it is open.
+2. **User-function call in text/print context — LANDED (auto-coerce).**
+   `print f($1)` used to return `0`: a text field reached the synthesised
+   `f(X,R) :- R is X*2` as an *atom*, failing `is`. Now the synthesised clause
+   coerces each untyped param inline — `(number(H) -> V = H ; atom_number(H, V))`
+   — so a text field parses to a number (awk semantics) while a typed i64 arg
+   (`BINFMT`) passes straight through. No engine change, no `num($1)` required.
+   *Typed-fast path — LANDED (optional arg typing).* An optional numeric type
+   annotation, `function f(num x)` (also `int` / `float`), declares the param
+   already-numeric, so the synthesised clause **skips the coercion goal** — the
+   head var *is* the value var. Because plawk compiles to **typed WAM**, a
+   declared arg carries in its native representation and the hot path pays
+   nothing (auto-coerce otherwise runs `number/1` every call). This is the same
+   principle as explicit `emit` (`PLAWK_GENERATOR_BLOCKS.md` §2.1,
+   `UNIFYWEAVER_LANGUAGE_PRINCIPLES.md` Principle 2): **static type knowledge
+   elides coercion.** It is layered *on* auto-coerce (the annotation-free
+   default), not instead of it; an unannotated param still auto-coerces. In text
+   mode a typed param is a contract that the arg is numeric — a bare text field
+   passed to it is the caller's responsibility. *Still open (follow-on):*
+   compile-time **type checking** of call sites (a mismatched call → error) and
+   distinguishing `int` vs `float` for representation; all three keywords
+   currently mean "numeric, skip coercion".
 2b. **`if` with a plain guarded body** — `{ if (c) { print $1 } }` doesn't
    compile (the scalar `if` lowering assumes branch bodies update scalars); this
    is what actually blocks regex-in-`if`. Fix the `if`-body lowering.

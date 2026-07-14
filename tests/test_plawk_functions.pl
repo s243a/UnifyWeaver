@@ -57,6 +57,46 @@ test(surface_functions_mix_with_prolog_blocks) :-
     Src = "@prolog\nplawk_fnt_hot(X) :- X > 10.\n@end\nBEGIN { BINFMT = \"i64 f64\" }\nfunction plawk_fnt_twice(a) { return a * 2 }\nplawk_fnt_hot($1) { s += plawk_fnt_twice($1) }\nEND { print s }\n",
     run_fn_smoke(Src, [rec(3, 0.25), rec(20, 0.25), rec(11, 0.25)], "62\n").
 
+% --- optional arg typing (typed-fast path over auto-coerce) ------------------
+% `function f(num x)` declares x numeric, so the synthesized clause skips the
+% auto-coercion goal -- the head var IS the value var (Principle 2: static type
+% knowledge elides the runtime coercion). Layered on auto-coerce, which stays
+% the default for unannotated params.
+
+test(typed_param_skips_coercion) :-
+    plawk_parse_source("BEGIN { BINFMT = \"i64\" }\nfunction f(num x) { return x * 2 }\n{ n++ }\nEND { print n }\n",
+        _, [Clause]),
+    % no coercion prefix: the body is exactly the arithmetic
+    assertion(Clause = (f(X, R) :- R is X * 2)),
+    Clause = (f(5, Result) :- Goal),
+    call(Goal),
+    assertion(Result =:= 10).
+
+test(untyped_param_still_coerces) :-
+    plawk_parse_source("BEGIN { BINFMT = \"i64\" }\nfunction g(x) { return x * 2 }\n{ n++ }\nEND { print n }\n",
+        _, [Clause]),
+    Clause = (g(_X, R) :- Body),
+    fn_body_last(Body, (R is _Arith)),
+    % the body has a coercion conjunct before the arithmetic (not a bare `is`)
+    assertion(Body = (_Coerce, _Rest)).
+
+test(mixed_typed_untyped_params) :-
+    plawk_parse_source("BEGIN { BINFMT = \"i64\" }\nfunction h(num a, b) { return a + b }\n{ n++ }\nEND { print n }\n",
+        _, [Clause]),
+    % a is typed (no coercion), b is untyped (one coercion goal) -> exactly one
+    % coercion conjunct precedes the `is`
+    Clause = (h(_A, _B, R) :- (Coerce, R is _Arith)),
+    assertion(Coerce = (number(_) -> _ ; _)),
+    Clause = (h(4, 6, V) :- FullGoal),
+    call(FullGoal),
+    assertion(V =:= 10).
+
+% A typed function used end-to-end in i64 (BINFMT) mode: the field is already a
+% number, so the typed-fast path runs with no coercion.
+test(typed_function_binfmt_end_to_end) :-
+    Src = "BEGIN { BINFMT = \"i64 f64\" }\nfunction plawk_fnt_scale(num a, num b) { return a * b + 1 }\n{ s += plawk_fnt_scale($1, $1) }\nEND { print s }\n",
+    run_fn_smoke(Src, [rec(3, 0.25), rec(5, 0.25)], "36\n").
+
 % --- auto-coerce (awk semantics): a function called on TEXT fields -----------
 % In text mode (no BINFMT) `$1` is an atom. awk auto-coerces a value used
 % numerically, so `print dbl($1)` must coerce the field to a number before the
