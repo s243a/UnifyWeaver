@@ -141,6 +141,12 @@ exploratory also fails larger-`G` four-endpoint capacity.  See
 a prospectively powered dependence-aware source design; the remaining ordering is unchanged after that gate
 passes.
 
+`REPORT_repeated_judge_source_dependence.md` subsequently defined that design's topology-only PSD exposure
+matrices and showed full-region structural feasibility for every frozen `K`, while deliberately making no
+power claim and unlocking nothing.  The immediate next item is therefore to lift those registered matrices
+and allocations into this complete null/power procedure with source-atomic folds and two-way prompt/source
+inference.  History remains after that Stage-A power gate, not before it.
+
 1. Implement and review the repository-owned candidate builder, then freeze graph/Nomic/historical artifacts.
 2. Freeze the exact approved live prompt, model revisions, settings, and keyed response parser.
 3. Run a list-position engineering pilot; preregister a train-only position-by-role-by-judge adjustment and add

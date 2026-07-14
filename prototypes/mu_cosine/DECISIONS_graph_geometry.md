@@ -191,3 +191,29 @@ that the full kernel is invertible.
 
 **Operational consequence:** downstream covariance construction still adds the separately selected nugget or
 block-noise term before whitening.  Kernel diagnostics do not authorize directly inverting a singular kernel.
+
+## 2026-07-13 — replace hard source-region separation with an explicit exposure bridge
+
+**Decision:** keep the exclusive connected source regions, discard the failed three-hop-core requirement, and
+represent cross-region exposure by the normalized Gram of region-average cumulative-walk features.  Lift that
+PSD Gram through a cap-constrained greedy allocation minimizing each exact incremental exposure and report the
+exact stipulated-correlation design effect over the frozen `rho` grid.
+
+**Reason:** full regions have usable raw endpoint capacity, while hard cores discarded 67--98% of nodes.  A
+feature Gram preserves PSD and makes the dependence assumption inspectable.  The stipulated `rho` path
+separates topology exposure from unknown residual amplitude and includes within-region correlation explicitly.
+
+**Authorization boundary:** topology alone cannot identify an effect size, residual covariance, exact
+candidate exposure, or end-to-end power.  A narrow pass unlocks nothing; it supplies fixed matrices to the
+next full-procedure null/power extension.  Only a passing power gate may unlock attempted-input identities.
+This audit does not select `K` or authorize candidates, Nomic, judges, covariance promotion, independent
+batching, QR, or CUDA.
+
+**Rejected:** calling regions independent; treating effective rank, Kish ESS, or a mean-test proxy as the
+complete campaign power calculation; tuning thresholds from the resulting matrices; and using entrywise lower
+covariance bounds for inference.
+
+**Reconsider:** candidate selection becomes eligible only after Stage A source-atomic full-procedure power with
+two-way prompt/source inference, followed by history exclusions, exact structural enumeration, and realized-
+design revalidation.  The ordering is Stage A power on the registered diagnostic allocation, then identity-
+only history if it passes, then Stage B exact candidate enumeration and revalidation.
