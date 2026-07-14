@@ -1621,7 +1621,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                 } else { false }
             }
             "reverse/2" => { self.execute_reverse_builtin() }
-            "atom_codes/2" => { self.execute_atom_codes_builtin() }
+            "atom_codes/2" | "string_codes/2" => { self.execute_atom_codes_builtin() }
             "number_codes/2" => { self.execute_number_codes_builtin() }
             "number_chars/2" => { self.execute_number_chars_builtin() }
             "atom_to_term/3" => { self.execute_atom_to_term_builtin() }
@@ -4627,7 +4627,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     }
                 }
             }
-            "atom_chars/2" => {
+            "atom_chars/2" | "string_chars/2" => {
                 let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
                 if let Some(text) = Self::value_atomic_text(&v1) {
                     let chars: Vec<Value> = text.chars()
