@@ -1198,6 +1198,25 @@ forin_guard(forin_val_cmp(Array, LoopVar, Op, Value)) -->
 forin_guard(forin_key_cmp(LoopVar, Op, Value)) -->
     identifier(LoopVar), ws, numeric_cmp_op(Op), ws,
     signed_integer_value(Value).
+% Reader guards (row readers, a WHERE-style filter): a column compared to an
+% integer. Named `r["col"] CMP int`, positional `r[N] CMP int`, or awk-field
+% `$N CMP int`. Distinct functors so the reader dispatch resolves the column;
+% the for-in planner does not generate them. Tried after the for-in forms
+% (which fail cleanly on a non-identifier key / `$`, then backtrack here).
+forin_guard(rcol_cmp(Var, Col, Op, Value)) -->
+    identifier(Var), ws, "[", ws, quoted_string(CCodes), ws, "]", ws,
+    numeric_cmp_op(Op), ws, signed_integer_value(Value),
+    { string_codes(Col, CCodes) },
+    !.
+forin_guard(rpos_cmp(Var, N, Op, Value)) -->
+    identifier(Var), ws, "[", ws, integer_codes(NCodes), ws, "]", ws,
+    numeric_cmp_op(Op), ws, signed_integer_value(Value),
+    { NCodes \== [], number_codes(N, NCodes), N > 0 },
+    !.
+forin_guard(rfield_cmp(N, Op, Value)) -->
+    "$", integer_codes(NCodes), ws,
+    numeric_cmp_op(Op), ws, signed_integer_value(Value),
+    { NCodes \== [], number_codes(N, NCodes), N > 0 }.
 
 actions([Action | Actions]) -->
     action(Action),

@@ -3962,13 +3962,27 @@ plawk_multipass_pass_fn(Index, pass_over(var(Var), var(Table), Body), Tables,
 % -- numeric/other fields fail the clause, so the driver reports unsupported).
 plawk_multipass_pass_fn(Index, pass_records(var(Var), var(Table), Body), Tables,
         _StrArrays, Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, '') :-
-    Body = [print(PrintFields)],
+    plawk_reader_body(Body, PrintFields, GuardTerm),
     PrintFields = [_ | _],
     memberchk(cache_schema(Table, Columns), Schemas),
     maplist(plawk_records_field_plan(Var, Columns), PrintFields, FieldPlans),
+    plawk_records_guard(GuardTerm, Var, Columns, GuardPlan),
     nth0(TableIndex, Tables, Table),
     plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, FieldPlans,
-        FieldSep, OutputSep, FnIR).
+        GuardPlan, FieldSep, OutputSep, FnIR).
+
+% A row-reader body is either a bare `{ print ... }` or a guarded
+% `{ if (GUARD) print ... }` (a WHERE-style filter). Extract the print fields
+% and the guard term (none when unguarded).
+plawk_reader_body([print(Fields)], Fields, none).
+plawk_reader_body([if(Guard, [print(Fields)], [])], Fields, Guard).
+
+% Resolve a `records of` guard (name column) to guard(ColIndex, Op, Value),
+% the schema position compared to an integer; `none` passes through.
+plawk_records_guard(none, _Var, _Columns, none).
+plawk_records_guard(rcol_cmp(Var, Col, Op, Value), Var, Columns,
+        guard(Index, Op, Value)) :-
+    plawk_records_col_index(Columns, Col, Index).
 
 % Resolve a `records of` print field to a plan: a plain column VAR["col"] ->
 % col(Index) (its 1-based schema position, printed as text), or an arithmetic
@@ -3993,12 +4007,18 @@ plawk_records_col_index(Columns, Col, Index) :-
 % `records of`, just sourcing the field indices from the literal positions.
 plawk_multipass_pass_fn(Index, pass_rows(var(Var), var(Table), Body), Tables,
         _StrArrays, _Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, '') :-
-    Body = [print(PrintFields)],
+    plawk_reader_body(Body, PrintFields, GuardTerm),
     PrintFields = [_ | _],
     maplist(plawk_rows_field_plan(Var), PrintFields, FieldPlans),
+    plawk_rows_guard(GuardTerm, Var, GuardPlan),
     nth0(TableIndex, Tables, Table),
     plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, FieldPlans,
-        FieldSep, OutputSep, FnIR).
+        GuardPlan, FieldSep, OutputSep, FnIR).
+
+% Resolve a `rows of` guard (positional) -> guard(N, Op, Value); none passes.
+plawk_rows_guard(none, _Var, none).
+plawk_rows_guard(rpos_cmp(Var, N, Op, Value), Var, guard(N, Op, Value)) :-
+    integer(N), N > 0.
 
 % A `rows of` print field: a plain position VAR[N] -> col(N), or arithmetic
 % over positions/constants -> arith(...), evaluated in f64. Positional only.
@@ -4017,12 +4037,18 @@ plawk_rows_operand(_Var, int(V), aint(V)) :- integer(V).
 % sources positions from `field(N)` ($N) rather than `VAR[N]`.
 plawk_multipass_pass_fn(Index, pass_rows_anon(var(Table), Body), Tables,
         _StrArrays, _Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, '') :-
-    Body = [print(PrintFields)],
+    plawk_reader_body(Body, PrintFields, GuardTerm),
     PrintFields = [_ | _],
     maplist(plawk_rows_anon_field_plan, PrintFields, FieldPlans),
+    plawk_rows_anon_guard(GuardTerm, GuardPlan),
     nth0(TableIndex, Tables, Table),
     plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, FieldPlans,
-        FieldSep, OutputSep, FnIR).
+        GuardPlan, FieldSep, OutputSep, FnIR).
+
+% Resolve a no-`as` guard (`$N CMP int`) -> guard(N, Op, Value); none passes.
+plawk_rows_anon_guard(none, none).
+plawk_rows_anon_guard(rfield_cmp(N, Op, Value), guard(N, Op, Value)) :-
+    integer(N), N > 0.
 
 plawk_rows_anon_field_plan(field(N), col(N)) :- integer(N), N > 0.
 plawk_rows_anon_field_plan(Expr, arith(F64Op, LPlan, RPlan)) :-
@@ -4079,18 +4105,21 @@ forin_after:
 ', [Index, TableParamsIR, TableIndex, TableIndex, BodyIR]).
 
 %% plawk_multipass_records_fn_ir(+Index, +TableParamsIR, +TableIndex,
-%%     +ColIndexes, +FieldSep, +OutputSep, -IR)
+%%     +ColIndexes, +GuardPlan, +FieldSep, +OutputSep, -IR)
 %  The named row reader as a void function: walk the shared table's occupied
 %  slots; for each, the value is the stored row's atom id. Build a row %Value
 %  from it and print the requested columns -- each `r["col"]` resolved to the
 %  column's schema position, extracted as field N of the row via
 %  @wam_atom_field_slice_value (the same field projection the input record
-%  uses), printed as text. Does not open the input; the table is freed by
-%  main.
+%  uses), printed as text. An optional GuardPlan (guard(ColIndex, Op, Value))
+%  gates the print: a WHERE-style filter comparing a column's i64 value to a
+%  constant, only emitting the row when it passes. Does not open the input;
+%  the table is freed by main.
 plawk_multipass_records_fn_ir(Index, TableParamsIR, TableIndex, ColIndexes,
-        FieldSep, OutputSep, IR) :-
+        GuardPlan, FieldSep, OutputSep, IR) :-
     phrase(plawk_records_col_lines(ColIndexes, FieldSep, OutputSep, 0), ColLines),
     atomic_list_concat(ColLines, '\n', ColIR),
+    plawk_records_guard_ir(GuardPlan, FieldSep, GuardIR),
     format(atom(IR),
 'define void @plawk_pass_~w(%Value %mp_path~w) {
 entry:
@@ -4107,6 +4136,9 @@ rec_body:
   %rec_row_v0 = insertvalue %Value undef, i32 0, 0
   %rec_row_v = insertvalue %Value %rec_row_v0, i64 %rec_row_id, 1
 ~w
+
+rec_print:
+~w
   %rec_printed_newline = call i32 @putchar(i32 10)
   br label %rec_body_done
 
@@ -4117,7 +4149,29 @@ rec_body_done:
 rec_after:
   ret void
 }
-', [Index, TableParamsIR, TableIndex, TableIndex, ColIR]).
+', [Index, TableParamsIR, TableIndex, TableIndex, GuardIR, ColIR]).
+
+%% plawk_records_guard_ir(+GuardPlan, +FieldSep, -IR)
+%  The transition out of rec_body: unguarded readers fall straight into
+%  rec_print; a guard extracts its column as i64 (@wam_atom_field_i64_value on
+%  the row %Value), compares to the constant, and branches to rec_print or
+%  skips the row (rec_body_done).
+plawk_records_guard_ir(none, _FieldSep, '  br label %rec_print').
+plawk_records_guard_ir(guard(ColIndex, Op, Value), FieldSep, IR) :-
+    plawk_icmp_pred(Op, Pred),
+    format(atom(IR),
+'  %rec_gv = call i64 @wam_atom_field_i64_value(%Value %rec_row_v, i64 ~w, i8 ~w)
+  %rec_gcmp = icmp ~w i64 %rec_gv, ~w
+  br i1 %rec_gcmp, label %rec_print, label %rec_body_done',
+        [ColIndex, FieldSep, Pred, Value]).
+
+% Surface comparison op -> signed LLVM icmp predicate.
+plawk_icmp_pred(eq, eq).
+plawk_icmp_pred(ne, ne).
+plawk_icmp_pred(lt, slt).
+plawk_icmp_pred(le, sle).
+plawk_icmp_pred(gt, sgt).
+plawk_icmp_pred(ge, sge).
 
 %% plawk_records_col_lines(+FieldPlans, +FieldSep, +OutputSep, +PrintIndex)//
 %  Per-field print for the row readers: a separator before each field after
