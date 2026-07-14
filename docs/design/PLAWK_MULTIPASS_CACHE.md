@@ -139,7 +139,11 @@ END   { }
 
 **So the invariant we must not break:** *within the iteration brackets, work
 is deterministic.* Backtracking is "contained and annotated" (the Haskell
-`IO`-monad analogy), never the default in the hot loop.
+`IO`-monad analogy), never the default in the hot loop. This is the general
+**bounded-multiplicity** principle — contain non-determinism by collapsing it
+at a boundary, the same shape as SQL `GROUP BY`, Prolog `findall`, and list
+comprehensions; stated once in `UNIFYWEAVER_LANGUAGE_PRINCIPLES.md` (Principle
+1) and applied throughout this doc.
 
 ### 1.1 Cross-iteration information under that invariant
 
@@ -390,7 +394,10 @@ multi-valued, and therefore exactly the nondeterminism §1 insists be
 aggregation** that collapses the set to a deterministic value or a
 deterministically-ordered array; using it raw (as a scalar) is a
 compile-time error. This is not just ergonomics — it is what keeps the
-multi-valued lookup from leaking a choicepoint into the hot loop.
+multi-valued lookup from leaking a choicepoint into the hot loop. It is the
+**bounded-multiplicity** principle in its SQL `GROUP BY` form — a set collapsed
+by an aggregate at a boundary (`UNIFYWEAVER_LANGUAGE_PRINCIPLES.md`, Principle
+1).
 
 ```awk
 # unique index: one record
@@ -693,7 +700,9 @@ values. So a loop does not hand back *non-determinism*; it hands back the
 enumerate-until — but under explicit, deterministic, step-by-step control. A
 Prolog solver explores a solution space implicitly; a `while` lets you do the
 same thing by hand. This is the same containment as Phase 6's aggregation
-rule, seen from the other side: a multi-solution goal is tamed either by
+rule (the bounded-multiplicity principle,
+`UNIFYWEAVER_LANGUAGE_PRINCIPLES.md`), seen from the other side: a
+multi-solution goal is tamed either by
 **folding it** (`collect`/`count` → one value, enumeration implicit) or by
 **looping over it** (enumeration explicit, one deterministic step at a time).
 The cost the loop pays is exactly the boundedness it drops: the
@@ -823,6 +832,25 @@ boundary**. Concretely:
    solved search flows into ordinary plawk values. In type terms, "unbound
    logic var" is a distinct kind that the collapse operators are the only way
    to eliminate.
+
+**What actually triggers the non-determinism (and where it must live).** The
+`where` is a **list comprehension**: `collect (A, B) where { A in nodes(g); B in
+nodes(g); adjacent(A, B) }` is exactly Haskell's `[ (a,b) | a <- nodes, b <-
+nodes, adjacent a b ]`. So it is worth being precise about which piece carries
+the non-determinism. It is **not** the collapse keyword — `collect` is the
+*eliminator* (one of `find`/`the`/`count`/`forall`), chosen for *how* to fold
+the solution set. The **producers** are the generators (`A in …`) and any
+multi-solution goal. Crucially, a goal's multiplicity is a property of its
+**mode**, not the predicate: `adjacent(A, B)` with both unbound *generates*
+pairs, `adjacent(a, B)` *extends* one, `adjacent(a, b)` is a yes/no *test*. So
+the rule is enforced by mode analysis (`demand_analysis` /
+`binding_state_analysis`, §1): a call carrying an **unbound logic variable** —
+the only calls that can backtrack — must sit inside the `where`. The same
+predicate called all-ground is an ordinary deterministic test, callable
+anywhere. That relation-run-backwards (a test used as a generator) is the extra
+power the search has over a plain comprehension guard. This is Principle 1 of
+`UNIFYWEAVER_LANGUAGE_PRINCIPLES.md` (bounded multiplicity) in its
+Prolog/comprehension form.
 
 **Termination.** A general `while` (§3.8) is deterministic but may not
 terminate. This search is the mirror image: non-deterministic but **bounded
