@@ -959,6 +959,76 @@ fn test_union_direct() {
 }
 
 #[test]
+fn test_list_to_set_direct() {
+    let (ok, vm) = call2(
+        "list_to_set/2",
+        Value::List(vec![a("a"), a("b"), a("c"), a("a"), a("b"), a("d")]),
+        ub("Set"),
+    );
+    assert!(ok);
+    assert_eq!(
+        read_var(&vm, "Set"),
+        Value::List(vec![a("a"), a("b"), a("c"), a("d")]),
+    );
+
+    let (empty_ok, empty_vm) =
+        call2("list_to_set/2", Value::List(vec![]), ub("Set"));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Set"), Value::List(vec![]));
+    assert!(!call2("list_to_set/2", a("bad"), ub("Set")).0);
+
+    let pair = Value::Str("pair/2".to_string(), vec![a("x"), i(1)]);
+    let (compound_ok, compound_vm) = call2(
+        "list_to_set/2",
+        Value::List(vec![pair.clone(), a("keep"), pair]),
+        ub("Set"),
+    );
+    assert!(compound_ok);
+    assert_eq!(
+        read_var(&compound_vm, "Set"),
+        Value::List(vec![
+            Value::Str("pair".to_string(), vec![a("x"), i(1)]),
+            a("keep"),
+        ]),
+    );
+
+    let (vars_ok, vars_vm) = call2(
+        "list_to_set/2",
+        Value::List(vec![ub("X"), a("a"), a("b")]),
+        ub("Set"),
+    );
+    assert!(vars_ok);
+    assert_eq!(read_var(&vars_vm, "X"), a("a"));
+    assert_eq!(read_var(&vars_vm, "Set"), Value::List(vec![a("a"), a("b")]));
+
+    let (miss_ok, miss_vm) = call2(
+        "list_to_set/2",
+        Value::List(vec![
+            Value::Str("f/2".to_string(), vec![ub("X"), a("a")]),
+            Value::Str("f/2".to_string(), vec![a("bound"), a("b")]),
+        ]),
+        ub("Set"),
+    );
+    assert!(miss_ok);
+    assert_eq!(read_var(&miss_vm, "X"), ub("X"));
+    assert_eq!(
+        read_var(&miss_vm, "Set"),
+        Value::List(vec![
+            Value::Str("f".to_string(), vec![ub("X"), a("a")]),
+            Value::Str("f".to_string(), vec![a("bound"), a("b")]),
+        ]),
+    );
+
+    let (mismatch_ok, mismatch_vm) = call2(
+        "list_to_set/2",
+        Value::List(vec![ub("X"), a("a")]),
+        Value::List(vec![]),
+    );
+    assert!(!mismatch_ok);
+    assert_eq!(read_var(&mismatch_vm, "X"), ub("X"));
+}
+
+#[test]
 fn test_ground() {
     assert!(call1("ground/1", a("x")).0);
     assert!(call1("ground/1", Value::List(vec![i(1), a("b")])).0);
