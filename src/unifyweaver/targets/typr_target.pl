@@ -7217,7 +7217,10 @@ compile_typr_transitive_closure(Module, Pred/Arity, BasePred, TypedMode, Options
     annotation_suffix(TypedMode, NodeTypeTerm, AddToAnnotation),
     annotation_suffix(TypedMode, list(NodeTypeTerm), AllReturnAnnotation),
     annotation_suffix(TypedMode, boolean, CheckReturnAnnotation),
-    empty_collection_expr(NodeTypeTerm, EmptyNodesExpr),
+    (   typr_transitive_closure_explicit_input_mode(Options, _)
+    ->  empty_collection_expr(NodeTypeTerm, EmptyNodesExpr)
+    ;   typr_native_empty_collection_expr(NodeTypeTerm, EmptyNodesExpr)
+    ),
     typr_tc_node_parse_helper(BaseStr, NodeTypeTerm, NodeParseHelperCode),
     typr_tc_line_part_expr(BaseStr, NodeTypeTerm, 1, FromLineExpr),
     typr_tc_line_part_expr(BaseStr, NodeTypeTerm, 2, ToLineExpr),
@@ -7612,14 +7615,16 @@ base_pair_vectors(Module, BasePred, NodeTypeTerm, FromNodesExpr, ToNodesExpr) :-
 
 typr_vector_literal(NodeTypeTerm, [], Expr) :-
     !,
-    empty_collection_expr(NodeTypeTerm, Expr).
+    typr_native_empty_collection_expr(NodeTypeTerm, Expr).
 typr_vector_literal(_NodeTypeTerm, Items, Expr) :-
     findall(Literal, (
         member(Item, Items),
         r_literal(Item, Literal)
     ), Literals),
     atomic_list_concat(Literals, ', ', LiteralText),
-    format(string(Expr), 'c(~w)', [LiteralText]).
+    format(string(Expr), '[~w]', [LiteralText]).
+
+typr_native_empty_collection_expr(_, '[]').
 
 empty_collection_expr(atom, 'character()').
 empty_collection_expr(string, 'character()').
