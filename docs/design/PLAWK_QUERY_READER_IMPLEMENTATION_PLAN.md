@@ -5,11 +5,12 @@ Copyright (c) 2026 John William Creighton (@s243a)
 
 # plawk `over query(Goal)` reader — implementation plan (phase 6)
 
-**Status**: plan, not yet implemented. Sequences the work for the query-driven
-reader (`PLAWK_MULTIPASS_CACHE.md` §3.4, phase 6): a pass whose records are the
-**solutions of a Prolog goal**. This is the "most beyond awk" reader and the
-first place plawk admits controlled non-determinism, so it is planned carefully
-and grounded in the actual runtime surface before any build.
+**Status**: PRs 1–2 landed; the arity-1 `print $1` slice runs end-to-end.
+Sequences the work for the query-driven reader (`PLAWK_MULTIPASS_CACHE.md`
+§3.4, phase 6): a pass whose records are the **solutions of a Prolog goal**.
+This is the "most beyond awk" reader and the first place plawk admits
+controlled non-determinism, so it is planned carefully and grounded in the
+actual runtime surface before any build.
 
 ## 1. Where we are (the blocking facts)
 
@@ -52,8 +53,16 @@ result (the list), and the list materialises through the already-built posarray
 / list machinery (`@wam_object_call_posarray`). The pass then iterates that list
 exactly like `over TABLE`. So the hard part (enumeration) is delegated to the
 WAM builtin that already does it, and no new backtracking-driver primitive is
-needed. (A direct engine-driven collector is the alternative if `findall/3` is
-unavailable or too costly; the plan keeps the surface identical either way.)
+needed.
+
+**Feasibility confirmed (the plan's biggest risk, retired).** `findall/3` +
+`call/1` already run end-to-end in a **compiled plawk binary** on the LLVM WAM:
+`tests/test_plawk_eval_compile.pl` has a passing test whose runtime-compiled
+grammar executes `findall(Q, call(G), L), sum_list(L, R)` and returns the folded
+result. So the enumeration builtin the approach depends on is real and works in
+the generated code; PR 2 is wiring, not a new engine capability. (A direct
+engine-driven collector remains the fallback, with the surface unchanged, but is
+no longer expected to be needed.)
 
 ## 3. Design decisions (the surface)
 
@@ -89,21 +98,43 @@ the multi-pass surface". `tests/test_plawk_query_reader.pl`: parse (two-arg,
 one-arg, `over TABLE` unchanged), the not-yet error (exit 2), and a non-query
 program unaffected. No runtime.
 
-### PR 2 — `findall` wrapper + solution materialisation (runtime/build)
+### PR 2 — `findall` wrapper + materialisation + query pass function — **LANDED**
 
-At build time, synthesise the `findall(Template, Goal, List)` wrapper for each
-query site and route it through the object-call so the solution list is
-materialised (list → posarray/table). This is the crux; it reuses the posarray
-list machinery. Verify with a fixed loaded predicate that N solutions produce an
-N-element materialised set.
+The runtime crux, delivered as one end-to-end vertical for the first supported
+shape (arity-1 goal, body `print $1`) so the materialisation is observable:
 
-### PR 3 — Codegen: the query pass function
+- **Injected findall wrapper.** For each query goal the build synthesises
+  `__plawk_query_pred(L) :- findall(V, pred(V), L)` and adds it to the
+  program's `@prolog` predicate set (`plawk_query_helper_clause/3` in the
+  codegen; injected in `bin/plawk`), so `write_wam_llvm_project` compiles the
+  enumeration into the same binary as the user's predicates.
+- **Materialise via the posarray path.** A new query driver
+  (`plawk_program_query_driver_ir/3`) emits, per query pass, a self-contained
+  `@plawk_pass_N` that runs the wrapper on a shared `%WamState`
+  (`@plawk_foreign_vm`, emitted standalone since a query program has no
+  foreign-call sites) through `@wam_object_call_posarray`, walking the flat
+  solution list into a fresh assoc table by position (keys `1..N`).
+- **Ordered, deterministic iteration.** The pass walks keys `1..count` in
+  order (not hash-slot order) and prints each solution's integer at `$1`, then
+  frees the table. The multiplicity collapses at the boundary before the body
+  runs (§1 intact); snapshot semantics fall out for free.
+- **Scope + guard.** v1 is an all-query program (no input is read — the records
+  come from the goal). Any query program outside the shape (higher arity,
+  richer body, `END` block, or a query pass mixed with ordinary passes) is a
+  clean not-yet compile error (exit 2, naming `pred/arity`), not a miscompile.
+- **Verified end-to-end.** `tests/test_plawk_query_reader.pl`: facts and a
+  disjunctive (non-deterministic) goal both materialise and print in order; the
+  higher-arity and mixed-pass shapes hit the not-yet error; a non-query program
+  is unaffected.
 
-Model on `pass_over`: after materialising the solution set (PR 2), iterate it,
-bind each solution's arguments to `$1..$n`, and run the body (`print $1, $2`).
-Deliverable: `pass over query(pred(X, Y)) { print $1, $2 }` prints one line per
-solution. Reader-guards (`if (…)`) compose for free if the body reuses the
-row-reader emitter.
+### PR 3 — Higher arity + richer bodies (tuple templates, guards)
+
+Generalise beyond the arity-1 flat-list slice. For `pred(X, Y)` the `findall`
+template becomes a tuple, so the wrapper returns a list of compounds; each
+element is deserialised into `$1..$n` (reuse the record/posarray element
+machinery). Then let the body be more than `print $1`: `print $1, $2`,
+reader-guards (`if (…)`) — composing for free if the body reuses the row-reader
+emitter. Mixed query + ordinary passes in one program is the other axis here.
 
 ### PR 4 — Determinism guarantees + snapshot test + docs
 

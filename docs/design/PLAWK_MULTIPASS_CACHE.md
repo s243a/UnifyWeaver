@@ -1074,7 +1074,15 @@ single-pass test before any driver surgery).
   reader **materialises** the solution set (a `findall` collapse at the reader
   boundary — bounded-multiplicity, `UNIFYWEAVER_LANGUAGE_PRINCIPLES.md`
   Principle 1) and iterates it like `over TABLE`, rather than retaining live
-  choicepoints (which §1 forbids in the hot loop).
+  choicepoints (which §1 forbids in the hot loop). **PRs 1–2 landed**: the
+  surface parses to `pass_query(query(Pred, Vars), Body)`, and the runtime for
+  the first shape (an all-query program, single-output goal, body `print $1`)
+  runs end-to-end — the build injects `__plawk_query_pred(L) :- findall(V,
+  pred(V), L)`, materialises the list into a table by position via
+  `@wam_object_call_posarray` on the shared `%WamState`, and prints each
+  solution's integer in key order (ordered, deterministic; a disjunctive goal
+  yields every solution). Higher arity, richer bodies, and mixed passes are the
+  next PRs.
 
 - **Phase 7 — secondary indexes (§3.5).** `index TABLE by FIELD [unique]` on
   record-valued tables; unique lookups return one record; non-unique
