@@ -591,6 +591,16 @@ a short sequence rather than a lone keyword:
   selects among them. This is the point at which `select` becomes load-bearing
   rather than sugar.
 
+Which physical table a store operation targets when the program names none —
+the **default table** — is specified per backend (and per backend *class*) in
+`PLAWK_CACHE_BACKENDS.md`: the container itself on a single-table backend
+(class A, our `file`), the native unnamed database on a default-plus-named
+backend (class B, `lmdb`), a reserved name on an all-named backend (class C,
+SQLite), a reserved key prefix on a table-less backend (class D, Redis). That
+spec also fixes how named tables map, and uses out-of-scope backends
+(SQLite/Redis/BerkeleyDB/TSV) as cases to check the rule. `use` (b) and
+multi-table (c) implement it.
+
 Ordering: (a) is the enabler and closes a correctness gap; (b) is the
 `select`/`use` reader; (c) generalises to many tables. Recorded as phases
 8.7–8.9 in §5.
