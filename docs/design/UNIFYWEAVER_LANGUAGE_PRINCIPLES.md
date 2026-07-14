@@ -137,13 +137,13 @@ the correct-but-slower default.
   §2.1): `emit E` materialises a *typed* value straight into the tagged column
   table — no text exists. An FS-split yield would `print` to text and re-parse
   it, a serialize→text→deserialize cost per value. Known type ⇒ no round-trip.
-- **Optional function-arg typing over auto-coerce**
-  (`PLAWK_AWK_FEATURE_AUDIT.md` gap 2): the awk-faithful default auto-coerces a
+- **Optional function-arg typing over auto-coerce** (LANDED —
+  `PLAWK_AWK_FEATURE_AUDIT.md` gap 2): the awk-faithful default auto-coerces a
   text field used numerically (`atom → number` every call); a declared
   `function f(num x)` lets the compiler pass an already-typed value and skip the
-  coercion — the typed-fast path over the dynamic-correct default. (It also
-  turns a type mismatch into a compile error — the safety face of the same
-  knowledge.)
+  coercion goal entirely — the typed-fast path over the dynamic-correct default.
+  (The safety face — turning a type mismatch into a compile error — is the
+  follow-on; today the annotation buys the elision.)
 - **Typed binary records (`BINFMT`)** vs text fields: a declared record layout
   reads fields as native `i64`/`f64` with no per-field string parse.
 - **The query reader's per-column tagged materialisation**
