@@ -6,42 +6,40 @@ Copyright (c) 2026 John William Creighton (@s243a)
 # plawk multi-pass processing over a persistent cache
 
 **Status**: partially implemented. Captures the determinism rationale, the
-surface, the runtime ABI, and a phased rollout. **Landed:** the persistent
-cache (file backend + `BEGIN cache("path") { declare NAME }` surface, phase
-1); the LMDB backend (`backend "lmdb"`, phase 5, eager); multi-pass
-execution (`pass { }` blocks over a shared assoc table, phase 2); and
-per-record output in assoc programs (`print $N` / `print arr[$N]` in the
-record loop), which gives the "normalise" shape — pass 2 prints each record
-from pass 1's table; cross-pass scalars (`acc += 1` / `acc += $N`
-folded in one pass and read in a later pass, backed by a zero-initialised
-module global); pure-scalar (no-table) multi-pass, where a program carries
-no assoc table at all and passes coordinate only through scalar globals;
-arithmetic in prints (`$2 / total`) evaluated in f64 (the surface `/`
-is integer, so a print expression is promoted to double and printed with
-`%g`), which completes **grand-total normalise**
-(`pass { total += $2 } pass { print $1, $2 / total }`); per-key aggregation
-via associative add-assign (`total[$1] += $2`) plus a table lookup as an
-arithmetic operand (`$2 / total[$1]`), which completes **per-key normalise**
-— each record divided by its own key's total; and the cache as the
-inter-pass channel (phase 3): a `BEGIN cache("path") { declare NAME }` table
-shared by the passes is loaded before pass 1 and committed after the last
-pass, so it is both the in-memory channel between passes and durable across
-runs (file and LMDB backends); and the `over TABLE` reader (phase 4):
-`pass over TABLE as VAR { print ... }` iterates a table's entries as the
-pass's record source (named fields — key bound to `VAR`, value via
-`TABLE[VAR]`) instead of re-scanning the input; and row-oriented / record-valued tables
-(phase 8, §3.6): a table whose value is a named-field **row** — captured with
-`TABLE[$k] = $0` and read back by column name with `records of TABLE as r`
-(`r["col"]`, resolved through the `declare TABLE(col type, …)` schema), or by
-position with `rows of TABLE as r` (`r[N]`, no schema); a column may be an
-arithmetic expression (`r["amt"] / 2`, f64); the row is written with
-`TABLE[$k] = $0` or `TABLE[$k] = row($a, $b)`; and rows are **durable across
-runs** on the file backend (the row bytes are persisted, phase 8.4).
-**Not yet:** durable rows over the LMDB backend; `rows of`'s `unsafe` /
-inline check-or-rename spec; the `over prev` reader (phase 4 follow-on); the
-query reader (phase 6); namespaces / `eager` / secondary indexes;
-string-literal print fields. See the per-phase status tags
-in §5.
+surface, the runtime ABI, and a phased rollout.
+
+**Landed:**
+
+- **Persistent cache** — `BEGIN cache("path") { declare NAME }`, file backend
+  (phase 1) and LMDB backend (`backend "lmdb"`, phase 5, eager).
+- **Multi-pass execution** — `pass { }` blocks over a shared assoc table
+  (phase 2), including pure-scalar (no-table) programs.
+- **Per-record output** in assoc programs (`print $N` / `print arr[$N]`) — the
+  "normalise" shape, where pass 2 prints each record from pass 1's table.
+- **Cross-pass scalars** (`acc += 1` / `acc += $N`, module-global accumulators).
+- **Print arithmetic in f64** (`$2 / total`) → **grand-total normalise**; and
+  **per-key aggregation** (`total[$1] += $2` + `$2 / total[$1]`) → **per-key
+  normalise**.
+- **Cache as the inter-pass channel** (phase 3) — a declared table loaded
+  before pass 1, committed after the last pass; durable across runs.
+- **`over TABLE` reader** (phase 4) — iterate a table's entries as the pass's
+  record source.
+- **Row-oriented tables** (phase 8, §3.6): a table whose value is a
+  named-field **row**. Schema (`declare NAME(col type, …)`); writers
+  `TABLE[$k] = $0` and `TABLE[$k] = row($a, $b)`; readers `records of TABLE
+  as r` (`r["col"]`, by schema name), `rows of TABLE as r` (`r[N]`, by
+  position), and `rows of TABLE` (no `as` → awk-native `$N`); column
+  arithmetic in f64 (`r["amt"] / 2`); durable rows on the file backend (row
+  bytes persisted, phase 8.4); self-describing store — schema persisted and
+  validated on open (phase 8.7); and `use NAME` to attach to an existing
+  store without re-`declare` (phase 8.8).
+
+**Not yet:** reader guards (a `WHERE`-style row filter); durable rows over the
+LMDB backend; `rows of`'s `unsafe` / inline check-or-rename spec; multiple
+named tables per store (phase 8.9); the `over prev` reader (phase 4
+follow-on); the query reader (phase 6); `eager` / secondary indexes;
+string-literal print fields. Future sketches: nested pass blocks (§3.8),
+`while`/loop statements, views (§3.9). See the per-phase status tags in §5.
 
 ## Implemented surface (quick reference)
 
@@ -656,6 +654,39 @@ statement to the per-record body (the general primitive) rather than nested
 scopes* (own reader/store), and design the shadowing + `parent.` reference
 then. Neither is scheduled; this note exists so the surface stays coherent if
 either is taken up.
+
+**A unifying observation (for when `do`/`while` is designed).** These
+constructs line up with pieces we already have: a `do { … }` block is almost
+exactly a `pass { … }` block — a block of actions run (repeatedly) over a
+record stream — and a `while (cond)` clause is essentially a **filter**, a
+narrower cousin of the `WHERE`-style reader guard (§3.9-adjacent): the guard
+selects which rows a reader emits, while the `while` selects how long a loop
+continues. That symmetry suggests the eventual `do`/`while` should share the
+guard/condition machinery (a boolean predicate over the current record's
+fields) rather than grow a parallel one.
+
+### 3.9 Views (future TODO — brief spec, not planned)
+
+A **view** is a named, derived query over one or more tables — conceptually a
+stored `records of … WHERE … ` (once reader guards, §status, land) with a
+projection. Recorded as a sketch, **not** scheduled.
+
+Backend-adaptive, mirroring `PLAWK_CACHE_BACKENDS.md`:
+
+- **If the backend has native views** (e.g. SQLite `CREATE VIEW`), define the
+  view natively and let the backend evaluate it; a `use`/reader over the view
+  name reads the backend's result set.
+- **If it does not** (file, LMDB, Redis), a view is **materialised**: the
+  named subset of columns (a projection, optionally filtered by a guard) is
+  computed and **cached as its own row table** — i.e. a view degrades to "a
+  derived table a pass builds", which the existing writer/reader/cache
+  machinery already covers. Refresh semantics (eager on write vs. lazy on
+  read vs. explicit) are the main open question.
+
+So a view is either delegated to the backend or lowered to a cached
+projection table; the surface (`view NAME as records of T where …`) is
+uniform, and only the evaluation strategy is backend-specific. Depends on
+reader guards (the `WHERE`) and, for multi-table sources, phase 8.9.
 
 ## 4. Runtime: the cache ABI (the first build step)
 
