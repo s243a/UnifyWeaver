@@ -72,8 +72,18 @@ per-column integer/string kinds end to end (the tagged materialisation of
 `print` + `FS`, every value would round-trip through text and arrive as a
 string, throwing away exactly that typing — the consumer would have to re-parse.
 `emit E` keeps the term's type (an integer stays an integer, an atom an atom),
-mirroring how the reader materialises columns. Three more reasons:
+mirroring how the reader materialises columns. Four more reasons:
 
+- **No serialize/deserialize round-trip (performance).** With explicit `emit`,
+  the compiler knows each emitted value's type, so it materialises the *typed
+  WAM value* straight into the tagged column table — no text ever exists.
+  Implicit-FS yield would `print` the value to **text** and the consumer would
+  **re-parse** it (`atom → number`), a serialise→text→deserialise cost on every
+  value that explicit `emit` avoids entirely. This is the *same* principle as
+  optional function-arg typing (`PLAWK_AWK_FEATURE_AUDIT.md` gap 2): **static
+  type/structure knowledge lets the compiler elide coercion and serialisation.**
+  It recurs across plawk — typed `BINFMT` records skip parsing, the reader's
+  per-column kinds skip re-typing, and `emit` skips the text round-trip.
 - **Emission ≠ stdout.** Overloading `print` to *also* mean "produce a solution"
   conflates two jobs — a gen block may legitimately want to write to stdout
   (debug/log) without that becoming a solution. `emit` keeps them separate.
@@ -264,6 +274,21 @@ the producer direction plus the `emit` collection. A rough PR shape:
    backed) collected set, remain follow-ons — they need the runtime collection
    below. `tests/test_plawk_gen_blocks.pl`: an int tuple and a mixed
    string+int tuple.
+
+5. **Multi-column source + projection (views) — LANDED.** The input iterator
+   now binds a loop var per source column (`as (a, b)`) and the body emits a
+   **projection** of them: `gen over query(edge(A, B)) as (a, b) { if (a > 1)
+   emit a } as srcs` → `srcs(A) :- edge(A, _B), A > 1` (only the needed column
+   materialises — the "don't carry the whole row" point), and `emit (b, a)` →
+   `flipped(B, A) :- edge(A, B)` (reorder). This is the **column-projection
+   engine for views** (`PLAWK_MULTIPASS_CACHE.md` §3.9): a filtered/projected
+   derived relation. The AST generalised to `over(query(Src, SrcVars),
+   LoopVars)` with `LoopVars` a list; `emit` tuple elements may now be bound
+   vars. What remains for a full *view* is **materialise-and-cache** (write the
+   projected set to its own row table with a refresh policy) — the generator
+   gives the *derived-relation* half; materialisation is the cache half.
+   `tests/test_plawk_gen_blocks.pl`: a filtered single-column projection and a
+   reordering tuple projection.
 
 ### Still open — runtime collection
 

@@ -95,10 +95,27 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    The most-requested basic control structure still missing at runtime.
 2. **User-function call in text/print context** — `print f($1)` returns `0`: a
    text field is passed to the foreign call as an *atom*, so the synthesised
-   `f(X,R) :- R is X*2` fails `is`. Works in `BINFMT`/typed mode. A **type-model
-   decision** (auto-coerce a numerically-used field arg to i64, or an explicit
-   `num($1)` at the call site — `int(...)` is not accepted as a call arg today);
-   wants a small design call before coding. See `PLAWK_CONTROL_FLOW_PLAN.md` §4.
+   `f(X,R) :- R is X*2` fails `is`. Works in `BINFMT`/typed mode.
+   **Decision: auto-coerce (awk semantics).** A field (a string) used in a
+   numeric context coerces to a number, matching AWK. Implementation options
+   (a design call for the PR, not the surface): coerce in the WAM arithmetic
+   builtins (an atom operand of `is`/`>`/`*`/… parses to a number — most
+   awk-faithful, but the WAM engine is shared, so scope/gate it to avoid
+   changing Prolog `is/2` for non-plawk callers), or coerce the field arg at the
+   plawk call boundary when the callee uses it numerically (needs light body
+   inference). No explicit `num($1)` is required of the user.
+   *Future direction — a **performance** lever, not just safety:* **optional
+   type annotations** on function inputs (e.g. `function f(num x)` / a `:- ftype`
+   directive). Because plawk compiles to **typed WAM**, a declared arg type would
+   (a) **skip the runtime coercion** — the value is already the right type, so
+   the hot path pays nothing (auto-coerce parses `atom → number` on every call),
+   and (b) enable **compile-time type checking** (a mismatched call is an error).
+   This is the same principle as explicit `emit` in generators
+   (`PLAWK_GENERATOR_BLOCKS.md` §2.1): **static type knowledge lets the compiler
+   elide coercion and serialisation.** Given the per-call coercion cost, this
+   ranks higher than a pure nice-to-have — it is the typed-fast path over the
+   dynamic-correct default. Layered *on* auto-coerce (which stays the annotation-
+   free default), not instead of it; whether/when to build it is open.
 2b. **`if` with a plain guarded body** — `{ if (c) { print $1 } }` doesn't
    compile (the scalar `if` lowering assumes branch bodies update scalars); this
    is what actually blocks regex-in-`if`. Fix the `if`-body lowering.

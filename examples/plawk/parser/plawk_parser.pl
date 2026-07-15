@@ -287,21 +287,24 @@ query_var_list_rest([V | Vs]) -->
     query_var_list_rest(Vs).
 query_var_list_rest([]) -->
     [].
-% A `gen over query(SRC(V)) as v { BODY } as name` generator with an input
-% iterator (PLAWK_GENERATOR_BLOCKS.md, PR 3): a producer that transforms another
-% relation. Each solution of the source goal binds `v`; the body emits from it.
-% Parses to gen_block(name(Name), over(query(Src, SrcVars), LoopVar), Body).
-% Tried before the pure `gen { ... }` form -- the `over` keyword distinguishes
-% them. The body is emit-based (`emit v`, or `if (v CMP int) emit v` to filter),
-% so it uses the reader-guard body grammar rather than a general action block.
+% A `gen over query(SRC(A, ...)) as (a, ...) { BODY } as name` generator with an
+% input iterator (PLAWK_GENERATOR_BLOCKS.md, PR 3 + views/PR 5): a producer that
+% transforms/projects another relation. Each solution of the source goal binds
+% the loop vars positionally; the body emits a projection of them. Parses to
+% gen_block(name(Name), over(query(Src, SrcVars), LoopVars), Body) where LoopVars
+% is a list (`as v` -> [v], `as (a, b)` -> [a, b]). A single-column source keeps
+% the `as v` spelling; a multi-column source binds each column and the body may
+% emit a subset (a column-projection view -- "don't materialise the whole row").
+% Tried before the pure `gen { ... }` form. The body is emit-based (`emit a`,
+% `emit (a, b)`, or `if (a CMP int) emit a` to filter).
 pass_clauses([gen_block(name(Name),
-        over(query(Src, SrcVars), LoopVar), Body) | Rest]) -->
+        over(query(Src, SrcVars), LoopVars), Body) | Rest]) -->
     "gen", identifier_boundary, ws,
     "over", identifier_boundary, ws,
     "query", ws, "(", ws,
     identifier(Src), ws, "(", ws, query_var_list(SrcVars), ws, ")", ws,
     ")", ws,
-    "as", identifier_boundary, ws, identifier(LoopVar), ws,
+    "as", identifier_boundary, ws, gen_over_binding(LoopVars), ws,
     gen_over_body(Body), ws,
     "as", identifier_boundary, ws, identifier(Name), ws,
     pass_clauses(Rest).
@@ -330,6 +333,15 @@ gen_over_body([if(Guard, [emit(Emit)], [])]) -->
     !.
 gen_over_body([emit(Emit)]) -->
     "{", ws, emit_action(emit(Emit)), ws, "}".
+
+% The loop-variable binding of an input iterator: `as v` binds one column,
+% `as (a, b, ...)` binds several (one per source column, positionally). Both
+% produce a list of variable names.
+gen_over_binding(Vars) -->
+    "(", ws, query_var_list(Vars), ws, ")",
+    !.
+gen_over_binding([V]) -->
+    identifier(V).
 % A `pass { ACTIONS }` block is one pass carrying a single always-rule with
 % those actions (per-pattern rules within a pass are a later extension).
 pass_clauses([pass([rule(always, Actions)]) | Rest]) -->
@@ -1906,13 +1918,17 @@ emit_tuple_rest([V | Vs]) -->
     emit_tuple_rest(Vs).
 emit_tuple_rest([]) -->
     [].
-% A tuple element: an integer or string literal (constants only for now).
+% A tuple element: an integer or string literal (constant emits -> facts), or a
+% bound loop variable (an input-iterator projection -> a derived rule).
 emit_tuple_value(int(N)) -->
     signed_integer_value(N),
     !.
 emit_tuple_value(string(S)) -->
     quoted_string(Codes),
+    !,
     { string_codes(S, Codes) }.
+emit_tuple_value(var(V)) -->
+    identifier(V).
 
 printf_action(printf(string(Format), Args)) -->
     "printf",
