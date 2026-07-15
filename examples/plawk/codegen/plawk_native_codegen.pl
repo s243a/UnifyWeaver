@@ -354,6 +354,63 @@ plawk_program_native_driver_ir(
             NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+% END { if (COND) print ...; [else print ...] } -- a scalar-guarded print in the
+% END block. COND is a scalar comparison over the final slot values; each branch
+% is a single print. Same lowering as the scalar END-print clause above, but the
+% end_print body is the if (condition + then/else print blocks) instead of a
+% plain print. The state plan sees every field the branches print plus the
+% condition variables (so their slots exist).
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules0, [end([if(scalar_if(Cond), ThenActions, ElseActions)])]),
+    InputPath,
+    DriverIR
+) :-
+    plawk_end_if_ok(ThenActions, ElseActions),
+    plawk_end_if_print_fields(Cond, ThenActions, ElseActions, PrintFields),
+    plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules1, WritebinPlan),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    plawk_resolve_dynrec_view_rules(Rules1, Rules1b),
+    plawk_resolve_foreach_rules(FieldSeparator, Rules1b, Rules),
+    plawk_scalar_state_plan(Rules, PrintFields, StatePlan),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR0),
+    plawk_writebin_entry_lines(WritebinPlan, WritebinEntryIR),
+    plawk_join_nonempty_ir([BeginIR0, WritebinEntryIR], BeginIR),
+    plawk_record_program_ok(FieldSeparator, Rules, PrintFields),
+    plawk_end_print_string_globals(PrintFields, StringGlobalIR),
+    plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator,
+        RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    plawk_rules_writebin_exprs(Rules, WritebinExprs),
+    append(PrintFields, BodyPrintFields, PrintExprs0),
+    append(PrintExprs0, WritebinExprs, PrintExprs),
+    append(PrintExprs, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
+    plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
+    plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
+    plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
+    plawk_scalar_rule_controls(Rules, ScalarRuleControls),
+    plawk_scalar_next_phi_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, NextPhiIR),
+    plawk_break_close_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, done,
+        BreakCloseIR, FinalStatePhiIR),
+    plawk_scalar_end_if_ir(Cond, ThenActions, ElseActions, StatePlan,
+        FieldSeparator, OutputSeparator, EndIfGlobalIR, EndIfIR),
+    plawk_writebin_globals(WritebinPlan, WritebinGlobalIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, EndIfGlobalIR, RuleGlobalIR, WritebinGlobalIR]),
+    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w~w
+  ret i32 0',
+        [FinalStatePhiIR, EndIfIR]),
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
+        driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
+            NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
 % Tag-guard sugar: with a union BINFMT, plain rules whose patterns lead
 % with TAG == K are shorthand for case blocks -- the tag test selects
 % the arm and the rest of the pattern stays as the rule's own guard, so
@@ -12191,6 +12248,75 @@ plawk_branch_next_phi_incomings([_Exit | Rest], SlotIndex, Incomings) :-
 plawk_scalar_end_print_ir(PrintFields, StatePlan, OutputSeparator, IR) :-
     phrase(plawk_scalar_end_print_lines(PrintFields, StatePlan, OutputSeparator, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
+
+%% END { if (COND) print ...; [else print ...] } support ---------------------
+
+% A supported END-if: each branch is a single print (else optional).
+plawk_end_if_ok([print(_)], []).
+plawk_end_if_ok([print(_)], [print(_)]).
+
+% The scalar fields the state plan must see: the branch print fields (so a
+% printed scalar gets a slot) plus the condition variables. String literals need
+% no slot, but leaving them in is harmless -- the state plan ignores non-vars.
+plawk_end_if_print_fields(Cond, ThenActions, ElseActions, Fields) :-
+    plawk_end_if_branch_fields(ThenActions, ThenFields),
+    plawk_end_if_branch_fields(ElseActions, ElseFields),
+    plawk_while_cond_vars(Cond, CondVars),
+    plawk_vars_as_fields(CondVars, CondFields),
+    append([ThenFields, ElseFields, CondFields], Fields).
+
+plawk_end_if_branch_fields([print(Fields)], Fields).
+plawk_end_if_branch_fields([], []).
+
+plawk_vars_as_fields([], []).
+plawk_vars_as_fields([V | Vs], [var(V) | Fs]) :-
+    plawk_vars_as_fields(Vs, Fs).
+
+% The END-if body IR: evaluate COND against the final slot values, branch to a
+% then/else print block, join. Each branch print uses the PREFIXED print emitter
+% (unique names per branch, so the two blocks' temporaries don't collide) with
+% scalar reads substituted to their final-slot SSA values. Returns the string
+% globals the branch prints need, plus the body IR.
+plawk_scalar_end_if_ir(Cond, ThenActions, ElseActions, StatePlan, FieldSeparator,
+        OutputSeparator, GlobalIR, IR) :-
+    plawk_state_plan_slots(StatePlan, Slots),
+    plawk_final_slot_values(StatePlan, FinalValues),
+    plawk_while_cond_ir(Cond, Slots, FinalValues, plawk_endif, CondVar, CondIR),
+    plawk_end_if_branch_ir(ThenActions, Slots, FinalValues, FieldSeparator,
+        OutputSeparator, plawk_endif_then, ThenGlobal, ThenIR),
+    plawk_end_if_branch_ir(ElseActions, Slots, FinalValues, FieldSeparator,
+        OutputSeparator, plawk_endif_else, ElseGlobal, ElseIR),
+    plawk_join_nonempty_ir([ThenGlobal, ElseGlobal], GlobalIR),
+    format(atom(IR),
+'~w
+  br i1 ~w, label %plawk_endif_then, label %plawk_endif_else
+
+plawk_endif_then:
+~w
+  br label %plawk_endif_done
+
+plawk_endif_else:
+~w
+  br label %plawk_endif_done
+
+plawk_endif_done:',
+        [CondIR, CondVar, ThenIR, ElseIR]).
+
+plawk_end_if_branch_ir([print(Fields)], Slots, FinalValues, FieldSeparator,
+        OutputSeparator, Prefix, GlobalIR, IR) :-
+    maplist(plawk_substitute_print_field(Slots, FinalValues), Fields, SubFields),
+    plawk_prefixed_print_action_ir(SubFields, FieldSeparator, OutputSeparator,
+        Prefix, GlobalIR-IR).
+plawk_end_if_branch_ir([], _Slots, _FinalValues, _FieldSeparator,
+        _OutputSeparator, _Prefix, '', '').
+
+% The final (post-loop) slot values, one per slot: %final_slot_0, %final_slot_1,
+% ... -- the values the END block reads.
+plawk_final_slot_values(StatePlan, Values) :-
+    plawk_state_plan_slots(StatePlan, Slots),
+    findall(V,
+        ( nth0(I, Slots, _Slot), format(atom(V), '%final_slot_~w', [I]) ),
+        Values).
 
 plawk_scalar_end_print_lines([], _StatePlan, _OutputSeparator, _) -->
     { llvm_emit_printf0(plawk_surface_print_newline, 2,
