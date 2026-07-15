@@ -79,7 +79,14 @@ classic `wam_conformance_smoke` matrix with Scala/Elixir.
 - Finish F# kernel templates for the remaining shared kinds (or stop
   claiming “7 kernels” without the templates).
 - Bidirectional off by default; enable after cost-model confidence.
-- **Not registered** in classic conformance harness.
+- Classic conformance (**CONF-FSHARP**, 2026-07-15): registered
+  opt-in (`fsharp` / `fsharp_functions`) with additive
+  `conformance_main(true)`. **Measured maturity:** member, fib, ack
+  green on interpreter and `emit_mode(functions)`. Still xfail:
+  append/reverse (FS-LIST-PARTIAL-TAIL — PutList/SetVariable result
+  spines vs GetList), builtins (FS-ARITH-INT-DIV — `evalArith` lacks
+  `//`). `fsharp_functions`+builtins skipped (FS-FUNCTIONS-BUILTINS-LOWER
+  — lowered emitter stalls on `cbi_eq`).
 - Dynamic database partial (facts via lowered mutation; prefer Python
   for full dynamic-DB semantics — target doc).
 - LMDB scan-mode / workload-segregation wait on Rust R9/R10 reference.
@@ -93,7 +100,8 @@ classic `wam_conformance_smoke` matrix with Scala/Elixir.
 
 ## Path forward
 
-1. Register classic conformance adapter.
+1. Close CONF-FSHARP follow-ups: FS-LIST-PARTIAL-TAIL,
+   FS-ARITH-INT-DIV, FS-FUNCTIONS-BUILTINS-LOWER.
 2. Elixir-style cost-gate calibration for TPL fanout.
 3. Follow Rust scan/segregation LMDB contract when available.
 4. Keep ISO table in sync with C++/Elixir/Python.
