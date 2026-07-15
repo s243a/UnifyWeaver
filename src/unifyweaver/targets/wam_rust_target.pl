@@ -1368,6 +1368,16 @@ compile_execute_io_builtin_to_rust(Code) :-
                     self.pc += 1; true
                 } else { false }
             }
+            "write_canonical/1" => {
+                if let Some(val) = self.get_reg_raw("A1") {
+                    let rendered = self.term_to_atom_text(&val);
+                    let mut stdout = std::io::stdout().lock();
+                    if std::io::Write::write_all(&mut stdout, rendered.as_bytes()).is_err() {
+                        return false;
+                    }
+                    self.pc += 1; true
+                } else { false }
+            }
             "writeln/1" => {
                 if let Some(val) = self.get_reg_raw("A1") {
                     let derefed = self.deref_heap(&val);
@@ -1392,6 +1402,44 @@ compile_execute_io_builtin_to_rust(Code) :-
                         return false;
                     }
                     remaining -= count;
+                }
+                self.pc += 1; true
+            }
+            "put_char/1" => {
+                let text = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(text)) => text,
+                    _ => return false,
+                };
+                let mut chars = text.chars();
+                let ch = match (chars.next(), chars.next()) {
+                    (Some(ch), None) => ch,
+                    _ => return false,
+                };
+                let mut encoded = [0u8; 4];
+                let bytes = ch.encode_utf8(&mut encoded).as_bytes();
+                let mut stdout = std::io::stdout().lock();
+                if std::io::Write::write_all(&mut stdout, bytes).is_err() {
+                    return false;
+                }
+                self.pc += 1; true
+            }
+            "put_code/1" => {
+                let ch = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(code)) if code >= 0 => {
+                        match u32::try_from(code).ok().and_then(char::from_u32) {
+                            Some(ch) => ch,
+                            None => return false,
+                        }
+                    }
+                    _ => return false,
+                };
+                let mut encoded = [0u8; 4];
+                let bytes = ch.encode_utf8(&mut encoded).as_bytes();
+                let mut stdout = std::io::stdout().lock();
+                if std::io::Write::write_all(&mut stdout, bytes).is_err() {
+                    return false;
                 }
                 self.pc += 1; true
             }
