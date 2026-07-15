@@ -1355,17 +1355,19 @@ for_in_action(for_in(var(LoopVar), var(ArrayName), Body)) -->
     ws,
     for_in_body(Body).
 
-for_in_body(Actions) -->
-    action_block(Actions),
-    !.
 % for-in filter (assoc for-in, stage 1): `{ if (GUARD) print ... }` where
 % GUARD compares the loop key `k` or the value `arr[k]` to an integer.
 % A for-in-scoped condition -- k / arr[k] are only meaningful inside the
 % loop, so the operands live here rather than in the global pattern
-% grammar. Gates the per-key print; no cross-iteration state.
+% grammar. Gates the per-key print; no cross-iteration state. Tried BEFORE the
+% general action_block: `if (k > 0)` would otherwise parse as a scalar_if (`k`
+% is the loop key, not a scalar slot), so the for-in-scoped guard must win.
 for_in_body([if(Guard, [PrintAction], [])]) -->
     "{", ws, "if", ws, "(", ws, guard_expr(Guard), ws, ")", ws,
     print_action(PrintAction), ws, "}",
+    !.
+for_in_body(Actions) -->
+    action_block(Actions),
     !.
 for_in_body([WritebinAction]) -->
     writebin_action(WritebinAction),
@@ -1476,6 +1478,10 @@ actions_rest(_Prev, []) -->
 
 plawk_block_action(if(_Pattern, _Then, _Else)).
 plawk_block_action(foreach(_Body)).
+% a loop is a braced block too: a statement may follow it without a separator
+% (`while (..) { .. } i++`), like an if / foreach.
+plawk_block_action(while_loop(_Cond, _Body)).
+plawk_block_action(do_while_loop(_Body, _Cond)).
 
 %% action_sep//0
 %

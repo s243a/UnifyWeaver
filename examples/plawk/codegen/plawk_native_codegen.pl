@@ -5859,6 +5859,8 @@ plawk_trim_control_tails([next | _Rest], [next]) :-
     !.
 plawk_trim_control_tails([break | _Rest], [break]) :-
     !.
+plawk_trim_control_tails([continue | _Rest], [continue]) :-
+    !.
 plawk_trim_control_tails([if(Pattern, ThenActions, ElseActions) | Rest],
         [if(Pattern, TrimmedThenActions, TrimmedElseActions) | TrimmedRest]) :-
     !,
@@ -5895,10 +5897,31 @@ plawk_action_has_control(if(_Pattern, ThenActions, ElseActions)) :-
     ).
 plawk_action_has_control(foreach_loop(_Layout, Body)) :-
     plawk_branch_actions_have_unsupported_control(Body).
+% A while/do-while loop consumes its own body's break/continue (loop-local), so
+% those do NOT make the loop-as-action carry control to the rule level; only a
+% `next` inside the body propagates (to the record loop).
 plawk_action_has_control(while_loop(_Cond, Body)) :-
-    plawk_branch_actions_have_unsupported_control(Body).
+    plawk_actions_have_next_control(Body).
 plawk_action_has_control(do_while_loop(Body, _Cond)) :-
-    plawk_branch_actions_have_unsupported_control(Body).
+    plawk_actions_have_next_control(Body).
+
+% True if some action reaches a bare `next` (recursing through ifs and nested
+% loops) -- `next` propagates past loops, break/continue do not.
+plawk_actions_have_next_control(Actions) :-
+    member(Action, Actions),
+    plawk_action_reaches_next(Action).
+
+plawk_action_reaches_next(next).
+plawk_action_reaches_next(if(_Pattern, ThenActions, ElseActions)) :-
+    ( plawk_actions_have_next_control(ThenActions)
+    ; plawk_actions_have_next_control(ElseActions)
+    ).
+plawk_action_reaches_next(while_loop(_Cond, Body)) :-
+    plawk_actions_have_next_control(Body).
+plawk_action_reaches_next(do_while_loop(Body, _Cond)) :-
+    plawk_actions_have_next_control(Body).
+plawk_action_reaches_next(foreach_loop(_Layout, Body)) :-
+    plawk_actions_have_next_control(Body).
 
 plawk_branch_actions_have_unsupported_control(Actions) :-
     plawk_trim_control_tails(Actions, TrimmedActions),
@@ -6291,6 +6314,10 @@ plawk_split_normalized_branch_control(Actions, BodyActions, branch_next) :-
     \+ plawk_actions_have_control(BodyActions).
 plawk_split_normalized_branch_control(Actions, BodyActions, branch_break) :-
     append(BodyActions, [break], Actions),
+    !,
+    \+ plawk_actions_have_control(BodyActions).
+plawk_split_normalized_branch_control(Actions, BodyActions, branch_continue) :-
+    append(BodyActions, [continue], Actions),
     !,
     \+ plawk_actions_have_control(BodyActions).
 plawk_split_normalized_branch_control(Actions, Actions, fallthrough) :-
@@ -11242,6 +11269,12 @@ plawk_scalar_action_sequence_pairs([next], _Slots, _AssocPlan, _FieldSeparator, 
 plawk_scalar_action_sequence_pairs([break], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
         OpIndex, Values, Values, OpIndex, break, [branch_break(CurrentLabel, Values)]) -->
     [].
+% `continue` -- like break, it emits no IR of its own; the consumer branches
+% (plawk_branch_to_done_ir) to the enclosing loop's continue target, and the
+% loop consumes the branch_continue exit to wire its head/cond phi.
+plawk_scalar_action_sequence_pairs([continue], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
+        OpIndex, Values, Values, OpIndex, continue, [branch_continue(CurrentLabel, Values)]) -->
+    [].
 % foreach_loop: the one loop in the emitter stack. Loop-carried phis
 % for the element index and every scalar slot; the body memcpys the
 % current element into the staging area and runs one copy of the
@@ -11353,6 +11386,9 @@ plawk_scalar_action_sequence_pairs([while_loop(Cond, Body) | Rest],
             format(atom(PhiValue), '%~w_slot_~w', [Base, SlotIndex])
           ),
           HeadValues),
+      % break -> after, continue -> head (re-test): push the loop context so a
+      % break/continue anywhere in the body branches to these labels.
+      plawk_loopctx_push(loop_ctx(AfterLabel, HeadLabel)),
       phrase(plawk_scalar_action_sequence_pairs(Body, Slots, AssocPlan,
           FieldSeparator, OutputSeparator, Base, BodyLabel, RuleIndex, 0,
           HeadValues, BodyOutValues, _InnerOpIndex, InnerExitLabel,
@@ -11361,11 +11397,14 @@ plawk_scalar_action_sequence_pairs([while_loop(Cond, Body) | Rest],
       atomic_list_concat(BodyGlobalParts, '\n', GlobalIR),
       atomic_list_concat(BodyLineParts, '\n', BodyIR),
       plawk_branch_to_done_ir(InnerExitLabel, BodyDoneLabel, BodyDoneBrIR),
-      phrase(plawk_foreach_head_phi_lines(Slots, Values0, BodyOutValues,
-          Base, EntryLabel, BodyDoneLabel, 0), HeadPhiLines),
-      atomic_list_concat(HeadPhiLines, '\n', HeadPhiIR),
-      % the condition reads the head-phi value of the condition variable
+      plawk_loopctx_pop,
+      plawk_partition_loop_exits(InnerNextExits, Breaks, Continues, RestExits),
+      % head phi carries continue values; the after phi carries break values
+      plawk_while_head_phi_ir(Slots, Values0, BodyOutValues, Continues,
+          Base, EntryLabel, BodyDoneLabel, HeadPhiIR),
       plawk_while_cond_ir(Cond, Slots, HeadValues, Base, CondVar, CondIR),
+      plawk_loop_after_ir(Slots, HeadValues, HeadLabel, Breaks, Base,
+          AfterValues, AfterPhiIR),
       format(atom(IR),
 '  br label %~w
 
@@ -11384,7 +11423,8 @@ plawk_scalar_action_sequence_pairs([while_loop(Cond, Body) | Rest],
 ~w:
   br label %~w
 
-~w:',
+~w:
+~w',
           [EntryLabel,
            EntryLabel,
            HeadLabel,
@@ -11397,13 +11437,14 @@ plawk_scalar_action_sequence_pairs([while_loop(Cond, Body) | Rest],
            BodyDoneBrIR,
            BodyDoneLabel,
            HeadLabel,
-           AfterLabel]),
+           AfterLabel,
+           AfterPhiIR]),
       NextOpIndex is OpIndex + 1
     },
     [GlobalIR-IR],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, AfterLabel, RuleIndex,
-        NextOpIndex, HeadValues, Values, FinalOpIndex, ExitLabel, RestNextExits),
-    { append(InnerNextExits, RestNextExits, NextExits) }.
+        NextOpIndex, AfterValues, Values, FinalOpIndex, ExitLabel, RestNextExits),
+    { append(RestExits, RestNextExits, NextExits) }.
 % do_while_loop: like while_loop but the condition tests AFTER the body, so the
 % body always runs at least once. The head phi sits at the top of the body
 % block; the condition reads the body's OUTPUT values (the exit values), since
@@ -12094,15 +12135,41 @@ plawk_i64_guarded_div_lines(LLVMOp, Base, LeftIR, RightIR, Lines) :-
 
 plawk_branch_to_done_ir(none, _DoneLabel, '  br label %continue_loop') :-
     !.
-plawk_branch_to_done_ir(break, _DoneLabel, '  br label %break_close_stream') :-
-    !.
+% `break` inside a loop leaves that loop (branch to its exit label); at rule
+% level it keeps its stream-break meaning. `continue` (only valid in a loop)
+% branches to the loop's continue target. The enclosing loop is read from the
+% loop-context stack (plawk_loopctx_current).
+plawk_branch_to_done_ir(break, _DoneLabel, IR) :-
+    !,
+    (   plawk_loopctx_current(loop_ctx(BreakLabel, _ContinueLabel))
+    ->  format(atom(IR), '  br label %~w', [BreakLabel])
+    ;   IR = '  br label %break_close_stream'
+    ).
+plawk_branch_to_done_ir(continue, _DoneLabel, IR) :-
+    !,
+    plawk_loopctx_current(loop_ctx(_BreakLabel, ContinueLabel)),
+    format(atom(IR), '  br label %~w', [ContinueLabel]).
 plawk_branch_to_done_ir(ExitLabel, DoneLabel, IR) :-
     ExitLabel \== none,
     ExitLabel \== break,
+    ExitLabel \== continue,
     format(atom(IR), '  br label %~w', [DoneLabel]).
+
+% The loop-context stack: each loop pushes loop_ctx(BreakLabel, ContinueLabel)
+% around its body, so a break/continue anywhere in the body (including nested
+% ifs) branches to the innermost loop's labels. Non-backtrackable global with
+% manual push/pop; nested loops stack naturally.
+plawk_loopctx_push(Ctx) :-
+    ( nb_current(plawk_loopctx, Stack) -> true ; Stack = [] ),
+    nb_setval(plawk_loopctx, [Ctx | Stack]).
+plawk_loopctx_pop :-
+    ( nb_current(plawk_loopctx, [_ | Stack]) -> nb_setval(plawk_loopctx, Stack) ; true ).
+plawk_loopctx_current(Ctx) :-
+    nb_current(plawk_loopctx, [Ctx | _]).
 
 plawk_branch_terminal_exit(none).
 plawk_branch_terminal_exit(break).
+plawk_branch_terminal_exit(continue).
 
 plawk_scalar_if_join_pairs(ThenExitLabel, _ThenValues, ElseExitLabel, _ElseValues, _Slots, _Prefix, _OpIndex, _Pairs) :-
     plawk_branch_terminal_exit(ThenExitLabel),
@@ -12195,6 +12262,77 @@ plawk_foreach_head_phi_lines([Slot | Slots], [InValue | InValues],
     [Line],
     plawk_foreach_head_phi_lines(Slots, InValues, OutValues, FeBase,
         EntryLabel, DoneLabel, NextIndex).
+
+%% Loop break/continue merge phis (PLAWK_CONTROL_FLOW_PLAN.md 3b) --------------
+
+% Partition a loop body's exits: loop-local `break` / `continue` (consumed by
+% the loop) vs everything else (`next`, propagated to the record loop).
+plawk_partition_loop_exits([], [], [], []).
+plawk_partition_loop_exits([branch_break(L, V) | R], [branch_break(L, V) | Bs], Cs, Ns) :-
+    !,
+    plawk_partition_loop_exits(R, Bs, Cs, Ns).
+plawk_partition_loop_exits([branch_continue(L, V) | R], Bs, [branch_continue(L, V) | Cs], Ns) :-
+    !,
+    plawk_partition_loop_exits(R, Bs, Cs, Ns).
+plawk_partition_loop_exits([X | R], Bs, Cs, [X | Ns]) :-
+    plawk_partition_loop_exits(R, Bs, Cs, Ns).
+
+% A `while` head phi per slot: the loop-carried value merges the pre-loop value
+% (from entry), the body's output (from the back edge), and each `continue`
+% point's value.
+plawk_while_head_phi_ir(Slots, InValues, OutValues, Continues, Base,
+        EntryLabel, BodyDoneLabel, IR) :-
+    phrase(plawk_while_head_phi_lines(Slots, InValues, OutValues, Continues,
+        Base, EntryLabel, BodyDoneLabel, 0), Lines),
+    atomic_list_concat(Lines, '\n', IR).
+
+plawk_while_head_phi_lines([], [], [], _Cs, _Base, _E, _BD, _) -->
+    [].
+plawk_while_head_phi_lines([Slot | Slots], [In | Ins], [Out | Outs], Continues,
+        Base, E, BD, I) -->
+    { plawk_slot_llvm_type(Slot, Type),
+      format(atom(BaseIncs), '[~w, %~w], [~w, %~w]', [In, E, Out, BD]),
+      plawk_loop_exit_incomings(Continues, I, ContIncs),
+      atomic_list_concat([BaseIncs | ContIncs], ', ', IncsIR),
+      format(atom(Line), '  %~w_slot_~w = phi ~w ~w', [Base, I, Type, IncsIR]),
+      I1 is I + 1
+    },
+    [Line],
+    plawk_while_head_phi_lines(Slots, Ins, Outs, Continues, Base, E, BD, I1).
+
+% The `after` block phi merging the normal loop exit (NormalValues from
+% NormalLabel) with each `break` point's value. No breaks -> no phi, and the
+% post-loop values are just the normal-exit values.
+plawk_loop_after_ir(_Slots, NormalValues, _NormalLabel, [], _Base, NormalValues, '') :-
+    !.
+plawk_loop_after_ir(Slots, NormalValues, NormalLabel, Breaks, Base, AfterValues, IR) :-
+    phrase(plawk_loop_after_phi_lines(Slots, NormalValues, NormalLabel, Breaks,
+        Base, 0), Lines),
+    atomic_list_concat(Lines, '\n', IR),
+    findall(V,
+        ( nth0(I, Slots, _), format(atom(V), '%~w_after_slot_~w', [Base, I]) ),
+        AfterValues).
+
+plawk_loop_after_phi_lines([], [], _NL, _Bs, _Base, _) -->
+    [].
+plawk_loop_after_phi_lines([Slot | Slots], [NV | NVs], NL, Breaks, Base, I) -->
+    { plawk_slot_llvm_type(Slot, Type),
+      format(atom(Normal), '[~w, %~w]', [NV, NL]),
+      plawk_loop_exit_incomings(Breaks, I, BreakIncs),
+      atomic_list_concat([Normal | BreakIncs], ', ', IncsIR),
+      format(atom(Line), '  %~w_after_slot_~w = phi ~w ~w', [Base, I, Type, IncsIR]),
+      I1 is I + 1
+    },
+    [Line],
+    plawk_loop_after_phi_lines(Slots, NVs, NL, Breaks, Base, I1).
+
+% One phi incoming per break/continue exit for slot I: [value-at-exit, %block].
+plawk_loop_exit_incomings([], _I, []).
+plawk_loop_exit_incomings([Exit | Rest], I, [Inc | Incs]) :-
+    Exit =.. [_Kind, Label, Values],
+    nth0(I, Values, V),
+    format(atom(Inc), '[~w, %~w]', [V, Label]),
+    plawk_loop_exit_incomings(Rest, I, Incs).
 
 replace_nth0(0, [_Old | Rest], Value, [Value | Rest]) :-
     !.

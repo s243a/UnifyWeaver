@@ -2,14 +2,13 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
-% plawk loop control -- `break` / `continue` (PLAWK_CONTROL_FLOW_PLAN.md 3b),
-% the SURFACE + a guard. `continue` parses to a `continue` action. The while /
-% do-while loop runtime is landed, but LOOP-LOCAL break/continue is not yet
-% wired: inside a loop `break` would otherwise lower to the rule-level
-% stream-break (stop reading records), a silent mis-compile. So a `break`
-% inside a loop, or any `continue`, is a clean not-yet error until the runtime
-% lands (it needs SSA merge phis at the loop exit + scalar `if` conditions).
-% `break` OUTSIDE a loop keeps its existing stream-break meaning.
+% plawk loop control -- `break` / `continue` (PLAWK_CONTROL_FLOW_PLAN.md 3b).
+% Loop-local break/continue is wired for `while` loops: `break` leaves the loop
+% (an SSA phi at the loop's `after` merges the break value with the normal
+% exit), `continue` re-tests the condition (an extra incoming to the head phi).
+% `break` OUTSIDE a loop keeps its rule-level stream-break meaning. `do-while`
+% break/continue is a clean not-yet error (its condition sits in the body-done
+% block, needing an extra merge phi there).
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -18,55 +17,65 @@
 
 :- begin_tests(plawk_loop_control).
 
-% `continue` parses to a `continue` action.
+% `continue` / `break` parse to their actions.
 test(continue_parses) :-
     plawk_parse_string("{ while (i < 3) { continue } }\n",
         program([], [rule(always,
             [while_loop(cmp(var(i), lt, int(3)), [continue])])], [])),
     !.
 
-% `break` still parses (unchanged) as a `break` action.
 test(break_parses) :-
     plawk_parse_string("{ while (i < 3) { break } }\n",
         program([], [rule(always,
             [while_loop(cmp(var(i), lt, int(3)), [break])])], [])),
     !.
 
-% A `break` inside a loop body is a clean not-yet error (exit 2) -- guarding the
-% silent stream-break mis-compile.
-test(break_in_loop_is_not_yet_error) :-
+% --- while break ------------------------------------------------------------
+
+% `break` leaves the loop: `while (i < 10) { if (i > 2) break; print i; i++ }`
+% prints 0/1/2 and stops.
+test(while_break, [condition(clang_available)]) :-
     ldir(Dir),
-    Src = "{ i = 0; while (i < 3) { print i; break } }\n",
-    build_status(Dir, 'lb', Src, St),
-    assertion(St == 2),
+    Src = "{ i = 0; while (i < 10) { if (i > 2) break; print i; i++ } }\n",
+    build_run(Dir, 'wb', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "0\n1\n2\n"),
     !.
 
-% A `break` inside an `if` inside a loop is likewise guarded (subtree search).
-test(break_in_if_in_loop_is_not_yet_error) :-
+% The break value flows past the loop: after breaking at i == 3, END sees i = 3
+% (proves the `after` merge phi carries the break-point value).
+test(while_break_state_to_end, [condition(clang_available)]) :-
     ldir(Dir),
-    Src = "{ i = 0; while (i < 3) { if ($1 > 100) { break } i++ } }\n",
-    build_status(Dir, 'lbif', Src, St),
-    assertion(St == 2),
+    Src = "{ i = 0; while (i < 10) { if (i > 2) break; i++ } }\nEND { print i }\n",
+    build_run(Dir, 'wbe', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "3\n"),
     !.
 
-% A `continue` anywhere is a clean not-yet error (it only means loop control).
-test(continue_is_not_yet_error) :-
+% An unconditional trailing break runs the body once.
+test(while_break_trailing, [condition(clang_available)]) :-
     ldir(Dir),
-    Src = "{ i = 0; while (i < 3) { continue } }\n",
-    build_status(Dir, 'lc', Src, St),
-    assertion(St == 2),
+    Src = "{ i = 0; while (i < 5) { print i; i++; break } }\n",
+    build_run(Dir, 'wbt', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "0\n"),
     !.
 
-% A do-while body with control is also guarded.
-test(break_in_do_while_is_not_yet_error) :-
+% --- while continue ---------------------------------------------------------
+
+% `continue` re-tests the condition, skipping the rest of the body:
+% `while (i < 5) { i++; if (i > 3) continue; print i }` prints 1/2/3.
+test(while_continue, [condition(clang_available)]) :-
     ldir(Dir),
-    Src = "{ i = 0; do { break } while (i < 3) }\n",
-    build_status(Dir, 'ldw', Src, St),
-    assertion(St == 2),
+    Src = "{ i = 0; while (i < 5) { i++; if (i > 3) continue; print i } }\n",
+    build_run(Dir, 'wc', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "1\n2\n3\n"),
     !.
 
-% `break` OUTSIDE a loop (rule-level stream break) still compiles and runs --
-% the guard only fires for loop bodies.
+% --- boundaries -------------------------------------------------------------
+
+% `break` OUTSIDE a loop (rule-level stream break) still compiles and runs.
 test(rule_level_break_still_runs, [condition(clang_available)]) :-
     ldir(Dir),
     Src = "$1 == \"stop\" { break }\n{ print $1 }\n",
@@ -75,7 +84,22 @@ test(rule_level_break_still_runs, [condition(clang_available)]) :-
     assertion(Out == "a\n"),
     !.
 
-% A plain loop with no break/continue is unaffected (no false trigger).
+% `do-while` break/continue is a clean not-yet error (runtime pending).
+test(do_while_break_is_not_yet_error) :-
+    ldir(Dir),
+    Src = "{ i = 0; do { print i; break } while (i < 5) }\n",
+    build_status(Dir, 'dwb', Src, St),
+    assertion(St == 2),
+    !.
+
+test(do_while_continue_is_not_yet_error) :-
+    ldir(Dir),
+    Src = "{ i = 0; do { continue } while (i < 5) }\n",
+    build_status(Dir, 'dwc', Src, St),
+    assertion(St == 2),
+    !.
+
+% A plain loop with no break/continue is unaffected.
 test(plain_loop_builds, [condition(clang_available)]) :-
     ldir(Dir),
     Src = "{ i = 0; while (i < 3) { print i; i++ } }\n",

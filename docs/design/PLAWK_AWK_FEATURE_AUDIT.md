@@ -38,7 +38,7 @@ only (runtime pending) · ❌ missing.
 | `do { } while (COND)` | ✅ | runtime landed; body runs at least once; same general condition |
 | `next` | ✅ | structural (guarded clause per rule) |
 | `break` (rule-level stream break) | ✅ | non-standard awk extension; stops the record stream |
-| `break` / `continue` (loop-local) | ⏳ | `continue` parses; loop-local break/continue is a clean not-yet error (guards a silent stream-break mis-compile) — runtime pending, `PLAWK_CONTROL_FLOW_PLAN.md` §3b |
+| `break` / `continue` (loop-local) | ◐ | **`while` loops: landed** (`break` leaves the loop, `continue` re-tests — SSA merge phis at the loop exit/head). `do-while` break/continue and nested-loop break: not yet (`PLAWK_CONTROL_FLOW_PLAN.md` §3b) |
 | `if` with a plain (non-accumulator) body | ✅ | `{ if (c) { print $1 } }` compiles and runs (fixed by the while-runtime body-print enablers); if/else with plain bodies too |
 | regex in `if` (`if ($0 ~ /re/)`) | ✅ | `if ($0 ~ /re/) { … }` and `!~` compile and run — guards a plain body |
 | brace-less `if`/loop body | ✅ | `if (c) print`, `while (c) x++`, `do stmt while (c)`, braceless else-if chains — a body is a braced block or one statement |
@@ -94,10 +94,11 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    phis — no memory slots needed after all; see `PLAWK_CONTROL_FLOW_PLAN.md`).
    Body: `set` / `inc` / `+=` over i64 + `print`. Enablers landed with it:
    **bare scalar-var print** (`print i`) and a **body-printing scalar chain with
-   no `END`**. **PR 3 (general condition) also LANDED**: the condition is now
-   scalar comparisons `VAR CMP (int | VAR)` combined with `&&` / `||`. Remaining:
-   `break` / `continue` (PR 3b — SSA phi-merge + break's rule-vs-loop semantics)
-   and nested / multi-pass loops (PR 4).
+   no `END`**. **PR 3 (general condition) LANDED**: scalar comparisons
+   `VAR CMP (int | VAR)` combined with `&&` / `||`. **PR 3b (`while`
+   break/continue) LANDED**: SSA merge phis at the loop exit (`break`) and head
+   (`continue`); scalar `if` conditions and END scalar-`if` landed alongside.
+   Remaining: `do-while` break/continue, and nested / multi-pass loops (PR 4).
 2. **User-function call in text/print context — LANDED (auto-coerce).**
    `print f($1)` used to return `0`: a text field reached the synthesised
    `f(X,R) :- R is X*2` as an *atom*, failing `is`. Now the synthesised clause

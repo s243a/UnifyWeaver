@@ -93,30 +93,36 @@ while.after.N:
    (`plawk_while_cond_vars` registers them). A single `VAR CMP int` still parses
    to a bare `cmp(...)`, so PR 2 is a strict subset. Tests:
    `tests/test_plawk_while.pl` (var-bound, `&&`, `||`, do-while var-bound).
-3b. **`break` / `continue` — SURFACE + GUARD LANDED; runtime is the follow-on.**
-   The `continue` keyword parses (to a `continue` action); `break` already did.
-   A `break` inside a loop body, or any `continue`, is now a **clean not-yet
-   error** (`check_loop_control`) — this **guards a silent mis-compile**: inside
-   a loop `break` used to lower to the rule-level stream-break, stopping the
-   record stream entirely instead of leaving the loop. `break` *outside* a loop
-   keeps its existing stream-break meaning. The runtime still to wire:
-   - **SSA phi merge.** A `break` jumps to the loop's `after`; that block then
-     needs a phi merging the normal exit (head-phi values, condition false) with
-     the value set at *each* break point. A `continue` adds a back-edge into the
-     head phi (`while`) / body-condition (`do-while`) from each continue point.
-     The loop emitter collects the body's `branch_break` / `branch_continue`
-     exits (delivered via `InnerNextExits`) and builds these merge phis instead
-     of letting them propagate to the record loop. A **loop-context stack in a
-     global** (pushed/popped around each loop body, read by `break`/`continue`
-     and by `plawk_branch_to_done_ir`) redirects the branches to the enclosing
-     loop's labels without threading a new argument through the ~14-clause
-     sequence walker; nested loops fall out because each loop consumes only the
-     exits generated while it was innermost.
+3b. **`break` / `continue` — `while` LANDED; `do-while` / nested pending.**
+   Loop-local break/continue is wired for `while` loops. `break` leaves the loop;
+   `continue` re-tests the condition. `break` *outside* a loop keeps its
+   stream-break meaning; a break/continue inside a **`do-while`** is still a clean
+   not-yet error (`check_loop_control`), and **nested loops** are outside the
+   compilable surface (a separate gap). How it works:
+   - **SSA phi merge (landed).** A `break` jumps to the loop's `after`, whose phi
+     (`plawk_loop_after_ir`) merges the normal exit (head-phi values, condition
+     false) with the value at *each* break point — so a value set before the
+     break flows past the loop (verified: `while (…) { if (i>2) break; i++ }` then
+     `END { print i }` prints `3`). A `continue` adds an extra incoming to the
+     `while` head phi (`plawk_while_head_phi_ir`) from each continue point and
+     branches back to the head to re-test.
+   - **Loop-context stack (landed).** `plawk_loopctx_push/pop/current` hold
+     `loop_ctx(BreakLabel, ContinueLabel)` around each loop body; `break` /
+     `continue` and `plawk_branch_to_done_ir` read the top, so a break/continue
+     nested in an `if` branches to the enclosing loop's labels — **without**
+     threading a new argument through the ~14-clause sequence walker. The loop
+     partitions its body's exits (`plawk_partition_loop_exits`): `break` /
+     `continue` are consumed here; `next` propagates to the record loop.
    - **`break` semantics.** plawk uses `break` at *rule-body* level to mean "stop
-     the record stream" (`break_close_stream`) — non-standard awk. In a loop,
-     `break` must mean *loop* break; the loop intercepts its own body's break
-     exits (the guard above makes this a hard boundary today). `next`-inside-loop
-     stays "next record" (propagates past the loop).
+     the record stream" (`break_close_stream`) — non-standard awk. Inside a loop,
+     the loop-context stack redirects `break` to the loop exit; outside a loop it
+     still means stream-break. `next`-inside-loop stays "next record".
+   - **`do-while` / nested — the remaining work.** `do-while`'s condition sits in
+     the body-done block, so `continue` needs an extra merge phi there (and the
+     head-phi back edge must read it); guarded as not-yet for now. Nested-loop
+     support is a separate codegen item (§4) — the loop-context *stack* already
+     handles the break/continue redirection for nesting, but the underlying
+     nested-loop lowering isn't wired.
    - **Dependency — scalar `if` conditions — LANDED.** A *counter-based* break
      (`if (i > 2) break`) needs the `if` condition to accept a scalar variable.
      This shipped: `if (COND)` now parses a scalar comparison (`i > 2`,
