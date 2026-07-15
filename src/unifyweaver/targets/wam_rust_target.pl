@@ -4894,6 +4894,90 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 if self.unify(&a2, &len) { self.pc += 1; true } else { false }
             }
+            "split_string/4" => {
+                let text = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .as_ref().and_then(Self::value_atomic_text) {
+                    Some(t) => t,
+                    None => return false,
+                };
+                let separators = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .as_ref().and_then(Self::value_atomic_text) {
+                    Some(t) => t.chars().collect::<Vec<_>>(),
+                    None => return false,
+                };
+                let pads = match self.get_reg_raw("A3")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .as_ref().and_then(Self::value_atomic_text) {
+                    Some(t) => t.chars().collect::<Vec<_>>(),
+                    None => return false,
+                };
+                let parts = text
+                    .split(|ch| separators.contains(&ch))
+                    .map(|part| {
+                        Value::Atom(part.trim_matches(|ch| pads.contains(&ch)).to_string())
+                    })
+                    .collect::<Vec<_>>();
+                let output = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::List(parts)) {
+                    self.pc += 1;
+                    true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "atom_split/3" => {
+                let text = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(s)) => s,
+                    _ => return false,
+                };
+                let separator = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(s)) => s,
+                    _ => return false,
+                };
+                let mut separator_chars = separator.chars();
+                let separator_char = match separator_chars.next() {
+                    Some(ch) if separator_chars.next().is_none() => ch,
+                    _ => return false,
+                };
+                let parts = text
+                    .split(separator_char)
+                    .map(|part| Value::Atom(part.to_string()))
+                    .collect::<Vec<_>>();
+                let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::List(parts)) {
+                    self.pc += 1;
+                    true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "atom_starts_with/2" | "atom_ends_with/2" | "atom_contains/2" => {
+                let text = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(s)) => s,
+                    _ => return false,
+                };
+                let fragment = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(s)) => s,
+                    _ => return false,
+                };
+                let matched = match op {
+                    "atom_starts_with/2" => text.starts_with(&fragment),
+                    "atom_ends_with/2" => text.ends_with(&fragment),
+                    "atom_contains/2" => text.contains(&fragment),
+                    _ => false,
+                };
+                if matched { self.pc += 1; true } else { false }
+            }
             "atom_concat/3" | "string_concat/3" => {
                 let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
                 let v2 = self.get_reg_raw("A2").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);

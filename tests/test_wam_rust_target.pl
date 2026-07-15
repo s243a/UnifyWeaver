@@ -488,6 +488,11 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, '"pairs_keys/2" | "pairs_values/2"'),
         sub_string(S, _, _, _, '"pairs_keys_values/3"'),
         sub_string(S, _, _, _, 'pair_list_columns'),
+        sub_string(S, _, _, _, '"split_string/4"'),
+        sub_string(S, _, _, _, '"atom_split/3"'),
+        sub_string(S, _, _, _, '"atom_starts_with/2"'),
+        sub_string(S, _, _, _, '"atom_ends_with/2"'),
+        sub_string(S, _, _, _, '"atom_contains/2"'),
         %% copy_term_walk helper (sharing-preserving recursive copy).
         sub_string(S, _, _, _, 'copy_term_walk'),
         %% Runtime-parser bridge support and the parser-required text/list builtins.
