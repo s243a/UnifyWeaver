@@ -9865,11 +9865,34 @@ plawk_end_print_string_global_lines([string(Value) | Rest], Index) -->
     },
     [Line],
     plawk_end_print_string_global_lines(Rest, NextIndex).
+% a concatenation's string operands emit globals under the same
+% PrintIndex*1000 + part index scheme the END concat print uses.
+plawk_end_print_string_global_lines([concat(Parts) | Rest], Index) -->
+    plawk_end_concat_string_globals(Parts, Index, 0),
+    { NextIndex is Index + 1 },
+    plawk_end_print_string_global_lines(Rest, NextIndex).
 plawk_end_print_string_global_lines([Field | Rest], Index) -->
     { \+ Field = string(_),
+      \+ Field = concat(_),
       NextIndex is Index + 1
     },
     plawk_end_print_string_global_lines(Rest, NextIndex).
+
+plawk_end_concat_string_globals([], _Index, _PartIndex) -->
+    [].
+plawk_end_concat_string_globals([string(Value) | Rest], Index, PartIndex) -->
+    { CombinedIndex is Index * 1000 + PartIndex,
+      format(atom(GlobalName), 'plawk_end_print_string_~w', [CombinedIndex]),
+      llvm_emit_c_string_global(GlobalName, Value, Line, _StringLen, _BytesLen),
+      NextPartIndex is PartIndex + 1
+    },
+    [Line],
+    plawk_end_concat_string_globals(Rest, Index, NextPartIndex).
+plawk_end_concat_string_globals([Part | Rest], Index, PartIndex) -->
+    { \+ Part = string(_),
+      NextPartIndex is PartIndex + 1
+    },
+    plawk_end_concat_string_globals(Rest, Index, NextPartIndex).
 
 plawk_assoc_print_key_global_lines([], _) -->
     [].
@@ -10116,6 +10139,11 @@ plawk_mixed_end_print_lines([string(Value) | Rest], ScalarPlan, AssocPlan, Outpu
     plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
 
 plawk_scalar_print_expr(var(Name), Name).
+% a concatenation contributes each operand's scalar reads (so a printed scalar
+% inside `print a $1 b` gets a slot).
+plawk_scalar_print_expr(concat(Parts), Name) :-
+    member(Part, Parts),
+    plawk_scalar_print_expr(Part, Name).
 plawk_scalar_print_expr(Expr, Name) :-
     plawk_end_scalar_expr(Expr),
     plawk_expr_scalar_read_name(Expr, Name).
@@ -10359,6 +10387,11 @@ plawk_rule_body_print_action(printf(string(Format), Args)) :-
 
 plawk_rule_body_print_field(field(_)).
 plawk_rule_body_print_field(string(_)).
+% a string concatenation (`print $1 $2`): every operand must be a valid print
+% field; they are emitted adjacently with no separator.
+plawk_rule_body_print_field(concat(Parts)) :-
+    Parts = [_, _ | _],
+    maplist(plawk_rule_body_print_field, Parts).
 % a bare scalar variable read (`print i`): substitution rewrites var(Name) to
 % the slot's SSA value at emit time, so a scalar can be printed directly. Only
 % names that resolve to a slot compile; a non-slot var fails substitution.
@@ -10917,6 +10950,11 @@ plawk_substitute_operation_reads(set(Expr0), Slots, Values, set(Expr)) :-
     plawk_substitute_scalar_reads(Expr0, Slots, Values, Expr).
 plawk_substitute_operation_reads(Operation, _Slots, _Values, Operation).
 
+plawk_substitute_scalar_reads(concat(Parts), Slots, Values, concat(SubParts)) :-
+    !,
+    maplist(plawk_substitute_scalar_read_part(Slots, Values), Parts, SubParts).
+plawk_substitute_scalar_read_part(Slots, Values, Part, SubPart) :-
+    plawk_substitute_scalar_reads(Part, Slots, Values, SubPart).
 plawk_substitute_scalar_reads(var(Name), Slots, Values, Substituted) :-
     !,
     nth0(SlotIndex, Slots, Slot),
@@ -12498,6 +12536,50 @@ plawk_scalar_end_print_lines([string(Value) | Rest], StatePlan, OutputSeparator,
     plawk_end_string_print_lines(Value, PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
     plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
+% concatenation in END (`print "total: " sum`): one leading separator, then each
+% operand printed adjacently (no separator between). Each part uses a unique
+% index (PrintIndex*1000 + part) so the fixed-name emitters don't collide.
+plawk_scalar_end_print_lines([concat(Parts) | Rest], StatePlan, OutputSeparator, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_concat_parts(Parts, StatePlan, PrintIndex, 0),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
+
+plawk_end_concat_parts([], _StatePlan, _PrintIndex, _PartIndex) -->
+    [].
+plawk_end_concat_parts([Part | Rest], StatePlan, PrintIndex, PartIndex) -->
+    { CombinedIndex is PrintIndex * 1000 + PartIndex },
+    plawk_end_field_print_lines(Part, StatePlan, CombinedIndex),
+    { NextPartIndex is PartIndex + 1 },
+    plawk_end_concat_parts(Rest, StatePlan, PrintIndex, NextPartIndex).
+
+% One END print field WITHOUT a leading separator (the concat driver adds the
+% single separator before the whole concatenation).
+plawk_end_field_print_lines(var(Name), StatePlan, PrintIndex) -->
+    { plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
+      format(atom(ValueIR), '%final_slot_~w', [SlotIndex]),
+      ( Slot = scalar_double(_Name)
+      -> format(atom(FmtVar), 'end_f64_fmt_~w', [PrintIndex]),
+         format(atom(FmtPtr),
+             '  %~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
+             [FmtVar]),
+         format(atom(PrintCall),
+             '  %printed_end_f64_~w = call i32 (i8*, ...) @printf(i8* %~w, double ~w)',
+             [PrintIndex, FmtVar, ValueIR])
+      ;  format(atom(FmtVar), 'end_i64_fmt_~w', [PrintIndex]),
+         format(atom(PrintVar), 'printed_end_i64_~w', [PrintIndex]),
+         llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
+             [FmtPtr, PrintCall])
+      )
+    },
+    [FmtPtr, PrintCall].
+plawk_end_field_print_lines(string(Value), _StatePlan, PrintIndex) -->
+    plawk_end_string_print_lines(Value, PrintIndex).
+plawk_end_field_print_lines(special('NR'), _StatePlan, PrintIndex) -->
+    plawk_end_nr_print_lines(PrintIndex).
+plawk_end_field_print_lines(Expr, StatePlan, PrintIndex) -->
+    { plawk_end_scalar_expr(Expr) },
+    plawk_end_expr_print_lines(Expr, StatePlan, PrintIndex).
 
 plawk_end_nr_print_lines(PrintIndex) -->
     { format(atom(FmtVar), 'end_nr_fmt_~w', [PrintIndex]),
@@ -13039,6 +13121,9 @@ plawk_fields_include_nr(Fields) :-
     plawk_expr_uses_nr(Field).
 
 plawk_expr_uses_nr(special('NR')).
+plawk_expr_uses_nr(concat(Parts)) :-
+    member(Part, Parts),
+    plawk_expr_uses_nr(Part).
 plawk_expr_uses_nr(Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     ( plawk_expr_uses_nr(Left)
@@ -13275,6 +13360,12 @@ plawk_print_field_ir(Field, FieldSeparator, Index) -->
     },
     [GlobalIR-BodyIR].
 
+% A concatenation prints its operands adjacently -- NO field separator between
+% them (that is what distinguishes `print $1 $2` from `print $1, $2`). Each part
+% lowers via the ordinary print-field emitter under a unique sub-prefix.
+plawk_prefixed_print_field_ir(concat(Parts), FieldSeparator, Prefix, Index) -->
+    { format(atom(ConcatPrefix), '~w_concat_~w', [Prefix, Index]) },
+    plawk_concat_parts_ir(Parts, FieldSeparator, ConcatPrefix, 0).
 plawk_prefixed_print_field_ir(Field, FieldSeparator, Prefix, Index) -->
     { plawk_emit_prefixed_print_expr_ir(Field, FieldSeparator, Prefix, Index,
           Type, GlobalParts, SetupParts),
@@ -13284,6 +13375,13 @@ plawk_prefixed_print_field_ir(Field, FieldSeparator, Prefix, Index) -->
       atomic_list_concat(BodyParts, '\n', BodyIR)
     },
     [GlobalIR-BodyIR].
+
+plawk_concat_parts_ir([], _FieldSeparator, _Prefix, _PartIndex) -->
+    [].
+plawk_concat_parts_ir([Part | Rest], FieldSeparator, Prefix, PartIndex) -->
+    plawk_prefixed_print_field_ir(Part, FieldSeparator, Prefix, PartIndex),
+    { NextIndex is PartIndex + 1 },
+    plawk_concat_parts_ir(Rest, FieldSeparator, Prefix, NextIndex).
 
 plawk_emit_print_expr_ir(Field, FieldSeparator, Index, Type, GlobalParts, SetupParts) :-
     plawk_emit_print_expr_for_context(Field, FieldSeparator, print_context(normal, '', Index),
