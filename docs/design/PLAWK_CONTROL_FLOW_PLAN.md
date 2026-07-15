@@ -124,8 +124,9 @@ while.after.N:
      loop-condition emitter (reads slot values), alongside the existing
      field/pattern guards. So a scalar `if` already works inside a loop body
      (e.g. `while (i < 5) { if (i > 2) print i; i++ }`); only the `break`/
-     `continue` *jump* itself remains to wire. (Scalar `if` in an `END` block is
-     a separate follow-on — END uses its own lowering.)
+     `continue` *jump* itself remains to wire. (Scalar `if` in an `END` block --
+     `END { if (COND) print … ; else print … }`, over final slot values -- also
+     landed.)
 4. **Nested loops / loop in multi-pass `pass { }`.** Unique slot naming per loop
    nesting; the multi-pass driver's scalar handling.
 

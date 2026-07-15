@@ -1330,6 +1330,12 @@ forin_accum_operand(_Array, _Key, int(Value)) -->
 end_action(Action) -->
     for_in_action(Action),
     !.
+% a scalar-guarded print in END: `if (n > 1) print ...` [`else print ...`].
+% The condition is a scalar comparison (END has no current record), lowered
+% against the final slot values; each branch is a single print.
+end_action(Action) -->
+    if_action(Action),
+    !.
 end_action(Action) -->
     print_action(Action).
 
