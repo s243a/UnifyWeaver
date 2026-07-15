@@ -117,12 +117,15 @@ while.after.N:
      `break` must mean *loop* break; the loop intercepts its own body's break
      exits (the guard above makes this a hard boundary today). `next`-inside-loop
      stays "next record" (propagates past the loop).
-   - **Dependency — scalar `if` conditions.** For a *counter-based* break
-     (`if (i > 2) break`) to be useful the `if` condition must accept a scalar
-     variable; today `if (COND)` only takes field/pattern conditions (`$1 > 2`),
-     not `i > 2` (parse error). So this PR also needs the `if` condition grammar
-     extended to scalar comparisons (the same `VAR CMP int/VAR` shape the loop
-     condition already uses). Do it alongside, or first.
+   - **Dependency — scalar `if` conditions — LANDED.** A *counter-based* break
+     (`if (i > 2) break`) needs the `if` condition to accept a scalar variable.
+     This shipped: `if (COND)` now parses a scalar comparison (`i > 2`,
+     `i < n && j > 0`) as `scalar_if(_)`, lowered by `plawk_if_cond_ir` via the
+     loop-condition emitter (reads slot values), alongside the existing
+     field/pattern guards. So a scalar `if` already works inside a loop body
+     (e.g. `while (i < 5) { if (i > 2) print i; i++ }`); only the `break`/
+     `continue` *jump* itself remains to wire. (Scalar `if` in an `END` block is
+     a separate follow-on — END uses its own lowering.)
 4. **Nested loops / loop in multi-pass `pass { }`.** Unique slot naming per loop
    nesting; the multi-pass driver's scalar handling.
 

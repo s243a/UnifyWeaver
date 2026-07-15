@@ -1633,12 +1633,26 @@ while_cmp_rhs(int(N)) -->
 while_cmp_rhs(var(W)) -->
     identifier(W).
 
+%% if_condition(-Cond)//
+%
+%  An `if` condition is either a SCALAR comparison over variables (`if (i > 2)`,
+%  `if (i < n && j > 0)`) -- the same `VAR CMP int/VAR` shape as a loop condition,
+%  wrapped as scalar_if(_) so the lowering reads slot values -- or the existing
+%  field/pattern guard (`$1 > 2`, `$0 ~ /re/`, combinators). The scalar form is
+%  tried first; it fails fast on a field condition (a `$` is not an identifier),
+%  falling through to the pattern. A single condition is scalar OR pattern, not a
+%  mix. (PLAWK_CONTROL_FLOW_PLAN.md 3b -- unblocks counter-based loop control.)
+if_condition(scalar_if(Cond)) -->
+    while_condition(Cond).
+if_condition(Pattern) -->
+    condition_pattern(Pattern).
+
 if_action(if(Pattern, ThenActions, ElseActions)) -->
     "if",
     ws,
     "(",
     ws,
-    condition_pattern(Pattern),
+    if_condition(Pattern),
     ws,
     ")",
     ws,
