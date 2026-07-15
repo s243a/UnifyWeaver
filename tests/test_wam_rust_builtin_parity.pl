@@ -83,6 +83,12 @@ t_file_metadata(Size, Time) :-
     size_file('Cargo.toml', Size),
     time_file('Cargo.toml', Time).
 
+:- dynamic t_system_queries/3.
+t_system_queries(Time, Pid, Path) :-
+    get_time(Time),
+    getpid(Pid),
+    getenv('PATH', Path).
+
 :- dynamic t_pairs_project/2.
 t_pairs_project(Keys, Values) :-
     Pairs = [a-1, b-2],
@@ -219,6 +225,7 @@ test_builtin_parity_execution :-
              user:t_output_family/0,
              user:t_filesystem_query/1,
              user:t_file_metadata/2,
+             user:t_system_queries/3,
              user:t_pairs_project/2, user:t_pairs_split/2, user:t_pairs_zip/1,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
@@ -247,6 +254,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_
     t_output_family_0,
     t_filesystem_query_1,
     t_file_metadata_2,
+    t_system_queries_3,
     t_pairs_project_2, t_pairs_split_2, t_pairs_zip_1,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
     t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
@@ -408,6 +416,19 @@ fn test_file_metadata_compiled() {
         Value::Float(time) => assert!(time.is_finite() && time > 0.0),
         other => panic!("expected float modification time, got {:?}", other),
     }
+}
+
+#[test]
+fn test_system_queries_compiled() {
+    let mut vm = vmnew();
+    assert!(t_system_queries_3(&mut vm, ub("Time"), ub("Pid"), ub("Path")));
+    match read_var(&vm, "Time") {
+        Value::Float(time) => assert!(time.is_finite() && time > 0.0),
+        other => panic!("expected float wall time, got {:?}", other),
+    }
+    assert_eq!(read_var(&vm, "Pid"), i(i64::from(std::process::id())));
+    assert_eq!(read_var(&vm, "Path"),
+        a(&std::env::var("PATH").expect("PATH must be available to cargo test")));
 }
 
 #[test]
@@ -1406,6 +1427,41 @@ fn test_file_metadata_direct() {
     assert!(!call2("time_file/2", a("definitely_missing_rust_wam_path"), ub("Time")).0);
     assert!(!call2("time_file/2", ub("Path"), ub("Time")).0);
     assert!(!call2("time_file/2", i(7), ub("Time")).0);
+}
+
+#[test]
+fn test_system_queries_direct() {
+    let (time_ok, time_vm) = call1("get_time/1", ub("Time"));
+    assert!(time_ok);
+    match read_var(&time_vm, "Time") {
+        Value::Float(time) => assert!(time.is_finite() && time > 0.0),
+        other => panic!("expected float wall time, got {:?}", other),
+    }
+    assert!(!call1("get_time/1", Value::Float(0.0)).0);
+    assert!(!call1("get_time/1", i(0)).0);
+    assert!(!vmnew().execute_builtin("get_time/1", 1));
+
+    let pid = i64::from(std::process::id());
+    let (pid_ok, pid_vm) = call1("getpid/1", ub("Pid"));
+    assert!(pid_ok);
+    assert_eq!(read_var(&pid_vm, "Pid"), i(pid));
+    assert!(call1("getpid/1", i(pid)).0);
+    assert!(!call1("getpid/1", i(pid + 1)).0);
+    assert!(!call1("getpid/1", a("pid")).0);
+    assert!(!vmnew().execute_builtin("getpid/1", 1));
+
+    let expected_path = std::env::var("PATH").expect("PATH must be available to cargo test");
+    let (env_ok, env_vm) = call2("getenv/2", a("PATH"), ub("Value"));
+    assert!(env_ok);
+    assert_eq!(read_var(&env_vm, "Value"), a(&expected_path));
+    assert!(call2("getenv/2", a("PATH"), a(&expected_path)).0);
+    assert!(!call2("getenv/2", a("PATH"), a("definitely_not_the_path")).0);
+    assert!(!call2("getenv/2", a("UNIFYWEAVER_ENV_MUST_NOT_EXIST_7F3A"), ub("Value")).0);
+    assert!(!call2("getenv/2", ub("Name"), ub("Value")).0);
+    assert!(!call2("getenv/2", i(7), ub("Value")).0);
+    let mut missing_output = vmnew();
+    missing_output.set_reg("A1", a("PATH"));
+    assert!(!missing_output.execute_builtin("getenv/2", 2));
 }
 ',
         setup_call_cleanup(
