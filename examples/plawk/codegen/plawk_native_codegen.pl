@@ -4952,6 +4952,7 @@ plawk_while_cond_vars(or(A, B), Vars) :-
     plawk_while_cond_vars(B, VB),
     append(VA, VB, Vars).
 plawk_while_cond_vars(cmp(var(V), _Op, int(_N)), [V]) :- !.
+plawk_while_cond_vars(cmp(var(V), _Op, string(_S)), [V]) :- !.
 plawk_while_cond_vars(cmp(var(V), _Op, var(W)), [V, W]).
 
 %% plawk_while_cond_ir(+Cond, +Slots, +CondValues, +Base, -CondVar, -IR)
@@ -5008,6 +5009,29 @@ plawk_while_cond_operand(var(Name), Slots, CondValues, Ref) :-
 %  scalar comparison over slots -- lowered like a loop condition, reading the
 %  current slot SSA values (Values0). A field/pattern guard is lowered by the
 %  existing pattern-guard emitter (which reads the record).
+% String-equality guard `if (s == "text")` / `!=` on a string scalar: intern the
+% literal and compare atom ids (interning is canonical, so equal strings share an
+% id). Only == / != (ordering would need strcmp). A single comparison, not
+% combined with && / || (that stays a clean codegen error) -- v1.
+plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
+        _FieldSeparator, GlobalBase, CondValue, GlobalIR-IR) :-
+    memberchk(Op, [eq, ne]),
+    !,
+    nth0(Idx, Slots, Slot),
+    plawk_slot_name(Slot, Name),
+    !,
+    nth0(Idx, Values0, SlotValue),
+    format(atom(LitName), '~w_lit', [GlobalBase]),
+    llvm_emit_c_string_global(LitName, Value, GlobalIR, Len, BytesLen),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(CondValue), '%~w_cond', [GlobalBase]),
+    format(atom(IR),
+'  %~w_litptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  %~w_litid = call i64 @wam_intern_atom(i8* %~w_litptr, i64 ~w)
+  %~w_cond = icmp ~w i64 ~w, %~w_litid',
+        [GlobalBase, BytesLen, BytesLen, LitName,
+         GlobalBase, GlobalBase, Len,
+         GlobalBase, Pred, SlotValue, GlobalBase]).
 plawk_if_cond_ir(scalar_if(Cond), Slots, Values0, _FieldSeparator, GlobalBase,
         CondValue, ''-GuardIR) :-
     !,
@@ -11088,6 +11112,11 @@ plawk_substitute_operation_reads(add(Expr0), Slots, Values, add(Expr)) :-
 plawk_substitute_operation_reads(set(Expr0), Slots, Values, set(Expr)) :-
     !,
     plawk_substitute_scalar_reads(Expr0, Slots, Values, Expr).
+% a string assignment's RHS may read a string scalar (`x = x $1` accumulation);
+% substitute the reads to their current slot values (ssa_str) before the build.
+plawk_substitute_operation_reads(set_str(Src0), Slots, Values, set_str(Src)) :-
+    !,
+    plawk_substitute_scalar_reads(Src0, Slots, Values, Src).
 plawk_substitute_operation_reads(Operation, _Slots, _Values, Operation).
 
 plawk_substitute_scalar_reads(concat(Parts), Slots, Values, concat(SubParts)) :-
@@ -11338,10 +11367,13 @@ plawk_scalar_action_update(set(var(Name), compile_file_handle(Arg)), Name,
         set(compile_file_handle(Arg))) :-
     plawk_foreign_arg(Arg).
 
-% A string-scalar concat part: a field (`$N`, projected as text) or a string
-% literal (embedded in the build format). Other part kinds are a follow-on.
+% A string-scalar concat part: a field (`$N`, projected as text), a string
+% literal (embedded in the build format), or a scalar-variable read (a string
+% scalar, resolved to text -- enables accumulation `x = x $1`). A numeric var in
+% a string concat is the caller's responsibility (it is read as an atom id).
 plawk_str_scalar_part_ok(field(Index)) :- integer(Index), Index >= 0.
 plawk_str_scalar_part_ok(string(Value)) :- string(Value).
+plawk_str_scalar_part_ok(var(Name)) :- atom(Name).
 % Double-typed update expressions: float literals, float($N), and
 % binary trees mixing them with i64 operands or scalar reads. The
 % written slot becomes a double via plawk_scalar_typed_slots/3.
@@ -11894,6 +11926,10 @@ plawk_str_concat_format([], '').
 plawk_str_concat_format([field(_) | Rest], Fmt) :-
     plawk_str_concat_format(Rest, RestFmt),
     atom_concat('%.*s', RestFmt, Fmt).
+% a resolved string-scalar read prints as a null-terminated `%s`.
+plawk_str_concat_format([ssa_str(_) | Rest], Fmt) :-
+    plawk_str_concat_format(Rest, RestFmt),
+    atom_concat('%s', RestFmt, Fmt).
 plawk_str_concat_format([string(Value) | Rest], Fmt) :-
     plawk_str_escape_percent(Value, Escaped),
     plawk_str_concat_format(Rest, RestFmt),
@@ -11913,6 +11949,21 @@ plawk_str_concat_field_lines([], _B, _Empty, _FieldSep, _Pos, [], []).
 plawk_str_concat_field_lines([string(_) | Rest], B, EmptyName, FieldSep, Pos,
         Lines, Frags) :-
     plawk_str_concat_field_lines(Rest, B, EmptyName, FieldSep, Pos, Lines, Frags).
+% a resolved string-scalar read: resolve its atom id to text (id 0 -> empty via
+% the null-safe global), yielding an `i8* <ptr>` snprintf argument for its `%s`.
+plawk_str_concat_field_lines([ssa_str(Value) | Rest], B, EmptyName, FieldSep, Pos,
+        Lines, [Frag | Frags]) :-
+    format(atom(Str), '  %~w_c~w_s = call i8* @wam_atom_to_string(i64 ~w)',
+        [B, Pos, Value]),
+    format(atom(Empty), '  %~w_c~w_e = icmp eq i64 ~w, 0', [B, Pos, Value]),
+    format(atom(Sel),
+        '  %~w_c~w_sptr = select i1 %~w_c~w_e, i8* getelementptr ([1 x i8], [1 x i8]* @.~w, i64 0, i64 0), i8* %~w_c~w_s',
+        [B, Pos, B, Pos, EmptyName, B, Pos]),
+    format(atom(Frag), 'i8* %~w_c~w_sptr', [B, Pos]),
+    ThisLines = [Str, Empty, Sel],
+    Pos1 is Pos + 1,
+    plawk_str_concat_field_lines(Rest, B, EmptyName, FieldSep, Pos1, RestLines, Frags),
+    append(ThisLines, RestLines, Lines).
 plawk_str_concat_field_lines([field(N) | Rest], B, EmptyName, FieldSep, Pos,
         Lines, [Frag | Frags]) :-
     format(atom(Slice),

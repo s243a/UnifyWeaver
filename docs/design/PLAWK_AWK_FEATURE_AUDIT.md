@@ -32,7 +32,7 @@ only (runtime pending) · ❌ missing.
 | `print` (fields, literals, `NR`/`NF`, `length`/`substr`/`index`/`tolower`/`toupper`, arithmetic, **concatenation**) | ✅ | constant fields (`print 1`, `print "x"`) + juxtaposition concat (`print $1 $2`) landed |
 | `printf` | ✅ | standard `%[flags][width][.precision][length]conv`: integers `d`/`i`/`x`/`X`/`o`/`u` + `c` (code point), floats `f`/`g`/`e`/`F`/`G`/`E`, strings `%s`; flags `-+ 0#`, width, precision. Field-slice `%s` takes width but not precision (non-terminated buffer); `%c` needs a numeric arg |
 | var assignment, `+=`, `++`, `//` | ✅ | indexed native scalar slots |
-| `if` / `else` (chains) | ✅ | field/pattern guards (`$1 > 2`, `$0 ~ /re/`) **and scalar-variable conditions** (`if (i > 2)`, `if (i < n && j > 0)`) in rule bodies, loops, **and `END`** (`END { if (n > 1) print … ; else print … }`, over final slot values) |
+| `if` / `else` (chains) | ✅ | field/pattern guards (`$1 > 2`, `$0 ~ /re/`), scalar-variable conditions (`if (i > 2)`, `if (i < n && j > 0)`) in rule bodies, loops, **and `END`**, **and string-equality guards on a string scalar** (`if (s == "text")` / `!=`, lowered as interned atom-id comparison — single `==`/`!=`, not combined with `&&`/`||`) |
 | `for (k in arr)` | ✅ | assoc for-in (rule body + END) |
 | `while (COND)` | ✅ | runtime landed (loop-header phis); condition is scalar comparisons (`VAR CMP int`/`VAR`) combined with `&&`/`||` — `PLAWK_CONTROL_FLOW_PLAN.md` PR 2–3. `break`/`continue` deferred (PR 3b) |
 | `do { } while (COND)` | ✅ | runtime landed; body runs at least once; same general condition |
@@ -68,7 +68,7 @@ only (runtime pending) · ❌ missing.
 | arithmetic `+ - * / % //` | ✅ | i64, awk precedence, safe div/mod |
 | comparison, `~`/`!~` | ✅ | |
 | ternary `?:` | ✅ | `COND ? A : B` in print / printf args **and scalar assignment** (`x = $1 > $2 ? $1 : $2`) — numeric comparison condition, numeric branches (fields, `NR`/`NF`, int literals, i64 arithmetic); lowered to an LLVM `select`. Scalar-var operands, string branches, and `&&`/`||` conditions are follow-ons |
-| string concatenation (juxtaposition `$1 $2`) | ✅ | `print` context **and** assignment: `print $1 $2`; `x = $1 $2` / `x = "id:" $1` build a **string-valued scalar** (an interned atom id in an i64 slot, resolved to text on read/print). Arithmetic binds tighter, comma still splits. Scalar-var concat operand (`x = x $1` accumulation) is a follow-on |
+| string concatenation (juxtaposition `$1 $2`) | ✅ | `print` context **and** assignment: `print $1 $2`; `x = $1 $2` / `x = "id:" $1` build a **string-valued scalar** (an interned atom id in an i64 slot, resolved to text on read/print), **incl. accumulation `x = x $1`** (a string-scalar read as a concat operand — resolved to text and re-interned). Arithmetic binds tighter, comma still splits |
 | exponentiation `^` / `**` | ❌ | |
 
 ## Arrays
