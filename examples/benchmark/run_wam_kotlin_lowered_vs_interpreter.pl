@@ -138,13 +138,13 @@ bench_case(append_500,
 bench_case(fib_15,
            [user:bk_fib/2],
            'bk_fib/2',
-           400,
+           80,
            'run { val st = WamState(); st.writeRegister("A1", Value.IntVal(15L)); st.writeRegister("A2", Value.IntVal(610L)); st }',
            ['bk_fib/2']).
 bench_case(ack_23,
            [user:bk_ack/3],
            'bk_ack/3',
-           2000,
+           800,
            'run { val st = WamState(); st.writeRegister("A1", Value.IntVal(2L)); st.writeRegister("A2", Value.IntVal(3L)); st.writeRegister("A3", Value.IntVal(9L)); st }',
            ['bk_ack/3']).
 
