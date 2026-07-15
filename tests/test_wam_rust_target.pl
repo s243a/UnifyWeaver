@@ -458,6 +458,8 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, '"exists_file/1"'),
         sub_string(S, _, _, _, '"exists_directory/1"'),
         sub_string(S, _, _, _, '"directory_files/2"'),
+        sub_string(S, _, _, _, '"size_file/2"'),
+        sub_string(S, _, _, _, '"time_file/2"'),
         sub_string(S, _, _, _, 'print!("{}", derefed)'),
         sub_string(S, _, _, _, 'nl/0'),
         sub_string(S, _, _, _, 'atom/1'),
