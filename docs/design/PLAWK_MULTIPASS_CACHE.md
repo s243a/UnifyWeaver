@@ -840,6 +840,16 @@ another. Keeping them apart:
     solutions into a RAM buffer and, on crossing the threshold, stop buffering
     and fall through to the spilling demand-driven path (flush or discard the
     prefix). Single pass, and it degrades to streaming exactly when it should.
+  - **`eager` / `when` are contextual keywords, not reserved words.** They are
+    recognised only in the `materialize NAME eager when COND` position (like
+    `materialize` / `gen` / `pass` / `while` / `over` / `as`, none of which are
+    in `plawk_surface_reserved_name` — that set only guards DYNENTRY names). So
+    `when` / `eager` stay legal identifiers and field names everywhere else,
+    keeping the lexer awk-lean. The parse must try the **longest form first**
+    (`… eager when COND` → `… eager` → bare `materialize NAME`), the same
+    backtracking the grammar already uses for typed params (`num x` vs a bare
+    `num`), the while-condition RHS (int before var), and gen-over bindings
+    (`as (a, b)` before `as v`).
 
 #### Original sketch (retained)
 
