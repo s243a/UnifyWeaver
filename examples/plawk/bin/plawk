@@ -108,6 +108,7 @@ build(File, Out0, KeepLL) :-
     % removed; `GenFactClauses` are the synthesised facts.
     check_generator_blocks(File, Program2),
     check_materialized_views(File, Program2, Clauses),
+    check_loop_control(File, Program2),
     resolve_generator_blocks(Program2, Program, GenFactClauses),
     check_multitable_store(File, Program),
     check_query_reader(File, Program),
@@ -364,6 +365,52 @@ check_generator_blocks(File, Program) :-
         [File, Name]),
     halt(2).
 check_generator_blocks(_File, _Program).
+
+% `break` / `continue` for loop control (PLAWK_CONTROL_FLOW_PLAN.md §3b). The
+% while / do-while loops run, but LOOP-LOCAL break/continue is not yet wired:
+% inside a loop `break` currently lowers to the rule-level stream-break
+% (`break_close_stream`), which stops reading records entirely instead of just
+% leaving the loop -- a silent mis-compile. So a `break` inside a loop body, or
+% any `continue`, is a clean not-yet error until the runtime lands (it needs SSA
+% merge phis at the loop exit + scalar `if` conditions to guard the jump).
+% `break` OUTSIDE a loop keeps its existing stream-break meaning.
+check_loop_control(File, Program) :-
+    (   plawk_loop_body_has_control(Program)
+    ;   plawk_ast_contains(Program, continue)
+    ),
+    !,
+    format(user_error,
+        'plawk: ~w uses `break`/`continue` for loop control. The loop runtime \c
+         is landed, but loop-local `break`/`continue` is not yet wired (it needs \c
+         SSA merge phis at the loop exit and scalar `if` conditions); see \c
+         PLAWK_CONTROL_FLOW_PLAN.md section 3b.~n',
+        [File]),
+    halt(2).
+check_loop_control(_File, _Program).
+
+% True if some `while` / `do-while` body contains a `break` or `continue`
+% anywhere in its subtree.
+plawk_loop_body_has_control(Term) :-
+    plawk_ast_loop_body(Term, Body),
+    ( plawk_ast_contains(Body, break)
+    ; plawk_ast_contains(Body, continue)
+    ),
+    !.
+
+plawk_ast_loop_body(while_loop(_Cond, Body), Body).
+plawk_ast_loop_body(do_while_loop(Body, _Cond), Body).
+plawk_ast_loop_body(Term, Body) :-
+    compound(Term),
+    arg(_, Term, Arg),
+    plawk_ast_loop_body(Arg, Body).
+
+% Structural sub-term search (handles lists, since a body is an action list).
+plawk_ast_contains(Term, Term) :-
+    !.
+plawk_ast_contains(Term, Target) :-
+    compound(Term),
+    arg(_, Term, Arg),
+    plawk_ast_contains(Arg, Target).
 
 % `materialize NAME` (PLAWK_MULTIPASS_CACHE.md §3.9): mark a view / relation to
 % be materialised-and-cached (computed once, reused by every query pass that
