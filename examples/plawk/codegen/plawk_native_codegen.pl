@@ -5851,12 +5851,17 @@ plawk_state_slot_index(StatePlan, Slot, Index) :-
 % declared, matching awk's untyped surface.
 plawk_slot_name(scalar_counter(Name), Name).
 plawk_slot_name(scalar_double(Name), Name).
+% A string scalar's slot holds an interned atom id (an i64); the id 0 is the
+% "unset" sentinel, printed as the empty string.
+plawk_slot_name(scalar_string(Name), Name).
 
 plawk_slot_llvm_type(scalar_counter(_Name), i64).
 plawk_slot_llvm_type(scalar_double(_Name), double).
+plawk_slot_llvm_type(scalar_string(_Name), i64).
 
 plawk_slot_zero_ir(scalar_counter(_Name), '0').
 plawk_slot_zero_ir(scalar_double(_Name), '0.0').
+plawk_slot_zero_ir(scalar_string(_Name), '0').
 
 plawk_state_slot_lookup(StatePlan, Name, Index, Slot) :-
     plawk_state_plan_slots(StatePlan, Slots),
@@ -6101,7 +6106,22 @@ plawk_scalar_typed_slots(Rules, Names, Slots) :-
         ),
         Updates),
     plawk_scalar_double_fixpoint(Updates, [], Doubles),
-    maplist(plawk_scalar_typed_slot(Doubles), Names, Slots).
+    plawk_scalar_string_names(Rules, Strings),
+    maplist(plawk_scalar_typed_slot(Doubles, Strings), Names, Slots).
+
+% A scalar is string-typed when it is assigned a string RHS (`x = $1 $2` or
+% `x = "text"`), tracked separately from the double/counter fixpoint. v1 looks
+% at top-level rule-body assignments; a nested (if/loop-body) string assignment
+% is a follow-on.
+plawk_scalar_string_names(Rules, Strings) :-
+    findall(Name,
+        ( member(rule(_Pattern, Actions0), Rules),
+          plawk_trim_control_tails(Actions0, Actions),
+          member(Action, Actions),
+          plawk_scalar_action_update(Action, Name, set_str(_Src))
+        ),
+        Names0),
+    sort(Names0, Strings).
 
 plawk_scalar_update_name_expr(Action, Name, Expr) :-
     plawk_scalar_action_update(Action, Name, Operation),
@@ -6164,10 +6184,13 @@ plawk_update_expr_is_double(Expr, Doubles) :-
     memberchk(Name, Doubles),
     !.
 
-plawk_scalar_typed_slot(Doubles, Name, scalar_double(Name)) :-
+plawk_scalar_typed_slot(_Doubles, Strings, Name, scalar_string(Name)) :-
+    memberchk(Name, Strings),
+    !.
+plawk_scalar_typed_slot(Doubles, _Strings, Name, scalar_double(Name)) :-
     memberchk(Name, Doubles),
     !.
-plawk_scalar_typed_slot(_Doubles, Name, scalar_counter(Name)).
+plawk_scalar_typed_slot(_Doubles, _Strings, Name, scalar_counter(Name)).
 
 plawk_mixed_state_plan(Rules, PrintFields, mixed_plan(ScalarPlan, AssocPlan, PlannedRules)) :-
     plawk_mixed_scalar_state_plan(Rules, PrintFields, ScalarPlan),
@@ -11080,6 +11103,8 @@ plawk_substitute_scalar_reads(var(Name), Slots, Values, Substituted) :-
     nth0(SlotIndex, Values, Value),
     ( Slot = scalar_double(_Name)
     -> Substituted = ssa_f64(Value)
+    ;  Slot = scalar_string(_Name)
+    -> Substituted = ssa_str(Value)
     ;  Substituted = ssa(Value)
     ).
 plawk_substitute_print_field(Slots, Values, Field0, Field) :-
@@ -11257,6 +11282,15 @@ plawk_scalar_action_update(add(var(Name), dyncall_at(Source, Args)), Name,
 plawk_scalar_action_update(add(var(Name), dyncall_at_named(E, Source, Args)),
         Name, add(dyncall_at_named(E, Source, Args))) :-
     plawk_dyncall_at_expr(dyncall_at_named(E, Source, Args)).
+% String-valued scalar assignment: `x = $1 $2` (concat) or `x = "text"`. The
+% slot holds an interned atom id (an i64); the RHS is built into a buffer and
+% interned at assignment, and `print x` resolves the id back to text. Recognised
+% before the numeric clauses so a string RHS types the slot as scalar_string.
+plawk_scalar_action_update(set(var(Name), concat(Parts)), Name, set_str(concat(Parts))) :-
+    Parts = [_, _ | _],
+    maplist(plawk_str_scalar_part_ok, Parts).
+plawk_scalar_action_update(set(var(Name), string(Value)), Name, set_str(string(Value))) :-
+    string(Value).
 plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) :-
     integer(Value),
     Value >= 0.
@@ -11295,6 +11329,11 @@ plawk_scalar_action_update(set(var(Name), compile_handle(Arg)), Name,
 plawk_scalar_action_update(set(var(Name), compile_file_handle(Arg)), Name,
         set(compile_file_handle(Arg))) :-
     plawk_foreign_arg(Arg).
+
+% A string-scalar concat part: a field (`$N`, projected as text) or a string
+% literal (embedded in the build format). Other part kinds are a follow-on.
+plawk_str_scalar_part_ok(field(Index)) :- integer(Index), Index >= 0.
+plawk_str_scalar_part_ok(string(Value)) :- string(Value).
 % Double-typed update expressions: float literals, float($N), and
 % binary trees mixing them with i64 operands or scalar reads. The
 % written slot becomes a double via plawk_scalar_typed_slots/3.
@@ -11776,6 +11815,16 @@ plawk_scalar_update_operation_ir(add(Expr), _Slot, FieldSeparator, Prefix, SlotI
     format(atom(AddLine), '  ~w = add i64 ~w, ~w',
         [NextValue, InputValue, ValueIR]),
     plawk_join_nonempty_ir([SetupIR, AddLine], IR).
+% String scalar assignment (`x = $1 $2` / `x = "text"`): build the RHS bytes,
+% intern to an atom id, and that id becomes the slot's new i64 value. Reads /
+% `print` resolve the id back to text.
+plawk_scalar_update_operation_ir(set_str(Src), scalar_string(_Name), FieldSeparator,
+        Prefix, SlotIndex, OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
+    !,
+    format(atom(Base), '~w_slot_~w_op_~w_str', [Prefix, SlotIndex, OpIndex]),
+    plawk_str_build_ir(Src, FieldSeparator, Base, NextValue, GlobalParts, SetupLines),
+    plawk_join_nonempty_ir(GlobalParts, GlobalIR),
+    atomic_list_concat(SetupLines, '\n', IR).
 plawk_scalar_update_operation_ir(set(Expr), _Slot, FieldSeparator, Prefix, SlotIndex,
         OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
     plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
@@ -11783,6 +11832,102 @@ plawk_scalar_update_operation_ir(set(Expr), _Slot, FieldSeparator, Prefix, SlotI
     format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
     format(atom(SetLine), '  ~w = add i64 0, ~w', [NextValue, ValueIR]),
     plawk_join_nonempty_ir([SetupIR, SetLine], IR).
+
+% Build a string RHS into an interned atom id (returned as the SSA value).
+% A bare literal interns its own global; a concat snprintf's its `%.*s` field
+% slots and literal segments into a 4096-byte stack buffer, then interns the
+% result (the assignment mirror of the print concat).
+plawk_str_build_ir(string(Value), _FieldSeparator, Base, IdValueIR,
+        [GlobalIR], [PtrLine, IdLine]) :-
+    format(atom(StrName), '~w_lit', [Base]),
+    llvm_emit_c_string_global(StrName, Value, GlobalIR, Len, BytesLen),
+    format(atom(PtrLine),
+        '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+        [Base, BytesLen, BytesLen, StrName]),
+    format(atom(IdLine),
+        '  %~w_id = call i64 @wam_intern_atom(i8* %~w_ptr, i64 ~w)',
+        [Base, Base, Len]),
+    format(atom(IdValueIR), '%~w_id', [Base]).
+plawk_str_build_ir(concat(Parts), FieldSeparator, Base, IdValueIR,
+        [FmtGlobal, EmptyGlobal], SetupLines) :-
+    plawk_str_concat_format(Parts, FmtAtom),
+    format(atom(FmtName), '~w_fmt', [Base]),
+    llvm_emit_c_string_global(FmtName, FmtAtom, FmtGlobal, _FmtLen, FmtBytes),
+    format(atom(EmptyName), '~w_empty', [Base]),
+    format(atom(EmptyGlobal),
+        '@.~w = private constant [1 x i8] zeroinitializer', [EmptyName]),
+    plawk_str_concat_field_lines(Parts, Base, EmptyName, FieldSeparator, 0,
+        FieldLines, ArgFrags),
+    ( ArgFrags == []
+    -> ArgsSuffix = ''
+    ;  atomic_list_concat(ArgFrags, ', ', ArgsJoined),
+       atom_concat(', ', ArgsJoined, ArgsSuffix)
+    ),
+    format(atom(BufA), '  %~w_buf = alloca [4096 x i8]', [Base]),
+    format(atom(BufP),
+        '  %~w_bufp = getelementptr [4096 x i8], [4096 x i8]* %~w_buf, i64 0, i64 0',
+        [Base, Base]),
+    format(atom(FmtP),
+        '  %~w_fmtp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+        [Base, FmtBytes, FmtBytes, FmtName]),
+    format(atom(Snp),
+        '  %~w_wrote = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %~w_bufp, i64 4096, i8* %~w_fmtp~w)',
+        [Base, Base, Base, ArgsSuffix]),
+    format(atom(LenL), '  %~w_len = call i64 @strlen(i8* %~w_bufp)', [Base, Base]),
+    format(atom(IdL),
+        '  %~w_id = call i64 @wam_intern_atom(i8* %~w_bufp, i64 %~w_len)',
+        [Base, Base, Base]),
+    format(atom(IdValueIR), '%~w_id', [Base]),
+    append(FieldLines, [BufA, BufP, FmtP, Snp, LenL, IdL], SetupLines).
+
+% The snprintf format for a string-concat: `%.*s` per field slot, literal
+% segments inline (with `%` escaped). No separator -- operands are adjacent.
+plawk_str_concat_format([], '').
+plawk_str_concat_format([field(_) | Rest], Fmt) :-
+    plawk_str_concat_format(Rest, RestFmt),
+    atom_concat('%.*s', RestFmt, Fmt).
+plawk_str_concat_format([string(Value) | Rest], Fmt) :-
+    plawk_str_escape_percent(Value, Escaped),
+    plawk_str_concat_format(Rest, RestFmt),
+    atom_concat(Escaped, RestFmt, Fmt).
+
+plawk_str_escape_percent(Value, Escaped) :-
+    ( sub_atom(Value, _, _, _, '%')
+    -> atomic_list_concat(Parts, '%', Value),
+       atomic_list_concat(Parts, '%%', Escaped)
+    ;  Escaped = Value
+    ).
+
+% Per concat field, project field N (null-safe empty), yielding an
+% `i32 <len>, i8* <ptr>` snprintf argument pair for its `%.*s` slot. Literal
+% parts contribute no argument (they live in the format).
+plawk_str_concat_field_lines([], _B, _Empty, _FieldSep, _Pos, [], []).
+plawk_str_concat_field_lines([string(_) | Rest], B, EmptyName, FieldSep, Pos,
+        Lines, Frags) :-
+    plawk_str_concat_field_lines(Rest, B, EmptyName, FieldSep, Pos, Lines, Frags).
+plawk_str_concat_field_lines([field(N) | Rest], B, EmptyName, FieldSep, Pos,
+        Lines, [Frag | Frags]) :-
+    format(atom(Slice),
+        '  %~w_c~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+        [B, Pos, N, FieldSep]),
+    format(atom(Ptr), '  %~w_c~w_ptr = extractvalue %WamSlice %~w_c~w_slice, 0',
+        [B, Pos, B, Pos]),
+    format(atom(Len), '  %~w_c~w_len = extractvalue %WamSlice %~w_c~w_slice, 1',
+        [B, Pos, B, Pos]),
+    format(atom(Null), '  %~w_c~w_null = icmp eq i8* %~w_c~w_ptr, null',
+        [B, Pos, B, Pos]),
+    format(atom(SafePtr),
+        '  %~w_c~w_sptr = select i1 %~w_c~w_null, i8* getelementptr ([1 x i8], [1 x i8]* @.~w, i64 0, i64 0), i8* %~w_c~w_ptr',
+        [B, Pos, B, Pos, EmptyName, B, Pos]),
+    format(atom(SafeLen), '  %~w_c~w_slen = select i1 %~w_c~w_null, i64 0, i64 %~w_c~w_len',
+        [B, Pos, B, Pos, B, Pos]),
+    format(atom(Lenw), '  %~w_c~w_lenw = trunc i64 %~w_c~w_slen to i32',
+        [B, Pos, B, Pos]),
+    format(atom(Frag), 'i32 %~w_c~w_lenw, i8* %~w_c~w_sptr', [B, Pos, B, Pos]),
+    ThisLines = [Slice, Ptr, Len, Null, SafePtr, SafeLen, Lenw],
+    Pos1 is Pos + 1,
+    plawk_str_concat_field_lines(Rest, B, EmptyName, FieldSep, Pos1, RestLines, Frags),
+    append(ThisLines, RestLines, Lines).
 
 %% plawk_scalar_f64_numeric_expr_ir(+Expr, +FieldSeparator, +Prefix,
 %%     +SlotIndex, +OpIndex, -ValueIR, -GlobalIR, -SetupIR)
@@ -12709,15 +12854,34 @@ plawk_scalar_end_print_lines([var(Name) | Rest], StatePlan, OutputSeparator, Pri
              [FmtVar]),
          format(atom(PrintCall),
              '  %printed_end_f64_~w = call i32 (i8*, ...) @printf(i8* %~w, double ~w)',
-             [PrintIndex, FmtVar, ValueIR])
+             [PrintIndex, FmtVar, ValueIR]),
+         Lines = [FmtPtr, PrintCall]
+      ;  Slot = scalar_string(_Name)
+      -> % resolve the atom id to text; id 0 (unset) prints as empty (the `%s\0`
+         % global's trailing NUL is a ready-made empty C string).
+         format(atom(StrS), '  %end_str_s_~w = call i8* @wam_atom_to_string(i64 ~w)',
+             [PrintIndex, ValueIR]),
+         format(atom(StrE), '  %end_str_empty_~w = icmp eq i64 ~w, 0',
+             [PrintIndex, ValueIR]),
+         format(atom(StrSel),
+             '  %end_str_ptr_~w = select i1 %end_str_empty_~w, i8* getelementptr ([3 x i8], [3 x i8]* @.plawk_surface_print_string, i64 0, i64 2), i8* %end_str_s_~w',
+             [PrintIndex, PrintIndex, PrintIndex]),
+         format(atom(FmtPtr),
+             '  %end_str_fmt_~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0',
+             [PrintIndex]),
+         format(atom(PrintCall),
+             '  %printed_end_str_~w = call i32 (i8*, ...) @printf(i8* %end_str_fmt_~w, i8* %end_str_ptr_~w)',
+             [PrintIndex, PrintIndex, PrintIndex]),
+         Lines = [StrS, StrE, StrSel, FmtPtr, PrintCall]
       ;  format(atom(FmtVar), 'end_i64_fmt_~w', [PrintIndex]),
          format(atom(PrintVar), 'printed_end_i64_~w', [PrintIndex]),
          llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
-             [FmtPtr, PrintCall])
+             [FmtPtr, PrintCall]),
+         Lines = [FmtPtr, PrintCall]
       ),
       NextPrintIndex is PrintIndex + 1
     },
-    [FmtPtr, PrintCall],
+    Lines,
     plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
 plawk_scalar_end_print_lines([special('NR') | Rest], StatePlan, OutputSeparator, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
@@ -13676,6 +13840,23 @@ plawk_emit_print_expr_for_context(ssa(Value), FieldSeparator, Context,
     plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
     plawk_i64_expr_ir(ssa(Value), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
+% a substituted STRING-scalar read (var(Name) -> ssa_str(SlotValue)): the slot
+% holds an atom id; resolve it to text (id 0 is the unset sentinel, printed as
+% empty). A select keeps it straight-line -- wam_atom_to_string is always called
+% but its result is discarded when the id is 0.
+plawk_emit_print_expr_for_context(ssa_str(Value), _FieldSeparator, Context,
+        string(Base, PtrIR), [EmptyGlobal], [StrCall, IsEmpty, SelPtr]) :-
+    plawk_print_expr_value_base(Context, string, Base),
+    format(atom(EmptyName), '~w_empty', [Base]),
+    format(atom(EmptyGlobal),
+        '@.~w = private constant [1 x i8] zeroinitializer', [EmptyName]),
+    format(atom(StrCall), '  %~w_s = call i8* @wam_atom_to_string(i64 ~w)',
+        [Base, Value]),
+    format(atom(IsEmpty), '  %~w_empty_c = icmp eq i64 ~w, 0', [Base, Value]),
+    format(atom(SelPtr),
+        '  %~w_sptr = select i1 %~w_empty_c, i8* getelementptr ([1 x i8], [1 x i8]* @.~w, i64 0, i64 0), i8* %~w_s',
+        [Base, Base, EmptyName, Base]),
+    format(atom(PtrIR), '%~w_sptr', [Base]).
 
 % Ternary print field `print (COND ? A : B)`: an i64 value via select.
 plawk_emit_print_expr_for_context(ternary(Cond, Then, Else), FieldSeparator, Context,
