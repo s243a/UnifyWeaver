@@ -29,7 +29,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | FS-ARITH-INT-DIV | Conformance gap fix | F# | S | CONF-FSHARP |
 | FS-FUNCTIONS-BUILTINS-LOWER ✅ | Conformance gap fix | F# | M | done — last-slash `parse_functor_fs` for `///2` (`cursor/fs-functions-builtins-lower-f421`); fsharp_functions/builtins green |
 | CONF-LLVM | Conformance adapter | LLVM | L | — |
-| CONF-R | Conformance adapter | R | M | — |
+| CONF-R ✅ | Conformance adapter | R | M | done — opt-in; append/reverse/builtins green; member/fib/ack xfail (Raw switch stubs) |
 | CONF-CLOJURE | Conformance adapter | Clojure | L | — |
 | CONF-LUA | Conformance adapter | Lua | M | — |
 | CONF-KOTLIN ✅ | Conformance adapter | Kotlin | M | done — opt-in (`cursor/conf-kotlin-f421`); append green, 5 xfails |
@@ -127,20 +127,17 @@ external toolchain.
   7. Add `test(llvm, [condition(ct_available(llvm))]) :- run_target_conformance(llvm).` in the tests block.
 - **Acceptance:** `CONFORMANCE_TARGETS=llvm swipl -g run_tests tests/test_wam_cross_target_conformance.pl` passes (skips if `clang`/`llc` absent).
 
-### CONF-R: Register R in the cross-target conformance harness
+### CONF-R: Register R in the cross-target conformance harness ✅
 - **Lever:** Conformance adapters  **Target:** R  **Size:** M  **Depends on:** —
-- **Goal:** Add an R adapter so the shared WAM spec runs against the R backend (interpreted, no build step).
-- **Files to touch:** `tests/test_wam_cross_target_conformance.pl`
-- **Reference to copy from:** `tests/test_wam_cross_target_conformance.pl` — the **Python adapter** (lines ~705-739; R is interpreted, same no-build shape); project writer is `write_wam_r_project/3` in `src/unifyweaver/targets/wam_r_target.pl:1903`.
-- **Steps:**
-  1. Add `:- use_module('../src/unifyweaver/targets/wam_r_target', [write_wam_r_project/3]).`
-  2. Add `conformance_target(r).` (opt-in only).
-  3. Add `ct_toolchain(r, ['Rscript']).` (verify: exact executable name/case — `Rscript`).
-  4. `ct_build(r, Preds, Queries, r_ctx(Dir, Map))`: exact Python shape — `ct_tmp_dir('tmp_ct_r', Dir)`, `synth_wrappers`, `strip_pred`/`qualify_user`, `write_wam_r_project(AllPreds, [module_name(wam_ct)], Dir)`. No compile gate. (verify: name of the generated entry script, e.g. `main.R`, and how it takes a `pred/arity` arg — inspect `write_wam_r_project` output.)
-  5. `ct_run(r, r_ctx(Dir, Map), K, A, Bool)`: `run_proc_out('Rscript', ['main.R', KeyStr], Dir, _, OutStr)`, map to bool (absence-of-`false.` like Python, or `bool_of_string` — match the generated runner's output).
-  6. `ct_teardown(r, r_ctx(Dir, Map)) :- cleanup_dir(Dir), abolish_wrappers(Map).`
-  7. Add `test(r, [condition(ct_available(r))]) :- run_target_conformance(r).`
-- **Acceptance:** `CONFORMANCE_TARGETS=r swipl -g run_tests tests/test_wam_cross_target_conformance.pl` passes (skips if `Rscript` absent).
+- **Status (2026-07-15):** Landed opt-in (`CONFORMANCE_TARGETS=r[,r_functions]`). Additive
+  `conformance_main(true)` in `templates/targets/r_wam/program.R.mustache`; harness pins
+  `runtime_parser(off)` (wrappers need no CLI parse; R default is `native(parse_term)`).
+  Run cwd is `Dir/R` (`Rscript generated_program.R <key>`).
+- **Measured:** append / reverse / builtins green on interpreter + functions. member / fib /
+  ack are `ct_xfail` — `wam_parts_to_r/2` lacks `switch_on_constant_fallthrough` and
+  `switch_on_term_a2`, so those emit `Raw(...)` and the step dispatcher `stop()`s (negatives
+  still return false → success channel discriminates).
+- **Acceptance:** `CONFORMANCE_TARGETS=r,r_functions swipl -g run_tests -t halt tests/test_wam_cross_target_conformance.pl` exits 0 (skips if `Rscript` absent).
 
 ### CONF-CLOJURE: Register Clojure in the cross-target conformance harness
 - **Lever:** Conformance adapters  **Target:** Clojure  **Size:** L  **Depends on:** —

@@ -305,12 +305,28 @@ ct_default_target(elixir).
 %     delegated to step via emit_one_fs(builtin_call). No remaining
 %     fsharp / fsharp_functions ct_xfail or ct_skip.
 
-%  R (CONF-R). Adapter registered (opt-in). Measured maturity and any
-%  ct_xfail(r[,_functions], Program) / ct_skip entries are recorded below
-%  after the first harness run (honest readout — do not force green).
+%  R (CONF-R). Adapter registered (opt-in via CONFORMANCE_TARGETS=r[,r_functions]).
 %  runtime_parser(off) is pinned so generation is deterministic: classic
-%  queries use 0-arity wrappers (no CLI term parsing), matching F#'s
-%  none default and avoiding native-parser variance on an unused path.
+%  queries use 0-arity wrappers (no CLI term parsing); R's default is
+%  native(parse_term), which is unused on the wrapper path.
+%
+%  Measured maturity (interpreter + functions, same gap set):
+%   - GREEN: append, reverse, builtins
+%   - xfail member / fib / ack — see ct_xfail(r, ...) below
+%  Success channel discriminates: negatives return false (XPASS under
+%  xfail), not blanket-true. Root cause for all three xfails is the same
+%  family: wam_parts_to_r/2 has no clause for switch_on_constant_fallthrough
+%  (fib/ack) or switch_on_term_a2 (member), so those instructions emit as
+%  Raw(...) and the R step dispatcher stop()s — tryCatch in the
+%  conformance driver maps that to false. (switch_on_constant and
+%  switch_on_term A1 variants already emit real constructors; fallthrough
+%  / _a2 are the missing Scala-class mapping.)
+ct_xfail(r, member).            % Raw(switch_on_term_a2) → stop
+ct_xfail(r, fib).               % Raw(switch_on_constant_fallthrough) → stop
+ct_xfail(r, ack).               % Raw(switch_on_constant_fallthrough) → stop
+ct_xfail(r_functions, member).  % same Raw stubs on WAM fallback path
+ct_xfail(r_functions, fib).
+ct_xfail(r_functions, ack).
 
 % ============================================================
 % Toolchain probes
@@ -329,8 +345,8 @@ ct_toolchain(kotlin, [gradle]).
 ct_toolchain(kotlin_functions, [gradle]).
 ct_toolchain(fsharp, [dotnet]).
 ct_toolchain(fsharp_functions, [dotnet]).
-ct_toolchain(r, [Rscript]).
-ct_toolchain(r_functions, [Rscript]).
+ct_toolchain(r, ['Rscript']).
+ct_toolchain(r_functions, ['Rscript']).
 
 ct_available(scala) :-
     ct_enabled(scala),
@@ -1160,9 +1176,9 @@ r_ct_build(EmitMode, Preds, Queries, Dir, Map) :-
          emit_mode(EmitMode),
          runtime_parser(off),
          conformance_main(true)], Dir),
-    % Syntax gate: source the generated script once (no predicate run).
+    % Syntax gate: source under Rscript -e (sys.nframe()>0 skips CLI main).
     directory_file_path(Dir, 'R', RDir),
-    run_proc(Rscript, ['-e', 'source("generated_program.R")'],
+    run_proc('Rscript', ['-e', 'source("generated_program.R")'],
              RDir, BExit, BErr),
     ( BExit =:= 0 -> true ; throw(r_build_failed(BExit, BErr)) ).
 
@@ -1177,7 +1193,7 @@ r_ct_run(r_ctx(Dir, Map), K, A, Bool) :-
     directory_file_path(Dir, 'R', RDir),
     % cwd = R/ so wam_runtime.R resolves next to generated_program.R
     % (sys.frame(1)$ofile is unreliable under Rscript path invocation).
-    run_proc_out(Rscript, ['generated_program.R', KeyStr],
+    run_proc_out('Rscript', ['generated_program.R', KeyStr],
                  RDir, _Exit, OutStr),
     normalize_space(string(Out), OutStr),
     bool_of_string(Out, Bool).
