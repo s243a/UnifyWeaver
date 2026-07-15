@@ -24,8 +24,8 @@ self-contained so a single coding agent can pick it up in isolation.
 
 | ID | Lever | Target | Size | Depends on |
 |---|---|---|---|---|
-| CONF-FSHARP ✅ | Conformance adapter | F# | M | done — opt-in (`cursor/conf-fsharp-f421`); member/fib/ack green, append/reverse/builtins xfails + functions/builtins skip |
-| FS-LIST-PARTIAL-TAIL | Conformance gap fix | F# | M | CONF-FSHARP |
+| CONF-FSHARP ✅ | Conformance adapter | F# | M | done — opt-in; classic programs green on interpreter; functions/builtins still skipped |
+| FS-LIST-PARTIAL-TAIL ✅ | Conformance gap fix | F# | M | done — GetValue→unifyVal (`cursor/fs-list-partial-tail-f421`); append/reverse green on fsharp + fsharp_functions |
 | FS-ARITH-INT-DIV | Conformance gap fix | F# | S | CONF-FSHARP |
 | FS-FUNCTIONS-BUILTINS-LOWER | Conformance gap fix | F# | M | CONF-FSHARP |
 | CONF-LLVM | Conformance adapter | LLVM | L | — |
@@ -89,14 +89,14 @@ external toolchain.
 
 ### CONF-FSHARP: Register F# in the cross-target conformance harness
 - **Lever:** Conformance adapters  **Target:** F#  **Size:** M  **Depends on:** —
-- **Status:** ✅ **Landed** on `cursor/conf-fsharp-f421` (2026-07-15). Opt-in `conformance_target(fsharp)` + `fsharp_functions` (`emit_mode(interpreter|functions)`). Added additive `conformance_main(true)` Program.fs driver (`tryRun` → `true`/`false`) without changing the default TSV/LMDB benchmark entrypoint. `dotnet build` gate; `dotnet run --no-build -- <key>` (avoid `--nologo` on the run line — some SDKs forward it as argv[0]). **Measured:** member/fib/ack green on both emit modes; `ct_xfail` append/reverse (FS-LIST-PARTIAL-TAIL) + builtins (FS-ARITH-INT-DIV); `ct_skip` `fsharp_functions`/builtins (FS-FUNCTIONS-BUILTINS-LOWER). Follow-ups filed below.
+- **Status:** ✅ **Landed** on `cursor/conf-fsharp-f421` (2026-07-15). Opt-in `conformance_target(fsharp)` + `fsharp_functions` (`emit_mode(interpreter|functions)`). Added additive `conformance_main(true)` Program.fs driver (`tryRun` → `true`/`false`) without changing the default TSV/LMDB benchmark entrypoint. `dotnet build` gate; `dotnet run --no-build -- <key>` (avoid `--nologo` on the run line — some SDKs forward it as argv[0]). **Measured (updated):** member/fib/ack/builtins/append/reverse green on interpreter; append/reverse also green on `fsharp_functions` after FS-LIST-PARTIAL-TAIL. Remaining: `ct_skip` `fsharp_functions`/builtins (FS-FUNCTIONS-BUILTINS-LOWER).
 - **Goal:** Add an F# adapter (`conformance_target(fsharp)` + `ct_toolchain`/`ct_build`/`ct_run`/`ct_teardown`) so the shared WAM spec runs against the F# backend.
 - **Acceptance:** `CONFORMANCE_TARGETS=fsharp[,fsharp_functions] swipl -g run_tests tests/test_wam_cross_target_conformance.pl` runs the adapter (skips cleanly if `dotnet` absent); xfails/skips match measured gaps.
 
 ### FS-LIST-PARTIAL-TAIL: F# PutList/SetVariable result spines vs GetList
 - **Lever:** Conformance gap fix  **Target:** F#  **Size:** M  **Depends on:** CONF-FSHARP
+- **Status:** ✅ **Landed** on `cursor/fs-list-partial-tail-f421` (2026-07-15). Root cause was **not** the builder (`addToBuilder` already emits `Str("[|]",[h;t])` for symbolic tails). Ground `capp([a],[b],[a,b])` failed in the base-case **GetValue** which used F# `=` / shallow bind; A3 was `Str("[|]",…)` while A2 was compact `VList`. Open-tail `capp([a],[b],X),X=[a,b]` already passed via `=/2`→`unifyTerms`. Fix: `GetValue` → `unifyVal`/`unifyTerms` in `wam_fsharp_target.pl` + hand-maintained `fsharp_runtime/WamRuntime.fs`. **Measured:** append/reverse green on `fsharp` and `fsharp_functions` (no xfail); suite exit 0.
 - **Goal:** Make non-empty ground `append`/`reverse` answers succeed under the classic harness (empty-list append base already passes).
-- **Root cause (measured):** Wrapper construction of ground result lists uses `PutList` + `SetVariable` + nested `PutStructure("[|]", …)` while recursive clauses peel with `GetList`/`UnifyValue`; partial-tail materialization does not unify against the expected VList/`"[|]"/2` spine.
 - **Acceptance:** Drop `ct_xfail(fsharp, append/reverse)` and the `fsharp_functions` twins; both emit modes green on those programs.
 
 ### FS-ARITH-INT-DIV: F# `evalArith` missing `//`

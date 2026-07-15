@@ -287,21 +287,15 @@ ct_default_target(elixir).
 %  KT-Y-ENV-RECURSION (no remaining kotlin ct_xfail entries).
 
 %  F# (CONF-FSHARP, 2026-07-15). Adapter registered (opt-in). Measured:
-%   - Green: member, fib, ack (interpreter + emit_mode(functions)).
-%   - append / reverse: non-empty ground answers fail — PutList +
-%     SetVariable partial-tail materialization vs GetList/unify on the
-%     result spine (VList / "[|]"/2). Empty-list append base case passes.
-%   - builtins: now green (interpreter). FS-ARITH-INT-DIV fixed —
-%     evalArith gained a Str ("//", ...) clause (truncate-toward-zero
-%     integer division) in src/unifyweaver/bindings/fsharp_wam_bindings.pl,
-%     so `17 // 5` folds and cbi_arith(28) succeeds (+,-,*,mod,=/2,cmp
-%     already passed).
+%   - Green: member, fib, ack, builtins, append, reverse on interpreter.
+%   - append / reverse ALSO green under emit_mode(functions) after
+%     FS-LIST-PARTIAL-TAIL (2026-07-15): GetValue routes through
+%     unifyVal/unifyTerms so ground Str("[|]",…) result spines unify with
+%     compact VList. Builder was already correct; open-tail
+%     `capp([a],[b],X),X=[a,b]` already passed via =/2. No remaining
+%     fsharp/fsharp_functions ct_xfail for append/reverse.
 %   - fsharp_functions + builtins: lowered emitter loops/stalls on cbi_eq
 %     (unsupported-instruction Proceed stubs for =/2); skip generation.
-ct_xfail(fsharp, append).            % FS-LIST-PARTIAL-TAIL
-ct_xfail(fsharp, reverse).           % FS-LIST-PARTIAL-TAIL
-ct_xfail(fsharp_functions, append).  % FS-LIST-PARTIAL-TAIL (same class)
-ct_xfail(fsharp_functions, reverse). % FS-LIST-PARTIAL-TAIL
 ct_skip(fsharp_functions, builtins). % FS-FUNCTIONS-BUILTINS-LOWER — codegen stalls
 
 % ============================================================

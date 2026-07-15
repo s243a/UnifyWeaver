@@ -221,6 +221,48 @@ let bindOutput (reg: int) (value: Value) (s: WamState) : WamState option =
     | Some existing when existing = value -> Some s
     | _ -> None
 
+/// Structural unify with VList <-> Str("[|]", [h;t]) cons-cell aliasing.
+/// Mirrors wam_fsharp_target.pl unifyTerms (FS-LIST-PARTIAL-TAIL). Does not
+/// advance WsPC — callers (GetValue) bump PC on success.
+let rec unifyTerms (a: Value) (b: Value) (s: WamState) : WamState option =
+    let a = derefVar s.WsBindings a
+    let b = derefVar s.WsBindings b
+    let bindUnbound vid v st =
+        { st with
+            WsBindings = Map.add vid v st.WsBindings
+            WsTrail    = { TrailVarId = vid; TrailOldVal = Map.tryFind vid st.WsBindings } :: st.WsTrail
+            WsTrailLen = st.WsTrailLen + 1 }
+    match a, b with
+    | Unbound vid, v -> Some (bindUnbound vid v s)
+    | v, Unbound vid -> Some (bindUnbound vid v s)
+    | VList [], Atom "[]" -> Some s
+    | Atom "[]", VList [] -> Some s
+    | VList (h1 :: t1), VList (h2 :: t2) ->
+        match unifyTerms h1 h2 s with
+        | None    -> None
+        | Some s1 -> unifyTerms (VList t1) (VList t2) s1
+    | VList (h :: t), Str ("[|]", [hb; tb]) ->
+        match unifyTerms h hb s with
+        | None    -> None
+        | Some s1 -> unifyTerms (VList t) tb s1
+    | Str ("[|]", [ha; ta]), VList (h :: t) ->
+        match unifyTerms ha h s with
+        | None    -> None
+        | Some s1 -> unifyTerms ta (VList t) s1
+    | Str (f1, args1), Str (f2, args2)
+        when f1 = f2 && List.length args1 = List.length args2 ->
+        let rec go xs ys st =
+            match xs, ys with
+            | [], [] -> Some st
+            | x :: xt, y :: yt ->
+                match unifyTerms x y st with
+                | None     -> None
+                | Some st1 -> go xt yt st1
+            | _ -> None
+        go args1 args2 s
+    | x, y when x = y -> Some s
+    | _               -> None
+
 /// Append to the current builder (PutStructure / PutList sequence).
 let addToBuilder (value: Value) (s: WamState) : WamState option =
     match s.WsBuilder with
@@ -450,6 +492,8 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                      WsTrail    = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
                      WsTrailLen = s.WsTrailLen + 1 }
         | Some existing when existing = c -> Some s1
+        // Atom "[]" <-> VList [] empty-list equivalence (read path).
+        | Some (VList []) when c = Atom "[]" -> Some s1
         | _ -> backtrack s
 
     | GetVariable (xn, ai) ->
@@ -459,12 +503,14 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         Some { s1 with WsRegs = Map.add xn src s.WsRegs }
 
     | GetValue (xn, ai) ->
-        // Full unification needed; delegate to unify helper
-        let v1 = Map.tryFind xn s.WsRegs |> Option.map (derefVar s.WsBindings)
-        let v2 = Map.tryFind ai s.WsRegs |> Option.map (derefVar s.WsBindings)
-        match v1, v2 with
-        | Some a, Some b when a = b -> Some s1
-        | _ -> backtrack s  // simplified: full unify handled by generator
+        // Structural unify (VList <-> "[|]"/2), not F# `=`. See
+        // FS-LIST-PARTIAL-TAIL / wam_fsharp_target.pl GetValue.
+        match getReg xn s, getReg ai s with
+        | Some a, Some b ->
+            match unifyTerms a b s with
+            | Some st -> Some { st with WsPC = s1.WsPC }
+            | None    -> backtrack s
+        | _ -> backtrack s
 
     | PutConstant (c, ai) ->
         Some { s1 with WsRegs = Map.add ai c s.WsRegs }
@@ -660,9 +706,10 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | _ -> backtrack s
 
     | GetList ai ->
-        let v = Map.tryFind ai s.WsRegs |> Option.map (derefVar s.WsBindings)
-        match v with
-        | Some (VList _) -> Some s1
+        // Accept both cons encodings (compact VList and Str "[|]"/2).
+        match getReg ai s with
+        | Some (VList (_ :: _)) | Some (Str ("[|]", [_; _])) -> Some s1
+        | Some (Unbound _) -> Some s1  // write-mode stub
         | _ -> backtrack s
 
     | UnifyVariable xn ->

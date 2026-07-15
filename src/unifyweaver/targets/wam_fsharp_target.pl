@@ -753,20 +753,16 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | None    -> None
 
     | GetValue (xn, ai) ->
-        let va = getReg ai s
-        let vx = getReg xn s
-        match va, vx with
-        | Some a, Some x when a = x -> Some { s with WsPC = s.WsPC + 1 }
-        | Some (Unbound vid), Some x ->
-            let r = Array.copy s.WsRegs
-            r.[ai] <- x
-            Some { s with
-                     WsPC      = s.WsPC + 1
-                     WsRegs    = r
-                     WsBindings= Map.add vid x s.WsBindings
-                     WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                     WsTrailLen= s.WsTrailLen + 1 }
-        | _ -> None
+        // Structural unify (not F# `=`). Ground append/reverse answers
+        // materialize the result spine as Str("[|]", [h; t]) via
+        // PutList+SetVariable+PutStructure, while A2 / peeled tails are
+        // often compact VList — same VList <-> "[|]"/2 class unifyTerms
+        // already handles for UnifyValue / =/2. Shallow equality made
+        // capp([a],[b],[a,b]) fail in the base-case GetValue while
+        // capp([a],[b],X), X=[a,b] (open + =/2) passed (FS-LIST-PARTIAL-TAIL).
+        match getReg ai s, getReg xn s with
+        | Some a, Some x -> unifyVal a x s
+        | _              -> None
 
     | GetStructure (fn, arity, ai) ->
         // If we''re already inside a build/read context, push it so the
