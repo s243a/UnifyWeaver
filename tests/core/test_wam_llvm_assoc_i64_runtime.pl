@@ -28,6 +28,10 @@ test(assoc_i64_resizes_across_many_numeric_keys) :-
     assoc_i64_resize_stress_driver_ir(DriverIR),
     run_assoc_i64_smoke('uw_wam_assoc_i64_resize_stress', DriverIR).
 
+test(assoc_i64_delete_backward_shifts_probe_chain) :-
+    assoc_i64_delete_driver_ir(DriverIR),
+    run_assoc_i64_smoke('uw_wam_assoc_i64_delete', DriverIR).
+
 run_assoc_i64_smoke(Name, DriverIR) :-
     tmp_root(Root),
     directory_file_path(Root, Name, Dir),
@@ -127,6 +131,53 @@ check_counts:
   %missing_ok = icmp eq i64 %got_missing, 0
   %zl_ok = and i1 %zero_ok, %last_ok
   %all_ok = and i1 %zl_ok, %missing_ok
+  call void @wam_assoc_i64_free(%WamAssocI64Table* %table)
+  br i1 %all_ok, label %ok, label %bad_counts
+
+ok:
+  ret i32 0
+
+alloc_fail:
+  ret i32 90
+
+bad_counts:
+  ret i32 91
+}
+').
+
+% Deleting a key in the middle of a probe chain must pull the following
+% colliding key back so it stays reachable (backward-shift), and preserve its
+% value. Keys 1/17/33 all hash to slot 1 at cap 16 -> slots 1,2,3. Delete 17
+% (slot 2); 33 (home 1) shifts back to slot 2. Deleting a missing key is a
+% no-op. After re-adding the deleted key it counts fresh from 0.
+assoc_i64_delete_driver_ir('
+define i32 @main() {
+entry:
+  %table = call %WamAssocI64Table* @wam_assoc_i64_new(i64 16)
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %alloc_fail, label %exercise
+
+exercise:
+  %a1 = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %table, i64 1, i64 1)
+  %b1 = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %table, i64 17, i64 1)
+  %c1 = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %table, i64 33, i64 1)
+  %c2 = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %table, i64 33, i64 1)
+  ; delete the middle of the 1/17/33 chain
+  call void @wam_assoc_i64_delete(%WamAssocI64Table* %table, i64 17)
+  ; deleting an absent key is a no-op
+  call void @wam_assoc_i64_delete(%WamAssocI64Table* %table, i64 99)
+  %got_a = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 1)
+  %got_del = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 17)
+  %got_c = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 33)
+  ; re-adding the deleted key counts fresh from 0
+  %b_re = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %table, i64 17, i64 1)
+  %a_ok = icmp eq i64 %got_a, 1
+  %del_ok = icmp eq i64 %got_del, 0
+  %c_ok = icmp eq i64 %got_c, 2
+  %re_ok = icmp eq i64 %b_re, 1
+  %ad_ok = and i1 %a_ok, %del_ok
+  %adc_ok = and i1 %ad_ok, %c_ok
+  %all_ok = and i1 %adc_ok, %re_ok
   call void @wam_assoc_i64_free(%WamAssocI64Table* %table)
   br i1 %all_ok, label %ok, label %bad_counts
 
