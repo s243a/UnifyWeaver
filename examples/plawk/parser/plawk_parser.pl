@@ -287,21 +287,24 @@ query_var_list_rest([V | Vs]) -->
     query_var_list_rest(Vs).
 query_var_list_rest([]) -->
     [].
-% A `gen over query(SRC(V)) as v { BODY } as name` generator with an input
-% iterator (PLAWK_GENERATOR_BLOCKS.md, PR 3): a producer that transforms another
-% relation. Each solution of the source goal binds `v`; the body emits from it.
-% Parses to gen_block(name(Name), over(query(Src, SrcVars), LoopVar), Body).
-% Tried before the pure `gen { ... }` form -- the `over` keyword distinguishes
-% them. The body is emit-based (`emit v`, or `if (v CMP int) emit v` to filter),
-% so it uses the reader-guard body grammar rather than a general action block.
+% A `gen over query(SRC(A, ...)) as (a, ...) { BODY } as name` generator with an
+% input iterator (PLAWK_GENERATOR_BLOCKS.md, PR 3 + views/PR 5): a producer that
+% transforms/projects another relation. Each solution of the source goal binds
+% the loop vars positionally; the body emits a projection of them. Parses to
+% gen_block(name(Name), over(query(Src, SrcVars), LoopVars), Body) where LoopVars
+% is a list (`as v` -> [v], `as (a, b)` -> [a, b]). A single-column source keeps
+% the `as v` spelling; a multi-column source binds each column and the body may
+% emit a subset (a column-projection view -- "don't materialise the whole row").
+% Tried before the pure `gen { ... }` form. The body is emit-based (`emit a`,
+% `emit (a, b)`, or `if (a CMP int) emit a` to filter).
 pass_clauses([gen_block(name(Name),
-        over(query(Src, SrcVars), LoopVar), Body) | Rest]) -->
+        over(query(Src, SrcVars), LoopVars), Body) | Rest]) -->
     "gen", identifier_boundary, ws,
     "over", identifier_boundary, ws,
     "query", ws, "(", ws,
     identifier(Src), ws, "(", ws, query_var_list(SrcVars), ws, ")", ws,
     ")", ws,
-    "as", identifier_boundary, ws, identifier(LoopVar), ws,
+    "as", identifier_boundary, ws, gen_over_binding(LoopVars), ws,
     gen_over_body(Body), ws,
     "as", identifier_boundary, ws, identifier(Name), ws,
     pass_clauses(Rest).
@@ -330,6 +333,26 @@ gen_over_body([if(Guard, [emit(Emit)], [])]) -->
     !.
 gen_over_body([emit(Emit)]) -->
     "{", ws, emit_action(emit(Emit)), ws, "}".
+
+% The loop-variable binding of an input iterator: `as v` binds one column,
+% `as (a, b, ...)` binds several (one per source column, positionally). Both
+% produce a list of variable names.
+gen_over_binding(Vars) -->
+    "(", ws, query_var_list(Vars), ws, ")",
+    !.
+gen_over_binding([V]) -->
+    identifier(V).
+% A `materialize NAME` declaration (PLAWK_MULTIPASS_CACHE.md §3.9): mark a
+% derived relation (a view produced by a `gen ... as NAME` block, or a @prolog
+% relation) as materialised-and-cached -- its projected/filtered rows are
+% computed once into a shared table and reused by every query pass that reads
+% it, instead of re-running the goal per consumer. Parses to materialize(Name);
+% the runtime is a follow-on (surface-first, like the query-reader / generator
+% arcs), so bin/plawk currently emits a clean not-yet diagnostic.
+pass_clauses([materialize(Name) | Rest]) -->
+    "materialize", identifier_boundary, ws,
+    identifier(Name), ws,
+    pass_clauses(Rest).
 % A `pass { ACTIONS }` block is one pass carrying a single always-rule with
 % those actions (per-pattern rules within a pass are a later extension).
 pass_clauses([pass([rule(always, Actions)]) | Rest]) -->
@@ -353,6 +376,8 @@ plawk_pass_dynentry_rewrite(_DynEntries, pass_query(Q, Body), pass_query(Q, Body
 % A `gen { ... } as name` generator block -- pass it through (its body is
 % lowered by the generator runtime in a later PR).
 plawk_pass_dynentry_rewrite(_DynEntries, gen_block(N, S, Body), gen_block(N, S, Body)).
+% A `materialize NAME` declaration has no rule actions -- pass it through.
+plawk_pass_dynentry_rewrite(_DynEntries, materialize(Name), materialize(Name)).
 
 %% dynentry_decls(-Names)//
 %
@@ -464,7 +489,7 @@ function_def((Head :- Body)) -->
     ws,
     "(",
     ws,
-    function_params(Params),
+    function_params(Params, ParamTypes),
     ws,
     ")",
     ws,
@@ -476,24 +501,66 @@ function_def((Head :- Body)) -->
     function_expr(Params, Pairs, ArithTerm),
     action_block_close,
     { pairs_values(Pairs, Vars),
-      append(Vars, [Result], HeadArgs),
+      % awk auto-coercion (PLAWK_AWK_FEATURE_AUDIT.md gap 2): a function body is
+      % `Result is ArithTerm`, so every parameter is used numerically. Text
+      % fields arrive as atoms (e.g. '5'), which `is/2` would reject -- so an
+      % UNTYPED parameter takes a fresh head var that is coerced to a number
+      % (`number(H) -> V = H ; atom_number(H, V)`) before the arithmetic.
+      %
+      % An OPTIONAL type annotation (`function f(num x)`) is a typed-fast path:
+      % the declared param is already numeric, so the head var IS the value var
+      % -- no coercion goal at all (Principle 2: static type knowledge elides
+      % the runtime coercion). The dynamic default (auto-coerce) stays for
+      % unannotated params; the annotation buys the elision, layered on top.
+      maplist(plawk_fn_param_binding, ParamTypes, Vars, HeadVars, CoerceGoals0),
+      exclude(==(true), CoerceGoals0, CoerceGoals),
+      append(HeadVars, [Result], HeadArgs),
       Head =.. [Name | HeadArgs],
-      Body = (Result is ArithTerm)
+      append(CoerceGoals, [Result is ArithTerm], BodyGoals),
+      plawk_conjunction(BodyGoals, Body)
     }.
 
-function_params([Param | Params]) -->
-    identifier(Param),
-    function_params_rest(Params).
+% Per-parameter head-var binding. Untyped: a fresh head var coerced to a number.
+% Typed (numeric): the head var IS the value var, so no coercion goal (`true`,
+% filtered out) -- the declared arg is already the right type.
+plawk_fn_param_binding(untyped, Value, Head,
+    (number(Head) -> Value = Head ; atom_number(Head, Value))).
+plawk_fn_param_binding(number, Value, Value, true).
 
-function_params_rest([Param | Params]) -->
+% Fold a non-empty goal list into a Prolog conjunction.
+plawk_conjunction([Goal], Goal) :- !.
+plawk_conjunction([Goal | Goals], (Goal, Rest)) :-
+    plawk_conjunction(Goals, Rest).
+
+function_params([Param | Params], [Type | Types]) -->
+    function_param(Param, Type),
+    function_params_rest(Params, Types).
+
+function_params_rest([Param | Params], [Type | Types]) -->
     ws,
     ",",
     ws,
     !,
-    identifier(Param),
-    function_params_rest(Params).
-function_params_rest([]) -->
+    function_param(Param, Type),
+    function_params_rest(Params, Types).
+function_params_rest([], []) -->
     [].
+
+% A parameter is an identifier, optionally prefixed by a numeric type keyword
+% (`num` / `int` / `float`). The typed form is tried first; it backtracks to an
+% untyped param when the keyword is actually the parameter's own name (e.g.
+% `function f(num)` -- `num` is the name, not a type).
+function_param(Name, number) -->
+    param_type_keyword,
+    identifier_boundary,
+    ws,
+    identifier(Name).
+function_param(Name, untyped) -->
+    identifier(Name).
+
+param_type_keyword --> "num".
+param_type_keyword --> "int".
+param_type_keyword --> "float".
 
 % arithmetic over the parameters, with awk precedence: * / % bind
 % tighter than + -, both associate left, parentheses group
@@ -628,6 +695,19 @@ action_block_close -->
     ws,
     "}",
     ws.
+
+%% body_block(-Actions)//
+%
+%  A control-flow body: either a braced `{ ... }` action block, or -- awk-style
+%  -- a single braceless statement (`if (c) print`, `while (c) x++`). The braced
+%  form is tried first; a braceless body is exactly one action wrapped in a
+%  singleton list, so downstream lowering (which already takes an action list)
+%  is unchanged.
+body_block(Actions) -->
+    action_block(Actions),
+    !.
+body_block([Action]) -->
+    action(Action).
 
 %% pattern(-Pattern)//
 %
@@ -1250,6 +1330,12 @@ forin_accum_operand(_Array, _Key, int(Value)) -->
 end_action(Action) -->
     for_in_action(Action),
     !.
+% a scalar-guarded print in END: `if (n > 1) print ...` [`else print ...`].
+% The condition is a scalar comparison (END has no current record), lowered
+% against the final slot values; each branch is a single print.
+end_action(Action) -->
+    if_action(Action),
+    !.
 end_action(Action) -->
     print_action(Action).
 
@@ -1269,17 +1355,19 @@ for_in_action(for_in(var(LoopVar), var(ArrayName), Body)) -->
     ws,
     for_in_body(Body).
 
-for_in_body(Actions) -->
-    action_block(Actions),
-    !.
 % for-in filter (assoc for-in, stage 1): `{ if (GUARD) print ... }` where
 % GUARD compares the loop key `k` or the value `arr[k]` to an integer.
 % A for-in-scoped condition -- k / arr[k] are only meaningful inside the
 % loop, so the operands live here rather than in the global pattern
-% grammar. Gates the per-key print; no cross-iteration state.
+% grammar. Gates the per-key print; no cross-iteration state. Tried BEFORE the
+% general action_block: `if (k > 0)` would otherwise parse as a scalar_if (`k`
+% is the loop key, not a scalar slot), so the for-in-scoped guard must win.
 for_in_body([if(Guard, [PrintAction], [])]) -->
     "{", ws, "if", ws, "(", ws, guard_expr(Guard), ws, ")", ws,
     print_action(PrintAction), ws, "}",
+    !.
+for_in_body(Actions) -->
+    action_block(Actions),
     !.
 for_in_body([WritebinAction]) -->
     writebin_action(WritebinAction),
@@ -1390,6 +1478,10 @@ actions_rest(_Prev, []) -->
 
 plawk_block_action(if(_Pattern, _Then, _Else)).
 plawk_block_action(foreach(_Body)).
+% a loop is a braced block too: a statement may follow it without a separator
+% (`while (..) { .. } i++`), like an if / foreach.
+plawk_block_action(while_loop(_Cond, _Body)).
+plawk_block_action(do_while_loop(_Body, _Cond)).
 
 %% action_sep//0
 %
@@ -1422,6 +1514,12 @@ action_sep_scan(yes) -->
     [].
 
 action(Action) -->
+    do_while_action(Action),
+    !.
+action(Action) -->
+    while_action(Action),
+    !.
+action(Action) -->
     if_action(Action),
     !.
 action(Action) -->
@@ -1444,6 +1542,12 @@ action(Action) -->
     !.
 action(Action) -->
     break_action(Action),
+    !.
+action(Action) -->
+    continue_action(Action),
+    !.
+action(Action) -->
+    exit_action(Action),
     !.
 action(Action) -->
     dynrec_view_action(Action),
@@ -1480,19 +1584,102 @@ action(Action) -->
 %  awk conditionals: `else` is optional (an absent else parses as an
 %  empty branch), and `else if` chains nest as a single-element else
 %  branch containing the next if.
+% A `while (VAR CMP int) { BODY }` loop -- iterate the body while a scalar
+% variable compares to an integer bound (the awk `while` control structure).
+% Parses to while_loop(cmp(var(V), Op, int(N)), Body). This is the SURFACE
+% (mirrors the query reader / generator surface-first PRs): the loop body reuses
+% the general action block, and the codegen (bin/plawk) rejects it with a clean
+% not-yet diagnostic until the loop runtime lands. The condition is a scalar
+% comparison for now; a general boolean condition is a follow-on.
+while_action(while_loop(Cond, Body)) -->
+    "while", identifier_boundary, ws,
+    "(", ws,
+    while_condition(Cond), ws,
+    ")", ws,
+    body_block(Body).
+
+% A `do { BODY } while (VAR CMP int)` loop -- the body runs at least once, then
+% repeats while the condition holds (the awk do-while control structure). Parses
+% to do_while_loop(Body, cmp(var(V), Op, int(N))). Surface only, like `while`;
+% both share the same loop runtime (a later PR). Tried via its own action
+% clause; the leading `do` keyword distinguishes it.
+do_while_action(do_while_loop(Body, Cond)) -->
+    "do", identifier_boundary, ws,
+    body_block(Body), ws,
+    "while", identifier_boundary, ws,
+    "(", ws,
+    while_condition(Cond), ws,
+    ")".
+
+% A loop condition: scalar comparisons (`VAR CMP int` or `VAR CMP VAR`) combined
+% with `&&` / `||`. `&&` binds tighter than `||` (awk precedence). A single
+% `VAR CMP int` still parses to the bare `cmp(...)` term, so the earlier runtime
+% is a strict subset. (PLAWK_CONTROL_FLOW_PLAN.md PR 3.)
+while_condition(Cond) -->
+    while_cond_and(First),
+    while_cond_or_rest(First, Cond).
+
+while_cond_or_rest(Acc, Cond) -->
+    ws, "||", ws, !,
+    while_cond_and(Next),
+    while_cond_or_rest(or(Acc, Next), Cond).
+while_cond_or_rest(Cond, Cond) -->
+    [].
+
+while_cond_and(Cond) -->
+    while_cmp(First),
+    while_cond_and_rest(First, Cond).
+
+while_cond_and_rest(Acc, Cond) -->
+    ws, "&&", ws, !,
+    while_cmp(Next),
+    while_cond_and_rest(and(Acc, Next), Cond).
+while_cond_and_rest(Cond, Cond) -->
+    [].
+
+% A scalar comparison: the left side is a loop variable; the right side is an
+% integer literal or another loop variable.
+while_cmp(cmp(var(V), Op, Rhs)) -->
+    identifier(V), ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
+
+while_cmp_rhs(int(N)) -->
+    signed_integer_value(N),
+    !.
+while_cmp_rhs(var(W)) -->
+    identifier(W).
+
+%% if_condition(-Cond)//
+%
+%  An `if` condition is either a SCALAR comparison over variables (`if (i > 2)`,
+%  `if (i < n && j > 0)`) -- the same `VAR CMP int/VAR` shape as a loop condition,
+%  wrapped as scalar_if(_) so the lowering reads slot values -- or the existing
+%  field/pattern guard (`$1 > 2`, `$0 ~ /re/`, combinators). The scalar form is
+%  tried first; it fails fast on a field condition (a `$` is not an identifier),
+%  falling through to the pattern. A single condition is scalar OR pattern, not a
+%  mix. (PLAWK_CONTROL_FLOW_PLAN.md 3b -- unblocks counter-based loop control.)
+if_condition(scalar_if(Cond)) -->
+    while_condition(Cond).
+if_condition(Pattern) -->
+    condition_pattern(Pattern).
+
 if_action(if(Pattern, ThenActions, ElseActions)) -->
     "if",
     ws,
     "(",
     ws,
-    condition_pattern(Pattern),
+    if_condition(Pattern),
     ws,
     ")",
     ws,
-    action_block(ThenActions),
+    body_block(ThenActions),
     if_else_part(ElseActions).
 
+% `else` may follow a braced then-body directly, or a braceless one across a
+% statement separator (`if (c) print x; else print y`) -- so tolerate an
+% optional separator before `else`. If no `else` follows, the clause fails and
+% backtracks (un-consuming the separator) to the empty else.
 if_else_part(ElseActions) -->
+    opt_action_sep,
     "else",
     identifier_boundary,
     if_else_body(ElseActions),
@@ -1500,13 +1687,19 @@ if_else_part(ElseActions) -->
 if_else_part([]) -->
     [].
 
+opt_action_sep -->
+    action_sep,
+    !.
+opt_action_sep -->
+    ws.
+
 if_else_body([ElseIfAction]) -->
     required_ws,
     if_action(ElseIfAction),
     !.
 if_else_body(ElseActions) -->
     ws,
-    action_block(ElseActions).
+    body_block(ElseActions).
 
 condition_pattern(Pattern) -->
     or_pattern(Pattern).
@@ -1531,6 +1724,23 @@ next_action(next) -->
 
 break_action(break) -->
     "break",
+    identifier_boundary.
+
+continue_action(continue) -->
+    "continue",
+    identifier_boundary.
+
+% `exit` / `exit N` -- stop reading records, run END, and return N (default 0).
+% Parses to exit(int(N)). Unlike `break`, it always ends the program (it is not
+% consumed by an enclosing loop).
+exit_action(exit(int(N))) -->
+    "exit",
+    identifier_boundary,
+    ws,
+    signed_integer_value(N),
+    !.
+exit_action(exit(int(0))) -->
+    "exit",
     identifier_boundary.
 
 %% dynrec_bind_action(-Action)//
@@ -1842,9 +2052,18 @@ print_action(print(Fields)) -->
 % contributes the value of E to the generated relation's solution set. Parses
 % to emit(Expr) reusing the print field-expression grammar (a field, number,
 % string, or arithmetic expression). Explicit emission keeps the value typed
-% (design doc section 2.1); a tuple emit (`emit (A, B)` -> arity 2) is a
-% follow-on. `emit` is only meaningful inside a `gen { ... }` block; the
-% codegen (bin/plawk) rejects it elsewhere until the runtime lands.
+% (design doc section 2.1). `emit` is only meaningful inside a `gen { ... }`
+% block; the codegen (bin/plawk) rejects it elsewhere.
+%
+% A TUPLE emit (`emit (A, B, ...)` -> a row of the generated relation, arity n)
+% parses to emit(tuple([V1, ..., Vn])). Tried first -- the `(` after `emit`
+% distinguishes it. Tuple elements are constants (integer or string literals);
+% a computed tuple element is a runtime-collection follow-on.
+emit_action(emit(tuple([V0, V1 | Vs]))) -->
+    "emit", required_ws, "(", ws,
+    emit_tuple_value(V0), ws, ",", ws, emit_tuple_value(V1),
+    emit_tuple_rest(Vs), ws, ")",
+    !.
 emit_action(emit(Expr)) -->
     "emit",
     required_ws,
@@ -1856,6 +2075,25 @@ emit_action(emit(int(N))) -->
     "emit",
     required_ws,
     signed_integer_value(N).
+
+% The remaining elements of a tuple emit, comma-separated.
+emit_tuple_rest([V | Vs]) -->
+    ws, ",", ws, emit_tuple_value(V),
+    !,
+    emit_tuple_rest(Vs).
+emit_tuple_rest([]) -->
+    [].
+% A tuple element: an integer or string literal (constant emits -> facts), or a
+% bound loop variable (an input-iterator projection -> a derived rule).
+emit_tuple_value(int(N)) -->
+    signed_integer_value(N),
+    !.
+emit_tuple_value(string(S)) -->
+    quoted_string(Codes),
+    !,
+    { string_codes(S, Codes) }.
+emit_tuple_value(var(V)) -->
+    identifier(V).
 
 printf_action(printf(string(Format), Args)) -->
     "printf",
@@ -1945,12 +2183,32 @@ print_fields_rest([]) -->
 % meaning there (`emit 1` stays the integer 1, not the atom '1'). field_expr is
 % tried first, so arithmetic (`print 1 + 2`) and floats are unaffected; only a
 % lone integer falls through to the literal clause.
+% String concatenation by juxtaposition (awk): `print $1 $2`, `print "x" $1`,
+% `print $1 "-" $2` output the operands adjacent, with NO field separator (unlike
+% the comma list). Two or more operands separated by whitespace parse to
+% concat([...]). Each operand is a field_expr, so arithmetic binds tighter than
+% concatenation (`$1 $2 + $3` == concat($1, $2 + $3)) and a comma still splits
+% print args. A single operand keeps its plain form (no concat wrapper).
+print_field_expr(concat([First, Second | Rest])) -->
+    field_expr(First),
+    required_ws,
+    field_expr(Second),
+    concat_rest(Rest),
+    !.
 print_field_expr(Field) -->
     field_expr(Field),
     !.
 print_field_expr(string(Text)) -->
     signed_integer_value(N),
     { format(string(Text), '~w', [N]) }.
+
+concat_rest([Operand | Rest]) -->
+    required_ws,
+    field_expr(Operand),
+    !,
+    concat_rest(Rest).
+concat_rest([]) -->
+    [].
 
 field_expr(Expr) -->
     i64_binary_surface_expr(Expr).

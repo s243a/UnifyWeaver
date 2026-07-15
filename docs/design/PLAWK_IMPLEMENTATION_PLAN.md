@@ -10,6 +10,7 @@ Copyright (c) 2026 John William Creighton (s243a)
 *Status: Early Design / Prototype Phase*
 
 > **Companion docs:** [Philosophy](PLAWK_PHILOSOPHY.md) ·
+> [AWK feature audit & roadmap](PLAWK_AWK_FEATURE_AUDIT.md) ·
 > [Specification](PLAWK_SPECIFICATION.md) ·
 > [Execution Architecture](PLAWK_EXECUTION_ARCHITECTURE.md) ·
 > [DCG Binary Readers](PLAWK_DCG_BINARY_READERS.md) ·

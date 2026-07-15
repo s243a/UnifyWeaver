@@ -9,6 +9,7 @@
     plawk_query_helper_name/3,
     plawk_query_helper_clause/4,
     plawk_program_query_passes/2,
+    plawk_program_materialize_views/2,
     plawk_program_gen_blocks/2,
     plawk_query_pass_supported/1,
     plawk_program_foreign_specs/3,
@@ -207,6 +208,61 @@ print_line:
             success, 'success:\n  ret i32 0'),
         DriverIR).
 
+% A body-printing scalar rule chain with NO END block: all output comes from
+% the per-record body (e.g. `{ i = 0; while (i < 3) { print i; i++ } }`). Same
+% lowering as the scalar END-print chain but with an empty print list and NO
+% end_print body -- the end_print block just returns 0 (no trailing newline).
+% Requires a genuine scalar plan (a rule that updates state or prints in its
+% body); writebin-only / query / single-action programs match their own
+% clauses above.
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules0, []),
+    InputPath,
+    DriverIR
+) :-
+    \+ plawk_begin_has_binfmt(BeginClauses),
+    is_list(Rules0),
+    plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules1, WritebinPlan),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    plawk_resolve_dynrec_view_rules(Rules1, Rules1b),
+    plawk_resolve_foreach_rules(FieldSeparator, Rules1b, Rules),
+    plawk_scalar_state_plan(Rules, [], StatePlan),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR0),
+    plawk_writebin_entry_lines(WritebinPlan, WritebinEntryIR),
+    plawk_join_nonempty_ir([BeginIR0, WritebinEntryIR], BeginIR),
+    plawk_record_program_ok(FieldSeparator, Rules, []),
+    plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator,
+        RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    plawk_rules_writebin_exprs(Rules, WritebinExprs),
+    append(BodyPrintFields, WritebinExprs, PrintExprs0),
+    append(PrintExprs0, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
+    plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
+    plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
+    plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
+    plawk_scalar_rule_controls(Rules, ScalarRuleControls),
+    plawk_scalar_next_phi_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, NextPhiIR),
+    plawk_break_close_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, done,
+        BreakCloseIR, FinalStatePhiIR),
+    plawk_writebin_globals(WritebinPlan, WritebinGlobalIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
+        [BeginGlobalIR, RuleGlobalIR, WritebinGlobalIR]),
+    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
+        [FinalStatePhiIR]),
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
+        driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
+            NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
 plawk_program_native_driver_ir(
     program(BeginClauses, Rules, [end([print(PrintFields)])]),
     InputPath,
@@ -244,7 +300,8 @@ plawk_program_native_driver_ir(
     format(atom(CloseOkIR),
 'end_print:
 ~w~w
-  ret i32 0',
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
         [FinalStatePhiIR, EndPrintIR]),
     llvm_emit_stream_driver_ir(InputPath,
         driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, LoopPhiIR, lowered_mixed,
@@ -292,8 +349,67 @@ plawk_program_native_driver_ir(
     format(atom(CloseOkIR),
 'end_print:
 ~w~w
-  ret i32 0',
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
         [FinalStatePhiIR, EndPrintIR]),
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
+        driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
+            NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
+% END { if (COND) print ...; [else print ...] } -- a scalar-guarded print in the
+% END block. COND is a scalar comparison over the final slot values; each branch
+% is a single print. Same lowering as the scalar END-print clause above, but the
+% end_print body is the if (condition + then/else print blocks) instead of a
+% plain print. The state plan sees every field the branches print plus the
+% condition variables (so their slots exist).
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules0, [end([if(scalar_if(Cond), ThenActions, ElseActions)])]),
+    InputPath,
+    DriverIR
+) :-
+    plawk_end_if_ok(ThenActions, ElseActions),
+    plawk_end_if_print_fields(Cond, ThenActions, ElseActions, PrintFields),
+    plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules1, WritebinPlan),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    plawk_resolve_dynrec_view_rules(Rules1, Rules1b),
+    plawk_resolve_foreach_rules(FieldSeparator, Rules1b, Rules),
+    plawk_scalar_state_plan(Rules, PrintFields, StatePlan),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR0),
+    plawk_writebin_entry_lines(WritebinPlan, WritebinEntryIR),
+    plawk_join_nonempty_ir([BeginIR0, WritebinEntryIR], BeginIR),
+    plawk_record_program_ok(FieldSeparator, Rules, PrintFields),
+    plawk_end_print_string_globals(PrintFields, StringGlobalIR),
+    plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator,
+        RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    plawk_rules_writebin_exprs(Rules, WritebinExprs),
+    append(PrintFields, BodyPrintFields, PrintExprs0),
+    append(PrintExprs0, WritebinExprs, PrintExprs),
+    append(PrintExprs, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
+    plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
+    plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
+    plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
+    plawk_scalar_rule_controls(Rules, ScalarRuleControls),
+    plawk_scalar_next_phi_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, NextPhiIR),
+    plawk_break_close_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, done,
+        BreakCloseIR, FinalStatePhiIR),
+    plawk_scalar_end_if_ir(Cond, ThenActions, ElseActions, StatePlan,
+        FieldSeparator, OutputSeparator, EndIfGlobalIR, EndIfIR),
+    plawk_writebin_globals(WritebinPlan, WritebinGlobalIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, EndIfGlobalIR, RuleGlobalIR, WritebinGlobalIR]),
+    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w~w
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
+        [FinalStatePhiIR, EndIfIR]),
     plawk_emit_record_driver_ir(FieldSeparator, InputPath,
         driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
             NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
@@ -386,7 +502,8 @@ plawk_program_native_driver_ir(
     format(atom(CloseOkIR),
 'end_print:
 ~w~w
-  ret i32 0',
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
         [FinalStatePhiIR, EndPrintIR]),
     plawk_emit_record_driver_ir(Descriptor, InputPath,
         driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
@@ -431,7 +548,8 @@ plawk_program_native_driver_ir(
     format(atom(CloseOkIR),
 'end_print:
 ~w
-  ret i32 0',
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
         [EndPrintIR]),
     plawk_emit_record_driver_ir(Descriptor, InputPath,
         driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, RecordLoopPhiIR, lowered_assoc,
@@ -504,7 +622,8 @@ plawk_program_native_driver_ir(
     format(atom(CloseOkIR),
 'end_print:
 ~w
-  ret i32 0',
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
         [EndPrintIR]),
     plawk_emit_record_driver_ir(FieldSeparator, InputPath,
         driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, RecordLoopPhiIR, lowered_assoc,
@@ -3931,6 +4050,13 @@ plawk_program_query_passes(program_passes(_, Passes, _), QueryPasses) :-
     findall(pass_query(Q, B), member(pass_query(Q, B), Passes), QueryPasses).
 plawk_program_query_passes(program(_, _, _), []).
 
+%% plawk_program_materialize_views(+Program, -Names) is det.
+%  The names declared by `materialize NAME` (PLAWK_MULTIPASS_CACHE.md §3.9),
+%  in program order (empty if none). Surface-first: the runtime is a follow-on.
+plawk_program_materialize_views(program_passes(_, Passes, _), Names) :-
+    findall(Name, member(materialize(Name), Passes), Names).
+plawk_program_materialize_views(program(_, _, _), []).
+
 %% plawk_program_gen_blocks(+Program, -GenBlocks) is det.
 %  The `gen { ... } as name` generator blocks of a program (empty if none).
 %  The producer dual of the query reader (PLAWK_GENERATOR_BLOCKS.md); collected
@@ -4791,6 +4917,106 @@ plawk_icmp_pred(le, sle).
 plawk_icmp_pred(gt, sgt).
 plawk_icmp_pred(ge, sge).
 
+%% plawk_while_cond_ok(+Cond) is semidet.
+%
+%  A supported loop condition: scalar comparisons (`VAR CMP int` or
+%  `VAR CMP VAR`) combined with `and` / `or` (PLAWK_CONTROL_FLOW_PLAN.md PR 3).
+plawk_while_cond_ok(and(A, B)) :-
+    !,
+    plawk_while_cond_ok(A),
+    plawk_while_cond_ok(B).
+plawk_while_cond_ok(or(A, B)) :-
+    !,
+    plawk_while_cond_ok(A),
+    plawk_while_cond_ok(B).
+plawk_while_cond_ok(cmp(var(_V), Op, Rhs)) :-
+    plawk_icmp_pred(Op, _Pred),
+    plawk_while_cond_rhs_ok(Rhs).
+
+plawk_while_cond_rhs_ok(int(N)) :- integer(N).
+plawk_while_cond_rhs_ok(var(_W)).
+
+%% plawk_while_cond_vars(+Cond, -Vars)
+%
+%  Every scalar variable named in the condition (both sides of every
+%  comparison) -- each must get an i64 slot.
+plawk_while_cond_vars(and(A, B), Vars) :-
+    !,
+    plawk_while_cond_vars(A, VA),
+    plawk_while_cond_vars(B, VB),
+    append(VA, VB, Vars).
+plawk_while_cond_vars(or(A, B), Vars) :-
+    !,
+    plawk_while_cond_vars(A, VA),
+    plawk_while_cond_vars(B, VB),
+    append(VA, VB, Vars).
+plawk_while_cond_vars(cmp(var(V), _Op, int(_N)), [V]) :- !.
+plawk_while_cond_vars(cmp(var(V), _Op, var(W)), [V, W]).
+
+%% plawk_while_cond_ir(+Cond, +Slots, +CondValues, +Base, -CondVar, -IR)
+%
+%  Emit the loop-condition test as a block of IR lines ending in an i1 value
+%  (CondVar). Each variable's current value is its slot value in CondValues
+%  (head-phi values for `while`, body-output values for `do-while`);
+%  comparisons are i64 icmps, combined with `and`/`or i1`.
+plawk_while_cond_ir(Cond, Slots, CondValues, Base, CondVar, IR) :-
+    plawk_while_cond_build(Cond, Slots, CondValues, Base, '', CondVar, Lines),
+    atomic_list_concat(Lines, '\n', IR).
+
+plawk_while_cond_build(and(A, B), Slots, CV, Base, Path, CondVar, Lines) :-
+    !,
+    atom_concat(Path, 'l', PA),
+    atom_concat(Path, 'r', PB),
+    plawk_while_cond_build(A, Slots, CV, Base, PA, VA, LA),
+    plawk_while_cond_build(B, Slots, CV, Base, PB, VB, LB),
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(Line), '  ~w = and i1 ~w, ~w', [CondVar, VA, VB]),
+    append([LA, LB, [Line]], Lines).
+plawk_while_cond_build(or(A, B), Slots, CV, Base, Path, CondVar, Lines) :-
+    !,
+    atom_concat(Path, 'l', PA),
+    atom_concat(Path, 'r', PB),
+    plawk_while_cond_build(A, Slots, CV, Base, PA, VA, LA),
+    plawk_while_cond_build(B, Slots, CV, Base, PB, VB, LB),
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(Line), '  ~w = or i1 ~w, ~w', [CondVar, VA, VB]),
+    append([LA, LB, [Line]], Lines).
+plawk_while_cond_build(cmp(var(CondName), Op, Rhs), Slots, CondValues, Base,
+        Path, CondVar, [Line]) :-
+    plawk_while_cond_operand(var(CondName), Slots, CondValues, LOperand),
+    plawk_while_cond_operand(Rhs, Slots, CondValues, ROperand),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(Line), '  ~w = icmp ~w i64 ~w, ~w',
+        [CondVar, Pred, LOperand, ROperand]).
+
+% An operand is either an integer literal (emitted inline) or a loop variable
+% (read from its slot's current SSA value).
+plawk_while_cond_operand(int(N), _Slots, _CondValues, N) :-
+    !.
+plawk_while_cond_operand(var(Name), Slots, CondValues, Ref) :-
+    nth0(Idx, Slots, Slot),
+    plawk_slot_name(Slot, Name),
+    !,
+    nth0(Idx, CondValues, Ref).
+
+%% plawk_if_cond_ir(+Cond, +Slots, +Values0, +FieldSeparator, +GlobalBase,
+%%     -CondValue, -GuardGlobalIR-GuardIR)
+%
+%  Lower an `if` condition to an i1 (CondValue). A `scalar_if(_)` condition is a
+%  scalar comparison over slots -- lowered like a loop condition, reading the
+%  current slot SSA values (Values0). A field/pattern guard is lowered by the
+%  existing pattern-guard emitter (which reads the record).
+plawk_if_cond_ir(scalar_if(Cond), Slots, Values0, _FieldSeparator, GlobalBase,
+        CondValue, ''-GuardIR) :-
+    !,
+    plawk_while_cond_ir(Cond, Slots, Values0, GlobalBase, CondValue, GuardIR).
+plawk_if_cond_ir(Pattern, _Slots, _Values0, FieldSeparator, GlobalBase,
+        CondValue, GuardGlobalIR-GuardIR) :-
+    format(atom(CondValue), '%~w_cond', [GlobalBase]),
+    plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, CondValue,
+        GuardGlobalIR-GuardIR).
+
 % Surface comparison op -> ordered LLVM fcmp predicate (row values are finite,
 % so ordered comparisons are correct; a NaN column fails every guard).
 plawk_fcmp_pred(eq, oeq).
@@ -5599,6 +5825,7 @@ plawk_i64_end_print_globals(SurfaceGlobals, RuntimeGlobals) :-
 @.plawk_surface_print_newline = private constant [2 x i8] c"\\0A\\00"
 @.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"
 @.plawk_surface_print_f64 = private constant [3 x i8] c"%g\\00"
+@plawk_exit_code = internal global i32 0
 ~w
 
 ',
@@ -5640,6 +5867,8 @@ plawk_trim_control_tails([next | _Rest], [next]) :-
     !.
 plawk_trim_control_tails([break | _Rest], [break]) :-
     !.
+plawk_trim_control_tails([continue | _Rest], [continue]) :-
+    !.
 plawk_trim_control_tails([if(Pattern, ThenActions, ElseActions) | Rest],
         [if(Pattern, TrimmedThenActions, TrimmedElseActions) | TrimmedRest]) :-
     !,
@@ -5661,6 +5890,17 @@ plawk_split_normalized_terminal_control(Actions, BodyActions, terminal_break) :-
     append(BodyActions, [break], Actions),
     !,
     \+ plawk_actions_have_control(BodyActions).
+% A rule-level `exit [N]` is a terminal like `break`: it leaves the record loop
+% via break_close_stream (which runs END and returns @plawk_exit_code). Unlike
+% break, it has a side effect -- storing the code -- so the trailing exit is
+% replaced by an `exit_store(N)` marker kept in the body (the sequence walker
+% lowers it to just the store, no branch); the branch to break_close_stream
+% comes from the terminal_exit rule target.
+plawk_split_normalized_terminal_control(Actions, BodyActions, terminal_exit) :-
+    append(Prefix, [exit(int(Code))], Actions),
+    !,
+    \+ plawk_actions_have_control(Prefix),
+    append(Prefix, [exit_store(Code)], BodyActions).
 plawk_split_normalized_terminal_control(Actions, Actions, fallthrough) :-
     \+ plawk_actions_have_control(Actions).
 
@@ -5676,6 +5916,31 @@ plawk_action_has_control(if(_Pattern, ThenActions, ElseActions)) :-
     ).
 plawk_action_has_control(foreach_loop(_Layout, Body)) :-
     plawk_branch_actions_have_unsupported_control(Body).
+% A while/do-while loop consumes its own body's break/continue (loop-local), so
+% those do NOT make the loop-as-action carry control to the rule level; only a
+% `next` inside the body propagates (to the record loop).
+plawk_action_has_control(while_loop(_Cond, Body)) :-
+    plawk_actions_have_next_control(Body).
+plawk_action_has_control(do_while_loop(Body, _Cond)) :-
+    plawk_actions_have_next_control(Body).
+
+% True if some action reaches a bare `next` (recursing through ifs and nested
+% loops) -- `next` propagates past loops, break/continue do not.
+plawk_actions_have_next_control(Actions) :-
+    member(Action, Actions),
+    plawk_action_reaches_next(Action).
+
+plawk_action_reaches_next(next).
+plawk_action_reaches_next(if(_Pattern, ThenActions, ElseActions)) :-
+    ( plawk_actions_have_next_control(ThenActions)
+    ; plawk_actions_have_next_control(ElseActions)
+    ).
+plawk_action_reaches_next(while_loop(_Cond, Body)) :-
+    plawk_actions_have_next_control(Body).
+plawk_action_reaches_next(do_while_loop(Body, _Cond)) :-
+    plawk_actions_have_next_control(Body).
+plawk_action_reaches_next(foreach_loop(_Layout, Body)) :-
+    plawk_actions_have_next_control(Body).
 
 plawk_branch_actions_have_unsupported_control(Actions) :-
     plawk_trim_control_tails(Actions, TrimmedActions),
@@ -5689,6 +5954,7 @@ plawk_branch_actions_have_unsupported_control(Actions) :-
 plawk_rule_target(fallthrough, NextLabel, NextLabel).
 plawk_rule_target(terminal_next, _NextLabel, continue_loop).
 plawk_rule_target(terminal_break, _NextLabel, break_close_stream).
+plawk_rule_target(terminal_exit, _NextLabel, break_close_stream).
 
 
 plawk_controls_have_break(Controls) :-
@@ -5706,7 +5972,9 @@ plawk_assoc_break_close_ir(Controls, IR) :-
 plawk_break_close_ir(StatePlan, RuleCount, Controls, BranchControlExits, BreakPredKind, BreakCloseIR, FinalStatePhiIR) :-
     plawk_state_plan_slots(StatePlan, Slots),
     (   plawk_controls_have_break(Controls)
+    ;   member(terminal_exit, Controls)
     ;   member(branch_break(_Label, _Values), BranchControlExits)
+    ;   member(branch_exit(_ExitLabel, _ExitValues), BranchControlExits)
     ),
     !,
     phrase(plawk_break_slot_phi_lines(Slots, RuleCount, Controls, BranchControlExits, BreakPredKind, 0), BreakSlotPhiLines),
@@ -5738,7 +6006,8 @@ plawk_break_slot_phi_lines([Slot | Rest], RuleCount, Controls, BranchControlExit
     { LastRuleIndex is RuleCount - 1,
       findall(Incoming,
           ( between(0, LastRuleIndex, RuleIndex),
-            nth0(RuleIndex, Controls, terminal_break),
+            nth0(RuleIndex, Controls, RuleControl),
+            memberchk(RuleControl, [terminal_break, terminal_exit]),
             plawk_break_predecessor_label(BreakPredKind, RuleIndex, PredLabel),
             format(atom(Incoming), '[%rule_~w_slot_~w, %~w]',
                 [RuleIndex, SlotIndex, PredLabel])
@@ -5756,7 +6025,10 @@ plawk_break_slot_phi_lines([Slot | Rest], RuleCount, Controls, BranchControlExit
     plawk_break_slot_phi_lines(Rest, RuleCount, Controls, BranchControlExits, BreakPredKind, NextSlotIndex).
 
 plawk_branch_break_phi_incomings([], _SlotIndex, []).
-plawk_branch_break_phi_incomings([branch_break(Label, Values) | Rest], SlotIndex, [Incoming | Incomings]) :-
+% `exit` reaches break_close_stream too (it runs END on the way out), so its
+% slot values merge into the break-close phi exactly like a break's.
+plawk_branch_break_phi_incomings([Exit | Rest], SlotIndex, [Incoming | Incomings]) :-
+    ( Exit = branch_break(Label, Values) ; Exit = branch_exit(Label, Values) ),
     !,
     nth0(SlotIndex, Values, Value),
     format(atom(Incoming), '[~w, %~w]', [Value, Label]),
@@ -5849,9 +6121,24 @@ plawk_scalar_update_name_expr(if(_Pattern, ThenActions, ElseActions), Name, Expr
     ; member(Action, ElseActions)
     ),
     plawk_scalar_update_name_expr(Action, Name, Expr).
+% a scalar `if` condition (`if (i > 2)`) references scalar variables -- each
+% needs an i64 slot, exactly like a loop condition.
+plawk_scalar_update_name_expr(if(scalar_if(Cond), _Then, _Else), Name, int(0)) :-
+    plawk_while_cond_vars(Cond, CondVars),
+    member(Name, CondVars).
 plawk_scalar_update_name_expr(foreach_loop(_Layout, Body), Name, Expr) :-
     member(Action, Body),
     plawk_scalar_update_name_expr(Action, Name, Expr).
+% while/do-while: every condition variable gets an i64 slot (each is compared
+% numerically), plus any scalar the body updates.
+plawk_scalar_update_name_expr(while_loop(Cond, Body), Name, Expr) :-
+    ( plawk_while_cond_vars(Cond, CondVars), member(Name, CondVars), Expr = int(0)
+    ; member(Action, Body), plawk_scalar_update_name_expr(Action, Name, Expr)
+    ).
+plawk_scalar_update_name_expr(do_while_loop(Body, Cond), Name, Expr) :-
+    ( plawk_while_cond_vars(Cond, CondVars), member(Name, CondVars), Expr = int(0)
+    ; member(Action, Body), plawk_scalar_update_name_expr(Action, Name, Expr)
+    ).
 
 plawk_scalar_double_fixpoint(Updates, Doubles0, Doubles) :-
     findall(Name,
@@ -5979,6 +6266,10 @@ plawk_action_body_print_field(if(_Pattern, ThenActions, ElseActions), Field) :-
     ).
 plawk_action_body_print_field(foreach_loop(_Layout, Body), Field) :-
     plawk_actions_body_print_field(Body, Field).
+plawk_action_body_print_field(while_loop(_Cond, Body), Field) :-
+    plawk_actions_body_print_field(Body, Field).
+plawk_action_body_print_field(do_while_loop(Body, _Cond), Field) :-
+    plawk_actions_body_print_field(Body, Field).
 
 plawk_mixed_planned_rules([], _AssocPlan, _Index) -->
     [].
@@ -6049,6 +6340,10 @@ plawk_split_normalized_branch_control(Actions, BodyActions, branch_next) :-
     \+ plawk_actions_have_control(BodyActions).
 plawk_split_normalized_branch_control(Actions, BodyActions, branch_break) :-
     append(BodyActions, [break], Actions),
+    !,
+    \+ plawk_actions_have_control(BodyActions).
+plawk_split_normalized_branch_control(Actions, BodyActions, branch_continue) :-
+    append(BodyActions, [continue], Actions),
     !,
     \+ plawk_actions_have_control(BodyActions).
 plawk_split_normalized_branch_control(Actions, Actions, fallthrough) :-
@@ -6192,7 +6487,8 @@ plawk_mixed_scalar_next_phi_lines([Slot | Rest], RuleCount, Controls, BranchNext
       findall(ApplyIncoming,
           ( between(0, LastRuleIndex, RuleIndex),
             ( ( RuleIndex =:= LastRuleIndex,
-                \+ nth0(RuleIndex, Controls, terminal_break)
+                \+ ( nth0(RuleIndex, Controls, LastControl),
+                     memberchk(LastControl, [terminal_break, terminal_exit]) )
               )
             ; nth0(RuleIndex, Controls, terminal_next)
             ),
@@ -7733,6 +8029,12 @@ plawk_binfmt_action_ok(Descriptor, writebin_arm_out(_Tag, ArmTypes, Fields)) :-
     !,
     plawk_binfmt_writebin_args_ok(Descriptor, ArmTypes, Fields).
 plawk_binfmt_action_ok(Descriptor, foreach_loop(_Layout, Body)) :-
+    !,
+    plawk_binfmt_actions_ok(Descriptor, Body).
+plawk_binfmt_action_ok(Descriptor, while_loop(_Cond, Body)) :-
+    !,
+    plawk_binfmt_actions_ok(Descriptor, Body).
+plawk_binfmt_action_ok(Descriptor, do_while_loop(Body, _Cond)) :-
     !,
     plawk_binfmt_actions_ok(Descriptor, Body).
 
@@ -9590,11 +9892,34 @@ plawk_end_print_string_global_lines([string(Value) | Rest], Index) -->
     },
     [Line],
     plawk_end_print_string_global_lines(Rest, NextIndex).
+% a concatenation's string operands emit globals under the same
+% PrintIndex*1000 + part index scheme the END concat print uses.
+plawk_end_print_string_global_lines([concat(Parts) | Rest], Index) -->
+    plawk_end_concat_string_globals(Parts, Index, 0),
+    { NextIndex is Index + 1 },
+    plawk_end_print_string_global_lines(Rest, NextIndex).
 plawk_end_print_string_global_lines([Field | Rest], Index) -->
     { \+ Field = string(_),
+      \+ Field = concat(_),
       NextIndex is Index + 1
     },
     plawk_end_print_string_global_lines(Rest, NextIndex).
+
+plawk_end_concat_string_globals([], _Index, _PartIndex) -->
+    [].
+plawk_end_concat_string_globals([string(Value) | Rest], Index, PartIndex) -->
+    { CombinedIndex is Index * 1000 + PartIndex,
+      format(atom(GlobalName), 'plawk_end_print_string_~w', [CombinedIndex]),
+      llvm_emit_c_string_global(GlobalName, Value, Line, _StringLen, _BytesLen),
+      NextPartIndex is PartIndex + 1
+    },
+    [Line],
+    plawk_end_concat_string_globals(Rest, Index, NextPartIndex).
+plawk_end_concat_string_globals([Part | Rest], Index, PartIndex) -->
+    { \+ Part = string(_),
+      NextPartIndex is PartIndex + 1
+    },
+    plawk_end_concat_string_globals(Rest, Index, NextPartIndex).
 
 plawk_assoc_print_key_global_lines([], _) -->
     [].
@@ -9841,6 +10166,11 @@ plawk_mixed_end_print_lines([string(Value) | Rest], ScalarPlan, AssocPlan, Outpu
     plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
 
 plawk_scalar_print_expr(var(Name), Name).
+% a concatenation contributes each operand's scalar reads (so a printed scalar
+% inside `print a $1 b` gets a slot).
+plawk_scalar_print_expr(concat(Parts), Name) :-
+    member(Part, Parts),
+    plawk_scalar_print_expr(Part, Name).
 plawk_scalar_print_expr(Expr, Name) :-
     plawk_end_scalar_expr(Expr),
     plawk_expr_scalar_read_name(Expr, Name).
@@ -9949,7 +10279,7 @@ plawk_scalar_rule_input_phi_lines([Slot | Rest], RuleIndex, Controls, SlotIndex)
 
 plawk_terminal_control_skips_next_rule(Controls, RuleIndex) :-
     nth0(RuleIndex, Controls, Control),
-    memberchk(Control, [terminal_next, terminal_break]).
+    memberchk(Control, [terminal_next, terminal_break, terminal_exit]).
 
 plawk_scalar_rule_input_value(0, SlotIndex, Value) :-
     !,
@@ -10032,6 +10362,9 @@ plawk_scalar_rule_body_action(Action) :-
     plawk_scalar_action_update(Action, _Name, _Operation).
 plawk_scalar_rule_body_action(Action) :-
     plawk_dynrec_bind_ok(Action).
+% the store-only half of a rule-level `exit N` (terminal_exit split); it is a
+% plain store with no control, valid anywhere a plain body action is.
+plawk_scalar_rule_body_action(exit_store(_Code)).
 plawk_scalar_rule_body_action(Action) :-
     plawk_rule_body_print_action(Action).
 plawk_scalar_rule_body_action(writebin_out(Types, Fields)) :-
@@ -10039,6 +10372,12 @@ plawk_scalar_rule_body_action(writebin_out(Types, Fields)) :-
 plawk_scalar_rule_body_action(writebin_arm_out(_Tag, ArmTypes, Fields)) :-
     plawk_writebin_args_ok(ArmTypes, Fields).
 plawk_scalar_rule_body_action(foreach_loop(_Layout, Body)) :-
+    plawk_scalar_branch_body_actions(Body).
+plawk_scalar_rule_body_action(while_loop(Cond, Body)) :-
+    plawk_while_cond_ok(Cond),
+    plawk_scalar_branch_body_actions(Body).
+plawk_scalar_rule_body_action(do_while_loop(Body, Cond)) :-
+    plawk_while_cond_ok(Cond),
     plawk_scalar_branch_body_actions(Body).
 plawk_scalar_rule_body_action(if(_Pattern, ThenActions, ElseActions)) :-
     append(ThenActions, ElseActions, Actions),
@@ -10052,6 +10391,11 @@ plawk_scalar_branch_body_actions(Actions) :-
 
 plawk_scalar_rule_body_plain_action(Action) :-
     plawk_scalar_action_update(Action, _Name, _Operation).
+% `exit [N]` inside a branch body (`if (c) exit`): the sequence walker lowers it
+% via branch_exit + plawk_branch_to_done_ir (branch to break_close_stream); the
+% store-only marker `exit_store` may appear when a branch ends the rule.
+plawk_scalar_rule_body_plain_action(exit(int(_Code))).
+plawk_scalar_rule_body_plain_action(exit_store(_Code)).
 % a structured-return destructure inside a branch body: the sequence
 % walker lowers dynrec_bind wherever it appears (its slots/call IR is
 % branch-position-independent), so branch-body validation accepts it
@@ -10068,6 +10412,14 @@ plawk_scalar_rule_body_plain_action(writebin_arm_out(_Tag, ArmTypes, Fields)) :-
 % lowers nested ifs recursively, so validation recurses the same way.
 plawk_scalar_rule_body_plain_action(if(Pattern, ThenActions, ElseActions)) :-
     plawk_scalar_rule_body_action(if(Pattern, ThenActions, ElseActions)).
+% a loop may nest inside another loop body (`while (..) { while (..) { .. } }`);
+% the sequence walker lowers the inner loop recursively, so validation recurses.
+plawk_scalar_rule_body_plain_action(while_loop(Cond, Body)) :-
+    plawk_scalar_rule_body_action(while_loop(Cond, Body)).
+plawk_scalar_rule_body_plain_action(do_while_loop(Body, Cond)) :-
+    plawk_scalar_rule_body_action(do_while_loop(Body, Cond)).
+plawk_scalar_rule_body_plain_action(foreach_loop(Layout, Body)) :-
+    plawk_scalar_rule_body_action(foreach_loop(Layout, Body)).
 
 plawk_rule_body_print_action(print(Fields)) :-
     Fields = [_ | _],
@@ -10078,6 +10430,15 @@ plawk_rule_body_print_action(printf(string(Format), Args)) :-
 
 plawk_rule_body_print_field(field(_)).
 plawk_rule_body_print_field(string(_)).
+% a string concatenation (`print $1 $2`): every operand must be a valid print
+% field; they are emitted adjacently with no separator.
+plawk_rule_body_print_field(concat(Parts)) :-
+    Parts = [_, _ | _],
+    maplist(plawk_rule_body_print_field, Parts).
+% a bare scalar variable read (`print i`): substitution rewrites var(Name) to
+% the slot's SSA value at emit time, so a scalar can be printed directly. Only
+% names that resolve to a slot compile; a non-slot var fails substitution.
+plawk_rule_body_print_field(var(_)).
 plawk_rule_body_print_field(special('NR')).
 plawk_rule_body_print_field(special('NF')).
 plawk_rule_body_print_field(int(field(_))).
@@ -10632,6 +10993,11 @@ plawk_substitute_operation_reads(set(Expr0), Slots, Values, set(Expr)) :-
     plawk_substitute_scalar_reads(Expr0, Slots, Values, Expr).
 plawk_substitute_operation_reads(Operation, _Slots, _Values, Operation).
 
+plawk_substitute_scalar_reads(concat(Parts), Slots, Values, concat(SubParts)) :-
+    !,
+    maplist(plawk_substitute_scalar_read_part(Slots, Values), Parts, SubParts).
+plawk_substitute_scalar_read_part(Slots, Values, Part, SubPart) :-
+    plawk_substitute_scalar_reads(Part, Slots, Values, SubPart).
 plawk_substitute_scalar_reads(var(Name), Slots, Values, Substituted) :-
     !,
     nth0(SlotIndex, Slots, Slot),
@@ -10764,9 +11130,20 @@ plawk_scalar_update_action_name(if(_Pattern, ThenActions, ElseActions), Name) :-
     ; member(Action, ElseActions)
     ),
     plawk_scalar_update_action_name(Action, Name).
+plawk_scalar_update_action_name(if(scalar_if(Cond), _Then, _Else), Name) :-
+    plawk_while_cond_vars(Cond, CondVars),
+    member(Name, CondVars).
 plawk_scalar_update_action_name(foreach_loop(_Layout, Body), Name) :-
     member(Action, Body),
     plawk_scalar_update_action_name(Action, Name).
+plawk_scalar_update_action_name(while_loop(Cond, Body), Name) :-
+    ( plawk_while_cond_vars(Cond, CondVars), member(Name, CondVars)
+    ; member(Action, Body), plawk_scalar_update_action_name(Action, Name)
+    ).
+plawk_scalar_update_action_name(do_while_loop(Body, Cond), Name) :-
+    ( plawk_while_cond_vars(Cond, CondVars), member(Name, CondVars)
+    ; member(Action, Body), plawk_scalar_update_action_name(Action, Name)
+    ).
 
 plawk_expr_scalar_read_name(var(Name), Name).
 plawk_expr_scalar_read_name(Expr, Name) :-
@@ -10973,6 +11350,32 @@ plawk_scalar_action_sequence_pairs([next], _Slots, _AssocPlan, _FieldSeparator, 
 plawk_scalar_action_sequence_pairs([break], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
         OpIndex, Values, Values, OpIndex, break, [branch_break(CurrentLabel, Values)]) -->
     [].
+% `continue` -- like break, it emits no IR of its own; the consumer branches
+% (plawk_branch_to_done_ir) to the enclosing loop's continue target, and the
+% loop consumes the branch_continue exit to wire its head/cond phi.
+plawk_scalar_action_sequence_pairs([continue], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
+        OpIndex, Values, Values, OpIndex, continue, [branch_continue(CurrentLabel, Values)]) -->
+    [].
+% `exit N` -- store the exit code, then leave the program via break_close_stream
+% (which runs END and returns the code). The branch_exit exit carries the slot
+% values at the exit point so END sees them (merged into the break_close phi
+% exactly like a break), but a loop does NOT consume it -- exit always ends the
+% program, so it propagates past any enclosing loop.
+plawk_scalar_action_sequence_pairs([exit(int(Code))], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
+        OpIndex, Values, Values, OpIndex, exit, [branch_exit(CurrentLabel, Values)]) -->
+    { format(atom(StoreIR), '  store i32 ~w, i32* @plawk_exit_code', [Code]) },
+    [''-StoreIR].
+% `exit_store(N)` -- the store-only half of a rule-level `exit N` (the terminal
+% control split leaves this in the body; the branch to break_close_stream comes
+% from the terminal_exit rule target). It emits just the store and falls through
+% -- control reaches the rule's done block, which branches to break_close_stream.
+plawk_scalar_action_sequence_pairs([exit_store(Code) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { format(atom(StoreIR), '  store i32 ~w, i32* @plawk_exit_code', [Code]),
+      NextOpIndex is OpIndex + 1 },
+    [''-StoreIR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 % foreach_loop: the one loop in the emitter stack. Loop-carried phis
 % for the element index and every scalar slot; the body memcpys the
 % current element into the staging area and runs one copy of the
@@ -11065,11 +11468,167 @@ plawk_scalar_action_sequence_pairs([foreach_loop(Layout, Body) | Rest],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, AfterLabel, RuleIndex,
         NextOpIndex, HeadValues, Values, FinalOpIndex, ExitLabel, RestNextExits),
     { append(InnerNextExits, RestNextExits, NextExits) }.
+% while_loop: a surface loop. Loop-carried head phis for every scalar slot
+% (modelled on foreach_loop's head-phi machinery -- no memory slots needed).
+% The condition tests the condition variable's head-phi value BEFORE the body,
+% so the loop may run zero times; the exit values are the head phis themselves.
+% (PLAWK_CONTROL_FLOW_PLAN.md PR 2.)
+plawk_scalar_action_sequence_pairs([while_loop(Cond, Body) | Rest],
+        Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { format(atom(Base), '~w_while_~w', [Prefix, OpIndex]),
+      format(atom(EntryLabel), '~w_entry', [Base]),
+      format(atom(HeadLabel), '~w_head', [Base]),
+      format(atom(BodyLabel), '~w_body', [Base]),
+      format(atom(BodyDoneLabel), '~w_body_done', [Base]),
+      format(atom(AfterLabel), '~w_after', [Base]),
+      findall(PhiValue,
+          ( nth0(SlotIndex, Slots, _Slot),
+            format(atom(PhiValue), '%~w_slot_~w', [Base, SlotIndex])
+          ),
+          HeadValues),
+      % break -> after, continue -> head (re-test): push the loop context so a
+      % break/continue anywhere in the body branches to these labels.
+      plawk_loopctx_push(loop_ctx(AfterLabel, HeadLabel)),
+      phrase(plawk_scalar_action_sequence_pairs(Body, Slots, AssocPlan,
+          FieldSeparator, OutputSeparator, Base, BodyLabel, RuleIndex, 0,
+          HeadValues, BodyOutValues, _InnerOpIndex, InnerExitLabel,
+          InnerNextExits), BodyPairs),
+      pairs_keys_values(BodyPairs, BodyGlobalParts, BodyLineParts),
+      atomic_list_concat(BodyGlobalParts, '\n', GlobalIR),
+      atomic_list_concat(BodyLineParts, '\n', BodyIR),
+      plawk_branch_to_done_ir(InnerExitLabel, BodyDoneLabel, BodyDoneBrIR),
+      plawk_loopctx_pop,
+      plawk_partition_loop_exits(InnerNextExits, Breaks, Continues, RestExits),
+      % head phi carries continue values; the after phi carries break values
+      plawk_while_head_phi_ir(Slots, Values0, BodyOutValues, Continues,
+          Base, EntryLabel, BodyDoneLabel, HeadPhiIR),
+      plawk_while_cond_ir(Cond, Slots, HeadValues, Base, CondVar, CondIR),
+      plawk_loop_after_ir(Slots, HeadValues, HeadLabel, Breaks, Base,
+          AfterValues, AfterPhiIR),
+      format(atom(IR),
+'  br label %~w
+
+~w:
+  br label %~w
+
+~w:
+~w
+~w
+  br i1 ~w, label %~w, label %~w
+
+~w:
+~w
+~w
+
+~w:
+  br label %~w
+
+~w:
+~w',
+          [EntryLabel,
+           EntryLabel,
+           HeadLabel,
+           HeadLabel,
+           HeadPhiIR,
+           CondIR,
+           CondVar, BodyLabel, AfterLabel,
+           BodyLabel,
+           BodyIR,
+           BodyDoneBrIR,
+           BodyDoneLabel,
+           HeadLabel,
+           AfterLabel,
+           AfterPhiIR]),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, AfterLabel, RuleIndex,
+        NextOpIndex, AfterValues, Values, FinalOpIndex, ExitLabel, RestNextExits),
+    { append(RestExits, RestNextExits, NextExits) }.
+% do_while_loop: like while_loop but the condition tests AFTER the body, so the
+% body always runs at least once. The head phi sits at the top of the body
+% block; the condition reads the body's OUTPUT values (the exit values), since
+% control reaches `after` from the post-body condition test.
+plawk_scalar_action_sequence_pairs([do_while_loop(Body, Cond) | Rest],
+        Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { format(atom(Base), '~w_dowhile_~w', [Prefix, OpIndex]),
+      format(atom(EntryLabel), '~w_entry', [Base]),
+      format(atom(BodyLabel), '~w_body', [Base]),
+      format(atom(BodyDoneLabel), '~w_body_done', [Base]),
+      format(atom(AfterLabel), '~w_after', [Base]),
+      findall(PhiValue,
+          ( nth0(SlotIndex, Slots, _Slot),
+            format(atom(PhiValue), '%~w_slot_~w', [Base, SlotIndex])
+          ),
+          HeadValues),
+      % break -> after, continue -> body_done (which re-tests the condition)
+      plawk_loopctx_push(loop_ctx(AfterLabel, BodyDoneLabel)),
+      phrase(plawk_scalar_action_sequence_pairs(Body, Slots, AssocPlan,
+          FieldSeparator, OutputSeparator, Base, BodyLabel, RuleIndex, 0,
+          HeadValues, BodyOutValues, _InnerOpIndex, InnerExitLabel,
+          InnerNextExits), BodyPairs),
+      pairs_keys_values(BodyPairs, BodyGlobalParts, BodyLineParts),
+      atomic_list_concat(BodyGlobalParts, '\n', GlobalIR),
+      atomic_list_concat(BodyLineParts, '\n', BodyIR),
+      plawk_branch_to_done_ir(InnerExitLabel, BodyDoneLabel, BodyDoneBrIR),
+      plawk_loopctx_pop,
+      plawk_partition_loop_exits(InnerNextExits, Breaks, Continues, RestExits),
+      % body_done merges the normal body output (from the body's exit block) with
+      % each continue point, and the condition tests that merged value; the head
+      % phi's back edge and the `after` block read it too.
+      format(atom(BdBase), '~w_bd', [Base]),
+      plawk_loop_after_ir(Slots, BodyOutValues, InnerExitLabel, Continues,
+          BdBase, BdValues, BdPhiIR),
+      phrase(plawk_foreach_head_phi_lines(Slots, Values0, BdValues,
+          Base, EntryLabel, BodyDoneLabel, 0), HeadPhiLines),
+      atomic_list_concat(HeadPhiLines, '\n', HeadPhiIR),
+      plawk_while_cond_ir(Cond, Slots, BdValues, Base, CondVar, CondIR),
+      plawk_loop_after_ir(Slots, BdValues, BodyDoneLabel, Breaks, Base,
+          AfterValues, AfterPhiIR),
+      format(atom(IR),
+'  br label %~w
+
+~w:
+  br label %~w
+
+~w:
+~w
+~w
+~w
+
+~w:
+~w
+~w
+  br i1 ~w, label %~w, label %~w
+
+~w:
+~w',
+          [EntryLabel,
+           EntryLabel,
+           BodyLabel,
+           BodyLabel,
+           HeadPhiIR,
+           BodyIR,
+           BodyDoneBrIR,
+           BodyDoneLabel,
+           BdPhiIR,
+           CondIR,
+           CondVar, BodyLabel, AfterLabel,
+           AfterLabel,
+           AfterPhiIR]),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, AfterLabel, RuleIndex,
+        NextOpIndex, AfterValues, Values, FinalOpIndex, ExitLabel, RestNextExits),
+    { append(RestExits, RestNextExits, NextExits) }.
 plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest],
         Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex, OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { format(atom(GlobalBase), '~w_if_~w', [Prefix, OpIndex]),
-      format(atom(CondValue), '%~w_if_~w_cond', [Prefix, OpIndex]),
-      plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, CondValue, GuardGlobalIR-GuardIR),
+      plawk_if_cond_ir(Pattern, Slots, Values0, FieldSeparator, GlobalBase,
+          CondValue, GuardGlobalIR-GuardIR),
       format(atom(ThenLabel), '~w_if_~w_then', [Prefix, OpIndex]),
       format(atom(ElseLabel), '~w_if_~w_else', [Prefix, OpIndex]),
       format(atom(DoneLabel), '~w_if_~w_done', [Prefix, OpIndex]),
@@ -11692,15 +12251,49 @@ plawk_i64_guarded_div_lines(LLVMOp, Base, LeftIR, RightIR, Lines) :-
 
 plawk_branch_to_done_ir(none, _DoneLabel, '  br label %continue_loop') :-
     !.
-plawk_branch_to_done_ir(break, _DoneLabel, '  br label %break_close_stream') :-
+% `break` inside a loop leaves that loop (branch to its exit label); at rule
+% level it keeps its stream-break meaning. `continue` (only valid in a loop)
+% branches to the loop's continue target. The enclosing loop is read from the
+% loop-context stack (plawk_loopctx_current).
+plawk_branch_to_done_ir(break, _DoneLabel, IR) :-
+    !,
+    (   plawk_loopctx_current(loop_ctx(BreakLabel, _ContinueLabel))
+    ->  format(atom(IR), '  br label %~w', [BreakLabel])
+    ;   IR = '  br label %break_close_stream'
+    ).
+plawk_branch_to_done_ir(continue, _DoneLabel, IR) :-
+    !,
+    plawk_loopctx_current(loop_ctx(_BreakLabel, ContinueLabel)),
+    format(atom(IR), '  br label %~w', [ContinueLabel]).
+% `exit` ends the program regardless of any enclosing loop: always branch to
+% break_close_stream (which runs END and returns @plawk_exit_code).
+plawk_branch_to_done_ir(exit, _DoneLabel, '  br label %break_close_stream') :-
     !.
 plawk_branch_to_done_ir(ExitLabel, DoneLabel, IR) :-
     ExitLabel \== none,
     ExitLabel \== break,
+    ExitLabel \== continue,
+    ExitLabel \== exit,
     format(atom(IR), '  br label %~w', [DoneLabel]).
+
+% The loop-context stack: each loop pushes loop_ctx(BreakLabel, ContinueLabel)
+% around its body, so a break/continue anywhere in the body (including nested
+% ifs) branches to the innermost loop's labels. Non-backtrackable global with
+% manual push/pop; nested loops stack naturally.
+plawk_loopctx_push(Ctx) :-
+    ( nb_current(plawk_loopctx, Stack) -> true ; Stack = [] ),
+    nb_setval(plawk_loopctx, [Ctx | Stack]).
+plawk_loopctx_pop :-
+    ( nb_current(plawk_loopctx, [_ | Stack]) -> nb_setval(plawk_loopctx, Stack) ; true ).
+plawk_loopctx_current(Ctx) :-
+    nb_current(plawk_loopctx, [Ctx | _]).
 
 plawk_branch_terminal_exit(none).
 plawk_branch_terminal_exit(break).
+plawk_branch_terminal_exit(continue).
+% `exit` inside an if branch leaves via break_close_stream, so (like break) that
+% branch does not flow into the if-join phi -- the join takes the other branch.
+plawk_branch_terminal_exit(exit).
 
 plawk_scalar_if_join_pairs(ThenExitLabel, _ThenValues, ElseExitLabel, _ElseValues, _Slots, _Prefix, _OpIndex, _Pairs) :-
     plawk_branch_terminal_exit(ThenExitLabel),
@@ -11794,6 +12387,77 @@ plawk_foreach_head_phi_lines([Slot | Slots], [InValue | InValues],
     plawk_foreach_head_phi_lines(Slots, InValues, OutValues, FeBase,
         EntryLabel, DoneLabel, NextIndex).
 
+%% Loop break/continue merge phis (PLAWK_CONTROL_FLOW_PLAN.md 3b) --------------
+
+% Partition a loop body's exits: loop-local `break` / `continue` (consumed by
+% the loop) vs everything else (`next`, propagated to the record loop).
+plawk_partition_loop_exits([], [], [], []).
+plawk_partition_loop_exits([branch_break(L, V) | R], [branch_break(L, V) | Bs], Cs, Ns) :-
+    !,
+    plawk_partition_loop_exits(R, Bs, Cs, Ns).
+plawk_partition_loop_exits([branch_continue(L, V) | R], Bs, [branch_continue(L, V) | Cs], Ns) :-
+    !,
+    plawk_partition_loop_exits(R, Bs, Cs, Ns).
+plawk_partition_loop_exits([X | R], Bs, Cs, [X | Ns]) :-
+    plawk_partition_loop_exits(R, Bs, Cs, Ns).
+
+% A `while` head phi per slot: the loop-carried value merges the pre-loop value
+% (from entry), the body's output (from the back edge), and each `continue`
+% point's value.
+plawk_while_head_phi_ir(Slots, InValues, OutValues, Continues, Base,
+        EntryLabel, BodyDoneLabel, IR) :-
+    phrase(plawk_while_head_phi_lines(Slots, InValues, OutValues, Continues,
+        Base, EntryLabel, BodyDoneLabel, 0), Lines),
+    atomic_list_concat(Lines, '\n', IR).
+
+plawk_while_head_phi_lines([], [], [], _Cs, _Base, _E, _BD, _) -->
+    [].
+plawk_while_head_phi_lines([Slot | Slots], [In | Ins], [Out | Outs], Continues,
+        Base, E, BD, I) -->
+    { plawk_slot_llvm_type(Slot, Type),
+      format(atom(BaseIncs), '[~w, %~w], [~w, %~w]', [In, E, Out, BD]),
+      plawk_loop_exit_incomings(Continues, I, ContIncs),
+      atomic_list_concat([BaseIncs | ContIncs], ', ', IncsIR),
+      format(atom(Line), '  %~w_slot_~w = phi ~w ~w', [Base, I, Type, IncsIR]),
+      I1 is I + 1
+    },
+    [Line],
+    plawk_while_head_phi_lines(Slots, Ins, Outs, Continues, Base, E, BD, I1).
+
+% The `after` block phi merging the normal loop exit (NormalValues from
+% NormalLabel) with each `break` point's value. No breaks -> no phi, and the
+% post-loop values are just the normal-exit values.
+plawk_loop_after_ir(_Slots, NormalValues, _NormalLabel, [], _Base, NormalValues, '') :-
+    !.
+plawk_loop_after_ir(Slots, NormalValues, NormalLabel, Breaks, Base, AfterValues, IR) :-
+    phrase(plawk_loop_after_phi_lines(Slots, NormalValues, NormalLabel, Breaks,
+        Base, 0), Lines),
+    atomic_list_concat(Lines, '\n', IR),
+    findall(V,
+        ( nth0(I, Slots, _), format(atom(V), '%~w_after_slot_~w', [Base, I]) ),
+        AfterValues).
+
+plawk_loop_after_phi_lines([], [], _NL, _Bs, _Base, _) -->
+    [].
+plawk_loop_after_phi_lines([Slot | Slots], [NV | NVs], NL, Breaks, Base, I) -->
+    { plawk_slot_llvm_type(Slot, Type),
+      format(atom(Normal), '[~w, %~w]', [NV, NL]),
+      plawk_loop_exit_incomings(Breaks, I, BreakIncs),
+      atomic_list_concat([Normal | BreakIncs], ', ', IncsIR),
+      format(atom(Line), '  %~w_after_slot_~w = phi ~w ~w', [Base, I, Type, IncsIR]),
+      I1 is I + 1
+    },
+    [Line],
+    plawk_loop_after_phi_lines(Slots, NVs, NL, Breaks, Base, I1).
+
+% One phi incoming per break/continue exit for slot I: [value-at-exit, %block].
+plawk_loop_exit_incomings([], _I, []).
+plawk_loop_exit_incomings([Exit | Rest], I, [Inc | Incs]) :-
+    Exit =.. [_Kind, Label, Values],
+    nth0(I, Values, V),
+    format(atom(Inc), '[~w, %~w]', [V, Label]),
+    plawk_loop_exit_incomings(Rest, I, Incs).
+
 replace_nth0(0, [_Old | Rest], Value, [Value | Rest]) :-
     !.
 replace_nth0(Index, [Head | Rest], Value, [Head | NewRest]) :-
@@ -11816,7 +12480,8 @@ plawk_scalar_next_phi_lines([Slot | Rest], RuleCount, Controls, BranchNextExits,
       findall(ApplyIncoming,
           ( between(0, LastRuleIndex, RuleIndex),
             ( ( RuleIndex =:= LastRuleIndex,
-                \+ nth0(RuleIndex, Controls, terminal_break)
+                \+ ( nth0(RuleIndex, Controls, LastControl),
+                     memberchk(LastControl, [terminal_break, terminal_exit]) )
               )
             ; nth0(RuleIndex, Controls, terminal_next)
             ),
@@ -11846,6 +12511,75 @@ plawk_branch_next_phi_incomings([_Exit | Rest], SlotIndex, Incomings) :-
 plawk_scalar_end_print_ir(PrintFields, StatePlan, OutputSeparator, IR) :-
     phrase(plawk_scalar_end_print_lines(PrintFields, StatePlan, OutputSeparator, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
+
+%% END { if (COND) print ...; [else print ...] } support ---------------------
+
+% A supported END-if: each branch is a single print (else optional).
+plawk_end_if_ok([print(_)], []).
+plawk_end_if_ok([print(_)], [print(_)]).
+
+% The scalar fields the state plan must see: the branch print fields (so a
+% printed scalar gets a slot) plus the condition variables. String literals need
+% no slot, but leaving them in is harmless -- the state plan ignores non-vars.
+plawk_end_if_print_fields(Cond, ThenActions, ElseActions, Fields) :-
+    plawk_end_if_branch_fields(ThenActions, ThenFields),
+    plawk_end_if_branch_fields(ElseActions, ElseFields),
+    plawk_while_cond_vars(Cond, CondVars),
+    plawk_vars_as_fields(CondVars, CondFields),
+    append([ThenFields, ElseFields, CondFields], Fields).
+
+plawk_end_if_branch_fields([print(Fields)], Fields).
+plawk_end_if_branch_fields([], []).
+
+plawk_vars_as_fields([], []).
+plawk_vars_as_fields([V | Vs], [var(V) | Fs]) :-
+    plawk_vars_as_fields(Vs, Fs).
+
+% The END-if body IR: evaluate COND against the final slot values, branch to a
+% then/else print block, join. Each branch print uses the PREFIXED print emitter
+% (unique names per branch, so the two blocks' temporaries don't collide) with
+% scalar reads substituted to their final-slot SSA values. Returns the string
+% globals the branch prints need, plus the body IR.
+plawk_scalar_end_if_ir(Cond, ThenActions, ElseActions, StatePlan, FieldSeparator,
+        OutputSeparator, GlobalIR, IR) :-
+    plawk_state_plan_slots(StatePlan, Slots),
+    plawk_final_slot_values(StatePlan, FinalValues),
+    plawk_while_cond_ir(Cond, Slots, FinalValues, plawk_endif, CondVar, CondIR),
+    plawk_end_if_branch_ir(ThenActions, Slots, FinalValues, FieldSeparator,
+        OutputSeparator, plawk_endif_then, ThenGlobal, ThenIR),
+    plawk_end_if_branch_ir(ElseActions, Slots, FinalValues, FieldSeparator,
+        OutputSeparator, plawk_endif_else, ElseGlobal, ElseIR),
+    plawk_join_nonempty_ir([ThenGlobal, ElseGlobal], GlobalIR),
+    format(atom(IR),
+'~w
+  br i1 ~w, label %plawk_endif_then, label %plawk_endif_else
+
+plawk_endif_then:
+~w
+  br label %plawk_endif_done
+
+plawk_endif_else:
+~w
+  br label %plawk_endif_done
+
+plawk_endif_done:',
+        [CondIR, CondVar, ThenIR, ElseIR]).
+
+plawk_end_if_branch_ir([print(Fields)], Slots, FinalValues, FieldSeparator,
+        OutputSeparator, Prefix, GlobalIR, IR) :-
+    maplist(plawk_substitute_print_field(Slots, FinalValues), Fields, SubFields),
+    plawk_prefixed_print_action_ir(SubFields, FieldSeparator, OutputSeparator,
+        Prefix, GlobalIR-IR).
+plawk_end_if_branch_ir([], _Slots, _FinalValues, _FieldSeparator,
+        _OutputSeparator, _Prefix, '', '').
+
+% The final (post-loop) slot values, one per slot: %final_slot_0, %final_slot_1,
+% ... -- the values the END block reads.
+plawk_final_slot_values(StatePlan, Values) :-
+    plawk_state_plan_slots(StatePlan, Slots),
+    findall(V,
+        ( nth0(I, Slots, _Slot), format(atom(V), '%final_slot_~w', [I]) ),
+        Values).
 
 plawk_scalar_end_print_lines([], _StatePlan, _OutputSeparator, _) -->
     { llvm_emit_printf0(plawk_surface_print_newline, 2,
@@ -11889,6 +12623,50 @@ plawk_scalar_end_print_lines([string(Value) | Rest], StatePlan, OutputSeparator,
     plawk_end_string_print_lines(Value, PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
     plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
+% concatenation in END (`print "total: " sum`): one leading separator, then each
+% operand printed adjacently (no separator between). Each part uses a unique
+% index (PrintIndex*1000 + part) so the fixed-name emitters don't collide.
+plawk_scalar_end_print_lines([concat(Parts) | Rest], StatePlan, OutputSeparator, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_concat_parts(Parts, StatePlan, PrintIndex, 0),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
+
+plawk_end_concat_parts([], _StatePlan, _PrintIndex, _PartIndex) -->
+    [].
+plawk_end_concat_parts([Part | Rest], StatePlan, PrintIndex, PartIndex) -->
+    { CombinedIndex is PrintIndex * 1000 + PartIndex },
+    plawk_end_field_print_lines(Part, StatePlan, CombinedIndex),
+    { NextPartIndex is PartIndex + 1 },
+    plawk_end_concat_parts(Rest, StatePlan, PrintIndex, NextPartIndex).
+
+% One END print field WITHOUT a leading separator (the concat driver adds the
+% single separator before the whole concatenation).
+plawk_end_field_print_lines(var(Name), StatePlan, PrintIndex) -->
+    { plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
+      format(atom(ValueIR), '%final_slot_~w', [SlotIndex]),
+      ( Slot = scalar_double(_Name)
+      -> format(atom(FmtVar), 'end_f64_fmt_~w', [PrintIndex]),
+         format(atom(FmtPtr),
+             '  %~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
+             [FmtVar]),
+         format(atom(PrintCall),
+             '  %printed_end_f64_~w = call i32 (i8*, ...) @printf(i8* %~w, double ~w)',
+             [PrintIndex, FmtVar, ValueIR])
+      ;  format(atom(FmtVar), 'end_i64_fmt_~w', [PrintIndex]),
+         format(atom(PrintVar), 'printed_end_i64_~w', [PrintIndex]),
+         llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
+             [FmtPtr, PrintCall])
+      )
+    },
+    [FmtPtr, PrintCall].
+plawk_end_field_print_lines(string(Value), _StatePlan, PrintIndex) -->
+    plawk_end_string_print_lines(Value, PrintIndex).
+plawk_end_field_print_lines(special('NR'), _StatePlan, PrintIndex) -->
+    plawk_end_nr_print_lines(PrintIndex).
+plawk_end_field_print_lines(Expr, StatePlan, PrintIndex) -->
+    { plawk_end_scalar_expr(Expr) },
+    plawk_end_expr_print_lines(Expr, StatePlan, PrintIndex).
 
 plawk_end_nr_print_lines(PrintIndex) -->
     { format(atom(FmtVar), 'end_nr_fmt_~w', [PrintIndex]),
@@ -12430,6 +13208,9 @@ plawk_fields_include_nr(Fields) :-
     plawk_expr_uses_nr(Field).
 
 plawk_expr_uses_nr(special('NR')).
+plawk_expr_uses_nr(concat(Parts)) :-
+    member(Part, Parts),
+    plawk_expr_uses_nr(Part).
 plawk_expr_uses_nr(Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     ( plawk_expr_uses_nr(Left)
@@ -12666,6 +13447,12 @@ plawk_print_field_ir(Field, FieldSeparator, Index) -->
     },
     [GlobalIR-BodyIR].
 
+% A concatenation prints its operands adjacently -- NO field separator between
+% them (that is what distinguishes `print $1 $2` from `print $1, $2`). Each part
+% lowers via the ordinary print-field emitter under a unique sub-prefix.
+plawk_prefixed_print_field_ir(concat(Parts), FieldSeparator, Prefix, Index) -->
+    { format(atom(ConcatPrefix), '~w_concat_~w', [Prefix, Index]) },
+    plawk_concat_parts_ir(Parts, FieldSeparator, ConcatPrefix, 0).
 plawk_prefixed_print_field_ir(Field, FieldSeparator, Prefix, Index) -->
     { plawk_emit_prefixed_print_expr_ir(Field, FieldSeparator, Prefix, Index,
           Type, GlobalParts, SetupParts),
@@ -12675,6 +13462,13 @@ plawk_prefixed_print_field_ir(Field, FieldSeparator, Prefix, Index) -->
       atomic_list_concat(BodyParts, '\n', BodyIR)
     },
     [GlobalIR-BodyIR].
+
+plawk_concat_parts_ir([], _FieldSeparator, _Prefix, _PartIndex) -->
+    [].
+plawk_concat_parts_ir([Part | Rest], FieldSeparator, Prefix, PartIndex) -->
+    plawk_prefixed_print_field_ir(Part, FieldSeparator, Prefix, PartIndex),
+    { NextIndex is PartIndex + 1 },
+    plawk_concat_parts_ir(Rest, FieldSeparator, Prefix, NextIndex).
 
 plawk_emit_print_expr_ir(Field, FieldSeparator, Index, Type, GlobalParts, SetupParts) :-
     plawk_emit_print_expr_for_context(Field, FieldSeparator, print_context(normal, '', Index),
@@ -12710,6 +13504,14 @@ plawk_emit_print_expr_for_context(int(field(FieldIndex)), FieldSeparator, Contex
     plawk_print_expr_value_base(Context, int, Base),
     plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
     plawk_i64_expr_ir(field_i64(FieldIndex), FieldSeparator, Base, Base,
+        ValueIR, GlobalParts, SetupParts).
+% a substituted scalar read (var(Name) -> ssa(SlotValue)): print the i64 SSA
+% value directly. This is what makes `print i` work for a scalar slot.
+plawk_emit_print_expr_for_context(ssa(Value), FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
+    plawk_print_expr_value_base(Context, int, Base),
+    plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
+    plawk_i64_expr_ir(ssa(Value), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
 
 plawk_emit_print_expr_for_context(Expr, FieldSeparator, Context,

@@ -50,9 +50,19 @@ test(gen_over_query_parses) :-
         "gen over query(num(V)) as v { if (v > 2) emit v } as big\n\c
          pass over query(big(X)) { print $1 }\n",
         program_passes([],
-            [gen_block(name(big), over(query(num, ['V']), v),
+            [gen_block(name(big), over(query(num, ['V']), [v]),
                  [if(forin_key_cmp(v, gt, 2), [emit(var(v))], [])]),
              pass_query(query(big, ['X']), [print([field(1)])])],
+            [])),
+    !.
+
+% A multi-column source with a tuple binding parses to a list of loop vars.
+test(gen_over_multicol_parses) :-
+    plawk_parse_string(
+        "gen over query(edge(A, B)) as (a, b) { emit a } as src\n",
+        program_passes([],
+            [gen_block(name(src), over(query(edge, ['A', 'B']), [a, b]),
+                 [emit(var(a))])],
             [])),
     !.
 
@@ -86,6 +96,27 @@ test(gen_block_string_run, [condition(clang_available)]) :-
     build_run(Dir, 'genstr', Src, [], Out, St),
     assertion(St == 0),
     assertion(Out == "red\ngreen\nblue\n"),
+    !.
+
+% A tuple emit produces an arity-n fact per row: `emit (1, 10)` -> `edge(1,10)`,
+% consumed by a two-column query.
+test(gen_block_tuple_run, [condition(clang_available)]) :-
+    gdir(Dir),
+    Src = "gen { emit (1, 10); emit (2, 20); emit (3, 30) } as edge\n\c
+           pass over query(edge(X, Y)) { print $1, $2 }\n",
+    build_run(Dir, 'gentup', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "1 10\n2 20\n3 30\n"),
+    !.
+
+% A tuple may mix string and integer columns (`emit ("a", 1)` -> `kv(a, 1)`).
+test(gen_block_tuple_mixed_run, [condition(clang_available)]) :-
+    gdir(Dir),
+    Src = "gen { emit (\"a\", 1); emit (\"b\", 2) } as kv\n\c
+           pass over query(kv(K, V)) { print $1, $2 }\n",
+    build_run(Dir, 'gentupmix', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "a 1\nb 2\n"),
     !.
 
 % A reader guard on the consuming query pass composes with a generator source.
@@ -133,6 +164,30 @@ test(gen_over_filter_and_run, [condition(clang_available)]) :-
     build_run(Dir, 'genand', Src, [], Out, St),
     assertion(St == 0),
     assertion(Out == "2\n3\n4\n"),
+    !.
+
+% A column-projection view: project one column of a two-column source, filtered
+% -- `gen over query(edge(A, B)) as (a, b) { if (a > 1) emit a } as srcs` ->
+% `srcs(A) :- edge(A, _B), A > 1` (only the needed column materialises).
+test(gen_over_projection_run, [condition(clang_available)]) :-
+    gdir(Dir),
+    Src = "@prolog\nedge(1, 10).\nedge(2, 20).\nedge(3, 30).\n@end\n\c
+           gen over query(edge(A, B)) as (a, b) { if (a > 1) emit a } as srcs\n\c
+           pass over query(srcs(X)) { print $1 }\n",
+    build_run(Dir, 'vwproj', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "2\n3\n"),
+    !.
+
+% A reordering projection: `emit (b, a)` -> `flipped(B, A) :- edge(A, B)`.
+test(gen_over_reorder_run, [condition(clang_available)]) :-
+    gdir(Dir),
+    Src = "@prolog\nedge(1, 10).\nedge(2, 20).\n@end\n\c
+           gen over query(edge(A, B)) as (a, b) { emit (b, a) } as flipped\n\c
+           pass over query(flipped(X, Y)) { print $1, $2 }\n",
+    build_run(Dir, 'vwflip', Src, [], Out, St),
+    assertion(St == 0),
+    assertion(Out == "10 1\n20 2\n"),
     !.
 
 % A computed emit (a field, not a constant) in a PURE generator needs runtime
