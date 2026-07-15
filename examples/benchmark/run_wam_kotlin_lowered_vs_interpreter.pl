@@ -30,6 +30,8 @@
 :- dynamic user:bk_t4/2.
 :- dynamic user:bk_member/2.
 :- dynamic user:bk_append/3.
+:- dynamic user:bk_fib/2.
+:- dynamic user:bk_ack/3.
 
 main :-
     current_prolog_flag(argv, Argv),
@@ -63,7 +65,15 @@ setup_benchmark_predicates :-
     assertz(user:bk_member(X, [X|_])),
     assertz(user:(bk_member(X, [_|T]) :- bk_member(X, T))),
     assertz(user:bk_append([], L, L)),
-    assertz(user:(bk_append([H|T], L, [H|R]) :- bk_append(T, L, R))).
+    assertz(user:(bk_append([H|T], L, [H|R]) :- bk_append(T, L, R))),
+    assertz(user:bk_fib(0, 0)),
+    assertz(user:bk_fib(1, 1)),
+    assertz(user:(bk_fib(N, R) :- N > 1, N1 is N - 1, N2 is N - 2,
+        bk_fib(N1, R1), bk_fib(N2, R2), R is R1 + R2)),
+    assertz(user:(bk_ack(0, N, R) :- R is N + 1)),
+    assertz(user:(bk_ack(M, 0, R) :- M > 0, M1 is M - 1, bk_ack(M1, 1, R))),
+    assertz(user:(bk_ack(M, N, R) :- M > 0, N > 0, M1 is M - 1, N1 is N - 1,
+        bk_ack(M, N1, R1), bk_ack(M1, R1, R))).
 
 cleanup_benchmark_predicates :-
     retractall(user:bk_fact(_, _)),
@@ -71,7 +81,9 @@ cleanup_benchmark_predicates :-
     retractall(user:bk_color(_)),
     retractall(user:bk_t4(_, _)),
     retractall(user:bk_member(_, _)),
-    retractall(user:bk_append(_, _, _)).
+    retractall(user:bk_append(_, _, _)),
+    retractall(user:bk_fib(_, _)),
+    retractall(user:bk_ack(_, _, _)).
 
 %% case(Name, Preds, PredKey, Iterations, StateSetupKotlin, ExpectNativeKeys)
 bench_case(fact,
@@ -122,6 +134,19 @@ bench_case(append_500,
            300,
            'run { val st = WamState(); val a = intRangeList(500); val b = intRangeList(500); st.writeRegister("A1", a); st.writeRegister("A2", b); st.writeRegister("A3", st.newVariable("R")); st }',
            ['bk_append/3']).
+% EMIT-KOTLIN-5: mid-body call + arithmetic (tree recursion / ack).
+bench_case(fib_15,
+           [user:bk_fib/2],
+           'bk_fib/2',
+           80,
+           'run { val st = WamState(); st.writeRegister("A1", Value.IntVal(15L)); st.writeRegister("A2", Value.IntVal(610L)); st }',
+           ['bk_fib/2']).
+bench_case(ack_23,
+           [user:bk_ack/3],
+           'bk_ack/3',
+           800,
+           'run { val st = WamState(); st.writeRegister("A1", Value.IntVal(2L)); st.writeRegister("A2", Value.IntVal(3L)); st.writeRegister("A3", Value.IntVal(9L)); st }',
+           ['bk_ack/3']).
 
 %% row(Name, IMin, IMed, LMin, LMed, SpeedupMin, SpeedupMed, NativeOk, Status)
 run_case(OutDir, row(Name, IMin, IMed, LMin, LMed, SpMin, SpMed, NativeOk, Status)) :-

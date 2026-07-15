@@ -94,7 +94,7 @@ clause backtracking. Recursive append therefore still copies the growing
 
 ---
 
-## KT-HEAP-SNAPSHOT-OPT-2 (this change)
+## KT-HEAP-SNAPSHOT-OPT-2
 
 ### Prior art consulted
 
@@ -149,6 +149,53 @@ Append’s recursive cons path is therefore snap-free → append_500
 | **(b) Trail-based undo for T4** | Trail still stores names only; needs old values or a native side trail. Bigger than peel; defer. |
 | **(c) Blind “skip `_t4` on last clause” only** | Entry snapshot still ran before clause 1; peel is the stronger form of (c) for fail-closed discriminants. |
 | **Peel `get_structure` / `get_list`** | Not fail-closed on vars (enters write mode); member already wins without it. |
+
+---
+
+## EMIT-KOTLIN-5 (this change)
+
+### Boundary (deterministic-only mid-body `call`)
+
+Inline `if (!dispatch("P/N", state)) return false` takes the **first**
+solution only and cannot backtrack into the callee if a later body goal
+fails. Lower mid-body `call` **only** when every target is:
+
+1. **self-recursion**, or
+2. a **single-clause deterministic** predicate (whose own mid-body calls
+   pass the same gate).
+
+Multi-clause callees (e.g. `choice(a). choice(b)` used as
+`choice(X), X = b`) **decline**. When unsure → decline. Top-level tryRun
+snapshot+fallback backstops a wrong `false`, not a wrong first-only
+`true`.
+
+Arithmetic `builtin_call` (`is/2`, compares, `=/2`, `true/0`) lowers by
+calling shared `kotlinLoBuiltinCall` → `wamEvalArith` (same helpers as the
+interpreter — no re-implementation).
+
+### Stack ceiling (tree / mid-body recursion)
+
+Linear mid-body-call recursion overflows the default JVM stack around
+**~750–780** frames (measured). Fib/ack need O(n) frames; conformance
+`fib(10)` / `ack(2,3)` are safe. Practical fib depth is usually time-bound
+before stack. Prefer decline over wrong answers if a workload would
+overflow.
+
+### Hardened bench after landing (min speedup)
+
+| program | speedup_min |
+|---|---:|
+| fib_15 | **1.85×** |
+| ack_23 | **1.78×** |
+| append_500 | ~28× (unchanged class) |
+
+### What we skipped (and why)
+
+| Idea | Why not now |
+|---|---|
+| Mid-body call to multi-clause callees | First-solution ≠ Prolog when later goals reject the first answer. |
+| Classic non-tail `reverse` via `append` | `append/3` is multi-clause — declined as a mid-body callee. Acc-reverse already lowers via `execute`. |
+| Full trail/CP continuation for nondet call | Out of scope; would be a different card. |
 
 ---
 

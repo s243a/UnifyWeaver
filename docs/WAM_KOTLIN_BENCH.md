@@ -22,52 +22,40 @@ Profiling (functions mode; attributes **all** `snapshotForNative`, incl. T4 `_t4
 WAM_KT_PROFILE=1 gradle -q run --args='80 2 5 PROFILE=1'
 ```
 
-## Results after KT-HEAP-SNAPSHOT-OPT-2 (2026-07-14)
+## Results after EMIT-KOTLIN-5 (2026-07-15)
 
 Hardened harness (5/15, min + median). All functions-mode cases confirmed
-`registerNative` / `lowered_*`.
+`registerNative` / `lowered_*` (incl. fib/ack).
 
 | program | interp min | lowered min | **speedup min** | speedup med | notes |
 |---|---:|---:|---:|---:|---|
-| fact | 3.64 | 3.92 | 0.93× | 0.75× | ~parity (short) |
-| list_builder | 6.28 | 5.58 | 1.13× | 1.01× | slight win |
-| t5_color | 8.63 | 3.35 | 2.58× | 1.96× | win |
-| t4_second_arg | 6.62 | 6.12 | 1.08× | 0.97× | ~parity |
-| member_100 | 65.68 | 46.94 | **1.40×** | 1.37× | win |
-| member_500 | 66.12 | 48.34 | **1.37×** | 1.31× | win |
-| append_100 | 235.26 | 32.63 | **7.21×** | 6.88× | win (was ~1.03×) |
-| append_500 | 884.52 | 29.16 | **30.33×** | 28.94× | win (was ~0.85×) |
+| fact | 3.10 | 4.02 | 0.77× | 0.70× | ~parity (short) |
+| list_builder | 6.39 | 5.56 | 1.15× | 1.02× | slight win |
+| t5_color | 7.82 | 3.22 | 2.43× | 2.10× | win |
+| t4_second_arg | 8.06 | 5.58 | 1.44× | 1.11× | win |
+| member_100 | 70.44 | 47.19 | **1.49×** | 1.43× | win |
+| member_500 | 70.21 | 46.60 | **1.51×** | 1.43× | win |
+| append_100 | 216.07 | 28.64 | **7.54×** | 7.46× | win |
+| append_500 | 872.58 | 31.31 | **27.87×** | 27.60× | win |
+| fib_15 | 9848.71 | 5310.43 | **1.85×** | 1.81× | mid-body call win |
+| ack_23 | 94.20 | 52.87 | **1.78×** | 1.77× | mid-body call win |
 
 Speedup = interpreter_ms / lowered_ms (min batch).
 
-## Before → after (append, the real signal)
+## Append trajectory (KT-DISPATCH → heap peel)
 
-| program | BENCH-KOTLIN | + KT-DISPATCH | **+ KT-HEAP-SNAPSHOT-OPT-2** |
+| program | BENCH-KOTLIN | + KT-DISPATCH | + KT-HEAP-SNAPSHOT-OPT-2 |
 |---|---:|---:|---:|
-| append_100 | ~0.75× | ~1.03× | **7.21×** |
-| append_500 | ~0.55–0.64× | ~0.85× | **30.33×** |
-
-### Profile evidence (append_500, 80×5, functions)
-
-| config | snap_fraction_of_wall | snap_count / native_entries | max_register_map_size |
-|---|---:|---|---:|
-| AFTER KT-DISPATCH (entry `_t4` every hop) | **48.1%** | 200800 / 200400 | 508 |
-| AFTER peel leading `get_constant` | **8.6%** | 800 / 200400 | 508 |
-
-See [`design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md`](design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md).
+| append_100 | ~0.75× | ~1.03× | **~7×** |
+| append_500 | ~0.55–0.64× | ~0.85× | **~28–30×** |
 
 ## Honest readout
 
-- **tryRun per-hop snapshot** was the first recursive tax (~31% of wall);
-  KT-DISPATCH fixed that and left append_500 at ~0.85×.
-- **T4 `_t4` per-entry map copy** was the residual (~48% of wall once
-  properly attributed). Peeling a leading fail-closed `get_constant` makes
-  append’s cons path snap-free → **≥1.0× with large margin**.
-- Member stays ~1.4× (first instr is `get_list`, not peeled).
-- Short cases: treat sub-10ms rows cautiously; member/append are durable.
+- Tail `execute` (append) and mid-body `call` (fib/ack) both **win** after
+  the dispatch/snapshot work — EMIT-KOTLIN-5 is not coverage-only.
+- Fib/ack ~**1.8×**; tree recursion is still JVM-stack-bound (~750 mid-body
+  frames on the default stack; conformance depths are fine).
+- Nondeterministic mid-body call **declines** (first-solution would be wrong).
+- Short cases: treat sub-10ms rows cautiously.
 
-## Implications for EMIT-KOTLIN-5
-
-Mid-body `call` still needs continuation machinery. Tail `execute`
-recursion is no longer snapshot-bound for peelable T4 heads; re-measure
-after EMIT-KOTLIN-5 lands.
+See [`design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md`](design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md).

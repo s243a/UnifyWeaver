@@ -57,7 +57,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | EMIT-KOTLIN-2 ✅ | Lowered emitter (structures) | Kotlin | M | done — write-mode structures (`cursor/emit-kotlin-structures-f421`) |
 | EMIT-KOTLIN-3 ✅ | Multi-clause deterministic | Kotlin | M | done — T5/T4 no call (`cursor/emit-kotlin-multi-clause-f421`) |
 | EMIT-KOTLIN-4 ✅ | Last-call `execute` | Kotlin | M | done — tail execute (`cursor/emit-kotlin-execute-f421`) |
-| EMIT-KOTLIN-5 | Mid-body `call` | Kotlin | M | fib/ack / non-tail continuation |
+| EMIT-KOTLIN-5 ✅ | Mid-body `call` + arith builtins | Kotlin | M | done — det-only mid-body + is/2 (`cursor/emit-kotlin-5-f421`) |
 | BENCH-KOTLIN ✅ | Lowered vs interpreter timing | Kotlin | S | done — recursion regresses; short cases noise (`cursor/bench-kotlin-f421`) |
 | KT-DISPATCH-SNAPSHOT-OPT ✅ | Perf: cheapen recursive dispatch | Kotlin | M | done — skip recursive tryRun snap (`cursor/kt-dispatch-snapshot-opt-f421`) |
 | KT-HEAP-SNAPSHOT-OPT-2 ✅ | Perf: eliminate residual T4 `_t4` copy | Kotlin | M | done — peel leading get_constant (`cursor/kt-heap-snapshot-opt-2-f421`) |
@@ -602,11 +602,12 @@ fallback) to the three Tier-D targets. Reference small emitters:
 - **Acceptance:** member/append/(acc)reverse LOWER and match interpreter via gradle differential; fib still declines; unit + `kotlin`/`kotlin_functions` conformance green with no xfails; emitted project registers `lowered_cmem_2` / etc. under kotlin_functions.
 
 ### EMIT-KOTLIN-5: Lower mid-body `call P/N` (non-tail / continuation)
-- **Lever:** Lowered emitters for early scaffolds  **Target:** Kotlin  **Size:** M  **Depends on:** EMIT-KOTLIN-4
-- **Goal:** Emit non-tail `call` with saved continuation / environment so fib/ack and non-tail reverse lower.
-- **Out of scope here:** cut, ITE/soft-cut, aggregates, multi-solution enumeration.
-- **Note from BENCH-KOTLIN:** the one reproducible perf finding is that tail `execute` recursion (append) is ~0.6–0.8× (slower) from the per-hop `tryRun`+snapshot tax; mid-body `call` adds more of the same recursion. **Do `KT-DISPATCH-SNAPSHOT-OPT` first**, or treat EMIT-KOTLIN-5 as correctness-only with no perf claim.
-- **Acceptance:** fib (or equivalent) LOWERS under `emit_mode(functions)` and matches interpreter; conformance remains green.
+- **Lever:** Lowered emitters for early scaffolds  **Target:** Kotlin  **Size:** M  **Depends on:** EMIT-KOTLIN-4, KT-DISPATCH-SNAPSHOT-OPT, KT-HEAP-SNAPSHOT-OPT-2
+- **Status:** ✅ **Landed** on `cursor/emit-kotlin-5-f421` (2026-07-15). Arithmetic `builtin_call` via shared `kotlinLoBuiltinCall`/`wamEvalArith`. Mid-body `call` emits `if (!dispatch) return false` **only** for self-recursion or single-clause deterministic callees; multi-clause callees decline (first-solution hazard). Fib/ack LOWER and match interpreter; nondet `choice(X), X=b` stays on the interpreter. Bench: fib_15 **1.85×**, ack_23 **1.78×**. JVM mid-body stack ceiling ~**750–780** frames. Classic non-tail reverse via `append` still declines (`append` is multi-clause). Docs: `WAM_KOTLIN_STATUS.md`, `WAM_KOTLIN_BENCH.md`, `design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md`.
+- **Goal:** Emit non-tail `call` + arithmetic builtins so fib/ack lower under `emit_mode(functions)`.
+- **Correctness gate:** deterministic-only mid-body goals — when unsure, decline.
+- **Out of scope:** cut, ITE/soft-cut, aggregates, multi-solution enumeration / backtracking into callees.
+- **Acceptance:** fib/ack LOWER + match interpreter; nondet mid-body declines; unit + both conformance modes green; bench table includes fib/ack; boundary + stack ceiling documented.
 
 ### BENCH-KOTLIN: Measure lowered vs interpreter (in-process)
 - **Lever:** Effective-distance / perf evidence  **Target:** Kotlin  **Size:** S  **Depends on:** EMIT-KOTLIN-4

@@ -4896,3 +4896,11 @@ fails skip the entry snapshot. append_100 ~7.2×, append_500 ~30× (hardened
 min). Skipped heap-reclaim / trail-undo for now — peel removed the hot path.
 Details: `docs/design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md`,
 `docs/WAM_PERF_CROSS_TARGET.md`, `docs/WAM_KOTLIN_BENCH.md`.
+
+## Kotlin — EMIT-KOTLIN-5 (2026-07-15)
+
+Deterministic-only mid-body `call` + arithmetic `builtin_call` (shared
+`wamEvalArith`). Fib/ack lower; nondet mid-body callers decline. Bench
+(hardened min): fib_15 **1.85×**, ack_23 **1.78×**. Mid-body JVM stack
+ceiling ~750–780 frames. Details: `docs/design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md`,
+`docs/WAM_KOTLIN_BENCH.md`, `docs/WAM_KOTLIN_STATUS.md`.
