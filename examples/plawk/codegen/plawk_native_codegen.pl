@@ -4952,6 +4952,7 @@ plawk_while_cond_vars(or(A, B), Vars) :-
     plawk_while_cond_vars(B, VB),
     append(VA, VB, Vars).
 plawk_while_cond_vars(cmp(var(V), _Op, int(_N)), [V]) :- !.
+plawk_while_cond_vars(cmp(var(V), _Op, string(_S)), [V]) :- !.
 plawk_while_cond_vars(cmp(var(V), _Op, var(W)), [V, W]).
 
 %% plawk_while_cond_ir(+Cond, +Slots, +CondValues, +Base, -CondVar, -IR)
@@ -5008,6 +5009,29 @@ plawk_while_cond_operand(var(Name), Slots, CondValues, Ref) :-
 %  scalar comparison over slots -- lowered like a loop condition, reading the
 %  current slot SSA values (Values0). A field/pattern guard is lowered by the
 %  existing pattern-guard emitter (which reads the record).
+% String-equality guard `if (s == "text")` / `!=` on a string scalar: intern the
+% literal and compare atom ids (interning is canonical, so equal strings share an
+% id). Only == / != (ordering would need strcmp). A single comparison, not
+% combined with && / || (that stays a clean codegen error) -- v1.
+plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
+        _FieldSeparator, GlobalBase, CondValue, GlobalIR-IR) :-
+    memberchk(Op, [eq, ne]),
+    !,
+    nth0(Idx, Slots, Slot),
+    plawk_slot_name(Slot, Name),
+    !,
+    nth0(Idx, Values0, SlotValue),
+    format(atom(LitName), '~w_lit', [GlobalBase]),
+    llvm_emit_c_string_global(LitName, Value, GlobalIR, Len, BytesLen),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(CondValue), '%~w_cond', [GlobalBase]),
+    format(atom(IR),
+'  %~w_litptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  %~w_litid = call i64 @wam_intern_atom(i8* %~w_litptr, i64 ~w)
+  %~w_cond = icmp ~w i64 ~w, %~w_litid',
+        [GlobalBase, BytesLen, BytesLen, LitName,
+         GlobalBase, GlobalBase, Len,
+         GlobalBase, Pred, SlotValue, GlobalBase]).
 plawk_if_cond_ir(scalar_if(Cond), Slots, Values0, _FieldSeparator, GlobalBase,
         CondValue, ''-GuardIR) :-
     !,
