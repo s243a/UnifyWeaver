@@ -52,6 +52,8 @@ module in the fleet.
     `if (!dispatch(...)) return false` + `kotlinLoBuiltinCall` — **only**
     when every mid-body callee is self-recursion or single-clause
     deterministic. Fib/ack lower; nondet mid-body callers decline.
+    Self-recursion exemption is sound via top-level tryRun fallback
+    (**KT-SELF-REC-SOUNDNESS** — do not remove that fallback lightly).
   Registered via `WamProgram.registerNative`. `functions` / `mixed`
   modes route lowerable preds through this path.
 
@@ -86,4 +88,4 @@ opts + EMIT-KOTLIN-5: append_500 ~**28×**, fib_15 ~**1.85×**, ack_23
 
 Fleet-aligned snapshot; source-verified against `wam_kotlin_target.pl`,
 `wam_kotlin_lowered_emitter.pl`, and `tests/test_wam_kotlin_target.pl`
-(2026-07-15). Through EMIT-KOTLIN-5.
+(2026-07-15). Through KT-SELF-REC-SOUNDNESS.

@@ -58,6 +58,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | EMIT-KOTLIN-3 ✅ | Multi-clause deterministic | Kotlin | M | done — T5/T4 no call (`cursor/emit-kotlin-multi-clause-f421`) |
 | EMIT-KOTLIN-4 ✅ | Last-call `execute` | Kotlin | M | done — tail execute (`cursor/emit-kotlin-execute-f421`) |
 | EMIT-KOTLIN-5 ✅ | Mid-body `call` + arith builtins | Kotlin | M | done — det-only mid-body + is/2 (`cursor/emit-kotlin-5-f421`) |
+| KT-SELF-REC-SOUNDNESS ✅ | Document+pin self-rec fallback soundness | Kotlin | S | done — adversarial regression + invariant (`cursor/kt-self-rec-soundness-f421`) |
 | BENCH-KOTLIN ✅ | Lowered vs interpreter timing | Kotlin | S | done — recursion regresses; short cases noise (`cursor/bench-kotlin-f421`) |
 | KT-DISPATCH-SNAPSHOT-OPT ✅ | Perf: cheapen recursive dispatch | Kotlin | M | done — skip recursive tryRun snap (`cursor/kt-dispatch-snapshot-opt-f421`) |
 | KT-HEAP-SNAPSHOT-OPT-2 ✅ | Perf: eliminate residual T4 `_t4` copy | Kotlin | M | done — peel leading get_constant (`cursor/kt-heap-snapshot-opt-2-f421`) |
@@ -608,6 +609,12 @@ fallback) to the three Tier-D targets. Reference small emitters:
 - **Correctness gate:** deterministic-only mid-body goals — when unsure, decline.
 - **Out of scope:** cut, ITE/soft-cut, aggregates, multi-solution enumeration / backtracking into callees.
 - **Acceptance:** fib/ack LOWER + match interpreter; nondet mid-body declines; unit + both conformance modes green; bench table includes fib/ack; boundary + stack ceiling documented.
+
+### KT-SELF-REC-SOUNDNESS: Pin self-recursion mid-body fallback invariant (Kotlin)
+- **Lever:** Lowered emitters / correctness closeout  **Target:** Kotlin  **Size:** S  **Depends on:** EMIT-KOTLIN-5
+- **Status:** ✅ **Landed** on `cursor/kt-self-rec-soundness-f421` (2026-07-15). Documents that the unconditional self-recursion exemption in `kotlin_safe_midbody_callee` is sound **only** because top-level `tryRun` native→bytecode fallback catches wrong-false; regression `functions_mode_self_rec_fallback_soundness` asserts the adversarial `p(z,a). p(z,b). p(s(N),R):-p(N,R),R=b` pattern **lowers** and functions == interpreter. Did **not** tighten the gate (would decline the pinning case). See `design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md` KT-SELF-REC-SOUNDNESS.
+- **Goal:** Make the EMIT-KOTLIN-5 self-recursion exemption’s soundness explicit and regression-protected.
+- **Acceptance:** adversarial regression green; unit + both conformance modes green; invariant in emitter comment + history doc.
 
 ### BENCH-KOTLIN: Measure lowered vs interpreter (in-process)
 - **Lever:** Effective-distance / perf evidence  **Target:** Kotlin  **Size:** S  **Depends on:** EMIT-KOTLIN-4

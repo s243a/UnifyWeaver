@@ -381,6 +381,12 @@ class WamRuntime(private val program: WamProgram) {
     // lowering). Recursive hops (execute→dispatch→tryRun) skip it when
     // skipRecursiveNativeSnapshot is true (KT-DISPATCH-SNAPSHOT-OPT):
     // T4 already snapshots per clause (`_t4`).
+    //
+    // KT-SELF-REC-SOUNDNESS: the top-level native→bytecode fallback is also
+    // load-bearing for EMIT-KOTLIN-5's unconditional self-recursion mid-body
+    // exemption — a lowered self-recursive wrong-false is re-run on the
+    // interpreter. Do not remove this fallback without tightening
+    // kotlin_safe_midbody_callee's SelfKey exemption.
     private var nativeDepth: Int = 0
 
     /** When true (default), recursive native hops skip snapshotForNative. */
@@ -440,7 +446,8 @@ class WamRuntime(private val program: WamProgram) {
             }
             // Top-level (or recursive with skip disabled for A/B profile):
             // snapshot so a native false can restore before falling back
-            // to bytecode (T5 unbound → interpreter, etc.).
+            // to bytecode (T5 unbound → interpreter; also KT-SELF-REC-
+            // SOUNDNESS wrong-false from self-recursive first-solution).
             val snapshot = initialState.snapshotForNative()
             nativeDepth++
             val ok = try {
