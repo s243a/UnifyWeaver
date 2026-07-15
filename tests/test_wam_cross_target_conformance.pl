@@ -291,14 +291,15 @@ ct_default_target(elixir).
 %   - append / reverse: non-empty ground answers fail — PutList +
 %     SetVariable partial-tail materialization vs GetList/unify on the
 %     result spine (VList / "[|]"/2). Empty-list append base case passes.
-%   - builtins: evalArith has no Str ("//", ...) clause, so integer-div
-%     `17 // 5` (PutStructure "//") returns None and cbi_arith(28) fails
-%     (mod is present; +,-,*,=/2,cmp pass).
+%   - builtins: now green (interpreter). FS-ARITH-INT-DIV fixed —
+%     evalArith gained a Str ("//", ...) clause (truncate-toward-zero
+%     integer division) in src/unifyweaver/bindings/fsharp_wam_bindings.pl,
+%     so `17 // 5` folds and cbi_arith(28) succeeds (+,-,*,mod,=/2,cmp
+%     already passed).
 %   - fsharp_functions + builtins: lowered emitter loops/stalls on cbi_eq
 %     (unsupported-instruction Proceed stubs for =/2); skip generation.
 ct_xfail(fsharp, append).            % FS-LIST-PARTIAL-TAIL
 ct_xfail(fsharp, reverse).           % FS-LIST-PARTIAL-TAIL
-ct_xfail(fsharp, builtins).          % FS-ARITH-INT-DIV
 ct_xfail(fsharp_functions, append).  % FS-LIST-PARTIAL-TAIL (same class)
 ct_xfail(fsharp_functions, reverse). % FS-LIST-PARTIAL-TAIL
 ct_skip(fsharp_functions, builtins). % FS-FUNCTIONS-BUILTINS-LOWER — codegen stalls
