@@ -2167,12 +2167,32 @@ print_fields_rest([]) -->
 % meaning there (`emit 1` stays the integer 1, not the atom '1'). field_expr is
 % tried first, so arithmetic (`print 1 + 2`) and floats are unaffected; only a
 % lone integer falls through to the literal clause.
+% String concatenation by juxtaposition (awk): `print $1 $2`, `print "x" $1`,
+% `print $1 "-" $2` output the operands adjacent, with NO field separator (unlike
+% the comma list). Two or more operands separated by whitespace parse to
+% concat([...]). Each operand is a field_expr, so arithmetic binds tighter than
+% concatenation (`$1 $2 + $3` == concat($1, $2 + $3)) and a comma still splits
+% print args. A single operand keeps its plain form (no concat wrapper).
+print_field_expr(concat([First, Second | Rest])) -->
+    field_expr(First),
+    required_ws,
+    field_expr(Second),
+    concat_rest(Rest),
+    !.
 print_field_expr(Field) -->
     field_expr(Field),
     !.
 print_field_expr(string(Text)) -->
     signed_integer_value(N),
     { format(string(Text), '~w', [N]) }.
+
+concat_rest([Operand | Rest]) -->
+    required_ws,
+    field_expr(Operand),
+    !,
+    concat_rest(Rest).
+concat_rest([]) -->
+    [].
 
 field_expr(Expr) -->
     i64_binary_surface_expr(Expr).

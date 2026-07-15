@@ -29,7 +29,7 @@ only (runtime pending) · ❌ missing.
 
 | Feature | Status | Notes |
 |---|---|---|
-| `print` (fields, literals, `NR`/`NF`, `length`/`substr`/`index`/`tolower`/`toupper`, arithmetic) | ✅ | constant fields (`print 1`, `print "x"`) landed |
+| `print` (fields, literals, `NR`/`NF`, `length`/`substr`/`index`/`tolower`/`toupper`, arithmetic, **concatenation**) | ✅ | constant fields (`print 1`, `print "x"`) + juxtaposition concat (`print $1 $2`) landed |
 | `printf` | ◐ | subset `%%`,`%s`,`%d`,`%i`,`%ld`; no `%f`/`%c`/`%x`/width/precision |
 | var assignment, `+=`, `++`, `//` | ✅ | indexed native scalar slots |
 | `if` / `else` (chains) | ✅ | field/pattern guards (`$1 > 2`, `$0 ~ /re/`) **and scalar-variable conditions** (`if (i > 2)`, `if (i < n && j > 0)`) in rule bodies, loops, **and `END`** (`END { if (n > 1) print … ; else print … }`, over final slot values) |
@@ -67,7 +67,7 @@ only (runtime pending) · ❌ missing.
 | arithmetic `+ - * / % //` | ✅ | i64, awk precedence, safe div/mod |
 | comparison, `~`/`!~` | ✅ | |
 | ternary `?:` | ❌ | does not parse |
-| string concatenation (juxtaposition `$1 $2`) | ❌ | does not parse |
+| string concatenation (juxtaposition `$1 $2`) | ◐ | **`print` context landed** — `print $1 $2`, `print "x" $1 "-" $2`, in rule bodies and `END`; arithmetic binds tighter, comma still splits. Assignment concat (`x = $1 $2`) needs string-valued scalars — separate |
 | exponentiation `^` / `**` | ❌ | |
 
 ## Arrays
@@ -131,8 +131,10 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    width/precision; the current subset is thin for real formatting.
 4. **`exit [n]`** — common and cheap; a flagged early-terminate of the record
    loop + END.
-5. **String concatenation & ternary `?:`** — the two most-missed *expression*
-   forms; both are parser + expression-lowering work.
+5. **Ternary `?:`** (string concatenation in `print` context **landed** —
+   `print $1 $2`, rule bodies + `END`; the remaining concat work is assignment
+   into a string-valued scalar). Ternary is the next most-missed *expression*
+   form; parser + expression-lowering work.
 6. **`delete arr[k]`** — rounds out the assoc-array story (paired with the
    existing for-in / `in`).
 7. **`split` / `sub` / `gsub` / `match` / `sprintf`** — the string-builtin
