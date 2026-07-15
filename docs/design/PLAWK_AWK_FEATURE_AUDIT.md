@@ -67,7 +67,7 @@ only (runtime pending) · ❌ missing.
 | `FNR` `FILENAME` `ARGV` `ARGC` `RS` `ORS` `SUBSEP` `RSTART` `RLENGTH` | ❌ | single newline-delimited record model |
 | arithmetic `+ - * / % //` | ✅ | i64, awk precedence, safe div/mod |
 | comparison, `~`/`!~` | ✅ | |
-| ternary `?:` | ❌ | does not parse |
+| ternary `?:` | ◐ | `COND ? A : B` in print / printf args — numeric comparison condition, numeric branches (fields, `NR`/`NF`, int literals, i64 arithmetic); lowered to an LLVM `select`. Assignment-context (scalar-var operands) and string branches are follow-ons |
 | string concatenation (juxtaposition `$1 $2`) | ◐ | **`print` context landed** — `print $1 $2`, `print "x" $1 "-" $2`, in rule bodies and `END`; arithmetic binds tighter, comma still splits. Assignment concat (`x = $1 $2`) needs string-valued scalars — separate |
 | exponentiation `^` / `**` | ❌ | |
 
@@ -155,10 +155,19 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    exit point merges into END through the break-close phi. Tests:
    `tests/test_plawk_exit.pl`. *Still open (follow-on):* `exit` inside a `BEGIN`
    or `END` block, and non-constant exit codes (`exit code_var`).
-5. **Ternary `?:`** (string concatenation in `print` context **landed** —
-   `print $1 $2`, rule bodies + `END`; the remaining concat work is assignment
-   into a string-valued scalar). Ternary is the next most-missed *expression*
-   form; parser + expression-lowering work.
+5. **Ternary `?:` — LANDED (print / printf, numeric).** `COND ? A : B` in a
+   print field or printf argument: the condition is a numeric comparison
+   `L <op> R` and both branches are numeric (fields, `NR`/`NF`, integer
+   literals, i64 arithmetic). Lowered to an LLVM `select` — both branches are
+   evaluated (no side effects in an i64 expression), so it composes straight-line
+   anywhere an i64 value is used (`plawk_i64_expr_ir(ternary(...))`), and the
+   `%s`/`%d`/arith paths are unaffected. Tests: `tests/test_plawk_ternary.pl`.
+   *Still open (follow-on):* assignment-context ternary (`x = c ? a : b`, needs
+   scalar-var operands + the assignment RHS grammar), string-valued branches,
+   and boolean-combination conditions (`a && b ? ...`).
+   (String concatenation in `print` context landed earlier — `print $1 $2`,
+   rule bodies + `END`; assignment concat into a string-valued scalar is
+   separate — see gap below.)
 6. **`delete arr[k]` — LANDED (field key).** `delete arr[$k]` removes the entry
    keyed by field k, matching the counted inc `arr[$k]++`. The runtime primitive
    `@wam_assoc_i64_delete` does **backward-shift deletion** on the linear-probing
