@@ -696,6 +696,19 @@ action_block_close -->
     "}",
     ws.
 
+%% body_block(-Actions)//
+%
+%  A control-flow body: either a braced `{ ... }` action block, or -- awk-style
+%  -- a single braceless statement (`if (c) print`, `while (c) x++`). The braced
+%  form is tried first; a braceless body is exactly one action wrapped in a
+%  singleton list, so downstream lowering (which already takes an action list)
+%  is unchanged.
+body_block(Actions) -->
+    action_block(Actions),
+    !.
+body_block([Action]) -->
+    action(Action).
+
 %% pattern(-Pattern)//
 %
 %  awk pattern combinators: `!` binds tighter than `&&`, which binds
@@ -1565,7 +1578,7 @@ while_action(while_loop(Cond, Body)) -->
     "(", ws,
     while_condition(Cond), ws,
     ")", ws,
-    action_block(Body).
+    body_block(Body).
 
 % A `do { BODY } while (VAR CMP int)` loop -- the body runs at least once, then
 % repeats while the condition holds (the awk do-while control structure). Parses
@@ -1574,7 +1587,7 @@ while_action(while_loop(Cond, Body)) -->
 % clause; the leading `do` keyword distinguishes it.
 do_while_action(do_while_loop(Body, Cond)) -->
     "do", identifier_boundary, ws,
-    action_block(Body), ws,
+    body_block(Body), ws,
     "while", identifier_boundary, ws,
     "(", ws,
     while_condition(Cond), ws,
@@ -1626,10 +1639,15 @@ if_action(if(Pattern, ThenActions, ElseActions)) -->
     ws,
     ")",
     ws,
-    action_block(ThenActions),
+    body_block(ThenActions),
     if_else_part(ElseActions).
 
+% `else` may follow a braced then-body directly, or a braceless one across a
+% statement separator (`if (c) print x; else print y`) -- so tolerate an
+% optional separator before `else`. If no `else` follows, the clause fails and
+% backtracks (un-consuming the separator) to the empty else.
 if_else_part(ElseActions) -->
+    opt_action_sep,
     "else",
     identifier_boundary,
     if_else_body(ElseActions),
@@ -1637,13 +1655,19 @@ if_else_part(ElseActions) -->
 if_else_part([]) -->
     [].
 
+opt_action_sep -->
+    action_sep,
+    !.
+opt_action_sep -->
+    ws.
+
 if_else_body([ElseIfAction]) -->
     required_ws,
     if_action(ElseIfAction),
     !.
 if_else_body(ElseActions) -->
     ws,
-    action_block(ElseActions).
+    body_block(ElseActions).
 
 condition_pattern(Pattern) -->
     or_pattern(Pattern).
