@@ -292,11 +292,14 @@ ct_default_target(elixir).
 %     FS-LIST-PARTIAL-TAIL (2026-07-15): GetValue routes through
 %     unifyVal/unifyTerms so ground Str("[|]",…) result spines unify with
 %     compact VList. Builder was already correct; open-tail
-%     `capp([a],[b],X),X=[a,b]` already passed via =/2. No remaining
-%     fsharp/fsharp_functions ct_xfail for append/reverse.
-%   - fsharp_functions + builtins: lowered emitter loops/stalls on cbi_eq
-%     (unsupported-instruction Proceed stubs for =/2); skip generation.
-ct_skip(fsharp_functions, builtins). % FS-FUNCTIONS-BUILTINS-LOWER — codegen stalls
+%     `capp([a],[b],X),X=[a,b]` already passed via =/2.
+%   - fsharp_functions + builtins: FIXED FS-FUNCTIONS-BUILTINS-LOWER
+%     (2026-07-15). Stall was not cbi_eq/=/2 — parse_functor_fs soft-cut
+%     on the first "/" so put_structure `///2` (integer-div) failed mid
+%     emit of cbi_arith and lower_all_fs never finished. Last-slash parse
+%     (Scala/R/Lua shape) unblocks all three builtins lowers; =/2 already
+%     delegated to step via emit_one_fs(builtin_call). No remaining
+%     fsharp / fsharp_functions ct_xfail or ct_skip.
 
 % ============================================================
 % Toolchain probes

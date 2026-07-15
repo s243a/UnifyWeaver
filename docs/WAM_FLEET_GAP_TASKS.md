@@ -24,10 +24,10 @@ self-contained so a single coding agent can pick it up in isolation.
 
 | ID | Lever | Target | Size | Depends on |
 |---|---|---|---|---|
-| CONF-FSHARP ✅ | Conformance adapter | F# | M | done — opt-in; classic programs green on interpreter; functions/builtins still skipped |
+| CONF-FSHARP ✅ | Conformance adapter | F# | M | done — opt-in; classic programs green on interpreter + functions |
 | FS-LIST-PARTIAL-TAIL ✅ | Conformance gap fix | F# | M | done — GetValue→unifyVal (`cursor/fs-list-partial-tail-f421`); append/reverse green on fsharp + fsharp_functions |
 | FS-ARITH-INT-DIV | Conformance gap fix | F# | S | CONF-FSHARP |
-| FS-FUNCTIONS-BUILTINS-LOWER | Conformance gap fix | F# | M | CONF-FSHARP |
+| FS-FUNCTIONS-BUILTINS-LOWER ✅ | Conformance gap fix | F# | M | done — last-slash `parse_functor_fs` for `///2` (`cursor/fs-functions-builtins-lower-f421`); fsharp_functions/builtins green |
 | CONF-LLVM | Conformance adapter | LLVM | L | — |
 | CONF-R | Conformance adapter | R | M | — |
 | CONF-CLOJURE | Conformance adapter | Clojure | L | — |
@@ -89,7 +89,7 @@ external toolchain.
 
 ### CONF-FSHARP: Register F# in the cross-target conformance harness
 - **Lever:** Conformance adapters  **Target:** F#  **Size:** M  **Depends on:** —
-- **Status:** ✅ **Landed** on `cursor/conf-fsharp-f421` (2026-07-15). Opt-in `conformance_target(fsharp)` + `fsharp_functions` (`emit_mode(interpreter|functions)`). Added additive `conformance_main(true)` Program.fs driver (`tryRun` → `true`/`false`) without changing the default TSV/LMDB benchmark entrypoint. `dotnet build` gate; `dotnet run --no-build -- <key>` (avoid `--nologo` on the run line — some SDKs forward it as argv[0]). **Measured (updated):** member/fib/ack/builtins/append/reverse green on interpreter; append/reverse also green on `fsharp_functions` after FS-LIST-PARTIAL-TAIL. Remaining: `ct_skip` `fsharp_functions`/builtins (FS-FUNCTIONS-BUILTINS-LOWER).
+- **Status:** ✅ **Landed** on `cursor/conf-fsharp-f421` (2026-07-15). Opt-in `conformance_target(fsharp)` + `fsharp_functions` (`emit_mode(interpreter|functions)`). Added additive `conformance_main(true)` Program.fs driver (`tryRun` → `true`/`false`) without changing the default TSV/LMDB benchmark entrypoint. `dotnet build` gate; `dotnet run --no-build -- <key>` (avoid `--nologo` on the run line — some SDKs forward it as argv[0]). **Measured (updated):** all classic programs green on interpreter; append/reverse + builtins also green on `fsharp_functions` after FS-LIST-PARTIAL-TAIL + FS-FUNCTIONS-BUILTINS-LOWER. No remaining fsharp ct_xfail/ct_skip.
 - **Goal:** Add an F# adapter (`conformance_target(fsharp)` + `ct_toolchain`/`ct_build`/`ct_run`/`ct_teardown`) so the shared WAM spec runs against the F# backend.
 - **Acceptance:** `CONFORMANCE_TARGETS=fsharp[,fsharp_functions] swipl -g run_tests tests/test_wam_cross_target_conformance.pl` runs the adapter (skips cleanly if `dotnet` absent); xfails/skips match measured gaps.
 
@@ -105,11 +105,11 @@ external toolchain.
 - **Root cause (measured):** `WamTypes.evalArith` handles `+,-,*,/,mod` but not `Str ("//", [a;b])`; the compiler emits `PutStructure ("//", 2, …)` for integer div, so `is_lax` binds nothing and the wrapper fails. (`mod` already works.)
 - **Acceptance:** Drop `ct_xfail(fsharp, builtins)`; builtins suite green under `CONFORMANCE_TARGETS=fsharp`.
 
-### FS-FUNCTIONS-BUILTINS-LOWER: `emit_mode(functions)` stalls on `cbi_eq`
+### FS-FUNCTIONS-BUILTINS-LOWER: `emit_mode(functions)` stalls on builtins
 - **Lever:** Conformance gap fix  **Target:** F#  **Size:** M  **Depends on:** CONF-FSHARP
-- **Goal:** Lowering `cbi_eq` (and friends) completes without hanging; builtins measurable under `fsharp_functions`.
-- **Root cause (measured):** `write_wam_fsharp_project` with `emit_mode(functions)` on the builtins program emits repeated “instruction not supported → Proceed stub” for `=/2` / `put_constant foo` and does not finish `Lowered.fs` / `Program.fs` within a minute-plus — harness uses `ct_skip(fsharp_functions, builtins)`.
-- **Acceptance:** Remove the skip; builtins either lowers cleanly or declines to interpreter without stalling; suite completes under `CONFORMANCE_TARGETS=fsharp_functions`.
+- **Status:** ✅ **Landed** on `cursor/fs-functions-builtins-lower-f421` (2026-07-15). Banner blamed `cbi_eq`/`=/2` Proceed stubs; the real stall was `parse_functor_fs` soft-cutting on the first `/` so `put_structure ///2` (integer-div in `cbi_arith`) failed mid-emit and `lower_all_fs` never finished. Fix: last-slash split (Scala/R/Lua shape) in `wam_fsharp_lowered_emitter.pl`. `=/2` already delegated to `step` via `emit_one_fs(builtin_call)`. **Measured:** `fsharp_functions`/builtins builds and runs green; `ct_skip` retired; interpreter builtins unchanged.
+- **Goal:** Lowering builtins completes without hanging; suite green under `fsharp_functions`.
+- **Acceptance:** Remove the skip; builtins lowers cleanly; suite completes under `CONFORMANCE_TARGETS=fsharp_functions`.
 
 ### CONF-LLVM: Register LLVM in the cross-target conformance harness
 - **Lever:** Conformance adapters  **Target:** LLVM  **Size:** L  **Depends on:** —
