@@ -2008,6 +2008,13 @@ assignment_action(set(var(Name), Value)) -->
     ws,
     scalar_value_expr(Value).
 
+% A ternary assignment `x = COND ? A : B`: numeric comparison condition, numeric
+% branches (the assignment mirror of the print/printf ternary). Tried first --
+% its `?`/`:` structure is unambiguous, and a plain concat / arithmetic RHS has
+% no cmp-then-`?`, so it backtracks cleanly.
+scalar_value_expr(Ternary) -->
+    ternary_expr(Ternary),
+    !.
 % String-valued assignment: a concatenation `x = $1 $2` (juxtaposition, no
 % separator -- the assignment mirror of `print $1 $2`) or a bare string literal
 % `x = "text"`. Both make `x` a string scalar (an interned atom id in an i64
