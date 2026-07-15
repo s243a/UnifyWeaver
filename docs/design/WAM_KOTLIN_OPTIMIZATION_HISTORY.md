@@ -152,7 +152,7 @@ Append’s recursive cons path is therefore snap-free → append_500
 
 ---
 
-## EMIT-KOTLIN-5 (this change)
+## EMIT-KOTLIN-5
 
 ### Boundary (deterministic-only mid-body `call`)
 
@@ -199,8 +199,50 @@ overflow.
 
 ---
 
+## KT-SELF-REC-SOUNDNESS (this change)
+
+### Invariant
+
+**Self-recursion mid-body lowering is safe ONLY because the top-level
+`tryRun` native→bytecode fallback catches the wrong-false; do not remove
+that fallback without tightening the `kotlin_safe_midbody_callee` SelfKey
+exemption.**
+
+The self-recursion exemption is unconditional (no per-clause determinism
+proof). Adversarial pattern that **lowers** and is correct only via
+fallback:
+
+```prolog
+p(z, a). p(z, b).
+p(s(N), R) :- p(N, R), R = b.
+adv :- p(s(z), _).   % interp true (backtracks to R=b);
+                     % lowered native false → tryRun bytecode fallback
+```
+
+Why this is still sound today:
+
+1. Missed backtracking yields wrong-**false**, never wrong-true.
+2. Top-level `tryRun` snapshots and re-runs on the interpreter when native
+   returns false (WAM registrar still present alongside `registerNative`).
+3. A multi-clause *caller* that could observe a wrong internal binding is
+   declined by the mid-body gate.
+
+Pinned by `functions_mode_self_rec_fallback_soundness` in
+`tests/test_wam_kotlin_target.pl` (asserts the pattern **lowers** and
+functions == interpreter). That test would fail if the top-level fallback
+were removed.
+
+### What we skipped (and why)
+
+| Idea | Why not now |
+|---|---|
+| Tighten SelfKey to require mutually exclusive clause heads | Would decline the adversarial pattern (two `p(z,_)` clauses); task asked to keep the pattern lowering and pin the fallback. Cheap peel-style exclusivity is a future option if fallback is retired. |
+
+---
+
 ## Correctness gates
 
 Differential unit suite + `CONFORMANCE_TARGETS=kotlin,kotlin_functions`
 must stay green whenever this seam changes. Top-level snapshot+fallback
-preserved deliberately for T5 unbound.
+preserved deliberately for T5 unbound **and** for
+KT-SELF-REC-SOUNDNESS (self-recursive first-solution wrong-false).

@@ -194,6 +194,28 @@ kotlin_call_parts_safe(Module, SelfKey, Parts, Visiting) :-
 %  predicate whose own mid-body calls are similarly safe. Multi-clause
 %  callees DECLINE — first-solution dispatch cannot backtrack into them.
 %  When unsure → fail (decline).
+%
+%  KT-SELF-REC-SOUNDNESS — self-recursion exemption soundness
+%  ---------------------------------------------------------
+%  The SelfKey = CalleeKey clause below is UNCONDITIONAL: we do not prove
+%  the self-recursive predicate deterministic. A multi-clause self-recursive
+%  body like `p(s(N),R) :- p(N,R), R = b` with `p(z,a). p(z,b).` can lower,
+%  take the first solution of the recursive call (R=a), fail `R = b`, and
+%  return false without backtracking into the recursion — a wrong *false*.
+%
+%  That is sound for the project TODAY only because:
+%    (1) missed backtracking yields wrong-false, never wrong-true;
+%    (2) top-level WamRuntime.tryRun still snapshots and falls back to the
+%        bytecode interpreter when the native fn returns false (so the
+%        query is re-run correctly);
+%    (3) a multi-clause *caller* that could observe a wrong internal binding
+%        is declined by this gate (only self / single-clause callees pass).
+%
+%  Do NOT remove the top-level tryRun native→bytecode fallback without
+%  tightening this exemption (e.g. require mutually exclusive clause heads
+%  on the indexed arg). Regression:
+%  tests/test_wam_kotlin_target.pl
+%  functions_mode_self_rec_fallback_soundness.
 kotlin_safe_midbody_callee(_Module, SelfKey, SelfKey, _Visiting) :- !.
 kotlin_safe_midbody_callee(_Module, _SelfKey, CalleeKey, Visiting) :-
     memberchk(CalleeKey, Visiting), !.

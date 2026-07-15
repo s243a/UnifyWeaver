@@ -50,6 +50,11 @@
 :- dynamic kt5_ack_bad/0.
 :- dynamic kt5_nd_ok/0.
 :- dynamic kt5_choice/1.
+:- dynamic kt_sr_p/2.
+:- dynamic kt_sr_adv/0.
+:- dynamic kt_sr_ok/0.
+:- dynamic kt_sr_direct/0.
+:- dynamic kt_sr_bad/0.
 
 :- begin_tests(wam_kotlin_target).
 
@@ -1024,6 +1029,95 @@ test(functions_mode_gradle_midbody_fib_ack, [condition(gradle_available), nondet
             retractall(user:kt5_ack(_, _, _)),
             retractall(user:kt5_ack_ok),
             retractall(user:kt5_ack_bad)
+        )
+    ).
+
+% KT-SELF-REC-SOUNDNESS: adversarial self-recursive nondet LOWERS; correct
+% only because top-level tryRun native→bytecode fallback re-runs on wrong
+% native false. Pins that invariant — would FAIL if fallback were removed.
+%   p(z,a). p(z,b).
+%   p(s(N),R) :- p(N,R), R = b.
+%   adv :- p(s(z), _).
+test(functions_mode_self_rec_fallback_soundness, [condition(gradle_available), nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_self_rec_soundness',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    Preds = [user:kt_sr_p/2, user:kt_sr_adv/0, user:kt_sr_ok/0,
+             user:kt_sr_direct/0, user:kt_sr_bad/0],
+    setup_call_cleanup(
+        (   retractall(user:kt_sr_p(_, _)),
+            retractall(user:kt_sr_adv),
+            retractall(user:kt_sr_ok),
+            retractall(user:kt_sr_direct),
+            retractall(user:kt_sr_bad),
+            assertz(user:kt_sr_p(z, a)),
+            assertz(user:kt_sr_p(z, b)),
+            assertz(user:(kt_sr_p(s(N), R) :- kt_sr_p(N, R), R = b)),
+            assertz(user:(kt_sr_adv :- kt_sr_p(s(z), _))),
+            assertz(user:(kt_sr_ok :- kt_sr_p(z, a))),
+            assertz(user:(kt_sr_direct :- kt_sr_p(s(z), b))),
+            assertz(user:(kt_sr_bad :- kt_sr_p(s(z), a)))
+        ),
+        (   % Partition: must LOWER (pin: exemption still admits this pattern).
+            wam_kotlin_partition_predicates(functions, Preds, Native, _Wam, Failed),
+            assertion(Failed == []),
+            assertion(memberchk(native(kt_sr_p/2, _), Native)),
+            assertion(memberchk(native(kt_sr_adv/0, _), Native)),
+            memberchk(native(kt_sr_p/2, lowered(_, _, PCode)), Native),
+            assertion(has_substring(PCode, 'if (!dispatch("kt_sr_p/2"')),
+            % Interpreter baseline (matching + backtrack-needed + failure).
+            wam_kotlin_target:write_wam_kotlin_project(
+                Preds, [emit_mode(interpreter), conformance_main(true)], TmpDir),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_sr_ok/0'], IO, _, S1),
+            assertion(S1 == exit(0)),
+            normalize_space(string(IOTrim), IO),
+            assertion(IOTrim == "true"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_sr_adv/0'], IA, _, S2),
+            assertion(S2 == exit(0)),
+            normalize_space(string(IATrim), IA),
+            assertion(IATrim == "true"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_sr_direct/0'], ID, _, S3),
+            assertion(S3 == exit(0)),
+            normalize_space(string(IDTrim), ID),
+            assertion(IDTrim == "true"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_sr_bad/0'], IB, _, S4),
+            assertion(S4 == exit(0)),
+            normalize_space(string(IBTrim), IB),
+            assertion(IBTrim == "false"),
+            % Functions: same answers (adv true only via tryRun fallback).
+            wam_kotlin_target:write_wam_kotlin_project(
+                Preds, [emit_mode(functions), conformance_main(true)], TmpDir),
+            read_file_to_string(
+                'output/test_wam_kotlin_self_rec_soundness/src/main/kotlin/generated/wam/Main.kt',
+                Main, []),
+            assertion(has_substring(Main, 'registerNative("kt_sr_p/2"')),
+            assertion(has_substring(Main, 'registerNative("kt_sr_adv/0"')),
+            assertion(has_substring(Main, 'if (!dispatch("kt_sr_p/2"')),
+            run_gradle(TmpDir, ['-q', 'compileKotlin'], _, CompileErr, CS),
+            assertion(CS == exit(0)),
+            assertion(\+ has_substring(CompileErr, "error:")),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_sr_ok/0'], FO, _, S5),
+            assertion(S5 == exit(0)),
+            normalize_space(string(FOTrim), FO),
+            assertion(FOTrim == IOTrim),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_sr_adv/0'], FA, _, S6),
+            assertion(S6 == exit(0)),
+            normalize_space(string(FATrim), FA),
+            assertion(FATrim == IATrim),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_sr_direct/0'], FD, _, S7),
+            assertion(S7 == exit(0)),
+            normalize_space(string(FDTrim), FD),
+            assertion(FDTrim == IDTrim),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt_sr_bad/0'], FB, _, S8),
+            assertion(S8 == exit(0)),
+            normalize_space(string(FBTrim), FB),
+            assertion(FBTrim == IBTrim)
+        ),
+        (   retractall(user:kt_sr_p(_, _)),
+            retractall(user:kt_sr_adv),
+            retractall(user:kt_sr_ok),
+            retractall(user:kt_sr_direct),
+            retractall(user:kt_sr_bad)
         )
     ).
 
