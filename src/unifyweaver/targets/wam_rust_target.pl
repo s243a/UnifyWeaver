@@ -1451,6 +1451,122 @@ compile_execute_io_builtin_to_rust(Code) :-
                 }
                 self.pc += 1; true
             }
+            "file_base_name/2" | "file_directory_name/2" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let component = if op == "file_base_name/2" {
+                    match path.rfind("/") {
+                        Some(index) => path[index + 1..].to_string(),
+                        None => path,
+                    }
+                } else {
+                    match path.rfind("/") {
+                        Some(0) => "/".to_string(),
+                        Some(index) => path[..index].to_string(),
+                        None => ".".to_string(),
+                    }
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Atom(component)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "file_name_extension/3" => {
+                let file_value = self.get_reg_raw("A3")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                if let Value::Atom(file) = file_value {
+                    let basename_start = file.rfind("/")
+                        .map(|index| index + 1)
+                        .unwrap_or(0);
+                    let extension_dot = file[basename_start..]
+                        .rfind(".")
+                        .map(|index| basename_start + index)
+                        .filter(|index| *index > basename_start);
+                    let (base, extension) = match extension_dot {
+                        Some(index) => (
+                            file[..index].to_string(),
+                            file[index + 1..].to_string(),
+                        ),
+                        None => (file, String::new()),
+                    };
+                    let base_output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                    let extension_output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                    let mark = self.trail.len();
+                    if !self.unify(&base_output, &Value::Atom(base)) {
+                        self.unwind_trail_to(mark);
+                        return false;
+                    }
+                    if self.unify(&extension_output, &Value::Atom(extension)) {
+                        self.pc += 1; true
+                    } else {
+                        self.unwind_trail_to(mark);
+                        false
+                    }
+                } else {
+                    let base = match self.builtin_path_arg("A1") {
+                        Some(base) => base,
+                        None => return false,
+                    };
+                    let extension = match self.builtin_path_arg("A2") {
+                        Some(extension) => extension,
+                        None => return false,
+                    };
+                    let file = if extension.is_empty() {
+                        base
+                    } else {
+                        format!("{}.{}", base, extension)
+                    };
+                    let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                    let mark = self.trail.len();
+                    if self.unify(&output, &Value::Atom(file)) {
+                        self.pc += 1; true
+                    } else {
+                        self.unwind_trail_to(mark);
+                        false
+                    }
+                }
+            }
+            "is_absolute_file_name/1" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                if path.starts_with("/") { self.pc += 1; true } else { false }
+            }
+            "path_join/3" => {
+                let base = match self.builtin_path_arg("A1") {
+                    Some(base) => base,
+                    None => return false,
+                };
+                let relative = match self.builtin_path_arg("A2") {
+                    Some(relative) => relative,
+                    None => return false,
+                };
+                let full = if relative.starts_with("/") || base.is_empty() {
+                    relative
+                } else if relative.is_empty() {
+                    base
+                } else if base.ends_with("/") {
+                    format!("{}{}", base, relative)
+                } else {
+                    format!("{}/{}", base, relative)
+                };
+                let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Atom(full)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
             "exists_file/1" => {
                 let path = match self.builtin_path_arg("A1") {
                     Some(path) => path,

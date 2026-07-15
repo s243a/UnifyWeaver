@@ -102,6 +102,14 @@ t_atom_checks :-
     atom_ends_with('prefix-middle-suffix', suffix),
     atom_contains('prefix-middle-suffix', middle).
 
+:- dynamic t_path_utilities/5.
+t_path_utilities(Base, Dir, Stem, Ext, Full) :-
+    file_base_name('/tmp/archive.tar.gz', Base),
+    file_directory_name('/tmp/archive.tar.gz', Dir),
+    file_name_extension(Stem, Ext, '/tmp/archive.tar.gz'),
+    is_absolute_file_name('/tmp/archive.tar.gz'),
+    path_join('/tmp/base', 'child.txt', Full).
+
 :- dynamic t_pairs_project/2.
 t_pairs_project(Keys, Values) :-
     Pairs = [a-1, b-2],
@@ -240,6 +248,7 @@ test_builtin_parity_execution :-
              user:t_file_metadata/2,
              user:t_system_queries/3,
              user:t_split_string/1, user:t_atom_split/1, user:t_atom_checks/0,
+             user:t_path_utilities/5,
              user:t_pairs_project/2, user:t_pairs_split/2, user:t_pairs_zip/1,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
@@ -270,6 +279,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_
     t_file_metadata_2,
     t_system_queries_3,
     t_split_string_1, t_atom_split_1, t_atom_checks_0,
+    t_path_utilities_5,
     t_pairs_project_2, t_pairs_split_2, t_pairs_zip_1,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
     t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
@@ -462,6 +472,18 @@ fn test_text_utility_family_compiled() {
 
     let mut checks_vm = vmnew();
     assert!(t_atom_checks_0(&mut checks_vm));
+}
+
+#[test]
+fn test_path_utility_family_compiled() {
+    let mut vm = vmnew();
+    assert!(t_path_utilities_5(
+        &mut vm, ub("Base"), ub("Dir"), ub("Stem"), ub("Ext"), ub("Full")));
+    assert_eq!(read_var(&vm, "Base"), a("archive.tar.gz"));
+    assert_eq!(read_var(&vm, "Dir"), a("/tmp"));
+    assert_eq!(read_var(&vm, "Stem"), a("/tmp/archive.tar"));
+    assert_eq!(read_var(&vm, "Ext"), a("gz"));
+    assert_eq!(read_var(&vm, "Full"), a("/tmp/base/child.txt"));
 }
 
 #[test]
@@ -1021,6 +1043,96 @@ fn test_atom_match_checks_direct() {
     assert!(call2("atom_contains/2", a("anything"), a("")).0);
     assert!(!call2("atom_contains/2", i(123), a("2")).0);
     assert!(!call2("atom_contains/2", a("123"), i(2)).0);
+}
+
+#[test]
+fn test_path_components_direct() {
+    let (base_ok, base_vm) = call2("file_base_name/2", a("/tmp/file.txt"), ub("Base"));
+    assert!(base_ok);
+    assert_eq!(read_var(&base_vm, "Base"), a("file.txt"));
+    let (plain_ok, plain_vm) = call2("file_base_name/2", a("plain"), ub("Base"));
+    assert!(plain_ok);
+    assert_eq!(read_var(&plain_vm, "Base"), a("plain"));
+    let (trailing_ok, trailing_vm) = call2("file_base_name/2", a("/tmp/"), ub("Base"));
+    assert!(trailing_ok);
+    assert_eq!(read_var(&trailing_vm, "Base"), a(""));
+    assert!(!call2("file_base_name/2", ub("Path"), ub("Base")).0);
+
+    let (dir_ok, dir_vm) = call2("file_directory_name/2", a("/tmp/file.txt"), ub("Dir"));
+    assert!(dir_ok);
+    assert_eq!(read_var(&dir_vm, "Dir"), a("/tmp"));
+    let (root_ok, root_vm) = call2("file_directory_name/2", a("/file.txt"), ub("Dir"));
+    assert!(root_ok);
+    assert_eq!(read_var(&root_vm, "Dir"), a("/"));
+    let (relative_ok, relative_vm) = call2("file_directory_name/2", a("file.txt"), ub("Dir"));
+    assert!(relative_ok);
+    assert_eq!(read_var(&relative_vm, "Dir"), a("."));
+    let (empty_ok, empty_vm) = call2("file_directory_name/2", a(""), ub("Dir"));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Dir"), a("."));
+}
+
+#[test]
+fn test_file_name_extension_direct() {
+    let (split_ok, split_vm) = call3(
+        "file_name_extension/3", ub("Base"), ub("Ext"), a("/tmp/archive.tar.gz"));
+    assert!(split_ok);
+    assert_eq!(read_var(&split_vm, "Base"), a("/tmp/archive.tar"));
+    assert_eq!(read_var(&split_vm, "Ext"), a("gz"));
+
+    let (hidden_ok, hidden_vm) = call3(
+        "file_name_extension/3", ub("Base"), ub("Ext"), a("/tmp/.hidden"));
+    assert!(hidden_ok);
+    assert_eq!(read_var(&hidden_vm, "Base"), a("/tmp/.hidden"));
+    assert_eq!(read_var(&hidden_vm, "Ext"), a(""));
+
+    let (hidden_ext_ok, hidden_ext_vm) = call3(
+        "file_name_extension/3", ub("Base"), ub("Ext"), a("/tmp/.hidden.txt"));
+    assert!(hidden_ext_ok);
+    assert_eq!(read_var(&hidden_ext_vm, "Base"), a("/tmp/.hidden"));
+    assert_eq!(read_var(&hidden_ext_vm, "Ext"), a("txt"));
+
+    let (join_ok, join_vm) = call3(
+        "file_name_extension/3", a("/tmp/report"), a("csv"), ub("File"));
+    assert!(join_ok);
+    assert_eq!(read_var(&join_vm, "File"), a("/tmp/report.csv"));
+    let (empty_ext_ok, empty_ext_vm) = call3(
+        "file_name_extension/3", a("/tmp/report"), a(""), ub("File"));
+    assert!(empty_ext_ok);
+    assert_eq!(read_var(&empty_ext_vm, "File"), a("/tmp/report"));
+
+    let (rollback_ok, rollback_vm) = call3(
+        "file_name_extension/3", ub("Base"), a("wrong"), a("name.txt"));
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "Base"), ub("Base"));
+    assert!(!call3("file_name_extension/3", ub("Base"), a("txt"), ub("File")).0);
+}
+
+#[test]
+fn test_path_queries_and_join_direct() {
+    assert!(call1("is_absolute_file_name/1", a("/tmp/file")).0);
+    assert!(!call1("is_absolute_file_name/1", a("tmp/file")).0);
+    assert!(!call1("is_absolute_file_name/1", a("")).0);
+    assert!(!call1("is_absolute_file_name/1", i(1)).0);
+
+    let (join_ok, join_vm) = call3("path_join/3", a("/tmp/base"), a("child"), ub("Full"));
+    assert!(join_ok);
+    assert_eq!(read_var(&join_vm, "Full"), a("/tmp/base/child"));
+    let (slash_ok, slash_vm) = call3("path_join/3", a("/tmp/base/"), a("child"), ub("Full"));
+    assert!(slash_ok);
+    assert_eq!(read_var(&slash_vm, "Full"), a("/tmp/base/child"));
+    let (absolute_ok, absolute_vm) = call3(
+        "path_join/3", a("/ignored"), a("/absolute/file"), ub("Full"));
+    assert!(absolute_ok);
+    assert_eq!(read_var(&absolute_vm, "Full"), a("/absolute/file"));
+    let (empty_base_ok, empty_base_vm) = call3("path_join/3", a(""), a("child"), ub("Full"));
+    assert!(empty_base_ok);
+    assert_eq!(read_var(&empty_base_vm, "Full"), a("child"));
+    let (empty_rel_ok, empty_rel_vm) = call3("path_join/3", a("base"), a(""), ub("Full"));
+    assert!(empty_rel_ok);
+    assert_eq!(read_var(&empty_rel_vm, "Full"), a("base"));
+    assert!(!call3("path_join/3", a("base"), ub("Rel"), ub("Full")).0);
+    assert!(!call3("path_join/3", a("base"), a("child"), a("wrong")).0);
 }
 
 #[test]

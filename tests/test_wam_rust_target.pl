@@ -493,6 +493,10 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, '"atom_starts_with/2"'),
         sub_string(S, _, _, _, '"atom_ends_with/2"'),
         sub_string(S, _, _, _, '"atom_contains/2"'),
+        sub_string(S, _, _, _, '"file_base_name/2" | "file_directory_name/2"'),
+        sub_string(S, _, _, _, '"file_name_extension/3"'),
+        sub_string(S, _, _, _, '"is_absolute_file_name/1"'),
+        sub_string(S, _, _, _, '"path_join/3"'),
         %% copy_term_walk helper (sharing-preserving recursive copy).
         sub_string(S, _, _, _, 'copy_term_walk'),
         %% Runtime-parser bridge support and the parser-required text/list builtins.
