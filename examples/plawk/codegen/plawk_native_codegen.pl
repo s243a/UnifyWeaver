@@ -4510,6 +4510,7 @@ plawk_passes_tables(Passes, Tables) :-
     sort(Names0, Tables).
 
 plawk_action_table_name(inc_assoc(var(Name), _Key), Name).
+plawk_action_table_name(delete_assoc(var(Name), _Key), Name).
 plawk_action_table_name(add_assoc(var(Name), _Key, _Delta), Name).
 plawk_action_table_name(set_row(var(Name), _Key), Name).
 plawk_action_table_name(set_row_cons(var(Name), _Key, _Fields), Name).
@@ -5201,6 +5202,7 @@ plawk_forin_assoc_plan(Rules, ArrayName, LookupArrays,
         ( member(rule(_Pattern, ActionSpecs, _Control), RuleSpecs),
           ( member(RuleArrayName-_KeyIndex, ActionSpecs)
           ; member(dynassoc(RuleArrayName, _Call), ActionSpecs)
+          ; member(assoc_delete(RuleArrayName, _KeyIndex), ActionSpecs)
           ; plawk_assoc_spec_forin_array(ActionSpecs, RuleArrayName)
           )
         ),
@@ -6556,6 +6558,11 @@ plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), field(KeyIndex)),
 plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), Blob),
         ArrayName-blob_key(Blob)) :-
     plawk_assoc_blob_key_ok(Blob).
+% `delete arr[$k]` -- remove the entry keyed by field k (v1: a field key, like
+% the counted inc). Absent key is a no-op (backward-shift delete in the runtime).
+plawk_assoc_body_action_spec(delete_assoc(var(ArrayName), field(KeyIndex)),
+        assoc_delete(ArrayName, KeyIndex)) :-
+    integer(KeyIndex), KeyIndex > 0.
 % Associative add-assign `arr[$k] += DELTA`: fold DELTA (a field value or an
 % integer constant) into the table at the key interned from field k. The
 % general form of `arr[$k]++` and the pass-1 half of per-key normalise. v1
@@ -6858,6 +6865,13 @@ plawk_assoc_planned_actions([ArrayName-KeyIndex | Rest], Tables, StrArrays,
       NextIndex is Index + 1
     },
     [assoc_action(Index, ArrayName, TableIndex, KeyIndex)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+plawk_assoc_planned_actions([assoc_delete(ArrayName, KeyIndex) | Rest],
+        Tables, StrArrays, PosArrays, Index) -->
+    { nth0(TableIndex, Tables, ArrayName),
+      NextIndex is Index + 1
+    },
+    [assoc_delete_action(Index, ArrayName, TableIndex, KeyIndex)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 plawk_assoc_planned_actions([assoc_add(ArrayName, KeyIndex, Delta) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
@@ -7666,6 +7680,47 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, Table
       format(atom(Next), '  br label %~w', [ActionNextLabel])
     },
     [Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId, Inc, Next, ''],
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% `delete arr[$k]`: same key-intern + missing-key skip as the counted inc, but
+% call the void backward-shift delete instead of the inc. An absent key (null
+% slice) skips to the next action; the runtime delete is itself a no-op if the
+% interned key is not in the table.
+plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_action(Index, _ArrayName, TableIndex, KeyIndex) | Rest], NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(HaveLabel), 'assoc_rule_~w_action_~w_have_key:',
+          [RuleIndex, Index]),
+      format(atom(HaveLabelName), 'assoc_rule_~w_action_~w_have_key',
+          [RuleIndex, Index]),
+      format(atom(Slice),
+          '  %assoc_rule_~w_action_~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+          [RuleIndex, Index, KeyIndex, FieldSeparator]),
+      format(atom(Ptr),
+          '  %assoc_rule_~w_action_~w_key_ptr = extractvalue %WamSlice %assoc_rule_~w_action_~w_key_slice, 0',
+          [RuleIndex, Index, RuleIndex, Index]),
+      format(atom(Len),
+          '  %assoc_rule_~w_action_~w_key_len = extractvalue %WamSlice %assoc_rule_~w_action_~w_key_slice, 1',
+          [RuleIndex, Index, RuleIndex, Index]),
+      format(atom(Missing),
+          '  %assoc_rule_~w_action_~w_key_missing = icmp eq i8* %assoc_rule_~w_action_~w_key_ptr, null',
+          [RuleIndex, Index, RuleIndex, Index]),
+      format(atom(Branch),
+          '  br i1 %assoc_rule_~w_action_~w_key_missing, label %~w, label %~w',
+          [RuleIndex, Index, ActionNextLabel, HaveLabelName]),
+      format(atom(KeyId),
+          '  %assoc_rule_~w_action_~w_key_id = call i64 @wam_intern_atom(i8* %assoc_rule_~w_action_~w_key_ptr, i64 %assoc_rule_~w_action_~w_key_len)',
+          [RuleIndex, Index, RuleIndex, Index, RuleIndex, Index]),
+      format(atom(Del),
+          '  call void @wam_assoc_i64_delete(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %assoc_rule_~w_action_~w_key_id)',
+          [TableIndex, RuleIndex, Index]),
+      format(atom(Next), '  br label %~w', [ActionNextLabel])
+    },
+    [Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId, Del, Next, ''],
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
 % Associative add-assign `arr[$k] += DELTA`: same key-intern + missing-key
 % skip as the counted inc, but the inc delta is the record's DELTA (a field

@@ -1576,8 +1576,28 @@ action(Action) -->
     assignment_action(Action),
     !.
 action(Action) -->
+    delete_action(Action),
+    !.
+action(Action) -->
     increment_action(Action),
     !.
+
+%% delete_action(-Action)//
+%
+%  `delete arr[k]` -- remove the entry keyed by `k` from an assoc table.
+%  Parses to delete_assoc(var(Name), KeyExpr). Same key forms as `arr[k]++`
+%  (a field `$N`, an integer, a quoted string, a blob call, or a bare var).
+delete_action(delete_assoc(var(Name), KeyExpr)) -->
+    "delete",
+    identifier_boundary,
+    ws,
+    table_ident(Name),
+    ws,
+    "[",
+    ws,
+    assoc_key_expr(KeyExpr),
+    ws,
+    "]".
 
 %% if_action(-Action)//
 %

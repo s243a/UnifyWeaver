@@ -44,6 +44,7 @@ only (runtime pending) · ❌ missing.
 | brace-less `if`/loop body | ✅ | `if (c) print`, `while (c) x++`, `do stmt while (c)`, braceless else-if chains — a body is a braced block or one statement |
 | field assignment (`$2 = expr`) | ❌ | rebuilding `$0` from mutated fields not wired |
 | C-style `for (;;)` | ❌ | |
+| `delete arr[k]` | ◐ | `delete arr[$k]` removes the entry keyed by a field (parity with `arr[$k]++`); backward-shift deletion in the runtime (later colliding keys stay reachable), missing key is a no-op. String-literal / var keys are a follow-on |
 | `exit [n]` | ✅ | stops the record loop, runs END, returns N (default 0); `exit` in a rule body, an `if`/`else` branch, or a loop (propagates past the loop) — scalar state at the exit point flows into END |
 | `delete arr[k]` | ❌ | |
 | `getline` | ❌ | the multi-pass / `over` readers cover much of its use |
@@ -77,7 +78,7 @@ only (runtime pending) · ❌ missing.
 | assoc arrays `arr[k]` | ✅ | native assoc tables |
 | `k in arr` (membership / for-in) | ✅ | |
 | multi-dim `arr[i,j]` (SUBSEP) | ❌ | |
-| `delete` | ❌ | |
+| `delete` | ◐ | `delete arr[$k]` (field key) removes an entry; backward-shift runtime delete. String-literal / var keys pending |
 
 ## plawk-specific surface (beyond AWK)
 
@@ -147,8 +148,16 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    `print $1 $2`, rule bodies + `END`; the remaining concat work is assignment
    into a string-valued scalar). Ternary is the next most-missed *expression*
    form; parser + expression-lowering work.
-6. **`delete arr[k]`** — rounds out the assoc-array story (paired with the
-   existing for-in / `in`).
+6. **`delete arr[k]` — LANDED (field key).** `delete arr[$k]` removes the entry
+   keyed by field k, matching the counted inc `arr[$k]++`. The runtime primitive
+   `@wam_assoc_i64_delete` does **backward-shift deletion** on the linear-probing
+   table, so later keys that collided into the same cluster stay reachable and
+   `get`/`inc`/`set` need no change (the no-gap invariant they rely on is
+   preserved); a missing key is a no-op. Wired through the assoc for-in driver
+   (build → delete → for-in report). Tests: `tests/test_plawk_delete.pl` and
+   `tests/core/test_wam_llvm_assoc_i64_runtime.pl` (backward-shift unit test).
+   *Still open (follow-on):* string-literal / variable keys (`delete arr["k"]`,
+   `delete arr[k]`), and `delete` in the scalar/mixed sequence-walker path.
 7. **`split` / `sub` / `gsub` / `match` / `sprintf`** — the string-builtin
    family; larger, lower priority for the DSL's data-pipeline focus.
 

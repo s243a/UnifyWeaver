@@ -4644,6 +4644,114 @@ get.miss:
   ret i64 0
 }
 
+; Remove %key from the table. Linear-probing has no tombstones, so a plain
+; "mark empty" would break the probe chains of later keys that collided here.
+; Backward-shift deletion repairs the cluster: after clearing the found slot,
+; walk forward and pull back any entry whose home bucket is not cyclically
+; inside the (hole, j] gap, so every remaining key stays reachable. get/inc/set
+; are unchanged (the no-gap invariant they rely on is preserved). No-op when the
+; key is absent.
+define void @wam_assoc_i64_delete(%WamAssocI64Table* %table, i64 %key) {
+entry:
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %del.done, label %del.load
+
+del.load:
+  %cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  %cap = load i64, i64* %cap_slot
+  %cap_zero = icmp eq i64 %cap, 0
+  br i1 %cap_zero, label %del.done, label %del.start
+
+del.start:
+  %entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %entries_slot
+  %entries_null = icmp eq %WamAssocI64Entry* %entries, null
+  br i1 %entries_null, label %del.done, label %del.hash
+
+del.hash:
+  %start = urem i64 %key, %cap
+  br label %del.find
+
+del.find:
+  %idx = phi i64 [ %start, %del.hash ], [ %next_idx, %del.find_next ]
+  %probes = phi i64 [ 0, %del.hash ], [ %next_probes, %del.find_next ]
+  %find_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %idx
+  %find_occ_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %find_entry, i32 0, i32 2
+  %find_occ = load i1, i1* %find_occ_slot
+  br i1 %find_occ, label %del.check_key, label %del.done
+
+del.check_key:
+  %find_key_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %find_entry, i32 0, i32 0
+  %find_key = load i64, i64* %find_key_slot
+  %find_match = icmp eq i64 %find_key, %key
+  br i1 %find_match, label %del.found, label %del.find_next_check
+
+del.find_next_check:
+  %next_probes = add i64 %probes, 1
+  %find_full = icmp uge i64 %next_probes, %cap
+  br i1 %find_full, label %del.done, label %del.find_next
+
+del.find_next:
+  %idx_plus = add i64 %idx, 1
+  %idx_wrap = icmp uge i64 %idx_plus, %cap
+  %next_idx = select i1 %idx_wrap, i64 0, i64 %idx_plus
+  br label %del.find
+
+del.found:
+  ; clear the found slot and drop the count
+  store i1 false, i1* %find_occ_slot
+  %count_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 0
+  %old_count = load i64, i64* %count_slot
+  %new_count = sub i64 %old_count, 1
+  store i64 %new_count, i64* %count_slot
+  br label %del.scan
+
+del.scan:
+  %hole = phi i64 [ %idx, %del.found ], [ %j, %del.move ], [ %hole, %del.nomove ]
+  %scan_prev = phi i64 [ %idx, %del.found ], [ %j, %del.move ], [ %j, %del.nomove ]
+  %j_plus = add i64 %scan_prev, 1
+  %j_wrap = icmp uge i64 %j_plus, %cap
+  %j = select i1 %j_wrap, i64 0, i64 %j_plus
+  %j_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %j
+  %j_occ_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %j_entry, i32 0, i32 2
+  %j_occ = load i1, i1* %j_occ_slot
+  br i1 %j_occ, label %del.consider, label %del.done
+
+del.consider:
+  %j_key_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %j_entry, i32 0, i32 0
+  %j_key = load i64, i64* %j_key_slot
+  %j_home = urem i64 %j_key, %cap
+  ; movable = j_home NOT cyclically in (hole, j]
+  %no_wrap = icmp ult i64 %hole, %j
+  %home_gt_hole = icmp ugt i64 %j_home, %hole
+  %home_le_j = icmp ule i64 %j_home, %j
+  %in_nowrap = and i1 %home_gt_hole, %home_le_j
+  %in_wrap = or i1 %home_gt_hole, %home_le_j
+  %in_gap = select i1 %no_wrap, i1 %in_nowrap, i1 %in_wrap
+  %movable = xor i1 %in_gap, true
+  br i1 %movable, label %del.move, label %del.nomove
+
+del.move:
+  ; pull entries[j] back into the hole, then clear entries[j]
+  %hole_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %hole
+  %hole_key_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %hole_entry, i32 0, i32 0
+  store i64 %j_key, i64* %hole_key_slot
+  %j_val_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %j_entry, i32 0, i32 1
+  %j_val = load i64, i64* %j_val_slot
+  %hole_val_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %hole_entry, i32 0, i32 1
+  store i64 %j_val, i64* %hole_val_slot
+  %hole_occ_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %hole_entry, i32 0, i32 2
+  store i1 true, i1* %hole_occ_slot
+  store i1 false, i1* %j_occ_slot
+  br label %del.scan
+
+del.nomove:
+  br label %del.scan
+
+del.done:
+  ret void
+}
+
 define i64 @wam_assoc_i64_inc(%WamAssocI64Table* %table, i64 %key, i64 %delta) {
 entry:
   %table_null = icmp eq %WamAssocI64Table* %table, null
