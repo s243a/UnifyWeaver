@@ -78,6 +78,11 @@ t_filesystem_query(Files) :-
     exists_directory('src/bin'),
     directory_files('src/bin', Files).
 
+:- dynamic t_file_metadata/2.
+t_file_metadata(Size, Time) :-
+    size_file('Cargo.toml', Size),
+    time_file('Cargo.toml', Time).
+
 :- dynamic t_pairs_project/2.
 t_pairs_project(Keys, Values) :-
     Pairs = [a-1, b-2],
@@ -213,6 +218,7 @@ test_builtin_parity_execution :-
              user:t_tab/0,
              user:t_output_family/0,
              user:t_filesystem_query/1,
+             user:t_file_metadata/2,
              user:t_pairs_project/2, user:t_pairs_split/2, user:t_pairs_zip/1,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
@@ -240,6 +246,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_
     t_tab_0,
     t_output_family_0,
     t_filesystem_query_1,
+    t_file_metadata_2,
     t_pairs_project_2, t_pairs_split_2, t_pairs_zip_1,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
     t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
@@ -387,6 +394,20 @@ fn test_filesystem_query_compiled() {
     assert_eq!(read_var(&vm, "Files"), Value::List(vec![
         a("."), a(".."), a("output_probe.rs")
     ]));
+}
+
+#[test]
+fn test_file_metadata_compiled() {
+    let mut vm = vmnew();
+    assert!(t_file_metadata_2(&mut vm, ub("Size"), ub("Time")));
+    match read_var(&vm, "Size") {
+        Value::Integer(size) => assert!(size > 0),
+        other => panic!("expected integer file size, got {:?}", other),
+    }
+    match read_var(&vm, "Time") {
+        Value::Float(time) => assert!(time.is_finite() && time > 0.0),
+        other => panic!("expected float modification time, got {:?}", other),
+    }
 }
 
 #[test]
@@ -1355,6 +1376,36 @@ fn test_filesystem_query_direct() {
         Value::List(vec![ub("Head"), a("wrong"), ub("Tail")]));
     assert!(!mismatched);
     assert_eq!(read_var(&mismatch_vm, "Head"), ub("Head"));
+}
+
+#[test]
+fn test_file_metadata_direct() {
+    let (size_ok, size_vm) = call2("size_file/2", a("Cargo.toml"), ub("Size"));
+    assert!(size_ok);
+    let size = match read_var(&size_vm, "Size") {
+        Value::Integer(size) => size,
+        other => panic!("expected integer file size, got {:?}", other),
+    };
+    assert!(size > 0);
+    assert!(call2("size_file/2", a("Cargo.toml"), i(size)).0);
+    assert!(!call2("size_file/2", a("Cargo.toml"), i(size + 1)).0);
+    assert!(!call2("size_file/2", a("definitely_missing_rust_wam_path"), ub("Size")).0);
+    assert!(!call2("size_file/2", ub("Path"), ub("Size")).0);
+    assert!(!call2("size_file/2", i(7), ub("Size")).0);
+
+    let (time_ok, time_vm) = call2("time_file/2", a("Cargo.toml"), ub("Time"));
+    assert!(time_ok);
+    let time = match read_var(&time_vm, "Time") {
+        Value::Float(time) => time,
+        other => panic!("expected float modification time, got {:?}", other),
+    };
+    assert!(time.is_finite() && time > 0.0);
+    assert!(call2("time_file/2", a("Cargo.toml"), Value::Float(time)).0);
+    assert!(!call2("time_file/2", a("Cargo.toml"), Value::Float(time + 1.0)).0);
+    assert!(!call2("time_file/2", a("Cargo.toml"), i(time as i64)).0);
+    assert!(!call2("time_file/2", a("definitely_missing_rust_wam_path"), ub("Time")).0);
+    assert!(!call2("time_file/2", ub("Path"), ub("Time")).0);
+    assert!(!call2("time_file/2", i(7), ub("Time")).0);
 }
 ',
         setup_call_cleanup(

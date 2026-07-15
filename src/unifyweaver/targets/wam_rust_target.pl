@@ -1507,6 +1507,49 @@ compile_execute_io_builtin_to_rust(Code) :-
                     false
                 }
             }
+            "size_file/2" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let size = match std::fs::metadata(path)
+                    .ok()
+                    .and_then(|metadata| i64::try_from(metadata.len()).ok()) {
+                    Some(size) => size,
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Integer(size)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "time_file/2" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let modified = match std::fs::metadata(path)
+                    .and_then(|metadata| metadata.modified()) {
+                    Ok(modified) => modified,
+                    Err(_) => return false,
+                };
+                let seconds = match modified.duration_since(std::time::UNIX_EPOCH) {
+                    Ok(duration) => duration.as_secs_f64(),
+                    Err(error) => -error.duration().as_secs_f64(),
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Float(seconds)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
             "nl/0" => { println!(); self.pc += 1; true }
             _ => false,
         }
