@@ -108,7 +108,6 @@ build(File, Out0, KeepLL) :-
     % removed; `GenFactClauses` are the synthesised facts.
     check_generator_blocks(File, Program2),
     check_materialized_views(File, Program2, Clauses),
-    check_loop_control(File, Program2),
     resolve_generator_blocks(Program2, Program, GenFactClauses),
     check_multitable_store(File, Program),
     check_query_reader(File, Program),
@@ -365,47 +364,6 @@ check_generator_blocks(File, Program) :-
         [File, Name]),
     halt(2).
 check_generator_blocks(_File, _Program).
-
-% `break` / `continue` for loop control (PLAWK_CONTROL_FLOW_PLAN.md §3b). Loop-
-% local break/continue is wired for `while` loops (SSA merge phis at the loop
-% exit / head). `do-while` break/continue is NOT wired yet (its condition sits
-% in the body-done block, so continue needs an extra merge phi there), so a
-% break/continue inside a `do-while` body is a clean not-yet error -- otherwise
-% break would silently lower to the rule-level stream-break. `break` OUTSIDE a
-% loop keeps its existing stream-break meaning.
-check_loop_control(File, Program) :-
-    plawk_dowhile_body_has_control(Program),
-    !,
-    format(user_error,
-        'plawk: ~w uses `break`/`continue` inside a `do-while` loop. `while` \c
-         loop break/continue is wired, but the do-while form is not yet; see \c
-         PLAWK_CONTROL_FLOW_PLAN.md section 3b.~n',
-        [File]),
-    halt(2).
-check_loop_control(_File, _Program).
-
-% True if some `do-while` body contains a `break` or `continue` anywhere in its
-% subtree.
-plawk_dowhile_body_has_control(Term) :-
-    plawk_ast_dowhile_body(Term, Body),
-    ( plawk_ast_contains(Body, break)
-    ; plawk_ast_contains(Body, continue)
-    ),
-    !.
-
-plawk_ast_dowhile_body(do_while_loop(Body, _Cond), Body).
-plawk_ast_dowhile_body(Term, Body) :-
-    compound(Term),
-    arg(_, Term, Arg),
-    plawk_ast_dowhile_body(Arg, Body).
-
-% Structural sub-term search (handles lists, since a body is an action list).
-plawk_ast_contains(Term, Term) :-
-    !.
-plawk_ast_contains(Term, Target) :-
-    compound(Term),
-    arg(_, Term, Arg),
-    plawk_ast_contains(Arg, Target).
 
 % `materialize NAME` (PLAWK_MULTIPASS_CACHE.md §3.9): mark a view / relation to
 % be materialised-and-cached (computed once, reused by every query pass that
