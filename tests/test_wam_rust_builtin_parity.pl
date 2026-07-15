@@ -89,6 +89,19 @@ t_system_queries(Time, Pid, Path) :-
     getpid(Pid),
     getenv('PATH', Path).
 
+:- dynamic t_split_string/1.
+t_split_string(Parts) :-
+    split_string(' alpha, beta ,, gamma ', ',', ' ', Parts).
+
+:- dynamic t_atom_split/1.
+t_atom_split(Parts) :- atom_split('a,,b', ',', Parts).
+
+:- dynamic t_atom_checks/0.
+t_atom_checks :-
+    atom_starts_with('prefix-middle-suffix', prefix),
+    atom_ends_with('prefix-middle-suffix', suffix),
+    atom_contains('prefix-middle-suffix', middle).
+
 :- dynamic t_pairs_project/2.
 t_pairs_project(Keys, Values) :-
     Pairs = [a-1, b-2],
@@ -226,6 +239,7 @@ test_builtin_parity_execution :-
              user:t_filesystem_query/1,
              user:t_file_metadata/2,
              user:t_system_queries/3,
+             user:t_split_string/1, user:t_atom_split/1, user:t_atom_checks/0,
              user:t_pairs_project/2, user:t_pairs_split/2, user:t_pairs_zip/1,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
@@ -255,6 +269,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_
     t_filesystem_query_1,
     t_file_metadata_2,
     t_system_queries_3,
+    t_split_string_1, t_atom_split_1, t_atom_checks_0,
     t_pairs_project_2, t_pairs_split_2, t_pairs_zip_1,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
     t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
@@ -429,6 +444,24 @@ fn test_system_queries_compiled() {
     assert_eq!(read_var(&vm, "Pid"), i(i64::from(std::process::id())));
     assert_eq!(read_var(&vm, "Path"),
         a(&std::env::var("PATH").expect("PATH must be available to cargo test")));
+}
+
+#[test]
+fn test_text_utility_family_compiled() {
+    let mut split_vm = vmnew();
+    assert!(t_split_string_1(&mut split_vm, ub("Parts")));
+    assert_eq!(read_var(&split_vm, "Parts"), Value::List(vec![
+        a("alpha"), a("beta"), a(""), a("gamma")
+    ]));
+
+    let mut atom_split_vm = vmnew();
+    assert!(t_atom_split_1(&mut atom_split_vm, ub("Parts")));
+    assert_eq!(read_var(&atom_split_vm, "Parts"), Value::List(vec![
+        a("a"), a(""), a("b")
+    ]));
+
+    let mut checks_vm = vmnew();
+    assert!(t_atom_checks_0(&mut checks_vm));
 }
 
 #[test]
@@ -633,6 +666,16 @@ fn call3(op: &str, a1: Value, a2: Value, a3: Value) -> (bool, WamState) {
     vm.set_reg("A2", a2);
     vm.set_reg("A3", a3);
     let ok = vm.execute_builtin(op, 3);
+    (ok, vm)
+}
+
+fn call4(op: &str, a1: Value, a2: Value, a3: Value, a4: Value) -> (bool, WamState) {
+    let mut vm = vmnew();
+    vm.set_reg("A1", a1);
+    vm.set_reg("A2", a2);
+    vm.set_reg("A3", a3);
+    vm.set_reg("A4", a4);
+    let ok = vm.execute_builtin(op, 4);
     (ok, vm)
 }
 
@@ -909,6 +952,75 @@ fn test_atom_text_ops() {
     let (ok12, vm12) = call2("string_to_atom/2", a("y"), ub("A"));
     assert!(ok12);
     assert_eq!(read_var(&vm12, "A"), a("y"));
+}
+
+#[test]
+fn test_text_decomposition_direct() {
+    let (split_ok, split_vm) = call4(
+        "split_string/4", a(" alpha; beta,,gamma "), a(";,"), a(" "), ub("Parts"));
+    assert!(split_ok);
+    assert_eq!(read_var(&split_vm, "Parts"), Value::List(vec![
+        a("alpha"), a("beta"), a(""), a("gamma")
+    ]));
+
+    let (no_sep_ok, no_sep_vm) = call4(
+        "split_string/4", a("  hello  "), a(""), a(" "), ub("Parts"));
+    assert!(no_sep_ok);
+    assert_eq!(read_var(&no_sep_vm, "Parts"), Value::List(vec![a("hello")]));
+
+    let (unicode_ok, unicode_vm) = call4(
+        "split_string/4", a(" α·β·γ "), a("·"), a(" "), ub("Parts"));
+    assert!(unicode_ok);
+    assert_eq!(read_var(&unicode_vm, "Parts"), Value::List(vec![
+        a("α"), a("β"), a("γ")
+    ]));
+    assert!(!call4("split_string/4", ub("Text"), a(","), a(""), ub("Parts")).0);
+
+    let (rollback_ok, rollback_vm) = call4(
+        "split_string/4",
+        a("a,b"),
+        a(","),
+        a(""),
+        Value::List(vec![ub("First"), a("wrong")]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "First"), ub("First"));
+
+    let (atom_split_ok, atom_split_vm) = call3(
+        "atom_split/3", a("a,,b"), a(","), ub("Parts"));
+    assert!(atom_split_ok);
+    assert_eq!(read_var(&atom_split_vm, "Parts"), Value::List(vec![
+        a("a"), a(""), a("b")
+    ]));
+
+    let (empty_ok, empty_vm) = call3("atom_split/3", a(""), a(","), ub("Parts"));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Parts"), Value::List(vec![a("")]));
+
+    let (unicode_split_ok, unicode_split_vm) = call3(
+        "atom_split/3", a("left·right"), a("·"), ub("Parts"));
+    assert!(unicode_split_ok);
+    assert_eq!(read_var(&unicode_split_vm, "Parts"), Value::List(vec![
+        a("left"), a("right")
+    ]));
+    assert!(!call3("atom_split/3", a("a--b"), a("--"), ub("Parts")).0);
+    assert!(!call3("atom_split/3", a("abc"), a(""), ub("Parts")).0);
+    assert!(!call3("atom_split/3", i(123), a(","), ub("Parts")).0);
+}
+
+#[test]
+fn test_atom_match_checks_direct() {
+    assert!(call2("atom_starts_with/2", a("prefix-value"), a("prefix")).0);
+    assert!(!call2("atom_starts_with/2", a("prefix-value"), a("value")).0);
+    assert!(call2("atom_ends_with/2", a("value-suffix"), a("suffix")).0);
+    assert!(!call2("atom_ends_with/2", a("value-suffix"), a("value")).0);
+    assert!(call2("atom_contains/2", a("prefix-middle-suffix"), a("middle")).0);
+    assert!(!call2("atom_contains/2", a("prefix-middle-suffix"), a("absent")).0);
+    assert!(call2("atom_starts_with/2", a("anything"), a("")).0);
+    assert!(call2("atom_ends_with/2", a("anything"), a("")).0);
+    assert!(call2("atom_contains/2", a("anything"), a("")).0);
+    assert!(!call2("atom_contains/2", i(123), a("2")).0);
+    assert!(!call2("atom_contains/2", a("123"), i(2)).0);
 }
 
 #[test]
