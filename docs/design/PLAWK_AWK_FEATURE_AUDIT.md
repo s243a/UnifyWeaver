@@ -23,7 +23,7 @@ only (runtime pending) · ❌ missing.
 | `&& \|\| !` combinators | ✅ | awk precedence, parens, single-block lowering |
 | `~` / `!~` match | ✅ | POSIX ERE |
 | expression pattern (bare `NR==1`) | ◐ | comparison guards yes; arbitrary expr no |
-| range pattern (`/a/,/b/`) | ❌ | |
+| range pattern (`/a/,/b/`) | ◐ | `/start/,/end/ { … }` fires for records from a /start/ match through a /end/ match (inclusive), via a per-rule i1 latch global; re-arms for later ranges, runs to EOF if unterminated. Regex endpoints (v1); general-pattern endpoints (`NR==1,NR==3`) are a follow-on |
 
 ## Actions & control flow
 

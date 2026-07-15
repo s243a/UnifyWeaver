@@ -671,6 +671,20 @@ rules_rest([Rule | Rules]) -->
 rules_rest([]) -->
     ws.
 
+% A range pattern `/start/,/end/ { ... }`: the rule fires for every record from
+% the one matching /start/ through the one matching /end/ (inclusive), tracked
+% by a per-rule latch. Endpoints are regexes (v1). Tried before the general rule
+% so the comma between the two regexes is seen (a plain `/re/ { }` has no comma,
+% so this clause fails before its cut and falls through).
+rule(rule(range(Start, End), Actions)) -->
+    slash_regex_pattern(Start),
+    ws,
+    ",",
+    ws,
+    slash_regex_pattern(End),
+    !,
+    ws,
+    action_block(Actions).
 rule(rule(Pattern, Actions)) -->
     pattern(Pattern),
     !,

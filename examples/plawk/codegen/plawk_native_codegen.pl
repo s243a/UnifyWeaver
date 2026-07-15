@@ -13342,6 +13342,42 @@ plawk_pattern_guard_ir(not_pat(Pattern), FieldSeparator, GlobalBase, MatchValue,
 '~w
   ~w = xor i1 ~w, true',
         [InnerCallIR, MatchValue, InnerValue]).
+% A range pattern `/start/,/end/`: the rule fires for records from a /start/
+% match through a /end/ match (inclusive), tracked by a per-rule i1 flag global
+% (init false = inactive). Latch, per record:
+%   fire        = was_active OR start_matches
+%   next_active = was_active ? NOT end_matches : start_matches
+% i.e. the end is only tested once already active (so a line matching both start
+% and end starts a range that continues -- the common gawk semantics). MatchValue
+% is the fire result; the two endpoints reuse the ordinary pattern guards.
+plawk_pattern_guard_ir(range(Start, End), FieldSeparator, GlobalBase, MatchValue,
+        GlobalIR-GuardCallIR) :-
+    format(atom(StartBase), '~w_rs', [GlobalBase]),
+    format(atom(StartValue), '~w_rs', [MatchValue]),
+    plawk_pattern_guard_ir(Start, FieldSeparator, StartBase, StartValue,
+        StartGlobalIR-StartCallIR),
+    format(atom(EndBase), '~w_re', [GlobalBase]),
+    format(atom(EndValue), '~w_re', [MatchValue]),
+    plawk_pattern_guard_ir(End, FieldSeparator, EndBase, EndValue,
+        EndGlobalIR-EndCallIR),
+    format(atom(FlagName), '~w_range', [GlobalBase]),
+    format(atom(FlagGlobal), '@~w = internal global i1 false', [FlagName]),
+    plawk_join_nonempty_ir([StartGlobalIR, EndGlobalIR, FlagGlobal], GlobalIR),
+    format(atom(GuardCallIR),
+'  %~w_was = load i1, i1* @~w
+~w
+~w
+  %~w_notend = xor i1 ~w, true
+  %~w_next = select i1 %~w_was, i1 %~w_notend, i1 ~w
+  store i1 %~w_next, i1* @~w
+  ~w = or i1 %~w_was, ~w',
+        [GlobalBase, FlagName,
+         StartCallIR,
+         EndCallIR,
+         GlobalBase, EndValue,
+         GlobalBase, GlobalBase, GlobalBase, StartValue,
+         GlobalBase, FlagName,
+         MatchValue, GlobalBase, StartValue]).
 
 plawk_combined_pattern(and_pat(_Left, _Right)).
 plawk_combined_pattern(or_pat(_Left, _Right)).
