@@ -817,6 +817,30 @@ another. Keeping them apart:
   clear win when several passes rescan a bounded set); large or unbounded views
   want the spilling, demand-driven path and wait on Phase 3.
 
+- **Guarded `eager` — the adaptive middle (planned).** `eager` and lazy are not
+  two hardcoded points but the endpoints of one **size-gated policy**:
+  `materialize NAME eager when size < 1GB` materialises eagerly into RAM *while
+  the view is small* and falls back to the lazy, demand-driven, spill-to-backend
+  path once it grows past the threshold. `eager` ≡ `eager when true`; plain lazy
+  ≡ `eager when false`; the guard is the adaptive selector between them. This
+  **automates the low-vs-high crossover** (the "eager wins low, loses high"
+  observation above) instead of asking the author to guess, and it stays
+  **awk-faithful at the limit** — anything large degrades to lazy streaming.
+  There is precedent for size-gated strategy selection in the codebase: the T9
+  fact-table-inline lowering is gated on row count being in a `[min, max]`
+  window (small predicates inline, oversized ones decline). Design points:
+  - **What the guard reads.** Row **count** is cheap and portable (the findall
+    list length / `aggregate_all(count, …)`); raw **bytes** need an estimate. A
+    memory-budget-relative form (`eager when size < 10% mem`) travels better than
+    a hardcoded `1GB`.
+  - **When.** Evaluated at **first access** (materialisation time) — the same
+    point the lazy default already decides, now made data-dependent.
+  - **Single-pass (don't run the goal twice).** Counting first then
+    materialising runs the goal twice; instead **collect-with-a-cap** — stream
+    solutions into a RAM buffer and, on crossing the threshold, stop buffering
+    and fall through to the spilling demand-driven path (flush or discard the
+    prefix). Single pass, and it degrades to streaming exactly when it should.
+
 #### Original sketch (retained)
 
 A **view** is a named, derived query over one or more tables — conceptually a
