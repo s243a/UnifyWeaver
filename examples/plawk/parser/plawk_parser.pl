@@ -1665,6 +1665,13 @@ while_cmp(cmp(var(V), Op, Rhs)) -->
 while_cmp_rhs(int(N)) -->
     signed_integer_value(N),
     !.
+% a string literal RHS -- used by `if (s == "text")` string-equality guards on a
+% string scalar (lowered as interned atom-id comparison). A while loop with a
+% string condition is a clean codegen error (no string loop bound).
+while_cmp_rhs(string(Value)) -->
+    quoted_string(Codes),
+    { string_codes(Value, Codes) },
+    !.
 while_cmp_rhs(var(W)) -->
     identifier(W).
 
