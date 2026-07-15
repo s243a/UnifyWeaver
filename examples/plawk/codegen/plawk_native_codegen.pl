@@ -11291,6 +11291,14 @@ plawk_scalar_action_update(set(var(Name), concat(Parts)), Name, set_str(concat(P
     maplist(plawk_str_scalar_part_ok, Parts).
 plawk_scalar_action_update(set(var(Name), string(Value)), Name, set_str(string(Value))) :-
     string(Value).
+% Ternary assignment `x = COND ? A : B`: an i64 value via select (the operation
+% lowers through plawk_scalar_numeric_expr_ir(ternary(...)) -> plawk_i64_expr_ir).
+plawk_scalar_action_update(set(var(Name), ternary(cmp(Left, _Op, Right), Then, Else)),
+        Name, set(ternary(cmp(Left, _Op, Right), Then, Else))) :-
+    plawk_ternary_i64_operand_ok(Left),
+    plawk_ternary_i64_operand_ok(Right),
+    plawk_ternary_i64_operand_ok(Then),
+    plawk_ternary_i64_operand_ok(Else).
 plawk_scalar_action_update(set(var(Name), int(Value)), Name, set(const(Value))) :-
     integer(Value),
     Value >= 0.

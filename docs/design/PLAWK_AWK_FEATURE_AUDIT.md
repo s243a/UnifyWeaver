@@ -67,7 +67,7 @@ only (runtime pending) · ❌ missing.
 | `FNR` `FILENAME` `ARGV` `ARGC` `RS` `ORS` `SUBSEP` `RSTART` `RLENGTH` | ❌ | single newline-delimited record model |
 | arithmetic `+ - * / % //` | ✅ | i64, awk precedence, safe div/mod |
 | comparison, `~`/`!~` | ✅ | |
-| ternary `?:` | ◐ | `COND ? A : B` in print / printf args — numeric comparison condition, numeric branches (fields, `NR`/`NF`, int literals, i64 arithmetic); lowered to an LLVM `select`. Assignment-context (scalar-var operands) and string branches are follow-ons |
+| ternary `?:` | ✅ | `COND ? A : B` in print / printf args **and scalar assignment** (`x = $1 > $2 ? $1 : $2`) — numeric comparison condition, numeric branches (fields, `NR`/`NF`, int literals, i64 arithmetic); lowered to an LLVM `select`. Scalar-var operands, string branches, and `&&`/`||` conditions are follow-ons |
 | string concatenation (juxtaposition `$1 $2`) | ✅ | `print` context **and** assignment: `print $1 $2`; `x = $1 $2` / `x = "id:" $1` build a **string-valued scalar** (an interned atom id in an i64 slot, resolved to text on read/print). Arithmetic binds tighter, comma still splits. Scalar-var concat operand (`x = x $1` accumulation) is a follow-on |
 | exponentiation `^` / `**` | ❌ | |
 
