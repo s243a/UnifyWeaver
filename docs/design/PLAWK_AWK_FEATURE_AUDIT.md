@@ -68,7 +68,7 @@ only (runtime pending) · ❌ missing.
 | arithmetic `+ - * / % //` | ✅ | i64, awk precedence, safe div/mod |
 | comparison, `~`/`!~` | ✅ | |
 | ternary `?:` | ◐ | `COND ? A : B` in print / printf args — numeric comparison condition, numeric branches (fields, `NR`/`NF`, int literals, i64 arithmetic); lowered to an LLVM `select`. Assignment-context (scalar-var operands) and string branches are follow-ons |
-| string concatenation (juxtaposition `$1 $2`) | ◐ | **`print` context landed** — `print $1 $2`, `print "x" $1 "-" $2`, in rule bodies and `END`; arithmetic binds tighter, comma still splits. Assignment concat (`x = $1 $2`) needs string-valued scalars — separate |
+| string concatenation (juxtaposition `$1 $2`) | ✅ | `print` context **and** assignment: `print $1 $2`; `x = $1 $2` / `x = "id:" $1` build a **string-valued scalar** (an interned atom id in an i64 slot, resolved to text on read/print). Arithmetic binds tighter, comma still splits. Scalar-var concat operand (`x = x $1` accumulation) is a follow-on |
 | exponentiation `^` / `**` | ❌ | |
 
 ## Arrays
@@ -165,9 +165,15 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    *Still open (follow-on):* assignment-context ternary (`x = c ? a : b`, needs
    scalar-var operands + the assignment RHS grammar), string-valued branches,
    and boolean-combination conditions (`a && b ? ...`).
-   (String concatenation in `print` context landed earlier — `print $1 $2`,
-   rule bodies + `END`; assignment concat into a string-valued scalar is
-   separate — see gap below.)
+   (String concatenation landed in both contexts — `print $1 $2` earlier, and
+   **assignment concat `x = $1 $2` via string-valued scalars** now: a string
+   scalar's slot holds an interned atom id (an i64, so it reuses the whole
+   SSA/phi scalar machinery), the RHS is built into a buffer and interned at
+   assignment, and a read/print resolves the id to text — id 0 is the unset
+   sentinel, printed as empty. Numeric and string scalars coexist in one
+   program. Tests: `tests/test_plawk_strscalar.pl`. *Still open (follow-on):*
+   a scalar-var concat operand (`x = x $1` accumulation), string scalars in an
+   `if`/loop body, and string comparison/guards on a string scalar.)
 6. **`delete arr[k]` — LANDED (field key).** `delete arr[$k]` removes the entry
    keyed by field k, matching the counted inc `arr[$k]++`. The runtime primitive
    `@wam_assoc_i64_delete` does **backward-shift deletion** on the linear-probing

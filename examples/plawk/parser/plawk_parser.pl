@@ -2001,6 +2001,21 @@ assignment_action(set(var(Name), Value)) -->
     ws,
     scalar_value_expr(Value).
 
+% String-valued assignment: a concatenation `x = $1 $2` (juxtaposition, no
+% separator -- the assignment mirror of `print $1 $2`) or a bare string literal
+% `x = "text"`. Both make `x` a string scalar (an interned atom id in an i64
+% slot). Tried before the numeric clause; concat needs two whitespace-separated
+% field_expr operands, so `x = $1 + $2` (arithmetic) still falls through.
+scalar_value_expr(concat([First, Second | Rest])) -->
+    field_expr(First),
+    required_ws,
+    field_expr(Second),
+    concat_rest(Rest),
+    !.
+scalar_value_expr(string(Value)) -->
+    quoted_string(Codes),
+    { string_codes(Value, Codes) },
+    !.
 scalar_value_expr(Value) -->
     scalar_delta_expr(Value).
 
