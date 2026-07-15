@@ -10,6 +10,7 @@
 :- use_module(library(lists)).
 :- use_module(wam_text_parser, [wam_classify_constant_token/2]).
 :- use_module(wam_clause_chain, [clause_chain/2]).
+:- use_module(wam_target, [compile_predicate_to_wam/3]).
 
 % ============================================================================
 % Emission plan (T5 clause_chain → T4 multi_clause_n → T1 deterministic)
@@ -33,6 +34,7 @@ skippable_prefix_line([]).
 skippable_prefix_line([First|_]) :- sub_string(First, _, 1, 0, ":").
 skippable_prefix_line(["switch_on_constant"|_]).
 skippable_prefix_line(["switch_on_constant_a2"|_]).
+skippable_prefix_line(["switch_on_constant_fallthrough"|_]).
 skippable_prefix_line(["switch_on_structure"|_]).
 skippable_prefix_line(["switch_on_term"|_]).
 skippable_prefix_line(["switch_on_term_a2"|_]).
@@ -45,8 +47,9 @@ classify_clause_shape([FirstLine|Rest],
     clause_chain(Terms, chain(Guards)),
     forall(member(guard(_, Rem), Guards), kotlin_chain_rem_supported(Rem)),
     !.
-% T4: multi-clause with only supported deterministic bodies (no mid-body call).
-% Last-call `execute` is allowed (EMIT-KOTLIN-4); mid-body `call` is EMIT-KOTLIN-5.
+% T4: multi-clause with supported bodies. Last-call `execute` (EMIT-KOTLIN-4)
+% and deterministic mid-body `call` (EMIT-KOTLIN-5) are allowed at classify
+% time; `wam_kotlin_lowerable/3` enforces the mid-body determinism gate.
 classify_clause_shape([FirstLine|Rest], plan(multi_clause_n, none, Clauses)) :-
     wam_kotlin_target:tokenize_wam_line(FirstLine, ["try_me_else", _AltStr]),
     kotlin_split_clause_lines([FirstLine|Rest], Clauses),
@@ -95,10 +98,7 @@ kotlin_chain_rem_supported([T|Rest]) :-
     (   T = get_constant(_, _)
     ->  true
     ;   T = line(Parts)
-    ->  (   Parts = ["call"|_]
-        ->  fail
-        ;   parts_supported(Parts)
-        )
+    ->  parts_supported(Parts)
     ),
     kotlin_chain_rem_supported(Rest).
 
@@ -114,6 +114,7 @@ kotlin_t4_instr_line(Line) :-
     \+ sub_string(F, _, 1, 0, ":"),
     \+ member(F, ["try_me_else", "retry_me_else", "trust_me",
                   "switch_on_constant", "switch_on_constant_a2",
+                  "switch_on_constant_fallthrough",
                   "switch_on_structure", "switch_on_term",
                   "switch_on_term_a2"]).
 
@@ -137,30 +138,86 @@ kotlin_t4_clause_line_supported(Line) :-
     wam_kotlin_target:tokenize_wam_line(Line, Parts),
     ( Parts == [] -> true ; parts_supported(Parts) ),
     Parts \= ["cut_ite"|_],
-    Parts \= ["jump"|_],
-    % Mid-body call needs a continuation — EMIT-KOTLIN-5.
-    \+ (Parts = ["call"|_]).
+    Parts \= ["jump"|_].
 
 kotlin_t4_terminal_line(Line) :-
     wam_kotlin_target:tokenize_wam_line(Line, Parts),
     kotlin_is_terminal_parts(Parts).
 
-wam_kotlin_lowerable(_PI, WamCode, Reason) :-
+%% wam_kotlin_lowerable(+PI, +WamCode, -Reason)
+%  EMIT-KOTLIN-5: mid-body `call` is allowed only when every call target is
+%  safe under first-solution semantics — self-recursion or a single-clause
+%  deterministic callee. Multi-clause callees (member, choice facts) DECLINE
+%  because inline `if (!dispatch) return false` cannot backtrack into them.
+wam_kotlin_lowerable(PI, WamCode, Reason) :-
+    kotlin_pi_module_key(PI, Module, SelfKey),
     catch(build_emission_plan(WamCode, plan(Reason, _, Payload)), _, fail),
+    % Visiting tracks only single-clause callees under proof (not SelfKey),
+    % so a helper that mid-body-calls back into a multi-clause Self declines.
     (   Reason == clause_chain
     ->  Payload = chain_payload(Guards),
-        forall(member(guard(_, Rem), Guards), kotlin_chain_rem_supported(Rem))
+        forall(member(guard(_, Rem), Guards), kotlin_chain_rem_supported(Rem)),
+        forall(member(guard(_, Rem), Guards),
+               kotlin_chain_rem_calls_safe(Module, SelfKey, Rem, []))
     ;   Reason == multi_clause_n
     ->  forall(member(Cl, Payload),
                ( forall(member(Line, Cl), line_supported(Line)),
-                 \+ kotlin_clause_has_call(Cl) ))
+                 kotlin_lines_calls_safe(Module, SelfKey, Cl, []) ))
     ;   forall(member(Line, Payload), line_supported(Line)),
-        \+ kotlin_clause_has_call(Payload)
+        kotlin_lines_calls_safe(Module, SelfKey, Payload, [])
     ).
 
-kotlin_clause_has_call(Lines) :-
-    member(Line, Lines),
-    wam_kotlin_target:tokenize_wam_line(Line, ["call"|_]).
+kotlin_pi_module_key(Module:Pred/Arity, Module, Pred/Arity) :- !.
+kotlin_pi_module_key(Pred/Arity, user, Pred/Arity).
+
+kotlin_chain_rem_calls_safe(Module, SelfKey, Rem, Visiting) :-
+    forall(
+        ( member(T, Rem), T = line(Parts), Parts = ["call"|_] ),
+        kotlin_call_parts_safe(Module, SelfKey, Parts, Visiting)
+    ).
+
+kotlin_lines_calls_safe(Module, SelfKey, Lines, Visiting) :-
+    forall(
+        ( member(Line, Lines),
+          wam_kotlin_target:tokenize_wam_line(Line, Parts),
+          Parts = ["call"|_]
+        ),
+        kotlin_call_parts_safe(Module, SelfKey, Parts, Visiting)
+    ).
+
+kotlin_call_parts_safe(Module, SelfKey, Parts, Visiting) :-
+    kotlin_call_target_key(Parts, CalleeKey),
+    kotlin_safe_midbody_callee(Module, SelfKey, CalleeKey, Visiting).
+
+%% kotlin_safe_midbody_callee(+Module, +SelfKey, +CalleeKey, +Visiting)
+%  Safe iff callee is Self (recursive) or a single-clause deterministic
+%  predicate whose own mid-body calls are similarly safe. Multi-clause
+%  callees DECLINE — first-solution dispatch cannot backtrack into them.
+%  When unsure → fail (decline).
+kotlin_safe_midbody_callee(_Module, SelfKey, SelfKey, _Visiting) :- !.
+kotlin_safe_midbody_callee(_Module, _SelfKey, CalleeKey, Visiting) :-
+    memberchk(CalleeKey, Visiting), !.
+kotlin_safe_midbody_callee(Module, _SelfKey, Pred/Arity, Visiting) :-
+    catch(compile_predicate_to_wam(Module:Pred/Arity, [], WamText), _, fail),
+    catch(build_emission_plan(WamText, plan(Reason, _, Payload)), _, fail),
+    Reason == deterministic,
+    Visiting1 = [Pred/Arity|Visiting],
+    forall(member(Line, Payload), line_supported(Line)),
+    kotlin_lines_calls_safe(Module, Pred/Arity, Payload, Visiting1).
+
+kotlin_call_target_key(["call", PredArity, _ArityStr|_], Key) :-
+    kotlin_pred_key_from_token(PredArity, Key), !.
+kotlin_call_target_key(["call", PredArity], Key) :-
+    kotlin_pred_key_from_token(PredArity, Key).
+
+kotlin_pred_key_from_token(Tok, Pred/Arity) :-
+    kotlin_execute_pred_key(Tok, KeyStr),
+    atom_string(KeyAtom, KeyStr),
+    atomic_list_concat(Parts, '/', KeyAtom),
+    append(NameParts, [ArityAtom], Parts),
+    NameParts \= [],
+    atomic_list_concat(NameParts, '/', Pred),
+    atom_number(ArityAtom, Arity).
 
 line_supported(Line) :-
     wam_kotlin_target:tokenize_wam_line(Line, Parts),
@@ -168,19 +225,21 @@ line_supported(Line) :-
     ->  true
     ;   Parts = [F|_], sub_string(F, _, 1, 0, ":")
     ->  true
-    ;   Parts = ["call"|_]
-    ->  fail
     ;   parts_supported(Parts)
     ).
 
-% Structure/list + unify/set + last-call execute. Mid-body call → EMIT-KOTLIN-5.
-% get_variable/put_variable must emit `run { ... }` — see emit_line_parts/2.
+% Structure/list + unify/set + last-call execute + det mid-body call +
+% arithmetic builtin_call (EMIT-KOTLIN-5). get_variable/put_variable must
+% emit `run { ... }` — see emit_line_parts/2.
 parts_supported(["allocate"]).
 parts_supported(["deallocate"]).
 parts_supported(["proceed"]).
 parts_supported(["fail"]).
 parts_supported(["execute", _]).
 parts_supported(["execute", _, _]).
+parts_supported(["call", _]).
+parts_supported(["call", _, _]).
+parts_supported(["builtin_call", Op, _]) :- kotlin_det_builtin(Op).
 parts_supported(["get_constant", _, _]).
 parts_supported(["get_variable", _, _]).
 parts_supported(["get_value", _, _]).
@@ -204,6 +263,12 @@ parts_supported(["set_value", _]).
 parts_supported(["set_constant", _]).
 parts_supported(["set_nil"]).
 parts_supported(["set_integer", _]).
+
+% Deterministic builtins only — same ops fib/ack/builtins need. Do NOT
+% re-implement; lowered emit calls kotlinLoBuiltinCall → wamEvalArith.
+kotlin_det_builtin(Op) :-
+    atom_string(Op, S),
+    memberchk(S, ["is/2", "=:=/2", "=\\=/2", "</2", ">/2", "=</2", ">=/2", "=/2", "true/0"]).
 
 kotlin_lowered_func_name(Functor/Arity, Name) :-
     atom_string(Functor, S),
@@ -367,6 +432,9 @@ emit_kotlin_t5_rem([line(Parts)|Rest], Ind, Ended) :- !,
     ;   Parts = ["execute"|_]
     ->  emit_line_parts(Parts, Ind),
         Ended = true
+    ;   Parts = ["call"|_]
+    ->  emit_line_parts(Parts, Ind),
+        emit_kotlin_t5_rem(Rest, Ind, Ended)
     ;   emit_line_parts(Parts, Ind),
         emit_kotlin_t5_rem(Rest, Ind, Ended)
     ).
@@ -394,6 +462,19 @@ emit_line_parts(["execute", Pred, ArityStr], I) :- !,
     format(string(PA), '~w/~w', [Name, ArityStr]),
     escape_kotlin_string(PA, Esc),
     format("~wreturn dispatch(\"~w\", state)~n", [I, Esc]).
+% EMIT-KOTLIN-5: mid-body call — first-solution only (determinism gated above).
+emit_line_parts(["call", PredArity], I) :- !,
+    kotlin_execute_pred_key(PredArity, Key),
+    escape_kotlin_string(Key, Esc),
+    format("~wif (!dispatch(\"~w\", state)) return false~n", [I, Esc]).
+emit_line_parts(["call", PredArity, _ArityStr], I) :- !,
+    kotlin_execute_pred_key(PredArity, Key),
+    escape_kotlin_string(Key, Esc),
+    format("~wif (!dispatch(\"~w\", state)) return false~n", [I, Esc]).
+emit_line_parts(["builtin_call", Op, _Arity], I) :- !,
+    atom_string(Op, OpS),
+    escape_kotlin_string(OpS, Esc),
+    format("~wif (!kotlinLoBuiltinCall(state, \"~w\")) return false~n", [I, Esc]).
 emit_line_parts(["allocate"], I) :- !,
     format("~wstate.allocateEnvironment()~n", [I]).
 emit_line_parts(["deallocate"], I) :- !,

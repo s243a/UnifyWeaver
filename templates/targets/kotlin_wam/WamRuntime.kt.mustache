@@ -528,60 +528,10 @@ class WamRuntime(private val program: WamProgram) {
         return jumpToLabel(state, target)
     }
 
-    // M148: arithmetic evaluation for is/2 and the arith compares.
-    // Handles numeric leaves and the standard binary/unary operators
-    // built via put_structure. Returns null for non-evaluable input
-    // (ISO lax semantics: the builtin then fails).
-    fun evalArith(state: WamState, value: Value?): Value? {
-        return when (val d = state.resolve(value)) {
-            is Value.IntVal -> d
-            is Value.FloatVal -> d
-            is Value.Struct -> {
-                // Functor keys are "name/arity". Strip only the trailing
-                // "/<digits>" — a naive split("/") breaks slash-bearing ops
-                // like "//" (key "///2") and "/" (key "//2").
-                val name = functorName(d.functor)
-                if (d.args.size == 2) {
-                    val a = evalArith(state, d.args[0]) ?: return null
-                    val b = evalArith(state, d.args[1]) ?: return null
-                    if (a is Value.IntVal && b is Value.IntVal) {
-                        val x = a.value; val y = b.value
-                        when (name) {
-                            "+" -> Value.IntVal(x + y)
-                            "-" -> Value.IntVal(x - y)
-                            "*" -> Value.IntVal(x * y)
-                            "//" -> if (y == 0L) null else Value.IntVal(x / y)
-                            "mod" -> if (y == 0L) null else Value.IntVal(Math.floorMod(x, y))
-                            "/" -> if (y == 0L) null else if (x % y == 0L) Value.IntVal(x / y) else Value.FloatVal(x.toDouble() / y)
-                            else -> null
-                        }
-                    } else {
-                        val x = arithDouble(a); val y = arithDouble(b)
-                        when (name) {
-                            "+" -> Value.FloatVal(x + y)
-                            "-" -> Value.FloatVal(x - y)
-                            "*" -> Value.FloatVal(x * y)
-                            "/" -> if (y == 0.0) null else Value.FloatVal(x / y)
-                            else -> null
-                        }
-                    }
-                } else if (d.args.size == 1 && name == "-") {
-                    when (val a = evalArith(state, d.args[0])) {
-                        is Value.IntVal -> Value.IntVal(-a.value)
-                        is Value.FloatVal -> Value.FloatVal(-a.value)
-                        else -> null
-                    }
-                } else null
-            }
-            else -> null
-        }
-    }
+    // M148 / EMIT-KOTLIN-5: shared with lowered kotlinLoBuiltinCall.
+    fun evalArith(state: WamState, value: Value?): Value? = wamEvalArith(state, value)
 
-    fun arithDouble(v: Value): Double = when (v) {
-        is Value.IntVal -> v.value.toDouble()
-        is Value.FloatVal -> v.value
-        else -> Double.NaN
-    }
+    fun arithDouble(v: Value): Double = wamArithDouble(v)
 
     fun step(state: WamState, instruction: Instruction): Boolean {
         when (instruction.op) {
@@ -833,23 +783,8 @@ class WamRuntime(private val program: WamProgram) {
                             else -> return false
                         }
                     }
-                    "is/2" -> {
-                        val result = evalArith(state, state.readRegister("A2")) ?: return false
-                        if (!state.unify(state.readRegister("A1"), result)) return false
-                        state.pc += 1; return true
-                    }
-                    "=:=/2", "=\\=/2", "</2", ">/2", "=</2", ">=/2" -> {
-                        val a = arithDouble(evalArith(state, state.readRegister("A1")) ?: return false)
-                        val b = arithDouble(evalArith(state, state.readRegister("A2")) ?: return false)
-                        val ok = when (op) {
-                            "=:=/2" -> a == b
-                            "=\\=/2" -> a != b
-                            "</2" -> a < b
-                            ">/2" -> a > b
-                            "=</2" -> a <= b
-                            else -> a >= b
-                        }
-                        if (!ok) return false
+                    "is/2", "=:=/2", "=\\=/2", "</2", ">/2", "=</2", ">=/2" -> {
+                        if (!kotlinLoBuiltinCall(state, op)) return false
                         state.pc += 1; return true
                     }
                 }
@@ -928,6 +863,55 @@ fun functorArity(functor: String): Int? =
 // "///2" → "//", "//2" → "/", "+/2" → "+".
 fun functorName(functor: String): String =
     functor.substringBeforeLast('/', missingDelimiterValue = functor)
+
+// Shared arithmetic (interpreter step + lowered kotlinLoBuiltinCall).
+fun wamEvalArith(state: WamState, value: Value?): Value? {
+    return when (val d = state.resolve(value)) {
+        is Value.IntVal -> d
+        is Value.FloatVal -> d
+        is Value.Struct -> {
+            val name = functorName(d.functor)
+            if (d.args.size == 2) {
+                val a = wamEvalArith(state, d.args[0]) ?: return null
+                val b = wamEvalArith(state, d.args[1]) ?: return null
+                if (a is Value.IntVal && b is Value.IntVal) {
+                    val x = a.value; val y = b.value
+                    when (name) {
+                        "+" -> Value.IntVal(x + y)
+                        "-" -> Value.IntVal(x - y)
+                        "*" -> Value.IntVal(x * y)
+                        "//" -> if (y == 0L) null else Value.IntVal(x / y)
+                        "mod" -> if (y == 0L) null else Value.IntVal(Math.floorMod(x, y))
+                        "/" -> if (y == 0L) null else if (x % y == 0L) Value.IntVal(x / y) else Value.FloatVal(x.toDouble() / y)
+                        else -> null
+                    }
+                } else {
+                    val x = wamArithDouble(a); val y = wamArithDouble(b)
+                    when (name) {
+                        "+" -> Value.FloatVal(x + y)
+                        "-" -> Value.FloatVal(x - y)
+                        "*" -> Value.FloatVal(x * y)
+                        "/" -> if (y == 0.0) null else Value.FloatVal(x / y)
+                        else -> null
+                    }
+                }
+            } else if (d.args.size == 1 && name == "-") {
+                when (val a = wamEvalArith(state, d.args[0])) {
+                    is Value.IntVal -> Value.IntVal(-a.value)
+                    is Value.FloatVal -> Value.FloatVal(-a.value)
+                    else -> null
+                }
+            } else null
+        }
+        else -> null
+    }
+}
+
+fun wamArithDouble(v: Value): Double = when (v) {
+    is Value.IntVal -> v.value.toDouble()
+    is Value.FloatVal -> v.value
+    else -> Double.NaN
+}
 
 fun parseWamCliValue(token: String): Value =
     parseStructToken(token)
@@ -1011,5 +995,30 @@ fun kotlinLoUnifyConstant(state: WamState, value: Value): Boolean {
     return when (state.context) {
         is WamContext.Write -> state.pushWriteArg(value)
         else -> state.unify(state.nextReadArg(), value)
+    }
+}
+
+/** Lowered arithmetic / compare / unify builtins — same ops as interpreter `builtin_call`. */
+fun kotlinLoBuiltinCall(state: WamState, op: String): Boolean {
+    return when (op) {
+        "true/0" -> true
+        "=/2" -> state.unify(state.readRegister("A1"), state.readRegister("A2"))
+        "is/2" -> {
+            val result = wamEvalArith(state, state.readRegister("A2")) ?: return false
+            state.unify(state.readRegister("A1"), result)
+        }
+        "=:=/2", "=\\=/2", "</2", ">/2", "=</2", ">=/2" -> {
+            val a = wamArithDouble(wamEvalArith(state, state.readRegister("A1")) ?: return false)
+            val b = wamArithDouble(wamEvalArith(state, state.readRegister("A2")) ?: return false)
+            when (op) {
+                "=:=/2" -> a == b
+                "=\\=/2" -> a != b
+                "</2" -> a < b
+                ">/2" -> a > b
+                "=</2" -> a <= b
+                else -> a >= b
+            }
+        }
+        else -> false
     }
 }

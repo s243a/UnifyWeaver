@@ -42,6 +42,14 @@
 :- dynamic kt4_rev_ok/0.
 :- dynamic kt4_rev_bad/0.
 :- dynamic kt4_fib/2.
+:- dynamic kt5_fib/2.
+:- dynamic kt5_fib_ok/0.
+:- dynamic kt5_fib_bad/0.
+:- dynamic kt5_ack/3.
+:- dynamic kt5_ack_ok/0.
+:- dynamic kt5_ack_bad/0.
+:- dynamic kt5_nd_ok/0.
+:- dynamic kt5_choice/1.
 
 :- begin_tests(wam_kotlin_target).
 
@@ -585,8 +593,7 @@ test(y_env_recursion_fib, [condition(gradle_available), nondet]) :-
         )
     ).
 
-% EMIT-KOTLIN-3: deterministic multi-clause (no mid-body call) lowers;
-% EMIT-KOTLIN-4: last-call execute (member) also lowers; fib stays declined.
+% EMIT-KOTLIN-3: deterministic multi-clause lowers; member lowers via execute.
 test(functions_mode_multi_clause_partition, [nondet]) :-
     setup_call_cleanup(
         (   retractall(user:kt3_color(_)),
@@ -734,8 +741,8 @@ test(functions_mode_gradle_multi_clause_t4, [condition(gradle_available), nondet
         retractall(user:kt3_t4(_, _))
     ).
 
-% EMIT-KOTLIN-4: last-call execute — member/append/acc-reverse LOWER;
-% mid-body call (fib) still declines.
+% EMIT-KOTLIN-4/5: last-call execute (member/append/acc-reverse) and
+% deterministic mid-body call (fib) LOWER.
 test(functions_mode_execute_partition, [nondet]) :-
     setup_call_cleanup(
         (   retractall(user:kt4_mem(_, _)),
@@ -764,11 +771,14 @@ test(functions_mode_execute_partition, [nondet]) :-
             assertion(memberchk(native(kt4_app/3, _), Native)),
             assertion(memberchk(native(kt4_rev_acc/3, _), Native)),
             assertion(memberchk(native(kt4_rev/2, _), Native)),
-            assertion(\+ memberchk(native(kt4_fib/2, _), Native)),
+            assertion(memberchk(native(kt4_fib/2, _), Native)),
             memberchk(native(kt4_mem/2, lowered(_, _, MemCode)), Native),
             assertion(has_substring(MemCode, 'return dispatch("kt4_mem/2"')),
             memberchk(native(kt4_app/3, lowered(_, _, AppCode)), Native),
-            assertion(has_substring(AppCode, 'return dispatch("kt4_app/3"'))
+            assertion(has_substring(AppCode, 'return dispatch("kt4_app/3"')),
+            memberchk(native(kt4_fib/2, lowered(_, _, FibCode)), Native),
+            assertion(has_substring(FibCode, 'kotlinLoBuiltinCall')),
+            assertion(has_substring(FibCode, 'if (!dispatch("kt4_fib/2"'))
         ),
         (   retractall(user:kt4_mem(_, _)),
             retractall(user:kt4_app(_, _, _)),
@@ -905,6 +915,115 @@ test(functions_mode_gradle_execute_acc_reverse, [condition(gradle_available), no
             retractall(user:kt4_rev(_, _)),
             retractall(user:kt4_rev_ok),
             retractall(user:kt4_rev_bad)
+        )
+    ).
+
+% EMIT-KOTLIN-5: nondeterministic mid-body call DECLINES (first-solution
+% would wrong-fail `choice(X), X = b` when choice has a before b).
+test(functions_mode_midbody_nondet_declines, [nondet]) :-
+    setup_call_cleanup(
+        (   retractall(user:kt5_nd_ok),
+            retractall(user:kt5_choice(_)),
+            assertz(user:(kt5_nd_ok :- kt5_choice(X), X = b)),
+            assertz(user:kt5_choice(a)),
+            assertz(user:kt5_choice(b))
+        ),
+        (   wam_kotlin_partition_predicates(functions,
+                [user:kt5_nd_ok/0, user:kt5_choice/1], Native, Wam, Failed),
+            assertion(Failed == []),
+            assertion(\+ memberchk(native(kt5_nd_ok/0, _), Native)),
+            assertion(memberchk(wam(kt5_nd_ok/0, _), Wam)),
+            % Choice facts alone may still lower (T5); the *caller* must not.
+            assertion(memberchk(native(kt5_choice/1, _), Native))
+        ),
+        (   retractall(user:kt5_nd_ok),
+            retractall(user:kt5_choice(_))
+        )
+    ).
+
+% EMIT-KOTLIN-5: fib/ack LOWER and match interpreter (ok + bad depths).
+test(functions_mode_gradle_midbody_fib_ack, [condition(gradle_available), nondet]) :-
+    TmpDir = 'output/test_wam_kotlin_midbody_fib_ack',
+    make_directory_path('output'),
+    clean_dir(TmpDir),
+    Preds = [user:kt5_fib_ok/0, user:kt5_fib_bad/0, user:kt5_fib/2,
+             user:kt5_ack_ok/0, user:kt5_ack_bad/0, user:kt5_ack/3],
+    setup_call_cleanup(
+        (   retractall(user:kt5_fib(_, _)),
+            retractall(user:kt5_fib_ok),
+            retractall(user:kt5_fib_bad),
+            retractall(user:kt5_ack(_, _, _)),
+            retractall(user:kt5_ack_ok),
+            retractall(user:kt5_ack_bad),
+            assertz(user:kt5_fib(0, 0)),
+            assertz(user:kt5_fib(1, 1)),
+            assertz(user:(kt5_fib(N, R) :- N > 1, N1 is N - 1, N2 is N - 2,
+                kt5_fib(N1, R1), kt5_fib(N2, R2), R is R1 + R2)),
+            assertz(user:(kt5_fib_ok :- kt5_fib(10, 55))),
+            assertz(user:(kt5_fib_bad :- kt5_fib(10, 54))),
+            assertz(user:(kt5_ack(0, N, R) :- R is N + 1)),
+            assertz(user:(kt5_ack(M, 0, R) :- M > 0, M1 is M - 1, kt5_ack(M1, 1, R))),
+            assertz(user:(kt5_ack(M, N, R) :- M > 0, N > 0, M1 is M - 1, N1 is N - 1,
+                kt5_ack(M, N1, R1), kt5_ack(M1, R1, R))),
+            assertz(user:(kt5_ack_ok :- kt5_ack(2, 3, 9))),
+            assertz(user:(kt5_ack_bad :- kt5_ack(2, 3, 8)))
+        ),
+        (   wam_kotlin_target:write_wam_kotlin_project(
+                Preds, [emit_mode(interpreter), conformance_main(true)], TmpDir),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt5_fib_ok/0'], IFO, _, SF1),
+            assertion(SF1 == exit(0)),
+            normalize_space(string(IFOTrim), IFO),
+            assertion(IFOTrim == "true"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt5_fib_bad/0'], IFB, _, SF2),
+            assertion(SF2 == exit(0)),
+            normalize_space(string(IFBTrim), IFB),
+            assertion(IFBTrim == "false"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt5_ack_ok/0'], IAO, _, SA1),
+            assertion(SA1 == exit(0)),
+            normalize_space(string(IAOTrim), IAO),
+            assertion(IAOTrim == "true"),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt5_ack_bad/0'], IAB, _, SA2),
+            assertion(SA2 == exit(0)),
+            normalize_space(string(IABTrim), IAB),
+            assertion(IABTrim == "false"),
+            wam_kotlin_target:write_wam_kotlin_project(
+                Preds, [emit_mode(functions), conformance_main(true)], TmpDir),
+            read_file_to_string(
+                'output/test_wam_kotlin_midbody_fib_ack/src/main/kotlin/generated/wam/Main.kt',
+                Main, []),
+            assertion(has_substring(Main, 'fun lowered_kt5_fib_2')),
+            assertion(has_substring(Main, 'registerNative("kt5_fib/2"')),
+            assertion(has_substring(Main, 'fun lowered_kt5_ack_3')),
+            assertion(has_substring(Main, 'registerNative("kt5_ack/3"')),
+            assertion(has_substring(Main, 'kotlinLoBuiltinCall')),
+            assertion(has_substring(Main, 'if (!dispatch("kt5_fib/2"')),
+            assertion(has_substring(Main, 'if (!dispatch("kt5_ack/3"')),
+            run_gradle(TmpDir, ['-q', 'compileKotlin'], _, CompileErr, CS),
+            assertion(CS == exit(0)),
+            assertion(\+ has_substring(CompileErr, "error:")),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt5_fib_ok/0'], FFO, _, SF3),
+            assertion(SF3 == exit(0)),
+            normalize_space(string(FFOTrim), FFO),
+            assertion(FFOTrim == IFOTrim),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt5_fib_bad/0'], FFB, _, SF4),
+            assertion(SF4 == exit(0)),
+            normalize_space(string(FFBTrim), FFB),
+            assertion(FFBTrim == IFBTrim),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt5_ack_ok/0'], FAO, _, SA3),
+            assertion(SA3 == exit(0)),
+            normalize_space(string(FAOTrim), FAO),
+            assertion(FAOTrim == IAOTrim),
+            run_gradle(TmpDir, ['-q', 'run', '--args=kt5_ack_bad/0'], FAB, _, SA4),
+            assertion(SA4 == exit(0)),
+            normalize_space(string(FABTrim), FAB),
+            assertion(FABTrim == IABTrim)
+        ),
+        (   retractall(user:kt5_fib(_, _)),
+            retractall(user:kt5_fib_ok),
+            retractall(user:kt5_fib_bad),
+            retractall(user:kt5_ack(_, _, _)),
+            retractall(user:kt5_ack_ok),
+            retractall(user:kt5_ack_bad)
         )
     ).
 
