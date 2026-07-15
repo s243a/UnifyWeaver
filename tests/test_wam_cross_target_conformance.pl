@@ -286,9 +286,22 @@ ct_default_target(elixir).
 %  programs green after KT-ARITH-SLASH-FUNCTOR + KT-LIST-BACKTRACK +
 %  KT-Y-ENV-RECURSION (no remaining kotlin ct_xfail entries).
 
-%  F# (CONF-FSHARP). Adapter registered (opt-in). Measured maturity and
-%  any ct_xfail(fsharp[,_functions], Program) entries are recorded below
-%  after the first harness run (honest readout — do not force green).
+%  F# (CONF-FSHARP, 2026-07-15). Adapter registered (opt-in). Measured:
+%   - Green: member, fib, ack (interpreter + emit_mode(functions)).
+%   - append / reverse: non-empty ground answers fail — PutList +
+%     SetVariable partial-tail materialization vs GetList/unify on the
+%     result spine (VList / "[|]"/2). Empty-list append base case passes.
+%   - builtins: evalArith has no Str ("//", ...) clause, so integer-div
+%     `17 // 5` (PutStructure "//") returns None and cbi_arith(28) fails
+%     (mod is present; +,-,*,=/2,cmp pass).
+%   - fsharp_functions + builtins: lowered emitter loops/stalls on cbi_eq
+%     (unsupported-instruction Proceed stubs for =/2); skip generation.
+ct_xfail(fsharp, append).            % FS-LIST-PARTIAL-TAIL
+ct_xfail(fsharp, reverse).           % FS-LIST-PARTIAL-TAIL
+ct_xfail(fsharp, builtins).          % FS-ARITH-INT-DIV
+ct_xfail(fsharp_functions, append).  % FS-LIST-PARTIAL-TAIL (same class)
+ct_xfail(fsharp_functions, reverse). % FS-LIST-PARTIAL-TAIL
+ct_skip(fsharp_functions, builtins). % FS-FUNCTIONS-BUILTINS-LOWER — codegen stalls
 
 % ============================================================
 % Toolchain probes
@@ -1083,8 +1096,11 @@ ct_run(fsharp_functions, Ctx, K, A, Bool) :-
 fsharp_ct_run(fsharp_ctx(Dir, Map), K, A, Bool) :-
     memberchk((K-A)-WName, Map),
     format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
-    % --no-build: ct_build already gated compilation; avoids restore noise.
-    run_proc_out(dotnet, ['run', '--no-build', '--nologo', '--', KeyStr],
+    % --no-build: ct_build already gated compilation. Do NOT pass --nologo
+    % here: on some SDK versions it is forwarded as argv[0] even after `--`,
+    % which makes tryRun look up the wrong predicate key. DOTNET_NOLOGO=1
+    % (set in fsharp_ct_build) suppresses the banner instead.
+    run_proc_out(dotnet, ['run', '--no-build', '--', KeyStr],
                  Dir, _Exit, OutStr),
     normalize_space(string(Out), OutStr),
     bool_of_string(Out, Bool).

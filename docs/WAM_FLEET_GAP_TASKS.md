@@ -24,7 +24,10 @@ self-contained so a single coding agent can pick it up in isolation.
 
 | ID | Lever | Target | Size | Depends on |
 |---|---|---|---|---|
-| CONF-FSHARP | Conformance adapter | F# | M | — |
+| CONF-FSHARP ✅ | Conformance adapter | F# | M | done — opt-in (`cursor/conf-fsharp-f421`); member/fib/ack green, append/reverse/builtins xfails + functions/builtins skip |
+| FS-LIST-PARTIAL-TAIL | Conformance gap fix | F# | M | CONF-FSHARP |
+| FS-ARITH-INT-DIV | Conformance gap fix | F# | S | CONF-FSHARP |
+| FS-FUNCTIONS-BUILTINS-LOWER | Conformance gap fix | F# | M | CONF-FSHARP |
 | CONF-LLVM | Conformance adapter | LLVM | L | — |
 | CONF-R | Conformance adapter | R | M | — |
 | CONF-CLOJURE | Conformance adapter | Clojure | L | — |
@@ -86,18 +89,27 @@ external toolchain.
 
 ### CONF-FSHARP: Register F# in the cross-target conformance harness
 - **Lever:** Conformance adapters  **Target:** F#  **Size:** M  **Depends on:** —
+- **Status:** ✅ **Landed** on `cursor/conf-fsharp-f421` (2026-07-15). Opt-in `conformance_target(fsharp)` + `fsharp_functions` (`emit_mode(interpreter|functions)`). Added additive `conformance_main(true)` Program.fs driver (`tryRun` → `true`/`false`) without changing the default TSV/LMDB benchmark entrypoint. `dotnet build` gate; `dotnet run --no-build -- <key>` (avoid `--nologo` on the run line — some SDKs forward it as argv[0]). **Measured:** member/fib/ack green on both emit modes; `ct_xfail` append/reverse (FS-LIST-PARTIAL-TAIL) + builtins (FS-ARITH-INT-DIV); `ct_skip` `fsharp_functions`/builtins (FS-FUNCTIONS-BUILTINS-LOWER). Follow-ups filed below.
 - **Goal:** Add an F# adapter (`conformance_target(fsharp)` + `ct_toolchain`/`ct_build`/`ct_run`/`ct_teardown`) so the shared WAM spec runs against the F# backend.
-- **Files to touch:** `tests/test_wam_cross_target_conformance.pl`
-- **Reference to copy from:** `tests/test_wam_cross_target_conformance.pl` — the **Python adapter** block (lines ~705-739, interpreted/scripted style) for overall shape; project writer is `write_wam_fsharp_project/3` in `src/unifyweaver/targets/wam_fsharp_target.pl:4926`.
-- **Steps:**
-  1. Add `:- use_module('../src/unifyweaver/targets/wam_fsharp_target', [write_wam_fsharp_project/3]).` near the other target imports (lines ~50-71).
-  2. Add `conformance_target(fsharp).` to the registry (lines ~77-85). Leave it opt-in (do NOT add `ct_default_target`).
-  3. Add `ct_toolchain(fsharp, [dotnet]).` (alongside lines ~283-291). (verify: exact executable — `dotnet` drives `dotnet run`/`dotnet build` for an F# project.)
-  4. `ct_build(fsharp, Preds, Queries, fsharp_ctx(Dir, Map))`: mirror Python's body — `ct_tmp_dir('tmp_ct_fsharp', Dir)`, `synth_wrappers`, `strip_pred`, `qualify_user`, then `write_wam_fsharp_project(AllPreds, [module_name(wam_ct)], Dir)`. Since F# is compiled, add a `dotnet build` gate via `run_proc` like the Go/Rust adapters (throw on nonzero). (verify: whether the generated project self-builds via a `.fsproj` and how the 0-arity wrapper is queried at runtime — inspect what `write_wam_fsharp_project` emits as an entry point / CLI shim; may need a driver overwrite like Go/Rust.)
-  5. `ct_run(fsharp, fsharp_ctx(Dir, Map), K, A, Bool)`: look up wrapper name in `Map`, run `dotnet run -- <key>` via `run_proc_out`, map stdout to bool with `bool_of_string` (or absence-of-`false.` like Python — match whatever the generated runner prints).
-  6. `ct_teardown(fsharp, fsharp_ctx(Dir, Map)) :- cleanup_dir(Dir), abolish_wrappers(Map).`
-  7. Add `test(fsharp, [condition(ct_available(fsharp))]) :- run_target_conformance(fsharp).` inside the `begin_tests/end_tests` block (lines ~323-334).
-- **Acceptance:** `CONFORMANCE_TARGETS=fsharp swipl -g run_tests tests/test_wam_cross_target_conformance.pl` passes (skips cleanly if `dotnet` absent).
+- **Acceptance:** `CONFORMANCE_TARGETS=fsharp[,fsharp_functions] swipl -g run_tests tests/test_wam_cross_target_conformance.pl` runs the adapter (skips cleanly if `dotnet` absent); xfails/skips match measured gaps.
+
+### FS-LIST-PARTIAL-TAIL: F# PutList/SetVariable result spines vs GetList
+- **Lever:** Conformance gap fix  **Target:** F#  **Size:** M  **Depends on:** CONF-FSHARP
+- **Goal:** Make non-empty ground `append`/`reverse` answers succeed under the classic harness (empty-list append base already passes).
+- **Root cause (measured):** Wrapper construction of ground result lists uses `PutList` + `SetVariable` + nested `PutStructure("[|]", …)` while recursive clauses peel with `GetList`/`UnifyValue`; partial-tail materialization does not unify against the expected VList/`"[|]"/2` spine.
+- **Acceptance:** Drop `ct_xfail(fsharp, append/reverse)` and the `fsharp_functions` twins; both emit modes green on those programs.
+
+### FS-ARITH-INT-DIV: F# `evalArith` missing `//`
+- **Lever:** Conformance gap fix  **Target:** F#  **Size:** S  **Depends on:** CONF-FSHARP
+- **Goal:** `cbi_arith(28)` succeeds (`17 // 5` + `17 mod 5` with the rest of the fold).
+- **Root cause (measured):** `WamTypes.evalArith` handles `+,-,*,/,mod` but not `Str ("//", [a;b])`; the compiler emits `PutStructure ("//", 2, …)` for integer div, so `is_lax` binds nothing and the wrapper fails. (`mod` already works.)
+- **Acceptance:** Drop `ct_xfail(fsharp, builtins)`; builtins suite green under `CONFORMANCE_TARGETS=fsharp`.
+
+### FS-FUNCTIONS-BUILTINS-LOWER: `emit_mode(functions)` stalls on `cbi_eq`
+- **Lever:** Conformance gap fix  **Target:** F#  **Size:** M  **Depends on:** CONF-FSHARP
+- **Goal:** Lowering `cbi_eq` (and friends) completes without hanging; builtins measurable under `fsharp_functions`.
+- **Root cause (measured):** `write_wam_fsharp_project` with `emit_mode(functions)` on the builtins program emits repeated “instruction not supported → Proceed stub” for `=/2` / `put_constant foo` and does not finish `Lowered.fs` / `Program.fs` within a minute-plus — harness uses `ct_skip(fsharp_functions, builtins)`.
+- **Acceptance:** Remove the skip; builtins either lowers cleanly or declines to interpreter without stalling; suite completes under `CONFORMANCE_TARGETS=fsharp_functions`.
 
 ### CONF-LLVM: Register LLVM in the cross-target conformance harness
 - **Lever:** Conformance adapters  **Target:** LLVM  **Size:** L  **Depends on:** —
