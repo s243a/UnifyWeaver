@@ -30,7 +30,7 @@ only (runtime pending) · ❌ missing.
 | Feature | Status | Notes |
 |---|---|---|
 | `print` (fields, literals, `NR`/`NF`, `length`/`substr`/`index`/`tolower`/`toupper`, arithmetic, **concatenation**) | ✅ | constant fields (`print 1`, `print "x"`) + juxtaposition concat (`print $1 $2`) landed |
-| `printf` | ◐ | subset `%%`,`%s`,`%d`,`%i`,`%ld`; no `%f`/`%c`/`%x`/width/precision |
+| `printf` | ✅ | standard `%[flags][width][.precision][length]conv`: integers `d`/`i`/`x`/`X`/`o`/`u` + `c` (code point), floats `f`/`g`/`e`/`F`/`G`/`E`, strings `%s`; flags `-+ 0#`, width, precision. Field-slice `%s` takes width but not precision (non-terminated buffer); `%c` needs a numeric arg |
 | var assignment, `+=`, `++`, `//` | ✅ | indexed native scalar slots |
 | `if` / `else` (chains) | ✅ | field/pattern guards (`$1 > 2`, `$0 ~ /re/`) **and scalar-variable conditions** (`if (i > 2)`, `if (i < n && j > 0)`) in rule bodies, loops, **and `END`** (`END { if (n > 1) print … ; else print … }`, over final slot values) |
 | `for (k in arr)` | ✅ | assoc for-in (rule body + END) |
@@ -67,8 +67,8 @@ only (runtime pending) · ❌ missing.
 | `FNR` `FILENAME` `ARGV` `ARGC` `RS` `ORS` `SUBSEP` `RSTART` `RLENGTH` | ❌ | single newline-delimited record model |
 | arithmetic `+ - * / % //` | ✅ | i64, awk precedence, safe div/mod |
 | comparison, `~`/`!~` | ✅ | |
-| ternary `?:` | ❌ | does not parse |
-| string concatenation (juxtaposition `$1 $2`) | ◐ | **`print` context landed** — `print $1 $2`, `print "x" $1 "-" $2`, in rule bodies and `END`; arithmetic binds tighter, comma still splits. Assignment concat (`x = $1 $2`) needs string-valued scalars — separate |
+| ternary `?:` | ◐ | `COND ? A : B` in print / printf args — numeric comparison condition, numeric branches (fields, `NR`/`NF`, int literals, i64 arithmetic); lowered to an LLVM `select`. Assignment-context (scalar-var operands) and string branches are follow-ons |
+| string concatenation (juxtaposition `$1 $2`) | ✅ | `print` context **and** assignment: `print $1 $2`; `x = $1 $2` / `x = "id:" $1` build a **string-valued scalar** (an interned atom id in an i64 slot, resolved to text on read/print). Arithmetic binds tighter, comma still splits. Scalar-var concat operand (`x = x $1` accumulation) is a follow-on |
 | exponentiation `^` / `**` | ❌ | |
 
 ## Arrays
@@ -130,8 +130,19 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    to update a scalar). Braceless bodies also landed: `if (c) print`,
    `while (c) x++`, `do stmt while (c)`, and braceless else-if chains — a
    control-flow body is a braced block *or* a single statement.
-3. **`printf` format coverage** — add `%f`/`%g` (f64 exists), `%c`, `%x`, and
-   width/precision; the current subset is thin for real formatting.
+3. **`printf` format coverage — LANDED.** The rewriter now parses the standard
+   conversion prefix `%[flags][width][.precision][length]<conv>` and rewrites to
+   a C printf spec driven by each argument's inferred kind: integer args (i64)
+   take `d`/`i`/`x`/`X`/`o`/`u` (with the `l` length modifier) and `c` (code
+   point → character); float args (f64) take `f`/`g`/`e`/`F`/`G`/`E`; string
+   args take `%s` with flags/width/precision. Flags `-+ 0#`, width, and
+   precision are honoured. A record-field `%s` (a non-null-terminated slice)
+   takes flags/width and rides `.*` for its length, so a user precision on a
+   field is a clean compile error (buffer safety) — a follow-on. `%c` needs a
+   numeric arg (a string arg's first-char form is a follow-on). Tests:
+   `tests/test_plawk_printf.pl`. *Still open (follow-on):* `%c` on a string
+   (first char), precision on a field slice, `*`-width (width from an arg), and
+   `printf` in a `BEGIN`/`END` block (a separate driver gap).
 4. **`exit [n]` — LANDED.** A rule-level `exit` / `exit N` stops the record loop,
    runs END, and returns N (default 0). It reuses the rule-level stream-break
    path (`break_close_stream` → END → `ret`), adding an exit code stored in
@@ -144,10 +155,25 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    exit point merges into END through the break-close phi. Tests:
    `tests/test_plawk_exit.pl`. *Still open (follow-on):* `exit` inside a `BEGIN`
    or `END` block, and non-constant exit codes (`exit code_var`).
-5. **Ternary `?:`** (string concatenation in `print` context **landed** —
-   `print $1 $2`, rule bodies + `END`; the remaining concat work is assignment
-   into a string-valued scalar). Ternary is the next most-missed *expression*
-   form; parser + expression-lowering work.
+5. **Ternary `?:` — LANDED (print / printf, numeric).** `COND ? A : B` in a
+   print field or printf argument: the condition is a numeric comparison
+   `L <op> R` and both branches are numeric (fields, `NR`/`NF`, integer
+   literals, i64 arithmetic). Lowered to an LLVM `select` — both branches are
+   evaluated (no side effects in an i64 expression), so it composes straight-line
+   anywhere an i64 value is used (`plawk_i64_expr_ir(ternary(...))`), and the
+   `%s`/`%d`/arith paths are unaffected. Tests: `tests/test_plawk_ternary.pl`.
+   *Still open (follow-on):* assignment-context ternary (`x = c ? a : b`, needs
+   scalar-var operands + the assignment RHS grammar), string-valued branches,
+   and boolean-combination conditions (`a && b ? ...`).
+   (String concatenation landed in both contexts — `print $1 $2` earlier, and
+   **assignment concat `x = $1 $2` via string-valued scalars** now: a string
+   scalar's slot holds an interned atom id (an i64, so it reuses the whole
+   SSA/phi scalar machinery), the RHS is built into a buffer and interned at
+   assignment, and a read/print resolves the id to text — id 0 is the unset
+   sentinel, printed as empty. Numeric and string scalars coexist in one
+   program. Tests: `tests/test_plawk_strscalar.pl`. *Still open (follow-on):*
+   a scalar-var concat operand (`x = x $1` accumulation), string scalars in an
+   `if`/loop body, and string comparison/guards on a string scalar.)
 6. **`delete arr[k]` — LANDED (field key).** `delete arr[$k]` removes the entry
    keyed by field k, matching the counted inc `arr[$k]++`. The runtime primitive
    `@wam_assoc_i64_delete` does **backward-shift deletion** on the linear-probing
