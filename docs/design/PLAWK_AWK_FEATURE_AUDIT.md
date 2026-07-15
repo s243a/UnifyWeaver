@@ -38,9 +38,9 @@ only (runtime pending) · ❌ missing.
 | `do { } while (COND)` | ✅ | runtime landed; body runs at least once; same general condition |
 | `next` | ✅ | structural (guarded clause per rule) |
 | `break` / `continue` | ◐ | present in some loop contexts |
-| `if` with a plain (non-accumulator) body | ❌ | `{ if (c) { print $1 } }` is exit 3 — the scalar `if` lowering assumes branch bodies update scalars; blocks regex-in-`if` too |
-| regex in `if` (`if ($0 ~ /re/)`) | ◐ | condition parses (`~` ok); blocked by the guarded-print body above, not the regex |
-| brace-less `if`/loop body | ❌ | `if (c) print` (no braces) doesn't parse |
+| `if` with a plain (non-accumulator) body | ✅ | `{ if (c) { print $1 } }` compiles and runs (fixed by the while-runtime body-print enablers); if/else with plain bodies too |
+| regex in `if` (`if ($0 ~ /re/)`) | ✅ | `if ($0 ~ /re/) { … }` and `!~` compile and run — guards a plain body |
+| brace-less `if`/loop body | ✅ | `if (c) print`, `while (c) x++`, `do stmt while (c)`, braceless else-if chains — a body is a braced block or one statement |
 | field assignment (`$2 = expr`) | ❌ | rebuilding `$0` from mutated fields not wired |
 | C-style `for (;;)` | ❌ | |
 | `exit [n]` | ❌ | |
@@ -118,9 +118,13 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    compile-time **type checking** of call sites (a mismatched call → error) and
    distinguishing `int` vs `float` for representation; all three keywords
    currently mean "numeric, skip coercion".
-2b. **`if` with a plain guarded body** — `{ if (c) { print $1 } }` doesn't
-   compile (the scalar `if` lowering assumes branch bodies update scalars); this
-   is what actually blocks regex-in-`if`. Fix the `if`-body lowering.
+2b. **`if` with a plain guarded body + regex-in-`if` + braceless bodies —
+   LANDED.** `{ if (c) { print $1 } }`, `if ($0 ~ /re/) { … }` / `!~`, and
+   if/else with plain bodies all compile and run (the guarded-print gap was
+   fixed by the while-runtime body-print enablers — a plain body no longer has
+   to update a scalar). Braceless bodies also landed: `if (c) print`,
+   `while (c) x++`, `do stmt while (c)`, and braceless else-if chains — a
+   control-flow body is a braced block *or* a single statement.
 3. **`printf` format coverage** — add `%f`/`%g` (f64 exists), `%c`, `%x`, and
    width/precision; the current subset is thin for real formatting.
 4. **`exit [n]`** — common and cheap; a flagged early-terminate of the record
