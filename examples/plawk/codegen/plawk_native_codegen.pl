@@ -4936,6 +4936,23 @@ plawk_while_cond_operand(var(Name), Slots, CondValues, Ref) :-
     !,
     nth0(Idx, CondValues, Ref).
 
+%% plawk_if_cond_ir(+Cond, +Slots, +Values0, +FieldSeparator, +GlobalBase,
+%%     -CondValue, -GuardGlobalIR-GuardIR)
+%
+%  Lower an `if` condition to an i1 (CondValue). A `scalar_if(_)` condition is a
+%  scalar comparison over slots -- lowered like a loop condition, reading the
+%  current slot SSA values (Values0). A field/pattern guard is lowered by the
+%  existing pattern-guard emitter (which reads the record).
+plawk_if_cond_ir(scalar_if(Cond), Slots, Values0, _FieldSeparator, GlobalBase,
+        CondValue, ''-GuardIR) :-
+    !,
+    plawk_while_cond_ir(Cond, Slots, Values0, GlobalBase, CondValue, GuardIR).
+plawk_if_cond_ir(Pattern, _Slots, _Values0, FieldSeparator, GlobalBase,
+        CondValue, GuardGlobalIR-GuardIR) :-
+    format(atom(CondValue), '%~w_cond', [GlobalBase]),
+    plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, CondValue,
+        GuardGlobalIR-GuardIR).
+
 % Surface comparison op -> ordered LLVM fcmp predicate (row values are finite,
 % so ordered comparisons are correct; a NaN column fails every guard).
 plawk_fcmp_pred(eq, oeq).
@@ -5998,6 +6015,11 @@ plawk_scalar_update_name_expr(if(_Pattern, ThenActions, ElseActions), Name, Expr
     ; member(Action, ElseActions)
     ),
     plawk_scalar_update_name_expr(Action, Name, Expr).
+% a scalar `if` condition (`if (i > 2)`) references scalar variables -- each
+% needs an i64 slot, exactly like a loop condition.
+plawk_scalar_update_name_expr(if(scalar_if(Cond), _Then, _Else), Name, int(0)) :-
+    plawk_while_cond_vars(Cond, CondVars),
+    member(Name, CondVars).
 plawk_scalar_update_name_expr(foreach_loop(_Layout, Body), Name, Expr) :-
     member(Action, Body),
     plawk_scalar_update_name_expr(Action, Name, Expr).
@@ -10943,6 +10965,9 @@ plawk_scalar_update_action_name(if(_Pattern, ThenActions, ElseActions), Name) :-
     ; member(Action, ElseActions)
     ),
     plawk_scalar_update_action_name(Action, Name).
+plawk_scalar_update_action_name(if(scalar_if(Cond), _Then, _Else), Name) :-
+    plawk_while_cond_vars(Cond, CondVars),
+    member(Name, CondVars).
 plawk_scalar_update_action_name(foreach_loop(_Layout, Body), Name) :-
     member(Action, Body),
     plawk_scalar_update_action_name(Action, Name).
@@ -11388,8 +11413,8 @@ plawk_scalar_action_sequence_pairs([do_while_loop(Body, Cond) | Rest],
 plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest],
         Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex, OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { format(atom(GlobalBase), '~w_if_~w', [Prefix, OpIndex]),
-      format(atom(CondValue), '%~w_if_~w_cond', [Prefix, OpIndex]),
-      plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, CondValue, GuardGlobalIR-GuardIR),
+      plawk_if_cond_ir(Pattern, Slots, Values0, FieldSeparator, GlobalBase,
+          CondValue, GuardGlobalIR-GuardIR),
       format(atom(ThenLabel), '~w_if_~w_then', [Prefix, OpIndex]),
       format(atom(ElseLabel), '~w_if_~w_else', [Prefix, OpIndex]),
       format(atom(DoneLabel), '~w_if_~w_done', [Prefix, OpIndex]),
