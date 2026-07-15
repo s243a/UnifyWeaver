@@ -257,7 +257,36 @@ class WamState(
 
     fun restoreChoicePoint(): Boolean = restoreChoicePointFrame() != null
 
-    fun snapshotForNative(): WamNativeSnapshot =
+    // Optional profile counters (KT-HEAP-SNAPSHOT-OPT-2): attribute ALL
+    // snapshotForNative cost — including T4 `_t4` — not only tryRun.
+    var profileSnaps: Boolean = false
+    var profileSnapNs: Long = 0L
+    var profileSnapCount: Long = 0L
+    var profileMaxRegisterMapSize: Int = 0
+    var profileSumRegisterMapSize: Long = 0L
+
+    fun resetSnapProfile() {
+        profileSnapNs = 0L
+        profileSnapCount = 0L
+        profileMaxRegisterMapSize = 0
+        profileSumRegisterMapSize = 0L
+    }
+
+    fun snapshotForNative(): WamNativeSnapshot {
+        if (profileSnaps) {
+            val mapSize = registers.size
+            if (mapSize > profileMaxRegisterMapSize) profileMaxRegisterMapSize = mapSize
+            profileSumRegisterMapSize += mapSize.toLong()
+            val t0 = System.nanoTime()
+            val snap = snapshotForNativeUnprofiled()
+            profileSnapNs += System.nanoTime() - t0
+            profileSnapCount++
+            return snap
+        }
+        return snapshotForNativeUnprofiled()
+    }
+
+    private fun snapshotForNativeUnprofiled(): WamNativeSnapshot =
         WamNativeSnapshot(
             registers = LinkedHashMap(registers),
             trail = trail.toList(),
@@ -358,16 +387,32 @@ class WamRuntime(private val program: WamProgram) {
     var skipRecursiveNativeSnapshot: Boolean = true
 
     // Optional nanoTime counters for dispatch profiling (append_500 etc.).
-    // Compare profileSnapNs to the BENCH batch wall to get snapshot fraction.
+    // Snap time/count live on the WamState used for each tryRun (includes T4 `_t4`).
+    // Aggregate into these fields across a timed batch via noteStateProfile().
     var profileNativeDispatch: Boolean = false
     var profileSnapNs: Long = 0L
     var profileSnapCount: Long = 0L
     var profileNativeEntries: Long = 0L
+    var profileMaxRegisterMapSize: Int = 0
+    var profileSumRegisterMapSize: Long = 0L
 
     fun resetProfileCounters() {
         profileSnapNs = 0L
         profileSnapCount = 0L
         profileNativeEntries = 0L
+        profileMaxRegisterMapSize = 0
+        profileSumRegisterMapSize = 0L
+    }
+
+    /** Fold per-query state snap counters into the runtime aggregate (bench PROFILE). */
+    fun noteStateProfile(state: WamState) {
+        if (!profileNativeDispatch) return
+        profileSnapNs += state.profileSnapNs
+        profileSnapCount += state.profileSnapCount
+        if (state.profileMaxRegisterMapSize > profileMaxRegisterMapSize) {
+            profileMaxRegisterMapSize = state.profileMaxRegisterMapSize
+        }
+        profileSumRegisterMapSize += state.profileSumRegisterMapSize
     }
 
     fun run(predicate: String, initialState: WamState = WamState()): WamState {
@@ -381,6 +426,9 @@ class WamRuntime(private val program: WamProgram) {
     // exhaustion (no throw). Used by conformance_main projects so ct_run
     // can map stdout true/false without relying on exceptions.
     fun tryRun(predicate: String, initialState: WamState = WamState()): Boolean {
+        if (profileNativeDispatch) {
+            initialState.profileSnaps = true
+        }
         program.findNative(predicate)?.let { nativeFn ->
             profileNativeEntries++
             val recursive = nativeDepth > 0
@@ -393,7 +441,7 @@ class WamRuntime(private val program: WamProgram) {
             // Top-level (or recursive with skip disabled for A/B profile):
             // snapshot so a native false can restore before falling back
             // to bytecode (T5 unbound → interpreter, etc.).
-            val snapshot = takeNativeSnapshot(initialState)
+            val snapshot = initialState.snapshotForNative()
             nativeDepth++
             val ok = try {
                 nativeFn(initialState, this::tryRun)
@@ -417,19 +465,6 @@ class WamRuntime(private val program: WamProgram) {
             }
         }
         return true
-    }
-
-    private fun takeNativeSnapshot(state: WamState): WamNativeSnapshot {
-        return if (profileNativeDispatch) {
-            val t0 = System.nanoTime()
-            val snap = state.snapshotForNative()
-            profileSnapNs += System.nanoTime() - t0
-            profileSnapCount++
-            snap
-        } else {
-            profileSnapCount++
-            state.snapshotForNative()
-        }
     }
 
     fun restoreChoicePoint(state: WamState): Boolean {

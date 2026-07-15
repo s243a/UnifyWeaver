@@ -190,7 +190,9 @@ test(generated_project_compiles_and_runs_fact_variable_and_terms, [condition(gra
                 [emit_mode(interpreter)], TmpDir),
             run_gradle(TmpDir, ['-q', 'compileKotlin'], _CompileOut, CompileErr, CompileStatus),
             assertion(CompileStatus == exit(0)),
-            assertion(CompileErr == ""),
+            % No kotlinc compile errors. (Not `== ""`: gradle daemon emits
+            % benign stderr like `Already watching path` / JAVA_TOOL_OPTIONS.)
+            assertion(\+ has_substring(CompileErr, "error:")),
             run_gradle(TmpDir, ['-q', 'run', '--args=kt_fact/2 alpha beta'], FactOut, _FactErr, FactStatus),
             assertion(FactStatus == exit(0)),
             assertion(has_substring(FactOut, 'Ran kt_fact/2')),
@@ -284,7 +286,9 @@ test(functions_mode_gradle_runs_lowered_fact, [condition(gradle_available), nond
         (   wam_kotlin_target:write_wam_kotlin_project([user:kt_fact/2], [emit_mode(functions)], TmpDir),
             run_gradle(TmpDir, ['-q', 'compileKotlin'], _CompileOut, CompileErr, CompileStatus),
             assertion(CompileStatus == exit(0)),
-            assertion(CompileErr == ""),
+            % No kotlinc compile errors. (Not `== ""`: gradle daemon emits
+            % benign stderr like `Already watching path` / JAVA_TOOL_OPTIONS.)
+            assertion(\+ has_substring(CompileErr, "error:")),
             run_gradle(TmpDir, ['-q', 'run', '--args=kt_fact/2 alpha beta'], FactOut, _FactErr, FactStatus),
             assertion(FactStatus == exit(0)),
             assertion(has_substring(FactOut, 'Ran kt_fact/2')),
@@ -612,7 +616,9 @@ test(functions_mode_multi_clause_partition, [nondet]) :-
             assertion(has_substring(ColorCode, 'T5 first-argument dispatch')),
             assertion(has_substring(ColorCode, 'Value.Atom("a")')),
             memberchk(native(kt3_t4/2, lowered(_, _, T4Code)), Native),
-            assertion(has_substring(T4Code, 'T4 all-clauses inline')),
+            % KT-HEAP-SNAPSHOT-OPT-2: leading get_constant peels (else plain T4).
+            assertion((has_substring(T4Code, 'T4 peel leading get_constant')
+                      ; has_substring(T4Code, 'T4 all-clauses inline'))),
             assertion(has_substring(T4Code, 'snapshotForNative')),
             assertion(has_substring(T4Code, 'restoreFromSnapshot')),
             memberchk(native(kt3_mem/2, lowered(_, _, MemCode)), Native),
@@ -707,7 +713,8 @@ test(functions_mode_gradle_multi_clause_t4, [condition(gradle_available), nondet
             read_file_to_string(
                 'output/test_wam_kotlin_multi_clause_t4/src/main/kotlin/generated/wam/Main.kt',
                 Main, []),
-            assertion(has_substring(Main, 'T4 all-clauses inline')),
+            assertion((has_substring(Main, 'T4 peel leading get_constant')
+                      ; has_substring(Main, 'T4 all-clauses inline'))),
             assertion(has_substring(Main, 'registerNative("kt3_t4/2"')),
             run_gradle(TmpDir, ['-q', 'compileKotlin'], _CO, _CE, CS),
             assertion(CS == exit(0)),
