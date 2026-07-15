@@ -30,7 +30,7 @@ only (runtime pending) · ❌ missing.
 | Feature | Status | Notes |
 |---|---|---|
 | `print` (fields, literals, `NR`/`NF`, `length`/`substr`/`index`/`tolower`/`toupper`, arithmetic, **concatenation**) | ✅ | constant fields (`print 1`, `print "x"`) + juxtaposition concat (`print $1 $2`) landed |
-| `printf` | ◐ | subset `%%`,`%s`,`%d`,`%i`,`%ld`; no `%f`/`%c`/`%x`/width/precision |
+| `printf` | ✅ | standard `%[flags][width][.precision][length]conv`: integers `d`/`i`/`x`/`X`/`o`/`u` + `c` (code point), floats `f`/`g`/`e`/`F`/`G`/`E`, strings `%s`; flags `-+ 0#`, width, precision. Field-slice `%s` takes width but not precision (non-terminated buffer); `%c` needs a numeric arg |
 | var assignment, `+=`, `++`, `//` | ✅ | indexed native scalar slots |
 | `if` / `else` (chains) | ✅ | field/pattern guards (`$1 > 2`, `$0 ~ /re/`) **and scalar-variable conditions** (`if (i > 2)`, `if (i < n && j > 0)`) in rule bodies, loops, **and `END`** (`END { if (n > 1) print … ; else print … }`, over final slot values) |
 | `for (k in arr)` | ✅ | assoc for-in (rule body + END) |
@@ -130,8 +130,19 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    to update a scalar). Braceless bodies also landed: `if (c) print`,
    `while (c) x++`, `do stmt while (c)`, and braceless else-if chains — a
    control-flow body is a braced block *or* a single statement.
-3. **`printf` format coverage** — add `%f`/`%g` (f64 exists), `%c`, `%x`, and
-   width/precision; the current subset is thin for real formatting.
+3. **`printf` format coverage — LANDED.** The rewriter now parses the standard
+   conversion prefix `%[flags][width][.precision][length]<conv>` and rewrites to
+   a C printf spec driven by each argument's inferred kind: integer args (i64)
+   take `d`/`i`/`x`/`X`/`o`/`u` (with the `l` length modifier) and `c` (code
+   point → character); float args (f64) take `f`/`g`/`e`/`F`/`G`/`E`; string
+   args take `%s` with flags/width/precision. Flags `-+ 0#`, width, and
+   precision are honoured. A record-field `%s` (a non-null-terminated slice)
+   takes flags/width and rides `.*` for its length, so a user precision on a
+   field is a clean compile error (buffer safety) — a follow-on. `%c` needs a
+   numeric arg (a string arg's first-char form is a follow-on). Tests:
+   `tests/test_plawk_printf.pl`. *Still open (follow-on):* `%c` on a string
+   (first char), precision on a field slice, `*`-width (width from an arg), and
+   `printf` in a `BEGIN`/`END` block (a separate driver gap).
 4. **`exit [n]` — LANDED.** A rule-level `exit` / `exit N` stops the record loop,
    runs END, and returns N (default 0). It reuses the rule-level stream-break
    path (`break_close_stream` → END → `ret`), adding an exit code stored in

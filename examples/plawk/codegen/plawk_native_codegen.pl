@@ -13397,46 +13397,91 @@ plawk_printf_rewrite_codes([Code | Rest], Kinds, [Code | RewrittenRest]) :-
 plawk_printf_rewrite_codes([0'%, 0'% | Rest], Kinds, [0'%, 0'% | RewrittenRest]) :-
     !,
     plawk_printf_rewrite_codes(Rest, Kinds, RewrittenRest).
-plawk_printf_rewrite_codes([0'% | Rest], [i64 | Kinds], [0'%, 0'l, 0'd | RewrittenRest]) :-
-    plawk_printf_i64_spec_codes(Rest, RestAfterSpec),
+% A conversion `%[flags][width][.precision][length]<conv>`: parse the standard
+% prefix, then rewrite the body per the next argument's inferred kind (the arg
+% kind drives the choice, so a mismatched conv -- e.g. %s for an integer arg --
+% cleanly fails the rewrite -> compile error rather than miscompiling).
+plawk_printf_rewrite_codes([0'% | Rest], Kinds0, Rewritten) :-
+    plawk_printf_scan_spec(Rest, Flags, Width, Prec, Conv, RestAfter),
+    plawk_printf_kind_spec(Kinds0, Flags, Width, Prec, Conv, Kinds, SpecBody),
     !,
-    plawk_printf_rewrite_codes(RestAfterSpec, Kinds, RewrittenRest).
-plawk_printf_rewrite_codes([0'%, 0's | Rest], [string | Kinds], [0'%, 0's | RewrittenRest]) :-
-    !,
-    plawk_printf_rewrite_codes(Rest, Kinds, RewrittenRest).
-plawk_printf_rewrite_codes([0'%, 0's | Rest], [slice_len, slice_ptr | Kinds],
-        [0'%, 0'., 0'*, 0's | RewrittenRest]) :-
-    !,
-    plawk_printf_rewrite_codes(Rest, Kinds, RewrittenRest).
-plawk_printf_rewrite_codes([0'% | Rest], [f64 | Kinds], [0'% | RewrittenSpec]) :-
-    plawk_printf_f64_spec_codes(Rest, SpecCodes, RestAfterSpec),
-    !,
-    append(SpecCodes, RewrittenRest, RewrittenSpec),
-    plawk_printf_rewrite_codes(RestAfterSpec, Kinds, RewrittenRest).
+    append([0'% | SpecBody], RewrittenRest, Rewritten),
+    plawk_printf_rewrite_codes(RestAfter, Kinds, RewrittenRest).
 
-% %f / %g / %e with an optional .N precision pass through unchanged for
-% double arguments (C varargs receive the double directly).
-plawk_printf_f64_spec_codes([0'., Digit | Rest0], [0'., Digit | SpecRest], Rest) :-
-    code_type(Digit, digit),
-    !,
-    plawk_printf_f64_precision_codes(Rest0, SpecRest, Rest).
-plawk_printf_f64_spec_codes([Conv | Rest], [Conv], Rest) :-
-    plawk_printf_f64_conversion_code(Conv).
+% Scan the standard printf conversion prefix: flags in `-+ 0#`, decimal width,
+% optional `.precision`, an optional (ignored) length modifier, then the
+% conversion character.
+plawk_printf_scan_spec(Codes, Flags, Width, Prec, Conv, Rest) :-
+    plawk_printf_take_flags(Codes, Flags, C1),
+    plawk_printf_take_digits(C1, Width, C2),
+    plawk_printf_take_prec(C2, Prec, C3),
+    plawk_printf_take_lenmod(C3, C4),
+    C4 = [Conv | Rest].
 
-plawk_printf_f64_precision_codes([Digit | Rest0], [Digit | SpecRest], Rest) :-
-    code_type(Digit, digit),
+plawk_printf_take_flags([C | Cs], [C | Fs], Rest) :-
+    memberchk(C, [0'-, 0'+, 0' , 0'0, 0'#]),
     !,
-    plawk_printf_f64_precision_codes(Rest0, SpecRest, Rest).
-plawk_printf_f64_precision_codes([Conv | Rest], [Conv], Rest) :-
-    plawk_printf_f64_conversion_code(Conv).
+    plawk_printf_take_flags(Cs, Fs, Rest).
+plawk_printf_take_flags(Cs, [], Cs).
+
+plawk_printf_take_digits([C | Cs], [C | Ds], Rest) :-
+    code_type(C, digit),
+    !,
+    plawk_printf_take_digits(Cs, Ds, Rest).
+plawk_printf_take_digits(Cs, [], Cs).
+
+% Precision keeps its leading `.` (a bare `.` is precision 0, as in C).
+plawk_printf_take_prec([0'. | Cs], [0'. | Ds], Rest) :-
+    !,
+    plawk_printf_take_digits(Cs, Ds, Rest).
+plawk_printf_take_prec(Cs, [], Cs).
+
+% A user-written length modifier is consumed and dropped; the emitter supplies
+% the correct one for the argument's representation (i64 -> `l`).
+plawk_printf_take_lenmod([0'l, 0'l | Cs], Cs) :- !.
+plawk_printf_take_lenmod([0'l | Cs], Cs) :- !.
+plawk_printf_take_lenmod([0'h, 0'h | Cs], Cs) :- !.
+plawk_printf_take_lenmod([0'h | Cs], Cs) :- !.
+plawk_printf_take_lenmod(Cs, Cs).
+
+% Map (arg kind, parsed prefix, conversion) to the C conversion body (the codes
+% after the leading `%`), consuming the kind(s) the argument contributed.
+% Integer arg (i64): d/i/x/X/o/u get the `l` length modifier; c takes the code
+% point as a character (no length modifier, precision dropped).
+plawk_printf_kind_spec([i64 | Ks], Flags, Width, _Prec, 0'c, Ks, Body) :-
+    !,
+    append([Flags, Width, [0'c]], Body).
+plawk_printf_kind_spec([i64 | Ks], Flags, Width, Prec, Conv, Ks, Body) :-
+    plawk_printf_int_conversion_code(Conv, OutConv),
+    append([Flags, Width, Prec, [0'l, OutConv]], Body).
+% Float arg (f64): f/g/e/F/G/E pass through with flags/width/precision.
+plawk_printf_kind_spec([f64 | Ks], Flags, Width, Prec, Conv, Ks, Body) :-
+    plawk_printf_f64_conversion_code(Conv),
+    append([Flags, Width, Prec, [Conv]], Body).
+% Null-terminated string arg (%s): flags/width/precision pass through.
+plawk_printf_kind_spec([string | Ks], Flags, Width, Prec, 0's, Ks, Body) :-
+    append([Flags, Width, Prec, [0's]], Body).
+% Record-field slice (%s over len+ptr): the length rides `.*`, so the slice
+% bounds the output; width is kept. A user precision can't be honoured -- the
+% slice pointer is not null-terminated, so `.N` (without `.*`) would read past
+% the field -- so `%.Ns` on a field is a clean compile error (a follow-on).
+plawk_printf_kind_spec([slice_len, slice_ptr | Ks], Flags, Width, [], 0's, Ks, Body) :-
+    append([Flags, Width, [0'., 0'*, 0's]], Body).
+
+% Integer conversions; `i` normalises to `d` (identical output).
+plawk_printf_int_conversion_code(0'd, 0'd).
+plawk_printf_int_conversion_code(0'i, 0'd).
+plawk_printf_int_conversion_code(0'x, 0'x).
+plawk_printf_int_conversion_code(0'X, 0'X).
+plawk_printf_int_conversion_code(0'o, 0'o).
+plawk_printf_int_conversion_code(0'u, 0'u).
 
 plawk_printf_f64_conversion_code(0'f).
 plawk_printf_f64_conversion_code(0'g).
 plawk_printf_f64_conversion_code(0'e).
-
-plawk_printf_i64_spec_codes([0'l, 0'd | Rest], Rest).
-plawk_printf_i64_spec_codes([0'd | Rest], Rest).
-plawk_printf_i64_spec_codes([0'i | Rest], Rest).
+plawk_printf_f64_conversion_code(0'F).
+plawk_printf_f64_conversion_code(0'G).
+plawk_printf_f64_conversion_code(0'E).
 
 plawk_print_ir_parts([], [], []).
 plawk_print_ir_parts([GlobalIR-BodyIR | Parts], [GlobalIR | GlobalParts], [BodyIR | BodyParts]) :-
