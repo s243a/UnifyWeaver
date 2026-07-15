@@ -5237,6 +5237,10 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
     ->  KernelKind = FirstKernelKind
     ;   KernelKind = unknown
     ),
+    %% Additive conformance driver (CONF-FSHARP): when true, Program.fs
+    %% prints true/false for argv[0]=pred/arity via tryRun. Default
+    %% benchmark driver (human-facing TSV/LMDB timing) is unchanged.
+    option(conformance_main(ConfMain), Options, false),
     Dict = [
         foreign_preds = ForeignPredsStr,
         lookup_sources_expr = LookupSourcesExpr,
@@ -5248,7 +5252,8 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
         branch_factor = BranchFactor,
         dimensionality = Dimensionality,
         materialisation = Materialisation,
-        l2_capacity = L2CapStr
+        l2_capacity = L2CapStr,
+        conformance_main = ConfMain
     ],
     fsharp_program_template_source(Template),
     render_template(Template, Dict, Code).

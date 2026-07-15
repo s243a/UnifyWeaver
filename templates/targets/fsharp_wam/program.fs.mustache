@@ -6,6 +6,67 @@ open WamTypes
 open WamRuntime
 open Predicates
 open Lowered
+{{#conformance_main}}
+// Conformance driver (CONF-FSHARP): argv[0] = pred/arity key; print true/false.
+// Additive — default Program.fs below is unchanged when conformance_main is off.
+
+let mkContext () =
+    let foreignPreds : string list = []
+    let resolvedCode =
+        resolveCallInstrs allLabels foreignPreds (Array.toList allCode)
+        |> List.toArray
+    { WcCode              = resolvedCode
+      WcLabels            = allLabels
+      WcForeignFacts      = Map.empty
+      WcFfiFacts          = Map.empty
+      WcFfiWeightedFacts  = Map.empty
+      WcAtomIntern        = Map.empty
+      WcAtomDeintern      = Map.empty
+      WcForeignConfig     = Map.empty
+      WcLoweredPredicates = loweredPredicates
+      WcLookupSources     = Map.empty
+      WcCancellationToken = None }
+
+let mkState () : WamState =
+    { WsPC         = 0
+      WsRegs       = Array.create MaxRegs (Unbound -1)
+      WsStack      = []
+      WsHeap       = []
+      WsHeapLen    = 0
+      WsTrail      = []
+      WsTrailLen   = 0
+      WsCP         = 0
+      WsCPs        = []
+      WsCPsLen     = 0
+      WsBindings   = Map.empty
+      WsCutBar     = 0
+      WsVarCounter = 0
+      WsBuilder    = None
+      WsBuilderStack = []
+      WsAggAccum   = []
+      WsB0Stack    = []
+      WsCatchers   = [] }
+
+/// Boolean success signal for a ground 0-arity wrapper (or any labeled/lowered pred).
+/// dispatchCall already runs the interpreter for WAM labels and invokes lowered fns.
+let tryRun (predKey: string) : bool =
+    let ctx = mkContext ()
+    let s = mkState ()
+    match dispatchCall ctx predKey s with
+    | Some _ -> true
+    | None   -> false
+
+[<EntryPoint>]
+let main argv =
+    match Array.tryHead argv with
+    | None ->
+        printfn "false"
+        0
+    | Some predKey ->
+        printfn "%b" (tryRun predKey)
+        0
+{{/conformance_main}}
+{{^conformance_main}}
 {{#has_lmdb}}open LmdbFactSource
 {{/has_lmdb}}{{#has_csr}}open CsrReader
 {{/has_csr}}
@@ -448,3 +509,4 @@ let main argv =
         lastQueryMs seedCats.Length (totalSolutions / numReps) numReps
     printfn "total_ms=%d" totalMs
     0
+{{/conformance_main}}

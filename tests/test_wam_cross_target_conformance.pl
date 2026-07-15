@@ -71,6 +71,8 @@
               [write_wam_cpp_project/3]).
 :- use_module('../src/unifyweaver/targets/wam_kotlin_target',
               [write_wam_kotlin_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_fsharp_target',
+              [write_wam_fsharp_project/3]).
 
 % ============================================================
 % Target registry + known-divergence (xfail) registry
@@ -87,13 +89,15 @@ conformance_target(c).
 conformance_target(cpp).
 conformance_target(kotlin).
 conformance_target(kotlin_functions).
+conformance_target(fsharp).
+conformance_target(fsharp_functions).
 
 %% ct_default_target(Target): runs unless CONFORMANCE_TARGETS overrides.
 %  Only scala and elixir run by default. Every other registered backend
-%  (wat, haskell, python, go, rust, c, cpp, kotlin, kotlin_functions) is
-%  opt-in via CONFORMANCE_TARGETS because it builds a per-program project
-%  with an external toolchain. Kotlin is especially slow (gradle compile
-%  per program) and stays opt-in like Haskell.
+%  (wat, haskell, python, go, rust, c, cpp, kotlin, kotlin_functions,
+%  fsharp, fsharp_functions) is opt-in via CONFORMANCE_TARGETS because it
+%  builds a per-program project with an external toolchain. Kotlin/F# are
+%  especially slow (gradle / dotnet compile per program) and stay opt-in.
 ct_default_target(scala).
 ct_default_target(elixir).
 
@@ -282,6 +286,10 @@ ct_default_target(elixir).
 %  programs green after KT-ARITH-SLASH-FUNCTOR + KT-LIST-BACKTRACK +
 %  KT-Y-ENV-RECURSION (no remaining kotlin ct_xfail entries).
 
+%  F# (CONF-FSHARP). Adapter registered (opt-in). Measured maturity and
+%  any ct_xfail(fsharp[,_functions], Program) entries are recorded below
+%  after the first harness run (honest readout — do not force green).
+
 % ============================================================
 % Toolchain probes
 % ============================================================
@@ -297,6 +305,8 @@ ct_toolchain(c,      [gcc]).
 ct_toolchain(cpp,    ['g++']).
 ct_toolchain(kotlin, [gradle]).
 ct_toolchain(kotlin_functions, [gradle]).
+ct_toolchain(fsharp, [dotnet]).
+ct_toolchain(fsharp_functions, [dotnet]).
 
 ct_available(scala) :-
     ct_enabled(scala),
@@ -341,6 +351,9 @@ test(cpp,    [condition(ct_available(cpp))])    :- run_target_conformance(cpp).
 test(kotlin, [condition(ct_available(kotlin))]) :- run_target_conformance(kotlin).
 test(kotlin_functions, [condition(ct_available(kotlin_functions))]) :-
     run_target_conformance(kotlin_functions).
+test(fsharp, [condition(ct_available(fsharp))]) :- run_target_conformance(fsharp).
+test(fsharp_functions, [condition(ct_available(fsharp_functions))]) :-
+    run_target_conformance(fsharp_functions).
 
 :- end_tests(wam_cross_target_conformance).
 
@@ -1024,6 +1037,61 @@ kotlin_ct_run(kotlin_ctx(Dir, Map), K, A, Bool) :-
 ct_teardown(kotlin, kotlin_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
 ct_teardown(kotlin_functions, kotlin_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: F#  (0-arity wrapper -> `dotnet run -- <key>` -> true/false)
+%
+% write_wam_fsharp_project/3 emits a .NET F# exe. The default Program.fs is
+% a TSV/LMDB benchmark driver; for conformance we pass conformance_main(true)
+% so Program.fs uses tryRun (dispatchCall) and prints true/false (additive —
+% default human-facing benchmark output for existing smokes is unchanged).
+%
+% Two opt-in targets share this adapter:
+%   fsharp            — emit_mode(interpreter)
+%   fsharp_functions  — emit_mode(functions) (native-first + WAM fallback)
+% Opt-in via CONFORMANCE_TARGETS=fsharp[,fsharp_functions].
+% ============================================================
+
+ct_build(fsharp, Preds, Queries, fsharp_ctx(Dir, Map)) :-
+    fsharp_ct_build(interpreter, Preds, Queries, Dir, Map).
+
+ct_build(fsharp_functions, Preds, Queries, fsharp_ctx(Dir, Map)) :-
+    fsharp_ct_build(functions, Preds, Queries, Dir, Map).
+
+fsharp_ct_build(EmitMode, Preds, Queries, Dir, Map) :-
+    setenv('DOTNET_CLI_TELEMETRY_OPTOUT', '1'),
+    setenv('DOTNET_NOLOGO', '1'),
+    ct_tmp_dir('tmp_ct_fsharp', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_fsharp_project(AllPreds,
+        [module_name(wam_ct),
+         no_kernels(true),
+         emit_mode(EmitMode),
+         conformance_main(true)], Dir),
+    run_proc(dotnet, ['build', '--nologo', '-v', 'q'], Dir, BExit, BErr),
+    ( BExit =:= 0 -> true ; throw(fsharp_build_failed(BExit, BErr)) ).
+
+ct_run(fsharp, Ctx, K, A, Bool) :-
+    fsharp_ct_run(Ctx, K, A, Bool).
+ct_run(fsharp_functions, Ctx, K, A, Bool) :-
+    fsharp_ct_run(Ctx, K, A, Bool).
+
+fsharp_ct_run(fsharp_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    % --no-build: ct_build already gated compilation; avoids restore noise.
+    run_proc_out(dotnet, ['run', '--no-build', '--nologo', '--', KeyStr],
+                 Dir, _Exit, OutStr),
+    normalize_space(string(Out), OutStr),
+    bool_of_string(Out, Bool).
+
+ct_teardown(fsharp, fsharp_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+ct_teardown(fsharp_functions, fsharp_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
 
 %% c_copy_runtime_header(+Dir) — copy the static wam_runtime.h into Dir.
