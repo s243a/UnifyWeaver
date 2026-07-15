@@ -2165,7 +2165,7 @@ printf_args([Arg | Args]) -->
     ",",
     ws,
     !,
-    field_expr(Arg),
+    printf_arg_expr(Arg),
     printf_args_rest(Args).
 printf_args([]) -->
     [].
@@ -2175,10 +2175,18 @@ printf_args_rest([Arg | Args]) -->
     ",",
     ws,
     !,
-    field_expr(Arg),
+    printf_arg_expr(Arg),
     printf_args_rest(Args).
 printf_args_rest([]) -->
     [].
+
+% A printf argument: a ternary (tried first for its `?`/`:` structure) or a
+% plain field_expr.
+printf_arg_expr(Ternary) -->
+    ternary_expr(Ternary),
+    !.
+printf_arg_expr(Expr) -->
+    field_expr(Expr).
 
 print_fields([Field | Fields]) -->
     print_field_expr(Field),
@@ -2209,6 +2217,13 @@ print_fields_rest([]) -->
 % concat([...]). Each operand is a field_expr, so arithmetic binds tighter than
 % concatenation (`$1 $2 + $3` == concat($1, $2 + $3)) and a comma still splits
 % print args. A single operand keeps its plain form (no concat wrapper).
+% Ternary `COND ? A : B` (awk `?:`). COND is a numeric comparison `L <op> R`;
+% both branches are numeric field_exprs. Tried before concat / plain field so
+% the `?`/`:` structure is seen first. Defined one level above field_expr (its
+% condition and branches call field_expr) so there is no left recursion.
+print_field_expr(Ternary) -->
+    ternary_expr(Ternary),
+    !.
 print_field_expr(concat([First, Second | Rest])) -->
     field_expr(First),
     required_ws,
@@ -2229,6 +2244,33 @@ concat_rest([Operand | Rest]) -->
     concat_rest(Rest).
 concat_rest([]) -->
     [].
+
+% A ternary `L <op> R ? THEN : ELSE`. The condition is a numeric comparison and
+% each branch is a numeric field_expr (nested ternaries are a follow-on). Used
+% by print fields and printf args.
+ternary_expr(ternary(cmp(Left, Op, Right), Then, Else)) -->
+    ternary_operand(Left),
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    ternary_operand(Right),
+    ws,
+    "?",
+    ws,
+    ternary_operand(Then),
+    ws,
+    ":",
+    ws,
+    ternary_operand(Else).
+
+% A ternary condition operand or branch: a field_expr (`$N`, `NR`, `NF`,
+% arithmetic, `length(...)`, ...) or a bare integer literal (which field_expr
+% does not accept on its own). Both lower to i64.
+ternary_operand(Expr) -->
+    field_expr(Expr),
+    !.
+ternary_operand(int(Value)) -->
+    signed_integer_value(Value).
 
 field_expr(Expr) -->
     i64_binary_surface_expr(Expr).

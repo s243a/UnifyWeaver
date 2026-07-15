@@ -10485,6 +10485,14 @@ plawk_rule_body_print_action(printf(string(Format), Args)) :-
 
 plawk_rule_body_print_field(field(_)).
 plawk_rule_body_print_field(string(_)).
+% a ternary `COND ? A : B`: the condition operands and both branches must be
+% i64-valued (field / NR / NF / int literal / length / i64 arithmetic); lowered
+% to an LLVM select.
+plawk_rule_body_print_field(ternary(cmp(Left, _Op, Right), Then, Else)) :-
+    plawk_ternary_i64_operand_ok(Left),
+    plawk_ternary_i64_operand_ok(Right),
+    plawk_ternary_i64_operand_ok(Then),
+    plawk_ternary_i64_operand_ok(Else).
 % a string concatenation (`print $1 $2`): every operand must be a valid print
 % field; they are emitted adjacently with no separator.
 plawk_rule_body_print_field(concat(Parts)) :-
@@ -10553,6 +10561,17 @@ plawk_i64_operand_expr(dyncall_at_named(Name, Source, Args)) :-
     plawk_dyncall_at_expr(dyncall_at_named(Name, Source, Args)).
 plawk_i64_operand_expr(Expr) :-
     plawk_i64_general_binary_expr(Expr).
+
+%% plawk_ternary_i64_operand_ok(+Expr) is semidet.
+%  A ternary condition operand or branch: any i64 operand plus the surface
+%  forms the parser emits for fields / NR / NF / length that plawk_i64_expr_ir
+%  lowers directly.
+plawk_ternary_i64_operand_ok(special('NR')).
+plawk_ternary_i64_operand_ok(special('NF')).
+plawk_ternary_i64_operand_ok(int(field(_))).
+plawk_ternary_i64_operand_ok(length(field(_))).
+plawk_ternary_i64_operand_ok(Expr) :-
+    plawk_i64_operand_expr(Expr).
 
 plawk_prolog_call_expr(prolog_call(Name, Args)) :-
     atom(Name),
@@ -11852,6 +11871,12 @@ plawk_scalar_numeric_expr_ir(field_i64(FieldIndex), FieldSeparator, Prefix, Slot
         [Prefix, SlotIndex, OpIndex]),
     plawk_i64_expr_ir_parts(field_i64(FieldIndex), FieldSeparator, ParseBase, ParseBase,
         ValueIR, GlobalIR, IR).
+% Ternary in a scalar assignment (`x = COND ? A : B`): an i64 value via select.
+plawk_scalar_numeric_expr_ir(ternary(Cond, Then, Else), FieldSeparator, Prefix, SlotIndex,
+        OpIndex, ValueIR, GlobalIR, IR) :-
+    format(atom(TernBase), '~w_slot_~w_op_~w_tern', [Prefix, SlotIndex, OpIndex]),
+    plawk_i64_expr_ir_parts(ternary(Cond, Then, Else), FieldSeparator, TernBase, TernBase,
+        ValueIR, GlobalIR, IR).
 plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
         OpIndex, ValueIR, GlobalIR, IR) :-
     plawk_i64_scalar_primary_expr(Expr),
@@ -12066,6 +12091,38 @@ plawk_i64_expr_ir(index(FieldIndex, Needle), FieldSeparator, Base, GlobalBase,
     llvm_emit_atom_field_index(GlobalBase, '%line', FieldIndex, Needle, FieldSeparator,
         Base, GlobalIR-CallIR),
     format(atom(ValueIR), '%~w', [Base]).
+% Ternary `COND ? A : B` over i64 values. COND is a single comparison
+% `L <op> R`; both branches are evaluated (no side effects in an i64 expr) and
+% an LLVM `select` picks one -- straight-line, so a ternary composes anywhere an
+% i64 expression is used (print, printf arg, assignment, arithmetic operand).
+plawk_i64_expr_ir(ternary(cmp(CondLeft, Op, CondRight), Then, Else),
+        FieldSeparator, Base, GlobalBase, ValueIR, GlobalParts, SetupParts) :-
+    plawk_icmp_pred(Op, Pred),
+    format(atom(CondLeftBase), '~w_cl', [Base]),
+    format(atom(CondLeftGlobal), '~w_cl', [GlobalBase]),
+    plawk_i64_expr_ir(CondLeft, FieldSeparator, CondLeftBase, CondLeftGlobal,
+        CondLeftValueIR, CondLeftGlobalParts, CondLeftSetupParts),
+    format(atom(CondRightBase), '~w_cr', [Base]),
+    format(atom(CondRightGlobal), '~w_cr', [GlobalBase]),
+    plawk_i64_expr_ir(CondRight, FieldSeparator, CondRightBase, CondRightGlobal,
+        CondRightValueIR, CondRightGlobalParts, CondRightSetupParts),
+    format(atom(ThenBase), '~w_t', [Base]),
+    format(atom(ThenGlobal), '~w_t', [GlobalBase]),
+    plawk_i64_expr_ir(Then, FieldSeparator, ThenBase, ThenGlobal,
+        ThenValueIR, ThenGlobalParts, ThenSetupParts),
+    format(atom(ElseBase), '~w_e', [Base]),
+    format(atom(ElseGlobal), '~w_e', [GlobalBase]),
+    plawk_i64_expr_ir(Else, FieldSeparator, ElseBase, ElseGlobal,
+        ElseValueIR, ElseGlobalParts, ElseSetupParts),
+    format(atom(CondLine), '  %~w_cond = icmp ~w i64 ~w, ~w',
+        [Base, Pred, CondLeftValueIR, CondRightValueIR]),
+    format(atom(SelLine), '  %~w = select i1 %~w_cond, i64 ~w, i64 ~w',
+        [Base, Base, ThenValueIR, ElseValueIR]),
+    format(atom(ValueIR), '%~w', [Base]),
+    append([CondLeftGlobalParts, CondRightGlobalParts, ThenGlobalParts,
+            ElseGlobalParts], GlobalParts),
+    append([CondLeftSetupParts, CondRightSetupParts, ThenSetupParts,
+            ElseSetupParts, [CondLine, SelLine]], SetupParts).
 
 %% plawk_i64_binary_op_lines(+LLVMOp, +Base, +LeftIR, +RightIR, -Lines)
 %
@@ -13266,6 +13323,12 @@ plawk_expr_uses_nr(special('NR')).
 plawk_expr_uses_nr(concat(Parts)) :-
     member(Part, Parts),
     plawk_expr_uses_nr(Part).
+plawk_expr_uses_nr(ternary(cmp(Left, _Op, Right), Then, Else)) :-
+    ( plawk_expr_uses_nr(Left)
+    ; plawk_expr_uses_nr(Right)
+    ; plawk_expr_uses_nr(Then)
+    ; plawk_expr_uses_nr(Else)
+    ).
 plawk_expr_uses_nr(Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     ( plawk_expr_uses_nr(Left)
@@ -13612,6 +13675,14 @@ plawk_emit_print_expr_for_context(ssa(Value), FieldSeparator, Context,
     plawk_print_expr_value_base(Context, int, Base),
     plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
     plawk_i64_expr_ir(ssa(Value), FieldSeparator, Base, Base,
+        ValueIR, GlobalParts, SetupParts).
+
+% Ternary print field `print (COND ? A : B)`: an i64 value via select.
+plawk_emit_print_expr_for_context(ternary(Cond, Then, Else), FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
+    plawk_print_expr_value_base(Context, int, Base),
+    plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
+    plawk_i64_expr_ir(ternary(Cond, Then, Else), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
 
 plawk_emit_print_expr_for_context(Expr, FieldSeparator, Context,
