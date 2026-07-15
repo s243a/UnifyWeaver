@@ -55,7 +55,7 @@ only (runtime pending) · ❌ missing.
 |---|---|---|
 | user functions (`function f(a) { return … }`) | ✅ | compile to Prolog clauses; work in accumulator / typed-field (`BINFMT`) contexts **and text mode** — `print f($1)` auto-coerces the field (awk semantics). Optional numeric arg typing (`function f(num x)`) skips the coercion (typed-fast path). |
 | string: `length` `substr` `index` `tolower` `toupper` | ✅ | native, allocation-free |
-| string: `split` `sub` `gsub` `match` `sprintf` | ❌ | |
+| string: `split` `sub` `gsub` `match` `sprintf` | ◐ | **`sprintf` landed** — `x = sprintf("fmt", args)` formats into a string scalar, reusing the printf format engine (same conversions/flags/width/precision) + `snprintf`→intern. Numeric convs need a numeric arg (`$1+0`/`NR`), as printf. `split`/`sub`/`gsub`/`match` still ❌ |
 | numeric: `int` | ✅ | `sin`/`cos`/`sqrt`/`rand`/… ❌ (f64 machinery exists) |
 | Prolog foreign calls (`pred($1)`, `float(pred(…))`) | ✅ | plawk-specific, beyond AWK |
 

@@ -6299,6 +6299,10 @@ plawk_action_scalar_update_expr(Action, Expr) :-
 
 plawk_scalar_operation_expr(add(Expr), Expr).
 plawk_scalar_operation_expr(set(Expr), Expr).
+% a string assignment's RHS is exposed too, so NR used inside it (e.g.
+% `x = sprintf("%d", NR)`) is detected and %current_nr defined. Its shape is not
+% double, so the double-type fixpoint ignores it.
+plawk_scalar_operation_expr(set_str(Expr), Expr).
 
 plawk_actions_body_print_field(Actions, Field) :-
     plawk_trim_control_tails(Actions, ReachableActions),
@@ -11320,6 +11324,11 @@ plawk_scalar_action_update(set(var(Name), concat(Parts)), Name, set_str(concat(P
     maplist(plawk_str_scalar_part_ok, Parts).
 plawk_scalar_action_update(set(var(Name), string(Value)), Name, set_str(string(Value))) :-
     string(Value).
+% `x = sprintf("fmt", args)`: format into a string scalar.
+plawk_scalar_action_update(set(var(Name), sprintf(string(Format), Args)), Name,
+        set_str(sprintf(string(Format), Args))) :-
+    string(Format),
+    is_list(Args).
 % Ternary assignment `x = COND ? A : B`: an i64 value via select (the operation
 % lowers through plawk_scalar_numeric_expr_ir(ternary(...)) -> plawk_i64_expr_ir).
 plawk_scalar_action_update(set(var(Name), ternary(cmp(Left, _Op, Right), Then, Else)),
@@ -11877,6 +11886,42 @@ plawk_scalar_update_operation_ir(set(Expr), _Slot, FieldSeparator, Prefix, SlotI
 % A bare literal interns its own global; a concat snprintf's its `%.*s` field
 % slots and literal segments into a 4096-byte stack buffer, then interns the
 % result (the assignment mirror of the print concat).
+% `sprintf("fmt", args...)`: reuse the printf format engine (arg lowering +
+% format rewrite) to snprintf into the buffer, then intern -- the string mirror
+% of the printf action.
+plawk_str_build_ir(sprintf(string(Format), Args), FieldSeparator, Base, IdValueIR,
+        GlobalParts, SetupLines) :-
+    phrase(plawk_printf_arg_pairs(Args, FieldSeparator, Base, 0), ArgPairs),
+    pairs_keys_values(ArgPairs, ArgGlobalParts, ArgInfoPairs),
+    pairs_keys_values(ArgInfoPairs, ArgSetupParts, ArgCallArgLists),
+    append(ArgCallArgLists, CallArgs),
+    maplist(plawk_printf_call_arg_kind, CallArgs, ArgKinds),
+    plawk_printf_rewrite_format(Format, ArgKinds, PrintfFormat),
+    format(atom(FmtName), '~w_fmt', [Base]),
+    llvm_emit_c_string_global(FmtName, PrintfFormat, FmtGlobal, _FmtLen, FmtBytes),
+    plawk_printf_call_args_ir(CallArgs, CallArgsIR),
+    format(atom(FmtP),
+        '  %~w_fmtp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+        [Base, FmtBytes, FmtBytes, FmtName]),
+    format(atom(BufA), '  %~w_buf = alloca [4096 x i8]', [Base]),
+    format(atom(BufP),
+        '  %~w_bufp = getelementptr [4096 x i8], [4096 x i8]* %~w_buf, i64 0, i64 0',
+        [Base, Base]),
+    ( CallArgsIR == ''
+    -> format(atom(Snp),
+           '  %~w_wrote = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %~w_bufp, i64 4096, i8* %~w_fmtp)',
+           [Base, Base, Base])
+    ;  format(atom(Snp),
+           '  %~w_wrote = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %~w_bufp, i64 4096, i8* %~w_fmtp, ~w)',
+           [Base, Base, Base, CallArgsIR])
+    ),
+    format(atom(LenL), '  %~w_len = call i64 @strlen(i8* %~w_bufp)', [Base, Base]),
+    format(atom(IdL),
+        '  %~w_id = call i64 @wam_intern_atom(i8* %~w_bufp, i64 %~w_len)',
+        [Base, Base, Base]),
+    format(atom(IdValueIR), '%~w_id', [Base]),
+    GlobalParts = [FmtGlobal | ArgGlobalParts],
+    append(ArgSetupParts, [FmtP, BufA, BufP, Snp, LenL, IdL], SetupLines).
 plawk_str_build_ir(string(Value), _FieldSeparator, Base, IdValueIR,
         [GlobalIR], [PtrLine, IdLine]) :-
     format(atom(StrName), '~w_lit', [Base]),
@@ -13552,6 +13597,9 @@ plawk_expr_uses_nr(ternary(cmp(Left, _Op, Right), Then, Else)) :-
     ; plawk_expr_uses_nr(Then)
     ; plawk_expr_uses_nr(Else)
     ).
+plawk_expr_uses_nr(sprintf(_Format, Args)) :-
+    member(Arg, Args),
+    plawk_expr_uses_nr(Arg).
 plawk_expr_uses_nr(Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     ( plawk_expr_uses_nr(Left)

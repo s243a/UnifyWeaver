@@ -2008,6 +2008,12 @@ assignment_action(set(var(Name), Value)) -->
     ws,
     scalar_value_expr(Value).
 
+% `x = sprintf("fmt", args...)`: format into a string scalar (the printf format
+% engine + string-valued scalars). Tried first -- the `sprintf(` keyword is
+% unambiguous.
+scalar_value_expr(Sprintf) -->
+    sprintf_expr(Sprintf),
+    !.
 % A ternary assignment `x = COND ? A : B`: numeric comparison condition, numeric
 % branches (the assignment mirror of the print/printf ternary). Tried first --
 % its `?`/`:` structure is unambiguous, and a plain concat / arithmetic RHS has
@@ -2149,6 +2155,23 @@ printf_action(printf(string(Format), Args)) -->
     required_ws,
     quoted_string(FormatCodes),
     printf_args(Args),
+    { string_codes(Format, FormatCodes) }.
+
+%% sprintf_expr(-Expr)//
+%
+%  `sprintf("fmt", args...)` -- the same format + args as `printf`, but the
+%  result is a string (built into a buffer and interned) rather than printed.
+%  Used as a scalar assignment RHS (`x = sprintf(...)`). The format is a string
+%  literal; the args are the printf argument list (a leading comma before each).
+sprintf_expr(sprintf(string(Format), Args)) -->
+    "sprintf",
+    ws,
+    "(",
+    ws,
+    quoted_string(FormatCodes),
+    printf_args(Args),
+    ws,
+    ")",
     { string_codes(Format, FormatCodes) }.
 
 %% foreach_action(-Action)//
