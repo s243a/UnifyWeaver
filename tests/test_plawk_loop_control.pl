@@ -85,18 +85,65 @@ test(rule_level_break_still_runs, [condition(clang_available)]) :-
     !.
 
 % `do-while` break/continue is a clean not-yet error (runtime pending).
-test(do_while_break_is_not_yet_error) :-
+% --- do-while break/continue ------------------------------------------------
+
+% `do-while` break leaves the loop (the after phi merges the post-condition exit
+% with each break value).
+test(do_while_break, [condition(clang_available)]) :-
     ldir(Dir),
-    Src = "{ i = 0; do { print i; break } while (i < 5) }\n",
-    build_status(Dir, 'dwb', Src, St),
-    assertion(St == 2),
+    Src = "{ i = 0; do { if (i > 2) break; print i; i++ } while (i < 10) }\n",
+    build_run(Dir, 'dwb', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "0\n1\n2\n"),
     !.
 
-test(do_while_continue_is_not_yet_error) :-
+% `do-while` continue re-tests the condition (an extra merge phi in the
+% body-done block feeds the condition and the back edge).
+test(do_while_continue, [condition(clang_available)]) :-
     ldir(Dir),
-    Src = "{ i = 0; do { continue } while (i < 5) }\n",
-    build_status(Dir, 'dwc', Src, St),
-    assertion(St == 2),
+    Src = "{ i = 0; do { i++; if (i > 3) continue; print i } while (i < 5) }\n",
+    build_run(Dir, 'dwc', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "1\n2\n3\n"),
+    !.
+
+% The do-while break value flows past the loop into END.
+test(do_while_break_state_to_end, [condition(clang_available)]) :-
+    ldir(Dir),
+    Src = "{ i = 0; do { if (i > 2) break; i++ } while (i < 10) }\nEND { print i }\n",
+    build_run(Dir, 'dwbe', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "3\n"),
+    !.
+
+% --- nested loops -----------------------------------------------------------
+
+% A while inside a while; the inner loop prints per outer iteration.
+test(nested_while, [condition(clang_available)]) :-
+    ldir(Dir),
+    Src = "{ i = 0; while (i < 2) { j = 0; while (j < 2) { print j; j++ } i++ } }\n",
+    build_run(Dir, 'nest', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "0\n1\n0\n1\n"),
+    !.
+
+% An inner break breaks only the INNER loop (the loop-context stack targets the
+% innermost loop).
+test(nested_inner_break, [condition(clang_available)]) :-
+    ldir(Dir),
+    Src = "{ i = 0; while (i < 3) { j = 0; while (j < 5) { if (j > 1) break; print j; j++ } i++ } }\n",
+    build_run(Dir, 'nb', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "0\n1\n0\n1\n0\n1\n"),
+    !.
+
+% A while nested inside a do-while, inner break.
+test(while_in_do_while, [condition(clang_available)]) :-
+    ldir(Dir),
+    Src = "{ i = 0; do { j = 0; while (j < 4) { if (j > 1) break; print j; j++ } i++ } while (i < 2) }\n",
+    build_run(Dir, 'mix', Src, "x\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "0\n1\n0\n1\n"),
     !.
 
 % A plain loop with no break/continue is unaffected.

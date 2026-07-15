@@ -10377,6 +10377,14 @@ plawk_scalar_rule_body_plain_action(writebin_arm_out(_Tag, ArmTypes, Fields)) :-
 % lowers nested ifs recursively, so validation recurses the same way.
 plawk_scalar_rule_body_plain_action(if(Pattern, ThenActions, ElseActions)) :-
     plawk_scalar_rule_body_action(if(Pattern, ThenActions, ElseActions)).
+% a loop may nest inside another loop body (`while (..) { while (..) { .. } }`);
+% the sequence walker lowers the inner loop recursively, so validation recurses.
+plawk_scalar_rule_body_plain_action(while_loop(Cond, Body)) :-
+    plawk_scalar_rule_body_action(while_loop(Cond, Body)).
+plawk_scalar_rule_body_plain_action(do_while_loop(Body, Cond)) :-
+    plawk_scalar_rule_body_action(do_while_loop(Body, Cond)).
+plawk_scalar_rule_body_plain_action(foreach_loop(Layout, Body)) :-
+    plawk_scalar_rule_body_action(foreach_loop(Layout, Body)).
 
 plawk_rule_body_print_action(print(Fields)) :-
     Fields = [_ | _],
@@ -11500,6 +11508,8 @@ plawk_scalar_action_sequence_pairs([do_while_loop(Body, Cond) | Rest],
             format(atom(PhiValue), '%~w_slot_~w', [Base, SlotIndex])
           ),
           HeadValues),
+      % break -> after, continue -> body_done (which re-tests the condition)
+      plawk_loopctx_push(loop_ctx(AfterLabel, BodyDoneLabel)),
       phrase(plawk_scalar_action_sequence_pairs(Body, Slots, AssocPlan,
           FieldSeparator, OutputSeparator, Base, BodyLabel, RuleIndex, 0,
           HeadValues, BodyOutValues, _InnerOpIndex, InnerExitLabel,
@@ -11508,11 +11518,20 @@ plawk_scalar_action_sequence_pairs([do_while_loop(Body, Cond) | Rest],
       atomic_list_concat(BodyGlobalParts, '\n', GlobalIR),
       atomic_list_concat(BodyLineParts, '\n', BodyIR),
       plawk_branch_to_done_ir(InnerExitLabel, BodyDoneLabel, BodyDoneBrIR),
-      phrase(plawk_foreach_head_phi_lines(Slots, Values0, BodyOutValues,
+      plawk_loopctx_pop,
+      plawk_partition_loop_exits(InnerNextExits, Breaks, Continues, RestExits),
+      % body_done merges the normal body output (from the body's exit block) with
+      % each continue point, and the condition tests that merged value; the head
+      % phi's back edge and the `after` block read it too.
+      format(atom(BdBase), '~w_bd', [Base]),
+      plawk_loop_after_ir(Slots, BodyOutValues, InnerExitLabel, Continues,
+          BdBase, BdValues, BdPhiIR),
+      phrase(plawk_foreach_head_phi_lines(Slots, Values0, BdValues,
           Base, EntryLabel, BodyDoneLabel, 0), HeadPhiLines),
       atomic_list_concat(HeadPhiLines, '\n', HeadPhiIR),
-      % the condition reads the body's output value of the condition variable
-      plawk_while_cond_ir(Cond, Slots, BodyOutValues, Base, CondVar, CondIR),
+      plawk_while_cond_ir(Cond, Slots, BdValues, Base, CondVar, CondIR),
+      plawk_loop_after_ir(Slots, BdValues, BodyDoneLabel, Breaks, Base,
+          AfterValues, AfterPhiIR),
       format(atom(IR),
 '  br label %~w
 
@@ -11526,9 +11545,11 @@ plawk_scalar_action_sequence_pairs([do_while_loop(Body, Cond) | Rest],
 
 ~w:
 ~w
+~w
   br i1 ~w, label %~w, label %~w
 
-~w:',
+~w:
+~w',
           [EntryLabel,
            EntryLabel,
            BodyLabel,
@@ -11537,15 +11558,17 @@ plawk_scalar_action_sequence_pairs([do_while_loop(Body, Cond) | Rest],
            BodyIR,
            BodyDoneBrIR,
            BodyDoneLabel,
+           BdPhiIR,
            CondIR,
            CondVar, BodyLabel, AfterLabel,
-           AfterLabel]),
+           AfterLabel,
+           AfterPhiIR]),
       NextOpIndex is OpIndex + 1
     },
     [GlobalIR-IR],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, AfterLabel, RuleIndex,
-        NextOpIndex, BodyOutValues, Values, FinalOpIndex, ExitLabel, RestNextExits),
-    { append(InnerNextExits, RestNextExits, NextExits) }.
+        NextOpIndex, AfterValues, Values, FinalOpIndex, ExitLabel, RestNextExits),
+    { append(RestExits, RestNextExits, NextExits) }.
 plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest],
         Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex, OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { format(atom(GlobalBase), '~w_if_~w', [Prefix, OpIndex]),

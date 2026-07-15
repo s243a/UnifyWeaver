@@ -38,7 +38,7 @@ only (runtime pending) · ❌ missing.
 | `do { } while (COND)` | ✅ | runtime landed; body runs at least once; same general condition |
 | `next` | ✅ | structural (guarded clause per rule) |
 | `break` (rule-level stream break) | ✅ | non-standard awk extension; stops the record stream |
-| `break` / `continue` (loop-local) | ◐ | **`while` loops: landed** (`break` leaves the loop, `continue` re-tests — SSA merge phis at the loop exit/head). `do-while` break/continue and nested-loop break: not yet (`PLAWK_CONTROL_FLOW_PLAN.md` §3b) |
+| `break` / `continue` (loop-local) | ✅ | `while` **and** `do-while`: `break` leaves the loop, `continue` re-tests (SSA merge phis at the loop exit / head / body-done). Works nested (inner break targets the innermost loop) — `PLAWK_CONTROL_FLOW_PLAN.md` §3b |
 | `if` with a plain (non-accumulator) body | ✅ | `{ if (c) { print $1 } }` compiles and runs (fixed by the while-runtime body-print enablers); if/else with plain bodies too |
 | regex in `if` (`if ($0 ~ /re/)`) | ✅ | `if ($0 ~ /re/) { … }` and `!~` compile and run — guards a plain body |
 | brace-less `if`/loop body | ✅ | `if (c) print`, `while (c) x++`, `do stmt while (c)`, braceless else-if chains — a body is a braced block or one statement |
@@ -98,7 +98,9 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    `VAR CMP (int | VAR)` combined with `&&` / `||`. **PR 3b (`while`
    break/continue) LANDED**: SSA merge phis at the loop exit (`break`) and head
    (`continue`); scalar `if` conditions and END scalar-`if` landed alongside.
-   Remaining: `do-while` break/continue, and nested / multi-pass loops (PR 4).
+   **do-while break/continue and nested loops also LANDED** (`while` inside
+   `while`/`do-while`, inner break targets the innermost loop). Remaining: loops
+   inside a multi-pass `pass { }` block (PR 4).
 2. **User-function call in text/print context — LANDED (auto-coerce).**
    `print f($1)` used to return `0`: a text field reached the synthesised
    `f(X,R) :- R is X*2` as an *atom*, failing `is`. Now the synthesised clause

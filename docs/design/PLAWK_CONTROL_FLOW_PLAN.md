@@ -117,12 +117,16 @@ while.after.N:
      the record stream" (`break_close_stream`) — non-standard awk. Inside a loop,
      the loop-context stack redirects `break` to the loop exit; outside a loop it
      still means stream-break. `next`-inside-loop stays "next record".
-   - **`do-while` / nested — the remaining work.** `do-while`'s condition sits in
-     the body-done block, so `continue` needs an extra merge phi there (and the
-     head-phi back edge must read it); guarded as not-yet for now. Nested-loop
-     support is a separate codegen item (§4) — the loop-context *stack* already
-     handles the break/continue redirection for nesting, but the underlying
-     nested-loop lowering isn't wired.
+   - **`do-while` / nested — LANDED.** `do-while`'s condition sits in the
+     body-done block, so `continue` targets it and a merge phi there
+     (`plawk_loop_after_ir` reused as the body-done phi) combines the normal body
+     output with each continue value; the condition, the head-phi back edge, and
+     the `after` block all read that merged value; `break` still targets `after`.
+     Nested loops also compile: the only fix needed was validation
+     (`plawk_scalar_rule_body_plain_action` now accepts a nested loop as a body
+     action) — the loop-context *stack* already routed break/continue to the
+     innermost loop, and the emitter's per-loop `Base` naming keeps nested
+     labels/phis distinct.
    - **Dependency — scalar `if` conditions — LANDED.** A *counter-based* break
      (`if (i > 2) break`) needs the `if` condition to accept a scalar variable.
      This shipped: `if (COND)` now parses a scalar comparison (`i > 2`,
@@ -133,8 +137,9 @@ while.after.N:
      `continue` *jump* itself remains to wire. (Scalar `if` in an `END` block --
      `END { if (COND) print … ; else print … }`, over final slot values -- also
      landed.)
-4. **Nested loops / loop in multi-pass `pass { }`.** Unique slot naming per loop
-   nesting; the multi-pass driver's scalar handling.
+4. **Loop in a multi-pass `pass { }` block.** Single-pass nested loops LANDED
+   (per-loop `Base` naming keeps labels/phis distinct); the remaining item is
+   the multi-pass driver's scalar handling for loops inside a `pass { }`.
 
 ## 4. Related AWK gaps found while scoping (see the audit)
 
