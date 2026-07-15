@@ -73,6 +73,8 @@
               [write_wam_kotlin_project/3]).
 :- use_module('../src/unifyweaver/targets/wam_fsharp_target',
               [write_wam_fsharp_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_r_target',
+              [write_wam_r_project/3]).
 
 % ============================================================
 % Target registry + known-divergence (xfail) registry
@@ -91,13 +93,15 @@ conformance_target(kotlin).
 conformance_target(kotlin_functions).
 conformance_target(fsharp).
 conformance_target(fsharp_functions).
+conformance_target(r).
+conformance_target(r_functions).
 
 %% ct_default_target(Target): runs unless CONFORMANCE_TARGETS overrides.
 %  Only scala and elixir run by default. Every other registered backend
 %  (wat, haskell, python, go, rust, c, cpp, kotlin, kotlin_functions,
-%  fsharp, fsharp_functions) is opt-in via CONFORMANCE_TARGETS because it
-%  builds a per-program project with an external toolchain. Kotlin/F# are
-%  especially slow (gradle / dotnet compile per program) and stay opt-in.
+%  fsharp, fsharp_functions, r, r_functions) is opt-in via
+%  CONFORMANCE_TARGETS because it builds a per-program project with an
+%  external toolchain. Kotlin/F#/R stay opt-in (slow toolchains / Rscript).
 ct_default_target(scala).
 ct_default_target(elixir).
 
@@ -301,6 +305,13 @@ ct_default_target(elixir).
 %     delegated to step via emit_one_fs(builtin_call). No remaining
 %     fsharp / fsharp_functions ct_xfail or ct_skip.
 
+%  R (CONF-R). Adapter registered (opt-in). Measured maturity and any
+%  ct_xfail(r[,_functions], Program) / ct_skip entries are recorded below
+%  after the first harness run (honest readout — do not force green).
+%  runtime_parser(off) is pinned so generation is deterministic: classic
+%  queries use 0-arity wrappers (no CLI term parsing), matching F#'s
+%  none default and avoiding native-parser variance on an unused path.
+
 % ============================================================
 % Toolchain probes
 % ============================================================
@@ -318,6 +329,8 @@ ct_toolchain(kotlin, [gradle]).
 ct_toolchain(kotlin_functions, [gradle]).
 ct_toolchain(fsharp, [dotnet]).
 ct_toolchain(fsharp_functions, [dotnet]).
+ct_toolchain(r, [Rscript]).
+ct_toolchain(r_functions, [Rscript]).
 
 ct_available(scala) :-
     ct_enabled(scala),
@@ -365,6 +378,9 @@ test(kotlin_functions, [condition(ct_available(kotlin_functions))]) :-
 test(fsharp, [condition(ct_available(fsharp))]) :- run_target_conformance(fsharp).
 test(fsharp_functions, [condition(ct_available(fsharp_functions))]) :-
     run_target_conformance(fsharp_functions).
+test(r, [condition(ct_available(r))]) :- run_target_conformance(r).
+test(r_functions, [condition(ct_available(r_functions))]) :-
+    run_target_conformance(r_functions).
 
 :- end_tests(wam_cross_target_conformance).
 
@@ -1106,6 +1122,69 @@ fsharp_ct_run(fsharp_ctx(Dir, Map), K, A, Bool) :-
 ct_teardown(fsharp, fsharp_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
 ct_teardown(fsharp_functions, fsharp_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: R  (0-arity wrapper -> `Rscript generated_program.R <key>` -> true/false)
+%
+% write_wam_r_project/3 emits DESCRIPTION + R/wam_runtime.R +
+% R/generated_program.R. The default Rscript main is a human/bench CLI; for
+% conformance we pass conformance_main(true) so main prints only true/false
+% via WamRuntime$run_predicate (additive — default CLI unchanged).
+%
+% runtime_parser(off) is pinned: classic queries use 0-arity wrappers so CLI
+% term parsing is unused; pinning off keeps generation deterministic (R's
+% default is native(parse_term)).
+%
+% Two opt-in targets share this adapter:
+%   r            — emit_mode(interpreter)
+%   r_functions  — emit_mode(functions) (native-first + WAM fallback)
+% No compile step — ct_build writes the project; ct_run sources from R/.
+% Opt-in via CONFORMANCE_TARGETS=r[,r_functions].
+% ============================================================
+
+ct_build(r, Preds, Queries, r_ctx(Dir, Map)) :-
+    r_ct_build(interpreter, Preds, Queries, Dir, Map).
+
+ct_build(r_functions, Preds, Queries, r_ctx(Dir, Map)) :-
+    r_ct_build(functions, Preds, Queries, Dir, Map).
+
+r_ct_build(EmitMode, Preds, Queries, Dir, Map) :-
+    ct_tmp_dir('tmp_ct_r', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_r_project(AllPreds,
+        [module_name(wam_ct),
+         emit_mode(EmitMode),
+         runtime_parser(off),
+         conformance_main(true)], Dir),
+    % Syntax gate: source the generated script once (no predicate run).
+    directory_file_path(Dir, 'R', RDir),
+    run_proc(Rscript, ['-e', 'source("generated_program.R")'],
+             RDir, BExit, BErr),
+    ( BExit =:= 0 -> true ; throw(r_build_failed(BExit, BErr)) ).
+
+ct_run(r, Ctx, K, A, Bool) :-
+    r_ct_run(Ctx, K, A, Bool).
+ct_run(r_functions, Ctx, K, A, Bool) :-
+    r_ct_run(Ctx, K, A, Bool).
+
+r_ct_run(r_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    directory_file_path(Dir, 'R', RDir),
+    % cwd = R/ so wam_runtime.R resolves next to generated_program.R
+    % (sys.frame(1)$ofile is unreliable under Rscript path invocation).
+    run_proc_out(Rscript, ['generated_program.R', KeyStr],
+                 RDir, _Exit, OutStr),
+    normalize_space(string(Out), OutStr),
+    bool_of_string(Out, Bool).
+
+ct_teardown(r, r_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+ct_teardown(r_functions, r_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
 
 %% c_copy_runtime_header(+Dir) — copy the static wam_runtime.h into Dir.
