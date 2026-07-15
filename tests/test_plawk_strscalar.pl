@@ -93,6 +93,26 @@ test(numeric_unaffected, [condition(clang_available)]) :-
     build_run(Dir, 'nu', "{ s = s + $1 }\nEND { print s }\n", "3\n7\n2\n", Out, St),
     assertion(St == 0), assertion(Out == "12\n"), !.
 
+% --- string accumulation (x = x $1) -----------------------------------------
+
+% `acc = acc $1` accumulates across records; an unset string scalar starts empty.
+test(accumulate, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'ac', "{ acc = acc $1 }\nEND { print acc }\n", "a\nb\nc\n", Out, St),
+    assertion(St == 0), assertion(Out == "abc\n"), !.
+
+% accumulate with a trailing literal separator (CSV build).
+test(accumulate_with_separator, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'as', "{ s = s $1 \",\" }\nEND { print s }\n", "x\ny\nz\n", Out, St),
+    assertion(St == 0), assertion(Out == "x,y,z,\n"), !.
+
+% accumulate with literal delimiters around each field.
+test(accumulate_wrapped, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'aw', "{ log = log \"[\" $1 \"]\" }\nEND { print log }\n", "a\nb\n", Out, St),
+    assertion(St == 0), assertion(Out == "[a][b]\n"), !.
+
 :- end_tests(plawk_strscalar).
 
 % --- helpers ---------------------------------------------------------------
