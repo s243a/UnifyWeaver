@@ -249,6 +249,12 @@ let rec evalArith (bindings: Map<int, Value>) (v: Value) : float option =
         match evalArith bindings a, evalArith bindings b with
         | Some x, Some y when y <> 0.0 -> Some (x / y)
         | _ -> None
+    | Str ("//", [a; b]) ->
+        // Prolog integer division: truncate quotient toward zero (SWI default,
+        // integer_rounding_function = toward_zero).
+        match evalArith bindings a, evalArith bindings b with
+        | Some x, Some y when y <> 0.0 -> Some (float (truncate (x / y)))
+        | _ -> None
     | Str ("mod", [a; b]) ->
         match evalArith bindings a, evalArith bindings b with
         | Some x, Some y when y <> 0.0 -> Some (float (int x % int y))
