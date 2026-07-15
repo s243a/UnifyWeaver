@@ -1595,15 +1595,30 @@ reg_to_int_fs(Reg, Int) :-
     ).
 
 %% parse_functor_fs(+FnStr, -Name, -Arity)
+%  Split "name/N" on the *last* "/". Functors that contain "/" themselves
+%  — integer-div "//" (WAM text `///2`) and float-div "/" (`//2`) — must
+%  not soft-cut on the first slash: the previous `(sub_atom(...'/') -> …)`
+%  committed to Before=0, then `atom_number('//2', _)` failed and the
+%  whole parse failed. That made emit_one_fs(put_structure("///2",…))
+%  fail mid-body for cbi_arith under emit_mode(functions), so
+%  lower_all_fs never finished (FS-FUNCTIONS-BUILTINS-LOWER). Mirrors
+%  Scala/R/Lua last_slash_index / parse_functor_arity.
 parse_functor_fs(FnStr, Name, Arity) :-
     atom_string(FA, FnStr),
-    (   sub_atom(FA, B, 1, _, '/')
+    (   last_slash_index_fs(FA, B)
     ->  sub_atom(FA, 0, B, _, Name),
         B1 is B + 1,
         sub_atom(FA, B1, _, 0, AS),
         atom_number(AS, Arity)
     ;   Name = FA, Arity = 0
     ).
+
+%% last_slash_index_fs(+Atom, -Index)
+%  Index of the last "/" in Atom, or fails if none.
+last_slash_index_fs(Atom, Index) :-
+    findall(B, sub_atom(Atom, B, 1, _, '/'), Bs),
+    Bs \= [],
+    last(Bs, Index).
 
 %% escape_dq_fs(+Str, -Escaped)
 %  Escape backslashes and double quotes for F# string literals.
