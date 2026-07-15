@@ -44,7 +44,7 @@ only (runtime pending) · ❌ missing.
 | brace-less `if`/loop body | ✅ | `if (c) print`, `while (c) x++`, `do stmt while (c)`, braceless else-if chains — a body is a braced block or one statement |
 | field assignment (`$2 = expr`) | ❌ | rebuilding `$0` from mutated fields not wired |
 | C-style `for (;;)` | ❌ | |
-| `exit [n]` | ❌ | |
+| `exit [n]` | ✅ | stops the record loop, runs END, returns N (default 0); `exit` in a rule body, an `if`/`else` branch, or a loop (propagates past the loop) — scalar state at the exit point flows into END |
 | `delete arr[k]` | ❌ | |
 | `getline` | ❌ | the multi-pass / `over` readers cover much of its use |
 
@@ -131,8 +131,18 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    control-flow body is a braced block *or* a single statement.
 3. **`printf` format coverage** — add `%f`/`%g` (f64 exists), `%c`, `%x`, and
    width/precision; the current subset is thin for real formatting.
-4. **`exit [n]`** — common and cheap; a flagged early-terminate of the record
-   loop + END.
+4. **`exit [n]` — LANDED.** A rule-level `exit` / `exit N` stops the record loop,
+   runs END, and returns N (default 0). It reuses the rule-level stream-break
+   path (`break_close_stream` → END → `ret`), adding an exit code stored in
+   `@plawk_exit_code` and read at the final `ret`. `exit` is modelled as a
+   terminal control (`terminal_exit`, like `terminal_break`) at rule-body top
+   level; inside an `if`/`else` branch or a loop it flows via the `branch_exit`
+   exit + `plawk_branch_to_done_ir` (branch to `break_close_stream`). Unlike
+   `break`, an `exit` inside a loop is NOT consumed by the loop — it always ends
+   the whole program (propagates past any enclosing loop). Scalar state at the
+   exit point merges into END through the break-close phi. Tests:
+   `tests/test_plawk_exit.pl`. *Still open (follow-on):* `exit` inside a `BEGIN`
+   or `END` block, and non-constant exit codes (`exit code_var`).
 5. **Ternary `?:`** (string concatenation in `print` context **landed** —
    `print $1 $2`, rule bodies + `END`; the remaining concat work is assignment
    into a string-valued scalar). Ternary is the next most-missed *expression*

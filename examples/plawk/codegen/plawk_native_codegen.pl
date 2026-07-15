@@ -255,7 +255,8 @@ plawk_program_native_driver_ir(
     format(atom(CloseOkIR),
 'end_print:
 ~w
-  ret i32 0',
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
         [FinalStatePhiIR]),
     plawk_emit_record_driver_ir(FieldSeparator, InputPath,
         driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
@@ -299,7 +300,8 @@ plawk_program_native_driver_ir(
     format(atom(CloseOkIR),
 'end_print:
 ~w~w
-  ret i32 0',
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
         [FinalStatePhiIR, EndPrintIR]),
     llvm_emit_stream_driver_ir(InputPath,
         driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, LoopPhiIR, lowered_mixed,
@@ -347,7 +349,8 @@ plawk_program_native_driver_ir(
     format(atom(CloseOkIR),
 'end_print:
 ~w~w
-  ret i32 0',
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
         [FinalStatePhiIR, EndPrintIR]),
     plawk_emit_record_driver_ir(FieldSeparator, InputPath,
         driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
@@ -404,7 +407,8 @@ plawk_program_native_driver_ir(
     format(atom(CloseOkIR),
 'end_print:
 ~w~w
-  ret i32 0',
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
         [FinalStatePhiIR, EndIfIR]),
     plawk_emit_record_driver_ir(FieldSeparator, InputPath,
         driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
@@ -498,7 +502,8 @@ plawk_program_native_driver_ir(
     format(atom(CloseOkIR),
 'end_print:
 ~w~w
-  ret i32 0',
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
         [FinalStatePhiIR, EndPrintIR]),
     plawk_emit_record_driver_ir(Descriptor, InputPath,
         driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
@@ -543,7 +548,8 @@ plawk_program_native_driver_ir(
     format(atom(CloseOkIR),
 'end_print:
 ~w
-  ret i32 0',
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
         [EndPrintIR]),
     plawk_emit_record_driver_ir(Descriptor, InputPath,
         driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, RecordLoopPhiIR, lowered_assoc,
@@ -616,7 +622,8 @@ plawk_program_native_driver_ir(
     format(atom(CloseOkIR),
 'end_print:
 ~w
-  ret i32 0',
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
         [EndPrintIR]),
     plawk_emit_record_driver_ir(FieldSeparator, InputPath,
         driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, RecordLoopPhiIR, lowered_assoc,
@@ -5818,6 +5825,7 @@ plawk_i64_end_print_globals(SurfaceGlobals, RuntimeGlobals) :-
 @.plawk_surface_print_newline = private constant [2 x i8] c"\\0A\\00"
 @.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"
 @.plawk_surface_print_f64 = private constant [3 x i8] c"%g\\00"
+@plawk_exit_code = internal global i32 0
 ~w
 
 ',
@@ -5882,6 +5890,17 @@ plawk_split_normalized_terminal_control(Actions, BodyActions, terminal_break) :-
     append(BodyActions, [break], Actions),
     !,
     \+ plawk_actions_have_control(BodyActions).
+% A rule-level `exit [N]` is a terminal like `break`: it leaves the record loop
+% via break_close_stream (which runs END and returns @plawk_exit_code). Unlike
+% break, it has a side effect -- storing the code -- so the trailing exit is
+% replaced by an `exit_store(N)` marker kept in the body (the sequence walker
+% lowers it to just the store, no branch); the branch to break_close_stream
+% comes from the terminal_exit rule target.
+plawk_split_normalized_terminal_control(Actions, BodyActions, terminal_exit) :-
+    append(Prefix, [exit(int(Code))], Actions),
+    !,
+    \+ plawk_actions_have_control(Prefix),
+    append(Prefix, [exit_store(Code)], BodyActions).
 plawk_split_normalized_terminal_control(Actions, Actions, fallthrough) :-
     \+ plawk_actions_have_control(Actions).
 
@@ -5935,6 +5954,7 @@ plawk_branch_actions_have_unsupported_control(Actions) :-
 plawk_rule_target(fallthrough, NextLabel, NextLabel).
 plawk_rule_target(terminal_next, _NextLabel, continue_loop).
 plawk_rule_target(terminal_break, _NextLabel, break_close_stream).
+plawk_rule_target(terminal_exit, _NextLabel, break_close_stream).
 
 
 plawk_controls_have_break(Controls) :-
@@ -5952,7 +5972,9 @@ plawk_assoc_break_close_ir(Controls, IR) :-
 plawk_break_close_ir(StatePlan, RuleCount, Controls, BranchControlExits, BreakPredKind, BreakCloseIR, FinalStatePhiIR) :-
     plawk_state_plan_slots(StatePlan, Slots),
     (   plawk_controls_have_break(Controls)
+    ;   member(terminal_exit, Controls)
     ;   member(branch_break(_Label, _Values), BranchControlExits)
+    ;   member(branch_exit(_ExitLabel, _ExitValues), BranchControlExits)
     ),
     !,
     phrase(plawk_break_slot_phi_lines(Slots, RuleCount, Controls, BranchControlExits, BreakPredKind, 0), BreakSlotPhiLines),
@@ -5984,7 +6006,8 @@ plawk_break_slot_phi_lines([Slot | Rest], RuleCount, Controls, BranchControlExit
     { LastRuleIndex is RuleCount - 1,
       findall(Incoming,
           ( between(0, LastRuleIndex, RuleIndex),
-            nth0(RuleIndex, Controls, terminal_break),
+            nth0(RuleIndex, Controls, RuleControl),
+            memberchk(RuleControl, [terminal_break, terminal_exit]),
             plawk_break_predecessor_label(BreakPredKind, RuleIndex, PredLabel),
             format(atom(Incoming), '[%rule_~w_slot_~w, %~w]',
                 [RuleIndex, SlotIndex, PredLabel])
@@ -6002,7 +6025,10 @@ plawk_break_slot_phi_lines([Slot | Rest], RuleCount, Controls, BranchControlExit
     plawk_break_slot_phi_lines(Rest, RuleCount, Controls, BranchControlExits, BreakPredKind, NextSlotIndex).
 
 plawk_branch_break_phi_incomings([], _SlotIndex, []).
-plawk_branch_break_phi_incomings([branch_break(Label, Values) | Rest], SlotIndex, [Incoming | Incomings]) :-
+% `exit` reaches break_close_stream too (it runs END on the way out), so its
+% slot values merge into the break-close phi exactly like a break's.
+plawk_branch_break_phi_incomings([Exit | Rest], SlotIndex, [Incoming | Incomings]) :-
+    ( Exit = branch_break(Label, Values) ; Exit = branch_exit(Label, Values) ),
     !,
     nth0(SlotIndex, Values, Value),
     format(atom(Incoming), '[~w, %~w]', [Value, Label]),
@@ -6461,7 +6487,8 @@ plawk_mixed_scalar_next_phi_lines([Slot | Rest], RuleCount, Controls, BranchNext
       findall(ApplyIncoming,
           ( between(0, LastRuleIndex, RuleIndex),
             ( ( RuleIndex =:= LastRuleIndex,
-                \+ nth0(RuleIndex, Controls, terminal_break)
+                \+ ( nth0(RuleIndex, Controls, LastControl),
+                     memberchk(LastControl, [terminal_break, terminal_exit]) )
               )
             ; nth0(RuleIndex, Controls, terminal_next)
             ),
@@ -10252,7 +10279,7 @@ plawk_scalar_rule_input_phi_lines([Slot | Rest], RuleIndex, Controls, SlotIndex)
 
 plawk_terminal_control_skips_next_rule(Controls, RuleIndex) :-
     nth0(RuleIndex, Controls, Control),
-    memberchk(Control, [terminal_next, terminal_break]).
+    memberchk(Control, [terminal_next, terminal_break, terminal_exit]).
 
 plawk_scalar_rule_input_value(0, SlotIndex, Value) :-
     !,
@@ -10335,6 +10362,9 @@ plawk_scalar_rule_body_action(Action) :-
     plawk_scalar_action_update(Action, _Name, _Operation).
 plawk_scalar_rule_body_action(Action) :-
     plawk_dynrec_bind_ok(Action).
+% the store-only half of a rule-level `exit N` (terminal_exit split); it is a
+% plain store with no control, valid anywhere a plain body action is.
+plawk_scalar_rule_body_action(exit_store(_Code)).
 plawk_scalar_rule_body_action(Action) :-
     plawk_rule_body_print_action(Action).
 plawk_scalar_rule_body_action(writebin_out(Types, Fields)) :-
@@ -10361,6 +10391,11 @@ plawk_scalar_branch_body_actions(Actions) :-
 
 plawk_scalar_rule_body_plain_action(Action) :-
     plawk_scalar_action_update(Action, _Name, _Operation).
+% `exit [N]` inside a branch body (`if (c) exit`): the sequence walker lowers it
+% via branch_exit + plawk_branch_to_done_ir (branch to break_close_stream); the
+% store-only marker `exit_store` may appear when a branch ends the rule.
+plawk_scalar_rule_body_plain_action(exit(int(_Code))).
+plawk_scalar_rule_body_plain_action(exit_store(_Code)).
 % a structured-return destructure inside a branch body: the sequence
 % walker lowers dynrec_bind wherever it appears (its slots/call IR is
 % branch-position-independent), so branch-body validation accepts it
@@ -11321,6 +11356,26 @@ plawk_scalar_action_sequence_pairs([break], _Slots, _AssocPlan, _FieldSeparator,
 plawk_scalar_action_sequence_pairs([continue], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
         OpIndex, Values, Values, OpIndex, continue, [branch_continue(CurrentLabel, Values)]) -->
     [].
+% `exit N` -- store the exit code, then leave the program via break_close_stream
+% (which runs END and returns the code). The branch_exit exit carries the slot
+% values at the exit point so END sees them (merged into the break_close phi
+% exactly like a break), but a loop does NOT consume it -- exit always ends the
+% program, so it propagates past any enclosing loop.
+plawk_scalar_action_sequence_pairs([exit(int(Code))], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
+        OpIndex, Values, Values, OpIndex, exit, [branch_exit(CurrentLabel, Values)]) -->
+    { format(atom(StoreIR), '  store i32 ~w, i32* @plawk_exit_code', [Code]) },
+    [''-StoreIR].
+% `exit_store(N)` -- the store-only half of a rule-level `exit N` (the terminal
+% control split leaves this in the body; the branch to break_close_stream comes
+% from the terminal_exit rule target). It emits just the store and falls through
+% -- control reaches the rule's done block, which branches to break_close_stream.
+plawk_scalar_action_sequence_pairs([exit_store(Code) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { format(atom(StoreIR), '  store i32 ~w, i32* @plawk_exit_code', [Code]),
+      NextOpIndex is OpIndex + 1 },
+    [''-StoreIR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 % foreach_loop: the one loop in the emitter stack. Loop-carried phis
 % for the element index and every scalar slot; the body memcpys the
 % current element into the staging area and runs one copy of the
@@ -12210,10 +12265,15 @@ plawk_branch_to_done_ir(continue, _DoneLabel, IR) :-
     !,
     plawk_loopctx_current(loop_ctx(_BreakLabel, ContinueLabel)),
     format(atom(IR), '  br label %~w', [ContinueLabel]).
+% `exit` ends the program regardless of any enclosing loop: always branch to
+% break_close_stream (which runs END and returns @plawk_exit_code).
+plawk_branch_to_done_ir(exit, _DoneLabel, '  br label %break_close_stream') :-
+    !.
 plawk_branch_to_done_ir(ExitLabel, DoneLabel, IR) :-
     ExitLabel \== none,
     ExitLabel \== break,
     ExitLabel \== continue,
+    ExitLabel \== exit,
     format(atom(IR), '  br label %~w', [DoneLabel]).
 
 % The loop-context stack: each loop pushes loop_ctx(BreakLabel, ContinueLabel)
@@ -12231,6 +12291,9 @@ plawk_loopctx_current(Ctx) :-
 plawk_branch_terminal_exit(none).
 plawk_branch_terminal_exit(break).
 plawk_branch_terminal_exit(continue).
+% `exit` inside an if branch leaves via break_close_stream, so (like break) that
+% branch does not flow into the if-join phi -- the join takes the other branch.
+plawk_branch_terminal_exit(exit).
 
 plawk_scalar_if_join_pairs(ThenExitLabel, _ThenValues, ElseExitLabel, _ElseValues, _Slots, _Prefix, _OpIndex, _Pairs) :-
     plawk_branch_terminal_exit(ThenExitLabel),
@@ -12417,7 +12480,8 @@ plawk_scalar_next_phi_lines([Slot | Rest], RuleCount, Controls, BranchNextExits,
       findall(ApplyIncoming,
           ( between(0, LastRuleIndex, RuleIndex),
             ( ( RuleIndex =:= LastRuleIndex,
-                \+ nth0(RuleIndex, Controls, terminal_break)
+                \+ ( nth0(RuleIndex, Controls, LastControl),
+                     memberchk(LastControl, [terminal_break, terminal_exit]) )
               )
             ; nth0(RuleIndex, Controls, terminal_next)
             ),

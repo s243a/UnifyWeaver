@@ -1547,6 +1547,9 @@ action(Action) -->
     continue_action(Action),
     !.
 action(Action) -->
+    exit_action(Action),
+    !.
+action(Action) -->
     dynrec_view_action(Action),
     !.
 action(Action) -->
@@ -1725,6 +1728,19 @@ break_action(break) -->
 
 continue_action(continue) -->
     "continue",
+    identifier_boundary.
+
+% `exit` / `exit N` -- stop reading records, run END, and return N (default 0).
+% Parses to exit(int(N)). Unlike `break`, it always ends the program (it is not
+% consumed by an enclosing loop).
+exit_action(exit(int(N))) -->
+    "exit",
+    identifier_boundary,
+    ws,
+    signed_integer_value(N),
+    !.
+exit_action(exit(int(0))) -->
+    "exit",
     identifier_boundary.
 
 %% dynrec_bind_action(-Action)//
