@@ -63,6 +63,30 @@ test(eq_if_else, [condition(clang_available)]) :-
         "y\nn\n", Out, St),
     assertion(St == 0), assertion(Out == "yes\nno\n"), !.
 
+% --- ordering (< <= > >=, via strcmp) ---------------------------------------
+
+% `<`: select values that sort before a literal.
+test(lt_orders_lexically, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'lt', "{ k = $1 \"\" ; if (k < \"m\") print $1 }\n",
+        "apple\nzebra\nmango\nbanana\n", Out, St),
+    assertion(St == 0), assertion(Out == "apple\nbanana\n"), !.
+
+% `>=`: the complement.
+test(ge_orders_lexically, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'ge', "{ k = $1 \"\" ; if (k >= \"m\") print $1 }\n",
+        "apple\nzebra\nmango\nbanana\n", Out, St),
+    assertion(St == 0), assertion(Out == "zebra\nmango\n"), !.
+
+% `>` on a sprintf-built zero-padded key (composes with sprintf).
+test(gt_on_built_key, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'gt',
+        "{ tag = sprintf(\"%03d\", $1 + 0); if (tag > \"005\") print $1 }\n",
+        "3\n9\n1\n7\n", Out, St),
+    assertion(St == 0), assertion(Out == "9\n7\n"), !.
+
 :- end_tests(plawk_strguard).
 
 % --- helpers ---------------------------------------------------------------
