@@ -1357,7 +1357,15 @@ compile_execute_arith_builtin_to_rust(Code) :-
     }'.
 
 compile_execute_io_builtin_to_rust(Code) :-
-    Code = '    fn execute_io_builtin(&mut self, op: &str, _arity: usize) -> bool {
+    Code = '    fn builtin_path_arg(&self, reg: &str) -> Option<String> {
+        match self.get_reg_raw(reg)
+            .map(|v| self.deref_heap(&self.deref_var(&v))) {
+            Some(Value::Atom(path)) => Some(path),
+            _ => None,
+        }
+    }
+
+    fn execute_io_builtin(&mut self, op: &str, _arity: usize) -> bool {
         match op {
             "write/1" | "display/1" | "print/1" => {
                 // These share Display rendering for now. Standard Prolog
@@ -1442,6 +1450,62 @@ compile_execute_io_builtin_to_rust(Code) :-
                     return false;
                 }
                 self.pc += 1; true
+            }
+            "exists_file/1" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                match std::fs::metadata(path) {
+                    Ok(metadata) if metadata.is_file() => { self.pc += 1; true }
+                    _ => false,
+                }
+            }
+            "exists_directory/1" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                match std::fs::metadata(path) {
+                    Ok(metadata) if metadata.is_dir() => { self.pc += 1; true }
+                    _ => false,
+                }
+            }
+            "directory_files/2" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let entries = match std::fs::read_dir(path) {
+                    Ok(entries) => entries,
+                    Err(_) => return false,
+                };
+                let mut names = Vec::new();
+                for entry in entries {
+                    let entry = match entry {
+                        Ok(entry) => entry,
+                        Err(_) => return false,
+                    };
+                    let name = match entry.file_name().into_string() {
+                        Ok(name) => name,
+                        Err(_) => return false,
+                    };
+                    names.push(name);
+                }
+                names.sort_unstable();
+                let mut files = Vec::with_capacity(names.len() + 2);
+                files.push(Value::Atom(".".to_string()));
+                files.push(Value::Atom("..".to_string()));
+                files.extend(names.into_iter().map(Value::Atom));
+
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::List(files)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
             }
             "nl/0" => { println!(); self.pc += 1; true }
             _ => false,

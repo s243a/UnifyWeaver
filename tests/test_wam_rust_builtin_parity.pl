@@ -72,6 +72,12 @@ t_output_family :-
     write_canonical('two words'),
     write_canonical(node('has space', 7)).
 
+:- dynamic t_filesystem_query/1.
+t_filesystem_query(Files) :-
+    exists_file('Cargo.toml'),
+    exists_directory('src/bin'),
+    directory_files('src/bin', Files).
+
 :- dynamic t_pairs_project/2.
 t_pairs_project(Keys, Values) :-
     Pairs = [a-1, b-2],
@@ -206,6 +212,7 @@ test_builtin_parity_execution :-
              user:t_output_aliases/0,
              user:t_tab/0,
              user:t_output_family/0,
+             user:t_filesystem_query/1,
              user:t_pairs_project/2, user:t_pairs_split/2, user:t_pairs_zip/1,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
@@ -232,6 +239,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_
     t_output_aliases_0,
     t_tab_0,
     t_output_family_0,
+    t_filesystem_query_1,
     t_pairs_project_2, t_pairs_split_2, t_pairs_zip_1,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
     t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
@@ -370,6 +378,15 @@ fn test_output_aliases_compiled() {
 
     let mut output_vm = vmnew();
     assert!(t_output_family_0(&mut output_vm));
+}
+
+#[test]
+fn test_filesystem_query_compiled() {
+    let mut vm = vmnew();
+    assert!(t_filesystem_query_1(&mut vm, ub("Files")));
+    assert_eq!(read_var(&vm, "Files"), Value::List(vec![
+        a("."), a(".."), a("output_probe.rs")
+    ]));
 }
 
 #[test]
@@ -1307,6 +1324,37 @@ fn test_single_term_output_direct() {
         Value::Str("node/2".to_string(), vec![a("has space"), i(7)])).0);
     let mut vm = vmnew();
     assert!(!vm.execute_builtin("write_canonical/1", 1));
+}
+
+#[test]
+fn test_filesystem_query_direct() {
+    assert!(call1("exists_file/1", a("Cargo.toml")).0);
+    assert!(!call1("exists_file/1", a("src/bin")).0);
+    assert!(!call1("exists_file/1", a("definitely_missing_rust_wam_path")).0);
+    assert!(!call1("exists_file/1", ub("Path")).0);
+    assert!(!call1("exists_file/1", i(7)).0);
+
+    assert!(call1("exists_directory/1", a("src/bin")).0);
+    assert!(!call1("exists_directory/1", a("Cargo.toml")).0);
+    assert!(!call1("exists_directory/1", a("definitely_missing_rust_wam_path")).0);
+    assert!(!call1("exists_directory/1", ub("Path")).0);
+    assert!(!call1("exists_directory/1", i(7)).0);
+
+    let expected = Value::List(vec![a("."), a(".."), a("output_probe.rs")]);
+    let (ok, vm) = call2("directory_files/2", a("src/bin"), ub("Files"));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "Files"), expected);
+    assert!(!call2("directory_files/2", a("Cargo.toml"), ub("Files")).0);
+    assert!(!call2("directory_files/2", a("definitely_missing_rust_wam_path"), ub("Files")).0);
+    assert!(!call2("directory_files/2", ub("Path"), ub("Files")).0);
+    assert!(!call2("directory_files/2", i(7), ub("Files")).0);
+
+    let (matched, _) = call2("directory_files/2", a("src/bin"), expected.clone());
+    assert!(matched);
+    let (mismatched, mismatch_vm) = call2("directory_files/2", a("src/bin"),
+        Value::List(vec![ub("Head"), a("wrong"), ub("Tail")]));
+    assert!(!mismatched);
+    assert_eq!(read_var(&mismatch_vm, "Head"), ub("Head"));
 }
 ',
         setup_call_cleanup(
