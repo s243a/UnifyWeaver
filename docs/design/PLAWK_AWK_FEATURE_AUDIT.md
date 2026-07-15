@@ -32,12 +32,13 @@ only (runtime pending) · ❌ missing.
 | `print` (fields, literals, `NR`/`NF`, `length`/`substr`/`index`/`tolower`/`toupper`, arithmetic) | ✅ | constant fields (`print 1`, `print "x"`) landed |
 | `printf` | ◐ | subset `%%`,`%s`,`%d`,`%i`,`%ld`; no `%f`/`%c`/`%x`/width/precision |
 | var assignment, `+=`, `++`, `//` | ✅ | indexed native scalar slots |
-| `if` / `else` (chains) | ✅ | |
+| `if` / `else` (chains) | ◐ | condition is a field/pattern guard (`$1 > 2`, `$0 ~ /re/`); a **scalar-variable** condition (`if (i > 2)`) does not parse yet — needed for counter-based loop `break` (`PLAWK_CONTROL_FLOW_PLAN.md` §3b) |
 | `for (k in arr)` | ✅ | assoc for-in (rule body + END) |
 | `while (COND)` | ✅ | runtime landed (loop-header phis); condition is scalar comparisons (`VAR CMP int`/`VAR`) combined with `&&`/`||` — `PLAWK_CONTROL_FLOW_PLAN.md` PR 2–3. `break`/`continue` deferred (PR 3b) |
 | `do { } while (COND)` | ✅ | runtime landed; body runs at least once; same general condition |
 | `next` | ✅ | structural (guarded clause per rule) |
-| `break` / `continue` | ◐ | present in some loop contexts |
+| `break` (rule-level stream break) | ✅ | non-standard awk extension; stops the record stream |
+| `break` / `continue` (loop-local) | ⏳ | `continue` parses; loop-local break/continue is a clean not-yet error (guards a silent stream-break mis-compile) — runtime pending, `PLAWK_CONTROL_FLOW_PLAN.md` §3b |
 | `if` with a plain (non-accumulator) body | ✅ | `{ if (c) { print $1 } }` compiles and runs (fixed by the while-runtime body-print enablers); if/else with plain bodies too |
 | regex in `if` (`if ($0 ~ /re/)`) | ✅ | `if ($0 ~ /re/) { … }` and `!~` compile and run — guards a plain body |
 | brace-less `if`/loop body | ✅ | `if (c) print`, `while (c) x++`, `do stmt while (c)`, braceless else-if chains — a body is a braced block or one statement |

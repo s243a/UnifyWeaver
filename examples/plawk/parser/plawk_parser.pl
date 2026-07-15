@@ -1532,6 +1532,9 @@ action(Action) -->
     break_action(Action),
     !.
 action(Action) -->
+    continue_action(Action),
+    !.
+action(Action) -->
     dynrec_view_action(Action),
     !.
 action(Action) -->
@@ -1692,6 +1695,10 @@ next_action(next) -->
 
 break_action(break) -->
     "break",
+    identifier_boundary.
+
+continue_action(continue) -->
+    "continue",
     identifier_boundary.
 
 %% dynrec_bind_action(-Action)//

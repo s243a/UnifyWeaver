@@ -93,21 +93,36 @@ while.after.N:
    (`plawk_while_cond_vars` registers them). A single `VAR CMP int` still parses
    to a bare `cmp(...)`, so PR 2 is a strict subset. Tests:
    `tests/test_plawk_while.pl` (var-bound, `&&`, `||`, do-while var-bound).
-3b. **`break` / `continue` — DEFERRED (own PR).** Loop-control statements are a
-   separate, design-sensitive change and were intentionally split out:
+3b. **`break` / `continue` — SURFACE + GUARD LANDED; runtime is the follow-on.**
+   The `continue` keyword parses (to a `continue` action); `break` already did.
+   A `break` inside a loop body, or any `continue`, is now a **clean not-yet
+   error** (`check_loop_control`) — this **guards a silent mis-compile**: inside
+   a loop `break` used to lower to the rule-level stream-break, stopping the
+   record stream entirely instead of leaving the loop. `break` *outside* a loop
+   keeps its existing stream-break meaning. The runtime still to wire:
    - **SSA phi merge.** A `break` jumps to the loop's `after`; that block then
      needs a phi merging the normal exit (head-phi values, condition false) with
      the value set at *each* break point. A `continue` adds a back-edge into the
      head phi (`while`) / body-condition (`do-while`) from each continue point.
-     The loop emitter would collect the body's `branch_break` / `branch_next`
-     exits (it already receives them as `InnerNextExits`) and build these merge
-     phis, rather than letting them propagate to the record loop.
-   - **`break` semantics.** plawk currently uses `break` at *rule-body* level to
-     mean "stop the record stream" (`break_close_stream`) — non-standard awk. In
-     a loop, `break` must mean *loop* break instead, so the loop has to intercept
-     its own body's break exits. That contextual re-meaning (plus adding a
-     `continue` keyword, and defining `next`-inside-loop = next record) is the
-     design call this PR defers.
+     The loop emitter collects the body's `branch_break` / `branch_continue`
+     exits (delivered via `InnerNextExits`) and builds these merge phis instead
+     of letting them propagate to the record loop. A **loop-context stack in a
+     global** (pushed/popped around each loop body, read by `break`/`continue`
+     and by `plawk_branch_to_done_ir`) redirects the branches to the enclosing
+     loop's labels without threading a new argument through the ~14-clause
+     sequence walker; nested loops fall out because each loop consumes only the
+     exits generated while it was innermost.
+   - **`break` semantics.** plawk uses `break` at *rule-body* level to mean "stop
+     the record stream" (`break_close_stream`) — non-standard awk. In a loop,
+     `break` must mean *loop* break; the loop intercepts its own body's break
+     exits (the guard above makes this a hard boundary today). `next`-inside-loop
+     stays "next record" (propagates past the loop).
+   - **Dependency — scalar `if` conditions.** For a *counter-based* break
+     (`if (i > 2) break`) to be useful the `if` condition must accept a scalar
+     variable; today `if (COND)` only takes field/pattern conditions (`$1 > 2`),
+     not `i > 2` (parse error). So this PR also needs the `if` condition grammar
+     extended to scalar comparisons (the same `VAR CMP int/VAR` shape the loop
+     condition already uses). Do it alongside, or first.
 4. **Nested loops / loop in multi-pass `pass { }`.** Unique slot naming per loop
    nesting; the multi-pass driver's scalar handling.
 
