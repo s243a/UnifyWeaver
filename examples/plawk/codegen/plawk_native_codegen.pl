@@ -5032,6 +5032,35 @@ plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
         [GlobalBase, BytesLen, BytesLen, LitName,
          GlobalBase, GlobalBase, Len,
          GlobalBase, Pred, SlotValue, GlobalBase]).
+% String-ordering guard `if (s < "text")` / `<=` / `>` / `>=` on a string scalar:
+% atom ids are not ordered by string value, so resolve the scalar's id to text
+% and `strcmp` against the literal, then compare the result to 0. An unset scalar
+% (id 0) resolves to empty via the literal global's trailing NUL.
+plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
+        _FieldSeparator, GlobalBase, CondValue, GlobalIR-IR) :-
+    memberchk(Op, [lt, le, gt, ge]),
+    !,
+    nth0(Idx, Slots, Slot),
+    plawk_slot_name(Slot, Name),
+    !,
+    nth0(Idx, Values0, SlotValue),
+    format(atom(LitName), '~w_lit', [GlobalBase]),
+    llvm_emit_c_string_global(LitName, Value, GlobalIR, Len, BytesLen),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(CondValue), '%~w_cond', [GlobalBase]),
+    format(atom(IR),
+'  %~w_litptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  %~w_sraw = call i8* @wam_atom_to_string(i64 ~w)
+  %~w_empty = icmp eq i64 ~w, 0
+  %~w_sptr = select i1 %~w_empty, i8* getelementptr ([~w x i8], [~w x i8]* @.~w, i64 0, i64 ~w), i8* %~w_sraw
+  %~w_scmp = call i32 @strcmp(i8* %~w_sptr, i8* %~w_litptr)
+  %~w_cond = icmp ~w i32 %~w_scmp, 0',
+        [GlobalBase, BytesLen, BytesLen, LitName,
+         GlobalBase, SlotValue,
+         GlobalBase, SlotValue,
+         GlobalBase, GlobalBase, BytesLen, BytesLen, LitName, Len, GlobalBase,
+         GlobalBase, GlobalBase, GlobalBase,
+         GlobalBase, Pred, GlobalBase]).
 plawk_if_cond_ir(scalar_if(Cond), Slots, Values0, _FieldSeparator, GlobalBase,
         CondValue, ''-GuardIR) :-
     !,
