@@ -1550,6 +1550,51 @@ compile_execute_io_builtin_to_rust(Code) :-
                     false
                 }
             }
+            "get_time/1" => {
+                let now = std::time::SystemTime::now();
+                let seconds = match now.duration_since(std::time::UNIX_EPOCH) {
+                    Ok(duration) => duration.as_secs_f64(),
+                    Err(error) => -error.duration().as_secs_f64(),
+                };
+                let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Float(seconds)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "getenv/2" => {
+                let name = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(name)) => name,
+                    _ => return false,
+                };
+                let value = match std::env::var(name) {
+                    Ok(value) => value,
+                    Err(_) => return false,
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Atom(value)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "getpid/1" => {
+                let pid = Value::Integer(i64::from(std::process::id()));
+                let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &pid) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
             "nl/0" => { println!(); self.pc += 1; true }
             _ => false,
         }
