@@ -68,7 +68,7 @@ only (runtime pending) · ❌ missing.
 | arithmetic `+ - * / % //` | ✅ | i64, awk precedence, safe div/mod |
 | comparison, `~`/`!~` | ✅ | |
 | ternary `?:` | ◐ | `COND ? A : B` in print / printf args — numeric comparison condition, numeric branches (fields, `NR`/`NF`, int literals, i64 arithmetic); lowered to an LLVM `select`. Assignment-context (scalar-var operands) and string branches are follow-ons |
-| string concatenation (juxtaposition `$1 $2`) | ✅ | `print` context **and** assignment: `print $1 $2`; `x = $1 $2` / `x = "id:" $1` build a **string-valued scalar** (an interned atom id in an i64 slot, resolved to text on read/print). Arithmetic binds tighter, comma still splits. Scalar-var concat operand (`x = x $1` accumulation) is a follow-on |
+| string concatenation (juxtaposition `$1 $2`) | ✅ | `print` context **and** assignment: `print $1 $2`; `x = $1 $2` / `x = "id:" $1` build a **string-valued scalar** (an interned atom id in an i64 slot, resolved to text on read/print), **incl. accumulation `x = x $1`** (a string-scalar read as a concat operand — resolved to text and re-interned). Arithmetic binds tighter, comma still splits |
 | exponentiation `^` / `**` | ❌ | |
 
 ## Arrays
