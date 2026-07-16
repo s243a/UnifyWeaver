@@ -38,6 +38,10 @@ t_msort(S) :- msort([banana, apple, cherry, apple], S).
 :- dynamic t_sort/1.
 t_sort(S) :- sort([b, a, b], S).
 
+:- dynamic t_sort4/1.
+t_sort4(S) :-
+    sort(2, '@=<', [row(a, 2), row(b, 1), row(c, 2)], S).
+
 :- dynamic t_concat_split/2.
 t_concat_split(A, B) :- atom_concat(A, B, abc).
 
@@ -236,7 +240,7 @@ test_builtin_parity_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         write_wam_rust_project(
-            [user:t_between/1, user:t_msort/1, user:t_sort/1,
+            [user:t_between/1, user:t_msort/1, user:t_sort/1, user:t_sort4/1,
              user:t_concat_split/2, user:t_select/2,
              user:t_atomic/1, user:t_atomic_number/1,
              user:t_string_codes/1, user:t_string_chars/1,
@@ -268,7 +272,7 @@ test_builtin_parity_execution :-
         TestContent = '
 use builtin_parity_test::state::WamState;
 use builtin_parity_test::value::Value;
-use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_select_2,
+use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_split_2, t_select_2,
     t_atomic_1, t_atomic_number_1,
     t_string_codes_1, t_string_chars_1,
     t_string_code_1,
@@ -330,6 +334,14 @@ fn test_msort_sort_compiled() {
     assert!(t_sort_1(&mut vm2, ub("S")));
     assert_eq!(read_var(&vm2, "S"), Value::List(vec![a("a"), a("b")]),
         "sort dedupes");
+
+    let mut vm3 = vmnew();
+    assert!(t_sort4_1(&mut vm3, ub("S")));
+    assert_eq!(read_var(&vm3, "S"), Value::List(vec![
+        Value::Str("row".to_string(), vec![a("b"), i(1)]),
+        Value::Str("row".to_string(), vec![a("a"), i(2)]),
+        Value::Str("row".to_string(), vec![a("c"), i(2)]),
+    ]), "sort/4 keeps equal keys stable for @=<");
 }
 
 #[test]
@@ -742,6 +754,89 @@ fn test_keysort() {
     assert_eq!(read_var(&vm, "S"), Value::List(vec![
         dpair(a("a"), i(2)), dpair(a("b"), i(1)), dpair(a("b"), i(0)),
     ]), "stable by key, payload order preserved");
+}
+
+#[test]
+fn test_sort4_modes_and_keys() {
+    let row = |name: &str, key: i64| {
+        Value::Str("row/2".to_string(), vec![a(name), i(key)])
+    };
+    let drow = |name: &str, key: i64| {
+        Value::Str("row".to_string(), vec![a(name), i(key)])
+    };
+    let rows = Value::List(vec![row("a", 2), row("b", 1), row("c", 2)]);
+
+    let (ascending_ok, ascending_vm) = call4(
+        "sort/4", i(2), a("@=<"), rows.clone(), ub("Sorted"));
+    assert!(ascending_ok);
+    assert_eq!(read_var(&ascending_vm, "Sorted"), Value::List(vec![
+        drow("b", 1), drow("a", 2), drow("c", 2),
+    ]));
+
+    let (ascending_unique_ok, ascending_unique_vm) = call4(
+        "sort/4", i(2), a("@<"), rows.clone(), ub("Sorted"));
+    assert!(ascending_unique_ok);
+    assert_eq!(read_var(&ascending_unique_vm, "Sorted"), Value::List(vec![
+        drow("b", 1), drow("a", 2),
+    ]));
+
+    let (descending_ok, descending_vm) = call4(
+        "sort/4", i(2), a("@>="), rows.clone(), ub("Sorted"));
+    assert!(descending_ok);
+    assert_eq!(read_var(&descending_vm, "Sorted"), Value::List(vec![
+        drow("a", 2), drow("c", 2), drow("b", 1),
+    ]));
+
+    let (descending_unique_ok, descending_unique_vm) = call4(
+        "sort/4", i(2), a("@>"), rows, ub("Sorted"));
+    assert!(descending_unique_ok);
+    assert_eq!(read_var(&descending_unique_vm, "Sorted"), Value::List(vec![
+        drow("a", 2), drow("b", 1),
+    ]));
+
+    let (whole_ok, whole_vm) = call4(
+        "sort/4", i(0), a("@<"),
+        Value::List(vec![a("b"), a("a"), a("b")]), ub("Sorted"));
+    assert!(whole_ok);
+    assert_eq!(read_var(&whole_vm, "Sorted"), Value::List(vec![a("a"), a("b")]));
+
+    let (list_key_ok, list_key_vm) = call4(
+        "sort/4", i(1), a("@=<"),
+        Value::List(vec![
+            Value::List(vec![i(2), a("two")]),
+            Value::List(vec![i(1), a("one")]),
+        ]),
+        ub("Sorted"),
+    );
+    assert!(list_key_ok);
+    assert_eq!(read_var(&list_key_vm, "Sorted"), Value::List(vec![
+        Value::List(vec![i(1), a("one")]),
+        Value::List(vec![i(2), a("two")]),
+    ]));
+}
+
+#[test]
+fn test_sort4_validation_and_rollback() {
+    let list = Value::List(vec![a("b"), a("a")]);
+    assert!(!call4("sort/4", i(-1), a("@<"), list.clone(), ub("Sorted")).0);
+    assert!(!call4("sort/4", a("key"), a("@<"), list.clone(), ub("Sorted")).0);
+    assert!(!call4("sort/4", i(0), a("ascending"), list.clone(), ub("Sorted")).0);
+    assert!(!call4("sort/4", i(0), a("@<"), a("not-a-list"), ub("Sorted")).0);
+
+    let (empty_ok, empty_vm) = call4(
+        "sort/4", i(0), a("@=<"), Value::List(vec![]), ub("Sorted"));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Sorted"), Value::List(vec![]));
+
+    let (rollback_ok, rollback_vm) = call4(
+        "sort/4",
+        i(0),
+        a("@=<"),
+        list,
+        Value::List(vec![ub("First"), a("wrong")]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "First"), ub("First"));
 }
 
 #[test]
