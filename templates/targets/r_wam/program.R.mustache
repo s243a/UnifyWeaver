@@ -127,6 +127,27 @@ shared_program <- list(
 # ----------------------------------------------------------
 if (!interactive() && sys.nframe() == 0L) {
   argv <- commandArgs(trailingOnly = TRUE)
+{{#conformance_main}}
+  # Conformance driver (CONF-R): argv[0] = pred/arity key; print true/false
+  # only. Additive — default CLI (usage/batch/bench/arg parsing) is below
+  # when conformance_main is off. 0-arity wrappers need no CLI args.
+  if (length(argv) == 0L) {
+    cat("false\n")
+    quit(status = 1L)
+  }
+  pred_arity <- argv[1L]
+  start_pc   <- shared_labels[[pred_arity]]
+  if (is.null(start_pc)) {
+    cat("false\n")
+    quit(status = 1L)
+  }
+  ok <- tryCatch(
+    WamRuntime$run_predicate(shared_program, start_pc, list()),
+    error = function(e) FALSE)
+  cat(if (isTRUE(ok)) "true" else "false", "\n", sep = "")
+  quit(status = if (isTRUE(ok)) 0L else 1L)
+{{/conformance_main}}
+{{^conformance_main}}
   if (length(argv) == 0L) {
     cat("usage: Rscript generated_program.R [--bench N] <pred>/<arity> <arg> ...\n")
     cat("       Rscript generated_program.R --batch <pred>/0 ...\n")
@@ -225,4 +246,5 @@ if (!interactive() && sys.nframe() == 0L) {
   ok <- WamRuntime$run_predicate(shared_program, start_pc, parsed)
   cat(if (isTRUE(ok)) "true" else "false", "\n", sep = "")
   quit(status = if (isTRUE(ok)) 0L else 1L)
+{{/conformance_main}}
 }

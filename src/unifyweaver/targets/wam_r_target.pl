@@ -1922,11 +1922,15 @@ write_wam_r_project(Predicates, Options, ProjectDir) :-
     r_foreign_handlers_code(Options, ForeignHandlersBody),
     r_op_decls_code(Options, OpDeclsBody),
     write_runtime_source(RDir),
+    % Additive conformance driver (CONF-R): when true, the Rscript main
+    % prints only true/false for argv[0]=pred/arity. Default human/bench
+    % CLI is unchanged when the option is absent/false.
+    option(conformance_main(ConfMain), Options, false),
     write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
                          WrapperCode, IdToStringStr, ForeignHandlersBody,
                          LoweredFunctionsCode, FactShapeComments,
                          LoweredDispatchCode, OpDeclsBody,
-                         RuntimeParserModeCode).
+                         RuntimeParserModeCode, ConfMain).
 
 write_description(ProjectDir, ModName) :-
     find_template('templates/targets/r_wam/DESCRIPTION.mustache', Template),
@@ -1947,7 +1951,7 @@ write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
                      WrapperCode, IdToStringStr, ForeignHandlersBody,
                      LoweredFunctionsCode, FactShapeComments,
                      LoweredDispatchCode, OpDeclsBody,
-                     RuntimeParserModeCode) :-
+                     RuntimeParserModeCode, ConfMain) :-
     find_template('templates/targets/r_wam/program.R.mustache', Template),
     get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
     render_template(Template,
@@ -1962,7 +1966,8 @@ write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
           'lowered_functions'=LoweredFunctionsCode,
           'fact_shape_comments'=FactShapeComments,
           'op_decls'=OpDeclsBody,
-          'runtime_parser_mode'=RuntimeParserModeCode
+          'runtime_parser_mode'=RuntimeParserModeCode,
+          'conformance_main'=ConfMain
         ], Content),
     directory_file_path(RDir, 'generated_program.R', Path),
     write_file(Path, Content).

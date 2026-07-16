@@ -73,6 +73,8 @@
               [write_wam_kotlin_project/3]).
 :- use_module('../src/unifyweaver/targets/wam_fsharp_target',
               [write_wam_fsharp_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_r_target',
+              [write_wam_r_project/3]).
 
 % ============================================================
 % Target registry + known-divergence (xfail) registry
@@ -91,13 +93,15 @@ conformance_target(kotlin).
 conformance_target(kotlin_functions).
 conformance_target(fsharp).
 conformance_target(fsharp_functions).
+conformance_target(r).
+conformance_target(r_functions).
 
 %% ct_default_target(Target): runs unless CONFORMANCE_TARGETS overrides.
 %  Only scala and elixir run by default. Every other registered backend
 %  (wat, haskell, python, go, rust, c, cpp, kotlin, kotlin_functions,
-%  fsharp, fsharp_functions) is opt-in via CONFORMANCE_TARGETS because it
-%  builds a per-program project with an external toolchain. Kotlin/F# are
-%  especially slow (gradle / dotnet compile per program) and stay opt-in.
+%  fsharp, fsharp_functions, r, r_functions) is opt-in via
+%  CONFORMANCE_TARGETS because it builds a per-program project with an
+%  external toolchain. Kotlin/F#/R stay opt-in (slow toolchains / Rscript).
 ct_default_target(scala).
 ct_default_target(elixir).
 
@@ -301,6 +305,29 @@ ct_default_target(elixir).
 %     delegated to step via emit_one_fs(builtin_call). No remaining
 %     fsharp / fsharp_functions ct_xfail or ct_skip.
 
+%  R (CONF-R). Adapter registered (opt-in via CONFORMANCE_TARGETS=r[,r_functions]).
+%  runtime_parser(off) is pinned so generation is deterministic: classic
+%  queries use 0-arity wrappers (no CLI term parsing); R's default is
+%  native(parse_term), which is unused on the wrapper path.
+%
+%  Measured maturity (interpreter + functions, same gap set):
+%   - GREEN: append, reverse, builtins
+%   - xfail member / fib / ack — see ct_xfail(r, ...) below
+%  Success channel discriminates: negatives return false (XPASS under
+%  xfail), not blanket-true. Root cause for all three xfails is the same
+%  family: wam_parts_to_r/2 has no clause for switch_on_constant_fallthrough
+%  (fib/ack) or switch_on_term_a2 (member), so those instructions emit as
+%  Raw(...) and the R step dispatcher stop()s — tryCatch in the
+%  conformance driver maps that to false. (switch_on_constant and
+%  switch_on_term A1 variants already emit real constructors; fallthrough
+%  / _a2 are the missing Scala-class mapping.)
+ct_xfail(r, member).            % Raw(switch_on_term_a2) → stop
+ct_xfail(r, fib).               % Raw(switch_on_constant_fallthrough) → stop
+ct_xfail(r, ack).               % Raw(switch_on_constant_fallthrough) → stop
+ct_xfail(r_functions, member).  % same as r — Raw(switch_on_term_a2) → stop
+ct_xfail(r_functions, fib).     % same as r — Raw(switch_on_constant_fallthrough) → stop
+ct_xfail(r_functions, ack).     % same as r — Raw(switch_on_constant_fallthrough) → stop
+
 % ============================================================
 % Toolchain probes
 % ============================================================
@@ -318,6 +345,8 @@ ct_toolchain(kotlin, [gradle]).
 ct_toolchain(kotlin_functions, [gradle]).
 ct_toolchain(fsharp, [dotnet]).
 ct_toolchain(fsharp_functions, [dotnet]).
+ct_toolchain(r, ['Rscript']).
+ct_toolchain(r_functions, ['Rscript']).
 
 ct_available(scala) :-
     ct_enabled(scala),
@@ -365,6 +394,9 @@ test(kotlin_functions, [condition(ct_available(kotlin_functions))]) :-
 test(fsharp, [condition(ct_available(fsharp))]) :- run_target_conformance(fsharp).
 test(fsharp_functions, [condition(ct_available(fsharp_functions))]) :-
     run_target_conformance(fsharp_functions).
+test(r, [condition(ct_available(r))]) :- run_target_conformance(r).
+test(r_functions, [condition(ct_available(r_functions))]) :-
+    run_target_conformance(r_functions).
 
 :- end_tests(wam_cross_target_conformance).
 
@@ -1106,6 +1138,76 @@ fsharp_ct_run(fsharp_ctx(Dir, Map), K, A, Bool) :-
 ct_teardown(fsharp, fsharp_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
 ct_teardown(fsharp_functions, fsharp_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: R  (0-arity wrapper -> `Rscript generated_program.R <key>` -> true/false)
+%
+% write_wam_r_project/3 emits DESCRIPTION + R/wam_runtime.R +
+% R/generated_program.R. The default Rscript main is a human/bench CLI; for
+% conformance we pass conformance_main(true) so main prints only true/false
+% via WamRuntime$run_predicate (additive — default CLI unchanged).
+%
+% runtime_parser(off) is pinned: classic queries use 0-arity wrappers so CLI
+% term parsing is unused; pinning off keeps generation deterministic (R's
+% default is native(parse_term)).
+%
+% Two opt-in targets share this adapter:
+%   r            — emit_mode(interpreter)
+%   r_functions  — emit_mode(functions) (native-first + WAM fallback)
+% No compile step — ct_build writes the project; ct_run sources from R/.
+% Opt-in via CONFORMANCE_TARGETS=r[,r_functions].
+% ============================================================
+
+ct_build(r, Preds, Queries, r_ctx(Dir, Map)) :-
+    r_ct_build(interpreter, Preds, Queries, Dir, Map).
+
+ct_build(r_functions, Preds, Queries, r_ctx(Dir, Map)) :-
+    r_ct_build(functions, Preds, Queries, Dir, Map).
+
+r_ct_build(EmitMode, Preds, Queries, Dir, Map) :-
+    % Distinct prefix per emit mode: both modes write R/generated_program.R
+    % (no compile-artifact isolation), so a shared tmp_ct_r stamp collision
+    % would silently overwrite the other mode's sources.
+    format(atom(TmpPrefix), 'tmp_ct_r_~w', [EmitMode]),
+    ct_tmp_dir(TmpPrefix, Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_r_project(AllPreds,
+        [module_name(wam_ct),
+         emit_mode(EmitMode),
+         runtime_parser(off),
+         conformance_main(true)], Dir),
+    % Syntax gate: source under Rscript -e (sys.nframe()>0 skips CLI main).
+    directory_file_path(Dir, 'R', RDir),
+    run_proc('Rscript', ['-e', 'source("generated_program.R")'],
+             RDir, BExit, BErr),
+    ( BExit =:= 0 -> true ; throw(r_build_failed(BExit, BErr)) ).
+
+ct_run(r, Ctx, K, A, Bool) :-
+    r_ct_run(Ctx, K, A, Bool).
+ct_run(r_functions, Ctx, K, A, Bool) :-
+    r_ct_run(Ctx, K, A, Bool).
+
+r_ct_run(r_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    directory_file_path(Dir, 'R', RDir),
+    % cwd = R/ so wam_runtime.R resolves next to generated_program.R
+    % (sys.frame(1)$ofile is unreliable under Rscript path invocation).
+    % Keep bool_of_string strict: empty/garbage stdout must fail the run
+    % (→ error(run_failed)), not collapse to false — that would mask
+    % crashes as correct negatives.
+    run_proc_out('Rscript', ['generated_program.R', KeyStr],
+                 RDir, _Exit, OutStr),
+    normalize_space(string(Out), OutStr),
+    bool_of_string(Out, Bool).
+
+ct_teardown(r, r_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+ct_teardown(r_functions, r_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
 
 %% c_copy_runtime_header(+Dir) — copy the static wam_runtime.h into Dir.

@@ -44,8 +44,10 @@ lazy/cached tiers of F#/Haskell).
 
 ## Gaps (relative to Rust / Haskell / F#)
 
-- **Not in the conformance harness** — no `conformance_target(r)`;
-  correctness rests on the generator suite, not the shared spec.
+- **Classic conformance (CONF-R, 2026-07-15):** opt-in adapter registered
+  (`r` / `r_functions`). Green: append, reverse, builtins. xfail: member,
+  fib, ack — `switch_on_term_a2` / `switch_on_constant_fallthrough` fall to
+  `Raw(...)` in `wam_parts_to_r/2` and abort the step loop.
 - **LMDB is load-everything** — no lazy/cached two-level policies.
 - **ISO error support** is `tryCatch`-level only, not the three-form
   contract.
@@ -53,15 +55,13 @@ lazy/cached tiers of F#/Haskell).
 
 ## Path forward
 
-1. Register a conformance adapter (`CONFORMANCE_TARGETS=r`) so R joins
-   the shared spec.
+1. Map `switch_on_constant_fallthrough` / `switch_on_term_a2` in
+   `wam_parts_to_r/2` (Scala-class fix) to retire the three xfails.
 2. Lazy/cached LMDB policies over the load-everything path.
 3. ISO three-form adoption if R joins the error-fidelity set.
 4. Effective-distance cross-target matrix row.
 
 ## Document status
 
-Fleet-aligned snapshot; source-verified line/kernel counts, the native
-runtime-parser default, and the **absence** of conformance registration
-against `wam_r_target.pl`, the parser-capability module, and the
-conformance harness (2026-07-11).
+Fleet-aligned snapshot updated for CONF-R landing (2026-07-15): opt-in
+harness adapter + measured classic-program readout.
