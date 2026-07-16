@@ -4477,6 +4477,26 @@ compile_execute_ext_builtin_to_rust(Code) :-
         }
     }
 
+    /// Extract the 1-based compound argument used by sort/4. None
+    /// means compare the whole term, including Key=0 and out-of-range
+    /// keys. Lists expose their head and tail as arguments 1 and 2.
+    fn builtin_sort_key(&self, value: &Value, position: usize) -> Option<Value> {
+        if position == 0 { return None; }
+        let term = self.deref_heap(&self.deref_var(value));
+        match &term {
+            Value::Str(_, args) if position <= args.len() => {
+                Some(self.deref_heap(&self.deref_var(&args[position - 1])))
+            }
+            Value::List(items) if !items.is_empty() && position == 1 => {
+                Some(self.deref_heap(&self.deref_var(&items[0])))
+            }
+            Value::List(items) if !items.is_empty() && position == 2 => {
+                Some(Value::List(items[1..].to_vec()))
+            }
+            _ => None,
+        }
+    }
+
     /// Test list membership by unification. Failed candidates are
     /// unwound; the first successful candidate keeps its bindings.
     fn builtin_unify_member(&mut self, item: &Value, candidates: &[Value]) -> bool {
@@ -4653,6 +4673,65 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 }
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 if self.unify(&a2, &Value::List(sorted)) { self.pc += 1; true } else { false }
+            }
+            "sort/4" => {
+                let key_position = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(position)) if position >= 0 => {
+                        match usize::try_from(position) {
+                            Ok(position) => position,
+                            Err(_) => return false,
+                        }
+                    }
+                    _ => return false,
+                };
+                let order = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(order)) => order,
+                    _ => return false,
+                };
+                let (descending, deduplicate) = match order.as_str() {
+                    "@<" => (false, true),
+                    "@=<" => (false, false),
+                    "@>" => (true, true),
+                    "@>=" => (true, false),
+                    _ => return false,
+                };
+                let list = match self.get_reg_raw("A3")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let mut keyed = Vec::with_capacity(list.len());
+                for item in &list {
+                    let value = self.deref_heap(&self.deref_var(item));
+                    let key = self.builtin_sort_key(&value, key_position);
+                    keyed.push((value, key));
+                }
+                keyed.sort_by(|a, b| {
+                    let a_key = a.1.as_ref().unwrap_or(&a.0);
+                    let b_key = b.1.as_ref().unwrap_or(&b.0);
+                    let ordering = self.term_compare(a_key, b_key);
+                    if descending { ordering.reverse() } else { ordering }
+                });
+                if deduplicate {
+                    keyed.dedup_by(|a, b| {
+                        let a_key = a.1.as_ref().unwrap_or(&a.0);
+                        let b_key = b.1.as_ref().unwrap_or(&b.0);
+                        self.term_compare(a_key, b_key) == Ordering::Equal
+                    });
+                }
+                let sorted = keyed.into_iter()
+                    .map(|(value, _)| value)
+                    .collect::<Vec<_>>();
+                let output = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::List(sorted)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
             }
             "keysort/2" => {
                 let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
