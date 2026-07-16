@@ -324,9 +324,9 @@ ct_default_target(elixir).
 ct_xfail(r, member).            % Raw(switch_on_term_a2) → stop
 ct_xfail(r, fib).               % Raw(switch_on_constant_fallthrough) → stop
 ct_xfail(r, ack).               % Raw(switch_on_constant_fallthrough) → stop
-ct_xfail(r_functions, member).  % same Raw stubs on WAM fallback path
-ct_xfail(r_functions, fib).
-ct_xfail(r_functions, ack).
+ct_xfail(r_functions, member).  % same as r — Raw(switch_on_term_a2) → stop
+ct_xfail(r_functions, fib).     % same as r — Raw(switch_on_constant_fallthrough) → stop
+ct_xfail(r_functions, ack).     % same as r — Raw(switch_on_constant_fallthrough) → stop
 
 % ============================================================
 % Toolchain probes
@@ -1166,7 +1166,11 @@ ct_build(r_functions, Preds, Queries, r_ctx(Dir, Map)) :-
     r_ct_build(functions, Preds, Queries, Dir, Map).
 
 r_ct_build(EmitMode, Preds, Queries, Dir, Map) :-
-    ct_tmp_dir('tmp_ct_r', Dir),
+    % Distinct prefix per emit mode: both modes write R/generated_program.R
+    % (no compile-artifact isolation), so a shared tmp_ct_r stamp collision
+    % would silently overwrite the other mode's sources.
+    format(atom(TmpPrefix), 'tmp_ct_r_~w', [EmitMode]),
+    ct_tmp_dir(TmpPrefix, Dir),
     synth_wrappers(Queries, WPreds, Map),
     maplist(strip_pred, Preds, BarePreds),
     append(WPreds, BarePreds, AllPreds0),
@@ -1193,6 +1197,9 @@ r_ct_run(r_ctx(Dir, Map), K, A, Bool) :-
     directory_file_path(Dir, 'R', RDir),
     % cwd = R/ so wam_runtime.R resolves next to generated_program.R
     % (sys.frame(1)$ofile is unreliable under Rscript path invocation).
+    % Keep bool_of_string strict: empty/garbage stdout must fail the run
+    % (→ error(run_failed)), not collapse to false — that would mask
+    % crashes as correct negatives.
     run_proc_out('Rscript', ['generated_program.R', KeyStr],
                  RDir, _Exit, OutStr),
     normalize_space(string(Out), OutStr),
