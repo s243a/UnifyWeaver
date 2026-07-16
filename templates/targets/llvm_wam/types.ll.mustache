@@ -14,6 +14,12 @@
 ; Used by term_to_atom/2 to render a term's text before interning it.
 %WamStrBuf = type { i8*, i64, i64 }       ; data, len, cap
 
+; === Editable field buffer ===
+; awk's $1..$NF as a mutable slice array. Each slot is a %WamSlice pointing into
+; the record text (split) or at a replacement value (field assignment); joining
+; with OFS rebuilds $0 without interning per edit.
+%WamFieldBuf = type { i64, i64, %WamSlice* } ; count, cap, slices
+
 ; === Compound and List (heap-allocated) ===
 %Compound = type { i8*, i32, %Value* }    ; functor, arity, args
 %List = type { i32, %Value* }             ; length, elements
