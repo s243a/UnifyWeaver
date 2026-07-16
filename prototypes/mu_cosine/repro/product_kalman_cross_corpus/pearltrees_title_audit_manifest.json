@@ -1,0 +1,80 @@
+{
+  "audited_pairs": "/tmp/mu_data/pearltrees_campaign_pairs_audited.tsv",
+  "audited_pairs_sha256": "f5ab3a837b04eb28768e383a7f6071953bdca7601e23834c0f7280a587b76d0f",
+  "canonical_identity_collision_groups": [
+    {
+      "canonical_identity": "art",
+      "endpoint_ids": [
+        "10454091",
+        "7178850"
+      ]
+    },
+    {
+      "canonical_identity": "society",
+      "endpoint_ids": [
+        "10371821",
+        "10889076"
+      ]
+    },
+    {
+      "canonical_identity": "wikipedia c",
+      "endpoint_ids": [
+        "11791730",
+        "9285273"
+      ]
+    }
+  ],
+  "corpus": "pearltrees",
+  "corrected_endpoint_count": 36,
+  "corrected_endpoint_occurrences": {
+    "10370051": 4,
+    "10371330": 4,
+    "10390883": 3,
+    "10407535": 2,
+    "10411186": 1,
+    "10455028": 1,
+    "10479932": 1,
+    "10490516": 1,
+    "10528062": 1,
+    "10538786": 2,
+    "10541886": 1,
+    "10646481": 1,
+    "10647433": 3,
+    "10658521": 1,
+    "10720446": 1,
+    "10761122": 1,
+    "10779347": 1,
+    "10790290": 1,
+    "10830626": 1,
+    "10907954": 1,
+    "11207530": 2,
+    "11392387": 1,
+    "11393591": 2,
+    "11423863": 1,
+    "11495603": 5,
+    "11727907": 1,
+    "11728045": 1,
+    "11728046": 2,
+    "11728130": 1,
+    "11730027": 1,
+    "12473654": 1,
+    "12613895": 2,
+    "12759321": 2,
+    "13445761": 1,
+    "14942407": 1,
+    "15044166": 1
+  },
+  "corrected_pair_count": 53,
+  "guardrail": "pair IDs, hops, endpoint IDs, and graph provenance unchanged; titles only",
+  "pair_count": 250,
+  "pair_id_sha256": "8c289075b1a2745bc4db407f1f4d873969db5a14b97a2aa27641f3b8ed5438f2",
+  "policy": "prototypes/mu_cosine/title_policies/product_kalman_pearltrees_titles.json",
+  "policy_sha256": "a955b876a3ee283601ee35acea6f97fd8745a5ab287a623f4421b550f72fb7fb",
+  "reviewed_endpoint_count": 284,
+  "schema_version": 1,
+  "score_in": "/tmp/mu_data/pearltrees_campaign_score_in_audited.tsv",
+  "score_in_sha256": "dcbe79ca2b5fbde65af9294278d2cc373f602bb5c0a703e2bd02d104f8e112ff",
+  "source_pairs": "/tmp/mu_data/pearltrees_campaign_pairs_unscored.tsv",
+  "source_pairs_sha256": "586c81c9065ef4f003f8039c78054f0f96bf35a0c311d1a8c3399533733f230f",
+  "view": "audited_title_sensitivity"
+}

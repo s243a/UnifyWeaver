@@ -35,6 +35,15 @@
     wam_classify_constant_token/2
 ]).
 :- use_module('../core/template_system', [render_template/3]).
+:- use_module('../targets/wam_kotlin_lowered_emitter', [
+    wam_kotlin_lowerable/3,
+    lower_predicate_to_kotlin/4,
+    kotlin_lowered_func_name/2
+]).
+
+% Compatibility wrapper for the lowered emitter (rules live in wam_text_parser).
+tokenize_wam_line(Line, Tokens) :-
+    wam_tokenize_line(Line, Tokens).
 
 % ============================================================================
 % Public hybrid entry points
@@ -81,17 +90,17 @@ partition_predicates_([], _Mode, Native, Native, Wam, Wam, Failed, Failed).
 partition_predicates_([Spec|Rest], Mode, Native0, Native, Wam0, Wam, Failed0, Failed) :-
     pi_parts(Spec, Module, Pred, Arity),
     PI = Pred/Arity,
-    (   should_attempt_native(Mode, PI),
-        catch(kotlin_target:compile_predicate_to_kotlin(Module:PI,
-                [include_main(false)], NativeCode), _, fail),
-        \+ native_code_is_stub(NativeCode)
-    ->  Native1 = [native(PI, NativeCode)|Native0],
-        Wam1 = Wam0,
-        Failed1 = Failed0
-    ;   catch(compile_predicate_to_wam(Module:PI, [], WamText), _, fail)
-    ->  Native1 = Native0,
-        Wam1 = [wam(PI, WamText)|Wam0],
-        Failed1 = Failed0
+  ( catch(compile_predicate_to_wam(Module:PI, [], WamText), _, fail)
+    ->  (   should_attempt_native(Mode, PI),
+            catch(wam_kotlin_lowerable(Module:PI, WamText, _), _, fail),
+            catch(lower_predicate_to_kotlin(Module:PI, WamText, [], Lowered), _, fail)
+        ->  Native1 = [native(PI, Lowered)|Native0],
+            Wam1 = [wam(PI, WamText)|Wam0],
+            Failed1 = Failed0
+        ;   Native1 = Native0,
+            Wam1 = [wam(PI, WamText)|Wam0],
+            Failed1 = Failed0
+        )
     ;   Native1 = Native0,
         Wam1 = Wam0,
         Failed1 = [failed(PI)|Failed0]
@@ -101,11 +110,6 @@ partition_predicates_([Spec|Rest], Mode, Native0, Native, Wam0, Wam, Failed0, Fa
 should_attempt_native(functions, _PI) :- !.
 should_attempt_native(mixed(List), PI) :- !, member(PI, List).
 should_attempt_native(_, _) :- fail.
-
-native_code_is_stub(Code) :-
-    sub_string(Code, _, _, _, 'TODO: Implement').
-native_code_is_stub(Code) :-
-    sub_string(Code, _, _, _, 'return null').
 
 % ============================================================================
 % WAM text -> Kotlin program registration
@@ -294,14 +298,18 @@ write_wam_kotlin_project(Predicates, Options, ProjectDir) :-
     compile_native_parts(NativeParts, NativeCode),
     compile_wam_parts(WamParts, Options, WamCode),
     compile_failed_parts(FailedParts, FailedCode),
-    registrar_names(WamParts, Registrars),
-    render_kotlin_wam_template('Main.kt.mustache', [
+    registrar_calls(NativeParts, WamParts, Registrars),
+    option(conformance_main(ConfMain), Options, false),
+    kotlin_benchmark_main_bindings(Options, BenchBindings),
+    append([
         package=Package,
         native_predicates=NativeCode,
         wam_predicates=WamCode,
         failed_predicates=FailedCode,
-        registrar_calls=Registrars
-    ], MainCode),
+        registrar_calls=Registrars,
+        conformance_main=ConfMain
+    ], BenchBindings, MainBindings),
+    render_kotlin_wam_template('Main.kt.mustache', MainBindings, MainCode),
     directory_file_path(SrcDir, 'Main.kt', MainPath),
     write_file(MainPath, MainCode),
     format('WAM Kotlin project created at: ~w~n', [ProjectDir]),
@@ -309,15 +317,49 @@ write_wam_kotlin_project(Predicates, Options, ProjectDir) :-
     format('  Native predicates: ~w~n', [NativeParts]),
     format('  WAM predicates: ~w~n', [WamParts]).
 
+%% kotlin_benchmark_main_bindings(+Options, -Bindings)
+%  Supports benchmark_main(Pred, Iterations) or benchmark_main(true) (CLI pred).
+%  Optional: benchmark_warmup/1, benchmark_batches/1, benchmark_state_setup/1
+%  (Kotlin expression returning WamState; default empty CLI state).
+kotlin_benchmark_main_bindings(Options, Bindings) :-
+    (   option(benchmark_main(Pred0, Iters0), Options)
+    ->  kotlin_bench_pred_atom(Pred0, PredAtom),
+        ( number(Iters0) -> Iters = Iters0 ; atom_number(Iters0, Iters) ),
+        Enabled = true
+    ;   option(benchmark_main(true), Options)
+    ->  PredAtom = '',
+        option(benchmark_iterations(Iters), Options, 1000),
+        Enabled = true
+    ;   Enabled = false,
+        PredAtom = '',
+        Iters = 1000
+    ),
+    option(benchmark_warmup(Warmup), Options, 5),
+    option(benchmark_batches(Batches), Options, 15),
+    option(benchmark_state_setup(StateSetup0), Options,
+           'stateFromCliArgs(emptyList())'),
+    atom_string_like(StateSetup0, StateSetup),
+    (   Enabled == true
+    ->  Bindings = [
+            benchmark_main=true,
+            benchmark_predicate=PredAtom,
+            benchmark_iterations=Iters,
+            benchmark_warmup=Warmup,
+            benchmark_batches=Batches,
+            benchmark_state_setup=StateSetup
+        ]
+    ;   Bindings = [benchmark_main=false]
+    ).
+
+kotlin_bench_pred_atom(Pred/Arity, Atom) :- !,
+    format(atom(Atom), '~w/~w', [Pred, Arity]).
+kotlin_bench_pred_atom(Atom, Atom) :- atomic(Atom).
+
 compile_native_parts([], '// No native Kotlin predicates selected.').
 compile_native_parts(NativeParts, Code) :-
     NativeParts \= [],
-    findall(Comment,
-        (   member(native(Pred/Arity, Part), NativeParts),
-            sanitize_block_comment(Part, SafePart),
-            format(string(Comment),
-                '/* Native Kotlin lowering selected for ~w/~w.\n   Direct native dispatch wiring is a follow-up; source captured for audit:\n~w\n*/',
-                [Pred, Arity, SafePart])
+    findall(Part,
+        (   member(native(_PI, lowered(_PredName, _FuncName, Part)), NativeParts)
         ),
         Parts),
     atomic_list_concat(Parts, '\n\n', Code).
@@ -342,16 +384,22 @@ compile_failed_parts(FailedParts, Code) :-
         Lines),
     atomic_list_concat(Lines, '\n', Code).
 
-registrar_names([], '// No WAM registrars.').
-registrar_names(WamParts, Calls) :-
-    WamParts \= [],
-    findall(Call,
-        (   member(wam(Pred/_Arity, _), WamParts),
-            kotlin_safe_identifier(Pred, Safe),
-            format(string(Call), '    register_~w(program)', [Safe])
-        ),
-        CallLines),
+registrar_calls([], [], '// No predicate registrars.').
+registrar_calls(NativeParts, WamParts, Calls) :-
+    (NativeParts \= [] ; WamParts \= []),
+    findall(Call, registrar_native_call(NativeParts, Call), NativeCalls),
+    findall(Call, registrar_wam_call(WamParts, Call), WamCalls),
+    append(NativeCalls, WamCalls, CallLines),
     atomic_list_concat(CallLines, '\n', Calls).
+
+registrar_native_call(NativeParts, Call) :-
+    member(native(_PI, lowered(PredName, FuncName, _)), NativeParts),
+    format(string(Call), '    program.registerNative("~w", ::~w)', [PredName, FuncName]).
+
+registrar_wam_call(WamParts, Call) :-
+    member(wam(Pred/_Arity, _), WamParts),
+    kotlin_safe_identifier(Pred, Safe),
+    format(string(Call), '    register_~w(program)', [Safe]).
 
 gradle_check_project(ProjectDir, Result) :-
     setup_call_cleanup(

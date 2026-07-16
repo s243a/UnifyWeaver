@@ -33,6 +33,7 @@
 #define WAM_META_DISJ_RIGHT -7
 #define WAM_META_ITE_THEN -8
 #define WAM_META_ITE_ELSE -9
+#define WAM_FOREIGN_STREAM_NEXT -10
 
 typedef struct WamState WamState;
 typedef bool (*WamForeignHandler)(WamState *state, const char *pred, int arity);
@@ -74,6 +75,12 @@ typedef struct {
     int ite_top;
     int arity;
     WamValue a_regs[32]; // Reduced from MAX_REGS to save memory (typical max arity)
+    /* Owned only when next_pc == WAM_FOREIGN_STREAM_NEXT. */
+    WamValue *foreign_results;
+    int foreign_result_count;
+    int foreign_result_index;
+    int foreign_result_reg;
+    int foreign_resume_pc;
 } ChoicePoint;
 
 typedef struct {
@@ -1007,6 +1014,7 @@ static inline void push_choice_point(WamState *state, int next_pc, int arity) {
         state->B_array = realloc(state->B_array, sizeof(ChoicePoint) * state->B_cap);
     }
     ChoicePoint *cp = &state->B_array[state->B];
+    memset(cp, 0, sizeof(ChoicePoint));
     cp->next_pc = next_pc;
     cp->cp = state->CP;
     cp->heap_size = state->H;
@@ -1045,6 +1053,9 @@ static inline void restore_choice_point(WamState *state, ChoicePoint *cp) {
 }
 static inline void pop_choice_point(WamState *state) {
     if (state->B > 0) {
+        ChoicePoint *cp = &state->B_array[state->B - 1];
+        free(cp->foreign_results);
+        cp->foreign_results = NULL;
         state->B--;
         if (state->B > 0) {
             state->HB = state->B_array[state->B - 1].heap_size;

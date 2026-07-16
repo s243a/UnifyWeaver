@@ -177,6 +177,49 @@ yields the same `@step` body. The hints matter for:
    `trail_binding`, `wam_deref_ptr`) and what F# gets from
    `let inline`.
 
+## Case study: Kotlin recursive `snapshotForNative` (KT-DISPATCH-SNAPSHOT-OPT)
+
+Same **copy-the-world-per-operation** class as the F# `putReg` bug, different
+trigger. BENCH-KOTLIN showed `emit_mode(functions)` **append** regressing
+(~0.55–0.80× vs interpreter) and worsening with depth. Manual
+`System.nanoTime` around `snapshotForNative` on `append_500` attributed
+**~31% of timed wall** to snapshots, with `snap_count == native_entries`
+(one full register/heap map copy per recursive `execute`→`tryRun` hop).
+Heap vars (`H<n>`) accumulate within a query, so cost ≈O(depth²).
+
+**Fix (pattern, not F# code):** keep the top-level WAT-style
+snapshot+bytecode fallback (T5 unbound / incomplete lowering), but skip
+snapshot+fallback on **recursive** native hops (`nativeDepth > 0`). Clause
+backtracking stays on the lowered T4 `_t4` snapshot. Toggle:
+`skipRecursiveNativeSnapshot` (default true); A/B via
+`SKIP_RECURSIVE_SNAP=0`.
+
+**Result:** append_100 → ~1.03×; append_500 → ~0.85× (from ~0.55×);
+functions-only append_500 self-speedup ~1.55×. Remaining gap was T4’s
+per-entry `_t4` map copy — closed by **KT-HEAP-SNAPSHOT-OPT-2** (below).
+
+## Case study: Kotlin T4 `_t4` peel (KT-HEAP-SNAPSHOT-OPT-2)
+
+After skipping recursive tryRun snaps, profiling **all**
+`snapshotForNative` (including lowered T4) on `append_500` showed
+**~48% of wall** still in snapshots: `snap_count ≈ native_entries`,
+`max_register_map_size ≈ 508` (heap vars grow with depth → ≈O(depth²)
+copy total).
+
+**Fix:** when T4 clause 1 starts with `get_constant` / `get_nil` /
+`get_integer`, peel the discriminant — closed ground mismatch jumps to
+later clauses with **no** entry snapshot. Append’s cons path is
+snap-free; nil/var paths still snapshot once.
+
+**Result:** append_100 → **~7.2×**; append_500 → **~30×** (hardened
+min harness). Member unchanged (~1.4×; first instr is `get_list`).
+Details: [`design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md`](design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md),
+[`WAM_KOTLIN_BENCH.md`](WAM_KOTLIN_BENCH.md).
+
+**Cross-target lesson (unchanged):** profile first; the bottleneck is
+rarely where the sibling target’s was. Here the residual was clause-entry
+snapshots on a fail-closed discriminant, not trail undo.
+
 ## Related
 
 - [WAM_FSHARP_TARGET.md](WAM_FSHARP_TARGET.md) — the F# WAM target's

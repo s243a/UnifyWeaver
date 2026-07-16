@@ -233,18 +233,18 @@ test(explicit_mode_emits_declared_scalar_annotations) :-
     assertz(type_declarations:uw_type(edge/2, 1, atom)),
     assertz(type_declarations:uw_type(edge/2, 2, atom)),
     once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit)], Code)),
-    once(sub_string(Code, _, _, _, "edge_from <- character();")),
-    once(sub_string(Code, _, _, _, "edge_to <- character();")),
-    once(sub_string(Code, _, _, _, "let edge_neighbors <- function(current, from_nodes, to_nodes)")),
-    once(sub_string(Code, _, _, _, "let tc_all_from_vectors <- function(start, from_nodes, to_nodes)")),
-    once(sub_string(Code, _, _, _, "let tc_all <- function(start)")),
+    once(sub_string(Code, _, _, _, "let edge_from: [#N, char] <- [];")),
+    once(sub_string(Code, _, _, _, "let edge_to: [#N, char] <- [];")),
+    once(sub_string(Code, _, _, _, "let edge_neighbors <- fn(current: char, from_nodes: [#N, char], to_nodes: [#N, char]): [#N, char]")),
+    once(sub_string(Code, _, _, _, "let tc_all_from_vectors <- fn(start: char, from_nodes: [#N, char], to_nodes: [#N, char]): [#N, char]")),
+    once(sub_string(Code, _, _, _, "let tc_all <- fn(start: char): [#N, char]")),
     once(sub_string(Code, _, _, _, "tc_all_from_vectors(start, edge_from, edge_to)")),
-    once(sub_string(Code, _, _, _, "let tc_check_from_vectors <- function(start, target, from_nodes, to_nodes)")),
-    once(sub_string(Code, _, _, _, "let tc_check <- function(start, target)")),
+    once(sub_string(Code, _, _, _, "let tc_check_from_vectors <- fn(start: char, target: char, from_nodes: [#N, char], to_nodes: [#N, char]): bool")),
+    once(sub_string(Code, _, _, _, "let tc_check <- fn(start: char, target: char): bool")),
     once(sub_string(Code, _, _, _, "tc_check_from_vectors(start, target, edge_from, edge_to)")),
-    once(sub_string(Code, _, _, _, "results <- character()")),
-    once(sub_string(Code, _, _, _, "current <- queue[1];")),
-    once(sub_string(Code, _, _, _, "queue <- queue[-1];")),
+    once(sub_string(Code, _, _, _, "let results: [#N, char] <- [];")),
+    once(sub_string(Code, _, _, _, "let current <- queue[queue_index];")),
+    once(sub_string(Code, _, _, _, "queue_index <- queue_index + 1;")),
     \+ sub_string(Code, _, _, _, "@{").
 
 test(infer_mode_omits_scalar_parameter_annotations) :-
@@ -253,16 +253,16 @@ test(infer_mode_omits_scalar_parameter_annotations) :-
     assertz(type_declarations:uw_type(edge/2, 2, atom)),
     once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(infer)], Code)),
     \+ sub_string(Code, _, _, _, "start: char"),
-    once(sub_string(Code, _, _, _, "let tc_all <- function(start)")).
+    once(sub_string(Code, _, _, _, "let tc_all <- fn(start): [#N, char]")).
 
 test(explicit_any_is_preserved_in_infer_mode) :-
     clear_type_declarations,
     assertz(type_declarations:uw_type(edge/2, 1, any)),
     assertz(type_declarations:uw_type(edge/2, 2, any)),
     once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(infer)], Code)),
-    once(sub_string(Code, _, _, _, "let tc_all <- function(start)")),
-    once(sub_string(Code, _, _, _, "results <- c()")),
-    once(sub_string(Code, _, _, _, "neighbors <- edge_neighbors(current, from_nodes, to_nodes);")),
+    once(sub_string(Code, _, _, _, "let tc_all <- fn(start: Any): [#N, Any]")),
+    once(sub_string(Code, _, _, _, "let results: [#N, Any] <- [];")),
+    once(sub_string(Code, _, _, _, "let neighbors <- edge_neighbors(current, from_nodes, to_nodes);")),
     \+ sub_string(Code, _, _, _, "@{").
 
 test(transitive_closure_stdin_input_mode_emits_native_loader) :-
@@ -3090,11 +3090,13 @@ test(transitive_closure_template_is_valid_typr) :-
     assertz(type_declarations:uw_type(edge/2, 1, atom)),
     assertz(type_declarations:uw_type(edge/2, 2, atom)),
     once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit)], Code)),
-    once(sub_string(Code, _, _, _, "while (length(queue) > 0)")),
-    once(sub_string(Code, _, _, _, "let tc_all_from_vectors <- function(start, from_nodes, to_nodes)")),
-    once(sub_string(Code, _, _, _, "for (i in seq(1, length(from_nodes), 1)) {")),
-    once(sub_string(Code, _, _, _, "for (next_node in neighbors) {")),
-    once(sub_string(Code, _, _, _, "if (found) {")),
+    once(sub_string(Code, _, _, _, "while (queue_index <= length(queue))")),
+    once(sub_string(Code, _, _, _, "let tc_all_from_vectors <- fn(start: char, from_nodes: [#N, char], to_nodes: [#N, char]): [#N, char]")),
+    once(sub_string(Code, _, _, _, "while (i <= length(from_nodes)) {")),
+    once(sub_string(Code, _, _, _, "while (neighbor_index <= length(neighbors)) {")),
+    once(sub_string(Code, _, _, _, "let next_node <- neighbors[neighbor_index];")),
+    once(sub_string(Code, _, _, _, "neighbor_index <- neighbor_index + 1;")),
+    once(sub_string(Code, _, _, _, "while (queue_index <= length(queue) && !found)")),
     \+ sub_string(Code, _, _, _, "@{"),
     generated_typr_is_valid(Code, exit(0)).
 
@@ -3103,9 +3105,9 @@ test(transitive_closure_runtime_vector_api_is_valid_typr) :-
     assertz(type_declarations:uw_type(edge/2, 1, atom)),
     assertz(type_declarations:uw_type(edge/2, 2, atom)),
     once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit)], Code)),
-    once(sub_string(Code, _, _, _, "let tc_all_from_vectors <- function(start, from_nodes, to_nodes)")),
-    once(sub_string(Code, _, _, _, "let tc_check_from_vectors <- function(start, target, from_nodes, to_nodes)")),
-    once(sub_string(Code, _, _, _, "neighbors <- edge_neighbors(current, from_nodes, to_nodes);")),
+    once(sub_string(Code, _, _, _, "let tc_all_from_vectors <- fn(start: char, from_nodes: [#N, char], to_nodes: [#N, char]): [#N, char]")),
+    once(sub_string(Code, _, _, _, "let tc_check_from_vectors <- fn(start: char, target: char, from_nodes: [#N, char], to_nodes: [#N, char]): bool")),
+    once(sub_string(Code, _, _, _, "let neighbors <- edge_neighbors(current, from_nodes, to_nodes);")),
     once(sub_string(Code, _, _, _, "tc_all_from_vectors(start, edge_from, edge_to)")),
     once(sub_string(Code, _, _, _, "tc_check_from_vectors(start, target, edge_from, edge_to)")),
     \+ sub_string(Code, _, _, _, "@{"),
@@ -3118,8 +3120,8 @@ test(transitive_closure_seeds_known_base_facts) :-
     assertz(type_declarations:uw_type(edge/2, 1, atom)),
     assertz(type_declarations:uw_type(edge/2, 2, atom)),
     once(compile_predicate_to_typr(tc/2, [base_pred(edge), typed_mode(explicit)], Code)),
-    once(sub_string(Code, _, _, _, "edge_from <- [\"a\", \"b\"];")),
-    once(sub_string(Code, _, _, _, "edge_to <- [\"b\", \"c\"];")),
+    once(sub_string(Code, _, _, _, "let edge_from: [#N, char] <- [\"a\", \"b\"];")),
+    once(sub_string(Code, _, _, _, "let edge_to: [#N, char] <- [\"b\", \"c\"];")),
     once(sub_string(Code, _, _, _, "tc_all_from_vectors(start, edge_from, edge_to)")).
 
 test(recursive_compiler_supports_typr_structural_tree_dual_mutual_context_path) :-

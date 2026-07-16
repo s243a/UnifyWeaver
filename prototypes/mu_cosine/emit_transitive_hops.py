@@ -50,7 +50,9 @@ def hit_prob(parents, desc, anc):
             return 1.0
         if x in memo:
             return memo[x]
-        ps = parents.get(x) or []
+        # Parent maps are commonly sets. Canonical order makes both floating-point summation and the
+        # cycle-guard fallback reproducible across PYTHONHASHSEED values/processes.
+        ps = sorted(parents.get(x) or [])
         if not ps:
             return 0.0                                   # reached a root without hitting anc
         memo[x] = 0.0                                    # cycle guard: node currently being computed → 0

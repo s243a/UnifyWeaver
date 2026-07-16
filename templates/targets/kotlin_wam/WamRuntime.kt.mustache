@@ -67,6 +67,7 @@ class WamState(
     val environmentStack: MutableList<EnvironmentFrame> = mutableListOf(),
     var context: WamContext? = null,
     private var nextEnvironmentId: Int = 0,
+    private var nextHeapVarId: Int = 0,
 ) {
     fun isEnvironmentRegister(register: String): Boolean =
         register.startsWith("Y")
@@ -93,10 +94,17 @@ class WamState(
     }
 
     fun newVariable(register: String): Value.Var {
-        val scopedName = scopedRegisterName(register)
-        val value = Value.Var(scopedName)
+        // Heap identity independent of the register name (Xn or Yn).
+        // Structure/list cells and arithmetic trees store this Var; later
+        // unify_variable/writeRegister on the register must not clobber
+        // already-built terms, and bindings must survive recursive
+        // call/execute across allocate frames (KT-LIST-BACKTRACK +
+        // KT-Y-ENV-RECURSION). Scoped Y@E names lived in environment
+        // slots that recursive allocate/call could miss on deref.
+        val heapName = "H${nextHeapVarId++}"
+        val value = Value.Var(heapName)
+        registers[heapName] = value
         writeRegister(register, value)
-        if (scopedName != register) writeRegister(scopedName, value)
         return value
     }
 
@@ -248,10 +256,96 @@ class WamState(
     }
 
     fun restoreChoicePoint(): Boolean = restoreChoicePointFrame() != null
+
+    // Optional profile counters (KT-HEAP-SNAPSHOT-OPT-2): attribute ALL
+    // snapshotForNative cost — including T4 `_t4` — not only tryRun.
+    var profileSnaps: Boolean = false
+    var profileSnapNs: Long = 0L
+    var profileSnapCount: Long = 0L
+    var profileMaxRegisterMapSize: Int = 0
+    var profileSumRegisterMapSize: Long = 0L
+
+    fun resetSnapProfile() {
+        profileSnapNs = 0L
+        profileSnapCount = 0L
+        profileMaxRegisterMapSize = 0
+        profileSumRegisterMapSize = 0L
+    }
+
+    fun snapshotForNative(): WamNativeSnapshot {
+        if (profileSnaps) {
+            val mapSize = registers.size
+            if (mapSize > profileMaxRegisterMapSize) profileMaxRegisterMapSize = mapSize
+            profileSumRegisterMapSize += mapSize.toLong()
+            val t0 = System.nanoTime()
+            val snap = snapshotForNativeUnprofiled()
+            profileSnapNs += System.nanoTime() - t0
+            profileSnapCount++
+            return snap
+        }
+        return snapshotForNativeUnprofiled()
+    }
+
+    private fun snapshotForNativeUnprofiled(): WamNativeSnapshot =
+        WamNativeSnapshot(
+            registers = LinkedHashMap(registers),
+            trail = trail.toList(),
+            choicePoints = choicePoints.map { cp ->
+                ChoicePoint(
+                    cp.code,
+                    cp.pc,
+                    LinkedHashMap(cp.registers),
+                    cp.trailSize,
+                    cp.context,
+                    cp.callStack.toList(),
+                    cp.environmentStack.map { EnvironmentFrame(it.id, LinkedHashMap(it.slots)) },
+                )
+            },
+            callStack = callStack.map { frame ->
+                CallFrame(
+                    frame.code,
+                    frame.returnPc,
+                    frame.context,
+                    frame.environmentStack.map { EnvironmentFrame(it.id, LinkedHashMap(it.slots)) },
+                )
+            },
+            environmentStack = snapshotEnvironmentStack(),
+            context = context,
+            pc = pc,
+        )
+
+    fun restoreFromSnapshot(snapshot: WamNativeSnapshot) {
+        registers.clear()
+        registers.putAll(snapshot.registers)
+        trail.clear()
+        trail.addAll(snapshot.trail)
+        choicePoints.clear()
+        choicePoints.addAll(snapshot.choicePoints)
+        callStack.clear()
+        callStack.addAll(snapshot.callStack)
+        restoreEnvironmentStack(snapshot.environmentStack)
+        context = snapshot.context
+        pc = snapshot.pc
+    }
 }
+
+data class WamNativeSnapshot(
+    val registers: Map<String, Value?>,
+    val trail: List<String>,
+    val choicePoints: List<ChoicePoint>,
+    val callStack: List<CallFrame>,
+    val environmentStack: List<EnvironmentFrame>,
+    val context: WamContext?,
+    val pc: Int,
+)
+
+// Native lowered predicates. The dispatch callback is WamRuntime.tryRun —
+// used for last-call `execute P/N` (EMIT-KOTLIN-4). Non-execute bodies ignore it.
+typealias WamNativeFn = (WamState, (String, WamState) -> Boolean) -> Boolean
 
 class WamProgram {
     private val predicates: MutableMap<String, PredicateCode> = linkedMapOf()
+    private val natives: MutableMap<String, WamNativeFn> = linkedMapOf()
 
     fun register(name: String, instructions: List<Instruction>) {
         val labels = linkedMapOf<String, Int>()
@@ -262,6 +356,12 @@ class WamProgram {
         }
         predicates[name] = PredicateCode(instructions, labels)
     }
+
+    fun registerNative(key: String, fn: WamNativeFn) {
+        natives[key] = fn
+    }
+
+    fun findNative(key: String): WamNativeFn? = natives[key]
 
     fun findCode(name: String): PredicateCode? = predicates[name]
 
@@ -276,16 +376,102 @@ class WamProgram {
 class WamRuntime(private val program: WamProgram) {
     private lateinit var currentCode: PredicateCode
 
+    // Depth of nested native tryRun entries. Top-level (=0→1) keeps the
+    // WAT-style snapshot+bytecode fallback (T5 unbound A1, incomplete
+    // lowering). Recursive hops (execute→dispatch→tryRun) skip it when
+    // skipRecursiveNativeSnapshot is true (KT-DISPATCH-SNAPSHOT-OPT):
+    // T4 already snapshots per clause (`_t4`).
+    //
+    // KT-SELF-REC-SOUNDNESS: the top-level native→bytecode fallback is also
+    // load-bearing for EMIT-KOTLIN-5's unconditional self-recursion mid-body
+    // exemption — a lowered self-recursive wrong-false is re-run on the
+    // interpreter. Do not remove this fallback without tightening
+    // kotlin_safe_midbody_callee's SelfKey exemption.
+    private var nativeDepth: Int = 0
+
+    /** When true (default), recursive native hops skip snapshotForNative. */
+    var skipRecursiveNativeSnapshot: Boolean = true
+
+    // Optional nanoTime counters for dispatch profiling (append_500 etc.).
+    // Snap time/count live on the WamState used for each tryRun (includes T4 `_t4`).
+    // Aggregate into these fields across a timed batch via noteStateProfile().
+    var profileNativeDispatch: Boolean = false
+    var profileSnapNs: Long = 0L
+    var profileSnapCount: Long = 0L
+    var profileNativeEntries: Long = 0L
+    var profileMaxRegisterMapSize: Int = 0
+    var profileSumRegisterMapSize: Long = 0L
+
+    fun resetProfileCounters() {
+        profileSnapNs = 0L
+        profileSnapCount = 0L
+        profileNativeEntries = 0L
+        profileMaxRegisterMapSize = 0
+        profileSumRegisterMapSize = 0L
+    }
+
+    /** Fold per-query state snap counters into the runtime aggregate (bench PROFILE). */
+    fun noteStateProfile(state: WamState) {
+        if (!profileNativeDispatch) return
+        profileSnapNs += state.profileSnapNs
+        profileSnapCount += state.profileSnapCount
+        if (state.profileMaxRegisterMapSize > profileMaxRegisterMapSize) {
+            profileMaxRegisterMapSize = state.profileMaxRegisterMapSize
+        }
+        profileSumRegisterMapSize += state.profileSumRegisterMapSize
+    }
+
     fun run(predicate: String, initialState: WamState = WamState()): WamState {
-        currentCode = program.codeFor(predicate)
+        if (!tryRun(predicate, initialState)) {
+            error("WAM predicate failed: $predicate")
+        }
+        return initialState
+    }
+
+    // Conformance / boolean entry: native-first, then bytecode; false on
+    // exhaustion (no throw). Used by conformance_main projects so ct_run
+    // can map stdout true/false without relying on exceptions.
+    fun tryRun(predicate: String, initialState: WamState = WamState()): Boolean {
+        if (profileNativeDispatch) {
+            initialState.profileSnaps = true
+        }
+        program.findNative(predicate)?.let { nativeFn ->
+            profileNativeEntries++
+            val recursive = nativeDepth > 0
+            // Recursive native hop: no full-state snapshot, no bytecode
+            // fallback. Clause-level backtracking is owned by the lowered
+            // T4 `_t4` snapshot; a native `false` here is a genuine fail.
+            if (recursive && skipRecursiveNativeSnapshot) {
+                return nativeFn(initialState, this::tryRun)
+            }
+            // Top-level (or recursive with skip disabled for A/B profile):
+            // snapshot so a native false can restore before falling back
+            // to bytecode (T5 unbound → interpreter; also KT-SELF-REC-
+            // SOUNDNESS wrong-false from self-recursive first-solution).
+            val snapshot = initialState.snapshotForNative()
+            nativeDepth++
+            val ok = try {
+                nativeFn(initialState, this::tryRun)
+            } finally {
+                nativeDepth--
+            }
+            if (ok) return true
+            if (program.findCode(predicate) == null) {
+                initialState.restoreFromSnapshot(snapshot)
+                return false
+            }
+            initialState.restoreFromSnapshot(snapshot)
+        }
+        val code = program.findCode(predicate) ?: return false
+        currentCode = code
         initialState.pc = 0
         while (initialState.pc in currentCode.instructions.indices) {
             val instruction = currentCode.instructions[initialState.pc]
             if (!step(initialState, instruction) && !restoreChoicePoint(initialState)) {
-                error("WAM instruction failed at pc=${initialState.pc}: $instruction")
+                return false
             }
         }
-        return initialState
+        return true
     }
 
     fun restoreChoicePoint(state: WamState): Boolean {
@@ -349,58 +535,10 @@ class WamRuntime(private val program: WamProgram) {
         return jumpToLabel(state, target)
     }
 
-    // M148: arithmetic evaluation for is/2 and the arith compares.
-    // Handles numeric leaves and the standard binary/unary operators
-    // built via put_structure. Returns null for non-evaluable input
-    // (ISO lax semantics: the builtin then fails).
-    fun evalArith(state: WamState, value: Value?): Value? {
-        return when (val d = state.resolve(value)) {
-            is Value.IntVal -> d
-            is Value.FloatVal -> d
-            is Value.Struct -> {
-                val parts = d.functor.split("/")
-                val name = parts.getOrNull(0) ?: return null
-                if (d.args.size == 2) {
-                    val a = evalArith(state, d.args[0]) ?: return null
-                    val b = evalArith(state, d.args[1]) ?: return null
-                    if (a is Value.IntVal && b is Value.IntVal) {
-                        val x = a.value; val y = b.value
-                        when (name) {
-                            "+" -> Value.IntVal(x + y)
-                            "-" -> Value.IntVal(x - y)
-                            "*" -> Value.IntVal(x * y)
-                            "//" -> if (y == 0L) null else Value.IntVal(x / y)
-                            "mod" -> if (y == 0L) null else Value.IntVal(Math.floorMod(x, y))
-                            "/" -> if (y == 0L) null else if (x % y == 0L) Value.IntVal(x / y) else Value.FloatVal(x.toDouble() / y)
-                            else -> null
-                        }
-                    } else {
-                        val x = arithDouble(a); val y = arithDouble(b)
-                        when (name) {
-                            "+" -> Value.FloatVal(x + y)
-                            "-" -> Value.FloatVal(x - y)
-                            "*" -> Value.FloatVal(x * y)
-                            "/" -> if (y == 0.0) null else Value.FloatVal(x / y)
-                            else -> null
-                        }
-                    }
-                } else if (d.args.size == 1 && name == "-") {
-                    when (val a = evalArith(state, d.args[0])) {
-                        is Value.IntVal -> Value.IntVal(-a.value)
-                        is Value.FloatVal -> Value.FloatVal(-a.value)
-                        else -> null
-                    }
-                } else null
-            }
-            else -> null
-        }
-    }
+    // M148 / EMIT-KOTLIN-5: shared with lowered kotlinLoBuiltinCall.
+    fun evalArith(state: WamState, value: Value?): Value? = wamEvalArith(state, value)
 
-    fun arithDouble(v: Value): Double = when (v) {
-        is Value.IntVal -> v.value.toDouble()
-        is Value.FloatVal -> v.value
-        else -> Double.NaN
-    }
+    fun arithDouble(v: Value): Double = wamArithDouble(v)
 
     fun step(state: WamState, instruction: Instruction): Boolean {
         when (instruction.op) {
@@ -652,23 +790,8 @@ class WamRuntime(private val program: WamProgram) {
                             else -> return false
                         }
                     }
-                    "is/2" -> {
-                        val result = evalArith(state, state.readRegister("A2")) ?: return false
-                        if (!state.unify(state.readRegister("A1"), result)) return false
-                        state.pc += 1; return true
-                    }
-                    "=:=/2", "=\\=/2", "</2", ">/2", "=</2", ">=/2" -> {
-                        val a = arithDouble(evalArith(state, state.readRegister("A1")) ?: return false)
-                        val b = arithDouble(evalArith(state, state.readRegister("A2")) ?: return false)
-                        val ok = when (op) {
-                            "=:=/2" -> a == b
-                            "=\\=/2" -> a != b
-                            "</2" -> a < b
-                            ">/2" -> a > b
-                            "=</2" -> a <= b
-                            else -> a >= b
-                        }
-                        if (!ok) return false
+                    "is/2", "=:=/2", "=\\=/2", "</2", ">/2", "=</2", ">=/2" -> {
+                        if (!kotlinLoBuiltinCall(state, op)) return false
                         state.pc += 1; return true
                     }
                 }
@@ -743,6 +866,60 @@ class WamRuntime(private val program: WamProgram) {
 fun functorArity(functor: String): Int? =
     functor.substringAfterLast('/', missingDelimiterValue = "").toIntOrNull()
 
+// Companion to functorArity: name is everything before the LAST '/', so
+// "///2" → "//", "//2" → "/", "+/2" → "+".
+fun functorName(functor: String): String =
+    functor.substringBeforeLast('/', missingDelimiterValue = functor)
+
+// Shared arithmetic (interpreter step + lowered kotlinLoBuiltinCall).
+fun wamEvalArith(state: WamState, value: Value?): Value? {
+    return when (val d = state.resolve(value)) {
+        is Value.IntVal -> d
+        is Value.FloatVal -> d
+        is Value.Struct -> {
+            val name = functorName(d.functor)
+            if (d.args.size == 2) {
+                val a = wamEvalArith(state, d.args[0]) ?: return null
+                val b = wamEvalArith(state, d.args[1]) ?: return null
+                if (a is Value.IntVal && b is Value.IntVal) {
+                    val x = a.value; val y = b.value
+                    when (name) {
+                        "+" -> Value.IntVal(x + y)
+                        "-" -> Value.IntVal(x - y)
+                        "*" -> Value.IntVal(x * y)
+                        "//" -> if (y == 0L) null else Value.IntVal(x / y)
+                        "mod" -> if (y == 0L) null else Value.IntVal(Math.floorMod(x, y))
+                        "/" -> if (y == 0L) null else if (x % y == 0L) Value.IntVal(x / y) else Value.FloatVal(x.toDouble() / y)
+                        else -> null
+                    }
+                } else {
+                    val x = wamArithDouble(a); val y = wamArithDouble(b)
+                    when (name) {
+                        "+" -> Value.FloatVal(x + y)
+                        "-" -> Value.FloatVal(x - y)
+                        "*" -> Value.FloatVal(x * y)
+                        "/" -> if (y == 0.0) null else Value.FloatVal(x / y)
+                        else -> null
+                    }
+                }
+            } else if (d.args.size == 1 && name == "-") {
+                when (val a = wamEvalArith(state, d.args[0])) {
+                    is Value.IntVal -> Value.IntVal(-a.value)
+                    is Value.FloatVal -> Value.FloatVal(-a.value)
+                    else -> null
+                }
+            } else null
+        }
+        else -> null
+    }
+}
+
+fun wamArithDouble(v: Value): Double = when (v) {
+    is Value.IntVal -> v.value.toDouble()
+    is Value.FloatVal -> v.value
+    else -> Double.NaN
+}
+
 fun parseWamCliValue(token: String): Value =
     parseStructToken(token)
         ?: token.toLongOrNull()?.let { Value.IntVal(it) }
@@ -764,4 +941,91 @@ fun stateFromCliArgs(values: List<String>): WamState {
         state.writeRegister("A${index + 1}", parseWamCliValue(raw))
     }
     return state
+}
+
+/** Build `[1,2,...,n]` as nested `[|]/2` cons cells (benchmark / CLI helper). */
+fun intRangeList(n: Int): Value {
+    var acc: Value = Value.Atom("[]")
+    for (i in n downTo 1) {
+        acc = Value.Struct("[|]/2", listOf(Value.IntVal(i.toLong()), acc))
+    }
+    return acc
+}
+
+// Lowered-predicate helpers (single-clause WAM fast path).
+fun kotlinLoGetConstant(state: WamState, expected: Value, register: String): Boolean {
+    val current = state.deref(state.readRegister(register))
+    return when {
+        current == null -> {
+            state.bind(register, expected)
+            true
+        }
+        current is Value.Var -> {
+            state.bind(current.name, expected)
+            true
+        }
+        current == expected -> true
+        else -> false
+    }
+}
+
+fun kotlinLoGetValue(state: WamState, variable: String, argument: String): Boolean {
+    val left = state.readRegister(variable) ?: state.newVariable(variable)
+    val right = state.readRegister(argument) ?: state.newVariable(argument)
+    return state.unify(left, right)
+}
+
+fun kotlinLoUnifyVariable(state: WamState, variable: String): Boolean {
+  return when (val ctx = state.context) {
+        is WamContext.Write -> state.pushWriteArg(state.newVariable(variable))
+        else -> {
+            val value = state.nextReadArg() ?: return false
+            state.writeRegister(variable, state.deref(value))
+            true
+        }
+    }
+}
+
+fun kotlinLoUnifyValue(state: WamState, register: String): Boolean {
+    return when (val ctx = state.context) {
+        is WamContext.Write ->
+            state.pushWriteArg(state.deref(state.readRegister(register)) ?: state.newVariable(register))
+        else -> {
+            val value = state.nextReadArg() ?: return false
+            val regValue = state.readRegister(register) ?: state.newVariable(register)
+            state.unify(regValue, value)
+        }
+    }
+}
+
+fun kotlinLoUnifyConstant(state: WamState, value: Value): Boolean {
+    return when (state.context) {
+        is WamContext.Write -> state.pushWriteArg(value)
+        else -> state.unify(state.nextReadArg(), value)
+    }
+}
+
+/** Lowered arithmetic / compare / unify builtins — same ops as interpreter `builtin_call`. */
+fun kotlinLoBuiltinCall(state: WamState, op: String): Boolean {
+    return when (op) {
+        "true/0" -> true
+        "=/2" -> state.unify(state.readRegister("A1"), state.readRegister("A2"))
+        "is/2" -> {
+            val result = wamEvalArith(state, state.readRegister("A2")) ?: return false
+            state.unify(state.readRegister("A1"), result)
+        }
+        "=:=/2", "=\\=/2", "</2", ">/2", "=</2", ">=/2" -> {
+            val a = wamArithDouble(wamEvalArith(state, state.readRegister("A1")) ?: return false)
+            val b = wamArithDouble(wamEvalArith(state, state.readRegister("A2")) ?: return false)
+            when (op) {
+                "=:=/2" -> a == b
+                "=\\=/2" -> a != b
+                "</2" -> a < b
+                ">/2" -> a > b
+                "=</2" -> a <= b
+                else -> a >= b
+            }
+        }
+        else -> false
+    }
 }

@@ -673,11 +673,17 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                     true
                 } else if p == "retract/1" {
                     self.dynamic_retract_call(self.pc + 1)
+                } else if p == "clause/2" {
+                    self.dynamic_clause_call(self.pc + 1)
+                } else if p == "current_predicate/1" {
+                    self.current_predicate_call(self.pc + 1)
                 } else if p == "assert/1" {
                     self.execute_assert_builtin("assert/1")
                 } else if p == "read_term/2" {
                     let options = self.get_reg_raw("A2");
                     self.execute_read_term_builtin(options.as_ref())
+                } else if p == "atomic/1" {
+                    self.execute_builtin(p, *_arity)
                 } else if self.foreign_predicates.contains(p) {
                     self.cp = self.pc + 1;
                     if self.execute_foreign_predicate(p, *_arity) {
@@ -749,6 +755,10 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
                     true
                 } else if p == "retract/1" {
                     self.dynamic_retract_call(self.cp)
+                } else if p == "clause/2" {
+                    self.dynamic_clause_call(self.cp)
+                } else if p == "current_predicate/1" {
+                    self.current_predicate_call(self.cp)
                 } else if p == "assert/1" {
                     if self.execute_assert_builtin("assert/1") {
                         self.pc = self.cp;
@@ -757,6 +767,11 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
                 } else if p == "read_term/2" {
                     let options = self.get_reg_raw("A2");
                     if self.execute_read_term_builtin(options.as_ref()) {
+                        self.pc = self.cp;
+                        true
+                    } else { false }
+                } else if p == "atomic/1" {
+                    if self.execute_builtin(p, 1) {
                         self.pc = self.cp;
                         true
                     } else { false }
@@ -1342,16 +1357,359 @@ compile_execute_arith_builtin_to_rust(Code) :-
     }'.
 
 compile_execute_io_builtin_to_rust(Code) :-
-    Code = '    fn execute_io_builtin(&mut self, op: &str, _arity: usize) -> bool {
+    Code = '    fn builtin_path_arg(&self, reg: &str) -> Option<String> {
+        match self.get_reg_raw(reg)
+            .map(|v| self.deref_heap(&self.deref_var(&v))) {
+            Some(Value::Atom(path)) => Some(path),
+            _ => None,
+        }
+    }
+
+    fn execute_io_builtin(&mut self, op: &str, _arity: usize) -> bool {
         match op {
-            "write/1" | "display/1" => {
-                // Both use Display for now. Standard Prolog differentiates them:
-                // write/1 suppresses quoting, display/1 uses functional notation.
+            "write/1" | "display/1" | "print/1" => {
+                // These share Display rendering for now. Standard Prolog
+                // differentiates write/1, display/1, and print/1.
                 if let Some(val) = self.get_reg_raw("A1") {
                     let derefed = self.deref_heap(&val);
                     print!("{}", derefed);
                     self.pc += 1; true
                 } else { false }
+            }
+            "write_canonical/1" => {
+                if let Some(val) = self.get_reg_raw("A1") {
+                    let rendered = self.term_to_atom_text(&val);
+                    let mut stdout = std::io::stdout().lock();
+                    if std::io::Write::write_all(&mut stdout, rendered.as_bytes()).is_err() {
+                        return false;
+                    }
+                    self.pc += 1; true
+                } else { false }
+            }
+            "writeln/1" => {
+                if let Some(val) = self.get_reg_raw("A1") {
+                    let derefed = self.deref_heap(&val);
+                    println!("{}", derefed);
+                    self.pc += 1; true
+                } else { false }
+            }
+            "tab/1" => {
+                let mut remaining = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(n)) if n >= 0 => match usize::try_from(n) {
+                        Ok(count) => count,
+                        Err(_) => return false,
+                    },
+                    _ => return false,
+                };
+                let spaces = [b'' ''; 64];
+                let mut stdout = std::io::stdout().lock();
+                while remaining > 0 {
+                    let count = remaining.min(spaces.len());
+                    if std::io::Write::write_all(&mut stdout, &spaces[..count]).is_err() {
+                        return false;
+                    }
+                    remaining -= count;
+                }
+                self.pc += 1; true
+            }
+            "put_char/1" => {
+                let text = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(text)) => text,
+                    _ => return false,
+                };
+                let mut chars = text.chars();
+                let ch = match (chars.next(), chars.next()) {
+                    (Some(ch), None) => ch,
+                    _ => return false,
+                };
+                let mut encoded = [0u8; 4];
+                let bytes = ch.encode_utf8(&mut encoded).as_bytes();
+                let mut stdout = std::io::stdout().lock();
+                if std::io::Write::write_all(&mut stdout, bytes).is_err() {
+                    return false;
+                }
+                self.pc += 1; true
+            }
+            "put_code/1" => {
+                let ch = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(code)) if code >= 0 => {
+                        match u32::try_from(code).ok().and_then(char::from_u32) {
+                            Some(ch) => ch,
+                            None => return false,
+                        }
+                    }
+                    _ => return false,
+                };
+                let mut encoded = [0u8; 4];
+                let bytes = ch.encode_utf8(&mut encoded).as_bytes();
+                let mut stdout = std::io::stdout().lock();
+                if std::io::Write::write_all(&mut stdout, bytes).is_err() {
+                    return false;
+                }
+                self.pc += 1; true
+            }
+            "file_base_name/2" | "file_directory_name/2" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let component = if op == "file_base_name/2" {
+                    match path.rfind("/") {
+                        Some(index) => path[index + 1..].to_string(),
+                        None => path,
+                    }
+                } else {
+                    match path.rfind("/") {
+                        Some(0) => "/".to_string(),
+                        Some(index) => path[..index].to_string(),
+                        None => ".".to_string(),
+                    }
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Atom(component)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "file_name_extension/3" => {
+                let file_value = self.get_reg_raw("A3")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                if let Value::Atom(file) = file_value {
+                    let basename_start = file.rfind("/")
+                        .map(|index| index + 1)
+                        .unwrap_or(0);
+                    let extension_dot = file[basename_start..]
+                        .rfind(".")
+                        .map(|index| basename_start + index)
+                        .filter(|index| *index > basename_start);
+                    let (base, extension) = match extension_dot {
+                        Some(index) => (
+                            file[..index].to_string(),
+                            file[index + 1..].to_string(),
+                        ),
+                        None => (file, String::new()),
+                    };
+                    let base_output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                    let extension_output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                    let mark = self.trail.len();
+                    if !self.unify(&base_output, &Value::Atom(base)) {
+                        self.unwind_trail_to(mark);
+                        return false;
+                    }
+                    if self.unify(&extension_output, &Value::Atom(extension)) {
+                        self.pc += 1; true
+                    } else {
+                        self.unwind_trail_to(mark);
+                        false
+                    }
+                } else {
+                    let base = match self.builtin_path_arg("A1") {
+                        Some(base) => base,
+                        None => return false,
+                    };
+                    let extension = match self.builtin_path_arg("A2") {
+                        Some(extension) => extension,
+                        None => return false,
+                    };
+                    let file = if extension.is_empty() {
+                        base
+                    } else {
+                        format!("{}.{}", base, extension)
+                    };
+                    let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                    let mark = self.trail.len();
+                    if self.unify(&output, &Value::Atom(file)) {
+                        self.pc += 1; true
+                    } else {
+                        self.unwind_trail_to(mark);
+                        false
+                    }
+                }
+            }
+            "is_absolute_file_name/1" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                if path.starts_with("/") { self.pc += 1; true } else { false }
+            }
+            "path_join/3" => {
+                let base = match self.builtin_path_arg("A1") {
+                    Some(base) => base,
+                    None => return false,
+                };
+                let relative = match self.builtin_path_arg("A2") {
+                    Some(relative) => relative,
+                    None => return false,
+                };
+                let full = if relative.starts_with("/") || base.is_empty() {
+                    relative
+                } else if relative.is_empty() {
+                    base
+                } else if base.ends_with("/") {
+                    format!("{}{}", base, relative)
+                } else {
+                    format!("{}/{}", base, relative)
+                };
+                let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Atom(full)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "exists_file/1" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                match std::fs::metadata(path) {
+                    Ok(metadata) if metadata.is_file() => { self.pc += 1; true }
+                    _ => false,
+                }
+            }
+            "exists_directory/1" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                match std::fs::metadata(path) {
+                    Ok(metadata) if metadata.is_dir() => { self.pc += 1; true }
+                    _ => false,
+                }
+            }
+            "directory_files/2" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let entries = match std::fs::read_dir(path) {
+                    Ok(entries) => entries,
+                    Err(_) => return false,
+                };
+                let mut names = Vec::new();
+                for entry in entries {
+                    let entry = match entry {
+                        Ok(entry) => entry,
+                        Err(_) => return false,
+                    };
+                    let name = match entry.file_name().into_string() {
+                        Ok(name) => name,
+                        Err(_) => return false,
+                    };
+                    names.push(name);
+                }
+                names.sort_unstable();
+                let mut files = Vec::with_capacity(names.len() + 2);
+                files.push(Value::Atom(".".to_string()));
+                files.push(Value::Atom("..".to_string()));
+                files.extend(names.into_iter().map(Value::Atom));
+
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::List(files)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "size_file/2" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let size = match std::fs::metadata(path)
+                    .ok()
+                    .and_then(|metadata| i64::try_from(metadata.len()).ok()) {
+                    Some(size) => size,
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Integer(size)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "time_file/2" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let modified = match std::fs::metadata(path)
+                    .and_then(|metadata| metadata.modified()) {
+                    Ok(modified) => modified,
+                    Err(_) => return false,
+                };
+                let seconds = match modified.duration_since(std::time::UNIX_EPOCH) {
+                    Ok(duration) => duration.as_secs_f64(),
+                    Err(error) => -error.duration().as_secs_f64(),
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Float(seconds)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "get_time/1" => {
+                let now = std::time::SystemTime::now();
+                let seconds = match now.duration_since(std::time::UNIX_EPOCH) {
+                    Ok(duration) => duration.as_secs_f64(),
+                    Err(error) => -error.duration().as_secs_f64(),
+                };
+                let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Float(seconds)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "getenv/2" => {
+                let name = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(name)) => name,
+                    _ => return false,
+                };
+                let value = match std::env::var(name) {
+                    Ok(value) => value,
+                    Err(_) => return false,
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Atom(value)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "getpid/1" => {
+                let pid = Value::Integer(i64::from(std::process::id()));
+                let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &pid) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
             }
             "nl/0" => { println!(); self.pc += 1; true }
             _ => false,
@@ -1366,6 +1724,12 @@ compile_execute_type_builtin_to_rust(Code) :-
                 "integer/1" => matches!(val, Value::Integer(_)),
                 "float/1" => matches!(val, Value::Float(_)),
                 "number/1" => val.is_number(),
+                "atomic/1" => {
+                    let derefed = self.deref_heap(&self.deref_var(&val));
+                    matches!(&derefed,
+                        Value::Atom(_) | Value::Integer(_) | Value::Float(_) | Value::Bool(_))
+                        || matches!(&derefed, Value::List(items) if items.is_empty())
+                }
                 "compound/1" => val.is_compound(),
                 "var/1" => val.is_unbound(),
                 "nonvar/1" => !val.is_unbound(),
@@ -1600,8 +1964,9 @@ compile_execute_term_builtin_to_rust(Code) :-
                 } else { false }
             }
             "reverse/2" => { self.execute_reverse_builtin() }
-            "atom_codes/2" => { self.execute_atom_codes_builtin() }
+            "atom_codes/2" | "string_codes/2" => { self.execute_atom_codes_builtin() }
             "number_codes/2" => { self.execute_number_codes_builtin() }
+            "number_chars/2" => { self.execute_number_chars_builtin() }
             "atom_to_term/3" => { self.execute_atom_to_term_builtin() }
             "term_to_atom/2" => { self.execute_term_to_atom_builtin() }
             "read_term_from_atom/2" => { self.execute_read_term_from_atom_builtin(2) }
@@ -1611,8 +1976,98 @@ compile_execute_term_builtin_to_rust(Code) :-
                 self.execute_read_term_builtin(options.as_ref())
             }
             "read/1" | "read_term/1" => { self.execute_read_term_builtin(None) }
+            "assert/1" => { self.execute_assert_builtin("assert/1") }
             "assertz/1" | "asserta/1" => { self.execute_assert_builtin(op) }
             "retractall/1" => { self.execute_retractall_builtin() }
+            "predicate_property/2" => { self.execute_predicate_property_builtin() }
+            "term_variables/2" => {
+                let term = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let variables = self.variables_from_term(&term);
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.unify(&output, &variables) { self.pc += 1; true }
+                else { false }
+            }
+            "numbervars/3" => {
+                let start = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(n)) => n,
+                    _ => return false,
+                };
+                let term = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let variables = match self.variables_from_term(&term) {
+                    Value::List(items) => items,
+                    _ => return false,
+                };
+                let mark = self.trail.len();
+                let mut next_number = start;
+                for variable in variables {
+                    let following = match next_number.checked_add(1) {
+                        Some(n) => n,
+                        None => { self.unwind_trail_to(mark); return false; }
+                    };
+                    let numbered = Value::Str(
+                        "$VAR/1".to_string(),
+                        vec![Value::Integer(next_number)],
+                    );
+                    if !self.unify(&variable, &numbered) {
+                        self.unwind_trail_to(mark);
+                        return false;
+                    }
+                    next_number = following;
+                }
+                let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                if self.unify(&output, &Value::Integer(next_number)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "=@=/2" | "\\\\=@=/2" => {
+                let left_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let right_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let left = self.deref_heap(&self.deref_var(&left_raw));
+                let right = self.deref_heap(&self.deref_var(&right_raw));
+                let mut left_vars = std::collections::HashMap::new();
+                let mut right_vars = std::collections::HashMap::new();
+                let equivalent = Self::variant_terms(
+                    &left,
+                    &right,
+                    &mut left_vars,
+                    &mut right_vars,
+                );
+                let succeeds = if op == "=@=/2" { equivalent } else { !equivalent };
+                if succeeds { self.pc += 1; true } else { false }
+            }
+            "unifiable/3" => {
+                let left = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let right = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if !self.unify(&left, &right) {
+                    self.unwind_trail_to(mark);
+                    return false;
+                }
+                // Keep raw values so alias substitutions remain X=Y after
+                // the trial bindings are unwound.
+                let pairs: Vec<Value> = self.trail[mark..].iter()
+                    .filter_map(|entry| {
+                        let name = entry.key.strip_prefix("__binding__")?;
+                        let bound = self.bindings.get(name)?.clone();
+                        Some(Value::Str(
+                            "=/2".to_string(),
+                            vec![Value::Unbound(name.to_string()), bound],
+                        ))
+                    })
+                    .collect();
+                self.unwind_trail_to(mark);
+                let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                if self.unify(&output, &Value::List(pairs)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
             _ => false,
         }
     }
@@ -1650,6 +2105,51 @@ compile_execute_term_builtin_to_rust(Code) :-
                 Value::List(new_items)
             }
             _ => v.clone(),
+        }
+    }
+
+    fn variant_terms(
+        left: &Value,
+        right: &Value,
+        left_vars: &mut std::collections::HashMap<String, String>,
+        right_vars: &mut std::collections::HashMap<String, String>,
+    ) -> bool {
+        match (left, right) {
+            (Value::Unbound(a), Value::Unbound(b)) => {
+                if let Some(mapped) = left_vars.get(a) {
+                    return mapped == b && right_vars.get(b) == Some(a);
+                }
+                if right_vars.contains_key(b) { return false; }
+                left_vars.insert(a.clone(), b.clone());
+                right_vars.insert(b.clone(), a.clone());
+                true
+            }
+            (Value::Atom(a), Value::Atom(b)) => a == b,
+            (Value::Integer(a), Value::Integer(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::List(items), Value::Atom(atom))
+            | (Value::Atom(atom), Value::List(items))
+                if items.is_empty() && atom == "[]" => true,
+            (Value::Str(f1, args1), Value::Str(f2, args2)) => {
+                if f1 != f2 || args1.len() != args2.len() { return false; }
+                for (a, b) in args1.iter().zip(args2.iter()) {
+                    if !Self::variant_terms(a, b, left_vars, right_vars) {
+                        return false;
+                    }
+                }
+                true
+            }
+            (Value::List(items1), Value::List(items2)) => {
+                if items1.len() != items2.len() { return false; }
+                for (a, b) in items1.iter().zip(items2.iter()) {
+                    if !Self::variant_terms(a, b, left_vars, right_vars) {
+                        return false;
+                    }
+                }
+                true
+            }
+            _ => false,
         }
     }
 
@@ -1731,6 +2231,61 @@ compile_execute_term_builtin_to_rust(Code) :-
         }
     }
 
+    fn execute_number_chars_builtin(&mut self) -> bool {
+        let num_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let chars_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let num = self.deref_heap(&self.deref_var(&num_raw));
+        let chars = self.deref_heap(&self.deref_var(&chars_raw));
+        match (num, chars) {
+            (Value::Integer(n), _) => {
+                let list = Value::List(
+                    n.to_string()
+                        .chars()
+                        .map(|ch| Value::Atom(ch.to_string()))
+                        .collect(),
+                );
+                if self.unify(&chars_raw, &list) { self.pc += 1; true }
+                else { false }
+            }
+            (Value::Float(f), _) => {
+                let list = Value::List(
+                    f.to_string()
+                        .chars()
+                        .map(|ch| Value::Atom(ch.to_string()))
+                        .collect(),
+                );
+                if self.unify(&chars_raw, &list) { self.pc += 1; true }
+                else { false }
+            }
+            (Value::Unbound(_), Value::List(items)) => {
+                let mut text = String::new();
+                for item in &items {
+                    match self.deref_heap(&self.deref_var(item)) {
+                        Value::Atom(atom) if atom.chars().count() == 1 => {
+                            text.push(atom.chars().next().unwrap());
+                        }
+                        _ => return false,
+                    }
+                }
+                let parsed = if let Ok(n) = text.parse::<i64>() {
+                    Some(Value::Integer(n))
+                } else if let Ok(f) = text.parse::<f64>() {
+                    Some(Value::Float(f))
+                } else {
+                    None
+                };
+                match parsed {
+                    Some(value) => {
+                        if self.unify(&num_raw, &value) { self.pc += 1; true }
+                        else { false }
+                    }
+                    None => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
     fn execute_atom_to_term_builtin(&mut self) -> bool {
         let atom = self.get_reg_raw("A1")
             .map(|value| self.deref_heap(&self.deref_var(&value)));
@@ -1797,6 +2352,7 @@ compile_execute_term_builtin_to_rust(Code) :-
         target_reg: &str,
         options: Option<&Value>,
     ) -> bool {
+        let atom_text = Self::strip_term_comments(atom_text);
         let variable_names = options
             .and_then(|value| self.read_term_option_arg(value, "variable_names"));
         let variables = options
@@ -1833,7 +2389,7 @@ compile_execute_term_builtin_to_rust(Code) :-
 
         parser.reset_query();
         let parsed_var = Value::Unbound("_RP_term".to_string());
-        parser.set_reg_str("A1", Value::Atom(atom_text.to_string()));
+        parser.set_reg_str("A1", Value::Atom(atom_text));
         parser.set_reg_str("A2", ops);
         parser.set_reg_str("A3", parsed_var.clone());
         let var_env = Value::Unbound("_RP_env".to_string());
@@ -1938,6 +2494,29 @@ compile_execute_term_builtin_to_rust(Code) :-
             }
             _ => None,
         }
+    }
+
+    fn pair_list_columns(
+        &self,
+        value: &Value,
+        take_keys: bool,
+        take_values: bool,
+    ) -> Option<(Vec<Value>, Vec<Value>)> {
+        let items = self.value_as_list(value)?;
+        let mut keys = if take_keys { Vec::with_capacity(items.len()) } else { Vec::new() };
+        let mut values = if take_values { Vec::with_capacity(items.len()) } else { Vec::new() };
+        for item in &items {
+            match self.deref_heap(&self.deref_var(item)) {
+                Value::Str(functor, args)
+                    if args.len() == 2
+                        && Self::display_functor_name(&functor, 2) == "-" => {
+                    if take_keys { keys.push(args[0].clone()); }
+                    if take_values { values.push(args[1].clone()); }
+                }
+                _ => return None,
+            }
+        }
+        Some((keys, values))
     }
 
     fn string_to_codes_value(text: &str) -> Value {
@@ -3675,6 +4254,52 @@ compile_resume_builtin_to_rust(Code) :-
                 };
                 self.dynamic_retract_attempt(key, start_idx, pattern, cont_pc)
             }
+            "dynamic_clause" => {
+                let key = match state.args.get(0) {
+                    Some(Value::Atom(key)) => key.clone(),
+                    _ => return false,
+                };
+                let head = match state.args.get(1) {
+                    Some(head) => head.clone(),
+                    _ => return false,
+                };
+                let body = match state.args.get(2) {
+                    Some(body) => body.clone(),
+                    _ => return false,
+                };
+                let start_idx = match state.data.get(0) {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return false,
+                };
+                let cont_pc = match state.data.get(1) {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return false,
+                };
+                self.dynamic_clause_attempt(key, start_idx, head, body, cont_pc)
+            }
+            "current_predicate" => {
+                let keys = match state.args.get(0) {
+                    Some(Value::List(keys)) => keys.clone(),
+                    _ => return false,
+                };
+                let name = match state.args.get(1) {
+                    Some(name) => name.clone(),
+                    _ => return false,
+                };
+                let arity = match state.args.get(2) {
+                    Some(arity) => arity.clone(),
+                    _ => return false,
+                };
+                let start_idx = match state.data.get(0) {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return false,
+                };
+                let cont_pc = match state.data.get(1) {
+                    Some(Value::Integer(n)) => *n as usize,
+                    _ => return false,
+                };
+                self.current_predicate_attempt(keys, start_idx, name, arity, cont_pc)
+            }
             "dynamic_rule_body" => {
                 let clause = match state.args.get(0) {
                     Some(clause) => clause.clone(),
@@ -3852,6 +4477,37 @@ compile_execute_ext_builtin_to_rust(Code) :-
         }
     }
 
+    /// Extract the 1-based compound argument used by sort/4. None
+    /// means compare the whole term, including Key=0 and out-of-range
+    /// keys. Lists expose their head and tail as arguments 1 and 2.
+    fn builtin_sort_key(&self, value: &Value, position: usize) -> Option<Value> {
+        if position == 0 { return None; }
+        let term = self.deref_heap(&self.deref_var(value));
+        match &term {
+            Value::Str(_, args) if position <= args.len() => {
+                Some(self.deref_heap(&self.deref_var(&args[position - 1])))
+            }
+            Value::List(items) if !items.is_empty() && position == 1 => {
+                Some(self.deref_heap(&self.deref_var(&items[0])))
+            }
+            Value::List(items) if !items.is_empty() && position == 2 => {
+                Some(Value::List(items[1..].to_vec()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Test list membership by unification. Failed candidates are
+    /// unwound; the first successful candidate keeps its bindings.
+    fn builtin_unify_member(&mut self, item: &Value, candidates: &[Value]) -> bool {
+        for candidate in candidates {
+            let mark = self.trail.len();
+            if self.unify(item, candidate) { return true; }
+            self.unwind_trail_to(mark);
+        }
+        false
+    }
+
     /// One alternative of between/3 enumeration: bind X to N, leaving a
     /// choice point for N+1..High. Called from the first builtin
     /// dispatch and from resume_builtin on backtrack.
@@ -4018,6 +4674,65 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 if self.unify(&a2, &Value::List(sorted)) { self.pc += 1; true } else { false }
             }
+            "sort/4" => {
+                let key_position = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(position)) if position >= 0 => {
+                        match usize::try_from(position) {
+                            Ok(position) => position,
+                            Err(_) => return false,
+                        }
+                    }
+                    _ => return false,
+                };
+                let order = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(order)) => order,
+                    _ => return false,
+                };
+                let (descending, deduplicate) = match order.as_str() {
+                    "@<" => (false, true),
+                    "@=<" => (false, false),
+                    "@>" => (true, true),
+                    "@>=" => (true, false),
+                    _ => return false,
+                };
+                let list = match self.get_reg_raw("A3")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let mut keyed = Vec::with_capacity(list.len());
+                for item in &list {
+                    let value = self.deref_heap(&self.deref_var(item));
+                    let key = self.builtin_sort_key(&value, key_position);
+                    keyed.push((value, key));
+                }
+                keyed.sort_by(|a, b| {
+                    let a_key = a.1.as_ref().unwrap_or(&a.0);
+                    let b_key = b.1.as_ref().unwrap_or(&b.0);
+                    let ordering = self.term_compare(a_key, b_key);
+                    if descending { ordering.reverse() } else { ordering }
+                });
+                if deduplicate {
+                    keyed.dedup_by(|a, b| {
+                        let a_key = a.1.as_ref().unwrap_or(&a.0);
+                        let b_key = b.1.as_ref().unwrap_or(&b.0);
+                        self.term_compare(a_key, b_key) == Ordering::Equal
+                    });
+                }
+                let sorted = keyed.into_iter()
+                    .map(|(value, _)| value)
+                    .collect::<Vec<_>>();
+                let output = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::List(sorted)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
             "keysort/2" => {
                 let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
                     Some(Value::List(items)) => items,
@@ -4036,6 +4751,65 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let sorted: Vec<Value> = keyed.into_iter().map(|kv| kv.1).collect();
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 if self.unify(&a2, &Value::List(sorted)) { self.pc += 1; true } else { false }
+            }
+            "pairs_keys/2" | "pairs_values/2" => {
+                let pairs = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let take_keys = op == "pairs_keys/2";
+                let (keys, values) = match self.pair_list_columns(&pairs, take_keys, !take_keys) {
+                    Some(parts) => parts,
+                    None => return false,
+                };
+                let projected = if op == "pairs_keys/2" { keys } else { values };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::List(projected)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "pairs_keys_values/3" => {
+                let pairs_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let keys_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let values_raw = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                let pairs = self.deref_heap(&self.deref_var(&pairs_raw));
+                if matches!(pairs, Value::Unbound(_)) {
+                    let keys = match self.value_as_list(&keys_raw) {
+                        Some(items) => items,
+                        None => return false,
+                    };
+                    let values = match self.value_as_list(&values_raw) {
+                        Some(items) if items.len() == keys.len() => items,
+                        _ => return false,
+                    };
+                    let zipped: Vec<Value> = keys.into_iter().zip(values)
+                        .map(|(key, value)| Value::Str("-".to_string(), vec![key, value]))
+                        .collect();
+                    let mark = self.trail.len();
+                    if self.unify(&pairs_raw, &Value::List(zipped)) {
+                        self.pc += 1; true
+                    } else {
+                        self.unwind_trail_to(mark);
+                        false
+                    }
+                } else {
+                    let (keys, values) = match self.pair_list_columns(&pairs_raw, true, true) {
+                        Some(parts) => parts,
+                        None => return false,
+                    };
+                    let mark = self.trail.len();
+                    if !self.unify(&keys_raw, &Value::List(keys)) {
+                        self.unwind_trail_to(mark);
+                        return false;
+                    }
+                    if self.unify(&values_raw, &Value::List(values)) {
+                        self.pc += 1; true
+                    } else {
+                        self.unwind_trail_to(mark);
+                        false
+                    }
+                }
             }
             "memberchk/2" => {
                 // First element that unifies wins, deterministically;
@@ -4111,6 +4885,95 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 }
                 let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                 if self.unify(&a3, &Value::List(kept)) { self.pc += 1; true } else { false }
+            }
+            "subtract/3" => {
+                let list = match self.get_reg_raw("A1").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let excluded = match self.get_reg_raw("A2").map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let kept: Vec<Value> = list.into_iter()
+                    .filter(|item| !excluded.contains(item))
+                    .collect();
+                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                if self.unify(&a3, &Value::List(kept)) { self.pc += 1; true } else { false }
+            }
+            "intersection/3" => {
+                let left = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let right = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let mark = self.trail.len();
+                let mut common = Vec::with_capacity(left.len());
+                for item in &left {
+                    if self.builtin_unify_member(item, &right) {
+                        common.push(item.clone());
+                    }
+                }
+                let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                if self.unify(&output, &Value::List(common)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "union/3" => {
+                let left = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let right = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let mark = self.trail.len();
+                let mut union = Vec::with_capacity(left.len() + right.len());
+                union.extend(left.iter().cloned());
+                for item in &right {
+                    if !self.builtin_unify_member(item, &left) {
+                        union.push(item.clone());
+                    }
+                }
+                let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                if self.unify(&output, &Value::List(union)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "list_to_set/2" => {
+                let items = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::List(items)) => items,
+                    _ => return false,
+                };
+                let mark = self.trail.len();
+                let mut unique = Vec::with_capacity(items.len());
+                for item in &items {
+                    if !self.builtin_unify_member(item, &unique) {
+                        unique.push(item.clone());
+                    }
+                }
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                if self.unify(&output, &Value::List(unique)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
             }
             "select/3" => {
                 let x_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
@@ -4226,6 +5089,90 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let a2 = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 if self.unify(&a2, &len) { self.pc += 1; true } else { false }
             }
+            "split_string/4" => {
+                let text = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .as_ref().and_then(Self::value_atomic_text) {
+                    Some(t) => t,
+                    None => return false,
+                };
+                let separators = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .as_ref().and_then(Self::value_atomic_text) {
+                    Some(t) => t.chars().collect::<Vec<_>>(),
+                    None => return false,
+                };
+                let pads = match self.get_reg_raw("A3")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .as_ref().and_then(Self::value_atomic_text) {
+                    Some(t) => t.chars().collect::<Vec<_>>(),
+                    None => return false,
+                };
+                let parts = text
+                    .split(|ch| separators.contains(&ch))
+                    .map(|part| {
+                        Value::Atom(part.trim_matches(|ch| pads.contains(&ch)).to_string())
+                    })
+                    .collect::<Vec<_>>();
+                let output = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::List(parts)) {
+                    self.pc += 1;
+                    true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "atom_split/3" => {
+                let text = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(s)) => s,
+                    _ => return false,
+                };
+                let separator = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(s)) => s,
+                    _ => return false,
+                };
+                let mut separator_chars = separator.chars();
+                let separator_char = match separator_chars.next() {
+                    Some(ch) if separator_chars.next().is_none() => ch,
+                    _ => return false,
+                };
+                let parts = text
+                    .split(separator_char)
+                    .map(|part| Value::Atom(part.to_string()))
+                    .collect::<Vec<_>>();
+                let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::List(parts)) {
+                    self.pc += 1;
+                    true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "atom_starts_with/2" | "atom_ends_with/2" | "atom_contains/2" => {
+                let text = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(s)) => s,
+                    _ => return false,
+                };
+                let fragment = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(s)) => s,
+                    _ => return false,
+                };
+                let matched = match op {
+                    "atom_starts_with/2" => text.starts_with(&fragment),
+                    "atom_ends_with/2" => text.ends_with(&fragment),
+                    "atom_contains/2" => text.contains(&fragment),
+                    _ => false,
+                };
+                if matched { self.pc += 1; true } else { false }
+            }
             "atom_concat/3" | "string_concat/3" => {
                 let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
                 let v2 = self.get_reg_raw("A2").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
@@ -4246,6 +5193,27 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let a1_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
                 let a2_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 self.builtin_atom_concat_attempt(&a1_raw, &a2_raw, &chars, 0)
+            }
+            "string_code/3" => {
+                let offset = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(n)) if n >= 1 => match usize::try_from(n - 1) {
+                        Ok(i) => i,
+                        Err(_) => return false,
+                    },
+                    _ => return false,
+                };
+                let text = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(s)) => s,
+                    _ => return false,
+                };
+                let code = match text.chars().nth(offset) {
+                    Some(ch) => Value::Integer(ch as i64),
+                    None => return false,
+                };
+                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                if self.unify(&a3, &code) { self.pc += 1; true } else { false }
             }
             "char_code/2" => {
                 let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
@@ -4268,7 +5236,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     }
                 }
             }
-            "atom_chars/2" => {
+            "atom_chars/2" | "string_chars/2" => {
                 let v1 = self.get_reg_raw("A1").map(|v| self.deref_var(&v)).unwrap_or(Value::Uninit);
                 if let Some(text) = Self::value_atomic_text(&v1) {
                     let chars: Vec<Value> = text.chars()
@@ -4858,6 +5826,12 @@ compile_execute_meta_builtin_to_rust(Code) :-
         let saved_pc = self.pc;
         if key == "retract/1" {
             return self.dynamic_retract_call(saved_pc);
+        }
+        if key == "clause/2" {
+            return self.dynamic_clause_call(saved_pc);
+        }
+        if key == "current_predicate/1" {
+            return self.current_predicate_call(saved_pc);
         }
         if self.execute_builtin(key, arity) {
             self.pc = saved_pc;

@@ -12,6 +12,88 @@ rust_dyn_dummy.
 :- dynamic rust_assert_alias_demo/0.
 rust_assert_alias_demo :- assert(dyn(alias)).
 
+:- dynamic rust_clause_demo/2.
+rust_clause_demo(X, Body) :-
+    clause(dyn(X), Body).
+
+:- dynamic rust_clause_instantiation_demo/1.
+rust_clause_instantiation_demo(Result) :-
+    catch(
+        clause(_, _),
+        error(instantiation_error, _),
+        Result = caught).
+
+:- dynamic rust_clause_type_demo/1.
+rust_clause_type_demo(Result) :-
+    catch(
+        clause(7, _),
+        error(type_error(callable, _), _),
+        Result = caught).
+
+:- dynamic rust_current_predicate_demo/2.
+rust_current_predicate_demo(Name, Arity) :-
+    current_predicate(Name/Arity).
+
+:- dynamic rust_current_predicate_instantiation_demo/1.
+rust_current_predicate_instantiation_demo(Result) :-
+    catch(
+        current_predicate(_),
+        error(instantiation_error, _),
+        Result = caught).
+
+:- dynamic rust_current_predicate_type_demo/1.
+rust_current_predicate_type_demo(Result) :-
+    catch(
+        current_predicate(not_an_indicator),
+        error(type_error(predicate_indicator, _), _),
+        Result = caught).
+
+:- dynamic rust_current_predicate_name_type_demo/1.
+rust_current_predicate_name_type_demo(Result) :-
+    catch(
+        current_predicate(7/1),
+        error(type_error(atom, _), _),
+        Result = caught).
+
+:- dynamic rust_current_predicate_arity_type_demo/1.
+rust_current_predicate_arity_type_demo(Result) :-
+    catch(
+        current_predicate(named/not_an_arity),
+        error(type_error(integer, _), _),
+        Result = caught).
+
+:- dynamic rust_predicate_property_demo/2.
+rust_predicate_property_demo(Head, Property) :-
+    predicate_property(Head, Property).
+
+:- dynamic rust_predicate_property_head_instantiation_demo/1.
+rust_predicate_property_head_instantiation_demo(Result) :-
+    catch(
+        predicate_property(_, defined),
+        error(instantiation_error, _),
+        Result = caught).
+
+:- dynamic rust_predicate_property_head_type_demo/1.
+rust_predicate_property_head_type_demo(Result) :-
+    catch(
+        predicate_property(7, defined),
+        error(type_error(callable, _), _),
+        Result = caught).
+
+:- dynamic rust_predicate_property_property_instantiation_demo/1.
+rust_predicate_property_property_instantiation_demo(Result) :-
+    catch(
+        predicate_property(rust_clause_demo(_, _), _),
+        error(instantiation_error, _),
+        Result = caught).
+
+:- dynamic rust_predicate_property_domain_demo/1.
+rust_predicate_property_domain_demo(Result) :-
+    catch(
+        predicate_property(rust_clause_demo(_, _), unsupported),
+        error(domain_error(predicate_property, _), _),
+        Result = caught).
+
 :- dynamic rust_read_term_options_demo/2.
 rust_read_term_options_demo(Term, Names) :-
     read_term(Term, [variable_names(Names)]).
@@ -44,6 +126,19 @@ test(assert_retract_dynamic_db,
     once(write_wam_rust_project(
         [user:rust_dyn_dummy/0,
          user:rust_assert_alias_demo/0,
+         user:rust_clause_demo/2,
+         user:rust_clause_instantiation_demo/1,
+         user:rust_clause_type_demo/1,
+         user:rust_current_predicate_demo/2,
+         user:rust_current_predicate_instantiation_demo/1,
+         user:rust_current_predicate_type_demo/1,
+         user:rust_current_predicate_name_type_demo/1,
+         user:rust_current_predicate_arity_type_demo/1,
+         user:rust_predicate_property_demo/2,
+         user:rust_predicate_property_head_instantiation_demo/1,
+         user:rust_predicate_property_head_type_demo/1,
+         user:rust_predicate_property_property_instantiation_demo/1,
+         user:rust_predicate_property_domain_demo/1,
          user:rust_read_term_options_demo/2,
          user:rust_atom_to_term_demo/2,
          user:rust_syntax_error_demo/1],
