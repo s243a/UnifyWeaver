@@ -120,6 +120,15 @@ t_filesystem_identity(Real, Target) :-
     read_link('identity_fixture/link.txt', Target),
     same_file('identity_fixture/source.txt', 'identity_fixture/hard.txt').
 
+:- dynamic t_filesystem_mutation/0.
+t_filesystem_mutation :-
+    make_directory('mutation_compiled_fixture'),
+    copy_file('Cargo.toml', 'mutation_compiled_fixture/copied.toml'),
+    rename_file('mutation_compiled_fixture/copied.toml',
+                'mutation_compiled_fixture/renamed.toml'),
+    delete_file('mutation_compiled_fixture/renamed.toml'),
+    delete_directory('mutation_compiled_fixture').
+
 :- dynamic t_pairs_project/2.
 t_pairs_project(Keys, Values) :-
     Pairs = [a-1, b-2],
@@ -260,6 +269,7 @@ test_builtin_parity_execution :-
              user:t_split_string/1, user:t_atom_split/1, user:t_atom_checks/0,
              user:t_path_utilities/5,
              user:t_filesystem_identity/2,
+             user:t_filesystem_mutation/0,
              user:t_pairs_project/2, user:t_pairs_split/2, user:t_pairs_zip/1,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
@@ -292,6 +302,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_split_string_1, t_atom_split_1, t_atom_checks_0,
     t_path_utilities_5,
     t_filesystem_identity_2,
+    t_filesystem_mutation_0,
     t_pairs_project_2, t_pairs_split_2, t_pairs_zip_1,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
     t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
@@ -551,6 +562,51 @@ fn test_filesystem_identity_validation() {
     assert!(!call2("realpath/2", i(1), ub("Real")).0);
     assert!(!call2("read_link/2", ub("Path"), ub("Target")).0);
     assert!(!call2("same_file/2", a("path"), i(2)).0);
+}
+
+#[test]
+fn test_filesystem_mutation_compiled() {
+    let fixture = std::path::Path::new("mutation_compiled_fixture");
+    let _ = std::fs::remove_dir_all(fixture);
+
+    let mut vm = vmnew();
+    assert!(t_filesystem_mutation_0(&mut vm));
+    assert!(!fixture.exists());
+}
+
+#[test]
+fn test_filesystem_mutation_direct() {
+    let fixture = std::path::Path::new("mutation_direct_fixture");
+    let _ = std::fs::remove_dir_all(fixture);
+    let fixture_text = fixture.to_str().unwrap();
+
+    assert!(call1("make_directory/1", a(fixture_text)).0);
+    assert!(fixture.is_dir());
+    assert!(!call1("make_directory/1", a(fixture_text)).0);
+
+    let copied = fixture.join("copied.toml");
+    let copied_text = copied.to_str().unwrap();
+    assert!(call2("copy_file/2", a("Cargo.toml"), a(copied_text)).0);
+    assert_eq!(std::fs::read(&copied).unwrap(), std::fs::read("Cargo.toml").unwrap());
+
+    let renamed = fixture.join("renamed.toml");
+    let renamed_text = renamed.to_str().unwrap();
+    assert!(call2("rename_file/2", a(copied_text), a(renamed_text)).0);
+    assert!(!copied.exists());
+    assert!(renamed.is_file());
+
+    assert!(!call1("delete_directory/1", a(fixture_text)).0,
+        "delete_directory/1 must reject a nonempty directory");
+    assert!(call1("delete_file/1", a(renamed_text)).0);
+    assert!(!call1("delete_file/1", a(renamed_text)).0);
+    assert!(call1("delete_directory/1", a(fixture_text)).0);
+    assert!(!call1("delete_directory/1", a(fixture_text)).0);
+
+    assert!(!call1("make_directory/1", ub("Path")).0);
+    assert!(!call1("delete_file/1", i(7)).0);
+    assert!(!call2("copy_file/2", a("missing-mutation-source"), a("unused")).0);
+    assert!(!call2("copy_file/2", a("Cargo.toml"), ub("Destination")).0);
+    assert!(!call2("rename_file/2", ub("Source"), a("unused")).0);
 }
 
 #[test]
