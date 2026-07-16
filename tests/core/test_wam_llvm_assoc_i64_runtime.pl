@@ -32,6 +32,10 @@ test(assoc_i64_delete_backward_shifts_probe_chain) :-
     assoc_i64_delete_driver_ir(DriverIR),
     run_assoc_i64_smoke('uw_wam_assoc_i64_delete', DriverIR).
 
+test(str_split_into_populates_positions) :-
+    str_split_driver_ir(DriverIR),
+    run_assoc_i64_smoke('uw_wam_str_split_into', DriverIR).
+
 run_assoc_i64_smoke(Name, DriverIR) :-
     tmp_root(Root),
     directory_file_path(Root, Name, Dir),
@@ -188,6 +192,50 @@ alloc_fail:
   ret i32 90
 
 bad_counts:
+  ret i32 91
+}
+').
+
+% Split "a,b,c" on ',' into a table keyed 1/2/3; the values are the interned ids
+% of "a"/"b"/"c" (interned up front for comparison; interning is canonical) and
+% the returned count is 3.
+str_split_driver_ir('
+@.uw_split_input = private constant [6 x i8] c"a,b,c\00"
+
+define i32 @main() {
+entry:
+  %table = call %WamAssocI64Table* @wam_assoc_i64_new(i64 8)
+  %tn = icmp eq %WamAssocI64Table* %table, null
+  br i1 %tn, label %alloc_fail, label %go
+
+go:
+  %sp = getelementptr [6 x i8], [6 x i8]* @.uw_split_input, i64 0, i64 0
+  %ida = call i64 @wam_intern_atom(i8* %sp, i64 1)
+  %bptr = getelementptr [6 x i8], [6 x i8]* @.uw_split_input, i64 0, i64 2
+  %idb = call i64 @wam_intern_atom(i8* %bptr, i64 1)
+  %cptr = getelementptr [6 x i8], [6 x i8]* @.uw_split_input, i64 0, i64 4
+  %idc = call i64 @wam_intern_atom(i8* %cptr, i64 1)
+  %n = call i64 @wam_str_split_into(%WamAssocI64Table* %table, i8* %sp, i64 5, i8 44)
+  %got1 = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 1)
+  %got2 = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 2)
+  %got3 = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 3)
+  %n_ok = icmp eq i64 %n, 3
+  %g1_ok = icmp eq i64 %got1, %ida
+  %g2_ok = icmp eq i64 %got2, %idb
+  %g3_ok = icmp eq i64 %got3, %idc
+  %a1 = and i1 %n_ok, %g1_ok
+  %a2 = and i1 %a1, %g2_ok
+  %a3 = and i1 %a2, %g3_ok
+  call void @wam_assoc_i64_free(%WamAssocI64Table* %table)
+  br i1 %a3, label %ok, label %bad
+
+ok:
+  ret i32 0
+
+alloc_fail:
+  ret i32 90
+
+bad:
   ret i32 91
 }
 ').

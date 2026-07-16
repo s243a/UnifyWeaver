@@ -1593,8 +1593,37 @@ action(Action) -->
     delete_action(Action),
     !.
 action(Action) -->
+    split_action(Action),
+    !.
+action(Action) -->
     increment_action(Action),
     !.
+
+%% split_action(-Action)//
+%
+%  `split($N, arr, "sep")` -- split field $N on the single-char separator into
+%  positional array `arr` (keys 1..n, string values). Parses to
+%  split_into(field(N), var(Arr), string(Sep)). v1: field source, string-literal
+%  separator; the return count and a default (FS) separator are follow-ons.
+split_action(split_into(field(N), var(Arr), string(Sep))) -->
+    "split",
+    ws,
+    "(",
+    ws,
+    "$",
+    integer_codes(NCodes),
+    { NCodes \== [], number_codes(N, NCodes), N >= 0 },
+    ws,
+    ",",
+    ws,
+    identifier(Arr),
+    ws,
+    ",",
+    ws,
+    quoted_string(SepCodes),
+    { SepCodes \== [], string_codes(Sep, SepCodes) },
+    ws,
+    ")".
 
 %% delete_action(-Action)//
 %

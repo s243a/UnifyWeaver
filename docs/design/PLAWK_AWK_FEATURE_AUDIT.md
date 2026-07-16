@@ -55,7 +55,7 @@ only (runtime pending) · ❌ missing.
 |---|---|---|
 | user functions (`function f(a) { return … }`) | ✅ | compile to Prolog clauses; work in accumulator / typed-field (`BINFMT`) contexts **and text mode** — `print f($1)` auto-coerces the field (awk semantics). Optional numeric arg typing (`function f(num x)`) skips the coercion (typed-fast path). |
 | string: `length` `substr` `index` `tolower` `toupper` | ✅ | native, allocation-free |
-| string: `split` `sub` `gsub` `match` `sprintf` | ◐ | **`sprintf` landed** — `x = sprintf("fmt", args)` formats into a string scalar, reusing the printf format engine (same conversions/flags/width/precision) + `snprintf`→intern. Numeric convs need a numeric arg (`$1+0`/`NR`), as printf. `split`/`sub`/`gsub`/`match` still ❌ |
+| string: `split` `sub` `gsub` `match` `sprintf` | ◐ | **`sprintf` + `split` landed.** `sprintf`: `x = sprintf("fmt", args)` → string scalar (printf engine + `snprintf`→intern). `split`: `split($N, arr, "sep")` populates a positional string array `arr` (keys 1..n) via `@wam_str_split_into` (clears + repopulates; empty pieces kept), read via for-in (`for (k in arr) print k, arr[k]`). v1 split: single-char literal separator, for-in read (a return count, default-FS separator, and `arr[N]` constant-index read are follow-ons). `sub`/`gsub`/`match` still ❌ |
 | numeric: `int` | ✅ | `sin`/`cos`/`sqrt`/`rand`/… ❌ (f64 machinery exists) |
 | Prolog foreign calls (`pred($1)`, `float(pred(…))`) | ✅ | plawk-specific, beyond AWK |
 

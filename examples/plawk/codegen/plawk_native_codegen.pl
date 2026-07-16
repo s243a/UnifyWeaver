@@ -4511,6 +4511,7 @@ plawk_passes_tables(Passes, Tables) :-
 
 plawk_action_table_name(inc_assoc(var(Name), _Key), Name).
 plawk_action_table_name(delete_assoc(var(Name), _Key), Name).
+plawk_action_table_name(split_into(_Src, var(Name), _Sep), Name).
 plawk_action_table_name(add_assoc(var(Name), _Key, _Delta), Name).
 plawk_action_table_name(set_row(var(Name), _Key), Name).
 plawk_action_table_name(set_row_cons(var(Name), _Key, _Fields), Name).
@@ -5256,6 +5257,7 @@ plawk_forin_assoc_plan(Rules, ArrayName, LookupArrays,
           ( member(RuleArrayName-_KeyIndex, ActionSpecs)
           ; member(dynassoc(RuleArrayName, _Call), ActionSpecs)
           ; member(assoc_delete(RuleArrayName, _KeyIndex), ActionSpecs)
+          ; member(assoc_split(RuleArrayName, _Ki, _Sep), ActionSpecs)
           ; plawk_assoc_spec_forin_array(ActionSpecs, RuleArrayName)
           )
         ),
@@ -5291,6 +5293,7 @@ plawk_assoc_specs_str_arrays(RuleSpecs, StrArrays) :-
           ; member(dynassoc(A, posarray_str(_Call)), ActionSpecs)
           ; member(assoc_set_row(A, _Key), ActionSpecs)   % row-valued (str)
           ; member(assoc_set_row_cons(A, _Key2, _Fs), ActionSpecs)  % row (str)
+          ; member(assoc_split(A, _Ski, _Ssep), ActionSpecs)   % split pieces (str)
           )
         ),
         As0),
@@ -5305,6 +5308,7 @@ plawk_assoc_specs_posarray_arrays(RuleSpecs, PosArrays) :-
         ( member(rule(_P, ActionSpecs, _C), RuleSpecs),
           ( member(dynassoc(A, posarray(_Call)), ActionSpecs)
           ; member(dynassoc(A, posarray_str(_Call)), ActionSpecs)
+          ; member(assoc_split(A, _Pki, _Psep), ActionSpecs)   % keys are 1..n positions
           )
         ),
         As0),
@@ -5785,6 +5789,21 @@ plawk_forin_body_print_lines([var(LoopVar) | Rest], LoopVar, ArrayName,
         TableIndex, AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
     { plawk_descriptor_is_binary(Descriptor) },
     % Binary mode: keys are raw i64 field values, printed numerically.
+    plawk_forin_separator_lines(PrintIndex, OutputSeparator),
+    { format(atom(FmtVar), 'forin_key_fmt_~w', [PrintIndex]),
+      format(atom(PrintVar), 'forin_printed_key_~w', [PrintIndex]),
+      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
+          '%forin_key_id', [FmtPtr, PrintCall]),
+      NextPrintIndex is PrintIndex + 1
+    },
+    [FmtPtr, PrintCall],
+    plawk_forin_body_print_lines(Rest, LoopVar, ArrayName, TableIndex, AssocPlan,
+        Descriptor, OutputSeparator, NextPrintIndex).
+plawk_forin_body_print_lines([var(LoopVar) | Rest], LoopVar, ArrayName,
+        TableIndex, AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
+    { plawk_assoc_plan_posarray_array(AssocPlan, ArrayName) },
+    % Positional array (e.g. split): keys are integer positions, printed
+    % numerically rather than resolved as atom-registry ids.
     plawk_forin_separator_lines(PrintIndex, OutputSeparator),
     { format(atom(FmtVar), 'forin_key_fmt_~w', [PrintIndex]),
       format(atom(PrintVar), 'forin_printed_key_~w', [PrintIndex]),
@@ -6643,6 +6662,12 @@ plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), Blob),
 plawk_assoc_body_action_spec(delete_assoc(var(ArrayName), field(KeyIndex)),
         assoc_delete(ArrayName, KeyIndex)) :-
     integer(KeyIndex), KeyIndex > 0.
+% `split($N, arr, "sep")`: populate arr (a str-valued positional table, keys
+% 1..n) by splitting field N on the single-char separator.
+plawk_assoc_body_action_spec(split_into(field(KeyIndex), var(ArrayName), string(Sep)),
+        assoc_split(ArrayName, KeyIndex, Sep)) :-
+    integer(KeyIndex), KeyIndex >= 0,
+    string(Sep), string_length(Sep, 1).
 % Associative add-assign `arr[$k] += DELTA`: fold DELTA (a field value or an
 % integer constant) into the table at the key interned from field k. The
 % general form of `arr[$k]++` and the pass-1 half of per-key normalise. v1
@@ -6952,6 +6977,13 @@ plawk_assoc_planned_actions([assoc_delete(ArrayName, KeyIndex) | Rest],
       NextIndex is Index + 1
     },
     [assoc_delete_action(Index, ArrayName, TableIndex, KeyIndex)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+plawk_assoc_planned_actions([assoc_split(ArrayName, KeyIndex, Sep) | Rest],
+        Tables, StrArrays, PosArrays, Index) -->
+    { nth0(TableIndex, Tables, ArrayName),
+      NextIndex is Index + 1
+    },
+    [assoc_split_action(Index, ArrayName, TableIndex, KeyIndex, Sep)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 plawk_assoc_planned_actions([assoc_add(ArrayName, KeyIndex, Delta) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
@@ -7801,6 +7833,47 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_action(Index, _ArrayName
       format(atom(Next), '  br label %~w', [ActionNextLabel])
     },
     [Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId, Del, Next, ''],
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% `split($k, arr, "sep")`: resolve the source string, then call the split
+% primitive, which clears the table and repopulates it with the pieces keyed
+% 1..n (string values). $0 is the whole record (resolved directly, since the
+% field-slice helper is 1-based); a positive field uses its slice (missing field
+% -> empty array). The split byte is the separator literal's code.
+plawk_assoc_rule_action_blocks(RuleIndex, [assoc_split_action(Index, _ArrayName, TableIndex, KeyIndex, Sep) | Rest], NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      string_codes(Sep, [SepCode]),
+      format(atom(Base), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
+      format(atom(Label), '~w:', [Base]),
+      format(atom(Split),
+          '  %~w_n = call i64 @wam_str_split_into(%WamAssocI64Table* %plawk_assoc_table_~w, i8* %~w_src_ptr, i64 %~w_src_len, i8 ~w)',
+          [Base, TableIndex, Base, Base, SepCode]),
+      format(atom(Next), '  br label %~w', [ActionNextLabel]),
+      ( KeyIndex =:= 0
+      ->  % whole record: resolve %line's atom to its string
+          format(atom(Lp), '  %~w_lp = call i64 @value_payload(%Value %line)', [Base]),
+          format(atom(Sptr), '  %~w_src_ptr = call i8* @wam_atom_to_string(i64 %~w_lp)', [Base, Base]),
+          format(atom(Slen), '  %~w_src_len = call i64 @strlen(i8* %~w_src_ptr)', [Base, Base]),
+          Lines = [Label, Lp, Sptr, Slen, Split, Next, '']
+      ;   % positive field: project its slice, skip on a missing field
+          format(atom(HaveLabel), '~w_have_src:', [Base]),
+          format(atom(HaveLabelName), '~w_have_src', [Base]),
+          format(atom(Slice),
+              '  %~w_src_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+              [Base, KeyIndex, FieldSeparator]),
+          format(atom(Ptr), '  %~w_src_ptr = extractvalue %WamSlice %~w_src_slice, 0', [Base, Base]),
+          format(atom(Len), '  %~w_src_len = extractvalue %WamSlice %~w_src_slice, 1', [Base, Base]),
+          format(atom(Missing), '  %~w_src_missing = icmp eq i8* %~w_src_ptr, null', [Base, Base]),
+          format(atom(Branch), '  br i1 %~w_src_missing, label %~w, label %~w',
+              [Base, ActionNextLabel, HaveLabelName]),
+          Lines = [Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, Split, Next, '']
+      )
+    },
+    plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
 % Associative add-assign `arr[$k] += DELTA`: same key-intern + missing-key
 % skip as the counted inc, but the inc delta is the record's DELTA (a field
@@ -10190,6 +10263,11 @@ plawk_assoc_plan_str_array(assoc_plan(_Tables, Rules), ArrayName) :-
     member(str_arrays(StrArrays), Rules),
     memberchk(ArrayName, StrArrays),
     !.
+% split fills its array with string pieces (interned atom ids).
+plawk_assoc_plan_str_array(assoc_plan(_Tables, Rules), ArrayName) :-
+    member(assoc_rule(_RuleIndex, _Pattern, Actions, _Control), Rules),
+    member(assoc_split_action(_Index, ArrayName, _TableIndex, _Ki, _Sep), Actions),
+    !.
 
 %% plawk_assoc_plan_posarray_array(+AssocPlan, +ArrayName) is semidet.
 %  ArrayName''s table is a POSITIONAL array: some rule fills it through an
@@ -10203,6 +10281,11 @@ plawk_assoc_plan_posarray_array(assoc_plan(_Tables, Rules), ArrayName) :-
     ; member(assoc_dyn_action(_Index2, ArrayName, _TableIndex2,
         posarray_str(_Call2)), Actions)
     ),
+    !.
+% split keys its array by integer position (1..n).
+plawk_assoc_plan_posarray_array(assoc_plan(_Tables, Rules), ArrayName) :-
+    member(assoc_rule(_RuleIndex, _Pattern, Actions, _Control), Rules),
+    member(assoc_split_action(_Index, ArrayName, _TableIndex, _Ki, _Sep), Actions),
     !.
 
 % Binary record modes: assoc keys are raw i64 field values (no
