@@ -253,10 +253,13 @@ ffi_owned_fact_filter_fs(DetectedKernels, PI) :-
 %   - lmdb_fact_source reachableToRoot* is demand-pruning BFS over
 %     category_child (includes root); not a drop-in for transitive_closure2.
 %   - BuildEmptySet / SetInsert / NotMemberSet + FFIStreamRetry are the
-%     WAM/FFI plumbing TC2 streaming reuses.
+%     WAM/FFI plumbing TC2/TD3 streaming reuses.
+%   - transitive_distance3 Mustache handler emits (atom,int) pairs via the
+%     existing multi-output binder (dist+ contract).
 wam_fsharp_native_kernel_kind(category_ancestor).
 wam_fsharp_native_kernel_kind(bidirectional_ancestor).
 wam_fsharp_native_kernel_kind(transitive_closure2).
+wam_fsharp_native_kernel_kind(transitive_distance3).
 
 fsharp_kernel_template_path(Kind, AbsPath) :-
     kernel_template_file(Kind, HsTemplateFile),

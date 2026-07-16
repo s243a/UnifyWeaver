@@ -3171,24 +3171,30 @@ func (vm *WamState) collectNativeTransitiveClosureResults(source string, pairs [
 }
 
 func (vm *WamState) collectNativeTransitiveDistanceResults(source string, pairs []AtomPair) []Value {
+    // dist+ (docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md): BFS shortest
+    // positive distance. Visited tracks edge-discovered nodes — do not seed
+    // with source (Source appears only for self-loop / nonempty cycle).
     adjacency := atomAdjacency(pairs)
-    visited := map[string]bool{source: true}
-    dist := map[string]int{source: 0}
-    queue := []string{source}
+    visited := make(map[string]bool)
+    type qd struct {
+        node string
+        dist int
+    }
+    queue := []qd{{source, 0}}
     results := make([]Value, 0)
     for len(queue) > 0 {
         current := queue[0]
         queue = queue[1:]
-        for _, next := range adjacency[current] {
+        for _, next := range adjacency[current.node] {
             if visited[next] {
                 continue
             }
             visited[next] = true
-            dist[next] = dist[current] + 1
-            queue = append(queue, next)
+            nextDist := current.dist + 1
+            queue = append(queue, qd{next, nextDist})
             results = append(results, tupleValue(
                 internAtom(next),
-                &Integer{Val: int64(dist[next])},
+                &Integer{Val: int64(nextDist)},
             ))
         }
     }

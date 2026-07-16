@@ -2868,6 +2868,11 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     Value::Unbound(_) => None,
                     _ => return false,
                 };
+                let distance_filter = match self.deref_var(&dist_reg) {
+                    Value::Integer(d) if d > 0 => Some(d),
+                    Value::Unbound(_) => None,
+                    _ => return false,
+                };
                 let edge_pred = match self.foreign_string_config(&pred_key, "edge_pred") {
                     Some(pred) => pred.to_string(),
                     None => return false,
@@ -2876,6 +2881,9 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 self.collect_native_transitive_distance_results(&start, &edge_pred, &mut results);
                 if let Some(target) = target_filter {
                     results.retain(|(node, _)| *node == target);
+                }
+                if let Some(want_d) = distance_filter {
+                    results.retain(|(_, d)| *d == want_d);
                 }
                 if results.is_empty() {
                     return false;
@@ -3753,25 +3761,29 @@ compile_collect_native_transitive_closure_to_rust(Code) :-
     }'.
 
 compile_collect_native_transitive_distance_to_rust(Code) :-
+    % dist+ (docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md): finite BFS;
+    % each target once at minimum positive distance. Visited tracks nodes
+    % discovered via an edge — do not seed with start (Source appears only
+    % for self-loop / nonempty cycle). Inline kept (matches surrounding
+    % collect_native_* helpers; not large enough to warrant Mustache).
     Code = '    pub fn collect_native_transitive_distance_results(
         &self,
         start: &str,
         edge_pred: &str,
         out: &mut Vec<(String, i64)>,
     ) {
-        let mut stack: Vec<(String, i64, Vec<String>)> =
-            vec![(start.to_string(), 0, vec![start.to_string()])];
-        while let Some((node, depth, path)) = stack.pop() {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<(String, i64)> = VecDeque::new();
+        queue.push_back((start.to_string(), 0));
+        while let Some((node, depth)) = queue.pop_front() {
             if let Some(next_nodes) = self.indexed_atom_fact2.get(edge_pred).and_then(|table| table.get(&node)) {
-                for next in next_nodes.iter().rev() {
-                    if path.iter().any(|seen| seen == next) {
+                for next in next_nodes {
+                    if !seen.insert(next.clone()) {
                         continue;
                     }
                     let next_depth = depth + 1;
                     out.push((next.clone(), next_depth));
-                    let mut next_path = path.clone();
-                    next_path.push(next.clone());
-                    stack.push((next.clone(), next_depth, next_path));
+                    queue.push_back((next.clone(), next_depth));
                 }
             }
         }

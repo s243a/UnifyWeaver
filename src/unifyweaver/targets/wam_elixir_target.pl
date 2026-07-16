@@ -4173,52 +4173,46 @@ defmodule WamRuntime.GraphKernel.TransitiveDistance do
           trans_dist(Mid, Y, N1),
           N is N1 + 1.
 
-  Returns all `(target, distance)` pairs reachable from `start` via
-  simple paths (per-path visited set, A->B->C and A->C are DIFFERENT
-  paths to C with distance 2 and 1, both yielded — same convention
-  CategoryAncestor uses).
-
-  Ported from the Rust kernel `collect_native_transitive_distance_results`
-  in src/unifyweaver/targets/wam_rust_target.pl. Identical algorithm:
-  recursive DFS with explicit per-path visited list, push (target,
-  next_depth) on every edge to an unvisited node, recurse with the
-  target appended to visited.
-
-  Termination: each recursive step adds the target to `visited`,
-  blocking re-entry. The recursion bottoms out when the current
-  nodes neighbours are all in visited (i.e. we have walked every
-  simple path from `start`).
-
-  Why bypass WAM: same reasoning as TransitiveClosure / CategoryAncestor.
-  Adding more kernel kinds is the second-largest perf lever after
-  walker tuning (per docs/WAM_TARGET_ROADMAP.md). This kernel was
-  the simplest of the five Rust+Haskell kinds Elixir was missing —
-  shape mirrors CategoryAncestor (per-path enumeration) but without
-  the explicit Visited-list arg or max_depth bound.
+  Contract: dist+ (docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md).
+  Finite BFS emits each reachable target exactly once with its minimum
+  positive edge distance. Visited tracks nodes discovered via an
+  outgoing edge — not seeded with `start` — so Source appears only for
+  a self-loop (distance 1) or the shortest nonempty cycle.
   """
 
   @doc """
-  Returns `[{target, distance}, ...]` for every distinct simple path
-  from `start`. `neighbors_fn` receives a node, returns a list of
-  `{from, to}` tuples (FactSource lookup_by_arg1 contract); only `to`
-  is read.
+  Returns `[{target, distance}, ...]` — one pair per reachable target
+  at minimum positive distance. `neighbors_fn` receives a node, returns
+  a list of `{from, to}` tuples (FactSource lookup_by_arg1 contract);
+  only `to` is read.
   """
   def collect_pairs(neighbors_fn, start) when is_function(neighbors_fn, 1) do
-    walk(neighbors_fn, start, [start], 0, [])
+    bfs(neighbors_fn, :queue.in({start, 0}, :queue.new()), MapSet.new(), [])
     |> Enum.reverse()
   end
 
-  defp walk(neighbors_fn, node, visited, depth, acc) do
-    edges = neighbors_fn.(node)
-    next_depth = depth + 1
-    Enum.reduce(edges, acc, fn {_from, target}, ac ->
-      if :lists.member(target, visited) do
-        ac
-      else
-        ac1 = [{target, next_depth} | ac]
-        walk(neighbors_fn, target, [target | visited], next_depth, ac1)
-      end
-    end)
+  defp bfs(neighbors_fn, q, visited, acc) do
+    case :queue.out(q) do
+      {:empty, _} ->
+        acc
+
+      {{:value, {node, depth}}, q1} ->
+        next_depth = depth + 1
+        {q2, visited2, acc2} =
+          Enum.reduce(neighbors_fn.(node), {q1, visited, acc}, fn {_from, target}, {qq, vv, aa} ->
+            if MapSet.member?(vv, target) do
+              {qq, vv, aa}
+            else
+              {
+                :queue.in({target, next_depth}, qq),
+                MapSet.put(vv, target),
+                [{target, next_depth} | aa]
+              }
+            end
+          end)
+
+        bfs(neighbors_fn, q2, visited2, acc2)
+    end
   end
 
   @doc """
