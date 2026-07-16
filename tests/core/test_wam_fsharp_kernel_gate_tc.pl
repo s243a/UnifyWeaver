@@ -16,6 +16,8 @@
 :- use_module(library(plunit)).
 :- use_module(library(filesex)).
 :- use_module(library(process)).
+:- use_module(library(readutil), [read_file_to_string/3]).
+:- use_module(library(debug), [assertion/1]).
 :- use_module('../../src/unifyweaver/targets/wam_fsharp_target',
               [write_wam_fsharp_project/3,
                wam_fsharp_native_kernel_kind/1,
@@ -25,6 +27,11 @@
 
 :- dynamic user:tc_edge/2.
 :- dynamic user:tc/2.
+:- dynamic user:tc_probe/0.
+:- dynamic user:tc_tail/1.
+:- dynamic user:tc_after/1.
+:- dynamic user:tc_cut/1.
+:- dynamic user:tc_call_after/1.
 :- dynamic user:td_edge/2.
 :- dynamic user:td/3.
 :- dynamic user:tpd_edge/2.
@@ -37,6 +44,9 @@
 :- dynamic user:astar/4.
 :- dynamic user:direct_dist/4.
 :- dynamic user:dimensionality/1.
+:- dynamic user:category_parent/2.
+:- dynamic user:category_ancestor/4.
+:- dynamic user:max_depth/1.
 
 dotnet_available :-
     catch(
@@ -61,9 +71,14 @@ run_dotnet_build(Dir, Exit, Out) :-
         ( catch(close(SO), _, true), catch(close(SE), _, true) )).
 
 run_dotnet_run(Dir, Exit, Out) :-
+    run_dotnet_run(Dir, [], Exit, Out).
+
+run_dotnet_run(Dir, ProgramArgs, Exit, Out) :-
+    append(['run', '--no-build', '-c', 'Release', '--no-launch-profile', '--'],
+           ProgramArgs, DotnetArgs),
     setup_call_cleanup(
         process_create(path(dotnet),
-            ['run', '--no-build', '-c', 'Release', '--no-launch-profile'],
+            DotnetArgs,
             [cwd(Dir),
              environment(['DOTNET_NOLOGO'='1', 'DOTNET_ROLL_FORWARD'='Major']),
              stdout(pipe(SO)), stderr(pipe(SE)), process(Pid)]),
@@ -77,13 +92,26 @@ run_dotnet_run(Dir, Exit, Out) :-
 assert_tc_program :-
     retractall(user:tc_edge(_, _)),
     retractall(user:tc(_, _)),
+    retractall(user:tc_probe),
+    retractall(user:tc_tail(_)),
+    retractall(user:tc_after(_)),
+    retractall(user:tc_cut(_)),
+    retractall(user:tc_call_after(_)),
     % Graph: a->b->c->d, plus cycle c->a, and unreachable z.
     assertz(user:tc_edge(a, b)),
     assertz(user:tc_edge(b, c)),
     assertz(user:tc_edge(c, d)),
     assertz(user:tc_edge(c, a)),
     assertz((user:tc(X, Y) :- tc_edge(X, Y))),
-    assertz((user:tc(X, Y) :- tc_edge(X, Z), tc(Z, Y))).
+    assertz((user:tc(X, Y) :- tc_edge(X, Z), tc(Z, Y))),
+    assertz((user:tc_probe :- tc(a, c))),
+    % tc_tail/1 forces Execute -> ExecuteForeign.  The outer predicates
+    % verify that the foreign tail call returns through its caller, including
+    % retry into a continuation and a cut over the remaining native stream.
+    assertz((user:tc_tail(Y) :- tc(a, Y))),
+    assertz((user:tc_after(Y) :- tc_tail(Y), Y \== b)),
+    assertz((user:tc_cut(Y) :- tc_tail(Y), !)),
+    assertz((user:tc_call_after(Y) :- tc(a, Y), Y \== b)).
 
 assert_td_program :-
     retractall(user:td_edge(_, _)),
@@ -134,6 +162,22 @@ assert_astar_program :-
     assertz((user:astar(X, Y, Dim, Total) :-
                 a_edge(X, Z, W), astar(Z, Y, Dim, Rest),
                 Total is Rest + W)).
+
+assert_bidir_program :-
+    retractall(user:category_parent(_, _)),
+    retractall(user:category_ancestor(_, _, _, _)),
+    retractall(user:max_depth(_)),
+    assertz(user:category_parent(a, b)),
+    assertz(user:max_depth(10)),
+    assertz((user:category_ancestor(Cat, Parent, 1, Visited) :-
+                category_parent(Cat, Parent),
+                \+ member(Parent, Visited))),
+    assertz((user:category_ancestor(Cat, Ancestor, Hops, Visited) :-
+                max_depth(MaxD), length(Visited, D), D < MaxD, !,
+                category_parent(Cat, Mid),
+                \+ member(Mid, Visited),
+                category_ancestor(Mid, Ancestor, H1, [Mid|Visited]),
+                Hops is H1 + 1)).
 
 write_native_tc_driver(ProgPath) :-
     % Custom Program.fs: wires foreignPreds + WcFfiFacts for edge, then
@@ -231,11 +275,68 @@ let collectTargets (ctx: WamContext) (source: string) (boundTarget: string optio
             | None -> List.rev (tgt :: acc)
         gather s1 []
 
+let boundCallTrailIsConsistent (ctx: WamContext) (source: string) (target: string) : bool =
+    let regs = Array.create MaxRegs (Unbound -1)
+    regs.[1] <- Atom source
+    regs.[2] <- Atom target
+    match callForeign ctx \"tc/2\" (mkState regs) with
+    | Some s1 -> s1.WsTrailLen = List.length s1.WsTrail
+    | None -> false
+
+let compiledForeignTailCallSucceeds (ctx: WamContext) : bool =
+    let wasRewritten =
+        ctx.WcCode
+        |> Array.exists (function
+            | ExecuteForeign \"tc/2\" -> true
+            | _ -> false)
+    wasRewritten &&
+        match dispatchCall ctx \"tc_probe/0\" (mkState (Array.create MaxRegs (Unbound -1))) with
+        | Some _ -> true
+        | None -> false
+
+let runUnary (ctx: WamContext) (pred: string) : WamState option =
+    let regs = Array.create MaxRegs (Unbound -1)
+    regs.[1] <- Unbound 200
+    dispatchCall ctx pred (mkState regs)
+
+let nestedTailRetryReturnsToCaller (ctx: WamContext) : bool =
+    // tc_after/1 rejects the first native result (b), backtracks through the
+    // FFIStreamRetry CP, and must resume the outer continuation with c.
+    match runUnary ctx \"tc_after/1\" with
+    | Some s ->
+        getReg 1 s = Some (Atom \"c\") &&
+        s.WsCP = 0 && s.WsCutBar = 0 && List.isEmpty s.WsB0Stack
+    | None -> false
+
+let cutAfterForeignTailUsesCallerBarrier (ctx: WamContext) : bool =
+    match runUnary ctx \"tc_cut/1\" with
+    | Some s ->
+        Map.tryFind 200 s.WsBindings = Some (Atom \"b\") &&
+        s.WsCP = 0 && s.WsCutBar = 0 && List.isEmpty s.WsB0Stack &&
+        s.WsCPsLen = 0 && Option.isNone (backtrack s)
+    | None -> false
+
+let directCallRetryReturnsToCaller (ctx: WamContext) : bool =
+    // Covers the non-tail CallForeign path independently of ExecuteForeign.
+    match runUnary ctx \"tc_call_after/1\" with
+    | Some s ->
+        getReg 1 s = Some (Atom \"c\") &&
+        s.WsCP = 0 && s.WsCutBar = 0 && List.isEmpty s.WsB0Stack
+    | None -> false
+
 [<EntryPoint>]
 let main _argv =
     let ctx = mkContext ()
-    // foreignPreds=[\"tc/2\"] + callForeign proves the native executeForeign path
-    // (conformance_main leaves foreignPreds empty and cannot show this).
+    // foreignPreds=[\"tc/2\"] rewrites the wrapper's tail Execute to
+    // ExecuteForeign; conformance_main leaves foreignPreds empty.
+    assertTrue \"compiled wrapper rewrites and executes foreign tail call\"
+        (compiledForeignTailCallSucceeds ctx)
+    assertTrue \"foreign tail retry resumes the outer continuation\"
+        (nestedTailRetryReturnsToCaller ctx)
+    assertTrue \"cut after foreign tail call uses the caller barrier\"
+        (cutAfterForeignTailUsesCallerBarrier ctx)
+    assertTrue \"non-tail foreign retry resumes its continuation\"
+        (directCallRetryReturnsToCaller ctx)
 
     let fromA = collectTargets ctx \"a\" None |> List.sort
     assertTrue \"direct+multi-hop from a\" (fromA = [\"b\"; \"c\"; \"d\"])
@@ -248,6 +349,8 @@ let main _argv =
 
     let boundOk = collectTargets ctx \"a\" (Some \"c\")
     assertTrue \"bound Target c succeeds\" (boundOk = [\"c\"])
+    assertTrue \"bound Target preserves trail invariant\"
+        (boundCallTrailIsConsistent ctx \"a\" \"c\")
 
     let boundNo = collectTargets ctx \"a\" (Some \"z\")
     assertTrue \"bound unreachable z fails\" (boundNo = [])
@@ -270,6 +373,13 @@ test(capability_allowlist_includes_shipped_and_tc2) :-
     wam_fsharp_native_kernel_kind(transitive_closure2),
     \+ wam_fsharp_native_kernel_kind(transitive_distance3),
     \+ wam_fsharp_native_kernel_kind(weighted_shortest_path3).
+
+test(every_allowlisted_kind_has_a_real_handler) :-
+    forall(
+        wam_fsharp_native_kernel_kind(Kind),
+        assertion(wam_fsharp_native_kernel_supported(
+            recursive_kernel(Kind, probe/0, [])))
+    ).
 
 test(existing_closure_layers_present) :-
     % Characterization: do not invent TC support from scratch.
@@ -305,7 +415,7 @@ test(wam_fallback_control_builds,
     assert_tc_program,
     tmp_proj(wam_tc, Dir),
     write_wam_fsharp_project(
-        [user:tc/2, user:tc_edge/2],
+        [user:tc/2, user:tc_edge/2, user:tc_probe/0],
         [no_kernels(true), module_name('uw_fs_wam_tc'), conformance_main(true)],
         Dir),
     directory_file_path(Dir, 'WamRuntime.fs', RT),
@@ -314,6 +424,9 @@ test(wam_fallback_control_builds,
     run_dotnet_build(Dir, Exit, Out),
     assertion(Exit =:= 0),
     ( Exit =:= 0 -> true ; format(user_error, '~w~n', [Out]), fail ),
+    run_dotnet_run(Dir, ['tc_probe/0'], RunExit, RunOut),
+    assertion(RunExit =:= 0),
+    assertion(sub_string(RunOut, _, _, _, "true")),
     !.
 
 test(native_tc2_codegen_and_build,
@@ -321,7 +434,10 @@ test(native_tc2_codegen_and_build,
     assert_tc_program,
     tmp_proj(native_tc, Dir),
     write_wam_fsharp_project(
-        [user:tc/2, user:tc_edge/2],
+        [ user:tc/2, user:tc_edge/2, user:tc_probe/0,
+          user:tc_tail/1, user:tc_after/1, user:tc_cut/1,
+          user:tc_call_after/1
+        ],
         [module_name('uw_fs_native_tc')],
         Dir),
     directory_file_path(Dir, 'WamRuntime.fs', RT),
@@ -342,15 +458,42 @@ test(native_tc2_codegen_and_build,
     run_dotnet_run(Dir, RunExit, RunOut),
     assertion(RunExit =:= 0),
     assertion(sub_string(RunOut, _, _, _, "RESULT ")),
-    (   sub_string(RunOut, _, _, _, "RESULT 5/5")
+    (   sub_string(RunOut, _, _, _, "RESULT 10/10")
     ->  true
     ;   format(user_error, 'native_tc2 run:~n~w~n', [RunOut]), fail
+    ),
+    !.
+
+test(existing_bidirectional_multi_output_still_builds,
+     [condition(dotnet_available)]) :-
+    assert_bidir_program,
+    tmp_proj(bidir_multi_output, Dir),
+    write_wam_fsharp_project(
+        [user:category_ancestor/4],
+        [ kernel_mode(bidirectional),
+          allow_bidirectional_kernel_swap(true),
+          module_name('uw_fs_bidir_multi_output')
+        ],
+        Dir),
+    directory_file_path(Dir, 'WamRuntime.fs', RT),
+    read_file_to_string(RT, RTS, []),
+    assertion(sub_string(RTS, _, _, _, "nativeKernel_bidirectional_ancestor")),
+    run_dotnet_build(Dir, Exit, Out),
+    assertion(Exit =:= 0),
+    ( Exit =:= 0 -> true
+    ; format(user_error, 'bidirectional multi-output build failed:~n~w~n', [Out]), fail
     ),
     !.
 
 %% Unsupported detected patterns must compile via WAM fallback.
 fallback_kind_builds(Kind, Setup, Preds, ForbiddenNative) :-
     call(Setup),
+    Preds = [user:Pred/Arity|_],
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    detect_recursive_kernel(Pred, Arity, Clauses, Kernel),
+    assertion(Kernel = recursive_kernel(Kind, _, _)),
+    assertion(\+ wam_fsharp_native_kernel_supported(Kernel)),
     format(atom(Name), 'fb_~w', [Kind]),
     tmp_proj(Name, Dir),
     write_wam_fsharp_project(

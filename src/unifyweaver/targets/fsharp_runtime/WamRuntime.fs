@@ -57,7 +57,7 @@ type AggFrame = { AggType: string; AggValReg: int; AggResReg: int; AggReturnPC: 
 type BuiltinState =
     | FactRetry      of varId: int * remaining: string list * retPC: int
     | HopsRetry      of varId: int * remaining: int list   * retPC: int
-    | FFIStreamRetry of outRegs: int list * outVars: int list * remaining: Value list list * retPC: int
+    | FFIStreamRetry of outRegs: int list * outVars: int list * remaining: Value list list * retPC: int * returnCP: int * returnCutBar: int * returnB0Stack: int list
 
 type EnvFrame = { EfSavedCP: int; EfYRegs: Map<int, Value> }
 
@@ -151,6 +151,7 @@ and Instruction =
     | Call           of pred: string * arity: int
     | CallResolved   of pc: int * arity: int
     | CallForeign    of pred: string * arity: int
+    | ExecuteForeign of pred: string
     | Execute        of pred: string
     | ExecutePc      of pc: int
     | Proceed
@@ -416,19 +417,24 @@ and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) 
                  WsBindings = Map.add vid (Integer h) cp.CpBindings
                  WsCPs      = newCPs
                  WsCPsLen   = List.length newCPs }
-    | FFIStreamRetry (_, _, [], _) ->
+    | FFIStreamRetry (_, _, [], _, _, _, _) ->
         backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
-    | FFIStreamRetry (outRegs, outVars, tuple :: restTuples, retPC) ->
+    | FFIStreamRetry (outRegs, outVars, tuple :: restTuples, retPC,
+                      returnCP, returnCutBar, returnB0Stack) ->
         let newRegs     = List.fold2 (fun m rN v -> Map.add rN v m) cp.CpRegs outRegs tuple
         let newBindings = List.fold2
                             (fun m vid v -> if vid = -1 then m else Map.add vid v m)
                             cp.CpBindings outVars tuple
         let newCPs = match restTuples with
                      | [] -> rest
-                     | _  -> { cp with CpBuiltin = Some (FFIStreamRetry (outRegs, outVars, restTuples, retPC)) } :: rest
+                     | _  -> { cp with CpBuiltin = Some (FFIStreamRetry (outRegs, outVars, restTuples, retPC,
+                                                                         returnCP, returnCutBar, returnB0Stack)) } :: rest
         let base_ = restoreCommon diff
         Some { base_ with
                  WsPC       = retPC
+                 WsCP       = returnCP
+                 WsCutBar   = returnCutBar
+                 WsB0Stack  = returnB0Stack
                  WsRegs     = newRegs
                  WsBindings = newBindings
                  WsCPs      = newCPs
@@ -550,7 +556,13 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         Some { s with WsPC = pc; WsCP = s.WsPC + 1 }
 
     | CallForeign (pred, _arity) ->
-        executeForeign ctx pred { s with WsCP = s.WsPC + 1 }
+        executeForeign ctx pred true
+            { s with WsCP      = s.WsPC + 1
+                     WsB0Stack = s.WsCutBar :: s.WsB0Stack
+                     WsCutBar  = s.WsCPsLen }
+
+    | ExecuteForeign pred ->
+        executeForeign ctx pred true { s with WsCutBar = s.WsCPsLen }
 
     | Execute pred ->
         dispatchCall ctx pred s
@@ -791,11 +803,11 @@ and callIndexedFact2 (ctx: WamContext) (pred: string) (s: WamState) : WamState o
 
 /// Foreign predicate dispatch — auto-generated from kernel detection.
 /// This stub always fails; the generator emits the real version.
-and executeForeign (_ctx: WamContext) (_pred: string) (_s: WamState) : WamState option = None
+and executeForeign (_ctx: WamContext) (_pred: string) (_completeReturn: bool) (_s: WamState) : WamState option = None
 
 /// Foreign call entry point used from lowered functions.
 and callForeign (ctx: WamContext) (pred: string) (sc: WamState) : WamState option =
-    executeForeign ctx pred sc
+    executeForeign ctx pred false sc
 
 // ----------------------------------------------------------------------------
 // resolveCallInstrs — pre-resolve Call labels to PCs at load time (Phase C)
@@ -812,6 +824,8 @@ let resolveCallInstrs (labels: Map<string, int>) (foreignPreds: string list) (in
                 match Map.tryFind pred labels with
                 | Some pc -> CallResolved (pc, arity)
                 | None    -> instr
+        | Execute pred when List.contains pred foreignPreds ->
+            ExecuteForeign pred
         | Execute pred ->
             match Map.tryFind pred labels with
             | Some pc -> ExecutePc pc
