@@ -3766,7 +3766,8 @@ compile_collect_native_transitive_distance_to_rust(Code) :-
     % discovered via an edge — do not seed with start (Source appears only
     % for self-loop / nonempty cycle). Inline kept (matches surrounding
     % collect_native_* helpers; not large enough to warrant Mustache).
-    Code = '    pub fn collect_native_transitive_distance_results(
+    Code = '    /// dist+ — docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md
+    pub fn collect_native_transitive_distance_results(
         &self,
         start: &str,
         edge_pred: &str,

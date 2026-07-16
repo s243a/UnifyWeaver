@@ -53,8 +53,9 @@ self-contained so a single coding agent can pick it up in isolation.
 | ISO-R | ISO three-form (new) | R | L | — |
 | ISO-PYTHON | ISO three-form (finish) | Python | S | — |
 | ISO-FSHARP | ISO three-form (finish) | F# | S | — |
-| KERN-FSHARP ⚡ | Finish F# native kernel acceleration | F# | L | gate+TC2 done (`FS-HYBRID-KERNEL-GATE-TC`); 5 kinds remain |
-| TC2-CONTRACT-PARITY ⚡ | Fleet-wide `transitive_closure2` strict R+ contract | multi | M | contract+oracle+handler align |
+| KERN-FSHARP ⚡ | Finish F# native kernel acceleration | F# | L | gate+TC2+TD3 done; 4 kinds remain |
+| TC2-CONTRACT-PARITY ✅ | Fleet-wide `transitive_closure2` strict R+ contract | multi | M | done (`#3817`) |
+| TD3-CONTRACT-PARITY-FS ⚡ | Fleet-wide `transitive_distance3` dist+ + F# native | multi | M | contract+oracle+F# Mustache |
 | EMIT-ILASM | Lowered emitter | ILAsm | L | — |
 | EMIT-JVM | Lowered emitter | JVM | L | — |
 | EMIT-KOTLIN ✅ | Lowered emitter | Kotlin | M | done — flat facts/unify (`cursor/emit-kotlin-lowered-f421`) |

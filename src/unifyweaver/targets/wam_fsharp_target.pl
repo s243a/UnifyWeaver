@@ -3971,7 +3971,10 @@ emit_multi_outvars_fs(OutputRegs, Indent) :-
 emit_outvars_list_fs([], _).
 emit_outvars_list_fs([output(RegN, _)|Rest], I) :-
     (   I =:= 1 -> true ; format('; ', []) ),
-    format('match outReg_~w with | Unbound v -> v | _ -> -1', [RegN]),
+    % Parenthesize each match: bare `match ... | _ -> -1; match ...`
+    % is parsed as one list element (`;` sequences inside the last arm),
+    % which breaks List.fold2/iter2 in FFIStreamRetry for multi-output.
+    format('(match outReg_~w with | Unbound v -> v | _ -> -1)', [RegN]),
     I1 is I + 1,
     emit_outvars_list_fs(Rest, I1).
 

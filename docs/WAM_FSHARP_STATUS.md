@@ -36,12 +36,13 @@ query times competitive with Rust FFI at scale 300.
 **Kernels.** Shared detection can recognize more kinds than F# accelerates.
 The capability gate promotes a predicate to `CallForeign` only when the
 selected kind is allow-listed **and** its F# handler exists; otherwise the
-already-working WAM predicate remains the correctness path. Three F#
+already-working WAM predicate remains the correctness path. Four F#
 mustache handlers exist on disk
 (`kernel_category_ancestor.fs.mustache`,
 `kernel_bidirectional_ancestor.fs.mustache`,
-`kernel_transitive_closure.fs.mustache`). Missing handlers no longer emit
-undefined `nativeKernel_*` calls. Benchmarks centre on
+`kernel_transitive_closure.fs.mustache`,
+`kernel_transitive_distance.fs.mustache` — dist+ BFS). Missing handlers no
+longer emit undefined `nativeKernel_*` calls. Benchmarks centre on
 `category_ancestor/4`. **Bidirectional** upgrade is computed but
 **off by default** — requires `allow_bidirectional_kernel_swap(true)`.
 CSR reverse-index reader (`CsrLookupSource`) and cost/strategy
