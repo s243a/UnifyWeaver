@@ -1567,6 +1567,59 @@ compile_execute_io_builtin_to_rust(Code) :-
                     false
                 }
             }
+            "realpath/2" | "read_link/2" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let resolved = if op == "realpath/2" {
+                    std::fs::canonicalize(path)
+                } else {
+                    std::fs::read_link(path)
+                };
+                let resolved = match resolved
+                    .ok()
+                    .and_then(|path| path.into_os_string().into_string().ok()) {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Atom(resolved)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "same_file/2" => {
+                let first = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let second = match self.builtin_path_arg("A2") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let same = {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::MetadataExt;
+                        match (std::fs::metadata(first), std::fs::metadata(second)) {
+                            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+                            _ => false,
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        match (std::fs::canonicalize(first), std::fs::canonicalize(second)) {
+                            (Ok(a), Ok(b)) => a == b,
+                            _ => false,
+                        }
+                    }
+                };
+                if same { self.pc += 1; true } else { false }
+            }
             "exists_file/1" => {
                 let path = match self.builtin_path_arg("A1") {
                     Some(path) => path,
