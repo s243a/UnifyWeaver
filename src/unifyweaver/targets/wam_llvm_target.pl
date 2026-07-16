@@ -4752,6 +4752,83 @@ del.done:
   ret void
 }
 
+; Split %str[0..len) on the single byte %sep into %table, keyed by 1-based
+; position (values are interned atom ids). The table is cleared first (split
+; replaces the array). Returns the piece count. An empty input yields 0 pieces;
+; adjacent / trailing separators yield empty pieces, as awk does with an
+; explicit single-char separator.
+define i64 @wam_str_split_into(%WamAssocI64Table* %table, i8* %str, i64 %len, i8 %sep) {
+entry:
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %sp.ret0, label %sp.clear_load
+
+sp.clear_load:
+  %cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  %cap = load i64, i64* %cap_slot
+  %entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %entries_slot
+  br label %sp.clear_loop
+
+sp.clear_loop:
+  %ci = phi i64 [ 0, %sp.clear_load ], [ %ci.next, %sp.clear_body ]
+  %ci.done = icmp uge i64 %ci, %cap
+  br i1 %ci.done, label %sp.clear_done, label %sp.clear_body
+
+sp.clear_body:
+  %ce = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %ci
+  %ce_occ = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %ce, i32 0, i32 2
+  store i1 false, i1* %ce_occ
+  %ci.next = add i64 %ci, 1
+  br label %sp.clear_loop
+
+sp.clear_done:
+  %count_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 0
+  store i64 0, i64* %count_slot
+  %len_zero = icmp eq i64 %len, 0
+  br i1 %len_zero, label %sp.ret0, label %sp.loop
+
+sp.loop:
+  %j = phi i64 [ 0, %sp.clear_done ], [ %jn, %sp.next ]
+  %fstart = phi i64 [ 0, %sp.clear_done ], [ %fstartn, %sp.next ]
+  %pos = phi i64 [ 1, %sp.clear_done ], [ %posn, %sp.next ]
+  %jdone = icmp uge i64 %j, %len
+  br i1 %jdone, label %sp.final, label %sp.body
+
+sp.body:
+  %cp = getelementptr i8, i8* %str, i64 %j
+  %c = load i8, i8* %cp
+  %sepc = icmp eq i8 %c, %sep
+  br i1 %sepc, label %sp.emit, label %sp.skip
+
+sp.emit:
+  %ep = getelementptr i8, i8* %str, i64 %fstart
+  %el = sub i64 %j, %fstart
+  %eid = call i64 @wam_intern_atom(i8* %ep, i64 %el)
+  %eset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %pos, i64 %eid)
+  %epos = add i64 %pos, 1
+  %efstart = add i64 %j, 1
+  br label %sp.next
+
+sp.skip:
+  br label %sp.next
+
+sp.next:
+  %posn = phi i64 [ %epos, %sp.emit ], [ %pos, %sp.skip ]
+  %fstartn = phi i64 [ %efstart, %sp.emit ], [ %fstart, %sp.skip ]
+  %jn = add i64 %j, 1
+  br label %sp.loop
+
+sp.final:
+  %lp = getelementptr i8, i8* %str, i64 %fstart
+  %ll = sub i64 %len, %fstart
+  %lid = call i64 @wam_intern_atom(i8* %lp, i64 %ll)
+  %lset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %pos, i64 %lid)
+  ret i64 %pos
+
+sp.ret0:
+  ret i64 0
+}
+
 define i64 @wam_assoc_i64_inc(%WamAssocI64Table* %table, i64 %key, i64 %delta) {
 entry:
   %table_null = icmp eq %WamAssocI64Table* %table, null
