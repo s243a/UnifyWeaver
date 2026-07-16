@@ -53,7 +53,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | ISO-R | ISO three-form (new) | R | L | — |
 | ISO-PYTHON | ISO three-form (finish) | Python | S | — |
 | ISO-FSHARP | ISO three-form (finish) | F# | S | — |
-| KERN-FSHARP | Finish F# kernel templates | F# | L | — |
+| KERN-FSHARP ⚡ | Finish F# native kernel acceleration | F# | L | gate+TC2 done (`FS-HYBRID-KERNEL-GATE-TC`); 5 kinds remain |
 | EMIT-ILASM | Lowered emitter | ILAsm | L | — |
 | EMIT-JVM | Lowered emitter | JVM | L | — |
 | EMIT-KOTLIN ✅ | Lowered emitter | Kotlin | M | done — flat facts/unify (`cursor/emit-kotlin-lowered-f421`) |
@@ -470,28 +470,19 @@ plumbing there.
 
 ## Lever: Finish F# foreign-kernel templates
 
-### KERN-FSHARP: Port the 6 missing F# foreign-kernel templates
+### KERN-FSHARP: Native foreign-kernel acceleration for F#
 - **Lever:** Finish F# foreign-kernel templates  **Target:** F#  **Size:** L  **Depends on:** —
-- **Goal:** Add the 6 missing `.fs.mustache` kernel templates so F#'s detector-fired kinds (transitive_closure2, transitive_distance3, transitive_parent_distance4, transitive_step_parent_distance5, weighted_shortest_path3, astar_shortest_path4) emit real F# instead of the "no F# template available" stub.
-- **Consolidation note:** Emitted as ONE card, not six. The 6 items are mechanically identical — each is a syntax port of the already-complete Haskell template of the same base name into F#, wired through the same code path (`render_kernel_function_fs/2` swaps `.hs.mustache`→`.fs.mustache` and reads `templates/targets/fsharp_wam/`). A Grok agent should do them in one branch, one kind at a time, in the order below.
-- **Files to touch:**
-  - `templates/targets/fsharp_wam/kernel_transitive_closure.fs.mustache` (new)
-  - `templates/targets/fsharp_wam/kernel_transitive_distance.fs.mustache` (new)
-  - `templates/targets/fsharp_wam/kernel_transitive_parent_distance.fs.mustache` (new)
-  - `templates/targets/fsharp_wam/kernel_transitive_step_parent_distance.fs.mustache` (new)
-  - `templates/targets/fsharp_wam/kernel_weighted_shortest_path.fs.mustache` (new)
-  - `templates/targets/fsharp_wam/kernel_astar_shortest_path.fs.mustache` (new)
-  - No `.pl` change expected: `wam_fsharp_target.pl` `render_kernel_function_fs/2` (lines 3554–3585) already derives each F# filename from `kernel_template_file/2` by suffix swap; dropping the files in place activates them. (verify: confirm no per-kind allow-list gate elsewhere restricts F# to the 2 shipped kinds.)
-- **Reference to copy from:**
-  - Structure/algorithm per kind: `templates/targets/haskell_wam/kernel_<base>.hs.mustache` (all exist and are complete) — pair each new file with the same base name.
-  - F# syntax + mustache-var conventions: the two working F# templates `templates/targets/fsharp_wam/kernel_category_ancestor.fs.mustache` and `kernel_bidirectional_ancestor.fs.mustache`.
-  - Var binding contract: `wam_fsharp_target.pl` `config_ops_to_template_vars_fs/2` (just below line 3585) — mustache vars come from the kernel's `ConfigOps` (e.g. `edge_pred`, `max_depth`); mirror the var names the matching `.hs.mustache` consumes.
-- **Steps:**
-  1. For each base name, open the Haskell template and the two working F# templates side by side; identify the mustache vars used.
-  2. Translate the Haskell kernel body to idiomatic F# (recursive/`Seq`/`Map` traversal calling `ILookupSource.Lookup`), keeping the same mustache placeholders and function-name shape as the F# category/bidirectional templates.
-  3. Ensure the emitted F# function name and signature match what `program.fs.mustache` / `execute_foreign.fs.mustache` dispatch to (check `generate_execute_foreign_fs/2` + `emit_execute_foreign_entry_fs/1`, lines ~3586–3600; expect `kernel_register_layout/2` + `kernel_native_call/2` already defined per kind).
-  4. Do the simplest kind first (transitive_closure), validate end-to-end, then the weighted/astar kinds.
-- **Acceptance:** For each kind, generating a project with that kernel produces a template (no `// Kernel …: no F# template available` marker in `WamRuntime.fs`) and `dotnet build` succeeds. Extend the emission+build assertion pattern of `tests/core/test_wam_fsharp_bidirectional_e2e.pl` (Step 5, lines ~125–168) to each new kind; `swipl -q -g run_tests -t halt tests/test_wam_fsharp_target.pl` plus `tests/run_wam_fsharp_tests.pl` pass.
+- **Correction (2026-07-16):** Missing `.fs.mustache` files are an *implementation choice*, not a requirement. Rust inlines handlers in `wam_rust_target.pl`; Haskell uses per-kind mustache. F# already had:
+  - generic WAM recursive `tc/2` (correctness path via `no_kernels(true)`),
+  - `nativeKernel_category_ancestor` / `nativeKernel_bidirectional_ancestor`,
+  - LMDB/CSR `reachableToRoot*` demand-pruning BFS (different semantics — includes root, reverse/child edges),
+  - `BuildEmptySet` / `SetInsert` / `NotMemberSet` + `FFIStreamRetry` plumbing.
+- **FS-HYBRID-KERNEL-GATE-TC ✅ (landed):**
+  1. **Capability gate** — `wam_fsharp_native_kernel_kind/1` + filter in `detect_kernels_fs/2`. Unsupported detected kinds fall back to ordinary WAM (no undefined `nativeKernel_*` / FS0039). Logged at generation time.
+  2. **Native `transitive_closure2` acceleration** — `templates/targets/fsharp_wam/kernel_transitive_closure.fs.mustache` (lookup-fn + HashSet visited; stream via existing FFIStreamRetry; bound Target filtered). Describe as “native foreign acceleration for the shared transitive_closure2 pattern,” not “F# transitive closure support.”
+- **Remaining (5 kinds, optional acceleration):** `transitive_distance3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, `weighted_shortest_path3`, `astar_shortest_path4` — add to the allow-list only when a real handler exists (mustache *or* inline). Until then they must stay WAM.
+- **Tests:** `tests/core/test_wam_fsharp_kernel_gate_tc.pl`
+- **Acceptance (gate+TC2):** `swipl -q -g run_tests -t halt tests/core/test_wam_fsharp_kernel_gate_tc.pl` (dotnet build/run for native TC2 + five WAM-fallback kinds).
 
 ---
 

@@ -40,6 +40,8 @@
     compile_wam_predicate_to_fsharp/4,   % +Pred/Arity, +WamCode, +Options, -FSharpCode
     compile_wam_runtime_to_fsharp/3,     % +Options, +DetectedKernels, -Code
     write_wam_fsharp_project/3,          % +Predicates, +Options, +ProjectDir
+    wam_fsharp_native_kernel_supported/1, % +recursive_kernel(Kind,...)
+    wam_fsharp_native_kernel_kind/1,     % ?Kind — authoritative native allow-list
     wam_fsharp_resolve_emit_mode/2,      % +Options, -Mode
     wam_fsharp_partition_predicates/5,   % +Mode, +Predicates, +DK, -Interp, -Lowered
     % Fact-shape classification parity with Haskell/Elixir hybrid targets
@@ -239,6 +241,27 @@ ffi_owned_fact_filter_fs(DetectedKernels, PI) :-
 % Kernel detection (shared with Haskell target pattern)
 % ============================================================================
 
+%% wam_fsharp_native_kernel_kind(?Kind)
+%  Authoritative allow-list of recursive-kernel kinds for which F# can
+%  actually emit a nativeKernel_* handler. Detection may fire on more
+%  kinds (shared detector); unsupported kinds must stay ordinary WAM
+%  predicates — never CallForeign / executeForeign to a missing symbol.
+%
+%  Inventory (do not confuse with this allow-list):
+%   - Generic WAM recursive tc/2 already works (no_kernels(true)).
+%   - category_ancestor / bidirectional_ancestor have .fs.mustache bodies.
+%   - lmdb_fact_source reachableToRoot* is demand-pruning BFS over
+%     category_child (includes root); not a drop-in for transitive_closure2.
+%   - BuildEmptySet / SetInsert / NotMemberSet + FFIStreamRetry are the
+%     WAM/FFI plumbing TC2 streaming reuses.
+wam_fsharp_native_kernel_kind(category_ancestor).
+wam_fsharp_native_kernel_kind(bidirectional_ancestor).
+wam_fsharp_native_kernel_kind(transitive_closure2).
+
+%% wam_fsharp_native_kernel_supported(+Kernel)
+wam_fsharp_native_kernel_supported(recursive_kernel(Kind, _Pred, _ConfigOps)) :-
+    wam_fsharp_native_kernel_kind(Kind).
+
 detect_kernels_fs([], []).
 detect_kernels_fs([PI|Rest], Kernels) :-
     (   PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
@@ -247,7 +270,14 @@ detect_kernels_fs([PI|Rest], Kernels) :-
     (   Clauses \= [],
         detect_recursive_kernel(Pred, Arity, Clauses, Kernel)
     ->  format(atom(Key), '~w/~w', [Pred, Arity]),
-        Kernels = [Key-Kernel|RestKernels]
+        (   wam_fsharp_native_kernel_supported(Kernel)
+        ->  Kernels = [Key-Kernel|RestKernels]
+        ;   Kernel = recursive_kernel(Kind, _, _),
+            format(user_error,
+                   '[WAM-FSharp] detected ~w (~w) but no native F# handler; falling back to WAM~n',
+                   [Key, Kind]),
+            Kernels = RestKernels
+        )
     ;   Kernels = RestKernels
     ),
     detect_kernels_fs(Rest, RestKernels).
@@ -3734,6 +3764,10 @@ emit_stream_binding_multi_fs(OutputRegs, Indent) :-
     length(OutputRegs, NOuts),
     format('~wlet retPC = s.WsCP~n', [Indent]),
     emit_multi_out_derefs_fs(OutputRegs, Indent),
+    % Respect already-bound output registers (e.g. tc(+Source, +Target)):
+    % filter the native result stream before FFIStreamRetry packing.
+    % Mirrors Rust transitive_closure2 target_filter retain.
+    emit_bound_output_filter_fs(OutputRegs, NOuts, Indent),
     format('~wlet bindResult ', [Indent]),
     emit_tuple_pattern_fs(NOuts),
     format(' =~n', []),
@@ -3769,6 +3803,53 @@ emit_stream_binding_multi_fs(OutputRegs, Indent) :-
     emit_outregs_list_fs(OutputRegs),
     format(', outVars, restWrapped, retPC)) }~n', []),
     format('~w    Some { s1 with WsCPs = cp :: s1.WsCPs; WsCPsLen = s1.WsCPsLen + 1 }~n', [Indent]).
+
+%% emit_bound_output_filter_fs(+OutputRegs, +NOuts, +Indent)
+%  Drop native results that conflict with already-bound output registers.
+emit_bound_output_filter_fs(OutputRegs, NOuts, Indent) :-
+    format('~wlet results =~n', [Indent]),
+    format('~w    results~n', [Indent]),
+    format('~w    |> List.filter (fun ', [Indent]),
+    emit_tuple_pattern_fs(NOuts),
+    format(' ->~n', []),
+    emit_bound_output_filter_body_fs(OutputRegs, 1, Indent),
+    format('~w       )~n', [Indent]).
+
+%% Single-output: a bare match expression. Multi-output: &&-chain of matches.
+emit_bound_output_filter_body_fs([output(RegN, Type)], I, Indent) :- !,
+    format('~w        match outReg_~w with~n', [Indent, RegN]),
+    format('~w        | Unbound _ -> true~n', [Indent]),
+    emit_bound_output_type_match_fs(Type, I, Indent),
+    format('~w        | _ -> false~n', [Indent]).
+emit_bound_output_filter_body_fs(OutputRegs, I, Indent) :-
+    format('~w        (~n', [Indent]),
+    emit_bound_output_filter_conds_fs(OutputRegs, I, Indent),
+    format('~w        )~n', [Indent]).
+
+emit_bound_output_filter_conds_fs([], _, Indent) :-
+    format('~w         true~n', [Indent]).
+emit_bound_output_filter_conds_fs([output(RegN, Type)|Rest], I, Indent) :-
+    format('~w         (match outReg_~w with~n', [Indent, RegN]),
+    format('~w          | Unbound _ -> true~n', [Indent]),
+    emit_bound_output_type_match_fs(Type, I, Indent),
+    format('~w          | _ -> false)~n', [Indent]),
+    (   Rest = []
+    ->  true
+    ;   format('~w         &&~n', [Indent]),
+        I1 is I + 1,
+        emit_bound_output_filter_conds_fs(Rest, I1, Indent)
+    ).
+
+emit_bound_output_type_match_fs(atom, I, Indent) :- !,
+    format('~w        | Atom t ->~n', [Indent]),
+    format('~w            match Map.tryFind t ctx.WcAtomIntern with~n', [Indent]),
+    format('~w            | Some id -> id = rv_~w~n', [Indent, I]),
+    format('~w            | None -> false~n', [Indent]).
+emit_bound_output_type_match_fs(integer, I, Indent) :- !,
+    format('~w        | Integer i -> i = rv_~w~n', [Indent, I]).
+emit_bound_output_type_match_fs(float, I, Indent) :- !,
+    format('~w        | Float f -> f = rv_~w~n', [Indent, I]).
+emit_bound_output_type_match_fs(_, _, _Indent).
 
 emit_multi_out_derefs_fs([], _).
 emit_multi_out_derefs_fs([output(RegN, _)|Rest], Indent) :-
