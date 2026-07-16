@@ -16,12 +16,15 @@ campaigns — exists to make that ranking accurate, calibrated, and cheap.
 
 `MuAttention` (mu_attention.py; DESIGN_directional_attention.md): a small permutation-invariant
 transformer over a SET of tagged tokens — operator token, anchor(root), node, sampled ancestors, a
-maskable provenance token (corpus ⊗ judge ⊗ account) — over **frozen e5-small** embeddings; sigmoid μ
-readout per operator. Asymmetry is structural (root = e5 `query:`, candidates = `passage:`). Operators:
-SYM (symmetric relatedness), HIER (category hierarchy), ELEM (element-of), LINEAGE / LINEAGE_RANK
-(materialized-path filing). Since 2026-07-09, identity conditioning is a **name function**
-(`cond = W·e5(card) + residual`, NameFunctionCond) for judges, operators, and corpora — new identities
-onboard from a text card at zero residual (REPORT_judge_name_migration.md).
+maskable provenance token (corpus ⊗ judge ⊗ account) — over **frozen intfloat/e5-small-v2** embeddings
+(384-dim; English-only — a live caveat for non-English bookmark titles in Filing v1); sigmoid μ readout
+per operator. Asymmetry is structural (root = e5 `query:`, candidates = `passage:`). Operators: SYM
+(symmetric relatedness), HIER (category hierarchy), ELEM (element-of), LINEAGE / LINEAGE_RANK
+(materialized-path filing). Since 2026-07-09, **judge** identity conditioning is a **name function**
+(`cond = W·e5(card) + residual`, NameFunctionCond; merged #3621) — new judges onboard from a text card at
+zero residual (REPORT_judge_name_migration.md). The same migration for OPERATORS and CORPORA is
+implemented and bit-exact-verified but sits on the **unmerged** branch `claude/ops-corpora-namecond`
+(f7c6cfc04, migrate_name_tables.py) — a pending dependency for Filing v1 step 3.
 
 ## 3. Corpora and their pathologies
 
@@ -84,32 +87,46 @@ infra PRs) → champion G_sl (statistical linearization; dual μ/logit mixture f
 points) → Lever A: judge as measurement channel, R_judge≈0.004, conflict routing, decision-flip value
 (#3584) → campaigns (#3613) → name architecture + fused head + luna (#3621–#3648, §5 rows above).
 Theory map: THEORY_evidence_fusion.md; the two-timescale design: DESIGN_amortized_fusion_heads.md;
-scheme + batch-vs-dynamic statistics ladder: DESIGN_cheap_judge_pipeline.md (figures/*.png).
+scheme + batch-vs-dynamic statistics ladder: DESIGN_cheap_judge_pipeline.md with figures/*.png
+(in the pending #3648).
 
 **Codex's post-#3648 theory chain** (≈07-10→15, from the PR titles): #3651 post-3648 validation + GPU
 square-root/QR conditioning → #3666 batched sqrt/QR with correlation whitening → #3671 gate structured
 residual covariance → #3675 covariance sensitivity + adjacency-aware batching → #3685 adjacency-residual
 confidence, component-safe folds → #3695 PSD graph-geometry audit → #3701 preregistered repeated-judge
 covariance campaign → #3707/#3726 fail-closed capacity/topology audits → #3735 dependence-aware
-source-region topology bridge → #3742 corpus-specific source-dependence power harness → **Stage-A
-immutable power run live** (results: ~/UnifyWeaver-runs/repeated-judge-source-power/d7e28a91/result.json).
+source-region topology bridge → #3742 corpus-specific source-dependence power harness → Stage-A immutable
+power run (reported LIVE by Codex as of 2026-07-15; transient status — replace this sentence with a
+tracked result report once its result JSON lands; the run directory lives outside the repository).
 Codex's three standing questions: graph geometry; how to measure correlation; how much correlation is
 safe in inverse-square-root propagation (Householder/Potter). Division of labor (2026-07-10): **Codex =
 theory/tools; Claude = application + training; Grok = delegated self-contained scripts.**
 
+**Merge-state note (as of 2026-07-16, main HEAD = #3639 / 2026-07-10):** the #3648 pipeline PR, its
+validity-correction commits, `claude/ops-corpora-namecond` (op/corpus name migration),
+`claude/fused-head-seeds` (multi-seed hardening; REPORT_luna_campaign.md §3b), and the Codex #3651–#3742
+chain are all on BRANCHES/PRs, not yet on main. Sections 5–6 describe that branch-side work; the ledger
+in §8 marks these pending. On main, REPORT_luna_campaign.md still predates the luna debiasing.
+
 ## 7. Where we are: Filing v1 (the application refocus)
 
-The research earned what filing needs; methodology hit diminishing returns. Plan (memory:
-project_filing_v1_arc.md):
+The research earned what filing needs; methodology hit diminishing returns. Plan (session notes kept in
+Claude's local memory; this section is the tracked record):
 1. Pearltrees data completion (chunked re-export + API backfill) — Grok-delegated script.
-2. Label Pearltrees with the validated cheap pipeline (luna bulk + ~300-row random 5.5 overlap, debiased
-   fusion, conflict-routed 5.5, sonnet-5-low tiebreaks).
-3. Fine-tune the filing model (corpus card onboards by name; single-path LINEAGE; champion recipe).
+2. Label Pearltrees with the **current best-supported (exploratory) cheap pipeline** (luna bulk +
+   ~300-row random 5.5 overlap, debiased fusion, conflict-routed 5.5, sonnet-5-low tiebreaks). Its
+   evidence base is exploratory by its own report: descendant-disjoint (not node-disjoint) splits, a
+   ridge-on-frozen-e5 proxy (not the full head), and fidelity to the 5.5 operating judge (not independent
+   truth); Codex's post-#3648 chain adds a node-disjoint rework. Full-head + node-disjoint confirmation
+   remains pending — the practical recipe stands, the scientific claim stays exploratory.
+3. Fine-tune the filing model (single-path LINEAGE; champion recipe). Corpus-card onboarding depends on
+   merging `claude/ops-corpora-namecond` and running migrate_name_tables.py on the training base ckpt;
+   otherwise the corpus uses its indexed embedding slot as before.
 4. Evaluate on the FILING metric (placement accuracy / rank of correct folder; decision-flip escalation).
 5. Assistant loop (rank folders, escalate on conflict) — Grok-delegated CLI shell around our scorer.
 sqrt-KF in training: target factory + Cholesky parameterization; no in-loop filter layer yet.
 
-## 8. PR ledger (merged; both authors)
+## 8. PR ledger (both authors; merged unless marked PENDING)
 
 Foundations: #3355–#3395 (06-25→07-01, Claude — superposition, anchored basis, tail, transitive,
 applications scaffolding). Data: #3400 Pearltrees completion (07-02); #3426/#3436 mindmap lineage
@@ -119,10 +136,16 @@ MSE/CE (07-03). Judges: #3445/#3464 SYM dual judge (07-03/04); #3488 ELEM member
 #3577 atoms, #3579 theory, #3584 judge channel (07-09). Campaigns: #3600/#3603/#3610/#3618 cross-corpus
 samplers incl. Pearltrees/SimpleMind + title/typo handling (Codex, 07-09); #3591/#3592 channel heads,
 #3613 campaign, #3614 within-stratum (Claude, 07-09). B2 + economics: #3621 name-cond arc, #3623
-multi-judge fusion, #3627/#3635 title audits (Codex), #3634 luna campaign (07-09/10). Pipeline: #3648
-cheap-judge pipeline + corrections (07-10). Theory chain: #3651→#3742 (Codex, ≈07-10→15, §6).
+multi-judge fusion, #3627/#3635 title audits (Codex), #3634 luna campaign (07-09/10).
+**PENDING (not on main as of 2026-07-16):** #3648 cheap-judge pipeline + validity corrections (07-10);
+`claude/ops-corpora-namecond` (op/corpus name migration); `claude/fused-head-seeds` (multi-seed
+hardening); Codex theory chain #3651→#3742 (≈07-10→15, §6).
 
-## 9. Doc index (by theme)
+## 9. Selected doc index (by theme)
+
+Docs on main as of 2026-07-16. The post-#3648 covariance/source-dependence chain's docs (square-root/QR
+conditioning, adjacency batching, source-region topology, power harness) live in the pending Codex PRs
+(§6) and should be indexed here when merged.
 
 - **Architecture**: DESIGN_directional_attention.md, DESIGN_provenance_and_representation.md,
   DESIGN_calibrated_judges.md, DESIGN_mu_sources_and_estimation.md.
@@ -138,7 +161,8 @@ cheap-judge pipeline + corrections (07-10). Theory chain: #3651→#3742 (Codex, 
 - **Channels/campaigns**: REPORT_channel_heads_probe.md, REPORT_channel_heads_b1.md,
   REPORT_channel_campaign.md, REPORT_judge_name_migration.md, REPORT_fused_head.md,
   REPORT_luna_campaign.md (⚠ predates luna debiasing — don't build on its exact numbers),
-  REPORT_class_mixture.md, REPORT_multi_judge_fusion.md, REPORT_cheap_judge_baseline.md (post-correction
+  REPORT_class_mixture.md, REPORT_multi_judge_fusion.md, REPORT_cheap_judge_baseline.md (pending #3648;
+  post-correction
   numbers are authoritative).
 - **Corpora/data quality**: DESIGN_wikipedia_sampling.md, DESIGN_graph_widening.md,
   REPORT_widen_enwiki.md, DESIGN_product_kalman_cross_corpus_campaign.md,
