@@ -4058,6 +4058,15 @@ tc_check_unbound:
 tc_run_bfs:
   %tc_start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
   %tc_target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  ; The per-kernel max is derived from edge-table endpoints, not every atom
+  ; interned by the module. Reject bound atoms outside that range before the
+  ; shared distance helper indexes visited[start].
+  %tc_start_in_range = icmp ule i64 %tc_start_id, %max_atom_id
+  %tc_target_in_range = icmp ule i64 %tc_target_id, %max_atom_id
+  %tc_ids_in_range = and i1 %tc_start_in_range, %tc_target_in_range
+  br i1 %tc_ids_in_range, label %tc_compare_ids, label %tc_bail
+
+tc_compare_ids:
   %tc_same = icmp eq i64 %tc_start_id, %tc_target_id
   br i1 %tc_same, label %tc_rplus_self, label %tc_dist
 
@@ -4100,7 +4109,10 @@ entry:
   call void @wam_arena_ensure()
   %arena_save = call i64 @wam_arena_mark()
   %vis_bytes = shl i64 %n, 2
-  %q_bytes = shl i64 %n, 3
+  ; One seed plus up to n edge-discovered atoms (including Source after a
+  ; cycle) can be resident over the traversal lifetime.
+  %q_slots = add i64 %n, 1
+  %q_bytes = shl i64 %q_slots, 3
   %vis_mem = call i8* @wam_arena_alloc(i64 %vis_bytes)
   %q_mem = call i8* @wam_arena_alloc(i64 %q_bytes)
   %visited = bitcast i8* %vis_mem to i32*
@@ -4197,7 +4209,8 @@ entry:
   call void @wam_arena_ensure()
   %arena_save = call i64 @wam_arena_mark()
   %vis_bytes = shl i64 %n, 2
-  %q_bytes = shl i64 %n, 3
+  %q_slots = add i64 %n, 1
+  %q_bytes = shl i64 %q_slots, 3
   %vis_mem = call i8* @wam_arena_alloc(i64 %vis_bytes)
   %q_mem = call i8* @wam_arena_alloc(i64 %q_bytes)
   %visited = bitcast i8* %vis_mem to i32*

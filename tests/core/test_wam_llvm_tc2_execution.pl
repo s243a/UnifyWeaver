@@ -8,6 +8,8 @@
 %   1. Reachable pair → exit 1 (true)
 %   2. Unreachable pair → exit 0 (false)
 %   3. Acyclic Source==Target → exit 0 (strict R+; no zero-edge hit)
+%   4. Self-loop Source==Target → exit 1 (strict R+)
+%   5. Nonempty cycle Source==Target → exit 1 (strict R+)
 
 :- use_module('../../src/unifyweaver/targets/wam_llvm_target',
     [write_wam_llvm_project/3,
@@ -20,6 +22,9 @@
 tc_edge(a, b).
 tc_edge(b, c).
 tc_edge(c, d).
+tc_edge(e, e).
+tc_edge(f, g).
+tc_edge(g, f).
 
 :- dynamic can_reach/2.
 can_reach(_, _) :- fail.
@@ -87,7 +92,7 @@ run_tc2_case(Label, StartAtom, TargetAtom, Expected) :-
         LLPath),
     read_file_to_string(LLPath, Src, []),
     extract_atom_id_for(Src, 'tc2_inst_can_reach_0_edges',
-        [a-b, b-c, c-d], AtomIds),
+        [a-b, b-c, c-d, e-e, f-g, g-f], AtomIds),
     get_dict(StartAtom, AtomIds, StartId),
     get_dict(TargetAtom, AtomIds, TargetId),
     extract_instr_count(Src, can_reach, IC),
@@ -149,7 +154,9 @@ test_tc2_executes :-
     ( process_which('clang'), process_which('llc')
     -> run_tc2_case('reachable a->d',    a, d, 1),
        run_tc2_case('direct edge a->b',  a, b, 1),
-       run_tc2_case('acyclic self a->a', a, a, 0)
+       run_tc2_case('acyclic self a->a', a, a, 0),
+       run_tc2_case('self-loop e->e',    e, e, 1),
+       run_tc2_case('cycle f->f',        f, f, 1)
     ;  format('  SKIP: clang or llc not found~n')
     ).
 
@@ -162,7 +169,10 @@ process_which(Tool) :-
         ), _, fail).
 
 test_all :-
-    catch(test_tc2_executes, E,
-        format('  ERROR: ~w~n', [E])).
+    ( catch(test_tc2_executes, E,
+          ( format(user_error, '  ERROR: ~w~n', [E]), fail ))
+    -> true
+    ;  halt(1)
+    ).
 
 :- initialization(test_all, main).

@@ -53,7 +53,7 @@ tc2_bfs(Edges, [Node|Queue], Seen, Acc0, Acc) :-
 
 %% tc2_fixture(?Name, -Edges, -QuerySources)
 tc2_fixture(chain, [a-b, b-c, c-d], [a, c, d, z]).
-tc2_fixture(branch, [a-b, a-c, b-d, c-d], [a, d]).
+tc2_fixture(branch, [a-b, a-c, b-d, c-e], [a, d, e]).
 tc2_fixture(diamond, [a-b, a-c, b-d, c-d], [a, d]).
 tc2_fixture(dup_edges, [a-b, a-b, b-c, b-c], [a, b]).
 tc2_fixture(sink_disconnected, [a-b, c-d], [a, b, c, z]).
@@ -62,6 +62,35 @@ tc2_fixture(two_cycle, [a-b, b-a], [a, b]).
 tc2_fixture(long_cycle_exit, [a-b, b-c, c-a, c-d], [a, c, d]).
 
 %% tc2_fixture_expected(+Name, +Source, -SortedTargets)
-tc2_fixture_expected(Name, Source, Sorted) :-
-    tc2_fixture(Name, Edges, _),
-    tc2_oracle_reachable(Edges, Source, Sorted).
+%  Independent expected results for every declared fixture query. Keep these
+%  literal rather than deriving them through tc2_oracle_reachable/3: the
+%  fixture matrix is intended to detect regressions in the oracle itself.
+tc2_fixture_expected(chain, a, [b, c, d]).
+tc2_fixture_expected(chain, c, [d]).
+tc2_fixture_expected(chain, d, []).
+tc2_fixture_expected(chain, z, []).
+
+tc2_fixture_expected(branch, a, [b, c, d, e]).
+tc2_fixture_expected(branch, d, []).
+tc2_fixture_expected(branch, e, []).
+
+tc2_fixture_expected(diamond, a, [b, c, d]).
+tc2_fixture_expected(diamond, d, []).
+
+tc2_fixture_expected(dup_edges, a, [b, c]).
+tc2_fixture_expected(dup_edges, b, [c]).
+
+tc2_fixture_expected(sink_disconnected, a, [b]).
+tc2_fixture_expected(sink_disconnected, b, []).
+tc2_fixture_expected(sink_disconnected, c, [d]).
+tc2_fixture_expected(sink_disconnected, z, []).
+
+tc2_fixture_expected(self_loop, a, [a, b]).
+tc2_fixture_expected(self_loop, b, []).
+
+tc2_fixture_expected(two_cycle, a, [a, b]).
+tc2_fixture_expected(two_cycle, b, [a, b]).
+
+tc2_fixture_expected(long_cycle_exit, a, [a, b, c, d]).
+tc2_fixture_expected(long_cycle_exit, c, [a, b, c, d]).
+tc2_fixture_expected(long_cycle_exit, d, []).

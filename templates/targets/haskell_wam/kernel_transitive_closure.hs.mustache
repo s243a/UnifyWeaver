@@ -16,7 +16,14 @@ nativeKernel_transitive_closure edges source =
   where
     go [] _ acc = acc
     go (node:queue) visited acc =
-      let neighbors = edges node
-          newTargets = filter (\n -> not (IS.member n visited)) neighbors
-          visited' = foldr IS.insert visited newTargets
+      let (visited', newTargetsRev) =
+            foldl' discover (visited, []) (edges node)
+          newTargets = reverse newTargetsRev
       in go (queue ++ newTargets) visited' (acc ++ newTargets)
+
+    -- Update the seen set for each neighbor, rather than filtering the
+    -- whole adjacency list against the old set. This keeps only the first
+    -- occurrence of duplicate edges while preserving discovery order.
+    discover (seen, foundRev) target
+      | IS.member target seen = (seen, foundRev)
+      | otherwise = (IS.insert target seen, target : foundRev)

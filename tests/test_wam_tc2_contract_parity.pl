@@ -182,15 +182,18 @@ test(haskell_mustache_rplus_visited) :-
         'templates/targets/haskell_wam/kernel_transitive_closure.hs.mustache', S),
     assertion(sub_string(S, _, _, _, "strict R+")),
     assertion(sub_string(S, _, _, _, "go [source] IS.empty []")),
-    assertion(sub_string(S, _, _, _, "newTargets = filter")),
+    assertion(sub_string(S, _, _, _, "foldl' discover")),
+    assertion(sub_string(S, _, _, _, "IS.insert target seen")),
+    assertion(\+ sub_string(S, _, _, _, "newTargets = filter")),
     assertion(\+ sub_string(S, _, _, _, "IS.insert source")).
 
 test(c_handler_does_not_seed_visited_with_start) :-
     read_file_string('src/unifyweaver/targets/wam_c_target.pl', S),
     assertion(sub_string(S, _, _, _, "wam_transitive_closure_handler")),
     assertion(sub_string(S, _, _, _, "Strict R+")),
-    assertion(sub_string(S, _, _, _, "do NOT seed visited with start")),
+    assertion(sub_string(S, _, _, _, "wam_collect_transitive_closure")),
     assertion(sub_string(S, _, _, _, "int visited_len = 0;")),
+    assertion(sub_string(S, _, _, _, "WAM_FOREIGN_STREAM_NEXT")),
     assertion(\+ sub_string(S, _, _, _, "visited[0] = start")).
 
 test(r_runtime_does_not_seed_visited_with_source) :-
@@ -282,7 +285,8 @@ test(c_registers_transitive_closure_handler) :-
     directory_file_path(Dir, 'wam_runtime.c', RT),
     read_file_string(RT, S),
     assertion(sub_string(S, _, _, _, "wam_transitive_closure_handler")),
-    assertion(sub_string(S, _, _, _, "do NOT seed visited with start")),
+    assertion(sub_string(S, _, _, _, "wam_bind_foreign_atom_stream")),
+    assertion(sub_string(S, _, _, _, "WAM_FOREIGN_STREAM_NEXT")),
     !.
 
 :- end_tests(tc2_native_dispatch).
@@ -314,7 +318,7 @@ test(fsharp_cycle_rplus_e2e, [condition(dotnet_available)]) :-
     assertion(sub_string(RunOut, _, _, _, "OK sink_d")),
     !.
 
-test(c_bound_source_via_cycle, [condition(gcc_available)]) :-
+test(c_stream_and_bound_rplus, [condition(gcc_available)]) :-
     assert_c_tc_program,
     tmp_dir(c_e2e, Dir),
     write_wam_c_project([user:tc_ancestor/2], [], Dir),
@@ -661,9 +665,58 @@ int main(void) {
     setup_detected_wam_c_kernels(&state);
 
     wam_register_transitive_edge(&state, "a", "b");
+    wam_register_transitive_edge(&state, "a", "b");
+    wam_register_transitive_edge(&state, "a", "c");
     wam_register_transitive_edge(&state, "b", "c");
     wam_register_transitive_edge(&state, "c", "d");
     wam_register_transitive_edge(&state, "c", "a");
+
+    /* Drive the native foreign handler and then force ordinary WAM
+       backtracking through its foreign-stream choice point. Duplicate
+       edges and the second path to c must still yield one result each. */
+    {
+        int fail_pc = state.code_size;
+        state.code_size += 2;
+        state.code = realloc(state.code,
+                             sizeof(Instruction) * (size_t)state.code_size);
+        if (!state.code) return 20;
+        memset(&state.code[fail_pc], 0, sizeof(Instruction) * 2u);
+        state.code[fail_pc].tag = INSTR_BUILTIN_CALL;
+        state.code[fail_pc].as.pred.pred = "__tc2_retry_fail/0";
+        state.code[fail_pc].as.pred.arity = 0;
+        state.code[fail_pc + 1].tag = INSTR_PROCEED;
+
+        state.P = fail_pc;
+        state.CP = WAM_HALT;
+        state.A[0] = val_atom("a");
+        state.A[1] = val_unbound("T");
+        if (!wam_execute_foreign_predicate(&state, "tc_ancestor/2", 2)) {
+            wam_free_state(&state);
+            return 21;
+        }
+
+        const char *expected[4] = { "b", "c", "d", "a" };
+        for (int i = 0; i < 4; i++) {
+            if (i > 0) {
+                state.P = fail_pc;
+                if (wam_run(&state) != 0) {
+                    wam_free_state(&state);
+                    return 22 + i;
+                }
+            }
+            WamValue *cell = wam_deref_ptr(&state, &state.A[1]);
+            if (cell->tag != VAL_ATOM ||
+                strcmp(cell->data.atom, expected[i]) != 0) {
+                wam_free_state(&state);
+                return 30 + i;
+            }
+        }
+        state.P = fail_pc;
+        if (wam_run(&state) != WAM_HALT || state.B != 0) {
+            wam_free_state(&state);
+            return 40;
+        }
+    }
 
     /* Bound Source via nonempty cycle must succeed (strict R+). */
     {
@@ -674,15 +727,6 @@ int main(void) {
             return 11;
         }
     }
-
-    wam_free_state(&state);
-    wam_state_init(&state);
-    setup_tc_ancestor_2(&state);
-    setup_detected_wam_c_kernels(&state);
-    wam_register_transitive_edge(&state, "a", "b");
-    wam_register_transitive_edge(&state, "b", "c");
-    wam_register_transitive_edge(&state, "c", "d");
-    wam_register_transitive_edge(&state, "c", "a");
 
     /* Sink d has no outgoing edges — unbound Target must fail. */
     {
