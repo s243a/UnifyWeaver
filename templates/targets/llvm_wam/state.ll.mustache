@@ -4031,10 +4031,13 @@ define weak i1 @wam_ls2_kernel_impl(%WamState* %vm, i32 %instance) {
 }
 
 ; === M5.12: tc2 common runner helper ===
-; Boolean reachability: is there any path from start to target in the
-; %AtomFactPair graph? Calls @wam_bfs_atom_distance and discards the
-; distance — we only care about the success/failure return. No result
-; register is written (tc2 is arity 2: A1=start, A2=target).
+; Boolean reachability under strict R+ (docs/design/WAM_TRANSITIVE_CLOSURE2_CONTRACT.md):
+; succeed iff a path of ≥1 edges exists. When start != target, reuse
+; @wam_bfs_atom_distance (distance-0 fast-path is unreachable). When
+; start == target, that helper's R*-style self-hit would wrongly succeed
+; with zero edges — route through @wam_tc2_rplus_reaches instead.
+; Organization: kept inline in state.ll.mustache (matches surrounding
+; LLVM kernel helpers; not large enough to warrant a separate fragment).
 define i1 @wam_tc2_run(%WamState* %vm, %AtomFactPair* %table, i64 %len, i64 %max_atom_id) {
 entry:
   %tc_s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
@@ -4055,6 +4058,17 @@ tc_check_unbound:
 tc_run_bfs:
   %tc_start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
   %tc_target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %tc_same = icmp eq i64 %tc_start_id, %tc_target_id
+  br i1 %tc_same, label %tc_rplus_self, label %tc_dist
+
+tc_rplus_self:
+  ; Strict R+: Source==Target needs a self-loop or nonempty cycle.
+  %tc_self_ok = call i1 @wam_tc2_rplus_reaches(
+      i64 %tc_start_id, i64 %tc_target_id,
+      %AtomFactPair* %table, i64 %len, i64 %max_atom_id)
+  ret i1 %tc_self_ok
+
+tc_dist:
   %tc_dist_slot = alloca i64
   %tc_ok = call i1 @wam_bfs_atom_distance(
       i64 %tc_start_id, i64 %tc_target_id,
@@ -4075,10 +4089,99 @@ tc_bail:
   ret i1 false
 }
 
+; === M5.14b: Strict R+ reachability (no reflexive zero-edge hit) ===
+; BFS from %start; visited tracks nodes discovered via an outgoing edge
+; (not seeded with %start). Succeeds iff %target is discovered that way.
+define i1 @wam_tc2_rplus_reaches(
+    i64 %start, i64 %target,
+    %AtomFactPair* %table, i64 %len, i64 %max_atom_id) {
+entry:
+  %n = add i64 %max_atom_id, 1
+  call void @wam_arena_ensure()
+  %arena_save = call i64 @wam_arena_mark()
+  %vis_bytes = shl i64 %n, 2
+  %q_bytes = shl i64 %n, 3
+  %vis_mem = call i8* @wam_arena_alloc(i64 %vis_bytes)
+  %q_mem = call i8* @wam_arena_alloc(i64 %q_bytes)
+  %visited = bitcast i8* %vis_mem to i32*
+  %queue = bitcast i8* %q_mem to i64*
+  call void @llvm.memset.p0i8.i64(i8* %vis_mem, i8 0, i64 %vis_bytes, i1 false)
+  ; Queue starts at Source; do NOT mark Source visited (R+).
+  %q0 = getelementptr i64, i64* %queue, i64 0
+  store i64 %start, i64* %q0
+  br label %rp_loop
+
+rp_loop:
+  %head = phi i64 [0, %entry], [%head_next, %rp_scan_done]
+  %tail = phi i64 [1, %entry], [%tail_after, %rp_scan_done]
+  %more = icmp ult i64 %head, %tail
+  br i1 %more, label %rp_pop, label %rp_fail
+
+rp_pop:
+  %q_slot = getelementptr i64, i64* %queue, i64 %head
+  %node = load i64, i64* %q_slot
+  %head_next = add i64 %head, 1
+  br label %rp_scan
+
+rp_scan:
+  %si = phi i64 [0, %rp_pop], [%si_next, %rp_scan_cont]
+  %tail_cur = phi i64 [%tail, %rp_pop], [%tail_kept, %rp_scan_cont]
+  %si_cmp = icmp ult i64 %si, %len
+  br i1 %si_cmp, label %rp_scan_body, label %rp_scan_done
+
+rp_scan_body:
+  %pair_ptr = getelementptr %AtomFactPair, %AtomFactPair* %table, i64 %si
+  %from_ptr = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 0
+  %to_ptr = getelementptr %AtomFactPair, %AtomFactPair* %pair_ptr, i32 0, i32 1
+  %from_id = load i64, i64* %from_ptr
+  %to_id = load i64, i64* %to_ptr
+  %from_match = icmp eq i64 %from_id, %node
+  br i1 %from_match, label %rp_check_to, label %rp_scan_cont
+
+rp_check_to:
+  %to_ok = icmp ult i64 %to_id, %n
+  br i1 %to_ok, label %rp_check_vis, label %rp_scan_cont
+
+rp_check_vis:
+  %vis_to_ptr = getelementptr i32, i32* %visited, i64 %to_id
+  %vis_to = load i32, i32* %vis_to_ptr
+  %already = icmp ne i32 %vis_to, 0
+  br i1 %already, label %rp_scan_cont, label %rp_hit_or_enq
+
+rp_hit_or_enq:
+  %is_tgt = icmp eq i64 %to_id, %target
+  br i1 %is_tgt, label %rp_success, label %rp_enqueue
+
+rp_enqueue:
+  store i32 1, i32* %vis_to_ptr
+  %q_push = getelementptr i64, i64* %queue, i64 %tail_cur
+  store i64 %to_id, i64* %q_push
+  %tail_inc = add i64 %tail_cur, 1
+  br label %rp_scan_cont
+
+rp_scan_cont:
+  %tail_kept = phi i64 [%tail_cur, %rp_scan_body], [%tail_cur, %rp_check_to], [%tail_cur, %rp_check_vis], [%tail_inc, %rp_enqueue]
+  %si_next = add i64 %si, 1
+  br label %rp_scan
+
+rp_scan_done:
+  %tail_after = phi i64 [%tail_cur, %rp_scan]
+  br label %rp_loop
+
+rp_success:
+  call void @wam_arena_rewind(i64 %arena_save)
+  ret i1 true
+
+rp_fail:
+  call void @wam_arena_rewind(i64 %arena_save)
+  ret i1 false
+}
+
 ; === M5.14: Stream-mode tc2 (enumerate all reachable nodes) ===
-; Runs BFS from A1, collects all reachable nodes (excluding start) into
-; a %Value array, pushes a foreign choice point, and yields the first
-; result. On backtrack, the iterator yields subsequent reachable nodes.
+; Strict R+ BFS from A1: collect every node discovered via an outgoing
+; edge (Source is included only for a self-loop or nonempty cycle).
+; Pushes a foreign choice point and yields the first result. On
+; backtrack, the iterator yields subsequent reachable nodes.
 ;
 ; Returns false if no reachable nodes exist (start is isolated).
 ; The result array is malloc'd (not arena) because it must outlive this
@@ -4109,9 +4212,8 @@ entry:
   ; Zero-init visited[].
   call void @llvm.memset.p0i8.i64(i8* %vis_mem, i8 0, i64 %vis_bytes, i1 false)
 
-  ; Seed BFS with start.
-  %vis_start = getelementptr i32, i32* %visited, i64 %start_id
-  store i32 1, i32* %vis_start
+  ; Seed queue with start; do NOT mark start visited (strict R+).
+  ; Nodes enter visited/results only when discovered via an edge.
   %q0 = getelementptr i64, i64* %queue, i64 0
   store i64 %start_id, i64* %q0
   br label %bfs_loop

@@ -54,6 +54,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | ISO-PYTHON | ISO three-form (finish) | Python | S | — |
 | ISO-FSHARP | ISO three-form (finish) | F# | S | — |
 | KERN-FSHARP ⚡ | Finish F# native kernel acceleration | F# | L | gate+TC2 done (`FS-HYBRID-KERNEL-GATE-TC`); 5 kinds remain |
+| TC2-CONTRACT-PARITY ⚡ | Fleet-wide `transitive_closure2` strict R+ contract | multi | M | contract+oracle+handler align |
 | EMIT-ILASM | Lowered emitter | ILAsm | L | — |
 | EMIT-JVM | Lowered emitter | JVM | L | — |
 | EMIT-KOTLIN ✅ | Lowered emitter | Kotlin | M | done — flat facts/unify (`cursor/emit-kotlin-lowered-f421`) |
@@ -483,6 +484,19 @@ plumbing there.
 - **Remaining (5 kinds, optional acceleration):** `transitive_distance3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, `weighted_shortest_path3`, `astar_shortest_path4` — add to the allow-list only when a real handler exists (mustache *or* inline). Until then they must stay WAM.
 - **Tests:** `tests/core/test_wam_fsharp_kernel_gate_tc.pl`
 - **Acceptance (gate+TC2):** `swipl -q -g run_tests -t halt tests/core/test_wam_fsharp_kernel_gate_tc.pl` (dotnet build/run for native TC2 + five WAM-fallback kinds).
+
+---
+
+## Lever: Shared recursive-kernel contract parity
+
+### TC2-CONTRACT-PARITY: Fleet-wide `transitive_closure2` strict R+
+- **Lever:** Shared recursive-kernel contract parity  **Target:** multi  **Size:** M  **Depends on:** —
+- **Contract:** [`docs/design/WAM_TRANSITIVE_CLOSURE2_CONTRACT.md`](design/WAM_TRANSITIVE_CLOSURE2_CONTRACT.md) — path of ≥1 edges; Source only via self-loop/cycle; set semantics; bound succeeds once; stream ABI preserved; cross-target compare uses sorted sets.
+- **Oracle / fixtures:** `tests/fixtures/tc2_contract_oracle.pl` (finite BFS; not cyclic Prolog recursion).
+- **Handler align (R+):** F#/Haskell Mustache TC2 kernels, C inline handler, R `runtime.R.mustache`, LLVM stream + bound `Source==Target` via `@wam_tc2_rplus_reaches`. Rust/Scala/Go/Elixir already matched.
+- **Template organization:** Mustache kept for F#/Haskell TC2 (non-trivial); C/Rust/Scala/LLVM/Go stay inline to match surrounding target style (documented in the contract).
+- **Tests:** `tests/test_wam_tc2_contract_parity.pl` (+ F# gate suite for native dispatch/retry ABI).
+- **Acceptance:** `swipl -q -g run_tests -t halt tests/test_wam_tc2_contract_parity.pl` and `tests/core/test_wam_fsharp_kernel_gate_tc.pl`.
 
 ---
 

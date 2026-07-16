@@ -7,7 +7,7 @@
 % Tests:
 %   1. Reachable pair → exit 1 (true)
 %   2. Unreachable pair → exit 0 (false)
-%   3. Self-reachability → exit 1 (start == target fast path)
+%   3. Acyclic Source==Target → exit 0 (strict R+; no zero-edge hit)
 
 :- use_module('../../src/unifyweaver/targets/wam_llvm_target',
     [write_wam_llvm_project/3,
@@ -149,7 +149,7 @@ test_tc2_executes :-
     ( process_which('clang'), process_which('llc')
     -> run_tc2_case('reachable a->d',    a, d, 1),
        run_tc2_case('direct edge a->b',  a, b, 1),
-       run_tc2_case('self a->a',         a, a, 1)
+       run_tc2_case('acyclic self a->a', a, a, 0)
     ;  format('  SKIP: clang or llc not found~n')
     ).
 

@@ -6141,9 +6141,14 @@ bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity
         return false;
     }
 
+    /* Strict R+ (docs/design/WAM_TRANSITIVE_CLOSURE2_CONTRACT.md):
+     * do NOT seed visited with start. Nodes enter visited only when
+     * discovered via an outgoing edge, so Source is a solution iff a
+     * self-loop or nonempty cycle reaches it. Inline C handler kept
+     * (small; matches surrounding wam_*_handler style). Single-solution
+     * ABI unchanged — first R+ hit only. */
     const char *visited[64];
     int visited_len = 0;
-    visited[visited_len++] = start;
     const char *result = NULL;
     if (!wam_transitive_closure_dfs(state, start, target, 0, visited, visited_len, &result)) {
         return false;
