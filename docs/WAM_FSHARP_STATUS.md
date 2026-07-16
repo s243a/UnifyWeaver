@@ -33,12 +33,15 @@ query times competitive with Rust FFI at scale 300.
 **Dual lowering.** Interpreter + `emit_mode(functions)` lowered path
 (mirrors Haskell; deterministic clause-1 for choicepoint-heavy bodies).
 
-**Kernels.** Shared detector can fire for all kinds, but **only two
-F# mustache templates exist** on disk
+**Kernels.** Shared detection can recognize more kinds than F# accelerates.
+The capability gate promotes a predicate to `CallForeign` only when the
+selected kind is allow-listed **and** its F# handler exists; otherwise the
+already-working WAM predicate remains the correctness path. Three F#
+mustache handlers exist on disk
 (`kernel_category_ancestor.fs.mustache`,
-`kernel_bidirectional_ancestor.fs.mustache`). Other kinds fall through
-to a `// Kernel …: template not found` stub at codegen
-(`render_kernel_function_fs/2`). Benchmarks centre on
+`kernel_bidirectional_ancestor.fs.mustache`,
+`kernel_transitive_closure.fs.mustache`). Missing handlers no longer emit
+undefined `nativeKernel_*` calls. Benchmarks centre on
 `category_ancestor/4`. **Bidirectional** upgrade is computed but
 **off by default** — requires `allow_bidirectional_kernel_swap(true)`.
 CSR reverse-index reader (`CsrLookupSource`) and cost/strategy

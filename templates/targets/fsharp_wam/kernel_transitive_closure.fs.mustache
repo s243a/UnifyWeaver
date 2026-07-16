@@ -1,0 +1,33 @@
+/// Native foreign acceleration for the shared transitive_closure2 pattern.
+/// Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
+///
+/// This is NOT "F# transitive closure support from scratch":
+///   - Ordinary recursive tc/2 already works through the generic WAM
+///     (use no_kernels(true) for that correctness path).
+///   - Lookup-function style matches nativeKernel_category_ancestor so
+///     Eager / LMDB / CSR ILookupSource backends all work.
+///   - HashSet visited-set cycle protection mirrors reachableToRootVia,
+///     but semantics differ: we follow this kernel's configured edge_pred
+///     forward from Source, and Source itself is not a Target solution
+///     (reachableToRoot* walks reverse/category_child edges for demand
+///     pruning and includes the root).
+///
+/// Returns interned Target atom ids; executeForeign streams them via
+/// the existing FFIStreamRetry choice-point machinery (stream-valued
+/// relation — not a deterministic Prolog interface).
+let nativeKernel_transitive_closure
+    (edges: int -> int list)
+    (source: int) : int list =
+    let visited = System.Collections.Generic.HashSet<int>()
+    visited.Add(source) |> ignore
+    let acc = System.Collections.Generic.List<int>()
+    let mutable frontier = [source]
+    while not (List.isEmpty frontier) do
+        let next = System.Collections.Generic.List<int>()
+        for node in frontier do
+            for n in edges node do
+                if visited.Add(n) then
+                    acc.Add(n)
+                    next.Add(n)
+        frontier <- List.ofSeq next
+    List.ofSeq acc

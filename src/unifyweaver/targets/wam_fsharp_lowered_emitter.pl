@@ -1406,11 +1406,12 @@ emit_one_fs(trust_me, PC, SV, SVout, I, _FP) :-
     format("~w| Some ~w ->~n", [I, SVout]).
 
 % Execute — tail call; returns directly (no WsCP change)
-emit_one_fs(execute(PredStr), _PC, SV, SV, I, FP) :-
+emit_one_fs(execute(PredStr), PC, SV, SV, I, FP) :-
     atom_string(PredAtom, PredStr),
     escape_dq_fs(PredStr, EscPred),
     (   member(PredAtom, FP)
-    ->  format("~wcallForeign ctx \"~w\" ~w~n", [I, EscPred, SV])
+    ->  format("~wstep ctx { ~w with WsPC = ~w } (ExecuteForeign \"~w\")~n",
+               [I, SV, PC, EscPred])
     ;   format("~wdispatchCall ctx \"~w\" ~w~n", [I, EscPred, SV])
     ).
 
