@@ -4829,145 +4829,320 @@ sp.ret0:
   ret i64 0
 }
 
-; Rebuild a text record with field %idx (1-based) set to %val[0..vlen). The
-; record %rec is a NUL-terminated string split on the single byte %sep; the
-; fields are re-joined with %ofs. Fields past the current count are padded with
-; empties up to %idx. Returns the interned atom id of the rebuilt record (0 on
-; a malloc failure). Mirrors awk: assigning a field rebuilds $0 using OFS.
-define i64 @wam_record_set_field(i8* %rec, i64 %idx, i8* %val, i64 %vlen, i8 %sep, i8 %ofs) {
+; Editable field buffer -- awk $1..$NF as a mutable %WamSlice array. A record
+; is split once into slices (pointing into the record text, no interning); field
+; assignments mutate slots in place; joining with OFS rebuilds $0 once at print.
+; This keeps record editing O(record) with zero interning, instead of rebuilding
+; and re-interning the whole record per assignment.
+
+; Split %rec (NUL-terminated) on the single byte %sep into a fresh field buffer.
+; Slices point into %rec, so the caller must keep %rec alive until the buffer is
+; freed. An empty record yields zero fields.
+define %WamFieldBuf* @wam_fields_new(i8* %rec, i8 %sep) {
 entry:
-  br label %rsf.sl
+  br label %fn.sl
 
 ; reclen = index of the terminating NUL
-rsf.sl:
-  %rsf.si = phi i64 [ 0, %entry ], [ %rsf.si1, %rsf.ss ]
-  %rsf.sp = getelementptr i8, i8* %rec, i64 %rsf.si
-  %rsf.sc = load i8, i8* %rsf.sp
-  %rsf.sz = icmp eq i8 %rsf.sc, 0
-  br i1 %rsf.sz, label %rsf.cs, label %rsf.ss
+fn.sl:
+  %fn.i = phi i64 [ 0, %entry ], [ %fn.i1, %fn.ss ]
+  %fn.p = getelementptr i8, i8* %rec, i64 %fn.i
+  %fn.c = load i8, i8* %fn.p
+  %fn.z = icmp eq i8 %fn.c, 0
+  br i1 %fn.z, label %fn.cnt, label %fn.ss
 
-rsf.ss:
-  %rsf.si1 = add i64 %rsf.si, 1
-  br label %rsf.sl
+fn.ss:
+  %fn.i1 = add i64 %fn.i, 1
+  br label %fn.sl
 
-; count separators to derive the field count
-rsf.cs:
-  br label %rsf.cl
+; count separators -> field count
+fn.cnt:
+  br label %fn.cl
 
-rsf.cl:
-  %rsf.ci = phi i64 [ 0, %rsf.cs ], [ %rsf.ci1, %rsf.cst ]
-  %rsf.cnt = phi i64 [ 0, %rsf.cs ], [ %rsf.cnt1, %rsf.cst ]
-  %rsf.cd = icmp uge i64 %rsf.ci, %rsf.si
-  br i1 %rsf.cd, label %rsf.cf, label %rsf.cb
+fn.cl:
+  %fn.ci = phi i64 [ 0, %fn.cnt ], [ %fn.ci1, %fn.cst ]
+  %fn.sc = phi i64 [ 0, %fn.cnt ], [ %fn.sc1, %fn.cst ]
+  %fn.cd = icmp uge i64 %fn.ci, %fn.i
+  br i1 %fn.cd, label %fn.mk, label %fn.cb
 
-rsf.cb:
-  %rsf.cp = getelementptr i8, i8* %rec, i64 %rsf.ci
-  %rsf.cc = load i8, i8* %rsf.cp
-  %rsf.cissep = icmp eq i8 %rsf.cc, %sep
-  %rsf.cinc = zext i1 %rsf.cissep to i64
-  br label %rsf.cst
+fn.cb:
+  %fn.cp = getelementptr i8, i8* %rec, i64 %fn.ci
+  %fn.cc = load i8, i8* %fn.cp
+  %fn.iss = icmp eq i8 %fn.cc, %sep
+  %fn.inc = zext i1 %fn.iss to i64
+  br label %fn.cst
 
-rsf.cst:
-  %rsf.cnt1 = add i64 %rsf.cnt, %rsf.cinc
-  %rsf.ci1 = add i64 %rsf.ci, 1
-  br label %rsf.cl
+fn.cst:
+  %fn.sc1 = add i64 %fn.sc, %fn.inc
+  %fn.ci1 = add i64 %fn.ci, 1
+  br label %fn.cl
 
-rsf.cf:
-  %rsf.empty = icmp eq i64 %rsf.si, 0
-  %rsf.nf1 = add i64 %rsf.cnt, 1
-  %rsf.nf = select i1 %rsf.empty, i64 0, i64 %rsf.nf1
-  %rsf.idxgt = icmp ugt i64 %idx, %rsf.nf
-  %rsf.outcount = select i1 %rsf.idxgt, i64 %idx, i64 %rsf.nf
-  ; cap bound: original bytes + new field + one sep per field + NUL slack
-  %rsf.cap0 = add i64 %rsf.si, %vlen
-  %rsf.cap1 = add i64 %rsf.cap0, %rsf.outcount
-  %rsf.cap = add i64 %rsf.cap1, 2
-  %rsf.buf = call i8* @malloc(i64 %rsf.cap)
-  %rsf.bufnull = icmp eq i8* %rsf.buf, null
-  br i1 %rsf.bufnull, label %rsf.fail, label %rsf.floop
+fn.mk:
+  %fn.empty = icmp eq i64 %fn.i, 0
+  %fn.nf0 = add i64 %fn.sc, 1
+  %fn.nf = select i1 %fn.empty, i64 0, i64 %fn.nf0
+  ; capacity: at least 4 so a few appends past NF avoid reallocation
+  %fn.small = icmp ult i64 %fn.nf, 4
+  %fn.cap = select i1 %fn.small, i64 4, i64 %fn.nf
+  %fn.sb1 = getelementptr %WamFieldBuf, %WamFieldBuf* null, i64 1
+  %fn.sbb = ptrtoint %WamFieldBuf* %fn.sb1 to i64
+  %fn.raw = call i8* @malloc(i64 %fn.sbb)
+  %fn.fb = bitcast i8* %fn.raw to %WamFieldBuf*
+  %fn.sl1 = getelementptr %WamSlice, %WamSlice* null, i64 %fn.cap
+  %fn.slb = ptrtoint %WamSlice* %fn.sl1 to i64
+  %fn.slraw = call i8* @malloc(i64 %fn.slb)
+  %fn.slices = bitcast i8* %fn.slraw to %WamSlice*
+  %fn.cslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fn.fb, i32 0, i32 0
+  store i64 %fn.nf, i64* %fn.cslot
+  %fn.capslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fn.fb, i32 0, i32 1
+  store i64 %fn.cap, i64* %fn.capslot
+  %fn.slslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fn.fb, i32 0, i32 2
+  store %WamSlice* %fn.slices, %WamSlice** %fn.slslot
+  %fn.nfz = icmp eq i64 %fn.nf, 0
+  br i1 %fn.nfz, label %fn.done, label %fn.sp
 
-; emit fields 1..outcount into %rsf.buf, joined by %ofs
-rsf.floop:
-  %rsf.f = phi i64 [ 1, %rsf.cf ], [ %rsf.fn, %rsf.fcont ]
-  %rsf.outpos = phi i64 [ 0, %rsf.cf ], [ %rsf.outposn, %rsf.fcont ]
-  %rsf.spos = phi i64 [ 0, %rsf.cf ], [ %rsf.sposn, %rsf.fcont ]
-  %rsf.fdone = icmp ugt i64 %rsf.f, %rsf.outcount
-  br i1 %rsf.fdone, label %rsf.finish, label %rsf.fbody
+fn.sp:
+  br label %fn.sploop
 
-rsf.fbody:
-  %rsf.fgt1 = icmp ugt i64 %rsf.f, 1
-  br i1 %rsf.fgt1, label %rsf.emitsep, label %rsf.aftersep
+; fill slices[pos] = {ptr, len} for each field
+fn.sploop:
+  %fn.j = phi i64 [ 0, %fn.sp ], [ %fn.jn, %fn.spnext ]
+  %fn.fstart = phi i64 [ 0, %fn.sp ], [ %fn.fstartn, %fn.spnext ]
+  %fn.pos = phi i64 [ 0, %fn.sp ], [ %fn.posn, %fn.spnext ]
+  %fn.jdone = icmp uge i64 %fn.j, %fn.i
+  br i1 %fn.jdone, label %fn.spfinal, label %fn.spbody
 
-rsf.emitsep:
-  %rsf.sepdst = getelementptr i8, i8* %rsf.buf, i64 %rsf.outpos
-  store i8 %ofs, i8* %rsf.sepdst
-  %rsf.outpos_sep = add i64 %rsf.outpos, 1
-  br label %rsf.aftersep
+fn.spbody:
+  %fn.jp = getelementptr i8, i8* %rec, i64 %fn.j
+  %fn.jc = load i8, i8* %fn.jp
+  %fn.jsep = icmp eq i8 %fn.jc, %sep
+  br i1 %fn.jsep, label %fn.spemit, label %fn.spskip
 
-rsf.aftersep:
-  %rsf.outposa = phi i64 [ %rsf.outpos_sep, %rsf.emitsep ], [ %rsf.outpos, %rsf.fbody ]
-  br label %rsf.feloop
+fn.spemit:
+  %fn.ep = getelementptr i8, i8* %rec, i64 %fn.fstart
+  %fn.el = sub i64 %fn.j, %fn.fstart
+  %fn.eslot = getelementptr %WamSlice, %WamSlice* %fn.slices, i64 %fn.pos
+  %fn.ep0 = getelementptr %WamSlice, %WamSlice* %fn.eslot, i32 0, i32 0
+  store i8* %fn.ep, i8** %fn.ep0
+  %fn.el0 = getelementptr %WamSlice, %WamSlice* %fn.eslot, i32 0, i32 1
+  store i64 %fn.el, i64* %fn.el0
+  %fn.pos1 = add i64 %fn.pos, 1
+  %fn.fstart1 = add i64 %fn.j, 1
+  br label %fn.spnext
 
-; find the end of the source field starting at %rsf.spos
-rsf.feloop:
-  %rsf.fei = phi i64 [ %rsf.spos, %rsf.aftersep ], [ %rsf.fei1, %rsf.fest ]
-  %rsf.feend = icmp uge i64 %rsf.fei, %rsf.si
-  br i1 %rsf.feend, label %rsf.fedone, label %rsf.fechk
+fn.spskip:
+  br label %fn.spnext
 
-rsf.fechk:
-  %rsf.fep = getelementptr i8, i8* %rec, i64 %rsf.fei
-  %rsf.fec = load i8, i8* %rsf.fep
-  %rsf.feissep = icmp eq i8 %rsf.fec, %sep
-  br i1 %rsf.feissep, label %rsf.fedone, label %rsf.fest
+fn.spnext:
+  %fn.posn = phi i64 [ %fn.pos1, %fn.spemit ], [ %fn.pos, %fn.spskip ]
+  %fn.fstartn = phi i64 [ %fn.fstart1, %fn.spemit ], [ %fn.fstart, %fn.spskip ]
+  %fn.jn = add i64 %fn.j, 1
+  br label %fn.sploop
 
-rsf.fest:
-  %rsf.fei1 = add i64 %rsf.fei, 1
-  br label %rsf.feloop
+fn.spfinal:
+  %fn.lp = getelementptr i8, i8* %rec, i64 %fn.fstart
+  %fn.ll = sub i64 %fn.i, %fn.fstart
+  %fn.lslot = getelementptr %WamSlice, %WamSlice* %fn.slices, i64 %fn.pos
+  %fn.lp0 = getelementptr %WamSlice, %WamSlice* %fn.lslot, i32 0, i32 0
+  store i8* %fn.lp, i8** %fn.lp0
+  %fn.ll0 = getelementptr %WamSlice, %WamSlice* %fn.lslot, i32 0, i32 1
+  store i64 %fn.ll, i64* %fn.ll0
+  br label %fn.done
 
-rsf.fedone:
-  ; source field is [%rsf.spos, %rsf.fei); pick the value to append
-  %rsf.isidx = icmp eq i64 %rsf.f, %idx
-  %rsf.lenf = icmp ule i64 %rsf.f, %rsf.nf
-  %rsf.srcptr = getelementptr i8, i8* %rec, i64 %rsf.spos
-  %rsf.srclen = sub i64 %rsf.fei, %rsf.spos
-  %rsf.srcorpad = select i1 %rsf.lenf, i64 %rsf.srclen, i64 0
-  %rsf.applen = select i1 %rsf.isidx, i64 %vlen, i64 %rsf.srcorpad
-  %rsf.apptr = select i1 %rsf.isidx, i8* %val, i8* %rsf.srcptr
-  %rsf.fei_1 = add i64 %rsf.fei, 1
-  %rsf.sposn = select i1 %rsf.lenf, i64 %rsf.fei_1, i64 %rsf.spos
-  br label %rsf.aploop
+fn.done:
+  ret %WamFieldBuf* %fn.fb
+}
 
-rsf.aploop:
-  %rsf.api = phi i64 [ 0, %rsf.fedone ], [ %rsf.api1, %rsf.apst ]
-  %rsf.apdone = icmp uge i64 %rsf.api, %rsf.applen
-  br i1 %rsf.apdone, label %rsf.apfin, label %rsf.apst
+; Read field %idx (1-based) as a slice; out-of-range yields {null, 0} (empty).
+define %WamSlice @wam_fields_get(%WamFieldBuf* %fb, i64 %idx) {
+entry:
+  %g.empty0 = insertvalue %WamSlice undef, i8* null, 0
+  %g.empty = insertvalue %WamSlice %g.empty0, i64 0, 1
+  %g.lt = icmp slt i64 %idx, 1
+  br i1 %g.lt, label %g.no, label %g.chk
 
-rsf.apst:
-  %rsf.apsp = getelementptr i8, i8* %rsf.apptr, i64 %rsf.api
-  %rsf.apc = load i8, i8* %rsf.apsp
-  %rsf.apdpos = add i64 %rsf.outposa, %rsf.api
-  %rsf.apdp = getelementptr i8, i8* %rsf.buf, i64 %rsf.apdpos
-  store i8 %rsf.apc, i8* %rsf.apdp
-  %rsf.api1 = add i64 %rsf.api, 1
-  br label %rsf.aploop
+g.chk:
+  %g.cslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 0
+  %g.count = load i64, i64* %g.cslot
+  %g.gt = icmp sgt i64 %idx, %g.count
+  br i1 %g.gt, label %g.no, label %g.yes
 
-rsf.apfin:
-  %rsf.outposn = add i64 %rsf.outposa, %rsf.applen
-  %rsf.fn = add i64 %rsf.f, 1
-  br label %rsf.fcont
+g.yes:
+  %g.slot = sub i64 %idx, 1
+  %g.slslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 2
+  %g.slices = load %WamSlice*, %WamSlice** %g.slslot
+  %g.e = getelementptr %WamSlice, %WamSlice* %g.slices, i64 %g.slot
+  %g.v = load %WamSlice, %WamSlice* %g.e
+  ret %WamSlice %g.v
 
-rsf.fcont:
-  br label %rsf.floop
+g.no:
+  ret %WamSlice %g.empty
+}
 
-rsf.finish:
-  %rsf.nuldst = getelementptr i8, i8* %rsf.buf, i64 %rsf.outpos
-  store i8 0, i8* %rsf.nuldst
-  %rsf.id = call i64 @wam_intern_atom(i8* %rsf.buf, i64 %rsf.outpos)
-  call void @free(i8* %rsf.buf)
-  ret i64 %rsf.id
+; Set field %idx (1-based) to the slice {%ptr, %len}. Grows the slice array and
+; pads intervening slots with empties when %idx is past the current count.
+define void @wam_fields_set(%WamFieldBuf* %fb, i64 %idx, i8* %ptr, i64 %len) {
+entry:
+  %s.lt = icmp slt i64 %idx, 1
+  br i1 %s.lt, label %s.ret, label %s.load
 
-rsf.fail:
-  ret i64 0
+s.load:
+  %s.capslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 1
+  %s.cap = load i64, i64* %s.capslot
+  %s.cslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 0
+  %s.count = load i64, i64* %s.cslot
+  %s.slslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 2
+  %s.slices0 = load %WamSlice*, %WamSlice** %s.slslot
+  %s.needgrow = icmp ugt i64 %idx, %s.cap
+  br i1 %s.needgrow, label %s.grow, label %s.nogrow
+
+s.grow:
+  %s.raw0 = bitcast %WamSlice* %s.slices0 to i8*
+  %s.sl1 = getelementptr %WamSlice, %WamSlice* null, i64 %idx
+  %s.slb = ptrtoint %WamSlice* %s.sl1 to i64
+  %s.raw1 = call i8* @realloc(i8* %s.raw0, i64 %s.slb)
+  %s.slices1 = bitcast i8* %s.raw1 to %WamSlice*
+  store %WamSlice* %s.slices1, %WamSlice** %s.slslot
+  store i64 %idx, i64* %s.capslot
+  br label %s.nogrow
+
+s.nogrow:
+  %s.slices = phi %WamSlice* [ %s.slices0, %s.load ], [ %s.slices1, %s.grow ]
+  %s.slot = sub i64 %idx, 1
+  br label %s.padloop
+
+; pad [count, slot) with empty slices when growing the logical length
+s.padloop:
+  %s.j = phi i64 [ %s.count, %s.nogrow ], [ %s.j1, %s.padstep ]
+  %s.pdone = icmp uge i64 %s.j, %s.slot
+  br i1 %s.pdone, label %s.setslot, label %s.padstep
+
+s.padstep:
+  %s.pe = getelementptr %WamSlice, %WamSlice* %s.slices, i64 %s.j
+  %s.pe0 = getelementptr %WamSlice, %WamSlice* %s.pe, i32 0, i32 0
+  store i8* null, i8** %s.pe0
+  %s.pe1 = getelementptr %WamSlice, %WamSlice* %s.pe, i32 0, i32 1
+  store i64 0, i64* %s.pe1
+  %s.j1 = add i64 %s.j, 1
+  br label %s.padloop
+
+s.setslot:
+  %s.e = getelementptr %WamSlice, %WamSlice* %s.slices, i64 %s.slot
+  %s.e0 = getelementptr %WamSlice, %WamSlice* %s.e, i32 0, i32 0
+  store i8* %ptr, i8** %s.e0
+  %s.e1 = getelementptr %WamSlice, %WamSlice* %s.e, i32 0, i32 1
+  store i64 %len, i64* %s.e1
+  %s.cgt = icmp ugt i64 %idx, %s.count
+  br i1 %s.cgt, label %s.setcount, label %s.ret
+
+s.setcount:
+  store i64 %idx, i64* %s.cslot
+  br label %s.ret
+
+s.ret:
+  ret void
+}
+
+; Join fields 1..count with %ofs into a fresh NUL-terminated malloc buffer (the
+; rebuilt $0). The caller prints and frees it. No interning.
+define i8* @wam_fields_join(%WamFieldBuf* %fb, i8 %ofs) {
+entry:
+  %j.cslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 0
+  %j.count = load i64, i64* %j.cslot
+  %j.slslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 2
+  %j.slices = load %WamSlice*, %WamSlice** %j.slslot
+  br label %j.sl
+
+; pass 1: sum of field lengths
+j.sl:
+  %j.i = phi i64 [ 0, %entry ], [ %j.i1, %j.sstep ]
+  %j.acc = phi i64 [ 0, %entry ], [ %j.acc1, %j.sstep ]
+  %j.sd = icmp uge i64 %j.i, %j.count
+  br i1 %j.sd, label %j.mk, label %j.sbody
+
+j.sbody:
+  %j.e = getelementptr %WamSlice, %WamSlice* %j.slices, i64 %j.i
+  %j.el = getelementptr %WamSlice, %WamSlice* %j.e, i32 0, i32 1
+  %j.len = load i64, i64* %j.el
+  br label %j.sstep
+
+j.sstep:
+  %j.acc1 = add i64 %j.acc, %j.len
+  %j.i1 = add i64 %j.i, 1
+  br label %j.sl
+
+j.mk:
+  %j.cz = icmp eq i64 %j.count, 0
+  %j.cm1 = sub i64 %j.count, 1
+  %j.seps = select i1 %j.cz, i64 0, i64 %j.cm1
+  %j.t0 = add i64 %j.acc, %j.seps
+  %j.total = add i64 %j.t0, 1
+  %j.buf = call i8* @malloc(i64 %j.total)
+  br label %j.wl
+
+; pass 2: copy fields, inserting %ofs between them
+j.wl:
+  %j.wi = phi i64 [ 0, %j.mk ], [ %j.wi1, %j.wcont ]
+  %j.op = phi i64 [ 0, %j.mk ], [ %j.opn, %j.wcont ]
+  %j.wd = icmp uge i64 %j.wi, %j.count
+  br i1 %j.wd, label %j.fin, label %j.wbody
+
+j.wbody:
+  %j.first = icmp eq i64 %j.wi, 0
+  br i1 %j.first, label %j.after, label %j.emitsep
+
+j.emitsep:
+  %j.sd2 = getelementptr i8, i8* %j.buf, i64 %j.op
+  store i8 %ofs, i8* %j.sd2
+  %j.op_s = add i64 %j.op, 1
+  br label %j.after
+
+j.after:
+  %j.opa = phi i64 [ %j.op_s, %j.emitsep ], [ %j.op, %j.wbody ]
+  %j.e2 = getelementptr %WamSlice, %WamSlice* %j.slices, i64 %j.wi
+  %j.p2s = getelementptr %WamSlice, %WamSlice* %j.e2, i32 0, i32 0
+  %j.p2 = load i8*, i8** %j.p2s
+  %j.l2s = getelementptr %WamSlice, %WamSlice* %j.e2, i32 0, i32 1
+  %j.l2 = load i64, i64* %j.l2s
+  br label %j.cploop
+
+j.cploop:
+  %j.ci = phi i64 [ 0, %j.after ], [ %j.ci1, %j.cpstep ]
+  %j.cd2 = icmp uge i64 %j.ci, %j.l2
+  br i1 %j.cd2, label %j.cpfin, label %j.cpstep
+
+j.cpstep:
+  %j.sp = getelementptr i8, i8* %j.p2, i64 %j.ci
+  %j.sc = load i8, i8* %j.sp
+  %j.dpos = add i64 %j.opa, %j.ci
+  %j.dp = getelementptr i8, i8* %j.buf, i64 %j.dpos
+  store i8 %j.sc, i8* %j.dp
+  %j.ci1 = add i64 %j.ci, 1
+  br label %j.cploop
+
+j.cpfin:
+  %j.opn = add i64 %j.opa, %j.l2
+  %j.wi1 = add i64 %j.wi, 1
+  br label %j.wcont
+
+j.wcont:
+  br label %j.wl
+
+j.fin:
+  %j.nul = getelementptr i8, i8* %j.buf, i64 %j.op
+  store i8 0, i8* %j.nul
+  ret i8* %j.buf
+}
+
+; Free a field buffer (its slice array and the struct).
+define void @wam_fields_free(%WamFieldBuf* %fb) {
+entry:
+  %ff.slslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 2
+  %ff.slices = load %WamSlice*, %WamSlice** %ff.slslot
+  %ff.raw = bitcast %WamSlice* %ff.slices to i8*
+  call void @free(i8* %ff.raw)
+  %ff.raw2 = bitcast %WamFieldBuf* %fb to i8*
+  call void @free(i8* %ff.raw2)
+  ret void
 }
 
 define i64 @wam_assoc_i64_inc(%WamAssocI64Table* %table, i64 %key, i64 %delta) {
