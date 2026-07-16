@@ -208,6 +208,154 @@ print_line:
             success, 'success:\n  ret i32 0'),
         DriverIR).
 
+% Field assignment: a single text-mode rule `Pattern { $N = expr; ...; print $0 }`.
+% Each `$N = expr` rebuilds the current record via @wam_record_set_field (fields
+% re-joined with OFS), folding a running interned-atom id; the trailing `print $0`
+% emits the rebuilt record. v1 scope: single-char explicit FS (so field splitting
+% matches how fields are read), a single rule with no END, and the print-the-record
+% idiom. RHS is a string literal, an integer literal, or another field `$M` (read
+% from the current record). In-body field reads after assignment, default (space)
+% FS, multi-rule/END programs, and `$0 = expr` are follow-ons.
+plawk_program_native_driver_ir(
+    program(BeginClauses, [rule(Pattern, Actions)], []),
+    InputPath,
+    DriverIR
+) :-
+    plawk_field_assign_body(Actions, SetFields, _PrintAction),
+    \+ plawk_begin_has_binfmt(BeginClauses),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    integer(FieldSeparator),
+    FieldSeparator =\= 32,
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
+    plawk_field_assign_actions_ir(SetFields, FieldSeparator, OutputSeparator,
+        AssignGlobalIR, AssignBodyIR, FinalIdVar),
+    format(atom(PrintIR),
+'  %fa_out = call i8* @wam_atom_to_string(i64 ~w)
+  %fa_out_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_line, i32 0, i32 0
+  %fa_out_pr = call i32 (i8*, ...) @printf(i8* %fa_out_fmt, i8* %fa_out)',
+        [FinalIdVar]),
+    format(atom(RecordIR),
+'~w
+  br i1 %is_match, label %print_line, label %continue_loop
+
+print_line:
+~w
+~w
+  br label %continue_loop',
+        [GuardCallIR, AssignBodyIR, PrintIR]),
+    format(atom(RuntimeGlobals),
+'@.plawk_surface_print_line = private constant [4 x i8] c"%s\\0A\\00"
+@.plawk_surface_print_slice = private constant [5 x i8] c"%.*s\\00"
+@.plawk_surface_print_i64 = private constant [4 x i8] c"%ld\\00"
+@.plawk_surface_print_newline = private constant [2 x i8] c"\\0A\\00"
+@.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"
+@.plawk_surface_print_f64 = private constant [3 x i8] c"%g\\00"
+~w
+~w
+~w
+',
+        [BeginGlobalIR, GuardGlobalIR, AssignGlobalIR]),
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
+        driver_blocks(RuntimeGlobals, BeginIR, '', lowered_match, RecordIR, '',
+            success, 'success:\n  ret i32 0'),
+        DriverIR).
+
+%% plawk_field_assign_body(+Actions, -SetFields, -PrintAction)
+%
+%  A field-assignment rule body: one or more `set_field(N, Value)` actions
+%  followed by exactly `print $0` (`print([field(0)])`). This is the canonical
+%  "edit a field and re-emit the record" shape; anything else (a scalar update,
+%  a field read after the assignment, a non-`$0` print) does not match, so the
+%  program falls through to the general drivers.
+plawk_field_assign_body(Actions, SetFields, print([field(0)])) :-
+    append(SetFields, [print([field(0)])], Actions),
+    SetFields = [_ | _],
+    forall(member(A, SetFields), A = set_field(_, _)).
+
+%% plawk_field_assign_actions_ir(+SetFields, +FieldSeparator, +OutputSeparator,
+%%     -GlobalIR, -BodyIR, -FinalIdVar)
+%
+%  Fold the `set_field` list into IR that rebuilds the record once per
+%  assignment. The first rebuild reads the original line atom (%line_payload);
+%  each subsequent one reads the previous rebuild's atom id, so chained
+%  assignments (`$1="p"; $2="q"`) and field-copy RHS (`$1=$3`) see the running
+%  record. FinalIdVar is the atom id to print.
+plawk_field_assign_actions_ir(SetFields, FieldSeparator, OutputSeparator,
+        GlobalIR, BodyIR, FinalIdVar) :-
+    plawk_field_assign_fold(SetFields, FieldSeparator, OutputSeparator, 0,
+        '%line_payload', Parts, FinalIdVar),
+    pairs_keys_values(Parts, GlobalParts, BodyParts),
+    plawk_join_nonempty_ir(GlobalParts, GlobalIR),
+    atomic_list_concat(BodyParts, '\n', BodyIR).
+
+plawk_field_assign_fold([], _FieldSeparator, _OutputSeparator, _Index, CurId, [], CurId).
+plawk_field_assign_fold([set_field(N, Value) | Rest], FieldSeparator,
+        OutputSeparator, Index, CurId, [GlobalPart-BodyPart | Parts], FinalId) :-
+    plawk_field_assign_one(N, Value, FieldSeparator, OutputSeparator, Index,
+        CurId, GlobalPart, BodyPart, NextId),
+    NextIndex is Index + 1,
+    plawk_field_assign_fold(Rest, FieldSeparator, OutputSeparator, NextIndex,
+        NextId, Parts, FinalId).
+
+%% plawk_field_assign_one(+N, +Value, +FS, +OFS, +Index, +CurId,
+%%     -GlobalPart, -BodyPart, -NextId)
+%
+%  One `$N = Value` rebuild. Resolves the current record to text, materializes
+%  the new field value as a byte range, then calls @wam_record_set_field. The
+%  new atom id is NextId (threaded to the next assignment / the print).
+plawk_field_assign_one(N, Value, FieldSeparator, OutputSeparator, Index, CurId,
+        GlobalPart, BodyPart, NextId) :-
+    format(atom(RecVar), '%fa_~w_rec', [Index]),
+    format(atom(NextId), '%fa_~w_id', [Index]),
+    format(atom(RecLine), '  ~w = call i8* @wam_atom_to_string(i64 ~w)',
+        [RecVar, CurId]),
+    plawk_field_assign_value_ir(Value, FieldSeparator, Index, CurId,
+        GlobalPart, ValueLines, ValPtr, ValLen),
+    format(atom(CallLine),
+        '  ~w = call i64 @wam_record_set_field(i8* ~w, i64 ~w, i8* ~w, i64 ~w, i8 ~w, i8 ~w)',
+        [NextId, RecVar, N, ValPtr, ValLen, FieldSeparator, OutputSeparator]),
+    append([RecLine | ValueLines], [CallLine], Lines),
+    atomic_list_concat(Lines, '\n', BodyPart).
+
+%% plawk_field_assign_value_ir(+Value, +FS, +Index, +CurId,
+%%     -GlobalPart, -Lines, -ValPtr, -ValLen)
+%
+%  The new field value as (ValPtr, ValLen). A string / integer literal becomes a
+%  private C-string global; a field `$M` is projected from the current record
+%  (its slice ptr aliases the record text, which @wam_record_set_field copies out
+%  before interning). A missing field yields a {null,0} slice -> an empty field.
+plawk_field_assign_value_ir(string(S), _FieldSeparator, Index, _CurId,
+        GlobalPart, [PtrLine], ValPtr, ValLen) :-
+    format(atom(GlobalName), 'fa_val_~w', [Index]),
+    llvm_emit_c_string_global(GlobalName, S, GlobalPart, ValLen, BytesLen),
+    format(atom(ValPtr), '%fa_~w_vp', [Index]),
+    format(atom(PtrLine),
+        '  ~w = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+        [ValPtr, BytesLen, BytesLen, GlobalName]).
+plawk_field_assign_value_ir(int(V), FieldSeparator, Index, CurId,
+        GlobalPart, Lines, ValPtr, ValLen) :-
+    format(atom(S), '~w', [V]),
+    plawk_field_assign_value_ir(string(S), FieldSeparator, Index, CurId,
+        GlobalPart, Lines, ValPtr, ValLen).
+plawk_field_assign_value_ir(field(M), FieldSeparator, Index, CurId,
+        '', Lines, ValPtr, ValLen) :-
+    format(atom(CvZero), '%fa_~w_cv0', [Index]),
+    format(atom(Cv), '%fa_~w_cv', [Index]),
+    format(atom(Slice), '%fa_~w_sl', [Index]),
+    format(atom(ValPtr), '%fa_~w_vp', [Index]),
+    format(atom(ValLen), '%fa_~w_vl', [Index]),
+    format(atom(L0), '  ~w = insertvalue %Value undef, i32 0, 0', [CvZero]),
+    format(atom(L1), '  ~w = insertvalue %Value ~w, i64 ~w, 1', [Cv, CvZero, CurId]),
+    format(atom(L2),
+        '  ~w = call %WamSlice @wam_atom_field_slice_value(%Value ~w, i64 ~w, i8 ~w)',
+        [Slice, Cv, M, FieldSeparator]),
+    format(atom(L3), '  ~w = extractvalue %WamSlice ~w, 0', [ValPtr, Slice]),
+    format(atom(L4), '  ~w = extractvalue %WamSlice ~w, 1', [ValLen, Slice]),
+    Lines = [L0, L1, L2, L3, L4].
+
 % A body-printing scalar rule chain with NO END block: all output comes from
 % the per-record body (e.g. `{ i = 0; while (i < 3) { print i; i++ } }`). Same
 % lowering as the scalar END-print chain but with an empty print list and NO

@@ -2044,6 +2044,35 @@ row_field(field(Index)) -->
     integer_codes(Codes),
     { Codes \== [], number_codes(Index, Codes), Index >= 0 }.
 
+% Field assignment `$N = expr` -- mutate field N of the current record, which
+% rebuilds `$0` (fields re-joined with OFS). Parses to set_field(N, Value). N>=1
+% (whole-record `$0 = ...` is a separate operation). RHS v1: a string literal,
+% a non-negative integer literal, or another field `$M` (M>=1, read from the
+% current record). Tried before the scalar `set` -- the leading `$` is
+% unambiguous. The codegen supports the canonical `{ $N = expr; ...; print }`
+% shape in single-char-FS text mode.
+assignment_action(set_field(N, Value)) -->
+    "$",
+    integer_codes(NCodes),
+    { NCodes \== [], number_codes(N, NCodes), N >= 1 },
+    ws,
+    "=",
+    ws,
+    field_assign_rhs(Value).
+
+field_assign_rhs(string(Value)) -->
+    quoted_string(Codes),
+    { string_codes(Value, Codes) },
+    !.
+field_assign_rhs(field(M)) -->
+    "$",
+    integer_codes(MCodes),
+    { MCodes \== [], number_codes(M, MCodes), M >= 1 },
+    !.
+field_assign_rhs(int(Value)) -->
+    integer_codes(VCodes),
+    { VCodes \== [], number_codes(Value, VCodes), Value >= 0 }.
+
 assignment_action(set(var(Name), Value)) -->
     identifier(Name),
     ws,

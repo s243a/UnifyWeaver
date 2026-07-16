@@ -36,6 +36,10 @@ test(str_split_into_populates_positions) :-
     str_split_driver_ir(DriverIR),
     run_assoc_i64_smoke('uw_wam_str_split_into', DriverIR).
 
+test(record_set_field_rebuilds_record) :-
+    record_set_field_driver_ir(DriverIR),
+    run_assoc_i64_smoke('uw_wam_record_set_field', DriverIR).
+
 run_assoc_i64_smoke(Name, DriverIR) :-
     tmp_root(Root),
     directory_file_path(Root, Name, Dir),
@@ -234,6 +238,54 @@ ok:
 
 alloc_fail:
   ret i32 90
+
+bad:
+  ret i32 91
+}
+').
+
+% Rebuild records via @wam_record_set_field and compare against the interned id
+% of the expected result (interning is canonical). Three cases: replace a middle
+% field keeping the separator (FS=OFS=','); replace with a different OFS (FS=',',
+% OFS=' '); and set a field past the end, which pads with empty fields.
+record_set_field_driver_ir('
+@.uw_rsf_abc = private constant [6 x i8] c"a,b,c\00"
+@.uw_rsf_X = private constant [2 x i8] c"X\00"
+@.uw_rsf_aXc = private constant [6 x i8] c"a,X,c\00"
+@.uw_rsf_aspXspc = private constant [6 x i8] c"a X c\00"
+@.uw_rsf_a = private constant [2 x i8] c"a\00"
+@.uw_rsf_Z = private constant [2 x i8] c"Z\00"
+@.uw_rsf_a__Z = private constant [6 x i8] c"a,,,Z\00"
+
+define i32 @main() {
+entry:
+  %abc = getelementptr [6 x i8], [6 x i8]* @.uw_rsf_abc, i64 0, i64 0
+  %vX = getelementptr [2 x i8], [2 x i8]* @.uw_rsf_X, i64 0, i64 0
+  %eaXc_p = getelementptr [6 x i8], [6 x i8]* @.uw_rsf_aXc, i64 0, i64 0
+  %eaXc = call i64 @wam_intern_atom(i8* %eaXc_p, i64 5)
+  %easc_p = getelementptr [6 x i8], [6 x i8]* @.uw_rsf_aspXspc, i64 0, i64 0
+  %easc = call i64 @wam_intern_atom(i8* %easc_p, i64 5)
+  %aa = getelementptr [2 x i8], [2 x i8]* @.uw_rsf_a, i64 0, i64 0
+  %vZ = getelementptr [2 x i8], [2 x i8]* @.uw_rsf_Z, i64 0, i64 0
+  %epad_p = getelementptr [6 x i8], [6 x i8]* @.uw_rsf_a__Z, i64 0, i64 0
+  %epad = call i64 @wam_intern_atom(i8* %epad_p, i64 5)
+
+  ; abc with field 2 = X, sep comma ofs comma -> a,X,c
+  %r1 = call i64 @wam_record_set_field(i8* %abc, i64 2, i8* %vX, i64 1, i8 44, i8 44)
+  %r1_ok = icmp eq i64 %r1, %eaXc
+  ; abc with field 2 = X, sep comma ofs space -> a X c
+  %r2 = call i64 @wam_record_set_field(i8* %abc, i64 2, i8* %vX, i64 1, i8 44, i8 32)
+  %r2_ok = icmp eq i64 %r2, %easc
+  ; a with field 4 = Z, sep comma ofs comma -> a,,,Z (pad empties)
+  %r3 = call i64 @wam_record_set_field(i8* %aa, i64 4, i8* %vZ, i64 1, i8 44, i8 44)
+  %r3_ok = icmp eq i64 %r3, %epad
+
+  %a1 = and i1 %r1_ok, %r2_ok
+  %a2 = and i1 %a1, %r3_ok
+  br i1 %a2, label %ok, label %bad
+
+ok:
+  ret i32 0
 
 bad:
   ret i32 91

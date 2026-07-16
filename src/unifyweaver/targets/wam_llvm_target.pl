@@ -4829,6 +4829,147 @@ sp.ret0:
   ret i64 0
 }
 
+; Rebuild a text record with field %idx (1-based) set to %val[0..vlen). The
+; record %rec is a NUL-terminated string split on the single byte %sep; the
+; fields are re-joined with %ofs. Fields past the current count are padded with
+; empties up to %idx. Returns the interned atom id of the rebuilt record (0 on
+; a malloc failure). Mirrors awk: assigning a field rebuilds $0 using OFS.
+define i64 @wam_record_set_field(i8* %rec, i64 %idx, i8* %val, i64 %vlen, i8 %sep, i8 %ofs) {
+entry:
+  br label %rsf.sl
+
+; reclen = index of the terminating NUL
+rsf.sl:
+  %rsf.si = phi i64 [ 0, %entry ], [ %rsf.si1, %rsf.ss ]
+  %rsf.sp = getelementptr i8, i8* %rec, i64 %rsf.si
+  %rsf.sc = load i8, i8* %rsf.sp
+  %rsf.sz = icmp eq i8 %rsf.sc, 0
+  br i1 %rsf.sz, label %rsf.cs, label %rsf.ss
+
+rsf.ss:
+  %rsf.si1 = add i64 %rsf.si, 1
+  br label %rsf.sl
+
+; count separators to derive the field count
+rsf.cs:
+  br label %rsf.cl
+
+rsf.cl:
+  %rsf.ci = phi i64 [ 0, %rsf.cs ], [ %rsf.ci1, %rsf.cst ]
+  %rsf.cnt = phi i64 [ 0, %rsf.cs ], [ %rsf.cnt1, %rsf.cst ]
+  %rsf.cd = icmp uge i64 %rsf.ci, %rsf.si
+  br i1 %rsf.cd, label %rsf.cf, label %rsf.cb
+
+rsf.cb:
+  %rsf.cp = getelementptr i8, i8* %rec, i64 %rsf.ci
+  %rsf.cc = load i8, i8* %rsf.cp
+  %rsf.cissep = icmp eq i8 %rsf.cc, %sep
+  %rsf.cinc = zext i1 %rsf.cissep to i64
+  br label %rsf.cst
+
+rsf.cst:
+  %rsf.cnt1 = add i64 %rsf.cnt, %rsf.cinc
+  %rsf.ci1 = add i64 %rsf.ci, 1
+  br label %rsf.cl
+
+rsf.cf:
+  %rsf.empty = icmp eq i64 %rsf.si, 0
+  %rsf.nf1 = add i64 %rsf.cnt, 1
+  %rsf.nf = select i1 %rsf.empty, i64 0, i64 %rsf.nf1
+  %rsf.idxgt = icmp ugt i64 %idx, %rsf.nf
+  %rsf.outcount = select i1 %rsf.idxgt, i64 %idx, i64 %rsf.nf
+  ; cap bound: original bytes + new field + one sep per field + NUL slack
+  %rsf.cap0 = add i64 %rsf.si, %vlen
+  %rsf.cap1 = add i64 %rsf.cap0, %rsf.outcount
+  %rsf.cap = add i64 %rsf.cap1, 2
+  %rsf.buf = call i8* @malloc(i64 %rsf.cap)
+  %rsf.bufnull = icmp eq i8* %rsf.buf, null
+  br i1 %rsf.bufnull, label %rsf.fail, label %rsf.floop
+
+; emit fields 1..outcount into %rsf.buf, joined by %ofs
+rsf.floop:
+  %rsf.f = phi i64 [ 1, %rsf.cf ], [ %rsf.fn, %rsf.fcont ]
+  %rsf.outpos = phi i64 [ 0, %rsf.cf ], [ %rsf.outposn, %rsf.fcont ]
+  %rsf.spos = phi i64 [ 0, %rsf.cf ], [ %rsf.sposn, %rsf.fcont ]
+  %rsf.fdone = icmp ugt i64 %rsf.f, %rsf.outcount
+  br i1 %rsf.fdone, label %rsf.finish, label %rsf.fbody
+
+rsf.fbody:
+  %rsf.fgt1 = icmp ugt i64 %rsf.f, 1
+  br i1 %rsf.fgt1, label %rsf.emitsep, label %rsf.aftersep
+
+rsf.emitsep:
+  %rsf.sepdst = getelementptr i8, i8* %rsf.buf, i64 %rsf.outpos
+  store i8 %ofs, i8* %rsf.sepdst
+  %rsf.outpos_sep = add i64 %rsf.outpos, 1
+  br label %rsf.aftersep
+
+rsf.aftersep:
+  %rsf.outposa = phi i64 [ %rsf.outpos_sep, %rsf.emitsep ], [ %rsf.outpos, %rsf.fbody ]
+  br label %rsf.feloop
+
+; find the end of the source field starting at %rsf.spos
+rsf.feloop:
+  %rsf.fei = phi i64 [ %rsf.spos, %rsf.aftersep ], [ %rsf.fei1, %rsf.fest ]
+  %rsf.feend = icmp uge i64 %rsf.fei, %rsf.si
+  br i1 %rsf.feend, label %rsf.fedone, label %rsf.fechk
+
+rsf.fechk:
+  %rsf.fep = getelementptr i8, i8* %rec, i64 %rsf.fei
+  %rsf.fec = load i8, i8* %rsf.fep
+  %rsf.feissep = icmp eq i8 %rsf.fec, %sep
+  br i1 %rsf.feissep, label %rsf.fedone, label %rsf.fest
+
+rsf.fest:
+  %rsf.fei1 = add i64 %rsf.fei, 1
+  br label %rsf.feloop
+
+rsf.fedone:
+  ; source field is [%rsf.spos, %rsf.fei); pick the value to append
+  %rsf.isidx = icmp eq i64 %rsf.f, %idx
+  %rsf.lenf = icmp ule i64 %rsf.f, %rsf.nf
+  %rsf.srcptr = getelementptr i8, i8* %rec, i64 %rsf.spos
+  %rsf.srclen = sub i64 %rsf.fei, %rsf.spos
+  %rsf.srcorpad = select i1 %rsf.lenf, i64 %rsf.srclen, i64 0
+  %rsf.applen = select i1 %rsf.isidx, i64 %vlen, i64 %rsf.srcorpad
+  %rsf.apptr = select i1 %rsf.isidx, i8* %val, i8* %rsf.srcptr
+  %rsf.fei_1 = add i64 %rsf.fei, 1
+  %rsf.sposn = select i1 %rsf.lenf, i64 %rsf.fei_1, i64 %rsf.spos
+  br label %rsf.aploop
+
+rsf.aploop:
+  %rsf.api = phi i64 [ 0, %rsf.fedone ], [ %rsf.api1, %rsf.apst ]
+  %rsf.apdone = icmp uge i64 %rsf.api, %rsf.applen
+  br i1 %rsf.apdone, label %rsf.apfin, label %rsf.apst
+
+rsf.apst:
+  %rsf.apsp = getelementptr i8, i8* %rsf.apptr, i64 %rsf.api
+  %rsf.apc = load i8, i8* %rsf.apsp
+  %rsf.apdpos = add i64 %rsf.outposa, %rsf.api
+  %rsf.apdp = getelementptr i8, i8* %rsf.buf, i64 %rsf.apdpos
+  store i8 %rsf.apc, i8* %rsf.apdp
+  %rsf.api1 = add i64 %rsf.api, 1
+  br label %rsf.aploop
+
+rsf.apfin:
+  %rsf.outposn = add i64 %rsf.outposa, %rsf.applen
+  %rsf.fn = add i64 %rsf.f, 1
+  br label %rsf.fcont
+
+rsf.fcont:
+  br label %rsf.floop
+
+rsf.finish:
+  %rsf.nuldst = getelementptr i8, i8* %rsf.buf, i64 %rsf.outpos
+  store i8 0, i8* %rsf.nuldst
+  %rsf.id = call i64 @wam_intern_atom(i8* %rsf.buf, i64 %rsf.outpos)
+  call void @free(i8* %rsf.buf)
+  ret i64 %rsf.id
+
+rsf.fail:
+  ret i64 0
+}
+
 define i64 @wam_assoc_i64_inc(%WamAssocI64Table* %table, i64 %key, i64 %delta) {
 entry:
   %table_null = icmp eq %WamAssocI64Table* %table, null
