@@ -90,12 +90,17 @@ CAMPAIGN_SCORED = "/tmp/mu_data/campaign_scored.tsv"
 CAMPAIGN_E5_100K = "/tmp/mu_data/campaign_100k_e5.pt"
 
 
-def load_campaign_datasets():
+def load_campaign_datasets(campaign_scored=None):
     """The stratified campaign, split by corpus membership. Same ds-dict shape as load_dataset; strata tags
-    kept so eval can slice by pair type (the S channel should now have VARIANCE on sib/cous rows)."""
+    kept so eval can slice by pair type (the S channel should now have VARIANCE on sib/cous rows).
+
+    ``campaign_scored`` is explicit for provenance-sensitive runners; existing callers retain the canonical
+    campaign default.
+    """
+    campaign_scored = CAMPAIGN_SCORED if campaign_scored is None else os.path.abspath(campaign_scored)
     DIRR = ["subcategory", "subtopic", "element_of", "super_category"]; SYMM = ["see_also", "assoc"]
     rows = []
-    with open(CAMPAIGN_SCORED, encoding="utf-8") as f:
+    with open(campaign_scored, encoding="utf-8") as f:
         header = f.readline().lstrip("#").strip().split("\t")
         col = {c: i for i, c in enumerate(header)}
         for ln in f:

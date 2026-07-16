@@ -1,0 +1,26 @@
+{
+  "D": {
+    "count": 0
+  },
+  "S": {
+    "count": 0
+  },
+  "affected_pair_count": 0,
+  "artifacts": {
+    "audited_pairs_sha256": "5ed4ab5003c6aa7eb470b4eb9e60c2a03bbb46b1af4827998b060d22df55dfde",
+    "audited_subset_responses_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mapping_sha256": "5118a50f67e69f746b12c621af83dba29e1c5cb25699168a27673626af58cc40",
+    "matched_deltas_sha256": "1ee949b09f89dee7651abdaabf6d954d2e4ce8b9d9245e7796b75bcbbfd7701d",
+    "merged_responses_sha256": "6262b94facac5c9edd08630c36f5dedfcba159bd5669e9d25b7750684262778d",
+    "raw_responses_sha256": "382c4c3038e1811e1ff5ff9fb24977fcc3ff3050e20ad634f98dac28f80aa733"
+  },
+  "by_hop": {},
+  "comparison_label": "corrected_titles",
+  "corpus": "enwiki",
+  "exact_response_changed_count": 0,
+  "guardrail": "descriptive paired-response comparison only; no causal attribution or model selection",
+  "numeric_fields": {},
+  "schema_version": 1,
+  "source_pair_count": 250,
+  "view": "paired_judge_response_comparison"
+}

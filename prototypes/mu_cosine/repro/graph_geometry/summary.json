@@ -1,0 +1,76 @@
+{
+  "status": "PSD geometry infrastructure complete; matched synthetic strong-effect gates pass; no real covariance or QR deployment",
+  "design": "DESIGN_graph_geometry_confirmatory.md",
+  "synthetic_v2_design": "DESIGN_graph_geometry_synthetic_v2.md",
+  "decision_log": "DECISIONS_graph_geometry.md",
+  "deployment": {
+    "real_covariance_gate_unlocked": false,
+    "batching_gate_unlocked": false,
+    "qr_deployment_unlocked": false,
+    "deployment_confidence_level": 0.95
+  },
+  "kernel_decisions": {
+    "fixed_baseline": "closed_neighborhood",
+    "primary_scalable": "cumulative_walk_feature_gram",
+    "same_hop_walk": "negative_control",
+    "small_graph_references": ["heat", "regularized_laplacian"],
+    "primary_external_embedding": "nomic",
+    "embedding_sensitivity_control": "minilm",
+    "shared_input_control": "e5"
+  },
+  "synthetic_v1": {
+    "formal_result": "failed",
+    "failure": "common path amplitude did not match off-diagonal covariance strength across kernels",
+    "block_null_nonzero_selection_rate": 0.06,
+    "all_frozen_gates_pass": false
+  },
+  "synthetic_v2": {
+    "formal_result": "matched-coupling rho=0.20 mechanism gates pass",
+    "train_fields": 48,
+    "held_fields": 64,
+    "replicates": 200,
+    "calibration_draws": 1000,
+    "block_null_nonzero_selection_rate": 0.055,
+    "rho_0_20": {
+      "closed": {"equivalence_selection_rate": 0.975, "topology_win_rate": 0.985, "held_nll_gain": 0.014632400460997204},
+      "walk_same_hop": {"equivalence_selection_rate": 0.86, "topology_win_rate": 0.97, "held_nll_gain": 0.008174402254935698},
+      "heat": {"equivalence_selection_rate": 0.935, "topology_win_rate": 0.975, "held_nll_gain": 0.00893864885277062},
+      "resolvent": {"equivalence_selection_rate": 0.92, "topology_win_rate": 0.985, "held_nll_gain": 0.009956571832873436}
+    },
+    "all_frozen_gates_pass": true,
+    "rho_0_10_power_warning": "mixed selection power; heat selected held gain approximately zero"
+  },
+  "outcome_blind_inventory": {
+    "exploratory": {
+      "campaign_rows": 1000,
+      "within_descendant_pairs": 764,
+      "adjacent_pairs": 84,
+      "nomic_e5_distance_spearman": 0.7763558201992552,
+      "minilm_e5_distance_spearman": 0.8102888131572337,
+      "cumulative_walk_nomic_distance_spearman": 0.589502679406453,
+      "closed_cumulative_distance_spearman": 0.7298022116068588,
+      "cumulative_nomic_disagreement_pairs": 13
+    },
+    "fresh": {
+      "campaign_rows": 770,
+      "within_descendant_pairs": 777,
+      "adjacent_pairs": 206,
+      "nomic_e5_distance_spearman": 0.8376352100877055,
+      "minilm_e5_distance_spearman": 0.8676558120678654,
+      "cumulative_walk_nomic_distance_spearman": 0.4930419031166443,
+      "closed_cumulative_distance_spearman": 0.8845233288541023,
+      "cumulative_nomic_disagreement_pairs": 22
+    }
+  },
+  "embedding_manifests": {
+    "minilm_sha256": "35fc09608d16dc2b5111686f587a57d5f60895611465b109de6898e864758569",
+    "nomic_sha256": "702f5f4af33c8994d25ad259c6a46ac7f7c762f4d6ef2a47f4335f9bc912e3d2",
+    "unique_endpoint_titles": 2681
+  },
+  "full_output_sha256": {
+    "synthetic_v1": "9cd6c0b6f6e7b4efdbf6e8afcff88607b871348fc3a8c212c421a8c8e5d2ee51",
+    "synthetic_v2": "24333d08941ac2c356bb33fdd602a0009317de0daa6d0f7788e176c6bcc33969",
+    "outcome_blind_inventory": "81c35eaa8f9fa82afbbcf6a9040f4905f97140b4b91d7134ecfb69957b9fb9a1"
+  },
+  "recommended_next": "purpose-built repeated-judge campaign with more than 400 independent components, at least three calls per judge family, and deliberate graph/Nomic disagreement oversampling"
+}

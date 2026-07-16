@@ -4,9 +4,10 @@
 REPORT_fused_head.md's null: with the reliable judge (R≈0.004) the posterior collapses onto the label.
 REPORT_multi_judge_fusion.md's boundary: with LUNA the posterior genuinely mixes channels (pull 0.133).
 The stratified luna campaign closes the loop: build Kalman posteriors from [prior, graph, LUNA] against
-the 5.5 operating target — luna's error blocks (including its tilt and cross-correlations) FIT EMPIRICALLY
-on the train split from the pair-matched dual-judge data, no imported R — and distill them into the
-kalman-fused name head.
+the 5.5 operating target — luna's error blocks and cross-correlations FIT EMPIRICALLY on the train split
+from the pair-matched dual-judge data, no imported R — and distill them into the kalman-fused name head.
+Luna is globally affine-calibrated on that train split before the covariance fit, so systematic tilt is
+removed as bias rather than charged to measurement variance.
 
 Deployment question this answers: a CHEAP pipeline (luna labels fused with graph+prior, amortized into one
 head) — how close does it get to the expensive judge's labels, vs the raw luna channel head?
@@ -14,7 +15,12 @@ head) — how close does it get to the expensive judge's labels, vs the raw luna
 Also trains the luna CHANNEL head on stratified data (fixing step 3's S starvation) and prints the
 analytic fusion ladder (prior | +graph | +graph+luna vs 5.5) before any training.
 
-  python3 fine_tune_fused_head_luna.py --ckpt model_channel_heads_namecond_r0.pt
+The channel checkpoint initializes/anchors the trainable model. A separate, campaign-independent checkpoint
+supplies the Gaussian prior and P0 residuals; keeping those roles separate avoids an optimistic prior fit.
+
+  python3 fine_tune_fused_head_luna.py \
+      --ckpt model_channel_heads_namecond_r0.pt \
+      --prior-ckpt model_prod_namecond.pt
 """
 import argparse
 import os
@@ -38,9 +44,19 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 LUNA_CAMPAIGN = "/tmp/mu_data/campaign_scored_luna.tsv"
 
 
+def calibrate_luna_global(luna, y, fit_idx):
+    """Train-only global affine calibration, applied to every row before fitting residual covariance."""
+    cal_D = affine_calibrate(luna[fit_idx, 0], y[fit_idx, 0], luna[:, 0])
+    cal_S = affine_calibrate(luna[fit_idx, 1], y[fit_idx, 1], luna[:, 1])
+    return np.column_stack([cal_D, cal_S])
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", default=os.path.join(ROOT, "model_channel_heads_namecond_r0.pt"))
+    ap.add_argument("--ckpt", default=os.path.join(ROOT, "model_channel_heads_namecond_r0.pt"),
+                    help="channel-head checkpoint used only for model initialization and the training anchor")
+    ap.add_argument("--prior-ckpt", default=os.path.join(ROOT, "model_prod_namecond.pt"),
+                    help="campaign-independent checkpoint used for prior means and P0")
     ap.add_argument("--out", default=os.path.join(ROOT, "model_fused_head_luna.pt"))
     ap.add_argument("--steps", type=int, default=800)
     ap.add_argument("--bs", type=int, default=64)
@@ -49,10 +65,16 @@ def main():
     ap.add_argument("--shrink", type=float, default=0.05)
     ap.add_argument("--seed", type=int, default=0,
                     help="full-pipeline seed: train/held split, covariance fit, torch init, batch order")
+    ap.add_argument("--luna-calibration", choices=("global", "none"), default="global",
+                    help="global=train-only affine correction; none only reproduces the historical report")
+    ap.add_argument("--analytic-only", action="store_true",
+                    help="print the corrected analytic ladder and exit without training or writing a checkpoint")
     a = ap.parse_args()
     dev = "cpu"
+    torch.set_num_threads(1)  # tiny deterministic campaign batches do not benefit from a large BLAS pool
     torch.manual_seed(a.seed)
     rng = np.random.default_rng(a.seed)
+    augment_rng = np.random.default_rng(a.seed + 1)   # seed 0 reproduces the pre-flag default (rng 1)
 
     model, cfg = load_expanded(a.ckpt, dev=dev)
     assert model.judge_name is not None
@@ -60,6 +82,13 @@ def main():
     ref.eval()
     for p in ref.parameters():
         p.requires_grad = False
+    prior_ref, _ = load_expanded(a.prior_ckpt, dev=dev)
+    prior_ref.eval()
+    for p in prior_ref.parameters():
+        p.requires_grad = False
+    print(f"training init/anchor: {os.path.basename(a.ckpt)}")
+    print(f"Gaussian prior:      {os.path.basename(a.prior_ckpt)}")
+    print(f"Luna calibration:    {a.luna_calibration}")
     for p in model.parameters():
         p.requires_grad = False
     model.judge_name.W.weight.requires_grad = True
@@ -88,11 +117,13 @@ def main():
         tr_l = [i for i in ds["tr"] if i in matched[n]]
         he_l = [i for i in ds["he"] if i in matched[n]]
         ds["he_l"], ds["luna"] = he_l, luna
-        ro = agnostic_readouts(ref, ds, dev)
+        ro = agnostic_readouts(prior_ref, ds, dev)
         y = dequant(np.column_stack([ds["D"], ds["S"]]))
         prior = np.column_stack([ro["prior_D"], ro["prior_S"]])
         m = affine_calibrate(ds["d"][tr_l], y[tr_l, 0], ds["d"])
-        meas = np.column_stack([m, luna[:, 0], luna[:, 1]])
+        luna_c = (calibrate_luna_global(luna, y, tr_l)
+                  if a.luna_calibration == "global" else luna.copy())  # bias first (DESIGN §2)
+        meas = np.column_stack([m, luna_c[:, 0], luna_c[:, 1]])
         E5 = np.column_stack([y - prior, meas - y[:, [0, 0, 1]]])[tr_l]
         C5 = fit_residual_covariance(E5, shrinkage=a.shrink)
         P0, C_pm, R0 = C5[:2, :2], C5[:2, 2:], C5[2:, 2:]
@@ -119,7 +150,7 @@ def main():
         g = np.array(acc["prior+graph"]) - np.array(acc["prior+graph+luna"])
         print(f"  ladder (held NLL): prior {np.mean(acc['prior']):+.3f} | +graph "
               f"{np.mean(acc['prior+graph']):+.3f} | +luna {np.mean(acc['prior+graph+luna']):+.3f}  "
-              f"(luna channel value {g.mean():+.3f}, row-SE {g.std()/np.sqrt(len(g)):.3f})")
+              f"(luna channel value {g.mean():+.3f}, descriptive row-SD {g.std(ddof=1):.3f})")
         print(f"  fusion non-degeneracy: mean |post_D − luna_D| = {np.mean(pull):.3f}")
 
         rows = []
@@ -135,6 +166,10 @@ def main():
         train_rows[n] = rows
         print(f"  {len(rows)} train rows (5.5 + graph + luna + fused channels)")
 
+    if a.analytic_only:
+        print("\nanalytic-only: skipped training and did not write a checkpoint")
+        return
+
     names = list(train_rows)
     model.train()
     for step in range(1, a.steps + 1):
@@ -143,7 +178,7 @@ def main():
         sel = rng.choice(len(rows), size=min(a.bs, len(rows)), replace=False)
         items = [rows[j][0] for j in sel]
         tgt = torch.tensor([rows[j][1] for j in sel], dtype=torch.float32, device=dev)
-        mu = mu_batch(model, dss[n]["tok"], items, dev, train=True, rng=np.random)
+        mu = mu_batch(model, dss[n]["tok"], items, dev, train=True, rng=augment_rng)
         loss = torch.mean((mu - tgt) ** 2)
         ag_items = [(it[0], it[1], it[2]) for it in items]
         mu_ag = mu_batch(model, dss[n]["tok"], ag_items, dev)

@@ -1,0 +1,251 @@
+# node	root	cur_rel	neighborhood	judge	P[element_of]	P[subcategory]	P[subtopic]	P[super_category]	P[see_also]	P[assoc]	P[unknown]	P[none]	mu[element_of]	mu[subcategory]	mu[subtopic]	mu[super_category]	mu[see_also]	mu[assoc]	mu[unknown]	mu[none]	E_mu_fwd	E_mu_rev
+Technology Science & Engineering Forums	forums	subtopic	principal_h1	gpt-5.5-low	0.176	0.275	0.235	0.039	0.078	0.137	0.039	0.020	0.350	0.650	0.550	0.050	0.150	0.250	0.100	0.000	0.422	0.108
+Building a Computer (How to)	Manufacturing Technology	subtopic	principal_h1	gpt-5.5-low	0.103	0.154	0.231	0.026	0.077	0.231	0.077	0.103	0.150	0.250	0.350	0.020	0.100	0.350	0.100	0.000	0.231	0.111
+Twin Towers & Aluminum combustion	Aluminum combustion	subtopic	principal_h1	gpt-5.5-low	0.124	0.142	0.319	0.018	0.195	0.177	0.018	0.007	0.250	0.300	0.850	0.050	0.450	0.400	0.050	0.000	0.505	0.210
+Anti-Democractic Think Tank Positions	Power & Motivation (Political Philosophy)	subtopic	principal_h1	gpt-5.5-low	0.049	0.098	0.268	0.024	0.122	0.268	0.098	0.073	0.050	0.150	0.450	0.030	0.200	0.450	0.150	0.000	0.298	0.174
+Holonomic system	Constraints (Clasical Mechanics)	subtopic	principal_h1	gpt-5.5-low	0.124	0.160	0.319	0.018	0.195	0.160	0.018	0.007	0.250	0.350	0.800	0.050	0.450	0.350	0.050	0.000	0.488	0.196
+Dystopic Fiction	Fiction	subtopic	principal_h1	gpt-5.5-low	0.056	0.353	0.316	0.019	0.112	0.130	0.011	0.004	0.100	0.900	0.750	0.050	0.250	0.250	0.030	0.000	0.622	0.112
+The Business of Artificial Intelligence	Artificial Intelligence	subtopic	principal_h1	gpt-5.5-low	0.041	0.143	0.367	0.012	0.184	0.224	0.020	0.008	0.050	0.250	0.850	0.020	0.350	0.450	0.050	0.000	0.517	0.203
+Roundtripping	Accounting Manipulation Schemes	subtopic	principal_h1	gpt-5.5-low	0.227	0.196	0.272	0.015	0.136	0.136	0.012	0.006	0.650	0.550	0.800	0.050	0.350	0.350	0.040	0.000	0.569	0.147
+We the corperations	Byfracating legislation & lichpins	subtopic	principal_h1	gpt-5.5-low	0.042	0.079	0.183	0.016	0.105	0.236	0.183	0.157	0.050	0.100	0.250	0.020	0.150	0.350	0.250	0.000	0.200	0.139
+Learning	Cognition	subtopic	principal_h1	gpt-5.5-low	0.109	0.201	0.347	0.018	0.164	0.146	0.011	0.004	0.200	0.450	0.900	0.050	0.350	0.300	0.030	0.000	0.527	0.160
+news.EFF.Patent	Intelectual Property	subtopic	principal_h1	gpt-5.5-low	0.153	0.240	0.328	0.004	0.087	0.153	0.022	0.013	0.350	0.550	0.750	0.010	0.200	0.350	0.050	0.000	0.503	0.093
+Alleged Monsanto Connections	Monsanto	subtopic	principal_h1	gpt-5.5-low	0.073	0.049	0.388	0.005	0.170	0.267	0.039	0.010	0.150	0.100	0.800	0.010	0.350	0.550	0.080	0.000	0.536	0.224
+Big Brother Govs & Corps (Books)	Corporate Privacy attacks	subtopic	principal_h1	gpt-5.5-low	0.052	0.078	0.285	0.026	0.130	0.311	0.078	0.041	0.100	0.150	0.550	0.050	0.250	0.600	0.150	0.000	0.405	0.253
+Geography (Puppylinux)	Datascience (puppylinux)	subtopic	principal_h1	gpt-5.5-low	0.035	0.056	0.176	0.014	0.106	0.317	0.085	0.211	0.050	0.080	0.250	0.020	0.150	0.450	0.120	0.000	0.219	0.174
+Kantianism	Deontology (AKA Deontological ethics)	subtopic	principal_h1	gpt-5.5-low	0.093	0.315	0.333	0.004	0.111	0.130	0.011	0.004	0.250	0.850	0.900	0.010	0.300	0.350	0.030	0.000	0.670	0.101
+Education by other Pearlers	Education	subtopic	principal_h1	gpt-5.5-low	0.186	0.165	0.310	0.004	0.103	0.186	0.033	0.012	0.450	0.400	0.750	0.010	0.250	0.450	0.080	0.000	0.494	0.131
+Theories of Influence	Social Control	subtopic	principal_h1	gpt-5.5-low	0.068	0.113	0.339	0.023	0.136	0.249	0.054	0.018	0.150	0.250	0.750	0.050	0.300	0.550	0.120	0.000	0.478	0.211
+Criticism of relegion	Relegion	subtopic	principal_h1	gpt-5.5-low	0.051	0.126	0.429	0.005	0.152	0.202	0.025	0.010	0.100	0.250	0.850	0.010	0.300	0.400	0.050	0.000	0.529	0.145
+Keeping Down Black Power	Counter-activism & Counter-Revolutions	subtopic	principal_h1	gpt-5.5-low	0.081	0.183	0.325	0.004	0.142	0.224	0.033	0.008	0.200	0.450	0.800	0.010	0.350	0.550	0.080	0.000	0.534	0.193
+Apocalyptic novels	Apocalyptic Fiction	subtopic	principal_h1	gpt-5.5-low	0.127	0.291	0.309	0.004	0.127	0.127	0.011	0.004	0.350	0.800	0.850	0.010	0.350	0.350	0.030	0.000	0.629	0.111
+Genocides & Holocausts	Genocide	subtopic	principal_h1	gpt-5.5-low	0.075	0.281	0.318	0.037	0.094	0.169	0.019	0.007	0.150	0.750	0.850	0.100	0.250	0.450	0.050	0.000	0.596	0.176
+Geo Politics	policy	subtopic	principal_h1	gpt-5.5-low	0.023	0.091	0.295	0.068	0.114	0.318	0.055	0.036	0.050	0.200	0.650	0.150	0.250	0.700	0.100	0.000	0.478	0.337
+Symbols of Satinism (Documentary)	eyes-symbols-history-s243a	subtopic	principal_h1	gpt-5.5-low	0.110	0.088	0.286	0.009	0.154	0.242	0.066	0.044	0.250	0.200	0.650	0.020	0.350	0.550	0.150	0.000	0.429	0.212
+Torture	clandestine	subtopic	principal_h1	gpt-5.5-low	0.026	0.077	0.231	0.026	0.103	0.333	0.128	0.077	0.050	0.150	0.450	0.050	0.200	0.650	0.200	0.000	0.381	0.271
+Poverty	Social Sciences	subtopic	principal_h1	gpt-5.5-low	0.021	0.230	0.356	0.008	0.105	0.251	0.021	0.008	0.050	0.550	0.850	0.020	0.250	0.600	0.050	0.000	0.608	0.204
+The native American genocide/holocaust	holocausts	subtopic	principal_h1	gpt-5.5-low	0.241	0.209	0.273	0.006	0.113	0.145	0.010	0.003	0.750	0.650	0.850	0.020	0.350	0.450	0.030	0.000	0.654	0.143
+Language	Human communication	subtopic	principal_h1	gpt-5.5-low	0.018	0.254	0.308	0.018	0.145	0.236	0.018	0.004	0.050	0.700	0.850	0.050	0.400	0.650	0.050	0.000	0.653	0.261
+psychology society	society	subtopic	principal_h1	gpt-5.5-low	0.012	0.183	0.305	0.020	0.142	0.285	0.041	0.012	0.030	0.450	0.750	0.050	0.350	0.700	0.100	0.000	0.565	0.300
+Probability & Statistics	integral	subtopic	principal_h1	gpt-5.5-low	0.011	0.029	0.103	0.257	0.114	0.314	0.069	0.103	0.020	0.050	0.180	0.450	0.200	0.550	0.100	0.000	0.338	0.218
+emotions (language)	Language, Literature & Other arts	subtopic	principal_h1	gpt-5.5-low	0.034	0.189	0.315	0.013	0.147	0.252	0.034	0.017	0.080	0.450	0.750	0.030	0.350	0.600	0.080	0.000	0.530	0.242
+Preface to Animal Farm	Animal Farm	subtopic	principal_h1	gpt-5.5-low	0.308	0.077	0.327	0.019	0.135	0.096	0.031	0.008	0.850	0.150	0.900	0.020	0.350	0.250	0.050	0.000	0.640	0.109
+NSA & Man in the Middle	Man in the MIddle	subtopic	principal_h1	gpt-5.5-low	0.083	0.186	0.372	0.021	0.165	0.145	0.025	0.004	0.200	0.450	0.900	0.020	0.450	0.350	0.050	0.000	0.562	0.159
+3D bioprinting	3D Printing	subtopic	principal_h1	gpt-5.5-low	0.075	0.340	0.321	0.019	0.113	0.113	0.015	0.004	0.200	0.900	0.850	0.020	0.350	0.300	0.030	0.000	0.668	0.115
+Dangerous Generalities	Destructive Practices	subtopic	principal_h1	gpt-5.5-low	0.109	0.197	0.262	0.035	0.109	0.175	0.079	0.035	0.250	0.500	0.650	0.050	0.250	0.400	0.150	0.000	0.407	0.154
+Scientific method	Methodology (Formal Sciences)	subtopic	principal_h1	gpt-5.5-low	0.068	0.158	0.338	0.054	0.135	0.158	0.068	0.023	0.150	0.350	0.800	0.100	0.350	0.350	0.150	0.000	0.454	0.177
+Aleister Crowley by other Pearlers	Aleister Crowley	subtopic	principal_h1	gpt-5.5-low	0.219	0.080	0.339	0.016	0.179	0.120	0.040	0.008	0.550	0.200	0.850	0.020	0.500	0.300	0.080	0.000	0.553	0.154
+MPs (Canadian Politicans)	Canadian Politicians	subtopic	principal_h1	gpt-5.5-low	0.217	0.289	0.253	0.018	0.108	0.090	0.022	0.004	0.650	0.850	0.750	0.020	0.350	0.250	0.050	0.000	0.638	0.100
+memes -- blaming the poor	Blaming the victim & Poverty	subtopic	principal_h1	gpt-5.5-low	0.165	0.103	0.329	0.021	0.165	0.165	0.041	0.012	0.450	0.250	0.850	0.020	0.450	0.450	0.080	0.000	0.531	0.187
+The Raiding of the Commons	Trickle Up Welfare	subtopic	principal_h1	gpt-5.5-low	0.087	0.131	0.284	0.035	0.153	0.197	0.079	0.035	0.200	0.350	0.700	0.050	0.350	0.500	0.150	0.000	0.427	0.209
+Misconduct‎	Problem behavior	subtopic	principal_h1	gpt-5.5-low	0.102	0.285	0.305	0.024	0.122	0.122	0.033	0.008	0.250	0.750	0.800	0.030	0.350	0.300	0.050	0.000	0.564	0.125
+Satire or Reality? (Right wing Madness)	Republican Sideshows	subtopic	principal_h1	gpt-5.5-low	0.198	0.110	0.286	0.009	0.154	0.198	0.022	0.022	0.450	0.250	0.650	0.020	0.350	0.450	0.050	0.000	0.447	0.173
+The Social Security Debate	American Politics	subtopic	principal_h1	gpt-5.5-low	0.166	0.071	0.403	0.005	0.118	0.213	0.014	0.009	0.350	0.150	0.850	0.010	0.250	0.450	0.030	0.000	0.537	0.151
+Security	Safety‎	subtopic	principal_h1	gpt-5.5-low	0.040	0.138	0.217	0.099	0.257	0.198	0.040	0.012	0.100	0.350	0.550	0.250	0.650	0.500	0.100	0.000	0.466	0.441
+Acountability	Social Forces	subtopic	principal_h1	gpt-5.5-low	0.108	0.134	0.296	0.005	0.108	0.242	0.043	0.065	0.200	0.250	0.550	0.010	0.200	0.450	0.080	0.000	0.352	0.147
+The Afganastan Media	Media in _ country	subtopic	principal_h1	gpt-5.5-low	0.251	0.212	0.270	0.004	0.097	0.135	0.019	0.012	0.650	0.550	0.700	0.010	0.250	0.350	0.050	0.000	0.542	0.090
+Types of power	Social Power	subtopic	principal_h1	gpt-5.5-low	0.137	0.114	0.342	0.009	0.160	0.205	0.023	0.009	0.300	0.250	0.750	0.020	0.350	0.450	0.050	0.000	0.476	0.186
+LOGO	TV Networks	subtopic	principal_h1	gpt-5.5-low	0.137	0.034	0.171	0.007	0.103	0.240	0.068	0.240	0.200	0.050	0.250	0.010	0.150	0.350	0.100	0.000	0.178	0.115
+Places	History by Region / place	subtopic	principal_h1	gpt-5.5-low	0.128	0.077	0.255	0.026	0.179	0.255	0.041	0.041	0.250	0.150	0.500	0.050	0.350	0.500	0.080	0.000	0.366	0.218
+technology	Technology, Engineering & Design	subtopic	principal_h1	gpt-5.5-low	0.215	0.149	0.265	0.026	0.182	0.149	0.010	0.003	0.650	0.450	0.800	0.080	0.550	0.450	0.030	0.000	0.589	0.244
+The MOVE bombing	The Militerization of the Police	subtopic	principal_h1	gpt-5.5-low	0.240	0.066	0.328	0.004	0.131	0.197	0.022	0.013	0.550	0.150	0.750	0.010	0.300	0.450	0.050	0.000	0.516	0.151
+Wikipedia C	Wikipedia	subtopic	principal_h2	gpt-5.5-low	0.282	0.179	0.205	0.026	0.103	0.128	0.051	0.026	0.650	0.450	0.500	0.050	0.250	0.350	0.100	0.000	0.444	0.121
+Building a Computer (How to)	3D Printing	subtopic	principal_h2	gpt-5.5-low	0.041	0.033	0.099	0.017	0.066	0.248	0.124	0.372	0.050	0.050	0.150	0.020	0.100	0.350	0.150	0.000	0.131	0.110
+Where Elite Unity Exists	Literary Portrayals of Totalitarianism	subtopic	principal_h2	gpt-5.5-low	0.114	0.076	0.285	0.019	0.158	0.158	0.095	0.095	0.250	0.150	0.550	0.030	0.300	0.350	0.200	0.000	0.319	0.135
+Constraints (Clasical Mechanics)	Physics	subtopic	principal_h2	gpt-5.5-low	0.064	0.159	0.541	0.013	0.064	0.115	0.032	0.013	0.150	0.350	0.900	0.020	0.150	0.250	0.080	0.000	0.594	0.065
+capitalism in Dystopic Fiction	Fiction	subtopic	principal_h2	gpt-5.5-low	0.065	0.116	0.355	0.013	0.129	0.226	0.065	0.032	0.150	0.250	0.650	0.020	0.250	0.450	0.150	0.000	0.413	0.160
+Trends	Artificial Intelligence	subtopic	principal_h2	gpt-5.5-low	0.054	0.082	0.408	0.014	0.102	0.204	0.082	0.054	0.100	0.150	0.700	0.020	0.200	0.400	0.150	0.000	0.418	0.126
+Business process	Acounting	subtopic	principal_h2	gpt-5.5-low	0.042	0.070	0.246	0.028	0.085	0.317	0.106	0.106	0.080	0.150	0.450	0.050	0.150	0.550	0.200	0.000	0.334	0.214
+"Pure" Intelligence?	Learning	subtopic	principal_h2	gpt-5.5-low	0.030	0.059	0.207	0.022	0.111	0.259	0.148	0.163	0.050	0.120	0.350	0.030	0.200	0.450	0.250	0.000	0.258	0.169
+Intelectual Property	copyright	subtopic	principal_h2	gpt-5.5-low	0.021	0.021	0.160	0.399	0.160	0.186	0.043	0.011	0.050	0.050	0.350	0.850	0.350	0.450	0.100	0.000	0.541	0.307
+Conflict of interest	Corruption & Retribution	subtopic	principal_h2	gpt-5.5-low	0.038	0.095	0.380	0.013	0.127	0.253	0.063	0.032	0.080	0.200	0.700	0.020	0.250	0.500	0.150	0.000	0.456	0.184
+Privacy in The Age of Big Data	Corporate Privacy attacks	subtopic	principal_h2	gpt-5.5-low	0.104	0.083	0.312	0.062	0.146	0.229	0.042	0.021	0.250	0.200	0.700	0.150	0.350	0.550	0.100	0.000	0.452	0.195
+Teaching to the test	Education	subtopic	principal_h2	gpt-5.5-low	0.072	0.120	0.455	0.000	0.120	0.215	0.014	0.005	0.150	0.250	0.900	0.000	0.250	0.450	0.030	0.000	0.577	0.136
+adiction	Political Psycology	subtopic	principal_h2	gpt-5.5-low	0.017	0.043	0.171	0.000	0.043	0.214	0.214	0.299	0.020	0.050	0.150	0.000	0.050	0.250	0.250	0.000	0.137	0.066
+Culture (Sociology)	Relegion	subtopic	principal_h2	gpt-5.5-low	0.013	0.022	0.174	0.283	0.152	0.283	0.052	0.022	0.030	0.050	0.350	0.650	0.350	0.650	0.100	0.000	0.488	0.277
+Counter-activism & Counter-Revolutions	FBI-history-s243a	subtopic	principal_h2	gpt-5.5-low	0.079	0.053	0.317	0.000	0.132	0.238	0.116	0.063	0.150	0.100	0.550	0.000	0.250	0.450	0.200	0.000	0.355	0.162
+Apocalyptic novels	Fiction	subtopic	principal_h2	gpt-5.5-low	0.043	0.385	0.299	0.000	0.107	0.150	0.013	0.004	0.100	0.850	0.650	0.000	0.250	0.350	0.030	0.000	0.605	0.085
+Cultural Genocide	Genocide	subtopic	principal_h2	gpt-5.5-low	0.039	0.332	0.313	0.000	0.137	0.156	0.020	0.004	0.100	0.800	0.750	0.000	0.350	0.400	0.050	0.000	0.615	0.126
+Geo Politics	geopolitics	subtopic	principal_h2	gpt-5.5-low	0.298	0.017	0.281	0.017	0.315	0.066	0.007	0.000	0.900	0.050	0.800	0.050	0.950	0.200	0.020	0.000	0.807	0.807
+Symbols of Satinism (Documentary)	symbols-history	subtopic	principal_h2	gpt-5.5-low	0.103	0.026	0.308	0.000	0.154	0.256	0.092	0.062	0.200	0.050	0.550	0.000	0.300	0.500	0.150	0.000	0.379	0.194
+Corporate Resistance to Spying	clandestine	subtopic	principal_h2	gpt-5.5-low	0.031	0.031	0.187	0.000	0.125	0.281	0.187	0.156	0.050	0.050	0.250	0.000	0.200	0.450	0.250	0.000	0.248	0.165
+Icelandic Geography	humanities	subtopic	principal_h2	gpt-5.5-low	0.038	0.138	0.423	0.015	0.038	0.192	0.062	0.092	0.050	0.180	0.550	0.000	0.050	0.250	0.050	0.000	0.313	0.062
+The Indian Removal Act of 1830	holocausts	subtopic	principal_h2	gpt-5.5-low	0.058	0.086	0.324	0.007	0.058	0.252	0.086	0.129	0.080	0.120	0.450	0.000	0.080	0.350	0.080	0.000	0.260	0.098
+psychology society	humanities & social sciences	subtopic	principal_h2	gpt-5.5-low	0.082	0.273	0.410	0.011	0.044	0.137	0.027	0.016	0.150	0.500	0.750	0.000	0.080	0.250	0.040	0.000	0.495	0.049
+English Nouns	Language, Literature & Other arts	subtopic	principal_h2	gpt-5.5-low	0.033	0.233	0.433	0.007	0.047	0.187	0.033	0.027	0.050	0.350	0.650	0.000	0.070	0.280	0.030	0.000	0.422	0.061
+Preface to Animal Farm	Literary Portrayals of Totalitarianism	subtopic	principal_h2	gpt-5.5-low	0.320	0.047	0.262	0.006	0.105	0.203	0.035	0.023	0.550	0.080	0.450	0.000	0.180	0.350	0.040	0.000	0.389	0.096
+NSA Programs	Man in the MIddle	subtopic	principal_h2	gpt-5.5-low	0.019	0.051	0.223	0.032	0.096	0.350	0.115	0.115	0.030	0.080	0.350	0.050	0.150	0.550	0.120	0.000	0.305	0.220
+3D bioprinting	Manufacturing Technology	subtopic	principal_h2	gpt-5.5-low	0.064	0.332	0.401	0.011	0.043	0.118	0.021	0.011	0.120	0.620	0.750	0.000	0.080	0.220	0.040	0.000	0.544	0.039
+1984 immages	Collective Moods & dispositions	subtopic	principal_h2	gpt-5.5-low	0.016	0.033	0.148	0.008	0.066	0.311	0.131	0.287	0.020	0.040	0.180	0.000	0.080	0.380	0.120	0.000	0.168	0.129
+Robert Graves	eyes-symbols-history-s243a	subtopic	principal_h2	gpt-5.5-low	0.031	0.016	0.142	0.008	0.094	0.331	0.157	0.220	0.040	0.020	0.180	0.000	0.120	0.420	0.150	0.000	0.201	0.158
+Alan Watts	philosophers	subtopic	principal_h2	gpt-5.5-low	0.463	0.049	0.216	0.006	0.074	0.154	0.025	0.012	0.750	0.080	0.350	0.000	0.120	0.250	0.030	0.000	0.475	0.050
+Blaming the Victum	philosophy	subtopic	principal_h2	gpt-5.5-low	0.036	0.072	0.326	0.022	0.036	0.254	0.109	0.145	0.050	0.100	0.350	0.000	0.050	0.250	0.100	0.000	0.199	0.072
+The Raiding of the Commons	The War on the Poor	subtopic	principal_h2	gpt-5.5-low	0.076	0.126	0.379	0.015	0.101	0.227	0.051	0.025	0.150	0.250	0.700	0.000	0.200	0.450	0.100	0.000	0.436	0.126
+Satire or Reality? (Right wing Madness)	Republican Politics	subtopic	principal_h2	gpt-5.5-low	0.050	0.101	0.402	0.015	0.101	0.276	0.040	0.015	0.100	0.200	0.750	0.000	0.200	0.550	0.100	0.000	0.503	0.175
+In Defense of Social Security	American Politics	subtopic	principal_h2	gpt-5.5-low	0.030	0.060	0.417	0.018	0.089	0.298	0.060	0.030	0.050	0.100	0.650	0.000	0.150	0.450	0.100	0.000	0.432	0.151
+Ancient Cultures	Social Forces	subtopic	principal_h2	gpt-5.5-low	0.034	0.068	0.203	0.020	0.034	0.304	0.169	0.169	0.050	0.100	0.250	0.000	0.050	0.350	0.200	0.000	0.201	0.126
+The Century of The Self	media	subtopic	principal_h2	gpt-5.5-low	0.060	0.030	0.359	0.012	0.090	0.299	0.090	0.060	0.100	0.050	0.550	0.000	0.150	0.450	0.150	0.000	0.367	0.153
+Moral Power	Social Power	subtopic	principal_h2	gpt-5.5-low	0.023	0.278	0.324	0.023	0.093	0.208	0.037	0.014	0.050	0.550	0.650	0.000	0.200	0.450	0.100	0.000	0.481	0.116
+The War on Science	war	subtopic	principal_h2	gpt-5.5-low	0.032	0.095	0.190	0.051	0.063	0.285	0.158	0.127	0.050	0.150	0.250	0.050	0.100	0.350	0.250	0.000	0.211	0.129
+Asia	History by Region / place	subtopic	principal_h2	gpt-5.5-low	0.064	0.300	0.365	0.013	0.064	0.150	0.034	0.009	0.150	0.650	0.800	0.000	0.150	0.350	0.100	0.000	0.562	0.065
+Subjects of learning	Technology, Engineering & Design	subtopic	principal_h2	gpt-5.5-low	0.027	0.081	0.162	0.297	0.054	0.189	0.108	0.081	0.050	0.150	0.250	0.550	0.100	0.300	0.200	0.000	0.301	0.068
+The Militerization of the Police	The Dividing of People's with lines on the map	subtopic	principal_h2	gpt-5.5-low	0.038	0.038	0.192	0.000	0.115	0.346	0.077	0.192	0.050	0.050	0.250	0.000	0.150	0.450	0.100	0.000	0.233	0.181
+Technology Science & Engineering Forums	2 - root node (my real tree Pearl Trees Version 1.0)	subtopic	principal_h2	gpt-5.5-low	0.469	0.219	0.156	0.000	0.031	0.062	0.031	0.031	0.750	0.350	0.250	0.000	0.050	0.100	0.050	0.000	0.477	0.008
+Power & Motivation (Political Philosophy)	Animal Farm	subtopic	principal_h2	gpt-5.5-low	0.029	0.029	0.441	0.000	0.147	0.265	0.059	0.029	0.050	0.050	0.750	0.000	0.250	0.450	0.100	0.000	0.496	0.181
+Electricity & Magnitism (Physics)	Antenna	subtopic	principal_h2	gpt-5.5-low	0.025	0.025	0.322	0.173	0.149	0.272	0.025	0.010	0.050	0.050	0.650	0.350	0.300	0.550	0.050	0.000	0.468	0.212
+Dystopic Fiction	Apocalyptic Fiction	subtopic	principal_h2	gpt-5.5-low	0.022	0.154	0.198	0.088	0.198	0.264	0.066	0.009	0.050	0.350	0.450	0.200	0.450	0.600	0.150	0.000	0.420	0.361
+Weak signals	Artificial Intelligence	subtopic	principal_h2	gpt-5.5-low	0.034	0.068	0.170	0.014	0.102	0.306	0.170	0.136	0.050	0.100	0.250	0.020	0.150	0.450	0.250	0.000	0.247	0.166
+Managerial Science	Acounting	subtopic	principal_h2	gpt-5.5-low	0.036	0.036	0.179	0.107	0.107	0.321	0.107	0.107	0.050	0.050	0.250	0.150	0.150	0.450	0.150	0.000	0.241	0.186
+Intelligence	Cognition	subtopic	principal_h2	gpt-5.5-low	0.061	0.101	0.304	0.040	0.182	0.263	0.040	0.008	0.150	0.250	0.750	0.100	0.450	0.650	0.100	0.000	0.523	0.298
+news.EFF.Patent	Copyright & Free Speach	subtopic	principal_h2	gpt-5.5-low	0.100	0.075	0.300	0.000	0.175	0.275	0.050	0.025	0.200	0.150	0.600	0.000	0.350	0.550	0.100	0.000	0.429	0.230
+gerrymandering	Corruption	subtopic	principal_h2	gpt-5.5-low	0.049	0.123	0.369	0.000	0.123	0.271	0.049	0.015	0.100	0.250	0.750	0.000	0.250	0.550	0.100	0.000	0.498	0.201
+Wikipedia C	2 - root node (my real tree Pearl Trees Version 1.0)	subtopic	principal_h3	gpt-5.5-low	0.160	0.120	0.080	0.040	0.040	0.160	0.200	0.200	0.150	0.100	0.050	0.000	0.050	0.150	0.200	0.000	0.106	0.040
+The Crises in Democarcy	Literary Portrayals of Totalitarianism	subtopic	principal_h3	gpt-5.5-low	0.111	0.111	0.376	0.022	0.111	0.221	0.035	0.013	0.250	0.200	0.750	0.000	0.250	0.450	0.100	0.000	0.463	0.170
+Physics	Antenna	subtopic	principal_h3	gpt-5.5-low	0.025	0.051	0.076	0.431	0.076	0.305	0.025	0.010	0.000	0.000	0.050	0.850	0.150	0.550	0.050	0.000	0.551	0.265
+capitalism in Dystopic Fiction	Apocalyptic Fiction	subtopic	principal_h3	gpt-5.5-low	0.023	0.116	0.349	0.047	0.116	0.279	0.047	0.023	0.050	0.250	0.650	0.000	0.250	0.550	0.100	0.000	0.444	0.249
+Accounting Manipulation Schemes	Bitcoin 2.0	subtopic	principal_h3	gpt-5.5-low	0.038	0.038	0.150	0.023	0.038	0.226	0.150	0.338	0.050	0.050	0.150	0.000	0.050	0.250	0.150	0.000	0.107	0.074
+"Pure" Intelligence?	Cognition	subtopic	principal_h3	gpt-5.5-low	0.025	0.125	0.450	0.025	0.100	0.225	0.040	0.010	0.050	0.200	0.800	0.000	0.200	0.450	0.100	0.000	0.512	0.195
+news.EFF.Patent	copyright	subtopic	principal_h3	gpt-5.5-low	0.025	0.075	0.275	0.025	0.175	0.325	0.050	0.050	0.050	0.150	0.450	0.000	0.350	0.600	0.100	0.000	0.398	0.302
+Justice (Ethics and/or Wikipedia category )	Corruption & Retribution	subtopic	principal_h3	gpt-5.5-low	0.020	0.061	0.325	0.081	0.183	0.285	0.033	0.012	0.050	0.150	0.700	0.200	0.400	0.650	0.100	0.000	0.515	0.325
+Privacy in The Age of Big Data	Privacy (Technology)	subtopic	principal_h3	gpt-5.5-low	0.033	0.233	0.317	0.033	0.150	0.217	0.013	0.003	0.100	0.650	0.900	0.000	0.450	0.650	0.050	0.000	0.649	0.301
+An Eye for An Eye	Education	subtopic	principal_h3	gpt-5.5-low	0.017	0.026	0.103	0.017	0.043	0.154	0.128	0.513	0.020	0.030	0.100	0.000	0.050	0.150	0.100	0.000	0.049	0.035
+breaching	Political Philosophy	subtopic	principal_h3	gpt-5.5-low	0.043	0.043	0.128	0.017	0.043	0.171	0.171	0.385	0.050	0.050	0.150	0.000	0.050	0.200	0.200	0.000	0.094	0.054
+Criticism of relegion	History by Region / place	subtopic	principal_h3	gpt-5.5-low	0.019	0.019	0.028	0.000	0.019	0.075	0.140	0.701	0.020	0.020	0.030	0.000	0.020	0.080	0.100	0.000	0.022	0.013
+Rounding up the Idlers	cointelpro (fbi history)	subtopic	principal_h3	gpt-5.5-low	0.150	0.060	0.210	0.012	0.090	0.210	0.120	0.150	0.250	0.100	0.350	0.000	0.150	0.350	0.200	0.000	0.228	0.093
+Heartland Theory	geopolitics	subtopic	principal_h3	gpt-5.5-low	0.023	0.114	0.411	0.009	0.160	0.251	0.023	0.009	0.050	0.250	0.900	0.000	0.350	0.550	0.050	0.000	0.595	0.195
+Associated With Sekhmet	History by Region / place	subtopic	principal_h3	gpt-5.5-low	0.025	0.017	0.068	0.000	0.025	0.102	0.212	0.551	0.030	0.020	0.080	0.000	0.030	0.120	0.250	0.000	0.072	0.030
+Dr Jack Heinemann	groups-activists	subtopic	principal_h3	gpt-5.5-low	0.265	0.033	0.099	0.007	0.066	0.232	0.132	0.166	0.400	0.050	0.150	0.000	0.100	0.350	0.200	0.000	0.237	0.095
+Theater of the Absurd	history	subtopic	principal_h3	gpt-5.5-low	0.034	0.068	0.308	0.007	0.068	0.171	0.171	0.171	0.050	0.100	0.450	0.000	0.100	0.250	0.250	0.000	0.240	0.058
+Anti-Drone War Art	Political Art	subtopic	principal_h3	gpt-5.5-low	0.095	0.284	0.284	0.008	0.133	0.170	0.019	0.008	0.250	0.750	0.750	0.000	0.350	0.450	0.050	0.000	0.574	0.124
+P.R.I.S.M	Man in the MIddle	subtopic	principal_h3	gpt-5.5-low	0.047	0.029	0.146	0.018	0.146	0.263	0.175	0.175	0.080	0.050	0.250	0.000	0.250	0.450	0.300	0.000	0.249	0.176
+Cynacism on Justice & Inequality	s243a-cynicism	subtopic	principal_h3	gpt-5.5-low	0.140	0.180	0.320	0.008	0.120	0.200	0.020	0.012	0.350	0.450	0.800	0.000	0.300	0.500	0.050	0.000	0.523	0.137
+Aleister Crowley	symbols-history	subtopic	principal_h3	gpt-5.5-low	0.033	0.066	0.197	0.013	0.197	0.296	0.099	0.099	0.050	0.100	0.350	0.000	0.350	0.550	0.150	0.000	0.324	0.237
+Arthur Schopenhauer	Intelectuals & Notable Non-Fiction Writers	subtopic	principal_h3	gpt-5.5-low	0.509	0.060	0.210	0.000	0.060	0.120	0.030	0.012	0.800	0.100	0.350	0.000	0.150	0.250	0.050	0.000	0.527	0.039
+Factory Pig Farms	philosophy	subtopic	principal_h3	gpt-5.5-low	0.017	0.017	0.210	0.000	0.042	0.294	0.168	0.252	0.020	0.020	0.250	0.000	0.050	0.350	0.250	0.000	0.200	0.113
+transparancy	Illusions	subtopic	principal_h3	gpt-5.5-low	0.036	0.072	0.254	0.058	0.109	0.217	0.109	0.145	0.050	0.100	0.350	0.100	0.200	0.350	0.200	0.000	0.223	0.114
+In Defense of Social Security	Republican Politics	subtopic	principal_h3	gpt-5.5-low	0.092	0.031	0.399	0.000	0.123	0.245	0.061	0.049	0.150	0.050	0.650	0.000	0.250	0.450	0.100	0.000	0.422	0.142
+deregulation as a force for censorship	Social Media	subtopic	principal_h3	gpt-5.5-low	0.030	0.060	0.417	0.000	0.149	0.268	0.048	0.030	0.050	0.100	0.700	0.000	0.300	0.550	0.100	0.000	0.496	0.193
+The War on Science	Society	subtopic	principal_h3	gpt-5.5-low	0.035	0.035	0.317	0.000	0.106	0.317	0.106	0.085	0.050	0.050	0.450	0.000	0.200	0.550	0.200	0.000	0.363	0.201
+African History	Mythology	subtopic	principal_h3	gpt-5.5-low	0.014	0.034	0.170	0.068	0.136	0.340	0.136	0.102	0.020	0.050	0.250	0.150	0.250	0.600	0.250	0.000	0.327	0.255
+sustainability technologies	Technology, Engineering & Design	subtopic	principal_h3	gpt-5.5-low	0.045	0.335	0.335	0.000	0.089	0.156	0.027	0.013	0.100	0.750	0.750	0.000	0.250	0.450	0.080	0.000	0.601	0.093
+The 1033 Program	The Dividing of People's with lines on the map	subtopic	principal_h3	gpt-5.5-low	0.036	0.036	0.250	0.000	0.107	0.286	0.143	0.143	0.050	0.050	0.350	0.000	0.200	0.450	0.250	0.000	0.277	0.157
+Wikipedia C	indexes	subtopic	principal_h3	gpt-5.5-low	0.156	0.094	0.156	0.031	0.094	0.219	0.094	0.156	0.250	0.150	0.250	0.000	0.150	0.350	0.150	0.000	0.197	0.097
+Where Elite Unity Exists	Animal Farm	subtopic	principal_h3	gpt-5.5-low	0.030	0.030	0.212	0.030	0.152	0.273	0.121	0.152	0.050	0.000	0.350	0.000	0.250	0.450	0.200	0.000	0.261	0.167
+Constraints (Clasical Mechanics)	Electricity & Magnitism (Physics)	subtopic	principal_h3	gpt-5.5-low	0.036	0.036	0.179	0.036	0.107	0.321	0.071	0.214	0.050	0.050	0.250	0.000	0.150	0.450	0.100	0.000	0.216	0.164
+Hard Times (novel)	Fiction	subtopic	principal_h3	gpt-5.5-low	0.366	0.151	0.302	0.022	0.043	0.086	0.022	0.009	0.850	0.350	0.700	0.000	0.100	0.200	0.050	0.000	0.598	0.022
+Dec 9, 2013 Standford pres Bitcoin, Bobby C. Lee, BTC China	Bitcoin 2.0	subtopic	principal_h3	gpt-5.5-low	0.214	0.024	0.262	0.024	0.119	0.238	0.071	0.048	0.450	0.050	0.550	0.000	0.250	0.500	0.150	0.000	0.401	0.152
+Monsto's connections	Corruption & Retribution	subtopic	principal_h3	gpt-5.5-low	0.030	0.030	0.182	0.030	0.121	0.273	0.152	0.182	0.050	0.050	0.300	0.000	0.200	0.450	0.250	0.000	0.242	0.155
+Big Brother Govs & Corps (Books)	Darknet & The Deep Web	subtopic	principal_h3	gpt-5.5-low	0.053	0.105	0.237	0.026	0.132	0.289	0.079	0.079	0.100	0.200	0.450	0.000	0.250	0.550	0.150	0.000	0.337	0.197
+Open Thesis	courses	subtopic	principal_h3	gpt-5.5-low	0.152	0.061	0.182	0.030	0.091	0.212	0.121	0.152	0.250	0.100	0.300	0.000	0.150	0.350	0.200	0.000	0.211	0.094
+PF thread problems concerning reductionism	ethics	subtopic	principal_h3	gpt-5.5-low	0.114	0.029	0.200	0.029	0.114	0.257	0.114	0.143	0.200	0.050	0.350	0.000	0.200	0.450	0.200	0.000	0.256	0.144
+owl.symbols.s243a	history	subtopic	principal_h3	gpt-5.5-low	0.037	0.037	0.111	0.037	0.074	0.185	0.185	0.333	0.050	0.050	0.150	0.000	0.100	0.250	0.250	0.000	0.120	0.063
+Anti-Protest Tactics	FBI-history-s243a	subtopic	principal_h3	gpt-5.5-low	0.067	0.111	0.333	0.022	0.156	0.244	0.044	0.022	0.150	0.250	0.750	0.000	0.350	0.550	0.100	0.000	0.481	0.213
+The Grand Chessboard	geopolitics	subtopic	principal_h3	gpt-5.5-low	0.146	0.021	0.335	0.008	0.188	0.272	0.021	0.008	0.350	0.050	0.800	0.000	0.450	0.650	0.050	0.000	0.583	0.279
+Evil Gods	History by Region / place	subtopic	principal_h3	gpt-5.5-low	0.017	0.025	0.124	0.008	0.041	0.165	0.165	0.455	0.020	0.030	0.150	0.000	0.050	0.200	0.200	0.000	0.088	0.046
+NDAA Pushback	government.clandestine.society	subtopic	principal_h3	gpt-5.5-low	0.028	0.044	0.306	0.011	0.139	0.306	0.083	0.083	0.050	0.080	0.550	0.000	0.250	0.550	0.150	0.000	0.388	0.217
+Political Science	Mythology	subtopic	principal_h3	gpt-5.5-low	0.000	0.000	0.029	0.000	0.049	0.243	0.049	0.631	0.000	0.000	0.030	0.000	0.050	0.250	0.050	0.000	0.066	0.066
+Drone War Art	Art	subtopic	principal_h3	gpt-5.5-low	0.083	0.227	0.310	0.021	0.145	0.186	0.021	0.008	0.200	0.550	0.750	0.000	0.350	0.450	0.050	0.000	0.509	0.162
+Destructive Practices	s243a-wikispaces	subtopic	principal_h3	gpt-5.5-low	0.120	0.090	0.180	0.012	0.090	0.180	0.120	0.210	0.200	0.150	0.300	0.000	0.150	0.300	0.200	0.000	0.183	0.079
+Aleister Crowley by other Pearlers	eyes-symbols-history-s243a	subtopic	principal_h3	gpt-5.5-low	0.035	0.021	0.174	0.007	0.139	0.312	0.139	0.174	0.050	0.030	0.250	0.000	0.200	0.450	0.200	0.000	0.242	0.179
+George Wilhelm Fredrich Hegel	Intelectuals & Notable Non-Fiction Writers	subtopic	principal_h3	gpt-5.5-low	0.450	0.025	0.225	0.005	0.100	0.175	0.015	0.005	0.900	0.050	0.450	0.000	0.200	0.350	0.030	0.000	0.589	0.086
+The Reality of Food Stamps	ethics	subtopic	principal_h3	gpt-5.5-low	0.034	0.014	0.372	0.007	0.101	0.304	0.068	0.101	0.050	0.020	0.550	0.000	0.150	0.450	0.100	0.000	0.365	0.162
+Wikipedia C	2 - root node (my real tree Pearl Trees Version 1.0)	subtopic	principal_h4	gpt-5.5-low	0.130	0.097	0.117	0.032	0.052	0.117	0.162	0.292	0.150	0.100	0.120	0.010	0.050	0.120	0.200	0.000	0.093	0.031
+The Crises in Democarcy	Animal Farm	subtopic	principal_h4	gpt-5.5-low	0.045	0.028	0.256	0.017	0.170	0.284	0.085	0.114	0.050	0.030	0.350	0.010	0.220	0.420	0.100	0.000	0.258	0.183
+Classical Mechanics	Antenna	subtopic	principal_h4	gpt-5.5-low	0.014	0.014	0.145	0.036	0.087	0.254	0.087	0.362	0.010	0.010	0.120	0.030	0.080	0.250	0.080	0.000	0.096	0.080
+Hard Times (novel)	Apocalyptic Fiction	subtopic	principal_h4	gpt-5.5-low	0.074	0.025	0.233	0.012	0.153	0.276	0.074	0.153	0.080	0.020	0.280	0.010	0.180	0.350	0.080	0.000	0.202	0.138
+Business process	Bitcoin 2.0	subtopic	principal_h4	gpt-5.5-low	0.026	0.032	0.182	0.078	0.078	0.273	0.104	0.227	0.020	0.030	0.180	0.080	0.080	0.300	0.100	0.000	0.139	0.103
+Monsanto	Corruption & Retribution	subtopic	principal_h4	gpt-5.5-low	0.099	0.022	0.231	0.011	0.154	0.319	0.066	0.099	0.120	0.020	0.320	0.010	0.200	0.480	0.080	0.000	0.275	0.197
+Privacy in The Age of Big Data	Darknet & The Deep Web	subtopic	principal_h4	gpt-5.5-low	0.029	0.058	0.301	0.019	0.204	0.291	0.049	0.049	0.040	0.080	0.480	0.020	0.320	0.500	0.080	0.000	0.365	0.251
+Open Thesis	Education	subtopic	principal_h4	gpt-5.5-low	0.111	0.083	0.315	0.009	0.167	0.231	0.046	0.037	0.180	0.120	0.550	0.010	0.280	0.420	0.080	0.000	0.351	0.167
+Who Has The Gold	Political Philosophy	subtopic	principal_h4	gpt-5.5-low	0.033	0.033	0.184	0.020	0.079	0.276	0.145	0.230	0.030	0.030	0.180	0.010	0.080	0.320	0.150	0.000	0.152	0.112
+Alcohol	Relegion	subtopic	principal_h4	gpt-5.5-low	0.028	0.035	0.211	0.014	0.085	0.317	0.085	0.225	0.020	0.030	0.220	0.010	0.080	0.350	0.080	0.000	0.173	0.130
+The Black Panthers	FBI-history-s243a	subtopic	principal_h4	gpt-5.5-low	0.064	0.021	0.340	0.021	0.213	0.298	0.034	0.009	0.150	0.050	0.750	0.000	0.450	0.650	0.050	0.000	0.557	0.292
+Associated With Sekhmet	history	subtopic	principal_h4	gpt-5.5-low	0.034	0.034	0.268	0.013	0.081	0.268	0.134	0.168	0.050	0.050	0.350	0.000	0.100	0.350	0.150	0.000	0.219	0.109
+English	groups-activists	subtopic	principal_h4	gpt-5.5-low	0.043	0.043	0.104	0.017	0.052	0.217	0.130	0.391	0.050	0.050	0.100	0.000	0.050	0.200	0.100	0.000	0.074	0.053
+Popular beliefs on scientific issues	Mythology	subtopic	principal_h4	gpt-5.5-low	0.028	0.056	0.279	0.011	0.140	0.335	0.084	0.067	0.050	0.100	0.450	0.000	0.200	0.550	0.100	0.000	0.353	0.217
+Drone War Art	Language, Literature & Other arts	subtopic	principal_h4	gpt-5.5-low	0.046	0.137	0.365	0.023	0.137	0.228	0.046	0.018	0.100	0.250	0.750	0.000	0.250	0.450	0.080	0.000	0.453	0.139
+mergers acquisitions and takeovers	s243a-wikispaces	subtopic	principal_h4	gpt-5.5-low	0.069	0.035	0.278	0.014	0.083	0.208	0.139	0.174	0.100	0.050	0.350	0.000	0.100	0.250	0.150	0.000	0.187	0.068
+Aleister Crowley	History by Region / place	subtopic	principal_h4	gpt-5.5-low	0.026	0.017	0.086	0.000	0.052	0.216	0.129	0.474	0.030	0.020	0.080	0.000	0.050	0.200	0.120	0.000	0.069	0.048
+2016 Election (Bernie Sanders)	people	subtopic	principal_h4	gpt-5.5-low	0.038	0.015	0.229	0.015	0.092	0.305	0.115	0.191	0.050	0.020	0.250	0.000	0.100	0.350	0.100	0.000	0.187	0.122
+Animal ethics	philosophy	subtopic	principal_h4	gpt-5.5-low	0.059	0.273	0.352	0.020	0.117	0.156	0.020	0.004	0.150	0.650	0.850	0.000	0.250	0.350	0.030	0.000	0.570	0.085
+CEO Wages	Removing The curtain	subtopic	principal_h4	gpt-5.5-low	0.030	0.060	0.301	0.018	0.108	0.301	0.090	0.090	0.050	0.100	0.450	0.000	0.150	0.450	0.100	0.000	0.304	0.157
+In Defense of Social Security	Republican Sideshows	subtopic	principal_h4	gpt-5.5-low	0.094	0.062	0.344	0.031	0.094	0.219	0.062	0.094	0.150	0.100	0.550	0.000	0.150	0.350	0.050	0.000	0.303	0.095
+Part 1 - The Company (Counter Intelligence)	media	subtopic	principal_h4	gpt-5.5-low	0.142	0.085	0.341	0.017	0.057	0.256	0.045	0.057	0.250	0.150	0.600	0.000	0.100	0.450	0.050	0.000	0.376	0.122
+LOGO	Net Nutrality and Society	subtopic	principal_h4	gpt-5.5-low	0.044	0.018	0.088	0.009	0.044	0.177	0.133	0.487	0.050	0.020	0.100	0.000	0.050	0.200	0.100	0.000	0.062	0.042
+Ukrain	History by Region / place	subtopic	principal_h4	gpt-5.5-low	0.095	0.261	0.355	0.014	0.047	0.166	0.038	0.024	0.200	0.550	0.750	0.000	0.100	0.350	0.050	0.000	0.494	0.064
+Support for Open Source Software	Technology, Engineering & Design	subtopic	principal_h4	gpt-5.5-low	0.077	0.179	0.357	0.015	0.077	0.230	0.041	0.026	0.150	0.350	0.700	0.000	0.150	0.450	0.050	0.000	0.441	0.116
+Constraints (Clasical Mechanics)	Signals & communication	subtopic	principal_h4	gpt-5.5-low	0.019	0.028	0.075	0.009	0.028	0.168	0.112	0.561	0.020	0.030	0.080	0.000	0.030	0.180	0.080	0.000	0.047	0.035
+Roundtripping	Bitcoin 2.0	subtopic	principal_h4	gpt-5.5-low	0.052	0.097	0.290	0.013	0.065	0.226	0.097	0.161	0.080	0.150	0.450	0.000	0.100	0.350	0.100	0.000	0.244	0.090
+Alleged Monsanto Connections	Corruption	subtopic	principal_h4	gpt-5.5-low	0.100	0.125	0.375	0.010	0.075	0.250	0.040	0.025	0.200	0.250	0.750	0.000	0.150	0.500	0.050	0.000	0.471	0.137
+Jens Förster - UvA (FMG)	Education	subtopic	principal_h4	gpt-5.5-low	0.086	0.036	0.252	0.007	0.058	0.252	0.129	0.180	0.120	0.050	0.350	0.000	0.080	0.350	0.120	0.000	0.209	0.098
+Inverted Totalitarianism	Political Philosophy	subtopic	principal_h4	gpt-5.5-low	0.079	0.198	0.374	0.009	0.088	0.220	0.022	0.009	0.180	0.450	0.850	0.000	0.200	0.500	0.030	0.000	0.550	0.128
+culture (Anthropology)	History by Region / place	subtopic	principal_h4	gpt-5.5-low	0.021	0.056	0.211	0.056	0.056	0.317	0.106	0.176	0.020	0.050	0.250	0.050	0.050	0.350	0.100	0.000	0.183	0.137
+Rounding up the Idlers	FBI-history-s243a	subtopic	principal_h4	gpt-5.5-low	0.143	0.046	0.343	0.017	0.069	0.229	0.069	0.086	0.200	0.050	0.550	0.000	0.100	0.350	0.100	0.000	0.313	0.096
+Evil Gods	history	subtopic	principal_h4	gpt-5.5-low	0.015	0.022	0.146	0.015	0.036	0.255	0.182	0.328	0.010	0.020	0.150	0.000	0.030	0.250	0.200	0.000	0.124	0.076
+Tyrone Hayes	groups	subtopic	principal_h4	gpt-5.5-low	0.065	0.008	0.041	0.008	0.024	0.203	0.244	0.407	0.050	0.000	0.030	0.000	0.020	0.180	0.250	0.000	0.103	0.049
+Same Love feat. Mary Lambert	history	subtopic	principal_h4	gpt-5.5-low	0.023	0.008	0.141	0.008	0.039	0.273	0.195	0.312	0.020	0.000	0.120	0.000	0.030	0.250	0.200	0.000	0.126	0.075
+Anti-Drone War Art	Art	subtopic	principal_h4	gpt-5.5-low	0.087	0.173	0.325	0.022	0.130	0.216	0.035	0.013	0.150	0.350	0.700	0.000	0.250	0.450	0.050	0.000	0.432	0.142
+Trade Deals are Collusion	s243a-cynicism	subtopic	principal_h4	gpt-5.5-low	0.155	0.041	0.285	0.016	0.130	0.259	0.062	0.052	0.250	0.050	0.500	0.000	0.200	0.450	0.100	0.000	0.332	0.150
+Robert Graves	History by Region / place	subtopic	principal_h4	gpt-5.5-low	0.024	0.008	0.126	0.008	0.047	0.276	0.236	0.276	0.020	0.000	0.120	0.000	0.040	0.280	0.250	0.000	0.154	0.091
+Criticism of Hillary Clinton	American Politicians	subtopic	principal_h4	gpt-5.5-low	0.039	0.145	0.338	0.019	0.145	0.242	0.048	0.024	0.050	0.250	0.650	0.000	0.250	0.450	0.080	0.000	0.407	0.156
+memes -- blaming the poor	philosophy	subtopic	principal_h4	gpt-5.5-low	0.020	0.040	0.252	0.013	0.079	0.331	0.119	0.146	0.020	0.040	0.300	0.000	0.080	0.400	0.150	0.000	0.234	0.145
+Money in Politics	Illusions	subtopic	principal_h4	gpt-5.5-low	0.019	0.028	0.113	0.000	0.075	0.264	0.075	0.425	0.020	0.030	0.120	0.000	0.080	0.280	0.050	0.000	0.099	0.082
+Empathetically Correct	Social Media	subtopic	principal_h4	gpt-5.5-low	0.029	0.058	0.326	0.014	0.159	0.254	0.072	0.087	0.040	0.080	0.450	0.000	0.220	0.350	0.080	0.000	0.282	0.126
+Showtime	Net Nutrality and Society	subtopic	principal_h4	gpt-5.5-low	0.009	0.019	0.075	0.000	0.057	0.208	0.113	0.519	0.010	0.020	0.080	0.000	0.060	0.220	0.080	0.000	0.065	0.054
+Foreign Politics (Israel)	History by Region / place	subtopic	principal_h4	gpt-5.5-low	0.022	0.131	0.365	0.015	0.131	0.204	0.073	0.058	0.030	0.180	0.500	0.000	0.180	0.280	0.100	0.000	0.295	0.083
+Art	Science and technology	subtopic	principal_h4	gpt-5.5-low	0.009	0.018	0.088	0.000	0.158	0.482	0.140	0.105	0.010	0.020	0.100	0.000	0.180	0.550	0.120	0.000	0.320	0.312
+Holonomic system	Electricity & Magnitism (Physics)	subtopic	principal_h4	gpt-5.5-low	0.018	0.036	0.108	0.000	0.072	0.288	0.162	0.315	0.020	0.040	0.120	0.000	0.080	0.320	0.180	0.000	0.142	0.108
+Production and organizations	Bitcoin 2.0	subtopic	principal_h4	gpt-5.5-low	0.023	0.062	0.248	0.016	0.124	0.279	0.109	0.140	0.030	0.080	0.320	0.020	0.160	0.360	0.120	0.000	0.219	0.126
+USA Law - Unintended Consequences	ethics	subtopic	principal_h4	gpt-5.5-low	0.023	0.045	0.316	0.015	0.135	0.301	0.075	0.090	0.030	0.060	0.420	0.000	0.180	0.400	0.100	0.000	0.288	0.148
+Miss Representation	Relegion	subtopic	principal_h4	gpt-5.5-low	0.010	0.020	0.079	0.000	0.079	0.238	0.099	0.475	0.010	0.020	0.080	0.000	0.080	0.240	0.080	0.000	0.078	0.066
+Symbols of Satinism (Documentary)	history	subtopic	principal_h4	gpt-5.5-low	0.017	0.043	0.241	0.009	0.121	0.276	0.103	0.190	0.020	0.050	0.280	0.000	0.140	0.320	0.120	0.000	0.188	0.109
+Constraints (Clasical Mechanics)	Antenna	subtopic	principal_h5	gpt-5.5-low	0.019	0.019	0.047	0.000	0.019	0.075	0.047	0.774	0.000	0.000	0.050	0.000	0.020	0.080	0.050	0.000	0.011	0.009
+Alleged Monsanto Connections	Corruption & Retribution	subtopic	principal_h5	gpt-5.5-low	0.186	0.165	0.310	0.008	0.103	0.165	0.041	0.021	0.550	0.450	0.750	0.000	0.300	0.450	0.100	0.000	0.519	0.123
+Corporate Facism	philosophy	subtopic	principal_h5	gpt-5.5-low	0.031	0.126	0.220	0.013	0.075	0.220	0.094	0.220	0.050	0.200	0.350	0.000	0.120	0.350	0.150	0.000	0.204	0.095
+Alien Myths	history	subtopic	principal_h5	gpt-5.5-low	0.031	0.075	0.283	0.013	0.075	0.252	0.113	0.157	0.050	0.150	0.450	0.000	0.150	0.450	0.200	0.000	0.287	0.136
+Associated With Sekhmet	Mythology	subtopic	principal_h5	gpt-5.5-low	0.142	0.104	0.355	0.005	0.142	0.190	0.047	0.014	0.350	0.250	0.750	0.000	0.350	0.450	0.120	0.000	0.483	0.154
+[PDF] Livres	groups-activists	subtopic	principal_h5	gpt-5.5-low	0.019	0.019	0.037	0.009	0.028	0.112	0.075	0.701	0.020	0.020	0.040	0.000	0.030	0.120	0.080	0.000	0.023	0.018
+fiction & poverty	Gods of Earth and Nature	subtopic	principal_h5	gpt-5.5-low	0.009	0.018	0.071	0.009	0.045	0.161	0.107	0.580	0.000	0.020	0.080	0.000	0.050	0.180	0.120	0.000	0.050	0.037
+Anti-Drone War Art	Language, Literature & Other arts	subtopic	principal_h5	gpt-5.5-low	0.135	0.179	0.359	0.004	0.099	0.157	0.045	0.022	0.350	0.450	0.800	0.000	0.250	0.400	0.100	0.000	0.507	0.100
+Collective Moods & dispositions	Social Media	subtopic	principal_h5	gpt-5.5-low	0.060	0.109	0.323	0.015	0.109	0.249	0.075	0.060	0.150	0.250	0.650	0.030	0.250	0.550	0.150	0.000	0.422	0.181
+Aleister Crowley	history	subtopic	principal_h5	gpt-5.5-low	0.178	0.061	0.279	0.005	0.112	0.228	0.076	0.061	0.400	0.150	0.550	0.000	0.250	0.500	0.150	0.000	0.387	0.152
+Books by Peter Kropotkin	Intelectuals & Notable Non-Fiction Writers	subtopic	principal_h5	gpt-5.5-low	0.252	0.161	0.252	0.014	0.069	0.161	0.046	0.046	0.550	0.250	0.550	0.020	0.150	0.350	0.100	0.000	0.389	0.103
+Money in Tennesse Politics	Illusions	subtopic	principal_h5	gpt-5.5-low	0.017	0.017	0.069	0.009	0.043	0.155	0.129	0.560	0.020	0.020	0.080	0.000	0.050	0.180	0.150	0.000	0.056	0.037
+Part 1 - The Company (Counter Intelligence)	Social Media	subtopic	principal_h5	gpt-5.5-low	0.039	0.023	0.140	0.008	0.093	0.271	0.155	0.271	0.050	0.030	0.180	0.000	0.120	0.350	0.200	0.000	0.165	0.117
+HBO	Social Forms & Ideologies	subtopic	principal_h5	gpt-5.5-low	0.017	0.026	0.104	0.009	0.043	0.217	0.104	0.478	0.020	0.030	0.120	0.000	0.050	0.250	0.120	0.000	0.083	0.063
+History of the Americas	eyes-symbols-history-s243a	subtopic	principal_h5	gpt-5.5-low	0.069	0.083	0.125	0.014	0.083	0.208	0.174	0.243	0.100	0.120	0.180	0.020	0.120	0.300	0.250	0.000	0.156	0.096
+Branches of science	Technology, Engineering & Design	subtopic	principal_h5	gpt-5.5-low	0.046	0.029	0.202	0.173	0.145	0.260	0.087	0.058	0.080	0.050	0.350	0.300	0.250	0.450	0.150	0.000	0.294	0.193
+Holonomic system	Signals & communication	subtopic	principal_h5	gpt-5.5-low	0.017	0.025	0.099	0.008	0.066	0.231	0.182	0.372	0.020	0.030	0.120	0.000	0.080	0.280	0.220	0.000	0.123	0.081
+Racist & Classist Justice	ethics	subtopic	principal_h5	gpt-5.5-low	0.079	0.132	0.395	0.011	0.132	0.184	0.042	0.026	0.150	0.250	0.750	0.020	0.250	0.350	0.080	0.000	0.442	0.139
+drug culture	History by Region / place	subtopic	principal_h5	gpt-5.5-low	0.023	0.038	0.135	0.008	0.060	0.211	0.150	0.376	0.030	0.050	0.180	0.010	0.080	0.280	0.200	0.000	0.121	0.075
+Eye Symbol Examples	Mythology	subtopic	principal_h5	gpt-5.5-low	0.046	0.069	0.259	0.006	0.172	0.259	0.103	0.086	0.080	0.120	0.450	0.010	0.300	0.450	0.180	0.000	0.315	0.191
+EN	groups	subtopic	principal_h5	gpt-5.5-low	0.106	0.176	0.141	0.014	0.035	0.176	0.106	0.246	0.150	0.250	0.200	0.020	0.050	0.250	0.100	0.000	0.145	0.062
+Cynacism & History Sterotypes	eyes-symbols-history-s243a	subtopic	principal_h5	gpt-5.5-low	0.142	0.189	0.283	0.009	0.094	0.189	0.071	0.024	0.350	0.450	0.650	0.020	0.250	0.450	0.150	0.000	0.438	0.138
+Cynacism	wikis	subtopic	principal_h5	gpt-5.5-low	0.128	0.096	0.160	0.006	0.064	0.224	0.160	0.160	0.200	0.150	0.250	0.010	0.100	0.350	0.200	0.000	0.197	0.101
+Aleister Crowley by other Pearlers	History by Region / place	subtopic	principal_h5	gpt-5.5-low	0.038	0.023	0.092	0.008	0.038	0.191	0.191	0.420	0.050	0.030	0.120	0.010	0.050	0.250	0.250	0.000	0.111	0.061
+The Phenomenology of Spirit, Hagel	people	subtopic	principal_h5	gpt-5.5-low	0.016	0.016	0.064	0.008	0.032	0.144	0.240	0.480	0.020	0.020	0.080	0.010	0.040	0.180	0.300	0.000	0.105	0.040
+Superpacs & Other Lobbying Groups - Super PAC (Political Action Committee) - pacs	Illusions	subtopic	principal_h5	gpt-5.5-low	0.017	0.026	0.103	0.009	0.034	0.214	0.214	0.385	0.020	0.030	0.120	0.010	0.040	0.250	0.250	0.000	0.122	0.067
+Part 5 - Drone Nation (counter intellegence)	Social Media	subtopic	principal_h5	gpt-5.5-low	0.017	0.025	0.102	0.008	0.042	0.237	0.212	0.356	0.020	0.030	0.120	0.010	0.050	0.280	0.250	0.000	0.135	0.081
+COMEDY CENTRAL	Social Forms & Ideologies	subtopic	principal_h5	gpt-5.5-low	0.024	0.041	0.163	0.008	0.057	0.285	0.163	0.260	0.030	0.050	0.200	0.010	0.070	0.350	0.200	0.000	0.171	0.116
+The Isreal Palistine Conflict	History by Region / place	subtopic	principal_h5	gpt-5.5-low	0.101	0.179	0.402	0.006	0.084	0.168	0.045	0.017	0.200	0.350	0.750	0.010	0.180	0.350	0.080	0.000	0.462	0.101
+Tools (Science & Engineering)	Technology, Engineering & Design	subtopic	principal_h5	gpt-5.5-low	0.138	0.259	0.302	0.009	0.078	0.172	0.034	0.009	0.350	0.650	0.750	0.020	0.200	0.450	0.080	0.000	0.539	0.131
+Abnormal psychology	ethics	subtopic	principal_h5	gpt-5.5-low	0.032	0.038	0.223	0.019	0.115	0.350	0.096	0.127	0.020	0.030	0.180	0.000	0.080	0.320	0.100	0.000	0.173	0.126
+work	history	subtopic	principal_h5	gpt-5.5-low	0.028	0.067	0.250	0.044	0.067	0.361	0.100	0.083	0.030	0.080	0.280	0.050	0.050	0.450	0.100	0.000	0.254	0.178
+Symbols of Satinism (Documentary)	Mythology	subtopic	principal_h5	gpt-5.5-low	0.083	0.041	0.207	0.016	0.166	0.301	0.093	0.093	0.080	0.040	0.220	0.000	0.180	0.380	0.120	0.000	0.209	0.148
+John Kiriakou	groups	subtopic	principal_h5	gpt-5.5-low	0.066	0.016	0.041	0.016	0.066	0.246	0.180	0.369	0.040	0.000	0.020	0.000	0.030	0.160	0.120	0.000	0.066	0.056
+The Muck We Must Climb Out Of	eyes-symbols-history-s243a	subtopic	principal_h5	gpt-5.5-low	0.053	0.026	0.180	0.016	0.185	0.265	0.159	0.116	0.050	0.020	0.180	0.000	0.200	0.300	0.200	0.000	0.184	0.129
+Tackling Danger Without Violence	s243a-wikispaces	subtopic	principal_h5	gpt-5.5-low	0.093	0.026	0.197	0.016	0.145	0.249	0.181	0.093	0.100	0.020	0.220	0.000	0.150	0.280	0.250	0.000	0.190	0.110
+Robert Graves	history	subtopic	principal_h5	gpt-5.5-low	0.081	0.016	0.259	0.011	0.135	0.351	0.081	0.065	0.080	0.010	0.280	0.000	0.120	0.450	0.100	0.000	0.262	0.178
+Goldwater	people	subtopic	principal_h5	gpt-5.5-low	0.491	0.030	0.084	0.018	0.090	0.210	0.048	0.030	0.750	0.020	0.080	0.000	0.080	0.200	0.050	0.000	0.427	0.050
+Money in Politics	Politics	subtopic	principal_h5	gpt-5.5-low	0.018	0.275	0.317	0.011	0.141	0.211	0.021	0.007	0.020	0.720	0.850	0.000	0.250	0.450	0.040	0.000	0.599	0.131
+Part 4 - IV - Necrophilous (Counter Intellegence)	Social Media	subtopic	principal_h5	gpt-5.5-low	0.045	0.022	0.202	0.017	0.135	0.326	0.140	0.112	0.040	0.020	0.200	0.000	0.120	0.380	0.180	0.000	0.208	0.149
+BET	Social Forms & Ideologies	subtopic	principal_h5	gpt-5.5-low	0.036	0.107	0.250	0.036	0.036	0.179	0.107	0.250	0.050	0.150	0.350	0.000	0.050	0.250	0.150	0.000	0.168	0.054
+Leaks and hacks	Places	subtopic	principal_h5	gpt-5.5-low	0.019	0.019	0.029	0.000	0.019	0.115	0.077	0.721	0.020	0.020	0.030	0.000	0.020	0.120	0.080	0.000	0.022	0.016
+Scientific phenomena	Technology, Engineering & Design	subtopic	principal_h5	gpt-5.5-low	0.014	0.103	0.241	0.034	0.055	0.310	0.138	0.103	0.020	0.150	0.350	0.000	0.080	0.450	0.200	0.000	0.272	0.153
+Transitions to Totalitarism	Political Philosophy	subtopic	principal_h5	gpt-5.5-low	0.007	0.132	0.497	0.013	0.066	0.199	0.053	0.033	0.010	0.200	0.750	0.000	0.100	0.300	0.080	0.000	0.470	0.068
+Federal Reserve	History by Region / place	subtopic	principal_h5	gpt-5.5-low	0.027	0.018	0.106	0.000	0.027	0.248	0.133	0.442	0.030	0.020	0.120	0.000	0.030	0.280	0.150	0.000	0.104	0.073
+Evil Gods	Mythology	subtopic	principal_h5	gpt-5.5-low	0.072	0.266	0.386	0.010	0.072	0.145	0.039	0.010	0.150	0.550	0.800	0.000	0.150	0.300	0.080	0.000	0.524	0.055
+English	groups	subtopic	principal_h5	gpt-5.5-low	0.156	0.156	0.094	0.031	0.031	0.156	0.156	0.219	0.250	0.250	0.150	0.000	0.050	0.250	0.250	0.000	0.172	0.050
+Poverty	eyes-symbols-history-s243a	subtopic	principal_h5	gpt-5.5-low	0.009	0.009	0.038	0.000	0.019	0.075	0.094	0.755	0.010	0.010	0.040	0.000	0.020	0.080	0.100	0.000	0.018	0.008
+1984 immages	s243a-wikispaces	subtopic	principal_h5	gpt-5.5-low	0.233	0.033	0.167	0.013	0.053	0.167	0.167	0.167	0.350	0.050	0.250	0.000	0.080	0.250	0.250	0.000	0.213	0.055
+Sander's on Inequality	people	subtopic	principal_h5	gpt-5.5-low	0.026	0.017	0.104	0.000	0.043	0.243	0.174	0.391	0.030	0.020	0.120	0.000	0.050	0.280	0.200	0.000	0.119	0.079

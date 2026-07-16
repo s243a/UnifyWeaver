@@ -1,0 +1,108 @@
+{
+  "status": "corrected synthetic v2 complete; mechanism recovery passes but frozen 80% detection gate fails",
+  "configuration": {
+    "evaluation_replicates_per_scenario": 100,
+    "calibration_draws": 2000,
+    "attribution_audit_draws": 1000,
+    "items": 96,
+    "outer_held_items": 32,
+    "inner_held_items": 22,
+    "evaluation_seed": 881000,
+    "calibration_seed": 991000,
+    "audit_seed": 994000,
+    "block_covariance_shrinkage": 0.05,
+    "alpha_grid": [0.0, 0.025, 0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0],
+    "length_multiplier_grid": [0.5, 1.0, 2.0],
+    "channel_shrinkage_beta_grid": [0.0, 0.5, 1.0],
+    "design": "DESIGN_covariance_sensitivity_v2_null_calibration.md",
+    "candidate_nonzero_count_v2a": 216,
+    "candidate_nonzero_count_v2b": 8,
+    "familywise_confidence": 0.95
+  },
+  "familywise_thresholds": {
+    "fixed_path_shared_z": {
+      "v2a_full_grid": 0.008436969049373152,
+      "v2b_canonical_alpha": 0.004655646517924976
+    },
+    "full_procedure_krr": {
+      "v2a_full_grid": 0.01760085089307406,
+      "v2b_canonical_alpha": 0.009416216207897751
+    }
+  },
+  "v1_nonzero_selection_rate": {
+    "oracle_zero_mean": {
+      "single_canonical_endpoint": 0.121,
+      "canonical_alpha_grid": 0.301,
+      "full_grid": 0.649
+    },
+    "intercept_only": {
+      "single_canonical_endpoint": 0.214,
+      "canonical_alpha_grid": 0.433,
+      "full_grid": 0.815
+    },
+    "regional_krr": {
+      "single_canonical_endpoint": 0.219,
+      "canonical_alpha_grid": 0.444,
+      "full_grid": 0.845
+    }
+  },
+  "end_to_end_krr": {
+    "v2a": {
+      "block_null_nonzero_rate": 0.05,
+      "regional_mean_only_nonzero_rate": 0.19,
+      "block_null_pass": true,
+      "regional_mean_only_pass": true
+    },
+    "v2b": {
+      "block_null_nonzero_rate": 0.07,
+      "regional_mean_only_nonzero_rate": 0.22,
+      "block_null_pass": true,
+      "regional_mean_only_pass": false
+    }
+  },
+  "oracle_mean_known_block_mechanism": {
+    "v2a": {
+      "block_null_nonzero_rate": 0.03,
+      "coupling_0_04": {
+        "detection_rate": 0.16,
+        "nll_recovery": 0.46860593601108713,
+        "posterior_risk_recovery": 0.12788451341246743
+      },
+      "coupling_0_10": {
+        "detection_rate": 0.31,
+        "nll_recovery": 0.6728872894048984,
+        "posterior_risk_recovery": 0.7350476213037347
+      },
+      "coupling_0_20": {
+        "detection_rate": 0.46,
+        "nll_recovery": 0.7114938900534903,
+        "posterior_risk_recovery": 0.8916303779047412
+      }
+    },
+    "v2b": {
+      "block_null_nonzero_rate": 0.06,
+      "coupling_0_04": {
+        "detection_rate": 0.18,
+        "nll_recovery": 0.6576268635235664,
+        "posterior_risk_recovery": 0.4586863639391446
+      },
+      "coupling_0_10": {
+        "detection_rate": 0.35,
+        "nll_recovery": 0.6952942620558186,
+        "posterior_risk_recovery": 0.8561309654287135
+      },
+      "coupling_0_20": {
+        "detection_rate": 0.46,
+        "nll_recovery": 0.8350851135441434,
+        "posterior_risk_recovery": 0.9594849648584444
+      }
+    }
+  },
+  "decision": {
+    "deploy_structured_covariance": false,
+    "good_known_correlation_improves_estimate": true,
+    "limitation": "family-wise calibrated detection power after mean/covariance estimation",
+    "real_v1_multiseed_run_intentionally_not_executed": true
+  },
+  "corrected_full_output_sha256": "bb4b81c6bd182ebe89bee3360345491b8068aecd56e3ff59d49da9ceac56a9ca"
+}

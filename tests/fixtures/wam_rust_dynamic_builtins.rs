@@ -62,6 +62,30 @@ fn generated_assert_alias_appends_a_dynamic_fact() {
 }
 
 #[test]
+fn asserted_rule_body_can_call_assert_alias() {
+    let mut vm = WamState::new(vec![], HashMap::new());
+    assert_clause(
+        &mut vm,
+        "assertz/1",
+        rule(
+            at("seed_alias"),
+            fact("assert", vec![fact("dyn", vec![at("meta_alias")])]),
+        ),
+    );
+
+    vm.reset_query();
+    vm.code = vec![
+        Instruction::Call("seed_alias/0".to_string(), 0),
+        Instruction::Proceed,
+    ];
+    vm.labels = HashMap::new();
+    vm.pc = 1;
+
+    assert!(vm.run());
+    assert_eq!(dyn_values(&mut vm), vec![at("meta_alias")]);
+}
+
+#[test]
 fn assertz_asserta_query_order_and_retractall() {
     let mut vm = WamState::new(vec![], HashMap::new());
     assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("red")]));
@@ -180,6 +204,246 @@ fn retract_backtracks_through_each_matching_fact() {
     }
     assert_eq!(removed, vec![at("red"), at("blue"), at("green")]);
     assert!(dyn_values(&mut vm).is_empty());
+}
+
+#[test]
+fn clause_backtracks_over_facts_and_rules_without_removing_them() {
+    let mut vm = WamState::new(
+        vec![Instruction::Call("clause/2".to_string(), 2), Instruction::Proceed],
+        HashMap::new(),
+    );
+    assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("red")]));
+    assert_clause(&mut vm, "assertz/1", fact("marker", vec![at("blue")]));
+    assert_clause(
+        &mut vm,
+        "assertz/1",
+        rule(
+            fact("dyn", vec![at("blue")]),
+            fact("marker", vec![at("blue")]),
+        ),
+    );
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("dyn", vec![ub("X")]));
+    vm.set_reg_str("A2", ub("Body"));
+    vm.pc = 1;
+
+    let mut clauses = Vec::new();
+    assert!(vm.run());
+    loop {
+        let x = vm.bindings.get("X").cloned().expect("X bound");
+        let body = vm.bindings.get("Body").cloned().expect("Body bound");
+        clauses.push((
+            vm.deref_heap(&vm.deref_var(&x)),
+            vm.deref_heap(&vm.deref_var(&body)),
+        ));
+        if !vm.backtrack() { break; }
+    }
+
+    assert_eq!(
+        clauses,
+        vec![
+            (at("red"), at("true")),
+            (at("blue"), fact("marker", vec![at("blue")]))
+        ],
+    );
+    assert_eq!(dyn_values(&mut vm), vec![at("red"), at("blue")]);
+}
+
+#[test]
+fn generated_tail_clause_call_reads_dynamic_facts() {
+    let (code, labels) = shared_wam_program();
+    let mut vm = WamState::new(code, labels);
+    assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("tail")]));
+
+    vm.reset_query();
+    vm.set_reg_str("A1", ub("X"));
+    vm.set_reg_str("A2", ub("Body"));
+    vm.pc = *vm.labels
+        .get("rust_clause_demo/2")
+        .expect("generated clause demo label");
+
+    assert!(vm.run());
+    let x = vm.bindings.get("X").cloned().expect("X bound");
+    let body = vm.bindings.get("Body").cloned().expect("Body bound");
+    assert_eq!(vm.deref_heap(&vm.deref_var(&x)), at("tail"));
+    assert_eq!(vm.deref_heap(&vm.deref_var(&body)), at("true"));
+}
+
+#[test]
+fn generated_clause_errors_are_catchable() {
+    let (code, labels) = shared_wam_program();
+    for pred in [
+        "rust_clause_instantiation_demo/1",
+        "rust_clause_type_demo/1",
+    ] {
+        let mut vm = WamState::new(code.clone(), labels.clone());
+        vm.set_reg_str("A1", ub("Result"));
+        vm.pc = *vm.labels.get(pred).expect("generated clause error label");
+
+        assert!(vm.run(), "{} should catch its error", pred);
+        assert_eq!(vm.bindings.get("Result"), Some(&at("caught")));
+        assert!(vm.thrown_ball.is_none(), "{} should consume the error", pred);
+    }
+}
+
+#[test]
+fn current_predicate_backtracks_over_matching_dynamic_arities() {
+    let mut vm = WamState::new(
+        vec![
+            Instruction::Call("current_predicate/1".to_string(), 1),
+            Instruction::Proceed,
+        ],
+        HashMap::new(),
+    );
+    assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("one")]));
+    assert_clause(
+        &mut vm,
+        "assertz/1",
+        fact("dyn", vec![at("one"), at("two")]),
+    );
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("/", vec![at("dyn"), ub("Arity")]));
+    vm.pc = 1;
+
+    let mut arities = Vec::new();
+    assert!(vm.run());
+    loop {
+        let arity = vm.bindings.get("Arity").cloned().expect("Arity bound");
+        arities.push(vm.deref_heap(&vm.deref_var(&arity)));
+        if !vm.backtrack() { break; }
+    }
+    assert_eq!(arities, vec![Value::Integer(1), Value::Integer(2)]);
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("/", vec![at("dyn"), Value::Integer(-1)]));
+    vm.pc = 1;
+    assert!(!vm.run());
+    assert!(vm.thrown_ball.is_none());
+}
+
+#[test]
+fn generated_tail_current_predicate_call_reads_static_labels() {
+    let (code, labels) = shared_wam_program();
+    let mut vm = WamState::new(code, labels);
+    vm.set_reg_str("A1", at("rust_clause_demo"));
+    vm.set_reg_str("A2", ub("Arity"));
+    vm.pc = *vm.labels
+        .get("rust_current_predicate_demo/2")
+        .expect("generated current_predicate demo label");
+
+    assert!(vm.run());
+    let arity = vm.bindings.get("Arity").cloned().expect("Arity bound");
+    assert_eq!(vm.deref_heap(&vm.deref_var(&arity)), Value::Integer(2));
+}
+
+#[test]
+fn generated_current_predicate_errors_are_catchable() {
+    let (code, labels) = shared_wam_program();
+    for pred in [
+        "rust_current_predicate_instantiation_demo/1",
+        "rust_current_predicate_type_demo/1",
+        "rust_current_predicate_name_type_demo/1",
+        "rust_current_predicate_arity_type_demo/1",
+    ] {
+        let mut vm = WamState::new(code.clone(), labels.clone());
+        vm.set_reg_str("A1", ub("Result"));
+        vm.pc = *vm.labels.get(pred).expect("generated error demo label");
+
+        assert!(vm.run(), "{} should catch its error", pred);
+        assert_eq!(
+            vm.bindings.get("Result"),
+            Some(&at("caught")),
+            "{} recovery should run",
+            pred,
+        );
+        assert!(vm.thrown_ball.is_none(), "{} should consume the error", pred);
+    }
+}
+
+#[test]
+fn generated_predicate_property_reads_static_labels() {
+    let (code, labels) = shared_wam_program();
+    let mut vm = WamState::new(code, labels);
+    vm.set_reg_str("A1", fact("rust_clause_demo", vec![ub("_"), ub("_")]));
+    vm.set_reg_str("A2", at("static"));
+    assert!(vm.execute_builtin("predicate_property/2", 2));
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("rust_clause_demo", vec![ub("_"), ub("_")]));
+    vm.set_reg_str("A2", at("static"));
+    vm.pc = *vm.labels
+        .get("rust_predicate_property_demo/2")
+        .expect("generated predicate_property demo label");
+
+    assert!(vm.run());
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("rust_clause_demo", vec![ub("_"), ub("_")]));
+    vm.set_reg_str("A2", at("defined"));
+    assert!(vm.execute_builtin("predicate_property/2", 2));
+
+    vm.reset_query();
+    vm.set_reg_str(
+        "A1",
+        fact("rust_clause_demo", vec![ub("_"), ub("_")]),
+    );
+    vm.set_reg_str("A2", fact("number_of_clauses", vec![ub("Count")]));
+    assert!(vm.execute_builtin("predicate_property/2", 2));
+    let count = vm.bindings.get("Count").cloned().expect("Count bound");
+    assert_eq!(vm.deref_heap(&vm.deref_var(&count)), Value::Integer(1));
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("missing", vec![ub("_")]));
+    vm.set_reg_str("A2", at("defined"));
+    assert!(!vm.execute_builtin("predicate_property/2", 2));
+}
+
+#[test]
+fn generated_predicate_property_errors_are_catchable() {
+    let (code, labels) = shared_wam_program();
+    for pred in [
+        "rust_predicate_property_head_instantiation_demo/1",
+        "rust_predicate_property_head_type_demo/1",
+        "rust_predicate_property_property_instantiation_demo/1",
+        "rust_predicate_property_domain_demo/1",
+    ] {
+        let mut vm = WamState::new(code.clone(), labels.clone());
+        vm.set_reg_str("A1", ub("Result"));
+        vm.pc = *vm.labels.get(pred).expect("generated error demo label");
+
+        assert!(vm.run(), "{} should catch its error", pred);
+        assert_eq!(vm.bindings.get("Result"), Some(&at("caught")));
+        assert!(vm.thrown_ball.is_none(), "{} should consume the error", pred);
+    }
+}
+
+#[test]
+fn predicate_property_reports_dynamic_status_and_clause_count() {
+    let mut vm = WamState::new(vec![], HashMap::new());
+    assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("red")]));
+    assert_clause(&mut vm, "assertz/1", fact("dyn", vec![at("blue")]));
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("dyn", vec![ub("_")]));
+    vm.set_reg_str("A2", at("dynamic"));
+    assert!(vm.execute_builtin("predicate_property/2", 2));
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("dyn", vec![ub("_")]));
+    vm.set_reg_str(
+        "A2",
+        fact("number_of_clauses", vec![ub("Count")]),
+    );
+    assert!(vm.execute_builtin("predicate_property/2", 2));
+    let count = vm.bindings.get("Count").cloned().expect("Count bound");
+    assert_eq!(vm.deref_heap(&vm.deref_var(&count)), Value::Integer(2));
+
+    vm.reset_query();
+    vm.set_reg_str("A1", fact("dyn", vec![ub("_")]));
+    vm.set_reg_str("A2", at("static"));
+    assert!(!vm.execute_builtin("predicate_property/2", 2));
 }
 
 #[test]
@@ -411,7 +675,7 @@ fn read_consumes_buffered_terms_before_end_of_file() {
     let mut vm = WamState::new(code, labels);
     vm.set_term_input(
         "/* block header . */% header\nfirst./* block between . */% between terms\n\
-         pair(second, % ignored . full stop\n 2).");
+         pair(second, '/* kept */', /* ignored . block */ % ignored . full stop\n 2).");
 
     vm.set_reg_str("A1", ub("T1"));
     assert!(vm.execute_builtin("read/1", 1));
@@ -422,7 +686,10 @@ fn read_consumes_buffered_terms_before_end_of_file() {
     assert!(vm.execute_builtin("read_term/1", 1));
     assert_eq!(
         vm.bindings.get("T2"),
-        Some(&fact("pair", vec![at("second"), Value::Integer(2)])),
+        Some(&fact(
+            "pair",
+            vec![at("second"), at("/* kept */"), Value::Integer(2)],
+        )),
     );
 
     vm.reset_query();
@@ -475,7 +742,10 @@ fn term_to_atom_quotes_and_roundtrips_non_bare_atoms() {
 fn read_term_from_atom_returns_variable_metadata_with_shared_variables() {
     let (code, labels) = shared_wam_program();
     let mut vm = WamState::new(code, labels);
-    vm.set_reg_str("A1", at("p(A, B, A, _, _C, _C, D)"));
+    vm.set_reg_str(
+        "A1",
+        at("p(A, /* ignored . block */ B, A, _, _C, _C, D)"),
+    );
     vm.set_reg_str("A2", ub("Term"));
     vm.set_reg_str(
         "A3",

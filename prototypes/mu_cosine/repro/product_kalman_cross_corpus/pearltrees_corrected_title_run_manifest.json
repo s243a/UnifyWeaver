@@ -1,0 +1,55 @@
+{
+  "batch_count": 6,
+  "batch_size": 10,
+  "batches": [
+    {
+      "batch_index": 0,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/pearltrees_audited_batches/batch_0000.json",
+      "checkpoint_sha256": "6d4803a05f8877b4c6bf814dc3c0094148b7d546c0afe116fe5fa5df469156d1",
+      "row_count": 10
+    },
+    {
+      "batch_index": 1,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/pearltrees_audited_batches/batch_0001.json",
+      "checkpoint_sha256": "d2d7f28061a508a8b6844a414017d2ea637c720bbdc1b1e1159e80091d1c9c0f",
+      "row_count": 10
+    },
+    {
+      "batch_index": 2,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/pearltrees_audited_batches/batch_0002.json",
+      "checkpoint_sha256": "e82c687cc358df234a59fce2c1128a8d2e0b7c2d0605b874e38d7052f15712ab",
+      "row_count": 10
+    },
+    {
+      "batch_index": 3,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/pearltrees_audited_batches/batch_0003.json",
+      "checkpoint_sha256": "ddaaf82243004dd396737d893af64463165e12608443613ee98f01bfe11bbb99",
+      "row_count": 10
+    },
+    {
+      "batch_index": 4,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/pearltrees_audited_batches/batch_0004.json",
+      "checkpoint_sha256": "ae15d000874c14dbfef03acf5f9c6e687e6cdcb185ea5a5cbe48aeb5793cf94a",
+      "row_count": 10
+    },
+    {
+      "batch_index": 5,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/pearltrees_audited_batches/batch_0005.json",
+      "checkpoint_sha256": "680fae09240efdab95328d4df5af349a76206e6248529c366edd3ca89feeeff6",
+      "row_count": 3
+    }
+  ],
+  "checkpoint_dir": "/tmp/mu_data/product_kalman_scoring/pearltrees_audited_batches",
+  "effort": "low",
+  "judge": "gpt-5.5-low",
+  "model": "gpt-5.5",
+  "responses": "/tmp/mu_data/product_kalman_scoring/pearltrees_audited_responses.txt",
+  "responses_sha256": "b8f090226c48bdb2f8e445d5baa5249680acc81c8aea252213e67070c0f61d76",
+  "row_count": 53,
+  "sandbox": "read-only",
+  "schema_version": 1,
+  "scored": "/tmp/mu_data/product_kalman_scoring/pearltrees_audited_scored.tsv",
+  "scored_sha256": "4e5bcc5af886ac7db56d7730dc56adebf64e2bb9f5f622ae1128d00369adb942",
+  "source_pairs": "/tmp/mu_data/product_kalman_scoring/pearltrees_audited_rescore_in.tsv",
+  "source_pairs_sha256": "4534601c7d8d9626473f5a76602ccc9892b037a859881b188aad359792ef58ff"
+}
