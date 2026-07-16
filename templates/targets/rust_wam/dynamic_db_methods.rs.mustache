@@ -219,6 +219,18 @@
         }
     }
 
+    fn raise_iso_error(&mut self, formal: Value) -> bool {
+        self.var_counter += 1;
+        self.thrown_ball = Some(Value::Str(
+            "error/2".to_string(),
+            vec![
+                formal,
+                Value::Unbound(format!("_EC{}", self.var_counter)),
+            ],
+        ));
+        false
+    }
+
     fn raise_read_syntax_error(&mut self) -> bool {
         self.var_counter += 1;
         let context = Value::Unbound(format!("_SE{}", self.var_counter));
@@ -412,6 +424,76 @@
         }
         self.pc += 1;
         true
+    }
+
+    fn execute_predicate_property_builtin(&mut self) -> bool {
+        let head_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let head = self.deref_heap(&self.deref_var(&head_raw));
+        if matches!(&head, Value::Unbound(_) | Value::Uninit) {
+            return self.raise_iso_error(Value::Atom(
+                "instantiation_error".to_string(),
+            ));
+        }
+        let key = match self.dynamic_head_key(&head) {
+            Some(key) => key,
+            None => {
+                return self.raise_iso_error(Value::Str(
+                    "type_error/2".to_string(),
+                    vec![Value::Atom("callable".to_string()), head],
+                ));
+            }
+        };
+        let in_labels = self.labels.contains_key(&key);
+        let dynamic_count = self.dynamic_db.get(&key).map(Vec::len);
+        let property_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let property = self.deref_heap(&self.deref_var(&property_raw));
+        if matches!(&property, Value::Unbound(_) | Value::Uninit) {
+            return self.raise_iso_error(Value::Atom(
+                "instantiation_error".to_string(),
+            ));
+        }
+        let succeeds = match &property {
+            Value::Atom(name) => match name.as_str() {
+                "defined" => in_labels || dynamic_count.is_some(),
+                "dynamic" => dynamic_count.is_some(),
+                "static" => in_labels && dynamic_count.is_none(),
+                _ => {
+                    return self.raise_iso_error(Value::Str(
+                        "domain_error/2".to_string(),
+                        vec![
+                            Value::Atom("predicate_property".to_string()),
+                            property,
+                        ],
+                    ));
+                }
+            },
+            Value::Str(functor, args)
+                if args.len() == 1 &&
+                    Self::display_functor_name(functor, 1) == "number_of_clauses" =>
+            {
+                let count = match dynamic_count {
+                    Some(count) => count,
+                    None if in_labels => 1,
+                    None => return false,
+                };
+                self.unify(&args[0], &Value::Integer(count as i64))
+            }
+            _ => {
+                return self.raise_iso_error(Value::Str(
+                    "domain_error/2".to_string(),
+                    vec![
+                        Value::Atom("predicate_property".to_string()),
+                        property,
+                    ],
+                ));
+            }
+        };
+        if succeeds {
+            self.pc += 1;
+            true
+        } else {
+            false
+        }
     }
 
     fn dynamic_clause_key(&self, clause: &Value) -> Option<String> {
@@ -654,6 +736,227 @@
             None => return false,
         };
         self.dynamic_retract_attempt(key, 0, pattern, cont_pc)
+    }
+
+    fn current_predicate_call(&mut self, cont_pc: usize) -> bool {
+        let spec_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let spec = self.deref_heap(&self.deref_var(&spec_raw));
+        let (name, arity) = match &spec {
+            Value::Unbound(_) | Value::Uninit => {
+                return self.raise_iso_error(Value::Atom(
+                    "instantiation_error".to_string(),
+                ));
+            }
+            Value::Str(functor, args)
+                if args.len() == 2 && Self::display_functor_name(functor, 2) == "/" =>
+            {
+                (
+                    self.deref_heap(&self.deref_var(&args[0])),
+                    self.deref_heap(&self.deref_var(&args[1])),
+                )
+            }
+            _ => {
+                return self.raise_iso_error(Value::Str(
+                    "type_error/2".to_string(),
+                    vec![
+                        Value::Atom("predicate_indicator".to_string()),
+                        spec,
+                    ],
+                ));
+            }
+        };
+        if !matches!(&name, Value::Atom(_) | Value::Unbound(_)) {
+            return self.raise_iso_error(Value::Str(
+                "type_error/2".to_string(),
+                vec![Value::Atom("atom".to_string()), name],
+            ));
+        }
+        if !matches!(&arity, Value::Integer(_) | Value::Unbound(_)) {
+            return self.raise_iso_error(Value::Str(
+                "type_error/2".to_string(),
+                vec![Value::Atom("integer".to_string()), arity],
+            ));
+        }
+
+        let mut all_keys = std::collections::BTreeSet::new();
+        all_keys.extend(self.labels.keys().cloned());
+        all_keys.extend(self.dynamic_db.keys().cloned());
+        let keys: Vec<Value> = all_keys
+            .into_iter()
+            .filter(|key| {
+                let (candidate_name, candidate_arity) = match key.rsplit_once('/') {
+                    Some((candidate_name, candidate_arity)) => {
+                        match candidate_arity.parse::<i64>() {
+                            Ok(candidate_arity) => (candidate_name, candidate_arity),
+                            Err(_) => return false,
+                        }
+                    }
+                    None => return false,
+                };
+                let name_matches = match &name {
+                    Value::Atom(expected) => expected == candidate_name,
+                    _ => true,
+                };
+                let arity_matches = match &arity {
+                    Value::Integer(expected) => *expected == candidate_arity,
+                    _ => true,
+                };
+                name_matches && arity_matches
+            })
+            .map(Value::Atom)
+            .collect();
+        self.current_predicate_attempt(keys, 0, name, arity, cont_pc)
+    }
+
+    fn current_predicate_attempt(
+        &mut self,
+        keys: Vec<Value>,
+        start_idx: usize,
+        name_pattern: Value,
+        arity_pattern: Value,
+        cont_pc: usize,
+    ) -> bool {
+        for idx in start_idx..keys.len() {
+            let key = match &keys[idx] {
+                Value::Atom(key) => key,
+                _ => continue,
+            };
+            let (name, arity) = match key.rsplit_once('/') {
+                Some((name, arity)) => match arity.parse::<i64>() {
+                    Ok(arity) => (name, arity),
+                    Err(_) => continue,
+                },
+                None => continue,
+            };
+            let cp_trail = self.trail.len();
+            let cp_heap = self.heap.len();
+            let cp_regs = self.save_regs();
+            let cp_stack = self.stack.clone();
+            if self.unify(&name_pattern, &Value::Atom(name.to_string())) &&
+                self.unify(&arity_pattern, &Value::Integer(arity))
+            {
+                if idx + 1 < keys.len() {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: cont_pc,
+                        saved_args: cp_regs,
+                        stack: cp_stack,
+                        cp: self.cp,
+                        trail_len: cp_trail,
+                        heap_len: cp_heap,
+                        builtin_state: Some(BuiltinState {
+                            name: "current_predicate".to_string(),
+                            args: vec![
+                                Value::List(keys.clone()),
+                                name_pattern.clone(),
+                                arity_pattern.clone(),
+                            ],
+                            data: vec![
+                                Value::Integer((idx + 1) as i64),
+                                Value::Integer(cont_pc as i64),
+                            ],
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                self.pc = cont_pc;
+                return true;
+            }
+            self.unwind_trail_to(cp_trail);
+            self.heap.truncate(cp_heap);
+            self.restore_regs(&cp_regs);
+            self.stack = cp_stack;
+        }
+        false
+    }
+
+    fn dynamic_clause_call(&mut self, cont_pc: usize) -> bool {
+        let head_raw = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let head = self.deref_heap(&self.deref_var(&head_raw));
+        if matches!(&head, Value::Unbound(_) | Value::Uninit) {
+            return self.raise_iso_error(Value::Atom(
+                "instantiation_error".to_string(),
+            ));
+        }
+        let key = match self.dynamic_head_key(&head) {
+            Some(key) => key,
+            None => {
+                return self.raise_iso_error(Value::Str(
+                    "type_error/2".to_string(),
+                    vec![
+                        Value::Atom("callable".to_string()),
+                        head,
+                    ],
+                ));
+            }
+        };
+        let body_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+        let body = self.deref_heap(&self.deref_var(&body_raw));
+        self.dynamic_clause_attempt(key, 0, head, body, cont_pc)
+    }
+
+    fn dynamic_clause_attempt(
+        &mut self,
+        key: String,
+        start_idx: usize,
+        head_pattern: Value,
+        body_pattern: Value,
+        cont_pc: usize,
+    ) -> bool {
+        let clauses = match self.dynamic_db.get(&key) {
+            Some(clauses) => clauses.clone(),
+            None => return false,
+        };
+        for idx in start_idx..clauses.len() {
+            let cp_trail = self.trail.len();
+            let cp_heap = self.heap.len();
+            let cp_regs = self.save_regs();
+            let cp_stack = self.stack.clone();
+            let mut clause_vars = std::collections::HashMap::new();
+            let clause = Self::copy_term_walk(
+                &mut self.var_counter,
+                &mut clause_vars,
+                &clauses[idx],
+            );
+            let (head, body) = match self.dynamic_clause_head_body(&clause) {
+                Some((head, body)) => (
+                    head,
+                    body.unwrap_or_else(|| Value::Atom("true".to_string())),
+                ),
+                None => continue,
+            };
+            if self.unify(&head_pattern, &head) && self.unify(&body_pattern, &body) {
+                if idx + 1 < clauses.len() {
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: cont_pc,
+                        saved_args: cp_regs,
+                        stack: cp_stack,
+                        cp: self.cp,
+                        trail_len: cp_trail,
+                        heap_len: cp_heap,
+                        builtin_state: Some(BuiltinState {
+                            name: "dynamic_clause".to_string(),
+                            args: vec![
+                                Value::Atom(key.clone()),
+                                head_pattern.clone(),
+                                body_pattern.clone(),
+                            ],
+                            data: vec![
+                                Value::Integer((idx + 1) as i64),
+                                Value::Integer(cont_pc as i64),
+                            ],
+                        }),
+                        cut_barrier: self.cut_barrier,
+                    });
+                }
+                self.pc = cont_pc;
+                return true;
+            }
+            self.unwind_trail_to(cp_trail);
+            self.heap.truncate(cp_heap);
+            self.restore_regs(&cp_regs);
+            self.stack = cp_stack;
+        }
+        false
     }
 
     fn dynamic_retract_candidate(&self, pattern: &Value, clause: &Value) -> Option<Value> {

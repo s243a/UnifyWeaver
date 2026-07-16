@@ -2337,10 +2337,12 @@ WamRuntime$transitive_closure2 <- function(program, state, key, edge_pred,
   snap_build <- state$build_stack
 
   edge_atom_id <- WamRuntime$intern(table, edge_pred)
+  # Strict R+ (docs/design/WAM_TRANSITIVE_CLOSURE2_CONTRACT.md): visited
+  # tracks nodes discovered via an outgoing edge — do not seed with Source.
+  # Source appears in `reached` only for a self-loop or nonempty cycle.
   visited <- new.env(parent = emptyenv())
   queue   <- list(src_v)
   reached <- list()
-  assign(as.character(src_v$id), TRUE, envir = visited)
 
   while (length(queue) > 0L) {
     cur <- queue[[1L]]

@@ -4876,3 +4876,31 @@ path. At small/medium scale where the edge map fits RAM, eager's in-memory
 at the scales and deployments where holding all edges resident is not an option.
 
 
+
+
+## Kotlin — KT-DISPATCH-SNAPSHOT-OPT (2026-07-14)
+
+Recursive native `tryRun` no longer calls `snapshotForNative` on every
+`execute` hop (default `skipRecursiveNativeSnapshot`). Profile on
+`append_500`: snapshot was ~31% of wall with snap_count == native_entries;
+after skip, tryRun snap_fraction ~0 and append_500 speedup vs interpreter rose
+from ~0.55× to ~0.85× (append_100 ~1.03×). Remaining cost: T4 `_t4`
+per-entry map copy. Details: `docs/design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md`,
+`docs/WAM_PERF_CROSS_TARGET.md` (Kotlin case study), `docs/WAM_KOTLIN_BENCH.md`.
+
+## Kotlin — KT-HEAP-SNAPSHOT-OPT-2 (2026-07-14)
+
+Attributed all `snapshotForNative` (incl. T4 `_t4`): ~48% of `append_500`
+wall, map size → ~508. Peel leading T4 `get_constant` so closed discriminant
+fails skip the entry snapshot. append_100 ~7.2×, append_500 ~30× (hardened
+min). Skipped heap-reclaim / trail-undo for now — peel removed the hot path.
+Details: `docs/design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md`,
+`docs/WAM_PERF_CROSS_TARGET.md`, `docs/WAM_KOTLIN_BENCH.md`.
+
+## Kotlin — EMIT-KOTLIN-5 (2026-07-15)
+
+Deterministic-only mid-body `call` + arithmetic `builtin_call` (shared
+`wamEvalArith`). Fib/ack lower; nondet mid-body callers decline. Bench
+(hardened min): fib_15 **1.85×**, ack_23 **1.78×**. Mid-body JVM stack
+ceiling ~750–780 frames. Details: `docs/design/WAM_KOTLIN_OPTIMIZATION_HISTORY.md`,
+`docs/WAM_KOTLIN_BENCH.md`, `docs/WAM_KOTLIN_STATUS.md`.

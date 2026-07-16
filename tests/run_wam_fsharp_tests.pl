@@ -39,6 +39,8 @@ repo_root(Root) :-
 %% then dotnet smokes (slower, may skip on toolchain-less machines).
 fsharp_test('tests/test_wam_fsharp_target.pl',
             'F# WAM codegen tests').
+fsharp_test('tests/core/test_wam_fsharp_kernel_gate_tc.pl',
+            'F# WAM kernel capability gate + native transitive_closure2').
 fsharp_test('tests/core/test_wam_fsharp_dotnet_smoke.pl',
             'F# WAM dotnet runtime smoke').
 fsharp_test('tests/core/test_wam_lmdb_cross_target_conformance.pl',
