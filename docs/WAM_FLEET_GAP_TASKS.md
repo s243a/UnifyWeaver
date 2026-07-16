@@ -482,22 +482,28 @@ plumbing there.
 - **FS-HYBRID-KERNEL-GATE-TC ✅ (landed):**
   1. **Capability gate** — `wam_fsharp_native_kernel_kind/1` + filter in `detect_kernels_fs/2`. Unsupported detected kinds fall back to ordinary WAM (no undefined `nativeKernel_*` / FS0039). Logged at generation time.
   2. **Native `transitive_closure2` acceleration** — `templates/targets/fsharp_wam/kernel_transitive_closure.fs.mustache` (lookup-fn + HashSet visited; stream via existing FFIStreamRetry; bound Target filtered). Describe as “native foreign acceleration for the shared transitive_closure2 pattern,” not “F# transitive closure support.”
-- **Remaining (5 kinds, optional acceleration):** `transitive_distance3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, `weighted_shortest_path3`, `astar_shortest_path4` — add to the allow-list only when a real handler exists (mustache *or* inline). Until then they must stay WAM.
+- **FS-TD3 ✅ (landed with TD3-CONTRACT-PARITY-FS):** `nativeKernel_transitive_distance` Mustache + allow-list entry; streams `(atom,int)` via existing multi-output `FFIStreamRetry` binder.
+- **Remaining (4 kinds, optional acceleration):** `transitive_parent_distance4`, `transitive_step_parent_distance5`, `weighted_shortest_path3`, `astar_shortest_path4` — add to the allow-list only when a real handler exists (mustache *or* inline). Until then they must stay WAM.
 - **Tests:** `tests/core/test_wam_fsharp_kernel_gate_tc.pl`
-- **Acceptance (gate+TC2):** `swipl -q -g run_tests -t halt tests/core/test_wam_fsharp_kernel_gate_tc.pl` (dotnet build/run for native TC2 + five WAM-fallback kinds).
+- **Acceptance (gate+TC2+TD3):** `swipl -q -g run_tests -t halt tests/core/test_wam_fsharp_kernel_gate_tc.pl`.
 
 ---
 
 ## Lever: Shared recursive-kernel contract parity
 
-### TC2-CONTRACT-PARITY: Fleet-wide `transitive_closure2` strict R+
+### TC2-CONTRACT-PARITY ✅: Fleet-wide `transitive_closure2` strict R+
 - **Lever:** Shared recursive-kernel contract parity  **Target:** multi  **Size:** M  **Depends on:** —
-- **Contract:** [`docs/design/WAM_TRANSITIVE_CLOSURE2_CONTRACT.md`](design/WAM_TRANSITIVE_CLOSURE2_CONTRACT.md) — path of ≥1 edges; Source only via self-loop/cycle; set semantics; bound succeeds once; stream ABI preserved; cross-target compare uses sorted sets.
-- **Oracle / fixtures:** `tests/fixtures/tc2_contract_oracle.pl` (finite BFS; not cyclic Prolog recursion).
-- **Handler align (R+):** F#/Haskell Mustache TC2 kernels, C inline handler, R `runtime.R.mustache`, LLVM stream + bound `Source==Target` via `@wam_tc2_rplus_reaches`. Rust/Scala/Go/Elixir already matched.
-- **Template organization:** Mustache kept for F#/Haskell TC2 (non-trivial); C/Rust/Scala/LLVM/Go stay inline to match surrounding target style (documented in the contract).
-- **Tests:** `tests/test_wam_tc2_contract_parity.pl` (+ F# gate suite for native dispatch/retry ABI).
-- **Acceptance:** `swipl -q -g run_tests -t halt tests/test_wam_tc2_contract_parity.pl` and `tests/core/test_wam_fsharp_kernel_gate_tc.pl`.
+- **Status:** ✅ Landed (`#3817`). Contract: [`docs/design/WAM_TRANSITIVE_CLOSURE2_CONTRACT.md`](design/WAM_TRANSITIVE_CLOSURE2_CONTRACT.md).
+- **Tests:** `tests/test_wam_tc2_contract_parity.pl`.
+
+### TD3-CONTRACT-PARITY-FS: Fleet-wide `transitive_distance3` dist+ + F# native
+- **Lever:** Shared recursive-kernel contract parity  **Target:** multi  **Size:** M  **Depends on:** TC2-CONTRACT-PARITY (`#3817`)
+- **Contract:** [`docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md`](design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md) — `dist+(S,T)` = min edges ≥1; each target once; Source only via self-loop (1) or shortest cycle; never distance 0; all four bound-output modes.
+- **Oracle / fixtures:** `tests/fixtures/td3_contract_oracle.pl` (literal expected tuples + finite BFS cross-check).
+- **Handler align:** Rust/Elixir → BFS (was per-path); Go/Scala/Haskell/R/C/LLVM → stop seeding Source; C streams interleaved pairs; LLVM bound self via `@wam_td3_rplus_distance` + paired stream.
+- **F# native:** `templates/targets/fsharp_wam/kernel_transitive_distance.fs.mustache` + allow-list; multi-output binder `outVars` parenthesize fix for `FFIStreamRetry`.
+- **Tests:** `tests/test_wam_td3_contract_parity.pl` + F# gate suite.
+- **Acceptance:** `swipl -q -g run_tests -t halt tests/test_wam_td3_contract_parity.pl` and `tests/core/test_wam_fsharp_kernel_gate_tc.pl`.
 
 ---
 

@@ -80,8 +80,10 @@ classic `wam_conformance_smoke` matrix with Scala/Elixir.
 
 ## Gaps
 
-- Finish F# kernel templates for the remaining shared kinds (or stop
-  claiming “7 kernels” without the templates).
+- Finish F# kernel templates for the remaining four shared kinds
+  (`transitive_parent_distance4`, `transitive_step_parent_distance5`,
+  `weighted_shortest_path3`, `astar_shortest_path4`) — or stop claiming
+  full kernel parity without the templates.
 - Bidirectional off by default; enable after cost-model confidence.
 - Classic conformance (**CONF-FSHARP**, 2026-07-15): registered
   opt-in (`fsharp` / `fsharp_functions`) with additive
