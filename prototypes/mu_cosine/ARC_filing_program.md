@@ -87,8 +87,7 @@ infra PRs) → champion G_sl (statistical linearization; dual μ/logit mixture f
 points) → Lever A: judge as measurement channel, R_judge≈0.004, conflict routing, decision-flip value
 (#3584) → campaigns (#3613) → name architecture + fused head + luna (#3621–#3648, §5 rows above).
 Theory map: THEORY_evidence_fusion.md; the two-timescale design: DESIGN_amortized_fusion_heads.md;
-scheme + batch-vs-dynamic statistics ladder: DESIGN_cheap_judge_pipeline.md with figures/*.png
-(in the pending #3648).
+scheme + batch-vs-dynamic statistics ladder: DESIGN_cheap_judge_pipeline.md with figures/*.png.
 
 **Codex's post-#3648 theory chain** (≈07-10→15, from the PR titles): #3651 post-3648 validation + GPU
 square-root/QR conditioning → #3666 batched sqrt/QR with correlation whitening → #3671 gate structured
@@ -102,11 +101,14 @@ Codex's three standing questions: graph geometry; how to measure correlation; ho
 safe in inverse-square-root propagation (Householder/Potter). Division of labor (2026-07-10): **Codex =
 theory/tools; Claude = application + training; Grok = delegated self-contained scripts.**
 
-**Merge-state note (as of 2026-07-16, main HEAD = #3639 / 2026-07-10):** the #3648 pipeline PR, its
-validity-correction commits, `claude/ops-corpora-namecond` (op/corpus name migration),
-`claude/fused-head-seeds` (multi-seed hardening; REPORT_luna_campaign.md §3b), and the Codex #3651–#3742
-chain are all on BRANCHES/PRs, not yet on main. Sections 5–6 describe that branch-side work; the ledger
-in §8 marks these pending. On main, REPORT_luna_campaign.md still predates the luna debiasing.
+**Merge-state note (as of 2026-07-16, verified via `git ls-tree`/`git grep` against origin/main):**
+#3648 and the Codex #3651–#3742 chain ARE on main — squash-merged, so they leave no
+"Merge pull request" commits (a repo convention worth knowing: merge-commit greps under-count; verify
+with `git log main..origin/<branch>` or `git ls-tree`). Still genuinely UNMERGED:
+`claude/ops-corpora-namecond` (op/corpus name migration, f7c6cfc04 — Filing v1 step-3 dependency) and
+`claude/fused-head-seeds` (multi-seed hardening; REPORT_luna_campaign.md §3b — so on main that report
+still predates the luna debiasing AND lacks the seed table). Codex's chain also closed the blocker-6
+TODO: REPORT_cheap_judge_joint_posterior.md is the JointPosterior-vs-correlated-Gaussian comparison.
 
 ## 7. Where we are: Filing v1 (the application refocus)
 
@@ -136,16 +138,15 @@ MSE/CE (07-03). Judges: #3445/#3464 SYM dual judge (07-03/04); #3488 ELEM member
 #3577 atoms, #3579 theory, #3584 judge channel (07-09). Campaigns: #3600/#3603/#3610/#3618 cross-corpus
 samplers incl. Pearltrees/SimpleMind + title/typo handling (Codex, 07-09); #3591/#3592 channel heads,
 #3613 campaign, #3614 within-stratum (Claude, 07-09). B2 + economics: #3621 name-cond arc, #3623
-multi-judge fusion, #3627/#3635 title audits (Codex), #3634 luna campaign (07-09/10).
-**PENDING (not on main as of 2026-07-16):** #3648 cheap-judge pipeline + validity corrections (07-10);
-`claude/ops-corpora-namecond` (op/corpus name migration); `claude/fused-head-seeds` (multi-seed
-hardening); Codex theory chain #3651→#3742 (≈07-10→15, §6).
+multi-judge fusion, #3627/#3635 title audits (Codex), #3634 luna campaign (07-09/10). Pipeline: #3648
+cheap-judge pipeline + validity corrections (07-10, squash-merged). Theory chain: #3651→#3742 (Codex,
+≈07-10→15, squash-merged; §6).
+**PENDING (not on main as of 2026-07-16):** `claude/ops-corpora-namecond` (op/corpus name migration);
+`claude/fused-head-seeds` (multi-seed hardening + REPORT_luna_campaign §3b).
 
 ## 9. Selected doc index (by theme)
 
-Docs on main as of 2026-07-16. The post-#3648 covariance/source-dependence chain's docs (square-root/QR
-conditioning, adjacency batching, source-region topology, power harness) live in the pending Codex PRs
-(§6) and should be indexed here when merged.
+Docs on main as of 2026-07-16 (selected — not exhaustive).
 
 - **Architecture**: DESIGN_directional_attention.md, DESIGN_provenance_and_representation.md,
   DESIGN_calibrated_judges.md, DESIGN_mu_sources_and_estimation.md.
@@ -161,8 +162,7 @@ conditioning, adjacency batching, source-region topology, power harness) live in
 - **Channels/campaigns**: REPORT_channel_heads_probe.md, REPORT_channel_heads_b1.md,
   REPORT_channel_campaign.md, REPORT_judge_name_migration.md, REPORT_fused_head.md,
   REPORT_luna_campaign.md (⚠ predates luna debiasing — don't build on its exact numbers),
-  REPORT_class_mixture.md, REPORT_multi_judge_fusion.md, REPORT_cheap_judge_baseline.md (pending #3648;
-  post-correction
+  REPORT_class_mixture.md, REPORT_multi_judge_fusion.md, REPORT_cheap_judge_baseline.md (post-correction
   numbers are authoritative).
 - **Corpora/data quality**: DESIGN_wikipedia_sampling.md, DESIGN_graph_widening.md,
   REPORT_widen_enwiki.md, DESIGN_product_kalman_cross_corpus_campaign.md,
@@ -173,3 +173,12 @@ conditioning, adjacency batching, source-region topology, power harness) live in
   REPORT_anchored_basis_ab.md, REPORT_infer_blend*.md, REPORT_tagged_blend_sweep.md.
 - **Application**: DESIGN_model_applications.md (retrieval, rerank, production/hybrid — Filing v1's
   scaffolding).
+- **Post-#3648 covariance/source-dependence chain (Codex, on main)**:
+  REPORT_cheap_judge_post3648_validation.md, DESIGN_joint_square_root_qr_conditioner.md +
+  REPORT_joint_square_root_qr_benchmark.md + REPORT_streamed_block_qr_benchmark.md,
+  DESIGN_structured_residual_covariance.md + REPORT_structured_residual_covariance.md,
+  DESIGN_cheap_judge_joint_posterior.md + REPORT_cheap_judge_joint_posterior.md (the JointPosterior
+  head-to-head — closes the blocker-6 TODO), DESIGN_graph_geometry_{confirmatory,synthetic_v2}.md +
+  REPORT_graph_geometry_confirmatory.md + DECISIONS_graph_geometry.md,
+  DESIGN_repeated_judge_source_{dependence,power}.md + REPORT_repeated_judge_*.md,
+  PREREG_graph_geometry_repeated_judge.md, DECISIONS_repeated_judge_campaign.md.
