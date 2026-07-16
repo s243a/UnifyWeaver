@@ -2583,6 +2583,8 @@ compile_step_wam_to_c(_Options, CCode) :-
                         recovered = wam_resume_disjunction(state);
                     } else if (next_pc == WAM_META_ITE_ELSE) {
                         recovered = wam_resume_if_then_else(state);
+                    } else if (next_pc == WAM_FOREIGN_STREAM_NEXT) {
+                        recovered = wam_resume_foreign_stream(state);
                     } else {
                         state->P = next_pc; // Explicitly jump to alternative
                         recovered = true;
@@ -3967,6 +3969,10 @@ void wam_state_init(WamState *state) {
 
 void wam_free_state(WamState *state) {
     wam_aggregate_clear_all(state);
+    for (int i = 0; i < state->B; i++) {
+        free(state->B_array[i].foreign_results);
+        state->B_array[i].foreign_results = NULL;
+    }
     for (int i = 0; i < state->atom_table_size; i++) {
         AtomEntry *e = state->atom_table[i];
         while (e) {
@@ -6094,36 +6100,100 @@ bool wam_bidirectional_ancestor_handler(WamState *state, const char *pred, int a
     return ok;
 }
 
-static bool wam_transitive_closure_dfs(WamState *state,
-                                       const char *start,
-                                       const char *target,
-                                       int depth,
-                                       const char **visited,
-                                       int visited_len,
-                                       const char **result_out) {
-    for (int i = 0; i < state->category_edge_count; i++) {
-        CategoryEdge *edge = &state->category_edges[i];
-        if (strcmp(edge->child, start) != 0) continue;
-        if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
-        if (!target || strcmp(edge->parent, target) == 0) {
-            *result_out = edge->parent;
-            return true;
+static bool wam_collect_transitive_closure(WamState *state,
+                                           const char *start,
+                                           WamValue **results_out,
+                                           int *result_count_out) {
+    int capacity = state->category_edge_count;
+    if (capacity <= 0 || capacity == INT_MAX) return false;
+
+    const char **visited = malloc(sizeof(const char *) * (size_t)capacity);
+    const char **queue = malloc(sizeof(const char *) * (size_t)(capacity + 1));
+    WamValue *results = malloc(sizeof(WamValue) * (size_t)capacity);
+    if (!visited || !queue || !results) {
+        free(visited);
+        free(queue);
+        free(results);
+        return false;
+    }
+
+    int visited_len = 0;
+    int head = 0;
+    int tail = 0;
+    int result_count = 0;
+    queue[tail++] = start;
+
+    while (head < tail) {
+        const char *node = queue[head++];
+        for (int i = 0; i < state->category_edge_count; i++) {
+            CategoryEdge *edge = &state->category_edges[i];
+            if (strcmp(edge->child, node) != 0) continue;
+            if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
+
+            /* Strict R+: nodes enter visited/results only after traversing
+             * an edge. Incremental insertion also suppresses duplicate
+             * facts and multiple paths before they reach the stream. */
+            visited[visited_len++] = edge->parent;
+            queue[tail++] = edge->parent;
+            results[result_count++] = val_atom(edge->parent);
         }
     }
 
-    if (depth >= 64 || visited_len >= 64) return false;
-
-    for (int i = 0; i < state->category_edge_count; i++) {
-        CategoryEdge *edge = &state->category_edges[i];
-        if (strcmp(edge->child, start) != 0) continue;
-        if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
-        visited[visited_len] = edge->parent;
-        if (wam_transitive_closure_dfs(state, edge->parent, target, depth + 1,
-                                       visited, visited_len + 1, result_out)) {
-            return true;
-        }
+    free(visited);
+    free(queue);
+    if (result_count == 0) {
+        free(results);
+        return false;
     }
+    *results_out = results;
+    *result_count_out = result_count;
+    return true;
+}
+
+static bool wam_bind_foreign_atom_stream(WamState *state,
+                                         int result_reg,
+                                         WamValue *results,
+                                         int result_count,
+                                         int resume_pc) {
+    WamValue first = results[0];
+    if (result_count > 1) {
+        push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, result_reg + 1);
+        ChoicePoint *cp = &state->B_array[state->B - 1];
+        cp->foreign_results = results;
+        cp->foreign_result_count = result_count;
+        cp->foreign_result_index = 1;
+        cp->foreign_result_reg = result_reg;
+        cp->foreign_resume_pc = resume_pc;
+    } else {
+        free(results);
+    }
+
+    if (wam_unify(state, &state->A[result_reg], &first)) return true;
+    if (result_count > 1) pop_choice_point(state);
     return false;
+}
+
+static bool wam_resume_foreign_stream(WamState *state) {
+    if (state->B <= 0) return false;
+    ChoicePoint *cp = &state->B_array[state->B - 1];
+    if (cp->next_pc != WAM_FOREIGN_STREAM_NEXT ||
+        !cp->foreign_results ||
+        cp->foreign_result_index < 0 ||
+        cp->foreign_result_index >= cp->foreign_result_count) {
+        if (cp->next_pc == WAM_FOREIGN_STREAM_NEXT) pop_choice_point(state);
+        return false;
+    }
+
+    int index = cp->foreign_result_index++;
+    int result_reg = cp->foreign_result_reg;
+    int resume_pc = cp->foreign_resume_pc;
+    WamValue result = cp->foreign_results[index];
+    if (cp->foreign_result_index >= cp->foreign_result_count) {
+        pop_choice_point(state);
+    }
+    if (!wam_unify(state, &state->A[result_reg], &result)) return false;
+    state->P = resume_pc;
+    return true;
 }
 
 bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity) {
@@ -6141,17 +6211,28 @@ bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity
         return false;
     }
 
-    const char *visited[64];
-    int visited_len = 0;
-    visited[visited_len++] = start;
-    const char *result = NULL;
-    if (!wam_transitive_closure_dfs(state, start, target, 0, visited, visited_len, &result)) {
+    WamValue *results = NULL;
+    int result_count = 0;
+    if (!wam_collect_transitive_closure(state, start, &results, &result_count)) {
         return false;
     }
-    if (target) return true;
 
-    WamValue result_value = val_atom(result);
-    return wam_unify(state, &state->A[1], &result_value);
+    if (target) {
+        bool found = false;
+        for (int i = 0; i < result_count; i++) {
+            if (strcmp(results[i].data.atom, target) == 0) {
+                found = true;
+                break;
+            }
+        }
+        free(results);
+        return found;
+    }
+
+    /* The ordinary C choice-point stack owns remaining results. This keeps
+     * tc(+Source,-Target) stream-valued without a parallel retry protocol. */
+    return wam_bind_foreign_atom_stream(state, 1, results, result_count,
+                                        state->P + 1);
 }
 
 static bool wam_transitive_distance_bfs(WamState *state,

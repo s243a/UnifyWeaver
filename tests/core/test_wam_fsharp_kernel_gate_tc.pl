@@ -338,11 +338,12 @@ let main _argv =
     assertTrue \"non-tail foreign retry resumes its continuation\"
         (directCallRetryReturnsToCaller ctx)
 
+    // Graph a->b->c->d + c->a. Strict R+: Source is reachable via the cycle.
     let fromA = collectTargets ctx \"a\" None |> List.sort
-    assertTrue \"direct+multi-hop from a\" (fromA = [\"b\"; \"c\"; \"d\"])
+    assertTrue \"R+ from a includes cycle-back Source\" (fromA = [\"a\"; \"b\"; \"c\"; \"d\"])
 
     let fromC = collectTargets ctx \"c\" None |> List.sort
-    assertTrue \"cycle-safe from c\" (fromC = [\"a\"; \"b\"; \"d\"])
+    assertTrue \"R+ cycle-safe from c includes Source\" (fromC = [\"a\"; \"b\"; \"c\"; \"d\"])
 
     let fromD = collectTargets ctx \"d\" None
     assertTrue \"sink d has no targets\" (fromD = [])
@@ -351,6 +352,8 @@ let main _argv =
     assertTrue \"bound Target c succeeds\" (boundOk = [\"c\"])
     assertTrue \"bound Target preserves trail invariant\"
         (boundCallTrailIsConsistent ctx \"a\" \"c\")
+    let boundSrc = collectTargets ctx \"a\" (Some \"a\")
+    assertTrue \"bound Source succeeds via nonempty cycle\" (boundSrc = [\"a\"])
 
     let boundNo = collectTargets ctx \"a\" (Some \"z\")
     assertTrue \"bound unreachable z fails\" (boundNo = [])
@@ -458,7 +461,7 @@ test(native_tc2_codegen_and_build,
     run_dotnet_run(Dir, RunExit, RunOut),
     assertion(RunExit =:= 0),
     assertion(sub_string(RunOut, _, _, _, "RESULT ")),
-    (   sub_string(RunOut, _, _, _, "RESULT 10/10")
+    (   sub_string(RunOut, _, _, _, "RESULT 11/11")
     ->  true
     ;   format(user_error, 'native_tc2 run:~n~w~n', [RunOut]), fail
     ),

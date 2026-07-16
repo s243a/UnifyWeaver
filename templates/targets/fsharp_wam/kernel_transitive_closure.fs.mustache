@@ -1,25 +1,24 @@
 /// Native foreign acceleration for the shared transitive_closure2 pattern.
 /// Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
 ///
-/// This is NOT "F# transitive closure support from scratch":
-///   - Ordinary recursive tc/2 already works through the generic WAM
-///     (use no_kernels(true) for that correctness path).
-///   - Lookup-function style matches nativeKernel_category_ancestor so
-///     Eager / LMDB / CSR ILookupSource backends all work.
-///   - HashSet visited-set cycle protection mirrors reachableToRootVia,
-///     but semantics differ: we follow this kernel's configured edge_pred
-///     forward from Source, and Source itself is not a Target solution
-///     (reachableToRoot* walks reverse/category_child edges for demand
-///     pruning and includes the root).
+/// Contract: strict R+ (docs/design/WAM_TRANSITIVE_CLOSURE2_CONTRACT.md).
+/// A Target is emitted iff a path of ≥1 edges reaches it. Source is emitted
+/// only for a self-loop or a nonempty cycle back to Source — not merely
+/// because traversal starts there.
+///
+/// Organization: Mustache kept (non-trivial handler body; matches Haskell
+/// TC2 and F# category/bidirectional kernel templates). Lookup-function
+/// style matches nativeKernel_category_ancestor (ILookupSource / WcFfiFacts).
+/// HashSet visited tracks nodes discovered *via an edge* (Rust/Scala R+
+/// pattern) — do not seed with Source. This is intentionally distinct from
+/// reachableToRoot* (demand pruning; includes root; reverse/child edges).
 ///
 /// Returns interned Target atom ids; executeForeign streams them via
-/// the existing FFIStreamRetry choice-point machinery (stream-valued
-/// relation — not a deterministic Prolog interface).
+/// FFIStreamRetry (stream-valued relation at the Prolog interface).
 let nativeKernel_transitive_closure
     (edges: int -> int list)
     (source: int) : int list =
     let visited = System.Collections.Generic.HashSet<int>()
-    visited.Add(source) |> ignore
     let acc = System.Collections.Generic.List<int>()
     let mutable frontier = [source]
     while not (List.isEmpty frontier) do

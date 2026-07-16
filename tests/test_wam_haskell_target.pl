@@ -247,6 +247,20 @@ test_transitive_closure_kernel_function :-
     ;   fail_test(Test, 'transitive_closure2 template rendering failed')
     ).
 
+test_transitive_closure_dedupes_neighbor_batch :-
+    Test = 'WAM-Haskell: transitive_closure2 dedupes duplicate edges in discovery order',
+    Kernel = recursive_kernel(transitive_closure2, closure/2, [edge_pred(edge/2)]),
+    (   wam_haskell_target:render_kernel_function('closure/2'-Kernel, Code),
+        sub_string(Code, _, _, _, "foldl' discover (visited, []) (edges node)"),
+        sub_string(Code, _, _, _, "newTargets = reverse newTargetsRev"),
+        sub_string(Code, _, _, _, "IS.member target seen"),
+        sub_string(Code, _, _, _, "IS.insert target seen, target : foundRev"),
+        \+ sub_string(Code, _, _, _, "newTargets = filter")
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'neighbor discoveries are not deduped incrementally in first-seen order')
+    ).
+
 test_transitive_closure_execute_foreign :-
     Test = 'WAM-Haskell: transitive_closure2 executeForeign generated',
     Kernel = recursive_kernel(transitive_closure2, closure/2, [edge_pred(edge/2)]),
@@ -2565,6 +2579,7 @@ run_tests :-
     test_parameterized_render_kernel_function,
     test_render_kernel_function_cwd_independent,
     test_transitive_closure_kernel_function,
+    test_transitive_closure_dedupes_neighbor_batch,
     test_transitive_closure_execute_foreign,
     test_multi_kernel_execute_foreign,
     test_call_foreign_in_types,
