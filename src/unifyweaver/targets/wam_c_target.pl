@@ -24,6 +24,8 @@
     generate_setup_reverse_index_c/2, % +Options, -CCode
     resolve_wam_c_reverse_index_plan/2, % +Options, -Plan
     plan_wam_c_lowered_helpers/4,     % +Predicates, +Options, +DetectedKeys, -Plans
+    wam_c_fact_table_classify/3,      % +PredIndicator, +Options, -fact_info(Arity,Rows)
+    wam_c_fact_table_helper_for_predicate/5, % +PI, +Rows, -Key, -Code, -SetupLine
     write_wam_c_project/3             % +Predicates, +Options, +ProjectDir
 ]).
 
@@ -540,7 +542,8 @@ wam_c_kernel_float_config(ConfigOps, Key, Default, Value) :-
 plan_wam_c_lowered_helpers(Predicates, Options, DetectedKeys, Plans) :-
     (   option(lowered_helpers(true), Options)
     ->  maplist(wam_c_predicate_key, Predicates, AvailableKeys),
-        maplist(plan_wam_c_lowered_helper(DetectedKeys, AvailableKeys), Predicates, Plans)
+        forall(member(P, Predicates), wam_c_maybe_warn_oversized_facts(P, Options)),
+        maplist(plan_wam_c_lowered_helper(DetectedKeys, AvailableKeys, Options), Predicates, Plans)
     ;   maplist(plan_wam_c_lowered_helper_disabled, Predicates, Plans)
     ).
 
@@ -548,11 +551,14 @@ wam_c_predicate_key(PredIndicator, Key) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     format(atom(Key), '~w/~w', [Pred, Arity]).
 
-plan_wam_c_lowered_helper(DetectedKeys, AvailableKeys, PredIndicator, Plan) :-
+plan_wam_c_lowered_helper(DetectedKeys, AvailableKeys, Options, PredIndicator, Plan) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     format(atom(Key), '~w/~w', [Pred, Arity]),
     (   memberchk(Key, DetectedKeys)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, interpreted, detected_kernel)
+    ;   \+ option(fact_table_inline(false), Options),
+        wam_c_fact_table_classify(PredIndicator, Options, fact_info(_, Rows))
+    ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_table(Rows))
     ;   lowered_fact_helper_rows(PredIndicator, Rows)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_only(Rows))
     ;   lowered_body_call_helper(PredIndicator, AvailableKeys, CalleeKey, CalleeArity)
@@ -712,7 +718,9 @@ wam_c_lowered_ordering_guard((=\=)).
 
 compile_lowered_helpers_for_project(Plans, LoweredKeys, Code, SetupCode) :-
     findall(Key-CodePart-SetupLine,
-            (   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_only(Rows)), Plans),
+            (   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_table(Rows)), Plans),
+                wam_c_fact_table_helper_for_predicate(PredIndicator, Rows, Key, CodePart, SetupLine)
+            ;   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_only(Rows)), Plans),
                 lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, CodePart, SetupLine)
             ;   member(wam_c_lowered_helper_plan(Key, PredIndicator, lowered, filtered_fact(_CalleeKey, Rows)), Plans),
                 lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, CodePart, SetupLine)
@@ -767,6 +775,7 @@ wam_c_lowered_helper_plan_by_action(Plans, Action, Key, ReasonLabel) :-
     member(wam_c_lowered_helper_plan(Key, _, Action, Reason), Plans),
     wam_c_lowered_plan_reason_label(Reason, ReasonLabel).
 
+wam_c_lowered_plan_reason_label(fact_table(_Rows), fact_table) :- !.
 wam_c_lowered_plan_reason_label(fact_only(_Rows), fact_only) :- !.
 wam_c_lowered_plan_reason_label(body_call(_CalleeKey, _CalleeArity), body_call) :- !.
 wam_c_lowered_plan_reason_label(body_call_projected(_CalleeKey, _CalleeArity, _CalleeArgs), body_call_projected) :- !.
@@ -790,6 +799,42 @@ lowered_fact_helper_rows_(PredIndicator, Rows) :-
             Rows),
     Rows \= [],
     \+ ( user:clause(Head, Body), Body \== true ).
+
+% --- T9 fact-table inline: thresholds, classifier, oversized warning ---------
+
+wam_c_t9_min_rows(Options, N) :- ( option(t9_min_rows(N), Options) -> true ; N = 64 ).
+wam_c_t9_max_rows(Options, N) :- ( option(t9_max_rows(N), Options) -> true ; N = 256 ).
+
+%% wam_c_fact_table_classify(+PredIndicator, +Options, -fact_info(Arity, Rows))
+%  An all-ground-facts predicate (arity >= 1) whose row count is in the inline
+%  window [t9_min_rows, t9_max_rows]. Reuses lowered_fact_helper_rows for the
+%  all-ground-facts check. Backtrackable T9 lowering applies when this holds and
+%  fact_table_inline(false) is not set.
+wam_c_fact_table_classify(PredIndicator, Options, fact_info(Arity, Rows)) :-
+    predicate_indicator_parts(PredIndicator, _Module, _Pred, Arity),
+    Arity >= 1,
+    lowered_fact_helper_rows(PredIndicator, Rows),
+    wam_c_t9_min_rows(Options, Min),
+    wam_c_t9_max_rows(Options, Max),
+    length(Rows, NR),
+    NR >= Min,
+    NR =< Max.
+
+%% wam_c_maybe_warn_oversized_facts(+PredIndicator, +Options)
+%  Warn (once) when an all-ground-facts predicate exceeds t9_max_rows and is not
+%  opted out — steer the user toward an external fact source. Always succeeds.
+wam_c_maybe_warn_oversized_facts(PredIndicator, Options) :-
+    (   \+ option(fact_table_inline(false), Options),
+        lowered_fact_helper_rows(PredIndicator, Rows),
+        wam_c_t9_max_rows(Options, Max),
+        length(Rows, NR),
+        NR > Max
+    ->  predicate_indicator_parts(PredIndicator, _M, Pred, Arity),
+        format(user_error,
+               '% [WAM-C T9] ~w/~w has ~w facts (> t9_max_rows ~w): not inlining as a fact table; consider an external fact source.~n',
+               [Pred, Arity, NR, Max])
+    ;   true
+    ).
 
 lowered_fact_helper_for_predicate(PredIndicator, Rows, Key, Code, SetupLine) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
@@ -872,6 +917,85 @@ static bool ~w(WamState *state, const char *pred, int arity) {
            [RowTableCode, ScanSymbol, Arity, RowTableSymbol, Arity, RowTableSymbol,
             BucketArraysCode, Symbol, Arity, Arity, Arity, Mask, Mask, DispatchCasesCode,
             ScanSymbol, RowCount]).
+
+% --- T9 fact-table inline: backtrackable emitter -----------------------------
+% Same static row table + first-arg bucket index as the deterministic fact
+% lowering, but the handler drives wam_fact_table_scan, which leaves a
+% WAM_FACT_TABLE_RETRY choice point so backtracking enumerates every matching
+% row (the deterministic _scan_rows returns only the first match).
+
+wam_c_fact_table_helper_for_predicate(PredIndicator, Rows, Key, Code, SetupLine) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    format(atom(Key), '~w/~w', [Pred, Arity]),
+    wam_c_symbol_name(Pred, Arity, Symbol),
+    wam_c_fact_table_helper_code(Symbol, Arity, Rows, Code),
+    format(atom(SetupLine),
+           '    wam_register_foreign_predicate(state, "~w", ~w, ~w);',
+           [Key, Arity, Symbol]).
+
+wam_c_fact_table_helper_code(Symbol, Arity, Rows, Code) :-
+    Arity > 0,
+    length(Rows, RowCount),
+    format(atom(RowTableSymbol), '~w_rows', [Symbol]),
+    wam_c_lowered_static_row_table(RowTableSymbol, Arity, Rows, RowTableCode),
+    wam_c_fact_table_bucket_arrays(Symbol, Arity, Rows, BucketArraysCode, DispatchCasesCode, BucketCount),
+    Mask is BucketCount - 1,
+    format(atom(Code),
+'~w
+
+~w
+
+static bool ~w(WamState *state, const char *pred, int arity) {
+    (void)pred;
+    if (arity != ~w) return false;
+    const WamValue *rows = (const WamValue *)~w;
+    WamValue *first = wam_deref_ptr(state, &state->A[0]);
+    if (!val_is_unbound(*first)) {
+        unsigned int bucket = 0;
+        if (first->tag == VAL_ATOM) {
+            bucket = wam_hash_string(first->data.atom) & ~w;
+        } else if (first->tag == VAL_INT) {
+            bucket = ((unsigned int)first->data.integer * 2654435761u) & ~w;
+        } else {
+            return false;
+        }
+        switch (bucket) {
+~w
+        default:
+            return false;
+        }
+    }
+    return wam_fact_table_scan(state, rows, ~w, NULL, ~w, 0, state->P + 1);
+}',
+           [RowTableCode, BucketArraysCode, Symbol, Arity, RowTableSymbol,
+            Mask, Mask, DispatchCasesCode, Arity, RowCount]).
+
+% Bucket index arrays (reused verbatim) + T9 switch cases driving the
+% backtrackable scan from candidate index 0.
+wam_c_fact_table_bucket_arrays(Symbol, Arity, Rows, ArraysCode, CasesCode, BucketCount) :-
+    findall(First, member([First|_], Rows), FirstValues0),
+    sort(FirstValues0, FirstValues),
+    length(FirstValues, FirstValueCount),
+    lowered_fact_bucket_count(FirstValueCount, BucketCount),
+    findall(Bucket,
+            lowered_fact_bucket_for_values(FirstValues, BucketCount, Bucket),
+            Buckets),
+    findall(ArrayCode-CaseCode,
+            (   member(Bucket, Buckets),
+                lowered_fact_bucket_row_indices(Rows, BucketCount, Bucket, RowIndices),
+                lowered_fact_bucket_symbols(Symbol, Bucket, ArraySymbol),
+                lowered_fact_bucket_array(ArraySymbol, RowIndices, ArrayCode),
+                length(RowIndices, RowIndexCount),
+                format(atom(CaseCode),
+'        case ~w:
+            return wam_fact_table_scan(state, rows, ~w, ~w, ~w, 0, state->P + 1);',
+                       [Bucket, Arity, ArraySymbol, RowIndexCount])
+            ),
+            Pairs),
+    findall(Array, member(Array-_, Pairs), Arrays),
+    findall(Case, member(_-Case, Pairs), Cases),
+    atomic_list_concat(Arrays, '\n', ArraysCode),
+    atomic_list_concat(Cases, '\n', CasesCode).
 
 wam_c_lowered_static_row_table(RowTableSymbol, Arity, Rows, Code) :-
     maplist(wam_c_lowered_static_row, Rows, RowCodes),
@@ -2583,6 +2707,8 @@ compile_step_wam_to_c(_Options, CCode) :-
                         recovered = wam_resume_disjunction(state);
                     } else if (next_pc == WAM_META_ITE_ELSE) {
                         recovered = wam_resume_if_then_else(state);
+                    } else if (next_pc == WAM_FACT_TABLE_RETRY) {
+                        recovered = wam_resume_fact_table(state);
                     } else {
                         state->P = next_pc; // Explicitly jump to alternative
                         recovered = true;
@@ -2617,6 +2743,7 @@ static bool wam_continue_conjunction(WamState *state);
 static bool wam_resume_disjunction(WamState *state);
 static bool wam_continue_if_then_else(WamState *state);
 static bool wam_resume_if_then_else(WamState *state);
+static bool wam_resume_fact_table(WamState *state);
 
 static bool wam_ensure_heap_slots(WamState *state, int additional) {
     if (additional <= 0) return true;
@@ -3066,6 +3193,21 @@ static bool wam_resume_disjunction(WamState *state) {
     state->disj_top--;
     pop_choice_point(state);
     return wam_invoke_goal_as_call(state, right_goal, return_pc);
+}
+
+/* wam_fact_table_scan is a static inline in wam_runtime.h so both the generated
+ * fact-table handlers (in the lib TU) and this resume function can call it. */
+static bool wam_resume_fact_table(WamState *state) {
+    if (state->fact_table_top <= 0 || state->B <= 0) return false;
+    WamFactTableFrame frame = state->fact_table_frames[state->fact_table_top - 1];
+    state->fact_table_top--;
+    pop_choice_point(state);
+    if (wam_fact_table_scan(state, frame.rows, frame.arity, frame.indices,
+                            frame.count, frame.pos, frame.return_pc)) {
+        state->P = frame.return_pc;
+        return true;
+    }
+    return false;
 }
 
 static bool wam_continue_if_then_else(WamState *state) {
