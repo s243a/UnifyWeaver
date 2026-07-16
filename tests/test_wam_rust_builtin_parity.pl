@@ -114,6 +114,12 @@ t_path_utilities(Base, Dir, Stem, Ext, Full) :-
     is_absolute_file_name('/tmp/archive.tar.gz'),
     path_join('/tmp/base', 'child.txt', Full).
 
+:- dynamic t_filesystem_identity/2.
+t_filesystem_identity(Real, Target) :-
+    realpath('identity_fixture/link.txt', Real),
+    read_link('identity_fixture/link.txt', Target),
+    same_file('identity_fixture/source.txt', 'identity_fixture/hard.txt').
+
 :- dynamic t_pairs_project/2.
 t_pairs_project(Keys, Values) :-
     Pairs = [a-1, b-2],
@@ -253,6 +259,7 @@ test_builtin_parity_execution :-
              user:t_system_queries/3,
              user:t_split_string/1, user:t_atom_split/1, user:t_atom_checks/0,
              user:t_path_utilities/5,
+             user:t_filesystem_identity/2,
              user:t_pairs_project/2, user:t_pairs_split/2, user:t_pairs_zip/1,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
@@ -284,6 +291,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_system_queries_3,
     t_split_string_1, t_atom_split_1, t_atom_checks_0,
     t_path_utilities_5,
+    t_filesystem_identity_2,
     t_pairs_project_2, t_pairs_split_2, t_pairs_zip_1,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
     t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
@@ -496,6 +504,53 @@ fn test_path_utility_family_compiled() {
     assert_eq!(read_var(&vm, "Stem"), a("/tmp/archive.tar"));
     assert_eq!(read_var(&vm, "Ext"), a("gz"));
     assert_eq!(read_var(&vm, "Full"), a("/tmp/base/child.txt"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_filesystem_identity_compiled_and_direct() {
+    let fixture = std::path::Path::new("identity_fixture");
+    let _ = std::fs::remove_dir_all(fixture);
+    std::fs::create_dir(fixture).unwrap();
+    std::fs::write(fixture.join("source.txt"), b"identity").unwrap();
+    std::fs::hard_link(fixture.join("source.txt"), fixture.join("hard.txt")).unwrap();
+    std::os::unix::fs::symlink("source.txt", fixture.join("link.txt")).unwrap();
+
+    let expected_real = std::fs::canonicalize(fixture.join("link.txt"))
+        .unwrap().into_os_string().into_string().unwrap();
+    let mut vm = vmnew();
+    assert!(t_filesystem_identity_2(&mut vm, ub("Real"), ub("Target")));
+    assert_eq!(read_var(&vm, "Real"), a(&expected_real));
+    assert_eq!(read_var(&vm, "Target"), a("source.txt"));
+
+    let source = fixture.join("source.txt").to_str().unwrap().to_string();
+    let hard = fixture.join("hard.txt").to_str().unwrap().to_string();
+    let link = fixture.join("link.txt").to_str().unwrap().to_string();
+    assert!(call2("same_file/2", a(&source), a(&hard)).0);
+    assert!(call2("same_file/2", a(&source), a(&link)).0,
+        "metadata follows symlinks");
+    std::fs::write(fixture.join("other.txt"), b"other").unwrap();
+    let other = fixture.join("other.txt").to_str().unwrap().to_string();
+    assert!(!call2("same_file/2", a(&source), a(&other)).0);
+
+    let (real_ok, real_vm) = call2("realpath/2", a(&link), ub("Real"));
+    assert!(real_ok);
+    assert_eq!(read_var(&real_vm, "Real"), a(&expected_real));
+    let (link_ok, link_vm) = call2("read_link/2", a(&link), ub("Target"));
+    assert!(link_ok);
+    assert_eq!(read_var(&link_vm, "Target"), a("source.txt"));
+
+    std::fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn test_filesystem_identity_validation() {
+    assert!(!call2("realpath/2", a("missing-identity-path"), ub("Real")).0);
+    assert!(!call2("read_link/2", a("missing-identity-link"), ub("Target")).0);
+    assert!(!call2("same_file/2", a("missing-a"), a("missing-b")).0);
+    assert!(!call2("realpath/2", i(1), ub("Real")).0);
+    assert!(!call2("read_link/2", ub("Path"), ub("Target")).0);
+    assert!(!call2("same_file/2", a("path"), i(2)).0);
 }
 
 #[test]
