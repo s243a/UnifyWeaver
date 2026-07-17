@@ -111,30 +111,21 @@ def soft_bin_weights(feats, tau, cap=13):
     nearest-center switching (the bandwidth→0 special case).
     """
     tau = max(float(tau), 1e-9)
-    n = len(feats)
-    W = np.zeros((n, len(BINS)))
+    W = np.zeros((len(feats), len(BINS)))
     is_anc = feats[:, 0] > 0.5
     no_signal = ~is_anc & ~np.isfinite(feats[:, 2])
 
-    hop_centers = np.arange(1.0, 6.0)
-    rows = np.where(is_anc)[0]
-    if len(rows):
-        d = feats[rows, 1][:, None] - hop_centers[None, :]
-        logw = -0.5 * (d / tau) ** 2
-        logw -= logw.max(axis=1, keepdims=True)
-        w = np.exp(logw)
-        W[rows, HOP_SLICE] = w / w.sum(axis=1, keepdims=True)
+    def kernel_rows(rows, coords, centers, cols):
+        if len(rows):
+            logw = -0.5 * ((coords[:, None] - centers[None, :]) / tau) ** 2
+            logw -= logw.max(axis=1, keepdims=True)
+            w = np.exp(logw)
+            W[rows, cols] = w / w.sum(axis=1, keepdims=True)
 
-    lat_centers = np.array([1.0, 2.0, 3.0])
-    rows = np.where(~is_anc & ~no_signal)[0]
-    if len(rows):
-        u = _lateral_coord(feats[rows, 2], cap)
-        d = u[:, None] - lat_centers[None, :]
-        logw = -0.5 * (d / tau) ** 2
-        logw -= logw.max(axis=1, keepdims=True)
-        w = np.exp(logw)
-        W[rows, LAT_SLICE] = w / w.sum(axis=1, keepdims=True)
-
+    hop_rows = np.where(is_anc)[0]
+    kernel_rows(hop_rows, feats[hop_rows, 1], np.arange(1.0, 6.0), HOP_SLICE)
+    lat_rows = np.where(~is_anc & ~no_signal)[0]
+    kernel_rows(lat_rows, _lateral_coord(feats[lat_rows, 2], cap), np.array([1.0, 2.0, 3.0]), LAT_SLICE)
     W[no_signal, MISSING_COL] = 1.0
     return W
 
@@ -177,7 +168,11 @@ def fit_channel_offsets(W, resid, prior_sd=0.10, noise_var=None, info_floor=0.10
 
     `noise_var` defaults to var(resid) — an upper bound on the row noise (it still contains the bin
     structure), so the implied shrinkage is conservative.  Fail-closed: states whose conditional
-    information ratio 1 − post_var/prior_var is below `info_floor` return to the prior mean (0).
+    information ratio 1 − post_var/prior_var is below `info_floor` return to the prior mean (0),
+    and the RETAINED states are REFIT with the dropped columns removed — overlapping kernel columns
+    share signal, so simply zeroing a jointly-solved coefficient would leave its neighbors matching
+    neither the full posterior nor the prior.  Dropping columns only increases the remaining states'
+    conditional information, so the loop is monotone and terminates.
     """
     W = np.asarray(W, dtype=float)
     r = np.asarray(resid, dtype=float)
@@ -198,8 +193,29 @@ def fit_channel_offsets(W, resid, prior_sd=0.10, noise_var=None, info_floor=0.10
     b_raw = np.linalg.solve(A, W.T @ r)
     posterior_var = noise_var * np.diag(np.linalg.inv(A))
     info_ratio = 1.0 - posterior_var / (prior_sd**2)
-    fallback = info_ratio < info_floor
-    b = np.where(fallback, 0.0, b_raw)
+
+    active = info_ratio >= info_floor
+    while True:
+        if not active.any():
+            b = np.zeros(len(BINS))
+            break
+        Ws = W[:, active]
+        As = Ws.T @ Ws + lam * np.eye(int(active.sum()))
+        post_var_active = noise_var * np.diag(np.linalg.inv(As))
+        info_active = 1.0 - post_var_active / (prior_sd**2)
+        still = info_active >= info_floor
+        if still.all():
+            b = np.zeros(len(BINS))
+            b[active] = np.linalg.solve(As, Ws.T @ r)
+            posterior_var = posterior_var.copy()
+            posterior_var[active] = post_var_active
+            info_ratio = info_ratio.copy()
+            info_ratio[active] = info_active
+            break
+        idx = np.where(active)[0]
+        active = active.copy()
+        active[idx[~still]] = False
+    fallback = ~active
 
     support = W.sum(axis=0)
     supported = support > 1e-9
@@ -225,15 +241,29 @@ def fit_channel_offsets(W, resid, prior_sd=0.10, noise_var=None, info_floor=0.10
     )
 
 
-def tune_bandwidth(feats_train, residuals_train, taus=DEFAULT_TAUS, prior_sd=0.10, folds=5, cap=13):
+def tune_bandwidth(feats_train, residuals_train, taus=DEFAULT_TAUS, prior_sd=0.10, folds=5, cap=13,
+                   info_floor=0.10, groups=None):
     """Pick the shared kernel bandwidth by deterministic K-fold CV on TRAIN rows only.
 
     The row→bin map stays a function of graph features alone for every candidate tau; train labels
     enter only through the CV score of the ridge fit, so the assignment remains outcome-blind.
-    Deterministic: folds by row index modulo `folds`, no RNG.
+    Deterministic, no RNG: folds by crc32 of the row's `groups` key when given (pass a node key so
+    rows sharing that node never straddle a fold — same-node residuals are correlated and would
+    otherwise bias the CV toward overfit bandwidths), else by row index modulo `folds`.
+    CV uses the same shrinkage AND the same fail-closed floor as the deployed fit, so the selected
+    tau optimizes the estimator that is actually applied.
     """
+    import zlib
+
     n = len(feats_train)
-    fold_id = np.arange(n) % folds
+    if groups is not None:
+        if len(groups) != n:
+            raise ValueError("groups must align with feats_train rows")
+        fold_id = np.array(
+            [zlib.crc32(repr(g).encode()) % folds for g in groups], dtype=int
+        )
+    else:
+        fold_id = np.arange(n) % folds
     best_tau, best_score, table = None, None, []
     for tau in taus:
         W = soft_bin_weights(feats_train, tau, cap=cap)
@@ -244,7 +274,8 @@ def tune_bandwidth(feats_train, residuals_train, taus=DEFAULT_TAUS, prior_sd=0.1
                 fit_rows, val_rows = fold_id != f, fold_id == f
                 if not val_rows.any() or not fit_rows.any():
                     continue
-                cf = fit_channel_offsets(W[fit_rows], r[fit_rows], prior_sd=prior_sd)
+                cf = fit_channel_offsets(W[fit_rows], r[fit_rows], prior_sd=prior_sd,
+                                         info_floor=info_floor)
                 pred = W[val_rows] @ cf.offsets
                 score += float(((r[val_rows] - pred) ** 2).sum())
         table.append((float(tau), score))
@@ -277,17 +308,31 @@ class BiasStates:
 
 
 def fit_bias_states(feats, train_idx, residuals, prior_sd=0.10, info_floor=0.10,
-                    taus=DEFAULT_TAUS, cap=13, verbose=True):
+                    taus=DEFAULT_TAUS, cap=13, cv_groups=None, verbose=True):
     """Fit shrunk per-bin offsets for every (judge, channel) residual series.
 
     `feats` covers ALL rows (pair_distance_features); `residuals` maps (judge, channel) to
     affine-calibrated-residual arrays over all rows.  Fitting (bandwidth + offsets) uses `train_idx`
-    rows only; the returned object applies corrections to any row through the outcome-blind W.
+    rows only (integer indices or a boolean mask); the returned object applies corrections to any
+    row through the outcome-blind W.  `cv_groups` (optional, aligned with ALL rows) gives each row a
+    node key for leakage-resistant CV folds — see tune_bandwidth.
     """
     feats = np.asarray(feats, dtype=float)
-    train_idx = np.asarray(train_idx, dtype=int)
+    train_idx = np.asarray(train_idx)
+    if train_idx.dtype == bool:
+        if len(train_idx) != len(feats):
+            raise ValueError("boolean train_idx mask must align with feats rows")
+        train_idx = np.flatnonzero(train_idx)
+    else:
+        train_idx = train_idx.astype(int)
     res_train = {k: np.asarray(v, dtype=float)[train_idx] for k, v in residuals.items()}
-    tau, cv_table = tune_bandwidth(feats[train_idx], res_train, taus=taus, prior_sd=prior_sd, cap=cap)
+    groups_train = None
+    if cv_groups is not None:
+        if len(cv_groups) != len(feats):
+            raise ValueError("cv_groups must align with feats rows")
+        groups_train = [cv_groups[i] for i in train_idx]
+    tau, cv_table = tune_bandwidth(feats[train_idx], res_train, taus=taus, prior_sd=prior_sd,
+                                   cap=cap, info_floor=info_floor, groups=groups_train)
     W = soft_bin_weights(feats, tau, cap=cap)
     states = BiasStates(tau=tau, W=W, cv_table=cv_table)
     for key, r in res_train.items():
@@ -386,7 +431,8 @@ def main(argv=None):
             ("graph", "S"): graph_S - y[:, 1],
         }
         states = fit_bias_states(feats, tr, residuals, prior_sd=a.prior_sd,
-                                 info_floor=a.info_floor, taus=a.taus)
+                                 info_floor=a.info_floor, taus=a.taus,
+                                 cv_groups=[min(pair) for pair in pairs])
 
         print("\nsign check vs measured stratum bias (train rows; bias relative to gpt-5.5-low):")
         for (judge, ch), raw_col, cal_col, y_col in [

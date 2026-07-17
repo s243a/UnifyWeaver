@@ -290,6 +290,7 @@ def main(argv=None):
                     prior_sd=a.bias_prior_sd,
                     info_floor=a.bias_info_floor,
                     taus=a.bias_taus,
+                    cv_groups=[min(pair) for pair in pairs],
                     verbose=False,
                 )
                 meas_by["affine+bins"] = meas - np.column_stack(
@@ -374,33 +375,41 @@ def main(argv=None):
             sample = "; ".join(f"{seed} ({why})" for seed, why in skipped[:5])
             print(f"    skipped seeds: {sample}" + ("; ..." if len(skipped) > 5 else ""))
 
+        # control-only runs keep the exact pre---debias output format (archived logs stay diffable);
+        # the treatment run prints both variants with the added D-marginal column
+        treatment = "affine+bins" in variants
         for v in variants:
-            print(f"ladder [{v}] (mean across {len(valid_splits)} node-disjoint split means; NLL ↓):")
+            header = f"ladder [{v}]" if treatment else "ladder"
+            print(f"{header} (mean across {len(valid_splits)} node-disjoint split means; NLL ↓):")
             print("    split SD is descriptive Monte Carlo partition stability, not an SE or confidence interval")
-            print(f"    {'rung':22s} {'joint mean ± SD':>20s} {'S-marginal mean ± SD':>23s} {'D-marginal mean ± SD':>23s}")
+            cols = f"    {'rung':22s} {'joint mean ± SD':>20s} {'S-marginal mean ± SD':>23s}"
+            if treatment:
+                cols += f" {'D-marginal mean ± SD':>23s}"
+            print(cols)
             for rung in RUNGS:
                 joint_mean, joint_sd = _mean_sd(split_scores[v][rung]["j"])
                 s_mean, s_sd = _mean_sd(split_scores[v][rung]["s"])
-                d_mean, d_sd = _mean_sd(split_scores[v][rung]["d"])
-                print(
-                    f"    {rung:22s} {joint_mean:+8.4f} ± {joint_sd:7.4f} {s_mean:+11.4f} ± {s_sd:7.4f}"
-                    f" {d_mean:+11.4f} ± {d_sd:7.4f}"
-                )
+                line = f"    {rung:22s} {joint_mean:+8.4f} ± {joint_sd:7.4f} {s_mean:+11.4f} ± {s_sd:7.4f}"
+                if treatment:
+                    d_mean, d_sd = _mean_sd(split_scores[v][rung]["d"])
+                    line += f" {d_mean:+11.4f} ± {d_sd:7.4f}"
+                print(line)
+        effect_width = 31 if treatment else 24
         for effect, base, plus in EFFECTS:
             gains = np.asarray(split_scores["affine"][base]["s"]) - np.asarray(split_scores["affine"][plus]["s"])
             mean, sd = _mean_sd(gains)
             print(
-                f"    value of {effect:24s}: {mean:+.4f} ± {sd:.4f} split SD; "
+                f"    value of {effect:{effect_width}s}: {mean:+.4f} ± {sd:.4f} split SD; "
                 f"{int((gains > 0).sum())}/{len(gains)} split seeds +"
             )
-        if "affine+bins" in variants:
+        if treatment:
             for effect, m in DEBIAS_EFFECTS:
                 gains = np.asarray(split_scores["affine"]["ALL"][m]) - np.asarray(
                     split_scores["affine+bins"]["ALL"][m]
                 )
                 mean, sd = _mean_sd(gains)
                 print(
-                    f"    value of {effect:31s}: {mean:+.4f} ± {sd:.4f} split SD; "
+                    f"    value of {effect:{effect_width}s}: {mean:+.4f} ± {sd:.4f} split SD; "
                     f"{int((gains > 0).sum())}/{len(gains)} split seeds +"
                 )
             taus = [st.tau for st in bias_fits]
@@ -435,8 +444,9 @@ def main(argv=None):
                 "conditional on this fitted split, not split-seed variability):"
             )
             effect_names = [effect for effect, _, _ in EFFECTS]
-            if "affine+bins" in variants:
+            if treatment:
                 effect_names += [effect for effect, _ in DEBIAS_EFFECTS]
+            boot_width = 31 if treatment else 27
             for effect_index, effect in enumerate(effect_names):
                 interval = paired_node_bootstrap_ci(
                     fixed["pairs"],
@@ -446,7 +456,7 @@ def main(argv=None):
                     confidence=a.bootstrap_confidence,
                 )
                 print(
-                    f"      {effect:31s}: {interval.estimate:+.4f} "
+                    f"      {effect:{boot_width}s}: {interval.estimate:+.4f} "
                     f"[{interval.low:+.4f}, {interval.high:+.4f}] "
                     f"(B={interval.n_resamples}, held-node resampling uncertainty)"
                 )

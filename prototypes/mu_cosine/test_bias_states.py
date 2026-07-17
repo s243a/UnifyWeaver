@@ -153,8 +153,10 @@ def test_shrinkage_pulls_thin_bins_toward_zero():
     fit_thin = fit_channel_offsets(W[keep], resid[keep], prior_sd=0.10, name="thin")
     unshrunk = resid[thin.nonzero()[0][:2]].mean()
     k = BIN_INDEX["h5"]
-    if not fit_thin.fallback[k]:
-        assert abs(fit_thin.offsets[k]) < abs(unshrunk)  # partial pooling shrinks 2-row evidence
+    # 2 rows against lam = var(resid)/prior_sd² keeps h5 above the 0.10 info floor, so the
+    # assertion must actually run — a fallback here would make the test vacuous
+    assert not fit_thin.fallback[k]
+    assert abs(fit_thin.offsets[k]) < abs(unshrunk)  # partial pooling shrinks 2-row evidence
 
 
 def test_affine_first_slope_error_is_not_expressed_as_offsets():
@@ -201,6 +203,38 @@ def test_stratum_sign_table_matches_injected_signs():
     by = {s: (measured, implied, ok) for s, _, measured, implied, ok in table}
     assert by["h1"][2] and by["h1"][0] > 0
     assert by["sib"][2] and by["sib"][0] < 0
+
+
+def test_boolean_train_mask_equals_integer_indices():
+    parents, pairs, tags = synthetic_graph_pairs(n_per_bin=30)
+    feats = pair_distance_features(parents, pairs)
+    rng = np.random.default_rng(13)
+    resid = {("luna", "D"): rng.normal(0.03, 0.05, len(tags))}
+    mask = np.zeros(len(pairs), dtype=bool)
+    mask[::2] = True
+    st_mask = fit_bias_states(feats, mask, resid, prior_sd=0.10, verbose=False)
+    st_idx = fit_bias_states(feats, np.flatnonzero(mask), resid, prior_sd=0.10, verbose=False)
+    assert np.array_equal(st_mask.fits[("luna", "D")].offsets, st_idx.fits[("luna", "D")].offsets)
+
+
+def test_fallback_refits_retained_states_without_dropped_columns():
+    """Zeroing a jointly-solved coefficient must refit its overlap neighbors, not keep them."""
+    parents, pairs, tags = synthetic_graph_pairs(n_per_bin=40)
+    keep = [i for i, t in enumerate(tags) if t != "missing"]
+    feats = pair_distance_features(parents, [pairs[i] for i in keep])
+    rng = np.random.default_rng(17)
+    resid = np.array([0.08 if tags[i].startswith("h") else -0.04 for i in keep])
+    resid = resid + rng.normal(0, 0.04, len(keep))
+    W = soft_bin_weights(feats, tau=0.75)  # smooth: hop columns overlap
+    fit = fit_channel_offsets(W, resid, prior_sd=0.10, info_floor=0.10, name="refit")
+    dropped = fit.fallback
+    active = ~dropped
+    # the retained coefficients must equal a fresh ridge fit on the retained columns alone
+    lam = fit.noise_var / fit.prior_sd**2
+    Ws = W[:, active]
+    expect = np.linalg.solve(Ws.T @ Ws + lam * np.eye(int(active.sum())), Ws.T @ resid)
+    assert np.allclose(fit.offsets[active], expect)
+    assert np.all(fit.offsets[dropped] == 0.0)
 
 
 def test_input_validation():
