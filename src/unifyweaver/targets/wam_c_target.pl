@@ -6173,6 +6173,24 @@ static bool wam_bind_foreign_atom_stream(WamState *state,
     return false;
 }
 
+static bool wam_try_bind_foreign_triple(WamState *state,
+                                        WamValue target_v,
+                                        WamValue parent_v,
+                                        WamValue dist_v) {
+    /* A tuple is one logical candidate.  In particular, A2/A3/A4 can
+     * alias the same WAM variable, so independently successful column
+     * binds are not enough.  Roll the complete candidate back on the
+     * first conflict before trying another tuple (or reporting failure). */
+    int trail_mark = state->TR;
+    if (wam_unify(state, &state->A[1], &target_v) &&
+        wam_unify(state, &state->A[2], &parent_v) &&
+        wam_unify(state, &state->A[3], &dist_v)) {
+        return true;
+    }
+    unwind_trail(state, trail_mark);
+    return false;
+}
+
 static bool wam_resume_foreign_stream(WamState *state) {
     if (state->B <= 0) return false;
     ChoicePoint *cp = &state->B_array[state->B - 1];
@@ -6203,6 +6221,31 @@ static bool wam_resume_foreign_stream(WamState *state) {
         if (!wam_unify(state, &state->A[2], &dist_v)) return false;
         state->P = resume_pc;
         return true;
+    }
+    /* Triple stream (result_reg == 254): interleaved [atom, atom, int, ...].
+     * A retry may encounter candidates incompatible only because output
+     * registers alias.  Scan transactionally until one complete tuple
+     * unifies; an incompatible tuple must neither leak bindings nor end the
+     * stream while later compatible tuples remain. */
+    if (result_reg == 254) {
+        while (cp->foreign_result_index + 2 < cp->foreign_result_count) {
+            int index = cp->foreign_result_index;
+            WamValue target_v = cp->foreign_results[index];
+            WamValue parent_v = cp->foreign_results[index + 1];
+            WamValue dist_v = cp->foreign_results[index + 2];
+            cp->foreign_result_index = index + 3;
+            if (!wam_try_bind_foreign_triple(state, target_v, parent_v,
+                                             dist_v)) {
+                continue;
+            }
+            if (cp->foreign_result_index >= cp->foreign_result_count) {
+                pop_choice_point(state);
+            }
+            state->P = resume_pc;
+            return true;
+        }
+        pop_choice_point(state);
+        return false;
     }
 
     int index = cp->foreign_result_index++;
@@ -6246,6 +6289,51 @@ static bool wam_bind_foreign_pair_stream(WamState *state,
         return false;
     }
     return true;
+}
+
+static bool wam_bind_foreign_triple_stream(WamState *state,
+                                           WamValue *results,
+                                           int value_count,
+                                           int resume_pc) {
+    /* results: interleaved [atom, atom, int, ...] with value_count = 3 * triples. */
+    if (value_count < 3) {
+        free(results);
+        return false;
+    }
+    for (int index = 0; index + 2 < value_count; index += 3) {
+        WamValue target_v = results[index];
+        WamValue parent_v = results[index + 1];
+        WamValue dist_v = results[index + 2];
+        int trail_mark = state->TR;
+        if (!wam_try_bind_foreign_triple(state, target_v, parent_v, dist_v)) {
+            continue;
+        }
+
+        if (index + 3 < value_count) {
+            /* The choice-point snapshot must describe the state before this
+             * first successful tuple.  Rewind the trial bind, take the
+             * ordinary foreign-stream snapshot, then commit the same tuple. */
+            unwind_trail(state, trail_mark);
+            push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 4);
+            ChoicePoint *cp = &state->B_array[state->B - 1];
+            cp->foreign_results = results;
+            cp->foreign_result_count = value_count;
+            cp->foreign_result_index = index + 3;
+            cp->foreign_result_reg = 254;
+            cp->foreign_resume_pc = resume_pc;
+            if (!wam_try_bind_foreign_triple(state, target_v, parent_v,
+                                             dist_v)) {
+                pop_choice_point(state);
+                return false;
+            }
+        } else {
+            free(results);
+        }
+        return true;
+    }
+
+    free(results);
+    return false;
 }
 
 bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity) {
@@ -6398,44 +6486,134 @@ bool wam_transitive_distance_handler(WamState *state, const char *pred, int arit
                                         state->P + 1);
 }
 
-static bool wam_transitive_parent_distance_bfs(WamState *state,
-                                               const char *start,
-                                               const char *target,
-                                               const char **target_out,
-                                               const char **parent_out,
-                                               int *distance_out) {
-    const char *queue_nodes[256];
-    int queue_distances[256];
-    const char *visited[256];
+static bool wam_collect_transitive_parent_distance(WamState *state,
+                                                   const char *start,
+                                                   const char *target_filter,
+                                                   const char *parent_filter,
+                                                   int *distance_filter,
+                                                   WamValue **results_out,
+                                                   int *value_count_out) {
+    /* Shortest-positive parents
+     * (docs/design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md): BFS with
+     * parent sets; dist not seeded with start. Results interleaved
+     * [atom, atom, int]. Inline kept (matches surrounding collect style). */
+    int capacity = state->category_edge_count;
+    if (capacity <= 0 || capacity == INT_MAX) return false;
+
+    const char **queue_nodes = malloc(sizeof(const char *) * (size_t)(capacity + 1));
+    int *queue_dists = malloc(sizeof(int) * (size_t)(capacity + 1));
+    const char **dist_nodes = malloc(sizeof(const char *) * (size_t)(capacity + 1));
+    int *dist_vals = malloc(sizeof(int) * (size_t)(capacity + 1));
+    /* Parent pairs: (target_idx_in_dist_nodes, parent_atom) — up to E. */
+    const char **parent_targets = malloc(sizeof(const char *) * (size_t)capacity);
+    const char **parent_preds = malloc(sizeof(const char *) * (size_t)capacity);
+    WamValue *results = malloc(sizeof(WamValue) * (size_t)capacity * 3);
+    if (!queue_nodes || !queue_dists || !dist_nodes || !dist_vals ||
+        !parent_targets || !parent_preds || !results) {
+        free(queue_nodes);
+        free(queue_dists);
+        free(dist_nodes);
+        free(dist_vals);
+        free(parent_targets);
+        free(parent_preds);
+        free(results);
+        return false;
+    }
+
+    int dist_len = 0;
+    int parent_len = 0;
     int head = 0;
     int tail = 0;
-    int visited_len = 0;
-
+    int value_count = 0;
     queue_nodes[tail] = start;
-    queue_distances[tail++] = 0;
-    visited[visited_len++] = start;
+    queue_dists[tail++] = 0;
 
     while (head < tail) {
         const char *node = queue_nodes[head];
-        int distance = queue_distances[head++];
+        int distance = queue_dists[head++];
+        int next_distance = distance + 1;
         for (int i = 0; i < state->category_edge_count; i++) {
             CategoryEdge *edge = &state->category_edges[i];
             if (strcmp(edge->child, node) != 0) continue;
-            if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
-            int next_distance = distance + 1;
-            if (!target || strcmp(edge->parent, target) == 0) {
-                *target_out = edge->parent;
-                *parent_out = node;
-                *distance_out = next_distance;
-                return true;
+            const char *next = edge->parent;
+            int existing = -1;
+            for (int j = 0; j < dist_len; j++) {
+                if (strcmp(dist_nodes[j], next) == 0) {
+                    existing = j;
+                    break;
+                }
             }
-            if (tail >= 256 || visited_len >= 256) return false;
-            visited[visited_len++] = edge->parent;
-            queue_nodes[tail] = edge->parent;
-            queue_distances[tail++] = next_distance;
+            if (existing < 0) {
+                if (dist_len >= capacity + 1 || tail >= capacity + 1 ||
+                    parent_len >= capacity) {
+                    free(queue_nodes); free(queue_dists); free(dist_nodes);
+                    free(dist_vals); free(parent_targets); free(parent_preds);
+                    free(results);
+                    return false;
+                }
+                dist_nodes[dist_len] = next;
+                dist_vals[dist_len] = next_distance;
+                dist_len++;
+                parent_targets[parent_len] = next;
+                parent_preds[parent_len] = node;
+                parent_len++;
+                queue_nodes[tail] = next;
+                queue_dists[tail++] = next_distance;
+            } else if (dist_vals[existing] == next_distance) {
+                bool have = false;
+                for (int j = 0; j < parent_len; j++) {
+                    if (strcmp(parent_targets[j], next) == 0 &&
+                        strcmp(parent_preds[j], node) == 0) {
+                        have = true;
+                        break;
+                    }
+                }
+                if (!have) {
+                    if (parent_len >= capacity) {
+                        free(queue_nodes); free(queue_dists); free(dist_nodes);
+                        free(dist_vals); free(parent_targets); free(parent_preds);
+                        free(results);
+                        return false;
+                    }
+                    parent_targets[parent_len] = next;
+                    parent_preds[parent_len] = node;
+                    parent_len++;
+                }
+            }
         }
     }
-    return false;
+
+    for (int i = 0; i < parent_len; i++) {
+        const char *t = parent_targets[i];
+        const char *p = parent_preds[i];
+        int d = 0;
+        for (int j = 0; j < dist_len; j++) {
+            if (strcmp(dist_nodes[j], t) == 0) {
+                d = dist_vals[j];
+                break;
+            }
+        }
+        if (target_filter && strcmp(t, target_filter) != 0) continue;
+        if (parent_filter && strcmp(p, parent_filter) != 0) continue;
+        if (distance_filter && d != *distance_filter) continue;
+        results[value_count++] = val_atom(t);
+        results[value_count++] = val_atom(p);
+        results[value_count++] = val_int(d);
+    }
+
+    free(queue_nodes);
+    free(queue_dists);
+    free(dist_nodes);
+    free(dist_vals);
+    free(parent_targets);
+    free(parent_preds);
+    if (value_count == 0) {
+        free(results);
+        return false;
+    }
+    *results_out = results;
+    *value_count_out = value_count;
+    return true;
 }
 
 bool wam_transitive_parent_distance_handler(WamState *state, const char *pred, int arity) {
@@ -6453,21 +6631,48 @@ bool wam_transitive_parent_distance_handler(WamState *state, const char *pred, i
         return false;
     }
 
-    const char *result_target = NULL;
-    const char *result_parent = NULL;
-    int result_distance = 0;
-    if (!wam_transitive_parent_distance_bfs(state, start, target,
-                                            &result_target, &result_parent,
-                                            &result_distance)) {
+    WamValue *parent_cell = wam_deref_ptr(state, &state->A[2]);
+    const char *parent = NULL;
+    if (parent_cell->tag == VAL_ATOM) {
+        parent = parent_cell->data.atom;
+    } else if (!val_is_unbound(*parent_cell)) {
         return false;
     }
 
-    WamValue target_value = val_atom(result_target);
-    WamValue parent_value = val_atom(result_parent);
-    WamValue distance_value = val_int(result_distance);
-    return wam_unify(state, &state->A[1], &target_value) &&
-           wam_unify(state, &state->A[2], &parent_value) &&
-           wam_unify(state, &state->A[3], &distance_value);
+    WamValue *distance_cell = wam_deref_ptr(state, &state->A[3]);
+    int distance_filter_value = 0;
+    int *distance_filter = NULL;
+    if (distance_cell->tag == VAL_INT) {
+        distance_filter_value = distance_cell->data.integer;
+        if (distance_filter_value <= 0) return false;
+        distance_filter = &distance_filter_value;
+    } else if (!val_is_unbound(*distance_cell)) {
+        return false;
+    }
+
+    WamValue *results = NULL;
+    int value_count = 0;
+    if (!wam_collect_transitive_parent_distance(state, start, target, parent,
+                                                distance_filter,
+                                                &results, &value_count)) {
+        return false;
+    }
+
+    /* Fully bound Target+Parent (+ optional Distance): succeed once.
+     * Bind Distance when unbound; both-bound already filtered. */
+    if (target && parent) {
+        if (value_count < 3) {
+            free(results);
+            return false;
+        }
+        WamValue dist_v = results[2];
+        free(results);
+        if (distance_filter) return true;
+        return wam_unify(state, &state->A[3], &dist_v);
+    }
+
+    return wam_bind_foreign_triple_stream(state, results, value_count,
+                                          state->P + 1);
 }
 
 static bool wam_transitive_step_parent_distance_bfs(WamState *state,

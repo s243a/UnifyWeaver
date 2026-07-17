@@ -882,14 +882,21 @@ object WamRuntime {
    *  Returns true on success; false on first unification conflict (caller
    *  should then backtrack). Stops at the first failure rather than
    *  continuing to bind further registers. */
-  def applyBindings(s: WamState, binds: Map[Int, WamTerm]): Boolean =
-    binds.forall { case (reg, v) =>
+  def applyBindings(s: WamState, binds: Map[Int, WamTerm]): Boolean = {
+    val trailMark = s.trail.length
+    val matched = binds.forall { case (reg, v) =>
       val current = deref(s.bindings, s.regs(reg))
       current match {
         case r @ Ref(_) => bindVar(s, r, v); true
         case existing   => unify(s, existing, v)
       }
     }
+    // A solution map is one correlated tuple.  If a later component
+    // conflicts through bound or aliased registers, remove bindings made by
+    // earlier components before the caller retries or reports failure.
+    if (!matched) unwindTrail(s, trailMark)
+    matched
+  }
 
   // ----------------------------------------------------------
   // Structure/list build stack helpers

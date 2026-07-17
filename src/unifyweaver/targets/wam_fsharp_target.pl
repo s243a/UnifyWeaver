@@ -256,10 +256,14 @@ ffi_owned_fact_filter_fs(DetectedKernels, PI) :-
 %     WAM/FFI plumbing TC2/TD3 streaming reuses.
 %   - transitive_distance3 Mustache handler emits (atom,int) pairs via the
 %     existing multi-output binder (dist+ contract).
+%   - transitive_parent_distance4 Mustache handler emits (atom,atom,int)
+%     triples via the existing three-output binder (shortest-positive
+%     parents contract).
 wam_fsharp_native_kernel_kind(category_ancestor).
 wam_fsharp_native_kernel_kind(bidirectional_ancestor).
 wam_fsharp_native_kernel_kind(transitive_closure2).
 wam_fsharp_native_kernel_kind(transitive_distance3).
+wam_fsharp_native_kernel_kind(transitive_parent_distance4).
 
 fsharp_kernel_template_path(Kind, AbsPath) :-
     kernel_template_file(Kind, HsTemplateFile),
@@ -3604,9 +3608,30 @@ generate_kernel_fsharp([], KF, EF) :- !,
     KF = "// No kernels detected.",
     EF = "and executeForeign (_ctx: WamContext) (_pred: string) (_completeReturn: bool) (_s: WamState) : WamState option = None".
 generate_kernel_fsharp(DetectedKernels, KernelFunctionsCode, ExecuteForeignCode) :-
-    maplist(render_kernel_function_fs, DetectedKernels, KernelParts),
+    % The Mustache bodies are named by kernel kind, not by predicate key, and
+    % every runtime fact lookup is supplied as an argument.  Rendering once
+    % per detected predicate therefore produces duplicate `let
+    % nativeKernel_*` definitions when two predicates share a kind.  Keep all
+    % predicate pairs for executeForeign dispatch, but emit one reusable body
+    % for each distinct kind.
+    distinct_kernel_handler_pairs_fs(DetectedKernels, HandlerKernels),
+    maplist(render_kernel_function_fs, HandlerKernels, KernelParts),
     atomic_list_concat(KernelParts, '\n\n', KernelFunctionsCode),
     generate_execute_foreign_fs(DetectedKernels, ExecuteForeignCode).
+
+distinct_kernel_handler_pairs_fs(KernelPairs, DistinctPairs) :-
+    distinct_kernel_handler_pairs_fs(KernelPairs, [], DistinctPairs).
+
+distinct_kernel_handler_pairs_fs([], _, []).
+distinct_kernel_handler_pairs_fs([Key-Kernel|Rest], SeenKinds, DistinctPairs) :-
+    Kernel = recursive_kernel(Kind, _, _),
+    (   memberchk(Kind, SeenKinds)
+    ->  DistinctPairs = RestDistinct,
+        NextSeen = SeenKinds
+    ;   DistinctPairs = [Key-Kernel|RestDistinct],
+        NextSeen = [Kind|SeenKinds]
+    ),
+    distinct_kernel_handler_pairs_fs(Rest, NextSeen, RestDistinct).
 
 render_kernel_function_fs(Key-Kernel, Code) :-
     Kernel = recursive_kernel(Kind, _, ConfigOps),

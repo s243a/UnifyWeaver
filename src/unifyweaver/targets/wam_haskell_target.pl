@@ -522,11 +522,31 @@ generate_kernel_haskell([], KF, EF) :- !,
     KF = "-- No kernels detected; no native functions generated.",
     EF = "executeForeign :: WamContext -> String -> WamState -> Maybe WamState\nexecuteForeign _ _ _ = Nothing".
 generate_kernel_haskell(DetectedKernels, KernelFunctionsCode, ExecuteForeignCode) :-
-    % For each detected kernel, find its template and render
-    maplist(render_kernel_function, DetectedKernels, KernelParts),
+    % Native function names are fixed per kernel kind, while relation-specific
+    % fact lookups and configuration are passed as function arguments.  Emit
+    % one reusable body per distinct kind; rendering per predicate would make
+    % two predicates of the same kind generate duplicate top-level Haskell
+    % definitions.  executeForeign still receives the full list below so each
+    % predicate keeps its own dispatch clause.
+    distinct_kernel_handler_pairs(DetectedKernels, HandlerKernels),
+    maplist(render_kernel_function, HandlerKernels, KernelParts),
     atomic_list_concat(KernelParts, '\n\n', KernelFunctionsCode),
     % Generate executeForeign with entries for each kernel
     generate_execute_foreign(DetectedKernels, ExecuteForeignCode).
+
+distinct_kernel_handler_pairs(KernelPairs, DistinctPairs) :-
+    distinct_kernel_handler_pairs(KernelPairs, [], DistinctPairs).
+
+distinct_kernel_handler_pairs([], _, []).
+distinct_kernel_handler_pairs([Key-Kernel|Rest], SeenKinds, DistinctPairs) :-
+    Kernel = recursive_kernel(Kind, _, _),
+    (   memberchk(Kind, SeenKinds)
+    ->  DistinctPairs = RestDistinct,
+        NextSeen = SeenKinds
+    ;   DistinctPairs = [Key-Kernel|RestDistinct],
+        NextSeen = [Kind|SeenKinds]
+    ),
+    distinct_kernel_handler_pairs(Rest, NextSeen, RestDistinct).
 
 render_kernel_function(Key-Kernel, Code) :-
     Kernel = recursive_kernel(Kind, _, ConfigOps),

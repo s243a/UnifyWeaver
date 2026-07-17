@@ -20,6 +20,9 @@
 :- use_module('../src/unifyweaver/targets/wam_target').
 :- use_module('../src/unifyweaver/core/clause_body_analysis').
 :- use_module('../src/unifyweaver/core/purity_certificate').
+:- use_module(library(filesex)).
+:- use_module(library(process)).
+:- use_module(library(readutil)).
 
 :- dynamic test_failed/0.
 
@@ -29,6 +32,11 @@ pass(Test) :-
 fail_test(Test, Reason) :-
     format('[FAIL] ~w: ~w~n', [Test, Reason]),
     (   test_failed -> true ; assert(test_failed) ).
+
+substring_occurrence_count_hs(Text0, Needle, Count) :-
+    ( string(Text0) -> Text = Text0 ; atom_string(Text0, Text) ),
+    findall(Start, sub_string(Text, Start, _, _, Needle), Starts),
+    length(Starts, Count).
 
 %% Phase 5: Term inspection builtins codegen
 %% --------------------------------------------
@@ -345,6 +353,162 @@ test_multi_kernel_execute_foreign :-
     ->  pass(Test)
     ;   fail_test(Test, 'Multi-kernel executeForeign generation failed')
     ).
+
+test_same_kind_kernel_body_deduplicated :-
+    Test = 'WAM-Haskell: two TPD4 predicates share one native handler body',
+    K1 = recursive_kernel(transitive_parent_distance4, tpd/4,
+                          [edge_pred(tpd_edge/2)]),
+    K2 = recursive_kernel(transitive_parent_distance4, tpd_alt/4,
+                          [edge_pred(tpd_alt_edge/2)]),
+    (   wam_haskell_target:generate_kernel_haskell(
+            ['tpd/4'-K1, 'tpd_alt/4'-K2], KernelCode, DispatchCode),
+        substring_occurrence_count_hs(
+            KernelCode,
+            "nativeKernel_transitive_parent_distance edges source =",
+            1),
+        sub_string(DispatchCode, _, _, _,
+                   "executeForeign !ctx \"tpd/4\" s ="),
+        sub_string(DispatchCode, _, _, _,
+                   "executeForeign !ctx \"tpd_alt/4\" s =")
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'same-kind predicates emitted duplicate body or lost dispatch')
+    ).
+
+test_tpd4_generated_ghc_smoke :-
+    Test = 'WAM-Haskell: generated duplicate-kind TPD4 project compiles and runs native diamond+cycle smoke',
+    (   ghc_available_hs
+    ->  run_tpd4_generated_ghc_smoke(Test)
+    ;   format('[SKIP] ~w (ghc unavailable)~n', [Test])
+    ).
+
+ghc_available_hs :-
+    catch(
+        setup_call_cleanup(
+            process_create(path(ghc), ['--version'],
+                           [stdout(null), stderr(null), process(Pid)]),
+            process_wait(Pid, exit(0)),
+            true),
+        _,
+        fail).
+
+run_tpd4_generated_ghc_smoke(Test) :-
+    Dir = '/tmp/uw_hs_tpd4_ghc_smoke',
+    ( exists_directory(Dir) -> delete_directory_and_contents(Dir) ; true ),
+    make_directory_path(Dir),
+    setup_call_cleanup(
+        assert_tpd4_haskell_smoke_program,
+        run_tpd4_generated_ghc_smoke_(Dir, Test),
+        retract_tpd4_haskell_smoke_program).
+
+assert_tpd4_haskell_smoke_program :-
+    retract_tpd4_haskell_smoke_program,
+    assertz(user:hs_tpd_edge(a, b)),
+    assertz(user:hs_tpd_edge(a, c)),
+    assertz(user:hs_tpd_edge(b, d)),
+    assertz(user:hs_tpd_edge(c, d)),
+    assertz(user:hs_tpd_edge(d, a)),
+    assertz((user:hs_tpd(X, Y, X, 1) :- hs_tpd_edge(X, Y))),
+    assertz((user:hs_tpd(X, Y, P, D) :-
+                hs_tpd_edge(X, Z), hs_tpd(Z, Y, P, D0), D is D0 + 1)),
+    assertz(user:hs_tpd_alt_edge(a, b)),
+    assertz(user:hs_tpd_alt_edge(b, a)),
+    assertz((user:hs_tpd_alt(X, Y, X, 1) :- hs_tpd_alt_edge(X, Y))),
+    assertz((user:hs_tpd_alt(X, Y, P, D) :-
+                hs_tpd_alt_edge(X, Z), hs_tpd_alt(Z, Y, P, D0), D is D0 + 1)).
+
+retract_tpd4_haskell_smoke_program :-
+    retractall(user:hs_tpd_edge(_, _)),
+    retractall(user:hs_tpd(_, _, _, _)),
+    retractall(user:hs_tpd_alt_edge(_, _)),
+    retractall(user:hs_tpd_alt(_, _, _, _)).
+
+run_tpd4_generated_ghc_smoke_(Dir, Test) :-
+    once(wam_haskell_target:write_wam_haskell_project(
+        [ user:hs_tpd/4, user:hs_tpd_edge/2,
+          user:hs_tpd_alt/4, user:hs_tpd_alt_edge/2
+        ],
+        [module_name('uw_hs_tpd4_ghc_smoke')],
+        Dir)),
+    directory_file_path(Dir, 'src/WamRuntime.hs', RuntimePath),
+    read_file_to_string(RuntimePath, RuntimeCode, []),
+    substring_occurrence_count_hs(
+        RuntimeCode,
+        "nativeKernel_transitive_parent_distance edges source =",
+        HandlerCount),
+    directory_file_path(Dir, 'Smoke.hs', SmokePath),
+    write_tpd4_haskell_smoke(SmokePath),
+    directory_file_path(Dir, 'src', SourceDir),
+    atom_concat('-i', SourceDir, IncludeArg),
+    directory_file_path(Dir, 'tpd4-smoke', ExePath),
+    run_process_capture(
+        ghc,
+        ['--make', IncludeArg, SmokePath, '-o', ExePath,
+         '-main-is', 'Main', '-fforce-recomp'],
+        Dir,
+        CompileStatus,
+        CompileOut),
+    (   HandlerCount =:= 1,
+        CompileStatus == exit(0)
+    ->  run_process_capture(ExePath, [], Dir, RunStatus, RunOut),
+        (   RunStatus == exit(0),
+            sub_string(RunOut, _, _, _, "OK haskell_tpd4_diamond_cycle")
+        ->  pass(Test)
+        ;   fail_test(Test, RunOut)
+        )
+    ;   format(string(Reason),
+               'handler_count=~w compile_status=~w~n~s',
+               [HandlerCount, CompileStatus, CompileOut]),
+        fail_test(Test, Reason)
+    ).
+
+write_tpd4_haskell_smoke(Path) :-
+    Code =
+"module Main where
+
+import qualified Data.IntMap.Strict as IM
+import WamRuntime (nativeKernel_transitive_parent_distance)
+
+main :: IO ()
+main =
+  let graph = IM.fromList
+        [ (1, [2, 3])
+        , (2, [4])
+        , (3, [4])
+        , (4, [1])
+        ]
+      edges node = IM.findWithDefault [] node graph
+      got = nativeKernel_transitive_parent_distance edges 1
+      expected =
+        [ (1, 4, 3)
+        , (2, 1, 1)
+        , (3, 1, 1)
+        , (4, 2, 2)
+        , (4, 3, 2)
+        ]
+  in if got == expected
+       then putStrLn \"OK haskell_tpd4_diamond_cycle\"
+       else error (\"unexpected TPD4 triples: \" ++ show got)
+",
+    setup_call_cleanup(
+        open(Path, write, Stream, [encoding(utf8)]),
+        write(Stream, Code),
+        close(Stream)).
+
+run_process_capture(Command, Args, Cwd, Status, Out) :-
+    (   sub_atom(Command, 0, 1, _, '/')
+    ->  Executable = Command
+    ;   Executable = path(Command)
+    ),
+    setup_call_cleanup(
+        process_create(Executable, Args,
+            [ cwd(Cwd), stdout(pipe(SO)), stderr(pipe(SE)), process(Pid) ]),
+        ( read_string(SO, _, Stdout),
+          read_string(SE, _, Stderr),
+          process_wait(Pid, Status),
+          string_concat(Stdout, Stderr, Out)
+        ),
+        ( catch(close(SO), _, true), catch(close(SE), _, true) )).
 
 %% Phase 8: CallForeign instruction codegen
 %% -------------------------------------------
@@ -2627,6 +2791,8 @@ run_tests :-
     test_transitive_closure_dedupes_neighbor_batch,
     test_transitive_closure_execute_foreign,
     test_multi_kernel_execute_foreign,
+    test_same_kind_kernel_body_deduplicated,
+    test_tpd4_generated_ghc_smoke,
     test_call_foreign_in_types,
     test_call_foreign_step_case,
     test_call_foreign_resolve,

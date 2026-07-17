@@ -3825,12 +3825,14 @@ e2e_kernel_wsp3_via_rscript :-
 
 % ------------------------------------------------------------------
 % End-to-end Rscript run for the transitive_parent_distance4
-% kernel. BFS that tracks the immediate predecessor of each
-% reachable node alongside its distance, yielding (target, parent,
-% distance) triples. Direct/multi-hop checks, branch traversal,
-% wrong-parent failure, and a findall over the reachable set
-% (using a struct template t(Y,P,D) since the WAM compiler doesn't
-% accept pair templates like Y-P-D).
+% kernel. Exercises the strict shortest-positive R+ contract over a
+% diamond, self-loop, and longer cycle: exact
+% correlated triples (including both equal-shortest parents), all
+% eight bound/free output modes, ordinary variable aliases, retry to
+% a later compatible tuple, stream exhaustion/cleanup, and invalid
+% source/distance rejection.  The aggregate uses a struct template
+% t(Y,P,D) since the WAM compiler doesn't accept pair templates like
+% Y-P-D.
 % Auto-skips when Rscript is not on PATH.
 % ------------------------------------------------------------------
 test(kernel_tpd4_e2e_rscript) :-
@@ -3843,49 +3845,91 @@ test(kernel_tpd4_e2e_rscript) :-
 e2e_kernel_tpd4_via_rscript :-
     retractall(user:pedge(_, _)),
     retractall(user:pd(_, _, _, _)),
-    % a -> b -> c -> d, plus branch a -> e -> f.
+    % Result order before sorting is b, c, a, d/b, d/c, e/d.  Keeping
+    % the self-loop third makes the T=P alias case skip incompatible
+    % tuples before finding (a,a,1).
     assertz(user:pedge(a, b)),
-    assertz(user:pedge(b, c)),
-    assertz(user:pedge(c, d)),
-    assertz(user:pedge(a, e)),
-    assertz(user:pedge(e, f)),
+    assertz(user:pedge(a, c)),
+    assertz(user:pedge(a, a)),
+    assertz(user:pedge(b, d)),
+    assertz(user:pedge(c, d)),             % equal-shortest second parent
+    assertz(user:pedge(d, e)),
+    assertz(user:pedge(e, a)),             % longer cycle loses to self-loop
+    % Acyclic disconnected component for alias-exhaustion checks.
+    assertz(user:pedge(q, r)),
+    assertz(user:pedge(r, s)),
     assertz((user:pd(X, Y, X, 1) :- user:pedge(X, Y))),
     assertz((user:pd(X, Y, P, D) :- user:pedge(X, Z),
                                      user:pd(Z, Y, P, D1),
                                      D is D1 + 1)),
     assertz((user:tpd_direct  :- pd(a, b, a, 1))),
-    assertz((user:tpd_two     :- pd(a, c, b, 2))),
-    assertz((user:tpd_three   :- pd(a, d, c, 3))),
-    assertz((user:tpd_branch  :- pd(a, e, a, 1))),
-    assertz((user:tpd_branch2 :- pd(a, f, e, 2))),
-    assertz((user:tpd_wrong   :- pd(a, c, a, 2))),
-    assertz((user:tpd_no_back :- pd(b, a, _, _))),
+    assertz((user:tpd_self    :- pd(a, a, a, 1))),
+    % The first d tuple has parent b, so this must transactionally
+    % retry to the later equal-shortest tuple with parent c.
+    assertz((user:tpd_retry_later :- pd(a, d, c, 2))),
+    assertz((user:tpd_three       :- pd(a, e, d, 3))),
+    % All eight modes for the (Target, Parent, Distance) outputs.
+    assertz((user:tpd_mode_fff :- pd(a, _, _, _))),
+    assertz((user:tpd_mode_tff :- pd(a, d, _, _))),
+    assertz((user:tpd_mode_fpf :- pd(a, _, a, _))),
+    assertz((user:tpd_mode_ffd :- pd(a, _, _, 3))),
+    assertz((user:tpd_mode_tpf :- pd(a, d, c, _))),
+    assertz((user:tpd_mode_tfd :- pd(a, d, _, 2))),
+    assertz((user:tpd_mode_fpd :- pd(a, _, a, 1))),
+    assertz((user:tpd_mode_tpd :- pd(a, d, c, 2))),
+    % Ordinary aliases: skip b/c before T=P reaches the self-loop.
+    assertz((user:tpd_alias_later :- pd(a, X, X, 1))),
+    % Exhaust a no-match alias stream, then prove bindings/CPs were
+    % cleaned up by running a known-successful query.
+    assertz((user:tpd_alias_cleanup :-
+        \+ pd(q, X, X, _),
+        pd(a, d, c, 2))),
+    assertz((user:tpd_wrong_parent :- pd(a, d, a, 2))),
+    assertz((user:tpd_no_back      :- pd(s, q, _, _))),
+    assertz((user:tpd_bad_src      :- pd(7, _, _, _))),
+    assertz((user:tpd_bad_d0       :- pd(a, _, _, 0))),
+    assertz((user:tpd_bad_dneg     :- pd(a, _, _, -1))),
+    assertz((user:tpd_bad_datom    :- pd(a, _, _, nope))),
+    % Atom/int alias can never match and must exhaust without leaking.
+    assertz((user:tpd_alias_type   :- pd(a, X, _, X))),
+    assertz((user:tpd_equal_parents :-
+        findall(P, pd(a, d, P, 2), Ps),
+        Ps == [b, c])),
+    assertz((user:tpd_alias_exact :-
+        findall(t(X, D), pd(a, X, X, D), L),
+        L == [t(a, 1)])),
     assertz((user:tpd_findall :-
         findall(t(Y, P, D), pd(a, Y, P, D), L),
         msort(L, S),
-        S == [t(b, a, 1), t(c, b, 2), t(d, c, 3), t(e, a, 1), t(f, e, 2)])),
+        S == [t(a, a, 1), t(b, a, 1), t(c, a, 1),
+              t(d, b, 2), t(d, c, 2), t(e, d, 3)])),
     unique_r_tmp_dir('tmp_r_kernel_tpd4_e2e', TmpDir),
     write_wam_r_project(
         [user:pedge/2, user:pd/4,
-         user:tpd_direct/0, user:tpd_two/0, user:tpd_three/0,
-         user:tpd_branch/0, user:tpd_branch2/0,
-         user:tpd_wrong/0, user:tpd_no_back/0, user:tpd_findall/0],
+         user:tpd_direct/0, user:tpd_self/0,
+         user:tpd_retry_later/0, user:tpd_three/0,
+         user:tpd_mode_fff/0, user:tpd_mode_tff/0,
+         user:tpd_mode_fpf/0, user:tpd_mode_ffd/0,
+         user:tpd_mode_tpf/0, user:tpd_mode_tfd/0,
+         user:tpd_mode_fpd/0, user:tpd_mode_tpd/0,
+         user:tpd_alias_later/0, user:tpd_alias_cleanup/0,
+         user:tpd_equal_parents/0, user:tpd_alias_exact/0,
+         user:tpd_findall/0,
+         user:tpd_wrong_parent/0, user:tpd_no_back/0,
+         user:tpd_bad_src/0, user:tpd_bad_d0/0,
+         user:tpd_bad_dneg/0, user:tpd_bad_datom/0,
+         user:tpd_alias_type/0],
         [],
         TmpDir),
     directory_file_path(TmpDir, 'R', RDir),
-    Yes = [tpd_direct, tpd_two, tpd_three, tpd_branch, tpd_branch2,
-           tpd_findall],
-    No  = [tpd_wrong, tpd_no_back],
-    forall(member(P, Yes), (
-        format(string(Q), '~w/0', [P]),
-        run_rscript_query(RDir, Q, Out),
-        assertion(sub_string(Out, _, _, _, "true"))
-    )),
-    forall(member(P, No), (
-        format(string(Q), '~w/0', [P]),
-        run_rscript_query(RDir, Q, Out),
-        assertion(sub_string(Out, _, _, _, "false"))
-    )),
+    Yes = [tpd_direct, tpd_self, tpd_retry_later, tpd_three,
+           tpd_mode_fff, tpd_mode_tff, tpd_mode_fpf, tpd_mode_ffd,
+           tpd_mode_tpf, tpd_mode_tfd, tpd_mode_fpd, tpd_mode_tpd,
+           tpd_alias_later, tpd_alias_cleanup, tpd_equal_parents,
+           tpd_alias_exact, tpd_findall],
+    No  = [tpd_wrong_parent, tpd_no_back, tpd_bad_src, tpd_bad_d0,
+           tpd_bad_dneg, tpd_bad_datom, tpd_alias_type],
+    assert_rscript_truth_batch(RDir, Yes, No),
     directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
     read_file_to_string(ProgPath, Code, []),
     assertion(sub_string(Code, _, _, _, 'pred_pd_kernel_tpd4 <- function(')),
