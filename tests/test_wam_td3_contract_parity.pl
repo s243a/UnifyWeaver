@@ -38,6 +38,10 @@
 
 :- dynamic user:td_edge/2.
 :- dynamic user:td/3.
+:- dynamic user:td_tail/2.
+:- dynamic user:td_after/2.
+:- dynamic user:td_cut/2.
+:- dynamic user:td_call_after/2.
 :- dynamic user:td_parent/2.
 :- dynamic user:tc_distance/3.
 
@@ -75,12 +79,23 @@ read_file_string(Path, String) :-
 assert_td_cycle_program :-
     retractall(user:td_edge(_, _)),
     retractall(user:td(_, _, _)),
+    retractall(user:td_tail(_, _)),
+    retractall(user:td_after(_, _)),
+    retractall(user:td_cut(_, _)),
+    retractall(user:td_call_after(_, _)),
     assertz(user:td_edge(a, b)),
     assertz(user:td_edge(b, c)),
     assertz(user:td_edge(c, d)),
     assertz(user:td_edge(c, a)),
     assertz((user:td(X, Y, 1) :- td_edge(X, Y))),
-    assertz((user:td(X, Y, D) :- td_edge(X, Z), td(Z, Y, D1), D is D1 + 1)).
+    assertz((user:td(X, Y, D) :- td_edge(X, Z), td(Z, Y, D1), D is D1 + 1)),
+    % Force both interpreter foreign opcodes around the two-output stream.
+    % td_tail/2 compiles its last goal to ExecuteForeign; td_call_after/2
+    % retains a continuation and therefore compiles to CallForeign.
+    assertz((user:td_tail(Y, D) :- td(a, Y, D))),
+    assertz((user:td_after(Y, D) :- td_tail(Y, D), Y \== b)),
+    assertz((user:td_cut(Y, D) :- td_tail(Y, D), !)),
+    assertz((user:td_call_after(Y, D) :- td(a, Y, D), Y \== b)).
 
 assert_td_chain_program :-
     retractall(user:td_edge(_, _)),
@@ -206,7 +221,16 @@ test(llvm_stream_and_bound_self_are_distplus) :-
     read_file_string('templates/targets/llvm_wam/state.ll.mustache', S),
     assertion(sub_string(S, _, _, _, "wam_td3_rplus_distance")),
     assertion(sub_string(S, _, _, _, "do NOT mark start visited")),
-    assertion(sub_string(S, _, _, _, "result_reg=255")).
+    assertion(sub_string(S, _, _, _, "result_reg=255")),
+    assertion(sub_string(S, _, _, _,
+        "%ids_in_range = and i1 %start_in_range, %target_in_range")),
+    assertion(sub_string(S, _, _, _,
+        "br i1 %start_in_range, label %check_distance_filter, label %stream_fail_early")),
+    findall(I,
+        sub_string(S, I, _, _, "%q_slots = add i64 %n, 1"),
+        QueueCapacityFixes),
+    % TD3 rplus + TD3 stream + the two existing TC2 R+ traversals.
+    assertion(QueueCapacityFixes = [_, _, _, _]).
 
 test(elixir_bfs_not_per_path) :-
     read_file_string('src/unifyweaver/targets/wam_elixir_target.pl', S),
@@ -280,23 +304,32 @@ test(c_registers_td3_handler) :-
 test(fsharp_cycle_distplus_e2e, [condition(dotnet_available)]) :-
     assert_td_cycle_program,
     tmp_dir(fs_e2e, Dir),
-    write_wam_fsharp_project(
-        [user:td/3, user:td_edge/2],
+    once(write_wam_fsharp_project(
+        [ user:td/3, user:td_edge/2,
+          user:td_tail/2, user:td_after/2, user:td_cut/2,
+          user:td_call_after/2
+        ],
         [module_name('uw_td3_e2e')],
-        Dir),
+        Dir)),
     directory_file_path(Dir, 'Program.fs', Prog),
     td3_write_fsharp_driver(Prog),
     run_dotnet_build(Dir, BuildExit, BuildOut),
-    assertion(BuildExit =:= 0),
     ( BuildExit =:= 0 -> true
-    ; format(user_error, 'fsharp td3 e2e build:~n~w~n', [BuildOut]), fail
+    ; format(user_error, 'fsharp td3 e2e build:~n~w~n', [BuildOut]),
+      assertion(BuildExit =:= 0), fail
     ),
     run_dotnet_run(Dir, RunExit, RunOut),
-    assertion(RunExit =:= 0),
+    ( RunExit =:= 0 -> true
+    ; format(user_error, 'fsharp td3 e2e run:~n~w~n', [RunOut]),
+      assertion(RunExit =:= 0), fail
+    ),
     assertion(sub_string(RunOut, _, _, _, "OK stream_from_a")),
     assertion(sub_string(RunOut, _, _, _, "OK bound_source_cycle")),
     assertion(sub_string(RunOut, _, _, _, "OK pairing_retry")),
-    assertion(sub_string(RunOut, _, _, _, "OK cut_first")),
+    assertion(sub_string(RunOut, _, _, _, "OK aliased_outputs_fail")),
+    assertion(sub_string(RunOut, _, _, _, "OK execute_foreign_retry")),
+    assertion(sub_string(RunOut, _, _, _, "OK call_foreign_retry")),
+    assertion(sub_string(RunOut, _, _, _, "OK cut_after_foreign")),
     !.
 
 test(c_td3_stream_and_bound, [condition(gcc_available)]) :-
@@ -352,7 +385,7 @@ test(rust_collect_distplus_unit, [condition(cargo_available)]) :-
 :- end_tests(td3_executable).
 
 % ============================================================
-% 5. Acyclic no_kernels note
+% 5. Acyclic no_kernels fallback
 % ============================================================
 
 :- begin_tests(td3_no_kernels_acyclic).
@@ -360,22 +393,19 @@ test(rust_collect_distplus_unit, [condition(cargo_available)]) :-
 test(fsharp_no_kernels_fallback_builds, [condition(dotnet_available)]) :-
     assert_td_chain_program,
     tmp_dir(fs_nk, Dir),
-    write_wam_fsharp_project(
+    once(write_wam_fsharp_project(
         [user:td/3, user:td_edge/2],
         [no_kernels(true), module_name('uw_td3_nk'), conformance_main(true)],
-        Dir),
+        Dir)),
     directory_file_path(Dir, 'WamRuntime.fs', RT),
     read_file_string(RT, RTS),
     assertion(\+ sub_string(RTS, _, _, _, "nativeKernel_transitive_distance")),
     run_dotnet_build(Dir, Exit, Out),
-    assertion(Exit =:= 0),
     ( Exit =:= 0 -> true
-    ; format(user_error, '~w~n', [Out]), fail
+    ; format(user_error, 'fsharp no-kernels build:~n~w~n', [Out]),
+      assertion(Exit =:= 0), fail
     ),
     !.
-
-test(cyclic_generic_wam_is_not_the_oracle) :-
-    assertion(true).
 
 :- end_tests(td3_no_kernels_acyclic).
 
@@ -387,9 +417,15 @@ run_dotnet_build(Dir, Exit, Out) :-
     setup_call_cleanup(
         process_create(path(dotnet),
             ['build', '--nologo', '-v', 'q', '-c', 'Release'],
-            [cwd(Dir), stdout(pipe(SO)), stderr(pipe(SE)), process(Pid)]),
+            [cwd(Dir),
+             environment([
+                 'DOTNET_NOLOGO'='1',
+                 'DOTNET_ROLL_FORWARD'='Major'
+             ]),
+             stdout(pipe(SO)), stderr(pipe(SE)), process(Pid)]),
         ( read_string(SO, _, S1), read_string(SE, _, S2),
-          process_wait(Pid, exit(Exit)),
+          process_wait(Pid, Status),
+          dotnet_status_exit(Status, Exit),
           string_concat(S1, S2, Out) ),
         ( catch(close(SO), _, true), catch(close(SE), _, true) )).
 
@@ -398,12 +434,20 @@ run_dotnet_run(Dir, Exit, Out) :-
         process_create(path(dotnet),
             ['run', '--no-build', '-c', 'Release', '--no-launch-profile', '--'],
             [cwd(Dir),
-             environment(['DOTNET_NOLOGO'='1', 'DOTNET_ROLL_FORWARD'='Major']),
+             environment([
+                 'DOTNET_NOLOGO'='1',
+                 'DOTNET_ROLL_FORWARD'='Major'
+             ]),
              stdout(pipe(SO)), stderr(pipe(SE)), process(Pid)]),
         ( read_string(SO, _, S1), read_string(SE, _, S2),
-          process_wait(Pid, exit(Exit)),
+          process_wait(Pid, Status),
+          dotnet_status_exit(Status, Exit),
           string_concat(S1, S2, Out) ),
         ( catch(close(SO), _, true), catch(close(SE), _, true) )).
+
+dotnet_status_exit(exit(Code), Code).
+dotnet_status_exit(killed(Signal), Code) :-
+    Code is 128 + Signal.
 
 td3_write_fsharp_driver(ProgPath) :-
     Driver =
@@ -506,6 +550,28 @@ let collectPairs (ctx: WamContext) (source: string)
             | None -> List.rev (p :: acc)
         gather s1 []
 
+let runPairWrapper (ctx: WamContext) (pred: string) : WamState option =
+    let regs = Array.create MaxRegs (Unbound -1)
+    regs.[1] <- Unbound 200
+    regs.[2] <- Unbound 201
+    dispatchCall ctx pred (mkState regs)
+
+let readWrapperPair (s: WamState) =
+    // Continuation code is free to reuse A1/A2. Read the original top-level
+    // output variables through their stable ids, as a Prolog caller would.
+    match derefVar s.WsBindings (Unbound 200),
+          derefVar s.WsBindings (Unbound 201) with
+    | Atom t, Integer d -> Some (t, d)
+    | _ -> None
+
+let aliasedOutputsFail (ctx: WamContext) =
+    // td(a, X, X) cannot unify an atom Target and integer Distance into X.
+    let regs = Array.create MaxRegs (Unbound -1)
+    regs.[1] <- Atom \"a\"
+    regs.[2] <- Unbound 150
+    regs.[3] <- Unbound 150
+    callForeign ctx \"td/3\" (mkState regs) |> Option.isNone
+
 [<EntryPoint>]
 let main _argv =
     let ctx = mkContext ()
@@ -534,10 +600,46 @@ let main _argv =
             | \"b\", 1 | \"c\", 2 | \"a\", 3 | \"d\", 3 -> true
             | _ -> false)
     assertTrue \"pairing_retry\" (pairingOk && List.length pairs = 4)
+    assertTrue \"aliased_outputs_fail\" (aliasedOutputsFail ctx)
 
-    // First result pairing (cut-style consume-once): first pair is b@1.
-    let first = collectPairs ctx \"a\" None None |> List.tryHead
-    assertTrue \"cut_first\" (first = Some (\"b\", 1))
+    // Exercise the generated interpreter opcodes, not just callForeign.
+    // td_after/2 rejects b@1 after an ExecuteForeign tail call and must
+    // retry the paired stream into the outer continuation as c@2.
+    let hasExecuteForeign =
+        ctx.WcCode
+        |> Array.exists (function ExecuteForeign \"td/3\" -> true | _ -> false)
+    let executeRetry = runPairWrapper ctx \"td_after/2\"
+    assertTrue \"execute_foreign_retry\"
+        (hasExecuteForeign &&
+         (executeRetry |> Option.exists (fun s ->
+             readWrapperPair s = Some (\"c\", 2) &&
+             s.WsCP = 0 && s.WsCutBar = 0 && List.isEmpty s.WsB0Stack &&
+             s.WsTrailLen = List.length s.WsTrail)))
+
+    // The non-tail wrapper proves CallForeign retains the same Target/Distance
+    // pairing when its continuation rejects the first result.
+    let hasCallForeign =
+        ctx.WcCode
+        |> Array.exists (function CallForeign (\"td/3\", 3) -> true | _ -> false)
+    let callRetry = runPairWrapper ctx \"td_call_after/2\"
+    assertTrue \"call_foreign_retry\"
+        (hasCallForeign &&
+         (callRetry |> Option.exists (fun s ->
+             readWrapperPair s = Some (\"c\", 2) &&
+             s.WsCP = 0 && s.WsCutBar = 0 && List.isEmpty s.WsB0Stack &&
+             s.WsTrailLen = List.length s.WsTrail)))
+
+    // A real WAM cut after the first foreign yield must discard the remaining
+    // FFIStreamRetry choice point. Merely taking List.tryHead after collecting
+    // the whole stream would not test cut/barrier cleanup.
+    let cutResult = runPairWrapper ctx \"td_cut/2\"
+    assertTrue \"cut_after_foreign\"
+        (cutResult |> Option.exists (fun s ->
+            readWrapperPair s = Some (\"b\", 1) &&
+            s.WsCP = 0 && s.WsCutBar = 0 && List.isEmpty s.WsB0Stack &&
+            s.WsCPsLen = 0 && List.isEmpty s.WsCPs &&
+            s.WsTrailLen = List.length s.WsTrail &&
+            Option.isNone (backtrack s)))
 
     let fromD = collectPairs ctx \"d\" None None
     assertTrue \"sink_d\" (fromD = [])
@@ -559,6 +661,7 @@ void setup_tc_distance_3(WamState* state);
 void setup_detected_wam_c_kernels(WamState* state);
 
 static void load_cycle(WamState *state) {
+    wam_register_transitive_edge(state, "a", "b");
     wam_register_transitive_edge(state, "a", "b");
     wam_register_transitive_edge(state, "b", "c");
     wam_register_transitive_edge(state, "c", "d");
@@ -599,32 +702,78 @@ int main(void) {
     }
     wam_free_state(&state);
 
-    /* Unbound stream first pair must be (b,1) with both regs bound. */
+    /* Drive the handler directly, then force ordinary WAM backtracking
+       through every paired stream result. The duplicate a->b edge must
+       not duplicate (b,1), and Target/Distance must stay paired. */
     wam_state_init(&state);
     setup_tc_distance_3(&state);
     setup_detected_wam_c_kernels(&state);
     load_cycle(&state);
     {
-        WamValue args[3] = {
-            val_atom("a"), val_unbound("T"), val_unbound("D")
-        };
-        int rc = wam_run_predicate(&state, "tc_distance/3", args, 3);
-        if (rc != 0 || state.P != WAM_HALT) {
+        int fail_pc = state.code_size;
+        state.code_size += 2;
+        state.code = realloc(state.code,
+                             sizeof(Instruction) * (size_t)state.code_size);
+        if (!state.code) return 20;
+        memset(&state.code[fail_pc], 0, sizeof(Instruction) * 2u);
+        state.code[fail_pc].tag = INSTR_BUILTIN_CALL;
+        state.code[fail_pc].as.pred.pred = "__td3_retry_fail/0";
+        state.code[fail_pc].as.pred.arity = 0;
+        state.code[fail_pc + 1].tag = INSTR_PROCEED;
+
+        state.P = fail_pc;
+        state.CP = WAM_HALT;
+        state.A[0] = val_atom("a");
+        state.A[1] = val_unbound("T");
+        state.A[2] = val_unbound("D");
+        if (!wam_execute_foreign_predicate(
+                &state, "tc_distance/3", 3)) {
             wam_free_state(&state);
-            return 13;
+            return 21;
         }
-        if (state.A[1].tag != VAL_ATOM || state.A[2].tag != VAL_INT) {
+
+        const char *expected_targets[4] = { "b", "c", "d", "a" };
+        const long expected_distances[4] = { 1, 2, 3, 3 };
+        int seen[4] = { 0, 0, 0, 0 };
+        for (int i = 0; i < 4; i++) {
+            if (i > 0) {
+                state.P = fail_pc;
+                if (wam_run(&state) != 0) {
+                    wam_free_state(&state);
+                    return 22 + i;
+                }
+            }
+            WamValue *target = wam_deref_ptr(&state, &state.A[1]);
+            WamValue *distance = wam_deref_ptr(&state, &state.A[2]);
+            if (target->tag != VAL_ATOM || distance->tag != VAL_INT) {
+                wam_free_state(&state);
+                return 30 + i;
+            }
+            int match = -1;
+            for (int j = 0; j < 4; j++) {
+                if (strcmp(target->data.atom, expected_targets[j]) == 0 &&
+                    distance->data.integer == expected_distances[j]) {
+                    match = j;
+                    break;
+                }
+            }
+            if (match < 0 || seen[match]) {
+                wam_free_state(&state);
+                return 34 + i;
+            }
+            seen[match] = 1;
+        }
+        state.P = fail_pc;
+        if (wam_run(&state) != WAM_HALT || state.B != 0) {
             wam_free_state(&state);
-            return 14;
+            return 40;
         }
-        if (strcmp(state.A[1].data.atom, "b") != 0 ||
-            state.A[2].data.integer != 1) {
-            wam_free_state(&state);
-            return 15;
+        for (int i = 0; i < 4; i++) {
+            if (!seen[i]) {
+                wam_free_state(&state);
+                return 41 + i;
+            }
         }
-        /* Note: wam_run_predicate prunes choice points on return, so
-         * remaining stream solutions are not visible here. Pairing of
-         * A2+A3 on the first yield still proves the stream binder. */
     }
     wam_free_state(&state);
 

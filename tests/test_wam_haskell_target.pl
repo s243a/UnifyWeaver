@@ -184,6 +184,49 @@ test_parameterized_execute_foreign_category_ancestor :-
     ;   fail_test(Test, 'Parameterized executeForeign missing expected patterns')
     ).
 
+test_multi_output_foreign_filters_bound_results :-
+    Test = 'WAM-Haskell: multi-output FFI filters bound/shared outputs before yield',
+    Kernel = recursive_kernel(transitive_distance3, td/3,
+                              [edge_pred(edge/2)]),
+    (   wam_haskell_target:generate_execute_foreign(['td/3'-Kernel], Code),
+        sub_string(Code, _, _, _, "resultMatches (rv_1, rv_2) ="),
+        sub_string(Code, _, _, _,
+                   "ffiTupleMatches [outReg_2, outReg_3] [w_1, w_2]"),
+        sub_string(Code, _, _, _,
+                   "matchingResults = filter resultMatches results"),
+        sub_string(Code, _, _, _, "in case matchingResults of"),
+        sub_string(Code, _, _, _,
+                   "case outReg_2 of { Unbound _ -> IM.insert 2 w_1; _ -> id }"),
+        sub_string(Code, _, _, _,
+                   "length [() | Unbound _ <- [outReg_2, outReg_3]]")
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'Generated tuple binder does not enforce bound/shared-output modes')
+    ).
+
+test_multi_output_foreign_retry_filters_and_pops :-
+    Test = 'WAM-Haskell: FFIStreamRetry rechecks tuples and maintains CP count',
+    (   compile_wam_runtime_to_haskell([], [], Code),
+        atom_string(Code, S),
+        sub_string(S, HelperPos, _, _,
+                   "ffiTupleMatches :: [Value] -> [Value] -> Bool"),
+        sub_string(S, LastResumePos, _, _,
+                   "resumeBuiltin (FactStream var1 var2"),
+        % Haskell requires every equation for a function to be contiguous.
+        LastResumePos < HelperPos,
+        sub_string(S, _, _, _,
+                   "Just old -> old == val && go seen rest"),
+        sub_string(S, _, _, _,
+                   "dropWhile (not . ffiTupleMatches baseOutputs) tuples"),
+        sub_string(S, _, _, _,
+                   "if vid == -1 then m else IM.insert rN v m"),
+        sub_string(S, _, _, _,
+                   "wsCPs = newCPs, wsCPsLen = newCPsLen")
+    ->  pass(Test)
+    ;   fail_test(Test,
+            'FFI retry can yield mismatches or leave wsCPsLen stale')
+    ).
+
 test_parameterized_execute_foreign_empty :-
     Test = 'WAM-Haskell: executeForeign with no kernels is a no-op',
     (   wam_haskell_target:generate_kernel_haskell([], _KF, EF),
@@ -2575,6 +2618,8 @@ run_tests :-
     test_haskell_copy_term_builtin_present,
     test_haskell_no_regressions,
     test_parameterized_execute_foreign_category_ancestor,
+    test_multi_output_foreign_filters_bound_results,
+    test_multi_output_foreign_retry_filters_and_pops,
     test_parameterized_execute_foreign_empty,
     test_parameterized_render_kernel_function,
     test_render_kernel_function_cwd_independent,

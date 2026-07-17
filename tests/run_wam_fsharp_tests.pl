@@ -1,14 +1,21 @@
 :- encoding(utf8).
 %% run_wam_fsharp_tests.pl — aggregate runner for the F# WAM target tests.
 %%
-%% Each F# WAM test file uses `:- initialization(run_tests, main)` and
-%% `halt(0/1)` on completion, so they can't be `use_module`'d in-process.
-%% This script spawns each as a subprocess and aggregates pass/fail.
+%% The files use incompatible top-level runners and shared dynamic fixtures,
+%% so this script loads each in an isolated subprocess with an explicit goal
+%% and aggregates pass/fail.
 %%
 %% Tests run:
 %%   tests/test_wam_fsharp_target.pl
 %%     - Source-level codegen assertions.  Runs everywhere swipl is
 %%       available; no external toolchain required.
+%%   tests/test_wam_td3_contract_parity.pl
+%%     - fleet TD3 dist+ oracle/structural checks plus executable F#/C/Rust
+%%       retry, binding-mode, cycle, and no-kernels coverage.
+%%   focused Scala, Haskell, Elixir, and LLVM TD3 regressions
+%%     - exercise the Scala Source gate, generic multi-output binding, Elixir
+%%       ordinary retries, and LLVM exact paired streaming / range safety.
+%%       Runtime legs skip only when their external compiler is unavailable.
 %%   tests/core/test_wam_fsharp_dotnet_smoke.pl
 %%     - dotnet build + run smokes (8 cases including category-ancestor
 %%       end-to-end + NAF micro-benchmark).  Each sub-case skips
@@ -35,26 +42,50 @@ repo_root(Root) :-
     file_directory_name(This, TestsDir),
     file_directory_name(TestsDir, Root).
 
-%% (RelativePath, HumanLabel).  Order matters — codegen first (fast),
+%% (RelativePath, HumanLabel, Goal).  Order matters — codegen first (fast),
 %% then dotnet smokes (slower, may skip on toolchain-less machines).
 fsharp_test('tests/test_wam_fsharp_target.pl',
-            'F# WAM codegen tests').
+            'F# WAM codegen tests', run_tests).
 fsharp_test('tests/core/test_wam_fsharp_kernel_gate_tc.pl',
-            'F# WAM kernel capability gate + native transitive_closure2').
+            'F# WAM kernel capability gate + native transitive_closure2',
+            run_tests).
+fsharp_test('tests/test_wam_td3_contract_parity.pl',
+            'TD3 strict dist+ fleet contract + F# native kernel', run_tests).
+fsharp_test('tests/test_wam_scala_kernels.pl',
+            'TD3 Scala bound-atom Source gate',
+            ( run_tests(wam_scala_kernels_structural:
+                        distance_kernel_emits_handler_and_stub),
+              run_tests(wam_scala_kernels_runtime:
+                        transitive_distance_rejects_non_atom_source) )).
+fsharp_test('tests/test_wam_haskell_target.pl',
+            'TD3 Haskell multi-output foreign retry regressions',
+            (test_multi_output_foreign_filters_bound_results,
+             test_multi_output_foreign_retry_filters_and_pops)).
+fsharp_test('tests/test_wam_elixir_target.pl',
+            'TD3 Elixir bound modes + ordinary retry stream regressions',
+            (test_graph_kernel_transitive_distance_uses_distplus_bfs,
+             test_kernel_dispatch_emits_transitive_distance_module,
+             test_kernel_dispatch_transitive_distance_e2e)).
+fsharp_test('tests/core/test_wam_llvm_reach_execution.pl',
+            'TD3 LLVM bound-distance + range-safety execution', test_all).
+fsharp_test('tests/core/test_wam_llvm_td3_stream_execution.pl',
+            'TD3 LLVM exact paired-stream execution', test_all).
 fsharp_test('tests/core/test_wam_fsharp_dotnet_smoke.pl',
-            'F# WAM dotnet runtime smoke').
+            'F# WAM dotnet runtime smoke', run_tests).
 fsharp_test('tests/core/test_wam_lmdb_cross_target_conformance.pl',
-            'WAM LMDB cross-target conformance (F# eager/lazy/cached vs oracle; Rust opt-in)').
+            'WAM LMDB cross-target conformance (F# eager/lazy/cached vs oracle; Rust opt-in)',
+            run_tests).
 
-run_one(RelPath, Label, Status) :-
+run_one(RelPath, Label, Goal, Status) :-
     repo_root(Root),
     atom_concat(Root, '/', Root1),
     atom_concat(Root1, RelPath, AbsPath),
     format('~n──── ~w ────~n', [Label]),
     format('     ~w~n', [RelPath]),
     catch(
-        (   process_create(path(swipl),
-                ['-q', '-g', 'run_tests', '-t', 'halt', AbsPath],
+        (   term_to_atom(Goal, GoalAtom),
+            process_create(path(swipl),
+                ['-q', '-l', AbsPath, '-g', GoalAtom, '-t', 'halt'],
                 [stdout(std), stderr(std), process(Pid)]),
             process_wait(Pid, exit(EC))
         ),
@@ -73,15 +104,15 @@ main :-
     format('~n========================================~n', []),
     format('F# WAM target test suite~n', []),
     format('========================================~n', []),
-    findall(P-L, fsharp_test(P, L), Tests),
+    findall(test(P, L, G), fsharp_test(P, L, G), Tests),
     length(Tests, Total),
     run_all(Tests, [], Results),
     summarize(Results, Total).
 
 run_all([], Acc, Reversed) :-
     reverse(Acc, Reversed).
-run_all([P-L|Rest], Acc, Out) :-
-    run_one(P, L, Status),
+run_all([test(P, L, G)|Rest], Acc, Out) :-
+    run_one(P, L, G, Status),
     run_all(Rest, [Status|Acc], Out).
 
 summarize(Results, Total) :-

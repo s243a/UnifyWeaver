@@ -886,6 +886,61 @@ fail_no_binding:
   ret i1 false
 }
 
+; Unify a native-kernel result with one WAM register.  Ordinary compiled
+; variables arrive as Ref chains, while direct ABI tests may use a bare
+; Unbound value.  wam_unify_value handles Ref identity and already-bound
+; values; the direct-Unbound case needs the register-aware binder.
+define i1 @wam_unify_reg_value(
+    %WamState* %vm, i32 %idx, %Value %val) alwaysinline nounwind {
+entry:
+  %raw = call %Value @wam_get_reg(%WamState* %vm, i32 %idx)
+  %deref = call %Value @wam_deref_value(%WamState* %vm, %Value %raw)
+  %logical_unbound = call i1 @value_is_unbound(%Value %deref)
+  %raw_tag = extractvalue %Value %raw, 0
+  %raw_unbound = icmp eq i32 %raw_tag, 6
+  %direct_unbound = and i1 %logical_unbound, %raw_unbound
+  br i1 %direct_unbound, label %bind_direct, label %unify
+
+bind_direct:
+  call void @wam_bind_reg(%WamState* %vm, i32 %idx, %Value %val)
+  ret i1 true
+
+unify:
+  %ok = call i1 @wam_unify_value(
+      %WamState* %vm, %Value %raw, %Value %val)
+  ret i1 %ok
+}
+
+; Bind a paired foreign result transactionally.  If the two output
+; registers alias and the tuple components cannot unify, roll the first
+; binding back instead of overwriting the shared heap cell.
+define i1 @wam_unify_reg_pair(
+    %WamState* %vm,
+    i32 %idx1, %Value %val1,
+    i32 %idx2, %Value %val2) nounwind {
+entry:
+  %ts_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 9
+  %saved_ts = load i32, i32* %ts_ptr
+  %ok1 = call i1 @wam_unify_reg_value(
+      %WamState* %vm, i32 %idx1, %Value %val1)
+  br i1 %ok1, label %bind_second, label %fail
+
+bind_second:
+  %ok2 = call i1 @wam_unify_reg_value(
+      %WamState* %vm, i32 %idx2, %Value %val2)
+  br i1 %ok2, label %success, label %rollback
+
+rollback:
+  call void @unwind_trail(%WamState* %vm, i32 %saved_ts)
+  br label %fail
+
+success:
+  ret i1 true
+
+fail:
+  ret i1 false
+}
+
 ; Trail a heap-cell binding. Uses the high bit (0x40000000) of the
 ; TrailEntry's reg_idx field as a "heap" sentinel to distinguish from
 ; register indices (which are always 0-63). unwind_trail reads that
@@ -3202,13 +3257,16 @@ fail_free:
 ; through the foreign paired iterator (result_reg=255).
 define i1 @wam_td3_run(%WamState* %vm, %AtomFactPair* %table, i64 %len, i64 %max_atom_id) {
 entry:
-  %s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %s_val = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %s_tag = extractvalue %Value %s_val, 0
   %s_is_atom = icmp eq i32 %s_tag, 0
   br i1 %s_is_atom, label %check_t, label %bail
 
 check_t:
-  ; If A2 is unbound, use stream mode (enumerate all reachable pairs).
-  %t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  ; Inspect the logical value, not the raw register.  Compiled Prolog
+  ; variables use Ref-backed heap cells for A2/A3.
+  %t_val = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %t_tag = extractvalue %Value %t_val, 0
   %t_is_atom = icmp eq i32 %t_tag, 0
   br i1 %t_is_atom, label %run_bfs, label %check_t_unbound
 
@@ -3217,8 +3275,18 @@ check_t_unbound:
   br i1 %t_is_unbound, label %stream, label %bail
 
 run_bfs:
-  %start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
-  %target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %start_id = extractvalue %Value %s_val, 1
+  %target_id = extractvalue %Value %t_val, 1
+  ; The per-instance bound is derived from its edge table, while atom IDs
+  ; come from the module-wide interner.  An otherwise valid atom can
+  ; therefore lie outside these scratch arrays.  Reject it before the
+  ; generic BFS indexes visited[start].
+  %start_in_range = icmp ule i64 %start_id, %max_atom_id
+  %target_in_range = icmp ule i64 %target_id, %max_atom_id
+  %ids_in_range = and i1 %start_in_range, %target_in_range
+  br i1 %ids_in_range, label %run_bfs_in_range, label %bail
+
+run_bfs_in_range:
   %same = icmp eq i64 %start_id, %target_id
   br i1 %same, label %rplus_self, label %dist_other
 
@@ -3254,7 +3322,8 @@ check_bound_d:
   br i1 %pos, label %check_d_reg, label %bail
 
 check_d_reg:
-  %d_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 2)
+  %d_val = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %d_tag = extractvalue %Value %d_val, 0
   %d_is_int = icmp eq i32 %d_tag, 1
   br i1 %d_is_int, label %verify_d, label %check_d_unbound
 
@@ -3263,13 +3332,16 @@ check_d_unbound:
   br i1 %d_is_unbound, label %write_d, label %bail
 
 verify_d:
-  %want_d = call i64 @wam_get_reg_payload(%WamState* %vm, i32 2)
+  %want_d = extractvalue %Value %d_val, 1
   %d_match = icmp eq i64 %want_d, %dist
   br i1 %d_match, label %ok_ret, label %bail
 
 write_d:
-  call void @wam_set_reg_int(%WamState* %vm, i32 2, i64 %dist)
-  br label %ok_ret
+  %dist_val_0 = insertvalue %Value undef, i32 1, 0
+  %dist_val = insertvalue %Value %dist_val_0, i64 %dist, 1
+  %dist_bound = call i1 @wam_unify_reg_value(
+      %WamState* %vm, i32 2, %Value %dist_val)
+  ret i1 %dist_bound
 
 ok_ret:
   ret i1 true
@@ -3294,8 +3366,12 @@ entry:
   call void @wam_arena_ensure()
   %arena_save = call i64 @wam_arena_mark()
   %vis_bytes = shl i64 %n, 2
-  %q_bytes = shl i64 %n, 3
-  %dq_bytes = shl i64 %n, 2
+  ; Source is the seed but is deliberately not pre-visited.  A cycle can
+  ; discover and enqueue every one of the n atom IDs, including Source,
+  ; so the lifetime total is the seed plus n discovered nodes.
+  %q_slots = add i64 %n, 1
+  %q_bytes = shl i64 %q_slots, 3
+  %dq_bytes = shl i64 %q_slots, 2
   %vis_mem = call i8* @wam_arena_alloc(i64 %vis_bytes)
   %q_mem = call i8* @wam_arena_alloc(i64 %q_bytes)
   %dq_mem = call i8* @wam_arena_alloc(i64 %dq_bytes)
@@ -3391,13 +3467,21 @@ define i1 @wam_td3_stream_run(
     %WamState* %vm,
     %AtomFactPair* %table, i64 %len, i64 %max_atom_id) {
 entry:
-  %start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
+  %start_val = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %start_id = extractvalue %Value %start_val, 1
   %n = add i64 %max_atom_id, 1
 
+  ; A module-global atom ID may be outside this kernel instances edge-table
+  ; range.  Check it before indexing visited or seeding the scratch queue.
+  %start_in_range = icmp ule i64 %start_id, %max_atom_id
+  br i1 %start_in_range, label %check_distance_filter, label %stream_fail_early
+
+check_distance_filter:
   ; Optional distance filter from bound A3 (tag 1 = Integer).
-  %d_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 2)
+  %d_val = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %d_tag = extractvalue %Value %d_val, 0
   %d_is_int = icmp eq i32 %d_tag, 1
-  %want_d = call i64 @wam_get_reg_payload(%WamState* %vm, i32 2)
+  %want_d = extractvalue %Value %d_val, 1
   %d_pos = icmp sgt i64 %want_d, 0
   %filter_active = and i1 %d_is_int, %d_pos
   ; Bound non-positive / non-int non-unbound D → empty stream (fail).
@@ -3412,8 +3496,11 @@ alloc:
   call void @wam_arena_ensure()
   %arena_save = call i64 @wam_arena_mark()
   %vis_bytes = shl i64 %n, 2
-  %q_bytes = shl i64 %n, 3
-  %dq_bytes = shl i64 %n, 2
+  ; Strict dist+ may enqueue Source after a cycle, in addition to the
+  ; initial seed and every other table atom.
+  %q_slots = add i64 %n, 1
+  %q_bytes = shl i64 %q_slots, 3
+  %dq_bytes = shl i64 %q_slots, 2
   %vis_mem = call i8* @wam_arena_alloc(i64 %vis_bytes)
   %q_mem = call i8* @wam_arena_alloc(i64 %q_bytes)
   %dq_mem = call i8* @wam_arena_alloc(i64 %dq_bytes)
@@ -3528,13 +3615,13 @@ bfs_done:
   br i1 %no_results, label %stream_fail, label %stream_yield
 
 stream_yield:
-  ; Yield first pair: result[0] → A2 (atom), result[1] → A3 (distance).
+  ; Snapshot the caller's unbound/bound Ref-backed registers before the
+  ; first binding, exactly as retries do.  This lets final exhaustion
+  ; restore the original variables instead of the first yielded tuple.
   %first_atom_ptr = getelementptr %Value, %Value* %results, i64 0
   %first_atom = load %Value, %Value* %first_atom_ptr
-  call void @wam_set_reg(%WamState* %vm, i32 1, %Value %first_atom)
   %first_dist_ptr = getelementptr %Value, %Value* %results, i64 1
   %first_dist = load %Value, %Value* %first_dist_ptr
-  call void @wam_set_reg(%WamState* %vm, i32 2, %Value %first_dist)
 
   ; Push foreign choice point with paired results (2 entries per pair).
   ; result_reg=1 (A2). The generic iterator will write atoms to A2,
@@ -3552,7 +3639,21 @@ stream_yield:
       i32 255,
       i32 %pc)
 
+  ; Unify rather than overwrite so A2/A3 aliases obey Prolog semantics.
+  %first_ok = call i1 @wam_unify_reg_pair(
+      %WamState* %vm,
+      i32 1, %Value %first_atom,
+      i32 2, %Value %first_dist)
+  br i1 %first_ok, label %stream_yield_ok, label %stream_yield_reject
+
+stream_yield_ok:
   ret i1 true
+
+stream_yield_reject:
+  ; Atom Target and Integer Distance cannot satisfy an aliased output
+  ; variable.  Drop the just-created iterator and restore its snapshot.
+  call void @wam_discard_top_foreign_choice_point(%WamState* %vm)
+  ret i1 false
 
 stream_fail:
   call void @free(i8* %res_mem)
@@ -4809,6 +4910,46 @@ entry:
   ret void
 }
 
+; Discard a foreign iterator created before its first tuple was found to
+; unify.  Unlike the exhaustion path, this must not backtrack into an outer
+; choice point: the caller is still returning failure from the foreign call.
+define void @wam_discard_top_foreign_choice_point(%WamState* %vm) {
+entry:
+  %cpn_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 13
+  %cpn = load i32, i32* %cpn_ptr
+  %top_idx = sub i32 %cpn, 1
+  %cps_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 12
+  %cps = load %ChoicePoint*, %ChoicePoint** %cps_ptr
+  %top = getelementptr %ChoicePoint, %ChoicePoint* %cps, i32 %top_idx
+
+  %fr_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 8
+  %fr = load i8*, i8** %fr_ptr
+  %fr_null = icmp eq i8* %fr, null
+  br i1 %fr_null, label %restore, label %free_results
+
+free_results:
+  call void @free(i8* %fr)
+  br label %restore
+
+restore:
+  %dst_regs = getelementptr %WamState, %WamState* %vm, i32 0, i32 1, i32 0
+  %src_regs = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 1, i32 0
+  %dst_raw = bitcast %Value* %dst_regs to i8*
+  %src_raw = bitcast %Value* %src_regs to i8*
+  call void @llvm.memcpy.p0i8.p0i8.i64(
+      i8* %dst_raw, i8* %src_raw, i64 512, i1 false)
+
+  %tm_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 2
+  %tm = load i32, i32* %tm_ptr
+  call void @unwind_trail(%WamState* %vm, i32 %tm)
+
+  %scp_ptr = getelementptr %ChoicePoint, %ChoicePoint* %top, i32 0, i32 3
+  %scp = load i32, i32* %scp_ptr
+  call void @wam_set_cp(%WamState* %vm, i32 %scp)
+  store i32 %top_idx, i32* %cpn_ptr
+  ret void
+}
+
 ; Advance the foreign result iterator on the top choice point.
 ; Called by @backtrack when it detects agg_type == -2.
 ;
@@ -4880,18 +5021,42 @@ yield_paired:
   %cursor_64_p = zext i32 %cursor to i64
   %val1_ptr = getelementptr %Value, %Value* %results_p, i64 %cursor_64_p
   %val1 = load %Value, %Value* %val1_ptr
-  call void @wam_trail_binding(%WamState* %vm, i32 1)
-  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %val1)
   %cursor_64_p1 = add i64 %cursor_64_p, 1
   %val2_ptr = getelementptr %Value, %Value* %results_p, i64 %cursor_64_p1
   %val2 = load %Value, %Value* %val2_ptr
+  %next_cursor_p = add i32 %cursor, 2
+  ; New TD3 choice points snapshot A2 while it is still logically
+  ; unbound.  Use the same transactional unifier as the first yield.
+  ; Older paired kernels snapshot after writing their first tuple;
+  ; retain their legacy overwrite path until those producers migrate.
+  %out1_before = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %out1_unbound = call i1 @value_is_unbound(%Value %out1_before)
+  br i1 %out1_unbound, label %yield_paired_unify, label %yield_paired_legacy
+
+yield_paired_legacy:
+  call void @wam_trail_binding(%WamState* %vm, i32 1)
+  call void @wam_bind_reg(%WamState* %vm, i32 1, %Value %val1)
   call void @wam_trail_binding(%WamState* %vm, i32 2)
   call void @wam_bind_reg(%WamState* %vm, i32 2, %Value %val2)
-  %next_cursor_p = add i32 %cursor, 2
   br label %yield_done
 
+yield_paired_unify:
+  %pair_ok = call i1 @wam_unify_reg_pair(
+      %WamState* %vm,
+      i32 1, %Value %val1,
+      i32 2, %Value %val2)
+  br i1 %pair_ok, label %yield_done, label %yield_paired_reject
+
+yield_paired_reject:
+  store i32 %next_cursor_p, i32* %cur_ptr
+  %pair_retry = call i1 @wam_foreign_iter_next(%WamState* %vm)
+  ret i1 %pair_retry
+
 yield_done:
-  %next_cursor = phi i32 [%next_cursor_s, %yield_single], [%next_cursor_p, %yield_paired]
+  %next_cursor = phi i32
+      [%next_cursor_s, %yield_single],
+      [%next_cursor_p, %yield_paired_legacy],
+      [%next_cursor_p, %yield_paired_unify]
   store i32 %next_cursor, i32* %cur_ptr
 
   ; Set PC to return_pc (proceed to next instruction after the foreign call)

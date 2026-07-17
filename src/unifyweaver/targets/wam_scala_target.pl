@@ -895,13 +895,14 @@ emit_scala_kernel_handler(recursive_kernel(transitive_closure2, _Pred/2, ConfigO
 % dist+ (docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md): BFS shortest
 % positive distance; each target once. Visited not seeded with source so
 % Source appears only via self-loop / nonempty cycle. Inline kept (matches
-% surrounding emit_scala_kernel_handler style).
+% surrounding emit_scala_kernel_handler style). The strict contract also
+% requires Source to dereference to a bound Atom before traversal.
 emit_scala_kernel_handler(recursive_kernel(transitive_distance3, _Pred/3, ConfigOps), Code) :-
     member(edge_pred(EdgePred/2), ConfigOps),
     format(atom(EdgeKey), '~w/2', [EdgePred]),
     scala_string_literal(EdgeKey, EdgeKeyLit),
     format(string(Code),
-"new ForeignHandler {\n      private lazy val adj: Map[WamTerm, Vector[WamTerm]] =\n        WamRuntime.collectBinarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(_._2) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        val dist = scala.collection.mutable.LinkedHashMap[WamTerm, Int]()\n        val seen = scala.collection.mutable.HashSet[WamTerm]()\n        val queue = scala.collection.mutable.Queue[(WamTerm, Int)]((source, 0))\n        while (queue.nonEmpty) {\n          val (node, d) = queue.dequeue()\n          for (nb <- adj.getOrElse(node, Vector.empty) if !seen.contains(nb)) {\n            seen += nb\n            dist(nb) = d + 1\n            queue.enqueue((nb, d + 1))\n          }\n        }\n        val sols = dist.toVector.map { case (t, dd) => Map(2 -> t, 3 -> IntTerm(dd)) }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+"new ForeignHandler {\n      private lazy val adj: Map[WamTerm, Vector[WamTerm]] =\n        WamRuntime.collectBinarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(_._2) }\n      def apply(args: Array[WamTerm]): ForeignResult =\n        args(0) match {\n          // TD3 Source contract: bound Atom only; Ref/numeric/compound fail.\n          case source @ Atom(_) =>\n            val dist = scala.collection.mutable.LinkedHashMap[WamTerm, Int]()\n            val seen = scala.collection.mutable.HashSet[WamTerm]()\n            val queue = scala.collection.mutable.Queue[(WamTerm, Int)]((source, 0))\n            while (queue.nonEmpty) {\n              val (node, d) = queue.dequeue()\n              for (nb <- adj.getOrElse(node, Vector.empty) if !seen.contains(nb)) {\n                seen += nb\n                dist(nb) = d + 1\n                queue.enqueue((nb, d + 1))\n              }\n            }\n            val sols = dist.toVector.map { case (t, dd) => Map(2 -> t, 3 -> IntTerm(dd)) }\n            if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n          case _ => ForeignFail\n        }\n    }",
            [EdgeKeyLit]).
 
 % transitive_parent_distance4: pd(Start, Target, Parent, Distance). BFS over
