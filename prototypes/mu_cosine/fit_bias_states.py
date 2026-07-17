@@ -335,8 +335,6 @@ def _require(path, what):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--ckpt", default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                   "model_prod_namecond.pt"))
     ap.add_argument("--luna-campaign", default="/tmp/mu_data/campaign_scored_luna.tsv")
     ap.add_argument("--seed", type=int, default=0, help="node-disjoint split seed for the train fit")
     ap.add_argument("--prior-sd", type=float, default=0.10)
@@ -345,7 +343,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     from eval_luna_transfer import load_luna
-    from fine_tune_channel_heads import CAMPAIGN_SCORED, load_campaign_datasets, load_expanded
+    from fine_tune_channel_heads import CAMPAIGN_SCORED, load_campaign_datasets
     from node_disjoint_eval import node_disjoint_pair_split
     from run_product_kalman_logit import dequant
     from run_product_kalman_realdata import DATASETS, affine_calibrate
@@ -356,8 +354,6 @@ def main(argv=None):
     _require(a.luna_campaign, "luna campaign labels")
     lp, lD, lS = load_luna(a.luna_campaign)
     luna_by = {p: (lD[i], lS[i]) for i, p in enumerate(lp)}
-    ref, _ = load_expanded(a.ckpt, dev="cpu")
-    ref.eval()
     dss = load_campaign_datasets()
 
     for name, ds in dss.items():
