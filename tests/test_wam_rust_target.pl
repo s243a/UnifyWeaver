@@ -504,6 +504,8 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, 'MetadataExt'),
         sub_string(S, _, _, _, '"make_directory/1" | "delete_file/1" | "delete_directory/1"'),
         sub_string(S, _, _, _, '"copy_file/2" | "rename_file/2"'),
+        sub_string(S, _, _, _, '"read_file_to_atom/2"'),
+        sub_string(S, _, _, _, '"write_atom_to_file/2" | "append_atom_to_file/2"'),
         %% copy_term_walk helper (sharing-preserving recursive copy).
         sub_string(S, _, _, _, 'copy_term_walk'),
         %% Runtime-parser bridge support and the parser-required text/list builtins.
