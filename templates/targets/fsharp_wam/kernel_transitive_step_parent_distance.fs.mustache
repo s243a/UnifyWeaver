@@ -1,0 +1,53 @@
+/// Native foreign acceleration for the shared transitive_step_parent_distance5
+/// pattern. Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
+///
+/// Contract: shortest-positive correlated step/parent
+/// (docs/design/WAM_TRANSITIVE_STEP_PARENT_DISTANCE5_CONTRACT.md).
+/// Emit every distinct (Target, Step, Parent, Distance) where Distance is
+/// dist+(Source, Target) and (Step, Parent) is a correlated pair realized by
+/// some length-D shortest path. Equal-shortest correlated pairs are all
+/// emitted; never cross-product independent Step/Parent sets. Source appears
+/// only for a self-loop (Source,Source,Source,1) or the shortest nonempty
+/// cycle — never distance 0.
+///
+/// Organization: Mustache kept (BFS + distance map + correlated pair sets +
+/// quadruple construction is non-trivial; mirrors F# TPD4 and Haskell
+/// kernel_transitive_step_parent_distance.hs.mustache). Lookup-function style
+/// matches nativeKernel_transitive_parent_distance.
+///
+/// Returns (interned Target, Step, Parent, Distance) quadruples; executeForeign
+/// streams them via the existing four-output binder + FFIStreamRetry.
+let nativeKernel_transitive_step_parent_distance
+    (edges: int -> int list)
+    (source: int) : (int * int * int * int) list =
+    let dist = System.Collections.Generic.Dictionary<int, int>()
+    let pairs =
+        System.Collections.Generic.Dictionary<int, System.Collections.Generic.HashSet<int * int>>()
+    let mutable frontier = [(source, 0)]
+    while not (List.isEmpty frontier) do
+        let next = System.Collections.Generic.List<int * int>()
+        for (node, d) in frontier do
+            let nd = d + 1
+            for n in edges node do
+                let cands =
+                    if node = source then
+                        [ (n, source) ]
+                    else
+                        pairs.[node]
+                        |> Seq.map (fun (step, _) -> (step, node))
+                        |> Seq.distinct
+                        |> Seq.toList
+                match dist.TryGetValue(n) with
+                | false, _ ->
+                    dist.[n] <- nd
+                    let hs = System.Collections.Generic.HashSet<int * int>()
+                    for c in cands do hs.Add(c) |> ignore
+                    pairs.[n] <- hs
+                    next.Add((n, nd))
+                | true, d0 when d0 = nd ->
+                    for c in cands do pairs.[n].Add(c) |> ignore
+                | _ -> ()
+        frontier <- List.ofSeq next
+    [ for KeyValue(t, d) in dist do
+        for (step, parent) in pairs.[t] do
+            yield (t, step, parent, d) ]

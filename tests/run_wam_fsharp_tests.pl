@@ -15,7 +15,11 @@
 %%   tests/test_wam_tpd4_contract_parity.pl
 %%     - fleet TPD4 shortest-positive-parents oracle/structural checks plus
 %%       executable F#/C/Rust/Elixir coverage; LLVM remains capability-gated.
-%%   focused Rust, Go, Scala, R, Haskell, Elixir, and LLVM TD3/TPD4 regressions
+%%   tests/test_wam_tspd5_contract_parity.pl
+%%     - fleet TSPD5 shortest-positive correlated step/parent oracle/structural
+%%       checks plus executable F#/C/Rust/Elixir/Go coverage; LLVM remains
+%%       capability-gated.
+%%   focused Rust, Go, Scala, R, Haskell, Elixir, and LLVM TD3/TPD4/TSPD5 regressions
 %%     - exercise transactional correlated-tuple binding, the R aggregate
 %%       path, Elixir ordinary retries, and LLVM exact paired streaming /
 %%       range safety.
@@ -58,6 +62,9 @@ fsharp_test('tests/test_wam_td3_contract_parity.pl',
 fsharp_test('tests/test_wam_tpd4_contract_parity.pl',
             'TPD4 shortest-positive-parents fleet contract + F# native kernel',
             run_tests).
+fsharp_test('tests/test_wam_tspd5_contract_parity.pl',
+            'TSPD5 shortest-positive correlated step/parent fleet contract + F# native kernel',
+            run_tests).
 fsharp_test('tests/test_wam_rust_foreign_tuple_aliases.pl',
             'Rust correlated foreign-tuple alias/retry cleanup', run_tests).
 fsharp_test('tests/test_wam_go_foreign_tuple_aliases.pl',
@@ -84,13 +91,17 @@ fsharp_test('tests/test_wam_haskell_target.pl',
              test_same_kind_kernel_body_deduplicated,
              test_tpd4_generated_ghc_smoke)).
 fsharp_test('tests/test_wam_elixir_target.pl',
-            'TD3/TPD4 Elixir bound modes + ordinary retry stream regressions',
+            'TD3/TPD4/TSPD5 Elixir bound modes + ordinary retry stream regressions',
             (test_graph_kernel_transitive_distance_uses_distplus_bfs,
              test_kernel_dispatch_emits_transitive_distance_module,
              test_kernel_dispatch_transitive_distance_e2e,
              test_graph_kernel_transitive_parent_distance_uses_bfs_parent_sets,
              test_kernel_dispatch_emits_transitive_parent_distance_module,
-             test_kernel_dispatch_transitive_parent_distance_e2e)).
+             test_kernel_dispatch_transitive_parent_distance_e2e,
+             test_graph_kernel_transitive_step_parent_distance_emitted_in_runtime,
+             test_graph_kernel_tspd_uses_bfs_correlated_contract,
+             test_kernel_dispatch_emits_transitive_step_parent_distance_module,
+             test_shared_detector_finds_transitive_step_parent_distance)).
 fsharp_test('tests/core/test_wam_llvm_reach_execution.pl',
             'TD3 LLVM bound-distance + range-safety execution', test_all).
 fsharp_test('tests/core/test_wam_llvm_td3_stream_execution.pl',
