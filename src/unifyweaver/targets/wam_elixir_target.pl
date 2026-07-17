@@ -4274,25 +4274,35 @@ defmodule WamRuntime.GraphKernel.TransitiveParentDistance do
 
         {q2, dist2, parents2} =
           Enum.reduce(neighbors_fn.(node), {q1, dist, parents}, fn {_from, target}, {qq, dd, pp} ->
-            case Map.get(dd, target) do
-              nil ->
-                {
-                  :queue.in({target, next_depth}, qq),
-                  Map.put(dd, target, next_depth),
-                  Map.put(pp, target, MapSet.new([node]))
-                }
+            if atom_node?(target) do
+              case Map.get(dd, target) do
+                nil ->
+                  {
+                    :queue.in({target, next_depth}, qq),
+                    Map.put(dd, target, next_depth),
+                    Map.put(pp, target, MapSet.new([node]))
+                  }
 
-              ^next_depth ->
-                {qq, dd, Map.update!(pp, target, &MapSet.put(&1, node))}
+                ^next_depth ->
+                  {qq, dd, Map.update!(pp, target, &MapSet.put(&1, node))}
 
-              _ ->
-                {qq, dd, pp}
+                _ ->
+                  {qq, dd, pp}
+              end
+            else
+              # TPD4 is an atom-node relation. Mixed-domain fact rows must
+              # neither become outputs nor bridge an otherwise atom path.
+              {qq, dd, pp}
             end
           end)
 
         bfs(neighbors_fn, q2, dist2, parents2)
     end
   end
+
+  # Default lowering represents atoms as binaries; intern_atoms(true) uses
+  # BEAM atoms. Other FactSource values are outside the TPD4 node domain.
+  defp atom_node?(value), do: is_binary(value) or is_atom(value)
 
   @doc """
   Convenience for FactSource-backed graphs.

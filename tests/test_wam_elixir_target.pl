@@ -1964,6 +1964,9 @@ test_graph_kernel_transitive_parent_distance_uses_bfs_parent_sets :-
         sub_string(RuntimeCode, Start, BodyLen, _, Body),
         sub_string(Body, _, _, _, ":queue.in({start, 0}"),
         sub_string(Body, _, _, _, "MapSet.new([node])"),
+        sub_string(Body, _, _, _, "if atom_node?(target) do"),
+        sub_string(Body, _, _, _,
+                   "defp atom_node?(value), do: is_binary(value) or is_atom(value)"),
         sub_string(Body, _, _, _, "shortest-positive parents"),
         \+ sub_string(Body, _, _, _, "NO cycle detection"),
         \+ sub_string(Body, _, _, _, "[{node, depth} | rest]")

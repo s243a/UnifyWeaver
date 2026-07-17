@@ -74,7 +74,9 @@ fsharp_test('tests/test_wam_scala_kernels.pl',
               run_tests(wam_scala_kernels_structural:
                         parent_distance_kernel_emits_handler_and_stub),
               run_tests(wam_scala_kernels_runtime:
-                        transitive_distance_rejects_non_atom_source) )).
+                        transitive_distance_rejects_non_atom_source),
+              run_tests(wam_scala_kernels_runtime:
+                        transitive_parent_distance_rejects_non_atom_nodes) )).
 fsharp_test('tests/test_wam_haskell_target.pl',
             'TD3/TPD4 Haskell multi-output foreign retry regressions',
             (test_multi_output_foreign_filters_bound_results,

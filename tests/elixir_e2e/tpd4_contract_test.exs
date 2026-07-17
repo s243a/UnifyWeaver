@@ -134,8 +134,9 @@ defmodule Tpd4ContractTest do
         {b, d},
         {c, d},
         {d, a},
-        # The row proves that the Source type gate rejects integers
-        # before looking in the fact store.
+        # Mixed-domain rows are deliberately connected to the atom graph.
+        # TPD4 must not emit the integer node or continue through it.
+        {a, 1},
         {1, value(representation, :integer_key_destination)}
       ],
       &:ets.insert(table, &1)
@@ -203,6 +204,12 @@ defmodule Tpd4ContractTest do
       )
 
       assert_equal("#{label} all-bound mismatch", Probe.Kdpd.run([a, d, c, 1]), :fail)
+
+      assert_equal(
+        "#{label} integer Target",
+        Probe.Kdpd.run([a, 1, a, 1]),
+        :fail
+      )
 
       # Shared output variables must be unified jointly, not treated as
       # independent wildcards by the compatibility pre-filter.
