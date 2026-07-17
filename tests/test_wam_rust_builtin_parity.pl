@@ -136,6 +136,20 @@ t_file_content_io(Content) :-
     read_file_to_atom('file_content_compiled_fixture.txt', Content),
     delete_file('file_content_compiled_fixture.txt').
 
+:- dynamic t_file_links_truncate/1.
+t_file_links_truncate(Content) :-
+    make_directory('file_link_compiled_fixture'),
+    write_atom_to_file('file_link_compiled_fixture/source.txt', abcdef),
+    link('file_link_compiled_fixture/source.txt',
+         'file_link_compiled_fixture/hard.txt'),
+    symlink('source.txt', 'file_link_compiled_fixture/symbolic.txt'),
+    truncate('file_link_compiled_fixture/hard.txt', 3),
+    read_file_to_atom('file_link_compiled_fixture/symbolic.txt', Content),
+    delete_file('file_link_compiled_fixture/symbolic.txt'),
+    delete_file('file_link_compiled_fixture/hard.txt'),
+    delete_file('file_link_compiled_fixture/source.txt'),
+    delete_directory('file_link_compiled_fixture').
+
 :- dynamic t_pairs_project/2.
 t_pairs_project(Keys, Values) :-
     Pairs = [a-1, b-2],
@@ -278,6 +292,7 @@ test_builtin_parity_execution :-
              user:t_filesystem_identity/2,
              user:t_filesystem_mutation/0,
              user:t_file_content_io/1,
+             user:t_file_links_truncate/1,
              user:t_pairs_project/2, user:t_pairs_split/2, user:t_pairs_zip/1,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
@@ -312,6 +327,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_filesystem_identity_2,
     t_filesystem_mutation_0,
     t_file_content_io_1,
+    t_file_links_truncate_1,
     t_pairs_project_2, t_pairs_split_2, t_pairs_zip_1,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
     t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
@@ -660,6 +676,60 @@ fn test_file_content_io_direct() {
     assert!(!call2("append_atom_to_file/2", ub("Path"), a("content")).0);
 
     std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn test_file_links_truncate_compiled() {
+    let fixture = std::path::Path::new("file_link_compiled_fixture");
+    let _ = std::fs::remove_dir_all(fixture);
+
+    let mut vm = vmnew();
+    assert!(t_file_links_truncate_1(&mut vm, ub("Content")));
+    assert_eq!(read_var(&vm, "Content"), a("abc"));
+    assert!(!fixture.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_file_links_truncate_direct() {
+    let fixture = std::path::Path::new("file_link_direct_fixture");
+    let _ = std::fs::remove_dir_all(fixture);
+    std::fs::create_dir(fixture).unwrap();
+
+    let source = fixture.join("source.txt");
+    let hard = fixture.join("hard.txt");
+    let symbolic = fixture.join("symbolic.txt");
+    let dangling = fixture.join("dangling.txt");
+    std::fs::write(&source, b"abcdef").unwrap();
+    let source_text = source.to_str().unwrap();
+    let hard_text = hard.to_str().unwrap();
+    let symbolic_text = symbolic.to_str().unwrap();
+    let dangling_text = dangling.to_str().unwrap();
+
+    assert!(call2("link/2", a(source_text), a(hard_text)).0);
+    assert!(call2("same_file/2", a(source_text), a(hard_text)).0);
+    assert!(!call2("link/2", a(source_text), a(hard_text)).0);
+
+    assert!(call2("symlink/2", a("source.txt"), a(symbolic_text)).0);
+    assert_eq!(std::fs::read(&symbolic).unwrap(), b"abcdef");
+    assert!(!call2("symlink/2", a("source.txt"), a(symbolic_text)).0);
+    assert!(call2("symlink/2", a("missing.txt"), a(dangling_text)).0);
+    assert!(std::fs::symlink_metadata(&dangling).unwrap().file_type().is_symlink());
+
+    assert!(call2("truncate/2", a(hard_text), i(3)).0);
+    assert_eq!(std::fs::read(&source).unwrap(), b"abc");
+    assert!(call2("truncate/2", a(source_text), i(6)).0);
+    assert_eq!(std::fs::read(&source).unwrap(), vec![97, 98, 99, 0, 0, 0]);
+
+    assert!(!call2("link/2", a("missing-link-source"), a("unused-link")).0);
+    assert!(!call2("link/2", i(1), a("unused-link")).0);
+    assert!(!call2("symlink/2", a("target"), i(2)).0);
+    assert!(!call2("truncate/2", a("missing-truncate-path"), i(1)).0);
+    assert!(!call2("truncate/2", a(source_text), i(-1)).0);
+    assert!(!call2("truncate/2", a(source_text), a("3")).0);
+
+    std::fs::remove_dir_all(fixture).unwrap();
 }
 
 #[test]
