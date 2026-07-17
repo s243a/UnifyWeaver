@@ -75,6 +75,37 @@ def group_of(tag):
     return "principal" if tag.startswith("principal") else tag
 
 
+def load_with_lineage_ops(ckpt, dev="cpu"):
+    """load_expanded, then grow the op tables 4→len(OPS) so LINEAGE/LINEAGE_RANK are addressable.
+
+    New op_emb rows are zero-init fresh rows (the train_lineage.py precedent); new op_name card
+    rows get their e5 card (name prior) with a ZERO residual — the onboarding story."""
+    import math
+
+    m, cfg_ = load_expanded(ckpt, dev=dev)
+    n_old = m.op_emb.weight.shape[0]
+    if n_old < len(OPS):
+        grow = len(OPS) - n_old
+        d_model = m.op_emb.weight.shape[1]
+        with torch.no_grad():
+            m.op_emb.weight.data = torch.cat(
+                [m.op_emb.weight.data, torch.zeros(grow, d_model)], 0)
+            # per-operator readout heads grow with FRESH rows (constructor init — train_lineage's
+            # "copy old rows, leave new rows fresh"); deterministic under the caller's torch seed
+            m.readout_w.data = torch.cat(
+                [m.readout_w.data, torch.randn(grow, d_model) * (1.0 / math.sqrt(d_model))], 0)
+            m.readout_b.data = torch.cat([m.readout_b.data, torch.zeros(grow)], 0)
+        if getattr(m, "op_name", None) is not None:
+            from judge_cards import op_card_e5
+            E, _ = op_card_e5()
+            with torch.no_grad():
+                m.op_name.name_e5 = E[: len(OPS)].to(m.op_name.name_e5.dtype)
+                m.op_name.resid.weight.data = torch.cat(
+                    [m.op_name.resid.weight.data,
+                     torch.zeros(grow, m.op_name.resid.weight.shape[1])], 0)
+    return m, cfg_
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", default=os.path.join(ROOT, "model_prod_namecond_full.pt"),
@@ -109,9 +140,9 @@ def main(argv=None):
     print(f"node-disjoint split (seed {a.split_seed}): train {len(tr)} / held {len(he)} / "
           f"cross {len(split.cross)} (cross discarded)")
 
-    model, cfg = load_expanded(a.ckpt, dev=dev)
+    model, cfg = load_with_lineage_ops(a.ckpt, dev=dev)
     assert model.judge_name is not None, "checkpoint must be name-migrated"
-    ref, _ = load_expanded(a.ckpt, dev=dev)
+    ref, _ = load_with_lineage_ops(a.ckpt, dev=dev)
     ref.eval()
     for p in ref.parameters():
         p.requires_grad = False

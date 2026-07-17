@@ -27,7 +27,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from eval_filing import load_filing, metrics, rank_all
-from fine_tune_channel_heads import load_expanded
+from fine_tune_pearltrees_filing import load_with_lineage_ops
 from mu_attention import CORPORA, JUDGES, NODETYPE, OPS, Tokenizer, build_e5_tables
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -116,7 +116,8 @@ def main(argv=None):
 
     results = {}
     for label, ckpt in (("base", a.base), ("tuned", a.tuned)):
-        model, _ = load_expanded(ckpt, dev=dev)
+        torch.manual_seed(0)   # deterministic fresh LINEAGE readout rows when the base ckpt lacks them
+        model, _ = load_with_lineage_ops(ckpt, dev=dev)
         model.eval()
         # stock agnostic rankers (prior art; anchor loss should keep base≈tuned here)
         rank_of, order = rank_all(model, tok, qtbl, ptbl, idx, q_titles, f_titles, truepos, dev)
