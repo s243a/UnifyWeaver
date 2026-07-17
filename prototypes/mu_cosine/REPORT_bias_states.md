@@ -79,7 +79,7 @@ distance.
   5.5 gauge is structural (its labels are the target). 4 fits × 9 states = 36 states on ~350 train
   rows per split (~39 rows/state, thin-bin identifiability carried by the shrinkage + soft-w
   smoothing exactly as §1 of the design anticipates).
-- 14 synthetic unit tests (`test_bias_states.py`): implied-correction sign/magnitude recovery,
+- 12 synthetic unit tests (`test_bias_states.py`): implied-correction sign/magnitude recovery,
   zero-support fallback, refit-after-drop correctness, missing≠rand, boolean-mask handling,
   determinism, hard-switch limit, and the affine-first guard (a pure slope error leaves nothing for
   the bins once the affine is retained). A 20-agent adversarial review ran on the implementation;
