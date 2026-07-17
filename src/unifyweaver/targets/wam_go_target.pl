@@ -3386,6 +3386,13 @@ func heuristicLookup(triples []WeightedEdgeTriple, from string, target string) f
     return 0
 }
 
+// collectNativeWeightedShortestPathResults — finite nonnegative Dijkstra
+// for weighted_shortest_path3
+// (docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md).
+// Emit one (Target, float64) per reachable non-Source target. Source is
+// never emitted (even via self-loop / cycle). Indexed triples are
+// atom-keyed; a reachable invalid weight (NaN / Inf / negative) fails
+// the complete call (nil result → foreign fail).
 func (vm *WamState) collectNativeWeightedShortestPathResults(source string, triples []WeightedEdgeTriple) []Value {
     adjacency := weightedAdjacency(triples)
     dist := map[string]float64{source: 0}
@@ -3404,7 +3411,11 @@ func (vm *WamState) collectNativeWeightedShortestPathResults(source string, trip
             ))
         }
         for _, edge := range adjacency[current] {
-            candidate := dist[current] + edge.Weight
+            w := edge.Weight
+            if math.IsNaN(w) || math.IsInf(w, 0) || w < 0 {
+                return nil
+            }
+            candidate := dist[current] + w
             prev, exists := dist[edge.Right]
             if !exists || candidate < prev {
                 dist[edge.Right] = candidate

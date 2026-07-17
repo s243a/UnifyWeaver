@@ -4409,8 +4409,8 @@ end
 
 defmodule WamRuntime.GraphKernel.WeightedShortestPath do
   @moduledoc """
-  Native Dijkstra shortest-path kernel — bypasses WAM dispatch for
-  the canonical pattern:
+  Native Dijkstra shortest-path kernel for weighted_shortest_path3
+  (docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md).
 
       wsp(X, Y, W) :- weighted_edge(X, Y, W).
       wsp(X, Y, TotalW) :-
@@ -4418,26 +4418,13 @@ defmodule WamRuntime.GraphKernel.WeightedShortestPath do
           wsp(Mid, Y, RestW),
           TotalW is RestW + W1.
 
-  Returns `[{target, cost}, ...]` — the SHORTEST-path cost from
-  `start` to each reachable node (excluding start itself).
+  Returns `[{target, cost}, ...]` — the SHORTEST-path float cost from
+  `start` to each reachable node (excluding start itself). Source is
+  never emitted (even via self-loop / cycle). Integral sums remain floats.
 
-  Important semantic narrowing: the canonical Prolog pattern above
-  enumerates ALL paths from start to target with their summed
-  weights. This kernel computes only the SHORTEST. So:
-
-      findall(W, wsp(s, t, W), Ws)
-      ;; Prolog source: yields all path weights to t.
-      ;; Kernel:        yields a 1-element list — only the shortest.
-
-      findall(T-W, wsp(s, T, W), Pairs)
-      ;; Prolog source: yields one pair per (path, weight); same
-      ;;                target may appear multiple times.
-      ;; Kernel:        yields one pair per reachable target with
-      ;;                its shortest-path cost.
-
-      aggregate_all(min, wsp(s, t, W), MinW)
-      ;; Both produce the same answer — the kernel just computes it
-      ;; in O(E log V) instead of exponential path enumeration.
+  A reachable invalid row (non-atom destination, non-numeric / NaN /
+  Inf / negative weight) returns `:invalid` so the dispatch wrapper
+  fails the complete kernel call.
 
   Ported from the Rust kernel
   `collect_native_weighted_shortest_path_results` in
@@ -4450,8 +4437,7 @@ defmodule WamRuntime.GraphKernel.WeightedShortestPath do
   Edge predicate is 3-ary: `weighted_edges_fn(node)` receives a node
   and returns `[{from, to, weight}, ...]` triples (the weight at
   position 3, matching the FactSource lookup_by_arg1 contract for
-  arity-3 predicates). Weights must be non-negative for Dijkstras
-  correctness — the kernel does not validate this; caller responsibility.
+  arity-3 predicates).
 
   Cycle handling: Dijkstra naturally bounds termination via the dist
   map. Cycles do not loop indefinitely (a nodes dist gets updated
@@ -4459,20 +4445,24 @@ defmodule WamRuntime.GraphKernel.WeightedShortestPath do
   """
 
   @doc """
-  Returns `[{target, cost}, ...]` — shortest path cost from `start`
-  to every reachable node. `weighted_edges_fn` is a 1-arity function
-  receiving a node, returns `[{from, to, weight}, ...]` triples.
+  Returns `[{target, cost}, ...]` — shortest path float cost from
+  `start` to every reachable non-source node, or `:invalid` when a
+  reachable edge row is invalid. `weighted_edges_fn` is a 1-arity
+  function receiving a node, returns `[{from, to, weight}, ...]` triples.
   """
   def collect_path_costs(weighted_edges_fn, start)
       when is_function(weighted_edges_fn, 1) do
-    initial_dist = %{start => 0}
-    initial_heap = :gb_sets.singleton({0, start})
-    final_dist = dijkstra(weighted_edges_fn, initial_heap, initial_dist)
-    final_dist
-    |> Enum.flat_map(fn
-      {^start, _} -> []
-      {node, cost} -> [{node, cost}]
-    end)
+    initial_dist = %{start => 0.0}
+    initial_heap = :gb_sets.singleton({0.0, start})
+    case dijkstra(weighted_edges_fn, initial_heap, initial_dist) do
+      :invalid -> :invalid
+      final_dist ->
+        final_dist
+        |> Enum.flat_map(fn
+          {^start, _} -> []
+          {node, cost} -> [{node, cost * 1.0}]
+        end)
+    end
   end
 
   defp dijkstra(weighted_edges_fn, heap, dist) do
@@ -4486,21 +4476,47 @@ defmodule WamRuntime.GraphKernel.WeightedShortestPath do
         if cost > best do
           dijkstra(weighted_edges_fn, heap1, dist)
         else
-          {new_heap, new_dist} =
-            weighted_edges_fn.(node)
-            |> Enum.reduce({heap1, dist}, fn {_from, next, weight}, {h, d} ->
-              next_cost = cost + weight
-              case Map.fetch(d, next) do
-                {:ok, prev} when prev <= next_cost ->
-                  {h, d}
-                _ ->
-                  {:gb_sets.add({next_cost, next}, h), Map.put(d, next, next_cost)}
-              end
-            end)
-          dijkstra(weighted_edges_fn, new_heap, new_dist)
+          case relax_edges(weighted_edges_fn.(node), cost, heap1, dist) do
+            :invalid -> :invalid
+            {new_heap, new_dist} ->
+              dijkstra(weighted_edges_fn, new_heap, new_dist)
+          end
         end
     end
   end
+
+  defp relax_edges(edges, cost, heap, dist) do
+    Enum.reduce_while(edges, {heap, dist}, fn row, {h, d} ->
+      case row do
+        {_from, next, weight} ->
+          cond do
+            not is_binary(next) ->
+              {:halt, :invalid}
+            not valid_edge_weight?(weight) ->
+              {:halt, :invalid}
+            true ->
+              w = weight * 1.0
+              next_cost = cost + w
+              case Map.fetch(d, next) do
+                {:ok, prev} when prev <= next_cost ->
+                  {:cont, {h, d}}
+                _ ->
+                  {:cont,
+                   {:gb_sets.add({next_cost, next}, h),
+                    Map.put(d, next, next_cost)}}
+              end
+          end
+        _ ->
+          {:halt, :invalid}
+      end
+    end)
+  end
+
+  # Finite nonnegative: integers >= 0; floats via IEEE (NaN fails
+  # comparison; Inf * 0.0 is NaN so fails == 0.0).
+  defp valid_edge_weight?(w) when is_integer(w), do: w >= 0
+  defp valid_edge_weight?(w) when is_float(w), do: w >= 0.0 and w * 0.0 == 0.0
+  defp valid_edge_weight?(_), do: false
 
   @doc """
   Convenience for FactSource-backed graphs (3-arity weighted_edge
@@ -6265,6 +6281,7 @@ end
 %  Dispatch module for the weighted_shortest_path3 pattern (3-ary
 %  predicate over a 3-ary weighted_edge/3 source). Routes calls
 %  through WamRuntime.GraphKernel.WeightedShortestPath.collect_path_costs.
+%  Contract: docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md.
 %
 %  TWO enumerated registers per solution: A2 (target), A3 (cost). The
 %  wrapper inspects the active aggregate frames :agg_value_reg at
@@ -6273,12 +6290,10 @@ end
 %    - val_reg == 3 -> push costs
 %    - otherwise    -> push pair tuples
 %
-%  Driver-direct call: bind_two_regs/3 binds A2, A3 to the first
-%  shortest-path solution.
-%
-%  Semantic narrowing (documented in the runtime kernels moduledoc):
-%  the canonical Prolog pattern enumerates ALL paths; the kernel
-%  computes only the SHORTEST. Match the Rust reference impl.
+%  Driver-direct call: filters against any bound A2/A3 values via
+%  compatible_pairs/2, then stream_pairs/2 (same ordinary multi-result
+%  retry as TD3/TPD4). Source is never in the pair list. Invalid
+%  reachable edge rows fail the complete call.
 compile_weighted_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
     atom_string(ModuleName, ModName),
     camel_case(ModName, CamelMod),
@@ -6292,53 +6307,44 @@ compile_weighted_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, Code)
   Kernel-dispatched ~w/3 (auto-recognised weighted_shortest_path3
   pattern over ~w/3). Routes calls through
   WamRuntime.GraphKernel.WeightedShortestPath (Dijkstra).
+  Contract: docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md.
 
   Edge source must be registered via WamRuntime.FactSourceRegistry
   under the indicator "~w" before calling. The registered handle
   must support arity 3 and return `[{from, to, weight}, ...]` from
   lookup_by_arg1.
 
-  Semantic narrowing: the canonical Prolog pattern enumerates all
-  paths from start to target with their summed weights; this kernel
-  computes only the SHORTEST path cost (one result per reachable
-  target). Match the Rust reference impl. See the kernel moduledoc
-  in WamRuntime.GraphKernel.WeightedShortestPath for the full
-  contract.
+  Emits one float-cost pair per reachable non-Source target.
+  Driver-direct retry uses compatible_pairs/stream_pairs like TD3.
   """
 
   def run(%WamRuntime.WamState{} = state) do
     start_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
+    unless is_binary(start_val), do: throw({:fail, state})
     edge_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
     weighted_edges_fn = fn node ->
       WamRuntime.FactSource.lookup_by_arg1(edge_handle, node, state)
     end
-    pairs =
-      WamRuntime.GraphKernel.WeightedShortestPath.collect_path_costs(
-        weighted_edges_fn, start_val)
-
-    if WamRuntime.in_forkable_aggregate_frame?(state) do
-      # Slice (target, cost) on which register the aggregate captures.
-      # split_at_aggregate_cp/1 walks cp stack ONCE (PR #1814 fix).
-      {above, agg_cp, below} = WamRuntime.split_at_aggregate_cp(state)
-      contributions =
-        case agg_cp.agg_value_reg do
-          2 -> Enum.map(pairs, fn {t, _w} -> t end)
-          3 -> Enum.map(pairs, fn {_t, w} -> w end)
-          _ -> pairs
+    case WamRuntime.GraphKernel.WeightedShortestPath.collect_path_costs(
+           weighted_edges_fn, start_val) do
+      :invalid -> throw({:fail, state})
+      pairs0 ->
+        pairs = pairs0 |> compatible_pairs(state)
+        if WamRuntime.in_forkable_aggregate_frame?(state) do
+          {above, agg_cp, below} = WamRuntime.split_at_aggregate_cp(state)
+          contributions =
+            case agg_cp.agg_value_reg do
+              2 -> Enum.map(pairs, fn {t, _w} -> t end)
+              3 -> Enum.map(pairs, fn {_t, w} -> w end)
+              _ -> pairs
+            end
+          new_accum = agg_cp.agg_accum ++ contributions
+          new_agg_cp = %{agg_cp | agg_accum: new_accum}
+          new_state = %{state | choice_points: above ++ [new_agg_cp | below]}
+          throw({:fail, new_state})
+        else
+          stream_pairs(state, pairs)
         end
-      new_accum = agg_cp.agg_accum ++ contributions
-      new_agg_cp = %{agg_cp | agg_accum: new_accum}
-      new_state = %{state | choice_points: above ++ [new_agg_cp | below]}
-      throw({:fail, new_state})
-    else
-      case pairs do
-        [{first_target, first_cost} | _] ->
-          case bind_two_regs(state, first_target, first_cost) do
-            nil -> throw({:fail, state})
-            bound -> {:ok, bound}
-          end
-        [] -> throw({:fail, state})
-      end
     end
   end
 
@@ -6367,6 +6373,38 @@ compile_weighted_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, Code)
       error ->
         IO.puts("Predicate ~w CRASHED: #{inspect(error)}")
         :fail
+    end
+  end
+
+  defp compatible_pairs(pairs, state) do
+    Enum.filter(pairs, fn {candidate_target, candidate_cost} ->
+      not is_nil(bind_two_regs(state, candidate_target, candidate_cost))
+    end)
+  end
+
+  defp stream_pairs(state, []), do: throw({:fail, state})
+  defp stream_pairs(state, [{target, cost} | rest]) do
+    case bind_two_regs(state, target, cost) do
+      nil ->
+        stream_pairs(state, rest)
+
+      bound when rest == [] ->
+        {:ok, bound}
+
+      bound ->
+        iter_cp = %{
+          pc: fn restored -> stream_pairs(restored, rest) end,
+          regs: state.regs,
+          y_regs: state.y_regs,
+          heap: state.heap,
+          heap_len: state.heap_len,
+          cp: state.cp,
+          trail: state.trail,
+          trail_len: state.trail_len,
+          stack: state.stack
+        }
+
+        {:ok, %{bound | choice_points: [iter_cp | bound.choice_points]}}
     end
   end
 

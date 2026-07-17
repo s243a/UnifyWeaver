@@ -3779,6 +3779,8 @@ e2e_kernel_wsp3_via_rscript :-
     retractall(user:wedge(_, _, _)),
     retractall(user:wsp(_, _, _)),
     % a -1-> b -2-> c -3-> d, plus a heavy direct a-5->c.
+    % Integral edge facts are fine; emitted costs are always floats
+    % (WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md).
     assertz(user:wedge(a, b, 1)),
     assertz(user:wedge(b, c, 2)),
     assertz(user:wedge(c, d, 3)),
@@ -3787,25 +3789,27 @@ e2e_kernel_wsp3_via_rscript :-
     assertz((user:wsp(X, Y, W) :- user:wedge(X, Z, W1),
                                    user:wsp(Z, Y, W2),
                                    W is W1 + W2)),
-    assertz((user:wsp_direct  :- wsp(a, b, 1))),
-    assertz((user:wsp_shorter :- wsp(a, c, 3))),       % via b, not 5
-    assertz((user:wsp_threehop :- wsp(a, d, 6))),
-    assertz((user:wsp_no_heavy :- wsp(a, c, 5))),      % wrong weight
+    assertz((user:wsp_direct  :- wsp(a, b, 1.0))),
+    assertz((user:wsp_shorter :- wsp(a, c, 3.0))),      % via b, not 5
+    assertz((user:wsp_threehop :- wsp(a, d, 6.0))),
+    assertz((user:wsp_no_heavy :- wsp(a, c, 5.0))),     % wrong weight
+    assertz((user:wsp_no_int   :- wsp(a, b, 1))),       % int != float
     assertz((user:wsp_no_back  :- wsp(d, a, _))),
     assertz((user:wsp_findall :-
         findall(Y-W, wsp(a, Y, W), L),
         msort(L, S),
-        S == [b-1, c-3, d-6])),
+        S == [b-1.0, c-3.0, d-6.0])),
     unique_r_tmp_dir('tmp_r_kernel_wsp3_e2e', TmpDir),
     write_wam_r_project(
         [user:wedge/3, user:wsp/3,
          user:wsp_direct/0, user:wsp_shorter/0, user:wsp_threehop/0,
-         user:wsp_no_heavy/0, user:wsp_no_back/0, user:wsp_findall/0],
+         user:wsp_no_heavy/0, user:wsp_no_int/0, user:wsp_no_back/0,
+         user:wsp_findall/0],
         [],
         TmpDir),
     directory_file_path(TmpDir, 'R', RDir),
     Yes = [wsp_direct, wsp_shorter, wsp_threehop, wsp_findall],
-    No  = [wsp_no_heavy, wsp_no_back],
+    No  = [wsp_no_heavy, wsp_no_int, wsp_no_back],
     forall(member(P, Yes), (
         format(string(Q), '~w/0', [P]),
         run_rscript_query(RDir, Q, Out),

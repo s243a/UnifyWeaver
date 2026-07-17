@@ -2478,18 +2478,21 @@ WamRuntime$transitive_distance3 <- function(program, state, key, edge_pred,
 # ----------------------------------------------------------
 # Recursive-kernel: weighted_shortest_path3
 # ----------------------------------------------------------
+# Finite nonnegative Dijkstra
+# (docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md).
 # Dijkstra from a ground source over a weighted edge predicate of
-# arity 3 (edge(X, Y, W)). Yields (target, total-weight) pairs --
-# the SHORTEST total weight per reachable node, not all paths.
+# arity 3 (edge(X, Y, W)). Yields (target, FloatCost) pairs -- the
+# SHORTEST total weight per reachable non-Source node. Source is
+# never emitted (even via self-loop / cycle). Integral sums remain
+# FloatTerm. A reachable invalid row (non-atom dest, non-numeric /
+# NaN / Inf / negative weight) fails the complete kernel call.
 # Pattern detected:
 #   wsp(X, Y, W) :- edge(X, Y, W).
 #   wsp(X, Y, W) :- edge(X, Z, W1), wsp(Z, Y, RestW), W is RestW + W1.
 # Algorithm: keep a priority queue (R list sorted ascending by
 # weight via linear insert -- O(V^2) but fine for the hundreds-of-
 # nodes regime). Pop the min-weight unvisited node, mark visited,
-# yield it, then relax all outgoing edges. Source itself isn't
-# yielded unless reachable via a non-trivial path (matches the
-# "at least one edge step" semantics of the clauses above).
+# yield it (if not Source), then relax all outgoing edges.
 WamRuntime$weighted_shortest_path3 <- function(program, state, key, edge_pred,
                                                  edge_key, source, target,
                                                  weight, resume_pc) {
@@ -2514,8 +2517,9 @@ WamRuntime$weighted_shortest_path3 <- function(program, state, key, edge_pred,
   # kept sorted ascending by weight.
   pq <- list(list(weight = 0, node = src_v))
   reached <- list()  # list of list(node, second = pre-built term)
+  invalid_row <- FALSE
 
-  while (length(pq) > 0L) {
+  while (length(pq) > 0L && !invalid_row) {
     entry  <- pq[[1L]]
     pq     <- pq[-1L]
     cur    <- entry$node
@@ -2523,16 +2527,9 @@ WamRuntime$weighted_shortest_path3 <- function(program, state, key, edge_pred,
     k      <- as.character(cur$id)
     if (exists(k, envir = visited, inherits = FALSE)) next
     assign(k, TRUE, envir = visited)
-    if (!identical(cur, src_v) || cur_w > 0) {
-      # Pre-build the weight WAM term: keep ints as IntTerm where
-      # possible so downstream `==/2` round-trips cleanly.
-      wt <- if (is.finite(cur_w) && cur_w == as.integer(cur_w) &&
-                abs(cur_w) < .Machine$integer.max) {
-              IntTerm(as.integer(cur_w))
-            } else {
-              FloatTerm(as.numeric(cur_w))
-            }
-      reached <- c(reached, list(list(node = cur, second = wt)))
+    # Source excluded even through self-loop / positive cycle.
+    if (!identical(cur, src_v)) {
+      reached <- c(reached, list(list(node = cur, second = FloatTerm(as.numeric(cur_w)))))
     }
     # Relax neighbours via edge_pred(cur, Y, W).
     y_var <- Unbound(paste0("V_wsp_y_", state$var_counter))
@@ -2542,29 +2539,41 @@ WamRuntime$weighted_shortest_path3 <- function(program, state, key, edge_pred,
     edge_goal <- StructTerm(edge_atom_id, list(cur, y_var, w_var))
     captured_w <- cur_w
     WamRuntime$iterate_goal(program, state, edge_goal, function() {
+      if (invalid_row) return(FALSE)
       y_v <- WamRuntime$deref(state, y_var)
       w_v <- WamRuntime$deref(state, w_var)
-      if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom" &&
-          !is.null(w_v) && !is.null(w_v$tag) &&
-          (w_v$tag == "int" || w_v$tag == "float")) {
-        nk <- as.character(y_v$id)
-        if (!exists(nk, envir = visited, inherits = FALSE)) {
-          new_w <- captured_w + w_v$val
-          # Sorted insert into pq (ascending weight).
-          if (length(pq) == 0L) {
-            pq <<- list(list(weight = new_w, node = y_v))
-          } else {
-            placed <- FALSE
-            for (i in seq_along(pq)) {
-              if (pq[[i]]$weight > new_w) {
-                pq <<- append(pq, list(list(weight = new_w, node = y_v)),
-                              after = i - 1L)
-                placed <- TRUE; break
-              }
+      # Reachable invalid row → fail complete kernel call.
+      if (is.null(y_v) || is.null(y_v$tag) || y_v$tag != "atom") {
+        invalid_row <<- TRUE
+        return(FALSE)
+      }
+      if (is.null(w_v) || is.null(w_v$tag) ||
+          !(w_v$tag == "int" || w_v$tag == "float")) {
+        invalid_row <<- TRUE
+        return(FALSE)
+      }
+      ew <- as.numeric(w_v$val)
+      if (!is.finite(ew) || ew < 0) {
+        invalid_row <<- TRUE
+        return(FALSE)
+      }
+      nk <- as.character(y_v$id)
+      if (!exists(nk, envir = visited, inherits = FALSE)) {
+        new_w <- captured_w + ew
+        # Sorted insert into pq (ascending weight).
+        if (length(pq) == 0L) {
+          pq <<- list(list(weight = new_w, node = y_v))
+        } else {
+          placed <- FALSE
+          for (i in seq_along(pq)) {
+            if (pq[[i]]$weight > new_w) {
+              pq <<- append(pq, list(list(weight = new_w, node = y_v)),
+                            after = i - 1L)
+              placed <- TRUE; break
             }
-            if (!placed) {
-              pq <<- c(pq, list(list(weight = new_w, node = y_v)))
-            }
+          }
+          if (!placed) {
+            pq <<- c(pq, list(list(weight = new_w, node = y_v)))
           }
         }
       }
@@ -2590,6 +2599,8 @@ WamRuntime$weighted_shortest_path3 <- function(program, state, key, edge_pred,
   state$var_counter <- snap_vc
   state$mode        <- snap_mode
   state$build_stack <- snap_build
+
+  if (invalid_row) return(FALSE)
 
   WamRuntime$kernel_pair_iter(program, state, key, reached, target, weight,
                                1L, resume_pc)
@@ -3054,7 +3065,7 @@ WamRuntime$astar_shortest_path4 <- function(program, state, key, edge_pred,
 # with the (target, second) reg pair. Each entry is
 # `list(node = <WAM term>, second = <pre-built WAM term>)` so the
 # caller controls how the second slot is constructed -- distance
-# IntTerms for transitive_distance3, weight Int/FloatTerms for
+# IntTerms for transitive_distance3, FloatTerm costs for
 # weighted_shortest_path3, etc. iter-CP shape mirrors
 # kernel_stream_iter with two unify slots per result.
 WamRuntime$kernel_pair_iter <- function(program, state, key, results, target,

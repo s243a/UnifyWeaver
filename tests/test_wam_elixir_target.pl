@@ -2158,28 +2158,29 @@ test_graph_kernel_wsp_uses_gb_sets_priority_queue :-
     Test = 'GraphKernel WeightedShortestPath: uses :gb_sets priority queue for Dijkstra',
     compile_wam_runtime_to_elixir([], RuntimeCode),
     Pattern = "defmodule WamRuntime.GraphKernel.WeightedShortestPath do",
-    EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.AstarShortestPath do",
     (   sub_string(RuntimeCode, Start, _, _, Pattern),
         sub_string(RuntimeCode, End, _, _, EndPattern),
         End > Start,
         BodyLen is End - Start,
         sub_string(RuntimeCode, Start, BodyLen, _, Body),
-        % Min-heap construction + pop.
-        sub_string(Body, _, _, _, ":gb_sets.singleton({0, start})"),
+        % Min-heap construction + pop (float seed cost per WSP3 contract).
+        sub_string(Body, _, _, _, ":gb_sets.singleton({0.0, start})"),
         sub_string(Body, _, _, _, ":gb_sets.take_smallest(heap)"),
         % Stale-entry skip (the canonical Dijkstra optimisation).
         sub_string(Body, _, _, _, "if cost > best do"),
-        % Documents the semantic narrowing (all-paths -> shortest).
-        sub_string(Body, _, _, _, "semantic narrowing"),
-        sub_string(Body, _, _, _, "computes only the SHORTEST")
+        % Contract: Source excluded; invalid reachable row fails cleanly.
+        sub_string(Body, _, _, _, "excluding start itself"),
+        sub_string(Body, _, _, _, ":invalid")
     ->  pass(Test)
-    ;   fail_test(Test, 'WeightedShortestPath kernel missing :gb_sets primitives or semantic-narrowing note')
+    ;   fail_test(Test, 'WeightedShortestPath kernel missing :gb_sets primitives or contract notes')
     ).
 
 test_kernel_dispatch_emits_weighted_shortest_path_module :-
     % End-to-end: detector recognises kdwsp/3 as
     % weighted_shortest_path3, dispatch wrapper emits with two-register
     % binding (target, cost) and 3-arity edge predicate ("kdweighted_edge/3").
+    % Driver-direct path uses compatible_pairs/stream_pairs like TD3.
     Test = 'Kernel dispatch: weighted_shortest_path3 kernel emits Probe.Kdwsp dispatch module',
     setup_kernel_fixtures,
     wam_target:compile_predicate_to_wam(user:kdwsp/3, [], WspWam),
@@ -2198,7 +2199,11 @@ test_kernel_dispatch_emits_weighted_shortest_path_module :-
         % Aggregate-frame slicing for two regs (target=2, cost=3).
         sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
         sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
-        % Driver-direct binding of both regs.
+        % Ordinary multi-result retry (TD3/TPD4 shape).
+        sub_string(S, _, _, _, "|> compatible_pairs(state)"),
+        sub_string(S, _, _, _, "stream_pairs(state, pairs)"),
+        sub_string(S, _, _, _, "defp stream_pairs(state, [])"),
+        sub_string(S, _, _, _, "pc: fn restored -> stream_pairs(restored, rest) end"),
         sub_string(S, _, _, _, "bind_two_regs(state, "),
         sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
     ->  pass(Test)
