@@ -19,6 +19,10 @@
 %%     - fleet TSPD5 shortest-positive correlated step/parent oracle/structural
 %%       checks plus executable F#/C/Rust/Elixir/Go coverage; LLVM remains
 %%       capability-gated.
+%%   tests/test_wam_wsp3_contract_parity.pl
+%%     - fleet WSP3 finite nonnegative Dijkstra oracle/structural checks plus
+%%       executable F#/C/Rust/Elixir/Go/Haskell/R/Scala coverage; LLVM keeps
+%%       its existing Dijkstra stream suite.
 %%   focused Rust, Go, Scala, R, Haskell, Elixir, and LLVM TD3/TPD4/TSPD5 regressions
 %%     - exercise transactional correlated-tuple binding, the R aggregate
 %%       path, Elixir ordinary retries, and LLVM exact paired streaming /
@@ -64,6 +68,9 @@ fsharp_test('tests/test_wam_tpd4_contract_parity.pl',
             run_tests).
 fsharp_test('tests/test_wam_tspd5_contract_parity.pl',
             'TSPD5 shortest-positive correlated step/parent fleet contract + F# native kernel',
+            run_tests).
+fsharp_test('tests/test_wam_wsp3_contract_parity.pl',
+            'WSP3 finite nonnegative Dijkstra fleet contract + F# native kernel',
             run_tests).
 fsharp_test('tests/test_wam_rust_foreign_tuple_aliases.pl',
             'Rust correlated foreign-tuple alias/retry cleanup', run_tests).

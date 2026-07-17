@@ -262,12 +262,16 @@ ffi_owned_fact_filter_fs(DetectedKernels, PI) :-
 %   - transitive_step_parent_distance5 Mustache handler emits
 %     (atom,atom,atom,int) quadruples via the existing four-output binder
 %     (shortest-positive correlated step/parent contract).
+%   - weighted_shortest_path3 Mustache handler emits (atom,float) pairs via
+%     the existing two-output binder (finite nonnegative Dijkstra contract).
+%     Relation-keyed weighted facts are materialized into WcFfiWeightedFacts.
 wam_fsharp_native_kernel_kind(category_ancestor).
 wam_fsharp_native_kernel_kind(bidirectional_ancestor).
 wam_fsharp_native_kernel_kind(transitive_closure2).
 wam_fsharp_native_kernel_kind(transitive_distance3).
 wam_fsharp_native_kernel_kind(transitive_parent_distance4).
 wam_fsharp_native_kernel_kind(transitive_step_parent_distance5).
+wam_fsharp_native_kernel_kind(weighted_shortest_path3).
 
 fsharp_kernel_template_path(Kind, AbsPath) :-
     kernel_template_file(Kind, HsTemplateFile),
@@ -5291,6 +5295,10 @@ compile_predicates_to_fsharp(Predicates, Options, DetectedKernels, BasePCMap, Co
     % Build merged code list and label map
     maplist(pred_func_name_fs, WamPredicates, FuncNames),
     emit_merged_code_build_fs(FuncNames, MergedCodeBuild),
+    % WSP3: materialize relation-keyed weighted adjacency from declared
+    % inline edge facts so generated projects do not leave WcFfiWeightedFacts
+    % empty when a native weighted_shortest_path3 handler is present.
+    emit_weighted_ffi_facts_fs(DetectedKernels, Options, WeightedBlock),
     format(string(Code),
 'module Predicates
 
@@ -5300,7 +5308,98 @@ open WamRuntime
 ~w
 
 ~w
-', [AllPredCode, MergedCodeBuild]).
+~w
+', [AllPredCode, MergedCodeBuild, WeightedBlock]).
+
+%% emit_weighted_ffi_facts_fs(+DetectedKernels, +Options, -Code)
+%  Emit declaredWeightedEdgeFacts / buildWeightedFfiFacts helpers into
+%  Predicates.fs. External weighted fact-source options (when present) are
+%  merged on top of inline triples so existing external wiring is preserved.
+emit_weighted_ffi_facts_fs(DetectedKernels, Options, Code) :-
+    findall(Rel-Triples,
+            ( member(_-recursive_kernel(weighted_shortest_path3, _, ConfigOps),
+                     DetectedKernels),
+              member(edge_pred(EdgePred/3), ConfigOps),
+              atom(EdgePred),
+              collect_weighted_edge_triples_fs(EdgePred, Triples0),
+              Rel = EdgePred,
+              Triples = Triples0
+            ),
+            InlineRaw),
+    sort(InlineRaw, InlineSorted),
+    (   option(external_weighted_facts(External), Options)
+    ->  true
+    ;   External = []
+    ),
+    append(InlineSorted, External, Combined0),
+    keysort(Combined0, Combined1),
+    group_pairs_by_key(Combined1, Grouped),
+    maplist(merge_weighted_rel_group_fs, Grouped, RelEntries),
+    emit_weighted_ffi_facts_block_fs(RelEntries, Code).
+
+merge_weighted_rel_group_fs(Rel-Lists, Rel-Triples) :-
+    append(Lists, Flat),
+    sort(Flat, Triples).
+
+collect_weighted_edge_triples_fs(EdgePred, Triples) :-
+    functor(Head, EdgePred, 3),
+    findall(triple(From, To, W),
+            (   clause(user:Head, true),
+                Head =.. [EdgePred, From, To, W0],
+                atom(From),
+                atom(To),
+                number(W0),
+                W is float(W0)
+            ),
+            Triples).
+
+emit_weighted_ffi_facts_block_fs(RelEntries, Code) :-
+    maplist(emit_weighted_rel_entry_fs, RelEntries, EntryAtoms),
+    (   EntryAtoms = []
+    ->  EntriesStr = ''
+    ;   atomic_list_concat(EntryAtoms, ';\n      ', EntriesJoined),
+        format(atom(EntriesStr), '~n      ~w~n    ', [EntriesJoined])
+    ),
+    format(string(Code),
+'
+/// Relation-keyed weighted edge facts declared inline (and any
+/// option(external_weighted_facts/1) triples). Used to populate
+/// WcFfiWeightedFacts for weighted_shortest_path3 / A* kernels.
+let declaredWeightedEdgeFacts : Map<string, (string * string * float) list> =
+    Map.ofList [~w]
+
+let declaredWeightedAtoms : string list =
+    declaredWeightedEdgeFacts
+    |> Map.toList
+    |> List.collect (fun (_, triples) ->
+        triples |> List.collect (fun (f, t, _) -> [f; t]))
+    |> List.distinct
+
+/// Build interned adjacency Map<rel, Map<from, (to * weight) list>>.
+let buildWeightedFfiFacts (intern: Map<string, int>)
+    : Map<string, Map<int, (int * float) list>> =
+    declaredWeightedEdgeFacts
+    |> Map.map (fun _ triples ->
+        triples
+        |> List.choose (fun (f, t, w) ->
+            match Map.tryFind f intern, Map.tryFind t intern with
+            | Some fi, Some ti -> Some (fi, (ti, w))
+            | _ -> None)
+        |> List.groupBy fst
+        |> List.map (fun (k, vs) -> k, vs |> List.map snd)
+        |> Map.ofList)
+', [EntriesStr]).
+
+emit_weighted_rel_entry_fs(Rel-Triples, Atom) :-
+    maplist(emit_weighted_triple_literal_fs, Triples, TripleAtoms),
+    (   TripleAtoms = []
+    ->  TriplesStr = ''
+    ;   atomic_list_concat(TripleAtoms, '; ', TriplesStr)
+    ),
+    format(atom(Atom), '("~w", [~w])', [Rel, TriplesStr]).
+
+emit_weighted_triple_literal_fs(triple(From, To, W), Atom) :-
+    format(atom(Atom), '("~w", "~w", ~w)', [From, To, W]).
 
 compile_one_predicate_fs(Options, BasePCMap, IsoConfig, PredIndicator, Code) :-
     %% Shape check: must be Module:Name/Arity or Name/Arity.  The

@@ -15,13 +15,22 @@ let mkContext () =
     let resolvedCode =
         resolveCallInstrs allLabels foreignPreds (Array.toList allCode)
         |> List.toArray
+    // Seed atom intern from declared weighted edge endpoints so native
+    // WSP3/A* kernels can resolve relation-keyed WcFfiWeightedFacts.
+    let atomIntern =
+        declaredWeightedAtoms
+        |> List.mapi (fun i a -> (a, i + 1))
+        |> Map.ofList
+    let atomDeintern =
+        atomIntern |> Map.toSeq |> Seq.map (fun (s, i) -> (i, s)) |> Map.ofSeq
+    let weightedFacts = buildWeightedFfiFacts atomIntern
     { WcCode              = resolvedCode
       WcLabels            = allLabels
       WcForeignFacts      = Map.empty
       WcFfiFacts          = Map.empty
-      WcFfiWeightedFacts  = Map.empty
-      WcAtomIntern        = Map.empty
-      WcAtomDeintern      = Map.empty
+      WcFfiWeightedFacts  = weightedFacts
+      WcAtomIntern        = atomIntern
+      WcAtomDeintern      = atomDeintern
       WcForeignConfig     = Map.empty
       WcLoweredPredicates = loweredPredicates
       WcLookupSources     = Map.empty
@@ -334,15 +343,28 @@ let main argv =
     eprintfn "load_ms=%d seeds=%d" loadMs seedCats.Length
 {{/has_lmdb}}
 
+    // Merge declared weighted-edge atoms into the benchmark intern table
+    // so WSP3/A* kernels see relation-keyed WcFfiWeightedFacts when present.
+    let atomInternFinal =
+        let extras =
+            declaredWeightedAtoms
+            |> List.filter (fun a -> not (Map.containsKey a atomIntern))
+            |> List.mapi (fun i a ->
+                (a, (Map.count atomIntern) + i + 1))
+        Map.fold (fun m k v -> Map.add k v m) atomIntern (Map.ofList extras)
+    let atomDeinternFinal =
+        atomInternFinal |> Map.toSeq |> Seq.map (fun (s, i) -> (i, s)) |> Map.ofSeq
+    let weightedFacts = buildWeightedFfiFacts atomInternFinal
+
     // Build WamContext
     let ctx =
         { WcCode             = resolvedCode
           WcLabels            = allLabels
           WcForeignFacts      = Map.empty
           WcFfiFacts          = Map.ofList [ ("category_parent", parentsInterned) ]
-          WcFfiWeightedFacts  = Map.empty
-          WcAtomIntern        = atomIntern
-          WcAtomDeintern      = atomDeintern
+          WcFfiWeightedFacts  = weightedFacts
+          WcAtomIntern        = atomInternFinal
+          WcAtomDeintern      = atomDeinternFinal
           WcForeignConfig     = Map.ofList [ ("max_depth", 10) ]
           WcLoweredPredicates = loweredPredicates
           WcLookupSources     = {{lookup_sources_expr}}
