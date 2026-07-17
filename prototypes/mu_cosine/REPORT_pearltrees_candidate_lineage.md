@@ -41,13 +41,21 @@ shuffled is the held-folder subset (0.097 vs 0.084, +0.013) — real signal exac
 disambiguation by parent path should matter (unseen folders), but small. Nothing here closes the
 gap to e5 (0.294).
 
-Why so weak, and what's next: this first cut reuses the shared `anc` token role for folder
-ancestors (no dedicated "candidate-lineage" role or hop/depth encoding — the design's step 1), and
-the k=1 node-ancestor sampling means the model never learned a rich path representation to begin
-with. The natural next steps are (a) a distinct candidate-lineage token role with explicit depth
-encoding, and (b) the training-time meta-judge (candidate-ranking CE with a held-out judge) that
-directly optimizes folder ranking rather than pair-μ — both aimed at the confusable NEAR stratum
-(§2) where e5 is also weak.
+Why so weak — the titles already carry the lineage. The held-folder slice discriminates the two
+candidate explanations: no-lineage 0.073 → correct 0.097 → shuffled 0.084, so the RIGHT lineage
+beats both no-lineage AND shuffled on UNSEEN folders, while the gain washes out once seen folders
+are pooled in. That rules out "the model can't use lineage order at all" (capacity/position
+embeddings — it would lose everywhere) and points to "the folder title already encodes its
+lineage." Direct probe: a child folder's e5 embedding is closer to its TRUE parent (mean cosine
+0.877) than to a random folder (0.816), a +0.062 separation — the parent relationship is legible in
+the title alone. So on folders the model has seen, it infers the parent path from the title and
+explicit lineage is redundant; explicit lineage only adds value where the folder's title is
+unfamiliar (the held slice). A weak depth encoding (this first cut reuses the shared `anc` role,
+no distinct candidate-lineage role) plausibly CAPS the held-folder magnitude but does not explain
+the pattern. Consequence for design: the leverage is not injecting lineage (titles have it) but
+CALIBRATING μ so the ranking is right — which is exactly the training-time meta-judge's job
+(candidate-ranking CE that calibrates the μ signal fed to the Kalman filter), aimed at the
+confusable NEAR stratum (§2) where e5 is also weak.
 
 ## 2. Why does e5 beat the μ heads? Mostly the regime, not pure capability
 
