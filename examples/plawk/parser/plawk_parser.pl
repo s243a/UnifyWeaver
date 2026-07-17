@@ -1596,8 +1596,30 @@ action(Action) -->
     split_action(Action),
     !.
 action(Action) -->
+    subgsub_action(Action),
+    !.
+action(Action) -->
     increment_action(Action),
     !.
+
+%% subgsub_action(-Action)//
+%
+%  `sub(/re/, "repl")` / `gsub(/re/, "repl")` -- substitute the first / every ERE
+%  match in $0 with the replacement (an unescaped `&` in the replacement expands
+%  to the matched text). Parses to regex_sub(Global, Regex, Repl) with Global 1
+%  for gsub, 0 for sub. v1: the target is $0 (no third arg); the codegen supports
+%  the `Pattern { sub/gsub(...); print }` stream-editor idiom.
+subgsub_action(regex_sub(Global, Regex, Repl)) -->
+    subgsub_keyword(Global),
+    ws, "(", ws,
+    regex_arg(Regex),
+    ws, ",", ws,
+    quoted_string(RCodes),
+    { string_codes(Repl, RCodes) },
+    ws, ")".
+
+subgsub_keyword(1) --> "gsub".
+subgsub_keyword(0) --> "sub".
 
 %% split_action(-Action)//
 %
@@ -2396,12 +2418,39 @@ ternary_operand(Expr) -->
 ternary_operand(int(Value)) -->
     signed_integer_value(Value).
 
+% `match(SRC, /re/)` -- search SRC (a field `$N`, `$0` = whole record) for the
+% ERE; returns the 1-based match position (0 if none) and sets RSTART/RLENGTH.
+% Tried before the arithmetic clause so the leading `match(` keyword wins.
+field_expr(match_expr(field(Index), Regex)) -->
+    "match", ws, "(", ws,
+    "$", integer_codes(ICodes),
+    { ICodes \== [], number_codes(Index, ICodes), Index >= 0 },
+    ws, ",", ws,
+    regex_arg(Regex),
+    ws, ")",
+    !.
+field_expr(special('RSTART')) -->
+    "RSTART".
+field_expr(special('RLENGTH')) -->
+    "RLENGTH".
 field_expr(Expr) -->
     i64_binary_surface_expr(Expr).
 field_expr(special('NR')) -->
     "NR".
 field_expr(special('NF')) -->
     "NF".
+
+%% regex_arg(-Regex)//
+%
+%  A regex argument to match/sub/gsub: a `/re/` literal or a `"re"` string. Both
+%  yield the ERE source string (a single-char string is still a literal-char ERE).
+regex_arg(Regex) -->
+    "/", regex_body_codes(Codes), "/",
+    { Codes \== [], string_codes(Regex, Codes) },
+    !.
+regex_arg(Regex) -->
+    quoted_string(Codes),
+    { Codes \== [], string_codes(Regex, Codes) }.
 field_expr(int(Field)) -->
     int_field_expr(int(Field)).
 field_expr(length(Field)) -->

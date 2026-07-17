@@ -208,6 +208,108 @@ print_line:
             success, 'success:\n  ret i32 0'),
         DriverIR).
 
+% sub/gsub stream editor: a single text-mode rule `Pattern { sub/gsub(re,repl);
+% ...; print $0 }`. Each substitution rewrites the whole record ($0) via
+% @wam_regex_gsub (a per-site compiled ERE; `&` in the replacement expands to the
+% matched text), folding a running interned-atom id; the trailing `print $0`
+% emits the result. v1 scope: the target is $0, a single rule with no END, and
+% the print-the-record idiom. sub/gsub into a scalar/field, and capturing the
+% substitution count (`n = gsub(...)`), are follow-ons.
+plawk_program_native_driver_ir(
+    program(BeginClauses, [rule(Pattern, Actions)], []),
+    InputPath,
+    DriverIR
+) :-
+    plawk_gsub_body(Actions, SubActions, _PrintAction),
+    \+ plawk_begin_has_binfmt(BeginClauses),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    integer(FieldSeparator),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
+    plawk_gsub_actions_ir(SubActions, GsubGlobalIR, GsubBodyIR, FinalIdVar),
+    format(atom(PrintIR),
+'  %gsx_out = call i8* @wam_atom_to_string(i64 ~w)
+  %gsx_out_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_line, i32 0, i32 0
+  %gsx_out_pr = call i32 (i8*, ...) @printf(i8* %gsx_out_fmt, i8* %gsx_out)',
+        [FinalIdVar]),
+    format(atom(RecordIR),
+'~w
+  br i1 %is_match, label %print_line, label %continue_loop
+
+print_line:
+~w
+~w
+  br label %continue_loop',
+        [GuardCallIR, GsubBodyIR, PrintIR]),
+    format(atom(RuntimeGlobals),
+'@.plawk_surface_print_line = private constant [4 x i8] c"%s\\0A\\00"
+@.plawk_surface_print_slice = private constant [5 x i8] c"%.*s\\00"
+@.plawk_surface_print_i64 = private constant [4 x i8] c"%ld\\00"
+@.plawk_surface_print_newline = private constant [2 x i8] c"\\0A\\00"
+@.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"
+@.plawk_surface_print_f64 = private constant [3 x i8] c"%g\\00"
+@plawk_gsub_count = internal global i64 0
+~w
+~w
+~w
+',
+        [BeginGlobalIR, GuardGlobalIR, GsubGlobalIR]),
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
+        driver_blocks(RuntimeGlobals, BeginIR, '', lowered_match, RecordIR, '',
+            success, 'success:\n  ret i32 0'),
+        DriverIR).
+
+%% plawk_gsub_body(+Actions, -SubActions, -PrintAction)
+%
+%  A sub/gsub stream-editor body: one or more `regex_sub(Global, Re, Repl)` actions
+%  followed by exactly `print $0`.
+plawk_gsub_body(Actions, SubActions, print([field(0)])) :-
+    append(SubActions, [print([field(0)])], Actions),
+    SubActions = [_ | _],
+    forall(member(A, SubActions), A = regex_sub(_, _, _)).
+
+%% plawk_gsub_actions_ir(+SubActions, -GlobalIR, -BodyIR, -FinalIdVar)
+%
+%  Fold the substitutions over $0: the first reads the original line atom, each
+%  subsequent one reads the previous result, so chained sub/gsub compose.
+plawk_gsub_actions_ir(SubActions, GlobalIR, BodyIR, FinalIdVar) :-
+    plawk_gsub_fold(SubActions, 0, '%line_payload', Parts, FinalIdVar),
+    pairs_keys_values(Parts, GlobalParts, BodyParts),
+    plawk_join_nonempty_ir(GlobalParts, GlobalIR),
+    atomic_list_concat(BodyParts, '\n', BodyIR).
+
+plawk_gsub_fold([], _Index, CurId, [], CurId).
+plawk_gsub_fold([regex_sub(Global, Regex, Repl) | Rest], Index, CurId,
+        [GlobalPart-BodyPart | Parts], FinalId) :-
+    plawk_gsub_one(Global, Regex, Repl, Index, CurId, GlobalPart, BodyPart, NextId),
+    NextIndex is Index + 1,
+    plawk_gsub_fold(Rest, NextIndex, NextId, Parts, FinalId).
+
+%% plawk_gsub_one(+Global, +Regex, +Repl, +Index, +CurId, -GlobalPart, -Body, -NextId)
+plawk_gsub_one(Global, Regex, Repl, Index, CurId, GlobalPart, BodyPart, NextId) :-
+    format(atom(PatName), 'gsx_~w_pat', [Index]),
+    format(atom(ReplName), 'gsx_~w_repl', [Index]),
+    format(atom(CacheName), 'gsx_~w_cache', [Index]),
+    llvm_emit_c_string_global(PatName, Regex, PatGlobal, _PL, PatBytes),
+    llvm_emit_c_string_global(ReplName, Repl, ReplGlobal, ReplLen, ReplBytes),
+    format(atom(CacheGlobal), '@~w = internal global i8* null', [CacheName]),
+    atomic_list_concat([PatGlobal, ReplGlobal, CacheGlobal], '\n', GlobalPart),
+    ( Global =:= 1 -> GlobalBool = true ; GlobalBool = false ),
+    format(atom(NextId), '%gsx_~w_id', [Index]),
+    format(atom(BodyPart),
+'  %gsx_~w_str = call i8* @wam_atom_to_string(i64 ~w)
+  %gsx_~w_len = call i64 @strlen(i8* %gsx_~w_str)
+  %gsx_~w_patptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  %gsx_~w_replptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  ~w = call i64 @wam_regex_gsub(i8* %gsx_~w_str, i64 %gsx_~w_len, i8* %gsx_~w_patptr, i8** @~w, i8* %gsx_~w_replptr, i64 ~w, i1 ~w, i64* @plawk_gsub_count)',
+        [Index, CurId,
+         Index, Index,
+         Index, PatBytes, PatBytes, PatName,
+         Index, ReplBytes, ReplBytes, ReplName,
+         NextId, Index, Index, Index, CacheName, Index, ReplLen, GlobalBool]).
+
 % Field assignment: a single text-mode rule `Pattern { $N = expr; ...; print $0 }`.
 % The record is split once into an editable field buffer (@wam_fields_new); each
 % `$N = expr` mutates a slot in place (@wam_fields_set); `print $0` joins the
@@ -10901,6 +11003,9 @@ plawk_rule_body_print_field(blob_dyncall_at_named(Name, Source, Args)) :-
 plawk_rule_body_print_field(Expr) :-
     plawk_f64_print_expr(Expr).
 plawk_rule_body_print_field(length(field(_))).
+plawk_rule_body_print_field(match_expr(field(_), _Regex)).
+plawk_rule_body_print_field(special('RSTART')).
+plawk_rule_body_print_field(special('RLENGTH')).
 plawk_rule_body_print_field(substr(field(_), _Start, _Len)).
 plawk_rule_body_print_field(index(field(_), string(_))).
 plawk_rule_body_print_field(tolower(field(_))).
@@ -12662,6 +12767,48 @@ plawk_i64_expr_ir(index(FieldIndex, Needle), FieldSeparator, Base, GlobalBase,
     llvm_emit_atom_field_index(GlobalBase, '%line', FieldIndex, Needle, FieldSeparator,
         Base, GlobalIR-CallIR),
     format(atom(ValueIR), '%~w', [Base]).
+% match(SRC, /re/): run the ERE over SRC's bytes, storing RSTART/RLENGTH and
+% yielding the 1-based match position (0 if none). SRC is $0 (whole record) or a
+% positive field slice. The pattern is a per-site constant + lazily-compiled cache.
+plawk_i64_expr_ir(match_expr(field(FieldIndex), Regex), FieldSeparator, Base, GlobalBase,
+        ValueIR, [PatGlobal, CacheGlobal], SetupLines) :-
+    sanitize_functor_for_llvm(GlobalBase, Safe),
+    format(atom(PatName), '~w_matchpat', [Safe]),
+    format(atom(CacheName), '~w_matchcache', [Safe]),
+    llvm_emit_c_string_global(PatName, Regex, PatGlobal, _PL, PatBytes),
+    format(atom(CacheGlobal), '@~w = internal global i8* null', [CacheName]),
+    format(atom(PatPtr),
+        '  %~w_mpat = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+        [Base, PatBytes, PatBytes, PatName]),
+    ( FieldIndex =:= 0
+    ->  format(atom(SrcLines),
+'  %~w_lp = call i64 @value_payload(%Value %line)
+  %~w_sptr = call i8* @wam_atom_to_string(i64 %~w_lp)
+  %~w_slen = call i64 @strlen(i8* %~w_sptr)',
+            [Base, Base, Base, Base, Base]),
+        format(atom(SrcPtr), '%~w_sptr', [Base]),
+        format(atom(SrcLen), '%~w_slen', [Base])
+    ;   format(atom(SrcLines),
+'  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)
+  %~w_sptr = extractvalue %WamSlice %~w_slice, 0
+  %~w_slen = extractvalue %WamSlice %~w_slice, 1',
+            [Base, FieldIndex, FieldSeparator, Base, Base, Base, Base]),
+        format(atom(SrcPtr), '%~w_sptr', [Base]),
+        format(atom(SrcLen), '%~w_slen', [Base])
+    ),
+    format(atom(CallLine),
+        '  %~w = call i64 @wam_regex_match(i8* ~w, i64 ~w, i8* %~w_mpat, i8** @~w, i64* @plawk_rstart, i64* @plawk_rlength)',
+        [Base, SrcPtr, SrcLen, Base, CacheName]),
+    SetupLines = [SrcLines, PatPtr, CallLine],
+    format(atom(ValueIR), '%~w', [Base]).
+plawk_i64_expr_ir(special('RSTART'), _FieldSeparator, Base, _GlobalBase,
+        ValueIR, [], [Line]) :-
+    format(atom(Line), '  %~w = load i64, i64* @plawk_rstart', [Base]),
+    format(atom(ValueIR), '%~w', [Base]).
+plawk_i64_expr_ir(special('RLENGTH'), _FieldSeparator, Base, _GlobalBase,
+        ValueIR, [], [Line]) :-
+    format(atom(Line), '  %~w = load i64, i64* @plawk_rlength', [Base]),
+    format(atom(ValueIR), '%~w', [Base]).
 % Ternary `COND ? A : B` over i64 values. COND is a single comparison
 % `L <op> R`; both branches are evaluated (no side effects in an i64 expr) and
 % an LLVM `select` picks one -- straight-line, so a ternary composes anywhere an
@@ -14400,6 +14547,28 @@ plawk_emit_print_expr_for_context(length(field(FieldIndex)), FieldSeparator, Con
     plawk_print_expr_value_base(Context, length, Base),
     plawk_print_expr_output_names(Context, length, FmtPrefix, PrintPrefix),
     plawk_i64_expr_ir(length(FieldIndex), FieldSeparator, Base, Base,
+        ValueIR, GlobalParts, SetupParts).
+
+plawk_emit_print_expr_for_context(match_expr(field(FieldIndex), Regex), FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
+    plawk_print_expr_value_base(Context, match, Base),
+    plawk_print_expr_value_base(Context, match_re, GlobalBase),
+    plawk_print_expr_output_names(Context, match, FmtPrefix, PrintPrefix),
+    plawk_i64_expr_ir(match_expr(field(FieldIndex), Regex), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts).
+
+plawk_emit_print_expr_for_context(special('RSTART'), FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
+    plawk_print_expr_value_base(Context, rstart, Base),
+    plawk_print_expr_output_names(Context, rstart, FmtPrefix, PrintPrefix),
+    plawk_i64_expr_ir(special('RSTART'), FieldSeparator, Base, Base,
+        ValueIR, GlobalParts, SetupParts).
+
+plawk_emit_print_expr_for_context(special('RLENGTH'), FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
+    plawk_print_expr_value_base(Context, rlength, Base),
+    plawk_print_expr_output_names(Context, rlength, FmtPrefix, PrintPrefix),
+    plawk_i64_expr_ir(special('RLENGTH'), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
 
 plawk_emit_print_expr_for_context(substr(field(FieldIndex), Start, Len), FieldSeparator, Context,

@@ -6343,6 +6343,321 @@ fc.zero:
   ret i64 0
 }
 
+; RSTART / RLENGTH: the position and length of the last match() (awk specials).
+; Defined once here so match() can store into them and reads can load from them
+; without per-site duplicate global definitions.
+@plawk_rstart = internal global i64 0
+@plawk_rlength = internal global i64 0
+
+; awk match(str, /re/): find the first ERE match in %ptr[0..len), storing the
+; 1-based match start into *%rstart_p (0 if none) and the match length into
+; *%rlength_p (-1 if none), and returning the start. %pattern / %cache are a
+; per-site pattern string and lazily regcomp()ed cache. The input is copied into
+; a NUL-terminated scratch for regexec (it may be a non-terminated field slice).
+define i64 @wam_regex_match(i8* %ptr, i64 %len, i8* %pattern, i8** %cache, i64* %rstart_p, i64* %rlength_p) {
+entry:
+  store i64 0, i64* %rstart_p
+  store i64 -1, i64* %rlength_p
+  %rmx.cached = load i8*, i8** %cache
+  %rmx.havec = icmp ne i8* %rmx.cached, null
+  br i1 %rmx.havec, label %rmx.ready, label %rmx.compile
+
+rmx.compile:
+  %rmx.mem = call i8* @malloc(i64 512)
+  %rmx.memnull = icmp eq i8* %rmx.mem, null
+  br i1 %rmx.memnull, label %rmx.ret0, label %rmx.docomp
+
+rmx.docomp:
+  %rmx.rc = call i32 @regcomp(i8* %rmx.mem, i8* %pattern, i32 1)
+  %rmx.ok = icmp eq i32 %rmx.rc, 0
+  br i1 %rmx.ok, label %rmx.storec, label %rmx.compfail
+
+rmx.compfail:
+  call void @free(i8* %rmx.mem)
+  br label %rmx.ret0
+
+rmx.storec:
+  store i8* %rmx.mem, i8** %cache
+  br label %rmx.ready
+
+rmx.ready:
+  %rmx.preg = load i8*, i8** %cache
+  %rmx.bufsz = add i64 %len, 1
+  %rmx.buf = call i8* @malloc(i64 %rmx.bufsz)
+  %rmx.bufnull = icmp eq i8* %rmx.buf, null
+  br i1 %rmx.bufnull, label %rmx.ret0, label %rmx.cploop
+
+rmx.cploop:
+  %rmx.ci = phi i64 [ 0, %rmx.ready ], [ %rmx.ci1, %rmx.cpstep ]
+  %rmx.cdone = icmp uge i64 %rmx.ci, %len
+  br i1 %rmx.cdone, label %rmx.cpfin, label %rmx.cpstep
+
+rmx.cpstep:
+  %rmx.sp = getelementptr i8, i8* %ptr, i64 %rmx.ci
+  %rmx.sc = load i8, i8* %rmx.sp
+  %rmx.dp = getelementptr i8, i8* %rmx.buf, i64 %rmx.ci
+  store i8 %rmx.sc, i8* %rmx.dp
+  %rmx.ci1 = add i64 %rmx.ci, 1
+  br label %rmx.cploop
+
+rmx.cpfin:
+  %rmx.nulp = getelementptr i8, i8* %rmx.buf, i64 %len
+  store i8 0, i8* %rmx.nulp
+  %rmx.pm = alloca [4 x i64], align 8
+  %rmx.pmp = bitcast [4 x i64]* %rmx.pm to i8*
+  %rmx.rc2 = call i32 @regexec(i8* %rmx.preg, i8* %rmx.buf, i64 1, i8* %rmx.pmp, i32 0)
+  %rmx.matched = icmp eq i32 %rmx.rc2, 0
+  br i1 %rmx.matched, label %rmx.hit, label %rmx.free0
+
+rmx.hit:
+  %rmx.so_p = bitcast i8* %rmx.pmp to i32*
+  %rmx.so = load i32, i32* %rmx.so_p
+  %rmx.eo_pp = getelementptr i8, i8* %rmx.pmp, i64 4
+  %rmx.eo_p = bitcast i8* %rmx.eo_pp to i32*
+  %rmx.eo = load i32, i32* %rmx.eo_p
+  %rmx.so64 = sext i32 %rmx.so to i64
+  %rmx.eo64 = sext i32 %rmx.eo to i64
+  %rmx.rstart = add i64 %rmx.so64, 1
+  %rmx.rlength = sub i64 %rmx.eo64, %rmx.so64
+  store i64 %rmx.rstart, i64* %rstart_p
+  store i64 %rmx.rlength, i64* %rlength_p
+  call void @free(i8* %rmx.buf)
+  ret i64 %rmx.rstart
+
+rmx.free0:
+  call void @free(i8* %rmx.buf)
+  ret i64 0
+
+rmx.ret0:
+  ret i64 0
+}
+
+; awk sub/gsub: substitute ERE matches in %ptr[0..len) with %repl[0..repl_len),
+; where an unescaped & in the replacement expands to the matched text and a
+; backslash-escaped ampersand is a literal &. %global = 1 substitutes every
+; non-overlapping match (gsub); 0 stops
+; after the first (sub). Returns the interned atom id of the result and stores the
+; substitution count into *%count_p. The output is built in a growable buffer.
+define i64 @wam_regex_gsub(i8* %ptr, i64 %len, i8* %pattern, i8** %cache, i8* %repl, i64 %repl_len, i1 %global, i64* %count_p) {
+entry:
+  store i64 0, i64* %count_p
+  ; NUL-terminated scratch copy of the input for regexec
+  %gs.bufsz = add i64 %len, 1
+  %gs.src = call i8* @malloc(i64 %gs.bufsz)
+  %gs.srcnull = icmp eq i8* %gs.src, null
+  br i1 %gs.srcnull, label %gs.fail, label %gs.cploop
+
+gs.cploop:
+  %gs.ci = phi i64 [ 0, %entry ], [ %gs.ci1, %gs.cpstep ]
+  %gs.cdone = icmp uge i64 %gs.ci, %len
+  br i1 %gs.cdone, label %gs.cpfin, label %gs.cpstep
+
+gs.cpstep:
+  %gs.sp = getelementptr i8, i8* %ptr, i64 %gs.ci
+  %gs.sc = load i8, i8* %gs.sp
+  %gs.dp = getelementptr i8, i8* %gs.src, i64 %gs.ci
+  store i8 %gs.sc, i8* %gs.dp
+  %gs.ci1 = add i64 %gs.ci, 1
+  br label %gs.cploop
+
+gs.cpfin:
+  %gs.nulp = getelementptr i8, i8* %gs.src, i64 %len
+  store i8 0, i8* %gs.nulp
+  ; init the output string buffer (data/len/cap)
+  %gs.sb = alloca %WamStrBuf, align 8
+  %gs.initcap = add i64 %len, 16
+  %gs.data0 = call i8* @malloc(i64 %gs.initcap)
+  %gs.data_slot = getelementptr %WamStrBuf, %WamStrBuf* %gs.sb, i32 0, i32 0
+  store i8* %gs.data0, i8** %gs.data_slot
+  %gs.len_slot = getelementptr %WamStrBuf, %WamStrBuf* %gs.sb, i32 0, i32 1
+  store i64 0, i64* %gs.len_slot
+  %gs.cap_slot = getelementptr %WamStrBuf, %WamStrBuf* %gs.sb, i32 0, i32 2
+  store i64 %gs.initcap, i64* %gs.cap_slot
+  ; get/compile regex
+  %gs.cached = load i8*, i8** %cache
+  %gs.havec = icmp ne i8* %gs.cached, null
+  br i1 %gs.havec, label %gs.ready, label %gs.compile
+
+gs.compile:
+  %gs.mem = call i8* @malloc(i64 512)
+  %gs.memnull = icmp eq i8* %gs.mem, null
+  br i1 %gs.memnull, label %gs.tail_all, label %gs.docomp
+
+gs.docomp:
+  %gs.rc = call i32 @regcomp(i8* %gs.mem, i8* %pattern, i32 1)
+  %gs.ok = icmp eq i32 %gs.rc, 0
+  br i1 %gs.ok, label %gs.storec, label %gs.compfail2
+
+gs.compfail2:
+  call void @free(i8* %gs.mem)
+  br label %gs.tail_all
+
+gs.storec:
+  store i8* %gs.mem, i8** %cache
+  br label %gs.ready
+
+gs.ready:
+  %gs.preg = load i8*, i8** %cache
+  %gs.pm = alloca [4 x i64], align 8
+  %gs.pmp = bitcast [4 x i64]* %gs.pm to i8*
+  br label %gs.walk
+
+gs.walk:
+  %gs.pos = phi i64 [ 0, %gs.ready ], [ %gs.posn, %gs.advance ]
+  %gs.count = phi i64 [ 0, %gs.ready ], [ %gs.countn, %gs.advance ]
+  ; sub (non-global) stops after one substitution
+  %gs.stop_sub = icmp eq i1 %global, false
+  %gs.have_one = icmp sge i64 %gs.count, 1
+  %gs.stop = and i1 %gs.stop_sub, %gs.have_one
+  br i1 %gs.stop, label %gs.tail, label %gs.chkpos
+
+gs.chkpos:
+  %gs.atend = icmp ugt i64 %gs.pos, %len
+  br i1 %gs.atend, label %gs.done, label %gs.exec
+
+gs.exec:
+  %gs.sp2 = getelementptr i8, i8* %gs.src, i64 %gs.pos
+  %gs.isbol = icmp eq i64 %gs.pos, 0
+  %gs.eflags = select i1 %gs.isbol, i32 0, i32 1
+  %gs.rc2 = call i32 @regexec(i8* %gs.preg, i8* %gs.sp2, i64 1, i8* %gs.pmp, i32 %gs.eflags)
+  %gs.matched = icmp eq i32 %gs.rc2, 0
+  br i1 %gs.matched, label %gs.havematch, label %gs.tail
+
+gs.havematch:
+  %gs.so_p = bitcast i8* %gs.pmp to i32*
+  %gs.so = load i32, i32* %gs.so_p
+  %gs.eo_pp = getelementptr i8, i8* %gs.pmp, i64 4
+  %gs.eo_p = bitcast i8* %gs.eo_pp to i32*
+  %gs.eo = load i32, i32* %gs.eo_p
+  %gs.so64 = sext i32 %gs.so to i64
+  %gs.eo64 = sext i32 %gs.eo to i64
+  %gs.mstart = add i64 %gs.pos, %gs.so64
+  %gs.mend = add i64 %gs.pos, %gs.eo64
+  ; append the text before the match: src[pos .. mstart)
+  %gs.pre_p = getelementptr i8, i8* %gs.src, i64 %gs.pos
+  %gs.pre_n = sub i64 %gs.mstart, %gs.pos
+  call void @wam_sb_putn(%WamStrBuf* %gs.sb, i8* %gs.pre_p, i64 %gs.pre_n)
+  ; append the expanded replacement
+  %gs.match_p = getelementptr i8, i8* %gs.src, i64 %gs.mstart
+  %gs.match_n = sub i64 %gs.mend, %gs.mstart
+  br label %gs.rloop
+
+; expand %repl: an unescaped & becomes the matched text, an escaped one a literal
+gs.rloop:
+  %gs.ri = phi i64 [ 0, %gs.havematch ], [ %gs.rin, %gs.rcont ]
+  %gs.rdone = icmp uge i64 %gs.ri, %repl_len
+  br i1 %gs.rdone, label %gs.rdoneb, label %gs.rbody
+
+gs.rbody:
+  %gs.rp = getelementptr i8, i8* %repl, i64 %gs.ri
+  %gs.rc3 = load i8, i8* %gs.rp
+  %gs.is_amp = icmp eq i8 %gs.rc3, 38
+  br i1 %gs.is_amp, label %gs.emit_match, label %gs.chk_bs
+
+gs.emit_match:
+  call void @wam_sb_putn(%WamStrBuf* %gs.sb, i8* %gs.match_p, i64 %gs.match_n)
+  %gs.ri_a = add i64 %gs.ri, 1
+  br label %gs.rcont
+
+gs.chk_bs:
+  %gs.is_bs = icmp eq i8 %gs.rc3, 92
+  br i1 %gs.is_bs, label %gs.bs_look, label %gs.emit_lit
+
+gs.bs_look:
+  %gs.ri_next = add i64 %gs.ri, 1
+  %gs.has_next = icmp ult i64 %gs.ri_next, %repl_len
+  br i1 %gs.has_next, label %gs.bs_peek, label %gs.emit_lit
+
+gs.bs_peek:
+  %gs.np = getelementptr i8, i8* %repl, i64 %gs.ri_next
+  %gs.nc = load i8, i8* %gs.np
+  %gs.next_amp = icmp eq i8 %gs.nc, 38
+  br i1 %gs.next_amp, label %gs.emit_esc_amp, label %gs.emit_lit
+
+gs.emit_esc_amp:
+  call void @wam_sb_putc(%WamStrBuf* %gs.sb, i8 38)
+  %gs.ri_b = add i64 %gs.ri, 2
+  br label %gs.rcont
+
+gs.emit_lit:
+  call void @wam_sb_putc(%WamStrBuf* %gs.sb, i8 %gs.rc3)
+  %gs.ri_c = add i64 %gs.ri, 1
+  br label %gs.rcont
+
+gs.rcont:
+  %gs.rin = phi i64 [ %gs.ri_a, %gs.emit_match ], [ %gs.ri_b, %gs.emit_esc_amp ], [ %gs.ri_c, %gs.emit_lit ]
+  br label %gs.rloop
+
+gs.rdoneb:
+  %gs.countn = add i64 %gs.count, 1
+  ; advance past the match; force progress on a zero-length match
+  %gs.zerolen = icmp eq i64 %gs.match_n, 0
+  br i1 %gs.zerolen, label %gs.zadv, label %gs.nadv
+
+gs.zadv:
+  ; copy one source char (if any) and step past it
+  %gs.at_end = icmp uge i64 %gs.mend, %len
+  br i1 %gs.at_end, label %gs.zadv_end, label %gs.zadv_char
+
+gs.zadv_char:
+  %gs.zc_p = getelementptr i8, i8* %gs.src, i64 %gs.mend
+  %gs.zc = load i8, i8* %gs.zc_p
+  call void @wam_sb_putc(%WamStrBuf* %gs.sb, i8 %gs.zc)
+  %gs.pos_zc = add i64 %gs.mend, 1
+  br label %gs.advance
+
+gs.zadv_end:
+  br label %gs.advance
+
+gs.nadv:
+  br label %gs.advance
+
+gs.advance:
+  %gs.posn = phi i64 [ %gs.pos_zc, %gs.zadv_char ], [ %gs.mend, %gs.zadv_end ], [ %gs.mend, %gs.nadv ]
+  br label %gs.walk
+
+gs.tail:
+  ; append the remaining source: src[pos .. len)
+  %gs.tail_p = getelementptr i8, i8* %gs.src, i64 %gs.pos
+  %gs.tail_n = sub i64 %len, %gs.pos
+  call void @wam_sb_putn(%WamStrBuf* %gs.sb, i8* %gs.tail_p, i64 %gs.tail_n)
+  br label %gs.finish
+
+gs.tail_all:
+  ; regex unavailable: emit the whole input unchanged, 0 substitutions
+  call void @wam_sb_putn(%WamStrBuf* %gs.sb, i8* %gs.src, i64 %len)
+  br label %gs.finish_zero
+
+gs.done:
+  ; pos walked past the end with no pending tail
+  br label %gs.finish
+
+gs.finish:
+  %gs.fcount = phi i64 [ %gs.count, %gs.tail ], [ %gs.count, %gs.done ]
+  store i64 %gs.fcount, i64* %count_p
+  %gs.odata_slot = getelementptr %WamStrBuf, %WamStrBuf* %gs.sb, i32 0, i32 0
+  %gs.odata = load i8*, i8** %gs.odata_slot
+  %gs.olen_slot = getelementptr %WamStrBuf, %WamStrBuf* %gs.sb, i32 0, i32 1
+  %gs.olen = load i64, i64* %gs.olen_slot
+  %gs.id = call i64 @wam_intern_atom(i8* %gs.odata, i64 %gs.olen)
+  call void @free(i8* %gs.odata)
+  call void @free(i8* %gs.src)
+  ret i64 %gs.id
+
+gs.finish_zero:
+  %gs.zdata_slot = getelementptr %WamStrBuf, %WamStrBuf* %gs.sb, i32 0, i32 0
+  %gs.zdata = load i8*, i8** %gs.zdata_slot
+  %gs.zlen_slot = getelementptr %WamStrBuf, %WamStrBuf* %gs.sb, i32 0, i32 1
+  %gs.zlen = load i64, i64* %gs.zlen_slot
+  %gs.zid = call i64 @wam_intern_atom(i8* %gs.zdata, i64 %gs.zlen)
+  call void @free(i8* %gs.zdata)
+  call void @free(i8* %gs.src)
+  ret i64 %gs.zid
+
+gs.fail:
+  ret i64 0
+}
+
 ; awk-style numeric coercion of a record or projected field to double:
 ; strtod parses a leading number and ignores trailing text, so
 ; "3.14abc" reads as 3.14 and non-numeric text reads as 0.0. Field
@@ -8906,6 +9221,26 @@ copy:
   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst, i8* %s, i64 %n, i1 false)
   %len1 = add i64 %len, %n
   store i64 %len1, i64* %len_ptr
+  ret void
+}
+
+; Append %n bytes from %s (not necessarily NUL-terminated) to the buffer.
+define void @wam_sb_putn(%WamStrBuf* %sb, i8* %s, i64 %n) {
+entry:
+  %pn.z = icmp eq i64 %n, 0
+  br i1 %pn.z, label %pn.done, label %pn.copy
+pn.copy:
+  call void @wam_sb_reserve(%WamStrBuf* %sb, i64 %n)
+  %pn.data_ptr = getelementptr %WamStrBuf, %WamStrBuf* %sb, i32 0, i32 0
+  %pn.data = load i8*, i8** %pn.data_ptr
+  %pn.len_ptr = getelementptr %WamStrBuf, %WamStrBuf* %sb, i32 0, i32 1
+  %pn.len = load i64, i64* %pn.len_ptr
+  %pn.dst = getelementptr i8, i8* %pn.data, i64 %pn.len
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %pn.dst, i8* %s, i64 %n, i1 false)
+  %pn.len1 = add i64 %pn.len, %n
+  store i64 %pn.len1, i64* %pn.len_ptr
+  br label %pn.done
+pn.done:
   ret void
 }
 
