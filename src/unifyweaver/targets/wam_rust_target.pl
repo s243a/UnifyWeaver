@@ -5525,6 +5525,54 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 let a2_raw = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
                 self.builtin_atom_concat_attempt(&a1_raw, &a2_raw, &chars, 0)
             }
+            "sub_atom/5" => {
+                // Deterministic extraction mode: Atom, Before and Length
+                // must be bound. Character indexing matches atom_length/2.
+                let text = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(text)) => text,
+                    _ => return false,
+                };
+                let before = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(n)) if n >= 0 => match usize::try_from(n) {
+                        Ok(n) => n,
+                        Err(_) => return false,
+                    },
+                    _ => return false,
+                };
+                let length = match self.get_reg_raw("A3")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(n)) if n >= 0 => match usize::try_from(n) {
+                        Ok(n) => n,
+                        Err(_) => return false,
+                    },
+                    _ => return false,
+                };
+                let chars: Vec<char> = text.chars().collect();
+                let end = match before.checked_add(length) {
+                    Some(end) if end <= chars.len() => end,
+                    _ => return false,
+                };
+                let after = match i64::try_from(chars.len() - end) {
+                    Ok(after) => after,
+                    Err(_) => return false,
+                };
+                let sub: String = chars[before..end].iter().collect();
+                let a4 = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
+                let a5 = self.get_reg_raw("A5").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if !self.unify(&a4, &Value::Integer(after)) {
+                    self.unwind_trail_to(mark);
+                    return false;
+                }
+                if self.unify(&a5, &Value::Atom(sub)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
             "string_code/3" => {
                 let offset = match self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v))) {
@@ -5690,6 +5738,38 @@ compile_execute_ext_builtin_to_rust(Code) :-
                     }
                     _ => false,
                 }
+            }
+            "code_type/2" => {
+                // Check-only ASCII classification, matching the LLVM
+                // hybrid WAM contract. Enumeration is intentionally absent.
+                let code = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(code)) if (0..=255).contains(&code) => code as u8,
+                    _ => return false,
+                };
+                let ty = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(ty)) => ty,
+                    _ => return false,
+                };
+                let ok = match ty.as_str() {
+                    "alpha" => code.is_ascii_alphabetic(),
+                    "alnum" => code.is_ascii_alphanumeric(),
+                    "digit" => code.is_ascii_digit(),
+                    "upper" => code.is_ascii_uppercase(),
+                    "lower" => code.is_ascii_lowercase(),
+                    "space" => code.is_ascii_whitespace(),
+                    "white" => code == 32 || code == 9,
+                    "punct" => code.is_ascii_punctuation(),
+                    "graph" => code.is_ascii_graphic(),
+                    "ascii" => code.is_ascii(),
+                    "csym" => code.is_ascii_alphanumeric() || code == 95,
+                    "csymf" => code.is_ascii_alphabetic() || code == 95,
+                    "newline" => code == 10,
+                    "end_of_line" => code == 10 || code == 13,
+                    _ => return false,
+                };
+                if ok { self.pc += 1; true } else { false }
             }
             "char_type/2" => {
                 // +Char mode only; the common type terms. Parameterized
