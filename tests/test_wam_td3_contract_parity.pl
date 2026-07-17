@@ -49,21 +49,21 @@ dotnet_available :-
     catch(
         ( process_create(path(dotnet), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, _) ),
+          process_wait(Pid, exit(0)) ),
         _, fail).
 
 gcc_available :-
     catch(
         ( process_create(path(gcc), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, _) ),
+          process_wait(Pid, exit(0)) ),
         _, fail).
 
 cargo_available :-
     catch(
         ( process_create(path(cargo), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, _) ),
+          process_wait(Pid, exit(0)) ),
         _, fail).
 
 tmp_dir(Tag, Dir) :-

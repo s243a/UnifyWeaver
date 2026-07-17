@@ -39,8 +39,11 @@ user:kedge(b, c).
 user:kedge(c, d).
 user:kedge(a, e).
 user:kedge(e, f).
-% Deliberate non-atom key: the native TD3 Source guard must reject it even
-% though an otherwise valid outgoing edge exists in the indexed relation.
+% Deliberate mixed-domain path. Native TD3/TPD4 Source guards reject the
+% integer key, and TPD4 must also ignore the integer destination reached from
+% atom a rather than emit it or continue through it.
+user:kedge(a, 7).
+user:kedge(7, integer_target_child).
 user:kedge(1, integer_key_target).
 
 user:ktc(X, Y) :- kedge(X, Y).
@@ -215,6 +218,8 @@ test(parent_distance_kernel_emits_handler_and_stub) :-
             Dir),
         kprogram_source(Dir, 'kp.core', Src),
         assertion(sub_string(Src, _, _, _, "CallForeign(\"kpd\", 4)")),
+        assertion(sub_string(Src, _, _, _,
+                   "vs.map(_._2).collect { case atom @ Atom(_) => atom }")),
         assertion(sub_string(Src, _, _, _, "4 -> IntTerm")),
         assertion(sub_string(Src, _, _, _, "\"kedge/2\" ->")),
         delete_directory_and_contents(Dir)
@@ -366,6 +371,19 @@ test(transitive_parent_distance_parity,
     ksame(Run, 'kpd/4', [b,d,c,'2'], "true"),
     ksame(Run, 'kpd/4', [a,d,b,'3'], "false"),
     ksame(Run, 'kpd/4', [a,c,a,'2'], "false").
+
+test(transitive_parent_distance_rejects_non_atom_nodes,
+     [setup(kbuild_both([user:kpd/4, user:kedge/2],
+                        'gen.kpd_atom_nodes', Run)),
+      cleanup(kcleanup(Run))]) :-
+    % Run the native build directly: the generic recursive Prolog relation is
+    % term-polymorphic, while the fleet TPD4 contract is atom-node-only.
+    Run = run(_ItDir, KnDir, _ItPkg, KnPkg),
+    krun(KnDir, KnPkg, 'kpd/4', [a,'7',a,'1'], IntegerTarget),
+    assertion(IntegerTarget == "false"),
+    krun(KnDir, KnPkg, 'kpd/4',
+         [a,integer_target_child,'7','2'], IntegerParent),
+    assertion(IntegerParent == "false").
 
 % transitive_step_parent_distance5: (target, first-hop, parent, distance).
 test(transitive_step_parent_distance_parity,

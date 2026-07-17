@@ -393,7 +393,7 @@ test_transitive_parent_distance_kernel_generation :-
         atom_string(RuntimeCode, S),
         sub_string(S, _, _, _, 'void wam_register_transitive_parent_distance_kernel'),
         sub_string(S, _, _, _, 'bool wam_transitive_parent_distance_handler'),
-        sub_string(S, _, _, _, 'wam_transitive_parent_distance_bfs')
+        sub_string(S, _, _, _, 'wam_collect_transitive_parent_distance')
     ->  pass(Test)
     ;   fail_test(Test, 'transitive_parent_distance4 native kernel helpers missing')
     ).

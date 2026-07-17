@@ -1,0 +1,45 @@
+/// Native foreign acceleration for the shared transitive_parent_distance4
+/// pattern. Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
+///
+/// Contract: shortest-positive parents
+/// (docs/design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md).
+/// Emit every distinct (Target, Parent, Distance) where Distance is
+/// dist+(Source, Target) and Parent is an immediate predecessor of Target
+/// on some shortest positive path. Equal-shortest parents are all emitted;
+/// Source appears only for a self-loop (Source,Source,1) or the shortest
+/// nonempty cycle — never distance 0.
+///
+/// Organization: Mustache kept (BFS + distance map + parent sets + triple
+/// construction is non-trivial; mirrors F# TD3 and Haskell
+/// kernel_transitive_parent_distance.hs.mustache). Lookup-function style
+/// matches nativeKernel_transitive_distance. Distinct from
+/// reachableToRoot* (no parent/distance columns; reverse/child edges;
+/// includes root).
+///
+/// Returns (interned Target, Parent, Distance) triples; executeForeign
+/// streams them via the existing three-output binder + FFIStreamRetry.
+let nativeKernel_transitive_parent_distance
+    (edges: int -> int list)
+    (source: int) : (int * int * int) list =
+    let dist = System.Collections.Generic.Dictionary<int, int>()
+    let parents = System.Collections.Generic.Dictionary<int, System.Collections.Generic.HashSet<int>>()
+    let mutable frontier = [(source, 0)]
+    while not (List.isEmpty frontier) do
+        let next = System.Collections.Generic.List<int * int>()
+        for (node, d) in frontier do
+            let nd = d + 1
+            for n in edges node do
+                match dist.TryGetValue(n) with
+                | false, _ ->
+                    dist.[n] <- nd
+                    let hs = System.Collections.Generic.HashSet<int>()
+                    hs.Add(node) |> ignore
+                    parents.[n] <- hs
+                    next.Add((n, nd))
+                | true, d0 when d0 = nd ->
+                    parents.[n].Add(node) |> ignore
+                | _ -> ()
+        frontier <- List.ofSeq next
+    [ for KeyValue(t, d) in dist do
+        for p in parents.[t] do
+            yield (t, p, d) ]

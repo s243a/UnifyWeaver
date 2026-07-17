@@ -2999,7 +2999,15 @@ func (vm *WamState) finishForeignResults(predKey string, resultRegs []int, resul
     case "stream":
         return vm.finishStreamResults(predKey, resultRegs, results)
     default:
+        baseRegs := vm.Regs
+        trailMark := vm.TrailLen
+        heapTop := vm.HeapLen
         if !vm.applyForeignResult(predKey, resultRegs, results[0]) {
+            vm.unwindTrailTo(trailMark)
+            vm.Regs = baseRegs
+            if heapTop >= 0 && heapTop <= vm.HeapLen {
+                vm.heapTrimTo(heapTop)
+            }
             return false
         }
         vm.PC = resumePC
@@ -3065,6 +3073,22 @@ func (vm *WamState) finishStreamResults(predKey string, resultRegs []int, result
         vm.PC = resumePC
         return true
     }
+    // The last candidate can fail only after binding an earlier tuple
+    // component (notably when output registers alias).  There is no next
+    // loop iteration to perform the usual reset, so restore the complete
+    // pre-stream snapshot before reporting exhaustion.
+    vm.unwindTrailTo(trailMark)
+    vm.Regs = baseRegs
+    if baseStackLen <= len(vm.Stack) {
+        vm.Stack = vm.Stack[:baseStackLen]
+    }
+    vm.E = baseE
+    if heapTop >= 0 && heapTop <= vm.HeapLen {
+        vm.heapTrimTo(heapTop)
+    }
+    vm.Halted = false
+    vm.CurrentStruct = nil
+    vm.CurrentList = nil
     return false
 }
 
@@ -3202,27 +3226,52 @@ func (vm *WamState) collectNativeTransitiveDistanceResults(source string, pairs 
 }
 
 func (vm *WamState) collectNativeTransitiveParentDistanceResults(source string, pairs []AtomPair) []Value {
+    // Shortest-positive parents
+    // (docs/design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md): BFS with
+    // parent sets. dist tracks edge-discovered nodes — do not seed with
+    // source. Equal-shortest parents are all emitted.
     adjacency := atomAdjacency(pairs)
-    visited := map[string]bool{source: true}
-    dist := map[string]int{source: 0}
-    parent := make(map[string]string)
-    queue := []string{source}
-    results := make([]Value, 0)
+    dist := make(map[string]int)
+    parents := make(map[string]map[string]bool)
+    type qd struct {
+        node string
+        dist int
+    }
+    queue := []qd{{source, 0}}
     for len(queue) > 0 {
         current := queue[0]
         queue = queue[1:]
-        for _, next := range adjacency[current] {
-            if visited[next] {
+        nextDist := current.dist + 1
+        for _, next := range adjacency[current.node] {
+            if d0, ok := dist[next]; ok {
+                if d0 == nextDist {
+                    parents[next][current.node] = true
+                }
                 continue
             }
-            visited[next] = true
-            dist[next] = dist[current] + 1
-            parent[next] = current
-            queue = append(queue, next)
+            dist[next] = nextDist
+            parents[next] = map[string]bool{current.node: true}
+            queue = append(queue, qd{next, nextDist})
+        }
+    }
+    keys := make([]string, 0, len(dist))
+    for k := range dist {
+        keys = append(keys, k)
+    }
+    sort.Strings(keys)
+    results := make([]Value, 0)
+    for _, target := range keys {
+        d := dist[target]
+        pars := make([]string, 0, len(parents[target]))
+        for p := range parents[target] {
+            pars = append(pars, p)
+        }
+        sort.Strings(pars)
+        for _, parent := range pars {
             results = append(results, tupleValue(
-                internAtom(next),
-                internAtom(parent[next]),
-                &Integer{Val: int64(dist[next])},
+                internAtom(target),
+                internAtom(parent),
+                &Integer{Val: int64(d)},
             ))
         }
     }

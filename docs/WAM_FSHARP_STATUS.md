@@ -36,17 +36,18 @@ query times competitive with Rust FFI at scale 300.
 **Kernels.** Shared detection can recognize more kinds than F# accelerates.
 The capability gate promotes a predicate to `CallForeign` only when the
 selected kind is allow-listed **and** its F# handler exists; otherwise the
-already-working WAM predicate remains the correctness path. Four F#
+already-working WAM predicate remains the correctness path. Five F#
 mustache handlers exist on disk
 (`kernel_category_ancestor.fs.mustache`,
 `kernel_bidirectional_ancestor.fs.mustache`,
 `kernel_transitive_closure.fs.mustache`,
-`kernel_transitive_distance.fs.mustache` — dist+ BFS). Missing handlers no
-longer emit undefined `nativeKernel_*` calls. Benchmarks centre on
-`category_ancestor/4`. **Bidirectional** upgrade is computed but
-**off by default** — requires `allow_bidirectional_kernel_swap(true)`.
-CSR reverse-index reader (`CsrLookupSource`) and cost/strategy
-analyzers ship.
+`kernel_transitive_distance.fs.mustache` — dist+ BFS,
+`kernel_transitive_parent_distance.fs.mustache` — shortest-positive
+parents). Missing handlers no longer emit undefined `nativeKernel_*`
+calls. Benchmarks centre on `category_ancestor/4`. **Bidirectional**
+upgrade is computed but **off by default** — requires
+`allow_bidirectional_kernel_swap(true)`. CSR reverse-index reader
+(`CsrLookupSource`) and cost/strategy analyzers ship.
 
 **LMDB.** LightningDB 0.21; `ILookupSource` with eager, lazy, cached,
 two-level cache, Dict unwrap; `lmdb_materialisation(...)` including
@@ -80,10 +81,10 @@ classic `wam_conformance_smoke` matrix with Scala/Elixir.
 
 ## Gaps
 
-- Finish F# kernel templates for the remaining four shared kinds
-  (`transitive_parent_distance4`, `transitive_step_parent_distance5`,
-  `weighted_shortest_path3`, `astar_shortest_path4`) — or stop claiming
-  full kernel parity without the templates.
+- Finish F# kernel templates for the remaining three shared kinds
+  (`transitive_step_parent_distance5`, `weighted_shortest_path3`,
+  `astar_shortest_path4`) — or stop claiming full kernel parity without
+  the templates.
 - Bidirectional off by default; enable after cost-model confidence.
 - Classic conformance (**CONF-FSHARP**, 2026-07-15): registered
   opt-in (`fsharp` / `fsharp_functions`) with additive
