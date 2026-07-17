@@ -4173,52 +4173,46 @@ defmodule WamRuntime.GraphKernel.TransitiveDistance do
           trans_dist(Mid, Y, N1),
           N is N1 + 1.
 
-  Returns all `(target, distance)` pairs reachable from `start` via
-  simple paths (per-path visited set, A->B->C and A->C are DIFFERENT
-  paths to C with distance 2 and 1, both yielded — same convention
-  CategoryAncestor uses).
-
-  Ported from the Rust kernel `collect_native_transitive_distance_results`
-  in src/unifyweaver/targets/wam_rust_target.pl. Identical algorithm:
-  recursive DFS with explicit per-path visited list, push (target,
-  next_depth) on every edge to an unvisited node, recurse with the
-  target appended to visited.
-
-  Termination: each recursive step adds the target to `visited`,
-  blocking re-entry. The recursion bottoms out when the current
-  nodes neighbours are all in visited (i.e. we have walked every
-  simple path from `start`).
-
-  Why bypass WAM: same reasoning as TransitiveClosure / CategoryAncestor.
-  Adding more kernel kinds is the second-largest perf lever after
-  walker tuning (per docs/WAM_TARGET_ROADMAP.md). This kernel was
-  the simplest of the five Rust+Haskell kinds Elixir was missing —
-  shape mirrors CategoryAncestor (per-path enumeration) but without
-  the explicit Visited-list arg or max_depth bound.
+  Contract: dist+ (docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md).
+  Finite BFS emits each reachable target exactly once with its minimum
+  positive edge distance. Visited tracks nodes discovered via an
+  outgoing edge — not seeded with `start` — so Source appears only for
+  a self-loop (distance 1) or the shortest nonempty cycle.
   """
 
   @doc """
-  Returns `[{target, distance}, ...]` for every distinct simple path
-  from `start`. `neighbors_fn` receives a node, returns a list of
-  `{from, to}` tuples (FactSource lookup_by_arg1 contract); only `to`
-  is read.
+  Returns `[{target, distance}, ...]` — one pair per reachable target
+  at minimum positive distance. `neighbors_fn` receives a node, returns
+  a list of `{from, to}` tuples (FactSource lookup_by_arg1 contract);
+  only `to` is read.
   """
   def collect_pairs(neighbors_fn, start) when is_function(neighbors_fn, 1) do
-    walk(neighbors_fn, start, [start], 0, [])
+    bfs(neighbors_fn, :queue.in({start, 0}, :queue.new()), MapSet.new(), [])
     |> Enum.reverse()
   end
 
-  defp walk(neighbors_fn, node, visited, depth, acc) do
-    edges = neighbors_fn.(node)
-    next_depth = depth + 1
-    Enum.reduce(edges, acc, fn {_from, target}, ac ->
-      if :lists.member(target, visited) do
-        ac
-      else
-        ac1 = [{target, next_depth} | ac]
-        walk(neighbors_fn, target, [target | visited], next_depth, ac1)
-      end
-    end)
+  defp bfs(neighbors_fn, q, visited, acc) do
+    case :queue.out(q) do
+      {:empty, _} ->
+        acc
+
+      {{:value, {node, depth}}, q1} ->
+        next_depth = depth + 1
+        {q2, visited2, acc2} =
+          Enum.reduce(neighbors_fn.(node), {q1, visited, acc}, fn {_from, target}, {qq, vv, aa} ->
+            if MapSet.member?(vv, target) do
+              {qq, vv, aa}
+            else
+              {
+                :queue.in({target, next_depth}, qq),
+                MapSet.put(vv, target),
+                [{target, next_depth} | aa]
+              }
+            end
+          end)
+
+        bfs(neighbors_fn, q2, visited2, acc2)
+    end
   end
 
   @doc """
@@ -5750,8 +5744,10 @@ end
 %    - val_reg == 3 -> push distances     (`findall(D, td(s, _, D), Ds)`)
 %    - otherwise    -> push pair tuples   (`findall(T-D, ...)` etc.)
 %
-%  Driver-direct call (no aggregate frame): binds A2 and A3 to the
-%  first solutions target and distance.
+%  Driver-direct call (no aggregate frame): filters against any bound
+%  A2/A3 values, binds the first compatible pair, and pushes an ordinary
+%  function-backed choice point for the remaining pairs.  This makes all
+%  four TD3 modes use the same retry path as the rest of the Elixir WAM.
 compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
     atom_string(ModuleName, ModName),
     camel_case(ModName, CamelMod),
@@ -5772,6 +5768,10 @@ compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
 
   def run(%WamRuntime.WamState{} = state) do
     start_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
+    # Prolog atoms are represented as binaries by the Elixir WAM.  Keep
+    # the fleet TD3 input contract explicit: an unbound or non-atom Source
+    # fails even if an external fact store happens to contain such a key.
+    unless is_binary(start_val), do: throw({:fail, state})
     edge_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
     neighbors_fn = fn node ->
       WamRuntime.FactSource.lookup_by_arg1(edge_handle, node, state)
@@ -5779,6 +5779,7 @@ compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
     pairs =
       WamRuntime.GraphKernel.TransitiveDistance.collect_pairs(
         neighbors_fn, start_val)
+      |> compatible_pairs(state)
 
     if WamRuntime.in_forkable_aggregate_frame?(state) do
       # Slice the pairs based on which register the active aggregate
@@ -5798,14 +5799,7 @@ compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
       new_state = %{state | choice_points: above ++ [new_agg_cp | below]}
       throw({:fail, new_state})
     else
-      case pairs do
-        [{first_target, first_dist} | _] ->
-          case bind_two_regs(state, first_target, first_dist) do
-            nil -> throw({:fail, state})
-            bound -> {:ok, bound}
-          end
-        [] -> throw({:fail, state})
-      end
+      stream_pairs(state, pairs)
     end
   end
 
@@ -5837,9 +5831,52 @@ compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
     end
   end
 
-  # Bind both A2 (target) and A3 (distance) for the driver-direct
-  # single-solution path. Either binding failure (slot already bound
-  # to a different value) returns nil so the caller throws fail.
+  # Keep only candidates that jointly unify with the callers current A2/A3.
+  # Checking both bindings against the same immutable candidate state is
+  # important when the output registers share a variable: independent
+  # wildcard checks would accept {atom, integer} for td(S, X, X).  The
+  # filtered list is also the aggregate fast paths contribution source, so
+  # aggregates observe the same tuple-unification contract as direct retry.
+  defp compatible_pairs(pairs, state) do
+    Enum.filter(pairs, fn {candidate_target, candidate_distance} ->
+      not is_nil(bind_two_regs(state, candidate_target, candidate_distance))
+    end)
+  end
+
+  # Yield one pair and retain the pre-bind snapshot in a normal Elixir-WAM
+  # choice point. WamRuntime.next_solution/1 drives the closure on retry;
+  # backtrack_ordinary restores registers, trail, heap, CP and stack before
+  # invoking it, so every pair attempt is independent.
+  defp stream_pairs(state, []), do: throw({:fail, state})
+  defp stream_pairs(state, [{target, distance} | rest]) do
+    case bind_two_regs(state, target, distance) do
+      nil ->
+        # Covers aliased output variables such as td(S, X, X): both slots
+        # look unbound during the pre-filter, but tuple unification must fail.
+        stream_pairs(state, rest)
+
+      bound when rest == [] ->
+        {:ok, bound}
+
+      bound ->
+        iter_cp = %{
+          pc: fn restored -> stream_pairs(restored, rest) end,
+          regs: state.regs,
+          y_regs: state.y_regs,
+          heap: state.heap,
+          heap_len: state.heap_len,
+          cp: state.cp,
+          trail: state.trail,
+          trail_len: state.trail_len,
+          stack: state.stack
+        }
+
+        {:ok, %{bound | choice_points: [iter_cp | bound.choice_points]}}
+    end
+  end
+
+  # Bind both A2 (target) and A3 (distance). Either binding failure
+  # returns nil so stream_pairs/2 can continue with the next candidate.
   defp bind_two_regs(state, target, distance) do
     with {:ok, s1} <- bind_one(state, 2, target),
          {:ok, s2} <- bind_one(s1, 3, distance) do
@@ -5850,7 +5887,7 @@ compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
   end
 
   defp bind_one(state, reg_idx, value) do
-    case WamRuntime.get_reg_raw(state, reg_idx) do
+    case WamRuntime.get_reg(state, reg_idx) do
       {:unbound, id} ->
         {:ok,
          state

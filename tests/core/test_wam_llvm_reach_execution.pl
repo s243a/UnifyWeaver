@@ -121,10 +121,6 @@ entry:
   %a2.0 = insertvalue %Value undef, i32 0, 0
   %a2 = insertvalue %Value %a2.0, i64 ~w, 1
 
-  ; Build %Value unbound for result slot.
-  %a3.0 = insertvalue %Value undef, i32 6, 0
-  %a3 = insertvalue %Value %a3.0, i64 0, 1
-
   ; Create a fresh vm backed by reach_code / reach_labels.
   %vm = call %WamState* @wam_state_new(
       %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
@@ -132,7 +128,22 @@ entry:
       i32* getelementptr ([~w x i32], [~w x i32]* @module_labels, i32 0, i32 0),
       i32 0)
 
-  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
+  ; Bound inputs may also arrive through nested Ref chains.
+  %a1.leaf = call i32 @wam_heap_push(%WamState* %vm, %Value %a1)
+  %a1.leaf_ref = call %Value @value_ref(i32 %a1.leaf)
+  %a1.root = call i32 @wam_heap_push(%WamState* %vm, %Value %a1.leaf_ref)
+  %a1.ref = call %Value @value_ref(i32 %a1.root)
+
+  ; A normal compiled output variable is Ref-backed.  Use a nested chain
+  ; to prove TD3 dereferences and binds the terminal heap cell.
+  %a3.0 = insertvalue %Value undef, i32 6, 0
+  %a3.unbound = insertvalue %Value %a3.0, i64 0, 1
+  %a3.leaf = call i32 @wam_heap_push(%WamState* %vm, %Value %a3.unbound)
+  %a3.leaf_ref = call %Value @value_ref(i32 %a3.leaf)
+  %a3.root = call i32 @wam_heap_push(%WamState* %vm, %Value %a3.leaf_ref)
+  %a3 = call %Value @value_ref(i32 %a3.root)
+
+  call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1.ref)
   call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
   call void @wam_set_reg(%WamState* %vm, i32 2, %Value %a3)
 
@@ -140,10 +151,19 @@ entry:
   br i1 %ok, label %hit, label %miss
 
 hit:
-  ; Read A3 (register index 2) payload back as the computed distance.
-  %dist = call i64 @wam_get_reg_payload(%WamState* %vm, i32 2)
+  ; Read through the original A3 Ref chain.
+  %dist_value = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %dist_tag = extractvalue %Value %dist_value, 0
+  %dist_is_int = icmp eq i32 %dist_tag, 1
+  br i1 %dist_is_int, label %distance_ok, label %bad_result
+
+distance_ok:
+  %dist = extractvalue %Value %dist_value, 1
   %dist32 = trunc i64 %dist to i32
   ret i32 %dist32
+
+bad_result:
+  ret i32 254
 
 miss:
   ret i32 255
@@ -173,8 +193,8 @@ run_reach_for(Label, StartAtom, TargetAtom, Expected) :-
     extract_instr_count(Src, InstrCount),
     extract_label_count(Src, LabelArraySize),
     extract_atom_ids(Src, AtomIds),
-    get_dict(StartAtom, AtomIds, StartId),
-    get_dict(TargetAtom, AtomIds, TargetId),
+    reach_test_atom_id(StartAtom, AtomIds, StartId),
+    reach_test_atom_id(TargetAtom, AtomIds, TargetId),
     build_reach_driver(InstrCount, LabelArraySize, StartId, TargetId, DriverIR),
     setup_call_cleanup(
         open(LLPath, append, Out),
@@ -209,6 +229,14 @@ run_reach_for(Label, StartAtom, TargetAtom, Expected) :-
     clear_llvm_foreign_kernel_specs,
     assertion(ExitCode =:= Expected).
 
+reach_test_atom_id(outside_edge_table, AtomIds, Id) :- !,
+    dict_pairs(AtomIds, _, Pairs),
+    findall(Value, member(_-Value, Pairs), Values),
+    max_list(Values, MaxId),
+    Id is MaxId + 1.
+reach_test_atom_id(Atom, AtomIds, Id) :-
+    get_dict(Atom, AtomIds, Id).
+
 test_reach_executes :-
     format('--- Full-pipeline foreign-lowered reach/3 execution ---~n'),
     ( process_which('clang'), process_which('llc')
@@ -217,7 +245,9 @@ test_reach_executes :-
        run_reach_for('two-hop path p->r',    p, r, 2),
        run_reach_for('direct edge p->q',     p, q, 1),
        run_reach_for('direct edge p->t',     p, t, 1),
-       run_reach_for('self hit p->p',        p, p, 0)
+       run_reach_for('acyclic p->p is not R+', p, p, 255),
+       run_reach_for('out-of-table Source fails safely',
+                     outside_edge_table, p, 255)
     ;  format('  SKIP: clang or llc not found on PATH~n')
     ).
 
@@ -233,7 +263,6 @@ process_which(Tool) :-
         fail).
 
 test_all :-
-    catch(test_reach_executes, E,
-        format('  ERROR: ~w~n', [E])).
+    test_reach_executes.
 
 :- initialization(test_all, main).

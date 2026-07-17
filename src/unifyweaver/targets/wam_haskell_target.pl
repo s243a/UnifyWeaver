@@ -816,6 +816,20 @@ emit_stream_binding_multi(OutputRegs, Indent) :-
     format('~w    retPC = wsCP s~n', [Indent]),
     % Deref each output register
     emit_multi_out_derefs(OutputRegs, Indent),
+    % Filter native tuples using ordinary output-mode unification before
+    % yielding or creating a retry choice point.  This is shared by every
+    % multi-output kernel because they all use the same tuple ABI.
+    format('~w    resultMatches ', [Indent]),
+    emit_tuple_pattern(NOuts),
+    format(' =~n', []),
+    format('~w      let ', [Indent]),
+    emit_multi_wrap_bindings(OutputRegs, 1),
+    format('~w      in ffiTupleMatches [', [Indent]),
+    emit_multi_outreg_values(OutputRegs, 1),
+    format('] [', []),
+    emit_wrapped_value_list(OutputRegs, 1),
+    format(']~n', []),
+    format('~w    matchingResults = filter resultMatches results~n', [Indent]),
     % Emit bindResult: pattern matches a tuple, binds each output
     format('~w    bindResult ', [Indent]),
     emit_tuple_pattern(NOuts),
@@ -826,10 +840,12 @@ emit_stream_binding_multi(OutputRegs, Indent) :-
     emit_multi_reg_updates(OutputRegs, Indent),
     emit_multi_binding_updates(OutputRegs, Indent),
     emit_multi_trail_updates(OutputRegs, Indent),
-    format('~w         , wsTrailLen = wsTrailLen s + ~w~n', [Indent, NOuts]),
+    format('~w         , wsTrailLen = wsTrailLen s + length [() | Unbound _ <- [', [Indent]),
+    emit_multi_outreg_values(OutputRegs, 1),
+    format(']]~n', []),
     format('~w         }~n', [Indent]),
     % Dispatch over result stream
-    format('~win case results of~n', [Indent]),
+    format('~win case matchingResults of~n', [Indent]),
     format('~w  [] -> Nothing~n', [Indent]),
     format('~w  [h] -> Just (bindResult h)~n', [Indent]),
     format('~w  (h:restResults) ->~n', [Indent]),
@@ -895,9 +911,28 @@ emit_multi_reg_updates(OutputRegs, Indent) :-
 
 emit_reg_insert_chain([], _).
 emit_reg_insert_chain([output(RegN, _)|Rest], I) :-
-    format('IM.insert ~w w_~w $ ', [RegN, I]),
+    % Preserve registers that were already bound at the call site.
+    format('(case outReg_~w of { Unbound _ -> IM.insert ~w w_~w; _ -> id }) $ ',
+           [RegN, RegN, I]),
     I1 is I + 1,
     emit_reg_insert_chain(Rest, I1).
+
+% Emit the dereferenced output cells as a Haskell list payload.
+emit_multi_outreg_values([], _).
+emit_multi_outreg_values([output(RegN, _)|Rest], I) :-
+    (   I =:= 1 -> true ; format(', ', []) ),
+    format('outReg_~w', [RegN]),
+    I1 is I + 1,
+    emit_multi_outreg_values(Rest, I1).
+
+% Emit the type-correct Value wrappers introduced by
+% emit_multi_wrap_bindings/2 as a Haskell list.
+emit_wrapped_value_list([], _).
+emit_wrapped_value_list([_|Rest], I) :-
+    (   I =:= 1 -> true ; format(', ', []) ),
+    format('w_~w', [I]),
+    I1 is I + 1,
+    emit_wrapped_value_list(Rest, I1).
 
 % Emit `, wsBindings = IM.insert vid_1 w_1 $ IM.insert vid_2 w_2 $ wsBindings s`
 % Only inserts for Unbound outputs; bound outputs are no-ops.
@@ -1305,31 +1340,42 @@ resumeBuiltin (HopsRetry vid (h:hs) retPC) cp rest s =
             , wsHeapLen = cpHeapLen cp
             , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
 
--- Multi-output FFI retry: each remaining tuple is already a list of
--- wrapped Values matching outRegs/outVars in order.
-resumeBuiltin (FFIStreamRetry _ _ [] _) _ rest s =
-  backtrack (s { wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
-resumeBuiltin (FFIStreamRetry outRegs outVars (tuple:rest_tuples) retPC) cp rest s =
-  let -- Insert each (reg, value) from the tuple into the registers.
-      newRegs = foldr (\\(rN, v) m -> IM.insert rN v m) (cpRegs cp)
-                      (zip outRegs tuple)
-      -- Insert each (varId, value) into bindings, skipping varId = -1
-      -- (meaning the output was originally bound, so no binding update).
-      newBindings = foldr (\\(vid, v) m ->
-                             if vid == -1 then m else IM.insert vid v m)
-                          (cpBindings cp)
-                          (zip outVars tuple)
-      newCPs = case rest_tuples of
-        [] -> rest
-        _  -> cp { cpBuiltin = Just (FFIStreamRetry outRegs outVars rest_tuples retPC) } : rest
-      diff = wsTrailLen s - cpTrailLen cp
-  in Just s { wsPC = retPC, wsRegs = newRegs, wsStack = cpStack cp
-            , wsCP = cpCP cp
-            , wsTrail = drop diff (wsTrail s)
-            , wsTrailLen = cpTrailLen cp
-            , wsHeap = take (cpHeapLen cp) (wsHeap s)
-            , wsHeapLen = cpHeapLen cp
-            , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
+-- Multi-output retry revalidates tuples against the saved call state.
+-- Generated call sites pre-filter too, so mismatches never become latent
+-- choice points and hand-built retry records remain safe.
+resumeBuiltin (FFIStreamRetry outRegs outVars tuples retPC) cp rest s =
+  let baseOutputs =
+        [ derefVar (cpBindings cp) $
+            fromMaybe (Unbound (-1)) (IM.lookup rN (cpRegs cp))
+        | rN <- outRegs
+        ]
+  in case dropWhile (not . ffiTupleMatches baseOutputs) tuples of
+    [] -> backtrack (s { wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
+    (tuple:restTuples) ->
+      let -- Bound registers retain their saved representation.
+          newRegs = foldr (\\(rN, vid, v) m ->
+                             if vid == -1 then m else IM.insert rN v m)
+                          (cpRegs cp)
+                          (zip3 outRegs outVars tuple)
+          newBindings = foldr (\\(vid, v) m ->
+                                 if vid == -1 then m else IM.insert vid v m)
+                              (cpBindings cp)
+                              (zip outVars tuple)
+          newCPs = case restTuples of
+            [] -> rest
+            _  -> cp { cpBuiltin = Just (FFIStreamRetry outRegs outVars restTuples retPC) } : rest
+          newCPsLen = case restTuples of
+            [] -> wsCPsLen s - 1
+            _  -> wsCPsLen s
+          diff = wsTrailLen s - cpTrailLen cp
+      in Just s { wsPC = retPC, wsRegs = newRegs, wsStack = cpStack cp
+                , wsCP = cpCP cp
+                , wsTrail = drop diff (wsTrail s)
+                , wsTrailLen = cpTrailLen cp
+                , wsHeap = take (cpHeapLen cp) (wsHeap s)
+                , wsHeapLen = cpHeapLen cp
+                , wsBindings = newBindings, wsCutBar = cpCutBar cp
+                , wsCPs = newCPs, wsCPsLen = newCPsLen }
 
 -- Phase F2: FactStream resume — iterate through inline fact tuples.
 -- Each (a1, a2) pair is unified against registers A1/A2. Variable IDs
@@ -1354,6 +1400,25 @@ resumeBuiltin (FactStream var1 var2 ((a1,a2):rows) retPC) cp rest s =
             , wsHeap = take (cpHeapLen cp) (wsHeap s)
             , wsHeapLen = cpHeapLen cp
             , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
+
+-- | Check a foreign result tuple against the output cells present at the
+-- call site. Bound cells must match. Unbound cells accept a value, while
+-- repeated occurrences of the same variable must agree with each other.
+-- Keep this helper after every resumeBuiltin equation: Haskell requires all
+-- equations for a function to be contiguous.
+ffiTupleMatches :: [Value] -> [Value] -> Bool
+ffiTupleMatches outputs values
+  | length outputs /= length values = False
+  | otherwise = go IM.empty (zip outputs values)
+  where
+    go _ [] = True
+    go seen ((out, val):rest) =
+      case out of
+        Unbound vid ->
+          case IM.lookup vid seen of
+            Nothing -> go (IM.insert vid val seen) rest
+            Just old -> old == val && go seen rest
+        bound -> bound == val && go seen rest
 
 -- | Backtrack skipping past the aggregate_frame CP. If the top CP is
 -- an aggregate frame, return Nothing (inner solutions exhausted).

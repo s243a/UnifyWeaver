@@ -2392,13 +2392,13 @@ WamRuntime$transitive_closure2 <- function(program, state, key, edge_pred,
 # ----------------------------------------------------------
 # Recursive-kernel: transitive_distance3
 # ----------------------------------------------------------
-# BFS variant that yields (target, distance) pairs. Pattern:
+# dist+ (docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md): BFS shortest
+# positive distance. Pattern:
 #   tdist(X, Y, 1) :- edge(X, Y).
 #   tdist(X, Y, D) :- edge(X, Z), tdist(Z, Y, D1), D is D1 + 1.
-# We BFS from the (ground) source and record the depth at which
-# each node is first reached. The source itself is *not* yielded
-# unless there's a self-loop, matching the SWI semantics of the
-# clauses above (one edge step is required).
+# Visited tracks nodes discovered via an outgoing edge — do NOT seed
+# with Source. Source appears only for a self-loop (distance 1) or the
+# shortest nonempty cycle back to Source.
 WamRuntime$transitive_distance3 <- function(program, state, key, edge_pred,
                                              edge_key, source, target, dist,
                                              resume_pc) {
@@ -2423,7 +2423,6 @@ WamRuntime$transitive_distance3 <- function(program, state, key, edge_pred,
   q_nodes  <- list(src_v)
   q_depths <- list(0L)
   reached  <- list()  # list of list(node, depth)
-  assign(as.character(src_v$id), TRUE, envir = visited)
 
   while (length(q_nodes) > 0L) {
     cur   <- q_nodes[[1L]]

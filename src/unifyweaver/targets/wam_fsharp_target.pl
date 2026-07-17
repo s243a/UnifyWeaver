@@ -253,10 +253,13 @@ ffi_owned_fact_filter_fs(DetectedKernels, PI) :-
 %   - lmdb_fact_source reachableToRoot* is demand-pruning BFS over
 %     category_child (includes root); not a drop-in for transitive_closure2.
 %   - BuildEmptySet / SetInsert / NotMemberSet + FFIStreamRetry are the
-%     WAM/FFI plumbing TC2 streaming reuses.
+%     WAM/FFI plumbing TC2/TD3 streaming reuses.
+%   - transitive_distance3 Mustache handler emits (atom,int) pairs via the
+%     existing multi-output binder (dist+ contract).
 wam_fsharp_native_kernel_kind(category_ancestor).
 wam_fsharp_native_kernel_kind(bidirectional_ancestor).
 wam_fsharp_native_kernel_kind(transitive_closure2).
+wam_fsharp_native_kernel_kind(transitive_distance3).
 
 fsharp_kernel_template_path(Kind, AbsPath) :-
     kernel_template_file(Kind, HsTemplateFile),
@@ -3851,6 +3854,7 @@ emit_bound_output_filter_body_fs([output(RegN, Type)], I, Indent) :- !,
 emit_bound_output_filter_body_fs(OutputRegs, I, Indent) :-
     format('~w        (~n', [Indent]),
     emit_bound_output_filter_conds_fs(OutputRegs, I, Indent),
+    emit_output_alias_filter_conds_fs(OutputRegs, Indent),
     format('~w        )~n', [Indent]).
 
 emit_bound_output_filter_conds_fs([], _, Indent) :-
@@ -3869,6 +3873,43 @@ emit_bound_output_filter_conds_fs([output(RegN, Type)|Rest], I, Indent) :-
         I1 is I + 1,
         emit_bound_output_filter_conds_fs(Rest, I1, Indent)
     ).
+
+%% Aliased output registers must still obey ordinary Prolog unification.
+%  The native tuple components are ground, so pairwise equality of their
+%  wrapped WAM Values is sufficient. Without this guard td(+S,X,X) could
+%  write an Atom to A2 and an Integer to A3 while adding the same variable id
+%  twice to WsBindings. Filtering once here also makes every FFIStreamRetry
+%  tuple safe for the existing direct retry binder.
+emit_output_alias_filter_conds_fs(OutputRegs, Indent) :-
+    index_output_regs_fs(OutputRegs, 1, Indexed),
+    emit_output_alias_pairs_fs(Indexed, Indent).
+
+index_output_regs_fs([], _, []).
+index_output_regs_fs([output(RegN, Type)|Rest], I,
+                     [indexed_output(I, RegN, Type)|IndexedRest]) :-
+    I1 is I + 1,
+    index_output_regs_fs(Rest, I1, IndexedRest).
+
+emit_output_alias_pairs_fs([], _).
+emit_output_alias_pairs_fs([Left|Rest], Indent) :-
+    emit_output_alias_pairs_with_fs(Left, Rest, Indent),
+    emit_output_alias_pairs_fs(Rest, Indent).
+
+emit_output_alias_pairs_with_fs(_, [], _).
+emit_output_alias_pairs_with_fs(indexed_output(I, RegN, Type),
+                                [indexed_output(J, OtherRegN, OtherType)|Rest],
+                                Indent) :-
+    fsharp_wam_result_wrap_rv(Type, I, LeftValue),
+    fsharp_wam_result_wrap_rv(OtherType, J, RightValue),
+    format('~w         &&~n', [Indent]),
+    format('~w         (match outReg_~w, outReg_~w with~n',
+           [Indent, RegN, OtherRegN]),
+    format('~w          | Unbound leftVar, Unbound rightVar when leftVar = rightVar ->~n',
+           [Indent]),
+    format('~w              (~w) = (~w)~n', [Indent, LeftValue, RightValue]),
+    format('~w          | _ -> true)~n', [Indent]),
+    emit_output_alias_pairs_with_fs(indexed_output(I, RegN, Type),
+                                    Rest, Indent).
 
 emit_bound_output_type_match_fs(atom, I, Indent) :- !,
     format('~w        | Atom t ->~n', [Indent]),
@@ -3968,7 +4009,10 @@ emit_multi_outvars_fs(OutputRegs, Indent) :-
 emit_outvars_list_fs([], _).
 emit_outvars_list_fs([output(RegN, _)|Rest], I) :-
     (   I =:= 1 -> true ; format('; ', []) ),
-    format('match outReg_~w with | Unbound v -> v | _ -> -1', [RegN]),
+    % Parenthesize each match: bare `match ... | _ -> -1; match ...`
+    % is parsed as one list element (`;` sequences inside the last arm),
+    % which breaks List.fold2/iter2 in FFIStreamRetry for multi-output.
+    format('(match outReg_~w with | Unbound v -> v | _ -> -1)', [RegN]),
     I1 is I + 1,
     emit_outvars_list_fs(Rest, I1).
 
