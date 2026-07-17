@@ -15,9 +15,11 @@ lineage order (§4). On the filing metric the result is an HONEST NULL, strength
 external-review corrections: e5-cosine ranks folders best (MRR 0.294), the like-for-like
 conditioned ranker does NOT improve under the corrected fine-tune (mu-max-cond −0.037 paired MRR;
 the earlier +0.041 claim is retracted as a random-baseline artifact), and only e5's own margins
-are a usable escalation signal (§5). Deployment recipe today: e5 ranks with margin-routed
-escalation; the fused model's value is the label factory and conflict router, not the ranking
-head.
+are a usable escalation signal (§5). One scope caveat on the negative: the LINEAGE head was
+evaluated with NO lineage context (empty tokenizer parents — a train/eval regime mismatch, §7), so
+candidate-lineage-conditioned μ is the identified, untested fix. Deployment recipe today: e5 ranks
+with margin-routed escalation; the fused model's value is the label factory and conflict router,
+and `model_pt_filing.pt` is Pearltrees-only (§4 drift check).
 
 ## 0. Corpus, coverage, and provenance
 
@@ -159,6 +161,19 @@ level-miscalibrated (rank is what filing consumes).
 The production checkpoint retrains with the full-overlap factory (all 300 rows — the deployment
 configuration; its held-overlap table is no longer quoted since those labels entered its targets).
 
+**Verification — the checkpoint is Pearltrees-only (finding 6, measured).** Freezing the shared
+name-transform W matrices removed one drift channel, but a direct base-vs-tuned comparison over 120
+campaign pairs shows the champion recipe's UNFROZEN last encoder layer + readout are the dominant
+one: untrained conditioned identities (enwiki/simplewiki/mindmap × judges never in the fine-tune)
+drift by up to 0.41 (mean 0.03–0.07), and agnostic readouts on the un-anchored ELEM operator drift
+up to 0.25 (HIER/SYM, which the anchor loss pins, stay ≤0.15). The trained pearltrees heads move as
+intended (mean 0.25–0.48). Disposition: `model_pt_filing.pt` is designated **Pearltrees-only** — it
+is not a drop-in replacement for the base across corpora, and the filing eval is unaffected (it
+reads only this checkpoint's own conditioned heads and compares against the untouched base). A
+cross-corpus-preserving variant would additionally freeze the trunk (train only residual rows +
+nodetype) or add conditioned legacy anchors — deferred, since Filing v1 is a single-corpus
+deployment.
+
 Checkpoint: `model_pt_filing.pt` (gitignored;
 SHA-256 `c0a2f731876cf81a668d2e93f1f71337fced2528e3c7a40e946022e759378ac9`).
 
@@ -239,8 +254,44 @@ External-review residues (2026-07-17, addressed where noted):
   larger overlap.
 - The overlap ladder and shadow-bins comparison are single-split descriptive numbers (n=45 held).
 - LINEAGE targets use pure hop decay (no lca_depth_frac) — see §4.
-- eval_filing's Tokenizer runs without lineage context (empty parents — prior art parity); a
-  lineage-aware candidate context is a plausible upgrade for the next round.
+
+## 7. The ranker negative is scoped: the LINEAGE head was evaluated outside its trained regime
+
+A design review of the LINEAGE operator (2026-07-17) surfaced a train/eval regime mismatch that
+materially qualifies §5's ranker negative — this is a scoping caveat, not a code bug (the committed
+code does what it documents):
+
+- LINEAGE is a SCALAR pairwise scorer `(node, folder, LINEAGE) → μ∈[0,1]`, not an embedding map;
+  ranking is over those scalars. It has no learned output geometry (that would be the rotation /
+  softmax-cluster metric-learning path — a separate architecture, and raw e5 staying strongest is a
+  hint that a genuine metric space may be worth it later).
+- The scorer's lineage context comes from `Tokenizer._anc_for(NODE, …)` — the ancestors of the
+  DEEPER endpoint. At TRAINING the LINEAGE node is a descendant WITH a real materialized path, so
+  the head learned on rows that carried lineage. At FILING the "node" is a fresh bookmark with NO
+  lineage, and `eval_pearltrees_filing` builds the Tokenizer with EMPTY parent tables — so the
+  folder's known principal path never reaches the scorer in either direction. The lineage head was
+  scored blind to lineage.
+- **Consequence:** §5's mu-lineage / mu-max+lineage numbers are a floor, not the head's ceiling.
+  The negative "the learned ranker does not beat e5" holds for the AGNOSTIC/conditioned μ heads on
+  their own terms, but the specifically-LINEAGE claim should be read as "not yet tested in its
+  intended regime".
+
+**Designed next experiment (candidate-lineage-conditioned μ).** Condition the scalar on the
+candidate FOLDER's pre-existing folder→parent lineage:
+`μ(x | f, π(f)) = σ(g_θ[x, f, p_1(f), …, p_k(f)])`, each path token carrying a distinct
+"candidate-lineage ancestor" role + hop/depth encoding (a tokenizer change: sample the ROOT's
+ancestors, not only the node's). Leakage boundary: supply ONLY the folder's folder→parent lineage —
+never whether the evaluated bookmark was filed there, nor the folder's bookmark children. Test plan:
+(1) add candidate-root lineage tokens; (2) train with vs without them; (3) shuffled-lineage and
+depth-only controls; (4) evaluate on folders whose entire tokenized lineage is held out, with
+folder-cluster bootstrap intervals; (5) compare against e5 and title-only LINEAGE. This uses
+structure we already have (the assembled DAG's folder parents) and is the cheap thing to try before
+importing a learned-metric-space architecture. It is a follow-up arc (tokenizer change + retrain),
+not part of this PR.
+
+## Caveats (cont.)
+- eval_pearltrees_filing's Tokenizer runs without lineage context (empty parents — prior-art
+  parity with eval_filing); §7 is the identified fix.
 
 ## Repro
 
