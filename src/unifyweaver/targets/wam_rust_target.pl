@@ -1689,6 +1689,59 @@ compile_execute_io_builtin_to_rust(Code) :-
                 };
                 if result.is_ok() { self.pc += 1; true } else { false }
             }
+            "symlink/2" | "link/2" => {
+                let source = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let destination = match self.builtin_path_arg("A2") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let success = if op == "link/2" {
+                    std::fs::hard_link(source, destination).is_ok()
+                } else {
+                    #[cfg(unix)]
+                    {
+                        std::os::unix::fs::symlink(source, destination).is_ok()
+                    }
+                    #[cfg(windows)]
+                    {
+                        let result = if std::path::Path::new(&source).is_dir() {
+                            std::os::windows::fs::symlink_dir(source, destination)
+                        } else {
+                            std::os::windows::fs::symlink_file(source, destination)
+                        };
+                        result.is_ok()
+                    }
+                    #[cfg(not(any(unix, windows)))]
+                    {
+                        false
+                    }
+                };
+                if success { self.pc += 1; true } else { false }
+            }
+            "truncate/2" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let length = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(length)) if length >= 0 => {
+                        match u64::try_from(length) {
+                            Ok(length) => length,
+                            Err(_) => return false,
+                        }
+                    }
+                    _ => return false,
+                };
+                let result = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(path)
+                    .and_then(|file| file.set_len(length));
+                if result.is_ok() { self.pc += 1; true } else { false }
+            }
             "exists_file/1" => {
                 let path = match self.builtin_path_arg("A1") {
                     Some(path) => path,

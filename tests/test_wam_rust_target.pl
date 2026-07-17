@@ -506,6 +506,8 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, '"copy_file/2" | "rename_file/2"'),
         sub_string(S, _, _, _, '"read_file_to_atom/2"'),
         sub_string(S, _, _, _, '"write_atom_to_file/2" | "append_atom_to_file/2"'),
+        sub_string(S, _, _, _, '"symlink/2" | "link/2"'),
+        sub_string(S, _, _, _, '"truncate/2"'),
         %% copy_term_walk helper (sharing-preserving recursive copy).
         sub_string(S, _, _, _, 'copy_term_walk'),
         %% Runtime-parser bridge support and the parser-required text/list builtins.
