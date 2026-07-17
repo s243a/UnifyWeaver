@@ -48,6 +48,10 @@ test(regex_match_and_gsub) :-
     regex_match_gsub_driver_ir(DriverIR),
     run_assoc_i64_smoke('uw_wam_regex_match_gsub', DriverIR).
 
+test(strnum_looks_numeric_and_cmp) :-
+    strnum_driver_ir(DriverIR),
+    run_assoc_i64_smoke('uw_wam_strnum', DriverIR).
+
 run_assoc_i64_smoke(Name, DriverIR) :-
     tmp_root(Root),
     directory_file_path(Root, Name, Dir),
@@ -467,6 +471,109 @@ entry:
   %a7 = and i1 %a6, %aid_ok
   %a8 = and i1 %a7, %acnt_ok
   br i1 %a8, label %ok, label %bad
+
+ok:
+  ret i32 0
+
+bad:
+  ret i32 91
+}
+').
+
+% Exercise the strnum primitives (PLAWK_STRNUM_DUALITY.md step 1). First the
+% recogniser @wam_looks_numeric over numeric / non-numeric / blank-padded /
+% empty inputs, then @wam_strnum_cmp over the POSIX kind table (0=number,
+% 1=strnum, 2=string literal) -- including the classic "10 9" (numeric) vs
+% "10 9x" (lexical) divergence and the "2" vs "10" case where numeric and
+% lexical disagree in sign.
+strnum_driver_ir('
+@.uw_sn_10 = private constant [3 x i8] c"10\00"
+@.uw_sn_314 = private constant [5 x i8] c"3.14\00"
+@.uw_sn_pad = private constant [7 x i8] c"  42  \00"
+@.uw_sn_neg = private constant [3 x i8] c"-5\00"
+@.uw_sn_exp = private constant [4 x i8] c"1e3\00"
+@.uw_sn_10x = private constant [4 x i8] c"10x\00"
+@.uw_sn_abc = private constant [4 x i8] c"abc\00"
+@.uw_sn_empty = private constant [1 x i8] c"\00"
+@.uw_sn_blanks = private constant [3 x i8] c"  \00"
+@.uw_sn_9 = private constant [2 x i8] c"9\00"
+@.uw_sn_9x = private constant [3 x i8] c"9x\00"
+@.uw_sn_2 = private constant [2 x i8] c"2\00"
+
+define i32 @main() {
+entry:
+  %p10 = getelementptr [3 x i8], [3 x i8]* @.uw_sn_10, i64 0, i64 0
+  %p314 = getelementptr [5 x i8], [5 x i8]* @.uw_sn_314, i64 0, i64 0
+  %ppad = getelementptr [7 x i8], [7 x i8]* @.uw_sn_pad, i64 0, i64 0
+  %pneg = getelementptr [3 x i8], [3 x i8]* @.uw_sn_neg, i64 0, i64 0
+  %pexp = getelementptr [4 x i8], [4 x i8]* @.uw_sn_exp, i64 0, i64 0
+  %p10x = getelementptr [4 x i8], [4 x i8]* @.uw_sn_10x, i64 0, i64 0
+  %pabc = getelementptr [4 x i8], [4 x i8]* @.uw_sn_abc, i64 0, i64 0
+  %pempty = getelementptr [1 x i8], [1 x i8]* @.uw_sn_empty, i64 0, i64 0
+  %pblanks = getelementptr [3 x i8], [3 x i8]* @.uw_sn_blanks, i64 0, i64 0
+  %p9 = getelementptr [2 x i8], [2 x i8]* @.uw_sn_9, i64 0, i64 0
+  %p9x = getelementptr [3 x i8], [3 x i8]* @.uw_sn_9x, i64 0, i64 0
+  %p2 = getelementptr [2 x i8], [2 x i8]* @.uw_sn_2, i64 0, i64 0
+
+  ; --- @wam_looks_numeric ---
+  %ln_10 = call i1 @wam_looks_numeric(i8* %p10)
+  %ln_10_ok = icmp eq i1 %ln_10, 1
+  %ln_314 = call i1 @wam_looks_numeric(i8* %p314)
+  %ln_314_ok = icmp eq i1 %ln_314, 1
+  %ln_pad = call i1 @wam_looks_numeric(i8* %ppad)
+  %ln_pad_ok = icmp eq i1 %ln_pad, 1
+  %ln_neg = call i1 @wam_looks_numeric(i8* %pneg)
+  %ln_neg_ok = icmp eq i1 %ln_neg, 1
+  %ln_exp = call i1 @wam_looks_numeric(i8* %pexp)
+  %ln_exp_ok = icmp eq i1 %ln_exp, 1
+  %ln_10x = call i1 @wam_looks_numeric(i8* %p10x)
+  %ln_10x_ok = icmp eq i1 %ln_10x, 0
+  %ln_abc = call i1 @wam_looks_numeric(i8* %pabc)
+  %ln_abc_ok = icmp eq i1 %ln_abc, 0
+  %ln_empty = call i1 @wam_looks_numeric(i8* %pempty)
+  %ln_empty_ok = icmp eq i1 %ln_empty, 0
+  %ln_blanks = call i1 @wam_looks_numeric(i8* %pblanks)
+  %ln_blanks_ok = icmp eq i1 %ln_blanks, 0
+
+  ; --- @wam_strnum_cmp (kinds 0=number 1=strnum 2=string) ---
+  ; "10" strnum vs "9" strnum -> both numeric -> 10 > 9 -> +1
+  %c1 = call i32 @wam_strnum_cmp(i8* %p10, i8 1, i8* %p9, i8 1)
+  %c1_ok = icmp eq i32 %c1, 1
+  ; "10" strnum vs "9x" strnum -> 9x not numeric -> lexical -> "10" < "9x" -> -1
+  %c2 = call i32 @wam_strnum_cmp(i8* %p10, i8 1, i8* %p9x, i8 1)
+  %c2_ok = icmp eq i32 %c2, -1
+  ; "10" strnum vs "10" string literal -> literal never numeric -> lexical eq -> 0
+  %c3 = call i32 @wam_strnum_cmp(i8* %p10, i8 1, i8* %p10, i8 2)
+  %c3_ok = icmp eq i32 %c3, 0
+  ; "10" number vs "9" number -> numeric -> +1
+  %c4 = call i32 @wam_strnum_cmp(i8* %p10, i8 0, i8* %p9, i8 0)
+  %c4_ok = icmp eq i32 %c4, 1
+  ; "abc" strnum vs "abc" strnum -> both non-numeric -> lexical eq -> 0
+  %c5 = call i32 @wam_strnum_cmp(i8* %pabc, i8 1, i8* %pabc, i8 1)
+  %c5_ok = icmp eq i32 %c5, 0
+  ; "2" strnum vs "10" strnum -> numeric -> 2 < 10 -> -1 (lexical would be +1)
+  %c6 = call i32 @wam_strnum_cmp(i8* %p2, i8 1, i8* %p10, i8 1)
+  %c6_ok = icmp eq i32 %c6, -1
+  ; "10" number vs "9x" strnum -> 9x not numeric -> lexical -> "10" < "9x" -> -1
+  %c7 = call i32 @wam_strnum_cmp(i8* %p10, i8 0, i8* %p9x, i8 1)
+  %c7_ok = icmp eq i32 %c7, -1
+
+  %a1 = and i1 %ln_10_ok, %ln_314_ok
+  %a2 = and i1 %a1, %ln_pad_ok
+  %a3 = and i1 %a2, %ln_neg_ok
+  %a4 = and i1 %a3, %ln_exp_ok
+  %a5 = and i1 %a4, %ln_10x_ok
+  %a6 = and i1 %a5, %ln_abc_ok
+  %a7 = and i1 %a6, %ln_empty_ok
+  %a8 = and i1 %a7, %ln_blanks_ok
+  %a9 = and i1 %a8, %c1_ok
+  %a10 = and i1 %a9, %c2_ok
+  %a11 = and i1 %a10, %c3_ok
+  %a12 = and i1 %a11, %c4_ok
+  %a13 = and i1 %a12, %c5_ok
+  %a14 = and i1 %a13, %c6_ok
+  %a15 = and i1 %a14, %c7_ok
+  br i1 %a15, label %ok, label %bad
 
 ok:
   ret i32 0

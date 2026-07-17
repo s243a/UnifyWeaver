@@ -5,11 +5,17 @@ Copyright (c) 2026 John William Creighton (@s243a)
 
 # plawk strnum: string/number scalar duality
 
-**Status**: **forward-looking design note.** None of §3–§5 is implemented.
-This captures what POSIX "strnum" is, where plawk's current static type model
-diverges from it, why closing the gap is a *type-model* project rather than a
-single feature, and a phased plan for getting there without destabilising the
-three-way slot model that ships today.
+**Status**: **design note + step 1 landed.** The runtime primitives of §6 step 1
+(`@wam_looks_numeric` and `@wam_strnum_cmp`) are implemented in
+`src/unifyweaver/targets/wam_llvm_target.pl` and unit-tested standalone in
+`tests/core/test_wam_llvm_assoc_i64_runtime.pl` (the recogniser over
+numeric/non-numeric/blank-padded/empty inputs, and the comparison over the
+POSIX kind table incl. the `10 9` vs `10 9x` divergence). **No codegen calls
+them yet** — the `scalar_strnum` slot kind, origin analysis, and comparison
+dispatch (§6 steps 2–3) remain. §3–§5 describe the not-yet-built model. This
+document captures what POSIX "strnum" is, where plawk's current static type
+model diverges from it, why closing the gap is a *type-model* project rather
+than a single feature, and the phased plan.
 
 ## 1. What strnum is (POSIX awk)
 
