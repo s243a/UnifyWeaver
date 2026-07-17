@@ -93,6 +93,13 @@ t_system_queries(Time, Pid, Path) :-
     getpid(Pid),
     getenv('PATH', Path).
 
+:- dynamic t_environment_mutation/1.
+t_environment_mutation(Value) :-
+    setenv('UNIFYWEAVER_RUST_WAM_COMPILED_ENV_8C19', first),
+    setenv('UNIFYWEAVER_RUST_WAM_COMPILED_ENV_8C19', second),
+    getenv('UNIFYWEAVER_RUST_WAM_COMPILED_ENV_8C19', Value),
+    unsetenv('UNIFYWEAVER_RUST_WAM_COMPILED_ENV_8C19').
+
 :- dynamic t_split_string/1.
 t_split_string(Parts) :-
     split_string(' alpha, beta ,, gamma ', ',', ' ', Parts).
@@ -287,6 +294,7 @@ test_builtin_parity_execution :-
              user:t_filesystem_query/1,
              user:t_file_metadata/2,
              user:t_system_queries/3,
+             user:t_environment_mutation/1,
              user:t_split_string/1, user:t_atom_split/1, user:t_atom_checks/0,
              user:t_path_utilities/5,
              user:t_filesystem_identity/2,
@@ -322,6 +330,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_filesystem_query_1,
     t_file_metadata_2,
     t_system_queries_3,
+    t_environment_mutation_1,
     t_split_string_1, t_atom_split_1, t_atom_checks_0,
     t_path_utilities_5,
     t_filesystem_identity_2,
@@ -510,6 +519,17 @@ fn test_system_queries_compiled() {
     assert_eq!(read_var(&vm, "Pid"), i(i64::from(std::process::id())));
     assert_eq!(read_var(&vm, "Path"),
         a(&std::env::var("PATH").expect("PATH must be available to cargo test")));
+}
+
+#[test]
+fn test_environment_mutation_compiled() {
+    let key = "UNIFYWEAVER_RUST_WAM_COMPILED_ENV_8C19";
+    std::env::remove_var(key);
+
+    let mut vm = vmnew();
+    assert!(t_environment_mutation_1(&mut vm, ub("Value")));
+    assert_eq!(read_var(&vm, "Value"), a("second"));
+    assert!(std::env::var_os(key).is_none());
 }
 
 #[test]
@@ -2015,6 +2035,36 @@ fn test_system_queries_direct() {
     let mut missing_output = vmnew();
     missing_output.set_reg("A1", a("PATH"));
     assert!(!missing_output.execute_builtin("getenv/2", 2));
+}
+
+#[test]
+fn test_environment_mutation_direct() {
+    let key = "UNIFYWEAVER_RUST_WAM_DIRECT_ENV_5A27";
+    std::env::remove_var(key);
+
+    assert!(call2("setenv/2", a(key), a("first")).0);
+    assert_eq!(std::env::var(key).unwrap(), "first");
+    assert!(call2("setenv/2", a(key), a("second")).0);
+    assert_eq!(std::env::var(key).unwrap(), "second");
+    assert!(call1("unsetenv/1", a(key)).0);
+    assert!(std::env::var_os(key).is_none());
+    assert!(call1("unsetenv/1", a(key)).0,
+        "unsetenv/1 is idempotent for a missing name");
+
+    let nul_name = String::from_utf8(vec![66, 65, 68, 0, 78, 65, 77, 69]).unwrap();
+    let nul_value = String::from_utf8(vec![98, 97, 100, 0, 118, 97, 108]).unwrap();
+    assert!(!call2("setenv/2", a(""), a("value")).0);
+    assert!(!call2("setenv/2", a("BAD=NAME"), a("value")).0);
+    assert!(!call2("setenv/2", a(&nul_name), a("value")).0);
+    assert!(!call2("setenv/2", a(key), a(&nul_value)).0);
+    assert!(!call2("setenv/2", ub("Name"), a("value")).0);
+    assert!(!call2("setenv/2", a(key), i(7)).0);
+    assert!(!call1("unsetenv/1", a("")).0);
+    assert!(!call1("unsetenv/1", a("BAD=NAME")).0);
+    assert!(!call1("unsetenv/1", a(&nul_name)).0);
+    assert!(!call1("unsetenv/1", i(7)).0);
+
+    std::env::remove_var(key);
 }
 ',
         setup_call_cleanup(

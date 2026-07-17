@@ -1875,6 +1875,40 @@ compile_execute_io_builtin_to_rust(Code) :-
                     false
                 }
             }
+            "setenv/2" => {
+                let name = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(name)) => name,
+                    _ => return false,
+                };
+                let value = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(value)) => value,
+                    _ => return false,
+                };
+                if name.is_empty()
+                    || name.contains("=")
+                    || name.as_bytes().contains(&0)
+                    || value.as_bytes().contains(&0) {
+                    return false;
+                }
+                std::env::set_var(name, value);
+                self.pc += 1; true
+            }
+            "unsetenv/1" => {
+                let name = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(name)) => name,
+                    _ => return false,
+                };
+                if name.is_empty()
+                    || name.contains("=")
+                    || name.as_bytes().contains(&0) {
+                    return false;
+                }
+                std::env::remove_var(name);
+                self.pc += 1; true
+            }
             "getpid/1" => {
                 let pid = Value::Integer(i64::from(std::process::id()));
                 let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);

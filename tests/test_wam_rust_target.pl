@@ -462,6 +462,8 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, '"time_file/2"'),
         sub_string(S, _, _, _, '"get_time/1"'),
         sub_string(S, _, _, _, '"getenv/2"'),
+        sub_string(S, _, _, _, '"setenv/2"'),
+        sub_string(S, _, _, _, '"unsetenv/1"'),
         sub_string(S, _, _, _, '"getpid/1"'),
         sub_string(S, _, _, _, 'print!("{}", derefed)'),
         sub_string(S, _, _, _, 'nl/0'),
