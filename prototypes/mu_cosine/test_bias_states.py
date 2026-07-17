@@ -217,8 +217,10 @@ def test_boolean_train_mask_equals_integer_indices():
     assert np.array_equal(st_mask.fits[("luna", "D")].offsets, st_idx.fits[("luna", "D")].offsets)
 
 
-def test_fallback_refits_retained_states_without_dropped_columns():
-    """Zeroing a jointly-solved coefficient must refit its overlap neighbors, not keep them."""
+def test_offsets_are_the_coherent_joint_posterior():
+    """The prior is the fail-closed mechanism: offsets = the FULL joint ridge posterior mean
+    (no column surgery — external review 2026-07-17), with zero-support states exactly at the
+    prior mean and the full posterior covariance exposed for downstream propagation."""
     parents, pairs, tags = synthetic_graph_pairs(n_per_bin=40)
     keep = [i for i, t in enumerate(tags) if t != "missing"]
     feats = pair_distance_features(parents, [pairs[i] for i in keep])
@@ -226,15 +228,31 @@ def test_fallback_refits_retained_states_without_dropped_columns():
     resid = np.array([0.08 if tags[i].startswith("h") else -0.04 for i in keep])
     resid = resid + rng.normal(0, 0.04, len(keep))
     W = soft_bin_weights(feats, tau=0.75)  # smooth: hop columns overlap
-    fit = fit_channel_offsets(W, resid, prior_sd=0.10, info_floor=0.10, name="refit")
-    dropped = fit.fallback
-    active = ~dropped
-    # the retained coefficients must equal a fresh ridge fit on the retained columns alone
+    fit = fit_channel_offsets(W, resid, prior_sd=0.10, info_floor=0.10, name="posterior")
     lam = fit.noise_var / fit.prior_sd**2
-    Ws = W[:, active]
-    expect = np.linalg.solve(Ws.T @ Ws + lam * np.eye(int(active.sum())), Ws.T @ resid)
-    assert np.allclose(fit.offsets[active], expect)
-    assert np.all(fit.offsets[dropped] == 0.0)
+    A = W.T @ W + lam * np.eye(len(BINS))
+    assert np.allclose(fit.offsets, np.linalg.solve(A, W.T @ resid))
+    assert np.allclose(fit.posterior_cov, fit.noise_var * np.linalg.inv(A))
+    k = BIN_INDEX["missing"]  # zero support here → posterior exactly equals the prior
+    assert fit.offsets[k] == 0.0
+    assert np.isclose(fit.posterior_var[k], fit.prior_sd**2)
+    assert fit.fallback[k]
+
+
+def test_correction_var_matches_quadratic_form():
+    parents, pairs, tags = synthetic_graph_pairs(n_per_bin=20)
+    feats = pair_distance_features(parents, pairs)
+    rng = np.random.default_rng(23)
+    resid = {("luna", "D"): rng.normal(0.02, 0.05, len(tags))}
+    train = np.array([j for j, t in enumerate(tags) if t != "missing"])  # missing UNSEEN in train
+    states = fit_bias_states(feats, train, resid, prior_sd=0.10, verbose=False)
+    cv = states.correction_var(("luna", "D"))
+    P = states.fits[("luna", "D")].posterior_cov
+    i = 3
+    assert np.isclose(cv[i], states.W[i] @ P @ states.W[i])
+    # an unseen missing-state row carries the FULL prior variance — it is not "known-unbiased"
+    missing_rows = [j for j, t in enumerate(tags) if t == "missing"]
+    assert np.allclose(cv[missing_rows], 0.10**2)
 
 
 def test_input_validation():

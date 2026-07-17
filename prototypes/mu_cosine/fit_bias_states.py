@@ -24,8 +24,12 @@ process noise this batch fit equals the sequential filter's posterior (design §
 
 Diagnostics printed per fit, FAIL CLOSED: unregularized design rank (kernel columns overlap, so Σw is
 support mass, NOT effective sample size — rank is the honest check), per-state conditional posterior
-variance (as an information ratio against the prior), and the design condition number.  A state whose
-conditional information is below floor falls back to its prior (offset 0).
+variance (as an information ratio against the prior), and the design condition number.  The closing
+mechanism is the prior itself: the applied offsets are the coherent joint ridge posterior, so a state
+with no information keeps EXACTLY its prior (mean 0, variance prior_sd²) and weakly-informed states
+are shrunk in proportion; states below the information floor are flagged in the diagnostics.  The
+full posterior covariance is exposed (`posterior_cov`, `BiasStates.correction_var`) for downstream
+uncertainty propagation (the square-root/QR lane).
 
 Importable API (target-factory use):
 
@@ -105,10 +109,12 @@ def _lateral_coord(d_sym, cap):
 def soft_bin_weights(feats, tau, cap=13):
     """Deterministic soft assignment over BINS from distance features alone (never outcomes).
 
-    Ancestor rows spread over h1..h5 by a Gaussian kernel in hop units; non-ancestor rows spread over
-    sib/cous/rand by the same kernel on the unit-spaced lateral coordinate; rows without usable signal
-    are one-hot `missing`.  Weights are normalized within the row's family, so tau→0 recovers hard
-    nearest-center switching (the bandwidth→0 special case).
+    Ancestor rows spread over h1..h5 by a Gaussian kernel in hop units — the hop coordinate is
+    clamped at 5, so h5 explicitly means "5 OR MORE hops" (ancestors() walks to hmax=6; without the
+    clamp a 6-hop row would be asymmetrically down-weighted instead of landing on the deepest bin).
+    Non-ancestor rows spread over sib/cous/rand by the same kernel on the unit-spaced lateral
+    coordinate; rows without usable signal are one-hot `missing`.  Weights are normalized within the
+    row's family, so tau→0 recovers hard nearest-center switching (the bandwidth→0 special case).
     """
     tau = max(float(tau), 1e-9)
     W = np.zeros((len(feats), len(BINS)))
@@ -123,7 +129,7 @@ def soft_bin_weights(feats, tau, cap=13):
             W[rows, cols] = w / w.sum(axis=1, keepdims=True)
 
     hop_rows = np.where(is_anc)[0]
-    kernel_rows(hop_rows, feats[hop_rows, 1], np.arange(1.0, 6.0), HOP_SLICE)
+    kernel_rows(hop_rows, np.minimum(feats[hop_rows, 1], 5.0), np.arange(1.0, 6.0), HOP_SLICE)
     lat_rows = np.where(~is_anc & ~no_signal)[0]
     kernel_rows(lat_rows, _lateral_coord(feats[lat_rows, 2], cap), np.array([1.0, 2.0, 3.0]), LAT_SLICE)
     W[no_signal, MISSING_COL] = 1.0
@@ -132,14 +138,20 @@ def soft_bin_weights(feats, tau, cap=13):
 
 @dataclass
 class ChannelBiasFit:
-    """Shrunk per-bin offsets for one (judge, channel), with fail-closed diagnostics."""
+    """Shrunk per-bin offsets for one (judge, channel), with fail-closed diagnostics.
+
+    `offsets` is the coherent joint ridge posterior mean; `fallback` flags prior-dominated states
+    (info below floor — their offsets are ≈0 by shrinkage, exactly 0 at zero support).
+    `posterior_cov` is the full state covariance for downstream uncertainty propagation
+    (per-row correction variance = w·P_b·wᵀ; see BiasStates.correction_var).
+    """
 
     name: str
-    offsets: np.ndarray            # post-fallback offsets actually applied (fallback states at 0)
-    raw_offsets: np.ndarray        # pre-fallback ridge solution
-    posterior_var: np.ndarray      # per-state conditional posterior variance
+    offsets: np.ndarray            # joint ridge posterior mean per state
+    posterior_cov: np.ndarray      # full posterior covariance of the states (len(BINS)²)
+    posterior_var: np.ndarray      # its diagonal, kept for cheap access
     info_ratio: np.ndarray         # 1 - posterior_var/prior_var (0 = prior only, 1 = data-determined)
-    fallback: np.ndarray           # bool: state fell below the information floor → prior
+    fallback: np.ndarray           # bool: prior-dominated (info below floor); flagged, not zeroed
     support: np.ndarray            # Σw per state (support mass, NOT effective sample size)
     rank: int                      # unregularized design rank of WᵀW
     cond: float                    # condition number of the supported unregularized design
@@ -151,12 +163,15 @@ class ChannelBiasFit:
         lines = [
             f"[{self.name}] n_train={self.n_train} rank={self.rank}/{int((self.support > 1e-9).sum())} "
             f"supported states, cond={self.cond:.1f}, noise_var={self.noise_var:.5f}, "
-            f"prior_sd={self.prior_sd}, fallbacks={int(self.fallback.sum())}"
+            f"prior_sd={self.prior_sd}, prior-dominated={int(self.fallback.sum())}"
         ]
+        if self.rank < int((self.support > 1e-9).sum()):
+            lines.append("    WARNING: unregularized design is rank-deficient over its supported "
+                         "states — bin estimates are identified only through the prior")
         for k, b in enumerate(BINS):
-            flag = " → PRIOR (below info floor)" if self.fallback[k] else ""
+            flag = " → prior-dominated (info below floor)" if self.fallback[k] else ""
             lines.append(
-                f"    {b:8s} offset={self.offsets[k]:+.4f} (raw {self.raw_offsets[k]:+.4f}) "
+                f"    {b:8s} offset={self.offsets[k]:+.4f} "
                 f"post_var={self.posterior_var[k]:.2e} info={self.info_ratio[k]:.2f} "
                 f"support={self.support[k]:.1f}{flag}"
             )
@@ -167,12 +182,16 @@ def fit_channel_offsets(W, resid, prior_sd=0.10, noise_var=None, info_floor=0.10
     """One ridge fit: resid ≈ W·b with the weak zero prior b ~ N(0, prior_sd²) per state.
 
     `noise_var` defaults to var(resid) — an upper bound on the row noise (it still contains the bin
-    structure), so the implied shrinkage is conservative.  Fail-closed: states whose conditional
-    information ratio 1 − post_var/prior_var is below `info_floor` return to the prior mean (0),
-    and the RETAINED states are REFIT with the dropped columns removed — overlapping kernel columns
-    share signal, so simply zeroing a jointly-solved coefficient would leave its neighbors matching
-    neither the full posterior nor the prior.  Dropping columns only increases the remaining states'
-    conditional information, so the loop is monotone and terminates.
+    structure), so the implied shrinkage is conservative.
+
+    Fail-closed semantics (external review, 2026-07-17): the PRIOR ITSELF is the fallback mechanism.
+    The returned offsets are the coherent joint ridge posterior mean — a state with zero support has
+    posterior exactly equal to its prior (offset exactly 0), and a weakly-informed state is shrunk
+    toward 0 in proportion to its missing information.  States below `info_floor` are FLAGGED
+    (`fallback`) so callers and diagnostics can see which estimates are prior-dominated; they are
+    NOT surgically zeroed or dropped — a point mass at 0 is a claim the model does not make, and
+    removing columns would break the batch-fit ≡ sequential-posterior equivalence the design relies
+    on.  The full posterior covariance is returned for downstream uncertainty propagation.
     """
     W = np.asarray(W, dtype=float)
     r = np.asarray(resid, dtype=float)
@@ -190,32 +209,11 @@ def fit_channel_offsets(W, resid, prior_sd=0.10, noise_var=None, info_floor=0.10
     lam = noise_var / (prior_sd**2)
     G = W.T @ W
     A = G + lam * np.eye(len(BINS))
-    b_raw = np.linalg.solve(A, W.T @ r)
-    posterior_var = noise_var * np.diag(np.linalg.inv(A))
+    b = np.linalg.solve(A, W.T @ r)
+    posterior_cov = noise_var * np.linalg.inv(A)
+    posterior_var = np.diag(posterior_cov).copy()
     info_ratio = 1.0 - posterior_var / (prior_sd**2)
-
-    active = info_ratio >= info_floor
-    while True:
-        if not active.any():
-            b = np.zeros(len(BINS))
-            break
-        Ws = W[:, active]
-        As = Ws.T @ Ws + lam * np.eye(int(active.sum()))
-        post_var_active = noise_var * np.diag(np.linalg.inv(As))
-        info_active = 1.0 - post_var_active / (prior_sd**2)
-        still = info_active >= info_floor
-        if still.all():
-            b = np.zeros(len(BINS))
-            b[active] = np.linalg.solve(As, Ws.T @ r)
-            posterior_var = posterior_var.copy()
-            posterior_var[active] = post_var_active
-            info_ratio = info_ratio.copy()
-            info_ratio[active] = info_active
-            break
-        idx = np.where(active)[0]
-        active = active.copy()
-        active[idx[~still]] = False
-    fallback = ~active
+    fallback = info_ratio < info_floor
 
     support = W.sum(axis=0)
     supported = support > 1e-9
@@ -228,7 +226,7 @@ def fit_channel_offsets(W, resid, prior_sd=0.10, noise_var=None, info_floor=0.10
     return ChannelBiasFit(
         name=name,
         offsets=b,
-        raw_offsets=b_raw,
+        posterior_cov=posterior_cov,
         posterior_var=posterior_var,
         info_ratio=info_ratio,
         fallback=fallback,
@@ -241,27 +239,42 @@ def fit_channel_offsets(W, resid, prior_sd=0.10, noise_var=None, info_floor=0.10
     )
 
 
+def cv_fold_ids(pairs, folds):
+    """Deterministic ENDPOINT-DISJOINT fold assignment for pair rows (no RNG).
+
+    Each node is hashed (crc32) into one of `folds` groups; a pair participates in CV only when
+    BOTH endpoints fall in the same group (fold = that group), else it gets -1 (excluded from CV
+    scoring but still used in the final full-train fit).  This is the inner-CV analog of the outer
+    node-disjoint split: same-node residuals are correlated, and letting a shared endpoint straddle
+    fit/validation folds would bias the bandwidth toward overfit values.
+    """
+    import zlib
+
+    def h(node):
+        return zlib.crc32(repr(node).encode()) % folds
+
+    return np.array([h(x) if h(x) == h(y) else -1 for x, y in pairs], dtype=int)
+
+
 def tune_bandwidth(feats_train, residuals_train, taus=DEFAULT_TAUS, prior_sd=0.10, folds=5, cap=13,
-                   info_floor=0.10, groups=None):
+                   info_floor=0.10, pairs=None):
     """Pick the shared kernel bandwidth by deterministic K-fold CV on TRAIN rows only.
 
     The row→bin map stays a function of graph features alone for every candidate tau; train labels
     enter only through the CV score of the ridge fit, so the assignment remains outcome-blind.
-    Deterministic, no RNG: folds by crc32 of the row's `groups` key when given (pass a node key so
-    rows sharing that node never straddle a fold — same-node residuals are correlated and would
-    otherwise bias the CV toward overfit bandwidths), else by row index modulo `folds`.
-    CV uses the same shrinkage AND the same fail-closed floor as the deployed fit, so the selected
-    tau optimizes the estimator that is actually applied.
+    Deterministic, no RNG: when `pairs` (the rows' endpoint tuples) is given, folds are
+    endpoint-disjoint via cv_fold_ids (cross-fold pairs are excluded from scoring); else folds fall
+    back to row index modulo `folds`.  CV uses the same shrinkage AND the same information floor as
+    the deployed fit, so the selected tau optimizes the estimator that is actually applied.
+    (Known, accepted residue: the per-channel affine calibration behind `residuals_train` is fit on
+    the full outer-train set, not per inner fold — a 2-parameter calibrator on ~350 rows; the outer
+    held-node evaluation is unaffected.)
     """
-    import zlib
-
     n = len(feats_train)
-    if groups is not None:
-        if len(groups) != n:
-            raise ValueError("groups must align with feats_train rows")
-        fold_id = np.array(
-            [zlib.crc32(repr(g).encode()) % folds for g in groups], dtype=int
-        )
+    if pairs is not None:
+        if len(pairs) != n:
+            raise ValueError("pairs must align with feats_train rows")
+        fold_id = cv_fold_ids(pairs, folds)
     else:
         fold_id = np.arange(n) % folds
     best_tau, best_score, table = None, None, []
@@ -271,7 +284,7 @@ def tune_bandwidth(feats_train, residuals_train, taus=DEFAULT_TAUS, prior_sd=0.1
         for r in residuals_train.values():
             r = np.asarray(r, dtype=float)
             for f in range(folds):
-                fit_rows, val_rows = fold_id != f, fold_id == f
+                fit_rows, val_rows = (fold_id != f) & (fold_id >= 0), fold_id == f
                 if not val_rows.any() or not fit_rows.any():
                     continue
                 cf = fit_channel_offsets(W[fit_rows], r[fit_rows], prior_sd=prior_sd,
@@ -296,6 +309,17 @@ class BiasStates:
     def corrections(self, key):
         return self.W @ self.fits[key].offsets
 
+    def correction_var(self, key):
+        """Per-row variance of the applied correction, w·P_b·wᵀ (marginal, no cross-row terms).
+
+        Downstream fusion that wants to price bias-estimation uncertainty should ADD this to the
+        channel's measurement variance (a `missing` row then carries the full prior variance
+        rather than being treated as known-unbiased).  The step-1 ladder does not yet consume it —
+        cross-row covariance and the square-root/QR propagation are the follow-up lanes.
+        """
+        P = self.fits[key].posterior_cov
+        return np.einsum("ij,jk,ik->i", self.W, P, self.W)
+
     def debias(self, key, values):
         """Apply the shrunk offsets on top of the (already affine-calibrated) channel readings."""
         return np.asarray(values, dtype=float) - self.corrections(key)
@@ -308,14 +332,14 @@ class BiasStates:
 
 
 def fit_bias_states(feats, train_idx, residuals, prior_sd=0.10, info_floor=0.10,
-                    taus=DEFAULT_TAUS, cap=13, cv_groups=None, verbose=True):
+                    taus=DEFAULT_TAUS, cap=13, cv_pairs=None, verbose=True):
     """Fit shrunk per-bin offsets for every (judge, channel) residual series.
 
     `feats` covers ALL rows (pair_distance_features); `residuals` maps (judge, channel) to
     affine-calibrated-residual arrays over all rows.  Fitting (bandwidth + offsets) uses `train_idx`
     rows only (integer indices or a boolean mask); the returned object applies corrections to any
-    row through the outcome-blind W.  `cv_groups` (optional, aligned with ALL rows) gives each row a
-    node key for leakage-resistant CV folds — see tune_bandwidth.
+    row through the outcome-blind W.  `cv_pairs` (optional, aligned with ALL rows) gives each row's
+    endpoint tuple for endpoint-disjoint CV folds — see tune_bandwidth.
     """
     feats = np.asarray(feats, dtype=float)
     train_idx = np.asarray(train_idx)
@@ -326,13 +350,13 @@ def fit_bias_states(feats, train_idx, residuals, prior_sd=0.10, info_floor=0.10,
     else:
         train_idx = train_idx.astype(int)
     res_train = {k: np.asarray(v, dtype=float)[train_idx] for k, v in residuals.items()}
-    groups_train = None
-    if cv_groups is not None:
-        if len(cv_groups) != len(feats):
-            raise ValueError("cv_groups must align with feats rows")
-        groups_train = [cv_groups[i] for i in train_idx]
+    pairs_train = None
+    if cv_pairs is not None:
+        if len(cv_pairs) != len(feats):
+            raise ValueError("cv_pairs must align with feats rows")
+        pairs_train = [cv_pairs[i] for i in train_idx]
     tau, cv_table = tune_bandwidth(feats[train_idx], res_train, taus=taus, prior_sd=prior_sd,
-                                   cap=cap, info_floor=info_floor, groups=groups_train)
+                                   cap=cap, info_floor=info_floor, pairs=pairs_train)
     W = soft_bin_weights(feats, tau, cap=cap)
     states = BiasStates(tau=tau, W=W, cv_table=cv_table)
     for key, r in res_train.items():
@@ -432,7 +456,7 @@ def main(argv=None):
         }
         states = fit_bias_states(feats, tr, residuals, prior_sd=a.prior_sd,
                                  info_floor=a.info_floor, taus=a.taus,
-                                 cv_groups=[min(pair) for pair in pairs])
+                                 cv_pairs=pairs)
 
         print("\nsign check vs measured stratum bias (train rows; bias relative to gpt-5.5-low):")
         for (judge, ch), raw_col, cal_col, y_col in [

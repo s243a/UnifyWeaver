@@ -25,6 +25,7 @@ ALL rung; D-marginal and joint NLL are secondary.
 import argparse
 import os
 import sys
+import zlib
 
 import numpy as np
 
@@ -169,6 +170,16 @@ def build_arg_parser():
                     help="minimum conditional information ratio; states below fall back to the prior")
     ap.add_argument("--bias-taus", type=float, nargs="+", default=list(DEFAULT_TAUS),
                     help="candidate kernel bandwidths for the train-tuned soft bin assignment")
+    ap.add_argument(
+        "--covariance",
+        choices=["train", "oof"],
+        default="train",
+        help=("train = R/C fit on the same train rows the calibrations saw (the historical harness "
+              "behavior; slightly optimistic for whichever arm fits more parameters); oof = R/C "
+              "from node-disjoint out-of-fold residuals (robustness check, both arms symmetric)"),
+    )
+    ap.add_argument("--covariance-folds", type=int, default=3,
+                    help="inner node-disjoint folds for --covariance oof")
     return ap
 
 
@@ -273,39 +284,86 @@ def main(argv=None):
                     )
                 continue
 
-            graph_D = affine_calibrate(d[tr], y[tr, 0], d)
             X = np.column_stack([F, np.ones(len(F))])
-            beta, *_ = np.linalg.lstsq(X[tr], y[tr, 1], rcond=None)
-            graph_S = X @ beta
-            luna_calibrated = calibrate_luna(luna, y, tr)
-            meas = np.column_stack([graph_D, graph_S, luna_calibrated[:, 0], luna_calibrated[:, 1]])
-            meas_by = {"affine": meas}
-            if "affine+bins" in variants:
-                # residual offsets fit ON TOP of the affine calibration above (never replacing it),
-                # train rows only; applied to every row through the outcome-blind kernel basis
-                states = fit_bias_states(
-                    feats,
-                    tr,
-                    {key: meas[:, j] - y[:, y_col] for j, (key, y_col) in enumerate(BIAS_CHANNELS)},
-                    prior_sd=a.bias_prior_sd,
-                    info_floor=a.bias_info_floor,
-                    taus=a.bias_taus,
-                    cv_groups=[min(pair) for pair in pairs],
-                    verbose=False,
-                )
-                meas_by["affine+bins"] = meas - np.column_stack(
-                    [states.corrections(key) for key, _ in BIAS_CHANNELS]
-                )
+
+            def build_meas_variants(fit_idx):
+                """Calibrations (+ bin offsets in treatment) fit on fit_idx, applied to ALL rows."""
+                graph_D = affine_calibrate(d[fit_idx], y[fit_idx, 0], d)
+                beta, *_ = np.linalg.lstsq(X[fit_idx], y[fit_idx, 1], rcond=None)
+                graph_S = X @ beta
+                luna_calibrated = calibrate_luna(luna, y, fit_idx)
+                m = np.column_stack([graph_D, graph_S, luna_calibrated[:, 0], luna_calibrated[:, 1]])
+                out = {"affine": m}
+                if "affine+bins" in variants:
+                    # residual offsets fit ON TOP of the affine calibration above (never replacing
+                    # it); applied to every row through the outcome-blind kernel basis
+                    st = fit_bias_states(
+                        feats,
+                        fit_idx,
+                        {key: m[:, j] - y[:, y_col] for j, (key, y_col) in enumerate(BIAS_CHANNELS)},
+                        prior_sd=a.bias_prior_sd,
+                        info_floor=a.bias_info_floor,
+                        taus=a.bias_taus,
+                        cv_pairs=pairs,
+                        verbose=False,
+                    )
+                    out["affine+bins"] = m - np.column_stack(
+                        [st.corrections(key) for key, _ in BIAS_CHANNELS]
+                    )
+                    out["_states"] = st
+                return out
+
+            full = build_meas_variants(tr)
+            meas_by = {v: full[v] for v in variants}
+            states = full.get("_states")
+            if states is not None:
                 if seed in mc_seeds:
                     bias_fits.append(states)
                 if a.bootstrap_resamples and seed == a.bootstrap_split_seed:
                     fixed_states = states
 
+            if a.covariance == "train":
+                errors_by = {
+                    v: np.column_stack([y - prior, meas_by[v] - y[:, [0, 1, 0, 1]]])[tr]
+                    for v in variants
+                }
+            else:
+                # out-of-fold covariance (external review): R/C from residuals of calibrations that
+                # never saw the evaluated rows' NODES, so the treatment's extra fitted parameters
+                # cannot deflate its own covariance estimate. Fold labels batch the eval rows; the
+                # node-disjointness itself is enforced by excluding every fit row sharing a node
+                # with the eval batch. Held-row predictions still use the full-train calibrations.
+                fold_of = np.array(
+                    [zlib.crc32(repr(min(pairs[i])).encode()) % a.covariance_folds for i in tr]
+                )
+                errors_lists = {v: [] for v in variants}
+                for f in range(a.covariance_folds):
+                    eval_rows = tr[fold_of == f]
+                    if not len(eval_rows):
+                        continue
+                    eval_nodes = {node for i in eval_rows for node in pairs[i]}
+                    fit_idx = np.array(
+                        [i for i in tr if pairs[i][0] not in eval_nodes and pairs[i][1] not in eval_nodes],
+                        dtype=int,
+                    )
+                    if len(fit_idx) < a.min_train:
+                        continue
+                    mv_f = build_meas_variants(fit_idx)
+                    for v in variants:
+                        errors_lists[v].append(
+                            np.column_stack([y - prior, mv_f[v] - y[:, [0, 1, 0, 1]]])[eval_rows]
+                        )
+                if not any(errors_lists[v] for v in variants):
+                    raise RuntimeError(
+                        "out-of-fold covariance: no usable fold (fit sets below --min-train); "
+                        "reduce --covariance-folds"
+                    )
+                errors_by = {v: np.vstack(errors_lists[v]) for v in variants}
+
             row_scores = {v: {rung: {"j": [], "s": [], "d": []} for rung in RUNGS} for v in variants}
             for v in variants:
                 mv = meas_by[v]
-                errors = np.column_stack([y - prior, mv - y[:, [0, 1, 0, 1]]])[tr]
-                covariance = fit_residual_covariance(errors, shrinkage=a.shrink)
+                covariance = fit_residual_covariance(errors_by[v], shrinkage=a.shrink)
                 P0, C_pm, R0 = covariance[:2, :2], covariance[:2, 2:], covariance[2:, 2:]
                 for i in he:
                     x = prior[i]
@@ -422,8 +480,8 @@ def main(argv=None):
                 print(
                     f"    {key[0]}.{key[1]:1s}: rank min/max {min(f.rank for f in fits)}/{max(f.rank for f in fits)}, "
                     f"cond max {max(f.cond for f in fits):.1f}, "
-                    f"fallbacks/split mean {np.mean([f.fallback.sum() for f in fits]):.1f} "
-                    f"(fail-closed states reverted to prior)"
+                    f"prior-dominated/split mean {np.mean([f.fallback.sum() for f in fits]):.1f} "
+                    f"(flagged states whose posterior ≈ prior)"
                 )
 
         if a.bootstrap_resamples:
