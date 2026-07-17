@@ -119,6 +119,20 @@ test(match_capture_then_guard, [condition(clang_available)]) :-
         "ab123\nxy\n", Out, St),
     assertion(St == 0), assertion(Out == "3 3\n"), !.
 
+% RSTART as a guard comparison LHS (reads the special, not a phantom slot).
+test(rstart_guard, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'rg', "{ n = match($0, /[0-9]+/); if (RSTART > 0) print RSTART, RLENGTH }\n",
+        "ab12\nxy\n", Out, St),
+    assertion(St == 0), assertion(Out == "3 2\n"), !.
+
+% RLENGTH in a guard comparison.
+test(rlength_guard, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'lg', "{ n = match($0, /[0-9]+/); if (RLENGTH >= 3) print \"long\" }\n",
+        "ab7\ncd999\n", Out, St),
+    assertion(St == 0), assertion(Out == "long\n"), !.
+
 :- end_tests(plawk_subgsub_match).
 
 % --- helpers ---------------------------------------------------------------
