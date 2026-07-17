@@ -377,7 +377,11 @@ print_line:
 plawk_field_assign_body(Actions, SetFields, print([field(0)])) :-
     append(SetFields, [print([field(0)])], Actions),
     SetFields = [_ | _],
-    forall(member(A, SetFields), A = set_field(_, _)).
+    forall(member(A, SetFields), plawk_field_edit_action(A)).
+
+% A field-editing action: a field assignment or a sub/gsub into a field.
+plawk_field_edit_action(set_field(_, _)).
+plawk_field_edit_action(regex_sub_field(_, _, _, _)).
 
 %% plawk_field_assign_sets_ir(+SetFields, -GlobalIR, -SetBodyIR)
 %
@@ -397,6 +401,46 @@ plawk_field_assign_fold([set_field(N, Value) | Rest], Index,
     plawk_field_assign_one(N, Value, Index, GlobalPart, BodyPart),
     NextIndex is Index + 1,
     plawk_field_assign_fold(Rest, NextIndex, Parts).
+plawk_field_assign_fold([regex_sub_field(Global, Regex, Repl, N) | Rest], Index,
+        [GlobalPart-BodyPart | Parts]) :-
+    plawk_field_gsub_one(Global, Regex, Repl, N, Index, GlobalPart, BodyPart),
+    NextIndex is Index + 1,
+    plawk_field_assign_fold(Rest, NextIndex, Parts).
+
+%% plawk_field_gsub_one(+Global, +Regex, +Repl, +N, +Index, -GlobalPart, -BodyPart)
+%
+%  `sub/gsub(/re/, repl, $N)`: read field N's current slice from the buffer, run
+%  @wam_regex_gsub over it (per-site pattern/cache; `&` expands to the match),
+%  resolve the interned result to text, and store it back into field N. Rebuilds
+%  $0 at the join, like a field assignment.
+plawk_field_gsub_one(Global, Regex, Repl, N, Index, GlobalPart, BodyPart) :-
+    format(atom(PatName), 'fa_gs_~w_pat', [Index]),
+    format(atom(ReplName), 'fa_gs_~w_repl', [Index]),
+    format(atom(CacheName), 'fa_gs_~w_cache', [Index]),
+    llvm_emit_c_string_global(PatName, Regex, PatGlobal, _PL, PatBytes),
+    llvm_emit_c_string_global(ReplName, Repl, ReplGlobal, ReplLen, ReplBytes),
+    format(atom(CacheGlobal), '@~w = internal global i8* null', [CacheName]),
+    atomic_list_concat([PatGlobal, ReplGlobal, CacheGlobal], '\n', GlobalPart),
+    ( Global =:= 1 -> GlobalBool = true ; GlobalBool = false ),
+    format(atom(BodyPart),
+'  %fa_gs_~w_sl = call %WamSlice @wam_fields_get(%WamFieldBuf* %fa_fb, i64 ~w)
+  %fa_gs_~w_sp = extractvalue %WamSlice %fa_gs_~w_sl, 0
+  %fa_gs_~w_sn = extractvalue %WamSlice %fa_gs_~w_sl, 1
+  %fa_gs_~w_pp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  %fa_gs_~w_rp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  %fa_gs_~w_id = call i64 @wam_regex_gsub(i8* %fa_gs_~w_sp, i64 %fa_gs_~w_sn, i8* %fa_gs_~w_pp, i8** @~w, i8* %fa_gs_~w_rp, i64 ~w, i1 ~w, i64* @plawk_gsub_count)
+  %fa_gs_~w_ns = call i8* @wam_atom_to_string(i64 %fa_gs_~w_id)
+  %fa_gs_~w_nl = call i64 @strlen(i8* %fa_gs_~w_ns)
+  call void @wam_fields_set(%WamFieldBuf* %fa_fb, i64 ~w, i8* %fa_gs_~w_ns, i64 %fa_gs_~w_nl)',
+        [Index, N,
+         Index, Index,
+         Index, Index,
+         Index, PatBytes, PatBytes, PatName,
+         Index, ReplBytes, ReplBytes, ReplName,
+         Index, Index, Index, Index, CacheName, Index, ReplLen, GlobalBool,
+         Index, Index,
+         Index, Index,
+         N, Index, Index]).
 
 %% plawk_field_assign_one(+N, +Value, +Index, -GlobalPart, -BodyPart)
 %
