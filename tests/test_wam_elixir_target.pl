@@ -1939,24 +1939,21 @@ test_shared_detector_finds_transitive_distance :-
     ).
 
 test_graph_kernel_transitive_parent_distance_emitted_in_runtime :-
-    % Second of the five missing kernels (after TransitiveDistance in PR
-    % #1822). Stack-based DFS with no cycle detection — matches Rust's
-    % collect_native_transitive_parent_distance_results reference exactly.
+    % Shortest-positive parents BFS (TPD4-CONTRACT-PARITY-FS).
     Test = 'GraphKernel TransitiveParentDistance: runtime emits WamRuntime.GraphKernel.TransitiveParentDistance',
     compile_wam_runtime_to_elixir([], RuntimeCode),
     (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.GraphKernel.TransitiveParentDistance do'),
         sub_string(RuntimeCode, _, _, _, 'def collect_triples('),
-        sub_string(RuntimeCode, _, _, _, 'def collect_triples_from_source(')
+        sub_string(RuntimeCode, _, _, _, 'def collect_triples_from_source('),
+        sub_string(RuntimeCode, _, _, _, 'shortest-positive parents')
     ->  pass(Test)
     ;   fail_test(Test, 'GraphKernel.TransitiveParentDistance module missing expected API')
     ).
 
-test_graph_kernel_transitive_parent_distance_no_visited_set :-
-    % Documented contract: NO cycle detection, matches Rust's
-    % stack-based DFS exactly. The walker must NOT carry a visited
-    % list — that would change the per-path enumeration semantics.
-    % Locate the TransitiveParentDistance module body and check it.
-    Test = 'GraphKernel TransitiveParentDistance: walker has no visited list (matches Rust DFS)',
+test_graph_kernel_transitive_parent_distance_uses_bfs_parent_sets :-
+    % Contract: finite BFS with parent sets; dist map not seeded with
+    % start; equal-shortest parents all emitted.
+    Test = 'GraphKernel TransitiveParentDistance: BFS parent-set shape (TPD4 contract)',
     compile_wam_runtime_to_elixir([], RuntimeCode),
     Pattern = "defmodule WamRuntime.GraphKernel.TransitiveParentDistance do",
     EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
@@ -1965,27 +1962,19 @@ test_graph_kernel_transitive_parent_distance_no_visited_set :-
         End > Start,
         BodyLen is End - Start,
         sub_string(RuntimeCode, Start, BodyLen, _, Body),
-        % Stack-based DFS shape: explicit `[{node, depth} | rest]`
-        % stack pattern in the walker, with the records pushed as
-        % `(target, predecessor, next_depth)` triples.
-        sub_string(Body, _, _, _, "[{node, depth} | rest]"),
-        sub_string(Body, _, _, _, "{[{target, node, next_depth}"),
-        % Negative invariant: no `:lists.member` visited check (would
-        % silently change the semantics from "every edge in DFS" to
-        % "every edge with simple-path constraint").
-        \+ sub_string(Body, _, _, _, ":lists.member"),
-        % Documents the cycle caveat in the moduledoc.
-        sub_string(Body, _, _, _, "NO cycle detection")
+        sub_string(Body, _, _, _, ":queue.in({start, 0}"),
+        sub_string(Body, _, _, _, "MapSet.new([node])"),
+        sub_string(Body, _, _, _, "shortest-positive parents"),
+        \+ sub_string(Body, _, _, _, "NO cycle detection"),
+        \+ sub_string(Body, _, _, _, "[{node, depth} | rest]")
     ->  pass(Test)
-    ;   fail_test(Test, 'TransitiveParentDistance walker has wrong shape or missing cycle caveat')
+    ;   fail_test(Test, 'TransitiveParentDistance walker missing BFS parent-set shape')
     ).
 
 test_kernel_dispatch_emits_transitive_parent_distance_module :-
     % End-to-end: detector recognises kdpd/4 as
-    % transitive_parent_distance4, dispatch wrapper emits with the
-    % correct shape (calls collect_triples, branches on agg_value_reg
-    % across reg 2/3/4 for findall slicing, binds three regs in
-    % driver-direct mode).
+    % transitive_parent_distance4; dispatch uses joint filter + stream
+    % (TD3-shaped ordinary choice points) and aggregate slicing.
     Test = 'Kernel dispatch: transitive_parent_distance4 kernel emits Probe.Kdpd dispatch module',
     setup_kernel_fixtures,
     wam_target:compile_predicate_to_wam(user:kdpd/4, [], PdWam),
@@ -1999,10 +1988,10 @@ test_kernel_dispatch_emits_transitive_parent_distance_module :-
     read_file_to_string(PredPath, S, []),
     (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.TransitiveParentDistance"),
         sub_string(S, _, _, _, "collect_triples("),
-        % Aggregate-frame slicing for three registers (2/3/4).
+        sub_string(S, _, _, _, "compatible_triples("),
+        sub_string(S, _, _, _, "stream_triples("),
         sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
         sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
-        % Driver-direct binding of all three (target, parent, distance).
         sub_string(S, _, _, _, "bind_three_regs(state, "),
         sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
     ->  pass(Test)
@@ -2055,10 +2044,7 @@ test_graph_kernel_tspd_reuses_parent_distance_walker :-
         % Emits the depth-1 base case: {next, next, start, 1}.
         sub_string(Body, _, _, _, "{next, next, start, 1}"),
         % Bumps inner triples by 1 (dist + 1).
-        sub_string(Body, _, _, _, "dist + 1"),
-        % Documents the cycle caveat (inherited from
-        % TransitiveParentDistance).
-        sub_string(Body, _, _, _, "NO cycle detection")
+        sub_string(Body, _, _, _, "dist + 1")
     ->  pass(Test)
     ;   fail_test(Test, 'TransitiveStepParentDistance does not reuse the parent_distance walker correctly')
     ).
@@ -3519,7 +3505,7 @@ run_tests :-
     test_kernel_dispatch_transitive_distance_e2e,
     test_shared_detector_finds_transitive_distance,
     test_graph_kernel_transitive_parent_distance_emitted_in_runtime,
-    test_graph_kernel_transitive_parent_distance_no_visited_set,
+    test_graph_kernel_transitive_parent_distance_uses_bfs_parent_sets,
     test_kernel_dispatch_emits_transitive_parent_distance_module,
     test_shared_detector_finds_transitive_parent_distance,
     test_graph_kernel_transitive_step_parent_distance_emitted_in_runtime,

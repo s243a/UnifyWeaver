@@ -2596,16 +2596,16 @@ WamRuntime$weighted_shortest_path3 <- function(program, state, key, edge_pred,
 # ----------------------------------------------------------
 # Recursive-kernel: transitive_parent_distance4
 # ----------------------------------------------------------
-# BFS variant that tracks the immediate predecessor of each node
-# in the search tree, yielding (target, parent, distance) triples.
+# Shortest-positive parents
+# (docs/design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md).
+# Finite BFS with parent sets: emit every distinct
+# (target, parent, distance) where distance is dist+ and parent is an
+# immediate predecessor on some shortest positive path. Equal-shortest
+# parents are all emitted. Do NOT seed Source into dist — Source appears
+# only for a self-loop (Source,Source,1) or the shortest nonempty cycle.
 # Pattern detected:
 #   pd(X, Y, X, 1) :- edge(X, Y).
 #   pd(X, Y, P, D) :- edge(X, Z), pd(Z, Y, P, D1), D is D1 + 1.
-# The `parent` slot is the node that immediately preceded `target`
-# in the BFS path from `source` (i.e. for direct neighbours it's
-# `source` itself; for two-hop reach it's the intermediate node).
-# Source itself is *not* yielded -- the recursion always takes at
-# least one edge step.
 WamRuntime$transitive_parent_distance4 <- function(program, state, key,
                                                      edge_pred, edge_key,
                                                      source, target, parent,
@@ -2626,21 +2626,17 @@ WamRuntime$transitive_parent_distance4 <- function(program, state, key,
   snap_build <- state$build_stack
 
   edge_atom_id <- WamRuntime$intern(table, edge_pred)
-  visited <- new.env(parent = emptyenv())
-  # Parallel queues: nodes, parents (immediate predecessor), depth.
-  q_nodes   <- list(src_v)
-  q_parents <- list(NULL)   # source has no parent in the BFS tree
-  q_depths  <- list(0L)
-  reached   <- list()       # (node, parent, distance) triples
-  assign(as.character(src_v$id), TRUE, envir = visited)
+  dist_env <- new.env(parent = emptyenv())
+  parents_env <- new.env(parent = emptyenv())
+  q_nodes  <- list(src_v)
+  q_depths <- list(0L)
+  reached  <- list()
 
   while (length(q_nodes) > 0L) {
-    cur     <- q_nodes[[1L]]
-    cur_par <- q_parents[[1L]]
-    depth   <- q_depths[[1L]]
-    q_nodes   <- q_nodes[-1L]
-    q_parents <- q_parents[-1L]
-    q_depths  <- q_depths[-1L]
+    cur   <- q_nodes[[1L]]
+    depth <- q_depths[[1L]]
+    q_nodes  <- q_nodes[-1L]
+    q_depths <- q_depths[-1L]
     next_depth <- depth + 1L
     captured_cur <- cur
     y_var <- Unbound(paste0("V_pd_", state$var_counter))
@@ -2650,15 +2646,25 @@ WamRuntime$transitive_parent_distance4 <- function(program, state, key,
       y_v <- WamRuntime$deref(state, y_var)
       if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom") {
         k <- as.character(y_v$id)
-        if (!exists(k, envir = visited, inherits = FALSE)) {
-          assign(k, TRUE, envir = visited)
-          q_nodes   <<- c(q_nodes,   list(y_v))
-          q_parents <<- c(q_parents, list(captured_cur))
-          q_depths  <<- c(q_depths,  list(next_depth))
-          reached   <<- c(reached,
+        pred_id <- as.character(captured_cur$id)
+        if (!exists(k, envir = dist_env, inherits = FALSE)) {
+          assign(k, next_depth, envir = dist_env)
+          assign(k, pred_id, envir = parents_env)
+          q_nodes  <<- c(q_nodes,  list(y_v))
+          q_depths <<- c(q_depths, list(next_depth))
+          reached  <<- c(reached,
+                         list(list(node   = y_v,
+                                   second = captured_cur,
+                                   third  = IntTerm(next_depth))))
+        } else if (get(k, envir = dist_env, inherits = FALSE) == next_depth) {
+          ps <- get(k, envir = parents_env, inherits = FALSE)
+          if (!(pred_id %in% ps)) {
+            assign(k, c(ps, pred_id), envir = parents_env)
+            reached <<- c(reached,
                           list(list(node   = y_v,
                                     second = captured_cur,
                                     third  = IntTerm(next_depth))))
+          }
         }
       }
       TRUE

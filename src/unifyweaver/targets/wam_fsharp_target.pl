@@ -256,10 +256,14 @@ ffi_owned_fact_filter_fs(DetectedKernels, PI) :-
 %     WAM/FFI plumbing TC2/TD3 streaming reuses.
 %   - transitive_distance3 Mustache handler emits (atom,int) pairs via the
 %     existing multi-output binder (dist+ contract).
+%   - transitive_parent_distance4 Mustache handler emits (atom,atom,int)
+%     triples via the existing three-output binder (shortest-positive
+%     parents contract).
 wam_fsharp_native_kernel_kind(category_ancestor).
 wam_fsharp_native_kernel_kind(bidirectional_ancestor).
 wam_fsharp_native_kernel_kind(transitive_closure2).
 wam_fsharp_native_kernel_kind(transitive_distance3).
+wam_fsharp_native_kernel_kind(transitive_parent_distance4).
 
 fsharp_kernel_template_path(Kind, AbsPath) :-
     kernel_template_file(Kind, HsTemplateFile),

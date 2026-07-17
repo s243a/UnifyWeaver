@@ -2918,6 +2918,16 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     Value::Unbound(_) => None,
                     _ => return false,
                 };
+                let parent_filter = match self.deref_var(&parent_reg) {
+                    Value::Atom(parent) => Some(parent),
+                    Value::Unbound(_) => None,
+                    _ => return false,
+                };
+                let distance_filter = match self.deref_var(&dist_reg) {
+                    Value::Integer(d) if d > 0 => Some(d),
+                    Value::Unbound(_) => None,
+                    _ => return false,
+                };
                 let edge_pred = match self.foreign_string_config(&pred_key, "edge_pred") {
                     Some(pred) => pred.to_string(),
                     None => return false,
@@ -2926,6 +2936,12 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 self.collect_native_transitive_parent_distance_results(&start, &edge_pred, &mut results);
                 if let Some(target) = target_filter {
                     results.retain(|(node, _, _)| *node == target);
+                }
+                if let Some(parent) = parent_filter {
+                    results.retain(|(_, p, _)| *p == parent);
+                }
+                if let Some(want_d) = distance_filter {
+                    results.retain(|(_, _, d)| *d == want_d);
                 }
                 if results.is_empty() {
                     return false;
@@ -3791,20 +3807,50 @@ compile_collect_native_transitive_distance_to_rust(Code) :-
     }'.
 
 compile_collect_native_transitive_parent_distance_to_rust(Code) :-
-    Code = '    pub fn collect_native_transitive_parent_distance_results(
+    % Shortest-positive parents
+    % (docs/design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md): finite BFS
+    % with parent sets. dist tracks nodes discovered via an edge — do not
+    % seed with start. Equal-shortest parents are all emitted. Inline kept
+    % (matches surrounding collect_native_* helpers).
+    Code = '    /// shortest-positive parents — docs/design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md
+    pub fn collect_native_transitive_parent_distance_results(
         &self,
         start: &str,
         edge_pred: &str,
         out: &mut Vec<(String, String, i64)>,
     ) {
-        let mut stack: Vec<(String, i64)> = vec![(start.to_string(), 0)];
-        while let Some((node, depth)) = stack.pop() {
+        let mut dist: HashMap<String, i64> = HashMap::new();
+        let mut parents: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut queue: VecDeque<(String, i64)> = VecDeque::new();
+        queue.push_back((start.to_string(), 0));
+        while let Some((node, depth)) = queue.pop_front() {
             if let Some(next_nodes) = self.indexed_atom_fact2.get(edge_pred).and_then(|table| table.get(&node)) {
-                for next in next_nodes.iter().rev() {
-                    let next_depth = depth + 1;
-                    out.push((next.clone(), node.clone(), next_depth));
-                    stack.push((next.clone(), next_depth));
+                let next_depth = depth + 1;
+                for next in next_nodes {
+                    match dist.get(next).copied() {
+                        None => {
+                            dist.insert(next.clone(), next_depth);
+                            let mut set = HashSet::new();
+                            set.insert(node.clone());
+                            parents.insert(next.clone(), set);
+                            queue.push_back((next.clone(), next_depth));
+                        }
+                        Some(d0) if d0 == next_depth => {
+                            parents.entry(next.clone()).or_default().insert(node.clone());
+                        }
+                        _ => {}
+                    }
                 }
+            }
+        }
+        let mut keys: Vec<String> = dist.keys().cloned().collect();
+        keys.sort();
+        for target in keys {
+            let d = dist[&target];
+            let mut pars: Vec<String> = parents.get(&target).into_iter().flatten().cloned().collect();
+            pars.sort();
+            for parent in pars {
+                out.push((target.clone(), parent, d));
             }
         }
     }'.

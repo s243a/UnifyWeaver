@@ -4235,59 +4235,63 @@ defmodule WamRuntime.GraphKernel.TransitiveParentDistance do
           pd(Mid, Y, P, N1),
           N is N1 + 1.
 
-  Returns `[{target, predecessor, distance}, ...]` triples — for every
-  edge encountered during DFS from `start`, records the edge plus the
-  depth at which it was traversed. The predecessor is the immediate
-  source-side of the recorded edge (the node we stepped FROM), which
-  matches the Prolog patterns base-case binding (`pd(X, Y, X, 1)` —
-  parent equals start when one edge connects start to target).
-
-  Ported from the Rust kernel
-  `collect_native_transitive_parent_distance_results` in
-  src/unifyweaver/targets/wam_rust_target.pl. Identical algorithm:
-  iterative DFS via an explicit stack, push `(target, predecessor,
-  next_depth)` per edge.
-
-  WARNING: NO cycle detection. Matches the Rust reference impl which
-  uses a stack-based DFS without a visited list. On cyclic inputs
-  this kernel **loops indefinitely**; callers must either ensure
-  acyclic input (DAGs only — e.g. typical category-parent structures)
-  or wrap with a depth-bound consumer like
-  `findall(P-N, (pd(X, Y, P, N), N < MaxD), Triples)`. If you need
-  cycle-safe behaviour AND the predecessor, the right next step is a
-  separate `transitive_parent_distance4_safe` kernel that adds a
-  visited list — not in this PR.
+  Contract: shortest-positive parents
+  (docs/design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md).
+  Finite BFS emits every distinct `{target, parent, distance}` where
+  `distance` is dist+ and `parent` is an immediate predecessor on some
+  shortest positive path. Equal-shortest parents are all emitted.
+  Distance map tracks nodes discovered via an outgoing edge — not
+  seeded with `start` — so Source appears only for a self-loop
+  (`{source, source, 1}`) or the shortest nonempty cycle.
   """
 
   @doc """
-  Returns `[{target, predecessor, distance}, ...]` for every edge
-  encountered during DFS from `start`. `neighbors_fn` follows the
-  FactSource lookup_by_arg1 contract: receives a node, returns
-  `[{from, to}, ...]` tuples.
-
-  Edge-iteration order: matches Rusts `for next in next_nodes.iter().rev()
-  + stack.push` — edges are visited in forward order. We reverse the
-  edge list before reducing onto the stack so the first edge pops
-  first. This preserves the same enumeration order across targets,
-  which matters when callers depend on it for deterministic test
-  output.
+  Returns `[{target, predecessor, distance}, ...]` — one triple per
+  distinct shortest-parent. `neighbors_fn` receives a node, returns
+  a list of `{from, to}` tuples (FactSource lookup_by_arg1 contract);
+  only `to` is read as the neighbour.
   """
   def collect_triples(neighbors_fn, start) when is_function(neighbors_fn, 1) do
-    walk(neighbors_fn, [{start, 0}], [])
-    |> Enum.reverse()
+    bfs(neighbors_fn, :queue.in({start, 0}, :queue.new()), %{}, %{})
   end
 
-  defp walk(_, [], acc), do: acc
-  defp walk(neighbors_fn, [{node, depth} | rest], acc) do
-    edges = neighbors_fn.(node)
-    next_depth = depth + 1
-    {new_acc, new_stack} =
-      edges
-      |> Enum.reverse()
-      |> Enum.reduce({acc, rest}, fn {_from, target}, {a, s} ->
-        {[{target, node, next_depth} | a], [{target, next_depth} | s]}
-      end)
-    walk(neighbors_fn, new_stack, new_acc)
+  defp bfs(neighbors_fn, q, dist, parents) do
+    case :queue.out(q) do
+      {:empty, _} ->
+        dist
+        |> Map.keys()
+        |> Enum.sort()
+        |> Enum.flat_map(fn t ->
+          d = Map.fetch!(dist, t)
+          Map.get(parents, t, MapSet.new())
+          |> MapSet.to_list()
+          |> Enum.sort()
+          |> Enum.map(fn p -> {t, p, d} end)
+        end)
+
+      {{:value, {node, depth}}, q1} ->
+        next_depth = depth + 1
+
+        {q2, dist2, parents2} =
+          Enum.reduce(neighbors_fn.(node), {q1, dist, parents}, fn {_from, target}, {qq, dd, pp} ->
+            case Map.get(dd, target) do
+              nil ->
+                {
+                  :queue.in({target, next_depth}, qq),
+                  Map.put(dd, target, next_depth),
+                  Map.put(pp, target, MapSet.new([node]))
+                }
+
+              ^next_depth ->
+                {qq, dd, Map.update!(pp, target, &MapSet.put(&1, node))}
+
+              _ ->
+                {qq, dd, pp}
+            end
+          end)
+
+        bfs(neighbors_fn, q2, dist2, parents2)
+    end
   end
 
   @doc """
@@ -4323,20 +4327,17 @@ defmodule WamRuntime.GraphKernel.TransitiveStepParentDistance do
 
   Ported from the Rust kernel
   `collect_native_transitive_step_parent_distance_results` in
-  src/unifyweaver/targets/wam_rust_target.pl. Identical algorithm:
+  src/unifyweaver/targets/wam_rust_target.pl. Algorithm:
   for each direct edge from `start`, emit the depth-1 quadruple, then
-  delegate to `TransitiveParentDistance.collect_triples/2` for the
-  deeper walk and decorate every returned `(target, parent, dist)`
-  triple with the current first-hop and `dist + 1`.
-
-  WARNING: NO cycle detection (inherited from TransitiveParentDistance).
-  Cyclic inputs loop indefinitely — use only on DAGs (typical
-  category-parent / ontology shapes are fine).
+  delegate to `TransitiveParentDistance.collect_triples/2` (finite BFS
+  shortest-positive parents) for the deeper walk and decorate every
+  returned `(target, parent, dist)` triple with the current first-hop
+  and `dist + 1`.
   """
 
   @doc """
-  Returns `[{target, step, parent, distance}, ...]` for every edge in
-  the DFS expansion from `start`, decorated with the FIRST hop taken.
+  Returns `[{target, step, parent, distance}, ...]` for every first hop
+  from `start`, decorated with results of the inner TPD4 BFS.
   Reuses `WamRuntime.GraphKernel.TransitiveParentDistance.collect_triples/2`
   for the inner walk; the step is fixed at the first hop per outer
   iteration.
@@ -5913,20 +5914,11 @@ end
 %  WamRuntime.GraphKernel.TransitiveParentDistance.collect_triples.
 %
 %  Three enumerated registers per solution: A2 (target), A3 (parent
-%  / immediate predecessor), A4 (distance). The kernel returns
-%  [{target, parent, distance}, ...]; the dispatch wrapper inspects
-%  the active aggregate frames :agg_value_reg at runtime to select
-%  which slice to push:
-%    - val_reg == 2 -> push targets
-%    - val_reg == 3 -> push parents
-%    - val_reg == 4 -> push distances
-%    - otherwise    -> push triple tuples (compound template)
-%
-%  Driver-direct call: bind_three_regs/4 binds A2, A3, A4 to the
-%  first solution.
-%
-%  WARNING (inherited from the kernel): NO cycle detection. Caller
-%  must ensure acyclic input or wrap with a depth-bounded consumer.
+%  / immediate predecessor), A4 (distance). Reuses the TD3 joint-
+%  compatibility filter + ordinary function-backed choicepoint stream
+%  (including aggregate aliases): filter triples against bound A2/A3/A4
+%  jointly, then stream_triples/2. Aggregate slicing projects columns
+%  from the already-filtered triple list.
 compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
     atom_string(ModuleName, ModName),
     camel_case(ModName, CamelMod),
@@ -5939,18 +5931,16 @@ compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, C
   @moduledoc """
   Kernel-dispatched ~w/4 (auto-recognised transitive_parent_distance4
   pattern over ~w/2). Routes calls through
-  WamRuntime.GraphKernel.TransitiveParentDistance.
+  WamRuntime.GraphKernel.TransitiveParentDistance (shortest-positive
+  parents contract).
 
   Edge source must be registered via WamRuntime.FactSourceRegistry
   under the indicator "~w" before calling.
-
-  WARNING: the underlying kernel has NO cycle detection. Use this
-  only on acyclic graphs (DAGs) or wrap calls with a depth-bound
-  consumer.
   """
 
   def run(%WamRuntime.WamState{} = state) do
     start_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
+    unless is_binary(start_val), do: throw({:fail, state})
     edge_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
     neighbors_fn = fn node ->
       WamRuntime.FactSource.lookup_by_arg1(edge_handle, node, state)
@@ -5958,11 +5948,11 @@ compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, C
     triples =
       WamRuntime.GraphKernel.TransitiveParentDistance.collect_triples(
         neighbors_fn, start_val)
+      |> compatible_triples(state)
 
     if WamRuntime.in_forkable_aggregate_frame?(state) do
-      # Slice triples based on which register the active aggregate
-      # is capturing. split_at_aggregate_cp/1 walks the cp stack ONCE
-      # so per-pair contribution is O(1) (PR #1814 amortisation).
+      # Slice jointly filtered triples. Independent column projection
+      # after joint filter preserves tuple integrity for aliased outputs.
       {above, agg_cp, below} = WamRuntime.split_at_aggregate_cp(state)
       contributions =
         case agg_cp.agg_value_reg do
@@ -5976,14 +5966,7 @@ compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, C
       new_state = %{state | choice_points: above ++ [new_agg_cp | below]}
       throw({:fail, new_state})
     else
-      case triples do
-        [{first_target, first_parent, first_dist} | _] ->
-          case bind_three_regs(state, first_target, first_parent, first_dist) do
-            nil -> throw({:fail, state})
-            bound -> {:ok, bound}
-          end
-        [] -> throw({:fail, state})
-      end
+      stream_triples(state, triples)
     end
   end
 
@@ -6015,9 +5998,38 @@ compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, C
     end
   end
 
-  # Bind A2 (target), A3 (parent), A4 (distance) for driver-direct
-  # single-solution mode. Any binding failure (slot already bound to a
-  # different value) aborts with nil so the caller throws fail.
+  defp compatible_triples(triples, state) do
+    Enum.filter(triples, fn {t, p, d} ->
+      not is_nil(bind_three_regs(state, t, p, d))
+    end)
+  end
+
+  defp stream_triples(state, []), do: throw({:fail, state})
+  defp stream_triples(state, [{target, parent, distance} | rest]) do
+    case bind_three_regs(state, target, parent, distance) do
+      nil ->
+        stream_triples(state, rest)
+
+      bound when rest == [] ->
+        {:ok, bound}
+
+      bound ->
+        iter_cp = %{
+          pc: fn restored -> stream_triples(restored, rest) end,
+          regs: state.regs,
+          y_regs: state.y_regs,
+          heap: state.heap,
+          heap_len: state.heap_len,
+          cp: state.cp,
+          trail: state.trail,
+          trail_len: state.trail_len,
+          stack: state.stack
+        }
+
+        {:ok, %{bound | choice_points: [iter_cp | bound.choice_points]}}
+    end
+  end
+
   defp bind_three_regs(state, target, parent, distance) do
     with {:ok, s1} <- bind_one(state, 2, target),
          {:ok, s2} <- bind_one(s1, 3, parent),
@@ -6029,7 +6041,7 @@ compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, C
   end
 
   defp bind_one(state, reg_idx, value) do
-    case WamRuntime.get_reg_raw(state, reg_idx) do
+    case WamRuntime.get_reg(state, reg_idx) do
       {:unbound, id} ->
         {:ok,
          state

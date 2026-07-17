@@ -12,7 +12,10 @@
 %%   tests/test_wam_td3_contract_parity.pl
 %%     - fleet TD3 dist+ oracle/structural checks plus executable F#/C/Rust
 %%       retry, binding-mode, cycle, and no-kernels coverage.
-%%   focused Scala, Haskell, Elixir, and LLVM TD3 regressions
+%%   tests/test_wam_tpd4_contract_parity.pl
+%%     - fleet TPD4 shortest-positive-parents oracle/structural checks plus
+%%       executable F#/C/Rust/Elixir coverage; LLVM remains capability-gated.
+%%   focused Scala, Haskell, Elixir, and LLVM TD3/TPD4 regressions
 %%     - exercise the Scala Source gate, generic multi-output binding, Elixir
 %%       ordinary retries, and LLVM exact paired streaming / range safety.
 %%       Runtime legs skip only when their external compiler is unavailable.
@@ -51,21 +54,28 @@ fsharp_test('tests/core/test_wam_fsharp_kernel_gate_tc.pl',
             run_tests).
 fsharp_test('tests/test_wam_td3_contract_parity.pl',
             'TD3 strict dist+ fleet contract + F# native kernel', run_tests).
+fsharp_test('tests/test_wam_tpd4_contract_parity.pl',
+            'TPD4 shortest-positive-parents fleet contract + F# native kernel',
+            run_tests).
 fsharp_test('tests/test_wam_scala_kernels.pl',
-            'TD3 Scala bound-atom Source gate',
+            'TD3/TPD4 Scala kernel structural + Source gate',
             ( run_tests(wam_scala_kernels_structural:
                         distance_kernel_emits_handler_and_stub),
+              run_tests(wam_scala_kernels_structural:
+                        parent_distance_kernel_emits_handler_and_stub),
               run_tests(wam_scala_kernels_runtime:
                         transitive_distance_rejects_non_atom_source) )).
 fsharp_test('tests/test_wam_haskell_target.pl',
-            'TD3 Haskell multi-output foreign retry regressions',
+            'TD3/TPD4 Haskell multi-output foreign retry regressions',
             (test_multi_output_foreign_filters_bound_results,
              test_multi_output_foreign_retry_filters_and_pops)).
 fsharp_test('tests/test_wam_elixir_target.pl',
-            'TD3 Elixir bound modes + ordinary retry stream regressions',
+            'TD3/TPD4 Elixir bound modes + ordinary retry stream regressions',
             (test_graph_kernel_transitive_distance_uses_distplus_bfs,
              test_kernel_dispatch_emits_transitive_distance_module,
-             test_kernel_dispatch_transitive_distance_e2e)).
+             test_kernel_dispatch_transitive_distance_e2e,
+             test_graph_kernel_transitive_parent_distance_uses_bfs_parent_sets,
+             test_kernel_dispatch_emits_transitive_parent_distance_module)).
 fsharp_test('tests/core/test_wam_llvm_reach_execution.pl',
             'TD3 LLVM bound-distance + range-safety execution', test_all).
 fsharp_test('tests/core/test_wam_llvm_td3_stream_execution.pl',
