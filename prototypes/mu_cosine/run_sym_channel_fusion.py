@@ -14,7 +14,13 @@ Two uncertainty summaries are intentionally separate:
   * A paired two-endpoint node-block bootstrap on one fixed held partition gives a 95% population interval
     conditional on that fitted split.
 
-  python3 run_sym_channel_fusion.py
+--debias affine+bins (DESIGN_bias_state_augmentation.md §5.1) additionally evaluates the treatment
+ladder where every measurement channel is corrected by shrunk per-(judge, bin, channel) offset states
+(fit_bias_states, train-split-only, ON TOP of the retained global affine — never replacing it) and
+reports the PAIRED control-vs-treatment gains.  Frozen primary metric: held-out S-marginal NLL at the
+ALL rung; D-marginal and joint NLL are secondary.
+
+  python3 run_sym_channel_fusion.py [--debias affine+bins]
 """
 import argparse
 import os
@@ -26,6 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from eval_luna_transfer import load_luna as load_scored_mu_tsv
 from fine_tune_channel_heads import load_campaign_datasets, load_expanded
 from fine_tune_fused_head import agnostic_readouts
+from fit_bias_states import DEFAULT_TAUS, fit_bias_states, pair_distance_features
 from node_disjoint_eval import (
     format_split_diagnostics,
     node_disjoint_pair_split,
@@ -52,6 +59,14 @@ RUNGS = {
 EFFECTS = [
     ("graph_S free-only (S)", "+graph_D", "+graph_D+graph_S"),
     ("graph_S after luna (S)", "+graph_D+luna", "ALL"),
+]
+# meas column order ↔ (judge, channel) bias-state keys and their observed y component
+BIAS_CHANNELS = ((("graph", "D"), 0), (("graph", "S"), 1), (("luna", "D"), 0), (("luna", "S"), 1))
+# paired control-vs-treatment gains at the ALL rung; S-marginal is the FROZEN primary metric
+DEBIAS_EFFECTS = [
+    ("debias bins (S, ALL) [primary]", "s"),
+    ("debias bins (D, ALL)", "d"),
+    ("debias bins (joint, ALL)", "j"),
 ]
 
 
@@ -140,6 +155,20 @@ def build_arg_parser():
         help="node-partition seed held fixed for the population-uncertainty interval",
     )
     ap.add_argument("--bootstrap-confidence", type=float, default=0.95)
+    ap.add_argument(
+        "--debias",
+        choices=["affine", "affine+bins"],
+        default="affine",
+        help=("affine = the existing global per-channel calibration only (control); affine+bins ALSO "
+              "evaluates shrunk per-(judge,bin,channel) offset states on top of the affine "
+              "(fit_bias_states, train-only) and reports paired control-vs-treatment gains"),
+    )
+    ap.add_argument("--bias-prior-sd", type=float, default=0.10,
+                    help="zero-prior scale of each bias state (ridge shrinkage strength)")
+    ap.add_argument("--bias-info-floor", type=float, default=0.10,
+                    help="minimum conditional information ratio; states below fall back to the prior")
+    ap.add_argument("--bias-taus", type=float, nargs="+", default=list(DEFAULT_TAUS),
+                    help="candidate kernel bandwidths for the train-tuned soft bin assignment")
     return ap
 
 
@@ -174,7 +203,7 @@ def main(argv=None):
 
     for corpus_index, (name, ds) in enumerate(dss.items()):
         corpus = name.replace("-campaign", "")
-        parents, _, _, _ = load_feature_graph(FeatureGraphConfig(**DATASETS[corpus]["graph"]))
+        parents, children, _, _ = load_feature_graph(FeatureGraphConfig(**DATASETS[corpus]["graph"]))
         keep = [i for i, pair in enumerate(ds["pairs"]) if pair in luna_by]
         pairs = [ds["pairs"][i] for i in keep]
         all_tags = ds.get("tags", ["all"] * len(ds["pairs"]))
@@ -194,12 +223,21 @@ def main(argv=None):
             f"corr(shared_parent, S) = {corr(F[:, 1], y[:, 1]):+.3f} ==="
         )
 
+        variants = ["affine"]
+        if a.debias == "affine+bins":
+            variants.append("affine+bins")
+            in_graph = set(parents) | {c for kids in children.values() for c in kids}
+            # outcome-blind distance features, computed once per corpus (graph only, never labels)
+            feats = pair_distance_features(parents, pairs, in_graph=in_graph)
+
         # Split-seed values answer only whether the result is stable to the node partition. They are not
         # independent replications, so their SD is descriptive and is never divided by sqrt(n).
-        split_scores = {rung: {"j": [], "s": []} for rung in RUNGS}
+        split_scores = {v: {rung: {"j": [], "s": [], "d": []} for rung in RUNGS} for v in variants}
         valid_splits = []
         skipped = []
         fixed = None
+        fixed_states = None
+        bias_fits = []
         mc_seeds = list(range(a.seeds))
         eval_seeds = list(mc_seeds)
         if a.bootstrap_resamples and a.bootstrap_split_seed not in eval_seeds:
@@ -241,41 +279,72 @@ def main(argv=None):
             graph_S = X @ beta
             luna_calibrated = calibrate_luna(luna, y, tr)
             meas = np.column_stack([graph_D, graph_S, luna_calibrated[:, 0], luna_calibrated[:, 1]])
-            errors = np.column_stack([y - prior, meas - y[:, [0, 1, 0, 1]]])[tr]
-            covariance = fit_residual_covariance(errors, shrinkage=a.shrink)
-            P0, C_pm, R0 = covariance[:2, :2], covariance[:2, 2:], covariance[2:, 2:]
-            row_scores = {rung: {"j": [], "s": []} for rung in RUNGS}
-            for i in he:
-                x = prior[i]
-                for rung, selected in RUNGS.items():
-                    if not selected:
-                        xp, Pp = x, P0
-                    else:
-                        xp, Pp = correlated_update_H(
-                            x,
-                            P0,
-                            meas[i][selected],
-                            R0[np.ix_(selected, selected)],
-                            C_pm[:, selected],
-                            H4[selected],
-                        )
-                    s_nll = s_marginal_nll(y[i, 1] - xp[1], Pp[1, 1])
-                    row_scores[rung]["j"].append(nll_mahal(y[i] - xp, Pp)[0])
-                    row_scores[rung]["s"].append(s_nll)
+            meas_by = {"affine": meas}
+            if "affine+bins" in variants:
+                # residual offsets fit ON TOP of the affine calibration above (never replacing it),
+                # train rows only; applied to every row through the outcome-blind kernel basis
+                states = fit_bias_states(
+                    feats,
+                    tr,
+                    {key: meas[:, j] - y[:, y_col] for j, (key, y_col) in enumerate(BIAS_CHANNELS)},
+                    prior_sd=a.bias_prior_sd,
+                    info_floor=a.bias_info_floor,
+                    taus=a.bias_taus,
+                    verbose=False,
+                )
+                meas_by["affine+bins"] = meas - np.column_stack(
+                    [states.corrections(key) for key, _ in BIAS_CHANNELS]
+                )
+                if seed in mc_seeds:
+                    bias_fits.append(states)
+                if a.bootstrap_resamples and seed == a.bootstrap_split_seed:
+                    fixed_states = states
+
+            row_scores = {v: {rung: {"j": [], "s": [], "d": []} for rung in RUNGS} for v in variants}
+            for v in variants:
+                mv = meas_by[v]
+                errors = np.column_stack([y - prior, mv - y[:, [0, 1, 0, 1]]])[tr]
+                covariance = fit_residual_covariance(errors, shrinkage=a.shrink)
+                P0, C_pm, R0 = covariance[:2, :2], covariance[:2, 2:], covariance[2:, 2:]
+                for i in he:
+                    x = prior[i]
+                    for rung, selected in RUNGS.items():
+                        if not selected:
+                            xp, Pp = x, P0
+                        else:
+                            xp, Pp = correlated_update_H(
+                                x,
+                                P0,
+                                mv[i][selected],
+                                R0[np.ix_(selected, selected)],
+                                C_pm[:, selected],
+                                H4[selected],
+                            )
+                        row_scores[v][rung]["j"].append(nll_mahal(y[i] - xp, Pp)[0])
+                        row_scores[v][rung]["s"].append(s_marginal_nll(y[i, 1] - xp[1], Pp[1, 1]))
+                        row_scores[v][rung]["d"].append(s_marginal_nll(y[i, 0] - xp[0], Pp[0, 0]))
 
             if seed in mc_seeds:
                 valid_splits.append(split)
-                for rung in RUNGS:
-                    split_scores[rung]["j"].append(float(np.mean(row_scores[rung]["j"])))
-                    split_scores[rung]["s"].append(float(np.mean(row_scores[rung]["s"])))
+                for v in variants:
+                    for rung in RUNGS:
+                        for m in ("j", "s", "d"):
+                            split_scores[v][rung][m].append(float(np.mean(row_scores[v][rung][m])))
             if a.bootstrap_resamples and seed == a.bootstrap_split_seed:
+                gains = {
+                    effect: np.asarray(row_scores["affine"][base]["s"])
+                    - np.asarray(row_scores["affine"][plus]["s"])
+                    for effect, base, plus in EFFECTS
+                }
+                if "affine+bins" in variants:
+                    for effect, m in DEBIAS_EFFECTS:
+                        gains[effect] = np.asarray(row_scores["affine"]["ALL"][m]) - np.asarray(
+                            row_scores["affine+bins"]["ALL"][m]
+                        )
                 fixed = {
                     "split": split,
                     "pairs": [pairs[i] for i in he],
-                    "gains": {
-                        effect: np.asarray(row_scores[base]["s"]) - np.asarray(row_scores[plus]["s"])
-                        for effect, base, plus in EFFECTS
-                    },
+                    "gains": gains,
                 }
 
         if not valid_splits:
@@ -305,20 +374,48 @@ def main(argv=None):
             sample = "; ".join(f"{seed} ({why})" for seed, why in skipped[:5])
             print(f"    skipped seeds: {sample}" + ("; ..." if len(skipped) > 5 else ""))
 
-        print(f"ladder (mean across {len(valid_splits)} node-disjoint split means; NLL ↓):")
-        print("    split SD is descriptive Monte Carlo partition stability, not an SE or confidence interval")
-        print(f"    {'rung':22s} {'joint mean ± SD':>20s} {'S-marginal mean ± SD':>23s}")
-        for rung in RUNGS:
-            joint_mean, joint_sd = _mean_sd(split_scores[rung]["j"])
-            s_mean, s_sd = _mean_sd(split_scores[rung]["s"])
-            print(f"    {rung:22s} {joint_mean:+8.4f} ± {joint_sd:7.4f} {s_mean:+11.4f} ± {s_sd:7.4f}")
+        for v in variants:
+            print(f"ladder [{v}] (mean across {len(valid_splits)} node-disjoint split means; NLL ↓):")
+            print("    split SD is descriptive Monte Carlo partition stability, not an SE or confidence interval")
+            print(f"    {'rung':22s} {'joint mean ± SD':>20s} {'S-marginal mean ± SD':>23s} {'D-marginal mean ± SD':>23s}")
+            for rung in RUNGS:
+                joint_mean, joint_sd = _mean_sd(split_scores[v][rung]["j"])
+                s_mean, s_sd = _mean_sd(split_scores[v][rung]["s"])
+                d_mean, d_sd = _mean_sd(split_scores[v][rung]["d"])
+                print(
+                    f"    {rung:22s} {joint_mean:+8.4f} ± {joint_sd:7.4f} {s_mean:+11.4f} ± {s_sd:7.4f}"
+                    f" {d_mean:+11.4f} ± {d_sd:7.4f}"
+                )
         for effect, base, plus in EFFECTS:
-            gains = np.asarray(split_scores[base]["s"]) - np.asarray(split_scores[plus]["s"])
+            gains = np.asarray(split_scores["affine"][base]["s"]) - np.asarray(split_scores["affine"][plus]["s"])
             mean, sd = _mean_sd(gains)
             print(
                 f"    value of {effect:24s}: {mean:+.4f} ± {sd:.4f} split SD; "
                 f"{int((gains > 0).sum())}/{len(gains)} split seeds +"
             )
+        if "affine+bins" in variants:
+            for effect, m in DEBIAS_EFFECTS:
+                gains = np.asarray(split_scores["affine"]["ALL"][m]) - np.asarray(
+                    split_scores["affine+bins"]["ALL"][m]
+                )
+                mean, sd = _mean_sd(gains)
+                print(
+                    f"    value of {effect:31s}: {mean:+.4f} ± {sd:.4f} split SD; "
+                    f"{int((gains > 0).sum())}/{len(gains)} split seeds +"
+                )
+            taus = [st.tau for st in bias_fits]
+            print(
+                f"bias-state fits across {len(bias_fits)} MC splits: "
+                f"tau chosen {sorted(set(taus))} (mode {max(set(taus), key=taus.count)})"
+            )
+            for key, _ in BIAS_CHANNELS:
+                fits = [st.fits[key] for st in bias_fits]
+                print(
+                    f"    {key[0]}.{key[1]:1s}: rank min/max {min(f.rank for f in fits)}/{max(f.rank for f in fits)}, "
+                    f"cond max {max(f.cond for f in fits):.1f}, "
+                    f"fallbacks/split mean {np.mean([f.fallback.sum() for f in fits]):.1f} "
+                    f"(fail-closed states reverted to prior)"
+                )
 
         if a.bootstrap_resamples:
             if fixed is None:
@@ -329,11 +426,18 @@ def main(argv=None):
             )
             for line in format_split_diagnostics(fixed["split"]).splitlines():
                 print(f"    {line}")
+            if fixed_states is not None:
+                print("    bias-state diagnostics on this fitted split (per fit, fail-closed):")
+                for line in fixed_states.diagnostics_lines():
+                    print(f"      {line}")
             print(
                 f"    paired two-endpoint node-block bootstrap ({a.bootstrap_confidence:.0%} percentile CI; "
                 "conditional on this fitted split, not split-seed variability):"
             )
-            for effect_index, (effect, _, _) in enumerate(EFFECTS):
+            effect_names = [effect for effect, _, _ in EFFECTS]
+            if "affine+bins" in variants:
+                effect_names += [effect for effect, _ in DEBIAS_EFFECTS]
+            for effect_index, effect in enumerate(effect_names):
                 interval = paired_node_bootstrap_ci(
                     fixed["pairs"],
                     fixed["gains"][effect],
@@ -342,7 +446,7 @@ def main(argv=None):
                     confidence=a.bootstrap_confidence,
                 )
                 print(
-                    f"      {effect:27s}: {interval.estimate:+.4f} "
+                    f"      {effect:31s}: {interval.estimate:+.4f} "
                     f"[{interval.low:+.4f}, {interval.high:+.4f}] "
                     f"(B={interval.n_resamples}, held-node resampling uncertainty)"
                 )
