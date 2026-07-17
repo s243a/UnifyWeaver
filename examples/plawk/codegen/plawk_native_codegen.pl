@@ -227,6 +227,8 @@ plawk_program_native_driver_ir(
     \+ plawk_begin_has_binfmt(BeginClauses),
     plawk_record_descriptor(BeginClauses, FieldSeparator),
     integer(FieldSeparator),
+    % a real single-char FS: not whitespace (32), not the regex sentinel (0)
+    FieldSeparator > 0,
     FieldSeparator =\= 32,
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
@@ -8542,12 +8544,34 @@ plawk_binfmt_icmp_op(le, sle).
 plawk_binfmt_icmp_op(gt, sgt).
 plawk_binfmt_icmp_op(ge, sge).
 
+% Field separator code. A single character sets a literal byte separator (awk
+% treats a one-char FS literally, even a regex metachar like "."). A multi-char
+% FS is an ERE regex and yields the reserved sentinel 0 -- the field runtime
+% dispatches sentinel 0 to the FS-regex splitter, and the program stores the
+% pattern into @wam_fs_regex_pattern_ptr at startup (see plawk_fs_regex_pattern).
+% Default (no FS) and an empty FS fall back to 32 (whitespace).
 plawk_field_separator(BeginClauses, FieldSeparator) :-
     (   member(begin(Actions), BeginClauses),
         member(set(var('FS'), string(Value)), Actions)
-    ->  string_codes(Value, [FieldSeparator])
+    ->  (   string_codes(Value, [FieldSeparator])
+        ->  true
+        ;   string_length(Value, Len), Len >= 2
+        ->  FieldSeparator = 0
+        ;   FieldSeparator = 32
+        )
     ;   FieldSeparator = 32
     ).
+
+%% plawk_fs_regex_pattern(+BeginClauses, -Pattern)
+%
+%  The multi-char FS regex pattern (a `BEGIN { FS = "…" }` value of length >= 2),
+%  or fails when FS is a single char / unset. Multi-char FS is a POSIX ERE, so
+%  every field read splits the record on it (sentinel separator 0).
+plawk_fs_regex_pattern(BeginClauses, Pattern) :-
+    member(begin(Actions), BeginClauses),
+    member(set(var('FS'), string(Pattern)), Actions),
+    string_length(Pattern, Len),
+    Len >= 2.
 
 %% plawk_record_descriptor(+BeginClauses, -Descriptor)
 %
@@ -10137,8 +10161,20 @@ plawk_output_separator(BeginClauses, OutputSeparator) :-
 
 plawk_begin_print_string_globals(BeginClauses, GlobalIR) :-
     plawk_begin_print_fields(BeginClauses, Fields),
-    phrase(plawk_begin_print_string_global_lines(Fields, 0), Lines),
+    phrase(plawk_begin_print_string_global_lines(Fields, 0), Lines0),
+    plawk_fs_regex_global_lines(BeginClauses, RegexLines),
+    append(Lines0, RegexLines, Lines),
     atomic_list_concat(Lines, '\n', GlobalIR).
+
+%% plawk_fs_regex_global_lines(+BeginClauses, -Lines)
+%
+%  The private constant holding a multi-char FS regex pattern, or [] for a
+%  single-char / unset FS. Paired with the startup store in plawk_fs_regex_setup.
+plawk_fs_regex_global_lines(BeginClauses, [Line]) :-
+    plawk_fs_regex_pattern(BeginClauses, Pattern),
+    !,
+    llvm_emit_c_string_global(wam_fs_regex_pattern, Pattern, Line, _StringLen, _BytesLen).
+plawk_fs_regex_global_lines(_BeginClauses, []).
 
 plawk_begin_print_fields([], []).
 plawk_begin_print_fields([begin(Actions)], Fields) :-
@@ -10166,9 +10202,30 @@ plawk_begin_print_ir([begin(Actions)], OutputSeparator, IR) :-
     member(print(Fields), Actions),
     !,
     maplist(plawk_begin_print_field, Fields),
-    phrase(plawk_begin_print_lines(Fields, OutputSeparator, 0), Lines),
+    phrase(plawk_begin_print_lines(Fields, OutputSeparator, 0), PrintLines),
+    plawk_fs_regex_store_lines([begin(Actions)], StoreLines),
+    append(StoreLines, PrintLines, Lines),
     atomic_list_concat(Lines, '\n', IR).
-plawk_begin_print_ir([begin(_Actions)], _OutputSeparator, '').
+plawk_begin_print_ir([begin(Actions)], _OutputSeparator, IR) :-
+    plawk_fs_regex_store_lines([begin(Actions)], StoreLines),
+    (   StoreLines == []
+    ->  IR = ''
+    ;   atomic_list_concat(StoreLines, '\n', IR)
+    ).
+
+%% plawk_fs_regex_store_lines(+BeginClauses, -Lines)
+%
+%  The startup store that points @wam_fs_regex_pattern_ptr at the emitted FS
+%  regex pattern (so the field runtime can compile it on first use), or [] when
+%  FS is a single char / unset. Runs in the BEGIN block, before the record loop.
+plawk_fs_regex_store_lines(BeginClauses, [Line]) :-
+    plawk_fs_regex_pattern(BeginClauses, Pattern),
+    !,
+    llvm_emit_c_string_global(wam_fs_regex_pattern, Pattern, _GlobalIR, _StringLen, BytesLen),
+    format(atom(Line),
+        '  store i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.wam_fs_regex_pattern, i64 0, i64 0), i8** @wam_fs_regex_pattern_ptr',
+        [BytesLen, BytesLen]).
+plawk_fs_regex_store_lines(_BeginClauses, []).
 
 plawk_begin_print_field(string(_)).
 
