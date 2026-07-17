@@ -6349,6 +6349,10 @@ fc.zero:
 @plawk_rstart = internal global i64 0
 @plawk_rlength = internal global i64 0
 
+; Scratch for a discarded sub/gsub substitution count (when the count is not
+; captured). Defined once so every gsub call site can share it.
+@plawk_gsub_count = internal global i64 0
+
 ; awk match(str, /re/): find the first ERE match in %ptr[0..len), storing the
 ; 1-based match start into *%rstart_p (0 if none) and the match length into
 ; *%rlength_p (-1 if none), and returning the start. %pattern / %cache are a
