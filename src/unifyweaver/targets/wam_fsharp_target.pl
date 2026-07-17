@@ -259,6 +259,9 @@ ffi_owned_fact_filter_fs(DetectedKernels, PI) :-
 %   - transitive_parent_distance4 Mustache handler emits (atom,atom,int)
 %     triples via the existing three-output binder (shortest-positive
 %     parents contract).
+%   - transitive_step_parent_distance5 Mustache handler emits
+%     (atom,atom,atom,int) quadruples via the existing four-output binder
+%     (shortest-positive correlated step/parent contract).
 wam_fsharp_native_kernel_kind(category_ancestor).
 wam_fsharp_native_kernel_kind(bidirectional_ancestor).
 wam_fsharp_native_kernel_kind(transitive_closure2).
