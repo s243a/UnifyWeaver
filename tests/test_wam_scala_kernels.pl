@@ -237,6 +237,10 @@ test(step_parent_distance_kernel_emits_handler_and_stub) :-
             Dir),
         kprogram_source(Dir, 'ks.core', Src),
         assertion(sub_string(Src, _, _, _, "CallForeign(\"ksp\", 5)")),
+        assertion(sub_string(Src, _, _, _,
+                   "vs.map(_._2).collect { case atom @ Atom(_) => atom }")),
+        assertion(sub_string(Src, _, _, _, "case source @ Atom(_) =>")),
+        assertion(sub_string(Src, _, _, _, "case _ => ForeignFail")),
         assertion(sub_string(Src, _, _, _, "5 -> IntTerm")),
         assertion(sub_string(Src, _, _, _, "\"kedge/2\" ->")),
         delete_directory_and_contents(Dir)
@@ -397,6 +401,24 @@ test(transitive_step_parent_distance_parity,
     ksame(Run, 'ksp/5', [a,d,e,c,'3'], "false"),
     ksame(Run, 'ksp/5', [a,d,b,b,'3'], "false").
 
+test(transitive_step_parent_distance_rejects_non_atom_nodes,
+     [setup(kbuild_both([user:ksp/5, user:kedge/2],
+                        'gen.ksp_atom_nodes', Run)),
+      cleanup(kcleanup(Run))]) :-
+    % The generic recursive relation is term-polymorphic; the native TSPD5
+    % contract is not. Neither an integer Source/Target nor a path bridged by
+    % an integer node may reach the atom-only result stream.
+    Run = run(_ItDir, KnDir, _ItPkg, KnPkg),
+    krun(KnDir, KnPkg, 'ksp/5',
+         ['7',integer_target_child,integer_target_child,'7','1'],
+         IntegerSource),
+    assertion(IntegerSource == "false"),
+    krun(KnDir, KnPkg, 'ksp/5', [a,'7','7',a,'1'], IntegerTarget),
+    assertion(IntegerTarget == "false"),
+    krun(KnDir, KnPkg, 'ksp/5',
+         [a,integer_target_child,'7','7','2'], IntegerBridge),
+    assertion(IntegerBridge == "false").
+
 % category_ancestor: depth-bounded ancestor search. The recursive clause
 % reads max_depth/1 at runtime, so max_depth/1 is included in the predicate
 % list (otherwise the interpreter's max_depth/1 call has no dispatch target).
@@ -451,7 +473,8 @@ collect_clauses(Pred, Arity, Clauses) :-
 
 kscala_available :-
     (   getenv('SCALA_SMOKE_TESTS', "1") -> true
-    ;   catch(process_create(path(scalac), ['--version'],
+    ;   % Scala 2.11 accepts -version; --version is a hard error.
+        catch(process_create(path(scalac), ['-version'],
                   [stdout(null), stderr(null), process(Pid)]), _, fail),
         process_wait(Pid, exit(0))
     ).
@@ -500,15 +523,53 @@ kcompile(Dir) :-
     absolute_file_name(Dir, AbsDir),
     directory_file_path(AbsDir, 'classes', ClassDir),
     make_directory_path(ClassDir),
+    % Scala 2.11 lacks String#toIntOption used in generated WamRuntime.
+    forall(
+        ( directory_member(AbsDir, RelF, [extensions([scala]), recursive(true)]),
+          directory_file_path(AbsDir, RelF, F),
+          file_base_name(F, 'WamRuntime.scala')
+        ),
+        kmake_runtime_scalac_211_compatible(F)
+    ),
     findall(F,
         ( directory_member(AbsDir, RelF, [extensions([scala]), recursive(true)]),
           directory_file_path(AbsDir, RelF, F) ), Sources),
     Sources \= [],
-    process_create(path(scalac), ['-d', ClassDir | Sources],
+    (   kscala_211_toolchain
+    ->  CompilePrefix = ['-usejavacp']
+    ;   CompilePrefix = []
+    ),
+    append(CompilePrefix, ['-d', ClassDir | Sources], CompileArgs),
+    process_create(path(scalac), CompileArgs,
         [cwd(AbsDir), stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
     read_string(O, _, _), read_string(E, _, Err), close(O), close(E),
     process_wait(Pid, exit(Code)),
     ( Code =:= 0 -> true ; throw(error(scala_compile_failed(Dir, Code, Err), _)) ).
+
+kscala_211_toolchain :-
+    catch(
+        ( process_create(path(scalac), ['-version'],
+                         [stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
+          read_string(O, _, Out), read_string(E, _, Err),
+          close(O), close(E),
+          process_wait(Pid, exit(0)),
+          string_concat(Out, Err, Combined),
+          sub_string(Combined, _, _, _, "2.11")
+        ),
+        _, fail).
+
+kmake_runtime_scalac_211_compatible(RuntimePath) :-
+    read_file_to_string(RuntimePath, Source0, []),
+    atom_string(SourceAtom0, Source0),
+    Old = 'name.tail.toIntOption.getOrElse(0)',
+    New = 'scala.util.Try(name.tail.toInt).getOrElse(0)',
+    atomic_list_concat(Parts, Old, SourceAtom0),
+    atomic_list_concat(Parts, New, SourceAtom),
+    atom_string(SourceAtom, Source),
+    setup_call_cleanup(
+        open(RuntimePath, write, Stream, [encoding(utf8)]),
+        write(Stream, Source),
+        close(Stream)).
 
 krun(Dir, Package, PredKey, Args, Output) :-
     absolute_file_name(Dir, AbsDir),
@@ -516,7 +577,11 @@ krun(Dir, Package, PredKey, Args, Output) :-
     format(atom(Main), '~w.GeneratedProgram', [Package]),
     atom_string(PredKey, PredStr),
     maplist([A,S]>>atom_string(A,S), Args, ArgStrs),
-    append(['-classpath', ClassDir, Main, PredStr], ArgStrs, ProcArgs),
+    (   kscala_211_toolchain
+    ->  RunPrefix = ['-usejavacp']
+    ;   RunPrefix = []
+    ),
+    append(RunPrefix, ['-classpath', ClassDir, Main, PredStr|ArgStrs], ProcArgs),
     process_create(path(scala), ProcArgs,
         [cwd(AbsDir), stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
     read_string(O, _, Out0), read_string(E, _, _), close(O), close(E),

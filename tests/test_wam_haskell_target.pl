@@ -382,6 +382,13 @@ test_tpd4_generated_ghc_smoke :-
     ;   format('[SKIP] ~w (ghc unavailable)~n', [Test])
     ).
 
+test_tspd5_generated_ghc_smoke :-
+    Test = 'WAM-Haskell: generated TSPD5 project compiles and runs correlated diamond+cycle smoke',
+    (   ghc_available_hs
+    ->  run_tspd5_generated_ghc_smoke(Test)
+    ;   format('[SKIP] ~w (ghc unavailable)~n', [Test])
+    ).
+
 ghc_available_hs :-
     catch(
         setup_call_cleanup(
@@ -489,6 +496,110 @@ main =
   in if got == expected
        then putStrLn \"OK haskell_tpd4_diamond_cycle\"
        else error (\"unexpected TPD4 triples: \" ++ show got)
+",
+    setup_call_cleanup(
+        open(Path, write, Stream, [encoding(utf8)]),
+        write(Stream, Code),
+        close(Stream)).
+
+run_tspd5_generated_ghc_smoke(Test) :-
+    Dir = '/tmp/uw_hs_tspd5_ghc_smoke',
+    ( exists_directory(Dir) -> delete_directory_and_contents(Dir) ; true ),
+    make_directory_path(Dir),
+    setup_call_cleanup(
+        assert_tspd5_haskell_smoke_program,
+        run_tspd5_generated_ghc_smoke_(Dir, Test),
+        retract_tspd5_haskell_smoke_program).
+
+assert_tspd5_haskell_smoke_program :-
+    retract_tspd5_haskell_smoke_program,
+    assertz(user:hs_tspd_edge(a, b)),
+    assertz(user:hs_tspd_edge(a, c)),
+    assertz(user:hs_tspd_edge(b, p)),
+    assertz(user:hs_tspd_edge(c, q)),
+    assertz(user:hs_tspd_edge(p, t)),
+    assertz(user:hs_tspd_edge(q, t)),
+    % Detector requires recursive head Step == edge Mid variable.
+    assertz((user:hs_tspd(X, Y, Y, X, 1) :- hs_tspd_edge(X, Y))),
+    assertz((user:hs_tspd(X, Y, Mid, P, D) :-
+                hs_tspd_edge(X, Mid), hs_tspd(Mid, Y, _, P, D0), D is D0 + 1)).
+
+retract_tspd5_haskell_smoke_program :-
+    retractall(user:hs_tspd_edge(_, _)),
+    retractall(user:hs_tspd(_, _, _, _, _)).
+
+run_tspd5_generated_ghc_smoke_(Dir, Test) :-
+    once(wam_haskell_target:write_wam_haskell_project(
+        [user:hs_tspd/5, user:hs_tspd_edge/2],
+        [module_name('uw_hs_tspd5_ghc_smoke'), use_hashmap(false)],
+        Dir)),
+    directory_file_path(Dir, 'src/WamRuntime.hs', RuntimePath),
+    read_file_to_string(RuntimePath, RuntimeCode, []),
+    substring_occurrence_count_hs(
+        RuntimeCode,
+        "nativeKernel_transitive_step_parent_distance edges source =",
+        HandlerCount),
+    directory_file_path(Dir, 'Smoke.hs', SmokePath),
+    write_tspd5_haskell_smoke(SmokePath),
+    directory_file_path(Dir, 'src', SourceDir),
+    atom_concat('-i', SourceDir, IncludeArg),
+    directory_file_path(Dir, 'tspd5-smoke', ExePath),
+    run_process_capture(
+        ghc,
+        ['--make', IncludeArg, SmokePath, '-o', ExePath,
+         '-main-is', 'Main', '-fforce-recomp'],
+        Dir,
+        CompileStatus,
+        CompileOut),
+    (   HandlerCount =:= 1,
+        CompileStatus == exit(0)
+    ->  run_process_capture(ExePath, [], Dir, RunStatus, RunOut),
+        (   RunStatus == exit(0),
+            sub_string(RunOut, _, _, _, "OK haskell_tspd5_correlated")
+        ->  pass(Test)
+        ;   fail_test(Test, RunOut)
+        )
+    ;   format(string(Reason),
+               'handler_count=~w compile_status=~w~n~s',
+               [HandlerCount, CompileStatus, CompileOut]),
+        fail_test(Test, Reason)
+    ).
+
+write_tspd5_haskell_smoke(Path) :-
+    Code =
+"module Main where
+
+import Data.List (sort)
+import qualified Data.IntMap.Strict as IM
+import WamRuntime (nativeKernel_transitive_step_parent_distance)
+
+main :: IO ()
+main =
+  let -- a=1 b=2 c=3 p=4 q=5 t=6
+      graph = IM.fromList
+        [ (1, [2, 3])
+        , (2, [4])
+        , (3, [5])
+        , (4, [6])
+        , (5, [6])
+        ]
+      edges node = IM.findWithDefault [] node graph
+      got = sort (nativeKernel_transitive_step_parent_distance edges 1)
+      expected = sort
+        [ (2, 2, 1, 1)
+        , (3, 3, 1, 1)
+        , (4, 2, 2, 2)
+        , (5, 3, 3, 2)
+        , (6, 2, 4, 3)
+        , (6, 3, 5, 3)
+        ]
+      tQuads = [ q | q@(6,_,_,_) <- got ]
+  in if got == expected
+        && tQuads == [(6, 2, 4, 3), (6, 3, 5, 3)]
+        && not (elem (6, 2, 5, 3) got)
+        && not (elem (6, 3, 4, 3) got)
+       then putStrLn \"OK haskell_tspd5_correlated\"
+       else error (\"unexpected TSPD5 quads: \" ++ show got)
 ",
     setup_call_cleanup(
         open(Path, write, Stream, [encoding(utf8)]),
@@ -2793,6 +2904,7 @@ run_tests :-
     test_multi_kernel_execute_foreign,
     test_same_kind_kernel_body_deduplicated,
     test_tpd4_generated_ghc_smoke,
+    test_tspd5_generated_ghc_smoke,
     test_call_foreign_in_types,
     test_call_foreign_step_case,
     test_call_foreign_resolve,

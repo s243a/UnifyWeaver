@@ -404,7 +404,9 @@ test_transitive_step_parent_distance_kernel_generation :-
         atom_string(RuntimeCode, S),
         sub_string(S, _, _, _, 'void wam_register_transitive_step_parent_distance_kernel'),
         sub_string(S, _, _, _, 'bool wam_transitive_step_parent_distance_handler'),
-        sub_string(S, _, _, _, 'wam_transitive_step_parent_distance_bfs')
+        sub_string(S, _, _, _, 'wam_collect_transitive_step_parent_distance'),
+        sub_string(S, _, _, _, 'wam_register_relation_edge'),
+        sub_string(S, _, _, _, 'wam_bind_foreign_quad_stream')
     ->  pass(Test)
     ;   fail_test(Test, 'transitive_step_parent_distance5 native kernel helpers missing')
     ).
@@ -798,7 +800,7 @@ test_transitive_step_parent_distance_detector_setup_generation :-
         Detected = ['tc_step_parent_distance/5'-_Kernel],
         generate_setup_detected_kernels_c(Detected, SetupCode),
         sub_atom(SetupCode, _, _, _, 'setup_detected_wam_c_kernels'),
-        sub_atom(SetupCode, _, _, _, 'wam_register_transitive_step_parent_distance_kernel(state, "tc_step_parent_distance/5")')
+        sub_atom(SetupCode, _, _, _, 'wam_register_transitive_step_parent_distance_kernel(state, "tc_step_parent_distance/5", "tspd_parent")')
     ->  cleanup_wam_c_detector_transitive_step_parent_distance,
         pass(Test)
     ;   cleanup_wam_c_detector_transitive_step_parent_distance,
@@ -4665,10 +4667,10 @@ int main(void) {
     WamState state;
     wam_state_init(&state);
     setup_tc_step_parent_distance_5(&state);
-    wam_register_transitive_edge(&state, "tom", "bob");
-    wam_register_transitive_edge(&state, "bob", "ann");
-    wam_register_transitive_edge(&state, "bob", "pat");
-    wam_register_transitive_step_parent_distance_kernel(&state, "tc_step_parent_distance/5");
+    wam_register_relation_edge(&state, "tspd_parent", "tom", "bob");
+    wam_register_relation_edge(&state, "tspd_parent", "bob", "ann");
+    wam_register_relation_edge(&state, "tspd_parent", "bob", "pat");
+    wam_register_transitive_step_parent_distance_kernel(&state, "tc_step_parent_distance/5", "tspd_parent");
 
     WamValue recursive_args[5] = {
         val_atom("tom"),
@@ -5068,8 +5070,8 @@ int main(void) {
     setup_tc_step_parent_distance_5(&state);
     setup_detected_wam_c_kernels(&state);
 
-    wam_register_transitive_edge(&state, "tom", "bob");
-    wam_register_transitive_edge(&state, "bob", "ann");
+    wam_register_relation_edge(&state, "tspd_parent", "tom", "bob");
+    wam_register_relation_edge(&state, "tspd_parent", "bob", "ann");
 
     WamValue args[5] = {
         val_atom("tom"),

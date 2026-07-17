@@ -4053,43 +4053,58 @@ compile_collect_native_transitive_parent_distance_to_rust(Code) :-
     }'.
 
 compile_collect_native_transitive_step_parent_distance_to_rust(Code) :-
-    Code = '    /// Legacy TSPD5 support only: reproduce the pre-TPD4 all-path DFS
-    /// and its emission order without calling the shortest-positive TPD4
-    /// collector. WARNING: this historical walker has no cycle detection and
-    /// must only be used with the same acyclic inputs TSPD5 supported before
-    /// the dedicated TSPD5 contract/parity task defines cycle semantics.
-    fn collect_legacy_transitive_parent_distance_all_paths(
-        &self,
-        start: &str,
-        edge_pred: &str,
-        out: &mut Vec<(String, String, i64)>,
-    ) {
-        let mut stack: Vec<(String, i64)> = vec![(start.to_string(), 0)];
-        while let Some((node, depth)) = stack.pop() {
-            if let Some(next_nodes) = self.indexed_atom_fact2.get(edge_pred).and_then(|table| table.get(&node)) {
-                for next in next_nodes.iter().rev() {
-                    let next_depth = depth + 1;
-                    out.push((next.clone(), node.clone(), next_depth));
-                    stack.push((next.clone(), next_depth));
-                }
-            }
-        }
-    }
-
+    Code = '    /// Shortest-positive correlated step/parent
+    /// (docs/design/WAM_TRANSITIVE_STEP_PARENT_DISTANCE5_CONTRACT.md).
+    /// Level-synchronous BFS stores correlated (Step, Parent) pairs per
+    /// Target — never an independent Step×Parent cross-product.
     pub fn collect_native_transitive_step_parent_distance_results(
         &self,
         start: &str,
         edge_pred: &str,
         out: &mut Vec<(String, String, String, i64)>,
     ) {
-        if let Some(next_nodes) = self.indexed_atom_fact2.get(edge_pred).and_then(|table| table.get(start)) {
+        use std::collections::{HashMap, HashSet, VecDeque};
+        let Some(table) = self.indexed_atom_fact2.get(edge_pred) else { return; };
+        let mut dist: HashMap<String, i64> = HashMap::new();
+        let mut pairs: HashMap<String, HashSet<(String, String)>> = HashMap::new();
+        let mut queue: VecDeque<(String, i64)> = VecDeque::new();
+        queue.push_back((start.to_string(), 0));
+        while let Some((node, d)) = queue.pop_front() {
+            let nd = d + 1;
+            let Some(next_nodes) = table.get(&node) else { continue; };
             for next in next_nodes {
-                out.push((next.clone(), next.clone(), start.to_string(), 1));
-                let mut nested: Vec<(String, String, i64)> = Vec::new();
-                self.collect_legacy_transitive_parent_distance_all_paths(next, edge_pred, &mut nested);
-                for (target, parent, dist) in nested {
-                    out.push((target, next.clone(), parent, dist + 1));
+                let cands: Vec<(String, String)> = if node == start {
+                    vec![(next.clone(), start.to_string())]
+                } else {
+                    pairs.get(&node).into_iter().flatten()
+                        .map(|(step, _)| (step.clone(), node.clone()))
+                        .collect::<HashSet<_>>()
+                        .into_iter()
+                        .collect()
+                };
+                match dist.get(next).copied() {
+                    None => {
+                        dist.insert(next.clone(), nd);
+                        pairs.insert(next.clone(), cands.into_iter().collect());
+                        queue.push_back((next.clone(), nd));
+                    }
+                    Some(d0) if d0 == nd => {
+                        let set = pairs.entry(next.clone()).or_default();
+                        for c in cands { set.insert(c); }
+                    }
+                    _ => {}
                 }
+            }
+        }
+        let mut targets: Vec<String> = dist.keys().cloned().collect();
+        targets.sort();
+        for target in targets {
+            let d = *dist.get(&target).unwrap();
+            let mut pair_list: Vec<(String, String)> =
+                pairs.get(&target).into_iter().flatten().cloned().collect();
+            pair_list.sort();
+            for (step, parent) in pair_list {
+                out.push((target.clone(), step, parent, d));
             }
         }
     }'.
