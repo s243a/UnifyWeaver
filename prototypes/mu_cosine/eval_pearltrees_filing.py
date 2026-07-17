@@ -26,7 +26,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from eval_filing import load_filing, metrics, rank_all
+from eval_filing import load_filing, metrics, score_mu
 from fine_tune_pearltrees_filing import load_with_lineage_ops
 from mu_attention import CORPORA, JUDGES, NODETYPE, OPS, Tokenizer, build_e5_tables
 
@@ -51,23 +51,37 @@ def score_cond(model, tok, q_keys, f_keys, op, judge, dev="cpu", batch=512):
     return torch.tensor([out[r * F:(r + 1) * F] for r in range(len(q_keys))])
 
 
-def ranks_from(M, truepos):
-    return [1 + int(((M[r] > M[r][truepos[r]]) |
-                     ((M[r] == M[r][truepos[r]]) & (torch.arange(M.shape[1]) < truepos[r]))).sum().item())
-            for r in range(M.shape[0])]
+def ranks_from(M, truepos_sets):
+    """1-based rank of the BEST-ranked acceptable folder per query.
+
+    `truepos_sets[r]` is the set of column indices counted correct — all folders sharing the true
+    folder's title (duplicate titles are indistinguishable to a title-keyed model; breaking their
+    ties by candidate order would misgrade ~10% of queries — external review)."""
+    out = []
+    arange = torch.arange(M.shape[1])
+    for r in range(M.shape[0]):
+        best = None
+        for tp in truepos_sets[r]:
+            rank = 1 + int(((M[r] > M[r][tp]) | ((M[r] == M[r][tp]) & (arange < tp))).sum().item())
+            best = rank if best is None else min(best, rank)
+        out.append(best)
+    return out
 
 
-def escalation_curve(M, truepos, thresholds=(0.0, 0.02, 0.05, 0.10, 0.15, 0.20, 0.30)):
-    """Deployment policy: escalate when top1−top2 margin < t. Returns rows (t, routed_frac, kept_recall@1)."""
+def escalation_curve(M, truepos_sets, thresholds=(0.0, 0.02, 0.05, 0.10, 0.15, 0.20, 0.30)):
+    """Escalate when top1−top2 margin < t → rows (t, routed_frac, kept_n, kept_recall@1).
+
+    DESCRIPTIVE margin diagnostic only: full policy evaluation (judge rescue accuracy, AURC,
+    cluster bootstrap, cost curve) needs judge labels on the routed queries — future spend."""
     top2 = M.topk(min(2, M.shape[1]), dim=1).values
     margin = (top2[:, 0] - top2[:, 1]) if top2.shape[1] > 1 else torch.zeros(M.shape[0])
-    ranks = torch.tensor(ranks_from(M, truepos), dtype=torch.float32)
+    ranks = torch.tensor(ranks_from(M, truepos_sets), dtype=torch.float32)
     rows = []
     for t in thresholds:
         kept = margin >= t
         routed = 1.0 - kept.float().mean().item()
         kept_r1 = float((ranks[kept] <= 1).float().mean().item()) if kept.any() else float("nan")
-        rows.append((t, routed, kept_r1))
+        rows.append((t, routed, int(kept.sum().item()), kept_r1))
     return rows
 
 
@@ -96,18 +110,27 @@ def main(argv=None):
     torch.set_num_threads(4)
 
     queries, cand = load_filing(a.trees, a.min_bm)
+    import hashlib
     import random
+    queries = sorted(queries)          # glob() order is fs-dependent; sort BEFORE seeded sampling
     if len(queries) > a.max_queries:
         queries = random.Random(a.seed).sample(queries, a.max_queries)
     f_ids = sorted(cand)
     f_titles = [cand[fid] for fid in f_ids]
     q_titles = [q for q, _ in queries]
-    truepos = [f_ids.index(fid) for _, fid in queries]
+    # duplicate folder titles are indistinguishable to a title-keyed model → equivalence sets
+    by_title = {}
+    for j, t in enumerate(f_titles):
+        by_title.setdefault(t, []).append(j)
+    truepos = [sorted(by_title[cand[fid]]) for _, fid in queries]
+    n_alias = sum(1 for tp in truepos if len(tp) > 1)
+    qman = hashlib.sha256("\n".join(f"{q}\t{fid}" for q, fid in queries).encode()).hexdigest()
     print(f"filing eval: {len(queries)} bookmark queries over {len(f_ids)} candidate folders "
-          f"(min_bm {a.min_bm}, seed {a.seed})")
+          f"(min_bm {a.min_bm}, seed {a.seed}); {n_alias} queries hit duplicate-title folder sets; "
+          f"query manifest sha256 {qman[:16]}")
 
     train_nodes = campaign_train_nodes(a.split_seed)
-    held_q = [i for i in range(len(queries)) if f_titles[truepos[i]] not in train_nodes]
+    held_q = [i for i in range(len(queries)) if f_titles[truepos[i][0]] not in train_nodes]
     print(f"held-folder subset (true folder unseen in fine-tune train nodes): {len(held_q)}/{len(queries)}")
 
     names = sorted(set(q_titles) | set(f_titles))
@@ -119,8 +142,28 @@ def main(argv=None):
         torch.manual_seed(0)   # deterministic fresh LINEAGE readout rows when the base ckpt lacks them
         model, _ = load_with_lineage_ops(ckpt, dev=dev)
         model.eval()
-        # stock agnostic rankers (prior art; anchor loss should keep base≈tuned here)
-        rank_of, order = rank_all(model, tok, qtbl, ptbl, idx, q_titles, f_titles, truepos, dev)
+        # stock agnostic matrices (rank_all's definitions, graded here with equivalence sets so
+        # duplicate-title folders never lose to candidate-order tie-breaking)
+        n_ops = model.op_emb.weight.shape[0]
+        ow_of = lambda op: torch.zeros(1, n_ops).index_fill_(1, torch.tensor([OPS[op]]), 1.0)
+        sm = lambda ow: torch.tensor(score_mu(model, tok, idx, q_titles, f_titles, ow, dev))
+        A_elem, A_hier, A_sym = sm(ow_of("ELEM")), sm(ow_of("HIER")), sm(ow_of("SYM"))
+        A_super = sm(torch.full((1, n_ops), 1.0 / n_ops))
+        A_max = torch.maximum(torch.maximum(A_elem, A_hier), A_sym)
+        C = (qtbl[[idx[k] for k in q_titles]] @ ptbl[[idx[k] for k in f_titles]].T).cpu()
+
+        def nzrow(M):
+            lo = M.min(dim=1, keepdim=True).values
+            hi = M.max(dim=1, keepdim=True).values
+            return (M - lo) / (hi - lo + 1e-9)
+
+        Cz, Sz = nzrow(C), nzrow(A_max)
+        A_blend = 0.1 * Cz + 0.9 * Sz
+        top2 = A_max.topk(min(2, A_max.shape[1]), dim=1).values
+        marg = (top2[:, 0] - top2[:, 1]).clamp(min=0)
+        mq = marg.argsort().argsort().float() / max(1, len(marg) - 1)
+        alpha = (0.3 + 0.6 * mq).unsqueeze(1)
+        A_gate = (1 - alpha) * Cz + alpha * Sz
         # conditioned rankers — where the fine-tune is allowed to show up
         S_elem = score_cond(model, tok, q_titles, f_titles, "ELEM", "kalman-fused", dev)
         S_hier = score_cond(model, tok, q_titles, f_titles, "HIER", "kalman-fused", dev)
@@ -128,11 +171,13 @@ def main(argv=None):
         S_lin = score_cond(model, tok, q_titles, f_titles, "LINEAGE", "graph", dev)
         S_maxc = torch.maximum(torch.maximum(S_elem, S_hier), S_sym)
         S_maxl = torch.maximum(S_maxc, S_lin)
-        for nm, M in (("mu-elem-cond", S_elem), ("mu-lineage", S_lin),
-                      ("mu-max-cond", S_maxc), ("mu-max+lineage", S_maxl)):
-            rank_of[nm] = ranks_from(M, truepos)
-        order = tuple(order) + ("mu-elem-cond", "mu-lineage", "mu-max-cond", "mu-max+lineage")
-        results[label] = dict(rank_of=rank_of, order=order, S_maxl=S_maxl)
+        matrices = (("e5-cos", C), ("mu-super", A_super), ("mu-elem", A_elem), ("mu-max", A_max),
+                    ("e5+mu-max", A_blend), ("margin-gate", A_gate),
+                    ("mu-elem-cond", S_elem), ("mu-lineage", S_lin),
+                    ("mu-max-cond", S_maxc), ("mu-max+lineage", S_maxl))
+        rank_of = {nm: ranks_from(M, truepos) for nm, M in matrices}
+        order = tuple(nm for nm, _ in matrices)
+        results[label] = dict(rank_of=rank_of, order=order, S_maxc=S_maxc, C=C)
 
         print(f"\n=== {label}: {os.path.basename(ckpt)} ===")
         print(f"  {'ranker':16} {'recall@1':>9} {'recall@5':>9} {'recall@10':>10} {'MRR':>7} {'med.rank':>9}")
@@ -141,22 +186,30 @@ def main(argv=None):
             print(f"  {nm:16} {m['recall@1']:9.3f} {m['recall@5']:9.3f} {m['recall@10']:10.3f} "
                   f"{m['MRR']:7.3f} {m['median_rank']:9d}")
         if held_q:
-            print(f"  held-folder subset (n={len(held_q)}):")
+            print(f"  transductive held-folder subset (n={len(held_q)}; endpoint-only definition — "
+                  "some true folders still appear as ancestor CONTEXT in training):")
             for nm in ("mu-max-cond", "mu-max+lineage", "e5-cos"):
                 m = metrics([rank_of[nm][i] for i in held_q])
                 print(f"    {nm:16} recall@1 {m['recall@1']:.3f}  recall@5 {m['recall@5']:.3f}  "
                       f"MRR {m['MRR']:.3f}")
 
-    print("\nescalation curve (mu-max+lineage margin; routed = sent to the judge):")
-    print(f"  {'threshold':>9} | {'base routed':>11} {'base kept R@1':>13} | {'tuned routed':>12} {'tuned kept R@1':>14}")
-    curve_b = escalation_curve(results["base"]["S_maxl"], truepos)
-    curve_t = escalation_curve(results["tuned"]["S_maxl"], truepos)
-    for (t, rb, kb), (_, rt, kt) in zip(curve_b, curve_t):
-        print(f"  {t:9.2f} | {rb:11.3f} {kb:13.3f} | {rt:12.3f} {kt:14.3f}")
+    # escalation margins on the DEPLOYED ranker (e5) and the like-for-like conditioned head —
+    # descriptive only; judge-rescue/AURC evaluation needs judge labels on routed queries
+    for head, key in (("e5-cos (deployed ranker)", "C"), ("mu-max-cond", "S_maxc")):
+        print(f"\nescalation margins [{head}] (routed = margin < t; kept_n in parens):")
+        print(f"  {'threshold':>9} | {'base routed':>11} {'base kept R@1':>16} | "
+              f"{'tuned routed':>12} {'tuned kept R@1':>17}")
+        curve_b = escalation_curve(results["base"][key], truepos)
+        curve_t = escalation_curve(results["tuned"][key], truepos)
+        for (t, rb, nb, kb), (_, rt, nt, kt) in zip(curve_b, curve_t):
+            print(f"  {t:9.2f} | {rb:11.3f} {kb:10.3f} ({nb:3d}) | {rt:12.3f} {kt:11.3f} ({nt:3d})")
 
-    dmrr = metrics(results["tuned"]["rank_of"]["mu-max+lineage"])["MRR"] - \
-        metrics(results["base"]["rank_of"]["mu-max+lineage"])["MRR"]
-    print(f"\npaired MRR delta (tuned - base, mu-max+lineage): {dmrr:+.4f}")
+    for nm in ("mu-max-cond", "mu-max+lineage"):
+        d = metrics(results["tuned"]["rank_of"][nm])["MRR"] - metrics(results["base"]["rank_of"][nm])["MRR"]
+        print(f"paired MRR delta (tuned - base, {nm}): {d:+.4f}")
+    print("NOTE: the base LINEAGE readout is a fresh random row (the base ckpt predates the op) — "
+          "mu-max+lineage deltas mostly measure training-a-random-head; mu-max-cond is the "
+          "like-for-like conditioned comparison.")
 
 
 if __name__ == "__main__":

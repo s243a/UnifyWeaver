@@ -55,6 +55,31 @@ PATHS_JSONL = os.path.join(ROOT, "..", "..", ".local", "data", "api_tree_paths_v
 TITLES_TSV = os.path.join(ROOT, "..", "..", ".local", "data", "pearltrees_api", "assembled_titles.tsv")
 
 
+def load_scored_strict(path, expect_judge):
+    """Fail-closed scored-TSV load: unique keys, judge column verified on every row."""
+    keys, out = set(), {}
+    with open(path, encoding="utf-8") as f:
+        header = f.readline().lstrip("#").strip().split("\t")
+        col = {c: i for i, c in enumerate(header)}
+        for want in ("node", "root", "judge"):
+            if want not in col:
+                raise SystemExit(f"{path}: missing column {want!r}")
+        from eval_luna_transfer import DIRR, SYMM
+        for ln in f:
+            c = ln.rstrip("\n").split("\t")
+            if len(c) < len(header):
+                raise SystemExit(f"{path}: short row (partial scoring failure?): {ln[:80]!r}")
+            if c[col["judge"]] != expect_judge:
+                raise SystemExit(f"{path}: judge {c[col['judge']]!r} != expected {expect_judge!r}")
+            key = (c[col["node"]], c[col["root"]])
+            if key in keys:
+                raise SystemExit(f"{path}: duplicate score key {key} — refusing to fail open")
+            keys.add(key)
+            out[key] = (max(float(c[col[f"mu[{r}]"]]) for r in DIRR),
+                        max(float(c[col[f"mu[{r}]"]]) for r in SYMM))
+    return out
+
+
 def load_pearltrees_campaign(pairs_tsv=PAIRS_TSV, luna_tsv=LUNA_TSV, tsv_55=TSV_55,
                              e5_cache=E5_CACHE, paths_jsonl=PATHS_JSONL, titles_tsv=TITLES_TSV,
                              require_55=True):
@@ -85,15 +110,17 @@ def load_pearltrees_campaign(pairs_tsv=PAIRS_TSV, luna_tsv=LUNA_TSV, tsv_55=TSV_
                              b_id=c[col["b_id"]], b_title=c[col["b_title"]],
                              hop=int(c[col["hop"]]), tag=c[col["tag"]]))
 
-    lp, lD, lS = load_luna(luna_tsv)
-    luna_by = {p: (lD[i], lS[i]) for i, p in enumerate(lp)}
+    luna_by = load_scored_strict(luna_tsv, "gpt-5.6-luna")
     y55_by = {}
     if tsv_55 and os.path.exists(tsv_55):
-        p5, d5, s5 = load_luna(tsv_55)          # same mu[] schema, judge column differs
-        y55_by = {p: (d5[i], s5[i]) for i, p in enumerate(p5)}
+        y55_by = load_scored_strict(tsv_55, "gpt-5.5-low")
     elif require_55:
         raise SystemExit(f"missing 5.5 overlap labels: {tsv_55}")
 
+    missing_luna = [r for r in rows if (r["a_title"], r["b_title"]) not in luna_by]
+    if missing_luna and require_55:
+        raise SystemExit(f"{len(missing_luna)} campaign rows missing luna labels "
+                         f"(e.g. {missing_luna[0]['pair_id']}) — refusing to fail open")
     kept = [r for r in rows if (r["a_title"], r["b_title"]) in luna_by]
     pairs = [(r["a_title"], r["b_title"]) for r in kept]
     tags = [r["tag"] for r in kept]
@@ -101,13 +128,10 @@ def load_pearltrees_campaign(pairs_tsv=PAIRS_TSV, luna_tsv=LUNA_TSV, tsv_55=TSV_
 
     cache = torch.load(e5_cache, weights_only=False)
     idx = {name: i for i, name in enumerate(cache["names"])}
-    ok = [i for i, (x, y) in enumerate(pairs) if x in idx and y in idx]
-    if len(ok) < len(pairs):
-        print(f"WARNING: {len(pairs) - len(ok)} rows dropped (endpoint missing from e5 cache)")
-    kept = [kept[i] for i in ok]
-    pairs = [pairs[i] for i in ok]
-    tags = [tags[i] for i in ok]
-    id_pairs = [id_pairs[i] for i in ok]
+    missing_e5 = [pairs[i] for i, (x, y) in enumerate(pairs) if x not in idx or y not in idx]
+    if missing_e5:
+        raise SystemExit(f"{len(missing_e5)} rows missing from e5 cache (e.g. {missing_e5[0]}) — "
+                         "rebuild prep_pearltrees_e5.py output; refusing to fail open")
 
     # title-keyed parent/degree maps for the Tokenizer's lineage sampling (id graph → titles)
     parents_title, deg_title = {}, {}
@@ -136,6 +160,17 @@ def load_pearltrees_campaign(pairs_tsv=PAIRS_TSV, luna_tsv=LUNA_TSV, tsv_55=TSV_
                 in_graph=in_graph, cache=cache, title_of=title_of)
 
 
+def group_of(tag):
+    return "principal" if tag.startswith("principal") else tag
+
+
+def campaign_split(pairs, tags, seed=0):
+    """The ONE node-disjoint campaign split shared by the target factory, trainer, and eval."""
+    from node_disjoint_eval import node_disjoint_pair_split
+
+    return node_disjoint_pair_split(pairs, seed, strata=[group_of(t) for t in tags])
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--ckpt", default=os.path.join(ROOT, "model_prod_namecond.pt"))
@@ -144,6 +179,15 @@ def main(argv=None):
                     help="fraction of ALL bulk rows routed to 5.5 by |graph_D - prior_D| innovation")
     ap.add_argument("--split-seed", type=int, default=0,
                     help="node-disjoint overlap split seed for the descriptive ladder + shadow fit")
+    ap.add_argument(
+        "--fit-overlap",
+        choices=["full", "train-only"],
+        default="full",
+        help=("full = production target factory (all overlap rows fit the blocks); train-only = "
+              "LEAKAGE-FREE eval targets — calibrations/covariance fit only on overlap rows on the "
+              "TRAIN side of the shared campaign split, so held overlap labels never touch the "
+              "factory (external review finding 1); output files get an _eval suffix"),
+    )
     ap.add_argument("--out-prefix", default="/tmp/mu_data/pt")
     a = ap.parse_args(argv)
 
@@ -151,6 +195,14 @@ def main(argv=None):
     pairs, tags, luna, d = ds["pairs"], ds["tags"], ds["luna"], ds["d"]
     ov, y55 = ds["overlap_idx"], ds["y55"]
     print(f"pearltrees campaign: {len(pairs)} luna-scored rows; overlap with 5.5: {len(ov)}")
+    if a.fit_overlap == "train-only":
+        split_c = campaign_split(pairs, tags, a.split_seed)
+        train_side = set(split_c.train.tolist())
+        keep_mask = np.array([i in train_side for i in ov])
+        ov, y55 = ov[keep_mask], y55[keep_mask]
+        a.out_prefix += "_eval" if not a.out_prefix.endswith("_eval") else ""
+        print(f"train-only target factory: {len(ov)} overlap rows on the campaign-train side "
+              f"(held overlap labels excluded from every fit)")
 
     ref, _ = load_expanded(a.ckpt, dev="cpu")
     ref.eval()

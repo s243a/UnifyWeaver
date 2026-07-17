@@ -9,12 +9,15 @@ to the user's actual filing decisions (retrieval eval) — never "semantic accur
 **Summary.** The labeling pipeline deployed cleanly (799 dual-strata pairs, 0 scoring failures,
 every fusion rung pays); luna's D bias FLIPS SIGN on Pearltrees vs enwiki (§1 — the per-corpus
 overlap is not optional); the shadow bias-states show larger bin structure than enwiki and win
-their descriptive ladder (§3 — gate-protocol rerun recommended); the fine-tune's fused head beats
-the raw-luna channel within-stratum and its LINEAGE head learns lineage order (§4). On the filing
-metric itself the result is an HONEST NULL vs the deployment baseline: e5-cosine still ranks
-folders best (MRR 0.294); the fine-tune improves the model's own μ rankers (paired +0.041 MRR)
-and makes escalation margins informative, but μ does not yet beat e5 at ranking (§5). Deployment
-recipe today: e5 ranks, the fused model routes conflicts and manufactures labels.
+their descriptive ladder (§3 — gate-protocol rerun recommended); on the LEAKAGE-FREE readout the
+fused head still beats the raw-luna channel within-stratum on S and the LINEAGE head learns
+lineage order (§4). On the filing metric the result is an HONEST NULL, strengthened by the
+external-review corrections: e5-cosine ranks folders best (MRR 0.294), the like-for-like
+conditioned ranker does NOT improve under the corrected fine-tune (mu-max-cond −0.037 paired MRR;
+the earlier +0.041 claim is retracted as a random-baseline artifact), and only e5's own margins
+are a usable escalation signal (§5). Deployment recipe today: e5 ranks with margin-routed
+escalation; the fused model's value is the label factory and conflict router, not the ranking
+head.
 
 ## 0. Corpus, coverage, and provenance
 
@@ -128,23 +131,33 @@ The base checkpoint predates the LINEAGE operator (4-row op tables): `load_with_
 op_emb/readout/op_name to len(OPS)=6 — old rows copied, new rows fresh (the train_lineage
 precedent), LINEAGE's op-name card as the name prior with zero residual.
 
-Run (seed 0): 1,839 train rows from 279 node-disjoint train pairs; loss 0.149 → 0.017 in 800
-steps; 1.64M trainable of 4.02M params. Held-overlap readout (49 held 5.5-labeled rows;
-pooled / between / WITHIN-stratum corr vs the 5.5 labels):
+Two external-review corrections shape this section (both rerun before reporting): (a) the anchor
+reference is a deepcopy of the exact initial model (an independently-grown ref carried different
+random LINEAGE rows — the anchor pulled toward a different model); (b) the shared name-transform W
+matrices are FROZEN (they map every identity's card; training them on pearltrees rows drifts
+unrelated judges/corpora/ops) — only per-identity residual rows train (1.20M trainable params).
+
+**Leakage-free held readout.** The first-cut evaluation let the full 300-row overlap fit the
+target factory before the split; the corrected protocol splits FIRST and fits the entire factory
+(calibrations + covariance + fused targets) on the 108 campaign-train overlap rows only
+(`run_pearltrees_fusion.py --fit-overlap train-only`), so the 49 held overlap labels never touch
+anything upstream of evaluation. Result (pooled / between / WITHIN vs 5.5):
 
 | head | D within | S within |
 |---|---|---|
-| kalman-fused (distilled) | +0.061 | **+0.187** |
-| luna channel (raw cheap labels) | +0.075 | +0.096 |
-| 5.5 channel (expensive labels) | +0.020 | +0.178 |
+| kalman-fused (distilled) | +0.197 | **+0.339** |
+| luna channel (raw cheap labels) | +0.211 | +0.302 |
+| 5.5 channel (expensive labels) | **+0.291** | **+0.462** |
 
-The fused head's within-stratum S beats the raw-luna channel and edges the direct-5.5 head —
-fuse-then-distill transfers to Pearltrees (n=49, one split; direction consistent with the enwiki
-fused-head result). D within-stratum is small for every head — Pearltrees principal rows are
-near-saturated in D (the up-walk is deterministic), so within-stratum D variance is thin.
-Held LINEAGE (38 principal rows): rank-corr **+0.608**, MAE 0.396 — the single-path head learns
-the ORDER of lineage decay but is level-miscalibrated after one fresh readout row × 800 steps
-(rank is what filing consumes; the MSE level is a follow-up).
+The honest ordering: the direct-5.5 head is best on both channels (as it should be — it is
+supervised by the target judge); the fused head still beats the RAW-LUNA channel on within-stratum
+S (+0.339 vs +0.302, n=49, one split) — the economics claim (fusion upgrades cheap labels) holds
+in direction, the stronger first-cut claim (fused ≈ 5.5 head) was partly leakage and is retracted.
+Held LINEAGE (38 principal rows): rank-corr **+0.655**, MAE 0.329 — learns lineage ORDER,
+level-miscalibrated (rank is what filing consumes).
+
+The production checkpoint retrains with the full-overlap factory (all 300 rows — the deployment
+configuration; its held-overlap table is no longer quoted since those labels entered its targets).
 
 Checkpoint: `model_pt_filing.pt` (gitignored;
 SHA-256 `c0a2f731876cf81a668d2e93f1f71337fced2528e3c7a40e946022e759378ac9`).
@@ -158,48 +171,64 @@ CONDITIONED rankers (corpus=pearltrees, judge=kalman-fused for ELEM/HIER/SYM; ju
 LINEAGE; nodetypes page→pearltrees_collection). Held-folder subset = queries whose true folder
 never appeared in the fine-tune's train node set.
 
-400 bookmark queries over 335 candidate folders (min_bm 3, seed 7); held-folder subset 277/400.
+400 bookmark queries over 335 candidate folders (min_bm 3, seed 7; sorted-query manifest sha256
+a1735e5b…; 47 queries hit duplicate-title folder sets, graded via title-equivalence best-alias
+ranks — a title-keyed model cannot distinguish aliases).
 
-**Headline (honest null vs the deployment baseline):** e5-cosine remains the best filing ranker
-(recall@1 0.198, MRR 0.294) — unchanged by construction between checkpoints. The fine-tune
-improves the model's OWN conditioned/LINEAGE heads (paired MRR delta +0.041 on mu-max+lineage;
-mu-lineage 0.021 → 0.050) but every μ ranker stays well below e5-cos on this OOD retrieval task.
-Filing v1 deployment should ship e5-cos (or the margin-gate e5⊕μ blend) as the ranker, with the
-fused model as the label factory and escalation policy — not (yet) as the ranker itself.
+**Headline (honest null, strengthened by the review corrections):** e5-cosine remains the best
+filing ranker (recall@1 0.205, MRR 0.294 — unchanged between checkpoints by construction). After
+fixing the anchor-reference and shared-W bugs and grading with equivalence sets, the fine-tune
+does NOT improve the like-for-like conditioned ranker — mu-max-cond MRR moves 0.112 → 0.075
+(paired −0.037) — and the stock agnostic rankers drift slightly down (margin-gate 0.206 → 0.191).
+Only the LINEAGE head improves (MRR 0.029 → 0.044), and per the review that mostly measures
+training a previously-random readout row. The earlier "+0.041" claim is RETRACTED as an artifact
+of comparing against a random LINEAGE baseline. The campaign's value on Pearltrees is the label
+factory (§2–§4), not — on this evidence — the ranking head.
 
-| ranker (MRR) | base | tuned |
+| ranker (MRR, equivalence-graded) | base | tuned |
 |---|---|---|
 | e5-cos | **0.294** | **0.294** |
-| margin-gate (e5⊕μ-max) | 0.204 | 0.187 |
-| mu-max (agnostic) | 0.130 | 0.120 |
-| mu-elem-cond | 0.105 | 0.109 |
-| mu-max-cond | 0.106 | 0.107 |
-| mu-lineage | 0.021 | **0.050** |
-| mu-max+lineage | 0.031 | **0.073** |
+| margin-gate (e5⊕μ-max) | 0.206 | 0.191 |
+| mu-max (agnostic) | 0.132 | 0.110 |
+| mu-max-cond (like-for-like) | 0.112 | 0.075 |
+| mu-elem-cond | 0.105 | 0.081 |
+| mu-lineage | 0.029 | 0.044 |
+| mu-max+lineage | 0.041 | 0.055 |
 
-Held-folder subset (true folder unseen in fine-tune train nodes, n=277): mu-max-cond MRR
-0.105 → 0.111, mu-max+lineage 0.033 → 0.064 — the conditioned gains generalize past the trained
-folders; e5-cos 0.280 there. Note the small DOWNWARD drift of the agnostic rankers
-(margin-gate 0.204 → 0.187): the anchor loss pins agnostic readouts only on campaign pairs, not
-on the filing-eval distribution — a real (small) cost of the fine-tune to price in future rounds.
+Transductive held-folder subset (endpoint-only definition; n=279): e5-cos MRR 0.302;
+mu-max-cond 0.105 → 0.073 — same shape as pooled.
 
-Escalation curve (route to the judge when the mu-max+lineage top-2 margin < t; kept-R@1 =
-recall@1 among non-routed decisions):
+Escalation margins on the DEPLOYED ranker (e5-cos; identical for both checkpoints; kept_n in
+parens) — descriptive only, full policy evaluation (judge rescue, AURC, cluster bootstrap) needs
+judge labels on routed queries:
 
-| threshold | base routed | base kept R@1 | tuned routed | tuned kept R@1 |
-|---|---|---|---|---|
-| 0.02 | 0.795 | 0.012 | 0.498 | 0.030 |
-| 0.05 | 0.987 | 0.000 | 0.775 | 0.044 |
-| 0.10 | 1.000 | — | 0.913 | 0.114 |
-| 0.15 | 1.000 | — | 0.968 | 0.154 |
-| 0.20 | 1.000 | — | 0.995 | 0.500 |
+| threshold | routed | kept R@1 |
+|---|---|---|
+| 0.02 | 0.585 (166 kept) | 0.235 |
+| 0.05 | 0.973 (11 kept) | 0.545 |
 
-The tuned model's margins are INFORMATIVE (kept-decision accuracy rises steeply with the
-threshold; the base model's margins are degenerate — everything routes). That is the escalation
-policy working in miniature, but at today's accuracy nearly all decisions still route: the model
-earns its keep as the conflict-router and label factory, while e5 ranks.
+e5's margin is informative (kept-decision accuracy rises with the threshold), so margin-routed
+escalation on e5 is viable as a POLICY SHAPE, but a calibrated threshold + judge-utility curve
+is future work. The tuned μ heads' margins are not currently a usable routing signal.
 
 ## 6. Caveats
+
+External-review residues (2026-07-17, addressed where noted):
+- Loader now FAILS CLOSED (unique score keys, judge-column verification, zero missing luna/e5
+  rows); the 300-row overlap selection is a committed sampler step with a manifest
+  (indices sha + file sha) and reproduces the original draw byte-for-byte.
+- The held-folder eval slice is TRANSDUCTIVE, not fully held: its definition is endpoint-only, and
+  ~19/277 true folders still appear as ancestor CONTEXT tokens during training.
+- Duplicate folder titles (7 titles / 19 folder ids; ~40/400 queries) are graded via
+  title-equivalence sets (best-alias rank) — a title-keyed model cannot distinguish them.
+- The routed-row SELECTION used the full-overlap innovation ordering, so the eval model's train
+  set composition retains a weak dependence on held overlap labels (selection only, not targets).
+- Fusion covariance is fit on fitted residuals (in-sample); the reviewer's out-of-fold diagnostic
+  put the R-diagonal understatement at 0.7–3.2% (mild) — the oof machinery exists in
+  run_sym_channel_fusion for the confirmatory enwiki harness.
+- Escalation curves are DESCRIPTIVE margin diagnostics on the deployed ranker; the full policy
+  evaluation (judge rescue accuracy, AURC, cluster bootstrap, cost curve) needs judge labels on
+  routed queries — future spend.
 
 - Partial-recovery DAG (396/880 multi-parent folders; 752 path records): coverage-limited campaign;
   the completed export re-runs this pipeline unchanged.

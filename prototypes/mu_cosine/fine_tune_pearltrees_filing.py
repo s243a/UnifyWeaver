@@ -35,7 +35,7 @@ from eval_within_stratum import decompose
 from fine_tune_channel_heads import load_expanded, mu_batch
 from mu_attention import CORPORA, JUDGES, NODETYPE, OPS
 from node_disjoint_eval import node_disjoint_pair_split
-from run_pearltrees_fusion import load_pearltrees_campaign
+from run_pearltrees_fusion import campaign_split, group_of, load_pearltrees_campaign
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 FUSED_TARGETS = "/tmp/mu_data/pt_fused_targets.tsv"
@@ -69,10 +69,6 @@ def load_routed_labels(path=ROUTED_55):
     from eval_luna_transfer import load_luna
     p, d, s = load_luna(path)
     return {pair: (d[i], s[i]) for i, pair in enumerate(p)}
-
-
-def group_of(tag):
-    return "principal" if tag.startswith("principal") else tag
 
 
 def load_with_lineage_ops(ckpt, dev="cpu"):
@@ -117,6 +113,9 @@ def main(argv=None):
     ap.add_argument("--anchor-weight", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--split-seed", type=int, default=0)
+    ap.add_argument("--targets", default=FUSED_TARGETS,
+                    help="fused-targets TSV; use the _eval (train-only factory) file for the honest "
+                         "held readout, the full file for the production checkpoint")
     a = ap.parse_args(argv)
     dev = "cpu"
     torch.set_num_threads(1)
@@ -125,7 +124,7 @@ def main(argv=None):
     augment_rng = np.random.default_rng(a.seed + 1)
 
     ds = load_pearltrees_campaign()
-    fused = load_fused_targets()
+    fused = load_fused_targets(a.targets)
     routed = load_routed_labels()
     pairs, tags, luna, d = ds["pairs"], ds["tags"], ds["luna"], ds["d"]
     ov_set = {tuple(pairs[i]) for i in ds["overlap_idx"]}
@@ -142,18 +141,24 @@ def main(argv=None):
 
     model, cfg = load_with_lineage_ops(a.ckpt, dev=dev)
     assert model.judge_name is not None, "checkpoint must be name-migrated"
-    ref, _ = load_with_lineage_ops(a.ckpt, dev=dev)
+    # the anchor reference must be the EXACT initial model — an independently-grown ref would carry
+    # different random LINEAGE readout rows and anchor toward a different model (review finding 2)
+    import copy
+
+    ref = copy.deepcopy(model)
     ref.eval()
     for p in ref.parameters():
         p.requires_grad = False
     for p in model.parameters():
         p.requires_grad = False
     trainable = []
+    # shared name-transform W matrices stay FROZEN: they map EVERY identity's card, so training
+    # them on pearltrees rows silently drifts unrelated judges/corpora/ops (review finding 6);
+    # only the per-identity residual rows train
     for mod in (model.judge_name, getattr(model, "corpus_name", None), getattr(model, "op_name", None)):
         if mod is not None:
-            mod.W.weight.requires_grad = True
             mod.resid.weight.requires_grad = True
-            trainable += [mod.W.weight, mod.resid.weight]
+            trainable += [mod.resid.weight]
     last = model.encoder.layers[-1]
     for p in last.parameters():
         p.requires_grad = True

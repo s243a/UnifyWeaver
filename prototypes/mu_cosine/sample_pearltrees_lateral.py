@@ -194,6 +194,10 @@ def main(argv=None):
     ap.add_argument("--out-score-in", required=True)
     ap.add_argument("--out-pairs", required=True)
     ap.add_argument("--manifest", required=True)
+    ap.add_argument("--overlap", type=int, default=300,
+                    help="size of the RANDOM 5.5 calibration overlap drawn from the unified rows; "
+                         "0 disables. Emitted as <out-score-in base>_overlap.tsv + manifest entry")
+    ap.add_argument("--overlap-seed", type=int, default=0)
     a = ap.parse_args(argv)
 
     forest = load_principal_paths(a.paths_jsonl, a.titles_tsv)
@@ -247,6 +251,31 @@ def main(argv=None):
             rel = "subtopic" if tag.startswith("principal") else "assoc"
             f.write(f"{a_t}\t{b_t}\t{rel}\t1.0\t{tag}\t{NODE_TYPE}\t{NODE_TYPE}\t\n")
 
+    overlap_manifest = None
+    if a.overlap:
+        # deterministic RANDOM overlap (never conflict-selected — the covariance-fit rule); indices
+        # over the unified score-in data rows, reproducing the original ad-hoc draw exactly
+        import numpy as np
+
+        idx_sel = sorted(np.random.default_rng(a.overlap_seed)
+                         .choice(len(rows), size=min(a.overlap, len(rows)), replace=False).tolist())
+        overlap_path = a.out_score_in.rsplit(".tsv", 1)[0] + "_overlap.tsv"
+        with open(overlap_path, "w", encoding="utf-8") as f:
+            f.write(SCORE_HEADER)
+            for i in idx_sel:
+                _, _, _, a_t, _, b_t, hop, tag = rows[i]
+                rel = "subtopic" if tag.startswith("principal") else "assoc"
+                f.write(f"{a_t}\t{b_t}\t{rel}\t1.0\t{tag}\t{NODE_TYPE}\t{NODE_TYPE}\t\n")
+        overlap_manifest = {
+            "path": os.path.basename(overlap_path),
+            "size": len(idx_sel),
+            "seed": a.overlap_seed,
+            "row_indices_sha256": hashlib.sha256(
+                ",".join(map(str, idx_sel)).encode()).hexdigest(),
+            "file_sha256": sha256_path(overlap_path),
+        }
+        print(f"overlap ({len(idx_sel)} rows, seed {a.overlap_seed}) -> {overlap_path}")
+
     counts = {}
     for row in rows:
         counts[row[7]] = counts.get(row[7], 0) + 1
@@ -267,6 +296,7 @@ def main(argv=None):
         },
         "note": "lateral pools drawn from the SAME privacy-filtered principal-path forest as the "
                 "Codex principal sampler; pt_rand additionally excludes anc/sib/cous relations",
+        "overlap": overlap_manifest,
     }
     with open(a.manifest, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=1, sort_keys=True)
