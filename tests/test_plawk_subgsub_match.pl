@@ -170,6 +170,29 @@ test(gsub_scalar_end, [condition(clang_available)]) :-
         "a1\nb2\n", Out, St),
     assertion(St == 0), assertion(Out == "b#\n"), !.
 
+% --- sub/gsub into a field target (rebuilds $0) -----------------------------
+
+% gsub into field 2 rewrites that field and rebuilds $0 (joined with OFS).
+test(gsub_into_field, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'gf', "BEGIN { FS = \",\"; OFS = \",\" }\n{ gsub(/[0-9]/, \"#\", $2); print $0 }\n",
+        "a,b1b2,c\n", Out, St),
+    assertion(St == 0), assertion(Out == "a,b#b#,c\n"), !.
+
+% sub into a field replaces only the first match.
+test(sub_into_field, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'sf2', "BEGIN { FS = \",\"; OFS = \",\" }\n{ sub(/o/, \"0\", $1); print $0 }\n",
+        "foo,bar\n", Out, St),
+    assertion(St == 0), assertion(Out == "f0o,bar\n"), !.
+
+% a field gsub composes with a field assignment in the same record.
+test(gsub_field_with_assign, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'gfa', "BEGIN { FS = \",\"; OFS = \",\" }\n{ $1 = \"X\"; gsub(/[0-9]/, \"#\", $3); print $0 }\n",
+        "a,b,c9c9\n", Out, St),
+    assertion(St == 0), assertion(Out == "X,b,c#c#\n"), !.
+
 :- end_tests(plawk_subgsub_match).
 
 % --- helpers ---------------------------------------------------------------
