@@ -503,10 +503,11 @@ wam_c_kernel_registration_line(Key-recursive_kernel(transitive_parent_distance4,
     format(atom(Line),
            '    wam_register_transitive_parent_distance_kernel(state, "~w");',
            [Key]).
-wam_c_kernel_registration_line(Key-recursive_kernel(transitive_step_parent_distance5, _Pred, _ConfigOps), Line) :-
+wam_c_kernel_registration_line(Key-recursive_kernel(transitive_step_parent_distance5, _Pred, ConfigOps), Line) :-
+    member(edge_pred(EdgePred/2), ConfigOps),
     format(atom(Line),
-           '    wam_register_transitive_step_parent_distance_kernel(state, "~w");',
-           [Key]).
+           '    wam_register_transitive_step_parent_distance_kernel(state, "~w", "~w");',
+           [Key, EdgePred]).
 wam_c_kernel_registration_line(Key-recursive_kernel(weighted_shortest_path3, _Pred, _ConfigOps), Line) :-
     format(atom(Line),
            '    wam_register_weighted_shortest_path_kernel(state, "~w");',
@@ -4004,6 +4005,8 @@ void wam_free_state(WamState *state) {
     free(state->category_id_by_value);
     free(state->weighted_edges);
     free(state->direct_distance_edges);
+    free(state->relation_edges);
+    free(state->kernel_edge_bindings);
     memset(state, 0, sizeof(WamState));
 }
 
@@ -4360,6 +4363,66 @@ void wam_register_category_parent(WamState *state, const char *child, const char
 
 void wam_register_transitive_edge(WamState *state, const char *child, const char *parent) {
     wam_register_category_parent(state, child, parent);
+}
+
+void wam_register_relation_edge(WamState *state, const char *relation,
+                                const char *from, const char *to) {
+    if (!relation || !from || !to) return;
+    if (state->relation_edge_count >= state->relation_edge_cap) {
+        int new_cap = state->relation_edge_cap ? state->relation_edge_cap * 2 : WAM_INITIAL_CAP;
+        RelationEdge *edges = realloc(state->relation_edges,
+                                      sizeof(RelationEdge) * (size_t)new_cap);
+        if (!edges) return;
+        state->relation_edges = edges;
+        state->relation_edge_cap = new_cap;
+    }
+    state->relation_edges[state->relation_edge_count].relation =
+        wam_intern_atom(state, relation);
+    state->relation_edges[state->relation_edge_count].child =
+        wam_intern_atom(state, from);
+    state->relation_edges[state->relation_edge_count].parent =
+        wam_intern_atom(state, to);
+    state->relation_edge_count++;
+}
+
+void wam_bind_kernel_edge_relation(WamState *state, const char *pred, int arity,
+                                   const char *relation) {
+    if (!pred || !relation || arity < 0) return;
+    for (int i = 0; i < state->kernel_edge_binding_count; i++) {
+        KernelEdgeBinding *binding = &state->kernel_edge_bindings[i];
+        if (binding->arity == arity && strcmp(binding->pred, pred) == 0) {
+            binding->relation = wam_intern_atom(state, relation);
+            return;
+        }
+    }
+    if (state->kernel_edge_binding_count >= state->kernel_edge_binding_cap) {
+        int new_cap = state->kernel_edge_binding_cap
+                          ? state->kernel_edge_binding_cap * 2
+                          : WAM_INITIAL_CAP;
+        KernelEdgeBinding *bindings =
+            realloc(state->kernel_edge_bindings,
+                    sizeof(KernelEdgeBinding) * (size_t)new_cap);
+        if (!bindings) return;
+        state->kernel_edge_bindings = bindings;
+        state->kernel_edge_binding_cap = new_cap;
+    }
+    state->kernel_edge_bindings[state->kernel_edge_binding_count].pred =
+        wam_intern_atom(state, pred);
+    state->kernel_edge_bindings[state->kernel_edge_binding_count].arity = arity;
+    state->kernel_edge_bindings[state->kernel_edge_binding_count].relation =
+        wam_intern_atom(state, relation);
+    state->kernel_edge_binding_count++;
+}
+
+const char *wam_lookup_kernel_edge_relation(WamState *state, const char *pred, int arity) {
+    if (!pred) return NULL;
+    for (int i = 0; i < state->kernel_edge_binding_count; i++) {
+        KernelEdgeBinding *binding = &state->kernel_edge_bindings[i];
+        if (binding->arity == arity && strcmp(binding->pred, pred) == 0) {
+            return binding->relation;
+        }
+    }
+    return NULL;
 }
 
 void wam_register_weighted_edge(WamState *state, const char *source, const char *target, double weight) {
@@ -5329,8 +5392,10 @@ void wam_register_transitive_parent_distance_kernel(WamState *state, const char 
     wam_register_foreign_predicate(state, pred, 4, wam_transitive_parent_distance_handler);
 }
 
-void wam_register_transitive_step_parent_distance_kernel(WamState *state, const char *pred) {
+void wam_register_transitive_step_parent_distance_kernel(WamState *state, const char *pred,
+                                                         const char *edge_relation) {
     wam_register_foreign_predicate(state, pred, 5, wam_transitive_step_parent_distance_handler);
+    wam_bind_kernel_edge_relation(state, pred, 5, edge_relation);
 }
 
 void wam_register_weighted_shortest_path_kernel(WamState *state, const char *pred) {
@@ -6191,6 +6256,24 @@ static bool wam_try_bind_foreign_triple(WamState *state,
     return false;
 }
 
+static bool wam_try_bind_foreign_quad(WamState *state,
+                                      WamValue target_v,
+                                      WamValue step_v,
+                                      WamValue parent_v,
+                                      WamValue dist_v) {
+    /* Quad candidate for TSPD5: A[1..4] = Target, Step, Parent, Distance.
+     * Alias-safe: roll back the whole candidate on the first conflict. */
+    int trail_mark = state->TR;
+    if (wam_unify(state, &state->A[1], &target_v) &&
+        wam_unify(state, &state->A[2], &step_v) &&
+        wam_unify(state, &state->A[3], &parent_v) &&
+        wam_unify(state, &state->A[4], &dist_v)) {
+        return true;
+    }
+    unwind_trail(state, trail_mark);
+    return false;
+}
+
 static bool wam_resume_foreign_stream(WamState *state) {
     if (state->B <= 0) return false;
     ChoicePoint *cp = &state->B_array[state->B - 1];
@@ -6236,6 +6319,30 @@ static bool wam_resume_foreign_stream(WamState *state) {
             cp->foreign_result_index = index + 3;
             if (!wam_try_bind_foreign_triple(state, target_v, parent_v,
                                              dist_v)) {
+                continue;
+            }
+            if (cp->foreign_result_index >= cp->foreign_result_count) {
+                pop_choice_point(state);
+            }
+            state->P = resume_pc;
+            return true;
+        }
+        pop_choice_point(state);
+        return false;
+    }
+    /* Quad stream (result_reg == 253): interleaved
+     * [atom, atom, atom, int, ...] = Target, Step, Parent, Distance.
+     * Alias-safe transactional scan, same protocol as the triple stream. */
+    if (result_reg == 253) {
+        while (cp->foreign_result_index + 3 < cp->foreign_result_count) {
+            int index = cp->foreign_result_index;
+            WamValue target_v = cp->foreign_results[index];
+            WamValue step_v = cp->foreign_results[index + 1];
+            WamValue parent_v = cp->foreign_results[index + 2];
+            WamValue dist_v = cp->foreign_results[index + 3];
+            cp->foreign_result_index = index + 4;
+            if (!wam_try_bind_foreign_quad(state, target_v, step_v, parent_v,
+                                           dist_v)) {
                 continue;
             }
             if (cp->foreign_result_index >= cp->foreign_result_count) {
@@ -6323,6 +6430,51 @@ static bool wam_bind_foreign_triple_stream(WamState *state,
             cp->foreign_resume_pc = resume_pc;
             if (!wam_try_bind_foreign_triple(state, target_v, parent_v,
                                              dist_v)) {
+                pop_choice_point(state);
+                return false;
+            }
+        } else {
+            free(results);
+        }
+        return true;
+    }
+
+    free(results);
+    return false;
+}
+
+static bool wam_bind_foreign_quad_stream(WamState *state,
+                                         WamValue *results,
+                                         int value_count,
+                                         int resume_pc) {
+    /* results: interleaved [atom, atom, atom, int, ...]
+     * with value_count = 4 * quads. */
+    if (value_count < 4) {
+        free(results);
+        return false;
+    }
+    for (int index = 0; index + 3 < value_count; index += 4) {
+        WamValue target_v = results[index];
+        WamValue step_v = results[index + 1];
+        WamValue parent_v = results[index + 2];
+        WamValue dist_v = results[index + 3];
+        int trail_mark = state->TR;
+        if (!wam_try_bind_foreign_quad(state, target_v, step_v, parent_v,
+                                       dist_v)) {
+            continue;
+        }
+
+        if (index + 4 < value_count) {
+            unwind_trail(state, trail_mark);
+            push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 5);
+            ChoicePoint *cp = &state->B_array[state->B - 1];
+            cp->foreign_results = results;
+            cp->foreign_result_count = value_count;
+            cp->foreign_result_index = index + 4;
+            cp->foreign_result_reg = 253;
+            cp->foreign_resume_pc = resume_pc;
+            if (!wam_try_bind_foreign_quad(state, target_v, step_v, parent_v,
+                                           dist_v)) {
                 pop_choice_point(state);
                 return false;
             }
@@ -6675,56 +6827,276 @@ bool wam_transitive_parent_distance_handler(WamState *state, const char *pred, i
                                           state->P + 1);
 }
 
-static bool wam_transitive_step_parent_distance_bfs(WamState *state,
-                                                    const char *start,
-                                                    const char *target,
-                                                    const char **target_out,
-                                                    const char **step_out,
-                                                    const char **parent_out,
-                                                    int *distance_out) {
-    const char *queue_nodes[256];
-    const char *queue_steps[256];
-    int queue_distances[256];
-    const char *visited[256];
+static int wam_count_relation_edges(WamState *state, const char *relation) {
+    int n = 0;
+    for (int i = 0; i < state->relation_edge_count; i++) {
+        if (strcmp(state->relation_edges[i].relation, relation) == 0) n++;
+    }
+    return n;
+}
+
+static bool wam_tspd5_ensure_pair_cap(const char ***pair_targets,
+                                      const char ***pair_steps,
+                                      const char ***pair_parents,
+                                      int *pair_cap,
+                                      int needed) {
+    if (needed <= *pair_cap) return true;
+    int new_cap = *pair_cap ? *pair_cap : 8;
+    while (new_cap < needed) {
+        if (new_cap > INT_MAX / 2) {
+            new_cap = needed;
+            break;
+        }
+        new_cap *= 2;
+    }
+    const char **targets = realloc(*pair_targets,
+                                   sizeof(const char *) * (size_t)new_cap);
+    if (!targets) return false;
+    *pair_targets = targets;
+    const char **steps = realloc(*pair_steps,
+                                 sizeof(const char *) * (size_t)new_cap);
+    if (!steps) return false;
+    *pair_steps = steps;
+    const char **parents = realloc(*pair_parents,
+                                   sizeof(const char *) * (size_t)new_cap);
+    if (!parents) return false;
+    *pair_parents = parents;
+    *pair_cap = new_cap;
+    return true;
+}
+
+static bool wam_tspd5_ensure_result_cap(WamValue **results, int *result_cap,
+                                        int needed) {
+    if (needed <= *result_cap) return true;
+    int new_cap = *result_cap ? *result_cap : 16;
+    while (new_cap < needed) {
+        if (new_cap > INT_MAX / 2) {
+            new_cap = needed;
+            break;
+        }
+        new_cap *= 2;
+    }
+    WamValue *grown = realloc(*results, sizeof(WamValue) * (size_t)new_cap);
+    if (!grown) return false;
+    *results = grown;
+    *result_cap = new_cap;
+    return true;
+}
+
+static bool wam_collect_transitive_step_parent_distance(
+    WamState *state,
+    const char *relation,
+    const char *start,
+    const char *target_filter,
+    const char *step_filter,
+    const char *parent_filter,
+    int *distance_filter,
+    WamValue **results_out,
+    int *value_count_out) {
+    /* Shortest-positive correlated step/parent
+     * (docs/design/WAM_TRANSITIVE_STEP_PARENT_DISTANCE5_CONTRACT.md):
+     * FIFO BFS seed (Source, 0); dist NOT seeded with Source; store
+     * correlated (Step, Parent) pairs per Target. */
+    int edge_n = wam_count_relation_edges(state, relation);
+    if (edge_n <= 0 || edge_n == INT_MAX) return false;
+
+    int node_cap = edge_n + 1;
+    const char **queue_nodes = malloc(sizeof(const char *) * (size_t)node_cap);
+    int *queue_dists = malloc(sizeof(int) * (size_t)node_cap);
+    const char **dist_nodes = malloc(sizeof(const char *) * (size_t)node_cap);
+    int *dist_vals = malloc(sizeof(int) * (size_t)node_cap);
+    const char **pair_targets = NULL;
+    const char **pair_steps = NULL;
+    const char **pair_parents = NULL;
+    int pair_cap = 0;
+    int pair_len = 0;
+    int result_cap = edge_n * 4;
+    if (result_cap < 4) result_cap = 4;
+    WamValue *results = malloc(sizeof(WamValue) * (size_t)result_cap);
+    if (!queue_nodes || !queue_dists || !dist_nodes || !dist_vals || !results) {
+        free(queue_nodes);
+        free(queue_dists);
+        free(dist_nodes);
+        free(dist_vals);
+        free(results);
+        return false;
+    }
+    if (!wam_tspd5_ensure_pair_cap(&pair_targets, &pair_steps, &pair_parents,
+                                   &pair_cap, edge_n > 0 ? edge_n : 8)) {
+        free(queue_nodes);
+        free(queue_dists);
+        free(dist_nodes);
+        free(dist_vals);
+        free(results);
+        return false;
+    }
+
+    int dist_len = 0;
     int head = 0;
     int tail = 0;
-    int visited_len = 0;
-
     queue_nodes[tail] = start;
-    queue_steps[tail] = start;
-    queue_distances[tail++] = 0;
-    visited[visited_len++] = start;
+    queue_dists[tail++] = 0;
 
     while (head < tail) {
         const char *node = queue_nodes[head];
-        const char *first_step = queue_steps[head];
-        int distance = queue_distances[head++];
-        for (int i = 0; i < state->category_edge_count; i++) {
-            CategoryEdge *edge = &state->category_edges[i];
+        int distance = queue_dists[head++];
+        int next_distance = distance + 1;
+        for (int i = 0; i < state->relation_edge_count; i++) {
+            RelationEdge *edge = &state->relation_edges[i];
+            if (strcmp(edge->relation, relation) != 0) continue;
             if (strcmp(edge->child, node) != 0) continue;
-            if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
-            int next_distance = distance + 1;
-            const char *next_step = (distance == 0) ? edge->parent : first_step;
-            if (!target || strcmp(edge->parent, target) == 0) {
-                *target_out = edge->parent;
-                *step_out = next_step;
-                *parent_out = node;
-                *distance_out = next_distance;
-                return true;
+            const char *next = edge->parent;
+
+            int existing = -1;
+            for (int j = 0; j < dist_len; j++) {
+                if (strcmp(dist_nodes[j], next) == 0) {
+                    existing = j;
+                    break;
+                }
             }
-            if (tail >= 256 || visited_len >= 256) return false;
-            visited[visited_len++] = edge->parent;
-            queue_nodes[tail] = edge->parent;
-            queue_steps[tail] = next_step;
-            queue_distances[tail++] = next_distance;
+            if (existing >= 0 && dist_vals[existing] < next_distance) {
+                continue; /* Longer path — ignore. */
+            }
+
+            if (existing < 0) {
+                if (dist_len >= node_cap || tail >= node_cap) {
+                    free(queue_nodes); free(queue_dists); free(dist_nodes);
+                    free(dist_vals); free(pair_targets);
+                    free(pair_steps); free(pair_parents);
+                    free(results);
+                    return false;
+                }
+                dist_nodes[dist_len] = next;
+                dist_vals[dist_len] = next_distance;
+                dist_len++;
+                queue_nodes[tail] = next;
+                queue_dists[tail++] = next_distance;
+            } else if (dist_vals[existing] != next_distance) {
+                continue;
+            }
+
+            /* Emit candidate (Step, Parent) pairs for U→V and union. */
+            if (distance == 0) {
+                /* U is Source: cand = (V, Source). */
+                bool have = false;
+                for (int p = 0; p < pair_len; p++) {
+                    if (strcmp(pair_targets[p], next) == 0 &&
+                        strcmp(pair_steps[p], next) == 0 &&
+                        strcmp(pair_parents[p], start) == 0) {
+                        have = true;
+                        break;
+                    }
+                }
+                if (!have) {
+                    if (!wam_tspd5_ensure_pair_cap(&pair_targets, &pair_steps,
+                                                   &pair_parents, &pair_cap,
+                                                   pair_len + 1)) {
+                        free(queue_nodes); free(queue_dists); free(dist_nodes);
+                        free(dist_vals); free(pair_targets);
+                        free(pair_steps); free(pair_parents);
+                        free(results);
+                        return false;
+                    }
+                    pair_targets[pair_len] = next;
+                    pair_steps[pair_len] = next;
+                    pair_parents[pair_len] = start;
+                    pair_len++;
+                }
+            } else {
+                /* Distinct Steps from pairs[U]; cand = (Step, U).
+                 * Snapshot pair_len so newly appended V pairs are not
+                 * re-scanned as if they belonged to U. */
+                int pairs_before = pair_len;
+                for (int p = 0; p < pairs_before; p++) {
+                    if (strcmp(pair_targets[p], node) != 0) continue;
+                    const char *step = pair_steps[p];
+                    bool step_seen = false;
+                    for (int q = 0; q < p; q++) {
+                        if (strcmp(pair_targets[q], node) == 0 &&
+                            strcmp(pair_steps[q], step) == 0) {
+                            step_seen = true;
+                            break;
+                        }
+                    }
+                    if (step_seen) continue;
+                    bool have = false;
+                    for (int r = 0; r < pair_len; r++) {
+                        if (strcmp(pair_targets[r], next) == 0 &&
+                            strcmp(pair_steps[r], step) == 0 &&
+                            strcmp(pair_parents[r], node) == 0) {
+                            have = true;
+                            break;
+                        }
+                    }
+                    if (have) continue;
+                    if (!wam_tspd5_ensure_pair_cap(&pair_targets, &pair_steps,
+                                                   &pair_parents, &pair_cap,
+                                                   pair_len + 1)) {
+                        free(queue_nodes); free(queue_dists); free(dist_nodes);
+                        free(dist_vals); free(pair_targets);
+                        free(pair_steps); free(pair_parents);
+                        free(results);
+                        return false;
+                    }
+                    pair_targets[pair_len] = next;
+                    pair_steps[pair_len] = step;
+                    pair_parents[pair_len] = node;
+                    pair_len++;
+                }
+            }
         }
     }
-    return false;
+
+    int value_count = 0;
+    for (int i = 0; i < pair_len; i++) {
+        const char *t = pair_targets[i];
+        const char *s = pair_steps[i];
+        const char *p = pair_parents[i];
+        int d = 0;
+        for (int j = 0; j < dist_len; j++) {
+            if (strcmp(dist_nodes[j], t) == 0) {
+                d = dist_vals[j];
+                break;
+            }
+        }
+        if (target_filter && strcmp(t, target_filter) != 0) continue;
+        if (step_filter && strcmp(s, step_filter) != 0) continue;
+        if (parent_filter && strcmp(p, parent_filter) != 0) continue;
+        if (distance_filter && d != *distance_filter) continue;
+        if (!wam_tspd5_ensure_result_cap(&results, &result_cap, value_count + 4)) {
+            free(queue_nodes); free(queue_dists); free(dist_nodes);
+            free(dist_vals); free(pair_targets);
+            free(pair_steps); free(pair_parents);
+            free(results);
+            return false;
+        }
+        results[value_count++] = val_atom(t);
+        results[value_count++] = val_atom(s);
+        results[value_count++] = val_atom(p);
+        results[value_count++] = val_int(d);
+    }
+
+    free(queue_nodes);
+    free(queue_dists);
+    free(dist_nodes);
+    free(dist_vals);
+    free(pair_targets);
+    free(pair_steps);
+    free(pair_parents);
+    if (value_count == 0) {
+        free(results);
+        return false;
+    }
+    *results_out = results;
+    *value_count_out = value_count;
+    return true;
 }
 
 bool wam_transitive_step_parent_distance_handler(WamState *state, const char *pred, int arity) {
-    (void)pred;
     if (arity != 5) return false;
+
+    const char *relation = wam_lookup_kernel_edge_relation(state, pred, arity);
+    if (!relation) return false;
 
     const char *start = NULL;
     if (!wam_value_as_atom(state, state->A[0], &start)) return false;
@@ -6737,25 +7109,57 @@ bool wam_transitive_step_parent_distance_handler(WamState *state, const char *pr
         return false;
     }
 
-    const char *result_target = NULL;
-    const char *result_step = NULL;
-    const char *result_parent = NULL;
-    int result_distance = 0;
-    if (!wam_transitive_step_parent_distance_bfs(state, start, target,
-                                                 &result_target, &result_step,
-                                                 &result_parent,
-                                                 &result_distance)) {
+    WamValue *step_cell = wam_deref_ptr(state, &state->A[2]);
+    const char *step = NULL;
+    if (step_cell->tag == VAL_ATOM) {
+        step = step_cell->data.atom;
+    } else if (!val_is_unbound(*step_cell)) {
         return false;
     }
 
-    WamValue target_value = val_atom(result_target);
-    WamValue step_value = val_atom(result_step);
-    WamValue parent_value = val_atom(result_parent);
-    WamValue distance_value = val_int(result_distance);
-    return wam_unify(state, &state->A[1], &target_value) &&
-           wam_unify(state, &state->A[2], &step_value) &&
-           wam_unify(state, &state->A[3], &parent_value) &&
-           wam_unify(state, &state->A[4], &distance_value);
+    WamValue *parent_cell = wam_deref_ptr(state, &state->A[3]);
+    const char *parent = NULL;
+    if (parent_cell->tag == VAL_ATOM) {
+        parent = parent_cell->data.atom;
+    } else if (!val_is_unbound(*parent_cell)) {
+        return false;
+    }
+
+    WamValue *distance_cell = wam_deref_ptr(state, &state->A[4]);
+    int distance_filter_value = 0;
+    int *distance_filter = NULL;
+    if (distance_cell->tag == VAL_INT) {
+        distance_filter_value = distance_cell->data.integer;
+        if (distance_filter_value <= 0) return false;
+        distance_filter = &distance_filter_value;
+    } else if (!val_is_unbound(*distance_cell)) {
+        return false;
+    }
+
+    WamValue *results = NULL;
+    int value_count = 0;
+    if (!wam_collect_transitive_step_parent_distance(state, relation, start,
+                                                     target, step, parent,
+                                                     distance_filter,
+                                                     &results, &value_count)) {
+        return false;
+    }
+
+    /* Fully bound Target+Step+Parent (+ optional Distance): succeed once.
+     * Bind Distance when unbound; both-bound already filtered. */
+    if (target && step && parent) {
+        if (value_count < 4) {
+            free(results);
+            return false;
+        }
+        WamValue dist_v = results[3];
+        free(results);
+        if (distance_filter) return true;
+        return wam_unify(state, &state->A[4], &dist_v);
+    }
+
+    return wam_bind_foreign_quad_stream(state, results, value_count,
+                                        state->P + 1);
 }
 
 static bool wam_weighted_shortest_path_dijkstra(WamState *state,
