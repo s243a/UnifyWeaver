@@ -113,6 +113,10 @@ def main(argv=None):
     ap.add_argument("--anchor-weight", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--split-seed", type=int, default=0)
+    ap.add_argument("--cand-lineage", action="store_true",
+                    help="candidate-lineage-conditioned μ (§7): supply the folder(root)'s principal "
+                         "path as anc tokens during training so the LINEAGE/conditioned heads learn "
+                         "to use folder lineage at filing time")
     ap.add_argument("--targets", default=FUSED_TARGETS,
                     help="fused-targets TSV; use the _eval (train-only factory) file for the honest "
                          "held readout, the full file for the production checkpoint")
@@ -123,7 +127,9 @@ def main(argv=None):
     rng = np.random.default_rng(a.seed)
     augment_rng = np.random.default_rng(a.seed + 1)
 
-    ds = load_pearltrees_campaign()
+    ds = load_pearltrees_campaign(root_lineage=a.cand_lineage)
+    if a.cand_lineage:
+        print("candidate-lineage-conditioned μ: folder principal path supplied as anc tokens")
     fused = load_fused_targets(a.targets)
     routed = load_routed_labels()
     pairs, tags, luna, d = ds["pairs"], ds["tags"], ds["luna"], ds["d"]

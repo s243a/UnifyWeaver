@@ -31,7 +31,62 @@ from fine_tune_pearltrees_filing import load_with_lineage_ops
 from mu_attention import CORPORA, JUDGES, NODETYPE, OPS, Tokenizer, build_e5_tables
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-TREES = os.path.join(ROOT, "..", "..", ".local", "data", "pearltrees_api", "trees")
+PT_API = os.path.join(ROOT, "..", "..", ".local", "data", "pearltrees_api")
+TREES = os.path.join(PT_API, "trees")
+DAG = os.path.join(PT_API, "assembled_dag.tsv")
+TITLES = os.path.join(PT_API, "assembled_titles.tsv")
+
+
+def folder_lineage(cand, depth=5, shuffle_seed=None):
+    """Build {folder_title: [parent_title,...]} principal paths from the assembled DAG.
+
+    Returns (parents_title, ancestor_titles). `cand` maps folder tid → title. Only the folder's
+    pre-existing folder→parent lineage is used (the §7 leakage boundary — never the evaluated
+    bookmark's placement or the folder's bookmark children). `shuffle_seed` permutes which folder
+    receives which lineage (the control: right-lineage vs any-lineage)."""
+    child2par = {}
+    for ln in open(DAG, encoding="utf-8"):
+        p, c = ln.split()
+        child2par.setdefault(c, []).append(p)
+    titles = {}
+    for ln in open(TITLES, encoding="utf-8"):
+        parts = ln.rstrip("\n").split("\t")
+        if len(parts) >= 2:
+            titles[parts[0]] = parts[1]
+
+    def chain(tid):
+        out, cur, seen = [], str(tid), {str(tid)}
+        for _ in range(depth):
+            ps = child2par.get(cur)
+            if not ps:
+                break
+            nxt = ps[0]
+            if nxt in seen:
+                break
+            seen.add(nxt)
+            t = titles.get(nxt)
+            if t:
+                out.append(t)
+            cur = nxt
+        return out
+
+    tids = list(cand)
+    chains = [chain(t) for t in tids]
+    if shuffle_seed is not None:
+        import numpy as np
+
+        perm = np.random.default_rng(shuffle_seed).permutation(len(chains))
+        chains = [chains[i] for i in perm]
+    parents_title, anc_titles = {}, set()
+    for tid, ch in zip(tids, chains):
+        ft = cand[tid]
+        # parents map is a chain: folder→p1→p2… (first-parent walk), keyed by title
+        prev = ft
+        for p in ch:
+            parents_title.setdefault(prev, [p])
+            anc_titles.add(p)
+            prev = p
+    return parents_title, anc_titles
 
 
 def score_cond(model, tok, q_keys, f_keys, op, judge, dev="cpu", batch=512):
@@ -105,6 +160,12 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--cache", default="/tmp/mu_data/pt_filing_eval_e5.pt")
     ap.add_argument("--split-seed", type=int, default=0)
+    ap.add_argument("--cand-lineage", action="store_true",
+                    help="§7: supply each candidate folder's principal path (assembled DAG) as anc "
+                         "tokens — evaluate a checkpoint trained with --cand-lineage in its regime")
+    ap.add_argument("--shuffle-lineage", action="store_true",
+                    help="control: permute which folder gets which lineage (right vs any lineage)")
+    ap.add_argument("--lineage-depth", type=int, default=5)
     a = ap.parse_args(argv)
     dev = "cpu"
     torch.set_num_threads(4)
@@ -133,9 +194,20 @@ def main(argv=None):
     held_q = [i for i in range(len(queries)) if f_titles[truepos[i][0]] not in train_nodes]
     print(f"held-folder subset (true folder unseen in fine-tune train nodes): {len(held_q)}/{len(queries)}")
 
-    names = sorted(set(q_titles) | set(f_titles))
-    qtbl, ptbl, idx = build_e5_tables(names, cache_path=a.cache, batch_size=128)
-    tok = Tokenizer(qtbl, ptbl, idx, {}, {})
+    parents_title, anc_titles = {}, set()
+    if a.cand_lineage:
+        parents_title, anc_titles = folder_lineage(
+            cand, depth=a.lineage_depth,
+            shuffle_seed=(a.seed if a.shuffle_lineage else None))
+        covered = sum(1 for ft in set(f_titles) if ft in parents_title)
+        print(f"candidate lineage: {covered}/{len(set(f_titles))} folders have a principal path; "
+              f"{len(anc_titles)} ancestor titles"
+              + (" [SHUFFLED control]" if a.shuffle_lineage else ""))
+    names = sorted(set(q_titles) | set(f_titles) | anc_titles)
+    cache_path = a.cache.rsplit(".pt", 1)[0] + ("_lin.pt" if a.cand_lineage else ".pt")
+    qtbl, ptbl, idx = build_e5_tables(names, cache_path=cache_path, batch_size=128)
+    tok = Tokenizer(qtbl, ptbl, idx, parents_title, {},
+                    root_lineage=a.cand_lineage, root_lineage_depth=a.lineage_depth)
 
     results = {}
     for label, ckpt in (("base", a.base), ("tuned", a.tuned)):
