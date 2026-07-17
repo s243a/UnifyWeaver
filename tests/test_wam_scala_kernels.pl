@@ -237,6 +237,10 @@ test(step_parent_distance_kernel_emits_handler_and_stub) :-
             Dir),
         kprogram_source(Dir, 'ks.core', Src),
         assertion(sub_string(Src, _, _, _, "CallForeign(\"ksp\", 5)")),
+        assertion(sub_string(Src, _, _, _,
+                   "vs.map(_._2).collect { case atom @ Atom(_) => atom }")),
+        assertion(sub_string(Src, _, _, _, "case source @ Atom(_) =>")),
+        assertion(sub_string(Src, _, _, _, "case _ => ForeignFail")),
         assertion(sub_string(Src, _, _, _, "5 -> IntTerm")),
         assertion(sub_string(Src, _, _, _, "\"kedge/2\" ->")),
         delete_directory_and_contents(Dir)
@@ -396,6 +400,24 @@ test(transitive_step_parent_distance_parity,
     ksame(Run, 'ksp/5', [b,d,c,c,'2'], "true"),
     ksame(Run, 'ksp/5', [a,d,e,c,'3'], "false"),
     ksame(Run, 'ksp/5', [a,d,b,b,'3'], "false").
+
+test(transitive_step_parent_distance_rejects_non_atom_nodes,
+     [setup(kbuild_both([user:ksp/5, user:kedge/2],
+                        'gen.ksp_atom_nodes', Run)),
+      cleanup(kcleanup(Run))]) :-
+    % The generic recursive relation is term-polymorphic; the native TSPD5
+    % contract is not. Neither an integer Source/Target nor a path bridged by
+    % an integer node may reach the atom-only result stream.
+    Run = run(_ItDir, KnDir, _ItPkg, KnPkg),
+    krun(KnDir, KnPkg, 'ksp/5',
+         ['7',integer_target_child,integer_target_child,'7','1'],
+         IntegerSource),
+    assertion(IntegerSource == "false"),
+    krun(KnDir, KnPkg, 'ksp/5', [a,'7','7',a,'1'], IntegerTarget),
+    assertion(IntegerTarget == "false"),
+    krun(KnDir, KnPkg, 'ksp/5',
+         [a,integer_target_child,'7','7','2'], IntegerBridge),
+    assertion(IntegerBridge == "false").
 
 % category_ancestor: depth-bounded ancestor search. The recursive clause
 % reads max_depth/1 at runtime, so max_depth/1 is included in the predicate

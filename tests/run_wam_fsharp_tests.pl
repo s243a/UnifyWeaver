@@ -88,7 +88,9 @@ fsharp_test('tests/test_wam_scala_kernels.pl',
               run_tests(wam_scala_kernels_runtime:
                         transitive_parent_distance_rejects_non_atom_nodes),
               run_tests(wam_scala_kernels_runtime:
-                        transitive_step_parent_distance_parity) )).
+                        transitive_step_parent_distance_parity),
+              run_tests(wam_scala_kernels_runtime:
+                        transitive_step_parent_distance_rejects_non_atom_nodes) )).
 fsharp_test('tests/test_wam_haskell_target.pl',
             'TD3/TPD4/TSPD5 Haskell multi-output foreign retry regressions',
             (test_multi_output_foreign_filters_bound_results,

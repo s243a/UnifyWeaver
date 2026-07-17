@@ -3,7 +3,7 @@
 Fleet-wide semantics for the shared recursive-kernel kind
 `transitive_step_parent_distance5` (detector shape
 `tspd(X, Y, Y, X, 1) :- edge(X, Y).` /
-`tspd(X, Y, S, P, D) :- edge(X, M), tspd(M, Y, _, P, D1), D is D1 + 1.`).
+`tspd(X, Y, S, P, D) :- edge(X, S), tspd(S, Y, _, P, D1), D is D1 + 1.`).
 
 This document is the authoritative contract. Target handlers (native /
 foreign) and their tests must agree with it. Enumeration **order** is
