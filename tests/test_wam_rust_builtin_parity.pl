@@ -113,6 +113,13 @@ t_atom_checks :-
     atom_ends_with('prefix-middle-suffix', suffix),
     atom_contains('prefix-middle-suffix', middle).
 
+:- dynamic t_text_inspection/2.
+t_text_inspection(Sub, After) :-
+    sub_atom(hello, 1, 3, After, Sub),
+    code_type(65, alpha),
+    code_type(65, upper),
+    code_type(95, csym).
+
 :- dynamic t_path_utilities/5.
 t_path_utilities(Base, Dir, Stem, Ext, Full) :-
     file_base_name('/tmp/archive.tar.gz', Base),
@@ -296,6 +303,7 @@ test_builtin_parity_execution :-
              user:t_system_queries/3,
              user:t_environment_mutation/1,
              user:t_split_string/1, user:t_atom_split/1, user:t_atom_checks/0,
+             user:t_text_inspection/2,
              user:t_path_utilities/5,
              user:t_filesystem_identity/2,
              user:t_filesystem_mutation/0,
@@ -332,6 +340,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_system_queries_3,
     t_environment_mutation_1,
     t_split_string_1, t_atom_split_1, t_atom_checks_0,
+    t_text_inspection_2,
     t_path_utilities_5,
     t_filesystem_identity_2,
     t_filesystem_mutation_0,
@@ -548,6 +557,11 @@ fn test_text_utility_family_compiled() {
 
     let mut checks_vm = vmnew();
     assert!(t_atom_checks_0(&mut checks_vm));
+
+    let mut inspection_vm = vmnew();
+    assert!(t_text_inspection_2(&mut inspection_vm, ub("Sub"), ub("After")));
+    assert_eq!(read_var(&inspection_vm, "Sub"), a("ell"));
+    assert_eq!(read_var(&inspection_vm, "After"), i(1));
 }
 
 #[test]
@@ -931,6 +945,63 @@ fn test_char_type_direct() {
         Value::Str("upper/1".to_string(), vec![ub("L")])).0);
 }
 
+#[test]
+fn test_code_type_direct() {
+    assert!(call2("code_type/2", i(65), a("alpha")).0);
+    assert!(call2("code_type/2", i(65), a("upper")).0);
+    assert!(call2("code_type/2", i(97), a("lower")).0);
+    assert!(call2("code_type/2", i(48), a("digit")).0);
+    assert!(call2("code_type/2", i(95), a("csym")).0);
+    assert!(call2("code_type/2", i(95), a("csymf")).0);
+    assert!(call2("code_type/2", i(10), a("space")).0);
+    assert!(call2("code_type/2", i(9), a("white")).0);
+    assert!(call2("code_type/2", i(33), a("punct")).0);
+    assert!(call2("code_type/2", i(33), a("graph")).0);
+    assert!(call2("code_type/2", i(127), a("ascii")).0);
+    assert!(!call2("code_type/2", i(128), a("ascii")).0);
+    assert!(call2("code_type/2", i(10), a("newline")).0);
+    assert!(call2("code_type/2", i(13), a("end_of_line")).0);
+    assert!(!call2("code_type/2", i(-1), a("ascii")).0);
+    assert!(!call2("code_type/2", i(256), a("ascii")).0);
+    assert!(!call2("code_type/2", a("A"), a("alpha")).0);
+    assert!(!call2("code_type/2", ub("Code"), a("alpha")).0);
+    assert!(!call2("code_type/2", i(65), ub("Type")).0);
+    assert!(!call2("code_type/2", i(65), a("unknown")).0);
+}
+
+#[test]
+fn test_sub_atom_direct() {
+    let (ok, vm) = call5("sub_atom/5",
+        a("hello"), i(1), i(3), ub("After"), ub("Sub"));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "After"), i(1));
+    assert_eq!(read_var(&vm, "Sub"), a("ell"));
+
+    assert!(call5("sub_atom/5", a("hello"), i(0), i(5), i(0), a("hello")).0);
+    let (empty_ok, empty_vm) = call5("sub_atom/5",
+        a("hello"), i(2), i(0), ub("After"), ub("Sub"));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "After"), i(3));
+    assert_eq!(read_var(&empty_vm, "Sub"), a(""));
+
+    assert!(!call5("sub_atom/5", a("hello"), i(1), i(3), i(2), a("ell")).0);
+    let (rollback_ok, rollback_vm) = call5("sub_atom/5",
+        a("hello"), i(1), i(3), ub("After"), a("wrong"));
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "After"), ub("After"),
+        "failed Sub unification must roll back the After binding");
+
+    assert!(!call5("sub_atom/5", i(42), i(0), i(1), ub("After"), ub("Sub")).0);
+    assert!(!call5("sub_atom/5", ub("Atom"), i(0), i(1), ub("After"), ub("Sub")).0);
+    assert!(!call5("sub_atom/5", a("hello"), ub("Before"), i(1), ub("After"), ub("Sub")).0);
+    assert!(!call5("sub_atom/5", a("hello"), i(0), ub("Length"), ub("After"), ub("Sub")).0);
+    assert!(!call5("sub_atom/5", a("hello"), i(-1), i(1), ub("After"), ub("Sub")).0);
+    assert!(!call5("sub_atom/5", a("hello"), i(1), i(-1), ub("After"), ub("Sub")).0);
+    assert!(!call5("sub_atom/5", a("hello"), i(4), i(2), ub("After"), ub("Sub")).0);
+    assert!(!call5("sub_atom/5", a("hello"), i(i64::MAX), i(i64::MAX),
+        ub("After"), ub("Sub")).0);
+}
+
 // ---- layer 2: direct execute_builtin coverage ------------------------
 
 fn call1(op: &str, a1: Value) -> (bool, WamState) {
@@ -964,6 +1035,17 @@ fn call4(op: &str, a1: Value, a2: Value, a3: Value, a4: Value) -> (bool, WamStat
     vm.set_reg("A3", a3);
     vm.set_reg("A4", a4);
     let ok = vm.execute_builtin(op, 4);
+    (ok, vm)
+}
+
+fn call5(op: &str, a1: Value, a2: Value, a3: Value, a4: Value, a5: Value) -> (bool, WamState) {
+    let mut vm = vmnew();
+    vm.set_reg("A1", a1);
+    vm.set_reg("A2", a2);
+    vm.set_reg("A3", a3);
+    vm.set_reg("A4", a4);
+    vm.set_reg("A5", a5);
+    let ok = vm.execute_builtin(op, 5);
     (ok, vm)
 }
 
