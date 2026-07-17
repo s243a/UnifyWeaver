@@ -25,7 +25,9 @@ NOT self-separate: step size follows the learning rate, not the information, so 
 So the candidate-ranking CE IS quantization-noise-dominated, exactly as claimed, and the gate turns
 that low information into a small, self-limited step — the two-timescale falls out of the
 information content, realized through the program's own Kalman/precision machinery rather than a
-hand-set `lr_slow`. (Naive SGD would have needed the timescale tuned by hand.)
+hand-set `lr_slow`. (Naive SGD would have needed the timescale tuned by hand.) The general principle
+— why Adam and SGD both break emergent-timescale learning and a precision-weighted update is
+required — is derived in THEORY_emergent_timescale_learning.md.
 
 ## 2. Scale-free negatives carry more information than uniform
 

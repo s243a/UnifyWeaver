@@ -50,10 +50,15 @@ reference the fusion itself cannot supply.
         if b % K == 0:
             slow_step(model, ranking_batch, sonnet)  # candidate-softmax CE + λ_cal anchor, lr_slow
 
-Timescale split (DESIGN_amortized_fusion_heads.md): `lr_slow ≪ lr_fast` (or K≫1). The judge is the
-slow meta-parameter set (the calibration of μ); the Kalman blocks + μ heads are the fast inner
-estimator. Anchor loss (agnostic readouts pinned to the base) stays on throughout, so untrained
-identities do not drift (the Filing v1 finding-6 lesson; checkpoint remains Pearltrees-only).
+Timescale split (DESIGN_amortized_fusion_heads.md): the judge is the slow meta-parameter (the
+calibration of μ); the Kalman blocks + μ heads are the fast inner estimator. IMPORTANT (added after
+implementation): do NOT impose the split with `lr_slow ≪ lr_fast` or a `K`-batch cadence. The judge
+uses a PRECISION/SNR-GATED update so the slow timescale EMERGES from the (low) information in the
+quantization-noisy ranking CE — Adam and plain SGD both destroy this and silently reintroduce a
+hand-tuned timescale. The full derivation is THEORY_emergent_timescale_learning.md; the fast μ heads
+keep Adam (their MSE signal is high-SNR, so gating buys nothing there). Anchor loss (agnostic
+readouts pinned to the base) stays on throughout, so untrained identities do not drift (the Filing v1
+finding-6 lesson; checkpoint remains Pearltrees-only).
 
 ## Evaluation
 
