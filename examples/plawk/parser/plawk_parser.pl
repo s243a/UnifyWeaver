@@ -1609,6 +1609,18 @@ action(Action) -->
 %  to the matched text). Parses to regex_sub(Global, Regex, Repl) with Global 1
 %  for gsub, 0 for sub. v1: the target is $0 (no third arg); the codegen supports
 %  the `Pattern { sub/gsub(...); print }` stream-editor idiom.
+% `gsub(/re/, "repl", var)` -- substitute into the string scalar `var` (in place),
+% not $0. Tried before the no-target form; a missing third arg backtracks.
+subgsub_action(regex_sub_var(Global, Regex, Repl, Name)) -->
+    subgsub_keyword(Global),
+    ws, "(", ws,
+    regex_arg(Regex),
+    ws, ",", ws,
+    quoted_string(RCodes),
+    { string_codes(Repl, RCodes) },
+    ws, ",", ws,
+    identifier(Name),
+    ws, ")".
 subgsub_action(regex_sub(Global, Regex, Repl)) -->
     subgsub_keyword(Global),
     ws, "(", ws,

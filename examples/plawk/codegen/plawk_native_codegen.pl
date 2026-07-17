@@ -250,7 +250,6 @@ print_line:
 @.plawk_surface_print_newline = private constant [2 x i8] c"\\0A\\00"
 @.plawk_surface_print_string = private constant [3 x i8] c"%s\\00"
 @.plawk_surface_print_f64 = private constant [3 x i8] c"%g\\00"
-@plawk_gsub_count = internal global i64 0
 ~w
 ~w
 ~w
@@ -11786,6 +11785,14 @@ plawk_scalar_action_update(set(var(Name), sprintf(string(Format), Args)), Name,
         set_str(sprintf(string(Format), Args))) :-
     string(Format),
     is_list(Args).
+% `gsub(/re/, "repl", var)` / `sub(...)`: substitute in place into the string
+% scalar `var`. Types `var` as a string scalar (set_str); the substitution reads
+% the slot's current interned value and re-interns the result.
+plawk_scalar_action_update(regex_sub_var(Global, Regex, Repl, Name), Name,
+        set_str(gsub_str(Global, Regex, Repl))) :-
+    integer(Global),
+    string(Regex),
+    string(Repl).
 % Ternary assignment `x = COND ? A : B`: an i64 value via select (the operation
 % lowers through plawk_scalar_numeric_expr_ir(ternary(...)) -> plawk_i64_expr_ir).
 plawk_scalar_action_update(set(var(Name), ternary(cmp(Left, _Op, Right), Then, Else)),
@@ -12324,6 +12331,33 @@ plawk_scalar_update_operation_ir(add(Expr), _Slot, FieldSeparator, Prefix, SlotI
 % String scalar assignment (`x = $1 $2` / `x = "text"`): build the RHS bytes,
 % intern to an atom id, and that id becomes the slot's new i64 value. Reads /
 % `print` resolve the id back to text.
+% `gsub(/re/, "repl", var)`: substitute over the slot's CURRENT interned value
+% (InputValue -> text via @wam_atom_to_string), producing a fresh interned id.
+% The discarded count goes to the shared @plawk_gsub_count scratch.
+plawk_scalar_update_operation_ir(set_str(gsub_str(Global, Regex, Repl)), scalar_string(_Name),
+        _FieldSeparator, Prefix, SlotIndex, OpIndex, InputValue, NextValue, GlobalIR-IR) :-
+    !,
+    format(atom(Base), '~w_slot_~w_op_~w_gsub', [Prefix, SlotIndex, OpIndex]),
+    format(atom(PatName), '~w_pat', [Base]),
+    format(atom(ReplName), '~w_repl', [Base]),
+    format(atom(CacheName), '~w_cache', [Base]),
+    llvm_emit_c_string_global(PatName, Regex, PatGlobal, _PL, PatBytes),
+    llvm_emit_c_string_global(ReplName, Repl, ReplGlobal, ReplLen, ReplBytes),
+    format(atom(CacheGlobal), '@~w = internal global i8* null', [CacheName]),
+    ( Global =:= 1 -> GlobalBool = true ; GlobalBool = false ),
+    format(atom(NextValue), '%~w_id', [Base]),
+    format(atom(IR),
+'  %~w_str = call i8* @wam_atom_to_string(i64 ~w)
+  %~w_len = call i64 @strlen(i8* %~w_str)
+  %~w_patptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  %~w_replptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  ~w = call i64 @wam_regex_gsub(i8* %~w_str, i64 %~w_len, i8* %~w_patptr, i8** @~w, i8* %~w_replptr, i64 ~w, i1 ~w, i64* @plawk_gsub_count)',
+        [Base, InputValue,
+         Base, Base,
+         Base, PatBytes, PatBytes, PatName,
+         Base, ReplBytes, ReplBytes, ReplName,
+         NextValue, Base, Base, Base, CacheName, Base, ReplLen, GlobalBool]),
+    atomic_list_concat([PatGlobal, ReplGlobal, CacheGlobal], '\n', GlobalIR).
 plawk_scalar_update_operation_ir(set_str(Src), scalar_string(_Name), FieldSeparator,
         Prefix, SlotIndex, OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
     !,

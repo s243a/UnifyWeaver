@@ -133,6 +133,43 @@ test(rlength_guard, [condition(clang_available)]) :-
         "ab7\ncd999\n", Out, St),
     assertion(St == 0), assertion(Out == "long\n"), !.
 
+% --- sub/gsub into a string-scalar target ----------------------------------
+
+% gsub into a string scalar (built from a field via the concat idiom).
+test(gsub_into_scalar, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'gv', "{ s = $1 \"\"; gsub(/[0-9]/, \"#\", s); print s }\n",
+        "a1b2\n", Out, St),
+    assertion(St == 0), assertion(Out == "a#b#\n"), !.
+
+% sub into a scalar replaces only the first match.
+test(sub_into_scalar, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'sv', "{ s = \"foo\"; sub(/o/, \"0\", s); print s }\n",
+        "x\n", Out, St),
+    assertion(St == 0), assertion(Out == "f0o\n"), !.
+
+% & expansion works on a scalar target.
+test(gsub_scalar_amp, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'gva', "{ s = \"ab12\"; gsub(/[0-9]+/, \"[&]\", s); print s }\n",
+        "x\n", Out, St),
+    assertion(St == 0), assertion(Out == "ab[12]\n"), !.
+
+% chained substitutions on the same scalar compose.
+test(gsub_scalar_chained, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'gvc', "{ s = $1 \"\"; gsub(/a/, \"X\", s); gsub(/b/, \"Y\", s); print s }\n",
+        "abab\n", Out, St),
+    assertion(St == 0), assertion(Out == "XYXY\n"), !.
+
+% the substituted scalar survives to END.
+test(gsub_scalar_end, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'gve', "{ s = $1 \"\"; gsub(/[0-9]/, \"#\", s) } END { print s }\n",
+        "a1\nb2\n", Out, St),
+    assertion(St == 0), assertion(Out == "b#\n"), !.
+
 :- end_tests(plawk_subgsub_match).
 
 % --- helpers ---------------------------------------------------------------
