@@ -44,6 +44,10 @@ test(regex_fs_field_slice_and_count) :-
     regex_fs_driver_ir(DriverIR),
     run_assoc_i64_smoke('uw_wam_regex_fs', DriverIR).
 
+test(regex_match_and_gsub) :-
+    regex_match_gsub_driver_ir(DriverIR),
+    run_assoc_i64_smoke('uw_wam_regex_match_gsub', DriverIR).
+
 run_assoc_i64_smoke(Name, DriverIR) :-
     tmp_root(Root),
     directory_file_path(Root, Name, Dir),
@@ -383,6 +387,86 @@ entry:
   %a8 = and i1 %a7, %g2l_ok
   %a9 = and i1 %a8, %g2c_ok
   br i1 %a9, label %ok, label %bad
+
+ok:
+  ret i32 0
+
+bad:
+  ret i32 91
+}
+').
+
+% Exercise @wam_regex_match (RSTART/RLENGTH out-params + returned position) and
+% @wam_regex_gsub (global gsub, non-global sub, and & expansion), comparing gsub
+% results against interned expected strings.
+regex_match_gsub_driver_ir('
+@.uw_mg_pat = private constant [7 x i8] c"[0-9]+\00"
+@.uw_mg_str = private constant [10 x i8] c"abc123def\00"
+@.uw_mg_gstr = private constant [10 x i8] c"a1b22c333\00"
+@.uw_mg_hash = private constant [2 x i8] c"#\00"
+@.uw_mg_ghash_exp = private constant [7 x i8] c"a#b#c#\00"
+@.uw_mg_shash_exp = private constant [10 x i8] c"a#b22c333\00"
+@.uw_mg_amp = private constant [4 x i8] c"[&]\00"
+@.uw_mg_astr = private constant [6 x i8] c"a1b22\00"
+@.uw_mg_amp_exp = private constant [10 x i8] c"a[1]b[22]\00"
+@mg_c1 = internal global i8* null
+@mg_c2 = internal global i8* null
+@mg_c3 = internal global i8* null
+@mg_c4 = internal global i8* null
+
+define i32 @main() {
+entry:
+  %pat = getelementptr [7 x i8], [7 x i8]* @.uw_mg_pat, i64 0, i64 0
+  %rstart = alloca i64, align 8
+  %rlength = alloca i64, align 8
+  %cnt = alloca i64, align 8
+
+  ; match "[0-9]+" in "abc123def" -> pos 4, rlength 3
+  %mstr = getelementptr [10 x i8], [10 x i8]* @.uw_mg_str, i64 0, i64 0
+  %pos = call i64 @wam_regex_match(i8* %mstr, i64 9, i8* %pat, i8** @mg_c1, i64* %rstart, i64* %rlength)
+  %rs = load i64, i64* %rstart
+  %rl = load i64, i64* %rlength
+  %pos_ok = icmp eq i64 %pos, 4
+  %rs_ok = icmp eq i64 %rs, 4
+  %rl_ok = icmp eq i64 %rl, 3
+
+  ; gsub "[0-9]+" -> "#" (global) over "a1b22c333" -> "a#b#c#", count 3
+  %gstr = getelementptr [10 x i8], [10 x i8]* @.uw_mg_gstr, i64 0, i64 0
+  %hash = getelementptr [2 x i8], [2 x i8]* @.uw_mg_hash, i64 0, i64 0
+  %gid = call i64 @wam_regex_gsub(i8* %gstr, i64 9, i8* %pat, i8** @mg_c2, i8* %hash, i64 1, i1 true, i64* %cnt)
+  %gcnt = load i64, i64* %cnt
+  %gexp_p = getelementptr [7 x i8], [7 x i8]* @.uw_mg_ghash_exp, i64 0, i64 0
+  %gexp = call i64 @wam_intern_atom(i8* %gexp_p, i64 6)
+  %gid_ok = icmp eq i64 %gid, %gexp
+  %gcnt_ok = icmp eq i64 %gcnt, 3
+
+  ; sub "[0-9]+" -> "#" (non-global) -> "a#b22c333", count 1
+  %sid = call i64 @wam_regex_gsub(i8* %gstr, i64 9, i8* %pat, i8** @mg_c3, i8* %hash, i64 1, i1 false, i64* %cnt)
+  %scnt = load i64, i64* %cnt
+  %sexp_p = getelementptr [10 x i8], [10 x i8]* @.uw_mg_shash_exp, i64 0, i64 0
+  %sexp = call i64 @wam_intern_atom(i8* %sexp_p, i64 9)
+  %sid_ok = icmp eq i64 %sid, %sexp
+  %scnt_ok = icmp eq i64 %scnt, 1
+
+  ; gsub "[0-9]+" -> "[&]" (global) over "a1b22" -> "a[1]b[22]", count 2
+  %astr = getelementptr [6 x i8], [6 x i8]* @.uw_mg_astr, i64 0, i64 0
+  %amp = getelementptr [4 x i8], [4 x i8]* @.uw_mg_amp, i64 0, i64 0
+  %aid = call i64 @wam_regex_gsub(i8* %astr, i64 5, i8* %pat, i8** @mg_c4, i8* %amp, i64 3, i1 true, i64* %cnt)
+  %acnt = load i64, i64* %cnt
+  %aexp_p = getelementptr [10 x i8], [10 x i8]* @.uw_mg_amp_exp, i64 0, i64 0
+  %aexp = call i64 @wam_intern_atom(i8* %aexp_p, i64 9)
+  %aid_ok = icmp eq i64 %aid, %aexp
+  %acnt_ok = icmp eq i64 %acnt, 2
+
+  %a1 = and i1 %pos_ok, %rs_ok
+  %a2 = and i1 %a1, %rl_ok
+  %a3 = and i1 %a2, %gid_ok
+  %a4 = and i1 %a3, %gcnt_ok
+  %a5 = and i1 %a4, %sid_ok
+  %a6 = and i1 %a5, %scnt_ok
+  %a7 = and i1 %a6, %aid_ok
+  %a8 = and i1 %a7, %acnt_ok
+  br i1 %a8, label %ok, label %bad
 
 ok:
   ret i32 0
