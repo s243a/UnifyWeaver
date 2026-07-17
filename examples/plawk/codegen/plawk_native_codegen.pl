@@ -6224,14 +6224,24 @@ plawk_slot_name(scalar_double(Name), Name).
 % A string scalar's slot holds an interned atom id (an i64); the id 0 is the
 % "unset" sentinel, printed as the empty string.
 plawk_slot_name(scalar_string(Name), Name).
+% A strnum scalar (POSIX numeric-string duality, PLAWK_STRNUM_DUALITY.md): a
+% value copied from a strnum source (a field for now) that compares numerically
+% or lexically by its runtime content. Its slot holds an interned atom id (an
+% i64) like a string scalar -- the string bytes are retained so a later
+% comparison can decide numeric vs lexical. This slot KIND is recognised
+% infrastructure (origin analysis, symbol, repr) but the type inferencer does
+% not yet produce it and no comparison dispatches on it -- that is step 3.
+plawk_slot_name(scalar_strnum(Name), Name).
 
 plawk_slot_llvm_type(scalar_counter(_Name), i64).
 plawk_slot_llvm_type(scalar_double(_Name), double).
 plawk_slot_llvm_type(scalar_string(_Name), i64).
+plawk_slot_llvm_type(scalar_strnum(_Name), i64).
 
 plawk_slot_zero_ir(scalar_counter(_Name), '0').
 plawk_slot_zero_ir(scalar_double(_Name), '0.0').
 plawk_slot_zero_ir(scalar_string(_Name), '0').
+plawk_slot_zero_ir(scalar_strnum(_Name), '0').
 
 plawk_state_slot_lookup(StatePlan, Name, Index, Slot) :-
     plawk_state_plan_slots(StatePlan, Slots),
@@ -6492,6 +6502,60 @@ plawk_scalar_string_names(Rules, Strings) :-
         ),
         Names0),
     sort(Names0, Strings).
+
+%% plawk_scalar_strnum_names(+Rules, -Strnums)
+%
+%  Origin/provenance analysis for POSIX strnum duality (PLAWK_STRNUM_DUALITY.md
+%  step 2). A name is a strnum when it is assigned **only** from strnum sources
+%  and never from a non-strnum one. A strnum source is a bare field copy
+%  (`x = $N`); a disqualifier is any other write to the name -- a literal,
+%  arithmetic, concat, a string builtin, a sprintf, a ternary, another var,
+%  etc. -- because those produce a plain number or string, destroying the
+%  duality (matching awk, where arithmetic yields a number and a literal yields
+%  a string). A name must have at least one strnum source and zero disqualifiers
+%  to qualify; a name written both ways cannot be tagged with one static slot
+%  kind, so it is conservatively excluded (step 5's honest-scoping gate governs
+%  those). v1 scope mirrors plawk_scalar_string_names/2: top-level rule-body
+%  assignments (nested if/loop-body writes and non-field sources such as
+%  split()/getline are follow-ons -- design doc step 4).
+plawk_scalar_strnum_names(Rules, Strnums) :-
+    findall(Name,
+        ( member(rule(_Pattern, Actions0), Rules),
+          plawk_trim_control_tails(Actions0, Actions),
+          member(Action, Actions),
+          plawk_scalar_strnum_source(Action, Name)
+        ),
+        Sources0),
+    sort(Sources0, Sources),
+    findall(Name,
+        ( member(rule(_Pattern, ActionsD0), Rules),
+          plawk_trim_control_tails(ActionsD0, ActionsD),
+          member(ActionD, ActionsD),
+          plawk_scalar_strnum_disqualify(ActionD, Name)
+        ),
+        Disq0),
+    sort(Disq0, Disq),
+    findall(Name,
+        ( member(Name, Sources),
+          \+ memberchk(Name, Disq)
+        ),
+        Strnums0),
+    sort(Strnums0, Strnums).
+
+% A strnum source: a bare field copy `x = $N`. Both surface shapes for a field
+% read (`field(N)` and `int(field(N))`) count.
+plawk_scalar_strnum_source(set(var(Name), field(FieldIndex)), Name) :-
+    integer(FieldIndex),
+    FieldIndex >= 0.
+plawk_scalar_strnum_source(set(var(Name), int(field(FieldIndex))), Name) :-
+    integer(FieldIndex),
+    FieldIndex >= 0.
+
+% Any write to Name that is not a strnum source disqualifies it from being a
+% pure strnum.
+plawk_scalar_strnum_disqualify(Action, Name) :-
+    plawk_scalar_action_update(Action, Name, _Operation),
+    \+ plawk_scalar_strnum_source(Action, Name).
 
 plawk_scalar_update_name_expr(Action, Name, Expr) :-
     plawk_scalar_action_update(Action, Name, Operation),
