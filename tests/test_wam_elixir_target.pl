@@ -1815,27 +1815,27 @@ test_graph_kernel_transitive_distance_emitted_in_runtime :-
     ;   fail_test(Test, 'GraphKernel.TransitiveDistance module missing expected API')
     ).
 
-test_graph_kernel_transitive_distance_uses_per_path_visited :-
-    % Per-path visited list (matches Rust collect_native_transitive_distance_results).
-    % Without it the recursion would loop on cyclic graphs. The walker should
-    % use :lists.member for the visited check (consistent with PR #1817 where
-    % the explicit :lists.member call beats `Enum.member?` on the hot path).
-    Test = 'GraphKernel TransitiveDistance: kernel uses per-path visited list with :lists.member',
+test_graph_kernel_transitive_distance_uses_distplus_bfs :-
+    % Fleet TD3 contract: one minimum positive distance per target. The
+    % source is deliberately not pre-seeded in the visited set, so it is
+    % emitted only through a self-loop or nonempty cycle.
+    Test = 'GraphKernel TransitiveDistance: kernel uses finite dist+ BFS',
     compile_wam_runtime_to_elixir([], RuntimeCode),
-    % Locate the TransitiveDistance module body and check its walker
-    % uses :lists.member — anchored to the module to avoid matching
-    % CategoryAncestors visited check.
+    % Anchor to this module so other graph kernels cannot satisfy the check.
     Pattern = "defmodule WamRuntime.GraphKernel.TransitiveDistance do",
-    EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.TransitiveParentDistance do",
     (   sub_string(RuntimeCode, Start, _, _, Pattern),
         sub_string(RuntimeCode, End, _, _, EndPattern),
         End > Start,
         BodyLen is End - Start,
         sub_string(RuntimeCode, Start, BodyLen, _, Body),
-        sub_string(Body, _, _, _, ":lists.member(target, visited)"),
-        sub_string(Body, _, _, _, "[target | visited]")
+        sub_string(Body, _, _, _, ":queue.in({start, 0}, :queue.new())"),
+        sub_string(Body, _, _, _, "MapSet.new()"),
+        sub_string(Body, _, _, _, "MapSet.member?(vv, target)"),
+        sub_string(Body, _, _, _, "MapSet.put(vv, target)"),
+        \+ sub_string(Body, _, _, _, "MapSet.new([start])")
     ->  pass(Test)
-    ;   fail_test(Test, 'TransitiveDistance walker missing :lists.member visited check')
+    ;   fail_test(Test, 'TransitiveDistance kernel missing strict dist+ BFS shape')
     ).
 
 test_kernel_dispatch_emits_transitive_distance_module :-
@@ -1860,6 +1860,17 @@ test_kernel_dispatch_emits_transitive_distance_module :-
         % based on which register the active aggregate is capturing.
         sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
         sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
+        % Bound-output gate plus ordinary choice-point streaming.
+        sub_string(S, _, _, _, "|> compatible_pairs(state)"),
+        % Aggregate contributions are filtered by joint A2/A3 unification,
+        % so shared output variables cannot be treated as two wildcards.
+        sub_string(S, _, _, _,
+                   "not is_nil(bind_two_regs(state, candidate_target, candidate_distance))"),
+        sub_string(S, _, _, _, "unless is_binary(start_val), do: throw({:fail, state})"),
+        sub_string(S, _, _, _, "defp stream_pairs(state, [])"),
+        sub_string(S, _, _, _, "pc: fn restored -> stream_pairs(restored, rest) end"),
+        % Candidate binding dereferences output aliases before unification.
+        sub_string(S, _, _, _, "WamRuntime.get_reg(state, reg_idx)"),
         % Driver-direct binding of both target (reg 2) and distance (reg 3).
         sub_string(S, _, _, _, "bind_two_regs(state, "),
         % Falls through to collect_pairs (no separate fold variant yet —
@@ -1868,6 +1879,49 @@ test_kernel_dispatch_emits_transitive_distance_module :-
         sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
     ->  pass(Test)
     ;   fail_test(Test, 'transitive_distance3 dispatch module missing expected shape')
+    ).
+
+test_kernel_dispatch_transitive_distance_e2e :-
+    Test = 'Kernel dispatch: transitive_distance3 bound modes and retry stream e2e',
+    (   catch(process_create(path(elixir), ['-v'],
+                              [stdout(null), stderr(null), process(P)]),
+              _, fail),
+        process_wait(P, exit(0))
+    ->  run_kernel_dispatch_transitive_distance_e2e(Test)
+    ;   format('[SKIP] ~w: elixir not installed~n', [Test])
+    ).
+
+run_kernel_dispatch_transitive_distance_e2e(Test) :-
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdtd/3, [], TdWam),
+    elixir_test_tmp_dir('test_kernel_disp_td_e2e', TmpDir),
+    write_wam_elixir_project([kdtd/3-TdWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false),
+         kernel_dispatch(true), source_module(user)],
+        TmpDir),
+    source_file(test_kernel_dispatch_transitive_distance_e2e, SrcFile),
+    file_directory_name(SrcFile, TestsDir),
+    directory_file_path(TestsDir,
+                        'elixir_e2e/td3_contract_test.exs', DriverSrc),
+    directory_file_path(TmpDir, 'td3_contract_test.exs', DriverDst),
+    copy_file(DriverSrc, DriverDst),
+    process_create(path(elixir),
+        ['-r', 'lib/wam_runtime.ex', '-r', 'lib/kdtd.ex',
+         'td3_contract_test.exs'],
+        [cwd(TmpDir), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
+    read_string(Out, _, StdOut),
+    read_string(Err, _, StdErr),
+    process_wait(Pid, Status),
+    close(Out),
+    close(Err),
+    (   Status = exit(0),
+        sub_string(StdOut, _, _, _,
+                   '[PASS] TD3 Elixir bound modes, aggregate aliases, and stream retry')
+    ->  pass(Test)
+    ;   format('[FAIL] ~w: status=~w~nstdout:~n~s~nstderr:~n~s~n',
+               [Test, Status, StdOut, StdErr]),
+        assertz(test_failed)
     ).
 
 test_shared_detector_finds_transitive_distance :-
@@ -3460,8 +3514,9 @@ run_tests :-
     test_kernel_docstring_documents_integer_id_path,
     test_graph_kernel_tc_emitted_in_runtime,
     test_graph_kernel_transitive_distance_emitted_in_runtime,
-    test_graph_kernel_transitive_distance_uses_per_path_visited,
+    test_graph_kernel_transitive_distance_uses_distplus_bfs,
     test_kernel_dispatch_emits_transitive_distance_module,
+    test_kernel_dispatch_transitive_distance_e2e,
     test_shared_detector_finds_transitive_distance,
     test_graph_kernel_transitive_parent_distance_emitted_in_runtime,
     test_graph_kernel_transitive_parent_distance_no_visited_set,

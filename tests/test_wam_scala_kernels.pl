@@ -39,6 +39,9 @@ user:kedge(b, c).
 user:kedge(c, d).
 user:kedge(a, e).
 user:kedge(e, f).
+% Deliberate non-atom key: the native TD3 Source guard must reject it even
+% though an otherwise valid outgoing edge exists in the indexed relation.
+user:kedge(1, integer_key_target).
 
 user:ktc(X, Y) :- kedge(X, Y).
 user:ktc(X, Y) :- kedge(X, Z), ktc(Z, Y).
@@ -189,6 +192,12 @@ test(distance_kernel_emits_handler_and_stub) :-
             Dir),
         kprogram_source(Dir, 'kd.core', Src),
         assertion(sub_string(Src, _, _, _, "CallForeign(\"ktd\", 3)")),
+        sub_string(Src, GuardAt, _, _, "args(0) match"),
+        sub_string(Src, QueueAt, _, _,
+                   "Queue[(WamTerm, Int)]((source, 0))"),
+        assertion(GuardAt < QueueAt),
+        assertion(sub_string(Src, _, _, _, "case source @ Atom(_) =>")),
+        assertion(sub_string(Src, _, _, _, "case _ => ForeignFail")),
         assertion(sub_string(Src, _, _, _, "3 -> IntTerm")),
         assertion(sub_string(Src, _, _, _, "\"kedge/2\" ->")),
         delete_directory_and_contents(Dir)
@@ -336,6 +345,15 @@ test(transitive_distance_parity,
     ksame(Run, 'ktd/3', [b,d,'2'], "true"),
     ksame(Run, 'ktd/3', [a,d,'2'], "false"),
     ksame(Run, 'ktd/3', [a,c,'3'], "false").
+
+test(transitive_distance_rejects_non_atom_source,
+     [setup(kbuild_both([user:ktd/3, user:kedge/2], 'gen.ktd_source_gate', Run)),
+      cleanup(kcleanup(Run))]) :-
+    % Run the native build directly: generic recursive Prolog accepts the
+    % integer-key edge, while the strict TD3 native contract requires Atom.
+    Run = run(_ItDir, KnDir, _ItPkg, KnPkg),
+    krun(KnDir, KnPkg, 'ktd/3', ['1',integer_key_target,'1'], Out),
+    assertion(Out == "false").
 
 % transitive_parent_distance4: (target, immediate-parent, distance).
 test(transitive_parent_distance_parity,

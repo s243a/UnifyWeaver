@@ -370,12 +370,13 @@ let main _argv =
 
 :- begin_tests(wam_fsharp_kernel_gate_tc).
 
-test(capability_allowlist_includes_shipped_and_tc2) :-
+test(capability_allowlist_includes_shipped_tc2_and_td3) :-
     wam_fsharp_native_kernel_kind(category_ancestor),
     wam_fsharp_native_kernel_kind(bidirectional_ancestor),
     wam_fsharp_native_kernel_kind(transitive_closure2),
-    \+ wam_fsharp_native_kernel_kind(transitive_distance3),
-    \+ wam_fsharp_native_kernel_kind(weighted_shortest_path3).
+    wam_fsharp_native_kernel_kind(transitive_distance3),
+    \+ wam_fsharp_native_kernel_kind(weighted_shortest_path3),
+    \+ wam_fsharp_native_kernel_kind(transitive_parent_distance4).
 
 test(every_allowlisted_kind_has_a_real_handler) :-
     forall(
@@ -401,6 +402,10 @@ test(existing_closure_layers_present) :-
     assertion(sub_string(LmdbS, _, _, _, "reachableToRootVia")),
     assertion(sub_string(LmdbS, _, _, _, "reachableToRoot")),
     assertion(sub_string(TcS, _, _, _, "let nativeKernel_transitive_closure")),
+    atom_concat(Tw, 'kernel_transitive_distance.fs.mustache', Td),
+    read_file_to_string(Td, TdS, []),
+    assertion(sub_string(TdS, _, _, _, "let nativeKernel_transitive_distance")),
+    assertion(sub_string(TdS, _, _, _, "dist+")),
     % TC2 must not define the demand-pruning helpers (comments may mention them).
     assertion(\+ sub_string(TcS, _, _, _, "let reachableToRoot")),
     !.
@@ -514,10 +519,42 @@ fallback_kind_builds(Kind, Setup, Preds, ForbiddenNative) :-
     ),
     !.
 
-test(fallback_transitive_distance3, [condition(dotnet_available)]) :-
-    fallback_kind_builds(transitive_distance3, assert_td_program,
-                         [user:td/3, user:td_edge/2],
-                         "nativeKernel_transitive_distance").
+test(native_td3_codegen_and_build, [condition(dotnet_available)]) :-
+    assert_td_program,
+    tmp_proj(native_td3, Dir),
+    write_wam_fsharp_project(
+        [user:td/3, user:td_edge/2],
+        [module_name('uw_fs_native_td3')],
+        Dir),
+    directory_file_path(Dir, 'WamRuntime.fs', RT),
+    read_file_to_string(RT, RTS, []),
+    assertion(sub_string(RTS, _, _, _, "nativeKernel_transitive_distance")),
+    assertion(sub_string(RTS, _, _, _, "| \"td/3\" ->")),
+    assertion(sub_string(RTS, _, _, _, "FFIStreamRetry")),
+    assertion(\+ sub_string(RTS, _, _, _, "template not found")),
+    run_dotnet_build(Dir, Exit, Out),
+    assertion(Exit =:= 0),
+    ( Exit =:= 0 -> true
+    ; format(user_error, 'native_td3 build failed:~n~w~n', [Out]), fail
+    ),
+    !.
+
+test(td3_no_kernels_still_builds, [condition(dotnet_available)]) :-
+    assert_td_program,
+    tmp_proj(td3_nk, Dir),
+    write_wam_fsharp_project(
+        [user:td/3, user:td_edge/2],
+        [no_kernels(true), module_name('uw_fs_td3_nk'), conformance_main(true)],
+        Dir),
+    directory_file_path(Dir, 'WamRuntime.fs', RT),
+    read_file_to_string(RT, RTS, []),
+    assertion(\+ sub_string(RTS, _, _, _, "nativeKernel_transitive_distance")),
+    run_dotnet_build(Dir, Exit, Out),
+    assertion(Exit =:= 0),
+    ( Exit =:= 0 -> true
+    ; format(user_error, '~w~n', [Out]), fail
+    ),
+    !.
 
 test(fallback_transitive_parent_distance4, [condition(dotnet_available)]) :-
     fallback_kind_builds(transitive_parent_distance4, assert_tpd_program,

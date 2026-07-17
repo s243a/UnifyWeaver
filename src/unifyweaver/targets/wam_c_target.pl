@@ -6184,15 +6184,67 @@ static bool wam_resume_foreign_stream(WamState *state) {
         return false;
     }
 
-    int index = cp->foreign_result_index++;
     int result_reg = cp->foreign_result_reg;
     int resume_pc = cp->foreign_resume_pc;
+    /* Paired stream (result_reg == 255): interleaved [atom, int, ...]. */
+    if (result_reg == 255) {
+        int index = cp->foreign_result_index;
+        if (index + 1 >= cp->foreign_result_count) {
+            pop_choice_point(state);
+            return false;
+        }
+        WamValue atom_v = cp->foreign_results[index];
+        WamValue dist_v = cp->foreign_results[index + 1];
+        cp->foreign_result_index = index + 2;
+        if (cp->foreign_result_index >= cp->foreign_result_count) {
+            pop_choice_point(state);
+        }
+        if (!wam_unify(state, &state->A[1], &atom_v)) return false;
+        if (!wam_unify(state, &state->A[2], &dist_v)) return false;
+        state->P = resume_pc;
+        return true;
+    }
+
+    int index = cp->foreign_result_index++;
     WamValue result = cp->foreign_results[index];
     if (cp->foreign_result_index >= cp->foreign_result_count) {
         pop_choice_point(state);
     }
     if (!wam_unify(state, &state->A[result_reg], &result)) return false;
     state->P = resume_pc;
+    return true;
+}
+
+static bool wam_bind_foreign_pair_stream(WamState *state,
+                                         WamValue *results,
+                                         int value_count,
+                                         int resume_pc) {
+    /* results: interleaved [atom, int, ...] with value_count = 2 * pairs. */
+    if (value_count < 2) {
+        free(results);
+        return false;
+    }
+    WamValue first_atom = results[0];
+    WamValue first_dist = results[1];
+    if (value_count > 2) {
+        push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 255);
+        ChoicePoint *cp = &state->B_array[state->B - 1];
+        cp->foreign_results = results;
+        cp->foreign_result_count = value_count;
+        cp->foreign_result_index = 2;
+        cp->foreign_result_reg = 255;
+        cp->foreign_resume_pc = resume_pc;
+    } else {
+        free(results);
+    }
+    if (!wam_unify(state, &state->A[1], &first_atom)) {
+        if (value_count > 2) pop_choice_point(state);
+        return false;
+    }
+    if (!wam_unify(state, &state->A[2], &first_dist)) {
+        if (value_count > 2) pop_choice_point(state);
+        return false;
+    }
     return true;
 }
 
@@ -6235,45 +6287,65 @@ bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity
                                         state->P + 1);
 }
 
-static bool wam_transitive_distance_bfs(WamState *state,
-                                        const char *start,
-                                        const char *target,
-                                        int *distance_filter,
-                                        const char **target_out,
-                                        int *distance_out) {
-    const char *queue_nodes[256];
-    int queue_distances[256];
-    const char *visited[256];
+static bool wam_collect_transitive_distance(WamState *state,
+                                            const char *start,
+                                            const char *target_filter,
+                                            int *distance_filter,
+                                            WamValue **results_out,
+                                            int *value_count_out) {
+    /* dist+ (docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md): BFS;
+     * visited not seeded with start. Results interleaved [atom, int].
+     * Inline kept (matches surrounding wam_*_handler / collect style). */
+    int capacity = state->category_edge_count;
+    if (capacity <= 0 || capacity == INT_MAX) return false;
+
+    const char **visited = malloc(sizeof(const char *) * (size_t)capacity);
+    const char **queue_nodes = malloc(sizeof(const char *) * (size_t)(capacity + 1));
+    int *queue_dists = malloc(sizeof(int) * (size_t)(capacity + 1));
+    WamValue *results = malloc(sizeof(WamValue) * (size_t)capacity * 2);
+    if (!visited || !queue_nodes || !queue_dists || !results) {
+        free(visited);
+        free(queue_nodes);
+        free(queue_dists);
+        free(results);
+        return false;
+    }
+
+    int visited_len = 0;
     int head = 0;
     int tail = 0;
-    int visited_len = 0;
-
+    int value_count = 0;
     queue_nodes[tail] = start;
-    queue_distances[tail++] = 0;
-    visited[visited_len++] = start;
+    queue_dists[tail++] = 0;
 
     while (head < tail) {
         const char *node = queue_nodes[head];
-        int distance = queue_distances[head++];
+        int distance = queue_dists[head++];
         for (int i = 0; i < state->category_edge_count; i++) {
             CategoryEdge *edge = &state->category_edges[i];
             if (strcmp(edge->child, node) != 0) continue;
             if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
             int next_distance = distance + 1;
-            bool target_ok = !target || strcmp(edge->parent, target) == 0;
-            bool distance_ok = !distance_filter || next_distance == *distance_filter;
-            if (target_ok && distance_ok) {
-                *target_out = edge->parent;
-                *distance_out = next_distance;
-                return true;
-            }
-            if (tail >= 256 || visited_len >= 256) return false;
             visited[visited_len++] = edge->parent;
             queue_nodes[tail] = edge->parent;
-            queue_distances[tail++] = next_distance;
+            queue_dists[tail++] = next_distance;
+            if (target_filter && strcmp(edge->parent, target_filter) != 0) continue;
+            if (distance_filter && next_distance != *distance_filter) continue;
+            results[value_count++] = val_atom(edge->parent);
+            results[value_count++] = val_int(next_distance);
         }
     }
-    return false;
+
+    free(visited);
+    free(queue_nodes);
+    free(queue_dists);
+    if (value_count == 0) {
+        free(results);
+        return false;
+    }
+    *results_out = results;
+    *value_count_out = value_count;
+    return true;
 }
 
 bool wam_transitive_distance_handler(WamState *state, const char *pred, int arity) {
@@ -6296,22 +6368,34 @@ bool wam_transitive_distance_handler(WamState *state, const char *pred, int arit
     int *distance_filter = NULL;
     if (distance_cell->tag == VAL_INT) {
         distance_filter_value = distance_cell->data.integer;
+        if (distance_filter_value <= 0) return false;
         distance_filter = &distance_filter_value;
     } else if (!val_is_unbound(*distance_cell)) {
         return false;
     }
 
-    const char *result_target = NULL;
-    int result_distance = 0;
-    if (!wam_transitive_distance_bfs(state, start, target, distance_filter,
-                                     &result_target, &result_distance)) {
+    WamValue *results = NULL;
+    int value_count = 0;
+    if (!wam_collect_transitive_distance(state, start, target, distance_filter,
+                                         &results, &value_count)) {
         return false;
     }
 
-    WamValue target_value = val_atom(result_target);
-    WamValue distance_value = val_int(result_distance);
-    return wam_unify(state, &state->A[1], &target_value) &&
-           wam_unify(state, &state->A[2], &distance_value);
+    /* Bound Target (+ optional Distance): succeed once. Bind Distance
+     * when unbound; both-bound already filtered to an exact match. */
+    if (target) {
+        if (value_count < 2) {
+            free(results);
+            return false;
+        }
+        WamValue dist_v = results[1];
+        free(results);
+        if (distance_filter) return true;
+        return wam_unify(state, &state->A[2], &dist_v);
+    }
+
+    return wam_bind_foreign_pair_stream(state, results, value_count,
+                                        state->P + 1);
 }
 
 static bool wam_transitive_parent_distance_bfs(WamState *state,
