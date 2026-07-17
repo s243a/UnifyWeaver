@@ -5,17 +5,34 @@ Copyright (c) 2026 John William Creighton (@s243a)
 
 # plawk strnum: string/number scalar duality
 
-**Status**: **design note + step 1 landed.** The runtime primitives of §6 step 1
-(`@wam_looks_numeric` and `@wam_strnum_cmp`) are implemented in
-`src/unifyweaver/targets/wam_llvm_target.pl` and unit-tested standalone in
-`tests/core/test_wam_llvm_assoc_i64_runtime.pl` (the recogniser over
-numeric/non-numeric/blank-padded/empty inputs, and the comparison over the
-POSIX kind table incl. the `10 9` vs `10 9x` divergence). **No codegen calls
-them yet** — the `scalar_strnum` slot kind, origin analysis, and comparison
-dispatch (§6 steps 2–3) remain. §3–§5 describe the not-yet-built model. This
-document captures what POSIX "strnum" is, where plawk's current static type
-model diverges from it, why closing the gap is a *type-model* project rather
-than a single feature, and the phased plan.
+**Status**: **design note + steps 1–2 landed.**
+- **Step 1** (runtime): `@wam_looks_numeric` and `@wam_strnum_cmp` are
+  implemented in `src/unifyweaver/targets/wam_llvm_target.pl` and unit-tested in
+  `tests/core/test_wam_llvm_assoc_i64_runtime.pl` (the recogniser over
+  numeric/non-numeric/blank-padded/empty inputs, and the comparison over the
+  POSIX kind table incl. the `10 9` vs `10 9x` divergence).
+- **Step 2** (origin analysis): `plawk_scalar_strnum_names/2` in
+  `examples/plawk/codegen/plawk_native_codegen.pl` decides which names are
+  strnum by provenance (assigned only from a field copy, never from a literal /
+  arithmetic / concat / string builtin), unit-tested in
+  `tests/test_plawk_strnum.pl`. The `scalar_strnum` slot kind is registered as
+  infrastructure (symbol, i64 interned-id representation, zero init). This half
+  is **inert**: the type inferencer does not yet produce `scalar_strnum`, so
+  behaviour is unchanged.
+
+**Not yet built**: step 3 (retype strnum slots to the interned-id
+representation and route guard/`while` comparisons through `@wam_strnum_cmp`),
+step 4 (extend strnum sources beyond fields), step 5 (honest-scoping gate). §3–§5
+describe the not-yet-active model. This document captures what POSIX "strnum" is,
+where plawk's current static type model diverges from it, why closing the gap is
+a *type-model* project rather than a single feature, and the phased plan.
+
+**Representation note**: the shipped `scalar_strnum` slot uses the §4b
+interned-id representation (an i64 atom id, same width as a string scalar) rather
+than the §4a wide `%WamStrnum` cell. This keeps the SSA phi model unchanged — a
+strnum slot phis a single i64 like every other slot — and the looks-numeric
+decision is recomputed at each comparison in step 3. The §4a cell stays the
+documented option if per-comparison recomputation ever shows up in profiles.
 
 ## 1. What strnum is (POSIX awk)
 
