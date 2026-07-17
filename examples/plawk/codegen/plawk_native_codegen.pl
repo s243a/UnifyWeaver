@@ -11754,6 +11754,11 @@ plawk_scalar_update_action_name(Action, Name) :-
     ;   plawk_scalar_operation_expr(Operation, Expr),
         plawk_expr_scalar_read_name(Expr, Name)
     ).
+% `n = gsub(...)` count capture: both the Target string scalar and the CountName
+% i64 slot are written. action_update reports Target; this clause additionally
+% surfaces CountName so it gets its own (i64) slot.
+plawk_scalar_update_action_name(gsub_count(CountName, _Global, _Regex, _Repl, Target), Name) :-
+    ( Name = Target ; Name = CountName ).
 plawk_scalar_update_action_name(dynrec_bind(Vars, _Call, _Types), Name) :-
     plawk_dynrec_binding_names(Vars, Names),
     member(Name, Names).
@@ -11833,6 +11838,16 @@ plawk_scalar_action_update(set(var(Name), sprintf(string(Format), Args)), Name,
 % scalar `var`. Types `var` as a string scalar (set_str); the substitution reads
 % the slot's current interned value and re-interns the result.
 plawk_scalar_action_update(regex_sub_var(Global, Regex, Repl, Name), Name,
+        set_str(gsub_str(Global, Regex, Repl))) :-
+    integer(Global),
+    string(Regex),
+    string(Repl).
+% `n = gsub(/re/, "repl", var)`: count capture. The Target string scalar is
+% substituted in place (same set_str(gsub_str(...)) operation as regex_sub_var);
+% the dedicated action-sequence clause additionally writes the substitution
+% count into the CountName i64 slot. Reported here as a Target string update so
+% the state plan types Target as scalar_string.
+plawk_scalar_action_update(gsub_count(_CountName, Global, Regex, Repl, Target), Target,
         set_str(gsub_str(Global, Regex, Repl))) :-
     integer(Global),
     string(Regex),
@@ -11943,6 +11958,33 @@ plawk_scalar_action_sequence_pairs([dynrec_bind(Vars, Call, Types) | Rest], Slot
     [Pair],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, NextExits).
+% `n = gsub(/re/, "repl", var)` count capture: a dual-slot write. The Target
+% string scalar is substituted in place (same set_str(gsub_str(...)) IR as a
+% bare `gsub(...,var)`), which also stores the substitution count into the
+% shared @plawk_gsub_count global; a following load moves that count into the
+% CountName i64 slot. Placed before the generic set-action clause so its
+% specific head wins.
+plawk_scalar_action_sequence_pairs([gsub_count(CountName, Global, Regex, Repl, Target) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { integer(Global), string(Regex), string(Repl),
+      nth0(TargetIndex, Slots, TargetSlot),
+      plawk_slot_name(TargetSlot, Target),
+      nth0(TargetIndex, Values0, TargetInput),
+      plawk_scalar_update_operation_ir(set_str(gsub_str(Global, Regex, Repl)),
+          TargetSlot, FieldSeparator, Prefix, TargetIndex, OpIndex,
+          TargetInput, TargetNext, GsubPair),
+      replace_nth0(TargetIndex, Values0, TargetNext, Values1),
+      nth0(CountIndex, Slots, CountSlot),
+      plawk_slot_name(CountSlot, CountName),
+      format(atom(CountNext), '%~w_gsubcount_~w', [Prefix, OpIndex]),
+      format(atom(CountLine),
+          '  ~w = load i64, i64* @plawk_gsub_count', [CountNext]),
+      replace_nth0(CountIndex, Values1, CountNext, Values2),
+      NextOpIndex is OpIndex + 1
+    },
+    [GsubPair, ''-CountLine],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values2, Values, FinalOpIndex, ExitLabel, NextExits).
 plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_scalar_action_update(Action, Name, Operation0),
