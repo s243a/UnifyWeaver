@@ -11660,6 +11660,11 @@ plawk_i64_scalar_primary_expr(length(field(FieldIndex))) :-
 plawk_i64_scalar_primary_expr(index(field(FieldIndex), string(Needle))) :-
     FieldIndex >= 0,
     string(Needle).
+plawk_i64_scalar_primary_expr(match_expr(field(FieldIndex), Regex)) :-
+    FieldIndex >= 0,
+    string(Regex).
+plawk_i64_scalar_primary_expr(special('RSTART')).
+plawk_i64_scalar_primary_expr(special('RLENGTH')).
 
 plawk_i64_binary_expr(add_i64(Left, Right), add, add, Left, Right).
 plawk_i64_binary_expr(sub_i64(Left, Right), sub, sub, Left, Right).
@@ -12540,6 +12545,17 @@ plawk_scalar_numeric_expr_ir(length(FieldIndex), FieldSeparator, Prefix, SlotInd
         OpIndex, ValueIR, GlobalIR, IR) :-
     format(atom(LengthBase), '~w_slot_~w_op_~w_len', [Prefix, SlotIndex, OpIndex]),
     plawk_i64_expr_ir_parts(length(FieldIndex), FieldSeparator, LengthBase, LengthBase,
+        ValueIR, GlobalIR, IR).
+plawk_scalar_numeric_expr_ir(match_expr(Src, Regex), FieldSeparator, Prefix, SlotIndex,
+        OpIndex, ValueIR, GlobalIR, IR) :-
+    format(atom(MatchBase), '~w_slot_~w_op_~w_match', [Prefix, SlotIndex, OpIndex]),
+    plawk_i64_expr_ir_parts(match_expr(Src, Regex), FieldSeparator, MatchBase, MatchBase,
+        ValueIR, GlobalIR, IR).
+plawk_scalar_numeric_expr_ir(special(Name), FieldSeparator, Prefix, SlotIndex,
+        OpIndex, ValueIR, GlobalIR, IR) :-
+    ( Name == 'RSTART' ; Name == 'RLENGTH' ),
+    format(atom(SpecBase), '~w_slot_~w_op_~w_spec', [Prefix, SlotIndex, OpIndex]),
+    plawk_i64_expr_ir_parts(special(Name), FieldSeparator, SpecBase, SpecBase,
         ValueIR, GlobalIR, IR).
 plawk_scalar_numeric_expr_ir(field_i64(FieldIndex), FieldSeparator, Prefix, SlotIndex,
         OpIndex, ValueIR, GlobalIR, IR) :-

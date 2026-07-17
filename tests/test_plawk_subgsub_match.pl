@@ -98,6 +98,27 @@ test(match_field, [condition(clang_available)]) :-
         "a,foo,b\n", Out, St),
     assertion(St == 0), assertion(Out == "2 2 2\n"), !.
 
+% match in a scalar assignment: n gets the position, RSTART/RLENGTH are set.
+test(match_scalar_assign, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'ms', "{ n = match($0, /[0-9]+/); print n, RSTART, RLENGTH }\n",
+        "ab123\nxy\n", Out, St),
+    assertion(St == 0), assertion(Out == "3 3 3\n0 0 -1\n"), !.
+
+% RSTART / RLENGTH readable as scalar RHS.
+test(rstart_scalar_rhs, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'rr', "{ n = match($0, /[0-9]+/); x = RLENGTH; print x }\n",
+        "ab777\n", Out, St),
+    assertion(St == 0), assertion(Out == "3\n"), !.
+
+% capture into a slot, then guard on the slot (the guard idiom for match).
+test(match_capture_then_guard, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'mg', "{ n = match($0, /[0-9]+/); if (n > 0) print RSTART, RLENGTH }\n",
+        "ab123\nxy\n", Out, St),
+    assertion(St == 0), assertion(Out == "3 3\n"), !.
+
 :- end_tests(plawk_subgsub_match).
 
 % --- helpers ---------------------------------------------------------------

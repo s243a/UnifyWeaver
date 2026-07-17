@@ -2133,6 +2133,21 @@ scalar_value_expr(string(Value)) -->
 scalar_value_expr(Value) -->
     scalar_delta_expr(Value).
 
+% match/RSTART/RLENGTH as a scalar RHS: `n = match($0, /re/)`, `x = RSTART`.
+% Tried before the arithmetic clause so the `match(` keyword and the special
+% names win over a bare-identifier parse.
+scalar_delta_expr(match_expr(field(Index), Regex)) -->
+    "match", ws, "(", ws,
+    "$", integer_codes(ICodes),
+    { ICodes \== [], number_codes(Index, ICodes), Index >= 0 },
+    ws, ",", ws,
+    regex_arg(Regex),
+    ws, ")",
+    !.
+scalar_delta_expr(special('RSTART')) -->
+    "RSTART".
+scalar_delta_expr(special('RLENGTH')) -->
+    "RLENGTH".
 scalar_delta_expr(Expr) -->
     i64_binary_surface_expr(Expr).
 % Bare float leaves before the integer clause: "0.5" must not stop at
