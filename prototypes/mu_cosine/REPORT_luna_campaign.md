@@ -71,19 +71,42 @@ claim: the recovery is corpus-dependent, S does not improve, and this head resul
 descendant-disjoint—not strict node-disjoint—split. Matched-cost and routing decisions should use the separate
 paired-budget and node-disjoint validations rather than extrapolating this table.
 
+## 3b. Multi-seed hardening (seeds 0–2, full-pipeline reseed: split + covariance fit + init + batches)
+
+Fused vs raw-luna channel head, D WITHIN-stratum, held rows:
+
+| seed | expl fused/luna/5.5h | fresh fused/luna/5.5h |
+|---|---|---|
+| 0 | +0.396 / +0.351 / +0.411 | +0.451 / +0.407 / +0.503 |
+| 1 | +0.607 / +0.594 / +0.600 | +0.411 / +0.401 / +0.465 |
+| 2 | +0.538 / +0.491 / +0.542 | +0.434 / +0.381 / +0.449 |
+
+- **Fused > raw-luna in 6/6 corpus×seed cells** (mean Δ +0.035, sd 0.020) — the win's SIGN is robust;
+  its magnitude varies with the split (seed 1 exploratory nearly ties).
+- Refinement of the §3 claim: on EXPLORATORY the fused head effectively TIES the expensive-label 5.5 head
+  (Δ −0.015/+0.007/−0.004); on FRESH it recovers ~half the gap (−0.052/−0.054/−0.015). "Half the gap" was
+  the conservative read; on the denser corpus fusion closes it entirely.
+- The analytic luna channel value is stable across seeds: +0.766/+0.767/+0.805 (expl), +0.721/+0.700/+0.640
+  (fresh) NLL over prior+graph.
+- Level differences between seeds reflect the split (descendant-disjoint held sets differ in composition) —
+  comparisons are valid within a seed row, which is why the paired Δ is the reported statistic.
+
 ## Caveats
 
-Single deterministic seed and one descendant-disjoint split per corpus; target = the 5.5 operating judge,
-not ground truth (same-family privilege — a human-verified subset remains the gold-standard upgrade); 14
-non-dict response objects skipped at ingest (the §3 format-discipline guard). The implemented bias correction
-is a global per-channel affine fit. Per-stratum/per-D-bin bias models and strict node-disjoint repeated head
-training remain follow-up work.
+One descendant-disjoint split per corpus per seed for the trained heads (the §3b multi-seed table reports
+the paired Δ exactly because held-set composition shifts levels between seeds); target = the 5.5 operating
+judge, not ground truth (same-family privilege — a human-verified subset remains the gold-standard
+upgrade); 14 non-dict response objects skipped at ingest (the §3 format-discipline guard). The implemented
+bias correction is a global per-channel affine fit. Per-stratum/per-D-bin bias models and strict
+node-disjoint repeated head training remain follow-up work.
 
 Run provenance (SHA-256): channel init `797e0b79ceba8af6e98c2fafb21b963de238a68a427deb71a75029f2c97cf1de`;
 campaign-independent prior `c1cfc3a3827e42a1993f4286b6a881aee7ff10eb56a76367735b9ec8fdf11f7d`;
 GPT-5.5 campaign `c2acf399aadd35c3797171d5b42d64e45b07055802092cc28becf308d460ef09`;
 Luna campaign `a8d951b4fd05f0ca111fbe9d9c23881bb47b790ccb335731113bfd4ae77ffe6e`;
 corrected `/tmp` output `fa6a5778452a2a92968cbae14a2150d056d0069d4f20aaa36fbf9aac1a919338`.
+(§3b multi-seed rows were produced pre-luna-debiasing with the seed-0 recipe of that date; treat their
+LEVELS as historical — the paired Δ sign pattern is the durable claim.)
 
 Repro:
 ```

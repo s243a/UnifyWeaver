@@ -63,6 +63,8 @@ def main():
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--anchor-weight", type=float, default=1.0)
     ap.add_argument("--shrink", type=float, default=0.05)
+    ap.add_argument("--seed", type=int, default=0,
+                    help="full-pipeline seed: train/held split, covariance fit, torch init, batch order")
     ap.add_argument("--luna-calibration", choices=("global", "none"), default="global",
                     help="global=train-only affine correction; none only reproduces the historical report")
     ap.add_argument("--analytic-only", action="store_true",
@@ -70,9 +72,9 @@ def main():
     a = ap.parse_args()
     dev = "cpu"
     torch.set_num_threads(1)  # tiny deterministic campaign batches do not benefit from a large BLAS pool
-    torch.manual_seed(0)
-    rng = np.random.default_rng(0)
-    augment_rng = np.random.default_rng(1)
+    torch.manual_seed(a.seed)
+    rng = np.random.default_rng(a.seed)
+    augment_rng = np.random.default_rng(a.seed + 1)   # seed 0 reproduces the pre-flag default (rng 1)
 
     model, cfg = load_expanded(a.ckpt, dev=dev)
     assert model.judge_name is not None
@@ -105,6 +107,9 @@ def main():
     dss = load_campaign_datasets()
     posts, train_rows, matched = {}, {}, {}
     for n, ds in dss.items():
+        if a.seed != 0:                                       # re-split for multi-seed replication
+            from sigma_hop_confirmatory import descendant_disjoint_split
+            ds["tr"], ds["he"] = descendant_disjoint_split(list(ds["pairs"]), a.seed, held_frac=0.30)
         mi = [i for i, p in enumerate(ds["pairs"]) if p in luna_by]
         matched[n] = set(mi)
         luna = np.array([luna_by[ds["pairs"][i]] if i in matched[n] else (np.nan, np.nan)
