@@ -67,6 +67,11 @@ def main(argv=None):
     ap.add_argument("--lam-cal", type=float, default=1.0, help="sonnet magnitude-anchor weight")
     ap.add_argument("--anchor-weight", type=float, default=1.0)
     ap.add_argument("--no-sonnet", action="store_true", help="ablation: CE only, no held-out anchor")
+    ap.add_argument("--neg-alpha", type=float, default=1.0,
+                    help="SCALE-FREE negative sampling over e5-distance rank: P(rank r) ∝ (r+1)^-alpha. "
+                         "alpha=1 (Zipf) = mostly close/confusable candidates + a heavy tail of a few "
+                         "distant ones (the information lives in the close choices; the far ones anchor "
+                         "the easy regime). alpha=0 = uniform (ablation: dilutes the CE information).")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--split-seed", type=int, default=0)
     a = ap.parse_args(argv)
@@ -99,6 +104,24 @@ def main(argv=None):
         if tags[i].startswith("principal"):
             true_anc.setdefault(pairs[i][0], set()).add(pairs[i][1])
     print(f"ranking examples (train principal): {len(rank_ex)}; folder pool {len(folder_pool)}")
+
+    # HARD-NEGATIVE ranking (user's point): the CE signal carries information where folders are
+    # semantically CLOSE — uniform negatives are mostly trivial (far) and dilute the gradient. For
+    # each true parent, rank the pool by e5 cosine (passage embeddings; unit-normed) so negatives are
+    # the confusable NEAR folders — raising CE information and focusing calibration on the hard stratum.
+    cache = ds["cache"]
+    cidx = {n: i for i, n in enumerate(cache["names"])}
+    Pmat = cache["passage"]
+    pool_in = [c for c in folder_pool if c in cidx]
+    pool_vecs = torch.stack([Pmat[cidx[c]] for c in pool_in]) if pool_in else None
+    hard_order = {}
+    if a.neg_alpha > 0 and pool_vecs is not None:
+        for f in {ft for _, ft in rank_ex if ft in cidx}:
+            sims = (pool_vecs @ Pmat[cidx[f]]).tolist()
+            hard_order[f] = [pool_in[k] for k in np.argsort([-s for s in sims])]  # closest first
+        print(f"scale-free negatives: P(rank)∝(r+1)^-{a.neg_alpha} (mostly close + heavy tail)")
+    else:
+        print("uniform negatives (neg-alpha=0, ablation)")
 
     # fast (distillation) training rows — the existing Filing v1 channel rows
     C = CORPORA["pearltrees"]
@@ -185,9 +208,17 @@ def main(argv=None):
             ce, cal, n_cal = 0.0, 0.0, 0
             for j in idxs:
                 node, f_true = rank_ex[j]
-                negs = [c for c in folder_pool if c != f_true and c not in true_anc.get(node, set())]
-                if len(negs) > a.n_cand - 1:
-                    negs = [negs[t] for t in rng.choice(len(negs), size=a.n_cand - 1, replace=False)]
+                excl = true_anc.get(node, set()) | {f_true}
+                if a.neg_alpha > 0 and f_true in hard_order:
+                    ranked = [c for c in hard_order[f_true] if c not in excl]     # closest-first
+                    k = min(a.n_cand - 1, len(ranked))
+                    w = np.array([(r + 1.0) ** (-a.neg_alpha) for r in range(len(ranked))])
+                    pick = rng.choice(len(ranked), size=k, replace=False, p=w / w.sum())
+                    negs = [ranked[t] for t in pick]
+                else:
+                    pool = [c for c in folder_pool if c not in excl]
+                    negs = [pool[t] for t in rng.choice(len(pool), size=min(a.n_cand - 1, len(pool)),
+                                                         replace=False)]
                 cands = [f_true] + negs
                 scores = candidate_scores(model, ds["tok"], node, cands, dev)   # [K]
                 ce = ce + torch.nn.functional.cross_entropy(
