@@ -451,7 +451,8 @@ collect_clauses(Pred, Arity, Clauses) :-
 
 kscala_available :-
     (   getenv('SCALA_SMOKE_TESTS', "1") -> true
-    ;   catch(process_create(path(scalac), ['--version'],
+    ;   % Scala 2.11 accepts -version; --version is a hard error.
+        catch(process_create(path(scalac), ['-version'],
                   [stdout(null), stderr(null), process(Pid)]), _, fail),
         process_wait(Pid, exit(0))
     ).
@@ -500,15 +501,53 @@ kcompile(Dir) :-
     absolute_file_name(Dir, AbsDir),
     directory_file_path(AbsDir, 'classes', ClassDir),
     make_directory_path(ClassDir),
+    % Scala 2.11 lacks String#toIntOption used in generated WamRuntime.
+    forall(
+        ( directory_member(AbsDir, RelF, [extensions([scala]), recursive(true)]),
+          directory_file_path(AbsDir, RelF, F),
+          file_base_name(F, 'WamRuntime.scala')
+        ),
+        kmake_runtime_scalac_211_compatible(F)
+    ),
     findall(F,
         ( directory_member(AbsDir, RelF, [extensions([scala]), recursive(true)]),
           directory_file_path(AbsDir, RelF, F) ), Sources),
     Sources \= [],
-    process_create(path(scalac), ['-d', ClassDir | Sources],
+    (   kscala_211_toolchain
+    ->  CompilePrefix = ['-usejavacp']
+    ;   CompilePrefix = []
+    ),
+    append(CompilePrefix, ['-d', ClassDir | Sources], CompileArgs),
+    process_create(path(scalac), CompileArgs,
         [cwd(AbsDir), stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
     read_string(O, _, _), read_string(E, _, Err), close(O), close(E),
     process_wait(Pid, exit(Code)),
     ( Code =:= 0 -> true ; throw(error(scala_compile_failed(Dir, Code, Err), _)) ).
+
+kscala_211_toolchain :-
+    catch(
+        ( process_create(path(scalac), ['-version'],
+                         [stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
+          read_string(O, _, Out), read_string(E, _, Err),
+          close(O), close(E),
+          process_wait(Pid, exit(0)),
+          string_concat(Out, Err, Combined),
+          sub_string(Combined, _, _, _, "2.11")
+        ),
+        _, fail).
+
+kmake_runtime_scalac_211_compatible(RuntimePath) :-
+    read_file_to_string(RuntimePath, Source0, []),
+    atom_string(SourceAtom0, Source0),
+    Old = 'name.tail.toIntOption.getOrElse(0)',
+    New = 'scala.util.Try(name.tail.toInt).getOrElse(0)',
+    atomic_list_concat(Parts, Old, SourceAtom0),
+    atomic_list_concat(Parts, New, SourceAtom),
+    atom_string(SourceAtom, Source),
+    setup_call_cleanup(
+        open(RuntimePath, write, Stream, [encoding(utf8)]),
+        write(Stream, Source),
+        close(Stream)).
 
 krun(Dir, Package, PredKey, Args, Output) :-
     absolute_file_name(Dir, AbsDir),
@@ -516,7 +555,11 @@ krun(Dir, Package, PredKey, Args, Output) :-
     format(atom(Main), '~w.GeneratedProgram', [Package]),
     atom_string(PredKey, PredStr),
     maplist([A,S]>>atom_string(A,S), Args, ArgStrs),
-    append(['-classpath', ClassDir, Main, PredStr], ArgStrs, ProcArgs),
+    (   kscala_211_toolchain
+    ->  RunPrefix = ['-usejavacp']
+    ;   RunPrefix = []
+    ),
+    append(RunPrefix, ['-classpath', ClassDir, Main, PredStr|ArgStrs], ProcArgs),
     process_create(path(scala), ProcArgs,
         [cwd(AbsDir), stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
     read_string(O, _, Out0), read_string(E, _, _), close(O), close(E),

@@ -72,24 +72,30 @@ fsharp_test('tests/test_wam_go_foreign_tuple_aliases.pl',
 fsharp_test('tests/test_wam_scala_foreign_tuple_aliases.pl',
             'Scala correlated foreign-tuple alias/retry cleanup', run_tests).
 fsharp_test('tests/test_wam_r_generator.pl',
-            'R TPD4 aggregate, binding-mode, alias, and retry contract',
-            run_tests([wam_r_generator:kernel_tpd4_e2e_rscript])).
+            'R TPD4/TSPD5 aggregate, binding-mode, alias, and retry contract',
+            run_tests([wam_r_generator:kernel_tpd4_e2e_rscript,
+                       wam_r_generator:kernel_tspd5_e2e_rscript])).
 fsharp_test('tests/test_wam_scala_kernels.pl',
-            'TD3/TPD4 Scala kernel structural + Source gate',
+            'TD3/TPD4/TSPD5 Scala kernel structural + runtime parity',
             ( run_tests(wam_scala_kernels_structural:
                         distance_kernel_emits_handler_and_stub),
               run_tests(wam_scala_kernels_structural:
                         parent_distance_kernel_emits_handler_and_stub),
+              run_tests(wam_scala_kernels_structural:
+                        step_parent_distance_kernel_emits_handler_and_stub),
               run_tests(wam_scala_kernels_runtime:
                         transitive_distance_rejects_non_atom_source),
               run_tests(wam_scala_kernels_runtime:
-                        transitive_parent_distance_rejects_non_atom_nodes) )).
+                        transitive_parent_distance_rejects_non_atom_nodes),
+              run_tests(wam_scala_kernels_runtime:
+                        transitive_step_parent_distance_parity) )).
 fsharp_test('tests/test_wam_haskell_target.pl',
-            'TD3/TPD4 Haskell multi-output foreign retry regressions',
+            'TD3/TPD4/TSPD5 Haskell multi-output foreign retry regressions',
             (test_multi_output_foreign_filters_bound_results,
              test_multi_output_foreign_retry_filters_and_pops,
              test_same_kind_kernel_body_deduplicated,
-             test_tpd4_generated_ghc_smoke)).
+             test_tpd4_generated_ghc_smoke,
+             test_tspd5_generated_ghc_smoke)).
 fsharp_test('tests/test_wam_elixir_target.pl',
             'TD3/TPD4/TSPD5 Elixir bound modes + ordinary retry stream regressions',
             (test_graph_kernel_transitive_distance_uses_distplus_bfs,

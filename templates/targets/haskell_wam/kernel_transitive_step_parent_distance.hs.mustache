@@ -25,24 +25,25 @@ nativeKernel_transitive_step_parent_distance edges source =
           candPairs n
             | node == source = [(n, source)]
             | otherwise =
-                let steps = map fst (IM.findWithDefault [] node pairs)
-                in [(s, node) | s <- nubOrd steps]
+                let steps = foldr insertUnique []
+                              (map fst (IM.findWithDefault [] node pairs))
+                in [(s, node) | s <- steps]
           step (qAcc, distAcc, pairAcc) n =
             let cands = candPairs n
             in case IM.lookup n distAcc of
               Nothing ->
                 ( qAcc ++ [(n, nd)]
                 , IM.insert n nd distAcc
-                , IM.insert n (nubOrd cands) pairAcc
+                , IM.insert n (foldr insertUniquePair [] cands) pairAcc
                 )
               Just d0
                 | d0 == nd ->
-                    ( qAcc
-                    , distAcc
-                    , IM.insert n (nubOrd (IM.findWithDefault [] n pairAcc ++ cands)) pairAcc
-                    )
+                    let old = IM.findWithDefault [] n pairAcc
+                        merged = foldr insertUniquePair old cands
+                    in (qAcc, distAcc, IM.insert n merged pairAcc)
                 | otherwise -> (qAcc, distAcc, pairAcc)
           (queue', dist', pairs') =
             foldl step (queue, dist, pairs) (edges node)
       in go queue' dist' pairs'
-    nubOrd = map head . group . sort
+    insertUnique x xs = if x `elem` xs then xs else x : xs
+    insertUniquePair p ps = if p `elem` ps then ps else p : ps
