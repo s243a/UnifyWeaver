@@ -6662,6 +6662,133 @@ gs.fail:
   ret i64 0
 }
 
+; --- strnum support (PLAWK_STRNUM_DUALITY.md step 1) -------------------------
+; These primitives are the runtime half of POSIX numeric-string duality. They
+; are defined here and unit-tested standalone; no codegen calls them yet (the
+; scalar_strnum slot kind and comparison dispatch are later phases).
+
+; @wam_looks_numeric(s): does the NUL-terminated string %s look like a number
+; per POSIX (the whole string, after optional leading and trailing blanks, is a
+; valid numeric value)? strtod parses the leading number and reports where it
+; stopped; the string is numeric when a conversion happened and only blanks
+; (space or tab) remain after it. A null or empty string is not numeric.
+define i1 @wam_looks_numeric(i8* %s) {
+entry:
+  %ln.isnull = icmp eq i8* %s, null
+  br i1 %ln.isnull, label %ln.no, label %ln.check
+
+ln.check:
+  %ln.endp = alloca i8*, align 8
+  %ln.val = call double @strtod(i8* %s, i8** %ln.endp)
+  %ln.end = load i8*, i8** %ln.endp
+  %ln.consumed = icmp ne i8* %ln.end, %s
+  br i1 %ln.consumed, label %ln.wsloop, label %ln.no
+
+ln.wsloop:
+  %ln.p = phi i8* [ %ln.end, %ln.check ], [ %ln.pn, %ln.wsstep ]
+  %ln.c = load i8, i8* %ln.p
+  %ln.sp = icmp eq i8 %ln.c, 32
+  %ln.tab = icmp eq i8 %ln.c, 9
+  %ln.blank = or i1 %ln.sp, %ln.tab
+  br i1 %ln.blank, label %ln.wsstep, label %ln.wsdone
+
+ln.wsstep:
+  %ln.pn = getelementptr i8, i8* %ln.p, i64 1
+  br label %ln.wsloop
+
+ln.wsdone:
+  %ln.atnul = icmp eq i8 %ln.c, 0
+  br i1 %ln.atnul, label %ln.yes, label %ln.no
+
+ln.yes:
+  ret i1 1
+
+ln.no:
+  ret i1 0
+}
+
+; @wam_strnum_cmp(as, akind, bs, bkind): compare two operands given as their
+; NUL-terminated string forms plus a kind tag per operand -- 0 = number,
+; 1 = strnum (input-derived), 2 = string literal. The comparison is numeric iff
+; BOTH operands are numeric-typed, where number is always numeric-typed, a strnum
+; is numeric-typed only when its content looks numeric, and a string literal
+; never is (POSIX strnum table, see PLAWK_STRNUM_DUALITY.md). Numeric comparison
+; is over strtod values; otherwise it is a strcmp of the two strings. Returns the
+; sign of the comparison as an i32: -1, 0, or 1.
+define i32 @wam_strnum_cmp(i8* %as, i8 %akind, i8* %bs, i8 %bkind) {
+entry:
+  ; operand A numeric-typed?
+  %sc.a_isnum = icmp eq i8 %akind, 0
+  %sc.a_isstrnum = icmp eq i8 %akind, 1
+  br i1 %sc.a_isnum, label %sc.a_yes, label %sc.a_maybe
+
+sc.a_maybe:
+  br i1 %sc.a_isstrnum, label %sc.a_look, label %sc.a_no
+
+sc.a_look:
+  %sc.a_ln = call i1 @wam_looks_numeric(i8* %as)
+  br label %sc.a_done
+
+sc.a_yes:
+  br label %sc.a_done
+
+sc.a_no:
+  br label %sc.a_done
+
+sc.a_done:
+  %sc.a_num = phi i1 [ 1, %sc.a_yes ], [ %sc.a_ln, %sc.a_look ], [ 0, %sc.a_no ]
+  ; operand B numeric-typed?
+  %sc.b_isnum = icmp eq i8 %bkind, 0
+  %sc.b_isstrnum = icmp eq i8 %bkind, 1
+  br i1 %sc.b_isnum, label %sc.b_yes, label %sc.b_maybe
+
+sc.b_maybe:
+  br i1 %sc.b_isstrnum, label %sc.b_look, label %sc.b_no
+
+sc.b_look:
+  %sc.b_ln = call i1 @wam_looks_numeric(i8* %bs)
+  br label %sc.b_done
+
+sc.b_yes:
+  br label %sc.b_done
+
+sc.b_no:
+  br label %sc.b_done
+
+sc.b_done:
+  %sc.b_num = phi i1 [ 1, %sc.b_yes ], [ %sc.b_ln, %sc.b_look ], [ 0, %sc.b_no ]
+  %sc.both = and i1 %sc.a_num, %sc.b_num
+  br i1 %sc.both, label %sc.numeric, label %sc.lexical
+
+sc.numeric:
+  %sc.av = call double @strtod(i8* %as, i8** null)
+  %sc.bv = call double @strtod(i8* %bs, i8** null)
+  %sc.lt = fcmp olt double %sc.av, %sc.bv
+  br i1 %sc.lt, label %sc.neg, label %sc.numge
+
+sc.numge:
+  %sc.gt = fcmp ogt double %sc.av, %sc.bv
+  br i1 %sc.gt, label %sc.pos, label %sc.zero
+
+sc.lexical:
+  %sc.rc = call i32 @strcmp(i8* %as, i8* %bs)
+  %sc.slt = icmp slt i32 %sc.rc, 0
+  br i1 %sc.slt, label %sc.neg, label %sc.lexge
+
+sc.lexge:
+  %sc.sgt = icmp sgt i32 %sc.rc, 0
+  br i1 %sc.sgt, label %sc.pos, label %sc.zero
+
+sc.neg:
+  ret i32 -1
+
+sc.pos:
+  ret i32 1
+
+sc.zero:
+  ret i32 0
+}
+
 ; awk-style numeric coercion of a record or projected field to double:
 ; strtod parses a leading number and ignores trailing text, so
 ; "3.14abc" reads as 3.14 and non-numeric text reads as 0.0. Field
