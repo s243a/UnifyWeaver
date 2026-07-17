@@ -5164,9 +5164,18 @@ plawk_while_cond_ok(or(A, B)) :-
 plawk_while_cond_ok(cmp(var(_V), Op, Rhs)) :-
     plawk_icmp_pred(Op, _Pred),
     plawk_while_cond_rhs_ok(Rhs).
+% RSTART/RLENGTH (i64 specials set by match()) as a comparison LHS.
+plawk_while_cond_ok(cmp(special(Name), Op, Rhs)) :-
+    plawk_match_special(Name),
+    plawk_icmp_pred(Op, _Pred),
+    plawk_while_cond_rhs_ok(Rhs).
+
+plawk_match_special('RSTART').
+plawk_match_special('RLENGTH').
 
 plawk_while_cond_rhs_ok(int(N)) :- integer(N).
 plawk_while_cond_rhs_ok(var(_W)).
+plawk_while_cond_rhs_ok(special(Name)) :- plawk_match_special(Name).
 
 %% plawk_while_cond_vars(+Cond, -Vars)
 %
@@ -5182,6 +5191,11 @@ plawk_while_cond_vars(or(A, B), Vars) :-
     plawk_while_cond_vars(A, VA),
     plawk_while_cond_vars(B, VB),
     append(VA, VB, Vars).
+% RSTART/RLENGTH operands are globals, not slots, so they add no slot vars.
+plawk_while_cond_vars(cmp(special(_), _Op, int(_N)), []) :- !.
+plawk_while_cond_vars(cmp(special(_), _Op, var(W)), [W]) :- !.
+plawk_while_cond_vars(cmp(special(_), _Op, special(_)), []) :- !.
+plawk_while_cond_vars(cmp(var(V), _Op, special(_)), [V]) :- !.
 plawk_while_cond_vars(cmp(var(V), _Op, int(_N)), [V]) :- !.
 plawk_while_cond_vars(cmp(var(V), _Op, string(_S)), [V]) :- !.
 plawk_while_cond_vars(cmp(var(V), _Op, var(W)), [V, W]).
@@ -5214,20 +5228,31 @@ plawk_while_cond_build(or(A, B), Slots, CV, Base, Path, CondVar, Lines) :-
     format(atom(CondVar), '%~w_cond~w', [Base, Path]),
     format(atom(Line), '  ~w = or i1 ~w, ~w', [CondVar, VA, VB]),
     append([LA, LB, [Line]], Lines).
-plawk_while_cond_build(cmp(var(CondName), Op, Rhs), Slots, CondValues, Base,
-        Path, CondVar, [Line]) :-
-    plawk_while_cond_operand(var(CondName), Slots, CondValues, LOperand),
-    plawk_while_cond_operand(Rhs, Slots, CondValues, ROperand),
+plawk_while_cond_build(cmp(Left, Op, Rhs), Slots, CondValues, Base,
+        Path, CondVar, Lines) :-
+    plawk_while_cond_operand(Left, Slots, CondValues, Base, Path, l, LOperand, LLines),
+    plawk_while_cond_operand(Rhs, Slots, CondValues, Base, Path, r, ROperand, RLines),
     plawk_icmp_pred(Op, Pred),
     format(atom(CondVar), '%~w_cond~w', [Base, Path]),
     format(atom(Line), '  ~w = icmp ~w i64 ~w, ~w',
-        [CondVar, Pred, LOperand, ROperand]).
+        [CondVar, Pred, LOperand, ROperand]),
+    append([LLines, RLines, [Line]], Lines).
 
-% An operand is either an integer literal (emitted inline) or a loop variable
-% (read from its slot's current SSA value).
-plawk_while_cond_operand(int(N), _Slots, _CondValues, N) :-
+% An operand is an integer literal (emitted inline), a loop variable (read from
+% its slot's current SSA value), or an RSTART/RLENGTH special (loaded from its
+% global -- the load line is threaded out). Side (l/r) keeps the load SSA name
+% unique within a comparison.
+plawk_while_cond_operand(int(N), _Slots, _CondValues, _Base, _Path, _Side, N, []) :-
     !.
-plawk_while_cond_operand(var(Name), Slots, CondValues, Ref) :-
+plawk_while_cond_operand(special('RSTART'), _Slots, _CondValues, Base, Path, Side, Ref, [Line]) :-
+    !,
+    format(atom(Ref), '%~w_cond~w_~w_rstart', [Base, Path, Side]),
+    format(atom(Line), '  ~w = load i64, i64* @plawk_rstart', [Ref]).
+plawk_while_cond_operand(special('RLENGTH'), _Slots, _CondValues, Base, Path, Side, Ref, [Line]) :-
+    !,
+    format(atom(Ref), '%~w_cond~w_~w_rlength', [Base, Path, Side]),
+    format(atom(Line), '  ~w = load i64, i64* @plawk_rlength', [Ref]).
+plawk_while_cond_operand(var(Name), Slots, CondValues, _Base, _Path, _Side, Ref, []) :-
     nth0(Idx, Slots, Slot),
     plawk_slot_name(Slot, Name),
     !,

@@ -1722,10 +1722,19 @@ while_cond_and_rest(Acc, Cond) -->
 while_cond_and_rest(Cond, Cond) -->
     [].
 
-% A scalar comparison: the left side is a loop variable; the right side is an
-% integer literal or another loop variable.
+% A scalar comparison: the left side is a loop variable or an i64 special
+% (RSTART/RLENGTH, set by match()); the right side is an integer literal or
+% another loop variable. The special clause is tried first (with a boundary so
+% `RSTARTED` still parses as an identifier) so `if (RSTART > 0)` reads the
+% special, not a phantom slot.
+while_cmp(cmp(special(Name), Op, Rhs)) -->
+    match_special_name(Name), identifier_boundary,
+    ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
 while_cmp(cmp(var(V), Op, Rhs)) -->
     identifier(V), ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
+
+match_special_name('RSTART') --> "RSTART".
+match_special_name('RLENGTH') --> "RLENGTH".
 
 while_cmp_rhs(int(N)) -->
     signed_integer_value(N),
