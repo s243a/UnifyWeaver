@@ -1620,6 +1620,34 @@ compile_execute_io_builtin_to_rust(Code) :-
                 };
                 if same { self.pc += 1; true } else { false }
             }
+            "make_directory/1" | "delete_file/1" | "delete_directory/1" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let result = match op {
+                    "make_directory/1" => std::fs::create_dir(path),
+                    "delete_file/1" => std::fs::remove_file(path),
+                    _ => std::fs::remove_dir(path),
+                };
+                if result.is_ok() { self.pc += 1; true } else { false }
+            }
+            "copy_file/2" | "rename_file/2" => {
+                let source = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let destination = match self.builtin_path_arg("A2") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let result = if op == "copy_file/2" {
+                    std::fs::copy(source, destination).map(|_| ())
+                } else {
+                    std::fs::rename(source, destination)
+                };
+                if result.is_ok() { self.pc += 1; true } else { false }
+            }
             "exists_file/1" => {
                 let path = match self.builtin_path_arg("A1") {
                     Some(path) => path,
