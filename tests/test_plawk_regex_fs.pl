@@ -89,13 +89,13 @@ test(regex_fs_single_char_literal, [condition(clang_available)]) :-
         "a.b.c\n", Out, St),
     assertion(St == 0), assertion(Out == "b\n"), !.
 
-% field assignment with a regex FS is out of the v1 surface: it must fail the
-% build cleanly (exit 3) rather than split on the sentinel byte.
-test(regex_fs_field_assign_rejected, [condition(clang_available)]) :-
+% field assignment with a regex FS now works: the record splits on the FS regex
+% into the field buffer, the field is set, and $0 rebuilds with OFS.
+test(regex_fs_field_assign, [condition(clang_available)]) :-
     ldir(Dir),
-    build_status(Dir, 'fa', "BEGIN { FS = \"::\" }\n{ $2 = \"X\"; print $0 }\n",
-        BuildStatus),
-    assertion(BuildStatus == exit(3)), !.
+    build_run(Dir, 'fa', "BEGIN { FS = \"::\"; OFS = \",\" }\n{ $2 = \"X\"; print $0 }\n",
+        "a::b::c\n", Out, St),
+    assertion(St == 0), assertion(Out == "a,X,c\n"), !.
 
 :- end_tests(plawk_regex_fs).
 
