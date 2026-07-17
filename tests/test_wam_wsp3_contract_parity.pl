@@ -113,7 +113,7 @@ scala_available :-
 
 rscript_available :-
     catch(
-        ( process_create(path(Rscript), ['--version'],
+        ( process_create(path('Rscript'), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
           process_wait(Pid, exit(0)) ),
         _, fail).
@@ -264,7 +264,7 @@ test(fsharp_allowlist_includes_wsp3) :-
 test(haskell_mustache_dijkstra) :-
     read_file_string(
         'templates/targets/haskell_wam/kernel_weighted_shortest_path.hs.mustache', S),
-    assertion(sub_string(S, _, _, _, "finite nonnegative Dijkstra")),
+    assertion(sub_string(S, _, _, _, "Finite nonnegative Dijkstra")),
     assertion(sub_string(S, _, _, _, "nativeKernel_weighted_shortest_path")),
     assertion(sub_string(S, _, _, _, "n /= source")),
     assertion(sub_string(S, _, _, _, "error \"wsp3: reachable invalid")).
@@ -732,6 +732,10 @@ wsp3_c_two_pred_main(
 #include <string.h>
 #include <math.h>
 
+void setup_wsp_a_3(WamState* state);
+void setup_wsp_b_3(WamState* state);
+void setup_detected_wam_c_kernels(WamState* state);
+
 static int expect_float(WamValue v, double want) {
     return v.tag == VAL_FLOAT && fabs(v.data.floating - want) < 1e-9;
 }
@@ -739,41 +743,44 @@ static int expect_float(WamValue v, double want) {
 int main(void) {
     WamState state;
     wam_state_init(&state);
+    setup_wsp_a_3(&state);
+    setup_wsp_b_3(&state);
+    setup_detected_wam_c_kernels(&state);
+
     wam_register_relation_weighted_edge(&state, "edge_a", "a", "b", 1.0);
     wam_register_relation_weighted_edge(&state, "edge_a", "b", "c", 1.0);
+    wam_register_relation_weighted_edge(&state, "edge_a", "a", "c", 10.0);
     wam_register_relation_weighted_edge(&state, "edge_b", "x", "y", 3.0);
     wam_register_relation_weighted_edge(&state, "edge_b", "y", "z", 4.0);
-    /* Detour fixture on edge_a */
-    wam_register_relation_weighted_edge(&state, "edge_a", "a", "c", 10.0);
-    wam_register_weighted_shortest_path_kernel(&state, "wsp_a/3", "edge_a");
-    wam_register_weighted_shortest_path_kernel(&state, "wsp_b/3", "edge_b");
 
     WamValue args[3] = { val_atom("a"), val_atom("c"), val_unbound("W") };
-    if (wam_run_predicate(&state, "wsp_a/3", args, 3) != 0 ||
-        !expect_float(state.A[2], 2.0)) {
-        fprintf(stderr, "detour fail\\n");
+    int rc = wam_run_predicate(&state, "wsp_a/3", args, 3);
+    if (rc != 0 || state.P != WAM_HALT || !expect_float(state.A[2], 2.0)) {
+        fprintf(stderr, "detour fail rc=%d P=%d tag=%d\\n", rc, state.P,
+                state.A[2].tag);
         return 10;
     }
 
     WamValue stream[3] = {
         val_atom("a"), val_unbound("T"), val_unbound("W")
     };
-    if (wam_run_predicate(&state, "wsp_a/3", stream, 3) != 0) {
+    if (wam_run_predicate(&state, "wsp_a/3", stream, 3) != 0 ||
+        state.P != WAM_HALT) {
         fprintf(stderr, "stream fail\\n");
         return 20;
     }
 
     WamValue bargs[3] = { val_atom("x"), val_atom("z"), val_unbound("W") };
     if (wam_run_predicate(&state, "wsp_b/3", bargs, 3) != 0 ||
-        !expect_float(state.A[2], 7.0)) {
+        state.P != WAM_HALT || !expect_float(state.A[2], 7.0)) {
         fprintf(stderr, "pred_b fail\\n");
         return 30;
     }
 
     /* Isolation: wsp_a must not see edge_b */
     WamValue cross[3] = { val_atom("x"), val_atom("y"), val_unbound("W") };
-    if (wam_run_predicate(&state, "wsp_a/3", cross, 3) == 0 &&
-        state.P == WAM_HALT) {
+    int cross_rc = wam_run_predicate(&state, "wsp_a/3", cross, 3);
+    if (cross_rc == 0 && state.P == WAM_HALT) {
         fprintf(stderr, "isolation leak\\n");
         return 40;
     }
@@ -781,10 +788,12 @@ int main(void) {
     /* Invalid reachable weight fails cleanly */
     WamState bad;
     wam_state_init(&bad);
-    wam_register_relation_weighted_edge(&bad, "bad_e", "a", "b", -1.0);
-    wam_register_weighted_shortest_path_kernel(&bad, "bad/3", "bad_e");
+    setup_wsp_a_3(&bad);
+    setup_detected_wam_c_kernels(&bad);
+    wam_register_relation_weighted_edge(&bad, "edge_a", "a", "b", -1.0);
     WamValue bada[3] = { val_atom("a"), val_unbound("T"), val_unbound("W") };
-    if (wam_run_predicate(&bad, "bad/3", bada, 3) == 0 && bad.P == WAM_HALT) {
+    int bad_rc = wam_run_predicate(&bad, "wsp_a/3", bada, 3);
+    if (bad_rc == 0 && bad.P == WAM_HALT) {
         fprintf(stderr, "invalid weight should fail\\n");
         return 50;
     }
