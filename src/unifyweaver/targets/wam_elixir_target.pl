@@ -4327,34 +4327,59 @@ defmodule WamRuntime.GraphKernel.TransitiveStepParentDistance do
 
   Ported from the Rust kernel
   `collect_native_transitive_step_parent_distance_results` in
-  src/unifyweaver/targets/wam_rust_target.pl. Algorithm:
-  for each direct edge from `start`, emit the depth-1 quadruple, then
-  delegate to `TransitiveParentDistance.collect_triples/2` (finite BFS
-  shortest-positive parents) for the deeper walk and decorate every
-  returned `(target, parent, dist)` triple with the current first-hop
-  and `dist + 1`.
+  src/unifyweaver/targets/wam_rust_target.pl. Algorithm: for each direct
+  edge from `start`, emit the depth-1 quadruple, then run the legacy
+  path-enumerating parent/distance walk from that first hop and decorate
+  every returned `(target, parent, dist)` triple with the first-hop and
+  `dist + 1`.
+
+  WARNING: NO cycle detection. This deliberately preserves TSPD5\'s
+  pre-TPD4-contract behaviour. TPD4 now has a finite shortest-positive
+  BFS contract, but changing this separate kernel to inherit that
+  contract requires its own fleet-parity task and must not happen as a
+  side effect of the TPD4 change.
   """
 
   @doc """
-  Returns `[{target, step, parent, distance}, ...]` for every first hop
-  from `start`, decorated with results of the inner TPD4 BFS.
-  Reuses `WamRuntime.GraphKernel.TransitiveParentDistance.collect_triples/2`
-  for the inner walk; the step is fixed at the first hop per outer
-  iteration.
+  Returns `[{target, step, parent, distance}, ...]` for every edge in
+  the legacy DFS expansion from each first hop. The step is fixed at
+  the first hop per outer iteration.
   """
   def collect_quads(neighbors_fn, start) when is_function(neighbors_fn, 1) do
     edges = neighbors_fn.(start)
     Enum.flat_map(edges, fn {_from, next} ->
       direct = [{next, next, start, 1}]
-      nested =
-        WamRuntime.GraphKernel.TransitiveParentDistance.collect_triples(
-          neighbors_fn, next)
+      nested = collect_legacy_path_triples(neighbors_fn, next)
       bumped =
         Enum.map(nested, fn {target, parent, dist} ->
           {target, next, parent, dist + 1}
         end)
       direct ++ bumped
     end)
+  end
+
+  # TSPD5 historically shared TPD4\'s unbounded DFS helper. TPD4 now has
+  # a different shortest-positive contract, so keep a private copy of the
+  # old path enumerator here until TSPD5 receives an explicit fleet-wide
+  # contract migration. Reversing edges before stack insertion preserves
+  # the prior forward enumeration order.
+  defp collect_legacy_path_triples(neighbors_fn, start) do
+    legacy_walk(neighbors_fn, [{start, 0}], [])
+    |> Enum.reverse()
+  end
+
+  defp legacy_walk(_, [], acc), do: acc
+  defp legacy_walk(neighbors_fn, [{node, depth} | rest], acc) do
+    next_depth = depth + 1
+
+    {new_acc, new_stack} =
+      neighbors_fn.(node)
+      |> Enum.reverse()
+      |> Enum.reduce({acc, rest}, fn {_from, target}, {a, s} ->
+        {[{target, node, next_depth} | a], [{target, next_depth} | s]}
+      end)
+
+    legacy_walk(neighbors_fn, new_stack, new_acc)
   end
 
   @doc """
@@ -5940,7 +5965,7 @@ compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, C
 
   def run(%WamRuntime.WamState{} = state) do
     start_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
-    unless is_binary(start_val), do: throw({:fail, state})
+    unless source_atom?(start_val), do: throw({:fail, state})
     edge_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
     neighbors_fn = fn node ->
       WamRuntime.FactSource.lookup_by_arg1(edge_handle, node, state)
@@ -6051,6 +6076,12 @@ compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, C
       _ -> :error
     end
   end
+
+  # Lowered Elixir uses binaries for Prolog atoms by default and BEAM
+  # atoms when intern_atoms(true) is enabled. Both representations are
+  # valid here; numbers, variables and compound terms remain invalid as
+  # a bound Source for this graph kernel.
+  defp source_atom?(value), do: is_binary(value) or is_atom(value)
 end
 ',
     [CamelMod, CamelPred,

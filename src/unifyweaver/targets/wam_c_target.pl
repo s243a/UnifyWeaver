@@ -6173,6 +6173,24 @@ static bool wam_bind_foreign_atom_stream(WamState *state,
     return false;
 }
 
+static bool wam_try_bind_foreign_triple(WamState *state,
+                                        WamValue target_v,
+                                        WamValue parent_v,
+                                        WamValue dist_v) {
+    /* A tuple is one logical candidate.  In particular, A2/A3/A4 can
+     * alias the same WAM variable, so independently successful column
+     * binds are not enough.  Roll the complete candidate back on the
+     * first conflict before trying another tuple (or reporting failure). */
+    int trail_mark = state->TR;
+    if (wam_unify(state, &state->A[1], &target_v) &&
+        wam_unify(state, &state->A[2], &parent_v) &&
+        wam_unify(state, &state->A[3], &dist_v)) {
+        return true;
+    }
+    unwind_trail(state, trail_mark);
+    return false;
+}
+
 static bool wam_resume_foreign_stream(WamState *state) {
     if (state->B <= 0) return false;
     ChoicePoint *cp = &state->B_array[state->B - 1];
@@ -6204,25 +6222,30 @@ static bool wam_resume_foreign_stream(WamState *state) {
         state->P = resume_pc;
         return true;
     }
-    /* Triple stream (result_reg == 254): interleaved [atom, atom, int, ...]. */
+    /* Triple stream (result_reg == 254): interleaved [atom, atom, int, ...].
+     * A retry may encounter candidates incompatible only because output
+     * registers alias.  Scan transactionally until one complete tuple
+     * unifies; an incompatible tuple must neither leak bindings nor end the
+     * stream while later compatible tuples remain. */
     if (result_reg == 254) {
-        int index = cp->foreign_result_index;
-        if (index + 2 >= cp->foreign_result_count) {
-            pop_choice_point(state);
-            return false;
+        while (cp->foreign_result_index + 2 < cp->foreign_result_count) {
+            int index = cp->foreign_result_index;
+            WamValue target_v = cp->foreign_results[index];
+            WamValue parent_v = cp->foreign_results[index + 1];
+            WamValue dist_v = cp->foreign_results[index + 2];
+            cp->foreign_result_index = index + 3;
+            if (!wam_try_bind_foreign_triple(state, target_v, parent_v,
+                                             dist_v)) {
+                continue;
+            }
+            if (cp->foreign_result_index >= cp->foreign_result_count) {
+                pop_choice_point(state);
+            }
+            state->P = resume_pc;
+            return true;
         }
-        WamValue target_v = cp->foreign_results[index];
-        WamValue parent_v = cp->foreign_results[index + 1];
-        WamValue dist_v = cp->foreign_results[index + 2];
-        cp->foreign_result_index = index + 3;
-        if (cp->foreign_result_index >= cp->foreign_result_count) {
-            pop_choice_point(state);
-        }
-        if (!wam_unify(state, &state->A[1], &target_v)) return false;
-        if (!wam_unify(state, &state->A[2], &parent_v)) return false;
-        if (!wam_unify(state, &state->A[3], &dist_v)) return false;
-        state->P = resume_pc;
-        return true;
+        pop_choice_point(state);
+        return false;
     }
 
     int index = cp->foreign_result_index++;
@@ -6277,33 +6300,40 @@ static bool wam_bind_foreign_triple_stream(WamState *state,
         free(results);
         return false;
     }
-    WamValue first_target = results[0];
-    WamValue first_parent = results[1];
-    WamValue first_dist = results[2];
-    if (value_count > 3) {
-        push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 254);
-        ChoicePoint *cp = &state->B_array[state->B - 1];
-        cp->foreign_results = results;
-        cp->foreign_result_count = value_count;
-        cp->foreign_result_index = 3;
-        cp->foreign_result_reg = 254;
-        cp->foreign_resume_pc = resume_pc;
-    } else {
-        free(results);
+    for (int index = 0; index + 2 < value_count; index += 3) {
+        WamValue target_v = results[index];
+        WamValue parent_v = results[index + 1];
+        WamValue dist_v = results[index + 2];
+        int trail_mark = state->TR;
+        if (!wam_try_bind_foreign_triple(state, target_v, parent_v, dist_v)) {
+            continue;
+        }
+
+        if (index + 3 < value_count) {
+            /* The choice-point snapshot must describe the state before this
+             * first successful tuple.  Rewind the trial bind, take the
+             * ordinary foreign-stream snapshot, then commit the same tuple. */
+            unwind_trail(state, trail_mark);
+            push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 4);
+            ChoicePoint *cp = &state->B_array[state->B - 1];
+            cp->foreign_results = results;
+            cp->foreign_result_count = value_count;
+            cp->foreign_result_index = index + 3;
+            cp->foreign_result_reg = 254;
+            cp->foreign_resume_pc = resume_pc;
+            if (!wam_try_bind_foreign_triple(state, target_v, parent_v,
+                                             dist_v)) {
+                pop_choice_point(state);
+                return false;
+            }
+        } else {
+            free(results);
+        }
+        return true;
     }
-    if (!wam_unify(state, &state->A[1], &first_target)) {
-        if (value_count > 3) pop_choice_point(state);
-        return false;
-    }
-    if (!wam_unify(state, &state->A[2], &first_parent)) {
-        if (value_count > 3) pop_choice_point(state);
-        return false;
-    }
-    if (!wam_unify(state, &state->A[3], &first_dist)) {
-        if (value_count > 3) pop_choice_point(state);
-        return false;
-    }
-    return true;
+
+    free(results);
+    return false;
 }
 
 bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity) {

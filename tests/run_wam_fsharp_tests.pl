@@ -15,9 +15,10 @@
 %%   tests/test_wam_tpd4_contract_parity.pl
 %%     - fleet TPD4 shortest-positive-parents oracle/structural checks plus
 %%       executable F#/C/Rust/Elixir coverage; LLVM remains capability-gated.
-%%   focused Scala, Haskell, Elixir, and LLVM TD3/TPD4 regressions
-%%     - exercise the Scala Source gate, generic multi-output binding, Elixir
-%%       ordinary retries, and LLVM exact paired streaming / range safety.
+%%   focused Rust, Go, Scala, R, Haskell, Elixir, and LLVM TD3/TPD4 regressions
+%%     - exercise transactional correlated-tuple binding, the R aggregate
+%%       path, Elixir ordinary retries, and LLVM exact paired streaming /
+%%       range safety.
 %%       Runtime legs skip only when their external compiler is unavailable.
 %%   tests/core/test_wam_fsharp_dotnet_smoke.pl
 %%     - dotnet build + run smokes (8 cases including category-ancestor
@@ -57,6 +58,15 @@ fsharp_test('tests/test_wam_td3_contract_parity.pl',
 fsharp_test('tests/test_wam_tpd4_contract_parity.pl',
             'TPD4 shortest-positive-parents fleet contract + F# native kernel',
             run_tests).
+fsharp_test('tests/test_wam_rust_foreign_tuple_aliases.pl',
+            'Rust correlated foreign-tuple alias/retry cleanup', run_tests).
+fsharp_test('tests/test_wam_go_foreign_tuple_aliases.pl',
+            'Go correlated foreign-tuple alias/retry cleanup', run_tests).
+fsharp_test('tests/test_wam_scala_foreign_tuple_aliases.pl',
+            'Scala correlated foreign-tuple alias/retry cleanup', run_tests).
+fsharp_test('tests/test_wam_r_generator.pl',
+            'R TPD4 aggregate, binding-mode, alias, and retry contract',
+            run_tests([wam_r_generator:kernel_tpd4_e2e_rscript])).
 fsharp_test('tests/test_wam_scala_kernels.pl',
             'TD3/TPD4 Scala kernel structural + Source gate',
             ( run_tests(wam_scala_kernels_structural:
@@ -68,14 +78,17 @@ fsharp_test('tests/test_wam_scala_kernels.pl',
 fsharp_test('tests/test_wam_haskell_target.pl',
             'TD3/TPD4 Haskell multi-output foreign retry regressions',
             (test_multi_output_foreign_filters_bound_results,
-             test_multi_output_foreign_retry_filters_and_pops)).
+             test_multi_output_foreign_retry_filters_and_pops,
+             test_same_kind_kernel_body_deduplicated,
+             test_tpd4_generated_ghc_smoke)).
 fsharp_test('tests/test_wam_elixir_target.pl',
             'TD3/TPD4 Elixir bound modes + ordinary retry stream regressions',
             (test_graph_kernel_transitive_distance_uses_distplus_bfs,
              test_kernel_dispatch_emits_transitive_distance_module,
              test_kernel_dispatch_transitive_distance_e2e,
              test_graph_kernel_transitive_parent_distance_uses_bfs_parent_sets,
-             test_kernel_dispatch_emits_transitive_parent_distance_module)).
+             test_kernel_dispatch_emits_transitive_parent_distance_module,
+             test_kernel_dispatch_transitive_parent_distance_e2e)).
 fsharp_test('tests/core/test_wam_llvm_reach_execution.pl',
             'TD3 LLVM bound-distance + range-safety execution', test_all).
 fsharp_test('tests/core/test_wam_llvm_td3_stream_execution.pl',

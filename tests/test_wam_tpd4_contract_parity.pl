@@ -49,28 +49,28 @@ dotnet_available :-
     catch(
         ( process_create(path(dotnet), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, _) ),
+          process_wait(Pid, exit(0)) ),
         _, fail).
 
 gcc_available :-
     catch(
         ( process_create(path(gcc), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, _) ),
+          process_wait(Pid, exit(0)) ),
         _, fail).
 
 cargo_available :-
     catch(
         ( process_create(path(cargo), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, _) ),
+          process_wait(Pid, exit(0)) ),
         _, fail).
 
 elixir_available :-
     catch(
         ( process_create(path(elixir), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, _) ),
+          process_wait(Pid, exit(0)) ),
         _, fail).
 
 tmp_dir(Tag, Dir) :-
@@ -212,13 +212,20 @@ test(haskell_mustache_parent_sets) :-
 test(rust_bfs_parent_sets_not_dfs) :-
     compile_wam_runtime_to_rust([], Code),
     atom_string(Code, S),
-    assertion(sub_string(S, _, _, _, "collect_native_transitive_parent_distance_results")),
+    StartPattern = "pub fn collect_native_transitive_parent_distance_results(",
+    EndPattern = "fn collect_legacy_transitive_parent_distance_all_paths(",
+    sub_string(S, Start, _, _, StartPattern),
+    sub_string(S, End, _, _, EndPattern),
+    End > Start,
+    BodyLen is End - Start,
+    sub_string(S, Start, BodyLen, _, Body),
     assertion(sub_string(S, _, _, _,
         "docs/design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md")),
-    assertion(sub_string(S, _, _, _, "HashMap<String, HashSet<String>>")),
-    assertion(sub_string(S, _, _, _, "VecDeque<(String, i64)>")),
-    assertion(\+ sub_string(S, _, _, _,
-        "let mut stack: Vec<(String, i64)> = vec![(start.to_string(), 0)];")).
+    assertion(sub_string(Body, _, _, _, "HashMap<String, HashSet<String>>")),
+    assertion(sub_string(Body, _, _, _, "VecDeque<(String, i64)>")),
+    assertion(\+ sub_string(Body, _, _, _,
+        "let mut stack: Vec<(String, i64)> = vec![(start.to_string(), 0)];")),
+    !.
 
 test(go_parent_sets_no_source_seed) :-
     read_file_string('src/unifyweaver/targets/wam_go_target.pl', S),
@@ -234,7 +241,8 @@ test(go_parent_sets_no_source_seed) :-
     assertion(sub_string(Body, _, _, _, "parents := make(map[string]map[string]bool)")),
     assertion(\+ sub_string(Body, _, _, _,
         "visited := map[string]bool{source: true}")),
-    assertion(\+ sub_string(Body, _, _, _, "dist := map[string]int{source: 0}")).
+    assertion(\+ sub_string(Body, _, _, _, "dist := map[string]int{source: 0}")),
+    !.
 
 test(scala_parent_sets_no_source_seed) :-
     read_file_string('src/unifyweaver/targets/wam_scala_target.pl', S),
@@ -363,6 +371,9 @@ test(fsharp_cycle_and_diamond_e2e, [condition(dotnet_available)]) :-
     assertion(sub_string(RunOut, _, _, _, "OK stream_from_a")),
     assertion(sub_string(RunOut, _, _, _, "OK equal_diamond_parents")),
     assertion(sub_string(RunOut, _, _, _, "OK pairing_retry")),
+    assertion(sub_string(RunOut, _, _, _, "OK all_bound_modes")),
+    assertion(sub_string(RunOut, _, _, _, "OK alias_later_match")),
+    assertion(sub_string(RunOut, _, _, _, "OK invalid_inputs")),
     assertion(sub_string(RunOut, _, _, _, "OK aliased_outputs_fail")),
     assertion(sub_string(RunOut, _, _, _, "OK execute_foreign_retry")),
     assertion(sub_string(RunOut, _, _, _, "OK call_foreign_retry")),
@@ -635,6 +646,36 @@ let aliasedOutputsFail (ctx: WamContext) =
     regs.[4] <- Unbound 150
     callForeign ctx \"tpd/4\" (mkState regs) |> Option.isNone
 
+let aliasedTargetParent (ctx: WamContext) =
+    let regs = Array.create MaxRegs (Unbound -1)
+    regs.[1] <- Atom \"a\"
+    regs.[2] <- Unbound 160
+    regs.[3] <- Unbound 160
+    regs.[4] <- Integer 1
+    match callForeign ctx \"tpd/4\" (mkState regs) with
+    | Some s ->
+        derefVar s.WsBindings (Unbound 160) = Atom \"a\" &&
+        getReg 2 s = Some (Atom \"a\") &&
+        getReg 3 s = Some (Atom \"a\") &&
+        Option.isNone (backtrack s)
+    | None -> false
+
+let invalidSourceFails (ctx: WamContext) (source: Value) =
+    let regs = Array.create MaxRegs (Unbound -1)
+    regs.[1] <- source
+    regs.[2] <- Unbound 170
+    regs.[3] <- Unbound 171
+    regs.[4] <- Unbound 172
+    callForeign ctx \"tpd/4\" (mkState regs) |> Option.isNone
+
+let invalidDistanceTypeFails (ctx: WamContext) =
+    let regs = Array.create MaxRegs (Unbound -1)
+    regs.[1] <- Atom \"a\"
+    regs.[2] <- Unbound 180
+    regs.[3] <- Unbound 181
+    regs.[4] <- Atom \"not_a_distance\"
+    callForeign ctx \"tpd/4\" (mkState regs) |> Option.isNone
+
 [<EntryPoint>]
 let main _argv =
     let cycleEdges = [(\"a\", \"b\"); (\"b\", \"c\"); (\"c\", \"d\"); (\"c\", \"a\")]
@@ -658,6 +699,32 @@ let main _argv =
             | \"b\", \"a\", 1 | \"c\", \"b\", 2 | \"a\", \"c\", 3 | \"d\", \"c\", 3 -> true
             | _ -> false)
     assertTrue \"pairing_retry\" (pairingOk && List.length fromA = 4)
+
+    let allBoundModes =
+        collectTriples ctx \"a\" (Some \"a\") None None = [(\"a\", \"c\", 3)] &&
+        (collectTriples ctx \"a\" None (Some \"c\") None |> List.sort) =
+            [(\"a\", \"c\", 3); (\"d\", \"c\", 3)] &&
+        (collectTriples ctx \"a\" None None (Some 3) |> List.sort) =
+            [(\"a\", \"c\", 3); (\"d\", \"c\", 3)] &&
+        collectTriples ctx \"a\" (Some \"a\") (Some \"c\") None =
+            [(\"a\", \"c\", 3)] &&
+        collectTriples ctx \"a\" (Some \"a\") None (Some 3) =
+            [(\"a\", \"c\", 3)] &&
+        (collectTriples ctx \"a\" None (Some \"c\") (Some 3) |> List.sort) =
+            [(\"a\", \"c\", 3); (\"d\", \"c\", 3)] &&
+        collectTriples ctx \"a\" (Some \"a\") (Some \"c\") (Some 3) =
+            [(\"a\", \"c\", 3)]
+    assertTrue \"all_bound_modes\" allBoundModes
+
+    let aliasCtx = mkContext [(\"a\", \"b\"); (\"a\", \"a\")] [\"a\"; \"b\"]
+    assertTrue \"alias_later_match\" (aliasedTargetParent aliasCtx)
+    assertTrue \"invalid_inputs\"
+        (invalidSourceFails ctx (Unbound 190) &&
+         invalidSourceFails ctx (Integer 7) &&
+         invalidDistanceTypeFails ctx &&
+         collectTriples ctx \"a\" None None (Some 0) = [] &&
+         collectTriples ctx \"a\" None None (Some -1) = [] &&
+         collectTriples ctx \"missing\" None None None = [])
     assertTrue \"aliased_outputs_fail\" (aliasedOutputsFail ctx)
 
     let hasExecuteForeign =
@@ -710,102 +777,243 @@ tpd4_c_cycle_main(Code) :-
 void setup_pd_4(WamState* state);
 void setup_detected_wam_c_kernels(WamState* state);
 
-static void load_cycle(WamState *state) {
-    wam_register_transitive_edge(state, "a", "b");
-    wam_register_transitive_edge(state, "a", "b");
-    wam_register_transitive_edge(state, "b", "c");
-    wam_register_transitive_edge(state, "c", "d");
-    wam_register_transitive_edge(state, "c", "a");
-}
+typedef struct {
+    const char *target;
+    const char *parent;
+    int distance;
+} ExpectedTriple;
 
-static void load_diamond(WamState *state) {
+static const ExpectedTriple contract_triples[] = {
+    { "b", "a", 1 },
+    { "c", "a", 1 },
+    { "d", "b", 2 },
+    { "d", "c", 2 },
+    { "a", "d", 3 }
+};
+
+static void load_contract_graph(WamState *state) {
+    wam_register_transitive_edge(state, "a", "b");
     wam_register_transitive_edge(state, "a", "b");
     wam_register_transitive_edge(state, "a", "c");
     wam_register_transitive_edge(state, "b", "d");
     wam_register_transitive_edge(state, "c", "d");
+    wam_register_transitive_edge(state, "d", "a");
+}
+
+static void load_alias_graph(WamState *state, bool include_self_loop) {
+    wam_register_transitive_edge(state, "a", "b");
+    if (include_self_loop) {
+        wam_register_transitive_edge(state, "a", "a");
+    }
+}
+
+static int install_retry_program(WamState *state) {
+    int fail_pc = state->code_size;
+    int next_size = fail_pc + 4;
+    Instruction *next = realloc(
+        state->code, sizeof(Instruction) * (size_t)next_size);
+    if (!next) return -1;
+    state->code = next;
+    state->code_size = next_size;
+    memset(&state->code[fail_pc], 0, sizeof(Instruction) * 4u);
+
+    /* Every requested retry first runs a guaranteed failing instruction.
+     * wam_run then restores the native stream CP and resumes it normally. */
+    state->code[fail_pc].tag = INSTR_BUILTIN_CALL;
+    state->code[fail_pc].as.pred.pred = "__tpd4_retry_fail/0";
+    state->code[fail_pc].as.pred.arity = 0;
+    state->code[fail_pc + 1].tag = INSTR_PROCEED;
+
+    /* An outer sentinel restores the pre-call bindings after the foreign
+     * stream is exhausted, pops itself, and returns cleanly. */
+    state->code[fail_pc + 2].tag = INSTR_TRUST_ME;
+    state->code[fail_pc + 3].tag = INSTR_PROCEED;
+    return fail_pc;
+}
+
+static int triple_index(const char *target, const char *parent, int distance) {
+    for (int i = 0; i < 5; i++) {
+        const ExpectedTriple *e = &contract_triples[i];
+        if (strcmp(target, e->target) == 0 &&
+            strcmp(parent, e->parent) == 0 &&
+            distance == e->distance) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static bool selected_by_mode(int mask, const ExpectedTriple *e) {
+    if ((mask & 1) && strcmp(e->target, "d") != 0) return false;
+    if ((mask & 2) && strcmp(e->parent, "b") != 0) return false;
+    if ((mask & 4) && e->distance != 2) return false;
+    return true;
+}
+
+static bool base_mode_regs_restored(WamState *state, int mask) {
+    WamValue *target = wam_deref_ptr(state, &state->A[1]);
+    WamValue *parent = wam_deref_ptr(state, &state->A[2]);
+    WamValue *dist = wam_deref_ptr(state, &state->A[3]);
+    bool target_ok = (mask & 1)
+        ? target->tag == VAL_ATOM && strcmp(target->data.atom, "d") == 0
+        : val_is_unbound(*target);
+    bool parent_ok = (mask & 2)
+        ? parent->tag == VAL_ATOM && strcmp(parent->data.atom, "b") == 0
+        : val_is_unbound(*parent);
+    bool dist_ok = (mask & 4)
+        ? dist->tag == VAL_INT && dist->data.integer == 2
+        : val_is_unbound(*dist);
+    return target_ok && parent_ok && dist_ok;
+}
+
+static int run_bound_mode(int mask) {
+    WamState state;
+    int rc = 0;
+    int seen[5] = { 0, 0, 0, 0, 0 };
+    int expected_count = 0;
+    wam_state_init(&state);
+    setup_pd_4(&state);
+    setup_detected_wam_c_kernels(&state);
+    load_contract_graph(&state);
+
+    int fail_pc = install_retry_program(&state);
+    if (fail_pc < 0) { rc = 1; goto done; }
+    state.P = fail_pc;
+    state.CP = WAM_HALT;
+    state.A[0] = val_atom("a");
+    state.A[1] = (mask & 1) ? val_atom("d") : val_unbound("T");
+    state.A[2] = (mask & 2) ? val_atom("b") : val_unbound("P");
+    state.A[3] = (mask & 4) ? val_int(2) : val_unbound("D");
+
+    for (int i = 0; i < 5; i++) {
+        if (selected_by_mode(mask, &contract_triples[i])) expected_count++;
+    }
+
+    /* This outer ordinary CP is the query-level retry boundary. */
+    push_choice_point(&state, fail_pc + 2, 4);
+    if (!wam_execute_foreign_predicate(&state, "pd/4", 4)) {
+        rc = 2; goto done;
+    }
+
+    for (int n = 0; n < expected_count; n++) {
+        if (n > 0) {
+            state.P = fail_pc;
+            if (wam_run(&state) != 0) { rc = 3; goto done; }
+        }
+        WamValue *target = wam_deref_ptr(&state, &state.A[1]);
+        WamValue *parent = wam_deref_ptr(&state, &state.A[2]);
+        WamValue *dist = wam_deref_ptr(&state, &state.A[3]);
+        if (target->tag != VAL_ATOM || parent->tag != VAL_ATOM ||
+            dist->tag != VAL_INT) {
+            rc = 4; goto done;
+        }
+        int index = triple_index(target->data.atom, parent->data.atom,
+                                 dist->data.integer);
+        if (index < 0 || seen[index] ||
+            !selected_by_mode(mask, &contract_triples[index])) {
+            rc = 5; goto done;
+        }
+        seen[index] = 1;
+    }
+
+    for (int i = 0; i < 5; i++) {
+        if (seen[i] != (selected_by_mode(mask, &contract_triples[i]) ? 1 : 0)) {
+            rc = 6; goto done;
+        }
+    }
+
+    /* One more failure exhausts the foreign CP.  The outer sentinel then
+     * restores the pre-call registers/trail and removes itself. */
+    state.P = fail_pc;
+    if (wam_run(&state) != 0 || state.P != WAM_HALT ||
+        state.B != 0 || state.TR != 0 ||
+        !base_mode_regs_restored(&state, mask)) {
+        rc = 7; goto done;
+    }
+
+done:
+    wam_free_state(&state);
+    return rc;
+}
+
+static int run_alias_later_match(void) {
+    WamState state;
+    int rc = 0;
+    wam_state_init(&state);
+    setup_pd_4(&state);
+    setup_detected_wam_c_kernels(&state);
+    load_alias_graph(&state, true);
+
+    int fail_pc = install_retry_program(&state);
+    if (fail_pc < 0) { rc = 1; goto done; }
+    state.P = fail_pc;
+    state.CP = WAM_HALT;
+    state.A[0] = val_atom("a");
+    WamValue shared = wam_make_ref(&state);
+    state.A[1] = shared;
+    state.A[2] = shared;
+    state.A[3] = val_int(1);
+    push_choice_point(&state, fail_pc + 2, 4);
+
+    /* (b,a,1) is incompatible with T=P, but the later self-loop
+     * (a,a,1) must still be selected. */
+    if (!wam_execute_foreign_predicate(&state, "pd/4", 4)) {
+        rc = 2; goto done;
+    }
+    WamValue *target = wam_deref_ptr(&state, &state.A[1]);
+    WamValue *parent = wam_deref_ptr(&state, &state.A[2]);
+    if (target->tag != VAL_ATOM || parent->tag != VAL_ATOM ||
+        strcmp(target->data.atom, "a") != 0 ||
+        strcmp(parent->data.atom, "a") != 0 || state.B != 1) {
+        rc = 3; goto done;
+    }
+
+    state.P = fail_pc;
+    if (wam_run(&state) != 0 || state.B != 0 || state.TR != 0 ||
+        state.A[1].tag != VAL_REF || state.A[2].tag != VAL_REF ||
+        state.A[1].data.ref_addr != state.A[2].data.ref_addr ||
+        !val_is_unbound(*wam_deref_ptr(&state, &state.A[1]))) {
+        rc = 4; goto done;
+    }
+
+done:
+    wam_free_state(&state);
+    return rc;
+}
+
+static int run_alias_no_match_clean(void) {
+    WamState state;
+    int rc = 0;
+    wam_state_init(&state);
+    setup_pd_4(&state);
+    setup_detected_wam_c_kernels(&state);
+    load_alias_graph(&state, false);
+    state.P = 0;
+    state.A[0] = val_atom("a");
+    WamValue shared = wam_make_ref(&state);
+    state.A[1] = shared;
+    state.A[2] = shared;
+    state.A[3] = val_int(1);
+
+    if (wam_execute_foreign_predicate(&state, "pd/4", 4) ||
+        state.B != 0 || state.TR != 0 ||
+        !val_is_unbound(*wam_deref_ptr(&state, &state.A[1]))) {
+        rc = 1;
+    }
+    wam_free_state(&state);
+    return rc;
 }
 
 int main(void) {
-    WamState state;
-
-    /* Bound Source via cycle: pd(a,a,P,D) → P=c, D=3 */
-    wam_state_init(&state);
-    setup_pd_4(&state);
-    setup_detected_wam_c_kernels(&state);
-    load_cycle(&state);
-    {
-        WamValue args[4] = {
-            val_atom("a"), val_atom("a"), val_unbound("P"), val_unbound("D")
-        };
-        int rc = wam_run_predicate(&state, "pd/4", args, 4);
-        if (rc != 0 || state.P != WAM_HALT ||
-            state.A[2].tag != VAL_ATOM ||
-            strcmp(state.A[2].data.atom, "c") != 0 ||
-            state.A[3].tag != VAL_INT || state.A[3].data.integer != 3) {
-            wam_free_state(&state);
-            return 11;
-        }
+    /* The mode loop includes the complete free stream: duplicate edge
+     * suppression, both equal-shortest parents, cycle-to-Source, exact
+     * tuple pairing, ordinary retries, and clean exhaustion. */
+    for (int mask = 0; mask < 8; mask++) {
+        int rc = run_bound_mode(mask);
+        if (rc != 0) return 20 + mask * 8 + rc;
     }
-    wam_free_state(&state);
-
-    /* Bound triple succeeds once */
-    wam_state_init(&state);
-    setup_pd_4(&state);
-    setup_detected_wam_c_kernels(&state);
-    load_cycle(&state);
-    {
-        WamValue args[4] = {
-            val_atom("a"), val_atom("c"), val_atom("b"), val_int(2)
-        };
-        int rc = wam_run_predicate(&state, "pd/4", args, 4);
-        if (rc != 0 || state.P != WAM_HALT) {
-            wam_free_state(&state);
-            return 12;
-        }
-    }
-    wam_free_state(&state);
-
-    /* Equal diamond: both parents for d */
-    wam_state_init(&state);
-    setup_pd_4(&state);
-    setup_detected_wam_c_kernels(&state);
-    load_diamond(&state);
-    {
-        WamValue args[4] = {
-            val_atom("a"), val_atom("d"), val_unbound("P"), val_unbound("D")
-        };
-        int rc = wam_run_predicate(&state, "pd/4", args, 4);
-        if (rc != 0 || state.P != WAM_HALT ||
-            state.A[2].tag != VAL_ATOM ||
-            state.A[3].tag != VAL_INT || state.A[3].data.integer != 2) {
-            wam_free_state(&state);
-            return 13;
-        }
-        /* First yield is one valid parent; second via foreign stream. */
-        const char *p1 = state.A[2].data.atom;
-        if (strcmp(p1, "b") != 0 && strcmp(p1, "c") != 0) {
-            wam_free_state(&state);
-            return 14;
-        }
-    }
-    wam_free_state(&state);
-
-    /* Mismatch fails */
-    wam_state_init(&state);
-    setup_pd_4(&state);
-    setup_detected_wam_c_kernels(&state);
-    load_cycle(&state);
-    {
-        WamValue args[4] = {
-            val_atom("a"), val_atom("c"), val_atom("b"), val_int(1)
-        };
-        int rc = wam_run_predicate(&state, "pd/4", args, 4);
-        if (rc == 0) {
-            wam_free_state(&state);
-            return 15;
-        }
-    }
-    wam_free_state(&state);
+    if (run_alias_later_match() != 0) return 100;
+    if (run_alias_no_match_clean() != 0) return 101;
     return 0;
 }
 '.

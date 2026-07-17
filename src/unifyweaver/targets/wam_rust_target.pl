@@ -3373,30 +3373,11 @@ compile_foreign_result_helpers_to_rust(Code) :-
             return false;
         }
         match result_mode {
-            "stream" => {
-                if results.len() > 1 {
-                    self.choice_points.push(ChoicePoint {
-                        next_pc: self.pc,
-                        saved_args: self.save_regs(),
-                        stack: self.stack.clone(),
-                        cp: self.cp,
-                        trail_len: self.trail.len(),
-                        heap_len: self.heap.len(),
-                        builtin_state: Some(BuiltinState {
-                            name: "foreign_results".to_string(),
-                            args: {
-                                let mut args = Vec::with_capacity(result_regs.len() + 1);
-                                args.push(Value::Atom(pred_key.to_string()));
-                                args.extend(result_regs.iter().cloned());
-                                args
-                            },
-                            data: results[1..].to_vec(),
-                        }),
-                        cut_barrier: self.cut_barrier,
-                    });
-                }
-                self.apply_foreign_result(pred_key, &result_regs, &results[0])
-            }
+            "stream" => self.apply_first_compatible_foreign_result(
+                pred_key,
+                result_regs,
+                results,
+            ),
             "deterministic" | "deterministic_collection" => {
                 if results.len() != 1 {
                     return false;
@@ -3405,6 +3386,55 @@ compile_foreign_result_helpers_to_rust(Code) :-
             }
             _ => false,
         }
+    }
+
+    /// Jointly try complete foreign tuples until one unifies.  A candidate
+    /// that conflicts through bound or aliased output registers is local
+    /// failure, not exhaustion of the whole stream.  The retry choice point
+    /// snapshots the state *before* the successful tuple is bound so ordinary
+    /// backtracking removes every output binding.
+    fn apply_first_compatible_foreign_result(
+        &mut self,
+        pred_key: &str,
+        result_regs: Vec<Value>,
+        results: Vec<Value>,
+    ) -> bool {
+        for (idx, result) in results.iter().enumerate() {
+            let saved_args = self.save_regs();
+            let saved_stack = self.stack.clone();
+            let saved_cp = self.cp;
+            let trail_len = self.trail.len();
+            let heap_len = self.heap.len();
+            let saved_cut_barrier = self.cut_barrier;
+
+            if !self.apply_foreign_result(pred_key, &result_regs, result) {
+                continue;
+            }
+
+            if idx + 1 < results.len() {
+                self.choice_points.push(ChoicePoint {
+                    next_pc: self.pc,
+                    saved_args,
+                    stack: saved_stack,
+                    cp: saved_cp,
+                    trail_len,
+                    heap_len,
+                    builtin_state: Some(BuiltinState {
+                        name: "foreign_results".to_string(),
+                        args: {
+                            let mut args = Vec::with_capacity(result_regs.len() + 1);
+                            args.push(Value::Atom(pred_key.to_string()));
+                            args.extend(result_regs.iter().cloned());
+                            args
+                        },
+                        data: results[idx + 1..].to_vec(),
+                    }),
+                    cut_barrier: saved_cut_barrier,
+                });
+            }
+            return true;
+        }
+        false
     }
 
     fn apply_foreign_result(
@@ -3421,17 +3451,28 @@ compile_foreign_result_helpers_to_rust(Code) :-
         if result_regs.len() != tuple_arity {
             return false;
         }
+        let saved_args = self.save_regs();
+        let trail_len = self.trail.len();
+        let heap_len = self.heap.len();
+        let mut matched = true;
         match result {
             Value::Str(functor, args) if functor == "__tuple__" && args.len() == tuple_arity => {
                 for (reg, arg) in result_regs.iter().zip(args.iter()) {
                     if !self.unify(reg, arg) {
-                        return false;
+                        matched = false;
+                        break;
                     }
                 }
-                true
             }
-            _ => false,
+            _ => matched = false,
         }
+        if !matched {
+            self.unwind_trail_bindings_only(trail_len);
+            self.trail.truncate(trail_len);
+            self.heap.truncate(heap_len);
+            self.restore_regs(&saved_args);
+        }
+        matched
     }'.
 
 compile_parse_foreign_tuple_layout_to_rust(Code) :-
@@ -3856,7 +3897,30 @@ compile_collect_native_transitive_parent_distance_to_rust(Code) :-
     }'.
 
 compile_collect_native_transitive_step_parent_distance_to_rust(Code) :-
-    Code = '    pub fn collect_native_transitive_step_parent_distance_results(
+    Code = '    /// Legacy TSPD5 support only: reproduce the pre-TPD4 all-path DFS
+    /// and its emission order without calling the shortest-positive TPD4
+    /// collector. WARNING: this historical walker has no cycle detection and
+    /// must only be used with the same acyclic inputs TSPD5 supported before
+    /// the dedicated TSPD5 contract/parity task defines cycle semantics.
+    fn collect_legacy_transitive_parent_distance_all_paths(
+        &self,
+        start: &str,
+        edge_pred: &str,
+        out: &mut Vec<(String, String, i64)>,
+    ) {
+        let mut stack: Vec<(String, i64)> = vec![(start.to_string(), 0)];
+        while let Some((node, depth)) = stack.pop() {
+            if let Some(next_nodes) = self.indexed_atom_fact2.get(edge_pred).and_then(|table| table.get(&node)) {
+                for next in next_nodes.iter().rev() {
+                    let next_depth = depth + 1;
+                    out.push((next.clone(), node.clone(), next_depth));
+                    stack.push((next.clone(), next_depth));
+                }
+            }
+        }
+    }
+
+    pub fn collect_native_transitive_step_parent_distance_results(
         &self,
         start: &str,
         edge_pred: &str,
@@ -3866,7 +3930,7 @@ compile_collect_native_transitive_step_parent_distance_to_rust(Code) :-
             for next in next_nodes {
                 out.push((next.clone(), next.clone(), start.to_string(), 1));
                 let mut nested: Vec<(String, String, i64)> = Vec::new();
-                self.collect_native_transitive_parent_distance_results(next, edge_pred, &mut nested);
+                self.collect_legacy_transitive_parent_distance_all_paths(next, edge_pred, &mut nested);
                 for (target, parent, dist) in nested {
                     out.push((target, next.clone(), parent, dist + 1));
                 }
@@ -4432,27 +4496,11 @@ compile_resume_builtin_to_rust(Code) :-
                     Some(Value::Atom(pred_key)) => pred_key.clone(),
                     _ => return false,
                 };
-                let result = match state.data.first() {
-                    Some(value) => value.clone(),
-                    None => return false,
-                };
-                if state.data.len() > 1 {
-                    self.choice_points.push(ChoicePoint {
-                        next_pc: self.pc,
-                        saved_args: self.save_regs(),
-                        stack: self.stack.clone(),
-                        cp: self.cp,
-                        trail_len: self.trail.len(),
-                        heap_len: self.heap.len(),
-                        builtin_state: Some(BuiltinState {
-                            name: "foreign_results".to_string(),
-                            args: state.args.clone(),
-                            data: state.data[1..].to_vec(),
-                        }),
-                        cut_barrier: self.cut_barrier,
-                    });
-                }
-                if self.apply_foreign_result(&pred_key, &state.args[1..], &result) {
+                if self.apply_first_compatible_foreign_result(
+                    &pred_key,
+                    state.args[1..].to_vec(),
+                    state.data,
+                ) {
                     self.pc += 1; true
                 } else { false }
             }

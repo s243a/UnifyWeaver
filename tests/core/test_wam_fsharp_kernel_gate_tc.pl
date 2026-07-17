@@ -36,6 +36,8 @@
 :- dynamic user:td/3.
 :- dynamic user:tpd_edge/2.
 :- dynamic user:tpd/4.
+:- dynamic user:tpd_alt_edge/2.
+:- dynamic user:tpd_alt/4.
 :- dynamic user:tspd_edge/2.
 :- dynamic user:tspd/5.
 :- dynamic user:w_edge/3.
@@ -52,13 +54,18 @@ dotnet_available :-
     catch(
         ( process_create(path(dotnet), ['--version'],
                          [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, _) ),
+          process_wait(Pid, exit(0)) ),
         _, fail).
 
 tmp_proj(Name, Dir) :-
     format(atom(Dir), '/tmp/uw_fs_gate_~w', [Name]),
     catch(delete_directory_and_contents(Dir), _, true),
     make_directory_path(Dir).
+
+substring_occurrence_count(Text0, Needle, Count) :-
+    ( string(Text0) -> Text = Text0 ; atom_string(Text0, Text) ),
+    findall(Start, sub_string(Text, Start, _, _, Needle), Starts),
+    length(Starts, Count).
 
 run_dotnet_build(Dir, Exit, Out) :-
     setup_call_cleanup(
@@ -129,6 +136,16 @@ assert_tpd_program :-
     assertz((user:tpd(X, Y, X, 1) :- tpd_edge(X, Y))),
     assertz((user:tpd(X, Y, P, D) :-
                 tpd_edge(X, Z), tpd(Z, Y, P, D1), D is D1 + 1)).
+
+assert_two_tpd_programs :-
+    assert_tpd_program,
+    retractall(user:tpd_alt_edge(_, _)),
+    retractall(user:tpd_alt(_, _, _, _)),
+    assertz(user:tpd_alt_edge(a, c)),
+    assertz(user:tpd_alt_edge(c, d)),
+    assertz((user:tpd_alt(X, Y, X, 1) :- tpd_alt_edge(X, Y))),
+    assertz((user:tpd_alt(X, Y, P, D) :-
+                tpd_alt_edge(X, Z), tpd_alt(Z, Y, P, D1), D is D1 + 1)).
 
 assert_tspd_program :-
     retractall(user:tspd_edge(_, _)),
@@ -387,6 +404,19 @@ test(every_allowlisted_kind_has_a_real_handler) :-
             recursive_kernel(Kind, probe/0, [])))
     ).
 
+test(two_tpd4_predicates_share_one_native_handler_body) :-
+    K1 = recursive_kernel(transitive_parent_distance4, tpd/4,
+                          [edge_pred(tpd_edge/2)]),
+    K2 = recursive_kernel(transitive_parent_distance4, tpd_alt/4,
+                          [edge_pred(tpd_alt_edge/2)]),
+    wam_fsharp_target:generate_kernel_fsharp(
+        ['tpd/4'-K1, 'tpd_alt/4'-K2], KernelCode, DispatchCode),
+    substring_occurrence_count(
+        KernelCode, "let nativeKernel_transitive_parent_distance", Count),
+    assertion(Count =:= 1),
+    assertion(sub_string(DispatchCode, _, _, _, "| \"tpd/4\" ->")),
+    assertion(sub_string(DispatchCode, _, _, _, "| \"tpd_alt/4\" ->")).
+
 test(existing_closure_layers_present) :-
     % Characterization: do not invent TC support from scratch.
     % Tests are invoked from the repo root (see docs/TESTING.md).
@@ -563,16 +593,21 @@ test(td3_no_kernels_still_builds, [condition(dotnet_available)]) :-
     !.
 
 test(native_tpd4_codegen_and_build, [condition(dotnet_available)]) :-
-    assert_tpd_program,
+    assert_two_tpd_programs,
     tmp_proj(native_tpd4, Dir),
-    write_wam_fsharp_project(
-        [user:tpd/4, user:tpd_edge/2],
+    once(write_wam_fsharp_project(
+        [ user:tpd/4, user:tpd_edge/2,
+          user:tpd_alt/4, user:tpd_alt_edge/2
+        ],
         [module_name('uw_fs_native_tpd4')],
-        Dir),
+        Dir)),
     directory_file_path(Dir, 'WamRuntime.fs', RT),
     read_file_to_string(RT, RTS, []),
-    assertion(sub_string(RTS, _, _, _, "nativeKernel_transitive_parent_distance")),
+    substring_occurrence_count(
+        RTS, "let nativeKernel_transitive_parent_distance", HandlerCount),
+    assertion(HandlerCount =:= 1),
     assertion(sub_string(RTS, _, _, _, "| \"tpd/4\" ->")),
+    assertion(sub_string(RTS, _, _, _, "| \"tpd_alt/4\" ->")),
     assertion(sub_string(RTS, _, _, _, "FFIStreamRetry")),
     assertion(\+ sub_string(RTS, _, _, _, "template not found")),
     run_dotnet_build(Dir, Exit, Out),
@@ -585,10 +620,10 @@ test(native_tpd4_codegen_and_build, [condition(dotnet_available)]) :-
 test(tpd4_no_kernels_still_builds, [condition(dotnet_available)]) :-
     assert_tpd_program,
     tmp_proj(tpd4_nk, Dir),
-    write_wam_fsharp_project(
+    once(write_wam_fsharp_project(
         [user:tpd/4, user:tpd_edge/2],
         [no_kernels(true), module_name('uw_fs_tpd4_nk'), conformance_main(true)],
-        Dir),
+        Dir)),
     directory_file_path(Dir, 'WamRuntime.fs', RT),
     read_file_to_string(RT, RTS, []),
     assertion(\+ sub_string(RTS, _, _, _, "nativeKernel_transitive_parent_distance")),

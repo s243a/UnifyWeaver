@@ -3270,7 +3270,24 @@ func (vm *WamState) backtrack() bool {
             vm.PC = resumePC
             return true
         }
-        return false
+        // The final tuple may have bound an earlier correlated output before
+        // a later aliased output conflicted.  Its ForeignCP was popped before
+        // applyForeignResult so restore the pre-stream snapshot explicitly,
+        // then continue with any older WAM choice point.
+        vm.unwindTrailTo(cp.TrailMark)
+        vm.restoreSavedRegs(cp.SavedRegs)
+        if cp.StackLen <= len(vm.Stack) {
+            vm.Stack = vm.Stack[:cp.StackLen]
+        }
+        vm.E = cp.E
+        if cp.HeapTop >= 0 && cp.HeapTop <= vm.HeapLen {
+            vm.heapTrimTo(cp.HeapTop)
+        }
+        vm.CP = cp.CP
+        vm.Halted = false
+        vm.CurrentStruct = nil
+        vm.CurrentList = nil
+        return vm.backtrack()
     }
     vm.unwindTrailTo(cp.TrailMark)
     vm.restoreSavedRegs(cp.SavedRegs)

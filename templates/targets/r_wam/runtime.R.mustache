@@ -1697,10 +1697,12 @@ WamRuntime$step <- function(program, state, instr) {
       # if it did).
       n <- length(state$cps)
       agg_idx <- 0L
-      for (i in seq.int(n, 1L, by = -1L)) {
-        cpi <- state$cps[[i]]
-        if (!is.null(cpi$kind) && cpi$kind == "aggregate") {
-          agg_idx <- i; break
+      if (n > 0L) {
+        for (i in seq.int(n, 1L, by = -1L)) {
+          cpi <- state$cps[[i]]
+          if (!is.null(cpi$kind) && cpi$kind == "aggregate") {
+            agg_idx <- i; break
+          }
         }
       }
       if (agg_idx == 0L) return(FALSE)
@@ -4134,11 +4136,12 @@ WamRuntime$dispatch_call <- function(program, state, pred, arity) {
     saved_cp       <- state$cp
     saved_halt     <- state$halt
     saved_stack_n  <- length(state$stack)
+    saved_cps_n    <- length(state$cps)
     saved_shadow   <- state$shadow_frame
     state$pc   <- as.integer(tgt)
     state$cp   <- 0L
     state$halt <- FALSE
-    ok <- WamRuntime$run(program, state)
+    ok <- WamRuntime$run(program, state, min_cps = saved_cps_n)
     state$pc   <- saved_pc
     state$cp   <- saved_cp
     state$halt <- saved_halt
@@ -4228,7 +4231,7 @@ WamRuntime$iterate_goal <- function(program, state, goal_term, on_each) {
         cont <- on_each()
         if (!isTRUE(cont)) break
         if (length(state$cps) <= snap_cps_len) break
-        if (!WamRuntime$backtrack(state)) break
+        if (!WamRuntime$backtrack(state, snap_cps_len)) break
         ok <- TRUE
       }
       return(invisible(NULL))
@@ -4350,7 +4353,7 @@ WamRuntime$iterate_goal <- function(program, state, goal_term, on_each) {
           cont <- on_each()
           if (!isTRUE(cont)) break
           if (length(state$cps) <= snap_cps_len) break
-          if (!WamRuntime$backtrack(state)) break
+          if (!WamRuntime$backtrack(state, snap_cps_len)) break
           ok <- TRUE  # backtrack already invoked retry; keep iterating
         }
         return(invisible(NULL))
@@ -4367,9 +4370,9 @@ WamRuntime$iterate_goal <- function(program, state, goal_term, on_each) {
     cont <- on_each()
     if (!isTRUE(cont)) break
     if (length(state$cps) <= snap_cps_len) break
-    if (!WamRuntime$backtrack(state)) break
+    if (!WamRuntime$backtrack(state, snap_cps_len)) break
     state$halt <- FALSE
-    ok <- WamRuntime$run(program, state)
+    ok <- WamRuntime$run(program, state, min_cps = snap_cps_len)
   }
   invisible(NULL)
 }
@@ -6062,9 +6065,12 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
 # ----------------------------------------------------------
 # Backtracking
 # ----------------------------------------------------------
-WamRuntime$backtrack <- function(state) {
+WamRuntime$backtrack <- function(state, min_cps = 0L) {
   n <- length(state$cps)
-  if (n == 0L) return(FALSE)
+  # Nested enumerators (notably graph kernels calling iterate_goal)
+  # must not consume a caller-owned choice point when their own
+  # retry stream is exhausted. min_cps is that protected stack depth.
+  if (n <= min_cps) return(FALSE)
   cp <- state$cps[[n]]
   # Dynamic-CP resume: the previous clause succeeded; backtracking
   # now means "try the next stored clause for the same predicate". On
@@ -6091,7 +6097,7 @@ WamRuntime$backtrack <- function(state) {
       state$pc <- as.integer(cp$resume_pc)
       return(TRUE)
     }
-    return(WamRuntime$backtrack(state))
+    return(WamRuntime$backtrack(state, min_cps))
   }
 
   # Iter-CP resume: builtin enumerators (member/2, between/3, ...)
@@ -6125,7 +6131,7 @@ WamRuntime$backtrack <- function(state) {
       state$pc <- as.integer(cp$resume_pc)
       return(TRUE)
     }
-    return(WamRuntime$backtrack(state))
+    return(WamRuntime$backtrack(state, min_cps))
   }
 
   # Aggregate-frame finalization: when backtrack reaches a frame
@@ -6156,7 +6162,7 @@ WamRuntime$backtrack <- function(state) {
       WamRuntime$put_reg(state, cp$bag_reg, bag)
     } else if (!WamRuntime$unify(state, cur, bag)) {
       # Bag unification failed - propagate as another backtrack.
-      return(WamRuntime$backtrack(state))
+      return(WamRuntime$backtrack(state, min_cps))
     }
     state$pc <- as.integer(cp$next_pc)
     return(TRUE)
@@ -6198,17 +6204,18 @@ WamRuntime$backtrack <- function(state) {
 # ----------------------------------------------------------
 # Top-level driver
 # ----------------------------------------------------------
-WamRuntime$run <- function(program, state, max_steps = 1e7) {
+WamRuntime$run <- function(program, state, max_steps = 1e7,
+                           min_cps = 0L) {
   for (i in seq_len(max_steps)) {
     if (state$halt) return(TRUE)
     if (state$pc < 1L || state$pc > length(program$instructions)) {
-      if (!WamRuntime$backtrack(state)) return(FALSE)
+      if (!WamRuntime$backtrack(state, min_cps)) return(FALSE)
       next
     }
     instr <- program$instructions[[state$pc]]
     ok <- WamRuntime$step(program, state, instr)
     if (!ok) {
-      if (!WamRuntime$backtrack(state)) return(FALSE)
+      if (!WamRuntime$backtrack(state, min_cps)) return(FALSE)
     }
   }
   warning("WAM run exceeded max_steps; truncating")

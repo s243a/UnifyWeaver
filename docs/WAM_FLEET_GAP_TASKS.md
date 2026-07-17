@@ -483,7 +483,7 @@ plumbing there.
   1. **Capability gate** — `wam_fsharp_native_kernel_kind/1` + filter in `detect_kernels_fs/2`. Unsupported detected kinds fall back to ordinary WAM (no undefined `nativeKernel_*` / FS0039). Logged at generation time.
   2. **Native `transitive_closure2` acceleration** — `templates/targets/fsharp_wam/kernel_transitive_closure.fs.mustache` (lookup-fn + HashSet visited; stream via existing FFIStreamRetry; bound Target filtered). Describe as “native foreign acceleration for the shared transitive_closure2 pattern,” not “F# transitive closure support.”
 - **FS-TD3 ✅ (landed with TD3-CONTRACT-PARITY-FS):** `nativeKernel_transitive_distance` Mustache + allow-list entry; streams `(atom,int)` via existing multi-output `FFIStreamRetry` binder.
-- **FS-TPD4 ✅ (landed with TPD4-CONTRACT-PARITY-FS):** `nativeKernel_transitive_parent_distance` Mustache + allow-list entry; streams `(atom,atom,int)` via existing three-output `FFIStreamRetry` binder.
+- **FS-TPD4 (implemented in draft PR #3830):** `nativeKernel_transitive_parent_distance` Mustache + allow-list entry; streams `(atom,atom,int)` via the three-output `FFIStreamRetry` binder. Mark this landed only after PR #3830 merges.
 - **Remaining (3 kinds, optional acceleration):** `transitive_step_parent_distance5`, `weighted_shortest_path3`, `astar_shortest_path4` — add to the allow-list only when a real handler exists (mustache *or* inline). Until then they must stay WAM.
 - **Tests:** `tests/core/test_wam_fsharp_kernel_gate_tc.pl`
 - **Acceptance (gate+TC2+TD3+TPD4):** `swipl -q -g run_tests -t halt tests/core/test_wam_fsharp_kernel_gate_tc.pl`.
@@ -504,6 +504,7 @@ plumbing there.
 
 ### TPD4-CONTRACT-PARITY-FS: Fleet-wide `transitive_parent_distance4` shortest-positive parents + F# native
 - **Lever:** Shared recursive-kernel contract parity  **Target:** multi  **Size:** M  **Depends on:** TD3-CONTRACT-PARITY-FS (`#3821`, `1e2a888`)
+- **Status:** Implemented in draft PR `#3830`; not landed until merge.
 - **Contract:** [`docs/design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md`](design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md) — emit every distinct `(T,P,D)` at `dist+`; all equal-shortest parents; Source only via self-loop/cycle; never distance 0; all eight bound-output modes; compare complete triples.
 - **Oracle / fixtures:** `tests/fixtures/tpd4_contract_oracle.pl` (literal expected triples + finite BFS cross-check).
 - **Handler align:** Rust/Elixir → BFS parent sets (was per-path DFS); Go/Scala/Haskell/R → parent sets + stop seeding Source; C streams interleaved triples (`result_reg==254`); LLVM remains capability-gated (no nonexistent handler).

@@ -2999,7 +2999,15 @@ func (vm *WamState) finishForeignResults(predKey string, resultRegs []int, resul
     case "stream":
         return vm.finishStreamResults(predKey, resultRegs, results)
     default:
+        baseRegs := vm.Regs
+        trailMark := vm.TrailLen
+        heapTop := vm.HeapLen
         if !vm.applyForeignResult(predKey, resultRegs, results[0]) {
+            vm.unwindTrailTo(trailMark)
+            vm.Regs = baseRegs
+            if heapTop >= 0 && heapTop <= vm.HeapLen {
+                vm.heapTrimTo(heapTop)
+            }
             return false
         }
         vm.PC = resumePC
@@ -3065,6 +3073,22 @@ func (vm *WamState) finishStreamResults(predKey string, resultRegs []int, result
         vm.PC = resumePC
         return true
     }
+    // The last candidate can fail only after binding an earlier tuple
+    // component (notably when output registers alias).  There is no next
+    // loop iteration to perform the usual reset, so restore the complete
+    // pre-stream snapshot before reporting exhaustion.
+    vm.unwindTrailTo(trailMark)
+    vm.Regs = baseRegs
+    if baseStackLen <= len(vm.Stack) {
+        vm.Stack = vm.Stack[:baseStackLen]
+    }
+    vm.E = baseE
+    if heapTop >= 0 && heapTop <= vm.HeapLen {
+        vm.heapTrimTo(heapTop)
+    }
+    vm.Halted = false
+    vm.CurrentStruct = nil
+    vm.CurrentList = nil
     return false
 }
 
