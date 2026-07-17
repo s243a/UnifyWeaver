@@ -227,8 +227,8 @@ plawk_program_native_driver_ir(
     \+ plawk_begin_has_binfmt(BeginClauses),
     plawk_record_descriptor(BeginClauses, FieldSeparator),
     integer(FieldSeparator),
-    % a real single-char FS: not whitespace (32), not the regex sentinel (0)
-    FieldSeparator > 0,
+    % a single explicit char (byte > 0, not whitespace 32) or the regex-FS
+    % sentinel 0 (the field buffer splits on the program FS regex via _new_re)
     FieldSeparator =\= 32,
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
@@ -6791,11 +6791,13 @@ plawk_assoc_body_action_spec(delete_assoc(var(ArrayName), field(KeyIndex)),
         assoc_delete(ArrayName, KeyIndex)) :-
     integer(KeyIndex), KeyIndex > 0.
 % `split($N, arr, "sep")`: populate arr (a str-valued positional table, keys
-% 1..n) by splitting field N on the single-char separator.
+% 1..n) by splitting field N on the separator. A single-char separator is a
+% literal byte; a multi-char separator is a POSIX ERE regex (its own pattern,
+% independent of FS).
 plawk_assoc_body_action_spec(split_into(field(KeyIndex), var(ArrayName), string(Sep)),
         assoc_split(ArrayName, KeyIndex, Sep)) :-
     integer(KeyIndex), KeyIndex >= 0,
-    string(Sep), string_length(Sep, 1).
+    string(Sep), string_length(Sep, Len), Len >= 1.
 % Associative add-assign `arr[$k] += DELTA`: fold DELTA (a field value or an
 % integer constant) into the table at the key interned from field k. The
 % general form of `arr[$k]++` and the pass-1 half of per-key normalise. v1
@@ -7524,6 +7526,33 @@ plawk_partition_global_lines([global(G) | Rest], [G | Gs], Lines) :-
 plawk_partition_global_lines([L | Rest], Gs, [L | Lines]) :-
     plawk_partition_global_lines(Rest, Gs, Lines).
 
+%% plawk_split_call_lines(+Sep, +Base, +TableIndex, -ExtraLines, -SplitCall)
+%
+%  The `split()` call for a separator. A single-char `Sep` is a literal byte
+%  (`@wam_str_split_into`), with no extra lines. A multi-char `Sep` is a POSIX
+%  ERE: emit a per-site pattern constant + cache global (as `global(...)` terms,
+%  lifted to module scope) and a body getelementptr for the pattern pointer, then
+%  call `@wam_str_split_into_re`. Base is the site-unique action label stem, so
+%  the derived global names never collide across split sites.
+plawk_split_call_lines(Sep, Base, TableIndex, [], SplitCall) :-
+    string_codes(Sep, [SepCode]),
+    !,
+    format(atom(SplitCall),
+        '  %~w_n = call i64 @wam_str_split_into(%WamAssocI64Table* %plawk_assoc_table_~w, i8* %~w_src_ptr, i64 %~w_src_len, i8 ~w)',
+        [Base, TableIndex, Base, Base, SepCode]).
+plawk_split_call_lines(Sep, Base, TableIndex,
+        [global(PatGlobal), global(CacheGlobal), PatPtrLine], SplitCall) :-
+    format(atom(PatName), '~w_split_pat', [Base]),
+    format(atom(CacheName), '~w_split_cache', [Base]),
+    llvm_emit_c_string_global(PatName, Sep, PatGlobal, _StringLen, BytesLen),
+    format(atom(CacheGlobal), '@~w = internal global i8* null', [CacheName]),
+    format(atom(PatPtrLine),
+        '  %~w_patptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+        [Base, BytesLen, BytesLen, PatName]),
+    format(atom(SplitCall),
+        '  %~w_n = call i64 @wam_str_split_into_re(%WamAssocI64Table* %plawk_assoc_table_~w, i8* %~w_src_ptr, i64 %~w_src_len, i8* %~w_patptr, i8** @~w)',
+        [Base, TableIndex, Base, Base, Base, CacheName]).
+
 plawk_assoc_rule_action_lines(RuleIndex, Actions, NextLabel, FieldSeparator) -->
     { Actions = [_ | _],
       format(atom(FirstBranch), '  br label %assoc_rule_~w_action_0', [RuleIndex])
@@ -7974,19 +8003,16 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_split_action(Index, _ArrayName,
          format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
              [RuleIndex, NextIndex])
       ),
-      string_codes(Sep, [SepCode]),
       format(atom(Base), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
       format(atom(Label), '~w:', [Base]),
-      format(atom(Split),
-          '  %~w_n = call i64 @wam_str_split_into(%WamAssocI64Table* %plawk_assoc_table_~w, i8* %~w_src_ptr, i64 %~w_src_len, i8 ~w)',
-          [Base, TableIndex, Base, Base, SepCode]),
+      plawk_split_call_lines(Sep, Base, TableIndex, SplitGlobals, Split),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       ( KeyIndex =:= 0
       ->  % whole record: resolve %line's atom to its string
           format(atom(Lp), '  %~w_lp = call i64 @value_payload(%Value %line)', [Base]),
           format(atom(Sptr), '  %~w_src_ptr = call i8* @wam_atom_to_string(i64 %~w_lp)', [Base, Base]),
           format(atom(Slen), '  %~w_src_len = call i64 @strlen(i8* %~w_src_ptr)', [Base, Base]),
-          Lines = [Label, Lp, Sptr, Slen, Split, Next, '']
+          append([Label, Lp, Sptr, Slen | SplitGlobals], [Split, Next, ''], Lines)
       ;   % positive field: project its slice, skip on a missing field
           format(atom(HaveLabel), '~w_have_src:', [Base]),
           format(atom(HaveLabelName), '~w_have_src', [Base]),
@@ -7998,7 +8024,8 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_split_action(Index, _ArrayName,
           format(atom(Missing), '  %~w_src_missing = icmp eq i8* %~w_src_ptr, null', [Base, Base]),
           format(atom(Branch), '  br i1 %~w_src_missing, label %~w, label %~w',
               [Base, ActionNextLabel, HaveLabelName]),
-          Lines = [Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, Split, Next, '']
+          append([Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel | SplitGlobals],
+                 [Split, Next, ''], Lines)
       )
     },
     plawk_emit_lines(Lines),

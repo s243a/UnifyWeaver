@@ -82,6 +82,28 @@ test(split_labelled_forin, [condition(clang_available)]) :-
         "x,y\n", Out, St),
     assertion(St == 0), assertion(Out == "col 1 x\ncol 2 y\n"), !.
 
+% a multi-char separator is a POSIX ERE (here a literal "::").
+test(split_multichar_sep, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'mc', "{ split($0, a, \"::\") }\nEND { for (k in a) print k, a[k] }\n",
+        "x::y::z\n", Out, St),
+    assertion(St == 0), assertion(Out == "1 x\n2 y\n3 z\n"), !.
+
+% a genuine regex separator: comma then optional spaces.
+test(split_regex_sep, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'rx', "{ split($0, a, \", *\") }\nEND { for (k in a) print k, a[k] }\n",
+        "p, q,r\n", Out, St),
+    assertion(St == 0), assertion(Out == "1 p\n2 q\n3 r\n"), !.
+
+% a field is split with its own regex, independent of FS.
+test(split_field_regex_sep, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'fx',
+        "BEGIN { FS = \"|\" }\n{ split($2, a, \"[0-9]+\") }\nEND { for (k in a) print k, a[k] }\n",
+        "x|a1b22c|y\n", Out, St),
+    assertion(St == 0), assertion(Out == "1 a\n2 b\n3 c\n"), !.
+
 :- end_tests(plawk_split).
 
 % --- helpers ---------------------------------------------------------------

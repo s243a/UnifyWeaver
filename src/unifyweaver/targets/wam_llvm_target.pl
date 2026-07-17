@@ -4829,6 +4829,149 @@ sp.ret0:
   ret i64 0
 }
 
+; split() with a multi-char / regex separator (a POSIX ERE). Like
+; @wam_str_split_into but the separators are regex matches; %pattern / %cache are
+; a per-call-site pattern string and lazily regcomp()ed cache (each split site
+; owns its separator, unlike the single program FS). %str[0..len) is not NUL-
+; terminated, so it is copied into a scratch buffer for regexec. Returns the
+; piece count; a compile failure stores the whole input as position 1.
+define i64 @wam_str_split_into_re(%WamAssocI64Table* %table, i8* %str, i64 %len, i8* %pattern, i8** %cache) {
+entry:
+  %spr.tnull = icmp eq %WamAssocI64Table* %table, null
+  br i1 %spr.tnull, label %spr.ret0, label %spr.clear_load
+
+spr.clear_load:
+  %spr.cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  %spr.cap = load i64, i64* %spr.cap_slot
+  %spr.entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %spr.entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %spr.entries_slot
+  br label %spr.clear_loop
+
+spr.clear_loop:
+  %spr.ci = phi i64 [ 0, %spr.clear_load ], [ %spr.ci_next, %spr.clear_body ]
+  %spr.ci_done = icmp uge i64 %spr.ci, %spr.cap
+  br i1 %spr.ci_done, label %spr.clear_done, label %spr.clear_body
+
+spr.clear_body:
+  %spr.ce = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %spr.entries, i64 %spr.ci
+  %spr.ce_occ = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %spr.ce, i32 0, i32 2
+  store i1 false, i1* %spr.ce_occ
+  %spr.ci_next = add i64 %spr.ci, 1
+  br label %spr.clear_loop
+
+spr.clear_done:
+  %spr.count_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 0
+  store i64 0, i64* %spr.count_slot
+  %spr.len_zero = icmp eq i64 %len, 0
+  br i1 %spr.len_zero, label %spr.ret0, label %spr.copy
+
+; copy %str[0..len) into a NUL-terminated scratch buffer for regexec
+spr.copy:
+  %spr.bufsz = add i64 %len, 1
+  %spr.buf = call i8* @malloc(i64 %spr.bufsz)
+  %spr.bufnull = icmp eq i8* %spr.buf, null
+  br i1 %spr.bufnull, label %spr.ret0, label %spr.cploop
+
+spr.cploop:
+  %spr.cpi = phi i64 [ 0, %spr.copy ], [ %spr.cpi1, %spr.cpstep ]
+  %spr.cpdone = icmp uge i64 %spr.cpi, %len
+  br i1 %spr.cpdone, label %spr.cpfin, label %spr.cpstep
+
+spr.cpstep:
+  %spr.srcp = getelementptr i8, i8* %str, i64 %spr.cpi
+  %spr.srcc = load i8, i8* %spr.srcp
+  %spr.dstp = getelementptr i8, i8* %spr.buf, i64 %spr.cpi
+  store i8 %spr.srcc, i8* %spr.dstp
+  %spr.cpi1 = add i64 %spr.cpi, 1
+  br label %spr.cploop
+
+spr.cpfin:
+  %spr.nulp = getelementptr i8, i8* %spr.buf, i64 %len
+  store i8 0, i8* %spr.nulp
+  %spr.cached = load i8*, i8** %cache
+  %spr.havec = icmp ne i8* %spr.cached, null
+  br i1 %spr.havec, label %spr.ready, label %spr.compile
+
+spr.compile:
+  %spr.mem = call i8* @malloc(i64 512)
+  %spr.memnull = icmp eq i8* %spr.mem, null
+  br i1 %spr.memnull, label %spr.whole, label %spr.docomp
+
+spr.docomp:
+  %spr.rc = call i32 @regcomp(i8* %spr.mem, i8* %pattern, i32 1)
+  %spr.ok = icmp eq i32 %spr.rc, 0
+  br i1 %spr.ok, label %spr.storec, label %spr.compfail
+
+spr.compfail:
+  call void @free(i8* %spr.mem)
+  br label %spr.whole
+
+spr.storec:
+  store i8* %spr.mem, i8** %cache
+  br label %spr.ready
+
+spr.ready:
+  %spr.preg = load i8*, i8** %cache
+  %spr.pm = alloca [4 x i64], align 8
+  %spr.pmp = bitcast [4 x i64]* %spr.pm to i8*
+  br label %spr.walk
+
+spr.walk:
+  %spr.pos = phi i64 [ 1, %spr.ready ], [ %spr.posn, %spr.after ]
+  %spr.fstart = phi i64 [ 0, %spr.ready ], [ %spr.sep_end, %spr.after ]
+  %spr.atend = icmp uge i64 %spr.fstart, %len
+  br i1 %spr.atend, label %spr.final, label %spr.exec
+
+spr.exec:
+  %spr.sp = getelementptr i8, i8* %spr.buf, i64 %spr.fstart
+  %spr.isbol = icmp eq i64 %spr.fstart, 0
+  %spr.eflags = select i1 %spr.isbol, i32 0, i32 1
+  %spr.rc2 = call i32 @regexec(i8* %spr.preg, i8* %spr.sp, i64 1, i8* %spr.pmp, i32 %spr.eflags)
+  %spr.matched = icmp eq i32 %spr.rc2, 0
+  br i1 %spr.matched, label %spr.havematch, label %spr.final
+
+spr.havematch:
+  %spr.so_p = bitcast i8* %spr.pmp to i32*
+  %spr.so = load i32, i32* %spr.so_p
+  %spr.eo_pp = getelementptr i8, i8* %spr.pmp, i64 4
+  %spr.eo_p = bitcast i8* %spr.eo_pp to i32*
+  %spr.eo = load i32, i32* %spr.eo_p
+  %spr.so64 = sext i32 %spr.so to i64
+  %spr.eo64 = sext i32 %spr.eo to i64
+  %spr.sep_start = add i64 %spr.fstart, %spr.so64
+  %spr.mlen = sub i32 %spr.eo, %spr.so
+  %spr.zlen = icmp eq i32 %spr.mlen, 0
+  %spr.end_nz = add i64 %spr.fstart, %spr.eo64
+  %spr.end_z = add i64 %spr.sep_start, 1
+  %spr.sep_end = select i1 %spr.zlen, i64 %spr.end_z, i64 %spr.end_nz
+  %spr.ep = getelementptr i8, i8* %spr.buf, i64 %spr.fstart
+  %spr.el = sub i64 %spr.sep_start, %spr.fstart
+  %spr.eid = call i64 @wam_intern_atom(i8* %spr.ep, i64 %spr.el)
+  %spr.eset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %spr.pos, i64 %spr.eid)
+  br label %spr.after
+
+spr.after:
+  %spr.posn = add i64 %spr.pos, 1
+  br label %spr.walk
+
+spr.final:
+  %spr.lp = getelementptr i8, i8* %spr.buf, i64 %spr.fstart
+  %spr.ll = sub i64 %len, %spr.fstart
+  %spr.lid = call i64 @wam_intern_atom(i8* %spr.lp, i64 %spr.ll)
+  %spr.lset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %spr.pos, i64 %spr.lid)
+  call void @free(i8* %spr.buf)
+  ret i64 %spr.pos
+
+spr.whole:
+  %spr.wid = call i64 @wam_intern_atom(i8* %spr.buf, i64 %len)
+  %spr.wset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 1, i64 %spr.wid)
+  call void @free(i8* %spr.buf)
+  ret i64 1
+
+spr.ret0:
+  ret i64 0
+}
+
 ; Editable field buffer -- awk $1..$NF as a mutable %WamSlice array. A record
 ; is split once into slices (pointing into the record text, no interning); field
 ; assignments mutate slots in place; joining with OFS rebuilds $0 once at print.
@@ -4840,7 +4983,13 @@ sp.ret0:
 ; freed. An empty record yields zero fields.
 define %WamFieldBuf* @wam_fields_new(i8* %rec, i8 %sep) {
 entry:
-  br label %fn.sl
+  ; sep 0 is the reserved sentinel for a program-level regex FS
+  %fn.is_re = icmp eq i8 %sep, 0
+  br i1 %fn.is_re, label %fn.regex, label %fn.sl
+
+fn.regex:
+  %fn.rfb = call %WamFieldBuf* @wam_fields_new_re(i8* %rec)
+  ret %WamFieldBuf* %fn.rfb
 
 ; reclen = index of the terminating NUL
 fn.sl:
@@ -5143,6 +5292,128 @@ entry:
   %ff.raw2 = bitcast %WamFieldBuf* %fb to i8*
   call void @free(i8* %ff.raw2)
   ret void
+}
+
+; Build a field buffer by splitting the NUL-terminated record %rec on the program
+; FS regex (@wam_fs_regex_pattern_ptr / cache). Slices point into %rec. An empty
+; record yields 0 fields; an unset/uncompilable FS yields the whole record as
+; field 1. Used by field assignment when FS is a multi-char regex (sentinel 0).
+define %WamFieldBuf* @wam_fields_new_re(i8* %rec) {
+entry:
+  %nr.sb1 = getelementptr %WamFieldBuf, %WamFieldBuf* null, i64 1
+  %nr.sbb = ptrtoint %WamFieldBuf* %nr.sb1 to i64
+  %nr.raw = call i8* @malloc(i64 %nr.sbb)
+  %nr.fb = bitcast i8* %nr.raw to %WamFieldBuf*
+  %nr.sl1 = getelementptr %WamSlice, %WamSlice* null, i64 4
+  %nr.slb = ptrtoint %WamSlice* %nr.sl1 to i64
+  %nr.slraw = call i8* @malloc(i64 %nr.slb)
+  %nr.slices = bitcast i8* %nr.slraw to %WamSlice*
+  %nr.cslot = getelementptr %WamFieldBuf, %WamFieldBuf* %nr.fb, i32 0, i32 0
+  store i64 0, i64* %nr.cslot
+  %nr.capslot = getelementptr %WamFieldBuf, %WamFieldBuf* %nr.fb, i32 0, i32 1
+  store i64 4, i64* %nr.capslot
+  %nr.slslot = getelementptr %WamFieldBuf, %WamFieldBuf* %nr.fb, i32 0, i32 2
+  store %WamSlice* %nr.slices, %WamSlice** %nr.slslot
+  br label %nr.slen
+
+nr.slen:
+  %nr.li = phi i64 [ 0, %entry ], [ %nr.li1, %nr.slstep ]
+  %nr.lp = getelementptr i8, i8* %rec, i64 %nr.li
+  %nr.lc = load i8, i8* %nr.lp
+  %nr.lz = icmp eq i8 %nr.lc, 0
+  br i1 %nr.lz, label %nr.lendone, label %nr.slstep
+
+nr.slstep:
+  %nr.li1 = add i64 %nr.li, 1
+  br label %nr.slen
+
+nr.lendone:
+  %nr.emptyrec = icmp eq i64 %nr.li, 0
+  br i1 %nr.emptyrec, label %nr.done, label %nr.getpat
+
+nr.getpat:
+  %nr.pat = load i8*, i8** @wam_fs_regex_pattern_ptr
+  %nr.patnull = icmp eq i8* %nr.pat, null
+  br i1 %nr.patnull, label %nr.whole1, label %nr.ensure
+
+nr.ensure:
+  %nr.cached = load i8*, i8** @wam_fs_regex_cache
+  %nr.havec = icmp ne i8* %nr.cached, null
+  br i1 %nr.havec, label %nr.ready, label %nr.compile
+
+nr.compile:
+  %nr.mem = call i8* @malloc(i64 512)
+  %nr.memnull = icmp eq i8* %nr.mem, null
+  br i1 %nr.memnull, label %nr.whole1, label %nr.docomp
+
+nr.docomp:
+  %nr.rc = call i32 @regcomp(i8* %nr.mem, i8* %nr.pat, i32 1)
+  %nr.ok = icmp eq i32 %nr.rc, 0
+  br i1 %nr.ok, label %nr.storec, label %nr.compfail
+
+nr.compfail:
+  call void @free(i8* %nr.mem)
+  br label %nr.whole1
+
+nr.storec:
+  store i8* %nr.mem, i8** @wam_fs_regex_cache
+  br label %nr.ready
+
+nr.ready:
+  %nr.preg = load i8*, i8** @wam_fs_regex_cache
+  %nr.pm = alloca [4 x i64], align 8
+  %nr.pmp = bitcast [4 x i64]* %nr.pm to i8*
+  br label %nr.walk
+
+nr.walk:
+  %nr.pos = phi i64 [ 1, %nr.ready ], [ %nr.posn, %nr.after ]
+  %nr.fstart = phi i64 [ 0, %nr.ready ], [ %nr.sep_end, %nr.after ]
+  %nr.atend = icmp uge i64 %nr.fstart, %nr.li
+  br i1 %nr.atend, label %nr.last, label %nr.exec
+
+nr.exec:
+  %nr.sp = getelementptr i8, i8* %rec, i64 %nr.fstart
+  %nr.isbol = icmp eq i64 %nr.fstart, 0
+  %nr.eflags = select i1 %nr.isbol, i32 0, i32 1
+  %nr.rc2 = call i32 @regexec(i8* %nr.preg, i8* %nr.sp, i64 1, i8* %nr.pmp, i32 %nr.eflags)
+  %nr.matched = icmp eq i32 %nr.rc2, 0
+  br i1 %nr.matched, label %nr.havematch, label %nr.last
+
+nr.havematch:
+  %nr.so_p = bitcast i8* %nr.pmp to i32*
+  %nr.so = load i32, i32* %nr.so_p
+  %nr.eo_pp = getelementptr i8, i8* %nr.pmp, i64 4
+  %nr.eo_p = bitcast i8* %nr.eo_pp to i32*
+  %nr.eo = load i32, i32* %nr.eo_p
+  %nr.so64 = sext i32 %nr.so to i64
+  %nr.eo64 = sext i32 %nr.eo to i64
+  %nr.sep_start = add i64 %nr.fstart, %nr.so64
+  %nr.mlen = sub i32 %nr.eo, %nr.so
+  %nr.zlen = icmp eq i32 %nr.mlen, 0
+  %nr.end_nz = add i64 %nr.fstart, %nr.eo64
+  %nr.end_z = add i64 %nr.sep_start, 1
+  %nr.sep_end = select i1 %nr.zlen, i64 %nr.end_z, i64 %nr.end_nz
+  %nr.fp = getelementptr i8, i8* %rec, i64 %nr.fstart
+  %nr.flen = sub i64 %nr.sep_start, %nr.fstart
+  call void @wam_fields_set(%WamFieldBuf* %nr.fb, i64 %nr.pos, i8* %nr.fp, i64 %nr.flen)
+  br label %nr.after
+
+nr.after:
+  %nr.posn = add i64 %nr.pos, 1
+  br label %nr.walk
+
+nr.last:
+  %nr.lp2 = getelementptr i8, i8* %rec, i64 %nr.fstart
+  %nr.llen = sub i64 %nr.li, %nr.fstart
+  call void @wam_fields_set(%WamFieldBuf* %nr.fb, i64 %nr.pos, i8* %nr.lp2, i64 %nr.llen)
+  br label %nr.done
+
+nr.whole1:
+  call void @wam_fields_set(%WamFieldBuf* %nr.fb, i64 1, i8* %rec, i64 %nr.li)
+  br label %nr.done
+
+nr.done:
+  ret %WamFieldBuf* %nr.fb
 }
 
 define i64 @wam_assoc_i64_inc(%WamAssocI64Table* %table, i64 %key, i64 %delta) {
