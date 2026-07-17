@@ -198,8 +198,7 @@ test(fsharp_mustache_parent_sets) :-
 test(fsharp_allowlist_includes_tpd4) :-
     assertion(wam_fsharp_native_kernel_kind(transitive_parent_distance4)),
     assertion(wam_fsharp_native_kernel_supported(
-        recursive_kernel(transitive_parent_distance4, probe/0, []))),
-    assertion(\+ wam_fsharp_native_kernel_kind(transitive_step_parent_distance5)).
+        recursive_kernel(transitive_parent_distance4, probe/0, []))).
 
 test(haskell_mustache_parent_sets) :-
     read_file_string(
@@ -213,7 +212,7 @@ test(rust_bfs_parent_sets_not_dfs) :-
     compile_wam_runtime_to_rust([], Code),
     atom_string(Code, S),
     StartPattern = "pub fn collect_native_transitive_parent_distance_results(",
-    EndPattern = "fn collect_legacy_transitive_parent_distance_all_paths(",
+    EndPattern = "pub fn collect_native_transitive_step_parent_distance_results(",
     sub_string(S, Start, _, _, StartPattern),
     sub_string(S, End, _, _, EndPattern),
     End > Start,
@@ -249,7 +248,7 @@ test(scala_parent_sets_no_source_seed) :-
     assertion(sub_string(S, _, _, _,
         "docs/design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md")),
     assertion(sub_string(S, _, _, _, "LinkedHashSet[WamTerm]")),
-    % Anchor to the TPD4 handler emission (TSPD5 still seeds Source).
+    % Anchor to the TPD4 handler emission (TSPD5 uses correlated pair sets).
     assertion(sub_string(S, _, _, _,
         "val dist = scala.collection.mutable.LinkedHashMap[WamTerm, Int]()")),
     assertion(sub_string(S, _, _, _,

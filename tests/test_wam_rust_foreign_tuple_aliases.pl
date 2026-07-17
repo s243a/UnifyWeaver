@@ -167,26 +167,32 @@ fn exhausted_retry_restores_bindings_trail_and_choice_point() {
 }
 
 #[test]
-fn tspd5_keeps_the_legacy_acyclic_all_path_walk() {
+fn tspd5_emits_correlated_shortest_positive_diamond() {
+    // Adversarial diamond: a→b,a→c,b→p,c→q,p→t,q→t.
+    // Correlated pairs only — never Step×Parent cross-products
+    // such as (t,b,q,3) / (t,c,p,3).
     let mut vm = WamState::new(Vec::new(), HashMap::new());
     vm.register_indexed_atom_fact2_pairs(\"edge\", &[
-        (\"s\", \"step\"),
-        (\"step\", \"p\"),
-        (\"step\", \"q\"),
+        (\"a\", \"b\"),
+        (\"a\", \"c\"),
+        (\"b\", \"p\"),
+        (\"c\", \"q\"),
         (\"p\", \"t\"),
-        (\"q\", \"r\"),
-        (\"r\", \"t\"),
+        (\"q\", \"t\"),
     ]);
     let mut out = Vec::new();
-    vm.collect_native_transitive_step_parent_distance_results(\"s\", \"edge\", &mut out);
+    vm.collect_native_transitive_step_parent_distance_results(\"a\", \"edge\", &mut out);
+    out.sort();
 
     assert_eq!(out, vec![
-        (\"step\".to_string(), \"step\".to_string(), \"s\".to_string(), 1),
-        (\"q\".to_string(), \"step\".to_string(), \"step\".to_string(), 2),
-        (\"p\".to_string(), \"step\".to_string(), \"step\".to_string(), 2),
-        (\"t\".to_string(), \"step\".to_string(), \"p\".to_string(), 3),
-        (\"r\".to_string(), \"step\".to_string(), \"q\".to_string(), 3),
-        (\"t\".to_string(), \"step\".to_string(), \"r\".to_string(), 4),
+        (\"b\".to_string(), \"b\".to_string(), \"a\".to_string(), 1),
+        (\"c\".to_string(), \"c\".to_string(), \"a\".to_string(), 1),
+        (\"p\".to_string(), \"b\".to_string(), \"b\".to_string(), 2),
+        (\"q\".to_string(), \"c\".to_string(), \"c\".to_string(), 2),
+        (\"t\".to_string(), \"b\".to_string(), \"p\".to_string(), 3),
+        (\"t\".to_string(), \"c\".to_string(), \"q\".to_string(), 3),
     ]);
+    assert!(!out.iter().any(|q| q == &(\"t\".to_string(), \"b\".to_string(), \"q\".to_string(), 3)));
+    assert!(!out.iter().any(|q| q == &(\"t\".to_string(), \"c\".to_string(), \"p\".to_string(), 3)));
 }
 ").

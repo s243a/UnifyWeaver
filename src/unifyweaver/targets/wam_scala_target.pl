@@ -920,18 +920,15 @@ emit_scala_kernel_handler(recursive_kernel(transitive_parent_distance4, _Pred/4,
            [EdgeKeyLit]).
 
 % transitive_step_parent_distance5: tspd(Start, Target, Step, Parent, Distance).
-% BFS over the edge relation; each reachable node (excluding the source) is
-% a solution binding register 2 = target, register 3 = the FIRST hop from
-% the source on the shortest path, register 4 = the immediate predecessor
-% of the target, and register 5 = the distance. The first hop is the source's
-% direct neighbour that begins the path (propagated through the BFS frontier);
-% matches the Haskell/Rust/Elixir kernels.
+% Shortest-positive correlated step/parent
+% (docs/design/WAM_TRANSITIVE_STEP_PARENT_DISTANCE5_CONTRACT.md).
+% Level-synchronous BFS stores correlated (Step, Parent) pairs per Target.
 emit_scala_kernel_handler(recursive_kernel(transitive_step_parent_distance5, _Pred/5, ConfigOps), Code) :-
     member(edge_pred(EdgePred/2), ConfigOps),
     format(atom(EdgeKey), '~w/2', [EdgePred]),
     scala_string_literal(EdgeKey, EdgeKeyLit),
     format(string(Code),
-"new ForeignHandler {\n      private lazy val adj: Map[WamTerm, Vector[WamTerm]] =\n        WamRuntime.collectBinarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(_._2) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        // node -> (first-hop-from-source, parent-on-shortest-path, distance)\n        val info = scala.collection.mutable.LinkedHashMap[WamTerm, (WamTerm, WamTerm, Int)]()\n        val seen = scala.collection.mutable.HashSet[WamTerm](source)\n        // queue entries: (node, first-hop-step, distance)\n        val queue = scala.collection.mutable.Queue[(WamTerm, WamTerm, Int)]((source, source, 0))\n        while (queue.nonEmpty) {\n          val (node, step, d) = queue.dequeue()\n          for (nb <- adj.getOrElse(node, Vector.empty) if !seen.contains(nb)) {\n            seen += nb\n            val nbStep = if (node == source) nb else step\n            info(nb) = (nbStep, node, d + 1)\n            queue.enqueue((nb, nbStep, d + 1))\n          }\n        }\n        val sols = info.toVector.map { case (t, (st, p, dd)) => Map(2 -> t, 3 -> st, 4 -> p, 5 -> IntTerm(dd)) }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
+"new ForeignHandler {\n      private lazy val adj: Map[WamTerm, Vector[WamTerm]] =\n        WamRuntime.collectBinarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(_._2) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        val dist = scala.collection.mutable.LinkedHashMap[WamTerm, Int]()\n        val pairs = scala.collection.mutable.LinkedHashMap[WamTerm, scala.collection.mutable.LinkedHashSet[(WamTerm, WamTerm)]]()\n        val queue = scala.collection.mutable.Queue[(WamTerm, Int)]((source, 0))\n        while (queue.nonEmpty) {\n          val (node, d) = queue.dequeue()\n          val nd = d + 1\n          for (nb <- adj.getOrElse(node, Vector.empty)) {\n            val cands: Iterable[(WamTerm, WamTerm)] =\n              if (node == source) List((nb, source))\n              else pairs.getOrElse(node, scala.collection.mutable.LinkedHashSet.empty).map(_._1).toSet.map(s => (s, node))\n            dist.get(nb) match {\n              case None =>\n                dist(nb) = nd\n                pairs(nb) = scala.collection.mutable.LinkedHashSet(cands.toSeq: _*)\n                queue.enqueue((nb, nd))\n              case Some(d0) if d0 == nd =>\n                val set = pairs.getOrElseUpdate(nb, scala.collection.mutable.LinkedHashSet.empty)\n                cands.foreach(set += _)\n              case _ => ()\n            }\n          }\n        }\n        val sols = dist.toVector.flatMap { case (t, dd) =>\n          pairs.getOrElse(t, scala.collection.mutable.LinkedHashSet.empty).toVector.map {\n            case (st, p) => Map(2 -> t, 3 -> st, 4 -> p, 5 -> IntTerm(dd))\n          }\n        }\n        if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n      }\n    }",
            [EdgeKeyLit]).
 
 % category_ancestor: ca(Cat, Root, Hops, Visited). Depth-bounded DFS up the

@@ -81,10 +81,12 @@ classic `wam_conformance_smoke` matrix with Scala/Elixir.
 
 ## Gaps
 
-- Finish F# kernel templates for the remaining three shared kinds
-  (`transitive_step_parent_distance5`, `weighted_shortest_path3`,
-  `astar_shortest_path4`) — or stop claiming full kernel parity without
-  the templates.
+- Native TSPD5 (`transitive_step_parent_distance5`) is implemented in a
+  draft fleet-parity PR (Mustache + allow-list + four-output
+  `FFIStreamRetry`); treat as landed only after that PR merges.
+- Finish F# kernel templates for the remaining two shared kinds
+  (`weighted_shortest_path3`, `astar_shortest_path4`) — or stop claiming
+  full kernel parity without the templates.
 - Bidirectional off by default; enable after cost-model confidence.
 - Classic conformance (**CONF-FSHARP**, 2026-07-15): registered
   opt-in (`fsharp` / `fsharp_functions`) with additive

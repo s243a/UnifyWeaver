@@ -264,6 +264,7 @@ wam_fsharp_native_kernel_kind(bidirectional_ancestor).
 wam_fsharp_native_kernel_kind(transitive_closure2).
 wam_fsharp_native_kernel_kind(transitive_distance3).
 wam_fsharp_native_kernel_kind(transitive_parent_distance4).
+wam_fsharp_native_kernel_kind(transitive_step_parent_distance5).
 
 fsharp_kernel_template_path(Kind, AbsPath) :-
     kernel_template_file(Kind, HsTemplateFile),

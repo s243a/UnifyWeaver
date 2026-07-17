@@ -84,34 +84,64 @@ defmodule Tpd4ContractTest do
     end
   end
 
-  # TPD4 changed its helper from all-path DFS to shortest-positive BFS.
-  # TSPD5 is a separate contract: this diamond-with-a-longer-arm proves
-  # it still emits both the length-2 and length-3 paths to the same target.
-  defp assert_tspd5_legacy_nonregression do
-    edges = %{
+  # TSPD5 shortest-positive correlated contract: unequal diamond keeps only
+  # the shorter path to d (distance 2 via b); the longer a→c→e→d arm is
+  # suppressed. A finite cycle must still terminate (source via cycle).
+  defp assert_tspd5_correlated_shortest_positive do
+    unequal_edges = %{
       "a" => [{"a", "b"}, {"a", "c"}],
       "b" => [{"b", "d"}],
       "c" => [{"c", "e"}],
       "e" => [{"e", "d"}]
     }
 
-    neighbors = fn node -> Map.get(edges, node, []) end
+    unequal_neighbors = fn node -> Map.get(unequal_edges, node, []) end
 
-    actual =
-      WamRuntime.GraphKernel.TransitiveStepParentDistance.collect_quads(neighbors, "a")
+    unequal_actual =
+      WamRuntime.GraphKernel.TransitiveStepParentDistance.collect_quads(
+        unequal_neighbors,
+        "a"
+      )
       |> Enum.sort()
 
-    expected =
+    unequal_expected =
       [
         {"b", "b", "a", 1},
         {"c", "c", "a", 1},
         {"d", "b", "b", 2},
-        {"d", "c", "e", 3},
         {"e", "c", "c", 2}
       ]
       |> Enum.sort()
 
-    assert_equal("TSPD5 legacy all-path nonregression", actual, expected)
+    assert_equal("TSPD5 correlated shortest-positive unequal", unequal_actual, unequal_expected)
+
+    # Longer all-path distance must not appear.
+    if Enum.any?(unequal_actual, &(&1 == {"d", "c", "e", 3})) do
+      raise "TSPD5 correlated: unexpected longer all-path quad {d,c,e,3}"
+    end
+
+    cycle_edges = %{
+      "a" => [{"a", "b"}],
+      "b" => [{"b", "a"}]
+    }
+
+    cycle_neighbors = fn node -> Map.get(cycle_edges, node, []) end
+
+    cycle_actual =
+      WamRuntime.GraphKernel.TransitiveStepParentDistance.collect_quads(
+        cycle_neighbors,
+        "a"
+      )
+      |> Enum.sort()
+
+    cycle_expected =
+      [
+        {"a", "b", "b", 2},
+        {"b", "b", "a", 1}
+      ]
+      |> Enum.sort()
+
+    assert_equal("TSPD5 correlated cycle terminates", cycle_actual, cycle_expected)
   end
 
   defp run_representation(representation) do
@@ -349,7 +379,7 @@ defmodule Tpd4ContractTest do
   end
 
   def run do
-    assert_tspd5_legacy_nonregression()
+    assert_tspd5_correlated_shortest_positive()
     Enum.each([:binary, :interned], &run_representation/1)
 
     IO.puts(

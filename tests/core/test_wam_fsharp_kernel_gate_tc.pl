@@ -40,6 +40,8 @@
 :- dynamic user:tpd_alt/4.
 :- dynamic user:tspd_edge/2.
 :- dynamic user:tspd/5.
+:- dynamic user:tspd_alt_edge/2.
+:- dynamic user:tspd_alt/5.
 :- dynamic user:w_edge/3.
 :- dynamic user:wsp/3.
 :- dynamic user:a_edge/3.
@@ -156,6 +158,16 @@ assert_tspd_program :-
     assertz((user:tspd(X, Y, Y, X, 1) :- tspd_edge(X, Y))),
     assertz((user:tspd(X, Y, Z, P, D) :-
                 tspd_edge(X, Z), tspd(Z, Y, _, P, D1), D is D1 + 1)).
+
+assert_two_tspd_programs :-
+    assert_tspd_program,
+    retractall(user:tspd_alt_edge(_, _)),
+    retractall(user:tspd_alt(_, _, _, _, _)),
+    assertz(user:tspd_alt_edge(a, c)),
+    assertz(user:tspd_alt_edge(c, d)),
+    assertz((user:tspd_alt(X, Y, Y, X, 1) :- tspd_alt_edge(X, Y))),
+    assertz((user:tspd_alt(X, Y, Z, P, D) :-
+                tspd_alt_edge(X, Z), tspd_alt(Z, Y, _, P, D1), D is D1 + 1)).
 
 assert_wsp_program :-
     retractall(user:w_edge(_, _, _)),
@@ -387,14 +399,14 @@ let main _argv =
 
 :- begin_tests(wam_fsharp_kernel_gate_tc).
 
-test(capability_allowlist_includes_shipped_tc2_td3_tpd4) :-
+test(capability_allowlist_includes_shipped_tc2_td3_tpd4_tspd5) :-
     wam_fsharp_native_kernel_kind(category_ancestor),
     wam_fsharp_native_kernel_kind(bidirectional_ancestor),
     wam_fsharp_native_kernel_kind(transitive_closure2),
     wam_fsharp_native_kernel_kind(transitive_distance3),
     wam_fsharp_native_kernel_kind(transitive_parent_distance4),
+    wam_fsharp_native_kernel_kind(transitive_step_parent_distance5),
     \+ wam_fsharp_native_kernel_kind(weighted_shortest_path3),
-    \+ wam_fsharp_native_kernel_kind(transitive_step_parent_distance5),
     \+ wam_fsharp_native_kernel_kind(astar_shortest_path4).
 
 test(every_allowlisted_kind_has_a_real_handler) :-
@@ -416,6 +428,19 @@ test(two_tpd4_predicates_share_one_native_handler_body) :-
     assertion(Count =:= 1),
     assertion(sub_string(DispatchCode, _, _, _, "| \"tpd/4\" ->")),
     assertion(sub_string(DispatchCode, _, _, _, "| \"tpd_alt/4\" ->")).
+
+test(two_tspd5_predicates_share_one_native_handler_body) :-
+    K1 = recursive_kernel(transitive_step_parent_distance5, tspd/5,
+                          [edge_pred(tspd_edge/2)]),
+    K2 = recursive_kernel(transitive_step_parent_distance5, tspd_alt/5,
+                          [edge_pred(tspd_alt_edge/2)]),
+    wam_fsharp_target:generate_kernel_fsharp(
+        ['tspd/5'-K1, 'tspd_alt/5'-K2], KernelCode, DispatchCode),
+    substring_occurrence_count(
+        KernelCode, "let nativeKernel_transitive_step_parent_distance", Count),
+    assertion(Count =:= 1),
+    assertion(sub_string(DispatchCode, _, _, _, "| \"tspd/5\" ->")),
+    assertion(sub_string(DispatchCode, _, _, _, "| \"tspd_alt/5\" ->")).
 
 test(existing_closure_layers_present) :-
     % Characterization: do not invent TC support from scratch.
@@ -442,6 +467,10 @@ test(existing_closure_layers_present) :-
     read_file_to_string(Tpd, TpdS, []),
     assertion(sub_string(TpdS, _, _, _, "let nativeKernel_transitive_parent_distance")),
     assertion(sub_string(TpdS, _, _, _, "shortest-positive parents")),
+    atom_concat(Tw, 'kernel_transitive_step_parent_distance.fs.mustache', Tspd),
+    read_file_to_string(Tspd, TspdS, []),
+    assertion(sub_string(TspdS, _, _, _, "let nativeKernel_transitive_step_parent_distance")),
+    assertion(sub_string(TspdS, _, _, _, "shortest-positive correlated")),
     % TC2 must not define the demand-pruning helpers (comments may mention them).
     assertion(\+ sub_string(TcS, _, _, _, "let reachableToRoot")),
     !.
@@ -634,10 +663,30 @@ test(tpd4_no_kernels_still_builds, [condition(dotnet_available)]) :-
     ),
     !.
 
-test(fallback_transitive_step_parent_distance5, [condition(dotnet_available)]) :-
-    fallback_kind_builds(transitive_step_parent_distance5, assert_tspd_program,
-                         [user:tspd/5, user:tspd_edge/2],
-                         "nativeKernel_transitive_step_parent_distance").
+test(native_tspd5_codegen_and_build, [condition(dotnet_available)]) :-
+    assert_two_tspd_programs,
+    tmp_proj(native_tspd5, Dir),
+    once(write_wam_fsharp_project(
+        [ user:tspd/5, user:tspd_edge/2,
+          user:tspd_alt/5, user:tspd_alt_edge/2
+        ],
+        [module_name('uw_fs_native_tspd5')],
+        Dir)),
+    directory_file_path(Dir, 'WamRuntime.fs', RT),
+    read_file_to_string(RT, RTS, []),
+    substring_occurrence_count(
+        RTS, "let nativeKernel_transitive_step_parent_distance", HandlerCount),
+    assertion(HandlerCount =:= 1),
+    assertion(sub_string(RTS, _, _, _, "| \"tspd/5\" ->")),
+    assertion(sub_string(RTS, _, _, _, "| \"tspd_alt/5\" ->")),
+    assertion(sub_string(RTS, _, _, _, "FFIStreamRetry")),
+    assertion(\+ sub_string(RTS, _, _, _, "template not found")),
+    run_dotnet_build(Dir, Exit, Out),
+    assertion(Exit =:= 0),
+    ( Exit =:= 0 -> true
+    ; format(user_error, 'native_tspd5 build failed:~n~w~n', [Out]), fail
+    ),
+    !.
 
 test(fallback_weighted_shortest_path3, [condition(dotnet_available)]) :-
     fallback_kind_builds(weighted_shortest_path3, assert_wsp_program,

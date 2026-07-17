@@ -2698,17 +2698,11 @@ WamRuntime$transitive_parent_distance4 <- function(program, state, key,
 # ----------------------------------------------------------
 # Recursive-kernel: transitive_step_parent_distance5
 # ----------------------------------------------------------
-# BFS that records, for each reachable node Y from source X:
-#   * step:   the FIRST hop neighbour of source on the path X -> ... -> Y
-#             (the immediate next node after source)
-#   * parent: the immediate predecessor of Y in the path
-#   * dist:   path length
-# Pattern detected:
-#   tspd(X, Y, Y, X, 1) :- edge(X, Y).
-#   tspd(X, Y, S, P, D) :- edge(X, M), tspd(M, Y, _, P, D1), D is D1 + 1.
-# When BFS visits N from frontier F: if F == source, then step[N] = N
-# (this IS the first hop); else step[N] = step[F] (inherits).
-# Yields (target, step, parent, distance) quads via kernel_quad_iter.
+# Shortest-positive correlated step/parent
+# (docs/design/WAM_TRANSITIVE_STEP_PARENT_DISTANCE5_CONTRACT.md).
+# Level-synchronous BFS stores correlated (Step, Parent) pairs per
+# Target — never an independent Step×Parent cross-product.
+# Do NOT seed Source into dist. Yields quads via kernel_quad_iter.
 WamRuntime$transitive_step_parent_distance5 <- function(program, state, key,
                                                           edge_pred, edge_key,
                                                           source, target, step,
@@ -2730,26 +2724,19 @@ WamRuntime$transitive_step_parent_distance5 <- function(program, state, key,
   snap_build <- state$build_stack
 
   edge_atom_id <- WamRuntime$intern(table, edge_pred)
-  visited <- new.env(parent = emptyenv())
-  q_nodes   <- list(src_v)
-  q_steps   <- list(NULL)   # source has no first-hop yet
-  q_parents <- list(NULL)
-  q_depths  <- list(0L)
-  reached   <- list()
-  assign(as.character(src_v$id), TRUE, envir = visited)
+  dist_env  <- new.env(parent = emptyenv())
+  pairs_env <- new.env(parent = emptyenv())
+  q_nodes  <- list(src_v)
+  q_depths <- list(0L)
+  reached  <- list()
 
   while (length(q_nodes) > 0L) {
-    cur     <- q_nodes[[1L]]
-    cur_step <- q_steps[[1L]]
-    cur_par <- q_parents[[1L]]
-    depth   <- q_depths[[1L]]
-    q_nodes   <- q_nodes[-1L]
-    q_steps   <- q_steps[-1L]
-    q_parents <- q_parents[-1L]
-    q_depths  <- q_depths[-1L]
+    cur   <- q_nodes[[1L]]
+    depth <- q_depths[[1L]]
+    q_nodes  <- q_nodes[-1L]
+    q_depths <- q_depths[-1L]
     next_depth <- depth + 1L
-    captured_cur     <- cur
-    captured_curstep <- cur_step
+    captured_cur <- cur
     is_source <- identical(cur, src_v)
     y_var <- Unbound(paste0("V_tspd_", state$var_counter))
     state$var_counter <- state$var_counter + 1L
@@ -2758,20 +2745,48 @@ WamRuntime$transitive_step_parent_distance5 <- function(program, state, key,
       y_v <- WamRuntime$deref(state, y_var)
       if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom") {
         k <- as.character(y_v$id)
-        if (!exists(k, envir = visited, inherits = FALSE)) {
-          assign(k, TRUE, envir = visited)
-          # If we're enumerating from source, this neighbour IS the
-          # first-hop step. Otherwise inherit the frontier's step.
-          new_step <- if (is_source) y_v else captured_curstep
-          q_nodes   <<- c(q_nodes,   list(y_v))
-          q_steps   <<- c(q_steps,   list(new_step))
-          q_parents <<- c(q_parents, list(captured_cur))
-          q_depths  <<- c(q_depths,  list(next_depth))
-          reached   <<- c(reached,
+        if (is_source) {
+          cands <- list(list(step = y_v, parent = src_v))
+        } else {
+          cur_k <- as.character(captured_cur$id)
+          old <- if (exists(cur_k, envir = pairs_env, inherits = FALSE))
+                   get(cur_k, envir = pairs_env, inherits = FALSE)
+                 else list()
+          step_ids <- unique(vapply(old, function(p) as.character(p$step$id),
+                                    character(1)))
+          cands <- lapply(old[match(step_ids, vapply(old, function(p)
+            as.character(p$step$id), character(1)))], function(p)
+              list(step = p$step, parent = captured_cur))
+        }
+        if (!exists(k, envir = dist_env, inherits = FALSE)) {
+          assign(k, next_depth, envir = dist_env)
+          assign(k, cands, envir = pairs_env)
+          q_nodes  <<- c(q_nodes,  list(y_v))
+          q_depths <<- c(q_depths, list(next_depth))
+          for (c in cands) {
+            reached <<- c(reached,
                           list(list(node   = y_v,
-                                    second = new_step,
-                                    third  = captured_cur,
+                                    second = c$step,
+                                    third  = c$parent,
                                     fourth = IntTerm(next_depth))))
+          }
+        } else if (get(k, envir = dist_env, inherits = FALSE) == next_depth) {
+          oldp <- get(k, envir = pairs_env, inherits = FALSE)
+          for (c in cands) {
+            dup <- any(vapply(oldp, function(p)
+              identical(p$step$id, c$step$id) &&
+                identical(p$parent$id, c$parent$id),
+              logical(1)))
+            if (!dup) {
+              oldp <- c(oldp, list(c))
+              reached <<- c(reached,
+                            list(list(node   = y_v,
+                                      second = c$step,
+                                      third  = c$parent,
+                                      fourth = IntTerm(next_depth))))
+            }
+          }
+          assign(k, oldp, envir = pairs_env)
         }
       }
       TRUE

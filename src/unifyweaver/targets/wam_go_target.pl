@@ -3279,34 +3279,81 @@ func (vm *WamState) collectNativeTransitiveParentDistanceResults(source string, 
 }
 
 func (vm *WamState) collectNativeTransitiveStepParentDistanceResults(source string, pairs []AtomPair) []Value {
+    // Shortest-positive correlated step/parent
+    // (docs/design/WAM_TRANSITIVE_STEP_PARENT_DISTANCE5_CONTRACT.md).
+    // Level-synchronous BFS stores correlated (Step, Parent) pairs per
+    // Target — never an independent Step×Parent cross-product. Dist is
+    // not seeded with Source.
     adjacency := atomAdjacency(pairs)
-    visited := map[string]bool{source: true}
-    dist := map[string]int{source: 0}
-    parent := make(map[string]string)
-    firstStep := make(map[string]string)
-    queue := []string{source}
-    results := make([]Value, 0)
+    dist := make(map[string]int)
+    pairSets := make(map[string]map[[2]string]bool)
+    type qd struct {
+        node string
+        d    int
+    }
+    queue := []qd{{source, 0}}
     for len(queue) > 0 {
         current := queue[0]
         queue = queue[1:]
-        for _, next := range adjacency[current] {
-            if visited[next] {
-                continue
-            }
-            visited[next] = true
-            dist[next] = dist[current] + 1
-            parent[next] = current
-            if current == source {
-                firstStep[next] = next
+        nd := current.d + 1
+        for _, next := range adjacency[current.node] {
+            var cands [][2]string
+            if current.node == source {
+                cands = [][2]string{{next, source}}
             } else {
-                firstStep[next] = firstStep[current]
+                seenStep := make(map[string]bool)
+                for pair := range pairSets[current.node] {
+                    if !seenStep[pair[0]] {
+                        seenStep[pair[0]] = true
+                        cands = append(cands, [2]string{pair[0], current.node})
+                    }
+                }
             }
-            queue = append(queue, next)
+            if d0, ok := dist[next]; !ok {
+                dist[next] = nd
+                set := make(map[[2]string]bool)
+                for _, c := range cands {
+                    set[c] = true
+                }
+                pairSets[next] = set
+                queue = append(queue, qd{next, nd})
+            } else if d0 == nd {
+                set := pairSets[next]
+                if set == nil {
+                    set = make(map[[2]string]bool)
+                    pairSets[next] = set
+                }
+                for _, c := range cands {
+                    set[c] = true
+                }
+            }
+        }
+    }
+    results := make([]Value, 0)
+    targets := make([]string, 0, len(dist))
+    for t := range dist {
+        targets = append(targets, t)
+    }
+    sort.Strings(targets)
+    for _, t := range targets {
+        d := dist[t]
+        type sp struct{ step, parent string }
+        list := make([]sp, 0, len(pairSets[t]))
+        for pair := range pairSets[t] {
+            list = append(list, sp{pair[0], pair[1]})
+        }
+        sort.Slice(list, func(i, j int) bool {
+            if list[i].step != list[j].step {
+                return list[i].step < list[j].step
+            }
+            return list[i].parent < list[j].parent
+        })
+        for _, p := range list {
             results = append(results, tupleValue(
-                internAtom(next),
-                internAtom(firstStep[next]),
-                internAtom(parent[next]),
-                &Integer{Val: int64(dist[next])},
+                internAtom(t),
+                internAtom(p.step),
+                internAtom(p.parent),
+                &Integer{Val: int64(d)},
             ))
         }
     }

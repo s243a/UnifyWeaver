@@ -2063,23 +2063,21 @@ test_shared_detector_finds_transitive_parent_distance :-
     ).
 
 test_graph_kernel_transitive_step_parent_distance_emitted_in_runtime :-
-    % Third missing kernel after PRs #1822/#1823. TSPD5 keeps its own
-    % legacy path-enumerating walk so a TPD4 contract migration cannot
-    % silently change this separate kernels behaviour.
+    % TSPD5 shortest-positive correlated step/parent contract.
     Test = 'GraphKernel TransitiveStepParentDistance: runtime emits WamRuntime.GraphKernel.TransitiveStepParentDistance',
     compile_wam_runtime_to_elixir([], RuntimeCode),
     (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.GraphKernel.TransitiveStepParentDistance do'),
         sub_string(RuntimeCode, _, _, _, 'def collect_quads('),
-        sub_string(RuntimeCode, _, _, _, 'def collect_quads_from_source(')
+        sub_string(RuntimeCode, _, _, _, 'def collect_quads_from_source('),
+        sub_string(RuntimeCode, _, _, _, 'shortest-positive correlated')
     ->  pass(Test)
     ;   fail_test(Test, 'GraphKernel.TransitiveStepParentDistance module missing expected API')
     ).
 
-test_graph_kernel_tspd_preserves_legacy_path_walker :-
-    % TPD4 moved from path-enumerating DFS to shortest-positive BFS in
-    % this PR. TSPD5 has not had a fleet contract migration, so it must
-    % retain the old DFS locally instead of inheriting TPD4 semantics.
-    Test = 'GraphKernel TransitiveStepParentDistance: preserves pre-TPD4 legacy path walker',
+test_graph_kernel_tspd_uses_bfs_correlated_contract :-
+    % Contract: finite BFS with correlated (Step, Parent) pair sets;
+    % no legacy all-path walker; equal-shortest correlated pairs emitted.
+    Test = 'GraphKernel TransitiveStepParentDistance: BFS correlated contract (TSPD5)',
     compile_wam_runtime_to_elixir([], RuntimeCode),
     Pattern = "defmodule WamRuntime.GraphKernel.TransitiveStepParentDistance do",
     EndPattern = "defmodule WamRuntime.GraphKernel.WeightedShortestPath do",
@@ -2088,18 +2086,14 @@ test_graph_kernel_tspd_preserves_legacy_path_walker :-
         End > Start,
         BodyLen is End - Start,
         sub_string(RuntimeCode, Start, BodyLen, _, Body),
-        sub_string(Body, _, _, _, "collect_legacy_path_triples(neighbors_fn, next)"),
-        sub_string(Body, _, _, _, "defp legacy_walk("),
-        sub_string(Body, _, _, _, "NO cycle detection"),
-        % Explicitly decoupled from TPD4s new finite shortest-path walker.
-        \+ sub_string(Body, _, _, _,
-                      "WamRuntime.GraphKernel.TransitiveParentDistance.collect_triples"),
-        % Emits the depth-1 base case: {next, next, start, 1}.
-        sub_string(Body, _, _, _, "{next, next, start, 1}"),
-        % Bumps inner triples by 1 (dist + 1).
-        sub_string(Body, _, _, _, "dist + 1")
+        sub_string(Body, _, _, _, "shortest-positive correlated"),
+        sub_string(Body, _, _, _, ":queue.in({start, 0}"),
+        sub_string(Body, _, _, _, "Never cross-product"),
+        \+ sub_string(Body, _, _, _, "legacy_walk"),
+        \+ sub_string(Body, _, _, _, "collect_legacy_path_triples"),
+        \+ sub_string(Body, _, _, _, "NO cycle detection")
     ->  pass(Test)
-    ;   fail_test(Test, 'TransitiveStepParentDistance no longer preserves its legacy walker contract')
+    ;   fail_test(Test, 'TransitiveStepParentDistance walker missing BFS correlated contract')
     ).
 
 test_kernel_dispatch_emits_transitive_step_parent_distance_module :-
@@ -3563,7 +3557,7 @@ run_tests :-
     test_kernel_dispatch_transitive_parent_distance_e2e,
     test_shared_detector_finds_transitive_parent_distance,
     test_graph_kernel_transitive_step_parent_distance_emitted_in_runtime,
-    test_graph_kernel_tspd_preserves_legacy_path_walker,
+    test_graph_kernel_tspd_uses_bfs_correlated_contract,
     test_kernel_dispatch_emits_transitive_step_parent_distance_module,
     test_shared_detector_finds_transitive_step_parent_distance,
     test_graph_kernel_weighted_shortest_path_emitted_in_runtime,

@@ -53,9 +53,11 @@ self-contained so a single coding agent can pick it up in isolation.
 | ISO-R | ISO three-form (new) | R | L | — |
 | ISO-PYTHON | ISO three-form (finish) | Python | S | — |
 | ISO-FSHARP | ISO three-form (finish) | F# | S | — |
-| KERN-FSHARP ⚡ | Finish F# native kernel acceleration | F# | L | gate+TC2+TD3 done; 4 kinds remain |
+| KERN-FSHARP ⚡ | Finish F# native kernel acceleration | F# | L | gate+TC2+TD3+TPD4 done; 2 kinds remain |
 | TC2-CONTRACT-PARITY ✅ | Fleet-wide `transitive_closure2` strict R+ contract | multi | M | done (`#3817`) |
-| TD3-CONTRACT-PARITY-FS ⚡ | Fleet-wide `transitive_distance3` dist+ + F# native | multi | M | contract+oracle+F# Mustache |
+| TD3-CONTRACT-PARITY-FS ✅ | Fleet-wide `transitive_distance3` dist+ + F# native | multi | M | done (`#3821`) |
+| TPD4-CONTRACT-PARITY-FS ✅ | Fleet-wide `transitive_parent_distance4` + F# native | multi | M | done (`#3830`) |
+| TSPD5-CONTRACT-PARITY-FS ⚡ | Fleet-wide correlated TSPD5 + F# native | multi | M | draft — not landed until merge |
 | EMIT-ILASM | Lowered emitter | ILAsm | L | — |
 | EMIT-JVM | Lowered emitter | JVM | L | — |
 | EMIT-KOTLIN ✅ | Lowered emitter | Kotlin | M | done — flat facts/unify (`cursor/emit-kotlin-lowered-f421`) |
@@ -484,9 +486,10 @@ plumbing there.
   2. **Native `transitive_closure2` acceleration** — `templates/targets/fsharp_wam/kernel_transitive_closure.fs.mustache` (lookup-fn + HashSet visited; stream via existing FFIStreamRetry; bound Target filtered). Describe as “native foreign acceleration for the shared transitive_closure2 pattern,” not “F# transitive closure support.”
 - **FS-TD3 ✅ (landed with TD3-CONTRACT-PARITY-FS):** `nativeKernel_transitive_distance` Mustache + allow-list entry; streams `(atom,int)` via existing multi-output `FFIStreamRetry` binder.
 - **FS-TPD4 (implemented in draft PR #3830):** `nativeKernel_transitive_parent_distance` Mustache + allow-list entry; streams `(atom,atom,int)` via the three-output `FFIStreamRetry` binder. Mark this landed only after PR #3830 merges.
-- **Remaining (3 kinds, optional acceleration):** `transitive_step_parent_distance5`, `weighted_shortest_path3`, `astar_shortest_path4` — add to the allow-list only when a real handler exists (mustache *or* inline). Until then they must stay WAM.
+- **FS-TSPD5 (implemented in draft PR):** `nativeKernel_transitive_step_parent_distance` Mustache + allow-list; streams `(atom,atom,atom,int)` via the four-output `FFIStreamRetry` binder. Mark landed only after the TSPD5 PR merges.
+- **Remaining (2 kinds, optional acceleration):** `weighted_shortest_path3`, `astar_shortest_path4` — add to the allow-list only when a real handler exists (mustache *or* inline). Until then they must stay WAM.
 - **Tests:** `tests/core/test_wam_fsharp_kernel_gate_tc.pl`
-- **Acceptance (gate+TC2+TD3+TPD4):** `swipl -q -g run_tests -t halt tests/core/test_wam_fsharp_kernel_gate_tc.pl`.
+- **Acceptance (gate+TC2+TD3+TPD4+TSPD5):** `swipl -q -g run_tests -t halt tests/core/test_wam_fsharp_kernel_gate_tc.pl`.
 
 ---
 
@@ -502,15 +505,25 @@ plumbing there.
 - **Status:** ✅ Landed (`#3821` + follow-up `1e2a888`). Contract: [`docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md`](design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md).
 - **Tests:** `tests/test_wam_td3_contract_parity.pl`.
 
-### TPD4-CONTRACT-PARITY-FS: Fleet-wide `transitive_parent_distance4` shortest-positive parents + F# native
+### TPD4-CONTRACT-PARITY-FS ✅: Fleet-wide `transitive_parent_distance4` shortest-positive parents + F# native
 - **Lever:** Shared recursive-kernel contract parity  **Target:** multi  **Size:** M  **Depends on:** TD3-CONTRACT-PARITY-FS (`#3821`, `1e2a888`)
-- **Status:** Implemented in draft PR `#3830`; not landed until merge.
+- **Status:** Landed (`#3830`, head `c809ff650f066009768bea435c7f348e24f1a62e`).
 - **Contract:** [`docs/design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md`](design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md) — emit every distinct `(T,P,D)` at `dist+`; all equal-shortest parents; Source only via self-loop/cycle; never distance 0; all eight bound-output modes; compare complete triples.
 - **Oracle / fixtures:** `tests/fixtures/tpd4_contract_oracle.pl` (literal expected triples + finite BFS cross-check).
 - **Handler align:** Rust/Elixir → BFS parent sets (was per-path DFS); Go/Scala/Haskell/R → parent sets + stop seeding Source; C streams interleaved triples (`result_reg==254`); LLVM remains capability-gated (no nonexistent handler).
 - **F# native:** `templates/targets/fsharp_wam/kernel_transitive_parent_distance.fs.mustache` + allow-list; three-output `FFIStreamRetry`.
 - **Tests:** `tests/test_wam_tpd4_contract_parity.pl` + F# gate suite.
 - **Acceptance:** `swipl -q -g run_tests -t halt tests/test_wam_tpd4_contract_parity.pl` and `tests/core/test_wam_fsharp_kernel_gate_tc.pl`.
+
+### TSPD5-CONTRACT-PARITY-FS: Fleet-wide `transitive_step_parent_distance5` correlated step/parent + F# native
+- **Lever:** Shared recursive-kernel contract parity  **Target:** multi  **Size:** M  **Depends on:** TPD4-CONTRACT-PARITY-FS (`#3830`, `c809ff65…`)
+- **Status:** Implemented in draft PR; **not landed** until merge. Do not describe as done in status docs before merge.
+- **Contract:** [`docs/design/WAM_TRANSITIVE_STEP_PARENT_DISTANCE5_CONTRACT.md`](design/WAM_TRANSITIVE_STEP_PARENT_DISTANCE5_CONTRACT.md) — emit every distinct correlated `(T,Step,P,D)` at `dist+`; never Step×Parent cross-product; Source only via self-loop/cycle; never distance 0; all 16 bound-output modes; compare complete quadruples.
+- **Oracle / fixtures:** `tests/fixtures/tspd5_contract_oracle.pl` (literal expected quads + finite correlated BFS cross-check; adversarial diamond).
+- **Handler align:** Rust/Elixir → replace quarantined all-path DFS with correlated BFS + Elixir `compatible_quads`/`stream_quads`; Go/Scala/Haskell/R → correlated pair sets (stop first-route / Source seeding); C streams quads (`result_reg==253`) over predicate-isolated `relation_edges`; LLVM remains capability-gated.
+- **F# native:** `templates/targets/fsharp_wam/kernel_transitive_step_parent_distance.fs.mustache` + allow-list; four-output `FFIStreamRetry`.
+- **Tests:** `tests/test_wam_tspd5_contract_parity.pl` + F# gate suite + TPD4 non-regression.
+- **Acceptance:** `swipl -q -g run_tests -t halt tests/test_wam_tspd5_contract_parity.pl` (plus TPD4 + F# gate).
 
 ---
 
