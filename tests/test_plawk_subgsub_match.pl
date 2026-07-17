@@ -10,8 +10,9 @@
 %   match(SRC, /re/)   -- return the 1-based match position (0 if none) and set
 %     RSTART / RLENGTH (RLENGTH = -1 on no match); an i64 expression usable in
 %     print. Backed by @wam_regex_match.
-% sub/gsub into a scalar or field, and capturing the substitution count, are
-% documented follow-ons.
+% sub/gsub into a scalar (`gsub(...,var)`) or field (`gsub(...,$N)`), and count
+% capture (`n = gsub(...,var)`, a dual-slot write of the substituted string plus
+% the substitution count), are also covered here.
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -169,6 +170,48 @@ test(gsub_scalar_end, [condition(clang_available)]) :-
     build_run(Dir, 'gve', "{ s = $1 \"\"; gsub(/[0-9]/, \"#\", s) } END { print s }\n",
         "a1\nb2\n", Out, St),
     assertion(St == 0), assertion(Out == "b#\n"), !.
+
+% --- count capture: n = gsub(...) / n = sub(...) ---------------------------
+
+test(gsub_count_parses) :-
+    plawk_parse_string("{ n = gsub(/[0-9]/, \"#\", s); print n }\n",
+        program([], [rule(always,
+            [gsub_count(n, 1, "[0-9]", "#", s), print([var(n)])])], [])),
+    !.
+
+test(sub_count_parses) :-
+    plawk_parse_string("{ n = sub(/x/, \"y\", s); print n }\n",
+        program([], [rule(always,
+            [gsub_count(n, 0, "x", "y", s), print([var(n)])])], [])),
+    !.
+
+% n gets the substitution count; the target scalar is substituted in place.
+test(gsub_count, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'gcn', "{ s = $1 \"\"; n = gsub(/[0-9]/, \"#\", s); print n, s }\n",
+        "a1b2c3\n", Out, St),
+    assertion(St == 0), assertion(Out == "3 a#b#c#\n"), !.
+
+% sub captures a count of 1 (or 0 on no match).
+test(sub_count, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'scn', "{ s = $1 \"\"; n = sub(/o/, \"0\", s); print n, s }\n",
+        "foo\nxyz\n", Out, St),
+    assertion(St == 0), assertion(Out == "1 f0o\n0 xyz\n"), !.
+
+% the captured count is usable in a guard.
+test(gsub_count_guard, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'gcg', "{ s = $1 \"\"; n = gsub(/[0-9]/, \"#\", s); if (n > 1) print \"many\", n }\n",
+        "a1b2\nx9\n", Out, St),
+    assertion(St == 0), assertion(Out == "many 2\n"), !.
+
+% a count of 0 when the pattern does not match.
+test(gsub_count_zero, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'gcz', "{ s = $1 \"\"; n = gsub(/[0-9]/, \"#\", s); print n, s }\n",
+        "abc\n", Out, St),
+    assertion(St == 0), assertion(Out == "0 abc\n"), !.
 
 % --- sub/gsub into a field target (rebuilds $0) -----------------------------
 

@@ -2130,6 +2130,24 @@ field_assign_rhs(int(Value)) -->
     integer_codes(VCodes),
     { VCodes \== [], number_codes(Value, VCodes), Value >= 0 }.
 
+% `n = gsub(/re/, "repl", var)` -- count capture: substitute into the string
+% scalar `var` (in place) and assign the substitution count to `n`. A dual-slot
+% write: `var` becomes a string scalar, `n` an i64 count. Tried before the
+% generic scalar `set`; the `gsub(`/`sub(` keyword after `=` is unambiguous.
+assignment_action(gsub_count(CountName, Global, Regex, Repl, Target)) -->
+    identifier(CountName),
+    ws, "=", ws,
+    subgsub_keyword(Global),
+    ws, "(", ws,
+    regex_arg(Regex),
+    ws, ",", ws,
+    quoted_string(RCodes),
+    { string_codes(Repl, RCodes) },
+    ws, ",", ws,
+    identifier(Target),
+    ws, ")",
+    !.
+
 assignment_action(set(var(Name), Value)) -->
     identifier(Name),
     ws,
