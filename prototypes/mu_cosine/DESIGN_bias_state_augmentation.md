@@ -28,9 +28,13 @@ a possible later refinement; not in scope.)
 **Gauge fixing (identifiability).** The core state x and the biases share a gauge: shifting x by Δ and
 every co-observed bias by −Δ leaves the likelihood unchanged. Fix: the OPERATING judge (gpt-5.5-low, the
 target frame every report already uses) has its bias pinned to 0; all bias states are estimates
-RELATIVE TO the operating judge, and are labeled as such. (An absolute frame needs the human-verified
-gold subset — the known, deferred upgrade.) Implementation prints two cheap diagnostics per fit: design
-rank and per-state effective sample size Σw; a state below a floor ESS falls back to its prior.
+RELATIVE TO the operating judge, and are labeled as such — fidelity/bias vs gpt-5.5-low, never "semantic
+accuracy". (An absolute frame needs the human-verified gold subset — the known, deferred upgrade.)
+Implementation prints cheap per-fit diagnostics and FAILS CLOSED on them: unregularized design rank
+(kernel columns overlap, so Σw is support mass, not effective sample size — rank is the honest check),
+per-state conditional posterior variance, and the design condition number; a state whose conditional
+information is below floor falls back to its prior. Rows with NO usable distance signal get their own
+explicit `missing` basis state rather than being silently mapped into `rand`.
 
 **Measurement equation.** A row with soft distance weights w and judge j's affine-calibrated reading z:
 
@@ -38,7 +42,8 @@ rank and per-state effective sample size Σw; a state below a floor ESS falls ba
 
 - **w is a deterministic, outcome-blind kernel basis** (graph features only — never labels): bin centers =
   the strata classes, bandwidth a train-tuned kernel width over d_sym/hop features, rows with no usable
-  distance falling to the `rand` bin. Hard switching is the bandwidth→0 special case. To be precise about
+  distance getting their own explicit `missing` basis state (not silently mapped to `rand` — "no signal"
+  and "measured unrelated" are different facts). Hard switching is the bandwidth→0 special case. To be precise about
   what the softness buys (review point): overlapping w columns make the bias ESTIMATES share information
   across neighboring bins (coefficient coupling through the design — kernel smoothing, thin bins borrow
   strength). It is NOT correlated measurement noise, and we explicitly reject the alternative reading of
@@ -102,15 +107,22 @@ exact map b_μ = E[σ(ℓ + b_ℓ) − σ(ℓ)] depends on the within-bin distri
 analytic slope is only as good as those distributional assumptions. The implementation therefore defines
 the coupling EMPIRICALLY, per bin, on train rows only:
 
-    L*_k  = slope of the regression of direct-space residuals on logit-space residuals within bin k
-    R_c,k = the residual variance of that regression
+    L*_k    = slope of the regression of direct-space residuals on logit-space residuals within bin k
+    R̂_row,k = the ROW-LEVEL residual variance of that regression
 
-— measured numbers, no quadrature assumptions, and automatically averaged over the bin's actual (ℓ, bias)
-distribution. The GL-3 statlin machinery (run_product_kalman_statlin.py — note its existing routine
-transports direct→logit, the OPPOSITE direction) serves as an analytic cross-check on small bins, not as
-the definition; if the two disagree, trust the regression and investigate. R_c,k > 0 is precisely why the
-dual states' correlation is near but not exactly one — the user's intuition, now a measured quantity per
-bin: corr = L*_k σ_ℓ / sqrt(L*²_k σ²_ℓ + R_c,k), → 1 as bins narrow, < 1 at any finite width.
+— measured numbers, no quadrature assumptions, averaged over the bin's actual (ℓ, bias) distribution. The
+GL-3 statlin machinery (run_product_kalman_statlin.py — note its existing routine transports direct→logit,
+the OPPOSITE direction) serves as an analytic cross-check on small bins, not as the definition.
+
+**Two levels, not one (review distinction, adopted).** R̂_row,k is row-level observation scatter — it
+contains target noise and errors-in-variables from BOTH residual axes — and is therefore an UPPER BOUND
+on, not an estimate of, the state-level constraint noise R_c,k (the discrepancy between the bin-level
+bias states themselves). The state-level R_c,k, the associated correlation formula
+corr = L*_k σ_ℓ / sqrt(L*²_k σ²_ℓ + R_c,k) and its "→ 1 as bins narrow" limit are PROVISIONAL pending the
+statistical follow-up (Codex/rigor lane: cross-fitted or replicated bin/campaign effects that separate
+observation noise from state discrepancy). Until then R̂_row,k must NOT be used as a tight state
+constraint — δ̃'s prior scale uses a deliberately conservative (loose) placeholder, which only weakens the
+coupling, never fabricates precision.
 
 **Lagrangian = pseudo-measurement.** The strong coupling is implemented in the same machinery as the weak
 zero prior: observe 0 on the constraint residual c = b_μ − L*_k·b_ℓ with SMALL R_c (statlin supplies R_c —
@@ -130,7 +142,8 @@ Rather than choosing logit-only by fiat OR carrying two nearly-collinear states,
 pair into equivalent, well-conditioned coordinates (treatment (iii), which is exact):
 
     canonical state:     b_ℓ (logit — the clean-propagation home, per §2)
-    discrepancy state:   δ̃ = (b_μ − L*_k · b_ℓ) / sqrt(R_c,k)     (STANDARDIZED; zero prior, unit scale)
+    discrepancy state:   δ̃ = (b_μ − L*_k · b_ℓ) / s_k     (STANDARDIZED; zero prior, unit scale;
+                          s_k = conservative placeholder until the follow-up delivers state-level R_c,k)
 
 This IS the dual-state design — (b_ℓ, δ̃) is a linear change of variables from (b_ℓ, b_μ) — but the second
 state is now the small, nearly-independent part instead of a near-copy, and standardizing by sqrt(R_c,k)
@@ -141,11 +154,14 @@ assertion: the build plan includes dense-vs-QR parity and a condition-number swe
 unit prior. Two properties make this the right form:
 
 1. **It is testable at the system level, not per-state.** With ~50 states, "any |δ̃| > 2 SD" would fire
-   almost surely under the null (multiplicity), so the retention gate is GLOBAL and decision-oriented:
-   keep dual-space iff the δ̃-augmented model improves the held-out NODE-DISJOINT score over logit-only.
-   Per-bin δ̃ posteriors are then read DESCRIPTIVELY to localize where the gain lives (candidates: the
-   boundary bins, where direct-space mass and the lattice bite). Flat everywhere + no held-out gain ⇒
-   collapse to logit-only and cite the run.
+   almost surely under the null (multiplicity), so the retention gate is GLOBAL and decision-oriented —
+   and guarded against pick-the-bigger-model-under-a-null selection: freeze ONE primary metric and a
+   minimum practical gain BEFORE the run (S-marginal NLL on the node-disjoint ladder; floor set from the
+   split-stability SD), select on inner node-disjoint validation, report once on the untouched outer
+   test, and require the paired node-block bootstrap interval on the gain to exclude zero. Per-bin δ̃
+   posteriors are then read DESCRIPTIVELY to localize where the gain lives (candidates: the boundary
+   bins, where direct-space mass and the lattice bite). No qualifying gain ⇒ collapse to logit-only and
+   cite the run.
 2. **It keeps the output layer untouched.** The bias filter runs underneath in (b_ℓ, δ̃); the two-space
    MIXTURE (G_sl champion — a mixture of μ/logit experts, NOT a product; weight fit on calibration;
    change-of-variables NLL as the common error currency) remains the output layer combining posteriors.
