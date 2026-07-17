@@ -67,7 +67,8 @@ def load_expanded(ckpt, n_judge=None, dev="cpu"):
     m = MuAttention(d_model=cfg["d_model"], n_heads=cfg["heads"], n_layers=cfg["layers"],
                     n_ops=sz("op_emb.weight", len(OPS)), n_corpus=sz("corpus_emb.weight", 2),
                     n_judge=n_judge, n_nodetype=sz("nodetype_emb.weight", 4),
-                    judge_name_e5=jn_e5).to(dev)
+                    judge_name_e5=jn_e5, op_name_e5=sd.get("op_name.name_e5"),
+                    corpus_name_e5=sd.get("corpus_name.name_e5")).to(dev)
     miss, unexp = m.load_state_dict(sd, strict=False)
     assert not unexp, f"unexpected keys: {unexp}"
     bad = [k for k in miss if not any(k.endswith(n) for n in NEW_KEYS)]
