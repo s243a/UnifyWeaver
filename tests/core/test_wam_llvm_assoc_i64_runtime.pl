@@ -40,6 +40,10 @@ test(fields_buffer_split_edit_join) :-
     fields_buffer_driver_ir(DriverIR),
     run_assoc_i64_smoke('uw_wam_fields_buffer', DriverIR).
 
+test(regex_fs_field_slice_and_count) :-
+    regex_fs_driver_ir(DriverIR),
+    run_assoc_i64_smoke('uw_wam_regex_fs', DriverIR).
+
 run_assoc_i64_smoke(Name, DriverIR) :-
     tmp_root(Root),
     directory_file_path(Root, Name, Dir),
@@ -293,6 +297,92 @@ entry:
   %a1 = and i1 %c1_ok, %c2_ok
   %a2 = and i1 %a1, %c3_ok
   br i1 %a2, label %ok, label %bad
+
+ok:
+  ret i32 0
+
+bad:
+  ret i32 91
+}
+').
+
+% Exercise the regex/multi-char FS field splitter through the public field
+% functions with the sentinel separator (i8 0). Two patterns: a multi-char
+% literal "::" over "a::b::c", and a regex ", *" over "a, b,c" (comma then
+% optional spaces). Checks NF and per-field bytes; the cache is reset between
+% patterns since one FS regex is compiled per program.
+regex_fs_driver_ir('
+@.uw_rfs_colons = private constant [3 x i8] c"::\00"
+@.uw_rfs_rec1 = private constant [8 x i8] c"a::b::c\00"
+@.uw_rfs_comma = private constant [4 x i8] c", *\00"
+@.uw_rfs_rec2 = private constant [7 x i8] c"a, b,c\00"
+
+define i32 @main() {
+entry:
+  ; --- multi-char literal FS "::" over "a::b::c" ---
+  %p1 = getelementptr [3 x i8], [3 x i8]* @.uw_rfs_colons, i64 0, i64 0
+  store i8* %p1, i8** @wam_fs_regex_pattern_ptr
+  store i8* null, i8** @wam_fs_regex_cache
+  %r1p = getelementptr [8 x i8], [8 x i8]* @.uw_rfs_rec1, i64 0, i64 0
+  %id1 = call i64 @wam_intern_atom(i8* %r1p, i64 7)
+  %v1a = insertvalue %Value undef, i32 0, 0
+  %v1 = insertvalue %Value %v1a, i64 %id1, 1
+
+  %n1 = call i64 @wam_atom_field_count_value(%Value %v1, i8 0)
+  %n1_ok = icmp eq i64 %n1, 3
+
+  %f1 = call %WamSlice @wam_atom_field_slice_value(%Value %v1, i64 1, i8 0)
+  %f1p = extractvalue %WamSlice %f1, 0
+  %f1l = extractvalue %WamSlice %f1, 1
+  %f1l_ok = icmp eq i64 %f1l, 1
+  %f1c = load i8, i8* %f1p
+  %f1c_ok = icmp eq i8 %f1c, 97
+
+  %f2 = call %WamSlice @wam_atom_field_slice_value(%Value %v1, i64 2, i8 0)
+  %f2p = extractvalue %WamSlice %f2, 0
+  %f2l = extractvalue %WamSlice %f2, 1
+  %f2l_ok = icmp eq i64 %f2l, 1
+  %f2c = load i8, i8* %f2p
+  %f2c_ok = icmp eq i8 %f2c, 98
+
+  %f3 = call %WamSlice @wam_atom_field_slice_value(%Value %v1, i64 3, i8 0)
+  %f3p = extractvalue %WamSlice %f3, 0
+  %f3c = load i8, i8* %f3p
+  %f3c_ok = icmp eq i8 %f3c, 99
+
+  %f4 = call %WamSlice @wam_atom_field_slice_value(%Value %v1, i64 4, i8 0)
+  %f4p = extractvalue %WamSlice %f4, 0
+  %f4_missing = icmp eq i8* %f4p, null
+
+  ; --- regex FS ", *" over "a, b,c" ---
+  %p2 = getelementptr [4 x i8], [4 x i8]* @.uw_rfs_comma, i64 0, i64 0
+  store i8* %p2, i8** @wam_fs_regex_pattern_ptr
+  store i8* null, i8** @wam_fs_regex_cache
+  %r2p = getelementptr [7 x i8], [7 x i8]* @.uw_rfs_rec2, i64 0, i64 0
+  %id2 = call i64 @wam_intern_atom(i8* %r2p, i64 6)
+  %v2a = insertvalue %Value undef, i32 0, 0
+  %v2 = insertvalue %Value %v2a, i64 %id2, 1
+
+  %n2 = call i64 @wam_atom_field_count_value(%Value %v2, i8 0)
+  %n2_ok = icmp eq i64 %n2, 3
+
+  %g2 = call %WamSlice @wam_atom_field_slice_value(%Value %v2, i64 2, i8 0)
+  %g2p = extractvalue %WamSlice %g2, 0
+  %g2l = extractvalue %WamSlice %g2, 1
+  %g2l_ok = icmp eq i64 %g2l, 1
+  %g2c = load i8, i8* %g2p
+  %g2c_ok = icmp eq i8 %g2c, 98
+
+  %a1 = and i1 %n1_ok, %f1l_ok
+  %a2 = and i1 %a1, %f1c_ok
+  %a3 = and i1 %a2, %f2l_ok
+  %a4 = and i1 %a3, %f2c_ok
+  %a5 = and i1 %a4, %f3c_ok
+  %a6 = and i1 %a5, %f4_missing
+  %a7 = and i1 %a6, %n2_ok
+  %a8 = and i1 %a7, %g2l_ok
+  %a9 = and i1 %a8, %g2c_ok
+  br i1 %a9, label %ok, label %bad
 
 ok:
   ret i32 0

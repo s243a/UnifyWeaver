@@ -63,7 +63,7 @@ only (runtime pending) · ❌ missing.
 
 | Feature | Status | Notes |
 |---|---|---|
-| `$0` `$N` `NR` `NF` `FS` `OFS` | ✅ | |
+| `$0` `$N` `NR` `NF` `FS` `OFS` | ✅ | `FS` accepts a **multi-char / regex** value (a POSIX ERE, awk semantics): a length-≥2 `BEGIN { FS = "…" }` compiles to a reserved sentinel separator byte that the field runtime dispatches to `@wam_fs_regex_field_slice_value` / `_count_value` (lazily `regcomp`ed, one FS per program). Because the numeric / `length` / `eq` / `cmp` field projectors all delegate to the core slice, the regex FS reaches `$N` reads, `NF`, guards, and concat uniformly; `$0` and EOF are unaffected. A single-char `FS` stays a literal byte (awk treats a one-char FS literally). Field assignment with a regex FS, and `split()`'s own separator, remain single-char follow-ons. |
 | `FNR` `FILENAME` `ARGV` `ARGC` `RS` `ORS` `SUBSEP` `RSTART` `RLENGTH` | ❌ | single newline-delimited record model |
 | arithmetic `+ - * / % //` | ✅ | i64, awk precedence, safe div/mod |
 | comparison, `~`/`!~` | ✅ | |
