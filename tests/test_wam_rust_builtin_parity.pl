@@ -129,6 +129,13 @@ t_filesystem_mutation :-
     delete_file('mutation_compiled_fixture/renamed.toml'),
     delete_directory('mutation_compiled_fixture').
 
+:- dynamic t_file_content_io/1.
+t_file_content_io(Content) :-
+    write_atom_to_file('file_content_compiled_fixture.txt', alpha),
+    append_atom_to_file('file_content_compiled_fixture.txt', '-beta'),
+    read_file_to_atom('file_content_compiled_fixture.txt', Content),
+    delete_file('file_content_compiled_fixture.txt').
+
 :- dynamic t_pairs_project/2.
 t_pairs_project(Keys, Values) :-
     Pairs = [a-1, b-2],
@@ -270,6 +277,7 @@ test_builtin_parity_execution :-
              user:t_path_utilities/5,
              user:t_filesystem_identity/2,
              user:t_filesystem_mutation/0,
+             user:t_file_content_io/1,
              user:t_pairs_project/2, user:t_pairs_split/2, user:t_pairs_zip/1,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
@@ -303,6 +311,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_path_utilities_5,
     t_filesystem_identity_2,
     t_filesystem_mutation_0,
+    t_file_content_io_1,
     t_pairs_project_2, t_pairs_split_2, t_pairs_zip_1,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
     t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
@@ -607,6 +616,50 @@ fn test_filesystem_mutation_direct() {
     assert!(!call2("copy_file/2", a("missing-mutation-source"), a("unused")).0);
     assert!(!call2("copy_file/2", a("Cargo.toml"), ub("Destination")).0);
     assert!(!call2("rename_file/2", ub("Source"), a("unused")).0);
+}
+
+#[test]
+fn test_file_content_io_compiled() {
+    let fixture = std::path::Path::new("file_content_compiled_fixture.txt");
+    let _ = std::fs::remove_file(fixture);
+
+    let mut vm = vmnew();
+    assert!(t_file_content_io_1(&mut vm, ub("Content")));
+    assert_eq!(read_var(&vm, "Content"), a("alpha-beta"));
+    assert!(!fixture.exists());
+}
+
+#[test]
+fn test_file_content_io_direct() {
+    let path = "file_content_direct_fixture.txt";
+    let _ = std::fs::remove_file(path);
+
+    assert!(call2("write_atom_to_file/2", a(path), a("longer content")).0);
+    assert!(call2("write_atom_to_file/2", a(path), a("short")).0);
+    assert_eq!(std::fs::read(path).unwrap(), b"short");
+    assert!(call2("append_atom_to_file/2", a(path), a("-tail")).0);
+    assert_eq!(std::fs::read(path).unwrap(), b"short-tail");
+
+    let (read_ok, read_vm) = call2("read_file_to_atom/2", a(path), ub("Content"));
+    assert!(read_ok);
+    assert_eq!(read_var(&read_vm, "Content"), a("short-tail"));
+    assert!(call2("read_file_to_atom/2", a(path), a("short-tail")).0);
+    assert!(!call2("read_file_to_atom/2", a(path), a("wrong")).0);
+
+    std::fs::remove_file(path).unwrap();
+    assert!(call2("append_atom_to_file/2", a(path), a("created")).0,
+        "append_atom_to_file/2 creates a missing file");
+    assert_eq!(std::fs::read(path).unwrap(), b"created");
+
+    std::fs::write(path, [0xff]).unwrap();
+    assert!(!call2("read_file_to_atom/2", a(path), ub("Content")).0,
+        "Rust atoms require UTF-8 file content");
+    assert!(!call2("read_file_to_atom/2", a("missing-file-content"), ub("Content")).0);
+    assert!(!call2("read_file_to_atom/2", i(7), ub("Content")).0);
+    assert!(!call2("write_atom_to_file/2", a(path), i(7)).0);
+    assert!(!call2("append_atom_to_file/2", ub("Path"), a("content")).0);
+
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

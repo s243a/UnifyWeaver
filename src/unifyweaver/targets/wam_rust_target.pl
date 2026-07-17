@@ -1648,6 +1648,47 @@ compile_execute_io_builtin_to_rust(Code) :-
                 };
                 if result.is_ok() { self.pc += 1; true } else { false }
             }
+            "read_file_to_atom/2" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let content = match std::fs::read_to_string(path) {
+                    Ok(content) => content,
+                    Err(_) => return false,
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Atom(content)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "write_atom_to_file/2" | "append_atom_to_file/2" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let content = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(content)) => content,
+                    _ => return false,
+                };
+                let result = if op == "write_atom_to_file/2" {
+                    std::fs::write(path, content.as_bytes())
+                } else {
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                        .and_then(|mut file| {
+                            std::io::Write::write_all(&mut file, content.as_bytes())
+                        })
+                };
+                if result.is_ok() { self.pc += 1; true } else { false }
+            }
             "exists_file/1" => {
                 let path = match self.builtin_path_arg("A1") {
                     Some(path) => path,
