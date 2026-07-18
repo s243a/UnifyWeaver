@@ -5869,7 +5869,8 @@ plawk_forin_end_guarded_print_ir(LoopVar, ArrayName, Guard, PrintFields,
     atomic_list_concat(BodyLines, '\n', BodyIR),
     phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
     atomic_list_concat(FreeLines, '\n', FreeIR),
-    plawk_forin_guard_plan(Guard, GuardPlan),
+    ( plawk_assoc_plan_str_array(AssocPlan, ArrayName) -> IsStr = true ; IsStr = false ),
+    plawk_forin_guard_plan(Guard, IsStr, GuardPlan),
     plawk_forin_end_guard_lines(GuardPlan, TableIndex, GuardLines, CondVar),
     atomic_list_concat(GuardLines, '\n', GuardIR),
     format(atom(IR),
@@ -5919,6 +5920,24 @@ plawk_forin_end_guard_lines(guard_key(Op, V), _TableIndex, Lines, CondVar) :-
         '  %forin_gcmp = icmp ~w i64 %forin_key_id, ~w', [Pred, V]),
     CondVar = '%forin_gcmp',
     Lines = [CmpLine].
+% Str-valued table (split / assoc(str)): the stored i64 is an atom id, so an
+% `arr[k] CMP int` comparison resolves the element text and compares via
+% strnum (numeric if the element looks like a number, else lexical -- POSIX
+% duality), testing the sign against 0 with the comparison predicate.
+plawk_forin_end_guard_lines(guard_value_strnum(Op, V), TableIndex, Lines, CondVar) :-
+    plawk_forin_cmp_pred(Op, Pred),
+    format(atom(ValLine),
+        '  %forin_gval = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
+        [TableIndex]),
+    format(atom(StrLine),
+        '  %forin_gval_s = call i8* @wam_atom_to_string(i64 %forin_gval)', []),
+    format(atom(RcLine),
+        '  %forin_gval_rc = call i32 @wam_strnum_cmp_int(i8* %forin_gval_s, i8 1, i64 ~w)',
+        [V]),
+    format(atom(CmpLine),
+        '  %forin_gcmp = icmp ~w i32 %forin_gval_rc, 0', [Pred]),
+    CondVar = '%forin_gcmp',
+    Lines = [ValLine, StrLine, RcLine, CmpLine].
 
 %% plawk_forin_end_accum_ir(+LoopVar, +ArrayName, +Acc, +Operand,
 %%     +PrintFields, +AssocPlan, +Descriptor, +OutputSeparator, -IR)
@@ -7751,9 +7770,20 @@ plawk_assoc_planned_actions(
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 
 % guard operand: the iterated table's value at the current slot, or the
-% raw loop key; both compared to an integer literal.
-plawk_forin_guard_plan(forin_val_cmp(_A, _K, Op, V), guard_value(Op, V)).
-plawk_forin_guard_plan(forin_key_cmp(_K, Op, V), guard_key(Op, V)).
+% raw loop key. The key is always a genuine i64 (a position / registry id);
+% the value depends on the table's kind. On an i64-valued table (a counter)
+% `arr[k] CMP int` is a raw i64 icmp; on a STR-valued table (split / assoc(str))
+% the stored i64 is an atom id, not a number, so an integer value comparison
+% must resolve the element text and go through strnum (guard_value_strnum) --
+% a raw icmp on the atom id would compare registry positions, not values.
+plawk_forin_guard_plan(Guard, GuardPlan) :-
+    plawk_forin_guard_plan(Guard, false, GuardPlan).
+plawk_forin_guard_plan(forin_val_cmp(_A, _K, Op, V), IsStr, GuardPlan) :-
+    ( IsStr == true
+    ->  GuardPlan = guard_value_strnum(Op, V)
+    ;   GuardPlan = guard_value(Op, V)
+    ).
+plawk_forin_guard_plan(forin_key_cmp(_K, Op, V), _IsStr, guard_key(Op, V)).
 
 plawk_forin_rule_field_plan(LoopVar, ArrayName, _TableIndex, _Tables,
         _StrArrays, PosArrays, var(LoopVar), KeyPlan) :- !,
