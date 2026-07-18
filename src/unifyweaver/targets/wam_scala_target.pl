@@ -960,9 +960,16 @@ emit_scala_kernel_handler(recursive_kernel(weighted_shortest_path3, _Pred/3, Con
     member(edge_pred(EdgePred/3), ConfigOps),
     format(atom(EdgeKey), '~w/3', [EdgePred]),
     scala_string_literal(EdgeKey, EdgeKeyLit),
-    format(string(Code),
+    format(string(Code0),
 "new ForeignHandler {\n      private lazy val adj: Map[WamTerm, Vector[(WamTerm, WamTerm)]] =\n        WamRuntime.collectTernarySolutions(sharedProgram, ~w)\n          .groupBy(_._1).map { case (k, vs) => k -> vs.map(t => (t._2, t._3)) }\n      def apply(args: Array[WamTerm]): ForeignResult = {\n        val source = args(0)\n        val dist = scala.collection.mutable.HashMap[WamTerm, Double](source -> 0.0)\n        val pq = scala.collection.mutable.PriorityQueue.empty[(Double, WamTerm)](\n          Ordering.by[(Double, WamTerm), Double](_._1).reverse)\n        pq.enqueue((0.0, source))\n        val out = scala.collection.mutable.LinkedHashMap[WamTerm, Double]()\n        var invalid = false\n        while (pq.nonEmpty && !invalid) {\n          val (cost, node) = pq.dequeue()\n          val best = dist.getOrElse(node, Double.PositiveInfinity)\n          if (cost <= best) {\n            if (node != source && !out.contains(node)) out(node) = cost\n            for ((nxt, wTerm) <- adj.getOrElse(node, Vector.empty)) {\n              nxt match {\n                case _: Atom =>\n                  val wOpt: Option[Double] = wTerm match {\n                    case IntTerm(n) => Some(n.toDouble)\n                    case FloatTerm(d) => Some(d)\n                    case _ => None\n                  }\n                  wOpt match {\n                    case Some(w) if !w.isNaN && !w.isInfinity && w >= 0.0 =>\n                      val nc = cost + w\n                      if (nc < dist.getOrElse(nxt, Double.PositiveInfinity)) {\n                        dist(nxt) = nc\n                        pq.enqueue((nc, nxt))\n                      }\n                    case _ => invalid = true\n                  }\n                case _ => invalid = true\n              }\n            }\n          }\n        }\n        if (invalid) ForeignFail\n        else {\n          val sols = out.toVector.map { case (t, c) => Map(2 -> (t: WamTerm), 3 -> (FloatTerm(c): WamTerm)) }\n          if (sols.isEmpty) ForeignFail else ForeignMulti(sols)\n        }\n      }\n    }",
-           [EdgeKeyLit]).
+           [EdgeKeyLit]),
+    Needle = "        val source = args(0)\n",
+    Replacement = "        val source = args(0) match { case a @ Atom(_) => a; case _ => return ForeignFail }\n",
+    sub_string(Code0, BeforeLen, _, AfterLen, Needle),
+    sub_string(Code0, 0, BeforeLen, _, Before),
+    sub_string(Code0, _, AfterLen, 0, After),
+    string_concat(Before, Replacement, Prefix),
+    string_concat(Prefix, After, Code).
 
 % astar_shortest_path4: astar(Source, Target, Dim, Dist). Goal-directed A*
 % over a ternary weighted edge relation, using a heuristic oracle

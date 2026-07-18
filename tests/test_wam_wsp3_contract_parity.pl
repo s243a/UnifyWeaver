@@ -267,7 +267,9 @@ test(haskell_mustache_dijkstra) :-
     assertion(sub_string(S, _, _, _, "Finite nonnegative Dijkstra")),
     assertion(sub_string(S, _, _, _, "nativeKernel_weighted_shortest_path")),
     assertion(sub_string(S, _, _, _, "n /= source")),
-    assertion(sub_string(S, _, _, _, "error \"wsp3: reachable invalid")).
+    assertion(sub_string(S, _, _, _, "maybe [] id")),
+    assertion(sub_string(S, _, _, _, "Nothing -> Nothing")),
+    assertion(\+ sub_string(S, _, _, _, "error \"wsp3: reachable invalid")).
 
 test(rust_dijkstra_source_excluded_float) :-
     compile_wam_runtime_to_rust([], Code),
@@ -294,6 +296,7 @@ test(go_scala_r_elixir_contract_markers) :-
     read_file_string('src/unifyweaver/targets/wam_scala_target.pl', Sc),
     assertion(sub_string(Sc, _, _, _,
         "docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md")),
+    assertion(sub_string(Sc, _, _, _, "case a @ Atom(_)")),
     read_file_string('templates/targets/r_wam/runtime.R.mustache', R),
     assertion(sub_string(R, _, _, _, "weighted_shortest_path3")),
     assertion(sub_string(R, _, _, _, "FloatTerm")),
