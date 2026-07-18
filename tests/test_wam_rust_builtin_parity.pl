@@ -105,6 +105,17 @@ t_system_queries(Time, Pid, Path) :-
     getpid(Pid),
     getenv('PATH', Path).
 
+:- dynamic t_process_commands/2.
+t_process_commands(Status, Output) :-
+    shell('exit 0'),
+    shell('exit 7', Status),
+    system_to_atom('printf compiled-output', Output),
+    atom_to_system('cat > process_command_compiled_fixture.txt',
+                   'compiled-input').
+
+:- dynamic t_sleep/0.
+t_sleep :- sleep(0.001).
+
 :- dynamic t_environment_mutation/1.
 t_environment_mutation(Value) :-
     setenv('UNIFYWEAVER_RUST_WAM_COMPILED_ENV_8C19', first),
@@ -333,6 +344,8 @@ test_builtin_parity_execution :-
              user:t_filesystem_query/1,
              user:t_file_metadata/2,
              user:t_system_queries/3,
+             user:t_process_commands/2,
+             user:t_sleep/0,
              user:t_environment_mutation/1,
              user:t_split_string/1, user:t_atom_split/1, user:t_atom_checks/0,
              user:t_text_inspection/2,
@@ -372,6 +385,8 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_filesystem_query_1,
     t_file_metadata_2,
     t_system_queries_3,
+    t_process_commands_2,
+    t_sleep_0,
     t_environment_mutation_1,
     t_split_string_1, t_atom_split_1, t_atom_checks_0,
     t_text_inspection_2,
@@ -585,6 +600,27 @@ fn test_system_queries_compiled() {
     assert_eq!(read_var(&vm, "Pid"), i(i64::from(std::process::id())));
     assert_eq!(read_var(&vm, "Path"),
         a(&std::env::var("PATH").expect("PATH must be available to cargo test")));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_process_commands_compiled() {
+    let fixture = std::path::Path::new("process_command_compiled_fixture.txt");
+    let _ = std::fs::remove_file(fixture);
+
+    let mut vm = vmnew();
+    assert!(t_process_commands_2(&mut vm, ub("Status"), ub("Output")));
+    assert_eq!(read_var(&vm, "Status"), i(7));
+    assert_eq!(read_var(&vm, "Output"), a("compiled-output"));
+    assert_eq!(std::fs::read_to_string(fixture).unwrap(), "compiled-input");
+
+    std::fs::remove_file(fixture).unwrap();
+}
+
+#[test]
+fn test_sleep_compiled() {
+    let mut vm = vmnew();
+    assert!(t_sleep_0(&mut vm));
 }
 
 #[test]
@@ -2276,6 +2312,60 @@ fn test_system_queries_direct() {
     let mut missing_output = vmnew();
     missing_output.set_reg("A1", a("PATH"));
     assert!(!missing_output.execute_builtin("getenv/2", 2));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_process_commands_direct() {
+    assert!(call1("shell/1", a("exit 0")).0);
+    assert!(!call1("shell/1", a("exit 3")).0);
+    assert!(!call1("shell/1", i(7)).0);
+    assert!(!vmnew().execute_builtin("shell/1", 1));
+
+    let (status_ok, status_vm) = call2("shell/2", a("exit 23"), ub("Status"));
+    assert!(status_ok);
+    assert_eq!(read_var(&status_vm, "Status"), i(23));
+    assert!(call2("shell/2", a("exit 0"), i(0)).0);
+    assert!(!call2("shell/2", a("exit 9"), i(8)).0);
+    assert!(!call2("shell/2", ub("Command"), ub("Status")).0);
+
+    let (capture_ok, capture_vm) = call2(
+        "system_to_atom/2", a("printf direct-output"), ub("Output"));
+    assert!(capture_ok);
+    assert_eq!(read_var(&capture_vm, "Output"), a("direct-output"));
+    assert!(call2("system_to_atom/2", a("exit 5"), a("")).0,
+        "stdout capture succeeds independently of the exit status");
+    assert!(!call2("system_to_atom/2", a("printf wrong"), a("right")).0);
+    assert!(!call2("system_to_atom/2", i(7), ub("Output")).0);
+
+    let fixture = std::path::Path::new("process_command_direct_fixture.txt");
+    let _ = std::fs::remove_file(fixture);
+    assert!(call2(
+        "atom_to_system/2",
+        a("cat > process_command_direct_fixture.txt"),
+        a("direct-input")).0);
+    assert_eq!(std::fs::read_to_string(fixture).unwrap(), "direct-input");
+    assert!(!call2("atom_to_system/2", a("exit 4"), a("input")).0);
+    assert!(!call2("atom_to_system/2", i(7), a("input")).0);
+    assert!(!call2("atom_to_system/2", a("cat"), i(7)).0);
+    std::fs::remove_file(fixture).unwrap();
+}
+
+#[test]
+fn test_sleep_direct() {
+    assert!(call1("sleep/1", i(0)).0);
+    assert!(call1("sleep/1", Value::Float(0.0)).0);
+
+    let started = std::time::Instant::now();
+    assert!(call1("sleep/1", Value::Float(0.005)).0);
+    assert!(started.elapsed() >= std::time::Duration::from_millis(4));
+
+    assert!(!call1("sleep/1", i(-1)).0);
+    assert!(!call1("sleep/1", Value::Float(-0.001)).0);
+    assert!(!call1("sleep/1", Value::Float(f64::NAN)).0);
+    assert!(!call1("sleep/1", Value::Float(f64::INFINITY)).0);
+    assert!(!call1("sleep/1", a("soon")).0);
+    assert!(!call1("sleep/1", ub("Seconds")).0);
 }
 
 #[test]

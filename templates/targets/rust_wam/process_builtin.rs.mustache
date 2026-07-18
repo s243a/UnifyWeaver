@@ -1,0 +1,126 @@
+{{match part}}{{case helpers}}
+    fn shell_process(command: &str) -> std::process::Command {
+        #[cfg(windows)]
+        let mut process = {
+            let mut process = std::process::Command::new("cmd");
+            process.arg("/C");
+            process
+        };
+        #[cfg(not(windows))]
+        let mut process = {
+            let mut process = std::process::Command::new("/bin/sh");
+            process.arg("-c");
+            process
+        };
+        process.arg(command);
+        process
+    }
+{{case arms}}
+            "shell/1" => {
+                let command = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(command)) => command,
+                    _ => return false,
+                };
+                match Self::shell_process(&command).status() {
+                    Ok(status) if status.success() => { self.pc += 1; true }
+                    _ => false,
+                }
+            }
+            "shell/2" => {
+                let command = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(command)) => command,
+                    _ => return false,
+                };
+                let status = match Self::shell_process(&command).status() {
+                    Ok(status) => status,
+                    Err(_) => return false,
+                };
+                let code = Value::Integer(i64::from(status.code().unwrap_or(1)));
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &code) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "system_to_atom/2" => {
+                let command = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(command)) => command,
+                    _ => return false,
+                };
+                let captured = match Self::shell_process(&command).output() {
+                    Ok(captured) => captured,
+                    Err(_) => return false,
+                };
+                if captured.stdout.len() > 65_536 {
+                    return false;
+                }
+                let text = match String::from_utf8(captured.stdout) {
+                    Ok(text) => text,
+                    Err(_) => return false,
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Atom(text)) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "atom_to_system/2" => {
+                let command = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(command)) => command,
+                    _ => return false,
+                };
+                let content = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(content)) => content,
+                    _ => return false,
+                };
+                let mut child = match Self::shell_process(&command)
+                    .stdin(std::process::Stdio::piped())
+                    .spawn() {
+                    Ok(child) => child,
+                    Err(_) => return false,
+                };
+                let wrote = match child.stdin.take() {
+                    Some(mut stdin) => std::io::Write::write_all(
+                        &mut stdin, content.as_bytes()).is_ok(),
+                    None => false,
+                };
+                if !wrote {
+                    let _ = child.wait();
+                    return false;
+                }
+                match child.wait() {
+                    Ok(status) if status.success() => { self.pc += 1; true }
+                    _ => false,
+                }
+            }
+            "sleep/1" => {
+                let seconds = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                let duration = match seconds {
+                    Value::Integer(seconds) if seconds >= 0 => {
+                        std::time::Duration::from_secs(seconds as u64)
+                    }
+                    Value::Float(seconds)
+                        if seconds.is_finite()
+                            && seconds >= 0.0
+                            && seconds <= i64::MAX as f64 => {
+                        std::time::Duration::from_secs_f64(seconds)
+                    }
+                    _ => return false,
+                };
+                std::thread::sleep(duration);
+                self.pc += 1; true
+            }
+{{/match}}
