@@ -11440,6 +11440,7 @@ plawk_rule_body_print_field(concat(Parts)) :-
 plawk_rule_body_print_field(var(_)).
 plawk_rule_body_print_field(special('NR')).
 plawk_rule_body_print_field(special('NF')).
+plawk_rule_body_print_field(environ(Key)) :- string(Key).
 plawk_rule_body_print_field(int(field(_))).
 plawk_rule_body_print_field(Expr) :-
     plawk_i64_general_binary_expr(Expr).
@@ -12231,6 +12232,9 @@ plawk_scalar_action_update(set(var(Name), concat(Parts)), Name, set_str(concat(P
     maplist(plawk_str_scalar_part_ok, Parts).
 plawk_scalar_action_update(set(var(Name), string(Value)), Name, set_str(string(Value))) :-
     string(Value).
+% `x = ENVIRON["NAME"]`: the env var value as a string scalar (via getenv).
+plawk_scalar_action_update(set(var(Name), environ(Key)), Name, set_str(environ(Key))) :-
+    string(Key).
 % `x = sprintf("fmt", args)`: format into a string scalar.
 plawk_scalar_action_update(set(var(Name), sprintf(string(Format), Args)), Name,
         set_str(sprintf(string(Format), Args))) :-
@@ -13000,6 +13004,19 @@ plawk_str_build_ir(string(Value), _FieldSeparator, Base, IdValueIR,
         '  %~w_id = call i64 @wam_intern_atom(i8* %~w_ptr, i64 ~w)',
         [Base, Base, Len]),
     format(atom(IdValueIR), '%~w_id', [Base]).
+% `ENVIRON["NAME"]`: look up the environment variable (a NUL-terminated key
+% constant) and yield the interned atom id of its value (0 = unset -> empty).
+plawk_str_build_ir(environ(Name), _FieldSeparator, Base, IdValueIR,
+        [GlobalIR], [PtrLine, CallLine]) :-
+    format(atom(KeyName), '~w_envkey', [Base]),
+    llvm_emit_c_string_global(KeyName, Name, GlobalIR, _Len, BytesLen),
+    format(atom(PtrLine),
+        '  %~w_envkeyp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+        [Base, BytesLen, BytesLen, KeyName]),
+    format(atom(CallLine),
+        '  %~w_envid = call i64 @wam_environ_get(i8* %~w_envkeyp)',
+        [Base, Base]),
+    format(atom(IdValueIR), '%~w_envid', [Base]).
 plawk_str_build_ir(concat(Parts), FieldSeparator, Base, IdValueIR,
         [FmtGlobal, EmptyGlobal], SetupLines) :-
     plawk_str_concat_format(Parts, FmtAtom),
@@ -15149,6 +15166,29 @@ plawk_emit_print_expr_for_context(ssa(Value), FieldSeparator, Context,
 % holds an atom id; resolve it to text (id 0 is the unset sentinel, printed as
 % empty). A select keeps it straight-line -- wam_atom_to_string is always called
 % but its result is discarded when the id is 0.
+% `print ENVIRON["NAME"]`: getenv the value then print it as text (id 0 -> empty).
+plawk_emit_print_expr_for_context(environ(Key), _FieldSeparator, Context,
+        string(Base, PtrIR), [KeyGlobal, EmptyGlobal],
+        [KeyPtr, EnvCall, StrCall, IsEmpty, SelPtr]) :-
+    plawk_print_expr_value_base(Context, string, Base),
+    format(atom(KeyName), '~w_envkey', [Base]),
+    llvm_emit_c_string_global(KeyName, Key, KeyGlobal, _Len, KeyBytes),
+    format(atom(KeyPtr),
+        '  %~w_envkeyp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+        [Base, KeyBytes, KeyBytes, KeyName]),
+    format(atom(EnvCall),
+        '  %~w_envid = call i64 @wam_environ_get(i8* %~w_envkeyp)', [Base, Base]),
+    format(atom(EmptyName), '~w_empty', [Base]),
+    format(atom(EmptyGlobal),
+        '@.~w = private constant [1 x i8] zeroinitializer', [EmptyName]),
+    format(atom(StrCall),
+        '  %~w_s = call i8* @wam_atom_to_string(i64 %~w_envid)', [Base, Base]),
+    format(atom(IsEmpty),
+        '  %~w_empty_c = icmp eq i64 %~w_envid, 0', [Base, Base]),
+    format(atom(SelPtr),
+        '  %~w_sptr = select i1 %~w_empty_c, i8* getelementptr ([1 x i8], [1 x i8]* @.~w, i64 0, i64 0), i8* %~w_s',
+        [Base, Base, EmptyName, Base]),
+    format(atom(PtrIR), '%~w_sptr', [Base]).
 plawk_emit_print_expr_for_context(ssa_str(Value), FieldSeparator, Context,
         Out, Globals, Setup) :-
     plawk_emit_print_str_id(Value, FieldSeparator, Context, Out, Globals, Setup).
