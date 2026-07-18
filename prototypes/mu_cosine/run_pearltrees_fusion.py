@@ -82,7 +82,7 @@ def load_scored_strict(path, expect_judge):
 
 def load_pearltrees_campaign(pairs_tsv=PAIRS_TSV, luna_tsv=LUNA_TSV, tsv_55=TSV_55,
                              e5_cache=E5_CACHE, paths_jsonl=PATHS_JSONL, titles_tsv=TITLES_TSV,
-                             require_55=True):
+                             require_55=True, root_lineage=False):
     """Assemble the Pearltrees campaign dataset: title pairs, id-graph features, judges, tokenizer.
 
     Returns a ds dict shaped like load_campaign_datasets' (pairs/tags/tok/d/...) plus id-level
@@ -148,7 +148,8 @@ def load_pearltrees_campaign(pairs_tsv=PAIRS_TSV, luna_tsv=LUNA_TSV, tsv_55=TSV_
         if pt:
             deg_title[pt] = deg_title.get(pt, 0) + len(kids)
 
-    tok = Tokenizer(cache["query"], cache["passage"], idx, parents_title, deg_title)
+    tok = Tokenizer(cache["query"], cache["passage"], idx, parents_title, deg_title,
+                    root_lineage=root_lineage)
     d = np.array([hit_prob(parents_id, a, b) for a, b in id_pairs])
     luna = np.array([luna_by[p] for p in pairs])
     overlap_idx = np.array([i for i, p in enumerate(pairs) if p in y55_by], dtype=int)

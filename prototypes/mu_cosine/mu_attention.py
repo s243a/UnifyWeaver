@@ -189,9 +189,18 @@ class Tokenizer:
     """Builds the token set per example and pads a batch. Holds the frozen e5 tables + the DAG."""
 
     def __init__(self, query_tbl, passage_tbl, idx, parents, deg, k=1, beta=1.0, max_anc=8,
-                 struct_tbl=None, struct_mode="dist", struct_cap=8, deg_scale=5.0):
+                 struct_tbl=None, struct_mode="dist", struct_cap=8, deg_scale=5.0,
+                 root_lineage=False, root_lineage_depth=5):
         self.q, self.p, self.idx = query_tbl, passage_tbl, idx
         self.parents, self.deg = parents, deg
+        # root_lineage: ALSO emit the anchor/root's ancestors as `anc` tokens (candidate-lineage-
+        # conditioned μ — DESIGN filing §7). At filing the node is a lineage-less bookmark and the
+        # useful known structure is the candidate FOLDER's principal path, which the default (node-
+        # only) ancestor sampling never supplies. Reuses the `anc` role → no new model params, no
+        # forward change; the model must be trained with this on to use it. Default off (backward
+        # compatible with every existing caller).
+        self.root_lineage = root_lineage
+        self.root_lineage_depth = root_lineage_depth
         self.k, self.beta, self.max_anc = k, beta, max_anc
         self.d = query_tbl.shape[1]
         # DUAL-JUDGE (step 3): {name: struct-emb vector} for the O(1) graph-judge proxy `3/(1+‖Δ‖)`. When set,
@@ -228,6 +237,22 @@ class Tokenizer:
                 break
             frontier = nxt
         return None
+
+    def _principal_path(self, node, cap):
+        """Deterministic parent-climb: [(ancestor, depth)] up the FIRST-parent chain, depth 1..cap.
+        The candidate folder's materialized path (§7) — the full lineage, not just gen-1 parents."""
+        out, cur, seen = [], node, {node}
+        for d in range(1, cap + 1):
+            ps = self.parents.get(cur)
+            if not ps:
+                break
+            nxt = next(iter(ps)) if isinstance(ps, (set, frozenset)) else ps[0]
+            if nxt in seen:
+                break
+            seen.add(nxt)
+            out.append((nxt, d))
+            cur = nxt
+        return out
 
     def _anc_for(self, node, train, rng):
         import random as _r
@@ -270,6 +295,12 @@ class Tokenizer:
                         toks.append(("anc", a, None, d))
             else:
                 toks.append(("noise", node, None, 1))                    # absent lineage → one noise@gen1
+            if self.root_lineage:                                        # candidate-folder lineage (§7)
+                rpath = self._principal_path(root, self.root_lineage_depth)
+                if rpath and not (train and rng is not None and rng.random() < p_drop_lineage):
+                    for (a, d) in rpath:
+                        if a in self.idx and not (train and rng is not None and rng.random() < p_drop_anc):
+                            toks.append(("anc", a, None, d))
             # provenance token — masked (agnostic) for 3-tuples, or for tagged items with prob p_mask_prov
             masked = corpus_id is None or (train and rng is not None and rng.random() < p_mask_prov)
             if masked:

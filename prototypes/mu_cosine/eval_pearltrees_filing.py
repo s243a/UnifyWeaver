@@ -31,7 +31,96 @@ from fine_tune_pearltrees_filing import load_with_lineage_ops
 from mu_attention import CORPORA, JUDGES, NODETYPE, OPS, Tokenizer, build_e5_tables
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-TREES = os.path.join(ROOT, "..", "..", ".local", "data", "pearltrees_api", "trees")
+PT_API = os.path.join(ROOT, "..", "..", ".local", "data", "pearltrees_api")
+TREES = os.path.join(PT_API, "trees")
+DAG = os.path.join(PT_API, "assembled_dag.tsv")
+TITLES = os.path.join(PT_API, "assembled_titles.tsv")
+
+
+PATHS_JSONL = os.path.join(PT_API, "..", "api_tree_paths_v8.jsonl")
+
+
+def folder_lineage(cand, depth=5, shuffle_seed=None):
+    """Build {folder_title: [parent_title,...]} PRINCIPAL paths for candidate folders.
+
+    Principal parent = the OBSERVATION-MAJORITY parent across the account's recorded path_ids (the
+    true filing lineage), falling back to the assembled DAG's edge only when a folder appears in no
+    record. The earlier first-DAG-parent walk contradicted the record-majority parent on 61% of
+    multi-parent folders (external statistical audit finding 1). Returns (parents_title,
+    ancestor_titles). Only the folder's pre-existing folder→parent lineage is used (the §7 leakage
+    boundary — never the evaluated bookmark's placement or the folder's bookmark children).
+    `shuffle_seed` permutes which folder receives which lineage, SUPPORT-PRESERVING: chains permute
+    only among folders that HAVE a chain (audit finding 6 — a naive permutation also changes which
+    folders get any lineage at all, confounding the control)."""
+    import json as _json
+    from collections import Counter, defaultdict
+
+    votes = defaultdict(Counter)
+    with open(PATHS_JSONL, encoding="utf-8") as f:
+        for ln in f:
+            if not ln.strip():
+                continue
+            r = _json.loads(ln)
+            ids = [str(x).split(":")[-1] for x in (r.get("path_ids") or [])]
+            for p, c in zip(ids, ids[1:]):
+                if p != c:
+                    votes[c][p] += 1
+    principal = {c: max(cnt.items(), key=lambda kv: (kv[1], kv[0]))[0] for c, cnt in votes.items()}
+    dag_first = {}
+    for ln in open(DAG, encoding="utf-8"):
+        p, c = ln.split()
+        dag_first.setdefault(c, p)
+    titles = {}
+    for ln in open(TITLES, encoding="utf-8"):
+        parts = ln.rstrip("\n").split("\t")
+        if len(parts) >= 2:
+            titles[parts[0]] = parts[1]
+
+    n_rec, n_dag = 0, 0
+
+    def chain(tid):
+        nonlocal n_rec, n_dag
+        out, cur, seen = [], str(tid), {str(tid)}
+        for _ in range(depth):
+            if cur in principal:
+                nxt = principal[cur]
+                n_rec += 1
+            elif cur in dag_first:
+                nxt = dag_first[cur]
+                n_dag += 1
+            else:
+                break
+            if nxt in seen:
+                break
+            seen.add(nxt)
+            t = titles.get(nxt)
+            if t:
+                out.append(t)
+            cur = nxt
+        return out
+
+    tids = list(cand)
+    chains = [chain(t) for t in tids]
+    print(f"    lineage edges: {n_rec} record-majority (principal), {n_dag} DAG-fallback")
+    if shuffle_seed is not None:
+        import numpy as np
+
+        has = [i for i, ch in enumerate(chains) if ch]        # support-preserving permutation
+        perm = np.random.default_rng(shuffle_seed).permutation(len(has))
+        remapped = list(chains)
+        for slot, src in zip(has, [has[j] for j in perm]):
+            remapped[slot] = chains[src]
+        chains = remapped
+    parents_title, anc_titles = {}, set()
+    for tid, ch in zip(tids, chains):
+        ft = cand[tid]
+        # parents map is a chain: folder→p1→p2… (first-parent walk), keyed by title
+        prev = ft
+        for p in ch:
+            parents_title.setdefault(prev, [p])
+            anc_titles.add(p)
+            prev = p
+    return parents_title, anc_titles
 
 
 def score_cond(model, tok, q_keys, f_keys, op, judge, dev="cpu", batch=512):
@@ -105,6 +194,12 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--cache", default="/tmp/mu_data/pt_filing_eval_e5.pt")
     ap.add_argument("--split-seed", type=int, default=0)
+    ap.add_argument("--cand-lineage", action="store_true",
+                    help="§7: supply each candidate folder's principal path (assembled DAG) as anc "
+                         "tokens — evaluate a checkpoint trained with --cand-lineage in its regime")
+    ap.add_argument("--shuffle-lineage", action="store_true",
+                    help="control: permute which folder gets which lineage (right vs any lineage)")
+    ap.add_argument("--lineage-depth", type=int, default=5)
     a = ap.parse_args(argv)
     dev = "cpu"
     torch.set_num_threads(4)
@@ -133,9 +228,20 @@ def main(argv=None):
     held_q = [i for i in range(len(queries)) if f_titles[truepos[i][0]] not in train_nodes]
     print(f"held-folder subset (true folder unseen in fine-tune train nodes): {len(held_q)}/{len(queries)}")
 
-    names = sorted(set(q_titles) | set(f_titles))
-    qtbl, ptbl, idx = build_e5_tables(names, cache_path=a.cache, batch_size=128)
-    tok = Tokenizer(qtbl, ptbl, idx, {}, {})
+    parents_title, anc_titles = {}, set()
+    if a.cand_lineage:
+        parents_title, anc_titles = folder_lineage(
+            cand, depth=a.lineage_depth,
+            shuffle_seed=(a.seed if a.shuffle_lineage else None))
+        covered = sum(1 for ft in set(f_titles) if ft in parents_title)
+        print(f"candidate lineage: {covered}/{len(set(f_titles))} folders have a principal path; "
+              f"{len(anc_titles)} ancestor titles"
+              + (" [SHUFFLED control]" if a.shuffle_lineage else ""))
+    names = sorted(set(q_titles) | set(f_titles) | anc_titles)
+    cache_path = a.cache.rsplit(".pt", 1)[0] + ("_lin.pt" if a.cand_lineage else ".pt")
+    qtbl, ptbl, idx = build_e5_tables(names, cache_path=cache_path, batch_size=128)
+    tok = Tokenizer(qtbl, ptbl, idx, parents_title, {},
+                    root_lineage=a.cand_lineage, root_lineage_depth=a.lineage_depth)
 
     results = {}
     for label, ckpt in (("base", a.base), ("tuned", a.tuned)):
