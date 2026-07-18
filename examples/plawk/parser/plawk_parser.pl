@@ -1107,13 +1107,6 @@ numeric_cmp_op(lt) -->
 numeric_cmp_op(gt) -->
     ">".
 
-% Equality-only operators, for comparisons that support == / != but not
-% ordering (e.g. a string-valued array element `arr[k] == "x"`).
-eq_ne_op(eq) -->
-    "==".
-eq_ne_op(ne) -->
-    "!=".
-
 
 integer_codes([Code | Codes]) -->
     [Code],
@@ -1488,13 +1481,14 @@ guard_atom(Expr) -->
 guard_atom(Guard) -->
     forin_guard(Guard).
 
-% arr[k] == "str" / != "str" -- string-value equality of an array element
-% (split / assoc(str) values are strings). Only ==/!= (ordering on strings is a
-% follow-on -- it needs strcmp); carried as str(Text). Tried before the integer
-% form so a quoted RHS takes the string branch; a non-string RHS backtracks.
+% arr[k] CMP "str" -- string comparison of an array element (split / assoc(str)
+% values are strings). `==`/`!=` lower to a canonical atom-id compare, the
+% ordering ops (`<` `<=` `>` `>=`) to strcmp; carried as str(Text). Tried before
+% the integer form so a quoted RHS takes the string branch; a non-string RHS
+% backtracks.
 forin_guard(forin_val_cmp(Array, LoopVar, Op, str(Text))) -->
     identifier(Array), ws, "[", ws, identifier(LoopVar), ws, "]", ws,
-    eq_ne_op(Op), ws, quoted_string(SCodes),
+    numeric_cmp_op(Op), ws, quoted_string(SCodes),
     { string_codes(Text, SCodes) },
     !.
 % arr[k] CMP int -- value comparison (tried before the bare-key form,
