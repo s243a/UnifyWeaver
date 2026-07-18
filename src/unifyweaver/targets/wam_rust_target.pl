@@ -1357,7 +1357,11 @@ compile_execute_arith_builtin_to_rust(Code) :-
     }'.
 
 compile_execute_io_builtin_to_rust(Code) :-
-    Code = '    fn builtin_path_arg(&self, reg: &str) -> Option<String> {
+    read_template_file('templates/targets/rust_wam/process_builtin.rs.mustache',
+                       ProcessTemplate),
+    render_template(ProcessTemplate, [part=helpers], ProcessHelpers),
+    render_template(ProcessTemplate, [part=arms], ProcessArms),
+    Prefix = '    fn builtin_path_arg(&self, reg: &str) -> Option<String> {
         match self.get_reg_raw(reg)
             .map(|v| self.deref_heap(&self.deref_var(&v))) {
             Some(Value::Atom(path)) => Some(path),
@@ -1463,7 +1467,8 @@ compile_execute_io_builtin_to_rust(Code) :-
         }
         Some(output)
     }
-
+',
+    Dispatcher = '
     fn execute_io_builtin(&mut self, op: &str, _arity: usize) -> bool {
         match op {
             "format/1" | "format/2" | "format/3" => {
@@ -2086,9 +2091,13 @@ compile_execute_io_builtin_to_rust(Code) :-
                 }
             }
             "nl/0" => { println!(); self.pc += 1; true }
+',
+    Suffix = '
             _ => false,
         }
-    }'.
+    }',
+    atomic_list_concat(
+        [Prefix, ProcessHelpers, Dispatcher, ProcessArms, Suffix], Code).
 
 compile_execute_type_builtin_to_rust(Code) :-
     Code = '    fn execute_type_builtin(&mut self, op: &str, _arity: usize) -> bool {
