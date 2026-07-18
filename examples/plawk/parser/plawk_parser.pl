@@ -82,7 +82,12 @@ plawk_parse_source(Source, Program, PrologClauses) :-
 %  in BEGIN/END/case blocks is a follow-on.
 plawk_normalise_getline_loops(program(Begin, Rules0, End),
         program(Begin, Rules, End)) :-
+    !,
     plawk_norm_getline_rules(Rules0, Rules).
+% Any other top-level program shape (program_passes for `pass ... of ... as`,
+% and the like) has no plain rule bodies to rewrite; pass it through unchanged.
+% (getline inside a pass block is a follow-on.)
+plawk_normalise_getline_loops(Program, Program).
 
 plawk_norm_getline_rules(Rules0, Rules) :-
     is_list(Rules0),
@@ -2295,8 +2300,22 @@ scalar_value_expr(string(Value)) -->
     quoted_string(Codes),
     { string_codes(Value, Codes) },
     !.
+% `x = ENVIRON["NAME"]`: the value of an environment variable as a string scalar
+% (empty if unset). Tried before the bare scalar expr; the `ENVIRON[` prefix is
+% unambiguous.
+scalar_value_expr(Environ) -->
+    environ_expr(Environ),
+    !.
 scalar_value_expr(Value) -->
     scalar_delta_expr(Value).
+
+%% environ_expr(-Environ)//
+%  `ENVIRON["NAME"]` -- read-only lookup of environment variable NAME (a string
+%  literal key). Parses to environ(Name).
+environ_expr(environ(Name)) -->
+    "ENVIRON", ws, "[", ws,
+    quoted_string(KCodes), ws, "]",
+    { string_codes(Name, KCodes) }.
 
 % match/RSTART/RLENGTH as a scalar RHS: `n = match($0, /re/)`, `x = RSTART`.
 % Tried before the arithmetic clause so the `match(` keyword and the special
@@ -2547,6 +2566,9 @@ print_fields_rest([]) -->
 % both branches are numeric field_exprs. Tried before concat / plain field so
 % the `?`/`:` structure is seen first. Defined one level above field_expr (its
 % condition and branches call field_expr) so there is no left recursion.
+print_field_expr(Environ) -->
+    environ_expr(Environ),
+    !.
 print_field_expr(Ternary) -->
     ternary_expr(Ternary),
     !.

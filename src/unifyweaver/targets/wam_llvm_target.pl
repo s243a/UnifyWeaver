@@ -7584,6 +7584,26 @@ gl.err:
   ret i64 -1
 }
 
+; awk ENVIRON["NAME"]: look up an environment variable by its NUL-terminated
+; name and return the interned atom id of its value, or 0 (the empty-string
+; sentinel) when it is unset -- matching awk, where a missing ENVIRON entry is
+; the empty string. getenv returns a pointer into the libc environment block;
+; @wam_intern_atom copies the bytes, so no separate arena copy is needed.
+define i64 @wam_environ_get(i8* %name) {
+entry:
+  %env.v = call i8* @getenv(i8* %name)
+  %env.null = icmp eq i8* %env.v, null
+  br i1 %env.null, label %env.unset, label %env.got
+
+env.got:
+  %env.len = call i64 @strlen(i8* %env.v)
+  %env.id = call i64 @wam_intern_atom(i8* %env.v, i64 %env.len)
+  ret i64 %env.id
+
+env.unset:
+  ret i64 0
+}
+
 define i1 @wam_atom_prefix_value(%Value %atom_value, i8* %prefix, i64 %prefix_len) {
 entry:
   %ap.t = call i32 @value_tag(%Value %atom_value)
