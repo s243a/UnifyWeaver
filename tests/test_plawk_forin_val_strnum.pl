@@ -11,8 +11,10 @@
 % a number, lexical otherwise (POSIX duality). Counter tables (arr[k]++, a
 % genuine i64) keep the plain i64 icmp -- see test_plawk_forin_filter.pl.
 %
-% v1: an integer RHS (`a[k] > 5`, `a[k] == 5`). A string RHS (`a[k] == "x"`) is
-% a follow-on (it needs the literal interned into a module global).
+% A string RHS (`a[k] == "x"` / `!= "x"`) is a string-equality compare: the
+% literal is interned (from a module-level constant) and its atom id icmp'd
+% against the element's stored id -- canonical interning means equal strings
+% share an id, so no strcmp. Only ==/!= (string ordering is a follow-on).
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -31,6 +33,15 @@ test(split_value_guard_parses) :-
          END { for (k in a) { if (a[k] > 2) print k } }\n",
         program(_, _, [end([for_in(var(k), var(a),
             [if(forin_val_cmp(a, k, gt, 2), [print([var(k)])], [])])])])),
+    !.
+
+% `a[k] == "str"` parses to a forin_val_cmp with a str(Text) RHS.
+test(split_streq_guard_parses) :-
+    plawk_parse_string(
+        "{ split($0, a, \",\") }\n\c
+         END { for (k in a) { if (a[k] == \"b\") print k } }\n",
+        program(_, _, [end([for_in(var(k), var(a),
+            [if(forin_val_cmp(a, k, eq, str("b")), [print([var(k)])], [])])])])),
     !.
 
 % --- runtime ---------------------------------------------------------------
@@ -72,6 +83,33 @@ test(split_gt_excludes_all, [condition(clang_available)]) :-
         END { for (k in a) { if (a[k] > 100) print k } }\n",
         "5,1,9\n", Out),
     assertion(Out == ""), !.
+
+% String equality: values a,b,c,b; `== "b"` keeps keys 2 and 4.
+test(split_streq, [condition(clang_available)]) :-
+    vdir(Dir),
+    build_run(Dir, 'se', "{ split($0, a, \",\") }\n\c
+        END { for (k in a) { if (a[k] == \"b\") print k } }\n",
+        "a,b,c,b\n", Out),
+    sorted_lines(Out, S),
+    assertion(S == ["2", "4"]), !.
+
+% String inequality: values a,b,c; `!= \"b\"` keeps keys 1 and 3.
+test(split_strne, [condition(clang_available)]) :-
+    vdir(Dir),
+    build_run(Dir, 'sn', "{ split($0, a, \",\") }\n\c
+        END { for (k in a) { if (a[k] != \"b\") print k, a[k] } }\n",
+        "a,b,c\n", Out),
+    sorted_lines(Out, S),
+    assertion(S == ["1 a", "3 c"]), !.
+
+% A multi-character literal equality.
+test(split_streq_multichar, [condition(clang_available)]) :-
+    vdir(Dir),
+    build_run(Dir, 'sm', "{ split($0, a, \",\") }\n\c
+        END { for (k in a) { if (a[k] == \"foo\") print k } }\n",
+        "foo,bar,foo\n", Out),
+    sorted_lines(Out, S),
+    assertion(S == ["1", "3"]), !.
 
 % Regression: a genuine i64 counter table still compares numerically as an
 % i64 (the value IS the count, not an atom id). a=3,b=1; `> 1` keeps a.
