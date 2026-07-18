@@ -105,6 +105,15 @@ t_system_queries(Time, Pid, Path) :-
     getpid(Pid),
     getenv('PATH', Path).
 
+:- dynamic t_process_identity/6.
+t_process_identity(Uid, EUid, Gid, EGid, PPid, PGrp) :-
+    getuid(Uid),
+    geteuid(EUid),
+    getgid(Gid),
+    getegid(EGid),
+    getppid(PPid),
+    getpgrp(PGrp).
+
 :- dynamic t_process_commands/2.
 t_process_commands(Status, Output) :-
     shell('exit 0'),
@@ -399,6 +408,7 @@ test_builtin_parity_execution :-
              user:t_filesystem_query/1,
              user:t_file_metadata/2,
              user:t_system_queries/3,
+             user:t_process_identity/6,
              user:t_process_commands/2,
              user:t_sleep/0,
              user:t_halt_zero/0,
@@ -443,6 +453,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_filesystem_query_1,
     t_file_metadata_2,
     t_system_queries_3,
+    t_process_identity_6,
     t_process_commands_2,
     t_sleep_0,
     t_environment_mutation_1,
@@ -468,6 +479,29 @@ fn vmnew() -> WamState {
 fn a(s: &str) -> Value { Value::Atom(s.to_string()) }
 fn i(n: i64) -> Value { Value::Integer(n) }
 fn ub(n: &str) -> Value { Value::Unbound(n.to_string()) }
+
+#[cfg(unix)]
+fn native_process_identity() -> [i64; 6] {
+    extern "C" {
+        fn getuid() -> std::os::raw::c_uint;
+        fn geteuid() -> std::os::raw::c_uint;
+        fn getgid() -> std::os::raw::c_uint;
+        fn getegid() -> std::os::raw::c_uint;
+        fn getppid() -> std::os::raw::c_int;
+        fn getpgrp() -> std::os::raw::c_int;
+    }
+
+    unsafe {
+        [
+            i64::from(getuid()),
+            i64::from(geteuid()),
+            i64::from(getgid()),
+            i64::from(getegid()),
+            i64::from(getppid()),
+            i64::from(getpgrp()),
+        ]
+    }
+}
 
 fn read_var(vm: &WamState, name: &str) -> Value {
     match vm.bindings.get(name) {
@@ -658,6 +692,28 @@ fn test_system_queries_compiled() {
     assert_eq!(read_var(&vm, "Pid"), i(i64::from(std::process::id())));
     assert_eq!(read_var(&vm, "Path"),
         a(&std::env::var("PATH").expect("PATH must be available to cargo test")));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_process_identity_compiled() {
+    let expected = native_process_identity();
+    let mut vm = vmnew();
+    assert!(t_process_identity_6(
+        &mut vm,
+        ub("Uid"), ub("EUid"), ub("Gid"),
+        ub("EGid"), ub("PPid"), ub("PGrp")));
+
+    for (name, value) in [
+        ("Uid", expected[0]),
+        ("EUid", expected[1]),
+        ("Gid", expected[2]),
+        ("EGid", expected[3]),
+        ("PPid", expected[4]),
+        ("PGrp", expected[5]),
+    ] {
+        assert_eq!(read_var(&vm, name), i(value), "unexpected {name}");
+    }
 }
 
 #[cfg(unix)]
@@ -2370,6 +2426,28 @@ fn test_system_queries_direct() {
     let mut missing_output = vmnew();
     missing_output.set_reg("A1", a("PATH"));
     assert!(!missing_output.execute_builtin("getenv/2", 2));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_process_identity_direct() {
+    let expected = native_process_identity();
+    for (op, value) in [
+        ("getuid/1", expected[0]),
+        ("geteuid/1", expected[1]),
+        ("getgid/1", expected[2]),
+        ("getegid/1", expected[3]),
+        ("getppid/1", expected[4]),
+        ("getpgrp/1", expected[5]),
+    ] {
+        let (ok, vm) = call1(op, ub("Value"));
+        assert!(ok, "{op} must succeed");
+        assert_eq!(read_var(&vm, "Value"), i(value));
+        assert!(call1(op, i(value)).0, "{op} must accept its current value");
+        assert!(!call1(op, i(value + 1)).0, "{op} must reject a mismatch");
+        assert!(!call1(op, a("not_an_integer")).0);
+        assert!(!vmnew().execute_builtin(op, 1));
+    }
 }
 
 #[cfg(unix)]

@@ -15,7 +15,52 @@
         process.arg(command);
         process
     }
+
+    #[cfg(unix)]
+    fn process_identity(op: &str) -> Option<i64> {
+        extern "C" {
+            fn getuid() -> std::os::raw::c_uint;
+            fn geteuid() -> std::os::raw::c_uint;
+            fn getgid() -> std::os::raw::c_uint;
+            fn getegid() -> std::os::raw::c_uint;
+            fn getppid() -> std::os::raw::c_int;
+            fn getpgrp() -> std::os::raw::c_int;
+        }
+
+        let value = unsafe {
+            match op {
+                "getuid/1" => i64::from(getuid()),
+                "geteuid/1" => i64::from(geteuid()),
+                "getgid/1" => i64::from(getgid()),
+                "getegid/1" => i64::from(getegid()),
+                "getppid/1" => i64::from(getppid()),
+                "getpgrp/1" => i64::from(getpgrp()),
+                _ => return None,
+            }
+        };
+        Some(value)
+    }
+
+    #[cfg(not(unix))]
+    fn process_identity(_op: &str) -> Option<i64> {
+        None
+    }
 {{case arms}}
+            "getuid/1" | "geteuid/1" | "getgid/1" | "getegid/1"
+            | "getppid/1" | "getpgrp/1" => {
+                let identity = match Self::process_identity(op) {
+                    Some(identity) => Value::Integer(identity),
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &identity) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
             "shell/1" => {
                 let command = match self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v))) {
