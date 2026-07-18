@@ -1,6 +1,8 @@
 # Meta-judge: two-timescale CE-calibration of the Kalman μ (results)
 
-Implements DESIGN_meta_judge_calibration.md: a candidate-ranking cross-entropy judge calibrates the
+Implements DESIGN_meta_judge_calibration.md: an ANCESTOR-ranking cross-entropy judge (candidates
+ranked against h1–h5 ancestor pairs — ancestor-recovery, not exact-parent recovery; audit finding 3)
+calibrates the
 μ that feeds the Kalman fusion, with sonnet-5 (subagent-scored, held OUT of the fusion) as the
 independent reference. Inference ranks folders by the calibrated Kalman μ (no judge in the loop).
 Three mechanism results (each tied to a design decision the user raised) all land in the predicted

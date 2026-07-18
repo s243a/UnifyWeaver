@@ -70,14 +70,26 @@ This is inverse-variance weighting in disguise. Treat the batch gradient as a no
 the descent direction with observation-noise variance `R ≈ p − ‖m‖²` and prior signal variance
 `P ≈ ‖m‖²`. The Kalman gain for that scalar problem is `K = P/(P+R) = ‖m‖²/p = gain_t`. So the
 meta-parameter is being Kalman-filtered: a low-information (quantization-noisy) batch has large `R`,
-small `K`, small posterior movement. **The slow timescale is now a consequence of the data's
-precision, not a hyperparameter** — exactly the user's claim, and exactly the inverse-variance rule
-the fusion filter already uses for its measurements (THEORY_evidence_fusion.md §"price every source
-by its precision"). The optimizer and the estimator obey the same law.
+small `K`, small posterior movement — the inverse-variance rule the fusion filter already uses for
+its measurements (THEORY_evidence_fusion.md §"price every source by its precision"), applied to the
+optimizer.
+
+**Correction (external statistical audit, 2026-07-17): what is and is not emergent.** The gate makes
+the SNR-PROPORTIONAL SCALING emergent — the step shrinks with the information, which neither SGD nor
+Adam provides. It does NOT make the ABSOLUTE timescale emergent: the step is `η₀·gain·m̂`, and `η₀`
+is still a free constant. In the first shipped run `η₀ = 0.5` (vs Adam 5e-4 on the fast heads) made
+the "slow" judge row move **22.7× farther per step than the fast heads** — the empirical timescale
+was REVERSED even though the gain (~0.10) behaved as predicted. Two lessons: (i) compare drifts in
+per-element RMS, not raw norms of different-sized tensors; (ii) the gate is NECESSARY for emergence
+but not SUFFICIENT — `η₀` must be commensurate with the fast rate, and in this half-Kalman form it is
+calibrated, not derived. The fully-derived version has no free `η₀`: a proper Kalman update on the
+meta-parameter carries a state prior `P_θ` whose posterior contraction sets the absolute step
+(`Δθ = K·innovation` with `K` from `P_θ` and `R` in the same units) — that is the honest meaning of
+"the timescale falls out", and it is the rigorous follow-up, not what the current code does.
 
 Measured on the meta-judge (REPORT_meta_judge_calibration.md §1): `gain_t ≈ 0.10` over training — the
-candidate-ranking CE gradient is ~90% noise, so the gate self-limits the judge to a slow drift while
-the fast MSE heads move freely. Two-timescale, emergent.
+candidate-ranking CE gradient is ~90% noise. With `η₀` calibrated the judge's per-element drift sits
+below the fast heads'; the SNR-scaling is the emergent part, the base rate is engineering.
 
 ## 4. Why the fast estimator can keep Adam
 
@@ -110,4 +122,7 @@ not chosen.
   Gaussian observation with diagonal precision; the full matrix (Fisher) precision and its
   interaction with the fast estimator's updates (a genuine two-timescale stochastic-approximation
   analysis, Borkar-style) is the rigorous version — Codex's lane if it matters. The claim here is the
-  qualitative law and its empirical confirmation, not a convergence proof.
+  qualitative law (SNR-proportional scaling requires precision weighting; Adam/SGD destroy it) plus
+  the measured gain, NOT a convergence proof and NOT a claim that the absolute timescale is
+  hyperparameter-free in the current implementation (see the §3 correction: `η₀` remains free until
+  the full state-prior Kalman form is implemented).

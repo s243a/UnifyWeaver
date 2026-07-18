@@ -37,6 +37,15 @@ reference the fusion itself cannot supply.
 
 ## Two-timescale loop (per epoch over batches)
 
+**Implemented mechanism, stated literally (audit finding 4).** The build below is aspirational in
+two places the implementation simplifies: (i) the Kalman fused targets are PRECOMPUTED once by
+run_pearltrees_fusion.py and held FIXED during training (the "inner Kalman refit per batch" is not
+in the loop — the fast step is MSE distillation toward static fused targets); (ii) the slow step
+updates ONLY the judge-name residual row via the SNR-gated manual update — no other meta-parameters.
+Also: the ranking examples are h1–h5 ancestor pairs, so the CE trains ANCESTOR-ranking, not
+exact-parent recovery (finding 3); exact-parent labels would need h1-only examples (too few at this
+campaign size) or the harvested tree ground truth.
+
     for batch b:
         # INNER (fast): refit the Kalman blocks on this batch's overlap-train rows; compute the
         # fused μ posterior; one gradient step on the μ heads + trunk toward the fused targets

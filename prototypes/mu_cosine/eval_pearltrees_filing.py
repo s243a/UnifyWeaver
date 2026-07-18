@@ -37,30 +37,59 @@ DAG = os.path.join(PT_API, "assembled_dag.tsv")
 TITLES = os.path.join(PT_API, "assembled_titles.tsv")
 
 
-def folder_lineage(cand, depth=5, shuffle_seed=None):
-    """Build {folder_title: [parent_title,...]} principal paths from the assembled DAG.
+PATHS_JSONL = os.path.join(PT_API, "..", "api_tree_paths_v8.jsonl")
 
-    Returns (parents_title, ancestor_titles). `cand` maps folder tid → title. Only the folder's
-    pre-existing folder→parent lineage is used (the §7 leakage boundary — never the evaluated
-    bookmark's placement or the folder's bookmark children). `shuffle_seed` permutes which folder
-    receives which lineage (the control: right-lineage vs any-lineage)."""
-    child2par = {}
+
+def folder_lineage(cand, depth=5, shuffle_seed=None):
+    """Build {folder_title: [parent_title,...]} PRINCIPAL paths for candidate folders.
+
+    Principal parent = the OBSERVATION-MAJORITY parent across the account's recorded path_ids (the
+    true filing lineage), falling back to the assembled DAG's edge only when a folder appears in no
+    record. The earlier first-DAG-parent walk contradicted the record-majority parent on 61% of
+    multi-parent folders (external statistical audit finding 1). Returns (parents_title,
+    ancestor_titles). Only the folder's pre-existing folder→parent lineage is used (the §7 leakage
+    boundary — never the evaluated bookmark's placement or the folder's bookmark children).
+    `shuffle_seed` permutes which folder receives which lineage, SUPPORT-PRESERVING: chains permute
+    only among folders that HAVE a chain (audit finding 6 — a naive permutation also changes which
+    folders get any lineage at all, confounding the control)."""
+    import json as _json
+    from collections import Counter, defaultdict
+
+    votes = defaultdict(Counter)
+    with open(PATHS_JSONL, encoding="utf-8") as f:
+        for ln in f:
+            if not ln.strip():
+                continue
+            r = _json.loads(ln)
+            ids = [str(x).split(":")[-1] for x in (r.get("path_ids") or [])]
+            for p, c in zip(ids, ids[1:]):
+                if p != c:
+                    votes[c][p] += 1
+    principal = {c: max(cnt.items(), key=lambda kv: (kv[1], kv[0]))[0] for c, cnt in votes.items()}
+    dag_first = {}
     for ln in open(DAG, encoding="utf-8"):
         p, c = ln.split()
-        child2par.setdefault(c, []).append(p)
+        dag_first.setdefault(c, p)
     titles = {}
     for ln in open(TITLES, encoding="utf-8"):
         parts = ln.rstrip("\n").split("\t")
         if len(parts) >= 2:
             titles[parts[0]] = parts[1]
 
+    n_rec, n_dag = 0, 0
+
     def chain(tid):
+        nonlocal n_rec, n_dag
         out, cur, seen = [], str(tid), {str(tid)}
         for _ in range(depth):
-            ps = child2par.get(cur)
-            if not ps:
+            if cur in principal:
+                nxt = principal[cur]
+                n_rec += 1
+            elif cur in dag_first:
+                nxt = dag_first[cur]
+                n_dag += 1
+            else:
                 break
-            nxt = ps[0]
             if nxt in seen:
                 break
             seen.add(nxt)
@@ -72,11 +101,16 @@ def folder_lineage(cand, depth=5, shuffle_seed=None):
 
     tids = list(cand)
     chains = [chain(t) for t in tids]
+    print(f"    lineage edges: {n_rec} record-majority (principal), {n_dag} DAG-fallback")
     if shuffle_seed is not None:
         import numpy as np
 
-        perm = np.random.default_rng(shuffle_seed).permutation(len(chains))
-        chains = [chains[i] for i in perm]
+        has = [i for i, ch in enumerate(chains) if ch]        # support-preserving permutation
+        perm = np.random.default_rng(shuffle_seed).permutation(len(has))
+        remapped = list(chains)
+        for slot, src in zip(has, [has[j] for j in perm]):
+            remapped[slot] = chains[src]
+        chains = remapped
     parents_title, anc_titles = {}, set()
     for tid, ch in zip(tids, chains):
         ft = cand[tid]

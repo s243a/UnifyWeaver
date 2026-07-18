@@ -54,10 +54,12 @@ def main(argv=None):
     ap.add_argument("--steps", type=int, default=800)
     ap.add_argument("--bs", type=int, default=64)
     ap.add_argument("--lr-fast", type=float, default=5e-4, help="Adam lr for the fast Kalman-μ heads")
-    ap.add_argument("--lr-slow", type=float, default=0.5,
-                    help="SGD lr for the judge calibration. SGD (not Adam) so the two-timescale EMERGES "
-                         "from information content: quantization-noisy CE gradients average out, mean "
-                         "drift ∝ signal (Adam would unit-normalize the step and chase the noise).")
+    ap.add_argument("--lr-slow", type=float, default=0.02,
+                    help="base rate η₀ of the SNR-gated judge step. The gate supplies the SNR-"
+                         "PROPORTIONAL scaling (the emergent part); η₀ sets the absolute scale and "
+                         "MUST be commensurate with the fast step — the earlier 0.5 default made the "
+                         "'slow' row move 22.7× farther per step than the fast heads (audit finding "
+                         "5). In a full Kalman treatment η₀ is not free; here it is calibrated.")
     ap.add_argument("--slow-every", type=int, default=1,
                     help="cadence of the CE-calibration step; default 1 = every batch, so the slow "
                          "timescale is emergent (from the SGD/SNR), not imposed by skipping batches")
@@ -95,8 +97,11 @@ def main(argv=None):
     tr = split.train
     tr_set = set(tr.tolist())
 
-    # ranking examples: principal-path descendants with their true parent folder (train side)
-    folder_pool = sorted({pairs[i][1] for i in range(len(pairs)) if tags[i].startswith("principal")})
+    # ANCESTOR-ranking examples (audit finding 3: pairs are h1–h5 ancestors, so this trains
+    # ancestor-recovery, NOT exact-parent recovery — named accordingly), train side only.
+    # Negative pool restricted to TRAIN-side folders (audit finding 2: held identities must not
+    # be reused as training negatives).
+    folder_pool = sorted({pairs[i][1] for i in tr if tags[i].startswith("principal")})
     rank_ex = [(pairs[i][0], pairs[i][1]) for i in tr if tags[i].startswith("principal")]
     # per-descendant true-ancestor set (to exclude from negatives)
     true_anc = {}
@@ -200,7 +205,9 @@ def main(argv=None):
         loss.backward()
         torch.nn.utils.clip_grad_norm_(fast_params, 1.0)
         opt_fast.step()
-        fast_drift.append(float((model.readout_w.detach() - readout_before).norm()))
+        # per-ELEMENT RMS drift (audit finding 5: raw norms of different-sized tensors are not
+        # comparable — readout_w has 6×384 elements vs the judge row's 384)
+        fast_drift.append(float((model.readout_w.detach() - readout_before).pow(2).mean().sqrt()))
 
         # ---- SLOW outer: candidate-ranking CE + held-out sonnet anchor calibrates the judge μ ----
         if step % a.slow_every == 0 and rank_ex:
@@ -242,7 +249,8 @@ def main(argv=None):
                 step_vec = a.lr_slow * gain * g_m / (g_m.norm() + 1e-9)
                 model.judge_name.resid.weight[rank_row] -= step_vec
             ce_grad.append(gain)                              # record the emergent gain (effective rate)
-            slow_drift.append(float((model.judge_name.resid.weight[rank_row].detach() - row_before).norm()))
+            slow_drift.append(float(
+                (model.judge_name.resid.weight[rank_row].detach() - row_before).pow(2).mean().sqrt()))
             ce_hist.append(float(ce / len(idxs)))
 
         if step % 200 == 0 or step == 1:
@@ -255,13 +263,15 @@ def main(argv=None):
     if slow_drift:
         fd, sd_ = np.array(fast_drift), np.array(slow_drift)
         gains = np.array(ce_grad)
-        print(f"\nEMERGENT TIMESCALE (SNR-gated judge; measured, not imposed):")
-        print(f"  fast μ-head drift/step (‖Δreadout‖):   mean {fd.mean():.4e}")
-        print(f"  slow judge drift/step (‖Δjudge_row‖):  mean {sd_.mean():.4e}")
-        print(f"  emergent judge gain ‖m‖²/power:        mean {gains.mean():.3f}  "
-              f"(≈0 ⇒ noise-dominated ⇒ self-limited slow; ≈1 ⇒ coherent signal)")
-        print(f"  → the gain, not a hand-set lr, is what makes the calibration slow: with a "
-              f"quantization-noisy CE signal it stays low, so the judge self-limits.")
+        print(f"\nTIMESCALE MEASUREMENT (per-element RMS drift/step — comparable across tensors):")
+        print(f"  fast μ-head drift:  mean {fd.mean():.4e}")
+        print(f"  slow judge drift:   mean {sd_.mean():.4e}   "
+              f"(slow/fast ratio {sd_.mean() / max(fd.mean(), 1e-12):.2f}; <1 ⇒ judge slower)")
+        print(f"  emergent judge gain ‖m‖²/power: mean {gains.mean():.3f} "
+              f"(≈0 noise-dominated, ≈1 coherent)")
+        print(f"  NOTE: the gain supplies the SNR-PROPORTIONAL part of the step (the emergent part); "
+              f"the base rate η₀ sets the absolute scale and must be commensurate with the fast lr "
+              f"— it is NOT emergent (THEORY_emergent_timescale_learning.md §3, corrected).")
 
     torch.save({"state": model.state_dict(), "cfg": cfg}, a.out)
     print(f"\nsaved -> {a.out}")

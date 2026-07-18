@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Why does e5 beat the μ heads at filing? Two hypotheses, one diagnostic.
 
+CAVEAT (external audit): the NEAR/MID/FAR stratification is OUTCOME-DEFINED — the difficulty gap is
+computed from e5's own true-vs-distractor margin, so this is an exploratory diagnostic lens, not
+independent validation. An outcome-blind hardness geometry would use graph topology first, with
+Nomic embeddings as the preferred independent semantic modifier (MiniLM as sensitivity check).
+
 H1 (capability): the μ operators genuinely carry less filing signal than raw e5 cosine.
 H2 (regime): the filing candidate set is semantically SPREAD OUT, so e5 cosine already separates
     the true folder easily and μ's fine-grained directional/membership discrimination has nothing
