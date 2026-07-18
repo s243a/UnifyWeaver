@@ -9,6 +9,9 @@
 %%   tests/test_wam_fsharp_target.pl
 %%     - Source-level codegen assertions.  Runs everywhere swipl is
 %%       available; no external toolchain required.
+%%   tests/test_wam_tc2_contract_parity.pl
+%%     - fleet TC2 strict R+ oracle/structural checks plus executable F#/C/Rust
+%%       retry, binding-mode, cycle, and native-vs-oracle coverage.
 %%   tests/test_wam_td3_contract_parity.pl
 %%     - fleet TD3 dist+ oracle/structural checks plus executable F#/C/Rust
 %%       retry, binding-mode, cycle, and no-kernels coverage.
@@ -64,6 +67,8 @@ fsharp_test('tests/test_wam_fsharp_target.pl',
 fsharp_test('tests/core/test_wam_fsharp_kernel_gate_tc.pl',
             'F# WAM kernel capability gate + native transitive_closure2',
             run_tests).
+fsharp_test('tests/test_wam_tc2_contract_parity.pl',
+            'TC2 strict R+ fleet contract + F# native kernel', run_tests).
 fsharp_test('tests/test_wam_td3_contract_parity.pl',
             'TD3 strict dist+ fleet contract + F# native kernel', run_tests).
 fsharp_test('tests/test_wam_tpd4_contract_parity.pl',

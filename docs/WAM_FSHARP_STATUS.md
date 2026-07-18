@@ -41,9 +41,9 @@ for the allow-listed native kinds:
 `category_ancestor`, `bidirectional_ancestor`, `transitive_closure2`,
 `transitive_distance3`, `transitive_parent_distance4`,
 `transitive_step_parent_distance5`, `weighted_shortest_path3`, and
-`astar_shortest_path4`. WSP3 landed in #3847; A* is implemented in draft
-contract-parity work. Missing handlers no longer emit undefined
-`nativeKernel_*` calls. Benchmarks centre on `category_ancestor/4`.
+`astar_shortest_path4`. WSP3 landed in #3847; A* landed in #3856.
+Missing handlers no longer emit undefined `nativeKernel_*` calls.
+Benchmarks centre on `category_ancestor/4`.
 **Bidirectional** upgrade is computed but **off by default** — requires
 `allow_bidirectional_kernel_swap(true)`. CSR reverse-index reader
 (`CsrLookupSource`) and cost/strategy analyzers ship.
@@ -80,13 +80,10 @@ classic `wam_conformance_smoke` matrix with Scala/Elixir.
 
 ## Gaps
 
-- ASTAR4 (`astar_shortest_path4`) is implemented in draft fleet-parity
-  work (Mustache + allow-list + dual weighted edge/heuristic
-  materialization + singleton `FFIStreamRetry`); treat as landed only
-  after that PR merges.
-- No shared recursive kernel is currently listed as remaining gated for a
-  missing F# handler; keep the ASTAR4 draft parity suite green before
-  claiming full fleet parity.
+- ASTAR4 (`astar_shortest_path4`) landed in #3856 (Mustache + allow-list
+  + dual weighted edge/heuristic materialization + singleton
+  `FFIStreamRetry`).
+- No shared recursive kernel remains gated for a missing F# handler.
 - Bidirectional off by default; enable after cost-model confidence.
 - Classic conformance (**CONF-FSHARP**, 2026-07-15): registered
   opt-in (`fsharp` / `fsharp_functions`) with additive
