@@ -203,6 +203,21 @@ t_catch_failgoal :- catch(fail, _Any, true).
 :- dynamic t_catch_nested/1.
 t_catch_nested(R) :- catch(catch(t_thrower, nomatch(_), fail), oops(X), R = X).
 
+:- dynamic t_must_be/3.
+t_must_be(TypeCaught, InstCaught, DomainCaught) :-
+    must_be(atom, hello),
+    must_be(integer, 42),
+    must_be(number, 2.5),
+    must_be(compound, node(x)),
+    must_be(list, [a, b]),
+    must_be(ground, node(a, [1, 2])),
+    catch(must_be(atom, 5),
+          error(type_error(atom, 5), _), TypeCaught = caught),
+    catch(must_be(integer, _),
+          error(instantiation_error, _), InstCaught = caught),
+    catch(must_be(unknown_type, 5),
+          error(domain_error(type, unknown_type), _), DomainCaught = caught).
+
 :- dynamic t_succ_fwd/1.
 t_succ_fwd(Y) :- succ(2, Y).
 
@@ -314,6 +329,7 @@ test_builtin_parity_execution :-
              user:t_catch_match/1, user:t_catch_deep/1,
              user:t_catch_nomatch/0, user:t_catch_nothrow/1,
              user:t_catch_failgoal/0, user:t_catch_nested/1,
+             user:t_must_be/3,
              user:t_succ_fwd/1, user:t_succ_rev/1,
              user:double/2, user:pos/1, user:acc_add/3,
              user:t_maplist/1, user:t_maplist_check/0, user:t_maplist_fail/0,
@@ -348,7 +364,8 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_file_links_truncate_1,
     t_pairs_project_2, t_pairs_split_2, t_pairs_zip_1,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
-    t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
+    t_catch_failgoal_0, t_catch_nested_1, t_must_be_3,
+    t_succ_fwd_1, t_succ_rev_1,
     t_maplist_1, t_maplist_check_0, t_maplist_fail_0, t_include_1, t_exclude_1,
     t_partition_2, t_foldl_1, t_alc_join_1, t_alc_split_1};
 use std::collections::HashMap;
@@ -365,6 +382,17 @@ fn read_var(vm: &WamState, name: &str) -> Value {
     match vm.bindings.get(name) {
         Some(v) => vm.deref_heap(&vm.deref_var(v)),
         None => Value::Unbound(name.to_string()),
+    }
+}
+
+fn thrown_formal(vm: &WamState) -> Value {
+    match vm.thrown_ball.as_ref() {
+        Some(Value::Str(name, args)) if name == "error" && args.len() == 2 => {
+            assert!(matches!(&args[1], Value::Unbound(_)),
+                "error context must be a fresh variable");
+            args[0].clone()
+        }
+        other => panic!("expected error/2 ball, got {:?}", other),
     }
 }
 
@@ -837,6 +865,17 @@ fn test_catch_nested_inner_rethrows_outer_catches() {
 }
 
 #[test]
+fn test_must_be_compiled_success_and_errors() {
+    let mut vm = vmnew();
+    assert!(t_must_be_3(
+        &mut vm, ub("TypeCaught"), ub("InstCaught"), ub("DomainCaught")));
+    assert_eq!(read_var(&vm, "TypeCaught"), a("caught"));
+    assert_eq!(read_var(&vm, "InstCaught"), a("caught"));
+    assert_eq!(read_var(&vm, "DomainCaught"), a("caught"));
+    assert!(vm.thrown_ball.is_none(), "all errors were caught");
+}
+
+#[test]
 fn test_succ_both_modes_compiled() {
     let mut vm = vmnew();
     assert!(t_succ_fwd_1(&mut vm, ub("Y")));
@@ -1000,6 +1039,58 @@ fn test_sub_atom_direct() {
     assert!(!call5("sub_atom/5", a("hello"), i(4), i(2), ub("After"), ub("Sub")).0);
     assert!(!call5("sub_atom/5", a("hello"), i(i64::MAX), i(i64::MAX),
         ub("After"), ub("Sub")).0);
+}
+
+#[test]
+fn test_must_be_direct() {
+    assert!(call2("must_be/2", a("atom"), a("hello")).0);
+    assert!(call2("must_be/2", a("integer"), i(7)).0);
+    assert!(call2("must_be/2", a("float"), Value::Float(2.5)).0);
+    assert!(call2("must_be/2", a("number"), i(7)).0);
+    assert!(call2("must_be/2", a("compound"),
+        Value::Str("node".to_string(), vec![i(1)])).0);
+    assert!(call2("must_be/2", a("compound"), Value::List(vec![i(1)])).0);
+    assert!(call2("must_be/2", a("atomic"), Value::List(vec![])).0);
+    assert!(call2("must_be/2", a("callable"), Value::List(vec![i(1)])).0);
+    assert!(call2("must_be/2", a("boolean"), Value::Bool(true)).0);
+    assert!(call2("must_be/2", a("list"), Value::List(vec![a("x")])).0);
+    assert!(call2("must_be/2", a("ground"),
+        Value::Str("node".to_string(), vec![a("x"), i(1)])).0);
+    assert!(call2("must_be/2", a("var"), ub("X")).0);
+    assert!(call2("must_be/2", a("nonvar"), i(1)).0);
+
+    let (type_ok, type_vm) = call2("must_be/2", a("atom"), i(5));
+    assert!(!type_ok);
+    assert_eq!(thrown_formal(&type_vm), Value::Str(
+        "type_error".to_string(), vec![a("atom"), i(5)]));
+
+    let (inst_ok, inst_vm) = call2("must_be/2", a("integer"), ub("X"));
+    assert!(!inst_ok);
+    assert_eq!(thrown_formal(&inst_vm), a("instantiation_error"));
+
+    let nested = Value::Str("node".to_string(), vec![ub("X"), i(2)]);
+    let (ground_ok, ground_vm) = call2("must_be/2", a("ground"), nested);
+    assert!(!ground_ok);
+    assert_eq!(thrown_formal(&ground_vm), a("instantiation_error"));
+
+    let (domain_ok, domain_vm) = call2("must_be/2", a("unknown_type"), i(5));
+    assert!(!domain_ok);
+    assert_eq!(thrown_formal(&domain_vm), Value::Str(
+        "domain_error".to_string(), vec![a("type"), a("unknown_type")]));
+
+    let (type_inst_ok, type_inst_vm) = call2("must_be/2", ub("Type"), i(5));
+    assert!(!type_inst_ok);
+    assert_eq!(thrown_formal(&type_inst_vm), a("instantiation_error"));
+
+    let (type_atom_ok, type_atom_vm) = call2("must_be/2", i(7), i(5));
+    assert!(!type_atom_ok);
+    assert_eq!(thrown_formal(&type_atom_vm), Value::Str(
+        "type_error".to_string(), vec![a("atom"), i(7)]));
+
+    let (nonvar_ok, nonvar_vm) = call2("must_be/2", a("nonvar"), ub("X"));
+    assert!(!nonvar_ok);
+    assert_eq!(thrown_formal(&nonvar_vm), Value::Str(
+        "type_error".to_string(), vec![a("nonvar"), ub("X")]));
 }
 
 // ---- layer 2: direct execute_builtin coverage ------------------------

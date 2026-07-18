@@ -4808,6 +4808,14 @@ compile_execute_ext_builtin_to_rust(Code) :-
         }
     }
 
+    fn raise_builtin_error(&mut self, formal: Value) -> bool {
+        self.var_counter += 1;
+        let context = Value::Unbound(format!("_MB{}", self.var_counter));
+        self.thrown_ball = Some(Value::Str(
+            "error".to_string(), vec![formal, context]));
+        false
+    }
+
     /// Extract the 1-based compound argument used by sort/4. None
     /// means compare the whole term, including Key=0 and out-of-range
     /// keys. Lists expose their head and tail as arguments 1 and 2.
@@ -5839,6 +5847,69 @@ compile_execute_ext_builtin_to_rust(Code) :-
             "ground/1" => {
                 let v = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
                 if self.value_is_ground(&v) { self.pc += 1; true } else { false }
+            }
+            "must_be/2" => {
+                let type_value = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                if matches!(&type_value, Value::Unbound(_)) {
+                    return self.raise_builtin_error(
+                        Value::Atom("instantiation_error".to_string()));
+                }
+                let type_name = match Self::value_atom_name(&type_value) {
+                    Some(name) => name,
+                    None => return self.raise_builtin_error(Value::Str(
+                        "type_error".to_string(),
+                        vec![Value::Atom("atom".to_string()), type_value],
+                    )),
+                };
+                let value = self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                if matches!(&value, Value::Unbound(_))
+                    && type_name != "var" && type_name != "nonvar" {
+                    return self.raise_builtin_error(
+                        Value::Atom("instantiation_error".to_string()));
+                }
+
+                let is_atom = Self::value_atom_name(&value).is_some();
+                let is_compound = matches!(&value, Value::Str(_, _))
+                    || matches!(&value, Value::List(items) if !items.is_empty());
+                let ok = match type_name.as_str() {
+                    "atom" => is_atom,
+                    "integer" => matches!(&value, Value::Integer(_)),
+                    "float" => matches!(&value, Value::Float(_)),
+                    "number" => value.is_number(),
+                    "compound" => is_compound,
+                    "var" => matches!(&value, Value::Unbound(_)),
+                    "nonvar" => !matches!(&value, Value::Unbound(_) | Value::Uninit),
+                    "atomic" => is_atom || value.is_number(),
+                    "callable" => is_atom || is_compound,
+                    "boolean" => matches!(&value, Value::Bool(_))
+                        || matches!(&value, Value::Atom(name)
+                            if name == "true" || name == "false"),
+                    "list" | "is_list" => matches!(&value, Value::List(_))
+                        || matches!(&value, Value::Atom(name) if name == "[]"),
+                    "ground" => {
+                        if !self.value_is_ground(&value) {
+                            return self.raise_builtin_error(
+                                Value::Atom("instantiation_error".to_string()));
+                        }
+                        true
+                    }
+                    _ => return self.raise_builtin_error(Value::Str(
+                        "domain_error".to_string(),
+                        vec![Value::Atom("type".to_string()), type_value],
+                    )),
+                };
+                if ok {
+                    self.pc += 1; true
+                } else {
+                    self.raise_builtin_error(Value::Str(
+                        "type_error".to_string(),
+                        vec![Value::Atom(type_name), value],
+                    ))
+                }
             }
             _ => false,
         }
