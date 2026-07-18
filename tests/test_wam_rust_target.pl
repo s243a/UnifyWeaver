@@ -471,6 +471,8 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, '"system_to_atom/2"'),
         sub_string(S, _, _, _, '"atom_to_system/2"'),
         sub_string(S, _, _, _, '"sleep/1"'),
+        sub_string(S, _, _, _, '"halt/0"'),
+        sub_string(S, _, _, _, '"halt/1"'),
         sub_string(S, _, _, _, 'print!("{}", derefed)'),
         sub_string(S, _, _, _, 'nl/0'),
         sub_string(S, _, _, _, 'atom/1'),
