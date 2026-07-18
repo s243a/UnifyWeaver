@@ -44,10 +44,10 @@ lazy/cached tiers of F#/Haskell).
 
 ## Gaps (relative to Rust / Haskell / F#)
 
-- **Classic conformance (CONF-R, 2026-07-15):** opt-in adapter registered
-  (`r` / `r_functions`). Green: append, reverse, builtins. xfail: member,
-  fib, ack — `switch_on_term_a2` / `switch_on_constant_fallthrough` fall to
-  `Raw(...)` in `wam_parts_to_r/2` and abort the step loop.
+- **Classic conformance (CONF-R):** opt-in adapter (`r` / `r_functions`).
+  All classic programs green after R-SWITCH-INDEX-CONFORMANCE mapped
+  `switch_on_constant_fallthrough` → existing `SwitchOnConstant` and
+  `switch_on_term_a2` → existing `SwitchOnTerm()` no-op (no new runtime).
 - **LMDB is load-everything** — no lazy/cached two-level policies.
 - **ISO error support** is `tryCatch`-level only, not the three-form
   contract.
@@ -55,11 +55,9 @@ lazy/cached tiers of F#/Haskell).
 
 ## Path forward
 
-1. Map `switch_on_constant_fallthrough` / `switch_on_term_a2` in
-   `wam_parts_to_r/2` (Scala-class fix) to retire the three xfails.
-2. Lazy/cached LMDB policies over the load-everything path.
-3. ISO three-form adoption if R joins the error-fidelity set.
-4. Effective-distance cross-target matrix row.
+1. Lazy/cached LMDB policies over the load-everything path.
+2. ISO three-form adoption if R joins the error-fidelity set.
+3. Effective-distance cross-target matrix row.
 
 ## Document status
 

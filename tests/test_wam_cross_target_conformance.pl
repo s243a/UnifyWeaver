@@ -310,23 +310,11 @@ ct_default_target(elixir).
 %  queries use 0-arity wrappers (no CLI term parsing); R's default is
 %  native(parse_term), which is unused on the wrapper path.
 %
-%  Measured maturity (interpreter + functions, same gap set):
-%   - GREEN: append, reverse, builtins
-%   - xfail member / fib / ack — see ct_xfail(r, ...) below
-%  Success channel discriminates: negatives return false (XPASS under
-%  xfail), not blanket-true. Root cause for all three xfails is the same
-%  family: wam_parts_to_r/2 has no clause for switch_on_constant_fallthrough
-%  (fib/ack) or switch_on_term_a2 (member), so those instructions emit as
-%  Raw(...) and the R step dispatcher stop()s — tryCatch in the
-%  conformance driver maps that to false. (switch_on_constant and
-%  switch_on_term A1 variants already emit real constructors; fallthrough
-%  / _a2 are the missing Scala-class mapping.)
-ct_xfail(r, member).            % Raw(switch_on_term_a2) → stop
-ct_xfail(r, fib).               % Raw(switch_on_constant_fallthrough) → stop
-ct_xfail(r, ack).               % Raw(switch_on_constant_fallthrough) → stop
-ct_xfail(r_functions, member).  % same as r — Raw(switch_on_term_a2) → stop
-ct_xfail(r_functions, fib).     % same as r — Raw(switch_on_constant_fallthrough) → stop
-ct_xfail(r_functions, ack).     % same as r — Raw(switch_on_constant_fallthrough) → stop
+%  Measured maturity (interpreter + functions): all classic programs green
+%  after R-SWITCH-INDEX-CONFORMANCE — switch_on_constant_fallthrough maps to
+%  existing SwitchOnConstant (miss/"default" already falls through);
+%  switch_on_term_a2 maps to existing SwitchOnTerm() no-op ahead of the
+%  try/retry/trust chain. No new runtime/indexing machinery.
 
 % ============================================================
 % Toolchain probes

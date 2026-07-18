@@ -26,10 +26,11 @@ self-contained so a single coding agent can pick it up in isolation.
 |---|---|---|---|---|
 | CONF-FSHARP ✅ | Conformance adapter | F# | M | done — opt-in; classic programs green on interpreter + functions |
 | FS-LIST-PARTIAL-TAIL ✅ | Conformance gap fix | F# | M | done — GetValue→unifyVal (`cursor/fs-list-partial-tail-f421`); append/reverse green on fsharp + fsharp_functions |
-| FS-ARITH-INT-DIV | Conformance gap fix | F# | S | CONF-FSHARP |
+| FS-ARITH-INT-DIV ✅ | Conformance gap fix | F# | S | done — `//` in evalArith (`37debf71`) |
 | FS-FUNCTIONS-BUILTINS-LOWER ✅ | Conformance gap fix | F# | M | done — last-slash `parse_functor_fs` for `///2` (`cursor/fs-functions-builtins-lower-f421`); fsharp_functions/builtins green |
 | CONF-LLVM | Conformance adapter | LLVM | L | — |
-| CONF-R ✅ | Conformance adapter | R | M | done — opt-in; append/reverse/builtins green; member/fib/ack xfail (Raw switch stubs) |
+| CONF-R ✅ | Conformance adapter | R | M | done — opt-in; all classic programs green (R-SWITCH-INDEX-CONFORMANCE) |
+| R-SWITCH-INDEX-CONFORMANCE ✅ | Conformance gap fix | R | S | done — fallthrough/A2 reuse existing SwitchOnConstant / SwitchOnTerm |
 | CONF-CLOJURE | Conformance adapter | Clojure | L | — |
 | CONF-LUA | Conformance adapter | Lua | M | — |
 | CONF-KOTLIN ✅ | Conformance adapter | Kotlin | M | done — opt-in (`cursor/conf-kotlin-f421`); append green, 5 xfails |
@@ -106,11 +107,10 @@ external toolchain.
 - **Goal:** Make non-empty ground `append`/`reverse` answers succeed under the classic harness (empty-list append base already passes).
 - **Acceptance:** Drop `ct_xfail(fsharp, append/reverse)` and the `fsharp_functions` twins; both emit modes green on those programs.
 
-### FS-ARITH-INT-DIV: F# `evalArith` missing `//`
+### FS-ARITH-INT-DIV ✅: F# `evalArith` missing `//`
 - **Lever:** Conformance gap fix  **Target:** F#  **Size:** S  **Depends on:** CONF-FSHARP
-- **Goal:** `cbi_arith(28)` succeeds (`17 // 5` + `17 mod 5` with the rest of the fold).
-- **Root cause (measured):** `WamTypes.evalArith` handles `+,-,*,/,mod` but not `Str ("//", [a;b])`; the compiler emits `PutStructure ("//", 2, …)` for integer div, so `is_lax` binds nothing and the wrapper fails. (`mod` already works.)
-- **Acceptance:** Drop `ct_xfail(fsharp, builtins)`; builtins suite green under `CONFORMANCE_TARGETS=fsharp`.
+- **Status:** ✅ **Landed** in `37debf71` — `Str ("//", …)` arm in generated + reference `evalArith`; `ct_xfail(fsharp, builtins)` retired. Do not reimplement.
+- **Acceptance:** builtins suite green under `CONFORMANCE_TARGETS=fsharp`.
 
 ### FS-FUNCTIONS-BUILTINS-LOWER: `emit_mode(functions)` stalls on builtins
 - **Lever:** Conformance gap fix  **Target:** F#  **Size:** M  **Depends on:** CONF-FSHARP
@@ -140,10 +140,9 @@ external toolchain.
   `conformance_main(true)` in `templates/targets/r_wam/program.R.mustache`; harness pins
   `runtime_parser(off)` (wrappers need no CLI parse; R default is `native(parse_term)`).
   Run cwd is `Dir/R` (`Rscript generated_program.R <key>`).
-- **Measured:** append / reverse / builtins green on interpreter + functions. member / fib /
-  ack are `ct_xfail` — `wam_parts_to_r/2` lacks `switch_on_constant_fallthrough` and
-  `switch_on_term_a2`, so those emit `Raw(...)` and the step dispatcher `stop()`s (negatives
-  still return false → success channel discriminates).
+- **Measured:** all classic programs green on interpreter + functions after
+  R-SWITCH-INDEX-CONFORMANCE (`switch_on_constant_fallthrough` → existing
+  `SwitchOnConstant`; `switch_on_term_a2` → existing `SwitchOnTerm()` no-op).
 - **Acceptance:** `CONFORMANCE_TARGETS=r,r_functions swipl -g run_tests -t halt tests/test_wam_cross_target_conformance.pl` exits 0 (skips if `Rscript` absent).
 
 ### CONF-CLOJURE: Register Clojure in the cross-target conformance harness

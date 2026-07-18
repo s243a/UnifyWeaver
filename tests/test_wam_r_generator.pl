@@ -4819,6 +4819,23 @@ test(r_wam_bindings_list_parity) :-
     assertion(r_wam_bindings:r_wam_binding(is_list/1, _, _, _, _)),
     assertion(r_wam_bindings:r_wam_binding(ground/1, _, _, _, _)).
 
+% ------------------------------------------------------------------
+% R-SWITCH-INDEX-CONFORMANCE: fallthrough / A2 reuse existing handlers
+% ------------------------------------------------------------------
+test(switch_on_constant_fallthrough_matches_constant) :-
+    init_r_atom_intern_table,
+    Cases = ["0:default", "1:L_cfib_2_2"],
+    once(wam_parts_to_r(["switch_on_constant"|Cases], [], LitConst)),
+    once(wam_parts_to_r(["switch_on_constant_fallthrough"|Cases], [], LitFt)),
+    assertion(LitFt == LitConst),
+    atom_string(LitFt, S),
+    assertion(sub_string(S, _, _, _, "SwitchOnConstant")),
+    assertion(\+ sub_string(S, _, _, _, "Raw(")).
+
+test(switch_on_term_a2_is_switch_on_term_noop) :-
+    once(wam_parts_to_r(["switch_on_term_a2", "0", "0", "default"], [], Lit)),
+    assertion(Lit == 'SwitchOnTerm()').
+
 :- end_tests(wam_r_generator).
 
 % ------------------------------------------------------------------

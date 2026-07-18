@@ -411,6 +411,12 @@ wam_parts_to_r(["switch_on_constant" | Cases], Lit) :-
     atomic_list_concat(CaseLits, ', ', CasesStr),
     format(string(Lit), 'SwitchOnConstant(list(~w))', [CasesStr]).
 
+% Fallthrough form: same encoding as switch_on_constant. The existing
+% SwitchOnConstant runtime already advances PC on miss/"default", which
+% is exactly the fallthrough semantics used by fib/ack indexing.
+wam_parts_to_r(["switch_on_constant_fallthrough" | Cases], Lit) :-
+    wam_parts_to_r(["switch_on_constant" | Cases], Lit).
+
 % --- Switch on term (type-mixed dispatch) ---
 % Emitted by the WAM compiler when a predicate's clauses have a mix
 % of first-arg types (constant + struct + list). The runtime
@@ -419,6 +425,10 @@ wam_parts_to_r(["switch_on_constant" | Cases], Lit) :-
 % filters non-matching ones, so correctness is preserved without
 % the optimisation.
 wam_parts_to_r(["switch_on_term" | _], 'SwitchOnTerm()').
+
+% A2 form: same correctness-preserving no-op as switch_on_term.
+% member/2 emits switch_on_term_a2 ahead of a complete try/trust chain.
+wam_parts_to_r(["switch_on_term_a2" | _], 'SwitchOnTerm()').
 
 % --- Switch on structure (functor-shape dispatch) ---
 % Each case is "F/N:label". Behaviour parallels switch_on_constant: when
