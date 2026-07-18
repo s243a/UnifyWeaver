@@ -116,6 +116,17 @@ t_process_commands(Status, Output) :-
 :- dynamic t_sleep/0.
 t_sleep :- sleep(0.001).
 
+:- dynamic t_halt_zero/0.
+t_halt_zero :- halt.
+
+:- dynamic t_halt_code/1.
+t_halt_code(Code) :- halt(Code).
+
+:- dynamic t_halt_sum/0.
+t_halt_sum :-
+    Code is 2 + 3,
+    halt(Code).
+
 :- dynamic t_environment_mutation/1.
 t_environment_mutation(Value) :-
     setenv('UNIFYWEAVER_RUST_WAM_COMPILED_ENV_8C19', first),
@@ -323,6 +334,50 @@ run_output_probe(TmpDir, ExitCode, Output) :-
     close(Stream),
     process_wait(Pid, exit(ExitCode)).
 
+write_halt_probe(TmpDir) :-
+    directory_file_path(TmpDir, 'src/bin', BinDir),
+    make_directory_path(BinDir),
+    directory_file_path(BinDir, 'halt_probe.rs', ProbePath),
+    ProbeContent = '
+use builtin_parity_test::state::WamState;
+use builtin_parity_test::value::Value;
+use builtin_parity_test::{t_halt_code_1, t_halt_sum_0, t_halt_zero_0};
+use std::collections::HashMap;
+
+fn main() {
+    let mode = std::env::args().nth(1).unwrap_or_default();
+    let mut vm = WamState::new(vec![], HashMap::new());
+    let returned = match mode.as_str() {
+        "zero" => t_halt_zero_0(&mut vm),
+        "seven" => t_halt_code_1(&mut vm, Value::Integer(7)),
+        "sum" => t_halt_sum_0(&mut vm),
+        "invalid" => t_halt_code_1(&mut vm, Value::Atom("bad".to_string())),
+        _ => std::process::exit(94),
+    };
+    if mode == "invalid" && !returned {
+        return;
+    }
+    std::process::exit(95);
+}
+',
+    setup_call_cleanup(
+        open(ProbePath, write, Out, [encoding(utf8)]),
+        write(Out, ProbeContent),
+        close(Out)).
+
+run_halt_probe(TmpDir, Mode, ExitCode) :-
+    process_create(path(cargo),
+                   ['run', '--quiet', '--bin', 'halt_probe', '--', Mode],
+                   [cwd(TmpDir), stdout(null), stderr(null), process(Pid)]),
+    process_wait(Pid, exit(ExitCode)).
+
+run_halt_probes(TmpDir, Results) :-
+    findall(Mode-ExitCode,
+            ( member(Mode, [zero, seven, sum, invalid]),
+              run_halt_probe(TmpDir, Mode, ExitCode)
+            ),
+            Results).
+
 test_builtin_parity_execution :-
     Test = 'WAM-Rust builtin parity: end-to-end execution (cargo test)',
     TmpDir = 'output/test_wam_rust_builtin_parity',
@@ -346,6 +401,9 @@ test_builtin_parity_execution :-
              user:t_system_queries/3,
              user:t_process_commands/2,
              user:t_sleep/0,
+             user:t_halt_zero/0,
+             user:t_halt_code/1,
+             user:t_halt_sum/0,
              user:t_environment_mutation/1,
              user:t_split_string/1, user:t_atom_split/1, user:t_atom_checks/0,
              user:t_text_inspection/2,
@@ -2414,7 +2472,15 @@ fn test_environment_mutation_direct() {
             ExpectedOutput = "xy'two words'node('has space', 7)F1~|node(1)/hello/42/ok\n",
             (   ProbeExitCode == 0,
                 ProbeOutput == ExpectedOutput
-            ->  pass(Test)
+            ->  write_halt_probe(TmpDir),
+                run_halt_probes(TmpDir, HaltResults),
+                ExpectedHaltResults = [zero-0, seven-7, sum-5, invalid-0],
+                (   HaltResults == ExpectedHaltResults
+                ->  pass(Test)
+                ;   format('--- halt probes ---~nexpected: ~q~nactual:   ~q~n--- end ---~n',
+                           [ExpectedHaltResults, HaltResults]),
+                    fail_test(Test, 'halt probes failed')
+                )
             ;   format('--- output probe ---~nexpected: ~q~nactual:   ~q~n--- end ---~n',
                        [ExpectedOutput, ProbeOutput]),
                 fail_test(Test, 'output probe failed')

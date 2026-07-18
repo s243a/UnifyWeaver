@@ -123,4 +123,13 @@
                 std::thread::sleep(duration);
                 self.pc += 1; true
             }
+            "halt/0" => std::process::exit(0),
+            "halt/1" => {
+                let code = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(code)) => code,
+                    _ => return false,
+                };
+                std::process::exit(code as i32)
+            }
 {{/match}}
