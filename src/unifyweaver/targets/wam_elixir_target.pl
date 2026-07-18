@@ -4531,8 +4531,10 @@ end
 
 defmodule WamRuntime.GraphKernel.AstarShortestPath do
   @moduledoc """
-  Native A* shortest-path kernel — bypasses WAM dispatch for the
-  canonical pattern:
+  Correctness-safe A* for astar_shortest_path4
+  (docs/design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md).
+
+  Canonical pattern:
 
       astar(X, Y, _Dim, W) :- weighted_edge(X, Y, W).
       astar(X, Y, Dim, TotalW) :-
@@ -4540,125 +4542,144 @@ defmodule WamRuntime.GraphKernel.AstarShortestPath do
           astar(Mid, Y, Dim, RestW),
           TotalW is RestW + W1.
 
-  Goal-directed shortest-path search with a dimensionality-aware
-  heuristic. Priority: f(n) = g(n)^D + h(n)^D where D is graph
-  dimensionality. h(n) = direct semantic distance from n to target
-  (via the configured `direct_dist_fn`). Minkowski-style f-cost
-  (NOT standard Euclidean f = g + h) — by Minkowski inequality this
-  is admissible and tighter than L1 A*.
-
-  Ported from the Rust kernel
-  `collect_native_astar_shortest_path_results` in
-  src/unifyweaver/targets/wam_rust_target.pl. Identical algorithm:
-  min-heap keyed by f-cost, dist map for stale-entry skip, early
-  termination when target pops, post-filter dist map.
-
-  Dijkstra fallback: if `target` is `nil`, the heuristic returns 0
-  for every node, f-cost reduces to g(n)^D, and the search behaves
-  like Dijkstra (no early termination — explores all reachable).
-  This matches Rusts `target.is_empty()` branch.
+  Final FloatCost is always the finite Dijkstra minimum (PQ settled
+  by g-cost). Minkowski-style f(n) = g(n)^D + h(n)^D is a secondary
+  scheduling key only — never used for early-stop under unchecked f.
+  Missing h = 0.0. Source=Target → [{target, 0.0}]. Malformed
+  reachable edge or relevant heuristic → empty result (fail call).
 
   Two edge predicates per call:
     - `weighted_edges_fn(node)` -> [{from, to, weight}, ...]
-      Forward weighted edges. Same contract as
-      WeightedShortestPath.collect_path_costs/2.
     - `direct_dist_fn(node)` -> [{from, to, weight}, ...]
-      Heuristic edges from `node`. The kernel filters for the entry
-      where `to == target`; if none, defaults to 1.0 (Rusts
-      "conservative default"). When no separate `direct_dist_pred`
-      is configured, callers pass `weighted_edges_fn` here too —
-      using forward edges as the heuristic is admissible (any direct
-      edge weight is a lower bound on shortest path through it).
+      Heuristic rows for `to == target`; missing → 0.0; duplicate →
+      min valid; NaN/Inf/neg → fail.
 
-  Result shape: same as WeightedShortestPath — `[{node, g_cost}, ...]`
-  for every node whose dist was finalised before target popped, plus
-  target itself. With early termination, result size depends on
-  search depth, not graph size. Caller post-filters to target if
-  only that single result is wanted (the dispatch wrapper does this
-  when target is bound on entry).
-
-  Cycle handling: same as Dijkstra (PR #1825) — naturally bounded
-  via the dist map. No explicit visited list needed.
+  Cycle handling: naturally bounded via the dist map (stale PQ skip).
   """
 
   @doc """
-  Returns `[{node, g_cost}, ...]` — finalised shortest-path costs
-  from `start` to nodes explored by A* search. With `target` bound,
-  search terminates as soon as target pops from the heap; result
-  contains target plus all nodes finalised along the way. With
-  `target == nil`, behaves like Dijkstra (full reachable set).
-
-  `dim` is the Minkowski exponent for f-cost. Use 5 by default
-  (matches Rusts foreign_usize_config fallback for `dimensionality`).
+  Returns `[{node, g_cost}, ...]` for settled non-source nodes, or
+  `[{target, 0.0}]` when Source=Target. With `target` bound, search
+  settles Target by g-cost and returns at most that singleton after
+  dispatch post-filter. `dim` must be a positive number (integer Dim
+  at the dispatch boundary).
   """
   def collect_path_costs(weighted_edges_fn, direct_dist_fn, start, target, dim)
       when is_function(weighted_edges_fn, 1) and is_function(direct_dist_fn, 1)
-       and is_number(dim) do
-    h_start = heuristic(direct_dist_fn, start, target)
-    initial_f = f_cost(0, h_start, dim)
-    initial_dist = %{start => 0}
-    initial_heap = :gb_sets.singleton({initial_f, 0, start})
-    final_dist = astar_loop(weighted_edges_fn, direct_dist_fn, target, dim,
-                            initial_heap, initial_dist)
-    final_dist
-    |> Enum.flat_map(fn
-      {^start, _} -> []
-      {node, cost} -> [{node, cost}]
-    end)
+       and is_number(dim) and dim > 0 do
+    if target != nil and start == target do
+      [{target, 0.0}]
+    else
+      case heuristic(direct_dist_fn, start, target) do
+        :invalid -> []
+        h_start ->
+          initial_f = f_cost(0, h_start, dim)
+          # Primary key g, secondary f (Dijkstra settle).
+          initial_heap = :gb_sets.singleton({0, initial_f, start})
+          case astar_loop(weighted_edges_fn, direct_dist_fn, target, dim,
+                          initial_heap, %{start => 0.0}) do
+            :invalid -> []
+            final_dist ->
+              final_dist
+              |> Enum.flat_map(fn
+                {^start, _} -> []
+                {node, cost} -> [{node, cost * 1.0}]
+              end)
+          end
+      end
+    end
   end
+  def collect_path_costs(_, _, _, _, _), do: []
 
   defp astar_loop(weighted_edges_fn, direct_dist_fn, target, dim, heap, dist) do
     case :gb_sets.is_empty(heap) do
       true -> dist
       false ->
-        {{_f_cost, g_cost, node}, heap1} = :gb_sets.take_smallest(heap)
+        {{g_cost, _f_cost, node}, heap1} = :gb_sets.take_smallest(heap)
         best = Map.fetch!(dist, node)
         cond do
           # Stale-entry skip: better path was found AFTER pushing this entry.
           g_cost > best ->
             astar_loop(weighted_edges_fn, direct_dist_fn, target, dim, heap1, dist)
 
-          # Early termination: target popped from heap. With an admissible
-          # heuristic this is guaranteed to be the shortest path to target.
+          # Settled by g-cost (Dijkstra). Safe even if h overestimates.
           target != nil and node == target ->
             dist
 
-          # Expand neighbours.
           true ->
             edges = weighted_edges_fn.(node)
-            {new_heap, new_dist} =
-              edges
-              |> Enum.reduce({heap1, dist}, fn {_from, next, weight}, {h, d} ->
-                next_g = g_cost + weight
-                case Map.fetch(d, next) do
-                  {:ok, prev} when prev <= next_g ->
-                    {h, d}
-                  _ ->
-                    h_next = heuristic(direct_dist_fn, next, target)
-                    f_next = f_cost(next_g, h_next, dim)
-                    {:gb_sets.add({f_next, next_g, next}, h),
-                     Map.put(d, next, next_g)}
-                end
-              end)
-            astar_loop(weighted_edges_fn, direct_dist_fn, target, dim,
-                       new_heap, new_dist)
+            case relax_edges(edges, g_cost, heap1, dist, direct_dist_fn, target, dim) do
+              :invalid -> :invalid
+              {new_heap, new_dist} ->
+                astar_loop(weighted_edges_fn, direct_dist_fn, target, dim,
+                           new_heap, new_dist)
+            end
         end
     end
   end
 
-  # h(n) = direct distance from `node` to `target`. nil target means
-  # Dijkstra mode (no goal). Default 1.0 if no direct edge recorded
-  # (matches Rusts conservative default).
-  defp heuristic(_direct_dist_fn, _node, nil), do: 0
-  defp heuristic(direct_dist_fn, node, target) do
-    edges = direct_dist_fn.(node)
-    Enum.find_value(edges, 1.0, fn
-      {_from, to, w} when to == target -> w
-      _ -> false
+  defp relax_edges(edges, g_cost, heap, dist, direct_dist_fn, target, dim) do
+    Enum.reduce_while(edges, {heap, dist}, fn row, {h, d} ->
+      case row do
+        {_from, next, weight} ->
+          if not valid_edge_weight?(weight) do
+            {:halt, :invalid}
+          else
+            w = weight * 1.0
+            next_g = g_cost + w
+            case Map.fetch(d, next) do
+              {:ok, prev} when prev <= next_g ->
+                {:cont, {h, d}}
+              _ ->
+                case heuristic(direct_dist_fn, next, target) do
+                  :invalid -> {:halt, :invalid}
+                  h_next ->
+                    f_next = f_cost(next_g, h_next, dim)
+                    {:cont, {:gb_sets.add({next_g, f_next, next}, h),
+                             Map.put(d, next, next_g)}}
+                end
+            end
+          end
+        _ ->
+          {:halt, :invalid}
+      end
     end)
   end
 
-  # f(n) = g(n)^D + h(n)^D — Minkowski-style. NOT standard A*s g + h.
+  # Finite nonnegative: integers >= 0; floats via IEEE (NaN fails
+  # comparison; Inf * 0.0 is NaN so fails == 0.0).
+  defp valid_edge_weight?(w) when is_integer(w), do: w >= 0
+  defp valid_edge_weight?(w) when is_float(w), do: w >= 0.0 and w * 0.0 == 0.0
+  defp valid_edge_weight?(_), do: false
+
+  # Missing h = 0.0. Duplicate (node,target) → min valid.
+  # Malformed relevant row → :invalid.
+  defp heuristic(_direct_dist_fn, _node, nil), do: 0.0
+  defp heuristic(direct_dist_fn, node, target) do
+    edges = direct_dist_fn.(node)
+    edges
+    |> Enum.reduce_while({:miss, nil}, fn
+      {_from, to, w}, acc when to == target ->
+        if not valid_edge_weight?(w) do
+          {:halt, :invalid}
+        else
+          wv = w * 1.0
+          case acc do
+            {:miss, _} -> {:cont, {:hit, wv}}
+            {:hit, best} when wv < best -> {:cont, {:hit, wv}}
+            other -> {:cont, other}
+          end
+        end
+      _, acc -> {:cont, acc}
+    end)
+    |> case do
+      :invalid -> :invalid
+      {:miss, _} -> 0.0
+      {:hit, best} -> best
+    end
+  end
+
+  # Secondary scheduling key only — Minkowski-style f = g^D + h^D.
   defp f_cost(g, h, dim), do: :math.pow(g, dim) + :math.pow(h, dim)
 
   @doc """

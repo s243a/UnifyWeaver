@@ -830,7 +830,8 @@ test_astar_shortest_path_detector_setup_generation :-
         Detected = ['astar_path/4'-_Kernel],
         generate_setup_detected_kernels_c(Detected, SetupCode),
         sub_atom(SetupCode, _, _, _, 'setup_detected_wam_c_kernels'),
-        sub_atom(SetupCode, _, _, _, 'wam_register_astar_shortest_path_kernel(state, "astar_path/4")')
+        sub_atom(SetupCode, _, _, _,
+                 'wam_register_astar_shortest_path_kernel(state, "astar_path/4", "test_astar_edge", "test_direct_distance")')
     ->  cleanup_wam_c_detector_astar_shortest_path,
         pass(Test)
     ;   cleanup_wam_c_detector_astar_shortest_path,
@@ -4838,16 +4839,16 @@ wam_c_astar_shortest_path_smoke_main(
 void setup_astar_path_4(WamState* state);
 
 static void register_astar_edges(WamState *state) {
-    wam_register_weighted_edge(state, "tom", "bob", 5);
-    wam_register_weighted_edge(state, "tom", "eve", 1);
-    wam_register_weighted_edge(state, "eve", "ann", 1);
-    wam_register_weighted_edge(state, "bob", "ann", 1);
-    wam_register_weighted_edge(state, "flo", "mid", 0.5);
-    wam_register_weighted_edge(state, "mid", "fin", 1.0);
-    wam_register_direct_distance_edge(state, "tom", "ann", 2);
-    wam_register_direct_distance_edge(state, "eve", "ann", 1);
-    wam_register_direct_distance_edge(state, "bob", "ann", 1);
-    wam_register_direct_distance_edge(state, "flo", "fin", 1.5);
+    wam_register_relation_weighted_edge(state, "test_astar_edge", "tom", "bob", 5);
+    wam_register_relation_weighted_edge(state, "test_astar_edge", "tom", "eve", 1);
+    wam_register_relation_weighted_edge(state, "test_astar_edge", "eve", "ann", 1);
+    wam_register_relation_weighted_edge(state, "test_astar_edge", "bob", "ann", 1);
+    wam_register_relation_weighted_edge(state, "test_astar_edge", "flo", "mid", 0.5);
+    wam_register_relation_weighted_edge(state, "test_astar_edge", "mid", "fin", 1.0);
+    wam_register_relation_weighted_edge(state, "test_direct_distance", "tom", "ann", 2);
+    wam_register_relation_weighted_edge(state, "test_direct_distance", "eve", "ann", 1);
+    wam_register_relation_weighted_edge(state, "test_direct_distance", "bob", "ann", 1);
+    wam_register_relation_weighted_edge(state, "test_direct_distance", "flo", "fin", 1.5);
 }
 
 int main(void) {
@@ -4855,7 +4856,8 @@ int main(void) {
     wam_state_init(&state);
     setup_astar_path_4(&state);
     register_astar_edges(&state);
-    wam_register_astar_shortest_path_kernel(&state, "astar_path/4");
+    wam_register_astar_shortest_path_kernel(&state, "astar_path/4",
+                                            "test_astar_edge", "test_direct_distance");
 
     WamValue shortest_args[4] = {
         val_atom("tom"),
@@ -4865,7 +4867,7 @@ int main(void) {
     };
     int shortest_rc = wam_run_predicate(&state, "astar_path/4", shortest_args, 4);
     if (shortest_rc != 0 || state.P != WAM_HALT ||
-        state.A[3].tag != VAL_INT || state.A[3].data.integer != 2) {
+        state.A[3].tag != VAL_FLOAT || state.A[3].data.floating != 2.0) {
         wam_free_state(&state);
         return 10;
     }
@@ -4874,7 +4876,7 @@ int main(void) {
         val_atom("bob"),
         val_atom("ann"),
         val_int(5),
-        val_int(1)
+        val_float(1.0)
     };
     int direct_rc = wam_run_predicate(&state, "astar_path/4", direct_args, 4);
     if (direct_rc != 0 || state.P != WAM_HALT) {
@@ -4893,6 +4895,19 @@ int main(void) {
         state.A[3].tag != VAL_FLOAT || state.A[3].data.floating != 1.5) {
         wam_free_state(&state);
         return 25;
+    }
+
+    WamValue self_args[4] = {
+        val_atom("tom"),
+        val_atom("tom"),
+        val_int(5),
+        val_unbound("Weight")
+    };
+    int self_rc = wam_run_predicate(&state, "astar_path/4", self_args, 4);
+    if (self_rc != 0 || state.P != WAM_HALT ||
+        state.A[3].tag != VAL_FLOAT || state.A[3].data.floating != 0.0) {
+        wam_free_state(&state);
+        return 28;
     }
 
     WamValue bad_dim_args[4] = {
@@ -5144,13 +5159,13 @@ int main(void) {
     setup_astar_path_4(&state);
     setup_detected_wam_c_kernels(&state);
 
-    wam_register_weighted_edge(&state, "tom", "bob", 5);
-    wam_register_weighted_edge(&state, "tom", "eve", 1);
-    wam_register_weighted_edge(&state, "eve", "ann", 1);
-    wam_register_weighted_edge(&state, "bob", "ann", 1);
-    wam_register_direct_distance_edge(&state, "tom", "ann", 2);
-    wam_register_direct_distance_edge(&state, "eve", "ann", 1);
-    wam_register_direct_distance_edge(&state, "bob", "ann", 1);
+    wam_register_relation_weighted_edge(&state, "test_astar_edge", "tom", "bob", 5);
+    wam_register_relation_weighted_edge(&state, "test_astar_edge", "tom", "eve", 1);
+    wam_register_relation_weighted_edge(&state, "test_astar_edge", "eve", "ann", 1);
+    wam_register_relation_weighted_edge(&state, "test_astar_edge", "bob", "ann", 1);
+    wam_register_relation_weighted_edge(&state, "test_direct_distance", "tom", "ann", 2);
+    wam_register_relation_weighted_edge(&state, "test_direct_distance", "eve", "ann", 1);
+    wam_register_relation_weighted_edge(&state, "test_direct_distance", "bob", "ann", 1);
 
     WamValue args[4] = {
         val_atom("tom"),
@@ -5160,7 +5175,7 @@ int main(void) {
     };
     int rc = wam_run_predicate(&state, "astar_path/4", args, 4);
     if (rc != 0 || state.P != WAM_HALT ||
-        state.A[3].tag != VAL_INT || state.A[3].data.integer != 2) {
+        state.A[3].tag != VAL_FLOAT || state.A[3].data.floating != 2.0) {
         wam_free_state(&state);
         return 10;
     }

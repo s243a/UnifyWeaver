@@ -513,10 +513,12 @@ wam_c_kernel_registration_line(Key-recursive_kernel(weighted_shortest_path3, _Pr
     format(atom(Line),
            '    wam_register_weighted_shortest_path_kernel(state, "~w", "~w");',
            [Key, EdgePred]).
-wam_c_kernel_registration_line(Key-recursive_kernel(astar_shortest_path4, _Pred, _ConfigOps), Line) :-
+wam_c_kernel_registration_line(Key-recursive_kernel(astar_shortest_path4, _Pred, ConfigOps), Line) :-
+    member(edge_pred(EdgePred/3), ConfigOps),
+    member(direct_dist_pred(DistPred/_), ConfigOps),
     format(atom(Line),
-           '    wam_register_astar_shortest_path_kernel(state, "~w");',
-           [Key]).
+           '    wam_register_astar_shortest_path_kernel(state, "~w", "~w", "~w");',
+           [Key, EdgePred, DistPred]).
 
 wam_c_kernel_max_depth(ConfigOps, MaxDepth) :-
     (   member(max_depth(MaxDepth0), ConfigOps),
@@ -4414,6 +4416,37 @@ void wam_bind_kernel_edge_relation(WamState *state, const char *pred, int arity,
     state->kernel_edge_bindings[state->kernel_edge_binding_count].arity = arity;
     state->kernel_edge_bindings[state->kernel_edge_binding_count].relation =
         wam_intern_atom(state, relation);
+    state->kernel_edge_bindings[state->kernel_edge_binding_count].heur_relation = NULL;
+    state->kernel_edge_binding_count++;
+}
+
+void wam_bind_kernel_heur_relation(WamState *state, const char *pred, int arity,
+                                   const char *heur_relation) {
+    if (!pred || !heur_relation || arity < 0) return;
+    for (int i = 0; i < state->kernel_edge_binding_count; i++) {
+        KernelEdgeBinding *binding = &state->kernel_edge_bindings[i];
+        if (binding->arity == arity && strcmp(binding->pred, pred) == 0) {
+            binding->heur_relation = wam_intern_atom(state, heur_relation);
+            return;
+        }
+    }
+    if (state->kernel_edge_binding_count >= state->kernel_edge_binding_cap) {
+        int new_cap = state->kernel_edge_binding_cap
+                          ? state->kernel_edge_binding_cap * 2
+                          : WAM_INITIAL_CAP;
+        KernelEdgeBinding *bindings =
+            realloc(state->kernel_edge_bindings,
+                    sizeof(KernelEdgeBinding) * (size_t)new_cap);
+        if (!bindings) return;
+        state->kernel_edge_bindings = bindings;
+        state->kernel_edge_binding_cap = new_cap;
+    }
+    state->kernel_edge_bindings[state->kernel_edge_binding_count].pred =
+        wam_intern_atom(state, pred);
+    state->kernel_edge_bindings[state->kernel_edge_binding_count].arity = arity;
+    state->kernel_edge_bindings[state->kernel_edge_binding_count].relation = NULL;
+    state->kernel_edge_bindings[state->kernel_edge_binding_count].heur_relation =
+        wam_intern_atom(state, heur_relation);
     state->kernel_edge_binding_count++;
 }
 
@@ -4423,6 +4456,17 @@ const char *wam_lookup_kernel_edge_relation(WamState *state, const char *pred, i
         KernelEdgeBinding *binding = &state->kernel_edge_bindings[i];
         if (binding->arity == arity && strcmp(binding->pred, pred) == 0) {
             return binding->relation;
+        }
+    }
+    return NULL;
+}
+
+const char *wam_lookup_kernel_heur_relation(WamState *state, const char *pred, int arity) {
+    if (!pred) return NULL;
+    for (int i = 0; i < state->kernel_edge_binding_count; i++) {
+        KernelEdgeBinding *binding = &state->kernel_edge_bindings[i];
+        if (binding->arity == arity && strcmp(binding->pred, pred) == 0) {
+            return binding->heur_relation;
         }
     }
     return NULL;
@@ -5432,8 +5476,12 @@ void wam_register_weighted_shortest_path_kernel(WamState *state, const char *pre
     wam_bind_kernel_edge_relation(state, pred, 3, edge_relation);
 }
 
-void wam_register_astar_shortest_path_kernel(WamState *state, const char *pred) {
+void wam_register_astar_shortest_path_kernel(WamState *state, const char *pred,
+                                             const char *edge_relation,
+                                             const char *heur_relation) {
     wam_register_foreign_predicate(state, pred, 4, wam_astar_shortest_path_handler);
+    wam_bind_kernel_edge_relation(state, pred, 4, edge_relation);
+    wam_bind_kernel_heur_relation(state, pred, 4, heur_relation);
 }
 
 static bool wam_value_as_atom(WamState *state, WamValue value, const char **out) {
@@ -7431,87 +7479,191 @@ bool wam_weighted_shortest_path_handler(WamState *state, const char *pred, int a
                                         state->P + 1);
 }
 
-static double wam_astar_heuristic(WamState *state, const char *node, const char *target) {
+/* Relevant heuristic for (node, target): min valid weight; missing → 0.0.
+ * Prefer relation-keyed edges; fall back to global direct_distance_edges
+ * only when no heur_relation is bound. Malformed relevant row → false. */
+static bool wam_astar_heuristic(WamState *state, const char *heur_relation,
+                                const char *node, const char *target,
+                                double *out) {
+    bool saw = false;
+    double best = 0.0;
+    if (heur_relation) {
+        for (int i = 0; i < state->weighted_relation_edge_count; i++) {
+            WeightedRelationEdge *edge = &state->weighted_relation_edges[i];
+            if (strcmp(edge->relation, heur_relation) != 0) continue;
+            if (strcmp(edge->source, node) != 0) continue;
+            if (strcmp(edge->target, target) != 0) continue;
+            if (!wam_wsp3_weight_valid(edge->weight)) return false;
+            if (!saw || edge->weight < best) {
+                best = edge->weight;
+                saw = true;
+            }
+        }
+        *out = saw ? best : 0.0;
+        return true;
+    }
     for (int i = 0; i < state->direct_distance_edge_count; i++) {
         WeightedEdge *edge = &state->direct_distance_edges[i];
-        if (strcmp(edge->source, node) == 0 && strcmp(edge->target, target) == 0) {
-            return edge->weight < 0 ? 0 : edge->weight;
+        if (strcmp(edge->source, node) != 0) continue;
+        if (strcmp(edge->target, target) != 0) continue;
+        if (!wam_wsp3_weight_valid(edge->weight)) return false;
+        if (!saw || edge->weight < best) {
+            best = edge->weight;
+            saw = true;
         }
     }
-    return 0;
+    *out = saw ? best : 0.0;
+    return true;
 }
 
+/* Correctness-safe A* for astar_shortest_path4
+ * (docs/design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md).
+ * Final cost is the finite Dijkstra minimum (PQ settled by g-cost).
+ * Heuristic / Dim are secondary scheduling keys only. Dynamic storage. */
 static bool wam_astar_shortest_path_search(WamState *state,
+                                           const char *edge_relation,
+                                           const char *heur_relation,
                                            const char *start,
                                            const char *target,
                                            int dimensionality,
                                            double *weight_out) {
-    const char *nodes[256];
-    double distances[256];
-    bool done[256];
-    int node_count = 0;
-    const double inf = 1.0e100;
     (void)dimensionality;
+    if (strcmp(start, target) == 0) {
+        *weight_out = 0.0;
+        return true;
+    }
 
-    nodes[node_count] = start;
-    distances[node_count] = 0;
-    done[node_count] = false;
-    node_count++;
+    const char **dist_nodes = NULL;
+    double *dist_vals = NULL;
+    int dist_cap = 0;
+    int dist_len = 0;
+    const char **pq_nodes = NULL;
+    double *pq_g = NULL;
+    double *pq_f = NULL;
+    int pq_cap = 0;
+    int pq_len = 0;
 
-    while (true) {
-        int best_idx = -1;
-        double best_score = inf;
-        double best_distance = inf;
-        for (int i = 0; i < node_count; i++) {
-            if (done[i]) continue;
-            double heuristic = wam_astar_heuristic(state, nodes[i], target);
-            double score = distances[i] <= inf - heuristic ? distances[i] + heuristic : inf;
-            if (score < best_score || (score == best_score && distances[i] < best_distance)) {
-                best_idx = i;
-                best_score = score;
-                best_distance = distances[i];
+    if (!wam_wsp3_grow_nodes_costs(&dist_nodes, &dist_vals, &dist_cap, 8)) {
+        return false;
+    }
+    pq_nodes = malloc(sizeof(const char *) * 8);
+    pq_g = malloc(sizeof(double) * 8);
+    pq_f = malloc(sizeof(double) * 8);
+    if (!pq_nodes || !pq_g || !pq_f) {
+        free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_g); free(pq_f);
+        return false;
+    }
+    pq_cap = 8;
+
+    double h_start = 0.0;
+    if (!wam_astar_heuristic(state, heur_relation, start, target, &h_start)) {
+        free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_g); free(pq_f);
+        return false;
+    }
+    dist_nodes[0] = start;
+    dist_vals[0] = 0.0;
+    dist_len = 1;
+    pq_nodes[0] = start;
+    pq_g[0] = 0.0;
+    pq_f[0] = h_start; /* secondary only; primary key is g */
+    pq_len = 1;
+
+    while (pq_len > 0) {
+        int best = 0;
+        for (int i = 1; i < pq_len; i++) {
+            if (pq_g[i] < pq_g[best] ||
+                (pq_g[i] == pq_g[best] && pq_f[i] < pq_f[best])) {
+                best = i;
             }
         }
-        if (best_idx < 0) break;
+        const char *u = pq_nodes[best];
+        double g_u = pq_g[best];
+        pq_nodes[best] = pq_nodes[pq_len - 1];
+        pq_g[best] = pq_g[pq_len - 1];
+        pq_f[best] = pq_f[pq_len - 1];
+        pq_len--;
 
-        done[best_idx] = true;
-        const char *node = nodes[best_idx];
-        if (strcmp(node, target) == 0 && best_distance > 0) {
-            *weight_out = best_distance;
+        int u_idx = -1;
+        for (int j = 0; j < dist_len; j++) {
+            if (strcmp(dist_nodes[j], u) == 0) {
+                u_idx = j;
+                break;
+            }
+        }
+        if (u_idx < 0 || g_u > dist_vals[u_idx]) continue;
+
+        /* Settled by g-cost (Dijkstra). Safe even if h overestimates. */
+        if (strcmp(u, target) == 0) {
+            *weight_out = g_u;
+            free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_g); free(pq_f);
             return true;
         }
 
-        for (int i = 0; i < state->weighted_edge_count; i++) {
-            WeightedEdge *edge = &state->weighted_edges[i];
-            if (edge->weight < 0) continue;
-            if (strcmp(edge->source, node) != 0) continue;
-            int next_idx = -1;
-            for (int j = 0; j < node_count; j++) {
-                if (strcmp(nodes[j], edge->target) == 0) {
-                    next_idx = j;
+        for (int i = 0; i < state->weighted_relation_edge_count; i++) {
+            WeightedRelationEdge *edge = &state->weighted_relation_edges[i];
+            if (strcmp(edge->relation, edge_relation) != 0) continue;
+            if (strcmp(edge->source, u) != 0) continue;
+            if (!edge->target || !wam_wsp3_weight_valid(edge->weight)) {
+                free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_g); free(pq_f);
+                return false;
+            }
+            double ng = g_u + edge->weight;
+            int v_idx = -1;
+            for (int j = 0; j < dist_len; j++) {
+                if (strcmp(dist_nodes[j], edge->target) == 0) {
+                    v_idx = j;
                     break;
                 }
             }
-            if (next_idx < 0) {
-                if (node_count >= 256) return false;
-                next_idx = node_count;
-                nodes[next_idx] = edge->target;
-                distances[next_idx] = inf;
-                done[next_idx] = false;
-                node_count++;
-            }
-            if (best_distance <= inf - edge->weight &&
-                best_distance + edge->weight < distances[next_idx]) {
-                distances[next_idx] = best_distance + edge->weight;
+            if (v_idx < 0 || ng < dist_vals[v_idx]) {
+                double h = 0.0;
+                if (!wam_astar_heuristic(state, heur_relation, edge->target,
+                                         target, &h)) {
+                    free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_g); free(pq_f);
+                    return false;
+                }
+                if (v_idx < 0) {
+                    if (!wam_wsp3_grow_nodes_costs(&dist_nodes, &dist_vals,
+                                                   &dist_cap, dist_len + 1)) {
+                        free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_g); free(pq_f);
+                        return false;
+                    }
+                    v_idx = dist_len;
+                    dist_nodes[v_idx] = edge->target;
+                    dist_len++;
+                }
+                dist_vals[v_idx] = ng;
+                if (pq_len >= pq_cap) {
+                    int new_cap = pq_cap * 2;
+                    const char **nn = realloc(pq_nodes, sizeof(const char *) * (size_t)new_cap);
+                    double *ng_a = realloc(pq_g, sizeof(double) * (size_t)new_cap);
+                    double *nf = realloc(pq_f, sizeof(double) * (size_t)new_cap);
+                    if (nn) pq_nodes = nn;
+                    if (ng_a) pq_g = ng_a;
+                    if (nf) pq_f = nf;
+                    if (!nn || !ng_a || !nf) {
+                        free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_g); free(pq_f);
+                        return false;
+                    }
+                    pq_cap = new_cap;
+                }
+                pq_nodes[pq_len] = edge->target;
+                pq_g[pq_len] = ng;
+                pq_f[pq_len] = h; /* secondary scheduling key only */
+                pq_len++;
             }
         }
     }
+
+    free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_g); free(pq_f);
     return false;
 }
 
 bool wam_astar_shortest_path_handler(WamState *state, const char *pred, int arity) {
-    (void)pred;
     if (arity != 4) return false;
+    const char *edge_relation = wam_lookup_kernel_edge_relation(state, pred, arity);
+    if (!edge_relation) return false;
+    const char *heur_relation = wam_lookup_kernel_heur_relation(state, pred, arity);
 
     const char *start = NULL;
     const char *target = NULL;
@@ -7519,16 +7671,21 @@ bool wam_astar_shortest_path_handler(WamState *state, const char *pred, int arit
     if (!wam_value_as_atom(state, state->A[1], &target)) return false;
 
     WamValue *dim_cell = wam_deref_ptr(state, &state->A[2]);
-    if (dim_cell->tag != VAL_INT) return false;
+    if (dim_cell->tag != VAL_INT || dim_cell->data.integer <= 0) return false;
+
+    WamValue *cost_cell = wam_deref_ptr(state, &state->A[3]);
+    if (!val_is_unbound(*cost_cell) && cost_cell->tag != VAL_FLOAT) return false;
 
     double result_weight = 0.0;
-    if (!wam_astar_shortest_path_search(state, start, target,
+    if (!wam_astar_shortest_path_search(state, edge_relation, heur_relation,
+                                        start, target,
                                         dim_cell->data.integer,
                                         &result_weight)) {
         return false;
     }
 
-    WamValue weight_value = val_number_from_double(result_weight);
+    /* Always VAL_FLOAT — never VAL_INT for integral 3.0. */
+    WamValue weight_value = val_float(result_weight);
     return wam_unify(state, &state->A[3], &weight_value);
 }
 '.

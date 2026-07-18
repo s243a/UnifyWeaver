@@ -259,7 +259,7 @@ test(fsharp_allowlist_includes_wsp3) :-
     assertion(wam_fsharp_native_kernel_kind(weighted_shortest_path3)),
     assertion(wam_fsharp_native_kernel_supported(
         recursive_kernel(weighted_shortest_path3, probe/0, []))),
-    assertion(\+ wam_fsharp_native_kernel_kind(astar_shortest_path4)).
+    assertion(wam_fsharp_native_kernel_kind(astar_shortest_path4)).
 
 test(haskell_mustache_dijkstra) :-
     read_file_string(

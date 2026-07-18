@@ -1,0 +1,103 @@
+/// Native foreign acceleration for the shared astar_shortest_path4
+/// pattern. Auto-generated from kernel detection.
+/// Edge predicate: {{edge_pred}}. Heuristic: {{direct_dist_pred}}.
+///
+/// Contract: correctness-safe A*
+/// (docs/design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md).
+/// Final FloatCost is always the finite Dijkstra minimum from Source
+/// to Target. Dim and heuristic may only affect scheduling. Missing
+/// h = 0.0. Source=Target → Some 0.0. Malformed reachable edge or
+/// relevant heuristic rows fail the call (None).
+///
+/// Returns a singleton float list for the existing single-output
+/// binder + FFIStreamRetry (at most one solution).
+let nativeKernel_astar_shortest_path
+    (edges: Map<int, (int * float) list>)
+    (heur: Map<int, (int * float) list>)
+    (source: int)
+    (target: int)
+    (dim: int) : float list =
+    if dim <= 0 then
+        []
+    elif source = target then
+        [ 0.0 ]
+    else
+        let mutable invalid = false
+        let heuristic (node: int) : float =
+            if invalid then 0.0
+            else
+                match Map.tryFind node heur with
+                | None -> 0.0
+                | Some xs ->
+                    let mutable best = System.Double.PositiveInfinity
+                    let mutable saw = false
+                    for (t, h) in xs do
+                        if t = target then
+                            if System.Double.IsNaN(h) || System.Double.IsInfinity(h) || h < 0.0 then
+                                invalid <- true
+                            else
+                                saw <- true
+                                if h < best then best <- h
+                    if invalid then 0.0
+                    elif saw then best
+                    else 0.0
+
+        // Correctness-safe settlement: primary PQ key is g-cost (Dijkstra).
+        // Heuristic / Dim are secondary scheduling keys only.
+        let dist = System.Collections.Generic.Dictionary<int, float>()
+        let pq = System.Collections.Generic.SortedSet<struct(float * float * int)>(
+            { new System.Collections.Generic.IComparer<struct(float * float * int)> with
+                member _.Compare(a, b) =
+                    let struct(ga, fa, na) = a
+                    let struct(gb, fb, nb) = b
+                    let c = ga.CompareTo(gb)
+                    if c <> 0 then c
+                    else
+                        let c2 = fa.CompareTo(fb)
+                        if c2 <> 0 then c2 else na.CompareTo(nb) })
+        let sched (g: float) (node: int) =
+            let h = heuristic node
+            let d = float dim
+            // Secondary key only — never used for early termination.
+            System.Math.Pow(g, d) + System.Math.Pow(h, d)
+
+        dist.[source] <- 0.0
+        pq.Add(struct(0.0, sched 0.0 source, source)) |> ignore
+
+        let mutable settledTarget = false
+        let mutable answer = 0.0
+        while pq.Count > 0 && not invalid && not settledTarget do
+            let struct(gcost, _, node) = pq.Min
+            pq.Remove(pq.Min) |> ignore
+            match dist.TryGetValue(node) with
+            | true, best when gcost > best -> ()
+            | _ ->
+                if node = target then
+                    settledTarget <- true
+                    answer <- gcost
+                else
+                    let outs =
+                        match Map.tryFind node edges with
+                        | Some xs -> xs
+                        | None -> []
+                    for (nxt, w) in outs do
+                        if System.Double.IsNaN(w) || System.Double.IsInfinity(w) || w < 0.0 then
+                            invalid <- true
+                        else
+                            let ng = gcost + w
+                            match dist.TryGetValue(nxt) with
+                            | false, _ ->
+                                dist.[nxt] <- ng
+                                pq.Add(struct(ng, sched ng nxt, nxt)) |> ignore
+                            | true, prev when ng < prev ->
+                                dist.[nxt] <- ng
+                                pq.Add(struct(ng, sched ng nxt, nxt)) |> ignore
+                            | _ -> ()
+        // Touch heuristic at source for relevant-row validation even on
+        // short paths (already done via sched). Fail closed on invalid.
+        if invalid then
+            []
+        elif settledTarget then
+            [ answer ]
+        else
+            []

@@ -48,7 +48,8 @@
 :- dynamic user:wsp_alt/3.
 :- dynamic user:a_edge/3.
 :- dynamic user:astar/4.
-:- dynamic user:direct_dist/4.
+:- dynamic user:direct_dist/3.
+:- dynamic user:direct_dist_pred/1.
 :- dynamic user:dimensionality/1.
 :- dynamic user:category_parent/2.
 :- dynamic user:category_ancestor/4.
@@ -193,10 +194,12 @@ assert_two_wsp_programs :-
 assert_astar_program :-
     retractall(user:a_edge(_, _, _)),
     retractall(user:astar(_, _, _, _)),
-    retractall(user:direct_dist(_, _, _, _)),
+    retractall(user:direct_dist(_, _, _)),
+    retractall(user:direct_dist_pred(_)),
     retractall(user:dimensionality(_)),
     assertz(user:dimensionality(2)),
-    assertz(user:direct_dist(a, c, 2, 1.0)),
+    assertz(user:direct_dist_pred(direct_dist/3)),
+    assertz(user:direct_dist(a, c, 1.0)),
     assertz(user:a_edge(a, b, 1.0)),
     assertz(user:a_edge(b, c, 1.0)),
     assertz((user:astar(X, Y, Dim, W) :- a_edge(X, Y, W), dimensionality(Dim))),
@@ -411,7 +414,7 @@ let main _argv =
 
 :- begin_tests(wam_fsharp_kernel_gate_tc).
 
-test(capability_allowlist_includes_shipped_through_wsp3) :-
+test(capability_allowlist_includes_shipped_and_draft_astar4) :-
     wam_fsharp_native_kernel_kind(category_ancestor),
     wam_fsharp_native_kernel_kind(bidirectional_ancestor),
     wam_fsharp_native_kernel_kind(transitive_closure2),
@@ -419,7 +422,7 @@ test(capability_allowlist_includes_shipped_through_wsp3) :-
     wam_fsharp_native_kernel_kind(transitive_parent_distance4),
     wam_fsharp_native_kernel_kind(transitive_step_parent_distance5),
     wam_fsharp_native_kernel_kind(weighted_shortest_path3),
-    \+ wam_fsharp_native_kernel_kind(astar_shortest_path4).
+    wam_fsharp_native_kernel_kind(astar_shortest_path4).
 
 test(every_allowlisted_kind_has_a_real_handler) :-
     forall(
@@ -748,9 +751,51 @@ test(wsp3_no_kernels_still_builds, [condition(dotnet_available)]) :-
     ),
     !.
 
-test(fallback_astar_shortest_path4, [condition(dotnet_available)]) :-
-    fallback_kind_builds(astar_shortest_path4, assert_astar_program,
-                         [user:astar/4, user:a_edge/3, user:direct_dist/4, user:dimensionality/1],
-                         "nativeKernel_astar_shortest_path").
+test(native_astar4_codegen_and_build, [condition(dotnet_available)]) :-
+    assert_astar_program,
+    tmp_proj(native_astar4, Dir),
+    once(write_wam_fsharp_project(
+        [ user:astar/4, user:a_edge/3, user:direct_dist/3,
+          user:dimensionality/1, user:direct_dist_pred/1
+        ],
+        [module_name('uw_fs_native_astar4')],
+        Dir)),
+    directory_file_path(Dir, 'WamRuntime.fs', RT),
+    read_file_to_string(RT, RTS, []),
+    assertion(sub_string(RTS, _, _, _, "nativeKernel_astar_shortest_path")),
+    assertion(sub_string(RTS, _, _, _, "| \"astar/4\" ->")),
+    assertion(sub_string(RTS, _, _, _, "FFIStreamRetry")),
+    assertion(\+ sub_string(RTS, _, _, _, "template not found")),
+    directory_file_path(Dir, 'Predicates.fs', Preds),
+    read_file_to_string(Preds, PredS, []),
+    assertion(sub_string(PredS, _, _, _, "declaredWeightedEdgeFacts")),
+    assertion(sub_string(PredS, _, _, _, "buildWeightedFfiFacts")),
+    assertion(sub_string(PredS, _, _, _, "(\"a_edge\"")),
+    assertion(sub_string(PredS, _, _, _, "(\"direct_dist\"")),
+    run_dotnet_build(Dir, Exit, Out),
+    assertion(Exit =:= 0),
+    ( Exit =:= 0 -> true
+    ; format(user_error, 'native_astar4 build failed:~n~w~n', [Out]), fail
+    ),
+    !.
+
+test(astar4_no_kernels_still_builds, [condition(dotnet_available)]) :-
+    assert_astar_program,
+    tmp_proj(astar4_nk, Dir),
+    once(write_wam_fsharp_project(
+        [ user:astar/4, user:a_edge/3, user:direct_dist/3,
+          user:dimensionality/1, user:direct_dist_pred/1
+        ],
+        [no_kernels(true), module_name('uw_fs_astar4_nk'), conformance_main(true)],
+        Dir)),
+    directory_file_path(Dir, 'WamRuntime.fs', RT),
+    read_file_to_string(RT, RTS, []),
+    assertion(\+ sub_string(RTS, _, _, _, "nativeKernel_astar_shortest_path")),
+    run_dotnet_build(Dir, Exit, Out),
+    assertion(Exit =:= 0),
+    ( Exit =:= 0 -> true
+    ; format(user_error, '~w~n', [Out]), fail
+    ),
+    !.
 
 :- end_tests(wam_fsharp_kernel_gate_tc).
