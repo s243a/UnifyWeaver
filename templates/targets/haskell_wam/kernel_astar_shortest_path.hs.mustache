@@ -18,11 +18,14 @@ nativeKernel_astar_shortest_path edges heur source target dim
   | dim <= 0 = []
   | source == target = [0.0]
   | otherwise =
-      case go (Set.singleton (0.0 :: Double, 0.0 :: Double, source))
-              (IM.singleton source 0.0) of
+      case sched 0.0 source of
         Left _ -> []
-        Right Nothing -> []
-        Right (Just c) -> [c]
+        Right f0 ->
+          case go (Set.singleton (0.0 :: Double, f0, source))
+                  (IM.singleton source 0.0) of
+            Left _ -> []
+            Right Nothing -> []
+            Right (Just c) -> [c]
   where
     -- Relevant heuristic: min valid (node,target) weight; missing → 0.
     -- Malformed relevant row → Left ().

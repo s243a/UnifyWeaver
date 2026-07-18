@@ -25,6 +25,7 @@
 :- use_module(library(readutil)).
 
 :- dynamic test_failed/0.
+:- dynamic user:direct_dist_pred/1.
 
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
@@ -284,6 +285,76 @@ test_render_kernel_function_cwd_independent :-
         fail_test(Test, Reason)
     ;   fail_test(Test, 'codegen from /tmp produced "Template not found"')
     ).
+
+test_astar_weighted_facts_wired_into_generated_project :-
+    Test = 'WAM-Haskell: generated A* project wires validated weighted facts',
+    Dir = 'output/test_haskell_astar_weighted_wiring',
+    ( exists_directory(Dir) -> delete_directory_and_contents(Dir) ; true ),
+    Kernel = recursive_kernel(astar_shortest_path4, hs_astar_path/4,
+              [edge_pred(hs_astar_edge/3),
+               direct_dist_pred(hs_astar_heur/3)]),
+    ( catch(setup_call_cleanup(
+        assert_haskell_astar_weighted_fixture,
+        ( write_wam_haskell_project(
+              [user:hs_astar_edge/3, user:hs_astar_heur/3,
+               user:hs_astar_path/4],
+              [module_name('hs-astar-wiring'),
+               external_weighted_facts([
+                 hs_astar_heur-[triple(hs_external_source, hs_target, 4.0)]
+               ])], Dir),
+          maplist({Dir}/[File, Text]>>(
+              directory_file_path(Dir, File, Path),
+              read_file_to_string(Path, Text, [])),
+              ['src/Predicates.hs', 'src/Main.hs', 'src/WamRuntime.hs'],
+              [PredCode, MainCode, RuntimeCode]),
+          sub_string(PredCode, _, _, _, '("hs_astar_edge", IM.fromListWith'),
+          sub_string(PredCode, _, _, _, '("hs_astar_heur", IM.fromListWith'),
+          sub_string(PredCode, _, _, _, '"hs_external_source"'),
+          sub_string(PredCode, _, _, _, '(1 / 0)'),
+          sub_string(MainCode, _, _, _,
+                     'wcFfiWeightedFacts = declaredWeightedFfiFacts'),
+          sub_string(RuntimeCode, _, _, _, 'case sched 0.0 source of'),
+          wam_haskell_target:emit_weighted_ffi_facts_hs(
+              ['hs_wsp/3'-recursive_kernel(weighted_shortest_path3, hs_wsp/3,
+                  [edge_pred(hs_astar_edge/3)])], [], WspCode),
+          sub_string(WspCode, _, _, _, '("hs_astar_edge", IM.fromListWith'),
+          assertz(user:hs_astar_edge(hs_source, hs_target, bad_weight)),
+          catch(wam_haskell_target:emit_weighted_ffi_facts_hs(
+                    ['hs_astar_path/4'-Kernel], [], _),
+                error(domain_error(weighted_kernel_fact, _), _), Rejected = true),
+          Rejected == true
+        ),
+        retract_haskell_astar_weighted_fixture), _, fail)
+    -> Ok = true
+    ;  Ok = false
+    ),
+    ( exists_directory(Dir) -> delete_directory_and_contents(Dir) ; true ),
+    (   Ok == true -> pass(Test)
+    ;   fail_test(Test, 'weighted materialization/wiring validation failed') ).
+
+assert_haskell_astar_weighted_fixture :-
+    retract_haskell_astar_weighted_fixture,
+    assertz(user:hs_astar_edge(hs_source, hs_target, 10.0)),
+    assertz(user:hs_astar_edge(hs_source, hs_mid, 1.0)),
+    assertz(user:hs_astar_edge(hs_mid, hs_target, 1.0)),
+    % Non-atom sources are outside the atom-keyed native ABI and are ignored.
+    assertz(user:hs_astar_edge(42, hs_target, bad_weight)),
+    assertz(user:hs_astar_heur(hs_source, hs_target, 100.0)),
+    assertz(user:hs_astar_heur(hs_mid, hs_target, 0.0)),
+    assertz(user:hs_astar_heur(hs_mid, hs_target, 1.0Inf)),
+    assertz((user:hs_astar_path(X, Y, _Dim, W) :-
+                hs_astar_edge(X, Y, W))),
+    assertz((user:hs_astar_path(X, Y, Dim, Total) :-
+                hs_astar_edge(X, Mid, W1),
+                hs_astar_path(Mid, Y, Dim, Rest),
+                Total is Rest + W1)),
+    assertz(user:direct_dist_pred(hs_astar_heur/3)).
+
+retract_haskell_astar_weighted_fixture :-
+    retractall(user:hs_astar_edge(_, _, _)),
+    retractall(user:hs_astar_heur(_, _, _)),
+    retractall(user:hs_astar_path(_, _, _, _)),
+    retractall(user:direct_dist_pred(hs_astar_heur/3)).
 
 test_transitive_closure_kernel_function :-
     Test = 'WAM-Haskell: transitive_closure2 kernel template renders',
@@ -2898,6 +2969,7 @@ run_tests :-
     test_parameterized_execute_foreign_empty,
     test_parameterized_render_kernel_function,
     test_render_kernel_function_cwd_independent,
+    test_astar_weighted_facts_wired_into_generated_project,
     test_transitive_closure_kernel_function,
     test_transitive_closure_dedupes_neighbor_batch,
     test_transitive_closure_execute_foreign,

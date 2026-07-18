@@ -21,25 +21,24 @@
 :- use_module(library(readutil)).
 :- use_module(library(pcre)).
 
-% Edge weights (same as M5.9 graph).
+% Edge weights: optimal a->b->c costs 2; direct a->c costs 10.
 :- dynamic rh_edge/3.
-rh_edge(a, b, 10.0).
+rh_edge(a, b, 1.0).
 rh_edge(b, c, 1.0).
-rh_edge(c, d, 1.0).
-rh_edge(a, d, 100.0).
+rh_edge(a, c, 10.0).
 
-% Direct distance estimates (admissible for target d).
+% Deliberately overestimating direct estimate for b->c. An unsafe f-first
+% implementation pops the direct target at 10 before b; g-primary gets 2.
 % These are scanned at query time to build h[n] for whichever target
 % is in A2. The table has entries for multiple targets so the same
-% module works for queries to d or to b.
+% module works for queries to c or to b.
 :- dynamic direct_dist/3.
-direct_dist(a, d, 3.0).
-direct_dist(b, d, 2.0).
-direct_dist(c, d, 1.0).
+direct_dist(a, c, 0.0).
+direct_dist(b, c, 100.0).
 direct_dist(a, b, 8.0).  % for target b
 
-:- dynamic astar_rt/3.
-astar_rt(_, _, _) :- fail.
+:- dynamic astar_rt/4.
+astar_rt(_, _, _, _) :- fail.
 
 host_target_triple(Triple) :-
     ( catch(
@@ -79,10 +78,10 @@ zip_loop(_, _, A, S) :- sort(1, @<, A, S).
 add_b(L, _, A, A) :- memberchk(L-_, A), !.
 add_b(L, I, A, [L-I|A]).
 
-extract_instr_count(Src, P, C) :-
+extract_instr_count(Src, _P, C) :-
     Pat = "@module_code = private constant \\[(?<n>\\d+) x %Instruction\\]",
     re_matchsub(Pat, Src, M, []), get_dict(n, M, NS), number_string(C, NS).
-extract_label_count(Src, P, C) :-
+extract_label_count(Src, _P, C) :-
     Pat = "@module_labels = private constant \\[(?<n>\\d+) x i32\\]",
     re_matchsub(Pat, Src, M, []), get_dict(n, M, NS), number_string(C, NS).
 
@@ -98,12 +97,12 @@ run_runtime_heuristic_test :-
     tmp_file_stream(text, LLPath, Stream), close(Stream),
     host_target_triple(Triple),
     write_wam_llvm_project(
-        [user:astar_rt/3],
+        [user:astar_rt/4],
         [ module_name('astar_rt_exec'),
           target_triple(Triple),
           target_datalayout(''),
           foreign_predicates([
-              astar_rt/3 - astar_shortest_path4 - [
+              astar_rt/4 - astar_shortest_path4 - [
                   weight_pred(rh_edge/3),
                   direct_dist_pred(direct_dist/3)
               ]
@@ -120,14 +119,15 @@ run_runtime_heuristic_test :-
     % Should call @wam_build_heuristic_from_table (runtime path).
     ( sub_string(Src, _, _, _, 'call double* @wam_build_heuristic_from_table')
     -> format('  PASS: runtime heuristic builder call present~n')
-    ;  format('  FAIL: runtime heuristic builder call missing~n')
+    ;  format('  FAIL: runtime heuristic builder call missing~n'),
+       throw(runtime_heuristic_builder_missing)
     ),
 
-    % Extract atom IDs and build driver: A*(a, d) expected 12.0.
+    % Extract atom IDs and build driver: A*(a, c) expected 2.0.
     extract_atom_ids_from_weighted(Src, 'astar4_inst_astar_rt_0_edges',
-        [a-b, b-c, c-d, a-d], AtomIds),
+        [a-b, b-c, a-c], AtomIds),
     get_dict(a, AtomIds, AId),
-    get_dict(d, AtomIds, DId),
+    get_dict(c, AtomIds, DId),
     extract_instr_count(Src, astar_rt, IC),
     extract_label_count(Src, astar_rt, LC),
     format(atom(DriverIR),
@@ -137,8 +137,10 @@ entry:
   %a1 = insertvalue %Value %a1_0, i64 ~w, 1
   %a2_0 = insertvalue %Value undef, i32 0, 0
   %a2 = insertvalue %Value %a2_0, i64 ~w, 1
-  %a3_0 = insertvalue %Value undef, i32 6, 0
-  %a3 = insertvalue %Value %a3_0, i64 0, 1
+  %a3_0 = insertvalue %Value undef, i32 1, 0
+  %a3 = insertvalue %Value %a3_0, i64 1, 1
+  %a4_0 = insertvalue %Value undef, i32 6, 0
+  %a4 = insertvalue %Value %a4_0, i64 0, 1
   %vm = call %WamState* @wam_state_new(
       %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
       i32 ~w,
@@ -147,10 +149,11 @@ entry:
   call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
   call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
   call void @wam_set_reg(%WamState* %vm, i32 2, %Value %a3)
+  call void @wam_set_reg(%WamState* %vm, i32 3, %Value %a4)
   %ok = call i1 @run_loop(%WamState* %vm)
   br i1 %ok, label %hit, label %miss
 hit:
-  %dist = call double @wam_get_reg_double(%WamState* %vm, i32 2)
+  %dist = call double @wam_get_reg_double(%WamState* %vm, i32 3)
   %dist100 = fmul double %dist, 1.0e2
   %dist_i32 = fptosi double %dist100 to i32
   ret i32 %dist_i32
@@ -179,11 +182,11 @@ miss:
        ;  shell(BinPath, ExitCode)
        )
     ),
-    ExpectedScaled is truncate(12.0 * 100) /\ 255,
+    ExpectedScaled is truncate(2.0 * 100) /\ 255,
     ( ExitCode =:= ExpectedScaled
-    -> format('  PASS: A*(a,d) with runtime heuristic = 12.0 (scaled=~w)~n',
+    -> format('  PASS: overestimating runtime h preserves A*(a,c)=2.0 (scaled=~w)~n',
           [ExitCode])
-    ;  format('  FAIL: returned ~w (expected ~w for 12.0)~n',
+    ;  format('  FAIL: returned ~w (expected ~w for 2.0)~n',
           [ExitCode, ExpectedScaled])
     ),
     catch(delete_file(LLPath), _, true),
@@ -201,7 +204,6 @@ process_which(Tool) :-
         ), _, fail).
 
 test_all :-
-    catch(test_runtime_heuristic, E,
-        format('  ERROR: ~w~n', [E])).
+    test_runtime_heuristic.
 
 :- initialization(test_all, main).

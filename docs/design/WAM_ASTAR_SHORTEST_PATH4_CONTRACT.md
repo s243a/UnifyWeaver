@@ -59,7 +59,8 @@ correctness assumption.
 - Missing `(Node, Target)` heuristic means **0.0**.
 - Relevant heuristic values must be finite, nonnegative numbers.
 - For duplicate `(Node, Target)` entries, use the **minimum** valid value.
-- A malformed relevant heuristic row fails the **complete** call.
+- A malformed heuristic row consulted for Source or a discovered node
+  before Target settles fails the **complete** call.
 - Unreachable heuristic rows are irrelevant.
 - An overestimating heuristic must not produce a wrong route: every
   target must still return the Dijkstra-minimum result.
@@ -80,14 +81,16 @@ Reference safe algorithm:
 
 ## Edge validation
 
-Match the WSP3 policy when expanding a node reachable from Source:
+Validate every row returned while expanding a settled node before Target
+settles:
 
 - atom destination;
 - finite nonnegative numeric weight;
 - zero allowed;
-- any malformed reachable row fails the complete call;
+- any malformed expanded row fails the complete call;
 - no partial result escapes;
-- unreachable invalid components are irrelevant.
+- rows in unreachable components, or in branches not expanded before the
+  goal-directed search settles Target, are irrelevant.
 
 ## Modes and unification
 

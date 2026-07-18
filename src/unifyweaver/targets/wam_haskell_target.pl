@@ -4015,9 +4015,14 @@ write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
     % lowered function doesn't handle. Phase 4+ lowered functions only
     % inline clause 1; clause 2+ runs through the interpreter on backtrack.
     compile_predicates_to_haskell(InternalPreds, Options, PredsCode0, InlineDefs),
+    % Native WSP3/A* handlers read relation-keyed weighted adjacency from
+    % wcFfiWeightedFacts. Materialize detected inline/external relations now,
+    % while the compile-time atom table is still open for interning.
+    emit_weighted_ffi_facts_hs(DetectedKernels, Options, WeightedFactsCode),
     % Append compile-time atom table to Predicates.hs
     emit_atom_table_haskell(AtomTableCode),
-    format(string(PredsCode0WithAtoms), "~w~n~n~w", [PredsCode0, AtomTableCode]),
+    format(string(PredsCode0WithAtoms), "~w~n~n~w~n~n~w",
+           [PredsCode0, WeightedFactsCode, AtomTableCode]),
     apply_hashmap_rewrite(UseHM, generic, PredsCode0WithAtoms, PredsCode),
     directory_file_path(SrcDir, 'Predicates.hs', PredsPath),
     write_hs_file(PredsPath, PredsCode),
@@ -4210,8 +4215,13 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     hPutStrLn stderr $ "demand_skipped_seeds=" ++ show demandSkippedSeeds'
     ;   DemandMetrics = ''
     ),
-    % Phase F3/F4: generate wcInlineFacts wiring from InlineDefs
-    generate_inline_facts_wiring(InlineDefs, InlineFactsWiring),
+    % Phase F3/F4: generate fact wiring. declaredWeightedFfiFacts is emitted
+    % in Predicates.hs even when empty, so every generated context has one
+    % unambiguous source for native WSP3/A* relation data.
+    generate_inline_facts_wiring(InlineDefs, InlineFactsWiring0),
+    format(string(InlineFactsWiring),
+           '~w~n            , wcFfiWeightedFacts = declaredWeightedFfiFacts',
+           [InlineFactsWiring0]),
     % Phase B1: generate LMDB setup and context wiring
     generate_lmdb_wiring(Options, LmdbSetup, LmdbContext, LmdbImport),
     % Int-atom-seeds path: when use_lmdb(true) and seeds come pre-interned
@@ -4361,6 +4371,101 @@ generate_inline_facts_wiring(InlineDefs, Code) :-
     format(string(Code),
            '            , wcInlineFacts   = Map.fromList [~w]',
            [EntriesStr]).
+
+%% emit_weighted_ffi_facts_hs(+DetectedKernels, +Options, -Code)
+%  Emit compile-time-interned, relation-keyed weighted adjacency for native
+%  weighted_shortest_path3 and astar_shortest_path4 handlers. A* needs both
+%  its edge and direct-distance relations. Existing external_weighted_facts
+%  options are merged with inline facts rather than replaced.
+emit_weighted_ffi_facts_hs(DetectedKernels, Options, Code) :-
+    findall(Rel-Triples,
+            ( (   member(_-recursive_kernel(weighted_shortest_path3, _, Ops),
+                         DetectedKernels),
+                  member(edge_pred(Rel/3), Ops)
+              ;   member(_-recursive_kernel(astar_shortest_path4, _, Ops),
+                         DetectedKernels),
+                  ( member(edge_pred(Rel/3), Ops)
+                  ; member(direct_dist_pred(Rel/3), Ops)
+                  ; member(direct_dist_pred(Rel), Ops), atom(Rel)
+                  )
+              ),
+              atom(Rel),
+              collect_weighted_edge_triples_hs(Rel, Triples)
+            ),
+            Inline),
+    option(external_weighted_facts(External), Options, []),
+    append(Inline, External, Combined0),
+    keysort(Combined0, Combined),
+    group_pairs_by_key(Combined, Grouped),
+    maplist(merge_weighted_rel_group_hs, Grouped, Relations),
+    maplist(emit_weighted_rel_entry_hs, Relations, Entries),
+    atomic_list_concat(Entries, ',\n    ', EntryCode),
+    format(string(Code),
+'-- | Compile-time-interned weighted facts for native WSP3/A* kernels.
+declaredWeightedFfiFacts :: Map.Map String (IM.IntMap [(Int, Double)])
+declaredWeightedFfiFacts = Map.fromList
+  [ ~w
+  ]', [EntryCode]).
+
+collect_weighted_edge_triples_hs(Rel, Triples) :-
+    functor(Head, Rel, 3),
+    findall(row(From, To, W),
+            ( clause(user:Head, true),
+              Head =.. [Rel, From, To, W]
+            ),
+            Rows),
+    validate_weighted_rows_hs(Rel, Rows, Triples).
+
+validate_weighted_rows_hs(_, [], []).
+validate_weighted_rows_hs(Rel, [row(From, To, W0)|Rows], Triples) :-
+    (   atom(From)
+    ->  (   atom(To), number(W0)
+        ->  weighted_float_hs(W0, W),
+            Triples = [triple(From, To, W)|Rest]
+        ;   Fact =.. [Rel, From, To, W0],
+            format(atom(Message),
+                   'native weighted relation ~w requires atom/atom/number rows',
+                   [Rel]),
+            throw(error(domain_error(weighted_kernel_fact, Fact),
+                        context(wam_haskell_target:emit_weighted_ffi_facts_hs/3,
+                                Message)))
+        )
+    ;   % Non-atom sources cannot be reached from the atom-keyed native ABI.
+        Triples = Rest
+    ),
+    validate_weighted_rows_hs(Rel, Rows, Rest).
+
+merge_weighted_rel_group_hs(Rel-Lists, Rel-Triples) :-
+    append(Lists, Flat),
+    sort(Flat, Triples).
+
+emit_weighted_rel_entry_hs(Rel-[], Entry) :- !,
+    format(string(Entry), '("~w", IM.empty)', [Rel]).
+emit_weighted_rel_entry_hs(Rel-Triples, Entry) :-
+    maplist(emit_weighted_triple_hs, Triples, Rows),
+    atomic_list_concat(Rows, ', ', RowCode),
+    format(string(Entry),
+           '("~w", IM.fromListWith (flip (++)) [~w])',
+           [Rel, RowCode]).
+
+emit_weighted_triple_hs(triple(From, To, W0), Row) :-
+    atom(From), atom(To), number(W0),
+    weighted_float_hs(W0, W),
+    intern_atom(From, FromId),
+    intern_atom(To, ToId),
+    haskell_double_literal_hs(W, WCode),
+    format(string(Row), '(~w, [(~w, ~w)])', [FromId, ToId, WCode]).
+
+weighted_float_hs(W, W) :- float(W), !.
+weighted_float_hs(N, W) :- W is float(N).
+
+haskell_double_literal_hs(W, Code) :-
+    float_class(W, Class),
+    (   Class == nan -> Code = '(0 / 0)'
+    ;   Class == infinite, W > 0 -> Code = '(1 / 0)'
+    ;   Class == infinite -> Code = '(-1 / 0)'
+    ;   format(string(Code), '~w', [W])
+    ).
 
 %% generate_lmdb_wiring(+Options, -SetupCode, -ContextCode, -ImportCode)
 %  When use_lmdb(true), generates:
@@ -5811,10 +5916,8 @@ data WamContext = WamContext
   -- FFI kernel path. Populated per-kernel from edge_pred config.
   , wcFfiFacts      :: !(Map.Map String (IM.IntMap [Int]))
   -- | Weighted fact indexes for kernels that need (target, weight)
-  -- pairs per edge (e.g., weighted_shortest_path3 / Dijkstra). Used
-  -- exclusively by the FFI kernel path. Populated from 3-column fact
-  -- sources — not wired into the default Main.hs template yet, so
-  -- standalone benchmarks build this directly.
+  -- pairs per edge (e.g., weighted_shortest_path3 / A*). Populated per
+  -- detected relation from compile-time and configured external facts.
   , wcFfiWeightedFacts :: !(Map.Map String (IM.IntMap [(Int, Double)]))
   -- | Phase F2: inline fact data for FactStream predicates. Keyed by
   -- predicate name (e.g., "category_parent"). Each entry is a list of

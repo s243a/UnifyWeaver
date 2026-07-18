@@ -11,17 +11,23 @@
      llvm_foreign_kernel_spec/3,
      clear_llvm_foreign_kernel_specs/0]).
 
-% A* clause shape (arity 4 with visited list).
+% Canonical A* clause shape: Source, Target, Dim, Cost.
 :- dynamic my_astar_path/4.
-my_astar_path(X, Y, W, _Vis) :- my_aweight(X, Y, W).
-my_astar_path(X, Y, Cost, Vis) :-
+my_astar_path(X, Y, _Dim, W) :- my_aweight(X, Y, W).
+my_astar_path(X, Y, Dim, Cost) :-
     my_aweight(X, Z, W),
-    my_astar_path(Z, Y, RC, [Z|Vis]),
+    my_astar_path(Z, Y, Dim, RC),
     Cost is W + RC.
 
 :- dynamic my_aweight/3.
 my_aweight(a, b, 3.0).
 my_aweight(b, c, 4.0).
+
+:- dynamic direct_dist_pred/1.
+direct_dist_pred(my_direct_dist).
+
+:- dynamic my_direct_dist/3.
+my_direct_dist(a, c, 2.0).
 
 % wsp3 clause shape (arity 3, no visited list).
 :- dynamic my_wsp/3.
@@ -46,8 +52,9 @@ test_astar4_autodetect :-
           foreign_lowering(true)
         ],
         LLPath),
-    ( llvm_foreign_kernel_spec(my_astar_path/4, astar_shortest_path4, Config)
-    -> format('  PASS: auto-detect matched astar4, config=~w~n', [Config])
+    ( llvm_foreign_kernel_spec(my_astar_path/4, astar_shortest_path4, Config),
+      memberchk(direct_dist_pred(my_direct_dist/3), Config)
+    -> format('  PASS: auto-detect matched astar4 + direct_dist_pred, config=~w~n', [Config])
     ;  format('  FAIL: auto-detect did not match astar4~n'),
        throw(astar4_autodetect_failed)
     ),
@@ -75,9 +82,7 @@ test_wsp3_autodetect :-
     clear_llvm_foreign_kernel_specs.
 
 test_all :-
-    catch(test_astar4_autodetect, E1,
-        format('  ERROR: ~w~n', [E1])),
-    catch(test_wsp3_autodetect, E2,
-        format('  ERROR: ~w~n', [E2])).
+    test_astar4_autodetect,
+    test_wsp3_autodetect.
 
 :- initialization(test_all, main).

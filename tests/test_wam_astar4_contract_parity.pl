@@ -84,8 +84,16 @@ cargo_available :-
           process_wait(Pid, exit(0)) ),
         _, fail).
 
-llvm_suite_available :-
-    exists_file('tests/core/test_wam_llvm_astar_execution.pl').
+llvm_tools_available :-
+    executable_available(llc),
+    executable_available(clang).
+
+executable_available(Name) :-
+    catch(
+        ( process_create(path(Name), ['--version'],
+                         [stdout(null), stderr(null), process(Pid)]),
+          process_wait(Pid, exit(0)) ),
+        _, fail).
 
 tmp_dir(Tag, Dir) :-
     get_time(T),
@@ -110,8 +118,7 @@ assert_astar_detour_program :-
     assertz(user:a_edge(a, c, 1.0)),
     assertz(user:a_edge(c, b, 1.0)),
     % Overestimating heuristic toward b — must not change Dijkstra optimum.
-    assertz(user:a_heur(a, b, 100.0)),
-    assertz(user:a_heur(c, b, 0.0)),
+    assertz(user:a_heur(c, b, 100.0)),
     assertz((user:astar(X, Y, _Dim, W) :- a_edge(X, Y, W))),
     assertz((user:astar(X, Y, Dim, Total) :-
                 a_edge(X, Z, W), astar(Z, Y, Dim, Rest), Total is Rest + W)),
@@ -158,6 +165,20 @@ test(oracle_overestimate_still_dijkstra_min) :-
     astar4_oracle_overestimate_cost(C),
     assertion(astar4_oracle_matches(E, a, b, C)),
     astar4_oracle_overestimate_heur(_H).  % documented fixture
+
+test(oracle_overestimate_fixture_is_actually_adversarial) :-
+    astar4_oracle_overestimate_edges(Edges),
+    astar4_oracle_overestimate_heur(Heur),
+    memberchk(edge(a, b, DirectG), Edges),
+    memberchk(edge(a, c, DetourG), Edges),
+    memberchk(edge(c, b, DetourH), Heur),
+    % The goal has no explicit (b,b) row, so its heuristic is 0.0.
+    DirectF is DirectG + 0.0,
+    DetourF is DetourG + DetourH,
+    assertion(DirectF < DetourF),
+    assertion(DirectG =:= 10.0),
+    astar4_oracle_overestimate_cost(Optimal),
+    assertion(Optimal =:= 2.0).
 
 test(oracle_missing_heur) :-
     astar4_oracle_missing_heur_edges(E),
@@ -407,23 +428,28 @@ test(rust_collect_astar4_unit, [condition(cargo_available)]) :-
     ),
     !.
 
-test(llvm_astar_suite_smoke, [condition(llvm_suite_available)]) :-
-    % Prefer existing generated-runtime LLVM A* suites when tools exist.
-    % Skip cleanly if llc/clang unavailable (suite files self-skip).
-    catch(
-        ( process_create(path(llc), ['--version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _,
-        ( format(user_error, '[SKIP] llvm tools unavailable for A* suites~n', []),
-          true )),
-    !.
+test(llvm_astar_autodetect_suite) :-
+    run_llvm_astar_script('tests/core/test_wam_llvm_astar_autodetect.pl').
+
+test(llvm_astar_generated_runtime_suites,
+     [condition(llvm_tools_available)]) :-
+    maplist(run_llvm_astar_script,
+        [ 'tests/core/test_wam_llvm_astar_execution.pl',
+          'tests/core/test_wam_llvm_astar_heuristic.pl',
+          'tests/core/test_wam_llvm_astar_runtime_heuristic.pl'
+        ]).
 
 :- end_tests(astar4_executable).
 
 % ============================================================
 % Helpers
 % ============================================================
+
+run_llvm_astar_script(File) :-
+    current_prolog_flag(executable, Swipl),
+    process_create(Swipl, ['-q', '-s', File], [process(Pid)]),
+    process_wait(Pid, Status),
+    assertion(Status == exit(0)).
 
 run_dotnet_build(Dir, Exit, Out) :-
     setup_call_cleanup(
@@ -606,8 +632,9 @@ int main(void) {
     wam_register_relation_weighted_edge(&state, "edge_a", "a", "b", 1.0);
     wam_register_relation_weighted_edge(&state, "edge_a", "b", "c", 1.0);
     wam_register_relation_weighted_edge(&state, "edge_a", "a", "c", 10.0);
-    /* Overestimating heuristic toward c — must still get 2.0 via a->b->c */
-    wam_register_relation_weighted_edge(&state, "edge_a", "a", "c", 100.0); /* heur bag shares relation when fallback */
+    /* Make the cheap detour look expensive to unsafe f-first A*. */
+    wam_bind_kernel_heur_relation(&state, "astar_a", 4, "heur_a");
+    wam_register_relation_weighted_edge(&state, "heur_a", "b", "c", 100.0);
     wam_register_relation_weighted_edge(&state, "edge_b", "x", "y", 3.0);
     wam_register_relation_weighted_edge(&state, "edge_b", "y", "z", 4.0);
 
@@ -697,7 +724,7 @@ mod astar4_contract {
         );
         vm.register_indexed_weighted_edge_triples(
             \"a_heur/3\",
-            &[(\"a\", \"b\", 100.0), (\"c\", \"b\", 0.0)],
+            &[(\"c\", \"b\", 100.0)],
         );
         let got = vm.collect_native_astar_shortest_path_cost(
             \"a\", \"a_edge/3\", \"a_heur/3\", \"b\", 2.0);

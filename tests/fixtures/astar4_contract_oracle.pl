@@ -85,16 +85,16 @@ astar4_oracle_cheaper_detour_edges([
 astar4_oracle_cheaper_detour_cost(2.0).
 
 % Overestimating heuristic: direct a->b weight 10, detour a->c->b cost 2.
-% Heuristic h(a)=100 would make unsafe first-pop A* take the direct edge
-% if it settled incorrectly; Dijkstra optimum is still 2.0.
+% h(c,b)=100 makes the cheap detour frontier entry score 101 while the
+% direct goal scores 10 (missing h(b,b) defaults to zero).  An unsafe
+% f-ordered first-goal-pop therefore returns 10; Dijkstra still returns 2.
 astar4_oracle_overestimate_edges([
     edge(a, b, 10.0),
     edge(a, c, 1.0),
     edge(c, b, 1.0)
 ]).
 astar4_oracle_overestimate_heur([
-    edge(a, b, 100.0),
-    edge(c, b, 0.0)
+    edge(c, b, 100.0)
 ]).
 astar4_oracle_overestimate_cost(2.0).
 

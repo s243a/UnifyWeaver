@@ -51,6 +51,7 @@
 :- dynamic user:direct_dist/3.
 :- dynamic user:direct_dist_pred/1.
 :- dynamic user:dimensionality/1.
+:- dynamic user:fs_bad_weighted/3.
 :- dynamic user:category_parent/2.
 :- dynamic user:category_ancestor/4.
 :- dynamic user:max_depth/1.
@@ -778,6 +779,39 @@ test(native_astar4_codegen_and_build, [condition(dotnet_available)]) :-
     ; format(user_error, 'native_astar4 build failed:~n~w~n', [Out]), fail
     ),
     !.
+
+test(astar4_weighted_fact_materialization_rejects_malformed_atom_source_rows) :-
+    Kernel = recursive_kernel(astar_shortest_path4, fs_bad_astar/4,
+                              [ edge_pred(fs_bad_weighted/3),
+                                direct_dist_pred(fs_bad_weighted/3)
+                              ]),
+    Detected = ['fs_bad_astar/4'-Kernel],
+    setup_call_cleanup(
+        retractall(user:fs_bad_weighted(_, _, _)),
+        ( % A non-atom source is outside the atom-keyed native ABI.
+          assertz(user:fs_bad_weighted(42, fs_target, bad_weight)),
+          wam_fsharp_target:emit_weighted_ffi_facts_fs(
+              Detected, [], IgnoredCode),
+          assertion(sub_string(IgnoredCode, _, _, _,
+                               '("fs_bad_weighted", [])')),
+          retractall(user:fs_bad_weighted(_, _, _)),
+          assertz(user:fs_bad_weighted(fs_source, 42, 1.0)),
+          catch(wam_fsharp_target:emit_weighted_ffi_facts_fs(
+                    Detected, [], _), TargetError, true),
+          assertion(nonvar(TargetError)),
+          assertion(TargetError = error(
+              domain_error(weighted_kernel_fact,
+                           fs_bad_weighted(fs_source, 42, 1.0)), _)),
+          retractall(user:fs_bad_weighted(_, _, _)),
+          assertz(user:fs_bad_weighted(fs_source, fs_target, bad_weight)),
+          catch(wam_fsharp_target:emit_weighted_ffi_facts_fs(
+                    Detected, [], _), WeightError, true),
+          assertion(nonvar(WeightError)),
+          assertion(WeightError = error(
+              domain_error(weighted_kernel_fact,
+                           fs_bad_weighted(fs_source, fs_target, bad_weight)), _))
+        ),
+        retractall(user:fs_bad_weighted(_, _, _))).
 
 test(astar4_no_kernels_still_builds, [condition(dotnet_available)]) :-
     assert_astar_program,

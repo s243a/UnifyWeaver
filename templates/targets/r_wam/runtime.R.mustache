@@ -2964,7 +2964,6 @@ WamRuntime$astar_shortest_path4 <- function(program, state, key, edge_pred,
   # Malformed relevant row fails the complete call.
   heuristic_at <- function(node) {
     if (invalid_row) return(0)
-    if (identical(node$id, tgt_v$id)) return(0)
     h_var <- Unbound(paste0("V_astar_h_", state$var_counter))
     state$var_counter <- state$var_counter + 1L
     h_goal <- StructTerm(dist_atom_id, list(node, tgt_v, h_var))

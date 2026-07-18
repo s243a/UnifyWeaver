@@ -1158,15 +1158,32 @@ go_binary_edge_fact_pairs(Module, EdgePred/2, FactPairs) :-
         FactPairs).
 
 go_weighted_edge_fact_triples(Module, WeightPred/3, FactTriples) :-
-    findall(Left-Right-Weight,
+    findall(row(Left, Right, Weight),
         ( functor(WeightHead, WeightPred, 3),
           Module:clause(WeightHead, true),
-          WeightHead =.. [WeightPred, Left, Right, Weight],
-          atom(Left),
-          atom(Right),
-          number(Weight)
+          WeightHead =.. [WeightPred, Left, Right, Weight]
         ),
-        FactTriples).
+        Rows),
+    go_validate_weighted_rows(WeightPred, Rows, FactTriples).
+
+go_validate_weighted_rows(_, [], []).
+go_validate_weighted_rows(WeightPred, [row(Left, Right, Weight0)|Rows], FactTriples) :-
+    (   atom(Left)
+    ->  (   atom(Right), number(Weight0)
+        ->  Weight is float(Weight0),
+            FactTriples = [Left-Right-Weight|Rest]
+        ;   Fact =.. [WeightPred, Left, Right, Weight0],
+            format(atom(Message),
+                   'native weighted relation ~w requires atom/atom/number rows',
+                   [WeightPred]),
+            throw(error(domain_error(weighted_kernel_fact, Fact),
+                        context(wam_go_target:go_weighted_edge_fact_triples/3,
+                                Message)))
+        )
+    ;   % Non-atom sources cannot be reached from the atom-keyed native ABI.
+        FactTriples = Rest
+    ),
+    go_validate_weighted_rows(WeightPred, Rows, Rest).
 
 go_foreign_lowerable_countdown_sum(Pred, 2, Clauses) :-
     member(BaseHead-true, Clauses),
@@ -1254,6 +1271,11 @@ go_foreign_lowerable_astar_shortest_path(Module, Pred, 4, Clauses,
                     dimensionality(Dim)].
 
 go_foreign_astar_direct_pred(Module, _FallbackPred, DirectPred/3, DirectTriples) :-
+    go_configured_astar_direct_pred(Module, DirectPred),
+    go_weighted_edge_fact_triples(Module, DirectPred/3, DirectTriples),
+    !.
+go_foreign_astar_direct_pred(Module, _FallbackPred, DirectPred/3, DirectTriples) :-
+    % Backward compatibility for workloads that predate direct_dist_pred/1.
     go_weighted_edge_fact_triples(Module, direct_semantic_dist/3, DirectTriples),
     DirectTriples \= [],
     DirectPred = direct_semantic_dist,
@@ -1261,6 +1283,19 @@ go_foreign_astar_direct_pred(Module, _FallbackPred, DirectPred/3, DirectTriples)
 go_foreign_astar_direct_pred(_Module, FallbackPred, DirectPred, DirectTriples) :-
     FallbackPred = DirectPred,
     DirectTriples = [].
+
+go_configured_astar_direct_pred(Module, DirectPred) :-
+    (   current_predicate(Module:direct_dist_pred/1),
+        Module:direct_dist_pred(Spec)
+    ;   Module \== user,
+        current_predicate(user:direct_dist_pred/1),
+        user:direct_dist_pred(Spec)
+    ),
+    (   Spec = DirectPred/3
+    ;   atom(Spec), DirectPred = Spec
+    ),
+    atom(DirectPred),
+    !.
 
 go_foreign_astar_dimensionality(Module, Dim) :-
     (   current_predicate(Module:dimensionality/1),

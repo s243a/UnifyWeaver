@@ -5355,15 +5355,31 @@ merge_weighted_rel_group_fs(Rel-Lists, Rel-Triples) :-
 
 collect_weighted_edge_triples_fs(EdgePred, Triples) :-
     functor(Head, EdgePred, 3),
-    findall(triple(From, To, W),
+    findall(row(From, To, W),
             (   clause(user:Head, true),
-                Head =.. [EdgePred, From, To, W0],
-                atom(From),
-                atom(To),
-                number(W0),
-                W is float(W0)
+                Head =.. [EdgePred, From, To, W]
             ),
-            Triples).
+            Rows),
+    validate_weighted_rows_fs(EdgePred, Rows, Triples).
+
+validate_weighted_rows_fs(_, [], []).
+validate_weighted_rows_fs(EdgePred, [row(From, To, W0)|Rows], Triples) :-
+    (   atom(From)
+    ->  (   atom(To), number(W0)
+        ->  W is float(W0),
+            Triples = [triple(From, To, W)|Rest]
+        ;   Fact =.. [EdgePred, From, To, W0],
+            format(atom(Message),
+                   'native weighted relation ~w requires atom/atom/number rows',
+                   [EdgePred]),
+            throw(error(domain_error(weighted_kernel_fact, Fact),
+                        context(wam_fsharp_target:emit_weighted_ffi_facts_fs/3,
+                                Message)))
+        )
+    ;   % Non-atom sources cannot be reached from the atom-keyed native ABI.
+        Triples = Rest
+    ),
+    validate_weighted_rows_fs(EdgePred, Rows, Rest).
 
 emit_weighted_ffi_facts_block_fs(RelEntries, Code) :-
     maplist(emit_weighted_rel_entry_fs, RelEntries, EntryAtoms),

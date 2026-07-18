@@ -388,45 +388,59 @@ llvm_foreign_lowerable_weighted_shortest_path(Pred, 3, Clauses, WeightPred) :-
 
 %% llvm_recursive_kernel_astar_shortest_path(+Pred, +Arity, +Clauses, -RecKernel).
 %
-%  Detects the astar_shortest_path4 clause shape (arity 4):
-%    pred(X, Y, W, _Vis) :- weight_pred(X, Y, W).
-%    pred(X, Y, Cost, Vis) :-
+%  Detects the canonical astar_shortest_path4 clause shape (arity 4):
+%    pred(X, Y, _Dim, W) :- weight_pred(X, Y, W).
+%    pred(X, Y, Dim, Cost) :-
 %        weight_pred(X, Z, W),
-%        pred(Z, Y, RC, [Z|Vis]),
+%        pred(Z, Y, Dim, RC),
 %        Cost is W + RC.
 %
-%  Extracts weight_pred. If user:direct_semantic_dist/3 is defined,
-%  includes it as direct_dist_pred for runtime heuristic support.
+%  Extracts weight_pred. If user:direct_dist_pred/1 (or the legacy
+%  direct_semantic_dist/3 convention) is available, includes it for
+%  target-specific runtime heuristic materialization.
 llvm_recursive_kernel_astar_shortest_path(Pred, Arity, Clauses,
         recursive_kernel(astar_shortest_path4, Pred/Arity, Config)) :-
     llvm_foreign_lowerable_astar_shortest_path(Pred, Arity, Clauses, WeightPred),
-    ( predicate_property(user:direct_semantic_dist(_,_,_), defined)
-    -> Config = [weight_pred(WeightPred/3), direct_dist_pred(direct_semantic_dist/3)]
+    ( llvm_astar_direct_dist_pred(DirectPred)
+    -> Config = [weight_pred(WeightPred/3), direct_dist_pred(DirectPred)]
     ;  Config = [weight_pred(WeightPred/3)]
     ).
 
+% Resolve the fleet-wide direct_dist_pred/1 declaration first.  Accept both
+% a predicate indicator and the convenient bare atom form; retain the old
+% direct_semantic_dist/3 convention as a compatibility fallback.
+llvm_astar_direct_dist_pred(DirectPred) :-
+    catch(user:direct_dist_pred(Spec), _, fail),
+    llvm_normalize_ternary_pred_spec(Spec, DirectPred),
+    !.
+llvm_astar_direct_dist_pred(direct_semantic_dist/3) :-
+    predicate_property(user:direct_semantic_dist(_, _, _), defined).
+
+llvm_normalize_ternary_pred_spec(_Module:Spec, DirectPred) :- !,
+    llvm_normalize_ternary_pred_spec(Spec, DirectPred).
+llvm_normalize_ternary_pred_spec(Name/3, Name/3) :- atom(Name), !.
+llvm_normalize_ternary_pred_spec(Name, Name/3) :- atom(Name).
+
 %% llvm_foreign_lowerable_astar_shortest_path(+Pred, +Arity, +Clauses, -WeightPred).
 %
-%  Matches arity-4 predicates with weighted shortest path + visited list.
-%  Base clause: pred(X, Y, W, _) :- weight(X, Y, W).
-%  Recursive clause: pred(X, Y, Cost, Vis) :- weight(X, Z, W), pred(Z, Y, RC, ...), Cost is W + RC.
+%  Matches the shared arity-4 Source/Target/Dim/Cost relation.  Dim is
+%  threaded unchanged through recursion and is a scheduling input only.
 llvm_foreign_lowerable_astar_shortest_path(Pred, 4, Clauses, WeightPred) :-
     member(BaseHead-BaseBody, Clauses),
     member(RecHead-RecBody, Clauses),
     BaseHead \== RecHead,
-    BaseHead =.. [Pred, _, _, _, _],
-    RecHead =.. [Pred, _, _, _, _],
-    % Base body is a single weight_pred call (ignoring visited arg).
-    BaseBody =.. [WeightPred, _, _, _],
+    BaseHead =.. [Pred, BaseStart, BaseTarget, _BaseDim, BaseCost],
+    BaseBody =.. [WeightPred, BaseStart, BaseTarget, BaseCost],
     WeightPred \== Pred,
-    % Recursive body contains weight call, recursive call, and arithmetic.
-    RecBody = (WeightGoal, RestBody),
-    WeightGoal =.. [WeightPred, _, _, _],
-    % Rest may have \+ member(...) interleaved; just check for the recursive call and is/2.
-    term_string(RestBody, RestStr),
-    atom_string(Pred, PredStr),
-    sub_string(RestStr, _, _, _, PredStr),
-    sub_string(RestStr, _, _, _, " is ").
+    RecHead =.. [Pred, RecStart, RecTarget, RecDim, RecCost],
+    RecBody = (WeightGoal, (RecGoal, IsGoal)),
+    WeightGoal =.. [WeightPred, RecStart, Mid, Weight],
+    RecGoal =.. [Pred, Mid, RecTarget, RecDim, RestCost],
+    IsGoal =.. [is, RecCost, PlusExpr],
+    PlusExpr =.. [+, Left, Right],
+    ( Left == Weight, Right == RestCost
+    ; Left == RestCost, Right == Weight
+    ).
 
 %% llvm_auto_detect_foreign_kernels(+Predicates) is det.
 %
@@ -903,6 +917,7 @@ build_wsp3_instance_parts([PredArity-Config | Rest], Index,
 %  call. The weight predicate has arity 3: weight_pred(From, To, Weight).
 build_wsp3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId) :-
     ( member(weight_pred(WeightPred), Config) -> true
+    ; member(edge_pred(WeightPred), Config) -> true
     ; WeightPred = weight/3  % default for smoke tests
     ),
     WeightPred = WPName/WPArity,
@@ -983,7 +998,8 @@ build_astar4_instance_parts([PredArity-Config | Rest], Index,
     format(atom(HeuristicName), 'astar4_inst_~w_~w_heuristic', [SanePred, Index]),
     build_wsp3_instance_table(Config, EdgeTableName, EdgeTableIR, GepLen, EffLen, MaxAtomId),
     % Check if direct_dist_pred is configured for runtime heuristic.
-    ( member(direct_dist_pred(DDPred), Config)
+    ( member(direct_dist_pred(DDRaw), Config),
+      llvm_normalize_ternary_pred_spec(DDRaw, DDPred)
     -> % Runtime heuristic: emit a %WeightedFact table for direct distances
        % and build the heuristic dynamically at query time.
        format(atom(DDTableName), 'astar4_inst_~w_~w_direct', [SanePred, Index]),
@@ -996,7 +1012,8 @@ build_astar4_instance_parts([PredArity-Config | Rest], Index,
 'as_inst_~w:
   %as_tbl_~w = getelementptr [~w x %WeightedFact], [~w x %WeightedFact]* @~w, i64 0, i64 0
   %as_dtbl_~w = getelementptr [~w x %WeightedFact], [~w x %WeightedFact]* @~w, i64 0, i64 0
-  %as_target_~w = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %as_target_v_~w = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %as_target_~w = extractvalue %Value %as_target_v_~w, 1
   %as_h_~w = call double* @wam_build_heuristic_from_table(
       %WeightedFact* %as_dtbl_~w, i64 ~w,
       i64 %as_target_~w, i64 ~w)
@@ -1007,7 +1024,7 @@ build_astar4_instance_parts([PredArity-Config | Rest], Index,
            [Index,
             Index, GepLen, GepLen, EdgeTableName,
             Index, DDGepLen, DDGepLen, DDTableName,
-            Index,
+            Index, Index, Index,
             Index, Index, DDEffLen,
             Index, MaxAtomIdAll,
             Index, Index, EffLen, Index, MaxAtomIdAll,
@@ -1059,7 +1076,6 @@ build_astar4_heuristic_array(Config, MaxAtomId, Name, IR, Size) :-
                 ( Goal =.. [HPName, Node, Target, HVal],
                   user:Goal,
                   atom(Node),
-                  number(HVal),
                   intern_atom(Node, AtomId)
                 ),
                 HEntries),
@@ -1079,7 +1095,18 @@ build_astar4_heuristic_array(Config, MaxAtomId, Name, IR, Size) :-
     ).
 
 heuristic_entry_value(HEntries, AtomId, Value) :-
-    ( memberchk(AtomId-V, HEntries) -> Value = V ; Value = 0.0 ).
+    findall(V, member(AtomId-V, HEntries), Values),
+    ( Values == []
+    -> Value = 0.0
+    ;  maplist(llvm_valid_heuristic_value, Values)
+    -> min_list(Values, Min), Value is float(Min)
+    ;  % Preserve malformed relevant data as a runtime-invalid sentinel.
+       Value = -1.0
+    ).
+
+llvm_valid_heuristic_value(V) :-
+    number(V),
+    catch((V >= 0, V =:= V, V =\= 1.0Inf, V =\= -1.0Inf), _, fail).
 
 format_double_entry(V, Str) :-
     ( integer(V)

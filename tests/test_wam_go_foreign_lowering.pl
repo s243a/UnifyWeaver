@@ -14,6 +14,8 @@
 :- dynamic test_weighted_path/3.
 :- dynamic test_astar_weighted_path/4.
 :- dynamic test_mixed_weighted_filtered/2.
+:- dynamic direct_dist_pred/1.
+:- dynamic configured_direct/3.
 
 edge(a, b).
 edge(b, c).
@@ -178,6 +180,48 @@ test(foreign_auto_detect_generation) :-
     assertion(sub_string(AstarCode, _, _, _, 'vm.registerForeignStringConfig("test_astar_weighted_path/4", "weight_pred", "weighted_edge/3")')),
     assertion(sub_string(AstarCode, _, _, _, 'vm.registerForeignUsizeConfig("test_astar_weighted_path/4", "dimensionality", 5)')),
     assertion(sub_string(AstarCode, _, _, _, 'return vm.executeForeignPredicate("test_astar_weighted_path", 4)')).
+
+test(astar_configured_direct_pred_validates_atom_source_rows,
+     [ setup(( retractall(direct_dist_pred(_)),
+               retractall(configured_direct(_, _, _)),
+               assertz(direct_dist_pred(configured_direct/3)) )),
+       cleanup(( retractall(direct_dist_pred(_)),
+                 retractall(configured_direct(_, _, _)) ))
+     ]) :-
+    assertz(configured_direct(s, d, 2.0)),
+    compile_wam_predicate_to_go(
+        plunit_wam_go_foreign_lowering:test_astar_weighted_path/4,
+        "call test_astar_weighted_path/4, 4", [foreign_lowering(true)], ValidCode),
+    assertion(sub_string(ValidCode, _, _, _,
+        'registerForeignStringConfig("test_astar_weighted_path/4", "direct_dist_pred", "configured_direct/3")')),
+    assertion(sub_string(ValidCode, _, _, _,
+        'registerIndexedWeightedEdgeTriples("configured_direct/3", []WeightedEdgeTriple{{Left: "s", Right: "d", Weight: 2}')),
+    % A non-atom source is outside the atom-keyed native ABI.
+    retractall(configured_direct(_, _, _)),
+    assertz(configured_direct(42, d, bad_weight)),
+    compile_wam_predicate_to_go(
+        plunit_wam_go_foreign_lowering:test_astar_weighted_path/4,
+        "call test_astar_weighted_path/4, 4", [foreign_lowering(true)], IgnoredCode),
+    assertion(sub_string(IgnoredCode, _, _, _,
+        'registerIndexedWeightedEdgeTriples("configured_direct/3", []WeightedEdgeTriple{})')),
+    retractall(configured_direct(_, _, _)),
+    assertz(configured_direct(s, 42, 1.0)),
+    catch(compile_wam_predicate_to_go(
+              plunit_wam_go_foreign_lowering:test_astar_weighted_path/4,
+              "call test_astar_weighted_path/4, 4", [foreign_lowering(true)], _),
+          TargetError, true),
+    assertion(nonvar(TargetError)),
+    assertion(TargetError = error(
+        domain_error(weighted_kernel_fact, configured_direct(s, 42, 1.0)), _)),
+    retractall(configured_direct(_, _, _)),
+    assertz(configured_direct(s, d, bad_weight)),
+    catch(compile_wam_predicate_to_go(
+              plunit_wam_go_foreign_lowering:test_astar_weighted_path/4,
+              "call test_astar_weighted_path/4, 4", [foreign_lowering(true)], _),
+          WeightError, true),
+    assertion(nonvar(WeightError)),
+    assertion(WeightError = error(
+        domain_error(weighted_kernel_fact, configured_direct(s, d, bad_weight)), _)).
 
 test(foreign_execution_deterministic_and_stream) :-
     once((

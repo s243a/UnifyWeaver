@@ -4559,34 +4559,36 @@ defmodule WamRuntime.GraphKernel.AstarShortestPath do
 
   @doc """
   Returns `[{node, g_cost}, ...]` for settled non-source nodes, or
-  `[{target, 0.0}]` when Source=Target. With `target` bound, search
-  settles Target by g-cost and returns at most that singleton after
-  dispatch post-filter. `dim` must be a positive number (integer Dim
-  at the dispatch boundary).
+  `[{target, 0.0}]` when Source=Target. Search settles Target by
+  g-cost and returns at most that singleton after dispatch post-filter.
+  Source and Target must be atom terms; `dim` must be a positive integer.
   """
   def collect_path_costs(weighted_edges_fn, direct_dist_fn, start, target, dim)
       when is_function(weighted_edges_fn, 1) and is_function(direct_dist_fn, 1)
-       and is_number(dim) and dim > 0 do
-    if target != nil and start == target do
-      [{target, 0.0}]
-    else
-      case heuristic(direct_dist_fn, start, target) do
-        :invalid -> []
-        h_start ->
-          initial_f = f_cost(0, h_start, dim)
-          # Primary key g, secondary f (Dijkstra settle).
-          initial_heap = :gb_sets.singleton({0, initial_f, start})
-          case astar_loop(weighted_edges_fn, direct_dist_fn, target, dim,
-                          initial_heap, %{start => 0.0}) do
-            :invalid -> []
-            final_dist ->
-              final_dist
-              |> Enum.flat_map(fn
-                {^start, _} -> []
-                {node, cost} -> [{node, cost * 1.0}]
-              end)
-          end
-      end
+       and is_integer(dim) and dim > 0 do
+    cond do
+      not valid_node?(start) or not valid_node?(target) ->
+        []
+      start == target ->
+        [{target, 0.0}]
+      true ->
+        case heuristic(direct_dist_fn, start, target) do
+          :invalid -> []
+          h_start ->
+            initial_f = f_cost(0, h_start, dim)
+            # Primary key g, secondary f (Dijkstra settle).
+            initial_heap = :gb_sets.singleton({0, initial_f, start})
+            case astar_loop(weighted_edges_fn, direct_dist_fn, target, dim,
+                            initial_heap, %{start => 0.0}) do
+              :invalid -> []
+              final_dist ->
+                final_dist
+                |> Enum.flat_map(fn
+                  {^start, _} -> []
+                  {node, cost} -> [{node, cost * 1.0}]
+                end)
+            end
+        end
     end
   end
   def collect_path_costs(_, _, _, _, _), do: []
@@ -4603,7 +4605,7 @@ defmodule WamRuntime.GraphKernel.AstarShortestPath do
             astar_loop(weighted_edges_fn, direct_dist_fn, target, dim, heap1, dist)
 
           # Settled by g-cost (Dijkstra). Safe even if h overestimates.
-          target != nil and node == target ->
+          node == target ->
             dist
 
           true ->
@@ -4622,23 +4624,30 @@ defmodule WamRuntime.GraphKernel.AstarShortestPath do
     Enum.reduce_while(edges, {heap, dist}, fn row, {h, d} ->
       case row do
         {_from, next, weight} ->
-          if not valid_edge_weight?(weight) do
-            {:halt, :invalid}
-          else
-            w = weight * 1.0
-            next_g = g_cost + w
-            case Map.fetch(d, next) do
-              {:ok, prev} when prev <= next_g ->
-                {:cont, {h, d}}
-              _ ->
-                case heuristic(direct_dist_fn, next, target) do
-                  :invalid -> {:halt, :invalid}
-                  h_next ->
-                    f_next = f_cost(next_g, h_next, dim)
-                    {:cont, {:gb_sets.add({next_g, f_next, next}, h),
-                             Map.put(d, next, next_g)}}
+          cond do
+            not valid_node?(next) ->
+              {:halt, :invalid}
+            not valid_edge_weight?(weight) ->
+              {:halt, :invalid}
+            true ->
+              w = weight * 1.0
+              next_g = g_cost + w
+              if not valid_edge_weight?(next_g) do
+                {:halt, :invalid}
+              else
+                case Map.fetch(d, next) do
+                  {:ok, prev} when prev <= next_g ->
+                    {:cont, {h, d}}
+                  _ ->
+                    case heuristic(direct_dist_fn, next, target) do
+                      :invalid -> {:halt, :invalid}
+                      h_next ->
+                        f_next = f_cost(next_g, h_next, dim)
+                        {:cont, {:gb_sets.add({next_g, f_next, next}, h),
+                                 Map.put(d, next, next_g)}}
+                    end
                 end
-            end
+              end
           end
         _ ->
           {:halt, :invalid}
@@ -4652,9 +4661,11 @@ defmodule WamRuntime.GraphKernel.AstarShortestPath do
   defp valid_edge_weight?(w) when is_float(w), do: w >= 0.0 and w * 0.0 == 0.0
   defp valid_edge_weight?(_), do: false
 
+  defp valid_node?(value),
+    do: is_binary(value) or (is_atom(value) and not is_nil(value))
+
   # Missing h = 0.0. Duplicate (node,target) → min valid.
   # Malformed relevant row → :invalid.
-  defp heuristic(_direct_dist_fn, _node, nil), do: 0.0
   defp heuristic(direct_dist_fn, node, target) do
     edges = direct_dist_fn.(node)
     edges
@@ -4680,7 +4691,13 @@ defmodule WamRuntime.GraphKernel.AstarShortestPath do
   end
 
   # Secondary scheduling key only — Minkowski-style f = g^D + h^D.
-  defp f_cost(g, h, dim), do: :math.pow(g, dim) + :math.pow(h, dim)
+  # Overflow must not turn a finite Dijkstra result into a kernel crash.
+  defp f_cost(g, h, dim) do
+    value = :math.pow(g, dim) + :math.pow(h, dim)
+    if valid_edge_weight?(value), do: value, else: g
+  rescue
+    ArithmeticError -> g
+  end
 
   @doc """
   Convenience for FactSource-backed graphs. Both `weighted_source` and
@@ -6463,20 +6480,14 @@ end
 %  calls through WamRuntime.GraphKernel.AstarShortestPath. Reads
 %  TWO FactSources at runtime (weighted_edge + direct_dist edges)
 %  via the registry, plus three argument registers:
-%    - A1: start (must be bound to an atom)
-%    - A2: target (atom for goal-directed mode; unbound for Dijkstra
-%      fallback)
-%    - A3: dim (number on entry overrides default; unbound uses
-%      compile-time Dim from kernel config)
-%    - A4: cost (typically unbound; gets bound on success)
+%    - A1: start (must be bound to an atom term)
+%    - A2: target (must be bound to an atom term)
+%    - A3: dim (must be a strictly positive integer)
+%    - A4: cost (free or bound to an exactly matching float)
 %
-%  TWO enumerated registers per solution: A2 (target, only if it
-%  was unbound on entry) and A4 (cost). When target is bound on
-%  entry, the kernel returns AT MOST ONE solution (the goal cost).
-%
-%  Driver-direct call: bind_two_regs/4 binds A2 and A4 (skipping
-%  A2 if already bound) to the first solution.
-compile_astar_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, DirectPred, Dim, Code) :-
+%  The kernel returns at most one solution and the wrapper binds A4.
+%  Aggregate-frame routing and direct-call lifecycle remain unchanged.
+compile_astar_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, DirectPred, _Dim, Code) :-
     atom_string(ModuleName, ModName),
     camel_case(ModName, CamelMod),
     atom_string(Pred, PredStr),
@@ -6498,27 +6509,15 @@ compile_astar_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, DirectPr
       if no separate direct_dist_pred was configured at compile time)
   """
 
-  @default_dim ~w
-
   def run(%WamRuntime.WamState{} = state) do
     start_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
-    target_raw = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 2))
-    dim_raw = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 3))
+    target_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 2))
+    dim_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 3))
+    cost_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 4))
 
-    # target: nil = unbound (Dijkstra mode); else the atom/binary.
-    target_val =
-      case target_raw do
-        {:unbound, _} -> nil
-        v -> v
-      end
-
-    # dim: numeric override on entry; else the compile-time default.
-    dim_val =
-      case dim_raw do
-        {:unbound, _} -> @default_dim
-        n when is_number(n) -> n
-        _ -> @default_dim
-      end
+    unless valid_node?(start_val) and valid_node?(target_val) and
+           is_integer(dim_val) and dim_val > 0 and valid_cost_arg?(cost_val),
+      do: throw({:fail, state})
 
     weighted_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
     direct_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
@@ -6533,15 +6532,11 @@ compile_astar_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, DirectPr
       WamRuntime.GraphKernel.AstarShortestPath.collect_path_costs(
         weighted_fn, direct_fn, start_val, target_val, dim_val)
 
-    # Post-filter: when target was bound on entry, surface only its
-    # entry from the dist map (matches Rust dispatchs `results.retain`
-    # behaviour). When target was unbound, return the full set
-    # (Dijkstra mode).
-    pairs =
-      case target_val do
-        nil -> pairs
-        t -> Enum.filter(pairs, fn {n, _} -> n == t end)
-      end
+    # Surface only the bound target and enforce Prologs typed float
+    # unification before either ordinary or aggregate-frame routing.
+    pairs = Enum.filter(pairs, fn {n, cost} ->
+      n == target_val and cost_compatible?(cost_val, cost)
+    end)
 
     if WamRuntime.in_forkable_aggregate_frame?(state) do
       {above, agg_cp, below} = WamRuntime.split_at_aggregate_cp(state)
@@ -6557,8 +6552,8 @@ compile_astar_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, DirectPr
       throw({:fail, new_state})
     else
       case pairs do
-        [{first_target, first_cost} | _] ->
-          case bind_target_and_cost(state, target_val, first_target, first_cost) do
+        [{_first_target, first_cost} | _] ->
+          case bind_cost(state, first_cost) do
             nil -> throw({:fail, state})
             bound -> {:ok, bound}
           end
@@ -6595,24 +6590,21 @@ compile_astar_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, DirectPr
     end
   end
 
-  # If target was bound on entry, A2 is already set — skip rebinding.
-  # Always bind A4 (cost).
-  defp bind_target_and_cost(state, nil, first_target, first_cost) do
-    # Target was unbound on entry — bind both A2 and A4.
-    with {:ok, s1} <- bind_one(state, 2, first_target),
-         {:ok, s2} <- bind_one(s1, 4, first_cost) do
-      s2
-    else
-      _ -> nil
-    end
-  end
-  defp bind_target_and_cost(state, _bound_target, _first_target, first_cost) do
-    # Target was bound on entry — only bind A4.
+  defp bind_cost(state, first_cost) do
     case bind_one(state, 4, first_cost) do
       {:ok, s} -> s
       _ -> nil
     end
   end
+
+  defp valid_node?(value),
+    do: is_binary(value) or (is_atom(value) and not is_nil(value))
+
+  defp valid_cost_arg?({:unbound, _}), do: true
+  defp valid_cost_arg?(value), do: is_float(value)
+
+  defp cost_compatible?({:unbound, _}, _candidate), do: true
+  defp cost_compatible?(bound, candidate), do: bound === candidate
 
   defp bind_one(state, reg_idx, value) do
     case WamRuntime.get_reg_raw(state, reg_idx) do
@@ -6631,7 +6623,6 @@ end
      PredStr, EdgePredStr, DirectPredStr,
      EdgeKey,
      DirectKey,
-     Dim,
      EdgeKey,
      DirectKey,
      CamelPred]).

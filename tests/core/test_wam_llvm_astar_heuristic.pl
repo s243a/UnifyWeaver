@@ -1,27 +1,23 @@
 :- encoding(utf8).
 % test_wam_llvm_astar_heuristic.pl
-% Tests that A* with a non-zero admissible heuristic produces the
-% correct shortest-path distance (same as Dijkstra since the
-% heuristic is admissible — never overestimates).
+% Tests that an overestimating heuristic cannot change the shortest-path
+% result.  An f-first implementation returns the direct cost 10.0 here;
+% the contract-safe g-primary implementation returns 2.0.
 %
 % The heuristic is baked at compile time for a FIXED target atom
 % specified via `heuristic_target(TargetAtom)` in the config. A
 % `heuristic_pred(Name/3)` predicate supplies per-node estimates
 % of the remaining distance to that target.
 %
-% Graph (same as M5.9/M5.10 — greedy ≠ optimal):
+% Graph:
 %
-%     a --10--> b --1--> c --1--> d    (optimal three-hop, total 12)
-%     a --100-> d                      (greedy direct, total 100)
+%     a --1--> b --1--> c    (optimal, total 2)
+%     a --10-> c             (direct, total 10)
 %
-% Heuristic (admissible, for target d):
-%     h(a, d) = 3.0     (actual ≥ 12, so 3 is admissible)
-%     h(b, d) = 2.0     (actual = 2, so exact)
-%     h(c, d) = 1.0     (actual = 1, exact)
-%     h(d, d) = 0.0     (exact)
+% Heuristic for target c deliberately overestimates b. Duplicate b rows
+% also verify that materialization keeps the minimum (50.0, not 100.0).
 %
-% Expected: A*(a, d) = 12.0 (same as Dijkstra — heuristic only
-%           affects exploration order, not the result)
+% Expected: A*(a, c) = 2.0.
 %
 % Additionally verifies that the heuristic array is NOT
 % zeroinitializer (proving the heuristic_pred path was taken).
@@ -35,20 +31,19 @@
 
 % Edge weights.
 :- dynamic hw/3.
-hw(a, b, 10.0).
+hw(a, b, 1.0).
 hw(b, c, 1.0).
-hw(c, d, 1.0).
-hw(a, d, 100.0).
+hw(a, c, 10.0).
 
-% Heuristic for target=d. Admissible: never overestimates.
-:- dynamic h_to_d/3.
-h_to_d(a, d, 3.0).
-h_to_d(b, d, 2.0).
-h_to_d(c, d, 1.0).
-h_to_d(d, d, 0.0).
+% Overestimating heuristic for target=c.
+:- dynamic h_to_c/3.
+h_to_c(a, c, 0.0).
+h_to_c(b, c, 100.0).
+h_to_c(b, c, 50.0).
+h_to_c(c, c, 0.0).
 
-:- dynamic astar_h/3.
-astar_h(_, _, _) :- fail.
+:- dynamic astar_h/4.
+astar_h(_, _, _, _) :- fail.
 
 host_target_triple(Triple) :-
     ( catch(
@@ -89,15 +84,15 @@ zip_loop(_, _, A, S) :- sort(1, @<, A, S).
 add_b(L, _, A, A) :- memberchk(L-_, A), !.
 add_b(L, I, A, [L-I|A]).
 
-extract_instr_count(Src, P, C) :-
+extract_instr_count(Src, _P, C) :-
     Pat = "@module_code = private constant \\[(?<n>\\d+) x %Instruction\\]",
     re_matchsub(Pat, Src, M, []), get_dict(n, M, NS), number_string(C, NS).
-extract_label_count(Src, P, C) :-
+extract_label_count(Src, _P, C) :-
     Pat = "@module_labels = private constant \\[(?<n>\\d+) x i32\\]",
     re_matchsub(Pat, Src, M, []), get_dict(n, M, NS), number_string(C, NS).
 
 test_astar_with_heuristic :-
-    format('--- A* with non-zero admissible heuristic ---~n'),
+    format('--- A* with overestimating heuristic ---~n'),
     ( process_which('clang'), process_which('llc')
     -> run_heuristic_test
     ;  format('  SKIP: clang or llc not found~n')
@@ -108,15 +103,15 @@ run_heuristic_test :-
     tmp_file_stream(text, LLPath, Stream), close(Stream),
     host_target_triple(Triple),
     write_wam_llvm_project(
-        [user:astar_h/3],
+        [user:astar_h/4],
         [ module_name('astar_h_exec'),
           target_triple(Triple),
           target_datalayout(''),
           foreign_predicates([
-              astar_h/3 - astar_shortest_path4 - [
+              astar_h/4 - astar_shortest_path4 - [
                   weight_pred(hw/3),
-                  heuristic_pred(h_to_d/3),
-                  heuristic_target(d)
+                  heuristic_pred(h_to_c/3),
+                  heuristic_target(c)
               ]
           ])
         ],
@@ -128,16 +123,17 @@ run_heuristic_test :-
     -> format('  PASS: heuristic global emitted~n')
     ;  format('  FAIL: heuristic global missing~n'), throw(no_heuristic)
     ),
-    ( sub_string(Src, _, _, _, 'double 3.0')
-    -> format('  PASS: non-zero heuristic value present (h(a,d)=3.0)~n')
-    ;  format('  FAIL: heuristic appears to be all zeros~n')
+    ( sub_string(Src, _, _, _, 'double 50.0')
+    -> format('  PASS: duplicate heuristic rows use minimum 50.0~n')
+    ;  format('  FAIL: minimum duplicate heuristic missing~n'),
+       throw(heuristic_duplicate_min_missing)
     ),
 
     % Extract atom IDs and build driver.
     extract_atom_ids_from_weighted(Src, 'astar4_inst_astar_h_0_edges',
-        [a-b, b-c, c-d, a-d], AtomIds),
+        [a-b, b-c, a-c], AtomIds),
     get_dict(a, AtomIds, AId),
-    get_dict(d, AtomIds, DId),
+    get_dict(c, AtomIds, DId),
     extract_instr_count(Src, astar_h, IC),
     extract_label_count(Src, astar_h, LC),
     format(atom(DriverIR),
@@ -147,8 +143,10 @@ entry:
   %a1 = insertvalue %Value %a1_0, i64 ~w, 1
   %a2_0 = insertvalue %Value undef, i32 0, 0
   %a2 = insertvalue %Value %a2_0, i64 ~w, 1
-  %a3_0 = insertvalue %Value undef, i32 6, 0
-  %a3 = insertvalue %Value %a3_0, i64 0, 1
+  %a3_0 = insertvalue %Value undef, i32 1, 0
+  %a3 = insertvalue %Value %a3_0, i64 1, 1
+  %a4_0 = insertvalue %Value undef, i32 6, 0
+  %a4 = insertvalue %Value %a4_0, i64 0, 1
   %vm = call %WamState* @wam_state_new(
       %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
       i32 ~w,
@@ -157,10 +155,11 @@ entry:
   call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
   call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
   call void @wam_set_reg(%WamState* %vm, i32 2, %Value %a3)
+  call void @wam_set_reg(%WamState* %vm, i32 3, %Value %a4)
   %ok = call i1 @run_loop(%WamState* %vm)
   br i1 %ok, label %hit, label %miss
 hit:
-  %dist = call double @wam_get_reg_double(%WamState* %vm, i32 2)
+  %dist = call double @wam_get_reg_double(%WamState* %vm, i32 3)
   %dist100 = fmul double %dist, 1.0e2
   %dist_i32 = fptosi double %dist100 to i32
   ret i32 %dist_i32
@@ -189,10 +188,10 @@ miss:
        ;  shell(BinPath, ExitCode)
        )
     ),
-    ExpectedScaled is truncate(12.0 * 100) /\ 255,
+    ExpectedScaled is truncate(2.0 * 100) /\ 255,
     ( ExitCode =:= ExpectedScaled
-    -> format('  PASS: A*(a,d) with heuristic = 12.0 (scaled=~w)~n', [ExitCode])
-    ;  format('  FAIL: returned ~w (expected ~w for 12.0)~n',
+    -> format('  PASS: overestimating h preserves A*(a,c)=2.0 (scaled=~w)~n', [ExitCode])
+    ;  format('  FAIL: returned ~w (expected ~w for 2.0)~n',
           [ExitCode, ExpectedScaled])
     ),
     catch(delete_file(LLPath), _, true),
@@ -210,7 +209,6 @@ process_which(Tool) :-
         ), _, fail).
 
 test_all :-
-    catch(test_astar_with_heuristic, E,
-        format('  ERROR: ~w~n', [E])).
+    test_astar_with_heuristic.
 
 :- initialization(test_all, main).
