@@ -74,9 +74,8 @@ test(strnum_beside_string) :-
 test(arith_read_deactivates) :-
     strnum_names("{ x = $1; y = x + 1; print y }\n", []), !.
 
-% compared to a numeric literal -> not activated (stays numeric i64).
-test(int_literal_cmp_deactivates) :-
-    strnum_names("{ x = $1; if (x > 3) print \"b\" }\n", []), !.
+% compared to a numeric literal -> activated in step 3b (dispatched to
+% @wam_strnum_cmp_int), see int_literal_cmp_activates below.
 
 % two field copies compared to each other -> both activated.
 test(strnum_vs_strnum_activates) :-
@@ -91,6 +90,14 @@ test(string_literal_cmp_activates) :-
 test(fixpoint_partner_deactivation) :-
     strnum_names("{ a = $1; b = $2; if (a > b) print \"x\"; c = b + 1; print c }\n", []),
     !.
+
+% step 3b: comparison against an integer literal is now a supported read.
+test(int_literal_cmp_activates) :-
+    strnum_names("{ x = $1; if (x > 3) print \"b\" }\n", [x]), !.
+
+% but arithmetic still deactivates, even alongside an int comparison.
+test(int_cmp_but_arith_deactivates) :-
+    strnum_names("{ x = $1; if (x > 3) print \"b\"; y = x + 1; print y }\n", []), !.
 
 % --- end-to-end: strnum comparison semantics --------------------------------
 
@@ -126,6 +133,22 @@ test(e2e_numeric_literal_cmp, [condition(clang_available)]) :-
     ldir(Dir),
     build_run(Dir, 'nlc', "{ n = $1; if (n == 5) print \"five\" }\n", "5\n6\n", Out, St),
     assertion(St == 0), assertion(Out == "five\n"), !.
+
+% step 3b: strnum vs integer literal -- numeric when the field looks numeric,
+% lexical otherwise (a non-numeric field compares as a string against "3").
+test(e2e_int_literal_numeric_vs_lexical, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'iln', "{ x = $1; if (x > 3) print \"big\"; else print \"no\" }\n",
+        "5\n2\nabc\n", Out, St),
+    assertion(St == 0), assertion(Out == "big\nno\nbig\n"), !.
+
+% step 3b: equality vs a number -- "5x" is not the number 5 (lexical), but "05"
+% is (numeric).
+test(e2e_int_equality, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'ieq', "{ n = $1; if (n == 5) print \"y\"; else print \"n\" }\n",
+        "5\n05\n5x\n", Out, St),
+    assertion(St == 0), assertion(Out == "y\ny\nn\n"), !.
 
 :- end_tests(plawk_strnum).
 

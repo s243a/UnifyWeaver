@@ -6789,6 +6789,60 @@ sc.zero:
   ret i32 0
 }
 
+; @wam_strnum_cmp_int(as, akind, bval): compare a strnum/number/string operand
+; (as its string form + kind, like @wam_strnum_cmp) against an integer number
+; bval. Numeric iff the string operand is numeric-typed (number, or strnum that
+; looks numeric); otherwise lexical against bval formatted as a decimal string
+; (the number-to-string conversion a non-numeric-vs-number comparison needs).
+; Returns the sign as i32 (-1/0/1). Used for `strnum CMP <integer literal>`.
+@.wam_strnum_int_fmt = private constant [5 x i8] c"%lld\00"
+
+define i32 @wam_strnum_cmp_int(i8* %as, i8 %akind, i64 %bval) {
+entry:
+  %ci.a_isnum = icmp eq i8 %akind, 0
+  %ci.a_isstrnum = icmp eq i8 %akind, 1
+  br i1 %ci.a_isnum, label %ci.numeric, label %ci.a_maybe
+
+ci.a_maybe:
+  br i1 %ci.a_isstrnum, label %ci.a_look, label %ci.lexical
+
+ci.a_look:
+  %ci.ln = call i1 @wam_looks_numeric(i8* %as)
+  br i1 %ci.ln, label %ci.numeric, label %ci.lexical
+
+ci.numeric:
+  %ci.av = call double @strtod(i8* %as, i8** null)
+  %ci.bv = sitofp i64 %bval to double
+  %ci.lt = fcmp olt double %ci.av, %ci.bv
+  br i1 %ci.lt, label %ci.neg, label %ci.numge
+
+ci.numge:
+  %ci.gt = fcmp ogt double %ci.av, %ci.bv
+  br i1 %ci.gt, label %ci.pos, label %ci.zero
+
+ci.lexical:
+  %ci.buf = alloca [32 x i8]
+  %ci.bufp = getelementptr [32 x i8], [32 x i8]* %ci.buf, i64 0, i64 0
+  %ci.fmt = getelementptr [5 x i8], [5 x i8]* @.wam_strnum_int_fmt, i64 0, i64 0
+  %ci.w = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %ci.bufp, i64 32, i8* %ci.fmt, i64 %bval)
+  %ci.rc = call i32 @strcmp(i8* %as, i8* %ci.bufp)
+  %ci.slt = icmp slt i32 %ci.rc, 0
+  br i1 %ci.slt, label %ci.neg, label %ci.lexge
+
+ci.lexge:
+  %ci.sgt = icmp sgt i32 %ci.rc, 0
+  br i1 %ci.sgt, label %ci.pos, label %ci.zero
+
+ci.neg:
+  ret i32 -1
+
+ci.pos:
+  ret i32 1
+
+ci.zero:
+  ret i32 0
+}
+
 ; awk-style numeric coercion of a record or projected field to double:
 ; strtod parses a leading number and ignores trailing text, so
 ; "3.14abc" reads as 3.14 and non-numeric text reads as 0.0. Field
