@@ -392,6 +392,9 @@ def main(argv=None):
     for nm in ("e5-only", "blend"):
         s = summarize(results[nm])
         print(f"  {nm:12s} " + " ".join(f"{s[k][0]:8.3f}±{s[k][1]:.3f}" for k in ("MRR", "recall@1", "recall@5")))
+    deltas = [results["blend"][i]["MRR"] - results["e5-only"][i]["MRR"] for i in range(a.folds)]
+    print(f"  PAIRED per-fold ΔMRR (blend − e5): mean {np.mean(deltas):+.4f} ± {np.std(deltas, ddof=1):.4f} "
+          f"fold-SD; per-fold {[f'{d:+.3f}' for d in deltas]}; {sum(d > 0 for d in deltas)}/{a.folds} folds +")
     print("\n  ablations (blend minus family; ΔMRR vs full blend):")
     full_mrr = np.mean([m["MRR"] for m in results["blend"]])
     for fam, ms in ablations.items():
