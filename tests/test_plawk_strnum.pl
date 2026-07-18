@@ -102,6 +102,21 @@ test(int_literal_cmp_activates) :-
 test(int_cmp_and_arith_activates) :-
     strnum_names("{ x = $1; if (x > 3) print \"b\"; y = x + 1; print y }\n", [x]), !.
 
+% --- step 4: strnum propagation through a plain copy -------------------------
+
+% `z = x` propagates strnum-ness: both are strnum.
+test(copy_propagates) :-
+    strnum_names("{ x = $1; z = x; print z }\n", [x, z]), !.
+
+% a copy chain x -> z -> w propagates transitively.
+test(copy_chain_propagates) :-
+    strnum_names("{ x = $1; z = x; w = z; if (w == \"hi\") print 1 }\n", [w, x, z]), !.
+
+% a copy target later written with a literal is disqualified; the field seed
+% survives.
+test(copy_then_literal_disqualifies_target) :-
+    strnum_names("{ x = $1; z = x; z = \"lit\"; print z }\n", [x]), !.
+
 % --- end-to-end: strnum comparison semantics --------------------------------
 
 % the headline case: two field copies compare numerically when both look
@@ -162,6 +177,15 @@ test(e2e_arith_and_string_cmp, [condition(clang_available)]) :-
         "{ x = $1; y = x + 1; if (x == \"42\") print \"is42\", y; else print \"no\", y }\n",
         "42\n7\n", Out, St),
     assertion(St == 0), assertion(Out == "is42 43\nno 8\n"), !.
+
+% step 4: a copy `z = x` carries strnum-ness -- printing z shows the field text
+% and comparing z uses strnum semantics.
+test(e2e_copy_print_and_compare, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'cpc',
+        "{ x = $1; z = x; if (z == \"hi\") print \"H\", z; else print \"-\", z }\n",
+        "hi\nbye\n", Out, St),
+    assertion(St == 0), assertion(Out == "H hi\n- bye\n"), !.
 
 :- end_tests(plawk_strnum).
 
