@@ -1761,6 +1761,11 @@ while_cmp(cmp(var(V), Op, Rhs)) -->
 
 match_special_name('RSTART') --> "RSTART".
 match_special_name('RLENGTH') --> "RLENGTH".
+% NR (the record number) is a special in a comparison guard too, so `if (NR > 1)`
+% / `while (NR < 3)` read the record counter rather than a phantom scalar slot.
+% (NF is a follow-on: it needs the field separator threaded into the condition
+% lowering, and has no defined value in an END condition.)
+match_special_name('NR') --> "NR".
 
 while_cmp_rhs(int(N)) -->
     signed_integer_value(N),

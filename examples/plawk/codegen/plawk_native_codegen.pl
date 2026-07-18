@@ -5215,6 +5215,7 @@ plawk_while_cond_ok(cmp(special(Name), Op, Rhs)) :-
 
 plawk_match_special('RSTART').
 plawk_match_special('RLENGTH').
+plawk_match_special('NR').
 
 plawk_while_cond_rhs_ok(int(N)) :- integer(N).
 plawk_while_cond_rhs_ok(var(_W)).
@@ -5378,6 +5379,16 @@ plawk_while_cond_operand(special('RLENGTH'), _Slots, _CondValues, Base, Path, Si
     !,
     format(atom(Ref), '%~w_cond~w_~w_rlength', [Base, Path, Side]),
     format(atom(Line), '  ~w = load i64, i64* @plawk_rlength', [Ref]).
+% NR: the current record number. In a rule-body condition it is the loop's
+% %current_nr; in an END condition it is %plawk_nr (the final record count, the
+% same SSA the END expression path reads). No extra line -- both are existing
+% SSA values in scope. The END base is plawk_endif (see plawk_end_if lowering).
+plawk_while_cond_operand(special('NR'), _Slots, _CondValues, Base, _Path, _Side, Ref, []) :-
+    !,
+    ( sub_atom(Base, 0, _, _, plawk_endif)
+    -> Ref = '%plawk_nr'
+    ;  Ref = '%current_nr'
+    ).
 plawk_while_cond_operand(var(Name), Slots, CondValues, _Base, _Path, _Side, Ref, []) :-
     nth0(Idx, Slots, Slot),
     plawk_slot_name(Slot, Name),
@@ -6991,14 +7002,39 @@ plawk_actions_scalar_update_expr(Actions, Expr) :-
     member(Action, ReachableActions),
     plawk_action_scalar_update_expr(Action, Expr).
 
-plawk_action_scalar_update_expr(if(_Pattern, ThenActions, ElseActions), Expr) :-
+plawk_action_scalar_update_expr(if(Pattern, ThenActions, ElseActions), Expr) :-
     !,
-    (   plawk_actions_scalar_update_expr(ThenActions, Expr)
+    (   plawk_pattern_cond_operand_expr(Pattern, Expr)
+    ;   plawk_actions_scalar_update_expr(ThenActions, Expr)
     ;   plawk_actions_scalar_update_expr(ElseActions, Expr)
+    ).
+plawk_action_scalar_update_expr(while_loop(Cond, Body), Expr) :-
+    !,
+    (   plawk_cond_operand_expr(Cond, Expr)
+    ;   plawk_actions_scalar_update_expr(Body, Expr)
+    ).
+plawk_action_scalar_update_expr(do_while_loop(Body, Cond), Expr) :-
+    !,
+    (   plawk_cond_operand_expr(Cond, Expr)
+    ;   plawk_actions_scalar_update_expr(Body, Expr)
     ).
 plawk_action_scalar_update_expr(Action, Expr) :-
     plawk_scalar_action_update(Action, _Name, Operation),
     plawk_scalar_operation_expr(Operation, Expr).
+
+% Expose the operands of a scalar `if`/`while` condition so specials used only in
+% a guard (e.g. `if (NR > 1)`) are seen by the NR-usage detector (and any other
+% expr scan), so the record counter %current_nr is defined. A non-scalar
+% (field/pattern) guard contributes no scalar operands.
+plawk_pattern_cond_operand_expr(scalar_if(Cond), Expr) :-
+    plawk_cond_operand_expr(Cond, Expr).
+
+plawk_cond_operand_expr(and(A, B), Expr) :-
+    ( plawk_cond_operand_expr(A, Expr) ; plawk_cond_operand_expr(B, Expr) ).
+plawk_cond_operand_expr(or(A, B), Expr) :-
+    ( plawk_cond_operand_expr(A, Expr) ; plawk_cond_operand_expr(B, Expr) ).
+plawk_cond_operand_expr(cmp(Left, _Op, Right), Expr) :-
+    ( Expr = Left ; Expr = Right ).
 
 plawk_scalar_operation_expr(add(Expr), Expr).
 plawk_scalar_operation_expr(set(Expr), Expr).
