@@ -76,6 +76,18 @@ t_output_family :-
     write_canonical('two words'),
     write_canonical(node('has space', 7)).
 
+:- dynamic t_format_capture/3.
+t_format_capture(Atom, String, Codes) :-
+    format(atom(Atom), 'X=~w ~a ~d ~s~n~~',
+           [node(1), hello, 42, [111, 107]]),
+    format(string(String), '~p~t~a', [foo(bar), done]),
+    format(codes(Codes), ab, []).
+
+:- dynamic t_format_output/0.
+t_format_output :-
+    format('F1~~'),
+    format('|~w/~a/~d/~s~n', [node(1), hello, 42, [111, 107]]).
+
 :- dynamic t_filesystem_query/1.
 t_filesystem_query(Files) :-
     exists_file('Cargo.toml'),
@@ -275,12 +287,15 @@ write_output_probe(TmpDir) :-
     directory_file_path(BinDir, 'output_probe.rs', ProbePath),
     ProbeContent = '
 use builtin_parity_test::state::WamState;
-use builtin_parity_test::t_output_family_0;
+use builtin_parity_test::{t_format_output_0, t_output_family_0};
 use std::collections::HashMap;
 
 fn main() {
     let mut vm = WamState::new(vec![], HashMap::new());
     if !t_output_family_0(&mut vm) {
+        std::process::exit(1);
+    }
+    if !t_format_output_0(&mut vm) {
         std::process::exit(1);
     }
 }
@@ -313,6 +328,8 @@ test_builtin_parity_execution :-
              user:t_output_aliases/0,
              user:t_tab/0,
              user:t_output_family/0,
+             user:t_format_capture/3,
+             user:t_format_output/0,
              user:t_filesystem_query/1,
              user:t_file_metadata/2,
              user:t_system_queries/3,
@@ -351,6 +368,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_output_aliases_0,
     t_tab_0,
     t_output_family_0,
+    t_format_capture_3,
     t_filesystem_query_1,
     t_file_metadata_2,
     t_system_queries_3,
@@ -520,6 +538,17 @@ fn test_output_aliases_compiled() {
 
     let mut output_vm = vmnew();
     assert!(t_output_family_0(&mut output_vm));
+}
+
+#[test]
+fn test_format_capture_compiled() {
+    let mut vm = vmnew();
+    assert!(t_format_capture_3(&mut vm, ub("Atom"), ub("String"), ub("Codes")));
+    assert_eq!(read_var(&vm, "Atom"),
+        a(&format!("X=node(1) hello 42 ok{}~", char::from(10))));
+    assert_eq!(read_var(&vm, "String"),
+        a(&format!("foo(bar){}done", char::from(9))));
+    assert_eq!(read_var(&vm, "Codes"), Value::List(vec![i(97), i(98)]));
 }
 
 #[test]
@@ -2115,6 +2144,45 @@ fn test_single_term_output_direct() {
 }
 
 #[test]
+fn test_format_direct() {
+    let args = Value::List(vec![
+        Value::Str("node".to_string(), vec![i(1)]),
+        a("hello"),
+        i(42),
+        Value::List(vec![i(111), i(107)]),
+    ]);
+    let destination = Value::Str("atom".to_string(), vec![ub("Out")]);
+    let (ok, vm) = call3("format/3", destination,
+        a("~w|~a|~d|~s|~t|~~"), args);
+    assert!(ok);
+    assert_eq!(read_var(&vm, "Out"),
+        a(&format!("node(1)|hello|42|ok|{}|~", char::from(9))));
+
+    let string_dest = Value::Str("string/1".to_string(), vec![ub("Out")]);
+    let (string_ok, string_vm) = call3("format/3", string_dest,
+        a("~p"), Value::List(vec![Value::List(vec![a("a"), i(2)])]));
+    assert!(string_ok);
+    assert_eq!(read_var(&string_vm, "Out"), a("[a, 2]"));
+
+    let codes_dest = Value::Str("codes".to_string(), vec![ub("Codes")]);
+    let (codes_ok, codes_vm) = call3("format/3", codes_dest,
+        a("ab"), Value::List(vec![]));
+    assert!(codes_ok);
+    assert_eq!(read_var(&codes_vm, "Codes"), Value::List(vec![i(97), i(98)]));
+
+    assert!(call3("format/3",
+        Value::Str("atom".to_string(), vec![a("ok")]),
+        a("ok"), Value::List(vec![])).0);
+    assert!(!call3("format/3",
+        Value::Str("atom".to_string(), vec![a("wrong")]),
+        a("ok"), Value::List(vec![])).0);
+    assert!(!call3("format/3", a("unknown"), a("ok"), Value::List(vec![])).0);
+    assert!(!call2("format/2", a("~w"), Value::List(vec![])).0);
+    assert!(!call2("format/2", a("ok"), i(7)).0);
+    assert!(!call2("format/2", Value::Float(2.5), Value::List(vec![])).0);
+}
+
+#[test]
 fn test_filesystem_query_direct() {
     assert!(call1("exists_file/1", a("Cargo.toml")).0);
     assert!(!call1("exists_file/1", a("src/bin")).0);
@@ -2253,7 +2321,7 @@ fn test_environment_mutation_direct() {
         (   ExitCode == 0,
             sub_string(Output, _, _, _, "test result: ok")
         ->  run_output_probe(TmpDir, ProbeExitCode, ProbeOutput),
-            ExpectedOutput = "xy'two words'node('has space', 7)",
+            ExpectedOutput = "xy'two words'node('has space', 7)F1~|node(1)/hello/42/ok\n",
             (   ProbeExitCode == 0,
                 ProbeOutput == ExpectedOutput
             ->  pass(Test)
