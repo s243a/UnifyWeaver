@@ -5271,8 +5271,39 @@ plawk_while_cond_build(or(A, B), Slots, CV, Base, Path, CondVar, Lines) :-
     format(atom(CondVar), '%~w_cond~w', [Base, Path]),
     format(atom(Line), '  ~w = or i1 ~w, ~w', [CondVar, VA, VB]),
     append([LA, LB, [Line]], Lines).
+% strnum-vs-strnum comparison (POSIX numeric-string duality): both operands are
+% strnum slots (interned atom ids). Resolve each id to its text and dispatch to
+% @wam_strnum_cmp, which decides numeric-vs-lexical by the runtime content (both
+% look numeric -> numeric; otherwise strcmp), then compare its sign to 0 with the
+% surface comparison predicate. This is the "10 9" (numeric) vs "10 9x" (lexical)
+% fix. Tried before the generic i64 icmp clause.
+plawk_while_cond_build(cmp(var(L), Op, var(R)), Slots, CondValues, Base,
+        Path, CondVar, Lines) :-
+    plawk_cond_var_is_strnum(L, Slots),
+    plawk_cond_var_is_strnum(R, Slots),
+    !,
+    plawk_while_cond_operand(var(L), Slots, CondValues, Base, Path, l, LId, _),
+    plawk_while_cond_operand(var(R), Slots, CondValues, Base, Path, r, RId, _),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(LineLS),
+        '  %~w_sn~w_ls = call i8* @wam_atom_to_string(i64 ~w)', [Base, Path, LId]),
+    format(atom(LineRS),
+        '  %~w_sn~w_rs = call i8* @wam_atom_to_string(i64 ~w)', [Base, Path, RId]),
+    format(atom(LineRC),
+        '  %~w_sn~w_rc = call i32 @wam_strnum_cmp(i8* %~w_sn~w_ls, i8 1, i8* %~w_sn~w_rs, i8 1)',
+        [Base, Path, Base, Path, Base, Path]),
+    format(atom(LineCmp),
+        '  ~w = icmp ~w i32 %~w_sn~w_rc, 0', [CondVar, Pred, Base, Path]),
+    Lines = [LineLS, LineRS, LineRC, LineCmp].
 plawk_while_cond_build(cmp(Left, Op, Rhs), Slots, CondValues, Base,
         Path, CondVar, Lines) :-
+    % Fail-closed: if either operand is a strnum slot and this is not the
+    % strnum-vs-strnum case above, refuse to emit a raw i64 icmp on an atom id
+    % (which would silently mis-compare). The clause fails, the scalar driver
+    % declines the program, and it falls back -- strnum-vs-number and
+    % strnum-vs-non-strnum comparisons are follow-ons (design doc steps 3+/5).
+    \+ plawk_cmp_has_strnum_operand(Left, Rhs, Slots),
     plawk_while_cond_operand(Left, Slots, CondValues, Base, Path, l, LOperand, LLines),
     plawk_while_cond_operand(Rhs, Slots, CondValues, Base, Path, r, ROperand, RLines),
     plawk_icmp_pred(Op, Pred),
@@ -5280,6 +5311,14 @@ plawk_while_cond_build(cmp(Left, Op, Rhs), Slots, CondValues, Base,
     format(atom(Line), '  ~w = icmp ~w i64 ~w, ~w',
         [CondVar, Pred, LOperand, ROperand]),
     append([LLines, RLines, [Line]], Lines).
+
+plawk_cond_var_is_strnum(Name, Slots) :-
+    memberchk(scalar_strnum(Name), Slots).
+
+plawk_cmp_has_strnum_operand(Left, Rhs, Slots) :-
+    ( Left = var(L), plawk_cond_var_is_strnum(L, Slots)
+    ; Rhs = var(R), plawk_cond_var_is_strnum(R, Slots)
+    ).
 
 % An operand is an integer literal (emitted inline), a loop variable (read from
 % its slot's current SSA value), or an RSTART/RLENGTH special (loaded from its
@@ -6487,7 +6526,8 @@ plawk_scalar_typed_slots(Rules, Names, Slots) :-
         Updates),
     plawk_scalar_double_fixpoint(Updates, [], Doubles),
     plawk_scalar_string_names(Rules, Strings),
-    maplist(plawk_scalar_typed_slot(Doubles, Strings), Names, Slots).
+    plawk_scalar_strnum_names(Rules, Strnums),
+    maplist(plawk_scalar_typed_slot(Doubles, Strings, Strnums), Names, Slots).
 
 % A scalar is string-typed when it is assigned a string RHS (`x = $1 $2` or
 % `x = "text"`), tracked separately from the double/counter fixpoint. v1 looks
@@ -6518,7 +6558,23 @@ plawk_scalar_string_names(Rules, Strings) :-
 %  those). v1 scope mirrors plawk_scalar_string_names/2: top-level rule-body
 %  assignments (nested if/loop-body writes and non-field sources such as
 %  split()/getline are follow-ons -- design doc step 4).
+%
+%  A candidate must ALSO pass a read-use gate (step 3): every read of the name
+%  must be in a position the strnum codegen supports -- a bare `print` field, or
+%  a comparison against another (activated) strnum var or a string literal.
+%  A name read in arithmetic, against a numeric literal, or in any other
+%  context stays a plain i64 counter (its current, correct behaviour), so
+%  activating strnum never regresses those programs. Because a var-vs-var
+%  comparison is only supported when BOTH sides are strnum, the gate is a
+%  fixpoint: deactivating one name can make its comparison partner unsupported,
+%  so the set is shrunk until stable.
 plawk_scalar_strnum_names(Rules, Strnums) :-
+    plawk_scalar_strnum_candidates(Rules, Base),
+    plawk_strnum_read_fixpoint(Rules, Base, Strnums).
+
+% Write-provenance candidates: at least one field-copy source, no disqualifying
+% (non-field) write.
+plawk_scalar_strnum_candidates(Rules, Candidates) :-
     findall(Name,
         ( member(rule(_Pattern, Actions0), Rules),
           plawk_trim_control_tails(Actions0, Actions),
@@ -6539,8 +6595,8 @@ plawk_scalar_strnum_names(Rules, Strnums) :-
         ( member(Name, Sources),
           \+ memberchk(Name, Disq)
         ),
-        Strnums0),
-    sort(Strnums0, Strnums).
+        Candidates0),
+    sort(Candidates0, Candidates).
 
 % A strnum source: a bare field copy `x = $N`. Both surface shapes for a field
 % read (`field(N)` and `int(field(N))`) count.
@@ -6556,6 +6612,114 @@ plawk_scalar_strnum_source(set(var(Name), int(field(FieldIndex))), Name) :-
 plawk_scalar_strnum_disqualify(Action, Name) :-
     plawk_scalar_action_update(Action, Name, _Operation),
     \+ plawk_scalar_strnum_source(Action, Name).
+
+% Shrink the candidate set until every remaining name's reads are all supported
+% given the current set (a monotone fixpoint -- the set only shrinks).
+plawk_strnum_read_fixpoint(Rules, Set0, Set) :-
+    exclude(plawk_strnum_name_has_unsafe_read(Rules, Set0), Set0, Set1),
+    ( Set1 == Set0
+    -> Set = Set0
+    ;  plawk_strnum_read_fixpoint(Rules, Set1, Set)
+    ).
+
+% True if Name has at least one read the strnum codegen does not support, given
+% the currently-activated Set.
+plawk_strnum_name_has_unsafe_read(Rules, Set, Name) :-
+    member(rule(_Pattern, Actions0), Rules),
+    plawk_trim_control_tails(Actions0, Actions),
+    member(Action, Actions),
+    plawk_strnum_action_unsafe_read(Action, Set, Name),
+    !.
+
+% `set(var(_), RHS)`: any read of Name in the RHS is unsafe. The name's own
+% field-copy source has RHS = field(N), which mentions no var, so it is not
+% flagged. A copy `z = Name` (RHS = var(Name)) or arithmetic `y = Name + 1`
+% (RHS mentions Name) is flagged -- strnum propagation through copies and
+% arithmetic coercion are follow-ons.
+plawk_strnum_action_unsafe_read(set(var(_LHS), RHS), _Set, Name) :-
+    !,
+    plawk_strnum_term_mentions(RHS, Name).
+% `print` / `emit`: a bare `var(Name)` field is fine; a field that MENTIONS
+% Name but is not exactly `var(Name)` (concat, arithmetic, length, ...) is not.
+plawk_strnum_action_unsafe_read(print(Fields), _Set, Name) :-
+    !,
+    member(Field, Fields),
+    Field \== var(Name),
+    plawk_strnum_term_mentions(Field, Name).
+plawk_strnum_action_unsafe_read(emit(Field), _Set, Name) :-
+    !,
+    Field \== var(Name),
+    plawk_strnum_term_mentions(Field, Name).
+% scalar `if`: the condition (see below) or either branch may hold an unsafe read.
+plawk_strnum_action_unsafe_read(if(scalar_if(Cond), Then, Else), Set, Name) :-
+    !,
+    ( plawk_strnum_cond_unsafe_read(Cond, Set, Name)
+    ; member(A, Then), plawk_strnum_action_unsafe_read(A, Set, Name)
+    ; member(A, Else), plawk_strnum_action_unsafe_read(A, Set, Name)
+    ).
+% pattern `if`: a scalar var mentioned in a record/pattern guard is unsupported;
+% recurse into the branches.
+plawk_strnum_action_unsafe_read(if(Pattern, Then, Else), Set, Name) :-
+    !,
+    ( Pattern \= scalar_if(_), plawk_strnum_term_mentions(Pattern, Name)
+    ; member(A, Then), plawk_strnum_action_unsafe_read(A, Set, Name)
+    ; member(A, Else), plawk_strnum_action_unsafe_read(A, Set, Name)
+    ).
+plawk_strnum_action_unsafe_read(while_loop(Cond, Body), Set, Name) :-
+    !,
+    ( plawk_strnum_cond_unsafe_read(Cond, Set, Name)
+    ; member(A, Body), plawk_strnum_action_unsafe_read(A, Set, Name)
+    ).
+plawk_strnum_action_unsafe_read(do_while_loop(Body, Cond), Set, Name) :-
+    !,
+    ( plawk_strnum_cond_unsafe_read(Cond, Set, Name)
+    ; member(A, Body), plawk_strnum_action_unsafe_read(A, Set, Name)
+    ).
+plawk_strnum_action_unsafe_read(foreach_loop(_Layout, Body), Set, Name) :-
+    !,
+    member(A, Body),
+    plawk_strnum_action_unsafe_read(A, Set, Name).
+% Any other action: mentioning Name at all is an unsupported read.
+plawk_strnum_action_unsafe_read(Action, _Set, Name) :-
+    plawk_strnum_term_mentions(Action, Name).
+
+% A comparison condition reads Name unsafely when Name appears in it but not in
+% a supported comparison form (strnum-vs-strnum with the partner in Set, or
+% strnum-vs-string-literal).
+plawk_strnum_cond_unsafe_read(and(A, B), Set, Name) :-
+    !,
+    ( plawk_strnum_cond_unsafe_read(A, Set, Name)
+    ; plawk_strnum_cond_unsafe_read(B, Set, Name)
+    ).
+plawk_strnum_cond_unsafe_read(or(A, B), Set, Name) :-
+    !,
+    ( plawk_strnum_cond_unsafe_read(A, Set, Name)
+    ; plawk_strnum_cond_unsafe_read(B, Set, Name)
+    ).
+plawk_strnum_cond_unsafe_read(cmp(Left, _Op, Right), Set, Name) :-
+    !,
+    plawk_strnum_term_mentions(cmp(Left, x, Right), Name),
+    \+ plawk_strnum_cmp_supported(Left, Right, Set, Name).
+plawk_strnum_cond_unsafe_read(Cond, _Set, Name) :-
+    plawk_strnum_term_mentions(Cond, Name).
+
+% Supported comparison forms that read Name: against another strnum var still in
+% Set, or against a string literal (handled by the existing string-guard clauses
+% and the strnum-vs-strnum dispatch).
+plawk_strnum_cmp_supported(var(Name), var(Other), Set, Name) :- memberchk(Other, Set).
+plawk_strnum_cmp_supported(var(Other), var(Name), Set, Name) :- memberchk(Other, Set).
+plawk_strnum_cmp_supported(var(Name), string(_), _Set, Name).
+plawk_strnum_cmp_supported(string(_), var(Name), _Set, Name).
+
+% Does var(Name) occur anywhere in Term?
+plawk_strnum_term_mentions(var(Name), Name) :- !.
+plawk_strnum_term_mentions(Term, Name) :-
+    compound(Term),
+    functor(Term, _, Arity),
+    Arity > 0,
+    arg(N, Term, Arg),
+    plawk_strnum_term_mentions(Arg, Name),
+    !.
 
 plawk_scalar_update_name_expr(Action, Name, Expr) :-
     plawk_scalar_action_update(Action, Name, Operation),
@@ -6618,13 +6782,19 @@ plawk_update_expr_is_double(Expr, Doubles) :-
     memberchk(Name, Doubles),
     !.
 
-plawk_scalar_typed_slot(_Doubles, Strings, Name, scalar_string(Name)) :-
+plawk_scalar_typed_slot(_Doubles, Strings, _Strnums, Name, scalar_string(Name)) :-
     memberchk(Name, Strings),
     !.
-plawk_scalar_typed_slot(Doubles, _Strings, Name, scalar_double(Name)) :-
+plawk_scalar_typed_slot(Doubles, _Strings, _Strnums, Name, scalar_double(Name)) :-
     memberchk(Name, Doubles),
     !.
-plawk_scalar_typed_slot(_Doubles, _Strings, Name, scalar_counter(Name)).
+% strnum precedence: below double/string (a name assigned a double leaf or a
+% string RHS is disqualified from being a pure strnum anyway, so these sets are
+% disjoint -- the order is defensive), above the plain i64 counter fall-through.
+plawk_scalar_typed_slot(_Doubles, _Strings, Strnums, Name, scalar_strnum(Name)) :-
+    memberchk(Name, Strnums),
+    !.
+plawk_scalar_typed_slot(_Doubles, _Strings, _Strnums, Name, scalar_counter(Name)).
 
 plawk_mixed_state_plan(Rules, PrintFields, mixed_plan(ScalarPlan, AssocPlan, PlannedRules)) :-
     plawk_mixed_scalar_state_plan(Rules, PrintFields, ScalarPlan),
@@ -11697,6 +11867,8 @@ plawk_substitute_scalar_reads(var(Name), Slots, Values, Substituted) :-
     -> Substituted = ssa_f64(Value)
     ;  Slot = scalar_string(_Name)
     -> Substituted = ssa_str(Value)
+    ;  Slot = scalar_strnum(_Name)
+    -> Substituted = ssa_str(Value)   % strnum holds an atom id -> string-read
     ;  Substituted = ssa(Value)
     ).
 plawk_substitute_print_field(Slots, Values, Field0, Field) :-
@@ -11760,6 +11932,8 @@ plawk_substitute_end_reads(var(Name), StatePlan, Substituted) :-
     format(atom(Value), '%final_slot_~w', [SlotIndex]),
     ( Slot = scalar_double(_Name)
     -> Substituted = ssa_f64(Value)
+    ;  Slot = scalar_strnum(_Name)
+    -> Substituted = ssa_str(Value)   % strnum holds an atom id -> string-read
     ;  Substituted = ssa(Value)
     ).
 plawk_substitute_end_reads(special('NR'), _StatePlan, ssa('%plawk_nr')) :-
@@ -12515,6 +12689,25 @@ plawk_scalar_update_operation_ir(set_str(Src), scalar_string(_Name), FieldSepara
     plawk_str_build_ir(Src, FieldSeparator, Base, NextValue, GlobalParts, SetupLines),
     plawk_join_nonempty_ir(GlobalParts, GlobalIR),
     atomic_list_concat(SetupLines, '\n', IR).
+% strnum assignment `x = $N`: intern the field's raw text into an atom id (the
+% strnum slot repr), retaining the bytes so a later comparison can decide
+% numeric vs lexical. This is the only operation a strnum slot receives (its
+% provenance is a pure field copy), so it is matched specifically before the
+% generic i64 set. The record is %line in this scope (as in the concat path).
+plawk_scalar_update_operation_ir(set(field_i64(FieldIndex)), scalar_strnum(_Name),
+        FieldSeparator, Prefix, SlotIndex, OpIndex, _InputValue, NextValue, ''-IR) :-
+    !,
+    format(atom(Base), '~w_slot_~w_op_~w_snum', [Prefix, SlotIndex, OpIndex]),
+    format(atom(NextValue), '%~w_id', [Base]),
+    format(atom(IR),
+'  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)
+  %~w_ptr = extractvalue %WamSlice %~w_slice, 0
+  %~w_len = extractvalue %WamSlice %~w_slice, 1
+  %~w_id = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len)',
+        [Base, FieldIndex, FieldSeparator,
+         Base, Base,
+         Base, Base,
+         Base, Base, Base]).
 plawk_scalar_update_operation_ir(set(Expr), _Slot, FieldSeparator, Prefix, SlotIndex,
         OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
     plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
@@ -13654,9 +13847,10 @@ plawk_scalar_end_print_lines([var(Name) | Rest], StatePlan, OutputSeparator, Pri
              '  %printed_end_f64_~w = call i32 (i8*, ...) @printf(i8* %~w, double ~w)',
              [PrintIndex, FmtVar, ValueIR]),
          Lines = [FmtPtr, PrintCall]
-      ;  Slot = scalar_string(_Name)
+      ;  ( Slot = scalar_string(_Name) ; Slot = scalar_strnum(_Name) )
       -> % resolve the atom id to text; id 0 (unset) prints as empty (the `%s\0`
-         % global's trailing NUL is a ready-made empty C string).
+         % global's trailing NUL is a ready-made empty C string). A strnum slot
+         % holds an atom id too, so it prints identically.
          format(atom(StrS), '  %end_str_s_~w = call i8* @wam_atom_to_string(i64 ~w)',
              [PrintIndex, ValueIR]),
          format(atom(StrE), '  %end_str_empty_~w = icmp eq i64 ~w, 0',
