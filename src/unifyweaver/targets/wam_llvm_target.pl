@@ -6843,6 +6843,57 @@ ci.zero:
   ret i32 0
 }
 
+; @wam_strnum_cmp_double(as, akind, bval): like @wam_strnum_cmp_int but the
+; number operand is a double (a float literal). Numeric iff the string operand
+; is numeric-typed; otherwise lexical against bval formatted with %g (awk-style
+; number-to-string). Returns the sign as i32 (-1/0/1).
+@.wam_strnum_dbl_fmt = private constant [3 x i8] c"%g\00"
+
+define i32 @wam_strnum_cmp_double(i8* %as, i8 %akind, double %bval) {
+entry:
+  %cd.a_isnum = icmp eq i8 %akind, 0
+  %cd.a_isstrnum = icmp eq i8 %akind, 1
+  br i1 %cd.a_isnum, label %cd.numeric, label %cd.a_maybe
+
+cd.a_maybe:
+  br i1 %cd.a_isstrnum, label %cd.a_look, label %cd.lexical
+
+cd.a_look:
+  %cd.ln = call i1 @wam_looks_numeric(i8* %as)
+  br i1 %cd.ln, label %cd.numeric, label %cd.lexical
+
+cd.numeric:
+  %cd.av = call double @strtod(i8* %as, i8** null)
+  %cd.lt = fcmp olt double %cd.av, %bval
+  br i1 %cd.lt, label %cd.neg, label %cd.numge
+
+cd.numge:
+  %cd.gt = fcmp ogt double %cd.av, %bval
+  br i1 %cd.gt, label %cd.pos, label %cd.zero
+
+cd.lexical:
+  %cd.buf = alloca [64 x i8]
+  %cd.bufp = getelementptr [64 x i8], [64 x i8]* %cd.buf, i64 0, i64 0
+  %cd.fmt = getelementptr [3 x i8], [3 x i8]* @.wam_strnum_dbl_fmt, i64 0, i64 0
+  %cd.w = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %cd.bufp, i64 64, i8* %cd.fmt, double %bval)
+  %cd.rc = call i32 @strcmp(i8* %as, i8* %cd.bufp)
+  %cd.slt = icmp slt i32 %cd.rc, 0
+  br i1 %cd.slt, label %cd.neg, label %cd.lexge
+
+cd.lexge:
+  %cd.sgt = icmp sgt i32 %cd.rc, 0
+  br i1 %cd.sgt, label %cd.pos, label %cd.zero
+
+cd.neg:
+  ret i32 -1
+
+cd.pos:
+  ret i32 1
+
+cd.zero:
+  ret i32 0
+}
+
 ; awk-style numeric coercion of a record or projected field to double:
 ; strtod parses a leading number and ignores trailing text, so
 ; "3.14abc" reads as 3.14 and non-numeric text reads as 0.0. Field
