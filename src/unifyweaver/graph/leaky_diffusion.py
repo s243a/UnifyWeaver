@@ -539,35 +539,21 @@ class GroundedSemanticDiffusion:
         return distance_squared if squared else np.sqrt(distance_squared)
 
 
-def build_grounded_semantic_diffusion(
+def _build_grounded_semantic_diffusion_from_components(
     nodes,
-    neighbors,
+    conductance,
+    laplacian,
     *,
     leakage_conductance,
-    node_embeddings=None,
-    length_scale=None,
-    conductance_floor=0.0,
+    semantic_length_scale,
+    conductance_floor,
     minimum_reciprocal_condition=_DEFAULT_MINIMUM_RECIPROCAL_CONDITION,
 ):
-    """Build a grounded diffusion model without a covariance inversion.
+    """Build one model from a single validated component snapshot."""
 
-    Leakage may be uniform, a node-aligned vector, or a sparse node mapping.
-    Zero leakage at some nodes is allowed only when the resulting grounded
-    precision is positive definite (every connected component must reach
-    ground).  Failure is explicit; no numerical diagonal loading is hidden.
-    The default float64 contract also requires reciprocal spectral condition
-    at least sqrt(machine epsilon); a caller-supplied weaker threshold is
-    explicit and recorded on the returned model.
-    """
-
-    nodes, conductance = semantic_conductance_matrix(
-        nodes,
-        neighbors,
-        node_embeddings,
-        length_scale=length_scale,
-        conductance_floor=conductance_floor,
-    )
-    laplacian = combinatorial_laplacian(conductance)
+    nodes = _nodes(nodes)
+    conductance = np.asarray(conductance, dtype=float)
+    laplacian = np.asarray(laplacian, dtype=float)
     leakage = _leakage_vector(nodes, leakage_conductance)
     minimum_reciprocal_condition = _positive_unit_interval(
         "minimum_reciprocal_condition", minimum_reciprocal_condition
@@ -629,8 +615,48 @@ def build_grounded_semantic_diffusion(
         condition_number=maximum / minimum,
         reciprocal_condition_number=reciprocal_condition,
         minimum_reciprocal_condition=minimum_reciprocal_condition,
+        semantic_length_scale=semantic_length_scale,
+        conductance_floor=float(conductance_floor),
+    )
+
+
+def build_grounded_semantic_diffusion(
+    nodes,
+    neighbors,
+    *,
+    leakage_conductance,
+    node_embeddings=None,
+    length_scale=None,
+    conductance_floor=0.0,
+    minimum_reciprocal_condition=_DEFAULT_MINIMUM_RECIPROCAL_CONDITION,
+):
+    """Build a grounded diffusion model without a covariance inversion.
+
+    Leakage may be uniform, a node-aligned vector, or a sparse node mapping.
+    Zero leakage at some nodes is allowed only when the resulting grounded
+    precision is positive definite (every connected component must reach
+    ground). Failure is explicit; no numerical diagonal loading is hidden.
+    The default float64 contract also requires reciprocal spectral condition
+    at least sqrt(machine epsilon); a caller-supplied weaker threshold is
+    explicit and recorded on the returned model.
+    """
+
+    nodes, conductance = semantic_conductance_matrix(
+        nodes,
+        neighbors,
+        node_embeddings,
+        length_scale=length_scale,
+        conductance_floor=conductance_floor,
+    )
+    laplacian = combinatorial_laplacian(conductance)
+    return _build_grounded_semantic_diffusion_from_components(
+        nodes,
+        conductance,
+        laplacian,
+        leakage_conductance=leakage_conductance,
         semantic_length_scale=(
             None if node_embeddings is None else float(length_scale)
         ),
         conductance_floor=float(conductance_floor),
+        minimum_reciprocal_condition=minimum_reciprocal_condition,
     )

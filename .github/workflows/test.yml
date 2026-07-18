@@ -95,7 +95,10 @@ jobs:
         run: python3 -m pip install --user lmdb "numpy>=1.24" pytest
 
       - name: Run grounded semantic diffusion tests
-        run: python3 -m pytest -q tests/test_leaky_diffusion.py
+        run: |
+          python3 -m pytest -q tests/test_leaky_diffusion.py \
+            tests/test_local_grounded_diffusion.py
+          python3 prototypes/mu_cosine/benchmark_local_grounded_diffusion.py --smoke
 
       - name: Run F# WAM target tests (codegen + dotnet smoke + LMDB conformance)
         env:

@@ -14,6 +14,12 @@ covariance. The completed Stage-A repeated-judge source-power experiment
 failed closed and unlocked no candidate enumeration, Nomic use, judge calls,
 covariance deployment, independent batching, QR specialization, or CUDA
 claim. This primitive therefore remains outcome-blind infrastructure.
+For million-node graphs, the bounded Dirichlet construction in
+[LOCAL_GROUNDED_DIFFUSION.md](LOCAL_GROUNDED_DIFFUSION.md) selects an
+outcome-blind topological neighborhood, aggregates every cut edge into an
+explicit bath shunt, and reuses the same operator and precision-root algebra
+on the retained domain.
+
 
 ## Separate topology, semantics, and grounding
 
@@ -230,9 +236,12 @@ union. This primitive does not choose a lineage source.
   behavior are unsuitable. A nonnegative monotone conductance transform is
   explicit and bounded; a positive epsilon is required when every retained
   topological edge must remain numerically present.
-- Arbitrarily choosing distant nodes as ground: supported only when the
-  boundary is externally defined. Uniform weak leakage is the default because
-  defining distant by the metric being estimated would be circular.
+- Arbitrarily choosing distant nodes as ground: rejected. A scalable local
+  model may ground the complete exterior of a frozen hop-distance or
+  Nomic-resistance neighborhood, provided every severed conductance is retained
+  in the Dirichlet cut term. Selecting the boundary with fitted Green distance
+  or outcomes would be circular. Uniform weak leakage remains part of the
+  model inside the local domain.
 - Symmetric normalized Laplacian for the circuit: retained for spectral
   references, but not used for physical KCL. The combinatorial Laplacian
   preserves edge conductance units.
@@ -266,5 +275,7 @@ tests/test_leaky_diffusion.py verifies:
 - direct-constructor invariants, immutable arrays, and fail-closed inputs;
 - absence of any explicit matrix inverse.
 
-The next engineering PR, if warranted, should add sparse operators and a
-matched CPU/GPU crossover benchmark without changing this statistical object.
+The bounded local extension is specified in
+[LOCAL_GROUNDED_DIFFUSION.md](LOCAL_GROUNDED_DIFFUSION.md). Sparse operators
+and any CPU/GPU crossover claim still require a matched full-cost benchmark
+without changing this statistical object.

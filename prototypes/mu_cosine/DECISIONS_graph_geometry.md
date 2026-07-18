@@ -288,3 +288,50 @@ claim.
 crossover benchmark. Statistical use as cross-item measurement covariance
 still requires new prospective data or a separately authorized design with
 train-only fitting and dependence-aware held validation.
+
+## 2026-07-17 — local Dirichlet grounding for million-node graphs
+
+**Decision:** bound anchored diffusion with an outcome-blind top-`K` graph
+domain. Use multi-source hop distance as the primary ordering and a
+revision-pinned Nomic-resistance weighted shortest path as the secondary
+ordering. For retained set `S`, preserve every severed edge through
+`beta_i=sum_{j not in S} c_ij` and solve
+`J_S=L_ind+diag(alpha+beta)`. The exterior is one fixed zero-temperature bath;
+it is not silently deleted.
+
+**Calibration:** choose uniform model leakage from the killed-response ratio
+`G_alpha(i,s)/G_alpha(s,s)`, targeting at most `exp(-1)` on a frozen e-fold
+shell. Treat that as a screening length, not automatically an accurate hard
+truncation: prefer a boundary near `exp(-3)` or one-percent attenuation when
+the memory budget permits. Verify `K`, `2K`, and `4K` nested-domain
+stability, harmonic measure of the artificial cut, and the fraction of
+injected current absorbed by the cut.
+
+**Batch consequence:** construct one shared union or multi-source domain and
+one grounded operator for all anchors whose cross-relations are used jointly.
+Splicing columns from separate anchor-specific operators is not guaranteed
+symmetric or PSD.
+
+**Reason:** a million-node dense float64 matrix is already about 8 TB before
+factorization. The local Dirichlet system preserves the physical meaning of
+the omitted adjacency while making work depend on the touched neighborhood.
+It also supplies monotone, outcome-blind diagnostics for deciding whether the
+boundary is far enough away.
+
+**Rejected:** dropping cut edges and thereby imposing an insulating boundary;
+embedding-only nearest neighbors that create topological shortcuts; selecting
+`S` with the fitted Green distance; using correlation-normalized response to
+calibrate leakage; setting `alpha=0` merely because a cut bath exists;
+per-anchor matrices presented as one joint kernel; or tuning `D`, `K`, or
+`alpha` against held residual outcomes.
+
+**Implementation status:** this change ships the strict-`K` multi-source hop
+selector, exact cut-shunt assembly, common-bath dense factor, leakage
+calibration, and nested-domain diagnostics. It also ships a constant-degree
+CPU microbenchmark. Nomic-resistance Dijkstra, hub-streaming adjacency,
+precomputed weighted cut degrees, sparse solvers, and CUDA remain follow-ups.
+
+**Not authorized:** learned judge covariance, relaxed source-power gates,
+sparse/CUDA performance claims, or hidden numerical jitter. Sparse direct and
+iterative backends remain engineering candidates only after parity with the
+dense local reference and a matched end-to-end crossover benchmark.
