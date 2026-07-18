@@ -1101,9 +1101,9 @@ plawk_program_native_driver_ir(
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
     plawk_forin_end_guarded_print_ir(LoopVar, ArrayName, Guard, PrintFields,
-        AssocPlan, FieldSeparator, OutputSeparator, EndPrintIR),
-    format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
-        [BeginGlobalIR, StringGlobalIR, AssocRuleGlobalIR]),
+        AssocPlan, FieldSeparator, OutputSeparator, EndPrintIR, GuardGlobalIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, AssocRuleGlobalIR, GuardGlobalIR]),
     plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
     plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
     format(atom(CloseOkIR),
@@ -5857,20 +5857,23 @@ forin_after:
         [TableIndex, TableIndex, BodyIR, FreeIR]).
 
 %% plawk_forin_end_guarded_print_ir(+LoopVar, +ArrayName, +Guard,
-%%     +PrintFields, +AssocPlan, +Descriptor, +OutputSeparator, -IR)
+%%     +PrintFields, +AssocPlan, +Descriptor, +OutputSeparator, -IR, -GuardGlobal)
 %  Guarded END for-in (stage 1b filter): same slot-walk, but a guard on
 %  the key or the iterated value gates the per-key print. Passing entries
-%  print; the rest branch straight to the loop-continue.
+%  print; the rest branch straight to the loop-continue. GuardGlobal is any
+%  module-level constant the guard needs (a string literal), threaded to the
+%  module top by the caller; '' when none.
 plawk_forin_end_guarded_print_ir(LoopVar, ArrayName, Guard, PrintFields,
-        AssocPlan, Descriptor, OutputSeparator, IR) :-
+        AssocPlan, Descriptor, OutputSeparator, IR, GuardGlobal) :-
     plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
     phrase(plawk_forin_body_print_lines(PrintFields, LoopVar, ArrayName,
         TableIndex, AssocPlan, Descriptor, OutputSeparator, 0), BodyLines),
     atomic_list_concat(BodyLines, '\n', BodyIR),
     phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
     atomic_list_concat(FreeLines, '\n', FreeIR),
-    plawk_forin_guard_plan(Guard, GuardPlan),
-    plawk_forin_end_guard_lines(GuardPlan, TableIndex, GuardLines, CondVar),
+    ( plawk_assoc_plan_str_array(AssocPlan, ArrayName) -> IsStr = true ; IsStr = false ),
+    plawk_forin_guard_plan(Guard, IsStr, GuardPlan),
+    plawk_forin_end_guard_lines(GuardPlan, TableIndex, GuardLines, CondVar, GuardGlobal),
     atomic_list_concat(GuardLines, '\n', GuardIR),
     format(atom(IR),
 '  br label %forin_head
@@ -5903,8 +5906,10 @@ forin_after:
   ret i32 0',
         [TableIndex, TableIndex, GuardIR, CondVar, BodyIR, FreeIR]).
 
-% END-loop guard operand load + comparison (fixed `forin` prefix).
-plawk_forin_end_guard_lines(guard_value(Op, V), TableIndex, Lines, CondVar) :-
+% END-loop guard operand load + comparison (fixed `forin` prefix). GuardGlobal
+% is any module-level constant the guard needs (a string literal to intern);
+% '' when none.
+plawk_forin_end_guard_lines(guard_value(Op, V), TableIndex, Lines, CondVar, '') :-
     plawk_forin_cmp_pred(Op, Pred),
     format(atom(ValLine),
         '  %forin_gval = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
@@ -5913,12 +5918,52 @@ plawk_forin_end_guard_lines(guard_value(Op, V), TableIndex, Lines, CondVar) :-
         '  %forin_gcmp = icmp ~w i64 %forin_gval, ~w', [Pred, V]),
     CondVar = '%forin_gcmp',
     Lines = [ValLine, CmpLine].
-plawk_forin_end_guard_lines(guard_key(Op, V), _TableIndex, Lines, CondVar) :-
+plawk_forin_end_guard_lines(guard_key(Op, V), _TableIndex, Lines, CondVar, '') :-
     plawk_forin_cmp_pred(Op, Pred),
     format(atom(CmpLine),
         '  %forin_gcmp = icmp ~w i64 %forin_key_id, ~w', [Pred, V]),
     CondVar = '%forin_gcmp',
     Lines = [CmpLine].
+% Str-valued table (split / assoc(str)): the stored i64 is an atom id, so an
+% `arr[k] CMP int` comparison resolves the element text and compares via
+% strnum (numeric if the element looks like a number, else lexical -- POSIX
+% duality), testing the sign against 0 with the comparison predicate.
+plawk_forin_end_guard_lines(guard_value_strnum(Op, V), TableIndex, Lines, CondVar, '') :-
+    plawk_forin_cmp_pred(Op, Pred),
+    format(atom(ValLine),
+        '  %forin_gval = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
+        [TableIndex]),
+    format(atom(StrLine),
+        '  %forin_gval_s = call i8* @wam_atom_to_string(i64 %forin_gval)', []),
+    format(atom(RcLine),
+        '  %forin_gval_rc = call i32 @wam_strnum_cmp_int(i8* %forin_gval_s, i8 1, i64 ~w)',
+        [V]),
+    format(atom(CmpLine),
+        '  %forin_gcmp = icmp ~w i32 %forin_gval_rc, 0', [Pred]),
+    CondVar = '%forin_gcmp',
+    Lines = [ValLine, StrLine, RcLine, CmpLine].
+% String equality (`arr[k] == "x"` / `!= "x"`): intern the literal into an atom
+% id (from a module-level constant) and icmp it against the element's stored id.
+% Interning is canonical, so equal strings share an id -- no strcmp needed. The
+% intern is idempotent (a hash lookup), so doing it per iteration is correct.
+plawk_forin_end_guard_lines(guard_value_streq(Op, Text), TableIndex, Lines, CondVar,
+        GuardGlobal) :-
+    plawk_forin_cmp_pred(Op, Pred),
+    format(atom(GName), 'plawk_forin_guard_streq_~w', [TableIndex]),
+    llvm_emit_c_string_global(GName, Text, GuardGlobal, StringLen, BytesLen),
+    format(atom(PtrLine),
+        '  %forin_glitp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+        [BytesLen, BytesLen, GName]),
+    format(atom(LitLine),
+        '  %forin_glit = call i64 @wam_intern_atom(i8* %forin_glitp, i64 ~w)',
+        [StringLen]),
+    format(atom(ValLine),
+        '  %forin_gval = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
+        [TableIndex]),
+    format(atom(CmpLine),
+        '  %forin_gcmp = icmp ~w i64 %forin_gval, %forin_glit', [Pred]),
+    CondVar = '%forin_gcmp',
+    Lines = [PtrLine, LitLine, ValLine, CmpLine].
 
 %% plawk_forin_end_accum_ir(+LoopVar, +ArrayName, +Acc, +Operand,
 %%     +PrintFields, +AssocPlan, +Descriptor, +OutputSeparator, -IR)
@@ -7751,9 +7796,27 @@ plawk_assoc_planned_actions(
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 
 % guard operand: the iterated table's value at the current slot, or the
-% raw loop key; both compared to an integer literal.
-plawk_forin_guard_plan(forin_val_cmp(_A, _K, Op, V), guard_value(Op, V)).
-plawk_forin_guard_plan(forin_key_cmp(_K, Op, V), guard_key(Op, V)).
+% raw loop key. The key is always a genuine i64 (a position / registry id);
+% the value depends on the table's kind. On an i64-valued table (a counter)
+% `arr[k] CMP int` is a raw i64 icmp; on a STR-valued table (split / assoc(str))
+% the stored i64 is an atom id, not a number, so an integer value comparison
+% must resolve the element text and go through strnum (guard_value_strnum) --
+% a raw icmp on the atom id would compare registry positions, not values.
+plawk_forin_guard_plan(Guard, GuardPlan) :-
+    plawk_forin_guard_plan(Guard, false, GuardPlan).
+% A string RHS (`arr[k] == "x"`) is a string-equality compare of the element:
+% intern the literal and icmp its atom id against the stored id (canonical
+% interning, so equal strings share an id). Only ==/!= reach here (the parser
+% restricts the string form). Independent of IsStr -- the RHS type drives it.
+plawk_forin_guard_plan(forin_val_cmp(_A, _K, Op, str(Text)), _IsStr,
+        guard_value_streq(Op, Text)) :-
+    !.
+plawk_forin_guard_plan(forin_val_cmp(_A, _K, Op, V), IsStr, GuardPlan) :-
+    ( IsStr == true
+    ->  GuardPlan = guard_value_strnum(Op, V)
+    ;   GuardPlan = guard_value(Op, V)
+    ).
+plawk_forin_guard_plan(forin_key_cmp(_K, Op, V), _IsStr, guard_key(Op, V)).
 
 plawk_forin_rule_field_plan(LoopVar, ArrayName, _TableIndex, _Tables,
         _StrArrays, PosArrays, var(LoopVar), KeyPlan) :- !,
