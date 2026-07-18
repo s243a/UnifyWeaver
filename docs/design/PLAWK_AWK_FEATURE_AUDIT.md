@@ -64,7 +64,8 @@ only (runtime pending) · ❌ missing.
 | Feature | Status | Notes |
 |---|---|---|
 | `$0` `$N` `NR` `NF` `FS` `OFS` | ✅ | `FS` accepts a **multi-char / regex** value (a POSIX ERE, awk semantics): a length-≥2 `BEGIN { FS = "…" }` compiles to a reserved sentinel separator byte that the field runtime dispatches to `@wam_fs_regex_field_slice_value` / `_count_value` (lazily `regcomp`ed, one FS per program). Because the numeric / `length` / `eq` / `cmp` field projectors all delegate to the core slice, the regex FS reaches `$N` reads, `NF`, guards, and concat uniformly; `$0` and EOF are unaffected. A single-char `FS` stays a literal byte (awk treats a one-char FS literally). **Field assignment splits on a regex FS too** (via `@wam_fields_new_re`), and `split()` takes its own multi-char/regex separator. Remaining: multi-char `OFS` (still a single byte), and regex FS inside the multipass / dyncall record-view drivers (which read a non-`%line` record). |
-| `FNR` `FILENAME` `ARGV` `ARGC` `RS` `ORS` `SUBSEP` | ❌ | single newline-delimited record model |
+| `ARGV[N]` `ARGC` | ◐ | **command-line arguments landed** (rule bodies): the plawk driver is a native binary, so `ARGV`/`ARGC` read straight from the process `argv` via `/proc/self/cmdline` (`@wam_argc`, `@wam_argv_get`) — `ARGV[0]` the program, `ARGV[1]` the first argument (the input path; `-` = stdin), `ARGV[2..]` extras, matching awk. `ARGC` is an i64 usable anywhere an i64 special is (`print ARGC`, `if (ARGC > 1)`, `n = ARGC - 1`, `c = ARGC`, concat). `ARGV[N]` (a non-negative integer-literal index) is a string scalar: `print ARGV[N]`, `x = ARGV[N]` (then prints / string-compares); an out-of-range index is `""`. Follow-ons: `ARGV`/`ARGC` in **BEGIN**/**END** blocks (their print/action pipelines are separate — BEGIN print is string-literal-only), a direct `ARGV[N]` comparison operand (`if (ARGV[2]=="x")` — use assign-then-compare), `ARGV[N]` in juxtaposition-concat (parses as an assoc read), and a variable/expression index. Linux-specific (`/proc/self/cmdline`) |
+| `FNR` `FILENAME` `RS` `ORS` `SUBSEP` | ❌ | single newline-delimited record model |
 | `ENVIRON["NAME"]` | ◐ | **read-only env lookup landed** (getenv via `@wam_environ_get`): `x = ENVIRON["NAME"]` (a string scalar — so it prints and string-compares) and `print ENVIRON["NAME"]`; an unset variable is `""` (awk semantics). v1 takes a string-literal key. Follow-ons: a non-literal key, `for (k in ENVIRON)`, and ENVIRON in juxtaposition-concat |
 | `RSTART` `RLENGTH` | ✅ | set by `match(SRC, /re/)`, readable as i64 specials in `print` (backed by `@plawk_rstart`/`@plawk_rlength`) |
 | arithmetic `+ - * / % //` | ✅ | i64, awk precedence, safe div/mod |
@@ -191,5 +192,6 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
 
 Deferred by design (the DSL's model diverges here): `RS`/multi-char record
 separators, `getline` (the `over`/multi-pass readers subsume most uses),
-multi-file `ARGV`/`FILENAME`/`FNR`, C-style `for(;;)` / `do-while` (the `while`
+multi-file `FILENAME`/`FNR` (`ARGV[N]`/`ARGC` themselves are landed for rule
+bodies — see the table), C-style `for(;;)` / `do-while` (the `while`
 runtime + for-in cover the loop needs).

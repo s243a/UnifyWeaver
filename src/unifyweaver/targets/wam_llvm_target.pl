@@ -7604,6 +7604,117 @@ env.unset:
   ret i64 0
 }
 
+; awk ARGC / ARGV[i]: the command-line arguments. Read once (cached) from
+; /proc/self/cmdline, a buffer of NUL-separated argv segments -- so ARGV[i]
+; maps directly to the compiled binary argv (ARGV[0] the program, ARGV[1] the
+; first argument), matching awk. Linux-specific; a follow-on would capture
+; argc/argv in main for portability.
+@.plawk_cmdline_path = private constant [19 x i8] c"/proc/self/cmdline\00"
+@plawk_cmdline_buf = internal global [65536 x i8] zeroinitializer
+@plawk_cmdline_len = internal global i64 -1
+
+; Load /proc/self/cmdline into the buffer once; return its byte length (0 on
+; error or if empty). Cached in @plawk_cmdline_len (-1 = not yet loaded).
+define i64 @plawk_cmdline_load() {
+entry:
+  %cl.cached = load i64, i64* @plawk_cmdline_len
+  %cl.done = icmp sge i64 %cl.cached, 0
+  br i1 %cl.done, label %cl.ret, label %cl.load
+
+cl.load:
+  %cl.path = getelementptr [19 x i8], [19 x i8]* @.plawk_cmdline_path, i64 0, i64 0
+  %cl.fd = call i32 @open(i8* %cl.path, i32 0, i32 0)
+  %cl.fdok = icmp sge i32 %cl.fd, 0
+  br i1 %cl.fdok, label %cl.read, label %cl.fail
+
+cl.read:
+  %cl.buf = getelementptr [65536 x i8], [65536 x i8]* @plawk_cmdline_buf, i64 0, i64 0
+  %cl.n = call i64 @read(i32 %cl.fd, i8* %cl.buf, i64 65535)
+  %cl.c = call i32 @close(i32 %cl.fd)
+  %cl.neg = icmp slt i64 %cl.n, 0
+  %cl.len = select i1 %cl.neg, i64 0, i64 %cl.n
+  store i64 %cl.len, i64* @plawk_cmdline_len
+  ret i64 %cl.len
+
+cl.fail:
+  store i64 0, i64* @plawk_cmdline_len
+  ret i64 0
+
+cl.ret:
+  ret i64 %cl.cached
+}
+
+; ARGC: the number of NUL-terminated segments in the cmdline buffer.
+define i64 @wam_argc() {
+entry:
+  %ac.len = call i64 @plawk_cmdline_load()
+  %ac.buf = getelementptr [65536 x i8], [65536 x i8]* @plawk_cmdline_buf, i64 0, i64 0
+  br label %ac.loop
+
+ac.loop:
+  %ac.i = phi i64 [ 0, %entry ], [ %ac.i1, %ac.step ]
+  %ac.count = phi i64 [ 0, %entry ], [ %ac.count2, %ac.step ]
+  %ac.atend = icmp sge i64 %ac.i, %ac.len
+  br i1 %ac.atend, label %ac.ret, label %ac.step
+
+ac.step:
+  %ac.p = getelementptr i8, i8* %ac.buf, i64 %ac.i
+  %ac.ch = load i8, i8* %ac.p
+  %ac.isnul = icmp eq i8 %ac.ch, 0
+  %ac.inc = zext i1 %ac.isnul to i64
+  %ac.count2 = add i64 %ac.count, %ac.inc
+  %ac.i1 = add i64 %ac.i, 1
+  br label %ac.loop
+
+ac.ret:
+  ret i64 %ac.count
+}
+
+; ARGV[idx]: intern the idx-th NUL-terminated segment and return its atom id, or
+; 0 (empty) when idx is out of range. Segment idx starts right after the idx-th
+; NUL (segment 0 at offset 0).
+define i64 @wam_argv_get(i64 %idx) {
+entry:
+  %av.len = call i64 @plawk_cmdline_load()
+  %av.buf = getelementptr [65536 x i8], [65536 x i8]* @plawk_cmdline_buf, i64 0, i64 0
+  %av.negidx = icmp slt i64 %idx, 0
+  br i1 %av.negidx, label %av.zero, label %av.scan
+
+av.scan:
+  %av.i = phi i64 [ 0, %entry ], [ %av.i1, %av.step ]
+  %av.seen = phi i64 [ 0, %entry ], [ %av.seen2, %av.step ]
+  %av.start = phi i64 [ 0, %entry ], [ %av.start2, %av.step ]
+  %av.reached = icmp eq i64 %av.seen, %idx
+  br i1 %av.reached, label %av.found, label %av.more
+
+av.more:
+  %av.atend = icmp sge i64 %av.i, %av.len
+  br i1 %av.atend, label %av.zero, label %av.step
+
+av.step:
+  %av.p = getelementptr i8, i8* %av.buf, i64 %av.i
+  %av.ch = load i8, i8* %av.p
+  %av.isnul = icmp eq i8 %av.ch, 0
+  %av.i1 = add i64 %av.i, 1
+  %av.next_seen = add i64 %av.seen, 1
+  %av.seen2 = select i1 %av.isnul, i64 %av.next_seen, i64 %av.seen
+  %av.start2 = select i1 %av.isnul, i64 %av.i1, i64 %av.start
+  br label %av.scan
+
+av.found:
+  %av.oob = icmp sge i64 %av.start, %av.len
+  br i1 %av.oob, label %av.zero, label %av.emit
+
+av.emit:
+  %av.segp = getelementptr i8, i8* %av.buf, i64 %av.start
+  %av.seglen = call i64 @strlen(i8* %av.segp)
+  %av.id = call i64 @wam_intern_atom(i8* %av.segp, i64 %av.seglen)
+  ret i64 %av.id
+
+av.zero:
+  ret i64 0
+}
+
 define i1 @wam_atom_prefix_value(%Value %atom_value, i8* %prefix, i64 %prefix_len) {
 entry:
   %ap.t = call i32 @value_tag(%Value %atom_value)

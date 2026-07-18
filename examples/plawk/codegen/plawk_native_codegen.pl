@@ -5216,6 +5216,7 @@ plawk_while_cond_ok(cmp(special(Name), Op, Rhs)) :-
 plawk_match_special('RSTART').
 plawk_match_special('RLENGTH').
 plawk_match_special('NR').
+plawk_match_special('ARGC').
 
 plawk_while_cond_rhs_ok(int(N)) :- integer(N).
 plawk_while_cond_rhs_ok(var(_W)).
@@ -5379,6 +5380,11 @@ plawk_while_cond_operand(special('RLENGTH'), _Slots, _CondValues, Base, Path, Si
     !,
     format(atom(Ref), '%~w_cond~w_~w_rlength', [Base, Path, Side]),
     format(atom(Line), '  ~w = load i64, i64* @plawk_rlength', [Ref]).
+% ARGC: the command-line argument count -- a call, no per-record state.
+plawk_while_cond_operand(special('ARGC'), _Slots, _CondValues, Base, Path, Side, Ref, [Line]) :-
+    !,
+    format(atom(Ref), '%~w_cond~w_~w_argc', [Base, Path, Side]),
+    format(atom(Line), '  ~w = call i64 @wam_argc()', [Ref]).
 % NR: the current record number. In a rule-body condition it is the loop's
 % %current_nr; in an END condition it is %plawk_nr (the final record count, the
 % same SSA the END expression path reads). No extra line -- both are existing
@@ -11441,6 +11447,8 @@ plawk_rule_body_print_field(var(_)).
 plawk_rule_body_print_field(special('NR')).
 plawk_rule_body_print_field(special('NF')).
 plawk_rule_body_print_field(environ(Key)) :- string(Key).
+plawk_rule_body_print_field(argv_at(N)) :- integer(N), N >= 0.
+plawk_rule_body_print_field(special('ARGC')).
 plawk_rule_body_print_field(int(field(_))).
 plawk_rule_body_print_field(Expr) :-
     plawk_i64_general_binary_expr(Expr).
@@ -12110,6 +12118,7 @@ plawk_substitute_end_reads(Expr, _StatePlan, Expr).
 
 plawk_i64_binary_primary_expr(special('NR')).
 plawk_i64_binary_primary_expr(special('NF')).
+plawk_i64_binary_primary_expr(special('ARGC')).
 plawk_i64_binary_primary_expr(int(field(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_i64_binary_primary_expr(length(field(FieldIndex))) :-
@@ -12132,6 +12141,7 @@ plawk_i64_scalar_primary_expr(match_expr(field(FieldIndex), Regex)) :-
     string(Regex).
 plawk_i64_scalar_primary_expr(special('RSTART')).
 plawk_i64_scalar_primary_expr(special('RLENGTH')).
+plawk_i64_scalar_primary_expr(special('ARGC')).
 
 plawk_i64_binary_expr(add_i64(Left, Right), add, add, Left, Right).
 plawk_i64_binary_expr(sub_i64(Left, Right), sub, sub, Left, Right).
@@ -12235,6 +12245,9 @@ plawk_scalar_action_update(set(var(Name), string(Value)), Name, set_str(string(V
 % `x = ENVIRON["NAME"]`: the env var value as a string scalar (via getenv).
 plawk_scalar_action_update(set(var(Name), environ(Key)), Name, set_str(environ(Key))) :-
     string(Key).
+% `x = ARGV[N]`: the N-th command-line argument as a string scalar.
+plawk_scalar_action_update(set(var(Name), argv_at(N)), Name, set_str(argv_at(N))) :-
+    integer(N), N >= 0.
 % `x = sprintf("fmt", args)`: format into a string scalar.
 plawk_scalar_action_update(set(var(Name), sprintf(string(Format), Args)), Name,
         set_str(sprintf(string(Format), Args))) :-
@@ -13017,6 +13030,14 @@ plawk_str_build_ir(environ(Name), _FieldSeparator, Base, IdValueIR,
         '  %~w_envid = call i64 @wam_environ_get(i8* %~w_envkeyp)',
         [Base, Base]),
     format(atom(IdValueIR), '%~w_envid', [Base]).
+% `ARGV[N]`: the N-th command-line argument as a string scalar. wam_argv_get
+% interns the argument bytes and returns the atom id (0 = out of range -> empty).
+plawk_str_build_ir(argv_at(N), _FieldSeparator, Base, IdValueIR,
+        [], [CallLine]) :-
+    integer(N), N >= 0,
+    format(atom(CallLine),
+        '  %~w_argvid = call i64 @wam_argv_get(i64 ~w)', [Base, N]),
+    format(atom(IdValueIR), '%~w_argvid', [Base]).
 plawk_str_build_ir(concat(Parts), FieldSeparator, Base, IdValueIR,
         [FmtGlobal, EmptyGlobal], SetupLines) :-
     plawk_str_concat_format(Parts, FmtAtom),
@@ -13508,6 +13529,10 @@ plawk_i64_expr_ir(special('RSTART'), _FieldSeparator, Base, _GlobalBase,
 plawk_i64_expr_ir(special('RLENGTH'), _FieldSeparator, Base, _GlobalBase,
         ValueIR, [], [Line]) :-
     format(atom(Line), '  %~w = load i64, i64* @plawk_rlength', [Base]),
+    format(atom(ValueIR), '%~w', [Base]).
+plawk_i64_expr_ir(special('ARGC'), _FieldSeparator, Base, _GlobalBase,
+        ValueIR, [], [Line]) :-
+    format(atom(Line), '  %~w = call i64 @wam_argc()', [Base]),
     format(atom(ValueIR), '%~w', [Base]).
 % Ternary `COND ? A : B` over i64 values. COND is a single comparison
 % `L <op> R`; both branches are evaluated (no side effects in an i64 expr) and
@@ -15189,6 +15214,26 @@ plawk_emit_print_expr_for_context(environ(Key), _FieldSeparator, Context,
         '  %~w_sptr = select i1 %~w_empty_c, i8* getelementptr ([1 x i8], [1 x i8]* @.~w, i64 0, i64 0), i8* %~w_s',
         [Base, Base, EmptyName, Base]),
     format(atom(PtrIR), '%~w_sptr', [Base]).
+% `print ARGV[N]`: fetch the N-th argument's atom id then print it as text
+% (id 0 -> empty), same id-resolve pattern as ENVIRON.
+plawk_emit_print_expr_for_context(argv_at(N), _FieldSeparator, Context,
+        string(Base, PtrIR), [EmptyGlobal],
+        [ArgvCall, StrCall, IsEmpty, SelPtr]) :-
+    integer(N), N >= 0,
+    plawk_print_expr_value_base(Context, string, Base),
+    format(atom(ArgvCall),
+        '  %~w_argvid = call i64 @wam_argv_get(i64 ~w)', [Base, N]),
+    format(atom(EmptyName), '~w_empty', [Base]),
+    format(atom(EmptyGlobal),
+        '@.~w = private constant [1 x i8] zeroinitializer', [EmptyName]),
+    format(atom(StrCall),
+        '  %~w_s = call i8* @wam_atom_to_string(i64 %~w_argvid)', [Base, Base]),
+    format(atom(IsEmpty),
+        '  %~w_empty_c = icmp eq i64 %~w_argvid, 0', [Base, Base]),
+    format(atom(SelPtr),
+        '  %~w_sptr = select i1 %~w_empty_c, i8* getelementptr ([1 x i8], [1 x i8]* @.~w, i64 0, i64 0), i8* %~w_s',
+        [Base, Base, EmptyName, Base]),
+    format(atom(PtrIR), '%~w_sptr', [Base]).
 plawk_emit_print_expr_for_context(ssa_str(Value), FieldSeparator, Context,
         Out, Globals, Setup) :-
     plawk_emit_print_str_id(Value, FieldSeparator, Context, Out, Globals, Setup).
@@ -15311,6 +15356,13 @@ plawk_emit_print_expr_for_context(special('RLENGTH'), FieldSeparator, Context,
     plawk_print_expr_value_base(Context, rlength, Base),
     plawk_print_expr_output_names(Context, rlength, FmtPrefix, PrintPrefix),
     plawk_i64_expr_ir(special('RLENGTH'), FieldSeparator, Base, Base,
+        ValueIR, GlobalParts, SetupParts).
+
+plawk_emit_print_expr_for_context(special('ARGC'), FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
+    plawk_print_expr_value_base(Context, argc, Base),
+    plawk_print_expr_output_names(Context, argc, FmtPrefix, PrintPrefix),
+    plawk_i64_expr_ir(special('ARGC'), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
 
 plawk_emit_print_expr_for_context(substr(field(FieldIndex), Start, Len), FieldSeparator, Context,
