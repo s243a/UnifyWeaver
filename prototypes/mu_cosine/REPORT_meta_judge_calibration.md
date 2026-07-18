@@ -31,6 +31,14 @@ hand-set `lr_slow`. (Naive SGD would have needed the timescale tuned by hand.) T
 — why Adam and SGD both break emergent-timescale learning and a precision-weighted update is
 required — is derived in THEORY_emergent_timescale_learning.md.
 
+**Post-audit leakage-tight rerun (v2)** — train-only target factory, TRAIN-side-only negatives,
+η₀ = 0.02, per-element-RMS drift metric (the audit's finding 5 corrections): emergent gain 0.153;
+per-element drift ratio slow/fast = 3.2, honestly reported as STILL >1 (the gate supplies the
+SNR-proportional scaling; η₀'s absolute calibration remains engineering, and re-tuning it until the
+diagnostic reads <1 would be circular). The mechanism signal survived the tightening and slightly
+sharpened: NEAR μ-beats-e5 rate 0.395 (vs 0.360 pre-fix), FAR R@1 0.135. Conclusions unchanged —
+the aggregate ranker verdict (§4) stands.
+
 ## 2. Scale-free negatives carry more information than uniform
 
 User's point: the ranking signal has more information when the folder choices are semantically

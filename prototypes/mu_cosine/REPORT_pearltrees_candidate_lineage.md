@@ -24,22 +24,26 @@ folder→parent lineage, never the evaluated bookmark's placement nor the folder
 without lineage tokens; the new `model_pt_filing_lin.pt` with them); 217/323 folders had a
 principal path (271 ancestor titles embedded). Filing MRR (fidelity to real treeId placement):
 
-| head (MRR ↑) | no-lineage | +candidate-lineage | +lineage SHUFFLED (control) |
+Post-audit rerun (record-majority PRINCIPAL lineage — the earlier first-DAG-parent walk
+contradicted the recorded parent on 61% of multi-parent folders — and a SUPPORT-PRESERVING shuffle
+control; coverage rose to 253/323 folders, 1118/1147 edges from records):
+
+| head (MRR ↑) | no-lineage | +principal lineage | +lineage SHUFFLED (clean control) |
 |---|---|---|---|
-| mu-max-cond (conditioned) | 0.075 | 0.085 | 0.082 |
-| mu-lineage | 0.044 | 0.054 | 0.073 |
-| mu-elem-cond | 0.081 | 0.077 | 0.082 |
-| **held-folder mu-max-cond (n=279)** | 0.073 | **0.097** | 0.084 |
+| mu-max-cond (conditioned) | 0.075 | 0.081 | 0.078 |
+| mu-lineage | 0.044 | 0.068 | 0.078 |
+| mu-elem-cond | 0.081 | 0.100 | 0.108 |
+| held-folder mu-max-cond (n=279) | 0.073 | 0.082 | 0.088 |
 | e5-cos (reference, lineage-invariant) | 0.294 | 0.294 | 0.294 |
 
-**Verdict: inconclusive at this first cut — the shuffled control eats most of the gain.** Adding
-candidate-folder tokens lifts the conditioned heads over no-lineage (mu-max-cond 0.075→0.085), but
-a SHUFFLED lineage (each folder given a random other folder's path) does about as well on the
-pooled metrics (0.082; mu-lineage is even higher shuffled) — so most of the pooled lift is generic
-extra-context, NOT the specific parent path. The one place the RIGHT lineage demonstrably beats
-shuffled is the held-folder subset (0.097 vs 0.084, +0.013) — real signal exactly where
-disambiguation by parent path should matter (unseen folders), but small. Nothing here closes the
-gap to e5 (0.294).
+**Verdict (corrected, and cleaner than the first cut): the lineage effect is GENERIC CONTEXT, not
+the specific path.** With the true principal lineage and the clean control, the shuffled chains do
+as well as — sometimes better than — the correct ones on every head, INCLUDING the held-folder
+slice where the first cut had shown a right-lineage edge (that edge was an artifact of the wrong
+lineage construction plus the confounded shuffle, and did not survive the audit corrections).
+Extra folder-side tokens help a little (0.075→~0.08–0.11 across heads); WHICH lineage they encode
+does not measurably matter at this scale. Consistent with §"titles already carry the lineage".
+Nothing approaches e5 (0.294).
 
 Why so weak — the titles already carry the lineage. The held-folder slice discriminates the two
 candidate explanations: no-lineage 0.073 → correct 0.097 → shuffled 0.084, so the RIGHT lineage
