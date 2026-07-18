@@ -13,6 +13,27 @@ The construction is general graph infrastructure. It does not promote a
 Green kernel to learned measurement covariance, relax the failed Stage-A
 source-power gates, or make a CUDA performance claim.
 
+Separate outcome-blind application uses are authorized now: frozen-geometry
+candidate generation, per-anchor `h_s` screening values as ranking features
+(not calibrated probabilities or covariance entries), and routing. Selection
+of `D`, `K`, `ell`, `epsilon`, `alpha`, and screening thresholds may use
+topology, frozen embeddings, resource limits, and numerical diagnostics, but
+no placement or judge outcomes. Any learned downstream consumer still requires
+train-only selection and held evaluation. This does not reopen the failed
+Stage-A dependence campaign or authorize judge covariance, independent
+batching, QR, sparse/CUDA, or performance claims.
+
+For scale orientation, the legacy 5,004-tree RDF slice documented in
+[pearltrees_data_completion.md](../pearltrees_data_completion.md) needs
+200,320,128 bytes (191.04 MiB) per dense float64 square array. The current
+reference retains four square arrays, about 764.16 MiB before construction and
+linear-algebra workspaces. The current assembled Pearltrees DAG has 14,709
+nodes rather than 5,004: one array is about 1.61 GiB and four are about
+6.45 GiB before workspaces. Thus the dense path is plausible today for a
+measured export-slice or bounded candidate-domain study on a sufficiently
+provisioned host, not yet a whole-current-corpus deployment or latency claim.
+Record the exact node universe, peak RSS, and wall time.
+
 ## Why locality is necessary
 
 A Wikipedia-scale graph can have millions of nodes. A dense float64 matrix on
@@ -133,6 +154,16 @@ pass reads the outside endpoints of cut edges. Semantic conductance on a cut
 edge may require the outside endpoint's embedding, but that endpoint does not
 enter the factorization.
 
+Under the bounded conductance transform, `0 <= c_ij <= c0_ij`. If a cut edge's
+exterior embedding is unavailable, the dense correctness reference continues
+to fail closed. A scale adapter may explicitly substitute `c0_ij` for that cut
+edge only: this upper-bounds `beta` and, by grounded M-matrix inverse
+monotonicity, lowers nonnegative raw responses, so the degradation over-grounds
+rather than exaggerates influence. Record the fallback edge count and
+substituted cut mass. Substituting zero, applying this fallback to retained
+internal edges, or claiming that normalized `h_s` values or their ranking are
+conservative is not allowed.
+
 ### Nonzero grounding remains mandatory
 
 Every positive-conductance component of the induced graph must reach a
@@ -167,6 +198,41 @@ over-grounding. If the upper bracket violates the float64 conditioning or
 physical-scale contract, calibration fails rather than adding hidden jitter.
 Calibration uses the raw Green response ratio; unit-diagonal correlation
 normalization does not have the required monotone interpretation.
+The API therefore requires `shell_nodes` explicitly and never substitutes the
+hard truncation frontier by default. The caller must preregister an interior
+shell; the implementation validates membership and reachability but cannot
+infer scientific interiority from node identifiers alone.
+
+### Per-anchor realized screening radius
+
+One uniform `alpha` is set by the tightest anchor and can over-ground the
+others. Preserve that heterogeneity instead of reporting only the joint
+maximum. For a frozen outcome-blind source-relative distance `d_s`, define the
+radial tail envelope
+
+    A_s(r) = max over reachable i with d_s(i) >= r of h_s(i).
+
+Unlike individual shell values, `A_s(r)` is nonincreasing by construction even
+when an irregular graph's exact-distance shell responses rebound. For target
+`q`, define
+
+    R_s(q) = min {r > 0 : A_s(r) <= q}.
+
+At `q=exp(-1)` this is the realized e-fold radius. For any other target it is
+the realized `q`-screening radius; do not infer or interpolate an exponential
+length from one shell value. Report each anchor's calibration-shell
+attenuation, threshold, distance metric, and discrete crossing bracket
+`(r_previous, r_crossing]`. If no crossing occurs inside the retained
+positive-conductance component, right-censor the result beyond the maximum
+observed radius.
+
+The current hop implementation recomputes source-relative hops inside each
+anchor's realized positive-conductance retained component. It excludes
+disconnected components rather than treating their zero Green response as
+instant attenuation, and it fails closed unless every calibration anchor has
+a reachable non-source shell node. A future weighted selector must supply its
+own frozen source-relative distances rather than reuse the multi-source
+minimum distance.
 
 ### Chain initializer
 
@@ -182,6 +248,11 @@ Setting `kappa=1/R_e` gives the exact one-dimensional initializer
 
 Using a robust typical internal conductance for `c` supplies a bracket seed,
 not a final calibration on an irregular graph.
+
+Tree-like outward branching can attenuate faster than a chain at the same
+`alpha`, so the chain seed can be conservatively high and over-ground.
+Cycles, bottlenecks, and degree heterogeneity can shift it in either direction.
+The frozen-shell bisection, not `alpha_0`, determines the final model.
 
 ### Screening radius is not truncation radius
 
@@ -310,8 +381,9 @@ An implementation of local grounded diffusion must:
    and reciprocal-condition contracts from the global design;
 4. retain the Cholesky/solve-first interface and never require an explicit
    inverse for primary computation;
-5. expose killed-response, harmonic-measure, cut-current, and nested-domain
-   diagnostics with finite-value and Kirchhoff-residual checks;
+5. expose killed-response, per-anchor realized screening-radius,
+   harmonic-measure, cut-current, and nested-domain diagnostics with
+   finite-value and Kirchhoff-residual checks;
 6. keep model leakage, Dirichlet cut conductance, and any future numerical
    jitter as three separately named quantities;
 7. preserve the node map, selector provenance, requested and realized `K`,

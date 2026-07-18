@@ -15,12 +15,28 @@ from unifyweaver.graph.leaky_diffusion import (  # noqa: E402
     build_grounded_semantic_diffusion,
 )
 from unifyweaver.graph.local_diffusion import (  # noqa: E402
+    AnchorScreeningProvenance,
     build_local_grounded_semantic_diffusion,
     LocalDiffusionDomain,
+    _tail_envelope_crossing,
     calibrate_uniform_leakage,
     compare_nested_domains,
     select_hop_local_domain,
 )
+
+
+def test_anchor_screening_provenance_requires_a_boolean_censor_flag():
+    with pytest.raises(ValueError, match="right_censored must be boolean"):
+        AnchorScreeningProvenance(
+            anchor="a",
+            shell_attenuation=0.25,
+            attenuation_threshold=0.5,
+            radius_lower=1.0,
+            radius_upper=None,
+            right_censored="false",
+            maximum_observed_radius=1.0,
+            distance_metric="hops",
+        )
 
 
 def _neighbors(edges, extra=()):
@@ -307,6 +323,119 @@ def test_uniform_leakage_calibration_hits_chain_frontier_target():
     assert response[-1] / response[0] == pytest.approx(
         calibration.achieved_attenuation
     )
+    assert calibration.source_nodes == (0,)
+    assert len(calibration.anchor_screening) == 1
+    screening = calibration.anchor_screening[0]
+    assert screening.anchor == 0
+    assert screening.shell_attenuation == pytest.approx(
+        calibration.achieved_attenuation
+    )
+    assert screening.attenuation_threshold == pytest.approx(target)
+    assert screening.radius_lower == 4.0
+    assert screening.radius_upper == 5.0
+    assert not screening.right_censored
+    assert screening.maximum_observed_radius == 5.0
+    assert screening.distance_metric == "realized_positive_conductance_hops"
+
+
+def test_multi_anchor_calibration_reports_tight_and_overgrounded_radii():
+    graph = {
+        "a0": ("a1",),
+        "a1": ("a0", "a2"),
+        "a2": ("a1",),
+        "b0": ("b1",),
+        "b1": ("b0", "b2"),
+        "b2": ("b1",),
+    }
+    domain = select_hop_local_domain(
+        ("a0", "b0"),
+        graph,
+        maximum_nodes=6,
+    )
+    embeddings = {
+        "a0": np.array([0.0]),
+        "a1": np.array([0.0]),
+        "a2": np.array([0.0]),
+        "b0": np.array([10.0]),
+        "b1": np.array([13.5]),
+        "b2": np.array([17.0]),
+    }
+
+    calibration = calibrate_uniform_leakage(
+        domain,
+        shell_nodes=("a2", "b2"),
+        node_embeddings=embeddings,
+        length_scale=1.0,
+        relative_tolerance=1e-6,
+    )
+
+    tight, overgrounded = calibration.anchor_screening
+    assert (tight.anchor, overgrounded.anchor) == ("a0", "b0")
+    assert tight.shell_attenuation == pytest.approx(
+        calibration.achieved_attenuation
+    )
+    assert tight.radius_upper == 2.0
+    assert overgrounded.shell_attenuation < tight.shell_attenuation
+    assert overgrounded.radius_upper == 1.0
+
+
+def test_tail_envelope_rejects_an_early_nonmonotone_shell_crossing():
+    lower, upper, censored, maximum = _tail_envelope_crossing(
+        np.array([0.0, 1.0, 2.0, 3.0]),
+        np.array([1.0, 0.2, 0.8, 0.1]),
+        0.5,
+    )
+
+    assert (lower, upper, censored, maximum) == (2.0, 3.0, False, 3.0)
+    lower, upper, censored, maximum = _tail_envelope_crossing(
+        np.array([0.0, 1.0, 2.0]),
+        np.array([1.0, 0.9, 0.8]),
+        0.5,
+    )
+    assert (lower, upper, censored, maximum) == (2.0, None, True, 2.0)
+
+
+def test_calibration_requires_a_reachable_shell_node_for_every_anchor():
+    graph = {
+        "a0": ("a1",),
+        "a1": ("a0",),
+        "b0": ("b1",),
+        "b1": ("b0",),
+    }
+    domain = select_hop_local_domain(
+        ("a0", "b0"),
+        graph,
+        maximum_nodes=4,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="reachable non-source node for anchor 'b0'",
+    ):
+        calibrate_uniform_leakage(
+            domain,
+            shell_nodes=("a1",),
+        )
+
+
+def test_non_e_fold_target_is_recorded_as_a_generic_threshold():
+    graph = _path(3)
+    domain = select_hop_local_domain(
+        (0,),
+        graph,
+        maximum_nodes=4,
+    )
+
+    calibration = calibrate_uniform_leakage(
+        domain,
+        shell_nodes=(3,),
+        target_attenuation=0.5,
+        relative_tolerance=1e-6,
+    )
+
+    screening = calibration.anchor_screening[0]
+    assert screening.attenuation_threshold == 0.5
+    assert screening.radius_upper is not None
 
 
 def test_leakage_calibration_reads_each_required_embedding_once():

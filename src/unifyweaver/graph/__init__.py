@@ -7,6 +7,7 @@ from .leaky_diffusion import (
     semantic_conductance_matrix,
 )
 from .local_diffusion import (
+    AnchorScreeningProvenance,
     LeakageCalibrationResult,
     LocalDiffusionDomain,
     LocalGroundedSemanticDiffusion,
@@ -18,6 +19,7 @@ from .local_diffusion import (
 )
 
 __all__ = [
+    "AnchorScreeningProvenance",
     "GroundedSemanticDiffusion",
     "build_grounded_semantic_diffusion",
     "LeakageCalibrationResult",

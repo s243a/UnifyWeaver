@@ -11,14 +11,22 @@ The implementation in src/unifyweaver/graph/leaky_diffusion.py is a dense
 float64 correctness reference. It establishes the algebra and fail-closed API;
 it does not claim a CUDA crossover or authorize a learned cross-item
 covariance. The completed Stage-A repeated-judge source-power experiment
-failed closed and unlocked no candidate enumeration, Nomic use, judge calls,
-covariance deployment, independent batching, QR specialization, or CUDA
-claim. This primitive therefore remains outcome-blind infrastructure.
+failed closed and, within that dependence campaign, unlocked no
+dependence-candidate enumeration, Nomic packing, judge calls, covariance
+deployment, independent batching, QR specialization, or CUDA claim.
+This primitive therefore remains outcome-blind infrastructure.
 For million-node graphs, the bounded Dirichlet construction in
 [LOCAL_GROUNDED_DIFFUSION.md](LOCAL_GROUNDED_DIFFUSION.md) selects an
 outcome-blind topological neighborhood, aggregates every cut edge into an
 explicit bath shunt, and reuses the same operator and precision-root algebra
 on the retained domain.
+
+Separate deterministic application uses do not depend on that failed
+dependence gate: frozen-geometry candidate generation, raw per-anchor
+screening values as ranking features, and routing are allowed when geometry,
+leakage, and thresholds are chosen without placement or judge outcomes.
+They are not calibrated probabilities, learned covariance entries, or
+authorization for independent batching, QR, or sparse/CUDA claims.
 
 
 ## Separate topology, semantics, and grounding
