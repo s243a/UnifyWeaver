@@ -5964,6 +5964,29 @@ plawk_forin_end_guard_lines(guard_value_streq(Op, Text), TableIndex, Lines, Cond
         '  %forin_gcmp = icmp ~w i64 %forin_gval, %forin_glit', [Pred]),
     CondVar = '%forin_gcmp',
     Lines = [PtrLine, LitLine, ValLine, CmpLine].
+% String ordering (`arr[k] < "x"` etc.): resolve the element text and strcmp it
+% against the literal (a NUL-terminated module constant), testing the sign
+% against 0 with the ordering predicate -- the same lowering the scalar string
+% ordering guard uses.
+plawk_forin_end_guard_lines(guard_value_strord(Op, Text), TableIndex, Lines, CondVar,
+        GuardGlobal) :-
+    plawk_forin_cmp_pred(Op, Pred),
+    format(atom(GName), 'plawk_forin_guard_strord_~w', [TableIndex]),
+    llvm_emit_c_string_global(GName, Text, GuardGlobal, _StringLen, BytesLen),
+    format(atom(PtrLine),
+        '  %forin_glitp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+        [BytesLen, BytesLen, GName]),
+    format(atom(ValLine),
+        '  %forin_gval = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
+        [TableIndex]),
+    format(atom(StrLine),
+        '  %forin_gval_s = call i8* @wam_atom_to_string(i64 %forin_gval)', []),
+    format(atom(RcLine),
+        '  %forin_gval_rc = call i32 @strcmp(i8* %forin_gval_s, i8* %forin_glitp)', []),
+    format(atom(CmpLine),
+        '  %forin_gcmp = icmp ~w i32 %forin_gval_rc, 0', [Pred]),
+    CondVar = '%forin_gcmp',
+    Lines = [PtrLine, ValLine, StrLine, RcLine, CmpLine].
 
 %% plawk_forin_end_accum_ir(+LoopVar, +ArrayName, +Acc, +Operand,
 %%     +PrintFields, +AssocPlan, +Descriptor, +OutputSeparator, -IR)
@@ -7804,13 +7827,17 @@ plawk_assoc_planned_actions(
 % a raw icmp on the atom id would compare registry positions, not values.
 plawk_forin_guard_plan(Guard, GuardPlan) :-
     plawk_forin_guard_plan(Guard, false, GuardPlan).
-% A string RHS (`arr[k] == "x"`) is a string-equality compare of the element:
-% intern the literal and icmp its atom id against the stored id (canonical
-% interning, so equal strings share an id). Only ==/!= reach here (the parser
-% restricts the string form). Independent of IsStr -- the RHS type drives it.
-plawk_forin_guard_plan(forin_val_cmp(_A, _K, Op, str(Text)), _IsStr,
-        guard_value_streq(Op, Text)) :-
-    !.
+% A string RHS (`arr[k] CMP "x"`) is a string compare of the element.
+% `==`/`!=` intern the literal and icmp its atom id against the stored id
+% (canonical interning, so equal strings share an id); the ordering ops resolve
+% the element text and strcmp it against the literal. Independent of IsStr --
+% the RHS type drives it.
+plawk_forin_guard_plan(forin_val_cmp(_A, _K, Op, str(Text)), _IsStr, GuardPlan) :-
+    !,
+    ( plawk_forin_streq_op(Op)
+    ->  GuardPlan = guard_value_streq(Op, Text)
+    ;   GuardPlan = guard_value_strord(Op, Text)
+    ).
 plawk_forin_guard_plan(forin_val_cmp(_A, _K, Op, V), IsStr, GuardPlan) :-
     ( IsStr == true
     ->  GuardPlan = guard_value_strnum(Op, V)
@@ -8401,6 +8428,11 @@ plawk_forin_cmp_pred(lt, slt).
 plawk_forin_cmp_pred(le, sle).
 plawk_forin_cmp_pred(gt, sgt).
 plawk_forin_cmp_pred(ge, sge).
+
+% String comparison ops that reduce to a canonical atom-id equality check;
+% the rest (ordering) go through strcmp.
+plawk_forin_streq_op(eq).
+plawk_forin_streq_op(ne).
 
 plawk_forin_rule_field_lines([], _B, _N) -->
     [].

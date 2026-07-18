@@ -11,10 +11,10 @@
 % a number, lexical otherwise (POSIX duality). Counter tables (arr[k]++, a
 % genuine i64) keep the plain i64 icmp -- see test_plawk_forin_filter.pl.
 %
-% A string RHS (`a[k] == "x"` / `!= "x"`) is a string-equality compare: the
-% literal is interned (from a module-level constant) and its atom id icmp'd
-% against the element's stored id -- canonical interning means equal strings
-% share an id, so no strcmp. Only ==/!= (string ordering is a follow-on).
+% A string RHS: `==`/`!=` are a canonical atom-id icmp (the literal interned from
+% a module-level constant -- equal strings share an id, so no strcmp); the
+% ordering ops (`<` `<=` `>` `>=`) resolve the element text and strcmp it against
+% the literal, testing the sign with the predicate.
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -110,6 +110,25 @@ test(split_streq_multichar, [condition(clang_available)]) :-
         "foo,bar,foo\n", Out),
     sorted_lines(Out, S),
     assertion(S == ["1", "3"]), !.
+
+% String ordering (`< "m"`): strcmp against the literal. apple,zebra,cat,mango
+% -> apple and cat are lexically < "m".
+test(split_strlt, [condition(clang_available)]) :-
+    vdir(Dir),
+    build_run(Dir, 'sl', "{ split($0, a, \",\") }\n\c
+        END { for (k in a) { if (a[k] < \"m\") print k, a[k] } }\n",
+        "apple,zebra,cat,mango\n", Out),
+    sorted_lines(Out, S),
+    assertion(S == ["1 apple", "3 cat"]), !.
+
+% String ordering (`>= "m"`): the complement -- zebra and mango.
+test(split_strge, [condition(clang_available)]) :-
+    vdir(Dir),
+    build_run(Dir, 'sg', "{ split($0, a, \",\") }\n\c
+        END { for (k in a) { if (a[k] >= \"m\") print k, a[k] } }\n",
+        "apple,zebra,cat,mango\n", Out),
+    sorted_lines(Out, S),
+    assertion(S == ["2 zebra", "4 mango"]), !.
 
 % Regression: a genuine i64 counter table still compares numerically as an
 % i64 (the value IS the count, not an atom id). a=3,b=1; `> 1` keeps a.
