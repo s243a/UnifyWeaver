@@ -1863,6 +1863,9 @@ match_special_name('RLENGTH') --> "RLENGTH".
 % (NF is a follow-on: it needs the field separator threaded into the condition
 % lowering, and has no defined value in an END condition.)
 match_special_name('NR') --> "NR".
+% ARGC (the command-line argument count) is a numeric special in a guard too:
+% `if (ARGC > 1)`.
+match_special_name('ARGC') --> "ARGC".
 
 while_cmp_rhs(int(N)) -->
     signed_integer_value(N),
@@ -2306,6 +2309,11 @@ scalar_value_expr(string(Value)) -->
 scalar_value_expr(Environ) -->
     environ_expr(Environ),
     !.
+% `x = ARGV[N]`: the N-th command-line argument as a string scalar (empty if out
+% of range). Tried before the bare scalar expr; the `ARGV[` prefix is unambiguous.
+scalar_value_expr(Argv) -->
+    argv_expr(Argv),
+    !.
 scalar_value_expr(Value) -->
     scalar_delta_expr(Value).
 
@@ -2316,6 +2324,15 @@ environ_expr(environ(Name)) -->
     "ENVIRON", ws, "[", ws,
     quoted_string(KCodes), ws, "]",
     { string_codes(Name, KCodes) }.
+
+%% argv_expr(-Argv)//
+%  `ARGV[N]` -- the N-th command-line argument (a non-negative integer-literal
+%  index). Parses to argv_at(N). ARGV[0] is the program, ARGV[1] the first arg.
+argv_expr(argv_at(N)) -->
+    "ARGV", ws, "[", ws,
+    integer_codes(NCodes),
+    { NCodes \== [], number_codes(N, NCodes), N >= 0 },
+    ws, "]".
 
 % match/RSTART/RLENGTH as a scalar RHS: `n = match($0, /re/)`, `x = RSTART`.
 % Tried before the arithmetic clause so the `match(` keyword and the special
@@ -2351,6 +2368,8 @@ scalar_delta_expr(special('NR')) -->
     "NR".
 scalar_delta_expr(special('NF')) -->
     "NF".
+scalar_delta_expr(special('ARGC')) -->
+    "ARGC".
 scalar_delta_expr(field(Index)) -->
     "$",
     integer_codes(IndexCodes),
@@ -2569,6 +2588,9 @@ print_fields_rest([]) -->
 print_field_expr(Environ) -->
     environ_expr(Environ),
     !.
+print_field_expr(Argv) -->
+    argv_expr(Argv),
+    !.
 print_field_expr(Ternary) -->
     ternary_expr(Ternary),
     !.
@@ -2641,6 +2663,8 @@ field_expr(special('NR')) -->
     "NR".
 field_expr(special('NF')) -->
     "NF".
+field_expr(special('ARGC')) -->
+    "ARGC".
 
 %% regex_arg(-Regex)//
 %
@@ -3182,6 +3206,8 @@ i64_binary_primary_expr(special('NR')) -->
     "NR".
 i64_binary_primary_expr(special('NF')) -->
     "NF".
+i64_binary_primary_expr(special('ARGC')) -->
+    "ARGC".
 i64_binary_primary_expr(Expr) -->
     int_field_expr(Expr).
 i64_binary_primary_expr(length(Field)) -->
