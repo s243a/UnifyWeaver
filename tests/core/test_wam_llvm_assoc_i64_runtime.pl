@@ -52,6 +52,10 @@ test(strnum_looks_numeric_and_cmp) :-
     strnum_driver_ir(DriverIR),
     run_assoc_i64_smoke('uw_wam_strnum', DriverIR).
 
+test(strnum_cmp_int) :-
+    strnum_cmp_int_driver_ir(DriverIR),
+    run_assoc_i64_smoke('uw_wam_strnum_cmp_int', DriverIR).
+
 run_assoc_i64_smoke(Name, DriverIR) :-
     tmp_root(Root),
     directory_file_path(Root, Name, Dir),
@@ -574,6 +578,53 @@ entry:
   %a14 = and i1 %a13, %c6_ok
   %a15 = and i1 %a14, %c7_ok
   br i1 %a15, label %ok, label %bad
+
+ok:
+  ret i32 0
+
+bad:
+  ret i32 91
+}
+').
+
+% Exercise @wam_strnum_cmp_int (step 3b): a strnum string operand vs an integer.
+% Numeric when the string looks numeric (5 vs 3 -> +1, 2 vs 3 -> -1, 5 vs 5 ->
+% 0, "05" vs 5 -> 0), lexical otherwise ("abc" vs 3 -> "abc">"3" -> +1, "5x" vs
+% 5 -> "5x">"5" -> +1).
+strnum_cmp_int_driver_ir('
+@.uw_ci_5 = private constant [2 x i8] c"5\00"
+@.uw_ci_2 = private constant [2 x i8] c"2\00"
+@.uw_ci_abc = private constant [4 x i8] c"abc\00"
+@.uw_ci_05 = private constant [3 x i8] c"05\00"
+@.uw_ci_5x = private constant [3 x i8] c"5x\00"
+
+define i32 @main() {
+entry:
+  %p5 = getelementptr [2 x i8], [2 x i8]* @.uw_ci_5, i64 0, i64 0
+  %p2 = getelementptr [2 x i8], [2 x i8]* @.uw_ci_2, i64 0, i64 0
+  %pabc = getelementptr [4 x i8], [4 x i8]* @.uw_ci_abc, i64 0, i64 0
+  %p05 = getelementptr [3 x i8], [3 x i8]* @.uw_ci_05, i64 0, i64 0
+  %p5x = getelementptr [3 x i8], [3 x i8]* @.uw_ci_5x, i64 0, i64 0
+
+  %c1 = call i32 @wam_strnum_cmp_int(i8* %p5, i8 1, i64 3)
+  %c1_ok = icmp eq i32 %c1, 1
+  %c2 = call i32 @wam_strnum_cmp_int(i8* %p2, i8 1, i64 3)
+  %c2_ok = icmp eq i32 %c2, -1
+  %c3 = call i32 @wam_strnum_cmp_int(i8* %pabc, i8 1, i64 3)
+  %c3_ok = icmp eq i32 %c3, 1
+  %c4 = call i32 @wam_strnum_cmp_int(i8* %p5, i8 1, i64 5)
+  %c4_ok = icmp eq i32 %c4, 0
+  %c5 = call i32 @wam_strnum_cmp_int(i8* %p05, i8 1, i64 5)
+  %c5_ok = icmp eq i32 %c5, 0
+  %c6 = call i32 @wam_strnum_cmp_int(i8* %p5x, i8 1, i64 5)
+  %c6_ok = icmp eq i32 %c6, 1
+
+  %a1 = and i1 %c1_ok, %c2_ok
+  %a2 = and i1 %a1, %c3_ok
+  %a3 = and i1 %a2, %c4_ok
+  %a4 = and i1 %a3, %c5_ok
+  %a5 = and i1 %a4, %c6_ok
+  br i1 %a5, label %ok, label %bad
 
 ok:
   ret i32 0

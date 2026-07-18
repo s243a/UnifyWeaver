@@ -5271,6 +5271,28 @@ plawk_while_cond_build(or(A, B), Slots, CV, Base, Path, CondVar, Lines) :-
     format(atom(CondVar), '%~w_cond~w', [Base, Path]),
     format(atom(Line), '  ~w = or i1 ~w, ~w', [CondVar, VA, VB]),
     append([LA, LB, [Line]], Lines).
+% strnum-vs-integer-literal comparison (step 3b): resolve the strnum id to text
+% and dispatch to @wam_strnum_cmp_int, which decides numeric (strnum looks
+% numeric) vs lexical (against the integer formatted as a decimal string) by the
+% runtime content, then compare its sign to 0. `x OP N`.
+plawk_while_cond_build(cmp(var(L), Op, int(N)), Slots, CondValues, Base,
+        Path, CondVar, Lines) :-
+    plawk_cond_var_is_strnum(L, Slots),
+    integer(N),
+    !,
+    plawk_while_cond_operand(var(L), Slots, CondValues, Base, Path, l, LId, _),
+    plawk_icmp_pred(Op, Pred),
+    plawk_strnum_cmp_int_lines(Base, Path, LId, N, Pred, CondVar, Lines).
+% `N OP x`: swap to `x swap(Op) N` so the strnum stays the left operand.
+plawk_while_cond_build(cmp(int(N), Op, var(R)), Slots, CondValues, Base,
+        Path, CondVar, Lines) :-
+    plawk_cond_var_is_strnum(R, Slots),
+    integer(N),
+    !,
+    plawk_while_cond_operand(var(R), Slots, CondValues, Base, Path, r, RId, _),
+    plawk_swap_cmp_op(Op, SwappedOp),
+    plawk_icmp_pred(SwappedOp, Pred),
+    plawk_strnum_cmp_int_lines(Base, Path, RId, N, Pred, CondVar, Lines).
 % strnum-vs-strnum comparison (POSIX numeric-string duality): both operands are
 % strnum slots (interned atom ids). Resolve each id to its text and dispatch to
 % @wam_strnum_cmp, which decides numeric-vs-lexical by the runtime content (both
@@ -5298,11 +5320,11 @@ plawk_while_cond_build(cmp(var(L), Op, var(R)), Slots, CondValues, Base,
     Lines = [LineLS, LineRS, LineRC, LineCmp].
 plawk_while_cond_build(cmp(Left, Op, Rhs), Slots, CondValues, Base,
         Path, CondVar, Lines) :-
-    % Fail-closed: if either operand is a strnum slot and this is not the
-    % strnum-vs-strnum case above, refuse to emit a raw i64 icmp on an atom id
-    % (which would silently mis-compare). The clause fails, the scalar driver
-    % declines the program, and it falls back -- strnum-vs-number and
-    % strnum-vs-non-strnum comparisons are follow-ons (design doc steps 3+/5).
+    % Fail-closed: if either operand is a strnum slot and this is not one of the
+    % supported strnum cases above (strnum-vs-strnum, strnum-vs-integer-literal),
+    % refuse to emit a raw i64 icmp on an atom id (which would silently
+    % mis-compare). The clause fails, the scalar driver declines the program, and
+    % it falls back -- strnum-vs-non-strnum-var and strnum-vs-float are follow-ons.
     \+ plawk_cmp_has_strnum_operand(Left, Rhs, Slots),
     plawk_while_cond_operand(Left, Slots, CondValues, Base, Path, l, LOperand, LLines),
     plawk_while_cond_operand(Rhs, Slots, CondValues, Base, Path, r, ROperand, RLines),
@@ -5319,6 +5341,28 @@ plawk_cmp_has_strnum_operand(Left, Rhs, Slots) :-
     ( Left = var(L), plawk_cond_var_is_strnum(L, Slots)
     ; Rhs = var(R), plawk_cond_var_is_strnum(R, Slots)
     ).
+
+% Emit the strnum-vs-integer comparison: resolve the strnum id to text, call
+% @wam_strnum_cmp_int(text, strnum-kind 1, N), and test its sign against 0 with
+% Pred. Id is the strnum slot's current SSA value.
+plawk_strnum_cmp_int_lines(Base, Path, Id, N, Pred, CondVar, Lines) :-
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(LineS),
+        '  %~w_sni~w_s = call i8* @wam_atom_to_string(i64 ~w)', [Base, Path, Id]),
+    format(atom(LineRC),
+        '  %~w_sni~w_rc = call i32 @wam_strnum_cmp_int(i8* %~w_sni~w_s, i8 1, i64 ~w)',
+        [Base, Path, Base, Path, N]),
+    format(atom(LineCmp),
+        '  ~w = icmp ~w i32 %~w_sni~w_rc, 0', [CondVar, Pred, Base, Path]),
+    Lines = [LineS, LineRC, LineCmp].
+
+% Swap a comparison operator for operand-order reversal (`N OP x` -> `x OP' N`).
+plawk_swap_cmp_op(eq, eq).
+plawk_swap_cmp_op(ne, ne).
+plawk_swap_cmp_op(lt, gt).
+plawk_swap_cmp_op(gt, lt).
+plawk_swap_cmp_op(le, ge).
+plawk_swap_cmp_op(ge, le).
 
 % An operand is an integer literal (emitted inline), a loop variable (read from
 % its slot's current SSA value), or an RSTART/RLENGTH special (loaded from its
@@ -6704,12 +6748,15 @@ plawk_strnum_cond_unsafe_read(Cond, _Set, Name) :-
     plawk_strnum_term_mentions(Cond, Name).
 
 % Supported comparison forms that read Name: against another strnum var still in
-% Set, or against a string literal (handled by the existing string-guard clauses
-% and the strnum-vs-strnum dispatch).
+% Set, a string literal (handled by the existing string-guard clauses and the
+% strnum-vs-strnum dispatch), or an integer literal (step 3b -- dispatched to
+% @wam_strnum_cmp_int, deciding numeric vs lexical by the strnum's content).
 plawk_strnum_cmp_supported(var(Name), var(Other), Set, Name) :- memberchk(Other, Set).
 plawk_strnum_cmp_supported(var(Other), var(Name), Set, Name) :- memberchk(Other, Set).
 plawk_strnum_cmp_supported(var(Name), string(_), _Set, Name).
 plawk_strnum_cmp_supported(string(_), var(Name), _Set, Name).
+plawk_strnum_cmp_supported(var(Name), int(_), _Set, Name).
+plawk_strnum_cmp_supported(int(_), var(Name), _Set, Name).
 
 % Does var(Name) occur anywhere in Term?
 plawk_strnum_term_mentions(var(Name), Name) :- !.
