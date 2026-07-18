@@ -31,10 +31,21 @@ Copyright (c) 2026 John William Creighton (@s243a)
   decimal string — so `"abc" > 3` is lexically true and `"5x" == 5` is false).
   A dedicated `plawk_while_cond_build` clause dispatches it.
 
+  **Step 3c** adds arithmetic **coercion**: a strnum read in a pure arithmetic
+  expression (`y = x + 1`, `c += x`) is coerced to a number — to i64 via the
+  *same* field parser the pre-strnum path used (so the result is byte-identical,
+  incl. the not-a-number → 0 default), or to double via `strtod` in an f64
+  context. The read tag is `ssa_strnum`; the i64/f64 expression leaves coerce it.
+  This lets a field copy used in **both** arithmetic and a string/number
+  comparison (`x = $1; y = x + 1; if (x == "42") …`) be a full strnum.
+
   **Step-3 scope gate (honest scoping, absorbs step 5 for these forms):** a
   field-copy name is retyped to `scalar_strnum` **only if every read of it is a
-  supported position** — a bare `print` field, or a comparison against another
-  strnum var, a string literal, or (3b) an integer literal. A name read in **arithmetic** (`y = x + 1`),
+  supported position** — a bare `print` field, a comparison against another
+  strnum var / string literal / integer literal, or (3c) a **pure arithmetic
+  expression**. A read in a string concat, a function/`dyncall` argument, a
+  ternary, an index, an assoc key, etc. still deactivates the name (it stays a
+  plain i64 counter), so activation never regresses those programs. A name read in **arithmetic** (`y = x + 1`),
   compared against a **numeric literal** (`if (x > 3)`), copied to another var,
   or used anywhere else stays a plain i64 counter with its current, correct
   numeric behaviour, so activation **never regresses** those programs. Because a
@@ -45,14 +56,12 @@ Copyright (c) 2026 John William Creighton (@s243a)
   operand ever reaches it in an unsupported form, so no path emits a raw `icmp`
   on an atom id.
 
-**Not yet built**: arithmetic **coercion** (id → number) — a strnum read in
-arithmetic (`y = x + 1`) still keeps the name on the i64 path, because the
-current i64 field read uses an integer parser (`@wam_slice_i64_parse_value`),
-not `strtod`, so switching to `strtod` coercion is a genuine (if more correct)
-semantic change deserving its own PR (3c). Comparison against a **non-integer
-number** or a **non-strnum var** also stays a follow-on. Step 4 extends strnum
-sources beyond field copies to `split()` / `getline` / nested writes. §4–§5
-describe model aspects that remain partial.
+**Not yet built**: comparison against a **non-integer / float literal** or a
+**non-strnum var**; strnum reads inside **calls / ternary / index / concat**
+(still deactivating, kept on the i64 path). Step 4 extends strnum sources beyond
+field copies to `split()` / `getline` / nested writes, and step 4 also carries
+strnum-ness through a plain copy (`z = x`), which today just coerces to a number.
+§4–§5 describe model aspects that remain partial.
 
 **Representation note**: the shipped `scalar_strnum` slot uses the §4b
 interned-id representation (an i64 atom id, same width as a string scalar) rather

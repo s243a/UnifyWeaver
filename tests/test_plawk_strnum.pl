@@ -70,12 +70,10 @@ test(strnum_beside_string) :-
 % --- read-use gate (step 3): a candidate is deactivated when read in an
 % unsupported position, so it stays a plain i64 (no regression) ----------------
 
-% read in arithmetic -> not activated.
-test(arith_read_deactivates) :-
-    strnum_names("{ x = $1; y = x + 1; print y }\n", []), !.
-
-% compared to a numeric literal -> activated in step 3b (dispatched to
-% @wam_strnum_cmp_int), see int_literal_cmp_activates below.
+% step 3c: a read in pure arithmetic is now supported (coerced), so a
+% field-copy used in arithmetic is activated.
+test(arith_read_activates) :-
+    strnum_names("{ x = $1; y = x + 1; print y }\n", [x]), !.
 
 % two field copies compared to each other -> both activated.
 test(strnum_vs_strnum_activates) :-
@@ -85,19 +83,24 @@ test(strnum_vs_strnum_activates) :-
 test(string_literal_cmp_activates) :-
     strnum_names("{ x = $1; if (x == \"foo\") print \"y\" }\n", [x]), !.
 
-% fixpoint: b is read in arithmetic (deactivated); a then compares against a
-% now-deactivated partner, so a is deactivated too.
+% a read in a STRING concat is still unsupported and deactivates.
+test(concat_read_deactivates) :-
+    strnum_names("{ x = $1; y = x \" tail\"; print y }\n", []), !.
+
+% fixpoint: b is read in a string concat (deactivated); a then compares against
+% a now-deactivated partner, so a is deactivated too.
 test(fixpoint_partner_deactivation) :-
-    strnum_names("{ a = $1; b = $2; if (a > b) print \"x\"; c = b + 1; print c }\n", []),
+    strnum_names("{ a = $1; b = $2; if (a > b) print \"x\"; c = b \" t\"; print c }\n", []),
     !.
 
-% step 3b: comparison against an integer literal is now a supported read.
+% step 3b: comparison against an integer literal is a supported read.
 test(int_literal_cmp_activates) :-
     strnum_names("{ x = $1; if (x > 3) print \"b\" }\n", [x]), !.
 
-% but arithmetic still deactivates, even alongside an int comparison.
-test(int_cmp_but_arith_deactivates) :-
-    strnum_names("{ x = $1; if (x > 3) print \"b\"; y = x + 1; print y }\n", []), !.
+% step 3c: int comparison AND arithmetic together -> still activated (both
+% supported).
+test(int_cmp_and_arith_activates) :-
+    strnum_names("{ x = $1; if (x > 3) print \"b\"; y = x + 1; print y }\n", [x]), !.
 
 % --- end-to-end: strnum comparison semantics --------------------------------
 
@@ -149,6 +152,16 @@ test(e2e_int_equality, [condition(clang_available)]) :-
     build_run(Dir, 'ieq', "{ n = $1; if (n == 5) print \"y\"; else print \"n\" }\n",
         "5\n05\n5x\n", Out, St),
     assertion(St == 0), assertion(Out == "y\ny\nn\n"), !.
+
+% step 3c: the same field copy used in BOTH arithmetic (coerced) and a string
+% comparison (lexical) -- the arithmetic result is the numeric coercion, the
+% comparison uses the retained text.
+test(e2e_arith_and_string_cmp, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'ans',
+        "{ x = $1; y = x + 1; if (x == \"42\") print \"is42\", y; else print \"no\", y }\n",
+        "42\n7\n", Out, St),
+    assertion(St == 0), assertion(Out == "is42 43\nno 8\n"), !.
 
 :- end_tests(plawk_strnum).
 

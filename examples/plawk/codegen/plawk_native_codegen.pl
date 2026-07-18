@@ -6675,11 +6675,20 @@ plawk_strnum_name_has_unsafe_read(Rules, Set, Name) :-
     plawk_strnum_action_unsafe_read(Action, Set, Name),
     !.
 
-% `set(var(_), RHS)`: any read of Name in the RHS is unsafe. The name's own
-% field-copy source has RHS = field(N), which mentions no var, so it is not
-% flagged. A copy `z = Name` (RHS = var(Name)) or arithmetic `y = Name + 1`
-% (RHS mentions Name) is flagged -- strnum propagation through copies and
-% arithmetic coercion are follow-ons.
+% A NUMERIC scalar update (set/add/inc of a numeric expression, e.g. `y = x + 1`
+% or `c += x`): reads of Name inside it are coerced to a number (step 3c -- via
+% the same field parser for i64, strtod for f64), so they are supported. The
+% whole action has no unsafe read of Name; cut and fail (fail = "not unsafe").
+% Placed first so it short-circuits before the string/other clauses below.
+plawk_strnum_action_unsafe_read(Action, _Set, _Name) :-
+    plawk_scalar_action_update(Action, _LHS, Operation),
+    plawk_strnum_numeric_operation(Operation),
+    !,
+    fail.
+% `set(var(_), RHS)` with a NON-numeric RHS (a string concat / sprintf / ...):
+% any read of Name in the RHS is unsafe (strnum in a string RHS is unsupported).
+% The name's own field-copy source has RHS = field(N), which is numeric and thus
+% handled by the clause above.
 plawk_strnum_action_unsafe_read(set(var(_LHS), RHS), _Set, Name) :-
     !,
     plawk_strnum_term_mentions(RHS, Name).
@@ -6757,6 +6766,32 @@ plawk_strnum_cmp_supported(var(Name), string(_), _Set, Name).
 plawk_strnum_cmp_supported(string(_), var(Name), _Set, Name).
 plawk_strnum_cmp_supported(var(Name), int(_), _Set, Name).
 plawk_strnum_cmp_supported(int(_), var(Name), _Set, Name).
+
+% A strnum-coercible numeric update: a `set`/`add` whose expression is a PURE
+% arithmetic tree (binary arithmetic over fields / vars / literals / length /
+% NR / NF). Reads of a strnum in such an expression are coerced to a number
+% (i64 via the field parser, f64 via strtod) by the ssa_strnum leaf clauses, so
+% they are supported (step 3c). Calls / ternary / index operations are
+% deliberately excluded -- a strnum argument there is not coerced, so those keep
+% a name on the i64 path (unchanged).
+plawk_strnum_numeric_operation(set(Expr)) :- plawk_strnum_arith_expr(Expr).
+plawk_strnum_numeric_operation(add(Expr)) :- plawk_strnum_arith_expr(Expr).
+plawk_strnum_numeric_operation(add(const(_))).
+
+plawk_strnum_arith_expr(var(_)) :- !.
+plawk_strnum_arith_expr(int(_)) :- !.
+plawk_strnum_arith_expr(const(_)) :- !.
+plawk_strnum_arith_expr(field(_)) :- !.
+plawk_strnum_arith_expr(field_i64(_)) :- !.
+plawk_strnum_arith_expr(length(_)) :- !.
+plawk_strnum_arith_expr(nf) :- !.
+plawk_strnum_arith_expr(nr) :- !.
+plawk_strnum_arith_expr(special('NR')) :- !.
+plawk_strnum_arith_expr(special('NF')) :- !.
+plawk_strnum_arith_expr(Expr) :-
+    plawk_i64_binary_expr(Expr, _Op, _NamePart, Left, Right),
+    plawk_strnum_arith_expr(Left),
+    plawk_strnum_arith_expr(Right).
 
 % Does var(Name) occur anywhere in Term?
 plawk_strnum_term_mentions(var(Name), Name) :- !.
@@ -11915,7 +11950,8 @@ plawk_substitute_scalar_reads(var(Name), Slots, Values, Substituted) :-
     ;  Slot = scalar_string(_Name)
     -> Substituted = ssa_str(Value)
     ;  Slot = scalar_strnum(_Name)
-    -> Substituted = ssa_str(Value)   % strnum holds an atom id -> string-read
+    -> Substituted = ssa_strnum(Value)   % strnum: resolves to text for print,
+                                         % coerces to a number in arithmetic
     ;  Substituted = ssa(Value)
     ).
 plawk_substitute_print_field(Slots, Values, Field0, Field) :-
@@ -11980,7 +12016,7 @@ plawk_substitute_end_reads(var(Name), StatePlan, Substituted) :-
     ( Slot = scalar_double(_Name)
     -> Substituted = ssa_f64(Value)
     ;  Slot = scalar_strnum(_Name)
-    -> Substituted = ssa_str(Value)   % strnum holds an atom id -> string-read
+    -> Substituted = ssa_strnum(Value)   % strnum: text for print, number in arith
     ;  Substituted = ssa(Value)
     ).
 plawk_substitute_end_reads(special('NR'), _StatePlan, ssa('%plawk_nr')) :-
@@ -12944,6 +12980,32 @@ plawk_scalar_f64_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
 plawk_scalar_numeric_expr_ir(ssa(Value), _FieldSeparator, _Prefix, _SlotIndex,
         _OpIndex, Value, '', '') :-
     atom(Value).
+% a bare strnum read as a numeric update RHS (`y = x`): coerce the atom id to
+% i64 like the field read (step 3c).
+plawk_scalar_numeric_expr_ir(ssa_strnum(Value), _FieldSeparator, Prefix,
+        SlotIndex, OpIndex, ValueIR, '', SetupIR) :-
+    format(atom(Base), '~w_slot_~w_op_~w_snc', [Prefix, SlotIndex, OpIndex]),
+    plawk_strnum_i64_coerce_lines(Base, Value, ValueIR, Lines),
+    atomic_list_concat(Lines, '\n', SetupIR).
+
+% Coerce a strnum atom id (Value) to i64 using the field parser + not-a-number
+% -> 0 default, matching @wam_atom_field_i64_value exactly.
+plawk_strnum_i64_coerce_lines(Base, Value, ValueIR,
+        [StrL, LenL, ParseL, ValL, OkL, SelL]) :-
+    format(atom(ValueIR), '%~w_snc_val', [Base]),
+    format(atom(StrL), '  %~w_snc_s = call i8* @wam_atom_to_string(i64 ~w)',
+        [Base, Value]),
+    format(atom(LenL), '  %~w_snc_len = call i64 @strlen(i8* %~w_snc_s)',
+        [Base, Base]),
+    format(atom(ParseL),
+        '  %~w_snc_p = call %WamI64Parse @wam_slice_i64_parse_value(i8* %~w_snc_s, i64 %~w_snc_len)',
+        [Base, Base, Base]),
+    format(atom(ValL), '  %~w_snc_v = extractvalue %WamI64Parse %~w_snc_p, 0',
+        [Base, Base]),
+    format(atom(OkL), '  %~w_snc_ok = extractvalue %WamI64Parse %~w_snc_p, 1',
+        [Base, Base]),
+    format(atom(SelL),
+        '  ~w = select i1 %~w_snc_ok, i64 %~w_snc_v, i64 0', [ValueIR, Base, Base]).
 plawk_scalar_numeric_expr_ir(prolog_call(Name, Args), FieldSeparator, Prefix,
         SlotIndex, OpIndex, ValueIR, GlobalIR, IR) :-
     format(atom(CallBase), '~w_slot_~w_op_~w_prolog_call',
@@ -13053,6 +13115,12 @@ plawk_i64_expr_ir(int(Value), _FieldSeparator, _Base, _GlobalBase, ValueIR, [], 
     format(atom(ValueIR), '~w', [Value]).
 plawk_i64_expr_ir(ssa(Value), _FieldSeparator, _Base, _GlobalBase, Value, [], []) :-
     atom(Value).
+% a strnum read in i64 arithmetic (step 3c): coerce the atom id to i64 using the
+% SAME integer parser the field read uses, so the arithmetic result is identical
+% to the pre-strnum i64 path (byte-for-byte, incl. the not-a-number -> 0 default).
+plawk_i64_expr_ir(ssa_strnum(Value), _FieldSeparator, Base, _GlobalBase,
+        ValueIR, [], Lines) :-
+    plawk_strnum_i64_coerce_lines(Base, Value, ValueIR, Lines).
 plawk_i64_expr_ir(prolog_call(Name, Args), FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts) :-
     length(Args, NArgs),
@@ -13402,6 +13470,15 @@ plawk_f64_expr_ir(float_field(Index), FieldSeparator, Base, _GlobalBase,
     format(atom(CallIR),
         '  ~w = call double @wam_atom_field_f64_value(%Value %line, i64 ~w, i8 ~w)',
         [ValueIR, Index, FieldSeparator]).
+% a strnum read in f64 arithmetic (step 3c): coerce the atom id to double via
+% strtod, matching the f64 field read (@wam_atom_field_f64_value also uses strtod).
+plawk_f64_expr_ir(ssa_strnum(Value), _FieldSeparator, Base, _GlobalBase,
+        ValueIR, [], [StrCall, ParseCall]) :-
+    format(atom(ValueIR), '%~w_snf_d', [Base]),
+    format(atom(StrCall), '  %~w_snf_s = call i8* @wam_atom_to_string(i64 ~w)',
+        [Base, Value]),
+    format(atom(ParseCall),
+        '  ~w = call double @strtod(i8* %~w_snf_s, i8** null)', [ValueIR, Base]).
 % float(name(args)): the double-returning foreign call. A failed call
 % contributes 0.0, mirroring the i64 prolog_call contract.
 plawk_f64_expr_ir(float_dyncall(Args), FieldSeparator, Base, GlobalBase,
@@ -14922,7 +14999,16 @@ plawk_emit_print_expr_for_context(ssa(Value), FieldSeparator, Context,
 % holds an atom id; resolve it to text (id 0 is the unset sentinel, printed as
 % empty). A select keeps it straight-line -- wam_atom_to_string is always called
 % but its result is discarded when the id is 0.
-plawk_emit_print_expr_for_context(ssa_str(Value), _FieldSeparator, Context,
+plawk_emit_print_expr_for_context(ssa_str(Value), FieldSeparator, Context,
+        Out, Globals, Setup) :-
+    plawk_emit_print_str_id(Value, FieldSeparator, Context, Out, Globals, Setup).
+% a strnum read printed in a print field resolves its atom id to text, exactly
+% like a string scalar (strnum retains the field bytes).
+plawk_emit_print_expr_for_context(ssa_strnum(Value), FieldSeparator, Context,
+        Out, Globals, Setup) :-
+    plawk_emit_print_str_id(Value, FieldSeparator, Context, Out, Globals, Setup).
+
+plawk_emit_print_str_id(Value, _FieldSeparator, Context,
         string(Base, PtrIR), [EmptyGlobal], [StrCall, IsEmpty, SelPtr]) :-
     plawk_print_expr_value_base(Context, string, Base),
     format(atom(EmptyName), '~w_empty', [Base]),
