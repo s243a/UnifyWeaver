@@ -6613,58 +6613,99 @@ plawk_scalar_string_names(Rules, Strings) :-
 %  fixpoint: deactivating one name can make its comparison partner unsupported,
 %  so the set is shrunk until stable.
 plawk_scalar_strnum_names(Rules, Strnums) :-
-    plawk_scalar_strnum_candidates(Rules, Base),
-    plawk_strnum_read_fixpoint(Rules, Base, Strnums).
-
-% Write-provenance candidates: at least one field-copy source, no disqualifying
-% (non-field) write.
-plawk_scalar_strnum_candidates(Rules, Candidates) :-
+    % Disqualified names: written by something that is neither a field copy nor a
+    % plain var copy (a literal, arithmetic assignment, concat, string builtin,
+    % ...). Such a name can never be a pure strnum.
     findall(Name,
-        ( member(rule(_Pattern, Actions0), Rules),
-          plawk_trim_control_tails(Actions0, Actions),
-          member(Action, Actions),
-          plawk_scalar_strnum_source(Action, Name)
-        ),
-        Sources0),
-    sort(Sources0, Sources),
-    findall(Name,
-        ( member(rule(_Pattern, ActionsD0), Rules),
-          plawk_trim_control_tails(ActionsD0, ActionsD),
-          member(ActionD, ActionsD),
+        ( plawk_strnum_rule_action(Rules, ActionD),
           plawk_scalar_strnum_disqualify(ActionD, Name)
         ),
         Disq0),
     sort(Disq0, Disq),
+    % Field seeds: names with a field-copy source, not disqualified.
     findall(Name,
-        ( member(Name, Sources),
+        ( plawk_strnum_rule_action(Rules, Action),
+          plawk_scalar_strnum_field_source(Action, Name),
           \+ memberchk(Name, Disq)
         ),
-        Candidates0),
-    sort(Candidates0, Candidates).
+        Seeds0),
+    sort(Seeds0, Seeds),
+    % Grow through plain copies to the maximum possible set (`z = x` propagates
+    % strnum-ness), then stabilize: a greatest fixpoint that removes any name
+    % whose reads are unsupported OR whose only source is a copy from a
+    % now-removed name (so copy chains collapse correctly).
+    plawk_strnum_copy_grow(Rules, Disq, Seeds, MaxSet),
+    plawk_strnum_stabilize(Rules, Disq, MaxSet, Strnums).
 
-% A strnum source: a bare field copy `x = $N`. Both surface shapes for a field
-% read (`field(N)` and `int(field(N))`) count.
-plawk_scalar_strnum_source(set(var(Name), field(FieldIndex)), Name) :-
-    integer(FieldIndex),
-    FieldIndex >= 0.
-plawk_scalar_strnum_source(set(var(Name), int(field(FieldIndex))), Name) :-
-    integer(FieldIndex),
-    FieldIndex >= 0.
+% Grow: add any copy target `z = x` whose source x is in the set and which is
+% not disqualified, until stable (monotone add -> terminates).
+plawk_strnum_copy_grow(Rules, Disq, Set0, Set) :-
+    findall(Z,
+        ( plawk_strnum_rule_action(Rules, set(var(Z), var(X))),
+          memberchk(X, Set0),
+          \+ memberchk(Z, Set0),
+          \+ memberchk(Z, Disq)
+        ),
+        New0),
+    sort(New0, New),
+    ( New == []
+    -> Set = Set0
+    ;  ord_union(Set0, New, Set1),
+       plawk_strnum_copy_grow(Rules, Disq, Set1, Set)
+    ).
 
-% Any write to Name that is not a strnum source disqualifies it from being a
-% pure strnum.
-plawk_scalar_strnum_disqualify(Action, Name) :-
-    plawk_scalar_action_update(Action, Name, _Operation),
-    \+ plawk_scalar_strnum_source(Action, Name).
-
-% Shrink the candidate set until every remaining name's reads are all supported
-% given the current set (a monotone fixpoint -- the set only shrinks).
-plawk_strnum_read_fixpoint(Rules, Set0, Set) :-
-    exclude(plawk_strnum_name_has_unsafe_read(Rules, Set0), Set0, Set1),
+% Stabilize: shrink until every remaining name is both validly sourced (a field
+% copy, or a copy from a still-present strnum) and free of unsupported reads,
+% given the current set. Monotone shrink -> terminates.
+plawk_strnum_stabilize(Rules, Disq, Set0, Set) :-
+    exclude(plawk_strnum_name_unstable(Rules, Disq, Set0), Set0, Set1),
     ( Set1 == Set0
     -> Set = Set0
-    ;  plawk_strnum_read_fixpoint(Rules, Set1, Set)
+    ;  plawk_strnum_stabilize(Rules, Disq, Set1, Set)
     ).
+
+plawk_strnum_name_unstable(Rules, _Disq, Set, Name) :-
+    plawk_strnum_name_has_unsafe_read(Rules, Set, Name),
+    !.
+plawk_strnum_name_unstable(Rules, _Disq, Set, Name) :-
+    \+ plawk_strnum_validly_sourced(Rules, Set, Name).
+
+% Validly sourced in Set: a field copy, or a copy `Name = M` with M still in Set.
+plawk_strnum_validly_sourced(Rules, _Set, Name) :-
+    plawk_strnum_rule_action(Rules, Action),
+    plawk_scalar_strnum_field_source(Action, Name),
+    !.
+plawk_strnum_validly_sourced(Rules, Set, Name) :-
+    plawk_strnum_rule_action(Rules, set(var(Name), var(M))),
+    memberchk(M, Set),
+    !.
+
+% Every rule action. v1 scope is top-level rule-body actions (nested if/loop
+% bodies are excluded: plawk does not yet correctly propagate a value assigned
+% in a nested block to a later statement, so activating strnum there would ride
+% on that unsupported control-flow shape).
+plawk_strnum_rule_action(Rules, Action) :-
+    member(rule(_Pattern, Actions0), Rules),
+    plawk_trim_control_tails(Actions0, Actions),
+    member(Action, Actions).
+
+% A strnum FIELD source: a bare field copy `x = $N` (the seed of strnum-ness).
+% Both surface shapes for a field read (`field(N)` and `int(field(N))`) count.
+plawk_scalar_strnum_field_source(set(var(Name), field(FieldIndex)), Name) :-
+    integer(FieldIndex),
+    FieldIndex >= 0.
+plawk_scalar_strnum_field_source(set(var(Name), int(field(FieldIndex))), Name) :-
+    integer(FieldIndex),
+    FieldIndex >= 0.
+
+% A write is disqualifying unless it is a strnum-preserving source: a field copy
+% (`x = $N`) or a plain var copy (`z = x`, which propagates strnum-ness). Any
+% other write (a literal, arithmetic, concat, a string builtin, ...) destroys
+% the duality and disqualifies the name.
+plawk_scalar_strnum_disqualify(Action, Name) :-
+    plawk_scalar_action_update(Action, Name, _Operation),
+    \+ plawk_scalar_strnum_field_source(Action, Name),
+    \+ Action = set(var(Name), var(_)).
 
 % True if Name has at least one read the strnum codegen does not support, given
 % the currently-activated Set.
@@ -12774,9 +12815,8 @@ plawk_scalar_update_operation_ir(set_str(Src), scalar_string(_Name), FieldSepara
     atomic_list_concat(SetupLines, '\n', IR).
 % strnum assignment `x = $N`: intern the field's raw text into an atom id (the
 % strnum slot repr), retaining the bytes so a later comparison can decide
-% numeric vs lexical. This is the only operation a strnum slot receives (its
-% provenance is a pure field copy), so it is matched specifically before the
-% generic i64 set. The record is %line in this scope (as in the concat path).
+% numeric vs lexical. Matched specifically before the generic i64 set. The
+% record is %line in this scope (as in the concat path).
 plawk_scalar_update_operation_ir(set(field_i64(FieldIndex)), scalar_strnum(_Name),
         FieldSeparator, Prefix, SlotIndex, OpIndex, _InputValue, NextValue, ''-IR) :-
     !,
@@ -12791,6 +12831,12 @@ plawk_scalar_update_operation_ir(set(field_i64(FieldIndex)), scalar_strnum(_Name
          Base, Base,
          Base, Base,
          Base, Base, Base]).
+% strnum copy `z = x` (step 4): both are strnum, so copy the source's atom id
+% straight into the target slot -- strnum-ness propagates, no coercion. The
+% read has already been substituted to ssa_strnum(Id).
+plawk_scalar_update_operation_ir(set(ssa_strnum(Id)), scalar_strnum(_Name),
+        _FieldSeparator, _Prefix, _SlotIndex, _OpIndex, _InputValue, Id, ''-'') :-
+    !.
 plawk_scalar_update_operation_ir(set(Expr), _Slot, FieldSeparator, Prefix, SlotIndex,
         OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
     plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,

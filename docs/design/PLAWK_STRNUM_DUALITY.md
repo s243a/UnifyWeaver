@@ -5,7 +5,7 @@ Copyright (c) 2026 John William Creighton (@s243a)
 
 # plawk strnum: string/number scalar duality
 
-**Status**: **design note + steps 1–3 landed (step 3 scoped).**
+**Status**: **design note + steps 1–4 landed (scoped).**
 - **Step 1** (runtime): `@wam_looks_numeric` and `@wam_strnum_cmp` are
   implemented in `src/unifyweaver/targets/wam_llvm_target.pl` and unit-tested in
   `tests/core/test_wam_llvm_assoc_i64_runtime.pl` (the recogniser over
@@ -39,29 +39,40 @@ Copyright (c) 2026 John William Creighton (@s243a)
   This lets a field copy used in **both** arithmetic and a string/number
   comparison (`x = $1; y = x + 1; if (x == "42") …`) be a full strnum.
 
-  **Step-3 scope gate (honest scoping, absorbs step 5 for these forms):** a
-  field-copy name is retyped to `scalar_strnum` **only if every read of it is a
-  supported position** — a bare `print` field, a comparison against another
-  strnum var / string literal / integer literal, or (3c) a **pure arithmetic
-  expression**. A read in a string concat, a function/`dyncall` argument, a
-  ternary, an index, an assoc key, etc. still deactivates the name (it stays a
-  plain i64 counter), so activation never regresses those programs. A name read in **arithmetic** (`y = x + 1`),
-  compared against a **numeric literal** (`if (x > 3)`), copied to another var,
-  or used anywhere else stays a plain i64 counter with its current, correct
-  numeric behaviour, so activation **never regresses** those programs. Because a
-  var-vs-var comparison is only supported when both sides are strnum, the gate is
-  a **fixpoint** (`plawk_strnum_read_fixpoint/3`): deactivating one name can make
-  its comparison partner unsupported, so the set is shrunk until stable. The
-  generic numeric-compare lowering additionally **fails closed** if a strnum
-  operand ever reaches it in an unsupported form, so no path emits a raw `icmp`
-  on an atom id.
+- **Step 4** (source propagation): a plain copy `z = x` now **propagates**
+  strnum-ness — `z` becomes a strnum holding `x`'s atom id (awk copies the dual
+  type), transitively through chains (`w = z = x`). The origin analysis grows the
+  set through copy edges, then a greatest-fixpoint (`plawk_strnum_stabilize/4`)
+  drops any name whose reads are unsupported **or** whose only source is a copy
+  from a now-dropped name, so copy chains collapse correctly. (The design doc's
+  other step-4 sources — `getline`, `ARGV`/`ENVIRON`, and `split()` elements —
+  are **blocked**: `getline`/`ARGV`/`ENVIRON` are not implemented in plawk, and
+  `split()` writes to an assoc-array, a separate subsystem from scalar slots.
+  Nested-block field copies are also excluded: plawk does not yet propagate a
+  value assigned inside an `if`/loop body to a later statement — a pre-existing
+  control-flow limitation, independent of strnum — so activating strnum there
+  would ride on an unsupported shape.)
+
+  **Scope gate (honest scoping, absorbs step 5 for these forms):** a name is a
+  `scalar_strnum` **only if** it has a valid source (a field copy, or a copy from
+  another strnum) **and every read of it is a supported position** — a bare
+  `print` field, a comparison against another strnum var / string literal /
+  integer literal, or a **pure arithmetic expression** (coerced). A read in a
+  string concat, a function/`dyncall` argument, a ternary, an index, an assoc
+  key, etc. deactivates the name (it stays a plain i64 counter), so activation
+  **never regresses** those programs. The analysis is a greatest-fixpoint
+  because a var-vs-var comparison is only supported when both sides are strnum
+  and a copy target only stays strnum while its source does; the set is shrunk
+  until stable. The generic numeric-compare lowering additionally **fails
+  closed** if a strnum operand ever reaches it in an unsupported form, so no path
+  emits a raw `icmp` on an atom id.
 
 **Not yet built**: comparison against a **non-integer / float literal** or a
-**non-strnum var**; strnum reads inside **calls / ternary / index / concat**
-(still deactivating, kept on the i64 path). Step 4 extends strnum sources beyond
-field copies to `split()` / `getline` / nested writes, and step 4 also carries
-strnum-ness through a plain copy (`z = x`), which today just coerces to a number.
-§4–§5 describe model aspects that remain partial.
+**non-strnum var**; strnum reads inside **calls / ternary / index / concat**;
+non-field sources that don't yet exist (`getline`, `ARGV`/`ENVIRON`) or live in
+another subsystem (`split()` array elements); nested-block field copies (blocked
+on the nested-assignment control-flow limitation). §4–§5 describe model aspects
+that remain partial.
 
 **Representation note**: the shipped `scalar_strnum` slot uses the §4b
 interned-id representation (an i64 atom id, same width as a string scalar) rather
