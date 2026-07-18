@@ -472,6 +472,10 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, '"getegid/1"'),
         sub_string(S, _, _, _, '"getppid/1"'),
         sub_string(S, _, _, _, '"getpgrp/1"'),
+        sub_string(S, _, _, _, 'fn system_name'),
+        sub_string(S, _, _, _, '"gethostname/1"'),
+        sub_string(S, _, _, _, '"uname_sysname/1"'),
+        sub_string(S, _, _, _, '"uname_machine/1"'),
         sub_string(S, _, _, _, 'fn shell_process'),
         sub_string(S, _, _, _, '"shell/1"'),
         sub_string(S, _, _, _, '"shell/2"'),
@@ -1440,7 +1444,7 @@ test_compile_wam_runtime_output :-
         sub_string(S, _, _, _, 'collect_native_transitive_parent_distance_results'),
         sub_string(S, _, _, _, 'collect_native_transitive_step_parent_distance_results'),
         sub_string(S, _, _, _, 'collect_native_weighted_shortest_path_results'),
-        sub_string(S, _, _, _, 'collect_native_astar_shortest_path_results')
+        sub_string(S, _, _, _, 'collect_native_astar_shortest_path_cost')
     ->  pass(Test)
     ;   fail_test(Test, 'Runtime impl block incomplete')
     ).

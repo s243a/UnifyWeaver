@@ -114,6 +114,12 @@ t_process_identity(Uid, EUid, Gid, EGid, PPid, PGrp) :-
     getppid(PPid),
     getpgrp(PGrp).
 
+:- dynamic t_system_names/3.
+t_system_names(Host, Sysname, Machine) :-
+    gethostname(Host),
+    uname_sysname(Sysname),
+    uname_machine(Machine).
+
 :- dynamic t_process_commands/2.
 t_process_commands(Status, Output) :-
     shell('exit 0'),
@@ -409,6 +415,7 @@ test_builtin_parity_execution :-
              user:t_file_metadata/2,
              user:t_system_queries/3,
              user:t_process_identity/6,
+             user:t_system_names/3,
              user:t_process_commands/2,
              user:t_sleep/0,
              user:t_halt_zero/0,
@@ -454,6 +461,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_file_metadata_2,
     t_system_queries_3,
     t_process_identity_6,
+    t_system_names_3,
     t_process_commands_2,
     t_sleep_0,
     t_environment_mutation_1,
@@ -501,6 +509,33 @@ fn native_process_identity() -> [i64; 6] {
             i64::from(getpgrp()),
         ]
     }
+}
+
+#[cfg(unix)]
+fn native_host_name() -> String {
+    extern "C" {
+        fn gethostname(
+            name: *mut std::os::raw::c_char,
+            len: usize,
+        ) -> std::os::raw::c_int;
+    }
+
+    let mut buffer = [0u8; 256];
+    assert_eq!(unsafe { gethostname(buffer.as_mut_ptr().cast(), buffer.len()) }, 0);
+    let end = buffer.iter().position(|byte| *byte == 0).unwrap();
+    String::from_utf8(buffer[..end].to_vec()).unwrap()
+}
+
+#[cfg(unix)]
+fn native_uname(flag: &str) -> String {
+    let output = std::process::Command::new("uname").arg(flag).output().unwrap();
+    assert!(output.status.success());
+    let mut value = String::from_utf8(output.stdout).unwrap();
+    while value.ends_with(char::from(10)) || value.ends_with(char::from(13)) {
+        value.pop();
+    }
+    assert!(!value.is_empty());
+    value
 }
 
 fn read_var(vm: &WamState, name: &str) -> Value {
@@ -713,6 +748,23 @@ fn test_process_identity_compiled() {
         ("PGrp", expected[5]),
     ] {
         assert_eq!(read_var(&vm, name), i(value), "unexpected {name}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_system_names_compiled() {
+    let expected = [native_host_name(), native_uname("-s"), native_uname("-m")];
+    let mut vm = vmnew();
+    assert!(t_system_names_3(
+        &mut vm, ub("Host"), ub("Sysname"), ub("Machine")));
+
+    for (name, value) in [
+        ("Host", &expected[0]),
+        ("Sysname", &expected[1]),
+        ("Machine", &expected[2]),
+    ] {
+        assert_eq!(read_var(&vm, name), a(value), "unexpected {name}");
     }
 }
 
@@ -2447,6 +2499,32 @@ fn test_process_identity_direct() {
         assert!(!call1(op, i(value + 1)).0, "{op} must reject a mismatch");
         assert!(!call1(op, a("not_an_integer")).0);
         assert!(!vmnew().execute_builtin(op, 1));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_system_names_direct() {
+    for (op, value) in [
+        ("gethostname/1", native_host_name()),
+        ("uname_sysname/1", native_uname("-s")),
+        ("uname_machine/1", native_uname("-m")),
+    ] {
+        let (ok, vm) = call1(op, ub("Value"));
+        assert!(ok, "{op} must succeed");
+        assert_eq!(read_var(&vm, "Value"), a(&value));
+        assert!(call1(op, a(&value)).0, "{op} must accept its current value");
+        assert!(!call1(op, a(&format!("{value}-mismatch"))).0);
+        assert!(!call1(op, i(7)).0);
+        assert!(!vmnew().execute_builtin(op, 1));
+    }
+}
+
+#[cfg(not(unix))]
+#[test]
+fn test_system_names_unavailable_direct() {
+    for op in ["gethostname/1", "uname_sysname/1", "uname_machine/1"] {
+        assert!(!call1(op, ub("Value")).0);
     }
 }
 
