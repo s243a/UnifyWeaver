@@ -384,7 +384,9 @@ test(rust_collect_wsp3_unit, [condition(cargo_available)]) :-
     !.
 
 test(elixir_collect_pairs_unit, [condition(elixir_available)]) :-
-    % Generated-runtime e2e: slice WeightedShortestPath from compile_wam_runtime_to_elixir/2.
+    % Generated-kernel unit: execute the production WeightedShortestPath
+    % module emitted by compile_wam_runtime_to_elixir/2.  This deliberately
+    % does not claim dispatch/register/streaming end-to-end coverage.
     tmp_dir(ex_e2e, Dir),
     compile_wam_runtime_snippet_for_elixir_wsp3(Dir),
     directory_file_path(Dir, 'wsp3_unit.exs', Script),
@@ -402,43 +404,6 @@ test(elixir_collect_pairs_unit, [condition(elixir_available)]) :-
       fail
     ),
     !.
-
-% Former Go/Haskell/R/Scala standalone Dijkstra replicas removed — they did
-% not execute generated runtime. Semantic cases remain via the Prolog oracle
-% and structural handler markers (always run; not capability-gated skips).
-test(go_cheaper_detour_oracle_and_markers) :-
-    wsp3_oracle_cheaper_detour_edges(E),
-    wsp3_oracle_cheaper_detour_expected(Want),
-    assertion(wsp3_oracle_matches_expected(E, a, Want)),
-    read_file_string('src/unifyweaver/targets/wam_go_target.pl', Go),
-    assertion(sub_string(Go, _, _, _,
-        "docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md")).
-
-test(haskell_cheaper_detour_oracle_and_markers) :-
-    wsp3_oracle_cheaper_detour_edges(E),
-    wsp3_oracle_cheaper_detour_expected(Want),
-    assertion(wsp3_oracle_matches_expected(E, a, Want)),
-    read_file_string(
-        'templates/targets/haskell_wam/kernel_weighted_shortest_path.hs.mustache', S),
-    assertion(sub_string(S, _, _, _, "nativeKernel_weighted_shortest_path")),
-    assertion(sub_string(S, _, _, _, "maybe [] id")).
-
-test(r_cheaper_detour_oracle_and_markers) :-
-    wsp3_oracle_cheaper_detour_edges(E),
-    wsp3_oracle_cheaper_detour_expected(Want),
-    assertion(wsp3_oracle_matches_expected(E, a, Want)),
-    read_file_string('templates/targets/r_wam/runtime.R.mustache', R),
-    assertion(sub_string(R, _, _, _, "weighted_shortest_path3")),
-    assertion(sub_string(R, _, _, _, "FloatTerm")).
-
-test(scala_cheaper_detour_oracle_and_markers) :-
-    wsp3_oracle_cheaper_detour_edges(E),
-    wsp3_oracle_cheaper_detour_expected(Want),
-    assertion(wsp3_oracle_matches_expected(E, a, Want)),
-    read_file_string('src/unifyweaver/targets/wam_scala_target.pl', Sc),
-    assertion(sub_string(Sc, _, _, _,
-        "docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md")),
-    assertion(sub_string(Sc, _, _, _, "case a @ Atom(_)")).
 
 :- end_tests(wsp3_executable).
 

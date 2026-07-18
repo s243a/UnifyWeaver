@@ -33,12 +33,20 @@
 :- use_module(library(readutil)).
 :- use_module('smoke_paths', [tmp_root/1, clean_dir/1]).
 
+% Missing executables fail the capability condition.  A command that starts
+% but returns nonzero is broken, not missing, and must fail the suite loudly.
 toolchain_available(Cmd, Args) :-
-    catch(
-        ( process_create(path(Cmd), Args,
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
+    absolute_file_name(path(Cmd), Executable,
+                       [access(execute), file_errors(fail)]),
+    process_create(Executable, Args,
+                   [stdout(null), stderr(null), process(Pid)]),
+    process_wait(Pid, Status),
+    (   Status == exit(0)
+    ->  true
+    ;   throw(error(toolchain_probe_failed(Cmd, Status),
+                    context(toolchain_available/2,
+                            'toolchain version probe failed')))
+    ).
 
 dotnet_available :- toolchain_available(dotnet, ['--version']).
 gcc_available     :- toolchain_available(gcc, ['--version']).

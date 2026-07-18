@@ -393,6 +393,7 @@ test(rust_collect_tpd4_unit, [condition(cargo_available)]) :-
     ),
     !.
 
+% Generated-kernel unit; it does not claim dispatch/register end-to-end coverage.
 test(elixir_collect_triples_unit, [condition(elixir_available)]) :-
     tmp_dir(ex_e2e, Dir),
     compile_wam_runtime_snippet_for_elixir_tpd4(Dir),

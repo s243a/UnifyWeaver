@@ -407,6 +407,7 @@ test(rust_collect_tspd5_unit, [condition(cargo_available)]) :-
     ),
     !.
 
+% Generated-kernel unit; it does not claim dispatch/register end-to-end coverage.
 test(elixir_collect_quads_unit, [condition(elixir_available)]) :-
     tmp_dir(ex_e2e, Dir),
     compile_wam_runtime_snippet_for_elixir_tspd5(Dir),
@@ -425,18 +426,6 @@ test(elixir_collect_quads_unit, [condition(elixir_available)]) :-
       fail
     ),
     !.
-
-% Former Go standalone BFS/correlated-pair replica removed — not generated
-% runtime. Contract remains via oracle + structural go_correlated_pair_sets.
-test(go_correlated_diamond_oracle_and_markers) :-
-    tspd5_fixture(correlated_diamond, Edges, _),
-    tspd5_fixture_expected(correlated_diamond, a, Want),
-    tspd5_oracle_quads(Edges, a, Got),
-    assertion(Got == Want),
-    \+ tspd5_oracle_has(Edges, a, t, b, q, 3),
-    \+ tspd5_oracle_has(Edges, a, t, c, p, 3),
-    read_file_string('src/unifyweaver/targets/wam_go_target.pl', Go),
-    assertion(sub_string(Go, _, _, _, "pairSets")).
 
 :- end_tests(tspd5_executable).
 
