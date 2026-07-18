@@ -65,9 +65,64 @@ plawk_parse_source(Source, Program, PrologClauses) :-
     maplist(plawk_read_block_clauses, BlockTexts, ClausesNested),
     append(ClausesNested, BlockClauses),
     string_codes(Stripped, Codes),
-    phrase(plawk_program(Program, FunctionClauses, DynEntries), Codes),
+    phrase(plawk_program(Program0, FunctionClauses, DynEntries), Codes),
+    plawk_normalise_getline_loops(Program0, Program),
     append(BlockClauses, FunctionClauses, PrologClauses),
     plawk_dynentry_reserved_check(DynEntries, PrologClauses).
+
+%% plawk_normalise_getline_loops(+Program0, -Program)
+%
+%  Desugar `while ((getline var < "file") > 0) BODY` (parsed to
+%  getline_loop(Var, File, Body)) into the phase-1 getline machinery: a priming
+%  read, then a `while (status > 0)` loop whose body is BODY plus a trailing
+%  re-read. `$getline_status` is a reserved i64 status slot (users cannot write a
+%  `$`-prefixed name). Applied once here so the rest of the pipeline (state plan,
+%  action sequence) only ever sees getline_capture + while_loop, both already
+%  supported. v1 rewrites rule bodies (and nested if/loop bodies); getline_loop
+%  in BEGIN/END/case blocks is a follow-on.
+plawk_normalise_getline_loops(program(Begin, Rules0, End),
+        program(Begin, Rules, End)) :-
+    plawk_norm_getline_rules(Rules0, Rules).
+
+plawk_norm_getline_rules(Rules0, Rules) :-
+    is_list(Rules0),
+    !,
+    maplist(plawk_norm_getline_rule, Rules0, Rules).
+plawk_norm_getline_rules(Other, Other).
+
+plawk_norm_getline_rule(rule(Pattern, Actions0), rule(Pattern, Actions)) :-
+    !,
+    plawk_norm_getline_actions(Actions0, Actions).
+plawk_norm_getline_rule(Other, Other).
+
+plawk_norm_getline_actions([], []).
+plawk_norm_getline_actions([getline_loop(Var, File, Body0) | Rest], Out) :-
+    !,
+    plawk_norm_getline_actions(Body0, Body),
+    Read = getline_capture('$getline_status', Var, File),
+    append(Body, [Read], LoopBody),
+    plawk_norm_getline_actions(Rest, Rest1),
+    Out = [ Read,
+            while_loop(cmp(var('$getline_status'), gt, int(0)), LoopBody)
+          | Rest1 ].
+plawk_norm_getline_actions([Action0 | Rest], [Action | Rest1]) :-
+    plawk_norm_getline_action(Action0, Action),
+    plawk_norm_getline_actions(Rest, Rest1).
+
+plawk_norm_getline_action(if(Pattern, Then0, Else0), if(Pattern, Then, Else)) :-
+    !,
+    plawk_norm_getline_actions(Then0, Then),
+    plawk_norm_getline_actions(Else0, Else).
+plawk_norm_getline_action(while_loop(Cond, Body0), while_loop(Cond, Body)) :-
+    !,
+    plawk_norm_getline_actions(Body0, Body).
+plawk_norm_getline_action(do_while_loop(Body0, Cond), do_while_loop(Body, Cond)) :-
+    !,
+    plawk_norm_getline_actions(Body0, Body).
+plawk_norm_getline_action(foreach_loop(Layout, Body0), foreach_loop(Layout, Body)) :-
+    !,
+    plawk_norm_getline_actions(Body0, Body).
+plawk_norm_getline_action(Action, Action).
 
 %% plawk_dynentry_reserved_check(+DynEntries, +PrologClauses)
 %
@@ -1496,6 +1551,7 @@ plawk_block_action(foreach(_Body)).
 % (`while (..) { .. } i++`), like an if / foreach.
 plawk_block_action(while_loop(_Cond, _Body)).
 plawk_block_action(do_while_loop(_Body, _Cond)).
+plawk_block_action(getline_loop(_Var, _File, _Body)).
 
 %% action_sep//0
 %
@@ -1723,6 +1779,21 @@ delete_action(delete_assoc(var(Name), KeyExpr)) -->
 % the general action block, and the codegen (bin/plawk) rejects it with a clean
 % not-yet diagnostic until the loop runtime lands. The condition is a scalar
 % comparison for now; a general boolean condition is a follow-on.
+% `while ((getline var < "file") > 0) BODY` -- the canonical getline loop: read
+% successive lines of a file into `var`, running BODY per line until EOF/error.
+% Parses to getline_loop(Var, File, Body); the codegen desugars it into the
+% prime-then-re-read form (a getline assignment + a `while (status > 0)` over
+% BODY plus a trailing re-read), reusing the phase-1 getline machinery. Tried
+% before the generic while; the `((getline` prefix distinguishes it.
+while_action(getline_loop(Var, File, Body)) -->
+    "while", identifier_boundary, ws,
+    "(", ws,
+    "(", ws, "getline", required_ws, identifier(Var), ws,
+    "<", ws, quoted_string(FCodes), ws, ")",
+    ws, ">", ws, "0", ws,
+    ")", ws,
+    body_block(Body),
+    { string_codes(File, FCodes) }.
 while_action(while_loop(Cond, Body)) -->
     "while", identifier_boundary, ws,
     "(", ws,

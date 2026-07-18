@@ -73,6 +73,44 @@ test(getline_bare_reads, [condition(clang_available)]) :-
     build_run(Dir, 'gbr', Src, "t\n", Out, St),
     assertion(St == 0), assertion(Out == "first\n"), !.
 
+% --- the in-condition idiom `while ((getline v < "f") > 0)` -----------------
+
+% parses (and normalises) to a priming getline + a `while (status > 0)` loop
+% whose body re-reads.
+test(getline_while_normalises) :-
+    plawk_parse_string("{ while ((getline v < \"f.txt\") > 0) print v }\n",
+        program(_, [rule(always, Actions)], _)),
+    Actions = [ getline_capture('$getline_status', v, "f.txt"),
+                while_loop(cmp(var('$getline_status'), gt, int(0)),
+                    [print([var(v)]), getline_capture('$getline_status', v, "f.txt")]) ],
+    !.
+
+% the canonical loop reads every line.
+test(getline_while_reads_all, [condition(clang_available)]) :-
+    ldir(Dir),
+    data_file(Dir, 'colors.txt', "red\ngreen\nblue\n", P),
+    format(atom(Src), "{ while ((getline c < \"~w\") > 0) print c }\n", [P]),
+    build_run(Dir, 'gwr', Src, "trigger\n", Out, St),
+    assertion(St == 0), assertion(Out == "red\ngreen\nblue\n"), !.
+
+% a body that accumulates: count the lines.
+test(getline_while_accumulate, [condition(clang_available)]) :-
+    ldir(Dir),
+    data_file(Dir, 'nums.txt', "10\n20\n30\n", P),
+    format(atom(Src),
+        "{ n = 0; while ((getline v < \"~w\") > 0) { n = n + 1 }; print n }\n", [P]),
+    build_run(Dir, 'gwa', Src, "t\n", Out, St),
+    assertion(St == 0), assertion(Out == "3\n"), !.
+
+% an empty file runs the body zero times.
+test(getline_while_empty, [condition(clang_available)]) :-
+    ldir(Dir),
+    data_file(Dir, 'empty.txt', "", P),
+    format(atom(Src),
+        "{ while ((getline v < \"~w\") > 0) print \"X\"; print \"done\" }\n", [P]),
+    build_run(Dir, 'gwe', Src, "t\n", Out, St),
+    assertion(St == 0), assertion(Out == "done\n"), !.
+
 :- end_tests(plawk_getline).
 
 % --- helpers ---------------------------------------------------------------
