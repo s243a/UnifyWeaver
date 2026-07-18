@@ -299,6 +299,13 @@ Three practical consequences:
    push-based PPR (Andersen-Chung-Lang) does — it bounds the
    work to a local region while remaining mathematically faithful
    to the global Green's function within that region.
+   [LOCAL_GROUNDED_DIFFUSION.md](LOCAL_GROUNDED_DIFFUSION.md) makes the
+   corresponding bath boundary explicit for anchored Green solves: select a
+   frozen hop or semantic-resistance neighborhood, aggregate cut-edge
+   conductance on the diagonal, and retain distributed leakage to set the
+   screening length. This is a reusable numerical operator rather than a new
+   cache-ranking default.
+
 
 3. **Connection to effective resistance**. `V_source − V_sink`
    divided by injected current is the effective resistance
@@ -420,6 +427,8 @@ pluggable; the math is what the new variant brings.
   + hop_distance), P3+ (warm-build + flux)
 - `docs/design/WAM_PERF_OPTIMIZATION_LOG.md` — Phase L / Phase M
   measurements that inform the decision guide
+- `docs/design/LOCAL_GROUNDED_DIFFUSION.md` — bounded Dirichlet Green solves,
+  screening calibration, and boundary diagnostics for massive graphs
 - `src/unifyweaver/core/cost_function.pl` — the registry
 - `templates/targets/haskell_wam/cost_function.hs.mustache` —
   Haskell-side concrete constructors
