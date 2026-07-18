@@ -209,7 +209,7 @@ test(fsharp_mustache_safe_astar) :-
     assertion(sub_string(S, _, _, _, "source = target")),
     assertion(sub_string(S, _, _, _,
         "docs/design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md")),
-    assertion(sub_string(S, _, _, _, "Primary PQ key is g-cost")).
+    assertion(sub_string(S, _, _, _, "primary PQ key is g-cost")).
 
 test(fsharp_allowlist_includes_astar4) :-
     assertion(wam_fsharp_native_kernel_kind(astar_shortest_path4)),
@@ -230,9 +230,9 @@ test(rust_safe_cost_api) :-
     assertion(sub_string(S, _, _, _, "collect_native_astar_shortest_path_cost")),
     assertion(sub_string(S, _, _, _,
         "docs/design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md")),
-    assertion(sub_string(S, _, _, _, "unwrap_or(0.0)") ; true),
-    assertion(sub_string(S, _, _, _, "Ok(0.0)")),
-    assertion(\+ sub_string(S, _, _, _, "unwrap_or(1.0)")).
+    assertion(sub_string(S, _, _, _, "if start == target { return Some(0.0); }")),
+    % Missing heuristic rows default to 0.0 (not the old 1.0).
+    assertion(sub_string(S, _, _, _, "Ok(if saw { best } else { 0.0 })")).
 
 test(c_relation_isolation_dynamic_float) :-
     read_file_string('src/unifyweaver/targets/wam_c_target.pl', S),
@@ -317,12 +317,17 @@ test(fsharp_materialized_modes_overestimate_e2e,
      [condition(dotnet_available)]) :-
     assert_astar_detour_program,
     assert_two_astar_programs,
+    % assert_two_astar_programs clears detector config; restore the detour
+    % heuristic so astar/4 materializes a_heur (astar_a/astar_b still fall
+    % back to their own edges when rows are missing → h=0.0).
+    retractall(user:direct_dist_pred(_)),
+    assertz(user:direct_dist_pred(a_heur/3)),
+    assertz(user:dimensionality(2)),
     tmp_dir(fs_e2e, Dir),
     once(write_wam_fsharp_project(
         [ user:astar/4, user:a_edge/3, user:a_heur/3,
           user:astar_a/4, user:edge_a/3,
           user:astar_b/4, user:edge_b/3,
-          user:dimensionality/1, user:direct_dist_pred/1,
           user:astar_cut/3, user:astar_after/3
         ],
         [module_name('uw_astar4_e2e')],
