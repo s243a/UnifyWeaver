@@ -130,6 +130,26 @@ test(split_strge, [condition(clang_available)]) :-
     sorted_lines(Out, S),
     assertion(S == ["2 zebra", "4 mango"]), !.
 
+% Float-literal RHS on a split element: numeric strnum vs the double. 1,5,3,9
+% with `< 3.5` keeps 1 and 3.
+test(split_lt_float, [condition(clang_available)]) :-
+    vdir(Dir),
+    build_run(Dir, 'lf', "{ split($0, a, \",\") }\n\c
+        END { for (k in a) { if (a[k] < 3.5) print k, a[k] } }\n",
+        "1,5,3,9\n", Out),
+    sorted_lines(Out, S),
+    assertion(S == ["1 1", "3 3"]), !.
+
+% Float-literal RHS on an i64 counter table: widen the count and fcmp. a=3,b=1
+% with `< 2.5` keeps b.
+test(counter_lt_float, [condition(clang_available)]) :-
+    vdir(Dir),
+    build_run(Dir, 'cf', "{ c[$1]++ }\n\c
+        END { for (k in c) { if (c[k] < 2.5) print k, c[k] } }\n",
+        "a\na\na\nb\n", Out),
+    sorted_lines(Out, S),
+    assertion(S == ["b 1"]), !.
+
 % Regression: a genuine i64 counter table still compares numerically as an
 % i64 (the value IS the count, not an atom id). a=3,b=1; `> 1` keeps a.
 test(counter_still_i64, [condition(clang_available)]) :-
