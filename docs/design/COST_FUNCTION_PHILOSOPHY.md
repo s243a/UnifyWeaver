@@ -247,6 +247,11 @@ In matrix form: `L V = b`, where `L = D − A` is the graph
 Laplacian (`D` = diagonal degree matrix, `A` = adjacency),
 and `b` is the boundary-condition / current-injection vector.
 
+The reusable variant with embedding-weighted edge conductance, finite shunt
+resistance to ground, equilibrium Green kernels, effective-resistance
+distance, and a direct inverse-covariance root is specified in
+[LEAKY_GRAPH_DIFFUSION.md](LEAKY_GRAPH_DIFFUSION.md).
+
 ### What the Green's function gives us
 
 `V_n = G(source, n)` is the **harmonic measure at `n`** given the
