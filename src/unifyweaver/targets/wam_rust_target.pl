@@ -1365,8 +1365,173 @@ compile_execute_io_builtin_to_rust(Code) :-
         }
     }
 
+    fn format_term_text(&self, value: &Value) -> String {
+        let derefed = self.deref_heap(&self.deref_var(value));
+        match derefed {
+            Value::Atom(text) => text,
+            Value::Integer(number) => number.to_string(),
+            Value::Float(number) => number.to_string(),
+            Value::Bool(boolean) => boolean.to_string(),
+            Value::Unbound(name) => {
+                if name.is_empty() { "_".to_string() } else { name }
+            }
+            Value::List(items) => {
+                let rendered: Vec<String> = items.iter()
+                    .map(|item| self.format_term_text(item))
+                    .collect();
+                format!("[{}]", rendered.join(", "))
+            }
+            Value::Str(functor, args) => {
+                let name = Self::display_functor_name(&functor, args.len());
+                let rendered: Vec<String> = args.iter()
+                    .map(|arg| self.format_term_text(arg))
+                    .collect();
+                format!("{}({})", name, rendered.join(", "))
+            }
+            value @ Value::Ref(_) => format!("{}", value),
+            Value::Uninit => "_".to_string(),
+        }
+    }
+
+    fn render_format(&self, format_raw: &Value, args_raw: Option<&Value>) -> Option<String> {
+        let format_value = self.deref_heap(&self.deref_var(format_raw));
+        let format_text = match format_value {
+            Value::Atom(text) => text,
+            Value::Integer(number) => number.to_string(),
+            Value::Bool(boolean) => boolean.to_string(),
+            Value::List(items) if items.is_empty() => "[]".to_string(),
+            _ => return None,
+        };
+        let args = match args_raw {
+            None => Vec::new(),
+            Some(raw) => match self.deref_heap(&self.deref_var(raw)) {
+                Value::List(items) => items,
+                Value::Atom(name) if name == "[]" => Vec::new(),
+                _ => return None,
+            },
+        };
+
+        let mut output = String::new();
+        let mut arg_index = 0usize;
+        let mut chars = format_text.chars();
+        while let Some(ch) = chars.next() {
+            if ch != ''~'' {
+                output.push(ch);
+                continue;
+            }
+            let directive = match chars.next() {
+                Some(directive) => directive,
+                None => {
+                    output.push(''~'');
+                    break;
+                }
+            };
+            match directive {
+                ''n'' => output.push(''\\n''),
+                ''t'' => output.push(''\\t''),
+                ''~'' => output.push(''~''),
+                ''w'' | ''p'' | ''a'' | ''d'' | ''s'' => {
+                    let value = self.deref_heap(&self.deref_var(args.get(arg_index)?));
+                    arg_index += 1;
+                    match directive {
+                        ''w'' | ''p'' => output.push_str(&self.format_term_text(&value)),
+                        ''a'' => match Self::value_atom_name(&value) {
+                            Some(atom) => output.push_str(&atom),
+                            None => output.push_str(&self.format_term_text(&value)),
+                        },
+                        ''d'' => match value {
+                            Value::Integer(number) => output.push_str(&number.to_string()),
+                            _ => output.push_str(&self.format_term_text(&value)),
+                        },
+                        ''s'' => match value {
+                            Value::List(items) => {
+                                output.push_str(&self.code_list_to_string(&items)?);
+                            }
+                            _ => match Self::value_atom_name(&value) {
+                                Some(atom) => output.push_str(&atom),
+                                None => output.push_str(&self.format_term_text(&value)),
+                            },
+                        },
+                        _ => unreachable!(),
+                    }
+                }
+                unknown => {
+                    output.push(''~'');
+                    output.push(unknown);
+                }
+            }
+        }
+        Some(output)
+    }
+
     fn execute_io_builtin(&mut self, op: &str, _arity: usize) -> bool {
         match op {
+            "format/1" | "format/2" | "format/3" => {
+                let is_format3 = op == "format/3";
+                let format_reg = if is_format3 { "A2" } else { "A1" };
+                let args_reg = if op == "format/2" {
+                    Some("A2")
+                } else if is_format3 {
+                    Some("A3")
+                } else {
+                    None
+                };
+                let format_raw = self.get_reg_raw(format_reg).unwrap_or(Value::Uninit);
+                let args_raw = args_reg
+                    .map(|reg| self.get_reg_raw(reg).unwrap_or(Value::Uninit));
+                let rendered = match self.render_format(&format_raw, args_raw.as_ref()) {
+                    Some(rendered) => rendered,
+                    None => return false,
+                };
+
+                if !is_format3 {
+                    let mut stdout = std::io::stdout().lock();
+                    if std::io::Write::write_all(&mut stdout, rendered.as_bytes()).is_err()
+                        || std::io::Write::flush(&mut stdout).is_err() {
+                        return false;
+                    }
+                    self.pc += 1;
+                    return true;
+                }
+
+                let destination = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                match destination {
+                    Value::Atom(name) if name == "user_output" => {
+                        let mut stdout = std::io::stdout().lock();
+                        if std::io::Write::write_all(&mut stdout, rendered.as_bytes()).is_err()
+                            || std::io::Write::flush(&mut stdout).is_err() {
+                            return false;
+                        }
+                        self.pc += 1; true
+                    }
+                    Value::Atom(name) if name == "user_error" => {
+                        let mut stderr = std::io::stderr().lock();
+                        if std::io::Write::write_all(&mut stderr, rendered.as_bytes()).is_err()
+                            || std::io::Write::flush(&mut stderr).is_err() {
+                            return false;
+                        }
+                        self.pc += 1; true
+                    }
+                    Value::Str(functor, args) if args.len() == 1 => {
+                        let name = Self::display_functor_name(&functor, 1);
+                        let output = match name.as_str() {
+                            "atom" | "string" => Value::Atom(rendered),
+                            "codes" => Self::string_to_codes_value(&rendered),
+                            _ => return false,
+                        };
+                        let mark = self.trail.len();
+                        if self.unify(&args[0], &output) {
+                            self.pc += 1; true
+                        } else {
+                            self.unwind_trail_to(mark);
+                            false
+                        }
+                    }
+                    _ => false,
+                }
+            }
             "write/1" | "display/1" | "print/1" => {
                 // These share Display rendering for now. Standard Prolog
                 // differentiates write/1, display/1, and print/1.

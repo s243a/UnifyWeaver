@@ -500,6 +500,7 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, '"sub_atom/5"'),
         sub_string(S, _, _, _, '"code_type/2"'),
         sub_string(S, _, _, _, '"must_be/2"'),
+        sub_string(S, _, _, _, '"format/1" | "format/2" | "format/3"'),
         sub_string(S, _, _, _, '"file_base_name/2" | "file_directory_name/2"'),
         sub_string(S, _, _, _, '"file_name_extension/3"'),
         sub_string(S, _, _, _, '"is_absolute_file_name/1"'),
