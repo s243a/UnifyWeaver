@@ -265,6 +265,9 @@ ffi_owned_fact_filter_fs(DetectedKernels, PI) :-
 %   - weighted_shortest_path3 Mustache handler emits (atom,float) pairs via
 %     the existing two-output binder (finite nonnegative Dijkstra contract).
 %     Relation-keyed weighted facts are materialized into WcFfiWeightedFacts.
+%   - astar_shortest_path4 Mustache handler emits a singleton float via the
+%     existing single-output binder (correctness-safe A* / Dijkstra-minimum
+%     contract). Dual relation-keyed weighted facts (edge + direct_dist).
 wam_fsharp_native_kernel_kind(category_ancestor).
 wam_fsharp_native_kernel_kind(bidirectional_ancestor).
 wam_fsharp_native_kernel_kind(transitive_closure2).
@@ -272,6 +275,7 @@ wam_fsharp_native_kernel_kind(transitive_distance3).
 wam_fsharp_native_kernel_kind(transitive_parent_distance4).
 wam_fsharp_native_kernel_kind(transitive_step_parent_distance5).
 wam_fsharp_native_kernel_kind(weighted_shortest_path3).
+wam_fsharp_native_kernel_kind(astar_shortest_path4).
 
 fsharp_kernel_template_path(Kind, AbsPath) :-
     kernel_template_file(Kind, HsTemplateFile),
@@ -5317,9 +5321,17 @@ open WamRuntime
 %  merged on top of inline triples so existing external wiring is preserved.
 emit_weighted_ffi_facts_fs(DetectedKernels, Options, Code) :-
     findall(Rel-Triples,
-            ( member(_-recursive_kernel(weighted_shortest_path3, _, ConfigOps),
-                     DetectedKernels),
-              member(edge_pred(EdgePred/3), ConfigOps),
+            ( (   member(_-recursive_kernel(weighted_shortest_path3, _, ConfigOps),
+                         DetectedKernels),
+                  member(edge_pred(EdgePred/3), ConfigOps)
+              ;   member(_-recursive_kernel(astar_shortest_path4, _, ConfigOps),
+                         DetectedKernels),
+                  (   member(edge_pred(EdgePred/3), ConfigOps)
+                  ;   member(direct_dist_pred(EdgePred/3), ConfigOps)
+                  ;   member(direct_dist_pred(EdgePred), ConfigOps),
+                      atom(EdgePred)
+                  )
+              ),
               atom(EdgePred),
               collect_weighted_edge_triples_fs(EdgePred, Triples0),
               Rel = EdgePred,
@@ -5343,15 +5355,31 @@ merge_weighted_rel_group_fs(Rel-Lists, Rel-Triples) :-
 
 collect_weighted_edge_triples_fs(EdgePred, Triples) :-
     functor(Head, EdgePred, 3),
-    findall(triple(From, To, W),
+    findall(row(From, To, W),
             (   clause(user:Head, true),
-                Head =.. [EdgePred, From, To, W0],
-                atom(From),
-                atom(To),
-                number(W0),
-                W is float(W0)
+                Head =.. [EdgePred, From, To, W]
             ),
-            Triples).
+            Rows),
+    validate_weighted_rows_fs(EdgePred, Rows, Triples).
+
+validate_weighted_rows_fs(_, [], []).
+validate_weighted_rows_fs(EdgePred, [row(From, To, W0)|Rows], Triples) :-
+    (   atom(From)
+    ->  (   atom(To), number(W0)
+        ->  W is float(W0),
+            Triples = [triple(From, To, W)|Rest]
+        ;   Fact =.. [EdgePred, From, To, W0],
+            format(atom(Message),
+                   'native weighted relation ~w requires atom/atom/number rows',
+                   [EdgePred]),
+            throw(error(domain_error(weighted_kernel_fact, Fact),
+                        context(wam_fsharp_target:emit_weighted_ffi_facts_fs/3,
+                                Message)))
+        )
+    ;   % Non-atom sources cannot be reached from the atom-keyed native ABI.
+        Triples = Rest
+    ),
+    validate_weighted_rows_fs(EdgePred, Rows, Rest).
 
 emit_weighted_ffi_facts_block_fs(RelEntries, Code) :-
     maplist(emit_weighted_rel_entry_fs, RelEntries, EntryAtoms),

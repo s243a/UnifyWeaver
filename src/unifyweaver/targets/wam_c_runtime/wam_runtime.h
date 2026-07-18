@@ -216,11 +216,13 @@ typedef struct {
     const char *parent;
 } RelationEdge;
 
-/* Maps a foreign kernel (pred, arity) onto its edge relation name. */
+/* Maps a foreign kernel (pred, arity) onto its edge relation name.
+ * heur_relation is set for astar_shortest_path4; NULL for other kernels. */
 typedef struct {
     const char *pred;
     int arity;
     const char *relation;
+    const char *heur_relation;
 } KernelEdgeBinding;
 
 typedef struct {
@@ -501,7 +503,10 @@ void wam_register_relation_edge(WamState *state, const char *relation,
                                 const char *from, const char *to);
 void wam_bind_kernel_edge_relation(WamState *state, const char *pred, int arity,
                                    const char *relation);
+void wam_bind_kernel_heur_relation(WamState *state, const char *pred, int arity,
+                                   const char *heur_relation);
 const char *wam_lookup_kernel_edge_relation(WamState *state, const char *pred, int arity);
+const char *wam_lookup_kernel_heur_relation(WamState *state, const char *pred, int arity);
 void wam_register_weighted_edge(WamState *state, const char *source, const char *target, double weight);
 void wam_register_relation_weighted_edge(WamState *state, const char *relation,
                                          const char *from, const char *to,
@@ -520,7 +525,9 @@ void wam_register_transitive_step_parent_distance_kernel(WamState *state, const 
                                                          const char *edge_relation);
 void wam_register_weighted_shortest_path_kernel(WamState *state, const char *pred,
                                                 const char *edge_relation);
-void wam_register_astar_shortest_path_kernel(WamState *state, const char *pred);
+void wam_register_astar_shortest_path_kernel(WamState *state, const char *pred,
+                                             const char *edge_relation,
+                                             const char *heur_relation);
 bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity);
 bool wam_bidirectional_ancestor_handler(WamState *state, const char *pred, int arity);
 bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity);

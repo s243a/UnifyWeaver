@@ -23,6 +23,9 @@
 %%     - fleet WSP3 finite nonnegative Dijkstra oracle/structural checks plus
 %%       executable F#/C/Rust/Elixir/Go/Haskell/R/Scala coverage; LLVM keeps
 %%       its existing Dijkstra stream suite.
+%%   tests/test_wam_astar4_contract_parity.pl
+%%     - fleet A* correctness-safe Dijkstra-minimum oracle/structural checks
+%%       plus executable F#/C coverage and cross-target contract markers.
 %%   focused Rust, Go, Scala, R, Haskell, Elixir, and LLVM TD3/TPD4/TSPD5 regressions
 %%     - exercise transactional correlated-tuple binding, the R aggregate
 %%       path, Elixir ordinary retries, and LLVM exact paired streaming /
@@ -72,10 +75,17 @@ fsharp_test('tests/test_wam_tspd5_contract_parity.pl',
 fsharp_test('tests/test_wam_wsp3_contract_parity.pl',
             'WSP3 finite nonnegative Dijkstra fleet contract + F# native kernel',
             run_tests).
+fsharp_test('tests/test_wam_astar4_contract_parity.pl',
+            'A* correctness-safe Dijkstra-minimum fleet contract + F# native kernel',
+            run_tests).
 fsharp_test('tests/test_wam_rust_foreign_tuple_aliases.pl',
             'Rust correlated foreign-tuple alias/retry cleanup', run_tests).
 fsharp_test('tests/test_wam_go_foreign_tuple_aliases.pl',
             'Go correlated foreign-tuple alias/retry cleanup', run_tests).
+fsharp_test('tests/test_wam_go_foreign_lowering.pl',
+            'Go A* configured heuristic relation + weighted-fact validation',
+            run_tests(wam_go_foreign_lowering:
+                      astar_configured_direct_pred_validates_atom_source_rows)).
 fsharp_test('tests/test_wam_scala_foreign_tuple_aliases.pl',
             'Scala correlated foreign-tuple alias/retry cleanup', run_tests).
 fsharp_test('tests/test_wam_r_generator.pl',
@@ -99,14 +109,15 @@ fsharp_test('tests/test_wam_scala_kernels.pl',
               run_tests(wam_scala_kernels_runtime:
                         transitive_step_parent_distance_rejects_non_atom_nodes) )).
 fsharp_test('tests/test_wam_haskell_target.pl',
-            'TD3/TPD4/TSPD5 Haskell multi-output foreign retry regressions',
+            'TD3/TPD4/TSPD5/A* Haskell kernel regressions',
             (test_multi_output_foreign_filters_bound_results,
              test_multi_output_foreign_retry_filters_and_pops,
              test_same_kind_kernel_body_deduplicated,
              test_tpd4_generated_ghc_smoke,
-             test_tspd5_generated_ghc_smoke)).
+             test_tspd5_generated_ghc_smoke,
+             test_astar_weighted_facts_wired_into_generated_project)).
 fsharp_test('tests/test_wam_elixir_target.pl',
-            'TD3/TPD4/TSPD5 Elixir bound modes + ordinary retry stream regressions',
+            'TD3/TPD4/TSPD5/A* Elixir kernel regressions',
             (test_graph_kernel_transitive_distance_uses_distplus_bfs,
              test_kernel_dispatch_emits_transitive_distance_module,
              test_kernel_dispatch_transitive_distance_e2e,
@@ -116,7 +127,11 @@ fsharp_test('tests/test_wam_elixir_target.pl',
              test_graph_kernel_transitive_step_parent_distance_emitted_in_runtime,
              test_graph_kernel_tspd_uses_bfs_correlated_contract,
              test_kernel_dispatch_emits_transitive_step_parent_distance_module,
-             test_shared_detector_finds_transitive_step_parent_distance)).
+             test_shared_detector_finds_transitive_step_parent_distance,
+             test_graph_kernel_astar_shortest_path_emitted_in_runtime,
+             test_graph_kernel_astar_uses_minkowski_f_cost,
+             test_kernel_dispatch_emits_astar_shortest_path_module,
+             test_shared_detector_finds_astar_shortest_path)).
 fsharp_test('tests/core/test_wam_llvm_reach_execution.pl',
             'TD3 LLVM bound-distance + range-safety execution', test_all).
 fsharp_test('tests/core/test_wam_llvm_td3_stream_execution.pl',

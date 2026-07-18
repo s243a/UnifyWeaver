@@ -3048,22 +3048,18 @@ fail_free:
   ret i1 false
 }
 
-; === M5.4: A* over a %WeightedFact table ===
-; Same as @wam_dijkstra_weighted_distance but orders the frontier by
-; f(n) = g(n) + h(n) instead of just g(n), where g is the best known
-; actual distance from %start and h is a precomputed heuristic estimate
-; of the remaining distance to %target.
+; === M5.4: correctness-safe A* over a %WeightedFact table ===
+; The frontier is ordered by g.  The heuristic is intentionally only an
+; optional scheduling input: an unchecked or overestimating h must never
+; make the first popped target look optimal.  This LLVM implementation
+; therefore degrades safely to Dijkstra until a second, g-bounded priority
+; queue key is available.
 ;
 ; The heuristic is supplied as a plain double[] indexed by atom ID;
-; %heuristic[i] = estimated distance from node i to %target. Must be
-; admissible (never overestimate) for the result to be optimal.
-;
-; Returns the same g value Dijkstra would return — the heuristic only
-; affects exploration order, not the reported distance.
-;
-; With a zero heuristic this degenerates to Dijkstra. We keep the two
-; helpers separate so the simpler one has no extra parameter and so
-; callers don't allocate a zeroed h[] when they don't want A*.
+; %heuristic[i] = estimated distance from node i to %target.  It is kept
+; in the ABI for relation/direct-distance materialization, but is not used
+; as the primary key.  The result is consequently the Dijkstra minimum for
+; admissible, overestimating, or missing heuristic data.
 define i1 @wam_astar_weighted_distance(
     i64 %start, i64 %target,
     %WeightedFact* %table, i64 %len,
@@ -3115,11 +3111,9 @@ init_best:
 seed:
   %best_start = getelementptr double, double* %best, i64 %start
   store double 0.0, double* %best_start
-  ; Insert start into heap with f = 0 + h(start).
-  %h_start_ptr = getelementptr double, double* %heuristic, i64 %start
-  %h_start = load double, double* %h_start_ptr
+  ; g-primary seed.  Do not terminate under an unchecked f score.
   %hk0 = getelementptr double, double* %heap_keys, i64 0
-  store double %h_start, double* %hk0
+  store double 0.0, double* %hk0
   %hv0 = getelementptr i64, i64* %heap_vals, i64 0
   store i64 %start, i64* %hv0
   br label %outer
@@ -3134,7 +3128,7 @@ extract:
   br i1 %es_empty, label %fail_free, label %do_extract
 
 do_extract:
-  ; Read root (min f).
+  ; Read root (minimum g).
   %root_key_ptr = getelementptr double, double* %heap_keys, i64 0
   %root_key = load double, double* %root_key_ptr
   %root_val_ptr = getelementptr i64, i64* %heap_vals, i64 0
@@ -3162,6 +3156,16 @@ skip_stale:
   br label %extract
 
 process_node:
+  ; Heuristics are hints, but malformed data for a reached node still
+  ; invalidates the deterministic call.  Overestimates remain valid.
+  %node_h_ptr = getelementptr double, double* %heuristic, i64 %root_val
+  %node_h = load double, double* %node_h_ptr
+  %node_h_nonneg = fcmp oge double %node_h, 0.0
+  %node_h_finite = fcmp olt double %node_h, 0x7FF0000000000000
+  %node_h_ok = and i1 %node_h_nonneg, %node_h_finite
+  br i1 %node_h_ok, label %mark_node, label %fail_free
+
+mark_node:
   store i32 1, i32* %rv_vis_ptr
   %is_target = icmp eq i64 %root_val, %target
   br i1 %is_target, label %hit, label %relax
@@ -3199,10 +3203,21 @@ relax_body:
 
 check_to_range:
   %to_ok = icmp ule i64 %edge_to, %max_atom_id
-  br i1 %to_ok, label %do_relax, label %relax_cont
+  br i1 %to_ok, label %check_edge_weight, label %relax_cont
+
+check_edge_weight:
+  ; A reachable row must have a finite, nonnegative edge weight.
+  %weight_nonneg = fcmp oge double %edge_w, 0.0
+  %weight_finite = fcmp olt double %edge_w, 0x7FF0000000000000
+  %weight_ok = and i1 %weight_nonneg, %weight_finite
+  br i1 %weight_ok, label %do_relax, label %fail_free
 
 do_relax:
   %alt = fadd double %best_pick, %edge_w
+  %alt_finite = fcmp olt double %alt, 0x7FF0000000000000
+  br i1 %alt_finite, label %compare_best, label %fail_free
+
+compare_best:
   %best_to_ptr = getelementptr double, double* %best, i64 %edge_to
   %best_to = load double, double* %best_to_ptr
   %improved = fcmp olt double %alt, %best_to
@@ -3210,12 +3225,9 @@ do_relax:
 
 store_and_push:
   store double %alt, double* %best_to_ptr
-  ; Push with f = g_new + h(edge_to).
-  %h_to_ptr = getelementptr double, double* %heuristic, i64 %edge_to
-  %h_to = load double, double* %h_to_ptr
-  %f_new = fadd double %alt, %h_to
+  ; Push with g.  h cannot alter correctness or early termination.
   %push_key_ptr = getelementptr double, double* %heap_keys, i64 %hs_cur
-  store double %f_new, double* %push_key_ptr
+  store double %alt, double* %push_key_ptr
   %push_val_ptr = getelementptr i64, i64* %heap_vals, i64 %hs_cur
   store i64 %edge_to, i64* %push_val_ptr
   %hs_inc = add i64 %hs_cur, 1
@@ -3223,7 +3235,7 @@ store_and_push:
   br label %relax_cont
 
 relax_cont:
-  %hs_after_insert = phi i64 [%hs_cur, %relax_body], [%hs_cur, %check_to_range], [%hs_cur, %do_relax], [%hs_inc, %store_and_push]
+  %hs_after_insert = phi i64 [%hs_cur, %relax_body], [%hs_cur, %check_to_range], [%hs_cur, %compare_best], [%hs_inc, %store_and_push]
   %ri_next = add i64 %ri, 1
   br label %relax_scan
 
@@ -4561,9 +4573,9 @@ stream_fail:
 
 ; === M5.12: Runtime heuristic builder ===
 ; Scans a %WeightedFact direct-distance table and builds a per-node
-; heuristic array for a specific target. For each entry where
-; to == %target, writes weight into heuristic[from]. Entries for
-; nodes not in the direct-distance table default to 0.0 (admissible).
+; heuristic array for a specific target. Duplicate (from,target) rows use
+; their minimum value; malformed numeric rows retain an invalid sentinel
+; that the reached-node check rejects. Missing nodes normalize to 0.0.
 ;
 ; Returns a malloc'd double* that the caller must free.
 define double* @wam_build_heuristic_from_table(
@@ -4573,14 +4585,21 @@ entry:
   %n = add i64 %max_atom_id, 1
   %bytes = shl i64 %n, 3
   %mem = call i8* @malloc(i64 %bytes)
-  call void @llvm.memset.p0i8.i64(i8* %mem, i8 0, i64 %bytes, i1 false)
   %h = bitcast i8* %mem to double*
-  br label %scan
+  br label %init
+
+init:
+  %ii = phi i64 [0, %entry], [%ii_next, %init]
+  %init_slot = getelementptr double, double* %h, i64 %ii
+  store double 0x7FF0000000000000, double* %init_slot
+  %ii_next = add i64 %ii, 1
+  %init_done = icmp uge i64 %ii_next, %n
+  br i1 %init_done, label %scan, label %init
 
 scan:
-  %si = phi i64 [0, %entry], [%si_next, %scan_next]
+  %si = phi i64 [0, %init], [%si_next, %scan_next]
   %si_cmp = icmp ult i64 %si, %dlen
-  br i1 %si_cmp, label %scan_body, label %done
+  br i1 %si_cmp, label %scan_body, label %normalize
 
 scan_body:
   %fp = getelementptr %WeightedFact, %WeightedFact* %dtable, i64 %si
@@ -4591,10 +4610,34 @@ scan_body:
   %to_id   = load i64, i64* %fp_to
   %w       = load double, double* %fp_w
   %is_target = icmp eq i64 %to_id, %target
-  br i1 %is_target, label %write_h, label %scan_next
+  br i1 %is_target, label %check_from, label %scan_next
+
+check_from:
+  %from_ok = icmp ule i64 %from_id, %max_atom_id
+  br i1 %from_ok, label %check_h, label %scan_next
+
+check_h:
+  %h_nonneg = fcmp oge double %w, 0.0
+  %h_finite = fcmp olt double %w, 0x7FF0000000000000
+  %h_valid = and i1 %h_nonneg, %h_finite
+  br i1 %h_valid, label %compare_h, label %mark_invalid
+
+mark_invalid:
+  %bad_slot = getelementptr double, double* %h, i64 %from_id
+  store double -1.0, double* %bad_slot
+  br label %scan_next
+
+compare_h:
+  %h_slot = getelementptr double, double* %h, i64 %from_id
+  %old_h = load double, double* %h_slot
+  %old_invalid = fcmp olt double %old_h, 0.0
+  %h_smaller = fcmp olt double %w, %old_h
+  br i1 %old_invalid, label %scan_next, label %compare_min
+
+compare_min:
+  br i1 %h_smaller, label %write_h, label %scan_next
 
 write_h:
-  %h_slot = getelementptr double, double* %h, i64 %from_id
   store double %w, double* %h_slot
   br label %scan_next
 
@@ -4602,48 +4645,80 @@ scan_next:
   %si_next = add i64 %si, 1
   br label %scan
 
+normalize:
+  %ni = phi i64 [0, %scan], [%ni_next, %normalize_next]
+  %norm_slot = getelementptr double, double* %h, i64 %ni
+  %norm_val = load double, double* %norm_slot
+  %was_missing = fcmp oeq double %norm_val, 0x7FF0000000000000
+  br i1 %was_missing, label %write_zero, label %normalize_next
+
+write_zero:
+  store double 0.0, double* %norm_slot
+  br label %normalize_next
+
+normalize_next:
+  %ni_next = add i64 %ni, 1
+  %normalize_done = icmp uge i64 %ni_next, %n
+  br i1 %normalize_done, label %done, label %normalize
+
 done:
   ret double* %h
 }
 
-; === M5.10: astar4 common runner helper ===
-; Parallels @wam_wsp3_run but wraps @wam_astar_weighted_distance
-; (the M5.4 A* helper). Uses a zeroed heuristic array — the caller
-; allocates and passes it. This means A* degenerates to Dijkstra
-; (same results, same complexity). A future refinement can supply a
-; non-zero heuristic via a separate global or a query-time callback.
-;
-; For M5.10, the zero-heuristic path validates the full A* pipeline
-; end-to-end without requiring a target-dependent heuristic mechanism
-; (the heuristic depends on which target is being queried, which is a
-; runtime value).
+; === M5.10: canonical astar/4 common runner helper ===
+; ABI: A1 Source atom, A2 Target atom, A3 positive integer Dim,
+; A4 free or float Cost.  Target enumeration is deliberately unsupported:
+; ASTAR4 is a deterministic, bound-target contract.  Results are unified
+; into A4 so bound float filters and ordinary variable aliases are honored.
 define i1 @wam_astar4_run(%WamState* %vm, %WeightedFact* %table, i64 %len, double* %heuristic, i64 %max_atom_id) {
 entry:
-  %as_s_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 0)
+  %as_s_val = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %as_s_tag = extractvalue %Value %as_s_val, 0
   %as_s_is_atom = icmp eq i32 %as_s_tag, 0
   br i1 %as_s_is_atom, label %as_check_t, label %as_bail
 
 as_check_t:
-  %as_t_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 1)
+  %as_t_val = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %as_t_tag = extractvalue %Value %as_t_val, 0
   %as_t_is_atom = icmp eq i32 %as_t_tag, 0
-  br i1 %as_t_is_atom, label %as_run, label %as_check_unbound
+  br i1 %as_t_is_atom, label %as_check_dim, label %as_bail
 
-as_check_unbound:
-  %as_t_unbound = icmp eq i32 %as_t_tag, 6
-  br i1 %as_t_unbound, label %as_stream, label %as_bail
+as_check_dim:
+  %as_dim_val = call %Value @wam_get_reg_deref(%WamState* %vm, i32 2)
+  %as_dim_tag = extractvalue %Value %as_dim_val, 0
+  %as_dim_is_int = icmp eq i32 %as_dim_tag, 1
+  %as_dim = extractvalue %Value %as_dim_val, 1
+  %as_dim_positive = icmp sgt i64 %as_dim, 0
+  %as_dim_ok = and i1 %as_dim_is_int, %as_dim_positive
+  br i1 %as_dim_ok, label %as_check_cost, label %as_bail
 
-as_stream:
-  ; Stream mode: enumerate all reachable (target, distance) pairs.
-  ; Heuristic only affects exploration order for single-target queries;
-  ; for full enumeration the result set is identical to Dijkstra.
-  %as_st_ok = call i1 @wam_wsp3_stream_run(
-      %WamState* %vm,
-      %WeightedFact* %table, i64 %len, i64 %max_atom_id)
-  ret i1 %as_st_ok
+as_check_cost:
+  %as_cost_val = call %Value @wam_get_reg_deref(%WamState* %vm, i32 3)
+  %as_cost_tag = extractvalue %Value %as_cost_val, 0
+  %as_cost_free = icmp eq i32 %as_cost_tag, 6
+  %as_cost_float = icmp eq i32 %as_cost_tag, 2
+  %as_cost_ok = or i1 %as_cost_free, %as_cost_float
+  br i1 %as_cost_ok, label %as_check_range, label %as_bail
+
+as_check_range:
+  %as_start_id = extractvalue %Value %as_s_val, 1
+  %as_target_id = extractvalue %Value %as_t_val, 1
+  %as_same = icmp eq i64 %as_start_id, %as_target_id
+  br i1 %as_same, label %as_zero, label %as_check_ids
+
+as_check_ids:
+  %as_start_in_range = icmp ule i64 %as_start_id, %max_atom_id
+  %as_target_in_range = icmp ule i64 %as_target_id, %max_atom_id
+  %as_both_in_range = and i1 %as_start_in_range, %as_target_in_range
+  br i1 %as_both_in_range, label %as_run, label %as_bail
+
+as_zero:
+  %as_zero_result = call %Value @value_float(double 0.0)
+  %as_zero_unified = call i1 @wam_unify_reg_value(
+      %WamState* %vm, i32 3, %Value %as_zero_result)
+  ret i1 %as_zero_unified
 
 as_run:
-  %as_start_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 0)
-  %as_target_id = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
   %as_dist_slot = alloca double
   %as_ok = call i1 @wam_astar_weighted_distance(
       i64 %as_start_id, i64 %as_target_id,
@@ -4655,8 +4730,10 @@ as_run:
 
 as_hit:
   %as_dist = load double, double* %as_dist_slot
-  call void @wam_set_reg_double(%WamState* %vm, i32 2, double %as_dist)
-  ret i1 true
+  %as_result = call %Value @value_float(double %as_dist)
+  %as_unified = call i1 @wam_unify_reg_value(
+      %WamState* %vm, i32 3, %Value %as_result)
+  ret i1 %as_unified
 
 as_bail:
   ret i1 false

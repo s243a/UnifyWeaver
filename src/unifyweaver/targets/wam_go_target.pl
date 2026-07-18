@@ -1158,15 +1158,32 @@ go_binary_edge_fact_pairs(Module, EdgePred/2, FactPairs) :-
         FactPairs).
 
 go_weighted_edge_fact_triples(Module, WeightPred/3, FactTriples) :-
-    findall(Left-Right-Weight,
+    findall(row(Left, Right, Weight),
         ( functor(WeightHead, WeightPred, 3),
           Module:clause(WeightHead, true),
-          WeightHead =.. [WeightPred, Left, Right, Weight],
-          atom(Left),
-          atom(Right),
-          number(Weight)
+          WeightHead =.. [WeightPred, Left, Right, Weight]
         ),
-        FactTriples).
+        Rows),
+    go_validate_weighted_rows(WeightPred, Rows, FactTriples).
+
+go_validate_weighted_rows(_, [], []).
+go_validate_weighted_rows(WeightPred, [row(Left, Right, Weight0)|Rows], FactTriples) :-
+    (   atom(Left)
+    ->  (   atom(Right), number(Weight0)
+        ->  Weight is float(Weight0),
+            FactTriples = [Left-Right-Weight|Rest]
+        ;   Fact =.. [WeightPred, Left, Right, Weight0],
+            format(atom(Message),
+                   'native weighted relation ~w requires atom/atom/number rows',
+                   [WeightPred]),
+            throw(error(domain_error(weighted_kernel_fact, Fact),
+                        context(wam_go_target:go_weighted_edge_fact_triples/3,
+                                Message)))
+        )
+    ;   % Non-atom sources cannot be reached from the atom-keyed native ABI.
+        FactTriples = Rest
+    ),
+    go_validate_weighted_rows(WeightPred, Rows, Rest).
 
 go_foreign_lowerable_countdown_sum(Pred, 2, Clauses) :-
     member(BaseHead-true, Clauses),
@@ -1254,6 +1271,11 @@ go_foreign_lowerable_astar_shortest_path(Module, Pred, 4, Clauses,
                     dimensionality(Dim)].
 
 go_foreign_astar_direct_pred(Module, _FallbackPred, DirectPred/3, DirectTriples) :-
+    go_configured_astar_direct_pred(Module, DirectPred),
+    go_weighted_edge_fact_triples(Module, DirectPred/3, DirectTriples),
+    !.
+go_foreign_astar_direct_pred(Module, _FallbackPred, DirectPred/3, DirectTriples) :-
+    % Backward compatibility for workloads that predate direct_dist_pred/1.
     go_weighted_edge_fact_triples(Module, direct_semantic_dist/3, DirectTriples),
     DirectTriples \= [],
     DirectPred = direct_semantic_dist,
@@ -1261,6 +1283,19 @@ go_foreign_astar_direct_pred(Module, _FallbackPred, DirectPred/3, DirectTriples)
 go_foreign_astar_direct_pred(_Module, FallbackPred, DirectPred, DirectTriples) :-
     FallbackPred = DirectPred,
     DirectTriples = [].
+
+go_configured_astar_direct_pred(Module, DirectPred) :-
+    (   current_predicate(Module:direct_dist_pred/1),
+        Module:direct_dist_pred(Spec)
+    ;   Module \== user,
+        current_predicate(user:direct_dist_pred/1),
+        user:direct_dist_pred(Spec)
+    ),
+    (   Spec = DirectPred/3
+    ;   atom(Spec), DirectPred = Spec
+    ),
+    atom(DirectPred),
+    !.
 
 go_foreign_astar_dimensionality(Module, Dim) :-
     (   current_predicate(Module:dimensionality/1),
@@ -3377,13 +3412,28 @@ func pickShortestCandidate(dist map[string]float64, settled map[string]bool) (st
     return bestNode, found
 }
 
-func heuristicLookup(triples []WeightedEdgeTriple, from string, target string) float64 {
+// heuristicLookup returns the min valid (from,target) weight.
+// Missing → 0. ok=false on malformed relevant heuristic (NaN/Inf/neg).
+func heuristicLookup(triples []WeightedEdgeTriple, from string, target string) (float64, bool) {
+    best := 0.0
+    saw := false
     for _, triple := range triples {
-        if triple.Left == from && triple.Right == target {
-            return triple.Weight
+        if triple.Left != from || triple.Right != target {
+            continue
+        }
+        w := triple.Weight
+        if math.IsNaN(w) || math.IsInf(w, 0) || w < 0 {
+            return 0, false
+        }
+        if !saw || w < best {
+            best = w
+            saw = true
         }
     }
-    return 0
+    if saw {
+        return best, true
+    }
+    return 0, true
 }
 
 // collectNativeWeightedShortestPathResults — finite nonnegative Dijkstra
@@ -3425,20 +3475,38 @@ func (vm *WamState) collectNativeWeightedShortestPathResults(source string, trip
     return results
 }
 
-func (vm *WamState) collectNativeAstarShortestPathResult(source string, target string, weighted []WeightedEdgeTriple, direct []WeightedEdgeTriple) []Value {
+// collectNativeAstarShortestPathResult — correctness-safe A* for
+// astar_shortest_path4 (docs/design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md).
+// Final cost is always the finite Dijkstra minimum (settled by g-cost).
+// Missing h = 0.0. Source=Target → 0.0. Malformed reachable edge or
+// relevant heuristic fails the complete call (nil).
+func (vm *WamState) collectNativeAstarShortestPathResult(source string, target string, dim int64, weighted []WeightedEdgeTriple, direct []WeightedEdgeTriple) []Value {
+    if dim <= 0 {
+        return nil
+    }
+    if source == target {
+        return []Value{&Float{Val: 0}}
+    }
     adjacency := weightedAdjacency(weighted)
     gScore := map[string]float64{source: 0}
     open := map[string]bool{source: true}
-    closed := make(map[string]bool)
     for len(open) > 0 {
         current := ""
-        bestScore := 0.0
+        bestG := 0.0
+        bestF := 0.0
         found := false
         for node := range open {
-            score := gScore[node] + heuristicLookup(direct, node, target)
-            if !found || score < bestScore || (score == bestScore && node < current) {
+            h, ok := heuristicLookup(direct, node, target)
+            if !ok {
+                return nil
+            }
+            g := gScore[node]
+            // Secondary scheduling key only (Dim/h); settle by g.
+            f := math.Pow(g, float64(dim)) + math.Pow(h, float64(dim))
+            if !found || g < bestG || (g == bestG && (f < bestF || (f == bestF && node < current))) {
                 current = node
-                bestScore = score
+                bestG = g
+                bestF = f
                 found = true
             }
         }
@@ -3446,15 +3514,16 @@ func (vm *WamState) collectNativeAstarShortestPathResult(source string, target s
             break
         }
         delete(open, current)
+        // Settled by g-cost (Dijkstra). Safe even if h overestimates.
         if current == target {
             return []Value{&Float{Val: gScore[current]}}
         }
-        closed[current] = true
         for _, edge := range adjacency[current] {
-            if closed[edge.Right] {
-                continue
+            w := edge.Weight
+            if math.IsNaN(w) || math.IsInf(w, 0) || w < 0 {
+                return nil
             }
-            candidate := gScore[current] + edge.Weight
+            candidate := gScore[current] + w
             prev, exists := gScore[edge.Right]
             if !exists || candidate < prev {
                 gScore[edge.Right] = candidate
@@ -3663,14 +3732,15 @@ func (vm *WamState) executeForeignPredicate(pred string, arity int) bool {
         if !ok {
             return false
         }
-        if _, ok := valueAsFloat(vm, vm.getReg(2)); !ok {
+        dim, ok := valueAsInteger(vm, vm.getReg(2))
+        if !ok || dim <= 0 {
             return false
         }
         weightPred := vm.foreignStringConfig(predKey, "weight_pred")
         directPred := vm.foreignStringConfig(predKey, "direct_dist_pred")
         weighted := vm.Ctx.IndexedWeightedEdgeTriples[weightPred]
         direct := vm.Ctx.IndexedWeightedEdgeTriples[directPred]
-        results := vm.collectNativeAstarShortestPathResult(source, target, weighted, direct)
+        results := vm.collectNativeAstarShortestPathResult(source, target, dim, weighted, direct)
         return vm.finishForeignResults(predKey, []int{3}, results)
     default:
         return false

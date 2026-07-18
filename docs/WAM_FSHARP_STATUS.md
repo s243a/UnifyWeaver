@@ -36,16 +36,15 @@ query times competitive with Rust FFI at scale 300.
 **Kernels.** Shared detection can recognize more kinds than F# accelerates.
 The capability gate promotes a predicate to `CallForeign` only when the
 selected kind is allow-listed **and** its F# handler exists; otherwise the
-already-working WAM predicate remains the correctness path. Five F#
-mustache handlers exist on disk
-(`kernel_category_ancestor.fs.mustache`,
-`kernel_bidirectional_ancestor.fs.mustache`,
-`kernel_transitive_closure.fs.mustache`,
-`kernel_transitive_distance.fs.mustache` — dist+ BFS,
-`kernel_transitive_parent_distance.fs.mustache` — shortest-positive
-parents). Missing handlers no longer emit undefined `nativeKernel_*`
-calls. Benchmarks centre on `category_ancestor/4`. **Bidirectional**
-upgrade is computed but **off by default** — requires
+already-working WAM predicate remains the correctness path. Handlers exist
+for the allow-listed native kinds:
+`category_ancestor`, `bidirectional_ancestor`, `transitive_closure2`,
+`transitive_distance3`, `transitive_parent_distance4`,
+`transitive_step_parent_distance5`, `weighted_shortest_path3`, and
+`astar_shortest_path4`. WSP3 landed in #3847; A* is implemented in draft
+contract-parity work. Missing handlers no longer emit undefined
+`nativeKernel_*` calls. Benchmarks centre on `category_ancestor/4`.
+**Bidirectional** upgrade is computed but **off by default** — requires
 `allow_bidirectional_kernel_swap(true)`. CSR reverse-index reader
 (`CsrLookupSource`) and cost/strategy analyzers ship.
 
@@ -81,12 +80,13 @@ classic `wam_conformance_smoke` matrix with Scala/Elixir.
 
 ## Gaps
 
-- Native WSP3 (`weighted_shortest_path3`) is implemented in a draft
-  fleet-parity PR (Mustache + allow-list + weighted-fact materialization +
-  two-output `FFIStreamRetry`); treat as landed only after that PR merges.
-- Finish F# kernel template for the remaining gated shared kind
-  (`astar_shortest_path4`) — or stop claiming full kernel parity without
-  the template.
+- ASTAR4 (`astar_shortest_path4`) is implemented in draft fleet-parity
+  work (Mustache + allow-list + dual weighted edge/heuristic
+  materialization + singleton `FFIStreamRetry`); treat as landed only
+  after that PR merges.
+- No shared recursive kernel is currently listed as remaining gated for a
+  missing F# handler; keep the ASTAR4 draft parity suite green before
+  claiming full fleet parity.
 - Bidirectional off by default; enable after cost-model confidence.
 - Classic conformance (**CONF-FSHARP**, 2026-07-15): registered
   opt-in (`fsharp` / `fsharp_functions`) with additive

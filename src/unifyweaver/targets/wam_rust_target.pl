@@ -3372,27 +3372,24 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                 self.finish_foreign_results(&pred_key, vec![target_reg, dist_reg], packed_results)
             }
             "astar_shortest_path4" => {
+                // Contract: docs/design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md
+                // Source/Target bound atoms; Dim strictly positive integer;
+                // Cost free or bound float. Target is an INPUT, not an output.
                 let start = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(start)) => start,
                     _ => return false,
                 };
-                let target_reg = match self.get_reg_raw("A2") {
-                    Some(val) => val,
-                    None => return false,
+                let target = match self.get_reg_raw("A2").map(|v| self.deref_var(&v)) {
+                    Some(Value::Atom(target)) => target,
+                    _ => return false,
                 };
                 let dim_val = match self.get_reg_raw("A3").map(|v| self.deref_var(&v)) {
-                    Some(Value::Integer(d)) => d as f64,
-                    Some(Value::Float(d)) => d,
-                    _ => 5.0,  // default dimensionality
+                    Some(Value::Integer(d)) if d > 0 => d as f64,
+                    _ => return false,
                 };
                 let dist_reg = match self.get_reg_raw("A4") {
                     Some(val) => val,
                     None => return false,
-                };
-                let target_filter = match self.deref_var(&target_reg) {
-                    Value::Atom(target) => Some(target),
-                    Value::Unbound(_) => None,
-                    _ => return false,
                 };
                 let weight_pred = match self.foreign_string_config(&pred_key, "weight_pred") {
                     Some(pred) => pred.to_string(),
@@ -3402,23 +3399,15 @@ compile_execute_foreign_predicate_to_rust(Code) :-
                     Some(pred) => pred.to_string(),
                     None => return false,
                 };
-                let target_node = target_filter.as_deref().unwrap_or("");
-                let mut results: Vec<(String, f64)> = Vec::new();
-                self.collect_native_astar_shortest_path_results(
-                    &start, &weight_pred, &direct_pred, target_node, dim_val, &mut results);
-                if let Some(target) = target_filter {
-                    results.retain(|(node, _)| *node == target);
+                match self.collect_native_astar_shortest_path_cost(
+                    &start, &weight_pred, &direct_pred, &target, dim_val)
+                {
+                    Some(dist) => {
+                        let packed = vec![Value::Float(dist)];
+                        self.finish_foreign_results(&pred_key, vec![dist_reg], packed)
+                    }
+                    None => false,
                 }
-                if results.is_empty() {
-                    return false;
-                }
-                let packed_results: Vec<Value> = results.into_iter().map(|(node, dist)| {
-                    Value::Str("__tuple__".to_string(), vec![
-                        Value::Atom(node),
-                        Value::Float(dist),
-                    ])
-                }).collect();
-                self.finish_foreign_results(&pred_key, vec![target_reg, dist_reg], packed_results)
             }
             "lazy_lmdb_lookup" => {
                 // R7: lazy parent-edge lookup via the LookupSource trait.
@@ -4360,30 +4349,36 @@ compile_collect_native_weighted_shortest_path_to_rust(Code) :-
     }'.
 
 compile_collect_native_astar_shortest_path_to_rust(Code) :-
-    Code = '    /// A* shortest path with dimensionality-aware heuristic.
-    /// Priority: f(n) = g(n)^D + h(n)^D where D = graph dimensionality.
-    /// h(n) = direct semantic distance from n to target.
-    /// By Minkowski inequality this is admissible and tighter than L1 A*.
-    /// The power D amplifies the effect of short remaining distances,
-    /// matching the intrinsic dimensionality of the graph structure.
-    pub fn collect_native_astar_shortest_path_results(
+    Code = '    /// Correctness-safe A* for astar_shortest_path4
+    /// (docs/design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md).
+    /// Final cost is always the finite Dijkstra minimum. Dim/heuristic
+    /// are secondary scheduling keys only. Missing h = 0.0. Source=Target
+    /// returns Some(0.0). Malformed reachable edge or relevant heuristic
+    /// → None (fail complete call).
+    pub fn collect_native_astar_shortest_path_cost(
         &self,
         start: &str,
         weight_pred: &str,
         direct_pred: &str,
         target: &str,
         dim: f64,
-        out: &mut Vec<(String, f64)>,
-    ) {
+    ) -> Option<f64> {
         use std::collections::BinaryHeap;
         use std::cmp::Ordering;
 
+        if !(dim > 0.0) { return None; }
+        if start == target { return Some(0.0); }
+
         #[derive(PartialEq)]
-        struct State { f_cost: f64, g_cost: f64, node: String }
+        struct State { g_cost: f64, f_cost: f64, node: String }
         impl Eq for State {}
         impl PartialOrd for State {
             fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-                other.f_cost.partial_cmp(&self.f_cost) // reversed for min-heap
+                // Primary: g (Dijkstra settle). Secondary: f schedule.
+                match other.g_cost.partial_cmp(&self.g_cost) {
+                    Some(Ordering::Equal) => other.f_cost.partial_cmp(&self.f_cost),
+                    o => o,
+                }
             }
         }
         impl Ord for State {
@@ -4392,44 +4387,50 @@ compile_collect_native_astar_shortest_path_to_rust(Code) :-
             }
         }
 
-        // Heuristic: h(n) = direct semantic distance from n to target
-        let heuristic = |node: &str| -> f64 {
-            if target.is_empty() { return 0.0; } // no target filter = Dijkstra
-            self.indexed_weighted_edge.get(direct_pred)
-                .and_then(|table| table.get(node))
-                .and_then(|edges| edges.iter().find(|(t, _)| t == target))
-                .map(|(_, w)| *w)
-                .unwrap_or(1.0) // conservative default if no direct distance
+        let heuristic = |node: &str| -> Result<f64, ()> {
+            let Some(table) = self.indexed_weighted_edge.get(direct_pred) else {
+                return Ok(0.0);
+            };
+            let Some(edges) = table.get(node) else { return Ok(0.0); };
+            let mut best = f64::INFINITY;
+            let mut saw = false;
+            for (t, w) in edges {
+                if t == target {
+                    if !w.is_finite() || *w < 0.0 { return Err(()); }
+                    saw = true;
+                    if *w < best { best = *w; }
+                }
+            }
+            Ok(if saw { best } else { 0.0 })
         };
 
-        // f(n) = g^D + h^D
-        let f_cost = |g: f64, h: f64| -> f64 {
-            g.powf(dim) + h.powf(dim)
-        };
+        let f_cost = |g: f64, h: f64| -> f64 { g.powf(dim) + h.powf(dim) };
 
         let mut dist: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
         let mut heap = BinaryHeap::new();
-
-        let h_start = heuristic(start);
+        let h_start = heuristic(start).ok()?;
         dist.insert(start.to_string(), 0.0);
-        heap.push(State { f_cost: f_cost(0.0, h_start), g_cost: 0.0, node: start.to_string() });
+        heap.push(State {
+            g_cost: 0.0,
+            f_cost: f_cost(0.0, h_start),
+            node: start.to_string(),
+        });
 
-        while let Some(State { f_cost: _, g_cost, node }) = heap.pop() {
-            // Skip if we already found a shorter path
+        while let Some(State { g_cost, f_cost: _, node }) = heap.pop() {
             if let Some(&best) = dist.get(&node) {
                 if g_cost > best { continue; }
             }
-
-            // Early termination: if we reached the target, no need to explore further
-            if !target.is_empty() && node == target {
-                break;
+            // Settled by g-cost (Dijkstra). Safe even if h overestimates.
+            if node == target {
+                return Some(g_cost);
             }
-
-            // Explore weighted edges
             if let Some(edges) = self.indexed_weighted_edge.get(weight_pred)
                 .and_then(|table| table.get(&node))
             {
                 for (next, weight) in edges {
+                    if !weight.is_finite() || *weight < 0.0 {
+                        return None;
+                    }
                     let next_g = g_cost + weight;
                     let is_shorter = match dist.get(next) {
                         Some(&prev_best) => next_g < prev_best,
@@ -4437,23 +4438,17 @@ compile_collect_native_astar_shortest_path_to_rust(Code) :-
                     };
                     if is_shorter {
                         dist.insert(next.clone(), next_g);
-                        let h = heuristic(next);
+                        let h = heuristic(next).ok()?;
                         heap.push(State {
-                            f_cost: f_cost(next_g, h),
                             g_cost: next_g,
+                            f_cost: f_cost(next_g, h),
                             node: next.clone(),
                         });
                     }
                 }
             }
         }
-
-        // Collect results
-        for (node, cost) in &dist {
-            if node != start {
-                out.push((node.clone(), *cost));
-            }
-        }
+        None
     }'.
 
 % T9 fact-table enumeration helper (generic, predicate-independent). Each

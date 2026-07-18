@@ -2919,23 +2919,14 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
 # ----------------------------------------------------------
 # Recursive-kernel: astar_shortest_path4
 # ----------------------------------------------------------
-# A* from a ground source to a ground target over a weighted edge
-# predicate of arity 3. Pattern detected:
+# Correctness-safe A* (docs/design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md).
+# Pattern detected:
 #   astar(X, Y, _, W) :- edge(X, Y, W).
 #   astar(X, Y, D, W) :- edge(X, Z, W1), astar(Z, Y, D, W2), W is W1 + W2.
-# (the 3rd arg is a Dim passthrough that the native impl ignores).
-# The heuristic is queried via a user-configurable predicate of
-# arity 3: dist_pred(Node, Target, H) yields H. If the user didn't
-# set `direct_dist_pred/1`, the detector falls back to the edge
-# predicate -- which gives h=0 for nodes with no direct edge to
-# the goal (degenerating A* to Dijkstra) and h = direct-edge-cost
-# otherwise. Admissibility of the heuristic is the user's
-# responsibility; non-admissible heuristics may produce non-
-# optimal results.
-#
-# Result layout is tuple(1) -- the single shortest-path distance.
-# Mode: source and target both ground; dim ignored; dist unground
-# (output). Failure when no path exists.
+# Final FloatCost is always the finite Dijkstra minimum (settled by
+# g-cost). Missing h = 0.0. Source=Target → 0.0. Dim must be a
+# positive integer. Malformed reachable edge or relevant heuristic
+# fails the complete call. Always emits FloatTerm.
 WamRuntime$astar_shortest_path4 <- function(program, state, key, edge_pred,
                                               edge_key, dist_pred, dist_key,
                                               source, target_node, dim, dist,
@@ -2943,9 +2934,17 @@ WamRuntime$astar_shortest_path4 <- function(program, state, key, edge_pred,
   table <- program$intern_table
   src_v <- WamRuntime$deref(state, source)
   tgt_v <- WamRuntime$deref(state, target_node)
+  dim_v <- WamRuntime$deref(state, dim)
   if (is.null(src_v) || is.null(src_v$tag) || src_v$tag != "atom" ||
       is.null(tgt_v) || is.null(tgt_v$tag) || tgt_v$tag != "atom") {
     return(FALSE)
+  }
+  if (is.null(dim_v) || is.null(dim_v$tag) || dim_v$tag != "int" ||
+      is.null(dim_v$val) || dim_v$val <= 0) {
+    return(FALSE)
+  }
+  if (identical(src_v$id, tgt_v$id)) {
+    return(WamRuntime$unify(state, dist, FloatTerm(0)))
   }
   snap_cps   <- length(state$cps)
   snap_regs  <- state$regs2
@@ -2959,39 +2958,54 @@ WamRuntime$astar_shortest_path4 <- function(program, state, key, edge_pred,
 
   edge_atom_id <- WamRuntime$intern(table, edge_pred)
   dist_atom_id <- WamRuntime$intern(table, dist_pred)
+  invalid_row <- FALSE
 
-  # Heuristic estimate: h(node, target). Returns 0 when the dist
-  # pred fails (no direct distance available -- safe / admissible).
+  # Relevant heuristic: min valid (node,target); missing → 0.0.
+  # Malformed relevant row fails the complete call.
   heuristic_at <- function(node) {
-    if (identical(node$id, tgt_v$id)) return(0)
+    if (invalid_row) return(0)
     h_var <- Unbound(paste0("V_astar_h_", state$var_counter))
     state$var_counter <- state$var_counter + 1L
     h_goal <- StructTerm(dist_atom_id, list(node, tgt_v, h_var))
-    h_val <- 0
+    best <- Inf
+    saw <- FALSE
     WamRuntime$iterate_goal(program, state, h_goal, function() {
+      if (invalid_row) return(FALSE)
       v <- WamRuntime$deref(state, h_var)
-      if (!is.null(v) && !is.null(v$tag) &&
-          (v$tag == "int" || v$tag == "float")) {
-        h_val <<- v$val
+      if (is.null(v) || is.null(v$tag) ||
+          !(v$tag == "int" || v$tag == "float")) {
+        invalid_row <<- TRUE
+        return(FALSE)
       }
-      FALSE  # one solution is enough
+      hv <- as.numeric(v$val)
+      if (!is.finite(hv) || hv < 0) {
+        invalid_row <<- TRUE
+        return(FALSE)
+      }
+      saw <<- TRUE
+      if (hv < best) best <<- hv
+      TRUE
     })
-    h_val
+    if (invalid_row) return(0)
+    if (saw) best else 0
   }
 
-  visited <- new.env(parent = emptyenv())
-  # PQ entry: list(f = priority, g = cost-so-far, node).
-  pq <- list(list(f = heuristic_at(src_v), g = 0, node = src_v))
+  # Dist map + PQ settled by g (Dijkstra). h/Dim secondary only.
+  dist_env <- new.env(parent = emptyenv())
+  assign(as.character(src_v$id), 0, envir = dist_env)
+  pq <- list(list(g = 0, f = heuristic_at(src_v), node = src_v))
   found_dist <- NULL
 
-  while (length(pq) > 0L) {
+  while (length(pq) > 0L && is.null(found_dist) && !invalid_row) {
     entry <- pq[[1L]]
     pq    <- pq[-1L]
     cur   <- entry$node
     g     <- entry$g
     k     <- as.character(cur$id)
-    if (exists(k, envir = visited, inherits = FALSE)) next
-    assign(k, TRUE, envir = visited)
+    best_g <- if (exists(k, envir = dist_env, inherits = FALSE))
+                get(k, envir = dist_env, inherits = FALSE) else Inf
+    if (g > best_g) next
+    # Settled by g-cost (Dijkstra). Safe even if h overestimates.
     if (identical(cur$id, tgt_v$id)) {
       found_dist <- g
       break
@@ -3003,29 +3017,47 @@ WamRuntime$astar_shortest_path4 <- function(program, state, key, edge_pred,
     state$var_counter <- state$var_counter + 1L
     edge_goal <- StructTerm(edge_atom_id, list(cur, y_var, w_var))
     WamRuntime$iterate_goal(program, state, edge_goal, function() {
+      if (invalid_row) return(FALSE)
       y_v <- WamRuntime$deref(state, y_var)
       w_v <- WamRuntime$deref(state, w_var)
-      if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom" &&
-          !is.null(w_v) && !is.null(w_v$tag) &&
-          (w_v$tag == "int" || w_v$tag == "float")) {
-        nk <- as.character(y_v$id)
-        if (!exists(nk, envir = visited, inherits = FALSE)) {
-          new_g <- captured_g + w_v$val
-          new_f <- new_g + heuristic_at(y_v)
-          if (length(pq) == 0L) {
-            pq <<- list(list(f = new_f, g = new_g, node = y_v))
-          } else {
-            placed <- FALSE
-            for (i in seq_along(pq)) {
-              if (pq[[i]]$f > new_f) {
-                pq <<- append(pq, list(list(f = new_f, g = new_g, node = y_v)),
-                              after = i - 1L)
-                placed <- TRUE; break
-              }
+      if (is.null(y_v) || is.null(y_v$tag) || y_v$tag != "atom") {
+        invalid_row <<- TRUE
+        return(FALSE)
+      }
+      if (is.null(w_v) || is.null(w_v$tag) ||
+          !(w_v$tag == "int" || w_v$tag == "float")) {
+        invalid_row <<- TRUE
+        return(FALSE)
+      }
+      ew <- as.numeric(w_v$val)
+      if (!is.finite(ew) || ew < 0) {
+        invalid_row <<- TRUE
+        return(FALSE)
+      }
+      nk <- as.character(y_v$id)
+      new_g <- captured_g + ew
+      prev <- if (exists(nk, envir = dist_env, inherits = FALSE))
+                get(nk, envir = dist_env, inherits = FALSE) else Inf
+      if (new_g < prev) {
+        assign(nk, new_g, envir = dist_env)
+        h <- heuristic_at(y_v)
+        if (invalid_row) return(FALSE)
+        new_f <- new_g + h  # secondary scheduling only
+        if (length(pq) == 0L) {
+          pq <<- list(list(g = new_g, f = new_f, node = y_v))
+        } else {
+          placed <- FALSE
+          for (i in seq_along(pq)) {
+            # Primary: g. Secondary: f.
+            if (pq[[i]]$g > new_g ||
+                (pq[[i]]$g == new_g && pq[[i]]$f > new_f)) {
+              pq <<- append(pq, list(list(g = new_g, f = new_f, node = y_v)),
+                            after = i - 1L)
+              placed <- TRUE; break
             }
-            if (!placed) {
-              pq <<- c(pq, list(list(f = new_f, g = new_g, node = y_v)))
-            }
+          }
+          if (!placed) {
+            pq <<- c(pq, list(list(g = new_g, f = new_f, node = y_v)))
           }
         }
       }
@@ -3051,14 +3083,8 @@ WamRuntime$astar_shortest_path4 <- function(program, state, key, edge_pred,
   state$mode        <- snap_mode
   state$build_stack <- snap_build
 
-  if (is.null(found_dist)) return(FALSE)
-  dt <- if (is.finite(found_dist) && found_dist == as.integer(found_dist) &&
-            abs(found_dist) < .Machine$integer.max) {
-          IntTerm(as.integer(found_dist))
-        } else {
-          FloatTerm(as.numeric(found_dist))
-        }
-  WamRuntime$unify(state, dist, dt)
+  if (invalid_row || is.null(found_dist)) return(FALSE)
+  WamRuntime$unify(state, dist, FloatTerm(as.numeric(found_dist)))
 }
 
 # Iterate a precomputed list of result pairs, unifying each pair

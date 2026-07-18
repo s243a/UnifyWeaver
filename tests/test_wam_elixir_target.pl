@@ -2252,11 +2252,18 @@ test_graph_kernel_astar_uses_minkowski_f_cost :-
         sub_string(RuntimeCode, Start, BodyLen, _, Body),
         % Minkowski f-cost helper.
         sub_string(Body, _, _, _, ":math.pow(g, dim) + :math.pow(h, dim)"),
-        % Stale-entry skip + early termination on target.
+        % Stale-entry skip + correctness-safe termination on bound target.
         sub_string(Body, _, _, _, "g_cost > best"),
-        sub_string(Body, _, _, _, "target != nil and node == target"),
+        sub_string(Body, _, _, _, "node == target"),
+        % Strict ASTAR4 boundary and finite-result contract.
+        sub_string(Body, _, _, _, "and is_integer(dim) and dim > 0"),
+        sub_string(Body, _, _, _, "not valid_node?(next)"),
+        sub_string(Body, _, _, _, "not valid_edge_weight?(next_g)"),
+        sub_string(Body, _, _, _, "is_atom(value) and not is_nil(value)"),
+        sub_string(Body, _, _, _, "if valid_edge_weight?(value), do: value, else: g"),
+        sub_string(Body, _, _, _, "ArithmeticError -> g"),
         % Documents the Minkowski narrowing.
-        sub_string(Body, _, _, _, "Minkowski-style f-cost"),
+        sub_string(Body, _, _, _, "Minkowski-style f(n)"),
         % :gb_sets primitives reused from WSP.
         sub_string(Body, _, _, _, ":gb_sets.take_smallest(heap)")
     ->  pass(Test)
@@ -2267,8 +2274,7 @@ test_kernel_dispatch_emits_astar_shortest_path_module :-
     % End-to-end: detector recognises kdastar/4 as
     % astar_shortest_path4 (with the user-asserted direct_dist_pred
     % and dimensionality facts), dispatch wrapper emits with TWO
-    % FactSource lookups + two-register binding (target=2, cost=4),
-    % skipping target rebinding when bound on entry.
+    % FactSource lookups + strict Source/Target/Dim/Cost boundary.
     Test = 'Kernel dispatch: astar_shortest_path4 kernel emits Probe.Kdastar dispatch module',
     setup_kernel_fixtures,
     wam_target:compile_predicate_to_wam(user:kdastar/4, [], AstarWam),
@@ -2287,13 +2293,19 @@ test_kernel_dispatch_emits_astar_shortest_path_module :-
         sub_string(S, _, _, _, "direct_handle = WamRuntime.FactSourceRegistry.lookup!"),
         % Edge indicator is /3.
         sub_string(S, _, _, _, "kdweighted_edge/3"),
-        % Compile-time dim default attribute.
-        sub_string(S, _, _, _, "@default_dim 5"),
+        % No legacy unbound-target enumeration or compile-time Dim fallback.
+        \+ sub_string(S, _, _, _, "@default_dim"),
+        \+ sub_string(S, _, _, _, "{:unbound, _} -> nil"),
+        sub_string(S, _, _, _, "valid_node?(start_val) and valid_node?(target_val)"),
+        sub_string(S, _, _, _, "is_integer(dim_val) and dim_val > 0"),
+        sub_string(S, _, _, _, "valid_cost_arg?(cost_val)"),
+        sub_string(S, _, _, _, "defp valid_cost_arg?(value), do: is_float(value)"),
+        sub_string(S, _, _, _, "defp cost_compatible?(bound, candidate), do: bound === candidate"),
         % Aggregate-frame slicing for two regs (target=2, cost=4).
         sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
         sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
-        % Driver-direct binding: target may be already bound on entry.
-        sub_string(S, _, _, _, "bind_target_and_cost(state, "),
+        % Target is already bound; direct mode binds only typed FloatCost.
+        sub_string(S, _, _, _, "bind_cost(state, first_cost)"),
         sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
     ->  pass(Test)
     ;   fail_test(Test, 'astar_shortest_path4 dispatch module missing expected shape')
