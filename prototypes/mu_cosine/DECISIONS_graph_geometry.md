@@ -327,11 +327,19 @@ per-anchor matrices presented as one joint kernel; or tuning `D`, `K`, or
 
 **Implementation status:** this change ships the strict-`K` multi-source hop
 selector, exact cut-shunt assembly, common-bath dense factor, leakage
-calibration, and nested-domain diagnostics. It also ships a constant-degree
-CPU microbenchmark. Nomic-resistance Dijkstra, hub-streaming adjacency,
-precomputed weighted cut degrees, sparse solvers, and CUDA remain follow-ups.
+calibration, per-anchor realized screening-radius provenance, and nested-domain
+diagnostics. It also ships a constant-degree CPU microbenchmark.
+Nomic-resistance Dijkstra, hub-streaming adjacency, precomputed weighted cut
+degrees, sparse solvers, and CUDA remain follow-ups. A scale adapter may
+explicitly upper-bound an unavailable exterior semantic conductance by its
+base topological `c0`, but must record fallback count and mass; the dense
+reference continues to fail closed.
 
 **Not authorized:** learned judge covariance, relaxed source-power gates,
 sparse/CUDA performance claims, or hidden numerical jitter. Sparse direct and
 iterative backends remain engineering candidates only after parity with the
 dense local reference and a matched end-to-end crossover benchmark.
+
+**Authorized application lane:** outcome-blind candidate generation,
+per-anchor screening values as ranking features, and routing, with no placement
+or judge outcomes in `D`, `K`, `ell`, `epsilon`, `alpha`, or threshold choice.
