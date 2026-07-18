@@ -7488,6 +7488,102 @@ sch.close:
   ret i1 %sch.ok
 }
 
+; awk `getline var < "file"`: read the next line of a file into a variable.
+; %pathptr/%pathlen name the file; %line_id_out receives the interned atom id of
+; the line on success. Returns 1 (a line was read), 0 (EOF), or -1 (open/read
+; error) -- the awk getline return contract.
+;
+; Handles are keyed by FILENAME in a small process-wide registry (so every
+; getline site reading the same file shares one open handle and advances through
+; it, matching awk), opened lazily on first use. Capacity is 64 distinct files.
+@wam_getline_reg_ids = internal global [64 x i64] zeroinitializer
+@wam_getline_reg_h = internal global [64 x i64] zeroinitializer
+@wam_getline_reg_n = internal global i64 0
+
+define i64 @wam_getline_file(i8* %pathptr, i64 %pathlen, i64* %line_id_out) {
+entry:
+  %gl.pid = call i64 @wam_intern_atom(i8* %pathptr, i64 %pathlen)
+  %gl.n = load i64, i64* @wam_getline_reg_n
+  br label %gl.scan
+
+gl.scan:
+  %gl.i = phi i64 [ 0, %entry ], [ %gl.i1, %gl.scan_next ]
+  %gl.done = icmp sge i64 %gl.i, %gl.n
+  br i1 %gl.done, label %gl.open, label %gl.scan_body
+
+gl.scan_body:
+  %gl.idp = getelementptr [64 x i64], [64 x i64]* @wam_getline_reg_ids, i64 0, i64 %gl.i
+  %gl.id = load i64, i64* %gl.idp
+  %gl.hit = icmp eq i64 %gl.id, %gl.pid
+  br i1 %gl.hit, label %gl.found, label %gl.scan_next
+
+gl.scan_next:
+  %gl.i1 = add i64 %gl.i, 1
+  br label %gl.scan
+
+gl.found:
+  %gl.fhp = getelementptr [64 x i64], [64 x i64]* @wam_getline_reg_h, i64 0, i64 %gl.i
+  %gl.fh = load i64, i64* %gl.fhp
+  br label %gl.ready
+
+gl.open:
+  %gl.full = icmp sge i64 %gl.n, 64
+  br i1 %gl.full, label %gl.err, label %gl.do_open
+
+gl.do_open:
+  %gl.pv0 = insertvalue %Value undef, i32 0, 0
+  %gl.pv = insertvalue %Value %gl.pv0, i64 %gl.pid, 1
+  %gl.hv = call %Value @wam_stream_open_value(%Value %gl.pv)
+  %gl.htag = extractvalue %Value %gl.hv, 0
+  %gl.hpay = extractvalue %Value %gl.hv, 1
+  %gl.hint = icmp eq i32 %gl.htag, 1
+  %gl.hpos = icmp sgt i64 %gl.hpay, 0
+  %gl.hok = and i1 %gl.hint, %gl.hpos
+  br i1 %gl.hok, label %gl.store, label %gl.err
+
+gl.store:
+  %gl.sidp = getelementptr [64 x i64], [64 x i64]* @wam_getline_reg_ids, i64 0, i64 %gl.n
+  store i64 %gl.pid, i64* %gl.sidp
+  %gl.shp = getelementptr [64 x i64], [64 x i64]* @wam_getline_reg_h, i64 0, i64 %gl.n
+  store i64 %gl.hpay, i64* %gl.shp
+  %gl.n1 = add i64 %gl.n, 1
+  store i64 %gl.n1, i64* @wam_getline_reg_n
+  br label %gl.ready
+
+gl.ready:
+  %gl.hcur = phi i64 [ %gl.fh, %gl.found ], [ %gl.hpay, %gl.store ]
+  %gl.hv0 = insertvalue %Value undef, i32 1, 0
+  %gl.hvr = insertvalue %Value %gl.hv0, i64 %gl.hcur, 1
+  %gl.line = call %Value @wam_stream_read_line_value(%Value %gl.hvr)
+  %gl.ltag = extractvalue %Value %gl.line, 0
+  %gl.lpay = extractvalue %Value %gl.line, 1
+  %gl.is_int = icmp eq i32 %gl.ltag, 1
+  %gl.neg = icmp slt i64 %gl.lpay, 0
+  %gl.readerr = and i1 %gl.is_int, %gl.neg
+  br i1 %gl.readerr, label %gl.err, label %gl.chk_atom
+
+gl.chk_atom:
+  %gl.is_atom = icmp eq i32 %gl.ltag, 0
+  br i1 %gl.is_atom, label %gl.chk_eof, label %gl.err
+
+gl.chk_eof:
+  %gl.ls = call i8* @wam_atom_to_string(i64 %gl.lpay)
+  %gl.eofp = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof_atom, i32 0, i32 0
+  %gl.cmp = call i32 @strcmp(i8* %gl.ls, i8* %gl.eofp)
+  %gl.iseof = icmp eq i32 %gl.cmp, 0
+  br i1 %gl.iseof, label %gl.eof, label %gl.line_ok
+
+gl.line_ok:
+  store i64 %gl.lpay, i64* %line_id_out
+  ret i64 1
+
+gl.eof:
+  ret i64 0
+
+gl.err:
+  ret i64 -1
+}
+
 define i1 @wam_atom_prefix_value(%Value %atom_value, i8* %prefix, i64 %prefix_len) {
 entry:
   %ap.t = call i32 @value_tag(%Value %atom_value)
