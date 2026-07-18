@@ -250,3 +250,41 @@ Nomic values cannot trigger repacking or candidate optimization, and judge calls
 source/prompt inclusion-exclusion with an indefinite subtraction; inverse-variance component weights; observed
 power of exactly `.80` without an exact lower bound; automatic fallback after failed confirmation; and scalar
 ESS/row-sum certification of the realized design.
+
+## 2026-07-17 — general leaky semantic diffusion, without covariance promotion
+
+**Observed:** the exact immutable Stage-A source-power run completed all 18
+configurations. All 12 evaluable R=3 discovery designs failed their
+preregistered gates, the six R=4 diagnostics were non-evaluable by design, no
+confirmation design was selected, and every downstream authorization remained
+false.
+
+**Decision:** implement semantically weighted, shunt-grounded diffusion as a
+general graph/numerical primitive rather than as a promoted residual-covariance
+model. Topology defines the edge support. Frozen external embedding distance
+may modulate conductance only on those edges. Uniform or component-covering
+shunt conductance makes the combinatorial Laplacian positive definite and
+gives the regularized-Laplacian diagonal term a physical leakage-to-bath
+meaning.
+
+**Numerical consequence:** for grounded precision J=L+diag(alpha)=U.T U, U is
+directly the inverse-covariance root of the Green kernel. The model diagonal
+alpha is recorded separately from any future floating-point jitter. Dense
+equilibrium and heat kernels are correctness references; primary solves use
+the root and do not form an inverse.
+
+**Accepted:** analytic source response, Green correlation normalization,
+grounded effective-resistance distance, sparse boundary grounding when every
+component reaches a shunt, and Nomic as the preferred future semantic
+conductance candidate because it is not the deployed e5 input.
+
+**Rejected for this PR:** semantic shortcut edges, arbitrary shortest-path RBF
+covariance, asymmetric transition matrices, calling leakage numerical jitter,
+interpreting the resulting Green kernel as empirically validated judge
+covariance, lowering the failed Stage-A gates, or making a CUDA performance
+claim.
+
+**Reconsider:** sparse and CUDA specialization requires a matched full-cost
+crossover benchmark. Statistical use as cross-item measurement covariance
+still requires new prospective data or a separately authorized design with
+train-only fitting and dependence-aware held validation.

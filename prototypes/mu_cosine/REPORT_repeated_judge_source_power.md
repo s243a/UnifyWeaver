@@ -2,20 +2,46 @@
 
 ## Bottom line
 
-This PR implements and preregisters the no-history Stage-A source-dependent power harness.  It does **not**
-report a power result: the immutable full discovery and confirmation runs have not been launched.  No attempted-
-input history, real Nomic embedding, candidate identity, label, judge response, or model output was read, and
-no judge/model call was made.  Every downstream authorization remains false.
+The exact immutable no-history Stage-A discovery finished on 2026-07-17. All 12 evaluable R=3 designs failed
+the complete preregistered gate family, so no provisional design was selected and the seed-disjoint confirmation
+was not run. The six R=4 configurations were diagnostic and non-evaluable by construction. The normal CLI
+therefore exited 2 with status **STAGE A FAIL-CLOSED; NO DOWNSTREAM AUTHORIZATION**.
+
+No attempted-input history, real Nomic embedding, candidate identity, label, judge response, or model output
+was read, and no judge/model call was made. Every authorization remains false: attempted identities, candidate
+enumeration, Nomic, judge calls, a live campaign, covariance deployment, independent batching, QR
+specialization, and CUDA are all still locked.
 
 The central correction is that source strength cannot be treated as one shared scalar or replaced by the
 largest value.  For every frozen design `G>K`, `H E H.T-I` is indefinite.  Therefore `.20` is not a universal
 Loewner upper envelope, and the exploratory and fresh corpora need not have the same strength.  The harness
 covers all 25 ordered pairs from `eta_source,c={0,.025,.05,.10,.20}`.
 
-The full run is intentionally deferred until this tooling and its cost are reviewed.  A representative
-`K=128,G=800` audit-only pilot completed the complete 5-by-5 source-strength grid with the full candidate and
-multiplier settings in 17.92 seconds for one null draw per null/pair cell and one planted evaluation replicate.
-That validates execution and resource shape, not power, type-I error, or a campaign size.
+This failure does not show that accurate graph/semantic covariance would be useless. It shows that this frozen
+procedure could not identify a campaign design satisfying all power and false-promotion requirements. General
+graph geometry may continue as non-deployment infrastructure, but the failed gate may not be bypassed by
+choosing a convenient configuration, lowering confidence, or treating a numerical kernel as empirical
+covariance evidence.
+
+## Immutable Stage-A outcome
+
+The run used detached source commit `d7e28a91b0f4efcc2d9b6f374463b8d26a5115fe` and frozen scientific
+fingerprint `989d274a032e814bad454e7a26bd4fa2ebed8e432139e3434ed43ad5cdce4fd7`. Its complete result artifact is
+29,154,632 bytes with SHA-256
+`4055c39e335464cc17261aa176bb508a6dd0b16804ff824eba59520b442d80a1`. The checkpoint manifest retained the
+same fingerprint and exact full-preregistration configuration. The CLI completion summary in `console.log`
+reports `wall_seconds=208218.401463738` from the final invocation's `perf_counter()` timer. Console timestamps
+span 197,364 seconds, 10,854.40 seconds less; these are runtime-provenance observations, not an accumulated
+checkpoint-history clock.
+
+| registered configurations | evaluable | passed | consequence |
+|---|---:|---:|---|
+| R=3 discovery | 12 | 0 | no provisional design |
+| R=4 diagnostics | 0 of 6 | n/a | diagnostic-only by preregistration |
+| seed-disjoint confirmation | 0 | n/a | not run because discovery selected nothing |
+
+The historical `K=128,G=800` audit-only pilot remains useful only as an execution/resource-shape check. Its
+one null draw and one planted replicate never supported power, type-I error, or campaign-size claims.
 
 ## Frozen statistical procedure
 
@@ -124,8 +150,8 @@ A selected-pair confirmation adds 67,980 corpus worlds, 99,950 null-pair combina
 combinations, for at most 1,291,620 expensive corpus worlds.  The runner submits 2,400 bounded chunks per
 discovery configuration and projects 241 checkpoint files per configuration; discovery plus confirmation is
 at most 45,600 chunk submissions and 4,580 checkpoint files.  The one-replicate pilot does not support a
-credible wall-time forecast for that heterogeneous workload.  Schedule the immutable run only after code
-review and report its observed resource use rather than extrapolating an ETA from this pilot.
+credible wall-time forecast for that heterogeneous workload. The completed immutable run is reported above
+using both the CLI timer and transcript span rather than an ETA extrapolated from this pilot.
 
 ## Verification
 
@@ -150,7 +176,8 @@ Only a complete exact discovery plus passing fixed-pair confirmation may set
 `R=4` runs cannot.  Candidate enumeration, real Nomic work, judge calls, live campaign, covariance deployment,
 independent batching, QR specialization, and CUDA remain false in every Stage-A outcome.
 
-If Stage A eventually confirms, Stage B is fixed-design: build the identity-only history inventory; enumerate
+Stage A did not confirm, so Stage B remains unauthorized. Under a future prospective design that legitimately
+clears the same authorization boundary, Stage B would be fixed-design: build the identity-only history inventory; enumerate
 and gate the topology-only universe; use a revision-pinned Nomic cache first only for agreement-cell quotas;
 freeze exact packing at the selected `(K,G,R=3)`; then compute the Nomic Gram on those immutable components and
 rerun the full null/evaluation/confirmation procedure on realized `H`, `E`, folds, and prompts.  Cross-corpus
@@ -178,7 +205,7 @@ python prototypes/mu_cosine/run_repeated_judge_source_power.py \
   --audit-only
 ```
 
-Eventual immutable run, only after review and with durable checkpoint storage:
+Command shape used for the exact immutable run with durable checkpoint storage:
 
 ```bash
 python prototypes/mu_cosine/run_repeated_judge_source_power.py \
