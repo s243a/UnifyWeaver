@@ -12157,6 +12157,10 @@ plawk_scalar_update_action_name(Action, Name) :-
 % surfaces CountName so it gets its own (i64) slot.
 plawk_scalar_update_action_name(gsub_count(CountName, _Global, _Regex, _Repl, Target), Name) :-
     ( Name = Target ; Name = CountName ).
+% `status = getline var < "file"` writes both the Var string scalar and the
+% Status i64 slot; action_update reports Var, this surfaces Status too.
+plawk_scalar_update_action_name(getline_capture(Status, Var, _File), Name) :-
+    ( Name = Var ; Name = Status ).
 plawk_scalar_update_action_name(dynrec_bind(Vars, _Call, _Types), Name) :-
     plawk_dynrec_binding_names(Vars, Names),
     member(Name, Names).
@@ -12250,6 +12254,14 @@ plawk_scalar_action_update(gsub_count(_CountName, Global, Regex, Repl, Target), 
     integer(Global),
     string(Regex),
     string(Repl).
+% `getline var < "file"` (and the count-capturing assignment): Var is a string
+% scalar holding the interned line. Reported as a Target string update so the
+% state plan types Var as scalar_string and the driver accepts the program; the
+% dedicated action-sequence clauses below emit the actual getline IR.
+plawk_scalar_action_update(getline_read(Var, File), Var, set_str(getline(File))) :-
+    string(File).
+plawk_scalar_action_update(getline_capture(_Status, Var, File), Var, set_str(getline(File))) :-
+    string(File).
 % Ternary assignment `x = COND ? A : B`: an i64 value via select (the operation
 % lowers through plawk_scalar_numeric_expr_ir(ternary(...)) -> plawk_i64_expr_ir).
 plawk_scalar_action_update(set(var(Name), ternary(cmp(Left, _Op, Right), Then, Else)),
@@ -12362,6 +12374,62 @@ plawk_scalar_action_sequence_pairs([dynrec_bind(Vars, Call, Types) | Rest], Slot
 % shared @plawk_gsub_count global; a following load moves that count into the
 % CountName i64 slot. Placed before the generic set-action clause so its
 % specific head wins.
+% Emit the getline IR for one site: the filename constant, an alloca for the
+% line id, the call to @wam_getline_file (which keys the open handle by filename
+% in a process-wide registry, so sites reading the same file share it), and the
+% awk EOF-preserve select (Var keeps its old value unless a line was actually
+% read). VarNext / StNext are the new Var / status SSA values. GlobalIR carries
+% just the filename constant.
+plawk_getline_ir(Prefix, OpIndex, File, VarInput, VarNext, StNext, GlobalIR, IR) :-
+    format(atom(Base), '~w_getline_~w', [Prefix, OpIndex]),
+    format(atom(PathName), '~w_path', [Base]),
+    llvm_emit_c_string_global(PathName, File, GlobalIR, PathLen, PathBytes),
+    format(atom(StNext), '%~w_status', [Base]),
+    format(atom(VarNext), '%~w_var', [Base]),
+    format(atom(IR),
+'  %~w_pathp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  %~w_lineid = alloca i64
+  ~w = call i64 @wam_getline_file(i8* %~w_pathp, i64 ~w, i64* %~w_lineid)
+  %~w_line = load i64, i64* %~w_lineid
+  %~w_got = icmp eq i64 ~w, 1
+  ~w = select i1 %~w_got, i64 %~w_line, i64 ~w',
+        [Base, PathBytes, PathBytes, PathName,
+         Base,
+         StNext, Base, PathLen, Base,
+         Base, Base,
+         Base, StNext,
+         VarNext, Base, Base, VarInput]).
+
+% `status = getline var < "file"`: read the next line into the Var string slot
+% and the 1/0/-1 status into the Status i64 slot (a dual-slot write). The file is
+% opened lazily and advanced one line per call via a per-site handle global.
+plawk_scalar_action_sequence_pairs([getline_capture(Status, Var, File) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { string(File),
+      nth0(VarIndex, Slots, VarSlot), plawk_slot_name(VarSlot, Var),
+      nth0(VarIndex, Values0, VarInput),
+      nth0(StIndex, Slots, StSlot), plawk_slot_name(StSlot, Status),
+      plawk_getline_ir(Prefix, OpIndex, File, VarInput, VarNext, StNext, GlobalIR, IR),
+      replace_nth0(VarIndex, Values0, VarNext, Values1),
+      replace_nth0(StIndex, Values1, StNext, Values2),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values2, Values, FinalOpIndex, ExitLabel, NextExits).
+% bare `getline var < "file"`: same, discarding the status.
+plawk_scalar_action_sequence_pairs([getline_read(Var, File) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { string(File),
+      nth0(VarIndex, Slots, VarSlot), plawk_slot_name(VarSlot, Var),
+      nth0(VarIndex, Values0, VarInput),
+      plawk_getline_ir(Prefix, OpIndex, File, VarInput, VarNext, _StNext, GlobalIR, IR),
+      replace_nth0(VarIndex, Values0, VarNext, Values1),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, NextExits).
 plawk_scalar_action_sequence_pairs([gsub_count(CountName, Global, Regex, Repl, Target) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { integer(Global), string(Regex), string(Repl),

@@ -47,7 +47,7 @@ only (runtime pending) · ❌ missing.
 | `delete arr[k]` | ◐ | `delete arr[$k]` removes the entry keyed by a field (parity with `arr[$k]++`); backward-shift deletion in the runtime (later colliding keys stay reachable), missing key is a no-op. String-literal / var keys are a follow-on |
 | `exit [n]` | ✅ | stops the record loop, runs END, returns N (default 0); `exit` in a rule body, an `if`/`else` branch, or a loop (propagates past the loop) — scalar state at the exit point flows into END |
 | `delete arr[k]` | ❌ | |
-| `getline` | ❌ | the multi-pass / `over` readers cover much of its use |
+| `getline` | ◐ | **`getline var < "file"` landed** (phase 1): reads the next line of a file into a scalar, returning 1/0/-1. `status = getline var < "file"` captures the return (dual-slot: `var` string, `status` i64); a bare `getline var < "file"` discards it. Handles are keyed by **filename** in a process-wide registry (`@wam_getline_file`), so every site reading the same file shares one advancing handle (as in awk); EOF preserves `var`. Canonical loop is prime-then-re-read (`r = getline v < "f"; while (r > 0) { …; r = getline v < "f" }`). Follow-ons: `getline` inside a `while` **condition** (needs the loop lowering to let the condition produce a slot update), plain `getline` / `getline < file` into `$0`, `cmd | getline`, and `var` as a strnum source. The multi-pass / `over` readers still cover the bulk-scan use |
 
 ## Functions
 

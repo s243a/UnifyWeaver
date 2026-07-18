@@ -1587,6 +1587,9 @@ action(Action) -->
     add_assign_action(Action),
     !.
 action(Action) -->
+    getline_action(Action),
+    !.
+action(Action) -->
     assignment_action(Action),
     !.
 action(Action) -->
@@ -1601,6 +1604,24 @@ action(Action) -->
 action(Action) -->
     increment_action(Action),
     !.
+
+%% getline_action(-Action)//
+%
+%  `getline var < "file"` -- read the next line of a file into the scalar `var`,
+%  reusing the shared stream primitives (the file is opened once, then advanced
+%  one line per call). This bare statement form discards the 1/0/-1 status;
+%  `status = getline var < "file"` (an assignment) captures it (see
+%  assignment_action). v1: the file is a string literal, the target a scalar var;
+%  the canonical loop is `r = getline v < "f"; while (r > 0) { ...; r = getline v
+%  < "f" }` (getline inside a while CONDITION is a follow-on -- it needs the loop
+%  lowering to let the condition produce a slot update).
+getline_action(getline_read(Var, File)) -->
+    "getline",
+    required_ws,
+    identifier(Var),
+    ws, "<", ws,
+    quoted_string(FCodes),
+    { string_codes(File, FCodes) }.
 
 %% subgsub_action(-Action)//
 %
@@ -2151,6 +2172,21 @@ assignment_action(gsub_count(CountName, Global, Regex, Repl, Target)) -->
     ws, ",", ws,
     identifier(Target),
     ws, ")",
+    !.
+
+% `status = getline var < "file"` -- read the next line of the file into `var`
+% (a string scalar) and assign the 1/0/-1 status to `status` (an i64). A
+% dual-slot write. Tried before the generic scalar `set`; the `getline` keyword
+% after `=` is unambiguous.
+assignment_action(getline_capture(Status, Var, File)) -->
+    identifier(Status),
+    ws, "=", ws,
+    "getline",
+    required_ws,
+    identifier(Var),
+    ws, "<", ws,
+    quoted_string(FCodes),
+    { string_codes(File, FCodes) },
     !.
 
 assignment_action(set(var(Name), Value)) -->
