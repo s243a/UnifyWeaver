@@ -416,9 +416,11 @@ test_weighted_shortest_path_kernel_generation :-
     (   compile_wam_runtime_to_c([], RuntimeCode),
         atom_string(RuntimeCode, S),
         sub_string(S, _, _, _, 'void wam_register_weighted_edge'),
+        sub_string(S, _, _, _, 'void wam_register_relation_weighted_edge'),
         sub_string(S, _, _, _, 'void wam_register_weighted_shortest_path_kernel'),
         sub_string(S, _, _, _, 'bool wam_weighted_shortest_path_handler'),
-        sub_string(S, _, _, _, 'wam_weighted_shortest_path_dijkstra')
+        sub_string(S, _, _, _, 'wam_collect_weighted_shortest_path'),
+        sub_string(S, _, _, _, 'wam_bind_foreign_pair_stream')
     ->  pass(Test)
     ;   fail_test(Test, 'weighted_shortest_path3 native kernel helpers missing')
     ).
@@ -814,7 +816,7 @@ test_weighted_shortest_path_detector_setup_generation :-
         Detected = ['weighted_path/3'-_Kernel],
         generate_setup_detected_kernels_c(Detected, SetupCode),
         sub_atom(SetupCode, _, _, _, 'setup_detected_wam_c_kernels'),
-        sub_atom(SetupCode, _, _, _, 'wam_register_weighted_shortest_path_kernel(state, "weighted_path/3")')
+        sub_atom(SetupCode, _, _, _, 'wam_register_weighted_shortest_path_kernel(state, "weighted_path/3", "test_weighted_edge")')
     ->  cleanup_wam_c_detector_weighted_shortest_path,
         pass(Test)
     ;   cleanup_wam_c_detector_weighted_shortest_path,
@@ -3646,7 +3648,7 @@ write_binary_file(Path, Bytes) :-
 compile_c_smoke(RuntimePath, PredPath, MainPath, ExePath) :-
     IncludeDir = 'src/unifyweaver/targets/wam_c_runtime',
     format(atom(Cmd),
-           'gcc -std=c11 -Wall -Wextra -fsanitize=address -I ~w ~w ~w ~w -o ~w',
+           'gcc -std=c11 -Wall -Wextra -fsanitize=address -I ~w ~w ~w ~w -lm -o ~w',
            [IncludeDir, RuntimePath, PredPath, MainPath, ExePath]),
     shell(Cmd, Status),
     (   Status =:= 0
@@ -3658,7 +3660,7 @@ compile_c_smoke(RuntimePath, PredPath, MainPath, ExePath) :-
 compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath) :-
     IncludeDir = 'src/unifyweaver/targets/wam_c_runtime',
     format(atom(Cmd),
-           'gcc -std=c11 -Wall -Wextra -I ~w ~w ~w ~w -o ~w',
+           'gcc -std=c11 -Wall -Wextra -I ~w ~w ~w ~w -lm -o ~w',
            [IncludeDir, RuntimePath, PredPath, MainPath, ExePath]),
     shell(Cmd, Status),
     (   Status =:= 0
@@ -3670,7 +3672,7 @@ compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath) :-
 compile_c_smoke_lmdb(RuntimePath, PredPath, MainPath, ExePath) :-
     IncludeDir = 'src/unifyweaver/targets/wam_c_runtime',
     format(atom(Cmd),
-           'gcc -std=c11 -Wall -Wextra -DWAM_C_ENABLE_LMDB -I ~w ~w ~w ~w -llmdb -o ~w',
+           'gcc -std=c11 -Wall -Wextra -DWAM_C_ENABLE_LMDB -I ~w ~w ~w ~w -llmdb -lm -o ~w',
            [IncludeDir, RuntimePath, PredPath, MainPath, ExePath]),
     shell(Cmd, Status),
     (   Status =:= 0
@@ -4745,13 +4747,13 @@ int main(void) {
     WamState state;
     wam_state_init(&state);
     setup_weighted_path_3(&state);
-    wam_register_weighted_edge(&state, "tom", "bob", 5);
-    wam_register_weighted_edge(&state, "tom", "eve", 1);
-    wam_register_weighted_edge(&state, "eve", "ann", 1);
-    wam_register_weighted_edge(&state, "bob", "ann", 1);
-    wam_register_weighted_edge(&state, "flo", "mid", 0.5);
-    wam_register_weighted_edge(&state, "mid", "fin", 1.0);
-    wam_register_weighted_shortest_path_kernel(&state, "weighted_path/3");
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "tom", "bob", 5);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "tom", "eve", 1);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "eve", "ann", 1);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "bob", "ann", 1);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "flo", "mid", 0.5);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "mid", "fin", 1.0);
+    wam_register_weighted_shortest_path_kernel(&state, "weighted_path/3", "test_weighted_edge");
 
     WamValue shortest_args[3] = {
         val_atom("tom"),
@@ -4760,7 +4762,7 @@ int main(void) {
     };
     int shortest_rc = wam_run_predicate(&state, "weighted_path/3", shortest_args, 3);
     if (shortest_rc != 0 || state.P != WAM_HALT ||
-        state.A[2].tag != VAL_INT || state.A[2].data.integer != 2) {
+        state.A[2].tag != VAL_FLOAT || state.A[2].data.floating != 2.0) {
         wam_free_state(&state);
         return 10;
     }
@@ -4768,7 +4770,7 @@ int main(void) {
     WamValue direct_args[3] = {
         val_atom("bob"),
         val_atom("ann"),
-        val_int(1)
+        val_float(1.0)
     };
     int direct_rc = wam_run_predicate(&state, "weighted_path/3", direct_args, 3);
     if (direct_rc != 0 || state.P != WAM_HALT) {
@@ -4776,15 +4778,17 @@ int main(void) {
         return 20;
     }
 
+    /* Unbound Target streams all reachable pairs (order non-semantic).
+     * Single-sink source keeps the first-yield check deterministic. */
     WamValue output_args[3] = {
-        val_atom("tom"),
+        val_atom("bob"),
         val_unbound("Target"),
         val_unbound("Weight")
     };
     int output_rc = wam_run_predicate(&state, "weighted_path/3", output_args, 3);
     if (output_rc != 0 || state.P != WAM_HALT ||
-        state.A[1].tag != VAL_ATOM || strcmp(state.A[1].data.atom, "eve") != 0 ||
-        state.A[2].tag != VAL_INT || state.A[2].data.integer != 1) {
+        state.A[1].tag != VAL_ATOM || strcmp(state.A[1].data.atom, "ann") != 0 ||
+        state.A[2].tag != VAL_FLOAT || state.A[2].data.floating != 1.0) {
         wam_free_state(&state);
         return 30;
     }
@@ -5106,10 +5110,10 @@ int main(void) {
     setup_weighted_path_3(&state);
     setup_detected_wam_c_kernels(&state);
 
-    wam_register_weighted_edge(&state, "tom", "bob", 5);
-    wam_register_weighted_edge(&state, "tom", "eve", 1);
-    wam_register_weighted_edge(&state, "eve", "ann", 1);
-    wam_register_weighted_edge(&state, "bob", "ann", 1);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "tom", "bob", 5);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "tom", "eve", 1);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "eve", "ann", 1);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "bob", "ann", 1);
 
     WamValue args[3] = {
         val_atom("tom"),
@@ -5118,7 +5122,7 @@ int main(void) {
     };
     int rc = wam_run_predicate(&state, "weighted_path/3", args, 3);
     if (rc != 0 || state.P != WAM_HALT ||
-        state.A[2].tag != VAL_INT || state.A[2].data.integer != 2) {
+        state.A[2].tag != VAL_FLOAT || state.A[2].data.floating != 2.0) {
         wam_free_state(&state);
         return 10;
     }

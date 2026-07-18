@@ -173,7 +173,8 @@ test(fsharp_allowlist_includes_td3) :-
     assertion(wam_fsharp_native_kernel_kind(transitive_distance3)),
     assertion(wam_fsharp_native_kernel_supported(
         recursive_kernel(transitive_distance3, probe/0, []))),
-    assertion(\+ wam_fsharp_native_kernel_kind(weighted_shortest_path3)).
+    assertion(wam_fsharp_native_kernel_kind(weighted_shortest_path3)),
+    assertion(\+ wam_fsharp_native_kernel_kind(astar_shortest_path4)).
 
 test(haskell_mustache_distplus) :-
     read_file_string(

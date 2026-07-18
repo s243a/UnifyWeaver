@@ -44,6 +44,8 @@
 :- dynamic user:tspd_alt/5.
 :- dynamic user:w_edge/3.
 :- dynamic user:wsp/3.
+:- dynamic user:w_edge_alt/3.
+:- dynamic user:wsp_alt/3.
 :- dynamic user:a_edge/3.
 :- dynamic user:astar/4.
 :- dynamic user:direct_dist/4.
@@ -177,6 +179,16 @@ assert_wsp_program :-
     assertz((user:wsp(X, Y, W) :- w_edge(X, Y, W))),
     assertz((user:wsp(X, Y, Total) :-
                 w_edge(X, Z, W), wsp(Z, Y, Rest), Total is Rest + W)).
+
+assert_two_wsp_programs :-
+    assert_wsp_program,
+    retractall(user:w_edge_alt(_, _, _)),
+    retractall(user:wsp_alt(_, _, _)),
+    assertz(user:w_edge_alt(x, y, 3.0)),
+    assertz(user:w_edge_alt(y, z, 4.0)),
+    assertz((user:wsp_alt(X, Y, W) :- w_edge_alt(X, Y, W))),
+    assertz((user:wsp_alt(X, Y, Total) :-
+                w_edge_alt(X, Z, W), wsp_alt(Z, Y, Rest), Total is Rest + W)).
 
 assert_astar_program :-
     retractall(user:a_edge(_, _, _)),
@@ -399,14 +411,14 @@ let main _argv =
 
 :- begin_tests(wam_fsharp_kernel_gate_tc).
 
-test(capability_allowlist_includes_shipped_tc2_td3_tpd4_tspd5) :-
+test(capability_allowlist_includes_shipped_through_wsp3) :-
     wam_fsharp_native_kernel_kind(category_ancestor),
     wam_fsharp_native_kernel_kind(bidirectional_ancestor),
     wam_fsharp_native_kernel_kind(transitive_closure2),
     wam_fsharp_native_kernel_kind(transitive_distance3),
     wam_fsharp_native_kernel_kind(transitive_parent_distance4),
     wam_fsharp_native_kernel_kind(transitive_step_parent_distance5),
-    \+ wam_fsharp_native_kernel_kind(weighted_shortest_path3),
+    wam_fsharp_native_kernel_kind(weighted_shortest_path3),
     \+ wam_fsharp_native_kernel_kind(astar_shortest_path4).
 
 test(every_allowlisted_kind_has_a_real_handler) :-
@@ -688,10 +700,53 @@ test(native_tspd5_codegen_and_build, [condition(dotnet_available)]) :-
     ),
     !.
 
-test(fallback_weighted_shortest_path3, [condition(dotnet_available)]) :-
-    fallback_kind_builds(weighted_shortest_path3, assert_wsp_program,
-                         [user:wsp/3, user:w_edge/3],
-                         "nativeKernel_weighted_shortest_path").
+test(native_wsp3_codegen_and_build, [condition(dotnet_available)]) :-
+    assert_two_wsp_programs,
+    tmp_proj(native_wsp3, Dir),
+    once(write_wam_fsharp_project(
+        [ user:wsp/3, user:w_edge/3,
+          user:wsp_alt/3, user:w_edge_alt/3
+        ],
+        [module_name('uw_fs_native_wsp3')],
+        Dir)),
+    directory_file_path(Dir, 'WamRuntime.fs', RT),
+    read_file_to_string(RT, RTS, []),
+    substring_occurrence_count(
+        RTS, "let nativeKernel_weighted_shortest_path", HandlerCount),
+    assertion(HandlerCount =:= 1),
+    assertion(sub_string(RTS, _, _, _, "| \"wsp/3\" ->")),
+    assertion(sub_string(RTS, _, _, _, "| \"wsp_alt/3\" ->")),
+    assertion(sub_string(RTS, _, _, _, "FFIStreamRetry")),
+    assertion(\+ sub_string(RTS, _, _, _, "template not found")),
+    directory_file_path(Dir, 'Predicates.fs', Preds),
+    read_file_to_string(Preds, PredS, []),
+    assertion(sub_string(PredS, _, _, _, "declaredWeightedEdgeFacts")),
+    assertion(sub_string(PredS, _, _, _, "buildWeightedFfiFacts")),
+    assertion(sub_string(PredS, _, _, _, "(\"w_edge\"")),
+    assertion(sub_string(PredS, _, _, _, "(\"w_edge_alt\"")),
+    run_dotnet_build(Dir, Exit, Out),
+    assertion(Exit =:= 0),
+    ( Exit =:= 0 -> true
+    ; format(user_error, 'native_wsp3 build failed:~n~w~n', [Out]), fail
+    ),
+    !.
+
+test(wsp3_no_kernels_still_builds, [condition(dotnet_available)]) :-
+    assert_wsp_program,
+    tmp_proj(wsp3_nk, Dir),
+    once(write_wam_fsharp_project(
+        [user:wsp/3, user:w_edge/3],
+        [no_kernels(true), module_name('uw_fs_wsp3_nk'), conformance_main(true)],
+        Dir)),
+    directory_file_path(Dir, 'WamRuntime.fs', RT),
+    read_file_to_string(RT, RTS, []),
+    assertion(\+ sub_string(RTS, _, _, _, "nativeKernel_weighted_shortest_path")),
+    run_dotnet_build(Dir, Exit, Out),
+    assertion(Exit =:= 0),
+    ( Exit =:= 0 -> true
+    ; format(user_error, '~w~n', [Out]), fail
+    ),
+    !.
 
 test(fallback_astar_shortest_path4, [condition(dotnet_available)]) :-
     fallback_kind_builds(astar_shortest_path4, assert_astar_program,

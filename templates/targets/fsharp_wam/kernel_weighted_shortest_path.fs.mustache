@@ -1,0 +1,59 @@
+/// Native foreign acceleration for the shared weighted_shortest_path3
+/// pattern. Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
+///
+/// Contract: finite nonnegative Dijkstra
+/// (docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md).
+/// Emit exactly one (Target, FloatCost) pair per reachable non-Source
+/// target at minimum path cost. Source is never emitted (even via
+/// self-loop / cycle). Integral sums remain floats.
+///
+/// Edge map: interned adjacency Map<int, (int * float) list>.
+/// A reachable invalid row (non-finite or negative weight) aborts the
+/// complete call by returning [] — executeForeign treats that as failure
+/// (no silent discard of bad rows with a partial path set).
+///
+/// Returns (interned Target, float Cost) pairs; executeForeign streams
+/// them via the existing two-output binder + FFIStreamRetry.
+let nativeKernel_weighted_shortest_path
+    (edges: Map<int, (int * float) list>)
+    (source: int) : (int * float) list =
+    let dist = System.Collections.Generic.Dictionary<int, float>()
+    let pq = System.Collections.Generic.SortedSet<struct(float * int)>(
+        { new System.Collections.Generic.IComparer<struct(float * int)> with
+            member _.Compare(a, b) =
+                let struct(ca, na) = a
+                let struct(cb, nb) = b
+                let c = ca.CompareTo(cb)
+                if c <> 0 then c else na.CompareTo(nb) })
+    dist.[source] <- 0.0
+    pq.Add(struct(0.0, source)) |> ignore
+    let mutable invalid = false
+    while pq.Count > 0 && not invalid do
+        let struct(cost, node) = pq.Min
+        pq.Remove(pq.Min) |> ignore
+        match dist.TryGetValue(node) with
+        | true, best when cost > best -> ()
+        | _ ->
+            let outs =
+                match Map.tryFind node edges with
+                | Some xs -> xs
+                | None -> []
+            for (nxt, w) in outs do
+                if System.Double.IsNaN(w) || System.Double.IsInfinity(w) || w < 0.0 then
+                    invalid <- true
+                else
+                    let nc = cost + w
+                    match dist.TryGetValue(nxt) with
+                    | false, _ ->
+                        dist.[nxt] <- nc
+                        pq.Add(struct(nc, nxt)) |> ignore
+                    | true, prev when nc < prev ->
+                        dist.[nxt] <- nc
+                        pq.Add(struct(nc, nxt)) |> ignore
+                    | _ -> ()
+    if invalid then
+        []
+    else
+        [ for KeyValue(t, c) in dist do
+            if t <> source then
+                yield (t, c) ]

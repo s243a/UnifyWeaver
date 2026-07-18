@@ -229,6 +229,14 @@ typedef struct {
     double weight;
 } WeightedEdge;
 
+/* Predicate-isolated weighted edge for WSP3 (mirrors RelationEdge for TSPD5). */
+typedef struct {
+    const char *relation;
+    const char *source;
+    const char *target;
+    double weight;
+} WeightedRelationEdge;
+
 typedef struct {
     WamState *owner_state;
     CategoryEdge *edges;
@@ -458,13 +466,18 @@ struct WamState {
     WamCategoryIdValueIndexEntry *category_id_by_value;
     int category_id_by_value_cap;
 
-    /* Native weighted_shortest_path3 kernel data */
+    /* Native weighted_shortest_path3 / astar kernel data (global bag; A* / legacy) */
     WeightedEdge *weighted_edges;
     int weighted_edge_count;
     int weighted_edge_cap;
     WeightedEdge *direct_distance_edges;
     int direct_distance_edge_count;
     int direct_distance_edge_cap;
+
+    /* Predicate-isolated weighted edges (WSP3; not global weighted_edges) */
+    WeightedRelationEdge *weighted_relation_edges;
+    int weighted_relation_edge_count;
+    int weighted_relation_edge_cap;
 
     /* Predicate-isolated relation edges (TSPD5; not global category_edges) */
     RelationEdge *relation_edges;
@@ -490,6 +503,9 @@ void wam_bind_kernel_edge_relation(WamState *state, const char *pred, int arity,
                                    const char *relation);
 const char *wam_lookup_kernel_edge_relation(WamState *state, const char *pred, int arity);
 void wam_register_weighted_edge(WamState *state, const char *source, const char *target, double weight);
+void wam_register_relation_weighted_edge(WamState *state, const char *relation,
+                                         const char *from, const char *to,
+                                         double weight);
 void wam_register_direct_distance_edge(WamState *state, const char *source, const char *target, double distance);
 void wam_register_category_ancestor_kernel(WamState *state, const char *pred, int max_depth);
 void wam_register_bidirectional_ancestor_kernel(WamState *state, const char *pred,
@@ -502,7 +518,8 @@ void wam_register_transitive_distance_kernel(WamState *state, const char *pred);
 void wam_register_transitive_parent_distance_kernel(WamState *state, const char *pred);
 void wam_register_transitive_step_parent_distance_kernel(WamState *state, const char *pred,
                                                          const char *edge_relation);
-void wam_register_weighted_shortest_path_kernel(WamState *state, const char *pred);
+void wam_register_weighted_shortest_path_kernel(WamState *state, const char *pred,
+                                                const char *edge_relation);
 void wam_register_astar_shortest_path_kernel(WamState *state, const char *pred);
 bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity);
 bool wam_bidirectional_ancestor_handler(WamState *state, const char *pred, int arity);

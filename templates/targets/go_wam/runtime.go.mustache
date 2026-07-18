@@ -2,6 +2,7 @@ package {{package_name}}
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"runtime"
@@ -12,6 +13,7 @@ import (
 
 var (
 	_ = fmt.Sprintf
+	_ = math.NaN
 	_ = os.ReadFile
 	_ = exec.Command
 	_ = runtime.GOMAXPROCS

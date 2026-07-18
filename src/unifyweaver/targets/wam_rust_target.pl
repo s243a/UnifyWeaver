@@ -4284,12 +4284,13 @@ compile_collect_native_transitive_step_parent_distance_to_rust(Code) :-
     }'.
 
 compile_collect_native_weighted_shortest_path_to_rust(Code) :-
-    Code = '    /// Dijkstra shortest path with precomputed semantic edge weights.
-    /// Returns the minimum-cost path from start to each reachable node.
-    /// Edge weights are f64 (typically 1 - cosine_similarity).
-    /// Uses a BinaryHeap priority queue — greedy expansion naturally
-    /// follows the lowest-cost (most semantically similar) path first,
-    /// with backtracking to alternatives when needed.
+    Code = '    /// Finite nonnegative Dijkstra for weighted_shortest_path3
+    /// (docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md).
+    /// Emit exactly one (Target, f64 cost) per reachable non-Source
+    /// target at minimum path cost. Source is never emitted (even via
+    /// self-loop / cycle). Integral sums remain f64 floats.
+    /// Indexed edges are already atom-keyed; a reachable invalid weight
+    /// (NaN / Inf / negative) fails the complete call (clears `out`).
     pub fn collect_native_weighted_shortest_path_results(
         &self,
         start: &str,
@@ -4331,6 +4332,11 @@ compile_collect_native_weighted_shortest_path_to_rust(Code) :-
                 .and_then(|table| table.get(&node))
             {
                 for (next, weight) in edges {
+                    // Reachable invalid row → fail complete kernel call.
+                    if !weight.is_finite() || *weight < 0.0 {
+                        out.clear();
+                        return;
+                    }
                     let next_cost = cost + weight;
                     let is_shorter = match dist.get(next) {
                         Some(&prev_best) => next_cost < prev_best,
@@ -4345,6 +4351,7 @@ compile_collect_native_weighted_shortest_path_to_rust(Code) :-
         }
 
         // Collect all reachable nodes (excluding start)
+        out.clear();
         for (node, cost) in &dist {
             if node != start {
                 out.push((node.clone(), *cost));
