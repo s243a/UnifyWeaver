@@ -56,6 +56,8 @@
 :- use_module('../src/unifyweaver/core/recursive_kernel_detection',
               [detect_recursive_kernel/4]).
 
+:- use_module('helpers/wam_kernel_parity_harness').
+
 :- dynamic user:w_edge/3.
 :- dynamic user:wsp/3.
 :- dynamic user:w_edge_alt/3.
@@ -68,71 +70,6 @@
 :- dynamic user:wsp_after/2.
 :- dynamic user:wsp_cut/2.
 :- dynamic user:wsp_call_after/2.
-
-dotnet_available :-
-    catch(
-        ( process_create(path(dotnet), ['--version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-gcc_available :-
-    catch(
-        ( process_create(path(gcc), ['--version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-cargo_available :-
-    catch(
-        ( process_create(path(cargo), ['--version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-elixir_available :-
-    catch(
-        ( process_create(path(elixir), ['--version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-go_available :-
-    catch(
-        ( process_create(path(go), ['version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-scala_available :-
-    catch(
-        ( process_create(path(scalac), ['-version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-rscript_available :-
-    catch(
-        ( process_create(path('Rscript'), ['--version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-ghc_available :-
-    catch(
-        ( process_create(path(ghc), ['--version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-tmp_dir(Tag, Dir) :-
-    get_time(T),
-    format(atom(Stamp), '~w', [T]),
-    format(atom(Dir), '/tmp/uw_wsp3_~w_~w', [Tag, Stamp]),
-    make_directory_path(Dir).
-
-read_file_string(Path, String) :-
-    read_file_to_string(Path, String, []).
 
 assert_wsp_detour_program :-
     retractall(user:w_edge(_, _, _)),
@@ -447,6 +384,7 @@ test(rust_collect_wsp3_unit, [condition(cargo_available)]) :-
     !.
 
 test(elixir_collect_pairs_unit, [condition(elixir_available)]) :-
+    % Generated-runtime e2e: slice WeightedShortestPath from compile_wam_runtime_to_elixir/2.
     tmp_dir(ex_e2e, Dir),
     compile_wam_runtime_snippet_for_elixir_wsp3(Dir),
     directory_file_path(Dir, 'wsp3_unit.exs', Script),
@@ -465,125 +403,48 @@ test(elixir_collect_pairs_unit, [condition(elixir_available)]) :-
     ),
     !.
 
-test(go_standalone_cheaper_detour, [condition(go_available)]) :-
-    tmp_dir(go_e2e, Dir),
-    directory_file_path(Dir, 'go.mod', ModPath),
-    setup_call_cleanup(
-        open(ModPath, write, ModOut, [encoding(utf8)]),
-        write(ModOut, "module wsp3algo\n\ngo 1.21\n"),
-        close(ModOut)),
-    directory_file_path(Dir, 'wsp3_algo_test.go', GoPath),
-    wsp3_write_go_standalone(GoPath),
-    format(atom(Cmd),
-        'cd ~w && go test -run TestWsp3CheaperDetour -count=1 >~w/go.out 2>~w/go.err',
-        [Dir, Dir, Dir]),
-    shell(Cmd, Exit),
-    ( Exit =:= 0 -> true
-    ; directory_file_path(Dir, 'go.err', ErrPath),
-      directory_file_path(Dir, 'go.out', OutPath),
-      ( exists_file(ErrPath) -> read_file_string(ErrPath, Err) ; Err = "" ),
-      ( exists_file(OutPath) -> read_file_string(OutPath, Out) ; Out = "" ),
-      format(user_error, 'go wsp3 unit failed:~n~w~n~w~n', [Out, Err]),
-      fail
-    ),
-    !.
+% Former Go/Haskell/R/Scala standalone Dijkstra replicas removed — they did
+% not execute generated runtime. Semantic cases remain via the Prolog oracle
+% and structural handler markers (always run; not capability-gated skips).
+test(go_cheaper_detour_oracle_and_markers) :-
+    wsp3_oracle_cheaper_detour_edges(E),
+    wsp3_oracle_cheaper_detour_expected(Want),
+    assertion(wsp3_oracle_matches_expected(E, a, Want)),
+    read_file_string('src/unifyweaver/targets/wam_go_target.pl', Go),
+    assertion(sub_string(Go, _, _, _,
+        "docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md")).
 
-test(haskell_standalone_cheaper_detour, [condition(ghc_available)]) :-
-    tmp_dir(hs_e2e, Dir),
-    directory_file_path(Dir, 'Wsp3Algo.hs', HsPath),
-    wsp3_write_haskell_standalone(HsPath),
-    format(atom(Cmd),
-        'cd ~w && ghc -O0 -package containers Wsp3Algo.hs -o wsp3algo >~w/ghc.out 2>~w/ghc.err && ./wsp3algo >~w/run.out 2>~w/run.err',
-        [Dir, Dir, Dir, Dir, Dir]),
-    shell(Cmd, Exit),
-    ( Exit =:= 0 -> true
-    ; format(user_error, 'haskell wsp3 failed exit=~w~n', [Exit]),
-      fail
-    ),
-    directory_file_path(Dir, 'run.out', OutPath),
-    read_file_string(OutPath, Out),
-    assertion(sub_string(Out, _, _, _, "OK")),
-    !.
+test(haskell_cheaper_detour_oracle_and_markers) :-
+    wsp3_oracle_cheaper_detour_edges(E),
+    wsp3_oracle_cheaper_detour_expected(Want),
+    assertion(wsp3_oracle_matches_expected(E, a, Want)),
+    read_file_string(
+        'templates/targets/haskell_wam/kernel_weighted_shortest_path.hs.mustache', S),
+    assertion(sub_string(S, _, _, _, "nativeKernel_weighted_shortest_path")),
+    assertion(sub_string(S, _, _, _, "maybe [] id")).
 
-test(r_standalone_cheaper_detour, [condition(rscript_available)]) :-
-    tmp_dir(r_e2e, Dir),
-    directory_file_path(Dir, 'wsp3_algo.R', RPath),
-    wsp3_write_r_standalone(RPath),
-    format(atom(Cmd),
-        'cd ~w && Rscript wsp3_algo.R >~w/r.out 2>~w/r.err',
-        [Dir, Dir, Dir]),
-    shell(Cmd, Exit),
-    ( Exit =:= 0 -> true
-    ; directory_file_path(Dir, 'r.err', ErrPath),
-      directory_file_path(Dir, 'r.out', OutPath),
-      ( exists_file(ErrPath) -> read_file_string(ErrPath, Err) ; Err = "" ),
-      ( exists_file(OutPath) -> read_file_string(OutPath, Out) ; Out = "" ),
-      format(user_error, 'R wsp3 failed:~n~w~n~w~n', [Out, Err]),
-      fail
-    ),
-    directory_file_path(Dir, 'r.out', OutPath),
-    read_file_string(OutPath, Out),
-    assertion(sub_string(Out, _, _, _, "OK")),
-    !.
+test(r_cheaper_detour_oracle_and_markers) :-
+    wsp3_oracle_cheaper_detour_edges(E),
+    wsp3_oracle_cheaper_detour_expected(Want),
+    assertion(wsp3_oracle_matches_expected(E, a, Want)),
+    read_file_string('templates/targets/r_wam/runtime.R.mustache', R),
+    assertion(sub_string(R, _, _, _, "weighted_shortest_path3")),
+    assertion(sub_string(R, _, _, _, "FloatTerm")).
 
-test(scala_standalone_cheaper_detour, [condition(scala_available)]) :-
-    tmp_dir(sc_e2e, Dir),
-    directory_file_path(Dir, 'Wsp3Algo.scala', ScPath),
-    wsp3_write_scala_standalone(ScPath),
-    format(atom(Cmd),
-        'cd ~w && scalac Wsp3Algo.scala >~w/sc.out 2>~w/sc.err && scala Wsp3Algo >~w/run.out 2>~w/run.err',
-        [Dir, Dir, Dir, Dir, Dir]),
-    shell(Cmd, Exit),
-    ( Exit =:= 0 -> true
-    ; format(user_error, 'scala wsp3 failed exit=~w~n', [Exit]),
-      fail
-    ),
-    directory_file_path(Dir, 'run.out', OutPath),
-    read_file_string(OutPath, Out),
-    assertion(sub_string(Out, _, _, _, "OK")),
-    !.
+test(scala_cheaper_detour_oracle_and_markers) :-
+    wsp3_oracle_cheaper_detour_edges(E),
+    wsp3_oracle_cheaper_detour_expected(Want),
+    assertion(wsp3_oracle_matches_expected(E, a, Want)),
+    read_file_string('src/unifyweaver/targets/wam_scala_target.pl', Sc),
+    assertion(sub_string(Sc, _, _, _,
+        "docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md")),
+    assertion(sub_string(Sc, _, _, _, "case a @ Atom(_)")).
 
 :- end_tests(wsp3_executable).
 
 % ============================================================
 % Helpers
 % ============================================================
-
-run_dotnet_build(Dir, Exit, Out) :-
-    setup_call_cleanup(
-        process_create(path(dotnet),
-            ['build', '--nologo', '-v', 'q', '-c', 'Release'],
-            [cwd(Dir),
-             environment([
-                 'DOTNET_NOLOGO'='1',
-                 'DOTNET_ROLL_FORWARD'='Major'
-             ]),
-             stdout(pipe(SO)), stderr(pipe(SE)), process(Pid)]),
-        ( read_string(SO, _, S1), read_string(SE, _, S2),
-          process_wait(Pid, Status),
-          dotnet_status_exit(Status, Exit),
-          string_concat(S1, S2, Out) ),
-        ( catch(close(SO), _, true), catch(close(SE), _, true) )).
-
-run_dotnet_run(Dir, Exit, Out) :-
-    setup_call_cleanup(
-        process_create(path(dotnet),
-            ['run', '--no-build', '-c', 'Release', '--no-launch-profile', '--'],
-            [cwd(Dir),
-             environment([
-                 'DOTNET_NOLOGO'='1',
-                 'DOTNET_ROLL_FORWARD'='Major'
-             ]),
-             stdout(pipe(SO)), stderr(pipe(SE)), process(Pid)]),
-        ( read_string(SO, _, S1), read_string(SE, _, S2),
-          process_wait(Pid, Status),
-          dotnet_status_exit(Status, Exit),
-          string_concat(S1, S2, Out) ),
-        ( catch(close(SO), _, true), catch(close(SE), _, true) )).
-
-dotnet_status_exit(exit(Code), Code).
-dotnet_status_exit(killed(Signal), Code) :-
-    Code is 128 + Signal.
 
 %% Driver uses Predicates.declaredWeightedEdgeFacts / buildWeightedFfiFacts
 %% — the generated project's real materialized facts, not a hand-built map.
@@ -859,308 +720,49 @@ mod wsp3_contract {
         write(Out, Combined),
         close(Out)).
 
+:- use_module('../src/unifyweaver/targets/wam_elixir_target',
+              [compile_wam_runtime_to_elixir/2]).
+
 compile_wam_runtime_snippet_for_elixir_wsp3(Dir) :-
-    directory_file_path(Dir, 'wsp3_runtime.ex', Path),
-    Code =
-"defmodule Wsp3Runtime do
-  def collect_pairs(edges, source) do
-    case dijkstra(edges, :gb_sets.singleton({0.0, source}), %{source => 0.0}) do
-      :invalid -> []
-      dist ->
-        dist
-        |> Enum.reject(fn {n, _} -> n == source end)
-        |> Enum.sort_by(fn {n, _} -> n end)
-    end
-  end
-
-  defp dijkstra(_edges, pq, dist) do
-    if :gb_sets.is_empty(pq) do
-      dist
-    else
-      {{cost, node}, pq2} = :gb_sets.take_smallest(pq)
-      best = Map.get(dist, node, 1.0e300)
-      if cost > best do
-        dijkstra(_edges, pq2, dist)
-      else
-        case Enum.reduce_while(Map.get(_edges, node, []), {:ok, pq2, dist}, &relax(cost, &1, &2)) do
-          :invalid -> :invalid
-          {:ok, pq3, dist2} -> dijkstra(_edges, pq3, dist2)
-        end
-      end
-    end
-  end
-
-  defp relax(cost, {nxt, w}, {:ok, q, d}) do
-    cond do
-      not is_number(w) or w < 0 or w != w -> {:halt, :invalid}
-      true ->
-        nc = cost + w
-        prev = Map.get(d, nxt, 1.0e300)
-        if nc < prev do
-          {:cont, {:ok, :gb_sets.add_element({nc, nxt}, q), Map.put(d, nxt, nc)}}
-        else
-          {:cont, {:ok, q, d}}
-        end
-    end
-  end
-end
-",
-    setup_call_cleanup(
-        open(Path, write, Out, [encoding(utf8)]),
-        write(Out, Code),
-        close(Out)).
+    compile_wam_runtime_to_elixir([], RuntimeCode),
+    Pattern = "defmodule WamRuntime.GraphKernel.WeightedShortestPath do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.AstarShortestPath do",
+    sub_string(RuntimeCode, Start, _, _, Pattern),
+    sub_string(RuntimeCode, End, _, _, EndPattern),
+    End > Start,
+    BodyLen is End - Start,
+    sub_string(RuntimeCode, Start, BodyLen, _, Body),
+    directory_file_path(Dir, 'wsp3_kernel.ex', Path),
+    write_file_string(Path, Body).
 
 wsp3_write_elixir_unit(Script) :-
     Code =
-"Code.require_file(\"wsp3_runtime.ex\")
-edges = %{
-  \"a\" => [{\"b\", 10.0}, {\"c\", 1.0}],
-  \"c\" => [{\"b\", 1.0}],
-  \"b\" => [{\"d\", 1.0}]
-}
-got = Wsp3Runtime.collect_pairs(edges, \"a\")
-want = [{\"b\", 2.0}, {\"c\", 1.0}, {\"d\", 3.0}]
-if got != want do
-  IO.puts(:stderr, \"mismatch #{inspect(got)}\")
+'Code.require_file("wsp3_kernel.ex")
+
+edges = fn
+  "a" -> [{"a", "b", 10.0}, {"a", "c", 1.0}]
+  "c" -> [{"c", "b", 1.0}]
+  "b" -> [{"b", "d", 1.0}]
+  _ -> []
+end
+
+got = WamRuntime.GraphKernel.WeightedShortestPath.collect_path_costs(edges, "a")
+     |> Enum.sort()
+want = [{"b", 2.0}, {"c", 1.0}, {"d", 3.0}]
+unless got == want do
+  IO.puts(:stderr, "mismatch #{inspect(got)}")
   System.halt(1)
 end
-bad = Wsp3Runtime.collect_pairs(%{\"a\" => [{\"b\", -1.0}]}, \"a\")
-if bad != [] do
-  IO.puts(:stderr, \"invalid should fail\")
+
+bad_edges = fn
+  "a" -> [{"a", "b", -1.0}]
+  _ -> []
+end
+bad = WamRuntime.GraphKernel.WeightedShortestPath.collect_path_costs(bad_edges, "a")
+unless bad == :invalid do
+  IO.puts(:stderr, "invalid should fail, got #{inspect(bad)}")
   System.halt(2)
 end
-IO.puts(\"OK\")
-",
-    setup_call_cleanup(
-        open(Script, write, Out, [encoding(utf8)]),
-        write(Out, Code),
-        close(Out)).
-
-wsp3_write_go_standalone(Path) :-
-    Code =
-"package wsp3algo
-
-import (
-        \"math\"
-        \"sort\"
-        \"testing\"
-)
-
-func dijkstra(edges map[string][]struct {
-        To string
-        W  float64
-}, source string) ([]struct {
-        To string
-        W  float64
-}, bool) {
-        dist := map[string]float64{source: 0}
-        type item struct {
-                n string
-                c float64
-        }
-        pq := []item{{source, 0}}
-        for len(pq) > 0 {
-                best := 0
-                for i := 1; i < len(pq); i++ {
-                        if pq[i].c < pq[best].c {
-                                best = i
-                        }
-                }
-                u := pq[best]
-                pq = append(pq[:best], pq[best+1:]...)
-                if d, ok := dist[u.n]; ok && u.c > d {
-                        continue
-                }
-                for _, e := range edges[u.n] {
-                        if math.IsNaN(e.W) || math.IsInf(e.W, 0) || e.W < 0 {
-                                return nil, false
-                        }
-                        nc := u.c + e.W
-                        if prev, ok := dist[e.To]; !ok || nc < prev {
-                                dist[e.To] = nc
-                                pq = append(pq, item{e.To, nc})
-                        }
-                }
-        }
-        var out []struct {
-                To string
-                W  float64
-        }
-        for n, c := range dist {
-                if n != source {
-                        out = append(out, struct {
-                                To string
-                                W  float64
-                        }{n, c})
-                }
-        }
-        sort.Slice(out, func(i, j int) bool { return out[i].To < out[j].To })
-        return out, true
-}
-
-func TestWsp3CheaperDetour(t *testing.T) {
-        edges := map[string][]struct {
-                To string
-                W  float64
-        }{
-                \"a\": {{\"b\", 10}, {\"c\", 1}},
-                \"c\": {{\"b\", 1}},
-                \"b\": {{\"d\", 1}},
-        }
-        got, ok := dijkstra(edges, \"a\")
-        if !ok || len(got) != 3 || got[0].To != \"b\" || got[0].W != 2 ||
-                got[1].To != \"c\" || got[1].W != 1 || got[2].To != \"d\" || got[2].W != 3 {
-                t.Fatalf(\"got %#v\", got)
-        }
-        _, ok2 := dijkstra(map[string][]struct {
-                To string
-                W  float64
-        }{\"a\": {{\"b\", -1}}}, \"a\")
-        if ok2 {
-                t.Fatal(\"invalid should fail\")
-        }
-}
-",
-    setup_call_cleanup(
-        open(Path, write, Out, [encoding(utf8)]),
-        write(Out, Code),
-        close(Out)).
-
-wsp3_write_haskell_standalone(Path) :-
-    Code =
-"import qualified Data.Map.Strict as M
-import qualified Data.Set as S
-import Data.List (sort)
-
-dijkstra2 edges source =
-  go (S.singleton (0.0 :: Double, source)) (M.singleton source 0.0)
-  where
-    go pq dist =
-      case S.minView pq of
-        Nothing ->
-          Right $ sort [ (n, c) | (n, c) <- M.toList dist, n /= source ]
-        Just ((cost, node), pq') ->
-          let best = M.findWithDefault (1/0) node dist
-          in if cost > best then go pq' dist else
-             let neighbors = M.findWithDefault [] node edges
-             in case foldl (relax cost) (Right (pq', dist)) neighbors of
-                  Left e -> Left e
-                  Right (q2, d2) -> go q2 d2
-    relax _ (Left e) _ = Left e
-    relax cost (Right (q, d)) (nxt, w)
-      | isNaN w || isInfinite w || w < 0 = Left \"invalid\"
-      | otherwise =
-          let nc = cost + w
-              prev = M.findWithDefault (1/0) nxt d
-          in if nc < prev
-               then Right (S.insert (nc, nxt) q, M.insert nxt nc d)
-               else Right (q, d)
-
-main :: IO ()
-main = do
-  let edges = M.fromList
-        [ (\"a\", [(\"b\", 10.0), (\"c\", 1.0)])
-        , (\"c\", [(\"b\", 1.0)])
-        , (\"b\", [(\"d\", 1.0)])
-        ]
-  case dijkstra2 edges \"a\" of
-    Right got | got == [(\"b\", 2.0), (\"c\", 1.0), (\"d\", 3.0)] ->
-      putStrLn \"OK\"
-    other -> error (show other)
-",
-    setup_call_cleanup(
-        open(Path, write, Out, [encoding(utf8)]),
-        write(Out, Code),
-        close(Out)).
-
-wsp3_write_r_standalone(Path) :-
-    Code =
-"dijkstra <- function(edges, source) {
-  dist <- new.env(parent = emptyenv())
-  assign(source, 0, envir = dist)
-  pq <- list(list(cost = 0, node = source))
-  while (length(pq) > 0) {
-    costs <- vapply(pq, function(x) x$cost, numeric(1))
-    best <- which.min(costs)
-    u <- pq[[best]]
-    pq <- pq[-best]
-    known <- if (exists(u$node, envir = dist, inherits = FALSE)) get(u$node, envir = dist) else Inf
-    if (u$cost > known) next
-    outs <- edges[[u$node]]
-    if (is.null(outs)) outs <- list()
-    for (e in outs) {
-      w <- e[[2]]
-      if (!is.finite(w) || w < 0) return(NULL)
-      nc <- u$cost + w
-      prev <- if (exists(e[[1]], envir = dist, inherits = FALSE)) get(e[[1]], envir = dist) else Inf
-      if (nc < prev) {
-        assign(e[[1]], nc, envir = dist)
-        pq[[length(pq) + 1]] <- list(cost = nc, node = e[[1]])
-      }
-    }
-  }
-  keys <- ls(dist)
-  keys <- keys[keys != source]
-  pairs <- lapply(keys, function(k) list(k, get(k, envir = dist)))
-  pairs[order(vapply(pairs, function(p) p[[1]], character(1)))]
-}
-edges <- list(
-  a = list(list(\"b\", 10), list(\"c\", 1)),
-  c = list(list(\"b\", 1)),
-  b = list(list(\"d\", 1))
-)
-got <- dijkstra(edges, \"a\")
-stopifnot(!is.null(got), length(got) == 3,
-          got[[1]][[1]] == \"b\", abs(got[[1]][[2]] - 2) < 1e-9,
-          got[[2]][[1]] == \"c\", abs(got[[2]][[2]] - 1) < 1e-9,
-          got[[3]][[1]] == \"d\", abs(got[[3]][[2]] - 3) < 1e-9)
-bad <- dijkstra(list(a = list(list(\"b\", -1))), \"a\")
-stopifnot(is.null(bad))
-cat(\"OK\\n\")
-",
-    setup_call_cleanup(
-        open(Path, write, Out, [encoding(utf8)]),
-        write(Out, Code),
-        close(Out)).
-
-wsp3_write_scala_standalone(Path) :-
-    Code =
-"object Wsp3Algo {
-  def dijkstra(edges: Map[String, List[(String, Double)]], source: String)
-      : Option[List[(String, Double)]] = {
-    import scala.collection.mutable
-    val dist = mutable.Map(source -> 0.0)
-    val pq = mutable.PriorityQueue.empty[(Double, String)](Ordering.by(-_._1))
-    pq.enqueue((0.0, source))
-    while (pq.nonEmpty) {
-      val (cost, node) = pq.dequeue()
-      if (!(dist.contains(node) && cost > dist(node))) {
-        for ((nxt, w) <- edges.getOrElse(node, Nil)) {
-          if (w.isNaN || w.isInfinity || w < 0) return None
-          val nc = cost + w
-          if (!dist.contains(nxt) || nc < dist(nxt)) {
-            dist(nxt) = nc
-            pq.enqueue((nc, nxt))
-          }
-        }
-      }
-    }
-    Some(dist.toList.filter(_._1 != source).sortBy(_._1))
-  }
-  def main(args: Array[String]): Unit = {
-    val edges = Map(
-      \"a\" -> List((\"b\", 10.0), (\"c\", 1.0)),
-      \"c\" -> List((\"b\", 1.0)),
-      \"b\" -> List((\"d\", 1.0))
-    )
-    val got = dijkstra(edges, \"a\")
-    require(got.contains(List((\"b\", 2.0), (\"c\", 1.0), (\"d\", 3.0))))
-    require(dijkstra(Map(\"a\" -> List((\"b\", -1.0))), \"a\").isEmpty)
-    println(\"OK\")
-  }
-}
-",
-    setup_call_cleanup(
-        open(Path, write, Out, [encoding(utf8)]),
-        write(Out, Code),
-        close(Out)).
+IO.puts("OK")
+',
+    write_file_string(Script, Code).

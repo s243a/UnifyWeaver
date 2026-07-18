@@ -53,13 +53,14 @@ self-contained so a single coding agent can pick it up in isolation.
 | ISO-R | ISO three-form (new) | R | L | — |
 | ISO-PYTHON | ISO three-form (finish) | Python | S | — |
 | ISO-FSHARP | ISO three-form (finish) | F# | S | — |
-| KERN-FSHARP ⚡ | Finish F# native kernel acceleration | F# | L | gate+TC2+TD3+TPD4+TSPD5+WSP3 done; A* draft |
+| KERN-FSHARP ✅ | Finish F# native kernel acceleration | F# | L | gate+TC2+TD3+TPD4+TSPD5+WSP3+A* done |
 | TC2-CONTRACT-PARITY ✅ | Fleet-wide `transitive_closure2` strict R+ contract | multi | M | done (`#3817`) |
 | TD3-CONTRACT-PARITY-FS ✅ | Fleet-wide `transitive_distance3` dist+ + F# native | multi | M | done (`#3821`) |
 | TPD4-CONTRACT-PARITY-FS ✅ | Fleet-wide `transitive_parent_distance4` + F# native | multi | M | done (`#3830`) |
 | TSPD5-CONTRACT-PARITY-FS ✅ | Fleet-wide correlated TSPD5 + F# native | multi | M | done (`#3838`) |
 | WSP3-CONTRACT-PARITY-FS ✅ | Fleet-wide WSP3 Dijkstra + F# native | multi | M | done (`#3847`) |
-| ASTAR4-CONTRACT-PARITY-FS ⚡ | Fleet-wide A* Dijkstra-minimum + F# native | multi | M | draft — not landed until merge |
+| ASTAR4-CONTRACT-PARITY-FS ✅ | Fleet-wide A* Dijkstra-minimum + F# native | multi | M | done (`#3856`) |
+| WAM-KERNEL-PARITY-HARNESS-DRY ⚡ | Deduplicate recursive-kernel parity harness | test | S | draft — shared helper + drop algorithm replicas |
 | EMIT-ILASM | Lowered emitter | ILAsm | L | — |
 | EMIT-JVM | Lowered emitter | JVM | L | — |
 | EMIT-KOTLIN ✅ | Lowered emitter | Kotlin | M | done — flat facts/unify (`cursor/emit-kotlin-lowered-f421`) |
@@ -490,10 +491,10 @@ plumbing there.
 - **FS-TPD4 ✅ (landed `#3830`):** `nativeKernel_transitive_parent_distance` Mustache + allow-list entry; streams `(atom,atom,int)` via the three-output `FFIStreamRetry` binder.
 - **FS-TSPD5 ✅ (landed `#3838`):** `nativeKernel_transitive_step_parent_distance` Mustache + allow-list; streams `(atom,atom,atom,int)` via the four-output `FFIStreamRetry` binder.
 - **FS-WSP3 ✅ (landed `#3847`):** `nativeKernel_weighted_shortest_path` Mustache + allow-list + `WcFfiWeightedFacts` materialization; streams `(atom,float)` via the two-output `FFIStreamRetry` binder.
-- **FS-ASTAR4 (draft):** `nativeKernel_astar_shortest_path` Mustache + allow-list + dual relation-keyed `WcFfiWeightedFacts` materialization for edge and heuristic triples; streams the singleton float cost via the existing single-output `FFIStreamRetry` binder. Mark landed only after the ASTAR4 parity PR merges.
-- **Remaining gated shared kinds:** none for missing F# handlers. A* remains draft contract-parity work, but is no longer intentionally excluded by the F# native-kernel capability gate.
+- **FS-ASTAR4 ✅ (landed `#3856`):** `nativeKernel_astar_shortest_path` Mustache + allow-list + dual relation-keyed `WcFfiWeightedFacts` materialization for edge and heuristic triples; streams the singleton float cost via the existing single-output `FFIStreamRetry` binder.
+- **Remaining gated shared kinds:** none for missing F# handlers.
 - **Tests:** `tests/core/test_wam_fsharp_kernel_gate_tc.pl`
-- **Acceptance (gate+TC2+TD3+TPD4+TSPD5+WSP3+A* draft):** `swipl -q -g run_tests -t halt tests/core/test_wam_fsharp_kernel_gate_tc.pl`.
+- **Acceptance (gate+TC2+TD3+TPD4+TSPD5+WSP3+A*):** `swipl -q -g run_tests -t halt tests/core/test_wam_fsharp_kernel_gate_tc.pl`.
 
 ---
 
@@ -535,19 +536,25 @@ plumbing there.
 - **Contract:** [`docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md`](design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md) — one `(Target, FloatCost)` per reachable non-Source target; finite nonnegative weights (zero OK); Source always excluded (even self-loop/cycle); reachable invalid rows fail the complete call; integral sums emit as float; all four Target/Cost modes; transactional pair stream (`FFIStreamRetry` / established ABIs).
 - **Oracle / fixtures:** `tests/fixtures/wsp3_contract_oracle.pl` (literal expected pairs + independent Dijkstra).
 - **Handler align:** Rust/Haskell/LLVM/C/Go/Scala/R/Elixir — float costs, invalid-row fail, Source excluded; C replaces fixed-256/first-only/global bag with relation-isolated dynamic Dijkstra + pair stream. Preserve TPD4/TSPD5/A*.
-- **F# native:** `templates/targets/fsharp_wam/kernel_weighted_shortest_path.fs.mustache` + allow-list + relation-keyed `WcFfiWeightedFacts` materialization from inline edge facts; two-output `FFIStreamRetry`. A* contract parity is now a separate draft card.
+- **F# native:** `templates/targets/fsharp_wam/kernel_weighted_shortest_path.fs.mustache` + allow-list + relation-keyed `WcFfiWeightedFacts` materialization from inline edge facts; two-output `FFIStreamRetry`.
 - **Tests:** `tests/test_wam_wsp3_contract_parity.pl` + F# gate suite + TSPD5/TPD4 non-regression.
 - **Acceptance:** `swipl -q -g run_tests -t halt tests/test_wam_wsp3_contract_parity.pl` (plus TSPD5 + TPD4 + F# gate).
 
-### ASTAR4-CONTRACT-PARITY-FS: Fleet-wide `astar_shortest_path4` correctness-safe A* + F# native
+### ASTAR4-CONTRACT-PARITY-FS ✅: Fleet-wide `astar_shortest_path4` correctness-safe A* + F# native
 - **Lever:** Shared recursive-kernel contract parity  **Target:** multi  **Size:** M  **Depends on:** WSP3-CONTRACT-PARITY-FS (`#3847`)
-- **Status:** Implemented in draft branch; **not landed** until merge. Do not describe as done in status docs before merge.
+- **Status:** ✅ Landed (`#3856`).
 - **Contract:** [`docs/design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md`](design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md) — goal-directed shortest path returns the finite Dijkstra minimum from Source to bound Target as a singleton float stream; heuristic and Dim affect scheduling only; missing heuristic is 0.0; Source=Target emits 0.0; invalid reachable edge or relevant heuristic rows fail the call.
 - **Oracle / fixtures:** `tests/fixtures/astar4_contract_oracle.pl` (literal expected costs + independent Dijkstra coverage for overestimating heuristic, missing heuristic, zero cycles, large chains, and multi-predicate isolation).
-- **Handler align:** F# adds native template + allow-list + weighted edge/heuristic materialization; Haskell uses empty-stream failure for invalid rows; Scala rejects non-atom Source/Target with `ForeignFail`; fleet targets keep the correctness-safe Dijkstra-minimum contract.
+- **Handler align:** F# native template + allow-list + weighted edge/heuristic materialization; Haskell empty-stream failure for invalid rows; Scala rejects non-atom Source/Target with `ForeignFail`; fleet targets keep the correctness-safe Dijkstra-minimum contract.
 - **F# native:** `templates/targets/fsharp_wam/kernel_astar_shortest_path.fs.mustache` + allow-list + relation-keyed `WcFfiWeightedFacts` for both `edge_pred/3` and `direct_dist_pred/3`; singleton float via the existing single-output `FFIStreamRetry` binder.
 - **Tests:** `tests/test_wam_astar4_contract_parity.pl` + F# gate suite + WSP3/TSPD5/TPD4 non-regression.
 - **Acceptance:** `swipl -q -g run_tests -t halt tests/test_wam_astar4_contract_parity.pl` (plus WSP3 + F# gate).
+
+### WAM-KERNEL-PARITY-HARNESS-DRY: Deduplicate recursive-kernel parity harness
+- **Lever:** Shared recursive-kernel contract parity  **Target:** test  **Size:** S  **Depends on:** ASTAR4-CONTRACT-PARITY-FS (`#3856`)
+- **Status:** Draft — behavior-preserving test maintenance only (no production target changes).
+- **Goal:** One shared Prolog helper (`tests/helpers/wam_kernel_parity_harness.pl`, reusing `smoke_paths`) for toolchain detection, tmp dirs, file I/O, and dotnet build/run; remove standalone target-language BFS/Dijkstra/A* replicas that did not execute generated runtime; keep independent oracles + structural markers + true generated-runtime e2e.
+- **Acceptance:** all six `tests/test_wam_*_contract_parity.pl` suites + F# gate + `run_wam_fsharp_tests.pl` + `git diff --check`.
 
 ---
 

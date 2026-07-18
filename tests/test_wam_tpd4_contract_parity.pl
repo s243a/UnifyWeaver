@@ -36,6 +36,8 @@
 :- use_module('../src/unifyweaver/core/recursive_kernel_detection',
               [detect_recursive_kernel/4]).
 
+:- use_module('helpers/wam_kernel_parity_harness').
+
 :- dynamic user:tpd_edge/2.
 :- dynamic user:tpd/4.
 :- dynamic user:tpd_tail/3.
@@ -44,44 +46,6 @@
 :- dynamic user:tpd_call_after/3.
 :- dynamic user:pd_parent/2.
 :- dynamic user:pd/4.
-
-dotnet_available :-
-    catch(
-        ( process_create(path(dotnet), ['--version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-gcc_available :-
-    catch(
-        ( process_create(path(gcc), ['--version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-cargo_available :-
-    catch(
-        ( process_create(path(cargo), ['--version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-elixir_available :-
-    catch(
-        ( process_create(path(elixir), ['--version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-tmp_dir(Tag, Dir) :-
-    get_time(T),
-    Stamp is round(T * 1000000),
-    format(atom(Dir), '/tmp/uw_tpd4_~w_~w', [Tag, Stamp]),
-    catch(delete_directory_and_contents(Dir), _, true),
-    make_directory_path(Dir).
-
-read_file_string(Path, String) :-
-    read_file_to_string(Path, String, []).
 
 assert_tpd_cycle_program :-
     retractall(user:tpd_edge(_, _)),
@@ -478,42 +442,6 @@ test(fsharp_no_kernels_fallback_builds, [condition(dotnet_available)]) :-
 % ============================================================
 % Helpers
 % ============================================================
-
-run_dotnet_build(Dir, Exit, Out) :-
-    setup_call_cleanup(
-        process_create(path(dotnet),
-            ['build', '--nologo', '-v', 'q', '-c', 'Release'],
-            [cwd(Dir),
-             environment([
-                 'DOTNET_NOLOGO'='1',
-                 'DOTNET_ROLL_FORWARD'='Major'
-             ]),
-             stdout(pipe(SO)), stderr(pipe(SE)), process(Pid)]),
-        ( read_string(SO, _, S1), read_string(SE, _, S2),
-          process_wait(Pid, Status),
-          dotnet_status_exit(Status, Exit),
-          string_concat(S1, S2, Out) ),
-        ( catch(close(SO), _, true), catch(close(SE), _, true) )).
-
-run_dotnet_run(Dir, Exit, Out) :-
-    setup_call_cleanup(
-        process_create(path(dotnet),
-            ['run', '--no-build', '-c', 'Release', '--no-launch-profile', '--'],
-            [cwd(Dir),
-             environment([
-                 'DOTNET_NOLOGO'='1',
-                 'DOTNET_ROLL_FORWARD'='Major'
-             ]),
-             stdout(pipe(SO)), stderr(pipe(SE)), process(Pid)]),
-        ( read_string(SO, _, S1), read_string(SE, _, S2),
-          process_wait(Pid, Status),
-          dotnet_status_exit(Status, Exit),
-          string_concat(S1, S2, Out) ),
-        ( catch(close(SO), _, true), catch(close(SE), _, true) )).
-
-dotnet_status_exit(exit(Code), Code).
-dotnet_status_exit(killed(Signal), Code) :-
-    Code is 128 + Signal.
 
 tpd4_write_fsharp_driver(ProgPath) :-
     Driver =

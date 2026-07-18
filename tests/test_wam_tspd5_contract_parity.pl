@@ -36,6 +36,8 @@
 :- use_module('../src/unifyweaver/core/recursive_kernel_detection',
               [detect_recursive_kernel/4]).
 
+:- use_module('helpers/wam_kernel_parity_harness').
+
 :- dynamic user:tspd_edge/2.
 :- dynamic user:tspd/5.
 :- dynamic user:tspd_tail/4.
@@ -46,51 +48,6 @@
 :- dynamic user:edge_b/2.
 :- dynamic user:tspd_a/5.
 :- dynamic user:tspd_b/5.
-
-dotnet_available :-
-    catch(
-        ( process_create(path(dotnet), ['--version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-gcc_available :-
-    catch(
-        ( process_create(path(gcc), ['--version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-cargo_available :-
-    catch(
-        ( process_create(path(cargo), ['--version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-elixir_available :-
-    catch(
-        ( process_create(path(elixir), ['--version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-go_available :-
-    catch(
-        ( process_create(path(go), ['version'],
-                         [stdout(null), stderr(null), process(Pid)]),
-          process_wait(Pid, exit(0)) ),
-        _, fail).
-
-tmp_dir(Tag, Dir) :-
-    get_time(T),
-    Stamp is round(T * 1000000),
-    format(atom(Dir), '/tmp/uw_tspd5_~w_~w', [Tag, Stamp]),
-    catch(delete_directory_and_contents(Dir), _, true),
-    make_directory_path(Dir).
-
-read_file_string(Path, String) :-
-    read_file_to_string(Path, String, []).
 
 assert_tspd_cycle_program :-
     retractall(user:tspd_edge(_, _)),
@@ -469,28 +426,17 @@ test(elixir_collect_quads_unit, [condition(elixir_available)]) :-
     ),
     !.
 
-test(go_standalone_correlated_diamond, [condition(go_available)]) :-
-    tmp_dir(go_e2e, Dir),
-    directory_file_path(Dir, 'go.mod', ModPath),
-    setup_call_cleanup(
-        open(ModPath, write, ModOut, [encoding(utf8)]),
-        write(ModOut, "module tspd5algo\n\ngo 1.21\n"),
-        close(ModOut)),
-    directory_file_path(Dir, 'tspd5_algo_test.go', GoPath),
-    tspd5_write_go_standalone(GoPath),
-    format(atom(Cmd),
-        'cd ~w && go test -run TestTspd5CorrelatedDiamond -count=1 >~w/go.out 2>~w/go.err',
-        [Dir, Dir, Dir]),
-    shell(Cmd, Exit),
-    ( Exit =:= 0 -> true
-    ; directory_file_path(Dir, 'go.err', ErrPath),
-      directory_file_path(Dir, 'go.out', OutPath),
-      ( exists_file(ErrPath) -> read_file_string(ErrPath, Err) ; Err = "" ),
-      ( exists_file(OutPath) -> read_file_string(OutPath, Out) ; Out = "" ),
-      format(user_error, 'go tspd5 standalone failed:~n~w~n~w~n', [Out, Err]),
-      fail
-    ),
-    !.
+% Former Go standalone BFS/correlated-pair replica removed — not generated
+% runtime. Contract remains via oracle + structural go_correlated_pair_sets.
+test(go_correlated_diamond_oracle_and_markers) :-
+    tspd5_fixture(correlated_diamond, Edges, _),
+    tspd5_fixture_expected(correlated_diamond, a, Want),
+    tspd5_oracle_quads(Edges, a, Got),
+    assertion(Got == Want),
+    \+ tspd5_oracle_has(Edges, a, t, b, q, 3),
+    \+ tspd5_oracle_has(Edges, a, t, c, p, 3),
+    read_file_string('src/unifyweaver/targets/wam_go_target.pl', Go),
+    assertion(sub_string(Go, _, _, _, "pairSets")).
 
 :- end_tests(tspd5_executable).
 
@@ -522,42 +468,6 @@ test(fsharp_no_kernels_omits_native_body, [condition(dotnet_available)]) :-
 % ============================================================
 % Helpers
 % ============================================================
-
-run_dotnet_build(Dir, Exit, Out) :-
-    setup_call_cleanup(
-        process_create(path(dotnet),
-            ['build', '--nologo', '-v', 'q', '-c', 'Release'],
-            [cwd(Dir),
-             environment([
-                 'DOTNET_NOLOGO'='1',
-                 'DOTNET_ROLL_FORWARD'='Major'
-             ]),
-             stdout(pipe(SO)), stderr(pipe(SE)), process(Pid)]),
-        ( read_string(SO, _, S1), read_string(SE, _, S2),
-          process_wait(Pid, Status),
-          dotnet_status_exit(Status, Exit),
-          string_concat(S1, S2, Out) ),
-        ( catch(close(SO), _, true), catch(close(SE), _, true) )).
-
-run_dotnet_run(Dir, Exit, Out) :-
-    setup_call_cleanup(
-        process_create(path(dotnet),
-            ['run', '--no-build', '-c', 'Release', '--no-launch-profile', '--'],
-            [cwd(Dir),
-             environment([
-                 'DOTNET_NOLOGO'='1',
-                 'DOTNET_ROLL_FORWARD'='Major'
-             ]),
-             stdout(pipe(SO)), stderr(pipe(SE)), process(Pid)]),
-        ( read_string(SO, _, S1), read_string(SE, _, S2),
-          process_wait(Pid, Status),
-          dotnet_status_exit(Status, Exit),
-          string_concat(S1, S2, Out) ),
-        ( catch(close(SO), _, true), catch(close(SE), _, true) )).
-
-dotnet_status_exit(exit(Code), Code).
-dotnet_status_exit(killed(Signal), Code) :-
-    Code is 128 + Signal.
 
 tspd5_write_fsharp_driver(ProgPath) :-
     Driver =
@@ -1007,117 +917,5 @@ IO.puts("OK elixir_tspd5")
 ',
     setup_call_cleanup(
         open(Script, write, Out, [encoding(utf8)]),
-        write(Out, Code),
-        close(Out)).
-
-tspd5_write_go_standalone(Path) :-
-    Code =
-'// Shortest-positive correlated step/parent (TSPD5) standalone algorithm check.
-package tspd5algo
-
-import (
-	"reflect"
-	"sort"
-	"testing"
-)
-
-type quad struct {
-	T, Step, P string
-	D          int
-}
-
-func collectTspd5(edges [][2]string, source string) []quad {
-	adj := map[string][]string{}
-	for _, e := range edges {
-		adj[e[0]] = append(adj[e[0]], e[1])
-	}
-	dist := map[string]int{}
-	pairSets := map[string]map[[2]string]bool{}
-	type item struct {
-		node string
-		d    int
-	}
-	queue := []item{{source, 0}}
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		nd := cur.d + 1
-		for _, n := range adj[cur.node] {
-			var cands [][2]string
-			if cur.node == source {
-				cands = [][2]string{{n, source}}
-			} else {
-				seenStep := map[string]bool{}
-				for pair := range pairSets[cur.node] {
-					if !seenStep[pair[0]] {
-						seenStep[pair[0]] = true
-						cands = append(cands, [2]string{pair[0], cur.node})
-					}
-				}
-			}
-			if d0, ok := dist[n]; !ok {
-				dist[n] = nd
-				set := map[[2]string]bool{}
-				for _, c := range cands {
-					set[c] = true
-				}
-				pairSets[n] = set
-				queue = append(queue, item{n, nd})
-			} else if d0 == nd {
-				for _, c := range cands {
-					pairSets[n][c] = true
-				}
-			}
-		}
-	}
-	var out []quad
-	for t, d := range dist {
-		for pair := range pairSets[t] {
-			out = append(out, quad{t, pair[0], pair[1], d})
-		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i], out[j]
-		if a.T != b.T {
-			return a.T < b.T
-		}
-		if a.Step != b.Step {
-			return a.Step < b.Step
-		}
-		if a.P != b.P {
-			return a.P < b.P
-		}
-		return a.D < b.D
-	})
-	return out
-}
-
-func TestTspd5CorrelatedDiamond(t *testing.T) {
-	edges := [][2]string{
-		{"a", "b"}, {"a", "c"}, {"b", "p"}, {"c", "q"}, {"p", "t"}, {"q", "t"},
-	}
-	got := collectTspd5(edges, "a")
-	want := []quad{
-		{"b", "b", "a", 1},
-		{"c", "c", "a", 1},
-		{"p", "b", "b", 2},
-		{"q", "c", "c", 2},
-		{"t", "b", "p", 3},
-		{"t", "c", "q", 3},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %#v want %#v", got, want)
-	}
-	for _, bad := range []quad{{"t", "b", "q", 3}, {"t", "c", "p", 3}} {
-		for _, q := range got {
-			if q == bad {
-				t.Fatalf("unexpected cross-product %#v", bad)
-			}
-		}
-	}
-}
-',
-    setup_call_cleanup(
-        open(Path, write, Out, [encoding(utf8)]),
         write(Out, Code),
         close(Out)).
