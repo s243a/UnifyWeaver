@@ -47,7 +47,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from emit_transitive_hops import hit_prob
 from eval_filing import load_filing, metrics
 from mu_attention import build_e5_tables
-from node_disjoint_eval import node_disjoint_pair_split
+from node_disjoint_eval import node_disjoint_pair_split, paired_node_bootstrap_ci
 from run_sym_channel_fusion import sym_graph_features
 from unifyweaver.graph.leaky_diffusion import (
     build_grounded_semantic_diffusion,
@@ -103,6 +103,11 @@ def load_graph_universe(hops=2):
     universe = sorted(n for n in seen if n in titles)
     uset = set(universe)
     neighbors = {n: sorted(adj[n] & uset) for n in universe}
+    # DIRICHLET boundary (audit finding 1): edges cut by the 2-hop truncation must become shunts to
+    # the bath, not vanish (an insulating boundary changes the operator, α calibration, and h_s).
+    # Record each boundary node's titled exterior neighbors; their cut-edge conductance is added to
+    # that node's leakage in main().
+    cut_ext = {n: sorted((adj[n] - uset) & set(titles)) for n in universe if adj[n] - uset}
 
     # DIRECTED principal-parent map: record-majority first (the audit rule), DAG-edge fallback
     votes = defaultdict(Counter)
@@ -124,20 +129,23 @@ def load_graph_universe(hops=2):
         par = principal.get(n, dag_first.get(n))
         if par is not None and par in uset:
             parents_dir[n] = [par]
-    return universe, titles, neighbors, parents_dir, queries, cand
+    return universe, titles, neighbors, parents_dir, queries, cand, cut_ext
 
 
-def calibrate_alpha_efold(universe, neighbors, emb, ell, eps, shell_hops=2, target=np.exp(-1.0),
-                          probe_stride=25, lo=1e-4, hi=10.0, iters=14):
+def calibrate_alpha_efold(universe, neighbors, emb, ell, eps, base_leak=None, shell_hops=2,
+                          target=np.exp(-1.0), probe_stride=25, lo=1e-4, hi=10.0, iters=14):
     """OUTCOME-BLIND e-fold calibration of the uniform leakage α on a frozen shell.
 
     Pick α so that the MEDIAN (over a fixed probe set of source folders) of
     [median equilibrium response on the shell at `shell_hops` graph hops] / [response at source]
-    equals 1/e. Uses graph + embeddings only; bisection with a light Cholesky path (the full
-    fail-closed contract is applied once at the final α). Everything is recorded."""
+    equals 1/e. `base_leak` (node-aligned) carries the FIXED Dirichlet boundary shunts (cut-edge
+    conductance); the bisected uniform α sits ON TOP of it. Uses graph + embeddings only; bisection
+    with a light Cholesky path (the full fail-closed contract is applied once at the final α)."""
     nodes, cond = semantic_conductance_matrix(universe, neighbors, emb, length_scale=ell,
                                               conductance_floor=eps)
     L = combinatorial_laplacian(cond)
+    if base_leak is not None:
+        L = L + np.diag(base_leak)
     index = {n: i for i, n in enumerate(nodes)}
     adj = {n: set(neighbors[n]) for n in universe}
     probes = universe[::probe_stride]
@@ -193,9 +201,10 @@ def main(argv=None):
     a = ap.parse_args(argv)
     rng = np.random.default_rng(a.seed)
 
-    universe, titles, neighbors, parents_dir, queries, cand = load_graph_universe(a.hops)
+    universe, titles, neighbors, parents_dir, queries, cand, cut_ext = load_graph_universe(a.hops)
     print(f"graph universe: {len(universe)} titled folders (radius {a.hops}); "
-          f"candidate folders: {len(cand)}; principal-parent edges: {len(parents_dir)}")
+          f"candidate folders: {len(cand)}; principal-parent edges: {len(parents_dir)}; "
+          f"boundary nodes with cut edges: {len(cut_ext)}")
 
     import random
     queries = sorted(queries)
@@ -211,7 +220,9 @@ def main(argv=None):
     qman = hashlib.sha256("\n".join(f"{q}\t{fid}" for q, fid in queries).encode()).hexdigest()
     print(f"queries: {len(queries)} (manifest sha {qman[:16]})")
 
-    names = sorted(set(q_titles) | set(f_titles) | {titles[n] for n in universe})
+    ext_nodes = sorted({x for xs in cut_ext.values() for x in xs})
+    names = sorted(set(q_titles) | set(f_titles) | {titles[n] for n in universe}
+                   | {titles[x] for x in ext_nodes})
     qtbl, ptbl, idx = build_e5_tables(names, cache_path=a.e5_cache, batch_size=128)
     Q = qtbl.numpy()
     P = ptbl.numpy()
@@ -227,23 +238,51 @@ def main(argv=None):
                 dists.append(float(np.linalg.norm(uni_vec[ui[n]] - uni_vec[ui[m]])))
     ell = float(np.median(dists))
     emb = {n: uni_vec[ui[n]] for n in universe}
-    alpha, alpha_log = calibrate_alpha_efold(universe, neighbors, emb, ell, a.eps)
+    # DIRICHLET boundary shunts (audit finding 1): each truncated edge's semantic conductance —
+    # same RBF-with-floor formula as interior edges — leaks to the bath at its boundary node,
+    # replacing the (wrong) insulating truncation.
+    ext_vec = {x: P[idx[titles[x]]] for x in ext_nodes}
+    cut_leak = np.zeros(len(universe))
+    n_cut = 0
+    for n, xs in cut_ext.items():
+        zi = emb[n]
+        for x in xs:
+            d2 = float(np.sum((zi - ext_vec[x]) ** 2))
+            cut_leak[ui[n]] += a.eps + (1.0 - a.eps) * np.exp(-d2 / (2.0 * ell * ell))
+            n_cut += 1
+    print(f"Dirichlet boundary: {n_cut} cut edges → shunt mass {cut_leak.sum():.1f} over "
+          f"{int((cut_leak > 0).sum())} boundary nodes")
+    alpha, alpha_log = calibrate_alpha_efold(universe, neighbors, emb, ell, a.eps,
+                                             base_leak=cut_leak)
     print(f"diffusion params (outcome-blind): ell={ell:.4f} (median edge e5 dist), eps={a.eps}, "
-          f"alpha={alpha:.5f} via e-fold on frozen {alpha_log['shell_hops']}-hop shell "
-          f"({alpha_log['probes']} probes, final ratio {alpha_log['final_ratio']:.3f})")
+          f"uniform alpha={alpha:.5f} ON TOP of boundary shunts, via e-fold on frozen "
+          f"{alpha_log['shell_hops']}-hop shell ({alpha_log['probes']} probes, "
+          f"final ratio {alpha_log['final_ratio']:.3f})")
 
+    leak_map = {n: float(alpha + cut_leak[ui[n]]) for n in universe}
     model = build_grounded_semantic_diffusion(
-        universe, neighbors, leakage_conductance=alpha, node_embeddings=emb,
+        universe, neighbors, leakage_conductance=leak_map, node_embeddings=emb,
         length_scale=ell, conductance_floor=a.eps)
     print(f"grounded precision: cond {model.condition_number:.1f} "
           f"(reciprocal {model.reciprocal_condition_number:.2e}; float64 contract passed)")
     root = model.precision_root                       # J = rootᵀ root
 
-    cache_key = hashlib.sha256(json.dumps(
-        [qman, a.top_k, a.inject_m, a.hops, a.eps, round(ell, 6), round(alpha, 6),
-         a.mu_feats, len(universe)]).encode()).hexdigest()[:16]
+    def file_sha(path):
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()[:16]
+
+    # full provenance key (audit finding 5): source data, e5 cache, checkpoint, feature schema
     feat_names = FAMILIES["e5"] + FAMILIES["diffusion"] + FAMILIES["walk"] + FAMILIES["sym"] + (
         FAMILIES["mu"] if a.mu_feats else [])
+    cache_key = hashlib.sha256(json.dumps(
+        [qman, a.top_k, a.inject_m, a.hops, a.eps, round(ell, 6), round(alpha, 6),
+         round(float(cut_leak.sum()), 3), a.mu_feats, len(universe), feat_names,
+         file_sha(DAG), file_sha(TITLES), file_sha(PATHS_JSONL),
+         file_sha(a.e5_cache) if os.path.exists(a.e5_cache) else "",
+         file_sha(a.ckpt) if a.mu_feats else ""]).encode()).hexdigest()[:16]
     if os.path.exists(a.cache) and np.load(a.cache, allow_pickle=True)["key"] == cache_key:
         z = np.load(a.cache, allow_pickle=True)
         X, cand_lists = z["X"], z["cand_lists"]
@@ -383,18 +422,42 @@ def main(argv=None):
                 m = rank_metrics(scores_blend, kept) if kept else {"recall@1": float("nan")}
                 esc_rows.append((t, 1 - len(kept) / max(len(he_b), 1), len(kept), m["recall@1"]))
 
+            # CONFIRMATORY quantity (frozen seed-0 split): paired per-query Δ(1/rank), two-endpoint
+            # node-block bootstrap (the repeated splits below are OVERLAPPING and only descriptive)
+            def rr(scores, b):
+                if not true_in_k[b]:
+                    return 0.0
+                t_ = max((scores[b][k] for k in range(K) if y[b, k]))
+                return 1.0 / (1 + int(np.sum(scores[b] > t_)))
+
+            keep_dd = [i for i, nm in enumerate(feat_names) if nm not in FAMILIES["diffusion"]]
+            b_dd, m_dd, s_dd = fit_blend(keep_dd)
+            sc_dd = ((X[:, :, keep_dd] - m_dd) / s_dd) @ b_dd
+            held_pairs = [split_pairs[b] for b in he_b]
+            frozen = {
+                "blend - e5 [primary]": np.array([rr(scores_blend, b) - rr(scores_e5, b) for b in he_b]),
+                "full - drop-diffusion": np.array([rr(scores_blend, b) - rr(sc_dd, b) for b in he_b]),
+            }
+            print(f"\nfrozen seed-0 split ({len(he_b)} held): paired two-endpoint node-block "
+                  "bootstrap on per-query Δ(1/rank) (95% CI):")
+            for ei, (nm, vals) in enumerate(frozen.items()):
+                ci = paired_node_bootstrap_ci(held_pairs, vals, n_resamples=2000, seed=1729 + ei)
+                print(f"    {nm:24s}: {ci.estimate:+.4f} [{ci.low:+.4f}, {ci.high:+.4f}]")
+
     def summarize(ms):
         return {k: (float(np.mean([m[k] for m in ms])), float(np.std([m[k] for m in ms])))
                 for k in ("MRR", "recall@1", "recall@5")}
 
-    print(f"\n=== held metrics across {a.folds} node-disjoint folds (mean ± sd) ===")
+    print(f"\n=== held metrics across {a.folds} REPEATED node-disjoint splits "
+          "(OVERLAPPING — descriptive stability, NOT an uncertainty interval) ===")
     print(f"  {'ranker':12s} {'MRR':>16s} {'recall@1':>16s} {'recall@5':>16s}")
     for nm in ("e5-only", "blend"):
         s = summarize(results[nm])
         print(f"  {nm:12s} " + " ".join(f"{s[k][0]:8.3f}±{s[k][1]:.3f}" for k in ("MRR", "recall@1", "recall@5")))
     deltas = [results["blend"][i]["MRR"] - results["e5-only"][i]["MRR"] for i in range(a.folds)]
-    print(f"  PAIRED per-fold ΔMRR (blend − e5): mean {np.mean(deltas):+.4f} ± {np.std(deltas, ddof=1):.4f} "
-          f"fold-SD; per-fold {[f'{d:+.3f}' for d in deltas]}; {sum(d > 0 for d in deltas)}/{a.folds} folds +")
+    print(f"  per-split ΔMRR (blend − e5): mean {np.mean(deltas):+.4f}; "
+          f"per-split {[f'{d:+.3f}' for d in deltas]}; {sum(d > 0 for d in deltas)}/{a.folds} splits + "
+          f"(descriptive; the frozen-split bootstrap above is the confirmatory quantity)")
     print("\n  ablations (blend minus family; ΔMRR vs full blend):")
     full_mrr = np.mean([m["MRR"] for m in results["blend"]])
     for fam, ms in ablations.items():
@@ -403,7 +466,8 @@ def main(argv=None):
     wbar = np.mean(weights_log, axis=0)
     print("\n  mean standardized blend weights: " +
           ", ".join(f"{nm}={w:+.3f}" for nm, w in zip(feat_names, wbar)))
-    print("\n  escalation (fold-0 held; routed = top-2 margin < t):")
+    print("\n  escalation (fold-0 held; routed = top-2 margin < t; DESCRIPTIVE — post-hoc "
+          "thresholds, no AURC/bootstrap/matched-coverage comparator):")
     print(f"  {'t':>6s} {'routed':>8s} {'kept_n':>7s} {'kept R@1':>9s}")
     for t, routed, kn, r1 in esc_rows:
         print(f"  {t:6.3f} {routed:8.3f} {kn:7d} {r1:9.3f}")
