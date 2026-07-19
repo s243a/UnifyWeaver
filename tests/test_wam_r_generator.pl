@@ -4858,7 +4858,8 @@ test(switch_on_constant_fallthrough_preserves_backtracking,
           ),
           retractall(user:r_switch_ft(_, _)),
           retractall(user:r_switch_ft_backtracks)
-        )).
+        )),
+    !.
 
 :- end_tests(wam_r_generator).
 
