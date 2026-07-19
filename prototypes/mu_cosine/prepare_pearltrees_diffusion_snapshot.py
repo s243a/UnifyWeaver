@@ -1557,6 +1557,21 @@ def _path_is_within(path, root):
         return False
 
 
+def _is_git_worktree_marker(path):
+    """Recognize an actual Git marker, not an unrelated empty `.git` path."""
+
+    try:
+        if path.is_symlink():
+            return True
+        if path.is_file():
+            with open(path, "rb") as stream:
+                return stream.read(256).lstrip().startswith(b"gitdir:")
+        return path.is_dir() and (path / "HEAD").is_file()
+    except OSError:
+        # An unreadable candidate marker is conservatively treated as Git.
+        return True
+
+
 def _validate_output_paths(run_dir, local_root, inputs):
     run_input = Path(run_dir)
     local_input = Path(local_root)
@@ -1570,7 +1585,10 @@ def _validate_output_paths(run_dir, local_root, inputs):
         raise SnapshotError("run directory must be a child of the approved local root")
     if _path_is_within(run_dir, REPO_ROOT.resolve()):
         raise SnapshotError("run directory cannot be inside the Git repository")
-    if any((ancestor / ".git").exists() for ancestor in (run_dir.parent, *run_dir.parents)):
+    if any(
+        _is_git_worktree_marker(ancestor / ".git")
+        for ancestor in (run_dir.parent, *run_dir.parents)
+    ):
         raise SnapshotError("run directory cannot be inside a Git worktree")
     if run_dir.exists():
         raise SnapshotError("run directory already exists")
@@ -2209,6 +2227,7 @@ def verify_snapshot(run_dir):
         "snapshot_fingerprint",
         "snapshot_label_hash",
         "graph_asset_ready",
+        "input_records",
     }
     if not isinstance(manifest, dict) or set(manifest) != expected_keys:
         raise SnapshotError("manifest fields mismatch")
@@ -2275,6 +2294,21 @@ def verify_snapshot(run_dir):
     }
     if core["numeric_contract"] != expected_numeric:
         raise SnapshotError("numeric contract mismatch")
+    input_records = manifest["input_records"]
+    if (
+        not isinstance(input_records, dict)
+        or set(input_records) != {"source_spec", "relation_policy"}
+        or any(
+            not isinstance(record, dict)
+            or set(record) != {"sha256", "size_bytes"}
+            or re.fullmatch(r"[0-9a-f]{64}", record.get("sha256", "")) is None
+            or not isinstance(record.get("size_bytes"), int)
+            or isinstance(record.get("size_bytes"), bool)
+            or record["size_bytes"] < 0
+            for record in input_records.values()
+        )
+    ):
+        raise SnapshotError("snapshot input content record is malformed")
     expected_privacy_policy = _expected_privacy_policy()
     if (
         manifest["privacy_policy"] != expected_privacy_policy
@@ -2438,6 +2472,10 @@ def prepare_snapshot(
             spec["snapshot_label"].encode("utf-8")
         ).hexdigest(),
         "graph_asset_ready": graph_asset_ready,
+        "input_records": {
+            "relation_policy": policy_before,
+            "source_spec": spec_before,
+        },
     }
     manifest_bytes = _canonical_json(manifest)
 

@@ -7,8 +7,10 @@ It does not report a real-corpus result, authorize a solve, or authorize automat
 publication. `graph_asset_ready` means only that this compiled graph passed its
 declared privacy and anchor-coverage checks. It is **not** study readiness: the
 fidelity protocol still requires a second deterministic compilation with a
-matching fingerprint plus its separately frozen run manifest. All detailed
-artifacts are local-only.
+matching fingerprint plus its separately frozen run manifest. The explicit
+declaration and comparison contract is specified in
+[`DESIGN_pearltrees_diffusion_consensus.md`](DESIGN_pearltrees_diffusion_consensus.md).
+All detailed artifacts are local-only.
 
 ## 1. Why this is a compiler
 
@@ -86,9 +88,11 @@ shape (with `legacy_check` optional):
 ```
 
 Each source entry must contain a unique nonempty `source_id`, supported `kind`,
-and `path`; `account` is optional declared provenance. Relative paths resolve
-against the source-spec directory. Implicit globs, environment-dependent
-defaults, and “newest file” discovery are forbidden. An `api_json_dir` means
+and `path`; the compiler schema permits `account` as declared provenance, while
+the required consensus declaration contract makes it mandatory for RDF and
+forbids it on the other source kinds. Relative paths resolve against the
+source-spec directory. Implicit globs, environment-dependent defaults, and
+“newest file” discovery are forbidden. An `api_json_dir` means
 every regular non-symlink member of that explicitly named directory; an empty
 directory fails closed.
 
@@ -263,7 +267,10 @@ per newline. Records and adjacency neighbours use stable numeric `pt:` ordering.
 Artifacts are mode 0600 inside a mode-0700 run directory.
 
 `manifest.json` content-records every installed artifact so `verify` can detect
-local tampering. Its **scientific** `fingerprint_core` is narrower and contains:
+local tampering. It also records the exact source-specification and relation-policy
+bytes under `input_records` for consensus provenance. Those exact records are
+outside the scientific fingerprint because the source specification contains
+machine-local paths. Its **scientific** `fingerprint_core` is narrower and contains:
 
 - schema, compiler algorithm, and repository commit;
 - an implementation/parser content hash over the exact preparer contract bytes;
@@ -310,9 +317,10 @@ member paths, filenames, mtimes, inodes, user/host names, temporary names,
 minimum-anchor threshold, descriptive snapshot label, and legacy parity are
 excluded. The repository commit is included; `snapshot_label_hash` remains
 manifest provenance, while minimum-anchor coverage and `graph_asset_ready` are
-manifest-level decisions. Byte-identical declarations and authoritative sources
-under different local paths and the same commit produce the same graph artifacts
-and scientific fingerprint.
+manifest-level decisions. Relocating byte-identical authoritative sources changes
+the private manifest's exact source-specification record, because the declared path
+changed, but never the graph artifacts or scientific fingerprint when the logical
+declaration, source contents, policy, and commit are otherwise equivalent.
 
 ## 7. Atomicity, verification, and failure semantics
 
@@ -335,10 +343,13 @@ fingerprint mismatch, duplicate typed nodes or adjacency rows, excluded nodes in
 adjacency, duplicate/unsorted neighbours, asymmetric adjacency, components that do
 not partition retained adjacency nodes, or an eligible-anchor count mismatch.
 
-`verify` validates the immutable compiled run; it does not promise to revalidate
-raw sources that may later have moved. A future stronger verifier may replay the
-compiler from the private source declaration, but v1's source mutation check is a
-prepare-time transaction boundary.
+Snapshot `verify` validates one immutable compiled run; by itself it does not
+revalidate raw sources that may later have moved. The separate consensus
+verifier therefore requires the complete private declaration bundle, relation
+policy, receipt, and both attempt directories; it reruns this fixed snapshot
+verification on each attempt, reloads both manifests, and re-derives the
+cross-attempt decision. It still does not replay source parsing: v1's source
+mutation check remains the boundary of each prepare transaction.
 
 `privacy_certified=false` or fewer than `--minimum-anchors` yields a valid
 verified snapshot with `graph_asset_ready=false`; `prepare` returns exit 2. Exceeding
@@ -392,10 +403,12 @@ instruction or a reason to change the frozen graph.
 ## 10. What this unlocks—and what it does not
 
 A verified, privacy-certified snapshot with `graph_asset_ready=true` is only a
-candidate for the graph-input gate in protocol §2. A second independent compilation must reproduce the snapshot fingerprint, and
-that matching rerun hash must be frozen in the downstream run manifest. The
-protocol must still freeze anchor batches, protected sets, resources, backend,
-and downstream manifests before any real solve. The preparer
-does not compute diffusion, inspect placement labels or judge outcomes, generate
-embeddings, claim full-account coverage, or publish corpus artifacts. Until those
-separate gates pass, the honest result remains: **no real-corpus outcome yet**.
+candidate for the graph-input gate in protocol §2. The full consensus verifier
+must validate the declaration/policy inputs and both fresh-process attempts,
+then the downstream manifest must bind the receipt and canonical attempt-A
+manifest records. The protocol must still freeze anchor batches, protected
+sets, resources, backend, and downstream manifests before any real solve. The
+preparer does not compute diffusion, inspect placement labels or judge outcomes,
+generate embeddings, claim full-account coverage, or publish corpus artifacts.
+Until those separate gates pass, the honest result remains: **no real-corpus
+outcome yet**.

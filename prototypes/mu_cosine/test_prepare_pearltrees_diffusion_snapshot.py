@@ -280,8 +280,20 @@ def test_relocation_and_source_declaration_order_do_not_change_snapshot(
     (first_manifest, first_run), (second_manifest, second_run) = prepared
     assert first_manifest["snapshot_fingerprint"] == second_manifest["snapshot_fingerprint"]
     assert {
-        name: (first_run / name).read_bytes() for name in snapshot.ALL_RUN_FILES
-    } == {name: (second_run / name).read_bytes() for name in snapshot.ALL_RUN_FILES}
+        name: (first_run / name).read_bytes()
+        for name in snapshot.ALL_RUN_FILES
+        if name != "manifest.json"
+    } == {
+        name: (second_run / name).read_bytes()
+        for name in snapshot.ALL_RUN_FILES
+        if name != "manifest.json"
+    }
+    first_without_inputs = dict(first_manifest)
+    second_without_inputs = dict(second_manifest)
+    first_without_inputs.pop("input_records")
+    second_without_inputs.pop("input_records")
+    assert first_without_inputs == second_without_inputs
+    assert first_manifest["input_records"] != second_manifest["input_records"]
 
 
 def test_sqlite_wal_sidecar_is_rejected_without_output(tmp_path: Path) -> None:
