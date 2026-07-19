@@ -339,11 +339,14 @@ supported today:
   separate `(key, vK)` tuples. Arity-2 only.
 - `lmdb('path.lmdb')` -- legacy load-everything LMDB (opaque keys,
   full-tuple values). Requires thor/lmdbr; empty table if absent.
-- `lmdb_arg1_v1('path.lmdb')` -- versioned on-demand arg1 index
-  (arity ≥ 2): ground arg1 → exact-key get; unbound → stream-all.
-  Schema key `__uw_schema__=lmdb_arg1_v1`; values are NL-buckets of
-  TAB-tagged args 2..N. Atom payloads use URL percent-encoding so tabs,
-  newlines, percent signs, and other reserved bytes remain unambiguous.
+- `lmdb_arg1_v1('path.lmdb')` -- versioned arg1-indexed source
+  (arity ≥ 2). Schema key `__uw_schema__=lmdb_arg1_v1`; values are
+  NL-buckets of TAB-tagged args 2..N (atom payloads URL-percent-encoded).
+  Materialisation via project option `lmdb_materialisation(Mode)`:
+  - `lazy` (default) — ground arg1 exact-key get; unbound stream-all
+  - `eager` — stream the v1 DB once at init, `build_fact_indexes`,
+    then `fact_table_dispatch` (not legacy `read_facts_lmdb`)
+  - `cached` / `auto` — unsupported in this phase (domain error)
   Writer: `lmdb_write_facts_arg1_v1`.
 
 ```prolog
