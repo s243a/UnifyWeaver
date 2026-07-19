@@ -412,7 +412,9 @@ An implementation of local grounded diffusion must:
   assembled cross-anchor object need not be symmetric or PSD.
 - **Exact exterior Schur complement by default:** deferred because it destroys
   strict locality through fill and models an integrated exterior, not the
-  requested fixed-temperature bath.
+  requested fixed-temperature bath. The prospective bounded-fidelity protocol
+  permits separately gated, opt-in elimination inside a frozen larger bounded
+  reference; plain Dirichlet remains the operating default.
 - **Tune `D`, `K`, or `alpha` against held outcomes:** rejected. Geometry and
   numerical accuracy are selected outcome blind; any later statistical use
   still requires train-only fitting and held, dependence-aware validation.
@@ -423,6 +425,9 @@ An implementation of local grounded diffusion must:
 
 - [LEAKY_GRAPH_DIFFUSION.md](LEAKY_GRAPH_DIFFUSION.md) — whole-graph physical
   operator, Green kernel, effective resistance, and precision-root algebra.
+- [Prospective bounded-diffusion fidelity protocol](../../prototypes/mu_cosine/PROTOCOL_bounded_diffusion_fidelity.md)
+  — matched-budget selectors, bounded-reference fidelity, exterior-component
+  discovery, and graph-derived closure gates.
 - [COST_FUNCTION_PHILOSOPHY.md](COST_FUNCTION_PHILOSOPHY.md) — hop, semantic,
   and local-exact graph scoring in the broader cost-function design space.
 - [WAM_TRANSITIVE_DISTANCE3_CONTRACT.md](WAM_TRANSITIVE_DISTANCE3_CONTRACT.md)
