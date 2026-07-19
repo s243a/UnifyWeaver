@@ -12,7 +12,10 @@ only, and it is BLOCKED on a raw-source snapshot preparer. The current
 it loses relation type, privacy-propagation semantics, and visibility. The
 14,246-node scrubbed largest-component figure is an audit estimate, not the
 frozen study universe. Unknown visibility means `privacy_certified=false`. No real
-solve may start until the preparer contract in Section 2 is satisfied.
+solve may start until the preparer contract in Section 2 is satisfied. The
+same-code fresh-process reproduction and immutable receipt that close this gate
+are specified in
+[`DESIGN_pearltrees_diffusion_consensus.md`](DESIGN_pearltrees_diffusion_consensus.md).
 No node IDs, titles, paths, embeddings, or node-level manifests may be published; only
 aggregate summaries and content hashes approved for the local provenance store
 may leave the machine. Results must be labeled relative to this scrubbed
@@ -82,6 +85,21 @@ Before ANY real solve, a content-hashed raw-source snapshot preparer must:
   and
 - freeze the resulting study-universe and largest-component hashes, software
   commit, float64 backend, thread settings, and resource ceiling.
+
+The preparer gate closes only through the consensus contract, not by possessing
+a receipt file alone. The source specification must be the complete private
+declaration bundle: a mode-0700 directory outside Git containing exactly the
+fixed mode-0600 local-only marker and canonical mode-0600 specification, with
+explicit RDF accounts and resolved absolute, non-symlink source paths of the
+declared types. Consensus binds the
+declaration-validator implementation and runs exactly two fresh compiler
+attempts, with no third retry and no pooling. Its verifier must be supplied the
+receipt, source specification, relation policy, and both attempt directories;
+it reruns fixed snapshot verification on both, reloads the actual manifests,
+and re-derives all comparisons, common fields, warnings, and the decision.
+Legacy artifact records/statuses are retained per attempt, but legacy-only
+disagreement is warning-only. The receipt's unkeyed self-hash is an integrity
+aid, not an authenticity credential.
 
 The legacy assembled DAG may be compared only as a parity diagnostic; it cannot
 source the scientific adjacency, privacy decision, or study universe. Detailed
@@ -482,7 +500,10 @@ own prospective amendment and untouched audit data.
 
 ## 9. Reproducibility and fail-closed rules
 
-The run fingerprint covers content rather than machine-local paths:
+The run fingerprint covers content rather than machine-local paths. Before the
+no-solve plan is frozen, the full consensus verifier above must pass and the
+plan must bind both the receipt content record and canonical attempt-A manifest
+record; receipt-only verification is prohibited. The fingerprint includes:
 
 - raw-source and parser hashes, deterministic preparer hash, physical-edge
   policy, privacy-propagation and visibility-limitation manifests, frozen
