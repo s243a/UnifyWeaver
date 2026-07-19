@@ -4424,6 +4424,9 @@ compile_execute_builtin_to_llvm(Options, Code) :-
     Template = '; Execute builtin operations
 @wam_stream_handle_table = internal global [4096 x %WamLineReader*] zeroinitializer
 @wam_stream_handle_count = internal global i32 0
+; One byte per stream handle records whether any record has already been
+; returned. Regex RS uses it so ^ is active only at physical file start.
+@wam_stream_handle_started = internal global [4096 x i8] zeroinitializer
 
 @.wam_stream_eof_atom = private constant [12 x i8] c"end_of_file\00"
 
@@ -7190,8 +7193,222 @@ sfd.free_all_fail:
   br label %sfd.fail
 }
 
+; Compile the program record-separator ERE once. Invalid patterns are a
+; startup error rather than a silent fallback to literal or unsplit input.
+define void @wam_rs_regex_init() {
+entry:
+  %rsri.cached = load i8*, i8** @wam_rs_regex_cache
+  %rsri.ready = icmp ne i8* %rsri.cached, null
+  br i1 %rsri.ready, label %rsri.done, label %rsri.alloc
+
+rsri.alloc:
+  %rsri.mem = call i8* @malloc(i64 512)
+  %rsri.memnull = icmp eq i8* %rsri.mem, null
+  br i1 %rsri.memnull, label %rsri.error, label %rsri.compile
+
+rsri.compile:
+  %rsri.pattern = load i8*, i8** @wam_rs_ptr
+  %rsri.rc = call i32 @regcomp(i8* %rsri.mem, i8* %rsri.pattern, i32 1)
+  %rsri.ok = icmp eq i32 %rsri.rc, 0
+  br i1 %rsri.ok, label %rsri.store, label %rsri.compile_fail
+
+rsri.compile_fail:
+  call void @free(i8* %rsri.mem)
+  br label %rsri.error
+
+rsri.store:
+  store i8* %rsri.mem, i8** @wam_rs_regex_cache
+  br label %rsri.done
+
+rsri.error:
+  %rsri.msg = getelementptr [38 x i8], [38 x i8]* @.wam_rs_regex_error, i64 0, i64 0
+  %rsri.written = call i64 @write(i32 2, i8* %rsri.msg, i64 37)
+  call void @exit(i32 2)
+  unreachable
+
+rsri.done:
+  ret void
+}
+
+; Reset awk RT to the stable empty string. The reusable backing allocation is
+; retained so streams with many records use only their high-water capacity.
+define void @wam_rt_clear() {
+entry:
+  %rtc.empty = getelementptr [1 x i8], [1 x i8]* @.wam_rt_empty, i64 0, i64 0
+  store i8* %rtc.empty, i8** @wam_rt_ptr
+  store i64 0, i64* @wam_rt_len
+  ret void
+}
+
+; Copy a matched record separator into stable process-owned RT storage.
+define i1 @wam_rt_set(i8* %src, i64 %len) {
+entry:
+  %rts.isempty = icmp eq i64 %len, 0
+  br i1 %rts.isempty, label %rts.clear, label %rts.need
+
+rts.clear:
+  call void @wam_rt_clear()
+  ret i1 true
+
+rts.need:
+  %rts.needlen = add i64 %len, 1
+  %rts.wrapped = icmp ule i64 %rts.needlen, %len
+  br i1 %rts.wrapped, label %rts.fail, label %rts.check
+
+rts.check:
+  %rts.cap = load i64, i64* @wam_rt_cap
+  %rts.buf0 = load i8*, i8** @wam_rt_buf
+  %rts.bufok = icmp ne i8* %rts.buf0, null
+  %rts.capok = icmp uge i64 %rts.cap, %rts.needlen
+  %rts.fits = and i1 %rts.bufok, %rts.capok
+  br i1 %rts.fits, label %rts.copy, label %rts.grow
+
+rts.grow:
+  %rts.twice = shl i64 %rts.cap, 1
+  %rts.small = icmp ult i64 %rts.cap, 4096
+  %rts.basecap = select i1 %rts.small, i64 4096, i64 %rts.twice
+  %rts.needmore = icmp ugt i64 %rts.needlen, %rts.basecap
+  %rts.newcap = select i1 %rts.needmore, i64 %rts.needlen, i64 %rts.basecap
+  %rts.grew = icmp ugt i64 %rts.newcap, %rts.cap
+  br i1 %rts.grew, label %rts.alloc, label %rts.fail
+
+rts.alloc:
+  %rts.old = load i8*, i8** @wam_rt_buf
+  %rts.new = call i8* @realloc(i8* %rts.old, i64 %rts.newcap)
+  %rts.newnull = icmp eq i8* %rts.new, null
+  br i1 %rts.newnull, label %rts.fail, label %rts.store
+
+rts.store:
+  store i8* %rts.new, i8** @wam_rt_buf
+  store i64 %rts.newcap, i64* @wam_rt_cap
+  br label %rts.copy
+
+rts.copy:
+  %rts.dst = load i8*, i8** @wam_rt_buf
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %rts.dst, i8* %src, i64 %len, i1 false)
+  %rts.end = getelementptr i8, i8* %rts.dst, i64 %len
+  store i8 0, i8* %rts.end
+  store i8* %rts.dst, i8** @wam_rt_ptr
+  store i64 %len, i64* @wam_rt_len
+  ret i1 true
+
+rts.fail:
+  call void @wam_rt_clear()
+  ret i1 false
+}
+
+; Replace the consumed reader block with bytes that followed a regex RS match.
+; The file descriptor already points beyond those bytes, so replaying this
+; copied tail before the next refill preserves separators found by block scans.
+define i1 @wam_stream_reader_set_replay(%WamLineReader* %reader, i8* %src, i64 %len) {
+entry:
+  %srr.buf_slot = getelementptr %WamLineReader, %WamLineReader* %reader, i32 0, i32 1
+  %srr.cap_slot = getelementptr %WamLineReader, %WamLineReader* %reader, i32 0, i32 2
+  %srr.len_slot = getelementptr %WamLineReader, %WamLineReader* %reader, i32 0, i32 3
+  %srr.pos_slot = getelementptr %WamLineReader, %WamLineReader* %reader, i32 0, i32 4
+  %srr.cap = load i64, i64* %srr.cap_slot
+  %srr.fits = icmp ule i64 %len, %srr.cap
+  br i1 %srr.fits, label %srr.copy, label %srr.grow
+
+srr.grow:
+  %srr.twice = shl i64 %srr.cap, 1
+  %srr.needmore = icmp ugt i64 %len, %srr.twice
+  %srr.newcap = select i1 %srr.needmore, i64 %len, i64 %srr.twice
+  %srr.grew = icmp ugt i64 %srr.newcap, %srr.cap
+  br i1 %srr.grew, label %srr.alloc, label %srr.fail
+
+srr.alloc:
+  %srr.old = load i8*, i8** %srr.buf_slot
+  %srr.new = call i8* @realloc(i8* %srr.old, i64 %srr.newcap)
+  %srr.newnull = icmp eq i8* %srr.new, null
+  br i1 %srr.newnull, label %srr.fail, label %srr.store
+
+srr.store:
+  store i8* %srr.new, i8** %srr.buf_slot
+  store i64 %srr.newcap, i64* %srr.cap_slot
+  br label %srr.copy
+
+srr.copy:
+  %srr.dst = load i8*, i8** %srr.buf_slot
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %srr.dst, i8* %src, i64 %len, i1 false)
+  store i64 %len, i64* %srr.len_slot
+  store i64 0, i64* %srr.pos_slot
+  ret i1 true
+
+srr.fail:
+  ret i1 false
+}
+
+; Find the earliest nonempty POSIX ERE match in a NUL-terminated record
+; prefix. Empty matches are skipped so an empty-capable RS cannot loop.
+define i1 @wam_rs_regex_find(i8* %buf, i64 %len, i1 %allow_bol, i64* %so_out, i64* %eo_out) {
+entry:
+  call void @wam_rs_regex_init()
+  %rsrf.preg = load i8*, i8** @wam_rs_regex_cache
+  %rsrf.pm = alloca [4 x i64], align 8
+  %rsrf.pmp = bitcast [4 x i64]* %rsrf.pm to i8*
+  br label %rsrf.walk
+
+rsrf.walk:
+  %rsrf.offset = phi i64 [ 0, %entry ], [ %rsrf.next, %rsrf.advance ]
+  %rsrf.within = icmp ule i64 %rsrf.offset, %len
+  br i1 %rsrf.within, label %rsrf.exec, label %rsrf.miss
+
+rsrf.exec:
+  %rsrf.start = getelementptr i8, i8* %buf, i64 %rsrf.offset
+  %rsrf.offset0 = icmp eq i64 %rsrf.offset, 0
+  %rsrf.atbol = and i1 %allow_bol, %rsrf.offset0
+  %rsrf.flags = select i1 %rsrf.atbol, i32 0, i32 1
+  %rsrf.rc = call i32 @regexec(i8* %rsrf.preg, i8* %rsrf.start, i64 1, i8* %rsrf.pmp, i32 %rsrf.flags)
+  %rsrf.matched = icmp eq i32 %rsrf.rc, 0
+  br i1 %rsrf.matched, label %rsrf.decode, label %rsrf.miss
+
+rsrf.decode:
+  %rsrf.so32p = bitcast i8* %rsrf.pmp to i32*
+  %rsrf.so32 = load i32, i32* %rsrf.so32p
+  %rsrf.eo8p = getelementptr i8, i8* %rsrf.pmp, i64 4
+  %rsrf.eo32p = bitcast i8* %rsrf.eo8p to i32*
+  %rsrf.eo32 = load i32, i32* %rsrf.eo32p
+  %rsrf.sononneg = icmp sge i32 %rsrf.so32, 0
+  %rsrf.eononneg = icmp sge i32 %rsrf.eo32, 0
+  %rsrf.nonneg = and i1 %rsrf.sononneg, %rsrf.eononneg
+  br i1 %rsrf.nonneg, label %rsrf.bounds, label %rsrf.miss
+
+rsrf.bounds:
+  %rsrf.so64 = sext i32 %rsrf.so32 to i64
+  %rsrf.eo64 = sext i32 %rsrf.eo32 to i64
+  %rsrf.abso = add i64 %rsrf.offset, %rsrf.so64
+  %rsrf.abeo = add i64 %rsrf.offset, %rsrf.eo64
+  %rsrf.ordered = icmp ule i64 %rsrf.abso, %rsrf.abeo
+  %rsrf.inrange = icmp ule i64 %rsrf.abeo, %len
+  %rsrf.valid = and i1 %rsrf.ordered, %rsrf.inrange
+  br i1 %rsrf.valid, label %rsrf.length, label %rsrf.miss
+
+rsrf.length:
+  %rsrf.nonempty = icmp ugt i64 %rsrf.abeo, %rsrf.abso
+  br i1 %rsrf.nonempty, label %rsrf.hit, label %rsrf.zero
+
+rsrf.hit:
+  store i64 %rsrf.abso, i64* %so_out
+  store i64 %rsrf.abeo, i64* %eo_out
+  ret i1 true
+
+rsrf.zero:
+  %rsrf.atend = icmp uge i64 %rsrf.abso, %len
+  br i1 %rsrf.atend, label %rsrf.miss, label %rsrf.advance
+
+rsrf.advance:
+  %rsrf.next = add i64 %rsrf.abso, 1
+  br label %rsrf.walk
+
+rsrf.miss:
+  ret i1 false
+}
+
 define %Value @wam_stream_read_line_value(%Value %handle_value) {
 entry:
+  %rhv.rs_so_slot = alloca i64, align 8
+  %rhv.rs_eo_slot = alloca i64, align 8
   %rhv.t = call i32 @value_tag(%Value %handle_value)
   %rhv.is_int = icmp eq i32 %rhv.t, 1
   br i1 %rhv.is_int, label %rhv.lookup_handle, label %rhv.fail
@@ -7218,6 +7435,9 @@ rhv.have_handle:
   %rhv.fd_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 0
   %rhv.fd = load i32, i32* %rhv.fd_slot
   %rhv.fd_ok = icmp sge i32 %rhv.fd, 0
+  %rhv.started_slot = getelementptr [4096 x i8], [4096 x i8]* @wam_stream_handle_started, i32 0, i32 %rhv.handle
+  %rhv.started = load i8, i8* %rhv.started_slot
+  %rhv.at_file_start = icmp eq i8 %rhv.started, 0
   br i1 %rhv.fd_ok, label %rhv.alloc_out, label %rhv.fail
 
 rhv.alloc_out:
@@ -7256,7 +7476,43 @@ rhv.after_read:
 
 rhv.eof_or_partial:
   %rhv.empty_line = icmp eq i64 %rhv.out_len, 0
-  br i1 %rhv.empty_line, label %rhv.eof, label %rhv.finalize
+  br i1 %rhv.empty_line, label %rhv.eof, label %rhv.eof_dispatch
+
+rhv.eof_dispatch:
+  %rhv.eof_mode = load i8, i8* @wam_rs_mode
+  %rhv.eof_regex = icmp eq i8 %rhv.eof_mode, 2
+  br i1 %rhv.eof_regex, label %rhv.regex_eof_prepare, label %rhv.eof_plain
+
+rhv.eof_plain:
+  call void @wam_rt_clear()
+  br label %rhv.finalize
+
+rhv.regex_eof_prepare:
+  %rhv.eof_term = getelementptr i8, i8* %rhv.out_cur, i64 %rhv.out_len
+  store i8 0, i8* %rhv.eof_term
+  %rhv.eof_found = call i1 @wam_rs_regex_find(i8* %rhv.out_cur, i64 %rhv.out_len, i1 %rhv.at_file_start, i64* %rhv.rs_so_slot, i64* %rhv.rs_eo_slot)
+  br i1 %rhv.eof_found, label %rhv.regex_eof_copy, label %rhv.regex_eof_miss
+
+rhv.regex_eof_copy:
+  %rhv.eof_so = load i64, i64* %rhv.rs_so_slot
+  %rhv.eof_eo = load i64, i64* %rhv.rs_eo_slot
+  %rhv.eof_sep_len = sub i64 %rhv.eof_eo, %rhv.eof_so
+  %rhv.eof_sep = getelementptr i8, i8* %rhv.out_cur, i64 %rhv.eof_so
+  %rhv.eof_rt_ok = call i1 @wam_rt_set(i8* %rhv.eof_sep, i64 %rhv.eof_sep_len)
+  br i1 %rhv.eof_rt_ok, label %rhv.regex_eof_replay, label %rhv.free_out_fail
+
+rhv.regex_eof_replay:
+  %rhv.eof_tail = sub i64 %rhv.out_len, %rhv.eof_eo
+  %rhv.eof_tail_src = getelementptr i8, i8* %rhv.out_cur, i64 %rhv.eof_eo
+  %rhv.eof_replay_ok = call i1 @wam_stream_reader_set_replay(%WamLineReader* %rhv.reader, i8* %rhv.eof_tail_src, i64 %rhv.eof_tail)
+  br i1 %rhv.eof_replay_ok, label %rhv.regex_eof_ready, label %rhv.free_out_fail
+
+rhv.regex_eof_ready:
+  br label %rhv.finalize
+
+rhv.regex_eof_miss:
+  call void @wam_rt_clear()
+  br label %rhv.finalize
 
 rhv.consume:
   %rhv.char_ptr = getelementptr i8, i8* %rhv.buf, i64 %rhv.pos
@@ -7297,8 +7553,19 @@ rhv.append_store:
   %rhv.next_out_len = add i64 %rhv.out_len, 1
   br label %rhv.checkmatch
 
-; A record boundary is the RS byte-string as a suffix of what we have appended.
+; Dispatch literal, paragraph, and regex record-separator modes explicitly.
+; The paragraph label preserves the independent merge seam for paragraph RS.
 rhv.checkmatch:
+  %rhv.rsmode = load i8, i8* @wam_rs_mode
+  switch i8 %rhv.rsmode, label %rhv.literal_check [
+    i8 1, label %rhv.paragraph_check
+    i8 2, label %rhv.regex_maybe_scan
+  ]
+
+rhv.paragraph_check:
+  br label %rhv.literal_check
+
+rhv.literal_check:
   %rhv.rslen = load i64, i64* @wam_rs_len
   %rhv.is_para = icmp eq i64 %rhv.rslen, 0
   br i1 %rhv.is_para, label %rhv.para_check, label %rhv.suffix_check
@@ -7329,14 +7596,59 @@ rhv.domatch:
   %rhv.rsptr = load i8*, i8** @wam_rs_ptr
   %rhv.cmp = call i32 @memcmp(i8* %rhv.mptr, i8* %rhv.rsptr, i64 %rhv.rslen)
   %rhv.matched = icmp eq i32 %rhv.cmp, 0
-  br i1 %rhv.matched, label %rhv.finalize, label %rhv.nomatch
+  br i1 %rhv.matched, label %rhv.literal_copy, label %rhv.nomatch
+
+rhv.literal_copy:
+  %rhv.literal_rt_ok = call i1 @wam_rt_set(i8* %rhv.mptr, i64 %rhv.rslen)
+  br i1 %rhv.literal_rt_ok, label %rhv.literal_ready, label %rhv.free_out_fail
+
+rhv.literal_ready:
+  br label %rhv.finalize
+
+; Scan once per filled reader block instead of once per byte. This gives
+; regexec the complete buffered prefix for leftmost-longest selection and
+; avoids repeated-prefix blowups on long records. A boundary-ending match is
+; deferred until another block or EOF can show whether it extends. POSIX
+; regexec has no partial-match state, so an optional extension that begins but
+; remains incomplete at a block edge follows the usual buffered-regex caveat.
+rhv.regex_maybe_scan:
+  %rhv.regex_scan_boundary = icmp eq i64 %rhv.pos_next, %rhv.len
+  br i1 %rhv.regex_scan_boundary, label %rhv.regex_prepare, label %rhv.nomatch
+
+rhv.regex_prepare:
+  %rhv.regex_term = getelementptr i8, i8* %rhv.append_out, i64 %rhv.next_out_len
+  store i8 0, i8* %rhv.regex_term
+  %rhv.regex_found = call i1 @wam_rs_regex_find(i8* %rhv.append_out, i64 %rhv.next_out_len, i1 %rhv.at_file_start, i64* %rhv.rs_so_slot, i64* %rhv.rs_eo_slot)
+  br i1 %rhv.regex_found, label %rhv.regex_hit, label %rhv.nomatch
+
+rhv.regex_hit:
+  %rhv.regex_so = load i64, i64* %rhv.rs_so_slot
+  %rhv.regex_eo = load i64, i64* %rhv.rs_eo_slot
+  %rhv.regex_at_end = icmp eq i64 %rhv.regex_eo, %rhv.next_out_len
+  br i1 %rhv.regex_at_end, label %rhv.nomatch, label %rhv.regex_copy
+
+rhv.regex_copy:
+  %rhv.regex_sep_len = sub i64 %rhv.regex_eo, %rhv.regex_so
+  %rhv.regex_sep = getelementptr i8, i8* %rhv.append_out, i64 %rhv.regex_so
+  %rhv.regex_rt_ok = call i1 @wam_rt_set(i8* %rhv.regex_sep, i64 %rhv.regex_sep_len)
+  br i1 %rhv.regex_rt_ok, label %rhv.regex_replay, label %rhv.free_out_fail
+
+rhv.regex_replay:
+  %rhv.regex_tail = sub i64 %rhv.next_out_len, %rhv.regex_eo
+  %rhv.regex_tail_src = getelementptr i8, i8* %rhv.append_out, i64 %rhv.regex_eo
+  %rhv.regex_replay_ok = call i1 @wam_stream_reader_set_replay(%WamLineReader* %rhv.reader, i8* %rhv.regex_tail_src, i64 %rhv.regex_tail)
+  br i1 %rhv.regex_replay_ok, label %rhv.regex_ready, label %rhv.free_out_fail
+
+rhv.regex_ready:
+  br label %rhv.finalize
 
 rhv.nomatch:
   br label %rhv.loop
 
 rhv.finalize:
-  %rhv.fin_buf = phi i8* [ %rhv.append_out, %rhv.domatch ], [ %rhv.append_out, %rhv.para_domatch ], [ %rhv.out_cur, %rhv.eof_or_partial ]
-  %rhv.fin_len = phi i64 [ %rhv.mstart, %rhv.domatch ], [ %rhv.pc_len, %rhv.para_domatch ], [ %rhv.out_len, %rhv.eof_or_partial ]
+  %rhv.fin_buf = phi i8* [ %rhv.append_out, %rhv.para_domatch ], [ %rhv.append_out, %rhv.literal_ready ], [ %rhv.append_out, %rhv.regex_ready ], [ %rhv.out_cur, %rhv.eof_plain ], [ %rhv.out_cur, %rhv.regex_eof_ready ], [ %rhv.out_cur, %rhv.regex_eof_miss ]
+  %rhv.fin_len = phi i64 [ %rhv.pc_len, %rhv.para_domatch ], [ %rhv.mstart, %rhv.literal_ready ], [ %rhv.regex_so, %rhv.regex_ready ], [ %rhv.out_len, %rhv.eof_plain ], [ %rhv.eof_so, %rhv.regex_eof_ready ], [ %rhv.out_len, %rhv.regex_eof_miss ]
+  store i8 1, i8* %rhv.started_slot
   %rhv.has_chars = icmp sgt i64 %rhv.fin_len, 0
   br i1 %rhv.has_chars, label %rhv.check_cr, label %rhv.intern_empty
 
@@ -7344,12 +7656,15 @@ rhv.check_cr:
   %rhv.last_idx = sub i64 %rhv.fin_len, 1
   %rhv.last_ptr = getelementptr i8, i8* %rhv.fin_buf, i64 %rhv.last_idx
   %rhv.last = load i8, i8* %rhv.last_ptr
+  %rhv.rsmode_cr = load i8, i8* @wam_rs_mode
+  %rhv.rsmode_literal = icmp eq i8 %rhv.rsmode_cr, 0
   %rhv.rslen_cr = load i64, i64* @wam_rs_len
   %rhv.rslen_is_1 = icmp eq i64 %rhv.rslen_cr, 1
   %rhv.rsptr_cr = load i8*, i8** @wam_rs_ptr
   %rhv.rsb_cr = load i8, i8* %rhv.rsptr_cr
   %rhv.rsb_is_lf = icmp eq i8 %rhv.rsb_cr, 10
-  %rhv.rs_is_lf = and i1 %rhv.rslen_is_1, %rhv.rsb_is_lf
+  %rhv.rs_is_lf0 = and i1 %rhv.rslen_is_1, %rhv.rsb_is_lf
+  %rhv.rs_is_lf = and i1 %rhv.rsmode_literal, %rhv.rs_is_lf0
   %rhv.last_is_cr = icmp eq i8 %rhv.last, 13
   %rhv.do_trim_cr = and i1 %rhv.rs_is_lf, %rhv.last_is_cr
   %rhv.para_cr = icmp eq i64 %rhv.rslen_cr, 0
@@ -7381,7 +7696,7 @@ rhv.eof:
   ret %Value %rhv.eof_v
 
 rhv.free_out_fail:
-  %rhv.fail_out = phi i8* [ %rhv.out_cur, %rhv.fill ], [ %rhv.out_cur, %rhv.grow_out ], [ %rhv.out_cur, %rhv.grow_alloc ]
+  %rhv.fail_out = phi i8* [ %rhv.out_cur, %rhv.fill ], [ %rhv.out_cur, %rhv.grow_out ], [ %rhv.out_cur, %rhv.grow_alloc ], [ %rhv.append_out, %rhv.literal_copy ], [ %rhv.append_out, %rhv.regex_copy ], [ %rhv.append_out, %rhv.regex_replay ], [ %rhv.out_cur, %rhv.regex_eof_copy ], [ %rhv.out_cur, %rhv.regex_eof_replay ]
   call void @free(i8* %rhv.fail_out)
   br label %rhv.fail
 }
@@ -7398,6 +7713,8 @@ rhv.free_out_fail:
 ; real interned end_of_file atom.
 define %Value @wam_stream_read_line_transient_value(%Value %handle_value) {
 entry:
+  %rtv.rs_so_slot = alloca i64, align 8
+  %rtv.rs_eo_slot = alloca i64, align 8
   %rtv.t = call i32 @value_tag(%Value %handle_value)
   %rtv.is_int = icmp eq i32 %rtv.t, 1
   br i1 %rtv.is_int, label %rtv.lookup_handle, label %rtv.fail
@@ -7424,6 +7741,9 @@ rtv.have_handle:
   %rtv.fd_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 0
   %rtv.fd = load i32, i32* %rtv.fd_slot
   %rtv.fd_ok = icmp sge i32 %rtv.fd, 0
+  %rtv.started_slot = getelementptr [4096 x i8], [4096 x i8]* @wam_stream_handle_started, i32 0, i32 %rtv.handle
+  %rtv.started = load i8, i8* %rtv.started_slot
+  %rtv.at_file_start = icmp eq i8 %rtv.started, 0
   br i1 %rtv.fd_ok, label %rtv.ensure_out, label %rtv.fail
 
 rtv.ensure_out:
@@ -7477,7 +7797,43 @@ rtv.after_read:
 
 rtv.eof_or_partial:
   %rtv.empty_line = icmp eq i64 %rtv.out_len, 0
-  br i1 %rtv.empty_line, label %rtv.eof, label %rtv.finalize
+  br i1 %rtv.empty_line, label %rtv.eof, label %rtv.eof_dispatch
+
+rtv.eof_dispatch:
+  %rtv.eof_mode = load i8, i8* @wam_rs_mode
+  %rtv.eof_regex = icmp eq i8 %rtv.eof_mode, 2
+  br i1 %rtv.eof_regex, label %rtv.regex_eof_prepare, label %rtv.eof_plain
+
+rtv.eof_plain:
+  call void @wam_rt_clear()
+  br label %rtv.finalize
+
+rtv.regex_eof_prepare:
+  %rtv.eof_term = getelementptr i8, i8* %rtv.out_cur, i64 %rtv.out_len
+  store i8 0, i8* %rtv.eof_term
+  %rtv.eof_found = call i1 @wam_rs_regex_find(i8* %rtv.out_cur, i64 %rtv.out_len, i1 %rtv.at_file_start, i64* %rtv.rs_so_slot, i64* %rtv.rs_eo_slot)
+  br i1 %rtv.eof_found, label %rtv.regex_eof_copy, label %rtv.regex_eof_miss
+
+rtv.regex_eof_copy:
+  %rtv.eof_so = load i64, i64* %rtv.rs_so_slot
+  %rtv.eof_eo = load i64, i64* %rtv.rs_eo_slot
+  %rtv.eof_sep_len = sub i64 %rtv.eof_eo, %rtv.eof_so
+  %rtv.eof_sep = getelementptr i8, i8* %rtv.out_cur, i64 %rtv.eof_so
+  %rtv.eof_rt_ok = call i1 @wam_rt_set(i8* %rtv.eof_sep, i64 %rtv.eof_sep_len)
+  br i1 %rtv.eof_rt_ok, label %rtv.regex_eof_replay, label %rtv.fail
+
+rtv.regex_eof_replay:
+  %rtv.eof_tail = sub i64 %rtv.out_len, %rtv.eof_eo
+  %rtv.eof_tail_src = getelementptr i8, i8* %rtv.out_cur, i64 %rtv.eof_eo
+  %rtv.eof_replay_ok = call i1 @wam_stream_reader_set_replay(%WamLineReader* %rtv.reader, i8* %rtv.eof_tail_src, i64 %rtv.eof_tail)
+  br i1 %rtv.eof_replay_ok, label %rtv.regex_eof_ready, label %rtv.fail
+
+rtv.regex_eof_ready:
+  br label %rtv.finalize
+
+rtv.regex_eof_miss:
+  call void @wam_rt_clear()
+  br label %rtv.finalize
 
 rtv.consume:
   %rtv.char_ptr = getelementptr i8, i8* %rtv.buf, i64 %rtv.pos
@@ -7525,9 +7881,20 @@ rtv.append_store:
   %rtv.next_out_len = add i64 %rtv.out_len, 1
   br label %rtv.checkmatch
 
-; A record boundary is the RS byte-string as a suffix of what we have appended;
-; in paragraph mode (rs_len == 0) it is a blank line -- two adjacent newlines.
+; Dispatch literal, paragraph, and regex record-separator modes explicitly.
+; Literal mode uses suffix matching, paragraph mode recognizes a blank line
+; (two adjacent newlines), and regex mode scans completed reader blocks.
 rtv.checkmatch:
+  %rtv.rsmode = load i8, i8* @wam_rs_mode
+  switch i8 %rtv.rsmode, label %rtv.literal_check [
+    i8 1, label %rtv.paragraph_check
+    i8 2, label %rtv.regex_maybe_scan
+  ]
+
+rtv.paragraph_check:
+  br label %rtv.literal_check
+
+rtv.literal_check:
   %rtv.rslen = load i64, i64* @wam_rs_len
   %rtv.is_para = icmp eq i64 %rtv.rslen, 0
   br i1 %rtv.is_para, label %rtv.para_check, label %rtv.suffix_check
@@ -7558,14 +7925,54 @@ rtv.domatch:
   %rtv.rsptr = load i8*, i8** @wam_rs_ptr
   %rtv.cmp = call i32 @memcmp(i8* %rtv.mptr, i8* %rtv.rsptr, i64 %rtv.rslen)
   %rtv.matched = icmp eq i32 %rtv.cmp, 0
-  br i1 %rtv.matched, label %rtv.finalize, label %rtv.nomatch
+  br i1 %rtv.matched, label %rtv.literal_copy, label %rtv.nomatch
+
+rtv.literal_copy:
+  %rtv.literal_rt_ok = call i1 @wam_rt_set(i8* %rtv.mptr, i64 %rtv.rslen)
+  br i1 %rtv.literal_rt_ok, label %rtv.literal_ready, label %rtv.fail
+
+rtv.literal_ready:
+  br label %rtv.finalize
+
+; Keep the transient reader scan points aligned with the persistent reader.
+rtv.regex_maybe_scan:
+  %rtv.regex_scan_boundary = icmp eq i64 %rtv.pos_next, %rtv.len
+  br i1 %rtv.regex_scan_boundary, label %rtv.regex_prepare, label %rtv.nomatch
+
+rtv.regex_prepare:
+  %rtv.regex_term = getelementptr i8, i8* %rtv.append_out, i64 %rtv.next_out_len
+  store i8 0, i8* %rtv.regex_term
+  %rtv.regex_found = call i1 @wam_rs_regex_find(i8* %rtv.append_out, i64 %rtv.next_out_len, i1 %rtv.at_file_start, i64* %rtv.rs_so_slot, i64* %rtv.rs_eo_slot)
+  br i1 %rtv.regex_found, label %rtv.regex_hit, label %rtv.nomatch
+
+rtv.regex_hit:
+  %rtv.regex_so = load i64, i64* %rtv.rs_so_slot
+  %rtv.regex_eo = load i64, i64* %rtv.rs_eo_slot
+  %rtv.regex_at_end = icmp eq i64 %rtv.regex_eo, %rtv.next_out_len
+  br i1 %rtv.regex_at_end, label %rtv.nomatch, label %rtv.regex_copy
+
+rtv.regex_copy:
+  %rtv.regex_sep_len = sub i64 %rtv.regex_eo, %rtv.regex_so
+  %rtv.regex_sep = getelementptr i8, i8* %rtv.append_out, i64 %rtv.regex_so
+  %rtv.regex_rt_ok = call i1 @wam_rt_set(i8* %rtv.regex_sep, i64 %rtv.regex_sep_len)
+  br i1 %rtv.regex_rt_ok, label %rtv.regex_replay, label %rtv.fail
+
+rtv.regex_replay:
+  %rtv.regex_tail = sub i64 %rtv.next_out_len, %rtv.regex_eo
+  %rtv.regex_tail_src = getelementptr i8, i8* %rtv.append_out, i64 %rtv.regex_eo
+  %rtv.regex_replay_ok = call i1 @wam_stream_reader_set_replay(%WamLineReader* %rtv.reader, i8* %rtv.regex_tail_src, i64 %rtv.regex_tail)
+  br i1 %rtv.regex_replay_ok, label %rtv.regex_ready, label %rtv.fail
+
+rtv.regex_ready:
+  br label %rtv.finalize
 
 rtv.nomatch:
   br label %rtv.loop
 
 rtv.finalize:
-  %rtv.fin_buf = phi i8* [ %rtv.append_out, %rtv.domatch ], [ %rtv.append_out, %rtv.para_domatch ], [ %rtv.out_cur, %rtv.eof_or_partial ]
-  %rtv.fin_len = phi i64 [ %rtv.mstart, %rtv.domatch ], [ %rtv.pc_len, %rtv.para_domatch ], [ %rtv.out_len, %rtv.eof_or_partial ]
+  %rtv.fin_buf = phi i8* [ %rtv.append_out, %rtv.para_domatch ], [ %rtv.append_out, %rtv.literal_ready ], [ %rtv.append_out, %rtv.regex_ready ], [ %rtv.out_cur, %rtv.eof_plain ], [ %rtv.out_cur, %rtv.regex_eof_ready ], [ %rtv.out_cur, %rtv.regex_eof_miss ]
+  %rtv.fin_len = phi i64 [ %rtv.pc_len, %rtv.para_domatch ], [ %rtv.mstart, %rtv.literal_ready ], [ %rtv.regex_so, %rtv.regex_ready ], [ %rtv.out_len, %rtv.eof_plain ], [ %rtv.eof_so, %rtv.regex_eof_ready ], [ %rtv.out_len, %rtv.regex_eof_miss ]
+  store i8 1, i8* %rtv.started_slot
   %rtv.has_chars = icmp sgt i64 %rtv.fin_len, 0
   br i1 %rtv.has_chars, label %rtv.check_cr, label %rtv.terminate_empty
 
@@ -7573,12 +7980,15 @@ rtv.check_cr:
   %rtv.last_idx = sub i64 %rtv.fin_len, 1
   %rtv.last_ptr = getelementptr i8, i8* %rtv.fin_buf, i64 %rtv.last_idx
   %rtv.last = load i8, i8* %rtv.last_ptr
+  %rtv.rsmode_cr = load i8, i8* @wam_rs_mode
+  %rtv.rsmode_literal = icmp eq i8 %rtv.rsmode_cr, 0
   %rtv.rslen_cr = load i64, i64* @wam_rs_len
   %rtv.rslen_is_1 = icmp eq i64 %rtv.rslen_cr, 1
   %rtv.rsptr_cr = load i8*, i8** @wam_rs_ptr
   %rtv.rsb_cr = load i8, i8* %rtv.rsptr_cr
   %rtv.rsb_is_lf = icmp eq i8 %rtv.rsb_cr, 10
-  %rtv.rs_is_lf = and i1 %rtv.rslen_is_1, %rtv.rsb_is_lf
+  %rtv.rs_is_lf0 = and i1 %rtv.rslen_is_1, %rtv.rsb_is_lf
+  %rtv.rs_is_lf = and i1 %rtv.rsmode_literal, %rtv.rs_is_lf0
   %rtv.last_is_cr = icmp eq i8 %rtv.last, 13
   %rtv.do_trim_cr = and i1 %rtv.rs_is_lf, %rtv.last_is_cr
   ; paragraph mode: strip a lone trailing newline (only reachable at EOF; a
@@ -21814,6 +22224,14 @@ emit_atom_string_globals(IR) :-
 @.wam_rs_default = private constant [2 x i8] c"\\0A\\00"
 @wam_rs_ptr = global i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.wam_rs_default, i64 0, i64 0)
 @wam_rs_len = global i64 1
+@wam_rs_mode = global i8 0
+@wam_rs_regex_cache = internal global i8* null
+@.wam_rt_empty = private constant [1 x i8] c"\\00"
+@wam_rt_ptr = global i8* getelementptr inbounds ([1 x i8], [1 x i8]* @.wam_rt_empty, i64 0, i64 0)
+@wam_rt_len = global i64 0
+@wam_rt_buf = internal global i8* null
+@wam_rt_cap = internal global i64 0
+@.wam_rs_regex_error = private constant [38 x i8] c"plawk: invalid RS regular expression\\0A\\00"
 
 define i8* @wam_atom_to_string(i64 %id) {
   ret i8* null
@@ -21946,6 +22364,14 @@ fail:
 @.wam_rs_default = private constant [2 x i8] c"\\0A\\00"
 @wam_rs_ptr = global i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.wam_rs_default, i64 0, i64 0)
 @wam_rs_len = global i64 1
+@wam_rs_mode = global i8 0
+@wam_rs_regex_cache = internal global i8* null
+@.wam_rt_empty = private constant [1 x i8] c"\\00"
+@wam_rt_ptr = global i8* getelementptr inbounds ([1 x i8], [1 x i8]* @.wam_rt_empty, i64 0, i64 0)
+@wam_rt_len = global i64 0
+@wam_rt_buf = internal global i8* null
+@wam_rt_cap = internal global i64 0
+@.wam_rs_regex_error = private constant [38 x i8] c"plawk: invalid RS regular expression\\0A\\00"
 
 define i8* @wam_atom_to_string(i64 %id) {
 entry:
