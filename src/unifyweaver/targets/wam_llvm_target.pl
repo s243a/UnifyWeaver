@@ -1640,6 +1640,7 @@ declare double @asin(double)
 declare double @acos(double)
 declare double @atan(double)
 declare double @atan2(double, double)
+declare double @pow(double, double)
 declare i32 @regcomp(i8*, i8*, i32)
 declare i32 @regexec(i8*, i8*, i64, i8*, i32)
 declare double @strtod(i8*, i8**)'
