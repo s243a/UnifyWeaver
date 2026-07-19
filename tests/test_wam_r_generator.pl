@@ -4686,29 +4686,29 @@ lmdb_r1_eager_lazy_runtime_parity :-
     unique_r_tmp_dir('tmp_r_lmdb_r1_rt', TmpDir),
     write_wam_r_project([user:pledge/2],
         [intern_atoms([alice,bob,carol,eve,p,q,r]),
+         lmdb_materialisation(eager),
          r_fact_sources([source(pledge/2, lmdb_arg1_v1('mock.lmdb'))])], TmpDir),
     directory_file_path(TmpDir, 'R', RDir),
     directory_file_path(RDir, 'lmdb_r1_parity.R', Script),
     setup_call_cleanup(open(Script, write, S), write(S,
-'source("generated_program.R")
-store <- new.env(parent=emptyenv())
+'store <- new.env(parent=emptyenv())
 assign("__uw_schema__",charToRaw("lmdb_arg1_v1"),envir=store)
 assign("a:alice",charToRaw("a:bob\na:eve"),envir=store); assign("a:bob",charToRaw("a:carol"),envir=store)
 assign("a:p",charToRaw("a:q\ti:3\na:r\ti:4"),envir=store)
 nget <<- 0L; nlist <<- 0L
-WamRuntime$lmdb_kv_adapter <- list(
+options(unifyweaver.lmdb_kv_adapter=list(
   get=function(path,key){ nget <<- nget+1L; if (exists(key,envir=store,inherits=FALSE)) get(key,envir=store) else NULL },
   list=function(path){ nlist <<- nlist+1L; ls(envir=store,all.names=TRUE) },
-  put_all=function(path,pairs){ for (k in names(pairs)) assign(k,charToRaw(pairs[[k]]),envir=store); TRUE })
-stopifnot(nget==0L, nlist==0L); it <- intern_table; g0 <- nget; l0 <- nlist
+  put_all=function(path,pairs){ for (k in names(pairs)) assign(k,charToRaw(pairs[[k]]),envir=store); TRUE }))
+source("generated_program.R")
+options(unifyweaver.lmdb_kv_adapter=NULL)
+stopifnot(nlist==1L, length(pledge_facts)>=3L, length(pledge_indexes)>0L)
+it <- intern_table; eager_facts <- pledge_facts; eager_idx <- pledge_indexes
+g0 <- nget; l0 <- nlist
 lazy_g <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"alice")), 2L, it)
 stopifnot(length(lazy_g)==2L, nget>g0, nlist==l0)
 lazy_all <- WamRuntime$lmdb_arg1_v1_stream("mock.lmdb", 2L, it)
-stopifnot(length(lazy_all)>=3L, nlist>l0)
-nget <<- 0L; nlist <<- 0L
-eager_facts <- WamRuntime$lmdb_arg1_v1_stream("mock.lmdb", 2L, it)
-eager_idx <- WamRuntime$build_fact_indexes(eager_facts, 2L)
-stopifnot(nlist==1L, length(eager_facts)==length(lazy_all))
+stopifnot(length(lazy_all)==length(eager_facts), nlist>l0)
 nget <<- 0L; nlist <<- 0L
 st <- WamRuntime$new_state(); st$regs2[[1]] <- Atom(WamRuntime$intern(it,"alice"))
 st$regs2[[2]] <- Unbound("V0"); args <- list(st$regs2[[1]], st$regs2[[2]])
