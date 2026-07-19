@@ -100,6 +100,30 @@ test(body_print_label_element, [condition(clang_available)]) :-
     build_run(Dir, 'le', "{ split($0, a, \",\"); print \"first\", a[1] }\n", "p,q\n", Out),
     assertion(Out == "first p\n"), !.
 
+% Juxtaposition concat: a literal glued to a table value (no separator).
+test(body_print_concat_literal_value, [condition(clang_available)]) :-
+    adir(Dir),
+    build_run(Dir, 'cc', "{ c[$1]++; print \"x=\" c[$1] }\n", "a\na\n", Out),
+    assertion(Out == "x=1\nx=2\n"), !.
+
+% A concat with a field, literal, and table value.
+test(body_print_concat_field_value, [condition(clang_available)]) :-
+    adir(Dir),
+    build_run(Dir, 'cf', "{ c[$1]++; print $1 \":\" c[$1] }\n", "a\nb\na\n", Out),
+    assertion(Out == "a:1\nb:1\na:2\n"), !.
+
+% A concat over split elements.
+test(body_print_concat_element, [condition(clang_available)]) :-
+    adir(Dir),
+    build_run(Dir, 'ce', "{ split($0, a, \",\"); print \"[\" a[1] \"]\" }\n", "p,q\n", Out),
+    assertion(Out == "[p]\n"), !.
+
+% A concat field beside a comma-separated field: "k=a" then a space then count.
+test(body_print_concat_in_list, [condition(clang_available)]) :-
+    adir(Dir),
+    build_run(Dir, 'cl', "{ c[$1]++; print \"k=\" $1, c[$1] }\n", "a\na\n", Out),
+    assertion(Out == "k=a 1\nk=a 2\n"), !.
+
 % BEGIN runs before the per-record loop.
 test(begin_then_body_print, [condition(clang_available)]) :-
     adir(Dir),

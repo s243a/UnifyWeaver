@@ -7628,6 +7628,12 @@ plawk_assoc_print_field_spec(assoc(var(Arr), int(N)), lookup_int(Arr, N)) :-
 % A scalar accumulator read in a per-record print.
 plawk_assoc_print_field_spec(var(Name), svar(Name)) :-
     atom(Name).
+% `print "x=" c[$1]` -- a juxtaposition concat: the parts print adjacently (no
+% separator). Parts are spec'd recursively, so a concat supports the same part
+% kinds as a comma-list field (literal, `$N`, `$0`, `arr[N]`, `arr[$k]`, scalar).
+plawk_assoc_print_field_spec(concat(Parts), concat_field(PartSpecs)) :-
+    Parts = [_, _ | _],
+    maplist(plawk_assoc_print_field_spec, Parts, PartSpecs).
 % Arithmetic in a per-record print, e.g. `$2 / total` (normalise). The
 % surface `/` is integer (div_i64), which truncates fractions to 0, so a
 % print arithmetic expression is evaluated in f64 and printed with %g:
@@ -7670,6 +7676,9 @@ plawk_assoc_print_plan_field(Tables, StrArrays, lookup_int(Arr, N),
     nth0(TableIndex, Tables, Arr),
     ( memberchk(Arr, StrArrays) -> Kind = str ; Kind = i64 ).
 plawk_assoc_print_plan_field(_Tables, _StrArrays, svar(Name), svar(Name)).
+plawk_assoc_print_plan_field(Tables, StrArrays, concat_field(PartSpecs),
+        concat_field(Planned)) :-
+    maplist(plawk_assoc_print_plan_field(Tables, StrArrays), PartSpecs, Planned).
 plawk_assoc_print_plan_field(Tables, _StrArrays, farith(Op, L, R), farith(Op, L2, R2)) :-
     plawk_assoc_arith_operand_plan(Tables, L, L2),
     plawk_assoc_arith_operand_plan(Tables, R, R2).
@@ -7708,6 +7717,21 @@ plawk_assoc_print_field_lines([Field | Rest], Base, FieldSep, Index, Lines) :-
     NextIndex is Index + 1,
     plawk_assoc_print_field_lines(Rest, Base, FieldSep, NextIndex, RestLs),
     append([SepLines, FieldLs, RestLs], Lines).
+
+% A juxtaposition concat prints its parts adjacently: emit each part's lines
+% with a unique sub-base and NO inter-part separator (the comma-list separator
+% lives one level up, between whole fields). Each part reuses the per-field
+% emitters below (so a literal part still rides the global channel).
+plawk_assoc_print_one_field(concat_field(Parts), Base, Index, FieldSep, Lines) :-
+    format(atom(SubBase), '~w_cc~w', [Base, Index]),
+    plawk_assoc_concat_part_lines(Parts, SubBase, 0, FieldSep, Lines).
+
+plawk_assoc_concat_part_lines([], _SubBase, _PartIdx, _FieldSep, []).
+plawk_assoc_concat_part_lines([Part | Rest], SubBase, PartIdx, FieldSep, Lines) :-
+    plawk_assoc_print_one_field(Part, SubBase, PartIdx, FieldSep, PartLines),
+    NextIdx is PartIdx + 1,
+    plawk_assoc_concat_part_lines(Rest, SubBase, NextIdx, FieldSep, RestLines),
+    append(PartLines, RestLines, Lines).
 
 plawk_assoc_print_one_field(fld(N), Base, Index, FieldSep, Lines) :-
     format(atom(P), '~w_f~w', [Base, Index]),
