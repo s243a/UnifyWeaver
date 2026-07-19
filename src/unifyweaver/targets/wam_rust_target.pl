@@ -1377,6 +1377,10 @@ compile_execute_io_builtin_to_rust(Code) :-
                        TimeTemplate),
     render_template(TimeTemplate, [part=helpers], TimeHelpers),
     render_template(TimeTemplate, [part=arms], TimeArms),
+    read_template_file('templates/targets/rust_wam/random_builtin.rs.mustache',
+                       RandomTemplate),
+    render_template(RandomTemplate, [part=helpers], RandomHelpers),
+    render_template(RandomTemplate, [part=arms], RandomArms),
     Prefix = '    fn builtin_path_arg(&self, reg: &str) -> Option<String> {
         match self.get_reg_raw(reg)
             .map(|v| self.deref_heap(&self.deref_var(&v))) {
@@ -2114,8 +2118,8 @@ compile_execute_io_builtin_to_rust(Code) :-
     }',
     atomic_list_concat(
         [Prefix, ProcessHelpers, MetricsHelpers, OsErrorHelpers, ResourceHelpers,
-         TimeHelpers, Dispatcher, ProcessArms, MetricsArms, OsErrorArms,
-         ResourceArms, TimeArms, Suffix], Code).
+         TimeHelpers, RandomHelpers, Dispatcher, ProcessArms, MetricsArms,
+         OsErrorArms, ResourceArms, TimeArms, RandomArms, Suffix], Code).
 
 compile_execute_type_builtin_to_rust(Code) :-
     Code = '    fn execute_type_builtin(&mut self, op: &str, _arity: usize) -> bool {
