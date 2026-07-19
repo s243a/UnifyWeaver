@@ -2,21 +2,21 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
-% RS (input record separator): the byte the runtime record reader splits input
-% on, default newline. `BEGIN { RS = "X" }` sets it to a single character.
+% RS (input record separator): the byte-string the runtime record reader splits
+% input on, default newline. `BEGIN { RS = "…" }` sets it to any single- or
+% multi-char literal string.
 %
-% The reader (@wam_stream_read_line_transient_value and its persistent sibling)
-% previously compared each byte against a hardcoded newline (10); it now loads
-% the @wam_rs_byte global instead, and a single-char `BEGIN { RS = "X" }` stores
-% that byte into the global at startup (before the record loop), reusing the
-% FS-regex startup-store seam. RS composes with FS (RS splits records, FS splits
-% each record's fields). The trailing-CR strip (CRLF handling) is now gated on
-% RS being newline, so a custom RS keeps a CR as ordinary data.
+% Both readers (@wam_stream_read_line_transient_value and its persistent sibling)
+% append each byte, then treat a record boundary as the RS byte-string appearing
+% as a suffix of what has been appended (a memcmp against @wam_rs_ptr /
+% @wam_rs_len, which a `BEGIN { RS = "…" }` sets from a @.wam_rs_custom constant
+% at startup). RS composes with FS (RS splits records, FS splits each record's
+% fields). The trailing-CR strip (CRLF handling) is gated on RS being exactly a
+% one-byte newline, so a custom RS keeps a CR as ordinary data.
 %
-% Single-char RS only: a multi-char or empty RS makes the startup helper fail,
-% so the program is cleanly rejected rather than silently reading by newline.
-% getline's own record separator (the WAM getline builtin) is a separate reader
-% and a follow-on.
+% An empty RS (paragraph mode) is a follow-on: the startup helper fails, so the
+% program is cleanly rejected rather than silently reading by newline. A regex
+% RS (gawk) and getline's own record separator are also follow-ons.
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -65,6 +65,31 @@ test(rs_custom_keeps_cr, [condition(clang_available)]) :-
     sdir(Dir),
     build_run(Dir, 'rk', "BEGIN { RS = \";\" } { print length($0) }\n", "a\r;b", Out),
     assertion(Out == "2\n1\n"), !.
+
+% A multi-char RS "||" splits records on the two-byte sequence.
+test(rs_multichar, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'rm', "BEGIN { RS = \"||\" } { print NR, $0 }\n", "a||b||c", Out),
+    assertion(Out == "1 a\n2 b\n3 c\n"), !.
+
+% A three-byte RS.
+test(rs_multichar_three, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'r3', "BEGIN { RS = \"-|-\" } { print $0 }\n", "x-|-y-|-z", Out),
+    assertion(Out == "x\ny\nz\n"), !.
+
+% A multi-char RS composes with FS.
+test(rs_multichar_fs, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'rmf', "BEGIN { RS = \"||\"; FS = \":\" } { print $2 }\n",
+        "a:1||b:2||c:3", Out),
+    assertion(Out == "1\n2\n3\n"), !.
+
+% A trailing multi-char RS does not yield an empty final record.
+test(rs_multichar_trailing, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'rmt', "BEGIN { RS = \"||\" } { print $0 }\n", "a||b||", Out),
+    assertion(Out == "a\nb\n"), !.
 
 :- end_tests(plawk_rs).
 

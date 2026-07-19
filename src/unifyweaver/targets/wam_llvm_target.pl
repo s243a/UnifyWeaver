@@ -7226,9 +7226,9 @@ rhv.alloc_out:
   br i1 %rhv.out_null, label %rhv.fail, label %rhv.loop
 
 rhv.loop:
-  %rhv.out_len = phi i64 [ 0, %rhv.alloc_out ], [ %rhv.out_len, %rhv.after_read ], [ %rhv.next_out_len, %rhv.append_store ]
-  %rhv.out_cur = phi i8* [ %rhv.out, %rhv.alloc_out ], [ %rhv.out_cur, %rhv.after_read ], [ %rhv.append_out, %rhv.append_store ]
-  %rhv.out_cap = phi i64 [ 4096, %rhv.alloc_out ], [ %rhv.out_cap, %rhv.after_read ], [ %rhv.append_cap, %rhv.append_store ]
+  %rhv.out_len = phi i64 [ 0, %rhv.alloc_out ], [ %rhv.out_len, %rhv.after_read ], [ %rhv.next_out_len, %rhv.nomatch ]
+  %rhv.out_cur = phi i8* [ %rhv.out, %rhv.alloc_out ], [ %rhv.out_cur, %rhv.after_read ], [ %rhv.append_out, %rhv.nomatch ]
+  %rhv.out_cap = phi i64 [ 4096, %rhv.alloc_out ], [ %rhv.out_cap, %rhv.after_read ], [ %rhv.append_cap, %rhv.nomatch ]
   %rhv.buf_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 1
   %rhv.buf = load i8*, i8** %rhv.buf_slot
   %rhv.len_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 3
@@ -7263,9 +7263,7 @@ rhv.consume:
   %rhv.ch = load i8, i8* %rhv.char_ptr
   %rhv.pos_next = add i64 %rhv.pos, 1
   store i64 %rhv.pos_next, i64* %rhv.pos_slot
-  %rhv.rs = load i8, i8* @wam_rs_byte
-  %rhv.is_lf = icmp eq i8 %rhv.ch, %rhv.rs
-  br i1 %rhv.is_lf, label %rhv.finalize, label %rhv.append
+  br label %rhv.append
 
 rhv.append:
   %rhv.next_out_len_pre = add i64 %rhv.out_len, 1
@@ -7288,21 +7286,44 @@ rhv.append_store:
   %rhv.out_ptr = getelementptr i8, i8* %rhv.append_out, i64 %rhv.out_len
   store i8 %rhv.ch, i8* %rhv.out_ptr
   %rhv.next_out_len = add i64 %rhv.out_len, 1
+  br label %rhv.checkmatch
+
+; A record boundary is the RS byte-string as a suffix of what we have appended.
+rhv.checkmatch:
+  %rhv.rslen = load i64, i64* @wam_rs_len
+  %rhv.enough = icmp uge i64 %rhv.next_out_len, %rhv.rslen
+  br i1 %rhv.enough, label %rhv.domatch, label %rhv.nomatch
+
+rhv.domatch:
+  %rhv.mstart = sub i64 %rhv.next_out_len, %rhv.rslen
+  %rhv.mptr = getelementptr i8, i8* %rhv.append_out, i64 %rhv.mstart
+  %rhv.rsptr = load i8*, i8** @wam_rs_ptr
+  %rhv.cmp = call i32 @memcmp(i8* %rhv.mptr, i8* %rhv.rsptr, i64 %rhv.rslen)
+  %rhv.matched = icmp eq i32 %rhv.cmp, 0
+  br i1 %rhv.matched, label %rhv.finalize, label %rhv.nomatch
+
+rhv.nomatch:
   br label %rhv.loop
 
 rhv.finalize:
-  %rhv.has_chars = icmp sgt i64 %rhv.out_len, 0
+  %rhv.fin_buf = phi i8* [ %rhv.append_out, %rhv.domatch ], [ %rhv.out_cur, %rhv.eof_or_partial ]
+  %rhv.fin_len = phi i64 [ %rhv.mstart, %rhv.domatch ], [ %rhv.out_len, %rhv.eof_or_partial ]
+  %rhv.has_chars = icmp sgt i64 %rhv.fin_len, 0
   br i1 %rhv.has_chars, label %rhv.check_cr, label %rhv.intern_empty
 
 rhv.check_cr:
-  %rhv.last_idx = sub i64 %rhv.out_len, 1
-  %rhv.last_ptr = getelementptr i8, i8* %rhv.out_cur, i64 %rhv.last_idx
+  %rhv.last_idx = sub i64 %rhv.fin_len, 1
+  %rhv.last_ptr = getelementptr i8, i8* %rhv.fin_buf, i64 %rhv.last_idx
   %rhv.last = load i8, i8* %rhv.last_ptr
-  %rhv.rs_cr = load i8, i8* @wam_rs_byte
-  %rhv.rs_is_lf = icmp eq i8 %rhv.rs_cr, 10
+  %rhv.rslen_cr = load i64, i64* @wam_rs_len
+  %rhv.rslen_is_1 = icmp eq i64 %rhv.rslen_cr, 1
+  %rhv.rsptr_cr = load i8*, i8** @wam_rs_ptr
+  %rhv.rsb_cr = load i8, i8* %rhv.rsptr_cr
+  %rhv.rsb_is_lf = icmp eq i8 %rhv.rsb_cr, 10
+  %rhv.rs_is_lf = and i1 %rhv.rslen_is_1, %rhv.rsb_is_lf
   %rhv.last_is_cr = icmp eq i8 %rhv.last, 13
   %rhv.do_trim = and i1 %rhv.rs_is_lf, %rhv.last_is_cr
-  %rhv.trim_len = select i1 %rhv.do_trim, i64 %rhv.last_idx, i64 %rhv.out_len
+  %rhv.trim_len = select i1 %rhv.do_trim, i64 %rhv.last_idx, i64 %rhv.fin_len
   br label %rhv.intern
 
 rhv.intern_empty:
@@ -7310,12 +7331,12 @@ rhv.intern_empty:
 
 rhv.intern:
   %rhv.final_len = phi i64 [ %rhv.trim_len, %rhv.check_cr ], [ 0, %rhv.intern_empty ]
-  %rhv.term = getelementptr i8, i8* %rhv.out_cur, i64 %rhv.final_len
+  %rhv.term = getelementptr i8, i8* %rhv.fin_buf, i64 %rhv.final_len
   store i8 0, i8* %rhv.term
-  %rhv.aid = call i64 @wam_intern_atom(i8* %rhv.out_cur, i64 %rhv.final_len)
+  %rhv.aid = call i64 @wam_intern_atom(i8* %rhv.fin_buf, i64 %rhv.final_len)
   %rhv.v0 = insertvalue %Value undef, i32 0, 0
   %rhv.v = insertvalue %Value %rhv.v0, i64 %rhv.aid, 1
-  call void @free(i8* %rhv.out_cur)
+  call void @free(i8* %rhv.fin_buf)
   ret %Value %rhv.v
 
 rhv.eof:
@@ -7393,9 +7414,9 @@ rtv.loop_pre:
   br label %rtv.loop
 
 rtv.loop:
-  %rtv.out_len = phi i64 [ 0, %rtv.loop_pre ], [ %rtv.out_len, %rtv.after_read ], [ %rtv.next_out_len, %rtv.append_store ]
-  %rtv.out_cur = phi i8* [ %rtv.out0, %rtv.loop_pre ], [ %rtv.out_cur, %rtv.after_read ], [ %rtv.append_out, %rtv.append_store ]
-  %rtv.out_cap = phi i64 [ %rtv.cap1, %rtv.loop_pre ], [ %rtv.out_cap, %rtv.after_read ], [ %rtv.append_cap, %rtv.append_store ]
+  %rtv.out_len = phi i64 [ 0, %rtv.loop_pre ], [ %rtv.out_len, %rtv.after_read ], [ %rtv.next_out_len, %rtv.nomatch ]
+  %rtv.out_cur = phi i8* [ %rtv.out0, %rtv.loop_pre ], [ %rtv.out_cur, %rtv.after_read ], [ %rtv.append_out, %rtv.nomatch ]
+  %rtv.out_cap = phi i64 [ %rtv.cap1, %rtv.loop_pre ], [ %rtv.out_cap, %rtv.after_read ], [ %rtv.append_cap, %rtv.nomatch ]
   %rtv.buf_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 1
   %rtv.buf = load i8*, i8** %rtv.buf_slot
   %rtv.len_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 3
@@ -7430,9 +7451,7 @@ rtv.consume:
   %rtv.ch = load i8, i8* %rtv.char_ptr
   %rtv.pos_next = add i64 %rtv.pos, 1
   store i64 %rtv.pos_next, i64* %rtv.pos_slot
-  %rtv.rs = load i8, i8* @wam_rs_byte
-  %rtv.is_lf = icmp eq i8 %rtv.ch, %rtv.rs
-  br i1 %rtv.is_lf, label %rtv.finalize, label %rtv.append
+  br label %rtv.append
 
 rtv.append:
   %rtv.next_out_len_pre = add i64 %rtv.out_len, 1
@@ -7460,21 +7479,44 @@ rtv.append_store:
   %rtv.out_ptr = getelementptr i8, i8* %rtv.append_out, i64 %rtv.out_len
   store i8 %rtv.ch, i8* %rtv.out_ptr
   %rtv.next_out_len = add i64 %rtv.out_len, 1
+  br label %rtv.checkmatch
+
+; A record boundary is the RS byte-string as a suffix of what we have appended.
+rtv.checkmatch:
+  %rtv.rslen = load i64, i64* @wam_rs_len
+  %rtv.enough = icmp uge i64 %rtv.next_out_len, %rtv.rslen
+  br i1 %rtv.enough, label %rtv.domatch, label %rtv.nomatch
+
+rtv.domatch:
+  %rtv.mstart = sub i64 %rtv.next_out_len, %rtv.rslen
+  %rtv.mptr = getelementptr i8, i8* %rtv.append_out, i64 %rtv.mstart
+  %rtv.rsptr = load i8*, i8** @wam_rs_ptr
+  %rtv.cmp = call i32 @memcmp(i8* %rtv.mptr, i8* %rtv.rsptr, i64 %rtv.rslen)
+  %rtv.matched = icmp eq i32 %rtv.cmp, 0
+  br i1 %rtv.matched, label %rtv.finalize, label %rtv.nomatch
+
+rtv.nomatch:
   br label %rtv.loop
 
 rtv.finalize:
-  %rtv.has_chars = icmp sgt i64 %rtv.out_len, 0
+  %rtv.fin_buf = phi i8* [ %rtv.append_out, %rtv.domatch ], [ %rtv.out_cur, %rtv.eof_or_partial ]
+  %rtv.fin_len = phi i64 [ %rtv.mstart, %rtv.domatch ], [ %rtv.out_len, %rtv.eof_or_partial ]
+  %rtv.has_chars = icmp sgt i64 %rtv.fin_len, 0
   br i1 %rtv.has_chars, label %rtv.check_cr, label %rtv.terminate_empty
 
 rtv.check_cr:
-  %rtv.last_idx = sub i64 %rtv.out_len, 1
-  %rtv.last_ptr = getelementptr i8, i8* %rtv.out_cur, i64 %rtv.last_idx
+  %rtv.last_idx = sub i64 %rtv.fin_len, 1
+  %rtv.last_ptr = getelementptr i8, i8* %rtv.fin_buf, i64 %rtv.last_idx
   %rtv.last = load i8, i8* %rtv.last_ptr
-  %rtv.rs_cr = load i8, i8* @wam_rs_byte
-  %rtv.rs_is_lf = icmp eq i8 %rtv.rs_cr, 10
+  %rtv.rslen_cr = load i64, i64* @wam_rs_len
+  %rtv.rslen_is_1 = icmp eq i64 %rtv.rslen_cr, 1
+  %rtv.rsptr_cr = load i8*, i8** @wam_rs_ptr
+  %rtv.rsb_cr = load i8, i8* %rtv.rsptr_cr
+  %rtv.rsb_is_lf = icmp eq i8 %rtv.rsb_cr, 10
+  %rtv.rs_is_lf = and i1 %rtv.rslen_is_1, %rtv.rsb_is_lf
   %rtv.last_is_cr = icmp eq i8 %rtv.last, 13
   %rtv.do_trim = and i1 %rtv.rs_is_lf, %rtv.last_is_cr
-  %rtv.trim_len = select i1 %rtv.do_trim, i64 %rtv.last_idx, i64 %rtv.out_len
+  %rtv.trim_len = select i1 %rtv.do_trim, i64 %rtv.last_idx, i64 %rtv.fin_len
   br label %rtv.terminate
 
 rtv.terminate_empty:
@@ -7482,7 +7524,7 @@ rtv.terminate_empty:
 
 rtv.terminate:
   %rtv.final_len = phi i64 [ %rtv.trim_len, %rtv.check_cr ], [ 0, %rtv.terminate_empty ]
-  %rtv.term = getelementptr i8, i8* %rtv.out_cur, i64 %rtv.final_len
+  %rtv.term = getelementptr i8, i8* %rtv.fin_buf, i64 %rtv.final_len
   store i8 0, i8* %rtv.term
   %rtv.v0 = insertvalue %Value undef, i32 0, 0
   %rtv.v = insertvalue %Value %rtv.v0, i64 4611686018427387904, 1
@@ -21698,6 +21740,9 @@ emit_atom_string_globals(IR) :-
 @wam_transient_line_buf = global i8* null
 @wam_transient_line_cap = global i64 0
 @wam_rs_byte = global i8 10
+@.wam_rs_default = private constant [2 x i8] c"\\0A\\00"
+@wam_rs_ptr = global i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.wam_rs_default, i64 0, i64 0)
+@wam_rs_len = global i64 1
 
 define i8* @wam_atom_to_string(i64 %id) {
   ret i8* null
@@ -21827,6 +21872,9 @@ fail:
 @wam_transient_line_buf = global i8* null
 @wam_transient_line_cap = global i64 0
 @wam_rs_byte = global i8 10
+@.wam_rs_default = private constant [2 x i8] c"\\0A\\00"
+@wam_rs_ptr = global i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.wam_rs_default, i64 0, i64 0)
+@wam_rs_len = global i64 1
 
 define i8* @wam_atom_to_string(i64 %id) {
 entry:

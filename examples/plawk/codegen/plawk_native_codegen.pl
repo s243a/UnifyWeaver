@@ -11246,7 +11246,8 @@ plawk_begin_print_string_globals(BeginClauses, GlobalIR) :-
     plawk_begin_print_fields(BeginClauses, Fields),
     phrase(plawk_begin_print_string_global_lines(Fields, 0), Lines0),
     plawk_fs_regex_global_lines(BeginClauses, RegexLines),
-    append(Lines0, RegexLines, Lines),
+    plawk_rs_global_lines(BeginClauses, RsLines),
+    append([Lines0, RegexLines, RsLines], Lines),
     atomic_list_concat(Lines, '\n', GlobalIR).
 
 %% plawk_fs_regex_global_lines(+BeginClauses, -Lines)
@@ -11324,11 +11325,38 @@ plawk_fs_regex_store_lines(_BeginClauses, []).
 plawk_rs_store_lines(BeginClauses, Lines) :-
     (   member(begin(Actions), BeginClauses),
         member(set(var('RS'), string(Value)), Actions)
-    ->  string_codes(Value, [Byte]),
-        format(atom(Line), '  store i8 ~w, i8* @wam_rs_byte', [Byte]),
-        Lines = [Line]
+    ->  string_codes(Value, Codes),
+        Codes \== [],
+        length(Codes, NBytes),
+        ArrLen is NBytes + 1,
+        format(atom(PtrLine),
+            '  store i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.wam_rs_custom, i64 0, i64 0), i8** @wam_rs_ptr',
+            [ArrLen, ArrLen]),
+        format(atom(LenLine), '  store i64 ~w, i64* @wam_rs_len', [NBytes]),
+        Lines = [PtrLine, LenLine]
     ;   Lines = []
     ).
+
+%% plawk_rs_global_lines(+BeginClauses, -Lines)
+%
+%  The RS string constant `@.wam_rs_custom` (module global) for a `BEGIN { RS =
+%  "…" }`, paired with the startup store in plawk_rs_store_lines/2. Emitted into
+%  the begin-globals seam, like the FS-regex pattern. An empty RS (paragraph
+%  mode) is a follow-on -- the first clause fails, and the store fails too, so
+%  the program is cleanly rejected.
+plawk_rs_global_lines(BeginClauses, [Line]) :-
+    member(begin(Actions), BeginClauses),
+    member(set(var('RS'), string(Value)), Actions),
+    string_codes(Value, Codes),
+    Codes \== [],
+    !,
+    maplist(plawk_llvm_byte_escape, Codes, Escapes),
+    atomic_list_concat(Escapes, EscBody),
+    length(Codes, NBytes),
+    ArrLen is NBytes + 1,
+    format(atom(Line), '@.wam_rs_custom = private constant [~w x i8] c"~w\\00"',
+        [ArrLen, EscBody]).
+plawk_rs_global_lines(_BeginClauses, []).
 
 plawk_begin_print_field(string(_)).
 
