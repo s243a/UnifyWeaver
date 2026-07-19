@@ -11161,26 +11161,51 @@ plawk_ofs_sep_ir(NamePrefix, Index, OFSBytes, IR) :-
 %  through printf(fmt) where a lone `%` is undefined; both make this helper fail
 %  so the driver clause fails and the program is cleanly rejected, never
 %  miscompiled. An unset ORS keeps the default newline.
-plawk_output_record_separator(BeginClauses, Byte) :-
+%% plawk_output_record_separator(+BeginClauses, -Codes)
+%
+%  The output record separator (ORS) as a list of byte codes, default newline
+%  `[10]`. `BEGIN { ORS = "…" }` sets it to any string -- multi-char, empty, or
+%  containing a `%` -- because the terminator prints it as a `%s` argument (not
+%  a format string), so no byte is special.
+plawk_output_record_separator(BeginClauses, Codes) :-
     (   member(begin(Actions), BeginClauses),
         member(set(var('ORS'), string(Value)), Actions)
-    ->  string_codes(Value, [Byte]),
-        Byte =\= 0'%
-    ;   Byte = 10
+    ->  string_codes(Value, Codes)
+    ;   Codes = [10]
     ).
 
-%% plawk_ors_global_line(+BeginClauses, -Line)
+%% plawk_ors_global_line(+BeginClauses, -GlobalIR)
 %
-%  The `@.plawk_surface_print_newline` global definition, holding the ORS byte
-%  (default newline). Every print terminator (`llvm_emit_printf0(...newline,
-%  2,...)`) references this global by name, so sourcing its byte here retargets
-%  all of them with no change to the print emitters.
-plawk_ors_global_line(BeginClauses, Line) :-
-    plawk_output_record_separator(BeginClauses, Byte),
-    plawk_llvm_byte_escape(Byte, Escape),
-    format(atom(Line),
-        '@.plawk_surface_print_newline = private constant [2 x i8] c"~w\\00"',
-        [Escape]).
+%  The ORS string constant `@.plawk_ors_str` plus a pointer global
+%  `@plawk_ors_ptr` statically initialised to it. The pointer is what every
+%  print terminator loads (plawk_ors_terminator_ir/4) and prints via `%s`, so
+%  the ORS can be any length (multi-char or empty) with no change to the
+%  terminator emitters and no per-emitter length.
+plawk_ors_global_line(BeginClauses, GlobalIR) :-
+    plawk_output_record_separator(BeginClauses, Codes),
+    maplist(plawk_llvm_byte_escape, Codes, Escapes),
+    atomic_list_concat(Escapes, EscBody),
+    length(Codes, NBytes),
+    ArrLen is NBytes + 1,
+    format(atom(GlobalIR),
+'@.plawk_ors_str = private constant [~w x i8] c"~w\\00"
+@plawk_ors_ptr = global i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_ors_str, i64 0, i64 0)',
+        [ArrLen, EscBody, ArrLen, ArrLen]).
+
+%% plawk_ors_terminator_ir(+FmtVar, +PtrVar, +PrintVar, -Lines)
+%
+%  The record terminator: load the ORS pointer and `printf("%s", ptr)`. Emits
+%  the shared `%s` format global (present in every driver's globals) rather than
+%  the ORS bytes inline, so the ORS content -- including a `%` -- is data, never
+%  a format directive.
+plawk_ors_terminator_ir(FmtVar, PtrVar, PrintVar, [FmtLine, LoadLine, PrintLine]) :-
+    format(atom(FmtLine),
+        '  %~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0',
+        [FmtVar]),
+    format(atom(LoadLine), '  %~w = load i8*, i8** @plawk_ors_ptr', [PtrVar]),
+    format(atom(PrintLine),
+        '  %~w = call i32 (i8*, ...) @printf(i8* %~w, i8* %~w)',
+        [PrintVar, FmtVar, PtrVar]).
 
 %% plawk_llvm_byte_escape(+Byte, -Escape)
 %
@@ -11292,10 +11317,10 @@ plawk_rs_store_lines(BeginClauses, Lines) :-
 plawk_begin_print_field(string(_)).
 
 plawk_begin_print_lines([], _OutputSeparator, _) -->
-    { llvm_emit_printf0(plawk_surface_print_newline, 2,
-          begin_newline_fmt, printed_begin_newline, [FmtPtr, PrintCall])
+    { plawk_ors_terminator_ir(begin_newline_fmt, begin_ors_ptr, printed_begin_newline,
+          TermLines)
     },
-    [FmtPtr, PrintCall].
+    TermLines.
 plawk_begin_print_lines([string(Value) | Rest], OutputSeparator, Index) -->
     plawk_begin_separator_lines(Index, OutputSeparator),
     plawk_begin_string_print_lines(Value, Index),
@@ -11399,10 +11424,10 @@ plawk_assoc_end_print_ir(PrintFields, AssocPlan, Descriptor, OutputSeparator, IR
     atomic_list_concat(Lines, '\n', IR).
 
 plawk_assoc_end_print_lines([], AssocPlan, _Descriptor, _OutputSeparator, _) -->
-    { llvm_emit_printf0(plawk_surface_print_newline, 2,
-          end_newline_fmt, printed_end_newline, [FmtPtr, PrintCall])
+    { plawk_ors_terminator_ir(end_newline_fmt, end_ors_ptr, printed_end_newline,
+          TermLines)
     },
-    [FmtPtr, PrintCall],
+    TermLines,
     plawk_assoc_free_lines(AssocPlan).
 plawk_assoc_end_print_lines([assoc(var(ArrayName), int(Key)) | Rest], AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
@@ -11554,10 +11579,10 @@ plawk_mixed_end_print_ir(PrintFields, ScalarPlan, AssocPlan, OutputSeparator, IR
     atomic_list_concat(Lines, '\n', IR).
 
 plawk_mixed_end_print_lines([], _ScalarPlan, AssocPlan, _OutputSeparator, _) -->
-    { llvm_emit_printf0(plawk_surface_print_newline, 2,
-          end_newline_fmt, printed_end_newline, [FmtPtr, PrintCall])
+    { plawk_ors_terminator_ir(end_newline_fmt, end_ors_ptr, printed_end_newline,
+          TermLines)
     },
-    [FmtPtr, PrintCall],
+    TermLines,
     plawk_assoc_free_lines(AssocPlan).
 plawk_mixed_end_print_lines([var(Name) | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
@@ -14735,10 +14760,10 @@ plawk_final_slot_values(StatePlan, Values) :-
         Values).
 
 plawk_scalar_end_print_lines([], _StatePlan, _OutputSeparator, _) -->
-    { llvm_emit_printf0(plawk_surface_print_newline, 2,
-          end_newline_fmt, printed_end_newline, [FmtPtr, PrintCall])
+    { plawk_ors_terminator_ir(end_newline_fmt, end_ors_ptr, printed_end_newline,
+          TermLines)
     },
-    [FmtPtr, PrintCall].
+    TermLines.
 plawk_scalar_end_print_lines([var(Name) | Rest], StatePlan, OutputSeparator, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
     { plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
@@ -15655,10 +15680,10 @@ plawk_nonempty_ir(IR) :-
     IR \== ''.
 
 plawk_print_fields_ir([], _FieldSeparator, _OutputSeparator, _) -->
-    { llvm_emit_printf0(plawk_surface_print_newline, 2,
-          newline_fmt, printed_newline, [FmtPtr, PrintCall])
+    { plawk_ors_terminator_ir(newline_fmt, newline_ors_ptr, printed_newline, TermLines),
+      findall(''-L, member(L, TermLines), Pairs)
     },
-    [''-FmtPtr, ''-PrintCall].
+    Pairs.
 plawk_print_fields_ir([Field | Rest], FieldSeparator, OutputSeparator, Index) -->
     plawk_print_separator_ir(Index, OutputSeparator),
     plawk_print_field_ir(Field, FieldSeparator, Index),
@@ -15667,11 +15692,12 @@ plawk_print_fields_ir([Field | Rest], FieldSeparator, OutputSeparator, Index) --
 
 plawk_prefixed_print_fields_ir([], _FieldSeparator, _OutputSeparator, Prefix, _) -->
     { format(atom(FmtVar), '~w_newline_fmt', [Prefix]),
+      format(atom(PtrVar), '~w_newline_ors_ptr', [Prefix]),
       format(atom(PrintVar), '~w_printed_newline', [Prefix]),
-      llvm_emit_printf0(plawk_surface_print_newline, 2, FmtVar, PrintVar,
-          [FmtPtr, PrintCall])
+      plawk_ors_terminator_ir(FmtVar, PtrVar, PrintVar, TermLines),
+      findall(''-L, member(L, TermLines), Pairs)
     },
-    [''-FmtPtr, ''-PrintCall].
+    Pairs.
 plawk_prefixed_print_fields_ir([Field | Rest], FieldSeparator, OutputSeparator, Prefix, Index) -->
     plawk_prefixed_print_separator_ir(Index, OutputSeparator, Prefix),
     plawk_prefixed_print_field_ir(Field, FieldSeparator, Prefix, Index),
