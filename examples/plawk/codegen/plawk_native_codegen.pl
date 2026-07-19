@@ -11212,14 +11212,17 @@ plawk_begin_print_ir([begin(Actions)], OutputSeparator, IR) :-
     !,
     maplist(plawk_begin_print_field, Fields),
     phrase(plawk_begin_print_lines(Fields, OutputSeparator, 0), PrintLines),
+    plawk_rs_store_lines([begin(Actions)], RsStoreLines),
     plawk_fs_regex_store_lines([begin(Actions)], StoreLines),
-    append(StoreLines, PrintLines, Lines),
+    append([RsStoreLines, StoreLines, PrintLines], Lines),
     atomic_list_concat(Lines, '\n', IR).
 plawk_begin_print_ir([begin(Actions)], _OutputSeparator, IR) :-
+    plawk_rs_store_lines([begin(Actions)], RsStoreLines),
     plawk_fs_regex_store_lines([begin(Actions)], StoreLines),
-    (   StoreLines == []
+    append(RsStoreLines, StoreLines, StartupLines),
+    (   StartupLines == []
     ->  IR = ''
-    ;   atomic_list_concat(StoreLines, '\n', IR)
+    ;   atomic_list_concat(StartupLines, '\n', IR)
     ).
 
 %% plawk_fs_regex_store_lines(+BeginClauses, -Lines)
@@ -11235,6 +11238,23 @@ plawk_fs_regex_store_lines(BeginClauses, [Line]) :-
         '  store i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.wam_fs_regex_pattern, i64 0, i64 0), i8** @wam_fs_regex_pattern_ptr',
         [BytesLen, BytesLen]).
 plawk_fs_regex_store_lines(_BeginClauses, []).
+
+%% plawk_rs_store_lines(+BeginClauses, -Lines)
+%
+%  The startup store that sets the record separator global @wam_rs_byte from a
+%  single-char `BEGIN { RS = "X" }`, so the runtime record reader splits input
+%  on that byte instead of newline (the global's default). Runs in the BEGIN
+%  block, before the record loop. When RS is unset, [] (the global keeps its
+%  newline default). A multi-char or empty RS makes this fail, so the program is
+%  cleanly rejected rather than silently reading by newline.
+plawk_rs_store_lines(BeginClauses, Lines) :-
+    (   member(begin(Actions), BeginClauses),
+        member(set(var('RS'), string(Value)), Actions)
+    ->  string_codes(Value, [Byte]),
+        format(atom(Line), '  store i8 ~w, i8* @wam_rs_byte', [Byte]),
+        Lines = [Line]
+    ;   Lines = []
+    ).
 
 plawk_begin_print_field(string(_)).
 
