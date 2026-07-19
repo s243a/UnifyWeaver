@@ -4850,7 +4850,7 @@ test(switch_on_constant_fallthrough_preserves_backtracking,
               [emit_mode(interpreter), fact_table_layout(off)], TmpDir),
           directory_file_path(TmpDir, 'R', RDir),
           run_rscript_query(RDir, 'r_switch_ft_backtracks/0', Out),
-          assertion(sub_string(Out, _, _, _, "true"))
+          assertion(once(sub_string(Out, _, _, _, "true")))
         ),
         ( ( exists_directory(TmpDir)
           -> delete_directory_and_contents(TmpDir)
