@@ -129,6 +129,22 @@ def _topology_two_port_schur(
     intrinsic_leakage,
     topology_conductance,
 ):
+    """Return the nonnegative two-port Schur return B = C J_E^-1 C.T.
+
+    Eliminating the exterior component E changes the retained precision by
+    subtracting B from its Dirichlet principal block; B[0, 1] is the bridge
+    conductance kappa and B[i, i] is the self-return at port i. Thus this matrix
+    is not itself the reduced precision, whose off-diagonal bridge entries have
+    the opposite sign.
+
+    For one exterior node with port conductances c_l and c_r, leakage a, and
+    d = c_l + c_r + a, this gives
+    B = [[c_l**2, c_l*c_r], [c_l*c_r, c_r**2]] / d. The downstream closure
+    ledger subtracts both transfer and self-return from the exact Dirichlet
+    shunt before checking nonnegative residual ground, M-matrix signs, and SPD;
+    it never adds this return on top of the shunt.
+    """
+
     nodes = component.nodes
     ports = component.ports
     node_index = {node: row for row, node in enumerate(nodes)}
