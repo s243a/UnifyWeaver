@@ -4861,6 +4861,67 @@ test(switch_on_constant_fallthrough_preserves_backtracking,
         )),
     !.
 
+% ------------------------------------------------------------------
+% R-A2-INDEX-FALLBACK-COVERAGE: remaining A2 hints → SwitchOnTerm()
+% ------------------------------------------------------------------
+r_a2_switch_token(["switch_on_constant_a2", "a:default", "b:L2"]).
+r_a2_switch_token(["switch_on_constant_a2_fallthrough", "a:default", "b:L2"]).
+r_a2_switch_token(["switch_on_structure_a2", "f/1:default", "g/1:L2"]).
+
+test(r_a2_switch_hints_are_linear_noop) :-
+    forall(r_a2_switch_token(Parts),
+           ( once(wam_parts_to_r(Parts, [], Lit)),
+             assertion(Lit == 'SwitchOnTerm()') )), !.
+
+test(r_a2_fallthrough_preserves_backtracking,
+     [condition(rscript_available)]) :-
+    maplist(retractall,
+            [user:r_a2_ft(_,_), user:r_a2_ft_backtracks,
+             user:r_a2_const(_,_), user:r_a2_const_ok,
+             user:r_a2_struct(_,_), user:r_a2_struct_ok]),
+    % Free A1 + constant/var A2 ⇒ switch_on_constant_a2_fallthrough.
+    assertz((user:r_a2_ft(Out, a) :- Out = first)),
+    assertz((user:r_a2_ft(Out, b) :- Out = specific)),
+    assertz((user:r_a2_ft(Out, _) :- Out = fallback)),
+    assertz((user:r_a2_ft_backtracks :-
+                user:r_a2_ft(Value, b), Value = fallback)),
+    % Free A1 + all-constant A2 ⇒ switch_on_constant_a2.
+    assertz((user:r_a2_const(Out, a) :- Out = ok)),
+    assertz((user:r_a2_const(Out, b) :- Out = ok)),
+    assertz((user:r_a2_const(Out, c) :- Out = ok)),
+    assertz((user:r_a2_const_ok :- user:r_a2_const(ok, b))),
+    % Free A1 + compound A2 ⇒ switch_on_structure_a2.
+    assertz((user:r_a2_struct(Out, f(_)) :- Out = ok)),
+    assertz((user:r_a2_struct(Out, g(_)) :- Out = ok)),
+    assertz((user:r_a2_struct(Out, h(_)) :- Out = ok)),
+    assertz((user:r_a2_struct_ok :- user:r_a2_struct(ok, g(1)))),
+    unique_r_tmp_dir('tmp_r_a2_ft', TmpDir),
+    call_cleanup(
+        ( write_wam_r_project(
+              [user:r_a2_ft/2, user:r_a2_ft_backtracks/0,
+               user:r_a2_const/2, user:r_a2_const_ok/0,
+               user:r_a2_struct/2, user:r_a2_struct_ok/0],
+              [emit_mode(interpreter), fact_table_layout(off)], TmpDir),
+          directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+          read_file_to_string(ProgPath, Prog, []),
+          assertion(\+ sub_string(Prog, _, _, _, "Raw(\"switch_on_")),
+          assertion(sub_string(Prog, _, _, _, "SwitchOnTerm()")),
+          directory_file_path(TmpDir, 'R', RDir),
+          run_rscript_query(RDir, 'r_a2_ft_backtracks/0', FtOut),
+          assertion(once(sub_string(FtOut, _, _, _, "true"))),
+          run_rscript_query(RDir, 'r_a2_const_ok/0', ConstOut),
+          assertion(once(sub_string(ConstOut, _, _, _, "true"))),
+          run_rscript_query(RDir, 'r_a2_struct_ok/0', StructOut),
+          assertion(once(sub_string(StructOut, _, _, _, "true")))
+        ),
+        ( ( exists_directory(TmpDir)
+          -> delete_directory_and_contents(TmpDir) ; true ),
+          maplist(retractall,
+                  [user:r_a2_ft(_,_), user:r_a2_ft_backtracks,
+                    user:r_a2_const(_,_), user:r_a2_const_ok,
+                    user:r_a2_struct(_,_), user:r_a2_struct_ok])
+        )), !.
+
 :- end_tests(wam_r_generator).
 
 % ------------------------------------------------------------------
