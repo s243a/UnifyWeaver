@@ -30,7 +30,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | FS-FUNCTIONS-BUILTINS-LOWER ✅ | Conformance gap fix | F# | M | done — last-slash `parse_functor_fs` for `///2` (`cursor/fs-functions-builtins-lower-f421`); fsharp_functions/builtins green |
 | CONF-LLVM | Conformance adapter | LLVM | L | — |
 | CONF-R ✅ | Conformance adapter | R | M | done — opt-in; all classic programs green (R-SWITCH-INDEX-CONFORMANCE) |
-| R-SWITCH-INDEX-CONFORMANCE ✅ | Conformance gap fix | R | S | done — fallthrough/A2 reuse existing SwitchOnConstant / SwitchOnTerm |
+| R-SWITCH-INDEX-CONFORMANCE ✅ | Conformance gap fix | R | S | done — fallthrough/A2 reuse existing SwitchOnTerm no-op |
 | CONF-CLOJURE | Conformance adapter | Clojure | L | — |
 | CONF-LUA | Conformance adapter | Lua | M | — |
 | CONF-KOTLIN ✅ | Conformance adapter | Kotlin | M | done — opt-in (`cursor/conf-kotlin-f421`); append green, 5 xfails |
@@ -141,8 +141,8 @@ external toolchain.
   `runtime_parser(off)` (wrappers need no CLI parse; R default is `native(parse_term)`).
   Run cwd is `Dir/R` (`Rscript generated_program.R <key>`).
 - **Measured:** all classic programs green on interpreter + functions after
-  R-SWITCH-INDEX-CONFORMANCE (`switch_on_constant_fallthrough` → existing
-  `SwitchOnConstant`; `switch_on_term_a2` → existing `SwitchOnTerm()` no-op).
+  R-SWITCH-INDEX-CONFORMANCE (both missing indexing hints → existing
+  `SwitchOnTerm()` no-op, preserving the full linear choice chain).
 - **Acceptance:** `CONFORMANCE_TARGETS=r,r_functions swipl -g run_tests -t halt tests/test_wam_cross_target_conformance.pl` exits 0 (skips if `Rscript` absent).
 
 ### CONF-CLOJURE: Register Clojure in the cross-target conformance harness

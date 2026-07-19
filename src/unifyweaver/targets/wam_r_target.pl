@@ -411,11 +411,11 @@ wam_parts_to_r(["switch_on_constant" | Cases], Lit) :-
     atomic_list_concat(CaseLits, ', ', CasesStr),
     format(string(Lit), 'SwitchOnConstant(list(~w))', [CasesStr]).
 
-% Fallthrough form: same encoding as switch_on_constant. The existing
-% SwitchOnConstant runtime already advances PC on miss/"default", which
-% is exactly the fallthrough semantics used by fib/ack indexing.
-wam_parts_to_r(["switch_on_constant_fallthrough" | Cases], Lit) :-
-    wam_parts_to_r(["switch_on_constant" | Cases], Lit).
+% Fallthrough indexes precede the linear try/retry/trust chain.  A direct
+% indexed hit would bypass TryMeElse and lose the trailing variable clause
+% as a backtracking alternative, so preserve correctness by using the
+% existing fall-through no-op.
+wam_parts_to_r(["switch_on_constant_fallthrough" | _], 'SwitchOnTerm()').
 
 % --- Switch on term (type-mixed dispatch) ---
 % Emitted by the WAM compiler when a predicate's clauses have a mix

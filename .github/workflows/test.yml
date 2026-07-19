@@ -204,6 +204,39 @@ jobs:
         run: |
           swipl -q -f init.pl -s tests/test_wam_cross_target_conformance.pl -g "seed_sampler,run_tests" -t halt
 
+  wam_r_conformance:
+    name: WAM R Conformance (interpreter + functions)
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CONFORMANCE_TARGETS: r,r_functions
+      CONFORMANCE_PROGRAMS: member,fib,ack,append,reverse,builtins
+      UW_SMOKE_TMPDIR: /tmp/unifyweaver-smoke
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install SWI-Prolog
+        run: bash scripts/ci/install_swi_prolog.sh
+
+      - name: Install R
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends r-base-core
+
+      - name: Create smoke temp root
+        run: mkdir -p "$UW_SMOKE_TMPDIR"
+
+      - name: Run R switch-index regressions
+        run: |
+          swipl -q -f init.pl -s tests/test_wam_r_generator.pl -g "run_tests([wam_r_generator:switch_on_constant_fallthrough_is_linear_noop,wam_r_generator:switch_on_term_a2_is_switch_on_term_noop,wam_r_generator:switch_on_constant_fallthrough_preserves_backtracking])" -t halt
+
+      - name: Run full R classic conformance
+        run: |
+          swipl -q -f init.pl -s tests/test_wam_cross_target_conformance.pl -g "run_tests" -t halt
+
   csharp_query_runtime_smoke:
     name: C# Query Runtime Smoke
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'

@@ -311,10 +311,10 @@ ct_default_target(elixir).
 %  native(parse_term), which is unused on the wrapper path.
 %
 %  Measured maturity (interpreter + functions): all classic programs green
-%  after R-SWITCH-INDEX-CONFORMANCE — switch_on_constant_fallthrough maps to
-%  existing SwitchOnConstant (miss/"default" already falls through);
-%  switch_on_term_a2 maps to existing SwitchOnTerm() no-op ahead of the
-%  try/retry/trust chain. No new runtime/indexing machinery.
+%  after R-SWITCH-INDEX-CONFORMANCE. Both switch_on_constant_fallthrough
+%  and switch_on_term_a2 map to the existing SwitchOnTerm() no-op so the
+%  complete try/retry/trust chain retains every backtracking alternative.
+%  No new runtime/indexing machinery.
 
 % ============================================================
 % Toolchain probes

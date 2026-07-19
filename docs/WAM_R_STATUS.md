@@ -45,9 +45,9 @@ lazy/cached tiers of F#/Haskell).
 ## Gaps (relative to Rust / Haskell / F#)
 
 - **Classic conformance (CONF-R):** opt-in adapter (`r` / `r_functions`).
-  All classic programs green after R-SWITCH-INDEX-CONFORMANCE mapped
-  `switch_on_constant_fallthrough` → existing `SwitchOnConstant` and
-  `switch_on_term_a2` → existing `SwitchOnTerm()` no-op (no new runtime).
+  All classic programs green after R-SWITCH-INDEX-CONFORMANCE mapped both
+  missing indexing hints to the existing `SwitchOnTerm()` no-op, preserving
+  the full linear choice chain without adding a runtime.
 - **LMDB is load-everything** — no lazy/cached two-level policies.
 - **ISO error support** is `tryCatch`-level only, not the three-form
   contract.
