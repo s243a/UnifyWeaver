@@ -69,6 +69,37 @@ test(guarded_body_print, [condition(clang_available)]) :-
     build_run(Dir, 'gp', "/a/ { c[$1]++; print $1, c[$1] }\n", "a\nb\na\n", Out),
     assertion(Out == "a 1\na 2\n"), !.
 
+% `print $0` prints the whole record.
+test(body_print_record, [condition(clang_available)]) :-
+    adir(Dir),
+    build_run(Dir, 'r0', "{ c[$1]++; print $0 }\n", "hello world\nfoo\n", Out),
+    assertion(Out == "hello world\nfoo\n"), !.
+
+% a string literal field alongside a table value.
+test(body_print_string_literal, [condition(clang_available)]) :-
+    adir(Dir),
+    build_run(Dir, 'sl', "{ c[$1]++; print \"count\", c[$1] }\n", "a\na\n", Out),
+    assertion(Out == "count 1\ncount 2\n"), !.
+
+% a string literal ahead of $0.
+test(body_print_literal_and_record, [condition(clang_available)]) :-
+    adir(Dir),
+    build_run(Dir, 'lr', "{ c[$1]++; print \"line:\", $0 }\n", "x\ny\n", Out),
+    assertion(Out == "line: x\nline: y\n"), !.
+
+% a literal containing a percent sign is printed verbatim (printed via %s, not
+% used as a printf format).
+test(body_print_percent_literal, [condition(clang_available)]) :-
+    adir(Dir),
+    build_run(Dir, 'pc', "{ c[$1]++; print \"100%\", c[$1] }\n", "a\n", Out),
+    assertion(Out == "100% 1\n"), !.
+
+% a label literal ahead of a split element.
+test(body_print_label_element, [condition(clang_available)]) :-
+    adir(Dir),
+    build_run(Dir, 'le', "{ split($0, a, \",\"); print \"first\", a[1] }\n", "p,q\n", Out),
+    assertion(Out == "first p\n"), !.
+
 % BEGIN runs before the per-record loop.
 test(begin_then_body_print, [condition(clang_available)]) :-
     adir(Dir),
