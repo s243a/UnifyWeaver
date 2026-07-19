@@ -1887,6 +1887,10 @@ match_special_name('RLENGTH') --> "RLENGTH".
 % NR (the record number) is a special in a comparison guard too, so `if (NR > 1)`
 % / `while (NR < 3)` read the record counter rather than a phantom scalar slot.
 match_special_name('NR') --> "NR".
+% FNR (the per-file record number) is an alias for NR here: plawk streams a
+% single input, so no per-file counter reset ever happens and FNR == NR. It
+% parses to special('NR') so every NR context handles it with no codegen.
+match_special_name('NR') --> "FNR".
 % NF (the field count of the current record) is a guard special too: `if (NF > 3)`.
 % The condition lowering threads the field separator to compute it from the
 % record; it has no defined value in an END condition (no current record).
@@ -2342,6 +2346,9 @@ scalar_value_expr(Environ) -->
 scalar_value_expr(Argv) -->
     argv_expr(Argv),
     !.
+scalar_value_expr(FileName) -->
+    filename_expr(FileName),
+    !.
 scalar_value_expr(Value) -->
     scalar_delta_expr(Value).
 
@@ -2361,6 +2368,15 @@ argv_expr(argv_at(N)) -->
     integer_codes(NCodes),
     { NCodes \== [], number_codes(N, NCodes), N >= 0 },
     ws, "]".
+
+%% filename_expr(-Argv)//
+%  `FILENAME` -- the current input filename. plawk streams a single input, which
+%  the native driver takes as `ARGV[1]` (the path; `-` denotes stdin), so
+%  FILENAME reads as `argv_at(1)` and reuses the ARGV[N] string machinery (a
+%  string scalar: print, `x = FILENAME`, and string-equality via assign-then-
+%  compare). A trailing identifier_boundary keeps `FILENAMEX` an identifier.
+filename_expr(argv_at(1)) -->
+    "FILENAME", identifier_boundary.
 
 % match/RSTART/RLENGTH as a scalar RHS: `n = match($0, /re/)`, `x = RSTART`.
 % Tried before the arithmetic clause so the `match(` keyword and the special
@@ -2394,6 +2410,8 @@ scalar_delta_expr(int(Value)) -->
       Value >= 0 }.
 scalar_delta_expr(special('NR')) -->
     "NR".
+scalar_delta_expr(special('NR')) -->
+    "FNR", identifier_boundary.
 scalar_delta_expr(special('NF')) -->
     "NF".
 scalar_delta_expr(special('ARGC')) -->
@@ -2619,6 +2637,9 @@ print_field_expr(Environ) -->
 print_field_expr(Argv) -->
     argv_expr(Argv),
     !.
+print_field_expr(FileName) -->
+    filename_expr(FileName),
+    !.
 print_field_expr(Ternary) -->
     ternary_expr(Ternary),
     !.
@@ -2689,6 +2710,8 @@ field_expr(Expr) -->
     i64_binary_surface_expr(Expr).
 field_expr(special('NR')) -->
     "NR".
+field_expr(special('NR')) -->
+    "FNR", identifier_boundary.
 field_expr(special('NF')) -->
     "NF".
 field_expr(special('ARGC')) -->
@@ -3232,6 +3255,8 @@ float_field_expr(float_field(Index)) -->
 
 i64_binary_primary_expr(special('NR')) -->
     "NR".
+i64_binary_primary_expr(special('NR')) -->
+    "FNR", identifier_boundary.
 i64_binary_primary_expr(special('NF')) -->
     "NF".
 i64_binary_primary_expr(special('ARGC')) -->
