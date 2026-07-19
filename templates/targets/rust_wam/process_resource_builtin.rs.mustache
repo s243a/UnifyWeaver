@@ -1,0 +1,115 @@
+{{match part}}{{case helpers}}
+    #[cfg(unix)]
+    fn process_priority() -> Option<i64> {
+        extern "C" {
+            fn getpriority(
+                which: std::os::raw::c_int,
+                who: std::os::raw::c_int,
+            ) -> std::os::raw::c_int;
+        }
+
+        Some(i64::from(unsafe { getpriority(0, 0) }))
+    }
+
+    #[cfg(not(unix))]
+    fn process_priority() -> Option<i64> {
+        None
+    }
+
+    #[cfg(all(unix, target_pointer_width = "64"))]
+    fn process_soft_limit(resource: i64) -> Option<i64> {
+        #[repr(align(16))]
+        struct LimitBuffer([u8; 16]);
+        extern "C" {
+            fn getrlimit(
+                resource: std::os::raw::c_int,
+                limits: *mut std::ffi::c_void,
+            ) -> std::os::raw::c_int;
+        }
+
+        let mut limits = LimitBuffer([0u8; 16]);
+        if unsafe { getrlimit(resource as std::os::raw::c_int,
+                              limits.0.as_mut_ptr().cast()) } != 0 {
+            return None;
+        }
+        let current = unsafe {
+            std::ptr::read_unaligned(limits.0.as_ptr().cast::<u64>())
+        };
+        Some(current as i64)
+    }
+
+    #[cfg(not(all(unix, target_pointer_width = "64")))]
+    fn process_soft_limit(_resource: i64) -> Option<i64> {
+        None
+    }
+
+    #[cfg(unix)]
+    fn login_name() -> Option<String> {
+        extern "C" {
+            fn getlogin_r(
+                name: *mut std::os::raw::c_char,
+                size: usize,
+            ) -> std::os::raw::c_int;
+        }
+
+        let mut buffer = [0u8; 256];
+        if unsafe { getlogin_r(buffer.as_mut_ptr().cast(), buffer.len()) } != 0 {
+            return None;
+        }
+        let end = buffer.iter().position(|byte| *byte == 0)?;
+        Some(String::from_utf8_lossy(&buffer[..end]).into_owned())
+    }
+
+    #[cfg(not(unix))]
+    fn login_name() -> Option<String> {
+        None
+    }
+{{case arms}}
+            "getpriority/1" => {
+                let priority = match Self::process_priority() {
+                    Some(priority) => Value::Integer(priority),
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &priority) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "getrlimit/2" => {
+                let resource = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(resource)) => resource,
+                    _ => return false,
+                };
+                let limit = match Self::process_soft_limit(resource) {
+                    Some(limit) => Value::Integer(limit),
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &limit) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "getlogin/1" => {
+                let name = match Self::login_name() {
+                    Some(name) => Value::Atom(name),
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &name) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+{{/match}}
