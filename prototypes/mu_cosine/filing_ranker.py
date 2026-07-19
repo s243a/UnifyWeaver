@@ -8,12 +8,14 @@ a learned ranker. No LLM scoring: ground truth = real recorded placements (each 
 Features per (bookmark, candidate folder) — ALL OUTCOME-BLIND (no placement labels anywhere in
 feature construction; labels appear only in the blend fit and the metrics):
   e5_cos    query-bookmark → passage-folder cosine (the champion baseline, kept as a feature)
-  h_s       grounded-diffusion screening score (docs/design/LEAKY_GRAPH_DIFFUSION.md): unit source
-            current injected at the bookmark's top-M e5-nearest GRAPH folders (weights ∝ cosine),
-            diffused through the folder topology with e5-RBF semantic conductance and uniform
-            leakage α; h_s(f) = equilibrium response at candidate f. α is calibrated OUTCOME-BLIND
-            by the e-fold recipe on a frozen 2-hop shell; ℓ = median edge e5 distance; ε floor
-            recorded. Dense float64 reference at this scale (~6k nodes), per the design doc.
+  h_s       RAW outcome-blind grounded-diffusion screening score (docs/design/
+            LEAKY_GRAPH_DIFFUSION.md) — NOT a calibrated probability or calibrated screening
+            score: the e-fold α recipe is INFEASIBLE on this boundary-dominated 2-hop universe
+            (bisection saturates at its lower bound), so the operator runs at the minimum-α /
+            boundary-shunt regime, which is defensible DESCRIPTIVELY while grounded and passing
+            the float64 diagnostics. Unit source current at the bookmark's top-M e5-nearest graph
+            folders (∝ cosine), e5-RBF semantic conductance, Dirichlet cut-edge shunts;
+            h_s(f) = equilibrium response at candidate f. ℓ/ε/α all recorded.
   hit_fwd   hit_prob(anchor → candidate) on the DIRECTED record-majority principal-parent graph
   hit_rev   hit_prob(candidate → anchor)      (anchor = bookmark's e5-nearest graph folder)
   sym4      sym_graph_features(anchor, candidate): 1/(1+d_sym), shared parent, shared gp, is_anc
@@ -105,9 +107,20 @@ def load_graph_universe(hops=2):
     neighbors = {n: sorted(adj[n] & uset) for n in universe}
     # DIRICHLET boundary (audit finding 1): edges cut by the 2-hop truncation must become shunts to
     # the bath, not vanish (an insulating boundary changes the operator, α calibration, and h_s).
-    # Record each boundary node's titled exterior neighbors; their cut-edge conductance is added to
-    # that node's leakage in main().
-    cut_ext = {n: sorted((adj[n] - uset) & set(titles)) for n in universe if adj[n] - uset}
+    # ALL cut edges count (audit round 2): titled exterior neighbors get semantic conductance;
+    # UNTITLED ones (no embedding possible) fall back to the topological c₀ = 1 conductance —
+    # fallback count and substituted mass are recorded, nothing is silently dropped.
+    tset = set(titles)
+    cut_ext = {}
+    cut_ext_untitled = {}
+    for n in universe:
+        ext = adj[n] - uset
+        if not ext:
+            continue
+        cut_ext[n] = sorted(ext & tset)
+        untitled = len(ext - tset)
+        if untitled:
+            cut_ext_untitled[n] = untitled
 
     # DIRECTED principal-parent map: record-majority first (the audit rule), DAG-edge fallback
     votes = defaultdict(Counter)
@@ -129,7 +142,7 @@ def load_graph_universe(hops=2):
         par = principal.get(n, dag_first.get(n))
         if par is not None and par in uset:
             parents_dir[n] = [par]
-    return universe, titles, neighbors, parents_dir, queries, cand, cut_ext
+    return universe, titles, neighbors, parents_dir, queries, cand, cut_ext, cut_ext_untitled
 
 
 def calibrate_alpha_efold(universe, neighbors, emb, ell, eps, base_leak=None, shell_hops=2,
@@ -201,7 +214,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     rng = np.random.default_rng(a.seed)
 
-    universe, titles, neighbors, parents_dir, queries, cand, cut_ext = load_graph_universe(a.hops)
+    universe, titles, neighbors, parents_dir, queries, cand, cut_ext, cut_ext_untitled = \
+        load_graph_universe(a.hops)
     print(f"graph universe: {len(universe)} titled folders (radius {a.hops}); "
           f"candidate folders: {len(cand)}; principal-parent edges: {len(parents_dir)}; "
           f"boundary nodes with cut edges: {len(cut_ext)}")
@@ -250,8 +264,16 @@ def main(argv=None):
             d2 = float(np.sum((zi - ext_vec[x]) ** 2))
             cut_leak[ui[n]] += a.eps + (1.0 - a.eps) * np.exp(-d2 / (2.0 * ell * ell))
             n_cut += 1
-    print(f"Dirichlet boundary: {n_cut} cut edges → shunt mass {cut_leak.sum():.1f} over "
-          f"{int((cut_leak > 0).sum())} boundary nodes")
+    # untitled exterior neighbors: no embedding → topological-c₀ fallback (c₀ = 1, un-modulated),
+    # recorded — nothing fails open
+    n_fallback = sum(cut_ext_untitled.values())
+    fallback_mass = 0.0
+    for n, k in cut_ext_untitled.items():
+        cut_leak[ui[n]] += float(k) * 1.0
+        fallback_mass += float(k)
+    print(f"Dirichlet boundary: {n_cut} semantic cut edges + {n_fallback} topological-c0 fallback "
+          f"edges (substituted mass {fallback_mass:.1f}) → total shunt mass {cut_leak.sum():.1f} "
+          f"over {int((cut_leak > 0).sum())} boundary nodes")
     alpha, alpha_log = calibrate_alpha_efold(universe, neighbors, emb, ell, a.eps,
                                              base_leak=cut_leak)
     print(f"diffusion params (outcome-blind): ell={ell:.4f} (median edge e5 dist), eps={a.eps}, "
@@ -422,8 +444,9 @@ def main(argv=None):
                 m = rank_metrics(scores_blend, kept) if kept else {"recall@1": float("nan")}
                 esc_rows.append((t, 1 - len(kept) / max(len(he_b), 1), len(kept), m["recall@1"]))
 
-            # CONFIRMATORY quantity (frozen seed-0 split): paired per-query Δ(1/rank), two-endpoint
-            # node-block bootstrap (the repeated splits below are OVERLAPPING and only descriptive)
+            # corrected-operator result on an EXPOSED split (seeds 0-4 were all inspected during
+            # development, so this is NOT a pre-registered confirmatory test — the prospective
+            # protocol governs the next run): paired per-query Δ(1/rank), node-block bootstrap
             def rr(scores, b):
                 if not true_in_k[b]:
                     return 0.0
@@ -435,11 +458,12 @@ def main(argv=None):
             sc_dd = ((X[:, :, keep_dd] - m_dd) / s_dd) @ b_dd
             held_pairs = [split_pairs[b] for b in he_b]
             frozen = {
-                "blend - e5 [primary]": np.array([rr(scores_blend, b) - rr(scores_e5, b) for b in he_b]),
+                "blend - e5": np.array([rr(scores_blend, b) - rr(scores_e5, b) for b in he_b]),
                 "full - drop-diffusion": np.array([rr(scores_blend, b) - rr(sc_dd, b) for b in he_b]),
             }
-            print(f"\nfrozen seed-0 split ({len(he_b)} held): paired two-endpoint node-block "
-                  "bootstrap on per-query Δ(1/rank) (95% CI):")
+            print(f"\ncorrected-operator result on an EXPOSED split (seed 0, {len(he_b)} held; "
+                  "seeds 0-4 all inspected — not pre-registered): paired node-block bootstrap "
+                  "on per-query Δ(1/rank) (95% CI):")
             for ei, (nm, vals) in enumerate(frozen.items()):
                 ci = paired_node_bootstrap_ci(held_pairs, vals, n_resamples=2000, seed=1729 + ei)
                 print(f"    {nm:24s}: {ci.estimate:+.4f} [{ci.low:+.4f}, {ci.high:+.4f}]")

@@ -120,3 +120,31 @@ def test_escalation_curve_reports_kept_counts():
     t1, routed1, kept_n1, r1_1 = rows[1]
     assert kept_n1 == 2  # the 0.05-margin row routes at t=0.1
     assert abs(r1_1 - 0.5) < 1e-6  # of the kept: one hit (row0), one miss (row2 true col1)
+
+
+def test_filing_ranker_boundary_accounting():
+    """Every cut edge is accounted for: titled exterior neighbors → semantic shunts, untitled →
+    recorded topological-c0 fallback; nothing silently dropped (audit rounds 1+2)."""
+    from filing_ranker import load_graph_universe
+
+    universe, titles, neighbors, _, _, _, cut_ext, cut_ext_untitled = load_graph_universe(hops=2)
+    uset = set(universe)
+    # rebuild the raw adjacency to compare totals
+    from collections import defaultdict
+    import os
+    adj = defaultdict(set)
+    dag = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "..", "..", ".local", "data", "pearltrees_api", "assembled_dag.tsv")
+    for ln in open(dag, encoding="utf-8"):
+        p, c = ln.split()
+        adj[p].add(c)
+        adj[c].add(p)
+    for n in universe:
+        ext = adj[n] - uset
+        titled = set(cut_ext.get(n, []))
+        n_untitled = cut_ext_untitled.get(n, 0)
+        assert titled <= ext
+        assert len(ext) == len(titled) + n_untitled, f"cut edges unaccounted at node {n}"
+        assert all(x in titles for x in titled)
+    total_untitled = sum(cut_ext_untitled.values())
+    assert total_untitled > 0  # the 97 the audit found — must be recorded, not dropped
