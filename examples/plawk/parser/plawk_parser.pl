@@ -2873,6 +2873,11 @@ field_expr(special('RSTART')) -->
     "RSTART".
 field_expr(special('RLENGTH')) -->
     "RLENGTH".
+% RT is the text matched by the current regex record separator. It is a
+% read-only string special (unlike the numeric RSTART/RLENGTH pair), so it is
+% admitted as a print field but not as an arithmetic scalar.
+field_expr(special('RT')) -->
+    "RT", identifier_boundary.
 field_expr(Expr) -->
     i64_binary_surface_expr(Expr).
 field_expr(special('NR')) -->

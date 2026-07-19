@@ -11400,50 +11400,52 @@ plawk_fs_regex_store_lines(_BeginClauses, []).
 
 %% plawk_rs_store_lines(+BeginClauses, -Lines)
 %
-%  The startup store that sets the record separator global @wam_rs_byte from a
-%  single-char `BEGIN { RS = "X" }`, so the runtime record reader splits input
-%  on that byte instead of newline (the global's default). Runs in the BEGIN
-%  block, before the record loop. When RS is unset, [] (the global keeps its
-%  newline default). A multi-char or empty RS makes this fail, so the program is
-%  cleanly rejected rather than silently reading by newline.
+%  Configure the record reader before the loop. @wam_rs_mode is explicit so
+%  literal suffix matching (0), paragraph mode (1), and regex matching (2) do
+%  not overload @wam_rs_len. An unset RS emits no stores and keeps the runtime
+%  default of literal newline. A one-character RS remains literal, including a
+%  regex metacharacter; an empty RS selects paragraph mode; every longer RS is
+%  a POSIX ERE compiled once by @wam_rs_regex_init. The existing pointer/length
+%  pair carries literal bytes in mode 0 and the NUL-terminated ERE in mode 2.
 plawk_rs_store_lines(BeginClauses, Lines) :-
     (   member(begin(Actions), BeginClauses),
         member(set(var('RS'), string(Value)), Actions)
-    ->  string_codes(Value, Codes),
-        (   Codes == []
-        ->  % empty RS = paragraph mode: signalled by @wam_rs_len = 0. The reader
-            % splits on blank lines and skips leading blank lines.
-            Lines = ['  store i64 0, i64* @wam_rs_len']
-        ;   length(Codes, NBytes),
-            ArrLen is NBytes + 1,
-            format(atom(PtrLine),
+    ->  string_length(Value, CharLen),
+        llvm_emit_c_string_global(wam_rs_custom, Value, _GlobalIR, NBytes, ArrLen),
+        plawk_rs_mode(CharLen, Mode),
+        format(atom(LenLine), '  store i64 ~w, i64* @wam_rs_len', [NBytes]),
+        format(atom(ModeLine), '  store i8 ~w, i8* @wam_rs_mode', [Mode]),
+        (   NBytes =:= 0
+        ->  Lines = [LenLine, ModeLine]
+        ;   format(atom(PtrLine),
                 '  store i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.wam_rs_custom, i64 0, i64 0), i8** @wam_rs_ptr',
                 [ArrLen, ArrLen]),
-            format(atom(LenLine), '  store i64 ~w, i64* @wam_rs_len', [NBytes]),
-            Lines = [PtrLine, LenLine]
+            (   Mode =:= 2
+            ->  Lines = [PtrLine, LenLine, ModeLine,
+                    '  call void @wam_rs_regex_init()']
+            ;   Lines = [PtrLine, LenLine, ModeLine]
+            )
         )
     ;   Lines = []
     ).
 
+plawk_rs_mode(0, 1) :- !.
+plawk_rs_mode(1, 0) :- !.
+plawk_rs_mode(_Longer, 2).
+
 %% plawk_rs_global_lines(+BeginClauses, -Lines)
 %
-%  The RS string constant `@.wam_rs_custom` (module global) for a `BEGIN { RS =
-%  "…" }`, paired with the startup store in plawk_rs_store_lines/2. Emitted into
-%  the begin-globals seam, like the FS-regex pattern. An empty RS (paragraph
-%  mode) is a follow-on -- the first clause fails, and the store fails too, so
-%  the program is cleanly rejected.
+%  The RS string constant `@.wam_rs_custom` (module global) for a nonempty
+%  `BEGIN { RS = "…" }`, paired with plawk_rs_store_lines/2. In literal mode it
+%  is the byte suffix; in regex mode it is the NUL-terminated POSIX ERE. Empty
+%  RS needs no constant because paragraph mode is selected solely by the mode
+%  and zero-length stores.
 plawk_rs_global_lines(BeginClauses, [Line]) :-
     member(begin(Actions), BeginClauses),
     member(set(var('RS'), string(Value)), Actions),
-    string_codes(Value, Codes),
-    Codes \== [],
+    Value \== "",
     !,
-    maplist(plawk_llvm_byte_escape, Codes, Escapes),
-    atomic_list_concat(Escapes, EscBody),
-    length(Codes, NBytes),
-    ArrLen is NBytes + 1,
-    format(atom(Line), '@.wam_rs_custom = private constant [~w x i8] c"~w\\00"',
-        [ArrLen, EscBody]).
+    llvm_emit_c_string_global(wam_rs_custom, Value, Line, _StringLen, _BytesLen).
 plawk_rs_global_lines(_BeginClauses, []).
 
 %% plawk_subsep_store_lines(+BeginClauses, -Lines)
@@ -11813,6 +11815,11 @@ plawk_mixed_end_print_lines([special('NR') | Rest], ScalarPlan, AssocPlan, Outpu
     plawk_end_nr_print_lines(PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
     plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
+plawk_mixed_end_print_lines([special('RT') | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_rt_print_lines(PrintIndex),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
 plawk_mixed_end_print_lines([Expr | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
     { plawk_end_scalar_expr(Expr) },
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
@@ -12145,6 +12152,7 @@ plawk_rule_body_print_field(length(field(_))).
 plawk_rule_body_print_field(match_expr(field(_), _Regex)).
 plawk_rule_body_print_field(special('RSTART')).
 plawk_rule_body_print_field(special('RLENGTH')).
+plawk_rule_body_print_field(special('RT')).
 plawk_rule_body_print_field(substr(field(_), _Start, _Len)).
 plawk_rule_body_print_field(index(field(_), string(_))).
 plawk_rule_body_print_field(tolower(field(_))).
@@ -14985,6 +14993,11 @@ plawk_scalar_end_print_lines([special('NR') | Rest], StatePlan, OutputSeparator,
     plawk_end_nr_print_lines(PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
     plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
+plawk_scalar_end_print_lines([special('RT') | Rest], StatePlan, OutputSeparator, PrintIndex) -->
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    plawk_end_rt_print_lines(PrintIndex),
+    { NextPrintIndex is PrintIndex + 1 },
+    plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
 plawk_scalar_end_print_lines([Expr | Rest], StatePlan, OutputSeparator, PrintIndex) -->
     { plawk_end_scalar_expr(Expr) },
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
@@ -15037,6 +15050,8 @@ plawk_end_field_print_lines(string(Value), _StatePlan, PrintIndex) -->
     plawk_end_string_print_lines(Value, PrintIndex).
 plawk_end_field_print_lines(special('NR'), _StatePlan, PrintIndex) -->
     plawk_end_nr_print_lines(PrintIndex).
+plawk_end_field_print_lines(special('RT'), _StatePlan, PrintIndex) -->
+    plawk_end_rt_print_lines(PrintIndex).
 plawk_end_field_print_lines(Expr, StatePlan, PrintIndex) -->
     { plawk_end_scalar_expr(Expr) },
     plawk_end_expr_print_lines(Expr, StatePlan, PrintIndex).
@@ -15048,6 +15063,25 @@ plawk_end_nr_print_lines(PrintIndex) -->
           [FmtPtr, PrintCall])
     },
     [FmtPtr, PrintCall].
+
+plawk_end_rt_print_lines(PrintIndex) -->
+    { format(atom(PtrLine),
+          '  %end_rt_ptr_~w = load i8*, i8** @wam_rt_ptr',
+          [PrintIndex]),
+      format(atom(Len64Line),
+          '  %end_rt_len64_~w = load i64, i64* @wam_rt_len',
+          [PrintIndex]),
+      format(atom(LenLine),
+          '  %end_rt_len_~w = trunc i64 %end_rt_len64_~w to i32',
+          [PrintIndex, PrintIndex]),
+      format(atom(FmtVar), 'end_rt_fmt_~w', [PrintIndex]),
+      format(atom(PrintVar), 'printed_end_rt_~w', [PrintIndex]),
+      format(atom(LenIR), '%end_rt_len_~w', [PrintIndex]),
+      format(atom(PtrIR), '%end_rt_ptr_~w', [PrintIndex]),
+      llvm_emit_printf_slice(plawk_surface_print_slice, FmtVar, PrintVar,
+          LenIR, PtrIR, [FmtPtr, PrintCall])
+    },
+    [PtrLine, Len64Line, LenLine, FmtPtr, PrintCall].
 
 plawk_end_expr_print_lines(Expr, StatePlan, PrintIndex) -->
     { plawk_substitute_end_reads(Expr, StatePlan, SubstitutedExpr),
@@ -16143,6 +16177,21 @@ plawk_emit_print_expr_for_context(special('RLENGTH'), FieldSeparator, Context,
     plawk_print_expr_output_names(Context, rlength, FmtPrefix, PrintPrefix),
     plawk_i64_expr_ir(special('RLENGTH'), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
+
+% RT is maintained by the record reader as an owned byte slice. Load it at the
+% point of use so each record observes its own separator match; a record ended
+% by EOF has length zero and the runtime supplies a non-null empty pointer.
+plawk_emit_print_expr_for_context(special('RT'), _FieldSeparator, Context,
+        slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), [],
+        [PtrLine, Len64Line, LenLine]) :-
+    plawk_print_expr_value_base(Context, rt, Base),
+    plawk_print_expr_output_names(Context, rt, FmtPrefix, PrintPrefix),
+    format(atom(PtrIR), '%~w_ptr', [Base]),
+    format(atom(PtrLine), '  ~w = load i8*, i8** @wam_rt_ptr', [PtrIR]),
+    format(atom(Len64IR), '%~w_len64', [Base]),
+    format(atom(Len64Line), '  ~w = load i64, i64* @wam_rt_len', [Len64IR]),
+    format(atom(LenIR), '%~w_len', [Base]),
+    format(atom(LenLine), '  ~w = trunc i64 ~w to i32', [LenIR, Len64IR]).
 
 plawk_emit_print_expr_for_context(special('ARGC'), FieldSeparator, Context,
         i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
