@@ -338,6 +338,7 @@ plawk_program_native_driver_ir(
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
     plawk_field_assign_sets_ir(SetFields, AssignGlobalIR, SetBodyIR),
+    plawk_output_separator_byte(OutputSeparator, OFSByte),
     format(atom(RecordIR),
 '~w
   br i1 %is_match, label %print_line, label %continue_loop
@@ -351,7 +352,7 @@ print_line:
   call void @free(i8* %fa_joined)
   call void @wam_fields_free(%WamFieldBuf* %fa_fb)
   br label %continue_loop',
-        [GuardCallIR, FieldSeparator, SetBodyIR, OutputSeparator]),
+        [GuardCallIR, FieldSeparator, SetBodyIR, OFSByte]),
     plawk_ors_global_line(BeginClauses, OrsGlobalLine),
     format(atom(RuntimeGlobals),
 '@.plawk_surface_print_line = private constant [4 x i8] c"%s\\0A\\00"
@@ -4798,9 +4799,11 @@ qatom_~w:
 qpd_~w:',
               [J, K, J, K | RestJs]),
           ( J < Last
-          ->  format(atom(Line),
-                  '~w\n  %qsep_~w = call i32 @putchar(i32 ~w)',
-                  [FieldBlock, J, OutputSep])
+          ->  plawk_ofs_sep_ir(qsep, J, OutputSep, SepIR),
+              ( SepIR == ''
+              ->  Line = FieldBlock
+              ;   format(atom(Line), '~w\n~w', [FieldBlock, SepIR])
+              )
           ;   Line = FieldBlock )
         ),
         Lines),
@@ -5564,9 +5567,7 @@ plawk_records_col_lines([], _FieldSep, _OutputSep, _PrintIndex) --> [].
 plawk_records_col_lines([Plan | Rest], FieldSep, OutputSep, PrintIndex) -->
     { ( PrintIndex =:= 0
       ->  SepLines = []
-      ;   format(atom(SepLine),
-              '  %rec_sep~w = call i32 @putchar(i32 ~w)', [PrintIndex, OutputSep]),
-          SepLines = [SepLine]
+      ;   plawk_ofs_sep_lines(rec_sep, PrintIndex, OutputSep, SepLines)
       ),
       plawk_records_field_lines(Plan, PrintIndex, FieldSep, FieldLines),
       append([SepLines, FieldLines], Lines),
@@ -6176,11 +6177,8 @@ plawk_forin_accum_separator_lines(0, _OutputSeparator) -->
     !,
     [].
 plawk_forin_accum_separator_lines(Index, OutputSeparator) -->
-    { format(atom(SpaceCall),
-          '  %forin_out_separator_~w = call i32 @putchar(i32 ~w)',
-          [Index, OutputSeparator])
-    },
-    [SpaceCall].
+    { plawk_ofs_sep_lines(forin_out_separator, Index, OutputSeparator, Lines) },
+    Lines.
 
 %% plawk_forin_end_decode_ir(+LoopVar, +ArrayName, +Vars, +Call, +Types,
 %%     +PrintFields, +AssocPlan, +Descriptor, +OutputSeparator,
@@ -6333,11 +6331,8 @@ plawk_forin_decode_separator_lines(0, _OutputSeparator) -->
     !,
     [].
 plawk_forin_decode_separator_lines(Index, OutputSeparator) -->
-    { format(atom(SpaceCall),
-          '  %forin_dprint_separator_~w = call i32 @putchar(i32 ~w)',
-          [Index, OutputSeparator])
-    },
-    [SpaceCall].
+    { plawk_ofs_sep_lines(forin_dprint_separator, Index, OutputSeparator, Lines) },
+    Lines.
 
 %% plawk_foreign_arg_ir(forin_val(_), ...) -- a for-in-scoped grammar arg:
 %  the current iterated value, already loaded into %forin_slot_value by the
@@ -6448,11 +6443,8 @@ plawk_forin_separator_lines(0, _OutputSeparator) -->
     !,
     [].
 plawk_forin_separator_lines(PrintIndex, OutputSeparator) -->
-    { format(atom(SpaceCall),
-          '  %forin_printed_separator_~w = call i32 @putchar(i32 ~w)',
-          [PrintIndex, OutputSeparator])
-    },
-    [SpaceCall].
+    { plawk_ofs_sep_lines(forin_printed_separator, PrintIndex, OutputSeparator, Lines) },
+    Lines.
 
 plawk_combine_entry_ir('', IR, IR) :-
     !.
@@ -11112,12 +11104,53 @@ plawk_varlen_eof_check_ir(eof, FBase, StatusSuffix, BodyPrefixIR) :-
         [FBase, FBase, StatusSuffix, FBase, FBase, FBase]).
 plawk_varlen_eof_check_ir(no_eof, _FBase, _StatusSuffix, '').
 
+%% plawk_output_separator(+BeginClauses, -OutputSeparator)
+%
+%  The output field separator (OFS) as a list of bytes emitted between a
+%  print's comma-separated fields -- default a single space `[32]`. A
+%  `BEGIN { OFS = "…" }` literal sets it, so OFS may be multi-char (`OFS=", "`
+%  → `[44, 32]`) or empty (`OFS=""` → `[]`, fields printed adjacent). The
+%  separator emitters (via plawk_ofs_sep_lines/4) write one `putchar` per byte,
+%  so an empty list emits nothing and an N-byte list emits N.
 plawk_output_separator(BeginClauses, OutputSeparator) :-
     (   member(begin(Actions), BeginClauses),
         member(set(var('OFS'), string(Value)), Actions)
-    ->  string_codes(Value, [OutputSeparator])
-    ;   OutputSeparator = 32
+    ->  string_codes(Value, OutputSeparator)
+    ;   OutputSeparator = [32]
     ).
+
+%% plawk_output_separator_byte(+OutputSeparator, -Byte)
+%
+%  The OFS as a single byte, for the runtime join path (the field-assignment
+%  `$N = expr; print $0` rebuild via @wam_fields_join, which takes a one-byte
+%  OFS). Only a single-char OFS qualifies; a multi-char or empty OFS on that
+%  path needs multi-byte join support (a follow-on), so this fails and the
+%  program is cleanly rejected rather than emitting a malformed join.
+plawk_output_separator_byte([Byte], Byte).
+
+%% plawk_ofs_sep_lines(+NamePrefix, +Index, +OFSBytes, -Lines)
+%
+%  The between-fields OFS emission: one `putchar` IR line per byte in OFSBytes,
+%  with SSA names `%<NamePrefix>_<Index>_<Pos>` kept unique per field position.
+%  An empty OFS yields no lines (adjacent fields); a multi-char OFS yields one
+%  line per byte.
+plawk_ofs_sep_lines(NamePrefix, Index, OFSBytes, Lines) :-
+    plawk_ofs_sep_lines_(OFSBytes, NamePrefix, Index, 0, Lines).
+
+plawk_ofs_sep_lines_([], _NamePrefix, _Index, _Pos, []).
+plawk_ofs_sep_lines_([Byte | Rest], NamePrefix, Index, Pos, [Line | Lines]) :-
+    format(atom(Line), '  %~w_~w_~w = call i32 @putchar(i32 ~w)',
+        [NamePrefix, Index, Pos, Byte]),
+    Pos1 is Pos + 1,
+    plawk_ofs_sep_lines_(Rest, NamePrefix, Index, Pos1, Lines).
+
+%% plawk_ofs_sep_ir(+NamePrefix, +Index, +OFSBytes, -IR)
+%
+%  As plawk_ofs_sep_lines/4 but joined into a single newline-separated atom,
+%  for sites that weave the separator into a larger format template.
+plawk_ofs_sep_ir(NamePrefix, Index, OFSBytes, IR) :-
+    plawk_ofs_sep_lines(NamePrefix, Index, OFSBytes, Lines),
+    atomic_list_concat(Lines, '\n', IR).
 
 %% plawk_output_record_separator(+BeginClauses, -Byte)
 %
@@ -11273,11 +11306,8 @@ plawk_begin_separator_lines(0, _OutputSeparator) -->
     !,
     [].
 plawk_begin_separator_lines(Index, OutputSeparator) -->
-    { format(atom(SpaceCall),
-          '  %printed_begin_separator_~w = call i32 @putchar(i32 ~w)',
-          [Index, OutputSeparator])
-    },
-    [SpaceCall].
+    { plawk_ofs_sep_lines(printed_begin_separator, Index, OutputSeparator, Lines) },
+    Lines.
 
 plawk_begin_string_print_lines(Value, Index) -->
     { string_codes(Value, Codes),
@@ -14870,11 +14900,8 @@ plawk_scalar_end_separator_lines(0, _OutputSeparator) -->
     !,
     [].
 plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator) -->
-    { format(atom(SpaceCall),
-          '  %printed_end_separator_~w = call i32 @putchar(i32 ~w)',
-          [PrintIndex, OutputSeparator])
-    },
-    [SpaceCall].
+    { plawk_ofs_sep_lines(printed_end_separator, PrintIndex, OutputSeparator, Lines) },
+    Lines.
 
 plawk_pattern_guard_ir(always, GuardIR) :-
     GuardIR = ''-'  %is_match = icmp eq i1 true, true'.
@@ -15655,21 +15682,20 @@ plawk_print_separator_ir(0, _OutputSeparator) -->
     !,
     [].
 plawk_print_separator_ir(Index, OutputSeparator) -->
-    { format(atom(SpaceCall),
-          '  %printed_separator_~w = call i32 @putchar(i32 ~w)',
-          [Index, OutputSeparator])
+    { plawk_ofs_sep_lines(printed_separator, Index, OutputSeparator, SepLines),
+      findall(''-L, member(L, SepLines), Pairs)
     },
-    [''-SpaceCall].
+    Pairs.
 
 plawk_prefixed_print_separator_ir(0, _OutputSeparator, _Prefix) -->
     !,
     [].
 plawk_prefixed_print_separator_ir(Index, OutputSeparator, Prefix) -->
-    { format(atom(SpaceCall),
-          '  %~w_printed_separator_~w = call i32 @putchar(i32 ~w)',
-          [Prefix, Index, OutputSeparator])
+    { format(atom(NamePrefix), '~w_printed_separator', [Prefix]),
+      plawk_ofs_sep_lines(NamePrefix, Index, OutputSeparator, SepLines),
+      findall(''-L, member(L, SepLines), Pairs)
     },
-    [''-SpaceCall].
+    Pairs.
 
 plawk_print_field_ir(Field, FieldSeparator, Index) -->
     { plawk_emit_print_expr_ir(Field, FieldSeparator, Index, Type, GlobalParts, SetupParts),
