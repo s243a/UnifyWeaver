@@ -95,7 +95,7 @@ emitter (not the token-parser predicates several targets also define).
 | rust | N | Y | N | N | N | `/* unknown */` (drop) | safe; missed opt |
 | go | N | N | N | N | N | `// TODO` (drop) | safe; missed opt |
 | python | N | N | N | N | N | `# SKIP` (drop) | safe; missed opt (confirmed) |
-| **r** (fixed) | Y | N | N | Y | N | `Raw(...)` (now unreachable for these) | safe linear no-op; classic conformance fixed |
+| **r** (fixed) | Y | Y | Y | Y | Y | `Raw(...)` (now unreachable for these) | safe linear no-op for all A1/A2 hints; classic conformance fixed |
 | lua | N | Y | N | N | N | `I.Raw(...)` (drop-style) | safe; missed opt (verify) |
 | clojure | N | N | N | N | N | `{:op :raw}` stub | depends on step-loop `:raw` |
 | llvm | N | Y | N | partial(nop) | N | `; TODO` (switch is design-nop) | safe (chain preserved) |
@@ -235,8 +235,11 @@ after runtime validation — see "Runtime validation" above.**
 - **C++** — `src/unifyweaver/targets/wam_cpp_target.pl` (full coverage incl. `struct_a2`).
 - **Elixir lowered emitter** — `src/unifyweaver/targets/wam_elixir_lowered_emitter.pl` (full coverage).
 - **R** — `src/unifyweaver/targets/wam_r_target.pl` maps
-  `switch_on_constant_fallthrough` and `switch_on_term_a2` to the existing
-  `SwitchOnTerm()` no-op, preserving the complete linear choice chain.
+  `switch_on_constant_fallthrough`, `switch_on_term_a2`,
+  `switch_on_constant_a2`, `switch_on_constant_a2_fallthrough`, and
+  `switch_on_structure_a2` to the existing `SwitchOnTerm()` no-op
+  (safe linear fallback — not optimized A2 dispatch), preserving the
+  complete try/retry/trust choice chain.
 
 ## Toolchain note
 

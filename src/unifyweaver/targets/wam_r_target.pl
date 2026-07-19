@@ -430,6 +430,13 @@ wam_parts_to_r(["switch_on_term" | _], 'SwitchOnTerm()').
 % member/2 emits switch_on_term_a2 ahead of a complete try/trust chain.
 wam_parts_to_r(["switch_on_term_a2" | _], 'SwitchOnTerm()').
 
+% Remaining A2 indexing hints (constant / constant-fallthrough / structure)
+% also lower to the linear no-op. Do not reuse SwitchOnConstant here: an
+% indexed jump can bypass TryMeElse and drop trailing clauses on backtrack.
+wam_parts_to_r(["switch_on_constant_a2" | _], 'SwitchOnTerm()').
+wam_parts_to_r(["switch_on_constant_a2_fallthrough" | _], 'SwitchOnTerm()').
+wam_parts_to_r(["switch_on_structure_a2" | _], 'SwitchOnTerm()').
+
 % --- Switch on structure (functor-shape dispatch) ---
 % Each case is "F/N:label". Behaviour parallels switch_on_constant: when
 % the first arg is a struct of matching shape, jump to the labelled
