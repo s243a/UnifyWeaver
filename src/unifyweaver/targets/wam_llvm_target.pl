@@ -7226,9 +7226,9 @@ rhv.alloc_out:
   br i1 %rhv.out_null, label %rhv.fail, label %rhv.loop
 
 rhv.loop:
-  %rhv.out_len = phi i64 [ 0, %rhv.alloc_out ], [ %rhv.out_len, %rhv.after_read ], [ %rhv.next_out_len, %rhv.nomatch ]
-  %rhv.out_cur = phi i8* [ %rhv.out, %rhv.alloc_out ], [ %rhv.out_cur, %rhv.after_read ], [ %rhv.append_out, %rhv.nomatch ]
-  %rhv.out_cap = phi i64 [ 4096, %rhv.alloc_out ], [ %rhv.out_cap, %rhv.after_read ], [ %rhv.append_cap, %rhv.nomatch ]
+  %rhv.out_len = phi i64 [ 0, %rhv.alloc_out ], [ %rhv.out_len, %rhv.after_read ], [ %rhv.next_out_len, %rhv.nomatch ], [ %rhv.out_len, %rhv.para_skip ]
+  %rhv.out_cur = phi i8* [ %rhv.out, %rhv.alloc_out ], [ %rhv.out_cur, %rhv.after_read ], [ %rhv.append_out, %rhv.nomatch ], [ %rhv.out_cur, %rhv.para_skip ]
+  %rhv.out_cap = phi i64 [ 4096, %rhv.alloc_out ], [ %rhv.out_cap, %rhv.after_read ], [ %rhv.append_cap, %rhv.nomatch ], [ %rhv.out_cap, %rhv.para_skip ]
   %rhv.buf_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 1
   %rhv.buf = load i8*, i8** %rhv.buf_slot
   %rhv.len_slot = getelementptr %WamLineReader, %WamLineReader* %rhv.reader, i32 0, i32 3
@@ -7263,7 +7263,16 @@ rhv.consume:
   %rhv.ch = load i8, i8* %rhv.char_ptr
   %rhv.pos_next = add i64 %rhv.pos, 1
   store i64 %rhv.pos_next, i64* %rhv.pos_slot
-  br label %rhv.append
+  %rhv.rslen_s = load i64, i64* @wam_rs_len
+  %rhv.para_s = icmp eq i64 %rhv.rslen_s, 0
+  %rhv.empty_s = icmp eq i64 %rhv.out_len, 0
+  %rhv.nl_s = icmp eq i8 %rhv.ch, 10
+  %rhv.pe_s = and i1 %rhv.para_s, %rhv.empty_s
+  %rhv.skip_s = and i1 %rhv.pe_s, %rhv.nl_s
+  br i1 %rhv.skip_s, label %rhv.para_skip, label %rhv.append
+
+rhv.para_skip:
+  br label %rhv.loop
 
 rhv.append:
   %rhv.next_out_len_pre = add i64 %rhv.out_len, 1
@@ -7291,6 +7300,26 @@ rhv.append_store:
 ; A record boundary is the RS byte-string as a suffix of what we have appended.
 rhv.checkmatch:
   %rhv.rslen = load i64, i64* @wam_rs_len
+  %rhv.is_para = icmp eq i64 %rhv.rslen, 0
+  br i1 %rhv.is_para, label %rhv.para_check, label %rhv.suffix_check
+
+rhv.para_check:
+  %rhv.pc_enough = icmp uge i64 %rhv.next_out_len, 2
+  br i1 %rhv.pc_enough, label %rhv.para_domatch, label %rhv.nomatch
+
+rhv.para_domatch:
+  %rhv.pc_len = sub i64 %rhv.next_out_len, 2
+  %rhv.pc_p2 = getelementptr i8, i8* %rhv.append_out, i64 %rhv.pc_len
+  %rhv.pc_i1 = sub i64 %rhv.next_out_len, 1
+  %rhv.pc_p1 = getelementptr i8, i8* %rhv.append_out, i64 %rhv.pc_i1
+  %rhv.pc_c2 = load i8, i8* %rhv.pc_p2
+  %rhv.pc_c1 = load i8, i8* %rhv.pc_p1
+  %rhv.pc_c2nl = icmp eq i8 %rhv.pc_c2, 10
+  %rhv.pc_c1nl = icmp eq i8 %rhv.pc_c1, 10
+  %rhv.pc_both = and i1 %rhv.pc_c2nl, %rhv.pc_c1nl
+  br i1 %rhv.pc_both, label %rhv.finalize, label %rhv.nomatch
+
+rhv.suffix_check:
   %rhv.enough = icmp uge i64 %rhv.next_out_len, %rhv.rslen
   br i1 %rhv.enough, label %rhv.domatch, label %rhv.nomatch
 
@@ -7306,8 +7335,8 @@ rhv.nomatch:
   br label %rhv.loop
 
 rhv.finalize:
-  %rhv.fin_buf = phi i8* [ %rhv.append_out, %rhv.domatch ], [ %rhv.out_cur, %rhv.eof_or_partial ]
-  %rhv.fin_len = phi i64 [ %rhv.mstart, %rhv.domatch ], [ %rhv.out_len, %rhv.eof_or_partial ]
+  %rhv.fin_buf = phi i8* [ %rhv.append_out, %rhv.domatch ], [ %rhv.append_out, %rhv.para_domatch ], [ %rhv.out_cur, %rhv.eof_or_partial ]
+  %rhv.fin_len = phi i64 [ %rhv.mstart, %rhv.domatch ], [ %rhv.pc_len, %rhv.para_domatch ], [ %rhv.out_len, %rhv.eof_or_partial ]
   %rhv.has_chars = icmp sgt i64 %rhv.fin_len, 0
   br i1 %rhv.has_chars, label %rhv.check_cr, label %rhv.intern_empty
 
@@ -7322,7 +7351,11 @@ rhv.check_cr:
   %rhv.rsb_is_lf = icmp eq i8 %rhv.rsb_cr, 10
   %rhv.rs_is_lf = and i1 %rhv.rslen_is_1, %rhv.rsb_is_lf
   %rhv.last_is_cr = icmp eq i8 %rhv.last, 13
-  %rhv.do_trim = and i1 %rhv.rs_is_lf, %rhv.last_is_cr
+  %rhv.do_trim_cr = and i1 %rhv.rs_is_lf, %rhv.last_is_cr
+  %rhv.para_cr = icmp eq i64 %rhv.rslen_cr, 0
+  %rhv.last_is_nl = icmp eq i8 %rhv.last, 10
+  %rhv.do_trim_para = and i1 %rhv.para_cr, %rhv.last_is_nl
+  %rhv.do_trim = or i1 %rhv.do_trim_cr, %rhv.do_trim_para
   %rhv.trim_len = select i1 %rhv.do_trim, i64 %rhv.last_idx, i64 %rhv.fin_len
   br label %rhv.intern
 
@@ -7414,9 +7447,9 @@ rtv.loop_pre:
   br label %rtv.loop
 
 rtv.loop:
-  %rtv.out_len = phi i64 [ 0, %rtv.loop_pre ], [ %rtv.out_len, %rtv.after_read ], [ %rtv.next_out_len, %rtv.nomatch ]
-  %rtv.out_cur = phi i8* [ %rtv.out0, %rtv.loop_pre ], [ %rtv.out_cur, %rtv.after_read ], [ %rtv.append_out, %rtv.nomatch ]
-  %rtv.out_cap = phi i64 [ %rtv.cap1, %rtv.loop_pre ], [ %rtv.out_cap, %rtv.after_read ], [ %rtv.append_cap, %rtv.nomatch ]
+  %rtv.out_len = phi i64 [ 0, %rtv.loop_pre ], [ %rtv.out_len, %rtv.after_read ], [ %rtv.next_out_len, %rtv.nomatch ], [ %rtv.out_len, %rtv.para_skip ]
+  %rtv.out_cur = phi i8* [ %rtv.out0, %rtv.loop_pre ], [ %rtv.out_cur, %rtv.after_read ], [ %rtv.append_out, %rtv.nomatch ], [ %rtv.out_cur, %rtv.para_skip ]
+  %rtv.out_cap = phi i64 [ %rtv.cap1, %rtv.loop_pre ], [ %rtv.out_cap, %rtv.after_read ], [ %rtv.append_cap, %rtv.nomatch ], [ %rtv.out_cap, %rtv.para_skip ]
   %rtv.buf_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 1
   %rtv.buf = load i8*, i8** %rtv.buf_slot
   %rtv.len_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 3
@@ -7451,7 +7484,18 @@ rtv.consume:
   %rtv.ch = load i8, i8* %rtv.char_ptr
   %rtv.pos_next = add i64 %rtv.pos, 1
   store i64 %rtv.pos_next, i64* %rtv.pos_slot
-  br label %rtv.append
+  ; paragraph mode (rs_len == 0): skip leading blank lines -- a newline while the
+  ; record is still empty is consumed without being appended.
+  %rtv.rslen_s = load i64, i64* @wam_rs_len
+  %rtv.para_s = icmp eq i64 %rtv.rslen_s, 0
+  %rtv.empty_s = icmp eq i64 %rtv.out_len, 0
+  %rtv.nl_s = icmp eq i8 %rtv.ch, 10
+  %rtv.pe_s = and i1 %rtv.para_s, %rtv.empty_s
+  %rtv.skip_s = and i1 %rtv.pe_s, %rtv.nl_s
+  br i1 %rtv.skip_s, label %rtv.para_skip, label %rtv.append
+
+rtv.para_skip:
+  br label %rtv.loop
 
 rtv.append:
   %rtv.next_out_len_pre = add i64 %rtv.out_len, 1
@@ -7481,9 +7525,30 @@ rtv.append_store:
   %rtv.next_out_len = add i64 %rtv.out_len, 1
   br label %rtv.checkmatch
 
-; A record boundary is the RS byte-string as a suffix of what we have appended.
+; A record boundary is the RS byte-string as a suffix of what we have appended;
+; in paragraph mode (rs_len == 0) it is a blank line -- two adjacent newlines.
 rtv.checkmatch:
   %rtv.rslen = load i64, i64* @wam_rs_len
+  %rtv.is_para = icmp eq i64 %rtv.rslen, 0
+  br i1 %rtv.is_para, label %rtv.para_check, label %rtv.suffix_check
+
+rtv.para_check:
+  %rtv.pc_enough = icmp uge i64 %rtv.next_out_len, 2
+  br i1 %rtv.pc_enough, label %rtv.para_domatch, label %rtv.nomatch
+
+rtv.para_domatch:
+  %rtv.pc_len = sub i64 %rtv.next_out_len, 2
+  %rtv.pc_p2 = getelementptr i8, i8* %rtv.append_out, i64 %rtv.pc_len
+  %rtv.pc_i1 = sub i64 %rtv.next_out_len, 1
+  %rtv.pc_p1 = getelementptr i8, i8* %rtv.append_out, i64 %rtv.pc_i1
+  %rtv.pc_c2 = load i8, i8* %rtv.pc_p2
+  %rtv.pc_c1 = load i8, i8* %rtv.pc_p1
+  %rtv.pc_c2nl = icmp eq i8 %rtv.pc_c2, 10
+  %rtv.pc_c1nl = icmp eq i8 %rtv.pc_c1, 10
+  %rtv.pc_both = and i1 %rtv.pc_c2nl, %rtv.pc_c1nl
+  br i1 %rtv.pc_both, label %rtv.finalize, label %rtv.nomatch
+
+rtv.suffix_check:
   %rtv.enough = icmp uge i64 %rtv.next_out_len, %rtv.rslen
   br i1 %rtv.enough, label %rtv.domatch, label %rtv.nomatch
 
@@ -7499,8 +7564,8 @@ rtv.nomatch:
   br label %rtv.loop
 
 rtv.finalize:
-  %rtv.fin_buf = phi i8* [ %rtv.append_out, %rtv.domatch ], [ %rtv.out_cur, %rtv.eof_or_partial ]
-  %rtv.fin_len = phi i64 [ %rtv.mstart, %rtv.domatch ], [ %rtv.out_len, %rtv.eof_or_partial ]
+  %rtv.fin_buf = phi i8* [ %rtv.append_out, %rtv.domatch ], [ %rtv.append_out, %rtv.para_domatch ], [ %rtv.out_cur, %rtv.eof_or_partial ]
+  %rtv.fin_len = phi i64 [ %rtv.mstart, %rtv.domatch ], [ %rtv.pc_len, %rtv.para_domatch ], [ %rtv.out_len, %rtv.eof_or_partial ]
   %rtv.has_chars = icmp sgt i64 %rtv.fin_len, 0
   br i1 %rtv.has_chars, label %rtv.check_cr, label %rtv.terminate_empty
 
@@ -7515,7 +7580,13 @@ rtv.check_cr:
   %rtv.rsb_is_lf = icmp eq i8 %rtv.rsb_cr, 10
   %rtv.rs_is_lf = and i1 %rtv.rslen_is_1, %rtv.rsb_is_lf
   %rtv.last_is_cr = icmp eq i8 %rtv.last, 13
-  %rtv.do_trim = and i1 %rtv.rs_is_lf, %rtv.last_is_cr
+  %rtv.do_trim_cr = and i1 %rtv.rs_is_lf, %rtv.last_is_cr
+  ; paragraph mode: strip a lone trailing newline (only reachable at EOF; a
+  ; blank-line boundary already trimmed the separator).
+  %rtv.para_cr = icmp eq i64 %rtv.rslen_cr, 0
+  %rtv.last_is_nl = icmp eq i8 %rtv.last, 10
+  %rtv.do_trim_para = and i1 %rtv.para_cr, %rtv.last_is_nl
+  %rtv.do_trim = or i1 %rtv.do_trim_cr, %rtv.do_trim_para
   %rtv.trim_len = select i1 %rtv.do_trim, i64 %rtv.last_idx, i64 %rtv.fin_len
   br label %rtv.terminate
 

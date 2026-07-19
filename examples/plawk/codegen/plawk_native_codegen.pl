@@ -11326,14 +11326,18 @@ plawk_rs_store_lines(BeginClauses, Lines) :-
     (   member(begin(Actions), BeginClauses),
         member(set(var('RS'), string(Value)), Actions)
     ->  string_codes(Value, Codes),
-        Codes \== [],
-        length(Codes, NBytes),
-        ArrLen is NBytes + 1,
-        format(atom(PtrLine),
-            '  store i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.wam_rs_custom, i64 0, i64 0), i8** @wam_rs_ptr',
-            [ArrLen, ArrLen]),
-        format(atom(LenLine), '  store i64 ~w, i64* @wam_rs_len', [NBytes]),
-        Lines = [PtrLine, LenLine]
+        (   Codes == []
+        ->  % empty RS = paragraph mode: signalled by @wam_rs_len = 0. The reader
+            % splits on blank lines and skips leading blank lines.
+            Lines = ['  store i64 0, i64* @wam_rs_len']
+        ;   length(Codes, NBytes),
+            ArrLen is NBytes + 1,
+            format(atom(PtrLine),
+                '  store i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.wam_rs_custom, i64 0, i64 0), i8** @wam_rs_ptr',
+                [ArrLen, ArrLen]),
+            format(atom(LenLine), '  store i64 ~w, i64* @wam_rs_len', [NBytes]),
+            Lines = [PtrLine, LenLine]
+        )
     ;   Lines = []
     ).
 
