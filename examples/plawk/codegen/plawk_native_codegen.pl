@@ -13972,6 +13972,8 @@ plawk_expr_is_double(ssa_f64(_Value)).
 % Exponentiation is always floating point (awk `^` / `**`), regardless of
 % whether its operands are integer- or float-typed.
 plawk_expr_is_double(pow_i64(_Left, _Right)).
+% Math builtins (sqrt/sin/cos/exp/log/atan2) return a double.
+plawk_expr_is_double(math_call(_Fn, _Args)).
 plawk_expr_is_double(Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     ( plawk_expr_is_double(Left)
@@ -14005,6 +14007,10 @@ plawk_f64_operand_expr(float_dyncall_at_named(Name, Source, Args)) :-
 plawk_f64_operand_expr(pow_i64(Left, Right)) :-
     plawk_f64_operand_expr(Left),
     plawk_f64_operand_expr(Right).
+plawk_f64_operand_expr(math_call(Fn, Args)) :-
+    plawk_math_fn(Fn, _Symbol, Arity),
+    length(Args, Arity),
+    maplist(plawk_f64_operand_expr, Args).
 plawk_f64_operand_expr(Expr) :-
     plawk_i64_operand_expr(Expr).
 plawk_f64_operand_expr(Expr) :-
@@ -14151,6 +14157,38 @@ plawk_f64_expr_ir(pow_i64(Left, Right), FieldSeparator, Base, GlobalBase,
         [ValueIR, LeftValueIR, RightValueIR]),
     append(LeftGlobalParts, RightGlobalParts, GlobalParts),
     append([LeftSetupParts, RightSetupParts, [OpIR]], SetupParts).
+% Unary math builtin `fn(Arg)` (sqrt/sin/cos/exp/log): evaluate the argument in
+% f64 (i64 leaves promote by sitofp) and call the libm function.
+plawk_f64_expr_ir(math_call(Fn, [Arg]), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts) :-
+    plawk_math_fn(Fn, Symbol, 1),
+    !,
+    format(atom(ArgBase), '~w_ma', [Base]),
+    format(atom(ArgGlobalBase), '~w_ma', [GlobalBase]),
+    plawk_f64_expr_ir(Arg, FieldSeparator, ArgBase, ArgGlobalBase,
+        ArgValueIR, GlobalParts, ArgSetupParts),
+    format(atom(ValueIR), '%~w', [Base]),
+    format(atom(OpIR), '  ~w = call double @~w(double ~w)',
+        [ValueIR, Symbol, ArgValueIR]),
+    append(ArgSetupParts, [OpIR], SetupParts).
+% Binary math builtin `atan2(Y, X)`: both arguments in f64, then the libm call.
+plawk_f64_expr_ir(math_call(Fn, [ArgA, ArgB]), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts) :-
+    plawk_math_fn(Fn, Symbol, 2),
+    !,
+    format(atom(ABase), '~w_ma', [Base]),
+    format(atom(AGlobalBase), '~w_ma', [GlobalBase]),
+    plawk_f64_expr_ir(ArgA, FieldSeparator, ABase, AGlobalBase,
+        AValueIR, AGlobalParts, ASetupParts),
+    format(atom(BBase), '~w_mb', [Base]),
+    format(atom(BGlobalBase), '~w_mb', [GlobalBase]),
+    plawk_f64_expr_ir(ArgB, FieldSeparator, BBase, BGlobalBase,
+        BValueIR, BGlobalParts, BSetupParts),
+    format(atom(ValueIR), '%~w', [Base]),
+    format(atom(OpIR), '  ~w = call double @~w(double ~w, double ~w)',
+        [ValueIR, Symbol, AValueIR, BValueIR]),
+    append(AGlobalParts, BGlobalParts, GlobalParts),
+    append([ASetupParts, BSetupParts, [OpIR]], SetupParts).
 plawk_f64_expr_ir(Expr, FieldSeparator, Base, GlobalBase, ValueIR,
         GlobalParts, SetupParts) :-
     plawk_expr_is_double(Expr),
@@ -14187,6 +14225,18 @@ plawk_f64_llvm_op(sub, fsub).
 plawk_f64_llvm_op(mul, fmul).
 plawk_f64_llvm_op(sdiv, fdiv).
 plawk_f64_llvm_op(srem, frem).
+
+%% plawk_math_fn(?Fn, ?LLVMSymbol, ?Arity)
+%
+%  The awk numeric builtins that map directly to a libm function of the same
+%  name. Arity 1: sqrt/sin/cos/exp/log; arity 2: atan2. `log` is the natural
+%  logarithm (libm @log), matching awk.
+plawk_math_fn(sqrt, sqrt, 1).
+plawk_math_fn(sin, sin, 1).
+plawk_math_fn(cos, cos, 1).
+plawk_math_fn(exp, exp, 1).
+plawk_math_fn(log, log, 1).
+plawk_math_fn(atan2, atan2, 2).
 
 plawk_i64_guarded_div_lines(LLVMOp, Base, LeftIR, RightIR, Lines) :-
     format(atom(DenZero),

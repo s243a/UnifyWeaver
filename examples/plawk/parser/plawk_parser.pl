@@ -2395,6 +2395,10 @@ scalar_delta_expr(special('RLENGTH')) -->
     "RLENGTH".
 scalar_delta_expr(Expr) -->
     i64_binary_surface_expr(Expr).
+% A standalone math builtin as the RHS (`x = sqrt($1)`). Tried after the binary
+% surface expr so `x = sqrt($1) + 1` parses as the full arithmetic expression.
+scalar_delta_expr(Expr) -->
+    math_call_expr(Expr).
 % Bare float leaves before the integer clause: "0.5" must not stop at
 % the integer prefix "0".
 scalar_delta_expr(Expr) -->
@@ -2825,6 +2829,9 @@ field_expr(Expr) -->
     float_literal_expr(Expr),
     !.
 field_expr(Expr) -->
+    math_call_expr(Expr),
+    !.
+field_expr(Expr) -->
     prolog_call_expr(Expr),
     !.
 field_expr(var(Name)) -->
@@ -2839,6 +2846,44 @@ int_field_expr(int(Field)) -->
     ws,
     ")",
     { Field = field(_) }.
+
+%% math_call_expr(-Expr)//
+%
+%  Standard awk numeric builtins that return a double: sqrt / sin / cos / exp /
+%  log (unary) and atan2 (binary). Parsed to math_call(Fn, Args); each argument
+%  is a full arithmetic expression, evaluated in f64 at codegen time (see
+%  plawk_f64_expr_ir). Tried before the generic prolog_call so these names are
+%  builtins rather than foreign predicate calls. A name only commits when
+%  directly followed by `(`, so a variable that merely starts with one of these
+%  names (e.g. `sine`) still parses as an identifier.
+math_call_expr(math_call(atan2, [Y, X])) -->
+    "atan2",
+    ws,
+    "(",
+    ws,
+    i64_additive_expr(Y),
+    ws,
+    ",",
+    ws,
+    i64_additive_expr(X),
+    ws,
+    ")",
+    !.
+math_call_expr(math_call(Fn, [Arg])) -->
+    math_unary_name(Fn),
+    ws,
+    "(",
+    ws,
+    i64_additive_expr(Arg),
+    ws,
+    ")",
+    !.
+
+math_unary_name(sqrt) --> "sqrt".
+math_unary_name(sin) --> "sin".
+math_unary_name(cos) --> "cos".
+math_unary_name(exp) --> "exp".
+math_unary_name(log) --> "log".
 
 %% i64_binary_surface_expr(-Expr)//
 %
@@ -2954,6 +2999,9 @@ i64_factor_expr(field(Index)) -->
       number_codes(Index, IndexCodes),
       Index >= 0
     }.
+i64_factor_expr(Expr) -->
+    math_call_expr(Expr),
+    !.
 i64_factor_expr(Expr) -->
     prolog_call_expr(Expr),
     !.
