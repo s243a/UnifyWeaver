@@ -1,0 +1,219 @@
+{{match part}}{{case helpers}}
+    fn time_value_seconds(value: &Value) -> Option<i64> {
+        match value {
+            Value::Integer(stamp) => Some(*stamp),
+            Value::Float(stamp)
+                if stamp.is_finite()
+                    && *stamp >= i64::MIN as f64
+                    && *stamp < -(i64::MIN as f64) =>
+            {
+                Some(stamp.trunc() as i64)
+            }
+            _ => None,
+        }
+    }
+
+    #[cfg(all(unix, target_pointer_width = "64"))]
+    fn local_tm(stamp: i64) -> Option<[usize; 8]> {
+        extern "C" {
+            fn localtime_r(
+                stamp: *const i64,
+                result: *mut std::ffi::c_void,
+            ) -> *mut std::ffi::c_void;
+        }
+
+        let mut tm = [0usize; 8];
+        let result = unsafe { localtime_r(&stamp, tm.as_mut_ptr().cast()) };
+        if result.is_null() { None } else { Some(tm) }
+    }
+
+    #[cfg(not(all(unix, target_pointer_width = "64")))]
+    fn local_tm(_stamp: i64) -> Option<[usize; 8]> {
+        None
+    }
+
+    fn tm_read_i32(tm: &[usize; 8], offset: usize) -> i64 {
+        i64::from(unsafe {
+            std::ptr::read_unaligned(
+                tm.as_ptr().cast::<u8>().add(offset)
+                    .cast::<std::os::raw::c_int>())
+        })
+    }
+
+    fn tm_read_i64(tm: &[usize; 8], offset: usize) -> i64 {
+        unsafe {
+            std::ptr::read_unaligned(
+                tm.as_ptr().cast::<u8>().add(offset).cast::<i64>())
+        }
+    }
+
+    fn tm_write_i32(tm: &mut [usize; 8], offset: usize, value: i64) {
+        unsafe {
+            std::ptr::write_unaligned(
+                tm.as_mut_ptr().cast::<u8>().add(offset)
+                    .cast::<std::os::raw::c_int>(),
+                value as std::os::raw::c_int,
+            );
+        }
+    }
+
+    fn stamp_date_time_value(stamp: i64) -> Option<Value> {
+        let tm = Self::local_tm(stamp)?;
+        Some(Value::Str("date".to_string(), vec![
+            Value::Integer(Self::tm_read_i32(&tm, 20) + 1900),
+            Value::Integer(Self::tm_read_i32(&tm, 16) + 1),
+            Value::Integer(Self::tm_read_i32(&tm, 12)),
+            Value::Integer(Self::tm_read_i32(&tm, 8)),
+            Value::Integer(Self::tm_read_i32(&tm, 4)),
+            Value::Integer(Self::tm_read_i32(&tm, 0)),
+            Value::Integer(Self::tm_read_i64(&tm, 40)),
+            Value::Atom("local".to_string()),
+            Value::Integer(Self::tm_read_i32(&tm, 32)),
+        ]))
+    }
+
+    #[cfg(all(unix, target_pointer_width = "64"))]
+    fn date_time_stamp_value(date: &Value) -> Option<f64> {
+        let args = match date {
+            Value::Str(functor, args) if functor == "date" && args.len() == 9 => args,
+            _ => return None,
+        };
+        let integer = |index: usize| match args.get(index) {
+            Some(Value::Integer(value)) => Some(*value),
+            _ => None,
+        };
+        let year = integer(0)?;
+        let month = integer(1)?;
+        let day = integer(2)?;
+        let hour = integer(3)?;
+        let minute = integer(4)?;
+        let second = integer(5)?;
+        let _offset = integer(6)?;
+        if !matches!(args.get(7), Some(Value::Atom(_))) {
+            return None;
+        }
+        let is_dst = integer(8)?;
+
+        let mut tm = [0usize; 8];
+        Self::tm_write_i32(&mut tm, 0, second);
+        Self::tm_write_i32(&mut tm, 4, minute);
+        Self::tm_write_i32(&mut tm, 8, hour);
+        Self::tm_write_i32(&mut tm, 12, day);
+        Self::tm_write_i32(&mut tm, 16, month - 1);
+        Self::tm_write_i32(&mut tm, 20, year - 1900);
+        Self::tm_write_i32(&mut tm, 32, is_dst);
+
+        extern "C" {
+            fn mktime(tm: *mut std::ffi::c_void) -> i64;
+        }
+        let stamp = unsafe { mktime(tm.as_mut_ptr().cast()) };
+        if stamp == -1 { None } else { Some(stamp as f64) }
+    }
+
+    #[cfg(not(all(unix, target_pointer_width = "64")))]
+    fn date_time_stamp_value(_date: &Value) -> Option<f64> {
+        None
+    }
+
+    #[cfg(all(unix, target_pointer_width = "64"))]
+    fn format_local_time(format: &str, stamp: i64) -> Option<String> {
+        extern "C" {
+            fn strftime(
+                output: *mut std::os::raw::c_char,
+                size: usize,
+                format: *const std::os::raw::c_char,
+                tm: *const std::ffi::c_void,
+            ) -> usize;
+        }
+
+        let tm = Self::local_tm(stamp)?;
+        let format = std::ffi::CString::new(format).ok()?;
+        let mut output = [0u8; 256];
+        let length = unsafe {
+            strftime(
+                output.as_mut_ptr().cast(), output.len(), format.as_ptr(),
+                tm.as_ptr().cast())
+        };
+        if length > output.len() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&output[..length]).into_owned())
+    }
+
+    #[cfg(not(all(unix, target_pointer_width = "64")))]
+    fn format_local_time(_format: &str, _stamp: i64) -> Option<String> {
+        None
+    }
+{{case arms}}
+            "stamp_date_time/3" => {
+                let stamp = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .as_ref()
+                    .and_then(Self::time_value_seconds) {
+                    Some(stamp) => stamp,
+                    None => return false,
+                };
+                match self.get_reg_raw("A3")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(_)) => {}
+                    _ => return false,
+                }
+                let date = match Self::stamp_date_time_value(stamp) {
+                    Some(date) => date,
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &date) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "date_time_stamp/2" => {
+                let date = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(date) => date,
+                    None => return false,
+                };
+                let stamp = match Self::date_time_stamp_value(&date) {
+                    Some(stamp) => Value::Float(stamp),
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &stamp) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "format_time/3" => {
+                let format = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(format)) => format,
+                    _ => return false,
+                };
+                let stamp = match self.get_reg_raw("A3")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .as_ref()
+                    .and_then(Self::time_value_seconds) {
+                    Some(stamp) => stamp,
+                    None => return false,
+                };
+                let formatted = match Self::format_local_time(&format, stamp) {
+                    Some(formatted) => Value::Atom(formatted),
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &formatted) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+{{/match}}

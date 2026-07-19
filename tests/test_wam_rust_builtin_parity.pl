@@ -142,6 +142,12 @@ t_process_resource_queries(Priority, FileLimit, CoreLimit) :-
 :- dynamic t_login_name/1.
 t_login_name(Name) :- getlogin(Name).
 
+:- dynamic t_time_conversions/3.
+t_time_conversions(DateTime, RoundTrip, Formatted) :-
+    stamp_date_time(1700000000, DateTime, local),
+    date_time_stamp(DateTime, RoundTrip),
+    format_time(Formatted, '%Y-%m-%d %H:%M:%S', 1700000000).
+
 :- dynamic t_process_commands/2.
 t_process_commands(Status, Output) :-
     shell('exit 0'),
@@ -442,6 +448,7 @@ test_builtin_parity_execution :-
              user:t_os_errors/2,
              user:t_process_resource_queries/3,
              user:t_login_name/1,
+             user:t_time_conversions/3,
              user:t_process_commands/2,
              user:t_sleep/0,
              user:t_halt_zero/0,
@@ -492,6 +499,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_os_errors_2,
     t_process_resource_queries_3,
     t_login_name_1,
+    t_time_conversions_3,
     t_process_commands_2,
     t_sleep_0,
     t_environment_mutation_1,
@@ -586,6 +594,20 @@ fn integer_var(vm: &WamState, name: &str) -> i64 {
     match read_var(vm, name) {
         Value::Integer(value) => value,
         other => panic!("expected integer {name}, got {:?}", other),
+    }
+}
+
+fn integer_value(value: &Value) -> i64 {
+    match value {
+        Value::Integer(value) => *value,
+        other => panic!("expected integer value, got {:?}", other),
+    }
+}
+
+fn date_args(value: Value) -> Vec<Value> {
+    match value {
+        Value::Str(functor, args) if functor == "date" && args.len() == 9 => args,
+        other => panic!("expected date/9 value, got {:?}", other),
     }
 }
 
@@ -858,6 +880,24 @@ fn test_login_name_compiled() {
             Value::Atom(name) => assert!(!name.is_empty()),
             other => panic!("expected login-name atom, got {:?}", other),
         }
+    }
+}
+
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn test_time_conversions_compiled() {
+    let mut vm = vmnew();
+    assert!(t_time_conversions_3(
+        &mut vm, ub("DateTime"), ub("RoundTrip"), ub("Formatted")));
+
+    let args = date_args(read_var(&vm, "DateTime"));
+    assert!((1970..3000).contains(&integer_value(&args[0])));
+    assert!((1..=12).contains(&integer_value(&args[1])));
+    assert_eq!(args[7], a("local"));
+    assert_eq!(float_var(&vm, "RoundTrip"), 1700000000.0);
+    match read_var(&vm, "Formatted") {
+        Value::Atom(formatted) => assert_eq!(formatted.len(), 19),
+        other => panic!("expected formatted atom, got {:?}", other),
     }
 }
 
@@ -2767,6 +2807,97 @@ fn test_process_soft_limit_direct() {
 #[test]
 fn test_process_soft_limit_unavailable_direct() {
     assert!(!call2("getrlimit/2", i(1), ub("Limit")).0);
+}
+
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn test_time_conversions_direct() {
+    const STAMP: i64 = 1_700_000_000;
+
+    let (date_ok, date_vm) = call3(
+        "stamp_date_time/3", i(STAMP), ub("DateTime"), a("local"));
+    assert!(date_ok);
+    let date = read_var(&date_vm, "DateTime");
+    let args = date_args(date.clone());
+    assert!((1970..3000).contains(&integer_value(&args[0])));
+    assert!((1..=12).contains(&integer_value(&args[1])));
+    assert!((1..=31).contains(&integer_value(&args[2])));
+    assert_eq!(args[7], a("local"));
+    assert!(matches!(args[5], Value::Integer(_)));
+    assert!(call3("stamp_date_time/3", i(STAMP), date.clone(), a("local")).0);
+    assert!(!call3("stamp_date_time/3", i(STAMP), a("not_a_date"), a("local")).0);
+
+    let (float_ok, float_vm) = call3(
+        "stamp_date_time/3", Value::Float(STAMP as f64 + 0.75),
+        ub("DateTime"), a("local"));
+    assert!(float_ok);
+    assert_eq!(read_var(&float_vm, "DateTime"), date);
+    let (ignored_tz_ok, ignored_tz_vm) = call3(
+        "stamp_date_time/3", i(STAMP), ub("DateTime"), a("UTC"));
+    assert!(ignored_tz_ok);
+    assert_eq!(read_var(&ignored_tz_vm, "DateTime"), date);
+    assert!(!call3("stamp_date_time/3", a("bad"), ub("DateTime"), a("local")).0);
+    assert!(!call3("stamp_date_time/3", i(STAMP), ub("DateTime"), i(0)).0);
+    assert!(!call3(
+        "stamp_date_time/3", Value::Float(f64::NAN),
+        ub("DateTime"), a("local")).0);
+    assert!(!vmnew().execute_builtin("stamp_date_time/3", 3));
+
+    let (roundtrip_ok, roundtrip_vm) = call2(
+        "date_time_stamp/2", date.clone(), ub("Stamp"));
+    assert!(roundtrip_ok);
+    assert_eq!(float_var(&roundtrip_vm, "Stamp"), STAMP as f64);
+    assert!(call2(
+        "date_time_stamp/2", date.clone(), Value::Float(STAMP as f64)).0);
+    assert!(!call2("date_time_stamp/2", date.clone(), i(STAMP)).0);
+    assert!(!call2("date_time_stamp/2", a("not_a_date"), ub("Stamp")).0);
+    assert!(!call2(
+        "date_time_stamp/2",
+        Value::Str("date".to_string(), vec![i(2024)]), ub("Stamp")).0);
+    let mut bad_seconds = args.clone();
+    bad_seconds[5] = Value::Float(0.0);
+    assert!(!call2(
+        "date_time_stamp/2", Value::Str("date".to_string(), bad_seconds),
+        ub("Stamp")).0);
+    let mut bad_timezone = args.clone();
+    bad_timezone[7] = i(0);
+    assert!(!call2(
+        "date_time_stamp/2", Value::Str("date".to_string(), bad_timezone),
+        ub("Stamp")).0);
+    assert!(!vmnew().execute_builtin("date_time_stamp/2", 2));
+    let mut missing_stamp_vm = vmnew();
+    missing_stamp_vm.set_reg("A1", date.clone());
+    assert!(!missing_stamp_vm.execute_builtin("date_time_stamp/2", 2));
+
+    let format = "%Y-%m-%d %H:%M:%S";
+    let (format_ok, format_vm) = call3(
+        "format_time/3", ub("Formatted"), a(format), i(STAMP));
+    assert!(format_ok);
+    let formatted = match read_var(&format_vm, "Formatted") {
+        Value::Atom(formatted) => formatted,
+        other => panic!("expected formatted atom, got {:?}", other),
+    };
+    assert_eq!(formatted.len(), 19);
+    assert!(call3("format_time/3", a(&formatted), a(format), i(STAMP)).0);
+    assert!(call3(
+        "format_time/3", a(&formatted), a(format),
+        Value::Float(STAMP as f64 + 0.75)).0);
+    assert!(call3("format_time/3", a(""), a(""), i(STAMP)).0);
+    assert!(!call3("format_time/3", a("wrong"), a(format), i(STAMP)).0);
+    assert!(!call3("format_time/3", ub("Formatted"), i(7), i(STAMP)).0);
+    assert!(!call3("format_time/3", ub("Formatted"), a(format), a("bad")).0);
+    assert!(!vmnew().execute_builtin("format_time/3", 3));
+}
+
+#[cfg(not(all(unix, target_pointer_width = "64")))]
+#[test]
+fn test_time_conversions_unavailable_direct() {
+    assert!(!call3(
+        "stamp_date_time/3", i(0), ub("DateTime"), a("local")).0);
+    assert!(!call2(
+        "date_time_stamp/2",
+        Value::Str("date".to_string(), vec![i(0); 9]), ub("Stamp")).0);
+    assert!(!call3("format_time/3", ub("Formatted"), a("%Y"), i(0)).0);
 }
 
 #[cfg(unix)]
