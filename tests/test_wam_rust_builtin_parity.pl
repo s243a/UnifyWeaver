@@ -120,6 +120,14 @@ t_system_names(Host, Sysname, Machine) :-
     uname_sysname(Sysname),
     uname_machine(Machine).
 
+:- dynamic t_runtime_metrics/5.
+t_runtime_metrics(Cpu, Monotonic, MaxRss, User, System) :-
+    cpu_time(Cpu),
+    monotonic_time(Monotonic),
+    process_max_rss(MaxRss),
+    process_user_time(User),
+    process_system_time(System).
+
 :- dynamic t_process_commands/2.
 t_process_commands(Status, Output) :-
     shell('exit 0'),
@@ -416,6 +424,7 @@ test_builtin_parity_execution :-
              user:t_system_queries/3,
              user:t_process_identity/6,
              user:t_system_names/3,
+             user:t_runtime_metrics/5,
              user:t_process_commands/2,
              user:t_sleep/0,
              user:t_halt_zero/0,
@@ -462,6 +471,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_system_queries_3,
     t_process_identity_6,
     t_system_names_3,
+    t_runtime_metrics_5,
     t_process_commands_2,
     t_sleep_0,
     t_environment_mutation_1,
@@ -542,6 +552,20 @@ fn read_var(vm: &WamState, name: &str) -> Value {
     match vm.bindings.get(name) {
         Some(v) => vm.deref_heap(&vm.deref_var(v)),
         None => Value::Unbound(name.to_string()),
+    }
+}
+
+fn float_var(vm: &WamState, name: &str) -> f64 {
+    match read_var(vm, name) {
+        Value::Float(value) => value,
+        other => panic!("expected float {name}, got {:?}", other),
+    }
+}
+
+fn integer_var(vm: &WamState, name: &str) -> i64 {
+    match read_var(vm, name) {
+        Value::Integer(value) => value,
+        other => panic!("expected integer {name}, got {:?}", other),
     }
 }
 
@@ -766,6 +790,21 @@ fn test_system_names_compiled() {
     ] {
         assert_eq!(read_var(&vm, name), a(value), "unexpected {name}");
     }
+}
+
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn test_runtime_metrics_compiled() {
+    let mut vm = vmnew();
+    assert!(t_runtime_metrics_5(
+        &mut vm,
+        ub("Cpu"), ub("Monotonic"), ub("MaxRss"), ub("User"), ub("System")));
+
+    for name in ["Cpu", "Monotonic", "User", "System"] {
+        let value = float_var(&vm, name);
+        assert!(value.is_finite() && value >= 0.0, "unexpected {name}: {value}");
+    }
+    assert!(integer_var(&vm, "MaxRss") > 0);
 }
 
 #[cfg(unix)]
@@ -2524,6 +2563,61 @@ fn test_system_names_direct() {
 #[test]
 fn test_system_names_unavailable_direct() {
     for op in ["gethostname/1", "uname_sysname/1", "uname_machine/1"] {
+        assert!(!call1(op, ub("Value")).0);
+    }
+}
+
+#[test]
+fn test_monotonic_time_direct() {
+    let (first_ok, first_vm) = call1("monotonic_time/1", ub("Time"));
+    assert!(first_ok);
+    let first = float_var(&first_vm, "Time");
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let (second_ok, second_vm) = call1("monotonic_time/1", ub("Time"));
+    assert!(second_ok);
+    let second = float_var(&second_vm, "Time");
+    assert!(first >= 0.0 && second >= first);
+    assert!(second - first >= 0.004);
+    assert!(!call1("monotonic_time/1", a("not_a_float")).0);
+    assert!(!call1("monotonic_time/1", i(0)).0);
+    assert!(!vmnew().execute_builtin("monotonic_time/1", 1));
+}
+
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn test_process_metrics_direct() {
+    for op in ["cpu_time/1", "process_user_time/1", "process_system_time/1"] {
+        let (first_ok, first_vm) = call1(op, ub("Value"));
+        assert!(first_ok, "{op} must succeed");
+        let first = float_var(&first_vm, "Value");
+        let (second_ok, second_vm) = call1(op, ub("Value"));
+        assert!(second_ok, "{op} must remain available");
+        let second = float_var(&second_vm, "Value");
+        assert!(first.is_finite() && first >= 0.0 && second >= first);
+        assert!(!call1(op, a("not_a_float")).0);
+        assert!(!call1(op, i(0)).0);
+        assert!(!vmnew().execute_builtin(op, 1));
+    }
+
+    let (first_ok, first_vm) = call1("process_max_rss/1", ub("Rss"));
+    assert!(first_ok);
+    let first = integer_var(&first_vm, "Rss");
+    let (second_ok, second_vm) = call1("process_max_rss/1", ub("Rss"));
+    assert!(second_ok);
+    let second = integer_var(&second_vm, "Rss");
+    assert!(first > 0 && second >= first);
+    assert!(!call1("process_max_rss/1", a("not_an_integer")).0);
+    assert!(!call1("process_max_rss/1", Value::Float(0.0)).0);
+    assert!(!vmnew().execute_builtin("process_max_rss/1", 1));
+}
+
+#[cfg(not(all(unix, target_pointer_width = "64")))]
+#[test]
+fn test_process_metrics_unavailable_direct() {
+    for op in [
+        "cpu_time/1", "process_user_time/1",
+        "process_system_time/1", "process_max_rss/1",
+    ] {
         assert!(!call1(op, ub("Value")).0);
     }
 }
