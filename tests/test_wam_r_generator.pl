@@ -4531,6 +4531,113 @@ r_escape_chars([C | Rest], Out) :-
     r_escape_chars(Rest, OutRest).
 
 % ------------------------------------------------------------------
+% LMDB-R-0: legacy lmdb/1 eager; lmdb_arg1_v1 on-demand + mock proof.
+% ------------------------------------------------------------------
+test(lmdb_r0_source_dispatch_selection) :-
+    once((
+        unique_r_tmp_dir('tmp_r_lmdb_r0_sel', Tmp),
+        write_wam_r_project([user:legedge/2],
+            [r_fact_sources([source(legedge/2, lmdb('/tmp/leg.lmdb'))])], Tmp),
+        directory_file_path(Tmp, 'R/generated_program.R', P1),
+        read_file_to_string(P1, C1, []),
+        assertion(sub_string(C1,_,_,_,'WamRuntime$read_facts_lmdb(')),
+        assertion(\+ sub_string(C1,_,_,_,'lmdb_arg1_v1_dispatch')),
+        delete_directory_and_contents(Tmp),
+        unique_r_tmp_dir('tmp_r_lmdb_r0_v1', Tmp2),
+        write_wam_r_project([user:ixedge/2],
+            [r_fact_sources([source(ixedge/2, lmdb_arg1_v1('/tmp/ix.lmdb'))])], Tmp2),
+        directory_file_path(Tmp2, 'R/generated_program.R', P2),
+        read_file_to_string(P2, C2, []),
+        assertion(sub_string(C2,_,_,_,'WamRuntime$lmdb_arg1_v1_dispatch(')),
+        assertion(\+ sub_string(C2,_,_,_,'WamRuntime$read_facts_lmdb(')),
+        assertion(\+ sub_string(C2,_,_,_,'build_fact_indexes')),
+        delete_directory_and_contents(Tmp2)
+    )).
+
+% Authoritative mock adapter (no thor required). Conditional real e2e below.
+test(lmdb_arg1_v1_mock_adapter_lookup_and_stream) :-
+    once((rscript_available -> lmdb_arg1_v1_mock_adapter_proof ; true)).
+
+lmdb_arg1_v1_mock_adapter_proof :-
+    unique_r_tmp_dir('tmp_r_lmdb_v1_mock', TmpDir),
+    write_wam_r_project([user:medge/2],
+        [intern_atoms([alice,bob,carol,eve,p,q,r]),
+         r_fact_sources([source(medge/2, lmdb_arg1_v1('mock.lmdb'))])], TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    directory_file_path(RDir, 'lmdb_arg1_v1_mock_proof.R', Script),
+    setup_call_cleanup(open(Script, write, S), write(S,
+'source("wam_runtime.R"); source("generated_program.R")
+store <- new.env(parent=emptyenv())
+assign("__uw_schema__",charToRaw("lmdb_arg1_v1"),envir=store)
+assign("a:alice",charToRaw("a:bob\na:eve"),envir=store); assign("a:bob",charToRaw("a:carol"),envir=store)
+listed <<- 0L
+WamRuntime$lmdb_kv_adapter <- list(
+  get=function(path,key) if (exists(key,envir=store,inherits=FALSE)) get(key,envir=store) else NULL,
+  list=function(path){ listed <<- listed+1L; ls(envir=store,all.names=TRUE) },
+  put_all=function(path,pairs){ for(k in names(pairs)) assign(k,charToRaw(pairs[[k]]),envir=store); TRUE })
+it <- intern_table
+rows <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"alice")), 2L, it)
+stopifnot(length(rows)==2L, listed==0L)
+ys <- vapply(rows, function(t) WamRuntime$string_of(it,t[[2]]$id), character(1))
+stopifnot(setequal(ys,c("bob","eve")))
+stopifnot(length(WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"zzz")), 2L, it))==0L, listed==0L)
+stopifnot(length(WamRuntime$lmdb_arg1_v1_stream("mock.lmdb", 2L, it))==3L, listed>=1L)
+assign("a:p",charToRaw("a:q\ti:3\na:r\ti:4"),envir=store)
+t3 <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"p")), 3L, it)
+stopifnot(length(t3)==2L, t3[[1]][[3]]$val==3L)
+special <- "tab\tline\npercent%"
+special_fact <- list(list(Atom(WamRuntime$intern(it,special)), Atom(WamRuntime$intern(it,"value"))))
+stopifnot(WamRuntime$lmdb_write_facts_arg1_v1("mock.lmdb", special_fact, it))
+special_rows <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,special)), 2L, it)
+stopifnot(length(special_rows)==1L, WamRuntime$string_of(it,special_rows[[1]][[1]]$id)==special)
+st <- WamRuntime$new_state(); st$regs2[[1]] <- Atom(WamRuntime$intern(it,"alice"))
+st$regs2[[2]] <- Unbound("V0"); args <- list(st$regs2[[1]], st$regs2[[2]])
+stopifnot(isTRUE(WamRuntime$fact_table_iter(shared_program, st, "medge/2", rows, args, 1L, 0L)), length(st$cps)>=1L)
+cat("OK\n")
+'), close(S)),
+    process_create(path('Rscript'), [Script],
+                   [cwd(RDir), stdout(pipe(O)), stderr(pipe(E)), process(PID)]),
+    read_string(O, _, Out), close(O), read_string(E, _, Err), close(E),
+    process_wait(PID, Status),
+    assertion(Status == exit(0)), assertion(sub_string(Out,_,_,_,"OK")),
+    assertion(\+ sub_string(Err,_,_,_,"Error")),
+    delete_directory_and_contents(TmpDir).
+
+test(lmdb_arg1_v1_real_binding_e2e_rscript) :-
+    once((rscript_available, r_lmdb_pkg_available -> lmdb_arg1_v1_real_binding_e2e ; true)).
+
+lmdb_arg1_v1_real_binding_e2e :-
+    retractall(user:redge(_,_)), retractall(user:r_hit), retractall(user:r_miss), retractall(user:r_findall),
+    unique_r_tmp_dir('tmp_r_lmdb_v1_real', TmpDir), make_directory_path(TmpDir),
+    directory_file_path(TmpDir, 'redge.lmdb', LmdbPath), atom_string(LmdbPath, LmdbPathStr),
+    r_double_quoted_literal(LmdbPathStr, LmdbPathLit),
+    assertz((user:r_hit :- redge(alice, bob))),
+    assertz((user:r_miss :- redge(zzz, bob))),
+    assertz((user:r_findall :- findall(Y, redge(alice, Y), L), msort(L, S), S == [bob, eve])),
+    write_wam_r_project(
+        [user:redge/2, user:r_hit/0, user:r_miss/0, user:r_findall/0],
+        [intern_atoms([alice,bob,eve,zzz]),
+         r_fact_sources([source(redge/2, lmdb_arg1_v1(LmdbPathStr))])], TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    directory_file_path(RDir, 'seed_arg1_v1.R', Seed),
+    format(string(SeedSrc),
+'source("wam_runtime.R"); source("generated_program.R")
+facts <- list(
+  list(Atom(WamRuntime$intern(intern_table,"alice")), Atom(WamRuntime$intern(intern_table,"bob"))),
+  list(Atom(WamRuntime$intern(intern_table,"alice")), Atom(WamRuntime$intern(intern_table,"eve"))),
+  list(Atom(WamRuntime$intern(intern_table,"bob")), Atom(WamRuntime$intern(intern_table,"eve"))))
+stopifnot(WamRuntime$lmdb_write_facts_arg1_v1(~w, facts, intern_table))
+', [LmdbPathLit]),
+    setup_call_cleanup(open(Seed, write, S), write(S, SeedSrc), close(S)),
+    process_create(path('Rscript'), [Seed], [cwd(RDir), stdout(null), stderr(null), process(PID0)]),
+    process_wait(PID0, exit(0)),
+    run_rscript_query(RDir, 'r_hit/0', Hit), run_rscript_query(RDir, 'r_miss/0', Miss),
+    run_rscript_query(RDir, 'r_findall/0', FA),
+    assertion(sub_string(Hit,_,_,_,"true")), assertion(sub_string(Miss,_,_,_,"false")),
+    assertion(sub_string(FA,_,_,_,"true")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % End-to-end: cut barrier truncates state$cps back to the depth at the
 % predicate's call site, so a `!` in a clause body that has just
 % returned from a multi-clause helper drops both the helper's leftover

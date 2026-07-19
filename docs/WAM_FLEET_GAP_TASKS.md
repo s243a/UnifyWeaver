@@ -46,7 +46,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | LMDB-SCALA | LMDB policy tiers | Scala | M | — |
 | LMDB-C-0 | LMDB lookup source (prereq) | C | M | — |
 | LMDB-C | LMDB policy tiers | C | L | LMDB-C-0 |
-| LMDB-R-0 | LMDB lookup source (prereq) | R | M | — |
+| LMDB-R-0 ✅ | LMDB lookup source (prereq) | R | M | done (`lmdb_arg1_v1`) |
 | LMDB-R | LMDB policy tiers | R | L | LMDB-R-0 |
 | ISO-C | ISO three-form (new) | C | L | — |
 | ISO-GO | ISO three-form (new) | Go | L | — |
@@ -345,15 +345,14 @@ path, not the reverse index.
   3. Dispatch on Mode at fact-source construction; gate all under `#ifdef WAM_C_ENABLE_LMDB`.
 - **Acceptance:** `swipl -q -g run_tests -t halt -l tests/test_wam_c_target.pl` passes new assertions that generated C emits eager (`wam_fact_source_load_lmdb`), lazy (cursor find, no cache), and cached (cursor + L2 capacity) code per mode; C still compiles with `-DWAM_C_ENABLE_LMDB` (verify: repo's C-build smoke, e.g. `test_wam_c_target.pl` build step).
 
-### LMDB-R-0 (prerequisite): On-demand LMDB lookup source in the R runtime
-- **Lever:** LMDB policy tiers  **Target:** R  **Size:** M  **Depends on:** —
-- **Goal:** R currently only has `read_facts_lmdb` (load-everything, `wam_r_target.pl:1458`); add a per-key LMDB query function to `runtime.R.mustache` so lazy/cached tiers are possible.
-- **Files to touch:** `templates/targets/r_wam/runtime.R.mustache` (add `WamRuntime$lookup_facts_lmdb`/`stream_facts_lmdb`); `src/unifyweaver/targets/wam_r_target.pl` (`fact_source_loader_call` line 1458, `emit_external_fact_source` 1414); `tests/test_wam_r_generator.pl`.
-- **Reference to copy from:** Scala `LmdbFactSource.lookupByArg1`/`streamAll` (`runtime.scala.mustache:339,327`) and Go `lmdbAtomFact2Source.LookupArg1` (`wam_go_target.pl:2932`) for the lookup-by-arg1 + stream-all contract; existing R `read_facts_lmdb` for the LMDB-open/intern-table conventions.
-- **Steps:**
-  1. Add an R function opening the LMDB env and returning tuples for a given ground arg1 key (arity ≥ 2, split the tab-joined value into registers 2..N as F#/Scala do), plus a streaming full-scan variant.
-  2. Expose both via `WamRuntime$` alongside `read_facts_lmdb` and make the fact-source loader able to select the on-demand path.
-- **Acceptance:** `swipl -q -g run_tests -t halt -l tests/test_wam_r_generator.pl` passes a case asserting the generated R runtime defines the per-key lookup + stream functions and they are selectable as a fact-source backend.
+### LMDB-R-0 ✅ (prerequisite): On-demand LMDB lookup source in the R runtime
+- **Status:** Landed. Selectable `lmdb_arg1_v1(Path)` fact source with
+  versioned schema (`__uw_schema__=lmdb_arg1_v1`), exact-key ground-arg1
+  lookup via `WamRuntime$lmdb_arg1_v1_lookup` / `lmdb_arg1_v1_dispatch`,
+  and explicit `lmdb_arg1_v1_stream` for unbound arg1. Legacy `lmdb(Path)`
+  remains eager `read_facts_lmdb`. Injectable `lmdb_kv_adapter` proves
+  get-without-list; thor/lmdbr e2e is conditional.
+- **Open follow-up:** LMDB-R eager/lazy/cached/auto policy tiers.
 
 ### LMDB-R: Add eager/lazy/cached tiers to R LMDB fact source
 - **Lever:** LMDB policy tiers  **Target:** R  **Size:** L  **Depends on:** LMDB-R-0
