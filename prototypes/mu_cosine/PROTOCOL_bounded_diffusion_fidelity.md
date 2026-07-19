@@ -91,7 +91,10 @@ a receipt file alone. The source specification must be the complete private
 declaration bundle: a mode-0700 directory outside Git containing exactly the
 fixed mode-0600 local-only marker and canonical mode-0600 specification, with
 explicit RDF accounts and resolved absolute, non-symlink source paths of the
-declared types. Consensus binds the
+declared types. Before HOP planning, every leaf in that declaration, receipt,
+and snapshot-attempt bundle is rechecked through a bound directory descriptor
+with a nonblocking open as a mode-0600, unique-link regular file; a FIFO or
+device substitution fails closed. Consensus binds the
 declaration-validator implementation and runs exactly two fresh compiler
 attempts, with no third retry and no pooling. Its verifier must be supplied the
 receipt, source specification, relation policy, and both attempt directories;
@@ -138,6 +141,14 @@ sparse 1,504-row lineage/path export or to nodes for which one convenience path
 was materialized. Exclusions are determined from the frozen graph manifest
 before any metric is computed.
 
+The frozen eligibility ledger may also contain excluded-private rows whose
+nodes are intentionally absent from retained adjacency. Such a row is valid
+only with `eligible=false` and reason `direct_private` or
+`private_descendant`; it is evidence of exclusion, not a malformed missing
+adjacency row and never enters a degree quartile. Retained eligibility rows must
+cover every adjacency node and satisfy the retained-row degree/component
+contract.
+
 HOP consumes only the frozen reciprocal conductance adjacency. A memoized
 revisit during bounded traversal means path convergence or a cycle; it is not a
 cut point and must not create a ground shunt. Cuts are actual retained-to-omitted
@@ -146,8 +157,12 @@ edges. No parent direction, root, or depth is inferred in phase one.
 Construct exactly four deterministic rank-based degree quartiles. Sort all
 eligible anchors by `(undirected_conductance_degree, stable_typed_node_id)` and
 split that ordered population into four contiguous groups whose sizes differ by
-at most one. Within each quartile order nodes by
-`SHA-256(3882001, "select", typed_node_id)` and select exactly 32 anchors. If
+at most one. If `N=4q+r`, the first `r` quartiles receive `q+1` members. The
+typed-ID key is `(namespace, positive decimal integer)`, so `pt:2` precedes
+`pt:10`. Within each quartile order nodes by
+`SHA-256(3882001, "select", typed_node_id)` and select exactly 32 anchors. Each
+key is SHA-256 of newline-terminated canonical UTF-8 JSON
+`[3882001,purpose,typed_node_id]`, with the typed-ID key as a collision tie. If
 any quartile cannot supply 32, phase one is coverage-inadequate before solves.
 
 Within each quartile reorder the 32 selected anchors by the independent key
@@ -205,9 +220,11 @@ create fill and must never be mislabeled a scalar tree shunt.
 ## 5. Regime-specific larger-domain references and leakage
 
 For phase one, `U_top` is exactly the frozen HOP `S_1024` domain for that
-batch. Build its exact-Dirichlet model, then expand from `U_top` by the same
-frozen hop ordering to at most 4,096 retained nodes, preserving all of `U_top`,
-to obtain `R_top`. If `U_top` exceeds the resource contract or `R_top` cannot
+batch. Freeze one continued anchor-source multi-source HOP order through at
+most 4,096 nodes; `S_256`, `S_512`, `S_1024`, and `R_top` are its prefixes.
+This preserves all of `U_top` and makes reference expansion unambiguous. Build
+the exact-Dirichlet models only after the no-solve plan is accepted. If `U_top`
+exceeds the resource contract or `R_top` cannot
 be built, that batch is reference-inadequate and cannot support a convergence
 claim. If the connected component is exhausted, the whole component is an
 exact admissible reference.
@@ -444,9 +461,18 @@ HOP budget is adequate on calibration, phase one is right-censored and the audit
 reports diagnostics without a convergence claim. No audit result may change the
 chosen pair.
 
-Use 9,999 deterministic paired bootstrap resamples of the 24 audit four-anchor
-batches with seed `3882002`. Apply identical batch multiplicities to both
-budgets. Every resampled batch contains one anchor from each quartile, so
+Use the frozen `bootstrap_multiplicities.jsonl` artifact containing exactly
+9,999 deterministic paired resamples of the 24 audit four-anchor batches with
+seed `3882002`. For replicate `r`, draw `d`, and nonce `n`, hash
+newline-terminated canonical UTF-8 JSON
+`[3882002,"paired_audit_batch_bootstrap",r,d,n]`; interpret SHA-256 as an
+unsigned 256-bit integer, reject values at least
+`2^256 - (2^256 mod 24)`, and take the first accepted value modulo 24. Store
+the resulting 24-entry count vector, whose entries sum to 24. Later runners
+must consume these vectors and must not regenerate them with a library PRNG.
+Apply each vector's identical
+batch multiplicities to both budgets and every paired endpoint. Every
+resampled batch contains one anchor from each quartile, so
 recompute the four quartile means and average them equally; no replicate can omit a quartile
 and no redraw rule is needed. The one-sided 95% upper endpoint is the higher
 observed bootstrap order statistic at 0.95, and the lower endpoint is the lower
@@ -500,7 +526,13 @@ own prospective amendment and untouched audit data.
 
 ## 9. Reproducibility and fail-closed rules
 
-The run fingerprint covers content rather than machine-local paths. Before the
+The scientific `plan_fingerprint` covers the plan's `fingerprint_core` rather
+than machine-local paths. A separate full-manifest integrity seal covers the
+complete no-solve manifest, including accepted/blocked and authorization
+fields. These unkeyed records detect accidental or unsynchronized drift; they
+do not authenticate a wholly replaced self-consistent chain against a
+malicious same-user without an external signature or immutable trusted store.
+Before the
 no-solve plan is frozen, the full consensus verifier above must pass and the
 plan must bind both the receipt content record and canonical attempt-A manifest
 record; receipt-only verification is prohibited. The fingerprint includes:
@@ -514,10 +546,37 @@ record; receipt-only verification is prohibited. The fingerprint includes:
   prospective coverage gate;
 - `K`, shell, `alpha_top`, stable tie keys, and any future licensed selector or
   closure ledger;
-- metric definitions, tolerances, bootstrap seeds/resamples, and software SHA;
+- metric definitions, candidate and reference adequacy tolerances, the minimum
+  18-of-24 complete-audit-batch rule, prospective `K_low`/`K_high` selection
+  cases, noninferiority rules, the exact bootstrap multiplicity artifact, and
+  software SHA;
 - float dtype, numerical thresholds, backend/thread identity without absolute
   library paths; and
 - per-phase timings, peak RSS, cache keys, and deterministic-rerun hashes.
+
+Deterministic plan content and observational execution provenance are separate:
+elapsed times and measured peak RSS do not enter the no-solve plan fingerprint.
+The plan freezes their later measurement contract. The implementation and
+transaction details are specified in
+[`DESIGN_pearltrees_hop_plan.md`](DESIGN_pearltrees_hop_plan.md).
+
+The planner preflights bounded receipt and attempt-manifest reads, then enforces
+its own aggregate ceiling over the receipt, both manifests, adjacency,
+eligibility, source specification, and relation policy that it captures. This
+does not claim to cap memory inside the separately invoked upstream snapshot
+verifier; that verifier retains its own resource contract. The plan output may
+not overlap any receipt/attempt/policy input, the declaration bundle, any
+declared raw source, or the optional legacy parity source. Staging writes,
+verification, no-replace rename, directory synchronization, and conservative
+rollback are descriptor-relative; an unprovable replacement is leaked for
+manual inspection rather than recursively deleted.
+
+The no-solve manifest must state `structural_metrics_computed=true`,
+`diffusion_or_fidelity_metrics_computed=false`, and
+`audit_solve_authorized=false`. The calibration lock must bind the complete
+plan-manifest content record—not merely `plan_fingerprint`—before it records
+the actual path-free BLAS identity, freezes `alpha_top` and the selected
+contrast, and authorizes any audit solve.
 
 Fail closed on a missing or mismatched raw-source preparer manifest, unfrozen
 physical-edge policy, incomplete privacy propagation, incomplete or asymmetric
