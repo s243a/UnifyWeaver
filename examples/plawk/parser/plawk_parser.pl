@@ -1651,6 +1651,9 @@ action(Action) -->
     exit_action(Action),
     !.
 action(Action) -->
+    srand_action(Action),
+    !.
+action(Action) -->
     dynrec_view_action(Action),
     !.
 action(Action) -->
@@ -2006,6 +2009,32 @@ exit_action(exit(int(N))) -->
 exit_action(exit(int(0))) -->
     "exit",
     identifier_boundary.
+
+%% srand_action(-Action)//
+%
+%  `srand(N)` / `srand()` -- seed the PRNG that rand() draws from (libm
+%  srand48). `srand(N)` seeds with the integer N so a run is reproducible;
+%  `srand()` seeds from the wall clock (time). Parses to srand(int(N)) or
+%  srand_time. A rule-body statement -- BEGIN blocks do not yet host non-print
+%  actions, and srand's awk return value (the previous seed) is a follow-on.
+srand_action(srand(int(N))) -->
+    "srand",
+    identifier_boundary,
+    ws,
+    "(",
+    ws,
+    signed_integer_value(N),
+    ws,
+    ")",
+    !.
+srand_action(srand_time) -->
+    "srand",
+    identifier_boundary,
+    ws,
+    "(",
+    ws,
+    ")",
+    !.
 
 %% dynrec_bind_action(-Action)//
 %
@@ -2856,6 +2885,13 @@ int_field_expr(int(Field)) -->
 %  builtins rather than foreign predicate calls. A name only commits when
 %  directly followed by `(`, so a variable that merely starts with one of these
 %  names (e.g. `sine`) still parses as an identifier.
+math_call_expr(math_call(rand, [])) -->
+    "rand",
+    ws,
+    "(",
+    ws,
+    ")",
+    !.
 math_call_expr(math_call(atan2, [Y, X])) -->
     "atan2",
     ws,
