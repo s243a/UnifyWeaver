@@ -4568,13 +4568,13 @@ lmdb_arg1_v1_mock_adapter_proof :-
     setup_call_cleanup(open(Script, write, S), write(S,
 'source("wam_runtime.R"); source("generated_program.R")
 store <- new.env(parent=emptyenv())
-assign("__uw_schema__","lmdb_arg1_v1",envir=store)
-assign("a:alice","a:bob\na:eve",envir=store); assign("a:bob","a:carol",envir=store)
+assign("__uw_schema__",charToRaw("lmdb_arg1_v1"),envir=store)
+assign("a:alice",charToRaw("a:bob\na:eve"),envir=store); assign("a:bob",charToRaw("a:carol"),envir=store)
 listed <<- 0L
 WamRuntime$lmdb_kv_adapter <- list(
   get=function(path,key) if (exists(key,envir=store,inherits=FALSE)) get(key,envir=store) else NULL,
   list=function(path){ listed <<- listed+1L; ls(envir=store,all.names=TRUE) },
-  put_all=function(path,pairs) TRUE)
+  put_all=function(path,pairs){ for(k in names(pairs)) assign(k,charToRaw(pairs[[k]]),envir=store); TRUE })
 it <- intern_table
 rows <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"alice")), 2L, it)
 stopifnot(length(rows)==2L, listed==0L)
@@ -4582,9 +4582,14 @@ ys <- vapply(rows, function(t) WamRuntime$string_of(it,t[[2]]$id), character(1))
 stopifnot(setequal(ys,c("bob","eve")))
 stopifnot(length(WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"zzz")), 2L, it))==0L, listed==0L)
 stopifnot(length(WamRuntime$lmdb_arg1_v1_stream("mock.lmdb", 2L, it))==3L, listed>=1L)
-assign("a:p","a:q\ti:3\na:r\ti:4",envir=store)
+assign("a:p",charToRaw("a:q\ti:3\na:r\ti:4"),envir=store)
 t3 <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"p")), 3L, it)
 stopifnot(length(t3)==2L, t3[[1]][[3]]$val==3L)
+special <- "tab\tline\npercent%"
+special_fact <- list(list(Atom(WamRuntime$intern(it,special)), Atom(WamRuntime$intern(it,"value"))))
+stopifnot(WamRuntime$lmdb_write_facts_arg1_v1("mock.lmdb", special_fact, it))
+special_rows <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,special)), 2L, it)
+stopifnot(length(special_rows)==1L, WamRuntime$string_of(it,special_rows[[1]][[1]]$id)==special)
 st <- WamRuntime$new_state(); st$regs2[[1]] <- Atom(WamRuntime$intern(it,"alice"))
 st$regs2[[2]] <- Unbound("V0"); args <- list(st$regs2[[1]], st$regs2[[2]])
 stopifnot(isTRUE(WamRuntime$fact_table_iter(shared_program, st, "medge/2", rows, args, 1L, 0L)), length(st$cps)>=1L)

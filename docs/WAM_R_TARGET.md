@@ -342,7 +342,9 @@ supported today:
 - `lmdb_arg1_v1('path.lmdb')` -- versioned on-demand arg1 index
   (arity ≥ 2): ground arg1 → exact-key get; unbound → stream-all.
   Schema key `__uw_schema__=lmdb_arg1_v1`; values are NL-buckets of
-  TAB-tagged args 2..N. Writer: `lmdb_write_facts_arg1_v1`.
+  TAB-tagged args 2..N. Atom payloads use URL percent-encoding so tabs,
+  newlines, percent signs, and other reserved bytes remain unambiguous.
+  Writer: `lmdb_write_facts_arg1_v1`.
 
 ```prolog
 :- write_wam_r_project(
