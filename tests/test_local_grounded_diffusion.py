@@ -20,6 +20,7 @@ from unifyweaver.graph.local_diffusion import (  # noqa: E402
     LocalDiffusionDomain,
     _tail_envelope_crossing,
     calibrate_uniform_leakage,
+    calibrate_uniform_leakage_per_anchor,
     compare_nested_domains,
     select_hop_local_domain,
 )
@@ -751,3 +752,206 @@ def test_direct_domain_overrun_must_complete_only_the_final_shell():
             complete_distance_shell=True,
             truncated_tie_count=0,
         )
+
+
+def _asymmetric_two_anchor_calibration_fixture():
+    graph = {
+        "a0": ("a1",),
+        "a1": ("a0", "a2"),
+        "a2": ("a1",),
+        "b0": ("b1",),
+        "b1": ("b0", "b2"),
+        "b2": ("b1",),
+    }
+    domain = select_hop_local_domain(
+        ("a0", "b0"),
+        graph,
+        maximum_nodes=6,
+    )
+    embeddings = {
+        "a0": np.array([0.0]),
+        "a1": np.array([0.0]),
+        "a2": np.array([0.0]),
+        "b0": np.array([10.0]),
+        "b1": np.array([13.5]),
+        "b2": np.array([17.0]),
+    }
+    shells = {"a0": ("a2",), "b0": ("b2",)}
+    return domain, embeddings, shells
+
+
+def test_per_anchor_calibration_reuses_one_eigendecomposition_and_matches_singles(
+    monkeypatch,
+):
+    domain, embeddings, shells = _asymmetric_two_anchor_calibration_fixture()
+    original_eigh = np.linalg.eigh
+    calls = []
+
+    def counted_eigh(*args, **kwargs):
+        calls.append(args[0].shape)
+        return original_eigh(*args, **kwargs)
+
+    monkeypatch.setattr(np.linalg, "eigh", counted_eigh)
+    batched = calibrate_uniform_leakage_per_anchor(
+        domain,
+        shell_nodes_by_anchor=shells,
+        node_embeddings=embeddings,
+        length_scale=1.0,
+        relative_tolerance=1e-6,
+    )
+    assert calls == [(6, 6)]
+    assert batched.eigendecomposition_count == 1
+
+    monkeypatch.setattr(np.linalg, "eigh", original_eigh)
+    singles = {
+        anchor: calibrate_uniform_leakage(
+            domain,
+            anchors=(anchor,),
+            shell_nodes=shells[anchor],
+            node_embeddings=embeddings,
+            length_scale=1.0,
+            relative_tolerance=1e-6,
+        )
+        for anchor in ("a0", "b0")
+    }
+    for anchor, record in batched.by_anchor.items():
+        single = singles[anchor]
+        assert record.added_leakage_conductance == pytest.approx(
+            single.leakage_conductance,
+            rel=2e-10,
+        )
+        assert record.achieved_attenuation == pytest.approx(
+            single.achieved_attenuation,
+            rel=2e-10,
+        )
+        assert record.screening_at_selected_leakage.radius_lower == (
+            single.anchor_screening[0].radius_lower
+        )
+        assert record.screening_at_selected_leakage.radius_upper == (
+            single.anchor_screening[0].radius_upper
+        )
+
+    requirements = {
+        record.anchor: record.added_leakage_conductance
+        for record in batched.per_anchor
+    }
+    assert requirements["a0"] > requirements["b0"]
+    assert batched.study_added_leakage_conductance == max(
+        requirements.values()
+    )
+    assert batched.by_anchor["b0"].screening_at_study_leakage.shell_attenuation < (
+        batched.by_anchor["b0"].achieved_attenuation
+    )
+
+
+def test_per_anchor_calibration_is_anchor_and_mapping_order_invariant():
+    domain, embeddings, shells = _asymmetric_two_anchor_calibration_fixture()
+    forward = calibrate_uniform_leakage_per_anchor(
+        domain,
+        anchors=("a0", "b0"),
+        shell_nodes_by_anchor=shells,
+        node_embeddings=embeddings,
+        length_scale=1.0,
+        relative_tolerance=1e-6,
+    )
+    reversed_order = calibrate_uniform_leakage_per_anchor(
+        domain,
+        anchors=("b0", "a0"),
+        shell_nodes_by_anchor={"b0": ("b2",), "a0": ("a2",)},
+        node_embeddings=embeddings,
+        length_scale=1.0,
+        relative_tolerance=1e-6,
+    )
+
+    assert tuple(record.anchor for record in forward.per_anchor) == ("a0", "b0")
+    assert tuple(record.anchor for record in reversed_order.per_anchor) == (
+        "a0",
+        "b0",
+    )
+    assert forward.study_added_leakage_conductance == pytest.approx(
+        reversed_order.study_added_leakage_conductance
+    )
+    assert {
+        key: value.added_leakage_conductance
+        for key, value in forward.by_anchor.items()
+    } == pytest.approx(
+        {
+            key: value.added_leakage_conductance
+            for key, value in reversed_order.by_anchor.items()
+        }
+    )
+
+
+def test_per_anchor_calibration_rejects_source_only_and_unreachable_shells():
+    domain, embeddings, _ = _asymmetric_two_anchor_calibration_fixture()
+
+    with pytest.raises(ValueError, match="reachable non-source.*'a0'"):
+        calibrate_uniform_leakage_per_anchor(
+            domain,
+            anchors=("a0",),
+            shell_nodes_by_anchor={"a0": ("a0",)},
+            node_embeddings=embeddings,
+            length_scale=1.0,
+        )
+
+    with pytest.raises(ValueError, match="reachable non-source.*'b2'"):
+        calibrate_uniform_leakage_per_anchor(
+            domain,
+            anchors=("a0",),
+            shell_nodes_by_anchor={"a0": ("b2",)},
+            node_embeddings=embeddings,
+            length_scale=1.0,
+        )
+
+
+def test_per_anchor_calibration_allows_zero_and_records_finite_provenance():
+    graph = _path(2)
+    domain = select_hop_local_domain((0,), graph, maximum_nodes=3)
+    result = calibrate_uniform_leakage_per_anchor(
+        domain,
+        shell_nodes_by_anchor={0: (2,)},
+        target_attenuation=0.9,
+        intrinsic_leakage_conductance=1.0,
+    )
+
+    assert result.study_added_leakage_conductance == 0.0
+    assert result.numerical_minimum_added_leakage == 0.0
+    assert np.array_equal(
+        result.base_intrinsic_leakage_conductance,
+        np.ones(3),
+    )
+    assert np.array_equal(
+        result.model.intrinsic_leakage_conductance,
+        result.base_intrinsic_leakage_conductance,
+    )
+    assert result.screening_provenance_semantics == (
+        "per_anchor_selected_and_shared_study_added_leakage"
+    )
+    assert result.total_evaluations == 1
+
+    record = result.per_anchor[0]
+    assert record.added_leakage_conductance == 0.0
+    finite_values = [
+        result.study_added_leakage_conductance,
+        result.target_attenuation,
+        result.numerical_minimum_added_leakage,
+        record.added_leakage_conductance,
+        record.achieved_attenuation,
+        record.numerical_minimum_added_leakage,
+    ]
+    for screening in (
+        record.screening_at_selected_leakage,
+        record.screening_at_study_leakage,
+    ):
+        finite_values.extend(
+            [
+                screening.shell_attenuation,
+                screening.attenuation_threshold,
+                screening.radius_lower,
+                screening.maximum_observed_radius,
+            ]
+        )
+        if screening.radius_upper is not None:
+            finite_values.append(screening.radius_upper)
+    assert np.isfinite(finite_values).all()
+    assert np.isfinite(result.base_intrinsic_leakage_conductance).all()

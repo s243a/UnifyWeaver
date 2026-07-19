@@ -859,7 +859,10 @@ def select_topology_skeleton_domain(
                         "from incident adjacency"
                     )
                 if reaches_parent(parent, child):
-                    raise ValueError("cyclic parent data are not permitted")
+                    raise ValueError(
+                        "cyclic parent data are not permitted; provide the "
+                        "complete typed relation after SCC condensation"
+                    )
                 parent_relation.setdefault(child, set()).add(parent)
                 parent_children.setdefault(parent, set()).add(child)
                 if parent not in selected:
@@ -959,10 +962,14 @@ def select_semantic_resistance_domain(
     maximum_nodes,
     length_scale,
     conductance_floor=0.0,
+    reference_conductance=1.0,
 ):
     """Select a truncated Dijkstra prefix using resistance on existing edges.
 
-    Semantics changes edge cost but never creates an edge.  Zero-conductance
+    Semantics changes edge cost but never creates an edge.
+    ``reference_conductance`` is the positive frozen ``c_ref`` scale in
+    ``c_ref / c_ij``; it changes distance units but not the ordering.
+    Zero-conductance
     edges (possible only with a zero floor) are not traversable in the weighted
     selector.  The returned physical model still uses the exact same semantic
     conductance formula and full Dirichlet cut aggregation.
@@ -974,6 +981,9 @@ def select_semantic_resistance_domain(
         raise ValueError("maximum_nodes must be at least the number of anchors")
     length_scale = _positive_finite("length_scale", length_scale)
     floor = _unit_interval("conductance_floor", conductance_floor)
+    reference_conductance = _positive_finite(
+        "reference_conductance", reference_conductance
+    )
     snapshot = _NeighborSnapshot(incident_neighbors)
     embeddings = _EmbeddingSnapshot(node_embeddings)
     started = time.perf_counter()
@@ -994,7 +1004,7 @@ def select_semantic_resistance_domain(
             conductance = floor + (1.0 - floor) * radial
             if conductance <= 0.0:
                 continue
-            candidate = distance + 1.0 / conductance
+            candidate = distance + reference_conductance / conductance
             if not math.isfinite(candidate):
                 raise ValueError("semantic resistance path length is not finite")
             old = distances.get(neighbor)
@@ -1021,6 +1031,7 @@ def select_semantic_resistance_domain(
         parameters={
             "length_scale": length_scale,
             "conductance_floor": floor,
+            "reference_conductance": reference_conductance,
             "edge_support": "topology_only",
         },
         snapshot=snapshot,
@@ -1660,9 +1671,21 @@ def _leakage_for_nodes(value, nodes, all_required_nodes):
             for node in nodes
         }
     else:
-        scalar = _positive_finite("intrinsic_leakage_conductance", value)
+        scalar = _finite_nonnegative("intrinsic_leakage_conductance", value)
         output = scalar
     return output
+
+
+def _conservative_upper_quantile(values, quantile):
+    """Return an observed upper order statistic without tail interpolation."""
+
+    return float(np.quantile(values, quantile, method="higher"))
+
+
+def _conservative_lower_quantile(values, quantile):
+    """Return an observed lower order statistic without tail interpolation."""
+
+    return float(np.quantile(values, quantile, method="lower"))
 
 
 def _rank_order(nodes, values):
@@ -2177,8 +2200,8 @@ def evaluate_bounded_domain_fidelity(
             )
             for source_column in range(len(sources))
         )
-        resistance_relative_p90 = float(
-            np.quantile(per_anchor_resistance_relative, 0.9)
+        resistance_relative_p90 = _conservative_upper_quantile(
+            per_anchor_resistance_relative, 0.9
         )
     candidate_harmonic = candidate_model.boundary_harmonic_measure()[
         candidate_protected
@@ -2221,16 +2244,18 @@ def evaluate_bounded_domain_fidelity(
         per_anchor_source_diagonal_relative_error=tuple(
             float(value) for value in per_anchor_diagonal_relative
         ),
-        raw_relative_l2_error_90th_percentile=float(
-            np.quantile(per_anchor_raw_relative_l2, 0.9)
+        raw_relative_l2_error_90th_percentile=_conservative_upper_quantile(
+            per_anchor_raw_relative_l2, 0.9
         ),
-        maximum_h_absolute_error_90th_percentile=float(
-            np.quantile(per_anchor_maximum_h, 0.9)
+        maximum_h_absolute_error_90th_percentile=_conservative_upper_quantile(
+            per_anchor_maximum_h, 0.9
         ),
-        rank_inversion_fraction_90th_percentile=float(
-            np.quantile(inversions, 0.9)
+        rank_inversion_fraction_90th_percentile=_conservative_upper_quantile(
+            inversions, 0.9
         ),
-        top_k_overlap_10th_percentile=float(np.quantile(overlaps, 0.1)),
+        top_k_overlap_10th_percentile=_conservative_lower_quantile(
+            overlaps, 0.1
+        ),
         candidate_nodes=candidate.realized_nodes,
         reference_nodes=reference.realized_nodes,
         protected_nodes_count=len(protected),
