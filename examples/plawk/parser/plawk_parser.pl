@@ -66,9 +66,94 @@ plawk_parse_source(Source, Program, PrologClauses) :-
     append(ClausesNested, BlockClauses),
     string_codes(Stripped, Codes),
     phrase(plawk_program(Program0, FunctionClauses, DynEntries), Codes),
-    plawk_normalise_getline_loops(Program0, Program),
+    plawk_normalise_c_for(Program0, Program1),
+    plawk_normalise_getline_loops(Program1, Program),
     append(BlockClauses, FunctionClauses, PrologClauses),
     plawk_dynentry_reserved_check(DynEntries, PrologClauses).
+
+%% plawk_normalise_c_for(+Program0, -Program)
+%
+%  Desugar a C-style `for (INIT; COND; UPDATE) BODY` (parsed to
+%  c_for(Init, Cond, Update, Body)) into `INIT; while (COND) { BODY; UPDATE }`,
+%  reusing the while runtime. Applied before the getline normalisation so a
+%  getline loop nested in a for body lands in the resulting while_loop body
+%  (which the getline walker recurses).
+%
+%  `break` desugars correctly (it exits the while == exits the for). `continue`
+%  does NOT: the while runtime's continue jumps to the condition test, skipping
+%  the appended UPDATE -- for a counter loop that is an infinite loop. So a
+%  c_for whose body has an own-level `continue` (directly, or inside an if, but
+%  not inside a nested loop that consumes its own continue) is left un-desugared;
+%  codegen then rejects it cleanly rather than miscompiling. `continue` in a
+%  C-style for is a follow-on.
+plawk_normalise_c_for(program(Begin, Rules0, End), program(Begin, Rules, End)) :-
+    !,
+    plawk_norm_cfor_rules(Rules0, Rules).
+plawk_normalise_c_for(Program, Program).
+
+plawk_norm_cfor_rules(Rules0, Rules) :-
+    is_list(Rules0),
+    !,
+    maplist(plawk_norm_cfor_rule, Rules0, Rules).
+plawk_norm_cfor_rules(Other, Other).
+
+plawk_norm_cfor_rule(rule(Pattern, Actions0), rule(Pattern, Actions)) :-
+    !,
+    plawk_norm_cfor_actions(Actions0, Actions).
+plawk_norm_cfor_rule(Other, Other).
+
+plawk_norm_cfor_actions([], []).
+plawk_norm_cfor_actions([c_for(Init, Cond, Update, Body0) | Rest], Out) :-
+    \+ plawk_actions_own_continue(Body0),
+    !,
+    plawk_norm_cfor_actions(Body0, Body1),
+    plawk_norm_cfor_action(Init, InitN),
+    plawk_norm_cfor_action(Update, UpdateN),
+    append(Body1, [UpdateN], LoopBody),
+    plawk_norm_cfor_actions(Rest, RestN),
+    Out = [InitN, while_loop(Cond, LoopBody) | RestN].
+plawk_norm_cfor_actions([Action0 | Rest], [Action | RestN]) :-
+    plawk_norm_cfor_action(Action0, Action),
+    plawk_norm_cfor_actions(Rest, RestN).
+
+plawk_norm_cfor_action(if(Pattern, Then0, Else0), if(Pattern, Then, Else)) :-
+    !,
+    plawk_norm_cfor_actions(Then0, Then),
+    plawk_norm_cfor_actions(Else0, Else).
+plawk_norm_cfor_action(while_loop(Cond, Body0), while_loop(Cond, Body)) :-
+    !,
+    plawk_norm_cfor_actions(Body0, Body).
+plawk_norm_cfor_action(do_while_loop(Body0, Cond), do_while_loop(Body, Cond)) :-
+    !,
+    plawk_norm_cfor_actions(Body0, Body).
+plawk_norm_cfor_action(foreach_loop(Layout, Body0), foreach_loop(Layout, Body)) :-
+    !,
+    plawk_norm_cfor_actions(Body0, Body).
+plawk_norm_cfor_action(for_in(Var, Array, Body0), for_in(Var, Array, Body)) :-
+    !,
+    plawk_norm_cfor_actions(Body0, Body).
+% A nested c_for that itself carries an own-level continue: keep the node (so
+% codegen rejects) but still normalise its body so inner desugarable loops work.
+plawk_norm_cfor_action(c_for(Init, Cond, Update, Body0), c_for(Init, Cond, Update, Body)) :-
+    !,
+    plawk_norm_cfor_actions(Body0, Body).
+plawk_norm_cfor_action(Action, Action).
+
+%% plawk_actions_own_continue(+Actions) is semidet.
+%
+%  True if a `continue` targets THIS loop level -- a continue directly in the
+%  action list, or inside an if branch (which does not consume continue), but
+%  NOT one inside a nested loop (while/do-while/for-in/c_for), which consumes
+%  its own continue.
+plawk_actions_own_continue(Actions) :-
+    member(Action, Actions),
+    plawk_action_own_continue(Action).
+
+plawk_action_own_continue(continue).
+plawk_action_own_continue(if(_Pattern, Then, Else)) :-
+    ( plawk_actions_own_continue(Then)
+    ; plawk_actions_own_continue(Else)
+    ).
 
 %% plawk_normalise_getline_loops(+Program0, -Program)
 %
@@ -1449,6 +1534,46 @@ for_in_body([WritebinAction]) -->
 for_in_body([PrintAction]) -->
     print_action(PrintAction).
 
+%% for_c_action(-Action)//
+%
+%  C-style `for (INIT; COND; UPDATE) BODY` -- the awk three-part for. INIT and
+%  UPDATE are simple statements (an assignment `i = 0` or an increment `i++` /
+%  `i += n`); COND is a general loop condition (the same grammar as `while`).
+%  Parses to c_for(Init, Cond, Update, Body); a normalisation pass
+%  (plawk_normalise_c_for) desugars it to `INIT; while (COND) { BODY; UPDATE }`,
+%  reusing the while runtime. Tried after for-in (which commits on `in`); the
+%  `;` separators distinguish the two. v1 requires all three parts (empty parts
+%  like `for (;;)` are a follow-on).
+for_c_action(c_for(Init, Cond, Update, Body)) -->
+    "for",
+    ws,
+    "(",
+    ws,
+    for_c_simple(Init),
+    ws,
+    ";",
+    ws,
+    while_condition(Cond),
+    ws,
+    ";",
+    ws,
+    for_c_simple(Update),
+    ws,
+    ")",
+    ws,
+    body_block(Body).
+
+% A simple statement usable as a C-for init / update: an increment (`i++`), a
+% compound assignment (`i += n`), or a plain assignment (`i = 0`).
+for_c_simple(Action) -->
+    increment_action(Action),
+    !.
+for_c_simple(Action) -->
+    add_assign_action(Action),
+    !.
+for_c_simple(Action) -->
+    assignment_action(Action).
+
 % A guard expression: one or more comparisons combined with `&&` / `||`
 % (short-circuit, `&&` binding tighter than `||`, left-associative, parens
 % allowed). A single comparison parses to the bare guard term (unchanged), so
@@ -1672,6 +1797,9 @@ action(Action) -->
 % assoc-route codegen (a print body over the loop key / lookups).
 action(Action) -->
     for_in_action(Action),
+    !.
+action(Action) -->
+    for_c_action(Action),
     !.
 action(Action) -->
     add_assign_action(Action),
