@@ -133,6 +133,15 @@ t_os_errors(Current, MissingMessage) :-
     errno(Current),
     strerror(2, MissingMessage).
 
+:- dynamic t_process_resource_queries/3.
+t_process_resource_queries(Priority, FileLimit, CoreLimit) :-
+    getpriority(Priority),
+    getrlimit(1, FileLimit),
+    getrlimit(4, CoreLimit).
+
+:- dynamic t_login_name/1.
+t_login_name(Name) :- getlogin(Name).
+
 :- dynamic t_process_commands/2.
 t_process_commands(Status, Output) :-
     shell('exit 0'),
@@ -431,6 +440,8 @@ test_builtin_parity_execution :-
              user:t_system_names/3,
              user:t_runtime_metrics/5,
              user:t_os_errors/2,
+             user:t_process_resource_queries/3,
+             user:t_login_name/1,
              user:t_process_commands/2,
              user:t_sleep/0,
              user:t_halt_zero/0,
@@ -479,6 +490,8 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_system_names_3,
     t_runtime_metrics_5,
     t_os_errors_2,
+    t_process_resource_queries_3,
+    t_login_name_1,
     t_process_commands_2,
     t_sleep_0,
     t_environment_mutation_1,
@@ -822,6 +835,29 @@ fn test_os_errors_compiled() {
     match read_var(&vm, "MissingMessage") {
         Value::Atom(message) => assert!(!message.is_empty()),
         other => panic!("expected error message atom, got {:?}", other),
+    }
+}
+
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn test_process_resource_queries_compiled() {
+    let mut vm = vmnew();
+    assert!(t_process_resource_queries_3(
+        &mut vm, ub("Priority"), ub("FileLimit"), ub("CoreLimit")));
+    let priority = integer_var(&vm, "Priority");
+    assert!((-20..=19).contains(&priority));
+    let _ = integer_var(&vm, "FileLimit");
+    let _ = integer_var(&vm, "CoreLimit");
+}
+
+#[test]
+fn test_login_name_compiled() {
+    let mut vm = vmnew();
+    if t_login_name_1(&mut vm, ub("Name")) {
+        match read_var(&vm, "Name") {
+            Value::Atom(name) => assert!(!name.is_empty()),
+            other => panic!("expected login-name atom, got {:?}", other),
+        }
     }
 }
 
@@ -2671,6 +2707,66 @@ fn test_os_errors_direct() {
     let mut missing_output_vm = vmnew();
     missing_output_vm.set_reg("A1", i(2));
     assert!(!missing_output_vm.execute_builtin("strerror/2", 2));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_process_priority_and_login_direct() {
+    let (priority_ok, priority_vm) = call1("getpriority/1", ub("Priority"));
+    assert!(priority_ok);
+    let priority = integer_var(&priority_vm, "Priority");
+    assert!((-20..=19).contains(&priority));
+    assert!(call1("getpriority/1", i(priority)).0);
+    assert!(!call1("getpriority/1", i(priority.wrapping_add(1))).0);
+    assert!(!call1("getpriority/1", a("not_an_integer")).0);
+    assert!(!vmnew().execute_builtin("getpriority/1", 1));
+
+    let (login_ok, login_vm) = call1("getlogin/1", ub("Name"));
+    if login_ok {
+        let name = match read_var(&login_vm, "Name") {
+            Value::Atom(name) => name,
+            other => panic!("expected login-name atom, got {:?}", other),
+        };
+        assert!(!name.is_empty());
+        assert!(call1("getlogin/1", a(&name)).0);
+        assert!(!call1("getlogin/1", a("__not_the_login_name__")).0);
+    }
+    assert!(!call1("getlogin/1", i(7)).0);
+    assert!(!vmnew().execute_builtin("getlogin/1", 1));
+}
+
+#[cfg(not(unix))]
+#[test]
+fn test_process_priority_and_login_unavailable_direct() {
+    assert!(!call1("getpriority/1", ub("Priority")).0);
+    assert!(!call1("getlogin/1", ub("Name")).0);
+}
+
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn test_process_soft_limit_direct() {
+    for resource in [0, 1, 4] {
+        let (ok, vm) = call2("getrlimit/2", i(resource), ub("Limit"));
+        assert!(ok, "resource {resource} must be readable");
+        let limit = integer_var(&vm, "Limit");
+        assert!(call2("getrlimit/2", i(resource), i(limit)).0);
+        assert!(!call2(
+            "getrlimit/2", i(resource), i(limit.wrapping_add(1))).0);
+    }
+    assert!(!call2("getrlimit/2", i(999), ub("Limit")).0);
+    assert!(!call2("getrlimit/2", a("fsize"), ub("Limit")).0);
+    assert!(!call2("getrlimit/2", ub("Resource"), ub("Limit")).0);
+    assert!(!call2("getrlimit/2", Value::Float(1.0), ub("Limit")).0);
+    assert!(!vmnew().execute_builtin("getrlimit/2", 2));
+    let mut missing_output_vm = vmnew();
+    missing_output_vm.set_reg("A1", i(1));
+    assert!(!missing_output_vm.execute_builtin("getrlimit/2", 2));
+}
+
+#[cfg(not(all(unix, target_pointer_width = "64")))]
+#[test]
+fn test_process_soft_limit_unavailable_direct() {
+    assert!(!call2("getrlimit/2", i(1), ub("Limit")).0);
 }
 
 #[cfg(unix)]
