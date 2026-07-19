@@ -4702,8 +4702,8 @@ options(unifyweaver.lmdb_kv_adapter=list(
   put_all=function(path,pairs){ for (k in names(pairs)) assign(k,charToRaw(pairs[[k]]),envir=store); TRUE }))
 source("generated_program.R")
 options(unifyweaver.lmdb_kv_adapter=NULL)
-stopifnot(nlist==1L, length(pledge_facts)>=3L, length(pledge_indexes)>0L)
-it <- intern_table; eager_facts <- pledge_facts; eager_idx <- pledge_indexes
+stopifnot(nlist==1L, length(pred_pledge_facts)>=3L, length(pred_pledge_indexes)>0L)
+it <- intern_table; eager_facts <- pred_pledge_facts; eager_idx <- pred_pledge_indexes
 g0 <- nget; l0 <- nlist
 lazy_g <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"alice")), 2L, it)
 stopifnot(length(lazy_g)==2L, nget>g0, nlist==l0)
