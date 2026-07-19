@@ -11722,6 +11722,9 @@ plawk_scalar_rule_body_action(Action) :-
 % the store-only half of a rule-level `exit N` (terminal_exit split); it is a
 % plain store with no control, valid anywhere a plain body action is.
 plawk_scalar_rule_body_action(exit_store(_Code)).
+% srand(N) / srand() -- PRNG seeding statements (pure side effect).
+plawk_scalar_rule_body_action(srand(int(_Seed))).
+plawk_scalar_rule_body_action(srand_time).
 plawk_scalar_rule_body_action(Action) :-
     plawk_rule_body_print_action(Action).
 plawk_scalar_rule_body_action(writebin_out(Types, Fields)) :-
@@ -11753,6 +11756,9 @@ plawk_scalar_rule_body_plain_action(Action) :-
 % store-only marker `exit_store` may appear when a branch ends the rule.
 plawk_scalar_rule_body_plain_action(exit(int(_Code))).
 plawk_scalar_rule_body_plain_action(exit_store(_Code)).
+% srand(N) / srand() inside a branch body (`if (c) srand(1)`).
+plawk_scalar_rule_body_plain_action(srand(int(_Seed))).
+plawk_scalar_rule_body_plain_action(srand_time).
 % a structured-return destructure inside a branch body: the sequence
 % walker lowers dynrec_bind wherever it appears (its slots/call IR is
 % branch-position-independent), so branch-body validation accepts it
@@ -12807,6 +12813,29 @@ plawk_scalar_action_sequence_pairs([getline_read(Var, File) | Rest], Slots, Asso
     [GlobalIR-IR],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, NextExits).
+% `srand(N)` -- seed the PRNG with the integer N (reproducible). A pure side
+% effect: no slot changes, so Values pass through unchanged.
+plawk_scalar_action_sequence_pairs([srand(int(Seed)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { integer(Seed),
+      format(atom(CallLine), '  call void @srand48(i64 ~w)', [Seed]),
+      NextOpIndex is OpIndex + 1
+    },
+    [''-CallLine],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
+% `srand()` -- seed from the wall clock (time), so the sequence differs run to
+% run. Same pure side effect.
+plawk_scalar_action_sequence_pairs([srand_time | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { format(atom(SeedRef), '%~w_srandt_~w', [Prefix, OpIndex]),
+      format(atom(TimeLine), '  ~w = call i64 @time(i64* null)', [SeedRef]),
+      format(atom(CallLine), '  call void @srand48(i64 ~w)', [SeedRef]),
+      NextOpIndex is OpIndex + 1
+    },
+    [''-TimeLine, ''-CallLine],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 plawk_scalar_action_sequence_pairs([gsub_count(CountName, Global, Regex, Repl, Target) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { integer(Global), string(Regex), string(Repl),
@@ -14157,6 +14186,13 @@ plawk_f64_expr_ir(pow_i64(Left, Right), FieldSeparator, Base, GlobalBase,
         [ValueIR, LeftValueIR, RightValueIR]),
     append(LeftGlobalParts, RightGlobalParts, GlobalParts),
     append([LeftSetupParts, RightSetupParts, [OpIR]], SetupParts).
+% Zero-argument math builtin `fn()` (rand): call the libm function directly.
+plawk_f64_expr_ir(math_call(Fn, []), _FieldSeparator, Base, _GlobalBase,
+        ValueIR, [], [OpIR]) :-
+    plawk_math_fn(Fn, Symbol, 0),
+    !,
+    format(atom(ValueIR), '%~w', [Base]),
+    format(atom(OpIR), '  ~w = call double @~w()', [ValueIR, Symbol]).
 % Unary math builtin `fn(Arg)` (sqrt/sin/cos/exp/log): evaluate the argument in
 % f64 (i64 leaves promote by sitofp) and call the libm function.
 plawk_f64_expr_ir(math_call(Fn, [Arg]), FieldSeparator, Base, GlobalBase,
@@ -14237,6 +14273,9 @@ plawk_math_fn(cos, cos, 1).
 plawk_math_fn(exp, exp, 1).
 plawk_math_fn(log, log, 1).
 plawk_math_fn(atan2, atan2, 2).
+% rand() returns a double in [0, 1) from libm drand48 (the seed is set by
+% srand -- default seed otherwise, so a program without srand is reproducible).
+plawk_math_fn(rand, drand48, 0).
 
 plawk_i64_guarded_div_lines(LLVMOp, Base, LeftIR, RightIR, Lines) :-
     format(atom(DenZero),
