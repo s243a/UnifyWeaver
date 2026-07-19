@@ -1,0 +1,61 @@
+{{match part}}{{case helpers}}
+    fn current_os_error_code() -> i64 {
+        std::io::Error::last_os_error()
+            .raw_os_error()
+            .map(i64::from)
+            .unwrap_or(0)
+    }
+
+    #[cfg(unix)]
+    fn os_error_message(code: i64) -> Option<String> {
+        extern "C" {
+            fn strerror(
+                error: std::os::raw::c_int,
+            ) -> *const std::os::raw::c_char;
+        }
+
+        let message = unsafe { strerror(code as std::os::raw::c_int) };
+        if message.is_null() {
+            return None;
+        }
+        Some(unsafe { std::ffi::CStr::from_ptr(message) }
+            .to_string_lossy()
+            .into_owned())
+    }
+
+    #[cfg(not(unix))]
+    fn os_error_message(code: i64) -> Option<String> {
+        Some(std::io::Error::from_raw_os_error(code as i32).to_string())
+    }
+{{case arms}}
+            "errno/1" => {
+                let error = Value::Integer(Self::current_os_error_code());
+                let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &error) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "strerror/2" => {
+                let code = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(code)) => code,
+                    _ => return false,
+                };
+                let message = match Self::os_error_message(code) {
+                    Some(message) => Value::Atom(message),
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &message) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+{{/match}}
