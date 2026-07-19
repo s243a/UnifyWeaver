@@ -5260,6 +5260,7 @@ plawk_match_special('RSTART').
 plawk_match_special('RLENGTH').
 plawk_match_special('NR').
 plawk_match_special('ARGC').
+plawk_match_special('NF').
 
 plawk_while_cond_rhs_ok(int(N)) :- integer(N).
 plawk_while_cond_rhs_ok(var(_W)).
@@ -5294,33 +5295,60 @@ plawk_while_cond_vars(cmp(var(V), _Op, var(W)), [V, W]).
 %  (CondVar). Each variable's current value is its slot value in CondValues
 %  (head-phi values for `while`, body-output values for `do-while`);
 %  comparisons are i64 icmps, combined with `and`/`or i1`.
-plawk_while_cond_ir(Cond, Slots, CondValues, Base, CondVar, IR) :-
-    plawk_while_cond_build(Cond, Slots, CondValues, Base, '', CondVar, Lines),
+plawk_while_cond_ir(Cond, Slots, CondValues, FieldSeparator, Base, CondVar, IR) :-
+    plawk_while_cond_build(Cond, Slots, CondValues, FieldSeparator, Base, '', CondVar, Lines),
     atomic_list_concat(Lines, '\n', IR).
 
-plawk_while_cond_build(and(A, B), Slots, CV, Base, Path, CondVar, Lines) :-
+plawk_while_cond_build(and(A, B), Slots, CV, FS, Base, Path, CondVar, Lines) :-
     !,
     atom_concat(Path, 'l', PA),
     atom_concat(Path, 'r', PB),
-    plawk_while_cond_build(A, Slots, CV, Base, PA, VA, LA),
-    plawk_while_cond_build(B, Slots, CV, Base, PB, VB, LB),
+    plawk_while_cond_build(A, Slots, CV, FS, Base, PA, VA, LA),
+    plawk_while_cond_build(B, Slots, CV, FS, Base, PB, VB, LB),
     format(atom(CondVar), '%~w_cond~w', [Base, Path]),
     format(atom(Line), '  ~w = and i1 ~w, ~w', [CondVar, VA, VB]),
     append([LA, LB, [Line]], Lines).
-plawk_while_cond_build(or(A, B), Slots, CV, Base, Path, CondVar, Lines) :-
+plawk_while_cond_build(or(A, B), Slots, CV, FS, Base, Path, CondVar, Lines) :-
     !,
     atom_concat(Path, 'l', PA),
     atom_concat(Path, 'r', PB),
-    plawk_while_cond_build(A, Slots, CV, Base, PA, VA, LA),
-    plawk_while_cond_build(B, Slots, CV, Base, PB, VB, LB),
+    plawk_while_cond_build(A, Slots, CV, FS, Base, PA, VA, LA),
+    plawk_while_cond_build(B, Slots, CV, FS, Base, PB, VB, LB),
     format(atom(CondVar), '%~w_cond~w', [Base, Path]),
     format(atom(Line), '  ~w = or i1 ~w, ~w', [CondVar, VA, VB]),
     append([LA, LB, [Line]], Lines).
+% NF (the field count of the current record) as a comparison operand. Computed
+% from %line via the field-count runtime (the field separator threaded in), so
+% it is only valid where a record is in scope -- rejected in an END condition
+% (Base is `plawk_endif...`), leaving `NF` in END a clean not-yet. Handles NF on
+% either side; the RHS is an integer literal or a loop variable.
+plawk_while_cond_build(cmp(special('NF'), Op, Rhs), Slots, CondValues, FS, Base,
+        Path, CondVar, Lines) :-
+    \+ sub_atom(Base, 0, _, _, plawk_endif),
+    !,
+    format(atom(NfBase), '~w_nf~w', [Base, Path]),
+    llvm_emit_atom_field_count('%line', FS, NfBase, CountLine),
+    plawk_while_cond_operand(Rhs, Slots, CondValues, Base, Path, r, ROperand, RLines),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(Line), '  ~w = icmp ~w i64 %~w, ~w', [CondVar, Pred, NfBase, ROperand]),
+    append([[CountLine], RLines, [Line]], Lines).
+plawk_while_cond_build(cmp(Lhs, Op, special('NF')), Slots, CondValues, FS, Base,
+        Path, CondVar, Lines) :-
+    \+ sub_atom(Base, 0, _, _, plawk_endif),
+    !,
+    format(atom(NfBase), '~w_nf~w', [Base, Path]),
+    llvm_emit_atom_field_count('%line', FS, NfBase, CountLine),
+    plawk_while_cond_operand(Lhs, Slots, CondValues, Base, Path, l, LOperand, LLines),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(Line), '  ~w = icmp ~w i64 ~w, %~w', [CondVar, Pred, LOperand, NfBase]),
+    append([[CountLine], LLines, [Line]], Lines).
 % strnum-vs-integer-literal comparison (step 3b): resolve the strnum id to text
 % and dispatch to @wam_strnum_cmp_int, which decides numeric (strnum looks
 % numeric) vs lexical (against the integer formatted as a decimal string) by the
 % runtime content, then compare its sign to 0. `x OP N`.
-plawk_while_cond_build(cmp(var(L), Op, int(N)), Slots, CondValues, Base,
+plawk_while_cond_build(cmp(var(L), Op, int(N)), Slots, CondValues, _FS, Base,
         Path, CondVar, Lines) :-
     plawk_cond_var_is_strnum(L, Slots),
     integer(N),
@@ -5329,7 +5357,7 @@ plawk_while_cond_build(cmp(var(L), Op, int(N)), Slots, CondValues, Base,
     plawk_icmp_pred(Op, Pred),
     plawk_strnum_cmp_int_lines(Base, Path, LId, N, Pred, CondVar, Lines).
 % `N OP x`: swap to `x swap(Op) N` so the strnum stays the left operand.
-plawk_while_cond_build(cmp(int(N), Op, var(R)), Slots, CondValues, Base,
+plawk_while_cond_build(cmp(int(N), Op, var(R)), Slots, CondValues, _FS, Base,
         Path, CondVar, Lines) :-
     plawk_cond_var_is_strnum(R, Slots),
     integer(N),
@@ -5344,7 +5372,7 @@ plawk_while_cond_build(cmp(int(N), Op, var(R)), Slots, CondValues, Base,
 % look numeric -> numeric; otherwise strcmp), then compare its sign to 0 with the
 % surface comparison predicate. This is the "10 9" (numeric) vs "10 9x" (lexical)
 % fix. Tried before the generic i64 icmp clause.
-plawk_while_cond_build(cmp(var(L), Op, var(R)), Slots, CondValues, Base,
+plawk_while_cond_build(cmp(var(L), Op, var(R)), Slots, CondValues, _FS, Base,
         Path, CondVar, Lines) :-
     plawk_cond_var_is_strnum(L, Slots),
     plawk_cond_var_is_strnum(R, Slots),
@@ -5363,7 +5391,7 @@ plawk_while_cond_build(cmp(var(L), Op, var(R)), Slots, CondValues, Base,
     format(atom(LineCmp),
         '  ~w = icmp ~w i32 %~w_sn~w_rc, 0', [CondVar, Pred, Base, Path]),
     Lines = [LineLS, LineRS, LineRC, LineCmp].
-plawk_while_cond_build(cmp(Left, Op, Rhs), Slots, CondValues, Base,
+plawk_while_cond_build(cmp(Left, Op, Rhs), Slots, CondValues, _FS, Base,
         Path, CondVar, Lines) :-
     % Fail-closed: if either operand is a strnum slot and this is not one of the
     % supported strnum cases above (strnum-vs-strnum, strnum-vs-integer-literal),
@@ -5503,10 +5531,10 @@ plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
          GlobalBase, GlobalBase, BytesLen, BytesLen, LitName, Len, GlobalBase,
          GlobalBase, GlobalBase, GlobalBase,
          GlobalBase, Pred, GlobalBase]).
-plawk_if_cond_ir(scalar_if(Cond), Slots, Values0, _FieldSeparator, GlobalBase,
+plawk_if_cond_ir(scalar_if(Cond), Slots, Values0, FieldSeparator, GlobalBase,
         CondValue, ''-GuardIR) :-
     !,
-    plawk_while_cond_ir(Cond, Slots, Values0, GlobalBase, CondValue, GuardIR).
+    plawk_while_cond_ir(Cond, Slots, Values0, FieldSeparator, GlobalBase, CondValue, GuardIR).
 plawk_if_cond_ir(Pattern, _Slots, _Values0, FieldSeparator, GlobalBase,
         CondValue, GuardGlobalIR-GuardIR) :-
     format(atom(CondValue), '%~w_cond', [GlobalBase]),
@@ -6727,8 +6755,14 @@ plawk_scalar_typed_slots(Rules, Names, Slots) :-
         ),
         Updates),
     plawk_scalar_double_fixpoint(Updates, [], Doubles),
-    plawk_scalar_string_names(Rules, Strings),
+    plawk_scalar_string_names(Rules, Strings0),
     plawk_scalar_strnum_names(Rules, Strnums),
+    % An ARGV/getline source produces a set_str op, so it also lands in Strings0;
+    % once it is an ACTIVATED strnum, drop it from the plain-string set so it
+    % types as scalar_strnum (Strings is checked before Strnums). A deactivated
+    % candidate stays in Strings -> scalar_string, its prior behaviour (no
+    % regression). Field strnums are not in Strings0, so this is a no-op for them.
+    ord_subtract(Strings0, Strnums, Strings),
     maplist(plawk_scalar_typed_slot(Doubles, Strings, Strnums), Names, Slots).
 
 % A scalar is string-typed when it is assigned a string RHS (`x = $1 $2` or
@@ -6780,10 +6814,11 @@ plawk_scalar_strnum_names(Rules, Strnums) :-
         ),
         Disq0),
     sort(Disq0, Disq),
-    % Field seeds: names with a field-copy source, not disqualified.
+    % Seeds: names with a strnum source (field copy / ARGV / getline), not
+    % disqualified.
     findall(Name,
         ( plawk_strnum_rule_action(Rules, Action),
-          plawk_scalar_strnum_field_source(Action, Name),
+          plawk_scalar_strnum_source(Action, Name),
           \+ memberchk(Name, Disq)
         ),
         Seeds0),
@@ -6831,7 +6866,7 @@ plawk_strnum_name_unstable(Rules, _Disq, Set, Name) :-
 % Validly sourced in Set: a field copy, or a copy `Name = M` with M still in Set.
 plawk_strnum_validly_sourced(Rules, _Set, Name) :-
     plawk_strnum_rule_action(Rules, Action),
-    plawk_scalar_strnum_field_source(Action, Name),
+    plawk_scalar_strnum_source(Action, Name),
     !.
 plawk_strnum_validly_sourced(Rules, Set, Name) :-
     plawk_strnum_rule_action(Rules, set(var(Name), var(M))),
@@ -6856,13 +6891,27 @@ plawk_scalar_strnum_field_source(set(var(Name), int(field(FieldIndex))), Name) :
     integer(FieldIndex),
     FieldIndex >= 0.
 
+% A strnum source: any assignment whose value is an external string of unknown
+% numericness -- a field copy, a command-line argument (`x = ARGV[N]`), or a
+% getline read (`getline var < "file"` / `status = getline var < "file"`). These
+% are POSIX strnums: their runtime content decides numeric vs lexical comparison.
+% All store an interned atom id into the slot (via set_str for argv/getline, via
+% the field-intern for a field), so they share the scalar_strnum representation.
+plawk_scalar_strnum_source(Action, Name) :-
+    plawk_scalar_strnum_field_source(Action, Name).
+plawk_scalar_strnum_source(set(var(Name), argv_at(N)), Name) :-
+    integer(N),
+    N >= 0.
+plawk_scalar_strnum_source(getline_read(Name, _File), Name).
+plawk_scalar_strnum_source(getline_capture(_Status, Name, _File), Name).
+
 % A write is disqualifying unless it is a strnum-preserving source: a field copy
 % (`x = $N`) or a plain var copy (`z = x`, which propagates strnum-ness). Any
 % other write (a literal, arithmetic, concat, a string builtin, ...) destroys
 % the duality and disqualifies the name.
 plawk_scalar_strnum_disqualify(Action, Name) :-
     plawk_scalar_action_update(Action, Name, _Operation),
-    \+ plawk_scalar_strnum_field_source(Action, Name),
+    \+ plawk_scalar_strnum_source(Action, Name),
     \+ Action = set(var(Name), var(_)).
 
 % True if Name has at least one read the strnum codegen does not support, given
@@ -13009,7 +13058,7 @@ plawk_scalar_action_sequence_pairs([while_loop(Cond, Body) | Rest],
       % head phi carries continue values; the after phi carries break values
       plawk_while_head_phi_ir(Slots, Values0, BodyOutValues, Continues,
           Base, EntryLabel, BodyDoneLabel, HeadPhiIR),
-      plawk_while_cond_ir(Cond, Slots, HeadValues, Base, CondVar, CondIR),
+      plawk_while_cond_ir(Cond, Slots, HeadValues, FieldSeparator, Base, CondVar, CondIR),
       plawk_loop_after_ir(Slots, HeadValues, HeadLabel, Breaks, Base,
           AfterValues, AfterPhiIR),
       format(atom(IR),
@@ -13090,7 +13139,7 @@ plawk_scalar_action_sequence_pairs([do_while_loop(Body, Cond) | Rest],
       phrase(plawk_foreach_head_phi_lines(Slots, Values0, BdValues,
           Base, EntryLabel, BodyDoneLabel, 0), HeadPhiLines),
       atomic_list_concat(HeadPhiLines, '\n', HeadPhiIR),
-      plawk_while_cond_ir(Cond, Slots, BdValues, Base, CondVar, CondIR),
+      plawk_while_cond_ir(Cond, Slots, BdValues, FieldSeparator, Base, CondVar, CondIR),
       plawk_loop_after_ir(Slots, BdValues, BodyDoneLabel, Breaks, Base,
           AfterValues, AfterPhiIR),
       format(atom(IR),
@@ -13239,6 +13288,17 @@ plawk_scalar_update_operation_ir(set_str(gsub_str(Global, Regex, Repl)), scalar_
          NextValue, Base, Base, Base, CacheName, Base, ReplLen, GlobalBool]),
     atomic_list_concat([PatGlobal, ReplGlobal, CacheGlobal], '\n', GlobalIR).
 plawk_scalar_update_operation_ir(set_str(Src), scalar_string(_Name), FieldSeparator,
+        Prefix, SlotIndex, OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
+    !,
+    format(atom(Base), '~w_slot_~w_op_~w_str', [Prefix, SlotIndex, OpIndex]),
+    plawk_str_build_ir(Src, FieldSeparator, Base, NextValue, GlobalParts, SetupLines),
+    plawk_join_nonempty_ir(GlobalParts, GlobalIR),
+    atomic_list_concat(SetupLines, '\n', IR).
+% An ARGV/getline strnum slot stores the same interned atom id as a string slot
+% (the runtime call yields an id via plawk_str_build_ir); only comparison-time
+% dispatch differs (strnum vs string). So the store is identical to the string
+% case -- the slot's kind, not this op, drives the numeric-vs-lexical choice.
+plawk_scalar_update_operation_ir(set_str(Src), scalar_strnum(_Name), FieldSeparator,
         Prefix, SlotIndex, OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
     !,
     format(atom(Base), '~w_slot_~w_op_~w_str', [Prefix, SlotIndex, OpIndex]),
@@ -14419,7 +14479,7 @@ plawk_scalar_end_if_ir(Cond, ThenActions, ElseActions, StatePlan, FieldSeparator
         OutputSeparator, GlobalIR, IR) :-
     plawk_state_plan_slots(StatePlan, Slots),
     plawk_final_slot_values(StatePlan, FinalValues),
-    plawk_while_cond_ir(Cond, Slots, FinalValues, plawk_endif, CondVar, CondIR),
+    plawk_while_cond_ir(Cond, Slots, FinalValues, FieldSeparator, plawk_endif, CondVar, CondIR),
     plawk_end_if_branch_ir(ThenActions, Slots, FinalValues, FieldSeparator,
         OutputSeparator, plawk_endif_then, ThenGlobal, ThenIR),
     plawk_end_if_branch_ir(ElseActions, Slots, FinalValues, FieldSeparator,
