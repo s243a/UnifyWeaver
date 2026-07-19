@@ -6030,6 +6030,36 @@ plawk_forin_end_guard_lines(guard_value_strord(Op, Text), TableIndex, Lines, Con
         '  %forin_gcmp = icmp ~w i32 %forin_gval_rc, 0', [Pred]),
     CondVar = '%forin_gcmp',
     Lines = [PtrLine, ValLine, StrLine, RcLine, CmpLine].
+% Str-valued element vs a float literal (`arr[k] < 3.5`): build the double
+% (M/D), resolve the element text, and compare via @wam_strnum_cmp_double
+% (numeric vs the double, else lexical against its %g form).
+plawk_forin_end_guard_lines(guard_value_strnum_f(Op, M, D), TableIndex, Lines, CondVar, '') :-
+    plawk_forin_cmp_pred(Op, Pred),
+    format(atom(FvLine), '  %forin_gfv = fdiv double ~w.0, ~w.0', [M, D]),
+    format(atom(ValLine),
+        '  %forin_gval = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
+        [TableIndex]),
+    format(atom(StrLine),
+        '  %forin_gval_s = call i8* @wam_atom_to_string(i64 %forin_gval)', []),
+    format(atom(RcLine),
+        '  %forin_gval_rc = call i32 @wam_strnum_cmp_double(i8* %forin_gval_s, i8 1, double %forin_gfv)', []),
+    format(atom(CmpLine),
+        '  %forin_gcmp = icmp ~w i32 %forin_gval_rc, 0', [Pred]),
+    CondVar = '%forin_gcmp',
+    Lines = [FvLine, ValLine, StrLine, RcLine, CmpLine].
+% i64 counter element vs a float literal: widen the count and fcmp.
+plawk_forin_end_guard_lines(guard_value_f(Op, M, D), TableIndex, Lines, CondVar, '') :-
+    plawk_forin_fcmp_pred(Op, FPred),
+    format(atom(FvLine), '  %forin_gfv = fdiv double ~w.0, ~w.0', [M, D]),
+    format(atom(ValLine),
+        '  %forin_gval = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
+        [TableIndex]),
+    format(atom(WidenLine),
+        '  %forin_gval_d = sitofp i64 %forin_gval to double', []),
+    format(atom(CmpLine),
+        '  %forin_gcmp = fcmp ~w double %forin_gval_d, %forin_gfv', [FPred]),
+    CondVar = '%forin_gcmp',
+    Lines = [FvLine, ValLine, WidenLine, CmpLine].
 
 %% plawk_forin_end_accum_ir(+LoopVar, +ArrayName, +Acc, +Operand,
 %%     +PrintFields, +AssocPlan, +Descriptor, +OutputSeparator, -IR)
@@ -7981,7 +8011,18 @@ plawk_forin_guard_plan(forin_val_cmp(_A, _K, Op, str(Text)), _IsStr, GuardPlan) 
     ->  GuardPlan = guard_value_streq(Op, Text)
     ;   GuardPlan = guard_value_strord(Op, Text)
     ).
+% A float-literal RHS (`arr[k] < 3.5`): on a str-valued table go through strnum
+% against the double (numeric vs the value, else lexical against %g of it); on an
+% i64 counter table widen the count to double and fcmp.
+plawk_forin_guard_plan(forin_val_cmp(_A, _K, Op, float_const(M, D)), IsStr,
+        GuardPlan) :-
+    !,
+    ( IsStr == true
+    ->  GuardPlan = guard_value_strnum_f(Op, M, D)
+    ;   GuardPlan = guard_value_f(Op, M, D)
+    ).
 plawk_forin_guard_plan(forin_val_cmp(_A, _K, Op, V), IsStr, GuardPlan) :-
+    integer(V),
     ( IsStr == true
     ->  GuardPlan = guard_value_strnum(Op, V)
     ;   GuardPlan = guard_value(Op, V)
@@ -8576,6 +8617,14 @@ plawk_forin_cmp_pred(ge, sge).
 % the rest (ordering) go through strcmp.
 plawk_forin_streq_op(eq).
 plawk_forin_streq_op(ne).
+
+% Float (fcmp) predicates for a counter element compared to a float literal.
+plawk_forin_fcmp_pred(eq, oeq).
+plawk_forin_fcmp_pred(ne, one).
+plawk_forin_fcmp_pred(lt, olt).
+plawk_forin_fcmp_pred(le, ole).
+plawk_forin_fcmp_pred(gt, ogt).
+plawk_forin_fcmp_pred(ge, oge).
 
 plawk_forin_rule_field_lines([], _B, _N) -->
     [].
