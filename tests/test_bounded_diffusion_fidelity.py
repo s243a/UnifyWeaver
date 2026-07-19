@@ -8,11 +8,15 @@ import sys
 import numpy as np
 import pytest
 
+import prototypes.mu_cosine.benchmark_bounded_diffusion_fidelity as fidelity_benchmark
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from unifyweaver.graph.bounded_diffusion_fidelity import (  # noqa: E402
+    _conservative_lower_quantile,
+    _conservative_upper_quantile,
     ExperimentalBoundaryClosure,
     ExperimentalBoundaryClosureConfig,
     ExteriorTraversalLimitError,
@@ -911,7 +915,7 @@ def test_exact_reduction_needs_no_embeddings_and_sorts_heterogeneous_ports():
 
     assert len(pairs) == 2
     assert set(self_return) == {0, 1, "a", "b"}
-    assert provenance["semantic_role"] == "rank_graph_connected_pairs_only"
+    assert provenance["semantic_role"] == "none"
 
 
 def test_fidelity_emits_protocol_per_anchor_top8_and_resistance_endpoints():
@@ -986,3 +990,234 @@ def test_fidelity_rejects_changed_shared_node_adjacency_snapshot():
             protected_nodes=(0, 1),
             intrinsic_leakage_conductance=0.2,
         )
+
+
+def test_semantic_resistance_records_frozen_c_ref_without_changing_prefix():
+    graph = _neighbors((("s", "a"), ("a", "b"), ("s", "c")))
+    embeddings = {
+        "s": np.array([0.0]),
+        "a": np.array([0.1]),
+        "b": np.array([0.2]),
+        "c": np.array([3.0]),
+    }
+    unit = select_semantic_resistance_domain(
+        ("s",),
+        graph,
+        embeddings,
+        maximum_nodes=3,
+        length_scale=1.0,
+        conductance_floor=0.1,
+        reference_conductance=1.0,
+    )
+    scaled = select_semantic_resistance_domain(
+        ("s",),
+        graph,
+        embeddings,
+        maximum_nodes=3,
+        length_scale=1.0,
+        conductance_floor=0.1,
+        reference_conductance=2.0,
+    )
+
+    assert unit.domain.nodes == scaled.domain.nodes
+    assert np.allclose(scaled.selection_distance, 2.0 * unit.selection_distance)
+    assert dict(scaled.selector_parameters)["reference_conductance"] == 2.0
+    assert scaled.selection_fingerprint != unit.selection_fingerprint
+
+
+def test_fidelity_accepts_shared_zero_scalar_alpha_when_cuts_ground_both_models():
+    graph = _path(3)
+    candidate = select_hop_budget_domain((0,), graph, maximum_nodes=2)
+    reference = select_hop_budget_domain((0,), graph, maximum_nodes=3)
+
+    result = evaluate_bounded_domain_fidelity(
+        candidate,
+        reference,
+        protected_nodes=(0, 1),
+        intrinsic_leakage_conductance=0.0,
+    )
+
+    assert result.candidate_reciprocal_condition > 0.0
+    assert result.reference_reciprocal_condition > 0.0
+
+
+def test_fidelity_tail_summaries_use_conservative_observed_order_statistics():
+    values = (0.0, 1.0, 2.0, 3.0)
+
+    assert _conservative_upper_quantile(values, 0.9) == 3.0
+    assert _conservative_lower_quantile(values, 0.1) == 0.0
+
+
+def test_primary_exact_two_port_closure_is_exhaustive_and_embedding_free():
+    graph = _neighbors(
+        (
+            ("p", "x"),
+            ("x", "q"),
+            ("r", "y"),
+            ("y", "s"),
+            ("p", "w"),
+            ("r", "w"),
+            ("s", "w"),
+        )
+    )
+    selection = select_hop_budget_domain(
+        ("p", "q", "r", "s"), graph, maximum_nodes=4
+    )
+
+    pairs, _, provenance = _exact_two_port_exterior_dtn(
+        selection,
+        graph,
+        None,
+        intrinsic_leakage=0.2,
+        length_scale=1.0,
+        topology_conductance=1.0,
+        maximum_pairs=None,
+        maximum_component_nodes=8,
+    )
+
+    assert {(left, right) for left, right, _ in pairs} == {
+        ("p", "q"),
+        ("r", "s"),
+    }
+    assert provenance["semantic_role"] == "none"
+    assert provenance["eligible_two_port_components"] == 2
+    assert provenance["joint_dtn_required_components"] == 1
+    assert provenance["discarded_for_pair_budget"] == 0
+
+
+
+def test_exhaustive_exact_two_port_output_ignores_embeddings_entirely():
+    graph = _neighbors(
+        (("p", "x"), ("x", "q"), ("r", "y"), ("y", "s"))
+    )
+    selection = select_hop_budget_domain(
+        ("p", "q", "r", "s"), graph, maximum_nodes=4
+    )
+    first_embeddings = {
+        "p": np.array([0.0]),
+        "q": np.array([0.0]),
+        "r": np.array([-10.0]),
+        "s": np.array([10.0]),
+    }
+    second_embeddings = {
+        "p": np.array([-10.0]),
+        "q": np.array([10.0]),
+        "r": np.array([0.0]),
+        "s": np.array([0.0]),
+    }
+    arguments = {
+        "intrinsic_leakage": 0.2,
+        "length_scale": 1.0,
+        "topology_conductance": 1.0,
+        "maximum_pairs": None,
+        "maximum_component_nodes": 8,
+    }
+
+    first = _exact_two_port_exterior_dtn(
+        selection, graph, first_embeddings, **arguments
+    )
+    second = _exact_two_port_exterior_dtn(
+        selection, graph, second_embeddings, **arguments
+    )
+
+    assert first == second
+    assert first[2]["semantic_role"] == "none"
+
+
+def test_traversal_limit_returns_stable_grounded_no_op():
+    graph = _neighbors((("p", "x"), ("x", "y"), ("y", "q")))
+    selection = select_hop_budget_domain(
+        ("p", "q"), graph, maximum_nodes=2
+    )
+
+    first = _exact_two_port_exterior_dtn(
+        selection,
+        graph,
+        None,
+        intrinsic_leakage=0.2,
+        length_scale=None,
+        topology_conductance=1.0,
+        maximum_pairs=None,
+        maximum_component_nodes=1,
+    )
+    second = _exact_two_port_exterior_dtn(
+        selection,
+        graph,
+        None,
+        intrinsic_leakage=0.2,
+        length_scale=None,
+        topology_conductance=1.0,
+        maximum_pairs=None,
+        maximum_component_nodes=1,
+    )
+
+    assert first == second
+    pairs, self_return, provenance = first
+    assert pairs == ()
+    assert self_return == {}
+    assert provenance["status"] == "traversal_incomplete_grounded_no_op"
+    assert provenance["no_op"] is True
+    assert provenance["failure_count"] == 1
+    assert provenance["failure_reasons"] == {"exterior_traversal_limit": 1}
+    assert len(provenance["failure_fingerprint"]) == 64
+
+
+def test_numerically_failed_two_port_stays_grounded_while_others_reduce(
+    monkeypatch,
+):
+    graph = _neighbors(
+        (("p", "x"), ("x", "q"), ("r", "y"), ("y", "s"))
+    )
+    selection = select_hop_budget_domain(
+        ("p", "q", "r", "s"), graph, maximum_nodes=4
+    )
+    original = fidelity_benchmark._topology_two_port_schur
+
+    def fail_one_component(component, *args, **kwargs):
+        if component.nodes == ("x",):
+            raise np.linalg.LinAlgError("synthetic numerical failure")
+        return original(component, *args, **kwargs)
+
+    monkeypatch.setattr(
+        fidelity_benchmark,
+        "_topology_two_port_schur",
+        fail_one_component,
+    )
+    pairs, self_return, provenance = _exact_two_port_exterior_dtn(
+        selection,
+        graph,
+        None,
+        intrinsic_leakage=0.2,
+        length_scale=None,
+        topology_conductance=1.0,
+        maximum_pairs=None,
+        maximum_component_nodes=8,
+    )
+
+    assert {(left, right) for left, right, _ in pairs} == {("r", "s")}
+    assert provenance["eligible_two_port_components"] == 2
+    assert provenance["reduced_two_port_components"] == 1
+    assert provenance["numerically_failed_two_port_components"] == 1
+    assert provenance["failure_reasons"] == {
+        "two_port_schur_numerical_failure": 1
+    }
+    assert len(provenance["failure_fingerprint"]) == 64
+
+    config = ExperimentalBoundaryClosureConfig(
+        maximum_edges=1,
+        closure_mass_fraction=1.0,
+        ordinary_branch_conductance=1.0,
+        bridge_conductance_cap=0.25,
+        pair_conductance_source="exact_component_schur",
+        ledger_mode="explicit_self_return",
+    )
+    closure = build_experimental_boundary_closure(
+        selection.domain,
+        intrinsic_leakage_conductance=0.2,
+        pair_conductances=pairs,
+        self_return_conductance=self_return,
+        config=config,
+    )
+    index = {node: row for row, node in enumerate(closure.model.nodes)}
+    assert closure.residual_ground_conductance[index["p"]] == pytest.approx(1.0)
+    assert closure.residual_ground_conductance[index["q"]] == pytest.approx(1.0)

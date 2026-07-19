@@ -44,13 +44,16 @@ from .leaky_diffusion import (
 
 
 __all__ = [
+    "AnchorLeakageCalibrationResult",
     "AnchorScreeningProvenance",
     "LeakageCalibrationResult",
     "LocalDiffusionDomain",
     "LocalGroundedSemanticDiffusion",
     "NestedDomainDiagnostics",
+    "PerAnchorLeakageCalibrationResult",
     "build_local_grounded_semantic_diffusion",
     "calibrate_uniform_leakage",
+    "calibrate_uniform_leakage_per_anchor",
     "compare_nested_domains",
     "select_hop_local_domain",
 ]
@@ -862,6 +865,203 @@ class LeakageCalibrationResult:
         object.__setattr__(self, "numerical_minimum_leakage", numeric)
 
 
+@dataclass(frozen=True)
+class AnchorLeakageCalibrationResult:
+    """Independent leakage requirement and screening provenance for one anchor.
+
+    ``added_leakage_conductance`` is the scalar shunt added uniformly on top of
+    the caller-provided intrinsic leakage vector. Both screening records use
+    this anchor's own shell. The first is evaluated at the anchor's independently
+    selected leakage; the second is evaluated at the conservative shared study
+    leakage (the maximum independent requirement across anchors).
+    """
+
+    anchor: object
+    shell_nodes: tuple
+    added_leakage_conductance: float
+    achieved_attenuation: float
+    iterations: int
+    numerical_minimum_added_leakage: float
+    screening_at_selected_leakage: AnchorScreeningProvenance
+    screening_at_study_leakage: AnchorScreeningProvenance
+
+    def __post_init__(self):
+        try:
+            hash(self.anchor)
+        except TypeError as exc:
+            raise ValueError("anchor must be hashable") from exc
+        shell = _canonical_unique(self.shell_nodes, name="shell_nodes")
+        added = _finite_scalar(
+            "added_leakage_conductance",
+            self.added_leakage_conductance,
+        )
+        numerical = _finite_scalar(
+            "numerical_minimum_added_leakage",
+            self.numerical_minimum_added_leakage,
+        )
+        if added < 0.0 or numerical < 0.0:
+            raise ValueError("added leakage values must be nonnegative")
+        scale = max(abs(added), abs(numerical), np.finfo(float).tiny)
+        if added + 64.0 * np.finfo(float).eps * scale < numerical:
+            raise ValueError("selected leakage is below the numerical minimum")
+        achieved = _finite_scalar(
+            "achieved_attenuation",
+            self.achieved_attenuation,
+        )
+        if achieved < 0.0 or achieved > 1.0 + 1e-8:
+            raise ValueError("achieved_attenuation must be in [0, 1]")
+        if (
+            isinstance(self.iterations, (bool, np.bool_))
+            or int(self.iterations) != self.iterations
+            or self.iterations <= 0
+        ):
+            raise ValueError("iterations must be a positive integer")
+        iterations = int(self.iterations)
+        selected = self.screening_at_selected_leakage
+        study = self.screening_at_study_leakage
+        if not isinstance(selected, AnchorScreeningProvenance) or not isinstance(
+            study,
+            AnchorScreeningProvenance,
+        ):
+            raise TypeError("screening provenance must use AnchorScreeningProvenance")
+        if selected.anchor != self.anchor or study.anchor != self.anchor:
+            raise ValueError("screening provenance anchor must match the result")
+        if not math.isclose(
+            selected.attenuation_threshold,
+            study.attenuation_threshold,
+            rel_tol=1e-12,
+            abs_tol=0.0,
+        ):
+            raise ValueError("selected and study screening thresholds must match")
+        observed_scale = max(
+            abs(achieved),
+            abs(selected.shell_attenuation),
+            np.finfo(float).tiny,
+        )
+        if abs(achieved - selected.shell_attenuation) > (
+            64.0 * np.finfo(float).eps * observed_scale
+        ):
+            raise ValueError(
+                "achieved attenuation must equal selected-leakage screening"
+            )
+        if study.shell_attenuation > selected.shell_attenuation + 1e-8:
+            raise ValueError(
+                "shared study leakage cannot weaken shell attenuation"
+            )
+        object.__setattr__(self, "shell_nodes", shell)
+        object.__setattr__(self, "added_leakage_conductance", added)
+        object.__setattr__(self, "achieved_attenuation", achieved)
+        object.__setattr__(self, "iterations", iterations)
+        object.__setattr__(self, "numerical_minimum_added_leakage", numerical)
+
+
+@dataclass(frozen=True)
+class PerAnchorLeakageCalibrationResult:
+    """One-factor study model plus independent per-anchor leakage requirements.
+
+    The returned ``model`` uses ``base_intrinsic_leakage_conductance`` plus
+    ``study_added_leakage_conductance``. The study addition is the maximum of
+    the independently calibrated anchor additions, so one shared precision can
+    safely serve the whole batch without pretending that the intrinsic leakage
+    was learned or replaced.
+    """
+
+    model: LocalGroundedSemanticDiffusion
+    base_intrinsic_leakage_conductance: np.ndarray
+    study_added_leakage_conductance: float
+    target_attenuation: float
+    numerical_minimum_added_leakage: float
+    per_anchor: tuple
+    total_evaluations: int
+    eigendecomposition_count: int = 1
+
+    def __post_init__(self):
+        if not isinstance(self.model, LocalGroundedSemanticDiffusion):
+            raise TypeError("model must be a LocalGroundedSemanticDiffusion")
+        base = np.asarray(self.base_intrinsic_leakage_conductance, dtype=float)
+        if base.shape != (len(self.model.nodes),):
+            raise ValueError("base intrinsic leakage must align with model nodes")
+        if not np.isfinite(base).all() or np.any(base < 0.0):
+            raise ValueError("base intrinsic leakage must be finite and nonnegative")
+        target = _positive_unit_interval(
+            "target_attenuation",
+            self.target_attenuation,
+        )
+        study = _finite_scalar(
+            "study_added_leakage_conductance",
+            self.study_added_leakage_conductance,
+        )
+        numerical = _finite_scalar(
+            "numerical_minimum_added_leakage",
+            self.numerical_minimum_added_leakage,
+        )
+        if study < 0.0 or numerical < 0.0:
+            raise ValueError("added leakage values must be nonnegative")
+        records = tuple(self.per_anchor)
+        if not records or not all(
+            isinstance(record, AnchorLeakageCalibrationResult)
+            for record in records
+        ):
+            raise ValueError("per_anchor must contain anchor calibration results")
+        anchors = tuple(record.anchor for record in records)
+        if anchors != tuple(sorted(set(anchors), key=_stable_key)):
+            raise ValueError("per-anchor results must use canonical unique anchors")
+        if any(
+            not math.isclose(
+                record.screening_at_selected_leakage.attenuation_threshold,
+                target,
+                rel_tol=1e-12,
+                abs_tol=0.0,
+            )
+            for record in records
+        ):
+            raise ValueError("all per-anchor thresholds must match the batch target")
+        required = max(record.added_leakage_conductance for record in records)
+        required_scale = max(abs(required), abs(study), np.finfo(float).tiny)
+        if abs(required - study) > 64.0 * np.finfo(float).eps * required_scale:
+            raise ValueError("study leakage must equal the maximum anchor requirement")
+        expected_intrinsic = base + study
+        intrinsic_scale = max(
+            float(np.max(np.abs(expected_intrinsic), initial=0.0)),
+            np.finfo(float).tiny,
+        )
+        if not np.allclose(
+            self.model.intrinsic_leakage_conductance,
+            expected_intrinsic,
+            rtol=1e-12,
+            atol=64.0 * np.finfo(float).eps * intrinsic_scale,
+        ):
+            raise ValueError(
+                "study model intrinsic leakage must equal base plus added leakage"
+            )
+        if (
+            isinstance(self.total_evaluations, (bool, np.bool_))
+            or int(self.total_evaluations) != self.total_evaluations
+            or self.total_evaluations <= 0
+        ):
+            raise ValueError("total_evaluations must be a positive integer")
+        total = int(self.total_evaluations)
+        if total != sum(record.iterations for record in records):
+            raise ValueError("total evaluations must equal per-anchor iterations")
+        if self.eigendecomposition_count != 1:
+            raise ValueError("per-anchor calibration must use one eigendecomposition")
+        object.__setattr__(self, "base_intrinsic_leakage_conductance", _readonly(base))
+        object.__setattr__(self, "study_added_leakage_conductance", study)
+        object.__setattr__(self, "target_attenuation", target)
+        object.__setattr__(self, "numerical_minimum_added_leakage", numerical)
+        object.__setattr__(self, "per_anchor", records)
+        object.__setattr__(self, "total_evaluations", total)
+        object.__setattr__(self, "eigendecomposition_count", 1)
+
+    @property
+    def by_anchor(self):
+        return {record.anchor: record for record in self.per_anchor}
+
+    @property
+    def screening_provenance_semantics(self):
+        return "per_anchor_selected_and_shared_study_added_leakage"
+
+
 def _positive_conductance_hop_distances(conductance, source_row):
     """Return source-relative hops inside one realized conductance component."""
 
@@ -1250,6 +1450,460 @@ def calibrate_uniform_leakage(
         anchor_screening=anchor_screening,
         iterations=evaluations,
         numerical_minimum_leakage=numerical_minimum,
+    )
+
+
+def _attenuation_from_selected_spectral_rows(
+    eigenvalues,
+    eigenvectors,
+    *,
+    leakage,
+    source_row,
+    shell_rows,
+):
+    """Evaluate one shell without materializing a full Green response."""
+
+    denominators = eigenvalues + leakage
+    if np.any(denominators <= 0.0) or not np.isfinite(denominators).all():
+        return math.inf
+    source_eigenvector = eigenvectors[source_row, :]
+    weighted_source = source_eigenvector / denominators
+    source_value = float(source_eigenvector @ weighted_source)
+    shell_values = eigenvectors[np.asarray(shell_rows, dtype=np.int64), :] @ (
+        weighted_source
+    )
+    if source_value <= 0.0 or not math.isfinite(source_value):
+        return math.inf
+    if not np.isfinite(shell_values).all():
+        return math.inf
+    scale = max(
+        abs(source_value),
+        float(np.max(np.abs(shell_values), initial=0.0)),
+        1.0,
+    )
+    if float(np.min(shell_values, initial=0.0)) < -1e-10 * scale:
+        raise np.linalg.LinAlgError("spectral Green shell response is negative")
+    return float(np.max(np.maximum(shell_values, 0.0)) / source_value)
+
+
+def _full_spectral_response(
+    eigenvalues,
+    eigenvectors,
+    *,
+    leakage,
+    source_row,
+):
+    denominators = eigenvalues + leakage
+    if np.any(denominators <= 0.0) or not np.isfinite(denominators).all():
+        raise np.linalg.LinAlgError("spectral Green response is singular")
+    response = eigenvectors @ (eigenvectors[source_row, :] / denominators)
+    scale = max(float(np.max(np.abs(response), initial=0.0)), 1.0)
+    if (
+        not np.isfinite(response).all()
+        or response[source_row] <= 0.0
+        or float(np.min(response, initial=0.0)) < -1e-10 * scale
+    ):
+        raise np.linalg.LinAlgError("spectral Green response is not nonnegative")
+    return response
+
+
+def _screening_from_response(
+    anchor,
+    source_row,
+    shell_rows,
+    distances,
+    response,
+    *,
+    threshold,
+):
+    source_value = float(response[source_row])
+    attenuation = np.maximum(response, 0.0) / source_value
+    if float(np.max(attenuation)) > 1.0 + 1e-8:
+        raise np.linalg.LinAlgError("per-anchor Green attenuation left [0, 1]")
+    attenuation = np.clip(attenuation, 0.0, 1.0)
+    shell_attenuation = float(np.max(attenuation[list(shell_rows)]))
+    reachable = distances >= 0
+    lower, upper, censored, maximum = _tail_envelope_crossing(
+        distances[reachable],
+        attenuation[reachable],
+        threshold,
+    )
+    return AnchorScreeningProvenance(
+        anchor=anchor,
+        shell_attenuation=shell_attenuation,
+        attenuation_threshold=threshold,
+        radius_lower=lower,
+        radius_upper=upper,
+        right_censored=censored,
+        maximum_observed_radius=maximum,
+        distance_metric="realized_positive_conductance_hops",
+    )
+
+
+def _minimum_uniform_leakage_for_spectrum(
+    minimum,
+    maximum,
+    *,
+    required_rcond,
+):
+    if required_rcond == 1.0 and maximum > minimum:
+        raise ValueError(
+            "finite uniform leakage cannot make a nonscalar spectrum exact"
+        )
+    if required_rcond == 1.0:
+        numerical_minimum = 0.0
+    else:
+        numerical_minimum = max(
+            0.0,
+            (required_rcond * maximum - minimum) / (1.0 - required_rcond),
+        )
+        if numerical_minimum > 0.0:
+            numerical_minimum += (
+                64.0 * np.finfo(float).eps * max(maximum, np.finfo(float).tiny)
+            )
+    representable = np.nextafter(1.0 / np.finfo(float).max, math.inf)
+    numerical_minimum = max(numerical_minimum, representable - minimum, 0.0)
+    if numerical_minimum > 0.0:
+        numerical_minimum = float(np.nextafter(numerical_minimum, math.inf))
+    return float(numerical_minimum)
+
+
+def _calibrate_one_anchor_from_spectrum(
+    eigenvalues,
+    eigenvectors,
+    *,
+    source_row,
+    shell_rows,
+    target,
+    numerical_minimum,
+    maximum_allowed,
+    typical_conductance,
+    radius,
+    tolerance,
+    maximum_iterations,
+):
+    evaluations = 0
+
+    def evaluate(leakage):
+        nonlocal evaluations
+        evaluations += 1
+        return _attenuation_from_selected_spectral_rows(
+            eigenvalues,
+            eigenvectors,
+            leakage=leakage,
+            source_row=source_row,
+            shell_rows=shell_rows,
+        )
+
+    lower = numerical_minimum
+    lower_value = evaluate(lower)
+    if lower_value <= target:
+        return lower, lower_value, evaluations
+
+    gamma = math.log(1.0 / target) / max(radius, 1)
+    try:
+        chain_seed = 2.0 * typical_conductance * (math.cosh(gamma) - 1.0)
+    except OverflowError:
+        chain_seed = math.inf
+    upper = max(
+        float(np.nextafter(lower, math.inf)) * 2.0,
+        chain_seed,
+        np.finfo(float).tiny,
+    )
+    upper = min(upper, maximum_allowed)
+    upper_value = evaluate(upper)
+    while upper_value > target and evaluations < maximum_iterations:
+        if upper >= maximum_allowed or not math.isfinite(upper):
+            break
+        candidate = min(upper * 2.0, maximum_allowed)
+        if candidate <= upper:
+            break
+        upper = candidate
+        upper_value = evaluate(upper)
+    if upper_value > target:
+        if evaluations >= maximum_iterations:
+            raise np.linalg.LinAlgError(
+                "leakage calibration exhausted evaluations before bracketing"
+            )
+        raise np.linalg.LinAlgError(
+            "no allowed uniform leakage meets the attenuation target"
+        )
+
+    while evaluations < maximum_iterations:
+        scale = max(abs(upper), np.finfo(float).tiny)
+        if upper - lower <= tolerance * scale:
+            break
+        if lower > 0.0 and upper / lower > 4.0:
+            middle = math.sqrt(lower * upper)
+        else:
+            middle = lower + 0.5 * (upper - lower)
+        middle_value = evaluate(middle)
+        if middle_value <= target:
+            upper = middle
+            upper_value = middle_value
+        else:
+            lower = middle
+    scale = max(abs(upper), np.finfo(float).tiny)
+    if upper - lower > tolerance * scale:
+        raise np.linalg.LinAlgError(
+            "leakage calibration did not converge within maximum_iterations"
+        )
+    return upper, upper_value, evaluations
+
+
+def calibrate_uniform_leakage_per_anchor(
+    domain,
+    *,
+    anchors=None,
+    shell_nodes_by_anchor,
+    target_attenuation=math.exp(-1.0),
+    intrinsic_leakage_conductance=0.0,
+    node_embeddings=None,
+    length_scale=None,
+    conductance_floor=0.0,
+    bath_temperature=0.0,
+    minimum_reciprocal_condition=None,
+    maximum_leakage_conductance=None,
+    relative_tolerance=1e-8,
+    maximum_iterations=80,
+):
+    """Calibrate independent anchor shells with one shared eigendecomposition.
+
+    Each anchor is calibrated only against its own explicitly supplied shell.
+    The base precision includes the caller's existing intrinsic leakage and the
+    exact Dirichlet cut. The returned per-anchor values are *added* uniform
+    leakage requirements; they do not replace or relabel intrinsic leakage.
+
+    Bisection evaluates only the source and shell rows of the spectral Green
+    response. Full response vectors are formed once per anchor at its selected
+    leakage and at the maximum shared study leakage solely to record robust
+    realized screening-radius provenance.
+    """
+
+    if not isinstance(domain, LocalDiffusionDomain):
+        raise TypeError("domain must be a LocalDiffusionDomain")
+    if not isinstance(shell_nodes_by_anchor, Mapping):
+        raise TypeError("shell_nodes_by_anchor must be a mapping")
+    target = _positive_unit_interval("target_attenuation", target_attenuation)
+    tolerance = _positive_finite("relative_tolerance", relative_tolerance)
+    maximum_iterations = _positive_integer(
+        "maximum_iterations",
+        maximum_iterations,
+    )
+    source_nodes = _selected_nodes(
+        domain.nodes,
+        domain.anchors if anchors is None else anchors,
+        name="anchors",
+    )
+    try:
+        supplied_anchors = set(shell_nodes_by_anchor)
+    except TypeError as exc:
+        raise ValueError("shell mapping anchors must be hashable") from exc
+    expected_anchors = set(source_nodes)
+    if supplied_anchors != expected_anchors:
+        missing = expected_anchors.difference(supplied_anchors)
+        extra = supplied_anchors.difference(expected_anchors)
+        details = []
+        if missing:
+            details.append(
+                "missing " + ", ".join(sorted((repr(node) for node in missing)))
+            )
+        if extra:
+            details.append(
+                "extra " + ", ".join(sorted((repr(node) for node in extra)))
+            )
+        raise ValueError(
+            "shell_nodes_by_anchor keys must exactly match anchors ("
+            + "; ".join(details)
+            + ")"
+        )
+
+    index = {node: row for row, node in enumerate(domain.nodes)}
+    source_rows = {node: index[node] for node in source_nodes}
+    shells = {}
+    shell_rows = {}
+    for anchor in source_nodes:
+        shell = _selected_nodes(
+            domain.nodes,
+            shell_nodes_by_anchor[anchor],
+            name=f"shell_nodes_by_anchor[{anchor!r}]",
+        )
+        shells[anchor] = shell
+        shell_rows[anchor] = tuple(index[node] for node in shell)
+
+    conductance, laplacian, intrinsic, cut = _assemble_local_components(
+        domain,
+        intrinsic_leakage_conductance=intrinsic_leakage_conductance,
+        node_embeddings=node_embeddings,
+        length_scale=length_scale,
+        conductance_floor=conductance_floor,
+    )
+    distances = {
+        anchor: _positive_conductance_hop_distances(
+            conductance,
+            source_rows[anchor],
+        )
+        for anchor in source_nodes
+    }
+    for anchor in source_nodes:
+        source_row = source_rows[anchor]
+        invalid = tuple(
+            domain.nodes[row]
+            for row in shell_rows[anchor]
+            if row == source_row or distances[anchor][row] <= 0
+        )
+        if invalid:
+            labels = ", ".join(repr(node) for node in invalid)
+            raise ValueError(
+                "each anchor shell must contain only reachable non-source "
+                f"nodes; anchor {anchor!r} has invalid shell nodes: {labels}"
+            )
+
+    base_precision = laplacian + np.diag(intrinsic + cut)
+    eigenvalues, eigenvectors = np.linalg.eigh(base_precision)
+    spectral_scale = max(float(np.max(np.abs(eigenvalues), initial=0.0)), 1.0)
+    if float(eigenvalues[0]) < -1e-12 * spectral_scale:
+        raise np.linalg.LinAlgError(
+            "local base precision is not positive semidefinite"
+        )
+    eigenvalues = np.maximum(eigenvalues, 0.0)
+    spectral_minimum = float(eigenvalues[0])
+    spectral_maximum = float(eigenvalues[-1])
+    required_rcond = (
+        _DEFAULT_MINIMUM_RECIPROCAL_CONDITION
+        if minimum_reciprocal_condition is None
+        else _positive_unit_interval(
+            "minimum_reciprocal_condition",
+            minimum_reciprocal_condition,
+        )
+    )
+    numerical_minimum = _minimum_uniform_leakage_for_spectrum(
+        spectral_minimum,
+        spectral_maximum,
+        required_rcond=required_rcond,
+    )
+
+    if maximum_leakage_conductance is None:
+        maximum_allowed = math.inf
+    else:
+        maximum_allowed = _finite_scalar(
+            "maximum_leakage_conductance",
+            maximum_leakage_conductance,
+        )
+        if maximum_allowed < 0.0:
+            raise ValueError("maximum_leakage_conductance must be nonnegative")
+    if numerical_minimum > maximum_allowed:
+        raise np.linalg.LinAlgError(
+            "numerical conditioning requires leakage above the allowed maximum"
+        )
+
+    positive_edges = conductance[conductance > 0.0]
+    typical_conductance = (
+        float(np.median(positive_edges)) if len(positive_edges) else 1.0
+    )
+    selected = {}
+    selected_screening = {}
+    total_evaluations = 0
+    for anchor in source_nodes:
+        added, _, evaluations = _calibrate_one_anchor_from_spectrum(
+            eigenvalues,
+            eigenvectors,
+            source_row=source_rows[anchor],
+            shell_rows=shell_rows[anchor],
+            target=target,
+            numerical_minimum=numerical_minimum,
+            maximum_allowed=maximum_allowed,
+            typical_conductance=typical_conductance,
+            radius=max(domain.cutoff_distance, 1),
+            tolerance=tolerance,
+            maximum_iterations=maximum_iterations,
+        )
+        response = _full_spectral_response(
+            eigenvalues,
+            eigenvectors,
+            leakage=added,
+            source_row=source_rows[anchor],
+        )
+        provenance = _screening_from_response(
+            anchor,
+            source_rows[anchor],
+            shell_rows[anchor],
+            distances[anchor],
+            response,
+            threshold=target,
+        )
+        if provenance.shell_attenuation > target * (
+            1.0 + max(tolerance, 1e-10)
+        ):
+            raise np.linalg.LinAlgError(
+                f"final model missed the attenuation target for {anchor!r}"
+            )
+        selected[anchor] = (added, evaluations)
+        selected_screening[anchor] = provenance
+        total_evaluations += evaluations
+
+    study_added = max(value[0] for value in selected.values())
+    study_screening = {}
+    for anchor in source_nodes:
+        response = _full_spectral_response(
+            eigenvalues,
+            eigenvectors,
+            leakage=study_added,
+            source_row=source_rows[anchor],
+        )
+        provenance = _screening_from_response(
+            anchor,
+            source_rows[anchor],
+            shell_rows[anchor],
+            distances[anchor],
+            response,
+            threshold=target,
+        )
+        if provenance.shell_attenuation > target * (
+            1.0 + max(tolerance, 1e-10)
+        ):
+            raise np.linalg.LinAlgError(
+                f"shared study leakage missed the target for {anchor!r}"
+            )
+        study_screening[anchor] = provenance
+
+    study_model = _build_local_from_components(
+        domain,
+        conductance,
+        laplacian,
+        intrinsic + study_added,
+        cut,
+        semantic_length_scale=(
+            None if node_embeddings is None else float(length_scale)
+        ),
+        conductance_floor=float(conductance_floor),
+        bath_temperature=bath_temperature,
+        minimum_reciprocal_condition=required_rcond,
+    )
+    records = tuple(
+        AnchorLeakageCalibrationResult(
+            anchor=anchor,
+            shell_nodes=shells[anchor],
+            added_leakage_conductance=selected[anchor][0],
+            achieved_attenuation=(
+                selected_screening[anchor].shell_attenuation
+            ),
+            iterations=selected[anchor][1],
+            numerical_minimum_added_leakage=numerical_minimum,
+            screening_at_selected_leakage=selected_screening[anchor],
+            screening_at_study_leakage=study_screening[anchor],
+        )
+        for anchor in source_nodes
+    )
+    return PerAnchorLeakageCalibrationResult(
+        model=study_model,
+        base_intrinsic_leakage_conductance=intrinsic,
+        study_added_leakage_conductance=study_added,
+        target_attenuation=target,
+        numerical_minimum_added_leakage=numerical_minimum,
+        per_anchor=records,
+        total_evaluations=total_evaluations,
+        eigendecomposition_count=1,
     )
 
 

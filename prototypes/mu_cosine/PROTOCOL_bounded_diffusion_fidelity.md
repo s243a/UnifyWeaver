@@ -6,6 +6,18 @@ the protocol PR. If the real graph, embeddings, budgets, selectors, protected
 set, leakage rule, metric, or decision threshold must change, amend this file
 and its machine-readable manifest before running the affected comparison.
 
+The first confirmatory phase is prospective snapshot-relative HOP convergence
+only, and it is BLOCKED on a raw-source snapshot preparer. The current
+`assembled_dag` is legacy parity input, not an authoritative scientific asset:
+it loses relation type, privacy-propagation semantics, and visibility. The
+14,246-node scrubbed largest-component figure is an audit estimate, not the
+frozen study universe. Unknown visibility means `privacy_certified=false`. No real
+solve may start until the preparer contract in Section 2 is satisfied.
+No node IDs, titles, paths, embeddings, or node-level manifests may be published; only
+aggregate summaries and content hashes approved for the local provenance store
+may leave the machine. Results must be labeled relative to this scrubbed
+snapshot, never as coverage of the user’s complete Pearltrees corpus.
+
 This is an outcome-blind numerical study. Placement labels, judge outputs,
 filing ranks, and downstream MRR are prohibited inputs. A selector that wins
 here is only a better approximation to a larger grounded-diffusion system at a
@@ -14,19 +26,21 @@ covariance model.
 
 ## 1. Decision and estimand
 
-The practical question is which bounded domain best preserves the local
-grounded-diffusion geometry that would be obtained from a larger retained
-domain. The first decision compares the topology-first candidate skeleton with
-the ordinary hop-prefix baseline. A revision-pinned semantic-resistance
-selector is a gatekept secondary comparison. Sparse graph-derived boundary
-closure is a final, explicitly experimental comparison against the same selected
-domain with its exact Dirichlet boundary. For closure, semantic distance may
-filter expensive graph calculations, but never licenses a pair or sets bridge
-strength. This restriction does not apply to the separate semantic-operator
-and RESISTANCE-selector sensitivity in Section 2.
+The first confirmatory question is whether a deterministic HOP domain reaches
+prespecified fidelity as `K` increases toward one larger topology-only
+reference. Calibration chooses one `K` contrast; the untouched audit evaluates
+that contrast once. There is no selector-promotion claim in this phase.
+SKELETON, semantic RESISTANCE, and graph-derived closure remain prospective
+secondary phases gated on the asset and provenance requirements below.
+
+Topology-only and semantic conductance define DIFFERENT physical operators.
+Each regime therefore has its own candidate union, outer reference, calibration
+shell solves, and frozen scalar leakage. No candidate is compared across
+regimes, and neither a reference nor an alpha calibrated for one regime may be
+reused implicitly in the other.
 
 For anchor `s`, candidate domain `D`, common protected nodes `P`, and the
-larger reference `R`, let
+matching regime-specific larger reference `R`, let
 
     g_D^s = J_D^-1 e_s,
     h_D^s(i) = g_D^s(i) / g_D^s(s).
@@ -36,10 +50,14 @@ The primary per-anchor error is the relative raw-response error
     E_g(s,D) = ||g_D^s[P] - g_R^s[P]||_2
                / max(||g_R^s[P]||_2, tiny).
 
-Raw response is primary because it preserves the circuit units and the
-Dirichlet monotonicity interpretation. Normalized screening, selected grounded
-effective resistance, and rank fidelity are required noninferiority checks;
-none may be used post hoc to replace a failed primary endpoint.
+The population estimand is the EQUAL-STRATUM MACRO mean: first average the
+anchor-level contrast within each frozen degree stratum, then average
+those stratum means with equal weight over decision-bearing strata. It is not
+the pooled anchor mean, so a populous or easy stratum cannot dominate. Raw
+response is primary because it preserves circuit units and the Dirichlet
+monotonicity interpretation. Normalized screening, selected grounded effective
+resistance, and rank fidelity are required noninferiority checks; none may be
+used post hoc to replace a failed primary endpoint.
 
 An honest outcome may be: a smaller adequate domain; better fidelity at the
 same budget; no material difference, retaining the simpler hop default; no
@@ -48,123 +66,170 @@ results.
 
 ## 2. Frozen graph and conductance regimes
 
-The first real run uses one content-hashed Pearltrees snapshot. Freeze before
-anchor selection:
+Before ANY real solve, a content-hashed raw-source snapshot preparer must:
 
-- the typed node universe and complete undirected incident adjacency;
-- the directed principal-parent relation used only by the skeleton selector;
-- canonical node IDs, titles/text construction, and all exclusion reasons;
-- the largest eligible positive-edge connected component;
-- software commit, float64 backend, thread settings, and resource ceiling; and
-- every embedding model ID, exact revision, normalization, prefix, node order,
-  array hash, and missing-node manifest.
+- freeze every raw input hash, parser version, and deterministic rerun hash;
+- preserve source relation types and freeze an explicit physical-edge policy,
+  including named include/exclude treatment for containment, aliases, shortcuts,
+  and cross-links before reciprocal conductance adjacency is built;
+- propagate privacy from known-private roots through the frozen containment
+  relations, record how non-containment links are treated, and exclude affected
+  nodes before anchor selection;
+- preserve source visibility where known and set `privacy_certified=false` when
+  any required visibility is unknown;
+- emit local-only typed-node, exclusion, conflict, physical-edge, reciprocal
+  adjacency, component, and scrub manifests plus aggregate publishable counts;
+  and
+- freeze the resulting study-universe and largest-component hashes, software
+  commit, float64 backend, thread settings, and resource ceiling.
 
-Run two operator regimes without mixing their conclusions:
+The legacy assembled DAG may be compared only as a parity diagnostic; it cannot
+source the scientific adjacency, privacy decision, or study universe. Detailed
+preparer artifacts remain local-only. Any change to raw inputs, edge policy,
+privacy propagation, or visibility invalidates downstream anchor and domain
+manifests.
 
-1. **Topology-only primary:** unit base conductance on every graph edge. Compare
-   hop and candidate-skeleton selectors. This isolates domain construction from
-   embedding choice.
-2. **Semantic sensitivity:** use the frozen RBF-with-floor conductance in
-   `docs/design/LEAKY_GRAPH_DIFFUSION.md`. Set `epsilon=0.05`; set `ell` to the
-   median finite positive within-edge embedding distance on the frozen graph,
-   computed once before anchor sampling. Run Nomic only when its exact revision
-   and `clustering: ` text contract are available. MiniLM is descriptive
-   sensitivity. Do not substitute e5 silently.
+Only after that preparer gate passes, the first phase uses only the
+**topology-only HOP operator**, with unit base conductance on every canonical
+physical edge admitted by the frozen raw-source relation policy. It makes a snapshot-relative
+convergence claim, not a claim that aliases or shortcuts are physically correct.
+Changing their inclusion requires a prospective amendment and rebuilt hashed
+adjacency; the study runner must not guess directions or relation types.
 
-The semantic arm tests a selector for a frozen semantic operator. It cannot
-establish that Nomic is a better embedding model, semantic truth, or
-statistically independent of e5.
+SKELETON is unavailable for decision-bearing use. The clean Collection parent
+source covers only 1,324 of 14,520 nodes (9.1%), path records cover 1,283, and
+their union covers 2,542 (17.5%) with one directed cycle. SCC condensation can
+represent that cycle but cannot manufacture missing parents or roots. Before a
+future SKELETON phase, freeze a typed parent/root/missing/conflict manifest with
+positive root evidence and a prospective coverage threshold; failure of that
+threshold leaves SKELETON descriptive or unavailable.
+
+Semantic conductance and RESISTANCE are also later secondary phases. When
+licensed by a revision-pinned embedding/cache manifest, set `epsilon=0.05`, set
+`ell` to the median finite positive within-edge embedding distance, and freeze
+`c_ref=1.0` in `c_ref/c_ij`. Nomic requires its exact revision and `clustering: `
+text contract; MiniLM is descriptive, and e5 is never a silent substitute. A
+semantic phase must construct its own candidate union, reference, shell
+calibration, and scalar alpha rather than reusing topology artifacts.
 
 ## 3. Anchor batches and protected nodes
 
-Eligible anchors are non-isolated folder nodes in the frozen component. Their
-selection cannot use bookmark destinations, placement counts, judge outcomes,
-existing ranker scores, or previous fidelity results.
+Eligible anchors are ALL non-isolated folder nodes in the largest frozen
+positive-conductance component. They are explicitly not restricted to the
+sparse 1,504-row lineage/path export or to nodes for which one convenience path
+was materialized. Exclusions are determined from the frozen graph manifest
+before any metric is computed.
 
-Stratify eligible nodes by undirected degree quartile and principal-depth
-quartile, with missing depth as its own level. Within each stratum order nodes
-by SHA-256 of `(seed, typed_node_id)` using seed `3882001`. Select 128 anchors
-as evenly as possible across nonempty strata; redistribute deficits in
-lexicographic stratum order. Persist the ordered manifest and every stratum
-count. Form 32 consecutive batches of four anchors. Reserve the first eight batches (32
-anchors) for leakage calibration and implementation configuration; their fidelity
-metrics cannot enter a selector or closure claim. The remaining 24 batches (96
-anchors) form the untouched audit. The batch, not the anchor, is the resampling
-unit because four anchors share one domain and factorization.
+HOP consumes only the frozen reciprocal conductance adjacency. A memoized
+revisit during bounded traversal means path convergence or a cycle; it is not a
+cut point and must not create a ground shunt. Cuts are actual retained-to-omitted
+edges. No parent direction, root, or depth is inferred in phase one.
+
+Construct exactly four deterministic rank-based degree quartiles. Sort all
+eligible anchors by `(undirected_conductance_degree, stable_typed_node_id)` and
+split that ordered population into four contiguous groups whose sizes differ by
+at most one. Within each quartile order nodes by
+`SHA-256(3882001, "select", typed_node_id)` and select exactly 32 anchors. If
+any quartile cannot supply 32, phase one is coverage-inadequate before solves.
+
+Within each quartile reorder the 32 selected anchors by the independent key
+`SHA-256(3882001, "split", typed_node_id)`: the first 8 are calibration and the
+remaining 24 are untouched audit. Reorder each split within quartile by
+`SHA-256(3882001, "batch", typed_node_id)`. Calibration batch `j` and audit
+batch `j` contain exactly the `j`th anchor from each of the four quartiles, for
+8 calibration and 24 audit batches. Persist the quartile boundaries, ordered
+memberships, split, and batch IDs. Every batch is therefore exactly balanced;
+calibration metrics cannot enter the final contrast.
 
 For each anchor independently, freeze its source-relative ordinary-hop order
 with the canonical tie key. Its protected set is the anchor plus its first 16
-reachable non-anchor nodes. The batch protected set is the union across its
-four anchors. This set is fixed before any selector is scored. A family/budget
-that does not retain the complete protected set fails that batch; do not form a
+reachable non-anchor nodes. The batch protected set is the union across its four
+anchors. This set is fixed before any selector is scored. A phase-one HOP budget that
+does not retain the complete protected set fails that batch; do not form a
 post-hoc intersection and do not rank missing nodes last.
 
-Report source-to-source hop distances within each batch. The primary result
-averages the prespecified 24 audit batches rather than selecting only
-convenient local or dispersed batches. Degree/depth and distance-stratified
-summaries are descriptive.
+Report source-to-source hop distances within each batch. Primary summaries use
+the equal-stratum macro estimand from Section 1. If reference failure or method
+coverage leaves fewer than 18 of the 24 complete
+balanced audit batches, demote the whole contrast to descriptive. A failed batch
+is never decomposed into surviving anchors; never redistribute quartile weight
+or fall back to an unbalanced pooled mean. Degree and distance-stratified
+summaries beyond the frozen macro estimand are descriptive.
 
-## 4. Domain families and matched budgets
+## 4. Frozen HOP budgets and gated future families
 
-Freeze one maximum-budget ordering per family and take deterministic prefixes,
-so within a family
+Freeze one maximum-budget HOP ordering and take deterministic prefixes, so
 
     S_256 subset S_512 subset S_1024.
 
 Every domain is one union-of-anchors system with one precision matrix and one
-factorization. Its budget includes anchors, retained connecting paths, and all
-other retained nodes.
+factorization. Its budget includes anchors and every retained node. HOP uses the
+deterministic multi-source ordering with the existing stable final-shell tie
+rule. Use nominal retained budgets `K={256,512,1024}`. A required protected set
+that exceeds `K` is a recorded coverage failure. Complete final-shell runs may
+be reported descriptively, but the decision-bearing comparison uses strict
+prefix budgets.
 
-1. **HOP:** deterministic multi-source hop ordering with the existing stable
-   final-shell tie rule.
-2. **SKELETON:** retain anchors, principal ancestors, and shared/common parents
-   with their connecting paths first; use deterministic multi-source local
-   expansion to fill the remaining budget. The exact priority and tie order are
-   part of the fingerprint. Missing or cyclic parent data fail this family
-   rather than falling back silently.
-3. **RESISTANCE:** secondary only. Run truncated Dijkstra on existing graph
-   edges with positive length `c_ref/c_ij`. Embeddings may change resistance on
-   an existing edge but may not create a shortcut edge in this selector.
+### Gated future families (not phase-one decisions)
 
-Use nominal retained budgets `K={256,512,1024}`. A required protected set or
-connecting closure that exceeds `K` is a recorded coverage failure. Complete
-final-shell runs may be reported descriptively, but the decision-bearing
-comparison uses the strict matched budgets.
+SKELETON requires the prospective parent/root/missing/conflict coverage gate in
+Section 2. If licensed later, freeze `ancestor_depth=3`, SCC-condense the full
+typed `child -> principal_parent` relation, and treat traversal collisions as
+cycle convergence rather than cuts. RESISTANCE requires the semantic cache gate
+and uses only existing graph edges with frozen length `c_ref/c_ij`,
+`c_ref=1.0`; embeddings never create shortcut edges. Neither family enters the
+phase-one candidate union, calibration, reference, or audit contrast.
 
-Exact one-port Kron reductions are a future family until an implementation has
-an exact small-graph oracle and a provenance-preserving expansion map.
-Multi-port elimination may create fill and must never be mislabeled a scalar
-tree shunt.
+Exact one-port Kron reductions and multi-port sparse closure remain future
+families until their separate gates are satisfied. Multi-port elimination may
+create fill and must never be mislabeled a scalar tree shunt.
 
-## 5. Common larger-domain reference and leakage
+## 5. Regime-specific larger-domain references and leakage
 
-For each batch and conductance regime, form `U` as the union of every available
-family's frozen `S_1024`. Build an exact-Dirichlet model on `U`. Then expand
-from `U` by the frozen hop ordering to at most 4,096 retained nodes, preserving
-all of `U`, and build the outer reference `R`. If `U` itself exceeds 4,096 or
-the resource contract cannot build `R`, the batch is reference-inadequate and
-cannot promote a selector. If the connected component is exhausted, the whole
-component is an exact admissible reference.
+For phase one, `U_top` is exactly the frozen HOP `S_1024` domain for that
+batch. Build its exact-Dirichlet model, then expand from `U_top` by the same
+frozen hop ordering to at most 4,096 retained nodes, preserving all of `U_top`,
+to obtain `R_top`. If `U_top` exceeds the resource contract or `R_top` cannot
+be built, that batch is reference-inadequate and cannot support a convergence
+claim. If the connected component is exhausted, the whole component is an
+exact admissible reference.
 
-`R` is a bounded reference, not whole-graph truth. It is adequate only if the
-model on `U` versus `R`, on the frozen protected set, has:
+A later licensed semantic phase must independently construct `U_sem` from only
+the families compared under that semantic operator, then build `R_sem`; it may
+not reuse `U_top`, `R_top`, or their calibration merely because node hashes
+happen to match.
 
-- 90th-percentile `E_g <= 0.01`;
-- 90th-percentile maximum absolute `h` error `<=0.005`; and
-- 10th-percentile top-8 overlap `>=0.98`.
+Each `R` is a bounded regime-specific reference, not whole-graph truth. It is
+adequate only if its `U` versus `R`, on the frozen protected set, has:
 
-Failure is reported as right-censored domain convergence. Do not choose a
-different outer size after inspecting which family wins.
+- conservative 90th-percentile `E_g <= 0.01`;
+- conservative 90th-percentile maximum absolute `h` error `<=0.005`; and
+- conservative 10th-percentile top-8 overlap `>=0.98`.
 
-On the first eight calibration batches, find the anchor-specific uniform leakage
-needed on each `R` for the graph-hop radius-3 shell and target `exp(-1)`, as
-specified by `LOCAL_GROUNDED_DIFFUSION.md`. Every shell node must be reachable
-and strictly interior (`beta=0`) in its reference. Freeze the single largest
-required value as the study-wide `alpha`, then apply it unchanged to every
-calibration and audit reference, `U`, and candidate domain. Recalibrating each candidate
-would confound boundary approximation with a different physical model and is
-not allowed in the primary comparison. Per-domain recalibration and censoring
-may be reported as a secondary operational diagnostic.
+Compute every upper-tail percentile as the observed higher order statistic and
+every lower-tail percentile as the observed lower order statistic; do not use
+linear interpolation that moves a tail estimate toward the center. Failure is
+reported as right-censored domain convergence. Do not choose a different outer
+size after inspecting which K looks best.
+
+On the hash-balanced calibration batches only, calibrate anchor-specific uniform
+leakage on `R_top` for the topology operator. A later semantic phase repeats
+this independently on `R_sem` rather than importing `alpha_top`, using the
+graph-hop radius-3 shell and target `exp(-1)` from
+`LOCAL_GROUNDED_DIFFUSION.md`. Every shell node must be reachable and strictly
+interior (`beta=0`) in its own reference. Freeze the single largest required
+value as the phase-one `alpha_top` and apply it unchanged to every calibration
+and audit reference, union, and candidate. A
+later `alpha_sem` is a distinct scalar parameter even if its numeric value
+happens to match.
+
+A frozen scalar alpha is finite and nonnegative; zero is allowed and no hidden
+numerical floor or jitter may be inserted. A zero-alpha system must still pass
+grounding, SPD, reciprocal-condition, and residual checks from its represented
+Dirichlet boundary, otherwise that batch fails closed. Node-varying alpha and
+per-domain recalibration are descriptive alternatives only. Recalibrating each
+candidate would change the physical model and is prohibited in the primary
+comparison.
 
 ## 6. Fidelity and boundary metrics
 
@@ -186,31 +251,36 @@ explicit omitted flag; the reduced run cannot resolve the resistance part of
 For every batch/family/budget also report:
 
 - retained/boundary node counts, cut-edge count and cut mass;
-- per-anchor cut-current fraction and the protected-set maximum of
-  `p=J_D^-1 beta`;
-- calibrated and numerical-minimum `alpha`, realized e-fold radius and censor
-  flag for every anchor;
+- per-anchor cut-current fraction;
+- the batch/domain protected-set maximum of `p=J_D^-1 beta`;
+- regime-specific frozen scalar `alpha`, realized e-fold radius and censor flag
+  for every anchor;
 - reciprocal condition number, M-matrix sign check, Cholesky/solve residuals;
 - adjacency calls or touched weighted degree where observable;
 - selection, assembly, factorization, metric, and total wall times; and
 - projected dense bytes, peak RSS, backend identity, and thread settings.
 
-An individual family/budget is **adequate** only with 100% protected coverage,
+An individual phase-one HOP budget is **adequate** only with 100% protected coverage,
+using higher-order-statistic Q90 and lower-order-statistic Q10 summaries,
 all numerical checks passing, and across anchors:
 
 - 90th-percentile `E_g <= 0.05`;
 - 90th-percentile maximum absolute `h` error `<=0.025`;
 - 90th-percentile rank-inversion fraction `<=0.05`;
-- 10th-percentile top-8 overlap `>=0.90`; and
-- 90th-percentile protected boundary-harmonic maximum `<=0.10`.
+- 10th-percentile top-8 overlap `>=0.90`.
 
+Across decision-bearing batches, the conservative higher-order-statistic Q90
+of the batch/domain protected boundary-harmonic maximum must be `<=0.10`.
 When resistance is evaluated, its 90th-percentile relative error must also be
 `<=0.05`. These are deliberately conservative engineering tolerances on a
 unit-normalized screening field, not claims about downstream filing loss.
 
-## 7. Experimental graph-derived boundary closure
+## 7. Gated future graph-derived boundary closure
 
-Plain exact Dirichlet remains the baseline: every omitted edge contributes to
+This section is implemented and synthetic-tested but is NOT part of the first
+confirmatory corpus phase. After HOP convergence, a separate prospective
+amendment may license this topology-only closure rule. Plain exact Dirichlet
+remains the baseline: every omitted edge contributes to
 the boundary shunt `beta`. For an omitted exterior `E`, the exact multi-port
 target is its Dirichlet-to-Neumann/Schur response, not a collection of semantic
 similarities. If `B` denotes the nonnegative Schur term subtracted from the
@@ -277,7 +347,8 @@ cycle-correct minimum-distance and caret mixing-boundary routines in the
 are examples for bounded search and common-parent stopping, not physical Schur
 oracles. [Tarjan SCC
 condensation](../../src/unifyweaver/core/advanced/scc_detection.pl) is
-available if a future directed variant needs cycle contraction. [Node-only
+the repository precedent for preprocessing the typed parent relation before
+principal depth or SKELETON ancestry is computed. [Node-only
 memoization](../../scripts/parent_histogram_recurrence.py) is not licensed for
 simple-path counts or other path-state-dependent transfer quantities; this PR
 uses global component memoization only for connectivity. Semantic
@@ -285,32 +356,40 @@ uses global component memoization only for connectivity. Semantic
 propose searches, but an embedding MST or kNN cut is never a cut in the
 original graph.
 
-Freeze one primary closure rule before the real run:
+A future closure amendment must freeze this primary rule before its real run:
 
-- identify cut exterior components and their retained boundary ports from the
-  graph; exact two-port reductions have first priority;
-- for a resource-bounded multi-port component, semantics may retain at most
-  `q=2` plausible non-adjacent port pairs per boundary node before graph solves,
-  but may not determine `kappa` or `sigma`;
-- derive `kappa` and `sigma` from topology-only `c0` graph resistance or
-  selected Schur solves;
-- apply the exact ledger of a fully traversed two-port component without `rho`
-  truncation or an approximate bridge cap; a simple series path is naturally
-  weaker than each constituent branch, but parallel exterior paths can be
-  stronger and must not be clipped if the reduction is called exact;
-- for an approximate multi-port reduction only, cap each bridge at one half of
-  the minimum positive ordinary retained graph-edge conductance and consume at
-  most `rho=0.25` of any `beta_i` through
-  `sigma_i + sum_j kappa_ij`, leaving the rest grounded; and
-- apply deterministic pair ordering and reject shared-path pairwise composition
-  unless it is represented by one joint sparse-DtN calculation.
+- deterministically discover every exterior component inside the matching
+  topology reference `R_top \ D` and collect all retained ports from actual cut
+  edges;
+- include EVERY fully traversed component with exactly two retained ports,
+  aggregating parallel components between the same pair in one audited ledger;
+- compute its complete two-port `kappa` and self-return from topology-only `c0`
+  Schur solves, without embeddings, semantic prescreening, a pair budget, `rho`
+  truncation, or an approximate bridge cap;
+- leave every one-port, multi-port, traversal-incomplete, or numerically failed
+  component fully grounded under its exact Dirichlet beta; and
+- reject shared-path pairwise composition unless one future method represents it
+  by a single audited joint sparse-DtN calculation.
 
-Exact graph two-port reductions do not require embeddings. If no
-revision-pinned semantic embedding is available, only the optional multi-port
-pair filter is unavailable; do not substitute e5 after results. Other
-`q/rho/cap` values are exploratory sensitivities with family-wise labels.
+The implementation distinguishes failure scopes conservatively. If the frozen
+component-size cap interrupts exterior discovery, the component partition is
+not known to be complete, so the entire closure arm becomes a recorded no-op
+and the unchanged full-Dirichlet baseline remains the result. After discovery
+has completed, a numerical failure in one two-port Schur solve grounds only
+that complete component; other successfully reduced complete two-port
+components may remain in the ledger. Record stable reason counts and a
+content-based failure fingerprint in either case. Malformed, incomplete, or
+nonreciprocal graph input is an integrity failure and still aborts rather than
+being mislabeled a conservative numerical fallback.
 
-The SKELETON selector is the primary way to avoid boundary error: it retains
+A simple exterior series path is naturally weaker than each constituent branch,
+but parallel exterior paths can be stronger and must not be clipped if the
+reduction is called exact. Approximate multi-port closure, semantic proposal
+filters, and `q/rho/cap` sweeps are separate exploratory future families. They
+are not primary fallbacks and cannot rescue a failed or empty exact two-port
+closure result.
+
+In a future licensed selector phase, SKELETON may avoid boundary error by retaining
 common parents and other high-value junctions before spending budget on local
 fill. Closure is considered only for residual boundary ports joined by an
 actual path through one represented omitted component. It must never force a
@@ -323,84 +402,116 @@ cannot materially improve the selected-domain solution.
 Report, before any response comparison, the number of exterior components with
 two or more retained ports, the number of graph-connected port pairs proposed
 and realized, total transfer degree relative to original cut mass, and
-`||B_hat||_F / ||J_D||_F`. For the optional semantic filter, also report the
-fraction of graph-derived transfer mass captured by its top-`q` proposals.
-That recall diagnostic evaluates search efficiency only: missing a pair leaves
-its mass grounded, while semantic proximity alone never licenses a bridge.
-If the realized closure is empty, record a no-op and do not manufacture an
+`||B_hat||_F / ||J_D||_F`. If the realized closure is empty, record a
+no-op and do not manufacture an
 experimental arm. If it is nonempty but small, still report the ledger and
-paired response comparison; retain plain Dirichlet unless the fixed Section 8
-promotion gate is met.
+paired response comparison; retain plain Dirichlet unless a future frozen
+closure amendment meets the
+Section 8 efficacy and noninferiority form on untouched data.
 
 Before the corpus run, exact small-graph tests must include equal and unequal
 exterior series paths, exterior leakage, and a multi-terminal shared-path case,
 plus oversubscribed, asymmetric, self-edge, already-adjacent, ungrounded, and
-double-counted-beta failures. On the corpus, compare closure with plain
-Dirichlet on the identical selected domain, protected set, `alpha`, and
+double-counted-beta failures. When a future corpus closure phase is licensed, compare closure with
+plain Dirichlet on the identical selected domain, protected set, `alpha`, and
 reference.
 
-## 8. Decision hierarchy and paired uncertainty
+## 8. Fixed HOP convergence contrast and paired uncertainty
 
-Use 9,999 deterministic percentile bootstrap resamples of the 24 audit anchor
-batches with seed `3882002`. Within a resample, apply identical batch weights
-to both methods. The interval describes variation over the frozen structural
-anchor-sampling design, not solver randomness.
+Calibration may inspect all three HOP budgets. It freezes `K_low` as the smallest
+calibration-adequate value in `{256,512,1024}` and freezes `K_high` as the next
+larger HOP budget; when `K_low=1024`, `R_top` is the high/reference endpoint and
+only absolute adequacy, not a finite-budget plateau claim, is available. If no
+HOP budget is adequate on calibration, phase one is right-censored and the audit
+reports diagnostics without a convergence claim. No audit result may change the
+chosen pair.
 
-Apply this gatekeeping hierarchy:
+Use 9,999 deterministic paired bootstrap resamples of the 24 audit four-anchor
+batches with seed `3882002`. Apply identical batch multiplicities to both
+budgets. Every resampled batch contains one anchor from each quartile, so
+recompute the four quartile means and average them equally; no replicate can omit a quartile
+and no redraw rule is needed. The one-sided 95% upper endpoint is the higher
+observed bootstrap order statistic at 0.95, and the lower endpoint is the lower
+observed order statistic
+at 0.05. These intervals describe the frozen structural sampling design, not
+solver randomness.
 
-1. Verify outer-reference adequacy. If it fails, make no selector claim.
-2. Find each topology family's smallest adequate `K`. Prefer the family that
-   is adequate at a strictly smaller `K`. If both first pass at the same `K`,
-   compare batch-mean `log(E_g + 1e-15)`. Promote SKELETON over HOP only when
-   its geometric-mean error is at least 10% lower and the upper endpoint of the
-   paired 95% interval for the log-error difference is below zero. Otherwise
-   retain HOP.
-3. In the semantic regime only, compare RESISTANCE with the selected topology
-   family by the same rule. A win is scoped to that frozen semantic operator.
-4. Compare graph-derived experimental closure with plain Dirichlet on the
-   selected topology-only domain and topology-only `c0` operator. Semantic
-   filtering may reduce which graph solves are attempted, but there is no
-   semantic-conductance closure arm. Enable closure only when it reduces
-   geometric-mean `E_g` by at least
-   10%, the paired upper interval is below zero, and every noninferiority and
-   safety gate still passes.
+For a finite `K_high`, define the primary paired log-error contrast
 
-At every stage, `h`, resistance, rank inversion, top-8 overlap, and resources
-are noninferiority gates: the candidate may worsen no metric by more than 10%
-relative or 0.01 absolute for unit-interval metrics, and may not increase peak
-memory or total wall time by more than 25% at the same `K` unless it achieves a
-smaller adequate `K`. Report all tested families, budgets, batches, and losses.
+    Delta_hi_lo = macro_s mean[log(E_g(high)) - log(E_g(low))].
 
-The hierarchy supplies one decision-bearing comparison at a time. MiniLM,
-complete-shell domains, alternate anchor strata, alternate closure strengths,
-per-domain `alpha`, and degree/depth subgroups remain descriptive and cannot
-rescue a failed primary comparison.
+Use extended-real zero handling without an epsilon: equal zeros contribute
+zero; zero numerator with positive denominator contributes negative infinity;
+positive numerator with zero denominator contributes positive infinity. A
+material larger-domain efficacy finding requires the one-sided upper endpoint
+of `Delta_hi_lo` to be strictly below `log(0.9)`, not merely below zero. The
+smaller domain is declared converged only when it independently passes the
+absolute Section 6 adequacy gates and the full noninferiority intersection below,
+while `K_high` does not meet that efficacy rule. If larger-domain efficacy and
+smaller-domain noninferiority conflict or neither resolves, report an
+inconclusive frontier rather than choosing post hoc. When `K_high=R_top`, report
+only the absolute adequacy of `S_1024` and reference convergence; do not call the
+reference trivially lower error an efficacy result.
+
+Noninferiority is a one-sided INTERSECTION-UNION TEST: EVERY named endpoint
+must pass its own 95% one-sided upper bound with these frozen margins:
+
+- primary `log(E_g(low))-log(E_g(high)) < log(1.10)`, with the same
+  extended-real zero convention;
+- maximum absolute `h` error and rank-inversion fraction: paired
+  low-minus-high harm `<0.01` absolute;
+- batch-level protected boundary-harmonic maximum: paired low-minus-high harm
+  `<0.01` absolute;
+- top-8 overlap: paired high-minus-low loss `<0.01` absolute; and
+- effective-resistance relative error and source-diagonal relative error:
+  paired low-minus-high harm `<0.01` absolute.
+
+Use the corresponding bootstrap upper endpoint for each strict inequality.
+M-matrix signs, grounding, reciprocal condition, Cholesky/solve residuals, and
+maximum-principle checks are deterministic safety gates, not noisy
+noninferiority endpoints; any failure fails immediately. Resource use is
+reported as a frontier rather than hidden inside statistical fidelity: the
+smaller K must actually use fewer retained nodes, and projected bytes, peak RSS,
+and wall time are reported for both endpoints. No endpoint may rescue another.
+
+SKELETON, RESISTANCE, semantic conductance, closure, alternate strata, alternate
+alpha, and complete-shell domains are not phase-one confirmatory contrasts. A
+future licensed method comparison uses the same paired equal-stratum machinery,
+the `log(0.9)` efficacy threshold, and the noninferiority IUT, but requires its
+own prospective amendment and untouched audit data.
 
 ## 9. Reproducibility and fail-closed rules
 
 The run fingerprint covers content rather than machine-local paths:
 
-- source snapshot, canonical graph/parent manifests, and all byte hashes;
-- anchor, batch, protected-node, family-ordering, domain, boundary, and
+- raw-source and parser hashes, deterministic preparer hash, physical-edge
+  policy, privacy-propagation and visibility-limitation manifests, frozen
+  reciprocal adjacency, and all approved byte hashes;
+- anchor, balanced-batch, protected-node, HOP-ordering, domain, boundary, and
   reference manifests;
-- embedding identity/revision/text contract, arrays, `ell`, `epsilon`, and
-  missing-node manifest;
-- `K`, shell, `alpha`, selector priorities, stable tie keys, and closure ledger;
+- parent or embedding manifests only in a future phase that has passed their
+  prospective coverage gate;
+- `K`, shell, `alpha_top`, stable tie keys, and any future licensed selector or
+  closure ledger;
 - metric definitions, tolerances, bootstrap seeds/resamples, and software SHA;
 - float dtype, numerical thresholds, backend/thread identity without absolute
   library paths; and
 - per-phase timings, peak RSS, cache keys, and deterministic-rerun hashes.
 
-Fail closed on incomplete or asymmetric adjacency, missing required parent or
-embedding data, duplicate/unknown IDs, non-nested family prefixes, missing
-protected nodes, stale caches, changed edge weights between candidate and
+Fail closed on a missing or mismatched raw-source preparer manifest, unfrozen
+physical-edge policy, incomplete privacy propagation, incomplete or asymmetric
+adjacency, duplicate/unknown IDs,
+non-nested HOP prefixes, missing protected nodes, stale caches, changed edge
+weights between candidate and
 reference, nonfinite values, closure-ledger error, an ungrounded component,
 M-matrix sign failure, insufficient reciprocal condition, solve residual above
 the recorded tolerance, or reference/calibration inadequacy. Numerical jitter,
 zero cut conductance, insulating truncation, and hidden embedding fallback are
 not repairs.
 
-The final report must separate synthetic correctness, topology-only primary,
-semantic sensitivity, closure experiment, reference failures, and resource
-failures. No geometry result may be described as a filing improvement,
+The phase-one report must separate synthetic correctness, snapshot-relative
+topology-only HOP convergence, reference failures, coverage failures, and
+resource failures. Any later semantic, SKELETON, or closure report is a
+separate prospectively licensed artifact. No geometry result may be described
+as a filing improvement,
 covariance estimate, CUDA crossover, or Stage-A dependence promotion.

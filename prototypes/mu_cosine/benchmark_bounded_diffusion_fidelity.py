@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Synthetic smoke harness for outcome-blind bounded-domain fidelity.
 
-The harness freezes one larger exact-Dirichlet hop-union reference and one
-plain-hop protected set before evaluating any selector.  Every family uses the
-same intrinsic leakage and semantic conductance configuration.  A selector
+The harness freezes separate topology-only and semantic exact-Dirichlet
+hop-union references plus one plain-hop protected set before evaluating any
+selector.  Each operator regime has its own explicitly recorded scalar
+intrinsic leakage; candidate and reference share that scalar only within the
+regime.  A selector
 that omits a protected node emits a distinct ``coverage_failure`` record; the
 harness never intersects node sets post hoc or ranks missing nodes last.
 
@@ -15,6 +17,7 @@ separate experimental variant and is never enabled by default.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -28,6 +31,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from unifyweaver.graph.bounded_diffusion_fidelity import (  # noqa: E402
     ExperimentalBoundaryClosureConfig,
+    ExteriorTraversalLimitError,
     ProtectedSetCoverageError,
     discover_exterior_components,
     ensure_matched_budget,
@@ -50,6 +54,13 @@ def _positive_float(value):
     parsed = float(value)
     if not math.isfinite(parsed) or parsed <= 0.0:
         raise argparse.ArgumentTypeError("expected a positive finite number")
+    return parsed
+
+
+def _nonnegative_float(value):
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0.0:
+        raise argparse.ArgumentTypeError("expected a nonnegative finite number")
     return parsed
 
 
@@ -89,6 +100,20 @@ def _stable_identifier_key(value):
     return (value_type.__module__, value_type.__qualname__, repr(value))
 
 
+def _stable_identifier_token(value):
+    return list(_stable_identifier_key(value))
+
+
+def _failure_fingerprint(records):
+    payload = json.dumps(
+        records,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("ascii")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _semantic_pair_score(left, right, embeddings, length_scale):
     if embeddings is None:
         return 0.0
@@ -104,6 +129,22 @@ def _topology_two_port_schur(
     intrinsic_leakage,
     topology_conductance,
 ):
+    """Return the nonnegative two-port Schur return B = C J_E^-1 C.T.
+
+    Eliminating the exterior component E changes the retained precision by
+    subtracting B from its Dirichlet principal block; B[0, 1] is the bridge
+    conductance kappa and B[i, i] is the self-return at port i. Thus this matrix
+    is not itself the reduced precision, whose off-diagonal bridge entries have
+    the opposite sign.
+
+    For one exterior node with port conductances c_l and c_r, leakage a, and
+    d = c_l + c_r + a, this gives
+    B = [[c_l**2, c_l*c_r], [c_l*c_r, c_r**2]] / d. The downstream closure
+    ledger subtracts both transfer and self-return from the exact Dirichlet
+    shunt before checking nonnegative residual ground, M-matrix signs, and SPD;
+    it never adds this return on top of the shunt.
+    """
+
     nodes = component.nodes
     ports = component.ports
     node_index = {node: row for row, node in enumerate(nodes)}
@@ -152,21 +193,67 @@ def _exact_two_port_exterior_dtn(
     """Discover complete exterior components and reduce exact two-port cases.
 
     The graph alone licenses every pair and topology-only ``c0`` determines
-    both transfer and self-return.  Optional frozen embeddings only rank already graph-connected pairs when the
-    pair budget binds; exact reduction itself is embedding-free.
+    both transfer and self-return.  With ``maximum_pairs=None`` every fully
+    traversed exact two-port component is retained and embeddings have no role.
+    A finite pair budget is a non-primary smoke sensitivity; optional frozen
+    embeddings may rank only pairs already licensed by graph connectivity.
     """
 
-    discovery = discover_exterior_components(
-        selection.domain,
-        graph,
-        allowed_exterior_nodes=allowed_exterior_nodes,
-        maximum_component_nodes=maximum_component_nodes,
-    )
+    exhaustive = maximum_pairs is None
+    try:
+        discovery = discover_exterior_components(
+            selection.domain,
+            graph,
+            allowed_exterior_nodes=allowed_exterior_nodes,
+            maximum_component_nodes=maximum_component_nodes,
+        )
+    except ExteriorTraversalLimitError as exc:
+        failure = {
+            "reason": "exterior_traversal_limit",
+            "component_start": _stable_identifier_token(exc.component_start),
+            "maximum_component_nodes": exc.maximum_component_nodes,
+            "visited_nodes": [
+                _stable_identifier_token(node) for node in exc.visited_nodes
+            ],
+            "blocked_neighbor": _stable_identifier_token(exc.blocked_neighbor),
+        }
+        failures = [failure]
+        return (), {}, {
+            "source": "exact_component_schur",
+            "strength_source": "topology_only_c0",
+            "topology_conductance": topology_conductance,
+            "semantic_role": "none" if exhaustive or embeddings is None else (
+                "rank_graph_connected_pairs_only"
+            ),
+            "status": "traversal_incomplete_grounded_no_op",
+            "eligible_two_port_components": 0,
+            "reduced_two_port_components": 0,
+            "numerically_failed_two_port_components": 0,
+            "grounded_one_port_components": 0,
+            "joint_dtn_required_components": 0,
+            "parallel_retained_edge_pairs": 0,
+            "approximate_caps_applied": False,
+            "aggregated_pair_candidates": 0,
+            "discarded_above_bridge_cap": 0,
+            "discarded_for_pair_budget": 0,
+            "realized_pairs": 0,
+            "no_op": True,
+            "failure_count": 1,
+            "failure_reasons": {"exterior_traversal_limit": 1},
+            "failure_fingerprint": _failure_fingerprint(failures),
+            "failures": failures,
+            "discovery": {
+                "status": "traversal_incomplete",
+                "maximum_component_nodes": maximum_component_nodes,
+            },
+        }
     grouped = {}
     one_port = 0
     multi_port = 0
     existing_edge = 0
     eligible_two_port = 0
+    reduced_two_port = 0
+    numerical_failures = []
     for component in discovery.components:
         if len(component.ports) == 1:
             one_port += 1
@@ -178,12 +265,25 @@ def _exact_two_port_exterior_dtn(
         if right in graph[left]:
             existing_edge += 1
         eligible_two_port += 1
-        update = _topology_two_port_schur(
-            component,
-            graph,
-            intrinsic_leakage=intrinsic_leakage,
-            topology_conductance=topology_conductance,
-        )
+        try:
+            update = _topology_two_port_schur(
+                component,
+                graph,
+                intrinsic_leakage=intrinsic_leakage,
+                topology_conductance=topology_conductance,
+            )
+        except np.linalg.LinAlgError as exc:
+            numerical_failures.append(
+                {
+                    "reason": "two_port_schur_numerical_failure",
+                    "component_fingerprint": component.component_fingerprint,
+                    "error_type": (
+                        type(exc).__module__ + "." + type(exc).__qualname__
+                    ),
+                }
+            )
+            continue
+        reduced_two_port += 1
         pair = (left, right)
         record = grouped.setdefault(
             pair,
@@ -192,7 +292,10 @@ def _exact_two_port_exterior_dtn(
                 "left_return": 0.0,
                 "right_return": 0.0,
                 "semantic_score": _semantic_pair_score(
-                    left, right, embeddings, length_scale
+                    left,
+                    right,
+                    None if exhaustive else embeddings,
+                    length_scale,
                 ),
                 "components": [],
             },
@@ -202,16 +305,30 @@ def _exact_two_port_exterior_dtn(
         record["right_return"] += float(update[1, 1])
         record["components"].append(component.component_fingerprint)
 
-    candidates = sorted(
-        grouped.items(),
-        key=lambda item: (
-            -item[1]["semantic_score"],
-            -item[1]["kappa"],
-            _stable_identifier_key(item[0][0]),
-            _stable_identifier_key(item[0][1]),
-        ),
-    )
-    chosen = candidates[:maximum_pairs]
+    if exhaustive:
+        candidates = sorted(
+            grouped.items(),
+            key=lambda item: (
+                -item[1]["kappa"],
+                _stable_identifier_key(item[0][0]),
+                _stable_identifier_key(item[0][1]),
+            ),
+        )
+    else:
+        candidates = sorted(
+            grouped.items(),
+            key=lambda item: (
+                -item[1]["semantic_score"],
+                -item[1]["kappa"],
+                _stable_identifier_key(item[0][0]),
+                _stable_identifier_key(item[0][1]),
+            ),
+        )
+    if maximum_pairs is None:
+        chosen = candidates
+    else:
+        maximum_pairs = _positive_integer(maximum_pairs)
+        chosen = candidates[:maximum_pairs]
     pairs = []
     self_return = {}
     for (left, right), record in chosen:
@@ -222,8 +339,13 @@ def _exact_two_port_exterior_dtn(
         "source": "exact_component_schur",
         "strength_source": "topology_only_c0",
         "topology_conductance": topology_conductance,
-        "semantic_role": "rank_graph_connected_pairs_only",
+        "semantic_role": "none" if exhaustive or embeddings is None else (
+            "rank_graph_connected_pairs_only"
+        ),
+        "status": "ok_with_grounded_failures" if numerical_failures else "ok",
         "eligible_two_port_components": eligible_two_port,
+        "reduced_two_port_components": reduced_two_port,
+        "numerically_failed_two_port_components": len(numerical_failures),
         "grounded_one_port_components": one_port,
         "joint_dtn_required_components": multi_port,
         "parallel_retained_edge_pairs": existing_edge,
@@ -233,6 +355,18 @@ def _exact_two_port_exterior_dtn(
         "discarded_for_pair_budget": max(len(candidates) - len(chosen), 0),
         "realized_pairs": len(pairs),
         "no_op": not pairs,
+        "failure_count": len(numerical_failures),
+        "failure_reasons": (
+            {"two_port_schur_numerical_failure": len(numerical_failures)}
+            if numerical_failures
+            else {}
+        ),
+        "failure_fingerprint": (
+            _failure_fingerprint(numerical_failures)
+            if numerical_failures
+            else None
+        ),
+        "failures": numerical_failures,
         "discovery": discovery.provenance_dict(),
     }
     return tuple(pairs), self_return, provenance
@@ -251,9 +385,15 @@ def main():
     parser.add_argument("--k", type=_positive_integer, default=32)
     parser.add_argument("--reference-k", type=_positive_integer, default=96)
     parser.add_argument("--protected", type=_positive_integer, default=12)
-    parser.add_argument("--alpha", type=_positive_float, default=0.2)
+    parser.add_argument("--alpha", type=_nonnegative_float, default=0.2)
+    parser.add_argument(
+        "--semantic-alpha", type=_nonnegative_float, default=0.3
+    )
     parser.add_argument("--length-scale", type=_positive_float, default=2.0)
     parser.add_argument("--conductance-floor", type=_unit_interval, default=0.1)
+    parser.add_argument(
+        "--reference-conductance", type=_positive_float, default=1.0
+    )
     parser.add_argument("--effective-resistance", action="store_true")
     parser.add_argument("--experimental-closure", action="store_true")
     parser.add_argument(
@@ -276,28 +416,45 @@ def main():
         anchors, graph, maximum_nodes=args.protected
     )
     protected_nodes = protected_selector.domain.nodes
-    selections = (
-        select_hop_budget_domain(anchors, graph, maximum_nodes=args.k),
-        select_topology_skeleton_domain(
-            anchors,
-            graph,
-            parents,
-            maximum_nodes=args.k,
-            ancestor_depth=3,
-        ),
-        select_semantic_resistance_domain(
-            anchors,
-            graph,
-            embeddings,
-            maximum_nodes=args.k,
-            length_scale=args.length_scale,
-            conductance_floor=args.conductance_floor,
-        ),
+    ancestor_depth = 3
+    hop_selection = select_hop_budget_domain(
+        anchors, graph, maximum_nodes=args.k
     )
-    ensure_matched_budget(selections)
-    reference = select_union_hop_reference(
-        selections, graph, maximum_nodes=args.reference_k
+    skeleton_selection = select_topology_skeleton_domain(
+        anchors,
+        graph,
+        parents,
+        maximum_nodes=args.k,
+        ancestor_depth=ancestor_depth,
     )
+    resistance_selection = select_semantic_resistance_domain(
+        anchors,
+        graph,
+        embeddings,
+        maximum_nodes=args.k,
+        length_scale=args.length_scale,
+        conductance_floor=args.conductance_floor,
+        reference_conductance=args.reference_conductance,
+    )
+    topology_selections = (hop_selection, skeleton_selection)
+    semantic_selections = (
+        hop_selection,
+        skeleton_selection,
+        resistance_selection,
+    )
+    ensure_matched_budget(semantic_selections)
+    references = {
+        "topology_only_c0": select_union_hop_reference(
+            topology_selections, graph, maximum_nodes=args.reference_k
+        ),
+        "semantic_rbf": select_union_hop_reference(
+            semantic_selections, graph, maximum_nodes=args.reference_k
+        ),
+    }
+    alpha_by_regime = {
+        "topology_only_c0": args.alpha,
+        "semantic_rbf": args.semantic_alpha,
+    }
     manifest = {
         "record_type": "manifest",
         "outcome_blind": True,
@@ -305,11 +462,16 @@ def main():
         "anchors": list(anchors),
         "requested_k": args.k,
         "reference_k": args.reference_k,
-        "reference_fingerprint": reference.selection_fingerprint,
+        "reference_fingerprints": {
+            regime: reference.selection_fingerprint
+            for regime, reference in references.items()
+        },
         "protected_nodes": list(protected_nodes),
-        "alpha": args.alpha,
+        "alpha_by_regime": alpha_by_regime,
+        "ancestor_depth": ancestor_depth,
         "length_scale": args.length_scale,
         "conductance_floor": args.conductance_floor,
+        "reference_conductance": args.reference_conductance,
         "effective_resistance": args.effective_resistance,
         "experimental_closure_requested": args.experimental_closure,
         "maximum_exterior_component_nodes": (
@@ -319,17 +481,23 @@ def main():
     }
     print(json.dumps(manifest, sort_keys=True))
 
-    maximum_closure_edges = max(1, args.k // 8)
     topology_conductance = 1.0
     closure_cap = float(np.nextafter(topology_conductance, 0.0))
-    for selection in selections:
-        if selection.strategy == "semantic_resistance":
-            operator_regime = "semantic_rbf"
+    regime_entries = tuple(
+        (selection, "topology_only_c0")
+        for selection in topology_selections
+    ) + tuple(
+        (selection, "semantic_rbf")
+        for selection in semantic_selections
+    )
+    for selection, operator_regime in regime_entries:
+        reference = references[operator_regime]
+        intrinsic_leakage = alpha_by_regime[operator_regime]
+        if operator_regime == "semantic_rbf":
             operator_embeddings = embeddings
             operator_length_scale = args.length_scale
             operator_floor = args.conductance_floor
         else:
-            operator_regime = "topology_only_c0"
             operator_embeddings = None
             operator_length_scale = None
             operator_floor = 0.0
@@ -346,11 +514,11 @@ def main():
             pairs, self_return, closure_provenance = _exact_two_port_exterior_dtn(
                 selection,
                 graph,
-                embeddings,
-                intrinsic_leakage=args.alpha,
+                None,
+                intrinsic_leakage=intrinsic_leakage,
                 length_scale=args.length_scale,
                 topology_conductance=topology_conductance,
-                maximum_pairs=maximum_closure_edges,
+                maximum_pairs=None,
                 maximum_component_nodes=(
                     args.maximum_exterior_component_nodes
                 ),
@@ -360,7 +528,7 @@ def main():
             )
             if pairs:
                 closure_config = ExperimentalBoundaryClosureConfig(
-                    maximum_edges=maximum_closure_edges,
+                    maximum_edges=len(pairs),
                     closure_mass_fraction=1.0,
                     ordinary_branch_conductance=topology_conductance,
                     bridge_conductance_cap=closure_cap,
@@ -409,6 +577,8 @@ def main():
                 "strategy": selection.strategy,
                 "variant": variant,
                 "operator_regime": operator_regime,
+                "reference_fingerprint": reference.selection_fingerprint,
+                "intrinsic_leakage": intrinsic_leakage,
                 "selection": selection.provenance_dict(),
             }
             if closure_provenance is not None:
@@ -418,7 +588,7 @@ def main():
                     selection,
                     reference,
                     protected_nodes=protected_nodes,
-                    intrinsic_leakage_conductance=args.alpha,
+                    intrinsic_leakage_conductance=intrinsic_leakage,
                     node_embeddings=operator_embeddings,
                     length_scale=operator_length_scale,
                     conductance_floor=operator_floor,
