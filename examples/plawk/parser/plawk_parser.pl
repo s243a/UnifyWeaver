@@ -1491,6 +1491,13 @@ forin_guard(forin_val_cmp(Array, LoopVar, Op, str(Text))) -->
     numeric_cmp_op(Op), ws, quoted_string(SCodes),
     { string_codes(Text, SCodes) },
     !.
+% arr[k] CMP <float> -- a float-literal RHS (`a[k] < 3.5`), compared via strnum
+% on the element text (numeric vs the double, else lexical). Tried before the
+% integer form: a float has a `.`, so `3.5` takes this branch and `3` the next.
+forin_guard(forin_val_cmp(Array, LoopVar, Op, FloatConst)) -->
+    identifier(Array), ws, "[", ws, identifier(LoopVar), ws, "]", ws,
+    numeric_cmp_op(Op), ws, signed_float_lit(FloatConst),
+    !.
 % arr[k] CMP int -- value comparison (tried before the bare-key form,
 % since `arr[` also starts with an identifier).
 forin_guard(forin_val_cmp(Array, LoopVar, Op, Value)) -->
@@ -1540,6 +1547,15 @@ guard_rhs(FloatConst) -->
     !.
 guard_rhs(Value) -->
     signed_integer_value(Value).
+
+% A signed decimal float literal (`3.5`, `-0.25`) as float_const(M, D); the
+% same shape guard_rhs uses, factored out for the for-in element float guard.
+signed_float_lit(float_const(M, D)) -->
+    "-", float_literal_expr(float_const(M0, D)),
+    !,
+    { M is -M0 }.
+signed_float_lit(FloatConst) -->
+    float_literal_expr(FloatConst).
 
 actions([Action | Actions]) -->
     action(Action),
