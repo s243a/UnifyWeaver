@@ -183,8 +183,8 @@ is still non-WAM `go_target.pl`.
 [`WAM_R_TARGET.md`](WAM_R_TARGET.md) + session handoff: ~30-PR parity
 campaign; **7/7 kernels**; rich builtins; **native parser default**;
 optional LMDB (load-everything). Generator suite ~94 plunit cases;
-classic conformance **opt-in** (`CONF-R`): append/reverse/builtins green;
-member/fib/ack xfail (`Raw` switch stubs).
+classic conformance **opt-in** (`CONF-R`): all classic programs green
+after R-SWITCH-INDEX-CONFORMANCE (fallthrough/A2 → safe linear no-op).
 
 ## Tier C — mid maturity
 

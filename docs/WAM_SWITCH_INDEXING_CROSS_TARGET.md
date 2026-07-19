@@ -95,7 +95,7 @@ emitter (not the token-parser predicates several targets also define).
 | rust | N | Y | N | N | N | `/* unknown */` (drop) | safe; missed opt |
 | go | N | N | N | N | N | `// TODO` (drop) | safe; missed opt |
 | python | N | N | N | N | N | `# SKIP` (drop) | safe; missed opt (confirmed) |
-| r | N | N | N | N | N | `Raw(...)` (drop-style) | safe; missed opt (verify) |
+| **r** (fixed) | Y | N | N | Y | N | `Raw(...)` (now unreachable for these) | safe linear no-op; classic conformance fixed |
 | lua | N | Y | N | N | N | `I.Raw(...)` (drop-style) | safe; missed opt (verify) |
 | clojure | N | N | N | N | N | `{:op :raw}` stub | depends on step-loop `:raw` |
 | llvm | N | Y | N | partial(nop) | N | `; TODO` (switch is design-nop) | safe (chain preserved) |
@@ -213,7 +213,7 @@ after runtime validation — see "Runtime validation" above.**
    that target's toolchain.
 
 2. **Drop-style targets — optimization gaps, not bugs.** rust, go,
-   python, r, lua (and clojure/llvm pending step-loop confirmation)
+   python, lua (and clojure/llvm pending step-loop confirmation)
    produce correct results today; adding the a2/fallthrough handlers
    only restores the indexing speedup. Lower priority; do alongside
    per-target perf work.
@@ -234,6 +234,9 @@ after runtime validation — see "Runtime validation" above.**
   runtime instructions, defaulting to 1).
 - **C++** — `src/unifyweaver/targets/wam_cpp_target.pl` (full coverage incl. `struct_a2`).
 - **Elixir lowered emitter** — `src/unifyweaver/targets/wam_elixir_lowered_emitter.pl` (full coverage).
+- **R** — `src/unifyweaver/targets/wam_r_target.pl` maps
+  `switch_on_constant_fallthrough` and `switch_on_term_a2` to the existing
+  `SwitchOnTerm()` no-op, preserving the complete linear choice chain.
 
 ## Toolchain note
 

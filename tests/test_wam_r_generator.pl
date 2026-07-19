@@ -36,6 +36,8 @@
 :- dynamic user:wam_r_parser_dep/0.
 :- dynamic user:wam_r_t2a_forward/0.
 :- dynamic user:wam_r_t2a_reverse/0.
+:- dynamic user:r_switch_ft/2.
+:- dynamic user:r_switch_ft_backtracks/0.
 
 user:wam_r_fact(a).
 user:wam_r_choice_fact(a).
@@ -4818,6 +4820,46 @@ test(r_wam_bindings_list_parity) :-
     assertion(r_wam_bindings:r_wam_binding(nth1/3, _, _, _, _)),
     assertion(r_wam_bindings:r_wam_binding(is_list/1, _, _, _, _)),
     assertion(r_wam_bindings:r_wam_binding(ground/1, _, _, _, _)).
+
+% ------------------------------------------------------------------
+% R-SWITCH-INDEX-CONFORMANCE: indexing hints reuse the safe linear no-op
+% ------------------------------------------------------------------
+test(switch_on_constant_fallthrough_is_linear_noop) :-
+    once(wam_parts_to_r(
+        ["switch_on_constant_fallthrough", "0:default", "1:L_cfib_2_2"],
+        [], Lit)),
+    assertion(Lit == 'SwitchOnTerm()').
+
+test(switch_on_term_a2_is_switch_on_term_noop) :-
+    once(wam_parts_to_r(["switch_on_term_a2", "0", "0", "default"], [], Lit)),
+    assertion(Lit == 'SwitchOnTerm()').
+
+test(switch_on_constant_fallthrough_preserves_backtracking,
+     [condition(rscript_available)]) :-
+    retractall(user:r_switch_ft(_, _)),
+    retractall(user:r_switch_ft_backtracks),
+    assertz(user:r_switch_ft(a, first)),
+    assertz(user:r_switch_ft(b, specific)),
+    assertz(user:r_switch_ft(_, fallback)),
+    assertz((user:r_switch_ft_backtracks :-
+        user:r_switch_ft(b, Value), Value = fallback)),
+    unique_r_tmp_dir('tmp_r_switch_ft', TmpDir),
+    call_cleanup(
+        ( write_wam_r_project(
+              [user:r_switch_ft/2, user:r_switch_ft_backtracks/0],
+              [emit_mode(interpreter), fact_table_layout(off)], TmpDir),
+          directory_file_path(TmpDir, 'R', RDir),
+          run_rscript_query(RDir, 'r_switch_ft_backtracks/0', Out),
+          assertion(once(sub_string(Out, _, _, _, "true")))
+        ),
+        ( ( exists_directory(TmpDir)
+          -> delete_directory_and_contents(TmpDir)
+          ;  true
+          ),
+          retractall(user:r_switch_ft(_, _)),
+          retractall(user:r_switch_ft_backtracks)
+        )),
+    !.
 
 :- end_tests(wam_r_generator).
 
