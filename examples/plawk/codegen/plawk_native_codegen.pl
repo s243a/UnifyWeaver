@@ -536,6 +536,49 @@ plawk_program_native_driver_ir(
             NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+% A NO-END program whose rule bodies mutate an assoc/positional table AND print
+% per-record (`{ c[$1]++; print $1, c[$1] }`, `{ split($0,a,","); print a[1] }`).
+% The assoc rule chain already emits per-record prints (the `assoc_print_action`
+% block, with %line live); this clause routes a no-END assoc program through it,
+% freeing the tables at exit. Tried after the scalar chain (which fails to lower
+% an assoc action and backtracks here); a non-assoc program has no table, so
+% plawk_assoc_runtime_record_plan fails and this clause is skipped.
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules, []),
+    InputPath,
+    DriverIR
+) :-
+    plawk_assoc_runtime_record_plan(Rules, AssocPlan),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    plawk_assoc_record_program_ok(FieldSeparator, Rules, []),
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR, AssocChainIR),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    append(BodyPrintFields, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
+    plawk_join_nonempty_ir([RecordCounterIR, AssocChainIR], RecordIR),
+    plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
+    plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
+    phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
+    atomic_list_concat(FreeLines, '\n', FreeIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w', [BeginGlobalIR, AssocRuleGlobalIR]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
+    plawk_i64_end_print_globals(SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
+        [FreeIR]),
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, RecordLoopPhiIR, lowered_assoc,
+            RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
 plawk_program_native_driver_ir(
     program(BeginClauses, Rules, [end([print(PrintFields)])]),
     InputPath,
@@ -7372,11 +7415,26 @@ plawk_mixed_scalar_next_phi_lines([Slot | Rest], RuleCount, Controls, BranchNext
     [Line],
     plawk_mixed_scalar_next_phi_lines(Rest, RuleCount, Controls, BranchNextExits, NextIndex).
 
-plawk_assoc_runtime_count_plan(
-    Rules,
-    PrintFields,
-    assoc_plan(Tables, PlannedRules)
-) :-
+plawk_assoc_runtime_count_plan(Rules, PrintFields, Plan) :-
+    plawk_assoc_plan_specs_tables(Rules, PrintFields, RuleSpecs, PrintArrays, Tables),
+    % END-print driver: the program must reference a table in its END print.
+    PrintArrays \== [],
+    plawk_assoc_plan_from_specs(RuleSpecs, Tables, Plan).
+
+%% plawk_assoc_runtime_record_plan(+Rules, -Plan)
+%  Like plawk_assoc_runtime_count_plan but for a NO-END program whose rule
+%  bodies mutate a table and print per-record. There is no END print, so the
+%  plan is admitted when the rule ACTIONS alone establish at least one table.
+plawk_assoc_runtime_record_plan(Rules, Plan) :-
+    plawk_assoc_plan_specs_tables(Rules, [], RuleSpecs, _PrintArrays, Tables),
+    Tables \== [],
+    plawk_assoc_plan_from_specs(RuleSpecs, Tables, Plan).
+
+%% plawk_assoc_plan_specs_tables(+Rules, +PrintFields, -RuleSpecs, -PrintArrays, -Tables)
+%  Build the per-rule action specs and the table set: every array a rule ACTION
+%  establishes (a counted inc, split, add, delete, set_row, dynassoc, or a
+%  body for-in) plus every array an END print field references.
+plawk_assoc_plan_specs_tables(Rules, PrintFields, RuleSpecs, PrintArrays, Tables) :-
     maplist(plawk_assoc_rule_action_specs, Rules, RuleSpecs),
     RuleSpecs \== [],
     findall(ArrayName,
@@ -7384,17 +7442,27 @@ plawk_assoc_runtime_count_plan(
           plawk_assoc_print_array(Field, ArrayName)
         ),
         PrintArrays),
-    PrintArrays \== [],
     findall(ArrayName,
         ( member(rule(_Pattern, ActionSpecs, _Control), RuleSpecs),
-          ( member(ArrayName-_KeyIndex, ActionSpecs)
-          ; member(dynassoc(ArrayName, _Call), ActionSpecs)
+          ( member(Spec, ActionSpecs),
+            plawk_assoc_spec_table_name(Spec, ArrayName)
           ; plawk_assoc_spec_forin_array(ActionSpecs, ArrayName)
           )
         ),
         ActionArrays),
     append(ActionArrays, PrintArrays, ArrayNames0),
-    sort(ArrayNames0, Tables),
+    sort(ArrayNames0, Tables).
+
+% The table an action spec establishes / mutates (its array name).
+plawk_assoc_spec_table_name(ArrayName-_Key, ArrayName) :- atom(ArrayName).
+plawk_assoc_spec_table_name(dynassoc(ArrayName, _Call), ArrayName).
+plawk_assoc_spec_table_name(assoc_split(ArrayName, _K, _Sep), ArrayName).
+plawk_assoc_spec_table_name(assoc_add(ArrayName, _K, _Delta), ArrayName).
+plawk_assoc_spec_table_name(assoc_delete(ArrayName, _K), ArrayName).
+plawk_assoc_spec_table_name(assoc_set_row(ArrayName, _K), ArrayName).
+plawk_assoc_spec_table_name(assoc_set_row_cons(ArrayName, _K, _Fs), ArrayName).
+
+plawk_assoc_plan_from_specs(RuleSpecs, Tables, assoc_plan(Tables, PlannedRules)) :-
     plawk_assoc_specs_str_arrays(RuleSpecs, StrArrays),
     plawk_assoc_specs_posarray_arrays(RuleSpecs, PosArrays),
     phrase(plawk_assoc_planned_rules(RuleSpecs, Tables, StrArrays, PosArrays,
@@ -7517,6 +7585,11 @@ plawk_assoc_print_field_spec(field(N), fld(N)) :-
     integer(N), N > 0.
 plawk_assoc_print_field_spec(assoc(var(Arr), field(N)), lookup(Arr, N)) :-
     integer(N), N > 0.
+% `print arr[N]` -- an integer-literal element read (split / positional tables
+% are keyed by the raw integer position). The value kind (str atom id vs i64) is
+% resolved from the str-array set at plan time.
+plawk_assoc_print_field_spec(assoc(var(Arr), int(N)), lookup_int(Arr, N)) :-
+    atom(Arr), integer(N), N >= 1.
 % A scalar accumulator read in a per-record print.
 plawk_assoc_print_field_spec(var(Name), svar(Name)) :-
     atom(Name).
@@ -7549,11 +7622,18 @@ plawk_assoc_arith_operand(assoc(var(Arr), field(N)), alookup(Arr, N)) :-
     atom(Arr), integer(N), N > 0.
 
 % Resolve a print field's lookup array to its table index in the plan.
-plawk_assoc_print_plan_field(_Tables, fld(N), fld(N)).
-plawk_assoc_print_plan_field(Tables, lookup(Arr, N), lookup(TableIndex, N)) :-
+% StrArrays is the set of str-valued (atom-id) tables, used to pick the value
+% kind for an integer-key element read.
+plawk_assoc_print_plan_field(_Tables, _StrArrays, fld(N), fld(N)).
+plawk_assoc_print_plan_field(Tables, _StrArrays, lookup(Arr, N), lookup(TableIndex, N)) :-
     nth0(TableIndex, Tables, Arr).
-plawk_assoc_print_plan_field(_Tables, svar(Name), svar(Name)).
-plawk_assoc_print_plan_field(Tables, farith(Op, L, R), farith(Op, L2, R2)) :-
+% `arr[N]` element read: raw integer key; value kind from the str-array set.
+plawk_assoc_print_plan_field(Tables, StrArrays, lookup_int(Arr, N),
+        lookup_int(TableIndex, N, Kind)) :-
+    nth0(TableIndex, Tables, Arr),
+    ( memberchk(Arr, StrArrays) -> Kind = str ; Kind = i64 ).
+plawk_assoc_print_plan_field(_Tables, _StrArrays, svar(Name), svar(Name)).
+plawk_assoc_print_plan_field(Tables, _StrArrays, farith(Op, L, R), farith(Op, L2, R2)) :-
     plawk_assoc_arith_operand_plan(Tables, L, L2),
     plawk_assoc_arith_operand_plan(Tables, R, R2).
 
@@ -7625,6 +7705,35 @@ plawk_assoc_print_one_field(lookup(TableIndex, N), Base, Index, FieldSep, Lines)
     format(atom(PrL),
         '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i64 %~w_val)', [P, P, P]),
     Lines = [SliceL, PtrL, LenL, KidL, ValL, FmtL, PrL].
+% `print arr[N]` -- an integer-key element read. The key is the raw position N
+% (split / positional tables are keyed by integer). A str element resolves the
+% atom id to text (%s); an i64 element (counter / numeric posarray) prints the
+% value (%ld). Absent element -> the empty atom / 0, matching an uninitialised
+% awk element.
+plawk_assoc_print_one_field(lookup_int(TableIndex, N, str), Base, Index, _FieldSep, Lines) :-
+    format(atom(P), '~w_f~w', [Base, Index]),
+    format(atom(ValL),
+        '  %~w_val = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
+        [P, TableIndex, N]),
+    format(atom(StrL),
+        '  %~w_s = call i8* @wam_atom_to_string(i64 %~w_val)', [P, P]),
+    format(atom(FmtL),
+        '  %~w_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0',
+        [P]),
+    format(atom(PrL),
+        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i8* %~w_s)', [P, P, P]),
+    Lines = [ValL, StrL, FmtL, PrL].
+plawk_assoc_print_one_field(lookup_int(TableIndex, N, i64), Base, Index, _FieldSep, Lines) :-
+    format(atom(P), '~w_f~w', [Base, Index]),
+    format(atom(ValL),
+        '  %~w_val = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
+        [P, TableIndex, N]),
+    format(atom(FmtL),
+        '  %~w_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
+        [P]),
+    format(atom(PrL),
+        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i64 %~w_val)', [P, P, P]),
+    Lines = [ValL, FmtL, PrL].
 plawk_assoc_print_one_field(svar(Name), Base, Index, _FieldSep, Lines) :-
     format(atom(P), '~w_f~w', [Base, Index]),
     format(atom(LoadL), '  %~w_sv = load i64, i64* @plawk_scalar_~w', [P, Name]),
@@ -7787,7 +7896,7 @@ plawk_assoc_planned_actions([dynassoc(ArrayName, Call) | Rest], Tables,
 % key (key_int) instead of the atom-resolved default.
 plawk_assoc_planned_actions([assoc_print(FieldSpecs) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
-    { maplist(plawk_assoc_print_plan_field(Tables), FieldSpecs, PlannedFields),
+    { maplist(plawk_assoc_print_plan_field(Tables, StrArrays), FieldSpecs, PlannedFields),
       NextIndex is Index + 1
     },
     [assoc_print_action(Index, PlannedFields)],
