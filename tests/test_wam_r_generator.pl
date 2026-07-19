@@ -4895,6 +4895,12 @@ test(r_a2_fallthrough_preserves_backtracking,
     assertz((user:r_a2_struct(Out, g(_)) :- Out = ok)),
     assertz((user:r_a2_struct(Out, h(_)) :- Out = ok)),
     assertz((user:r_a2_struct_ok :- user:r_a2_struct(ok, g(1)))),
+    compile_predicate_to_wam_items(user:r_a2_ft/2, [], FtItems),
+    assertion(member(switch_on_constant_a2_fallthrough(_), FtItems)),
+    compile_predicate_to_wam_items(user:r_a2_const/2, [], ConstItems),
+    assertion(member(switch_on_constant_a2(_), ConstItems)),
+    compile_predicate_to_wam_items(user:r_a2_struct/2, [], StructItems),
+    assertion(member(switch_on_structure_a2(_), StructItems)),
     unique_r_tmp_dir('tmp_r_a2_ft', TmpDir),
     call_cleanup(
         ( write_wam_r_project(
