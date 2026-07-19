@@ -1412,6 +1412,8 @@ begin_assignment_name('OFS') -->
     "OFS".
 begin_assignment_name('ORS') -->
     "ORS".
+begin_assignment_name('RS') -->
+    "RS".
 
 % END decode-into-struct (assoc for-in, stage 3): a for-in whose body
 % destructures the iterated value `arr[k]` through a grammar into typed

@@ -7187,7 +7187,8 @@ rhv.consume:
   %rhv.ch = load i8, i8* %rhv.char_ptr
   %rhv.pos_next = add i64 %rhv.pos, 1
   store i64 %rhv.pos_next, i64* %rhv.pos_slot
-  %rhv.is_lf = icmp eq i8 %rhv.ch, 10
+  %rhv.rs = load i8, i8* @wam_rs_byte
+  %rhv.is_lf = icmp eq i8 %rhv.ch, %rhv.rs
   br i1 %rhv.is_lf, label %rhv.finalize, label %rhv.append
 
 rhv.append:
@@ -7221,8 +7222,11 @@ rhv.check_cr:
   %rhv.last_idx = sub i64 %rhv.out_len, 1
   %rhv.last_ptr = getelementptr i8, i8* %rhv.out_cur, i64 %rhv.last_idx
   %rhv.last = load i8, i8* %rhv.last_ptr
+  %rhv.rs_cr = load i8, i8* @wam_rs_byte
+  %rhv.rs_is_lf = icmp eq i8 %rhv.rs_cr, 10
   %rhv.last_is_cr = icmp eq i8 %rhv.last, 13
-  %rhv.trim_len = select i1 %rhv.last_is_cr, i64 %rhv.last_idx, i64 %rhv.out_len
+  %rhv.do_trim = and i1 %rhv.rs_is_lf, %rhv.last_is_cr
+  %rhv.trim_len = select i1 %rhv.do_trim, i64 %rhv.last_idx, i64 %rhv.out_len
   br label %rhv.intern
 
 rhv.intern_empty:
@@ -7350,7 +7354,8 @@ rtv.consume:
   %rtv.ch = load i8, i8* %rtv.char_ptr
   %rtv.pos_next = add i64 %rtv.pos, 1
   store i64 %rtv.pos_next, i64* %rtv.pos_slot
-  %rtv.is_lf = icmp eq i8 %rtv.ch, 10
+  %rtv.rs = load i8, i8* @wam_rs_byte
+  %rtv.is_lf = icmp eq i8 %rtv.ch, %rtv.rs
   br i1 %rtv.is_lf, label %rtv.finalize, label %rtv.append
 
 rtv.append:
@@ -7389,8 +7394,11 @@ rtv.check_cr:
   %rtv.last_idx = sub i64 %rtv.out_len, 1
   %rtv.last_ptr = getelementptr i8, i8* %rtv.out_cur, i64 %rtv.last_idx
   %rtv.last = load i8, i8* %rtv.last_ptr
+  %rtv.rs_cr = load i8, i8* @wam_rs_byte
+  %rtv.rs_is_lf = icmp eq i8 %rtv.rs_cr, 10
   %rtv.last_is_cr = icmp eq i8 %rtv.last, 13
-  %rtv.trim_len = select i1 %rtv.last_is_cr, i64 %rtv.last_idx, i64 %rtv.out_len
+  %rtv.do_trim = and i1 %rtv.rs_is_lf, %rtv.last_is_cr
+  %rtv.trim_len = select i1 %rtv.do_trim, i64 %rtv.last_idx, i64 %rtv.out_len
   br label %rtv.terminate
 
 rtv.terminate_empty:
@@ -21613,6 +21621,7 @@ emit_atom_string_globals(IR) :-
 @wam_atom_dyn_cap   = global i32 0
 @wam_transient_line_buf = global i8* null
 @wam_transient_line_cap = global i64 0
+@wam_rs_byte = global i8 10
 
 define i8* @wam_atom_to_string(i64 %id) {
   ret i8* null
@@ -21741,6 +21750,7 @@ fail:
 ; transient read.
 @wam_transient_line_buf = global i8* null
 @wam_transient_line_cap = global i64 0
+@wam_rs_byte = global i8 10
 
 define i8* @wam_atom_to_string(i64 %id) {
 entry:
