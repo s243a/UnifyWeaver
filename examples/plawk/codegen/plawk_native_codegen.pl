@@ -7561,6 +7561,12 @@ plawk_assoc_rule_action_specs(rule(Pattern, Actions), rule(Pattern, ActionSpecs,
 plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), field(KeyIndex)),
         ArrayName-KeyIndex) :-
     KeyIndex > 0.
+% counts[$i,$j]++ -- multi-dimensional subscript: the two field values are
+% joined with SUBSEP into one key (awk `arr[i SUBSEP j]`). v1 keys on exactly
+% two fields; three-plus subscripts and non-field subscripts are a follow-on.
+plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), subsep_key(Fields)),
+        ArrayName-subsep_key(Indexes)) :-
+    plawk_subsep_field_indexes(Fields, Indexes).
 % counts[blob(dyncall...)]++ -- key the table by a runtime grammar's
 % byte output (interned like a field slice).
 plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), Blob),
@@ -7666,6 +7672,12 @@ plawk_assoc_print_field_spec(string(V), strlit(V)) :-
     string(V).
 plawk_assoc_print_field_spec(assoc(var(Arr), field(N)), lookup(Arr, N)) :-
     integer(N), N > 0.
+% `print arr[$i,$j]` -- a multi-dimensional element read: the two field values
+% are joined with SUBSEP into the key (matching the arr[$i,$j]++ counter).
+plawk_assoc_print_field_spec(assoc(var(Arr), subsep_key([field(I), field(J)])),
+        lookup2(Arr, I, J)) :-
+    integer(I), I > 0,
+    integer(J), J > 0.
 % `print arr[N]` -- an integer-literal element read (split / positional tables
 % are keyed by the raw integer position). The value kind (str atom id vs i64) is
 % resolved from the str-array set at plan time.
@@ -7715,6 +7727,9 @@ plawk_assoc_print_plan_field(_Tables, _StrArrays, fld(N), fld(N)).
 plawk_assoc_print_plan_field(_Tables, _StrArrays, record, record).
 plawk_assoc_print_plan_field(_Tables, _StrArrays, strlit(V), strlit(V)).
 plawk_assoc_print_plan_field(Tables, _StrArrays, lookup(Arr, N), lookup(TableIndex, N)) :-
+    nth0(TableIndex, Tables, Arr).
+% `arr[$i,$j]` multi-dim element read resolves its array to a table index.
+plawk_assoc_print_plan_field(Tables, _StrArrays, lookup2(Arr, I, J), lookup2(TableIndex, I, J)) :-
     nth0(TableIndex, Tables, Arr).
 % `arr[N]` element read: raw integer key; value kind from the str-array set.
 plawk_assoc_print_plan_field(Tables, StrArrays, lookup_int(Arr, N),
@@ -7839,6 +7854,24 @@ plawk_assoc_print_one_field(lookup(TableIndex, N), Base, Index, FieldSep, Lines)
     format(atom(PrL),
         '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i64 %~w_val)', [P, P, P]),
     Lines = [SliceL, PtrL, LenL, KidL, ValL, FmtL, PrL].
+% `print arr[$i,$j]` -- a multi-dimensional element read. The two fields are
+% joined with SUBSEP and interned by the runtime helper (the same key the
+% arr[$i,$j]++ counter builds), then the table's i64 value at that key prints.
+plawk_assoc_print_one_field(lookup2(TableIndex, I, J), Base, Index, FieldSep, Lines) :-
+    integer(FieldSep),
+    format(atom(P), '~w_f~w', [Base, Index]),
+    format(atom(KidL),
+        '  %~w_kid = call i64 @wam_intern_subsep_key2(%Value %line, i64 ~w, i64 ~w, i8 ~w)',
+        [P, I, J, FieldSep]),
+    format(atom(ValL),
+        '  %~w_val = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_kid)',
+        [P, TableIndex, P]),
+    format(atom(FmtL),
+        '  %~w_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
+        [P]),
+    format(atom(PrL),
+        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i64 %~w_val)', [P, P, P]),
+    Lines = [KidL, ValL, FmtL, PrL].
 % `print arr[N]` -- an integer-key element read. The key is the raw position N
 % (split / positional tables are keyed by integer). A str element resolves the
 % atom id to text (%s); an i64 element (counter / numeric posarray) prints the
@@ -7948,9 +7981,21 @@ plawk_forin_guard_ok(forin_key_cmp(LoopVar, _Op, _V), LoopVar, _Array).
 
 plawk_assoc_increment_action(inc_assoc(var(ArrayName), field(KeyIndex)), ArrayName-KeyIndex) :-
     KeyIndex > 0.
+plawk_assoc_increment_action(inc_assoc(var(ArrayName), subsep_key(Fields)),
+        ArrayName-subsep_key(Indexes)) :-
+    plawk_subsep_field_indexes(Fields, Indexes).
 plawk_assoc_increment_action(inc_assoc(var(ArrayName), Blob),
         ArrayName-blob_key(Blob)) :-
     plawk_assoc_blob_key_ok(Blob).
+
+%% plawk_subsep_field_indexes(+Fields, -Indexes) is semidet.
+%  A multi-dimensional subscript `arr[$i,$j]`: v1 accepts exactly two field
+%  subscripts, yielding their 1-based indexes [I,J]. Three-plus subscripts and
+%  non-field subscripts (string/var/int) are a follow-on, so those key shapes
+%  fail the spec and the program is cleanly rejected rather than miscompiled.
+plawk_subsep_field_indexes([field(I), field(J)], [I, J]) :-
+    integer(I), I > 0,
+    integer(J), J > 0.
 
 %% plawk_assoc_blob_key_ok(+Blob) is semidet.
 %  Blob-key shapes: the same validation as any blob call position (the
@@ -7974,9 +8019,20 @@ plawk_assoc_planned_rules([rule(Pattern, ActionSpecs, Control) | Rest], Tables,
 
 plawk_assoc_planned_actions([], _Tables, _StrArrays, _PosArrays, _Index) -->
     [].
+% Multi-dimensional counter `arr[$i,$j]++`: the two field indexes ride as a
+% subsep_key so the emitter joins them with SUBSEP before interning. Placed
+% before the generic Array-KeyIndex clause, which is guarded to exclude it.
+plawk_assoc_planned_actions([ArrayName-subsep_key(Indexes) | Rest], Tables,
+        StrArrays, PosArrays, Index) -->
+    { nth0(TableIndex, Tables, ArrayName),
+      NextIndex is Index + 1
+    },
+    [assoc_action2(Index, ArrayName, TableIndex, Indexes)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 plawk_assoc_planned_actions([ArrayName-KeyIndex | Rest], Tables, StrArrays,
         PosArrays, Index) -->
-    { nth0(TableIndex, Tables, ArrayName),
+    { KeyIndex \= subsep_key(_),
+      nth0(TableIndex, Tables, ArrayName),
       NextIndex is Index + 1
     },
     [assoc_action(Index, ArrayName, TableIndex, KeyIndex)],
@@ -8875,6 +8931,31 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action(Index, _ArrayName, Table
       format(atom(Next), '  br label %~w', [ActionNextLabel])
     },
     [Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId, Inc, Next, ''],
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% `arr[$i,$j]++`: multi-dimensional counter. The two field indexes are joined
+% with SUBSEP and interned by @wam_intern_subsep_key2, then the counter
+% increments at that key. No missing-key skip -- a missing field contributes an
+% empty slice (awk: an unset subscript is the empty string), so the helper
+% always yields a valid key. Guarded to a byte FieldSeparator (text records);
+% binfmt records with a multi-dim key have no clause and are cleanly rejected.
+plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action2(Index, _ArrayName, TableIndex, [I, J]) | Rest], NextLabel, FieldSeparator) -->
+    { integer(FieldSeparator),
+      ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(KeyId),
+          '  %assoc_rule_~w_action_~w_key_id = call i64 @wam_intern_subsep_key2(%Value %line, i64 ~w, i64 ~w, i8 ~w)',
+          [RuleIndex, Index, I, J, FieldSeparator]),
+      format(atom(Inc),
+          '  %assoc_rule_~w_action_~w_count = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %assoc_rule_~w_action_~w_key_id, i64 1)',
+          [RuleIndex, Index, TableIndex, RuleIndex, Index]),
+      format(atom(Next), '  br label %~w', [ActionNextLabel])
+    },
+    [Label, KeyId, Inc, Next, ''],
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
 % `delete arr[$k]`: same key-intern + missing-key skip as the counted inc, but
 % call the void backward-shift delete instead of the inc. An absent key (null
@@ -11247,7 +11328,8 @@ plawk_begin_print_string_globals(BeginClauses, GlobalIR) :-
     phrase(plawk_begin_print_string_global_lines(Fields, 0), Lines0),
     plawk_fs_regex_global_lines(BeginClauses, RegexLines),
     plawk_rs_global_lines(BeginClauses, RsLines),
-    append([Lines0, RegexLines, RsLines], Lines),
+    plawk_subsep_global_lines(BeginClauses, SubsepLines),
+    append([Lines0, RegexLines, RsLines, SubsepLines], Lines),
     atomic_list_concat(Lines, '\n', GlobalIR).
 
 %% plawk_fs_regex_global_lines(+BeginClauses, -Lines)
@@ -11288,13 +11370,15 @@ plawk_begin_print_ir([begin(Actions)], OutputSeparator, IR) :-
     maplist(plawk_begin_print_field, Fields),
     phrase(plawk_begin_print_lines(Fields, OutputSeparator, 0), PrintLines),
     plawk_rs_store_lines([begin(Actions)], RsStoreLines),
+    plawk_subsep_store_lines([begin(Actions)], SubsepStoreLines),
     plawk_fs_regex_store_lines([begin(Actions)], StoreLines),
-    append([RsStoreLines, StoreLines, PrintLines], Lines),
+    append([RsStoreLines, SubsepStoreLines, StoreLines, PrintLines], Lines),
     atomic_list_concat(Lines, '\n', IR).
 plawk_begin_print_ir([begin(Actions)], _OutputSeparator, IR) :-
     plawk_rs_store_lines([begin(Actions)], RsStoreLines),
+    plawk_subsep_store_lines([begin(Actions)], SubsepStoreLines),
     plawk_fs_regex_store_lines([begin(Actions)], StoreLines),
-    append(RsStoreLines, StoreLines, StartupLines),
+    append([RsStoreLines, SubsepStoreLines, StoreLines], StartupLines),
     (   StartupLines == []
     ->  IR = ''
     ;   atomic_list_concat(StartupLines, '\n', IR)
@@ -11363,6 +11447,49 @@ plawk_rs_global_lines(BeginClauses, [Line]) :-
     !,
     llvm_emit_c_string_global(wam_rs_custom, Value, Line, _StringLen, _BytesLen).
 plawk_rs_global_lines(_BeginClauses, []).
+
+%% plawk_subsep_store_lines(+BeginClauses, -Lines)
+%
+%  Startup stores for a `BEGIN { SUBSEP = "…" }`, pointing @wam_subsep_ptr at
+%  the @.wam_subsep_custom constant and setting @wam_subsep_len. Multi-dim
+%  subscripts `arr[i,j]` join their fields with these bytes. Unset -> [] (the
+%  global keeps its default 0x1C, awk's SUBSEP). An empty SUBSEP sets len 0, so
+%  the subscripts concatenate with no separator.
+plawk_subsep_store_lines(BeginClauses, Lines) :-
+    (   member(begin(Actions), BeginClauses),
+        member(set(var('SUBSEP'), string(Value)), Actions)
+    ->  string_codes(Value, Codes),
+        (   Codes == []
+        ->  Lines = ['  store i64 0, i64* @wam_subsep_len']
+        ;   length(Codes, NBytes),
+            ArrLen is NBytes + 1,
+            format(atom(PtrLine),
+                '  store i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.wam_subsep_custom, i64 0, i64 0), i8** @wam_subsep_ptr',
+                [ArrLen, ArrLen]),
+            format(atom(LenLine), '  store i64 ~w, i64* @wam_subsep_len', [NBytes]),
+            Lines = [PtrLine, LenLine]
+        )
+    ;   Lines = []
+    ).
+
+%% plawk_subsep_global_lines(+BeginClauses, -Lines)
+%
+%  The SUBSEP string constant `@.wam_subsep_custom` for a non-empty
+%  `BEGIN { SUBSEP = "…" }`, paired with the startup store above. Emitted into
+%  the begin-globals seam like the RS custom constant.
+plawk_subsep_global_lines(BeginClauses, [Line]) :-
+    member(begin(Actions), BeginClauses),
+    member(set(var('SUBSEP'), string(Value)), Actions),
+    string_codes(Value, Codes),
+    Codes \== [],
+    !,
+    maplist(plawk_llvm_byte_escape, Codes, Escapes),
+    atomic_list_concat(Escapes, EscBody),
+    length(Codes, NBytes),
+    ArrLen is NBytes + 1,
+    format(atom(Line), '@.wam_subsep_custom = private constant [~w x i8] c"~w\\00"',
+        [ArrLen, EscBody]).
+plawk_subsep_global_lines(_BeginClauses, []).
 
 plawk_begin_print_field(string(_)).
 

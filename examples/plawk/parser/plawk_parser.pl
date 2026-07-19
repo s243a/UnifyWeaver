@@ -1414,6 +1414,8 @@ begin_assignment_name('ORS') -->
     "ORS".
 begin_assignment_name('RS') -->
     "RS".
+begin_assignment_name('SUBSEP') -->
+    "SUBSEP".
 
 % END decode-into-struct (assoc for-in, stage 3): a for-in whose body
 % destructures the iterated value `arr[k]` through a grammar into typed
@@ -3540,17 +3542,39 @@ simple_field_expr(field(Index)) -->
       Index >= 0
     }.
 
-assoc_key_expr(field(Index)) -->
+% A subscript is either one expression, or a comma-separated list
+% `[i,j,...]` -- awk's multi-dimensional array notation, which joins the
+% subscripts with SUBSEP into one string key. A single subscript collapses to
+% the bare expression (unchanged from before); two or more yield
+% subsep_key([E1,E2,...]), which the codegen lowers by interning the fields
+% joined with the SUBSEP byte.
+assoc_key_expr(Key) -->
+    assoc_key_atom(First),
+    assoc_key_rest(Rest),
+    { ( Rest == []
+      ->  Key = First
+      ;   Key = subsep_key([First | Rest])
+      )
+    }.
+
+assoc_key_rest([Atom | Rest]) -->
+    ws, ",", ws,
+    assoc_key_atom(Atom),
+    assoc_key_rest(Rest).
+assoc_key_rest([]) -->
+    [].
+
+assoc_key_atom(field(Index)) -->
     "$",
     integer_codes(IndexCodes),
     { IndexCodes \== [],
       number_codes(Index, IndexCodes),
       Index >= 0
     }.
-assoc_key_expr(int(Value)) -->
+assoc_key_atom(int(Value)) -->
     signed_integer_value(Value),
     !.
-assoc_key_expr(string(Value)) -->
+assoc_key_atom(string(Value)) -->
     quoted_string(ValueCodes),
     { ValueCodes \== [],
       string_codes(Value, ValueCodes)
@@ -3558,10 +3582,10 @@ assoc_key_expr(string(Value)) -->
 % counts[blob(dyncall...)]++ -- key an assoc table by a runtime
 % grammar's byte output (JIT roadmap item 2 follow-on). Must precede
 % var(Name): identifier would otherwise eat "blob".
-assoc_key_expr(Blob) -->
+assoc_key_atom(Blob) -->
     blob_call_expr(Blob),
     !.
-assoc_key_expr(var(Name)) -->
+assoc_key_atom(var(Name)) -->
     identifier(Name).
 
 identifier(Name) -->

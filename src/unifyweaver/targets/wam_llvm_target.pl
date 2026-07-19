@@ -5379,6 +5379,50 @@ entry:
   ret void
 }
 
+; Intern a 2-D subscript key: slice fields %f1 and %f2 out of the record %line
+; (using field separator %fs), join them with the SUBSEP bytes
+; (@wam_subsep_ptr / @wam_subsep_len), and intern the joined buffer to a single
+; atom id. A missing field contributes an empty slice (awk: an unset subscript
+; is the empty string). The join buffer is a stack alloca, freed on return;
+; wam_intern_atom copies the bytes it keeps. Backs arr[i,j] reads and the
+; arr[i,j]++ counter (multi-dimensional arrays).
+define i64 @wam_intern_subsep_key2(%Value %line, i64 %f1, i64 %f2, i8 %fs) {
+entry:
+  %sk.s1 = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %f1, i8 %fs)
+  %sk.p1 = extractvalue %WamSlice %sk.s1, 0
+  %sk.l1 = extractvalue %WamSlice %sk.s1, 1
+  %sk.s2 = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %f2, i8 %fs)
+  %sk.p2 = extractvalue %WamSlice %sk.s2, 0
+  %sk.l2 = extractvalue %WamSlice %sk.s2, 1
+  %sk.sepp = load i8*, i8** @wam_subsep_ptr
+  %sk.sepl = load i64, i64* @wam_subsep_len
+  %sk.body0 = add i64 %sk.l1, %sk.l2
+  %sk.body = add i64 %sk.body0, %sk.sepl
+  %sk.total = add i64 %sk.body, 1
+  %sk.buf = alloca i8, i64 %sk.total
+  %sk.miss1 = icmp eq i8* %sk.p1, null
+  br i1 %sk.miss1, label %sk.after1, label %sk.copy1
+sk.copy1:
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %sk.buf, i8* %sk.p1, i64 %sk.l1, i1 false)
+  br label %sk.after1
+sk.after1:
+  %sk.sepdst = getelementptr i8, i8* %sk.buf, i64 %sk.l1
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %sk.sepdst, i8* %sk.sepp, i64 %sk.sepl, i1 false)
+  %sk.off2 = add i64 %sk.l1, %sk.sepl
+  %sk.dst2 = getelementptr i8, i8* %sk.buf, i64 %sk.off2
+  %sk.miss2 = icmp eq i8* %sk.p2, null
+  br i1 %sk.miss2, label %sk.after2, label %sk.copy2
+sk.copy2:
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %sk.dst2, i8* %sk.p2, i64 %sk.l2, i1 false)
+  br label %sk.after2
+sk.after2:
+  %sk.keylen = add i64 %sk.off2, %sk.l2
+  %sk.nul = getelementptr i8, i8* %sk.buf, i64 %sk.keylen
+  store i8 0, i8* %sk.nul
+  %sk.id = call i64 @wam_intern_atom(i8* %sk.buf, i64 %sk.keylen)
+  ret i64 %sk.id
+}
+
 ; Build a field buffer by splitting the NUL-terminated record %rec on the program
 ; FS regex (@wam_fs_regex_pattern_ptr / cache). Slices point into %rec. An empty
 ; record yields 0 fields; an unset/uncompilable FS yields the whole record as
@@ -22232,6 +22276,9 @@ emit_atom_string_globals(IR) :-
 @wam_rt_buf = internal global i8* null
 @wam_rt_cap = internal global i64 0
 @.wam_rs_regex_error = private constant [38 x i8] c"plawk: invalid RS regular expression\\0A\\00"
+@.wam_subsep_default = private constant [2 x i8] c"\\1C\\00"
+@wam_subsep_ptr = global i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.wam_subsep_default, i64 0, i64 0)
+@wam_subsep_len = global i64 1
 
 define i8* @wam_atom_to_string(i64 %id) {
   ret i8* null
@@ -22372,6 +22419,9 @@ fail:
 @wam_rt_buf = internal global i8* null
 @wam_rt_cap = internal global i64 0
 @.wam_rs_regex_error = private constant [38 x i8] c"plawk: invalid RS regular expression\\0A\\00"
+@.wam_subsep_default = private constant [2 x i8] c"\\1C\\00"
+@wam_subsep_ptr = global i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.wam_subsep_default, i64 0, i64 0)
+@wam_subsep_len = global i64 1
 
 define i8* @wam_atom_to_string(i64 %id) {
 entry:
