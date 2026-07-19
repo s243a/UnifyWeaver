@@ -1,0 +1,86 @@
+{{match part}}{{case helpers}}
+    fn monotonic_seconds() -> f64 {
+        static ORIGIN: std::sync::OnceLock<std::time::Instant> =
+            std::sync::OnceLock::new();
+        ORIGIN.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()
+    }
+
+    #[cfg(all(unix, target_pointer_width = "64"))]
+    fn process_usage() -> Option<(f64, f64, i64)> {
+        #[repr(align(16))]
+        struct UsageBuffer([u8; 512]);
+        extern "C" {
+            fn getrusage(
+                who: std::os::raw::c_int,
+                usage: *mut std::ffi::c_void,
+            ) -> std::os::raw::c_int;
+        }
+
+        let mut usage = UsageBuffer([0u8; 512]);
+        if unsafe { getrusage(0, usage.0.as_mut_ptr().cast()) } != 0 {
+            return None;
+        }
+        let width = std::mem::size_of::<std::os::raw::c_long>();
+        let read_long = |offset: usize| unsafe {
+            std::ptr::read_unaligned(
+                usage.0.as_ptr().add(offset).cast::<std::os::raw::c_long>())
+        };
+        let user_sec = read_long(0);
+        let user_usec = read_long(width);
+        let system_sec = read_long(width * 2);
+        let system_usec = read_long(width * 3);
+        let max_rss_raw = read_long(width * 4);
+        if user_sec < 0 || user_usec < 0 || user_usec >= 1_000_000
+            || system_sec < 0 || system_usec < 0 || system_usec >= 1_000_000
+            || max_rss_raw < 0 {
+            return None;
+        }
+
+        let user = user_sec as f64 + user_usec as f64 / 1_000_000.0;
+        let system = system_sec as f64 + system_usec as f64 / 1_000_000.0;
+        let max_rss = if cfg!(any(
+            target_os = "macos", target_os = "ios",
+            target_os = "tvos", target_os = "watchos"
+        )) {
+            max_rss_raw as i64 / 1024
+        } else {
+            max_rss_raw as i64
+        };
+        Some((user, system, max_rss))
+    }
+
+    #[cfg(not(all(unix, target_pointer_width = "64")))]
+    fn process_usage() -> Option<(f64, f64, i64)> {
+        None
+    }
+
+    fn runtime_metric(op: &str) -> Option<Value> {
+        if op == "monotonic_time/1" {
+            return Some(Value::Float(Self::monotonic_seconds()));
+        }
+        let (user, system, max_rss) = Self::process_usage()?;
+        match op {
+            "cpu_time/1" => Some(Value::Float(user + system)),
+            "process_user_time/1" => Some(Value::Float(user)),
+            "process_system_time/1" => Some(Value::Float(system)),
+            "process_max_rss/1" => Some(Value::Integer(max_rss)),
+            _ => None,
+        }
+    }
+{{case arms}}
+            "cpu_time/1" | "monotonic_time/1" | "process_user_time/1"
+            | "process_system_time/1" | "process_max_rss/1" => {
+                let metric = match Self::runtime_metric(op) {
+                    Some(metric) => metric,
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &metric) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+{{/match}}
