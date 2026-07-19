@@ -22,7 +22,7 @@ only (runtime pending) · ❌ missing.
 | `$N == "v"`, `$3 > 100` | ✅ | field-equality + numeric field guards |
 | `&& \|\| !` combinators | ✅ | awk precedence, parens, single-block lowering |
 | `~` / `!~` match | ✅ | POSIX ERE |
-| expression pattern (bare `NR==1`) | ◐ | comparison guards yes; arbitrary expr no. **`NR` is a special in `if`/`while` condition guards** (`if (NR == 2)`, `if (NR >= 2 && NR <= 3)`) — the record counter, not a phantom scalar slot (a prior bug read it as an uninitialised var → always 0). Fixes the record-gated idioms (`if (NR == 1) { first = $1 }`, conditional accumulation). `NF` as a guard special is a follow-on (needs the field separator threaded into condition lowering; no value in an END condition) |
+| expression pattern (bare `NR==1`) | ◐ | comparison guards yes; arbitrary expr no. **`NR` is a special in `if`/`while` condition guards** (`if (NR == 2)`, `if (NR >= 2 && NR <= 3)`) — the record counter, not a phantom scalar slot (a prior bug read it as an uninitialised var → always 0). Fixes the record-gated idioms (`if (NR == 1) { first = $1 }`, conditional accumulation). **`NF` is a guard special too** (`if (NF > 3)`, `if (NF >= 2 && NR == 1)`) — the field count of the current record, computed from `%line` via the field-count runtime with the active `FS` threaded into the condition lowering; works in `if`/`while`/`do-while` guards. `NF` in an END condition is a clean not-yet (no current record) |
 | range pattern (`/a/,/b/`) | ◐ | `/start/,/end/ { … }` fires for records from a /start/ match through a /end/ match (inclusive), via a per-rule i1 latch global; re-arms for later ranges, runs to EOF if unterminated. Regex endpoints (v1); general-pattern endpoints (`NR==1,NR==3`) are a follow-on |
 
 ## Actions & control flow

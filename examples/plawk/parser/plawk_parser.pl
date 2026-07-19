@@ -1870,9 +1870,11 @@ match_special_name('RSTART') --> "RSTART".
 match_special_name('RLENGTH') --> "RLENGTH".
 % NR (the record number) is a special in a comparison guard too, so `if (NR > 1)`
 % / `while (NR < 3)` read the record counter rather than a phantom scalar slot.
-% (NF is a follow-on: it needs the field separator threaded into the condition
-% lowering, and has no defined value in an END condition.)
 match_special_name('NR') --> "NR".
+% NF (the field count of the current record) is a guard special too: `if (NF > 3)`.
+% The condition lowering threads the field separator to compute it from the
+% record; it has no defined value in an END condition (no current record).
+match_special_name('NF') --> "NF".
 % ARGC (the command-line argument count) is a numeric special in a guard too:
 % `if (ARGC > 1)`.
 match_special_name('ARGC') --> "ARGC".
