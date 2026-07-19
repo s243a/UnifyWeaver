@@ -338,7 +338,7 @@ plawk_program_native_driver_ir(
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
     plawk_field_assign_sets_ir(SetFields, AssignGlobalIR, SetBodyIR),
-    plawk_output_separator_byte(OutputSeparator, OFSByte),
+    plawk_field_ofs_global(OutputSeparator, FieldOfsGlobal, OfsArrLen, OfsSepLen),
     format(atom(RecordIR),
 '~w
   br i1 %is_match, label %print_line, label %continue_loop
@@ -346,13 +346,13 @@ plawk_program_native_driver_ir(
 print_line:
   %fa_fb = call %WamFieldBuf* @wam_fields_new(i8* %line_s, i8 ~w)
 ~w
-  %fa_joined = call i8* @wam_fields_join(%WamFieldBuf* %fa_fb, i8 ~w)
+  %fa_joined = call i8* @wam_fields_join_str(%WamFieldBuf* %fa_fb, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_field_ofs, i64 0, i64 0), i64 ~w)
   %fa_out_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_line, i32 0, i32 0
   %fa_out_pr = call i32 (i8*, ...) @printf(i8* %fa_out_fmt, i8* %fa_joined)
   call void @free(i8* %fa_joined)
   call void @wam_fields_free(%WamFieldBuf* %fa_fb)
   br label %continue_loop',
-        [GuardCallIR, FieldSeparator, SetBodyIR, OFSByte]),
+        [GuardCallIR, FieldSeparator, SetBodyIR, OfsArrLen, OfsArrLen, OfsSepLen]),
     plawk_ors_global_line(BeginClauses, OrsGlobalLine),
     format(atom(RuntimeGlobals),
 '@.plawk_surface_print_line = private constant [4 x i8] c"%s\\0A\\00"
@@ -364,8 +364,9 @@ print_line:
 ~w
 ~w
 ~w
+~w
 ',
-        [OrsGlobalLine, BeginGlobalIR, GuardGlobalIR, AssignGlobalIR]),
+        [OrsGlobalLine, FieldOfsGlobal, BeginGlobalIR, GuardGlobalIR, AssignGlobalIR]),
     plawk_emit_record_driver_ir(FieldSeparator, InputPath,
         driver_blocks(RuntimeGlobals, BeginIR, '', lowered_match, RecordIR, '',
             success, 'success:\n  ret i32 0'),
@@ -11127,6 +11128,21 @@ plawk_output_separator(BeginClauses, OutputSeparator) :-
 %  path needs multi-byte join support (a follow-on), so this fails and the
 %  program is cleanly rejected rather than emitting a malformed join.
 plawk_output_separator_byte([Byte], Byte).
+
+%% plawk_field_ofs_global(+OFSBytes, -GlobalLine, -ArrLen, -SepLen)
+%
+%  The field-assignment join OFS as a private string constant `@.plawk_field_ofs`
+%  plus its array length (bytes + null) and separator length (bytes). The
+%  `$N=expr; print $0` rebuild passes a pointer to it and SepLen to
+%  @wam_fields_join_str, so a multi-char (or empty) OFS joins correctly.
+plawk_field_ofs_global(OFSBytes, GlobalLine, ArrLen, SepLen) :-
+    maplist(plawk_llvm_byte_escape, OFSBytes, Escapes),
+    atomic_list_concat(Escapes, EscBody),
+    length(OFSBytes, SepLen),
+    ArrLen is SepLen + 1,
+    format(atom(GlobalLine),
+        '@.plawk_field_ofs = private constant [~w x i8] c"~w\\00"',
+        [ArrLen, EscBody]).
 
 %% plawk_ofs_sep_lines(+NamePrefix, +Index, +OFSBytes, -Lines)
 %

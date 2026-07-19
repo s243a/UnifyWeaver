@@ -5288,6 +5288,82 @@ j.fin:
   ret i8* %j.buf
 }
 
+; Join a field buffer with a MULTI-BYTE separator (sep, seplen bytes). Same
+; two-pass shape as @wam_fields_join, but the total reserves seplen bytes per
+; gap and each gap is a memcpy of the separator. seplen 0 joins fields adjacent.
+define i8* @wam_fields_join_str(%WamFieldBuf* %fb, i8* %sep, i64 %seplen) {
+entry:
+  %js.cslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 0
+  %js.count = load i64, i64* %js.cslot
+  %js.slslot = getelementptr %WamFieldBuf, %WamFieldBuf* %fb, i32 0, i32 2
+  %js.slices = load %WamSlice*, %WamSlice** %js.slslot
+  br label %js.sl
+
+js.sl:
+  %js.i = phi i64 [ 0, %entry ], [ %js.i1, %js.sstep ]
+  %js.acc = phi i64 [ 0, %entry ], [ %js.acc1, %js.sstep ]
+  %js.sd = icmp uge i64 %js.i, %js.count
+  br i1 %js.sd, label %js.mk, label %js.sbody
+
+js.sbody:
+  %js.e = getelementptr %WamSlice, %WamSlice* %js.slices, i64 %js.i
+  %js.el = getelementptr %WamSlice, %WamSlice* %js.e, i32 0, i32 1
+  %js.len = load i64, i64* %js.el
+  br label %js.sstep
+
+js.sstep:
+  %js.acc1 = add i64 %js.acc, %js.len
+  %js.i1 = add i64 %js.i, 1
+  br label %js.sl
+
+js.mk:
+  %js.cz = icmp eq i64 %js.count, 0
+  %js.cm1 = sub i64 %js.count, 1
+  %js.nsep = select i1 %js.cz, i64 0, i64 %js.cm1
+  %js.sepbytes = mul i64 %js.nsep, %seplen
+  %js.t0 = add i64 %js.acc, %js.sepbytes
+  %js.total = add i64 %js.t0, 1
+  %js.buf = call i8* @malloc(i64 %js.total)
+  br label %js.wl
+
+js.wl:
+  %js.wi = phi i64 [ 0, %js.mk ], [ %js.wi1, %js.wcont ]
+  %js.op = phi i64 [ 0, %js.mk ], [ %js.opn, %js.wcont ]
+  %js.wd = icmp uge i64 %js.wi, %js.count
+  br i1 %js.wd, label %js.fin, label %js.wbody
+
+js.wbody:
+  %js.first = icmp eq i64 %js.wi, 0
+  br i1 %js.first, label %js.after, label %js.emitsep
+
+js.emitsep:
+  %js.sdst = getelementptr i8, i8* %js.buf, i64 %js.op
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %js.sdst, i8* %sep, i64 %seplen, i1 false)
+  %js.op_s = add i64 %js.op, %seplen
+  br label %js.after
+
+js.after:
+  %js.opa = phi i64 [ %js.op_s, %js.emitsep ], [ %js.op, %js.wbody ]
+  %js.e2 = getelementptr %WamSlice, %WamSlice* %js.slices, i64 %js.wi
+  %js.p2s = getelementptr %WamSlice, %WamSlice* %js.e2, i32 0, i32 0
+  %js.p2 = load i8*, i8** %js.p2s
+  %js.l2s = getelementptr %WamSlice, %WamSlice* %js.e2, i32 0, i32 1
+  %js.l2 = load i64, i64* %js.l2s
+  %js.dst2 = getelementptr i8, i8* %js.buf, i64 %js.opa
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %js.dst2, i8* %js.p2, i64 %js.l2, i1 false)
+  %js.opn = add i64 %js.opa, %js.l2
+  %js.wi1 = add i64 %js.wi, 1
+  br label %js.wcont
+
+js.wcont:
+  br label %js.wl
+
+js.fin:
+  %js.nul = getelementptr i8, i8* %js.buf, i64 %js.op
+  store i8 0, i8* %js.nul
+  ret i8* %js.buf
+}
+
 ; Free a field buffer (its slice array and the struct).
 define void @wam_fields_free(%WamFieldBuf* %fb) {
 entry:
