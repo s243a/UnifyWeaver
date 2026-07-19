@@ -148,6 +148,15 @@ t_time_conversions(DateTime, RoundTrip, Formatted) :-
     date_time_stamp(DateTime, RoundTrip),
     format_time(Formatted, '%Y-%m-%d %H:%M:%S', 1700000000).
 
+:- dynamic t_random_builtins/4.
+t_random_builtins(First, Repeat, Unit, Singleton) :-
+    set_random(seed(424242)),
+    random_between(1, 1000000, First),
+    set_random(seed(424242)),
+    random_between(1, 1000000, Repeat),
+    random(Unit),
+    random_between(7, 7, Singleton).
+
 :- dynamic t_process_commands/2.
 t_process_commands(Status, Output) :-
     shell('exit 0'),
@@ -449,6 +458,7 @@ test_builtin_parity_execution :-
              user:t_process_resource_queries/3,
              user:t_login_name/1,
              user:t_time_conversions/3,
+             user:t_random_builtins/4,
              user:t_process_commands/2,
              user:t_sleep/0,
              user:t_halt_zero/0,
@@ -500,6 +510,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_process_resource_queries_3,
     t_login_name_1,
     t_time_conversions_3,
+    t_random_builtins_4,
     t_process_commands_2,
     t_sleep_0,
     t_environment_mutation_1,
@@ -899,6 +910,54 @@ fn test_time_conversions_compiled() {
         Value::Atom(formatted) => assert_eq!(formatted.len(), 19),
         other => panic!("expected formatted atom, got {:?}", other),
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_random_builtins_compiled_and_direct() {
+    let mut vm = vmnew();
+    assert!(t_random_builtins_4(
+        &mut vm, ub("First"), ub("Repeat"), ub("Unit"), ub("Singleton")));
+    assert_eq!(integer_var(&vm, "First"), integer_var(&vm, "Repeat"));
+    let unit = float_var(&vm, "Unit");
+    assert!((0.0..1.0).contains(&unit));
+    assert_eq!(integer_var(&vm, "Singleton"), 7);
+
+    assert!(call3("random_between/3", i(7), i(7), i(7)).0);
+    assert!(!call3("random_between/3", i(7), i(7), i(8)).0);
+    assert!(!call3("random_between/3", i(8), i(7), ub("Random")).0);
+    assert!(!call3("random_between/3", a("low"), i(7), ub("Random")).0);
+    assert!(!call3("random_between/3", i(1), a("high"), ub("Random")).0);
+    let (wide_ok, wide_vm) = call3(
+        "random_between/3", i(i64::MIN), i(i64::MAX), ub("Wide"));
+    assert!(wide_ok);
+    let _ = integer_var(&wide_vm, "Wide");
+    assert!(!vmnew().execute_builtin("random_between/3", 3));
+
+    let seed = Value::Str("seed".to_string(), vec![i(7)]);
+    assert!(call1("set_random/1", seed.clone()).0);
+    let (first_ok, first_vm) = call1("random/1", ub("Random"));
+    assert!(first_ok);
+    let first = float_var(&first_vm, "Random");
+    assert!(call1("set_random/1", seed).0);
+    assert!(call1("random/1", Value::Float(first)).0);
+    assert!(!call1(
+        "set_random/1", Value::Str("other".to_string(), vec![i(7)])).0);
+    assert!(!call1(
+        "set_random/1", Value::Str("seed".to_string(), vec![a("random")])).0);
+    assert!(!call1("set_random/1", i(7)).0);
+    assert!(!call1("set_random/1", ub("Option")).0);
+    assert!(!vmnew().execute_builtin("random/1", 1));
+    assert!(!vmnew().execute_builtin("set_random/1", 1));
+}
+
+#[cfg(not(unix))]
+#[test]
+fn test_random_builtins_unavailable_direct() {
+    assert!(!call1("random/1", ub("Random")).0);
+    assert!(!call3("random_between/3", i(1), i(2), ub("Random")).0);
+    assert!(!call1(
+        "set_random/1", Value::Str("seed".to_string(), vec![i(7)])).0);
 }
 
 #[cfg(unix)]
