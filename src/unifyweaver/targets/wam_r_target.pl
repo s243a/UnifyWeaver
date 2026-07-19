@@ -1428,6 +1428,32 @@ fact_source_pi_match(Name/Ar, P, Arity) :-
 %  generated loader output feeds the same build_fact_indexes +
 %  fact_table_dispatch pipeline used by inline fact tables, so
 %  per-arg indexing and dispatch are unchanged across backends.
+%
+%  lmdb_arg1_v1(Path) is the versioned on-demand exception: no eager
+%  load / build_fact_indexes; the iterator probes LMDB per call.
+emit_external_fact_source(Pred, Arity, lmdb_arg1_v1(Path),
+                          DataDecl, LoweredFunc, FuncName) :- !,
+    (   Arity >= 2
+    ->  true
+    ;   throw(error(domain_error(arity_ge_2_for_lmdb_arg1_v1, Arity), _))
+    ),
+    r_pred_name(Pred, RName),
+    format(atom(PathVar), '~w_lmdb_path', [RName]),
+    format(atom(FuncName), '~w_fact_iter', [RName]),
+    atom_string(Path, PathStr),
+    r_string_literal(PathStr, PathLit),
+    format(string(DataDecl),
+'# External fact source for ~w/~w (lmdb_arg1_v1 on-demand: ~w)
+~w <- ~w',
+        [Pred, Arity, PathStr, PathVar, PathLit]),
+    fact_args_collect(Arity, ArgsCollect),
+    format(string(LoweredFunc),
+'~w <- function(program, state) {
+  args <- ~w
+  WamRuntime$lmdb_arg1_v1_dispatch(program, state, ~w, ~wL, args,
+                                    state$pc + 1L)
+}',
+        [FuncName, ArgsCollect, PathVar, Arity]).
 emit_external_fact_source(Pred, Arity, Spec,
                           DataDecl, LoweredFunc, FuncName) :-
     r_pred_name(Pred, RName),

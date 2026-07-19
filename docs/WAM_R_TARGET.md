@@ -337,12 +337,12 @@ supported today:
 - `grouped_by_first('data.tsv')` -- tab-separated rows shaped as
   `key<TAB>v1<TAB>v2<TAB>...`; the loader explodes each row into
   separate `(key, vK)` tuples. Arity-2 only.
-- `lmdb('path.lmdb')` -- on-disk LMDB env containing one fact per
-  key, value encoded as TAB-separated `tag:payload` fields. Any
-  arity. Requires an R LMDB binding (see *LMDB install* below);
-  loader returns an empty fact table with a warning if the binding
-  is absent. Step-1 semantics: load-everything (treats LMDB as a
-  serialization format); step-2 probe-on-demand is a follow-up.
+- `lmdb('path.lmdb')` -- legacy load-everything LMDB (opaque keys,
+  full-tuple values). Requires thor/lmdbr; empty table if absent.
+- `lmdb_arg1_v1('path.lmdb')` -- versioned on-demand arg1 index
+  (arity ≥ 2): ground arg1 → exact-key get; unbound → stream-all.
+  Schema key `__uw_schema__=lmdb_arg1_v1`; values are NL-buckets of
+  TAB-tagged args 2..N. Writer: `lmdb_write_facts_arg1_v1`.
 
 ```prolog
 :- write_wam_r_project(

@@ -39,8 +39,10 @@ native(parse_term))` — R is one of only two backends (with C++) whose
 runtime-parser default is native, with the compiled
 `prolog_term_parser` available as an opt-in fallback.
 
-**Optional LMDB.** Load-everything LMDB fact path (not the
-lazy/cached tiers of F#/Haskell).
+**Optional LMDB.** Legacy `lmdb(Path)` remains load-everything.
+Versioned `lmdb_arg1_v1(Path)` adds on-demand exact-key arg1 lookup
+(plus explicit stream-all for unbound arg1). Lazy/cached L1/L2 tiers
+remain open (LMDB-R).
 
 ## Gaps (relative to Rust / Haskell / F#)
 
@@ -49,14 +51,15 @@ lazy/cached tiers of F#/Haskell).
   forms (`switch_on_constant_a2`, `_a2_fallthrough`, `switch_on_structure_a2`)
   — map to the existing `SwitchOnTerm()` linear no-op (not optimized A2
   dispatch), preserving the full try/retry/trust chain.
-- **LMDB is load-everything** — no lazy/cached two-level policies.
+- **LMDB-R policy tiers** (eager/lazy/cached/auto) still open; LMDB-R-0
+  on-demand lookup source is landed.
 - **ISO error support** is `tryCatch`-level only, not the three-form
   contract.
 - No dedicated effective-distance cross-target bench row.
 
 ## Path forward
 
-1. Lazy/cached LMDB policies over the load-everything path.
+1. LMDB-R eager/lazy/cached tiers over `lmdb_arg1_v1` lookup/stream.
 2. ISO three-form adoption if R joins the error-fidelity set.
 3. Effective-distance cross-target matrix row.
 
