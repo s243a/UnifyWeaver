@@ -13969,6 +13969,9 @@ plawk_expr_is_double(float_dyncall_at_named(_Name, _Source, _Args)).
 % A substituted read of a double scalar slot (see
 % plawk_substitute_scalar_reads/4).
 plawk_expr_is_double(ssa_f64(_Value)).
+% Exponentiation is always floating point (awk `^` / `**`), regardless of
+% whether its operands are integer- or float-typed.
+plawk_expr_is_double(pow_i64(_Left, _Right)).
 plawk_expr_is_double(Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     ( plawk_expr_is_double(Left)
@@ -13999,6 +14002,9 @@ plawk_f64_operand_expr(float_dyncall_at(Source, Args)) :-
     plawk_float_dyncall_at_expr(float_dyncall_at(Source, Args)).
 plawk_f64_operand_expr(float_dyncall_at_named(Name, Source, Args)) :-
     plawk_float_dyncall_at_expr(float_dyncall_at_named(Name, Source, Args)).
+plawk_f64_operand_expr(pow_i64(Left, Right)) :-
+    plawk_f64_operand_expr(Left),
+    plawk_f64_operand_expr(Right).
 plawk_f64_operand_expr(Expr) :-
     plawk_i64_operand_expr(Expr).
 plawk_f64_operand_expr(Expr) :-
@@ -14125,6 +14131,26 @@ plawk_f64_expr_ir(float_call(Name, Args), FieldSeparator, Base, GlobalBase,
         [Base, Base, Base]),
     format(atom(ValueIR), '%~w', [Base]),
     append(ArgSetupParts, [ResIR, ValIR, OkIR, SelIR], SetupParts).
+% Exponentiation `L ^ R` / `L ** R`: computed in f64 via libm pow. Both
+% operands recurse through this same emitter, so i64 leaves promote by sitofp
+% and float leaves stay double; the result is a double that prints via %g and
+% flows into scalar_double slots like any other double expression.
+plawk_f64_expr_ir(pow_i64(Left, Right), FieldSeparator, Base, GlobalBase,
+        ValueIR, GlobalParts, SetupParts) :-
+    !,
+    format(atom(LeftBase), '~w_pl', [Base]),
+    format(atom(LeftGlobalBase), '~w_pl', [GlobalBase]),
+    plawk_f64_expr_ir(Left, FieldSeparator, LeftBase, LeftGlobalBase,
+        LeftValueIR, LeftGlobalParts, LeftSetupParts),
+    format(atom(RightBase), '~w_pr', [Base]),
+    format(atom(RightGlobalBase), '~w_pr', [GlobalBase]),
+    plawk_f64_expr_ir(Right, FieldSeparator, RightBase, RightGlobalBase,
+        RightValueIR, RightGlobalParts, RightSetupParts),
+    format(atom(ValueIR), '%~w', [Base]),
+    format(atom(OpIR), '  ~w = call double @pow(double ~w, double ~w)',
+        [ValueIR, LeftValueIR, RightValueIR]),
+    append(LeftGlobalParts, RightGlobalParts, GlobalParts),
+    append([LeftSetupParts, RightSetupParts, [OpIR]], SetupParts).
 plawk_f64_expr_ir(Expr, FieldSeparator, Base, GlobalBase, ValueIR,
         GlobalParts, SetupParts) :-
     plawk_expr_is_double(Expr),

@@ -2855,7 +2855,7 @@ i64_binary_surface_expr(Expr) -->
 i64_binary_expr_ast(Expr) :-
     compound(Expr),
     functor(Expr, Functor, 2),
-    memberchk(Functor, [add_i64, sub_i64, mul_i64, div_i64, mod_i64]).
+    memberchk(Functor, [add_i64, sub_i64, mul_i64, div_i64, mod_i64, pow_i64]).
 
 i64_additive_expr(Expr) -->
     i64_multiplicative_expr(First),
@@ -2873,19 +2873,44 @@ i64_additive_chain(Expr, Expr) -->
     [].
 
 i64_multiplicative_expr(Expr) -->
-    i64_factor_expr(First),
+    i64_power_expr(First),
     i64_multiplicative_chain(First, Expr).
 
 i64_multiplicative_chain(Acc, Expr) -->
     ws,
     i64_multiplicative_operator(Functor),
     ws,
-    i64_factor_expr(Right),
+    i64_power_expr(Right),
     !,
     { Acc1 =.. [Functor, Acc, Right] },
     i64_multiplicative_chain(Acc1, Expr).
 i64_multiplicative_chain(Expr, Expr) -->
     [].
+
+% Exponentiation `L ^ R` / `L ** R`: binds tighter than `* / %` and is
+% right-associative (`2 ^ 3 ^ 2` == `2 ^ (3 ^ 2)`), as in awk. It is always
+% computed in floating point (the result keeps its fraction), so the AST node
+% pow_i64/2 is typed double at codegen -- see plawk_expr_is_double/1.
+i64_power_expr(Expr) -->
+    i64_factor_expr(Base),
+    i64_power_rest(Base, Expr).
+
+i64_power_rest(Base, pow_i64(Base, Exp)) -->
+    ws,
+    i64_power_operator,
+    ws,
+    !,
+    i64_power_expr(Exp).
+i64_power_rest(Expr, Expr) -->
+    [].
+
+% `**` is matched before `^`; both are the same operator. The `**` spelling is
+% distinct from `*` because it is only reached at the power level, inside a
+% single factor, before the multiplicative chain sees an operator.
+i64_power_operator -->
+    "**".
+i64_power_operator -->
+    "^".
 
 i64_additive_operator(add_i64) -->
     "+".
