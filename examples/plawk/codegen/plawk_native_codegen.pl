@@ -7583,6 +7583,11 @@ plawk_assoc_body_action_spec(add(var(Name), field(K)), scalar_add(Name, field(K)
 
 plawk_assoc_print_field_spec(field(N), fld(N)) :-
     integer(N), N > 0.
+% `print $0` -- the whole record.
+plawk_assoc_print_field_spec(field(0), record).
+% `print "text"` -- a string literal field.
+plawk_assoc_print_field_spec(string(V), strlit(V)) :-
+    string(V).
 plawk_assoc_print_field_spec(assoc(var(Arr), field(N)), lookup(Arr, N)) :-
     integer(N), N > 0.
 % `print arr[N]` -- an integer-literal element read (split / positional tables
@@ -7625,6 +7630,8 @@ plawk_assoc_arith_operand(assoc(var(Arr), field(N)), alookup(Arr, N)) :-
 % StrArrays is the set of str-valued (atom-id) tables, used to pick the value
 % kind for an integer-key element read.
 plawk_assoc_print_plan_field(_Tables, _StrArrays, fld(N), fld(N)).
+plawk_assoc_print_plan_field(_Tables, _StrArrays, record, record).
+plawk_assoc_print_plan_field(_Tables, _StrArrays, strlit(V), strlit(V)).
 plawk_assoc_print_plan_field(Tables, _StrArrays, lookup(Arr, N), lookup(TableIndex, N)) :-
     nth0(TableIndex, Tables, Arr).
 % `arr[N]` element read: raw integer key; value kind from the str-array set.
@@ -7687,6 +7694,33 @@ plawk_assoc_print_one_field(fld(N), Base, Index, FieldSep, Lines) :-
         '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i32 %~w_lenw, i8* %~w_ptr)',
         [P, P, P, P]),
     Lines = [SliceL, PtrL, LenL, LenwL, FmtL, PrL].
+% `print $0` -- the whole record: resolve %line's atom to its NUL-terminated
+% text (like the split-$0 source) and print it as %s.
+plawk_assoc_print_one_field(record, Base, Index, _FieldSep, Lines) :-
+    format(atom(P), '~w_f~w', [Base, Index]),
+    format(atom(LpL), '  %~w_lp = call i64 @value_payload(%Value %line)', [P]),
+    format(atom(SL), '  %~w_s = call i8* @wam_atom_to_string(i64 %~w_lp)', [P, P]),
+    format(atom(FmtL),
+        '  %~w_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0',
+        [P]),
+    format(atom(PrL),
+        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i8* %~w_s)', [P, P, P]),
+    Lines = [LpL, SL, FmtL, PrL].
+% `print "text"` -- a string literal: its bytes ride the global channel (a
+% module constant, lifted by plawk_partition_global_lines), printed as %s.
+plawk_assoc_print_one_field(strlit(V), Base, Index, _FieldSep, Lines) :-
+    format(atom(P), '~w_f~w', [Base, Index]),
+    format(atom(GName), '~w_lit', [P]),
+    llvm_emit_c_string_global(GName, V, Global, _StrLen, BytesLen),
+    format(atom(PtrL),
+        '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+        [P, BytesLen, BytesLen, GName]),
+    format(atom(FmtL),
+        '  %~w_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0',
+        [P]),
+    format(atom(PrL),
+        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i8* %~w_ptr)', [P, P, P]),
+    Lines = [global(Global), PtrL, FmtL, PrL].
 plawk_assoc_print_one_field(lookup(TableIndex, N), Base, Index, FieldSep, Lines) :-
     format(atom(P), '~w_f~w', [Base, Index]),
     format(atom(SliceL),
