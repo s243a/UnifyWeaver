@@ -1365,6 +1365,10 @@ compile_execute_io_builtin_to_rust(Code) :-
                        MetricsTemplate),
     render_template(MetricsTemplate, [part=helpers], MetricsHelpers),
     render_template(MetricsTemplate, [part=arms], MetricsArms),
+    read_template_file('templates/targets/rust_wam/os_error_builtin.rs.mustache',
+                       OsErrorTemplate),
+    render_template(OsErrorTemplate, [part=helpers], OsErrorHelpers),
+    render_template(OsErrorTemplate, [part=arms], OsErrorArms),
     Prefix = '    fn builtin_path_arg(&self, reg: &str) -> Option<String> {
         match self.get_reg_raw(reg)
             .map(|v| self.deref_heap(&self.deref_var(&v))) {
@@ -2101,8 +2105,8 @@ compile_execute_io_builtin_to_rust(Code) :-
         }
     }',
     atomic_list_concat(
-        [Prefix, ProcessHelpers, MetricsHelpers, Dispatcher,
-         ProcessArms, MetricsArms, Suffix], Code).
+        [Prefix, ProcessHelpers, MetricsHelpers, OsErrorHelpers, Dispatcher,
+         ProcessArms, MetricsArms, OsErrorArms, Suffix], Code).
 
 compile_execute_type_builtin_to_rust(Code) :-
     Code = '    fn execute_type_builtin(&mut self, op: &str, _arity: usize) -> bool {

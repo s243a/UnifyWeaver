@@ -128,6 +128,11 @@ t_runtime_metrics(Cpu, Monotonic, MaxRss, User, System) :-
     process_user_time(User),
     process_system_time(System).
 
+:- dynamic t_os_errors/2.
+t_os_errors(Current, MissingMessage) :-
+    errno(Current),
+    strerror(2, MissingMessage).
+
 :- dynamic t_process_commands/2.
 t_process_commands(Status, Output) :-
     shell('exit 0'),
@@ -425,6 +430,7 @@ test_builtin_parity_execution :-
              user:t_process_identity/6,
              user:t_system_names/3,
              user:t_runtime_metrics/5,
+             user:t_os_errors/2,
              user:t_process_commands/2,
              user:t_sleep/0,
              user:t_halt_zero/0,
@@ -472,6 +478,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_process_identity_6,
     t_system_names_3,
     t_runtime_metrics_5,
+    t_os_errors_2,
     t_process_commands_2,
     t_sleep_0,
     t_environment_mutation_1,
@@ -805,6 +812,17 @@ fn test_runtime_metrics_compiled() {
         assert!(value.is_finite() && value >= 0.0, "unexpected {name}: {value}");
     }
     assert!(integer_var(&vm, "MaxRss") > 0);
+}
+
+#[test]
+fn test_os_errors_compiled() {
+    let mut vm = vmnew();
+    assert!(t_os_errors_2(&mut vm, ub("Current"), ub("MissingMessage")));
+    let _ = integer_var(&vm, "Current");
+    match read_var(&vm, "MissingMessage") {
+        Value::Atom(message) => assert!(!message.is_empty()),
+        other => panic!("expected error message atom, got {:?}", other),
+    }
 }
 
 #[cfg(unix)]
@@ -2620,6 +2638,39 @@ fn test_process_metrics_unavailable_direct() {
     ] {
         assert!(!call1(op, ub("Value")).0);
     }
+}
+
+#[test]
+fn test_os_errors_direct() {
+    let mut failed_vm = vmnew();
+    failed_vm.set_reg("A1", a("__unifyweaver_missing_errno_path__/file"));
+    assert!(!failed_vm.execute_builtin("delete_file/1", 1));
+    failed_vm.set_reg("A1", ub("Error"));
+    assert!(failed_vm.execute_builtin("errno/1", 1));
+    let failure_code = integer_var(&failed_vm, "Error");
+    assert_ne!(failure_code, 0);
+
+    assert!(call1("errno/1", i(failure_code)).0);
+    assert!(!call1("errno/1", i(i64::MIN)).0);
+    assert!(!call1("errno/1", a("not_an_integer")).0);
+    assert!(!vmnew().execute_builtin("errno/1", 1));
+
+    let (message_ok, message_vm) = call2("strerror/2", i(2), ub("Message"));
+    assert!(message_ok);
+    let message = match read_var(&message_vm, "Message") {
+        Value::Atom(message) => message,
+        other => panic!("expected error message atom, got {:?}", other),
+    };
+    assert!(!message.is_empty());
+    assert!(call2("strerror/2", i(2), a(&message)).0);
+    assert!(!call2("strerror/2", i(2), a("__not_an_error_message__")).0);
+    assert!(!call2("strerror/2", a("two"), ub("Message")).0);
+    assert!(!call2("strerror/2", ub("Error"), ub("Message")).0);
+    assert!(!call2("strerror/2", Value::Float(2.0), ub("Message")).0);
+    assert!(!vmnew().execute_builtin("strerror/2", 2));
+    let mut missing_output_vm = vmnew();
+    missing_output_vm.set_reg("A1", i(2));
+    assert!(!missing_output_vm.execute_builtin("strerror/2", 2));
 }
 
 #[cfg(unix)]
