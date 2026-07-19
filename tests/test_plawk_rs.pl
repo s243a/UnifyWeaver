@@ -14,9 +14,8 @@
 % fields). The trailing-CR strip (CRLF handling) is gated on RS being exactly a
 % one-byte newline, so a custom RS keeps a CR as ordinary data.
 %
-% An empty RS (paragraph mode) is a follow-on: the startup helper fails, so the
-% program is cleanly rejected rather than silently reading by newline. A regex
-% RS (gawk) and getline's own record separator are also follow-ons.
+% An empty RS (paragraph mode) is supported — see tests/test_plawk_paragraph.pl.
+% A regex RS (gawk) and getline's own record separator are follow-ons.
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
