@@ -880,14 +880,16 @@ plawk_program_native_driver_ir(
 % ... and the canonical group-by report: END { for (k in counts)
 % print k, counts[k] } over a tagged-union stream.
 plawk_program_native_driver_ir(
-    program(BeginClauses, case_blocks(CaseBlocks), [end([for_in(var(LoopVar), var(ArrayName), BodyActions)])]),
+    program(BeginClauses, case_blocks(CaseBlocks),
+        [end([for_in(var(LoopVar), var(ArrayName), [print(PrintFields)])])]),
     InputPath,
     DriverIR
 ) :-
     plawk_record_descriptor(BeginClauses, Descriptor),
     Descriptor = binfmt_union(Arms),
     plawk_union_flatten_rules(CaseBlocks, Arms, Rules),
-    plawk_forin_end_plan(Rules, LoopVar, ArrayName, BodyActions, AssocPlan, PrintFields),
+    plawk_forin_end_plan(Rules, LoopVar, ArrayName, [print(PrintFields)],
+        AssocPlan, PrintFields),
     plawk_assoc_record_program_ok(Descriptor, Rules, PrintFields),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
@@ -5479,8 +5481,8 @@ plawk_while_cond_operand(var(Name), Slots, CondValues, _Base, _Path, _Side, Ref,
     !,
     nth0(Idx, CondValues, Ref).
 
-%% plawk_if_cond_ir(+Cond, +Slots, +Values0, +FieldSeparator, +GlobalBase,
-%%     -CondValue, -GuardGlobalIR-GuardIR)
+%% plawk_if_cond_ir(+Cond, +Slots, +Values0, +AssocPlan, +FieldSeparator,
+%%     +GlobalBase, -CondValue, -GuardGlobalIR-GuardIR)
 %
 %  Lower an `if` condition to an i1 (CondValue). A `scalar_if(_)` condition is a
 %  scalar comparison over slots -- lowered like a loop condition, reading the
@@ -5491,7 +5493,7 @@ plawk_while_cond_operand(var(Name), Slots, CondValues, _Base, _Path, _Side, Ref,
 % id). Only == / != (ordering would need strcmp). A single comparison, not
 % combined with && / || (that stays a clean codegen error) -- v1.
 plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
-        _FieldSeparator, GlobalBase, CondValue, GlobalIR-IR) :-
+        _AssocPlan, _FieldSeparator, GlobalBase, CondValue, GlobalIR-IR) :-
     memberchk(Op, [eq, ne]),
     !,
     nth0(Idx, Slots, Slot),
@@ -5514,7 +5516,7 @@ plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
 % and `strcmp` against the literal, then compare the result to 0. An unset scalar
 % (id 0) resolves to empty via the literal global's trailing NUL.
 plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
-        _FieldSeparator, GlobalBase, CondValue, GlobalIR-IR) :-
+        _AssocPlan, _FieldSeparator, GlobalBase, CondValue, GlobalIR-IR) :-
     memberchk(Op, [lt, le, gt, ge]),
     !,
     nth0(Idx, Slots, Slot),
@@ -5538,15 +5540,19 @@ plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
          GlobalBase, GlobalBase, BytesLen, BytesLen, LitName, Len, GlobalBase,
          GlobalBase, GlobalBase, GlobalBase,
          GlobalBase, Pred, GlobalBase]).
-plawk_if_cond_ir(scalar_if(Cond), Slots, Values0, FieldSeparator, GlobalBase,
-        CondValue, ''-GuardIR) :-
+plawk_if_cond_ir(scalar_if(Cond), Slots, Values0, _AssocPlan, FieldSeparator,
+        GlobalBase, CondValue, ''-GuardIR) :-
     !,
     plawk_while_cond_ir(Cond, Slots, Values0, FieldSeparator, GlobalBase, CondValue, GuardIR).
-plawk_if_cond_ir(Pattern, _Slots, _Values0, FieldSeparator, GlobalBase,
-        CondValue, GuardGlobalIR-GuardIR) :-
+plawk_if_cond_ir(Pattern, _Slots, _Values0, AssocPlan, FieldSeparator,
+        GlobalBase, CondValue, GuardGlobalIR-GuardIR) :-
     format(atom(CondValue), '%~w_cond', [GlobalBase]),
-    plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, CondValue,
-        GuardGlobalIR-GuardIR).
+    (   plawk_pattern_has_membership(Pattern)
+    ->  plawk_assoc_pattern_guard_ir(Pattern, AssocPlan, FieldSeparator,
+            GlobalBase, CondValue, GuardGlobalIR-GuardIR)
+    ;   plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, CondValue,
+            GuardGlobalIR-GuardIR)
+    ).
 
 % Surface comparison op -> ordered LLVM fcmp predicate (row values are finite,
 % so ordered comparisons are correct; a NaN column fails every guard).
@@ -5695,8 +5701,28 @@ plawk_forin_end_plan(Rules, LoopVar, ArrayName,
     maplist(plawk_forin_print_field(LoopVar), PrintFields),
     findall(LookupArrayName,
         member(assoc(var(LookupArrayName), var(LoopVar)), PrintFields),
-        LookupArrays),
-    plawk_forin_assoc_plan(Rules, ArrayName, LookupArrays, AssocPlan).
+        PrintLookupArrays),
+    findall(GuardArrayName,
+        plawk_membership_array(Guard, GuardArrayName), GuardLookupArrays),
+    append(PrintLookupArrays, GuardLookupArrays, LookupArrays),
+    plawk_forin_assoc_plan(Rules, ArrayName, LookupArrays, AssocPlan),
+    plawk_forin_membership_domains_ok(Guard, ArrayName, AssocPlan).
+
+% The iterated key may be forwarded directly only across tables with the same
+% internal key domain. Check this during END-plan selection as well as during
+% emission so no broader driver can accept a cross-domain program first.
+plawk_forin_membership_domains_ok(Guard, IteratedArray, AssocPlan) :-
+    plawk_assoc_plan_posarrays(AssocPlan, PosArrays),
+    forall(plawk_membership_array(Guard, LookupArray),
+        plawk_forin_key_domains_match(IteratedArray, LookupArray, PosArrays)).
+
+plawk_assoc_plan_posarrays(AssocPlan, PosArrays) :-
+    AssocPlan = assoc_plan(Tables, _),
+    findall(PosArray,
+        ( member(PosArray, Tables),
+          plawk_assoc_plan_posarray_array(AssocPlan, PosArray)
+        ),
+        PosArrays).
 
 %% plawk_forin_end_accum_plan(+Rules, +ArrayName, +Operand, -AssocPlan)
 %  Plan the END accumulate for-in (stage 2): the record rules populate the
@@ -5727,12 +5753,11 @@ plawk_forin_assoc_plan(Rules, ArrayName, LookupArrays,
     maplist(plawk_assoc_rule_action_specs, Rules, RuleSpecs),
     RuleSpecs \== [],
     findall(RuleArrayName,
-        ( member(rule(_Pattern, ActionSpecs, _Control), RuleSpecs),
-          ( member(RuleArrayName-_KeyIndex, ActionSpecs)
-          ; member(dynassoc(RuleArrayName, _Call), ActionSpecs)
-          ; member(assoc_delete(RuleArrayName, _KeyIndex), ActionSpecs)
-          ; member(assoc_split(RuleArrayName, _Ki, _Sep), ActionSpecs)
+        ( member(rule(Pattern, ActionSpecs, _Control), RuleSpecs),
+          ( member(Spec, ActionSpecs),
+            plawk_assoc_spec_table_name(Spec, RuleArrayName)
           ; plawk_assoc_spec_forin_array(ActionSpecs, RuleArrayName)
+          ; plawk_membership_array(Pattern, RuleArrayName)
           )
         ),
         ActionArrays),
@@ -5752,9 +5777,10 @@ plawk_assoc_spec_forin_array(ActionSpecs, ArrayName) :-
     ; member(assoc(var(ArrayName), var(_)), FFields)
     ).
 plawk_assoc_spec_forin_array(ActionSpecs, ArrayName) :-
-    member(forin_guarded(_LoopVar, FA, _Guard, FFields), ActionSpecs),
+    member(forin_guarded(_LoopVar, FA, Guard, FFields), ActionSpecs),
     ( ArrayName = FA
     ; member(assoc(var(ArrayName), var(_)), FFields)
+    ; plawk_membership_array(Guard, ArrayName)
     ).
 
 %% plawk_assoc_specs_str_arrays(+RuleSpecs, -StrArrays)
@@ -5948,7 +5974,10 @@ plawk_forin_end_guarded_print_ir(LoopVar, ArrayName, Guard, PrintFields,
     phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
     atomic_list_concat(FreeLines, '\n', FreeIR),
     ( plawk_assoc_plan_str_array(AssocPlan, ArrayName) -> IsStr = true ; IsStr = false ),
-    plawk_forin_guard_plan(Guard, IsStr, GuardPlan),
+    AssocPlan = assoc_plan(Tables, _),
+    plawk_assoc_plan_posarrays(AssocPlan, PosArrays),
+    plawk_forin_guard_plan(Guard, IsStr, ArrayName, Tables, PosArrays,
+        GuardPlan),
     plawk_forin_end_guard_lines(GuardPlan, TableIndex, GuardLines, CondVar, GuardGlobal),
     atomic_list_concat(GuardLines, '\n', GuardIR),
     format(atom(IR),
@@ -5985,6 +6014,17 @@ forin_after:
 % END-loop guard operand load + comparison (fixed `forin` prefix). GuardGlobal
 % is any module-level constant the guard needs (a string literal to intern);
 % '' when none.
+plawk_forin_end_guard_lines(guard_exists(LookupTableIndex), _TableIndex,
+        [ExistsLine], '%forin_gexists', '') :-
+    format(atom(ExistsLine),
+        '  %forin_gexists = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_key_id)',
+        [LookupTableIndex]).
+plawk_forin_end_guard_lines(guard_not(GuardPlan), TableIndex, Lines,
+        '%forin_gnot', GuardGlobal) :-
+    plawk_forin_end_guard_lines(GuardPlan, TableIndex, InnerLines, InnerCond,
+        GuardGlobal),
+    format(atom(NotLine), '  %forin_gnot = xor i1 ~w, true', [InnerCond]),
+    append(InnerLines, [NotLine], Lines).
 plawk_forin_end_guard_lines(guard_value(Op, V), TableIndex, Lines, CondVar, '') :-
     plawk_forin_cmp_pred(Op, Pred),
     format(atom(ValLine),
@@ -7162,9 +7202,26 @@ plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, [])) :-
           plawk_assoc_print_array(Field, ArrayName)
         ),
         PrintArrays),
-    PrintArrays \== [],
-    append(ActionArrays, PrintArrays, ArrayNames0),
+    findall(ArrayName,
+        ( member(rule(Pattern, Actions), Rules),
+          ( plawk_membership_array(Pattern, ArrayName)
+          ; plawk_actions_membership_array(Actions, ArrayName)
+          )
+        ),
+        MembershipArrays),
+    ( PrintArrays \== [] ; MembershipArrays \== [] ),
+    append([ActionArrays, PrintArrays, MembershipArrays], ArrayNames0),
     sort(ArrayNames0, Tables).
+
+plawk_actions_membership_array(Actions, ArrayName) :-
+    member(Action, Actions),
+    plawk_action_membership_array(Action, ArrayName).
+
+plawk_action_membership_array(if(Pattern, ThenActions, ElseActions), ArrayName) :-
+    ( plawk_membership_array(Pattern, ArrayName)
+    ; plawk_actions_membership_array(ThenActions, ArrayName)
+    ; plawk_actions_membership_array(ElseActions, ArrayName)
+    ).
 
 plawk_planned_rules_have_conditionals(PlannedRules) :-
     member(mixed_rule(_Index, _Pattern, Actions, _AssocActions, _Control), PlannedRules),
@@ -7382,7 +7439,8 @@ plawk_mixed_rule_chain_lines([mixed_rule(Index, Pattern, Actions, _AssocActions,
       format(atom(DoneLabel), 'rule_~w_done', [Index]),
       plawk_mixed_scalar_rule_input_phi_ir(ScalarPlan, Index, Controls, InputPhiIR),
       plawk_mixed_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel,
-          NextLabel, InputPhiIR, FieldSeparator, GuardGlobalIR-GuardIR),
+          NextLabel, InputPhiIR, AssocPlan, FieldSeparator,
+          GuardGlobalIR-GuardIR),
       plawk_native_match_update_ir(ScalarPlan, AssocPlan, Actions, FieldSeparator, OutputSeparator, Index,
           BranchNextExits, ActionGlobalIR-ActionIR),
       ( Index =:= 0
@@ -7406,7 +7464,7 @@ plawk_mixed_rule_chain_lines([mixed_rule(Index, Pattern, Actions, _AssocActions,
     plawk_mixed_rule_chain_lines(Rest, Controls, ScalarPlan, AssocPlan, FieldSeparator, OutputSeparator, NextIndex).
 
 plawk_mixed_rule_guard_ir(always, Index, RuleLabel, ApplyLabel, NextLabel,
-    InputPhiIR, _FieldSeparator, ''-IR) :-
+    InputPhiIR, _AssocPlan, _FieldSeparator, ''-IR) :-
     !,
     format(atom(MatchVar), 'rule_~w_is_match', [Index]),
     format(atom(IR),
@@ -7415,12 +7473,16 @@ plawk_mixed_rule_guard_ir(always, Index, RuleLabel, ApplyLabel, NextLabel,
   br i1 %~w, label %~w, label %~w',
         [RuleLabel, InputPhiIR, MatchVar, MatchVar, ApplyLabel, NextLabel]).
 plawk_mixed_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel, NextLabel,
-    InputPhiIR, FieldSeparator, GuardGlobalIR-IR) :-
+    InputPhiIR, AssocPlan, FieldSeparator, GuardGlobalIR-IR) :-
     format(atom(MatchVar), 'rule_~w_is_match', [Index]),
     format(atom(GlobalBase), 'plawk_mixed_rule_~w', [Index]),
     format(atom(MatchValue), '%~w', [MatchVar]),
-    plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, MatchValue,
-        GuardGlobalIR-GuardCallIR),
+    (   plawk_pattern_has_membership(Pattern)
+    ->  plawk_assoc_pattern_guard_ir(Pattern, AssocPlan, FieldSeparator,
+            GlobalBase, MatchValue, GuardGlobalIR-GuardCallIR)
+    ;   plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, MatchValue,
+            GuardGlobalIR-GuardCallIR)
+    ),
     format(atom(IR),
 '~w:
 ~w~w
@@ -7519,10 +7581,11 @@ plawk_assoc_plan_specs_tables(Rules, PrintFields, RuleSpecs, PrintArrays, Tables
         ),
         PrintArrays),
     findall(ArrayName,
-        ( member(rule(_Pattern, ActionSpecs, _Control), RuleSpecs),
+        ( member(rule(Pattern, ActionSpecs, _Control), RuleSpecs),
           ( member(Spec, ActionSpecs),
             plawk_assoc_spec_table_name(Spec, ArrayName)
           ; plawk_assoc_spec_forin_array(ActionSpecs, ArrayName)
+          ; plawk_membership_array(Pattern, ArrayName)
           )
         ),
         ActionArrays),
@@ -7537,6 +7600,8 @@ plawk_assoc_spec_table_name(assoc_add(ArrayName, _K, _Delta), ArrayName).
 plawk_assoc_spec_table_name(assoc_delete(ArrayName, _K), ArrayName).
 plawk_assoc_spec_table_name(assoc_set_row(ArrayName, _K), ArrayName).
 plawk_assoc_spec_table_name(assoc_set_row_cons(ArrayName, _K, _Fs), ArrayName).
+plawk_assoc_spec_table_name(assoc_guarded_print(Pattern, _Fields), ArrayName) :-
+    plawk_membership_array(Pattern, ArrayName).
 
 plawk_assoc_plan_from_specs(RuleSpecs, Tables, assoc_plan(Tables, PlannedRules)) :-
     plawk_assoc_specs_str_arrays(RuleSpecs, StrArrays),
@@ -7651,6 +7716,15 @@ plawk_assoc_body_action_spec(dynposarray_bind_str(var(ArrayName), Call),
 % text field `$N`, or a table lookup `arr[$N]` (the table's i64 value at the
 % key interned from field N). String-literal fields are a follow-on.
 plawk_assoc_body_action_spec(print(Fields), assoc_print(FieldSpecs)) :-
+    Fields = [_ | _],
+    maplist(plawk_assoc_print_field_spec, Fields, FieldSpecs).
+
+% A membership-guarded per-record print. This is the canonical awk idiom used
+% for first-seen filtering; the condition is planned against the same table set
+% as the following assoc update, and the existence probe does not insert.
+plawk_assoc_body_action_spec(if(Pattern, [print(Fields)], []),
+        assoc_guarded_print(Pattern, FieldSpecs)) :-
+    plawk_pattern_has_membership(Pattern),
     Fields = [_ | _],
     maplist(plawk_assoc_print_field_spec, Fields, FieldSpecs).
 
@@ -7978,6 +8052,9 @@ plawk_assoc_body_action_spec(
 % (value_self), or `k CMP int` (the raw loop key).
 plawk_forin_guard_ok(forin_val_cmp(Array, LoopVar, _Op, _V), LoopVar, Array).
 plawk_forin_guard_ok(forin_key_cmp(LoopVar, _Op, _V), LoopVar, _Array).
+plawk_forin_guard_ok(in_arr(var(LoopVar), _LookupArray), LoopVar, _Array).
+plawk_forin_guard_ok(not_pat(Pattern), LoopVar, Array) :-
+    plawk_forin_guard_ok(Pattern, LoopVar, Array).
 
 plawk_assoc_increment_action(inc_assoc(var(ArrayName), field(KeyIndex)), ArrayName-KeyIndex) :-
     KeyIndex > 0.
@@ -8079,6 +8156,16 @@ plawk_assoc_planned_actions([dynassoc(ArrayName, Call) | Rest], Tables,
     },
     [assoc_dyn_action(Index, ArrayName, TableIndex, Call)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+plawk_assoc_planned_actions([assoc_guarded_print(Pattern, FieldSpecs) | Rest],
+        Tables, StrArrays, PosArrays, Index) -->
+    { plawk_membership_pattern_key_shapes_ok(Pattern),
+      maplist(plawk_assoc_print_plan_field(Tables, StrArrays), FieldSpecs,
+          PlannedFields),
+      NextIndex is Index + 1
+    },
+    [assoc_guarded_print_action(Index,
+        membership_context(Tables, PosArrays), Pattern, PlannedFields)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 % rule-body for-in: resolve each print field to a plan (loop key /
 % iterated-table value / lookup by key / literal), with the value kind
 % (i64 vs str) baked in from the str-array set, so the emitter needs no
@@ -8109,13 +8196,37 @@ plawk_assoc_planned_actions(
         [forin_guarded(LoopVar, ArrayName, Guard, Fields) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
     { nth0(TableIndex, Tables, ArrayName),
-      plawk_forin_guard_plan(Guard, GuardPlan),
+      ( memberchk(ArrayName, StrArrays) -> IsStr = true ; IsStr = false ),
+      plawk_forin_guard_plan(Guard, IsStr, ArrayName, Tables, PosArrays,
+          GuardPlan),
       maplist(plawk_forin_rule_field_plan(LoopVar, ArrayName, TableIndex,
           Tables, StrArrays, PosArrays), Fields, FieldPlans),
       NextIndex is Index + 1
     },
     [assoc_forin_guarded_action(Index, TableIndex, GuardPlan, FieldPlans)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+
+% The codegen whitelist for membership key shapes. Parsing is intentionally
+% broader so unsupported forms (three-plus dimensions, blob/dynamic keys, or a
+% scalar variable outside a for-in) reach codegen and produce status 3.
+plawk_membership_pattern_key_shapes_ok(in_arr(field(Index), _Array)) :-
+    integer(Index), Index > 0.
+plawk_membership_pattern_key_shapes_ok(in_arr(string(Value), _Array)) :-
+    string(Value).
+plawk_membership_pattern_key_shapes_ok(in_arr(int(Value), _Array)) :-
+    integer(Value).
+plawk_membership_pattern_key_shapes_ok(in_arr(subsep_key(Fields), _Array)) :-
+    plawk_subsep_field_indexes(Fields, _Indexes).
+plawk_membership_pattern_key_shapes_ok(not_pat(Pattern)) :-
+    plawk_membership_pattern_key_shapes_ok(Pattern).
+plawk_membership_pattern_key_shapes_ok(and_pat(Left, Right)) :-
+    plawk_membership_pattern_key_shapes_ok(Left),
+    plawk_membership_pattern_key_shapes_ok(Right).
+plawk_membership_pattern_key_shapes_ok(or_pat(Left, Right)) :-
+    plawk_membership_pattern_key_shapes_ok(Left),
+    plawk_membership_pattern_key_shapes_ok(Right).
+plawk_membership_pattern_key_shapes_ok(Pattern) :-
+    \+ plawk_pattern_has_membership(Pattern).
 
 % guard operand: the iterated table's value at the current slot, or the
 % raw loop key. The key is always a genuine i64 (a position / registry id);
@@ -8126,6 +8237,38 @@ plawk_assoc_planned_actions(
 % a raw icmp on the atom id would compare registry positions, not values.
 plawk_forin_guard_plan(Guard, GuardPlan) :-
     plawk_forin_guard_plan(Guard, false, GuardPlan).
+plawk_forin_guard_plan(in_arr(var(_LoopVar), ArrayName), _IsStr,
+        IteratedArray, Tables, PosArrays,
+        guard_exists(TableIndex)) :-
+    !,
+    plawk_forin_key_domains_match(IteratedArray, ArrayName, PosArrays),
+    nth0(TableIndex, Tables, ArrayName).
+% Collapse pairs of negations while planning. Besides being cheaper, this
+% keeps the fixed for-in SSA names unique for arbitrarily nested `!!` guards.
+plawk_forin_guard_plan(not_pat(not_pat(Pattern)), IsStr, IteratedArray,
+        Tables, PosArrays, GuardPlan) :-
+    !,
+    plawk_forin_guard_plan(Pattern, IsStr, IteratedArray, Tables, PosArrays,
+        GuardPlan).
+plawk_forin_guard_plan(not_pat(Pattern), IsStr, IteratedArray, Tables,
+        PosArrays, guard_not(GuardPlan)) :-
+    !,
+    plawk_forin_guard_plan(Pattern, IsStr, IteratedArray, Tables, PosArrays,
+        GuardPlan).
+plawk_forin_guard_plan(Guard, IsStr, _IteratedArray, _Tables, _PosArrays,
+        GuardPlan) :-
+    plawk_forin_guard_plan(Guard, IsStr, GuardPlan).
+
+% Ordinary associative arrays use interned text ids as keys; positional
+% arrays (split / posarray binds) use raw integer positions. A scoped loop key
+% can be forwarded without conversion only when both tables use the same
+% domain. Cross-domain membership is rejected at planning time rather than
+% comparing unrelated i64 representations.
+plawk_forin_key_domains_match(Left, Right, PosArrays) :-
+    ( memberchk(Left, PosArrays)
+    -> memberchk(Right, PosArrays)
+    ;  \+ memberchk(Right, PosArrays)
+    ).
 % A string RHS (`arr[k] CMP "x"`) is a string compare of the element.
 % `==`/`!=` intern the literal and icmp its atom id against the stored id
 % (canonical interning, so equal strings share an id); the ordering ops resolve
@@ -8409,17 +8552,19 @@ plawk_assoc_entry_setup_lines([_ArrayName | Rest], Index) -->
     [Line],
     plawk_assoc_entry_setup_lines(Rest, NextIndex).
 
-plawk_assoc_rule_chain_ir(assoc_plan(_Tables, Rules), FieldSeparator, GlobalIR, ChainIR) :-
+plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, GlobalIR, ChainIR) :-
+    AssocPlan = assoc_plan(_Tables, Rules),
     length(Rules, RuleCount),
     RuleCount > 0,
-    phrase(plawk_assoc_rule_chain_lines(Rules, FieldSeparator, 0), Pairs),
+    phrase(plawk_assoc_rule_chain_lines(Rules, AssocPlan, FieldSeparator, 0), Pairs),
     pairs_keys_values(Pairs, GlobalParts, ChainParts),
     atomic_list_concat(GlobalParts, '\n', GlobalIR),
     atomic_list_concat(ChainParts, '\n', ChainIR).
 
-plawk_assoc_rule_chain_lines([], _FieldSeparator, _) -->
+plawk_assoc_rule_chain_lines([], _AssocPlan, _FieldSeparator, _) -->
     [].
-plawk_assoc_rule_chain_lines([assoc_rule(Index, Pattern, Actions, Control) | Rest], FieldSeparator, Index) -->
+plawk_assoc_rule_chain_lines([assoc_rule(Index, Pattern, Actions, Control) | Rest],
+        AssocPlan, FieldSeparator, Index) -->
     { NextIndex is Index + 1,
       ( Rest == []
       -> NextLabel = 'continue_loop'
@@ -8437,7 +8582,7 @@ plawk_assoc_rule_chain_lines([assoc_rule(Index, Pattern, Actions, Control) | Res
       ;  EntryIR = ''
       ),
       plawk_assoc_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel,
-          NextLabel, EntryIR, RuleDescriptor, GuardGlobalIR, BranchIR),
+          NextLabel, EntryIR, AssocPlan, RuleDescriptor, GuardGlobalIR, BranchIR),
       format(atom(RuleIR),
 '~w
 
@@ -8448,22 +8593,26 @@ plawk_assoc_rule_chain_lines([assoc_rule(Index, Pattern, Actions, Control) | Res
       Pair = RuleGlobalIR-RuleIR
     },
     [Pair],
-    plawk_assoc_rule_chain_lines(Rest, FieldSeparator, NextIndex).
+    plawk_assoc_rule_chain_lines(Rest, AssocPlan, FieldSeparator, NextIndex).
 
 plawk_assoc_rule_guard_ir(always, _Index, RuleLabel, ApplyLabel, _NextLabel,
-    EntryIR, _FieldSeparator, '', IR) :-
+    EntryIR, _AssocPlan, _FieldSeparator, '', IR) :-
     !,
     format(atom(IR),
 '~w~w:
   br label %~w',
         [EntryIR, RuleLabel, ApplyLabel]).
 plawk_assoc_rule_guard_ir(Pattern, Index, RuleLabel, ApplyLabel, NextLabel,
-    EntryIR, FieldSeparator, GuardGlobalIR, IR) :-
+    EntryIR, AssocPlan, FieldSeparator, GuardGlobalIR, IR) :-
     format(atom(MatchVar), 'assoc_rule_~w_is_match', [Index]),
     format(atom(GlobalBase), 'plawk_assoc_rule_~w', [Index]),
     format(atom(MatchValue), '%~w', [MatchVar]),
-    plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, MatchValue,
-        GuardGlobalIR-GuardCallIR),
+    (   plawk_pattern_has_membership(Pattern)
+    ->  plawk_assoc_pattern_guard_ir(Pattern, AssocPlan, FieldSeparator,
+            GlobalBase, MatchValue, GuardGlobalIR-GuardCallIR)
+    ;   plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, MatchValue,
+            GuardGlobalIR-GuardCallIR)
+    ),
     format(atom(IR),
 '~w~w:
 ~w
@@ -8585,6 +8734,37 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[global(GlobalDecl), Label], SrcLines,
               [LoadL, AddL, StoreL, Next, '']], Lines)
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% `if (KEY in arr) print ...` and its negated form. The condition is a pure
+% occupancy probe; on false it skips this print and proceeds to the next action
+% (which is commonly the insertion that records a newly seen key).
+plawk_assoc_rule_action_blocks(RuleIndex,
+        [assoc_guarded_print_action(Index, Context, Pattern, Fields) | Rest],
+        NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(Base), 'assoc_rule_~w_action_~w_in', [RuleIndex, Index]),
+      format(atom(CondValue), '%~w_cond', [Base]),
+      plawk_assoc_pattern_guard_ir(Pattern, Context, FieldSeparator, Base,
+          CondValue, GuardGlobal-GuardIR),
+      format(atom(PrintLabel), '~w_print', [Base]),
+      format(atom(BranchLine),
+          '  br i1 ~w, label %~w, label %~w',
+          [CondValue, PrintLabel, ActionNextLabel]),
+      format(atom(PrintLabelLine), '~w:', [PrintLabel]),
+      plawk_assoc_print_field_lines(Fields, Base, FieldSeparator, 0, FieldLines),
+      format(atom(NLLine), '  %~w_nl = call i32 @putchar(i32 10)', [Base]),
+      format(atom(NextLine), '  br label %~w', [ActionNextLabel]),
+      ( GuardGlobal == '' -> GlobalLines = [] ; GlobalLines = [global(GuardGlobal)] ),
+      append([GlobalLines, [Label, GuardIR, BranchLine, '', PrintLabelLine],
+              FieldLines, [NLLine, NextLine, '']], Lines)
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
@@ -8716,6 +8896,17 @@ plawk_assoc_rule_action_blocks(RuleIndex,
 % Guard operand load + comparison. guard_value reads the iterated table's
 % value at the current slot; guard_key uses the raw key. Both icmp against
 % the integer literal.
+plawk_forin_guard_lines(guard_exists(LookupTableIndex), B, _TableIndex,
+        [ExistsLine], CondVar) :-
+    format(atom(CondVar), '%~w_gexists', [B]),
+    format(atom(ExistsLine),
+        '  ~w = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key)',
+        [CondVar, LookupTableIndex, B]).
+plawk_forin_guard_lines(guard_not(GuardPlan), B, TableIndex, Lines, CondVar) :-
+    plawk_forin_guard_lines(GuardPlan, B, TableIndex, InnerLines, InnerCond),
+    format(atom(CondVar), '%~w_gnot', [B]),
+    format(atom(NotLine), '  ~w = xor i1 ~w, true', [CondVar, InnerCond]),
+    append(InnerLines, [NotLine], Lines).
 plawk_forin_guard_lines(guard_value(Op, V), B, TableIndex, Lines, CondVar) :-
     plawk_forin_cmp_pred(Op, Pred),
     format(atom(ValLine),
@@ -13522,8 +13713,8 @@ plawk_scalar_action_sequence_pairs([do_while_loop(Body, Cond) | Rest],
 plawk_scalar_action_sequence_pairs([if(Pattern, ThenActions, ElseActions) | Rest],
         Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex, OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { format(atom(GlobalBase), '~w_if_~w', [Prefix, OpIndex]),
-      plawk_if_cond_ir(Pattern, Slots, Values0, FieldSeparator, GlobalBase,
-          CondValue, GuardGlobalIR-GuardIR),
+      plawk_if_cond_ir(Pattern, Slots, Values0, AssocPlan, FieldSeparator,
+          GlobalBase, CondValue, GuardGlobalIR-GuardIR),
       format(atom(ThenLabel), '~w_if_~w_then', [Prefix, OpIndex]),
       format(atom(ElseLabel), '~w_if_~w_else', [Prefix, OpIndex]),
       format(atom(DoneLabel), '~w_if_~w_done', [Prefix, OpIndex]),
@@ -15136,6 +15327,175 @@ plawk_scalar_end_separator_lines(0, _OutputSeparator) -->
 plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator) -->
     { plawk_ofs_sep_lines(printed_end_separator, PrintIndex, OutputSeparator, Lines) },
     Lines.
+
+%% Associative membership guards -------------------------------------------
+
+% Membership is an occupancy query. It deliberately calls the runtime
+% `exists` primitive rather than comparing `get` with zero: zero is a valid
+% stored value. Context is either a complete assoc_plan or the compact context
+% embedded in a planned guarded-print action.
+plawk_pattern_has_membership(in_arr(_Key, _Array)).
+plawk_pattern_has_membership(not_pat(Pattern)) :-
+    plawk_pattern_has_membership(Pattern).
+plawk_pattern_has_membership(and_pat(Left, Right)) :-
+    ( plawk_pattern_has_membership(Left)
+    ; plawk_pattern_has_membership(Right)
+    ).
+plawk_pattern_has_membership(or_pat(Left, Right)) :-
+    ( plawk_pattern_has_membership(Left)
+    ; plawk_pattern_has_membership(Right)
+    ).
+plawk_pattern_has_membership(arm_pat(_Tag, _Types, Pattern)) :-
+    plawk_pattern_has_membership(Pattern).
+
+plawk_membership_array(in_arr(_Key, ArrayName), ArrayName).
+plawk_membership_array(not_pat(Pattern), ArrayName) :-
+    plawk_membership_array(Pattern, ArrayName).
+plawk_membership_array(and_pat(Left, Right), ArrayName) :-
+    ( plawk_membership_array(Left, ArrayName)
+    ; plawk_membership_array(Right, ArrayName)
+    ).
+plawk_membership_array(or_pat(Left, Right), ArrayName) :-
+    ( plawk_membership_array(Left, ArrayName)
+    ; plawk_membership_array(Right, ArrayName)
+    ).
+plawk_membership_array(arm_pat(_Tag, _Types, Pattern), ArrayName) :-
+    plawk_membership_array(Pattern, ArrayName).
+
+plawk_assoc_context_table_index(assoc_plan(Tables, _Rules), ArrayName, TableIndex) :-
+    nth0(TableIndex, Tables, ArrayName).
+plawk_assoc_context_table_index(membership_context(Tables, _PosArrays),
+        ArrayName, TableIndex) :-
+    nth0(TableIndex, Tables, ArrayName).
+
+plawk_assoc_context_posarray(Context, ArrayName) :-
+    Context = assoc_plan(_Tables, _Rules),
+    plawk_assoc_plan_posarray_array(Context, ArrayName).
+plawk_assoc_context_posarray(membership_context(_Tables, PosArrays), ArrayName) :-
+    memberchk(ArrayName, PosArrays).
+
+% An assoc-aware pattern emitter. Ordinary leaves fall back to the existing
+% guard emitter; membership leaves resolve the named table and build a key
+% without ever mutating that table. Boolean wrappers recurse through this
+% emitter so `!`, `&&`, and `||` preserve membership semantics.
+plawk_assoc_pattern_guard_ir(in_arr(Key, ArrayName), Context, Descriptor,
+        GlobalBase, MatchValue, GlobalIR-GuardIR) :-
+    !,
+    plawk_assoc_context_table_index(Context, ArrayName, TableIndex),
+    format(atom(KeyBase), '~w_in', [GlobalBase]),
+    plawk_membership_key_ir(Key, ArrayName, Context, Descriptor, KeyBase,
+        KeyValue, GlobalIR, KeyLines),
+    format(atom(ExistsLine),
+        '  ~w = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
+        [MatchValue, TableIndex, KeyValue]),
+    append(KeyLines, [ExistsLine], Lines),
+    atomic_list_concat(Lines, '\n', GuardIR).
+plawk_assoc_pattern_guard_ir(not_pat(Pattern), Context, Descriptor,
+        GlobalBase, MatchValue, GlobalIR-GuardIR) :-
+    !,
+    format(atom(InnerBase), '~w_n', [GlobalBase]),
+    format(atom(InnerValue), '~w_n', [MatchValue]),
+    plawk_assoc_pattern_guard_ir(Pattern, Context, Descriptor, InnerBase,
+        InnerValue, GlobalIR-InnerIR),
+    format(atom(GuardIR),
+'~w
+  ~w = xor i1 ~w, true',
+        [InnerIR, MatchValue, InnerValue]).
+plawk_assoc_pattern_guard_ir(and_pat(Left, Right), Context, Descriptor,
+        GlobalBase, MatchValue, GlobalIR-GuardIR) :-
+    !,
+    plawk_assoc_binary_pattern_guard_ir(and, Left, Right, Context, Descriptor,
+        GlobalBase, MatchValue, GlobalIR-GuardIR).
+plawk_assoc_pattern_guard_ir(or_pat(Left, Right), Context, Descriptor,
+        GlobalBase, MatchValue, GlobalIR-GuardIR) :-
+    !,
+    plawk_assoc_binary_pattern_guard_ir(or, Left, Right, Context, Descriptor,
+        GlobalBase, MatchValue, GlobalIR-GuardIR).
+plawk_assoc_pattern_guard_ir(Pattern, _Context, Descriptor, GlobalBase,
+        MatchValue, GuardIR) :-
+    \+ plawk_pattern_has_membership(Pattern),
+    plawk_pattern_guard_ir(Pattern, Descriptor, GlobalBase, MatchValue, GuardIR).
+
+plawk_assoc_binary_pattern_guard_ir(Op, Left, Right, Context, Descriptor,
+        GlobalBase, MatchValue, GlobalIR-GuardIR) :-
+    format(atom(LeftBase), '~w_l', [GlobalBase]),
+    format(atom(LeftValue), '~w_l', [MatchValue]),
+    plawk_assoc_pattern_guard_ir(Left, Context, Descriptor, LeftBase, LeftValue,
+        LeftGlobal-LeftIR),
+    format(atom(RightBase), '~w_r', [GlobalBase]),
+    format(atom(RightValue), '~w_r', [MatchValue]),
+    plawk_assoc_pattern_guard_ir(Right, Context, Descriptor, RightBase,
+        RightValue, RightGlobal-RightIR),
+    plawk_join_nonempty_ir([LeftGlobal, RightGlobal], GlobalIR),
+    format(atom(GuardIR),
+'~w
+~w
+  ~w = ~w i1 ~w, ~w',
+        [LeftIR, RightIR, MatchValue, Op, LeftValue, RightValue]).
+
+% Text fields are canonical atom ids, matching assoc writes. A two-field key
+% uses the exact SUBSEP helper shared with arr[$i,$j] reads and writes. The
+% low-level binary clauses are retained for the binary driver, whose current
+% surface whitelist does not yet expose membership patterns.
+plawk_membership_key_ir(field(Index), _ArrayName, _Context, binfmt(Types), Base,
+        KeyValue, '', Lines) :-
+    !,
+    Descriptor = binfmt(Types),
+    plawk_binfmt_field_type(Descriptor, Index, i64),
+    plawk_binfmt_field_load_lines(Descriptor, Index, Base, KeyValue, Lines).
+plawk_membership_key_ir(field(Index), _ArrayName, _Context, FieldSeparator,
+        Base, KeyValue, '', [SliceLine, PtrLine, LenLine, KeyLine]) :-
+    integer(FieldSeparator),
+    integer(Index), Index > 0,
+    format(atom(SliceLine),
+        '  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+        [Base, Index, FieldSeparator]),
+    format(atom(PtrLine),
+        '  %~w_ptr = extractvalue %WamSlice %~w_slice, 0', [Base, Base]),
+    format(atom(LenLine),
+        '  %~w_len = extractvalue %WamSlice %~w_slice, 1', [Base, Base]),
+    format(atom(KeyLine),
+        '  %~w_key = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len)',
+        [Base, Base, Base]),
+    format(atom(KeyValue), '%~w_key', [Base]).
+plawk_membership_key_ir(string(Value), _ArrayName, _Context, FieldSeparator,
+        Base, KeyValue, GlobalIR, [PtrLine, KeyLine]) :-
+    integer(FieldSeparator),
+    string(Value),
+    format(atom(GlobalName), '~w_key', [Base]),
+    llvm_emit_c_string_global(GlobalName, Value, GlobalIR, StringLen, BytesLen),
+    format(atom(PtrLine),
+        '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+        [Base, BytesLen, BytesLen, GlobalName]),
+    format(atom(KeyLine),
+        '  %~w_key = call i64 @wam_intern_atom(i8* %~w_ptr, i64 ~w)',
+        [Base, Base, StringLen]),
+    format(atom(KeyValue), '%~w_key', [Base]).
+plawk_membership_key_ir(int(Value), _ArrayName, _Context, binfmt(_Types),
+        _Base, Value, '', []) :-
+    integer(Value),
+    !.
+plawk_membership_key_ir(int(Value), ArrayName, Context, FieldSeparator,
+        _Base, Value, '', []) :-
+    integer(FieldSeparator),
+    integer(Value),
+    plawk_assoc_context_posarray(Context, ArrayName),
+    !.
+plawk_membership_key_ir(int(Value), ArrayName, Context, FieldSeparator,
+        Base, KeyValue, GlobalIR, Lines) :-
+    integer(FieldSeparator),
+    integer(Value),
+    format(string(Text), '~w', [Value]),
+    plawk_membership_key_ir(string(Text), ArrayName, Context, FieldSeparator,
+        Base, KeyValue, GlobalIR, Lines).
+plawk_membership_key_ir(subsep_key(Fields), _ArrayName, _Context,
+        FieldSeparator, Base, KeyValue, '', [KeyLine]) :-
+    integer(FieldSeparator),
+    plawk_subsep_field_indexes(Fields, [I, J]),
+    format(atom(KeyLine),
+        '  %~w_key = call i64 @wam_intern_subsep_key2(%Value %line, i64 ~w, i64 ~w, i8 ~w)',
+        [Base, I, J, FieldSeparator]),
+    format(atom(KeyValue), '%~w_key', [Base]).
 
 plawk_pattern_guard_ir(always, GuardIR) :-
     GuardIR = ''-'  %is_match = icmp eq i1 true, true'.

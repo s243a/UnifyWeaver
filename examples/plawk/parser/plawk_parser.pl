@@ -924,6 +924,9 @@ base_pattern(Pattern) -->
     slash_regex_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
+    in_arr_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
     field_match_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
@@ -944,6 +947,47 @@ base_pattern(Pattern) -->
     !.
 base_pattern(Pattern) -->
     prolog_guard_pattern(Pattern).
+
+%% in_arr_pattern(-Pattern)//
+%
+%  Associative-array membership: `KEY in ARRAY`. A scalar key is one
+%  assoc_key_atom; a multi-part key uses awk's parenthesised `(K1,K2,...)`
+%  spelling and the existing SUBSEP AST. Keep this parser deliberately as
+%  broad as assoc_key_expr: codegen owns the supported-key policy and can
+%  diagnose shapes (such as three-part keys) that are not implemented yet.
+in_arr_pattern(in_arr(KeyExpr, ArrayName)) -->
+    in_arr_key(KeyExpr),
+    ws,
+    "in",
+    identifier_boundary,
+    ws,
+    table_ident(ArrayName).
+
+in_arr_key(KeyExpr) -->
+    "(",
+    ws,
+    assoc_key_expr(KeyExpr),
+    ws,
+    ")".
+% Membership accepts the empty-string key even though the older general
+% subscript atom grammar still excludes an empty literal. Keep this before the
+% shared atom clause so `"" in arr` reaches the membership codegen path.
+in_arr_key(string(Value)) -->
+    quoted_string(ValueCodes),
+    { string_codes(Value, ValueCodes) }.
+in_arr_key(KeyExpr) -->
+    assoc_key_atom(KeyExpr).
+
+% Parenthesised membership in a value position is parsed only so the compiler
+% can report that broader awk expression surface as unsupported (exit 3),
+% instead of misclassifying valid syntax as a parse error. It intentionally
+% remains a distinct node with no codegen lowering.
+in_arr_value_expr(in_expr(Pattern)) -->
+    "(",
+    ws,
+    in_arr_pattern(Pattern),
+    ws,
+    ")".
 
 %% blob_eq_pattern(-Pattern)//
 blob_eq_pattern(blob_eq(Blob, Value)) -->
@@ -1417,6 +1461,27 @@ begin_assignment_name('RS') -->
 begin_assignment_name('SUBSEP') -->
     "SUBSEP".
 
+% Exact END cardinality idiom: initialise an accumulator to zero, increment it
+% once for each occupied associative-array entry, then print it. Lower directly
+% to the established for-in accumulation AST; sharing Acc across all three
+% parser terms ensures that near-misses are not silently normalised.
+%
+%   END { n = 0; for (k in seen) n++; print n }
+end_clauses([end([for_in(var(LoopVar), var(ArrayName),
+                  [add(var(Acc), int(1))]),
+                  print([var(Acc)])])]) -->
+    "END", ws, "{", ws,
+    assignment_action(set(var(Acc), int(0))),
+    action_sep,
+    "for", ws, "(", ws,
+    identifier(LoopVar), ws, "in", identifier_boundary, ws,
+    identifier(ArrayName), ws, ")", ws,
+    identifier(Acc), ws, "++",
+    action_sep,
+    print_action(print([var(Acc)])),
+    action_block_close,
+    !.
+
 % END decode-into-struct (assoc for-in, stage 3): a for-in whose body
 % destructures the iterated value `arr[k]` through a grammar into typed
 % fields, then prints them. `END { for (k in arr) { (n, m) =
@@ -1584,8 +1649,9 @@ for_c_simple(Action) -->
 % (short-circuit, `&&` binding tighter than `||`, left-associative, parens
 % allowed). A single comparison parses to the bare guard term (unchanged), so
 % existing single-guard `if`s are untouched; combinations parse to and(L, R) /
-% or(L, R). The leaves are the same forin_guard comparisons (reader guards
-% `r["col"] CMP L` etc.); boolean combination is supported by the row readers.
+% or(L, R). Leaves are the existing forin_guard comparisons (reader guards
+% `r["col"] CMP L` etc.) plus associative membership; unary `!` is available
+% for the scoped membership filter.
 guard_expr(Expr) -->
     guard_or(Expr).
 guard_or(Expr) -->
@@ -1606,8 +1672,14 @@ guard_and_rest(Left, Expr) -->
     guard_and_rest(and(Left, Right), Expr).
 guard_and_rest(Expr, Expr) -->
     [].
+guard_atom(not_pat(Expr)) -->
+    "!", ws, guard_atom(Expr),
+    !.
 guard_atom(Expr) -->
     "(", ws, guard_expr(Expr), ws, ")",
+    !.
+guard_atom(Guard) -->
+    in_arr_pattern(Guard),
     !.
 guard_atom(Guard) -->
     forin_guard(Guard).
@@ -2476,6 +2548,9 @@ assignment_action(set(var(Name), Value)) -->
 scalar_value_expr(Sprintf) -->
     sprintf_expr(Sprintf),
     !.
+scalar_value_expr(InExpr) -->
+    in_arr_value_expr(InExpr),
+    !.
 % A ternary assignment `x = COND ? A : B`: numeric comparison condition, numeric
 % branches (the assignment mirror of the print/printf ternary). Tried first --
 % its `?`/`:` structure is unambiguous, and a plain concat / arithmetic RHS has
@@ -2798,6 +2873,9 @@ print_fields_rest([]) -->
 % both branches are numeric field_exprs. Tried before concat / plain field so
 % the `?`/`:` structure is seen first. Defined one level above field_expr (its
 % condition and branches call field_expr) so there is no left recursion.
+print_field_expr(InExpr) -->
+    in_arr_value_expr(InExpr),
+    !.
 print_field_expr(Environ) -->
     environ_expr(Environ),
     !.
