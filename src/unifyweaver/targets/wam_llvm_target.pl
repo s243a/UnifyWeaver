@@ -7333,15 +7333,29 @@ rsri.done:
 ; retained so streams with many records use only their high-water capacity.
 define void @wam_rt_clear() {
 entry:
+  %rtc.suppress = load i1, i1* @wam_rt_suppress
+  br i1 %rtc.suppress, label %rtc.done, label %rtc.write
+
+rtc.write:
   %rtc.empty = getelementptr [1 x i8], [1 x i8]* @.wam_rt_empty, i64 0, i64 0
   store i8* %rtc.empty, i8** @wam_rt_ptr
   store i64 0, i64* @wam_rt_len
+  br label %rtc.done
+
+rtc.done:
   ret void
 }
 
 ; Copy a matched record separator into stable process-owned RT storage.
 define i1 @wam_rt_set(i8* %src, i64 %len) {
 entry:
+  %rts.suppress = load i1, i1* @wam_rt_suppress
+  br i1 %rts.suppress, label %rts.suppressed, label %rts.dispatch
+
+rts.suppressed:
+  ret i1 true
+
+rts.dispatch:
   %rts.isempty = icmp eq i64 %len, 0
   br i1 %rts.isempty, label %rts.clear, label %rts.need
 
@@ -8345,6 +8359,54 @@ gl.eof:
 
 gl.err:
   ret i64 -1
+}
+
+; awk getline from a literal file into the current record. Reuse the shared
+; filename registry and persistent reader, but force a physical newline record
+; for this v1 form and suppress RT changes. On success, copy the persistent
+; atom text into the reserved transient record buffer so the existing %line
+; Value immediately exposes the new $0. EOF and errors leave that buffer
+; untouched. Returns the awk 1, 0, or -1 status.
+define i64 @wam_getline_file_record(i8* %pathptr, i64 %pathlen) {
+entry:
+  %gr.old_rs_ptr = load i8*, i8** @wam_rs_ptr
+  %gr.old_rs_len = load i64, i64* @wam_rs_len
+  %gr.old_rs_mode = load i8, i8* @wam_rs_mode
+  %gr.old_rt_suppress = load i1, i1* @wam_rt_suppress
+  %gr.newline = getelementptr [2 x i8], [2 x i8]* @.wam_rs_default, i64 0, i64 0
+  store i8* %gr.newline, i8** @wam_rs_ptr
+  store i64 1, i64* @wam_rs_len
+  store i8 0, i8* @wam_rs_mode
+  store i1 true, i1* @wam_rt_suppress
+  %gr.line_id_slot = alloca i64, align 8
+  %gr.status = call i64 @wam_getline_file(i8* %pathptr, i64 %pathlen, i64* %gr.line_id_slot)
+  store i8* %gr.old_rs_ptr, i8** @wam_rs_ptr
+  store i64 %gr.old_rs_len, i64* @wam_rs_len
+  store i8 %gr.old_rs_mode, i8* @wam_rs_mode
+  store i1 %gr.old_rt_suppress, i1* @wam_rt_suppress
+  %gr.got = icmp eq i64 %gr.status, 1
+  br i1 %gr.got, label %gr.copy, label %gr.return_status
+
+gr.copy:
+  %gr.line_id = load i64, i64* %gr.line_id_slot
+  %gr.line_ptr = call i8* @wam_atom_to_string(i64 %gr.line_id)
+  %gr.line_null = icmp eq i8* %gr.line_ptr, null
+  br i1 %gr.line_null, label %gr.copy_error, label %gr.copy_bytes
+
+gr.copy_bytes:
+  %gr.line_len = call i64 @strlen(i8* %gr.line_ptr)
+  %gr.transient_id = call i64 @wam_transient_atom_from_bytes(i8* %gr.line_ptr, i64 %gr.line_len)
+  %gr.copy_failed = icmp slt i64 %gr.transient_id, 0
+  br i1 %gr.copy_failed, label %gr.copy_error, label %gr.success
+
+gr.success:
+  ret i64 1
+
+gr.copy_error:
+  ret i64 -1
+
+gr.return_status:
+  ret i64 %gr.status
 }
 
 ; awk ENVIRON["NAME"]: look up an environment variable by its NUL-terminated
@@ -22330,6 +22392,7 @@ emit_atom_string_globals(IR) :-
 @wam_rt_len = global i64 0
 @wam_rt_buf = internal global i8* null
 @wam_rt_cap = internal global i64 0
+@wam_rt_suppress = internal global i1 false
 @.wam_rs_regex_error = private constant [38 x i8] c"plawk: invalid RS regular expression\\0A\\00"
 @.wam_subsep_default = private constant [2 x i8] c"\\1C\\00"
 @wam_subsep_ptr = global i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.wam_subsep_default, i64 0, i64 0)
@@ -22473,6 +22536,7 @@ fail:
 @wam_rt_len = global i64 0
 @wam_rt_buf = internal global i8* null
 @wam_rt_cap = internal global i64 0
+@wam_rt_suppress = internal global i1 false
 @.wam_rs_regex_error = private constant [38 x i8] c"plawk: invalid RS regular expression\\0A\\00"
 @.wam_subsep_default = private constant [2 x i8] c"\\1C\\00"
 @wam_subsep_ptr = global i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.wam_subsep_default, i64 0, i64 0)

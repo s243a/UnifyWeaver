@@ -157,14 +157,14 @@ plawk_action_own_continue(if(_Pattern, Then, Else)) :-
 
 %% plawk_normalise_getline_loops(+Program0, -Program)
 %
-%  Desugar `while ((getline var < "file") > 0) BODY` (parsed to
-%  getline_loop(Var, File, Body)) into the phase-1 getline machinery: a priming
-%  read, then a `while (status > 0)` loop whose body is BODY plus a trailing
-%  re-read. `$getline_status` is a reserved i64 status slot (users cannot write a
-%  `$`-prefixed name). Applied once here so the rest of the pipeline (state plan,
-%  action sequence) only ever sees getline_capture + while_loop, both already
-%  supported. v1 rewrites rule bodies (and nested if/loop bodies); getline_loop
-%  in BEGIN/END/case blocks is a follow-on.
+%  Desugar the two supported in-condition forms into the existing while
+%  machinery. `while ((getline var < "file") > 0) BODY` becomes a priming
+%  getline_capture plus a `while (status > 0)` whose body ends in another read.
+%  The record form, `while ((getline < "file") > 0) BODY`, is identical except
+%  that its priming and trailing actions are getline_file_record_capture nodes.
+%  `$getline_status` is a reserved i64 slot (users cannot write a `$`-prefixed
+%  name). v1 rewrites rule bodies (and nested if/loop bodies); getline loops in
+%  BEGIN/END/case blocks remain explicit unsupported nodes.
 plawk_normalise_getline_loops(program(Begin, Rules0, End),
         program(Begin, Rules, End)) :-
     !,
@@ -186,6 +186,15 @@ plawk_norm_getline_rule(rule(Pattern, Actions0), rule(Pattern, Actions)) :-
 plawk_norm_getline_rule(Other, Other).
 
 plawk_norm_getline_actions([], []).
+plawk_norm_getline_actions([getline_file_record_loop(File, Body0) | Rest], Out) :-
+    !,
+    plawk_norm_getline_actions(Body0, Body),
+    Read = getline_file_record_capture('$getline_status', File),
+    append(Body, [Read], LoopBody),
+    plawk_norm_getline_actions(Rest, Rest1),
+    Out = [ Read,
+            while_loop(cmp(var('$getline_status'), gt, int(0)), LoopBody)
+          | Rest1 ].
 plawk_norm_getline_actions([getline_loop(Var, File, Body0) | Rest], Out) :-
     !,
     plawk_norm_getline_actions(Body0, Body),
@@ -1430,6 +1439,12 @@ begin_actions_rest([]) -->
 begin_action(Action) -->
     begin_assignment(Action),
     !.
+% getline is deliberately not executable in BEGIN in this phase. Preserve the
+% surface as an explicit node so codegen reports a compile error (exit 3)
+% instead of a parse error or an ignored BEGIN action.
+begin_action(unsupported_getline(begin(Action))) -->
+    getline_context_action(Action),
+    !.
 begin_action(Action) -->
     print_action(Action),
     !.
@@ -1559,6 +1574,10 @@ forin_accum_operand(_Array, _Key, int(Value)) -->
 
 end_action(Action) -->
     for_in_action(Action),
+    !.
+% As in BEGIN, retain getline syntax for a clean context rejection in codegen.
+end_action(unsupported_getline(end(Action))) -->
+    getline_context_action(Action),
     !.
 % a scalar-guarded print in END: `if (n > 1) print ...` [`else print ...`].
 % The condition is a scalar comparison (END has no current record), lowered
@@ -1786,6 +1805,8 @@ plawk_block_action(foreach(_Body)).
 plawk_block_action(while_loop(_Cond, _Body)).
 plawk_block_action(do_while_loop(_Body, _Cond)).
 plawk_block_action(getline_loop(_Var, _File, _Body)).
+plawk_block_action(getline_file_record_loop(_File, _Body)).
+plawk_block_action(unsupported_getline(while(_Getline, _Body))).
 
 %% action_sep//0
 %
@@ -1903,21 +1924,72 @@ action(Action) -->
 
 %% getline_action(-Action)//
 %
-%  `getline var < "file"` -- read the next line of a file into the scalar `var`,
-%  reusing the shared stream primitives (the file is opened once, then advanced
-%  one line per call). This bare statement form discards the 1/0/-1 status;
-%  `status = getline var < "file"` (an assignment) captures it (see
-%  assignment_action). v1: the file is a string literal, the target a scalar var;
-%  the canonical loop is `r = getline v < "f"; while (r > 0) { ...; r = getline v
-%  < "f" }` (getline inside a while CONDITION is a follow-on -- it needs the loop
-%  lowering to let the condition produce a slot update).
+%  `getline < "file"` reads a newline-delimited record into `$0`; codegen
+%  refreshes the current transient record so fields and NF re-split under the
+%  active FS. The sibling `getline var < "file"` reads into a scalar. Both use a
+%  filename-keyed shared handle. Unsupported main-input, pipeline, and dynamic
+%  filename shapes are retained as unsupported_getline nodes so they fail at
+%  compile time rather than being approximated.
+getline_action(getline_file_record(File)) -->
+    "getline",
+    identifier_boundary,
+    ws, "<", ws,
+    quoted_string(FCodes),
+    { string_codes(File, FCodes) },
+    !.
 getline_action(getline_read(Var, File)) -->
     "getline",
     required_ws,
     identifier(Var),
     ws, "<", ws,
     quoted_string(FCodes),
-    { string_codes(File, FCodes) }.
+    { string_codes(File, FCodes) },
+    !.
+getline_action(unsupported_getline(Reason)) -->
+    unsupported_getline_statement(Reason).
+
+% A context grammar used by BEGIN/END rejection. Assignment getline forms are
+% included so `BEGIN { r = getline < "f" }` is rejected at compile time too.
+getline_context_action(Action) -->
+    getline_action(Action).
+getline_context_action(Action) -->
+    getline_assignment_action(Action).
+
+% Unsupported statement forms. Longest shapes come first so the trailing
+% tokens cannot be left for the enclosing action grammar.
+unsupported_getline_statement(pipe(Command)) -->
+    getline_pipe_command(Command), ws,
+    "|", ws, "getline", identifier_boundary,
+    !.
+unsupported_getline_statement(file_var(Var, File)) -->
+    "getline", required_ws, identifier(Var), ws,
+    "<", ws, getline_dynamic_file_expr(File),
+    !.
+unsupported_getline_statement(file_record_dynamic(File)) -->
+    "getline", identifier_boundary, ws,
+    "<", ws, getline_dynamic_file_expr(File),
+    !.
+unsupported_getline_statement(main_var(Var)) -->
+    "getline", required_ws, identifier(Var),
+    !.
+unsupported_getline_statement(main_record) -->
+    "getline", identifier_boundary.
+
+getline_pipe_command(var(Command)) -->
+    identifier(Command).
+getline_pipe_command(string(Command)) -->
+    quoted_string(Codes),
+    { string_codes(Command, Codes) }.
+
+% Consume a non-string-literal filename expression solely so v1 can reject it
+% as an explicit unsupported node (build exit 3). Parenthesised scalar values
+% need their own clause because a bare `(name)` is not a general field_expr.
+getline_dynamic_file_expr(paren(Expr)) -->
+    "(", ws, scalar_value_expr(Expr), ws, ")",
+    !.
+getline_dynamic_file_expr(Expr) -->
+    scalar_value_expr(Expr),
+    { Expr \= string(_) }.
 
 %% subgsub_action(-Action)//
 %
@@ -2019,12 +2091,20 @@ delete_action(delete_assoc(var(Name), KeyExpr)) -->
 % the general action block, and the codegen (bin/plawk) rejects it with a clean
 % not-yet diagnostic until the loop runtime lands. The condition is a scalar
 % comparison for now; a general boolean condition is a follow-on.
-% `while ((getline var < "file") > 0) BODY` -- the canonical getline loop: read
-% successive lines of a file into `var`, running BODY per line until EOF/error.
-% Parses to getline_loop(Var, File, Body); the codegen desugars it into the
-% prime-then-re-read form (a getline assignment + a `while (status > 0)` over
-% BODY plus a trailing re-read), reusing the phase-1 getline machinery. Tried
-% before the generic while; the `((getline` prefix distinguishes it.
+% `while ((getline < "file") > 0) BODY` -- read successive newline-delimited
+% file records into `$0`. It normalises to a priming record read plus the same
+% status-slot while machinery used by scalar-target getline.
+while_action(getline_file_record_loop(File, Body)) -->
+    "while", identifier_boundary, ws,
+    "(", ws,
+    "(", ws, "getline", identifier_boundary, ws,
+    "<", ws, quoted_string(FCodes), ws, ")",
+    ws, ">", ws, "0", ws,
+    ")", ws,
+    body_block(Body),
+    { string_codes(File, FCodes) },
+    !.
+% `while ((getline var < "file") > 0) BODY` -- the scalar-target sibling.
 while_action(getline_loop(Var, File, Body)) -->
     "while", identifier_boundary, ws,
     "(", ws,
@@ -2034,6 +2114,17 @@ while_action(getline_loop(Var, File, Body)) -->
     ")", ws,
     body_block(Body),
     { string_codes(File, FCodes) }.
+% Other getline operands in the same while shape are deliberate v1
+% rejections: main-input reads and dynamic filenames must reach codegen as an
+% unsupported node rather than falling out of the parser with exit 2.
+while_action(unsupported_getline(while(Getline, Body))) -->
+    "while", identifier_boundary, ws,
+    "(", ws,
+    "(", ws, getline_action(Getline), ws, ")",
+    ws, ">", ws, "0", ws,
+    ")", ws,
+    body_block(Body),
+    !.
 while_action(while_loop(Cond, Body)) -->
     "while", identifier_boundary, ws,
     "(", ws,
@@ -2520,11 +2611,32 @@ assignment_action(gsub_count(CountName, Global, Regex, Repl, Target)) -->
     ws, ")",
     !.
 
-% `status = getline var < "file"` -- read the next line of the file into `var`
-% (a string scalar) and assign the 1/0/-1 status to `status` (an i64). A
-% dual-slot write. Tried before the generic scalar `set`; the `getline` keyword
-% after `=` is unambiguous.
-assignment_action(getline_capture(Status, Var, File)) -->
+% Getline assignments are tried before the generic scalar `set`. This is
+% essential for unsupported `status = getline`: without the dedicated fallback
+% it would be misparsed as a read of an ordinary variable named `getline`.
+assignment_action(Action) -->
+    getline_assignment_action(Action),
+    !.
+
+assignment_action(set(var(Name), Value)) -->
+    identifier(Name),
+    ws,
+    "=",
+    ws,
+    scalar_value_expr(Value).
+
+% `status = getline < "file"`: update `$0` and capture 1/0/-1 in status.
+getline_assignment_action(getline_file_record_capture(Status, File)) -->
+    identifier(Status),
+    ws, "=", ws,
+    "getline", identifier_boundary, ws,
+    "<", ws,
+    quoted_string(FCodes),
+    { string_codes(File, FCodes) },
+    !.
+
+% `status = getline var < "file"`: scalar-target form (a dual-slot write).
+getline_assignment_action(getline_capture(Status, Var, File)) -->
     identifier(Status),
     ws, "=", ws,
     "getline",
@@ -2535,12 +2647,24 @@ assignment_action(getline_capture(Status, Var, File)) -->
     { string_codes(File, FCodes) },
     !.
 
-assignment_action(set(var(Name), Value)) -->
-    identifier(Name),
-    ws,
-    "=",
-    ws,
-    scalar_value_expr(Value).
+getline_assignment_action(unsupported_getline(capture(Status, Reason))) -->
+    identifier(Status),
+    ws, "=", ws,
+    unsupported_getline_rhs(Reason).
+
+unsupported_getline_rhs(file_var(Var, File)) -->
+    "getline", required_ws, identifier(Var), ws,
+    "<", ws, getline_dynamic_file_expr(File),
+    !.
+unsupported_getline_rhs(file_record_dynamic(File)) -->
+    "getline", identifier_boundary, ws,
+    "<", ws, getline_dynamic_file_expr(File),
+    !.
+unsupported_getline_rhs(main_var(Var)) -->
+    "getline", required_ws, identifier(Var),
+    !.
+unsupported_getline_rhs(main_record) -->
+    "getline", identifier_boundary.
 
 % `x = sprintf("fmt", args...)`: format into a string scalar (the printf format
 % engine + string-valued scalars). Tried first -- the `sprintf(` keyword is

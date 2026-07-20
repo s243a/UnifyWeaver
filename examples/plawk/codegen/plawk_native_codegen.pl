@@ -156,6 +156,20 @@ plawk_dedupe_keep_order([PI | Rest0], [PI | Deduped]) :-
 %  The surrounding runtime still comes from write_wam_llvm_project/3. This
 %  function emits the target-specific native main that streams the file, lowers
 %  the deterministic guard, and prints matching records.
+plawk_program_has_unsupported_getline(Program) :-
+    sub_term(Term, Program),
+    compound(Term),
+    functor(Term, unsupported_getline, _),
+    !.
+
+% Unsupported getline shapes are explicit parser nodes. Commit to rejection
+% before any specialized driver can ignore an unfamiliar BEGIN/END action or
+% accidentally route a main-input getline through an ordinary scalar path.
+plawk_program_native_driver_ir(Program, _InputPath, _DriverIR) :-
+    plawk_program_has_unsupported_getline(Program),
+    !,
+    fail.
+
 plawk_program_native_driver_ir(
     program(BeginClauses, [rule(Pattern, [Action0])], []),
     InputPath,
@@ -4133,6 +4147,11 @@ plawk_action_blob_field(if(_Pattern, ThenActions, ElseActions), Blob) :-
 %  bodies (no break/next); an `END { for (k in arr) print ... }`. The input
 %  must be a file argument (re-opened per pass); stdin is not re-openable
 %  (the design requires an explicit spool, a later phase).
+plawk_program_multipass_driver_ir(Program, _DriverIR) :-
+    plawk_program_has_unsupported_getline(Program),
+    !,
+    fail.
+
 plawk_program_multipass_driver_ir(
     program_passes(BeginClauses, Passes,
         [end([for_in(var(LoopVar), var(ArrayName), [print(PrintFields)])])]),
@@ -6767,7 +6786,10 @@ plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
         ),
         ActionVars),
     plawk_rules_body_print_fields(Rules, BodyPrintFields),
-    ( ActionVars \== [] ; BodyPrintFields \== [] ),
+    ( ActionVars \== []
+    ; BodyPrintFields \== []
+    ; plawk_rules_have_record_getline(Rules)
+    ),
     findall(Name,
         ( member(Field, PrintFields),
           plawk_scalar_print_expr(Field, Name)
@@ -6776,6 +6798,33 @@ plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
     append(ActionVars, PrintVars, Names0),
     sort(Names0, Names),
     plawk_scalar_typed_slots(Rules, Names, Slots).
+
+% A bare record-getline has an observable `$0` side effect but no scalar slot.
+% Keep the scalar action-chain driver active even when it is the only action in
+% the program. Walk nested control bodies too; the sequence walker supports the
+% same nodes there.
+plawk_rules_have_record_getline(Rules) :-
+    member(rule(_Pattern, Actions), Rules),
+    plawk_actions_have_record_getline(Actions),
+    !.
+
+plawk_actions_have_record_getline(Actions) :-
+    member(Action, Actions),
+    plawk_action_has_record_getline(Action),
+    !.
+
+plawk_action_has_record_getline(getline_file_record(_File)).
+plawk_action_has_record_getline(getline_file_record_capture(_Status, _File)).
+plawk_action_has_record_getline(if(_Pattern, ThenActions, ElseActions)) :-
+    ( plawk_actions_have_record_getline(ThenActions)
+    ; plawk_actions_have_record_getline(ElseActions)
+    ).
+plawk_action_has_record_getline(while_loop(_Cond, Body)) :-
+    plawk_actions_have_record_getline(Body).
+plawk_action_has_record_getline(do_while_loop(Body, _Cond)) :-
+    plawk_actions_have_record_getline(Body).
+plawk_action_has_record_getline(foreach_loop(_Layout, Body)) :-
+    plawk_actions_have_record_getline(Body).
 
 %% plawk_scalar_typed_slots(+Rules, +Names, -Slots)
 %
@@ -12220,6 +12269,11 @@ plawk_scalar_rule_body_action(Action) :-
     plawk_scalar_action_update(Action, _Name, _Operation).
 plawk_scalar_rule_body_action(Action) :-
     plawk_dynrec_bind_ok(Action).
+plawk_scalar_rule_body_action(getline_file_record(File)) :-
+    string(File).
+plawk_scalar_rule_body_action(getline_file_record_capture(Status, File)) :-
+    atom(Status),
+    string(File).
 % the store-only half of a rule-level `exit N` (terminal_exit split); it is a
 % plain store with no control, valid anywhere a plain body action is.
 plawk_scalar_rule_body_action(exit_store(_Code)).
@@ -12252,6 +12306,11 @@ plawk_scalar_branch_body_actions(Actions) :-
 
 plawk_scalar_rule_body_plain_action(Action) :-
     plawk_scalar_action_update(Action, _Name, _Operation).
+plawk_scalar_rule_body_plain_action(getline_file_record(File)) :-
+    string(File).
+plawk_scalar_rule_body_plain_action(getline_file_record_capture(Status, File)) :-
+    atom(Status),
+    string(File).
 % `exit [N]` inside a branch body (`if (c) exit`): the sequence walker lowers it
 % via branch_exit + plawk_branch_to_done_ir (branch to break_close_stream); the
 % store-only marker `exit_store` may appear when a branch ends the rule.
@@ -13040,6 +13099,9 @@ plawk_scalar_update_action_name(gsub_count(CountName, _Global, _Regex, _Repl, Ta
 % Status i64 slot; action_update reports Var, this surfaces Status too.
 plawk_scalar_update_action_name(getline_capture(Status, Var, _File), Name) :-
     ( Name = Var ; Name = Status ).
+% Record-target getline writes only its i64 status slot; `$0` lives in the
+% reserved transient record buffer rather than in the scalar state plan.
+plawk_scalar_update_action_name(getline_file_record_capture(Status, _File), Status).
 plawk_scalar_update_action_name(dynrec_bind(Vars, _Call, _Types), Name) :-
     plawk_dynrec_binding_names(Vars, Names),
     member(Name, Names).
@@ -13284,6 +13346,45 @@ plawk_getline_ir(Prefix, OpIndex, File, VarInput, VarNext, StNext, GlobalIR, IR)
          Base, Base,
          Base, StNext,
          VarNext, Base, Base, VarInput]).
+
+% Emit one `getline < "file"` site. The runtime sibling shares the scalar
+% getline filename registry, reads a physical newline record without changing
+% RS/RT, and replaces the reserved transient record buffer only on status 1.
+% The `%line` Value used throughout the action chain therefore remains the
+% current `$0`; fields and NF continue to project lazily from it.
+plawk_getline_record_ir(Prefix, OpIndex, File, StNext, GlobalIR, IR) :-
+    format(atom(Base), '~w_getline_record_~w', [Prefix, OpIndex]),
+    format(atom(PathName), '~w_path', [Base]),
+    llvm_emit_c_string_global(PathName, File, GlobalIR, PathLen, PathBytes),
+    format(atom(StNext), '%~w_status', [Base]),
+    format(atom(IR),
+'  %~w_pathp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  ~w = call i64 @wam_getline_file_record(i8* %~w_pathp, i64 ~w)',
+        [Base, PathBytes, PathBytes, PathName,
+         StNext, Base, PathLen]).
+
+% `status = getline < "file"`: update the current record and the status slot.
+plawk_scalar_action_sequence_pairs([getline_file_record_capture(Status, File) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { string(File),
+      nth0(StIndex, Slots, StSlot), plawk_slot_name(StSlot, Status),
+      plawk_getline_record_ir(Prefix, OpIndex, File, StNext, GlobalIR, IR),
+      replace_nth0(StIndex, Values0, StNext, Values1),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, NextExits).
+% Bare `getline < "file"`: same record side effect, status discarded.
+plawk_scalar_action_sequence_pairs([getline_file_record(File) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { string(File),
+      plawk_getline_record_ir(Prefix, OpIndex, File, _StNext, GlobalIR, IR),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 
 % `status = getline var < "file"`: read the next line into the Var string slot
 % and the 1/0/-1 status into the Status i64 slot (a dual-slot write). The file is
@@ -15879,21 +15980,28 @@ plawk_foreign_arg_ir(field(0), _FieldSeparator, ArgBase, ArgValueIR,
     % The record Value is the transient line atom whose buffer mutates
     % on the next read; Prolog-side atom identity (X == 'ERROR') and
     % anything the predicate might persist need a real atom, so $0
-    % interns the current line text. %line_s is the C string the
-    % driver's EOF check already resolved.
+    % interns the current line text. Resolve the pointer at this use site:
+    % record-getline can grow the transient buffer after the driver cached
+    % %line_s for its EOF check.
     SafeBase = ArgBase,
-    format(atom(LenIR),
-        '  %~w_len = call i64 @strlen(i8* %line_s)', [SafeBase]),
-    format(atom(InternIR),
-        '  %~w_id = call i64 @wam_intern_atom(i8* %line_s, i64 %~w_len)',
+    format(atom(PayloadIR),
+        '  %~w_line_id = call i64 @value_payload(%Value %line)', [SafeBase]),
+    format(atom(PtrIR),
+        '  %~w_line_ptr = call i8* @wam_atom_to_string(i64 %~w_line_id)',
         [SafeBase, SafeBase]),
+    format(atom(LenIR),
+        '  %~w_len = call i64 @strlen(i8* %~w_line_ptr)',
+        [SafeBase, SafeBase]),
+    format(atom(InternIR),
+        '  %~w_id = call i64 @wam_intern_atom(i8* %~w_line_ptr, i64 %~w_len)',
+        [SafeBase, SafeBase, SafeBase]),
     format(atom(Value0IR),
         '  %~w_v0 = insertvalue %Value undef, i32 0, 0', [SafeBase]),
     format(atom(ValueIR),
         '  %~w_v = insertvalue %Value %~w_v0, i64 %~w_id, 1',
         [SafeBase, SafeBase, SafeBase]),
     format(atom(ArgValueIR), '%~w_v', [SafeBase]),
-    SetupParts = [LenIR, InternIR, Value0IR, ValueIR].
+    SetupParts = [PayloadIR, PtrIR, LenIR, InternIR, Value0IR, ValueIR].
 plawk_foreign_arg_ir(field(FieldIndex), FieldSeparator, ArgBase, ArgValueIR,
         [EmptyGlobalIR], SetupParts) :-
     integer(FieldIndex),
@@ -16026,6 +16134,18 @@ plawk_expr_uses_nr(Expr) :-
     ; plawk_expr_uses_nr(Right)
     ).
 
+% Resolve the transient current-record pointer at the point of use. The driver
+% resolves `%line_s` before executing any rule actions, but `getline < file>`
+% may grow and relocate the shared transient buffer. `%line` keeps the reserved
+% transient atom id, so re-resolving it is both cheap and relocation-safe.
+plawk_fresh_record_ptr_ir(Base, PtrIR, [PayloadLine, PtrLine]) :-
+    format(atom(PayloadLine),
+        '  %~w_payload = call i64 @value_payload(%Value %line)', [Base]),
+    format(atom(PtrIR), '%~w_ptr', [Base]),
+    format(atom(PtrLine),
+        '  ~w = call i8* @wam_atom_to_string(i64 %~w_payload)',
+        [PtrIR, Base]).
+
 plawk_print_action_ir([field(0)], _FieldSeparator, _OutputSeparator, ''-IR) :-
     !,
     llvm_emit_printf_string(plawk_surface_print_line, 4, fmt, printed, '%line_s',
@@ -16061,9 +16181,12 @@ plawk_prefixed_print_action_ir([field(0)], _FieldSeparator, _OutputSeparator, Pr
     !,
     format(atom(FmtVar), '~w_line_fmt', [Prefix]),
     format(atom(PrintVar), '~w_printed_line', [Prefix]),
-    llvm_emit_printf_string(plawk_surface_print_line, 4, FmtVar, PrintVar, '%line_s',
+    format(atom(RecordBase), '~w_current_record', [Prefix]),
+    plawk_fresh_record_ptr_ir(RecordBase, RecordPtr, ResolveLines),
+    llvm_emit_printf_string(plawk_surface_print_line, 4, FmtVar, PrintVar, RecordPtr,
         [FmtPtr, PrintCall]),
-    atomic_list_concat([FmtPtr, PrintCall], '\n', IR).
+    append(ResolveLines, [FmtPtr, PrintCall], Lines),
+    atomic_list_concat(Lines, '\n', IR).
 plawk_prefixed_print_action_ir(Fields, FieldSeparator, OutputSeparator, Prefix, GlobalIR-IR) :-
     phrase(plawk_prefixed_print_fields_ir(Fields, FieldSeparator, OutputSeparator, Prefix, 0), Pairs),
     plawk_print_ir_parts(Pairs, GlobalParts, BodyParts),
@@ -16579,14 +16702,14 @@ plawk_emit_print_expr_for_context(index(field(FieldIndex), string(Needle)), Fiel
 plawk_emit_print_expr_for_context(tolower(field(FieldIndex)), FieldSeparator, Context,
         case_slice(lower, LowerBase, LenIR, PtrIR), [], SetupParts) :-
     plawk_print_expr_value_base(Context, tolower, LowerBase),
-    plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, LowerBase, LenIR, PtrIR,
-        SetupParts).
+    plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, Context, LowerBase,
+        LenIR, PtrIR, SetupParts).
 
 plawk_emit_print_expr_for_context(toupper(field(FieldIndex)), FieldSeparator, Context,
         case_slice(upper, UpperBase, LenIR, PtrIR), [], SetupParts) :-
     plawk_print_expr_value_base(Context, toupper, UpperBase),
-    plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, UpperBase, LenIR, PtrIR,
-        SetupParts).
+    plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, Context, UpperBase,
+        LenIR, PtrIR, SetupParts).
 
 plawk_emit_print_expr_for_context(field(FieldIndex), binfmt(Types), Context,
         PrintType, [], SetupLines) :-
@@ -16622,9 +16745,9 @@ plawk_emit_print_expr_for_context(field(FieldIndex), binfmt(Types), Context,
     ).
 
 plawk_emit_print_expr_for_context(field(0), _FieldSeparator, Context,
-        slice(FmtPrefix, PrintPrefix, LenIR, '%line_s'), [], [LineLen64, LineLen]) :-
+        slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), [], Lines) :-
     plawk_print_expr_output_names(Context, line, FmtPrefix, PrintPrefix),
-    plawk_emit_print_line_length_ir(Context, LenIR, LineLen64, LineLen).
+    plawk_emit_print_line_length_ir(Context, PtrIR, LenIR, Lines).
 
 plawk_emit_print_expr_for_context(field(FieldIndex), FieldSeparator, Context,
         slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), [], [SliceIR]) :-
@@ -16679,7 +16802,8 @@ plawk_normal_print_expr_value_base(field, Index, Base) :-
 plawk_normal_print_expr_value_base(string, Index, Base) :-
     format(atom(Base), 'plawk_string_~w', [Index]).
 
-plawk_emit_print_line_length_ir(print_context(normal, _Prefix, Index), LenIR, LineLen64, LineLen) :-
+plawk_emit_print_line_length_ir(print_context(normal, _Prefix, Index), '%line_s', LenIR,
+        [LineLen64, LineLen]) :-
     format(atom(LineLen64),
         '  %line_len64_~w = call i64 @strlen(i8* %line_s)',
         [Index]),
@@ -16687,15 +16811,17 @@ plawk_emit_print_line_length_ir(print_context(normal, _Prefix, Index), LenIR, Li
         '  %line_len_~w = trunc i64 %line_len64_~w to i32',
         [Index, Index]),
     format(atom(LenIR), '%line_len_~w', [Index]).
-plawk_emit_print_line_length_ir(print_context(prefixed, Prefix, Index), LenIR, LineLen64, LineLen) :-
+plawk_emit_print_line_length_ir(print_context(prefixed, Prefix, Index), PtrIR, LenIR, Lines) :-
     format(atom(Base), '~w_line_~w', [Prefix, Index]),
+    plawk_fresh_record_ptr_ir(Base, PtrIR, ResolveLines),
     format(atom(LineLen64),
-        '  %~w_len64 = call i64 @strlen(i8* %line_s)',
-        [Base]),
+        '  %~w_len64 = call i64 @strlen(i8* ~w)',
+        [Base, PtrIR]),
     format(atom(LineLen),
         '  %~w_len = trunc i64 %~w_len64 to i32',
         [Base, Base]),
-    format(atom(LenIR), '%~w_len', [Base]).
+    format(atom(LenIR), '%~w_len', [Base]),
+    append(ResolveLines, [LineLen64, LineLen], Lines).
 
 plawk_print_expr_output_names(print_context(normal, _Prefix, _Index), field, slice, slice) :-
     !.
@@ -16703,12 +16829,22 @@ plawk_print_expr_output_names(print_context(normal, _Prefix, _Index), Kind, Kind
 plawk_print_expr_output_names(print_context(prefixed, Prefix, Index), Kind, Base, Base) :-
     format(atom(Base), '~w_~w_~w', [Prefix, Kind, Index]).
 
-plawk_emit_case_source_slice_ir(0, _FieldSeparator, Base, LenIR, '%line_s', [LineLen64]) :-
+plawk_emit_case_source_slice_ir(0, _FieldSeparator, print_context(normal, _, _), Base,
+        LenIR, '%line_s', [LineLen64]) :-
     format(atom(LineLen64),
         '  %~w_len64 = call i64 @strlen(i8* %line_s)',
         [Base]),
     format(atom(LenIR), '%~w_len64', [Base]).
-plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, Base, LenIR, PtrIR, [SliceIR]) :-
+plawk_emit_case_source_slice_ir(0, _FieldSeparator, print_context(prefixed, _, _), Base,
+        LenIR, PtrIR, Lines) :-
+    plawk_fresh_record_ptr_ir(Base, PtrIR, ResolveLines),
+    format(atom(LineLen64),
+        '  %~w_len64 = call i64 @strlen(i8* ~w)',
+        [Base, PtrIR]),
+    format(atom(LenIR), '%~w_len64', [Base]),
+    append(ResolveLines, [LineLen64], Lines).
+plawk_emit_case_source_slice_ir(FieldIndex, FieldSeparator, _Context, Base, LenIR, PtrIR,
+        [SliceIR]) :-
     FieldIndex > 0,
     llvm_emit_atom_field_slice('%line', FieldIndex, FieldSeparator, Base, SliceIR),
     format(atom(LenIR), '%~w_len64', [Base]),
