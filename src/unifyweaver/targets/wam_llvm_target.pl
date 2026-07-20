@@ -4653,6 +4653,61 @@ get.miss:
   ret i64 0
 }
 
+; Test whether %key occupies a table entry. This must inspect the occupied bit:
+; zero is both a valid stored value and the value returned by get on a miss.
+define i1 @wam_assoc_i64_exists(%WamAssocI64Table* %table, i64 %key) {
+entry:
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %exists.miss, label %exists.load
+
+exists.load:
+  %cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  %cap = load i64, i64* %cap_slot
+  %cap_zero = icmp eq i64 %cap, 0
+  br i1 %cap_zero, label %exists.miss, label %exists.start
+
+exists.start:
+  %entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %entries_slot
+  %entries_null = icmp eq %WamAssocI64Entry* %entries, null
+  br i1 %entries_null, label %exists.miss, label %exists.hash
+
+exists.hash:
+  %start = urem i64 %key, %cap
+  br label %exists.loop
+
+exists.loop:
+  %idx = phi i64 [ %start, %exists.hash ], [ %next_idx, %exists.next ]
+  %probes = phi i64 [ 0, %exists.hash ], [ %next_probes, %exists.next ]
+  %assoc_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %idx
+  %occupied_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 2
+  %occupied = load i1, i1* %occupied_slot
+  br i1 %occupied, label %exists.check_key, label %exists.miss
+
+exists.check_key:
+  %key_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 0
+  %found_key = load i64, i64* %key_slot
+  %key_match = icmp eq i64 %found_key, %key
+  br i1 %key_match, label %exists.hit, label %exists.next_check
+
+exists.hit:
+  ret i1 true
+
+exists.next_check:
+  %next_probes = add i64 %probes, 1
+  %full = icmp uge i64 %next_probes, %cap
+  br i1 %full, label %exists.miss, label %exists.next
+
+exists.next:
+  %idx_plus = add i64 %idx, 1
+  %wrap = icmp uge i64 %idx_plus, %cap
+  %next_idx = select i1 %wrap, i64 0, i64 %idx_plus
+  br label %exists.loop
+
+exists.miss:
+  ret i1 false
+}
+
 ; Remove %key from the table. Linear-probing has no tombstones, so a plain
 ; "mark empty" would break the probe chains of later keys that collided here.
 ; Backward-shift deletion repairs the cluster: after clearing the found slot,
