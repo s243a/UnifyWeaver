@@ -1042,8 +1042,10 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, BasePC,
     % detector (recognised graph pattern -> native R fast path);
     % then the fact-table path; then the regular Phase-3 lowered
     % emitter; otherwise the WAM array.
-    (   r_fact_source_spec(P, Arity, Options, ExternalFactSpec)
-    ->  emit_external_fact_source(P, Arity, ExternalFactSpec,
+    (   r_fact_source_spec(P, Arity, Options, ExternalFactSpec0)
+    ->  r_normalize_fact_source_spec(ExternalFactSpec0, Options,
+                                      ExternalFactSpec),
+        emit_external_fact_source(P, Arity, ExternalFactSpec,
                                    ExtData, ExtFunc, ExtFuncName),
         NewLoweredAcc = [ExtData, ExtFunc | LoweredAcc],
         emit_r_lowered_wrapper(P, Arity, ExtFuncName, WrapperCode),
@@ -1421,39 +1423,65 @@ fact_source_pi_match(_:Name/Ar, P, Arity) :- !,
 fact_source_pi_match(Name/Ar, P, Arity) :-
     Name == P, Ar =:= Arity.
 
+%% r_normalize_fact_source_spec(+Spec0, +Options, -Spec)
+%  lmdb_arg1_v1 → lmdb_arg1_v1(Path, Mode); default Mode=lazy.
+%  cached/auto/unknown → domain_error (LMDB-R-2).
+r_normalize_fact_source_spec(lmdb_arg1_v1(Path), Options,
+                             lmdb_arg1_v1(Path, Mode)) :- !,
+    option(lmdb_materialisation(Mode0), Options, lazy),
+    r_lmdb_arg1_v1_materialisation(Mode0, Mode).
+r_normalize_fact_source_spec(Spec, _Options, Spec).
+
+r_lmdb_arg1_v1_materialisation(lazy, lazy) :- !.
+r_lmdb_arg1_v1_materialisation(eager, eager) :- !.
+r_lmdb_arg1_v1_materialisation(Mode, _) :-
+    throw(error(domain_error(lmdb_materialisation_eager_or_lazy, Mode), _)).
+
+r_lmdb_arg1_v1_arity(Arity) :-
+    (   Arity >= 2 -> true
+    ;   throw(error(domain_error(arity_ge_2_for_lmdb_arg1_v1, Arity), _))
+    ).
+
 %% emit_external_fact_source(+P, +Arity, +Spec,
 %%                            -DataDecl, -LoweredFunc, -FuncName)
-%  Emits the loader + fact-iter dispatch fn. Spec dispatches to a
-%  per-shape loader call (CSV, grouped-by-first TSV, ...); the
-%  generated loader output feeds the same build_fact_indexes +
-%  fact_table_dispatch pipeline used by inline fact tables, so
-%  per-arg indexing and dispatch are unchanged across backends.
-%
-%  lmdb_arg1_v1(Path) is the versioned on-demand exception: no eager
-%  load / build_fact_indexes; the iterator probes LMDB per call.
-emit_external_fact_source(Pred, Arity, lmdb_arg1_v1(Path),
+%  lmdb_arg1_v1(Path, lazy|eager): lazy = on-demand dispatch (default);
+%  eager = stream-once + build_fact_indexes + fact_table_dispatch.
+emit_external_fact_source(Pred, Arity, lmdb_arg1_v1(Path, lazy),
                           DataDecl, LoweredFunc, FuncName) :- !,
-    (   Arity >= 2
-    ->  true
-    ;   throw(error(domain_error(arity_ge_2_for_lmdb_arg1_v1, Arity), _))
-    ),
+    r_lmdb_arg1_v1_arity(Arity),
     r_pred_name(Pred, RName),
     format(atom(PathVar), '~w_lmdb_path', [RName]),
     format(atom(FuncName), '~w_fact_iter', [RName]),
-    atom_string(Path, PathStr),
-    r_string_literal(PathStr, PathLit),
+    atom_string(Path, PathStr), r_string_literal(PathStr, PathLit),
     format(string(DataDecl),
-'# External fact source for ~w/~w (lmdb_arg1_v1 on-demand: ~w)
-~w <- ~w',
-        [Pred, Arity, PathStr, PathVar, PathLit]),
+'# External fact source for ~w/~w (lmdb_arg1_v1 lazy: ~w)
+~w <- ~w', [Pred, Arity, PathStr, PathVar, PathLit]),
     fact_args_collect(Arity, ArgsCollect),
     format(string(LoweredFunc),
 '~w <- function(program, state) {
   args <- ~w
-  WamRuntime$lmdb_arg1_v1_dispatch(program, state, ~w, ~wL, args,
-                                    state$pc + 1L)
-}',
-        [FuncName, ArgsCollect, PathVar, Arity]).
+  WamRuntime$lmdb_arg1_v1_dispatch(program, state, ~w, ~wL, args, state$pc + 1L)
+}', [FuncName, ArgsCollect, PathVar, Arity]).
+emit_external_fact_source(Pred, Arity, lmdb_arg1_v1(Path, eager),
+                          DataDecl, LoweredFunc, FuncName) :- !,
+    r_lmdb_arg1_v1_arity(Arity),
+    r_pred_name(Pred, RName),
+    format(atom(DataName), '~w_facts', [RName]),
+    format(atom(IndexesName), '~w_indexes', [RName]),
+    format(atom(FuncName), '~w_fact_iter', [RName]),
+    atom_string(Path, PathStr), r_string_literal(PathStr, PathLit),
+    format(string(DataDecl),
+'# External fact source for ~w/~w (lmdb_arg1_v1 eager: ~w)
+~w <- WamRuntime$lmdb_arg1_v1_stream(~w, ~wL, intern_table)
+~w <- WamRuntime$build_fact_indexes(~w, ~wL)',
+        [Pred, Arity, PathStr, DataName, PathLit, Arity,
+         IndexesName, DataName, Arity]),
+    fact_args_collect(Arity, ArgsCollect),
+    format(string(LoweredFunc),
+'~w <- function(program, state) {
+  args <- ~w
+  WamRuntime$fact_table_dispatch(program, state, "~w/~w", ~w, ~w, args, state$pc + 1L)
+}', [FuncName, ArgsCollect, Pred, Arity, DataName, IndexesName]).
 emit_external_fact_source(Pred, Arity, Spec,
                           DataDecl, LoweredFunc, FuncName) :-
     r_pred_name(Pred, RName),

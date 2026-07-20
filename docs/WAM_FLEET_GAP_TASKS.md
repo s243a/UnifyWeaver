@@ -47,7 +47,8 @@ self-contained so a single coding agent can pick it up in isolation.
 | LMDB-C-0 | LMDB lookup source (prereq) | C | M | — |
 | LMDB-C | LMDB policy tiers | C | L | LMDB-C-0 |
 | LMDB-R-0 ✅ | LMDB lookup source (prereq) | R | M | done (`lmdb_arg1_v1`) |
-| LMDB-R | LMDB policy tiers | R | L | LMDB-R-0 |
+| LMDB-R-1 ✅ | eager/lazy materialisation | R | S | done (`lmdb_materialisation`) |
+| LMDB-R-2 | cached/auto policy tiers | R | M | LMDB-R-1 |
 | ISO-C | ISO three-form (new) | C | L | — |
 | ISO-GO | ISO three-form (new) | Go | L | — |
 | ISO-SCALA | ISO three-form (new) | Scala | L | — |
@@ -352,18 +353,17 @@ path, not the reverse index.
   and explicit `lmdb_arg1_v1_stream` for unbound arg1. Legacy `lmdb(Path)`
   remains eager `read_facts_lmdb`. Injectable `lmdb_kv_adapter` proves
   get-without-list; thor/lmdbr e2e is conditional.
-- **Open follow-up:** LMDB-R eager/lazy/cached/auto policy tiers.
 
-### LMDB-R: Add eager/lazy/cached tiers to R LMDB fact source
-- **Lever:** LMDB policy tiers  **Target:** R  **Size:** L  **Depends on:** LMDB-R-0
-- **Goal:** After R gains an on-demand LMDB lookup source, add `lmdb_materialisation(eager|lazy|cached|auto)` + `lmdb_l2_capacity` so R matches the F# tier surface (today R is load-everything only).
-- **Files to touch:** `src/unifyweaver/targets/wam_r_target.pl` — `fact_source_loader_call(lmdb(Path), _Arity, ...)` (line 1458, explicitly "Step-1 backend: load-everything") and `emit_external_fact_source/…` (1414), `r_fact_source_spec/4` (1397); `templates/targets/r_wam/runtime.R.mustache` (contains the `read_facts_lmdb` runtime); tests `tests/test_r_target.pl` / `tests/test_wam_r_generator.pl`.
-- **Reference to copy from:** `src/unifyweaver/targets/wam_fsharp_target.pl` — `resolve_auto_lmdb_materialisation_fs/2` (4833) + `resolve_auto_lmdb_cache_tier_fs/2` (4873); tier semantics in `templates/targets/fsharp_wam/lmdb_fact_source.fs.mustache`.
-- **Steps:**
-  1. Parse `lmdb_materialisation(Mode)` (default `cached`) + `lmdb_l2_capacity(N)` in `fact_source_loader_call`/`emit_external_fact_source`; port the F# auto-resolvers as `_r`.
-  2. eager = keep `WamRuntime$read_facts_lmdb` (load all); lazy = call the LMDB-R-0 per-key lookup (no cache); cached = wrap lookup with an environment-backed L1 list + bounded L2 (capacity = `lmdb_l2_capacity`).
-  3. Emit the correct R loader/handler per Mode from `runtime.R.mustache`.
-- **Acceptance:** `swipl -q -g run_tests -t halt -l tests/test_wam_r_generator.pl` (and `tests/test_r_target.pl`) pass new assertions that generated R selects `read_facts_lmdb` for eager, per-key lookup for lazy, and cached L1/L2 for cached; existing R tests stay green.
+### LMDB-R-1 ✅: eager/lazy materialisation over `lmdb_arg1_v1`
+- **Status:** Landed. `lmdb_materialisation(lazy|eager)` (default **lazy**)
+  over the same v1 schema: lazy → on-demand dispatch; eager → init
+  `lmdb_arg1_v1_stream` + `build_fact_indexes` + `fact_table_dispatch`
+  (not `read_facts_lmdb`). `cached`/`auto` → domain_error.
+- **Open:** LMDB-R-2 cached/auto (+ `lmdb_l2_capacity`).
+
+### LMDB-R-2: cached/auto tiers for R LMDB fact source
+- **Depends on:** LMDB-R-1. Add `cached|auto` + `lmdb_l2_capacity` over
+  `lmdb_arg1_v1` (F# L1/L2 reference). Keep R-1 eager/lazy green.
 
 ---
 

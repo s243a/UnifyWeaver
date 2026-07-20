@@ -4638,6 +4638,97 @@ stopifnot(WamRuntime$lmdb_write_facts_arg1_v1(~w, facts, intern_table))
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
+% LMDB-R-1: lmdb_materialisation(lazy|eager) over lmdb_arg1_v1.
+% ------------------------------------------------------------------
+test(lmdb_r1_materialisation_codegen) :-
+    once((
+        unique_r_tmp_dir('tmp_r_lmdb_r1_cg', Tmp),
+        forall(member(Opts, [[], [lmdb_materialisation(lazy)]]), (
+            write_wam_r_project([user:lzedge/2],
+                [r_fact_sources([source(lzedge/2, lmdb_arg1_v1('/tmp/lz.lmdb'))])|Opts], Tmp),
+            directory_file_path(Tmp, 'R/generated_program.R', P),
+            read_file_to_string(P, C, []),
+            assertion((sub_string(C,_,_,_,'lmdb_arg1_v1_dispatch('),
+                       sub_string(C,_,_,_,'lmdb_arg1_v1 lazy:'),
+                       \+ sub_string(C,_,_,_,'lmdb_arg1_v1_stream('),
+                       \+ sub_string(C,_,_,_,'build_fact_indexes'),
+                       \+ sub_string(C,_,_,_,'read_facts_lmdb'))),
+            delete_directory_and_contents(Tmp), make_directory_path(Tmp))),
+        write_wam_r_project([user:egedge/2],
+            [lmdb_materialisation(eager),
+             r_fact_sources([source(egedge/2, lmdb_arg1_v1('/tmp/eg.lmdb'))])], Tmp),
+        directory_file_path(Tmp, 'R/generated_program.R', P2),
+        read_file_to_string(P2, C2, []),
+        assertion((sub_string(C2,_,_,_,'lmdb_arg1_v1_stream('),
+                   sub_string(C2,_,_,_,'build_fact_indexes('),
+                   sub_string(C2,_,_,_,'fact_table_dispatch('),
+                   \+ sub_string(C2,_,_,_,'lmdb_arg1_v1_dispatch('),
+                   \+ sub_string(C2,_,_,_,'read_facts_lmdb'))),
+        delete_directory_and_contents(Tmp),
+        forall(member(Bad, [cached, auto, weird]),
+               catch((write_wam_r_project([user:bedge/2],
+                          [lmdb_materialisation(Bad),
+                           r_fact_sources([source(bedge/2, lmdb_arg1_v1('/tmp/b.lmdb'))])], Tmp),
+                      throw(unexpected_success)),
+                     error(domain_error(lmdb_materialisation_eager_or_lazy, Bad), _), true)),
+        write_wam_r_project([user:leg2/2],
+            [lmdb_materialisation(eager),
+             r_fact_sources([source(leg2/2, lmdb('/tmp/leg2.lmdb'))])], Tmp),
+        directory_file_path(Tmp, 'R/generated_program.R', P3),
+        read_file_to_string(P3, C3, []),
+        assertion((sub_string(C3,_,_,_,'read_facts_lmdb('),
+                   \+ sub_string(C3,_,_,_,'lmdb_arg1_v1_'))),
+        delete_directory_and_contents(Tmp))).
+
+test(lmdb_r1_eager_lazy_runtime_parity) :-
+    once((rscript_available -> lmdb_r1_eager_lazy_runtime_parity ; true)).
+lmdb_r1_eager_lazy_runtime_parity :-
+    unique_r_tmp_dir('tmp_r_lmdb_r1_rt', TmpDir),
+    write_wam_r_project([user:pledge/2],
+        [intern_atoms([alice,bob,carol,eve,p,q,r]),
+         lmdb_materialisation(eager),
+         r_fact_sources([source(pledge/2, lmdb_arg1_v1('mock.lmdb'))])], TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    directory_file_path(RDir, 'lmdb_r1_parity.R', Script),
+    setup_call_cleanup(open(Script, write, S), write(S,
+'store <- new.env(parent=emptyenv())
+assign("__uw_schema__",charToRaw("lmdb_arg1_v1"),envir=store)
+assign("a:alice",charToRaw("a:bob\na:eve"),envir=store); assign("a:bob",charToRaw("a:carol"),envir=store)
+assign("a:p",charToRaw("a:q\ti:3\na:r\ti:4"),envir=store)
+nget <<- 0L; nlist <<- 0L
+options(unifyweaver.lmdb_kv_adapter=list(
+  get=function(path,key){ nget <<- nget+1L; if (exists(key,envir=store,inherits=FALSE)) get(key,envir=store) else NULL },
+  list=function(path){ nlist <<- nlist+1L; ls(envir=store,all.names=TRUE) },
+  put_all=function(path,pairs){ for (k in names(pairs)) assign(k,charToRaw(pairs[[k]]),envir=store); TRUE }))
+source("generated_program.R")
+options(unifyweaver.lmdb_kv_adapter=NULL)
+stopifnot(nlist==1L, length(pred_pledge_facts)>=3L, length(pred_pledge_indexes)>0L)
+it <- intern_table; eager_facts <- pred_pledge_facts; eager_idx <- pred_pledge_indexes
+g0 <- nget; l0 <- nlist
+lazy_g <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"alice")), 2L, it)
+stopifnot(length(lazy_g)==2L, nget>g0, nlist==l0)
+lazy_all <- WamRuntime$lmdb_arg1_v1_stream("mock.lmdb", 2L, it)
+stopifnot(length(lazy_all)==length(eager_facts), nlist>l0)
+nget <<- 0L; nlist <<- 0L
+st <- WamRuntime$new_state(); st$regs2[[1]] <- Atom(WamRuntime$intern(it,"alice"))
+st$regs2[[2]] <- Unbound("V0"); args <- list(st$regs2[[1]], st$regs2[[2]])
+stopifnot(isTRUE(WamRuntime$fact_table_dispatch(shared_program, st, "pledge/2", eager_facts, eager_idx, args, 0L)), nget==0L, nlist==0L, length(st$cps)>=1L)
+t3 <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"p")), 3L, it)
+stopifnot(length(t3)==2L, t3[[1]][[3]]$val==3L)
+stopifnot(length(WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"zzz")), 2L, it))==0L)
+special <- "tab\tline\npercent%"
+stopifnot(WamRuntime$lmdb_write_facts_arg1_v1("mock.lmdb", list(list(Atom(WamRuntime$intern(it,special)), Atom(WamRuntime$intern(it,"value")))), it))
+sr <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,special)), 2L, it)
+stopifnot(length(sr)==1L, WamRuntime$string_of(it,sr[[1]][[1]]$id)==special); cat("OK\n")
+'), close(S)),
+    process_create(path('Rscript'), [Script], [cwd(RDir), stdout(pipe(O)), stderr(pipe(E)), process(PID)]),
+    read_string(O, _, Out), close(O), read_string(E, _, Err), close(E),
+    process_wait(PID, Status),
+    assertion(Status == exit(0)), assertion(sub_string(Out,_,_,_,"OK")),
+    assertion(\+ sub_string(Err,_,_,_,"Error")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
 % End-to-end: cut barrier truncates state$cps back to the depth at the
 % predicate's call site, so a `!` in a clause body that has just
 % returned from a multi-clause helper drops both the helper's leftover

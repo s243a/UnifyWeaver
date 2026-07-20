@@ -3652,8 +3652,8 @@ WamRuntime$lmdb_pick_pkg <- function() {
 
 # --- lmdb_arg1_v1: versioned on-demand arg1 index (not legacy numeric keys) ---
 # Schema: "__uw_schema__"="lmdb_arg1_v1"; key=tagged arg1; value=NL-rows of TAB args2..N
-# Adapter (tests): lmdb_kv_adapter=list(get=, list=, put_all=)
-WamRuntime$lmdb_kv_adapter <- NULL
+# Adapter (tests/embedders): options(unifyweaver.lmdb_kv_adapter=list(get=, list=, put_all=))
+WamRuntime$lmdb_kv_adapter <- getOption("unifyweaver.lmdb_kv_adapter", NULL)
 WamRuntime$lmdb_schema_key <- "__uw_schema__"
 WamRuntime$lmdb_arg1_v1_id <- "lmdb_arg1_v1"
 WamRuntime$lmdb_parse_tagged_field <- function(p, intern_table) {
