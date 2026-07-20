@@ -346,7 +346,11 @@ supported today:
   - `lazy` (default) — ground arg1 exact-key get; unbound stream-all
   - `eager` — stream the v1 DB once at init, `build_fact_indexes`,
     then `fact_table_dispatch` (not legacy `read_facts_lmdb`)
-  - `cached` / `auto` — unsupported in this phase (domain error)
+  - `cached` — per-source L1 MRU + bounded L2 true-LRU over lookup;
+    `lmdb_l2_capacity(N)` (default 4096, positive int) sizes L2 by
+    distinct arg1 keys (empty/missing buckets count). Unbound queries
+    stream-all and bypass the cache.
+  - `auto` — unsupported (domain error; LMDB-R-2B)
   Writer: `lmdb_write_facts_arg1_v1`.
 
 ```prolog

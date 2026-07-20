@@ -1424,18 +1424,31 @@ fact_source_pi_match(Name/Ar, P, Arity) :-
     Name == P, Ar =:= Arity.
 
 %% r_normalize_fact_source_spec(+Spec0, +Options, -Spec)
-%  lmdb_arg1_v1 → lmdb_arg1_v1(Path, Mode); default Mode=lazy.
-%  cached/auto/unknown → domain_error (LMDB-R-2).
-r_normalize_fact_source_spec(lmdb_arg1_v1(Path), Options,
-                             lmdb_arg1_v1(Path, Mode)) :- !,
+%  lmdb_arg1_v1 → lmdb_arg1_v1(Path, Mode) or
+%  lmdb_arg1_v1(Path, cached, Cap). Default Mode=lazy.
+%  auto/unknown → domain_error (LMDB-R-2B).
+r_normalize_fact_source_spec(lmdb_arg1_v1(Path), Options, Spec) :- !,
     option(lmdb_materialisation(Mode0), Options, lazy),
-    r_lmdb_arg1_v1_materialisation(Mode0, Mode).
+    r_lmdb_arg1_v1_materialisation(Mode0, Mode),
+    (   Mode == cached
+    ->  option(lmdb_l2_capacity(Cap0), Options, 4096),
+        r_lmdb_l2_capacity(Cap0, Cap),
+        Spec = lmdb_arg1_v1(Path, cached, Cap)
+    ;   Spec = lmdb_arg1_v1(Path, Mode)
+    ).
 r_normalize_fact_source_spec(Spec, _Options, Spec).
 
 r_lmdb_arg1_v1_materialisation(lazy, lazy) :- !.
 r_lmdb_arg1_v1_materialisation(eager, eager) :- !.
+r_lmdb_arg1_v1_materialisation(cached, cached) :- !.
 r_lmdb_arg1_v1_materialisation(Mode, _) :-
+    % auto and unknowns stay rejected until LMDB-R-2B.
     throw(error(domain_error(lmdb_materialisation_eager_or_lazy, Mode), _)).
+
+r_lmdb_l2_capacity(N, N) :-
+    integer(N), N > 0, !.
+r_lmdb_l2_capacity(N, _) :-
+    throw(error(domain_error(lmdb_l2_capacity_positive_integer, N), _)).
 
 r_lmdb_arg1_v1_arity(Arity) :-
     (   Arity >= 2 -> true
@@ -1444,8 +1457,8 @@ r_lmdb_arg1_v1_arity(Arity) :-
 
 %% emit_external_fact_source(+P, +Arity, +Spec,
 %%                            -DataDecl, -LoweredFunc, -FuncName)
-%  lmdb_arg1_v1(Path, lazy|eager): lazy = on-demand dispatch (default);
-%  eager = stream-once + build_fact_indexes + fact_table_dispatch.
+%  lmdb_arg1_v1(Path, lazy|eager|cached(+Cap)):
+%  lazy = on-demand; eager = stream-once+indexes; cached = L1/L2 LRU.
 emit_external_fact_source(Pred, Arity, lmdb_arg1_v1(Path, lazy),
                           DataDecl, LoweredFunc, FuncName) :- !,
     r_lmdb_arg1_v1_arity(Arity),
@@ -1482,6 +1495,26 @@ emit_external_fact_source(Pred, Arity, lmdb_arg1_v1(Path, eager),
   args <- ~w
   WamRuntime$fact_table_dispatch(program, state, "~w/~w", ~w, ~w, args, state$pc + 1L)
 }', [FuncName, ArgsCollect, Pred, Arity, DataName, IndexesName]).
+emit_external_fact_source(Pred, Arity, lmdb_arg1_v1(Path, cached, Cap),
+                          DataDecl, LoweredFunc, FuncName) :- !,
+    r_lmdb_arg1_v1_arity(Arity),
+    r_pred_name(Pred, RName),
+    format(atom(PathVar), '~w_lmdb_path', [RName]),
+    format(atom(CacheVar), '~w_lmdb_cache', [RName]),
+    format(atom(FuncName), '~w_fact_iter', [RName]),
+    atom_string(Path, PathStr), r_string_literal(PathStr, PathLit),
+    format(string(DataDecl),
+'# External fact source for ~w/~w (lmdb_arg1_v1 cached cap=~w: ~w)
+~w <- ~w
+~w <- WamRuntime$lmdb_arg1_v1_new_cache(~wL)',
+        [Pred, Arity, Cap, PathStr, PathVar, PathLit, CacheVar, Cap]),
+    fact_args_collect(Arity, ArgsCollect),
+    format(string(LoweredFunc),
+'~w <- function(program, state) {
+  args <- ~w
+  WamRuntime$lmdb_arg1_v1_cached_dispatch(program, state, ~w, ~wL, args,
+                                           state$pc + 1L, ~w)
+}', [FuncName, ArgsCollect, PathVar, Arity, CacheVar]).
 emit_external_fact_source(Pred, Arity, Spec,
                           DataDecl, LoweredFunc, FuncName) :-
     r_pred_name(Pred, RName),
