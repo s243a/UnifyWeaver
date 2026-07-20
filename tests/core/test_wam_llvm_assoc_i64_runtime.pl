@@ -32,6 +32,10 @@ test(assoc_i64_delete_backward_shifts_probe_chain) :-
     assoc_i64_delete_driver_ir(DriverIR),
     run_assoc_i64_smoke('uw_wam_assoc_i64_delete', DriverIR).
 
+test(assoc_i64_exists_tracks_occupancy_not_value) :-
+    assoc_i64_exists_driver_ir(DriverIR),
+    run_assoc_i64_smoke('uw_wam_assoc_i64_exists', DriverIR).
+
 test(str_split_into_populates_positions) :-
     str_split_driver_ir(DriverIR),
     run_assoc_i64_smoke('uw_wam_str_split_into', DriverIR).
@@ -212,6 +216,49 @@ alloc_fail:
   ret i32 90
 
 bad_counts:
+  ret i32 91
+}
+').
+
+% Existence is an occupancy query, not `get(Key) != 0`: key 1 is deliberately
+% stored with value zero and must still exist. Keys 1 and 17 collide at cap 16;
+% deleting 1 must leave 17 reachable after the backward-shift repair.
+assoc_i64_exists_driver_ir('
+define i32 @main() {
+entry:
+  %table = call %WamAssocI64Table* @wam_assoc_i64_new(i64 16)
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %alloc_fail, label %exercise
+
+exercise:
+  %zero_set = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 1, i64 0)
+  %neighbor_set = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 17, i64 7)
+  %zero_exists = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %table, i64 1)
+  %zero_value = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 1)
+  %zero_value_ok = icmp eq i64 %zero_value, 0
+  %absent_exists = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %table, i64 33)
+  %absent_ok = xor i1 %absent_exists, true
+  call void @wam_assoc_i64_delete(%WamAssocI64Table* %table, i64 1)
+  %deleted_exists = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %table, i64 1)
+  %deleted_ok = xor i1 %deleted_exists, true
+  %neighbor_exists = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %table, i64 17)
+  %neighbor_value = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 17)
+  %neighbor_value_ok = icmp eq i64 %neighbor_value, 7
+  %a = and i1 %zero_exists, %zero_value_ok
+  %b = and i1 %a, %absent_ok
+  %c = and i1 %b, %deleted_ok
+  %d = and i1 %c, %neighbor_exists
+  %all_ok = and i1 %d, %neighbor_value_ok
+  call void @wam_assoc_i64_free(%WamAssocI64Table* %table)
+  br i1 %all_ok, label %ok, label %bad
+
+ok:
+  ret i32 0
+
+alloc_fail:
+  ret i32 90
+
+bad:
   ret i32 91
 }
 ').
