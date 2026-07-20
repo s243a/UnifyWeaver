@@ -46,6 +46,7 @@ from .leaky_diffusion import (
 __all__ = [
     "AnchorLeakageCalibrationResult",
     "AnchorScreeningProvenance",
+    "LeakageCalibrationMinimalityCertificate",
     "LeakageCalibrationResult",
     "LocalDiffusionDomain",
     "LocalGroundedSemanticDiffusion",
@@ -866,6 +867,124 @@ class LeakageCalibrationResult:
 
 
 @dataclass(frozen=True)
+class LeakageCalibrationMinimalityCertificate:
+    """Final attenuation bracket certifying one anchor's leakage minimum.
+
+    Except when the conditioning-imposed initial lower endpoint already meets
+    the attenuation target, the lower endpoint is known to miss the target and
+    the upper endpoint is the selected leakage that meets it.  The remaining
+    relative bracket width therefore states the numerical resolution of the
+    minimality claim. ``bracket_seed_radius`` records only the radius used by
+    the chain-model initializer; it is not the scientific shell definition.
+    """
+
+    lower_added_leakage_conductance: float
+    upper_added_leakage_conductance: float
+    attenuation_at_lower: float
+    attenuation_at_upper: float
+    target_attenuation: float
+    relative_tolerance: float
+    initial_lower_passed: bool
+    bracket_seed_radius: int
+
+    def __post_init__(self):
+        lower = _finite_scalar(
+            "lower_added_leakage_conductance",
+            self.lower_added_leakage_conductance,
+        )
+        upper = _finite_scalar(
+            "upper_added_leakage_conductance",
+            self.upper_added_leakage_conductance,
+        )
+        lower_attenuation = _finite_scalar(
+            "attenuation_at_lower",
+            self.attenuation_at_lower,
+        )
+        upper_attenuation = _finite_scalar(
+            "attenuation_at_upper",
+            self.attenuation_at_upper,
+        )
+        target = _positive_unit_interval(
+            "target_attenuation",
+            self.target_attenuation,
+        )
+        tolerance = _positive_finite(
+            "relative_tolerance",
+            self.relative_tolerance,
+        )
+        if lower < 0.0 or upper < 0.0:
+            raise ValueError("leakage bracket endpoints must be nonnegative")
+        if lower > upper:
+            raise ValueError("leakage bracket endpoints must be ordered")
+        if (
+            lower_attenuation < 0.0
+            or lower_attenuation > 1.0 + 1e-8
+            or upper_attenuation < 0.0
+            or upper_attenuation > 1.0 + 1e-8
+        ):
+            raise ValueError("bracket attenuations must be in [0, 1]")
+        attenuation_scale = max(
+            abs(lower_attenuation),
+            abs(upper_attenuation),
+            np.finfo(float).tiny,
+        )
+        if upper_attenuation > lower_attenuation + (
+            64.0 * np.finfo(float).eps * attenuation_scale
+        ):
+            raise ValueError(
+                "attenuation must not increase across the leakage bracket"
+            )
+        if upper_attenuation > target:
+            raise ValueError("upper leakage endpoint must meet the target")
+        if not isinstance(self.initial_lower_passed, (bool, np.bool_)):
+            raise ValueError("initial_lower_passed must be boolean")
+        initial_passed = bool(self.initial_lower_passed)
+        if initial_passed:
+            if lower != upper or lower_attenuation != upper_attenuation:
+                raise ValueError(
+                    "an initial-lower pass must return a collapsed bracket"
+                )
+            if lower_attenuation > target:
+                raise ValueError(
+                    "an initial-lower pass must meet the attenuation target"
+                )
+        elif lower_attenuation <= target:
+            raise ValueError(
+                "the lower endpoint must miss the target unless the initial "
+                "lower endpoint passed"
+            )
+        scale = max(abs(upper), np.finfo(float).tiny)
+        relative_width = (upper - lower) / scale
+        if not math.isfinite(relative_width) or relative_width > tolerance:
+            raise ValueError(
+                "leakage bracket exceeds its stated relative tolerance"
+            )
+        seed_radius = _positive_integer(
+            "bracket_seed_radius",
+            self.bracket_seed_radius,
+        )
+        object.__setattr__(self, "lower_added_leakage_conductance", lower)
+        object.__setattr__(self, "upper_added_leakage_conductance", upper)
+        object.__setattr__(self, "attenuation_at_lower", lower_attenuation)
+        object.__setattr__(self, "attenuation_at_upper", upper_attenuation)
+        object.__setattr__(self, "target_attenuation", target)
+        object.__setattr__(self, "relative_tolerance", tolerance)
+        object.__setattr__(self, "initial_lower_passed", initial_passed)
+        object.__setattr__(self, "bracket_seed_radius", seed_radius)
+
+    @property
+    def relative_bracket_width(self):
+        scale = max(
+            abs(self.upper_added_leakage_conductance),
+            np.finfo(float).tiny,
+        )
+        return (
+            self.upper_added_leakage_conductance
+            - self.lower_added_leakage_conductance
+        ) / scale
+
+
+@dataclass(frozen=True)
 class AnchorLeakageCalibrationResult:
     """Independent leakage requirement and screening provenance for one anchor.
 
@@ -884,6 +1003,7 @@ class AnchorLeakageCalibrationResult:
     numerical_minimum_added_leakage: float
     screening_at_selected_leakage: AnchorScreeningProvenance
     screening_at_study_leakage: AnchorScreeningProvenance
+    minimality_certificate: LeakageCalibrationMinimalityCertificate
 
     def __post_init__(self):
         try:
@@ -926,6 +1046,29 @@ class AnchorLeakageCalibrationResult:
             raise TypeError("screening provenance must use AnchorScreeningProvenance")
         if selected.anchor != self.anchor or study.anchor != self.anchor:
             raise ValueError("screening provenance anchor must match the result")
+        certificate = self.minimality_certificate
+        if not isinstance(
+            certificate,
+            LeakageCalibrationMinimalityCertificate,
+        ):
+            raise TypeError(
+                "minimality_certificate must use "
+                "LeakageCalibrationMinimalityCertificate"
+            )
+        if certificate.upper_added_leakage_conductance != added:
+            raise ValueError(
+                "selected leakage must equal the certificate upper endpoint"
+            )
+        if certificate.lower_added_leakage_conductance < numerical:
+            raise ValueError(
+                "minimality bracket cannot fall below the numerical minimum"
+            )
+        if certificate.initial_lower_passed and (
+            certificate.lower_added_leakage_conductance != numerical
+        ):
+            raise ValueError(
+                "an initial-lower pass must occur at the numerical minimum"
+            )
         if not math.isclose(
             selected.attenuation_threshold,
             study.attenuation_threshold,
@@ -944,6 +1087,27 @@ class AnchorLeakageCalibrationResult:
             raise ValueError(
                 "achieved attenuation must equal selected-leakage screening"
             )
+        if not math.isclose(
+            certificate.target_attenuation,
+            selected.attenuation_threshold,
+            rel_tol=1e-12,
+            abs_tol=0.0,
+        ):
+            raise ValueError(
+                "minimality-certificate target must match screening"
+            )
+        certificate_scale = max(
+            abs(achieved),
+            abs(certificate.attenuation_at_upper),
+            np.finfo(float).tiny,
+        )
+        if abs(achieved - certificate.attenuation_at_upper) > (
+            128.0 * np.finfo(float).eps * certificate_scale
+        ):
+            raise ValueError(
+                "selected attenuation must equal the certificate upper "
+                "attenuation"
+            )
         if study.shell_attenuation > selected.shell_attenuation + 1e-8:
             raise ValueError(
                 "shared study leakage cannot weaken shell attenuation"
@@ -953,6 +1117,7 @@ class AnchorLeakageCalibrationResult:
         object.__setattr__(self, "achieved_attenuation", achieved)
         object.__setattr__(self, "iterations", iterations)
         object.__setattr__(self, "numerical_minimum_added_leakage", numerical)
+        object.__setattr__(self, "minimality_certificate", certificate)
 
 
 @dataclass(frozen=True)
@@ -1578,7 +1743,7 @@ def _calibrate_one_anchor_from_spectrum(
     numerical_minimum,
     maximum_allowed,
     typical_conductance,
-    radius,
+    bracket_seed_radius,
     tolerance,
     maximum_iterations,
 ):
@@ -1598,9 +1763,19 @@ def _calibrate_one_anchor_from_spectrum(
     lower = numerical_minimum
     lower_value = evaluate(lower)
     if lower_value <= target:
-        return lower, lower_value, evaluations
+        certificate = LeakageCalibrationMinimalityCertificate(
+            lower_added_leakage_conductance=lower,
+            upper_added_leakage_conductance=lower,
+            attenuation_at_lower=lower_value,
+            attenuation_at_upper=lower_value,
+            target_attenuation=target,
+            relative_tolerance=tolerance,
+            initial_lower_passed=True,
+            bracket_seed_radius=bracket_seed_radius,
+        )
+        return lower, lower_value, evaluations, certificate
 
-    gamma = math.log(1.0 / target) / max(radius, 1)
+    gamma = math.log(1.0 / target) / bracket_seed_radius
     try:
         chain_seed = 2.0 * typical_conductance * (math.cosh(gamma) - 1.0)
     except OverflowError:
@@ -1643,12 +1818,23 @@ def _calibrate_one_anchor_from_spectrum(
             upper_value = middle_value
         else:
             lower = middle
+            lower_value = middle_value
     scale = max(abs(upper), np.finfo(float).tiny)
     if upper - lower > tolerance * scale:
         raise np.linalg.LinAlgError(
             "leakage calibration did not converge within maximum_iterations"
         )
-    return upper, upper_value, evaluations
+    certificate = LeakageCalibrationMinimalityCertificate(
+        lower_added_leakage_conductance=lower,
+        upper_added_leakage_conductance=upper,
+        attenuation_at_lower=lower_value,
+        attenuation_at_upper=upper_value,
+        target_attenuation=target,
+        relative_tolerance=tolerance,
+        initial_lower_passed=False,
+        bracket_seed_radius=bracket_seed_radius,
+    )
+    return upper, upper_value, evaluations, certificate
 
 
 def calibrate_uniform_leakage_per_anchor(
@@ -1666,6 +1852,7 @@ def calibrate_uniform_leakage_per_anchor(
     maximum_leakage_conductance=None,
     relative_tolerance=1e-8,
     maximum_iterations=80,
+    bracket_seed_radius=None,
 ):
     """Calibrate independent anchor shells with one shared eigendecomposition.
 
@@ -1678,6 +1865,11 @@ def calibrate_uniform_leakage_per_anchor(
     response. Full response vectors are formed once per anchor at its selected
     leakage and at the maximum shared study leakage solely to record robust
     realized screening-radius provenance.
+
+    ``bracket_seed_radius`` affects only the chain-model starting value used to
+    bracket the monotone solve. It does not alter the supplied scientific shell
+    or target. By default it preserves the historical behavior of using the
+    selected domain's cutoff distance (with a minimum of one).
     """
 
     if not isinstance(domain, LocalDiffusionDomain):
@@ -1690,6 +1882,13 @@ def calibrate_uniform_leakage_per_anchor(
         "maximum_iterations",
         maximum_iterations,
     )
+    if bracket_seed_radius is None:
+        seed_radius = max(domain.cutoff_distance, 1)
+    else:
+        seed_radius = _positive_integer(
+            "bracket_seed_radius",
+            bracket_seed_radius,
+        )
     source_nodes = _selected_nodes(
         domain.nodes,
         domain.anchors if anchors is None else anchors,
@@ -1803,9 +2002,10 @@ def calibrate_uniform_leakage_per_anchor(
     )
     selected = {}
     selected_screening = {}
+    minimality_certificates = {}
     total_evaluations = 0
     for anchor in source_nodes:
-        added, _, evaluations = _calibrate_one_anchor_from_spectrum(
+        added, _, evaluations, certificate = _calibrate_one_anchor_from_spectrum(
             eigenvalues,
             eigenvectors,
             source_row=source_rows[anchor],
@@ -1814,7 +2014,7 @@ def calibrate_uniform_leakage_per_anchor(
             numerical_minimum=numerical_minimum,
             maximum_allowed=maximum_allowed,
             typical_conductance=typical_conductance,
-            radius=max(domain.cutoff_distance, 1),
+            bracket_seed_radius=seed_radius,
             tolerance=tolerance,
             maximum_iterations=maximum_iterations,
         )
@@ -1840,6 +2040,7 @@ def calibrate_uniform_leakage_per_anchor(
             )
         selected[anchor] = (added, evaluations)
         selected_screening[anchor] = provenance
+        minimality_certificates[anchor] = certificate
         total_evaluations += evaluations
 
     study_added = max(value[0] for value in selected.values())
@@ -1892,6 +2093,7 @@ def calibrate_uniform_leakage_per_anchor(
             numerical_minimum_added_leakage=numerical_minimum,
             screening_at_selected_leakage=selected_screening[anchor],
             screening_at_study_leakage=study_screening[anchor],
+            minimality_certificate=minimality_certificates[anchor],
         )
         for anchor in source_nodes
     )

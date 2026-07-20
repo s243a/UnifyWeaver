@@ -32,13 +32,16 @@ import numpy as np
 
 from .leaky_diffusion import _stable_radial_factor
 from .local_diffusion import (
+    AnchorScreeningProvenance,
     LocalDiffusionDomain,
     LocalGroundedSemanticDiffusion,
     _assemble_local_components,
     _build_local_from_components,
     _canonical_unique,
     _positive_integer,
+    _positive_conductance_hop_distances,
     _read_incident_neighbors,
+    _screening_from_response,
     _stable_key,
     build_local_grounded_semantic_diffusion,
     select_hop_local_domain,
@@ -47,7 +50,9 @@ from .local_diffusion import (
 
 __all__ = [
     "BoundedDomainSelection",
+    "BoundedFidelityBatchResult",
     "BoundedFidelityResult",
+    "BoundedModelSafetyDiagnostics",
     "ExperimentalBoundaryClosure",
     "ExperimentalBoundaryClosureConfig",
     "ExteriorComponent",
@@ -58,6 +63,7 @@ __all__ = [
     "discover_exterior_components",
     "ensure_matched_budget",
     "evaluate_bounded_domain_fidelity",
+    "evaluate_nested_bounded_domain_fidelity",
     "select_hop_budget_domain",
     "select_semantic_resistance_domain",
     "select_topology_skeleton_domain",
@@ -67,6 +73,11 @@ __all__ = [
 
 _NO_CLOSURE_POLICY = "none_full_dirichlet_beta"
 _EXPERIMENTAL_CLOSURE_POLICY = "experimental_graph_derived_schur_closure"
+_CHOLESKY_RECONSTRUCTION_ATOL = 1e-12
+_CHOLESKY_RECONSTRUCTION_RTOL = 1e-11
+_SOLVE_RELATIVE_RESIDUAL_TOLERANCE = 1e-10
+_M_MATRIX_OFF_DIAGONAL_TOLERANCE = 1e-12
+_MAXIMUM_PRINCIPLE_RELATIVE_TOLERANCE = 1e-10
 
 
 class ProtectedSetCoverageError(ValueError):
@@ -1909,7 +1920,446 @@ class BoundedFidelityResult:
         return asdict(self)
 
 
-def evaluate_bounded_domain_fidelity(
+@dataclass(frozen=True)
+class BoundedModelSafetyDiagnostics:
+    """Deterministic numerical gates for one uniquely factorized local model."""
+
+    strategy: str
+    selection_fingerprint: str
+    nodes: int
+    reciprocal_condition: float
+    maximum_positive_off_diagonal: float
+    cholesky_reconstruction_relative_error: float
+    multi_rhs_solve_relative_residual: float
+    minimum_source_response: float
+    maximum_normalized_source_response: float
+    maximum_principle_violation: float
+    maximum_kirchhoff_relative_error: float
+    checks_passed: bool = True
+
+    def __post_init__(self):
+        if not self.strategy:
+            raise ValueError("strategy must be non-empty")
+        if len(self.selection_fingerprint) != 64:
+            raise ValueError("selection_fingerprint must be SHA-256")
+        if int(self.nodes) != self.nodes or self.nodes <= 0:
+            raise ValueError("nodes must be a positive integer")
+        values = (
+            self.reciprocal_condition,
+            self.maximum_positive_off_diagonal,
+            self.cholesky_reconstruction_relative_error,
+            self.multi_rhs_solve_relative_residual,
+            self.minimum_source_response,
+            self.maximum_normalized_source_response,
+            self.maximum_principle_violation,
+            self.maximum_kirchhoff_relative_error,
+        )
+        if any(not math.isfinite(float(value)) for value in values):
+            raise ValueError("model safety diagnostics must be finite")
+        if any(
+            value < 0.0
+            for value in (
+                self.reciprocal_condition,
+                self.maximum_positive_off_diagonal,
+                self.cholesky_reconstruction_relative_error,
+                self.multi_rhs_solve_relative_residual,
+                self.maximum_principle_violation,
+                self.maximum_kirchhoff_relative_error,
+            )
+        ):
+            raise ValueError("model safety error diagnostics must be nonnegative")
+        if self.checks_passed is not True:
+            raise ValueError("a returned model diagnostic must have passed every gate")
+
+    def as_dict(self):
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class BoundedFidelityBatchResult:
+    """Ordered candidate results plus shared-factor provenance and safety gates."""
+
+    results: tuple
+    candidate_model_diagnostics: tuple
+    candidate_model_index: tuple
+    reference_model_diagnostics: BoundedModelSafetyDiagnostics
+    reference_anchor_screening: tuple | None
+    candidate_requested_result_count: int
+    candidate_unique_model_count: int
+    candidate_reference_reuse_count: int
+    candidate_build_count: int
+    candidate_factorization_count: int
+    reference_build_count: int
+    reference_factorization_count: int
+
+    def __post_init__(self):
+        results = tuple(self.results)
+        diagnostics = tuple(self.candidate_model_diagnostics)
+        model_index = tuple(self.candidate_model_index)
+        if not results:
+            raise ValueError("a batch fidelity result must contain candidates")
+        if any(not isinstance(value, BoundedFidelityResult) for value in results):
+            raise TypeError("results must contain BoundedFidelityResult values")
+        if any(
+            not isinstance(value, BoundedModelSafetyDiagnostics)
+            for value in diagnostics
+        ):
+            raise ValueError("candidate diagnostics must describe unique models")
+        if len(model_index) != len(results) or any(
+            int(value) != value or not -1 <= value < len(diagnostics)
+            for value in model_index
+        ):
+            raise ValueError("candidate_model_index must align results to models")
+        referenced_candidate_models = {value for value in model_index if value >= 0}
+        if referenced_candidate_models != set(range(len(diagnostics))):
+            raise ValueError("every unique candidate diagnostic must be referenced")
+        for diagnostic_index, diagnostic in enumerate(diagnostics):
+            first_result = results[model_index.index(diagnostic_index)]
+            if (
+                diagnostic.selection_fingerprint
+                != first_result.candidate_selection_fingerprint
+            ):
+                raise ValueError(
+                    "unique model diagnostics must bind their first nominal result"
+                )
+        first = results[0]
+        shared_fields = (
+            "reference_selection_fingerprint",
+            "alpha_fingerprint",
+            "protected_nodes",
+            "source_nodes",
+            "rank_top_k",
+            "effective_resistance_evaluated",
+        )
+        if any(
+            getattr(result, name) != getattr(first, name)
+            for result in results[1:]
+            for name in shared_fields
+        ):
+            raise ValueError("batch results must share one evaluation contract")
+        if not isinstance(
+            self.reference_model_diagnostics, BoundedModelSafetyDiagnostics
+        ):
+            raise TypeError(
+                "reference_model_diagnostics must be BoundedModelSafetyDiagnostics"
+            )
+        screening = self.reference_anchor_screening
+        if screening is not None:
+            screening = tuple(screening)
+            if len(screening) != len(results[0].source_nodes) or any(
+                not isinstance(value, AnchorScreeningProvenance)
+                for value in screening
+            ):
+                raise ValueError(
+                    "reference screening must align with source anchors"
+                )
+            if tuple(value.anchor for value in screening) != results[0].source_nodes:
+                raise ValueError(
+                    "reference screening order must match source_nodes"
+                )
+        counts = (
+            self.candidate_requested_result_count,
+            self.candidate_unique_model_count,
+            self.candidate_reference_reuse_count,
+            self.candidate_build_count,
+            self.candidate_factorization_count,
+            self.reference_build_count,
+            self.reference_factorization_count,
+        )
+        if any(int(value) != value or value < 0 for value in counts):
+            raise ValueError("model build and factorization counts must be integers")
+        if self.candidate_requested_result_count != len(results):
+            raise ValueError("candidate_requested_result_count must match results")
+        if self.candidate_unique_model_count != len(diagnostics):
+            raise ValueError("candidate_unique_model_count must match diagnostics")
+        if self.candidate_reference_reuse_count != model_index.count(-1):
+            raise ValueError(
+                "candidate_reference_reuse_count must match candidate_model_index"
+            )
+        if self.candidate_build_count != len(diagnostics):
+            raise ValueError("every unique candidate model must be built once")
+        if self.candidate_factorization_count != len(diagnostics):
+            raise ValueError("every unique candidate model must be factorized once")
+        if self.reference_build_count != 1 or self.reference_factorization_count != 1:
+            raise ValueError("the shared reference must be built and factorized once")
+        object.__setattr__(self, "results", results)
+        object.__setattr__(self, "candidate_model_diagnostics", diagnostics)
+        object.__setattr__(self, "candidate_model_index", model_index)
+        object.__setattr__(self, "reference_anchor_screening", screening)
+
+    def __len__(self):
+        return len(self.results)
+
+    def __iter__(self):
+        return iter(self.results)
+
+    def __getitem__(self, index):
+        return self.results[index]
+
+    def as_dict(self):
+        return asdict(self)
+
+
+def _cached_equilibrium_response(model, source, cache, key):
+    """Solve once per model/key and return an immutable cached response."""
+
+    if cache is None:
+        return model.equilibrium_response(source)
+    if key not in cache:
+        response = np.array(model.equilibrium_response(source), copy=True)
+        response.setflags(write=False)
+        cache[key] = response
+    return cache[key]
+
+
+def _cached_boundary_harmonic_measure(model, cache):
+    if not np.any(model.cut_conductance):
+        return np.zeros(len(model.nodes), dtype=float)
+    value = _cached_equilibrium_response(
+        model,
+        model.cut_conductance,
+        cache,
+        ("boundary_harmonic",),
+    )
+    scale = max(float(np.max(np.abs(value), initial=0.0)), 1.0)
+    if np.min(value) < -1e-12 * scale or np.max(value) > 1.0 + 1e-10:
+        raise np.linalg.LinAlgError("boundary harmonic measure left [0, 1]")
+    return np.clip(value, 0.0, 1.0)
+
+
+def _cached_cut_current_fraction(model, source, cache, key):
+    source = np.asarray(source, dtype=float)
+    if source.shape != (len(model.nodes),):
+        raise ValueError("source must be one node-aligned vector")
+    if not np.isfinite(source).all() or np.any(source < 0.0):
+        raise ValueError("source must be finite and nonnegative")
+    total = float(np.sum(source))
+    if total <= 0.0:
+        raise ValueError("source must inject positive total current")
+    response = _cached_equilibrium_response(model, source, cache, key)
+    cut_current = float(model.cut_conductance @ response)
+    leakage_current = float(model.intrinsic_leakage_conductance @ response)
+    balance = cut_current + leakage_current
+    scale = max(total, abs(cut_current), abs(leakage_current), 1.0)
+    if not math.isfinite(balance) or abs(balance - total) > 1e-10 * scale:
+        raise np.linalg.LinAlgError(
+            "cut and intrinsic leakage currents do not balance the source"
+        )
+    fraction = cut_current / total
+    if not math.isfinite(fraction) or fraction < -1e-12 or fraction > 1.0 + 1e-10:
+        raise np.linalg.LinAlgError("cut current fraction left [0, 1]")
+    return min(max(fraction, 0.0), 1.0)
+
+
+def _model_matches_selection(model, selection):
+    """Return whether two nominal selections induce the exact same operator."""
+
+    return (
+        model.nodes == selection.domain.nodes
+        and model.domain.anchors == selection.domain.anchors
+        and model.domain.neighbors == selection.domain.neighbors
+    )
+
+
+def _model_safety_diagnostics(selection, model, *, solve_cache=None):
+    """Evaluate and fail closed on the frozen phase-one numerical contract."""
+
+    if not isinstance(selection, BoundedDomainSelection):
+        raise TypeError("selection must be a BoundedDomainSelection")
+    if not isinstance(model, LocalGroundedSemanticDiffusion):
+        raise TypeError("model must be a LocalGroundedSemanticDiffusion")
+    if not _model_matches_selection(model, selection):
+        raise ValueError("model does not match its bounded selection")
+
+    precision = np.asarray(model.precision)
+    size = len(model.nodes)
+    off_diagonal = precision.copy()
+    np.fill_diagonal(off_diagonal, -math.inf)
+    maximum_positive_off_diagonal = max(
+        float(np.max(off_diagonal, initial=-math.inf)), 0.0
+    )
+    if maximum_positive_off_diagonal > _M_MATRIX_OFF_DIAGONAL_TOLERANCE:
+        raise np.linalg.LinAlgError(
+            "bounded precision violates the M-matrix off-diagonal sign gate"
+        )
+
+    reconstructed = model.model.precision_root.T @ model.model.precision_root
+    if not np.allclose(
+        reconstructed,
+        precision,
+        rtol=_CHOLESKY_RECONSTRUCTION_RTOL,
+        atol=_CHOLESKY_RECONSTRUCTION_ATOL,
+    ):
+        raise np.linalg.LinAlgError(
+            "bounded precision root violates the Cholesky reconstruction gate"
+        )
+    reconstruction_relative_error = float(
+        np.linalg.norm(reconstructed - precision)
+        / max(np.linalg.norm(precision), np.finfo(float).tiny)
+    )
+    reciprocal_condition = model.model.reciprocal_condition_number
+    if reciprocal_condition < model.model.minimum_reciprocal_condition:
+        raise np.linalg.LinAlgError(
+            "bounded model violates its reciprocal-condition gate"
+        )
+
+    index = {node: row for row, node in enumerate(model.nodes)}
+    sources = selection.domain.anchors
+    source = np.zeros((size, len(sources)))
+    for column, node in enumerate(sources):
+        source[index[node], column] = 1.0
+    response = _cached_equilibrium_response(
+        model,
+        source,
+        solve_cache,
+        ("anchor_sources", sources),
+    )
+    solve_relative_residual = float(
+        np.linalg.norm(precision @ response - source)
+        / max(np.linalg.norm(source), np.finfo(float).tiny)
+    )
+    if solve_relative_residual > _SOLVE_RELATIVE_RESIDUAL_TOLERANCE:
+        raise np.linalg.LinAlgError(
+            "bounded multi-anchor solve violates the relative-residual gate"
+        )
+
+    response_scale = max(float(np.max(np.abs(response), initial=0.0)), 1.0)
+    minimum_response = float(np.min(response))
+    negative_violation = max(0.0, -minimum_response / response_scale)
+    diagonal = np.asarray(
+        [response[index[node], column] for column, node in enumerate(sources)]
+    )
+    if np.any(diagonal <= 0.0):
+        raise np.linalg.LinAlgError("anchor Green diagonals must be positive")
+    normalized = response / diagonal[None, :]
+    maximum_normalized = float(np.max(normalized))
+    normalized_negative = max(0.0, -float(np.min(normalized)))
+    normalized_excess = max(0.0, maximum_normalized - 1.0)
+    maximum_principle_violation = max(
+        negative_violation,
+        normalized_negative,
+        normalized_excess,
+    )
+    if maximum_principle_violation > _MAXIMUM_PRINCIPLE_RELATIVE_TOLERANCE:
+        raise np.linalg.LinAlgError(
+            "bounded source response violates sign or maximum-principle gates"
+        )
+
+    maximum_kirchhoff_error = 0.0
+    ground = (
+        model.intrinsic_leakage_conductance + model.cut_conductance
+    )
+    for column, node in enumerate(sources):
+        cut_fraction = _cached_cut_current_fraction(
+            model,
+            source[:, column],
+            solve_cache,
+            ("cut_current", node),
+        )
+        if not 0.0 <= cut_fraction <= 1.0:
+            raise np.linalg.LinAlgError("cut-current fraction left [0, 1]")
+        cut_current = float(model.cut_conductance @ response[:, column])
+        intrinsic_current = float(
+            model.intrinsic_leakage_conductance @ response[:, column]
+        )
+        balance = float(ground @ response[:, column])
+        scale = max(1.0, abs(cut_current), abs(intrinsic_current), abs(balance))
+        relative_error = abs(balance - 1.0) / scale
+        maximum_kirchhoff_error = max(
+            maximum_kirchhoff_error, relative_error
+        )
+        if relative_error > _SOLVE_RELATIVE_RESIDUAL_TOLERANCE:
+            raise np.linalg.LinAlgError(
+                f"Kirchhoff current balance failed for source {node!r}"
+            )
+
+    return BoundedModelSafetyDiagnostics(
+        strategy=selection.strategy,
+        selection_fingerprint=selection.selection_fingerprint,
+        nodes=size,
+        reciprocal_condition=reciprocal_condition,
+        maximum_positive_off_diagonal=maximum_positive_off_diagonal,
+        cholesky_reconstruction_relative_error=reconstruction_relative_error,
+        multi_rhs_solve_relative_residual=solve_relative_residual,
+        minimum_source_response=minimum_response,
+        maximum_normalized_source_response=maximum_normalized,
+        maximum_principle_violation=maximum_principle_violation,
+        maximum_kirchhoff_relative_error=maximum_kirchhoff_error,
+    )
+
+
+def _reference_anchor_screening(
+    selection,
+    model,
+    solve_cache,
+    shell_nodes_by_anchor,
+    *,
+    attenuation_threshold,
+):
+    """Derive per-anchor screening from the cached shared-reference response."""
+
+    if shell_nodes_by_anchor is None:
+        return None
+    if not isinstance(shell_nodes_by_anchor, Mapping):
+        raise ValueError("screening_shell_nodes_by_anchor must be a mapping")
+    sources = selection.domain.anchors
+    if set(shell_nodes_by_anchor) != set(sources):
+        raise ValueError(
+            "screening shells must have exactly one entry per source anchor"
+        )
+    threshold = _positive_finite(
+        "screening_attenuation_threshold", attenuation_threshold
+    )
+    if threshold >= 1.0:
+        raise ValueError("screening_attenuation_threshold must be in (0, 1)")
+    index = {node: row for row, node in enumerate(model.nodes)}
+    source = np.zeros((len(model.nodes), len(sources)))
+    for column, node in enumerate(sources):
+        source[index[node], column] = 1.0
+    response = _cached_equilibrium_response(
+        model,
+        source,
+        solve_cache,
+        ("anchor_sources", sources),
+    )
+    records = []
+    for column, anchor in enumerate(sources):
+        shell_nodes = _canonical_unique(
+            shell_nodes_by_anchor[anchor],
+            name=f"screening shell for {anchor!r}",
+        )
+        unknown = set(shell_nodes).difference(model.nodes)
+        if unknown:
+            labels = ", ".join(
+                repr(node) for node in sorted(unknown, key=_stable_key)
+            )
+            raise ValueError("screening shell contains unretained nodes: " + labels)
+        distances = _positive_conductance_hop_distances(
+            model.model.conductance,
+            index[anchor],
+        )
+        shell_rows = tuple(index[node] for node in shell_nodes)
+        if not shell_rows or any(
+            row == index[anchor] or distances[row] <= 0 for row in shell_rows
+        ):
+            raise ValueError(
+                "screening shell must contain only reachable non-source nodes "
+                f"for anchor {anchor!r}"
+            )
+        records.append(
+            _screening_from_response(
+                anchor,
+                index[anchor],
+                shell_rows,
+                distances,
+                response[:, column],
+                threshold=threshold,
+            )
+        )
+    return tuple(records)
+
+
+def _evaluate_bounded_domain_fidelity(
     candidate,
     reference,
     *,
@@ -1926,6 +2376,13 @@ def evaluate_bounded_domain_fidelity(
     boundary_closure_filter_embeddings=None,
     boundary_closure_filter_length_scale=None,
     include_effective_resistance=False,
+    _candidate_model=None,
+    _reference_model=None,
+    _candidate_build_seconds=None,
+    _reference_build_seconds=None,
+    _candidate_solve_cache=None,
+    _reference_solve_cache=None,
+    _allow_node_identical_reference=False,
 ):
     """Compare one bounded domain with a larger exact-Dirichlet reference.
 
@@ -1941,7 +2398,10 @@ def evaluate_bounded_domain_fidelity(
         raise TypeError("candidate and reference must be BoundedDomainSelection values")
     if candidate.domain.anchors != reference.domain.anchors:
         raise ValueError("candidate and reference must use the same anchor union")
-    if reference.realized_nodes <= candidate.realized_nodes:
+    if reference.realized_nodes < candidate.realized_nodes or (
+        reference.realized_nodes == candidate.realized_nodes
+        and not _allow_node_identical_reference
+    ):
         raise ValueError("reference domain must contain more nodes than candidate")
     protected = _canonical_unique(protected_nodes, name="protected_nodes")
     candidate_set = set(candidate.domain.nodes)
@@ -2024,7 +2484,27 @@ def evaluate_bounded_domain_fidelity(
         raise ValueError("include_effective_resistance must be boolean")
     started = time.perf_counter()
     closure = None
-    if boundary_closure_config is None:
+    if _candidate_model is not None:
+        if boundary_closure_config is not None or any(
+            value is not None
+            for value in (
+                boundary_closure_pair_conductances,
+                boundary_closure_self_return,
+                boundary_closure_filter_embeddings,
+                boundary_closure_filter_length_scale,
+            )
+        ):
+            raise ValueError("a prebuilt candidate model cannot use closure inputs")
+        if node_embeddings is not None or length_scale is not None:
+            raise ValueError("a prebuilt candidate model cannot use embeddings")
+        if not isinstance(_candidate_model, LocalGroundedSemanticDiffusion):
+            raise TypeError(
+                "_candidate_model must be a LocalGroundedSemanticDiffusion"
+            )
+        if not _model_matches_selection(_candidate_model, candidate):
+            raise ValueError("prebuilt candidate model does not match candidate domain")
+        candidate_model = _candidate_model
+    elif boundary_closure_config is None:
         if (
             boundary_closure_pair_conductances is not None
             or boundary_closure_self_return is not None
@@ -2058,14 +2538,35 @@ def evaluate_bounded_domain_fidelity(
             minimum_reciprocal_condition=minimum_reciprocal_condition,
         )
         candidate_model = closure.model
-    candidate_build_seconds = time.perf_counter() - started
-    started = time.perf_counter()
-    reference_model = build_local_grounded_semantic_diffusion(
-        reference.domain,
-        intrinsic_leakage_conductance=reference_alpha,
-        **build_arguments,
+    candidate_build_seconds = (
+        time.perf_counter() - started
+        if _candidate_build_seconds is None
+        else _finite_nonnegative(
+            "_candidate_build_seconds", _candidate_build_seconds
+        )
     )
-    reference_build_seconds = time.perf_counter() - started
+    if _reference_model is None:
+        started = time.perf_counter()
+        reference_model = build_local_grounded_semantic_diffusion(
+            reference.domain,
+            intrinsic_leakage_conductance=reference_alpha,
+            **build_arguments,
+        )
+        reference_build_seconds = time.perf_counter() - started
+    else:
+        if node_embeddings is not None or length_scale is not None:
+            raise ValueError("a prebuilt reference model cannot use embeddings")
+        if not isinstance(_reference_model, LocalGroundedSemanticDiffusion):
+            raise TypeError(
+                "_reference_model must be a LocalGroundedSemanticDiffusion"
+            )
+        if not _model_matches_selection(_reference_model, reference):
+            raise ValueError("prebuilt reference model does not match reference domain")
+        reference_model = _reference_model
+        reference_build_seconds = _finite_nonnegative(
+            "_reference_build_seconds",
+            0.0 if _reference_build_seconds is None else _reference_build_seconds,
+        )
 
     candidate_index = {node: row for row, node in enumerate(candidate_model.nodes)}
     reference_index = {node: row for row, node in enumerate(reference_model.nodes)}
@@ -2077,8 +2578,18 @@ def evaluate_bounded_domain_fidelity(
     for column, node in enumerate(sources):
         candidate_source[candidate_index[node], column] = 1.0
         reference_source[reference_index[node], column] = 1.0
-    candidate_full = candidate_model.equilibrium_response(candidate_source)
-    reference_full = reference_model.equilibrium_response(reference_source)
+    candidate_full = _cached_equilibrium_response(
+        candidate_model,
+        candidate_source,
+        _candidate_solve_cache,
+        ("anchor_sources", sources),
+    )
+    reference_full = _cached_equilibrium_response(
+        reference_model,
+        reference_source,
+        _reference_solve_cache,
+        ("anchor_sources", sources),
+    )
     solve_seconds = time.perf_counter() - started
     candidate_raw = candidate_full[candidate_protected, :]
     reference_raw = reference_full[reference_protected, :]
@@ -2165,8 +2676,19 @@ def evaluate_bounded_domain_fidelity(
             reference_rhs[reference_index[source_node], column] = 1.0
             reference_rhs[reference_index[target_node], column] = -1.0
         resistance_started = time.perf_counter()
-        candidate_voltage = candidate_model.equilibrium_response(candidate_rhs)
-        reference_voltage = reference_model.equilibrium_response(reference_rhs)
+        resistance_key = ("effective_resistance", protected, sources)
+        candidate_voltage = _cached_equilibrium_response(
+            candidate_model,
+            candidate_rhs,
+            _candidate_solve_cache,
+            resistance_key,
+        )
+        reference_voltage = _cached_equilibrium_response(
+            reference_model,
+            reference_rhs,
+            _reference_solve_cache,
+            resistance_key,
+        )
         solve_seconds += time.perf_counter() - resistance_started
         candidate_resistance = np.sum(candidate_rhs * candidate_voltage, axis=0)
         reference_resistance = np.sum(reference_rhs * reference_voltage, axis=0)
@@ -2203,23 +2725,41 @@ def evaluate_bounded_domain_fidelity(
         resistance_relative_p90 = _conservative_upper_quantile(
             per_anchor_resistance_relative, 0.9
         )
-    candidate_harmonic = candidate_model.boundary_harmonic_measure()[
+    candidate_harmonic = _cached_boundary_harmonic_measure(
+        candidate_model, _candidate_solve_cache
+    )[
         candidate_protected
     ]
-    reference_harmonic = reference_model.boundary_harmonic_measure()[
+    reference_harmonic = _cached_boundary_harmonic_measure(
+        reference_model, _reference_solve_cache
+    )[
         reference_protected
     ]
     candidate_cut = []
     reference_cut = []
     for node in sources:
         candidate_cut.append(
-            candidate_model.cut_current_fraction(
-                np.eye(1, candidate.realized_nodes, candidate_index[node]).reshape(-1)
+            _cached_cut_current_fraction(
+                candidate_model,
+                np.eye(
+                    1,
+                    candidate.realized_nodes,
+                    candidate_index[node],
+                ).reshape(-1),
+                _candidate_solve_cache,
+                ("cut_current", node),
             )
         )
         reference_cut.append(
-            reference_model.cut_current_fraction(
-                np.eye(1, reference.realized_nodes, reference_index[node]).reshape(-1)
+            _cached_cut_current_fraction(
+                reference_model,
+                np.eye(
+                    1,
+                    reference.realized_nodes,
+                    reference_index[node],
+                ).reshape(-1),
+                _reference_solve_cache,
+                ("cut_current", node),
             )
         )
 
@@ -2332,4 +2872,293 @@ def evaluate_bounded_domain_fidelity(
             if closure is None
             else _EXPERIMENTAL_CLOSURE_POLICY
         ),
+    )
+
+
+def evaluate_bounded_domain_fidelity(
+    candidate,
+    reference,
+    *,
+    protected_nodes,
+    intrinsic_leakage_conductance,
+    node_embeddings=None,
+    length_scale=None,
+    conductance_floor=0.0,
+    rank_top_k=None,
+    minimum_reciprocal_condition=None,
+    boundary_closure_config=None,
+    boundary_closure_pair_conductances=None,
+    boundary_closure_self_return=None,
+    boundary_closure_filter_embeddings=None,
+    boundary_closure_filter_length_scale=None,
+    include_effective_resistance=False,
+):
+    """Compare one bounded domain with a larger exact-Dirichlet reference."""
+
+    return _evaluate_bounded_domain_fidelity(
+        candidate,
+        reference,
+        protected_nodes=protected_nodes,
+        intrinsic_leakage_conductance=intrinsic_leakage_conductance,
+        node_embeddings=node_embeddings,
+        length_scale=length_scale,
+        conductance_floor=conductance_floor,
+        rank_top_k=rank_top_k,
+        minimum_reciprocal_condition=minimum_reciprocal_condition,
+        boundary_closure_config=boundary_closure_config,
+        boundary_closure_pair_conductances=(
+            boundary_closure_pair_conductances
+        ),
+        boundary_closure_self_return=boundary_closure_self_return,
+        boundary_closure_filter_embeddings=(
+            boundary_closure_filter_embeddings
+        ),
+        boundary_closure_filter_length_scale=(
+            boundary_closure_filter_length_scale
+        ),
+        include_effective_resistance=include_effective_resistance,
+    )
+
+
+def evaluate_nested_bounded_domain_fidelity(
+    candidates,
+    reference,
+    *,
+    protected_nodes,
+    intrinsic_leakage_conductance,
+    rank_top_k=None,
+    minimum_reciprocal_condition=None,
+    include_effective_resistance=False,
+    screening_shell_nodes_by_anchor=None,
+    screening_attenuation_threshold=math.exp(-1.0),
+):
+    """Evaluate nested topology-only candidates against one shared reference.
+
+    Candidate order is preserved.  Every candidate must be nested nondecreasingly
+    in the next candidate and in ``reference``.  Node-identical nominal candidates
+    reuse one model/factor while retaining distinct result fingerprints.  The
+    scalar ``intrinsic_leakage_conductance``,
+    protected set, anchors, exact incident adjacency, and numerical contract are
+    shared.  Phase-one topology-only semantics are deliberate: this helper has
+    no embedding or boundary-closure inputs, and node-varying alpha is rejected.
+
+    The reference and each unique candidate are assembled and Cholesky-factorized
+    exactly once.  Optional per-anchor reference shells produce realized
+    :class:`AnchorScreeningProvenance` from the already-cached multi-anchor
+    response, without another reference build, factor, or solve. A
+    ``candidate_model_index`` entry of ``-1`` records a node-identical nominal
+    candidate that reuses the shared reference model (the exhausted-component
+    absolute-only case); nonnegative entries index unique candidate diagnostics.
+    Returned model
+    diagnostics make counts and every frozen deterministic safety gate explicit.
+    ``batch.results`` contains exactly one :class:`BoundedFidelityResult` per
+    input candidate and the batch itself is an ordered sequence over those results.
+    """
+
+    try:
+        candidates = tuple(candidates)
+    except TypeError as exc:
+        raise ValueError("candidates must be an ordered iterable") from exc
+    if not candidates:
+        raise ValueError("at least one candidate is required")
+    if any(not isinstance(value, BoundedDomainSelection) for value in candidates):
+        raise TypeError("every candidate must be a BoundedDomainSelection")
+    if not isinstance(reference, BoundedDomainSelection):
+        raise TypeError("reference must be a BoundedDomainSelection")
+    if isinstance(intrinsic_leakage_conductance, Mapping):
+        raise ValueError(
+            "nested topology-only fidelity requires one frozen scalar alpha"
+        )
+    if isinstance(intrinsic_leakage_conductance, np.ndarray) and (
+        intrinsic_leakage_conductance.ndim != 0
+    ):
+        raise ValueError(
+            "nested topology-only fidelity requires one frozen scalar alpha"
+        )
+    alpha = _finite_nonnegative(
+        "intrinsic_leakage_conductance",
+        intrinsic_leakage_conductance,
+    )
+    if not isinstance(include_effective_resistance, (bool, np.bool_)):
+        raise ValueError("include_effective_resistance must be boolean")
+
+    protected = _canonical_unique(protected_nodes, name="protected_nodes")
+    sources = reference.domain.anchors
+    if not set(sources).issubset(protected):
+        raise ValueError("protected_nodes must include every source anchor")
+    minimum_rankable = min(
+        len(protected) - int(source in protected) for source in sources
+    )
+    if minimum_rankable <= 0:
+        raise ValueError(
+            "protected set must include a non-source node for every source ranking"
+        )
+    if rank_top_k is None:
+        rank_top_k = min(8, minimum_rankable)
+    rank_top_k = _positive_integer("rank_top_k", rank_top_k)
+    if rank_top_k > minimum_rankable:
+        raise ValueError(
+            "rank_top_k cannot exceed the smallest source-excluded protected set"
+        )
+
+    reference_set = set(reference.domain.nodes)
+    missing_reference = set(protected).difference(reference_set)
+    if missing_reference:
+        raise ProtectedSetCoverageError((), missing_reference)
+    previous_set = None
+    for candidate in candidates:
+        if candidate.domain.anchors != sources:
+            raise ValueError("candidate and reference must use the same anchor union")
+        if reference.realized_nodes < candidate.realized_nodes:
+            raise ValueError(
+                "reference domain cannot contain fewer nodes than candidate"
+            )
+        candidate_set = set(candidate.domain.nodes)
+        if not candidate_set.issubset(reference_set):
+            missing = tuple(
+                sorted(candidate_set.difference(reference_set), key=_stable_key)
+            )
+            raise ValueError(
+                "candidate domain must be a subset of the reference domain; "
+                f"reference misses {missing!r}"
+            )
+        if previous_set is not None and not previous_set.issubset(candidate_set):
+            raise ValueError(
+                "candidates must be nested in the supplied order"
+            )
+        previous_set = candidate_set
+        missing_candidate = set(protected).difference(candidate_set)
+        if missing_candidate:
+            raise ProtectedSetCoverageError(missing_candidate, ())
+        candidate_neighbors = candidate.domain.neighbor_mapping
+        reference_neighbors = reference.domain.neighbor_mapping
+        changed_adjacency = tuple(
+            node
+            for node in candidate.domain.nodes
+            if candidate_neighbors[node] != reference_neighbors[node]
+        )
+        if changed_adjacency:
+            raise ValueError(
+                "candidate and reference must use identical complete incident "
+                f"adjacency on shared nodes; changed {changed_adjacency!r}"
+            )
+
+    build_arguments = {}
+    if minimum_reciprocal_condition is not None:
+        build_arguments["minimum_reciprocal_condition"] = (
+            minimum_reciprocal_condition
+        )
+    started = time.perf_counter()
+    reference_model = build_local_grounded_semantic_diffusion(
+        reference.domain,
+        intrinsic_leakage_conductance=alpha,
+        **build_arguments,
+    )
+    reference_build_seconds = time.perf_counter() - started
+    reference_solve_cache = {}
+    reference_diagnostics = _model_safety_diagnostics(
+        reference,
+        reference_model,
+        solve_cache=reference_solve_cache,
+    )
+    reference_screening = _reference_anchor_screening(
+        reference,
+        reference_model,
+        reference_solve_cache,
+        screening_shell_nodes_by_anchor,
+        attenuation_threshold=screening_attenuation_threshold,
+    )
+
+    unique_candidate_models = []
+    unique_candidate_build_seconds = []
+    candidate_diagnostics = []
+    unique_candidate_solve_caches = []
+    candidate_model_index = []
+    operator_index = {}
+    reference_operator_key = (
+        reference.domain.nodes,
+        reference.domain.neighbors,
+    )
+    for candidate in candidates:
+        key = (candidate.domain.nodes, candidate.domain.neighbors)
+        if key == reference_operator_key:
+            candidate_model_index.append(-1)
+            continue
+        index = operator_index.get(key)
+        if index is None:
+            index = len(unique_candidate_models)
+            operator_index[key] = index
+            started = time.perf_counter()
+            model = build_local_grounded_semantic_diffusion(
+                candidate.domain,
+                intrinsic_leakage_conductance=alpha,
+                **build_arguments,
+            )
+            unique_candidate_build_seconds.append(
+                time.perf_counter() - started
+            )
+            unique_candidate_models.append(model)
+            solve_cache = {}
+            unique_candidate_solve_caches.append(solve_cache)
+            candidate_diagnostics.append(
+                _model_safety_diagnostics(
+                    candidate,
+                    model,
+                    solve_cache=solve_cache,
+                )
+            )
+        candidate_model_index.append(index)
+
+    candidate_models = tuple(
+        reference_model if index == -1 else unique_candidate_models[index]
+        for index in candidate_model_index
+    )
+    candidate_build_seconds = tuple(
+        0.0 if index == -1 else unique_candidate_build_seconds[index]
+        for index in candidate_model_index
+    )
+    candidate_solve_caches = tuple(
+        reference_solve_cache
+        if index == -1
+        else unique_candidate_solve_caches[index]
+        for index in candidate_model_index
+    )
+
+    results = tuple(
+        _evaluate_bounded_domain_fidelity(
+            candidate,
+            reference,
+            protected_nodes=protected,
+            intrinsic_leakage_conductance=alpha,
+            rank_top_k=rank_top_k,
+            minimum_reciprocal_condition=minimum_reciprocal_condition,
+            include_effective_resistance=include_effective_resistance,
+            _candidate_model=model,
+            _reference_model=reference_model,
+            _candidate_build_seconds=build_seconds,
+            _reference_build_seconds=reference_build_seconds,
+            _candidate_solve_cache=solve_cache,
+            _reference_solve_cache=reference_solve_cache,
+            _allow_node_identical_reference=True,
+        )
+        for candidate, model, build_seconds, solve_cache in zip(
+            candidates,
+            candidate_models,
+            candidate_build_seconds,
+            candidate_solve_caches,
+        )
+    )
+    return BoundedFidelityBatchResult(
+        results=results,
+        candidate_model_diagnostics=tuple(candidate_diagnostics),
+        candidate_model_index=tuple(candidate_model_index),
+        reference_model_diagnostics=reference_diagnostics,
+        reference_anchor_screening=reference_screening,
+        candidate_requested_result_count=len(candidates),
+        candidate_unique_model_count=len(unique_candidate_models),
+        candidate_reference_reuse_count=candidate_model_index.count(-1),
+        candidate_build_count=len(unique_candidate_models),
+        candidate_factorization_count=len(unique_candidate_models),
+        reference_build_count=1,
+        reference_factorization_count=1,
     )

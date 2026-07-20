@@ -315,6 +315,8 @@ def test_ready_plan_is_balanced_nested_local_only_and_byte_deterministic(
     assert manifest["diffusion_or_fidelity_metrics_computed"] is False
     assert manifest["calibration_solve_authorized"] is True
     assert manifest["audit_solve_authorized"] is False
+    assert manifest["schema"] == "pearltrees-hop-fidelity-plan-v2"
+    assert manifest["algorithm"] == "outcome-blind-nested-hop-plan-v2"
     assert manifest["aggregate"] == {
         "audit_batches": 24,
         "calibration_batches": 8,
@@ -403,11 +405,63 @@ def test_ready_plan_is_balanced_nested_local_only_and_byte_deterministic(
     assert all(sum(row["multiplicities"]) == 24 for row in bootstrap)
     statistical = manifest["fingerprint_core"]["statistical_contract"]
     assert statistical["minimum_complete_audit_batches"] == 18
+    assert statistical["allowed_calibration_lock_modes"] == [
+        "absolute_only",
+        "blocked",
+        "finite_contrast",
+        "right_censored_diagnostics",
+    ]
+    assert statistical["audit_authorization_by_lock_mode"]["blocked"] is False
+    assert statistical["effective_resistance_endpoint"] == "active"
+    assert statistical["omitted_endpoints"] == []
     assert statistical["reference_adequacy"] == {
         "maximum_h_absolute_error_q90_max": 0.005,
         "raw_relative_l2_error_q90_max": 0.01,
         "top8_overlap_q10_min": 0.98,
     }
+    calibration = manifest["fingerprint_core"]["calibration_contract"]
+    assert calibration == {
+        "alpha_status": "unfrozen",
+        "alpha_zero_evaluation_required": True,
+        "alpha_zero_numerical_admissibility_required": True,
+        "base_intrinsic_leakage_conductance_hex": float(0.0).hex(),
+        "bath_temperature_hex": float(0.0).hex(),
+        "bisection_relative_tolerance_hex": float(1e-8).hex(),
+        "bracket_seed_hop_radius": 3,
+        "calibration_anchor_count": 32,
+        "calibration_batch_count": 8,
+        "calibration_split_only": True,
+        "finite_result_required": True,
+        "global_alpha_rule": (
+            "maximum-of-eight-four-anchor-batch-maxima-equivalently-all-32-anchors"
+        ),
+        "hidden_floor_or_jitter": False,
+        "hidden_maximum_alpha_cap": False,
+        "lock_verification_contract": (
+            "full-chain-and-content-record-verification-without-numerical-"
+            "recomputation-or-authentication"
+        ),
+        "maximum_function_evaluations_per_anchor": 80,
+        "maximum_leakage_conductance": None,
+        "nonfinite_unbracketed_or_evaluation_exhaustion": "lock_mode=blocked",
+        "per_batch_alpha_rule": "maximum-of-four-anchor-required-added-leakages",
+        "radius": 3,
+        "required_numerical_minimum_added_leakage_hex": float(0.0).hex(),
+        "target_attenuation": "exp(-1)",
+        "zero_alpha_allowed": True,
+    }
+    numeric = manifest["fingerprint_core"]["numeric_backend_contract"]
+    assert numeric["actual_blas_identity_nonempty_lock_requirement"] is True
+    assert numeric["actual_blas_identity_absolute_paths_prohibited"] is True
+    assert numeric["alpha_calibration_backend"] == "numpy.linalg.eigh"
+    assert numeric["condition_estimation_backend"] == "numpy.linalg.eigvalsh"
+    assert numeric["decision_factorization_backend"] == "numpy.linalg.cholesky"
+    assert numeric["triangular_solve_backend"] == "numpy.linalg.solve"
+    assert numeric["blas_threads_requested"] == 1
+    assert numeric["blas_threads_observed_lock_requirement"] == 1
+    assert manifest["fingerprint_core"]["repository_commit_policy"] == (
+        "actual-plan-generated-only-at-final-calibration-lock-implementation-commit"
+    )
 
     eligibility = _jsonl(ready_case["attempt_a"] / "anchor_eligibility.jsonl")
     private = next(row for row in eligibility if row["node_id"] == "pt:1101")
@@ -426,6 +480,24 @@ def test_ready_plan_is_balanced_nested_local_only_and_byte_deterministic(
     assert "private-source-id" not in manifest_text
     assert str(ready_case["local"].parent) not in manifest_text
     assert '"K_low"' not in manifest_text and '"K_high"' not in manifest_text
+
+
+def test_predeclared_resistance_omission_removes_the_endpoint() -> None:
+    statistical = plan._statistical_contract("omitted")
+
+    assert statistical["effective_resistance_endpoint"] == "predeclared_omitted"
+    assert statistical["omitted_endpoints"] == [
+        "effective_resistance_relative_error"
+    ]
+    assert "effective_resistance_relative_error_q90_max" not in statistical[
+        "absolute_adequacy"
+    ]
+    assert "effective_resistance_relative_error_harm" not in statistical[
+        "noninferiority_intersection_margins"
+    ]
+    assert "effective_resistance_relative_error_harm" not in statistical[
+        "active_noninferiority_endpoints"
+    ]
 
 
 def test_small_valid_snapshot_installs_an_immutable_coverage_block(

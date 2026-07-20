@@ -2,6 +2,7 @@
 """Tests for outcome-blind bounded-domain fidelity selectors and closure."""
 
 from pathlib import Path
+from dataclasses import replace
 import math
 import sys
 
@@ -14,6 +15,7 @@ import prototypes.mu_cosine.benchmark_bounded_diffusion_fidelity as fidelity_ben
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+import unifyweaver.graph.bounded_diffusion_fidelity as bounded_fidelity  # noqa: E402
 from unifyweaver.graph.bounded_diffusion_fidelity import (  # noqa: E402
     _conservative_lower_quantile,
     _conservative_upper_quantile,
@@ -25,6 +27,7 @@ from unifyweaver.graph.bounded_diffusion_fidelity import (  # noqa: E402
     discover_exterior_components,
     ensure_matched_budget,
     evaluate_bounded_domain_fidelity,
+    evaluate_nested_bounded_domain_fidelity,
     select_hop_budget_domain,
     select_semantic_resistance_domain,
     select_topology_skeleton_domain,
@@ -633,6 +636,338 @@ def test_fidelity_uses_shared_alpha_explicit_protected_nodes_and_selected_resist
     assert result.rank_excludes_source is True
     assert result.maximum_raw_absolute_error > 0.0
     assert -1.0 <= result.mean_kendall_rank_agreement <= 1.0
+
+
+def test_nested_fidelity_is_exactly_equal_to_repeated_evaluation_except_timings():
+    graph = _path(10)
+    candidates = (
+        select_hop_budget_domain((0, 10), graph, maximum_nodes=6),
+        select_hop_budget_domain((0, 10), graph, maximum_nodes=8),
+    )
+    reference = select_hop_budget_domain((0, 10), graph, maximum_nodes=11)
+    arguments = {
+        "protected_nodes": candidates[0].domain.nodes,
+        "intrinsic_leakage_conductance": 0.2,
+        "rank_top_k": 2,
+        "include_effective_resistance": True,
+    }
+
+    repeated = tuple(
+        evaluate_bounded_domain_fidelity(candidate, reference, **arguments)
+        for candidate in candidates
+    )
+    batch = evaluate_nested_bounded_domain_fidelity(
+        candidates, reference, **arguments
+    )
+
+    assert len(batch) == len(candidates)
+    assert tuple(batch) == batch.results
+    assert tuple(
+        result.candidate_selection_fingerprint for result in batch
+    ) == tuple(candidate.selection_fingerprint for candidate in candidates)
+    for shared, separate in zip(batch, repeated):
+        shared_values = shared.as_dict()
+        separate_values = separate.as_dict()
+        for name in tuple(shared_values):
+            if name.endswith("_seconds"):
+                shared_values.pop(name)
+                separate_values.pop(name)
+        assert shared_values == separate_values
+
+    assert batch.reference_build_count == 1
+    assert batch.reference_factorization_count == 1
+    assert batch.candidate_build_count == len(candidates)
+    assert batch.candidate_factorization_count == len(candidates)
+    assert batch.reference_model_diagnostics.checks_passed
+    assert all(
+        diagnostic.checks_passed
+        for diagnostic in batch.candidate_model_diagnostics
+    )
+    for diagnostic in (
+        batch.reference_model_diagnostics,
+        *batch.candidate_model_diagnostics,
+    ):
+        assert diagnostic.maximum_positive_off_diagonal == 0.0
+        assert diagnostic.multi_rhs_solve_relative_residual <= 1e-10
+        assert diagnostic.maximum_principle_violation <= 1e-10
+        assert diagnostic.maximum_kirchhoff_relative_error <= 1e-10
+
+
+def test_nested_fidelity_builds_and_factorizes_shared_reference_once(monkeypatch):
+    graph = _path(9)
+    candidates = (
+        select_hop_budget_domain((0,), graph, maximum_nodes=4),
+        select_hop_budget_domain((0,), graph, maximum_nodes=6),
+    )
+    reference = select_hop_budget_domain((0,), graph, maximum_nodes=9)
+    built_domains = []
+    factor_sizes = []
+    reference_solve_calls = 0
+    original_build = bounded_fidelity.build_local_grounded_semantic_diffusion
+    original_cholesky = np.linalg.cholesky
+    original_equilibrium = (
+        bounded_fidelity.LocalGroundedSemanticDiffusion.equilibrium_response
+    )
+
+    def counted_build(domain, **kwargs):
+        built_domains.append(domain)
+        return original_build(domain, **kwargs)
+
+    def counted_cholesky(matrix, *args, **kwargs):
+        factor_sizes.append(np.asarray(matrix).shape[0])
+        return original_cholesky(matrix, *args, **kwargs)
+
+    def counted_equilibrium(model, source, *args, **kwargs):
+        nonlocal reference_solve_calls
+        if model.domain is reference.domain:
+            reference_solve_calls += 1
+        return original_equilibrium(model, source, *args, **kwargs)
+
+    monkeypatch.setattr(
+        bounded_fidelity,
+        "build_local_grounded_semantic_diffusion",
+        counted_build,
+    )
+    monkeypatch.setattr(np.linalg, "cholesky", counted_cholesky)
+    monkeypatch.setattr(
+        bounded_fidelity.LocalGroundedSemanticDiffusion,
+        "equilibrium_response",
+        counted_equilibrium,
+    )
+
+    batch = evaluate_nested_bounded_domain_fidelity(
+        candidates,
+        reference,
+        protected_nodes=(0, 1, 2, 3),
+        intrinsic_leakage_conductance=0.2,
+        rank_top_k=2,
+    )
+
+    assert len(built_domains) == len(candidates) + 1
+    assert sum(domain is reference.domain for domain in built_domains) == 1
+    assert factor_sizes.count(reference.realized_nodes) == 1
+    assert len(factor_sizes) == len(candidates) + 1
+    # One multi-anchor solve, one source cut-current solve, and one boundary
+    # harmonic solve are the only unique reference right-hand sides here.
+    assert reference_solve_calls == 3
+    assert batch.reference_build_count == 1
+    assert batch.reference_factorization_count == 1
+
+
+def test_nested_fidelity_reuses_node_identical_nominal_candidates(monkeypatch):
+    graph = _path(6)
+    first = select_hop_budget_domain((0,), graph, maximum_nodes=4)
+    exhausted_domain = replace(first.domain, maximum_nodes=5)
+    exhausted = replace(
+        first,
+        domain=exhausted_domain,
+        requested_nodes=5,
+        selection_fingerprint="1" * 64,
+    )
+    reference = select_hop_budget_domain((0,), graph, maximum_nodes=7)
+    build_count = 0
+    factor_count = 0
+    original_build = bounded_fidelity.build_local_grounded_semantic_diffusion
+    original_cholesky = np.linalg.cholesky
+
+    def counted_build(domain, **kwargs):
+        nonlocal build_count
+        build_count += 1
+        return original_build(domain, **kwargs)
+
+    def counted_cholesky(matrix, *args, **kwargs):
+        nonlocal factor_count
+        factor_count += 1
+        return original_cholesky(matrix, *args, **kwargs)
+
+    monkeypatch.setattr(
+        bounded_fidelity,
+        "build_local_grounded_semantic_diffusion",
+        counted_build,
+    )
+    monkeypatch.setattr(np.linalg, "cholesky", counted_cholesky)
+
+    arguments = {
+        "protected_nodes": first.domain.nodes,
+        "intrinsic_leakage_conductance": 0.2,
+        "rank_top_k": 2,
+    }
+    batch = evaluate_nested_bounded_domain_fidelity(
+        (first, exhausted), reference, **arguments
+    )
+    repeated = (
+        evaluate_bounded_domain_fidelity(first, reference, **arguments),
+        evaluate_bounded_domain_fidelity(exhausted, reference, **arguments),
+    )
+
+    # The batch itself used one unique candidate factor and one reference
+    # factor. The two calls above account for the four later factors.
+    assert build_count == 6
+    assert factor_count == 6
+    assert batch.candidate_requested_result_count == 2
+    assert batch.candidate_unique_model_count == 1
+    assert batch.candidate_build_count == 1
+    assert batch.candidate_factorization_count == 1
+    assert batch.candidate_model_index == (0, 0)
+    assert len(batch.candidate_model_diagnostics) == 1
+    assert tuple(
+        result.candidate_selection_fingerprint for result in batch
+    ) == (first.selection_fingerprint, exhausted.selection_fingerprint)
+    for shared, separate in zip(batch, repeated):
+        shared_values = shared.as_dict()
+        separate_values = separate.as_dict()
+        for name in tuple(shared_values):
+            if name.endswith("_seconds"):
+                shared_values.pop(name)
+                separate_values.pop(name)
+        assert shared_values == separate_values
+
+
+def test_nested_fidelity_reuses_reference_for_exhausted_nominal_candidate(monkeypatch):
+    graph = _path(6)
+    small = select_hop_budget_domain((0,), graph, maximum_nodes=4)
+    reference = select_hop_budget_domain((0,), graph, maximum_nodes=7)
+    exhausted = replace(
+        reference,
+        domain=replace(reference.domain, maximum_nodes=8),
+        strategy="hop_budget_exhausted",
+        requested_nodes=8,
+        selection_fingerprint="2" * 64,
+    )
+    build_count = 0
+    factor_count = 0
+    original_build = bounded_fidelity.build_local_grounded_semantic_diffusion
+    original_cholesky = np.linalg.cholesky
+
+    def counted_build(domain, **kwargs):
+        nonlocal build_count
+        build_count += 1
+        return original_build(domain, **kwargs)
+
+    def counted_cholesky(matrix, *args, **kwargs):
+        nonlocal factor_count
+        factor_count += 1
+        return original_cholesky(matrix, *args, **kwargs)
+
+    monkeypatch.setattr(
+        bounded_fidelity,
+        "build_local_grounded_semantic_diffusion",
+        counted_build,
+    )
+    monkeypatch.setattr(np.linalg, "cholesky", counted_cholesky)
+
+    batch = evaluate_nested_bounded_domain_fidelity(
+        (small, exhausted),
+        reference,
+        protected_nodes=small.domain.nodes,
+        intrinsic_leakage_conductance=0.2,
+        rank_top_k=2,
+        include_effective_resistance=True,
+    )
+
+    assert build_count == 2
+    assert factor_count == 2
+    assert batch.candidate_model_index == (0, -1)
+    assert batch.candidate_requested_result_count == 2
+    assert batch.candidate_unique_model_count == 1
+    assert batch.candidate_reference_reuse_count == 1
+    assert batch.candidate_build_count == 1
+    assert batch.candidate_factorization_count == 1
+    exhausted_result = batch[1]
+    assert exhausted_result.candidate_selection_fingerprint == "2" * 64
+    assert exhausted_result.maximum_raw_absolute_error == 0.0
+    assert exhausted_result.raw_relative_frobenius_error == 0.0
+    assert exhausted_result.maximum_h_absolute_error == 0.0
+    assert exhausted_result.maximum_effective_resistance_absolute_error == 0.0
+    assert exhausted_result.maximum_effective_resistance_relative_error == 0.0
+
+    all_exhausted = evaluate_nested_bounded_domain_fidelity(
+        (exhausted,),
+        reference,
+        protected_nodes=small.domain.nodes,
+        intrinsic_leakage_conductance=0.2,
+        rank_top_k=2,
+    )
+    assert all_exhausted.candidate_model_index == (-1,)
+    assert all_exhausted.candidate_model_diagnostics == ()
+    assert all_exhausted.candidate_unique_model_count == 0
+    assert all_exhausted.candidate_build_count == 0
+    assert all_exhausted.candidate_factorization_count == 0
+
+
+def test_nested_fidelity_reuses_reference_response_for_anchor_screening(monkeypatch):
+    graph = _path(10)
+    anchors = (0, 10)
+    candidate = select_hop_budget_domain(anchors, graph, maximum_nodes=6)
+    reference = select_hop_budget_domain(anchors, graph, maximum_nodes=11)
+    reference_solve_calls = 0
+    original_equilibrium = (
+        bounded_fidelity.LocalGroundedSemanticDiffusion.equilibrium_response
+    )
+
+    def counted_equilibrium(model, source, *args, **kwargs):
+        nonlocal reference_solve_calls
+        if model.domain is reference.domain:
+            reference_solve_calls += 1
+        return original_equilibrium(model, source, *args, **kwargs)
+
+    monkeypatch.setattr(
+        bounded_fidelity.LocalGroundedSemanticDiffusion,
+        "equilibrium_response",
+        counted_equilibrium,
+    )
+
+    batch = evaluate_nested_bounded_domain_fidelity(
+        (candidate,),
+        reference,
+        protected_nodes=candidate.domain.nodes,
+        intrinsic_leakage_conductance=0.2,
+        rank_top_k=2,
+        screening_shell_nodes_by_anchor={0: (3,), 10: (7,)},
+        screening_attenuation_threshold=math.exp(-1.0),
+    )
+
+    assert tuple(
+        record.anchor for record in batch.reference_anchor_screening
+    ) == anchors
+    assert all(
+        record.attenuation_threshold == pytest.approx(math.exp(-1.0))
+        for record in batch.reference_anchor_screening
+    )
+    assert all(
+        0.0 <= record.shell_attenuation <= 1.0
+        for record in batch.reference_anchor_screening
+    )
+    assert batch.reference_build_count == 1
+    assert batch.reference_factorization_count == 1
+    # One shared two-anchor solve plus one Kirchhoff solve per anchor. The
+    # screening records and fidelity metrics reuse those cached responses.
+    assert reference_solve_calls == 3
+
+
+def test_nested_fidelity_fails_closed_on_non_scalar_alpha_or_embeddings():
+    graph = _path(5)
+    candidate = select_hop_budget_domain((0,), graph, maximum_nodes=3)
+    reference = select_hop_budget_domain((0,), graph, maximum_nodes=6)
+    arguments = {
+        "protected_nodes": (0, 1, 2),
+        "intrinsic_leakage_conductance": 0.2,
+    }
+
+    with pytest.raises(ValueError, match="one frozen scalar alpha"):
+        evaluate_nested_bounded_domain_fidelity(
+            (candidate,),
+            reference,
+            protected_nodes=(0, 1, 2),
+            intrinsic_leakage_conductance={node: 0.2 for node in graph},
+        )
+    with pytest.raises(TypeError, match="unexpected keyword"):
+        evaluate_nested_bounded_domain_fidelity(
+            (candidate,),
+            reference,
+            node_embeddings={node: np.array([float(node)]) for node in graph},
+            **arguments,
+        )
 
 
 def test_rank_top_k_is_bounded_after_excluding_each_source():

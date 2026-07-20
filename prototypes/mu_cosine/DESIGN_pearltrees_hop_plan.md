@@ -5,6 +5,10 @@ accepted two-process snapshot-consensus receipt and the calibration lock in
 [`PROTOCOL_bounded_diffusion_fidelity.md`](PROTOCOL_bounded_diffusion_fidelity.md).
 This artifact performs topology bookkeeping only. It computes no diffusion
 response, leakage estimate, fidelity metric, filing metric, or judge result.
+Synthetic tests may generate disposable plans while implementation is changing,
+but the actual corpus plan must be generated only from the final committed
+calibration-lock implementation. Any later implementation or contract change
+invalidates that plan and requires regeneration under a new version.
 
 ## 1. Why planning is a separate transaction
 
@@ -26,8 +30,20 @@ every outcome-blind choice that could otherwise move after calibration:
 An accepted plan authorizes only the registered calibration batches. It never
 authorizes audit solves. The later calibration-lock manifest must bind the
 complete plan-manifest content record, not only `plan_fingerprint`; freeze
-`alpha_top`, the selected contrast, and its actual path-free BLAS identity; and
-only then authorize the untouched audit.
+`alpha_top`, the selected lock mode and any applicable contrast, and its actual
+path-free BLAS identity; and only then authorize the untouched audit when that
+mode permits it.
+
+The lock has exactly four modes. `finite_contrast` licenses the frozen paired
+finite-budget comparison. `absolute_only` licenses only absolute/reference
+adequacy for the `K_low=1024` case. Phase-one component exhaustion leaves an
+ungrounded zero-alpha gauge mode and therefore blocks rather than manufacturing
+an executable comparison; a gauge-aware extension requires an amendment.
+`right_censored_diagnostics` licenses an
+untouched audit diagnostic when the reference is adequate but no candidate is
+adequate; it licenses no convergence, efficacy, or resource claim. `blocked`
+licenses no audit solve. Reference inadequacy, nonfinite calibration, or a
+numerical-contract failure necessarily selects `blocked`.
 
 ## 2. Full-chain verification and read boundary
 
@@ -125,7 +141,20 @@ component.
 For each calibration anchor, the plan freezes all nodes at graph-hop radius 3.
 The shell must be nonempty, contained in that batch's `R_top`, and strictly
 interior (`beta=0`). The plan records the later target `exp(-1)` but leaves
-`alpha_status=unfrozen`; zero remains legal and no jitter is licensed.
+`alpha_status=unfrozen`. Calibration starts from base intrinsic uniform
+leakage `alpha=0` and bath temperature 0. It must evaluate `alpha=0`, prove it
+numerically admissible, and record a numerical minimum of exactly 0; a positive
+conditioning-derived minimum is a block, not permission to inject leakage.
+The bracket seed uses radius 3, bisection relative tolerance is `1e-8`, and at
+most 80 attenuation evaluations are allowed per anchor. The result must be
+finite. There is no hidden alpha cap, floor, or jitter; inability to bracket a
+finite result within the evaluation budget blocks the lock.
+
+All 32 calibration anchors participate. Record each anchor requirement, take
+the maximum within each of the eight four-anchor calibration batches, then
+take the maximum of those eight batch maxima as `alpha_top`. This equals the
+maximum across all 32 anchors while preserving batch provenance. No failed or
+inconvenient anchor may be dropped.
 
 ## 5. Resource and numeric contracts
 
@@ -141,12 +170,18 @@ reference projection exceeds the registered study ceiling, the plan is an
 immutable scientific block. The later runner must measure peak RSS; the
 projection is not a claim that the workspace fits.
 
-The first phase freezes CPU `numpy.linalg.cholesky`, float64, one BLAS thread,
-no hidden jitter, reciprocal condition at least `sqrt(eps)`, and explicit
-symmetry/root/solve tolerances. A path-free actual BLAS identity is deferred to
-the calibration lock because the no-solve planner intentionally never loads
-BLAS. There is no automatic CPU/CUDA switch. A different backend requires a
-prospective amendment.
+The first phase freezes separate numerical roles rather than one ambiguous
+"backend": CPU `numpy.linalg.eigh` for the shared alpha-calibration spectral
+decomposition, `numpy.linalg.eigvalsh` for decision-model condition estimates,
+`numpy.linalg.cholesky` for decision factorization, and
+`numpy.linalg.solve` for the two triangular factor solves. All use float64,
+with no hidden jitter, reciprocal condition at least `sqrt(eps)`, and explicit
+symmetry/root/solve tolerances. Exactly one BLAS thread is requested. The
+calibration lock must record a nonempty path-free BLAS identity and an observed
+thread count of exactly one; a request or environment variable alone is not
+evidence. The no-solve planner intentionally never loads BLAS. There is no
+automatic CPU/CUDA switch. A different routine, device, dtype, or thread count
+requires a prospective amendment.
 
 The planner loads a bounded in-memory adjacency. This is suitable for the
 current bounded Pearltrees study, not a million-node scaling claim. A large
@@ -163,6 +198,12 @@ the next larger `K_high` (or the absolute-only `R_top` endpoint when
 `K_low=1024`). The paired-bootstrap contract binds the actual multiplicity
 artifact, identical multiplicities across endpoints, and the lower/upper
 order-statistic endpoint rules.
+
+The effective-resistance arm is fixed before results. If it is predeclared
+`omitted`, its absolute-adequacy and noninferiority endpoints are removed
+explicitly from the active endpoint sets; omission is neither a passing value
+nor a missing-result failure. It cannot be restored after any family result is
+seen.
 
 ## 6. Artifacts, privacy, and blocked outcomes
 
@@ -193,6 +234,13 @@ authenticity requires an external signature or immutable trusted store. The
 calibration lock binds the complete manifest content record to prevent ordinary
 downstream drift; it is not authentication unless that lock is itself trusted
 externally.
+
+Lock verification replays the full declaration, two-attempt consensus, plan
+inventory, hashes, content records, and lock-content relationships. It does
+not rerun eigendecompositions, bisection, or decision solves, and it does not
+turn unkeyed hashes into authentication. Numerical recomputation is a separate
+explicit rerun; hostile same-user authenticity still requires an external
+signature or immutable trusted store.
 
 ## 7. Output transaction and overlap boundary
 

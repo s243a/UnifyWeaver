@@ -5,6 +5,11 @@ computed. Synthetic unit tests and implementation smoke tests are permitted in
 the protocol PR. If the real graph, embeddings, budgets, selectors, protected
 set, leakage rule, metric, or decision threshold must change, amend this file
 and its machine-readable manifest before running the affected comparison.
+Disposable synthetic test plans may be made during development. The actual
+corpus plan must be generated only after the calibration-lock implementation,
+this protocol, and the planner are all at their final committed versions; a
+later change invalidates that plan rather than being absorbed by its old
+repository SHA.
 
 The first confirmatory phase is prospective snapshot-relative HOP convergence
 only, and it is BLOCKED on a raw-source snapshot preparer. The current
@@ -227,7 +232,11 @@ the exact-Dirichlet models only after the no-solve plan is accepted. If `U_top`
 exceeds the resource contract or `R_top` cannot
 be built, that batch is reference-inadequate and cannot support a convergence
 claim. If the connected component is exhausted, the whole component is an
-exact admissible reference.
+exact structural reference. This does not override the zero-alpha numerical
+gate below: an otherwise ungrounded whole-component Laplacian has a constant
+gauge mode and therefore blocks this phase rather than licensing a hidden
+ground or conditioning-derived alpha. A gauge-aware whole-component extension
+requires a prospective amendment.
 
 A later licensed semantic phase must independently construct `U_sem` from only
 the families compared under that semantic operator, then build `R_sem`; it may
@@ -244,7 +253,8 @@ adequate only if its `U` versus `R`, on the frozen protected set, has:
 Compute every upper-tail percentile as the observed higher order statistic and
 every lower-tail percentile as the observed lower order statistic; do not use
 linear interpolation that moves a tail estimate toward the center. Failure is
-reported as right-censored domain convergence. Do not choose a different outer
+reported as right-censored reference convergence and forces lock mode
+`blocked`, so no audit solve is authorized. Do not choose a different outer
 size after inspecting which K looks best.
 
 On the hash-balanced calibration batches only, calibrate anchor-specific uniform
@@ -252,19 +262,37 @@ leakage on `R_top` for the topology operator. A later semantic phase repeats
 this independently on `R_sem` rather than importing `alpha_top`, using the
 graph-hop radius-3 shell and target `exp(-1)` from
 `LOCAL_GROUNDED_DIFFUSION.md`. Every shell node must be reachable and strictly
-interior (`beta=0`) in its own reference. Freeze the single largest required
-value as the phase-one `alpha_top` and apply it unchanged to every calibration
-and audit reference, union, and candidate. A
-later `alpha_sem` is a distinct scalar parameter even if its numeric value
-happens to match.
+interior (`beta=0`) in its own reference.
 
-A frozen scalar alpha is finite and nonnegative; zero is allowed and no hidden
-numerical floor or jitter may be inserted. A zero-alpha system must still pass
-grounding, SPD, reciprocal-condition, and residual checks from its represented
-Dirichlet boundary, otherwise that batch fails closed. Node-varying alpha and
-per-domain recalibration are descriptive alternatives only. Recalibrating each
-candidate would change the physical model and is prohibited in the primary
-comparison.
+The calibration call is frozen with base intrinsic uniform `alpha=0`, bath
+temperature 0, radius-3 bracket seed, relative bisection tolerance `1e-8`, and
+at most 80 attenuation evaluations per anchor. It has no maximum-alpha cap and
+may return only a finite nonnegative result. Evaluate `alpha=0` first. The
+zero-alpha precision must itself pass grounding, SPD, reciprocal-condition,
+and residual checks, and the reported numerical minimum added leakage must be
+exactly 0. A positive conditioning-derived numerical minimum, a nonfinite
+result, inability to bracket, or evaluation-budget exhaustion blocks the lock;
+none licenses a hidden floor, cap, jitter, or substituted alpha.
+
+Use all 32 calibration anchors. Persist each anchor's required added leakage,
+take the maximum of the four requirements in each of the eight balanced
+calibration batches, then freeze the maximum of those eight batch maxima as
+phase-one `alpha_top`. This is algebraically the maximum over all 32 anchors,
+but both levels are retained as provenance. Apply `alpha_top` unchanged to
+every calibration and audit reference, union, and candidate. A later
+`alpha_sem` is a distinct scalar parameter even if its numeric value happens
+to match. Node-varying alpha and per-domain recalibration are descriptive
+alternatives only. Recalibrating each candidate would change the physical
+model and is prohibited in the primary comparison.
+
+Numerical routines have separate frozen roles: `numpy.linalg.eigh` performs
+the shared alpha-calibration decomposition, `numpy.linalg.eigvalsh` estimates
+the decision-model spectrum/condition, `numpy.linalg.cholesky` creates the
+decision factor, and `numpy.linalg.solve` performs the lower/upper triangular
+factor solves. All are CPU float64 operations. Exactly one BLAS thread is
+requested, and the lock must record both a nonempty path-free actual BLAS
+identity and an observed thread count of exactly one. A configured thread
+count without observation is insufficient.
 
 ## 6. Fidelity and boundary metrics
 
@@ -280,8 +308,12 @@ Compute per anchor on the complete frozen protected set:
 
 Effective resistance may be omitted only when the run manifest declared the
 selected-solve resource arm unavailable before any family result. Record an
-explicit omitted flag; the reduced run cannot resolve the resistance part of
-`OPENQ-004`.
+explicit omitted flag. That preregistered omission removes the
+effective-resistance absolute gate and noninferiority endpoint from the active
+endpoint sets; it is neither imputed as a pass nor treated as a post-result
+missing-value failure. The reduced run cannot resolve the resistance part of
+`OPENQ-004`, and the endpoint cannot be restored after any family result is
+seen.
 
 For every batch/family/budget also report:
 
@@ -453,13 +485,29 @@ reference.
 
 ## 8. Fixed HOP convergence contrast and paired uncertainty
 
-Calibration may inspect all three HOP budgets. It freezes `K_low` as the smallest
-calibration-adequate value in `{256,512,1024}` and freezes `K_high` as the next
-larger HOP budget; when `K_low=1024`, `R_top` is the high/reference endpoint and
-only absolute adequacy, not a finite-budget plateau claim, is available. If no
-HOP budget is adequate on calibration, phase one is right-censored and the audit
-reports diagnostics without a convergence claim. No audit result may change the
-chosen pair.
+Calibration may inspect all three HOP budgets, but the lock has exactly four
+modes and no audit result may change one:
+
+- `finite_contrast`: the reference is adequate, `K_low` is the smallest
+  calibration-adequate value in `{256,512}`, and the next larger finite HOP
+  endpoint has a distinct node-content hash. This mode licenses the frozen
+  paired efficacy/noninferiority contrast.
+- `absolute_only`: the reference is adequate and `K_low=1024`, with `R_top` as
+  the endpoint. Report absolute/reference adequacy only. Under the phase-one
+  zero-alpha gate, component exhaustion produces an ungrounded gauge mode and
+  therefore blocks; a gauge-aware extension needs a prospective amendment.
+- `right_censored_diagnostics`: the reference is adequate but no HOP candidate
+  is adequate. The untouched audit may report the frozen diagnostics, but it
+  cannot make convergence, efficacy, noninferiority, or resource claims.
+- `blocked`: the reference is inadequate or calibration/numerical requirements
+  fail. No audit solve is authorized. In particular, reference inadequacy is
+  not converted into a right-censored audit run.
+
+The lock records its mode, reason, endpoint node-content hashes, selected
+budgets where applicable, and the resulting audit/decision authorization
+booleans. Nominally different endpoints whose hashes are equal because the
+component was exhausted never enter a log-ratio or resource contrast and block
+phase one.
 
 Use the frozen `bootstrap_multiplicities.jsonl` artifact containing exactly
 9,999 deterministic paired resamples of the 24 audit four-anchor batches with
@@ -507,8 +555,11 @@ must pass its own 95% one-sided upper bound with these frozen margins:
 - batch-level protected boundary-harmonic maximum: paired low-minus-high harm
   `<0.01` absolute;
 - top-8 overlap: paired high-minus-low loss `<0.01` absolute; and
-- effective-resistance relative error and source-diagonal relative error:
-  paired low-minus-high harm `<0.01` absolute.
+- source-diagonal relative error: paired low-minus-high harm `<0.01`
+  absolute; and
+- effective-resistance relative error: the same `<0.01` harm margin only when
+  the effective-resistance arm was predeclared enabled. A predeclared omitted
+  arm removes this endpoint as specified in Section 6.
 
 Use the corresponding bootstrap upper endpoint for each strict inequality.
 M-matrix signs, grounding, reciprocal condition, Cholesky/solve residuals, and
@@ -535,7 +586,8 @@ malicious same-user without an external signature or immutable trusted store.
 Before the
 no-solve plan is frozen, the full consensus verifier above must pass and the
 plan must bind both the receipt content record and canonical attempt-A manifest
-record; receipt-only verification is prohibited. The fingerprint includes:
+record; receipt-only verification is prohibited. Taken together, the
+deterministic scientific fingerprints and complete manifest provenance bind:
 
 - raw-source and parser hashes, deterministic preparer hash, physical-edge
   policy, privacy-propagation and visibility-limitation manifests, frozen
@@ -552,7 +604,12 @@ record; receipt-only verification is prohibited. The fingerprint includes:
   software SHA;
 - float dtype, numerical thresholds, backend/thread identity without absolute
   library paths; and
-- per-phase timings, peak RSS, cache keys, and deterministic-rerun hashes.
+- cache keys and deterministic-rerun hashes; plus per-phase timings and
+  measured peak RSS in the complete manifest seal only.
+
+The phase-one resource contract uses a post-hoc per-batch elapsed ceiling for
+both calibration and fidelity. It does not claim to interrupt a hung in-flight
+LAPACK call; hard deadlines require a future process-isolated adapter.
 
 Deterministic plan content and observational execution provenance are separate:
 elapsed times and measured peak RSS do not enter the no-solve plan fingerprint.
@@ -575,8 +632,18 @@ The no-solve manifest must state `structural_metrics_computed=true`,
 `diffusion_or_fidelity_metrics_computed=false`, and
 `audit_solve_authorized=false`. The calibration lock must bind the complete
 plan-manifest content record—not merely `plan_fingerprint`—before it records
-the actual path-free BLAS identity, freezes `alpha_top` and the selected
-contrast, and authorizes any audit solve.
+the nonempty actual path-free BLAS identity, confirms one observed BLAS thread,
+freezes `alpha_top` and one of the four lock modes, and authorizes any audit
+solve allowed by that mode.
+
+Lock verification is full-chain and content verification: rerun declaration,
+two-attempt consensus, and plan verification; check the complete plan record,
+calibration artifacts, hashes, lock fields, and authorization consistency. It
+does not numerically recompute eigendecompositions, bisection, factors, or
+responses. Such recomputation is a separate explicit rerun. Verification of
+unkeyed content hashes also does not authenticate a wholly replaced
+self-consistent chain against a hostile same-user; that requires an external
+signature or immutable trusted store.
 
 Fail closed on a missing or mismatched raw-source preparer manifest, unfrozen
 physical-edge policy, incomplete privacy propagation, incomplete or asymmetric
