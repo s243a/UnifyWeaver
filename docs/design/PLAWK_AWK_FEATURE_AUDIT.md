@@ -47,7 +47,7 @@ only (runtime pending) · ❌ missing.
 | `delete arr[k]` | ◐ | `delete arr[$k]` removes the entry keyed by a field (parity with `arr[$k]++`); backward-shift deletion in the runtime (later colliding keys stay reachable), missing key is a no-op. String-literal / var keys are a follow-on |
 | `exit [n]` | ✅ | stops the record loop, runs END, returns N (default 0); `exit` in a rule body, an `if`/`else` branch, or a loop (propagates past the loop) — scalar state at the exit point flows into END |
 | `delete arr[k]` | ❌ | |
-| `getline` | ◐ | **`getline var < "file"` landed** (phase 1): reads the next line of a file into a scalar, returning 1/0/-1. `status = getline var < "file"` captures the return (dual-slot: `var` string, `status` i64); a bare `getline var < "file"` discards it. Handles are keyed by **filename** in a process-wide registry (`@wam_getline_file`), so every site reading the same file shares one advancing handle (as in awk); EOF preserves `var`. The **canonical in-condition idiom** works: `while ((getline var < "file") > 0) BODY` (normalised at parse to a priming read + a `while (status > 0)` loop whose body re-reads — reusing the phase-1 machinery, no new codegen). Follow-ons: plain `getline` / `getline < file` into `$0` (updates `NF`), `cmd | getline`, `getline` in BEGIN/END, and `var` as a strnum source. The multi-pass / `over` readers still cover the bulk-scan use |
+| `getline` | ◐ | **Redirected scalar and record getline landed.** `getline var < "file"` reads into a scalar; `getline < "file"` reads into `$0`, re-splits `$1…$NF` with the active FS (including regex FS), and updates `NF`. Their assignment forms capture the 1/0/-1 status (`status = getline …`), while bare statements discard it; EOF/error preserve the prior target. Handles are keyed by **filename** in the process-wide `@wam_getline_file` registry, so scalar- and record-target sites share one advancing handle. Both canonical conditions work: `while ((getline var < "file") > 0)` and `while ((getline < "file") > 0)`. Redirected record getline does **not** advance NR/FNR. Its v1 runtime sibling forces a physical newline record and preserves RS/RT while reusing the persistent reader; applying RS/RT to this form is a follow-on. Cleanly rejected follow-ons: plain main-input `getline`, bare main-input `getline var`, `cmd | getline`, dynamic filenames, and getline in BEGIN/END. The multi-pass / `over` readers still cover the bulk-scan use |
 
 ## Functions
 
@@ -194,7 +194,8 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    family; larger, lower priority for the DSL's data-pipeline focus.
 
 Deferred by design (the DSL's model diverges here): `RS`/multi-char record
-separators, `getline` (the `over`/multi-pass readers subsume most uses),
+separators, main-input and pipeline `getline` (the `over`/multi-pass readers
+subsume most bulk-scan uses),
 multi-file `FILENAME`/`FNR` (`ARGV[N]`/`ARGC` themselves are landed for rule
 bodies — see the table), C-style `for(;;)` / `do-while` (the `while`
 runtime + for-in cover the loop needs).
