@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import math
 from types import SimpleNamespace
 
@@ -53,6 +54,392 @@ def _contract() -> dict:
         "peak_rss_ceiling_bytes": 10**12,
         "statistics": plan._statistical_contract("omitted"),
     }
+
+
+def _synthetic_plan_material() -> tuple[
+    dict, dict[str, bytes], dict, bytes, bytes, bytes
+]:
+    """Build a small but complete plan projection without running a graph study."""
+
+    adjacency: dict[str, tuple[str, ...]] = {}
+    batches = []
+    domains = []
+    boundaries = []
+    calibration_shells = []
+    audit_shells = []
+    role_budgets = {
+        "S_256": 256,
+        "S_512": 512,
+        "S_1024": 1024,
+        "R_top": 4096,
+    }
+    next_node = 1
+    for split, batch_count in (
+        ("calibration", 8),
+        ("audit", audit.EXPECTED_AUDIT_BATCHES),
+    ):
+        for batch_index in range(batch_count):
+            batch_id = f"{split}-{batch_index:02d}"
+            anchors = [f"pt:{next_node + offset}" for offset in range(4)]
+            next_node += 4
+            for anchor in anchors:
+                adjacency[anchor] = ()
+            # Keep one real graph node outside every frozen domain so the
+            # projection preserves a nontrivial protected-set boundary.
+            omitted_protected = f"pt:{next_node}"
+            next_node += 1
+            adjacency[omitted_protected] = ()
+            anchors_by_quartile = [
+                {"node_id": anchor, "quartile_id": quartile}
+                for anchor, quartile in zip(anchors, audit.EXPECTED_QUARTILES)
+            ]
+            batches.append(
+                {
+                    "anchors_by_quartile": anchors_by_quartile,
+                    "batch_id": batch_id,
+                    "batch_index": batch_index,
+                    "protected_nodes": [*anchors, omitted_protected],
+                    "split": split,
+                }
+            )
+            node_rows = [
+                {"hop_distance": 0, "node_id": anchor} for anchor in anchors
+            ]
+            for role in audit.ROLE_ORDER:
+                domain = {
+                    "batch_id": batch_id,
+                    "nodes": copy.deepcopy(node_rows),
+                    "requested_nodes": role_budgets[role],
+                    "role": role,
+                    "truncated_final_shell_nodes": 0,
+                }
+                domains.append(domain)
+                boundaries.append(
+                    plan._boundary_record(
+                        batch_id,
+                        role,
+                        role_budgets[role],
+                        anchors,
+                        adjacency,
+                    )
+                )
+            shell_target = (
+                calibration_shells if split == "calibration" else audit_shells
+            )
+            for anchor in anchors:
+                shell_target.append(
+                    {
+                        "anchor_node_id": anchor,
+                        "batch_id": batch_id,
+                        "hop_radius": 3,
+                        "reasons": [],
+                        "shell_nodes": [anchor],
+                        "strictly_interior_pass": True,
+                        "target_attenuation": "exp(-1)",
+                    }
+                )
+
+    bootstrap = [
+        {
+            "multiplicities": [1] * audit.EXPECTED_AUDIT_BATCHES,
+            "replicate_index": replicate,
+        }
+        for replicate in range(audit.EXPECTED_BOOTSTRAP_REPLICATES)
+    ]
+    artifacts = {
+        "audit_shells.jsonl": audit._jsonl_bytes(audit_shells),
+        "batches.jsonl": audit._jsonl_bytes(batches),
+        "bootstrap_multiplicities.jsonl": audit._jsonl_bytes(bootstrap),
+        "boundaries.jsonl": audit._jsonl_bytes(boundaries),
+        "calibration_shells.jsonl": audit._jsonl_bytes(calibration_shells),
+        "domains.jsonl": audit._jsonl_bytes(domains),
+    }
+    attempt_manifest = audit._canonical_json({"schema": "synthetic-attempt-v1"})
+    adjacency_data = audit._jsonl_bytes(
+        [
+            {"neighbors": list(adjacency[node]), "node_id": node}
+            for node in sorted(adjacency, key=plan._typed_id_key)
+        ]
+    )
+    eligibility_data = b""
+    manifest = {
+        "accepted": True,
+        "audit_solve_authorized": False,
+        "calibration_solve_authorized": True,
+        "diffusion_or_fidelity_metrics_computed": False,
+        "fingerprint_core": {
+            "artifact_records": {
+                name: audit._content_record(data) for name, data in artifacts.items()
+            },
+            "input_bindings": {
+                "canonical_attempt_a_manifest": audit._content_record(
+                    attempt_manifest
+                ),
+                "planning_graph_artifacts": {
+                    "adjacency.jsonl": audit._content_record(adjacency_data),
+                    "anchor_eligibility.jsonl": audit._content_record(
+                        eligibility_data
+                    ),
+                },
+            },
+            "resource_contract": {"planner_input_ceiling_bytes": 10**8},
+        },
+        "plan_fingerprint": "1" * 64,
+    }
+    return (
+        adjacency,
+        artifacts,
+        manifest,
+        attempt_manifest,
+        adjacency_data,
+        eligibility_data,
+    )
+
+
+def _write_private(path, data: bytes) -> None:
+    path.write_bytes(data)
+    path.chmod(0o600)
+
+
+def _capture_synthetic_plan_context(tmp_path, monkeypatch) -> dict:
+    (
+        adjacency,
+        artifacts,
+        manifest,
+        attempt_manifest,
+        adjacency_data,
+        eligibility_data,
+    ) = _synthetic_plan_material()
+    plan_dir = tmp_path / "plan"
+    attempt_dir = tmp_path / "attempt-a"
+    plan_dir.mkdir(mode=0o700)
+    attempt_dir.mkdir(mode=0o700)
+    plan_dir.chmod(0o700)
+    attempt_dir.chmod(0o700)
+    _write_private(plan_dir / plan.MANIFEST_NAME, audit._canonical_json(manifest))
+    for name, data in artifacts.items():
+        _write_private(plan_dir / name, data)
+    _write_private(attempt_dir / "manifest.json", attempt_manifest)
+    _write_private(attempt_dir / "adjacency.jsonl", adjacency_data)
+    _write_private(attempt_dir / "anchor_eligibility.jsonl", eligibility_data)
+
+    monkeypatch.setattr(plan, "verify_plan", lambda *_args, **_kwargs: manifest)
+    monkeypatch.setattr(
+        plan,
+        "_load_graph",
+        lambda *_args, **_kwargs: ({}, adjacency, ()),
+    )
+    context = audit.hop_lock._capture_verified_context(
+        plan_dir,
+        receipt_dir=tmp_path / "receipt",
+        attempt_a_dir=attempt_dir,
+        attempt_b_dir=tmp_path / "attempt-b",
+        source_spec=tmp_path / "source-spec.json",
+        relation_policy=tmp_path / "relation-policy.json",
+    )
+    return context
+
+
+def _audit_context(plan_context: dict) -> dict:
+    runtime = [
+        {
+            "observed_num_threads": 1,
+            "user_api": "blas",
+            "version": "synthetic",
+        }
+    ]
+    return {
+        "contract": {
+            "effective_resistance": False,
+            "minimum_rcond": 1e-12,
+            "numeric": {},
+            "peak_rss_ceiling_bytes": 10**9,
+            "peak_rss_scope": "synthetic-audit-transaction",
+            "per_batch_elapsed_ceiling_seconds": 10.0,
+            "statistics": plan._statistical_contract("omitted"),
+        },
+        "lock_execution": {"actual_blas_identity": runtime},
+        "lock_manifest": {
+            "lock_fingerprint": "2" * 64,
+            "scientific_core": {
+                "actual_blas_identity": runtime,
+                "alpha_top_hex": float(0.1).hex(),
+            },
+        },
+        "lock_manifest_record": {"sha256": "3" * 64, "size_bytes": 1},
+        "plan_context": plan_context,
+        "selection": {
+            "frozen_audit_roles": ["S_256", "S_512"],
+            "k_high": "S_512",
+            "k_low": "S_256",
+            "lock_mode": "finite_contrast",
+            "required_audit_model_roles": list(audit.ROLE_ORDER),
+        },
+    }
+
+
+def test_verified_plan_capture_feeds_complete_audit_projection(
+    monkeypatch, tmp_path
+) -> None:
+    plan_context = _capture_synthetic_plan_context(tmp_path, monkeypatch)
+
+    assert set(plan_context["plan_artifacts"]) == {
+        "audit_shells.jsonl",
+        "batches.jsonl",
+        "bootstrap_multiplicities.jsonl",
+        "boundaries.jsonl",
+        "calibration_shells.jsonl",
+        "domains.jsonl",
+    }
+    for name in ("audit_shells.jsonl", "bootstrap_multiplicities.jsonl"):
+        assert plan_context["captured_records"]["plan_artifacts"][name] == (
+            plan_context["manifest"]["fingerprint_core"]["artifact_records"][name]
+        )
+
+    work_order, schedule = audit._derive_audit_work_order(
+        _audit_context(plan_context)
+    )
+    assert work_order["batch_count"] == audit.EXPECTED_AUDIT_BATCHES
+    assert work_order["audit_anchor_count"] == audit.EXPECTED_AUDIT_ANCHORS
+    assert {batch["split"] for batch in work_order["batches"]} == {"audit"}
+    assert len(schedule) == audit.EXPECTED_BOOTSTRAP_REPLICATES
+    assert work_order["contains_calibration_metrics_or_responses"] is False
+
+
+def test_audit_projection_rejects_calibration_anchor_overlap(
+    monkeypatch, tmp_path
+) -> None:
+    plan_context = _capture_synthetic_plan_context(tmp_path, monkeypatch)
+    context = _audit_context(plan_context)
+    batches = audit._strict_jsonl_bytes(
+        plan_context["plan_artifacts"]["batches.jsonl"], "batches"
+    )
+    calibration = next(row for row in batches if row["split"] == "calibration")
+    first_audit = next(row for row in batches if row["split"] == "audit")
+    calibration["anchors_by_quartile"][0]["node_id"] = first_audit[
+        "anchors_by_quartile"
+    ][0]["node_id"]
+    plan_context["plan_artifacts"]["batches.jsonl"] = audit._jsonl_bytes(batches)
+
+    with pytest.raises(audit.HopAuditError, match="anchor identities overlap"):
+        audit._derive_audit_work_order(context)
+
+
+def test_audit_capture_rejects_lock_without_audit_authorization(
+    monkeypatch, tmp_path
+) -> None:
+    lock_manifest = {
+        "accepted": True,
+        "audit_solve_authorized": False,
+        "audit_solves_executed": 0,
+        "calibration_completed": True,
+        "confirmatory_claim_authorized": False,
+        "lock_mode": "finite_contrast",
+    }
+    monkeypatch.setattr(
+        audit.hop_lock,
+        "verify_lock",
+        lambda *_args, **_kwargs: lock_manifest,
+    )
+
+    def unexpected_plan_capture(*_args, **_kwargs):
+        pytest.fail("an unauthorized lock reached plan capture")
+
+    monkeypatch.setattr(
+        audit.hop_lock,
+        "_capture_verified_context",
+        unexpected_plan_capture,
+    )
+    with pytest.raises(
+        audit.HopAuditError,
+        match="does not authorize an audit solve",
+    ):
+        audit._capture_verified_context(
+            lock_dir=tmp_path / "lock",
+            plan_dir=tmp_path / "plan",
+            receipt_dir=tmp_path / "receipt",
+            attempt_a_dir=tmp_path / "attempt-a",
+            attempt_b_dir=tmp_path / "attempt-b",
+            source_spec=tmp_path / "sources.json",
+            relation_policy=tmp_path / "policy.json",
+        )
+
+
+def test_audit_prepare_verify_replay_and_tamper_rejection(
+    monkeypatch, tmp_path
+) -> None:
+    plan_context = _capture_synthetic_plan_context(tmp_path, monkeypatch)
+    context = _audit_context(plan_context)
+    runtime = copy.deepcopy(
+        context["lock_manifest"]["scientific_core"]["actual_blas_identity"]
+    )
+
+    @contextmanager
+    def one_thread_runtime():
+        yield copy.deepcopy(runtime)
+
+    def deterministic_safety_failure(*_args, **_kwargs):
+        raise audit.np.linalg.LinAlgError("synthetic deterministic safety stop")
+
+    monkeypatch.setattr(
+        audit,
+        "_capture_verified_context",
+        lambda **_kwargs: copy.deepcopy(context),
+    )
+    monkeypatch.setattr(audit, "_git_commit", lambda: "a" * 40)
+    monkeypatch.setattr(audit, "_implementation_records", lambda: {})
+    monkeypatch.setattr(audit.hop_lock, "_single_blas_thread", one_thread_runtime)
+    monkeypatch.setattr(audit, "_peak_rss_bytes", lambda: 100)
+    monkeypatch.setattr(audit.time, "perf_counter", lambda: 10.0)
+    monkeypatch.setattr(
+        audit,
+        "evaluate_nested_bounded_domain_fidelity",
+        deterministic_safety_failure,
+    )
+    monkeypatch.setattr(
+        audit.hop_plan,
+        "_assert_no_output_input_overlap",
+        lambda *_args, **_kwargs: None,
+    )
+
+    common = {
+        "attempt_a_dir": tmp_path / "attempt-a-input",
+        "attempt_b_dir": tmp_path / "attempt-b-input",
+        "lock_dir": tmp_path / "lock-input",
+        "plan_dir": tmp_path / "plan-input",
+        "receipt_dir": tmp_path / "receipt-input",
+        "relation_policy": tmp_path / "policy.json",
+        "source_spec": tmp_path / "sources.json",
+    }
+    first_dir = tmp_path / "audit-first"
+    first = audit.prepare_audit(
+        audit_dir=first_dir,
+        local_root=tmp_path,
+        **common,
+    )
+    assert first["decision"] == "safety_or_resource_blocked"
+    assert first["confirmatory_claim_authorized"] is False
+    assert audit.verify_audit(audit_dir=first_dir, **common) == first
+
+    second_dir = tmp_path / "audit-second"
+    second = audit.prepare_audit(
+        audit_dir=second_dir,
+        local_root=tmp_path,
+        **common,
+    )
+    assert second["audit_fingerprint"] == first["audit_fingerprint"]
+    for name in audit.SCIENTIFIC_ARTIFACT_NAMES:
+        assert (second_dir / name).read_bytes() == (first_dir / name).read_bytes()
+
+    monkeypatch.setattr(audit, "_git_commit", lambda: "b" * 40)
+    with pytest.raises(audit.HopAuditError, match="implementation binding changed"):
+        audit.verify_audit(audit_dir=first_dir, **common)
+    monkeypatch.setattr(audit, "_git_commit", lambda: "a" * 40)
+
+    decision_path = first_dir / "decision.json"
+    decision_path.write_bytes(decision_path.read_bytes() + b"\n")
+    with pytest.raises(audit.HopAuditError, match="artifact decision.json"):
+        audit.verify_audit(audit_dir=first_dir, **common)
 
 
 def _adequacy_summary() -> dict[str, float]:

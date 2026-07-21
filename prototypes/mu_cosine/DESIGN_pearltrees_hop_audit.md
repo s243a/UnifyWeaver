@@ -229,18 +229,25 @@ Q90/Q10 rules. A finite contrast additionally computes:
 The exhaustive result classes are:
 
 - `low_endpoint_converged`: `K_low` passes absolute adequacy, all active
-  noninferiority endpoints pass, and larger-domain efficacy does not pass;
-- `larger_endpoint_efficacious`: the efficacy rule passes and the smaller
-  endpoint is not authorized as converged;
+  noninferiority endpoints pass, `K_low` realizes strictly fewer candidate
+  nodes than `K_high` in every complete batch, and larger-domain efficacy does
+  not pass;
+- `larger_endpoint_efficacious`: the efficacy rule passes, `K_low` realizes
+  strictly fewer candidate nodes than `K_high` in every complete batch, and the
+  smaller endpoint is not authorized as converged;
 - `inconclusive_frontier`: the rules conflict or neither resolves;
 - `absolute_only`: report `S_1024` and reference adequacy only;
 - `right_censored_diagnostics`: report the frozen diagnostics only;
 - `reference_inadequate`: the untouched `S_1024`-to-`R_top` support gate
   fails, so no finite or absolute claim is authorized;
-- `descriptive_incomplete`: fewer than 18 complete batches or an unusable
-  bootstrap; and
+- `descriptive_incomplete`: fewer than 18 complete batches; and
 - `safety_or_resource_blocked`: a deterministic safety gate or frozen resource
   ceiling fails.
+
+An invalid schedule, zero retained multiplicity, undefined extended-real
+aggregation, or any other unusable-bootstrap condition aborts preparation and
+fails verification before an installed decision. It is not converted into
+`descriptive_incomplete`.
 
 `confirmatory_claim_authorized=true` for either a clean
 `low_endpoint_converged` or a clean `larger_endpoint_efficacious` result under
@@ -251,6 +258,14 @@ all required endpoint/safety checks pass, `K_low` realizes fewer nodes in every
 complete batch, timing provenance is complete, and process peak RSS is within
 the frozen ceiling. Both flags remain false for a conflict, every other result
 class, or any failed gate.
+
+The authorization booleans written during decision derivation are not
+transaction-effective by themselves. They become effective only after staged
+and installed audit verification validates the complete, status-consistent
+24-batch timing ledger and every required per-role timing field, then rederives
+the decision and confirms the authorization invariants. Missing or malformed
+timing aborts preparation or verification; it does not produce a different
+decision class.
 
 ## 9. Resource provenance
 

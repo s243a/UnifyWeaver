@@ -560,7 +560,9 @@ Every frozen vector must have at least 10 nonzero batch entries. Consequently
 any mask retaining at least 18 batches has positive mass. Verification still
 recomputes both facts; if `M_r=0` or the schedule support certificate fails,
 fail the bootstrap closed with no redraw, seed change, or replacement
-replicate. Otherwise use `m_r,b c_b / M_r`, implemented as a
+replicate. This is a transaction/verification failure, not a
+`descriptive_incomplete` result; that result is reserved for fewer than 18
+complete batches. Otherwise use `m_r,b c_b / M_r`, implemented as a
 multiplicity-weighted numerator divided by the exact positive integer `M_r`.
 Apply that identical masked weight to both budgets, all four quartiles, and
 every paired endpoint; endpoint-specific or survivor-anchor masks are
@@ -588,14 +590,16 @@ Use extended-real zero handling without an epsilon: equal zeros contribute
 zero; zero numerator with positive denominator contributes negative infinity;
 positive numerator with zero denominator contributes positive infinity. Store
 infinities as explicit canonical extended-real tokens, never as non-standard
-JSON numbers; an unregistered undefined operation fails closed. A
-material larger-domain efficacy finding requires the one-sided upper endpoint
-of `Delta_hi_lo` to be strictly below `log(0.9)`, not merely below zero. The
-smaller domain is declared converged only when it independently passes the
-absolute Section 6 adequacy gates and the full noninferiority intersection below,
-while `K_high` does not meet that efficacy rule. If larger-domain efficacy and
-smaller-domain noninferiority conflict or neither resolves, report an
-inconclusive frontier rather than choosing post hoc. When `K_high=R_top`, report
+JSON numbers; an unregistered undefined operation fails closed. A material
+larger-domain efficacy finding requires both the one-sided upper endpoint of
+`Delta_hi_lo` to be strictly below `log(0.9)`, not merely below zero, and strict
+smaller-endpoint node reduction in every complete batch. The smaller domain is
+declared converged only when it independently passes the absolute Section 6
+adequacy gates, the full noninferiority intersection below, and that same
+strict node-reduction gate, while `K_high` does not meet the efficacy rule. If
+larger-domain efficacy and smaller-domain noninferiority conflict, node
+reduction fails, or neither statistical rule resolves, report an inconclusive
+frontier rather than choosing post hoc. When `K_high=R_top`, report
 only the absolute adequacy of `S_1024` and reference convergence; do not call the
 reference trivially lower error an efficacy result.
 
@@ -611,6 +615,13 @@ deterministic safety/resource gate, complete timing provenance, and strict
 smaller-endpoint node reduction in every complete batch. Both flags are false
 for a conflict, `absolute_only`, `right_censored_diagnostics`, incomplete,
 blocked, or inconclusive results.
+
+Decision derivation records the statistical/resource candidate values of these
+flags before observational timing validation. Authorization is effective only
+after staged and installed verification validates the complete,
+status-consistent timing ledger and required per-role fields and rederives the
+decision. Missing or malformed timing fails the transaction rather than
+downgrading it to an incomplete result.
 
 Noninferiority is a one-sided INTERSECTION-UNION TEST: EVERY named endpoint
 must pass its own 95% one-sided upper bound with these frozen margins:

@@ -238,7 +238,7 @@ def _capture_verified_context(
     source_spec,
     relation_policy,
 ):
-    """Fully reverify upstream state and capture the exact calibration bytes."""
+    """Fully reverify upstream state and capture the bound downstream bytes."""
 
     try:
         manifest = hop_plan.verify_plan(
@@ -277,6 +277,8 @@ def _capture_verified_context(
             "domains.jsonl",
             "boundaries.jsonl",
             "calibration_shells.jsonl",
+            "audit_shells.jsonl",
+            "bootstrap_multiplicities.jsonl",
         )
         plan_artifacts = {
             name: _read_bound_bytes(
