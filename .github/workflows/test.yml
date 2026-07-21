@@ -231,7 +231,7 @@ jobs:
 
       - name: Run R focused regressions (switch-index + LMDB)
         run: |
-          swipl -q -f init.pl -s tests/test_wam_r_generator.pl -g "run_tests([wam_r_generator:switch_on_constant_fallthrough_is_linear_noop,wam_r_generator:switch_on_term_a2_is_switch_on_term_noop,wam_r_generator:switch_on_constant_fallthrough_preserves_backtracking,wam_r_generator:r_a2_switch_hints_are_linear_noop,wam_r_generator:r_a2_fallthrough_preserves_backtracking,wam_r_generator:lmdb_r0_source_dispatch_selection,wam_r_generator:lmdb_arg1_v1_mock_adapter_lookup_and_stream,wam_r_generator:lmdb_arg1_v1_real_binding_e2e_rscript,wam_r_generator:lmdb_r1_materialisation_codegen,wam_r_generator:lmdb_r1_eager_lazy_runtime_parity,wam_r_generator:lmdb_r2a_cached_codegen,wam_r_generator:lmdb_r2a_cached_runtime])" -t halt
+          swipl -q -f init.pl -s tests/test_wam_r_generator.pl -g "run_tests([wam_r_generator:switch_on_constant_fallthrough_is_linear_noop,wam_r_generator:switch_on_term_a2_is_switch_on_term_noop,wam_r_generator:switch_on_constant_fallthrough_preserves_backtracking,wam_r_generator:r_a2_switch_hints_are_linear_noop,wam_r_generator:r_a2_fallthrough_preserves_backtracking,wam_r_generator:lmdb_r0_source_dispatch_selection,wam_r_generator:lmdb_arg1_v1_mock_adapter_lookup_and_stream,wam_r_generator:lmdb_arg1_v1_real_binding_e2e_rscript,wam_r_generator:lmdb_r1_materialisation_codegen,wam_r_generator:lmdb_r1_eager_lazy_runtime_parity,wam_r_generator:lmdb_r2a_cached_codegen,wam_r_generator:lmdb_r2a_cached_runtime,wam_r_generator:lmdb_r2b_auto_materialisation_codegen])" -t halt
 
       - name: Run full R classic conformance
         run: |

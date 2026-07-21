@@ -73,6 +73,8 @@
 :- use_module(wam_runtime_parser_capability,
              [parser_dependent_body_goal/2,
               wam_target_runtime_parser/3]).
+:- use_module('../core/cost_model',
+             [resolve_auto_lmdb_materialisation/2]).
 
 % ============================================================================
 % EMIT MODE
@@ -1424,12 +1426,15 @@ fact_source_pi_match(Name/Ar, P, Arity) :-
     Name == P, Ar =:= Arity.
 
 %% r_normalize_fact_source_spec(+Spec0, +Options, -Spec)
-%  lmdb_arg1_v1 → lmdb_arg1_v1(Path, Mode) or
-%  lmdb_arg1_v1(Path, cached, Cap). Default Mode=lazy.
-%  auto/unknown → domain_error (LMDB-R-2B).
+%  lmdb_arg1_v1 → concrete Mode via existing R-1/R-2A emitters.
+%  Absent lmdb_materialisation → lazy (R default; do NOT call the
+%  shared resolver, whose no-metadata default is eager).
+%  Explicit auto/lazy/eager/cached → resolve_auto_lmdb_materialisation/2.
 r_normalize_fact_source_spec(lmdb_arg1_v1(Path), Options, Spec) :- !,
-    option(lmdb_materialisation(Mode0), Options, lazy),
-    r_lmdb_arg1_v1_materialisation(Mode0, Mode),
+    (   option(lmdb_materialisation(_), Options)
+    ->  resolve_auto_lmdb_materialisation(Options, Mode)
+    ;   Mode = lazy
+    ),
     (   Mode == cached
     ->  option(lmdb_l2_capacity(Cap0), Options, 4096),
         r_lmdb_l2_capacity(Cap0, Cap),
@@ -1437,13 +1442,6 @@ r_normalize_fact_source_spec(lmdb_arg1_v1(Path), Options, Spec) :- !,
     ;   Spec = lmdb_arg1_v1(Path, Mode)
     ).
 r_normalize_fact_source_spec(Spec, _Options, Spec).
-
-r_lmdb_arg1_v1_materialisation(lazy, lazy) :- !.
-r_lmdb_arg1_v1_materialisation(eager, eager) :- !.
-r_lmdb_arg1_v1_materialisation(cached, cached) :- !.
-r_lmdb_arg1_v1_materialisation(Mode, _) :-
-    % auto and unknowns stay rejected until LMDB-R-2B.
-    throw(error(domain_error(lmdb_materialisation, Mode), _)).
 
 r_lmdb_l2_capacity(N, N) :-
     integer(N), N > 0, !.

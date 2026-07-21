@@ -41,8 +41,9 @@ runtime-parser default is native, with the compiled
 
 **Optional LMDB.** Legacy `lmdb(Path)` remains load-everything.
 Versioned `lmdb_arg1_v1(Path)` supports `lmdb_materialisation(lazy)`
-(default), `eager`, and `cached` (+ `lmdb_l2_capacity`, default 4096).
-`auto` remains open (LMDB-R-2B).
+(default when omitted), `eager`, `cached` (+ `lmdb_l2_capacity`,
+default 4096), and explicit `auto` (codegen resolves via shared
+`resolve_auto_lmdb_materialisation/2`). LMDB-R-0/R-1/R-2A/R-2B complete.
 
 ## Gaps (relative to Rust / Haskell / F#)
 
@@ -51,16 +52,14 @@ Versioned `lmdb_arg1_v1(Path)` supports `lmdb_materialisation(lazy)`
   forms (`switch_on_constant_a2`, `_a2_fallthrough`, `switch_on_structure_a2`)
   — map to the existing `SwitchOnTerm()` linear no-op (not optimized A2
   dispatch), preserving the full try/retry/trust chain.
-- **LMDB-R-2B** auto resolution still open; LMDB-R-0/R-1/R-2A landed.
 - **ISO error support** is `tryCatch`-level only, not the three-form
   contract.
 - No dedicated effective-distance cross-target bench row.
 
 ## Path forward
 
-1. LMDB-R-2B auto over `lmdb_arg1_v1`.
-2. ISO three-form adoption if R joins the error-fidelity set.
-3. Effective-distance cross-target matrix row.
+1. ISO three-form adoption if R joins the error-fidelity set.
+2. Effective-distance cross-target matrix row.
 
 ## Document status
 
