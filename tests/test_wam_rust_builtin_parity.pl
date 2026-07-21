@@ -157,6 +157,13 @@ t_random_builtins(First, Repeat, Unit, Singleton) :-
     random(Unit),
     random_between(7, 7, Singleton).
 
+:- dynamic t_filesystem_permissions/0.
+t_filesystem_permissions :-
+    access('filesystem_permissions_compiled_fixture.txt', 0),
+    chmod('filesystem_permissions_compiled_fixture.txt', 384),
+    chown('filesystem_permissions_compiled_fixture.txt', -1, -1),
+    mkfifo('filesystem_permissions_compiled_fixture.fifo', 384).
+
 :- dynamic t_process_commands/2.
 t_process_commands(Status, Output) :-
     shell('exit 0'),
@@ -459,6 +466,7 @@ test_builtin_parity_execution :-
              user:t_login_name/1,
              user:t_time_conversions/3,
              user:t_random_builtins/4,
+             user:t_filesystem_permissions/0,
              user:t_process_commands/2,
              user:t_sleep/0,
              user:t_halt_zero/0,
@@ -511,6 +519,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_login_name_1,
     t_time_conversions_3,
     t_random_builtins_4,
+    t_filesystem_permissions_0,
     t_process_commands_2,
     t_sleep_0,
     t_environment_mutation_1,
@@ -958,6 +967,84 @@ fn test_random_builtins_unavailable_direct() {
     assert!(!call3("random_between/3", i(1), i(2), ub("Random")).0);
     assert!(!call1(
         "set_random/1", Value::Str("seed".to_string(), vec![i(7)])).0);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_filesystem_permissions_compiled_and_direct() {
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+
+    let compiled_file = std::path::Path::new(
+        "filesystem_permissions_compiled_fixture.txt");
+    let compiled_fifo = std::path::Path::new(
+        "filesystem_permissions_compiled_fixture.fifo");
+    let _ = std::fs::remove_file(compiled_file);
+    let _ = std::fs::remove_file(compiled_fifo);
+    std::fs::write(compiled_file, b"compiled").unwrap();
+
+    let mut vm = vmnew();
+    assert!(t_filesystem_permissions_0(&mut vm));
+    assert_eq!(
+        std::fs::metadata(compiled_file).unwrap().permissions().mode() & 0o777,
+        0o600);
+    assert!(std::fs::metadata(compiled_fifo).unwrap().file_type().is_fifo());
+
+    let direct_file = std::path::Path::new(
+        "filesystem_permissions_direct_fixture.txt");
+    let direct_fifo = std::path::Path::new(
+        "filesystem_permissions_direct_fixture.fifo");
+    let _ = std::fs::remove_file(direct_file);
+    let _ = std::fs::remove_file(direct_fifo);
+    std::fs::write(direct_file, b"direct").unwrap();
+
+    assert!(call2("access/2", a(direct_file.to_str().unwrap()), i(0)).0);
+    assert!(!call2("access/2", a("missing-permission-path"), i(0)).0);
+    assert!(!call2("access/2", i(7), i(0)).0);
+    assert!(!call2("access/2", a(direct_file.to_str().unwrap()), a("mode")).0);
+
+    assert!(call2("chmod/2", a(direct_file.to_str().unwrap()), i(0o400)).0);
+    assert_eq!(
+        std::fs::metadata(direct_file).unwrap().permissions().mode() & 0o777,
+        0o400);
+    assert!(!call2("chmod/2", a("missing-permission-path"), i(0o600)).0);
+    assert!(!call2("chmod/2", i(7), i(0o600)).0);
+    assert!(!call2("chmod/2", a(direct_file.to_str().unwrap()), a("mode")).0);
+
+    assert!(call3(
+        "chown/3", a(direct_file.to_str().unwrap()), i(-1), i(-1)).0);
+    assert!(!call3("chown/3", a("missing-permission-path"), i(-1), i(-1)).0);
+    assert!(!call3("chown/3", i(7), i(-1), i(-1)).0);
+    assert!(!call3(
+        "chown/3", a(direct_file.to_str().unwrap()), a("uid"), i(-1)).0);
+    assert!(!call3(
+        "chown/3", a(direct_file.to_str().unwrap()), i(-1), a("gid")).0);
+
+    assert!(call2("mkfifo/2", a(direct_fifo.to_str().unwrap()), i(0o600)).0);
+    assert!(std::fs::metadata(direct_fifo).unwrap().file_type().is_fifo());
+    assert!(!call2("mkfifo/2", a(direct_fifo.to_str().unwrap()), i(0o600)).0);
+    assert!(!call2("mkfifo/2", i(7), i(0o600)).0);
+    assert!(!call2("mkfifo/2", a("unused-fifo"), a("mode")).0);
+
+    let nul_path = String::from_utf8(vec![98, 97, 100, 0, 112, 97, 116, 104]).unwrap();
+    assert!(!call2("access/2", a(&nul_path), i(0)).0);
+    assert!(!vmnew().execute_builtin("access/2", 2));
+    assert!(!vmnew().execute_builtin("chmod/2", 2));
+    assert!(!vmnew().execute_builtin("chown/3", 3));
+    assert!(!vmnew().execute_builtin("mkfifo/2", 2));
+
+    std::fs::remove_file(compiled_fifo).unwrap();
+    std::fs::remove_file(compiled_file).unwrap();
+    std::fs::remove_file(direct_fifo).unwrap();
+    std::fs::remove_file(direct_file).unwrap();
+}
+
+#[cfg(not(unix))]
+#[test]
+fn test_filesystem_permissions_unavailable_direct() {
+    assert!(!call2("access/2", a("path"), i(0)).0);
+    assert!(!call2("chmod/2", a("path"), i(0o600)).0);
+    assert!(!call3("chown/3", a("path"), i(-1), i(-1)).0);
+    assert!(!call2("mkfifo/2", a("path"), i(0o600)).0);
 }
 
 #[cfg(unix)]

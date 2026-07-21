@@ -1381,6 +1381,10 @@ compile_execute_io_builtin_to_rust(Code) :-
                        RandomTemplate),
     render_template(RandomTemplate, [part=helpers], RandomHelpers),
     render_template(RandomTemplate, [part=arms], RandomArms),
+    read_template_file('templates/targets/rust_wam/filesystem_permission_builtin.rs.mustache',
+                       PermissionTemplate),
+    render_template(PermissionTemplate, [part=helpers], PermissionHelpers),
+    render_template(PermissionTemplate, [part=arms], PermissionArms),
     Prefix = '    fn builtin_path_arg(&self, reg: &str) -> Option<String> {
         match self.get_reg_raw(reg)
             .map(|v| self.deref_heap(&self.deref_var(&v))) {
@@ -2118,8 +2122,9 @@ compile_execute_io_builtin_to_rust(Code) :-
     }',
     atomic_list_concat(
         [Prefix, ProcessHelpers, MetricsHelpers, OsErrorHelpers, ResourceHelpers,
-         TimeHelpers, RandomHelpers, Dispatcher, ProcessArms, MetricsArms,
-         OsErrorArms, ResourceArms, TimeArms, RandomArms, Suffix], Code).
+         TimeHelpers, RandomHelpers, PermissionHelpers, Dispatcher, ProcessArms,
+         MetricsArms, OsErrorArms, ResourceArms, TimeArms, RandomArms,
+         PermissionArms, Suffix], Code).
 
 compile_execute_type_builtin_to_rust(Code) :-
     Code = '    fn execute_type_builtin(&mut self, op: &str, _arity: usize) -> bool {
