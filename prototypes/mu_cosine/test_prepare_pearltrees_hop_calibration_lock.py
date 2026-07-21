@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import deepcopy
 import hashlib
 import math
@@ -180,7 +181,19 @@ def _calibration_work_order() -> dict:
     return {"batches": batches}
 
 
-def test_calibration_global_max_uses_all_32_independent_anchors_and_is_order_invariant(
+def _calibration_contract() -> dict:
+    return {
+        "cholesky_atol": 1e-12,
+        "cholesky_rtol": 1e-11,
+        "m_matrix_tolerance": 1e-12,
+        "maximum_principle_tolerance": 1e-10,
+        "minimum_rcond": 1e-12,
+        "per_batch_elapsed_ceiling_seconds": 1000,
+        "solve_residual_tolerance": 1e-10,
+    }
+
+
+def test_calibration_global_max_uses_all_32_unique_anchors_and_is_order_invariant(
     monkeypatch,
 ) -> None:
     work_order = _calibration_work_order()
@@ -212,15 +225,7 @@ def test_calibration_global_max_uses_all_32_independent_anchors_and_is_order_inv
     monkeypatch.setattr(lock, "_domain_from_role", domain_from_role)
     monkeypatch.setattr(lock, "_zero_alpha_precheck", lambda *_a, **_k: {"status": "pass"})
     monkeypatch.setattr(lock.local, "calibrate_uniform_leakage_per_anchor", calibrate)
-    contract = {
-        "cholesky_atol": 1e-12,
-        "cholesky_rtol": 1e-11,
-        "m_matrix_tolerance": 1e-12,
-        "maximum_principle_tolerance": 1e-10,
-        "minimum_rcond": 1e-12,
-        "per_batch_elapsed_ceiling_seconds": 1000,
-        "solve_residual_tolerance": 1e-10,
-    }
+    contract = _calibration_contract()
 
     batches, alpha = lock._run_calibration_pass(work_order, {}, contract)
     reversed_order = {"batches": list(reversed(work_order["batches"]))}
@@ -269,16 +274,40 @@ def test_calibration_rejects_survivor_only_maximum_from_31_anchors(
         lock._run_calibration_pass(
             work_order,
             {},
-            {
-                "cholesky_atol": 1e-12,
-                    "cholesky_rtol": 1e-11,
-                    "m_matrix_tolerance": 1e-12,
-                        "maximum_principle_tolerance": 1e-10,
-                        "minimum_rcond": 1e-12,
-                    "per_batch_elapsed_ceiling_seconds": 1000,
-                    "solve_residual_tolerance": 1e-10,
-            },
+            _calibration_contract(),
         )
+
+
+def test_calibration_blocks_conditioning_derived_leakage(monkeypatch) -> None:
+    work_order = _calibration_work_order()
+
+    def domain_from_role(batch, _role, _adjacency):
+        return SimpleNamespace(
+            anchors=tuple(
+                row["node_id"] for row in batch["anchors_by_quartile"]
+            )
+        )
+
+    def calibrate(_reference, *, anchors, **_kwargs):
+        return SimpleNamespace(
+            eigendecomposition_count=1,
+            numerical_minimum_added_leakage=1e-12,
+            per_anchor=tuple(
+                SimpleNamespace(added_leakage_conductance=0.1)
+                for _anchor in anchors
+            ),
+            study_added_leakage_conductance=0.1,
+            total_evaluations=len(anchors),
+        )
+
+    monkeypatch.setattr(lock, "_domain_from_role", domain_from_role)
+    monkeypatch.setattr(
+        lock, "_zero_alpha_precheck", lambda *_a, **_k: {"status": "pass"}
+    )
+    monkeypatch.setattr(lock.local, "calibrate_uniform_leakage_per_anchor", calibrate)
+
+    with pytest.raises(np.linalg.LinAlgError, match="conditioning-derived leakage"):
+        lock._run_calibration_pass(work_order, {}, _calibration_contract())
 
 
 def _projection_context() -> dict:
@@ -351,10 +380,17 @@ def _projection_context() -> dict:
     }
 
 
-def test_work_order_projects_out_audit_rows_and_rejects_unknown_split(
-    monkeypatch,
-) -> None:
-    context = _projection_context()
+def _plan_rows(context: dict, artifact: str) -> list[dict]:
+    return lock._strict_jsonl_bytes(
+        context["plan_artifacts"][artifact], artifact[: -len(".jsonl")]
+    )
+
+
+def _set_plan_rows(context: dict, artifact: str, rows: list[dict]) -> None:
+    context["plan_artifacts"][artifact] = lock._jsonl_bytes(rows)
+
+
+def _derive_projection_work_order(monkeypatch, context: dict) -> dict:
     monkeypatch.setattr(
         lock.hop_plan,
         "_boundary_record",
@@ -363,7 +399,14 @@ def test_work_order_projects_out_audit_rows_and_rejects_unknown_split(
             "role": role,
         },
     )
-    work_order = lock._derive_calibration_work_order(context)
+    return lock._derive_calibration_work_order(context)
+
+
+def test_work_order_projects_out_audit_rows_and_rejects_unknown_split(
+    monkeypatch,
+) -> None:
+    context = _projection_context()
+    work_order = _derive_projection_work_order(monkeypatch, context)
     assert len(work_order["batches"]) == 8
     assert {row["split"] for row in work_order["batches"]} == {"calibration"}
     assert all(not row["batch_id"].startswith("audit-") for row in work_order["batches"])
@@ -384,6 +427,91 @@ def test_work_order_projects_out_audit_rows_and_rejects_unknown_split(
     context["plan_artifacts"]["batches.jsonl"] = lock._jsonl_bytes(rows)
     with pytest.raises(lock.CalibrationLockError, match="unknown split"):
         lock._derive_calibration_work_order(context)
+
+
+def test_work_order_rejects_wrong_batch_and_anchor_counts(monkeypatch) -> None:
+    context = _projection_context()
+    batches = _plan_rows(context, "batches.jsonl")
+    batches = [row for row in batches if row["batch_id"] != "calibration-07"]
+    _set_plan_rows(context, "batches.jsonl", batches)
+    with pytest.raises(lock.CalibrationLockError, match="eight batches"):
+        _derive_projection_work_order(monkeypatch, context)
+
+    context = _projection_context()
+    batches = _plan_rows(context, "batches.jsonl")
+    batches[0]["anchors_by_quartile"].pop()
+    _set_plan_rows(context, "batches.jsonl", batches)
+    with pytest.raises(lock.CalibrationLockError, match="four anchors"):
+        _derive_projection_work_order(monkeypatch, context)
+
+
+def test_work_order_rejects_duplicate_and_missing_anchors(monkeypatch) -> None:
+    context = _projection_context()
+    batches = _plan_rows(context, "batches.jsonl")
+    batches[0]["anchors_by_quartile"][1]["node_id"] = batches[0][
+        "anchors_by_quartile"
+    ][0]["node_id"]
+    _set_plan_rows(context, "batches.jsonl", batches)
+    with pytest.raises(lock.CalibrationLockError, match="quartile-balanced"):
+        _derive_projection_work_order(monkeypatch, context)
+
+    context = _projection_context()
+    batches = _plan_rows(context, "batches.jsonl")
+    batches[0]["anchors_by_quartile"][0]["node_id"] = "pt:missing"
+    _set_plan_rows(context, "batches.jsonl", batches)
+    with pytest.raises(lock.CalibrationLockError, match="absent from adjacency"):
+        _derive_projection_work_order(monkeypatch, context)
+
+    context = _projection_context()
+    batches = _plan_rows(context, "batches.jsonl")
+    batches[1]["anchors_by_quartile"][0]["node_id"] = batches[0][
+        "anchors_by_quartile"
+    ][0]["node_id"]
+    _set_plan_rows(context, "batches.jsonl", batches)
+    with pytest.raises(lock.CalibrationLockError, match="globally unique"):
+        _derive_projection_work_order(monkeypatch, context)
+
+
+def test_work_order_rejects_unbalanced_quartiles(monkeypatch) -> None:
+    context = _projection_context()
+    batches = _plan_rows(context, "batches.jsonl")
+    batches[0]["anchors_by_quartile"][-1]["quartile_id"] = "q3"
+    _set_plan_rows(context, "batches.jsonl", batches)
+    with pytest.raises(lock.CalibrationLockError, match="quartile-balanced"):
+        _derive_projection_work_order(monkeypatch, context)
+
+
+def test_work_order_rejects_non_nested_and_missing_roles(monkeypatch) -> None:
+    context = _projection_context()
+    domains = _plan_rows(context, "domains.jsonl")
+    s512 = next(
+        row
+        for row in domains
+        if row["batch_id"] == "calibration-00" and row["role"] == "S_512"
+    )
+    s512["nodes"][0], s512["nodes"][1] = s512["nodes"][1], s512["nodes"][0]
+    _set_plan_rows(context, "domains.jsonl", domains)
+    with pytest.raises(lock.CalibrationLockError, match="not nested"):
+        _derive_projection_work_order(monkeypatch, context)
+
+    context = _projection_context()
+    domains = _plan_rows(context, "domains.jsonl")
+    domains = [
+        row
+        for row in domains
+        if not (
+            row["batch_id"] == "calibration-00" and row["role"] == "S_512"
+        )
+    ]
+    _set_plan_rows(context, "domains.jsonl", domains)
+    with pytest.raises(lock.CalibrationLockError, match="role is missing"):
+        _derive_projection_work_order(monkeypatch, context)
+
+
+def test_role_lookup_rejects_unknown_roles() -> None:
+    batch = {"roles": [{"role": "S_256"}]}
+    with pytest.raises(lock.CalibrationLockError, match="ambiguous"):
+        lock._role_item(batch, "UNKNOWN")
 
 
 def _two_node_domain(*, grounded: bool):
@@ -1199,3 +1327,147 @@ def test_lock_reader_rejects_oversized_content_record_before_payload_read(
         match="scientific artifact exceeds its frozen read ceiling",
     ):
         lock._read_lock_payloads(object(), manifest)
+
+
+def test_manifest_rejects_non_single_thread_blas_identity_even_when_resealed(
+    monkeypatch,
+) -> None:
+    manifest = _valid_manifest(monkeypatch)
+    invalid = deepcopy(manifest)
+    invalid["scientific_core"]["actual_blas_identity"][0][
+        "observed_num_threads"
+    ] = 2
+    _reseal(invalid, scientific_core_changed=True)
+    with pytest.raises(
+        lock.CalibrationLockError,
+        match="BLAS thread identity is invalid",
+    ):
+        lock._validate_manifest_invariants(invalid)
+
+
+def test_runtime_blas_gate_rejects_observed_two_thread_backend(
+    monkeypatch,
+) -> None:
+    import threadpoolctl
+
+    @contextmanager
+    def requested_one_thread(*, limits, user_api):
+        assert limits == 1
+        assert user_api == "blas"
+        yield
+
+    monkeypatch.setattr(threadpoolctl, "threadpool_limits", requested_one_thread)
+    monkeypatch.setattr(
+        threadpoolctl,
+        "threadpool_info",
+        lambda: [
+            {
+                "architecture": "test",
+                "internal_api": "test",
+                "num_threads": 2,
+                "prefix": "test",
+                "threading_layer": "test",
+                "user_api": "blas",
+                "version": "test",
+            }
+        ],
+    )
+    with pytest.raises(
+        lock.CalibrationLockError,
+        match="BLAS thread contract is not one",
+    ):
+        with lock._single_blas_thread():
+            pytest.fail("two-thread backend passed the runtime gate")
+
+
+def test_blocked_lock_prepare_install_verify_round_trip_and_commit_binding(
+    monkeypatch, tmp_path
+) -> None:
+    payloads, _fixture_manifest, work_order, contract = (
+        _incomplete_payload_fixture(
+            observed_rss=9_999,
+            ceiling=10_000,
+            resource_blocked=False,
+        )
+    )
+    contract = {
+        **contract,
+        "effective_resistance": False,
+        "numeric": {},
+    }
+    context = {
+        "captured_records": {
+            "plan_manifest": {"sha256": "b" * 64, "size_bytes": 10}
+        },
+        "manifest": {
+            "fingerprint_core": {
+                "resource_contract": {"planner_input_ceiling_bytes": 1_024}
+            },
+            "plan_fingerprint": "c" * 64,
+        },
+    }
+    selection = lock._strict_json_bytes(payloads["selection.json"], "selection")
+    runtime = lock._strict_json_bytes(payloads["execution.json"], "execution")[
+        "actual_blas_identity"
+    ]
+
+    @contextmanager
+    def one_thread_runtime():
+        yield deepcopy(runtime)
+
+    monkeypatch.setattr(
+        lock,
+        "_capture_verified_context",
+        lambda *_args, **_kwargs: deepcopy(context),
+    )
+    monkeypatch.setattr(
+        lock,
+        "_validated_bound_contract",
+        lambda _manifest: deepcopy(contract),
+    )
+    monkeypatch.setattr(
+        lock,
+        "_derive_calibration_work_order",
+        lambda _context: deepcopy(work_order),
+    )
+    monkeypatch.setattr(
+        lock,
+        "_derive_lock_payloads",
+        lambda _context, _runtime: (
+            deepcopy(payloads),
+            deepcopy(selection),
+            deepcopy(contract),
+            False,
+        ),
+    )
+    monkeypatch.setattr(lock, "_implementation_records", lambda: {})
+    monkeypatch.setattr(lock, "_git_commit", lambda: "a" * 40)
+    monkeypatch.setattr(lock, "_single_blas_thread", one_thread_runtime)
+    monkeypatch.setattr(
+        lock.hop_plan,
+        "_assert_no_output_input_overlap",
+        lambda *_args, **_kwargs: None,
+    )
+
+    lock_dir = tmp_path / "calibration-lock"
+    common = {
+        "attempt_a_dir": tmp_path / "attempt-a",
+        "attempt_b_dir": tmp_path / "attempt-b",
+        "lock_dir": lock_dir,
+        "plan_dir": tmp_path / "plan",
+        "receipt_dir": tmp_path / "receipt",
+        "relation_policy": tmp_path / "policy.json",
+        "source_spec": tmp_path / "sources.json",
+    }
+    prepared, exit_code = lock.prepare_lock(local_root=tmp_path, **common)
+    assert exit_code == 2
+    assert prepared["lock_mode"] == "blocked"
+    assert prepared["audit_solve_authorized"] is False
+    assert lock.verify_lock(**common) == prepared
+
+    monkeypatch.setattr(lock, "_git_commit", lambda: "d" * 40)
+    with pytest.raises(
+        lock.CalibrationLockError,
+        match="implementation binding changed",
+    ):
+        lock.verify_lock(**common)

@@ -2101,7 +2101,13 @@ class BoundedFidelityBatchResult:
 
 
 def _cached_equilibrium_response(model, source, cache, key):
-    """Solve once per model/key and return an immutable cached response."""
+    """Solve once per model/key and return an immutable cached response.
+
+    ``key`` is an internal closed-scheme identifier that must uniquely imply
+    the right-hand-side vector.  It is deliberately not a caller-supplied or
+    content-addressed cache key, so adding a new call site requires a distinct
+    key whenever its source vector can differ.
+    """
 
     if cache is None:
         return model.equilibrium_response(source)

@@ -18,7 +18,7 @@ The transaction is one-way:
    chain;
 2. derive a calibration-only work order;
 3. prove every calibration reference is numerically admissible at `alpha=0`;
-4. calibrate 32 independent anchor requirements and take their maximum;
+4. calibrate 32 separate anchor requirements and take their maximum;
 5. apply that one maximum unchanged to every calibration candidate and
    reference;
 6. evaluate the preregistered adequacy rules and freeze the audit mode; and
@@ -100,7 +100,12 @@ The radius-three value controls the deterministic chain bracket seed as well
 as naming the scientific shell; a domain cutoff is not substituted silently.
 
 Each four-anchor batch shares one `numpy.linalg.eigh` decomposition, but its
-anchors retain separate shells and requirements. After all 32 succeed,
+anchors retain separate shells and requirements.
+
+"Separate" is an algorithmic statement, not a statistical-independence claim:
+the registered anchors are unique, but their bounded graph domains may overlap.
+
+After all 32 succeed,
 
     alpha_top = max_s alpha_s.
 
@@ -211,8 +216,9 @@ Preparation reverifies the full upstream chain before work and again before
 installation. Staging uses descriptor-relative no-follow exclusive writes,
 per-file and directory `fsync`, no-replace rename, and conservative rollback.
 The output may not overlap the plan, receipt, either attempt, the declaration
-bundle, policy, any declared raw source, or a cache root. Node-level material
-never enters stdout.
+bundle, policy, or any declared raw source. This phase has no cache input or
+cache-root CLI surface; a future cache-backed adapter must add and test its own
+overlap guard prospectively. Node-level material never enters stdout.
 
 Lock verification repeats full upstream and plan verification and checks every
 bound byte and authorization invariant. It rederives the 32-anchor, eight-batch,
