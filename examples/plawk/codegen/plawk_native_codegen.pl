@@ -532,7 +532,8 @@ plawk_program_native_driver_ir(
     plawk_rules_writebin_exprs(Rules, WritebinExprs),
     append(BodyPrintFields, WritebinExprs, PrintExprs0),
     append(PrintExprs0, ScalarExprs, RecordCounterExprs),
-    plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
+    plawk_print_record_counter_ir(StatePlan, RecordCounterExprs,
+        RecordLoopPhiIR, RecordCounterIR),
     plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
     plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
     plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
@@ -619,7 +620,8 @@ plawk_program_native_driver_ir(
     plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
     append(PrintFields, BodyPrintFields, PrintExprs),
     append(PrintExprs, ScalarExprs, RecordCounterExprs),
-    plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
+    plawk_print_record_counter_ir(ScalarPlan, RecordCounterExprs,
+        RecordLoopPhiIR, RecordCounterIR),
     plawk_state_loop_phi_ir(ScalarPlan, StateLoopPhiIR),
     plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
     plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
@@ -668,7 +670,8 @@ plawk_program_native_driver_ir(
     append(PrintFields, BodyPrintFields, PrintExprs0),
     append(PrintExprs0, WritebinExprs, PrintExprs),
     append(PrintExprs, ScalarExprs, RecordCounterExprs),
-    plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
+    plawk_print_record_counter_ir(StatePlan, RecordCounterExprs,
+        RecordLoopPhiIR, RecordCounterIR),
     plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
     plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
     plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
@@ -725,7 +728,8 @@ plawk_program_native_driver_ir(
     append(PrintFields, BodyPrintFields, PrintExprs0),
     append(PrintExprs0, WritebinExprs, PrintExprs),
     append(PrintExprs, ScalarExprs, RecordCounterExprs),
-    plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
+    plawk_print_record_counter_ir(StatePlan, RecordCounterExprs,
+        RecordLoopPhiIR, RecordCounterIR),
     plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
     plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
     plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
@@ -818,7 +822,8 @@ plawk_program_native_driver_ir(
     append(PrintFields, BodyPrintFields, PrintExprs0),
     append(PrintExprs0, WritebinExprs, PrintExprs),
     append(PrintExprs, ScalarExprs, RecordCounterExprs),
-    plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR, RecordCounterIR),
+    plawk_print_record_counter_ir(StatePlan, RecordCounterExprs,
+        RecordLoopPhiIR, RecordCounterIR),
     plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
     plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
     plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
@@ -5484,6 +5489,13 @@ plawk_while_cond_operand(special('ARGC'), _Slots, _CondValues, Base, Path, Side,
     !,
     format(atom(Ref), '%~w_cond~w_~w_argc', [Base, Path, Side]),
     format(atom(Line), '  ~w = call i64 @wam_argc()', [Ref]).
+% In a main-input-getline program NR/FNR is an ordinary hidden state slot, so a
+% condition after a successful getline (including a loop back-edge) observes
+% the advanced value rather than the outer record's entry value.
+plawk_while_cond_operand(special('NR'), Slots, CondValues, _Base, _Path, _Side,
+        Ref, []) :-
+    plawk_record_number_value(Slots, CondValues, Ref),
+    !.
 % NR: the current record number. In a rule-body condition it is the loop's
 % %current_nr; in an END condition it is %plawk_nr (the final record count, the
 % same SSA the END expression path reads). No extra line -- both are existing
@@ -6562,11 +6574,21 @@ plawk_slot_llvm_type(scalar_counter(_Name), i64).
 plawk_slot_llvm_type(scalar_double(_Name), double).
 plawk_slot_llvm_type(scalar_string(_Name), i64).
 plawk_slot_llvm_type(scalar_strnum(_Name), i64).
+plawk_slot_llvm_type(scalar_record_number, i64).
 
 plawk_slot_zero_ir(scalar_counter(_Name), '0').
 plawk_slot_zero_ir(scalar_double(_Name), '0.0').
 plawk_slot_zero_ir(scalar_string(_Name), '0').
 plawk_slot_zero_ir(scalar_strnum(_Name), '0').
+plawk_slot_zero_ir(scalar_record_number, '0').
+
+plawk_record_number_slot(Slots, Index) :-
+    nth0(Index, Slots, scalar_record_number),
+    !.
+
+plawk_record_number_value(Slots, Values, Value) :-
+    plawk_record_number_slot(Slots, Index),
+    nth0(Index, Values, Value).
 
 plawk_state_slot_lookup(StatePlan, Name, Index, Slot) :-
     plawk_state_plan_slots(StatePlan, Slots),
@@ -6756,7 +6778,10 @@ plawk_break_predecessor_label(done, RuleIndex, Label) :-
 plawk_final_state_phi_lines([], _HasBreak, _) -->
     [].
 plawk_final_state_phi_lines([Slot | Rest], HasBreak, SlotIndex) -->
-    { format(atom(EofIncoming), '[%slot_~w, %close_stream]', [SlotIndex]),
+    { ( Slot == scalar_record_number
+      -> format(atom(EofIncoming), '[%slot_~w_prev, %close_stream]', [SlotIndex])
+      ;  format(atom(EofIncoming), '[%slot_~w, %close_stream]', [SlotIndex])
+      ),
       ( HasBreak == true
       -> format(atom(BreakIncoming), '[%break_slot_~w, %break_close_stream]', [SlotIndex]),
          Incomings = [EofIncoming, BreakIncoming]
@@ -6789,6 +6814,7 @@ plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
     ( ActionVars \== []
     ; BodyPrintFields \== []
     ; plawk_rules_have_record_getline(Rules)
+    ; plawk_rules_have_main_getline(Rules)
     ),
     findall(Name,
         ( member(Field, PrintFields),
@@ -6797,7 +6823,11 @@ plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
         PrintVars),
     append(ActionVars, PrintVars, Names0),
     sort(Names0, Names),
-    plawk_scalar_typed_slots(Rules, Names, Slots).
+    plawk_scalar_typed_slots(Rules, Names, ScalarSlots),
+    (   plawk_rules_have_main_getline(Rules)
+    ->  append(ScalarSlots, [scalar_record_number], Slots)
+    ;   Slots = ScalarSlots
+    ).
 
 % A bare record-getline has an observable `$0` side effect but no scalar slot.
 % Keep the scalar action-chain driver active even when it is the only action in
@@ -6815,6 +6845,8 @@ plawk_actions_have_record_getline(Actions) :-
 
 plawk_action_has_record_getline(getline_file_record(_File)).
 plawk_action_has_record_getline(getline_file_record_capture(_Status, _File)).
+plawk_action_has_record_getline(getline_main_record).
+plawk_action_has_record_getline(getline_main_record_capture(_Status)).
 plawk_action_has_record_getline(if(_Pattern, ThenActions, ElseActions)) :-
     ( plawk_actions_have_record_getline(ThenActions)
     ; plawk_actions_have_record_getline(ElseActions)
@@ -6825,6 +6857,35 @@ plawk_action_has_record_getline(do_while_loop(Body, _Cond)) :-
     plawk_actions_have_record_getline(Body).
 plawk_action_has_record_getline(foreach_loop(_Layout, Body)) :-
     plawk_actions_have_record_getline(Body).
+
+% Main-input getline advances the same logical NR/FNR counter as the outer
+% record driver. Surface FNR is parsed as NR, so one hidden slot covers both.
+% Keep this detector separate from the record-target detector: `getline var`
+% does not replace $0, but it still advances the shared record number.
+plawk_rules_have_main_getline(Rules) :-
+    member(rule(_Pattern, Actions), Rules),
+    plawk_actions_have_main_getline(Actions),
+    !.
+
+plawk_actions_have_main_getline(Actions) :-
+    member(Action, Actions),
+    plawk_action_has_main_getline(Action),
+    !.
+
+plawk_action_has_main_getline(getline_main_record).
+plawk_action_has_main_getline(getline_main_record_capture(_Status)).
+plawk_action_has_main_getline(getline_main_var(_Var)).
+plawk_action_has_main_getline(getline_main_var_capture(_Status, _Var)).
+plawk_action_has_main_getline(if(_Pattern, ThenActions, ElseActions)) :-
+    ( plawk_actions_have_main_getline(ThenActions)
+    ; plawk_actions_have_main_getline(ElseActions)
+    ).
+plawk_action_has_main_getline(while_loop(_Cond, Body)) :-
+    plawk_actions_have_main_getline(Body).
+plawk_action_has_main_getline(do_while_loop(Body, _Cond)) :-
+    plawk_actions_have_main_getline(Body).
+plawk_action_has_main_getline(foreach_loop(_Layout, Body)) :-
+    plawk_actions_have_main_getline(Body).
 
 %% plawk_scalar_typed_slots(+Rules, +Names, -Slots)
 %
@@ -6990,6 +7051,8 @@ plawk_scalar_strnum_source(set(var(Name), argv_at(N)), Name) :-
     N >= 0.
 plawk_scalar_strnum_source(getline_read(Name, _File), Name).
 plawk_scalar_strnum_source(getline_capture(_Status, Name, _File), Name).
+plawk_scalar_strnum_source(getline_main_var(Name), Name).
+plawk_scalar_strnum_source(getline_main_var_capture(_Status, Name), Name).
 
 % A write is disqualifying unless it is a strnum-preserving source: a field copy
 % (`x = $N`) or a plain var copy (`z = x`, which propagates strnum-ness). Any
@@ -7237,7 +7300,11 @@ plawk_mixed_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
         PrintVars),
     append(ActionVars, PrintVars, Names0),
     sort(Names0, Names),
-    plawk_scalar_typed_slots(Rules, Names, Slots).
+    plawk_scalar_typed_slots(Rules, Names, ScalarSlots),
+    (   plawk_rules_have_main_getline(Rules)
+    ->  append(ScalarSlots, [scalar_record_number], Slots)
+    ;   Slots = ScalarSlots
+    ).
 
 plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, [])) :-
     findall(ArrayName,
@@ -7397,6 +7464,12 @@ plawk_mixed_update_action(Action) :-
     plawk_assoc_update_action(Action).
 plawk_mixed_update_action(Action) :-
     plawk_rule_body_print_action(Action).
+% Record-target main getline has no surface scalar update, but it still writes
+% the transient `$0` buffer and advances the hidden NR/FNR slot. The scalar-
+% target forms are admitted by plawk_scalar_action_update/3 above.
+plawk_mixed_update_action(getline_main_record).
+plawk_mixed_update_action(getline_main_record_capture(Status)) :-
+    atom(Status).
 plawk_mixed_update_action(if(_Pattern, ThenActions, ElseActions)) :-
     append(ThenActions, ElseActions, Actions),
     Actions \== [],
@@ -12052,7 +12125,7 @@ plawk_mixed_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], ScalarP
     plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
 plawk_mixed_end_print_lines([special('NR') | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_nr_print_lines(PrintIndex),
+    plawk_end_nr_print_lines(ScalarPlan, PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
     plawk_mixed_end_print_lines(Rest, ScalarPlan, AssocPlan, OutputSeparator, NextPrintIndex).
 plawk_mixed_end_print_lines([special('RT') | Rest], ScalarPlan, AssocPlan, OutputSeparator, PrintIndex) -->
@@ -12210,9 +12283,14 @@ plawk_scalar_loop_phi_lines([], _) -->
 plawk_scalar_loop_phi_lines([Slot | Rest], Index) -->
     { plawk_slot_llvm_type(Slot, Type),
       plawk_slot_zero_ir(Slot, Zero),
-      format(atom(Line),
-          '  %slot_~w = phi ~w [~w, %check_handle_value], [%next_slot_~w, %continue_loop]',
-          [Index, Type, Zero, Index]),
+      ( Slot == scalar_record_number
+      -> format(atom(Line),
+             '  %slot_~w_prev = phi ~w [~w, %check_handle_value], [%next_slot_~w, %continue_loop]',
+             [Index, Type, Zero, Index])
+      ;  format(atom(Line),
+             '  %slot_~w = phi ~w [~w, %check_handle_value], [%next_slot_~w, %continue_loop]',
+             [Index, Type, Zero, Index])
+      ),
       NextIndex is Index + 1
     },
     [Line],
@@ -12274,6 +12352,14 @@ plawk_scalar_rule_body_action(getline_file_record(File)) :-
 plawk_scalar_rule_body_action(getline_file_record_capture(Status, File)) :-
     atom(Status),
     string(File).
+plawk_scalar_rule_body_action(getline_main_record).
+plawk_scalar_rule_body_action(getline_main_record_capture(Status)) :-
+    atom(Status).
+plawk_scalar_rule_body_action(getline_main_var(Var)) :-
+    atom(Var).
+plawk_scalar_rule_body_action(getline_main_var_capture(Status, Var)) :-
+    atom(Status),
+    atom(Var).
 % the store-only half of a rule-level `exit N` (terminal_exit split); it is a
 % plain store with no control, valid anywhere a plain body action is.
 plawk_scalar_rule_body_action(exit_store(_Code)).
@@ -12311,6 +12397,14 @@ plawk_scalar_rule_body_plain_action(getline_file_record(File)) :-
 plawk_scalar_rule_body_plain_action(getline_file_record_capture(Status, File)) :-
     atom(Status),
     string(File).
+plawk_scalar_rule_body_plain_action(getline_main_record).
+plawk_scalar_rule_body_plain_action(getline_main_record_capture(Status)) :-
+    atom(Status).
+plawk_scalar_rule_body_plain_action(getline_main_var(Var)) :-
+    atom(Var).
+plawk_scalar_rule_body_plain_action(getline_main_var_capture(Status, Var)) :-
+    atom(Status),
+    atom(Var).
 % `exit [N]` inside a branch body (`if (c) exit`): the sequence walker lowers it
 % via branch_exit + plawk_branch_to_done_ir (branch to break_close_stream); the
 % store-only marker `exit_store` may appear when a branch ends the rule.
@@ -12950,6 +13044,20 @@ plawk_substitute_operation_reads(Operation, _Slots, _Values, Operation).
 plawk_substitute_scalar_reads(concat(Parts), Slots, Values, concat(SubParts)) :-
     !,
     maplist(plawk_substitute_scalar_read_part(Slots, Values), Parts, SubParts).
+plawk_substitute_scalar_reads(special('NR'), Slots, Values, ssa(Value)) :-
+    plawk_record_number_value(Slots, Values, Value),
+    !.
+plawk_substitute_scalar_reads(sprintf(Format, Args), Slots, Values,
+        sprintf(Format, SubArgs)) :-
+    !,
+    maplist(plawk_substitute_scalar_read_part(Slots, Values), Args, SubArgs).
+plawk_substitute_scalar_reads(ternary(cmp(Left0, Op, Right0), Then0, Else0),
+        Slots, Values, ternary(cmp(Left, Op, Right), Then, Else)) :-
+    !,
+    plawk_substitute_scalar_reads(Left0, Slots, Values, Left),
+    plawk_substitute_scalar_reads(Right0, Slots, Values, Right),
+    plawk_substitute_scalar_reads(Then0, Slots, Values, Then),
+    plawk_substitute_scalar_reads(Else0, Slots, Values, Else).
 plawk_substitute_scalar_read_part(Slots, Values, Part, SubPart) :-
     plawk_substitute_scalar_reads(Part, Slots, Values, SubPart).
 plawk_substitute_scalar_reads(var(Name), Slots, Values, Substituted) :-
@@ -13032,6 +13140,10 @@ plawk_substitute_end_reads(var(Name), StatePlan, Substituted) :-
     -> Substituted = ssa_strnum(Value)   % strnum: text for print, number in arith
     ;  Substituted = ssa(Value)
     ).
+plawk_substitute_end_reads(special('NR'), state_plan(Slots), ssa(Value)) :-
+    plawk_record_number_slot(Slots, Index),
+    !,
+    format(atom(Value), '%final_slot_~w', [Index]).
 plawk_substitute_end_reads(special('NR'), _StatePlan, ssa('%plawk_nr')) :-
     !.
 plawk_substitute_end_reads(Expr0, StatePlan, Expr) :-
@@ -13102,6 +13214,9 @@ plawk_scalar_update_action_name(getline_capture(Status, Var, _File), Name) :-
 % Record-target getline writes only its i64 status slot; `$0` lives in the
 % reserved transient record buffer rather than in the scalar state plan.
 plawk_scalar_update_action_name(getline_file_record_capture(Status, _File), Status).
+plawk_scalar_update_action_name(getline_main_record_capture(Status), Status).
+plawk_scalar_update_action_name(getline_main_var_capture(Status, Var), Name) :-
+    ( Name = Var ; Name = Status ).
 plawk_scalar_update_action_name(dynrec_bind(Vars, _Call, _Types), Name) :-
     plawk_dynrec_binding_names(Vars, Names),
     member(Name, Names).
@@ -13209,6 +13324,11 @@ plawk_scalar_action_update(getline_read(Var, File), Var, set_str(getline(File)))
     string(File).
 plawk_scalar_action_update(getline_capture(_Status, Var, File), Var, set_str(getline(File))) :-
     string(File).
+plawk_scalar_action_update(getline_main_var(Var), Var, set_str(getline_main)) :-
+    atom(Var).
+plawk_scalar_action_update(getline_main_var_capture(_Status, Var), Var,
+        set_str(getline_main)) :-
+    atom(Var).
 % Ternary assignment `x = COND ? A : B`: an i64 value via select (the operation
 % lowers through plawk_scalar_numeric_expr_ir(ternary(...)) -> plawk_i64_expr_ir).
 plawk_scalar_action_update(set(var(Name), ternary(cmp(Left, _Op, Right), Then, Else)),
@@ -13362,6 +13482,113 @@ plawk_getline_record_ir(Prefix, OpIndex, File, StNext, GlobalIR, IR) :-
   ~w = call i64 @wam_getline_file_record(i8* %~w_pathp, i64 ~w)',
         [Base, PathBytes, PathBytes, PathName,
          StNext, Base, PathLen]).
+
+% Main-input getline sites use the driver-owned %handle, hence advance the
+% exact buffered stream the outer record loop is draining. Runtime helpers keep
+% their internal control flow out of the action sequence (whose predecessor
+% labels are tracked by the Prolog lowering). The returned status gates the
+% hidden NR/FNR slot increment.
+plawk_getline_main_record_ir(Prefix, OpIndex, NrInput, StNext, NrNext, IR) :-
+    format(atom(Base), '~w_getline_main_record_~w', [Prefix, OpIndex]),
+    format(atom(StNext), '%~w_status', [Base]),
+    format(atom(NrNext), '%~w_nr', [Base]),
+    format(atom(IR),
+'  ~w = call i64 @wam_getline_main_record(%Value %handle)
+  %~w_got = icmp eq i64 ~w, 1
+  %~w_nr_inc = add i64 ~w, 1
+  ~w = select i1 %~w_got, i64 %~w_nr_inc, i64 ~w',
+        [StNext,
+         Base, StNext,
+         Base, NrInput,
+         NrNext, Base, Base, NrInput]).
+
+plawk_getline_main_var_ir(Prefix, OpIndex, VarInput, NrInput, VarNext, StNext,
+        NrNext, IR) :-
+    format(atom(Base), '~w_getline_main_var_~w', [Prefix, OpIndex]),
+    format(atom(VarNext), '%~w_var', [Base]),
+    format(atom(StNext), '%~w_status', [Base]),
+    format(atom(NrNext), '%~w_nr', [Base]),
+    format(atom(IR),
+'  %~w_lineid = alloca i64
+  store i64 ~w, i64* %~w_lineid
+  ~w = call i64 @wam_getline_main_var(%Value %handle, i64* %~w_lineid)
+  %~w_line = load i64, i64* %~w_lineid
+  %~w_got = icmp eq i64 ~w, 1
+  ~w = select i1 %~w_got, i64 %~w_line, i64 ~w
+  %~w_nr_inc = add i64 ~w, 1
+  ~w = select i1 %~w_got, i64 %~w_nr_inc, i64 ~w',
+        [Base,
+         VarInput, Base,
+         StNext, Base,
+         Base, Base,
+         Base, StNext,
+         VarNext, Base, Base, VarInput,
+         Base, NrInput,
+         NrNext, Base, Base, NrInput]).
+
+% `status = getline`: replace the current record, capture status, and advance
+% NR/FNR only when a record was actually read.
+plawk_scalar_action_sequence_pairs([getline_main_record_capture(Status) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { nth0(StIndex, Slots, StSlot), plawk_slot_name(StSlot, Status),
+      plawk_record_number_slot(Slots, NrIndex),
+      nth0(NrIndex, Values0, NrInput),
+      plawk_getline_main_record_ir(Prefix, OpIndex, NrInput, StNext, NrNext, IR),
+      replace_nth0(StIndex, Values0, StNext, Values1),
+      replace_nth0(NrIndex, Values1, NrNext, Values2),
+      NextOpIndex is OpIndex + 1
+    },
+    [''-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values2, Values, FinalOpIndex, ExitLabel, NextExits).
+% Bare main-input `getline`: same record/counter effects, status discarded.
+plawk_scalar_action_sequence_pairs([getline_main_record | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { plawk_record_number_slot(Slots, NrIndex),
+      nth0(NrIndex, Values0, NrInput),
+      plawk_getline_main_record_ir(Prefix, OpIndex, NrInput, _StNext, NrNext, IR),
+      replace_nth0(NrIndex, Values0, NrNext, Values1),
+      NextOpIndex is OpIndex + 1
+    },
+    [''-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, NextExits).
+
+% `status = getline var`: the persistent line id updates Var on success while
+% $0/NF remain untouched; status and the hidden record number are threaded too.
+plawk_scalar_action_sequence_pairs([getline_main_var_capture(Status, Var) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { nth0(VarIndex, Slots, VarSlot), plawk_slot_name(VarSlot, Var),
+      nth0(VarIndex, Values0, VarInput),
+      nth0(StIndex, Slots, StSlot), plawk_slot_name(StSlot, Status),
+      plawk_record_number_slot(Slots, NrIndex),
+      nth0(NrIndex, Values0, NrInput),
+      plawk_getline_main_var_ir(Prefix, OpIndex, VarInput, NrInput,
+          VarNext, StNext, NrNext, IR),
+      replace_nth0(VarIndex, Values0, VarNext, Values1),
+      replace_nth0(StIndex, Values1, StNext, Values2),
+      replace_nth0(NrIndex, Values2, NrNext, Values3),
+      NextOpIndex is OpIndex + 1
+    },
+    [''-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values3, Values, FinalOpIndex, ExitLabel, NextExits).
+% Bare `getline var`: update Var and NR/FNR, discard status.
+plawk_scalar_action_sequence_pairs([getline_main_var(Var) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { nth0(VarIndex, Slots, VarSlot), plawk_slot_name(VarSlot, Var),
+      nth0(VarIndex, Values0, VarInput),
+      plawk_record_number_slot(Slots, NrIndex),
+      nth0(NrIndex, Values0, NrInput),
+      plawk_getline_main_var_ir(Prefix, OpIndex, VarInput, NrInput,
+          VarNext, _StNext, NrNext, IR),
+      replace_nth0(VarIndex, Values0, VarNext, Values1),
+      replace_nth0(NrIndex, Values1, NrNext, Values2),
+      NextOpIndex is OpIndex + 1
+    },
+    [''-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values2, Values, FinalOpIndex, ExitLabel, NextExits).
 
 % `status = getline < "file"`: update the current record and the status slot.
 plawk_scalar_action_sequence_pairs([getline_file_record_capture(Status, File) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
@@ -13524,8 +13751,9 @@ plawk_scalar_action_sequence_pairs([printf(string(Format), Args) | Rest],
         Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_rule_body_print_action(printf(string(Format), Args)),
+      maplist(plawk_substitute_print_field(Slots, Values0), Args, SubArgs),
       format(atom(PrintPrefix), '~w_printf_~w', [Prefix, OpIndex]),
-      plawk_prefixed_printf_action_ir(Format, Args, FieldSeparator, PrintPrefix, Pair),
+      plawk_prefixed_printf_action_ir(Format, SubArgs, FieldSeparator, PrintPrefix, Pair),
       NextOpIndex is OpIndex + 1
     },
     [Pair],
@@ -15282,7 +15510,7 @@ plawk_scalar_end_print_lines([var(Name) | Rest], StatePlan, OutputSeparator, Pri
     plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
 plawk_scalar_end_print_lines([special('NR') | Rest], StatePlan, OutputSeparator, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
-    plawk_end_nr_print_lines(PrintIndex),
+    plawk_end_nr_print_lines(StatePlan, PrintIndex),
     { NextPrintIndex is PrintIndex + 1 },
     plawk_scalar_end_print_lines(Rest, StatePlan, OutputSeparator, NextPrintIndex).
 plawk_scalar_end_print_lines([special('RT') | Rest], StatePlan, OutputSeparator, PrintIndex) -->
@@ -15340,18 +15568,25 @@ plawk_end_field_print_lines(var(Name), StatePlan, PrintIndex) -->
     [FmtPtr, PrintCall].
 plawk_end_field_print_lines(string(Value), _StatePlan, PrintIndex) -->
     plawk_end_string_print_lines(Value, PrintIndex).
-plawk_end_field_print_lines(special('NR'), _StatePlan, PrintIndex) -->
-    plawk_end_nr_print_lines(PrintIndex).
+plawk_end_field_print_lines(special('NR'), StatePlan, PrintIndex) -->
+    plawk_end_nr_print_lines(StatePlan, PrintIndex).
 plawk_end_field_print_lines(special('RT'), _StatePlan, PrintIndex) -->
     plawk_end_rt_print_lines(PrintIndex).
 plawk_end_field_print_lines(Expr, StatePlan, PrintIndex) -->
     { plawk_end_scalar_expr(Expr) },
     plawk_end_expr_print_lines(Expr, StatePlan, PrintIndex).
 
-plawk_end_nr_print_lines(PrintIndex) -->
+plawk_end_nr_value(state_plan(Slots), ValueIR) :-
+    plawk_record_number_slot(Slots, Index),
+    !,
+    format(atom(ValueIR), '%final_slot_~w', [Index]).
+plawk_end_nr_value(_StatePlan, '%plawk_nr').
+
+plawk_end_nr_print_lines(StatePlan, PrintIndex) -->
     { format(atom(FmtVar), 'end_nr_fmt_~w', [PrintIndex]),
       format(atom(PrintVar), 'printed_end_nr_~w', [PrintIndex]),
-      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, '%plawk_nr',
+      plawk_end_nr_value(StatePlan, ValueIR),
+      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar, ValueIR,
           [FmtPtr, PrintCall])
     },
     [FmtPtr, PrintCall].
@@ -16102,6 +16337,21 @@ plawk_field_cmp_op_code(lt, 2).
 plawk_field_cmp_op_code(le, 3).
 plawk_field_cmp_op_code(gt, 4).
 plawk_field_cmp_op_code(ge, 5).
+
+% Main-input getline needs the record number as ordinary loop-carried state:
+% one outer-loop record and every successful getline both advance it. The
+% hidden slot's loop phi is named *_prev because EOF branches before the
+% current outer record is counted; the lowered record block materializes the
+% current value after a successful driver read.
+plawk_print_record_counter_ir(state_plan(Slots), _Fields, '', RecordCounterIR) :-
+    plawk_record_number_slot(Slots, Index),
+    !,
+    format(atom(RecordCounterIR),
+'  %slot_~w = add i64 %slot_~w_prev, 1
+  %current_nr = add i64 %slot_~w, 0',
+        [Index, Index, Index]).
+plawk_print_record_counter_ir(_StatePlan, Fields, LoopPhiIR, RecordCounterIR) :-
+    plawk_print_record_counter_ir(Fields, LoopPhiIR, RecordCounterIR).
 
 plawk_print_record_counter_ir(Fields, LoopPhiIR, RecordCounterIR) :-
     (   plawk_fields_include_nr(Fields)

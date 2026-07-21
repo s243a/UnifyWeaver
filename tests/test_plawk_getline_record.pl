@@ -133,17 +133,12 @@ test(record_getline_long_record_prints, [condition(clang_available)]) :-
 
 test(unsupported_getline_shapes_exit_3, [condition(clang_available)]) :-
     rdir(Dir),
-    Cases = [ plain-"{ getline }\n",
-              main_var-"{ getline v }\n",
-              pipe-"{ cmd | getline }\n",
+    Cases = [ pipe-"{ cmd | getline }\n",
               dynamic_file-"{ getline < filename }\n",
               dynamic_field-"{ getline < $1 }\n",
               dynamic_paren-"{ getline < (filename) }\n",
               dynamic_scalar_target-"{ getline v < $1 }\n",
-              capture_main-"{ r = getline }\n",
               capture_dynamic-"{ r = getline < $1 }\n",
-              while_main-"{ while ((getline) > 0) print $0 }\n",
-              while_main_var-"{ while ((getline v) > 0) print $0 }\n",
               while_dynamic-"{ while ((getline < filename) > 0) print $0 }\n",
               begin_ctx-"BEGIN { getline < \"x\" } { print $0 }\n",
               begin_capture-"BEGIN { r = getline < \"x\" } { print $0 }\n",

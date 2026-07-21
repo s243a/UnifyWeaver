@@ -8361,6 +8361,112 @@ gl.err:
   ret i64 -1
 }
 
+; awk main-input `getline var`: read from the already-open primary stream.
+; The persistent reader shares the exact handle, buffered position, RS state,
+; regex replay, and RT updates used by the outer record driver. The output slot
+; is written only for a real record, so EOF and read errors preserve the target.
+; Returns the awk 1, 0, or -1 status.
+define i64 @wam_getline_main_var(%Value %handle, i64* %line_id_out) {
+entry:
+  %gmv.line = call %Value @wam_stream_read_line_value(%Value %handle)
+  %gmv.tag = extractvalue %Value %gmv.line, 0
+  %gmv.payload = extractvalue %Value %gmv.line, 1
+  %gmv.is_int = icmp eq i32 %gmv.tag, 1
+  %gmv.negative = icmp slt i64 %gmv.payload, 0
+  %gmv.read_error = and i1 %gmv.is_int, %gmv.negative
+  br i1 %gmv.read_error, label %gmv.error, label %gmv.check_atom
+
+gmv.check_atom:
+  %gmv.is_atom = icmp eq i32 %gmv.tag, 0
+  br i1 %gmv.is_atom, label %gmv.check_eof, label %gmv.error
+
+gmv.check_eof:
+  %gmv.text = call i8* @wam_atom_to_string(i64 %gmv.payload)
+  %gmv.text_null = icmp eq i8* %gmv.text, null
+  br i1 %gmv.text_null, label %gmv.error, label %gmv.compare_eof
+
+gmv.compare_eof:
+  %gmv.eof_text = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof_atom, i32 0, i32 0
+  %gmv.eof_cmp = call i32 @strcmp(i8* %gmv.text, i8* %gmv.eof_text)
+  %gmv.is_eof = icmp eq i32 %gmv.eof_cmp, 0
+  br i1 %gmv.is_eof, label %gmv.eof, label %gmv.success
+
+gmv.success:
+  store i64 %gmv.payload, i64* %line_id_out
+  ret i64 1
+
+gmv.eof:
+  ret i64 0
+
+gmv.error:
+  ret i64 -1
+}
+
+; awk main-input `getline`: read the next primary-stream record into $0.
+; Use the transient reader so a drain loop keeps the main driver constant-space.
+; Snapshot the old record first and restore it on an error; clean EOF does not
+; modify the transient buffer. This shares the outer handle and active RS/RT.
+; Returns the awk 1, 0, or -1 status.
+define i64 @wam_getline_main_record(%Value %handle) {
+entry:
+  %gmr.old_ptr = load i8*, i8** @wam_transient_line_buf
+  %gmr.have_old = icmp ne i8* %gmr.old_ptr, null
+  br i1 %gmr.have_old, label %gmr.snapshot, label %gmr.read_without_snapshot
+
+gmr.snapshot:
+  %gmr.old_len = call i64 @strlen(i8* %gmr.old_ptr)
+  %gmr.snapshot_len = add i64 %gmr.old_len, 1
+  %gmr.snapshot_ptr = call i8* @malloc(i64 %gmr.snapshot_len)
+  %gmr.snapshot_null = icmp eq i8* %gmr.snapshot_ptr, null
+  br i1 %gmr.snapshot_null, label %gmr.error_without_read, label %gmr.save
+
+gmr.save:
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %gmr.snapshot_ptr, i8* %gmr.old_ptr, i64 %gmr.snapshot_len, i1 false)
+  br label %gmr.read
+
+gmr.read_without_snapshot:
+  br label %gmr.read
+
+gmr.read:
+  %gmr.saved_ptr = phi i8* [ %gmr.snapshot_ptr, %gmr.save ], [ null, %gmr.read_without_snapshot ]
+  %gmr.saved_len = phi i64 [ %gmr.old_len, %gmr.save ], [ 0, %gmr.read_without_snapshot ]
+  %gmr.line = call %Value @wam_stream_read_line_transient_value(%Value %handle)
+  %gmr.tag = extractvalue %Value %gmr.line, 0
+  %gmr.payload = extractvalue %Value %gmr.line, 1
+  %gmr.is_int = icmp eq i32 %gmr.tag, 1
+  %gmr.negative = icmp slt i64 %gmr.payload, 0
+  %gmr.read_error = and i1 %gmr.is_int, %gmr.negative
+  br i1 %gmr.read_error, label %gmr.restore_or_error, label %gmr.check_atom
+
+gmr.check_atom:
+  %gmr.is_atom = icmp eq i32 %gmr.tag, 0
+  br i1 %gmr.is_atom, label %gmr.check_record, label %gmr.restore_or_error
+
+gmr.check_record:
+  %gmr.is_record = icmp eq i64 %gmr.payload, 4611686018427387904
+  br i1 %gmr.is_record, label %gmr.success, label %gmr.eof
+
+gmr.success:
+  call void @free(i8* %gmr.saved_ptr)
+  ret i64 1
+
+gmr.eof:
+  call void @free(i8* %gmr.saved_ptr)
+  ret i64 0
+
+gmr.restore_or_error:
+  %gmr.have_snapshot = icmp ne i8* %gmr.saved_ptr, null
+  br i1 %gmr.have_snapshot, label %gmr.restore, label %gmr.error_without_read
+
+gmr.restore:
+  %gmr.restored = call i64 @wam_transient_atom_from_bytes(i8* %gmr.saved_ptr, i64 %gmr.saved_len)
+  call void @free(i8* %gmr.saved_ptr)
+  ret i64 -1
+
+gmr.error_without_read:
+  ret i64 -1
+}
+
 ; awk getline from a literal file into the current record. Reuse the shared
 ; filename registry and persistent reader, but force a physical newline record
 ; for this v1 form and suppress RT changes. On success, copy the persistent

@@ -11,8 +11,8 @@
 % file shares it (as in awk). On EOF the status is 0 and var is unchanged; an
 % open/read error yields -1. The canonical loop is prime-then-re-read:
 %   r = getline v < "f"; while (r > 0) { ...; r = getline v < "f" }
-% (getline inside a while CONDITION is a follow-on; `getline` into $0, plain
-% `getline`, and `cmd | getline` are follow-ons.)
+% The direct while-condition form and the redirected/main-input record forms
+% have their own coverage; `cmd | getline` remains a follow-on.
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
