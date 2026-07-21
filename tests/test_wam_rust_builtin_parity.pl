@@ -164,6 +164,12 @@ t_filesystem_permissions :-
     chown('filesystem_permissions_compiled_fixture.txt', -1, -1),
     mkfifo('filesystem_permissions_compiled_fixture.fifo', 384).
 
+:- dynamic t_os_utilities/2.
+t_os_utilities(Path, Pid) :-
+    getpid(Pid),
+    kill(Pid, 0),
+    tmp_file(uw_rust_compiled, Path).
+
 :- dynamic t_process_commands/2.
 t_process_commands(Status, Output) :-
     shell('exit 0'),
@@ -467,6 +473,7 @@ test_builtin_parity_execution :-
              user:t_time_conversions/3,
              user:t_random_builtins/4,
              user:t_filesystem_permissions/0,
+             user:t_os_utilities/2,
              user:t_process_commands/2,
              user:t_sleep/0,
              user:t_halt_zero/0,
@@ -520,6 +527,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_time_conversions_3,
     t_random_builtins_4,
     t_filesystem_permissions_0,
+    t_os_utilities_2,
     t_process_commands_2,
     t_sleep_0,
     t_environment_mutation_1,
@@ -1045,6 +1053,63 @@ fn test_filesystem_permissions_unavailable_direct() {
     assert!(!call2("chmod/2", a("path"), i(0o600)).0);
     assert!(!call3("chown/3", a("path"), i(-1), i(-1)).0);
     assert!(!call2("mkfifo/2", a("path"), i(0o600)).0);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_os_utilities_compiled_and_direct() {
+    let mut vm = vmnew();
+    assert!(t_os_utilities_2(&mut vm, ub("Path"), ub("Pid")));
+    assert_eq!(integer_var(&vm, "Pid"), i64::from(std::process::id()));
+    let compiled_path = match read_var(&vm, "Path") {
+        Value::Atom(path) => path,
+        other => panic!("expected temporary-path atom, got {:?}", other),
+    };
+    assert!(compiled_path.starts_with("/tmp/uw_rust_compiled_"));
+    assert_eq!(std::fs::metadata(&compiled_path).unwrap().len(), 0);
+
+    let pid = i64::from(std::process::id());
+    assert!(call2("kill/2", i(pid), i(0)).0);
+    assert!(!call2("kill/2", i(i64::from(i32::MAX)), i(0)).0);
+    assert!(!call2("kill/2", a("pid"), i(0)).0);
+    assert!(!call2("kill/2", i(pid), a("signal")).0);
+    assert!(!vmnew().execute_builtin("kill/2", 2));
+
+    let (first_ok, first_vm) = call2(
+        "tmp_file/2", a("uw_rust_direct"), ub("First"));
+    let (second_ok, second_vm) = call2(
+        "tmp_file/2", a("uw_rust_direct"), ub("Second"));
+    assert!(first_ok && second_ok);
+    let first_path = match read_var(&first_vm, "First") {
+        Value::Atom(path) => path,
+        other => panic!("expected first temporary-path atom, got {:?}", other),
+    };
+    let second_path = match read_var(&second_vm, "Second") {
+        Value::Atom(path) => path,
+        other => panic!("expected second temporary-path atom, got {:?}", other),
+    };
+    assert_ne!(first_path, second_path);
+    for path in [&first_path, &second_path] {
+        assert!(path.starts_with("/tmp/uw_rust_direct_"));
+        assert_eq!(std::fs::metadata(path).unwrap().len(), 0);
+    }
+
+    let nul_base = String::from_utf8(vec![98, 97, 115, 101, 0, 120]).unwrap();
+    assert!(!call2("tmp_file/2", i(7), ub("Path")).0);
+    assert!(!call2("tmp_file/2", a(&nul_base), ub("Path")).0);
+    assert!(!call2("tmp_file/2", a(&"x".repeat(4096)), ub("Path")).0);
+    assert!(!vmnew().execute_builtin("tmp_file/2", 2));
+
+    std::fs::remove_file(compiled_path).unwrap();
+    std::fs::remove_file(first_path).unwrap();
+    std::fs::remove_file(second_path).unwrap();
+}
+
+#[cfg(not(unix))]
+#[test]
+fn test_os_utilities_unavailable_direct() {
+    assert!(!call2("kill/2", i(1), i(0)).0);
+    assert!(!call2("tmp_file/2", a("base"), ub("Path")).0);
 }
 
 #[cfg(unix)]
