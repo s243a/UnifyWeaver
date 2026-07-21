@@ -3781,6 +3781,56 @@ WamRuntime$lmdb_write_facts_arg1_v1 <- function(path, facts, intern_table) {
   WamRuntime$lmdb_kv_put_all(path, pairs)
 }
 
+# --- lmdb_arg1_v1 cached: per-source L1 MRU + bounded L2 true-LRU ----
+# capacity = max distinct arg1 keys in L2 (empty/missing buckets count).
+# Unbound/stream bypasses the cache (no populate/evict).
+WamRuntime$lmdb_arg1_v1_new_cache <- function(capacity) {
+  e <- new.env(parent = emptyenv())
+  e$capacity <- as.integer(capacity)
+  e$l1_key <- NULL
+  e$l1_val <- NULL
+  e$l2 <- new.env(parent = emptyenv(), hash = TRUE)
+  e$order <- character(0)  # oldest .. newest
+  e
+}
+WamRuntime$lmdb_arg1_v1_cached_lookup <- function(cache, path, key_term, arity, intern_table) {
+  key <- WamRuntime$lmdb_encode_tagged_field(key_term, intern_table)
+  if (!is.null(cache$l1_key) && identical(cache$l1_key, key)) return(cache$l1_val)
+  if (exists(key, envir = cache$l2, inherits = FALSE)) {
+    val <- get(key, envir = cache$l2, inherits = FALSE)
+    cache$order <- c(cache$order[cache$order != key], key)
+    cache$l1_key <- key; cache$l1_val <- val
+    return(val)
+  }
+  tuples <- WamRuntime$lmdb_arg1_v1_lookup(path, key_term, arity, intern_table)
+  if (length(cache$order) >= cache$capacity) {
+    old <- cache$order[[1]]
+    cache$order <- cache$order[-1]
+    if (exists(old, envir = cache$l2, inherits = FALSE))
+      rm(list = old, envir = cache$l2)
+    if (!is.null(cache$l1_key) && identical(cache$l1_key, old)) {
+      cache$l1_key <- NULL; cache$l1_val <- NULL
+    }
+  }
+  assign(key, tuples, envir = cache$l2)
+  cache$order <- c(cache$order, key)
+  cache$l1_key <- key; cache$l1_val <- tuples
+  tuples
+}
+WamRuntime$lmdb_arg1_v1_cached_dispatch <- function(program, state, path, arity, args,
+                                                     resume_pc, cache) {
+  table <- program$intern_table
+  a1 <- WamRuntime$deref(state, args[[1]])
+  ground <- !is.null(a1) && !is.null(a1$tag) && a1$tag %in% c("atom", "int", "float")
+  tuples <- if (ground) {
+    WamRuntime$lmdb_arg1_v1_cached_lookup(cache, path, a1, arity, table)
+  } else {
+    WamRuntime$lmdb_arg1_v1_stream(path, arity, table)
+  }
+  if (!length(tuples)) return(FALSE)
+  WamRuntime$fact_table_iter(program, state, path, tuples, args, 1L, resume_pc)
+}
+
 # Build per-arg hash indexes for a runtime-loaded fact table.
 # Returns a list of N envs (one per arg position, where N = arity).
 # Each env follows the same shape as the codegen-emitted

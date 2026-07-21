@@ -4665,12 +4665,12 @@ test(lmdb_r1_materialisation_codegen) :-
                    \+ sub_string(C2,_,_,_,'lmdb_arg1_v1_dispatch('),
                    \+ sub_string(C2,_,_,_,'read_facts_lmdb'))),
         delete_directory_and_contents(Tmp),
-        forall(member(Bad, [cached, auto, weird]),
+        forall(member(Bad, [auto, weird]),
                catch((write_wam_r_project([user:bedge/2],
                           [lmdb_materialisation(Bad),
                            r_fact_sources([source(bedge/2, lmdb_arg1_v1('/tmp/b.lmdb'))])], Tmp),
                       throw(unexpected_success)),
-                     error(domain_error(lmdb_materialisation_eager_or_lazy, Bad), _), true)),
+                     error(domain_error(lmdb_materialisation, Bad), _), true)),
         write_wam_r_project([user:leg2/2],
             [lmdb_materialisation(eager),
              r_fact_sources([source(leg2/2, lmdb('/tmp/leg2.lmdb'))])], Tmp),
@@ -4720,6 +4720,131 @@ special <- "tab\tline\npercent%"
 stopifnot(WamRuntime$lmdb_write_facts_arg1_v1("mock.lmdb", list(list(Atom(WamRuntime$intern(it,special)), Atom(WamRuntime$intern(it,"value")))), it))
 sr <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,special)), 2L, it)
 stopifnot(length(sr)==1L, WamRuntime$string_of(it,sr[[1]][[1]]$id)==special); cat("OK\n")
+'), close(S)),
+    process_create(path('Rscript'), [Script], [cwd(RDir), stdout(pipe(O)), stderr(pipe(E)), process(PID)]),
+    read_string(O, _, Out), close(O), read_string(E, _, Err), close(E),
+    process_wait(PID, Status),
+    assertion(Status == exit(0)), assertion(sub_string(Out,_,_,_,"OK")),
+    assertion(\+ sub_string(Err,_,_,_,"Error")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% LMDB-R-2A: cached materialisation (L1 MRU + bounded L2 LRU).
+% ------------------------------------------------------------------
+test(lmdb_r2a_cached_codegen) :-
+    once((
+        unique_r_tmp_dir('tmp_r_lmdb_r2a_cg', Tmp),
+        write_wam_r_project([user:cedge/2],
+            [lmdb_materialisation(cached),
+             r_fact_sources([source(cedge/2, lmdb_arg1_v1('/tmp/c.lmdb'))])], Tmp),
+        directory_file_path(Tmp, 'R/generated_program.R', P),
+        read_file_to_string(P, C, []),
+        assertion((sub_string(C,_,_,_,'lmdb_arg1_v1_new_cache(4096L)'),
+                   sub_string(C,_,_,_,'lmdb_arg1_v1_cached_dispatch('),
+                   sub_string(C,_,_,_,'lmdb_arg1_v1 cached cap=4096:'),
+                   \+ sub_string(C,_,_,_,'lmdb_arg1_v1_stream('),
+                   \+ sub_string(C,_,_,_,'read_facts_lmdb'))),
+        delete_directory_and_contents(Tmp), make_directory_path(Tmp),
+        write_wam_r_project([user:cedge2/2],
+            [lmdb_materialisation(cached), lmdb_l2_capacity(2),
+             r_fact_sources([source(cedge2/2, lmdb_arg1_v1('/tmp/c2.lmdb'))])], Tmp),
+        directory_file_path(Tmp, 'R/generated_program.R', P2),
+        read_file_to_string(P2, C2, []),
+        assertion(sub_string(C2,_,_,_,'lmdb_arg1_v1_new_cache(2L)')),
+        delete_directory_and_contents(Tmp),
+        forall(member(BadCap, [0, -1, 1.5, foo]),
+               catch((write_wam_r_project([user:badc/2],
+                          [lmdb_materialisation(cached), lmdb_l2_capacity(BadCap),
+                           r_fact_sources([source(badc/2, lmdb_arg1_v1('/tmp/x.lmdb'))])], Tmp),
+                      throw(unexpected_success)),
+                     error(domain_error(lmdb_l2_capacity_positive_integer, BadCap), _), true)),
+        catch((write_wam_r_project([user:autox/2],
+                    [lmdb_materialisation(auto),
+                     r_fact_sources([source(autox/2, lmdb_arg1_v1('/tmp/a.lmdb'))])], Tmp),
+               throw(unexpected_success)),
+              error(domain_error(lmdb_materialisation, auto), _), true),
+        write_wam_r_project([user:legc/2],
+            [lmdb_materialisation(cached),
+             r_fact_sources([source(legc/2, lmdb('/tmp/legc.lmdb'))])], Tmp),
+        directory_file_path(Tmp, 'R/generated_program.R', P3),
+        read_file_to_string(P3, C3, []),
+        assertion((sub_string(C3,_,_,_,'read_facts_lmdb('),
+                   \+ sub_string(C3,_,_,_,'lmdb_arg1_v1_'))),
+        delete_directory_and_contents(Tmp)
+    )).
+
+test(lmdb_r2a_cached_runtime) :-
+    once((rscript_available -> lmdb_r2a_cached_runtime ; true)).
+lmdb_r2a_cached_runtime :-
+    unique_r_tmp_dir('tmp_r_lmdb_r2a_rt', TmpDir),
+    write_wam_r_project([user:chedge/2],
+        [intern_atoms([alice,bob,carol,eve,p,q,r]),
+         lmdb_materialisation(cached), lmdb_l2_capacity(2),
+         r_fact_sources([source(chedge/2, lmdb_arg1_v1('mock.lmdb'))])], TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    directory_file_path(RDir, 'lmdb_r2a_cached.R', Script),
+    setup_call_cleanup(open(Script, write, S), write(S,
+'store <- new.env(parent=emptyenv())
+assign("__uw_schema__",charToRaw("lmdb_arg1_v1"),envir=store)
+assign("a:alice",charToRaw("a:bob\na:eve"),envir=store)
+assign("a:bob",charToRaw("a:carol"),envir=store)
+assign("a:carol",charToRaw("a:eve"),envir=store)
+assign("a:p",charToRaw("a:q\ti:3\na:r\ti:4"),envir=store)
+nget <<- 0L; nlist <<- 0L
+options(unifyweaver.lmdb_kv_adapter=list(
+  get=function(path,key){ nget <<- nget+1L
+    if (exists(key,envir=store,inherits=FALSE)) get(key,envir=store) else NULL },
+  list=function(path){ nlist <<- nlist+1L; ls(envir=store,all.names=TRUE) },
+  put_all=function(path,pairs){ for (k in names(pairs)) assign(k,charToRaw(pairs[[k]]),envir=store); TRUE }))
+source("generated_program.R")
+stopifnot(nget==0L, nlist==0L)  # cached init: no LMDB I/O
+it <- intern_table; cache <- pred_chedge_lmdb_cache
+# positive miss then hit
+nget <<- 0L; nlist <<- 0L
+r1 <- WamRuntime$lmdb_arg1_v1_cached_lookup(cache, "mock.lmdb", Atom(WamRuntime$intern(it,"alice")), 2L, it)
+stopifnot(length(r1)==2L, nget>=1L, nlist==0L)
+g0 <- nget
+r1b <- WamRuntime$lmdb_arg1_v1_cached_lookup(cache, "mock.lmdb", Atom(WamRuntime$intern(it,"alice")), 2L, it)
+stopifnot(length(r1b)==2L, nget==g0, nlist==0L)
+# negative miss then hit
+nget <<- 0L
+mz <- WamRuntime$lmdb_arg1_v1_cached_lookup(cache, "mock.lmdb", Atom(WamRuntime$intern(it,"zzz")), 2L, it)
+stopifnot(length(mz)==0L, nget>=1L, nlist==0L)
+g1 <- nget
+mz2 <- WamRuntime$lmdb_arg1_v1_cached_lookup(cache, "mock.lmdb", Atom(WamRuntime$intern(it,"zzz")), 2L, it)
+stopifnot(length(mz2)==0L, nget==g1, nlist==0L)
+# capacity-2 LRU: fill alice,bob then carol evicts alice; alice rereads
+cache2 <- WamRuntime$lmdb_arg1_v1_new_cache(2L)
+nget <<- 0L
+invisible(WamRuntime$lmdb_arg1_v1_cached_lookup(cache2, "mock.lmdb", Atom(WamRuntime$intern(it,"alice")), 2L, it))
+invisible(WamRuntime$lmdb_arg1_v1_cached_lookup(cache2, "mock.lmdb", Atom(WamRuntime$intern(it,"bob")), 2L, it))
+stopifnot(identical(cache2$order, c("a:alice","a:bob")))
+nget <<- 0L
+invisible(WamRuntime$lmdb_arg1_v1_cached_lookup(cache2, "mock.lmdb", Atom(WamRuntime$intern(it,"carol")), 2L, it))
+stopifnot(identical(cache2$order, c("a:bob","a:carol")), !exists("a:alice", envir=cache2$l2, inherits=FALSE))
+g2 <- nget
+invisible(WamRuntime$lmdb_arg1_v1_cached_lookup(cache2, "mock.lmdb", Atom(WamRuntime$intern(it,"alice")), 2L, it))
+stopifnot(nget>g2, nlist==0L)  # reread after eviction; still no list
+# generated unbound wrapper streams but leaves its cache/recency unchanged
+ord0 <- cache$order; keys0 <- sort(ls(envir=cache$l2, all.names=TRUE)); l1k0 <- cache$l1_key
+nlist <<- 0L; nget <<- 0L
+stu <- WamRuntime$new_state(); stu$regs2[[1]] <- Unbound("U0"); stu$regs2[[2]] <- Unbound("U1")
+stopifnot(isTRUE(pred_chedge_fact_iter(shared_program, stu)), nlist>=1L)
+stopifnot(identical(cache$order, ord0), identical(sort(ls(envir=cache$l2, all.names=TRUE)), keys0),
+          identical(cache$l1_key, l1k0))
+# generated ground wrapper: warm hit has zero I/O and preserves CP behavior
+st <- WamRuntime$new_state(); st$regs2[[1]] <- Atom(WamRuntime$intern(it,"alice"))
+st$regs2[[2]] <- Unbound("V0"); nget <<- 0L; nlist <<- 0L
+stopifnot(isTRUE(pred_chedge_fact_iter(shared_program, st)), length(st$cps)>=1L,
+          nget==0L, nlist==0L)
+# arity-3 + escaped
+t3 <- WamRuntime$lmdb_arg1_v1_cached_lookup(cache, "mock.lmdb", Atom(WamRuntime$intern(it,"p")), 3L, it)
+stopifnot(length(t3)==2L, t3[[1]][[3]]$val==3L)
+special <- "tab\tline\npercent%"
+stopifnot(WamRuntime$lmdb_write_facts_arg1_v1("mock.lmdb", list(list(Atom(WamRuntime$intern(it,special)), Atom(WamRuntime$intern(it,"value")))), it))
+sr <- WamRuntime$lmdb_arg1_v1_cached_lookup(cache, "mock.lmdb", Atom(WamRuntime$intern(it,special)), 2L, it)
+stopifnot(length(sr)==1L, WamRuntime$string_of(it,sr[[1]][[1]]$id)==special)
+cat("OK\n")
 '), close(S)),
     process_create(path('Rscript'), [Script], [cwd(RDir), stdout(pipe(O)), stderr(pipe(E)), process(PID)]),
     read_string(O, _, Out), close(O), read_string(E, _, Err), close(E),
