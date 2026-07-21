@@ -3192,6 +3192,25 @@ field_expr(substr(Field, Start, Len)) -->
       StartCodes \== [], LenCodes \== [],
       number_codes(Start, StartCodes), Start >= 1,
       number_codes(Len, LenCodes), Len >= 0 }.
+% Two-argument `substr(s, m)` returns the tail from position m to the end of the
+% string (awk semantics). The `to_end` length flows through the same slice path;
+% the emitter maps it to a max byte count that the runtime clamps to whatever
+% remains after m.
+field_expr(substr(Field, Start, to_end)) -->
+    "substr",
+    ws,
+    "(",
+    ws,
+    field_expr(Field),
+    ws,
+    ",",
+    ws,
+    integer_codes(StartCodes),
+    ws,
+    ")",
+    { Field = field(_),
+      StartCodes \== [],
+      number_codes(Start, StartCodes), Start >= 1 }.
 field_expr(index(Field, string(Needle))) -->
     "index",
     ws,

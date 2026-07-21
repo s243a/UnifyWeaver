@@ -16933,13 +16933,21 @@ plawk_emit_print_expr_for_context(special('ARGC'), FieldSeparator, Context,
     plawk_i64_expr_ir(special('ARGC'), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
 
-plawk_emit_print_expr_for_context(substr(field(FieldIndex), Start, Len), FieldSeparator, Context,
+plawk_emit_print_expr_for_context(substr(field(FieldIndex), Start, Len0), FieldSeparator, Context,
         slice(FmtPrefix, PrintPrefix, LenIR, PtrIR), [], [SliceIR]) :-
+    plawk_substr_max_len(Len0, Len),
     plawk_print_expr_value_base(Context, substr, Base),
     plawk_print_expr_output_names(Context, substr, FmtPrefix, PrintPrefix),
     llvm_emit_atom_field_subslice('%line', FieldIndex, FieldSeparator, Start, Len, Base, SliceIR),
     format(atom(LenIR), '%~w_len', [Base]),
     format(atom(PtrIR), '%~w_ptr', [Base]).
+
+% Resolve a substr length to the byte count passed to the runtime. A 3-arg
+% substr passes its explicit length; the 2-arg `substr(s, m)` form uses the
+% `to_end` marker, lowered to i64-max so the runtime clamps it to the bytes
+% remaining after m (i.e. the tail of the string).
+plawk_substr_max_len(to_end, 9223372036854775807) :- !.
+plawk_substr_max_len(Len, Len) :- integer(Len).
 
 plawk_emit_print_expr_for_context(index(field(FieldIndex), string(Needle)), FieldSeparator, Context,
         i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
