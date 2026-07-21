@@ -3679,8 +3679,7 @@ WamRuntime$lmdb_encode_tagged_field <- function(v, intern_table) {
   else paste0("a:?", v$tag)
 }
 WamRuntime$lmdb_kv_get <- function(path, key) {
-  ad <- getOption("unifyweaver.lmdb_kv_adapter", WamRuntime$lmdb_kv_adapter)
-  if (!is.null(ad)) return(ad$get(path, key))
+  ad <- WamRuntime$lmdb_kv_adapter; if (!is.null(ad)) return(ad$get(path, key))
   pkg <- WamRuntime$lmdb_pick_pkg(); if (is.null(pkg)) return(NULL)
   if (pkg == "thor") {
     env <- tryCatch(thor::mdb_env(path, create = FALSE), error = function(e) NULL)
@@ -3695,8 +3694,7 @@ WamRuntime$lmdb_kv_get <- function(path, key) {
   NULL
 }
 WamRuntime$lmdb_kv_list <- function(path) {
-  ad <- getOption("unifyweaver.lmdb_kv_adapter", WamRuntime$lmdb_kv_adapter)
-  if (!is.null(ad)) return(ad$list(path))
+  ad <- WamRuntime$lmdb_kv_adapter; if (!is.null(ad)) return(ad$list(path))
   pkg <- WamRuntime$lmdb_pick_pkg(); if (is.null(pkg)) return(character(0))
   if (pkg == "thor") {
     env <- tryCatch(thor::mdb_env(path, create = FALSE), error = function(e) NULL)
@@ -3713,8 +3711,7 @@ WamRuntime$lmdb_kv_list <- function(path) {
   character(0)
 }
 WamRuntime$lmdb_kv_put_all <- function(path, pairs) {
-  ad <- getOption("unifyweaver.lmdb_kv_adapter", WamRuntime$lmdb_kv_adapter)
-  if (!is.null(ad)) return(isTRUE(ad$put_all(path, pairs)))
+  ad <- WamRuntime$lmdb_kv_adapter; if (!is.null(ad)) return(isTRUE(ad$put_all(path, pairs)))
   pkg <- WamRuntime$lmdb_pick_pkg(); if (is.null(pkg)) return(FALSE)
   keys <- names(pairs)
   if (pkg == "thor") {

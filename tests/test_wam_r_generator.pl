@@ -4670,7 +4670,7 @@ test(lmdb_r1_materialisation_codegen) :-
                           [lmdb_materialisation(Bad),
                            r_fact_sources([source(bedge/2, lmdb_arg1_v1('/tmp/b.lmdb'))])], Tmp),
                       throw(unexpected_success)),
-                     error(domain_error(lmdb_materialisation_eager_or_lazy, Bad), _), true)),
+                     error(domain_error(lmdb_materialisation, Bad), _), true)),
         write_wam_r_project([user:leg2/2],
             [lmdb_materialisation(eager),
              r_fact_sources([source(leg2/2, lmdb('/tmp/leg2.lmdb'))])], Tmp),
@@ -4762,7 +4762,7 @@ test(lmdb_r2a_cached_codegen) :-
                     [lmdb_materialisation(auto),
                      r_fact_sources([source(autox/2, lmdb_arg1_v1('/tmp/a.lmdb'))])], Tmp),
                throw(unexpected_success)),
-              error(domain_error(lmdb_materialisation_eager_or_lazy, auto), _), true),
+              error(domain_error(lmdb_materialisation, auto), _), true),
         write_wam_r_project([user:legc/2],
             [lmdb_materialisation(cached),
              r_fact_sources([source(legc/2, lmdb('/tmp/legc.lmdb'))])], Tmp),
@@ -4825,18 +4825,19 @@ stopifnot(identical(cache2$order, c("a:bob","a:carol")), !exists("a:alice", envi
 g2 <- nget
 invisible(WamRuntime$lmdb_arg1_v1_cached_lookup(cache2, "mock.lmdb", Atom(WamRuntime$intern(it,"alice")), 2L, it))
 stopifnot(nget>g2, nlist==0L)  # reread after eviction; still no list
-# unbound stream bypasses cache (order/recency unchanged)
-ord0 <- cache2$order; keys0 <- sort(ls(envir=cache2$l2, all.names=TRUE)); l1k0 <- cache2$l1_key
+# generated unbound wrapper streams but leaves its cache/recency unchanged
+ord0 <- cache$order; keys0 <- sort(ls(envir=cache$l2, all.names=TRUE)); l1k0 <- cache$l1_key
 nlist <<- 0L; nget <<- 0L
-all <- WamRuntime$lmdb_arg1_v1_stream("mock.lmdb", 2L, it)
-stopifnot(nlist>=1L, length(all)>=3L)
-stopifnot(identical(cache2$order, ord0), identical(sort(ls(envir=cache2$l2, all.names=TRUE)), keys0),
-          identical(cache2$l1_key, l1k0))
-# generated cached_dispatch ground + CP; arity-3 + escaped
+stu <- WamRuntime$new_state(); stu$regs2[[1]] <- Unbound("U0"); stu$regs2[[2]] <- Unbound("U1")
+stopifnot(isTRUE(pred_chedge_fact_iter(shared_program, stu)), nlist>=1L)
+stopifnot(identical(cache$order, ord0), identical(sort(ls(envir=cache$l2, all.names=TRUE)), keys0),
+          identical(cache$l1_key, l1k0))
+# generated ground wrapper: warm hit has zero I/O and preserves CP behavior
 st <- WamRuntime$new_state(); st$regs2[[1]] <- Atom(WamRuntime$intern(it,"alice"))
-st$regs2[[2]] <- Unbound("V0"); args <- list(st$regs2[[1]], st$regs2[[2]])
-stopifnot(isTRUE(WamRuntime$lmdb_arg1_v1_cached_dispatch(shared_program, st, "mock.lmdb", 2L, args, 0L, cache)),
-          length(st$cps)>=1L)
+st$regs2[[2]] <- Unbound("V0"); nget <<- 0L; nlist <<- 0L
+stopifnot(isTRUE(pred_chedge_fact_iter(shared_program, st)), length(st$cps)>=1L,
+          nget==0L, nlist==0L)
+# arity-3 + escaped
 t3 <- WamRuntime$lmdb_arg1_v1_cached_lookup(cache, "mock.lmdb", Atom(WamRuntime$intern(it,"p")), 3L, it)
 stopifnot(length(t3)==2L, t3[[1]][[3]]$val==3L)
 special <- "tab\tline\npercent%"

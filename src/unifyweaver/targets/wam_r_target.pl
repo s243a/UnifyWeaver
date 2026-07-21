@@ -1443,7 +1443,7 @@ r_lmdb_arg1_v1_materialisation(eager, eager) :- !.
 r_lmdb_arg1_v1_materialisation(cached, cached) :- !.
 r_lmdb_arg1_v1_materialisation(Mode, _) :-
     % auto and unknowns stay rejected until LMDB-R-2B.
-    throw(error(domain_error(lmdb_materialisation_eager_or_lazy, Mode), _)).
+    throw(error(domain_error(lmdb_materialisation, Mode), _)).
 
 r_lmdb_l2_capacity(N, N) :-
     integer(N), N > 0, !.
