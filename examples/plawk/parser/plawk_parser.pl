@@ -2853,6 +2853,9 @@ scalar_delta_expr(length(Field)) -->
     ws,
     ")",
     { Field = field(_) }.
+scalar_delta_expr(length(field(0))) -->
+    "length",
+    length_no_argument.
 scalar_delta_expr(index(Field, string(Needle))) -->
     "index",
     ws,
@@ -3166,6 +3169,9 @@ field_expr(length(Field)) -->
     ws,
     ")",
     { Field = field(_) }.
+field_expr(length(field(0))) -->
+    "length",
+    length_no_argument.
 field_expr(substr(Field, Start, Len)) -->
     "substr",
     ws,
@@ -3774,6 +3780,9 @@ i64_binary_primary_expr(length(Field)) -->
     simple_field_expr(Field),
     ws,
     ")".
+i64_binary_primary_expr(length(field(0))) -->
+    "length",
+    length_no_argument.
 i64_binary_primary_expr(index(Field, string(Needle))) -->
     "index",
     ws,
@@ -3877,6 +3886,17 @@ identifier_rest([]) -->
 identifier_boundary([Code | Rest], [Code | Rest]) :-
     \+ identifier_continue_code(Code).
 identifier_boundary([], []).
+
+% Bare `length` (no argument) is awk shorthand for `length($0)`. A non-consuming
+% lookahead: `length` must be a complete token that is NOT the start of a call,
+% so `length(...)` / `length (...)` stay function calls (handled by the
+% parenthesised clauses) and `lengthy` / `length_x` stay identifiers.
+length_no_argument(Rest, Rest) :-
+    \+ ( Rest = [Code | _], identifier_continue_code(Code) ),
+    \+ phrase(length_call_open, Rest, _).
+
+length_call_open -->
+    ws, "(".
 
 identifier_continue_code(Code) :-
     code_type(Code, alnum),
