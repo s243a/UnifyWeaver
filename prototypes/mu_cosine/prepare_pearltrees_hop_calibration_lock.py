@@ -73,6 +73,8 @@ MAXIMUM_LOCK_ARTIFACT_BYTES = {
     "selection.json": 4 * 1024 * 1024,
 }
 LOCK_DESIGN_PATH = HERE / "DESIGN_pearltrees_hop_calibration_lock.md"
+AUDIT_DESIGN_PATH = HERE / "DESIGN_pearltrees_hop_audit.md"
+AUDIT_RUNNER_PATH = HERE / "prepare_pearltrees_hop_audit.py"
 PROTOCOL_PATH = HERE / "PROTOCOL_bounded_diffusion_fidelity.md"
 PLAN_DESIGN_PATH = HERE / "DESIGN_pearltrees_hop_plan.md"
 LOCAL_DIFFUSION_PATH = REPO_ROOT / "src/unifyweaver/graph/local_diffusion.py"
@@ -846,8 +848,24 @@ def _validated_bound_contract(manifest):
         "right_censored_diagnostics",
     ]:
         raise CalibrationLockError("calibration lock modes changed")
+    if statistics.get("audit_model_role_rules") != {
+        "decision_roles_field": "frozen_audit_roles",
+        "required_roles_field": "required_audit_model_roles",
+        "required_roles_rule": (
+            "frozen-order union of decision roles with S_1024 and R_top"
+        ),
+        "s1024_support_use": (
+            "audit-reference-adequacy-only-when-not-a-decision-role"
+        ),
+    }:
+        raise CalibrationLockError("audit model-role contract changed")
     if resources.get("candidate_budgets") != [256, 512, 1024]:
         raise CalibrationLockError("candidate budgets changed")
+    if resources.get("peak_rss_scope") != (
+        "process_high_water_through_scientific_payload_serialization_"
+        "before_staging"
+    ):
+        raise CalibrationLockError("audit peak-RSS scope changed")
     return {
         "calibration": calibration,
         "cholesky_atol": float.fromhex(
@@ -868,6 +886,7 @@ def _validated_bound_contract(manifest):
         ),
         "numeric": numeric,
         "peak_rss_ceiling_bytes": resources["study_peak_rss_ceiling_bytes"],
+        "peak_rss_scope": resources["peak_rss_scope"],
         "solve_residual_tolerance": float.fromhex(
             numeric["solve_residual_relative_tolerance_hex"]
         ),
@@ -1259,6 +1278,7 @@ def _select_lock_mode(
         "efficacy_or_resource_claim_authorized": False,
         "endpoint_inventory": endpoint_rows,
         "frozen_audit_roles": [],
+        "required_audit_model_roles": [],
         "k_high": None,
         "k_low": None,
         "reference_adequacy": {
@@ -1279,6 +1299,7 @@ def _select_lock_mode(
             **base,
             "audit_solve_authorized": True,
             "frozen_audit_roles": list(ROLE_ORDER),
+            "required_audit_model_roles": list(ROLE_ORDER),
             "lock_mode": "right_censored_diagnostics",
             "reason": "no_calibration_candidate_adequate",
         }
@@ -1301,17 +1322,24 @@ def _select_lock_mode(
             "audit_solve_authorized": True,
             "endpoint_node_identical_across_all_batches": False,
             "frozen_audit_roles": [low, high],
+            "required_audit_model_roles": ["S_1024", "R_top"],
             "k_high": high,
             "k_low": low,
             "lock_mode": "absolute_only",
             "reason": "selected_low_is_1024_absolute_endpoint",
         }
+    required_roles = [
+        role
+        for role in ROLE_ORDER
+        if role in {low, high, "S_1024", "R_top"}
+    ]
     return {
         **base,
         "audit_solve_authorized": True,
         "efficacy_or_resource_claim_authorized": True,
         "endpoint_node_identical_across_all_batches": False,
         "frozen_audit_roles": [low, high],
+        "required_audit_model_roles": required_roles,
         "k_high": high,
         "k_low": low,
         "lock_mode": "finite_contrast",
@@ -1327,6 +1355,7 @@ def _blocked_selection(reason, *, alpha_top=None, details=None):
         "details": {} if details is None else details,
         "efficacy_or_resource_claim_authorized": False,
         "frozen_audit_roles": [],
+        "required_audit_model_roles": [],
         "k_high": None,
         "k_low": None,
         "lock_mode": "blocked",
@@ -1506,6 +1535,8 @@ def _implementation_records():
     paths = (
         Path(__file__).resolve(),
         LOCK_DESIGN_PATH,
+        AUDIT_DESIGN_PATH,
+        AUDIT_RUNNER_PATH,
         PROTOCOL_PATH,
         PLAN_DESIGN_PATH,
         LOCAL_DIFFUSION_PATH,
@@ -2234,6 +2265,7 @@ def _resource_blocked_selection(selection, ceiling):
         "details": {"ceiling_bytes": ceiling},
         "efficacy_or_resource_claim_authorized": False,
         "frozen_audit_roles": [],
+        "required_audit_model_roles": [],
         "k_high": None,
         "k_low": None,
         "lock_mode": "blocked",
@@ -2909,6 +2941,7 @@ def _validate_lock_payload_structure(
         or selection.get("k_low") is not None
         or selection.get("k_high") is not None
         or selection.get("frozen_audit_roles") != []
+        or selection.get("required_audit_model_roles") != []
         or selection.get("efficacy_or_resource_claim_authorized") is not False
     ):
         raise CalibrationLockError("incomplete calibration selection is unsafe")

@@ -34,8 +34,8 @@ REPO_ROOT = HERE.parents[1]
 PROTOCOL_PATH = HERE / "PROTOCOL_bounded_diffusion_fidelity.md"
 DESIGN_PATH = HERE / "DESIGN_pearltrees_hop_plan.md"
 
-SCHEMA = "pearltrees-hop-fidelity-plan-v2"
-ALGORITHM = "outcome-blind-nested-hop-plan-v2"
+SCHEMA = "pearltrees-hop-fidelity-plan-v3"
+ALGORITHM = "outcome-blind-nested-hop-plan-v3"
 MARKER_NAME = "LOCAL_ONLY_DO_NOT_PUBLISH"
 MARKER_BYTES = b"LOCAL ONLY - DO NOT PUBLISH HOP PLAN NODE ARTIFACTS\n"
 MANIFEST_NAME = "manifest.json"
@@ -47,6 +47,7 @@ ARTIFACT_NAMES = (
     "domains.jsonl",
     "boundaries.jsonl",
     "calibration_shells.jsonl",
+    "audit_shells.jsonl",
     "bootstrap_multiplicities.jsonl",
 )
 ALL_PLAN_FILES = frozenset(ARTIFACT_NAMES + (MANIFEST_NAME, MARKER_NAME))
@@ -935,37 +936,37 @@ def _freeze_domains(batches, anchor_internal, adjacency, touch_budget):
             boundary_records.append(boundary)
             domain_records[-1]["component_exhausted"] = boundary["cut_edge_count"] == 0
 
-        if batch["split"] == "calibration":
-            reference_nodes = {
-                row["node_id"]
-                for row in domain_records[-1]["nodes"]
-            }
-            reference_beta = {
-                row["node_id"]: row["cut_conductance"]
-                for row in boundary_by_role["R_top"]["beta"]
-            }
-            for anchor in anchors:
-                shell = anchor_internal[anchor]["shell"]
-                reasons = []
-                if not shell:
-                    reasons.append("empty_radius_3_shell")
-                if any(node not in reference_nodes for node in shell):
-                    reasons.append("shell_outside_reference")
-                if any(reference_beta.get(node, 0) != 0 for node in shell):
-                    reasons.append("shell_not_strictly_interior")
-                if reasons:
-                    block_reasons.append("calibration_shell_inadequate")
-                shell_records.append(
-                    {
-                        "anchor_node_id": anchor,
-                        "batch_id": batch_id,
-                        "hop_radius": CALIBRATION_SHELL_RADIUS,
-                        "reasons": sorted(set(reasons)),
-                        "shell_nodes": list(shell),
-                        "strictly_interior_pass": not reasons,
-                        "target_attenuation": CALIBRATION_TARGET,
-                    }
-                )
+        reference_nodes = {
+            row["node_id"]
+            for row in domain_records[-1]["nodes"]
+        }
+        reference_beta = {
+            row["node_id"]: row["cut_conductance"]
+            for row in boundary_by_role["R_top"]["beta"]
+        }
+        for anchor in anchors:
+            shell = anchor_internal[anchor]["shell"]
+            reasons = []
+            if not shell:
+                reasons.append("empty_radius_3_shell")
+            if any(node not in reference_nodes for node in shell):
+                reasons.append("shell_outside_reference")
+            if any(reference_beta.get(node, 0) != 0 for node in shell):
+                reasons.append("shell_not_strictly_interior")
+            if reasons:
+                block_reasons.append(f"{batch['split']}_shell_inadequate")
+            shell_records.append(
+                {
+                    "anchor_node_id": anchor,
+                    "batch_id": batch_id,
+                    "hop_radius": CALIBRATION_SHELL_RADIUS,
+                    "reasons": sorted(set(reasons)),
+                    "shell_nodes": list(shell),
+                    "split": batch["split"],
+                    "strictly_interior_pass": not reasons,
+                    "target_attenuation": CALIBRATION_TARGET,
+                }
+            )
     return (
         batch_records,
         domain_records,
@@ -1185,6 +1186,22 @@ def _statistical_contract(effective_resistance_arm):
             "finite_contrast": True,
             "right_censored_diagnostics": True,
         },
+        "audit_model_role_rules": {
+            "decision_roles_field": "frozen_audit_roles",
+            "required_roles_field": "required_audit_model_roles",
+            "required_roles_rule": (
+                "frozen-order union of decision roles with S_1024 and R_top"
+            ),
+            "s1024_support_use": "audit-reference-adequacy-only-when-not-a-decision-role",
+        },
+        "audit_role_semantics": {
+            "decision_roles": "selection.json:frozen_audit_roles",
+            "reference_adequacy_support_role": "S_1024",
+            "reference_role": "R_top",
+            "required_bounded_model_roles": (
+                "deduplicated-frozen-hop-order-union-of-decision-roles-and-S_1024"
+            ),
+        },
         "bootstrap": {
             "audit_batch_resamples": 9999,
             "draws_per_resample": AUDIT_PER_QUARTILE,
@@ -1232,6 +1249,40 @@ def _statistical_contract(effective_resistance_arm):
                 "a prospective amendment"
             ),
             "reference_inadequate": "lock_mode=blocked; audit_solve_authorized=false",
+        },
+        "complete_batch_bootstrap": {
+            "allowed_incomplete_batch_reasons": [
+                "candidate_protected_coverage_failure_before_metrics",
+                "reference_protected_coverage_failure_before_metrics",
+            ],
+            "complete_mask_scope": (
+                "one-fixed-whole-balanced-batch-mask-shared-across-roles-and-endpoints"
+            ),
+            "conditional_complete_case_inference": True,
+            "fewer_than_minimum_complete_batches": "descriptive_only",
+            "masked_weight_formula": "m[r,b]*complete[b]/sum_b(m[r,b]*complete[b])",
+            "missingness_limitation": (
+                "does-not-correct-nonrandom-missingness-or-restore-the-24-batch-estimand"
+            ),
+            "threshold_or_safety_failure_is_missingness": False,
+            "replicate_zero_retained_mass": "fail_closed_without_redraw",
+            "schedule_minimum_nonzero_batch_support": 10,
+            "unresampled_estimand": (
+                "equal-complete-batch-mean-within-quartile-then-equal-four-quartile-mean"
+            ),
+            "zero_mass_impossible_at_or_above_complete_batch_floor": True,
+        },
+        "authorization_flags": {
+            "confirmatory_claim_authorized": [
+                "finite_contrast_larger_endpoint_efficacious",
+                "finite_contrast_low_endpoint_converged",
+            ],
+            "convergence_claim_authorized": (
+                "finite_contrast_low_endpoint_converged"
+            ),
+            "absolute_only": False,
+            "right_censored_diagnostics": False,
+            "requires_strict_realized_node_reduction_each_complete_batch": True,
         },
         "effective_resistance_endpoint": effective_resistance_endpoint,
         "efficacy_log_ratio_threshold": "log(0.9)",
@@ -1350,6 +1401,7 @@ def _derive_plan(capture, receipt, config):
         "quartile_coverage_inadequate",
         "protected_coverage_inadequate",
         "calibration_shell_inadequate",
+        "audit_shell_inadequate",
         "study_resource_inadequate",
     )
     reason = "hop_plan_frozen"
@@ -1357,6 +1409,16 @@ def _derive_plan(capture, receipt, config):
         reason = next(item for item in priority if item in block_reasons)
     accepted = not block_reasons
 
+    calibration_shells = [
+        {key: value for key, value in row.items() if key != "split"}
+        for row in shell_records
+        if row["split"] == "calibration"
+    ]
+    audit_shells = [
+        {key: value for key, value in row.items() if key != "split"}
+        for row in shell_records
+        if row["split"] == "audit"
+    ]
     payloads = {
         "quartiles.jsonl": _jsonl_bytes(quartiles),
         "selected_anchors.jsonl": _jsonl_bytes(selected),
@@ -1364,7 +1426,8 @@ def _derive_plan(capture, receipt, config):
         "anchor_traversals.jsonl": _jsonl_bytes(anchor_traversals),
         "domains.jsonl": _jsonl_bytes(domain_records),
         "boundaries.jsonl": _jsonl_bytes(boundary_records),
-        "calibration_shells.jsonl": _jsonl_bytes(shell_records),
+        "calibration_shells.jsonl": _jsonl_bytes(calibration_shells),
+        "audit_shells.jsonl": _jsonl_bytes(audit_shells),
         "bootstrap_multiplicities.jsonl": _jsonl_bytes(
             _bootstrap_multiplicity_records()
         ),
@@ -1387,12 +1450,26 @@ def _derive_plan(capture, receipt, config):
         "float64_bytes": FLOAT64_BYTES,
         "maximum_projected_dense_preworkspace_bytes": maximum_projected_bytes,
         "maximum_reference_nodes": REFERENCE_BUDGET,
+        "endpoint_peak_rss_attribution": False,
+        "endpoint_timing_provenance": (
+            "evaluator-candidate-reference-selection-build-and-solve-timings"
+        ),
+        "factorization_timing_scope": "included-in-evaluator-build-seconds",
+        "separate_metric_timer": False,
+        "peak_rss_scope": (
+            "process_high_water_through_scientific_payload_serialization_"
+            "before_staging"
+        ),
         "planner_edge_touch_ceiling": config["planner_edge_touch_ceiling"],
         "planner_edge_touches_observed": touch_budget.observed,
         "planner_input_ceiling_bytes": config["planner_input_ceiling_bytes"],
         "planner_input_bytes_observed": capture["planned_input_bytes"],
         "study_peak_rss_ceiling_bytes": config["study_peak_rss_ceiling_bytes"],
         "per_batch_elapsed_ceiling_seconds": 3600,
+        "resource_contrast_requires": [
+            "strict-realized-node-reduction-each-complete-batch",
+            "complete-endpoint-timing-provenance",
+        ],
     }
     calibration_contract = {
         "alpha_zero_evaluation_required": True,
