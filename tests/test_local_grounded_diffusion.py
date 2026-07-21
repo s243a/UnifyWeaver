@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for bounded grounded diffusion domains and bath boundaries."""
 
+from dataclasses import replace
 from pathlib import Path
 import sys
 
@@ -882,6 +883,137 @@ def test_per_anchor_calibration_is_anchor_and_mapping_order_invariant():
     )
 
 
+def test_per_anchor_calibration_certifies_the_final_minimality_bracket():
+    domain, embeddings, shells = _asymmetric_two_anchor_calibration_fixture()
+    tolerance = 1e-7
+    result = calibrate_uniform_leakage_per_anchor(
+        domain,
+        shell_nodes_by_anchor=shells,
+        node_embeddings=embeddings,
+        length_scale=1.0,
+        relative_tolerance=tolerance,
+        bracket_seed_radius=3,
+    )
+
+    for record in result.per_anchor:
+        certificate = record.minimality_certificate
+        assert not certificate.initial_lower_passed
+        assert certificate.bracket_seed_radius == 3
+        assert certificate.lower_added_leakage_conductance >= (
+            record.numerical_minimum_added_leakage
+        )
+        assert certificate.lower_added_leakage_conductance < (
+            certificate.upper_added_leakage_conductance
+        )
+        assert certificate.upper_added_leakage_conductance == (
+            record.added_leakage_conductance
+        )
+        assert certificate.attenuation_at_lower > result.target_attenuation
+        assert certificate.attenuation_at_upper <= result.target_attenuation
+        assert certificate.attenuation_at_upper == pytest.approx(
+            record.achieved_attenuation,
+            rel=2e-14,
+        )
+        assert certificate.relative_bracket_width <= tolerance
+
+
+def test_per_anchor_bracket_seed_radius_changes_only_search_provenance():
+    domain, embeddings, shells = _asymmetric_two_anchor_calibration_fixture()
+    tolerance = 1e-6
+    default = calibrate_uniform_leakage_per_anchor(
+        domain,
+        shell_nodes_by_anchor=shells,
+        node_embeddings=embeddings,
+        length_scale=1.0,
+        relative_tolerance=tolerance,
+    )
+    registered = calibrate_uniform_leakage_per_anchor(
+        domain,
+        shell_nodes_by_anchor=shells,
+        node_embeddings=embeddings,
+        length_scale=1.0,
+        relative_tolerance=tolerance,
+        bracket_seed_radius=3,
+    )
+
+    for anchor in shells:
+        default_record = default.by_anchor[anchor]
+        registered_record = registered.by_anchor[anchor]
+        default_certificate = default_record.minimality_certificate
+        registered_certificate = registered_record.minimality_certificate
+        assert default_certificate.bracket_seed_radius == max(
+            domain.cutoff_distance,
+            1,
+        )
+        assert registered_certificate.bracket_seed_radius == 3
+        # Both searches certify the same threshold crossing: their final
+        # brackets overlap even though their chain-model starting points differ.
+        assert max(
+            default_certificate.lower_added_leakage_conductance,
+            registered_certificate.lower_added_leakage_conductance,
+        ) <= min(
+            default_certificate.upper_added_leakage_conductance,
+            registered_certificate.upper_added_leakage_conductance,
+        )
+        assert registered_record.added_leakage_conductance == pytest.approx(
+            default_record.added_leakage_conductance,
+            rel=2.0 * tolerance,
+        )
+    assert registered.by_anchor["a0"].iterations != default.by_anchor["a0"].iterations
+
+
+@pytest.mark.parametrize("seed_radius", (0, -1, 1.5, True))
+def test_per_anchor_calibration_rejects_invalid_bracket_seed_radius(seed_radius):
+    domain, embeddings, shells = _asymmetric_two_anchor_calibration_fixture()
+    with pytest.raises(ValueError, match="bracket_seed_radius"):
+        calibrate_uniform_leakage_per_anchor(
+            domain,
+            shell_nodes_by_anchor=shells,
+            node_embeddings=embeddings,
+            length_scale=1.0,
+            bracket_seed_radius=seed_radius,
+        )
+
+
+def test_minimality_certificate_rejects_invalid_endpoint_claims():
+    domain, embeddings, shells = _asymmetric_two_anchor_calibration_fixture()
+    result = calibrate_uniform_leakage_per_anchor(
+        domain,
+        anchors=("a0",),
+        shell_nodes_by_anchor={"a0": shells["a0"]},
+        node_embeddings=embeddings,
+        length_scale=1.0,
+        relative_tolerance=1e-6,
+    )
+    certificate = result.per_anchor[0].minimality_certificate
+
+    with pytest.raises(ValueError, match="must be finite"):
+        replace(certificate, lower_added_leakage_conductance=np.nan)
+    with pytest.raises(ValueError, match="must be ordered"):
+        replace(
+            certificate,
+            lower_added_leakage_conductance=(
+                certificate.upper_added_leakage_conductance + 1.0
+            ),
+        )
+    with pytest.raises(ValueError, match="upper leakage endpoint"):
+        replace(
+            certificate,
+            attenuation_at_upper=0.5
+            * (
+                certificate.attenuation_at_lower
+                + certificate.target_attenuation
+            ),
+        )
+    with pytest.raises(ValueError, match="lower endpoint must miss"):
+        replace(
+            certificate,
+            attenuation_at_lower=certificate.target_attenuation,
+        )
+    with pytest.raises(ValueError, match="relative tolerance"):
+        replace(certificate, lower_added_leakage_conductance=0.0)
+
+
 def test_per_anchor_calibration_rejects_source_only_and_unreachable_shells():
     domain, embeddings, _ = _asymmetric_two_anchor_calibration_fixture()
 
@@ -931,6 +1063,13 @@ def test_per_anchor_calibration_allows_zero_and_records_finite_provenance():
 
     record = result.per_anchor[0]
     assert record.added_leakage_conductance == 0.0
+    certificate = record.minimality_certificate
+    assert certificate.initial_lower_passed
+    assert certificate.lower_added_leakage_conductance == 0.0
+    assert certificate.upper_added_leakage_conductance == 0.0
+    assert certificate.attenuation_at_lower == certificate.attenuation_at_upper
+    assert certificate.attenuation_at_upper <= result.target_attenuation
+    assert certificate.relative_bracket_width == 0.0
     finite_values = [
         result.study_added_leakage_conductance,
         result.target_attenuation,

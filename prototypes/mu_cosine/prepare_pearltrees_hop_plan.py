@@ -34,8 +34,8 @@ REPO_ROOT = HERE.parents[1]
 PROTOCOL_PATH = HERE / "PROTOCOL_bounded_diffusion_fidelity.md"
 DESIGN_PATH = HERE / "DESIGN_pearltrees_hop_plan.md"
 
-SCHEMA = "pearltrees-hop-fidelity-plan-v1"
-ALGORITHM = "outcome-blind-nested-hop-plan-v1"
+SCHEMA = "pearltrees-hop-fidelity-plan-v2"
+ALGORITHM = "outcome-blind-nested-hop-plan-v2"
 MARKER_NAME = "LOCAL_ONLY_DO_NOT_PUBLISH"
 MARKER_BYTES = b"LOCAL ONLY - DO NOT PUBLISH HOP PLAN NODE ARTIFACTS\n"
 MANIFEST_NAME = "manifest.json"
@@ -1108,32 +1108,82 @@ def _numeric_backend_contract():
     except metadata.PackageNotFoundError as exc:
         raise HopPlanError("frozen NumPy backend is unavailable") from exc
     return {
-        "actual_blas_identity": "required_in_calibration_lock_without_library_paths",
-        "backend": "numpy.linalg.cholesky",
-        "blas_threads": 1,
+        "actual_blas_identity": (
+            "required_nonempty_in_calibration_lock_without_library_paths"
+        ),
+        "actual_blas_identity_absolute_paths_prohibited": True,
+        "actual_blas_identity_nonempty_lock_requirement": True,
+        "alpha_calibration_backend": "numpy.linalg.eigh",
+        "blas_threads_observed_lock_requirement": 1,
+        "blas_threads_requested": 1,
         "cholesky_reconstruction_atol_hex": float(1e-12).hex(),
         "cholesky_reconstruction_rtol_hex": float(1e-11).hex(),
+        "condition_estimation_backend": "numpy.linalg.eigvalsh",
         "decision_dtype": "float64",
+        "decision_factorization_backend": "numpy.linalg.cholesky",
         "device_class": "cpu",
         "hidden_jitter": False,
+        "m_matrix_off_diagonal_tolerance_hex": float(1e-12).hex(),
+        "maximum_principle_relative_tolerance_hex": float(1e-10).hex(),
         "minimum_reciprocal_condition_hex": MINIMUM_RECIPROCAL_CONDITION_HEX,
         "numpy_version": numpy_version,
         "python_implementation": sys.implementation.name,
         "python_version": ".".join(map(str, sys.version_info[:3])),
         "solve_residual_relative_tolerance_hex": float(1e-10).hex(),
         "symmetry_absolute_tolerance_hex": float(1e-12).hex(),
+        "triangular_solve_backend": "numpy.linalg.solve",
     }
 
 
-def _statistical_contract():
+def _statistical_contract(effective_resistance_arm):
+    absolute_adequacy = {
+        "boundary_harmonic_q90_max": 0.10,
+        "maximum_h_absolute_error_q90_max": 0.025,
+        "rank_inversion_fraction_q90_max": 0.05,
+        "raw_relative_l2_error_q90_max": 0.05,
+        "top8_overlap_q10_min": 0.90,
+    }
+    noninferiority_margins = {
+        "boundary_harmonic_absolute_harm": 0.01,
+        "maximum_h_absolute_error_harm": 0.01,
+        "primary_log_error_ratio": "log(1.10)",
+        "rank_inversion_absolute_harm": 0.01,
+        "source_diagonal_relative_error_harm": 0.01,
+        "top8_overlap_loss": 0.01,
+    }
+    active_noninferiority_endpoints = [
+        "boundary_harmonic_absolute_harm",
+        "maximum_h_absolute_error_harm",
+        "primary_log_error_ratio",
+        "rank_inversion_absolute_harm",
+        "source_diagonal_relative_error_harm",
+        "top8_overlap_loss",
+    ]
+    omitted_endpoints = []
+    if effective_resistance_arm == "enabled":
+        absolute_adequacy["effective_resistance_relative_error_q90_max"] = 0.05
+        noninferiority_margins["effective_resistance_relative_error_harm"] = 0.01
+        active_noninferiority_endpoints.append(
+            "effective_resistance_relative_error_harm"
+        )
+        effective_resistance_endpoint = "active"
+    else:
+        omitted_endpoints.append("effective_resistance_relative_error")
+        effective_resistance_endpoint = "predeclared_omitted"
     return {
-        "absolute_adequacy": {
-            "boundary_harmonic_q90_max": 0.10,
-            "effective_resistance_relative_error_q90_max": 0.05,
-            "maximum_h_absolute_error_q90_max": 0.025,
-            "rank_inversion_fraction_q90_max": 0.05,
-            "raw_relative_l2_error_q90_max": 0.05,
-            "top8_overlap_q10_min": 0.90,
+        "absolute_adequacy": absolute_adequacy,
+        "active_noninferiority_endpoints": sorted(active_noninferiority_endpoints),
+        "allowed_calibration_lock_modes": [
+            "absolute_only",
+            "blocked",
+            "finite_contrast",
+            "right_censored_diagnostics",
+        ],
+        "audit_authorization_by_lock_mode": {
+            "absolute_only": True,
+            "blocked": False,
+            "finite_contrast": True,
+            "right_censored_diagnostics": True,
         },
         "bootstrap": {
             "audit_batch_resamples": 9999,
@@ -1151,28 +1201,45 @@ def _statistical_contract():
             "seed": BOOTSTRAP_SEED,
             "unit": "balanced_four-anchor_batch",
         },
+        "calibration_lock_mode_rules": {
+            "absolute_only": (
+                "reference-adequate and K_low=1024 with R_top high endpoint; "
+                "no efficacy or resource-contrast claim"
+            ),
+            "blocked": (
+                "reference-inadequate or calibration/numerical contract failure; "
+                "no audit solve"
+            ),
+            "finite_contrast": (
+                "reference-adequate, smallest adequate K_low in {256,512}, and "
+                "next larger finite endpoint has a distinct node-content hash"
+            ),
+            "right_censored_diagnostics": (
+                "reference-adequate but no candidate budget adequate; audit is "
+                "diagnostic only and cannot make convergence, efficacy, or resource claims"
+            ),
+        },
         "calibration_selection": {
             "candidate_order": list(CANDIDATE_BUDGETS),
             "if_k_low_1024": (
-                "K_high=R_top; report absolute adequacy only; no finite-budget efficacy claim"
+                "lock_mode=absolute_only; K_high=R_top; report absolute adequacy only"
             ),
             "k_high_rule": "next-larger-candidate-after-smallest-adequate-k-low",
             "k_low_rule": "smallest-calibration-adequate-candidate",
-            "no_adequate_candidate": "right-censored-no-convergence-claim",
+            "no_adequate_candidate": "lock_mode=right_censored_diagnostics",
+            "node_identical_exhausted_endpoints": (
+                "lock_mode=blocked in phase one; a gauge-aware extension requires "
+                "a prospective amendment"
+            ),
+            "reference_inadequate": "lock_mode=blocked; audit_solve_authorized=false",
         },
+        "effective_resistance_endpoint": effective_resistance_endpoint,
         "efficacy_log_ratio_threshold": "log(0.9)",
         "estimand": "equal-degree-quartile-macro-mean",
         "extended_real_zero_handling": True,
         "minimum_complete_audit_batches": 18,
-        "noninferiority_intersection_margins": {
-            "boundary_harmonic_absolute_harm": 0.01,
-            "effective_resistance_relative_error_harm": 0.01,
-            "maximum_h_absolute_error_harm": 0.01,
-            "primary_log_error_ratio": "log(1.10)",
-            "rank_inversion_absolute_harm": 0.01,
-            "source_diagonal_relative_error_harm": 0.01,
-            "top8_overlap_loss": 0.01,
-        },
+        "noninferiority_intersection_margins": noninferiority_margins,
+        "omitted_endpoints": omitted_endpoints,
         "reference_adequacy": {
             "maximum_h_absolute_error_q90_max": 0.005,
             "raw_relative_l2_error_q90_max": 0.01,
@@ -1325,14 +1392,35 @@ def _derive_plan(capture, receipt, config):
         "planner_input_ceiling_bytes": config["planner_input_ceiling_bytes"],
         "planner_input_bytes_observed": capture["planned_input_bytes"],
         "study_peak_rss_ceiling_bytes": config["study_peak_rss_ceiling_bytes"],
-        "solve_timeout_seconds": 3600,
+        "per_batch_elapsed_ceiling_seconds": 3600,
     }
     calibration_contract = {
+        "alpha_zero_evaluation_required": True,
+        "alpha_zero_numerical_admissibility_required": True,
         "alpha_status": "unfrozen",
+        "base_intrinsic_leakage_conductance_hex": float(0.0).hex(),
+        "bath_temperature_hex": float(0.0).hex(),
+        "bisection_relative_tolerance_hex": float(1e-8).hex(),
+        "bracket_seed_hop_radius": CALIBRATION_SHELL_RADIUS,
+        "calibration_anchor_count": QUARTILE_COUNT * CALIBRATION_PER_QUARTILE,
+        "calibration_batch_count": CALIBRATION_PER_QUARTILE,
         "calibration_split_only": True,
-        "global_alpha_rule": "maximum-anchor-required-added-leakage",
+        "finite_result_required": True,
+        "global_alpha_rule": (
+            "maximum-of-eight-four-anchor-batch-maxima-equivalently-all-32-anchors"
+        ),
         "hidden_floor_or_jitter": False,
+        "hidden_maximum_alpha_cap": False,
+        "lock_verification_contract": (
+            "full-chain-and-content-record-verification-without-numerical-"
+            "recomputation-or-authentication"
+        ),
+        "maximum_function_evaluations_per_anchor": 80,
+        "maximum_leakage_conductance": None,
+        "nonfinite_unbracketed_or_evaluation_exhaustion": "lock_mode=blocked",
+        "per_batch_alpha_rule": "maximum-of-four-anchor-required-added-leakages",
         "radius": CALIBRATION_SHELL_RADIUS,
+        "required_numerical_minimum_added_leakage_hex": float(0.0).hex(),
         "target_attenuation": CALIBRATION_TARGET,
         "zero_alpha_allowed": True,
     }
@@ -1353,11 +1441,16 @@ def _derive_plan(capture, receipt, config):
         "operator_contract": _operator_contract(),
         "reference_contract": reference_contract,
         "repository_commit": _git_commit(),
+        "repository_commit_policy": (
+            "actual-plan-generated-only-at-final-calibration-lock-implementation-commit"
+        ),
         "resource_contract": resource_contract,
         "schema": SCHEMA,
         "selection_contract": _selection_contract(),
         "snapshot_common_records": receipt_common,
-        "statistical_contract": _statistical_contract(),
+        "statistical_contract": _statistical_contract(
+            config["effective_resistance_arm"]
+        ),
     }
     plan_fingerprint = hashlib.sha256(_canonical_json(fingerprint_core)).hexdigest()
     manifest = {

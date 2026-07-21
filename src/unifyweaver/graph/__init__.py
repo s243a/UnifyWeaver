@@ -9,6 +9,7 @@ from .leaky_diffusion import (
 from .local_diffusion import (
     AnchorLeakageCalibrationResult,
     AnchorScreeningProvenance,
+    LeakageCalibrationMinimalityCertificate,
     LeakageCalibrationResult,
     LocalDiffusionDomain,
     LocalGroundedSemanticDiffusion,
@@ -24,6 +25,7 @@ from .local_diffusion import (
 __all__ = [
     "AnchorLeakageCalibrationResult",
     "AnchorScreeningProvenance",
+    "LeakageCalibrationMinimalityCertificate",
     "GroundedSemanticDiffusion",
     "build_grounded_semantic_diffusion",
     "LeakageCalibrationResult",
