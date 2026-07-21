@@ -1,0 +1,94 @@
+{{match part}}{{case helpers}}
+    #[cfg(unix)]
+    fn signal_process(pid: i64, signal: i64) -> bool {
+        extern "C" {
+            fn kill(
+                pid: std::os::raw::c_int,
+                signal: std::os::raw::c_int,
+            ) -> std::os::raw::c_int;
+        }
+
+        unsafe {
+            kill(
+                pid as std::os::raw::c_int,
+                signal as std::os::raw::c_int,
+            ) == 0
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn signal_process(_pid: i64, _signal: i64) -> bool {
+        false
+    }
+
+    #[cfg(unix)]
+    fn create_temporary_file(base: &str) -> Option<String> {
+        extern "C" {
+            fn mkstemp(template: *mut std::os::raw::c_char)
+                -> std::os::raw::c_int;
+            fn close(fd: std::os::raw::c_int) -> std::os::raw::c_int;
+        }
+
+        if base.as_bytes().contains(&0) {
+            return None;
+        }
+        let mut template = Vec::with_capacity(5 + base.len() + 8);
+        template.extend_from_slice(b"/tmp/");
+        template.extend_from_slice(base.as_bytes());
+        template.extend_from_slice(b"_XXXXXX");
+        if template.len() + 1 > 4096 {
+            return None;
+        }
+        template.push(0);
+
+        let fd = unsafe { mkstemp(template.as_mut_ptr().cast()) };
+        if fd < 0 {
+            return None;
+        }
+        let _ = unsafe { close(fd) };
+        template.pop();
+        String::from_utf8(template).ok()
+    }
+
+    #[cfg(not(unix))]
+    fn create_temporary_file(_base: &str) -> Option<String> {
+        None
+    }
+{{case arms}}
+            "kill/2" => {
+                let pid = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(pid)) => pid,
+                    _ => return false,
+                };
+                let signal = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(signal)) => signal,
+                    _ => return false,
+                };
+                if Self::signal_process(pid, signal) {
+                    self.pc += 1; true
+                } else {
+                    false
+                }
+            }
+            "tmp_file/2" => {
+                let base = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(base)) => base,
+                    _ => return false,
+                };
+                let path = match Self::create_temporary_file(&base) {
+                    Some(path) => Value::Atom(path),
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &path) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+{{/match}}
