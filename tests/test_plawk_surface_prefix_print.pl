@@ -660,12 +660,12 @@ test(surface_field_eq_scalar_add_assign_accumulates_constants_and_lengths) :-
 test(surface_field_numeric_scalar_add_assign_accumulates_values) :-
     run_surface_print_smoke("$1 == \"ERROR\" { bytes += $3; last = $3 } END { print bytes, last }\n",
         "INFO boot 7\nERROR disk 10\nWARN cpu 20\nERROR net -3\nERROR bad nope\n",
-        "7 0\n").
+        "7 nope\n").
 
 test(surface_begin_field_separator_drives_numeric_scalar_values) :-
     run_surface_print_smoke("BEGIN { FS = \":\" } $1 == \"ERROR\" { bytes += $3; last = $3 } END { print bytes, last }\n",
         "INFO:boot:7\nERROR:disk:10\nWARN:cpu:20\nERROR:net:-3\nERROR:bad:nope\n",
-        "7 0\n").
+        "7 nope\n").
 
 test(surface_begin_field_separator_drives_int_printing) :-
     run_surface_print_smoke("BEGIN { FS = \":\"; OFS = \",\" } $1 == \"ERROR\" { print $3, int($3) }\n",
@@ -1047,9 +1047,14 @@ test(surface_scalar_add_assign_uses_native_field_i64_parse) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '_field_i64_value = extractvalue %WamI64Parse'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '_field_i64_ok = extractvalue %WamI64Parse'))),
     assertion(once(sub_atom(DriverIR, _, _, _, 'select i1 %rule_0_body_slot_0_op_0_field_i64_ok'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, 'select i1 %rule_0_body_slot_1_op_1_field_i64_ok'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0 = add i64 %slot_0, %rule_0_body_slot_0_op_0_field_i64_value_or_default'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_1_op_1 = add i64 0, %rule_0_body_slot_1_op_1_field_i64_value_or_default'))),
+    % `last = $3` is a plain copy of a field, so strnum copy-propagation keeps it
+    % a string (strnum) scalar -- it interns the field bytes rather than parsing
+    % them as i64. That is what lets a non-numeric `$3` ("nope") round-trip to the
+    % END print as text (awk semantics), instead of the old numeric `add i64 0`
+    % lowering that forced it to 0.
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_1_op_1_snum_id = call i64 @wam_intern_atom'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_1_op_1 = add i64 0, %rule_0_body_slot_1_op_1_field_i64_value_or_default')),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
@@ -1469,7 +1474,10 @@ test(surface_numeric_eq_ne_guards_use_numeric_op_codes) :-
 test(surface_begin_output_separator_uses_configured_delimiter) :-
     plawk_parse_string("BEGIN { OFS = \",\" } { total++ } END { print \"total\", total }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_end_separator_1 = call i32 @putchar(i32 44)'))),
+    % OFS is now emitted as a byte list (one putchar per byte, indexed), so the
+    % single-byte "," separator is `printed_end_separator_1_0` (byte 0) rather
+    % than the old un-indexed `printed_end_separator_1`.
+    assertion(once(sub_atom(DriverIR, _, _, _, '%printed_end_separator_1_0 = call i32 @putchar(i32 44)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@.plawk_surface_print_space')),
     assertion(\+ sub_atom(DriverIR, _, _, _, 'printf(i8* %end_space_fmt')),
     assertion(\+ sub_atom(DriverIR, _, _, _, '%printed_end_space_1')),
