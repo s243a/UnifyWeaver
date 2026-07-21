@@ -139,6 +139,14 @@ t_process_resource_queries(Priority, FileLimit, CoreLimit) :-
     getrlimit(1, FileLimit),
     getrlimit(4, CoreLimit).
 
+:- dynamic t_process_resource_updates/2.
+t_process_resource_updates(Priority, CoreLimit) :-
+    getpriority(Priority),
+    nice(0),
+    setpriority(Priority),
+    getrlimit(4, CoreLimit),
+    setrlimit(4, CoreLimit).
+
 :- dynamic t_login_name/1.
 t_login_name(Name) :- getlogin(Name).
 
@@ -469,6 +477,7 @@ test_builtin_parity_execution :-
              user:t_runtime_metrics/5,
              user:t_os_errors/2,
              user:t_process_resource_queries/3,
+             user:t_process_resource_updates/2,
              user:t_login_name/1,
              user:t_time_conversions/3,
              user:t_random_builtins/4,
@@ -523,6 +532,7 @@ use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_
     t_runtime_metrics_5,
     t_os_errors_2,
     t_process_resource_queries_3,
+    t_process_resource_updates_2,
     t_login_name_1,
     t_time_conversions_3,
     t_random_builtins_4,
@@ -897,6 +907,16 @@ fn test_process_resource_queries_compiled() {
     let priority = integer_var(&vm, "Priority");
     assert!((-20..=19).contains(&priority));
     let _ = integer_var(&vm, "FileLimit");
+    let _ = integer_var(&vm, "CoreLimit");
+}
+
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn test_process_resource_updates_compiled() {
+    let mut vm = vmnew();
+    assert!(t_process_resource_updates_2(
+        &mut vm, ub("Priority"), ub("CoreLimit")));
+    assert!((-20..=19).contains(&integer_var(&vm, "Priority")));
     let _ = integer_var(&vm, "CoreLimit");
 }
 
@@ -2972,6 +2992,16 @@ fn test_process_priority_and_login_direct() {
     assert!(!call1("getpriority/1", a("not_an_integer")).0);
     assert!(!vmnew().execute_builtin("getpriority/1", 1));
 
+    assert!(call1("nice/1", i(0)).0);
+    assert!(call1("setpriority/1", i(priority)).0);
+    let (after_ok, after_vm) = call1("getpriority/1", ub("After"));
+    assert!(after_ok);
+    assert_eq!(integer_var(&after_vm, "After"), priority);
+    assert!(!call1("nice/1", a("increment")).0);
+    assert!(!call1("setpriority/1", a("priority")).0);
+    assert!(!vmnew().execute_builtin("nice/1", 1));
+    assert!(!vmnew().execute_builtin("setpriority/1", 1));
+
     let (login_ok, login_vm) = call1("getlogin/1", ub("Name"));
     if login_ok {
         let name = match read_var(&login_vm, "Name") {
@@ -2990,6 +3020,8 @@ fn test_process_priority_and_login_direct() {
 #[test]
 fn test_process_priority_and_login_unavailable_direct() {
     assert!(!call1("getpriority/1", ub("Priority")).0);
+    assert!(!call1("nice/1", i(0)).0);
+    assert!(!call1("setpriority/1", i(0)).0);
     assert!(!call1("getlogin/1", ub("Name")).0);
 }
 
@@ -3001,6 +3033,10 @@ fn test_process_soft_limit_direct() {
         assert!(ok, "resource {resource} must be readable");
         let limit = integer_var(&vm, "Limit");
         assert!(call2("getrlimit/2", i(resource), i(limit)).0);
+        assert!(call2("setrlimit/2", i(resource), i(limit)).0);
+        let (after_ok, after_vm) = call2("getrlimit/2", i(resource), ub("After"));
+        assert!(after_ok);
+        assert_eq!(integer_var(&after_vm, "After"), limit);
         assert!(!call2(
             "getrlimit/2", i(resource), i(limit.wrapping_add(1))).0);
     }
@@ -3009,6 +3045,10 @@ fn test_process_soft_limit_direct() {
     assert!(!call2("getrlimit/2", ub("Resource"), ub("Limit")).0);
     assert!(!call2("getrlimit/2", Value::Float(1.0), ub("Limit")).0);
     assert!(!vmnew().execute_builtin("getrlimit/2", 2));
+    assert!(!call2("setrlimit/2", i(999), i(0)).0);
+    assert!(!call2("setrlimit/2", a("fsize"), i(0)).0);
+    assert!(!call2("setrlimit/2", i(1), a("limit")).0);
+    assert!(!vmnew().execute_builtin("setrlimit/2", 2));
     let mut missing_output_vm = vmnew();
     missing_output_vm.set_reg("A1", i(1));
     assert!(!missing_output_vm.execute_builtin("getrlimit/2", 2));
@@ -3018,6 +3058,7 @@ fn test_process_soft_limit_direct() {
 #[test]
 fn test_process_soft_limit_unavailable_direct() {
     assert!(!call2("getrlimit/2", i(1), ub("Limit")).0);
+    assert!(!call2("setrlimit/2", i(1), i(0)).0);
 }
 
 #[cfg(all(unix, target_pointer_width = "64"))]
