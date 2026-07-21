@@ -13,6 +13,7 @@
 :- use_module(library(process)).
 :- use_module(library(filesex), [make_directory_path/1]).
 :- use_module('../examples/plawk/parser/plawk_parser').
+:- use_module('../examples/plawk/codegen/plawk_native_codegen').
 
 :- begin_tests(plawk_in_membership).
 
@@ -54,6 +55,23 @@ test(negated_membership_parses) :-
         program([], [rule(always,
             [if(not_pat(in_arr(field(1), seen)),
                 [print([field(1)])], [])])], [])),
+    !.
+
+test(end_membership_if_else_parses) :-
+    plawk_parse_string(
+        "{ seen[$1]++ } END { if (\"a\" in seen) print \"yes\"; else print \"no\" }\n",
+        program([], [rule(always, [inc_assoc(var(seen), field(1))])],
+            [end([if(in_arr(string("a"), seen),
+                [print([string("yes")])],
+                [print([string("no")])])])])),
+    !.
+
+test(end_negated_membership_parses) :-
+    plawk_parse_string(
+        "{ seen[$1]++ } END { if (!(\"missing\" in seen)) print \"absent\" }\n",
+        program([], [rule(always, [inc_assoc(var(seen), field(1))])],
+            [end([if(not_pat(in_arr(string("missing"), seen)),
+                [print([string("absent")])], [])])])),
     !.
 
 % Parentheses can put a membership term in a general value position. Preserve
@@ -157,6 +175,135 @@ test(integer_membership_on_split_array, [condition(clang_available)]) :-
     build_run(Dir, 'integer', Src, "a,b,c\n", Out, St),
     assertion(St == 0),
     assertion(Out == "present\nabsent\n3\n"),
+    !.
+
+% A standalone END if probes the final associative table. This is a distinct
+% driver shape from membership in a rule body or a for-in filter.
+test(end_string_membership_present, [condition(clang_available)]) :-
+    mdir(Dir),
+    Src = "{ seen[$1]++ } END { if (\"a\" in seen) print \"has-a\" }\n",
+    build_run(Dir, 'end_string_present', Src, "a\nb\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "has-a\n"),
+    !.
+
+% Presence is the occupied bit, not a nonzero stored value. The END-specific
+% driver must keep the stored-zero behavior of the shared exists primitive.
+test(end_stored_zero_is_present, [condition(clang_available)]) :-
+    mdir(Dir),
+    Src = "{ zero[$1] += 0 } END { if (\"z\" in zero) print \"present\"; else print \"bad\" }\n",
+    build_run(Dir, 'end_zero', Src, "z\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "present\n"),
+    !.
+
+% A miss takes the optional else branch. In particular, it must not be
+% approximated as an associative read, which would insert the missing key.
+test(end_string_membership_absent_else,
+        [condition(clang_available)]) :-
+    mdir(Dir),
+    Src = "{ seen[$1]++ } END { if (\"missing\" in seen) print \"bad\"; else print \"absent\" }\n",
+    build_run(Dir, 'end_string_absent', Src, "a\nb\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "absent\n"),
+    !.
+
+test(end_negated_membership, [condition(clang_available)]) :-
+    mdir(Dir),
+    Src = "{ seen[$1]++ } END { if (!(\"missing\" in seen)) print \"absent\"; else print \"bad\" }\n",
+    build_run(Dir, 'end_negated', Src, "a\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "absent\n"),
+    !.
+
+% END retains the final input record in awk. A field-shaped membership key
+% must therefore resolve against that record, not the EOF sentinel returned by
+% the reader call that transfers control into END.
+test(end_field_membership_uses_last_record,
+        [condition(clang_available)]) :-
+    mdir(Dir),
+    Src = "{ seen[$1]++ } END { if ($1 in seen) print \"last-seen\"; else print \"bad\" }\n",
+    build_run(Dir, 'end_field', Src, "first\nlast\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "last-seen\n"),
+    !.
+
+% With no successful read there is no last record. The preserved END-key slot
+% must still be initialized safely, and the empty table makes the probe false.
+test(end_field_membership_empty_input,
+        [condition(clang_available)]) :-
+    mdir(Dir),
+    Src = "{ seen[$1]++ } END { if ($1 in seen) print \"bad\"; else print \"empty\" }\n",
+    build_run(Dir, 'end_field_empty', Src, "", Out, St),
+    assertion(St == 0),
+    assertion(Out == "empty\n"),
+    !.
+
+% Integer literals in a text-keyed array use their decimal spelling, matching
+% a key inserted from the field text.
+test(end_integer_membership, [condition(clang_available)]) :-
+    mdir(Dir),
+    Src = "{ seen[$1]++ } END { if (2 in seen) print \"two\"; else print \"bad\" }\n",
+    build_run(Dir, 'end_integer', Src, "1\n2\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "two\n"),
+    !.
+
+% The END probe and the arr[$1,$2] write must join the final record's fields
+% through the same active SUBSEP helper.
+test(end_two_field_subsep_membership,
+        [condition(clang_available)]) :-
+    mdir(Dir),
+    Src = "BEGIN { SUBSEP=\":\" } { pairs[$1,$2]++ } END { if (($1,$2) in pairs) print \"pair\"; else print \"bad\" }\n",
+    build_run(Dir, 'end_subsep', Src, "old pair\nlast pair\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "pair\n"),
+    !.
+
+% The narrow END driver has no following statement in which to count keys.
+% Inspect its END block instead: the probe must be the non-mutating occupied-bit
+% primitive, with no associative get/set/inc operation after END is entered.
+% The runtime cardinality property of this primitive is covered above by the
+% first-seen test, whose later for-in count remains exact.
+test(end_missing_probe_is_non_mutating_ir) :-
+    Src = "{ seen[$1]++ } END { if (\"missing\" in seen) print \"bad\"; else print \"clean\" }\n",
+    plawk_parse_string(Src, Program),
+    plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    sub_atom(DriverIR, EndStart, _, _, '\nend_print:\n'),
+    sub_atom(DriverIR, EndStart, _, 0, EndIR),
+    assertion(once(sub_atom(EndIR, _, _, _,
+        'call i1 @wam_assoc_i64_exists('))),
+    assertion(\+ sub_atom(EndIR, _, _, _, '@wam_assoc_i64_get(')),
+    assertion(\+ sub_atom(EndIR, _, _, _, '@wam_assoc_i64_set(')),
+    assertion(\+ sub_atom(EndIR, _, _, _, '@wam_assoc_i64_inc(')),
+    !.
+
+test(end_three_field_membership_rejected,
+        [condition(clang_available)]) :-
+    mdir(Dir),
+    Src = "{ seen[$1,$2]++ } END { if (($1,$2,$3) in seen) print \"bad\" }\n",
+    build_status(Dir, 'end_three_fields', Src, St),
+    assertion(St == 3),
+    !.
+
+% Standalone END membership is deliberately a single direct/negated probe in
+% v1. Boolean combinations stay outside this narrow driver and fail closed.
+test(end_boolean_membership_rejected,
+        [condition(clang_available)]) :-
+    mdir(Dir),
+    Src = "{ seen[$1]++ } END { if ((\"a\" in seen) && (\"b\" in seen)) print \"bad\" }\n",
+    build_status(Dir, 'end_boolean', Src, St),
+    assertion(St == 3),
+    !.
+
+% The condition has an explicit final-record key path, but v1 branch printing
+% remains record-independent. Reject a field output instead of reading EOF.
+test(end_membership_field_print_rejected,
+        [condition(clang_available)]) :-
+    mdir(Dir),
+    Src = "{ seen[$1]++ } END { if (\"a\" in seen) print $1 }\n",
+    build_status(Dir, 'end_field_print', Src, St),
+    assertion(St == 3),
     !.
 
 % Membership is also a rule pattern, not only an if condition. The first rule

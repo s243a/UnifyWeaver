@@ -695,6 +695,65 @@ plawk_program_native_driver_ir(
             NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+% END { if (KEY in arr) print ...; [else print ...] } -- the associative
+% counterpart of the scalar END-if driver below.  The record rules build the
+% table set through the ordinary assoc chain; the END condition is a pure
+% occupancy probe and each branch is one print.
+%
+% At EOF, %line is the end_of_file atom even though the shared transient
+% buffer still contains the last successful record.  Field-shaped END keys
+% therefore use a synthetic transient %Value (the reserved transient atom id)
+% rather than the EOF value.  Entry initializes that buffer to an empty record,
+% which also gives the right key on empty input, without interning every record
+% or retaining an unbounded record history.
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules,
+        [end([if(Cond, ThenActions, ElseActions)])]),
+    InputPath,
+    DriverIR
+) :-
+    plawk_assoc_end_if_plan(Rules, Cond, AssocPlan),
+    plawk_end_if_ok(ThenActions, ElseActions),
+    plawk_assoc_end_if_branch_prints_ok(ThenActions, ElseActions),
+    plawk_end_if_branch_fields(ThenActions, ThenFields),
+    plawk_end_if_branch_fields(ElseActions, ElseFields),
+    append(ThenFields, ElseFields, PrintFields),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    plawk_assoc_record_program_ok(FieldSeparator, Rules, PrintFields),
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR,
+        AssocChainIR),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    append(BodyPrintFields, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(RecordCounterExprs, RecordLoopPhiIR,
+        RecordCounterIR),
+    plawk_join_nonempty_ir([RecordCounterIR, AssocChainIR], RecordIR),
+    plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
+    plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
+    plawk_assoc_end_if_ir(Cond, ThenActions, ElseActions, AssocPlan,
+        FieldSeparator, OutputSeparator, EndLineGlobalIR, EndLineEntryIR,
+        EndIfGlobalIR, EndIfIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+        [BeginGlobalIR, AssocRuleGlobalIR, EndLineGlobalIR, EndIfGlobalIR]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR0),
+    plawk_combine_entry_ir(CombinedEntrySetupIR0, EndLineEntryIR,
+        CombinedEntrySetupIR),
+    plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
+        [EndIfIR]),
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, RecordLoopPhiIR,
+            lowered_assoc, RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
 % END { if (COND) print ...; [else print ...] } -- a scalar-guarded print in the
 % END block. COND is a scalar comparison over the final slot values; each branch
 % is a single print. Same lowering as the scalar END-print clause above, but the
@@ -15399,6 +15458,37 @@ plawk_scalar_end_print_ir(PrintFields, StatePlan, OutputSeparator, IR) :-
 plawk_end_if_ok([print(_)], []).
 plawk_end_if_ok([print(_)], [print(_)]).
 
+% A standalone associative END-if is intentionally narrower than the general
+% rule-pattern membership surface: one membership leaf, with any number of
+% unary negations.  Boolean combinations and wider key shapes continue to miss
+% every driver and become the normal compilable-surface error (status 3).
+plawk_assoc_end_if_condition_ok(in_arr(Key, ArrayName)) :-
+    atom(ArrayName),
+    plawk_membership_pattern_key_shapes_ok(in_arr(Key, ArrayName)).
+plawk_assoc_end_if_condition_ok(not_pat(Pattern)) :-
+    plawk_assoc_end_if_condition_ok(Pattern).
+
+% v1 branch output is deliberately record-independent.  The condition has an
+% explicit final-record Value, but the general print emitter still names
+% %line; admitting a field/array/scalar print here would therefore either read
+% the EOF sentinel or bypass assoc/scalar state.  String fields include awk
+% integer print literals, which the parser normalizes to decimal strings.
+plawk_assoc_end_if_branch_prints_ok(ThenActions, ElseActions) :-
+    plawk_assoc_end_if_branch_print_ok(ThenActions),
+    plawk_assoc_end_if_branch_print_ok(ElseActions).
+
+plawk_assoc_end_if_branch_print_ok([]).
+plawk_assoc_end_if_branch_print_ok([print(Fields)]) :-
+    forall(member(Field, Fields), Field = string(_)).
+
+% Build exactly the same table/rule plan as an associative END for-in, adding
+% the condition's table to the set even when the record rules only establish
+% other tables.  The membership probe itself never adds an entry.
+plawk_assoc_end_if_plan(Rules, Cond, AssocPlan) :-
+    plawk_assoc_end_if_condition_ok(Cond),
+    plawk_membership_array(Cond, ArrayName),
+    plawk_forin_assoc_plan(Rules, ArrayName, [], AssocPlan).
+
 % The scalar fields the state plan must see: the branch print fields (so a
 % printed scalar gets a slot) plus the condition variables. String literals need
 % no slot, but leaving them in is harmless -- the state plan ignores non-vars.
@@ -15445,6 +15535,64 @@ plawk_endif_else:
 
 plawk_endif_done:',
         [CondIR, CondVar, ThenIR, ElseIR]).
+
+% Associative standalone END-if.  For field-shaped keys the EOF %line value is
+% not the last record, so plawk_assoc_end_if_line_context/5 synthesizes a Value
+% that resolves the still-live transient buffer.  Literal keys need no record
+% context and therefore no buffer initialization or synthetic Value.
+plawk_assoc_end_if_ir(Cond, ThenActions, ElseActions, AssocPlan,
+        FieldSeparator, OutputSeparator, LineGlobalIR, LineEntryIR, GlobalIR,
+        IR) :-
+    plawk_assoc_end_if_line_context(Cond, LineGlobalIR, LineEntryIR,
+        LineSetupIR, LineValue),
+    plawk_assoc_pattern_guard_line_ir(Cond, AssocPlan, FieldSeparator,
+        LineValue, plawk_end_in, '%plawk_end_in_cond',
+        CondGlobalIR-CondIR),
+    plawk_end_if_branch_ir(ThenActions, [], [], FieldSeparator,
+        OutputSeparator, plawk_end_in_then, ThenGlobalIR, ThenIR),
+    plawk_end_if_branch_ir(ElseActions, [], [], FieldSeparator,
+        OutputSeparator, plawk_end_in_else, ElseGlobalIR, ElseIR),
+    phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
+    atomic_list_concat(FreeLines, '\n', FreeIR),
+    plawk_join_nonempty_ir([CondGlobalIR, ThenGlobalIR, ElseGlobalIR],
+        GlobalIR),
+    format(atom(IR),
+'~w
+~w
+  br i1 %plawk_end_in_cond, label %plawk_end_in_then, label %plawk_end_in_else
+
+plawk_end_in_then:
+~w
+  br label %plawk_end_in_done
+
+plawk_end_in_else:
+~w
+  br label %plawk_end_in_done
+
+plawk_end_in_done:
+~w',
+        [LineSetupIR, CondIR, ThenIR, ElseIR, FreeIR]).
+
+% A field or two-field SUBSEP key reads the final successful main-input record.
+% The stream reader's EOF result does not overwrite its shared transient bytes;
+% initialize them once so an empty input behaves like an empty current record.
+plawk_assoc_end_if_line_context(Cond, GlobalIR, EntryIR, EndIR,
+        '%plawk_end_in_line') :-
+    plawk_assoc_end_if_record_key(Cond),
+    !,
+    GlobalIR = '@.plawk_end_in_empty = private constant [1 x i8] zeroinitializer',
+    EntryIR =
+'  %plawk_end_in_empty_ptr = getelementptr [1 x i8], [1 x i8]* @.plawk_end_in_empty, i64 0, i64 0
+  %plawk_end_in_empty_id = call i64 @wam_transient_atom_from_bytes(i8* %plawk_end_in_empty_ptr, i64 0)',
+    EndIR =
+'  %plawk_end_in_line0 = insertvalue %Value undef, i32 0, 0
+  %plawk_end_in_line = insertvalue %Value %plawk_end_in_line0, i64 4611686018427387904, 1'.
+plawk_assoc_end_if_line_context(_Cond, '', '', '', '%line').
+
+plawk_assoc_end_if_record_key(in_arr(field(_Index), _ArrayName)).
+plawk_assoc_end_if_record_key(in_arr(subsep_key(_Fields), _ArrayName)).
+plawk_assoc_end_if_record_key(not_pat(Pattern)) :-
+    plawk_assoc_end_if_record_key(Pattern).
 
 plawk_end_if_branch_ir([print(Fields)], Slots, FinalValues, FieldSeparator,
         OutputSeparator, Prefix, GlobalIR, IR) :-
@@ -15714,54 +15862,69 @@ plawk_assoc_context_posarray(membership_context(_Tables, PosArrays), ArrayName) 
 % guard emitter; membership leaves resolve the named table and build a key
 % without ever mutating that table. Boolean wrappers recurse through this
 % emitter so `!`, `&&`, and `||` preserve membership semantics.
-plawk_assoc_pattern_guard_ir(in_arr(Key, ArrayName), Context, Descriptor,
+plawk_assoc_pattern_guard_ir(Pattern, Context, Descriptor, GlobalBase,
+        MatchValue, GuardIR) :-
+    plawk_assoc_pattern_guard_line_ir(Pattern, Context, Descriptor, '%line',
+        GlobalBase, MatchValue, GuardIR).
+
+% Line-parameterized sibling used by standalone END membership.  Ordinary
+% record guards pass %line through the wrapper above; END supplies a synthetic
+% transient Value that resolves to the final successful record rather than the
+% EOF sentinel.
+plawk_assoc_pattern_guard_line_ir(in_arr(Key, ArrayName), Context, Descriptor,
+        LineValue,
         GlobalBase, MatchValue, GlobalIR-GuardIR) :-
     !,
     plawk_assoc_context_table_index(Context, ArrayName, TableIndex),
     format(atom(KeyBase), '~w_in', [GlobalBase]),
-    plawk_membership_key_ir(Key, ArrayName, Context, Descriptor, KeyBase,
-        KeyValue, GlobalIR, KeyLines),
+    plawk_membership_key_ir(Key, ArrayName, Context, Descriptor, LineValue,
+        KeyBase, KeyValue, GlobalIR, KeyLines),
     format(atom(ExistsLine),
         '  ~w = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
         [MatchValue, TableIndex, KeyValue]),
     append(KeyLines, [ExistsLine], Lines),
     atomic_list_concat(Lines, '\n', GuardIR).
-plawk_assoc_pattern_guard_ir(not_pat(Pattern), Context, Descriptor,
+plawk_assoc_pattern_guard_line_ir(not_pat(Pattern), Context, Descriptor,
+        LineValue,
         GlobalBase, MatchValue, GlobalIR-GuardIR) :-
     !,
     format(atom(InnerBase), '~w_n', [GlobalBase]),
     format(atom(InnerValue), '~w_n', [MatchValue]),
-    plawk_assoc_pattern_guard_ir(Pattern, Context, Descriptor, InnerBase,
-        InnerValue, GlobalIR-InnerIR),
+    plawk_assoc_pattern_guard_line_ir(Pattern, Context, Descriptor, LineValue,
+        InnerBase, InnerValue, GlobalIR-InnerIR),
     format(atom(GuardIR),
 '~w
   ~w = xor i1 ~w, true',
         [InnerIR, MatchValue, InnerValue]).
-plawk_assoc_pattern_guard_ir(and_pat(Left, Right), Context, Descriptor,
+plawk_assoc_pattern_guard_line_ir(and_pat(Left, Right), Context, Descriptor,
+        LineValue,
         GlobalBase, MatchValue, GlobalIR-GuardIR) :-
     !,
-    plawk_assoc_binary_pattern_guard_ir(and, Left, Right, Context, Descriptor,
-        GlobalBase, MatchValue, GlobalIR-GuardIR).
-plawk_assoc_pattern_guard_ir(or_pat(Left, Right), Context, Descriptor,
+    plawk_assoc_binary_pattern_guard_line_ir(and, Left, Right, Context,
+        Descriptor, LineValue, GlobalBase, MatchValue, GlobalIR-GuardIR).
+plawk_assoc_pattern_guard_line_ir(or_pat(Left, Right), Context, Descriptor,
+        LineValue,
         GlobalBase, MatchValue, GlobalIR-GuardIR) :-
     !,
-    plawk_assoc_binary_pattern_guard_ir(or, Left, Right, Context, Descriptor,
-        GlobalBase, MatchValue, GlobalIR-GuardIR).
-plawk_assoc_pattern_guard_ir(Pattern, _Context, Descriptor, GlobalBase,
+    plawk_assoc_binary_pattern_guard_line_ir(or, Left, Right, Context,
+        Descriptor, LineValue, GlobalBase, MatchValue, GlobalIR-GuardIR).
+plawk_assoc_pattern_guard_line_ir(Pattern, _Context, Descriptor, _LineValue,
+        GlobalBase,
         MatchValue, GuardIR) :-
     \+ plawk_pattern_has_membership(Pattern),
     plawk_pattern_guard_ir(Pattern, Descriptor, GlobalBase, MatchValue, GuardIR).
 
-plawk_assoc_binary_pattern_guard_ir(Op, Left, Right, Context, Descriptor,
+plawk_assoc_binary_pattern_guard_line_ir(Op, Left, Right, Context, Descriptor,
+        LineValue,
         GlobalBase, MatchValue, GlobalIR-GuardIR) :-
     format(atom(LeftBase), '~w_l', [GlobalBase]),
     format(atom(LeftValue), '~w_l', [MatchValue]),
-    plawk_assoc_pattern_guard_ir(Left, Context, Descriptor, LeftBase, LeftValue,
-        LeftGlobal-LeftIR),
+    plawk_assoc_pattern_guard_line_ir(Left, Context, Descriptor, LineValue,
+        LeftBase, LeftValue, LeftGlobal-LeftIR),
     format(atom(RightBase), '~w_r', [GlobalBase]),
     format(atom(RightValue), '~w_r', [MatchValue]),
-    plawk_assoc_pattern_guard_ir(Right, Context, Descriptor, RightBase,
-        RightValue, RightGlobal-RightIR),
+    plawk_assoc_pattern_guard_line_ir(Right, Context, Descriptor, LineValue,
+        RightBase, RightValue, RightGlobal-RightIR),
     plawk_join_nonempty_ir([LeftGlobal, RightGlobal], GlobalIR),
     format(atom(GuardIR),
 '~w
@@ -15773,19 +15936,20 @@ plawk_assoc_binary_pattern_guard_ir(Op, Left, Right, Context, Descriptor,
 % uses the exact SUBSEP helper shared with arr[$i,$j] reads and writes. The
 % low-level binary clauses are retained for the binary driver, whose current
 % surface whitelist does not yet expose membership patterns.
-plawk_membership_key_ir(field(Index), _ArrayName, _Context, binfmt(Types), Base,
+plawk_membership_key_ir(field(Index), _ArrayName, _Context, binfmt(Types),
+        _LineValue, Base,
         KeyValue, '', Lines) :-
     !,
     Descriptor = binfmt(Types),
     plawk_binfmt_field_type(Descriptor, Index, i64),
     plawk_binfmt_field_load_lines(Descriptor, Index, Base, KeyValue, Lines).
 plawk_membership_key_ir(field(Index), _ArrayName, _Context, FieldSeparator,
-        Base, KeyValue, '', [SliceLine, PtrLine, LenLine, KeyLine]) :-
+        LineValue, Base, KeyValue, '', [SliceLine, PtrLine, LenLine, KeyLine]) :-
     integer(FieldSeparator),
     integer(Index), Index > 0,
     format(atom(SliceLine),
-        '  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
-        [Base, Index, FieldSeparator]),
+        '  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value ~w, i64 ~w, i8 ~w)',
+        [Base, LineValue, Index, FieldSeparator]),
     format(atom(PtrLine),
         '  %~w_ptr = extractvalue %WamSlice %~w_slice, 0', [Base, Base]),
     format(atom(LenLine),
@@ -15795,7 +15959,7 @@ plawk_membership_key_ir(field(Index), _ArrayName, _Context, FieldSeparator,
         [Base, Base, Base]),
     format(atom(KeyValue), '%~w_key', [Base]).
 plawk_membership_key_ir(string(Value), _ArrayName, _Context, FieldSeparator,
-        Base, KeyValue, GlobalIR, [PtrLine, KeyLine]) :-
+        _LineValue, Base, KeyValue, GlobalIR, [PtrLine, KeyLine]) :-
     integer(FieldSeparator),
     string(Value),
     format(atom(GlobalName), '~w_key', [Base]),
@@ -15808,29 +15972,29 @@ plawk_membership_key_ir(string(Value), _ArrayName, _Context, FieldSeparator,
         [Base, Base, StringLen]),
     format(atom(KeyValue), '%~w_key', [Base]).
 plawk_membership_key_ir(int(Value), _ArrayName, _Context, binfmt(_Types),
-        _Base, Value, '', []) :-
+        _LineValue, _Base, Value, '', []) :-
     integer(Value),
     !.
 plawk_membership_key_ir(int(Value), ArrayName, Context, FieldSeparator,
-        _Base, Value, '', []) :-
+        _LineValue, _Base, Value, '', []) :-
     integer(FieldSeparator),
     integer(Value),
     plawk_assoc_context_posarray(Context, ArrayName),
     !.
 plawk_membership_key_ir(int(Value), ArrayName, Context, FieldSeparator,
-        Base, KeyValue, GlobalIR, Lines) :-
+        LineValue, Base, KeyValue, GlobalIR, Lines) :-
     integer(FieldSeparator),
     integer(Value),
     format(string(Text), '~w', [Value]),
     plawk_membership_key_ir(string(Text), ArrayName, Context, FieldSeparator,
-        Base, KeyValue, GlobalIR, Lines).
+        LineValue, Base, KeyValue, GlobalIR, Lines).
 plawk_membership_key_ir(subsep_key(Fields), _ArrayName, _Context,
-        FieldSeparator, Base, KeyValue, '', [KeyLine]) :-
+        FieldSeparator, LineValue, Base, KeyValue, '', [KeyLine]) :-
     integer(FieldSeparator),
     plawk_subsep_field_indexes(Fields, [I, J]),
     format(atom(KeyLine),
-        '  %~w_key = call i64 @wam_intern_subsep_key2(%Value %line, i64 ~w, i64 ~w, i8 ~w)',
-        [Base, I, J, FieldSeparator]),
+        '  %~w_key = call i64 @wam_intern_subsep_key2(%Value ~w, i64 ~w, i64 ~w, i8 ~w)',
+        [Base, LineValue, I, J, FieldSeparator]),
     format(atom(KeyValue), '%~w_key', [Base]).
 
 plawk_pattern_guard_ir(always, GuardIR) :-
