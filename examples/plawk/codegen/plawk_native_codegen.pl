@@ -183,7 +183,13 @@ plawk_program_native_driver_ir(
     -> plawk_writebin_args_ok(ArmTypes, ArmFields)
     ;  plawk_rule_body_print_action(Action)
     ),
-    plawk_output_action_exprs(Action, Exprs),
+    plawk_output_action_exprs(Action, ActionExprs),
+    % A bare NR pattern (`NR == 2 { print }`) uses %current_nr in its guard, so
+    % fold the pattern's NR operand into the counter-emission exprs alongside the
+    % print action's -- otherwise the fast single-rule path would elide the
+    % counter and leave %current_nr undefined.
+    findall(PatExpr, plawk_pattern_operand_expr(Pattern, PatExpr), PatExprs),
+    append(ActionExprs, PatExprs, Exprs),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR0),
@@ -7454,10 +7460,33 @@ plawk_rules_body_print_fields(Rules, Fields) :-
 
 plawk_rules_scalar_update_exprs(Rules, Exprs) :-
     findall(Expr,
-        ( member(rule(_Pattern, Actions), Rules),
-          plawk_actions_scalar_update_expr(Actions, Expr)
+        ( member(rule(Pattern, Actions), Rules),
+          (   plawk_actions_scalar_update_expr(Actions, Expr)
+          ;   plawk_pattern_operand_expr(Pattern, Expr)
+          )
         ),
         Exprs).
+
+% Expose pattern operands that affect record-counter emission. A rule whose
+% guard uses NR (`NR == 1 { … }`, or an NR endpoint of a range `NR==1, NR==3`)
+% needs the %current_nr counter defined -- exactly as a scalar `if (NR>1)` guard
+% does. Only NR-bearing expression patterns contribute an operand; other base
+% patterns yield nothing, so the counter stays elided for the common case.
+plawk_pattern_operand_expr(special_cmp('NR', _Op, _Value), special('NR')).
+plawk_pattern_operand_expr(not_pat(Pattern), Expr) :-
+    plawk_pattern_operand_expr(Pattern, Expr).
+plawk_pattern_operand_expr(and_pat(Left, Right), Expr) :-
+    ( plawk_pattern_operand_expr(Left, Expr)
+    ; plawk_pattern_operand_expr(Right, Expr)
+    ).
+plawk_pattern_operand_expr(or_pat(Left, Right), Expr) :-
+    ( plawk_pattern_operand_expr(Left, Expr)
+    ; plawk_pattern_operand_expr(Right, Expr)
+    ).
+plawk_pattern_operand_expr(range(Start, End), Expr) :-
+    ( plawk_pattern_operand_expr(Start, Expr)
+    ; plawk_pattern_operand_expr(End, Expr)
+    ).
 
 plawk_actions_scalar_update_expr(Actions, Expr) :-
     plawk_trim_control_tails(Actions, ReachableActions),
@@ -16250,6 +16279,13 @@ plawk_pattern_guard_ir(special_cmp('NF', Op, Value), FieldSeparator, ''-GuardCal
     format(atom(CmpLine), '  %is_match = icmp ~w i64 %plawk_surface_nf_count, ~w',
         [Pred, Value]),
     atomic_list_concat([CountLine, CmpLine], '\n', GuardCallIR).
+% Expression pattern `NR OP int` (single-rule guard): compare the current
+% record's number against the literal. %current_nr is defined by the record
+% counter, which plawk_pattern_operand_expr/2 arranges to emit for NR patterns.
+plawk_pattern_guard_ir(special_cmp('NR', Op, Value), _FieldSeparator, ''-GuardCallIR) :-
+    plawk_icmp_pred(Op, Pred),
+    format(atom(GuardCallIR), '  %is_match = icmp ~w i64 %current_nr, ~w',
+        [Pred, Value]).
 % Field-vs-field pattern `$I OP $J` (single-rule guard): compare the two field
 % values by POSIX strnum rules.
 plawk_pattern_guard_ir(field_cmp2(I, Op, J), FieldSeparator, GuardIR) :-
@@ -16360,6 +16396,13 @@ plawk_pattern_guard_ir(special_cmp('NF', Op, Value), FieldSeparator, GlobalBase,
     format(atom(CmpLine), '  ~w = icmp ~w i64 %~w, ~w',
         [MatchValue, Pred, NfBase, Value]),
     atomic_list_concat([CountLine, CmpLine], '\n', GuardCallIR).
+% Expression pattern `NR OP int` (multi-rule / combined-pattern / range guard):
+% compare the current record number to the literal. No per-rule temporaries are
+% needed -- %current_nr dominates every rule block, and MatchValue is unique.
+plawk_pattern_guard_ir(special_cmp('NR', Op, Value), _FieldSeparator, _GlobalBase, MatchValue, ''-GuardCallIR) :-
+    plawk_icmp_pred(Op, Pred),
+    format(atom(GuardCallIR), '  ~w = icmp ~w i64 %current_nr, ~w',
+        [MatchValue, Pred, Value]).
 % Field-vs-field pattern `$I OP $J` (multi-rule / combined-pattern guard): use
 % the per-rule base for unique slice/comparator temporaries.
 plawk_pattern_guard_ir(field_cmp2(I, Op, J), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-

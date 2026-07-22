@@ -2,13 +2,15 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
-% Expression patterns `NF OP int` and `length OP int`: bare rule patterns that
-% fire on the current record's field count (`NF > 3 { … }`) or byte length
-% (`length > 80 { … }`, `length($0) <= 40 { … }`). Both parse to
-% special_cmp(Special, Op, Value) and lower through the pattern-guard path (NF
-% via @wam_atom_field_count_value, length via strlen of $0), so they compose
-% with `!`, `&&`, `||`, and the other base patterns. Both operand orders parse:
-% `SPECIAL OP int` and `int OP SPECIAL` (the reversed form swaps the operator).
+% Expression patterns `NF OP int`, `length OP int`, and `NR OP int`: bare rule
+% patterns that fire on the current record's field count (`NF > 3 { … }`), byte
+% length (`length > 80 { … }`, `length($0) <= 40 { … }`), or record number
+% (`NR == 1 { … }`, `NR > 2 { … }`). All parse to special_cmp(Special, Op, Value)
+% and lower through the pattern-guard path (NF via @wam_atom_field_count_value,
+% length via strlen of $0, NR via the %current_nr record counter), so they
+% compose with `!`, `&&`, `||`, and the other base patterns. Both operand orders
+% parse: `SPECIAL OP int` and `int OP SPECIAL` (the reversed form swaps the
+% operator). FNR is an alias of NR (single input stream, no per-file reset).
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -190,6 +192,65 @@ test(field_arith_nonnumeric_zero, [condition(clang_available)]) :-
     sdir(Dir),
     build_run(Dir, 'an', "$1 + 0 == 0 { print \"z\" }\n", "abc\n5\n", Out),
     assertion(Out == "z\n"), !.
+
+% --- NR-as-bare-pattern (NR OP int) ----------------------------------------
+
+% `NR == 1` parses to special_cmp('NR', eq, 1).
+test(nr_eq_pattern_parses) :-
+    plawk_parse_string("NR == 1 { print $0 }\n",
+        program([], [rule(special_cmp('NR', eq, 1), [print([field(0)])])], [])),
+    !.
+
+% Reversed `2 < NR` swaps the operator to gt.
+test(reversed_nr_pattern_parses) :-
+    plawk_parse_string("2 < NR { print $0 }\n",
+        program([], [rule(special_cmp('NR', gt, 2), [print([field(0)])])], [])),
+    !.
+
+% FNR is an alias of NR.
+test(fnr_pattern_parses) :-
+    plawk_parse_string("FNR == 3 { print $0 }\n",
+        program([], [rule(special_cmp('NR', eq, 3), [print([field(0)])])], [])),
+    !.
+
+% `NR == 2` selects the second record (single-rule fast path).
+test(nr_eq_selects, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'nre', "NR == 2 { print $0 }\n", "a\nb\nc\n", Out),
+    assertion(Out == "b\n"), !.
+
+% `NR > 2` selects from the third record on.
+test(nr_gt_selects, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'nrg', "NR > 2 { print $0 }\n", "a\nb\nc\nd\n", Out),
+    assertion(Out == "c\nd\n"), !.
+
+% A window via `&&`: records 2 through 3.
+test(nr_window_combined, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'nrw', "NR >= 2 && NR <= 3 { print $0 }\n",
+        "a\nb\nc\nd\n", Out),
+    assertion(Out == "b\nc\n"), !.
+
+% Negated NR pattern via the combinator path.
+test(nr_negated, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'nrn', "!(NR == 2) { print $0 }\n", "a\nb\nc\n", Out),
+    assertion(Out == "a\nc\n"), !.
+
+% NR pattern combined with a field guard.
+test(nr_combined_with_field, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'nrf', "NR > 1 && $1 == \"x\" { print $2 }\n",
+        "x a\nx b\ny c\n", Out),
+    assertion(Out == "b\n"), !.
+
+% NR pattern with a scalar accumulator + END (multi-rule path).
+test(nr_scalar_end, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'nrs', "NR > 2 { c++ } END { print c }\n",
+        "a\nb\nc\nd\ne\n", Out),
+    assertion(Out == "3\n"), !.
 
 :- end_tests(plawk_expr_pattern).
 
