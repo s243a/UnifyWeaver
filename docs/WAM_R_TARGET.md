@@ -759,8 +759,9 @@ are wired. Project options: `iso_errors(true|false)`,
 `iso_errors(PI, true|false)`, `iso_errors_config(File)`.
 
 Key table (slice only): `is/2` → `is_iso/2` | `is_lax/2`. Comparisons and
-`succ/2` are deferred (ISO-R-2). Explicit `_iso`/`_lax` forms survive mode
-rewrites. Runtime helpers in `runtime.R.mustache`:
+`succ/2` are deferred (ISO-R-2A and ISO-R-2B respectively). Explicit
+`_iso`/`_lax` forms survive mode rewrites. Runtime helpers in
+`runtime.R.mustache`:
 `builtin_is_iso` / `builtin_is_lax` + structured `error/2` constructors.
 Classify order for `is_iso`: unbound → `evaluation_error(zero_divisor)` →
 `type_error(evaluable, Culprit)`.
