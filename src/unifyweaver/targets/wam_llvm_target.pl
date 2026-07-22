@@ -6975,6 +6975,105 @@ sc.zero:
   ret i32 0
 }
 
+@wam_strnum_slice_buf = internal global i8* null
+@wam_strnum_slice_cap = internal global i64 0
+
+; @wam_strnum_cmp_slices(ap, alen, bp, blen): compare two field slices as
+; input-derived strnums. Null with length zero denotes an empty field. Null
+; with a nonzero length, a negative or overflowing length, or allocation
+; failure returns the reserved result 2. Otherwise returns -1, 0, or 1.
+define i32 @wam_strnum_cmp_slices(i8* %ap, i64 %alen, i8* %bp, i64 %blen) {
+entry:
+  %ss.ap_null = icmp eq i8* %ap, null
+  %ss.alen_zero = icmp eq i64 %alen, 0
+  %ss.a_empty = and i1 %ss.ap_null, %ss.alen_zero
+  %ss.a_present = icmp ne i8* %ap, null
+  %ss.a_valid_ptr = or i1 %ss.a_empty, %ss.a_present
+  %ss.bp_null = icmp eq i8* %bp, null
+  %ss.blen_zero = icmp eq i64 %blen, 0
+  %ss.b_empty = and i1 %ss.bp_null, %ss.blen_zero
+  %ss.b_present = icmp ne i8* %bp, null
+  %ss.b_valid_ptr = or i1 %ss.b_empty, %ss.b_present
+  %ss.ptrs_valid = and i1 %ss.a_valid_ptr, %ss.b_valid_ptr
+  %ss.alen_negative = icmp slt i64 %alen, 0
+  %ss.blen_negative = icmp slt i64 %blen, 0
+  %ss.any_negative = or i1 %ss.alen_negative, %ss.blen_negative
+  %ss.lengths_valid = xor i1 %ss.any_negative, true
+  %ss.args_valid = and i1 %ss.ptrs_valid, %ss.lengths_valid
+  br i1 %ss.args_valid, label %ss.size_a, label %ss.fail
+
+ss.size_a:
+  %ss.after_a = add i64 %alen, 1
+  %ss.after_a_ok = icmp ugt i64 %ss.after_a, %alen
+  br i1 %ss.after_a_ok, label %ss.size_b, label %ss.fail
+
+ss.size_b:
+  %ss.before_b_nul = add i64 %ss.after_a, %blen
+  %ss.with_b_ok = icmp uge i64 %ss.before_b_nul, %ss.after_a
+  br i1 %ss.with_b_ok, label %ss.size_final, label %ss.fail
+
+ss.size_final:
+  %ss.need = add i64 %ss.before_b_nul, 1
+  %ss.need_ok = icmp ugt i64 %ss.need, %ss.before_b_nul
+  br i1 %ss.need_ok, label %ss.ensure, label %ss.fail
+
+ss.ensure:
+  %ss.cap = load i64, i64* @wam_strnum_slice_cap
+  %ss.fits = icmp ule i64 %ss.need, %ss.cap
+  br i1 %ss.fits, label %ss.copy_a_check, label %ss.grow
+
+ss.grow:
+  %ss.old_buf = load i8*, i8** @wam_strnum_slice_buf
+  %ss.cap_zero = icmp eq i64 %ss.cap, 0
+  br i1 %ss.cap_zero, label %ss.first_cap, label %ss.double_cap
+
+ss.first_cap:
+  br label %ss.alloc
+
+ss.double_cap:
+  %ss.twice_cap = shl i64 %ss.cap, 1
+  %ss.cap_grew = icmp ugt i64 %ss.twice_cap, %ss.cap
+  br i1 %ss.cap_grew, label %ss.alloc, label %ss.fail
+
+ss.alloc:
+  %ss.new_cap = phi i64 [ %ss.need, %ss.first_cap ], [ %ss.twice_cap, %ss.double_cap ]
+  %ss.new_buf = call i8* @realloc(i8* %ss.old_buf, i64 %ss.new_cap)
+  %ss.grow_failed = icmp eq i8* %ss.new_buf, null
+  br i1 %ss.grow_failed, label %ss.fail, label %ss.store_buf
+
+ss.store_buf:
+  store i8* %ss.new_buf, i8** @wam_strnum_slice_buf
+  store i64 %ss.new_cap, i64* @wam_strnum_slice_cap
+  br label %ss.ensure
+
+ss.copy_a_check:
+  %ss.buf = load i8*, i8** @wam_strnum_slice_buf
+  br i1 %ss.alen_zero, label %ss.term_a, label %ss.copy_a
+
+ss.copy_a:
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %ss.buf, i8* %ap, i64 %alen, i1 false)
+  br label %ss.term_a
+
+ss.term_a:
+  %ss.a_nul = getelementptr i8, i8* %ss.buf, i64 %alen
+  store i8 0, i8* %ss.a_nul
+  %ss.b_dst = getelementptr i8, i8* %ss.a_nul, i64 1
+  br i1 %ss.blen_zero, label %ss.term_b, label %ss.copy_b
+
+ss.copy_b:
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %ss.b_dst, i8* %bp, i64 %blen, i1 false)
+  br label %ss.term_b
+
+ss.term_b:
+  %ss.b_nul = getelementptr i8, i8* %ss.b_dst, i64 %blen
+  store i8 0, i8* %ss.b_nul
+  %ss.result = call i32 @wam_strnum_cmp(i8* %ss.buf, i8 1, i8* %ss.b_dst, i8 1)
+  ret i32 %ss.result
+
+ss.fail:
+  ret i32 2
+}
+
 ; @wam_strnum_cmp_int(as, akind, bval): compare a strnum/number/string operand
 ; (as its string form + kind, like @wam_strnum_cmp) against an integer number
 ; bval. Numeric iff the string operand is numeric-typed (number, or strnum that

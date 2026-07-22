@@ -126,11 +126,25 @@ test(field_field_equality, [condition(clang_available)]) :-
     build_run(Dir, 'fe', "$1 == $2 { print \"eq\" }\n", "abc abc\nx y\n10 10\n", Out),
     assertion(Out == "eq\neq\n"), !.
 
-% A field beyond NF compares as the empty string (awk semantics).
+% A field beyond NF compares as the empty string (awk semantics). Exercises the
+% slice comparator's empty-slice (null ptr / zero len) path.
 test(field_field_missing, [condition(clang_available)]) :-
     sdir(Dir),
     build_run(Dir, 'fm', "$1 < $3 { print $1 }\n", "1 x 2\n5 y\n", Out),
     assertion(Out == "1\n"), !.
+
+% A larger distinct-value stream: the slice comparator reuses one scratch
+% buffer and interns nothing per record (constant-memory), so a many-record
+% run stays correct. Each record has $1 > $2, so all are selected.
+test(field_field_streaming_distinct, [condition(clang_available)]) :-
+    sdir(Dir),
+    numlist(1, 200, Ns),
+    findall(Line, (member(N, Ns), M is N + 1000,
+                   format(atom(Line), "~w ~w", [M, N])), Lines),
+    atomic_list_concat(Lines, "\n", Body0),
+    atom_concat(Body0, "\n", Input),
+    build_run(Dir, 'fs', "$1 > $2 { seen++ } END { print seen }\n", Input, Out),
+    assertion(Out == "200\n"), !.
 
 % Composes with a && combinator.
 test(field_field_combined, [condition(clang_available)]) :-
