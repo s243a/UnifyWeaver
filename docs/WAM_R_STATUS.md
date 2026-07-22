@@ -59,6 +59,7 @@ default 4096), and explicit `auto` (codegen resolves via shared
   without three-form keys are out of scope for “complete for every
   builtin.” Do not describe R as fully ISO-compatible across the entire
   builtin surface.
+- No dedicated effective-distance cross-target bench row.
 
 ## Path forward
 
@@ -68,5 +69,5 @@ default 4096), and explicit `auto` (codegen resolves via shared
 
 ## Document status
 
-Fleet-aligned snapshot updated for CONF-R landing (2026-07-15): opt-in
-harness adapter + measured classic-program readout.
+Fleet-aligned snapshot updated for ISO-R-2B closeout (2026-07-22): audited
+three-form adoption surface plus the remaining effective-distance bench gap.
