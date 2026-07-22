@@ -974,6 +974,9 @@ base_pattern(Pattern) -->
     field_match_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
+    field_field_cmp_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
     field_i64_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
@@ -1256,6 +1259,25 @@ field_eq_pattern(field_eq(Index, Value)) -->
       Index > 0,
       ValueCodes \== [],
       string_codes(Value, ValueCodes)
+    }.
+
+% Expression patterns comparing two record fields, e.g. `$1 > $2`.
+% Codegen applies awk strnum semantics to the two field slices. Restrict both
+% operands to positive, literal field indexes for this initial surface.
+field_field_cmp_pattern(field_cmp2(LeftIndex, Op, RightIndex)) -->
+    "$",
+    integer_codes(LeftIndexCodes),
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    "$",
+    integer_codes(RightIndexCodes),
+    { LeftIndexCodes \== [],
+      RightIndexCodes \== [],
+      number_codes(LeftIndex, LeftIndexCodes),
+      number_codes(RightIndex, RightIndexCodes),
+      LeftIndex > 0,
+      RightIndex > 0
     }.
 
 field_i64_cmp_pattern(field_cmp(Index, Op, Value)) -->

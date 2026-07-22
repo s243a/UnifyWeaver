@@ -16241,6 +16241,16 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, ''-GuardCall
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, '%is_match', GuardCallIR).
+% Expression pattern `$I OP $J` (single-rule guard): compare the two bounded
+% field slices with POSIX strnum semantics. Missing fields are null/zero slices,
+% which the slice comparator treats as empty strings.
+plawk_pattern_guard_ir(field_cmp2(LeftIndex, Op, RightIndex), FieldSeparator,
+        GuardIR) :-
+    integer(FieldSeparator),
+    integer(LeftIndex), LeftIndex > 0,
+    integer(RightIndex), RightIndex > 0,
+    plawk_field_cmp2_guard_ir(LeftIndex, Op, RightIndex, FieldSeparator,
+        plawk_surface_ffcmp, '%is_match', GuardIR).
 % Expression pattern `NF OP int` (single-rule guard): count the current
 % record's fields with the active FS, then compare to the literal.
 plawk_pattern_guard_ir(special_cmp('NF', Op, Value), FieldSeparator, ''-GuardCallIR) :-
@@ -16336,6 +16346,15 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, _GlobalBase,
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, MatchValue, GuardCallIR).
+% Expression pattern `$I OP $J` (multi-rule / combined-pattern guard): use the
+% per-rule base for unique slice/comparator temporaries.
+plawk_pattern_guard_ir(field_cmp2(LeftIndex, Op, RightIndex), FieldSeparator,
+        GlobalBase, MatchValue, GuardIR) :-
+    integer(FieldSeparator),
+    integer(LeftIndex), LeftIndex > 0,
+    integer(RightIndex), RightIndex > 0,
+    plawk_field_cmp2_guard_ir(LeftIndex, Op, RightIndex, FieldSeparator,
+        GlobalBase, MatchValue, GuardIR).
 % Expression pattern `NF OP int` (multi-rule guard): a per-rule GlobalBase keeps
 % the field-count temporary unique across rule blocks.
 plawk_pattern_guard_ir(special_cmp('NF', Op, Value), FieldSeparator, GlobalBase, MatchValue, ''-GuardCallIR) :-
@@ -16364,6 +16383,35 @@ plawk_length_line_ir(Base, LenVar, [PayloadLine, StrLine, LenLine]) :-
     format(atom(StrLine), '  %~w_str = call i8* @wam_atom_to_string(i64 %~w_payload)', [Base, Base]),
     format(atom(LenLine), '  %~w_len = call i64 @strlen(i8* %~w_str)', [Base, Base]),
     format(atom(LenVar), '%~w_len', [Base]).
+
+% Field-vs-field POSIX strnum comparison shared by the single- and multi-rule
+% pattern guards. @wam_atom_field_slice_value returns bounded spans whose
+% interior fields are not NUL-terminated, so pass their pointers and lengths to
+% the slice-aware comparator without interning them. The runtime returns the
+% usual comparison sign, or reserved value 2 on failure; mask that failure so it
+% cannot accidentally satisfy `!=`, `>`, or `>=`.
+plawk_field_cmp2_guard_ir(LeftIndex, Op, RightIndex, FieldSeparator, Base,
+        MatchValue, ''-GuardCallIR) :-
+    plawk_icmp_pred(Op, Pred),
+    format(atom(LeftBase), '~w_lf~w', [Base, LeftIndex]),
+    format(atom(RightBase), '~w_rf~w', [Base, RightIndex]),
+    llvm_emit_atom_field_slice('%line', LeftIndex, FieldSeparator, LeftBase,
+        LeftSliceIR),
+    llvm_emit_atom_field_slice('%line', RightIndex, FieldSeparator, RightBase,
+        RightSliceIR),
+    format(atom(GuardCallIR),
+'~w
+~w
+  %~w_rc = call i32 @wam_strnum_cmp_slices(i8* %~w_ptr, i64 %~w_len64, i8* %~w_ptr, i64 %~w_len64)
+  %~w_ok = icmp ne i32 %~w_rc, 2
+  %~w_cmp = icmp ~w i32 %~w_rc, 0
+  ~w = and i1 %~w_ok, %~w_cmp',
+        [LeftSliceIR,
+         RightSliceIR,
+         Base, LeftBase, LeftBase, RightBase, RightBase,
+         Base, Base,
+         Base, Pred, Base,
+         MatchValue, Base, Base]).
 % blob(dyncall...) == "literal" -- equality between a runtime grammar's
 % byte output and a string literal: length check + memcmp. A failed
 % call (null slice) never matches; the memcmp pointer is substituted
