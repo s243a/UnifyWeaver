@@ -974,6 +974,9 @@ base_pattern(Pattern) -->
     field_match_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
+    field_field_cmp_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
     field_i64_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
@@ -1268,6 +1271,23 @@ field_i64_cmp_pattern(field_cmp(Index, Op, Value)) -->
     { IndexCodes \== [],
       number_codes(Index, IndexCodes),
       Index > 0
+    }.
+
+% Field-vs-field comparison pattern: `$I OP $J { … }` (both positive field
+% indexes). Fires when the two field values compare per POSIX strnum rules
+% (numeric when both look numeric, else lexical), matching awk. Composes with
+% the `!`/`&&`/`||` combinators.
+field_field_cmp_pattern(field_cmp2(I, Op, J)) -->
+    "$",
+    integer_codes(ICodes),
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    "$",
+    integer_codes(JCodes),
+    { ICodes \== [], JCodes \== [],
+      number_codes(I, ICodes), I > 0,
+      number_codes(J, JCodes), J > 0
     }.
 
 % Expression patterns: a numeric special/builtin compared to an integer, e.g.

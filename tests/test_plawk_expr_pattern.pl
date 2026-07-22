@@ -108,6 +108,36 @@ test(reversed_length_selects, [condition(clang_available)]) :-
         "ab\nabcdef\nxy\n", Out),
     assertion(Out == "ab\nxy\n"), !.
 
+% Field-vs-field pattern `$I OP $J` parses to field_cmp2.
+test(field_field_pattern_parses) :-
+    plawk_parse_string("$1 > $2 { print $0 }\n",
+        program([], [rule(field_cmp2(1, gt, 2), [print([field(0)])])], [])),
+    !.
+
+% `$1 > $2` compares the two fields numerically.
+test(field_field_numeric, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'ff', "$1 > $2 { print $0 }\n", "5 3\n2 9\n10 10\n", Out),
+    assertion(Out == "5 3\n"), !.
+
+% `$1 == $2` compares by strnum (lexical for non-numeric, numeric for numbers).
+test(field_field_equality, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'fe', "$1 == $2 { print \"eq\" }\n", "abc abc\nx y\n10 10\n", Out),
+    assertion(Out == "eq\neq\n"), !.
+
+% A field beyond NF compares as the empty string (awk semantics).
+test(field_field_missing, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'fm', "$1 < $3 { print $1 }\n", "1 x 2\n5 y\n", Out),
+    assertion(Out == "1\n"), !.
+
+% Composes with a && combinator.
+test(field_field_combined, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'fc2', "$1 > $2 && $2 > 0 { print $0 }\n", "5 3\n5 -1\n1 2\n", Out),
+    assertion(Out == "5 3\n"), !.
+
 :- end_tests(plawk_expr_pattern).
 
 % --- helpers ---------------------------------------------------------------
