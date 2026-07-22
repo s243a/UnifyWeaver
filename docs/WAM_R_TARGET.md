@@ -552,31 +552,27 @@ shorthand (input / output / any), the same convention
 [`design/WAM_R_MODE_ANALYSIS_PLAN.md`](design/WAM_R_MODE_ANALYSIS_PLAN.md)
 for the phase roadmap and measured impact.
 
-### `is/2` specialisation (phase 3)
+### `is/2` specialisation (phase 3 + ISO-R-0)
 
-Two complementary specialisations targeting the `is/2` arithmetic
-builtin (dominant cost on arith-heavy recursive predicates):
+ISO-R-0 rewrites default `is/2` to `is_lax/2` (or `is_iso/2` under
+`iso_errors(true)`). Evaluation lives in shared runtime helpers
+`WamRuntime$builtin_is_lax` / `builtin_is_iso` (also used by the
+interpreter path).
 
-**Runtime fast-path** (in `WamRuntime$call_builtin`'s is/2 branch).
-When the expression is a 2-arg arithmetic struct (`+`, `-`, `*`,
-`//`, `mod`) with both operands derefing to ints, bypasses the
-recursive `eval_arith` walk + `arith_to_term` dispatch and
-fast-binds when the target is unbound. Falls through to the
-original slow path for floats, nested expressions, unbound vars in
-the RHS, etc. Always active, no codegen flag needed.
+**Runtime.** `builtin_is_lax` keeps the prior fail-on-bad-eval behaviour
+and the binary-int fast path (`+ - * // mod`). `builtin_is_iso`
+classifies unbound → zero_divisor → non-evaluable and throws structured
+`error/2`.
 
-**Lowered-emitter inline.** For `builtin_call is/2 2` lines in a
-lowered function body, the emitter emits inline R that bypasses
-`WamRuntime$step` → `WamRuntime$call_builtin` (saving 2 function
-calls + 2 switch lookups per is/2 hit). Always fires when the
-lowered emitter handles the clause; the runtime fast-path then
-applies inside the inline body.
+**Lowered-emitter inline.** For `builtin_call is/2|is_lax/2|is_iso/2 2`
+(and Execute forms of the explicit keys), the emitter calls the matching
+helper instead of `WamRuntime$step(... BuiltinCall(...))`.
 
 Note: phase 4 broadens lowered emission from the older
 `multi_clause_1` shape to `multi_clause_n`: when every clause is in
 the lowered emitter's supported instruction subset, each clause is
-emitted inline. That means lowered-emitter inline `is/2` now applies
-to clause 2+ as well as deterministic predicates and first clauses.
+emitted inline. That means the inlined `is_*` helper path applies to
+clause 2+ as well as deterministic predicates and first clauses.
 
 ## Supported features
 
@@ -755,6 +751,24 @@ raises a `prolog_throw` condition carrying a `copy_term`'d snapshot
 of the thrown term; `catch/3` unwinds the trail and CP stack to its
 entry snapshot before unifying with the catcher and running the
 recovery. Uncaught throws at the top level become query failure.
+
+### ISO errors (ISO-R-0 partial slice)
+
+Shared `iso_errors` config / per-predicate rewrite / `wam_r_iso_audit/3`
+are wired. Project options: `iso_errors(true|false)`,
+`iso_errors(PI, true|false)`, `iso_errors_config(File)`.
+
+Key table (slice only): `is/2` → `is_iso/2` | `is_lax/2`. Comparisons and
+`succ/2` are deferred (ISO-R-2A and ISO-R-2B respectively). Explicit
+`_iso`/`_lax` forms survive mode rewrites. Runtime helpers in
+`runtime.R.mustache`:
+`builtin_is_iso` / `builtin_is_lax` + structured `error/2` constructors.
+Classify order for `is_iso`: unbound → `evaluation_error(zero_divisor)` →
+`type_error(evaluable, Culprit)`.
+
+R is still a **partial adopter** until all seven items in
+`docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` §"What Counts As
+Adoption" are satisfied.
 
 ## Supported WAM instructions
 
@@ -935,7 +949,7 @@ Coverage map (e2e tests, by feature group):
 | `mode_analysis_phase1_comments` | Mode-analysis visibility: `mode_comments(on)` option prepends `# Mode analysis:` block to each lowered function with per-clause head-binding states; covers `+`, `-`, `?`, undeclared mode shapes |
 | `mode_analysis_phase2_get_constant_inlined` | Mode-analysis phase 2: structural assertion that `get_constant` head match is emitted as inline `WamRuntime$deref + identical()` when the target A-register's declared mode is `+`; falls back to `WamRuntime$step` when no mode declaration or `mode_specialise(off)` |
 | `mode_analysis_phase2_get_constant_e2e_rscript` | Mode-analysis phase 2: e2e correctness -- a predicate with `:- mode(p(+))` and three clauses compiles + runs via Rscript, queries return correct true/false matching across the multi-clause backtracking path |
-| `mode_analysis_phase3_is_inlined` | Mode-analysis phase 3: structural assertion that `builtin_call is/2 2` is emitted as inline `WamRuntime$eval_arith + bind/unify` in the lowered function (instead of `WamRuntime$step(... BuiltinCall("is/2", 2))`) |
+| `mode_analysis_phase3_is_inlined` | Mode-analysis phase 3: structural assertion that rewritten `is_lax/2` is emitted as `WamRuntime$builtin_is_lax(...)` in the lowered function (instead of `WamRuntime$step(... BuiltinCall(...))`) |
 | `mode_analysis_phase3_is_e2e_rscript` | Mode-analysis phase 3: e2e correctness -- a predicate using `is/2` with simple binary int op (runtime fast-path), nested arith (slow path), and negative-result arith compiles + runs via Rscript with correct values |
 | `mode_analysis_phase4_multiclause_n_e2e_rscript` | Mode-analysis phase 4: all-supported-clause `multi_clause_n` lowering, including direct R-wrapper execution of clause 2's inline `is/2` path |
 | `mode_analysis_get_value_inlined` | Mode-analysis follow-up: structural assertion that repeated bound head variables compile `get_value` to an inline atomic identity fast path with safe fallback |
