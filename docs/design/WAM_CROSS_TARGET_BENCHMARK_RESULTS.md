@@ -22,7 +22,7 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
 | **F# LMDB cached (two-level L1/L2)** | **2** | -- | **1** | **Yes** | Fact-access only (no WAM overhead); see below |
 | Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
-| R WAM (functions, kernels_on) | 37854 | 37878 | 1 | Yes | R 4.3.3; auto `category_ancestor/4` kernel + FactSource; 3-rep median query |
+| R WAM (functions, kernels_on) | 62595 | 63424 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; auto `category_ancestor/4` kernel + FactSource; 3-rep median query |
 | Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
 
 **Key takeaway:** Atom interning (replacing `HashMap<String, Vec<String>>` with
@@ -344,18 +344,20 @@ python3 /tmp/wam-bench/python-300/main.py data/benchmark/300 3
 
 ### R WAM (functions mode)
 
-Measured 2026-07-22 using `generate_wam_r_effective_distance_benchmark.pl`
+Measured 2026-07-22 in hosted GitHub Actions using
+`generate_wam_r_effective_distance_benchmark.pl`
 with `emit_mode(functions)`, auto-detected `category_ancestor/4` kernel
 (fleet hops layout), and `category_parent/2` FactSource via
 `grouped_by_first_atoms` (preserves Prolog atom identity for numeric-looking
-Wikipedia IDs). Host: Linux 6.12.94+, SWI-Prolog 9.0.4, R 4.3.3, single-core.
+Wikipedia IDs). Host: Ubuntu 24.04 hosted runner, SWI-Prolog 10.0.2,
+R 4.3.3, single-core.
 
 | Scale | query_ms | total_ms | rows | Cores | vs reference |
 |-------|----------|----------|------|-------|--------------|
-| 300 | 37854 | 37878 | 271 | 1 | match (`normalize_three_column_float_rows`, 6 dp) |
+| 300 | 62595 | 63424 | 271 | 1 | match (`normalize_three_column_float_rows`, 6 dp) |
 
 `query_ms` is the 3-run median of article×root enumeration only
-(samples: 37949, 37854, 37705). `total_ms` is setup (Rscript startup +
+(samples: 65368, 62595, 62559). `total_ms` is setup (Rscript startup +
 generated-program / FactSource load + article/root TSV load) plus that
 median query. Output validated against
 `data/benchmark/300/reference_output.tsv` with canonical sort and 6-decimal
