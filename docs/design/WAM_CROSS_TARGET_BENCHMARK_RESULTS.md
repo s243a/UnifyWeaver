@@ -53,8 +53,8 @@ workloads — see `tests/core/test_wam_fsharp_lmdb_scale_sweep.pl`.
 ## Test Environment
 
 - **Date**: 2026-04-18 (R WAM row: 2026-07-22)
-- **Platform**: Linux 6.1.158 (amd64), sandbox VM; R measurement on Linux 6.12.94+
-- **SWI-Prolog**: 9.2.9 (R measurement host: 9.0.4)
+- **Platform**: Linux 6.1.158 (amd64), sandbox VM; R measurement on hosted Ubuntu 24.04
+- **SWI-Prolog**: 9.2.9 (R measurement host: 10.0.2)
 - **Rust**: 1.95.0 (release build, `--release`)
 - **Haskell/GHC**: 9.6 (prior measurements on WSL2 4-core host)
 - **.NET**: 8.x (`/tmp/dotnet/dotnet`)
