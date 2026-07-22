@@ -157,9 +157,10 @@ plawk_action_own_continue(if(_Pattern, Then, Else)) :-
 
 %% plawk_normalise_getline_loops(+Program0, -Program)
 %
-%  Desugar the supported redirected and main-input getline conditions into the
-%  existing while machinery. Each becomes a priming status-capturing getline
-%  plus a `while (status > 0)` whose body ends in another read of the same form.
+%  Desugar the supported redirected, main-input, and command-pipe getline
+%  conditions into the existing while machinery. Each becomes a priming
+%  status-capturing getline plus a `while (status > 0)` whose body ends in
+%  another read of the same form.
 %  `$getline_status` is a reserved i64 slot (users cannot write a `$`-prefixed
 %  name). v1 rewrites rule bodies (and nested if/loop bodies); getline loops in
 %  BEGIN/END/case blocks remain explicit unsupported nodes.
@@ -215,6 +216,24 @@ plawk_norm_getline_actions([getline_main_var_loop(Var, Body0) | Rest], Out) :-
     !,
     plawk_norm_getline_actions(Body0, Body),
     Read = getline_main_var_capture('$getline_status', Var),
+    append(Body, [Read], LoopBody),
+    plawk_norm_getline_actions(Rest, Rest1),
+    Out = [ Read,
+            while_loop(cmp(var('$getline_status'), gt, int(0)), LoopBody)
+          | Rest1 ].
+plawk_norm_getline_actions([getline_pipe_record_loop(Command, Body0) | Rest], Out) :-
+    !,
+    plawk_norm_getline_actions(Body0, Body),
+    Read = getline_pipe_record_capture('$getline_status', Command),
+    append(Body, [Read], LoopBody),
+    plawk_norm_getline_actions(Rest, Rest1),
+    Out = [ Read,
+            while_loop(cmp(var('$getline_status'), gt, int(0)), LoopBody)
+          | Rest1 ].
+plawk_norm_getline_actions([getline_pipe_loop(Var, Command, Body0) | Rest], Out) :-
+    !,
+    plawk_norm_getline_actions(Body0, Body),
+    Read = getline_pipe_capture('$getline_status', Var, Command),
     append(Body, [Read], LoopBody),
     plawk_norm_getline_actions(Rest, Rest1),
     Out = [ Read,
@@ -1452,14 +1471,16 @@ begin_actions_rest([Action | Actions]) -->
 begin_actions_rest([]) -->
     [].
 
-begin_action(Action) -->
-    begin_assignment(Action),
-    !.
 % getline is deliberately not executable in BEGIN in this phase. Preserve the
 % surface as an explicit node so codegen reports a compile error (exit 3)
-% instead of a parse error or an ignored BEGIN action.
+% instead of a parse error or an ignored BEGIN action. Try this before an
+% ordinary BEGIN assignment: `FS = "cmd" | getline` otherwise commits to the
+% valid `FS = "cmd"` prefix and leaves the pipe behind.
 begin_action(unsupported_getline(begin(Action))) -->
     getline_context_action(Action),
+    !.
+begin_action(Action) -->
+    begin_assignment(Action),
     !.
 begin_action(Action) -->
     print_action(Action),
@@ -1824,6 +1845,8 @@ plawk_block_action(getline_loop(_Var, _File, _Body)).
 plawk_block_action(getline_file_record_loop(_File, _Body)).
 plawk_block_action(getline_main_record_loop(_Body)).
 plawk_block_action(getline_main_var_loop(_Var, _Body)).
+plawk_block_action(getline_pipe_record_loop(_Command, _Body)).
+plawk_block_action(getline_pipe_loop(_Var, _Command, _Body)).
 plawk_block_action(unsupported_getline(while(_Getline, _Body))).
 
 %% action_sep//0
@@ -1944,9 +1967,26 @@ action(Action) -->
 %
 %  Redirected forms read through a filename-keyed shared handle. Main-input
 %  forms read the next record from the driver's stream: `getline` replaces `$0`
-%  while `getline var` only updates the scalar target. Pipeline and dynamic
-%  filename shapes are retained as unsupported_getline nodes so they fail at
-%  compile time rather than being approximated.
+%  while `getline var` only updates the scalar target. A string-literal command
+%  may precede `| getline`; dynamic command and filename shapes are retained as
+%  unsupported_getline nodes so they fail at compile time rather than being
+%  approximated. The scalar-target pipe clause precedes its record sibling so
+%  the latter cannot accept only the `... | getline` prefix.
+getline_action(getline_pipe_read(Var, Command)) -->
+    quoted_string(CCodes),
+    ws, "|", ws,
+    "getline",
+    required_inline_ws,
+    identifier(Var),
+    { string_codes(Command, CCodes) },
+    !.
+getline_action(getline_pipe_record(Command)) -->
+    quoted_string(CCodes),
+    ws, "|", ws,
+    "getline",
+    identifier_boundary,
+    { string_codes(Command, CCodes) },
+    !.
 getline_action(getline_file_record(File)) -->
     "getline",
     identifier_boundary,
@@ -1985,9 +2025,14 @@ getline_context_action(Action) -->
     getline_assignment_action(Action).
 
 % Unsupported statement forms. Longest shapes come first so the trailing
-% tokens cannot be left for the enclosing action grammar.
+% tokens cannot be left for the enclosing action grammar. A pipe target is
+% consumed before the record form for the same prefix reason as above.
+unsupported_getline_statement(pipe_var(Command, Var)) -->
+    getline_dynamic_pipe_expr(Command), ws,
+    "|", ws, "getline", required_inline_ws, identifier(Var),
+    !.
 unsupported_getline_statement(pipe(Command)) -->
-    getline_pipe_command(Command), ws,
+    getline_dynamic_pipe_expr(Command), ws,
     "|", ws, "getline", identifier_boundary,
     !.
 unsupported_getline_statement(file_var(Var, File)) -->
@@ -1999,11 +2044,16 @@ unsupported_getline_statement(file_record_dynamic(File)) -->
     "<", ws, getline_dynamic_file_expr(File),
     !.
 
-getline_pipe_command(var(Command)) -->
-    identifier(Command).
-getline_pipe_command(string(Command)) -->
-    quoted_string(Codes),
-    { string_codes(Command, Codes) }.
+% Consume a non-literal command expression solely for an explicit v1
+% rejection. Parentheses need a dedicated shape for the same reason as a
+% dynamic redirected filename. Literal strings are handled by the supported
+% clauses above and deliberately excluded here.
+getline_dynamic_pipe_expr(paren(Expr)) -->
+    "(", ws, scalar_value_expr(Expr), ws, ")",
+    !.
+getline_dynamic_pipe_expr(Expr) -->
+    scalar_value_expr(Expr),
+    { Expr \= string(_) }.
 
 % Consume a non-string-literal filename expression solely so v1 can reject it
 % as an explicit unsupported node (build exit 3). Parenthesised scalar values
@@ -2115,6 +2165,30 @@ delete_action(delete_assoc(var(Name), KeyExpr)) -->
 % the general action block, and the codegen (bin/plawk) rejects it with a clean
 % not-yet diagnostic until the loop runtime lands. The condition is a scalar
 % comparison for now; a general boolean condition is a follow-on.
+% `while (("cmd" | getline var) > 0) BODY` -- drain a literal command's
+% stdout into a scalar. Keep this before the record form so the target cannot
+% be left behind as trailing input.
+while_action(getline_pipe_loop(Var, Command, Body)) -->
+    "while", identifier_boundary, ws,
+    "(", ws,
+    "(", ws, quoted_string(CCodes), ws,
+    "|", ws, "getline", required_inline_ws, identifier(Var), ws, ")",
+    ws, ">", ws, "0", ws,
+    ")", ws,
+    body_block(Body),
+    { string_codes(Command, CCodes) },
+    !.
+% `while (("cmd" | getline) > 0) BODY` -- drain it into `$0`.
+while_action(getline_pipe_record_loop(Command, Body)) -->
+    "while", identifier_boundary, ws,
+    "(", ws,
+    "(", ws, quoted_string(CCodes), ws,
+    "|", ws, "getline", identifier_boundary, ws, ")",
+    ws, ">", ws, "0", ws,
+    ")", ws,
+    body_block(Body),
+    { string_codes(Command, CCodes) },
+    !.
 % `while ((getline < "file") > 0) BODY` -- read successive newline-delimited
 % file records into `$0`. It normalises to a priming record read plus the same
 % status-slot while machinery used by scalar-target getline.
@@ -2667,6 +2741,28 @@ assignment_action(set(var(Name), Value)) -->
     ws,
     scalar_value_expr(Value).
 
+% Pipe captures use a literal command and mirror the two statement targets.
+% The scalar-target form is tried first because it extends the record prefix.
+getline_assignment_action(getline_pipe_capture(Status, Var, Command)) -->
+    identifier(Status),
+    ws, "=", ws,
+    quoted_string(CCodes),
+    ws, "|", ws,
+    "getline",
+    required_inline_ws,
+    identifier(Var),
+    { string_codes(Command, CCodes) },
+    !.
+getline_assignment_action(getline_pipe_record_capture(Status, Command)) -->
+    identifier(Status),
+    ws, "=", ws,
+    quoted_string(CCodes),
+    ws, "|", ws,
+    "getline",
+    identifier_boundary,
+    { string_codes(Command, CCodes) },
+    !.
+
 % `status = getline < "file"`: update `$0` and capture 1/0/-1 in status.
 getline_assignment_action(getline_file_record_capture(Status, File)) -->
     identifier(Status),
@@ -2717,6 +2813,14 @@ unsupported_getline_rhs(file_var(Var, File)) -->
 unsupported_getline_rhs(file_record_dynamic(File)) -->
     "getline", identifier_boundary, ws,
     "<", ws, getline_dynamic_file_expr(File),
+    !.
+unsupported_getline_rhs(pipe_var(Command, Var)) -->
+    getline_dynamic_pipe_expr(Command), ws,
+    "|", ws, "getline", required_inline_ws, identifier(Var),
+    !.
+unsupported_getline_rhs(pipe(Command)) -->
+    getline_dynamic_pipe_expr(Command), ws,
+    "|", ws, "getline", identifier_boundary,
     !.
 
 % `x = sprintf("fmt", args...)`: format into a string scalar (the printf format

@@ -47,7 +47,7 @@ only (runtime pending) · ❌ missing.
 | `delete arr[k]` | ◐ | `delete arr[$k]` removes the entry keyed by a field (parity with `arr[$k]++`); backward-shift deletion in the runtime (later colliding keys stay reachable), missing key is a no-op. String-literal / var keys are a follow-on |
 | `exit [n]` | ✅ | stops the record loop, runs END, returns N (default 0); `exit` in a rule body, an `if`/`else` branch, or a loop (propagates past the loop) — scalar state at the exit point flows into END |
 | `delete arr[k]` | ❌ | |
-| `getline` | ◐ | **Main-input and redirected scalar/record getline landed.** Plain `getline` reads the next record from the primary driver stream into `$0`, re-splits `$1…$NF` with the active FS, updates `NF`, and advances `NR`/`FNR`; `getline var` advances the same stream and counters but preserves `$0`/fields. Both honor the active RS (including regex RS) and RT because they share the driver's reader state. Bare statements, `status = getline` / `status = getline var`, and the canonical `while ((getline …) > 0)` forms return/use 1 on a record, 0 at EOF, or -1 on a read error; EOF/error preserve the target. Redirected `getline var < "file"` and `getline < "file"` use filename-keyed handles; redirected record getline does **not** advance NR/FNR and remains physical-newline-only in v1 while preserving RS/RT. Cleanly rejected follow-ons: `cmd | getline`, dynamic filenames, and getline in BEGIN/END. The multi-pass / `over` readers still cover the bulk-scan use |
+| `getline` | ◐ | **Main-input, redirected, and command-pipe scalar/record getline landed.** Plain `getline` reads the next record from the primary driver stream into `$0`, re-splits `$1…$NF` with the active FS, updates `NF`, and advances `NR`/`FNR`; `getline var` advances the same stream and counters but preserves `$0`/fields. Both honor the active RS (including regex RS) and RT because they share the driver's reader state. Redirected `getline var < "file"` and `getline < "file"` use filename-keyed handles; redirected record getline does **not** advance NR/FNR and remains physical-newline-only in v1 while preserving RS/RT. Literal-command `"cmd" | getline` and `"cmd" | getline var` use a command-keyed `popen(cmd, "r")` registry shared by both target forms: the record target replaces `$0` and re-splits fields, the scalar target preserves `$0`/fields, and each successful pipe record advances `NR` (therefore also `FNR`, which is intentionally an alias of `NR` in plawk's single-input model). Pipe reads are physical-newline-only and preserve RT in v1; updating RT from the matched pipe separator remains a follow-on. All three families support bare statements, status capture, and canonical while-drain forms, returning 1 on a record, 0 at clean EOF (including a child that merely exits nonzero), or -1 on an actual pipe/open/read/close/allocation failure; EOF/error preserve the target. `cmd | getline` necessarily executes the shell command supplied by the awk program. Cleanly rejected follow-ons: dynamic filenames or commands, and getline in BEGIN/END. The multi-pass / `over` readers still cover the bulk-scan use |
 
 ## Functions
 
@@ -193,8 +193,7 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
 7. **`split` / `sub` / `gsub` / `match` / `sprintf`** — the string-builtin
    family; larger, lower priority for the DSL's data-pipeline focus.
 
-Deferred by design (the DSL's model diverges here): pipeline `cmd | getline`
-(the `over`/multi-pass readers subsume most bulk-scan uses),
-multi-file `FILENAME`/`FNR` (`ARGV[N]`/`ARGC` themselves are landed for rule
+Deferred by design (the DSL's model diverges here): multi-file `FILENAME`/`FNR`
+(`ARGV[N]`/`ARGC` themselves are landed for rule
 bodies — see the table), C-style `for(;;)` / `do-while` (the `while`
 runtime + for-in cover the loop needs).

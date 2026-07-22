@@ -1624,6 +1624,8 @@ declare i8* @strerror(i32)
 declare i32 @getrusage(i32, i8*)
 declare i8* @popen(i8*, i8*)
 declare i32 @pclose(i8*)
+declare i32 @fgetc(i8*)
+declare i32 @ferror(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
 declare i64 @fwrite(i8*, i64, i64, i8*)
 declare i32 @memcmp(i8*, i8*, i64)
@@ -8513,6 +8515,239 @@ gr.copy_error:
 
 gr.return_status:
   ret i64 %gr.status
+}
+
+; awk pipe getline: run a command through the host shell and read its stdout
+; one physical newline record at a time. Commands share a process-wide
+; registry keyed by command text, so repeated calls continue the same pipe.
+; A terminal state is retained after pclose so EOF and errors never respawn
+; the command. Capacity is 64 distinct commands.
+;
+; The output slot is written only after a complete record is available.
+; Returns 1 for a record, 0 for clean EOF, and -1 for popen, read, allocation,
+; or pclose errors. The command exit status does not turn pipe EOF into an
+; error. A final partial record is returned before a rare pclose error is
+; reported on the following call.
+@wam_getline_pipe_reg_ids = internal global [64 x i64] zeroinitializer
+@wam_getline_pipe_reg_fp = internal global [64 x i8*] zeroinitializer
+@wam_getline_pipe_reg_state = internal global [64 x i8] zeroinitializer
+@wam_getline_pipe_reg_n = internal global i64 0
+
+define i64 @wam_getline_pipe(i8* %cmdptr, i64 %cmdlen, i64* %line_id_out) {
+entry:
+  %gp.cid = call i64 @wam_intern_atom(i8* %cmdptr, i64 %cmdlen)
+  %gp.n = load i64, i64* @wam_getline_pipe_reg_n
+  br label %gp.scan
+
+gp.scan:
+  %gp.i = phi i64 [ 0, %entry ], [ %gp.i1, %gp.scan_next ]
+  %gp.scan_done = icmp sge i64 %gp.i, %gp.n
+  br i1 %gp.scan_done, label %gp.open, label %gp.scan_body
+
+gp.scan_body:
+  %gp.idp = getelementptr [64 x i64], [64 x i64]* @wam_getline_pipe_reg_ids, i64 0, i64 %gp.i
+  %gp.id = load i64, i64* %gp.idp
+  %gp.hit = icmp eq i64 %gp.id, %gp.cid
+  br i1 %gp.hit, label %gp.found, label %gp.scan_next
+
+gp.scan_next:
+  %gp.i1 = add i64 %gp.i, 1
+  br label %gp.scan
+
+gp.found:
+  %gp.found_statep = getelementptr [64 x i8], [64 x i8]* @wam_getline_pipe_reg_state, i64 0, i64 %gp.i
+  %gp.found_state = load i8, i8* %gp.found_statep
+  switch i8 %gp.found_state, label %gp.err [
+    i8 1, label %gp.found_open
+    i8 2, label %gp.eof
+    i8 3, label %gp.err
+  ]
+
+gp.found_open:
+  %gp.found_fpp = getelementptr [64 x i8*], [64 x i8*]* @wam_getline_pipe_reg_fp, i64 0, i64 %gp.i
+  %gp.found_fp = load i8*, i8** %gp.found_fpp
+  %gp.found_fp_null = icmp eq i8* %gp.found_fp, null
+  br i1 %gp.found_fp_null, label %gp.err, label %gp.ready
+
+gp.open:
+  %gp.full = icmp sge i64 %gp.n, 64
+  br i1 %gp.full, label %gp.err, label %gp.open_command
+
+gp.open_command:
+  %gp.command = call i8* @wam_atom_to_string(i64 %gp.cid)
+  %gp.command_null = icmp eq i8* %gp.command, null
+  br i1 %gp.command_null, label %gp.err, label %gp.do_popen
+
+gp.do_popen:
+  %gp.mode = alloca [2 x i8], align 1
+  %gp.mode_ptr = getelementptr [2 x i8], [2 x i8]* %gp.mode, i64 0, i64 0
+  store i8 114, i8* %gp.mode_ptr
+  %gp.mode_end = getelementptr i8, i8* %gp.mode_ptr, i64 1
+  store i8 0, i8* %gp.mode_end
+  %gp.opened_fp = call i8* @popen(i8* %gp.command, i8* %gp.mode_ptr)
+  %gp.open_failed = icmp eq i8* %gp.opened_fp, null
+  br i1 %gp.open_failed, label %gp.err, label %gp.store
+
+gp.store:
+  %gp.store_idp = getelementptr [64 x i64], [64 x i64]* @wam_getline_pipe_reg_ids, i64 0, i64 %gp.n
+  store i64 %gp.cid, i64* %gp.store_idp
+  %gp.store_fpp = getelementptr [64 x i8*], [64 x i8*]* @wam_getline_pipe_reg_fp, i64 0, i64 %gp.n
+  store i8* %gp.opened_fp, i8** %gp.store_fpp
+  %gp.store_statep = getelementptr [64 x i8], [64 x i8]* @wam_getline_pipe_reg_state, i64 0, i64 %gp.n
+  store i8 1, i8* %gp.store_statep
+  %gp.n1 = add i64 %gp.n, 1
+  store i64 %gp.n1, i64* @wam_getline_pipe_reg_n
+  br label %gp.ready
+
+gp.ready:
+  %gp.fp = phi i8* [ %gp.found_fp, %gp.found_open ], [ %gp.opened_fp, %gp.store ]
+  %gp.fpp = phi i8** [ %gp.found_fpp, %gp.found_open ], [ %gp.store_fpp, %gp.store ]
+  %gp.statep = phi i8* [ %gp.found_statep, %gp.found_open ], [ %gp.store_statep, %gp.store ]
+  %gp.buf0 = call i8* @malloc(i64 256)
+  %gp.buf0_null = icmp eq i8* %gp.buf0, null
+  br i1 %gp.buf0_null, label %gp.alloc_error, label %gp.read
+
+gp.read:
+  %gp.buf = phi i8* [ %gp.buf0, %gp.ready ], [ %gp.append_buf, %gp.append ]
+  %gp.len = phi i64 [ 0, %gp.ready ], [ %gp.len1, %gp.append ]
+  %gp.cap = phi i64 [ 256, %gp.ready ], [ %gp.append_cap, %gp.append ]
+  %gp.ch = call i32 @fgetc(i8* %gp.fp)
+  %gp.at_end = icmp eq i32 %gp.ch, -1
+  br i1 %gp.at_end, label %gp.read_end, label %gp.check_newline
+
+gp.check_newline:
+  %gp.is_newline = icmp eq i32 %gp.ch, 10
+  br i1 %gp.is_newline, label %gp.finish_open, label %gp.ensure
+
+gp.ensure:
+  %gp.full_buf = icmp uge i64 %gp.len, %gp.cap
+  br i1 %gp.full_buf, label %gp.grow, label %gp.append
+
+gp.grow:
+  %gp.new_cap = mul i64 %gp.cap, 2
+  %gp.grown = call i8* @realloc(i8* %gp.buf, i64 %gp.new_cap)
+  %gp.grow_failed = icmp eq i8* %gp.grown, null
+  br i1 %gp.grow_failed, label %gp.realloc_error, label %gp.append
+
+gp.append:
+  %gp.append_buf = phi i8* [ %gp.buf, %gp.ensure ], [ %gp.grown, %gp.grow ]
+  %gp.append_cap = phi i64 [ %gp.cap, %gp.ensure ], [ %gp.new_cap, %gp.grow ]
+  %gp.dst = getelementptr i8, i8* %gp.append_buf, i64 %gp.len
+  %gp.byte = trunc i32 %gp.ch to i8
+  store i8 %gp.byte, i8* %gp.dst
+  %gp.len1 = add i64 %gp.len, 1
+  br label %gp.read
+
+gp.finish_open:
+  %gp.open_has_chars = icmp ugt i64 %gp.len, 0
+  br i1 %gp.open_has_chars, label %gp.open_check_cr, label %gp.open_intern_empty
+
+gp.open_check_cr:
+  %gp.open_last_idx = sub i64 %gp.len, 1
+  %gp.open_last_ptr = getelementptr i8, i8* %gp.buf, i64 %gp.open_last_idx
+  %gp.open_last = load i8, i8* %gp.open_last_ptr
+  %gp.open_last_is_cr = icmp eq i8 %gp.open_last, 13
+  %gp.open_trimmed_len = select i1 %gp.open_last_is_cr, i64 %gp.open_last_idx, i64 %gp.len
+  br label %gp.open_intern
+
+gp.open_intern_empty:
+  br label %gp.open_intern
+
+gp.open_intern:
+  %gp.open_final_len = phi i64 [ %gp.open_trimmed_len, %gp.open_check_cr ], [ 0, %gp.open_intern_empty ]
+  %gp.line_id = call i64 @wam_intern_atom(i8* %gp.buf, i64 %gp.open_final_len)
+  call void @free(i8* %gp.buf)
+  store i64 %gp.line_id, i64* %line_id_out
+  ret i64 1
+
+gp.read_end:
+  %gp.read_error = call i32 @ferror(i8* %gp.fp)
+  %gp.read_failed = icmp ne i32 %gp.read_error, 0
+  br i1 %gp.read_failed, label %gp.io_error, label %gp.close_at_eof
+
+gp.close_at_eof:
+  %gp.close_status = call i32 @pclose(i8* %gp.fp)
+  store i8* null, i8** %gp.fpp
+  %gp.close_ok = icmp ne i32 %gp.close_status, -1
+  %gp.terminal_state = select i1 %gp.close_ok, i8 2, i8 3
+  store i8 %gp.terminal_state, i8* %gp.statep
+  %gp.have_partial = icmp ugt i64 %gp.len, 0
+  br i1 %gp.have_partial, label %gp.finish_partial, label %gp.finish_empty
+
+gp.finish_partial:
+  %gp.partial_last_idx = sub i64 %gp.len, 1
+  %gp.partial_last_ptr = getelementptr i8, i8* %gp.buf, i64 %gp.partial_last_idx
+  %gp.partial_last = load i8, i8* %gp.partial_last_ptr
+  %gp.partial_last_is_cr = icmp eq i8 %gp.partial_last, 13
+  %gp.partial_len = select i1 %gp.partial_last_is_cr, i64 %gp.partial_last_idx, i64 %gp.len
+  %gp.partial_id = call i64 @wam_intern_atom(i8* %gp.buf, i64 %gp.partial_len)
+  call void @free(i8* %gp.buf)
+  store i64 %gp.partial_id, i64* %line_id_out
+  ret i64 1
+
+gp.finish_empty:
+  call void @free(i8* %gp.buf)
+  %gp.empty_status = select i1 %gp.close_ok, i64 0, i64 -1
+  ret i64 %gp.empty_status
+
+gp.alloc_error:
+  %gp.alloc_close = call i32 @pclose(i8* %gp.fp)
+  store i8* null, i8** %gp.fpp
+  store i8 3, i8* %gp.statep
+  ret i64 -1
+
+gp.realloc_error:
+  %gp.realloc_close = call i32 @pclose(i8* %gp.fp)
+  store i8* null, i8** %gp.fpp
+  store i8 3, i8* %gp.statep
+  call void @free(i8* %gp.buf)
+  ret i64 -1
+
+gp.io_error:
+  %gp.io_close = call i32 @pclose(i8* %gp.fp)
+  store i8* null, i8** %gp.fpp
+  store i8 3, i8* %gp.statep
+  call void @free(i8* %gp.buf)
+  ret i64 -1
+
+gp.eof:
+  ret i64 0
+
+gp.err:
+  ret i64 -1
+}
+
+; Pipe getline into the current record. The scalar helper owns command state
+; and produces a persistent atom. On success copy it into the reserved
+; transient record buffer so existing field and NF projections see the new
+; record immediately. EOF and errors do not touch the transient destination.
+define i64 @wam_getline_pipe_record(i8* %cmdptr, i64 %cmdlen) {
+entry:
+  %gpr.line_id_slot = alloca i64, align 8
+  %gpr.status = call i64 @wam_getline_pipe(i8* %cmdptr, i64 %cmdlen, i64* %gpr.line_id_slot)
+  %gpr.got = icmp eq i64 %gpr.status, 1
+  br i1 %gpr.got, label %gpr.copy, label %gpr.return_status
+
+gpr.copy:
+  %gpr.line_id = load i64, i64* %gpr.line_id_slot
+  %gpr.line_ptr = call i8* @wam_atom_to_string(i64 %gpr.line_id)
+  %gpr.line_null = icmp eq i8* %gpr.line_ptr, null
+  br i1 %gpr.line_null, label %gpr.copy_error, label %gpr.copy_bytes
+
+gpr.copy_bytes:
+  %gpr.line_len = call i64 @strlen(i8* %gpr.line_ptr)
+  %gpr.transient_id = call i64 @wam_transient_atom_from_bytes(i8* %gpr.line_ptr, i64 %gpr.line_len)
+  %gpr.copy_failed = icmp slt i64 %gpr.transient_id, 0
+  br i1 %gpr.copy_failed, label %gpr.copy_error, label %gpr.success
+
+gpr.success:
+  ret i64 1
+
+gpr.copy_error:
+  ret i64 -1
+
+gpr.return_status:
+  ret i64 %gpr.status
 }
 
 ; awk ENVIRON["NAME"]: look up an environment variable by its NUL-terminated

@@ -6883,7 +6883,9 @@ plawk_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
     append(ActionVars, PrintVars, Names0),
     sort(Names0, Names),
     plawk_scalar_typed_slots(Rules, Names, ScalarSlots),
-    (   plawk_rules_have_main_getline(Rules)
+    (   ( plawk_rules_have_main_getline(Rules)
+        ; plawk_rules_have_pipe_getline(Rules)
+        )
     ->  append(ScalarSlots, [scalar_record_number], Slots)
     ;   Slots = ScalarSlots
     ).
@@ -6906,6 +6908,8 @@ plawk_action_has_record_getline(getline_file_record(_File)).
 plawk_action_has_record_getline(getline_file_record_capture(_Status, _File)).
 plawk_action_has_record_getline(getline_main_record).
 plawk_action_has_record_getline(getline_main_record_capture(_Status)).
+plawk_action_has_record_getline(getline_pipe_record(_Command)).
+plawk_action_has_record_getline(getline_pipe_record_capture(_Status, _Command)).
 plawk_action_has_record_getline(if(_Pattern, ThenActions, ElseActions)) :-
     ( plawk_actions_have_record_getline(ThenActions)
     ; plawk_actions_have_record_getline(ElseActions)
@@ -6945,6 +6949,35 @@ plawk_action_has_main_getline(do_while_loop(Body, _Cond)) :-
     plawk_actions_have_main_getline(Body).
 plawk_action_has_main_getline(foreach_loop(_Layout, Body)) :-
     plawk_actions_have_main_getline(Body).
+
+% Pipe getline reads do not consume the driver-owned stream, but POSIX awk
+% still advances NR on every successful command-output record. Keep their
+% detector separate from main-input getline so the source-stream distinction
+% remains explicit while both opt into the same hidden record-number slot.
+plawk_rules_have_pipe_getline(Rules) :-
+    member(rule(_Pattern, Actions), Rules),
+    plawk_actions_have_pipe_getline(Actions),
+    !.
+
+plawk_actions_have_pipe_getline(Actions) :-
+    member(Action, Actions),
+    plawk_action_has_pipe_getline(Action),
+    !.
+
+plawk_action_has_pipe_getline(getline_pipe_record(_Command)).
+plawk_action_has_pipe_getline(getline_pipe_record_capture(_Status, _Command)).
+plawk_action_has_pipe_getline(getline_pipe_read(_Var, _Command)).
+plawk_action_has_pipe_getline(getline_pipe_capture(_Status, _Var, _Command)).
+plawk_action_has_pipe_getline(if(_Pattern, ThenActions, ElseActions)) :-
+    ( plawk_actions_have_pipe_getline(ThenActions)
+    ; plawk_actions_have_pipe_getline(ElseActions)
+    ).
+plawk_action_has_pipe_getline(while_loop(_Cond, Body)) :-
+    plawk_actions_have_pipe_getline(Body).
+plawk_action_has_pipe_getline(do_while_loop(Body, _Cond)) :-
+    plawk_actions_have_pipe_getline(Body).
+plawk_action_has_pipe_getline(foreach_loop(_Layout, Body)) :-
+    plawk_actions_have_pipe_getline(Body).
 
 %% plawk_scalar_typed_slots(+Rules, +Names, -Slots)
 %
@@ -7099,8 +7132,8 @@ plawk_scalar_strnum_field_source(set(var(Name), int(field(FieldIndex))), Name) :
 
 % A strnum source: any assignment whose value is an external string of unknown
 % numericness -- a field copy, a command-line argument (`x = ARGV[N]`), or a
-% getline read (`getline var < "file"` / `status = getline var < "file"`). These
-% are POSIX strnums: their runtime content decides numeric vs lexical comparison.
+% getline read (`getline var < "file"`, main-input, or command-output). These are
+% POSIX strnums: their runtime content decides numeric vs lexical comparison.
 % All store an interned atom id into the slot (via set_str for argv/getline, via
 % the field-intern for a field), so they share the scalar_strnum representation.
 plawk_scalar_strnum_source(Action, Name) :-
@@ -7112,6 +7145,8 @@ plawk_scalar_strnum_source(getline_read(Name, _File), Name).
 plawk_scalar_strnum_source(getline_capture(_Status, Name, _File), Name).
 plawk_scalar_strnum_source(getline_main_var(Name), Name).
 plawk_scalar_strnum_source(getline_main_var_capture(_Status, Name), Name).
+plawk_scalar_strnum_source(getline_pipe_read(Name, _Command), Name).
+plawk_scalar_strnum_source(getline_pipe_capture(_Status, Name, _Command), Name).
 
 % A write is disqualifying unless it is a strnum-preserving source: a field copy
 % (`x = $N`) or a plain var copy (`z = x`, which propagates strnum-ness). Any
@@ -7360,7 +7395,9 @@ plawk_mixed_scalar_state_plan(Rules, PrintFields, state_plan(Slots)) :-
     append(ActionVars, PrintVars, Names0),
     sort(Names0, Names),
     plawk_scalar_typed_slots(Rules, Names, ScalarSlots),
-    (   plawk_rules_have_main_getline(Rules)
+    (   ( plawk_rules_have_main_getline(Rules)
+        ; plawk_rules_have_pipe_getline(Rules)
+        )
     ->  append(ScalarSlots, [scalar_record_number], Slots)
     ;   Slots = ScalarSlots
     ).
@@ -7529,6 +7566,11 @@ plawk_mixed_update_action(Action) :-
 plawk_mixed_update_action(getline_main_record).
 plawk_mixed_update_action(getline_main_record_capture(Status)) :-
     atom(Status).
+plawk_mixed_update_action(getline_pipe_record(Command)) :-
+    string(Command).
+plawk_mixed_update_action(getline_pipe_record_capture(Status, Command)) :-
+    atom(Status),
+    string(Command).
 plawk_mixed_update_action(if(_Pattern, ThenActions, ElseActions)) :-
     append(ThenActions, ElseActions, Actions),
     Actions \== [],
@@ -12419,6 +12461,18 @@ plawk_scalar_rule_body_action(getline_main_var(Var)) :-
 plawk_scalar_rule_body_action(getline_main_var_capture(Status, Var)) :-
     atom(Status),
     atom(Var).
+plawk_scalar_rule_body_action(getline_pipe_record(Command)) :-
+    string(Command).
+plawk_scalar_rule_body_action(getline_pipe_record_capture(Status, Command)) :-
+    atom(Status),
+    string(Command).
+plawk_scalar_rule_body_action(getline_pipe_read(Var, Command)) :-
+    atom(Var),
+    string(Command).
+plawk_scalar_rule_body_action(getline_pipe_capture(Status, Var, Command)) :-
+    atom(Status),
+    atom(Var),
+    string(Command).
 % the store-only half of a rule-level `exit N` (terminal_exit split); it is a
 % plain store with no control, valid anywhere a plain body action is.
 plawk_scalar_rule_body_action(exit_store(_Code)).
@@ -12464,6 +12518,18 @@ plawk_scalar_rule_body_plain_action(getline_main_var(Var)) :-
 plawk_scalar_rule_body_plain_action(getline_main_var_capture(Status, Var)) :-
     atom(Status),
     atom(Var).
+plawk_scalar_rule_body_plain_action(getline_pipe_record(Command)) :-
+    string(Command).
+plawk_scalar_rule_body_plain_action(getline_pipe_record_capture(Status, Command)) :-
+    atom(Status),
+    string(Command).
+plawk_scalar_rule_body_plain_action(getline_pipe_read(Var, Command)) :-
+    atom(Var),
+    string(Command).
+plawk_scalar_rule_body_plain_action(getline_pipe_capture(Status, Var, Command)) :-
+    atom(Status),
+    atom(Var),
+    string(Command).
 % `exit [N]` inside a branch body (`if (c) exit`): the sequence walker lowers it
 % via branch_exit + plawk_branch_to_done_ir (branch to break_close_stream); the
 % store-only marker `exit_store` may appear when a branch ends the rule.
@@ -13276,6 +13342,9 @@ plawk_scalar_update_action_name(getline_file_record_capture(Status, _File), Stat
 plawk_scalar_update_action_name(getline_main_record_capture(Status), Status).
 plawk_scalar_update_action_name(getline_main_var_capture(Status, Var), Name) :-
     ( Name = Var ; Name = Status ).
+plawk_scalar_update_action_name(getline_pipe_record_capture(Status, _Command), Status).
+plawk_scalar_update_action_name(getline_pipe_capture(Status, Var, _Command), Name) :-
+    ( Name = Var ; Name = Status ).
 plawk_scalar_update_action_name(dynrec_bind(Vars, _Call, _Types), Name) :-
     plawk_dynrec_binding_names(Vars, Names),
     member(Name, Names).
@@ -13388,6 +13457,17 @@ plawk_scalar_action_update(getline_main_var(Var), Var, set_str(getline_main)) :-
 plawk_scalar_action_update(getline_main_var_capture(_Status, Var), Var,
         set_str(getline_main)) :-
     atom(Var).
+% Command-output getline is a strnum-producing scalar source, just like file
+% and main-input getline. The dedicated sequence clauses perform the runtime
+% call; this declaration supplies slot planning and surface validation.
+plawk_scalar_action_update(getline_pipe_read(Var, Command), Var,
+        set_str(getline_pipe(Command))) :-
+    atom(Var),
+    string(Command).
+plawk_scalar_action_update(getline_pipe_capture(_Status, Var, Command), Var,
+        set_str(getline_pipe(Command))) :-
+    atom(Var),
+    string(Command).
 % Ternary assignment `x = COND ? A : B`: an i64 value via select (the operation
 % lowers through plawk_scalar_numeric_expr_ir(ternary(...)) -> plawk_i64_expr_ir).
 plawk_scalar_action_update(set(var(Name), ternary(cmp(Left, _Op, Right), Then, Else)),
@@ -13542,6 +13622,62 @@ plawk_getline_record_ir(Prefix, OpIndex, File, StNext, GlobalIR, IR) :-
         [Base, PathBytes, PathBytes, PathName,
          StNext, Base, PathLen]).
 
+% Command-output getline mirrors redirected-file getline, but keys a popen
+% registry by the literal command string and advances the shared logical
+% NR/FNR slot on success. The record-target runtime helper replaces the
+% reserved transient `$0` buffer only for status 1; the scalar-target helper
+% writes an interned line id through its out pointer. Both therefore preserve
+% their destination on EOF/error.
+plawk_getline_pipe_record_ir(Prefix, OpIndex, Command, NrInput, StNext,
+        NrNext, GlobalIR, IR) :-
+    format(atom(Base), '~w_getline_pipe_record_~w', [Prefix, OpIndex]),
+    format(atom(CommandName), '~w_command', [Base]),
+    llvm_emit_c_string_global(CommandName, Command, GlobalIR, CommandLen,
+        CommandBytes),
+    format(atom(StNext), '%~w_status', [Base]),
+    format(atom(NrNext), '%~w_nr', [Base]),
+    format(atom(IR),
+'  %~w_commandp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  ~w = call i64 @wam_getline_pipe_record(i8* %~w_commandp, i64 ~w)
+  %~w_got = icmp eq i64 ~w, 1
+  %~w_nr_inc = add i64 ~w, 1
+  ~w = select i1 %~w_got, i64 %~w_nr_inc, i64 ~w',
+        [Base, CommandBytes, CommandBytes, CommandName,
+         StNext, Base, CommandLen,
+         Base, StNext,
+         Base, NrInput,
+         NrNext, Base, Base, NrInput]).
+
+plawk_getline_pipe_ir(Prefix, OpIndex, Command, VarInput, NrInput, VarNext,
+        StNext, NrNext, GlobalIR, IR) :-
+    format(atom(Base), '~w_getline_pipe_~w', [Prefix, OpIndex]),
+    format(atom(CommandName), '~w_command', [Base]),
+    llvm_emit_c_string_global(CommandName, Command, CommandGlobalIR, CommandLen,
+        CommandBytes),
+    format(atom(LineIdName), '~w_lineid_slot', [Base]),
+    format(atom(LineIdGlobalIR), '@~w = private global i64 0', [LineIdName]),
+    atomic_list_concat([CommandGlobalIR, LineIdGlobalIR], '\n', GlobalIR),
+    format(atom(VarNext), '%~w_var', [Base]),
+    format(atom(StNext), '%~w_status', [Base]),
+    format(atom(NrNext), '%~w_nr', [Base]),
+    format(atom(IR),
+'  %~w_commandp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  store i64 ~w, i64* @~w
+  ~w = call i64 @wam_getline_pipe(i8* %~w_commandp, i64 ~w, i64* @~w)
+  %~w_line = load i64, i64* @~w
+  %~w_got = icmp eq i64 ~w, 1
+  ~w = select i1 %~w_got, i64 %~w_line, i64 ~w
+  %~w_nr_inc = add i64 ~w, 1
+  ~w = select i1 %~w_got, i64 %~w_nr_inc, i64 ~w',
+        [Base, CommandBytes, CommandBytes, CommandName,
+         VarInput, LineIdName,
+         StNext, Base, CommandLen, LineIdName,
+         Base, LineIdName,
+         Base, StNext,
+         VarNext, Base, Base, VarInput,
+         Base, NrInput,
+         NrNext, Base, Base, NrInput]).
+
 % Main-input getline sites use the driver-owned %handle, hence advance the
 % exact buffered stream the outer record loop is draining. Runtime helpers keep
 % their internal control flow out of the action sequence (whose predecessor
@@ -13584,6 +13720,78 @@ plawk_getline_main_var_ir(Prefix, OpIndex, VarInput, NrInput, VarNext, StNext,
          VarNext, Base, Base, VarInput,
          Base, NrInput,
          NrNext, Base, Base, NrInput]).
+
+% `status = "cmd" | getline`: replace `$0`, capture status, and advance the
+% hidden logical NR/FNR slot only after a successful command-output read.
+plawk_scalar_action_sequence_pairs([getline_pipe_record_capture(Status, Command) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { string(Command),
+      nth0(StIndex, Slots, StSlot), plawk_slot_name(StSlot, Status),
+      plawk_record_number_slot(Slots, NrIndex),
+      nth0(NrIndex, Values0, NrInput),
+      plawk_getline_pipe_record_ir(Prefix, OpIndex, Command, NrInput, StNext,
+          NrNext, GlobalIR, IR),
+      replace_nth0(StIndex, Values0, StNext, Values1),
+      replace_nth0(NrIndex, Values1, NrNext, Values2),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values2, Values, FinalOpIndex, ExitLabel, NextExits).
+% Bare record-target pipe getline has the same `$0` and counter effects while
+% discarding the status value.
+plawk_scalar_action_sequence_pairs([getline_pipe_record(Command) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { string(Command),
+      plawk_record_number_slot(Slots, NrIndex),
+      nth0(NrIndex, Values0, NrInput),
+      plawk_getline_pipe_record_ir(Prefix, OpIndex, Command, NrInput, _StNext,
+          NrNext, GlobalIR, IR),
+      replace_nth0(NrIndex, Values0, NrNext, Values1),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, NextExits).
+
+% `status = "cmd" | getline var`: update Var only on success, capture status,
+% and advance NR/FNR without changing `$0` or NF.
+plawk_scalar_action_sequence_pairs([getline_pipe_capture(Status, Var, Command) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { string(Command),
+      nth0(VarIndex, Slots, VarSlot), plawk_slot_name(VarSlot, Var),
+      nth0(VarIndex, Values0, VarInput),
+      nth0(StIndex, Slots, StSlot), plawk_slot_name(StSlot, Status),
+      plawk_record_number_slot(Slots, NrIndex),
+      nth0(NrIndex, Values0, NrInput),
+      plawk_getline_pipe_ir(Prefix, OpIndex, Command, VarInput, NrInput,
+          VarNext, StNext, NrNext, GlobalIR, IR),
+      replace_nth0(VarIndex, Values0, VarNext, Values1),
+      replace_nth0(StIndex, Values1, StNext, Values2),
+      replace_nth0(NrIndex, Values2, NrNext, Values3),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values3, Values, FinalOpIndex, ExitLabel, NextExits).
+% Bare scalar-target pipe getline discards status while preserving the same
+% success-gated Var and record-number updates.
+plawk_scalar_action_sequence_pairs([getline_pipe_read(Var, Command) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { string(Command),
+      nth0(VarIndex, Slots, VarSlot), plawk_slot_name(VarSlot, Var),
+      nth0(VarIndex, Values0, VarInput),
+      plawk_record_number_slot(Slots, NrIndex),
+      nth0(NrIndex, Values0, NrInput),
+      plawk_getline_pipe_ir(Prefix, OpIndex, Command, VarInput, NrInput,
+          VarNext, _StNext, NrNext, GlobalIR, IR),
+      replace_nth0(VarIndex, Values0, VarNext, Values1),
+      replace_nth0(NrIndex, Values1, NrNext, Values2),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values2, Values, FinalOpIndex, ExitLabel, NextExits).
 
 % `status = getline`: replace the current record, capture status, and advance
 % NR/FNR only when a record was actually read.
@@ -16502,9 +16710,9 @@ plawk_field_cmp_op_code(le, 3).
 plawk_field_cmp_op_code(gt, 4).
 plawk_field_cmp_op_code(ge, 5).
 
-% Main-input getline needs the record number as ordinary loop-carried state:
-% one outer-loop record and every successful getline both advance it. The
-% hidden slot's loop phi is named *_prev because EOF branches before the
+% Main-input and pipe getline need the record number as ordinary loop-carried
+% state: one outer-loop record and every successful getline both advance it.
+% The hidden slot's loop phi is named *_prev because EOF branches before the
 % current outer record is counted; the lowered record block materializes the
 % current value after a successful driver read.
 plawk_print_record_counter_ir(state_plan(Slots), _Fields, '', RecordCounterIR) :-
