@@ -958,6 +958,9 @@ base_pattern(Pattern) -->
     field_i64_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
+    special_i64_cmp_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
     field_eq_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
@@ -1247,6 +1250,19 @@ field_i64_cmp_pattern(field_cmp(Index, Op, Value)) -->
       number_codes(Index, IndexCodes),
       Index > 0
     }.
+
+% Expression pattern: the field count `NF` compared to an integer, e.g.
+% `NF > 3 { … }` or `NF == 0 { … }`. Mirrors the field guard `$N OP int` but the
+% left operand is the record's field count. `identifier_boundary` keeps `NFX`
+% an ordinary identifier. (A reversed `int OP NF` and a `length OP int` pattern
+% are follow-ons.)
+special_i64_cmp_pattern(special_cmp('NF', Op, Value)) -->
+    "NF",
+    identifier_boundary,
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    signed_integer_value(Value).
 
 numeric_cmp_op(eq) -->
     "==".

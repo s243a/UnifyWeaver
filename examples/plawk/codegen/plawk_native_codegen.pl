@@ -16033,6 +16033,15 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, ''-GuardCall
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, '%is_match', GuardCallIR).
+% Expression pattern `NF OP int` (single-rule guard): count the current
+% record's fields with the active FS, then compare to the literal.
+plawk_pattern_guard_ir(special_cmp('NF', Op, Value), FieldSeparator, ''-GuardCallIR) :-
+    integer(FieldSeparator),
+    plawk_icmp_pred(Op, Pred),
+    llvm_emit_atom_field_count('%line', FieldSeparator, plawk_surface_nf_count, CountLine),
+    format(atom(CmpLine), '  %is_match = icmp ~w i64 %plawk_surface_nf_count, ~w',
+        [Pred, Value]),
+    atomic_list_concat([CountLine, CmpLine], '\n', GuardCallIR).
 plawk_pattern_guard_ir(field_match(Index, Regex), FieldSeparator, GuardIR) :-
     llvm_emit_regex_field_match_guard(plawk_surface_regex, '%line', Index,
         Regex, FieldSeparator, '%is_match', GuardIR).
@@ -16110,6 +16119,16 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, _GlobalBase,
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, MatchValue, GuardCallIR).
+% Expression pattern `NF OP int` (multi-rule guard): a per-rule GlobalBase keeps
+% the field-count temporary unique across rule blocks.
+plawk_pattern_guard_ir(special_cmp('NF', Op, Value), FieldSeparator, GlobalBase, MatchValue, ''-GuardCallIR) :-
+    integer(FieldSeparator),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(NfBase), '~w_nf', [GlobalBase]),
+    llvm_emit_atom_field_count('%line', FieldSeparator, NfBase, CountLine),
+    format(atom(CmpLine), '  ~w = icmp ~w i64 %~w, ~w',
+        [MatchValue, Pred, NfBase, Value]),
+    atomic_list_concat([CountLine, CmpLine], '\n', GuardCallIR).
 % blob(dyncall...) == "literal" -- equality between a runtime grammar's
 % byte output and a string literal: length check + memcmp. A failed
 % call (null slice) never matches; the memcmp pointer is substituted
