@@ -48,7 +48,14 @@
     reg_to_int/2,                    % +RegName, -Index
     constant_to_r_term/2,            % +ConstStr, -RTermLiteral
     intern_r_atom/2,                 % +AtomStr, -Id
-    wam_r_resolve_emit_mode/2        % +Options, -Mode
+    wam_r_resolve_emit_mode/2,       % +Options, -Mode
+    % --- ISO-R-0: shared wiring + is/2 vertical slice -----
+    iso_errors_resolve_options/2,
+    iso_errors_load_config/2,
+    iso_errors_mode_for/3,
+    iso_errors_rewrite_text/4,
+    wam_r_iso_audit/3,
+    wam_r_iso_audit_report/1
 ]).
 
 :- use_module(library(lists)).
@@ -58,7 +65,11 @@
     compile_predicate_to_wam_text/3,
     compile_predicate_to_wam_items/3
 ]).
-:- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
+:- use_module('../targets/wam_text_parser', [
+    wam_classify_constant_token/2,
+    wam_tokenize_line/2,
+    wam_recognise_instruction/2
+]).
 :- use_module(wam_ir_mode, [wam_ir_mode/4]).
 :- use_module('../core/template_system', [render_template/3]).
 % Lowered emitter: real Phase-2 implementation lives there. We keep the
@@ -75,6 +86,16 @@
               wam_target_runtime_parser/3]).
 :- use_module('../core/cost_model',
              [resolve_auto_lmdb_materialisation/2]).
+:- use_module('../core/iso_errors',
+             [ iso_errors_resolve_options/2,
+               iso_errors_load_config/2,
+               iso_errors_mode_for/3,
+               iso_errors_warn_multi_module/2,
+               iso_errors_rewrite/4,
+               iso_errors_rewrite_item/3,
+               iso_errors_audit_normalise_pi/2,
+               iso_errors_audit_walk/5
+             ]).
 
 % ============================================================================
 % EMIT MODE
@@ -942,7 +963,12 @@ compile_predicates_for_project(Predicates, Options,
                                       CompilePredicates),
     wam_r_resolve_emit_mode(Options, EmitMode),
     wam_r_emit_ir_mode(Options, EmitMode, IrMode),
-    compile_all_predicates(CompilePredicates, Options, EmitMode, IrMode, 1,
+    % ISO-R-0: resolve once per project; warn on bare-PI multi-module
+    % overrides. Rewrite is applied per predicate before array/lowered.
+    iso_errors_resolve_options(Options, IsoConfig),
+    iso_errors_warn_multi_module(IsoConfig, CompilePredicates),
+    compile_all_predicates(CompilePredicates, Options, EmitMode, IrMode,
+                           IsoConfig, 1,
                            [], [], [], [], [], [], [],
                            AllInstrs, TopLevelLabelEntries,
                            AllLabelEntries, Wrappers, LoweredEntries,
@@ -970,11 +996,11 @@ same_predicate_indicator(P0, P1) :-
 predicate_indicator_key(_:Pred/Arity, Pred/Arity) :- !.
 predicate_indicator_key(Pred/Arity, Pred/Arity).
 
-compile_all_predicates([], _, _, _, _, Instrs, TopLabels, AllLabels, Wrappers,
+compile_all_predicates([], _, _, _, _, _, Instrs, TopLabels, AllLabels, Wrappers,
                        Lowered, FactComments, Dispatch,
                        Instrs, TopLabels, AllLabels, Wrappers,
                        Lowered, FactComments, Dispatch).
-compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, BasePC,
+compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, IsoConfig, BasePC,
                        InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc,
                        FactCommentAcc, LoweredDispAcc,
                        AllInstrs, TopLevelLabelEntries,
@@ -1015,8 +1041,12 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, BasePC,
         % to P/Arity defaults compile_predicate_to_wam's module to
         % `user`, which silently produces "no clauses" for predicates
         % defined in any other module.
-        compile_predicate_to_wam_text(Pred, [], WamCode),
-        compile_r_predicate_array_wam(Pred, IrMode, WamCode, WamForArray),
+        compile_predicate_to_wam_text(Pred, [], WamCode0),
+        % ISO rewrite before array vs lowered choice (ISO-R-0).
+        iso_errors_pi_for_rewrite(Pred, RewritePI),
+        iso_errors_rewrite_text(IsoConfig, RewritePI, WamCode0, WamCode),
+        compile_r_predicate_array_wam(Pred, IrMode, IsoConfig, RewritePI,
+                                      WamCode, WamForArray),
         WamCodeForLower = WamCode,
         atom_string(WamCode, WamStr),
         split_string(WamStr, "\n", "", WamLines),
@@ -1097,7 +1127,7 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, BasePC,
         NewLoweredDispAcc = LoweredDispAcc,
         emit_r_wrapper(P, Arity, BasePC, WrapperCode)
     ),
-    compile_all_predicates(Rest, Options, EmitMode, IrMode, NewPC,
+    compile_all_predicates(Rest, Options, EmitMode, IrMode, IsoConfig, NewPC,
                            NewInstrs, NewTopLabels, NewAllLabels,
                            [WrapperCode|WrapperAcc], NewLoweredAcc,
                            NewFactCommentAcc,
@@ -1106,9 +1136,24 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, BasePC,
                            AllLabelEntries, AllWrappers, AllLowered,
                            AllFactComments, AllLoweredDispatch).
 
-compile_r_predicate_array_wam(_Pred, wam_text, WamCode, WamCode).
-compile_r_predicate_array_wam(Pred, wam_items_bridge, _WamCode, Items) :-
-    compile_predicate_to_wam_items(Pred, [], Items).
+compile_r_predicate_array_wam(_Pred, wam_text, _IsoConfig, _RewritePI,
+                              WamCode, WamCode).
+compile_r_predicate_array_wam(Pred, wam_items_bridge, IsoConfig, RewritePI,
+                              _WamCode, Items) :-
+    compile_predicate_to_wam_items(Pred, [], Items0),
+    iso_errors_rewrite(IsoConfig, RewritePI, Items0, Items1),
+    % Drop rewrites to keys R has not implemented yet (cross-target
+    % multifile pollution from F#/Haskell/Python compare/succ tables).
+    maplist(r_iso_filter_item_rewrite, Items0, Items1, Items).
+
+r_iso_filter_item_rewrite(Item0, Item1, Item) :-
+    (   Item0 == Item1
+    ->  Item = Item1
+    ;   arg(1, Item0, OldKey),
+        r_iso_rewritable_key(OldKey)
+    ->  Item = Item1
+    ;   Item = Item0
+    ).
 
 %% emit_lowered_dispatch_entry(+Pred, +Arity, +FuncName, -Entry)
 %  Generates an `assign("Pred/Arity", FuncName, envir = ...)` line
@@ -2138,3 +2183,125 @@ find_template(RelPath, Template) :-
     ;   AbsPath = RelPath
     ),
     read_file_to_string(AbsPath, Template, []).
+
+% ============================================================================
+% ISO-R-0: shared ISO wiring + is/2 three-form vertical slice
+% ============================================================================
+% Key-table safety: register ONLY is/2 until matching R runtime branches
+% exist for comparisons / succ.  Catch/throw already ship in
+% runtime.R.mustache and are reused by the smoke suite, but are not
+% part of this slice's adoption claim.
+
+iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2").
+iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2").
+
+iso_errors_pi_for_rewrite(_M:Pred/Arity, Pred/Arity) :- !.
+iso_errors_pi_for_rewrite(Pred/Arity, Pred/Arity) :- !.
+iso_errors_pi_for_rewrite(PI, PI).
+
+%% iso_errors_rewrite_text(+Config, +PI, +WamText, -RewrittenText)
+%  Per-target adapter: tokenize → recognise → shared rewrite_item → splice.
+%  Covers builtin_call / put_structure / call / execute via the shared
+%  item rewriter.  Not exported by core/iso_errors.pl.
+iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
+    iso_errors_mode_for(Config, PI, Mode),
+    (   Mode == false,
+        \+ iso_errors_has_lax_entries
+    ->  RewrittenText = WamText
+    ;   atom_string(WamText, S),
+        split_string(S, "\n", "", Lines),
+        maplist(iso_errors_rewrite_line(Mode), Lines, RewrittenLines),
+        atomic_list_concat(RewrittenLines, '\n', RewrittenText)
+    ).
+
+iso_errors_has_lax_entries :- iso_errors:iso_errors_default_to_lax(_, _), !.
+
+iso_errors_rewrite_line(Mode, Line, OutLine) :-
+    (   wam_tokenize_line(Line, Tokens),
+        wam_recognise_instruction(Tokens, Item0),
+        iso_errors_rewrite_item(Mode, Item0, Item1),
+        Item0 \== Item1,
+        arg(1, Item0, OldKey),
+        % ISO-R-0: only keep rewrites for keys this target implements.
+        % Other loaded targets' multifile tables must not route R codegen
+        % to missing >_lax / succ_iso arms.
+        r_iso_rewritable_key(OldKey),
+        arg(1, Item1, NewKey),
+        iso_errors_splice_line(Line, OldKey, NewKey, OutLine)
+    ->  true
+    ;   OutLine = Line
+    ).
+
+%% Keys with matching R runtime branches (ISO-R-0 slice).
+r_iso_rewritable_key("is/2").
+
+iso_errors_clean_key_token(Token0, Token) :-
+    (   string_concat(Token, ",", Token0)
+    ->  true
+    ;   Token = Token0
+    ).
+
+iso_errors_splice_line(Line, Key, NewKey, OutLine) :-
+    sub_string(Line, Before, KLen, _After, Key),
+    string_length(Key, KLen),
+    sub_string(Line, 0, Before, _, Pre),
+    PostStart is Before + KLen,
+    sub_string(Line, PostStart, _, 0, Post),
+    string_concat(Pre, NewKey, T1),
+    string_concat(T1, Post, OutLine), !.
+
+%% wam_r_iso_audit(+Predicates, +Options, -Audit)
+wam_r_iso_audit(Predicates, Options, Audit) :-
+    iso_errors_resolve_options(Options, Config),
+    findall(audit(PI, Mode, Sites), (
+        member(P, Predicates),
+        iso_errors_audit_normalise_pi(P, PI),
+        iso_errors_mode_for(Config, PI, Mode),
+        iso_errors_audit_predicate_r(PI, Mode, Sites)
+    ), Audit).
+
+iso_errors_audit_predicate_r(PI, Mode, Sites) :-
+    (   catch(
+            ( iso_errors_audit_wam_for_pi_r(PI, WamText),
+              iso_errors_audit_parse_lines_r(WamText, Items)
+            ),
+            _, fail)
+    ->  iso_errors_audit_walk(Items, 0, Mode, [], SitesRev),
+        reverse(SitesRev, Sites)
+    ;   Sites = []
+    ).
+
+iso_errors_audit_wam_for_pi_r(Module:Pred/Arity, WamText) :- !,
+    compile_predicate_to_wam_text(Module:Pred/Arity, [], WamText).
+iso_errors_audit_wam_for_pi_r(Pred/Arity, WamText) :-
+    compile_predicate_to_wam_text(Pred/Arity, [], WamText).
+
+iso_errors_audit_parse_lines_r(WamText, Items) :-
+    atom_string(WamText, S),
+    split_string(S, "\n", "", Lines),
+    maplist(iso_errors_audit_parse_one_r, Lines, MaybeItems),
+    exclude(==(skip), MaybeItems, Items).
+
+iso_errors_audit_parse_one_r(Line, Item) :-
+    split_string(Line, " \t", " \t", Parts0),
+    exclude(==(""), Parts0, Parts),
+    iso_errors_audit_classify_line_r(Parts, Item).
+
+iso_errors_audit_classify_line_r([], skip).
+iso_errors_audit_classify_line_r([Tok], label) :-
+    string_concat(_, ":", Tok), !.
+iso_errors_audit_classify_line_r(["builtin_call", Key0 | _],
+                                builtin_call(Key, 0)) :- !,
+    iso_errors_clean_key_token(Key0, Key).
+iso_errors_audit_classify_line_r(_, other).
+
+wam_r_iso_audit_report([]).
+wam_r_iso_audit_report([audit(PI, Mode, Sites)|Rest]) :-
+    format('~w [~w]~n', [PI, Mode]),
+    (   Sites == []
+    ->  format('  (no builtin_call sites)~n', [])
+    ;   forall(member(site(PC, Orig, Res, Src, Flip), Sites),
+               format('  pc=~w  ~w -> ~w  (~w)  flip-changes=~w~n',
+                      [PC, Orig, Res, Src, Flip]))
+    ),
+    wam_r_iso_audit_report(Rest).

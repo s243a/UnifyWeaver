@@ -53,7 +53,9 @@ self-contained so a single coding agent can pick it up in isolation.
 | ISO-C | ISO three-form (new) | C | L | — |
 | ISO-GO | ISO three-form (new) | Go | L | — |
 | ISO-SCALA | ISO three-form (new) | Scala | L | — |
-| ISO-R | ISO three-form (new) | R | L | — |
+| ISO-R-0 ✅ | shared wiring + `is/2` vertical slice | R | M | done (partial adopter) |
+| ISO-R-1 | catch/throw substrate formalization | R | S | ISO-R-0 |
+| ISO-R-2 | comparisons, succ, remaining adoption | R | M | ISO-R-1 |
 | ISO-PYTHON | ISO three-form (finish) | Python | S | — |
 | ISO-FSHARP | ISO three-form (finish) | F# | S | — |
 | KERN-FSHARP ✅ | Finish F# native kernel acceleration | F# | L | gate+TC2+TD3+TPD4+TSPD5+WSP3+A* done |
@@ -445,19 +447,41 @@ plumbing there.
   6. Config/inline-override plumbing + bare-PI warning.
 - **Acceptance:** `swipl -g run_tests -t halt tests/test_wam_scala_iso_smoke.pl` passes (mirror `tests/test_wam_haskell_iso_smoke.pl`); `tests/test_iso_errors.pl` still green.
 
-### ISO-R: New ISO three-form adoption for WAM R target
+### ISO-R-0 ✅: shared ISO wiring + `is/2` three-form vertical slice
+- **Status:** Landed. Shared `iso_errors` config/rewrite/audit wired into
+  `wam_r_target.pl`; key table registers **only** `is/2` → `is_iso/2` |
+  `is_lax/2`. Runtime helpers live in `runtime.R.mustache`
+  (`builtin_is_iso` / `builtin_is_lax` + structured error constructors).
+  Existing `catch/3`+`throw/1` substrate is reused by tests but **R remains
+  a partial adopter** until all seven “What Counts As Adoption” items are
+  satisfied (comparisons, succ, and the rest of ISO-R-1/R-2).
+- **Acceptance:** `tests/test_wam_r_iso_unit.pl` + `tests/test_wam_r_iso_smoke.pl`.
+
+### ISO-R-1: catch/throw substrate (formalization / remaining gaps)
+- **Depends on:** ISO-R-0. Catch/throw already ship on R `tryCatch`; this
+  card covers any remaining substrate polish called out by the adoption
+  checklist (not claimed complete by ISO-R-0).
+
+### ISO-R-2: comparisons, successor, remaining adoption checklist
+- **Depends on:** ISO-R-1. Six arithmetic-compare families, `succ_iso` /
+  `succ_lax`, and any remaining concrete builtins needed to claim full
+  ISO-R adoption per
+  `docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md`.
+
+### ISO-R (ledger parent): New ISO three-form adoption for WAM R target
 - **Lever:** ISO three-form  **Target:** R  **Size:** L  **Depends on:** —
-- **Goal:** Bring the WAM R target from non-adopter (only `tryCatch`/generator `catch/3`) to full ISO three-form adoption mirroring F#/Haskell.
-- **Files to touch:** `src/unifyweaver/targets/wam_r_target.pl`, `src/unifyweaver/targets/wam_r_lowered_emitter.pl`, new `tests/test_wam_r_iso_smoke.pl`
-- **Reference to copy from:** `wam_haskell_target.pl` + `wam_fsharp_target.pl`; `wam_cpp_target.pl` for runtime shapes; spec `docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md`. Note: R already keeps a native inline parser hot-path (see spec §"Relationship To Runtime Parser Transpilation") — ISO work is independent of that.
-- **Steps:**
-  1. Import shared `iso_errors` module (6 preds).
-  2. Assert R key tables (`is/2`, 6 compares, `succ/2`).
-  3. Emit R runtime: `catch/3`+`throw/1` on R `tryCatch`/`stop`/`condition` substrate (verify: extend existing `tryCatch` usage at wam_r_target.pl:65), `error(...)` constructors + `throw_iso_error`, `is_iso`/`is_lax`, ISO/lax compares, `succ_iso`/`succ_lax`, lax IEEE-754 divide (R `/` already yields Inf/NaN; add ISO int div-by-zero→`evaluation_error(zero_divisor)`).
-  4. Wire text-path rewrite via `iso_errors_rewrite_text/4`.
-  5. Add `wam_r_iso_audit/3` + report.
-  6. Config/inline-override plumbing + bare-PI warning.
-- **Acceptance:** `swipl -g run_tests -t halt tests/test_wam_r_iso_smoke.pl` passes (mirror `tests/test_wam_haskell_iso_smoke.pl`); `tests/test_iso_errors.pl` still green.
+- **Goal:** Bring the WAM R target from non-adopter to full ISO three-form
+  adoption mirroring F#/Haskell. Split into ISO-R-0/1/2 above; do not claim
+  complete adoption until R-2 lands.
+- **Files to touch:** `src/unifyweaver/targets/wam_r_target.pl`,
+  `src/unifyweaver/targets/wam_r_lowered_emitter.pl`,
+  `templates/targets/r_wam/runtime.R.mustache`,
+  `tests/test_wam_r_iso_unit.pl`, `tests/test_wam_r_iso_smoke.pl`
+- **Reference to copy from:** `wam_haskell_target.pl` + `wam_fsharp_target.pl`;
+  `wam_cpp_target.pl` for runtime shapes; spec
+  `docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md`.
+- **Acceptance (full):** all seven adoption items green; smoke + unit +
+  `tests/test_iso_errors.pl`.
 
 ### ISO-PYTHON: Finish Python three-form delta (remaining concrete builtins)
 - **Lever:** ISO three-form  **Target:** Python  **Size:** S  **Depends on:** —

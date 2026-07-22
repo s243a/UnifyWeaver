@@ -52,13 +52,16 @@ default 4096), and explicit `auto` (codegen resolves via shared
   forms (`switch_on_constant_a2`, `_a2_fallthrough`, `switch_on_structure_a2`)
   — map to the existing `SwitchOnTerm()` linear no-op (not optimized A2
   dispatch), preserving the full try/retry/trust chain.
-- **ISO error support** is `tryCatch`-level only, not the three-form
-  contract.
+- **ISO error support** is a **partial adopter** after ISO-R-0: shared
+  config/rewrite/audit + `is/2` → `is_iso`/`is_lax` vertical slice.
+  Catch/throw substrate exists; comparisons/`succ` and full adoption
+  checklist remain ISO-R-1/R-2. Do not claim complete ISO-R yet.
 - No dedicated effective-distance cross-target bench row.
 
 ## Path forward
 
-1. ISO three-form adoption if R joins the error-fidelity set.
+1. ISO-R-1 catch/throw substrate polish; ISO-R-2 comparisons + succ +
+   remaining adoption checklist.
 2. Effective-distance cross-target matrix row.
 
 ## Document status
