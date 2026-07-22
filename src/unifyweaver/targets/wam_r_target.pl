@@ -2317,6 +2317,21 @@ iso_errors_audit_classify_line_r([Tok], label) :-
 iso_errors_audit_classify_line_r(["builtin_call", Key0 | _],
                                 builtin_call(Key, 0)) :- !,
     iso_errors_clean_key_token(Key0, Key).
+% succ/2 and other library predicates emit Call/Execute, not BuiltinCall.
+iso_errors_audit_classify_line_r(["execute", Key0 | _],
+                                builtin_call(Key, 0)) :- !,
+    iso_errors_clean_key_token(Key0, Key).
+iso_errors_audit_classify_line_r(["call", Key0 | Rest],
+                                builtin_call(Key, 0)) :- !,
+    (   Rest = [ArityStr | _],
+        \+ sub_string(Key0, _, _, _, "/"),
+        format(string(Key1), "~w/~w", [Key0, ArityStr])
+    ->  Key = Key1
+    ;   iso_errors_clean_key_token(Key0, Key)
+    ).
+iso_errors_audit_classify_line_r(["put_structure", Key0 | _],
+                                builtin_call(Key, 0)) :- !,
+    iso_errors_clean_key_token(Key0, Key).
 iso_errors_audit_classify_line_r(_, other).
 
 wam_r_iso_audit_report([]).
