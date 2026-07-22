@@ -16300,6 +16300,13 @@ plawk_pattern_guard_ir(field_arith_cmp(I, ArithOp, K, Op, RHS), FieldSeparator, 
     integer(I), I > 0,
     plawk_field_arith_cmp_guard_ir(I, ArithOp, K, Op, RHS, FieldSeparator,
         plawk_surface_facmp, '%is_match', GuardIR).
+% Field-vs-field arithmetic pattern `$I ARITH $J CMP int` (single-rule guard).
+plawk_pattern_guard_ir(field_field_arith_cmp(I, ArithOp, J, Op, RHS), FieldSeparator, GuardIR) :-
+    integer(FieldSeparator),
+    integer(I), I > 0,
+    integer(J), J > 0,
+    plawk_field_field_arith_cmp_guard_ir(I, ArithOp, J, Op, RHS, FieldSeparator,
+        plawk_surface_ffacmp, '%is_match', GuardIR).
 % Expression pattern `length OP int` (single-rule guard): the current record's
 % byte length ($0) compared to the literal.
 plawk_pattern_guard_ir(special_cmp(length, Op, Value), FieldSeparator, ''-GuardCallIR) :-
@@ -16415,6 +16422,12 @@ plawk_pattern_guard_ir(field_arith_cmp(I, ArithOp, K, Op, RHS), FieldSeparator, 
     integer(FieldSeparator),
     integer(I), I > 0,
     plawk_field_arith_cmp_guard_ir(I, ArithOp, K, Op, RHS, FieldSeparator, GlobalBase, MatchValue, GuardIR).
+% Field-vs-field arithmetic pattern `$I ARITH $J CMP int` (multi-rule guard).
+plawk_pattern_guard_ir(field_field_arith_cmp(I, ArithOp, J, Op, RHS), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
+    integer(FieldSeparator),
+    integer(I), I > 0,
+    integer(J), J > 0,
+    plawk_field_field_arith_cmp_guard_ir(I, ArithOp, J, Op, RHS, FieldSeparator, GlobalBase, MatchValue, GuardIR).
 % `$I ARITH K CMP RHS` shared guard: parse field I as a signed i64 (non-numeric
 % -> 0, matching plawk field arithmetic), apply the integer arithmetic op with
 % K, then icmp the result against RHS. `%` is srem (parser guarantees K != 0).
@@ -16433,6 +16446,31 @@ plawk_field_arith_cmp_guard_ir(I, ArithOp, K, Op, RHS, FieldSeparator, Base,
          ParseBase, ParseBase, ParseBase,
          ParseBase, LLVMOp, ParseBase, K,
          MatchValue, Pred, ParseBase, RHS]).
+
+% `$I ARITH $J CMP RHS` shared guard: parse both fields as signed i64 (each
+% non-numeric -> 0, via the parse-with-default-0 helper), apply the integer op to
+% the two field values, then icmp the result against the literal RHS. Only
+% add/sub/mul reach here (the parser rejects `%`/`/` between two fields, whose
+% zero divisor would be UB); unique per-field ParseBases keep temporaries
+% distinct across rule blocks.
+plawk_field_field_arith_cmp_guard_ir(I, ArithOp, J, Op, RHS, FieldSeparator, Base,
+        MatchValue, ''-GuardCallIR) :-
+    plawk_icmp_pred(Op, Pred),
+    plawk_field_arith_llvm_op(ArithOp, LLVMOp),
+    format(atom(BaseI), '~w_ffa~wi', [Base, I]),
+    format(atom(BaseJ), '~w_ffa~wj', [Base, J]),
+    format(atom(NumI), '%~w_num', [BaseI]),
+    format(atom(NumJ), '%~w_num', [BaseJ]),
+    llvm_emit_atom_field_i64_or_default('%line', I, FieldSeparator, 0, BaseI, NumI, ParseIRI),
+    llvm_emit_atom_field_i64_or_default('%line', J, FieldSeparator, 0, BaseJ, NumJ, ParseIRJ),
+    format(atom(GuardCallIR),
+'~w
+~w
+  %~w_ffar = ~w i64 ~w, ~w
+  ~w = icmp ~w i64 %~w_ffar, ~w',
+        [ParseIRI, ParseIRJ,
+         Base, LLVMOp, NumI, NumJ,
+         MatchValue, Pred, Base, RHS]).
 
 plawk_field_arith_llvm_op(add, add).
 plawk_field_arith_llvm_op(sub, sub).
