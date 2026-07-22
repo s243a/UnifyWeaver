@@ -1606,6 +1606,21 @@ fact_source_loader_call(grouped_by_first(Path), Arity, LoaderCall, Comment) :-
            'WamRuntime$read_facts_grouped_tsv(~w, intern_table)',
            [PathLit]),
     format(string(Comment), 'grouped-by-first tsv file: ~w', [PathStr]).
+% Atom-preserving grouped TSV: every field is interned as an atom, even
+% when it looks numeric. Needed for Wikipedia-style IDs such as '1827'
+% that are atoms in Prolog facts.pl but would otherwise become IntTerm
+% under the default numeric field parser.
+fact_source_loader_call(grouped_by_first_atoms(Path), Arity, LoaderCall, Comment) :-
+    (   Arity =:= 2
+    ->  true
+    ;   throw(error(domain_error(arity_2_for_grouped_by_first_atoms, Arity), _))
+    ),
+    atom_string(Path, PathStr),
+    r_string_literal(PathStr, PathLit),
+    format(string(LoaderCall),
+           'WamRuntime$read_facts_grouped_tsv_atoms(~w, intern_table)',
+           [PathLit]),
+    format(string(Comment), 'grouped-by-first atoms tsv file: ~w', [PathStr]).
 fact_source_loader_call(lmdb(Path), _Arity, LoaderCall, Comment) :-
     % Step-1 backend: load-everything. Treats LMDB as a serialization
     % format -- the runtime reads all key/value pairs at program-load

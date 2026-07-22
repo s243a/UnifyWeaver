@@ -82,7 +82,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | BENCH-CPP | Effective-distance bench row | C++ | L | — |
 | BENCH-C | Effective-distance bench row | C | M | — |
 | BENCH-GO | Effective-distance bench row | Go | M | — |
-| BENCH-R | Effective-distance bench row | R | L | — |
+| BENCH-R ✅ | Effective-distance bench row | R | L | done — scale-300 matrix row (`cursor/bench-r-effective-distance-f421`) |
 
 Suggested ordering: **start with `EMIT-KOTLIN`** — lowest-risk (least-mature
 target, plumbing already present) and fully spec'd below as the first
@@ -831,19 +831,9 @@ Add each target to the scale-300 effective-distance matrix in
   3. Complete the bash block; capture timings; replace the `--` doc row and rewrite the "In Progress" subsection with results.
 - **Acceptance:** `./examples/benchmark/run_wam_cross_target_benchmark.sh 300` builds and runs the Go benchmark and prints query_ms/total_ms; the Go doc row no longer shows `--` and the "In Progress" note is removed.
 
-### BENCH-R: Add R row to effective-distance scale-300 matrix
+### BENCH-R: Add R row to effective-distance scale-300 matrix ✅
 - **Lever:** Effective-distance benchmark rows  **Target:** R  **Size:** L  **Depends on:** —
-- **Goal:** Create a scale-300 effective-distance benchmark for the R WAM target and add its matrix row.
-- **Files to touch:**
-  - `examples/benchmark/generate_wam_r_effective_distance_benchmark.pl` (new — no R generator exists)
-  - `examples/benchmark/run_wam_cross_target_benchmark.sh` (append R block)
-  - `docs/design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md` (new table row + subsection)
-- **Reference to copy from:** `generate_wam_python_effective_distance_benchmark.pl` (closest analog — interpreted/scripted target, no compile step, run via interpreter) and the Rust generator for the pipeline docstring. Emit via `wam_r_target.pl` `write_wam_r_project/3` (line 1903, exported line 36).
-- **Steps:**
-  1. Clone the Python generator; swap to `wam_r_target:write_wam_r_project/3`; run the emitted program with `Rscript` instead of `python`.
-  2. Ensure `category_parent/2` loading + `category_ancestor/4` kernel over the full effective-distance enumeration.
-  3. Add the bash block (guarded on `Rscript` availability, mirroring the Python block); capture timings; add the doc row + "R WAM" subsection.
-- **Acceptance:** `./examples/benchmark/run_wam_cross_target_benchmark.sh 300` runs the R benchmark and prints query_ms/total_ms; doc table gains a populated R row. (verify: `Rscript` present in the target env.)
+- **Status:** Done — `examples/benchmark/generate_wam_r_effective_distance_benchmark.pl`, guarded Rscript harness block, scale-300 matrix row + subsection in `WAM_CROSS_TARGET_BENCHMARK_RESULTS.md` (query_ms=37854 median / total_ms=37878; reference parity match). Branch `cursor/bench-r-effective-distance-f421`.
 
 ---
 

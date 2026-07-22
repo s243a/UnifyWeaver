@@ -97,7 +97,8 @@ generate(FactsPath, OutputDir, KernelModeAtom, EmitModeAtom, VariantAtom) :-
         [ module_name('wam-r-effective-distance-bench'),
           emit_mode(EmitMode),
           intern_atoms(Atoms),
-          r_fact_sources([source(category_parent/2, grouped_by_first(GroupedPath))])
+          r_fact_sources([source(category_parent/2,
+                                 grouped_by_first_atoms(GroupedPath))])
         ],
         KernelOptions
     ], Options),

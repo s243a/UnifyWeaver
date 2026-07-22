@@ -3842,20 +3842,31 @@ WamRuntime$read_facts_csv <- function(path, intern_table) {
 # wam_scala_target.pl). Arity-2 only -- the codegen layer is
 # responsible for refusing other arities at codegen time.
 WamRuntime$read_facts_grouped_tsv <- function(path, intern_table) {
+  WamRuntime$read_facts_grouped_tsv_with(path, intern_table, numeric = TRUE)
+}
+
+# Like read_facts_grouped_tsv, but every field is interned as an atom
+# (no IntTerm/FloatTerm coercion). Use for Prolog-atom identity of
+# numeric-looking Wikipedia category IDs.
+WamRuntime$read_facts_grouped_tsv_atoms <- function(path, intern_table) {
+  WamRuntime$read_facts_grouped_tsv_with(path, intern_table, numeric = FALSE)
+}
+
+WamRuntime$read_facts_grouped_tsv_with <- function(path, intern_table, numeric) {
   if (!file.exists(path)) return(list())
   lines <- tryCatch(readLines(path, warn = FALSE),
                     error = function(e) character(0))
   parse_field <- function(p) {
-    n <- suppressWarnings(as.numeric(p))
-    if (!is.na(n) && is.finite(n)) {
-      if (n == as.integer(n) && abs(n) < .Machine$integer.max) {
-        IntTerm(as.integer(n))
-      } else {
-        FloatTerm(as.numeric(n))
+    if (isTRUE(numeric)) {
+      n <- suppressWarnings(as.numeric(p))
+      if (!is.na(n) && is.finite(n)) {
+        if (n == as.integer(n) && abs(n) < .Machine$integer.max) {
+          return(IntTerm(as.integer(n)))
+        }
+        return(FloatTerm(as.numeric(n)))
       }
-    } else {
-      Atom(WamRuntime$intern(intern_table, p))
     }
+    Atom(WamRuntime$intern(intern_table, p))
   }
   out <- list()
   for (raw in lines) {

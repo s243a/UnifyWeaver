@@ -31,7 +31,7 @@ test(generate_kernels_on_functions_emits_runner_kernel_and_factsource) :-
             assertion(once(sub_string(Prog, _, _, _, 'pred_category_ancestor_kernel_ca'))),
             assertion(once(sub_string(Prog, _, _, _, 'source, root, hops, visited'))),
             assertion(once(sub_string(Prog, _, _, _, 'category_ancestor/4'))),
-            assertion(once(sub_string(Prog, _, _, _, 'read_facts_grouped_tsv'))),
+            assertion(once(sub_string(Prog, _, _, _, 'read_facts_grouped_tsv_atoms'))),
             assertion(once(sub_string(Prog, _, _, _, 'category_parent/2')))
         ),
         cleanup_tmp_dir(TmpDir)).
@@ -46,7 +46,7 @@ test(generate_kernels_off_disables_ca_kernel) :-
             read_file_to_string(RunnerPath, Runner, []),
             assertion(once(sub_string(Runner, _, _, _, 'KERNEL_MODE <- "kernels_off"'))),
             assertion(\+ sub_string(Prog, _, _, _, 'pred_category_ancestor_kernel_ca')),
-            assertion(once(sub_string(Prog, _, _, _, 'read_facts_grouped_tsv')))
+            assertion(once(sub_string(Prog, _, _, _, 'read_facts_grouped_tsv_atoms')))
         ),
         cleanup_tmp_dir(TmpDir)).
 
