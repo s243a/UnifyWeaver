@@ -1251,18 +1251,51 @@ field_i64_cmp_pattern(field_cmp(Index, Op, Value)) -->
       Index > 0
     }.
 
-% Expression pattern: the field count `NF` compared to an integer, e.g.
-% `NF > 3 { … }` or `NF == 0 { … }`. Mirrors the field guard `$N OP int` but the
-% left operand is the record's field count. `identifier_boundary` keeps `NFX`
-% an ordinary identifier. (A reversed `int OP NF` and a `length OP int` pattern
-% are follow-ons.)
-special_i64_cmp_pattern(special_cmp('NF', Op, Value)) -->
-    "NF",
-    identifier_boundary,
+% Expression patterns: a numeric special/builtin compared to an integer, e.g.
+% `NF > 3 { … }`, `NF == 0 { … }`, `length > 80 { … }`, `length($0) <= 40 { … }`.
+% The special is the record's field count `NF` or its byte length `length` (of
+% `$0`). Both operand orders parse: `SPECIAL OP int` and `int OP SPECIAL` (the
+% reversed form swaps the operator). `identifier_boundary` keeps `NFX` an
+% ordinary identifier, and `length_no_argument` keeps `length(…)` a call rather
+% than the bare builtin.
+special_i64_cmp_pattern(special_cmp(Special, Op, Value)) -->
+    special_cmp_operand(Special),
     ws,
     numeric_cmp_op(Op),
     ws,
     signed_integer_value(Value).
+special_i64_cmp_pattern(special_cmp(Special, SwappedOp, Value)) -->
+    signed_integer_value(Value),
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    special_cmp_operand(Special),
+    { swap_cmp_op(Op, SwappedOp) }.
+
+% The special operand of an expression pattern: the field count or the record
+% byte length (of `$0`, bare or parenthesised).
+special_cmp_operand('NF') -->
+    "NF",
+    identifier_boundary.
+special_cmp_operand(length) -->
+    "length",
+    ws,
+    "(",
+    ws,
+    "$0",
+    ws,
+    ")".
+special_cmp_operand(length) -->
+    "length",
+    length_no_argument.
+
+% Swap a comparison operator for the reversed-operand (`int OP SPECIAL`) form.
+swap_cmp_op(eq, eq).
+swap_cmp_op(ne, ne).
+swap_cmp_op(lt, gt).
+swap_cmp_op(gt, lt).
+swap_cmp_op(le, ge).
+swap_cmp_op(ge, le).
 
 numeric_cmp_op(eq) -->
     "==".

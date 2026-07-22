@@ -2,19 +2,20 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
-% Expression pattern `NF OP int`: a bare rule pattern that fires on the current
-% record's field count, e.g. `NF > 3 { … }`, `NF == 0 { … }`. It parses to
-% special_cmp('NF', Op, Value) and lowers through the pattern-guard path by
-% counting fields with @wam_atom_field_count_value and comparing to the literal,
-% so it composes with `!`, `&&`, `||`, and the other base patterns. (A reversed
-% `int OP NF` and a `length OP int` pattern are follow-ons.)
+% Expression patterns `NF OP int` and `length OP int`: bare rule patterns that
+% fire on the current record's field count (`NF > 3 { … }`) or byte length
+% (`length > 80 { … }`, `length($0) <= 40 { … }`). Both parse to
+% special_cmp(Special, Op, Value) and lower through the pattern-guard path (NF
+% via @wam_atom_field_count_value, length via strlen of $0), so they compose
+% with `!`, `&&`, `||`, and the other base patterns. Both operand orders parse:
+% `SPECIAL OP int` and `int OP SPECIAL` (the reversed form swaps the operator).
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
 :- use_module(library(filesex), [make_directory_path/1]).
 :- use_module('../examples/plawk/parser/plawk_parser').
 
-:- begin_tests(plawk_nf_pattern).
+:- begin_tests(plawk_expr_pattern).
 
 % --- parsing ----------------------------------------------------------------
 
@@ -62,7 +63,52 @@ test(nf_combined_with_field_eq, [condition(clang_available)]) :-
     build_run(Dir, 'nc', "NF >= 2 && $1 == \"x\" { print $2 }\n", "x y\nx\nz w\n", Out),
     assertion(Out == "y\n"), !.
 
-:- end_tests(plawk_nf_pattern).
+% length OP int parses to special_cmp(length, …).
+test(length_gt_pattern_parses) :-
+    plawk_parse_string("length > 3 { print $0 }\n",
+        program([], [rule(special_cmp(length, gt, 3), [print([field(0)])])], [])),
+    !.
+
+% length($0) parses to the same length special.
+test(length_paren_pattern_parses) :-
+    plawk_parse_string("length($0) <= 2 { print $0 }\n",
+        program([], [rule(special_cmp(length, le, 2), [print([field(0)])])], [])),
+    !.
+
+% Reversed `int OP NF` swaps the operator.
+test(reversed_nf_pattern_parses) :-
+    plawk_parse_string("3 < NF { print $1 }\n",
+        program([], [rule(special_cmp('NF', gt, 3), [print([field(1)])])], [])),
+    !.
+
+% length > 3 selects records longer than three bytes.
+test(length_gt_selects, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'lg', "length > 3 { print $0 }\n",
+        "ab\nabcdef\nxy\nhello world\n", Out),
+    assertion(Out == "abcdef\nhello world\n"), !.
+
+% length($0) <= 2 selects short records.
+test(length_le_selects, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'll', "length($0) <= 2 { print $0 }\n",
+        "ab\nabcdef\nxy\n", Out),
+    assertion(Out == "ab\nxy\n"), !.
+
+% Reversed `3 < NF` matches records with more than three fields.
+test(reversed_nf_selects, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'rn', "3 < NF { print $1 }\n", "a b c d\ne f\n", Out),
+    assertion(Out == "a\n"), !.
+
+% Reversed `5 >= length` matches records of at most five bytes.
+test(reversed_length_selects, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'rl', "5 >= length { print $0 }\n",
+        "ab\nabcdef\nxy\n", Out),
+    assertion(Out == "ab\nxy\n"), !.
+
+:- end_tests(plawk_expr_pattern).
 
 % --- helpers ---------------------------------------------------------------
 

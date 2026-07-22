@@ -16042,6 +16042,15 @@ plawk_pattern_guard_ir(special_cmp('NF', Op, Value), FieldSeparator, ''-GuardCal
     format(atom(CmpLine), '  %is_match = icmp ~w i64 %plawk_surface_nf_count, ~w',
         [Pred, Value]),
     atomic_list_concat([CountLine, CmpLine], '\n', GuardCallIR).
+% Expression pattern `length OP int` (single-rule guard): the current record's
+% byte length ($0) compared to the literal.
+plawk_pattern_guard_ir(special_cmp(length, Op, Value), FieldSeparator, ''-GuardCallIR) :-
+    integer(FieldSeparator),
+    plawk_icmp_pred(Op, Pred),
+    plawk_length_line_ir(plawk_surface_len, LenVar, LenLines),
+    format(atom(CmpLine), '  %is_match = icmp ~w i64 ~w, ~w', [Pred, LenVar, Value]),
+    append(LenLines, [CmpLine], Lines),
+    atomic_list_concat(Lines, '\n', GuardCallIR).
 plawk_pattern_guard_ir(field_match(Index, Regex), FieldSeparator, GuardIR) :-
     llvm_emit_regex_field_match_guard(plawk_surface_regex, '%line', Index,
         Regex, FieldSeparator, '%is_match', GuardIR).
@@ -16129,6 +16138,24 @@ plawk_pattern_guard_ir(special_cmp('NF', Op, Value), FieldSeparator, GlobalBase,
     format(atom(CmpLine), '  ~w = icmp ~w i64 %~w, ~w',
         [MatchValue, Pred, NfBase, Value]),
     atomic_list_concat([CountLine, CmpLine], '\n', GuardCallIR).
+% Expression pattern `length OP int` (multi-rule guard): a per-rule GlobalBase
+% keeps the record-length temporaries unique across rule blocks.
+plawk_pattern_guard_ir(special_cmp(length, Op, Value), FieldSeparator, GlobalBase, MatchValue, ''-GuardCallIR) :-
+    integer(FieldSeparator),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(LenBase), '~w_len', [GlobalBase]),
+    plawk_length_line_ir(LenBase, LenVar, LenLines),
+    format(atom(CmpLine), '  ~w = icmp ~w i64 ~w, ~w',
+        [MatchValue, Pred, LenVar, Value]),
+    append(LenLines, [CmpLine], Lines),
+    atomic_list_concat(Lines, '\n', GuardCallIR).
+% Byte length of the current record ($0): resolve %line to its string and strlen
+% it. Shared by the single-rule and multi-rule `length OP int` pattern guards.
+plawk_length_line_ir(Base, LenVar, [PayloadLine, StrLine, LenLine]) :-
+    format(atom(PayloadLine), '  %~w_payload = call i64 @value_payload(%Value %line)', [Base]),
+    format(atom(StrLine), '  %~w_str = call i8* @wam_atom_to_string(i64 %~w_payload)', [Base, Base]),
+    format(atom(LenLine), '  %~w_len = call i64 @strlen(i8* %~w_str)', [Base, Base]),
+    format(atom(LenVar), '%~w_len', [Base]).
 % blob(dyncall...) == "literal" -- equality between a runtime grammar's
 % byte output and a string literal: length check + memcmp. A failed
 % call (null slice) never matches; the memcmp pointer is substituted
