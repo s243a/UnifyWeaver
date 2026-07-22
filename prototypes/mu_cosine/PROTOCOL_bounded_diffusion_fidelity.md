@@ -22,6 +22,10 @@ solve may start until the preparer contract in Section 2 is satisfied. The
 same-code fresh-process reproduction and immutable receipt that close this gate
 are specified in
 [`DESIGN_pearltrees_diffusion_consensus.md`](DESIGN_pearltrees_diffusion_consensus.md).
+Public STEM coverage gaps are filled iteratively under the separate local-only
+acquisition contract in
+[`DESIGN_pearltrees_stem_harvest_plan.md`](DESIGN_pearltrees_stem_harvest_plan.md);
+its work orders do not themselves reopen this scientific gate.
 No node IDs, titles, paths, embeddings, or node-level manifests may be published; only
 aggregate summaries and content hashes approved for the local provenance store
 may leave the machine. Results must be labeled relative to this scrubbed
