@@ -54,8 +54,9 @@ self-contained so a single coding agent can pick it up in isolation.
 | ISO-GO | ISO three-form (new) | Go | L | — |
 | ISO-SCALA | ISO three-form (new) | Scala | L | — |
 | ISO-R-0 ✅ | shared wiring + `is/2` vertical slice | R | M | done (partial adopter) |
-| ISO-R-1 | catch/throw substrate formalization | R | S | ISO-R-0 |
-| ISO-R-2 | comparisons, succ, remaining adoption | R | M | ISO-R-1 |
+| ISO-R-1 ✅ | pre-existing catch/throw substrate | R | — | validated (`catch_throw_dyn_aggregator_e2e_rscript`) |
+| ISO-R-2A | arithmetic comparisons | R | S | ISO-R-0 |
+| ISO-R-2B | successor + adoption closeout | R | S | ISO-R-2A |
 | ISO-PYTHON | ISO three-form (finish) | Python | S | — |
 | ISO-FSHARP | ISO three-form (finish) | F# | S | — |
 | KERN-FSHARP ✅ | Finish F# native kernel acceleration | F# | L | gate+TC2+TD3+TPD4+TSPD5+WSP3+A* done |
@@ -454,25 +455,29 @@ plumbing there.
   (`builtin_is_iso` / `builtin_is_lax` + structured error constructors).
   Existing `catch/3`+`throw/1` substrate is reused by tests but **R remains
   a partial adopter** until all seven “What Counts As Adoption” items are
-  satisfied (comparisons, succ, and the rest of ISO-R-1/R-2).
+  satisfied (comparisons and succ remain).
 - **Acceptance:** `tests/test_wam_r_iso_unit.pl` + `tests/test_wam_r_iso_smoke.pl`.
 
-### ISO-R-1: catch/throw substrate (formalization / remaining gaps)
-- **Depends on:** ISO-R-0. Catch/throw already ship on R `tryCatch`; this
-  card covers any remaining substrate polish called out by the adoption
-  checklist (not claimed complete by ISO-R-0).
+### ISO-R-1 ✅: pre-existing catch/throw substrate
+- **Status:** Already shipped before ISO-R-0. R's `tryCatch` implementation
+  snapshots and unwinds trail/choice-point state, supports catcher
+  unification and rethrow, and is covered by
+  `catch_throw_dyn_aggregator_e2e_rscript`. No follow-up implementation card.
 
-### ISO-R-2: comparisons, successor, remaining adoption checklist
-- **Depends on:** ISO-R-1. Six arithmetic-compare families, `succ_iso` /
-  `succ_lax`, and any remaining concrete builtins needed to claim full
-  ISO-R adoption per
+### ISO-R-2A: arithmetic comparisons
+- **Depends on:** ISO-R-0. Add the six arithmetic-compare ISO/lax families,
+  reusing the existing evaluator and ISO error constructors.
+
+### ISO-R-2B: successor + adoption closeout
+- **Depends on:** ISO-R-2A. Add `succ_iso` / `succ_lax`, then verify the
+  complete adoption checklist in
   `docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md`.
 
 ### ISO-R (ledger parent): New ISO three-form adoption for WAM R target
 - **Lever:** ISO three-form  **Target:** R  **Size:** L  **Depends on:** —
 - **Goal:** Bring the WAM R target from non-adopter to full ISO three-form
-  adoption mirroring F#/Haskell. Split into ISO-R-0/1/2 above; do not claim
-  complete adoption until R-2 lands.
+  adoption mirroring F#/Haskell. Split into ISO-R-0/1/2A/2B above; do not
+  claim complete adoption until R-2B lands.
 - **Files to touch:** `src/unifyweaver/targets/wam_r_target.pl`,
   `src/unifyweaver/targets/wam_r_lowered_emitter.pl`,
   `templates/targets/r_wam/runtime.R.mustache`,
