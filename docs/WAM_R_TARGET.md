@@ -752,23 +752,25 @@ of the thrown term; `catch/3` unwinds the trail and CP stack to its
 entry snapshot before unifying with the catcher and running the
 recovery. Uncaught throws at the top level become query failure.
 
-### ISO errors (ISO-R-0 partial slice)
+### ISO errors (ISO-R-0 + ISO-R-2A partial adoption)
 
 Shared `iso_errors` config / per-predicate rewrite / `wam_r_iso_audit/3`
 are wired. Project options: `iso_errors(true|false)`,
 `iso_errors(PI, true|false)`, `iso_errors_config(File)`.
 
-Key table (slice only): `is/2` → `is_iso/2` | `is_lax/2`. Comparisons and
-`succ/2` are deferred (ISO-R-2A and ISO-R-2B respectively). Explicit
-`_iso`/`_lax` forms survive mode rewrites. Runtime helpers in
-`runtime.R.mustache`:
-`builtin_is_iso` / `builtin_is_lax` + structured `error/2` constructors.
-Classify order for `is_iso`: unbound → `evaluation_error(zero_divisor)` →
-`type_error(evaluable, Culprit)`.
+Key table: `is/2` → `is_iso/2` | `is_lax/2`, plus the six comparison
+families (`</2 >/2 =</2 >=/2 =:=/2 =\=/2`) → matching `_iso`/`_lax`.
+`succ/2` remains deferred to ISO-R-2B. Explicit `_iso`/`_lax` forms
+survive mode rewrites. Runtime helpers in `runtime.R.mustache`:
+`builtin_is_iso` / `builtin_is_lax`, parameterized
+`builtin_arith_compare_{iso,lax}`, plus structured `error/2` constructors.
+Classify order (ISO arith): unbound → `evaluation_error(zero_divisor)` →
+`type_error(evaluable, Culprit)`. Valid but false comparisons fail
+normally without throwing.
 
 R is still a **partial adopter** until all seven items in
 `docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` §"What Counts As
-Adoption" are satisfied.
+Adoption" are satisfied (`succ` + closeout = ISO-R-2B).
 
 ## Supported WAM instructions
 

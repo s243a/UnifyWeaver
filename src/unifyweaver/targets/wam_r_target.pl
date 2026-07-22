@@ -2185,15 +2185,28 @@ find_template(RelPath, Template) :-
     read_file_to_string(AbsPath, Template, []).
 
 % ============================================================================
-% ISO-R-0: shared ISO wiring + is/2 three-form vertical slice
+% ISO-R-0/R-2A: shared ISO wiring + is/2 + arithmetic comparisons
 % ============================================================================
-% Key-table safety: register ONLY is/2 until matching R runtime branches
-% exist for comparisons / succ.  Catch/throw already ship in
-% runtime.R.mustache and are reused by the smoke suite, but are not
-% part of this slice's adoption claim.
+% Key-table safety: register a default key only when matching R runtime
+% branches exist.  Catch/throw and is_iso/is_lax ship already; ISO-R-2A
+% adds the six arithmetic-compare families.  succ_* remains ISO-R-2B.
 
 iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2").
 iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2").
+
+iso_errors:iso_errors_default_to_iso("</2", "<_iso/2").
+iso_errors:iso_errors_default_to_iso(">/2", ">_iso/2").
+iso_errors:iso_errors_default_to_iso(">=/2", ">=_iso/2").
+iso_errors:iso_errors_default_to_iso("=</2", "=<_iso/2").
+iso_errors:iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
+iso_errors:iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
+
+iso_errors:iso_errors_default_to_lax("</2", "<_lax/2").
+iso_errors:iso_errors_default_to_lax(">/2", ">_lax/2").
+iso_errors:iso_errors_default_to_lax(">=/2", ">=_lax/2").
+iso_errors:iso_errors_default_to_lax("=</2", "=<_lax/2").
+iso_errors:iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
+iso_errors:iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
 
 % Keep the module when present: qualified overrides must not leak to a
 % same-named predicate in another module.
@@ -2234,8 +2247,14 @@ iso_errors_rewrite_line(Mode, Line, OutLine) :-
     ;   OutLine = Line
     ).
 
-%% Keys with matching R runtime branches (ISO-R-0 slice).
+%% Keys with matching R runtime branches (ISO-R-0 is/2 + ISO-R-2A compares).
 r_iso_rewritable_key("is/2").
+r_iso_rewritable_key("</2").
+r_iso_rewritable_key(">/2").
+r_iso_rewritable_key(">=/2").
+r_iso_rewritable_key("=</2").
+r_iso_rewritable_key("=:=/2").
+r_iso_rewritable_key("=\\=/2").
 
 iso_errors_clean_key_token(Token0, Token) :-
     (   string_concat(Token, ",", Token0)
