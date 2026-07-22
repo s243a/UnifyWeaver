@@ -2195,7 +2195,9 @@ find_template(RelPath, Template) :-
 iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2").
 iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2").
 
-iso_errors_pi_for_rewrite(_M:Pred/Arity, Pred/Arity) :- !.
+% Keep the module when present: qualified overrides must not leak to a
+% same-named predicate in another module.
+iso_errors_pi_for_rewrite(M:Pred/Arity, M:Pred/Arity) :- !.
 iso_errors_pi_for_rewrite(Pred/Arity, Pred/Arity) :- !.
 iso_errors_pi_for_rewrite(PI, PI).
 
