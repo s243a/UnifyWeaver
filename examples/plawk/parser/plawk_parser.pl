@@ -976,6 +976,9 @@ base_pattern(Pattern) -->
     field_match_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
+    field_field_arith_cmp_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
     field_arith_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
@@ -1304,6 +1307,31 @@ field_arith_op(add) --> "+".
 field_arith_op(sub) --> "-".
 field_arith_op(mul) --> "*".
 field_arith_op(mod) --> "%".
+
+% Field-vs-field arithmetic pattern: `$I ARITH $J CMP int { … }` — two fields
+% combined with one arithmetic op, compared to an integer, e.g. `$1 + $2 > 100`,
+% `$2 - $1 == 0`, `$1 * $2 >= 50`. Both fields are evaluated as signed i64
+% (non-numeric -> 0, matching plawk field arithmetic). Only `+`/`-`/`*` are
+% supported: `%` and `/` with a *field* divisor need runtime zero-divisor
+% handling (awk fatals; LLVM `srem`/`fdiv` by zero is UB), so they are a
+% follow-on. Composes with the `!`/`&&`/`||` combinators.
+field_field_arith_cmp_pattern(field_field_arith_cmp(I, ArithOp, J, Op, RHS)) -->
+    "$",
+    integer_codes(ICodes),
+    ws,
+    field_arith_op(ArithOp),
+    ws,
+    "$",
+    integer_codes(JCodes),
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    signed_integer_value(RHS),
+    { ICodes \== [], JCodes \== [],
+      number_codes(I, ICodes), I > 0,
+      number_codes(J, JCodes), J > 0,
+      memberchk(ArithOp, [add, sub, mul])
+    }.
 
 % Field-vs-field comparison pattern: `$I OP $J { … }` (both positive field
 % indexes). Fires when the two field values compare per POSIX strnum rules

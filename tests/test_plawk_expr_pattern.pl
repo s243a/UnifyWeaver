@@ -193,6 +193,56 @@ test(field_arith_nonnumeric_zero, [condition(clang_available)]) :-
     build_run(Dir, 'an', "$1 + 0 == 0 { print \"z\" }\n", "abc\n5\n", Out),
     assertion(Out == "z\n"), !.
 
+% --- field-vs-field arithmetic patterns ($I ARITH $J CMP int) -------------
+
+% `$1 + $2 > 100` parses to field_field_arith_cmp.
+test(field_field_arith_pattern_parses) :-
+    plawk_parse_string("$1 + $2 > 100 { print $0 }\n",
+        program([], [rule(field_field_arith_cmp(1, add, 2, gt, 100), [print([field(0)])])], [])),
+    !.
+
+% `%` / `/` between two fields are cleanly rejected (zero-divisor UB); they do
+% not parse (the whole program fails), documenting the follow-on boundary.
+test(field_field_mod_rejected) :-
+    \+ plawk_parse_string("$1 % $2 == 0 { print $0 }\n", _).
+test(field_field_div_rejected) :-
+    \+ plawk_parse_string("$1 / $2 > 1 { print $0 }\n", _).
+
+% `$1 + $2 > 100` sums two fields.
+test(field_field_arith_add, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'fa1', "$1 + $2 > 100 { print $0 }\n",
+        "5 3\n40 70\n5 5\n", Out),
+    assertion(Out == "40 70\n"), !.
+
+% `$2 - $1 == 0` (subtraction).
+test(field_field_arith_sub, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'fa2', "$2 - $1 == 0 { print $0 }\n",
+        "5 3\n5 5\n2 2\n", Out),
+    assertion(Out == "5 5\n2 2\n"), !.
+
+% `$1 * $2 >= 50` (multiplication).
+test(field_field_arith_mul, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'fa3', "$1 * $2 >= 50 { print $0 }\n",
+        "5 3\n10 5\n2 25\n", Out),
+    assertion(Out == "10 5\n2 25\n"), !.
+
+% A non-numeric field evaluates as 0 in the sum.
+test(field_field_arith_nonnumeric, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'fa4', "$1 + $2 == 0 { print \"z\" }\n",
+        "x y\n0 0\n1 2\n", Out),
+    assertion(Out == "z\nz\n"), !.
+
+% Composes with a field-equality guard.
+test(field_field_arith_combined, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'fa5', "$1 + $2 > 10 && $1 == \"5\" { print $0 }\n",
+        "5 8\n5 2\n40 1\n", Out),
+    assertion(Out == "5 8\n"), !.
+
 % --- NR-as-bare-pattern (NR OP int) ----------------------------------------
 
 % `NR == 1` parses to special_cmp('NR', eq, 1).
