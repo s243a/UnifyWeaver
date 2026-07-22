@@ -853,6 +853,22 @@ emit_line_parts(["execute", "is_iso/2"], I) :- !,
 emit_line_parts(["execute", "is_lax/2"], I) :- !,
     format("~wif (!isTRUE(WamRuntime$builtin_is_lax(program, state))) return(FALSE)~n", [I]),
     format("~wreturn(TRUE)~n", [I]).
+% ISO-R-2B: succ arrives as Call/Execute (not BuiltinCall).
+emit_line_parts(["call", "succ/2"], I) :- !,
+    format("~wif (!isTRUE(WamRuntime$builtin_succ_lax(program, state))) return(FALSE)~n", [I]).
+emit_line_parts(["call", "succ_lax/2"], I) :- !,
+    format("~wif (!isTRUE(WamRuntime$builtin_succ_lax(program, state))) return(FALSE)~n", [I]).
+emit_line_parts(["call", "succ_iso/2"], I) :- !,
+    format("~wif (!isTRUE(WamRuntime$builtin_succ_iso(program, state))) return(FALSE)~n", [I]).
+emit_line_parts(["execute", "succ/2"], I) :- !,
+    format("~wif (!isTRUE(WamRuntime$builtin_succ_lax(program, state))) return(FALSE)~n", [I]),
+    format("~wreturn(TRUE)~n", [I]).
+emit_line_parts(["execute", "succ_lax/2"], I) :- !,
+    format("~wif (!isTRUE(WamRuntime$builtin_succ_lax(program, state))) return(FALSE)~n", [I]),
+    format("~wreturn(TRUE)~n", [I]).
+emit_line_parts(["execute", "succ_iso/2"], I) :- !,
+    format("~wif (!isTRUE(WamRuntime$builtin_succ_iso(program, state))) return(FALSE)~n", [I]),
+    format("~wreturn(TRUE)~n", [I]).
 % ISO-R-2A: arithmetic-compare Call/Execute → shared parameterized helpers.
 emit_line_parts(["call", Key], I) :-
     r_arith_compare_emit(Key, Op, Mode), !,

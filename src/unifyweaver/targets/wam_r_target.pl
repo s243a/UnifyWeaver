@@ -2188,8 +2188,8 @@ find_template(RelPath, Template) :-
 % ISO-R-0/R-2A: shared ISO wiring + is/2 + arithmetic comparisons
 % ============================================================================
 % Key-table safety: register a default key only when matching R runtime
-% branches exist.  Catch/throw and is_iso/is_lax ship already; ISO-R-2A
-% adds the six arithmetic-compare families.  succ_* remains ISO-R-2B.
+% branches exist.  Catch/throw, is_*, and compares ship already; ISO-R-2B
+% adds succ_iso / succ_lax.
 
 iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2").
 iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2").
@@ -2200,6 +2200,7 @@ iso_errors:iso_errors_default_to_iso(">=/2", ">=_iso/2").
 iso_errors:iso_errors_default_to_iso("=</2", "=<_iso/2").
 iso_errors:iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
 iso_errors:iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
+iso_errors:iso_errors_default_to_iso("succ/2", "succ_iso/2").
 
 iso_errors:iso_errors_default_to_lax("</2", "<_lax/2").
 iso_errors:iso_errors_default_to_lax(">/2", ">_lax/2").
@@ -2207,6 +2208,7 @@ iso_errors:iso_errors_default_to_lax(">=/2", ">=_lax/2").
 iso_errors:iso_errors_default_to_lax("=</2", "=<_lax/2").
 iso_errors:iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
 iso_errors:iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
+iso_errors:iso_errors_default_to_lax("succ/2", "succ_lax/2").
 
 % Keep the module when present: qualified overrides must not leak to a
 % same-named predicate in another module.
@@ -2247,7 +2249,7 @@ iso_errors_rewrite_line(Mode, Line, OutLine) :-
     ;   OutLine = Line
     ).
 
-%% Keys with matching R runtime branches (ISO-R-0 is/2 + ISO-R-2A compares).
+%% Keys with matching R runtime branches (ISO-R-0/2A/2B).
 r_iso_rewritable_key("is/2").
 r_iso_rewritable_key("</2").
 r_iso_rewritable_key(">/2").
@@ -2255,6 +2257,7 @@ r_iso_rewritable_key(">=/2").
 r_iso_rewritable_key("=</2").
 r_iso_rewritable_key("=:=/2").
 r_iso_rewritable_key("=\\=/2").
+r_iso_rewritable_key("succ/2").
 
 iso_errors_clean_key_token(Token0, Token) :-
     (   string_concat(Token, ",", Token0)
@@ -2312,6 +2315,21 @@ iso_errors_audit_classify_line_r([], skip).
 iso_errors_audit_classify_line_r([Tok], label) :-
     string_concat(_, ":", Tok), !.
 iso_errors_audit_classify_line_r(["builtin_call", Key0 | _],
+                                builtin_call(Key, 0)) :- !,
+    iso_errors_clean_key_token(Key0, Key).
+% succ/2 and other library predicates emit Call/Execute, not BuiltinCall.
+iso_errors_audit_classify_line_r(["execute", Key0 | _],
+                                builtin_call(Key, 0)) :- !,
+    iso_errors_clean_key_token(Key0, Key).
+iso_errors_audit_classify_line_r(["call", Key0 | Rest],
+                                builtin_call(Key, 0)) :- !,
+    (   Rest = [ArityStr | _],
+        \+ sub_string(Key0, _, _, _, "/"),
+        format(string(Key1), "~w/~w", [Key0, ArityStr])
+    ->  Key = Key1
+    ;   iso_errors_clean_key_token(Key0, Key)
+    ).
+iso_errors_audit_classify_line_r(["put_structure", Key0 | _],
                                 builtin_call(Key, 0)) :- !,
     iso_errors_clean_key_token(Key0, Key).
 iso_errors_audit_classify_line_r(_, other).

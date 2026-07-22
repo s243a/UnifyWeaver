@@ -752,25 +752,33 @@ of the thrown term; `catch/3` unwinds the trail and CP stack to its
 entry snapshot before unifying with the catcher and running the
 recovery. Uncaught throws at the top level become query failure.
 
-### ISO errors (ISO-R-0 + ISO-R-2A partial adoption)
+### ISO errors (ISO-R-0/2A/2B adoption unit)
 
 Shared `iso_errors` config / per-predicate rewrite / `wam_r_iso_audit/3`
 are wired. Project options: `iso_errors(true|false)`,
 `iso_errors(PI, true|false)`, `iso_errors_config(File)`.
 
-Key table: `is/2` → `is_iso/2` | `is_lax/2`, plus the six comparison
-families (`</2 >/2 =</2 >=/2 =:=/2 =\=/2`) → matching `_iso`/`_lax`.
-`succ/2` remains deferred to ISO-R-2B. Explicit `_iso`/`_lax` forms
-survive mode rewrites. Runtime helpers in `runtime.R.mustache`:
-`builtin_is_iso` / `builtin_is_lax`, parameterized
-`builtin_arith_compare_{iso,lax}`, plus structured `error/2` constructors.
-Classify order (ISO arith): unbound → `evaluation_error(zero_divisor)` →
-`type_error(evaluable, Culprit)`. Valid but false comparisons fail
-normally without throwing.
+Key table: `is/2`, the six comparison families, and `succ/2` → matching
+`_iso`/`_lax`. Explicit `_iso`/`_lax` forms survive mode rewrites.
+Runtime helpers in `runtime.R.mustache`: `builtin_is_*`,
+`builtin_arith_compare_*`, `builtin_succ_*` (+ `make_domain_error`),
+and structured `error/2` constructors.
 
-R is still a **partial adopter** until all seven items in
-`docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` §"What Counts As
-Adoption" are satisfied (`succ` + closeout = ISO-R-2B).
+**succ ISO classify order** (Python/F# fleet contract): both unbound →
+`instantiation_error`; bound non-int X → `type_error(integer, X)`; bound
+non-int Y → `type_error(integer, Y)`; X < 0 →
+`type_error(not_less_than_zero, X)`; reverse Y ≤ 0 →
+`domain_error(not_less_than_zero, Y)`; valid inconsistent pairs fail
+normally. Integer overflow follows existing R `IntTerm` arithmetic
+(NA on signed 32-bit wrap) — no target-specific overflow policy.
+
+**Lax float `/`:** host IEEE-754 Inf/NaN via R `/`. ISO arith still
+throws `evaluation_error(zero_divisor)` when a zero divisor is detected.
+
+R satisfies the seven-item adoption checklist in
+`docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` for the audited
+surface. Remaining builtins without three-form keys are the same
+open-ended caveat as Python/F#.
 
 ## Supported WAM instructions
 

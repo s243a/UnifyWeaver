@@ -101,6 +101,8 @@ run_project(Label, Preds, Opts, Checks) :-
             ; sub_string(Code,_,_,_,"<_lax/2")
             ; sub_string(Code,_,_,_,">_iso/2")
             ; sub_string(Code,_,_,_,"=:=_iso/2")
+            ; sub_string(Code,_,_,_,"succ_iso")
+            ; sub_string(Code,_,_,_,"succ_lax")
             )
         ->  pass(Label-codegen-skip-rscript)
         ;   fail_test(Label, 'missing rewritten iso/lax key in codegen')
@@ -172,7 +174,41 @@ assert_iso_helpers :-
     assertz((user:r_cmp_plain_zdiv :-
         catch((1/0 < 3), error(evaluation_error(zero_divisor), _), true))),
     assertz((user:r_cmp_plain_bad :- \+ (foo < 3))),
-    assertz((user:r_cmp_plain_ok :- 1 < 2)).
+    assertz((user:r_cmp_plain_ok :- 1 < 2)),
+
+    % succ/2 family (ISO-R-2B)
+    assertz((user:r_succ_fwd :- succ(0, 1), succ(4, 5))),
+    assertz((user:r_succ_back :- succ(X, 5), X =:= 4)),
+    assertz((user:r_succ_pair_ok :- succ(3, 4))),
+    assertz((user:r_succ_pair_bad :- \+ succ(3, 5))),
+    assertz((user:r_succ_lax_bad :-
+        \+ succ_lax(_, _), \+ succ_lax(foo, _), \+ succ_lax(_, foo),
+        \+ succ_lax(-1, _), \+ succ_lax(_, 0), \+ succ_lax(_, -1))),
+    assertz((user:r_succ_iso_inst :-
+        catch(succ_iso(_, _), error(instantiation_error, _), true))),
+    assertz((user:r_succ_iso_type_x :-
+        catch(succ_iso(foo, _), error(type_error(integer, _), _), true))),
+    assertz((user:r_succ_iso_type_y :-
+        catch(succ_iso(_, bar), error(type_error(integer, _), _), true))),
+    % Classification precedence: X type before Y type; Y type before X range.
+    assertz((user:r_succ_iso_precedence_x :-
+        catch(succ_iso(foo, bar), error(type_error(integer, foo), _), true))),
+    assertz((user:r_succ_iso_precedence_y :-
+        catch(succ_iso(-1, bar), error(type_error(integer, bar), _), true))),
+    assertz((user:r_succ_iso_neg :-
+        catch(succ_iso(-1, _),
+              error(type_error(not_less_than_zero, _), _), true))),
+    assertz((user:r_succ_iso_domain :-
+        catch(succ_iso(_, 0),
+              error(domain_error(not_less_than_zero, _), _), true))),
+    assertz((user:r_succ_iso_mismatch :- \+ succ_iso(3, 5))),
+    assertz((user:r_succ_iso_under_lax :-
+        catch(succ_iso(_, _), error(instantiation_error, _), true))),
+    assertz((user:r_succ_lax_under_iso :- \+ succ_lax(_, _))),
+    assertz((user:r_succ_plain_iso :-
+        catch((succ(_, _)), error(instantiation_error, _), true))),
+    assertz((user:r_succ_plain_lax :- \+ (succ(_, _)))),
+    assertz((user:r_succ_mod_b :- succ(1, 2))).
 
 retract_iso_helpers :-
     forall(member(P, [
@@ -187,7 +223,13 @@ retract_iso_helpers :-
         r_eq_iso_type/0, r_ne_iso_inst/0,
         r_lt_lax_bad/0, r_eq_lax_bad/0,
         r_cmp_iso_under_lax/0, r_cmp_lax_under_iso/0,
-        r_cmp_plain_zdiv/0, r_cmp_plain_bad/0, r_cmp_plain_ok/0
+        r_cmp_plain_zdiv/0, r_cmp_plain_bad/0, r_cmp_plain_ok/0,
+        r_succ_fwd/0, r_succ_back/0, r_succ_pair_ok/0, r_succ_pair_bad/0,
+        r_succ_lax_bad/0, r_succ_iso_inst/0, r_succ_iso_type_x/0,
+        r_succ_iso_type_y/0, r_succ_iso_precedence_x/0,
+        r_succ_iso_precedence_y/0, r_succ_iso_neg/0, r_succ_iso_domain/0,
+        r_succ_iso_mismatch/0, r_succ_iso_under_lax/0, r_succ_lax_under_iso/0,
+        r_succ_plain_iso/0, r_succ_plain_lax/0, r_succ_mod_b/0
     ]), retractall(user:P)).
 
 main :-
@@ -304,6 +346,70 @@ main :-
          'functions precedence instantiation'-'r_lt_iso_precedence_inst/0',
          'functions precedence zero_divisor'-'r_lt_iso_precedence_zdiv/0',
          'functions default zdiv'-'r_cmp_plain_zdiv/0']),
+
+    % ----- succ/2 (ISO-R-2B) -----
+    run_project('succ happy paths (iso default, interpreter)',
+        [user:r_succ_fwd/0, user:r_succ_back/0,
+         user:r_succ_pair_ok/0, user:r_succ_pair_bad/0],
+        [iso_errors(true)],
+        ['succ forward'-'r_succ_fwd/0',
+         'succ reverse'-'r_succ_back/0',
+         'succ pair ok'-'r_succ_pair_ok/0',
+         'succ pair mismatch'-'r_succ_pair_bad/0']),
+
+    run_project('succ ISO errors (interpreter)',
+        [user:r_succ_iso_inst/0, user:r_succ_iso_type_x/0,
+         user:r_succ_iso_type_y/0, user:r_succ_iso_precedence_x/0,
+         user:r_succ_iso_precedence_y/0, user:r_succ_iso_neg/0,
+         user:r_succ_iso_domain/0, user:r_succ_iso_mismatch/0],
+        [iso_errors(false)],
+        ['succ_iso inst'-'r_succ_iso_inst/0',
+         'succ_iso type X'-'r_succ_iso_type_x/0',
+         'succ_iso type Y'-'r_succ_iso_type_y/0',
+         'succ_iso precedence X type'-'r_succ_iso_precedence_x/0',
+         'succ_iso precedence Y type'-'r_succ_iso_precedence_y/0',
+         'succ_iso neg'-'r_succ_iso_neg/0',
+         'succ_iso domain'-'r_succ_iso_domain/0',
+         'succ_iso mismatch'-'r_succ_iso_mismatch/0']),
+
+    run_project('succ lax silent + explicit lax under ISO',
+        [user:r_succ_lax_bad/0, user:r_succ_lax_under_iso/0],
+        [iso_errors(true)],
+        ['succ_lax silent'-'r_succ_lax_bad/0',
+         'succ_lax under ISO'-'r_succ_lax_under_iso/0']),
+
+    run_project('succ explicit iso under lax mode',
+        [user:r_succ_iso_under_lax/0, user:r_succ_iso_domain/0],
+        [iso_errors(false)],
+        ['succ_iso under lax'-'r_succ_iso_under_lax/0',
+         'succ_iso domain under lax'-'r_succ_iso_domain/0']),
+
+    run_project('succ default rewrite ISO + lax override',
+        [user:r_succ_plain_iso/0, user:r_succ_plain_lax/0],
+        [iso_errors(true), iso_errors(r_succ_plain_lax/0, false)],
+        ['default succ ISO inst'-'r_succ_plain_iso/0',
+         'override succ lax silent'-'r_succ_plain_lax/0']),
+
+    run_project('succ module-scoped override isolation',
+        [user:r_succ_mod_b/0, user:r_succ_plain_lax/0],
+        [iso_errors(false),
+         iso_errors(mod_a:r_succ_mod_b/0, true)],
+        ['mod_b stays lax success'-'r_succ_mod_b/0',
+         'bare override sibling lax'-'r_succ_plain_lax/0']),
+
+    run_project('succ functions mode ISO + explicit',
+        [user:r_succ_fwd/0, user:r_succ_back/0,
+         user:r_succ_iso_domain/0, user:r_succ_iso_precedence_x/0,
+         user:r_succ_iso_precedence_y/0, user:r_succ_lax_bad/0,
+         user:r_succ_plain_iso/0],
+        [emit_mode(functions), iso_errors(true)],
+        ['functions succ forward'-'r_succ_fwd/0',
+         'functions succ reverse'-'r_succ_back/0',
+         'functions succ_iso domain'-'r_succ_iso_domain/0',
+         'functions succ_iso precedence X'-'r_succ_iso_precedence_x/0',
+         'functions succ_iso precedence Y'-'r_succ_iso_precedence_y/0',
+         'functions succ_lax silent'-'r_succ_lax_bad/0',
+         'functions default succ ISO'-'r_succ_plain_iso/0']),
 
     retract_iso_helpers,
     (   nb_getval(r_iso_smoke_failed, true) -> halt(1) ; halt(0) ).

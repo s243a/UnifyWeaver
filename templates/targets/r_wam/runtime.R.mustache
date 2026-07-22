@@ -1998,6 +1998,11 @@ WamRuntime$make_evaluation_error <- function(table, kind) {
              list(Atom(WamRuntime$intern(table, kind))))
 }
 
+WamRuntime$make_domain_error <- function(table, domain, culprit) {
+  StructTerm(WamRuntime$intern(table, "domain_error"),
+             list(Atom(WamRuntime$intern(table, domain)), culprit))
+}
+
 WamRuntime$throw_iso_error <- function(state, table, err_term) {
   ctx <- Unbound(paste0("V", state$var_counter))
   state$var_counter <- state$var_counter + 1L
@@ -2194,6 +2199,62 @@ WamRuntime$builtin_arith_compare_iso <- function(program, state, op) {
   a <- WamRuntime$eval_arith_iso_value(program, state, a_expr)
   b <- WamRuntime$eval_arith_iso_value(program, state, b_expr)
   isTRUE(WamRuntime$arith_compare_apply(op, a, b))
+}
+
+# ISO-R-2B: successor three-form. Shared bind/unify; lax vs ISO only
+# differ in error reporting. Mirrors Python _execute_succ_{lax,iso}.
+# Integer overflow follows existing R IntTerm arithmetic (NA on wrap).
+WamRuntime$succ_bind <- function(state, x_v, y_v) {
+  if (!is.null(x_v) && !is.null(x_v$tag) && x_v$tag == "int") {
+    if (x_v$val < 0L) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                            IntTerm(x_v$val + 1L)))
+  }
+  if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "int") {
+    if (y_v$val <= 0L) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 1L),
+                            IntTerm(y_v$val - 1L)))
+  }
+  FALSE
+}
+
+WamRuntime$builtin_succ_lax <- function(program, state) {
+  x_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+  y_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+  WamRuntime$succ_bind(state, x_v, y_v)
+}
+
+# Classify: both-unbound → non-int X → non-int Y → X<0 type →
+# Y<=0 domain (reverse) → bind. Valid inconsistent pairs fail normally.
+WamRuntime$builtin_succ_iso <- function(program, state) {
+  table <- program$intern_table
+  x_raw <- WamRuntime$get_reg(state, 1L)
+  y_raw <- WamRuntime$get_reg(state, 2L)
+  x_v <- WamRuntime$deref(state, x_raw)
+  y_v <- WamRuntime$deref(state, y_raw)
+  x_unbound <- is.null(x_v) || is.null(x_v$tag) || x_v$tag == "unbound"
+  y_unbound <- is.null(y_v) || is.null(y_v$tag) || y_v$tag == "unbound"
+  if (x_unbound && y_unbound) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_instantiation_error(table))
+  }
+  if (!x_unbound && (is.null(x_v$tag) || x_v$tag != "int")) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_type_error(table, "integer", x_v))
+  }
+  if (!y_unbound && (is.null(y_v$tag) || y_v$tag != "int")) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_type_error(table, "integer", y_v))
+  }
+  if (!x_unbound && x_v$tag == "int" && x_v$val < 0L) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_type_error(table, "not_less_than_zero", x_v))
+  }
+  if (x_unbound && !y_unbound && y_v$tag == "int" && y_v$val <= 0L) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_domain_error(table, "not_less_than_zero", y_v))
+  }
+  WamRuntime$succ_bind(state, x_v, y_v)
 }
 
 # Standard Euclidean GCD; both args coerced to non-negative integers.
@@ -5373,6 +5434,13 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     }
     return(WamRuntime$builtin_arith_compare_lax(program, state, cmp_info$op))
   }
+  # succ/2 family: Execute/Call (compiler does not emit BuiltinCall).
+  if (arity == 2L && (key == "succ/2" || key == "succ_lax/2")) {
+    return(WamRuntime$builtin_succ_lax(program, state))
+  }
+  if (key == "succ_iso/2" && arity == 2L) {
+    return(WamRuntime$builtin_succ_iso(program, state))
+  }
 
   # ----- ^/2 existential scope -----
   # When the WAM compiler emits `Y^Goal` as a Call("^", 2), treat
@@ -5486,23 +5554,6 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     }
     return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L),
                             WamRuntime$wam_list_build(keep, table)))
-  }
-
-  # ----- succ/2: successor (bidirectional integer +1) -----
-  if (key == "succ/2") {
-    x_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
-    y_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
-    if (!is.null(x_v) && !is.null(x_v$tag) && x_v$tag == "int") {
-      if (x_v$val < 0L) return(FALSE)
-      return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
-                              IntTerm(x_v$val + 1L)))
-    }
-    if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "int") {
-      if (y_v$val <= 0L) return(FALSE)
-      return(WamRuntime$unify(state, WamRuntime$get_reg(state, 1L),
-                              IntTerm(y_v$val - 1L)))
-    }
-    return(FALSE)
   }
 
   # ----- between/3: deterministic mode (test only) -----
