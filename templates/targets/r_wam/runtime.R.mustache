@@ -2151,7 +2151,7 @@ WamRuntime$arith_compare_key_info <- function(pred) {
     "=</2"       = list(op = "=<",   mode = "lax"),
     "=<_lax/2"   = list(op = "=<",   mode = "lax"),
     "=<_iso/2"   = list(op = "=<",   mode = "iso"),
-    "=:="/2"     = list(op = "=:=",  mode = "lax"),
+    "=:=/2"      = list(op = "=:=",  mode = "lax"),
     "=:=_lax/2"  = list(op = "=:=",  mode = "lax"),
     "=:=_iso/2"  = list(op = "=:=",  mode = "iso"),
     "=\\=/2"     = list(op = "=\\=", mode = "lax"),
@@ -5340,10 +5340,19 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
   key <- if (grepl("/[0-9]+$", pred)) pred else paste0(pred, "/", arity)
 
   # Explicit is_*/compare_* arrive as Execute/Call (not builtin_call).
-  # Delegate to call_builtin so evaluation lives in one place.
-  if (key == "is_iso/2" || key == "is_lax/2" ||
-      !is.null(WamRuntime$arith_compare_key_info(key))) {
-    return(WamRuntime$call_builtin(program, state, key, arity))
+  # Invoke helpers directly (avoid call_builtin → call_library recursion).
+  if (key == "is_iso/2" && arity == 2L) {
+    return(WamRuntime$builtin_is_iso(program, state))
+  }
+  if (key == "is_lax/2" && arity == 2L) {
+    return(WamRuntime$builtin_is_lax(program, state))
+  }
+  cmp_info <- WamRuntime$arith_compare_key_info(key)
+  if (!is.null(cmp_info) && arity == 2L) {
+    if (identical(cmp_info$mode, "iso")) {
+      return(WamRuntime$builtin_arith_compare_iso(program, state, cmp_info$op))
+    }
+    return(WamRuntime$builtin_arith_compare_lax(program, state, cmp_info$op))
   }
 
   # ----- ^/2 existential scope -----

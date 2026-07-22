@@ -546,7 +546,7 @@ test(builtin_call_emitted) :-
         directory_file_path(TmpDir, 'R/generated_program.R', Program),
         read_file_to_string(Program, Code, []),
         assertion(sub_string(Code, _, _, _, 'BuiltinCall("is_lax/2", 2)')),
-        assertion(sub_string(Code, _, _, _, 'BuiltinCall(">/2", 2)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall(">_lax/2", 2)')),
         delete_directory_and_contents(TmpDir)
     )).
 

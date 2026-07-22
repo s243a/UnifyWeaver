@@ -54,12 +54,27 @@ check <- function(name, key) {
 }
 ', []),
     forall(member(Name-Key, Checks),
-           format(S, 'check("~w", "~w")~n', [Name, Key])),
+           (   r_iso_smoke_r_string(Name, NameR),
+               r_iso_smoke_r_string(Key, KeyR),
+               format(S, 'check(~w, ~w)~n', [NameR, KeyR])
+           )),
     write(S,
 'cat(sprintf("RESULT %d/%d\\n", passes, passes + fails))
 quit(status = if (fails == 0L) 0L else 1L)
 '),
     close(S).
+
+%% Escape a Prolog string/atom for an R double-quoted literal.
+r_iso_smoke_r_string(In, Out) :-
+    format(string(S0), '~w', [In]),
+    atom_chars(S0, Cs),
+    maplist(r_iso_smoke_escape_char, Cs, EscParts),
+    atomic_list_concat(EscParts, Esc),
+    format(atom(Out), '"~w"', [Esc]).
+
+r_iso_smoke_escape_char('\\', '\\\\') :- !.
+r_iso_smoke_escape_char('"', '\\"') :- !.
+r_iso_smoke_escape_char(C, C).
 
 unique_tmp(Base, Dir) :-
     get_time(T), format(atom(Dir), '/tmp/~w_~w', [Base, T]),
@@ -241,7 +256,7 @@ main :-
          '>=_iso type'-'r_ge_iso_type/0',
          '=<_iso zdiv'-'r_le_iso_zdiv/0',
          '=:=_iso type'-'r_eq_iso_type/0',
-         '=\\=_iso inst'-'r_ne_iso_inst/0']),
+         'ne_iso inst'-'r_ne_iso_inst/0']),
 
     run_project('cmp lax silent (interpreter)',
         [user:r_lt_lax_bad/0, user:r_eq_lax_bad/0],

@@ -1021,8 +1021,12 @@ emit_arith_compare_inline(Op, Mode, I, Kind) :-
     ->  Helper = "builtin_arith_compare_iso"
     ;   Helper = "builtin_arith_compare_lax"
     ),
+    % R string literals need \\ for each Prolog backslash (e.g. =\=).
+    atom_string(Op, OpStr0),
+    atomic_list_concat(Parts, '\\', OpStr0),
+    atomic_list_concat(Parts, '\\\\', OpStr),
     format("~wif (!isTRUE(WamRuntime$~w(program, state, \"~w\"))) return(FALSE)~n",
-           [I, Helper, Op]),
+           [I, Helper, OpStr]),
     (   Kind == execute
     ->  format("~wreturn(TRUE)~n", [I])
     ;   true
