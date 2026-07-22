@@ -4665,12 +4665,11 @@ test(lmdb_r1_materialisation_codegen) :-
                    \+ sub_string(C2,_,_,_,'lmdb_arg1_v1_dispatch('),
                    \+ sub_string(C2,_,_,_,'read_facts_lmdb'))),
         delete_directory_and_contents(Tmp),
-        forall(member(Bad, [auto, weird]),
-               catch((write_wam_r_project([user:bedge/2],
-                          [lmdb_materialisation(Bad),
-                           r_fact_sources([source(bedge/2, lmdb_arg1_v1('/tmp/b.lmdb'))])], Tmp),
-                      throw(unexpected_success)),
-                     error(domain_error(lmdb_materialisation, Bad), _), true)),
+        catch((write_wam_r_project([user:bedge/2],
+                    [lmdb_materialisation(weird),
+                     r_fact_sources([source(bedge/2, lmdb_arg1_v1('/tmp/b.lmdb'))])], Tmp),
+               throw(unexpected_success)),
+              error(domain_error(lmdb_materialisation, weird), _), true),
         write_wam_r_project([user:leg2/2],
             [lmdb_materialisation(eager),
              r_fact_sources([source(leg2/2, lmdb('/tmp/leg2.lmdb'))])], Tmp),
@@ -4758,11 +4757,6 @@ test(lmdb_r2a_cached_codegen) :-
                            r_fact_sources([source(badc/2, lmdb_arg1_v1('/tmp/x.lmdb'))])], Tmp),
                       throw(unexpected_success)),
                      error(domain_error(lmdb_l2_capacity_positive_integer, BadCap), _), true)),
-        catch((write_wam_r_project([user:autox/2],
-                    [lmdb_materialisation(auto),
-                     r_fact_sources([source(autox/2, lmdb_arg1_v1('/tmp/a.lmdb'))])], Tmp),
-               throw(unexpected_success)),
-              error(domain_error(lmdb_materialisation, auto), _), true),
         write_wam_r_project([user:legc/2],
             [lmdb_materialisation(cached),
              r_fact_sources([source(legc/2, lmdb('/tmp/legc.lmdb'))])], Tmp),
@@ -4852,6 +4846,87 @@ cat("OK\n")
     assertion(Status == exit(0)), assertion(sub_string(Out,_,_,_,"OK")),
     assertion(\+ sub_string(Err,_,_,_,"Error")),
     delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% LMDB-R-2B: shared auto materialisation resolution (codegen-time).
+% ------------------------------------------------------------------
+%% lmdb_r_mode_markers(+Mode, +Code) — concrete path only, no auto runtime.
+lmdb_r_mode_markers(lazy, C) :-
+    assertion((sub_string(C,_,_,_,'lmdb_arg1_v1_dispatch('),
+               sub_string(C,_,_,_,'lmdb_arg1_v1 lazy:'),
+               \+ sub_string(C,_,_,_,'lmdb_arg1_v1_stream('),
+               \+ sub_string(C,_,_,_,'lmdb_arg1_v1_cached_dispatch('))).
+lmdb_r_mode_markers(eager, C) :-
+    assertion((sub_string(C,_,_,_,'lmdb_arg1_v1_stream('),
+               sub_string(C,_,_,_,'build_fact_indexes('),
+               sub_string(C,_,_,_,'lmdb_arg1_v1 eager:'),
+               \+ sub_string(C,_,_,_,'lmdb_arg1_v1_dispatch('),
+               \+ sub_string(C,_,_,_,'lmdb_arg1_v1_cached_dispatch('))).
+lmdb_r_mode_markers(cached, C) :-
+    assertion((sub_string(C,_,_,_,'lmdb_arg1_v1_cached_dispatch('),
+               sub_string(C,_,_,_,'lmdb_arg1_v1_new_cache('),
+               \+ sub_string(C,_,_,_,'lmdb_arg1_v1_dispatch('),
+               \+ sub_string(C,_,_,_,'lmdb_arg1_v1_stream('))).
+
+lmdb_r_gen_mode(Tmp, ExtraOpts, Mode) :-
+    append([r_fact_sources([source(aedge/2, lmdb_arg1_v1('/tmp/a.lmdb'))])],
+           ExtraOpts, Opts),
+    write_wam_r_project([user:aedge/2], Opts, Tmp),
+    directory_file_path(Tmp, 'R/generated_program.R', P),
+    read_file_to_string(P, C, []),
+    lmdb_r_mode_markers(Mode, C),
+    assertion(\+ sub_string(C,_,_,_,'resolve_auto_lmdb')),
+    delete_directory_and_contents(Tmp), make_directory_path(Tmp).
+
+test(lmdb_r2b_auto_materialisation_codegen) :-
+    once((
+        unique_r_tmp_dir('tmp_r_lmdb_r2b', Tmp),
+        % 1) absent option → lazy (must not invoke shared no-metadata eager)
+        lmdb_r_gen_mode(Tmp, [], lazy),
+        % 2) explicit modes pass through
+        forall(member(M, [lazy, eager, cached]),
+               lmdb_r_gen_mode(Tmp, [lmdb_materialisation(M)], M)),
+        % 3) auto → eager at 1k
+        lmdb_r_gen_mode(Tmp, [lmdb_materialisation(auto), fact_count(1000)], eager),
+        % 4) auto → cached (default + explicit capacity)
+        lmdb_r_gen_mode(Tmp, [lmdb_materialisation(auto), fact_count(297000)], cached),
+        write_wam_r_project([user:aedge/2],
+            [lmdb_materialisation(auto), fact_count(297000), lmdb_l2_capacity(7),
+             r_fact_sources([source(aedge/2, lmdb_arg1_v1('/tmp/a.lmdb'))])], Tmp),
+        directory_file_path(Tmp, 'R/generated_program.R', PCap),
+        read_file_to_string(PCap, CCap, []),
+        assertion(sub_string(CCap,_,_,_,'lmdb_arg1_v1_new_cache(7L)')),
+        lmdb_r_mode_markers(cached, CCap),
+        delete_directory_and_contents(Tmp), make_directory_path(Tmp),
+        % 5) large + segregated → lazy
+        lmdb_r_gen_mode(Tmp,
+            [lmdb_materialisation(auto), fact_count(9930000),
+             workload_segregated(true)], lazy),
+        % 6) budget-overflow branches
+        lmdb_r_gen_mode(Tmp,
+            [lmdb_materialisation(auto), fact_count(2000), memory_budget(1000)],
+            cached),
+        lmdb_r_gen_mode(Tmp,
+            [lmdb_materialisation(auto), fact_count(2000), memory_budget(1000),
+             workload_segregated(true)], lazy),
+        % 7) explicit auto, no metadata → shared resolver (eager)
+        lmdb_r_gen_mode(Tmp, [lmdb_materialisation(auto)], eager),
+        % 8) unknown mode → generic domain_error
+        catch((write_wam_r_project([user:aedge/2],
+                    [lmdb_materialisation(bogus),
+                     r_fact_sources([source(aedge/2, lmdb_arg1_v1('/tmp/a.lmdb'))])], Tmp),
+               throw(unexpected_success)),
+              error(domain_error(lmdb_materialisation, bogus), _), true),
+        % 9) legacy lmdb(Path) unchanged under auto metadata
+        write_wam_r_project([user:legb/2],
+            [lmdb_materialisation(auto), fact_count(297000),
+             r_fact_sources([source(legb/2, lmdb('/tmp/legb.lmdb'))])], Tmp),
+        directory_file_path(Tmp, 'R/generated_program.R', PLeg),
+        read_file_to_string(PLeg, CLeg, []),
+        assertion((sub_string(CLeg,_,_,_,'read_facts_lmdb('),
+                   \+ sub_string(CLeg,_,_,_,'lmdb_arg1_v1_'))),
+        delete_directory_and_contents(Tmp)
+    )).
 
 % ------------------------------------------------------------------
 % End-to-end: cut barrier truncates state$cps back to the depth at the

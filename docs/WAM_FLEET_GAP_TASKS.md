@@ -49,7 +49,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | LMDB-R-0 ✅ | LMDB lookup source (prereq) | R | M | done (`lmdb_arg1_v1`) |
 | LMDB-R-1 ✅ | eager/lazy materialisation | R | S | done (`lmdb_materialisation`) |
 | LMDB-R-2A ✅ | bounded cached materialisation | R | S | done (`cached` + L2) |
-| LMDB-R-2B | auto materialisation resolution | R | S | LMDB-R-2A |
+| LMDB-R-2B ✅ | auto materialisation resolution | R | S | done (shared `resolve_auto_lmdb_materialisation/2`) |
 | ISO-C | ISO three-form (new) | C | L | — |
 | ISO-GO | ISO three-form (new) | Go | L | — |
 | ISO-SCALA | ISO three-form (new) | Scala | L | — |
@@ -365,13 +365,15 @@ path, not the reverse index.
 - **Status:** Landed. `lmdb_materialisation(cached)` + `lmdb_l2_capacity(N)`
   (default 4096, positive int): per-source L1 MRU + bounded L2 true-LRU
   over `lmdb_arg1_v1_lookup`. Ground hits/misses cache complete buckets
-  (incl. empty); unbound stream-all bypasses the cache. `auto` still
-  rejected (`domain_error`) until LMDB-R-2B.
+  (incl. empty); unbound stream-all bypasses the cache.
 
-### LMDB-R-2B: auto materialisation resolution
-- **Depends on:** LMDB-R-2A. Resolve `lmdb_materialisation(auto)` using
-  shared/fleet cost-model conventions (do not invent a new heuristic
-  surface). Keep R-1/R-2A modes green.
+### LMDB-R-2B ✅: auto materialisation resolution
+- **Status:** Landed. Explicit `lmdb_materialisation(auto)` resolves at
+  codegen via shared `resolve_auto_lmdb_materialisation/2` into the
+  existing eager/lazy/cached emitters. **Absent option stays lazy** —
+  the shared resolver is not consulted (its no-metadata default is
+  eager). Unknown modes retain `domain_error(lmdb_materialisation, Value)`.
+  LMDB-R sequence (R-0 → R-1 → R-2A → R-2B) complete.
 
 ---
 

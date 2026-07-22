@@ -343,14 +343,17 @@ supported today:
   (arity ≥ 2). Schema key `__uw_schema__=lmdb_arg1_v1`; values are
   NL-buckets of TAB-tagged args 2..N (atom payloads URL-percent-encoded).
   Materialisation via project option `lmdb_materialisation(Mode)`:
-  - `lazy` (default) — ground arg1 exact-key get; unbound stream-all
+  - omit / `lazy` — ground arg1 exact-key get; unbound stream-all
+    (absent option stays lazy; shared resolver is not consulted)
   - `eager` — stream the v1 DB once at init, `build_fact_indexes`,
     then `fact_table_dispatch` (not legacy `read_facts_lmdb`)
   - `cached` — per-source L1 MRU + bounded L2 true-LRU over lookup;
     `lmdb_l2_capacity(N)` (default 4096, positive int) sizes L2 by
     distinct arg1 keys (empty/missing buckets count). Unbound queries
     stream-all and bypass the cache.
-  - `auto` — unsupported (domain error; LMDB-R-2B)
+  - `auto` — resolved at codegen via shared
+    `resolve_auto_lmdb_materialisation/2` into eager/lazy/cached
+    (no runtime auto conditional)
   Writer: `lmdb_write_facts_arg1_v1`.
 
 ```prolog
