@@ -16,6 +16,39 @@
         None
     }
 
+    #[cfg(unix)]
+    fn adjust_process_priority(increment: i64) -> bool {
+        extern "C" {
+            fn nice(increment: std::os::raw::c_int) -> std::os::raw::c_int;
+        }
+
+        let _ = unsafe { nice(increment as std::os::raw::c_int) };
+        true
+    }
+
+    #[cfg(not(unix))]
+    fn adjust_process_priority(_increment: i64) -> bool {
+        false
+    }
+
+    #[cfg(unix)]
+    fn set_process_priority(priority: i64) -> bool {
+        extern "C" {
+            fn setpriority(
+                which: std::os::raw::c_int,
+                who: std::os::raw::c_int,
+                priority: std::os::raw::c_int,
+            ) -> std::os::raw::c_int;
+        }
+
+        unsafe { setpriority(0, 0, priority as std::os::raw::c_int) == 0 }
+    }
+
+    #[cfg(not(unix))]
+    fn set_process_priority(_priority: i64) -> bool {
+        false
+    }
+
     #[cfg(all(unix, target_pointer_width = "64"))]
     fn process_soft_limit(resource: i64) -> Option<i64> {
         #[repr(align(16))]
@@ -41,6 +74,38 @@
     #[cfg(not(all(unix, target_pointer_width = "64")))]
     fn process_soft_limit(_resource: i64) -> Option<i64> {
         None
+    }
+
+    #[cfg(all(unix, target_pointer_width = "64"))]
+    fn set_process_soft_limit(resource: i64, limit: i64) -> bool {
+        #[repr(align(16))]
+        struct LimitBuffer([u8; 16]);
+        extern "C" {
+            fn getrlimit(
+                resource: std::os::raw::c_int,
+                limits: *mut std::ffi::c_void,
+            ) -> std::os::raw::c_int;
+            fn setrlimit(
+                resource: std::os::raw::c_int,
+                limits: *const std::ffi::c_void,
+            ) -> std::os::raw::c_int;
+        }
+
+        let mut limits = LimitBuffer([0u8; 16]);
+        let resource = resource as std::os::raw::c_int;
+        if unsafe { getrlimit(resource, limits.0.as_mut_ptr().cast()) } != 0 {
+            return false;
+        }
+        unsafe {
+            std::ptr::write_unaligned(
+                limits.0.as_mut_ptr().cast::<u64>(), limit as u64)
+        };
+        unsafe { setrlimit(resource, limits.0.as_ptr().cast()) == 0 }
+    }
+
+    #[cfg(not(all(unix, target_pointer_width = "64")))]
+    fn set_process_soft_limit(_resource: i64, _limit: i64) -> bool {
+        false
     }
 
     #[cfg(unix)]
@@ -79,6 +144,23 @@
                     false
                 }
             }
+            "nice/1" | "setpriority/1" => {
+                let value = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(value)) => value,
+                    _ => return false,
+                };
+                let succeeded = if op == "nice/1" {
+                    Self::adjust_process_priority(value)
+                } else {
+                    Self::set_process_priority(value)
+                };
+                if succeeded {
+                    self.pc += 1; true
+                } else {
+                    false
+                }
+            }
             "getrlimit/2" => {
                 let resource = match self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v))) {
@@ -95,6 +177,23 @@
                     self.pc += 1; true
                 } else {
                     self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "setrlimit/2" => {
+                let resource = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(resource)) => resource,
+                    _ => return false,
+                };
+                let limit = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(limit)) => limit,
+                    _ => return false,
+                };
+                if Self::set_process_soft_limit(resource, limit) {
+                    self.pc += 1; true
+                } else {
                     false
                 }
             }
