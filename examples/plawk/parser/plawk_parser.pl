@@ -862,17 +862,20 @@ rules_rest([]) -->
 
 % A range pattern `start, end { ... }`: the rule fires for every record from the
 % one matching `start` through the one matching `end` (inclusive), tracked by a
-% per-rule latch. Endpoints are general base patterns -- regexes (`/re/,/re/`),
-% expression patterns (`NR==1, NR==3`), field comparisons, etc. -- each reused by
-% the ordinary pattern-guard lowering. Tried before the general rule so the comma
-% between the two endpoints is seen (a plain `pat { }` has no comma, so this
-% clause fails before its cut and falls through to the single-pattern rule).
+% per-rule latch. Endpoints are full patterns -- regexes (`/re/,/re/`), expression
+% patterns (`NR==1, NR==3`), field comparisons, and `!`/`&&`/`||` combinators
+% (`NR>=2 && /x/, /end/`) -- each reused by the ordinary pattern-guard lowering
+% (which already recurses through the combinators). Tried before the general rule
+% so the comma between the two endpoints is seen (a plain `pat { }` has no comma,
+% so this clause fails before its cut and falls through to the single-pattern
+% rule). `pattern` stops at the top-level comma: an `&&`/`||` chain only continues
+% on `&&`/`||`, so the comma separating the endpoints is never consumed.
 rule(rule(range(Start, End), Actions)) -->
-    base_pattern(Start),
+    pattern(Start),
     ws,
     ",",
     ws,
-    base_pattern(End),
+    pattern(End),
     !,
     ws,
     action_block(Actions).
