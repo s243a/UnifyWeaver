@@ -860,17 +860,19 @@ rules_rest([Rule | Rules]) -->
 rules_rest([]) -->
     ws.
 
-% A range pattern `/start/,/end/ { ... }`: the rule fires for every record from
-% the one matching /start/ through the one matching /end/ (inclusive), tracked
-% by a per-rule latch. Endpoints are regexes (v1). Tried before the general rule
-% so the comma between the two regexes is seen (a plain `/re/ { }` has no comma,
-% so this clause fails before its cut and falls through).
+% A range pattern `start, end { ... }`: the rule fires for every record from the
+% one matching `start` through the one matching `end` (inclusive), tracked by a
+% per-rule latch. Endpoints are general base patterns -- regexes (`/re/,/re/`),
+% expression patterns (`NR==1, NR==3`), field comparisons, etc. -- each reused by
+% the ordinary pattern-guard lowering. Tried before the general rule so the comma
+% between the two endpoints is seen (a plain `pat { }` has no comma, so this
+% clause fails before its cut and falls through to the single-pattern rule).
 rule(rule(range(Start, End), Actions)) -->
-    slash_regex_pattern(Start),
+    base_pattern(Start),
     ws,
     ",",
     ws,
-    slash_regex_pattern(End),
+    base_pattern(End),
     !,
     ws,
     action_block(Actions).
@@ -1341,10 +1343,19 @@ special_i64_cmp_pattern(special_cmp(Special, SwappedOp, Value)) -->
     special_cmp_operand(Special),
     { swap_cmp_op(Op, SwappedOp) }.
 
-% The special operand of an expression pattern: the field count or the record
-% byte length (of `$0`, bare or parenthesised).
+% The special operand of an expression pattern: the field count, the record
+% byte length (of `$0`, bare or parenthesised), or the record number NR.
 special_cmp_operand('NF') -->
     "NF",
+    identifier_boundary.
+% NR as a bare pattern operand: `NR == 1 { … }`, `NR > 2 { … }` (and the reversed
+% `1 == NR`). FNR is NR's alias here (single input stream, no per-file reset), so
+% it lowers to the same %current_nr counter comparison.
+special_cmp_operand('NR') -->
+    "NR",
+    identifier_boundary.
+special_cmp_operand('NR') -->
+    "FNR",
     identifier_boundary.
 special_cmp_operand(length) -->
     "length",

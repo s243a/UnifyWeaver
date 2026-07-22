@@ -6,8 +6,9 @@
 % from a /start/ match through a /end/ match (inclusive), tracked by a per-rule
 % i1 latch global. The end is tested only once the range is active, so a line
 % matching both start and end starts a range that continues (the common gawk
-% semantics). v1 endpoints are regexes; general-pattern endpoints (NR==1,NR==3)
-% are a follow-on.
+% semantics). Endpoints are general base patterns: regexes (`/S/,/E/`),
+% expression patterns (`NR==1,NR==3`), and any mix (`NR==2,/end/`); each endpoint
+% reuses the ordinary pattern-guard lowering.
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -34,6 +35,20 @@ test(range_prefix_endpoints_parse) :-
 test(plain_regex_unaffected) :-
     plawk_parse_string("/a/ { print $1 }\n",
         program([], [rule(contains("a"), [print([field(1)])])], [])),
+    !.
+
+% NR endpoints parse to special_cmp range endpoints.
+test(range_nr_endpoints_parse) :-
+    plawk_parse_string("NR==1, NR==3 { print $0 }\n",
+        program([], [rule(range(special_cmp('NR', eq, 1), special_cmp('NR', eq, 3)),
+            [print([field(0)])])], [])),
+    !.
+
+% a mixed range (NR start, regex end) parses.
+test(range_mixed_endpoints_parse) :-
+    plawk_parse_string("NR==2, /end/ { print $0 }\n",
+        program([], [rule(range(special_cmp('NR', eq, 2), contains("end")),
+            [print([field(0)])])], [])),
     !.
 
 % --- runtime ----------------------------------------------------------------
@@ -80,6 +95,27 @@ test(range_no_match, [condition(clang_available)]) :-
     build_run(Dir, 'nm', "/S/,/E/ { print $0 }\n",
         "a\nb\nc\n", Out, St),
     assertion(St == 0), assertion(Out == ""), !.
+
+% NR==2,NR==4 selects records 2 through 4 inclusive.
+test(range_nr_inclusive, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'nri', "NR==2, NR==4 { print $0 }\n",
+        "a\nb\nc\nd\ne\n", Out, St),
+    assertion(St == 0), assertion(Out == "b\nc\nd\n"), !.
+
+% a mixed range: NR start, regex end.
+test(range_nr_regex_mixed, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'nrm', "NR==2, /end/ { print $0 }\n",
+        "a\nb\nc\nend\nf\n", Out, St),
+    assertion(St == 0), assertion(Out == "b\nc\nend\n"), !.
+
+% a mixed range: regex start, NR end.
+test(range_regex_nr_mixed, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'rnm', "/b/, NR==4 { print $0 }\n",
+        "a\nb\nc\nd\ne\n", Out, St),
+    assertion(St == 0), assertion(Out == "b\nc\nd\n"), !.
 
 :- end_tests(plawk_range).
 
