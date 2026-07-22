@@ -154,12 +154,62 @@ test(iso_errors_text_rewrite_comparison_explicit_survives) :-
     assertion(sub_string(LaxWam, _, _, _, "builtin_call <_iso/2 2")),
     assertion(sub_string(LaxWam, _, _, _, "builtin_call >_lax/2 2")).
 
-test(iso_errors_text_rewrite_succ_not_yet) :-
-    % ISO-R-2B owns succ_*; R must not rewrite succ/2 yet.
-    Wam0 = 'succ_demo/0:\n  builtin_call succ/2 2',
+test(iso_errors_text_rewrite_succ_iso) :-
+    Wam0 = 'succ_demo/0:\n  execute succ/2\n  call succ/2 2\n  proceed',
     iso_errors_rewrite_text(iso_config(true, []), succ_demo/0, Wam0, IsoWam),
-    assertion(sub_string(IsoWam, _, _, _, "builtin_call succ/2 2")),
-    \+ sub_string(IsoWam, _, _, _, "succ_iso").
+    assertion(sub_string(IsoWam, _, _, _, "execute succ_iso/2")),
+    assertion(sub_string(IsoWam, _, _, _, "call succ_iso/2")),
+    \+ sub_string(IsoWam, _, _, _, "execute succ/2\n").
+
+test(iso_errors_text_rewrite_succ_lax) :-
+    Wam0 = 'succ_demo/0:\n  execute succ/2\n  proceed',
+    iso_errors_rewrite_text(iso_config(false, []), succ_demo/0, Wam0, LaxWam),
+    assertion(sub_string(LaxWam, _, _, _, "execute succ_lax/2")),
+    \+ sub_string(LaxWam, _, _, _, "execute succ/2\n").
+
+test(iso_errors_text_rewrite_succ_explicit_survives) :-
+    Wam0 = 'succ_demo/0:\n  execute succ_iso/2\n  execute succ_lax/2\n  proceed',
+    iso_errors_rewrite_text(iso_config(true, []), succ_demo/0, Wam0, IsoWam),
+    assertion(sub_string(IsoWam, _, _, _, "execute succ_iso/2")),
+    assertion(sub_string(IsoWam, _, _, _, "execute succ_lax/2")),
+    iso_errors_rewrite_text(iso_config(false, []), succ_demo/0, Wam0, LaxWam),
+    assertion(sub_string(LaxWam, _, _, _, "execute succ_iso/2")),
+    assertion(sub_string(LaxWam, _, _, _, "execute succ_lax/2")).
+
+test(iso_errors_audit_succ) :-
+    setup_call_cleanup(
+        assertz((user:r_iso_audit_succ :- succ(1, 2))),
+        (   wam_r_iso_audit(
+                [user:r_iso_audit_succ/0],
+                [iso_errors(true)],
+                Audit),
+            assertion((
+                Audit = [audit(user:r_iso_audit_succ/0, true, Sites)],
+                memberchk(site(_, "succ/2", "succ_iso/2", default, true), Sites)
+            ))
+        ),
+        retractall(user:r_iso_audit_succ)).
+
+test(iso_errors_project_generation_succ_keys) :-
+    once((
+        TmpDir = '/tmp/uw_r_iso_succ_rewrite_unit',
+        catch(delete_directory_and_contents(TmpDir), _, true),
+        setup_call_cleanup(
+            assertz((user:r_iso_succ_rewrite :- succ(3, 4))),
+            (   write_wam_r_project(
+                    [user:r_iso_succ_rewrite/0],
+                    [iso_errors(true)],
+                    TmpDir),
+                string_concat(TmpDir, '/R/generated_program.R', ProgPath),
+                read_file_to_string(ProgPath, Code, []),
+                assertion(sub_string(Code, _, _, _, "succ_iso")),
+                assertion(\+ sub_string(Code, _, _, _, 'Execute("succ", 2)'))
+            ),
+            (   retractall(user:r_iso_succ_rewrite),
+                catch(delete_directory_and_contents(TmpDir), _, true)
+            )
+        )
+    )).
 
 test(iso_errors_audit_structure) :-
     setup_call_cleanup(

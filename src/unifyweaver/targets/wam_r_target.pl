@@ -2188,8 +2188,8 @@ find_template(RelPath, Template) :-
 % ISO-R-0/R-2A: shared ISO wiring + is/2 + arithmetic comparisons
 % ============================================================================
 % Key-table safety: register a default key only when matching R runtime
-% branches exist.  Catch/throw and is_iso/is_lax ship already; ISO-R-2A
-% adds the six arithmetic-compare families.  succ_* remains ISO-R-2B.
+% branches exist.  Catch/throw, is_*, and compares ship already; ISO-R-2B
+% adds succ_iso / succ_lax.
 
 iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2").
 iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2").
@@ -2200,6 +2200,7 @@ iso_errors:iso_errors_default_to_iso(">=/2", ">=_iso/2").
 iso_errors:iso_errors_default_to_iso("=</2", "=<_iso/2").
 iso_errors:iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
 iso_errors:iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
+iso_errors:iso_errors_default_to_iso("succ/2", "succ_iso/2").
 
 iso_errors:iso_errors_default_to_lax("</2", "<_lax/2").
 iso_errors:iso_errors_default_to_lax(">/2", ">_lax/2").
@@ -2207,6 +2208,7 @@ iso_errors:iso_errors_default_to_lax(">=/2", ">=_lax/2").
 iso_errors:iso_errors_default_to_lax("=</2", "=<_lax/2").
 iso_errors:iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
 iso_errors:iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
+iso_errors:iso_errors_default_to_lax("succ/2", "succ_lax/2").
 
 % Keep the module when present: qualified overrides must not leak to a
 % same-named predicate in another module.
@@ -2247,7 +2249,7 @@ iso_errors_rewrite_line(Mode, Line, OutLine) :-
     ;   OutLine = Line
     ).
 
-%% Keys with matching R runtime branches (ISO-R-0 is/2 + ISO-R-2A compares).
+%% Keys with matching R runtime branches (ISO-R-0/2A/2B).
 r_iso_rewritable_key("is/2").
 r_iso_rewritable_key("</2").
 r_iso_rewritable_key(">/2").
@@ -2255,6 +2257,7 @@ r_iso_rewritable_key(">=/2").
 r_iso_rewritable_key("=</2").
 r_iso_rewritable_key("=:=/2").
 r_iso_rewritable_key("=\\=/2").
+r_iso_rewritable_key("succ/2").
 
 iso_errors_clean_key_token(Token0, Token) :-
     (   string_concat(Token, ",", Token0)

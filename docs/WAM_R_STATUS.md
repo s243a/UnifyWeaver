@@ -52,17 +52,19 @@ default 4096), and explicit `auto` (codegen resolves via shared
   forms (`switch_on_constant_a2`, `_a2_fallthrough`, `switch_on_structure_a2`)
   — map to the existing `SwitchOnTerm()` linear no-op (not optimized A2
   dispatch), preserving the full try/retry/trust chain.
-- **ISO error support** is a **partial adopter** after ISO-R-0 + ISO-R-2A:
-  shared config/rewrite/audit, `is/2` three-form, and the six arithmetic
-  comparison families (`<_iso`/`<_lax` … `=\=_iso`/`=\=_lax`). The
-  pre-existing catch/throw substrate is already covered end-to-end;
-  `succ` remains ISO-R-2B. Do not claim complete ISO-R yet.
-- No dedicated effective-distance cross-target bench row.
+- **ISO error support** meets the seven-item adoption unit after ISO-R-0/
+  2A/2B: shared config/rewrite/audit, `is/2`, six arithmetic comparisons,
+  and `succ/2` three-form (`succ_iso`/`succ_lax`), plus pre-existing
+  catch/throw. Same caveat as Python/F#: remaining concrete builtins
+  without three-form keys are out of scope for “complete for every
+  builtin.” Do not describe R as fully ISO-compatible across the entire
+  builtin surface.
 
 ## Path forward
 
-1. ISO-R-2B successor (`succ_iso`/`succ_lax`) + adoption closeout.
-2. Effective-distance cross-target matrix row.
+1. Effective-distance cross-target matrix row.
+2. Optional follow-up: three-form keys for additional audited builtins
+   beyond `is`/compares/`succ` (same class of work as ISO-PYTHON/ISO-FSHARP).
 
 ## Document status
 

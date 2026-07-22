@@ -53,10 +53,10 @@ self-contained so a single coding agent can pick it up in isolation.
 | ISO-C | ISO three-form (new) | C | L | — |
 | ISO-GO | ISO three-form (new) | Go | L | — |
 | ISO-SCALA | ISO three-form (new) | Scala | L | — |
-| ISO-R-0 ✅ | shared wiring + `is/2` vertical slice | R | M | done (partial adopter) |
+| ISO-R-0 ✅ | shared wiring + `is/2` vertical slice | R | M | done |
 | ISO-R-1 ✅ | pre-existing catch/throw substrate | R | — | validated (`catch_throw_dyn_aggregator_e2e_rscript`) |
 | ISO-R-2A ✅ | arithmetic comparisons | R | S | done |
-| ISO-R-2B | successor + adoption closeout | R | S | ISO-R-2A |
+| ISO-R-2B ✅ | successor + adoption closeout | R | S | done |
 | ISO-PYTHON | ISO three-form (finish) | Python | S | — |
 | ISO-FSHARP | ISO three-form (finish) | F# | S | — |
 | KERN-FSHARP ✅ | Finish F# native kernel acceleration | F# | L | gate+TC2+TD3+TPD4+TSPD5+WSP3+A* done |
@@ -454,9 +454,9 @@ plumbing there.
   `is_lax/2` (ISO-R-2A later extended comparisons). Runtime helpers live in
   `runtime.R.mustache`
   (`builtin_is_iso` / `builtin_is_lax` + structured error constructors).
-  Existing `catch/3`+`throw/1` substrate is reused by tests but **R remains
-  a partial adopter** until all seven “What Counts As Adoption” items are
-  satisfied (`succ` remains ISO-R-2B).
+  Existing `catch/3`+`throw/1` substrate is reused by tests. ISO-R-2B
+  closed the seven-item adoption unit for the audited surface; remaining
+  concrete builtins without three-form keys match the Python/F# caveat.
 - **Acceptance:** `tests/test_wam_r_iso_unit.pl` + `tests/test_wam_r_iso_smoke.pl`.
 
 ### ISO-R-1 ✅: pre-existing catch/throw substrate
@@ -474,11 +474,19 @@ plumbing there.
 - **Acceptance:** extended `tests/test_wam_r_iso_unit.pl` +
   `tests/test_wam_r_iso_smoke.pl`.
 
-### ISO-R-2B: successor + adoption closeout
-- **Depends on:** ISO-R-2A. Add `succ_iso` / `succ_lax`, then verify the
-  complete adoption checklist in
-  `docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md`.
-  Do **not** claim full R ISO adoption until R-2B lands.
+### ISO-R-2B ✅: successor + adoption closeout
+- **Status:** Landed. `succ/2` → `succ_iso/2` | `succ_lax/2` via shared
+  key table + `r_iso_rewritable_key/1`. Runtime reuses the pre-existing
+  bidirectional bind path as `succ_bind` / `builtin_succ_{iso,lax}`
+  (Execute/Call; no BuiltinCall form from the R compiler). R now meets
+  the seven-item “What Counts As Adoption” unit in
+  `docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` for the audited
+  surface (`catch`/`throw`, constructors, config/rewrite/audit, `is/2`,
+  six compares, `succ/2`). Remaining concrete builtins without three-form
+  keys are the same class of caveat as Python/F# — not claimed as full
+  fleet-wide ISO compatibility for every builtin.
+- **Acceptance:** extended `tests/test_wam_r_iso_unit.pl` +
+  `tests/test_wam_r_iso_smoke.pl`.
 
 ### ISO-R (ledger parent): New ISO three-form adoption for WAM R target
 - **Lever:** ISO three-form  **Target:** R  **Size:** L  **Depends on:** —
