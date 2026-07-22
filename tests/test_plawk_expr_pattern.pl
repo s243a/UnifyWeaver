@@ -243,6 +243,58 @@ test(field_field_arith_combined, [condition(clang_available)]) :-
         "5 8\n5 2\n40 1\n", Out),
     assertion(Out == "5 8\n"), !.
 
+% --- float-division patterns ($I / K CMP V) --------------------------------
+
+% `$1 / 2 > 3.5` parses to field_div_cmp with a float_const RHS.
+test(field_div_float_rhs_parses) :-
+    plawk_parse_string("$1 / 2 > 3.5 { print $0 }\n",
+        program([], [rule(field_div_cmp(1, 2, gt, float_const(35, 10)), [print([field(0)])])], [])),
+    !.
+
+% an integer RHS widens to float_const(V, 1).
+test(field_div_int_rhs_parses) :-
+    plawk_parse_string("$1 / 3 <= 10 { print $0 }\n",
+        program([], [rule(field_div_cmp(1, 3, le, float_const(10, 1)), [print([field(0)])])], [])),
+    !.
+
+% a zero divisor is cleanly rejected (would diverge from awk's fatal); a field
+% divisor `$1 / $2` is a follow-on and does not parse either.
+test(field_div_zero_rejected) :-
+    \+ plawk_parse_string("$1 / 0 > 1 { print $0 }\n", _).
+test(field_div_field_divisor_rejected) :-
+    \+ plawk_parse_string("$1 / $2 > 1 { print $0 }\n", _).
+
+% `$1 / 2 > 3.5` is a floating-point compare (matches `$1 > 7`).
+test(field_div_gt, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'd1', "$1 / 2 > 3.5 { print $0 }\n", "8\n7\n6\n", Out),
+    assertion(Out == "8\n"), !.
+
+% division truncation does NOT happen -- 7/2 = 3.5, not 3.
+test(field_div_exact_half, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'd2', "$1 / 2 == 3.5 { print \"h\" }\n", "6\n7\n8\n", Out),
+    assertion(Out == "h\n"), !.
+
+% integer RHS compare.
+test(field_div_int_rhs, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'd3', "$1 / 3 <= 10 { print $0 }\n", "30\n33\n27\n", Out),
+    assertion(Out == "30\n27\n"), !.
+
+% a non-numeric field evaluates as 0.0.
+test(field_div_nonnumeric, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'd4', "$1 / 2 == 0 { print \"z\" }\n", "abc\n4\n", Out),
+    assertion(Out == "z\n"), !.
+
+% composes with a field-equality guard.
+test(field_div_combined, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'd5', "$1 / 2 > 3.5 && $1 == \"8\" { print $0 }\n",
+        "8\n10\n", Out),
+    assertion(Out == "8\n"), !.
+
 % --- NR-as-bare-pattern (NR OP int) ----------------------------------------
 
 % `NR == 1` parses to special_cmp('NR', eq, 1).
