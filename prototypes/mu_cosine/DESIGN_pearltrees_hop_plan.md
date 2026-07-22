@@ -7,8 +7,9 @@ This artifact performs topology bookkeeping only. It computes no diffusion
 response, leakage estimate, fidelity metric, filing metric, or judge result.
 Synthetic tests may generate disposable plans while implementation is changing,
 but the actual corpus plan must be generated only from the final committed
-calibration-lock implementation. Any later implementation or contract change
-invalidates that plan and requires regeneration under a new version.
+calibration-lock and untouched-audit implementation. Any later implementation
+or contract change invalidates that plan and requires regeneration under a new
+version.
 
 ## 1. Why planning is a separate transaction
 
@@ -21,7 +22,7 @@ every outcome-blind choice that could otherwise move after calibration:
 - one nested HOP ordering per batch, its strict candidate prefixes, and its
   larger reference;
 - every real retained-to-omitted cut edge under exact Dirichlet grounding;
-- the radius-3 calibration shells;
+- the disjoint radius-3 calibration and untouched-audit shell ledgers;
 - the complete 9,999-replicate paired-bootstrap multiplicity schedule; and
 - the numerical, memory, and statistical contracts that later stages must use,
   including reference adequacy, the 18-of-24 complete-audit-batch floor, and
@@ -138,10 +139,15 @@ artifact records every cut edge and integer `beta`. `R_top` is a bounded
 reference unless its boundary is empty, in which case it is the exact connected
 component.
 
-For each calibration anchor, the plan freezes all nodes at graph-hop radius 3.
-The shell must be nonempty, contained in that batch's `R_top`, and strictly
-interior (`beta=0`). The plan records the later target `exp(-1)` but leaves
-`alpha_status=unfrozen`. Calibration starts from base intrinsic uniform
+For every selected anchor, the plan freezes all nodes at graph-hop radius 3 in
+one of two disjoint artifacts. `calibration_shells.jsonl` contains exactly the
+32 calibration anchors and `audit_shells.jsonl` contains exactly the 96 audit
+anchors. Every shell must be nonempty, contained in that batch's `R_top`, and
+strictly interior (`beta=0`); an inadequate shell blocks the plan before any
+solve. The audit ledger is later used only to report screening/e-fold
+provenance under the already frozen `alpha_top`: it never recalibrates alpha.
+The plan records the target `exp(-1)` but leaves `alpha_status=unfrozen`.
+Calibration starts from base intrinsic uniform
 leakage `alpha=0` and bath temperature 0. It must evaluate `alpha=0`, prove it
 numerically admissible, and record a numerical minimum of exactly 0; a positive
 conditioning-derived minimum is a block, not permission to inject leakage.
@@ -196,8 +202,23 @@ observed-order-statistic tails, all noninferiority margins, extended-real zero
 handling, and the calibration rule selecting the smallest adequate `K_low` and
 the next larger `K_high` (or the absolute-only `R_top` endpoint when
 `K_low=1024`). The paired-bootstrap contract binds the actual multiplicity
-artifact, identical multiplicities across endpoints, and the lower/upper
-order-statistic endpoint rules.
+artifact, identical multiplicities across endpoints, the fixed whole-batch
+complete mask, renormalization by each replicate's retained integer mass,
+fail-closed zero retained mass with no redraw, and the lower/upper
+order-statistic endpoint rules. Eighteen through 23 complete batches remain
+decision-bearing under that exact mask; fewer than 18 are descriptive only.
+Every frozen vector has at least 10 nonzero batch entries, so an 18-batch mask
+necessarily retains positive mass, with verification still required. Masked
+inference is conditional on the complete-batch set and does not repair
+nonrandom missingness or recover the all-24-batch estimand.
+
+The lock's `frozen_audit_roles` are decision roles. Audit execution additionally
+requires `S_1024` as a deduplicated support role whenever needed to re-evaluate
+reference adequacy against `R_top`. The generic
+`confirmatory_claim_authorized` flag covers either clean decisive finite
+outcome; the separate `convergence_claim_authorized` flag is true only for
+smaller-endpoint convergence. Absolute-only, diagnostic, blocked, incomplete,
+and inconclusive results authorize neither flag.
 
 The effective-resistance arm is fixed before results. If it is predeclared
 `omitted`, its absolute-adequacy and noninferiority endpoints are removed
@@ -205,18 +226,31 @@ explicitly from the active endpoint sets; omission is neither a passing value
 nor a missing-result failure. It cannot be restored after any family result is
 seen.
 
+The audit resource contract treats peak RSS as one process-global safety
+observation through numerical work, the complete frozen bootstrap, decision,
+and scientific-payload serialization immediately before staging. Filesystem
+installation and replay verification are outside that scientific resource
+scope. Endpoint resource provenance consists of the frozen dense projection,
+realized node count, evaluator candidate/reference selection/build and solve
+timing fields, and runner batch elapsed time. Evaluator build time includes
+factorization; no separate factorization or metric timer is claimed. A finite
+resource contrast requires strict realized-node reduction in every complete
+batch and complete timing provenance; it does not assert endpoint-specific
+RSS.
+
 ## 6. Artifacts, privacy, and blocked outcomes
 
 The mode-0700 local-only directory contains mode-0600 canonical artifacts for
 quartiles, selected anchors, batches, anchor traversals, domains, boundaries,
-calibration shells, all 9,999 bootstrap multiplicity vectors, and the manifest.
+separate calibration and audit shells, all 9,999 bootstrap multiplicity
+vectors, and the manifest.
 Every leaf is a unique-link regular file. Node-level material never appears in
 stdout. The CLI emits only acceptance, reason, batch counts, and `no_solve`.
 
 A structurally valid graph may produce an installed `accepted=false` plan for
-quartile coverage, protected coverage, calibration-shell adequacy, or study
-resource inadequacy. This is a complete no-solve scientific result, not an
-operational crash. Invalid provenance, privacy, artifact structure, path
+quartile coverage, protected coverage, calibration- or audit-shell adequacy, or
+study resource inadequacy. This is a complete no-solve scientific result, not
+an operational crash. Invalid provenance, privacy, artifact structure, path
 identity, or consensus aborts without installing a plan.
 
 The manifest states `solves_executed=0`,

@@ -93,6 +93,13 @@ def test_selection_freezes_finite_contrast_at_smallest_adequate_budget(
     assert selected["lock_mode"] == "finite_contrast"
     assert selected["k_low"] == "S_256"
     assert selected["k_high"] == "S_512"
+    assert selected["frozen_audit_roles"] == ["S_256", "S_512"]
+    assert selected["required_audit_model_roles"] == [
+        "S_256",
+        "S_512",
+        "S_1024",
+        "R_top",
+    ]
     assert selected["audit_solve_authorized"] is True
     assert selected["efficacy_or_resource_claim_authorized"] is True
 
@@ -107,6 +114,7 @@ def test_selection_freezes_absolute_only_at_1024_endpoint(monkeypatch) -> None:
     assert selected["lock_mode"] == "absolute_only"
     assert selected["k_low"] == "S_1024"
     assert selected["k_high"] == "R_top"
+    assert selected["required_audit_model_roles"] == ["S_1024", "R_top"]
     assert selected["audit_solve_authorized"] is True
     assert selected["efficacy_or_resource_claim_authorized"] is False
 
@@ -125,6 +133,7 @@ def test_selection_freezes_right_censored_diagnostics_when_no_candidate_passes(
     assert selected["k_low"] is None
     assert selected["k_high"] is None
     assert selected["audit_solve_authorized"] is True
+    assert selected["required_audit_model_roles"] == list(lock.ROLE_ORDER)
     assert selected["efficacy_or_resource_claim_authorized"] is False
 
 
@@ -1138,6 +1147,7 @@ def _incomplete_payload_fixture(
         "confirmatory_claim_authorized": False,
         "efficacy_or_resource_claim_authorized": False,
         "frozen_audit_roles": [],
+        "required_audit_model_roles": [],
         "k_high": None,
         "k_low": None,
         "lock_mode": "blocked",

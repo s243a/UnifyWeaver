@@ -1271,6 +1271,16 @@ def test_fidelity_emits_protocol_per_anchor_top8_and_resistance_endpoints():
     assert len(result.per_anchor_rank_inversion_fraction) == 1
     assert len(result.per_anchor_top_k_overlap) == 1
     assert len(result.per_anchor_source_diagonal_relative_error) == 1
+    assert len(result.per_anchor_candidate_cut_current_fraction) == 1
+    assert len(result.per_anchor_reference_cut_current_fraction) == 1
+    assert all(
+        0.0 <= value <= 1.0
+        for value in result.per_anchor_candidate_cut_current_fraction
+    )
+    assert all(
+        0.0 <= value <= 1.0
+        for value in result.per_anchor_reference_cut_current_fraction
+    )
     assert len(result.per_anchor_effective_resistance_relative_error) == 1
     assert result.effective_resistance_relative_error_90th_percentile >= 0.0
 

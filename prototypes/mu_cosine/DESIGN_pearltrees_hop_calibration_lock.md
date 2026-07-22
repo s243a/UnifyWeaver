@@ -147,6 +147,14 @@ An effective-resistance endpoint is present exactly when the plan froze that
 arm as enabled. A prospectively omitted arm is absent from both adequacy and
 the later intersection test; it is never dropped after seeing a failure.
 
+The selection record distinguishes decision roles from required audit model
+roles. `frozen_audit_roles` contains only the registered decision endpoints.
+`required_audit_model_roles` is their frozen-order union with `S_1024` and
+`R_top`, so a finite `S_256`/`S_512` contrast still rechecks untouched
+reference adequacy using `S_1024` against `R_top`. In `absolute_only` it is
+`[S_1024,R_top]`; in right-censored mode it is all four roles. The support-only
+`S_1024` result may not enter the finite efficacy or noninferiority contrast.
+
 ## 6. Lock modes and authorization
 
 Exactly one mode is installed:
@@ -208,9 +216,13 @@ regular files:
 
 The deterministic lock fingerprint binds the complete plan-manifest byte
 record, calibration work order, scientific output records, implementation and
-protocol records, backend identity, alpha, and audit mode. The full manifest
-seal additionally binds observational execution provenance. Merely copying
-`plan_fingerprint` is insufficient.
+protocol records, backend identity, alpha, and audit mode. Its implementation
+inventory explicitly includes
+`DESIGN_pearltrees_hop_audit.md` and
+`prepare_pearltrees_hop_audit.py`, so a real lock can be generated only after
+the prospective untouched-audit contract and runner both exist at the bound
+repository commit. The full manifest seal additionally binds observational
+execution provenance. Merely copying `plan_fingerprint` is insufficient.
 
 Preparation reverifies the full upstream chain before work and again before
 installation. Staging uses descriptor-relative no-follow exclusive writes,
@@ -238,11 +250,12 @@ signature or immutable trusted digest.
 
 ## 9. Sequencing, scale, and non-claims
 
-The HOP plan binds its repository commit and scientific-file hashes. Therefore
-the real private plan and lock must be generated from the final landed
-implementation commit (or its exact detached checkout), after this runner is
-reviewed. Generating a real plan from an earlier commit and attempting to
-reinterpret it with later code is prohibited.
+The HOP plan binds its repository commit and scientific-file hashes, and this
+lock additionally binds the audit design and runner bytes. Therefore the real
+private plan and lock must be generated from the final landed audit
+implementation commit (or its exact detached checkout), after both runners are
+reviewed. Generating a real plan or lock from an earlier commit and attempting
+to reinterpret it with later audit code is prohibited.
 
 The dense phase is for bounded references on the current host. It is not a
 million-node algorithm, CUDA crossover result, covariance estimate, filing

@@ -6,10 +6,11 @@ the protocol PR. If the real graph, embeddings, budgets, selectors, protected
 set, leakage rule, metric, or decision threshold must change, amend this file
 and its machine-readable manifest before running the affected comparison.
 Disposable synthetic test plans may be made during development. The actual
-corpus plan must be generated only after the calibration-lock implementation,
-this protocol, and the planner are all at their final committed versions; a
-later change invalidates that plan rather than being absorbed by its old
-repository SHA.
+corpus plan must be generated only after the planner, calibration lock,
+untouched-audit runner, and their prospective designs are all at their final
+committed versions; a later change invalidates that plan rather than being
+absorbed by its old repository SHA. The audit transaction is specified in
+[`DESIGN_pearltrees_hop_audit.md`](DESIGN_pearltrees_hop_audit.md).
 
 The first confirmatory phase is prospective snapshot-relative HOP convergence
 only, and it is BLOCKED on a raw-source snapshot preparer. The current
@@ -186,13 +187,23 @@ anchors. This set is fixed before any selector is scored. A phase-one HOP budget
 does not retain the complete protected set fails that batch; do not form a
 post-hoc intersection and do not rank missing nodes last.
 
+Also freeze every selected anchor's complete graph-hop radius-3 shell before
+any response is computed. Persist the 32 calibration shells and 96 audit shells
+in disjoint artifacts. Every shell must be nonempty, contained in its batch's
+`R_top`, and strictly interior (`beta=0`), or the no-solve plan is blocked. The
+audit shell is screening/e-fold provenance under the already frozen
+`alpha_top`; it never licenses audit-side recalibration.
+
 Report source-to-source hop distances within each batch. Primary summaries use
 the equal-stratum macro estimand from Section 1. If reference failure or method
-coverage leaves fewer than 18 of the 24 complete
-balanced audit batches, demote the whole contrast to descriptive. A failed batch
-is never decomposed into surviving anchors; never redistribute quartile weight
-or fall back to an unbalanced pooled mean. Degree and distance-stratified
-summaries beyond the frozen macro estimand are descriptive.
+coverage leaves fewer than 18 of the 24 complete balanced audit batches, demote
+the whole contrast to descriptive. With 18 through 23 complete batches, use the
+fixed whole-batch mask and the exact masked-bootstrap rule in Section 8. A
+failed batch is never decomposed into surviving anchors; never redistribute
+quartile weight or fall back to an unbalanced pooled mean. A deterministic
+numerical safety failure is not ordinary missing coverage and independently
+blocks confirmatory authorization. Degree and distance-stratified summaries
+beyond the frozen macro estimand are descriptive.
 
 ## 4. Frozen HOP budgets and gated future families
 
@@ -320,12 +331,20 @@ For every batch/family/budget also report:
 - retained/boundary node counts, cut-edge count and cut mass;
 - per-anchor cut-current fraction;
 - the batch/domain protected-set maximum of `p=J_D^-1 beta`;
-- regime-specific frozen scalar `alpha`, realized e-fold radius and censor flag
-  for every anchor;
+- regime-specific frozen scalar `alpha`, plus realized e-fold radius and censor
+  flag for every anchor from its split-specific frozen radius-3 shell, measured
+  only on the shared `R_top` response and not separately per candidate;
 - reciprocal condition number, M-matrix sign check, Cholesky/solve residuals;
 - adjacency calls or touched weighted degree where observable;
-- selection, assembly, factorization, metric, and total wall times; and
-- projected dense bytes, peak RSS, backend identity, and thread settings.
+- evaluator candidate/reference selection and build times, evaluator solve
+  time, and runner whole-batch elapsed time; factorization is included in build
+  time and no separate factorization or metric timer is claimed; and
+- projected dense bytes, process-global peak RSS, backend identity, and thread
+  settings. Audit peak RSS covers numerical work, all frozen bootstrap
+  statistics, the decision, and scientific-payload serialization immediately
+  before staging; filesystem installation and replay verification are outside
+  that frozen scientific resource scope. It is not an endpoint-attributed
+  measurement.
 
 An individual phase-one HOP budget is **adequate** only with 100% protected coverage,
 using higher-order-statistic Q90 and lower-order-statistic Q10 summaries,
@@ -518,15 +537,50 @@ unsigned 256-bit integer, reject values at least
 `2^256 - (2^256 mod 24)`, and take the first accepted value modulo 24. Store
 the resulting 24-entry count vector, whose entries sum to 24. Later runners
 must consume these vectors and must not regenerate them with a library PRNG.
-Apply each vector's identical
-batch multiplicities to both budgets and every paired endpoint. Every
-resampled batch contains one anchor from each quartile, so
-recompute the four quartile means and average them equally; no replicate can omit a quartile
-and no redraw rule is needed. The one-sided 95% upper endpoint is the higher
-observed bootstrap order statistic at 0.95, and the lower endpoint is the lower
-observed order statistic
-at 0.05. These intervals describe the frozen structural sampling design, not
+
+The untouched runner treats the locked `frozen_audit_roles` as decision roles.
+It also evaluates `S_1024` as a deduplicated support role whenever it is not
+already a decision endpoint, so the audit re-evaluates the frozen reference-
+adequacy comparison of `S_1024` with `R_top`. This support result cannot enter
+the finite efficacy or noninferiority contrast. Audit and calibration anchor
+IDs must be disjoint, although their graph domains may overlap.
+
+Freeze one whole-batch completeness mask `c_b` before aggregation. The closed
+allowlist for `c_b=0` is a structured whole-batch candidate- or reference-
+protected-coverage failure reported before any metric for that batch is
+committed. A metric threshold miss, deterministic numerical/safety failure,
+resource-ceiling failure, provenance mismatch, or partially written batch is
+never missingness; it remains a complete failed result or globally blocks, as
+applicable. For each
+registered multiplicity vector `m_r`, compute
+
+    M_r = sum_b m_r,b c_b.
+
+Every frozen vector must have at least 10 nonzero batch entries. Consequently
+any mask retaining at least 18 batches has positive mass. Verification still
+recomputes both facts; if `M_r=0` or the schedule support certificate fails,
+fail the bootstrap closed with no redraw, seed change, or replacement
+replicate. This is a transaction/verification failure, not a
+`descriptive_incomplete` result; that result is reserved for fewer than 18
+complete batches. Otherwise use `m_r,b c_b / M_r`, implemented as a
+multiplicity-weighted numerator divided by the exact positive integer `M_r`.
+Apply that identical masked weight to both budgets, all four quartiles, and
+every paired endpoint; endpoint-specific or survivor-anchor masks are
+prohibited. Each retained batch contains one anchor from every quartile, so
+compute one weighted mean per quartile and average the four means equally. The
+unresampled point estimate uses equal weights over the same complete batches.
+With fewer than 18 complete batches the result is descriptive only. With 18
+through 23, this masked rule remains decision-bearing when every one of the
+9,999 replicates has positive retained mass. The one-sided 95% upper endpoint
+is the higher observed bootstrap order statistic at 0.95, and the lower
+endpoint is the lower observed order statistic at 0.05. No interpolation is
+allowed. These intervals describe the frozen structural sampling design, not
 solver randomness.
+
+The 18-through-23 estimand is conditional complete-case inference on the fixed
+observed complete-batch set. Masking preserves the registered pairing and
+multiplicity schedule; it neither corrects nonrandom missingness nor restores
+the original all-24-batch estimand. Report that limitation with the result.
 
 For a finite `K_high`, define the primary paired log-error contrast
 
@@ -534,16 +588,40 @@ For a finite `K_high`, define the primary paired log-error contrast
 
 Use extended-real zero handling without an epsilon: equal zeros contribute
 zero; zero numerator with positive denominator contributes negative infinity;
-positive numerator with zero denominator contributes positive infinity. A
-material larger-domain efficacy finding requires the one-sided upper endpoint
-of `Delta_hi_lo` to be strictly below `log(0.9)`, not merely below zero. The
-smaller domain is declared converged only when it independently passes the
-absolute Section 6 adequacy gates and the full noninferiority intersection below,
-while `K_high` does not meet that efficacy rule. If larger-domain efficacy and
-smaller-domain noninferiority conflict or neither resolves, report an
-inconclusive frontier rather than choosing post hoc. When `K_high=R_top`, report
+positive numerator with zero denominator contributes positive infinity. Store
+infinities as explicit canonical extended-real tokens, never as non-standard
+JSON numbers; an unregistered undefined operation fails closed. A material
+larger-domain efficacy finding requires both the one-sided upper endpoint of
+`Delta_hi_lo` to be strictly below `log(0.9)`, not merely below zero, and strict
+smaller-endpoint node reduction in every complete batch. The smaller domain is
+declared converged only when it independently passes the absolute Section 6
+adequacy gates, the full noninferiority intersection below, and that same
+strict node-reduction gate, while `K_high` does not meet the efficacy rule. If
+larger-domain efficacy and smaller-domain noninferiority conflict, node
+reduction fails, or neither statistical rule resolves, report an inconclusive
+frontier rather than choosing post hoc. When `K_high=R_top`, report
 only the absolute adequacy of `S_1024` and reference convergence; do not call the
 reference trivially lower error an efficacy result.
+
+The audit result has two explicit authorization flags. Preserve
+`confirmatory_claim_authorized=true` as the continuity flag for either clean
+decisive `finite_contrast` outcome: material larger-domain efficacy or
+smaller-domain convergence. Set the narrower
+`convergence_claim_authorized=true` only when the smaller endpoint passes
+absolute adequacy and the full noninferiority intersection and the larger
+endpoint does not meet the efficacy rule. Both require audit reference
+adequacy, at least 18 complete balanced batches, valid masked replicates, every
+deterministic safety/resource gate, complete timing provenance, and strict
+smaller-endpoint node reduction in every complete batch. Both flags are false
+for a conflict, `absolute_only`, `right_censored_diagnostics`, incomplete,
+blocked, or inconclusive results.
+
+Decision derivation records the statistical/resource candidate values of these
+flags before observational timing validation. Authorization is effective only
+after staged and installed verification validates the complete,
+status-consistent timing ledger and required per-role fields and rederives the
+decision. Missing or malformed timing fails the transaction rather than
+downgrading it to an incomplete result.
 
 Noninferiority is a one-sided INTERSECTION-UNION TEST: EVERY named endpoint
 must pass its own 95% one-sided upper bound with these frozen margins:
@@ -566,8 +644,19 @@ M-matrix signs, grounding, reciprocal condition, Cholesky/solve residuals, and
 maximum-principle checks are deterministic safety gates, not noisy
 noninferiority endpoints; any failure fails immediately. Resource use is
 reported as a frontier rather than hidden inside statistical fidelity: the
-smaller K must actually use fewer retained nodes, and projected bytes, peak RSS,
-and wall time are reported for both endpoints. No endpoint may rescue another.
+smaller K must actually use fewer retained nodes in every complete batch, and
+projected bytes plus the evaluator's candidate/reference selection/build and
+solve timing fields are reported for both endpoints; evaluator build time
+includes factorization and there is no claimed separate metric timer. Process-
+global peak RSS is recorded after numerical work, all 9,999 frozen bootstrap
+records, the decision, and scientific-payload serialization, immediately
+before staging, and checked against the frozen safety ceiling. A threshold
+crossing during those post-solve steps rebuilds the decision as blocked.
+Filesystem installation and replay verification are outside this scientific
+resource scope. RSS is not attributed to either endpoint and endpoint-specific
+RSS reduction is not a claim requirement. Timing provenance is required for a
+resource contrast but timing is not a fidelity endpoint. No endpoint may
+rescue another.
 
 SKELETON, RESISTANCE, semantic conductance, closure, alternate strata, alternate
 alpha, and complete-shell domains are not phase-one confirmatory contrasts. A
@@ -592,8 +681,8 @@ deterministic scientific fingerprints and complete manifest provenance bind:
 - raw-source and parser hashes, deterministic preparer hash, physical-edge
   policy, privacy-propagation and visibility-limitation manifests, frozen
   reciprocal adjacency, and all approved byte hashes;
-- anchor, balanced-batch, protected-node, HOP-ordering, domain, boundary, and
-  reference manifests;
+- anchor, balanced-batch, protected-node, HOP-ordering, domain, boundary,
+  split-specific radius-3 shell, and reference manifests;
 - parent or embedding manifests only in a future phase that has passed their
   prospective coverage gate;
 - `K`, shell, `alpha_top`, stable tie keys, and any future licensed selector or
@@ -644,6 +733,19 @@ responses. Such recomputation is a separate explicit rerun. Verification of
 unkeyed content hashes also does not authenticate a wholly replaced
 self-consistent chain against a hostile same-user; that requires an external
 signature or immutable trusted store.
+
+The lock's implementation inventory must include the prospective untouched-
+audit design and runner bytes. The audit runner then binds the complete lock
+manifest record and fingerprint, derives an audit-only work order, and writes
+one immutable result to a fresh mode-0700 local-only directory through the same
+descriptor-relative, no-replace transaction discipline. It has no resume,
+append, overwrite, or in-place repair mode. A later numerical reproduction uses
+a different fresh directory and is not a second confirmatory reveal; its
+scientific artifacts must be byte-identical to the primary result, while
+timing/RSS provenance may differ. A scientific mismatch fails closed and may
+not be resolved by selecting the favorable run. Audit verification rederives
+the work order, metrics, all masked bootstrap endpoints, and the decision but
+does not rerun solves.
 
 Fail closed on a missing or mismatched raw-source preparer manifest, unfrozen
 physical-edge policy, incomplete privacy propagation, incomplete or asymmetric

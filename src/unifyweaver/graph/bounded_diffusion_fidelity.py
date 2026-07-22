@@ -1764,6 +1764,8 @@ class BoundedFidelityResult:
     rank_excludes_source: bool
     candidate_boundary_harmonic_max: float
     reference_boundary_harmonic_max: float
+    per_anchor_candidate_cut_current_fraction: tuple
+    per_anchor_reference_cut_current_fraction: tuple
     candidate_cut_current_fraction_max: float
     reference_cut_current_fraction_max: float
     candidate_reciprocal_condition: float
@@ -1801,6 +1803,8 @@ class BoundedFidelityResult:
             self.per_anchor_rank_inversion_fraction,
             self.per_anchor_top_k_overlap,
             self.per_anchor_source_diagonal_relative_error,
+            self.per_anchor_candidate_cut_current_fraction,
+            self.per_anchor_reference_cut_current_fraction,
         )
         if any(len(values) != len(self.source_nodes) for values in per_anchor_vectors):
             raise ValueError("per-anchor metric vectors must align with source_nodes")
@@ -1814,6 +1818,15 @@ class BoundedFidelityResult:
             raise ValueError("top-k overlap must be in [0, 1]")
         if any(value > 1.0 for value in self.per_anchor_rank_inversion_fraction):
             raise ValueError("rank-inversion fraction must be in [0, 1]")
+        if any(
+            value > 1.0
+            for values in (
+                self.per_anchor_candidate_cut_current_fraction,
+                self.per_anchor_reference_cut_current_fraction,
+            )
+            for value in values
+        ):
+            raise ValueError("cut-current fractions must be in [0, 1]")
         for name, value in asdict(self).items():
             if isinstance(value, float) and not math.isfinite(value):
                 raise ValueError(f"{name} must be finite")
@@ -2823,6 +2836,12 @@ def _evaluate_bounded_domain_fidelity(
         ),
         reference_boundary_harmonic_max=float(
             np.max(reference_harmonic, initial=0.0)
+        ),
+        per_anchor_candidate_cut_current_fraction=tuple(
+            float(value) for value in candidate_cut
+        ),
+        per_anchor_reference_cut_current_fraction=tuple(
+            float(value) for value in reference_cut
         ),
         candidate_cut_current_fraction_max=float(np.max(candidate_cut)),
         reference_cut_current_fraction_max=float(np.max(reference_cut)),

@@ -239,7 +239,7 @@ def test_reference_truncation_counts_the_omitted_final_shell() -> None:
     _batches, domains, _boundaries, _shells, _maximum, blocks = plan._freeze_domains(
         (batch,), internal, adjacency, plan._TouchBudget(100_000)
     )
-    assert blocks == []
+    assert blocks == ["audit_shell_inadequate"]
     reference = next(row for row in domains if row["role"] == "R_top")
     assert reference["realized_nodes"] == 4096
     assert reference["truncated_final_shell_nodes"] == 5
@@ -315,8 +315,8 @@ def test_ready_plan_is_balanced_nested_local_only_and_byte_deterministic(
     assert manifest["diffusion_or_fidelity_metrics_computed"] is False
     assert manifest["calibration_solve_authorized"] is True
     assert manifest["audit_solve_authorized"] is False
-    assert manifest["schema"] == "pearltrees-hop-fidelity-plan-v2"
-    assert manifest["algorithm"] == "outcome-blind-nested-hop-plan-v2"
+    assert manifest["schema"] == "pearltrees-hop-fidelity-plan-v3"
+    assert manifest["algorithm"] == "outcome-blind-nested-hop-plan-v3"
     assert manifest["aggregate"] == {
         "audit_batches": 24,
         "calibration_batches": 8,
@@ -371,6 +371,12 @@ def test_ready_plan_is_balanced_nested_local_only_and_byte_deterministic(
     shells = _jsonl(first / "calibration_shells.jsonl")
     assert len(shells) == 32
     assert all(row["strictly_interior_pass"] is True for row in shells)
+    audit_shells = _jsonl(first / "audit_shells.jsonl")
+    assert len(audit_shells) == 96
+    assert all(row["strictly_interior_pass"] is True for row in audit_shells)
+    assert not {row["anchor_node_id"] for row in shells}.intersection(
+        row["anchor_node_id"] for row in audit_shells
+    )
     bootstrap = _jsonl(first / "bootstrap_multiplicities.jsonl")
     assert len(bootstrap) == 9999
     assert bootstrap[0] == {
@@ -403,6 +409,10 @@ def test_ready_plan_is_balanced_nested_local_only_and_byte_deterministic(
         "replicate_index": 0,
     }
     assert all(sum(row["multiplicities"]) == 24 for row in bootstrap)
+    assert min(
+        sum(multiplicity > 0 for multiplicity in row["multiplicities"])
+        for row in bootstrap
+    ) >= 10
     statistical = manifest["fingerprint_core"]["statistical_contract"]
     assert statistical["minimum_complete_audit_batches"] == 18
     assert statistical["allowed_calibration_lock_modes"] == [
