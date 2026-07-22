@@ -152,6 +152,45 @@ test(field_field_combined, [condition(clang_available)]) :-
     build_run(Dir, 'fc2', "$1 > $2 && $2 > 0 { print $0 }\n", "5 3\n5 -1\n1 2\n", Out),
     assertion(Out == "5 3\n"), !.
 
+% --- arithmetic-expression patterns ($I ARITH K CMP int) -------------------
+
+% `$1 + 0 > 5` parses to field_arith_cmp.
+test(field_arith_pattern_parses) :-
+    plawk_parse_string("$1 + 0 > 5 { print $0 }\n",
+        program([], [rule(field_arith_cmp(1, add, 0, gt, 5), [print([field(0)])])], [])),
+    !.
+
+% `$1 + 0 > 5` is the force-numeric comparison idiom.
+test(field_arith_plus_zero, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'a0', "$1 + 0 > 5 { print $0 }\n", "3\n8\n5\n10\n", Out),
+    assertion(Out == "8\n10\n"), !.
+
+% `$1 % 2 == 0` selects even values.
+test(field_arith_mod_even, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'am', "$1 % 2 == 0 { print $0 }\n", "1\n2\n3\n4\n", Out),
+    assertion(Out == "2\n4\n"), !.
+
+% `$2 * 2 >= 10` scales a field, and composes with a field-equality guard.
+test(field_arith_mul_combined, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'ac', "$2 * 2 >= 10 && $1 == \"x\" { print $2 }\n",
+        "x 6\ny 9\nx 3\n", Out),
+    assertion(Out == "6\n"), !.
+
+% `$1 - 1 == 0` offsets a field.
+test(field_arith_sub, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'as', "$1 - 1 == 0 { print \"one\" }\n", "1\n2\n1\n", Out),
+    assertion(Out == "one\none\n"), !.
+
+% A non-numeric field evaluates as 0 in the arithmetic (plawk field arithmetic).
+test(field_arith_nonnumeric_zero, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'an', "$1 + 0 == 0 { print \"z\" }\n", "abc\n5\n", Out),
+    assertion(Out == "z\n"), !.
+
 :- end_tests(plawk_expr_pattern).
 
 % --- helpers ---------------------------------------------------------------

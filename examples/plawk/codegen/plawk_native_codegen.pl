@@ -16258,6 +16258,12 @@ plawk_pattern_guard_ir(field_cmp2(I, Op, J), FieldSeparator, GuardIR) :-
     integer(J), J > 0,
     plawk_field_cmp2_guard_ir(I, Op, J, FieldSeparator,
         plawk_surface_ffcmp, '%is_match', GuardIR).
+% Arithmetic-expression pattern `$I ARITH K CMP int` (single-rule guard).
+plawk_pattern_guard_ir(field_arith_cmp(I, ArithOp, K, Op, RHS), FieldSeparator, GuardIR) :-
+    integer(FieldSeparator),
+    integer(I), I > 0,
+    plawk_field_arith_cmp_guard_ir(I, ArithOp, K, Op, RHS, FieldSeparator,
+        plawk_surface_facmp, '%is_match', GuardIR).
 % Expression pattern `length OP int` (single-rule guard): the current record's
 % byte length ($0) compared to the literal.
 plawk_pattern_guard_ir(special_cmp(length, Op, Value), FieldSeparator, ''-GuardCallIR) :-
@@ -16361,6 +16367,34 @@ plawk_pattern_guard_ir(field_cmp2(I, Op, J), FieldSeparator, GlobalBase, MatchVa
     integer(I), I > 0,
     integer(J), J > 0,
     plawk_field_cmp2_guard_ir(I, Op, J, FieldSeparator, GlobalBase, MatchValue, GuardIR).
+% Arithmetic-expression pattern `$I ARITH K CMP int` (multi-rule guard).
+plawk_pattern_guard_ir(field_arith_cmp(I, ArithOp, K, Op, RHS), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
+    integer(FieldSeparator),
+    integer(I), I > 0,
+    plawk_field_arith_cmp_guard_ir(I, ArithOp, K, Op, RHS, FieldSeparator, GlobalBase, MatchValue, GuardIR).
+% `$I ARITH K CMP RHS` shared guard: parse field I as a signed i64 (non-numeric
+% -> 0, matching plawk field arithmetic), apply the integer arithmetic op with
+% K, then icmp the result against RHS. `%` is srem (parser guarantees K != 0).
+plawk_field_arith_cmp_guard_ir(I, ArithOp, K, Op, RHS, FieldSeparator, Base,
+        MatchValue, ''-GuardCallIR) :-
+    plawk_icmp_pred(Op, Pred),
+    plawk_field_arith_llvm_op(ArithOp, LLVMOp),
+    format(atom(ParseBase), '~w_fa~w', [Base, I]),
+    llvm_emit_atom_field_i64('%line', I, FieldSeparator, ParseBase, ParseIR),
+    format(atom(GuardCallIR),
+'~w
+  %~w_num = select i1 %~w_ok, i64 %~w_value, i64 0
+  %~w_ar = ~w i64 %~w_num, ~w
+  ~w = icmp ~w i64 %~w_ar, ~w',
+        [ParseIR,
+         ParseBase, ParseBase, ParseBase,
+         ParseBase, LLVMOp, ParseBase, K,
+         MatchValue, Pred, ParseBase, RHS]).
+
+plawk_field_arith_llvm_op(add, add).
+plawk_field_arith_llvm_op(sub, sub).
+plawk_field_arith_llvm_op(mul, mul).
+plawk_field_arith_llvm_op(mod, srem).
 % Field-vs-field POSIX strnum comparison shared by the single- and multi-rule
 % pattern guards. @wam_atom_field_slice_value returns bounded spans whose
 % interior fields are not NUL-terminated, so pass their pointers and lengths to
