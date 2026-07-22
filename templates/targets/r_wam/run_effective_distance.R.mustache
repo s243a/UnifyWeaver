@@ -164,7 +164,6 @@ compute_rows <- function(article_pairs, roots) {
 }
 
 main <- function(args) {
-  total_t0 <- proc.time()[["elapsed"]]
   if (length(args) < 1L) {
     cat("Usage: Rscript run_effective_distance.R <benchmark-data-dir> [reps]\n",
         file = stderr())
@@ -183,9 +182,11 @@ main <- function(args) {
     quit(status = 1L)
   }
 
-  # Setup complete (Rscript start + generated-program / FactSource load +
-  # article/root TSV load). total_ms = setup + one query (median).
-  setup_ms <- as.integer(round((proc.time()[["elapsed"]] - total_t0) * 1000))
+  # proc.time()["elapsed"] is measured from R process start, so this
+  # includes interpreter startup, generated-program / FactSource load,
+  # and article/root TSV load. total_ms represents setup plus one median
+  # query rather than the wall time of all benchmark repetitions.
+  setup_ms <- as.integer(round(proc.time()[["elapsed"]] * 1000))
   query_ms_samples <- integer(0)
   rows <- list()
   for (rep in seq_len(reps)) {

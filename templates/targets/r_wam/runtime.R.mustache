@@ -3578,7 +3578,12 @@ WamRuntime$aggregate_result <- function(kind, collected, table) {
       total <- total + n
       if (identical(item$tag, "float")) saw_float <- TRUE
     }
-    if (saw_float || total != as.integer(total)) return(FloatTerm(total))
+    # as.integer() returns NA outside R's signed-32-bit range. Guard the
+    # conversion explicitly so a valid large aggregate becomes a float
+    # term instead of crashing an `if` with an NA condition.
+    if (saw_float || !is.finite(total) ||
+        total > .Machine$integer.max || total < (-.Machine$integer.max - 1) ||
+        total != trunc(total)) return(FloatTerm(total))
     return(IntTerm(as.integer(total)))
   }
   if (identical(k, "min") || identical(k, "max")) {

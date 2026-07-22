@@ -24,6 +24,9 @@ test(generate_kernels_on_functions_emits_runner_kernel_and_factsource) :-
             assertion(once(sub_string(Runner, _, _, _, 'root_category'))),
             assertion(once(sub_string(Runner, _, _, _, 'query_ms='))),
             assertion(once(sub_string(Runner, _, _, _, 'total_ms='))),
+            assertion(once(sub_string(Runner, _, _, _,
+                'proc.time()[["elapsed"]] * 1000'))),
+            assertion(\+ sub_string(Runner, _, _, _, 'total_t0')),
             assertion(once(sub_string(Runner, _, _, _, 'KERNEL_MODE <- "kernels_on"'))),
             assertion(once(sub_string(Runner, _, _, _, 'EMIT_MODE'))),
             assertion(once(sub_string(Runner, _, _, _, 'functions'))),
@@ -92,6 +95,10 @@ e2e_r_effective_distance(EmitMode) :-
             assertion(once(sub_string(Err, _, _, _, 'query_ms='))),
             assertion(once(sub_string(Err, _, _, _, 'total_ms='))),
             assertion(once(sub_string(Err, _, _, _, 'row_count='))),
+            metric_value(Err, "query_ms", QueryMs),
+            metric_value(Err, "total_ms", TotalMs),
+            assertion(QueryMs >= 0),
+            assertion(TotalMs >= QueryMs),
             assertion(once(sub_string(Out, _, _, _, 'root_category'))),
             assertion(once(sub_string(Out, _, _, _, 'Special_relativity'))),
             assertion(once(sub_string(Out, _, _, _, '0.993073'))),
@@ -121,6 +128,14 @@ count_tsv_data_rows(Out, N) :-
     ->  length(Rows, N)
     ;   N = 0
     ).
+
+metric_value(Text, Key, Value) :-
+    split_string(Text, "\n", "\r\n", Lines),
+    string_concat(Key, "=", Prefix),
+    member(Line, Lines),
+    string_concat(Prefix, Raw, Line),
+    number_string(Value, Raw),
+    !.
 
 rscript_available :-
     catch((
