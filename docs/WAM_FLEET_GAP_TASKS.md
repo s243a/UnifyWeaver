@@ -55,7 +55,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | ISO-SCALA | ISO three-form (new) | Scala | L | — |
 | ISO-R-0 ✅ | shared wiring + `is/2` vertical slice | R | M | done (partial adopter) |
 | ISO-R-1 ✅ | pre-existing catch/throw substrate | R | — | validated (`catch_throw_dyn_aggregator_e2e_rscript`) |
-| ISO-R-2A | arithmetic comparisons | R | S | ISO-R-0 | ✅ |
+| ISO-R-2A ✅ | arithmetic comparisons | R | S | done |
 | ISO-R-2B | successor + adoption closeout | R | S | ISO-R-2A |
 | ISO-PYTHON | ISO three-form (finish) | Python | S | — |
 | ISO-FSHARP | ISO three-form (finish) | F# | S | — |
@@ -479,6 +479,7 @@ plumbing there.
   complete adoption checklist in
   `docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md`.
   Do **not** claim full R ISO adoption until R-2B lands.
+
 ### ISO-R (ledger parent): New ISO three-form adoption for WAM R target
 - **Lever:** ISO three-form  **Target:** R  **Size:** L  **Depends on:** —
 - **Goal:** Bring the WAM R target from non-adopter to full ISO three-form

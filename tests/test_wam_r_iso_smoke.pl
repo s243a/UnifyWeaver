@@ -141,6 +141,11 @@ assert_iso_helpers :-
         catch('<_iso'(1/0, 3), error(evaluation_error(zero_divisor), _), true))),
     assertz((user:r_lt_iso_zdiv_r :-
         catch('<_iso'(3, 1/0), error(evaluation_error(zero_divisor), _), true))),
+    % Fleet-wide precedence scans both operands before evaluation.
+    assertz((user:r_lt_iso_precedence_inst :-
+        catch('<_iso'(foo, _), error(instantiation_error, _), true))),
+    assertz((user:r_lt_iso_precedence_zdiv :-
+        catch('<_iso'(foo, 1/0), error(evaluation_error(zero_divisor), _), true))),
     assertz((user:r_gt_iso_inst :-
         catch('>_iso'(_, 3), error(instantiation_error, _), true))),
     assertz((user:r_ge_iso_type :-
@@ -177,6 +182,7 @@ retract_iso_helpers :-
         r_lt_iso_inst_l/0, r_lt_iso_inst_r/0,
         r_lt_iso_type_l/0, r_lt_iso_type_r/0,
         r_lt_iso_zdiv_l/0, r_lt_iso_zdiv_r/0,
+        r_lt_iso_precedence_inst/0, r_lt_iso_precedence_zdiv/0,
         r_gt_iso_inst/0, r_ge_iso_type/0, r_le_iso_zdiv/0,
         r_eq_iso_type/0, r_ne_iso_inst/0,
         r_lt_lax_bad/0, r_eq_lax_bad/0,
@@ -242,6 +248,7 @@ main :-
         [user:r_lt_iso_inst_l/0, user:r_lt_iso_inst_r/0,
          user:r_lt_iso_type_l/0, user:r_lt_iso_type_r/0,
          user:r_lt_iso_zdiv_l/0, user:r_lt_iso_zdiv_r/0,
+         user:r_lt_iso_precedence_inst/0, user:r_lt_iso_precedence_zdiv/0,
          user:r_gt_iso_inst/0, user:r_ge_iso_type/0,
          user:r_le_iso_zdiv/0, user:r_eq_iso_type/0,
          user:r_ne_iso_inst/0],
@@ -252,6 +259,8 @@ main :-
          '<_iso type R'-'r_lt_iso_type_r/0',
          '<_iso zdiv L'-'r_lt_iso_zdiv_l/0',
          '<_iso zdiv R'-'r_lt_iso_zdiv_r/0',
+         'cmp precedence instantiation'-'r_lt_iso_precedence_inst/0',
+         'cmp precedence zero_divisor'-'r_lt_iso_precedence_zdiv/0',
          '>_iso inst'-'r_gt_iso_inst/0',
          '>=_iso type'-'r_ge_iso_type/0',
          '=<_iso zdiv'-'r_le_iso_zdiv/0',
@@ -285,12 +294,15 @@ main :-
     run_project('cmp functions mode ISO + explicit',
         [user:r_cmp_ok/0, user:r_cmp_false/0,
          user:r_lt_iso_type_l/0, user:r_lt_lax_bad/0,
+         user:r_lt_iso_precedence_inst/0, user:r_lt_iso_precedence_zdiv/0,
          user:r_cmp_plain_zdiv/0],
         [emit_mode(functions), iso_errors(true)],
         ['functions cmp ok'-'r_cmp_ok/0',
          'functions cmp false'-'r_cmp_false/0',
          'functions <_iso type'-'r_lt_iso_type_l/0',
          'functions <_lax silent'-'r_lt_lax_bad/0',
+         'functions precedence instantiation'-'r_lt_iso_precedence_inst/0',
+         'functions precedence zero_divisor'-'r_lt_iso_precedence_zdiv/0',
          'functions default zdiv'-'r_cmp_plain_zdiv/0']),
 
     retract_iso_helpers,

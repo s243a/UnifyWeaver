@@ -2095,6 +2095,17 @@ WamRuntime$builtin_is_lax <- function(program, state) {
 }
 
 # ISO is/2: structured errors; classify unbound → zero_div → type_error.
+WamRuntime$eval_arith_iso_value <- function(program, state, expr) {
+  table <- program$intern_table
+  n <- WamRuntime$eval_arith(state, expr, table)
+  if (is.null(n)) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_type_error(table, "evaluable",
+        WamRuntime$iso_arith_culprit(state, expr, table)))
+  }
+  n
+}
+
 WamRuntime$eval_arith_iso <- function(program, state, expr) {
   table <- program$intern_table
   if (WamRuntime$iso_term_contains_unbound(state, expr)) {
@@ -2105,13 +2116,7 @@ WamRuntime$eval_arith_iso <- function(program, state, expr) {
     WamRuntime$throw_iso_error(state, table,
       WamRuntime$make_evaluation_error(table, "zero_divisor"))
   }
-  n <- WamRuntime$eval_arith(state, expr, table)
-  if (is.null(n)) {
-    WamRuntime$throw_iso_error(state, table,
-      WamRuntime$make_type_error(table, "evaluable",
-        WamRuntime$iso_arith_culprit(state, expr, table)))
-  }
-  n
+  WamRuntime$eval_arith_iso_value(program, state, expr)
 }
 
 WamRuntime$builtin_is_iso <- function(program, state) {
@@ -2170,10 +2175,24 @@ WamRuntime$builtin_arith_compare_lax <- function(program, state, op) {
   isTRUE(WamRuntime$arith_compare_apply(op, a, b))
 }
 
-# ISO: per-operand classify (unbound → zero_divisor → non-evaluable), left then right.
+# ISO: scan both operands for the fleet-wide precedence before evaluating
+# either one: unbound → zero_divisor → first non-evaluable operand.
 WamRuntime$builtin_arith_compare_iso <- function(program, state, op) {
-  a <- WamRuntime$eval_arith_iso(program, state, WamRuntime$get_reg(state, 1L))
-  b <- WamRuntime$eval_arith_iso(program, state, WamRuntime$get_reg(state, 2L))
+  table <- program$intern_table
+  a_expr <- WamRuntime$get_reg(state, 1L)
+  b_expr <- WamRuntime$get_reg(state, 2L)
+  if (WamRuntime$iso_term_contains_unbound(state, a_expr) ||
+      WamRuntime$iso_term_contains_unbound(state, b_expr)) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_instantiation_error(table))
+  }
+  if (WamRuntime$iso_term_has_zero_divide_t(state, a_expr, table) ||
+      WamRuntime$iso_term_has_zero_divide_t(state, b_expr, table)) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_evaluation_error(table, "zero_divisor"))
+  }
+  a <- WamRuntime$eval_arith_iso_value(program, state, a_expr)
+  b <- WamRuntime$eval_arith_iso_value(program, state, b_expr)
   isTRUE(WamRuntime$arith_compare_apply(op, a, b))
 }
 

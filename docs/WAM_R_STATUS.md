@@ -57,6 +57,7 @@ default 4096), and explicit `auto` (codegen resolves via shared
   comparison families (`<_iso`/`<_lax` … `=\=_iso`/`=\=_lax`). The
   pre-existing catch/throw substrate is already covered end-to-end;
   `succ` remains ISO-R-2B. Do not claim complete ISO-R yet.
+- No dedicated effective-distance cross-target bench row.
 
 ## Path forward
 
