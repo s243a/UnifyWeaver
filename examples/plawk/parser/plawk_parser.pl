@@ -974,6 +974,9 @@ base_pattern(Pattern) -->
     field_match_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
+    field_arith_cmp_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
     field_field_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
@@ -1272,6 +1275,33 @@ field_i64_cmp_pattern(field_cmp(Index, Op, Value)) -->
       number_codes(Index, IndexCodes),
       Index > 0
     }.
+
+% Arithmetic-expression pattern: `$I ARITH K CMP int { … }` — a single field
+% combined with one arithmetic op and an integer, compared to an integer, e.g.
+% `$1 + 0 > 5` (force-numeric compare), `$1 % 2 == 0` (even), `$1 * 2 >= 10`.
+% The field is evaluated as a signed i64 (non-numeric -> 0, matching plawk field
+% arithmetic); `%` requires a nonzero divisor. `/` (float division) is a
+% follow-on. Composes with the `!`/`&&`/`||` combinators.
+field_arith_cmp_pattern(field_arith_cmp(I, ArithOp, K, Op, RHS)) -->
+    "$",
+    integer_codes(ICodes),
+    ws,
+    field_arith_op(ArithOp),
+    ws,
+    signed_integer_value(K),
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    signed_integer_value(RHS),
+    { ICodes \== [],
+      number_codes(I, ICodes), I > 0,
+      ( ArithOp == mod -> K =\= 0 ; true )
+    }.
+
+field_arith_op(add) --> "+".
+field_arith_op(sub) --> "-".
+field_arith_op(mul) --> "*".
+field_arith_op(mod) --> "%".
 
 % Field-vs-field comparison pattern: `$I OP $J { … }` (both positive field
 % indexes). Fires when the two field values compare per POSIX strnum rules
