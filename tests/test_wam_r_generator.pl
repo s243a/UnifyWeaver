@@ -4022,12 +4022,10 @@ e2e_kernel_tspd5_via_rscript :-
 
 % ------------------------------------------------------------------
 % End-to-end Rscript run for the category_ancestor kernel.
-% Hierarchical BFS with explicit depth cap (read from
-% user:max_depth/1 at codegen time) and visited-set cycle
-% detection. Result layout is tuple(1) -- yields each reached
-% ancestor. The Visited and Hops slots in the user-side call are
-% inputs / discarded outputs that the native impl doesn't touch.
-% Auto-skips when Rscript is not on PATH.
+% Fleet layout: category_ancestor(+Cat, +Root, -Hops, +Visited).
+% Depth-bounded DFS over the edge predicate streams one hop count
+% per path to Root (shared with Go/Rust/F#). Auto-skips when
+% Rscript is not on PATH.
 % ------------------------------------------------------------------
 test(kernel_ca_e2e_rscript) :-
     once((
@@ -4050,23 +4048,25 @@ e2e_kernel_ca_via_rscript :-
     assertz(user:cparent(dog, poodle)),
     assertz(user:cparent(animal, fish)),
     assertz(user:cparent(fish, salmon)),
-    assertz((user:cat_anc(Cat, Anc, Visited, 0) :-
-        \+ member(Cat, Visited),
-        user:cparent(Cat, Anc))),
-    assertz((user:cat_anc(Cat, Anc, Visited, Hops) :-
-        \+ member(Cat, Visited),
+    assertz((user:cat_anc(Cat, Parent, 1, Visited) :-
+        user:cparent(Cat, Parent),
+        \+ member(Parent, Visited))),
+    assertz((user:cat_anc(Cat, Ancestor, Hops, Visited) :-
+        max_depth(MaxD),
+        length(Visited, Depth),
+        Depth < MaxD, !,
         user:cparent(Cat, Mid),
-        user:cat_anc(Mid, Anc, [Cat | Visited], Hops0),
-        Hops is Hops0 + 1)),
-    assertz((user:ca_direct  :- cat_anc(animal, mammal, [], _))),
-    assertz((user:ca_two     :- cat_anc(animal, dog, [], _))),
-    assertz((user:ca_three   :- cat_anc(animal, poodle, [], _))),
-    assertz((user:ca_branch  :- cat_anc(animal, salmon, [], _))),
-    assertz((user:ca_no_back :- cat_anc(mammal, animal, [], _))),
+        \+ member(Mid, Visited),
+        user:cat_anc(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1)),
+    assertz((user:ca_direct  :- cat_anc(animal, mammal, 1, []))),
+    assertz((user:ca_two     :- cat_anc(animal, dog, 2, []))),
+    assertz((user:ca_three   :- cat_anc(animal, poodle, 3, []))),
+    assertz((user:ca_branch  :- cat_anc(animal, salmon, 2, []))),
+    assertz((user:ca_no_back :- cat_anc(mammal, animal, _, []))),
     assertz((user:ca_findall :-
-        findall(A, cat_anc(animal, A, [], _), L),
-        msort(L, S),
-        S == [dog, fish, mammal, poodle, salmon])),
+        findall(H, cat_anc(animal, poodle, H, []), L),
+        L == [3])),
     unique_r_tmp_dir('tmp_r_kernel_ca_e2e', TmpDir),
     write_wam_r_project(
         [user:cparent/2, user:cat_anc/4,
@@ -4092,8 +4092,8 @@ e2e_kernel_ca_via_rscript :-
     assertion(sub_string(Code, _, _, _, 'pred_cat_anc_kernel_ca <- function(')),
     assertion(sub_string(Code, _, _, _,
         'assign("cat_anc/4", pred_cat_anc_kernel_ca, envir = shared_program$lowered_dispatch)')),
-    % max_depth(3) should be embedded into the generated dispatch call.
-    assertion(sub_string(Code, _, _, _, '3L, source, ancestor')),
+    % max_depth(3) + fleet hops regs should be embedded in the dispatch call.
+    assertion(sub_string(Code, _, _, _, '3L, source, root, hops, visited')),
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------

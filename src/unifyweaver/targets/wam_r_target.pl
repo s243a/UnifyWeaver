@@ -1406,12 +1406,16 @@ emit_kernel(Pred, recursive_kernel(category_ancestor, _, ConfigOps),
     r_pred_name(Pred, RName),
     format(atom(FuncName), '~w_kernel_ca', [RName]),
     DataDecl = "",
+    % Fleet layout: Cat=A1, Root=A2, Hops=A3 (streamed), Visited=A4.
     format(string(LoweredFunc),
 '~w <- function(program, state) {
-  source   <- WamRuntime$get_reg(state, 1L)
-  ancestor <- WamRuntime$get_reg(state, 2L)
+  source  <- WamRuntime$get_reg(state, 1L)
+  root    <- WamRuntime$get_reg(state, 2L)
+  hops    <- WamRuntime$get_reg(state, 3L)
+  visited <- WamRuntime$get_reg(state, 4L)
   WamRuntime$category_ancestor(program, state, "~w/4", "~w", "~w/2",
-                                ~wL, source, ancestor, state$pc + 1L)
+                                ~wL, source, root, hops, visited,
+                                state$pc + 1L)
 }',
            [FuncName, Pred, EdgePred, EdgePred, MaxDepth]).
 emit_kernel(Pred, recursive_kernel(astar_shortest_path4, _, ConfigOps),
