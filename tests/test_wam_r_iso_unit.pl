@@ -153,4 +153,26 @@ test(iso_errors_project_generation_selects_concrete_key) :-
         )
     )).
 
+test(iso_errors_project_generation_preserves_module_scope) :-
+    once((
+        TmpDir = '/tmp/uw_r_iso_module_scope_unit',
+        catch(delete_directory_and_contents(TmpDir), _, true),
+        setup_call_cleanup(
+            assertz((mod_b:r_iso_scope_demo :- X is 1 + 2, X == 3)),
+            (   write_wam_r_project(
+                    [mod_b:r_iso_scope_demo/0],
+                    [iso_errors(false),
+                     iso_errors(mod_a:r_iso_scope_demo/0, true)],
+                    TmpDir),
+                string_concat(TmpDir, '/R/generated_program.R', ProgPath),
+                read_file_to_string(ProgPath, Code, []),
+                assertion(sub_string(Code, _, _, _, "is_lax/2")),
+                assertion(\+ sub_string(Code, _, _, _, 'BuiltinCall("is_iso/2"'))
+            ),
+            (   retractall(mod_b:r_iso_scope_demo),
+                catch(delete_directory_and_contents(TmpDir), _, true)
+            )
+        )
+    )).
+
 :- end_tests(wam_r_iso_errors_config).
