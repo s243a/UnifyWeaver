@@ -1,8 +1,8 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 %
-% test_wam_r_iso_unit.pl - Prolog-only unit tests for R WAM ISO-R-0
-% (shared config/rewrite/audit + is/2 key table). End-to-end generated-R
-% behaviour is covered by tests/test_wam_r_iso_smoke.pl.
+% test_wam_r_iso_unit.pl - Prolog-only unit tests for R WAM ISO-R-0/2A
+% (shared config/rewrite/audit + is/2 + six arithmetic-compare families).
+% End-to-end generated-R behaviour is covered by tests/test_wam_r_iso_smoke.pl.
 
 :- encoding(utf8).
 :- use_module(library(plunit)).
@@ -117,6 +117,50 @@ test(iso_errors_text_rewrite_per_pred_override) :-
     iso_errors_rewrite_text(Config, other/0, Wam2, OutWam2),
     assertion(sub_string(OutWam2, _, _, _, "builtin_call is_iso/2 2")).
 
+test(iso_errors_text_rewrite_comparison_iso) :-
+    Wam0 = 'cmp/0:\n  builtin_call </2 2\n  builtin_call >/2 2\n  builtin_call >=/2 2\n  builtin_call =</2 2\n  builtin_call =:=/2 2\n  builtin_call =\\=/2 2',
+    iso_errors_rewrite_text(iso_config(true, []), cmp/0, Wam0, IsoWam),
+    assertion(sub_string(IsoWam, _, _, _, "builtin_call <_iso/2 2")),
+    assertion(sub_string(IsoWam, _, _, _, "builtin_call >_iso/2 2")),
+    assertion(sub_string(IsoWam, _, _, _, "builtin_call >=_iso/2 2")),
+    assertion(sub_string(IsoWam, _, _, _, "builtin_call =<_iso/2 2")),
+    assertion(sub_string(IsoWam, _, _, _, "builtin_call =:=_iso/2 2")),
+    assertion(sub_string(IsoWam, _, _, _, "builtin_call =\\=_iso/2 2")).
+
+test(iso_errors_text_rewrite_comparison_lax) :-
+    Wam0 = 'cmp/0:\n  builtin_call </2 2\n  builtin_call >/2 2\n  builtin_call =:=/2 2',
+    iso_errors_rewrite_text(iso_config(false, []), cmp/0, Wam0, LaxWam),
+    assertion(sub_string(LaxWam, _, _, _, "builtin_call <_lax/2 2")),
+    assertion(sub_string(LaxWam, _, _, _, "builtin_call >_lax/2 2")),
+    assertion(sub_string(LaxWam, _, _, _, "builtin_call =:=_lax/2 2")).
+
+test(iso_errors_text_rewrite_comparison_shapes) :-
+    Wam0 = 'cmp/0:\n  put_structure </2, A1\n  call </2 2\n  execute </2\n  proceed',
+    iso_errors_rewrite_text(iso_config(true, []), cmp/0, Wam0, IsoWam),
+    assertion(sub_string(IsoWam, _, _, _, "put_structure <_iso/2")),
+    assertion(sub_string(IsoWam, _, _, _, "call <_iso/2")),
+    assertion(sub_string(IsoWam, _, _, _, "execute <_iso/2")),
+    iso_errors_rewrite_text(iso_config(false, []), cmp/0, Wam0, LaxWam),
+    assertion(sub_string(LaxWam, _, _, _, "put_structure <_lax/2")),
+    assertion(sub_string(LaxWam, _, _, _, "call <_lax/2")),
+    assertion(sub_string(LaxWam, _, _, _, "execute <_lax/2")).
+
+test(iso_errors_text_rewrite_comparison_explicit_survives) :-
+    Wam0 = 'cmp/0:\n  builtin_call <_iso/2 2\n  builtin_call >_lax/2 2\n  proceed',
+    iso_errors_rewrite_text(iso_config(true, []), cmp/0, Wam0, IsoWam),
+    assertion(sub_string(IsoWam, _, _, _, "builtin_call <_iso/2 2")),
+    assertion(sub_string(IsoWam, _, _, _, "builtin_call >_lax/2 2")),
+    iso_errors_rewrite_text(iso_config(false, []), cmp/0, Wam0, LaxWam),
+    assertion(sub_string(LaxWam, _, _, _, "builtin_call <_iso/2 2")),
+    assertion(sub_string(LaxWam, _, _, _, "builtin_call >_lax/2 2")).
+
+test(iso_errors_text_rewrite_succ_not_yet) :-
+    % ISO-R-2B owns succ_*; R must not rewrite succ/2 yet.
+    Wam0 = 'succ_demo/0:\n  builtin_call succ/2 2',
+    iso_errors_rewrite_text(iso_config(true, []), succ_demo/0, Wam0, IsoWam),
+    assertion(sub_string(IsoWam, _, _, _, "builtin_call succ/2 2")),
+    \+ sub_string(IsoWam, _, _, _, "succ_iso").
+
 test(iso_errors_audit_structure) :-
     setup_call_cleanup(
         assertz((user:r_iso_audit_pred :- X is 1 + 2, X = 3)),
@@ -131,6 +175,21 @@ test(iso_errors_audit_structure) :-
             ))
         ),
         retractall(user:r_iso_audit_pred)).
+
+test(iso_errors_audit_comparison) :-
+    setup_call_cleanup(
+        assertz((user:r_iso_audit_cmp :- 1 < 2, 3 > 2)),
+        (   wam_r_iso_audit(
+                [user:r_iso_audit_cmp/0],
+                [iso_errors(true)],
+                Audit),
+            assertion((
+                Audit = [audit(user:r_iso_audit_cmp/0, true, Sites)],
+                memberchk(site(_, "</2", "<_iso/2", default, true), Sites),
+                memberchk(site(_, ">/2", ">_iso/2", default, true), Sites)
+            ))
+        ),
+        retractall(user:r_iso_audit_cmp)).
 
 test(iso_errors_project_generation_selects_concrete_key) :-
     once((
@@ -148,6 +207,28 @@ test(iso_errors_project_generation_selects_concrete_key) :-
                 assertion(\+ sub_string(Code, _, _, _, 'BuiltinCall("is/2"'))
             ),
             (   retractall(user:r_iso_rewrite_demo),
+                catch(delete_directory_and_contents(TmpDir), _, true)
+            )
+        )
+    )).
+
+test(iso_errors_project_generation_comparison_keys) :-
+    once((
+        TmpDir = '/tmp/uw_r_iso_cmp_rewrite_unit',
+        catch(delete_directory_and_contents(TmpDir), _, true),
+        setup_call_cleanup(
+            assertz((user:r_iso_cmp_rewrite :- 1 < 2, 4 =:= 2 + 2)),
+            (   write_wam_r_project(
+                    [user:r_iso_cmp_rewrite/0],
+                    [iso_errors(true)],
+                    TmpDir),
+                string_concat(TmpDir, '/R/generated_program.R', ProgPath),
+                read_file_to_string(ProgPath, Code, []),
+                assertion(sub_string(Code, _, _, _, "<_iso/2")),
+                assertion(sub_string(Code, _, _, _, "=:=_iso/2")),
+                assertion(\+ sub_string(Code, _, _, _, 'BuiltinCall("</2"'))
+            ),
+            (   retractall(user:r_iso_cmp_rewrite),
                 catch(delete_directory_and_contents(TmpDir), _, true)
             )
         )

@@ -2095,10 +2095,8 @@ WamRuntime$builtin_is_lax <- function(program, state) {
 }
 
 # ISO is/2: structured errors; classify unbound → zero_div → type_error.
-WamRuntime$builtin_is_iso <- function(program, state) {
+WamRuntime$eval_arith_iso <- function(program, state, expr) {
   table <- program$intern_table
-  target <- WamRuntime$get_reg(state, 1L)
-  expr   <- WamRuntime$get_reg(state, 2L)
   if (WamRuntime$iso_term_contains_unbound(state, expr)) {
     WamRuntime$throw_iso_error(state, table,
       WamRuntime$make_instantiation_error(table))
@@ -2113,9 +2111,70 @@ WamRuntime$builtin_is_iso <- function(program, state) {
       WamRuntime$make_type_error(table, "evaluable",
         WamRuntime$iso_arith_culprit(state, expr, table)))
   }
+  n
+}
+
+WamRuntime$builtin_is_iso <- function(program, state) {
+  target <- WamRuntime$get_reg(state, 1L)
+  expr   <- WamRuntime$get_reg(state, 2L)
+  n <- WamRuntime$eval_arith_iso(program, state, expr)
   res <- WamRuntime$arith_to_term(n)
   if (is.null(res)) return(FALSE)
   WamRuntime$unify(state, target, res)
+}
+
+# ISO-R-2A: parameterized arithmetic comparisons (six families × three forms).
+WamRuntime$arith_compare_apply <- function(op, a, b) {
+  switch(op,
+    "<"   = a <  b,
+    ">"   = a >  b,
+    ">="  = a >= b,
+    "=<"  = a <= b,
+    "=:=" = a == b,
+    "=\\=" = a != b,
+    FALSE
+  )
+}
+
+# Map BuiltinCall / Execute keys → list(op, mode) where mode is lax|iso.
+WamRuntime$arith_compare_key_info <- function(pred) {
+  switch(pred,
+    "</2"        = list(op = "<",    mode = "lax"),
+    "<_lax/2"    = list(op = "<",    mode = "lax"),
+    "<_iso/2"    = list(op = "<",    mode = "iso"),
+    ">/2"        = list(op = ">",    mode = "lax"),
+    ">_lax/2"    = list(op = ">",    mode = "lax"),
+    ">_iso/2"    = list(op = ">",    mode = "iso"),
+    ">=/2"       = list(op = ">=",   mode = "lax"),
+    ">=_lax/2"   = list(op = ">=",   mode = "lax"),
+    ">=_iso/2"   = list(op = ">=",   mode = "iso"),
+    "=</2"       = list(op = "=<",   mode = "lax"),
+    "=<_lax/2"   = list(op = "=<",   mode = "lax"),
+    "=<_iso/2"   = list(op = "=<",   mode = "iso"),
+    "=:="/2"     = list(op = "=:=",  mode = "lax"),
+    "=:=_lax/2"  = list(op = "=:=",  mode = "lax"),
+    "=:=_iso/2"  = list(op = "=:=",  mode = "iso"),
+    "=\\=/2"     = list(op = "=\\=", mode = "lax"),
+    "=\\=_lax/2" = list(op = "=\\=", mode = "lax"),
+    "=\\=_iso/2" = list(op = "=\\=", mode = "iso"),
+    NULL
+  )
+}
+
+# Lax/default: silent fail on bad eval (prior R comparison behaviour).
+WamRuntime$builtin_arith_compare_lax <- function(program, state, op) {
+  table <- program$intern_table
+  a <- WamRuntime$eval_arith(state, WamRuntime$get_reg(state, 1L), table)
+  b <- WamRuntime$eval_arith(state, WamRuntime$get_reg(state, 2L), table)
+  if (is.null(a) || is.null(b)) return(FALSE)
+  isTRUE(WamRuntime$arith_compare_apply(op, a, b))
+}
+
+# ISO: per-operand classify (unbound → zero_divisor → non-evaluable), left then right.
+WamRuntime$builtin_arith_compare_iso <- function(program, state, op) {
+  a <- WamRuntime$eval_arith_iso(program, state, WamRuntime$get_reg(state, 1L))
+  b <- WamRuntime$eval_arith_iso(program, state, WamRuntime$get_reg(state, 2L))
+  isTRUE(WamRuntime$arith_compare_apply(op, a, b))
 }
 
 # Standard Euclidean GCD; both args coerced to non-negative integers.
@@ -5027,20 +5086,15 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
   if (pred == "is_iso/2" && arity == 2L) {
     return(WamRuntime$builtin_is_iso(program, state))
   }
-  # Numeric comparison builtins: eval both args, compare.
-  if (arity == 2L && pred %in% c("=:=/2", "=\\=/2", "</2", ">/2", "=</2", ">=/2")) {
-    a <- WamRuntime$eval_arith(state, WamRuntime$get_reg(state, 1L), table)
-    b <- WamRuntime$eval_arith(state, WamRuntime$get_reg(state, 2L), table)
-    if (is.null(a) || is.null(b)) return(FALSE)
-    return(switch(pred,
-      "=:=/2"  = a == b,
-      "=\\=/2" = a != b,
-      "</2"    = a <  b,
-      ">/2"    = a >  b,
-      "=</2"   = a <= b,
-      ">=/2"   = a >= b,
-      FALSE
-    ))
+  # Arithmetic comparisons (ISO-R-2A): default/_lax/_iso share one helper.
+  if (arity == 2L) {
+    cmp_info <- WamRuntime$arith_compare_key_info(pred)
+    if (!is.null(cmp_info)) {
+      if (identical(cmp_info$mode, "iso")) {
+        return(WamRuntime$builtin_arith_compare_iso(program, state, cmp_info$op))
+      }
+      return(WamRuntime$builtin_arith_compare_lax(program, state, cmp_info$op))
+    }
   }
 
   # Type-check builtins: deref A1, classify.
@@ -5285,9 +5339,10 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
   table <- program$intern_table
   key <- if (grepl("/[0-9]+$", pred)) pred else paste0(pred, "/", arity)
 
-  # Explicit is_iso/is_lax arrive as Execute/Call (not builtin_call).
+  # Explicit is_*/compare_* arrive as Execute/Call (not builtin_call).
   # Delegate to call_builtin so evaluation lives in one place.
-  if (key == "is_iso/2" || key == "is_lax/2") {
+  if (key == "is_iso/2" || key == "is_lax/2" ||
+      !is.null(WamRuntime$arith_compare_key_info(key))) {
     return(WamRuntime$call_builtin(program, state, key, arity))
   }
 

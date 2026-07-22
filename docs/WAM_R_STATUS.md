@@ -52,15 +52,15 @@ default 4096), and explicit `auto` (codegen resolves via shared
   forms (`switch_on_constant_a2`, `_a2_fallthrough`, `switch_on_structure_a2`)
   — map to the existing `SwitchOnTerm()` linear no-op (not optimized A2
   dispatch), preserving the full try/retry/trust chain.
-- **ISO error support** is a **partial adopter** after ISO-R-0: shared
-  config/rewrite/audit + `is/2` → `is_iso`/`is_lax` vertical slice.
-  The pre-existing catch/throw substrate is already covered end-to-end;
-  comparisons/`succ` remain ISO-R-2A/R-2B. Do not claim complete ISO-R yet.
-- No dedicated effective-distance cross-target bench row.
+- **ISO error support** is a **partial adopter** after ISO-R-0 + ISO-R-2A:
+  shared config/rewrite/audit, `is/2` three-form, and the six arithmetic
+  comparison families (`<_iso`/`<_lax` … `=\=_iso`/`=\=_lax`). The
+  pre-existing catch/throw substrate is already covered end-to-end;
+  `succ` remains ISO-R-2B. Do not claim complete ISO-R yet.
 
 ## Path forward
 
-1. ISO-R-2A arithmetic comparisons; ISO-R-2B successor + adoption closeout.
+1. ISO-R-2B successor (`succ_iso`/`succ_lax`) + adoption closeout.
 2. Effective-distance cross-target matrix row.
 
 ## Document status

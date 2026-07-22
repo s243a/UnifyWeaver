@@ -55,7 +55,7 @@ self-contained so a single coding agent can pick it up in isolation.
 | ISO-SCALA | ISO three-form (new) | Scala | L | — |
 | ISO-R-0 ✅ | shared wiring + `is/2` vertical slice | R | M | done (partial adopter) |
 | ISO-R-1 ✅ | pre-existing catch/throw substrate | R | — | validated (`catch_throw_dyn_aggregator_e2e_rscript`) |
-| ISO-R-2A | arithmetic comparisons | R | S | ISO-R-0 |
+| ISO-R-2A | arithmetic comparisons | R | S | ISO-R-0 | ✅ |
 | ISO-R-2B | successor + adoption closeout | R | S | ISO-R-2A |
 | ISO-PYTHON | ISO three-form (finish) | Python | S | — |
 | ISO-FSHARP | ISO three-form (finish) | F# | S | — |
@@ -450,12 +450,13 @@ plumbing there.
 
 ### ISO-R-0 ✅: shared ISO wiring + `is/2` three-form vertical slice
 - **Status:** Landed. Shared `iso_errors` config/rewrite/audit wired into
-  `wam_r_target.pl`; key table registers **only** `is/2` → `is_iso/2` |
-  `is_lax/2`. Runtime helpers live in `runtime.R.mustache`
+  `wam_r_target.pl`; key table initially registered `is/2` → `is_iso/2` |
+  `is_lax/2` (ISO-R-2A later extended comparisons). Runtime helpers live in
+  `runtime.R.mustache`
   (`builtin_is_iso` / `builtin_is_lax` + structured error constructors).
   Existing `catch/3`+`throw/1` substrate is reused by tests but **R remains
   a partial adopter** until all seven “What Counts As Adoption” items are
-  satisfied (comparisons and succ remain).
+  satisfied (`succ` remains ISO-R-2B).
 - **Acceptance:** `tests/test_wam_r_iso_unit.pl` + `tests/test_wam_r_iso_smoke.pl`.
 
 ### ISO-R-1 ✅: pre-existing catch/throw substrate
@@ -464,15 +465,20 @@ plumbing there.
   unification and rethrow, and is covered by
   `catch_throw_dyn_aggregator_e2e_rscript`. No follow-up implementation card.
 
-### ISO-R-2A: arithmetic comparisons
-- **Depends on:** ISO-R-0. Add the six arithmetic-compare ISO/lax families,
-  reusing the existing evaluator and ISO error constructors.
+### ISO-R-2A ✅: arithmetic comparisons
+- **Status:** Landed. Six families (`</2 >/2 =</2 >=/2 =:=/2 =\=/2`) each
+  expose `_iso`/`_lax` via the shared key table + `r_iso_rewritable_key/1`.
+  Runtime uses one parameterized helper (`builtin_arith_compare_{iso,lax}`)
+  reusing ISO-R-0 `eval_arith_iso` / constructors / `throw_iso_error`.
+  Call/Execute and lowered emission route through the same helpers.
+- **Acceptance:** extended `tests/test_wam_r_iso_unit.pl` +
+  `tests/test_wam_r_iso_smoke.pl`.
 
 ### ISO-R-2B: successor + adoption closeout
 - **Depends on:** ISO-R-2A. Add `succ_iso` / `succ_lax`, then verify the
   complete adoption checklist in
   `docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md`.
-
+  Do **not** claim full R ISO adoption until R-2B lands.
 ### ISO-R (ledger parent): New ISO three-form adoption for WAM R target
 - **Lever:** ISO three-form  **Target:** R  **Size:** L  **Depends on:** —
 - **Goal:** Bring the WAM R target from non-adopter to full ISO three-form
