@@ -92,19 +92,30 @@ def run_ceilings(a):
 
 
 def task_path(a):
-    return os.path.expanduser(f"~/mu_data/routed_tasks_t{a.margin}_n{a.menu}.jsonl")
+    suf = "_lin" if getattr(a, "lineage", False) else ""
+    return os.path.expanduser(f"~/mu_data/routed_tasks_t{a.margin}_n{a.menu}{suf}.jsonl")
 
 
 def run_emit(a):
     q_titles, f_titles, truepos, cos, ranks, margin, order, qman = build(a)
     routed = np.where(margin < a.margin)[0]
+    lin = {}
+    if a.lineage:
+        # folder principal-path context (§7 machinery): outcome-blind — uses only the folder's own
+        # pre-existing folder→parent lineage, never the bookmark's placement
+        from eval_pearltrees_filing import folder_lineage
+        _, cand = load_filing(TREES, a.min_bm)
+        parents_title, _ = folder_lineage(cand, depth=a.lineage_depth)
+        lin = parents_title
     out = task_path(a)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         f.write(json.dumps({"manifest": qman, "margin": a.margin, "menu": a.menu,
-                            "n_routed": len(routed)}) + "\n")
+                            "n_routed": len(routed), "lineage": bool(a.lineage)}) + "\n")
         for b in routed:
-            menu = [{"pos": p, "title": f_titles[int(order[b][p])]} for p in range(a.menu)]
+            menu = [{"pos": p, "title": f_titles[int(order[b][p])],
+                     **({"path": " > ".join(reversed(lin.get(f_titles[int(order[b][p])], [])))}
+                        if a.lineage else {})} for p in range(a.menu)]
             f.write(json.dumps({"qid": int(b), "bookmark": q_titles[b], "menu": menu},
                                ensure_ascii=False) + "\n")
     hit = sum(menu_hit(order, truepos, b, a.menu) for b in routed)
@@ -176,6 +187,9 @@ def main(argv=None):
     em = sub.add_parser("emit")
     em.add_argument("--margin", type=float, default=0.02)
     em.add_argument("--menu", type=int, default=10)
+    em.add_argument("--lineage", action="store_true",
+                    help="include each folder's principal-path context in the menu")
+    em.add_argument("--lineage-depth", type=int, default=3)
     sc = sub.add_parser("score")
     sc.add_argument("--picks", required=True)
     sc.add_argument("--margin", type=float, default=0.02)
