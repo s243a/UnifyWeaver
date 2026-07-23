@@ -165,6 +165,42 @@ once on the outer test.  Report risk/coverage or AURC against e5 and a matched-c
 paired node-block interval.  No claim of judge rescue, cost savings, or deployment benefit is permitted
 without labeled routed outcomes and a matched-cost analysis.
 
+The historical three-tier routed policy (margin <0.02: Sonnet-family judge with N=10 lineage menu;
+0.02≤margin<0.03: the same judge with N=20 lineage menu; margin≥0.03: e5 top-1) was developed on
+the standing 1,200-row benchmark and is therefore exploratory/transductive there.  Its frozen
+prospective definition is `ROUTED_POLICY_three_tier_v1.json`.  A decision-bearing follow-up must
+apply that artifact without modification to a later cohort or one untouched outer node-disjoint
+test; any threshold, menu, judge, prompt, or lineage change restarts selection inside outer-train.
+Repeated judge draws are required to expose judge variance. Task emission on that untouched set
+must not report a rescue ceiling or any other placement-label-derived diagnostic before the
+frozen judge outputs have been sealed.
+
+Any task sent outside the local machine must be rebuilt from the certified-public Pearltrees
+population.  Candidate folders and emitted lineage ancestors require explicit public node
+visibility under `pearltrees-public-only-v1`; missing node visibility is quarantined and privacy
+propagates down typed containment.  A bookmark is eligible only as content of a certified-public
+folder and only when it has no private-title or restricted-visibility signal. Candidate and query
+eligibility also use the frozen, outcome-blind
+`pearltrees-public-alphanumeric-title-v1` rule: a destination title must contain at least one
+letter or number, and queries recorded only in an excluded destination leave the evaluation
+population. The task envelope
+must bind the source inventory, privacy index, catalog, population, ranking, exact selection band,
+and task rows. Exact score ties are broken by ascending frozen catalog column, matching the
+exact-destination rank computation. Picks must bind the exact task bytes and declared judge/prompt provenance.
+Missing, extra, duplicate, legacy headerless, cross-task, or tampered rows fail closed.  Content
+hashes establish integrity, not provider authentication.
+
+The current v2 tool binds exactly one complete response artifact per judge tier. It does not yet
+represent multiple provider-call chunks or repeated judge draws. Before the next decision-bearing
+run, add a parent-task manifest that binds every chunk, provider run, and draw to the same task ID,
+plus a frozen aggregation rule. Manually concatenating partial responses is not an acceptable
+substitute.
+
+The current ranker receipt binds the e5 model name and exact candidate/query embedding arrays, so
+upstream model drift fails reproduction rather than silently changing a result. Before a future
+decision-bearing task is emitted, replace the `unresolved` Hub revision with an immutable e5
+revision so those bound arrays can also be regenerated long-term.
+
 ## 8. Reproducibility and fail-closed audit
 
 The run fingerprint must cover, by content rather than machine-local paths:
