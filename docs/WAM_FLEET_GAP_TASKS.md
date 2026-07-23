@@ -833,7 +833,7 @@ Add each target to the scale-300 effective-distance matrix in
 
 ### BENCH-R: Add R row to effective-distance scale-300 matrix ✅
 - **Lever:** Effective-distance benchmark rows  **Target:** R  **Size:** L  **Depends on:** —
-- **Status:** Done — `examples/benchmark/generate_wam_r_effective_distance_benchmark.pl`, guarded Rscript harness block, scale-300 matrix row + subsection in `WAM_CROSS_TARGET_BENCHMARK_RESULTS.md` (hosted-CI query_ms=10307 median / total_ms=11103 from process start after capability-gated direct arg1 lookup; reference parity match). Initial BENCH-R branch `cursor/bench-r-effective-distance-f421`; optimized by PERF-R-CA-DIRECT.
+- **Status:** Done — `examples/benchmark/generate_wam_r_effective_distance_benchmark.pl`, guarded Rscript harness block, scale-300 matrix row + subsection in `WAM_CROSS_TARGET_BENCHMARK_RESULTS.md` (hosted-CI query_ms=7521 median / total_ms=8341 from process start after direct arg1 lookup plus integer-ID DFS/downward hops; reference parity match). Initial BENCH-R branch `cursor/bench-r-effective-distance-f421`; optimized by PERF-R-CA-DIRECT and PERF-R-CA-IDDFS.
 
 ---
 
