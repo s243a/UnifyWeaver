@@ -8584,7 +8584,10 @@ entry:
   store i8* %gr.newline, i8** @wam_rs_ptr
   store i64 1, i64* @wam_rs_len
   store i8 0, i8* @wam_rs_mode
-  store i1 true, i1* @wam_rt_suppress
+  ; Let the RS-aware reader update RT to the separator it reads (a physical
+  ; newline in v1, or empty at a trailing partial record / EOF), matching awk --
+  ; a redirected record getline sets RT just like the main reader does.
+  store i1 false, i1* @wam_rt_suppress
   %gr.line_id_slot = alloca i64, align 8
   %gr.status = call i64 @wam_getline_file(i8* %pathptr, i64 %pathlen, i64* %gr.line_id_slot)
   store i8* %gr.old_rs_ptr, i8** @wam_rs_ptr
@@ -8757,6 +8760,10 @@ gp.open_intern:
   %gp.line_id = call i64 @wam_intern_atom(i8* %gp.buf, i64 %gp.open_final_len)
   call void @free(i8* %gp.buf)
   store i64 %gp.line_id, i64* %line_id_out
+  ; The record was terminated by a physical newline (pipe getline is
+  ; newline-only in v1), so RT is that separator, matching awk.
+  %gp.rt_nl = getelementptr [2 x i8], [2 x i8]* @.wam_rs_default, i64 0, i64 0
+  %gp.rt_ok = call i1 @wam_rt_set(i8* %gp.rt_nl, i64 1)
   ret i64 1
 
 gp.read_end:
@@ -8782,6 +8789,8 @@ gp.finish_partial:
   %gp.partial_id = call i64 @wam_intern_atom(i8* %gp.buf, i64 %gp.partial_len)
   call void @free(i8* %gp.buf)
   store i64 %gp.partial_id, i64* %line_id_out
+  ; A final record with no trailing newline had no separator: RT is empty.
+  call void @wam_rt_clear()
   ret i64 1
 
 gp.finish_empty:

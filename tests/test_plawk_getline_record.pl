@@ -88,9 +88,11 @@ test(record_getline_while_keeps_nr_fnr, [condition(clang_available)]) :-
     assertion(Out == "1|1|red green|2\n1|1|blue gold|2\n"),
     !.
 
-% Record getline is newline-only in v1 even when the main reader has regex RS;
-% it also leaves the main reader's matched RT unchanged.
-test(record_getline_ignores_rs_and_preserves_rt, [condition(clang_available)]) :-
+% Record getline is newline-only in v1 even when the main reader has regex RS,
+% but it now updates RT to the separator it matched (the physical newline), so
+% RT becomes "\n" (matching gawk). The printed RT is a literal newline, so the
+% record line is followed by a blank line.
+test(record_getline_ignores_rs_sets_newline_rt, [condition(clang_available)]) :-
     rdir(Dir),
     data_file(Dir, 'physical_line.txt', "left45right\n", Path),
     format(atom(Src),
@@ -98,7 +100,21 @@ test(record_getline_ignores_rs_and_preserves_rt, [condition(clang_available)]) :
         [Path]),
     build_run(Dir, 'rs_rt', Src, "trigger123", Out, St),
     assertion(St == 0),
-    assertion(Out == "1|left45right|123\n"),
+    assertion(Out == "1|left45right|\n\n"),
+    !.
+
+% A trailing record with no newline sets RT = "" (empty); a newline-terminated
+% record sets RT = "\n". Draining a two-line file (last line unterminated) shows
+% both: "one" (RT "\n") then "two" (RT "").
+test(record_getline_rt_empty_at_unterminated_eof, [condition(clang_available)]) :-
+    rdir(Dir),
+    data_file(Dir, 'rt_eof.txt', "one\ntwo", Path),
+    format(atom(Src),
+        "{ while ((getline v < \"~w\") > 0) print v \"/[\" RT \"]\" }\n",
+        [Path]),
+    build_run(Dir, 'rt_eof', Src, "trigger\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "one/[\n]\ntwo/[]\n"),
     !.
 
 % Scalar-target and record-target sites use the same filename-keyed handle.
