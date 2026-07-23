@@ -7229,6 +7229,13 @@ plawk_strnum_action_unsafe_read(foreach_loop(_Layout, Body), Set, Name) :-
     !,
     member(A, Body),
     plawk_strnum_action_unsafe_read(A, Set, Name).
+% `arr[Name]++` -- reading Name as an associative-array key is a SUPPORTED strnum
+% read: the key is the scalar's string value, which is exactly the interned atom
+% id the strnum slot already holds (so the mixed walker uses it directly). Not
+% unsafe; cut and fail (fail = "not unsafe"). Placed before the catch-all.
+plawk_strnum_action_unsafe_read(inc_assoc(var(_Arr), var(Name)), _Set, Name) :-
+    !,
+    fail.
 % Any other action: mentioning Name at all is an unsupported read.
 plawk_strnum_action_unsafe_read(Action, _Set, Name) :-
     plawk_strnum_term_mentions(Action, Name).
@@ -7612,6 +7619,9 @@ plawk_mixed_branch_body_actions(Actions) :-
 
 plawk_assoc_update_action(inc_assoc(var(_ArrayName), field(KeyIndex))) :-
     KeyIndex > 0.
+% `arr[x]++` -- a scalar-variable key (resolved to the scalar's slot value in the
+% mixed walker; only a string/strnum slot is a valid key, checked there).
+plawk_assoc_update_action(inc_assoc(var(_ArrayName), var(_Name))).
 plawk_assoc_update_action(inc_assoc(var(_ArrayName), Blob)) :-
     plawk_assoc_blob_key_ok(Blob).
 
@@ -8326,6 +8336,10 @@ plawk_assoc_increment_action(inc_assoc(var(ArrayName), field(KeyIndex)), ArrayNa
 plawk_assoc_increment_action(inc_assoc(var(ArrayName), subsep_key(Fields)),
         ArrayName-subsep_key(Indexes)) :-
     plawk_subsep_field_indexes(Fields, Indexes).
+% `arr[x]++` -- key by a scalar variable's current value (a `svar(Name)` spec;
+% the mixed walker resolves it to the scalar's slot atom id).
+plawk_assoc_increment_action(inc_assoc(var(ArrayName), var(Name)),
+        ArrayName-svar(Name)).
 plawk_assoc_increment_action(inc_assoc(var(ArrayName), Blob),
         ArrayName-blob_key(Blob)) :-
     plawk_assoc_blob_key_ok(Blob).
@@ -14133,6 +14147,28 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
     [Pair],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, NextExits).
+% `arr[x]++` with a scalar-variable key: resolve the scalar to its current slot
+% value (Values0) and increment that key id directly. Only a string/strnum slot
+% is a valid key -- its i64 slot value IS the interned atom id `arr[$N]` would
+% produce for the same bytes, so no field-slice / re-intern is needed. A numeric
+% (counter) or double scalar key fails the slot-kind check before the cut, so the
+% clause backtracks and the program declines cleanly (no i64->string path yet).
+% Straight-line (no missing-key branch), so the current block label is unchanged.
+plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { plawk_assoc_increment_action(Action, ArrayName-svar(Name)),
+      plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+      nth0(SlotIndex, Slots, Slot),
+      plawk_slot_name(Slot, Name),
+      ( Slot = scalar_strnum(_) ; Slot = scalar_string(_) ),
+      !,
+      nth0(SlotIndex, Values0, KeyIdValue),
+      plawk_assoc_update_operation_keyid_ir(Prefix, OpIndex, TableIndex, KeyIdValue, Pair),
+      NextOpIndex is OpIndex + 1
+    },
+    [Pair],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_assoc_increment_action(Action, ArrayName-KeyIndex),
@@ -15673,6 +15709,16 @@ plawk_assoc_update_operation_ir(Prefix, OpIndex, TableIndex, KeyIndex,
          CountValue, TableIndex, KeyId,
          DoneLabel,
          DoneLabel]).
+
+% `arr[x]++` with a scalar (string/strnum) key already resolved to its atom-id
+% SSA value: a single straight-line increment on that key id -- no field slice,
+% no re-intern, no missing-key branch (an unset scalar is id 0 = the empty-string
+% key, matching awk's `arr[""]`).
+plawk_assoc_update_operation_keyid_ir(Prefix, OpIndex, TableIndex, KeyIdValue, ''-IR) :-
+    format(atom(CountValue), '%~w_assoc_~w_count', [Prefix, OpIndex]),
+    format(atom(IR),
+        '  ~w = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 1)',
+        [CountValue, TableIndex, KeyIdValue]).
 
 plawk_scalar_if_phi_lines([], [], _Slots, _Prefix, _OpIndex, _ThenLabel, _ElseLabel, _) -->
     [].
