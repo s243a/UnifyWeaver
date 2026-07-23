@@ -1011,6 +1011,9 @@ base_pattern(Pattern) -->
     scalar_str_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
+    field_str_ne_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
     field_eq_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
@@ -1280,6 +1283,30 @@ field_eq_pattern(field_eq(Index, Value)) -->
     integer_codes(IndexCodes),
     ws,
     "==",
+    ws,
+    quoted_string(ValueCodes),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index > 0,
+      ValueCodes \== [],
+      string_codes(Value, ValueCodes)
+    }.
+
+%% field_str_ne_pattern(-Pattern)//
+%
+%  `$N != "str"` -- a field-vs-string-literal inequality guard (the common
+%  skip-a-value idiom, e.g. `$1 != "header"`). Awk string `!=`, lowered as the
+%  NEGATION of the `==` guard: it parses directly to not_pat(field_eq(N, Value)),
+%  so the existing field_eq codegen (and its combinator/if-condition handling)
+%  applies with no new lowering. A numeric RHS keeps the field_i64 path
+%  (`$N != 5`, tried earlier in base_pattern); only a quoted-string RHS matches
+%  here. String ordering (`$N < "str"`) needs a real lexical compare and remains
+%  a follow-on.
+field_str_ne_pattern(not_pat(field_eq(Index, Value))) -->
+    "$",
+    integer_codes(IndexCodes),
+    ws,
+    "!=",
     ws,
     quoted_string(ValueCodes),
     { IndexCodes \== [],
