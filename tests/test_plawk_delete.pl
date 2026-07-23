@@ -131,9 +131,11 @@ test(delete_int_key_removes, [condition(clang_available)]) :-
     assertion(Lines == ["7 1", "rm 1"]),
     !.
 
-% A variable key is still a clean not-yet (compile error): the assoc chain has
-% no scalar-value key machinery yet (`arr[x]++` is unsupported too), so
-% `delete arr[x]` declines rather than mis-lowers. A follow-on.
+% A variable key in the PURE-assoc chain (for-in END, no scalar slots) is still a
+% clean not-yet: this program's `x` is an unassigned bare variable with no slot,
+% so `delete seen[x]` declines with a compile error rather than mis-lowering.
+% (Scalar-var keys DO work in the mixed chain -- a plain-print END with a
+% field-assigned scalar -- see test_plawk_assoc_varkey.pl.)
 test(delete_var_key_rejected, [condition(clang_available)]) :-
     ldir(Dir),
     Src = "{ seen[$1]++ }\n{ delete seen[x] }\nEND { for (k in seen) print k }\n",

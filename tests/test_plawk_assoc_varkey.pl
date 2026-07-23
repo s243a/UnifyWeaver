@@ -2,18 +2,21 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
-% Scalar-variable keys in associative arrays: `arr[x]++` where `x` is a scalar
-% variable (the group-by-a-copied-field idiom, `{ k = $1; freq[k]++ }`). v1
-% covers the INC operation in the mixed chain (a program whose END is a plain
-% print, so scalar slots are threaded to the assoc-key site): the key scalar
-% must be a string/strnum slot -- a field-assigned scalar (`k = $1`), whose slot
-% value already IS the interned atom id `arr[$1]` would produce, so `arr[k]` uses
-% it directly (no field-slice / re-intern). Reading the scalar as an assoc key
-% is a supported strnum read, so `k` stays a strnum slot rather than deactivating
-% to a numeric counter.
+% Scalar-variable keys in associative arrays: `arr[x]++` / `delete arr[x]` where
+% `x` is a scalar variable (the group-by-a-copied-field idiom,
+% `{ k = $1; freq[k]++ }`). Covered in the mixed chain (a program whose END is a
+% plain print, so scalar slots are threaded to the assoc-key site): the key
+% scalar must be a string/strnum slot -- a field-assigned scalar (`k = $1`),
+% whose slot value already IS the interned atom id `arr[$1]` would produce, so
+% `arr[k]` uses it directly (no field-slice / re-intern). Reading the scalar as
+% an assoc key (inc or delete) is a supported strnum read, so `k` stays a strnum
+% slot rather than deactivating to a numeric counter.
 %
-% A numeric/counter scalar key (`{ n++; arr[n]++ }`) is a clean not-yet (no
-% i64->string key path), and delete/read by a scalar key are separate follow-ons.
+% INC (`arr[k]++`) and DELETE (`delete arr[k]`) both work. A numeric/counter
+% scalar key (`{ n++; arr[n]++ }` / `delete arr[n]`) is a clean not-yet (no
+% i64->string key path) -- it declines with a compile error rather than
+% mis-lowering. Reading `arr[k]` as a value (e.g. `print arr[k]`) is a separate
+% follow-on.
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -60,6 +63,55 @@ test(varkey_reassigned_each_record, [condition(clang_available)]) :-
         "p\nq\np\nq\np\n", Out),
     assertion(Out == "3 2\n"), !.
 
+% --- delete by a scalar-variable key ----------------------------------------
+
+test(varkey_delete_parses) :-
+    plawk_parse_string("{ k = $1; delete a[k] }\n",
+        program([], [rule(always,
+            [set(var(k), field(1)), delete_assoc(var(a), var(k))])], [])),
+    !.
+
+% `delete arr[k]` resets the count: the key is counted then deleted, so a later
+% insert of the same key counts fresh from 1.
+test(varkey_delete_resets_count, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'vkd1',
+        "{ k = $1; c[k]++ }\n$2 == \"x\" { k = $1; delete c[k] }\nEND { print c[\"a\"] }\n",
+        "a p\na p\na x\na p\n", Out),
+    assertion(Out == "1\n"), !.
+
+% The delete key may come from a different scalar than the counter (here `$2`).
+test(varkey_delete_by_other_scalar, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'vkd2',
+        "{ k = $1; c[k]++ }\n$1 == \"rm\" { k = $2; delete c[k] }\nEND { print c[\"keep\"] }\n",
+        "keep\nkeep\nrm keep\nkeep\n", Out),
+    assertion(Out == "1\n"), !.
+
+% Delete and re-increment the same key in one guarded rule body.
+test(varkey_delete_then_reinc, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'vkd3',
+        "{ k = $1; freq[k]++ }\n$1 == \"drop\" { k = $1; delete freq[k]; freq[k]++ }\nEND { print freq[\"a\"], freq[\"drop\"] }\n",
+        "a\ndrop\na\ndrop\n", Out),
+    assertion(Out == "2 1\n"), !.
+
+% Count, delete, and re-count the same key within a single unguarded rule.
+test(varkey_delete_single_rule, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'vkd4',
+        "{ k = $1; c[k]++; delete c[k]; c[k]++ } END { print c[\"a\"] }\n",
+        "a\na\na\n", Out),
+    assertion(Out == "1\n"), !.
+
+% A numeric/counter scalar key for delete is a clean not-yet: no i64->string key
+% path, so the program declines with a compile error rather than mis-lowering.
+test(varkey_delete_numeric_rejected, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_status(Dir, 'vkdnum',
+        "{ n++; c[n]++; delete c[n] } END { print c[\"1\"] }\n", St),
+    assertion(St == 3), !.
+
 :- end_tests(plawk_assoc_varkey).
 
 % --- helpers ---------------------------------------------------------------
@@ -73,6 +125,17 @@ sdir(Dir) :-
     current_prolog_flag(tmp_dir, Tmp),
     directory_file_path(Tmp, 'uw_plawk_assoc_varkey', Dir),
     ( exists_directory(Dir) -> true ; make_directory_path(Dir) ).
+
+% Build only; return the compiler exit status (for clean-decline tests).
+build_status(Dir, Name, Src, Status) :-
+    directory_file_path(Dir, Name, Prog0),
+    atom_concat(Prog0, '.plawk', Prog),
+    setup_call_cleanup(open(Prog, write, S, [encoding(utf8)]),
+        write(S, Src), close(S)),
+    atom_concat(Prog0, '_bin', Bin),
+    process_create(path(swipl), ['examples/plawk/bin/plawk', build, Prog, '-o', Bin],
+        [stdout(null), stderr(null), process(Pid)]),
+    process_wait(Pid, exit(Status)).
 
 build_run(Dir, Name, Src, Input, Out) :-
     directory_file_path(Dir, Name, Prog0),
