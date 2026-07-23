@@ -4,9 +4,10 @@
 %
 % plawk `delete arr[k]` -- remove an entry from an assoc table (AWK
 % `delete arr[k]`). Keys on a field (`delete arr[$k]`, matching the counted inc
-% `arr[$k]++`) or a string literal (`delete arr["lit"]`, interned to its
-% canonical atom id); a variable or integer key is a clean not-yet (compile
-% error). The runtime primitive (`@wam_assoc_i64_delete`) does backward-shift
+% `arr[$k]++`), a string literal (`delete arr["lit"]`, interned to its canonical
+% atom id), or an integer literal (`delete arr[5]`, keyed by its decimal text);
+% a variable key (`delete arr[x]`) is a clean not-yet (compile error). The
+% runtime primitive (`@wam_assoc_i64_delete`) does backward-shift
 % deletion so later colliding keys stay reachable; a missing key is a no-op.
 % for-in iteration order is hash-dependent, so outputs are compared as sorted sets.
 
@@ -114,7 +115,25 @@ test(delete_string_key_missing_is_noop, [condition(clang_available)]) :-
     assertion(Lines == ["a 2", "b 1"]),
     !.
 
-% A variable key is still a clean not-yet (compile error), a follow-on.
+% `delete arr[5]` parses to an integer-literal key.
+test(delete_int_key_parses) :-
+    plawk_parse_string("{ delete a[5] }\n",
+        program([], [rule(always, [delete_assoc(var(a), int(5))])], [])),
+    !.
+
+% An integer-literal key is keyed by its decimal text ("5"), so it removes the
+% field-derived "5" entry (awk array keys are strings).
+test(delete_int_key_removes, [condition(clang_available)]) :-
+    ldir(Dir),
+    Src = "{ a[$1]++ }\n$1 == \"rm\" { delete a[5] }\nEND { for (k in a) print k, a[k] }\n",
+    build_run_sorted(Dir, 'intkey', Src, "5\n7\n5\nrm\n", Lines, St),
+    assertion(St == 0),
+    assertion(Lines == ["7 1", "rm 1"]),
+    !.
+
+% A variable key is still a clean not-yet (compile error): the assoc chain has
+% no scalar-value key machinery yet (`arr[x]++` is unsupported too), so
+% `delete arr[x]` declines rather than mis-lowers. A follow-on.
 test(delete_var_key_rejected, [condition(clang_available)]) :-
     ldir(Dir),
     Src = "{ seen[$1]++ }\n{ delete seen[x] }\nEND { for (k in seen) print k }\n",
