@@ -30,7 +30,13 @@ from typing import Mapping
 
 import numpy as np
 
-from .leaky_diffusion import _stable_radial_factor
+from .leaky_diffusion import (
+    _DEFAULT_MINIMUM_RECIPROCAL_CONDITION,
+    _positive_unit_interval,
+    _readonly,
+    _stable_radial_factor,
+    _symmetric_part,
+)
 from .local_diffusion import (
     AnchorScreeningProvenance,
     LocalDiffusionDomain,
@@ -55,6 +61,7 @@ __all__ = [
     "BoundedModelSafetyDiagnostics",
     "ExperimentalBoundaryClosure",
     "ExperimentalBoundaryClosureConfig",
+    "ExactExteriorSchurReduction",
     "ExteriorComponent",
     "ExteriorComponentDiscovery",
     "ExteriorTraversalLimitError",
@@ -64,6 +71,7 @@ __all__ = [
     "ensure_matched_budget",
     "evaluate_bounded_domain_fidelity",
     "evaluate_nested_bounded_domain_fidelity",
+    "reduce_exact_exterior_component",
     "select_hop_budget_domain",
     "select_semantic_resistance_domain",
     "select_topology_skeleton_domain",
@@ -232,6 +240,8 @@ class ExteriorComponent:
         for port, omitted in cut_edges:
             if port not in port_set or omitted not in node_set:
                 raise ValueError("component cut edge does not align with its ports")
+        if {port for port, _omitted in cut_edges} != port_set:
+            raise ValueError("every exterior component port needs a cut edge")
         for interior, outside in bath_edges:
             if interior not in node_set or outside in node_set or outside in port_set:
                 raise ValueError("outside bath edge does not leave the component")
@@ -292,6 +302,877 @@ class ExteriorComponent:
             "internal_edge_count": self.internal_edge_count,
             "component_fingerprint": self.component_fingerprint,
         }
+
+
+def _float_hex_vector(value):
+    return [float(item).hex() for item in np.asarray(value, dtype=float)]
+
+
+def _float_hex_matrix(value):
+    return [
+        [float(item).hex() for item in row]
+        for row in np.asarray(value, dtype=float)
+    ]
+
+
+def _exact_reduction_fingerprint_payload(
+    *,
+    component_fingerprint,
+    ports,
+    exterior_nodes,
+    topology_conductance,
+    intrinsic_leakage_conductance,
+    boundary_cut_conductance,
+    exterior_precision,
+    boundary_coupling,
+    harmonic_extension,
+    schur_return,
+    reduced_boundary_precision,
+    minimum_reciprocal_condition,
+):
+    return {
+        "component_fingerprint": str(component_fingerprint),
+        "ports": [_stable_node_token(node) for node in ports],
+        "exterior_nodes": [
+            _stable_node_token(node) for node in exterior_nodes
+        ],
+        "topology_conductance": float(topology_conductance).hex(),
+        "intrinsic_leakage_conductance": _float_hex_vector(
+            intrinsic_leakage_conductance
+        ),
+        "boundary_cut_conductance": _float_hex_vector(
+            boundary_cut_conductance
+        ),
+        "exterior_precision": _float_hex_matrix(exterior_precision),
+        "boundary_coupling": _float_hex_matrix(boundary_coupling),
+        "harmonic_extension": _float_hex_vector(harmonic_extension),
+        "schur_return": _float_hex_matrix(schur_return),
+        "reduced_boundary_precision": _float_hex_matrix(
+            reduced_boundary_precision
+        ),
+        "minimum_reciprocal_condition": float(
+            minimum_reciprocal_condition
+        ).hex(),
+    }
+
+
+def _exterior_leakage_vector(nodes, intrinsic_leakage_conductance):
+    if isinstance(intrinsic_leakage_conductance, Mapping):
+        unknown = set(intrinsic_leakage_conductance).difference(nodes)
+        if unknown:
+            labels = ", ".join(sorted(repr(node) for node in unknown))
+            raise ValueError(
+                "intrinsic leakage mapping contains unknown exterior nodes: "
+                f"{labels}"
+            )
+        values = np.asarray(
+            [
+                intrinsic_leakage_conductance.get(node, 0.0)
+                for node in nodes
+            ],
+            dtype=float,
+        )
+    else:
+        values = np.asarray(intrinsic_leakage_conductance, dtype=float)
+        if values.ndim == 0:
+            values = np.full(len(nodes), float(values), dtype=float)
+    if values.shape != (len(nodes),):
+        raise ValueError(
+            "intrinsic_leakage_conductance must be a scalar, exterior-node "
+            "mapping, or exterior-node-aligned vector"
+        )
+    if not np.isfinite(values).all() or np.any(values < 0.0):
+        raise ValueError(
+            "intrinsic leakage conductance must be finite and nonnegative"
+        )
+    return values
+
+
+@dataclass(frozen=True)
+class ExactExteriorSchurReduction:
+    """Exact grounded multi-port reduction of one frozen exterior component.
+
+    ``schur_return`` is the positive matrix
+    ``C @ exterior_precision^-1 @ C.T``. It is subtracted exactly once from
+    the full-Dirichlet boundary precision. ``reduced_boundary_precision`` is
+    the exterior contribution
+    ``diag(boundary_cut_conductance) - schur_return``;
+    it may be singular when the represented exterior has no route to ground.
+    """
+
+    component_fingerprint: str
+    ports: tuple
+    exterior_nodes: tuple
+    topology_conductance: float
+    intrinsic_leakage_conductance: np.ndarray
+    boundary_cut_conductance: np.ndarray
+    exterior_precision: np.ndarray
+    boundary_coupling: np.ndarray
+    harmonic_extension: np.ndarray
+    schur_return: np.ndarray
+    reduced_boundary_precision: np.ndarray
+    minimum_exterior_precision_eigenvalue: float
+    maximum_exterior_precision_eigenvalue: float
+    reciprocal_condition_number: float
+    minimum_reciprocal_condition: float
+    cholesky_reconstruction_relative_error: float
+    solve_relative_residual: float
+    maximum_principle_violation: float
+    minimum_schur_return_eigenvalue: float
+    minimum_reduced_precision_eigenvalue: float
+    ledger_maximum_absolute_error: float
+    reduction_fingerprint: str
+
+    def __post_init__(self):
+        ports = tuple(self.ports)
+        exterior_nodes = tuple(self.exterior_nodes)
+        component_fingerprint = str(self.component_fingerprint)
+        if len(component_fingerprint) != 64 or any(
+            character not in "0123456789abcdef"
+            for character in component_fingerprint
+        ):
+            raise ValueError(
+                "component_fingerprint must be lowercase SHA-256"
+            )
+        if not ports or not exterior_nodes:
+            raise ValueError("an exact exterior reduction needs ports and nodes")
+        if ports != tuple(sorted(ports, key=_stable_key)):
+            raise ValueError("reduction ports must use canonical stable order")
+        if exterior_nodes != tuple(sorted(exterior_nodes, key=_stable_key)):
+            raise ValueError(
+                "reduction exterior nodes must use canonical stable order"
+            )
+        if len(set(ports)) != len(ports) or len(set(exterior_nodes)) != len(
+            exterior_nodes
+        ):
+            raise ValueError("reduction ports and exterior nodes must be unique")
+        topology = _positive_finite(
+            "topology_conductance", self.topology_conductance
+        )
+        port_count = len(ports)
+        node_count = len(exterior_nodes)
+        arrays = {
+            "intrinsic_leakage_conductance": np.asarray(
+                self.intrinsic_leakage_conductance, dtype=float
+            ),
+            "boundary_cut_conductance": np.asarray(
+                self.boundary_cut_conductance, dtype=float
+            ),
+            "exterior_precision": np.asarray(
+                self.exterior_precision, dtype=float
+            ),
+            "boundary_coupling": np.asarray(
+                self.boundary_coupling, dtype=float
+            ),
+            "harmonic_extension": np.asarray(
+                self.harmonic_extension, dtype=float
+            ),
+            "schur_return": np.asarray(self.schur_return, dtype=float),
+            "reduced_boundary_precision": np.asarray(
+                self.reduced_boundary_precision, dtype=float
+            ),
+        }
+        expected_shapes = {
+            "intrinsic_leakage_conductance": (node_count,),
+            "boundary_cut_conductance": (port_count,),
+            "exterior_precision": (node_count, node_count),
+            "boundary_coupling": (port_count, node_count),
+            "harmonic_extension": (node_count,),
+            "schur_return": (port_count, port_count),
+            "reduced_boundary_precision": (port_count, port_count),
+        }
+        for name, value in arrays.items():
+            if value.shape != expected_shapes[name]:
+                raise ValueError(
+                    f"{name} must have shape {expected_shapes[name]}"
+                )
+            if not np.isfinite(value).all():
+                raise ValueError("exact exterior reduction arrays must be finite")
+        if np.any(arrays["intrinsic_leakage_conductance"] < 0.0):
+            raise ValueError("intrinsic leakage must be nonnegative")
+        if np.any(arrays["boundary_coupling"] < 0.0):
+            raise ValueError("boundary coupling must be nonnegative")
+        expected_beta = np.sum(arrays["boundary_coupling"], axis=1)
+        if not np.allclose(
+            arrays["boundary_cut_conductance"],
+            expected_beta,
+            rtol=1e-12,
+            atol=1e-12,
+        ):
+            raise ValueError(
+                "boundary cut conductance must equal the coupling row sums"
+            )
+        arrays["boundary_cut_conductance"] = expected_beta
+        for name in (
+            "exterior_precision",
+            "schur_return",
+            "reduced_boundary_precision",
+        ):
+            if not np.allclose(
+                arrays[name], arrays[name].T, rtol=0.0, atol=1e-12
+            ):
+                raise ValueError(f"{name} must be symmetric")
+        expected_reduced = np.diag(expected_beta) - arrays["schur_return"]
+        if not np.allclose(
+            arrays["reduced_boundary_precision"],
+            expected_reduced,
+            rtol=1e-12,
+            atol=1e-12,
+        ):
+            raise ValueError(
+                "reduced boundary precision must equal diag(beta) minus "
+                "the Schur return"
+            )
+        precision = arrays["exterior_precision"]
+        coupling = arrays["boundary_coupling"]
+        precision_scale = max(
+            float(np.max(np.abs(precision), initial=0.0)), 1.0
+        )
+        precision_sign_tolerance = max(
+            _M_MATRIX_OFF_DIAGONAL_TOLERANCE * precision_scale,
+            64.0 * np.finfo(float).eps * precision_scale,
+        )
+        precision_off_diagonal = precision - np.diag(np.diag(precision))
+        if (
+            np.max(precision_off_diagonal, initial=0.0)
+            > precision_sign_tolerance
+        ):
+            raise ValueError(
+                "exterior precision violates M-matrix off-diagonal signs"
+            )
+        precision_eigenvalues = np.linalg.eigvalsh(precision)
+        observed_minimum = _positive_finite(
+            "minimum_exterior_precision_eigenvalue",
+            self.minimum_exterior_precision_eigenvalue,
+        )
+        observed_maximum = _positive_finite(
+            "maximum_exterior_precision_eigenvalue",
+            self.maximum_exterior_precision_eigenvalue,
+        )
+        observed_reciprocal = _positive_unit_interval(
+            "reciprocal_condition_number", self.reciprocal_condition_number
+        )
+        required_reciprocal = _positive_unit_interval(
+            "minimum_reciprocal_condition",
+            self.minimum_reciprocal_condition,
+        )
+        expected_minimum = float(precision_eigenvalues[0])
+        expected_maximum = float(precision_eigenvalues[-1])
+        if expected_minimum < 1.0 / np.finfo(float).max:
+            raise ValueError(
+                "exterior precision has an unrepresentable equilibrium scale"
+            )
+        expected_reciprocal = expected_minimum / expected_maximum
+        diagnostics = (
+            (observed_minimum, expected_minimum),
+            (observed_maximum, expected_maximum),
+            (observed_reciprocal, expected_reciprocal),
+        )
+        if any(
+            not math.isclose(left, right, rel_tol=1e-10, abs_tol=0.0)
+            for left, right in diagnostics
+        ):
+            raise ValueError(
+                "exterior precision spectral diagnostics do not match"
+            )
+        if observed_reciprocal < required_reciprocal:
+            raise ValueError(
+                "reciprocal condition violates the recorded contract"
+            )
+        try:
+            lower = np.linalg.cholesky(precision)
+            intermediate = np.linalg.solve(lower, coupling.T)
+            expected_solved = np.linalg.solve(lower.T, intermediate)
+        except np.linalg.LinAlgError as exc:
+            raise ValueError(
+                "exterior precision and coupling fail exact reduction"
+            ) from exc
+        reconstructed = lower @ lower.T
+        reconstruction_relative_error = float(
+            np.linalg.norm(reconstructed - precision, ord="fro")
+            / max(
+                np.linalg.norm(precision, ord="fro"),
+                np.finfo(float).tiny,
+            )
+        )
+        solve_relative_residual = float(
+            np.linalg.norm(
+                precision @ expected_solved - coupling.T, ord=np.inf
+            )
+            / max(
+                np.linalg.norm(coupling.T, ord=np.inf),
+                np.finfo(float).tiny,
+            )
+        )
+        expected_return = _symmetric_part(coupling @ expected_solved)
+        expected_harmonic = expected_solved @ np.ones(port_count)
+        expected_maximum_principle_violation = max(
+            float(np.max(-expected_solved, initial=0.0)),
+            float(np.max(-expected_harmonic, initial=0.0)),
+            float(np.max(expected_harmonic - 1.0, initial=0.0)),
+            0.0,
+        )
+        boundary_scale = max(
+            float(np.max(np.abs(arrays["schur_return"]), initial=0.0)),
+            float(
+                np.max(
+                    np.abs(arrays["reduced_boundary_precision"]),
+                    initial=0.0,
+                )
+            ),
+            float(np.max(expected_beta, initial=0.0)),
+            1.0,
+        )
+        entry_tolerance = max(
+            _M_MATRIX_OFF_DIAGONAL_TOLERANCE * boundary_scale,
+            64.0 * np.finfo(float).eps * boundary_scale,
+        )
+        spectral_tolerance = (
+            _MAXIMUM_PRINCIPLE_RELATIVE_TOLERANCE * boundary_scale
+        )
+        if not np.allclose(
+            arrays["schur_return"],
+            expected_return,
+            rtol=1e-10,
+            atol=entry_tolerance,
+        ):
+            raise ValueError(
+                "Schur return does not match exterior precision and coupling"
+            )
+        if not np.allclose(
+            arrays["harmonic_extension"],
+            expected_harmonic,
+            rtol=1e-10,
+            atol=1e-12,
+        ):
+            raise ValueError(
+                "harmonic extension does not match the exterior solve"
+            )
+        if np.min(arrays["schur_return"]) < -entry_tolerance:
+            raise ValueError("Schur return must be entrywise nonnegative")
+        if (
+            np.min(np.linalg.eigvalsh(arrays["schur_return"]))
+            < -spectral_tolerance
+        ):
+            raise ValueError("Schur return must be positive semidefinite")
+        reduced = arrays["reduced_boundary_precision"]
+        off_diagonal = reduced - np.diag(np.diag(reduced))
+        if np.max(off_diagonal, initial=0.0) > entry_tolerance:
+            raise ValueError(
+                "reduced boundary precision must have nonpositive "
+                "off-diagonal entries"
+            )
+        if np.min(np.linalg.eigvalsh(reduced)) < -spectral_tolerance:
+            raise ValueError(
+                "reduced boundary precision must be positive semidefinite"
+            )
+        residual = reduced @ np.ones(port_count)
+        if np.min(residual, initial=0.0) < -entry_tolerance:
+            raise ValueError(
+                "reduced boundary precision has negative residual grounding"
+            )
+        bridge = np.array(arrays["schur_return"], copy=True)
+        np.fill_diagonal(bridge, 0.0)
+        reconstructed_reduced = (
+            np.diag(np.sum(bridge, axis=1))
+            - bridge
+            + np.diag(residual)
+        )
+        if not np.allclose(
+            reduced,
+            reconstructed_reduced,
+            rtol=1e-12,
+            atol=entry_tolerance,
+        ):
+            raise ValueError(
+                "reduced boundary precision does not reconstruct from its "
+                "transfer and residual-ground ledger"
+            )
+        self_return = np.diag(arrays["schur_return"])
+        transfer = np.sum(arrays["schur_return"], axis=1) - self_return
+        ledger_error = float(
+            np.max(
+                np.abs(expected_beta - self_return - transfer - residual),
+                initial=0.0,
+            )
+        )
+        observed_ledger_error = _finite_nonnegative(
+            "ledger_maximum_absolute_error",
+            self.ledger_maximum_absolute_error,
+        )
+        if not math.isclose(
+            observed_ledger_error,
+            ledger_error,
+            rel_tol=1e-10,
+            abs_tol=1e-15,
+        ):
+            raise ValueError("ledger diagnostic does not match reduction")
+        diagnostic_comparisons = (
+            (
+                "cholesky_reconstruction_relative_error",
+                self.cholesky_reconstruction_relative_error,
+                reconstruction_relative_error,
+                _CHOLESKY_RECONSTRUCTION_RTOL,
+            ),
+            (
+                "solve_relative_residual",
+                self.solve_relative_residual,
+                solve_relative_residual,
+                _SOLVE_RELATIVE_RESIDUAL_TOLERANCE,
+            ),
+            (
+                "maximum_principle_violation",
+                self.maximum_principle_violation,
+                expected_maximum_principle_violation,
+                _MAXIMUM_PRINCIPLE_RELATIVE_TOLERANCE,
+            ),
+        )
+        for name, value, expected, maximum in diagnostic_comparisons:
+            observed = _finite_nonnegative(name, value)
+            if observed > maximum:
+                raise ValueError(f"{name} violates the recorded contract")
+            if not math.isclose(
+                observed, expected, rel_tol=1e-10, abs_tol=1e-15
+            ):
+                raise ValueError(f"{name} does not match the reduction")
+            object.__setattr__(self, name, observed)
+        minimum_return = float(
+            np.min(np.linalg.eigvalsh(arrays["schur_return"]))
+        )
+        minimum_reduced = float(np.min(np.linalg.eigvalsh(reduced)))
+        for name, observed, expected in (
+            (
+                "minimum_schur_return_eigenvalue",
+                float(self.minimum_schur_return_eigenvalue),
+                minimum_return,
+            ),
+            (
+                "minimum_reduced_precision_eigenvalue",
+                float(self.minimum_reduced_precision_eigenvalue),
+                minimum_reduced,
+            ),
+        ):
+            if not math.isfinite(observed) or not math.isclose(
+                observed, expected, rel_tol=1e-10, abs_tol=1e-15
+            ):
+                raise ValueError(f"{name} does not match the reduction")
+        payload = _exact_reduction_fingerprint_payload(
+            component_fingerprint=component_fingerprint,
+            ports=ports,
+            exterior_nodes=exterior_nodes,
+            topology_conductance=topology,
+            intrinsic_leakage_conductance=(
+                arrays["intrinsic_leakage_conductance"]
+            ),
+            boundary_cut_conductance=expected_beta,
+            exterior_precision=precision,
+            boundary_coupling=coupling,
+            harmonic_extension=arrays["harmonic_extension"],
+            schur_return=arrays["schur_return"],
+            reduced_boundary_precision=reduced,
+            minimum_reciprocal_condition=required_reciprocal,
+        )
+        fingerprint = str(self.reduction_fingerprint)
+        if fingerprint != _fingerprint(payload):
+            raise ValueError(
+                "reduction_fingerprint does not match exact reduction"
+            )
+        object.__setattr__(
+            self, "component_fingerprint", component_fingerprint
+        )
+        object.__setattr__(self, "ports", ports)
+        object.__setattr__(self, "exterior_nodes", exterior_nodes)
+        object.__setattr__(self, "topology_conductance", topology)
+        object.__setattr__(
+            self, "minimum_reciprocal_condition", required_reciprocal
+        )
+        object.__setattr__(
+            self, "reciprocal_condition_number", observed_reciprocal
+        )
+        object.__setattr__(
+            self,
+            "minimum_exterior_precision_eigenvalue",
+            observed_minimum,
+        )
+        object.__setattr__(
+            self,
+            "maximum_exterior_precision_eigenvalue",
+            observed_maximum,
+        )
+        object.__setattr__(
+            self, "ledger_maximum_absolute_error", observed_ledger_error
+        )
+        object.__setattr__(self, "reduction_fingerprint", fingerprint)
+        for name, value in arrays.items():
+            object.__setattr__(self, name, _readonly(value))
+
+    @property
+    def bridge_conductance(self):
+        output = np.array(self.schur_return, copy=True)
+        np.fill_diagonal(output, 0.0)
+        return _readonly(np.maximum(output, 0.0))
+
+    @property
+    def self_return_conductance(self):
+        return _readonly(np.maximum(np.diag(self.schur_return), 0.0))
+
+    @property
+    def transfer_degree(self):
+        return _readonly(np.sum(self.bridge_conductance, axis=1))
+
+    @property
+    def residual_ground_conductance(self):
+        residual = self.reduced_boundary_precision @ np.ones(len(self.ports))
+        return _readonly(np.maximum(residual, 0.0))
+
+    @property
+    def pair_conductances(self):
+        return tuple(
+            (
+                self.ports[left],
+                self.ports[right],
+                float(self.schur_return[left, right]),
+            )
+            for left in range(len(self.ports))
+            for right in range(left + 1, len(self.ports))
+            if self.schur_return[left, right] > 0.0
+        )
+
+    @property
+    def self_return_by_port(self):
+        values = self.self_return_conductance
+        return {
+            port: float(values[index])
+            for index, port in enumerate(self.ports)
+        }
+
+    def provenance_dict(self):
+        return {
+            "component_fingerprint": self.component_fingerprint,
+            "reduction_fingerprint": self.reduction_fingerprint,
+            "ports": [_stable_node_token(node) for node in self.ports],
+            "exterior_nodes": [
+                _stable_node_token(node) for node in self.exterior_nodes
+            ],
+            "topology_conductance": self.topology_conductance,
+            "intrinsic_leakage_conductance": (
+                self.intrinsic_leakage_conductance.tolist()
+            ),
+            "boundary_cut_conductance": (
+                self.boundary_cut_conductance.tolist()
+            ),
+            "pair_conductances": [
+                [
+                    _stable_node_token(left),
+                    _stable_node_token(right),
+                    conductance,
+                ]
+                for left, right, conductance in self.pair_conductances
+            ],
+            "self_return_conductance": (
+                self.self_return_conductance.tolist()
+            ),
+            "transfer_degree": self.transfer_degree.tolist(),
+            "residual_ground_conductance": (
+                self.residual_ground_conductance.tolist()
+            ),
+            "minimum_exterior_precision_eigenvalue": (
+                self.minimum_exterior_precision_eigenvalue
+            ),
+            "maximum_exterior_precision_eigenvalue": (
+                self.maximum_exterior_precision_eigenvalue
+            ),
+            "reciprocal_condition_number": (
+                self.reciprocal_condition_number
+            ),
+            "minimum_reciprocal_condition": (
+                self.minimum_reciprocal_condition
+            ),
+            "cholesky_reconstruction_relative_error": (
+                self.cholesky_reconstruction_relative_error
+            ),
+            "solve_relative_residual": self.solve_relative_residual,
+            "maximum_principle_violation": (
+                self.maximum_principle_violation
+            ),
+            "minimum_schur_return_eigenvalue": (
+                self.minimum_schur_return_eigenvalue
+            ),
+            "minimum_reduced_precision_eigenvalue": (
+                self.minimum_reduced_precision_eigenvalue
+            ),
+            "ledger_maximum_absolute_error": (
+                self.ledger_maximum_absolute_error
+            ),
+        }
+
+
+def reduce_exact_exterior_component(
+    component,
+    *,
+    intrinsic_leakage_conductance=0.0,
+    topology_conductance=1.0,
+    minimum_reciprocal_condition=None,
+):
+    """Reduce one complete frozen exterior component without an explicit inverse.
+
+    The component snapshot is the sole topology authority. Outside-bath edges
+    remain clamped to zero, while every listed port is retained jointly. The
+    resulting multi-terminal operator is exact for that frozen Dirichlet
+    exterior and must not be reconstructed from independent pair solves.
+    """
+
+    if not isinstance(component, ExteriorComponent):
+        raise TypeError("component must be an ExteriorComponent")
+    topology = _positive_finite(
+        "topology_conductance", topology_conductance
+    )
+    required_reciprocal = (
+        _DEFAULT_MINIMUM_RECIPROCAL_CONDITION
+        if minimum_reciprocal_condition is None
+        else _positive_unit_interval(
+            "minimum_reciprocal_condition",
+            minimum_reciprocal_condition,
+        )
+    )
+    nodes = component.nodes
+    ports = component.ports
+    node_index = {node: row for row, node in enumerate(nodes)}
+    port_index = {port: row for row, port in enumerate(ports)}
+    leakage = _exterior_leakage_vector(
+        nodes, intrinsic_leakage_conductance
+    )
+    precision = np.diag(leakage)
+    coupling = np.zeros((len(ports), len(nodes)), dtype=float)
+    for left, right in component.internal_edges:
+        left_row = node_index[left]
+        right_row = node_index[right]
+        precision[left_row, left_row] += topology
+        precision[right_row, right_row] += topology
+        precision[left_row, right_row] -= topology
+        precision[right_row, left_row] -= topology
+    for port, exterior in component.cut_edges:
+        port_row = port_index[port]
+        exterior_row = node_index[exterior]
+        precision[exterior_row, exterior_row] += topology
+        coupling[port_row, exterior_row] += topology
+    for exterior, _outside in component.outside_bath_edges:
+        precision[node_index[exterior], node_index[exterior]] += topology
+    raw_precision_scale = float(
+        np.max(np.abs(precision), initial=0.0)
+    )
+    if raw_precision_scale < 1.0 / np.finfo(float).max:
+        raise np.linalg.LinAlgError(
+            "exterior precision has an unrepresentable equilibrium scale"
+        )
+    precision = _symmetric_part(precision)
+    precision_scale = max(
+        float(np.max(np.abs(precision), initial=0.0)), 1.0
+    )
+    precision_sign_tolerance = max(
+        _M_MATRIX_OFF_DIAGONAL_TOLERANCE * precision_scale,
+        64.0 * np.finfo(float).eps * precision_scale,
+    )
+    if np.max(
+        precision - np.diag(np.diag(precision)), initial=0.0
+    ) > precision_sign_tolerance:
+        raise np.linalg.LinAlgError(
+            "exterior precision violates M-matrix off-diagonal signs"
+        )
+    eigenvalues = np.linalg.eigvalsh(precision)
+    minimum = float(eigenvalues[0])
+    maximum = float(eigenvalues[-1])
+    if (
+        not math.isfinite(minimum)
+        or not math.isfinite(maximum)
+        or minimum <= 0.0
+        or maximum <= 0.0
+    ):
+        raise np.linalg.LinAlgError(
+            "exterior precision must be finite and positive definite"
+        )
+    if minimum < 1.0 / np.finfo(float).max:
+        raise np.linalg.LinAlgError(
+            "exterior precision has an unrepresentable equilibrium scale"
+        )
+    reciprocal = minimum / maximum
+    if reciprocal < required_reciprocal:
+        raise np.linalg.LinAlgError(
+            "exterior precision is too ill-conditioned for the requested "
+            "float64 contract: reciprocal condition "
+            f"{reciprocal:.3e} < {required_reciprocal:.3e}"
+        )
+    try:
+        lower = np.linalg.cholesky(precision)
+    except np.linalg.LinAlgError as exc:
+        raise np.linalg.LinAlgError(
+            "exterior precision failed Cholesky factorization"
+        ) from exc
+    reconstructed = lower @ lower.T
+    reconstruction_relative_error = float(
+        np.linalg.norm(reconstructed - precision, ord="fro")
+        / max(
+            np.linalg.norm(precision, ord="fro"),
+            np.finfo(float).tiny,
+        )
+    )
+    if (
+        reconstruction_relative_error > _CHOLESKY_RECONSTRUCTION_RTOL
+        or not np.allclose(
+            reconstructed,
+            precision,
+            rtol=_CHOLESKY_RECONSTRUCTION_RTOL,
+            atol=_CHOLESKY_RECONSTRUCTION_ATOL,
+        )
+    ):
+        raise np.linalg.LinAlgError(
+            "exterior Cholesky factor does not reconstruct precision"
+        )
+    try:
+        intermediate = np.linalg.solve(lower, coupling.T)
+        solved = np.linalg.solve(lower.T, intermediate)
+    except np.linalg.LinAlgError as exc:
+        raise np.linalg.LinAlgError(
+            "exterior multi-right-hand-side solve failed"
+        ) from exc
+    solve_relative_residual = float(
+        np.linalg.norm(precision @ solved - coupling.T, ord=np.inf)
+        / max(
+            np.linalg.norm(coupling.T, ord=np.inf),
+            np.finfo(float).tiny,
+        )
+    )
+    if (
+        not math.isfinite(solve_relative_residual)
+        or solve_relative_residual > _SOLVE_RELATIVE_RESIDUAL_TOLERANCE
+    ):
+        raise np.linalg.LinAlgError(
+            "exterior solve residual violates the float64 contract"
+        )
+    harmonic = solved @ np.ones(len(ports))
+    maximum_principle_violation = max(
+        float(np.max(-solved, initial=0.0)),
+        float(np.max(-harmonic, initial=0.0)),
+        float(np.max(harmonic - 1.0, initial=0.0)),
+        0.0,
+    )
+    if maximum_principle_violation > _MAXIMUM_PRINCIPLE_RELATIVE_TOLERANCE:
+        raise np.linalg.LinAlgError(
+            "exterior harmonic extension violates the maximum principle"
+        )
+    schur_return = _symmetric_part(coupling @ solved)
+    beta = np.sum(coupling, axis=1)
+    scale = max(
+        float(np.max(np.abs(schur_return), initial=0.0)),
+        float(np.max(beta, initial=0.0)),
+        topology,
+        1.0,
+    )
+    tolerance = max(
+        _M_MATRIX_OFF_DIAGONAL_TOLERANCE * scale,
+        64.0 * np.finfo(float).eps * scale,
+    )
+    if np.min(schur_return, initial=0.0) < -tolerance:
+        raise np.linalg.LinAlgError(
+            "exterior Schur return is materially negative"
+        )
+    minimum_return_eigenvalue = float(
+        np.min(np.linalg.eigvalsh(schur_return))
+    )
+    spectral_tolerance = _MAXIMUM_PRINCIPLE_RELATIVE_TOLERANCE * scale
+    if minimum_return_eigenvalue < -spectral_tolerance:
+        raise np.linalg.LinAlgError(
+            "exterior Schur return is not positive semidefinite"
+        )
+    reduced = _symmetric_part(np.diag(beta) - schur_return)
+    off_diagonal = reduced - np.diag(np.diag(reduced))
+    if np.max(off_diagonal, initial=0.0) > tolerance:
+        raise np.linalg.LinAlgError(
+            "reduced boundary precision violates M-matrix signs"
+        )
+    minimum_reduced_eigenvalue = float(
+        np.min(np.linalg.eigvalsh(reduced))
+    )
+    if minimum_reduced_eigenvalue < -spectral_tolerance:
+        raise np.linalg.LinAlgError(
+            "reduced boundary precision is not positive semidefinite"
+        )
+    residual = reduced @ np.ones(len(ports))
+    if np.min(residual, initial=0.0) < -tolerance:
+        raise np.linalg.LinAlgError(
+            "reduced boundary precision has negative residual grounding"
+        )
+    bridge = np.array(schur_return, copy=True)
+    np.fill_diagonal(bridge, 0.0)
+    reconstructed_reduced = (
+        np.diag(np.sum(bridge, axis=1))
+        - bridge
+        + np.diag(residual)
+    )
+    if not np.allclose(
+        reduced,
+        reconstructed_reduced,
+        rtol=1e-12,
+        atol=tolerance,
+    ):
+        raise np.linalg.LinAlgError(
+            "reduced boundary precision does not reconstruct from its "
+            "transfer and residual-ground ledger"
+        )
+    self_return = np.diag(schur_return)
+    transfer = np.sum(schur_return, axis=1) - self_return
+    ledger_error = float(
+        np.max(
+            np.abs(beta - self_return - transfer - residual),
+            initial=0.0,
+        )
+    )
+    if ledger_error > max(tolerance, 1e-12 * scale):
+        raise np.linalg.LinAlgError(
+            "exact exterior reduction does not close its cut-mass ledger"
+        )
+    fingerprint_payload = _exact_reduction_fingerprint_payload(
+        component_fingerprint=component.component_fingerprint,
+        ports=ports,
+        exterior_nodes=nodes,
+        topology_conductance=topology,
+        intrinsic_leakage_conductance=leakage,
+        boundary_cut_conductance=beta,
+        exterior_precision=precision,
+        boundary_coupling=coupling,
+        harmonic_extension=harmonic,
+        schur_return=schur_return,
+        reduced_boundary_precision=reduced,
+        minimum_reciprocal_condition=required_reciprocal,
+    )
+    return ExactExteriorSchurReduction(
+        component_fingerprint=component.component_fingerprint,
+        ports=ports,
+        exterior_nodes=nodes,
+        topology_conductance=topology,
+        intrinsic_leakage_conductance=leakage,
+        boundary_cut_conductance=beta,
+        exterior_precision=precision,
+        boundary_coupling=coupling,
+        harmonic_extension=harmonic,
+        schur_return=schur_return,
+        reduced_boundary_precision=reduced,
+        minimum_exterior_precision_eigenvalue=minimum,
+        maximum_exterior_precision_eigenvalue=maximum,
+        reciprocal_condition_number=reciprocal,
+        minimum_reciprocal_condition=required_reciprocal,
+        cholesky_reconstruction_relative_error=(
+            reconstruction_relative_error
+        ),
+        solve_relative_residual=solve_relative_residual,
+        maximum_principle_violation=maximum_principle_violation,
+        minimum_schur_return_eigenvalue=minimum_return_eigenvalue,
+        minimum_reduced_precision_eigenvalue=(
+            minimum_reduced_eigenvalue
+        ),
+        ledger_maximum_absolute_error=ledger_error,
+        reduction_fingerprint=_fingerprint(fingerprint_payload),
+    )
 
 
 @dataclass(frozen=True)

@@ -36,6 +36,7 @@ from unifyweaver.graph.bounded_diffusion_fidelity import (  # noqa: E402
     discover_exterior_components,
     ensure_matched_budget,
     evaluate_bounded_domain_fidelity,
+    reduce_exact_exterior_component,
     select_hop_budget_domain,
     select_semantic_resistance_domain,
     select_topology_skeleton_domain,
@@ -143,39 +144,17 @@ def _topology_two_port_schur(
     ledger subtracts both transfer and self-return from the exact Dirichlet
     shunt before checking nonnegative residual ground, M-matrix signs, and SPD;
     it never adds this return on top of the shunt.
-    """
 
-    nodes = component.nodes
-    ports = component.ports
-    node_index = {node: row for row, node in enumerate(nodes)}
-    port_index = {node: row for row, node in enumerate(ports)}
-    precision = np.eye(len(nodes), dtype=float) * intrinsic_leakage
-    coupling = np.zeros((2, len(nodes)), dtype=float)
-    outside_bath_edges = set(component.outside_bath_edges)
-    for node, row in node_index.items():
-        for neighbor in graph[node]:
-            if neighbor in node_index:
-                neighbor_row = node_index[neighbor]
-                if row < neighbor_row:
-                    precision[row, row] += topology_conductance
-                    precision[neighbor_row, neighbor_row] += topology_conductance
-                    precision[row, neighbor_row] -= topology_conductance
-                    precision[neighbor_row, row] -= topology_conductance
-            elif neighbor in port_index:
-                precision[row, row] += topology_conductance
-                coupling[port_index[neighbor], row] += topology_conductance
-            elif (node, neighbor) in outside_bath_edges:
-                precision[row, row] += topology_conductance
-            else:
-                raise ValueError(
-                    "bounded exterior component contains an unknown neighbor"
-                )
-    update = coupling @ np.linalg.solve(precision, coupling.T)
-    if not np.isfinite(update).all() or not np.allclose(update, update.T):
-        raise np.linalg.LinAlgError("two-port topology Schur response is invalid")
-    if np.min(update) < -1e-12:
-        raise np.linalg.LinAlgError("two-port topology Schur response is negative")
-    return update
+    ``graph`` remains in this private helper's signature for benchmark-call
+    compatibility. The reusable reducer deliberately does not read it:
+    ``component`` is the already-fingerprinted authoritative topology snapshot.
+    """
+    del graph
+    return reduce_exact_exterior_component(
+        component,
+        intrinsic_leakage_conductance=intrinsic_leakage,
+        topology_conductance=topology_conductance,
+    ).schur_return
 
 
 def _exact_two_port_exterior_dtn(

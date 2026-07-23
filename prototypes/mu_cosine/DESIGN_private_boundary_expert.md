@@ -452,7 +452,9 @@ graph-only primary. Report losses as well as wins.
 ## Staged acceptance
 
 1. **Synthetic identities:** prove exact elimination and sparse-ledger safety on
-   small graphs. This stage cannot authorize private training.
+   small graphs under
+   [`PROTOCOL_synthetic_multiport_schur.md`](PROTOCOL_synthetic_multiport_schur.md).
+   This stage cannot authorize private training.
 2. **Private structural shadow study:** on a freshly authenticated local
    snapshot, measure whether the private interior induces material
    multi-terminal transfer after common-parent retention. No filing labels tune
