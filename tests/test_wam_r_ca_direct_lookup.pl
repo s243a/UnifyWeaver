@@ -18,34 +18,17 @@
 % ------------------------------------------------------------------
 % Structural: grouped_by_first_atoms registers indexed arg1 lookup.
 % ------------------------------------------------------------------
-test(grouped_by_first_atoms_registers_indexed_lookup) :-
+test(grouped_by_first_atoms_registers_indexed_lookup, [nondet]) :-
     setup_call_cleanup(
         (   unique_tmp('tmp_ca_direct_gbf', TmpDir),
+            write_edge_tsv(TmpDir, 'edges.tsv',
+                           ['a\tb', 'b\tc']),
             directory_file_path(TmpDir, 'edges.tsv', TsvPath),
-            setup_call_cleanup(
-                open(TsvPath, write, S),
-                (   format(S, 'a\tb~n', []),
-                    format(S, 'b\tc~n', [])
-                ),
-                close(S)),
             atom_string(TsvPath, TsvPathStr),
-            retractall(user:max_depth(_)),
-            assertz(user:max_depth(4)),
-            retractall(user:ca(_,_,_,_)),
-            assertz((user:ca(Cat, Root, 1, Visited) :-
-                user:gbf_edge(Cat, Root),
-                \+ member(Root, Visited))),
-            assertz((user:ca(Cat, Root, Hops, Visited) :-
-                max_depth(MaxD),
-                length(Visited, Depth),
-                Depth < MaxD, !,
-                user:gbf_edge(Cat, Mid),
-                \+ member(Mid, Visited),
-                user:ca(Mid, Root, H1, [Mid|Visited]),
-                Hops is H1 + 1))
+            install_ca_kernel(gbf_edge, 4)
         ),
         (   write_wam_r_project(
-                [user:gbf_edge/2, user:ca/4, user:max_depth/1],
+                [user:gbf_edge/2, user:cat_anc/4, user:max_depth/1],
                 [r_fact_sources([source(gbf_edge/2,
                                         grouped_by_first_atoms(TsvPathStr))])],
                 TmpDir),
@@ -58,11 +41,10 @@ test(grouped_by_first_atoms_registers_indexed_lookup) :-
             assertion(once(sub_string(Code, _, _, _,
                 'arg1_lookups = new.env'))),
             assertion(once(sub_string(Code, _, _, _,
-                'pred_ca_kernel_ca')))
+                'pred_cat_anc_kernel_ca')))
         ),
         (   cleanup_tmp(TmpDir),
-            retractall(user:max_depth(_)),
-            retractall(user:ca(_,_,_,_))
+            uninstall_ca_kernel
         )).
 
 % ------------------------------------------------------------------
@@ -128,45 +110,6 @@ test(lmdb_eager_registers_indexed_lookup) :-
         cleanup_tmp(TmpDir)).
 
 % ------------------------------------------------------------------
-% Structural: inline fact table also registers indexed lookup.
-% ------------------------------------------------------------------
-test(inline_fact_table_registers_indexed_lookup) :-
-    setup_call_cleanup(
-        (   retractall(user:max_depth(_)),
-            assertz(user:max_depth(3)),
-            retractall(user:cparent(_,_)),
-            retractall(user:cat_anc(_,_,_,_)),
-            assertz(user:cparent(a, b)),
-            assertz(user:cparent(b, c)),
-            assertz((user:cat_anc(Cat, Root, 1, Visited) :-
-                user:cparent(Cat, Root),
-                \+ member(Root, Visited))),
-            assertz((user:cat_anc(Cat, Root, Hops, Visited) :-
-                max_depth(MaxD),
-                length(Visited, Depth),
-                Depth < MaxD, !,
-                user:cparent(Cat, Mid),
-                \+ member(Mid, Visited),
-                user:cat_anc(Mid, Root, H1, [Mid|Visited]),
-                Hops is H1 + 1)),
-            unique_tmp('tmp_ca_direct_inline', TmpDir)
-        ),
-        (   write_wam_r_project(
-                [user:cparent/2, user:cat_anc/4, user:max_depth/1],
-                [],
-                TmpDir),
-            directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
-            read_file_to_string(ProgPath, Code, []),
-            assertion(once(sub_string(Code, _, _, _,
-                'register_indexed_arg1_parent_lookup(shared_program, "cparent/2"')))
-        ),
-        (   cleanup_tmp(TmpDir),
-            retractall(user:max_depth(_)),
-            retractall(user:cparent(_,_)),
-            retractall(user:cat_anc(_,_,_,_))
-        )).
-
-% ------------------------------------------------------------------
 % Runtime: direct selected, fallback when cleared, result parity,
 % multipath, cycles, visited, depth boundary, numeric atoms.
 % ------------------------------------------------------------------
@@ -205,7 +148,7 @@ collect_hops <- function(cat, root, visited_chars) {
     v <- WamRuntime$deref(state, hops)
     stopifnot(!is.null(v), identical(v$tag, "int"))
     out <- c(out, as.integer(v$val))
-    ok <- isTRUE(WamRuntime$backtrack(shared_program, state))
+    ok <- isTRUE(WamRuntime$backtrack(state))
   }
   sort(out)
 }
@@ -220,14 +163,14 @@ d_num       <- collect_hops("1827", "9001", character(0))
 d_num_miss  <- collect_hops("1827", "nope", character(0))
 
 stopifnot(identical(d_multi_eq, c(2L, 2L)))          # a->b->d and a->c->d
-stopifnot(identical(d_multi_une, c(1L, 3L)))         # a->z and a->b->c->z
+stopifnot(identical(d_multi_une, c(1L, 3L)))         # a->z and a->p->q->z
 stopifnot(identical(d_cycle, 1L))                    # cycle edge ignored
 stopifnot(identical(d_visited, 2L))                  # b blocked; only a->c->d
-stopifnot(identical(d_depth, 3L))                    # direct edge at max_depth=3
+stopifnot(identical(d_depth, 3L))                    # edge at max_depth=3
 stopifnot(identical(d_num, 2L))                      # numeric-looking atoms
 stopifnot(length(d_num_miss) == 0L)
 
-# Fallback: clear capability, collect_parents/iterate_goal path
+# Fallback: clear capability -> iterate_goal collect_parents path
 rm(list = "cparent/2", envir = shared_program$arg1_lookups)
 stopifnot(is.null(WamRuntime$get_arg1_parent_lookup(shared_program, "cparent/2")))
 f_multi_eq  <- collect_hops("a", "d", character(0))
@@ -265,7 +208,7 @@ cat("ok\n")
         ),
         ca_direct_cleanup(TmpDir)).
 
-% functions + interpreter modes (small e2e queries)
+% functions + interpreter modes (FactSource + CA kernel queries)
 test(ca_direct_functions_mode_e2e) :-
     once((rscript_available -> ca_mode_e2e(functions) ; true)).
 
@@ -274,47 +217,35 @@ test(ca_direct_interpreter_mode_e2e) :-
 
 ca_mode_e2e(EmitMode) :-
     setup_call_cleanup(
-        (   retractall(user:max_depth(_)),
-            assertz(user:max_depth(4)),
-            retractall(user:cparent(_,_)),
-            retractall(user:cat_anc(_,_,_,_)),
+        (   unique_tmp('tmp_ca_direct_mode', TmpDir),
+            write_edge_tsv(TmpDir, 'edges.tsv',
+                           ['a\tb', 'a\tc', 'b\td', 'c\td',
+                            '1827\tmid', 'mid\t9001']),
+            directory_file_path(TmpDir, 'edges.tsv', TsvPath),
+            atom_string(TsvPath, TsvPathStr),
+            install_ca_kernel(cparent, 4),
             retractall(user:ca_ok),
             retractall(user:ca_paths),
-            assertz(user:cparent(a, b)),
-            assertz(user:cparent(a, c)),
-            assertz(user:cparent(b, d)),
-            assertz(user:cparent(c, d)),
-            assertz(user:cparent('1827', mid)),
-            assertz(user:cparent(mid, '9001')),
-            assertz((user:cat_anc(Cat, Root, 1, Visited) :-
-                user:cparent(Cat, Root),
-                \+ member(Root, Visited))),
-            assertz((user:cat_anc(Cat, Root, Hops, Visited) :-
-                max_depth(MaxD),
-                length(Visited, Depth),
-                Depth < MaxD, !,
-                user:cparent(Cat, Mid),
-                \+ member(Mid, Visited),
-                user:cat_anc(Mid, Root, H1, [Mid|Visited]),
-                Hops is H1 + 1)),
+            retractall(user:ca_num),
             assertz((user:ca_ok :- cat_anc(a, d, 2, []))),
             assertz((user:ca_paths :-
                 findall(H, cat_anc(a, d, H, []), L0),
                 msort(L0, L),
                 L == [2, 2])),
-            assertz((user:ca_num :- cat_anc('1827', '9001', 2, []))),
-            unique_tmp('tmp_ca_direct_mode', TmpDir)
+            assertz((user:ca_num :- cat_anc('1827', '9001', 2, [])))
         ),
         (   write_wam_r_project(
                 [user:cparent/2, user:cat_anc/4, user:max_depth/1,
                  user:ca_ok/0, user:ca_paths/0, user:ca_num/0],
-                [emit_mode(EmitMode)],
+                [emit_mode(EmitMode),
+                 r_fact_sources([source(cparent/2,
+                                        grouped_by_first_atoms(TsvPathStr))])],
                 TmpDir),
             directory_file_path(TmpDir, 'R', RDir),
             directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
             read_file_to_string(ProgPath, Code, []),
             assertion(once(sub_string(Code, _, _, _,
-                'register_indexed_arg1_parent_lookup'))),
+                'register_indexed_arg1_parent_lookup(shared_program, "cparent/2"'))),
             run_rscript_query(RDir, 'ca_ok/0', Out1),
             assertion(once(sub_string(Out1, _, _, _, "true"))),
             run_rscript_query(RDir, 'ca_paths/0', Out2),
@@ -323,9 +254,7 @@ ca_mode_e2e(EmitMode) :-
             assertion(once(sub_string(Out3, _, _, _, "true")))
         ),
         (   cleanup_tmp(TmpDir),
-            retractall(user:max_depth(_)),
-            retractall(user:cparent(_,_)),
-            retractall(user:cat_anc(_,_,_,_)),
+            uninstall_ca_kernel,
             retractall(user:ca_ok),
             retractall(user:ca_paths),
             retractall(user:ca_num)
@@ -336,54 +265,60 @@ ca_mode_e2e(EmitMode) :-
 % ------------------------------------------------------------------
 % Helpers
 % ------------------------------------------------------------------
-ca_direct_setup_program(TmpDir, RDir) :-
-    unique_tmp('tmp_ca_direct_rt', TmpDir),
-    retractall(user:max_depth(_)),
-    assertz(user:max_depth(3)),
-    retractall(user:cparent(_,_)),
-    retractall(user:cat_anc(_,_,_,_)),
-    % multipath equal hops: a->b->d, a->c->d
-    assertz(user:cparent(a, b)),
-    assertz(user:cparent(a, c)),
-    assertz(user:cparent(b, d)),
-    assertz(user:cparent(c, d)),
-    % multipath unequal hops: a->z (1) and a->p->q->z (3)
-    assertz(user:cparent(a, z)),
-    assertz(user:cparent(a, p)),
-    assertz(user:cparent(p, q)),
-    assertz(user:cparent(q, z)),
-    % cycle
-    assertz(user:cparent(loop_a, loop_b)),
-    assertz(user:cparent(loop_b, loop_a)),
-    % depth boundary chain deep0->deep1->deep2->deep3 (exactly max_depth=3)
-    assertz(user:cparent(deep0, deep1)),
-    assertz(user:cparent(deep1, deep2)),
-    assertz(user:cparent(deep2, deep3)),
-    % numeric-looking atoms
-    assertz(user:cparent('1827', mid)),
-    assertz(user:cparent(mid, '9001')),
-    assertz((user:cat_anc(Cat, Root, 1, Visited) :-
-        user:cparent(Cat, Root),
-        \+ member(Root, Visited))),
-    assertz((user:cat_anc(Cat, Root, Hops, Visited) :-
+% Kernel detector requires a direct body call to EdgePred/2 (not call/N).
+install_ca_kernel(EdgePred, MaxDepth) :-
+    uninstall_ca_kernel,
+    assertz(user:max_depth(MaxDepth)),
+    Head1 = user:cat_anc(Cat, Root, 1, Visited),
+    Edge1 =.. [EdgePred, Cat, Root],
+    assertz((Head1 :- user:Edge1, \+ member(Root, Visited))),
+    Head2 = user:cat_anc(Cat, Root, Hops, Visited),
+    Edge2 =.. [EdgePred, Cat, Mid],
+    assertz((Head2 :-
         max_depth(MaxD),
         length(Visited, Depth),
         Depth < MaxD, !,
-        user:cparent(Cat, Mid),
+        user:Edge2,
         \+ member(Mid, Visited),
         user:cat_anc(Mid, Root, H1, [Mid|Visited]),
-        Hops is H1 + 1)),
+        Hops is H1 + 1)).
+
+uninstall_ca_kernel :-
+    retractall(user:max_depth(_)),
+    retractall(user:cat_anc(_,_,_,_)).
+
+ca_direct_setup_program(TmpDir, RDir) :-
+    unique_tmp('tmp_ca_direct_rt', TmpDir),
+    % multipath equal: a->b->d, a->c->d
+    % multipath unequal: a->z (1), a->p->q->z (3)
+    % cycle, depth boundary, numeric-looking atoms
+    write_edge_tsv(TmpDir, 'edges.tsv',
+                   ['a\tb', 'a\tc', 'b\td', 'c\td',
+                    'a\tz', 'a\tp', 'p\tq', 'q\tz',
+                    'loop_a\tloop_b', 'loop_b\tloop_a',
+                    'deep0\tdeep1', 'deep1\tdeep2', 'deep2\tdeep3',
+                    '1827\tmid', 'mid\t9001']),
+    directory_file_path(TmpDir, 'edges.tsv', TsvPath),
+    atom_string(TsvPath, TsvPathStr),
+    install_ca_kernel(cparent, 3),
     write_wam_r_project(
         [user:cparent/2, user:cat_anc/4, user:max_depth/1],
-        [emit_mode(functions)],
+        [emit_mode(functions),
+         r_fact_sources([source(cparent/2,
+                                grouped_by_first_atoms(TsvPathStr))])],
         TmpDir),
     directory_file_path(TmpDir, 'R', RDir).
 
 ca_direct_cleanup(TmpDir) :-
     cleanup_tmp(TmpDir),
-    retractall(user:max_depth(_)),
-    retractall(user:cparent(_,_)),
-    retractall(user:cat_anc(_,_,_,_)).
+    uninstall_ca_kernel.
+
+write_edge_tsv(Dir, File, Lines) :-
+    directory_file_path(Dir, File, Path),
+    setup_call_cleanup(
+        open(Path, write, S),
+        forall(member(Line, Lines), format(S, '~w~n', [Line])),
+        close(S)).
 
 run_rscript_query(RDir, Query, Out) :-
     process_create(path('Rscript'),
