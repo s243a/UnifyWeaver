@@ -17546,6 +17546,16 @@ plawk_emit_print_expr_for_context(ssa(Value), FieldSeparator, Context,
     plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
     plawk_i64_expr_ir(ssa(Value), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
+% a substituted DOUBLE-scalar read (var(Name) -> ssa_f64(SlotValue)): print the
+% double SSA value with %g, mirroring the END-print double branch. This makes
+% `print x` work for a float-valued scalar slot in a rule body (the i64 `ssa`
+% clause above handles the counter case; ssa_f64 is functor-distinct).
+plawk_emit_print_expr_for_context(ssa_f64(Value), FieldSeparator, Context,
+        f64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
+    plawk_print_expr_value_base(Context, f64, Base),
+    plawk_print_expr_output_names(Context, f64, FmtPrefix, PrintPrefix),
+    plawk_f64_expr_ir(ssa_f64(Value), FieldSeparator, Base, Base,
+        ValueIR, GlobalParts, SetupParts).
 % a substituted STRING-scalar read (var(Name) -> ssa_str(SlotValue)): the slot
 % holds an atom id; resolve it to text (id 0 is the unset sentinel, printed as
 % empty). A select keeps it straight-line -- wam_atom_to_string is always called
