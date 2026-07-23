@@ -51,6 +51,20 @@ test(range_mixed_endpoints_parse) :-
             [print([field(0)])])], [])),
     !.
 
+% combinator endpoints: an `&&` start parses to an and_pat endpoint.
+test(range_combinator_start_parses) :-
+    plawk_parse_string("NR>=2 && /x/, /end/ { print $0 }\n",
+        program([], [rule(range(and_pat(special_cmp('NR', ge, 2), contains("x")),
+            contains("end")), [print([field(0)])])], [])),
+    !.
+
+% a single combinator pattern (no comma) is unaffected -- not a range.
+test(single_combinator_unaffected) :-
+    plawk_parse_string("NR>=2 && /x/ { print $0 }\n",
+        program([], [rule(and_pat(special_cmp('NR', ge, 2), contains("x")),
+            [print([field(0)])])], [])),
+    !.
+
 % --- runtime ----------------------------------------------------------------
 
 % the section between markers is printed inclusive; outside is skipped.
@@ -116,6 +130,28 @@ test(range_regex_nr_mixed, [condition(clang_available)]) :-
     build_run(Dir, 'rnm', "/b/, NR==4 { print $0 }\n",
         "a\nb\nc\nd\ne\n", Out, St),
     assertion(St == 0), assertion(Out == "b\nc\nd\n"), !.
+
+% a combinator start `NR>=2 && /x/`: the range opens only when both hold.
+test(range_combinator_start, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'rcs', "NR>=2 && /x/, /end/ { print $0 }\n",
+        "x1\nx start\nfoo\nend\ntail\n", Out, St),
+    assertion(St == 0), assertion(Out == "x start\nfoo\nend\n"), !.
+
+% a combinator end `NR>=3 && /c/`: the range closes only when both hold.
+test(range_combinator_end, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'rce', "NR==1, NR>=3 && /c/ { print $0 }\n",
+        "top\nb\nc here\ntail\n", Out, St),
+    assertion(St == 0), assertion(Out == "top\nb\nc here\n"), !.
+
+% an `||` start opens the range on either alternative. ("done" as the trailing
+% line deliberately avoids an `a`/`b` that would re-open the range.)
+test(range_or_start, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'ros', "/a/ || /b/, /z/ { print $0 }\n",
+        "top\nb here\nmid\nz end\ndone\n", Out, St),
+    assertion(St == 0), assertion(Out == "b here\nmid\nz end\n"), !.
 
 :- end_tests(plawk_range).
 
