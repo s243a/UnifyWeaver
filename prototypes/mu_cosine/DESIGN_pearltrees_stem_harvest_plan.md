@@ -263,6 +263,10 @@ Private visibility data can support a local personalization overlay, but every
 transitively derived embedding, adapter, checkpoint, prompt cache, and report
 then remains private.  The public corpus and the private overlay are separate
 trust domains, not two splits of one publishable dataset.
+The parked architecture for boundary alignment and a graph-derived private
+interface is specified in
+[`DESIGN_private_boundary_expert.md`](DESIGN_private_boundary_expert.md); that
+design does not authorize training or release.
 
 ## Alternatives rejected for V1
 
