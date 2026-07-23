@@ -102,12 +102,12 @@ shared_program <- list(
   # the fact_in_range/5 builtin via binary-search + the existing
   # fact_table_iter_subset enumeration path.
   fact_range_indexes = new.env(parent = emptyenv()),
-  # Bound-arg1 parent-lookup capability registry (PERF-R-CA-DIRECT).
-  # Keyed by "pred/arity"; value is a closure key_term -> list of
-  # atom parent TermValues (arg2). Registered explicitly at FactSource
-  # / fact-table emit time — kernels never guess generated R names.
-  # category_ancestor/4 uses this when present; otherwise falls back
-  # to iterate_goal over the edge predicate.
+  # Bound-arg1 parent-lookup capability registry (PERF-R-CA-DIRECT /
+  # PERF-R-CA-IDDFS). Keyed by "pred/arity"; value is
+  # list(lookup, lookup_ids) registered at FactSource / fact-table
+  # emit time — kernels never guess generated R names.
+  # lookup_ids enables integer-ID DFS; lookup alone keeps TermValue
+  # DFS; neither falls back to iterate_goal.
   arg1_lookups = new.env(parent = emptyenv())
 )
 
