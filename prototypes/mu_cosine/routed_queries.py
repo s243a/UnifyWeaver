@@ -59,7 +59,7 @@ from filing_assistant import (
     ranks_np,
     stable_score_order,
 )
-from mu_attention import E5_MODEL
+from mu_attention import E5_MODEL, E5_REVISION
 from routed_policy import (
     RoutedPolicyError,
     band_qids,
@@ -288,8 +288,8 @@ def build(a):
         "ranker": {
             "name": "e5-cos",
             "model_id": E5_MODEL,
-            "model_revision": "unresolved",
-            "model_revision_status": "name-plus-output-bound",
+            "model_revision": E5_REVISION,
+            "model_revision_status": "immutable-huggingface-commit",
             "top_k": a.top_k,
             "tie_break": "candidate_catalog_column_ascending",
             "candidate_embeddings": _array_record(cand_vec),
