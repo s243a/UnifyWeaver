@@ -21,6 +21,7 @@ from unifyweaver.graph.bounded_diffusion_fidelity import (  # noqa: E402
     _conservative_upper_quantile,
     ExperimentalBoundaryClosure,
     ExperimentalBoundaryClosureConfig,
+    ExactExteriorSchurReduction,
     ExteriorTraversalLimitError,
     ProtectedSetCoverageError,
     build_experimental_boundary_closure,
@@ -28,6 +29,7 @@ from unifyweaver.graph.bounded_diffusion_fidelity import (  # noqa: E402
     ensure_matched_budget,
     evaluate_bounded_domain_fidelity,
     evaluate_nested_bounded_domain_fidelity,
+    reduce_exact_exterior_component,
     select_hop_budget_domain,
     select_semantic_resistance_domain,
     select_topology_skeleton_domain,
@@ -397,6 +399,383 @@ def _schur_precision(full, retained, exterior):
     j_rx = full.precision[np.ix_(retained, exterior)]
     j_xx = full.precision[np.ix_(exterior, exterior)]
     return j_rr - j_rx @ np.linalg.solve(j_xx, j_rx.T)
+
+
+def _exterior_component(graph, ports, *, allowed_exterior_nodes=None):
+    ports = tuple(ports)
+    domain = select_hop_budget_domain(
+        ports, graph, maximum_nodes=len(ports)
+    ).domain
+    discovery = discover_exterior_components(
+        domain,
+        graph,
+        allowed_exterior_nodes=allowed_exterior_nodes,
+    )
+    assert discovery.component_count == 1
+    return discovery.components[0]
+
+
+def test_exact_multiport_schur_matches_grounded_three_port_star_identity():
+    graph = _neighbors((("p", "x"), ("q", "x"), ("r", "x")))
+    component = _exterior_component(graph, ("p", "q", "r"))
+    reduction = reduce_exact_exterior_component(
+        component, intrinsic_leakage_conductance=1.0
+    )
+    expected_return = np.ones((3, 3)) / 4.0
+    expected_reduced = np.eye(3) - expected_return
+
+    assert isinstance(reduction, ExactExteriorSchurReduction)
+    assert np.allclose(
+        reduction.schur_return, expected_return, rtol=1e-10, atol=1e-12
+    )
+    assert np.allclose(
+        reduction.reduced_boundary_precision,
+        expected_reduced,
+        rtol=1e-10,
+        atol=1e-12,
+    )
+    assert np.allclose(
+        reduction.boundary_cut_conductance,
+        np.ones(3),
+        rtol=1e-10,
+        atol=1e-12,
+    )
+    assert np.allclose(
+        reduction.self_return_conductance,
+        np.full(3, 0.25),
+        rtol=1e-10,
+        atol=1e-12,
+    )
+    assert np.allclose(
+        reduction.transfer_degree,
+        np.full(3, 0.5),
+        rtol=1e-10,
+        atol=1e-12,
+    )
+    assert np.allclose(
+        reduction.residual_ground_conductance,
+        np.full(3, 0.25),
+        rtol=1e-10,
+        atol=1e-12,
+    )
+    assert reduction.pair_conductances == (
+        ("p", "q", pytest.approx(0.25)),
+        ("p", "r", pytest.approx(0.25)),
+        ("q", "r", pytest.approx(0.25)),
+    )
+    assert np.allclose(
+        reduction.boundary_cut_conductance,
+        reduction.self_return_conductance
+        + reduction.transfer_degree
+        + reduction.residual_ground_conductance,
+        rtol=1e-10,
+        atol=1e-12,
+    )
+
+    source = np.array([1.0, -1.0, 0.0])
+    effective_resistance = float(
+        source
+        @ np.linalg.solve(reduction.reduced_boundary_precision, source)
+    )
+    assert effective_resistance == pytest.approx(2.0)
+    assert 1.0 / effective_resistance != pytest.approx(
+        reduction.schur_return[0, 1]
+    )
+
+
+def test_exact_multiport_schur_matches_direct_full_graph_elimination():
+    graph = _neighbors(
+        (
+            ("p", "a"),
+            ("q", "a"),
+            ("a", "b"),
+            ("b", "c"),
+            ("c", "a"),
+            ("p", "q"),
+            ("r", "b"),
+            ("s", "c"),
+        )
+    )
+    ports = ("p", "q", "r", "s")
+    exterior = ("a", "b", "c")
+    component = _exterior_component(graph, ports)
+    reduction = reduce_exact_exterior_component(
+        component,
+        intrinsic_leakage_conductance={
+            "a": 0.2,
+            "b": 0.2,
+            "c": 0.2,
+        },
+    )
+    nodes = ports + exterior
+    full = build_grounded_semantic_diffusion(
+        nodes,
+        graph,
+        leakage_conductance={
+            "p": 0.3,
+            "q": 0.3,
+            "r": 0.3,
+            "s": 0.3,
+            "a": 0.2,
+            "b": 0.2,
+            "c": 0.2,
+        },
+    )
+    expected = _schur_precision(
+        full,
+        retained=range(len(ports)),
+        exterior=range(len(ports), len(nodes)),
+    )
+    public_boundary_precision = np.diag(np.full(len(ports), 0.3))
+    public_boundary_precision[0, 0] += 1.0
+    public_boundary_precision[1, 1] += 1.0
+    public_boundary_precision[0, 1] -= 1.0
+    public_boundary_precision[1, 0] -= 1.0
+    observed = (
+        public_boundary_precision + reduction.reduced_boundary_precision
+    )
+    assert np.allclose(observed, expected, rtol=1e-10, atol=1e-12)
+
+    sources = np.array(
+        (
+            (1.0, 0.0, 0.5),
+            (0.0, 1.0, 0.5),
+            (0.5, 0.0, 1.0),
+            (0.0, 0.5, 1.0),
+        )
+    )
+    full_sources = np.zeros((len(nodes), sources.shape[1]))
+    full_sources[: len(ports)] = sources
+    assert np.allclose(
+        np.linalg.solve(observed, sources),
+        full.equilibrium_response(full_sources)[: len(ports)],
+        rtol=1e-10,
+        atol=1e-12,
+    )
+
+
+def test_exact_multiport_schur_does_not_cap_parallel_graph_return():
+    hubs = ("x1", "x2", "x3", "x4")
+    edges = [
+        (port, hub)
+        for port in ("p", "q", "r")
+        for hub in hubs
+    ]
+    edges.extend(zip(hubs, hubs[1:]))
+    graph = _neighbors(edges)
+    component = _exterior_component(graph, ("p", "q", "r"))
+    reduction = reduce_exact_exterior_component(component)
+
+    assert np.allclose(
+        reduction.schur_return,
+        np.full((3, 3), 4.0 / 3.0),
+        rtol=1e-10,
+        atol=1e-12,
+    )
+    assert reduction.schur_return[0, 1] > reduction.topology_conductance
+    assert np.allclose(
+        reduction.residual_ground_conductance,
+        np.zeros(3),
+        rtol=1e-10,
+        atol=1e-12,
+    )
+    assert reduction.minimum_reduced_precision_eigenvalue >= -1e-10
+
+
+def test_exact_multiport_schur_is_invariant_to_input_and_identifier_order():
+    ports = (1, "p", ("r",))
+    edges = (
+        (1, "x"),
+        ("p", "x"),
+        (("r",), "y"),
+        ("x", "y"),
+    )
+    first_graph = _neighbors(edges)
+    second_graph = _neighbors(reversed(edges))
+    first_component = _exterior_component(first_graph, reversed(ports))
+    second_component = _exterior_component(second_graph, ports)
+    first = reduce_exact_exterior_component(
+        first_component,
+        intrinsic_leakage_conductance={"x": 0.1, "y": 0.3},
+    )
+    second = reduce_exact_exterior_component(
+        second_component,
+        intrinsic_leakage_conductance={"y": 0.3, "x": 0.1},
+    )
+
+    assert first.component_fingerprint == second.component_fingerprint
+    assert first.reduction_fingerprint == second.reduction_fingerprint
+    assert first.ports == second.ports
+    assert np.array_equal(first.schur_return, second.schur_return)
+    assert np.array_equal(
+        first.reduced_boundary_precision,
+        second.reduced_boundary_precision,
+    )
+
+
+def test_exact_multiport_schur_avoids_explicit_inverse_and_has_readonly_outputs(
+    monkeypatch,
+):
+    graph = _neighbors((("p", "x"), ("q", "x"), ("r", "x")))
+    component = _exterior_component(graph, ("p", "q", "r"))
+
+    def reject_inverse(*_args, **_kwargs):
+        raise AssertionError("the exact reducer must not form an inverse")
+
+    original_cholesky = np.linalg.cholesky
+    cholesky_calls = []
+
+    def record_cholesky(*args, **kwargs):
+        cholesky_calls.append(1)
+        return original_cholesky(*args, **kwargs)
+
+    monkeypatch.setattr(np.linalg, "inv", reject_inverse)
+    monkeypatch.setattr(np.linalg, "pinv", reject_inverse)
+    monkeypatch.setattr(np.linalg, "cholesky", record_cholesky)
+    reduction = reduce_exact_exterior_component(
+        component, intrinsic_leakage_conductance=0.2
+    )
+
+    assert cholesky_calls
+    assert reduction.schur_return.flags.writeable is False
+    assert reduction.reduced_boundary_precision.flags.writeable is False
+    assert reduction.bridge_conductance.flags.writeable is False
+    assert reduction.solve_relative_residual <= 1e-10
+    assert reduction.cholesky_reconstruction_relative_error <= 1e-11
+    assert reduction.maximum_principle_violation <= 1e-10
+    assert len(reduction.reduction_fingerprint) == 64
+
+
+def test_exact_multiport_schur_accounts_for_outside_bath_grounding():
+    graph = _neighbors(
+        (("p", "x"), ("q", "x"), ("r", "x"), ("x", "z"))
+    )
+    component = _exterior_component(
+        graph,
+        ("p", "q", "r"),
+        allowed_exterior_nodes=("x",),
+    )
+    reduction = reduce_exact_exterior_component(
+        component, intrinsic_leakage_conductance=0.2
+    )
+
+    assert component.outside_bath_edges == (("x", "z"),)
+    assert np.allclose(
+        reduction.schur_return,
+        np.ones((3, 3)) / 4.2,
+        rtol=1e-10,
+        atol=1e-12,
+    )
+    assert np.allclose(
+        reduction.residual_ground_conductance,
+        np.full(3, 1.2 / 4.2),
+        rtol=1e-10,
+        atol=1e-12,
+    )
+
+
+def test_exact_exterior_schur_supports_one_port_and_fails_closed_on_inputs():
+    one_port_graph = _neighbors((("p", "x"),))
+    one_port = reduce_exact_exterior_component(
+        _exterior_component(one_port_graph, ("p",)),
+        intrinsic_leakage_conductance=0.5,
+    )
+    assert one_port.pair_conductances == ()
+    assert one_port.schur_return[0, 0] == pytest.approx(2.0 / 3.0)
+    assert one_port.residual_ground_conductance[0] == pytest.approx(
+        1.0 / 3.0
+    )
+
+    graph = _neighbors((("p", "x"), ("x", "y"), ("y", "q")))
+    component = _exterior_component(graph, ("p", "q"))
+    for bad_topology in (0.0, -1.0, float("nan")):
+        with pytest.raises(ValueError, match="topology_conductance"):
+            reduce_exact_exterior_component(
+                component, topology_conductance=bad_topology
+            )
+    for bad_leakage in (-0.1, float("inf")):
+        with pytest.raises(ValueError, match="leakage"):
+            reduce_exact_exterior_component(
+                component,
+                intrinsic_leakage_conductance=bad_leakage,
+            )
+    with pytest.raises(ValueError, match="unknown exterior"):
+        reduce_exact_exterior_component(
+            component,
+            intrinsic_leakage_conductance={"unknown": 0.2},
+        )
+    with pytest.raises(np.linalg.LinAlgError, match="ill-conditioned"):
+        reduce_exact_exterior_component(
+            component,
+            minimum_reciprocal_condition=0.9,
+        )
+    with pytest.raises(np.linalg.LinAlgError, match="unrepresentable"):
+        reduce_exact_exterior_component(
+            _exterior_component(one_port_graph, ("p",)),
+            topology_conductance=np.nextafter(0.0, 1.0),
+        )
+
+
+def test_exact_multiport_result_rejects_tampered_exposed_state():
+    graph = _neighbors(
+        (
+            ("p", "x"),
+            ("q", "x"),
+            ("x", "y"),
+            ("r", "y"),
+        )
+    )
+    reduction = reduce_exact_exterior_component(
+        _exterior_component(graph, ("p", "q", "r")),
+        intrinsic_leakage_conductance={"x": 0.1, "y": 0.2},
+    )
+
+    with pytest.raises(ValueError, match="harmonic extension"):
+        replace(
+            reduction,
+            harmonic_extension=np.full(
+                len(reduction.exterior_nodes), -100.0
+            ),
+        )
+    with pytest.raises(ValueError, match="Schur return|fingerprint"):
+        replace(
+            reduction,
+            boundary_coupling=np.flip(
+                reduction.boundary_coupling, axis=1
+            ),
+        )
+    canonicalized = replace(
+        reduction,
+        boundary_cut_conductance=(
+            reduction.boundary_cut_conductance + 5e-13
+        ),
+    )
+    assert np.array_equal(
+        canonicalized.boundary_cut_conductance,
+        reduction.boundary_cut_conductance,
+    )
+    assert (
+        canonicalized.reduction_fingerprint
+        == reduction.reduction_fingerprint
+    )
+
+
+def test_exact_multiport_public_residual_shunt_is_roundoff_nonnegative():
+    ports = tuple(f"p{index:03d}" for index in range(64))
+    graph = _neighbors(((port, "x") for port in ports))
+    reduction = reduce_exact_exterior_component(
+        _exterior_component(graph, reversed(ports))
+    )
+
+    assert np.all(reduction.residual_ground_conductance >= 0.0)
+    assert np.allclose(
+        reduction.boundary_cut_conductance,
+        reduction.self_return_conductance
+        + reduction.transfer_degree
+        + reduction.residual_ground_conductance,
+        rtol=1e-10,
+        atol=1e-12,
+    )
 
 
 def _equal_series_closure_fixture():
