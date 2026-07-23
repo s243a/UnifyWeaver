@@ -36,6 +36,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(ROOT, "..", ".."))
 GRAPH = os.environ.get("UW_MU_GRAPH", os.path.join(REPO, "data", "benchmark", "10k", "category_parent.tsv"))
 E5_MODEL = "intfloat/e5-small-v2"
+E5_REVISION = "ffb93f3bd4047442299a41ebb6fa998a38507c52"
 
 # operator codebook (the relation axis). OPERATORS = pure RELATIONS (what the edge is). SOURCE lives on other axes:
 # corpus_emb (enwiki/simplewiki/pearltrees/mindmap) = which knowledge base; judge_emb (graph/haiku/…) = how labeled.
@@ -151,29 +152,60 @@ def sample_ancestors(node, parents, deg, k=1, beta=1.0, stop=0.33, depth_cap=5, 
 # --------------------------------------------------------------------------------------------------
 # e5 embedding cache (frozen) — query: for the root/anchor, passage: for candidate + ancestors
 # --------------------------------------------------------------------------------------------------
-def build_e5_tables(names, cache_path=None, model_name=E5_MODEL, batch_size=512, device=None, texts=None):
+def build_e5_tables(
+    names,
+    cache_path=None,
+    model_name=E5_MODEL,
+    batch_size=512,
+    device=None,
+    texts=None,
+    model_revision=None,
+):
     """Return (query_tbl, passage_tbl, idx) — two [N,384] unit-normed frozen e5 tables. Cached to disk
     (regenerable, git-ignored). `query:`/`passage:` are e5's asymmetric prefixes — the directional
     motivation for choosing e5 (the root is the query, the candidate/ancestors are passages).
 
     `texts` (optional {name: text}) overrides the embedded string for a name — used for fused nodes whose
-    KEY (e.g. `mm:cybernetics`) is not its text; they embed their title/embed_text instead of the key."""
+    KEY (e.g. `mm:cybernetics`) is not its text; they embed their title/embed_text instead of the key.
+
+    ``model_revision`` is an immutable Hub commit when reproducibility is decision-bearing. Cache reuse
+    requires the same model ID and revision; legacy or mismatched caches are regenerated rather than
+    silently crossing model versions.
+    """
     idx = {n: i for i, n in enumerate(names)}
     texts = texts or {}
     human = [texts.get(n, n.replace("_", " ")) for n in names]
     if cache_path and os.path.exists(cache_path):
         d = torch.load(cache_path, weights_only=False)
-        if d["names"] == list(names) and d.get("human") == human:
+        if (
+            d.get("names") == list(names)
+            and d.get("human") == human
+            and d.get("model_name") == model_name
+            and d.get("model_revision") == model_revision
+        ):
             return d["query"], d["passage"], idx
     from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer(model_name, device=device)
+    model_kwargs = {"device": device}
+    if model_revision is not None:
+        model_kwargs["revision"] = model_revision
+    model = SentenceTransformer(model_name, **model_kwargs)
     q = model.encode(["query: " + h for h in human], batch_size=batch_size,
                      convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False)
     p = model.encode(["passage: " + h for h in human], batch_size=batch_size,
                      convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False)
     qt, pt = torch.tensor(q, dtype=torch.float32), torch.tensor(p, dtype=torch.float32)
     if cache_path:
-        torch.save({"names": list(names), "human": human, "query": qt, "passage": pt}, cache_path)
+        torch.save(
+            {
+                "names": list(names),
+                "human": human,
+                "model_name": model_name,
+                "model_revision": model_revision,
+                "query": qt,
+                "passage": pt,
+            },
+            cache_path,
+        )
     return qt, pt, idx
 
 

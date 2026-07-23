@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from eval_filing import load_filing, metrics
 from filing_privacy import public_catalog_title_eligible
-from mu_attention import E5_MODEL, build_e5_tables
+from mu_attention import E5_MODEL, E5_REVISION, build_e5_tables
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 TREES = os.path.join(ROOT, "..", "..", ".local", "data", "pearltrees_api", "trees")
@@ -73,9 +73,15 @@ def catalog_tables(min_bm, cache_tag, *, return_privacy=False):
     os.makedirs(cache_root, exist_ok=True)
     cache = os.path.join(
         cache_root,
-        f"filing_assistant_e5_{cache_tag}_{privacy.manifest_sha256[:12]}.pt",
+        f"filing_assistant_e5_{cache_tag}_{privacy.manifest_sha256[:12]}_"
+        f"{E5_REVISION[:12]}.pt",
     )
-    _, ptbl, idx = build_e5_tables(names, cache_path=cache, batch_size=128)
+    _, ptbl, idx = build_e5_tables(
+        names,
+        cache_path=cache,
+        batch_size=128,
+        model_revision=E5_REVISION,
+    )
     P = ptbl.numpy()
     cand_vec = np.stack([P[idx[t]] for t in f_titles])
     result = (queries, f_ids, f_titles, cand_vec)
@@ -84,7 +90,7 @@ def catalog_tables(min_bm, cache_tag, *, return_privacy=False):
 
 def encode_queries(titles):
     from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer(E5_MODEL)
+    model = SentenceTransformer(E5_MODEL, revision=E5_REVISION)
     q = model.encode(["query: " + t.replace("_", " ") for t in titles], batch_size=64,
                      convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False)
     return q

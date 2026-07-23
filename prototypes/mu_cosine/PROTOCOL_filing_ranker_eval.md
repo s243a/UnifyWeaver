@@ -196,10 +196,12 @@ run, add a parent-task manifest that binds every chunk, provider run, and draw t
 plus a frozen aggregation rule. Manually concatenating partial responses is not an acceptable
 substitute.
 
-The current ranker receipt binds the e5 model name and exact candidate/query embedding arrays, so
-upstream model drift fails reproduction rather than silently changing a result. Before a future
-decision-bearing task is emitted, replace the `unresolved` Hub revision with an immutable e5
-revision so those bound arrays can also be regenerated long-term.
+The ranker is frozen to `intfloat/e5-small-v2` at immutable Hugging Face commit
+`ffb93f3bd4047442299a41ebb6fa998a38507c52`. Candidate and query encoders both pass that revision
+explicitly. Regenerable embedding caches bind the model ID and revision and reject legacy or
+mismatched entries. Ranker receipts bind the same commit plus the exact candidate/query embedding
+arrays, so both long-term regeneration and fail-closed output comparison are available before a
+future decision-bearing task is emitted.
 
 ## 8. Reproducibility and fail-closed audit
 
