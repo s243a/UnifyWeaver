@@ -228,6 +228,50 @@ test(scalar_str_reversed_selects, [condition(clang_available)]) :-
         "yes a\nno b\n", Out),
     assertion(Out == "a\n"), !.
 
+% --- field vs a string/strnum scalar ($I OP NAME) --------------------------
+
+% `$2 == key` (key a field-assigned strnum scalar): a per-record string compare.
+test(field_strscalar_eq, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'ke', "{ key = $1 } $2 == key { print $0 }\n",
+        "a a\nb c\nx x\n", Out),
+    assertion(Out == "a a\nx x\n"), !.
+
+% `!=` selects the complement.
+test(field_strscalar_ne, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'kn', "{ key = $1 } $2 != key { print $2 }\n",
+        "a a\nb c\nx x\n", Out),
+    assertion(Out == "c\n"), !.
+
+% ordering op uses the strnum slice comparator (lexical for non-numeric).
+test(field_strscalar_lt, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'kl', "{ lo = $1 } $2 < lo { print $2 }\n",
+        "m a\nz p\nc b\n", Out),
+    assertion(Out == "a\np\nb\n"), !.
+
+% two numeric-looking fields compare numerically (strnum): 10 == 10.0.
+test(field_strscalar_numeric, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'kd', "{ k = $1 } $2 == k { print \"eq\" }\n",
+        "5 5\n10 10.0\n3 4\n", Out),
+    assertion(Out == "eq\neq\n"), !.
+
+% reversed `lo < $2` swaps to the field-relative op.
+test(field_strscalar_reversed, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'kr', "{ lo = $1 } lo < $2 { print $2 }\n",
+        "a m\np z\nb c\n", Out),
+    assertion(Out == "m\nz\nc\n"), !.
+
+% composes with a numeric field guard via `&&`.
+test(field_strscalar_combined, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'kc', "{ k = $1 } $2 == k && $3 > 0 { print $3 }\n",
+        "k k 5\nk k 0\nq k 9\n", Out),
+    assertion(Out == "5\n"), !.
+
 :- end_tests(plawk_scalar_pattern).
 
 % --- helpers ---------------------------------------------------------------
