@@ -21,11 +21,17 @@
 % strnum against a string literal is a string comparison in awk, matching the
 % canonical-id/strcmp path.
 %
-% Scope (v1): a NUMERIC scalar pattern needs an i64 (counter) slot; a STRING
-% scalar pattern needs a string/strnum slot. Either way the scalar must be
-% assigned somewhere (so it has a slot); a never-assigned scalar, or a numeric
-% pattern on a string slot (or vice versa), is cleanly declined at compile time
-% rather than mis-lowered. Double-scalar compares are a follow-on.
+% A double-scalar variant compares a float-valued scalar (a double slot, e.g.
+% `rate = 1.5`) to a number: bare `rate > 2.5` / `rate > 2` (float or widened-int
+% literal, fcmp) and field-vs-scalar `$1 > rate` (field parsed as f64, fcmp).
+%
+% Scope (v1): a NUMERIC scalar pattern resolves an i64 (counter) or double slot; a
+% STRING scalar pattern needs a string/strnum slot. Either way the scalar must be
+% assigned somewhere (so it has a slot); a never-assigned scalar, or a mismatch
+% the resolver can't place, is cleanly declined rather than mis-lowered. Double
+% slots come from float-literal assignment (`rate = 1.5`); a field-derived float
+% (`avg = sum / NR`) stays an integer counter -- a separate scalar-float-typing
+% limitation, not this feature.
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -271,6 +277,70 @@ test(field_strscalar_combined, [condition(clang_available)]) :-
     build_run(Dir, 'kc', "{ k = $1 } $2 == k && $3 > 0 { print $3 }\n",
         "k k 5\nk k 0\nq k 9\n", Out),
     assertion(Out == "5\n"), !.
+
+% --- double-scalar patterns (float-valued scalar) --------------------------
+
+% `rate > 2.5` parses to scalar_f64_cmp(rate, gt, float_const(25, 10)).
+test(scalar_f64_parses) :-
+    plawk_parse_string("rate > 2.5 { print $0 }\n",
+        program([], [rule(scalar_f64_cmp(rate, gt, float_const(25, 10)), [print([field(0)])])], [])),
+    !.
+
+% reversed `2.5 < rate` swaps to gt.
+test(reversed_scalar_f64_parses) :-
+    plawk_parse_string("2.5 < rate { print $0 }\n",
+        program([], [rule(scalar_f64_cmp(rate, gt, float_const(25, 10)), [print([field(0)])])], [])),
+    !.
+
+% an integer RHS on a scalar stays scalar_cmp (the i64 path); the codegen
+% widens it if the slot turns out to be a double.
+test(scalar_int_rhs_stays_i64_ast) :-
+    plawk_parse_string("rate > 2 { print $0 }\n",
+        program([], [rule(scalar_cmp(rate, gt, 2), [print([field(0)])])], [])),
+    !.
+
+% `$1 > rate` with a float-valued scalar: field parsed as f64, fcmp.
+test(field_double_scalar, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'dg', "{ rate = 1.5 } $1 > rate { print $0 }\n",
+        "1\n2\n3\n", Out),
+    assertion(Out == "2\n3\n"), !.
+
+% bare `rate > 2.0` (float literal RHS) on a double slot.
+test(bare_double_float_rhs, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'df', "{ rate = 2.5 } rate > 2.0 { print $1 }\n",
+        "a\nb\n", Out),
+    assertion(Out == "a\nb\n"), !.
+
+% bare `rate > 2` (integer RHS) on a double slot widens to a double compare.
+test(bare_double_int_rhs, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'di', "{ rate = 1.5 } rate > 2 { print $1 }\n",
+        "a\nb\n", Out),
+    assertion(Out == ""), !.
+
+% a conditionally-set float threshold varies per record.
+test(double_conditional_threshold, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'dc',
+        "{ if ($1 > 5) rate = 2.5; else rate = 0.5 } $2 > rate { print $2 }\n",
+        "3 1\n8 3\n8 2\n", Out),
+    assertion(Out == "1\n3\n"), !.
+
+% two double scalars combine via `&&` (a float range window).
+test(double_window, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'dw', "{ lo = 0.5; hi = 9.5 } $1 >= lo && $1 <= hi { print $1 }\n",
+        "0.2\n5\n0.7\n12\n", Out),
+    assertion(Out == "5\n0.7\n"), !.
+
+% negated bare double via the combinator path.
+test(double_negated, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'dn', "{ rate = 1.5 } !(rate > 2.0) { print $1 }\n",
+        "a\nb\n", Out),
+    assertion(Out == "a\nb\n"), !.
 
 :- end_tests(plawk_scalar_pattern).
 

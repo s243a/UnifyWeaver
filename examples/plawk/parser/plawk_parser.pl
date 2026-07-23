@@ -999,6 +999,11 @@ base_pattern(Pattern) -->
 base_pattern(Pattern) -->
     special_i64_cmp_pattern(Pattern),
     !.
+% Before scalar_i64: a float RHS (`rate > 2.5`) must take the f64 path -- else
+% scalar_i64 would greedily match `rate > 2` and leave `.5` to choke the rule.
+base_pattern(Pattern) -->
+    scalar_f64_cmp_pattern(Pattern),
+    !.
 base_pattern(Pattern) -->
     scalar_i64_cmp_pattern(Pattern),
     !.
@@ -1512,6 +1517,30 @@ scalar_str_cmp_pattern(scalar_str_cmp(Name, SwappedOp, Str)) -->
     { swap_cmp_op(Op, SwappedOp),
       \+ scalar_cmp_reserved_name(Name),
       string_codes(Str, Codes) }.
+
+% Bare double-scalar pattern: `rate > 2.5 { … }` (and the reversed `2.5 < rate`).
+% A user scalar compared to a *float* literal; parses to scalar_f64_cmp(Name, Op,
+% float_const(M, D)). The codegen resolves Name to a double slot and emits an
+% fcmp. `signed_float_lit` requires a `.`, so a bare integer RHS never reaches
+% here (it stays on the scalar_i64 path); this must be registered before
+% scalar_i64 so `rate > 2.5` is not mis-split into `rate > 2` + `.5`.
+scalar_f64_cmp_pattern(scalar_f64_cmp(Name, Op, FloatConst)) -->
+    identifier(Name),
+    identifier_boundary,
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    signed_float_lit(FloatConst),
+    { \+ scalar_cmp_reserved_name(Name) }.
+scalar_f64_cmp_pattern(scalar_f64_cmp(Name, SwappedOp, FloatConst)) -->
+    signed_float_lit(FloatConst),
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    identifier(Name),
+    identifier_boundary,
+    { swap_cmp_op(Op, SwappedOp),
+      \+ scalar_cmp_reserved_name(Name) }.
 
 % A scalar name that must NOT be treated as a user scalar in a bare pattern: the
 % numeric/positional specials (which own the special_cmp path) and the surface

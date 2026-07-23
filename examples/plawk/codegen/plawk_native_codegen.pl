@@ -12372,10 +12372,24 @@ plawk_scalar_rule_chain_lines([scalar_rule(Index, Pattern, Actions, Control) | R
 % slot, or is a non-i64 slot (double/string/strnum) -- scalar_counter/1 will not
 % unify -- so an unsupported scalar comparison declines cleanly rather than
 % mis-lowering (the driver backtracks to the standard unsupported diagnostic).
-plawk_resolve_scalar_cmp(scalar_cmp(Name, Op, Value), StatePlan, Index,
-        scalar_cmp_resolved(SSARef, Op, Value)) :-
+% A bare scalar vs an integer literal. A counter (i64) scalar uses an i64 icmp; a
+% double scalar widens the literal to a double and uses fcmp (so `rate > 2` on a
+% float-valued scalar compares correctly).
+plawk_resolve_scalar_cmp(scalar_cmp(Name, Op, Value), StatePlan, Index, Resolved) :-
     !,
-    plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex),
+    (   plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex)
+    ->  plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef),
+        Resolved = scalar_cmp_resolved(SSARef, Op, Value)
+    ;   plawk_state_slot_index(StatePlan, scalar_double(Name), SlotIndex),
+        plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef),
+        Resolved = scalar_dbl_cmp_resolved(SSARef, Op, float_const(Value, 1))
+    ).
+% A bare scalar vs a float literal: the scalar must be a double slot; emit an
+% fcmp against the exact-rational double literal.
+plawk_resolve_scalar_cmp(scalar_f64_cmp(Name, Op, FloatConst), StatePlan, Index,
+        scalar_dbl_cmp_resolved(SSARef, Op, FloatConst)) :-
+    !,
+    plawk_state_slot_index(StatePlan, scalar_double(Name), SlotIndex),
     plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef).
 % A field compared to a scalar. A counter (i64) scalar uses the numeric field
 % comparison (the scalar's value passes straight into @wam_atom_field_i64_cmp_value
@@ -12390,6 +12404,9 @@ plawk_resolve_scalar_cmp(field_scalar_cmp(FieldIndex, Op, Name), StatePlan, Inde
     (   plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex)
     ->  plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef),
         Resolved = field_scalar_cmp_resolved(FieldIndex, Op, SSARef)
+    ;   plawk_state_slot_index(StatePlan, scalar_double(Name), SlotIndex)
+    ->  plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef),
+        Resolved = field_scalar_dbl_resolved(FieldIndex, Op, SSARef)
     ;   ( plawk_state_slot_index(StatePlan, scalar_strnum(Name), SlotIndex)
         ; plawk_state_slot_index(StatePlan, scalar_string(Name), SlotIndex)
         ),
@@ -16495,6 +16512,16 @@ plawk_pattern_guard_ir(scalar_cmp_resolved(SSARef, Op, Value), _FieldSeparator, 
     plawk_icmp_pred(Op, Pred),
     format(atom(GuardCallIR), '  ~w = icmp ~w i64 ~w, ~w',
         [MatchValue, Pred, SSARef, Value]).
+% Bare double-scalar pattern `rate OP <num>` (resolved to the scalar's double slot
+% SSA value). fcmp against the RHS built as the exact rational `fdiv M.0, D.0`
+% (an integer literal was widened to float_const(V, 1) at resolve time). No global.
+plawk_pattern_guard_ir(scalar_dbl_cmp_resolved(SSARef, Op, float_const(M, D)), _FieldSeparator, GlobalBase, MatchValue, ''-GuardCallIR) :-
+    plawk_fcmp_pred(Op, Pred),
+    format(atom(GuardCallIR),
+'  %~w_drhs = fdiv double ~w.0, ~w.0
+  ~w = fcmp ~w double ~w, %~w_drhs',
+        [GlobalBase, M, D,
+         MatchValue, Pred, SSARef, GlobalBase]).
 % Field-vs-scalar pattern `$I OP NAME` (already resolved to the rule's slot SSA
 % value by plawk_resolve_scalar_cmp/4). Reuse the same numeric field-comparison
 % runtime as `$I OP int` -- @wam_atom_field_i64_cmp_value takes the expected
@@ -16507,6 +16534,17 @@ plawk_pattern_guard_ir(field_scalar_cmp_resolved(FieldIndex, Op, SSARef), FieldS
     format(atom(GuardCallIR),
         '  ~w = call i1 @wam_atom_field_i64_cmp_value(%Value %line, i64 ~w, i8 ~w, i64 ~w, i32 ~w)',
         [MatchValue, FieldIndex, FieldSeparator, SSARef, OpCode]).
+% Field vs a double scalar `$I OP NAME`: parse the field as an f64 (non-numeric /
+% missing -> 0.0) and fcmp against the scalar's double slot value. Op is
+% field-relative.
+plawk_pattern_guard_ir(field_scalar_dbl_resolved(FieldIndex, Op, SSARef), FieldSeparator, GlobalBase, MatchValue, ''-GuardCallIR) :-
+    integer(FieldSeparator),
+    plawk_fcmp_pred(Op, Pred),
+    format(atom(GuardCallIR),
+'  %~w_dfv = call double @wam_atom_field_f64_value(%Value %line, i64 ~w, i8 ~w)
+  ~w = fcmp ~w double %~w_dfv, ~w',
+        [GlobalBase, FieldIndex, FieldSeparator,
+         MatchValue, Pred, GlobalBase, SSARef]).
 % Field vs a string/strnum scalar `$I OP NAME` (NAME resolved to its atom-id slot
 % value): compare the field slice against the scalar's stored string by POSIX
 % strnum rules, exactly like `$I OP $J` -- the second slice is the scalar's string
