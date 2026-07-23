@@ -59,15 +59,16 @@ default 4096), and explicit `auto` (codegen resolves via shared
   without three-form keys are out of scope for “complete for every
   builtin.” Do not describe R as fully ISO-compatible across the entire
   builtin surface.
-- No dedicated effective-distance cross-target bench row.
+- Effective-distance cross-target matrix row populated (BENCH-R): scale-300
+  `emit_mode(functions)` + auto `category_ancestor/4` kernel, reference
+  parity match — see `docs/design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md`.
 
 ## Path forward
 
-1. Effective-distance cross-target matrix row.
-2. Optional follow-up: three-form keys for additional audited builtins
+1. Optional follow-up: three-form keys for additional audited builtins
    beyond `is`/compares/`succ` (same class of work as ISO-PYTHON/ISO-FSHARP).
 
 ## Document status
 
-Fleet-aligned snapshot updated for ISO-R-2B closeout (2026-07-22): audited
-three-form adoption surface plus the remaining effective-distance bench gap.
+Fleet-aligned snapshot updated for BENCH-R closeout (2026-07-22): scale-300
+effective-distance matrix row measured and documented after ISO-R-2B.

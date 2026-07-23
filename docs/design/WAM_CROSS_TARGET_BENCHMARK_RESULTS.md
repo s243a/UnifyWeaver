@@ -22,6 +22,7 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
 | **F# LMDB cached (two-level L1/L2)** | **2** | -- | **1** | **Yes** | Fact-access only (no WAM overhead); see below |
 | Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
+| R WAM (functions, kernels_on) | 62595 | 63424 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; auto `category_ancestor/4` kernel + FactSource; 3-rep median query |
 | Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
 
 **Key takeaway:** Atom interning (replacing `HashMap<String, Vec<String>>` with
@@ -51,14 +52,15 @@ workloads — see `tests/core/test_wam_fsharp_lmdb_scale_sweep.pl`.
 
 ## Test Environment
 
-- **Date**: 2026-04-18
-- **Platform**: Linux 6.1.158 (amd64), sandbox VM
-- **SWI-Prolog**: 9.2.9
+- **Date**: 2026-04-18 (R WAM row: 2026-07-22)
+- **Platform**: Linux 6.1.158 (amd64), sandbox VM; R measurement on hosted Ubuntu 24.04
+- **SWI-Prolog**: 9.2.9 (R measurement host: 10.0.2)
 - **Rust**: 1.95.0 (release build, `--release`)
 - **Haskell/GHC**: 9.6 (prior measurements on WSL2 4-core host)
 - **.NET**: 8.x (`/tmp/dotnet/dotnet`)
 - **Go**: 1.24.2
 - **Python**: 3.12.8 (CPython)
+- **R**: 4.3.3 (`Rscript`)
 - **Repetitions**: 3 per query (median) unless noted; Haskell uses 10-run median
 
 ## Methodology
@@ -338,6 +340,43 @@ swipl -q -s examples/benchmark/generate_wam_python_optimized_benchmark.pl -- \\
 cp src/unifyweaver/targets/wam_python_runtime/WamRuntime.py \\
    /tmp/wam-bench/python-300/wam_runtime.py
 python3 /tmp/wam-bench/python-300/main.py data/benchmark/300 3
+```
+
+### R WAM (functions mode)
+
+Measured 2026-07-22 in hosted GitHub Actions using
+`generate_wam_r_effective_distance_benchmark.pl`
+with `emit_mode(functions)`, auto-detected `category_ancestor/4` kernel
+(fleet hops layout), and `category_parent/2` FactSource via
+`grouped_by_first_atoms` (preserves Prolog atom identity for numeric-looking
+Wikipedia IDs). Host: Ubuntu 24.04 hosted runner, SWI-Prolog 10.0.2,
+R 4.3.3, single-core.
+
+| Scale | query_ms | total_ms | rows | Cores | vs reference |
+|-------|----------|----------|------|-------|--------------|
+| 300 | 62595 | 63424 | 271 | 1 | match (`normalize_three_column_float_rows`, 6 dp) |
+
+`query_ms` is the 3-run median of article×root enumeration only
+(samples: 65368, 62595, 62559). `total_ms` is setup (Rscript startup +
+generated-program / FactSource load + article/root TSV load) plus that
+median query. Output validated against
+`data/benchmark/300/reference_output.tsv` with canonical sort and 6-decimal
+float tolerance (not row-count-only).
+
+The R path is correctness-complete for the matrix but much slower than
+compiled FFI targets: the hot loop still pays interpreted R dispatch around
+the native CA kernel and lowered power-sum helpers.
+
+#### Reproduction
+
+```bash
+cd /path/to/UnifyWeaver
+mkdir -p /tmp/wam-bench/r-ed-300
+swipl -q -s examples/benchmark/generate_wam_r_effective_distance_benchmark.pl -- \
+    data/benchmark/300/facts.pl /tmp/wam-bench/r-ed-300 kernels_on functions
+( cd /tmp/wam-bench/r-ed-300/R && \
+  Rscript run_effective_distance.R /path/to/UnifyWeaver/data/benchmark/300 3 )
+# Or: ./examples/benchmark/run_wam_cross_target_benchmark.sh 300 3
 ```
 
 ## Analysis: When Does UnifyWeaver Beat Hand-Written Code?

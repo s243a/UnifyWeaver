@@ -3108,29 +3108,76 @@ WamRuntime$transitive_step_parent_distance5 <- function(program, state, key,
 # ----------------------------------------------------------
 # Recursive-kernel: category_ancestor
 # ----------------------------------------------------------
-# Hierarchical BFS with explicit depth cap and visited-set cycle
-# detection. Pattern detected:
-#   ca(Cat, Anc, Visited, Hops) :-
-#       \+ member(Cat, Visited),
-#       edge(Cat, Anc).
-#   ca(Cat, Anc, Visited, Hops) :-
-#       \+ member(Cat, Visited),
-#       edge(Cat, Mid),
-#       ca(Mid, Anc, [Cat | Visited], Hops0),
-#       Hops is Hops0 + 1.
-# The user provides `max_depth/1` at codegen time; the detector
-# embeds it in the kernel config so we know the cap. Result layout
-# is tuple(1) -- yield each reached ancestor; the Visited and Hops
-# slots in the user-side call are inputs / discarded outputs that
-# the native impl doesn't touch.
+# Fleet-shared register layout (recursive_kernel_detection.pl):
+#   category_ancestor(+Cat, +Root, -Hops, +Visited)
+# Streams one integer hop count per path from Cat to Root, walking
+# the edge predicate (typically category_parent/2 FactSource) with
+# depth-bounded DFS and visited-set cycle detection. Matches Go/Rust/
+# F# native-kernel semantics so power_sum / effective_distance helpers
+# can consume hops. The user provides max_depth/1 at codegen time; the
+# detector embeds it in the kernel config.
+WamRuntime$category_ancestor_collect_parents <- function(program, state,
+                                                          edge_atom_id, cur) {
+  parents <- list()
+  y_var <- Unbound(paste0("V_ca_p_", state$var_counter))
+  state$var_counter <- state$var_counter + 1L
+  edge_goal <- StructTerm(edge_atom_id, list(cur, y_var))
+  WamRuntime$iterate_goal(program, state, edge_goal, function() {
+    y_v <- WamRuntime$deref(state, y_var)
+    if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom") {
+      parents <<- c(parents, list(y_v))
+    }
+    TRUE
+  })
+  parents
+}
+
+WamRuntime$category_ancestor_hops_rec <- function(program, state, edge_atom_id,
+                                                   cat, root_id, visited_env,
+                                                   visited_len, max_depth, out) {
+  root_seen <- exists(as.character(root_id), envir = visited_env, inherits = FALSE)
+  parents <- WamRuntime$category_ancestor_collect_parents(
+    program, state, edge_atom_id, cat)
+  if (!root_seen) {
+    for (p in parents) {
+      if (identical(p$id, root_id)) {
+        out$hops <- c(out$hops, list(IntTerm(1L)))
+        break
+      }
+    }
+  }
+  if (visited_len >= max_depth) return(invisible(NULL))
+  for (parent in parents) {
+    pk <- as.character(parent$id)
+    if (exists(pk, envir = visited_env, inherits = FALSE)) next
+    assign(pk, TRUE, envir = visited_env)
+    before <- length(out$hops)
+    WamRuntime$category_ancestor_hops_rec(
+      program, state, edge_atom_id, parent, root_id, visited_env,
+      visited_len + 1L, max_depth, out)
+    if (length(out$hops) > before) {
+      for (i in seq.int(before + 1L, length(out$hops))) {
+        out$hops[[i]] <- IntTerm(as.integer(out$hops[[i]]$val + 1L))
+      }
+    }
+    rm(list = pk, envir = visited_env)
+  }
+  invisible(NULL)
+}
+
 WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
                                             edge_key, max_depth, source,
-                                            ancestor, resume_pc) {
+                                            root, hops, visited, resume_pc) {
   table <- program$intern_table
   src_v <- WamRuntime$deref(state, source)
-  if (is.null(src_v) || is.null(src_v$tag) || src_v$tag != "atom") {
+  root_v <- WamRuntime$deref(state, root)
+  if (is.null(src_v) || is.null(src_v$tag) || src_v$tag != "atom" ||
+      is.null(root_v) || is.null(root_v$tag) || root_v$tag != "atom") {
     return(FALSE)
   }
+  visited_elems <- WamRuntime$wam_list_decompose(state, visited, table)
+  if (is.null(visited_elems)) return(FALSE)
+
   snap_cps   <- length(state$cps)
   snap_regs  <- state$regs2
   snap_trail <- length(state$trail)
@@ -3142,36 +3189,17 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
   snap_build <- state$build_stack
 
   edge_atom_id <- WamRuntime$intern(table, edge_pred)
-  visited <- new.env(parent = emptyenv())
-  q_nodes  <- list(src_v)
-  q_depths <- list(0L)
-  reached  <- list()
-  assign(as.character(src_v$id), TRUE, envir = visited)
-
-  while (length(q_nodes) > 0L) {
-    cur   <- q_nodes[[1L]]
-    depth <- q_depths[[1L]]
-    q_nodes  <- q_nodes[-1L]
-    q_depths <- q_depths[-1L]
-    if (depth >= max_depth) next  # depth-cap pruning
-    next_depth <- depth + 1L
-    y_var <- Unbound(paste0("V_ca_", state$var_counter))
-    state$var_counter <- state$var_counter + 1L
-    edge_goal <- StructTerm(edge_atom_id, list(cur, y_var))
-    WamRuntime$iterate_goal(program, state, edge_goal, function() {
-      y_v <- WamRuntime$deref(state, y_var)
-      if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom") {
-        k <- as.character(y_v$id)
-        if (!exists(k, envir = visited, inherits = FALSE)) {
-          assign(k, TRUE, envir = visited)
-          q_nodes  <<- c(q_nodes,  list(y_v))
-          q_depths <<- c(q_depths, list(next_depth))
-          reached  <<- c(reached,  list(y_v))
-        }
-      }
-      TRUE
-    })
+  visited_env <- new.env(parent = emptyenv())
+  for (elem in visited_elems) {
+    if (!is.null(elem) && !is.null(elem$tag) && elem$tag == "atom") {
+      assign(as.character(elem$id), TRUE, envir = visited_env)
+    }
   }
+  out <- new.env(parent = emptyenv())
+  out$hops <- list()
+  WamRuntime$category_ancestor_hops_rec(
+    program, state, edge_atom_id, src_v, root_v$id, visited_env,
+    length(visited_elems), as.integer(max_depth), out)
 
   if (length(state$cps) > snap_cps) {
     state$cps <- state$cps[seq_len(snap_cps)]
@@ -3191,7 +3219,8 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
   state$mode        <- snap_mode
   state$build_stack <- snap_build
 
-  WamRuntime$kernel_stream_iter(program, state, key, reached, ancestor,
+  if (length(out$hops) == 0L) return(FALSE)
+  WamRuntime$kernel_stream_iter(program, state, key, out$hops, hops,
                                   1L, resume_pc)
 }
 
@@ -3525,6 +3554,73 @@ WamRuntime$kernel_quad_iter <- function(program, state, key, results, target,
   FALSE
 }
 
+# Finalize a BeginAggregate/EndAggregate collection according to kind.
+# Mirrors Lua/Go/Clojure: sum/count/min/max reduce numerically; collect/
+# bag/set build lists (set uniquifies). findall uses kind "collect".
+WamRuntime$aggregate_numeric_value <- function(term) {
+  if (is.null(term) || is.null(term$tag)) return(NULL)
+  if (identical(term$tag, "int")) return(as.numeric(term$val))
+  if (identical(term$tag, "float")) return(as.numeric(term$val))
+  NULL
+}
+
+WamRuntime$aggregate_result <- function(kind, collected, table) {
+  k <- if (is.null(kind) || !nzchar(kind)) "collect" else as.character(kind)
+  if (identical(k, "count")) {
+    return(IntTerm(as.integer(length(collected))))
+  }
+  if (identical(k, "sum")) {
+    total <- 0.0
+    saw_float <- FALSE
+    for (item in collected) {
+      n <- WamRuntime$aggregate_numeric_value(item)
+      if (is.null(n)) return(NULL)
+      total <- total + n
+      if (identical(item$tag, "float")) saw_float <- TRUE
+    }
+    # as.integer() returns NA outside R's signed-32-bit range. Guard the
+    # conversion explicitly so a valid large aggregate becomes a float
+    # term instead of crashing an `if` with an NA condition.
+    if (saw_float || !is.finite(total) ||
+        total > .Machine$integer.max || total < (-.Machine$integer.max - 1) ||
+        total != trunc(total)) return(FloatTerm(total))
+    return(IntTerm(as.integer(total)))
+  }
+  if (identical(k, "min") || identical(k, "max")) {
+    if (length(collected) == 0L) return(NULL)
+    best <- NULL
+    best_n <- NULL
+    for (item in collected) {
+      n <- WamRuntime$aggregate_numeric_value(item)
+      if (is.null(n)) return(NULL)
+      if (is.null(best_n) ||
+          (identical(k, "min") && n < best_n) ||
+          (identical(k, "max") && n > best_n)) {
+        best <- item
+        best_n <- n
+      }
+    }
+    return(best)
+  }
+  items <- collected
+  if (identical(k, "set") || identical(k, "setof")) {
+    seen <- new.env(parent = emptyenv())
+    uniq <- list()
+    for (item in collected) {
+      key <- wam_term_to_string(item, table)
+      if (!exists(key, envir = seen, inherits = FALSE)) {
+        assign(key, TRUE, envir = seen)
+        uniq <- c(uniq, list(item))
+      }
+    }
+    items <- uniq
+  }
+  if ((identical(k, "bagof") || identical(k, "setof")) && length(items) == 0L) {
+    return(NULL)
+  }
+  WamRuntime$wam_list_build(items, table)
+}
+
 # Iterate a precomputed result list, unifying each entry with the
 # target reg. Mirrors fact_table_iter_subset's iter-CP shape but
 # unifies a single-arg target instead of an arg tuple.
@@ -3751,20 +3847,31 @@ WamRuntime$read_facts_csv <- function(path, intern_table) {
 # wam_scala_target.pl). Arity-2 only -- the codegen layer is
 # responsible for refusing other arities at codegen time.
 WamRuntime$read_facts_grouped_tsv <- function(path, intern_table) {
+  WamRuntime$read_facts_grouped_tsv_with(path, intern_table, numeric = TRUE)
+}
+
+# Like read_facts_grouped_tsv, but every field is interned as an atom
+# (no IntTerm/FloatTerm coercion). Use for Prolog-atom identity of
+# numeric-looking Wikipedia category IDs.
+WamRuntime$read_facts_grouped_tsv_atoms <- function(path, intern_table) {
+  WamRuntime$read_facts_grouped_tsv_with(path, intern_table, numeric = FALSE)
+}
+
+WamRuntime$read_facts_grouped_tsv_with <- function(path, intern_table, numeric) {
   if (!file.exists(path)) return(list())
   lines <- tryCatch(readLines(path, warn = FALSE),
                     error = function(e) character(0))
   parse_field <- function(p) {
-    n <- suppressWarnings(as.numeric(p))
-    if (!is.na(n) && is.finite(n)) {
-      if (n == as.integer(n) && abs(n) < .Machine$integer.max) {
-        IntTerm(as.integer(n))
-      } else {
-        FloatTerm(as.numeric(n))
+    if (isTRUE(numeric)) {
+      n <- suppressWarnings(as.numeric(p))
+      if (!is.na(n) && is.finite(n)) {
+        if (n == as.integer(n) && abs(n) < .Machine$integer.max) {
+          return(IntTerm(as.integer(n)))
+        }
+        return(FloatTerm(as.numeric(n)))
       }
-    } else {
-      Atom(WamRuntime$intern(intern_table, p))
     }
+    Atom(WamRuntime$intern(intern_table, p))
   }
   out <- list()
   for (raw in lines) {
@@ -6611,8 +6718,9 @@ WamRuntime$backtrack <- function(state, min_cps = 0L) {
 
   # Aggregate-frame finalization: when backtrack reaches a frame
   # left by BeginAggregate, the goal has exhausted all its solutions.
-  # Restore the snapshot, bind the bag register to the collected list,
-  # and resume at the instruction after end_aggregate.
+  # Restore the snapshot, bind the bag register to the kind-specific
+  # result (sum/count/min/max or collect/bag/set list), and resume at
+  # the instruction after end_aggregate.
   if (!is.null(cp$kind) && cp$kind == "aggregate") {
     state$cps <- state$cps[-n]
     state$regs2 <- cp$regs
@@ -6628,7 +6736,10 @@ WamRuntime$backtrack <- function(state, min_cps = 0L) {
     state$mode        <- cp$mode
     state$build_stack <- cp$build_stack
     state$read_stack  <- cp$read_stack
-    bag <- WamRuntime$wam_list_build(cp$collected, cp$table)
+    bag <- WamRuntime$aggregate_result(cp$agg_kind, cp$collected, cp$table)
+    if (is.null(bag)) {
+      return(WamRuntime$backtrack(state, min_cps))
+    }
     cur <- WamRuntime$get_reg(state, cp$bag_reg)
     if (is.null(cur)) {
       # Bag register was unset at begin_aggregate time (typical case

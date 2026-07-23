@@ -219,16 +219,18 @@ pd(X, Y, P, D) :- edge(X, Z), pd(Z, Y, P, D1), D is D1 + 1.
 tspd(X, Y, Y, X, 1) :- edge(X, Y).
 tspd(X, Y, M, P, D) :- edge(X, M), tspd(M, Y, _, P, D1), D is D1 + 1.
 
-% category_ancestor -- streams reachable ancestors with depth cap.
-% max_depth/1 must be asserted before write_wam_r_project/3 runs;
-% the detector reads it at codegen time and the cap is embedded
-% in the lowered function. Visited and Hops are inputs / discarded
-% outputs that the native impl doesn't touch.
+% category_ancestor -- fleet layout (+Cat, +Root, -Hops, +Visited).
+% Streams one hop count per path from Cat to Root. max_depth/1 must
+% be asserted before write_wam_r_project/3; the detector embeds the
+% depth cap in the lowered function. Matches Go/Rust/F# kernel hops
+% semantics (used by effective-distance power-sum helpers).
 :- assertz(user:max_depth(3)).
-ca(Cat, Anc, Visited, 0) :- \+ member(Cat, Visited), edge(Cat, Anc).
-ca(Cat, Anc, Visited, Hops) :- \+ member(Cat, Visited),
-    edge(Cat, Mid), ca(Mid, Anc, [Cat | Visited], Hops0),
-    Hops is Hops0 + 1.
+ca(Cat, Parent, 1, Visited) :-
+    edge(Cat, Parent), \+ member(Parent, Visited).
+ca(Cat, Ancestor, Hops, Visited) :-
+    max_depth(MaxD), length(Visited, Depth), Depth < MaxD, !,
+    edge(Cat, Mid), \+ member(Mid, Visited),
+    ca(Mid, Ancestor, H1, [Mid|Visited]), Hops is H1 + 1.
 
 % astar_shortest_path4 -- goal-directed shortest-path search.
 % direct_dist_pred/1 names the heuristic predicate (arity 3:
@@ -942,7 +944,7 @@ Coverage map (e2e tests, by feature group):
 | `kernel_wsp3_e2e_rscript` | recursive-kernel detection: `weighted_shortest_path3` Dijkstra over a weighted fact-table edge predicate |
 | `kernel_tpd4_e2e_rscript` | recursive-kernel detection: `transitive_parent_distance4` BFS with parent tracking |
 | `kernel_tspd5_e2e_rscript` | recursive-kernel detection: `transitive_step_parent_distance5` BFS with step + parent + distance |
-| `kernel_ca_e2e_rscript` | recursive-kernel detection: `category_ancestor` BFS with depth-cap + visited-set cycle detection |
+| `kernel_ca_e2e_rscript` | recursive-kernel detection: `category_ancestor` DFS hop streams (fleet layout) with depth-cap + visited-set cycle detection |
 | `kernel_astar4_e2e_rscript` | recursive-kernel detection: `astar_shortest_path4` goal-directed search with user heuristic |
 | `external_fact_source_e2e_rscript` | external CSV fact sources via `r_fact_sources([source(P/A, file(...))])` |
 | `external_fact_source_grouped_tsv_e2e_rscript` | external grouped-by-first TSV fact sources (arity-2): `r_fact_sources([source(P/2, grouped_by_first(...))])` |

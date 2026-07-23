@@ -5,7 +5,7 @@
 #   ./run_wam_cross_target_benchmark.sh [scale] [reps]
 #
 # Requires: swipl, cargo/rustc
-# Optional: go, python3 (for Go/Python targets — currently in progress)
+# Optional: go, python3, Rscript (Go/Python in progress; R ED skips if missing)
 #
 # Toolchain env vars (adjust paths for your system):
 #   RUST:  /tmp/cargo/bin/cargo
@@ -129,6 +129,32 @@ elif [ -f "$PYTHON_DIR/main.py" ]; then
     cd "$REPO_ROOT"
 else
     echo "NOTE: Python WAM benchmark driver not yet connected"
+fi
+
+echo ""
+
+# === R WAM Effective Distance (hybrid functions mode) ===
+echo "--- R WAM Effective Distance (functions, kernels_on) ---"
+if command -v Rscript >/dev/null 2>&1; then
+    R_ED_DIR="$BENCH_DIR/r-ed-${SCALE}"
+    mkdir -p "$R_ED_DIR"
+
+    echo "Generating R WAM effective-distance project..."
+    LANG=C.UTF-8 LC_ALL=C.UTF-8 swipl -q -s examples/benchmark/generate_wam_r_effective_distance_benchmark.pl \
+        -- "$FACTS_FILE" "$R_ED_DIR" kernels_on functions 2>&1 || {
+        echo "WARNING: R effective-distance generation failed"
+    }
+
+    if [ -f "$R_ED_DIR/R/run_effective_distance.R" ]; then
+        echo "Running R WAM effective-distance benchmark ($REPS reps)..."
+        ( cd "$R_ED_DIR/R" && Rscript run_effective_distance.R "$FACTS_DIR" "$REPS" ) 2>&1 || {
+            echo "WARNING: R effective-distance run failed"
+        }
+    else
+        echo "WARNING: R effective-distance runner not generated"
+    fi
+else
+    echo "SKIP: Rscript not found (R WAM effective-distance benchmark)"
 fi
 
 echo ""

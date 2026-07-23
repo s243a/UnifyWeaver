@@ -238,6 +238,10 @@ jobs:
           swipl -q -f init.pl -s tests/test_wam_r_iso_unit.pl -g "run_tests, halt" -t "halt(1)"
           swipl -q -f init.pl -s tests/test_wam_r_iso_smoke.pl -g main -t halt
 
+      - name: Run R effective-distance generator + runtime smoke
+        run: |
+          swipl -q -f init.pl -s tests/test_wam_r_effective_distance_generator.pl -g "run_tests, halt" -t "halt(1)"
+
       - name: Run full R classic conformance
         run: |
           swipl -q -f init.pl -s tests/test_wam_cross_target_conformance.pl -g "run_tests" -t halt
