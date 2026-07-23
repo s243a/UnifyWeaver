@@ -115,6 +115,37 @@ test(surface_float_composes_with_guards) :-
         "ERROR disk 10\nWARN cpu 4\nERROR net 3\n",
         "15\n4.5\n").
 
+% A double-valued scalar prints with %g in a rule body (previously only END
+% print handled a double scalar; a rule-body `print x` was rejected).
+test(surface_rule_body_double_scalar_print) :-
+    run_float_print_smoke("{ x = 1.5; print x }\n",
+        "a\nb\n",
+        "1.5\n1.5\n").
+
+% ... in a comma list beside a field.
+test(surface_rule_body_double_scalar_comma) :-
+    run_float_print_smoke("{ x = 1.5; print x, $1 }\n",
+        "7\n",
+        "1.5 7\n").
+
+% ... and glued by juxtaposition-concat.
+test(surface_rule_body_double_scalar_concat) :-
+    run_float_print_smoke("{ x = 1.5; print x $1 }\n",
+        "7\n",
+        "1.57\n").
+
+% ... and after a string-literal prefix.
+test(surface_rule_body_double_scalar_prefix) :-
+    run_float_print_smoke("{ x = 2.5; print \"v=\" x }\n",
+        "a\n",
+        "v=2.5\n").
+
+% An integer-valued double still prints without a decimal point (%g).
+test(surface_rule_body_double_scalar_integral) :-
+    run_float_print_smoke("{ x = 2.0 * $1; print x }\n",
+        "5\n",
+        "10\n").
+
 run_float_print_smoke(Source, Input, ExpectedOutput) :-
     tmp_root(Root),
     directory_file_path(Root, 'uw_plawk_surface_float_exprs', Dir),
