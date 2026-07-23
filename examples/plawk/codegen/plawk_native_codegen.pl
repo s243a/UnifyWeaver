@@ -12325,7 +12325,12 @@ plawk_scalar_rule_chain_lines([scalar_rule(Index, Pattern, Actions, Control) | R
       format(atom(MatchValue), '%~w', [MatchVar]),
       % tagged-union rules carry their arm's field types with them
       plawk_rule_descriptor(Pattern, FieldSeparator, RuleDescriptor),
-      plawk_pattern_guard_ir(Pattern, RuleDescriptor, GlobalBase, MatchValue,
+      % A scalar_cmp(Name,...) pattern reads a scalar's current value: resolve
+      % Name to THIS rule's in-scope slot SSA ref before lowering the guard, so
+      % the guard predicate needs no StatePlan/index params (see
+      % plawk_resolve_scalar_cmp/4).
+      plawk_resolve_scalar_cmp(Pattern, StatePlan, Index, ResolvedPattern),
+      plawk_pattern_guard_ir(ResolvedPattern, RuleDescriptor, GlobalBase, MatchValue,
           GuardGlobalIR-GuardCallIR),
       plawk_rule_target(Control, NextLabel, RuleTargetLabel),
       maplist(plawk_scalar_rule_body_action, Actions),
@@ -12356,6 +12361,43 @@ plawk_scalar_rule_chain_lines([scalar_rule(Index, Pattern, Actions, Control) | R
     },
     [Part],
     plawk_scalar_rule_chain_lines(Rest, Controls, StatePlan, FieldSeparator, OutputSeparator, NextIndex).
+
+% Resolve every scalar_cmp(Name, Op, Value) in a rule's pattern to
+% scalar_cmp_resolved(SSARef, Op, Value), where SSARef is the current-slot SSA
+% value for THIS rule index (rule 0: %slot_M from the loop-head phi; rule N>0:
+% %rule_N_in_slot_M, the input phi emitted just above the guard). This lets the
+% pattern guard read a scalar without threading StatePlan/index into
+% plawk_pattern_guard_ir. Recurses through the !/&&/|| combinators (and range) so
+% a scalar_cmp nested in a combinator is resolved too. Fails if the name is not a
+% slot, or is a non-i64 slot (double/string/strnum) -- scalar_counter/1 will not
+% unify -- so an unsupported scalar comparison declines cleanly rather than
+% mis-lowering (the driver backtracks to the standard unsupported diagnostic).
+plawk_resolve_scalar_cmp(scalar_cmp(Name, Op, Value), StatePlan, Index,
+        scalar_cmp_resolved(SSARef, Op, Value)) :-
+    !,
+    plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex),
+    plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef).
+plawk_resolve_scalar_cmp(field_scalar_cmp(FieldIndex, Op, Name), StatePlan, Index,
+        field_scalar_cmp_resolved(FieldIndex, Op, SSARef)) :-
+    !,
+    plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex),
+    plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef).
+plawk_resolve_scalar_cmp(not_pat(P), StatePlan, Index, not_pat(P1)) :-
+    !,
+    plawk_resolve_scalar_cmp(P, StatePlan, Index, P1).
+plawk_resolve_scalar_cmp(and_pat(L, R), StatePlan, Index, and_pat(L1, R1)) :-
+    !,
+    plawk_resolve_scalar_cmp(L, StatePlan, Index, L1),
+    plawk_resolve_scalar_cmp(R, StatePlan, Index, R1).
+plawk_resolve_scalar_cmp(or_pat(L, R), StatePlan, Index, or_pat(L1, R1)) :-
+    !,
+    plawk_resolve_scalar_cmp(L, StatePlan, Index, L1),
+    plawk_resolve_scalar_cmp(R, StatePlan, Index, R1).
+plawk_resolve_scalar_cmp(range(S, E), StatePlan, Index, range(S1, E1)) :-
+    !,
+    plawk_resolve_scalar_cmp(S, StatePlan, Index, S1),
+    plawk_resolve_scalar_cmp(E, StatePlan, Index, E1).
+plawk_resolve_scalar_cmp(Pattern, _StatePlan, _Index, Pattern).
 
 plawk_scalar_rule_input_phi_ir(_StatePlan, 0, _Controls, '') :-
     !.
@@ -16307,6 +16349,12 @@ plawk_pattern_guard_ir(field_field_arith_cmp(I, ArithOp, J, Op, RHS), FieldSepar
     integer(J), J > 0,
     plawk_field_field_arith_cmp_guard_ir(I, ArithOp, J, Op, RHS, FieldSeparator,
         plawk_surface_ffacmp, '%is_match', GuardIR).
+% Float-division pattern `$I / K CMP V` (single-rule guard).
+plawk_pattern_guard_ir(field_div_cmp(I, K, Op, RHS), FieldSeparator, GuardIR) :-
+    integer(FieldSeparator),
+    integer(I), I > 0,
+    plawk_field_div_cmp_guard_ir(I, K, Op, RHS, FieldSeparator,
+        plawk_surface_fdcmp, '%is_match', GuardIR).
 % Expression pattern `length OP int` (single-rule guard): the current record's
 % byte length ($0) compared to the literal.
 plawk_pattern_guard_ir(special_cmp(length, Op, Value), FieldSeparator, ''-GuardCallIR) :-
@@ -16410,6 +16458,27 @@ plawk_pattern_guard_ir(special_cmp('NR', Op, Value), _FieldSeparator, _GlobalBas
     plawk_icmp_pred(Op, Pred),
     format(atom(GuardCallIR), '  ~w = icmp ~w i64 %current_nr, ~w',
         [MatchValue, Pred, Value]).
+% Bare scalar-vs-integer pattern `n OP int` (already resolved to the rule's slot
+% SSA value by plawk_resolve_scalar_cmp/4). The slot value dominates the guard
+% block (rule-0 loop-head phi %slot_M, or the rule's %rule_N_in_slot_M input phi
+% emitted just above), so a straight i64 icmp against the literal suffices; no
+% globals, MatchValue is unique per rule/combinator operand.
+plawk_pattern_guard_ir(scalar_cmp_resolved(SSARef, Op, Value), _FieldSeparator, _GlobalBase, MatchValue, ''-GuardCallIR) :-
+    plawk_icmp_pred(Op, Pred),
+    format(atom(GuardCallIR), '  ~w = icmp ~w i64 ~w, ~w',
+        [MatchValue, Pred, SSARef, Value]).
+% Field-vs-scalar pattern `$I OP NAME` (already resolved to the rule's slot SSA
+% value by plawk_resolve_scalar_cmp/4). Reuse the same numeric field-comparison
+% runtime as `$I OP int` -- @wam_atom_field_i64_cmp_value takes the expected
+% value as a runtime i64 argument, so the scalar's SSA value passes straight in;
+% the field is parsed as a signed i64 (non-numeric / missing -> false), giving
+% semantics identical to the field-vs-int-literal pattern.
+plawk_pattern_guard_ir(field_scalar_cmp_resolved(FieldIndex, Op, SSARef), FieldSeparator, _GlobalBase, MatchValue, ''-GuardCallIR) :-
+    integer(FieldSeparator),
+    plawk_field_cmp_op_code(Op, OpCode),
+    format(atom(GuardCallIR),
+        '  ~w = call i1 @wam_atom_field_i64_cmp_value(%Value %line, i64 ~w, i8 ~w, i64 ~w, i32 ~w)',
+        [MatchValue, FieldIndex, FieldSeparator, SSARef, OpCode]).
 % Field-vs-field pattern `$I OP $J` (multi-rule / combined-pattern guard): use
 % the per-rule base for unique slice/comparator temporaries.
 plawk_pattern_guard_ir(field_cmp2(I, Op, J), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
@@ -16428,6 +16497,11 @@ plawk_pattern_guard_ir(field_field_arith_cmp(I, ArithOp, J, Op, RHS), FieldSepar
     integer(I), I > 0,
     integer(J), J > 0,
     plawk_field_field_arith_cmp_guard_ir(I, ArithOp, J, Op, RHS, FieldSeparator, GlobalBase, MatchValue, GuardIR).
+% Float-division pattern `$I / K CMP V` (multi-rule guard).
+plawk_pattern_guard_ir(field_div_cmp(I, K, Op, RHS), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
+    integer(FieldSeparator),
+    integer(I), I > 0,
+    plawk_field_div_cmp_guard_ir(I, K, Op, RHS, FieldSeparator, GlobalBase, MatchValue, GuardIR).
 % `$I ARITH K CMP RHS` shared guard: parse field I as a signed i64 (non-numeric
 % -> 0, matching plawk field arithmetic), apply the integer arithmetic op with
 % K, then icmp the result against RHS. `%` is srem (parser guarantees K != 0).
@@ -16476,6 +16550,25 @@ plawk_field_arith_llvm_op(add, add).
 plawk_field_arith_llvm_op(sub, sub).
 plawk_field_arith_llvm_op(mul, mul).
 plawk_field_arith_llvm_op(mod, srem).
+
+% `$I / K CMP V` shared guard: `/` is always floating-point in awk, so parse
+% field I as an f64 (@wam_atom_field_f64_value, non-numeric -> 0.0), fdiv by the
+% integer divisor K (as a `K.0` double literal), then fcmp against RHS. RHS is a
+% float_const(M, D) (an integer widened to M/1), built as the exact rational
+% `fdiv M.0, D.0` -- the same inexact-decimal-safe idiom the other float guards
+% use. The parser guarantees K != 0, so the divisor literal is finite/nonzero.
+plawk_field_div_cmp_guard_ir(I, K, Op, float_const(M, D), FieldSeparator, Base,
+        MatchValue, ''-GuardCallIR) :-
+    plawk_fcmp_pred(Op, Pred),
+    format(atom(GuardCallIR),
+'  %~w_dv = call double @wam_atom_field_f64_value(%Value %line, i64 ~w, i8 ~w)
+  %~w_dq = fdiv double %~w_dv, ~w.0
+  %~w_rhs = fdiv double ~w.0, ~w.0
+  ~w = fcmp ~w double %~w_dq, %~w_rhs',
+        [Base, I, FieldSeparator,
+         Base, Base, K,
+         Base, M, D,
+         MatchValue, Pred, Base, Base]).
 % Field-vs-field POSIX strnum comparison shared by the single- and multi-rule
 % pattern guards. @wam_atom_field_slice_value returns bounded spans whose
 % interior fields are not NUL-terminated, so pass their pointers and lengths to

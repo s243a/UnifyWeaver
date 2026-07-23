@@ -979,6 +979,9 @@ base_pattern(Pattern) -->
     field_match_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
+    field_div_cmp_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
     field_field_arith_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
@@ -991,7 +994,13 @@ base_pattern(Pattern) -->
     field_i64_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
+    field_scalar_cmp_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
     special_i64_cmp_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
+    scalar_i64_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
     field_eq_pattern(Pattern),
@@ -1284,12 +1293,86 @@ field_i64_cmp_pattern(field_cmp(Index, Op, Value)) -->
       Index > 0
     }.
 
+% Field-vs-scalar pattern: `$I OP NAME { … }` (and reversed `NAME OP $I`), a
+% field compared to a user scalar variable, e.g. `$1 > threshold { … }`,
+% `$2 == limit { … }`. Parses to field_scalar_cmp(Index, Op, Name); the codegen
+% resolves Name to the rule's current slot value and reuses the same numeric
+% field-comparison runtime as `$I OP int` (the field is parsed as a signed i64,
+% non-numeric / missing -> the comparison is false), so the semantics match the
+% field-vs-int-literal pattern exactly -- only the RHS is a scalar rather than a
+% literal. Both operand orders; the reversed form swaps the field-relative op.
+% Tried after field_i64_cmp_pattern so an integer RHS keeps the literal path.
+field_scalar_cmp_pattern(field_scalar_cmp(Index, Op, Name)) -->
+    "$",
+    integer_codes(IndexCodes),
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    identifier(Name),
+    identifier_boundary,
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index > 0,
+      \+ scalar_cmp_reserved_name(Name)
+    }.
+field_scalar_cmp_pattern(field_scalar_cmp(Index, SwappedOp, Name)) -->
+    identifier(Name),
+    identifier_boundary,
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    "$",
+    integer_codes(IndexCodes),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index > 0,
+      swap_cmp_op(Op, SwappedOp),
+      \+ scalar_cmp_reserved_name(Name)
+    }.
+
+% Float-division pattern: `$I / K CMP V { … }` — a single field divided by a
+% nonzero integer literal, compared to a numeric literal, e.g. `$1 / 2 > 3.5`,
+% `$1 / 3 <= 10`, `$1 / 100 >= 0.5`. Unlike the integer arithmetic ops (`+`/`-`/
+% `*`/`%`), `/` is always floating-point in awk, so the field is evaluated as an
+% f64 (non-numeric -> 0.0), divided, and compared with `fcmp`; the RHS carries as
+% float_const(M, D) whether written as a float (`3.5`) or an integer (`10`). The
+% divisor must be a nonzero integer literal (a field or float divisor -- whose
+% zero value diverges from awk's fatal -- is a follow-on). Composes with the
+% `!`/`&&`/`||` combinators. Tried before the integer arithmetic pattern so `/`
+% takes this float path (field_arith_op has no `/`, so the integer form ignores
+% it anyway, but the ordering keeps the intent explicit).
+field_div_cmp_pattern(field_div_cmp(I, K, Op, RHS)) -->
+    "$",
+    integer_codes(ICodes),
+    ws,
+    "/",
+    ws,
+    signed_integer_value(K),
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    div_rhs(RHS),
+    { ICodes \== [],
+      number_codes(I, ICodes), I > 0,
+      K =\= 0
+    }.
+
+% The right-hand side of a float-division pattern: a signed float literal (`3.5`,
+% carried as float_const(M, D)) or a signed integer (widened to float_const(V, 1)
+% so the comparison is uniformly a double fcmp). A float has a `.`, so it takes
+% the first clause; a bare integer falls through.
+div_rhs(float_const(M, D)) -->
+    signed_float_lit(float_const(M, D)),
+    !.
+div_rhs(float_const(V, 1)) -->
+    signed_integer_value(V).
+
 % Arithmetic-expression pattern: `$I ARITH K CMP int { … }` — a single field
 % combined with one arithmetic op and an integer, compared to an integer, e.g.
 % `$1 + 0 > 5` (force-numeric compare), `$1 % 2 == 0` (even), `$1 * 2 >= 10`.
 % The field is evaluated as a signed i64 (non-numeric -> 0, matching plawk field
-% arithmetic); `%` requires a nonzero divisor. `/` (float division) is a
-% follow-on. Composes with the `!`/`&&`/`||` combinators.
+% arithmetic); `%` requires a nonzero divisor. `/` is the separate float-division
+% pattern above. Composes with the `!`/`&&`/`||` combinators.
 field_arith_cmp_pattern(field_arith_cmp(I, ArithOp, K, Op, RHS)) -->
     "$",
     integer_codes(ICodes),
@@ -1373,6 +1456,40 @@ special_i64_cmp_pattern(special_cmp(Special, SwappedOp, Value)) -->
     ws,
     special_cmp_operand(Special),
     { swap_cmp_op(Op, SwappedOp) }.
+
+% Bare scalar-vs-integer pattern: `n > 2 { … }` (and the reversed `2 < n`). A user
+% scalar compared to an integer literal, both operand orders (the reversed form
+% swaps the operator). Parses to scalar_cmp(Name, Op, Value); the codegen resolves
+% Name to the rule's current slot value. Tried after special_i64_cmp_pattern so
+% NR/NF/FNR/length keep the special path, and scalar_cmp_reserved_name/1 rejects
+% the numeric specials and reserved words so they never reach here as a phantom
+% scalar. `n(...)` (a call) has a `(` where the comparison op is expected, so it
+% falls through to prolog_guard_pattern.
+scalar_i64_cmp_pattern(scalar_cmp(Name, Op, Value)) -->
+    identifier(Name),
+    identifier_boundary,
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    signed_integer_value(Value),
+    { \+ scalar_cmp_reserved_name(Name) }.
+scalar_i64_cmp_pattern(scalar_cmp(Name, SwappedOp, Value)) -->
+    signed_integer_value(Value),
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    identifier(Name),
+    identifier_boundary,
+    { swap_cmp_op(Op, SwappedOp),
+      \+ scalar_cmp_reserved_name(Name) }.
+
+% A scalar name that must NOT be treated as a user scalar in a bare pattern: the
+% numeric/positional specials (which own the special_cmp path) and the surface
+% reserved words (builtins/keywords).
+scalar_cmp_reserved_name(Name) :-
+    ( memberchk(Name, ['NR', 'NF', 'FNR', 'RSTART', 'RLENGTH', 'ARGC'])
+    ; plawk_surface_reserved_name(Name)
+    ).
 
 % The special operand of an expression pattern: the field count, the record
 % byte length (of `$0`, bare or parenthesised), or the record number NR.
