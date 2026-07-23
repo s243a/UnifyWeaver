@@ -16307,6 +16307,12 @@ plawk_pattern_guard_ir(field_field_arith_cmp(I, ArithOp, J, Op, RHS), FieldSepar
     integer(J), J > 0,
     plawk_field_field_arith_cmp_guard_ir(I, ArithOp, J, Op, RHS, FieldSeparator,
         plawk_surface_ffacmp, '%is_match', GuardIR).
+% Float-division pattern `$I / K CMP V` (single-rule guard).
+plawk_pattern_guard_ir(field_div_cmp(I, K, Op, RHS), FieldSeparator, GuardIR) :-
+    integer(FieldSeparator),
+    integer(I), I > 0,
+    plawk_field_div_cmp_guard_ir(I, K, Op, RHS, FieldSeparator,
+        plawk_surface_fdcmp, '%is_match', GuardIR).
 % Expression pattern `length OP int` (single-rule guard): the current record's
 % byte length ($0) compared to the literal.
 plawk_pattern_guard_ir(special_cmp(length, Op, Value), FieldSeparator, ''-GuardCallIR) :-
@@ -16428,6 +16434,11 @@ plawk_pattern_guard_ir(field_field_arith_cmp(I, ArithOp, J, Op, RHS), FieldSepar
     integer(I), I > 0,
     integer(J), J > 0,
     plawk_field_field_arith_cmp_guard_ir(I, ArithOp, J, Op, RHS, FieldSeparator, GlobalBase, MatchValue, GuardIR).
+% Float-division pattern `$I / K CMP V` (multi-rule guard).
+plawk_pattern_guard_ir(field_div_cmp(I, K, Op, RHS), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
+    integer(FieldSeparator),
+    integer(I), I > 0,
+    plawk_field_div_cmp_guard_ir(I, K, Op, RHS, FieldSeparator, GlobalBase, MatchValue, GuardIR).
 % `$I ARITH K CMP RHS` shared guard: parse field I as a signed i64 (non-numeric
 % -> 0, matching plawk field arithmetic), apply the integer arithmetic op with
 % K, then icmp the result against RHS. `%` is srem (parser guarantees K != 0).
@@ -16476,6 +16487,25 @@ plawk_field_arith_llvm_op(add, add).
 plawk_field_arith_llvm_op(sub, sub).
 plawk_field_arith_llvm_op(mul, mul).
 plawk_field_arith_llvm_op(mod, srem).
+
+% `$I / K CMP V` shared guard: `/` is always floating-point in awk, so parse
+% field I as an f64 (@wam_atom_field_f64_value, non-numeric -> 0.0), fdiv by the
+% integer divisor K (as a `K.0` double literal), then fcmp against RHS. RHS is a
+% float_const(M, D) (an integer widened to M/1), built as the exact rational
+% `fdiv M.0, D.0` -- the same inexact-decimal-safe idiom the other float guards
+% use. The parser guarantees K != 0, so the divisor literal is finite/nonzero.
+plawk_field_div_cmp_guard_ir(I, K, Op, float_const(M, D), FieldSeparator, Base,
+        MatchValue, ''-GuardCallIR) :-
+    plawk_fcmp_pred(Op, Pred),
+    format(atom(GuardCallIR),
+'  %~w_dv = call double @wam_atom_field_f64_value(%Value %line, i64 ~w, i8 ~w)
+  %~w_dq = fdiv double %~w_dv, ~w.0
+  %~w_rhs = fdiv double ~w.0, ~w.0
+  ~w = fcmp ~w double %~w_dq, %~w_rhs',
+        [Base, I, FieldSeparator,
+         Base, Base, K,
+         Base, M, D,
+         MatchValue, Pred, Base, Base]).
 % Field-vs-field POSIX strnum comparison shared by the single- and multi-rule
 % pattern guards. @wam_atom_field_slice_value returns bounded spans whose
 % interior fields are not NUL-terminated, so pass their pointers and lengths to

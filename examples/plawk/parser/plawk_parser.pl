@@ -979,6 +979,9 @@ base_pattern(Pattern) -->
     field_match_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
+    field_div_cmp_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
     field_field_arith_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
@@ -1284,12 +1287,49 @@ field_i64_cmp_pattern(field_cmp(Index, Op, Value)) -->
       Index > 0
     }.
 
+% Float-division pattern: `$I / K CMP V { … }` — a single field divided by a
+% nonzero integer literal, compared to a numeric literal, e.g. `$1 / 2 > 3.5`,
+% `$1 / 3 <= 10`, `$1 / 100 >= 0.5`. Unlike the integer arithmetic ops (`+`/`-`/
+% `*`/`%`), `/` is always floating-point in awk, so the field is evaluated as an
+% f64 (non-numeric -> 0.0), divided, and compared with `fcmp`; the RHS carries as
+% float_const(M, D) whether written as a float (`3.5`) or an integer (`10`). The
+% divisor must be a nonzero integer literal (a field or float divisor -- whose
+% zero value diverges from awk's fatal -- is a follow-on). Composes with the
+% `!`/`&&`/`||` combinators. Tried before the integer arithmetic pattern so `/`
+% takes this float path (field_arith_op has no `/`, so the integer form ignores
+% it anyway, but the ordering keeps the intent explicit).
+field_div_cmp_pattern(field_div_cmp(I, K, Op, RHS)) -->
+    "$",
+    integer_codes(ICodes),
+    ws,
+    "/",
+    ws,
+    signed_integer_value(K),
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    div_rhs(RHS),
+    { ICodes \== [],
+      number_codes(I, ICodes), I > 0,
+      K =\= 0
+    }.
+
+% The right-hand side of a float-division pattern: a signed float literal (`3.5`,
+% carried as float_const(M, D)) or a signed integer (widened to float_const(V, 1)
+% so the comparison is uniformly a double fcmp). A float has a `.`, so it takes
+% the first clause; a bare integer falls through.
+div_rhs(float_const(M, D)) -->
+    signed_float_lit(float_const(M, D)),
+    !.
+div_rhs(float_const(V, 1)) -->
+    signed_integer_value(V).
+
 % Arithmetic-expression pattern: `$I ARITH K CMP int { … }` — a single field
 % combined with one arithmetic op and an integer, compared to an integer, e.g.
 % `$1 + 0 > 5` (force-numeric compare), `$1 % 2 == 0` (even), `$1 * 2 >= 10`.
 % The field is evaluated as a signed i64 (non-numeric -> 0, matching plawk field
-% arithmetic); `%` requires a nonzero divisor. `/` (float division) is a
-% follow-on. Composes with the `!`/`&&`/`||` combinators.
+% arithmetic); `%` requires a nonzero divisor. `/` is the separate float-division
+% pattern above. Composes with the `!`/`&&`/`||` combinators.
 field_arith_cmp_pattern(field_arith_cmp(I, ArithOp, K, Op, RHS)) -->
     "$",
     integer_codes(ICodes),
