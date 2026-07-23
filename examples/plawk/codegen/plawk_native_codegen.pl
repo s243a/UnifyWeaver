@@ -12377,11 +12377,25 @@ plawk_resolve_scalar_cmp(scalar_cmp(Name, Op, Value), StatePlan, Index,
     !,
     plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex),
     plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef).
+% A field compared to a scalar. A counter (i64) scalar uses the numeric field
+% comparison (the scalar's value passes straight into @wam_atom_field_i64_cmp_value
+% as the expected i64). A string/strnum scalar (its slot an interned atom id) uses
+% the field-vs-field strnum SLICE comparator against the scalar's stored string --
+% i.e. `$I OP NAME` compares like `$I OP $J`, matching awk when NAME is a strnum
+% (field-assigned); a string-literal-assigned NAME with a numeric-looking field is
+% the one rare divergence (strnum vs true-string comparison).
 plawk_resolve_scalar_cmp(field_scalar_cmp(FieldIndex, Op, Name), StatePlan, Index,
-        field_scalar_cmp_resolved(FieldIndex, Op, SSARef)) :-
+        Resolved) :-
     !,
-    plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex),
-    plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef).
+    (   plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex)
+    ->  plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef),
+        Resolved = field_scalar_cmp_resolved(FieldIndex, Op, SSARef)
+    ;   ( plawk_state_slot_index(StatePlan, scalar_strnum(Name), SlotIndex)
+        ; plawk_state_slot_index(StatePlan, scalar_string(Name), SlotIndex)
+        ),
+        plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef),
+        Resolved = field_scalar_str_resolved(FieldIndex, Op, SSARef)
+    ).
 % A string-scalar comparison resolves against a string-valued slot -- either a
 % scalar_string (literal-assigned) or a scalar_strnum (field-assigned, e.g.
 % `s = $1`); both store an interned atom id (0 = unset), so the guard compares by
@@ -16493,6 +16507,38 @@ plawk_pattern_guard_ir(field_scalar_cmp_resolved(FieldIndex, Op, SSARef), FieldS
     format(atom(GuardCallIR),
         '  ~w = call i1 @wam_atom_field_i64_cmp_value(%Value %line, i64 ~w, i8 ~w, i64 ~w, i32 ~w)',
         [MatchValue, FieldIndex, FieldSeparator, SSARef, OpCode]).
+% Field vs a string/strnum scalar `$I OP NAME` (NAME resolved to its atom-id slot
+% value): compare the field slice against the scalar's stored string by POSIX
+% strnum rules, exactly like `$I OP $J` -- the second slice is the scalar's string
+% (@wam_atom_to_string of its id; an unset id 0 selects an empty literal so strlen
+% is safe). Op is field-relative. The failure sentinel (rc = 2) is masked so it
+% cannot satisfy !=/>/>=.
+plawk_pattern_guard_ir(field_scalar_str_resolved(FieldIndex, Op, SSARef), FieldSeparator, GlobalBase, MatchValue, GlobalIR-GuardCallIR) :-
+    integer(FieldSeparator),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(Base), '~w_fss~w', [GlobalBase, FieldIndex]),
+    llvm_emit_atom_field_slice('%line', FieldIndex, FieldSeparator, Base, FieldSliceIR),
+    format(atom(EmptyName), '~w_empty', [Base]),
+    format(atom(GlobalIR), '@.~w = private constant [1 x i8] c"\\00"', [EmptyName]),
+    format(atom(GuardCallIR),
+'~w
+  %~w_sraw = call i8* @wam_atom_to_string(i64 ~w)
+  %~w_sunset = icmp eq i64 ~w, 0
+  %~w_sptr = select i1 %~w_sunset, i8* getelementptr ([1 x i8], [1 x i8]* @.~w, i64 0, i64 0), i8* %~w_sraw
+  %~w_slen = call i64 @strlen(i8* %~w_sptr)
+  %~w_rc = call i32 @wam_strnum_cmp_slices(i8* %~w_ptr, i64 %~w_len64, i8* %~w_sptr, i64 %~w_slen)
+  %~w_ok = icmp ne i32 %~w_rc, 2
+  %~w_cmp = icmp ~w i32 %~w_rc, 0
+  ~w = and i1 %~w_ok, %~w_cmp',
+        [FieldSliceIR,
+         Base, SSARef,
+         Base, SSARef,
+         Base, Base, EmptyName, Base,
+         Base, Base,
+         Base, Base, Base, Base, Base,
+         Base, Base,
+         Base, Pred, Base,
+         MatchValue, Base, Base]).
 % Bare string-scalar pattern `name OP "lit"` (resolved to the scalar's string
 % slot atom-id SSA value). == / != compare atom ids directly (interning is
 % canonical, so equal strings share an id); the ordering ops resolve the id to
