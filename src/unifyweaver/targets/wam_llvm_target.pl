@@ -7082,6 +7082,22 @@ ss.fail:
 ; Returns the sign as i32 (-1/0/1). Used for `strnum CMP <integer literal>`.
 @.wam_strnum_int_fmt = private constant [5 x i8] c"%lld\00"
 
+; Intern an i64 as its decimal-text atom id. awk array keys are strings, so
+; arr[n] with a numeric scalar n keys on n formatted as %lld (e.g. n=5 -> "5"),
+; matching the id a field/string key of the same spelling would produce. Format
+; into a 32-byte stack buffer (an i64 is at most 20 digits plus sign), then
+; intern the written bytes.
+define i64 @wam_intern_i64_decimal(i64 %n) {
+entry:
+  %d.buf = alloca [32 x i8]
+  %d.bufp = getelementptr [32 x i8], [32 x i8]* %d.buf, i64 0, i64 0
+  %d.fmt = getelementptr [5 x i8], [5 x i8]* @.wam_strnum_int_fmt, i64 0, i64 0
+  %d.w = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %d.bufp, i64 32, i8* %d.fmt, i64 %n)
+  %d.len = sext i32 %d.w to i64
+  %d.id = call i64 @wam_intern_atom(i8* %d.bufp, i64 %d.len)
+  ret i64 %d.id
+}
+
 define i32 @wam_strnum_cmp_int(i8* %as, i8 %akind, i64 %bval) {
 entry:
   %ci.a_isnum = icmp eq i8 %akind, 0
