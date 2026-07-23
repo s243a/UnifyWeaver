@@ -7901,6 +7901,12 @@ plawk_assoc_body_action_spec(delete_assoc(var(ArrayName), field(KeyIndex)),
 plawk_assoc_body_action_spec(delete_assoc(var(ArrayName), string(Str)),
         assoc_delete_lit(ArrayName, Str)) :-
     ( string(Str) ; atom(Str) ).
+% `delete arr[5]` -- an integer-literal key. awk array keys are strings, so the
+% integer is keyed by its decimal text ("5"), reusing the string-literal delete.
+plawk_assoc_body_action_spec(delete_assoc(var(ArrayName), int(N)),
+        assoc_delete_lit(ArrayName, Str)) :-
+    integer(N),
+    number_string(N, Str).
 % `split($N, arr, "sep")`: populate arr (a str-valued positional table, keys
 % 1..n) by splitting field N on the separator. A single-char separator is a
 % literal byte; a multi-char separator is a POSIX ERE regex (its own pattern,
