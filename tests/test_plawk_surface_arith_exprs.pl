@@ -77,13 +77,17 @@ test(legacy_primary_minus_constant_ast_unchanged) :-
         [print([sub_i64(special('NR'), int(1)),
                 sub_i64(length(field(0)), int(3))])])], [])).
 
-test(arith_ir_guards_division) :-
-    plawk_parse_string("{ print $2 / $3 }\n", Program),
+% `/` is floating-point (fdiv, no integer guard); `%` stays integer and keeps its
+% zero-divisor / INT64_MIN-overflow guard (srem).
+test(arith_ir_division_is_float_modulo_stays_guarded_integer) :-
+    plawk_parse_string("{ print $2 / $3, $2 % $3 }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'fdiv double'))),
+    assertion(\+ sub_atom(DriverIR, _, _, _, 'sdiv i64')),
     assertion(once(sub_atom(DriverIR, _, _, _, '_den_zero = icmp eq i64'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '_lhs_min = icmp eq i64'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '_safe_den = select i1'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '_raw = sdiv i64'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '_raw = srem i64'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
@@ -105,20 +109,25 @@ test(surface_precedence_and_parens) :-
         "x 2 3 4\n",
         "20 14\n").
 
+% `/` is floating-point (7/2 = 3.5); `%` stays integer.
 test(surface_division_and_modulo) :-
     run_arith_print_smoke("{ print $2 / $3, $2 % $3 }\n",
         "a 7 2\nb -7 2\n",
-        "3 1\n-3 -1\n").
+        "3.5 1\n-3.5 -1\n").
 
-test(surface_division_by_zero_yields_zero) :-
+% float `/` by zero is IEEE inf (gawk fatals; plawk stays lenient); `%` by zero
+% keeps its guard and yields 0.
+test(surface_float_division_by_zero_is_inf) :-
     run_arith_print_smoke("{ print $2 / $3, $2 % $3 }\n",
         "a 7 0\n",
-        "0 0\n").
+        "inf 0\n").
 
-test(surface_int64_min_overflow_division_is_defined) :-
+% INT64_MIN / -1 has no integer-overflow trap under float `/` -- it is just the
+% double 2^63 (printed by %g); `%` keeps the integer overflow guard (-> 0).
+test(surface_int64_min_division_is_float) :-
     run_arith_print_smoke("{ print $2 / $3, $2 % $3 }\n",
         "a -9223372036854775808 -1\n",
-        "-9223372036854775808 0\n").
+        "9.22337e+18 0\n").
 
 test(surface_nonnumeric_fields_coerce_to_zero) :-
     run_arith_print_smoke("{ print $2 + $3 }\n",
@@ -140,10 +149,11 @@ test(surface_printf_binary_arg) :-
         "x 1 2\ny 3 4\n",
         "5;11;").
 
+% `100 / NF` is float (100/3 = 33.3333); `NF % 2` stays integer.
 test(surface_constant_operands_with_nf) :-
     run_arith_print_smoke("{ print 100 / NF, NF % 2 }\n",
         "a b c d\nx y z\n",
-        "25 0\n33 1\n").
+        "25 0\n33.3333 1\n").
 
 run_arith_print_smoke(Source, Input, ExpectedOutput) :-
     tmp_root(Root),

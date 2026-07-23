@@ -342,6 +342,15 @@ test(double_negated, [condition(clang_available)]) :-
         "a\nb\n", Out),
     assertion(Out == "a\nb\n"), !.
 
+% The payoff of float `/`: a scalar assigned a DIVISION result (`avg = sum / c`)
+% is a double slot, so a double-scalar pattern reads it. A running-average
+% threshold `$1 > avg` keeps only records above the average so far.
+test(double_running_average_threshold, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'da', "{ sum += $1; c++; avg = sum / c } $1 > avg { print $1 }\n",
+        "10\n20\n5\n40\n", Out),
+    assertion(Out == "20\n40\n"), !.
+
 :- end_tests(plawk_scalar_pattern).
 
 % --- helpers ---------------------------------------------------------------
