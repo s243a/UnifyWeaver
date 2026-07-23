@@ -15217,6 +15217,12 @@ plawk_expr_is_double(ssa_f64(_Value)).
 plawk_expr_is_double(pow_i64(_Left, _Right)).
 % Math builtins (sqrt/sin/cos/exp/log/atan2) return a double.
 plawk_expr_is_double(math_call(_Fn, _Args)).
+% awk `/` is always floating-point division (`7 / 2` = 3.5), regardless of
+% whether its operands are integer- or float-typed -- so a scalar assigned a
+% division result is a double slot, and a division subtree in any arithmetic
+% is evaluated in f64. Integer operands promote via sitofp at emission, and the
+% op lowers to fdiv through plawk_i64_op_f64.
+plawk_expr_is_double(div_i64(_Left, _Right)).
 plawk_expr_is_double(Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     ( plawk_expr_is_double(Left)

@@ -65,10 +65,12 @@ test(surface_float_multiply_prints_g_format) :-
         "a 10\nb 3\n",
         "15\n4.5\n").
 
-test(surface_int_and_float_division_differ) :-
+% `/` is ALWAYS floating-point in awk, so `$2 / 2` and `$2 / 2.0` are identical
+% (both 3.5) -- there is no integer-division form of `/`.
+test(surface_division_is_always_float) :-
     run_float_print_smoke("{ print $2 / 2.0, $2 / 2 }\n",
         "a 7\n",
-        "3.5 3\n").
+        "3.5 3.5\n").
 
 test(surface_float_field_uses_strtod_semantics) :-
     run_float_print_smoke("{ print float($2) }\n",
