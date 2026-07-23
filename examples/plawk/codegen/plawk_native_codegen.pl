@@ -12377,6 +12377,11 @@ plawk_resolve_scalar_cmp(scalar_cmp(Name, Op, Value), StatePlan, Index,
     !,
     plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex),
     plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef).
+plawk_resolve_scalar_cmp(field_scalar_cmp(FieldIndex, Op, Name), StatePlan, Index,
+        field_scalar_cmp_resolved(FieldIndex, Op, SSARef)) :-
+    !,
+    plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex),
+    plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef).
 plawk_resolve_scalar_cmp(not_pat(P), StatePlan, Index, not_pat(P1)) :-
     !,
     plawk_resolve_scalar_cmp(P, StatePlan, Index, P1).
@@ -16462,6 +16467,18 @@ plawk_pattern_guard_ir(scalar_cmp_resolved(SSARef, Op, Value), _FieldSeparator, 
     plawk_icmp_pred(Op, Pred),
     format(atom(GuardCallIR), '  ~w = icmp ~w i64 ~w, ~w',
         [MatchValue, Pred, SSARef, Value]).
+% Field-vs-scalar pattern `$I OP NAME` (already resolved to the rule's slot SSA
+% value by plawk_resolve_scalar_cmp/4). Reuse the same numeric field-comparison
+% runtime as `$I OP int` -- @wam_atom_field_i64_cmp_value takes the expected
+% value as a runtime i64 argument, so the scalar's SSA value passes straight in;
+% the field is parsed as a signed i64 (non-numeric / missing -> false), giving
+% semantics identical to the field-vs-int-literal pattern.
+plawk_pattern_guard_ir(field_scalar_cmp_resolved(FieldIndex, Op, SSARef), FieldSeparator, _GlobalBase, MatchValue, ''-GuardCallIR) :-
+    integer(FieldSeparator),
+    plawk_field_cmp_op_code(Op, OpCode),
+    format(atom(GuardCallIR),
+        '  ~w = call i1 @wam_atom_field_i64_cmp_value(%Value %line, i64 ~w, i8 ~w, i64 ~w, i32 ~w)',
+        [MatchValue, FieldIndex, FieldSeparator, SSARef, OpCode]).
 % Field-vs-field pattern `$I OP $J` (multi-rule / combined-pattern guard): use
 % the per-rule base for unique slice/comparator temporaries.
 plawk_pattern_guard_ir(field_cmp2(I, Op, J), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-

@@ -994,6 +994,9 @@ base_pattern(Pattern) -->
     field_i64_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
+    field_scalar_cmp_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
     special_i64_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
@@ -1288,6 +1291,43 @@ field_i64_cmp_pattern(field_cmp(Index, Op, Value)) -->
     { IndexCodes \== [],
       number_codes(Index, IndexCodes),
       Index > 0
+    }.
+
+% Field-vs-scalar pattern: `$I OP NAME { … }` (and reversed `NAME OP $I`), a
+% field compared to a user scalar variable, e.g. `$1 > threshold { … }`,
+% `$2 == limit { … }`. Parses to field_scalar_cmp(Index, Op, Name); the codegen
+% resolves Name to the rule's current slot value and reuses the same numeric
+% field-comparison runtime as `$I OP int` (the field is parsed as a signed i64,
+% non-numeric / missing -> the comparison is false), so the semantics match the
+% field-vs-int-literal pattern exactly -- only the RHS is a scalar rather than a
+% literal. Both operand orders; the reversed form swaps the field-relative op.
+% Tried after field_i64_cmp_pattern so an integer RHS keeps the literal path.
+field_scalar_cmp_pattern(field_scalar_cmp(Index, Op, Name)) -->
+    "$",
+    integer_codes(IndexCodes),
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    identifier(Name),
+    identifier_boundary,
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index > 0,
+      \+ scalar_cmp_reserved_name(Name)
+    }.
+field_scalar_cmp_pattern(field_scalar_cmp(Index, SwappedOp, Name)) -->
+    identifier(Name),
+    identifier_boundary,
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    "$",
+    integer_codes(IndexCodes),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index > 0,
+      swap_cmp_op(Op, SwappedOp),
+      \+ scalar_cmp_reserved_name(Name)
     }.
 
 % Float-division pattern: `$I / K CMP V { … }` — a single field divided by a
