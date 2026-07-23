@@ -11,6 +11,12 @@ Available skills for AI agents. Load skills as needed based on user request.
 | **Cross-Links** | `skill_mindmap_cross_links.md` | Add links between mindmaps |
 | **Folder Suggestion** | `skill_folder_suggestion.md` | Find best folder for mindmap |
 
+## Pearltrees / Harvester
+
+| Skill | File | Use When |
+|-------|------|----------|
+| **Harvester Orientation** | `skill_pearltrees_harvester.md` | Onboard to Pearltrees; find where harvested data / code lives; the RDF-truncation gap; (re)harvest |
+
 ## Bookmark Tools
 
 | Skill | File | Use When |
@@ -47,6 +53,10 @@ Available skills for AI agents. Load skills as needed based on user request.
 | "where should this go" | `skill_folder_suggestion.md` |
 | "file bookmark" | `skill_bookmark_filing.md` |
 | "save bookmark" | `skill_bookmark_filing.md` |
+| "where is the pearltrees data" | `skill_pearltrees_harvester.md` |
+| "onboard pearltrees" / "harvester" | `skill_pearltrees_harvester.md` |
+| "rebuild the dag" / "assembled_dag" | `skill_pearltrees_harvester.md` |
+| "reharvest pearltrees" | `skill_pearltrees_harvester.md` |
 
 ## Documentation References
 
