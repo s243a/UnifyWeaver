@@ -3234,15 +3234,16 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
   out_terms <- list()
   if (!is.null(lookup_ids)) {
     # ID-native path: convert Visited once, downward depth, integer buffer.
-    vlen0 <- 0L
-    visited_ids <- integer(max(8L, length(visited_elems)))
-    for (elem in visited_elems) {
+    # Depth is the full Prolog list length, even though only atom entries
+    # participate in cycle membership. Keep non-atoms as the zero sentinel
+    # so this fast path has the same max_depth semantics as the TermValue
+    # and iterate_goal paths.
+    vlen0 <- length(visited_elems)
+    visited_ids <- integer(max(8L, vlen0))
+    for (i in seq_along(visited_elems)) {
+      elem <- visited_elems[[i]]
       if (!is.null(elem) && !is.null(elem$tag) && elem$tag == "atom") {
-        vlen0 <- vlen0 + 1L
-        if (vlen0 > length(visited_ids)) {
-          length(visited_ids) <- as.integer(length(visited_ids) * 2L)
-        }
-        visited_ids[[vlen0]] <- as.integer(elem$id)
+        visited_ids[[i]] <- as.integer(elem$id)
       }
     }
     out <- new.env(parent = emptyenv())
