@@ -12382,6 +12382,20 @@ plawk_resolve_scalar_cmp(field_scalar_cmp(FieldIndex, Op, Name), StatePlan, Inde
     !,
     plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex),
     plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef).
+% A string-scalar comparison resolves against a string-valued slot -- either a
+% scalar_string (literal-assigned) or a scalar_strnum (field-assigned, e.g.
+% `s = $1`); both store an interned atom id (0 = unset), so the guard compares by
+% id (==/!=) or strcmp (ordering). Comparing a strnum against a string *literal*
+% is a string comparison in awk, which is exactly what the canonical-id/strcmp
+% path does.
+plawk_resolve_scalar_cmp(scalar_str_cmp(Name, Op, Str), StatePlan, Index,
+        scalar_str_cmp_resolved(SSARef, Op, Str)) :-
+    !,
+    ( plawk_state_slot_index(StatePlan, scalar_string(Name), SlotIndex)
+    ; plawk_state_slot_index(StatePlan, scalar_strnum(Name), SlotIndex)
+    ),
+    !,
+    plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef).
 plawk_resolve_scalar_cmp(not_pat(P), StatePlan, Index, not_pat(P1)) :-
     !,
     plawk_resolve_scalar_cmp(P, StatePlan, Index, P1).
@@ -16479,6 +16493,42 @@ plawk_pattern_guard_ir(field_scalar_cmp_resolved(FieldIndex, Op, SSARef), FieldS
     format(atom(GuardCallIR),
         '  ~w = call i1 @wam_atom_field_i64_cmp_value(%Value %line, i64 ~w, i8 ~w, i64 ~w, i32 ~w)',
         [MatchValue, FieldIndex, FieldSeparator, SSARef, OpCode]).
+% Bare string-scalar pattern `name OP "lit"` (resolved to the scalar's string
+% slot atom-id SSA value). == / != compare atom ids directly (interning is
+% canonical, so equal strings share an id); the ordering ops resolve the id to
+% text and strcmp against the literal (an unset scalar, id 0, resolves to empty
+% via the literal global's trailing NUL). Mirrors the scalar-`if` string guard.
+plawk_pattern_guard_ir(scalar_str_cmp_resolved(SSARef, Op, Str), _FieldSeparator, GlobalBase, MatchValue, GlobalIR-GuardCallIR) :-
+    memberchk(Op, [eq, ne]),
+    !,
+    format(atom(LitName), '~w_slit', [GlobalBase]),
+    llvm_emit_c_string_global(LitName, Str, GlobalIR, Len, BytesLen),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(GuardCallIR),
+'  %~w_slitptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  %~w_slitid = call i64 @wam_intern_atom(i8* %~w_slitptr, i64 ~w)
+  ~w = icmp ~w i64 ~w, %~w_slitid',
+        [GlobalBase, BytesLen, BytesLen, LitName,
+         GlobalBase, GlobalBase, Len,
+         MatchValue, Pred, SSARef, GlobalBase]).
+plawk_pattern_guard_ir(scalar_str_cmp_resolved(SSARef, Op, Str), _FieldSeparator, GlobalBase, MatchValue, GlobalIR-GuardCallIR) :-
+    memberchk(Op, [lt, le, gt, ge]),
+    format(atom(LitName), '~w_slit', [GlobalBase]),
+    llvm_emit_c_string_global(LitName, Str, GlobalIR, Len, BytesLen),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(GuardCallIR),
+'  %~w_slitptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
+  %~w_sraw = call i8* @wam_atom_to_string(i64 ~w)
+  %~w_sempty = icmp eq i64 ~w, 0
+  %~w_sptr = select i1 %~w_sempty, i8* getelementptr ([~w x i8], [~w x i8]* @.~w, i64 0, i64 ~w), i8* %~w_sraw
+  %~w_sscmp = call i32 @strcmp(i8* %~w_sptr, i8* %~w_slitptr)
+  ~w = icmp ~w i32 %~w_sscmp, 0',
+        [GlobalBase, BytesLen, BytesLen, LitName,
+         GlobalBase, SSARef,
+         GlobalBase, SSARef,
+         GlobalBase, GlobalBase, BytesLen, BytesLen, LitName, Len, GlobalBase,
+         GlobalBase, GlobalBase, GlobalBase,
+         MatchValue, Pred, GlobalBase]).
 % Field-vs-field pattern `$I OP $J` (multi-rule / combined-pattern guard): use
 % the per-rule base for unique slice/comparator temporaries.
 plawk_pattern_guard_ir(field_cmp2(I, Op, J), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-

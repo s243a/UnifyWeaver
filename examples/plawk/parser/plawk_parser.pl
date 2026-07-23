@@ -1003,6 +1003,9 @@ base_pattern(Pattern) -->
     scalar_i64_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
+    scalar_str_cmp_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
     field_eq_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
@@ -1482,6 +1485,33 @@ scalar_i64_cmp_pattern(scalar_cmp(Name, SwappedOp, Value)) -->
     identifier_boundary,
     { swap_cmp_op(Op, SwappedOp),
       \+ scalar_cmp_reserved_name(Name) }.
+
+% Bare string-scalar pattern: `name == "alice" { … }` (and `!=`, the ordering ops,
+% and the reversed `"alice" == name`). A user scalar compared to a string literal;
+% parses to scalar_str_cmp(Name, Op, Str). The codegen resolves Name to the string
+% slot's interned atom id and compares (== / != by atom id, ordering by strcmp),
+% reusing the scalar-`if` string-guard lowering. Tried after scalar_i64_cmp_pattern
+% so an integer RHS keeps the i64 path and a quoted RHS takes this one; the
+% reserved-name guard keeps NR/NF/specials and keywords off this path.
+scalar_str_cmp_pattern(scalar_str_cmp(Name, Op, Str)) -->
+    identifier(Name),
+    identifier_boundary,
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    quoted_string(Codes),
+    { \+ scalar_cmp_reserved_name(Name),
+      string_codes(Str, Codes) }.
+scalar_str_cmp_pattern(scalar_str_cmp(Name, SwappedOp, Str)) -->
+    quoted_string(Codes),
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    identifier(Name),
+    identifier_boundary,
+    { swap_cmp_op(Op, SwappedOp),
+      \+ scalar_cmp_reserved_name(Name),
+      string_codes(Str, Codes) }.
 
 % A scalar name that must NOT be treated as a user scalar in a bare pattern: the
 % numeric/positional specials (which own the special_cmp path) and the surface

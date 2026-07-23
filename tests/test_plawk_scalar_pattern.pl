@@ -13,11 +13,19 @@
 % patterns. Field-vs-scalar shares the field-vs-int-literal semantics exactly (a
 % non-numeric/missing field makes the comparison false).
 %
-% Scope (v1): the scalar must be an i64 (counter) slot -- i.e. assigned somewhere
-% in the program (a rule body), so it has a slot. A scalar never assigned (no
-% slot) or a double/string scalar is cleanly declined at compile time rather than
-% mis-lowered (an intentional conservative boundary; auto-creating a zero-valued
-% read-only slot, and double/string scalar compares, are follow-ons).
+% A string-scalar variant compares a scalar to a string *literal* (`name ==
+% "alice"`, reversed `"alice" == name`, and the ordering ops): it resolves against
+% a string-valued slot -- either scalar_string (literal-assigned) or scalar_strnum
+% (field-assigned, e.g. `s = $1`) -- and compares by interned atom id (== / !=) or
+% strcmp (ordering), reusing the scalar-`if` string-guard lowering. Comparing a
+% strnum against a string literal is a string comparison in awk, matching the
+% canonical-id/strcmp path.
+%
+% Scope (v1): a NUMERIC scalar pattern needs an i64 (counter) slot; a STRING
+% scalar pattern needs a string/strnum slot. Either way the scalar must be
+% assigned somewhere (so it has a slot); a never-assigned scalar, or a numeric
+% pattern on a string slot (or vice versa), is cleanly declined at compile time
+% rather than mis-lowered. Double-scalar compares are a follow-on.
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -157,6 +165,68 @@ test(field_scalar_nonnumeric, [condition(clang_available)]) :-
     build_run(Dir, 'fn', "{ t++ } $1 > t { print $0 }\n",
         "abc 1\n9 2\n", Out),
     assertion(Out == "9 2\n"), !.
+
+% --- string-scalar patterns (NAME OP "literal") ----------------------------
+
+% `name == "alice"` parses to scalar_str_cmp(name, eq, "alice").
+test(scalar_str_eq_parses) :-
+    plawk_parse_string("name == \"alice\" { print $0 }\n",
+        program([], [rule(scalar_str_cmp(name, eq, "alice"), [print([field(0)])])], [])),
+    !.
+
+% reversed `"alice" == name` (eq is symmetric).
+test(reversed_scalar_str_parses) :-
+    plawk_parse_string("\"alice\" == name { print $0 }\n",
+        program([], [rule(scalar_str_cmp(name, eq, "alice"), [print([field(0)])])], [])),
+    !.
+
+% ordering op parses too.
+test(scalar_str_lt_parses) :-
+    plawk_parse_string("name < \"m\" { print $0 }\n",
+        program([], [rule(scalar_str_cmp(name, lt, "m"), [print([field(0)])])], [])),
+    !.
+
+% `{ s = $1 } s == "yes"`: a field-assigned (strnum) scalar equals a literal.
+test(scalar_str_eq_selects, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'te', "{ s = $1 } s == \"yes\" { print $2 }\n",
+        "yes a\nno b\nyes c\n", Out),
+    assertion(Out == "a\nc\n"), !.
+
+% `!=` selects the complement.
+test(scalar_str_ne_selects, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'tn', "{ tag = $1 } tag != \"skip\" { print $2 }\n",
+        "go x\nskip y\ngo z\n", Out),
+    assertion(Out == "x\nz\n"), !.
+
+% ordering op uses strcmp (lexical).
+test(scalar_str_lt_selects, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'tl', "{ s = $1 } s < \"m\" { print $1 }\n",
+        "apple 1\nzebra 2\nmango 3\n", Out),
+    assertion(Out == "apple\n"), !.
+
+% a field that looks numeric is still compared as a string against the literal.
+test(scalar_str_numeric_looking, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'tm', "{ s = $1 } s == \"10\" { print $2 }\n",
+        "10 a\n10.0 b\n7 c\n", Out),
+    assertion(Out == "a\n"), !.
+
+% composes with a field guard via `&&`.
+test(scalar_str_combined, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'tc', "{ s = $1 } s == \"yes\" && $2 > 1 { print $2 }\n",
+        "yes 0\nyes 5\nno 9\n", Out),
+    assertion(Out == "5\n"), !.
+
+% reversed `"yes" == s` matches the same records.
+test(scalar_str_reversed_selects, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'tr', "{ s = $1 } \"yes\" == s { print $2 }\n",
+        "yes a\nno b\n", Out),
+    assertion(Out == "a\n"), !.
 
 :- end_tests(plawk_scalar_pattern).
 
