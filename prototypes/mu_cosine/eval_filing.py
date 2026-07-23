@@ -26,9 +26,11 @@ Usage:
   python3 eval_filing.py --ckpt model_nodetype.pt --trees ../../.local/data/pearltrees_api/trees \
       --min-bm 3 --max-queries 500 [--seed 7]
 """
-import argparse, glob, json, os, random, collections
+import argparse, json, os, random, collections
 import torch
 from mu_attention import build_e5_tables, Tokenizer, MuAttention, OPS, load_dag, GRAPH
+from filing_privacy import build_pearltrees_privacy_index
+from privacy import is_private_title, vis_private
 
 
 import re
@@ -66,28 +68,39 @@ def load_membership(graph_path, min_bm, holdout=None, drop_admin=None):
     return queries, cand
 
 
-def load_filing(trees_dir, min_bm):
-    """Parse harvested tree JSONs → (queries, folders). A folder = a tree; its bookmarks (contentType 1)
-    are filed in it. Candidate folders = those with >= min_bm bookmarks; queries = the bookmarks therein."""
+def load_filing(trees_dir, min_bm, *, return_privacy=False, paths_jsonl=None):
+    """Parse a certified-public harvested snapshot into filing queries/folders.
+
+    Privacy filtering is unconditional: there is deliberately no
+    ``include_private`` escape hatch.  Candidate eligibility and ``min_bm`` are
+    computed *after* private-title bookmarks and private/quarantined folders
+    have been removed, so excluded content cannot influence ranking margins or
+    routing.  With ``return_privacy=True`` the exact privacy index used for the
+    population is returned as a third value.
+    """
+    privacy = build_pearltrees_privacy_index(trees_dir, paths_jsonl=paths_jsonl)
     folders = {}                                  # tid -> title
     by_folder = collections.defaultdict(list)     # tid -> [bookmark_title, ...]
-    for f in glob.glob(os.path.join(trees_dir, "*.json")):
-        try:
-            d = json.load(open(f, encoding="utf-8"))
-        except Exception:
+    for tid_key, t in privacy.tree_payloads.items():
+        if tid_key not in privacy.public_ids:
             continue
-        t = d.get("api_response", {}).get("tree", {}) if isinstance(d, dict) else {}
-        if not isinstance(t, dict):
-            continue
-        tid, ttitle = t.get("id"), t.get("title")
+        tid, ttitle = privacy.tree_value_ids[tid_key], t.get("title")
         if tid is None or not ttitle:
-            continue
+            raise ValueError(f"certified-public tree {tid_key} lacks a title")
         folders[tid] = ttitle
         for p in t.get("pearls", []) if isinstance(t.get("pearls"), list) else []:
-            if isinstance(p, dict) and p.get("contentType") == 1 and p.get("title"):
+            if (
+                isinstance(p, dict)
+                and str(p.get("contentType")) == "1"
+                and p.get("title")
+                and not is_private_title(p["title"])
+                and not vis_private(p.get("visibility"))
+            ):
                 by_folder[tid].append(p["title"])
     cand = {tid: folders[tid] for tid, bms in by_folder.items() if len(bms) >= min_bm and tid in folders}
     queries = [(bt, tid) for tid in cand for bt in by_folder[tid]]   # (bookmark_title, true_folder_tid)
+    if return_privacy:
+        return queries, cand, privacy
     return queries, cand
 
 

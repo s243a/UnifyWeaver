@@ -23,6 +23,15 @@ def vis_private(v):
     return v is not None and str(v).strip() not in ("", "0")
 
 
+def vis_public(v):
+    """True only for Pearltrees' explicit public value.
+
+    This deliberately is not ``not vis_private(v)``: missing visibility is
+    *unknown*, not evidence that a node is safe to send to an external service.
+    """
+    return v is not None and str(v).strip() == "0"
+
+
 def propagate(private_seed, children_of):
     """Inherit privacy DOWN a containment graph: given a seed set of private keys and a
     parent_key -> iterable(child_key) map, return the full set including all descendants."""

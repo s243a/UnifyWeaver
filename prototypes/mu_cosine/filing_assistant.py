@@ -16,9 +16,11 @@ confident placements auto-suggested, low-margin ones routed to review (a human o
   suggest mode  python3 filing_assistant.py suggest "Some new bookmark title" [--top-n 5]
       Rank folders for new bookmark title(s) (repeatable arg, or --from-file, one per line).
       Catalog = folders with ≥ --min-bm recorded bookmarks (default 1: every folder actually in
-      use as a filing destination). Duplicate titles are merged (all tree ids shown). Each
-      suggestion prints e5 cosine; the query prints its top-2 margin and a routing verdict at
-      --margin (default 0.05 — see the eval routing table for the measured kept-R@1 tradeoff).
+      use as a filing destination). Folder IDs remain distinct even when titles match, so exact
+      score ties have the same ascending-catalog-column rule as evaluation and correctly produce
+      zero margin. Each suggestion prints the exact tree ID and e5 cosine; the query prints its
+      top-2 ID-level margin and a routing verdict at --margin (default 0.05 — see the eval routing
+      table for the measured kept-R@1 tradeoff).
 
 No μ, no blend, no diffusion — those are nulls as rankers on this task (REPORTs); revisit only if
 a future head beats e5 somewhere (gap-directed training is the demonstrated path — §B′/B″).
@@ -34,23 +36,50 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from eval_filing import load_filing, metrics
+from filing_privacy import public_catalog_title_eligible
 from mu_attention import E5_MODEL, build_e5_tables
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 TREES = os.path.join(ROOT, "..", "..", ".local", "data", "pearltrees_api", "trees")
 
 
-def catalog_tables(min_bm, cache_tag):
-    """Folder catalog + unit e5 passage vectors (cached per catalog)."""
-    queries, cand = load_filing(TREES, min_bm)
+def apply_public_catalog_policy(queries, candidates):
+    """Apply the one shared outcome-blind folder eligibility rule."""
+    eligible = {
+        folder_id: title
+        for folder_id, title in candidates.items()
+        if public_catalog_title_eligible(title)
+    }
+    filtered_queries = [
+        (bookmark, folder_id)
+        for bookmark, folder_id in queries
+        if folder_id in eligible
+    ]
+    return filtered_queries, eligible
+
+
+def catalog_tables(min_bm, cache_tag, *, return_privacy=False):
+    """Certified-public folder catalog + unit e5 passage vectors.
+
+    ``return_privacy`` exposes the exact privacy index used to construct the
+    catalog so hosted-task emitters can bind it into their provenance.
+    """
+    queries, cand, privacy = load_filing(TREES, min_bm, return_privacy=True)
+    queries, cand = apply_public_catalog_policy(queries, cand)
     f_ids = sorted(cand)
     f_titles = [cand[fid] for fid in f_ids]
     names = sorted(set(f_titles))
-    cache = f"/tmp/mu_data/filing_assistant_e5_{cache_tag}.pt"
+    cache_root = os.environ.get("MU_COSINE_CACHE_DIR", "/tmp/mu_data")
+    os.makedirs(cache_root, exist_ok=True)
+    cache = os.path.join(
+        cache_root,
+        f"filing_assistant_e5_{cache_tag}_{privacy.manifest_sha256[:12]}.pt",
+    )
     _, ptbl, idx = build_e5_tables(names, cache_path=cache, batch_size=128)
     P = ptbl.numpy()
     cand_vec = np.stack([P[idx[t]] for t in f_titles])
-    return queries, f_ids, f_titles, cand_vec
+    result = (queries, f_ids, f_titles, cand_vec)
+    return (*result, privacy) if return_privacy else result
 
 
 def encode_queries(titles):
@@ -62,8 +91,12 @@ def encode_queries(titles):
 
 
 def ranks_np(cos, truepos):
-    """1-based rank of the best acceptable folder (title-equivalence; ties broken pessimistically
-    against later columns, matching eval_pearltrees_filing.ranks_from)."""
+    """1-based rank of the best supplied acceptable column.
+
+    ``truepos`` determines exact-ID versus title-equivalence grading. Exact
+    ties favor the lower catalog column, matching ``stable_score_order`` and
+    ``eval_pearltrees_filing.ranks_from``.
+    """
     out = []
     for r in range(cos.shape[0]):
         best = None
@@ -73,6 +106,11 @@ def ranks_np(cos, truepos):
             best = rank if best is None else min(best, rank)
         out.append(best)
     return np.array(out)
+
+
+def stable_score_order(cos):
+    """Descending score order with exact ties broken by lower catalog column."""
+    return np.argsort(-np.asarray(cos), axis=-1, kind="stable")
 
 
 def run_eval(a):
@@ -124,37 +162,19 @@ def run_suggest(a):
         print("no titles given — pass positional titles or --from-file", file=sys.stderr)
         sys.exit(2)
     _, f_ids, f_titles, cand_vec = catalog_tables(a.min_bm, f"sugg{a.min_bm}")
-    # catalog hygiene (suggest only — eval keeps the standing manifest): drop degenerate titles
-    # with no letters/digits ("?", "-", …) — e5 places them near everything (observed: a "?"
-    # folder ranked #1 for every query)
-    keep = [j for j, t in enumerate(f_titles) if any(c.isalnum() for c in t)]
-    dropped = len(f_titles) - len(keep)
-    if dropped:
-        print(f"(catalog hygiene: dropped {dropped} degenerate folder title(s))")
-    f_ids = [f_ids[j] for j in keep]
-    cand_vec = cand_vec[keep]
-    f_titles = [f_titles[j] for j in keep]
-    by_title = {}
-    for j, t in enumerate(f_titles):
-        by_title.setdefault(t, []).append(f_ids[j])
-    uniq_titles = sorted(by_title)
-    tvec = {}
-    for j, t in enumerate(f_titles):
-        tvec.setdefault(t, cand_vec[j])
-    U = np.stack([tvec[t] for t in uniq_titles])
-
     qv = encode_queries(titles)
-    cos = qv @ U.T
+    cos = qv @ cand_vec.T
     for i, bt in enumerate(titles):
-        order = np.argsort(-cos[i])
+        order = stable_score_order(cos[i])
         margin = float(cos[i][order[0]] - cos[i][order[1]]) if len(order) > 1 else float("inf")
         verdict = "AUTO-FILE candidate" if margin >= a.margin else "ROUTE TO REVIEW (low margin)"
         print(f"\n» {bt}")
         print(f"  margin {margin:.3f} → {verdict} (t={a.margin})")
         for r, j in enumerate(order[:a.top_n], 1):
-            t = uniq_titles[j]
-            ids = ",".join(str(x) for x in by_title[t][:4])
-            print(f"  {r}. {cos[i][j]:.3f}  {t}   [tree {ids}]")
+            print(
+                f"  {r}. {cos[i][j]:.3f}  {f_titles[j]}   "
+                f"[tree {f_ids[j]}]"
+            )
 
 
 def main(argv=None):

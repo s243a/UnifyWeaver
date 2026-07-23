@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from eval_filing import load_filing, metrics, score_mu
 from fine_tune_pearltrees_filing import load_with_lineage_ops
 from mu_attention import CORPORA, JUDGES, NODETYPE, OPS, Tokenizer, build_e5_tables
+from privacy import is_private_title
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PT_API = os.path.join(ROOT, "..", "..", ".local", "data", "pearltrees_api")
@@ -40,7 +41,14 @@ TITLES = os.path.join(PT_API, "assembled_titles.tsv")
 PATHS_JSONL = os.path.join(PT_API, "..", "api_tree_paths_v8.jsonl")
 
 
-def folder_lineage(cand, depth=5, shuffle_seed=None):
+def folder_lineage(
+    cand,
+    depth=5,
+    shuffle_seed=None,
+    *,
+    public_tree_titles=None,
+    return_id_chains=False,
+):
     """Build {folder_title: [parent_title,...]} PRINCIPAL paths for candidate folders.
 
     Principal parent = the OBSERVATION-MAJORITY parent across the account's recorded path_ids (the
@@ -51,9 +59,28 @@ def folder_lineage(cand, depth=5, shuffle_seed=None):
     boundary — never the evaluated bookmark's placement or the folder's bookmark children).
     `shuffle_seed` permutes which folder receives which lineage, SUPPORT-PRESERVING: chains permute
     only among folders that HAVE a chain (audit finding 6 — a naive permutation also changes which
-    folders get any lineage at all, confounding the control)."""
+    folders get any lineage at all, confounding the control).
+
+    Hosted-task callers must pass ``public_tree_titles`` from the same privacy
+    index that built ``cand``.  In that mode unsafe path rows are excluded
+    before parent voting, every emitted ancestor is certified public, and the
+    visibility-free assembled-DAG and assembled-title fallbacks are disabled.
+    """
     import json as _json
     from collections import Counter, defaultdict
+
+    allowed = (
+        None
+        if public_tree_titles is None
+        else {str(x) for x in public_tree_titles}
+    )
+    if allowed is not None:
+        blocked = sorted(str(tid) for tid in cand if str(tid) not in allowed)
+        if blocked:
+            raise ValueError(
+                f"candidate catalog contains {len(blocked)} uncertified tree ids "
+                f"(first: {blocked[:5]})"
+            )
 
     votes = defaultdict(Counter)
     with open(PATHS_JSONL, encoding="utf-8") as f:
@@ -61,20 +88,34 @@ def folder_lineage(cand, depth=5, shuffle_seed=None):
             if not ln.strip():
                 continue
             r = _json.loads(ln)
-            ids = [str(x).split(":")[-1] for x in (r.get("path_ids") or [])]
+            ids = [
+                str(x)
+                for x in (r.get("path_ids") or [])
+                if str(x) and not str(x).startswith("account:")
+            ]
+            if allowed is not None and (
+                is_private_title(r.get("title"))
+                or is_private_title(r.get("target_text"))
+                or any(node not in allowed for node in ids)
+            ):
+                continue
             for p, c in zip(ids, ids[1:]):
                 if p != c:
                     votes[c][p] += 1
     principal = {c: max(cnt.items(), key=lambda kv: (kv[1], kv[0]))[0] for c, cnt in votes.items()}
     dag_first = {}
-    for ln in open(DAG, encoding="utf-8"):
-        p, c = ln.split()
-        dag_first.setdefault(c, p)
-    titles = {}
-    for ln in open(TITLES, encoding="utf-8"):
-        parts = ln.rstrip("\n").split("\t")
-        if len(parts) >= 2:
-            titles[parts[0]] = parts[1]
+    if allowed is None:
+        for ln in open(DAG, encoding="utf-8"):
+            p, c = ln.split()
+            dag_first.setdefault(c, p)
+    if public_tree_titles is None:
+        titles = {}
+        for ln in open(TITLES, encoding="utf-8"):
+            parts = ln.rstrip("\n").split("\t")
+            if len(parts) >= 2:
+                titles[parts[0]] = parts[1]
+    else:
+        titles = {str(tid): title for tid, title in public_tree_titles.items()}
 
     n_rec, n_dag = 0, 0
 
@@ -89,6 +130,8 @@ def folder_lineage(cand, depth=5, shuffle_seed=None):
                 nxt = dag_first[cur]
                 n_dag += 1
             else:
+                break
+            if allowed is not None and nxt not in allowed:
                 break
             if nxt in seen:
                 break
@@ -120,6 +163,10 @@ def folder_lineage(cand, depth=5, shuffle_seed=None):
             parents_title.setdefault(prev, [p])
             anc_titles.add(p)
             prev = p
+    if return_id_chains:
+        return parents_title, anc_titles, {
+            str(tid): list(ch) for tid, ch in zip(tids, chains)
+        }
     return parents_title, anc_titles
 
 
