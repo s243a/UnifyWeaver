@@ -7236,6 +7236,11 @@ plawk_strnum_action_unsafe_read(foreach_loop(_Layout, Body), Set, Name) :-
 plawk_strnum_action_unsafe_read(inc_assoc(var(_Arr), var(Name)), _Set, Name) :-
     !,
     fail.
+% `delete arr[Name]` -- likewise a SUPPORTED strnum read: the key is the scalar's
+% interned atom id, used directly by the mixed walker. Not unsafe; cut and fail.
+plawk_strnum_action_unsafe_read(delete_assoc(var(_Arr), var(Name)), _Set, Name) :-
+    !,
+    fail.
 % Any other action: mentioning Name at all is an unsupported read.
 plawk_strnum_action_unsafe_read(Action, _Set, Name) :-
     plawk_strnum_term_mentions(Action, Name).
@@ -7596,6 +7601,11 @@ plawk_mixed_update_action(Action) :-
     plawk_assoc_update_action(Action).
 plawk_mixed_update_action(Action) :-
     plawk_rule_body_print_action(Action).
+% `delete arr[x]` with a scalar-variable key is admitted into the mixed chain
+% (resolved to the scalar's slot value at the walker, gated on a string/strnum
+% slot there). Field / string-literal / integer-literal delete keys stay in the
+% pure-assoc chain; a numeric-scalar key declines at the walker's slot gate.
+plawk_mixed_update_action(delete_assoc(var(_ArrayName), var(_Name))).
 % Record-target main getline has no surface scalar update, but it still writes
 % the transient `$0` buffer and advances the hidden NR/FNR slot. The scalar-
 % target forms are admitted by plawk_scalar_action_update/3 above.
@@ -14169,6 +14179,26 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
     [Pair],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
+% `delete arr[x]` with a scalar-variable key: resolve the scalar to its current
+% slot value (Values0) and delete that key id directly. Same insight as the inc
+% case -- only a string/strnum slot is a valid key (its i64 value IS the interned
+% atom id), so a numeric/double key fails the slot-kind check before the cut and
+% the program declines cleanly. Void delete (a missing key is a runtime no-op),
+% no missing-key branch, slot values unchanged, so the block label is unchanged.
+plawk_scalar_action_sequence_pairs([delete_assoc(var(ArrayName), var(Name)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+      nth0(SlotIndex, Slots, Slot),
+      plawk_slot_name(Slot, Name),
+      ( Slot = scalar_strnum(_) ; Slot = scalar_string(_) ),
+      !,
+      nth0(SlotIndex, Values0, KeyIdValue),
+      plawk_assoc_delete_operation_keyid_ir(Prefix, OpIndex, TableIndex, KeyIdValue, Pair),
+      NextOpIndex is OpIndex + 1
+    },
+    [Pair],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_assoc_increment_action(Action, ArrayName-KeyIndex),
@@ -15719,6 +15749,16 @@ plawk_assoc_update_operation_keyid_ir(Prefix, OpIndex, TableIndex, KeyIdValue, '
     format(atom(IR),
         '  ~w = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 1)',
         [CountValue, TableIndex, KeyIdValue]).
+
+% `delete arr[x]` with a scalar (string/strnum) key resolved to its atom-id SSA
+% value: a single straight-line void delete on that key id -- no field slice, no
+% re-intern, no missing-key branch (the runtime delete is itself a no-op for an
+% absent key; an unset scalar is id 0 = the empty-string key). Void, so no SSA
+% result name is bound and OpIndex is unused.
+plawk_assoc_delete_operation_keyid_ir(_Prefix, _OpIndex, TableIndex, KeyIdValue, ''-IR) :-
+    format(atom(IR),
+        '  call void @wam_assoc_i64_delete(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
+        [TableIndex, KeyIdValue]).
 
 plawk_scalar_if_phi_lines([], [], _Slots, _Prefix, _OpIndex, _ThenLabel, _ElseLabel, _) -->
     [].
