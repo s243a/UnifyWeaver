@@ -12325,7 +12325,12 @@ plawk_scalar_rule_chain_lines([scalar_rule(Index, Pattern, Actions, Control) | R
       format(atom(MatchValue), '%~w', [MatchVar]),
       % tagged-union rules carry their arm's field types with them
       plawk_rule_descriptor(Pattern, FieldSeparator, RuleDescriptor),
-      plawk_pattern_guard_ir(Pattern, RuleDescriptor, GlobalBase, MatchValue,
+      % A scalar_cmp(Name,...) pattern reads a scalar's current value: resolve
+      % Name to THIS rule's in-scope slot SSA ref before lowering the guard, so
+      % the guard predicate needs no StatePlan/index params (see
+      % plawk_resolve_scalar_cmp/4).
+      plawk_resolve_scalar_cmp(Pattern, StatePlan, Index, ResolvedPattern),
+      plawk_pattern_guard_ir(ResolvedPattern, RuleDescriptor, GlobalBase, MatchValue,
           GuardGlobalIR-GuardCallIR),
       plawk_rule_target(Control, NextLabel, RuleTargetLabel),
       maplist(plawk_scalar_rule_body_action, Actions),
@@ -12356,6 +12361,38 @@ plawk_scalar_rule_chain_lines([scalar_rule(Index, Pattern, Actions, Control) | R
     },
     [Part],
     plawk_scalar_rule_chain_lines(Rest, Controls, StatePlan, FieldSeparator, OutputSeparator, NextIndex).
+
+% Resolve every scalar_cmp(Name, Op, Value) in a rule's pattern to
+% scalar_cmp_resolved(SSARef, Op, Value), where SSARef is the current-slot SSA
+% value for THIS rule index (rule 0: %slot_M from the loop-head phi; rule N>0:
+% %rule_N_in_slot_M, the input phi emitted just above the guard). This lets the
+% pattern guard read a scalar without threading StatePlan/index into
+% plawk_pattern_guard_ir. Recurses through the !/&&/|| combinators (and range) so
+% a scalar_cmp nested in a combinator is resolved too. Fails if the name is not a
+% slot, or is a non-i64 slot (double/string/strnum) -- scalar_counter/1 will not
+% unify -- so an unsupported scalar comparison declines cleanly rather than
+% mis-lowering (the driver backtracks to the standard unsupported diagnostic).
+plawk_resolve_scalar_cmp(scalar_cmp(Name, Op, Value), StatePlan, Index,
+        scalar_cmp_resolved(SSARef, Op, Value)) :-
+    !,
+    plawk_state_slot_index(StatePlan, scalar_counter(Name), SlotIndex),
+    plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef).
+plawk_resolve_scalar_cmp(not_pat(P), StatePlan, Index, not_pat(P1)) :-
+    !,
+    plawk_resolve_scalar_cmp(P, StatePlan, Index, P1).
+plawk_resolve_scalar_cmp(and_pat(L, R), StatePlan, Index, and_pat(L1, R1)) :-
+    !,
+    plawk_resolve_scalar_cmp(L, StatePlan, Index, L1),
+    plawk_resolve_scalar_cmp(R, StatePlan, Index, R1).
+plawk_resolve_scalar_cmp(or_pat(L, R), StatePlan, Index, or_pat(L1, R1)) :-
+    !,
+    plawk_resolve_scalar_cmp(L, StatePlan, Index, L1),
+    plawk_resolve_scalar_cmp(R, StatePlan, Index, R1).
+plawk_resolve_scalar_cmp(range(S, E), StatePlan, Index, range(S1, E1)) :-
+    !,
+    plawk_resolve_scalar_cmp(S, StatePlan, Index, S1),
+    plawk_resolve_scalar_cmp(E, StatePlan, Index, E1).
+plawk_resolve_scalar_cmp(Pattern, _StatePlan, _Index, Pattern).
 
 plawk_scalar_rule_input_phi_ir(_StatePlan, 0, _Controls, '') :-
     !.
@@ -16416,6 +16453,15 @@ plawk_pattern_guard_ir(special_cmp('NR', Op, Value), _FieldSeparator, _GlobalBas
     plawk_icmp_pred(Op, Pred),
     format(atom(GuardCallIR), '  ~w = icmp ~w i64 %current_nr, ~w',
         [MatchValue, Pred, Value]).
+% Bare scalar-vs-integer pattern `n OP int` (already resolved to the rule's slot
+% SSA value by plawk_resolve_scalar_cmp/4). The slot value dominates the guard
+% block (rule-0 loop-head phi %slot_M, or the rule's %rule_N_in_slot_M input phi
+% emitted just above), so a straight i64 icmp against the literal suffices; no
+% globals, MatchValue is unique per rule/combinator operand.
+plawk_pattern_guard_ir(scalar_cmp_resolved(SSARef, Op, Value), _FieldSeparator, _GlobalBase, MatchValue, ''-GuardCallIR) :-
+    plawk_icmp_pred(Op, Pred),
+    format(atom(GuardCallIR), '  ~w = icmp ~w i64 ~w, ~w',
+        [MatchValue, Pred, SSARef, Value]).
 % Field-vs-field pattern `$I OP $J` (multi-rule / combined-pattern guard): use
 % the per-rule base for unique slice/comparator temporaries.
 plawk_pattern_guard_ir(field_cmp2(I, Op, J), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-

@@ -997,6 +997,9 @@ base_pattern(Pattern) -->
     special_i64_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
+    scalar_i64_cmp_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
     field_eq_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
@@ -1413,6 +1416,40 @@ special_i64_cmp_pattern(special_cmp(Special, SwappedOp, Value)) -->
     ws,
     special_cmp_operand(Special),
     { swap_cmp_op(Op, SwappedOp) }.
+
+% Bare scalar-vs-integer pattern: `n > 2 { … }` (and the reversed `2 < n`). A user
+% scalar compared to an integer literal, both operand orders (the reversed form
+% swaps the operator). Parses to scalar_cmp(Name, Op, Value); the codegen resolves
+% Name to the rule's current slot value. Tried after special_i64_cmp_pattern so
+% NR/NF/FNR/length keep the special path, and scalar_cmp_reserved_name/1 rejects
+% the numeric specials and reserved words so they never reach here as a phantom
+% scalar. `n(...)` (a call) has a `(` where the comparison op is expected, so it
+% falls through to prolog_guard_pattern.
+scalar_i64_cmp_pattern(scalar_cmp(Name, Op, Value)) -->
+    identifier(Name),
+    identifier_boundary,
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    signed_integer_value(Value),
+    { \+ scalar_cmp_reserved_name(Name) }.
+scalar_i64_cmp_pattern(scalar_cmp(Name, SwappedOp, Value)) -->
+    signed_integer_value(Value),
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    identifier(Name),
+    identifier_boundary,
+    { swap_cmp_op(Op, SwappedOp),
+      \+ scalar_cmp_reserved_name(Name) }.
+
+% A scalar name that must NOT be treated as a user scalar in a bare pattern: the
+% numeric/positional specials (which own the special_cmp path) and the surface
+% reserved words (builtins/keywords).
+scalar_cmp_reserved_name(Name) :-
+    ( memberchk(Name, ['NR', 'NF', 'FNR', 'RSTART', 'RLENGTH', 'ARGC'])
+    ; plawk_surface_reserved_name(Name)
+    ).
 
 % The special operand of an expression pattern: the field count, the record
 % byte length (of `$0`, bare or parenthesised), or the record number NR.
