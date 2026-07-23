@@ -13416,28 +13416,34 @@ plawk_substitute_print_field(Slots, Values, Field0, Field) :-
 
 %% plawk_resolve_assoc_read_field(+Slots, +Values, +AssocPlan, +Field0, -Field)
 %
-%  Rewrite a print/printf item `arr[k]` (a scalar-var-keyed assoc VALUE read)
-%  into `assoc_keyid(TableIndex, KeyIdValue)`: the resolved table index plus the
-%  key scalar's current slot value (its interned atom id). Only a string/strnum
-%  key slot resolves -- the same insight as the inc/delete key case (the slot
-%  value IS the key id) -- so a numeric/double key or an unknown array leaves the
-%  term unresolved, the print emitter has no clause for a raw `assoc(...)`, and
-%  the program declines cleanly. Recurses into `concat` parts; every other term
-%  passes through unchanged (scalar-read substitution then handles var/field/NR).
+%  Rewrite a print item `arr[k]` (a scalar-var-keyed assoc VALUE read) into a
+%  resolved lookup term: `assoc_keyid(TableIndex, KeyIdValue)` when the key slot
+%  value already IS the atom id (string/strnum), or `assoc_keyid_num(TableIndex,
+%  SlotValue)` for a counter slot (the print emitter interns its decimal spelling
+%  first). A double key or an unknown array leaves the term unresolved, so the
+%  print emitter has no clause for a raw `assoc(...)` and the program declines
+%  cleanly. Recurses into `concat` parts; every other term passes through
+%  unchanged (scalar-read substitution then handles var/field/NR).
 plawk_resolve_assoc_read_field(Slots, Values, AssocPlan,
-        assoc(var(ArrayName), var(KeyName)),
-        assoc_keyid(TableIndex, KeyIdValue)) :-
+        assoc(var(ArrayName), var(KeyName)), Resolved) :-
     plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
     nth0(SlotIndex, Slots, Slot),
     plawk_slot_name(Slot, KeyName),
-    ( Slot = scalar_strnum(_) ; Slot = scalar_string(_) ),
-    !,
-    nth0(SlotIndex, Values, KeyIdValue).
+    nth0(SlotIndex, Values, SlotValue),
+    plawk_assoc_read_resolved_term(Slot, TableIndex, SlotValue, Resolved),
+    !.
 plawk_resolve_assoc_read_field(Slots, Values, AssocPlan, concat(Parts0),
         concat(Parts)) :-
     !,
     maplist(plawk_resolve_assoc_read_field(Slots, Values, AssocPlan), Parts0, Parts).
 plawk_resolve_assoc_read_field(_Slots, _Values, _AssocPlan, Field, Field).
+
+plawk_assoc_read_resolved_term(Slot, TableIndex, SlotValue,
+        assoc_keyid(TableIndex, SlotValue)) :-
+    ( Slot = scalar_strnum(_) ; Slot = scalar_string(_) ),
+    !.
+plawk_assoc_read_resolved_term(scalar_counter(_), TableIndex, SlotValue,
+        assoc_keyid_num(TableIndex, SlotValue)).
 
 plawk_substitute_scalar_reads(blob_slice_vars(A0, B0), Slots, Values,
         blob_slice_vars(A, B)) :-
@@ -14206,42 +14212,40 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, NextExits).
 % `arr[x]++` with a scalar-variable key: resolve the scalar to its current slot
-% value (Values0) and increment that key id directly. Only a string/strnum slot
-% is a valid key -- its i64 slot value IS the interned atom id `arr[$N]` would
-% produce for the same bytes, so no field-slice / re-intern is needed. A numeric
-% (counter) or double scalar key fails the slot-kind check before the cut, so the
-% clause backtracks and the program declines cleanly (no i64->string path yet).
-% Straight-line (no missing-key branch), so the current block label is unchanged.
+% value (Values0) and increment that key id. A string/strnum slot value IS the
+% interned atom id `arr[$N]` would produce (no field-slice / re-intern); a
+% counter (i64) value is interned via its decimal spelling. A double slot key
+% fails the slot-kind check (in the key-id helper) so the clause backtracks and
+% the program declines cleanly. Straight-line, so the block label is unchanged.
 plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_assoc_increment_action(Action, ArrayName-svar(Name)),
       plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
       nth0(SlotIndex, Slots, Slot),
       plawk_slot_name(Slot, Name),
-      ( Slot = scalar_strnum(_) ; Slot = scalar_string(_) ),
+      ( Slot = scalar_strnum(_) ; Slot = scalar_string(_) ; Slot = scalar_counter(_) ),
       !,
-      nth0(SlotIndex, Values0, KeyIdValue),
-      plawk_assoc_update_operation_keyid_ir(Prefix, OpIndex, TableIndex, KeyIdValue, Pair),
+      nth0(SlotIndex, Values0, SlotValue),
+      plawk_assoc_update_operation_keyid_ir(Prefix, OpIndex, TableIndex, Slot, SlotValue, Pair),
       NextOpIndex is OpIndex + 1
     },
     [Pair],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 % `delete arr[x]` with a scalar-variable key: resolve the scalar to its current
-% slot value (Values0) and delete that key id directly. Same insight as the inc
-% case -- only a string/strnum slot is a valid key (its i64 value IS the interned
-% atom id), so a numeric/double key fails the slot-kind check before the cut and
-% the program declines cleanly. Void delete (a missing key is a runtime no-op),
-% no missing-key branch, slot values unchanged, so the block label is unchanged.
+% slot value (Values0) and delete that key id. Same key-id resolution as the inc
+% case (direct for string/strnum, decimal intern for a counter); a double slot
+% key fails and the program declines cleanly. Void delete (a missing key is a
+% runtime no-op), slot values unchanged, so the block label is unchanged.
 plawk_scalar_action_sequence_pairs([delete_assoc(var(ArrayName), var(Name)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
       nth0(SlotIndex, Slots, Slot),
       plawk_slot_name(Slot, Name),
-      ( Slot = scalar_strnum(_) ; Slot = scalar_string(_) ),
+      ( Slot = scalar_strnum(_) ; Slot = scalar_string(_) ; Slot = scalar_counter(_) ),
       !,
-      nth0(SlotIndex, Values0, KeyIdValue),
-      plawk_assoc_delete_operation_keyid_ir(Prefix, OpIndex, TableIndex, KeyIdValue, Pair),
+      nth0(SlotIndex, Values0, SlotValue),
+      plawk_assoc_delete_operation_keyid_ir(Prefix, OpIndex, TableIndex, Slot, SlotValue, Pair),
       NextOpIndex is OpIndex + 1
     },
     [Pair],
@@ -14250,6 +14254,11 @@ plawk_scalar_action_sequence_pairs([delete_assoc(var(ArrayName), var(Name)) | Re
 plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_assoc_increment_action(Action, ArrayName-KeyIndex),
+      % This is the field-key slice path: the key is a single record field index.
+      % A scalar-var key (svar(_)) is handled by the clause above; guarding on an
+      % integer here makes an unsupported var key (e.g. a double slot) fail rather
+      % than emit `i64 svar(_)` -- so such a program declines cleanly.
+      integer(KeyIndex),
       plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
       plawk_assoc_update_operation_ir(Prefix, OpIndex, TableIndex, KeyIndex,
           FieldSeparator, Pair, AssocExitLabel),
@@ -15790,25 +15799,48 @@ plawk_assoc_update_operation_ir(Prefix, OpIndex, TableIndex, KeyIndex,
          DoneLabel,
          DoneLabel]).
 
-% `arr[x]++` with a scalar (string/strnum) key already resolved to its atom-id
-% SSA value: a single straight-line increment on that key id -- no field slice,
-% no re-intern, no missing-key branch (an unset scalar is id 0 = the empty-string
-% key, matching awk's `arr[""]`).
-plawk_assoc_update_operation_keyid_ir(Prefix, OpIndex, TableIndex, KeyIdValue, ''-IR) :-
-    format(atom(CountValue), '%~w_assoc_~w_count', [Prefix, OpIndex]),
-    format(atom(IR),
-        '  ~w = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 1)',
-        [CountValue, TableIndex, KeyIdValue]).
+% Resolve the LLVM key-id value for a scalar-variable assoc key, plus any setup
+% lines to emit before the op. A string/strnum slot value already IS the interned
+% atom id, so it is used directly with no setup. A counter (i64) slot value is a
+% NUMBER, so its decimal spelling is interned (awk array keys are strings) via
+% @wam_intern_i64_decimal into a fresh `<BaseName>_keyid` temp. A double slot has
+% no i64->string key path yet, so this fails and the caller declines cleanly.
+plawk_assoc_scalar_key_id(Slot, SlotValue, _BaseName, SlotValue, []) :-
+    ( Slot = scalar_strnum(_) ; Slot = scalar_string(_) ),
+    !.
+plawk_assoc_scalar_key_id(scalar_counter(_), SlotValue, BaseName, KeyIdIR, [SetupLine]) :-
+    format(atom(KeyIdIR), '%~w_keyid', [BaseName]),
+    format(atom(SetupLine),
+        '  ~w = call i64 @wam_intern_i64_decimal(i64 ~w)',
+        [KeyIdIR, SlotValue]).
 
-% `delete arr[x]` with a scalar (string/strnum) key resolved to its atom-id SSA
-% value: a single straight-line void delete on that key id -- no field slice, no
-% re-intern, no missing-key branch (the runtime delete is itself a no-op for an
-% absent key; an unset scalar is id 0 = the empty-string key). Void, so no SSA
-% result name is bound and OpIndex is unused.
-plawk_assoc_delete_operation_keyid_ir(_Prefix, _OpIndex, TableIndex, KeyIdValue, ''-IR) :-
-    format(atom(IR),
+% `arr[x]++` with a scalar key resolved to its slot value: a straight-line
+% increment on the key id -- no field slice, no missing-key branch (an unset
+% string scalar is id 0 = the empty-string key, matching awk's `arr[""]`). A
+% string/strnum slot value is the key id directly; a counter value is interned
+% via its decimal spelling first (SetupLines).
+plawk_assoc_update_operation_keyid_ir(Prefix, OpIndex, TableIndex, Slot, SlotValue, ''-IR) :-
+    format(atom(BaseName), '~w_assoc_~w', [Prefix, OpIndex]),
+    plawk_assoc_scalar_key_id(Slot, SlotValue, BaseName, KeyIdIR, SetupLines),
+    format(atom(CountValue), '%~w_count', [BaseName]),
+    format(atom(IncLine),
+        '  ~w = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 1)',
+        [CountValue, TableIndex, KeyIdIR]),
+    append(SetupLines, [IncLine], AllLines),
+    atomic_list_concat(AllLines, '\n', IR).
+
+% `delete arr[x]` with a scalar key resolved to its slot value: a straight-line
+% void delete on the key id (the runtime delete is a no-op for an absent key).
+% Key-id resolution mirrors the inc case (direct for string/strnum, decimal
+% intern for a counter).
+plawk_assoc_delete_operation_keyid_ir(Prefix, OpIndex, TableIndex, Slot, SlotValue, ''-IR) :-
+    format(atom(BaseName), '~w_assoc_~w', [Prefix, OpIndex]),
+    plawk_assoc_scalar_key_id(Slot, SlotValue, BaseName, KeyIdIR, SetupLines),
+    format(atom(DeleteLine),
         '  call void @wam_assoc_i64_delete(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
-        [TableIndex, KeyIdValue]).
+        [TableIndex, KeyIdIR]),
+    append(SetupLines, [DeleteLine], AllLines),
+    atomic_list_concat(AllLines, '\n', IR).
 
 plawk_scalar_if_phi_lines([], [], _Slots, _Prefix, _OpIndex, _ThenLabel, _ElseLabel, _) -->
     [].
@@ -17748,6 +17780,19 @@ plawk_emit_print_expr_for_context(assoc_keyid(TableIndex, KeyIdValue), _FieldSep
     format(atom(GetCall),
         '  ~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
         [ValueIR, TableIndex, KeyIdValue]).
+% `print arr[n]` with a NUMERIC (counter) key: intern n's decimal spelling to its
+% atom id first (awk keys are strings), then fetch the count with that key id.
+plawk_emit_print_expr_for_context(assoc_keyid_num(TableIndex, SlotValue), _FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), [], [InternCall, GetCall]) :-
+    plawk_print_expr_value_base(Context, int, Base),
+    plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
+    format(atom(KeyIdIR), '%~w_keyid', [Base]),
+    format(atom(InternCall),
+        '  ~w = call i64 @wam_intern_i64_decimal(i64 ~w)', [KeyIdIR, SlotValue]),
+    format(atom(ValueIR), '%~w_assoc_get', [Base]),
+    format(atom(GetCall),
+        '  ~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
+        [ValueIR, TableIndex, KeyIdIR]).
 % a substituted DOUBLE-scalar read (var(Name) -> ssa_f64(SlotValue)): print the
 % double SSA value with %g, mirroring the END-print double branch. This makes
 % `print x` work for a float-valued scalar slot in a rule body (the i64 `ssa`

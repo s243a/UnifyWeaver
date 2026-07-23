@@ -19,10 +19,13 @@
 % (`print "n=" arr[k]`). Because the mixed chain still needs an assoc-reading
 % plain-print END, the read tests carry an `END { print arr["lit"] }`.
 %
-% A numeric/counter scalar key (`{ n++; arr[n]++ }` / `delete arr[n]` /
-% `print arr[n]`) is a clean not-yet (no i64->string key path) -- it declines
-% with a compile error rather than mis-lowering. Reading via `printf` and reading
-% in a no-END program are separate follow-ons (both decline cleanly for now).
+% A NUMERIC (counter) scalar key works too (`arr[n]++` / `delete arr[n]` /
+% `print arr[n]` where n is an i64 counter): awk array keys are strings, so the
+% counter value is interned via its decimal spelling (@wam_intern_i64_decimal)
+% to the same atom id a `"5"` literal / field key would produce. A DOUBLE scalar
+% key is still a clean not-yet (no float->string key path) -- it declines with a
+% compile error rather than mis-lowering. Reading via `printf` and reading in a
+% no-END program are separate follow-ons (both decline cleanly for now).
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -110,13 +113,15 @@ test(varkey_delete_single_rule, [condition(clang_available)]) :-
         "a\na\na\n", Out),
     assertion(Out == "1\n"), !.
 
-% A numeric/counter scalar key for delete is a clean not-yet: no i64->string key
-% path, so the program declines with a compile error rather than mis-lowering.
-test(varkey_delete_numeric_rejected, [condition(clang_available)]) :-
+% A numeric (counter) scalar key for delete: the counter value is interned via
+% its decimal spelling. Delete resets the count for that key; here `delete c[n]`
+% fires at NR==2 (n==0), so c["0"] recounts fresh from the later record.
+test(varkey_delete_numeric_counter, [condition(clang_available)]) :-
     sdir(Dir),
-    build_status(Dir, 'vkdnum',
-        "{ n++; c[n]++; delete c[n] } END { print c[\"1\"] }\n", St),
-    assertion(St == 3), !.
+    build_run(Dir, 'vkdnum',
+        "{ n = NR % 2; c[n]++ }\nNR == 2 { n = NR % 2; delete c[n] }\nEND { print c[\"0\"], c[\"1\"] }\n",
+        "1\n2\n3\n4\n", Out),
+    assertion(Out == "1 2\n"), !.
 
 % --- read arr[k] as a value -------------------------------------------------
 
@@ -166,11 +171,40 @@ test(varkey_read_printf_rejected, [condition(clang_available)]) :-
         "{ k = $1; c[k]++; printf \"%d\\n\", c[k] } END { print c[\"a\"] }\n", St),
     assertion(St == 3), !.
 
-% A numeric/counter scalar key read declines cleanly (no i64->string key path).
-test(varkey_read_numeric_rejected, [condition(clang_available)]) :-
+% A numeric (counter) scalar key read: intern n's decimal spelling, then fetch
+% the count. `n = NR % 2` gives repeating keys 0/1 so the counts advance.
+test(varkey_read_numeric_counter, [condition(clang_available)]) :-
     sdir(Dir),
-    build_status(Dir, 'vkrnum',
-        "{ n++; c[n]++; print c[n] } END { print c[\"1\"] }\n", St),
+    build_run(Dir, 'vkrnum',
+        "{ n = NR % 2; c[n]++; print c[n] } END { print c[\"0\"] }\n",
+        "1\n2\n3\n4\n", Out),
+    assertion(Out == "1\n1\n2\n2\n2\n"), !.
+
+% --- numeric (counter) key: inc; and a double key still declines --------------
+
+% Counter-keyed inc: `arr[n]++` with n an i64 counter keys on n's decimal text.
+test(varkey_inc_numeric_counter, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'vkinum',
+        "{ n = NR % 2; c[n]++ } END { print c[\"0\"], c[\"1\"] }\n",
+        "1\n2\n3\n4\n", Out),
+    assertion(Out == "2 2\n"), !.
+
+% A plain `n++` counter key (distinct keys 1,2,3): each counts once.
+test(varkey_inc_counter_incr, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'vkinc2',
+        "{ n++; c[n]++ } END { print c[\"1\"], c[\"2\"] }\n",
+        "a\nb\nc\n", Out),
+    assertion(Out == "1 1\n"), !.
+
+% A DOUBLE scalar key is a clean not-yet (no float->string key path): `d = NR / 2`
+% is double-typed (`/` is always float in awk), so `c[d]++` declines rather than
+% mis-lowering to a garbage `i64 svar(d)` field slice.
+test(varkey_double_key_rejected, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_status(Dir, 'vkdbl',
+        "{ d = NR / 2; c[d]++ } END { print c[\"1\"] }\n", St),
     assertion(St == 3), !.
 
 :- end_tests(plawk_assoc_varkey).
