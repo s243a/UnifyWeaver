@@ -3133,11 +3133,18 @@ WamRuntime$category_ancestor_collect_parents <- function(program, state,
 }
 
 WamRuntime$category_ancestor_hops_rec <- function(program, state, edge_atom_id,
+                                                   parent_lookup,
                                                    cat, root_id, visited_env,
                                                    visited_len, max_depth, out) {
   root_seen <- exists(as.character(root_id), envir = visited_env, inherits = FALSE)
-  parents <- WamRuntime$category_ancestor_collect_parents(
-    program, state, edge_atom_id, cat)
+  # Prefer an explicit bound-arg1 parent lookup when the edge FactSource
+  # registered one; otherwise keep the iterate_goal semantic fallback.
+  parents <- if (!is.null(parent_lookup)) {
+    parent_lookup(cat)
+  } else {
+    WamRuntime$category_ancestor_collect_parents(
+      program, state, edge_atom_id, cat)
+  }
   if (!root_seen) {
     for (p in parents) {
       if (identical(p$id, root_id)) {
@@ -3153,8 +3160,8 @@ WamRuntime$category_ancestor_hops_rec <- function(program, state, edge_atom_id,
     assign(pk, TRUE, envir = visited_env)
     before <- length(out$hops)
     WamRuntime$category_ancestor_hops_rec(
-      program, state, edge_atom_id, parent, root_id, visited_env,
-      visited_len + 1L, max_depth, out)
+      program, state, edge_atom_id, parent_lookup, parent, root_id,
+      visited_env, visited_len + 1L, max_depth, out)
     if (length(out$hops) > before) {
       for (i in seq.int(before + 1L, length(out$hops))) {
         out$hops[[i]] <- IntTerm(as.integer(out$hops[[i]]$val + 1L))
@@ -3189,6 +3196,7 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
   snap_build <- state$build_stack
 
   edge_atom_id <- WamRuntime$intern(table, edge_pred)
+  parent_lookup <- WamRuntime$get_arg1_parent_lookup(program, edge_key)
   visited_env <- new.env(parent = emptyenv())
   for (elem in visited_elems) {
     if (!is.null(elem) && !is.null(elem$tag) && elem$tag == "atom") {
@@ -3198,8 +3206,8 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
   out <- new.env(parent = emptyenv())
   out$hops <- list()
   WamRuntime$category_ancestor_hops_rec(
-    program, state, edge_atom_id, src_v, root_v$id, visited_env,
-    length(visited_elems), as.integer(max_depth), out)
+    program, state, edge_atom_id, parent_lookup, src_v, root_v$id,
+    visited_env, length(visited_elems), as.integer(max_depth), out)
 
   if (length(state$cps) > snap_cps) {
     state$cps <- state$cps[seq_len(snap_cps)]
@@ -4254,6 +4262,96 @@ WamRuntime$build_fact_indexes <- function(facts, arity) {
     }
   }
   idxs
+}
+
+# ----------------------------------------------------------
+# Bound-arg1 parent-lookup capability (PERF-R-CA-DIRECT)
+# ----------------------------------------------------------
+# Explicit registry on program$arg1_lookups ("pred/arity" -> closure).
+# Closures are installed by codegen after fact tables / FactSources are
+# built — never by guessing pred_*_indexes names from a kernel.
+# Atom-only parents match category_ancestor_collect_parents filtering.
+WamRuntime$arg1_parent_terms_from_tuples <- function(tuples) {
+  n <- length(tuples)
+  if (n == 0L) return(list())
+  parents <- vector("list", n)
+  k <- 0L
+  for (tup in tuples) {
+    if (length(tup) < 2L) next
+    p <- tup[[2L]]
+    if (!is.null(p) && !is.null(p$tag) && identical(p$tag, "atom")) {
+      k <- k + 1L
+      parents[[k]] <- p
+    }
+  }
+  if (k == 0L) list() else if (k == n) parents else parents[seq_len(k)]
+}
+
+WamRuntime$make_indexed_arg1_parent_lookup <- function(facts, indexes) {
+  if (is.null(indexes) || length(indexes) < 1L) return(NULL)
+  idx0 <- indexes[[1L]]
+  function(key_term) {
+    if (is.null(key_term) || is.null(key_term$tag)) return(list())
+    bk <- if (identical(key_term$tag, "atom")) paste0("a", key_term$id)
+          else if (identical(key_term$tag, "int")) paste0("i", key_term$val)
+          else return(list())
+    if (!exists(bk, envir = idx0, inherits = FALSE)) return(list())
+    tidxs <- get(bk, envir = idx0, inherits = FALSE)
+    n <- length(tidxs)
+    if (n == 0L) return(list())
+    parents <- vector("list", n)
+    k <- 0L
+    for (ti in tidxs) {
+      tup <- facts[[ti]]
+      if (length(tup) < 2L) next
+      p <- tup[[2L]]
+      if (!is.null(p) && !is.null(p$tag) && identical(p$tag, "atom")) {
+        k <- k + 1L
+        parents[[k]] <- p
+      }
+    }
+    if (k == 0L) list() else if (k == n) parents else parents[seq_len(k)]
+  }
+}
+
+WamRuntime$register_arg1_parent_lookup_fn <- function(program, key, fn) {
+  if (is.null(program$arg1_lookups) || is.null(fn)) return(invisible(NULL))
+  assign(key, fn, envir = program$arg1_lookups)
+  invisible(NULL)
+}
+
+WamRuntime$register_indexed_arg1_parent_lookup <- function(program, key,
+                                                            facts, indexes) {
+  fn <- WamRuntime$make_indexed_arg1_parent_lookup(facts, indexes)
+  WamRuntime$register_arg1_parent_lookup_fn(program, key, fn)
+}
+
+WamRuntime$register_lmdb_arg1_parent_lookup <- function(program, key, path,
+                                                         arity) {
+  # On-demand: each key hits lmdb_arg1_v1_lookup — no full materialize.
+  table <- program$intern_table
+  WamRuntime$register_arg1_parent_lookup_fn(program, key, function(key_term) {
+    rows <- WamRuntime$lmdb_arg1_v1_lookup(path, key_term, arity, table)
+    WamRuntime$arg1_parent_terms_from_tuples(rows)
+  })
+}
+
+WamRuntime$register_lmdb_cached_arg1_parent_lookup <- function(program, key,
+                                                                path, arity,
+                                                                cache) {
+  table <- program$intern_table
+  WamRuntime$register_arg1_parent_lookup_fn(program, key, function(key_term) {
+    rows <- WamRuntime$lmdb_arg1_v1_cached_lookup(
+      cache, path, key_term, arity, table)
+    WamRuntime$arg1_parent_terms_from_tuples(rows)
+  })
+}
+
+WamRuntime$get_arg1_parent_lookup <- function(program, key) {
+  env <- program$arg1_lookups
+  if (is.null(env)) return(NULL)
+  if (!exists(key, envir = env, inherits = FALSE)) return(NULL)
+  get(key, envir = env, inherits = FALSE)
 }
 
 # Binary-search a sorted-by-value index for tuple indices whose value

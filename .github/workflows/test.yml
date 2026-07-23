@@ -242,6 +242,10 @@ jobs:
         run: |
           swipl -q -f init.pl -s tests/test_wam_r_effective_distance_generator.pl -g "run_tests, halt" -t "halt(1)"
 
+      - name: Run R direct arg1 lookup contract suite
+        run: |
+          swipl -q -f init.pl -s tests/test_wam_r_ca_direct_lookup.pl -g "run_tests, halt" -t "halt(1)"
+
       - name: Run full R classic conformance
         run: |
           swipl -q -f init.pl -s tests/test_wam_cross_target_conformance.pl -g "run_tests" -t halt

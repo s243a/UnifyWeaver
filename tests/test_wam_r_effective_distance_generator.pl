@@ -35,7 +35,13 @@ test(generate_kernels_on_functions_emits_runner_kernel_and_factsource) :-
             assertion(once(sub_string(Prog, _, _, _, 'source, root, hops, visited'))),
             assertion(once(sub_string(Prog, _, _, _, 'category_ancestor/4'))),
             assertion(once(sub_string(Prog, _, _, _, 'read_facts_grouped_tsv_atoms'))),
-            assertion(once(sub_string(Prog, _, _, _, 'category_parent/2')))
+            assertion(once(sub_string(Prog, _, _, _, 'category_parent/2'))),
+            assertion(once(sub_string(Prog, _, _, _,
+                'register_indexed_arg1_parent_lookup(shared_program, "category_parent/2"'))),
+            assertion(once(sub_string(Prog, _, _, _, 'arg1_lookups = new.env'))),
+            % Runner enumerates via WAM helpers only — no host-side graph walk.
+            assertion(\+ sub_string(Runner, _, _, _, 'lookup_parents')),
+            assertion(\+ sub_string(Runner, _, _, _, 'category_ancestor_hops'))
         ),
         cleanup_tmp_dir(TmpDir)).
 
