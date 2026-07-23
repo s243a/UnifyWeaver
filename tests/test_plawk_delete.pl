@@ -3,11 +3,12 @@
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
 % plawk `delete arr[k]` -- remove an entry from an assoc table (AWK
-% `delete arr[k]`). v1 keys on a field (`delete arr[$k]`), matching the counted
-% inc `arr[$k]++`; a string-literal / var key is a clean not-yet (compile error).
-% The runtime primitive (`@wam_assoc_i64_delete`) does backward-shift deletion
-% so later colliding keys stay reachable; a missing key is a no-op. for-in
-% iteration order is hash-dependent, so outputs are compared as sorted sets.
+% `delete arr[k]`). Keys on a field (`delete arr[$k]`, matching the counted inc
+% `arr[$k]++`) or a string literal (`delete arr["lit"]`, interned to its
+% canonical atom id); a variable or integer key is a clean not-yet (compile
+% error). The runtime primitive (`@wam_assoc_i64_delete`) does backward-shift
+% deletion so later colliding keys stay reachable; a missing key is a no-op.
+% for-in iteration order is hash-dependent, so outputs are compared as sorted sets.
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -79,10 +80,45 @@ test(no_delete_unaffected, [condition(clang_available)]) :-
 
 % A string-literal key is a clean not-yet (v1 keys on a field), so the program
 % is rejected with a compile error rather than miscompiled.
-test(delete_string_key_rejected, [condition(clang_available)]) :-
+% `delete arr["lit"]` parses to a string-literal key.
+test(delete_string_key_parses) :-
+    plawk_parse_string("{ delete a[\"x\"] }\n",
+        program([], [rule(always, [delete_assoc(var(a), string("x"))])], [])),
+    !.
+
+% A string-literal key removes the counted entry: "drop" is counted then
+% deleted, so END's for-in no longer sees it.
+test(delete_string_key_removes, [condition(clang_available)]) :-
     ldir(Dir),
-    Src = "{ seen[$1]++ }\n{ delete seen[\"x\"] }\nEND { for (k in seen) print k }\n",
-    build_status(Dir, 'strkey', Src, St),
+    Src = "{ seen[$1]++ }\n$1 == \"rm\" { delete seen[\"drop\"] }\nEND { for (k in seen) print k }\n",
+    build_run_sorted(Dir, 'strrm', Src, "drop\na\nrm\n", Lines, St),
+    assertion(St == 0),
+    assertion(Lines == ["a", "rm"]),
+    !.
+
+% Deleting a literal key resets its count; a later insert counts fresh from 1.
+test(delete_string_key_resets_count, [condition(clang_available)]) :-
+    ldir(Dir),
+    Src = "{ seen[$1]++ }\n$2 == \"x\" { delete seen[\"a\"] }\nEND { for (k in seen) print k, seen[k] }\n",
+    build_run_sorted(Dir, 'strreset', Src, "a y\na y\na x\na y\nb y\n", Lines, St),
+    assertion(St == 0),
+    assertion(Lines == ["a 1", "b 1"]),
+    !.
+
+% Deleting an absent literal key is a no-op.
+test(delete_string_key_missing_is_noop, [condition(clang_available)]) :-
+    ldir(Dir),
+    Src = "{ c[$1]++ }\n{ delete c[\"zzz\"] }\nEND { for (k in c) print k, c[k] }\n",
+    build_run_sorted(Dir, 'strnoop', Src, "a\nb\na\n", Lines, St),
+    assertion(St == 0),
+    assertion(Lines == ["a 2", "b 1"]),
+    !.
+
+% A variable key is still a clean not-yet (compile error), a follow-on.
+test(delete_var_key_rejected, [condition(clang_available)]) :-
+    ldir(Dir),
+    Src = "{ seen[$1]++ }\n{ delete seen[x] }\nEND { for (k in seen) print k }\n",
+    build_status(Dir, 'varkey', Src, St),
     assertion(St == 3),
     !.
 

@@ -7894,6 +7894,13 @@ plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), Blob),
 plawk_assoc_body_action_spec(delete_assoc(var(ArrayName), field(KeyIndex)),
         assoc_delete(ArrayName, KeyIndex)) :-
     integer(KeyIndex), KeyIndex > 0.
+% `delete arr["lit"]` -- remove the entry keyed by a string literal. The literal
+% is interned to a canonical atom id (so it matches the id a `arr["lit"]++` /
+% field key would produce for the same bytes) and the runtime void delete is a
+% no-op if absent, like the field-key form.
+plawk_assoc_body_action_spec(delete_assoc(var(ArrayName), string(Str)),
+        assoc_delete_lit(ArrayName, Str)) :-
+    ( string(Str) ; atom(Str) ).
 % `split($N, arr, "sep")`: populate arr (a str-valued positional table, keys
 % 1..n) by splitting field N on the separator. A single-char separator is a
 % literal byte; a multi-char separator is a POSIX ERE regex (its own pattern,
@@ -8372,6 +8379,13 @@ plawk_assoc_planned_actions([assoc_delete(ArrayName, KeyIndex) | Rest],
       NextIndex is Index + 1
     },
     [assoc_delete_action(Index, ArrayName, TableIndex, KeyIndex)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+plawk_assoc_planned_actions([assoc_delete_lit(ArrayName, Str) | Rest],
+        Tables, StrArrays, PosArrays, Index) -->
+    { nth0(TableIndex, Tables, ArrayName),
+      NextIndex is Index + 1
+    },
+    [assoc_delete_lit_action(Index, ArrayName, TableIndex, Str)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 plawk_assoc_planned_actions([assoc_split(ArrayName, KeyIndex, Sep) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
@@ -9440,6 +9454,34 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_action(Index, _ArrayName
       format(atom(Next), '  br label %~w', [ActionNextLabel])
     },
     [Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId, Del, Next, ''],
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% `delete arr["lit"]`: intern the string-literal key to its canonical atom id
+% (via a private c-string global) and call the same void backward-shift delete.
+% No missing-key branch is needed -- the literal is always present -- and the
+% runtime delete is itself a no-op if the interned key is not in the table.
+plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_lit_action(Index, _ArrayName, TableIndex, Str) | Rest], NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Base), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
+      format(atom(Label), '~w:', [Base]),
+      format(atom(GName), 'plawk_delete_lit_~w_~w', [RuleIndex, Index]),
+      llvm_emit_c_string_global(GName, Str, GlobalLine, StrLen, BytesLen),
+      format(atom(Ptr),
+          '  %~w_key_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+          [Base, BytesLen, BytesLen, GName]),
+      format(atom(KeyId),
+          '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_ptr, i64 ~w)',
+          [Base, Base, StrLen]),
+      format(atom(Del),
+          '  call void @wam_assoc_i64_delete(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id)',
+          [TableIndex, Base]),
+      format(atom(Next), '  br label %~w', [ActionNextLabel])
+    },
+    [global(GlobalLine), Label, Ptr, KeyId, Del, Next, ''],
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
 % `split($k, arr, "sep")`: resolve the source string, then call the split
 % primitive, which clears the table and repopulates it with the pieces keyed
