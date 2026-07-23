@@ -7189,13 +7189,17 @@ plawk_strnum_action_unsafe_read(Action, _Set, _Name) :-
 plawk_strnum_action_unsafe_read(set(var(_LHS), RHS), _Set, Name) :-
     !,
     plawk_strnum_term_mentions(RHS, Name).
-% `print` / `emit`: a bare `var(Name)` field is fine; a field that MENTIONS
-% Name but is not exactly `var(Name)` (concat, arithmetic, length, ...) is not.
+% `print`: a field is safe if it does not mention Name, or mentions it only as a
+% supported strnum read -- a bare `var(Name)` (resolved to text) or an assoc key
+% `arr[Name]` (`print arr[k]`: the slot's atom id is used directly as the key).
+% A field that mentions Name any other way (concat, arithmetic, length, ...) is
+% unsafe. The action is unsafe iff some field is unsafe.
 plawk_strnum_action_unsafe_read(print(Fields), _Set, Name) :-
     !,
     member(Field, Fields),
-    Field \== var(Name),
-    plawk_strnum_term_mentions(Field, Name).
+    \+ plawk_strnum_print_field_safe(Field, Name).
+% `emit`: a bare `var(Name)` field is fine; a field that MENTIONS Name but is
+% not exactly `var(Name)` (concat, arithmetic, length, ...) is not.
 plawk_strnum_action_unsafe_read(emit(Field), _Set, Name) :-
     !,
     Field \== var(Name),
@@ -7311,6 +7315,19 @@ plawk_strnum_term_mentions(Term, Name) :-
     arg(N, Term, Arg),
     plawk_strnum_term_mentions(Arg, Name),
     !.
+
+% A `print` field whose mentions of Name (if any) are all SUPPORTED strnum reads:
+% no mention at all, a bare `var(Name)` (resolved to text), or an assoc key
+% `arr[Name]` (the slot's atom id is the key). Recurses through concat so
+% `print "n=" arr[k]` is safe iff every part is. Anything else is unsafe.
+plawk_strnum_print_field_safe(Field, Name) :-
+    \+ plawk_strnum_term_mentions(Field, Name),
+    !.
+plawk_strnum_print_field_safe(var(Name), Name) :- !.
+plawk_strnum_print_field_safe(assoc(var(_), var(Name)), Name) :- !.
+plawk_strnum_print_field_safe(concat(Parts), Name) :-
+    !,
+    forall(member(Part, Parts), plawk_strnum_print_field_safe(Part, Name)).
 
 plawk_scalar_update_name_expr(Action, Name, Expr) :-
     plawk_scalar_action_update(Action, Name, Operation),
@@ -12777,6 +12794,12 @@ plawk_rule_body_print_field(concat(Parts)) :-
 % the slot's SSA value at emit time, so a scalar can be printed directly. Only
 % names that resolve to a slot compile; a non-slot var fails substitution.
 plawk_rule_body_print_field(var(_)).
+% `print arr[k]` -- a scalar-var-keyed assoc VALUE read. The walker resolves it
+% to the array's table index and the key scalar's slot value (its interned atom
+% id), then the print emitter fetches the count via @wam_assoc_i64_get. Only a
+% string/strnum key slot resolves (checked at the walker); other key forms
+% (`arr[$1]`, `arr["x"]`) and a numeric key are not matched here.
+plawk_rule_body_print_field(assoc(var(_), var(_))).
 plawk_rule_body_print_field(special('NR')).
 plawk_rule_body_print_field(special('NF')).
 plawk_rule_body_print_field(environ(Key)) :- string(Key).
@@ -13390,6 +13413,31 @@ plawk_substitute_scalar_reads(var(Name), Slots, Values, Substituted) :-
     ).
 plawk_substitute_print_field(Slots, Values, Field0, Field) :-
     plawk_substitute_scalar_reads(Field0, Slots, Values, Field).
+
+%% plawk_resolve_assoc_read_field(+Slots, +Values, +AssocPlan, +Field0, -Field)
+%
+%  Rewrite a print/printf item `arr[k]` (a scalar-var-keyed assoc VALUE read)
+%  into `assoc_keyid(TableIndex, KeyIdValue)`: the resolved table index plus the
+%  key scalar's current slot value (its interned atom id). Only a string/strnum
+%  key slot resolves -- the same insight as the inc/delete key case (the slot
+%  value IS the key id) -- so a numeric/double key or an unknown array leaves the
+%  term unresolved, the print emitter has no clause for a raw `assoc(...)`, and
+%  the program declines cleanly. Recurses into `concat` parts; every other term
+%  passes through unchanged (scalar-read substitution then handles var/field/NR).
+plawk_resolve_assoc_read_field(Slots, Values, AssocPlan,
+        assoc(var(ArrayName), var(KeyName)),
+        assoc_keyid(TableIndex, KeyIdValue)) :-
+    plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+    nth0(SlotIndex, Slots, Slot),
+    plawk_slot_name(Slot, KeyName),
+    ( Slot = scalar_strnum(_) ; Slot = scalar_string(_) ),
+    !,
+    nth0(SlotIndex, Values, KeyIdValue).
+plawk_resolve_assoc_read_field(Slots, Values, AssocPlan, concat(Parts0),
+        concat(Parts)) :-
+    !,
+    maplist(plawk_resolve_assoc_read_field(Slots, Values, AssocPlan), Parts0, Parts).
+plawk_resolve_assoc_read_field(_Slots, _Values, _AssocPlan, Field, Field).
 
 plawk_substitute_scalar_reads(blob_slice_vars(A0, B0), Slots, Values,
         blob_slice_vars(A, B)) :-
@@ -14233,10 +14281,12 @@ plawk_scalar_action_sequence_pairs([writebin_arm_out(Tag, ArmTypes, Fields) | Re
 plawk_scalar_action_sequence_pairs([print(Fields) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_rule_body_print_action(print(Fields)),
-      % substitute scalar-slot reads with their threaded SSA values so a
-      % print can reference a scalar (e.g. a record-view string field's
-      % (ptr,len) slice temps); idempotent for field/literal print items.
-      maplist(plawk_substitute_print_field(Slots, Values0), Fields, SubFields),
+      % resolve scalar-var-keyed assoc reads (`arr[k]`) to their table index +
+      % key-id slot value first, then substitute scalar-slot reads with their
+      % threaded SSA values so a print can reference a scalar (e.g. a record-view
+      % string field's (ptr,len) slice temps); idempotent for field/literal items.
+      maplist(plawk_resolve_assoc_read_field(Slots, Values0, AssocPlan), Fields, ResolvedFields),
+      maplist(plawk_substitute_print_field(Slots, Values0), ResolvedFields, SubFields),
       format(atom(PrintPrefix), '~w_print_~w', [Prefix, OpIndex]),
       plawk_prefixed_print_action_ir(SubFields, FieldSeparator, OutputSeparator, PrintPrefix, Pair),
       NextOpIndex is OpIndex + 1
@@ -17686,6 +17736,18 @@ plawk_emit_print_expr_for_context(ssa(Value), FieldSeparator, Context,
     plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
     plawk_i64_expr_ir(ssa(Value), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
+% `print arr[k]` (a resolved scalar-var-keyed assoc value read): fetch the i64
+% count for the key id via @wam_assoc_i64_get and print it with %ld. An absent
+% key returns 0 (awk's numeric-context default). The single get call is the
+% setup; no module global is needed (the key id is an in-register SSA value).
+plawk_emit_print_expr_for_context(assoc_keyid(TableIndex, KeyIdValue), _FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), [], [GetCall]) :-
+    plawk_print_expr_value_base(Context, int, Base),
+    plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
+    format(atom(ValueIR), '%~w_assoc_get', [Base]),
+    format(atom(GetCall),
+        '  ~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
+        [ValueIR, TableIndex, KeyIdValue]).
 % a substituted DOUBLE-scalar read (var(Name) -> ssa_f64(SlotValue)): print the
 % double SSA value with %g, mirroring the END-print double branch. This makes
 % `print x` work for a float-valued scalar slot in a rule body (the i64 `ssa`
