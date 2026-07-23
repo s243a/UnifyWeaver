@@ -164,15 +164,29 @@ test(pipe_record_long_line, [condition(clang_available)]) :-
     assertion(Out == Expected),
     !.
 
-% Pipe getline is physical-newline-only in v1. It does not consume the active
-% regex RS or replace the RT captured by the main-input reader.
-test(pipe_record_ignores_rs_and_preserves_rt,
+% Pipe getline is physical-newline-only in v1: it does not consume the active
+% regex RS. It DOES update RT to the separator it actually matched -- the
+% physical newline -- so RT becomes "\n" (matching gawk, which sets RT on every
+% getline). The printed RT is a literal newline, so the record line is followed
+% by a blank line before the next output.
+test(pipe_record_ignores_rs_sets_newline_rt,
         [condition(clang_available)]) :-
     pdir(Dir),
     Src = "BEGIN { RS = \"[0-9]+\"; OFS = \"|\" } { r = \"echo left45right\" | getline; print r, NR, $0, RT }\n",
     build_run(Dir, 'rs_rt', Src, "trigger123", Out, St),
     assertion(St == 0),
-    assertion(Out == "1|2|left45right|123\n"),
+    assertion(Out == "1|2|left45right|\n\n"),
+    !.
+
+% RT tracks the pipe separator per record: each newline-terminated record sets
+% RT = "\n", and a final record with no trailing newline sets RT = "" (empty).
+% `printf 'a\nb'` yields "a" (RT "\n") then "b" (RT "", no trailing newline).
+test(pipe_getline_sets_rt_per_record, [condition(clang_available)]) :-
+    pdir(Dir),
+    Src = "{ while ((\"printf 'a\\nb'\" | getline v) > 0) print v \"/[\" RT \"]\" }\n",
+    build_run(Dir, 'rt_track', Src, "z\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "a/[\n]\nb/[]\n"),
     !.
 
 % Once popen succeeds, a child that exits nonzero without output is still a
