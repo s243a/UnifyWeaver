@@ -3132,13 +3132,13 @@ WamRuntime$category_ancestor_collect_parents <- function(program, state,
   parents
 }
 
+# TermValue / iterate_goal DFS (PERF-R-CA-DIRECT fallback path).
+# Upward hop rewrite preserved for sources without lookup_ids.
 WamRuntime$category_ancestor_hops_rec <- function(program, state, edge_atom_id,
                                                    parent_lookup,
                                                    cat, root_id, visited_env,
                                                    visited_len, max_depth, out) {
   root_seen <- exists(as.character(root_id), envir = visited_env, inherits = FALSE)
-  # Prefer an explicit bound-arg1 parent lookup when the edge FactSource
-  # registered one; otherwise keep the iterate_goal semantic fallback.
   parents <- if (!is.null(parent_lookup)) {
     parent_lookup(cat)
   } else {
@@ -3172,6 +3172,37 @@ WamRuntime$category_ancestor_hops_rec <- function(program, state, edge_atom_id,
   invisible(NULL)
 }
 
+# Integer-ID DFS with downward depth (PERF-R-CA-IDDFS). Mirrors Rust
+# accumulator-passing: emit depth+1 when root is among parents; traverse
+# parents/visited as intern IDs; grow an integer buffer (IntTerm only at exit).
+WamRuntime$category_ancestor_hops_rec_ids <- function(lookup_ids, cat_id, root_id,
+                                                       visited, vlen, max_depth,
+                                                       depth, out) {
+  root_seen <- if (vlen < 1L) FALSE else any(visited[seq_len(vlen)] == root_id)
+  parents <- lookup_ids(cat_id)
+  if (!root_seen && length(parents) > 0L && any(parents == root_id)) {
+    n <- out$n + 1L
+    if (n > length(out$buf)) {
+      length(out$buf) <- as.integer(max(8L, length(out$buf) * 2L))
+    }
+    out$buf[[n]] <- as.integer(depth + 1L)
+    out$n <- n
+  }
+  if (vlen >= max_depth) return(invisible(NULL))
+  for (pid in parents) {
+    if (vlen > 0L && any(visited[seq_len(vlen)] == pid)) next
+    nv <- vlen + 1L
+    if (nv > length(visited)) {
+      length(visited) <- as.integer(max(8L, length(visited) * 2L))
+    }
+    visited[[nv]] <- as.integer(pid)
+    WamRuntime$category_ancestor_hops_rec_ids(
+      lookup_ids, as.integer(pid), root_id, visited, nv, max_depth,
+      depth + 1L, out)
+  }
+  invisible(NULL)
+}
+
 WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
                                             edge_key, max_depth, source,
                                             root, hops, visited, resume_pc) {
@@ -3196,18 +3227,49 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
   snap_build <- state$build_stack
 
   edge_atom_id <- WamRuntime$intern(table, edge_pred)
-  parent_lookup <- WamRuntime$get_arg1_parent_lookup(program, edge_key)
-  visited_env <- new.env(parent = emptyenv())
-  for (elem in visited_elems) {
-    if (!is.null(elem) && !is.null(elem$tag) && elem$tag == "atom") {
-      assign(as.character(elem$id), TRUE, envir = visited_env)
+  cap <- WamRuntime$get_arg1_capability(program, edge_key)
+  lookup_ids <- if (!is.null(cap)) cap$lookup_ids else NULL
+  parent_lookup <- if (!is.null(cap)) cap$lookup else NULL
+
+  out_terms <- list()
+  if (!is.null(lookup_ids)) {
+    # ID-native path: convert Visited once, downward depth, integer buffer.
+    # Depth is the full Prolog list length, even though only atom entries
+    # participate in cycle membership. Keep non-atoms as the zero sentinel
+    # so this fast path has the same max_depth semantics as the TermValue
+    # and iterate_goal paths.
+    vlen0 <- length(visited_elems)
+    visited_ids <- integer(max(8L, vlen0))
+    for (i in seq_along(visited_elems)) {
+      elem <- visited_elems[[i]]
+      if (!is.null(elem) && !is.null(elem$tag) && elem$tag == "atom") {
+        visited_ids[[i]] <- as.integer(elem$id)
+      }
     }
+    out <- new.env(parent = emptyenv())
+    out$buf <- integer(8L)
+    out$n <- 0L
+    WamRuntime$category_ancestor_hops_rec_ids(
+      lookup_ids, as.integer(src_v$id), as.integer(root_v$id),
+      visited_ids, vlen0, as.integer(max_depth), 0L, out)
+    if (out$n > 0L) {
+      out_terms <- vector("list", out$n)
+      for (i in seq_len(out$n)) out_terms[[i]] <- IntTerm(out$buf[[i]])
+    }
+  } else {
+    visited_env <- new.env(parent = emptyenv())
+    for (elem in visited_elems) {
+      if (!is.null(elem) && !is.null(elem$tag) && elem$tag == "atom") {
+        assign(as.character(elem$id), TRUE, envir = visited_env)
+      }
+    }
+    out <- new.env(parent = emptyenv())
+    out$hops <- list()
+    WamRuntime$category_ancestor_hops_rec(
+      program, state, edge_atom_id, parent_lookup, src_v, root_v$id,
+      visited_env, length(visited_elems), as.integer(max_depth), out)
+    out_terms <- out$hops
   }
-  out <- new.env(parent = emptyenv())
-  out$hops <- list()
-  WamRuntime$category_ancestor_hops_rec(
-    program, state, edge_atom_id, parent_lookup, src_v, root_v$id,
-    visited_env, length(visited_elems), as.integer(max_depth), out)
 
   if (length(state$cps) > snap_cps) {
     state$cps <- state$cps[seq_len(snap_cps)]
@@ -3227,8 +3289,8 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
   state$mode        <- snap_mode
   state$build_stack <- snap_build
 
-  if (length(out$hops) == 0L) return(FALSE)
-  WamRuntime$kernel_stream_iter(program, state, key, out$hops, hops,
+  if (length(out_terms) == 0L) return(FALSE)
+  WamRuntime$kernel_stream_iter(program, state, key, out_terms, hops,
                                   1L, resume_pc)
 }
 
@@ -4265,12 +4327,15 @@ WamRuntime$build_fact_indexes <- function(facts, arity) {
 }
 
 # ----------------------------------------------------------
-# Bound-arg1 parent-lookup capability (PERF-R-CA-DIRECT)
+# Bound-arg1 parent-lookup capability (PERF-R-CA-DIRECT / IDDFS)
 # ----------------------------------------------------------
-# Explicit registry on program$arg1_lookups ("pred/arity" -> closure).
-# Closures are installed by codegen after fact tables / FactSources are
-# built — never by guessing pred_*_indexes names from a kernel.
-# Atom-only parents match category_ancestor_collect_parents filtering.
+# Registry: program$arg1_lookups["pred/arity"] -> capability list:
+#   list(lookup = function(key_term) -> list(atom TermValues) | NULL,
+#        lookup_ids = function(atom_id) -> integer vector of parent ids | NULL)
+# Installed by codegen after fact tables / FactSources are built — never
+# by guessing pred_*_indexes names from a kernel. lookup_ids enables the
+# integer-ID DFS; lookup alone keeps the TermValue path; neither falls
+# back to iterate_goal. Atom-only parents match collect_parents filtering.
 WamRuntime$arg1_parent_terms_from_tuples <- function(tuples) {
   n <- length(tuples)
   if (n == 0L) return(list())
@@ -4285,6 +4350,22 @@ WamRuntime$arg1_parent_terms_from_tuples <- function(tuples) {
     }
   }
   if (k == 0L) list() else if (k == n) parents else parents[seq_len(k)]
+}
+
+WamRuntime$arg1_parent_ids_from_tuples <- function(tuples) {
+  n <- length(tuples)
+  if (n == 0L) return(integer(0))
+  ids <- integer(n)
+  k <- 0L
+  for (tup in tuples) {
+    if (length(tup) < 2L) next
+    p <- tup[[2L]]
+    if (!is.null(p) && !is.null(p$tag) && identical(p$tag, "atom")) {
+      k <- k + 1L
+      ids[[k]] <- as.integer(p$id)
+    }
+  }
+  if (k == 0L) integer(0) else if (k == n) ids else ids[seq_len(k)]
 }
 
 WamRuntime$make_indexed_arg1_parent_lookup <- function(facts, indexes) {
@@ -4314,44 +4395,115 @@ WamRuntime$make_indexed_arg1_parent_lookup <- function(facts, indexes) {
   }
 }
 
-WamRuntime$register_arg1_parent_lookup_fn <- function(program, key, fn) {
-  if (is.null(program$arg1_lookups) || is.null(fn)) return(invisible(NULL))
-  assign(key, fn, envir = program$arg1_lookups)
+WamRuntime$make_indexed_arg1_parent_lookup_ids <- function(facts, indexes) {
+  if (is.null(indexes) || length(indexes) < 1L) return(NULL)
+  idx0 <- indexes[[1L]]
+  function(atom_id) {
+    bk <- paste0("a", as.integer(atom_id))
+    if (!exists(bk, envir = idx0, inherits = FALSE)) return(integer(0))
+    tidxs <- get(bk, envir = idx0, inherits = FALSE)
+    n <- length(tidxs)
+    if (n == 0L) return(integer(0))
+    ids <- integer(n)
+    k <- 0L
+    for (ti in tidxs) {
+      tup <- facts[[ti]]
+      if (length(tup) < 2L) next
+      p <- tup[[2L]]
+      if (!is.null(p) && !is.null(p$tag) && identical(p$tag, "atom")) {
+        k <- k + 1L
+        ids[[k]] <- as.integer(p$id)
+      }
+    }
+    if (k == 0L) integer(0) else if (k == n) ids else ids[seq_len(k)]
+  }
+}
+
+WamRuntime$normalize_arg1_capability <- function(cap) {
+  if (is.null(cap)) return(NULL)
+  # Legacy: bare function treated as TermValue-only lookup.
+  if (is.function(cap)) return(list(lookup = cap, lookup_ids = NULL))
+  if (!is.list(cap)) return(NULL)
+  list(
+    lookup = if (!is.null(cap$lookup)) cap$lookup else NULL,
+    lookup_ids = if (!is.null(cap$lookup_ids)) cap$lookup_ids else NULL
+  )
+}
+
+WamRuntime$register_arg1_capability <- function(program, key, cap) {
+  if (is.null(program$arg1_lookups) || is.null(cap)) return(invisible(NULL))
+  assign(key, WamRuntime$normalize_arg1_capability(cap),
+         envir = program$arg1_lookups)
   invisible(NULL)
+}
+
+# Back-compat: register a TermValue-only (or full) capability via fn args.
+WamRuntime$register_arg1_parent_lookup_fn <- function(program, key, fn,
+                                                       lookup_ids = NULL) {
+  WamRuntime$register_arg1_capability(
+    program, key, list(lookup = fn, lookup_ids = lookup_ids))
 }
 
 WamRuntime$register_indexed_arg1_parent_lookup <- function(program, key,
                                                             facts, indexes) {
-  fn <- WamRuntime$make_indexed_arg1_parent_lookup(facts, indexes)
-  WamRuntime$register_arg1_parent_lookup_fn(program, key, fn)
+  WamRuntime$register_arg1_capability(program, key, list(
+    lookup = WamRuntime$make_indexed_arg1_parent_lookup(facts, indexes),
+    lookup_ids = WamRuntime$make_indexed_arg1_parent_lookup_ids(facts, indexes)
+  ))
 }
 
 WamRuntime$register_lmdb_arg1_parent_lookup <- function(program, key, path,
                                                          arity) {
   # On-demand: each key hits lmdb_arg1_v1_lookup — no full materialize.
   table <- program$intern_table
-  WamRuntime$register_arg1_parent_lookup_fn(program, key, function(key_term) {
-    rows <- WamRuntime$lmdb_arg1_v1_lookup(path, key_term, arity, table)
-    WamRuntime$arg1_parent_terms_from_tuples(rows)
-  })
+  WamRuntime$register_arg1_capability(program, key, list(
+    lookup = function(key_term) {
+      rows <- WamRuntime$lmdb_arg1_v1_lookup(path, key_term, arity, table)
+      WamRuntime$arg1_parent_terms_from_tuples(rows)
+    },
+    lookup_ids = function(atom_id) {
+      rows <- WamRuntime$lmdb_arg1_v1_lookup(
+        path, Atom(as.integer(atom_id)), arity, table)
+      WamRuntime$arg1_parent_ids_from_tuples(rows)
+    }
+  ))
 }
 
 WamRuntime$register_lmdb_cached_arg1_parent_lookup <- function(program, key,
                                                                 path, arity,
                                                                 cache) {
   table <- program$intern_table
-  WamRuntime$register_arg1_parent_lookup_fn(program, key, function(key_term) {
-    rows <- WamRuntime$lmdb_arg1_v1_cached_lookup(
-      cache, path, key_term, arity, table)
-    WamRuntime$arg1_parent_terms_from_tuples(rows)
-  })
+  WamRuntime$register_arg1_capability(program, key, list(
+    lookup = function(key_term) {
+      rows <- WamRuntime$lmdb_arg1_v1_cached_lookup(
+        cache, path, key_term, arity, table)
+      WamRuntime$arg1_parent_terms_from_tuples(rows)
+    },
+    lookup_ids = function(atom_id) {
+      rows <- WamRuntime$lmdb_arg1_v1_cached_lookup(
+        cache, path, Atom(as.integer(atom_id)), arity, table)
+      WamRuntime$arg1_parent_ids_from_tuples(rows)
+    }
+  ))
 }
 
-WamRuntime$get_arg1_parent_lookup <- function(program, key) {
+WamRuntime$get_arg1_capability <- function(program, key) {
   env <- program$arg1_lookups
   if (is.null(env)) return(NULL)
   if (!exists(key, envir = env, inherits = FALSE)) return(NULL)
-  get(key, envir = env, inherits = FALSE)
+  WamRuntime$normalize_arg1_capability(get(key, envir = env, inherits = FALSE))
+}
+
+WamRuntime$get_arg1_parent_lookup <- function(program, key) {
+  cap <- WamRuntime$get_arg1_capability(program, key)
+  if (is.null(cap)) return(NULL)
+  cap$lookup
+}
+
+WamRuntime$get_arg1_parent_lookup_ids <- function(program, key) {
+  cap <- WamRuntime$get_arg1_capability(program, key)
+  if (is.null(cap)) return(NULL)
+  cap$lookup_ids
 }
 
 # Binary-search a sorted-by-value index for tuple indices whose value

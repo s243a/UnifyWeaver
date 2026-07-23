@@ -22,7 +22,7 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
 | **F# LMDB cached (two-level L1/L2)** | **2** | -- | **1** | **Yes** | Fact-access only (no WAM overhead); see below |
 | Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
-| R WAM (functions, kernels_on) | 10307 | 11103 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; auto `category_ancestor/4` kernel + direct indexed FactSource lookup; 3-rep median query |
+| R WAM (functions, kernels_on) | 7521 | 8341 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; direct indexed lookup + integer-ID CA DFS/downward hops; 3-rep median query |
 | Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
 
 **Key takeaway:** Atom interning (replacing `HashMap<String, Vec<String>>` with
@@ -354,22 +354,23 @@ R 4.3.3, single-core.
 
 | Scale | query_ms | total_ms | rows | Cores | vs reference |
 |-------|----------|----------|------|-------|--------------|
-| 300 | 10307 | 11103 | 271 | 1 | match (`normalize_three_column_float_rows`, 6 dp) |
+| 300 | 7521 | 8341 | 271 | 1 | match (`normalize_three_column_float_rows`, 6 dp) |
 
 `query_ms` is the 3-run median of article×root enumeration only
-(samples: 11038, 10307, 10296). `total_ms` is setup (Rscript startup +
+(samples: 8260, 7509, 7521). `total_ms` is setup (Rscript startup +
 generated-program / FactSource load + article/root TSV load) plus that
 median query. Output validated against
 `data/benchmark/300/reference_output.tsv` with canonical sort and 6-decimal
 float tolerance (not row-count-only).
 
-PERF-R-CA-DIRECT reduced the same hosted-runner query baseline from 62595 ms
-to 10307 ms (6.07x) by giving the native CA kernel a capability-gated bound-
-arg1 lookup over the existing FactSource index. Sources without the
-capability retain the generic `iterate_goal` fallback. The R path remains
-slower than compiled FFI targets; its remaining cost is inside interpreted R
-DFS/result handling and the lowered power-sum orchestration rather than
-generic WAM fact dispatch.
+PERF-R-CA-DIRECT reduced the hosted-runner query baseline from 62595 ms to
+10307 ms (6.07x) by giving the native CA kernel a capability-gated bound-arg1
+lookup over the existing FactSource index. PERF-R-CA-IDDFS then reduced it to
+7521 ms (a further 1.37x; 8.32x cumulative) by traversing intern IDs, carrying
+depth downward, and constructing `IntTerm` results only at the WAM boundary.
+Sources without these capabilities retain the TermValue and generic
+`iterate_goal` fallbacks. The remaining cost is interpreted R lookup/DFS and
+lowered power-sum orchestration rather than generic WAM fact dispatch.
 
 #### Reproduction
 

@@ -41,7 +41,13 @@ test(grouped_by_first_atoms_registers_indexed_lookup, [nondet]) :-
             assertion(once(sub_string(Code, _, _, _,
                 'arg1_lookups = new.env'))),
             assertion(once(sub_string(Code, _, _, _,
-                'pred_cat_anc_kernel_ca')))
+                'pred_cat_anc_kernel_ca'))),
+            directory_file_path(TmpDir, 'R/wam_runtime.R', RtPath),
+            read_file_to_string(RtPath, Rt, []),
+            assertion(once(sub_string(Rt, _, _, _,
+                'make_indexed_arg1_parent_lookup_ids'))),
+            assertion(once(sub_string(Rt, _, _, _,
+                'category_ancestor_hops_rec_ids')))
         ),
         (   cleanup_tmp(TmpDir),
             uninstall_ca_kernel
@@ -126,15 +132,20 @@ ca_direct_runtime_proof :-
 'source("generated_program.R")
 stopifnot(!is.null(shared_program$arg1_lookups))
 stopifnot(exists("cparent/2", envir = shared_program$arg1_lookups, inherits = FALSE))
+cap <- WamRuntime$get_arg1_capability(shared_program, "cparent/2")
+stopifnot(!is.null(cap$lookup), !is.null(cap$lookup_ids))
 lk <- WamRuntime$get_arg1_parent_lookup(shared_program, "cparent/2")
 stopifnot(!is.null(lk))
+lk_ids <- WamRuntime$get_arg1_parent_lookup_ids(shared_program, "cparent/2")
+stopifnot(!is.null(lk_ids))
 
-collect_hops <- function(cat, root, visited_chars) {
+collect_hops <- function(cat, root, visited_chars, sorted = TRUE) {
   state <- WamRuntime$new_state()
   WamRuntime$promote_regs(state)
   hops <- Unbound("H")
-  vis_elems <- lapply(visited_chars, function(nm)
-    Atom(WamRuntime$intern(intern_table, nm)))
+  vis_elems <- if (is.list(visited_chars)) visited_chars else
+    lapply(visited_chars, function(nm)
+      Atom(WamRuntime$intern(intern_table, nm)))
   vis <- WamRuntime$wam_list_build(vis_elems, intern_table)
   WamRuntime$put_reg(state, 1L, Atom(WamRuntime$intern(intern_table, cat)))
   WamRuntime$put_reg(state, 2L, Atom(WamRuntime$intern(intern_table, root)))
@@ -150,42 +161,75 @@ collect_hops <- function(cat, root, visited_chars) {
     out <- c(out, as.integer(v$val))
     ok <- isTRUE(WamRuntime$backtrack(state))
   }
-  sort(out)
+  if (isTRUE(sorted)) sort(out) else out
 }
 
-# Direct path (capability present)
+# ID-native path (lookup_ids present)
 d_multi_eq  <- collect_hops("a", "d", character(0))
 d_multi_une <- collect_hops("a", "z", character(0))
 d_cycle     <- collect_hops("loop_a", "loop_b", character(0))
 d_visited   <- collect_hops("a", "d", c("b"))
+d_root_vis  <- collect_hops("a", "d", c("d"))
 d_depth     <- collect_hops("deep0", "deep3", character(0))
 d_num       <- collect_hops("1827", "9001", character(0))
 d_num_miss  <- collect_hops("1827", "nope", character(0))
+d_nonatom   <- collect_hops("deep0", "deep4", list(IntTerm(99L)))
+d_order     <- collect_hops("ord0", "ord_root", character(0), sorted = FALSE)
 
-stopifnot(identical(d_multi_eq, c(2L, 2L)))          # a->b->d and a->c->d
-stopifnot(identical(d_multi_une, c(1L, 3L)))         # a->z and a->p->q->z
-stopifnot(identical(d_cycle, 1L))                    # cycle edge ignored
-stopifnot(identical(d_visited, 2L))                  # b blocked; only a->c->d
-stopifnot(identical(d_depth, 3L))                    # edge at max_depth=3
-stopifnot(identical(d_num, 2L))                      # numeric-looking atoms
+stopifnot(identical(d_multi_eq, c(2L, 2L)))
+stopifnot(identical(d_multi_une, c(1L, 3L)))
+stopifnot(identical(d_cycle, 1L))
+stopifnot(identical(d_visited, 2L))
+stopifnot(length(d_root_vis) == 0L)              # root already in Visited
+stopifnot(identical(d_depth, 3L))
+stopifnot(identical(d_num, 2L))
 stopifnot(length(d_num_miss) == 0L)
+stopifnot(length(d_nonatom) == 0L)             # non-atoms still consume depth
+# Distinguishable DFS order: long branch is listed before short branch.
+stopifnot(identical(d_order, c(3L, 2L)))
 
-# Fallback: clear capability -> iterate_goal collect_parents path
+# Forced TermValue-capability fallback (lookup only, no lookup_ids)
+facts <- pred_cparent_facts; indexes <- pred_cparent_indexes
+WamRuntime$register_arg1_capability(shared_program, "cparent/2", list(
+  lookup = WamRuntime$make_indexed_arg1_parent_lookup(facts, indexes),
+  lookup_ids = NULL
+))
+stopifnot(is.null(WamRuntime$get_arg1_parent_lookup_ids(shared_program, "cparent/2")))
+stopifnot(!is.null(WamRuntime$get_arg1_parent_lookup(shared_program, "cparent/2")))
+t_multi_eq  <- collect_hops("a", "d", character(0))
+t_multi_une <- collect_hops("a", "z", character(0))
+t_cycle     <- collect_hops("loop_a", "loop_b", character(0))
+t_visited   <- collect_hops("a", "d", c("b"))
+t_root_vis  <- collect_hops("a", "d", c("d"))
+t_depth     <- collect_hops("deep0", "deep3", character(0))
+t_num       <- collect_hops("1827", "9001", character(0))
+t_nonatom   <- collect_hops("deep0", "deep4", list(IntTerm(99L)))
+t_order     <- collect_hops("ord0", "ord_root", character(0), sorted = FALSE)
+
+# Forced iterate_goal fallback (no capability)
 rm(list = "cparent/2", envir = shared_program$arg1_lookups)
 stopifnot(is.null(WamRuntime$get_arg1_parent_lookup(shared_program, "cparent/2")))
 f_multi_eq  <- collect_hops("a", "d", character(0))
 f_multi_une <- collect_hops("a", "z", character(0))
 f_cycle     <- collect_hops("loop_a", "loop_b", character(0))
 f_visited   <- collect_hops("a", "d", c("b"))
+f_root_vis  <- collect_hops("a", "d", c("d"))
 f_depth     <- collect_hops("deep0", "deep3", character(0))
 f_num       <- collect_hops("1827", "9001", character(0))
+f_nonatom   <- collect_hops("deep0", "deep4", list(IntTerm(99L)))
+f_order     <- collect_hops("ord0", "ord_root", character(0), sorted = FALSE)
 
-stopifnot(identical(d_multi_eq, f_multi_eq))
-stopifnot(identical(d_multi_une, f_multi_une))
-stopifnot(identical(d_cycle, f_cycle))
-stopifnot(identical(d_visited, f_visited))
-stopifnot(identical(d_depth, f_depth))
-stopifnot(identical(d_num, f_num))
+# Three-way parity (sorted values)
+stopifnot(identical(d_multi_eq, t_multi_eq), identical(d_multi_eq, f_multi_eq))
+stopifnot(identical(d_multi_une, t_multi_une), identical(d_multi_une, f_multi_une))
+stopifnot(identical(d_cycle, t_cycle), identical(d_cycle, f_cycle))
+stopifnot(identical(d_visited, t_visited), identical(d_visited, f_visited))
+stopifnot(identical(d_root_vis, t_root_vis), identical(d_root_vis, f_root_vis))
+stopifnot(identical(d_depth, t_depth), identical(d_depth, f_depth))
+stopifnot(identical(d_num, t_num), identical(d_num, f_num))
+stopifnot(identical(d_nonatom, t_nonatom), identical(d_nonatom, f_nonatom))
+# DFS emission order parity across all three paths
+stopifnot(identical(d_order, t_order), identical(d_order, f_order))
 cat("ok\n")
 '),
                 close(S)),
@@ -291,12 +335,16 @@ ca_direct_setup_program(TmpDir, RDir) :-
     unique_tmp('tmp_ca_direct_rt', TmpDir),
     % multipath equal: a->b->d, a->c->d
     % multipath unequal: a->z (1), a->p->q->z (3)
-    % cycle, depth boundary, numeric-looking atoms
+    % cycle, depth boundary, numeric-looking atoms, order-distinguishable paths
     write_edge_tsv(TmpDir, 'edges.tsv',
                    ['a\tb', 'a\tc', 'b\td', 'c\td',
                     'a\tz', 'a\tp', 'p\tq', 'q\tz',
                     'loop_a\tloop_b', 'loop_b\tloop_a',
                     'deep0\tdeep1', 'deep1\tdeep2', 'deep2\tdeep3',
+                    'deep3\tdeep4',
+                    'ord0\tord_long', 'ord_long\tord_mid',
+                    'ord_mid\tord_root', 'ord0\tord_short',
+                    'ord_short\tord_root',
                     '1827\tmid', 'mid\t9001']),
     directory_file_path(TmpDir, 'edges.tsv', TsvPath),
     atom_string(TsvPath, TsvPathStr),
