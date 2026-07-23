@@ -1078,11 +1078,18 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, IsoConfig, BasePC
     ->  r_normalize_fact_source_spec(ExternalFactSpec0, Options,
                                       ExternalFactSpec),
         emit_external_fact_source(P, Arity, ExternalFactSpec,
-                                   ExtData, ExtFunc, ExtFuncName),
+                                   ExtData, ExtFunc, ExtFuncName, LookupReg),
         NewLoweredAcc = [ExtData, ExtFunc | LoweredAcc],
         emit_r_lowered_wrapper(P, Arity, ExtFuncName, WrapperCode),
         emit_lowered_dispatch_entry(P, Arity, ExtFuncName, DispEntry),
-        NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
+        % LookupReg registers an explicit bound-arg1 parent-lookup
+        % capability into shared_program$arg1_lookups when the source
+        % supports it (in-memory indexes or on-demand LMDB). Empty
+        % string means leave category_ancestor on iterate_goal fallback.
+        (   LookupReg == ""
+        ->  NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
+        ;   NewLoweredDispAcc = [LookupReg, DispEntry | LoweredDispAcc]
+        )
     ;   kernel_layout_enabled(Options),
         catch(wam_r_kernel_detect(Pred, Kernel), _, fail),
         catch(emit_kernel(P, Kernel, KData, KFunc, KFuncName), _, fail)
@@ -1503,11 +1510,14 @@ r_lmdb_arg1_v1_arity(Arity) :-
     ).
 
 %% emit_external_fact_source(+P, +Arity, +Spec,
-%%                            -DataDecl, -LoweredFunc, -FuncName)
+%%                            -DataDecl, -LoweredFunc, -FuncName, -LookupReg)
 %  lmdb_arg1_v1(Path, lazy|eager|cached(+Cap)):
 %  lazy = on-demand; eager = stream-once+indexes; cached = L1/L2 LRU.
+%  LookupReg is an R assignment (or "") registered into
+%  shared_program$arg1_lookups for arity-2 sources that can answer
+%  bound-arg1 parent probes without guessing generated variable names.
 emit_external_fact_source(Pred, Arity, lmdb_arg1_v1(Path, lazy),
-                          DataDecl, LoweredFunc, FuncName) :- !,
+                          DataDecl, LoweredFunc, FuncName, LookupReg) :- !,
     r_lmdb_arg1_v1_arity(Arity),
     r_pred_name(Pred, RName),
     format(atom(PathVar), '~w_lmdb_path', [RName]),
@@ -1521,9 +1531,10 @@ emit_external_fact_source(Pred, Arity, lmdb_arg1_v1(Path, lazy),
 '~w <- function(program, state) {
   args <- ~w
   WamRuntime$lmdb_arg1_v1_dispatch(program, state, ~w, ~wL, args, state$pc + 1L)
-}', [FuncName, ArgsCollect, PathVar, Arity]).
+}', [FuncName, ArgsCollect, PathVar, Arity]),
+    r_emit_arg1_lookup_reg_lmdb(Pred, Arity, PathVar, none, LookupReg).
 emit_external_fact_source(Pred, Arity, lmdb_arg1_v1(Path, eager),
-                          DataDecl, LoweredFunc, FuncName) :- !,
+                          DataDecl, LoweredFunc, FuncName, LookupReg) :- !,
     r_lmdb_arg1_v1_arity(Arity),
     r_pred_name(Pred, RName),
     format(atom(DataName), '~w_facts', [RName]),
@@ -1541,9 +1552,10 @@ emit_external_fact_source(Pred, Arity, lmdb_arg1_v1(Path, eager),
 '~w <- function(program, state) {
   args <- ~w
   WamRuntime$fact_table_dispatch(program, state, "~w/~w", ~w, ~w, args, state$pc + 1L)
-}', [FuncName, ArgsCollect, Pred, Arity, DataName, IndexesName]).
+}', [FuncName, ArgsCollect, Pred, Arity, DataName, IndexesName]),
+    r_emit_arg1_lookup_reg_indexed(Pred, Arity, DataName, IndexesName, LookupReg).
 emit_external_fact_source(Pred, Arity, lmdb_arg1_v1(Path, cached, Cap),
-                          DataDecl, LoweredFunc, FuncName) :- !,
+                          DataDecl, LoweredFunc, FuncName, LookupReg) :- !,
     r_lmdb_arg1_v1_arity(Arity),
     r_pred_name(Pred, RName),
     format(atom(PathVar), '~w_lmdb_path', [RName]),
@@ -1561,9 +1573,10 @@ emit_external_fact_source(Pred, Arity, lmdb_arg1_v1(Path, cached, Cap),
   args <- ~w
   WamRuntime$lmdb_arg1_v1_cached_dispatch(program, state, ~w, ~wL, args,
                                            state$pc + 1L, ~w)
-}', [FuncName, ArgsCollect, PathVar, Arity, CacheVar]).
+}', [FuncName, ArgsCollect, PathVar, Arity, CacheVar]),
+    r_emit_arg1_lookup_reg_lmdb(Pred, Arity, PathVar, CacheVar, LookupReg).
 emit_external_fact_source(Pred, Arity, Spec,
-                          DataDecl, LoweredFunc, FuncName) :-
+                          DataDecl, LoweredFunc, FuncName, LookupReg) :-
     r_pred_name(Pred, RName),
     format(atom(DataName), '~w_facts', [RName]),
     format(atom(IndexesName), '~w_indexes', [RName]),
@@ -1582,7 +1595,35 @@ emit_external_fact_source(Pred, Arity, Spec,
   WamRuntime$fact_table_dispatch(program, state, "~w/~w", ~w, ~w,
                                   args, state$pc + 1L)
 }',
-        [FuncName, ArgsCollect, Pred, Arity, DataName, IndexesName]).
+        [FuncName, ArgsCollect, Pred, Arity, DataName, IndexesName]),
+    r_emit_arg1_lookup_reg_indexed(Pred, Arity, DataName, IndexesName, LookupReg).
+
+%% r_emit_arg1_lookup_reg_indexed(+Pred, +Arity, +FactsVar, +IndexesVar, -Reg)
+%  In-memory indexed FactSource / eager LMDB / inline fact table.
+r_emit_arg1_lookup_reg_indexed(Pred, Arity, DataName, IndexesName, Reg) :-
+    (   Arity >= 2
+    ->  format(string(Reg),
+'WamRuntime$register_indexed_arg1_parent_lookup(shared_program, "~w/~w", ~w, ~w)',
+               [Pred, Arity, DataName, IndexesName])
+    ;   Reg = ""
+    ).
+
+%% r_emit_arg1_lookup_reg_lmdb(+Pred, +Arity, +PathVar, +CacheOrNone, -Reg)
+%  On-demand LMDB capability (lazy or cached). Does not stream-all.
+r_emit_arg1_lookup_reg_lmdb(Pred, Arity, PathVar, none, Reg) :- !,
+    (   Arity >= 2
+    ->  format(string(Reg),
+'WamRuntime$register_lmdb_arg1_parent_lookup(shared_program, "~w/~w", ~w, ~wL)',
+               [Pred, Arity, PathVar, Arity])
+    ;   Reg = ""
+    ).
+r_emit_arg1_lookup_reg_lmdb(Pred, Arity, PathVar, CacheVar, Reg) :-
+    (   Arity >= 2
+    ->  format(string(Reg),
+'WamRuntime$register_lmdb_cached_arg1_parent_lookup(shared_program, "~w/~w", ~w, ~wL, ~w)',
+               [Pred, Arity, PathVar, Arity, CacheVar])
+    ;   Reg = ""
+    ).
 
 %% fact_source_loader_call(+Spec, +Arity, -LoaderCallSrc, -CommentTag)
 %  Maps a Spec to the R source that loads the table, plus a short
@@ -1813,9 +1854,17 @@ emit_fact_table(Pred, Arity, Tuples, DataDecl, LoweredFunc, FuncName,
   WamRuntime$fact_table_dispatch(program, state, "~w/~w", ~w, ~w,
                                   args, state$pc + 1L)
 }', [FuncName, ArgsCollect, Pred, Arity, DataName, IndexesName]),
-    format(string(RangeRegistration),
+    format(string(RangeReg0),
 'assign("~w/~w", list(facts = ~w, range = ~w), envir = shared_program$fact_range_indexes)',
-           [Pred, Arity, DataName, RangeIndexesName]).
+           [Pred, Arity, DataName, RangeIndexesName]),
+    % Also publish a bound-arg1 parent-lookup capability for recursive
+    % kernels (category_ancestor). Reuses the same facts+indexes; no
+    % parallel indexing system.
+    r_emit_arg1_lookup_reg_indexed(Pred, Arity, DataName, IndexesName, LookupReg),
+    (   LookupReg == ""
+    ->  RangeRegistration = RangeReg0
+    ;   format(string(RangeRegistration), '~w\n~w', [RangeReg0, LookupReg])
+    ).
 
 %% fact_sorted_indexes_block(+Tuples, +Arity, +RName, +RangeIndexesName, -Body)
 %  Emits per-arg sorted-by-value indexes alongside the hash indexes
