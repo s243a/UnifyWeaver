@@ -40,3 +40,21 @@ The deployed loop is filing_assistant (e5 @ K=100 + margin gate) + judge escalat
 confirmed +0.055 R@1 today. Remaining levers, in ceiling order: stronger/contextual judge
 (up to +0.13 more at this t/N), larger menus (N=20 ceiling 0.512 at t=0.03), DAG completion
 (the `missing` stratum), and gap-directed training (REPORT_hybrid_candidates §B′/B″).
+
+## Lever 1 result: Sonnet judge + lineage-context menus (2026-07-23)
+
+Same manifest, same routed set (t=0.02, N=10), menus augmented with each folder's principal-path
+context (`--lineage`, §7 machinery, folder-side only / outcome-blind). Judge = Sonnet subagents
+(4 disjoint chunks; null rates 13/11/11/14 — far steadier than Haiku's 9/15/49/14).
+
+- **Policy R@1 0.290 vs 0.203 baseline: +0.087, 95% CI [+0.070, +0.107] — excludes zero.**
+- **Paired vs Haiku (same queries): +0.056, 95% CI [+0.032, +0.084] — excludes zero.**
+  232/351 rescuable menus converted (66% vs Haiku's 55%); ~47% of the perfect-judge headroom.
+  Pick agreement with Haiku only 0.60 — a genuinely different policy, not noise on the same one.
+- Confound note: this pass upgrades judge AND menu context together (deliberate — one redundant
+  full pass to pick the production judge); the components are not separated.
+
+**Coverage-efficiency rule (owner, standing):** full same-data re-scores are a one-time spend for
+judge selection only. All future judge spends are coverage-first — calibrate judges/prompts on
+~150–200-query subsamples; put the bulk of tokens on NEW queries (e.g. the t=0.03 increment) or
+NEW menu tail (positions 11–20 where the N=10 menu missed), never on re-scoring covered rows.
