@@ -7926,6 +7926,13 @@ plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), subsep_key(Fields)),
 plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), Blob),
         ArrayName-blob_key(Blob)) :-
     plawk_assoc_blob_key_ok(Blob).
+% `arr[k]++` with a scalar-variable key -- the no-END group-by idiom
+% (`{ k = $N; arr[k]++ } END { for (kk in arr) ... }`). The key scalar is
+% threaded through a module global @plawk_scalar_<Name> set by a `k = $N` action
+% (scalar_set_str below); the inc loads that atom id as the key.
+plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), var(Name)),
+        assoc_inc_svar(ArrayName, Name)) :-
+    atom(Name).
 % `delete arr[$k]` -- remove the entry keyed by field k (v1: a field key, like
 % the counted inc). Absent key is a no-op (backward-shift delete in the runtime).
 plawk_assoc_body_action_spec(delete_assoc(var(ArrayName), field(KeyIndex)),
@@ -8038,6 +8045,11 @@ plawk_assoc_body_action_spec(add(var(Name), int(V)), scalar_add(Name, int(V))) :
     integer(V).
 plawk_assoc_body_action_spec(add(var(Name), field(K)), scalar_add(Name, field(K))) :-
     integer(K), K > 0.
+% `k = $N` -- copy field N into a scalar global as its interned atom id, so a
+% later `arr[k]++` keys on it (the no-END group-by idiom). v1: a field source
+% (the key-scalar use); other RHS forms are not handled in the pure-assoc chain.
+plawk_assoc_body_action_spec(set(var(Name), field(K)), scalar_set_str(Name, K)) :-
+    integer(K), K >= 1.
 
 plawk_assoc_print_field_spec(field(N), fld(N)) :-
     integer(N), N > 0.
@@ -8495,6 +8507,18 @@ plawk_assoc_planned_actions([scalar_add(Name, Src) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
     { NextIndex is Index + 1 },
     [assoc_scalar_add_action(Index, Name, Src)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+plawk_assoc_planned_actions([scalar_set_str(Name, KeyIndex) | Rest],
+        Tables, StrArrays, PosArrays, Index) -->
+    { NextIndex is Index + 1 },
+    [assoc_scalar_set_str_action(Index, Name, KeyIndex)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+plawk_assoc_planned_actions([assoc_inc_svar(ArrayName, Name) | Rest],
+        Tables, StrArrays, PosArrays, Index) -->
+    { nth0(TableIndex, Tables, ArrayName),
+      NextIndex is Index + 1
+    },
+    [assoc_inc_svar_action(Index, ArrayName, TableIndex, Name)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 plawk_assoc_planned_actions([forin(LoopVar, ArrayName, Fields) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
@@ -9047,6 +9071,77 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[global(GlobalDecl), Label], SrcLines,
               [LoadL, AddL, StoreL, Next, '']], Lines)
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% `k = $N` -- intern field N's slice to its atom id and store it in the scalar
+% global @plawk_scalar_<Name>, so a later `arr[k]++` keys on it. A missing field
+% (null slice) stores 0 (the empty-string key, awk's `arr[""]`). No per-record
+% counter change; falls through to the next action.
+plawk_assoc_rule_action_blocks(RuleIndex,
+        [assoc_scalar_set_str_action(Index, Name, KeyIndex) | Rest], NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(B), 'assoc_rule_~w_action_~w_sset', [RuleIndex, Index]),
+      format(atom(GlobalDecl),
+          '@plawk_scalar_~w = internal global i64 0', [Name]),
+      format(atom(Slice),
+          '  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+          [B, KeyIndex, FieldSeparator]),
+      format(atom(Ptr), '  %~w_ptr = extractvalue %WamSlice %~w_slice, 0', [B, B]),
+      format(atom(Len), '  %~w_len = extractvalue %WamSlice %~w_slice, 1', [B, B]),
+      format(atom(Missing), '  %~w_missing = icmp eq i8* %~w_ptr, null', [B, B]),
+      format(atom(HaveName), '~w_have', [B]),
+      format(atom(EmptyName), '~w_empty', [B]),
+      format(atom(Branch), '  br i1 %~w_missing, label %~w, label %~w',
+          [B, EmptyName, HaveName]),
+      format(atom(HaveLabel), '~w:', [HaveName]),
+      format(atom(KeyId),
+          '  %~w_id = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len)', [B, B, B]),
+      format(atom(StoreHave), '  store i64 %~w_id, i64* @plawk_scalar_~w', [B, Name]),
+      format(atom(HaveNext), '  br label %~w', [ActionNextLabel]),
+      % A field past NF is the empty string (awk `$N` -> ""). Intern the empty
+      % string to its atom id (a valid key), so a later for-in resolves it back
+      % to "" rather than an unset id-0 sentinel.
+      format(atom(EmptyGlobalDecl),
+          '@.~w_emptykey = private constant [1 x i8] zeroinitializer', [B]),
+      format(atom(EmptyLabel), '~w:', [EmptyName]),
+      format(atom(EmptyId),
+          '  %~w_empty_id = call i64 @wam_intern_atom(i8* getelementptr ([1 x i8], [1 x i8]* @.~w_emptykey, i64 0, i64 0), i64 0)',
+          [B, B]),
+      format(atom(StoreEmpty), '  store i64 %~w_empty_id, i64* @plawk_scalar_~w', [B, Name]),
+      format(atom(EmptyNext), '  br label %~w', [ActionNextLabel]),
+      Lines = [global(GlobalDecl), global(EmptyGlobalDecl),
+               Label, Slice, Ptr, Len, Missing, Branch, '',
+               HaveLabel, KeyId, StoreHave, HaveNext, '',
+               EmptyLabel, EmptyId, StoreEmpty, EmptyNext, '']
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% `arr[k]++` with a scalar-variable key: load the key scalar's atom id from
+% @plawk_scalar_<Name> and increment the table at that key. Straight-line -- the
+% scalar always holds a value (0 = the empty-string key if never set).
+plawk_assoc_rule_action_blocks(RuleIndex,
+        [assoc_inc_svar_action(Index, _ArrayName, TableIndex, Name) | Rest], NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(B), 'assoc_rule_~w_action_~w_incsv', [RuleIndex, Index]),
+      format(atom(LoadKey), '  %~w_key = load i64, i64* @plawk_scalar_~w', [B, Name]),
+      format(atom(Inc),
+          '  %~w_count = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key, i64 1)',
+          [B, TableIndex, B]),
+      format(atom(Next), '  br label %~w', [ActionNextLabel]),
+      Lines = [Label, LoadKey, Inc, Next, '']
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
