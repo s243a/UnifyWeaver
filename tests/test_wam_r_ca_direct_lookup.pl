@@ -185,6 +185,16 @@ stopifnot(identical(first_sx, c(aid("pa"), aid("pb"))))
 # fresh uncached builder sees the mutation
 syn_ids2 <- WamRuntime$make_indexed_arg1_parent_lookup_ids(syn_facts, syn_idx)
 stopifnot(identical(syn_ids2(aid("sx")), c(aid("mutated"), aid("pb"))))
+# Arbitrary sparse ids must not grow the dense list to the id value.
+high_id <- 1000000000L
+high_facts <- list(list(Atom(high_id), Atom(aid("pa"))))
+high_idx <- WamRuntime$build_fact_indexes(high_facts, 2L)
+high_ids <- WamRuntime$make_indexed_arg1_parent_lookup_ids(high_facts, high_idx)
+stopifnot(identical(high_ids(high_id), aid("pa")))
+high_facts[[1L]][[2L]] <- Atom(aid("mutated"))
+stopifnot(identical(high_ids(high_id), aid("pa")))  # sparse cache hit
+stopifnot(identical(high_ids(.Machine$integer.max), integer(0)))
+stopifnot(identical(high_ids(.Machine$integer.max), integer(0)))  # cached miss
 
 collect_hops <- function(cat, root, visited_chars, sorted = TRUE) {
   state <- WamRuntime$new_state()
