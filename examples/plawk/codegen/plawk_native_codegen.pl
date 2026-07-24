@@ -1147,6 +1147,11 @@ plawk_program_native_driver_ir(
     DriverIR
 ) :-
     Call = dyncall_named(_Name, [forin_val(ArrayName)]),
+    % NR-guarded rules need the %current_nr record counter, which this decode
+    % driver does not emit; decline cleanly rather than mis-lowering to an
+    % undefined %current_nr (a follow-on could wire the counter here as the
+    % plain/multi for-in and accumulate drivers now do).
+    \+ plawk_rules_use_nr(Rules),
     plawk_forin_end_decode_plan(Rules, ArrayName, AssocPlan),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
@@ -1195,6 +1200,7 @@ plawk_program_native_driver_ir(
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
     plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR, AssocChainIR),
+    plawk_assoc_record_counter(Rules, [], AssocChainIR, RecordLoopPhiIR, RecordIR),
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
     plawk_forin_end_accum_ir(LoopVar, ArrayName, Acc, Operand, PrintFields,
@@ -1208,8 +1214,8 @@ plawk_program_native_driver_ir(
 ~w',
         [EndPrintIR]),
     plawk_emit_record_driver_ir(FieldSeparator, InputPath,
-        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
-            AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, RecordLoopPhiIR, lowered_assoc,
+            RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 % guarded END for-in (stage 1b): iterate the FINAL hash and filter --
 % `END { for (k in arr) { if (GUARD) print ... } }`. Matched before the
@@ -1232,6 +1238,7 @@ plawk_program_native_driver_ir(
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
     plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR, AssocChainIR),
+    plawk_assoc_record_counter(Rules, [], AssocChainIR, RecordLoopPhiIR, RecordIR),
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
     plawk_forin_end_guarded_print_ir(LoopVar, ArrayName, Guard, PrintFields,
@@ -1245,8 +1252,8 @@ plawk_program_native_driver_ir(
 ~w',
         [EndPrintIR]),
     plawk_emit_record_driver_ir(FieldSeparator, InputPath,
-        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
-            AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, RecordLoopPhiIR, lowered_assoc,
+            RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 plawk_program_native_driver_ir(
     program(BeginClauses, Rules, [end([for_in(var(LoopVar), var(ArrayName), BodyActions)])]),
@@ -1265,6 +1272,7 @@ plawk_program_native_driver_ir(
     plawk_end_print_string_globals(PrintFields, StringGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, CacheEntries, EntrySetupIR),
     plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR, AssocChainIR),
+    plawk_assoc_record_counter(Rules, PrintFields, AssocChainIR, RecordLoopPhiIR, RecordIR),
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
     plawk_forin_end_print_ir(LoopVar, ArrayName, PrintFields, AssocPlan,
@@ -1280,8 +1288,8 @@ plawk_program_native_driver_ir(
 ~w',
         [CommitIR, EndPrintIR]),
     plawk_emit_record_driver_ir(FieldSeparator, InputPath,
-        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
-            AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, RecordLoopPhiIR, lowered_assoc,
+            RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 % Multiple for-in loops in the END block (dump several tables):
 % `{ c[$1]++; d[$2]++ } END { for (a in c) print a, c[a]; for (b in d) print b, d[b] }`.
@@ -1310,6 +1318,7 @@ plawk_program_native_driver_ir(
     plawk_end_print_string_globals(AllPrintFields, StringGlobalIR),
     plawk_assoc_entry_setup_ir(AssocPlan, CacheEntries, EntrySetupIR),
     plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR, AssocChainIR),
+    plawk_assoc_record_counter(Rules, AllPrintFields, AssocChainIR, RecordLoopPhiIR, RecordIR),
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
     plawk_multi_forin_end_print_ir(PerLoop, AssocPlan, FieldSeparator,
@@ -1325,8 +1334,8 @@ plawk_program_native_driver_ir(
 ~w',
         [CommitIR, EndPrintIR]),
     plawk_emit_record_driver_ir(FieldSeparator, InputPath,
-        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
-            AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, RecordLoopPhiIR, lowered_assoc,
+            RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
 %% plawk_program_native_driver_ir(+Program, +InputPath, +Options, -DriverIR) is semidet.
@@ -7656,6 +7665,31 @@ plawk_rules_scalar_update_exprs(Rules, Exprs) :-
           )
         ),
         Exprs).
+
+%% plawk_assoc_record_counter(+Rules, +EndFields, +AssocChainIR, -LoopPhiIR, -RecordIR)
+%
+%  Emit a per-record NR counter for a TEXT-mode assoc-END driver when any rule
+%  (pattern or body) or the END fields reference NR, so the assoc rule chain's
+%  `%current_nr` guard -- and an END `%plawk_nr` read -- are defined. When no NR
+%  is used the counter is empty and RecordIR = AssocChainIR (byte-identical to
+%  the historical output). Mirrors the counter wiring the `END { print arr[k] }`
+%  driver already does; without it a rule guard like `NR > 1 { arr[$1]++ }`
+%  referenced an undefined `%current_nr` (a clang miscompile).
+plawk_assoc_record_counter(Rules, EndFields, AssocChainIR, LoopPhiIR, RecordIR) :-
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    append([EndFields, BodyPrintFields, ScalarExprs], RecordCounterExprs),
+    plawk_print_record_counter_ir(RecordCounterExprs, LoopPhiIR, RecordCounterIR),
+    plawk_join_nonempty_ir([RecordCounterIR, AssocChainIR], RecordIR).
+
+%% plawk_rules_use_nr(+Rules) is semidet.
+%  True if a rule's pattern or body references NR. Used to CLEANLY DECLINE NR in
+%  the specialized assoc-END drivers (accumulate / decode / guarded-print) that
+%  do not emit the record counter, so such a program is rejected rather than
+%  mis-lowered to an undefined `%current_nr`.
+plawk_rules_use_nr(Rules) :-
+    plawk_rules_scalar_update_exprs(Rules, Exprs),
+    plawk_fields_include_nr(Exprs).
 
 % Expose pattern operands that affect record-counter emission. A rule whose
 % guard uses NR (`NR == 1 { … }`, or an NR endpoint of a range `NR==1, NR==3`)
