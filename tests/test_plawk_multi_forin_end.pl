@@ -13,7 +13,8 @@
 %
 % v1 scope: each END statement is a for-in whose body is a single print of the
 % loop key and/or `arr[k]` lookups (the common table-dump). A for-in print with a
-% string literal, or a multi plain-print END, declines cleanly (follow-ons).
+% string literal declines cleanly (a follow-on). A multi plain-print END (no
+% for-in) compiles via the separate scalar-chain multi-print driver.
 % for-in order is hash-dependent, so outputs are compared as sorted sets.
 
 :- use_module(library(plunit)).
@@ -86,13 +87,13 @@ test(string_literal_in_forin_declines, [condition(clang_available)]) :-
     assertion(St \== 0),
     !.
 
-% A multi plain-print END (no for-in) is a separate follow-on; it now PARSES but
-% no driver lowers it, so it declines cleanly rather than compiling.
-test(multi_plain_print_declines, [condition(clang_available)]) :-
+% A multi plain-print END (no for-in) now compiles via the scalar-chain
+% multi-print driver (see test_plawk_multi_print_end.pl for full coverage).
+test(multi_plain_print_compiles, [condition(clang_available)]) :-
     mdir(Dir),
     build_status(Dir, 'pp',
         "{ n++ } END { print \"a\"; print \"b\" }\n", St),
-    assertion(St \== 0),
+    assertion(St == 0),
     !.
 
 :- end_tests(plawk_multi_forin_end).

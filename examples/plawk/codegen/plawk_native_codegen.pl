@@ -701,6 +701,66 @@ plawk_program_native_driver_ir(
             NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+% Multiple plain prints in an END block (`END { print a; print b }`), scalar
+% chain. Same driver wiring as the single-print scalar clause above, but the END
+% is a sequence of prints, each emitted (and per-print renamed) by
+% plawk_scalar_end_prints_ir. The `[_,_|_]` + all-prints guard keeps it disjoint
+% from the single-print clause and from the for-in / accumulate END shapes (which
+% are not plain prints). A mixed for-in/print END declines (plawk_end_print_list
+% fails), a follow-on.
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules0, [end(Prints)]),
+    InputPath,
+    DriverIR
+) :-
+    Prints = [_, _ | _],
+    plawk_end_print_list(Prints, PrintFieldsList),
+    append(PrintFieldsList, AllFields),
+    plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules1, WritebinPlan),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    plawk_resolve_dynrec_view_rules(Rules1, Rules1b),
+    plawk_resolve_foreach_rules(FieldSeparator, Rules1b, Rules),
+    plawk_scalar_state_plan(Rules, AllFields, StatePlan),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR0),
+    plawk_writebin_entry_lines(WritebinPlan, WritebinEntryIR),
+    plawk_join_nonempty_ir([BeginIR0, WritebinEntryIR], BeginIR),
+    plawk_record_program_ok(FieldSeparator, Rules, AllFields),
+    plawk_scalar_end_prints_ir(Prints, StatePlan, OutputSeparator, EndPrintIR,
+        StringGlobalIR),
+    plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator,
+        RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    plawk_rules_writebin_exprs(Rules, WritebinExprs),
+    append(AllFields, BodyPrintFields, PrintExprs0),
+    append(PrintExprs0, WritebinExprs, PrintExprs),
+    append(PrintExprs, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(StatePlan, RecordCounterExprs,
+        RecordLoopPhiIR, RecordCounterIR),
+    plawk_state_loop_phi_ir(StatePlan, StateLoopPhiIR),
+    plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
+    plawk_join_nonempty_ir([RecordCounterIR, RuleChainIR], RecordIR),
+    plawk_scalar_rule_controls(Rules, ScalarRuleControls),
+    plawk_scalar_next_phi_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, NextPhiIR),
+    plawk_break_close_ir(StatePlan, RuleCount, ScalarRuleControls, BranchControlExits, done,
+        BreakCloseIR, FinalStatePhiIR),
+    plawk_writebin_globals(WritebinPlan, WritebinGlobalIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, RuleGlobalIR, WritebinGlobalIR]),
+    plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w~w
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
+        [FinalStatePhiIR, EndPrintIR]),
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
+        driver_blocks(RuntimeGlobals, BeginIR, LoopPhiIR, lowered_match, RecordIR,
+            NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
 % END { if (KEY in arr) print ...; [else print ...] } -- the associative
 % counterpart of the scalar END-if driver below.  The record rules build the
 % table set through the ordinary assoc chain; the END condition is a pure
@@ -16287,6 +16347,47 @@ plawk_branch_next_phi_incomings([_Exit | Rest], SlotIndex, Incomings) :-
 plawk_scalar_end_print_ir(PrintFields, StatePlan, OutputSeparator, IR) :-
     phrase(plawk_scalar_end_print_lines(PrintFields, StatePlan, OutputSeparator, 0), Lines),
     atomic_list_concat(Lines, '\n', IR).
+
+%% plawk_scalar_end_prints_ir(+Prints, +StatePlan, +OutputSeparator, -IR, -StringGlobalIR)
+%
+%  Emit MULTIPLE prints in an END block (`END { print a; print b }`). Each print
+%  is lowered independently by the single-print emitter (fields + ORS newline,
+%  PrintIndex from 0 so the first-field separator is correctly suppressed), then
+%  its `end_`-prefixed SSA/globals are uniformly renamed `end_` -> `end<I>_` so
+%  they stay unique across prints -- the string-literal globals are renamed with
+%  the same rule as their block references, keeping them consistent. Print 0 is
+%  byte-identical to the single-print path. Returns the joined block IR and the
+%  joined (renamed) string-literal globals.
+plawk_scalar_end_prints_ir(Prints, StatePlan, OutputSeparator, IR, StringGlobalIR) :-
+    plawk_scalar_end_prints_ir_(Prints, 0, StatePlan, OutputSeparator, Blocks, Globals),
+    atomic_list_concat(Blocks, '\n', IR),
+    plawk_join_nonempty_ir(Globals, StringGlobalIR).
+
+plawk_scalar_end_prints_ir_([], _I, _StatePlan, _OutputSeparator, [], []).
+plawk_scalar_end_prints_ir_([print(Fields) | Rest], I, StatePlan, OutputSeparator,
+        [Block | Blocks], [Global | Globals]) :-
+    plawk_scalar_end_print_ir(Fields, StatePlan, OutputSeparator, RawBlock),
+    plawk_end_print_string_globals(Fields, RawGlobal),
+    plawk_end_print_suffix_rename(I, RawBlock, Block),
+    plawk_end_print_suffix_rename(I, RawGlobal, Global),
+    I1 is I + 1,
+    plawk_scalar_end_prints_ir_(Rest, I1, StatePlan, OutputSeparator, Blocks, Globals).
+
+% Suffix a print's `end_`-prefixed SSA/globals (and its `end_print_string_N`
+% literal globals) so multiple END prints do not collide. I=0 is unchanged
+% (byte-identical single-print IR). Every collidable name in a single END print
+% block/global is `end_`-prefixed; shared globals (`@.plawk_surface_*`,
+% `@plawk_ors_ptr`) contain no `end_` and are left alone.
+plawk_end_print_suffix_rename(0, IR, IR) :- !.
+plawk_end_print_suffix_rename(I, IR0, IR) :-
+    format(atom(Repl), 'end~w_', [I]),
+    plawk_atom_replace_all(IR0, 'end_', Repl, IR).
+
+% Every element of an END statement list is a plain print; collect their fields.
+% Fails on any non-print element, so a mixed for-in/print END declines cleanly.
+plawk_end_print_list([], []).
+plawk_end_print_list([print(Fields) | Rest], [Fields | More]) :-
+    plawk_end_print_list(Rest, More).
 
 %% END { if (COND) print ...; [else print ...] } support ---------------------
 
