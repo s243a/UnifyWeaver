@@ -48,7 +48,7 @@ Train on SEVERAL verbosity renderings of the same expression, biased toward conc
   share a V1 rendering → shared statistical strength); verbose cards teach the distinctions that
   matter within a class (t, N, judge modifier). The model learns the abstraction HIERARCHY, so at
   inference you can condition at whichever specificity you actually know.
-- WHY BIAS CONCISE: (1) most distinctions don't survive the MDL test — spending most gradient on
+- WHY BIAS CONCISE: (1) most distinctions don't survive the gain-per-token test — spending most gradient on
   V1 matches where the information is; (2) concise cards are what inference will usually supply;
   (3) V3-heavy training would fragment 922 judged rows into near-singleton conditions.
 - V0 (empty card) rows keep an unconditional readout alive — the agnostic-anchor precedent — and
@@ -62,7 +62,7 @@ Train on SEVERAL verbosity renderings of the same expression, biased toward conc
 - **Target-factory policy:** the sqrt-KF-in-training decision (Kalman as target factory, not
   in-loop layer) generalizes: EVERY target factory gets an expression; the expression is the
   factory's name. Codex's theory lane owns the grammar's formal semantics; the application lane
-  owns the empirical MDL ladder.
+  owns the empirical gain-per-token ladder.
 - **Certainty re-entry:** once expression-conditioned μ exceeds e5 in some region, the bias-state
   info_ratio gate becomes meaningful again — certainty-weighting returns exactly when the
   precondition (μ ≥ e5 somewhere) is met, per the owner's framing.
