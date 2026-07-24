@@ -2,8 +2,9 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
-% PERF-R-CA-DIRECT: capability-gated bound-arg1 parent lookup for the
-% R category_ancestor/4 recursive kernel.
+% PERF-R-CA-DIRECT / IDDFS / IDCACHE: capability-gated bound-arg1 parent
+% lookup for the R category_ancestor/4 recursive kernel, including
+% integer-ID DFS and closure-private numeric-key parent-id memoization.
 %
 % Usage: swipl -g run_tests -t halt tests/test_wam_r_ca_direct_lookup.pl
 
@@ -47,7 +48,12 @@ test(grouped_by_first_atoms_registers_indexed_lookup, [nondet]) :-
             assertion(once(sub_string(Rt, _, _, _,
                 'make_indexed_arg1_parent_lookup_ids'))),
             assertion(once(sub_string(Rt, _, _, _,
-                'category_ancestor_hops_rec_ids')))
+                'category_ancestor_hops_rec_ids'))),
+            % IDCACHE: in-memory lookup_ids keeps a closure-private memo
+            assertion(once(sub_string(Rt, _, _, _,
+                'Closure-private memo'))),
+            assertion(once(sub_string(Rt, _, _, _,
+                'cache[[aid]] <<- out')))
         ),
         (   cleanup_tmp(TmpDir),
             uninstall_ca_kernel
@@ -138,6 +144,57 @@ lk <- WamRuntime$get_arg1_parent_lookup(shared_program, "cparent/2")
 stopifnot(!is.null(lk))
 lk_ids <- WamRuntime$get_arg1_parent_lookup_ids(shared_program, "cparent/2")
 stopifnot(!is.null(lk_ids))
+
+# ------------------------------------------------------------------
+# IDCACHE: memoized numeric-key parent buckets (in-memory indexed)
+# ------------------------------------------------------------------
+aid <- function(nm) as.integer(WamRuntime$intern(intern_table, nm))
+# miss then hit: identical ordered parent ids
+p_a1 <- lk_ids(aid("a"))
+p_a2 <- lk_ids(aid("a"))
+stopifnot(identical(p_a1, p_a2))
+stopifnot(identical(p_a1, c(aid("b"), aid("c"), aid("z"), aid("p"))))
+# shared parents across source ids
+p_b <- lk_ids(aid("b"))
+p_c <- lk_ids(aid("c"))
+stopifnot(identical(p_b, aid("d")), identical(p_c, aid("d")))
+# missing key and empty-after-filter both yield integer(0)
+stopifnot(identical(lk_ids(aid("no_such_node")), integer(0)))
+# numeric-looking atom names remain atoms (not ints)
+stopifnot(identical(lk_ids(aid("1827")), aid("mid")))
+stopifnot(identical(lk_ids(aid("mid")), aid("9001")))
+# Synthetic facts: mixed atom/non-atom parents + empty bucket + cache sticky
+syn_facts <- list(
+  list(Atom(aid("sx")), Atom(aid("pa"))),
+  list(Atom(aid("sx")), IntTerm(99L)),
+  list(Atom(aid("sx")), Atom(aid("pb"))),
+  list(Atom(aid("sy")), Atom(aid("pa"))),
+  list(Atom(aid("sz")), IntTerm(1L))
+)
+syn_idx <- WamRuntime$build_fact_indexes(syn_facts, 2L)
+syn_ids <- WamRuntime$make_indexed_arg1_parent_lookup_ids(syn_facts, syn_idx)
+stopifnot(identical(syn_ids(aid("sx")), c(aid("pa"), aid("pb"))))
+stopifnot(identical(syn_ids(aid("sy")), aid("pa")))
+stopifnot(identical(syn_ids(aid("sz")), integer(0)))  # non-atom-only bucket
+stopifnot(identical(syn_ids(aid("missing_syn")), integer(0)))
+# cache hit retains first result even if underlying facts are mutated
+first_sx <- syn_ids(aid("sx"))
+syn_facts[[1L]][[2L]] <- Atom(aid("mutated"))
+stopifnot(identical(syn_ids(aid("sx")), first_sx))
+stopifnot(identical(first_sx, c(aid("pa"), aid("pb"))))
+# fresh uncached builder sees the mutation
+syn_ids2 <- WamRuntime$make_indexed_arg1_parent_lookup_ids(syn_facts, syn_idx)
+stopifnot(identical(syn_ids2(aid("sx")), c(aid("mutated"), aid("pb"))))
+# Arbitrary sparse ids must not grow the dense list to the id value.
+high_id <- 1000000000L
+high_facts <- list(list(Atom(high_id), Atom(aid("pa"))))
+high_idx <- WamRuntime$build_fact_indexes(high_facts, 2L)
+high_ids <- WamRuntime$make_indexed_arg1_parent_lookup_ids(high_facts, high_idx)
+stopifnot(identical(high_ids(high_id), aid("pa")))
+high_facts[[1L]][[2L]] <- Atom(aid("mutated"))
+stopifnot(identical(high_ids(high_id), aid("pa")))  # sparse cache hit
+stopifnot(identical(high_ids(.Machine$integer.max), integer(0)))
+stopifnot(identical(high_ids(.Machine$integer.max), integer(0)))  # cached miss
 
 collect_hops <- function(cat, root, visited_chars, sorted = TRUE) {
   state <- WamRuntime$new_state()
