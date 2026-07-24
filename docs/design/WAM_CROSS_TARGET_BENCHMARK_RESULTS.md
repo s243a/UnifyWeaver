@@ -22,7 +22,7 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
 | **F# LMDB cached (two-level L1/L2)** | **2** | -- | **1** | **Yes** | Fact-access only (no WAM overhead); see below |
 | Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
-| R WAM (functions, kernels_on) | 2940 | 3455 | 1 | Yes | Cursor cloud agent, R 4.3.3; + memoized numeric-key parent-id buckets (IDCACHE); 3-rep median query |
+| R WAM (functions, kernels_on) | 4812 | 5610 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + memoized numeric-key parent-id buckets (IDCACHE); 3-rep median query |
 | Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
 
 **Key takeaway:** Atom interning (replacing `HashMap<String, Vec<String>>` with
@@ -344,28 +344,29 @@ python3 /tmp/wam-bench/python-300/main.py data/benchmark/300 3
 
 ### R WAM (functions mode)
 
-Measured 2026-07-23 on a Cursor cloud agent using
+Measured 2026-07-23 in hosted GitHub Actions using
 `generate_wam_r_effective_distance_benchmark.pl`
 with `emit_mode(functions)`, auto-detected `category_ancestor/4` kernel
 (fleet hops layout), and `category_parent/2` FactSource via
 `grouped_by_first_atoms` (preserves Prolog atom identity for numeric-looking
-Wikipedia IDs). Host: Linux cloud agent, SWI-Prolog, R 4.3.3, single-core.
+Wikipedia IDs). Host: Ubuntu 24.04 hosted runner, SWI-Prolog 10.0.2,
+R 4.3.3, single-core.
 
 | Scale | query_ms | total_ms | rows | Cores | vs reference |
 |-------|----------|----------|------|-------|--------------|
-| 300 | 2940 | 3455 | 271 | 1 | match (`normalize_three_column_float_rows`, 6 dp) |
+| 300 | 4812 | 5610 | 271 | 1 | match (`normalize_three_column_float_rows`, 6 dp) |
 
 `query_ms` is the 3-run median of article×root enumeration only
-(samples: 3445, 2929, 2940). `total_ms` is setup (Rscript startup +
+(samples: 5573, 4812, 4795). `total_ms` is setup (Rscript startup +
 generated-program / FactSource load + article/root TSV load) plus that
 median query. Output validated against
 `data/benchmark/300/reference_output.tsv` with canonical sort and 6-decimal
 float tolerance (not row-count-only).
 
-Same-host post-PERF-R-CA-IDDFS baseline on this agent was query_ms=4612 /
-total_ms=5126 (samples: 5183, 4499, 4612). PERF-R-CA-IDCACHE reduces that to
-2940 / 3455 (1.57x query). For cross-host context, the prior published GitHub
-Actions Ubuntu 24.04 IDDFS median was 7521 / 8341.
+The prior hosted GitHub Actions post-PERF-R-CA-IDDFS median was query_ms=7521 /
+total_ms=8341 (samples: 8260, 7509, 7521). PERF-R-CA-IDCACHE reduces that to
+4812 / 5610 (1.56x query). An independent same-host cloud-agent comparison
+(4612 to 2940 ms) also measured a 1.57x query improvement.
 
 PERF-R-CA-DIRECT reduced the hosted-runner query baseline from 62595 ms to
 10307 ms (6.07x) by giving the native CA kernel a capability-gated bound-arg1
@@ -374,9 +375,10 @@ GHA median to 7521 ms (a further 1.37x; 8.32x cumulative vs original) by
 traversing intern IDs, carrying depth downward, and constructing `IntTerm`
 results only at the WAM boundary. PERF-R-CA-IDCACHE then memoizes ordered
 parent-id vectors by numeric atom id inside the in-memory indexed
-`lookup_ids` closure (lazy list slots; ~151 KiB for a full scale-300
-adjacency image), avoiding repeated `paste0` key construction, index-env
-bucket walks, and parent extraction. Profiled scale-300 path: 516522
+`lookup_ids` closure (bounded lazy list slots with sparse-id overflow;
+~151 KiB for the scale-300 adjacency image), avoiding repeated `paste0` key
+construction, index-env bucket walks, and parent extraction. Profiled
+scale-300 path: 516522
 `lookup_ids` calls over only 2273 distinct ids (99.56% hit opportunity);
 instrumented lookup time fell from ~4.3 s to ~1.0 s. Lazy/cached LMDB
 capabilities are unchanged (on-demand / existing bounded cache). Sources

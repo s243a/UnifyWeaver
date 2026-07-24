@@ -62,8 +62,8 @@ default 4096), and explicit `auto` (codegen resolves via shared
 - Effective-distance cross-target matrix row populated (BENCH-R): scale-300
   `emit_mode(functions)` + auto `category_ancestor/4` kernel, reference
   parity match — see `docs/design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md`.
-  Further optimized by PERF-R-CA-DIRECT / IDDFS / IDCACHE (cloud-agent
-  median query_ms=2940 after numeric-key parent-id memoization).
+  Further optimized by PERF-R-CA-DIRECT / IDDFS / IDCACHE (hosted-CI
+  median query_ms=4812 after numeric-key parent-id memoization).
 
 ## Path forward
 

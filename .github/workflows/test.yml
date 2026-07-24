@@ -246,15 +246,6 @@ jobs:
         run: |
           swipl -q -f init.pl -s tests/test_wam_r_ca_direct_lookup.pl -g "run_tests, halt" -t "halt(1)"
 
-      # Review-only measurement on the same hosted runner class as the
-      # documented post-PERF-R-CA-IDDFS baseline. Remove after recording.
-      - name: Measure PERF-R-CA-IDCACHE scale-300 timing
-        run: |
-          OUT="$RUNNER_TEMP/wam-r-ed-300"
-          swipl -q -s examples/benchmark/generate_wam_r_effective_distance_benchmark.pl -- data/benchmark/300/facts.pl "$OUT" kernels_on functions
-          ( cd "$OUT/R" && Rscript run_effective_distance.R "$GITHUB_WORKSPACE/data/benchmark/300" 3 ) > "$RUNNER_TEMP/wam-r-ed-300.tsv" 2> "$RUNNER_TEMP/wam-r-ed-300.metrics"
-          cat "$RUNNER_TEMP/wam-r-ed-300.metrics"
-
       - name: Run full R classic conformance
         run: |
           swipl -q -f init.pl -s tests/test_wam_cross_target_conformance.pl -g "run_tests" -t halt
