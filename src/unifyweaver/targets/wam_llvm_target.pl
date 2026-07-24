@@ -54,6 +54,7 @@
     llvm_emit_atom_field_subslice/7,     % +ValueIR, +FieldIndex, +SepCode, +Start, +Len, +SliceBase, -CallIR
     llvm_emit_atom_field_index/7,        % +GlobalBase, +ValueIR, +FieldIndex, +Needle, +SepCode, +IndexBase, -GlobalIR-CallIR
     llvm_emit_atom_field_i64_cmp_guard/7,% +ValueIR, +FieldIndex, +OpCode, +Expected, +SepCode, +ResultIR, -CallIR
+    llvm_emit_atom_field_str_cmp_guard/8,% +GlobalBase, +ValueIR, +FieldIndex, +OpCode, +Expected, +SepCode, +ResultIR, -GlobalIR-CallIR
     llvm_emit_atom_field_i64/5,          % +ValueIR, +FieldIndex, +SepCode, +ParseBase, -CallIR
     llvm_emit_atom_field_i64_or_default/7,% +ValueIR, +FieldIndex, +SepCode, +DefaultValue, +ParseBase, +ResultIR, -CallIR
     llvm_emit_c_string_global/5,         % +GlobalName, +Value, -GlobalIR, -StringLen, -BytesLen
@@ -9801,6 +9802,46 @@ afc.yes:
 
 afc.no:
   ret i1 false
+}
+
+; Lexical (byte) comparison of a text field against a string literal, for
+; `$N < "str"` and friends. awk compares a field against a string CONSTANT
+; lexically (the constant forces a string comparison, never numeric), so this is
+; a plain memcmp over the shorter length, breaking ties by length (shorter is
+; less). A missing field is the empty string. The op code matches
+; @wam_i64_cmp_value (2 <, 3 <=, 4 >, 5 >=), applied to the sign vs 0.
+define i1 @wam_atom_field_str_cmp_value(%Value %atom_value, i64 %field_index, i8* %lit, i64 %lit_len, i8 %sep, i32 %op) {
+entry:
+  %fsc.slice = call %WamSlice @wam_atom_field_slice_value(%Value %atom_value, i64 %field_index, i8 %sep)
+  %fsc.ptr = extractvalue %WamSlice %fsc.slice, 0
+  %fsc.len0 = extractvalue %WamSlice %fsc.slice, 1
+  %fsc.has = icmp ne i8* %fsc.ptr, null
+  %fsc.len = select i1 %fsc.has, i64 %fsc.len0, i64 0
+  %fsc.field_shorter = icmp ult i64 %fsc.len, %lit_len
+  %fsc.min = select i1 %fsc.field_shorter, i64 %fsc.len, i64 %lit_len
+  %fsc.min_zero = icmp eq i64 %fsc.min, 0
+  br i1 %fsc.min_zero, label %fsc.by_len, label %fsc.memcmp
+
+fsc.memcmp:
+  %fsc.mc = call i32 @memcmp(i8* %fsc.ptr, i8* %lit, i64 %fsc.min)
+  %fsc.mc_zero = icmp eq i32 %fsc.mc, 0
+  br i1 %fsc.mc_zero, label %fsc.by_len, label %fsc.by_mc
+
+fsc.by_mc:
+  %fsc.mc64 = sext i32 %fsc.mc to i64
+  br label %fsc.decide
+
+fsc.by_len:
+  %fsc.len_lt = icmp ult i64 %fsc.len, %lit_len
+  %fsc.len_gt = icmp ugt i64 %fsc.len, %lit_len
+  %fsc.len_sign0 = select i1 %fsc.len_gt, i64 1, i64 0
+  %fsc.len_sign = select i1 %fsc.len_lt, i64 -1, i64 %fsc.len_sign0
+  br label %fsc.decide
+
+fsc.decide:
+  %fsc.sign = phi i64 [ %fsc.mc64, %fsc.by_mc ], [ %fsc.len_sign, %fsc.by_len ]
+  %fsc.res = call i1 @wam_i64_cmp_value(i64 %fsc.sign, i64 0, i32 %op)
+  ret i1 %fsc.res
 }
 
 define void @wam_print_ascii_lower_slice(i8* %source_ptr, i64 %source_len) {
@@ -23530,6 +23571,28 @@ llvm_emit_atom_field_i64_cmp_guard(ValueIR, FieldIndex, OpCode, Expected, SepCod
     format(atom(CallIR),
         '  ~w = call i1 @wam_atom_field_i64_cmp_value(%Value ~w, i64 ~w, i8 ~w, i64 ~w, i32 ~w)',
         [ResultIR, ValueIR, FieldIndex, SepCode, Expected, OpCode]).
+
+%% llvm_emit_atom_field_str_cmp_guard(+GlobalBase, +ValueIR, +FieldIndex, +OpCode, +Expected, +SepCode, +ResultIR, -GlobalIR-CallIR)
+%
+%  Emit a native LEXICAL field-vs-string-literal comparison over an atom-backed
+%  text record (`$N < "str"` and friends). The literal is a private c-string
+%  constant; the runtime memcmp-compares the field slice against it (string
+%  semantics, never numeric). OpCode is 2 <, 3 <=, 4 >, 5 >= (== / != use the
+%  field_eq path).
+llvm_emit_atom_field_str_cmp_guard(GlobalBase, ValueIR, FieldIndex, OpCode, Expected, SepCode, ResultIR, GlobalIR-CallIR) :-
+    integer(FieldIndex),
+    integer(OpCode),
+    between(0, 5, OpCode),
+    sanitize_functor_for_llvm(GlobalBase, SafeBase),
+    escape_llvm_string(Expected, EscapedExpected, ExpectedLen),
+    ArrLen is ExpectedLen + 1,
+    format(atom(GlobalIR),
+        '@.~w = private constant [~w x i8] c"~w\\00"',
+        [SafeBase, ArrLen, EscapedExpected]),
+    format(atom(CallIR),
+        '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0~n  ~w = call i1 @wam_atom_field_str_cmp_value(%Value ~w, i64 ~w, i8* %~w_ptr, i64 ~w, i8 ~w, i32 ~w)',
+        [SafeBase, ArrLen, ArrLen, SafeBase,
+         ResultIR, ValueIR, FieldIndex, SafeBase, ExpectedLen, SepCode, OpCode]).
 
 %% llvm_emit_atom_field_i64(+ValueIR, +FieldIndex, +SepCode, +ParseBase, -CallIR)
 %
