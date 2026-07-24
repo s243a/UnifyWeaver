@@ -171,9 +171,11 @@ the standing 1,200-row benchmark and is therefore exploratory/transductive there
 prospective definition is `ROUTED_POLICY_three_tier_v1.json`.  A decision-bearing follow-up must
 apply that artifact without modification to a later cohort or one untouched outer node-disjoint
 test; any threshold, menu, judge, prompt, or lineage change restarts selection inside outer-train.
-Repeated judge draws are required to expose judge variance. Task emission on that untouched set
-must not report a rescue ceiling or any other placement-label-derived diagnostic before the
-frozen judge outputs have been sealed.
+Three counterbalanced judge views are required to expose combined repeat-call and menu-presentation
+sensitivity. Because draw index also determines the cyclic menu rotation, those views do not
+identify a pure judge-variance component, and agreement is not calibrated confidence. Task
+emission on that untouched set must not report a rescue ceiling or any other
+placement-label-derived diagnostic before the frozen judge outputs have been sealed.
 
 Any task sent outside the local machine must be rebuilt from the certified-public Pearltrees
 population.  Candidate folders and emitted lineage ancestors require explicit public node
@@ -190,11 +192,33 @@ exact-destination rank computation. Picks must bind the exact task bytes and dec
 Missing, extra, duplicate, legacy headerless, cross-task, or tampered rows fail closed.  Content
 hashes establish integrity, not provider authentication.
 
-The current v2 tool binds exactly one complete response artifact per judge tier. It does not yet
-represent multiple provider-call chunks or repeated judge draws. Before the next decision-bearing
-run, add a parent-task manifest that binds every chunk, provider run, and draw to the same task ID,
-plus a frozen aggregation rule. Manually concatenating partial responses is not an acceptable
-substitute.
+Repeated judging uses `unifyweaver.routed-execution-plan.v1`, never manually concatenated
+responses. The plan freezes three complete draws, stable outcome-blind chunk membership,
+deterministic per-query cyclic menu rotations, every child task and exact rendered request, the
+parent policy/privacy/ranker receipt, and the required judge contract. Each draw is an exact
+duplicate-free partition of its parent task. Distinct child task IDs bind the execution, draw,
+chunk, ordered QIDs, and presentation map, so a response cannot move between logical calls.
+
+Retries remain contiguous attempts of one logical draw/chunk and never become additional votes.
+Every attempt retains content-bound provider request/response IDs, status, timestamps, and raw
+response hash. Missing calls, terminal failures, reused provider IDs, or incomplete draws fail the
+whole bundle; they are never imputed as `null`. Aggregation is a preregistered strict majority over
+canonical folder IDs with `null` as an ordinary outcome. A `null` majority and a no-consensus
+abstention remain distinct in the bundle provenance even though both map to `null` in the
+parent-compatible pick artifact.
+`routed_queries.py score` requires `--execution-bundle` whenever the pick
+provenance names an execution aggregate; complete-policy scoring likewise
+requires one `--tier-bundle ID BUNDLE` for every execution-derived judge tier.
+The scorer re-derives the bundle and requires its aggregate bytes and pick ID
+to equal the supplied picks before reporting even a descriptive interval.
+
+This execution-integrity layer does **not** authorize confirmatory inference. All QIDs sharing a
+provider call inherit prompt/call dependence, and dependence may also be shared by draw,
+provider-run/session, time, or model instance. A future preregistration must name its estimand,
+represent stable-chunk incidence plus every applicable shared execution unit, report the
+effective independent block counts, and fail closed when those counts are inadequate. Unioning
+chunk incidence with the existing bookmark/folder node blocks is one conservative candidate, not
+automatic authorization for a confirmatory claim.
 
 The ranker is frozen to `intfloat/e5-small-v2` at immutable Hugging Face commit
 `ffb93f3bd4047442299a41ebb6fa998a38507c52`. Candidate and query encoders both pass that revision

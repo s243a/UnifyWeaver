@@ -250,6 +250,37 @@ def _atomic_write_jsonl(
     return file_content_record(target)
 
 
+def _atomic_write_jsonl_no_clobber(
+    path: str | os.PathLike[str],
+    header: Mapping[str, Any],
+    rows: Sequence[Mapping[str, Any]],
+):
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(canonical_json_bytes(dict(header)))
+            for row in rows:
+                handle.write(canonical_json_bytes(dict(row)))
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(tmp_name, target)
+        except FileExistsError as exc:
+            raise RoutedPolicyError(
+                f"refusing to overwrite derived pick artifact: {target}"
+            ) from exc
+        os.unlink(tmp_name)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+        raise
+    return file_content_record(target)
+
+
 def write_task_file(path, task_core, rows):
     header = build_task_envelope(task_core, rows)
     record = _atomic_write_jsonl(path, header, rows)
@@ -314,8 +345,13 @@ def _validate_pick_rows(task_rows, pick_rows):
     return picks
 
 
-def read_raw_picks(path, task_header, task_rows):
-    records = _read_jsonl(path)
+def read_raw_picks_bytes(data, task_header, task_rows, source="<raw-picks>"):
+    records = []
+    for line_no, line in enumerate(bytes(data).splitlines(), 1):
+        if line.strip():
+            records.append(strict_json_loads(line, f"{source}:{line_no}"))
+    if not records:
+        raise RoutedPolicyError(f"empty JSONL file: {source}")
     raw_header, records = records[0], records[1:]
     if (
         not isinstance(raw_header, Mapping)
@@ -342,6 +378,12 @@ def read_raw_picks(path, task_header, task_rows):
         )
     _validate_pick_rows(task_rows, rows)
     return rows
+
+
+def read_raw_picks(path, task_header, task_rows):
+    return read_raw_picks_bytes(
+        Path(path).read_bytes(), task_header, task_rows, str(path)
+    )
 
 
 def build_pick_envelope(
@@ -379,6 +421,28 @@ def seal_pick_file(task_path, raw_picks_path, out_path, judge_provenance):
         judge_provenance,
     )
     record = _atomic_write_jsonl(out_path, header, pick_rows)
+    return header, record
+
+
+def write_pick_file(task_path, out_path, pick_rows, judge_provenance):
+    """Write already-derived picks while retaining the v2 task binding.
+
+    Raw provider output must continue to use :func:`seal_pick_file`.  This
+    helper is deliberately narrower: it is for deterministic derived artifacts
+    such as a verified repeated-draw aggregate.  The ordinary pick validator is
+    still applied, and the resulting envelope is byte-for-byte compatible with
+    :func:`read_pick_file`.
+    """
+    task_header, task_rows, task_file_record = read_task_file(task_path)
+    rows = [dict(row) for row in pick_rows]
+    header = build_pick_envelope(
+        task_header,
+        task_file_record,
+        task_rows,
+        rows,
+        judge_provenance,
+    )
+    record = _atomic_write_jsonl_no_clobber(out_path, header, rows)
     return header, record
 
 
