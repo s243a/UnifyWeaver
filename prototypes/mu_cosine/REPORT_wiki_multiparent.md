@@ -35,3 +35,21 @@ the lever: each queued tree is scored by max e5 similarity to the 741 filing-fai
 politics/society gap topics (Authority, Deception, Injustice, Misinformation …) — matching
 REPORT_hybrid_candidates §B″ (the gap mass is news/politics, not STEM). Harvester relaunched on
 the prioritized queue at unchanged pacing; batch_state dedup makes reordering safe/resumable.
+
+## Cross-corpus table (sm_filing_hits.py adds SimpleMind)
+
+| task (single right answer unless noted) | catalog | R@1 | MRR |
+|---|---|---|---|
+| SM parent-level (immediate parent) | 200 | 0.180 | 0.320 |
+| PT single-folder (standing) | 335 | 0.203 | 0.291 |
+| SM root-level (map root + PT distractors) | 346 | 0.128 | 0.218 |
+| wiki any-parent (multi-target) | 5,000 | 0.945 | — |
+| wiki all-4-parents | 5,000 | median k=181 | — |
+
+Owner's claim CONFIRMED: Pearltrees and SimpleMind are the same task — same shape (one principal
+parent), same difficulty band (R@1 0.18–0.20, MRR 0.29–0.32) across different corpora and catalog
+sizes. Task structure, not corpus identity, sets ranking difficulty; Wikipedia's facet structure
+is the outlier in both directions (any-parent trivial, all-parents deep-tail). Root-level is
+harder than parent-level (0.128): deep nodes drift semantically from their map root, so
+root↔filing matching is best done at the map level (shallow nodes/roots), not per deep node.
+488 SM lineage rows (6 maps, privacy-filtered at parse); single seed; descriptive.
