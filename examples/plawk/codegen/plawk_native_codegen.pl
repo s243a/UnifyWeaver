@@ -1283,6 +1283,51 @@ plawk_program_native_driver_ir(
         driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
             AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
+% Multiple for-in loops in the END block (dump several tables):
+% `{ c[$1]++; d[$2]++ } END { for (a in c) print a, c[a]; for (b in d) print b, d[b] }`.
+% Matches a MULTI-element END list of for-in prints (the `[_,_|_]` guard plus the
+% per-loop check keep it disjoint from every single-statement clause and from the
+% `[for_in, print]` accumulate/cardinality shapes, which decline the loop check).
+% One shared AssocPlan feeds the multi-table rule chain (already supported) and
+% the chained END emitter walks each loop over its own table.
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules, [end(ForInList)]),
+    InputPath,
+    DriverIR
+) :-
+    ForInList = [_, _ | _],
+    plawk_multi_forin_end_plan(Rules, ForInList, AssocPlan, PerLoop),
+    AssocPlan = assoc_plan(Tables, _),
+    findall(F, member(_-_-F, PerLoop), PerLoopFields),
+    append(PerLoopFields, AllPrintFields),
+    plawk_program_cache_tables(BeginClauses, CacheNamePaths),
+    plawk_cache_entries(Tables, [], [], CacheNamePaths, CacheEntries, CachePathGlobals),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_record_descriptor(BeginClauses, FieldSeparator),
+    plawk_assoc_record_program_ok(FieldSeparator, Rules, AllPrintFields),
+    plawk_end_print_string_globals(AllPrintFields, StringGlobalIR),
+    plawk_assoc_entry_setup_ir(AssocPlan, CacheEntries, EntrySetupIR),
+    plawk_assoc_rule_chain_ir(AssocPlan, FieldSeparator, AssocRuleGlobalIR, AssocChainIR),
+    plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
+    plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
+    plawk_multi_forin_end_print_ir(PerLoop, AssocPlan, FieldSeparator,
+        OutputSeparator, EndPrintIR),
+    plawk_cache_commit_lines(CacheEntries, CommitIR),
+    format(atom(SurfaceGlobalIR), '~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, AssocRuleGlobalIR, CachePathGlobals]),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
+    plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w
+~w',
+        [CommitIR, EndPrintIR]),
+    plawk_emit_record_driver_ir(FieldSeparator, InputPath,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, '', lowered_assoc,
+            AssocChainIR, '', BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
 
 %% plawk_program_native_driver_ir(+Program, +InputPath, +Options, -DriverIR) is semidet.
 %
@@ -5804,6 +5849,38 @@ plawk_forin_end_plan(Rules, LoopVar, ArrayName,
     plawk_forin_assoc_plan(Rules, ArrayName, LookupArrays, AssocPlan),
     plawk_forin_membership_domains_ok(Guard, ArrayName, AssocPlan).
 
+%% plawk_multi_forin_end_plan(+Rules, +ForInList, -AssocPlan, -PerLoop)
+%
+%  Plan an END block that is a SEQUENCE of for-in prints (dump several tables).
+%  Each loop's print fields are validated against its own loop variable, and the
+%  ONE shared AssocPlan is built to contain every table: `plawk_forin_assoc_plan`
+%  already gathers all rule-body arrays into Tables, so passing the first
+%  iterated array plus all other iterated arrays and all print-lookup arrays as
+%  the "extra" set covers c, d, ... regardless of order. PerLoop is a list of
+%  `LoopVar-ArrayName-PrintFields` for the chained emitter. v1: each print field
+%  is the loop key or a `arr[k]` lookup keyed by the loop var (a string literal
+%  or other field declines cleanly, keeping END string-global naming simple).
+plawk_multi_forin_end_plan(Rules, ForInList, AssocPlan, PerLoop) :-
+    ForInList = [_, _ | _],
+    maplist(plawk_multi_forin_loop_ok, ForInList),
+    findall(A, member(for_in(var(_), var(A), _), ForInList), IterArrays),
+    findall(Lk,
+        ( member(for_in(var(L), var(_), [print(F)]), ForInList),
+          member(assoc(var(Lk), var(L)), F)
+        ),
+        LookupArrays),
+    IterArrays = [First | RestIter],
+    append(RestIter, LookupArrays, ExtraArrays),
+    plawk_forin_assoc_plan(Rules, First, ExtraArrays, AssocPlan),
+    findall(L-A-F, member(for_in(var(L), var(A), [print(F)]), ForInList), PerLoop).
+
+plawk_multi_forin_loop_ok(for_in(var(LoopVar), var(_ArrayName), [print(PrintFields)])) :-
+    PrintFields = [_ | _],
+    maplist(plawk_multi_forin_field_ok(LoopVar), PrintFields).
+
+plawk_multi_forin_field_ok(LoopVar, var(LoopVar)).
+plawk_multi_forin_field_ok(LoopVar, assoc(var(_ArrayName), var(LoopVar))).
+
 % The iterated key may be forwarded directly only across tables with the same
 % internal key domain. Check this during END-plan selection as well as during
 % emission so no broader driver can accept a cross-domain program first.
@@ -6024,35 +6101,119 @@ plawk_forin_writebin_value_lines(int(Value), _LoopVar, _ArrayName, _TableIndex,
 %  every table and return.
 plawk_forin_end_print_ir(LoopVar, ArrayName, PrintFields, AssocPlan,
         Descriptor, OutputSeparator, IR) :-
+    plawk_forin_end_print_ir_indexed('', end_print, free_ret, LoopVar, ArrayName,
+        PrintFields, AssocPlan, Descriptor, OutputSeparator, CoreIR),
+    format(atom(IR), '  br label %forin_head\n\n~w', [CoreIR]).
+
+% Index-parameterized, chainable for-in-END print loop. Suffix is '' for the
+% first loop (byte-identical to the historical single-loop IR) and '1','2',...
+% for later loops, so all labels/SSA are unique across loops. PrevLabel is the
+% phi entry predecessor block (`end_print` for loop 0, `forin<I-1>_after` for a
+% later loop). Tail is `free_ret` (last loop: free every table then `ret i32 0`)
+% or `chain(NextHeadLabel)` (branch into the next loop). PrintIndex resets to 0
+% per loop so the first-field separator is correctly suppressed; the body IR is
+% then uniformly renamed `forin_` -> `forin<Suffix>_` to keep its temps unique.
+plawk_forin_end_print_ir_indexed(Suffix, PrevLabel, Tail, LoopVar, ArrayName,
+        PrintFields, AssocPlan, Descriptor, OutputSeparator, IR) :-
     plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
     phrase(plawk_forin_body_print_lines(PrintFields, LoopVar, ArrayName,
         TableIndex, AssocPlan, Descriptor, OutputSeparator, 0), BodyLines),
-    atomic_list_concat(BodyLines, '\n', BodyIR),
+    atomic_list_concat(BodyLines, '\n', BodyIR0),
+    plawk_forin_suffix_rename(Suffix, BodyIR0, BodyIR),
+    plawk_forin_end_tail_ir(Tail, AssocPlan, TailIR),
+    format(atom(IR),
+'forin~w_head:
+  %forin~w_idx = phi i64 [0, %~w], [%forin~w_next_idx, %forin~w_body_done]
+  %forin~w_slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin~w_idx)
+  %forin~w_done = icmp slt i64 %forin~w_slot, 0
+  br i1 %forin~w_done, label %forin~w_after, label %forin~w_body
+
+forin~w_body:
+  %forin~w_key_id = call i64 @wam_assoc_i64_key_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin~w_slot)
+~w
+  %forin~w_printed_newline = call i32 @putchar(i32 10)
+  br label %forin~w_body_done
+
+forin~w_body_done:
+  %forin~w_next_idx = add i64 %forin~w_slot, 1
+  br label %forin~w_head
+
+forin~w_after:
+~w',
+        [Suffix,
+         Suffix, PrevLabel, Suffix, Suffix,
+         Suffix, TableIndex, Suffix,
+         Suffix, Suffix,
+         Suffix, Suffix, Suffix,
+         Suffix,
+         Suffix, TableIndex, Suffix,
+         BodyIR,
+         Suffix,
+         Suffix,
+         Suffix,
+         Suffix, Suffix,
+         Suffix,
+         Suffix,
+         TailIR]).
+
+% Last loop: free every table in the plan, then return. Non-last loop: branch to
+% the next loop's head.
+plawk_forin_end_tail_ir(free_ret, AssocPlan, IR) :-
     phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
     atomic_list_concat(FreeLines, '\n', FreeIR),
-    format(atom(IR),
-'  br label %forin_head
+    format(atom(IR), '~w\n  ret i32 0', [FreeIR]).
+plawk_forin_end_tail_ir(chain(NextHead), _AssocPlan, IR) :-
+    format(atom(IR), '  br label %~w', [NextHead]).
 
-forin_head:
-  %forin_idx = phi i64 [0, %end_print], [%forin_next_idx, %forin_body_done]
-  %forin_slot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_idx)
-  %forin_done = icmp slt i64 %forin_slot, 0
-  br i1 %forin_done, label %forin_after, label %forin_body
+% Loop index -> label/SSA suffix: '' for the first loop (byte-identical IR),
+% the integer for later loops.
+plawk_forin_index_suffix(0, '') :- !.
+plawk_forin_index_suffix(I, I).
 
-forin_body:
-  %forin_key_id = call i64 @wam_assoc_i64_key_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)
-~w
-  %forin_printed_newline = call i32 @putchar(i32 10)
-  br label %forin_body_done
+% Rename a loop body's `forin_`-prefixed temps to `forin<Suffix>_` so they stay
+% unique across chained loops. Every body temp is `forin_`-prefixed and no other
+% token in the body contains `forin_`, so a plain substring replace is exact. A
+% '' suffix (the first loop) leaves the body unchanged.
+plawk_forin_suffix_rename('', IR, IR) :- !.
+plawk_forin_suffix_rename(Suffix, IR0, IR) :-
+    format(atom(Repl), 'forin~w_', [Suffix]),
+    plawk_atom_replace_all(IR0, 'forin_', Repl, IR).
 
-forin_body_done:
-  %forin_next_idx = add i64 %forin_slot, 1
-  br label %forin_head
+plawk_atom_replace_all(Atom, Find, Replace, Result) :-
+    atomic_list_concat(Parts, Find, Atom),
+    atomic_list_concat(Parts, Replace, Result).
 
-forin_after:
-~w
-  ret i32 0',
-        [TableIndex, TableIndex, BodyIR, FreeIR]).
+% Chain N for-in-END print loops (each `LoopVar-ArrayName-PrintFields`) into one
+% IR block: loop 0 enters from `end_print`, each loop branches into the next, and
+% the last frees the tables and returns.
+plawk_multi_forin_end_print_ir(PerLoop, AssocPlan, Descriptor, OutputSeparator, IR) :-
+    length(PerLoop, N),
+    plawk_multi_forin_loops(PerLoop, 0, N, AssocPlan, Descriptor, OutputSeparator,
+        LoopIRs),
+    atomic_list_concat(LoopIRs, '\n\n', LoopsIR),
+    format(atom(IR), '  br label %forin_head\n\n~w', [LoopsIR]).
+
+plawk_multi_forin_loops([], _I, _N, _AssocPlan, _Descriptor, _OutputSeparator, []).
+plawk_multi_forin_loops([LoopVar-ArrayName-PrintFields | Rest], I, N, AssocPlan,
+        Descriptor, OutputSeparator, [LoopIR | More]) :-
+    plawk_forin_index_suffix(I, Suffix),
+    ( I =:= 0
+    -> PrevLabel = end_print
+    ;  I0 is I - 1,
+       plawk_forin_index_suffix(I0, PrevSuffix),
+       format(atom(PrevLabel), 'forin~w_after', [PrevSuffix])
+    ),
+    I1 is I + 1,
+    ( I1 =:= N
+    -> Tail = free_ret
+    ;  plawk_forin_index_suffix(I1, NextSuffix),
+       format(atom(NextHead), 'forin~w_head', [NextSuffix]),
+       Tail = chain(NextHead)
+    ),
+    plawk_forin_end_print_ir_indexed(Suffix, PrevLabel, Tail, LoopVar, ArrayName,
+        PrintFields, AssocPlan, Descriptor, OutputSeparator, LoopIR),
+    plawk_multi_forin_loops(Rest, I1, N, AssocPlan, Descriptor, OutputSeparator,
+        More).
 
 %% plawk_forin_end_guarded_print_ir(+LoopVar, +ArrayName, +Guard,
 %%     +PrintFields, +AssocPlan, +Descriptor, +OutputSeparator, -IR, -GuardGlobal)
