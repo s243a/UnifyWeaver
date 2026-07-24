@@ -1934,7 +1934,32 @@ end_clauses([end([Action])]) -->
     "}",
     ws,
     !.
+% General multi-statement END block: a sequence of end_actions separated by
+% `action_sep` (`;` or newline). Tried after the single-action clause (which
+% commits before reaching here for a genuine single statement, so single-END
+% ASTs are unchanged) and the specialized idiom clauses above. Enables e.g. two
+% for-in loops dumping two tables, or `END { print a; print b }`.
+end_clauses([end([A | As])]) -->
+    "END",
+    ws,
+    "{",
+    ws,
+    end_action_seq([A | As]),
+    action_block_close,
+    !.
 end_clauses([]) -->
+    [].
+
+end_action_seq([A | As]) -->
+    end_action(A),
+    end_action_seq_rest(As).
+
+end_action_seq_rest([A | As]) -->
+    action_sep,
+    end_action(A),
+    !,
+    end_action_seq_rest(As).
+end_action_seq_rest([]) -->
     [].
 
 % `acc += OPERAND` inside a for-in accumulate body. The operand is
