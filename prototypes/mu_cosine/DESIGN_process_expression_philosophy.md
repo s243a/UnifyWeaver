@@ -23,14 +23,20 @@ card is its documentation") from atoms to programs.
 The language must balance CONCISENESS against SPECIFICITY. Operationalized: an expression
 distinction earns its tokens iff it buys held-out predictive gain —
 
-    maximize   Δ(held-out NLL of the conditioned model)  per  expression token
+    the GAIN-PER-TOKEN EFFICIENCY CURVE:  Δ(held-out NLL)  per  expression token
 
-an MDL criterion. Too coarse (all judges = "llm") discards distinctions that change the label
-distribution; too fine (temperature, prompt hash, date on every row) adds description length
-without gain and fragments the data into unlearnable slivers. The optimal grammar level is an
-EMPIRICAL quantity, found by sweeping card verbosity and measuring gain-per-token — not decided
-by taste. Control: shuffled/mismatched cards must HURT (if the model ignores its conditioning,
-the language is decoration and the result is void).
+(Naming amended per review #3974-r1 finding 8: this is NOT MDL — a true MDL objective would also
+charge for the grammar/registry/model code length and require a pinned tokenizer so "token" is
+well-defined. We adopt the efficiency-curve framing, pin the tokenizer (the e5 tokenizer at a
+recorded revision) so lengths are comparable, and leave a genuine two-part code-length objective
+to the Codex/theory lane if the curve proves insufficient.) Too coarse (all judges = "llm")
+discards distinctions that change the label distribution; too fine (temperature, prompt hash,
+date on every row) adds description length without gain and fragments the data into unlearnable
+slivers. The optimal grammar level is an EMPIRICAL quantity — swept on an INNER validation split,
+never on the set later used for reported inference. Control: shuffled/mismatched cards must
+DEGRADE the conditioned arm toward (not necessarily below) the unconditional arm — when judges
+often agree, a wrong card still carries mostly-right information, so the prespecified check is
+"shuffling loses a significant fraction of the conditioning gain", not "shuffling goes negative".
 
 ## Multi-verbosity training (owner's design point)
 
