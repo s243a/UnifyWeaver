@@ -16846,6 +16846,8 @@ plawk_pattern_guard_ir(field_eq(Index, Value), GuardIR) :-
     plawk_pattern_guard_ir(field_eq(Index, Value), 32, GuardIR).
 plawk_pattern_guard_ir(field_cmp(Index, Op, Value), GuardIR) :-
     plawk_pattern_guard_ir(field_cmp(Index, Op, Value), 32, GuardIR).
+plawk_pattern_guard_ir(field_str_cmp(Index, Op, Value), GuardIR) :-
+    plawk_pattern_guard_ir(field_str_cmp(Index, Op, Value), 32, GuardIR).
 
 plawk_pattern_guard_ir(always, _FieldSeparator, GuardIR) :-
     plawk_pattern_guard_ir(always, GuardIR).
@@ -16869,6 +16871,14 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, ''-GuardCall
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, '%is_match', GuardCallIR).
+% Field-vs-string-literal ordering `$N < "str"` (single-rule guard): lexical
+% memcmp of the field slice against the literal. Text mode only (integer FS);
+% a binfmt descriptor has no clause here and declines.
+plawk_pattern_guard_ir(field_str_cmp(Index, Op, Value), FieldSeparator, GuardIR) :-
+    integer(FieldSeparator),
+    plawk_field_cmp_op_code(Op, OpCode),
+    llvm_emit_atom_field_str_cmp_guard(plawk_surface_field_strcmp, '%line', Index,
+        OpCode, Value, FieldSeparator, '%is_match', GuardIR).
 % Expression pattern `NF OP int` (single-rule guard): count the current
 % record's fields with the active FS, then compare to the literal.
 plawk_pattern_guard_ir(special_cmp('NF', Op, Value), FieldSeparator, ''-GuardCallIR) :-
@@ -16998,6 +17008,13 @@ plawk_pattern_guard_ir(field_cmp(Index, Op, Value), FieldSeparator, _GlobalBase,
     plawk_field_cmp_op_code(Op, OpCode),
     llvm_emit_atom_field_i64_cmp_guard('%line', Index, OpCode, Value,
         FieldSeparator, MatchValue, GuardCallIR).
+% Field-vs-string-literal ordering (multi-rule guard): per-rule GlobalBase keeps
+% the literal constant unique across rule blocks. Text mode only.
+plawk_pattern_guard_ir(field_str_cmp(Index, Op, Value), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
+    integer(FieldSeparator),
+    plawk_field_cmp_op_code(Op, OpCode),
+    llvm_emit_atom_field_str_cmp_guard(GlobalBase, '%line', Index, OpCode, Value,
+        FieldSeparator, MatchValue, GuardIR).
 % Expression pattern `NF OP int` (multi-rule guard): a per-rule GlobalBase keeps
 % the field-count temporary unique across rule blocks.
 plawk_pattern_guard_ir(special_cmp('NF', Op, Value), FieldSeparator, GlobalBase, MatchValue, ''-GuardCallIR) :-

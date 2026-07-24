@@ -1014,6 +1014,9 @@ base_pattern(Pattern) -->
     field_str_ne_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
+    field_str_cmp_pattern(Pattern),
+    !.
+base_pattern(Pattern) -->
     field_eq_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
@@ -1315,6 +1318,33 @@ field_str_ne_pattern(not_pat(field_eq(Index, Value))) -->
       ValueCodes \== [],
       string_codes(Value, ValueCodes)
     }.
+
+%% field_str_cmp_pattern(-Pattern)//
+%
+%  `$N < "str"` / `<=` / `>` / `>=` -- a field-vs-string-literal ORDERING guard.
+%  awk compares a field against a string constant lexically (the constant forces
+%  a string comparison, never numeric), so this lowers to a byte-wise memcmp of
+%  the field slice against the literal. A numeric RHS keeps the field_i64 path
+%  (`$N < 5`, tried earlier in base_pattern); only a quoted-string RHS matches
+%  here. `==` / `!=` are the field_eq / field_str_ne rules; this covers the four
+%  ordering operators, parsed via string_ordering_cmp_op (longest match first).
+field_str_cmp_pattern(field_str_cmp(Index, Op, Value)) -->
+    "$",
+    integer_codes(IndexCodes),
+    ws,
+    string_ordering_cmp_op(Op),
+    ws,
+    quoted_string(ValueCodes),
+    { IndexCodes \== [],
+      number_codes(Index, IndexCodes),
+      Index > 0,
+      string_codes(Value, ValueCodes)
+    }.
+
+string_ordering_cmp_op(le) --> "<=".
+string_ordering_cmp_op(ge) --> ">=".
+string_ordering_cmp_op(lt) --> "<".
+string_ordering_cmp_op(gt) --> ">".
 
 field_i64_cmp_pattern(field_cmp(Index, Op, Value)) -->
     "$",
