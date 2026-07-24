@@ -278,12 +278,17 @@ test(end_missing_probe_is_non_mutating_ir) :-
     assertion(\+ sub_atom(EndIR, _, _, _, '@wam_assoc_i64_inc(')),
     !.
 
-test(end_three_field_membership_rejected,
+% A three-field probe against a two-field table (`seen[$1,$2]`) compiles now
+% that any-arity SUBSEP membership is supported, and correctly never matches --
+% the 3-field key `$1 SUBSEP $2 SUBSEP $3` is a different key domain, so "bad"
+% is not printed (matching gawk).
+test(end_three_field_probe_wrong_arity,
         [condition(clang_available)]) :-
     mdir(Dir),
     Src = "{ seen[$1,$2]++ } END { if (($1,$2,$3) in seen) print \"bad\" }\n",
-    build_status(Dir, 'end_three_fields', Src, St),
-    assertion(St == 3),
+    build_run(Dir, 'end_three_fields', Src, "a b\nc d\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == ""),
     !.
 
 % Standalone END membership is deliberately a single direct/negated probe in
@@ -359,11 +364,15 @@ test(boolean_membership_with_ordinary_leaves,
 
 % The parser deliberately preserves a wider SUBSEP key in the AST, but v1 only
 % lowers exactly two field components. It must fail with compile status 3.
-test(three_field_membership_rejected, [condition(clang_available)]) :-
+% A rule-body three-field probe against a two-field table compiles and never
+% matches (different key domain), so "bad" is not printed and the for-in
+% cardinality is the number of distinct two-field keys (matching gawk).
+test(three_field_probe_wrong_arity, [condition(clang_available)]) :-
     mdir(Dir),
     Src = "{ seen[$1,$2]++; if (($1,$2,$3) in seen) print \"bad\" } END { n=0; for (k in seen) n++; print n }\n",
-    build_status(Dir, 'three_fields', Src, St),
-    assertion(St == 3),
+    build_run(Dir, 'three_fields', Src, "a b\nc d\na b\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "2\n"),
     !.
 
 % Membership is a guard in v1, not a printable value. The explicit in_expr AST
