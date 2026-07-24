@@ -7,16 +7,27 @@ the label it is fitting* — at a chosen level of specificity.
 ## Grammar (v0, amended per review #3974-r1)
 
 ```
-Expr     := Atom | Apply | Atom "." Ident            # dotted modifier: judge variant (sonnet.lineage)
-Apply    := Ident "(" [Args] ")"                     # an Ident may be BOTH atom and operator —
+Expr     := Atom | Apply | Expr "." Mod              # dotted modifier: variant/channel (sonnet.lineage, luna.D)
+Apply    := Name "(" [Args] ")"                      # a Name may be BOTH atom and operator —
 Args     := Arg ("," Arg)*                           #   e5 (embedding source) vs e5(...) (ranker over
 Arg      := Expr | Kwarg | Pin                       #   an inner process); resolved by the registry
 Kwarg    := Ident "=" Val                            # canonical: sorted by kw, defaults ELIDED
 Pin      := Expr "@" PinLit                          # provenance pin (V3 only): rev, date, hash
-Val      := Number | List | String | Ident
+Atom     := Name                                     # any registry-registered leaf source/judge
+Val      := Number | List | String | Name
 List     := "[" Val ("," Val)* "]"
-Number   := /-?[0-9]+(\.[0-9]+)?/ ;  Ident := /[a-z][a-z0-9_-]*/ ;  PinLit := /[A-Za-z0-9._\/-]+/
+String   := '"' /[^"]*/ '"'
+Number   := /-?[0-9]+(\.[0-9]+)?/ ;  Ident := /[a-z][a-z0-9_]*/ ;  Mod := /[A-Za-z][A-Za-z0-9_-]*/
+PinLit   := /[A-Za-z0-9._\/-]+/
+Name     := longest match against the registry's reserved name vocabulary
 ```
+
+**Registry-driven lexing (review r2 item 1):** names like `gpt-5.5-low` contain `.` and `-`, which
+would collide with the modifier and minus syntax under naive lexing. Resolution: the lexer
+longest-matches `Name` tokens against the versioned registry vocabulary FIRST, so any registered
+name — dots, hyphens and all — is one token; `.Mod` parsing applies only to text following a
+complete parsed Expr. `Mod` permits uppercase (channel modifiers `luna.D`, `luna.S`). Unregistered
+bare words are a parse error (no guessing).
 
 **Typed operator-signature registry (versioned):** every Ident used as an operator has a registry
 entry — arity, positional/kw parameter types + defaults, output type (score | pick | target-set),

@@ -53,10 +53,14 @@ cohort with a structurally frozen catalog, collected AFTER this design is fixed.
   (d) SHUFFLED cards — permutation defined as: within each split side, permute the card column
   across rows UNIFORMLY AT RANDOM among rows with distinct process ASTs (so a shuffled row's card
   is always wrong), 5 permutation draws, mean reported.
-- **Frozen primary decision (finding 7):** primary metric = held MRR of arm (a) vs arm (c),
-  paired two-endpoint node-block bootstrap, 3 training seeds pooled by mean-per-query; success =
-  CI excludes zero AND point gain ≥ +0.01 MRR. Everything else (R@1, arm (b), shuffled fraction
-  lost, per-process breakdowns) is secondary/descriptive — reported, no multiplicity claims.
+- **Frozen primary decision (finding 7; amended per review r2 item 2):** the claim is
+  "STRUCTURED EXPRESSIONS earn their keep over flat tokens", so the primary is arm (a) vs
+  arm (b) — held MRR, paired two-endpoint node-block bootstrap, 3 training seeds pooled by
+  mean-per-query; success = superiority (CI excludes zero, point gain ≥ +0.01 MRR) OR
+  noninferiority (CI lower bound ≥ −0.005) IF the P3 zero-shot LOCO pass succeeds — expressions
+  may tie flat tokens in-distribution and still win on generalization, which flat tokens cannot
+  attempt. Secondary: (a) vs (c) ("conditioning helps at all"), R@1, shuffled fraction lost,
+  per-process breakdowns — reported, no multiplicity claims.
 - Exit: primary success ⇒ proceed to P2; primary failure but rollback floor held ⇒ the language
   is not earning conditioning gain on this corpus — stop and hand the grammar to the theory lane
   before spending more.
@@ -72,8 +76,11 @@ cohort with a structurally frozen catalog, collected AFTER this design is fixed.
 
 ## P3 — compositional embedding + zero-shot
 
-- Tree encoder over the AST (superposition first — random_operator_embedding precedent — then a
-  small learned encoder if superposition plateaus).
+- Tree encoder over the AST — DETERMINISTIC composition (review r2 item 3): node embedding =
+  card-e5(operator) + Σ position-weighted child embeddings with fixed per-position weights; any
+  stochastic element (e.g. dropout-style card sampling) is seeded by SHA-256 of the canonical AST,
+  so identical expressions always embed identically. A small learned tree encoder follows only if
+  the deterministic superposition plateaus.
 - Zero-shot test (finding 9 — one held process proves nothing): PREREGISTERED
   leave-one-composition-out over SEVERAL held processes — at minimum {sonnet.lineage@N20,
   haiku@N10, kalman(luna.D, luna.S), one lineage-decay variant} — each evaluated against four
