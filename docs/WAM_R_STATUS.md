@@ -73,4 +73,6 @@ default 4096), and explicit `auto` (codegen resolves via shared
 ## Document status
 
 Fleet-aligned snapshot updated for PERF-R-CA-STACK (2026-07-25): iterative
-integer-ID DFS frame stack, remeasured in hosted CI.
+integer-ID DFS frame stack, remeasured in hosted CI. PERF-R-CA-PATHMARK
+was profiled and declined (path membership ~1% Rprof self post-STACK; trial
+counts path showed no speedup; no production change).
