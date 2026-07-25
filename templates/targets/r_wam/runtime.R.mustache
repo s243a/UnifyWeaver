@@ -3257,7 +3257,8 @@ WamRuntime$category_ancestor_hops_ids <- function(lookup_ids, start_id, root_id,
     cur_pos <- st_pos[[sp]]
     cur_depth <- st_depth[[sp]]
     cur_vlen <- st_vlen[[sp]]
-    st_parents[[sp]] <- NULL
+    # Single-bracket replacement clears without deleting/shifting the slot.
+    st_parents[sp] <- list(NULL)
     sp <- sp - 1L
     do_enter <- FALSE
   }
