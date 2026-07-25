@@ -1,0 +1,176 @@
+{
+  "schema": "unifyweaver.sm-fs-retention-transfer-prereg.v1",
+  "protocol_path": "PROTOCOL_sm_fs_retention_transfer.md",
+  "protocol_sha256": "5cbe305ed3eb0c2ecbb78b6f032e326c5c0c72bf415d218c538bbe3abdacd3d8",
+  "evidence_status": "prospective-blocked-design-lock",
+  "source": {
+    "ranking_protocol_schema": "unifyweaver.sm-fs-lineage-ranking-prereg.v1",
+    "ranking_protocol_sha256": "25bac71a67b317700f6a5123af238f01e9b57225bf4deaf71a6470486bd194f3",
+    "ranking_prereg_id": "0235521270c565a413d69feaa01a6e101fb533261942451a43ddf963e409aca2",
+    "negative_bundle_status": "blocked-until-frozen-and-verified",
+    "negative_bundle_sha256": null,
+    "null_ledger_status": "blocked-until-frozen-and-verified",
+    "null_ledger_sha256": null,
+    "reserve_rows_authorized": false,
+    "quarantined_rows_authorized": false
+  },
+  "checkpoints": {
+    "pre_pt_base": {
+      "name": "model_prod_namecond.pt",
+      "sha256": "c1cfc3a3827e42a1993f4286b6a881aee7ff10eb56a76367735b9ec8fdf11f7d",
+      "role": "migration-provenance-only"
+    },
+    "pre_pt_migrated": {
+      "name": "model_prod_namecond_full.pt",
+      "sha256": "9bb60915e9bcf8d4a89293c538284fd5ac631d9729f355917e128db7353bc8ef",
+      "role": "operative-track-t-source"
+    },
+    "pt_retention_base": {
+      "name": "model_pt_filing_lin.pt",
+      "sha256": "55834a204093e1cd525b7189d372cdec6eea4b424518e938912955f5dfcf3c76"
+    },
+    "sm_fs_positive_pilot": {
+      "name": "model_sm_fs_lin.pt",
+      "sha256": "e541e8b812a00be457a27f3f7484ffcb53f5ba65c54c6c3bbd9ebcba90c9be19",
+      "decision_eligible": false,
+      "transfer_eligible": false
+    }
+  },
+  "training": {
+    "seeds": [
+      3998101,
+      3998102,
+      3998103
+    ],
+    "matched_initial_state_budget_batches_and_augmentation": true,
+    "seed_zero_pilot_eligible": false,
+    "source_only_selection": true,
+    "pearltrees_outcome_selection_authorized": false,
+    "one_gpu_job_at_a_time": true,
+    "sm_fs_node_types": [
+      "mindmap_node",
+      "mindmap_node"
+    ]
+  },
+  "null_control": {
+    "required": true,
+    "kind": "within-source-list-constrained-joint-payload-permutation",
+    "preserves_list_level": [
+      "items",
+      "candidate_text",
+      "list_sizes",
+      "target_marginals",
+      "positive-negative-types",
+      "row_weights",
+      "folds",
+      "batches",
+      "optimizer_budget"
+    ],
+    "payload": [
+      "target-bytes",
+      "objective-mass",
+      "positive-nonancestor-status",
+      "relation",
+      "hardness"
+    ],
+    "rowwise_type_or_weight_preserved": false,
+    "constraints": [
+      "every-payload-index-moves",
+      "every-true-ancestor-receives-nonancestor-payload",
+      "every-positive-payload-moves-to-true-nonancestor",
+      "target-one-parent-payload-moves"
+    ],
+    "fixed_point_definition": "payload-index-not-numeric-value",
+    "unchanged_numeric_target_fraction_recorded": true,
+    "pearltrees_inputs_authorized": false
+  },
+  "retention": {
+    "arms": [
+      "R0_unchanged_pt",
+      "R1_correct_sm_fs",
+      "Rnull_scrambled_sm_fs"
+    ],
+    "primary_contrast": "R1-minus-R0",
+    "metric": "exact-destination-mrr",
+    "interval_lower_strictly_greater_than": -0.005,
+    "maximum_individual_seed_loss": 0.01,
+    "correct_candidate_lineage": true,
+    "behavior_panel_required": true,
+    "behavior_panel_sha256": null,
+    "status": "blocked-behavior-panel-and-source-ledgers"
+  },
+  "transfer": {
+    "arms": [
+      "T0_common_expanded_pre_pt",
+      "T1_correct_sm_fs",
+      "Tnull_scrambled_sm_fs"
+    ],
+    "common_expansion_once_per_seed": true,
+    "operative_source": "model_prod_namecond_full.pt",
+    "total_contrast": "T1-minus-T0",
+    "total_minimum_point_gain": 0.01,
+    "total_interval_lower_strictly_greater_than": 0.0,
+    "specificity_contrast": "T1-minus-Tnull",
+    "specificity_minimum_point_gain": 0.005,
+    "specificity_interval_lower_strictly_greater_than": 0.0,
+    "gate_specificity_after_total": true,
+    "e5_noninferiority_contrast": "T1-minus-e5",
+    "e5_noninferiority_margin": -0.01,
+    "e5_interval_lower_strictly_greater_than_margin": true,
+    "title_only_lineage_primary": true,
+    "correct_candidate_lineage_primary": false,
+    "status": "blocked-fresh-target-cohort-and-source-ledgers"
+  },
+  "target": {
+    "fresh_post_freeze_cohort_required_for_confirmation": true,
+    "historical_population_status": "exploratory-transductive-locked-audit-only",
+    "catalog_frozen_before_placement_labels": true,
+    "predictions_sealed_before_destination_join": true,
+    "historical_identity_overlap_authorized": false,
+    "historical_resource_overlap_authorized": false,
+    "canonical_resource_hash_required_for_confirmation": true,
+    "e5_revision": "ffb93f3bd4047442299a41ebb6fa998a38507c52",
+    "candidate_pool_size": 100,
+    "missing_destination_rr": 0.0,
+    "exact_id_primary": true,
+    "title_equivalence_primary": false
+  },
+  "inference": {
+    "function": "paired_node_bootstrap_ci",
+    "typed_endpoints": [
+      "resource",
+      "folder"
+    ],
+    "resamples": 9999,
+    "seed": 3998999,
+    "confidence": 0.95,
+    "minimum_endpoint_components_for_decision": 20,
+    "seed_aggregation": "mean-per-query-before-contrast",
+    "interval_scope": "conditional-on-frozen-target-cohort-and-fitted-checkpoints",
+    "root_decisions": [
+      "retention",
+      "total-transfer"
+    ],
+    "root_interval": "central-95-percent",
+    "root_lower_tail_alpha_each": 0.025,
+    "root_family_bonferroni_upper_bound": 0.05,
+    "specificity_and_e5_are_serially_gated": true
+  },
+  "privacy": {
+    "local_only": true,
+    "directory_mode": "0700",
+    "file_mode": "0600",
+    "atomic_no_replace": true,
+    "provider_calls_with_source_content": false,
+    "checkpoint_release_authorized": false
+  },
+  "execution_authorized": false,
+  "blocked_on": [
+    "negative-ranking-bundle",
+    "matched-null-ledger",
+    "retention-behavior-panel",
+    "fresh-certified-public-pearltrees-cohort",
+    "exact-training-plan-and-environment-lock"
+  ],
+  "prereg_id": "f3e1d123e6f81191489689d7f7e0fd121e25ff891ada330fe668b8b3238497c1"
+}
