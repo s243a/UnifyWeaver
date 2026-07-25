@@ -7,17 +7,18 @@ the label it is fitting* — at a chosen level of specificity.
 ## Grammar (v0, amended per review #3974-r1)
 
 ```
-Expr     := Atom | Apply | Expr "." Mod              # dotted modifier: variant/channel (sonnet.lineage, luna.D)
+Expr     := Primary ("." Mod)* ("@" PinLit)*          # modifiers precede provenance pins
+Primary  := Atom | Apply
 Apply    := Name "(" [Args] ")"                      # a Name may be BOTH atom and operator —
 Args     := Arg ("," Arg)*                           #   e5 (embedding source) vs e5(...) (ranker over
-Arg      := Expr | Kwarg | Pin                       #   an inner process); resolved by the registry
+Arg      := Expr | Kwarg                             #   an inner process); resolved by the registry
 Kwarg    := Ident "=" Val                            # canonical: sorted by kw, defaults ELIDED
-Pin      := Expr "@" PinLit                          # provenance pin (V3 only): rev, date, hash
 Atom     := Name                                     # any registry-registered leaf source/judge
-Val      := Number | List | String | Name
+Val      := Number | List | String
 List     := "[" Val ("," Val)* "]"
-String   := '"' /[^"]*/ '"'
-Number   := /-?[0-9]+(\.[0-9]+)?/ ;  Ident := /[a-z][a-z0-9_]*/ ;  Mod := /[A-Za-z][A-Za-z0-9_-]*/
+String   := a JSON string literal                    # whitespace and escapes are content
+Number   := /-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?/ ; Ident := /[a-z][a-z0-9_]*/
+Mod      := /[A-Za-z][A-Za-z0-9_-]*/
 PinLit   := /[A-Za-z0-9._\/-]+/
 Name     := longest match against the registry's reserved name vocabulary
 ```
@@ -29,11 +30,16 @@ name — dots, hyphens and all — is one token; `.Mod` parsing applies only to 
 complete parsed Expr. `Mod` permits uppercase (channel modifiers `luna.D`, `luna.S`). Unregistered
 bare words are a parse error (no guessing).
 
-**Typed operator-signature registry (versioned):** every Ident used as an operator has a registry
-entry — arity, positional/kw parameter types + defaults, output type (score | pick | target-set),
-and whether the same Ident is also a valid atom. The registry version is part of process identity.
-The P0 round-trip requirement (parse ∘ render = id) is against THIS grammar + registry, and the
-registry must parse every example in this document (the v0 acceptance test).
+**Typed operator-signature registry (versioned):** every Name used as an operator has a registry
+entry — arity, positional/kw parameter types + defaults, output type
+(`source | score | pick | target-set`), allowed modifiers, and whether the same Name is also a
+valid atom. Composition validates each child's output type against the parent's positional type.
+The registry version is part of process identity.
+The P0 lossless round-trip requirement (`parse(render(ast, V3)) = ast`, and likewise for the
+canonical identity string) is against THIS grammar + registry, and the registry must parse every
+example in this document (the v0 acceptance test). V0–V2 are deliberately lossy conditioning
+views; an elided required parameter can make such a card non-executable, so they are never parsed
+back as process identities.
 
 Examples (the deployed three-tier filing policy, at three verbosities):
 
@@ -41,7 +47,7 @@ Examples (the deployed three-tier filing policy, at three verbosities):
 V1  e5(routing(e5, sonnet))
 V2  e5(routing(e5, sonnet.lineage, t=[0.02,0.03], menus=[10,20]))
 V3  e5(routing(e5@e5-small-v2, sonnet.lineage@2026-07-23/menu-order-blind,
-       t=[0.02,0.03], menus=[10,20], manifest=fcf5e1d6))
+       t=[0.02,0.03], menus=[10,20], manifest="fcf5e1d6"))
 ```
 
 Other current processes, expressed: `kalman(luna.D, luna.S)` (the "kalman-fused" judge token),
@@ -62,8 +68,9 @@ Other current processes, expressed: `kalman(luna.D, luna.S)` (the "kalman-fused"
 
 ## Canonicalization rules
 
-1. Kwargs sorted; values in canonical numeric form; DEFAULTS ELIDED in renderings (the canonical
-   AST keeps explicit resolved values for identity).
+1. Kwargs sorted; finite floats use Python's shortest lossless round-trip form (including exponent
+   notation when needed); DEFAULTS ELIDED in renderings (the canonical AST keeps explicit resolved
+   values for identity).
 2. `judge.modifier` dot-syntax for judge variants (`sonnet.lineage` = sonnet with lineage-context
    menus); `@` pins (model revision, date, prompt hash) rendered at V3 only, always present in
    the canonical AST.
