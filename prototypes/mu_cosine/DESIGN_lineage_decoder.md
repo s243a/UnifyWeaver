@@ -1,5 +1,17 @@
 # Lineage Decoder — design sketch (FUTURE WORK, not an immediate priority)
 
+> **HISTORICAL DESIGN SKETCH — superseded for implementation.** Preserve this
+> document as research history, but do not implement from it. In particular,
+> frozen e5—not a `mu_lineage` head—is the current filing-ranking backbone; a
+> low top-two margin establishes ambiguity, not a probability that a folder is
+> missing; existing-folder breadcrumbs come from the frozen catalog's recorded
+> canonical/principal path rather than a generated path; and path depth is
+> dynamic rather than a fixed 26-slot output. The implementation handoff is
+> [`DESIGN_filing_path_decoder_handoff.md`](DESIGN_filing_path_decoder_handoff.md).
+> The process-expression reconstruction decoder is a separate model described
+> in
+> [`DESIGN_expression_encoder_future.md`](DESIGN_expression_encoder_future.md).
+
 Sketched during a training run, per the "would be cool to design for future work" note. This is the generative
 counterpart to the **retrieval** LINEAGE operator (`train_lineage.py`): instead of *picking* the best existing
 folder/path, a decoder *generates* the placement path — and, crucially, can **propose a folder that doesn't exist

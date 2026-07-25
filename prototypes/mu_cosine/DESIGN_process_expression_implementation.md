@@ -105,7 +105,10 @@ cohort with a structurally frozen catalog, collected AFTER this design is fixed.
   card-e5(operator) + Σ position-weighted child embeddings with fixed per-position weights; any
   stochastic element (e.g. dropout-style card sampling) is seeded by SHA-256 of the canonical AST,
   so identical expressions always embed identically. A small learned tree encoder follows only if
-  the deterministic superposition plateaus.
+  the deterministic superposition plateaus. The learned follow-on is specified separately in
+  `DESIGN_expression_encoder_future.md`; its complete typed-role-path position contract and
+  mathematically corrected ablation set are in `DESIGN_tree_position_encoding_theory.md`. Those
+  documents are implementation handoffs, not permission to bypass this phase's activation gate.
 - Zero-shot test (finding 9 — one held process proves nothing): PREREGISTERED
   leave-one-composition-out over SEVERAL held processes — at minimum {sonnet.lineage@N20,
   haiku@N10, kalman(luna.D, luna.S), one lineage-decay variant} — each evaluated against four
