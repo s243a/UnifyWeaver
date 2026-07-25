@@ -4327,7 +4327,8 @@ WamRuntime$build_fact_indexes <- function(facts, arity) {
 }
 
 # ----------------------------------------------------------
-# Bound-arg1 parent-lookup capability (PERF-R-CA-DIRECT / IDDFS)
+# Bound-arg1 parent-lookup capability
+# (PERF-R-CA-DIRECT / IDDFS / IDCACHE)
 # ----------------------------------------------------------
 # Registry: program$arg1_lookups["pred/arity"] -> capability list:
 #   list(lookup = function(key_term) -> list(atom TermValues) | NULL,
@@ -4336,6 +4337,9 @@ WamRuntime$build_fact_indexes <- function(facts, arity) {
 # by guessing pred_*_indexes names from a kernel. lookup_ids enables the
 # integer-ID DFS; lookup alone keeps the TermValue path; neither falls
 # back to iterate_goal. Atom-only parents match collect_parents filtering.
+# In-memory indexed lookup_ids memoizes parent-id vectors by numeric atom
+# id inside the capability closure (PERF-R-CA-IDCACHE). Lazy/cached LMDB
+# capabilities stay on-demand and retain their existing cache policy.
 WamRuntime$arg1_parent_terms_from_tuples <- function(tuples) {
   n <- length(tuples)
   if (n == 0L) return(list())
@@ -4398,24 +4402,64 @@ WamRuntime$make_indexed_arg1_parent_lookup <- function(facts, indexes) {
 WamRuntime$make_indexed_arg1_parent_lookup_ids <- function(facts, indexes) {
   if (is.null(indexes) || length(indexes) < 1L) return(NULL)
   idx0 <- indexes[[1L]]
+  # Closure-private memo: list indexed by intern atom id.
+  # NULL slot = not yet computed; integer vector (possibly empty) = cached.
+  # Avoids repeated paste0("a", id) / env bucket walks / parent extraction
+  # on the CA ID-DFS hot path. Does not duplicate the full edge table up
+  # front — entries are filled lazily on first query of each id.
+  cache <- list()
+  # Keep the numeric-list fast path bounded. Intern ids are normally dense,
+  # but a capability caller can supply an arbitrary positive integer; growing
+  # a list to that id would turn a cache miss into an unbounded allocation.
+  # Rare ids beyond the dense bound use a closure-private hashed overflow.
+  dense_limit <- max(4096L, length(facts))
+  overflow <- new.env(hash = TRUE, parent = emptyenv())
   function(atom_id) {
-    bk <- paste0("a", as.integer(atom_id))
-    if (!exists(bk, envir = idx0, inherits = FALSE)) return(integer(0))
-    tidxs <- get(bk, envir = idx0, inherits = FALSE)
-    n <- length(tidxs)
-    if (n == 0L) return(integer(0))
-    ids <- integer(n)
-    k <- 0L
-    for (ti in tidxs) {
-      tup <- facts[[ti]]
-      if (length(tup) < 2L) next
-      p <- tup[[2L]]
-      if (!is.null(p) && !is.null(p$tag) && identical(p$tag, "atom")) {
-        k <- k + 1L
-        ids[[k]] <- as.integer(p$id)
+    aid <- as.integer(atom_id)
+    if (!is.na(aid) && aid >= 1L) {
+      if (aid <= dense_limit) {
+        if (aid <= length(cache)) {
+          hit <- cache[[aid]]
+          if (!is.null(hit)) return(hit)
+        }
+      } else {
+        overflow_key <- as.character(aid)
+        if (exists(overflow_key, envir = overflow, inherits = FALSE)) {
+          return(get(overflow_key, envir = overflow, inherits = FALSE))
+        }
       }
     }
-    if (k == 0L) integer(0) else if (k == n) ids else ids[seq_len(k)]
+    out <- integer(0)
+    if (!is.na(aid)) {
+      bk <- paste0("a", aid)
+      if (exists(bk, envir = idx0, inherits = FALSE)) {
+        tidxs <- get(bk, envir = idx0, inherits = FALSE)
+        n <- length(tidxs)
+        if (n > 0L) {
+          ids <- integer(n)
+          k <- 0L
+          for (ti in tidxs) {
+            tup <- facts[[ti]]
+            if (length(tup) < 2L) next
+            p <- tup[[2L]]
+            if (!is.null(p) && !is.null(p$tag) && identical(p$tag, "atom")) {
+              k <- k + 1L
+              ids[[k]] <- as.integer(p$id)
+            }
+          }
+          out <- if (k == 0L) integer(0) else if (k == n) ids else ids[seq_len(k)]
+        }
+      }
+      if (aid >= 1L) {
+        if (aid <= dense_limit) {
+          if (aid > length(cache)) length(cache) <<- aid
+          cache[[aid]] <<- out
+        } else {
+          assign(as.character(aid), out, envir = overflow)
+        }
+      }
+    }
+    out
   }
 }
 
