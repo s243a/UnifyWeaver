@@ -112,7 +112,10 @@ def test_registry_caps_modifiers_at_one_per_node():
 
     with pytest.raises(pc.ParseError, match="at most one modifier"):
         pc.parse("llm.element.subcat")
-    assert all(len(s.modifiers) >= 0 for s in REGISTRY.values())
+    # The cap actually bites: several names declare more than one modifier, so
+    # the restriction is a real one rather than vacuously satisfied.
+    multi = {n for n, s in REGISTRY.items() if len(s.modifiers) > 1}
+    assert multi == {"luna", "llm"}
 
 
 # --------------------------------------------------------------------------
@@ -287,3 +290,87 @@ def test_specification_records_the_measured_numbers():
         "max_depth        = 3",
     ):
         assert needle in text, f"specification no longer records {needle!r}"
+
+
+# --------------------------------------------------------------------------
+# §5.0 the closeness objective — its numbers are spec, so they are tests too
+# --------------------------------------------------------------------------
+
+
+def test_specification_records_the_closeness_numbers():
+    text = SPEC.read_text(encoding="utf-8")
+    for needle in (
+        "p = 0.75",                      # verification fraction
+        "{0, 0.5, 0.75, 1}",             # its ablation grid
+        "tolerance.routing.t      = 0.005",
+        "tolerance.lineage.decay  = 0.01",
+    ):
+        assert needle in text, f"specification no longer records {needle!r}"
+
+
+def test_integer_fields_are_typed_int_and_therefore_exempt_from_tolerance():
+    """§5.0.1: menus=10 vs 11 is a different process, not a near miss."""
+
+    int_fields = {
+        (name, key)
+        for name, sig in REGISTRY.items()
+        for key, spec in sig.kwargs.items()
+        if spec.kind in ("int", "int_list")
+    }
+    assert ("routing", "menus") in int_fields
+    assert ("menu", "n") in int_fields
+    assert ("lineage", "depth") in int_fields
+    number_fields = {
+        (name, key)
+        for name, sig in REGISTRY.items()
+        for key, spec in sig.kwargs.items()
+        if spec.kind in ("number", "number_list")
+    }
+    # The tolerance table covers exactly the number-valued fields.
+    assert number_fields == {
+        ("routing", "t"),
+        ("margin", "t"),
+        ("lineage", "decay"),
+        ("blend", "w"),
+    }
+    assert not (int_fields & number_fields)
+
+
+def test_missing_digits_cap_resolution_below_the_stated_tolerance():
+    """§5.2: the digit floor is about resolution, not catastrophic failure.
+
+    A decoder can render 0.47 as 0.45 using only trained glyphs, so an unseen
+    digit is not fatal.  But in the production threshold range the forced error
+    exceeds the routing tolerance, which is why the grid still widens.
+    """
+
+    nearest_trained = 0.06  # 0.07 unreachable: digit 7 is absent
+    forced_error = abs(0.07 - nearest_trained)
+    routing_tolerance = 0.005
+    assert forced_error > routing_tolerance
+    assert ABSENT_DIGITS == {"4", "6", "7", "9"}
+
+
+def test_decoder_output_is_never_an_identity_source():
+    """§5.0: identity is retained alongside, never recomputed from decoded text.
+
+    The identity helpers accept a *validated AST*, not decoder output, and the
+    canonical bytes travel with the record — so an approximate decode cannot
+    contaminate a digest.
+    """
+
+    from process_identity import deployed_identity, verify_identity_record
+
+    node = pc.parse("lineage(graph,decay=0.85)")
+    record = deployed_identity(node, factory_fingerprint="f").as_record()
+    # The record carries the canonical bytes, so verification never needs the
+    # decoder to have spelled anything.
+    assert record["canonical_identity_string"] == "lineage(graph,decay=0.85)"
+    verify_identity_record(record)
+
+    # A near-miss decode is a different process identity, not a tolerated one:
+    # nothing in the identity layer knows about tolerance.
+    near = pc.parse("lineage(graph,decay=0.84)")
+    from process_identity import full_ast_digest
+
+    assert full_ast_digest(near) != full_ast_digest(node)

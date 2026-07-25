@@ -192,11 +192,51 @@ near slice, it is dropped.
 §3.3 of the encoder handoff separates exact reconstruction from smooth conditioning. They are not
 alternatives:
 
-- **Exact channel** — the canonical lexical string (`0.85`, byte for byte) must round-trip,
-  because the identity contract is a digest over canonical bytes. An approximately invertible
-  smooth representation cannot supply this.
+- **Exact channel** — carries the canonical lexical string (`0.85`, byte for byte).
 - **Smooth channel** — carries numeric semantics into the latent, which is where fixed Fourier
   features plus FiLM earn their place.
+
+### 5.0 Exactness is layered, and only one layer is mandatory
+
+The three layers have different obligations, and conflating them is how an unnecessary exactness
+requirement gets imposed on the model:
+
+```text
+tokenizer   exact by construction   (reversibility is a serialization property)
+decoder     close by objective      (a learned approximation, graded by tolerance)
+identity    independent of both     (canonical bytes retained alongside)
+```
+
+**Decoder output is candidate generation and conditioning — never identity.** This is the rule
+that makes relaxed exactness safe, and it is inherited rather than invented: `process_identity.py`
+already keeps identity outside the bottleneck, so callers retain the canonical bytes and the full
+digest, and no pipeline recomputes a digest, cache key, or residual lookup from decoded text. A
+decoder that renders `0.84` for `0.85` therefore breaks nothing identity-shaped. Exactness would
+only be load-bearing if decoded text flowed back into a digest — which the architecture forbids.
+
+The tokenizer's round-trip guarantee in §9 is unaffected. It is a property of the serialization
+layer, which stays exact and lossless; "close is good" must not leak downward into it.
+
+### 5.0.1 Tolerance is per field, and integers are exempt
+
+`menus=10` versus `menus=11`, or `depth=3` versus `depth=4`, are not "close" — they are
+behaviorally different processes, and the grammar types them `int`. So:
+
+| field kind | grading |
+|---|---|
+| `number`, `number_list` | within tolerance |
+| `int`, `int_list` | exact after rounding — no tolerance |
+| `string` | exact |
+
+Tolerances are spec numbers reproduced by a test, revised when the production distribution moves —
+the same rule as the caps. Provisional starting values, absolute unless stated:
+
+```text
+tolerance.routing.t      = 0.005     # thresholds live in 0.01-0.1; must not blur a margin band
+tolerance.margin.t       = 0.005
+tolerance.lineage.decay  = 0.01      # decays live in 0.8-0.95
+tolerance.blend.w        = 0.01
+```
 
 ### 5.1 Why the smooth channel is needed, measured before training
 
@@ -222,17 +262,73 @@ weakness.
 are `{0.02, 0.03, 0.85, 10, 20}`, so digit bytes `0 1 2 3 5 8` appear and **`4`, `6`, `7`, `9`
 never do**.
 
-A byte-level reversible tokenizer with untrained digit bytes cannot reconstruct a value containing
-them. Optimizing for the distribution the model will actually see is right — thresholds around
-0.01–0.1, menu sizes 5–50, decays 0.8–0.95 — and the frequency weighting should reflect exactly
-that. But the support must still include every digit byte and every magnitude scale at low
-frequency. Same support/frequency separation as §1: shape the distribution for the likely case,
-never let the tail reach zero.
+Under §5.0 this is a **resolution** floor, not a correctness floor. A byte-level decoder can be
+close without ever spelling an unseen digit: asked for `0.47` it can render `0.45` from trained
+glyphs alone, so missing digits no longer produce a catastrophic failure. They cap how close the
+decoder can get — and in the production threshold range that still matters, since a missing `7`
+forces `0.07` to `0.06` or `0.08`, a real difference for a margin band and larger than the
+§5.0.1 tolerance of 0.005.
+
+So the widened numeric grid stays; only its justification changes. Optimizing for the distribution
+the model will actually see is right — thresholds around 0.01–0.1, menu sizes 5–50, decays
+0.8–0.95 — and the frequency weighting should reflect exactly that. But the support must still
+include every digit byte and every magnitude scale at low frequency. Same support/frequency
+separation as §1: shape the distribution for the likely case, never let the tail reach zero.
 
 The coverage invariant lands as a test: every byte value the tokenizer can emit for a numeric
 field appears in the training split, in more than one position.
 
-### 5.3 Numeric-encoding arms
+### 5.3 The objective is where closeness lives or dies
+
+Stating tolerance in the spec is not enough. Plain byte-token cross-entropy is an *exactness*
+objective — it penalizes `0.84` for `0.85` exactly as hard as `0.31` for `0.85` — so a run that
+declares "close is good" and then trains on unmodified token CE quietly optimizes spelling anyway.
+Closeness has to be expressed in the loss or it does not exist.
+
+#### Stochastic exact verification
+
+The mechanism: on a sampled fraction `p` of training rows, grade the decoded output with an
+**exact verifier**; on the rest, grade it with a tolerance loss.
+
+```text
+L_numeric = p * verifier_reward + (1 - p) * tolerance_loss
+p = 0.75    # provisional; ablated over {0, 0.5, 0.75, 1}
+```
+
+Two properties make this the right shape rather than a compromise:
+
+- **The verifier is free.** Decode, re-parse, canonicalize, compare bytes. The tokenizer's exact
+  reversibility (§5.0) supplies a deterministic oracle at zero cost — no teacher model, no learned
+  similarity, nothing to calibrate. Most "close is good" regimes stall on defining similarity;
+  this one can check correctness whenever it likes.
+- **It behaves like masking.** The decoder cannot tell which rows will be strictly graded, so its
+  optimal policy is to be exact wherever exactness is affordable. The equilibrium is the profile
+  actually wanted: exact in the production region, where values are well trained and cheap to
+  spell, and gracefully close in the tail, where exactness costs more capacity than it is worth.
+  `p` is the dial between exact-always and close-always.
+
+Three requirements on the implementation:
+
+1. **Verify per field, not per expression.** Whole-expression canonical equality is all-or-nothing:
+   one wrong digit in a 120-token row fails the whole verification and the signal goes sparse.
+   Parse the decoded candidate and compare field by field, which also matches the per-field
+   tolerance structure of §5.0.1. Integer fields verify exactly, always.
+2. **The unverified fraction still needs a loss.** On the `(1 - p)` rows, falling back to plain
+   byte CE silently reimposes exactness and undoes the whole mechanism. The tolerance loss is the
+   N2 scalar head or a digit-distance-weighted cross-entropy — never unmodified CE.
+3. **Watch for collapse onto common values.** A large exact-hit reward can be maximized by always
+   emitting the most frequent canonical value — `0.85` forever — yielding a high verified-exact
+   rate with dead numerics. The diagnostic is already in the metric list: report verified-exact
+   rate *alongside* latent numeric sensitivity. High exact rate with flat sensitivity is collapse,
+   and seeing both numbers makes it visible instead of mysterious.
+
+#### Inference-time reuse
+
+The same verifier reranks without any training change: sample `k` decodings and prefer the ones
+that verify. Consumers needing exactness buy it at inference; consumers needing only closeness
+ignore it. Recorded here so it is not rediscovered as a novelty later.
+
+### 5.4 Numeric-encoding arms
 
 Same frozen corpus and LOCO splits across all three:
 
@@ -244,19 +340,25 @@ Same frozen corpus and LOCO splits across all three:
 
 Evaluation, frozen in advance:
 
-1. exact-match reconstruction weighted by the production numeric distribution;
-2. tail robustness under an explicit **digit-holdout** split — train never sees `7`, test does;
+1. **tolerance-based reconstruction** — structure exact, `number` fields within the §5.0.1
+   tolerance, `int` fields exact after rounding — weighted by the production numeric distribution.
+   This replaces plain exact-match string comparison, which would grade for an objective the
+   design does not hold;
+2. **verified-exact rate**, reported separately, as both an exactness readout and the numerator of
+   the collapse diagnostic;
+3. tail robustness under an explicit **digit-holdout** split — train never sees `7`, test does;
    train sees two decimal places, test sees three. This turns "which encoding generalizes" into a
    measurement of the same shape as the template LOCO;
-3. latent numeric sensitivity — does the embedding separate `decay=0.85` from `decay=0.5`, the
-   direct repair target for §5.1.
+4. latent numeric sensitivity — does the embedding separate `decay=0.85` from `decay=0.5`, the
+   direct repair target for §5.1, and the collapse diagnostic's denominator.
 
-Preregistered prediction: N1 beats N0 on tail robustness without hurting exact match, because the
-smooth channel absorbs *which value is this* and lets the byte channel specialize in spelling; N2
-has the cleanest exactness story and the weakest semantic one unless its scalar head is carefully
-calibrated. A different outcome is a finding, not a failure.
+Preregistered prediction, revised for the closeness metric: under tolerance-based grading N2's
+"clean exactness story" stops being an advantage and its scalar head becomes the natural fit for
+the objective, while N0's weakness moves from tail robustness to plain resolution. N1 remains the
+expected middle. A different outcome is a finding, not a failure — which is the point of running
+arms rather than asserting a winner.
 
-### 5.4 `decay` as the exemplar measured prior
+### 5.5 `decay` as the exemplar measured prior
 
 `decay` is the ideal first `measured` dimension: one-dimensional, executable, and cheap to sweep.
 A decay sweep over a real corpus sample under the standing node-disjoint evaluation yields an
