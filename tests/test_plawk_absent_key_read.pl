@@ -126,6 +126,76 @@ test(read_does_not_autovivify, [condition(clang_available)]) :-
         "a b\n", Out),
     assertion(Out == "\n1\n"), !.
 
+% --- STR-VALUED (row / split) tables ----------------------------------------
+%
+% A row capture (`t[$k] = $0`), a row constructor, and `split` pieces store the
+% bytes as an interned atom id, so those tables are str-valued and a read must
+% resolve the id back to text. Two bugs lived here: the PLAN-level str-array test
+% did not recognise row-capture writers (so a row read printed the raw atom id,
+% e.g. "98"), and resolving an ABSENT key's id 0 printed either an unrelated
+% static atom or "(null)". Both now go through @wam_assoc_str_print.
+
+% A present row read prints the captured record, not its atom id.
+test(row_table_present_read_prints_text, [condition(clang_available)]) :-
+    kdir(Dir),
+    build_run(Dir, 'rp', "{ t[$1] = $0 } END { print t[\"a\"] }\n",
+        "a b\nc d\n", Out),
+    assertion(Out == "a b\n"), !.
+
+% An absent row read prints empty (not id 0's text, and not "(null)").
+test(row_table_absent_read_prints_empty, [condition(clang_available)]) :-
+    kdir(Dir),
+    build_run(Dir, 'ra', "{ t[$1] = $0 } END { print t[\"nope\"] }\n",
+        "a b\n", Out),
+    assertion(Out == "\n"), !.
+
+% Present and absent row reads on one line: the absent one contributes nothing
+% after the separator.
+test(row_table_mixed_reads, [condition(clang_available)]) :-
+    kdir(Dir),
+    build_run(Dir, 'rm', "{ t[$1] = $0 } END { print t[\"a\"], t[\"zz\"] }\n",
+        "a b\n", Out),
+    assertion(Out == "a b \n"), !.
+
+% for-in over a row table resolves every stored row (all keys present).
+test(row_table_forin_resolves_rows, [condition(clang_available)]) :-
+    kdir(Dir),
+    build_run_sorted(Dir, 'rf2', "{ t[$1] = $0 } END { for (k in t) print t[k] }\n",
+        "a b\nc d\n", Lines),
+    assertion(Lines == ["a b", "c d"]), !.
+
+% A `split` array is str-valued and positionally keyed: an out-of-range position
+% is absent, so it prints empty rather than "(null)".
+test(split_absent_position_prints_empty, [condition(clang_available)]) :-
+    kdir(Dir),
+    build_run(Dir, 'sa', "{ split($0, a, \",\"); print a[5] }\n",
+        "x,y\n", Out),
+    assertion(Out == "\n"), !.
+
+% ... and an in-range position still prints its piece.
+test(split_present_position_prints_piece, [condition(clang_available)]) :-
+    kdir(Dir),
+    build_run(Dir, 'sp', "{ split($0, a, \",\"); print a[1] }\n",
+        "x,y\n", Out),
+    assertion(Out == "x\n"), !.
+
+% An END for-in that looks up a str table by the loop key: keys the str table
+% never captured print empty.
+test(absent_str_cross_table_in_end_forin, [condition(clang_available)]) :-
+    kdir(Dir),
+    build_run_sorted(Dir, 'xe',
+        "{ c[$1]++ }\n$2 == \"x\" { t[$1] = $0 }\nEND { for (k in c) print k, t[k] }\n",
+        "p x\nq n\n", Lines),
+    assertion(Lines == ["p p x", "q "]), !.
+
+% The same cross-table str lookup inside a rule-body for-in.
+test(absent_str_cross_table_in_rule_forin, [condition(clang_available)]) :-
+    kdir(Dir),
+    build_run(Dir, 'xr',
+        "{ c[$1]++ }\n$2 == \"x\" { t[$1] = $0 }\n{ for (k in c) print t[k] }\n",
+        "p x\nq n\n", Out),
+    assertion(Out == "p x\np x\n\n"), !.
+
 :- end_tests(plawk_absent_key_read).
 
 % --- helpers ---------------------------------------------------------------
