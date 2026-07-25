@@ -110,7 +110,11 @@ jobs:
 
       - name: Run process-expression contract fixture tests
         # Identity helpers plus the frozen AST/token/role-path golden vectors.
-        # Pure stdlib over process_cards — no embedder, no torch, no corpus.
+        # The modules under test import only process_cards; the suite also
+        # imports process_expression_p1_protocol in one test, to prove the
+        # digest matches the frozen P1 convention, which pulls numpy via
+        # routed_policy. numpy is installed above. No embedder, torch, or
+        # corpus either way.
         run: |
           python3 -m pytest -q prototypes/mu_cosine/test_process_expression_contract.py
 
