@@ -63,8 +63,7 @@ default 4096), and explicit `auto` (codegen resolves via shared
   `emit_mode(functions)` + auto `category_ancestor/4` kernel, reference
   parity match — see `docs/design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md`.
   Further optimized by PERF-R-CA-DIRECT / IDDFS / IDCACHE / STACK (hosted-CI
-  IDCACHE median query_ms=4812; STACK iterative ID DFS ≈1.12× on same-host
-  cloud-agent vs recursive IDCACHE).
+  median query_ms=3679 after iterative ID DFS, 1.31× vs IDCACHE).
 
 ## Path forward
 
@@ -74,5 +73,4 @@ default 4096), and explicit `auto` (codegen resolves via shared
 ## Document status
 
 Fleet-aligned snapshot updated for PERF-R-CA-STACK (2026-07-25): iterative
-integer-ID DFS frame stack; primary GHA fleet row still IDCACHE pending
-hosted STACK remeasure.
+integer-ID DFS frame stack, remeasured in hosted CI.
