@@ -2,18 +2,19 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
-% Multi-dimensional array subscripts `arr[i,j]` and SUBSEP. In awk, `arr[i,j]`
-% is sugar for `arr[i SUBSEP j]`: the subscripts are joined by SUBSEP (default
-% "\034", the FS/0x1C byte) into one string key. v1 keys on exactly two field
-% subscripts (`arr[$i,$j]`), covering the write counter `arr[$i,$j]++` and the
-% element read `arr[$i,$j]`; for-in iteration sees the joined key.
+% Multi-dimensional array subscripts `arr[i,j,...]` and SUBSEP. In awk,
+% `arr[i,j]` is sugar for `arr[i SUBSEP j]`: the subscripts are joined by SUBSEP
+% (default "\034", the FS/0x1C byte) into one string key. Any arity of field
+% subscripts (`arr[$i,$j]`, `arr[$i,$j,$k]`, ...) is handled uniformly, covering
+% the write counter `arr[$i,...]++`, the element read `arr[$i,...]`, and
+% membership `($i,...) in arr`; for-in iteration sees the joined key.
 %
-% The join is done by the runtime helper @wam_intern_subsep_key2, which slices
-% the two fields, joins them with the SUBSEP bytes (@wam_subsep_ptr /
-% @wam_subsep_len, default 0x1C, overridable by `BEGIN { SUBSEP = "…" }`), and
-% interns the result to one atom id -- the same key both the write and read
-% paths build. Three-plus subscripts and non-field subscripts (string / var)
-% are a clean not-yet (compile error), not miscompiled.
+% The join is done by the runtime helper @wam_intern_subsep_key_n, which slices
+% the N fields (indexes passed as a constant array), joins them with the SUBSEP
+% bytes (@wam_subsep_ptr / @wam_subsep_len, default 0x1C, overridable by
+% `BEGIN { SUBSEP = "…" }`), and interns the result to one atom id -- the same
+% key the write, read, and membership paths build. Non-field subscripts
+% (string / var) are a clean not-yet (compile error), not miscompiled.
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -92,12 +93,40 @@ test(subsep_empty, [condition(clang_available)]) :-
         "a b\n", Out),
     assertion(Out == "ab\n"), !.
 
-% A three-subscript key is a clean not-yet (v1 keys on two fields): rejected
-% with a compile error rather than miscompiled.
-test(three_dim_rejected, [condition(clang_available)]) :-
+% Three-subscript keys work (any arity, via @wam_intern_subsep_key_n). The
+% running count for a repeated (a,b,c) advances; a distinct third field is its
+% own key.
+test(three_dim_counter_read, [condition(clang_available)]) :-
     sdir(Dir),
-    build_status(Dir, 'r3', "{ c[$1,$2,$3]++ }\n", St),
-    assertion(St == 3), !.
+    build_run(Dir, 'c3',
+        "{ c[$1,$2,$3]++; print c[$1,$2,$3] }\n",
+        "a b c\na b c\na b d\n", Out),
+    assertion(Out == "1\n2\n1\n"), !.
+
+% Three-dim histogram via END for-in over the joined keys (compare counts as a
+% sorted set, since the joined key contains the raw SUBSEP byte).
+test(three_dim_histogram, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run_sorted(Dir, 'h3',
+        "{ c[$1,$2,$3]++ } END { for (k in c) print c[k] }\n",
+        "a b c\na b c\na b d\n", Lines),
+    assertion(Lines == ["1", "2"]), !.
+
+% Three-dim membership: `($i,$j,$k) in arr` sees a repeated tuple.
+test(three_dim_membership, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'm3',
+        "($1,$2,$3) in seen { print \"dup\" } { seen[$1,$2,$3]++ }\n",
+        "a b c\na b c\nx y z\n", Out),
+    assertion(Out == "dup\n"), !.
+
+% Four subscripts work the same way (no per-arity special case).
+test(four_dim_counter_read, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'c4',
+        "{ c[$1,$2,$3,$4]++; print c[$1,$2,$3,$4] }\n",
+        "a b c d\na b c d\n", Out),
+    assertion(Out == "1\n2\n"), !.
 
 % A string subscript in a multi-dim key is a clean not-yet (v1 keys on fields).
 test(string_subscript_rejected, [condition(clang_available)]) :-

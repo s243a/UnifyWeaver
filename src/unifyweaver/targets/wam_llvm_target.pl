@@ -5437,48 +5437,83 @@ entry:
   ret void
 }
 
-; Intern a 2-D subscript key: slice fields %f1 and %f2 out of the record %line
-; (using field separator %fs), join them with the SUBSEP bytes
-; (@wam_subsep_ptr / @wam_subsep_len), and intern the joined buffer to a single
-; atom id. A missing field contributes an empty slice (awk: an unset subscript
-; is the empty string). The join buffer is a stack alloca, freed on return;
-; wam_intern_atom copies the bytes it keeps. Backs arr[i,j] reads and the
-; arr[i,j]++ counter (multi-dimensional arrays).
-define i64 @wam_intern_subsep_key2(%Value %line, i64 %f1, i64 %f2, i8 %fs) {
+; arr[i,j,k,...] key -- N-dimensional subscript (N >= 1), backing the multi-dim
+; counter, read, and membership for any arity. Joins the N field slices named by
+; %indices (an array of 1-based field numbers) with SUBSEP into one interned
+; atom key. Two passes: sum the field lengths for the buffer size, then copy each
+; field with a SUBSEP between successive fields. A missing field contributes an
+; empty slice (awk: an unset subscript is the empty string). The join buffer is a
+; stack alloca freed on return; wam_intern_atom copies the bytes it keeps.
+define i64 @wam_intern_subsep_key_n(%Value %line, i64* %indices, i64 %n, i8 %fs) {
 entry:
-  %sk.s1 = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %f1, i8 %fs)
-  %sk.p1 = extractvalue %WamSlice %sk.s1, 0
-  %sk.l1 = extractvalue %WamSlice %sk.s1, 1
-  %sk.s2 = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %f2, i8 %fs)
-  %sk.p2 = extractvalue %WamSlice %sk.s2, 0
-  %sk.l2 = extractvalue %WamSlice %sk.s2, 1
-  %sk.sepp = load i8*, i8** @wam_subsep_ptr
-  %sk.sepl = load i64, i64* @wam_subsep_len
-  %sk.body0 = add i64 %sk.l1, %sk.l2
-  %sk.body = add i64 %sk.body0, %sk.sepl
-  %sk.total = add i64 %sk.body, 1
-  %sk.buf = alloca i8, i64 %sk.total
-  %sk.miss1 = icmp eq i8* %sk.p1, null
-  br i1 %sk.miss1, label %sk.after1, label %sk.copy1
-sk.copy1:
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %sk.buf, i8* %sk.p1, i64 %sk.l1, i1 false)
-  br label %sk.after1
-sk.after1:
-  %sk.sepdst = getelementptr i8, i8* %sk.buf, i64 %sk.l1
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %sk.sepdst, i8* %sk.sepp, i64 %sk.sepl, i1 false)
-  %sk.off2 = add i64 %sk.l1, %sk.sepl
-  %sk.dst2 = getelementptr i8, i8* %sk.buf, i64 %sk.off2
-  %sk.miss2 = icmp eq i8* %sk.p2, null
-  br i1 %sk.miss2, label %sk.after2, label %sk.copy2
-sk.copy2:
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %sk.dst2, i8* %sk.p2, i64 %sk.l2, i1 false)
-  br label %sk.after2
-sk.after2:
-  %sk.keylen = add i64 %sk.off2, %sk.l2
-  %sk.nul = getelementptr i8, i8* %sk.buf, i64 %sk.keylen
-  store i8 0, i8* %sk.nul
-  %sk.id = call i64 @wam_intern_atom(i8* %sk.buf, i64 %sk.keylen)
-  ret i64 %sk.id
+  %skn.sepp = load i8*, i8** @wam_subsep_ptr
+  %skn.sepl = load i64, i64* @wam_subsep_len
+  br label %skn.len_loop
+
+skn.len_loop:
+  %skn.i = phi i64 [ 0, %entry ], [ %skn.i_next, %skn.len_step ]
+  %skn.acc = phi i64 [ 0, %entry ], [ %skn.acc_next, %skn.len_step ]
+  %skn.len_done_c = icmp uge i64 %skn.i, %n
+  br i1 %skn.len_done_c, label %skn.len_done, label %skn.len_step
+
+skn.len_step:
+  %skn.li_ptr = getelementptr i64, i64* %indices, i64 %skn.i
+  %skn.li = load i64, i64* %skn.li_ptr
+  %skn.lslice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %skn.li, i8 %fs)
+  %skn.llen = extractvalue %WamSlice %skn.lslice, 1
+  %skn.acc_next = add i64 %skn.acc, %skn.llen
+  %skn.i_next = add i64 %skn.i, 1
+  br label %skn.len_loop
+
+skn.len_done:
+  %skn.nm1 = sub i64 %n, 1
+  %skn.sep_total = mul i64 %skn.nm1, %skn.sepl
+  %skn.body = add i64 %skn.acc, %skn.sep_total
+  %skn.total = add i64 %skn.body, 1
+  %skn.buf = alloca i8, i64 %skn.total
+  br label %skn.copy_loop
+
+skn.copy_loop:
+  %skn.j = phi i64 [ 0, %skn.len_done ], [ %skn.j_next, %skn.copy_cont ]
+  %skn.off = phi i64 [ 0, %skn.len_done ], [ %skn.off_next, %skn.copy_cont ]
+  %skn.copy_done_c = icmp uge i64 %skn.j, %n
+  br i1 %skn.copy_done_c, label %skn.copy_done, label %skn.copy_body
+
+skn.copy_body:
+  %skn.is_first = icmp eq i64 %skn.j, 0
+  br i1 %skn.is_first, label %skn.after_sep, label %skn.do_sep
+
+skn.do_sep:
+  %skn.sepdst = getelementptr i8, i8* %skn.buf, i64 %skn.off
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %skn.sepdst, i8* %skn.sepp, i64 %skn.sepl, i1 false)
+  %skn.off_sep = add i64 %skn.off, %skn.sepl
+  br label %skn.after_sep
+
+skn.after_sep:
+  %skn.off1 = phi i64 [ %skn.off, %skn.copy_body ], [ %skn.off_sep, %skn.do_sep ]
+  %skn.cj_ptr = getelementptr i64, i64* %indices, i64 %skn.j
+  %skn.cj = load i64, i64* %skn.cj_ptr
+  %skn.cslice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %skn.cj, i8 %fs)
+  %skn.cptr = extractvalue %WamSlice %skn.cslice, 0
+  %skn.clen = extractvalue %WamSlice %skn.cslice, 1
+  %skn.miss = icmp eq i8* %skn.cptr, null
+  br i1 %skn.miss, label %skn.copy_cont, label %skn.do_field
+
+skn.do_field:
+  %skn.fdst = getelementptr i8, i8* %skn.buf, i64 %skn.off1
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %skn.fdst, i8* %skn.cptr, i64 %skn.clen, i1 false)
+  br label %skn.copy_cont
+
+skn.copy_cont:
+  %skn.off_next = add i64 %skn.off1, %skn.clen
+  %skn.j_next = add i64 %skn.j, 1
+  br label %skn.copy_loop
+
+skn.copy_done:
+  %skn.nul = getelementptr i8, i8* %skn.buf, i64 %skn.body
+  store i8 0, i8* %skn.nul
+  %skn.id = call i64 @wam_intern_atom(i8* %skn.buf, i64 %skn.body)
+  ret i64 %skn.id
 }
 
 ; Build a field buffer by splitting the NUL-terminated record %rec on the program
