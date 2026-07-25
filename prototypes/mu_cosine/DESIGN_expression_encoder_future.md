@@ -424,7 +424,10 @@ run, not permission to shrink data/model or change precision post hoc.
 ## 11. Delegable implementation sequence
 
 1. **Contract fixtures:** add full-digest/process-identity helpers and golden AST/token/role-path
-   vectors without changing current P0 behavior.
+   vectors without changing current P0 behavior. *Landed:* `process_identity.py`,
+   `process_expression_contract.py`, and the frozen `PROCESS_EXPRESSION_GOLDEN_v1.json`. The
+   contract module is the fixture authority only; the versioned vocabulary IDs and the 256-byte
+   literal fallback belong to step 2, which must reproduce those frozen structures exactly.
 2. **Tokenizer and generator:** implement reversible typed serialization, finite deterministic
    generation, structural templates, LOCO splits, and overlap/privacy validators.
 3. **Model core:** implement the bounded encoder, complete role-path positions, lexical numeric

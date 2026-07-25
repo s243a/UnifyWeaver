@@ -100,6 +100,20 @@ jobs:
             tests/test_local_grounded_diffusion.py
           python3 prototypes/mu_cosine/benchmark_local_grounded_diffusion.py --smoke
 
+      - name: Run filing path decoder Stage A tests
+        # Stage A is provenance/schema logic over a routed-task.v2 parent: it
+        # needs only numpy (via routed_policy) and pytest, no embedder, no
+        # corpus.  The other mu_cosine suites import the filing/embedding stack
+        # and stay out of CI for that reason.
+        run: |
+          python3 -m pytest -q prototypes/mu_cosine/test_filing_path_decision.py
+
+      - name: Run process-expression contract fixture tests
+        # Identity helpers plus the frozen AST/token/role-path golden vectors.
+        # Pure stdlib over process_cards — no embedder, no torch, no corpus.
+        run: |
+          python3 -m pytest -q prototypes/mu_cosine/test_process_expression_contract.py
+
       - name: Run F# WAM target tests (codegen + dotnet smoke + LMDB conformance)
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: '1'

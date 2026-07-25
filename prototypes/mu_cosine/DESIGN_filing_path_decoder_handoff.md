@@ -571,6 +571,11 @@ reproduction at identical hashes.
 
 ## 11. Engineering handoff checklist
 
+**Landed:** [`filing_path_decision.py`](filing_path_decision.py) implements the
+Stage A slice below, with acceptance tests in
+[`test_filing_path_decision.py`](test_filing_path_decision.py). It emits only
+`SELECT_EXISTING` or `ABSTAIN`; `PROPOSE_NEW` has no reachable code path.
+
 The first engineering PR should implement only Stage A and the common request /
 decision schemas. It should:
 
