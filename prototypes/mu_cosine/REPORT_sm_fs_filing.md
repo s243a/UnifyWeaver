@@ -149,3 +149,23 @@ PT ≈ SM-in-map (wild/deep queries), SM-FS much easier (topic-identity queries)
 Caveats: exploration-split numbers are descriptive (single seed, no CIs); catalog uses directory
 NAMES (duplicates title-equivalent); depth-0 maps (no filing folder) excluded; per-item data
 stays in `~/mu_data` (paths/names may be personal), repo carries aggregates only.
+
+## v3 LINEAGE onboarding diagnostic and next claim gates
+
+The certified public-policy v3 bundle contains 361 exploration maps and 2,792 positive
+`lineage(fs,decay=0.85)` rows. The first positive-only fine-tune reached held-map row correlation
+about `+0.82`, showing that the LINEAGE head can learn SM-FS depth structure. This remains an
+onboarding diagnostic:
+
+- it contains no non-ancestor candidates and therefore supplies no ranking evidence;
+- 356 of 384 validation rows reuse an exact ancestor path seen in training, so it measures
+  shared-hierarchy interpolation rather than unseen-lineage generalization; and
+- the currently available exact warm start reproduces correlation `-0.112`, while the cited
+  `+0.37` initialization was not content-bound or evaluated by the run receipt.
+
+The next ranking experiment is frozen in `PROTOCOL_sm_fs_lineage_ranking.md` and
+`SM_FS_LINEAGE_RANKING_PREREG.json`. It enumerates every explore-supported candidate and preserves
+the untouched v3 reserve. Cross-corpus claims are separately gated by
+`PROTOCOL_sm_fs_retention_transfer.md`: retention starts from the Pearltrees-trained checkpoint,
+whereas genuine transfer starts from a common pre-Pearltrees state and must beat both the
+unchanged base and a matched structure-scrambled source control.
