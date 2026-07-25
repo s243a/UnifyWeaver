@@ -4737,6 +4737,34 @@ aip.absent:
   ret void
 }
 
+@.wam_assoc_str_fmt = private constant [3 x i8] c"%s\00"
+
+; Print arr[key] for a STR-VALUED table (row captures, split pieces, str binds),
+; whose stored i64 is an interned atom id: resolve the id to its bytes and print
+; them, or print NOTHING when the key does not exist -- an uninitialized element
+; is the empty string in awk, and id 0 is a legitimate static atom, so testing
+; the VALUE against 0 would print an unrelated atom instead. Also prints nothing
+; when the id fails to resolve, so a stale id can never emit a bogus pointer.
+define void @wam_assoc_str_print(%WamAssocI64Table* %table, i64 %key) {
+entry:
+  %asp.ex = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %table, i64 %key)
+  br i1 %asp.ex, label %asp.present, label %asp.done
+
+asp.present:
+  %asp.id = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 %key)
+  %asp.s = call i8* @wam_atom_to_string(i64 %asp.id)
+  %asp.null = icmp eq i8* %asp.s, null
+  br i1 %asp.null, label %asp.done, label %asp.emit
+
+asp.emit:
+  %asp.fmt = getelementptr [3 x i8], [3 x i8]* @.wam_assoc_str_fmt, i64 0, i64 0
+  %asp.pr = call i32 (i8*, ...) @printf(i8* %asp.fmt, i8* %asp.s)
+  br label %asp.done
+
+asp.done:
+  ret void
+}
+
 ; Remove %key from the table. Linear-probing has no tombstones, so a plain
 ; "mark empty" would break the probe chains of later keys that collided here.
 ; Backward-shift deletion repairs the cluster: after clearing the found slot,

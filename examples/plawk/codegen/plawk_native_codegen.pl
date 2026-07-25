@@ -6778,9 +6778,17 @@ plawk_forin_body_print_lines([assoc(var(LookupArrayName), var(LoopVar)) | Rest],
               [PrintIndex, LookupTableIndex])
       ),
       format(atom(ValueIR), '%forin_value_~w', [PrintIndex]),
-      (   plawk_assoc_plan_str_array(AssocPlan, LookupArrayName)
-      ->  % str-valued table: the stored i64 is an atom-registry id --
-          % resolve it to text, like the key print does.
+      (   plawk_assoc_plan_str_array(AssocPlan, LookupArrayName),
+          Iterated == false
+      ->  % a CROSS-table str lookup by the loop key: that key may be absent in
+          % the looked-up table, and an absent element is empty in awk (resolving
+          % id 0 would print an unrelated atom, or "(null)").
+          plawk_assoc_str_value_print_line(LookupTableIndex, '%forin_key_id',
+              PrintCall),
+          ValueLines = [PrintCall]
+      ;   plawk_assoc_plan_str_array(AssocPlan, LookupArrayName)
+      ->  % the ITERATED str table: the slot is occupied by construction, so the
+          % stored atom id always resolves.
           format(atom(ValueString),
               '  %forin_value_s_~w = call i8* @wam_atom_to_string(i64 ~w)',
               [PrintIndex, ValueIR]),
@@ -8533,19 +8541,8 @@ plawk_assoc_print_one_field(lookupn(TableIndex, Comps), Base, Index, FieldSep, L
 % atom id to text (%s); an i64 element (counter / numeric posarray) prints the
 % value (%ld). Absent element -> the empty atom / 0, matching an uninitialised
 % awk element.
-plawk_assoc_print_one_field(lookup_int(TableIndex, N, str), Base, Index, _FieldSep, Lines) :-
-    format(atom(P), '~w_f~w', [Base, Index]),
-    format(atom(ValL),
-        '  %~w_val = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
-        [P, TableIndex, N]),
-    format(atom(StrL),
-        '  %~w_s = call i8* @wam_atom_to_string(i64 %~w_val)', [P, P]),
-    format(atom(FmtL),
-        '  %~w_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0',
-        [P]),
-    format(atom(PrL),
-        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i8* %~w_s)', [P, P, P]),
-    Lines = [ValL, StrL, FmtL, PrL].
+plawk_assoc_print_one_field(lookup_int(TableIndex, N, str), _Base, _Index, _FieldSep, [PrL]) :-
+    plawk_assoc_str_value_print_line(TableIndex, N, PrL).
 plawk_assoc_print_one_field(lookup_int(TableIndex, N, i64), _Base, _Index, FieldSep, [PrL]) :-
     integer(FieldSep),          % text mode: awk string-context rule (empty if absent)
     !,
@@ -8575,6 +8572,19 @@ plawk_assoc_print_one_field(lookup_int(TableIndex, N, i64), Base, Index, _FieldS
 plawk_assoc_value_print_line(TableIndex, KeyIR, Line) :-
     format(atom(Line),
         '  call void @wam_assoc_i64_print(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
+        [TableIndex, KeyIR]).
+
+%% plawk_assoc_str_value_print_line(+TableIndex, +KeyIR, -Line)
+%
+%  The STR-VALUED counterpart: `arr[KeyIR]` on a row / split / str-bind table
+%  whose stored i64 is an interned atom id. The runtime resolves the id to its
+%  bytes and prints them only when the key exists, printing nothing otherwise --
+%  an absent element is the empty string in awk. Testing the value against 0
+%  would be wrong here (id 0 is a legitimate static atom), which is why the helper
+%  probes presence.
+plawk_assoc_str_value_print_line(TableIndex, KeyIR, Line) :-
+    format(atom(Line),
+        '  call void @wam_assoc_str_print(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
         [TableIndex, KeyIR]).
 plawk_assoc_print_one_field(svar(Name), Base, Index, _FieldSep, Lines) :-
     format(atom(P), '~w_f~w', [Base, Index]),
@@ -9757,10 +9767,18 @@ plawk_forin_rule_field_value(value_self(TableIndex, Kind), B, N) -->
 % table, and an absent element prints as empty in awk, so the i64 kind goes
 % through the absent-aware print helper (which fetches the value itself). A
 % str-valued table still resolves its stored atom id through the older path.
-plawk_forin_rule_field_value(value_lookup(LookupIndex, i64), B, N) -->
+plawk_forin_rule_field_value(value_lookup(LookupIndex, i64), B, _N) -->
     !,
     { format(atom(KeyIR), '%~w_key', [B]),
       plawk_assoc_value_print_line(LookupIndex, KeyIR, PrintCall)
+    },
+    [PrintCall].
+% Same for a str-valued lookup table: the runtime resolves the stored atom id
+% only when the key exists, so a miss prints empty instead of "(null)".
+plawk_forin_rule_field_value(value_lookup(LookupIndex, str), B, _N) -->
+    !,
+    { format(atom(KeyIR), '%~w_key', [B]),
+      plawk_assoc_str_value_print_line(LookupIndex, KeyIR, PrintCall)
     },
     [PrintCall].
 plawk_forin_rule_field_value(value_lookup(LookupIndex, Kind), B, N) -->
@@ -12720,16 +12738,11 @@ plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], AssocPl
           [PrintIndex, TableIndex, PrintIndex]),
       format(atom(ValueIR), '%assoc_end_value_~w', [PrintIndex]),
       (   plawk_assoc_plan_str_array(AssocPlan, ArrayName)
-      ->  % str-valued table: resolve the stored atom-registry id to text.
-          format(atom(ValueString),
-              '  %assoc_end_value_s_~w = call i8* @wam_atom_to_string(i64 ~w)',
-              [PrintIndex, ValueIR]),
-          format(atom(FmtVar), 'assoc_end_str_fmt_~w', [PrintIndex]),
-          format(atom(PrintVar), 'printed_assoc_end_str_~w', [PrintIndex]),
-          format(atom(PtrIR), '%assoc_end_value_s_~w', [PrintIndex]),
-          llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar,
-              PtrIR, [FmtPtr, PrintCall]),
-          ValueLines = [KeyPtr, KeyId, Value, ValueString, FmtPtr, PrintCall]
+      ->  % str-valued table: the runtime resolves the stored atom id to text,
+          % printing nothing when the key is absent (awk empty string).
+          format(atom(KeyIdIR2), '%assoc_end_key_~w_id', [PrintIndex]),
+          plawk_assoc_str_value_print_line(TableIndex, KeyIdIR2, PrintCall),
+          ValueLines = [KeyPtr, KeyId, PrintCall]
       ;   format(atom(KeyIdIR), '%assoc_end_key_~w_id', [PrintIndex]),
           plawk_assoc_value_print_line(TableIndex, KeyIdIR, PrintCall),
           ValueLines = [KeyPtr, KeyId, PrintCall]
@@ -12771,6 +12784,18 @@ plawk_assoc_plan_str_array(assoc_plan(_Tables, Rules), ArrayName) :-
 plawk_assoc_plan_str_array(assoc_plan(_Tables, Rules), ArrayName) :-
     member(assoc_rule(_RuleIndex, _Pattern, Actions, _Control), Rules),
     member(assoc_split_action(_Index, ArrayName, _TableIndex, _Ki, _Sep), Actions),
+    !.
+% Row capture (`arr[$k] = $0`) and the row constructor (`arr[$k] = row(...)`)
+% store the row's bytes as an interned atom id, so those tables are str-valued
+% too. The spec-level collector (plawk_assoc_specs_str_arrays) already counted
+% them; without these clauses the PLAN-level view disagreed and a row read was
+% treated as i64, printing the raw atom id instead of the row text.
+plawk_assoc_plan_str_array(assoc_plan(_Tables, Rules), ArrayName) :-
+    member(assoc_rule(_RuleIndex, _Pattern, Actions, _Control), Rules),
+    ( member(assoc_set_row_action(_Index, ArrayName, _TableIndex, _Ki), Actions)
+    ; member(assoc_set_row_cons_action(_Index2, ArrayName, _TableIndex2, _Ki2, _Fs),
+        Actions)
+    ),
     !.
 
 %% plawk_assoc_plan_posarray_array(+AssocPlan, +ArrayName) is semidet.
@@ -12850,16 +12875,11 @@ plawk_mixed_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], ScalarP
           [PrintIndex, TableIndex, PrintIndex]),
       format(atom(ValueIR), '%assoc_end_value_~w', [PrintIndex]),
       (   plawk_assoc_plan_str_array(AssocPlan, ArrayName)
-      ->  % str-valued table: resolve the stored atom-registry id to text.
-          format(atom(ValueString),
-              '  %assoc_end_value_s_~w = call i8* @wam_atom_to_string(i64 ~w)',
-              [PrintIndex, ValueIR]),
-          format(atom(FmtVar), 'assoc_end_str_fmt_~w', [PrintIndex]),
-          format(atom(PrintVar), 'printed_assoc_end_str_~w', [PrintIndex]),
-          format(atom(PtrIR), '%assoc_end_value_s_~w', [PrintIndex]),
-          llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar,
-              PtrIR, [FmtPtr, PrintCall]),
-          ValueLines = [KeyPtr, KeyId, Value, ValueString, FmtPtr, PrintCall]
+      ->  % str-valued table: the runtime resolves the stored atom id to text,
+          % printing nothing when the key is absent (awk empty string).
+          format(atom(KeyIdIR2), '%assoc_end_key_~w_id', [PrintIndex]),
+          plawk_assoc_str_value_print_line(TableIndex, KeyIdIR2, PrintCall),
+          ValueLines = [KeyPtr, KeyId, PrintCall]
       ;   format(atom(KeyIdIR), '%assoc_end_key_~w_id', [PrintIndex]),
           plawk_assoc_value_print_line(TableIndex, KeyIdIR, PrintCall),
           ValueLines = [KeyPtr, KeyId, PrintCall]
