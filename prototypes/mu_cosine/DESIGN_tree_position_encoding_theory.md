@@ -1,73 +1,318 @@
-# Tree Position Encodings for Expression ASTs — Theory Note (FUTURE WORK)
+# Tree-Position Encodings for Process-Expression ASTs — Implementation Handoff
 
-**Status: theory capture, 2026-07-24 (owner + Perplexity/Sonnet-5 discussion).** Companion to
-`DESIGN_expression_encoder_future.md`; same gating (post-P1, post-P3-plateau). This note records
-the mathematical structure so a future implementer (possibly a separate agent) does not
-re-derive it.
+**Status: future-work design contract, revised 2026-07-25.** This is the position-encoding
+companion to [`DESIGN_expression_encoder_future.md`](DESIGN_expression_encoder_future.md).
+It inherits that document's gate: do not schedule this work unless the frozen P1 comparison
+supports expression conditioning and the deterministic P3 composition baseline has plateaued.
+This note changes no P1 or P3 protocol and authorizes no downstream claim.
 
-## The problem
+Current art remains:
 
-A node in an expression AST (`e5(routing(e5, sonnet.lineage, ...))`) is doubly positioned:
-**depth** k (operator vs argument vs sub-argument — abstraction level) and **breadth** j
-(which argument at that depth — role/order). P3's current plan collapses this to fixed scalar
-per-position weights. The question: how should a positional embedding represent (k, j) jointly?
+- [`process_cards.py`](process_cards.py): registry-driven parsing and canonicalization, plus the
+  current shortened `ast_sha` convenience identifier; it does not compose learned tree
+  embeddings. The future artifact contract below retains the canonical AST and a full SHA-256
+  digest rather than treating a shortened digest as lossless.
+- [`DESIGN_process_expression_implementation.md`](DESIGN_process_expression_implementation.md):
+  the P0–P4 ladder and deterministic P3 baseline.
+- [`ARCHITECTURE_filing_engine.md`](../../docs/design/ARCHITECTURE_filing_engine.md): FUSE-003 and OPENQ-012,
+  the eventual conditioning and cross-corpus consumers.
 
-## The factorization and the combination operator
+## 1. Structural authority: a typed root-to-node role path
 
-Give depth and breadth their own embedding vocabularies, d_k and b_j, and combine. The candidate
-combinations form a strict information hierarchy:
+The earlier shorthand `(depth, breadth)` is not a node identity. At depth 3, for example,
+`arg:0` below the first argument and `arg:0` below the second argument have the same local
+coordinates but different locations and often different meanings.
 
-| operation | output dim | information preserved | Gaussian analogy |
-|---|---|---|---|
-| Kronecker d ⊗ b | D_d · D_b | exact, fully separable joint | full joint covariance Σ |
-| circular convolution d ∗ b | D | Fourier-basis projection of the Kronecker | low-rank/diagonal Σ approximation |
-| learned bilinear W(d ⊗ b) | D | learned projection of the Kronecker | fitted low-rank Σ |
-| quadratic form dᵀA b | 1 | one interaction scalar | log-likelihood of the joint |
-| additive d + b | D | marginals only, no interactions | independence, Σ = diag |
+For every tokenized AST item `u`, freeze its complete root-to-item path
 
-**Key identity (the owner's question, answered affirmatively): circular convolution IS a
-dimensionality reduction of the Kronecker product** — a fixed linear projection. In the Fourier
-domain, F(d ∗ b)_n = F(d)_n · F(b)_n: the D²-dimensional outer product is contracted to D
-dimensions using the DFT matrix as the projection basis. Fixed (no training, approximately
-invertible — the holographic reduced representation / HRR construction), but the Fourier basis
-is not necessarily optimal for a given vocabulary.
+```
+p(u) = (rho_1, rho_2, ..., rho_k),    k = depth(u).
+```
 
-**The quadratic-form / joint-Gaussian analogy, made precise:** for zero-mean joint Gaussian x,
-−½ xᵀΣ⁻¹x = −½ vec(xxᵀ)ᵀ vec(Σ⁻¹) — the outer product xxᵀ is the rank-1 Kronecker self-product,
-and contracting against the precision matrix is a linear projection of the Kronecker product to a
-SCALAR: maximal compression, keeping exactly the information a score needs and nothing
-recoverable. Attention's qᵀk is this same object; multi-head attention learns D_head such
-projections in parallel — i.e., a learned partial recovery of the Kronecker structure. This
-places the whole design space on one axis: how much of the joint (depth × breadth) interaction
-structure do you keep, and is the projection fixed (Fourier) or learned (W)?
+Each `rho_t` is the typed role of the edge from the item at depth `t-1` to the item at depth
+`t`. The exact serialized role schema is authoritative in
+[`DESIGN_expression_encoder_future.md`](DESIGN_expression_encoder_future.md):
 
-## Separability requirement
+- `ARG(index, expected_output_type)` for positional expression children, with the registry's
+  positional type and zero-based index;
+- `KWARG(registry_kw_id, value_type)` for keyword values;
+- `LIST_ITEM(index, element_type)` for nested list items;
+- ordered `MOD(index)` and `PIN(index)` roles; and
+- `LITERAL_BYTE(index)` below exact literal payloads.
 
-Depth and breadth vocabularies must be DISTINCT (independent initializations; distinguishable
-subspaces). With a shared vocabulary the combination degenerates: the network cannot tell
-(depth=k, breadth=j) from other pairs producing the same product. This was the owner's own
-caveat and it is load-bearing — it is what makes the joint representation identifiable.
+The root token has the empty path. `<ROOT>` is a distinguished content token, not an edge role.
+This document's lower-case mathematical symbols denote those exact serialized roles; it does not
+define a second vocabulary.
 
-## Recommendation for THIS grammar
+The exact path is serialized in the example/split manifest and is recoverable from the resolved
+canonical AST. Sibling indices are local to their parent. Keyword roles use the canonical
+registry keyword ID, not the source-text order; canonicalization already sorts keywords. No
+modulo, clipping, or hash-bucket operation is allowed in this authoritative path.
 
-Expression trees here are shallow and narrow (depth ≤ ~4: operator → argument → sub-argument /
-kwarg; breadth ≤ ~8). Therefore:
+The pair
 
-- Full Kronecker is FEASIBLE (small vocabularies ⇒ manageable D_d·D_b) but likely wasteful.
-- **Learned bilinear W(d ⊗ b) is the recommended sweet spot**: a few hundred parameters,
-  exactly separable, discovers which depth×breadth interactions matter for this grammar instead
-  of assuming the Fourier basis. P3's fixed scalar position weights are its rank-degenerate
-  special case, so it slots into the existing ablation ladder rather than replacing it.
-- Preregistered ablation ladder when implemented: fixed-weight sum (P3 baseline) → additive
-  d + b → circular convolution (HRR) → learned bilinear → full Kronecker. Determinism contract
-  carries over: any stochastic element seeded by SHA-256 of the canonical AST.
+```
+(depth(u), local_role(u)) = (k, rho_k)
+```
 
-## Cautions
+is a useful **lossy feature**, not a coordinate system. Distinct paths can share it. Likewise,
+any learned position vector is a conditioning feature, never process identity. The canonical AST,
+registry version, factory/manifest fingerprint, and their full digests remain authoritative.
 
-- With ~922 labeled rows, NO learned position scheme is trainable from task labels alone — this
-  only becomes feasible on the synthetic-pretraining path of the encoder–decoder design
-  (grammar-generated expressions, reconstruction + e5-alignment objectives).
-- Current art references: `process_cards.py` (P0 — canonicalization/token identification only,
-  no embeddings composed today), `DESIGN_process_expression_implementation.md` P3 (deterministic
-  superposition), `ARCHITECTURE_filing_engine.md` OPENQ-012 (cross-corpus transfer — the
-  evaluation any position scheme ultimately serves).
+## 2. Encoder input contract
+
+The implementation may represent the path as a sequence rather than forcing it into one vector.
+For each AST item it must expose:
+
+```
+path_role_ids : [max_path_length]  # root-to-item, in order
+path_mask     : [max_path_length]  # true entries only; padding is not a role
+depth         : integer
+parent_index  : integer or ROOT
+local_role_id : integer
+```
+
+The expression encoder consumes the ordered role sequence or an equivalent parent-pointer tree
+whose message-passing steps preserve that order. A commutative sum of edge-role vectors alone
+does not meet this contract: it maps `(rho_a, rho_b)` and `(rho_b, rho_a)` to the same value.
+
+For the operator comparisons below, let
+
+- `d_k in R^(D_d)` be the table code for edge depth `k`;
+- `b_rho in R^(D_b)` be the table code for typed role `rho`;
+- `K_d` and `K_r` be the frozen depth and role vocabulary sizes; and
+- `C(d_k, b_rho)` be the local edge feature.
+
+The table parameter count is
+
+```
+P_tables = K_d D_d + K_r D_b.
+```
+
+Unless stated otherwise, parameter counts below are **in addition** to `P_tables`. Biases are
+counted explicitly. The same order-sensitive path aggregator and the same content encoder must be
+held fixed within an ablation; otherwise the comparison is not a position-operator comparison.
+
+## 3. Local depth-by-role combination operators
+
+The operations below combine the depth and typed-role code for one edge. None of them, by itself,
+represents the complete path.
+
+| family | definition | output dimension | trainable parameters beyond tables |
+|---|---|---:|---:|
+| Concatenation | `C(d,b) = [d ; b]` | `D_d + D_b` | `0` |
+| Outer/Kronecker feature | `C(d,b)_(i,j) = d_i b_j` | `D_d D_b` | `0` |
+| Circular convolution | `C(d,b)_t = sum_i d_i b_((t-i) mod D)`; requires `D_d=D_b=D` | `D` | `0` |
+| Dense learned bilinear tensor | `C(d,b)_o = sum_(i,j) W_(o,i,j) d_i b_j + c_o` | `D_o` | `D_o D_d D_b + D_o` |
+| Scalar bilinear | `C(d,b) = d^T A b + c` | `1` | `D_d D_b + 1` |
+| Addition | `C(d,b) = d + b`; requires `D_d=D_b=D` | `D` | `0` |
+| Rank-`R` factorized bilinear | `C(d,b) = H ((U d) elementwise_mul (V b)) + c` | `D_o` | `R(D_d + D_b + D_o) + D_o` |
+
+For the factorized form,
+
+```
+U in R^(R x D_d),  V in R^(R x D_b),  H in R^(D_o x R),  c in R^(D_o).
+```
+
+It is a CP-style rank-`R` factorization of the dense three-way tensor. `R`, `D_o`, and whether
+biases are used must be frozen in the run manifest; silently changing them changes the model
+class.
+
+For an explicit fixed-projection view of circular convolution, choose the outer-feature vector
+
+```
+x = vec(d b^T),    x_(i,j) = d_i b_j,
+```
+
+with the `(i,j)` coordinate order frozen. Then
+
+```
+d circular_conv b = P x,
+P_(t,(i,j)) = 1 if i+j = t (mod D), else 0.
+```
+
+Thus circular convolution is one particular fixed linear projection of the outer feature. Any
+normalization factor is part of the operator definition and must be pinned; the formula above is
+unnormalized.
+
+These families do **not** form a strict information hierarchy. Concatenation allows direct
+recovery of its two input codes. An outer feature has scale ambiguity and need not identify an
+unknown pair. A lower-dimensional projection can still separate every pair in a finite frozen
+vocabulary, while a higher-dimensional learned representation can collide or overfit. “More
+dimensions” and “more interactions” are capacity statements, not guaranteed information or
+accuracy orderings.
+
+## 4. Complete-path composition
+
+For `p(u) = (rho_1, ..., rho_k)`, form the ordered edge sequence
+
+```
+e_t = C(d_t, b_(rho_t)),    t = 1..k.
+```
+
+Feed `(e_1, ..., e_k)` and its mask to the shared order-sensitive path encoder, or make the same
+information available through parent-indexed tree attention. The root uses a frozen root token.
+The output `g(p(u))` may be concatenated with the content token or used as an attention bias, but
+the choice must be common across the registered operator ablation.
+
+This separation is load-bearing:
+
+1. the exact typed role path specifies location;
+2. `C` controls how depth and the role at one edge interact; and
+3. the path encoder controls how successive edges compose.
+
+Do not call `g(p)` lossless or collision-free unless that property is established for the frozen,
+finite manifest. It is a learned feature. The exact path and AST digest remain available for
+auditing even when two vectors are numerically equal.
+
+## 5. What HRR unbinding does—and does not—provide
+
+Let `z = d circular_conv b`. In the Fourier domain,
+
+```
+DFT(z) = DFT(d) elementwise_mul DFT(b).
+```
+
+If **one key is known**, and its Fourier coefficients are nonzero and suitably conditioned, the
+other code can be recovered by Fourier-domain division. With random unitary or approximately
+orthogonal codebooks, circular correlation is often used as an approximate unbinding operation.
+Those are codebook and known-key assumptions.
+
+Given only `z`, the unknown pair `(d,b)` is not generally recoverable: many factorizations produce
+the same product, and scale/phase ambiguities remain. Therefore this design must not describe HRR
+as making the pair “approximately invertible.” Its practical question is empirical separation of
+the finite registered depth-role pairs and paths.
+
+## 6. Limited analogies
+
+The outer feature is useful because a bilinear cross-energy is linear in it:
+
+```
+d^T A b = inner_product(A, d b^T).
+```
+
+For a joint Gaussian whose precision matrix has a depth/role cross-block, a term of this form can
+appear in its quadratic energy. That does **not** make `d b^T` a covariance matrix, nor does it
+model the Gaussian self-terms or normalization. The analogy is limited to representing a
+cross-interaction.
+
+Likewise, an attention logit after learned projections is a scalar bilinear form
+
+```
+(W_q d)^T (W_k b).
+```
+
+Multiple heads learn multiple such scores and use them to mix value vectors. They do not, in
+general, recover or retain the full outer product. Attention is therefore an example of learned
+bilinear scoring, not evidence for an information hierarchy among the operators above.
+
+## 7. Typing and identifiability
+
+Depth codes and edge-role codes use separate tables and separate parameter namespaces. This
+prevents the trivial role swap that a shared table plus a commutative operator would permit:
+“depth 2” cannot be looked up as “arg 2.” It does **not** make the learned factors statistically
+identifiable. Permutations, rescalings, rotations, sign changes, and compensating changes in a
+downstream projection can leave model outputs unchanged.
+
+Consequently:
+
+- interpret downstream behavior, not individual embedding coordinates;
+- never use a position vector as a cache or process key; and
+- bind artifacts to the canonical AST digest, registry/canonicalizer versions, split manifest,
+  tokenizer version, and position-encoder configuration.
+
+## 8. Measured envelope and overflow behavior
+
+Do not encode the earlier informal claims that the grammar is “depth <= 4” or “breadth <= 8” as
+facts. Before implementation, scan:
+
+1. every registered current process;
+2. every process in the frozen downstream ledger;
+3. the synthetic generator's proposed train/dev/test manifests; and
+4. each value/list token emitted by the proposed tokenizer.
+
+Record at least maximum and empirical distributions for AST depth, positional arity, list length,
+keyword count, modifier count, pin count, and typed-path length. Freeze the resulting table sizes
+and limits before fitting.
+
+The overflow policy must also be frozen. The recommended confirmatory behavior is fail closed:
+reject an expression whose path depth or role index exceeds the manifest envelope, report the
+count and hashes, and do not clip, wrap, or reuse the final in-range code. A preregistered
+`OVERFLOW` role is permissible for an explicitly exploratory deployment, but it is lossy and its
+rate must be reported. Expanding a table creates a new model revision and requires a new manifest.
+
+## 9. Required ablation and diagnostics
+
+Preregister one primary downstream metric. Screen the following position variants only on
+synthetic train/dev and downstream inner data:
+
+1. no learned position feature;
+2. lossy `(depth, local_role)` only;
+3. complete typed path with concatenation;
+4. complete typed path with addition;
+5. complete typed path with circular convolution;
+6. complete typed path with rank-`R` factorized bilinear interaction;
+7. complete typed path with dense bilinear interaction; and
+8. the unprojected outer feature, if its memory and downstream projection fit the frozen resource
+   envelope.
+
+The scalar bilinear form is a diagnostic interaction-score arm, not a drop-in vector replacement
+unless the downstream interface explicitly accepts one scalar.
+
+Within that inner screen, run both:
+
+- a **matched-output/matched-budget comparison**, choosing `D_d`, `D_b`, `D_o`, and `R` on inner
+  data so total trainable parameters are as close as the preregistered tolerance permits; and
+- an **unmatched native-capacity diagnostic**, clearly labeled exploratory.
+
+Freeze one selected position arm before any held evaluation. The held comparison contains that
+arm, the deterministic P3 position rule, and the no-learned-position baseline—not all eight
+variants. This avoids spending the outer set on architecture search.
+
+For every screened arm report table parameters, operator parameters, path-aggregator parameters,
+total trainable parameters, output dimensions, peak memory, and measured inference cost. Do not
+claim an operator win when only its parameter budget changed.
+
+Before any downstream score, test the representation itself on the frozen manifest:
+
+- exact duplicate-vector count under a pinned numerical tolerance;
+- nearest distinct-path cosine and Euclidean distance distributions;
+- minimum distance and the identities of the closest distinct paths;
+- numerical rank and conditioning of the finite code matrix, labeled diagnostic rather than an
+  identifiability proof;
+- deterministic inference with dropout disabled, plus reproducible training under pinned
+  run/global seeds and deterministic-operation settings; and
+- overflow count and rate.
+
+Canonical-AST-derived randomness remains appropriate for the deterministic P3 baseline and
+synthetic sample generation. Do not use it to freeze one dropout mask per example while training
+the learned encoder.
+
+Required path-order tests include:
+
+- sibling swaps change the exact path and the encoded feature for ordered positional arguments;
+- `(rho_a, rho_b)` differs from `(rho_b, rho_a)` when both are valid paths;
+- nodes sharing `(depth, local_role)` but having different ancestors remain distinguishable in
+  the complete-path arms;
+- keyword source order canonicalizes to the same keyword-role path;
+- padding and a real role never share a mask state; and
+- registered commutative operators receive permutation invariance only if the canonicalizer
+  explicitly normalizes that operator. Do not infer commutativity from a function name.
+
+## 10. Exit criteria and handoff artifacts
+
+An implementation PR is complete only when it emits:
+
+- the typed-role vocabulary and digest;
+- measured envelope and overflow policy;
+- tokenizer, registry, canonicalizer, split, and synthetic-generator digests;
+- the exact operator equations, dimensions, ranks, normalizations, seeds, and parameter counts;
+- path-order, determinism, overflow, and collision test results; and
+- a cross-reference from the encoder/decoder handoff to the selected position arm.
+
+Selection occurs on inner data only. The P3 LOCO/cross-corpus evidence that triggered this
+follow-on is already exposed and can support only an adaptive/exploratory comparison. A newly
+reserved post-activation process family, corpus, or prospective cohort stays untouched until the
+whole encoder configuration, including its position arm, has been frozen. Passing these checks
+licenses evaluation of the position feature; it does not establish compositional generalization,
+improve a filing metric, or authorize deployment.
