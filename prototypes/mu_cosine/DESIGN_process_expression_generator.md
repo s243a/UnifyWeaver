@@ -207,17 +207,53 @@ decoder     close by objective      (a learned approximation, graded by toleranc
 identity    independent of both     (canonical bytes retained alongside)
 ```
 
-**Decoder output is candidate generation and conditioning — never identity.** This is the rule
-that makes relaxed exactness safe, and it is inherited rather than invented: `process_identity.py`
-already keeps identity outside the bottleneck, so callers retain the canonical bytes and the full
-digest, and no pipeline recomputes a digest, cache key, or residual lookup from decoded text. A
-decoder that renders `0.84` for `0.85` therefore breaks nothing identity-shaped. Exactness would
-only be load-bearing if decoded text flowed back into a digest — which the architecture forbids.
+**Decoder output is candidate generation and conditioning — never identity.** Relaxed exactness is
+safe only while that holds, so it is worth being precise about what currently enforces it and what
+does not.
+
+*What holds today:* `process_identity.py` keeps identity outside the bottleneck. Identity is
+derived from a validated AST and its retained canonical bytes, never from a latent, so a decoder
+rendering `0.84` for `0.85` cannot corrupt an existing identity, cache key, or residual lookup.
+Reconstruction always has the reference bytes available.
+
+*What is not yet enforced:* nothing mechanically prevents a caller from passing a decoded
+candidate into `full_ast_digest_for_expression` or minting a `deployed_identity` from a decoded
+node plus a fingerprint. Those APIs accept any parsed node — they cannot tell where it came from.
+The separation is therefore currently a **discipline, not an invariant**, and this document should
+not claim otherwise.
+
+Consequently this is recorded as a **step-3 obligation, blocking on the decoder landing**: decoder
+output must be carried in an origin-tagged wrapper that the identity and cache APIs refuse, with a
+test asserting that a decoded candidate cannot mint an identity, cache key, or residual row. Until
+that exists, decoded output is diagnostic-only and no consumer may treat it as a process identity.
+The test added in this change proves only that identity is derived from retained bytes rather than
+from decoded text; it does not, and cannot yet, guard the boundary.
 
 The tokenizer's round-trip guarantee in §9 is unaffected. It is a property of the serialization
 layer, which stays exact and lossless; "close is good" must not leak downward into it.
 
-### 5.0.1 Tolerance is per field, and integers are exempt
+### 5.0.1 Precedence over the inherited handoff
+
+[`DESIGN_expression_encoder_future.md`](DESIGN_expression_encoder_future.md) is the authoritative
+parent and it currently requires exact reconstruction: §4.3 makes exact canonical-byte and
+full-digest equality *the primary reconstruction event*, §7 specifies grammar-masked token
+cross-entropy, and §8 reports exact AST match as an engineering gate. A tolerance-graded decoder
+does not satisfy those clauses, and this document does **not** silently supersede its parent.
+
+The precedence rule for the interim:
+
+- the handoff's **exact-AST reconstruction gate remains primary and unchanged**. It is still
+  reported, and still blocking;
+- tolerance-based reconstruction (§5.4) is an **additional reported metric** and the objective for
+  a registered closeness arm — not a replacement for the gate;
+- promoting closeness to the primary reconstruction criterion requires amending the handoff's §4.3,
+  §7, and §8 in one change, with the gates restated. That amendment is proposed, not assumed here.
+
+Under `p = 1` the closeness arm reduces to exact token cross-entropy, which is precisely the
+handoff's stated loss — so the arm at its default endpoint is already compatible, and only
+`p < 1` needs the amendment.
+
+### 5.0.2 Tolerance is per field, and integers are exempt
 
 `menus=10` versus `menus=11`, or `depth=3` versus `depth=4`, are not "close" — they are
 behaviorally different processes, and the grammar types them `int`. So:
@@ -232,11 +268,34 @@ Tolerances are spec numbers reproduced by a test, revised when the production di
 the same rule as the caps. Provisional starting values, absolute unless stated:
 
 ```text
-tolerance.routing.t      = 0.005     # thresholds live in 0.01-0.1; must not blur a margin band
-tolerance.margin.t       = 0.005
+tolerance.routing.t      = 0.002     # < half the 0.01 gap between registered tiers
+tolerance.margin.t       = 0.002
 tolerance.lineage.decay  = 0.01      # decays live in 0.8-0.95
 tolerance.blend.w        = 0.01
 ```
+
+#### Per-field tolerance is not sufficient on its own
+
+Grading list elements independently can destroy a structure that no individual element violates.
+The registered thresholds `t=[0.02,0.03]` are `0.01` apart, so an independent absolute tolerance of
+`0.005` per element admits `[0.025, 0.025]` — **both elements within tolerance, and the two-tier
+routing policy collapsed into one tier**, while the primary metric reports success. The parser does
+not prevent this: it validates list kind and non-emptiness but enforces no ordering or separation,
+so `routing(e5,haiku,t=[0.03,0.02],...)` and `t=[0.025,0.025]` both parse today.
+
+Two consequences, both binding:
+
+1. **A tolerance must be strictly below half the minimum operational gap** of its field. Hence
+   `0.002` for thresholds rather than `0.005`, which was exactly half the gap and therefore
+   admitted the collapse.
+2. **Ordered fields carry a structural predicate as well.** A decoded `number_list` for a
+   threshold field must preserve strict ordering and a minimum separation no smaller than the
+   original's. Field-wise tolerance and the structural predicate must both hold; passing only the
+   first is a failure.
+
+Where an operational gap is unknown, the honest grading is downstream route-decision equivalence —
+does the decoded expression select the same tier — rather than a numeric tolerance chosen for
+convenience.
 
 ### 5.1 Why the smooth channel is needed, measured before training
 
@@ -267,7 +326,7 @@ close without ever spelling an unseen digit: asked for `0.47` it can render `0.4
 glyphs alone, so missing digits no longer produce a catastrophic failure. They cap how close the
 decoder can get — and in the production threshold range that still matters, since a missing `7`
 forces `0.07` to `0.06` or `0.08`, a real difference for a margin band and larger than the
-§5.0.1 tolerance of 0.005.
+§5.0.2 tolerance of 0.002.
 
 So the widened numeric grid stays; only its justification changes. Optimizing for the distribution
 the model will actually see is right — thresholds around 0.01–0.1, menu sizes 5–50, decays
@@ -285,48 +344,70 @@ objective — it penalizes `0.84` for `0.85` exactly as hard as `0.31` for `0.85
 declares "close is good" and then trains on unmodified token CE quietly optimizes spelling anyway.
 Closeness has to be expressed in the loss or it does not exist.
 
-#### Stochastic exact verification
+#### Stochastic exact grading
 
-The mechanism: on a sampled fraction `p` of training rows, grade the decoded output with an
-**exact verifier**; on the rest, grade it with a tolerance loss.
+The mechanism is **grading-mode selection**, not a reward term: each training row is assigned, by a
+seeded draw, to one of two *differentiable* losses.
 
 ```text
-L_numeric = p * verifier_reward + (1 - p) * tolerance_loss
+L_numeric(row) = exact_token_CE(row)      with probability p
+               = tolerance_loss(row)      with probability 1 - p
 p = 0.75    # provisional; ablated over {0, 0.5, 0.75, 1}
 ```
 
+Both branches are ordinary teacher-forced losses over known targets, so gradients flow in the
+usual way and `p` only chooses which loss a row contributes. This is deliberate. An earlier
+formulation of this section wrote the exact branch as a *verifier reward* computed after discrete
+decoding, parsing, and canonicalization — which is not differentiable, supplies no gradient at
+all at `p = 1`, and would silently require a policy-gradient estimator with its own sign,
+sampling policy, variance control, and credit assignment. None of that is needed: at training
+time the target is known, so "grade this row exactly" is just exact cross-entropy.
+
+The masking analogy holds under this reading, and is in fact what motivates it: masking does not
+add a reward, it selects which positions are graded.
+
 Two properties make this the right shape rather than a compromise:
 
-- **The verifier is free.** Decode, re-parse, canonicalize, compare bytes. The tokenizer's exact
-  reversibility (§5.0) supplies a deterministic oracle at zero cost — no teacher model, no learned
-  similarity, nothing to calibrate. Most "close is good" regimes stall on defining similarity;
-  this one can check correctness whenever it likes.
-- **It behaves like masking.** The decoder cannot tell which rows will be strictly graded, so its
-  optimal policy is to be exact wherever exactness is affordable. The equilibrium is the profile
-  actually wanted: exact in the production region, where values are well trained and cheap to
-  spell, and gracefully close in the tail, where exactness costs more capacity than it is worth.
-  `p` is the dial between exact-always and close-always.
+- **The decoder cannot tell which rows are strictly graded**, so its optimal policy is exactness
+  wherever exactness is affordable. The equilibrium is the profile actually wanted: exact in the
+  production region, where values are well trained and cheap to spell, and gracefully close in the
+  tail, where exactness costs more capacity than it is worth. `p` is the dial between
+  exact-always and close-always.
+- **Exact verification remains free, as a metric.** Decode, re-parse, canonicalize, compare bytes:
+  the tokenizer's exact reversibility (§5.0) supplies a deterministic oracle at zero cost. It is
+  not in the loss, but it is what produces the verified-exact rate below, and what makes the
+  collapse diagnostic checkable rather than inferred.
 
 Three requirements on the implementation:
 
-1. **Verify per field, not per expression.** Whole-expression canonical equality is all-or-nothing:
-   one wrong digit in a 120-token row fails the whole verification and the signal goes sparse.
-   Parse the decoded candidate and compare field by field, which also matches the per-field
-   tolerance structure of §5.0.1. Integer fields verify exactly, always.
-2. **The unverified fraction still needs a loss.** On the `(1 - p)` rows, falling back to plain
-   byte CE silently reimposes exactness and undoes the whole mechanism. The tolerance loss is the
-   N2 scalar head or a digit-distance-weighted cross-entropy — never unmodified CE.
-3. **Watch for collapse onto common values.** A large exact-hit reward can be maximized by always
-   emitting the most frequent canonical value — `0.85` forever — yielding a high verified-exact
-   rate with dead numerics. The diagnostic is already in the metric list: report verified-exact
-   rate *alongside* latent numeric sensitivity. High exact rate with flat sensitivity is collapse,
-   and seeing both numbers makes it visible instead of mysterious.
+1. **Grade per field, not per expression.** Whole-expression equality is all-or-nothing: one wrong
+   digit in a 120-token row zeroes the signal for every other field. Assign the grading mode per
+   numeric field, matching the per-field tolerance structure of §5.0.2. Integer fields grade
+   exactly regardless of the draw.
+2. **The tolerance branch must not be plain CE.** Falling back to unmodified byte cross-entropy on
+   the `(1 - p)` rows silently reimposes exactness and undoes the whole mechanism. The tolerance
+   loss is the N2 scalar head or a digit-distance-weighted cross-entropy.
+3. **Watch for collapse onto common values.** Exact grading can be satisfied by always emitting the
+   most frequent canonical value — `0.85` forever — yielding a high verified-exact rate with dead
+   numerics. See the collapse diagnostic in §5.4, which is deliberately decoder-level: encoder
+   sensitivity alone cannot detect this.
 
-#### Inference-time reuse
+#### Inference-time reuse, scoped honestly
 
-The same verifier reranks without any training change: sample `k` decodings and prefer the ones
-that verify. Consumers needing exactness buy it at inference; consumers needing only closeness
-ignore it. Recorded here so it is not rediscovered as a novelty later.
+The verifier can rerank, but only where a reference exists, and the two cases differ:
+
+- **Reconstruction of a known process** — the caller already holds the canonical bytes and digest
+  (§5.0), so re-deriving them from a decode is redundant. Reranking buys nothing here; use the
+  retained bytes.
+- **Novel candidate generation** — no reference bytes exist, so nothing can establish *exactness*.
+  Parsing and canonicalizing establish **validity and canonical stability** only: the decode
+  parses, type-checks under the pinned registry, and round-trips to itself. That is a useful
+  filter and it is not an exactness oracle.
+
+So the recorded claim is narrowed: sample `k` decodings and reject those that fail validity or
+canonical round-trip; `k` and the all-candidates-rejected fallback are parameters of whatever
+consumer wants this, and are specified there rather than asserted here. The earlier phrasing
+("prefer the ones that verify") implied an exactness guarantee that novel generation cannot have.
 
 ### 5.4 Numeric-encoding arms
 
@@ -340,17 +421,37 @@ Same frozen corpus and LOCO splits across all three:
 
 Evaluation, frozen in advance:
 
-1. **tolerance-based reconstruction** — structure exact, `number` fields within the §5.0.1
+1. **tolerance-based reconstruction** — structure exact, `number` fields within the §5.0.2
    tolerance, `int` fields exact after rounding — weighted by the production numeric distribution.
    This replaces plain exact-match string comparison, which would grade for an objective the
    design does not hold;
-2. **verified-exact rate**, reported separately, as both an exactness readout and the numerator of
-   the collapse diagnostic;
+2. **verified-exact rate**, reported separately, as the exactness readout;
 3. tail robustness under an explicit **digit-holdout** split — train never sees `7`, test does;
    train sees two decimal places, test sees three. This turns "which encoding generalizes" into a
    measurement of the same shape as the template LOCO;
-4. latent numeric sensitivity — does the embedding separate `decay=0.85` from `decay=0.5`, the
-   direct repair target for §5.1, and the collapse diagnostic's denominator.
+4. latent numeric sensitivity — does the *embedding* separate `decay=0.85` from `decay=0.5`, the
+   direct repair target for §5.1;
+5. **decoder-level numeric dependence** (below).
+
+#### The collapse diagnostic must be decoder-level
+
+Latent sensitivity and verified-exact rate can both look healthy while the decoder is collapsed.
+The encoder may separate `0.85` from `0.5` cleanly while the decoder ignores that coordinate and
+emits the majority value; if the majority value is common enough, aggregate exactness stays high
+and aggregate sensitivity stays high. Neither aggregate is target-conditioned, so neither can see
+it.
+
+The diagnostic must therefore measure whether decoder output *depends on* the target value:
+
+- **macro-averaged reconstruction over distinct target values**, not micro-averaged over rows, so
+  a rare value cannot be drowned by a frequent one;
+- **field-level confusion** between target and decoded value, which exposes an always-emit-`0.85`
+  policy directly;
+- **decoded-output variance** conditioned on target — near-zero variance across distinct targets is
+  collapse regardless of the aggregate rate.
+
+Reporting latent sensitivity alone would satisfy the letter of "watch for collapse" while missing
+the failure it names.
 
 Preregistered prediction, revised for the closeness metric: under tolerance-based grading N2's
 "clean exactness story" stops being an advantage and its scalar head becomes the natural fit for

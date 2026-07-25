@@ -53,7 +53,8 @@ from process_identity import (
     verify_identity_record,
 )
 
-GOLDEN_PATH = ROOT / "PROCESS_EXPRESSION_GOLDEN_v1.json"
+GOLDEN_PATH = ROOT / "PROCESS_EXPRESSION_GOLDEN_v2.json"
+SUPERSEDED_GOLDEN_PATH = ROOT / "PROCESS_EXPRESSION_GOLDEN_v1.json"
 SPEC_SHA = "a" * 64
 
 
@@ -435,6 +436,8 @@ def test_golden_fixture_verifies_and_covers_the_required_shapes():
     names = {row["name"] for row in document["rows"]}
     assert set(PROCESSES) <= names
     for required in (
+        "int-spelled-number",
+        "int-spelled-number-list",
         "atom-bare",
         "atom-dual-bare",
         "pinned",
@@ -472,6 +475,40 @@ def test_golden_detects_a_row_recomputed_differently():
     # Digest re-bound, so only recomputation from the expression catches it.
     with pytest.raises(ContractError, match="golden row drifted"):
         verify_golden(document)
+
+
+def test_superseded_v1_bundle_is_retained_and_fails_closed():
+    """A contract change creates a new bundle; it never mutates a sealed one.
+
+    pec-v1 stays on disk as the sealed artifact it was.  Because scalar literals
+    now carry their declared registry kind, it is loadable but no longer valid
+    under the current contract — which is the designed behavior, not clutter.
+    """
+
+    assert SUPERSEDED_GOLDEN_PATH.exists()
+    with pytest.raises(ContractError, match="different contract version"):
+        load_golden(SUPERSEDED_GOLDEN_PATH)
+
+    superseded = json.loads(SUPERSEDED_GOLDEN_PATH.read_text(encoding="utf-8"))
+    assert superseded["contract_version"] == "pec-v1"
+    # No pec-v1 row was affected by the fix, which is exactly why pec-v2 had to
+    # add explicit coverage for an integer-spelled `number`.
+    assert not any(row["name"].startswith("int-spelled") for row in superseded["rows"])
+
+
+def test_declared_registry_kind_wins_over_the_runtime_value_type():
+    """`margin.t` is registered `number`; spelling it `1` must not make it int."""
+
+    assert REGISTRY["margin"].kwargs["t"].kind == "number"
+    resolved = resolve_expression("margin(t=1)")
+    assert [(k.key, k.value_type, k.value) for k in resolved.kwargs] == [
+        ("t", "number", 1)
+    ]
+    tokens = [t.token for t in token_stream(resolved) if t.token in ("<INT>", "<NUMBER>")]
+    assert tokens == ["<NUMBER>"]
+    assert "KWARG(t,number)" in role_paths(token_stream(resolved))
+    # A genuinely int-declared field is unaffected.
+    assert resolve_expression("menu(graph,n=10)").kwargs[0].value_type == "int"
 
 
 def test_golden_rejects_a_foreign_registry_version():

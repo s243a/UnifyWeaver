@@ -300,16 +300,80 @@ def test_specification_records_the_measured_numbers():
 def test_specification_records_the_closeness_numbers():
     text = SPEC.read_text(encoding="utf-8")
     for needle in (
-        "p = 0.75",                      # verification fraction
+        "p = 0.75",                      # exact-grading fraction
         "{0, 0.5, 0.75, 1}",             # its ablation grid
-        "tolerance.routing.t      = 0.005",
-        "tolerance.lineage.decay  = 0.01",
     ):
         assert needle in text, f"specification no longer records {needle!r}"
 
 
+def _spec_tolerances() -> dict[str, float]:
+    """Parse the whole tolerance table out of the specification."""
+
+    import re
+
+    text = SPEC.read_text(encoding="utf-8")
+    return {
+        m.group(1): float(m.group(2))
+        for m in re.finditer(r"^tolerance\.(\S+)\s*=\s*([0-9.]+)", text, re.M)
+    }
+
+
+def test_tolerance_table_covers_every_number_field_and_nothing_else():
+    """The whole mapping is pinned, not a sampled pair of entries.
+
+    Checking only two rows would let `margin.t` or `blend.w` change or vanish
+    while the suite stayed green, contrary to the rule that every specification
+    number is reproduced by a test.
+    """
+
+    declared = _spec_tolerances()
+    number_fields = {
+        f"{name}.{key}"
+        for name, sig in REGISTRY.items()
+        for key, spec in sig.kwargs.items()
+        if spec.kind in ("number", "number_list")
+    }
+    assert set(declared) == number_fields
+    assert declared == {
+        "routing.t": 0.002,
+        "margin.t": 0.002,
+        "lineage.decay": 0.01,
+        "blend.w": 0.01,
+    }
+
+
+def test_threshold_tolerance_is_below_half_the_operational_gap():
+    """§5.0.2: independent per-element tolerance can collapse a routing tier.
+
+    Registered thresholds are 0.01 apart.  A tolerance of half that gap admits
+    [0.025, 0.025] — both elements "within tolerance" and the two-tier policy
+    destroyed — so the tolerance must be strictly below half the gap.
+    """
+
+    registered = [0.02, 0.03]
+    gap = min(b - a for a, b in zip(registered, registered[1:]))
+    assert gap == pytest.approx(0.01)
+    tolerance = _spec_tolerances()["routing.t"]
+    assert tolerance < gap / 2
+
+    # The collapse the tolerance alone cannot prevent: the parser accepts both
+    # an unordered and a degenerate threshold list, so §5.0.2 additionally
+    # requires a structural ordering/separation predicate.
+    for collapsed in ("routing(e5,haiku,t=[0.025,0.025],menus=[10,20])",
+                      "routing(e5,haiku,t=[0.03,0.02],menus=[10,20])"):
+        pc.parse(collapsed)  # parses today: no ordering or separation enforced
+
+
+def test_specification_states_precedence_over_the_parent_handoff():
+    """§5.0.1: the handoff's exact-AST gate stays primary until amended."""
+
+    text = SPEC.read_text(encoding="utf-8")
+    assert "does **not** silently supersede its parent" in text
+    assert "exact-AST reconstruction gate remains primary" in text
+
+
 def test_integer_fields_are_typed_int_and_therefore_exempt_from_tolerance():
-    """§5.0.1: menus=10 vs 11 is a different process, not a near miss."""
+    """§5.0.2: menus=10 vs 11 is a different process, not a near miss."""
 
     int_fields = {
         (name, key)
@@ -351,12 +415,15 @@ def test_missing_digits_cap_resolution_below_the_stated_tolerance():
     assert ABSENT_DIGITS == {"4", "6", "7", "9"}
 
 
-def test_decoder_output_is_never_an_identity_source():
-    """§5.0: identity is retained alongside, never recomputed from decoded text.
+def test_identity_is_derived_from_retained_bytes_not_decoded_text():
+    """§5.0: what this proves, and what it deliberately does not.
 
-    The identity helpers accept a *validated AST*, not decoder output, and the
-    canonical bytes travel with the record — so an approximate decode cannot
-    contaminate a digest.
+    It proves identity is derived from a validated AST and its retained
+    canonical bytes, so an approximate decode cannot corrupt an existing
+    identity.  It does *not* prove decoder output can never become an identity:
+    the helpers accept any parsed node and cannot tell where it came from.  That
+    boundary needs an origin-tagged wrapper, recorded in §5.0 as a step-3
+    obligation blocking on the decoder — see the companion test below.
     """
 
     from process_identity import deployed_identity, verify_identity_record
@@ -374,3 +441,28 @@ def test_decoder_output_is_never_an_identity_source():
     from process_identity import full_ast_digest
 
     assert full_ast_digest(near) != full_ast_digest(node)
+
+
+def test_identity_boundary_is_currently_a_discipline_not_an_invariant():
+    """Records the gap honestly so the step-3 obligation is not forgotten.
+
+    The identity APIs accept any parsed node, so text that *happened* to come
+    from a decoder can still mint an identity today.  Asserting the gap keeps
+    the specification's claim and the code in agreement, and this test is the
+    one to invert once the origin-tagged wrapper lands.
+    """
+
+    from process_identity import deployed_identity, full_ast_digest_for_expression
+
+    decoded_looking_text = "lineage(graph,decay=0.84)"  # imagine a decode
+    # Nothing distinguishes it from an authored expression:
+    assert len(full_ast_digest_for_expression(decoded_looking_text)) == 64
+    identity = deployed_identity(
+        pc.parse(decoded_looking_text), factory_fingerprint="f"
+    )
+    assert identity.full_digest == full_ast_digest_for_expression(decoded_looking_text)
+
+    # The specification must therefore not claim the boundary is enforced.
+    text = SPEC.read_text(encoding="utf-8")
+    assert "discipline, not an invariant" in text
+    assert "step-3 obligation" in text

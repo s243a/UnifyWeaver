@@ -49,7 +49,12 @@ from process_identity import full_ast_digest
 
 #: Bumped whenever the structural stream or role-path serialization changes.
 #: Versioned independently of the grammar, per §3.1.
-CONTRACT_VERSION = "pec-v1"
+#:
+#: pec-v2: scalar literals carry their *declared registry kind* rather than a
+#: type inferred from the Python runtime value.  ``margin(t=1)`` now emits
+#: ``<NUMBER>`` instead of ``<INT>``.  No pec-v1 fixture row was affected — that
+#: is precisely why pec-v2 adds a row covering an integer-spelled ``number``.
+CONTRACT_VERSION = "pec-v2"
 
 GOLDEN_SCHEMA = "unifyweaver.process-expression-golden.v1"
 
@@ -172,13 +177,32 @@ def _lexical(value: Any) -> str:
     return _render_val(value)
 
 
+_SCALAR_KINDS = ("number", "int", "string")
+
+
 def _value_type(value: Any, declared_kind: str | None) -> str:
+    """Resolve a literal's type, preferring the *declared registry kind*.
+
+    §3.1 of the encoder handoff requires derived tokens to agree with the pinned
+    registry during both encoding and decoding.  Inferring a scalar's type from
+    its Python runtime value violates that: ``margin(t=1)`` is valid, and
+    ``margin.t`` is registered ``number``, but the runtime value is an ``int``.
+    Inferring would emit ``<INT>`` for a ``number`` field, which a stream-driven
+    grader would then hold to exact reconstruction instead of the tolerance
+    rule in the generator specification §5.0.1.
+
+    Runtime inference remains only as a fallback for values with no declared
+    kind, and it never overrides the registry.
+    """
+
     if isinstance(value, tuple):
         if declared_kind in _LIST_ELEMENT_TYPE:
             return declared_kind
         raise ContractError(f"list value has no registered list kind: {declared_kind!r}")
     if isinstance(value, bool):
         raise ContractError("booleans are not a registered process value type")
+    if declared_kind in _SCALAR_KINDS:
+        return declared_kind
     if isinstance(value, int):
         return "int"
     if isinstance(value, float):
