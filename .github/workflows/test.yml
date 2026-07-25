@@ -108,6 +108,12 @@ jobs:
         run: |
           python3 -m pytest -q prototypes/mu_cosine/test_filing_path_decision.py
 
+      - name: Run process-expression contract fixture tests
+        # Identity helpers plus the frozen AST/token/role-path golden vectors.
+        # Pure stdlib over process_cards — no embedder, no torch, no corpus.
+        run: |
+          python3 -m pytest -q prototypes/mu_cosine/test_process_expression_contract.py
+
       - name: Run F# WAM target tests (codegen + dotnet smoke + LMDB conformance)
         env:
           DOTNET_CLI_TELEMETRY_OPTOUT: '1'
