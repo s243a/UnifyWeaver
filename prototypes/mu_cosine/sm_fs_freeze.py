@@ -397,10 +397,10 @@ def _verify_ledger_against_privacy_source(
             continue
         fields = _expected_ledger_privacy_fields(relative, digest, indexed)
         if not fields["dest"]:
-            raise ValueError(
-                "policy-eligible privacy-index map has no destination: "
-                f"{relative}"
-            )
+            # root-level map: filed in no directory, so it has no filing label —
+            # structurally ineligible for a filing corpus (counted, not an error)
+            observed_privacy["no_destination"] += 1
+            continue
         expected[relative] = fields
 
     rows = ledger.get("rows")
@@ -1194,10 +1194,9 @@ def main(argv=None):
             continue
         row = _expected_ledger_privacy_fields(relative, digest, indexed)
         if not row["dest"]:
-            raise ValueError(
-                "policy-eligible privacy-index map has no destination: "
-                f"{relative}"
-            )
+            # root-level map: no filing folder ⇒ no filing label (counted, skipped)
+            observed_privacy["no_destination"] += 1
+            continue
         # This is deliberately adjacent to the source/index digest comparison
         # in the iterator: the ledger stores that same digest, never a reread.
         rows.append(row)
@@ -1205,6 +1204,7 @@ def main(argv=None):
         relative
         for relative, record in index.items()
         if relative not in excluded_set
+        and "/" in relative                      # root-level maps have no destination
         and training_privacy_allows(
             record["classification"], a.training_privacy_policy
         )
