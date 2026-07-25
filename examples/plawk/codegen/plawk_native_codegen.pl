@@ -8141,7 +8141,9 @@ plawk_assoc_spec_table_name(ArrayName-_Key, ArrayName) :- atom(ArrayName).
 plawk_assoc_spec_table_name(dynassoc(ArrayName, _Call), ArrayName).
 plawk_assoc_spec_table_name(assoc_split(ArrayName, _K, _Sep), ArrayName).
 plawk_assoc_spec_table_name(assoc_add(ArrayName, _K, _Delta), ArrayName).
+plawk_assoc_spec_table_name(assoc_add_n(ArrayName, _Comps, _Delta), ArrayName).
 plawk_assoc_spec_table_name(assoc_delete(ArrayName, _K), ArrayName).
+plawk_assoc_spec_table_name(assoc_delete_n(ArrayName, _Comps), ArrayName).
 plawk_assoc_spec_table_name(assoc_set_row(ArrayName, _K), ArrayName).
 plawk_assoc_spec_table_name(assoc_set_row_cons(ArrayName, _K, _Fs), ArrayName).
 plawk_assoc_spec_table_name(assoc_guarded_print(Pattern, _Fields), ArrayName) :-
@@ -8207,6 +8209,14 @@ plawk_assoc_body_action_spec(delete_assoc(var(ArrayName), int(N)),
         assoc_delete_lit(ArrayName, Str)) :-
     integer(N),
     number_string(N, Str).
+% `delete arr[$i,$j,...]` -- remove the entry at a multi-dimensional key, the
+% delete counterpart of the `arr[$i,$j,...]++` counter. The shared key builder
+% always yields a valid key (a missing subscript is the empty string), so unlike
+% the single-field delete there is no missing-key skip; the runtime delete is
+% itself a no-op when the key is absent.
+plawk_assoc_body_action_spec(delete_assoc(var(ArrayName), subsep_key(Fields)),
+        assoc_delete_n(ArrayName, Comps)) :-
+    plawk_subsep_key_components(Fields, Comps).
 % `split($N, arr, "sep")`: populate arr (a str-valued positional table, keys
 % 1..n) by splitting field N on the separator. A single-char separator is a
 % literal byte; a multi-char separator is a POSIX ERE regex (its own pattern,
@@ -8222,6 +8232,13 @@ plawk_assoc_body_action_spec(split_into(field(KeyIndex), var(ArrayName), string(
 plawk_assoc_body_action_spec(add_assoc(var(ArrayName), field(KeyIndex), Delta),
         assoc_add(ArrayName, KeyIndex, Delta)) :-
     integer(KeyIndex), KeyIndex > 0,
+    plawk_assoc_add_delta_ok(Delta).
+% `arr[$i,$j,...] += DELTA` -- add-assign at a multi-dimensional key (the
+% sum-by-a-compound-group idiom). Same DELTA shapes as the single-field form;
+% straight-line like the multi-dim counter (no missing-key skip).
+plawk_assoc_body_action_spec(add_assoc(var(ArrayName), subsep_key(Fields), Delta),
+        assoc_add_n(ArrayName, Comps, Delta)) :-
+    plawk_subsep_key_components(Fields, Comps),
     plawk_assoc_add_delta_ok(Delta).
 
 plawk_assoc_add_delta_ok(field(V)) :- integer(V), V > 0.
@@ -8758,6 +8775,20 @@ plawk_assoc_planned_actions([assoc_delete_lit(ArrayName, Str) | Rest],
       NextIndex is Index + 1
     },
     [assoc_delete_lit_action(Index, ArrayName, TableIndex, Str)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+plawk_assoc_planned_actions([assoc_delete_n(ArrayName, Comps) | Rest],
+        Tables, StrArrays, PosArrays, Index) -->
+    { nth0(TableIndex, Tables, ArrayName),
+      NextIndex is Index + 1
+    },
+    [assoc_delete_n_action(Index, ArrayName, TableIndex, Comps)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+plawk_assoc_planned_actions([assoc_add_n(ArrayName, Comps, Delta) | Rest],
+        Tables, StrArrays, PosArrays, Index) -->
+    { nth0(TableIndex, Tables, ArrayName),
+      NextIndex is Index + 1
+    },
+    [assoc_add_n_action(Index, ArrayName, TableIndex, Comps, Delta)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 plawk_assoc_planned_actions([assoc_split(ArrayName, KeyIndex, Sep) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
@@ -9869,6 +9900,61 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action2(Index, _ArrayName, Tabl
           [Base, TableIndex, KeyId]),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[global(GlobalDecl), Label], KeyLines, [Inc, Next, '']], Lines)
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% `delete arr[$i,$j,...]`: build the multi-dimensional key the same way the
+% counter does, then call the void backward-shift delete. Straight-line -- the
+% key builder always yields a valid key, and the runtime delete is a no-op when
+% that key is absent -- so there is no missing-key skip.
+plawk_assoc_rule_action_blocks(RuleIndex,
+        [assoc_delete_n_action(Index, _ArrayName, TableIndex, Comps) | Rest],
+        NextLabel, FieldSeparator) -->
+    { integer(FieldSeparator),
+      ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(Base), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
+      format(atom(KeyId), '%~w_key_id', [Base]),
+      plawk_subsep_key_n_ir(Base, '%line', Comps, FieldSeparator, KeyId,
+          GlobalDecl, KeyLines),
+      format(atom(Del),
+          '  call void @wam_assoc_i64_delete(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
+          [TableIndex, KeyId]),
+      format(atom(Next), '  br label %~w', [ActionNextLabel]),
+      append([[global(GlobalDecl), Label], KeyLines, [Del, Next, '']], Lines)
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% `arr[$i,$j,...] += DELTA`: the multi-dimensional key plus the record's DELTA
+% (a field value or an integer constant) folded in through the same inc
+% primitive the counter uses with a delta of 1. Straight-line, as above.
+plawk_assoc_rule_action_blocks(RuleIndex,
+        [assoc_add_n_action(Index, _ArrayName, TableIndex, Comps, Delta) | Rest],
+        NextLabel, FieldSeparator) -->
+    { integer(FieldSeparator),
+      ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(Base), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
+      format(atom(KeyId), '%~w_key_id', [Base]),
+      plawk_subsep_key_n_ir(Base, '%line', Comps, FieldSeparator, KeyId,
+          GlobalDecl, KeyLines),
+      plawk_assoc_scalar_src_lines(Delta, Base, FieldSeparator, DeltaVar, DeltaLines),
+      format(atom(Inc),
+          '  %~w_sum = call i64 @wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 ~w)',
+          [Base, TableIndex, KeyId, DeltaVar]),
+      format(atom(Next), '  br label %~w', [ActionNextLabel]),
+      append([[global(GlobalDecl), Label], KeyLines, DeltaLines,
+              [Inc, Next, '']], Lines)
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).

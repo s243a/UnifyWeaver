@@ -197,6 +197,78 @@ test(var_subscript_rejected, [condition(clang_available)]) :-
     build_status(Dir, 'rv', "{ k = \"z\"; c[$1,k]++ }\n", St),
     assertion(St \== 0), !.
 
+% --- multi-dim write shapes: `+=` and `delete` ------------------------------
+
+% `arr[$i,$j] += DELTA` sums by a compound group: (a,x) gets 5+3, (a,y) gets 2.
+test(multi_dim_add_assign, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run_sorted(Dir, 'ad2', "{ c[$1,$2] += $3 } END { for (k in c) print c[k] }\n",
+        "a x 5\na x 3\na y 2\n", Lines),
+    assertion(Lines == ["2", "8"]), !.
+
+% `+=` at a three-dimensional key.
+test(multi_dim_add_assign_three, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run_sorted(Dir, 'ad3',
+        "{ c[$1,$2,$3] += $4 } END { for (k in c) print c[k] }\n",
+        "a b c 1\na b c 2\na b d 4\n", Lines),
+    assertion(Lines == ["3", "4"]), !.
+
+% `+=` with a literal component in the key.
+test(multi_dim_add_assign_literal_key, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run_sorted(Dir, 'adl', "{ c[$1,\"t\"] += $2 } END { for (k in c) print c[k] }\n",
+        "a 3\na 4\nb 1\n", Lines),
+    assertion(Lines == ["1", "7"]), !.
+
+% `+=` with an integer-constant delta rather than a field.
+test(multi_dim_add_assign_int_delta, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run_sorted(Dir, 'adi', "{ c[$1,$2] += 10 } END { for (k in c) print c[k] }\n",
+        "a x\na x\nb y\n", Lines),
+    assertion(Lines == ["10", "20"]), !.
+
+% The running total reads back per record through the same multi-dim key.
+test(multi_dim_add_assign_read_back, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'adr', "{ c[$1,$2] += $3; print c[$1,$2] }\n",
+        "a x 5\na x 3\na y 9\n", Out),
+    assertion(Out == "5\n8\n9\n"), !.
+
+% `delete arr[$i,$j]` removes the entry at a compound key: the "rm" tuple is
+% counted then deleted, so END's for-in no longer sees it.
+test(multi_dim_delete, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run_sorted(Dir, 'dl2',
+        "{ c[$1,$2]++ }\n$1 == \"rm\" { delete c[$1,$2] }\nEND { for (k in c) print c[k] }\n",
+        "a x\na x\nrm y\nb z\n", Lines),
+    assertion(Lines == ["1", "2"]), !.
+
+% `delete` at a three-dimensional key.
+test(multi_dim_delete_three, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run_sorted(Dir, 'dl3',
+        "{ c[$1,$2,$3]++ }\n$1 == \"rm\" { delete c[$1,$2,$3] }\nEND { for (k in c) print c[k] }\n",
+        "a b c\na b c\nrm y z\n", Lines),
+    assertion(Lines == ["2"]), !.
+
+% `delete` may target a different tuple than the counter built: the "rm" record
+% deletes the (a,x) entry, leaving only its own (rm,a) entry.
+test(multi_dim_delete_other_tuple, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run_sorted(Dir, 'dlo',
+        "{ c[$1,$2]++ }\n$1 == \"rm\" { delete c[$2,$3] }\nEND { for (k in c) print c[k] }\n",
+        "a x\na x\nrm a x\n", Lines),
+    assertion(Lines == ["1"]), !.
+
+% Row capture at a multi-dim key (`arr[$i,$j] = $0`) is a clean not-yet: the
+% row-valued (str) table path has its own marking and reader machinery, so it
+% declines rather than mis-lowering. A follow-on.
+test(multi_dim_set_row_rejected, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_status(Dir, 'dsr', "{ c[$1,$2] = $0 }\n", St),
+    assertion(St \== 0), !.
+
 :- end_tests(plawk_subsep).
 
 % --- helpers ---------------------------------------------------------------
