@@ -403,18 +403,22 @@ def test_mixed_case_smmx_member_cannot_vanish_from_bundle(tmp_path):
     assert row["sha256"] == hashlib.sha256(mixed.read_bytes()).hexdigest()
 
 
-def test_policy_eligible_root_map_is_rejected_instead_of_silently_omitted(
+def test_policy_eligible_root_map_is_counted_not_silently_omitted(
     tmp_path,
 ):
+    # Semantic revised 2026-07-25 (owner corpus has 13 root-level maps): a map filed
+    # in no directory has no filing label — structurally ineligible, SKIPPED but
+    # NEVER silent: it must appear in observed_counts["no_destination"], preserving
+    # the original test's anti-silent-omission intent.
     tree = make_tree(tmp_path)
     write_map(tree / "AtRoot.smmx", "At root")
     privacy_path = tmp_path / "privacy.jsonl"
     build_privacy_index(tree, privacy_path)
     out = tmp_path / "out"
 
-    with pytest.raises(ValueError, match="has no destination"):
-        run(tree, out, privacy_index=privacy_path)
-    assert not out.exists()
+    led = run(tree, out, privacy_index=privacy_path)
+    assert led["privacy_index"]["observed_counts"].get("no_destination") == 1
+    assert all(r["map_path"] != "AtRoot.smmx" for r in led["rows"])
 
 
 def test_source_change_after_initial_check_is_rejected_at_inclusion(
@@ -848,3 +852,13 @@ def test_owner_exclusion_retires_unresolved_refs_and_is_sealed(tmp_path):
     assert man["parameters"]["owner_excluded_maps"] == led["owner_excluded_maps"]
     assert all(r["map_path"] != "Subjects/sci/phy/mech/Dangling.smmx" for r in led["rows"])
     assert led["privacy_index"]["observed_counts"].get("owner_excluded") == 1
+
+
+def test_root_level_maps_skip_as_no_destination(tmp_path):
+    tree = make_tree(tmp_path)
+    write_map(tree / "1 Working On.smmx", "1 Working On")   # root-level: no filing folder
+    privacy_path = tmp_path / "privacy.jsonl"
+    build_privacy_index(tree, privacy_path)
+    led = run(tree, tmp_path / "out", privacy_index=privacy_path)
+    assert led["privacy_index"]["observed_counts"].get("no_destination") == 1
+    assert all("/" in r["map_path"] for r in led["rows"])
