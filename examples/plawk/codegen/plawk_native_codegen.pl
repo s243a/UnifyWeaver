@@ -6906,6 +6906,16 @@ plawk_slot_name(scalar_counter(Name), Name).
 plawk_slot_name(scalar_double(Name), Name).
 % A string scalar's slot holds an interned atom id (an i64); the id 0 is the
 % "unset" sentinel, printed as the empty string.
+%% plawk_slot_holds_text(+Slot) is semidet.
+%  Slot kinds whose i64 payload is an interned ATOM ID rather than a number: a
+%  string scalar and a strnum scalar share that representation, and differ only
+%  in comparison-time dispatch (lexical vs POSIX strnum). Every WRITE path must
+%  therefore treat them alike -- keeping them behind one guard is what stops a
+%  store emitter from handling one kind and silently mis-storing the other as a
+%  number.
+plawk_slot_holds_text(scalar_string(_Name)).
+plawk_slot_holds_text(scalar_strnum(_Name)).
+
 plawk_slot_name(scalar_string(Name), Name).
 % A strnum scalar (POSIX numeric-string duality, PLAWK_STRNUM_DUALITY.md): a
 % value copied from a strnum source (a field for now) that compares numerically
@@ -7291,15 +7301,45 @@ plawk_scalar_typed_slots(Rules, Names, Slots) :-
     ord_subtract(Strings0, Strnums, Strings),
     maplist(plawk_scalar_typed_slot(Doubles, Strings, Strnums), Names, Slots).
 
+%% plawk_scalar_nested_action(+Action, -Inner) is nondet.
+%
+%  Action itself, plus every action nested inside it at any depth: both `if`
+%  branches, and foreach / while / do-while bodies.
+%
+%  The scalar collectors that ask "which names does this rule write, and how?"
+%  must all walk the SAME shape. plawk_scalar_update_name_expr/3 descends into
+%  these containers (so a name assigned only inside a branch does get a slot)
+%  while plawk_scalar_string_names/2 used to look at top-level actions only --
+%  so the slot existed but its TYPE was decided by a collector that never saw
+%  the assignment, and `{ if (NR > 1) s = $1 } END { print s }` silently printed
+%  `0` (the i64 default) instead of the text. Sharing this walker is what keeps
+%  the two views from drifting again.
+plawk_scalar_nested_action(Action, Action).
+plawk_scalar_nested_action(if(_Pattern, ThenActions, ElseActions), Inner) :-
+    (   member(Action, ThenActions)
+    ;   member(Action, ElseActions)
+    ),
+    plawk_scalar_nested_action(Action, Inner).
+plawk_scalar_nested_action(foreach_loop(_Layout, Body), Inner) :-
+    member(Action, Body),
+    plawk_scalar_nested_action(Action, Inner).
+plawk_scalar_nested_action(while_loop(_Cond, Body), Inner) :-
+    member(Action, Body),
+    plawk_scalar_nested_action(Action, Inner).
+plawk_scalar_nested_action(do_while_loop(Body, _Cond), Inner) :-
+    member(Action, Body),
+    plawk_scalar_nested_action(Action, Inner).
+
 % A scalar is string-typed when it is assigned a string RHS (`x = $1 $2` or
-% `x = "text"`), tracked separately from the double/counter fixpoint. v1 looks
-% at top-level rule-body assignments; a nested (if/loop-body) string assignment
-% is a follow-on.
+% `x = "text"`), tracked separately from the double/counter fixpoint. Walks
+% nested if/loop bodies via plawk_scalar_nested_action/2, matching the slot
+% collector's reach -- a string assigned only inside a branch is still a string.
 plawk_scalar_string_names(Rules, Strings) :-
     findall(Name,
         ( member(rule(_Pattern, Actions0), Rules),
           plawk_trim_control_tails(Actions0, Actions),
-          member(Action, Actions),
+          member(Action0, Actions),
+          plawk_scalar_nested_action(Action0, Action),
           plawk_scalar_action_update(Action, Name, set_str(_Src))
         ),
         Names0),
@@ -7403,10 +7443,18 @@ plawk_strnum_validly_sourced(Rules, Set, Name) :-
 % bodies are excluded: plawk does not yet correctly propagate a value assigned
 % in a nested block to a later statement, so activating strnum there would ride
 % on that unsupported control-flow shape).
+% Every action a rule performs, nested if/loop bodies included (via the shared
+% plawk_scalar_nested_action/2 walker). All five strnum sites -- disqualifiers,
+% field/external sources, copy-grow, and the read-use gate -- enumerate through
+% here, so widening the reach widens them together: a nested `x = $N` can seed
+% strnum-ness, and a nested READ is equally visible to the gate, so a name whose
+% nested read is unsupported still deactivates rather than activating on a
+% half-seen program.
 plawk_strnum_rule_action(Rules, Action) :-
     member(rule(_Pattern, Actions0), Rules),
     plawk_trim_control_tails(Actions0, Actions),
-    member(Action, Actions).
+    member(Action0, Actions),
+    plawk_scalar_nested_action(Action0, Action).
 
 % A strnum FIELD source: a bare field copy `x = $N` (the seed of strnum-ness).
 % Both surface shapes for a field read (`field(N)` and `int(field(N))`) count.
@@ -15336,30 +15384,33 @@ plawk_scalar_update_operation_ir(set_str(gsub_str(Global, Regex, Repl)), scalar_
          Base, ReplBytes, ReplBytes, ReplName,
          NextValue, Base, Base, Base, CacheName, Base, ReplLen, GlobalBool]),
     atomic_list_concat([PatGlobal, ReplGlobal, CacheGlobal], '\n', GlobalIR).
-plawk_scalar_update_operation_ir(set_str(Src), scalar_string(_Name), FieldSeparator,
+% A string RHS into a text-holding slot. A strnum slot stores the same interned
+% atom id as a string slot (the runtime call yields an id via
+% plawk_str_build_ir); only comparison-time dispatch differs (strnum vs string).
+% So the store is identical for both -- the slot's KIND, not this op, drives the
+% numeric-vs-lexical choice.
+plawk_scalar_update_operation_ir(set_str(Src), Slot, FieldSeparator,
         Prefix, SlotIndex, OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
+    plawk_slot_holds_text(Slot),
     !,
     format(atom(Base), '~w_slot_~w_op_~w_str', [Prefix, SlotIndex, OpIndex]),
     plawk_str_build_ir(Src, FieldSeparator, Base, NextValue, GlobalParts, SetupLines),
     plawk_join_nonempty_ir(GlobalParts, GlobalIR),
     atomic_list_concat(SetupLines, '\n', IR).
-% An ARGV/getline strnum slot stores the same interned atom id as a string slot
-% (the runtime call yields an id via plawk_str_build_ir); only comparison-time
-% dispatch differs (strnum vs string). So the store is identical to the string
-% case -- the slot's kind, not this op, drives the numeric-vs-lexical choice.
-plawk_scalar_update_operation_ir(set_str(Src), scalar_strnum(_Name), FieldSeparator,
-        Prefix, SlotIndex, OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
-    !,
-    format(atom(Base), '~w_slot_~w_op_~w_str', [Prefix, SlotIndex, OpIndex]),
-    plawk_str_build_ir(Src, FieldSeparator, Base, NextValue, GlobalParts, SetupLines),
-    plawk_join_nonempty_ir(GlobalParts, GlobalIR),
-    atomic_list_concat(SetupLines, '\n', IR).
-% strnum assignment `x = $N`: intern the field's raw text into an atom id (the
-% strnum slot repr), retaining the bytes so a later comparison can decide
-% numeric vs lexical. Matched specifically before the generic i64 set. The
-% record is %line in this scope (as in the concat path).
-plawk_scalar_update_operation_ir(set(field_i64(FieldIndex)), scalar_strnum(_Name),
+% A field copy `x = $N` into a text-holding slot: intern the field's raw bytes
+% into an atom id, retaining them so a later comparison can decide numeric vs
+% lexical. Matched specifically before the generic i64 set. The record is %line
+% in this scope (as in the concat path).
+%
+% This used to be restricted to a strnum slot, so a name written BOTH as a field
+% copy and as a string (`{ s = "x"; s = $1 }` -- string wins the slot kind, since
+% a literal write disqualifies strnum) fell through to the generic NUMERIC store:
+% the slot got the field's numeric value (0 for non-numeric text), and printing
+% it resolved atom id 0 to empty. Both kinds hold an interned id, so both take
+% this store.
+plawk_scalar_update_operation_ir(set(field_i64(FieldIndex)), Slot,
         FieldSeparator, Prefix, SlotIndex, OpIndex, _InputValue, NextValue, ''-IR) :-
+    plawk_slot_holds_text(Slot),
     !,
     format(atom(Base), '~w_slot_~w_op_~w_snum', [Prefix, SlotIndex, OpIndex]),
     format(atom(NextValue), '%~w_id', [Base]),
