@@ -6766,10 +6766,13 @@ plawk_forin_body_print_lines([assoc(var(LookupArrayName), var(LoopVar)) | Rest],
         LoopVar, ArrayName, TableIndex, AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
     plawk_forin_separator_lines(PrintIndex, OutputSeparator),
     { (   LookupArrayName == ArrayName
-      ->  format(atom(Value),
+      ->  LookupTableIndex = TableIndex,
+          Iterated = true,
+          format(atom(Value),
               '  %forin_value_~w = call i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_slot)',
               [PrintIndex, TableIndex])
       ;   plawk_assoc_table_index(AssocPlan, LookupArrayName, LookupTableIndex),
+          Iterated = false,
           format(atom(Value),
               '  %forin_value_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %forin_key_id)',
               [PrintIndex, LookupTableIndex])
@@ -6787,11 +6790,18 @@ plawk_forin_body_print_lines([assoc(var(LookupArrayName), var(LoopVar)) | Rest],
           llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar,
               PtrIR, [FmtPtr, PrintCall]),
           ValueLines = [Value, ValueString, FmtPtr, PrintCall]
-      ;   format(atom(FmtVar), 'forin_i64_fmt_~w', [PrintIndex]),
+      ;   Iterated == true
+      ->  % the iterated table: this slot is occupied by construction, so the
+          % value always exists and prints unconditionally.
+          format(atom(FmtVar), 'forin_i64_fmt_~w', [PrintIndex]),
           format(atom(PrintVar), 'forin_printed_i64_~w', [PrintIndex]),
           llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
               ValueIR, [FmtPtr, PrintCall]),
           ValueLines = [Value, FmtPtr, PrintCall]
+      ;   % a CROSS-table lookup by the loop key: that key may be absent in the
+          % looked-up table, and an absent element prints as empty in awk.
+          plawk_assoc_value_print_line(LookupTableIndex, '%forin_key_id', PrintCall),
+          ValueLines = [PrintCall]
       ),
       NextPrintIndex is PrintIndex + 1
     },
@@ -8505,15 +8515,9 @@ plawk_assoc_print_one_field(lookup(TableIndex, N), Base, Index, FieldSep, Lines)
     format(atom(LenL), '  %~w_len = extractvalue %WamSlice %~w_slice, 1', [P, P]),
     format(atom(KidL),
         '  %~w_kid = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len)', [P, P, P]),
-    format(atom(ValL),
-        '  %~w_val = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_kid)',
-        [P, TableIndex, P]),
-    format(atom(FmtL),
-        '  %~w_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
-        [P]),
-    format(atom(PrL),
-        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i64 %~w_val)', [P, P, P]),
-    Lines = [SliceL, PtrL, LenL, KidL, ValL, FmtL, PrL].
+    format(atom(KeyIR), '%~w_kid', [P]),
+    plawk_assoc_value_print_line(TableIndex, KeyIR, PrL),
+    Lines = [SliceL, PtrL, LenL, KidL, PrL].
 % `print arr[$i,$j,...]` -- a multi-dimensional element read. The N components
 % are joined with SUBSEP and interned by the runtime helper (the same key the
 % arr[...]++ counter builds), then the table's i64 value at that key prints.
@@ -8522,15 +8526,8 @@ plawk_assoc_print_one_field(lookupn(TableIndex, Comps), Base, Index, FieldSep, L
     format(atom(P), '~w_f~w', [Base, Index]),
     format(atom(KeyId), '%~w_kid', [P]),
     plawk_subsep_key_n_ir(P, '%line', Comps, FieldSep, KeyId, GlobalDecl, KeyLines),
-    format(atom(ValL),
-        '  %~w_val = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
-        [P, TableIndex, KeyId]),
-    format(atom(FmtL),
-        '  %~w_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
-        [P]),
-    format(atom(PrL),
-        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i64 %~w_val)', [P, P, P]),
-    append([[global(GlobalDecl)], KeyLines, [ValL, FmtL, PrL]], Lines).
+    plawk_assoc_value_print_line(TableIndex, KeyId, PrL),
+    append([[global(GlobalDecl)], KeyLines, [PrL]], Lines).
 % `print arr[N]` -- an integer-key element read. The key is the raw position N
 % (split / positional tables are keyed by integer). A str element resolves the
 % atom id to text (%s); an i64 element (counter / numeric posarray) prints the
@@ -8549,6 +8546,11 @@ plawk_assoc_print_one_field(lookup_int(TableIndex, N, str), Base, Index, _FieldS
     format(atom(PrL),
         '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i8* %~w_s)', [P, P, P]),
     Lines = [ValL, StrL, FmtL, PrL].
+plawk_assoc_print_one_field(lookup_int(TableIndex, N, i64), _Base, _Index, FieldSep, [PrL]) :-
+    integer(FieldSep),          % text mode: awk string-context rule (empty if absent)
+    !,
+    plawk_assoc_value_print_line(TableIndex, N, PrL).
+% Binary records keep the numeric-0 reading of a missing key (see above).
 plawk_assoc_print_one_field(lookup_int(TableIndex, N, i64), Base, Index, _FieldSep, Lines) :-
     format(atom(P), '~w_f~w', [Base, Index]),
     format(atom(ValL),
@@ -8557,9 +8559,23 @@ plawk_assoc_print_one_field(lookup_int(TableIndex, N, i64), Base, Index, _FieldS
     format(atom(FmtL),
         '  %~w_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
         [P]),
-    format(atom(PrL),
+    format(atom(PrL2),
         '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i64 %~w_val)', [P, P, P]),
-    Lines = [ValL, FmtL, PrL].
+    Lines = [ValL, FmtL, PrL2].
+
+%% plawk_assoc_value_print_line(+TableIndex, +KeyIR, -Line)
+%
+%  Print `arr[KeyIR]` in STRING context (a `print` field). The runtime helper
+%  prints the stored i64 when the key exists and NOTHING when it does not, so an
+%  absent element contributes no bytes -- awk's uninitialized array element is the
+%  empty string in string context, not "0". A stored zero still prints "0" (the
+%  helper probes the occupied bit, not the value). Numeric contexts keep using
+%  @wam_assoc_i64_get directly, whose 0 for an absent key is awk's numeric
+%  reading of an uninitialized element.
+plawk_assoc_value_print_line(TableIndex, KeyIR, Line) :-
+    format(atom(Line),
+        '  call void @wam_assoc_i64_print(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
+        [TableIndex, KeyIR]).
 plawk_assoc_print_one_field(svar(Name), Base, Index, _FieldSep, Lines) :-
     format(atom(P), '~w_f~w', [Base, Index]),
     format(atom(LoadL), '  %~w_sv = load i64, i64* @plawk_scalar_~w', [P, Name]),
@@ -9737,6 +9753,16 @@ plawk_forin_rule_field_value(value_self(TableIndex, Kind), B, N) -->
     },
     [Value],
     plawk_forin_rule_value_print(Kind, B, N).
+% A CROSS-table lookup by the loop key: that key may be absent in the looked-up
+% table, and an absent element prints as empty in awk, so the i64 kind goes
+% through the absent-aware print helper (which fetches the value itself). A
+% str-valued table still resolves its stored atom id through the older path.
+plawk_forin_rule_field_value(value_lookup(LookupIndex, i64), B, N) -->
+    !,
+    { format(atom(KeyIR), '%~w_key', [B]),
+      plawk_assoc_value_print_line(LookupIndex, KeyIR, PrintCall)
+    },
+    [PrintCall].
 plawk_forin_rule_field_value(value_lookup(LookupIndex, Kind), B, N) -->
     { format(atom(Value),
           '  %~w_v_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key)',
@@ -12660,11 +12686,18 @@ plawk_assoc_end_print_lines([assoc(var(ArrayName), int(Key)) | Rest], AssocPlan,
           llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar,
               PtrIR, [FmtPtr, PrintCall]),
           ValueLines = [Value, ValueString, FmtPtr, PrintCall]
-      ;   format(atom(FmtVar), 'assoc_end_i64_fmt_~w', [PrintIndex]),
+      ;   plawk_descriptor_is_binary(Descriptor)
+      ->  % BINARY records are a plawk extension over fixed-width numeric
+          % fields, where a missing key reads as the numeric 0 by contract
+          % (test_plawk_binary_assoc) rather than as an empty string. Only
+          % text mode follows the awk string-context rule below.
+          format(atom(FmtVar), 'assoc_end_i64_fmt_~w', [PrintIndex]),
           format(atom(PrintVar), 'printed_assoc_end_i64_~w', [PrintIndex]),
           llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
               ValueIR, [FmtPtr, PrintCall]),
           ValueLines = [Value, FmtPtr, PrintCall]
+      ;   plawk_assoc_value_print_line(TableIndex, Key, PrintCall),
+          ValueLines = [PrintCall]
       ),
       NextPrintIndex is PrintIndex + 1
     },
@@ -12697,11 +12730,9 @@ plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], AssocPl
           llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar,
               PtrIR, [FmtPtr, PrintCall]),
           ValueLines = [KeyPtr, KeyId, Value, ValueString, FmtPtr, PrintCall]
-      ;   format(atom(FmtVar), 'assoc_end_i64_fmt_~w', [PrintIndex]),
-          format(atom(PrintVar), 'printed_assoc_end_i64_~w', [PrintIndex]),
-          llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
-              ValueIR, [FmtPtr, PrintCall]),
-          ValueLines = [KeyPtr, KeyId, Value, FmtPtr, PrintCall]
+      ;   format(atom(KeyIdIR), '%assoc_end_key_~w_id', [PrintIndex]),
+          plawk_assoc_value_print_line(TableIndex, KeyIdIR, PrintCall),
+          ValueLines = [KeyPtr, KeyId, PrintCall]
       ),
       NextPrintIndex is PrintIndex + 1
     },
@@ -12829,11 +12860,9 @@ plawk_mixed_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], ScalarP
           llvm_emit_printf_string(plawk_surface_print_string, FmtVar, PrintVar,
               PtrIR, [FmtPtr, PrintCall]),
           ValueLines = [KeyPtr, KeyId, Value, ValueString, FmtPtr, PrintCall]
-      ;   format(atom(FmtVar), 'assoc_end_i64_fmt_~w', [PrintIndex]),
-          format(atom(PrintVar), 'printed_assoc_end_i64_~w', [PrintIndex]),
-          llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
-              ValueIR, [FmtPtr, PrintCall]),
-          ValueLines = [KeyPtr, KeyId, Value, FmtPtr, PrintCall]
+      ;   format(atom(KeyIdIR), '%assoc_end_key_~w_id', [PrintIndex]),
+          plawk_assoc_value_print_line(TableIndex, KeyIdIR, PrintCall),
+          ValueLines = [KeyPtr, KeyId, PrintCall]
       ),
       NextPrintIndex is PrintIndex + 1
     },
@@ -18323,9 +18352,16 @@ plawk_emit_print_expr_for_context(ssa(Value), FieldSeparator, Context,
     plawk_i64_expr_ir(ssa(Value), FieldSeparator, Base, Base,
         ValueIR, GlobalParts, SetupParts).
 % `print arr[k]` (a resolved scalar-var-keyed assoc value read): fetch the i64
-% count for the key id via @wam_assoc_i64_get and print it with %ld. An absent
-% key returns 0 (awk's numeric-context default). The single get call is the
-% setup; no module global is needed (the key id is an in-register SSA value).
+% count for the key id via @wam_assoc_i64_get and print it with %ld. The single
+% get call is the setup; no module global is needed (the key id is an in-register
+% SSA value). Unlike the other assoc value prints this does not route through
+% plawk_assoc_value_print_line (which prints empty for an absent key, matching
+% awk): the print protocol here hands a value + format back to the CALLER, which
+% does the printf. That is sound because the supported mixed-chain shapes
+% increment the key before reading it (`{ k = $1; arr[k]++; print arr[k] }`), so
+% the key always exists -- read-before-write and cross-table shapes are outside
+% the compilable surface. Revisit together with the print-type protocol if those
+% shapes are admitted.
 plawk_emit_print_expr_for_context(assoc_keyid(TableIndex, KeyIdValue), _FieldSeparator, Context,
         i64(FmtPrefix, PrintPrefix, ValueIR), [], [GetCall]) :-
     plawk_print_expr_value_base(Context, int, Base),

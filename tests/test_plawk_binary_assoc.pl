@@ -83,7 +83,11 @@ test(text_mode_rejects_int_assoc_keys) :-
 test(text_mode_string_assoc_still_works) :-
     plawk_parse_string("{ counts[$1]++ } END { print counts[\"alpha\"] }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_get'))),
+    % A text-mode string key still lowers to a table read. In TEXT mode the read
+    % goes through @wam_assoc_i64_print, which prints the stored value only when
+    % the key exists (an absent element is the empty string in awk); binary mode
+    % keeps the plain get + numeric-0 contract, asserted separately above.
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_print'))),
     !.
 
 test(surface_binary_groupby_forin) :-
