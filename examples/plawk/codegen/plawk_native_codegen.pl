@@ -701,21 +701,23 @@ plawk_program_native_driver_ir(
             NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
-% Multiple plain prints in an END block (`END { print a; print b }`), scalar
-% chain. Same driver wiring as the single-print scalar clause above, but the END
-% is a sequence of prints, each emitted (and per-print renamed) by
-% plawk_scalar_end_prints_ir. The `[_,_|_]` + all-prints guard keeps it disjoint
-% from the single-print clause and from the for-in / accumulate END shapes (which
-% are not plain prints). A mixed for-in/print END declines (plawk_end_print_list
-% fails), a follow-on.
+% A sequence of plain output statements in an END block, scalar chain: multiple
+% prints (`END { print a; print b }`), a `printf` (`END { printf "%d\n", n }`),
+% or a mix. Same driver wiring as the single-print scalar clause above, but the
+% END is a statement list, each statement emitted (and per-statement renamed) by
+% plawk_scalar_end_prints_ir. The guard excludes a lone plain print -- the
+% dedicated clause above owns that shape and stays byte-identical -- and
+% plawk_end_output_list/2 rejects for-in / if ENDs, keeping this disjoint from
+% those drivers. A mixed for-in/print END declines, a follow-on.
 plawk_program_native_driver_ir(
-    program(BeginClauses, Rules0, [end(Prints)]),
+    program(BeginClauses, Rules0, [end(Statements)]),
     InputPath,
     DriverIR
 ) :-
-    Prints = [_, _ | _],
-    plawk_end_print_list(Prints, PrintFieldsList),
-    append(PrintFieldsList, AllFields),
+    Statements = [_ | _],
+    Statements \= [print(_)],
+    plawk_end_output_list(Statements, StatementExprs),
+    append(StatementExprs, AllFields),
     plawk_resolve_writebin_rules(BeginClauses, Rules0, Rules1, WritebinPlan),
     plawk_record_descriptor(BeginClauses, FieldSeparator),
     plawk_resolve_dynrec_view_rules(Rules1, Rules1b),
@@ -727,7 +729,7 @@ plawk_program_native_driver_ir(
     plawk_writebin_entry_lines(WritebinPlan, WritebinEntryIR),
     plawk_join_nonempty_ir([BeginIR0, WritebinEntryIR], BeginIR),
     plawk_record_program_ok(FieldSeparator, Rules, AllFields),
-    plawk_scalar_end_prints_ir(Prints, StatePlan, OutputSeparator, EndPrintIR,
+    plawk_scalar_end_prints_ir(Statements, StatePlan, OutputSeparator, EndPrintIR,
         StringGlobalIR),
     plawk_scalar_rule_chain_ir(Rules, StatePlan, FieldSeparator, OutputSeparator,
         RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
@@ -13432,6 +13434,11 @@ plawk_rule_body_print_field(environ(Key)) :- string(Key).
 plawk_rule_body_print_field(argv_at(N)) :- integer(N), N >= 0.
 plawk_rule_body_print_field(special('ARGC')).
 plawk_rule_body_print_field(int(field(_))).
+% a bare integer literal -- reachable only as a printf ARGUMENT (`printf
+% "%d\n", 42`); `print 1` renders the constant as text instead. integer/1 keeps
+% it disjoint from the int(field(N)) truncation builtin above.
+plawk_rule_body_print_field(int(Value)) :-
+    integer(Value).
 plawk_rule_body_print_field(Expr) :-
     plawk_i64_general_binary_expr(Expr).
 plawk_rule_body_print_field(Expr) :-
@@ -16648,6 +16655,129 @@ plawk_scalar_end_prints_ir_([print(Fields) | Rest], I, StatePlan, OutputSeparato
     plawk_end_print_suffix_rename(I, RawGlobal, Global),
     I1 is I + 1,
     plawk_scalar_end_prints_ir_(Rest, I1, StatePlan, OutputSeparator, Blocks, Globals).
+% `printf` in END. Unlike `print` it takes no OFS between arguments and appends
+% no ORS -- the format string is the entire output contract -- so it does not go
+% through the print-field emitters at all; it emits its own arguments and shares
+% the format rewriter with the record-context printf.
+plawk_scalar_end_prints_ir_([printf(string(Format), Args) | Rest], I, StatePlan,
+        OutputSeparator, [Block | Blocks], [Global | Globals]) :-
+    plawk_end_printf_ir(Format, Args, StatePlan, RawGlobal-RawBlock),
+    plawk_end_print_suffix_rename(I, RawBlock, Block),
+    plawk_end_print_suffix_rename(I, RawGlobal, Global),
+    I1 is I + 1,
+    plawk_scalar_end_prints_ir_(Rest, I1, StatePlan, OutputSeparator, Blocks, Globals).
+
+%% plawk_end_printf_ir(+Format, +Args, +StatePlan, -GlobalIR-IR)
+%
+%  `END { printf "fmt", args }`. END runs after the record loop, so there is no
+%  current record and an argument cannot slice `$0`/`$N`; the arguments read the
+%  FINAL scalar slot values (`%final_slot_N`, established by the break-close
+%  phi) exactly as an END `print` field does. Everything after the arguments --
+%  argument kinds, the awk->C format rewrite, the format global, the `@printf`
+%  call -- is the shared plawk_printf_from_arg_pairs/4, so a format rewrite fix
+%  lands in both contexts at once.
+%
+%  The emitted names are all `plawk_end_printf`-prefixed, which contains
+%  `end_`, so plawk_end_print_suffix_rename/3 uniquifies them across multiple
+%  END statements the same way it does for prints. `%final_slot_N` and
+%  `%plawk_nr` are defined OUTSIDE this block and contain no `end_`, so the
+%  rename leaves them alone.
+plawk_end_printf_ir(Format, Args, StatePlan, Pair) :-
+    phrase(plawk_end_printf_arg_pairs(Args, StatePlan, plawk_end_printf, 0),
+        ArgPairs),
+    plawk_printf_from_arg_pairs(ArgPairs, Format, plawk_end_printf, Pair).
+
+plawk_end_printf_arg_pairs([], _StatePlan, _Prefix, _Index) -->
+    [].
+plawk_end_printf_arg_pairs([Arg | Args], StatePlan, Prefix, Index) -->
+    { plawk_end_printf_arg(Arg, StatePlan, Prefix, Index, GlobalParts, SetupParts,
+          CallArgs),
+      plawk_join_nonempty_ir(GlobalParts, GlobalIR),
+      plawk_join_nonempty_ir(SetupParts, SetupIR),
+      NextIndex is Index + 1
+    },
+    [GlobalIR-(SetupIR-CallArgs)],
+    plawk_end_printf_arg_pairs(Args, StatePlan, Prefix, NextIndex).
+
+%% plawk_end_printf_arg(+Arg, +StatePlan, +Prefix, +Index, -Globals, -Setup,
+%%     -CallArgs) is semidet.
+%  One END printf argument, lowered to the printf call-argument vocabulary
+%  (`i64(IR)` / `f64(IR)` / `string_ptr(IR)`). Fails for anything END cannot
+%  reach (a field read, say), so the driver declines rather than emitting a
+%  printf over an undefined value.
+
+% A double scalar slot passes as a native double (%g / %f / %e conversions).
+plawk_end_printf_arg(var(Name), StatePlan, _Prefix, _Index, [], [],
+        [f64(ValueIR)]) :-
+    plawk_state_slot_lookup(StatePlan, Name, SlotIndex, scalar_double(_)),
+    !,
+    format(atom(ValueIR), '%final_slot_~w', [SlotIndex]).
+% A string / strnum scalar slot holds an interned atom id: resolve it to text
+% for `%s`. Id 0 is the unset sentinel and must print as empty rather than
+% resolving to whatever atom 0 is -- the shared `"%s\0"` global's trailing NUL
+% is a ready-made empty C string, the same trick the END print path uses.
+plawk_end_printf_arg(var(Name), StatePlan, Prefix, Index, [], Setup,
+        [string_ptr(PtrIR)]) :-
+    plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
+    ( Slot = scalar_string(_) ; Slot = scalar_strnum(_) ),
+    !,
+    format(atom(ValueIR), '%final_slot_~w', [SlotIndex]),
+    format(atom(Base), '~w_arg~w', [Prefix, Index]),
+    format(atom(StrS), '  %~w_s = call i8* @wam_atom_to_string(i64 ~w)',
+        [Base, ValueIR]),
+    format(atom(StrE), '  %~w_empty = icmp eq i64 ~w, 0', [Base, ValueIR]),
+    format(atom(StrSel),
+        '  %~w_ptr = select i1 %~w_empty, i8* getelementptr ([3 x i8], [3 x i8]* @.plawk_surface_print_string, i64 0, i64 2), i8* %~w_s',
+        [Base, Base, Base]),
+    format(atom(PtrIR), '%~w_ptr', [Base]),
+    Setup = [StrS, StrE, StrSel].
+% Any other scalar slot is an i64 counter.
+plawk_end_printf_arg(var(Name), StatePlan, _Prefix, _Index, [], [],
+        [i64(ValueIR)]) :-
+    plawk_state_slot_lookup(StatePlan, Name, SlotIndex, _Slot),
+    !,
+    format(atom(ValueIR), '%final_slot_~w', [SlotIndex]).
+plawk_end_printf_arg(special('NR'), StatePlan, _Prefix, _Index, [], [],
+        [i64(ValueIR)]) :-
+    !,
+    plawk_end_nr_value(StatePlan, ValueIR).
+% A string literal argument gets its own module global.
+plawk_end_printf_arg(string(Value), _StatePlan, Prefix, Index, [GlobalIR], [PtrLine],
+        [string_ptr(PtrIR)]) :-
+    !,
+    format(atom(GlobalName), '~w_arg~w_str', [Prefix, Index]),
+    llvm_emit_c_string_global(GlobalName, Value, GlobalIR, _StringLen, BytesLen),
+    format(atom(PtrIR), '%~w_arg~w_str_ptr', [Prefix, Index]),
+    format(atom(PtrLine),
+        '  ~w = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
+        [PtrIR, BytesLen, BytesLen, GlobalName]).
+% An integer / float literal or scalar arithmetic over the final slots: reuse
+% the shared expression emitters after substituting the reads, exactly as the
+% END expression PRINT path does, so `printf "%d\n", n + 1` and
+% `printf "%.2f\n", total / n` work wherever `print n + 1` does.
+plawk_end_printf_arg(Expr, StatePlan, Prefix, Index, [], SetupParts, [CallArg]) :-
+    plawk_end_printf_value_expr(Expr),
+    plawk_substitute_end_reads(Expr, StatePlan, Substituted),
+    format(atom(Base), '~w_arg~w', [Prefix, Index]),
+    (   plawk_expr_is_double(Substituted)
+    ->  plawk_f64_expr_ir(Substituted, 32, Base, Base, ValueIR, [], SetupParts),
+        CallArg = f64(ValueIR)
+    ;   plawk_i64_expr_ir(Substituted, 32, Base, Base, ValueIR, [], SetupParts),
+        CallArg = i64(ValueIR)
+    ).
+
+%% plawk_end_printf_value_expr(+Expr) is semidet.
+%  An END printf argument that lowers through the numeric expression emitters:
+%  an integer or float literal, or scalar arithmetic over slots / NR (the same
+%  operand surface `print` accepts in END).
+plawk_end_printf_value_expr(int(Value)) :-
+    integer(Value).
+plawk_end_printf_value_expr(float_const(Mantissa, Denominator)) :-
+    integer(Mantissa),
+    integer(Denominator),
+    Denominator > 0.
+plawk_end_printf_value_expr(Expr) :-
+    plawk_end_scalar_expr(Expr).
 
 % Suffix a print's `end_`-prefixed SSA/globals (and its `end_print_string_N`
 % literal globals) so multiple END prints do not collide. I=0 is unchanged
@@ -16659,11 +16789,16 @@ plawk_end_print_suffix_rename(I, IR0, IR) :-
     format(atom(Repl), 'end~w_', [I]),
     plawk_atom_replace_all(IR0, 'end_', Repl, IR).
 
-% Every element of an END statement list is a plain print; collect their fields.
-% Fails on any non-print element, so a mixed for-in/print END declines cleanly.
-plawk_end_print_list([], []).
-plawk_end_print_list([print(Fields) | Rest], [Fields | More]) :-
-    plawk_end_print_list(Rest, More).
+% Every element of an END statement list is a plain output statement -- a
+% `print` or a `printf`; collect the expressions each one reads (print fields /
+% printf arguments) so the scalar state plan keeps a slot for every scalar the
+% END touches. Fails on any other element (a for-in, an if), so those END shapes
+% fall through to their own drivers or decline cleanly.
+plawk_end_output_list([], []).
+plawk_end_output_list([print(Fields) | Rest], [Fields | More]) :-
+    plawk_end_output_list(Rest, More).
+plawk_end_output_list([printf(string(_Format), Args) | Rest], [Args | More]) :-
+    plawk_end_output_list(Rest, More).
 
 %% END { if (COND) print ...; [else print ...] } support ---------------------
 
@@ -18154,8 +18289,23 @@ plawk_prefixed_print_action_ir(Fields, FieldSeparator, OutputSeparator, Prefix, 
     plawk_join_nonempty_ir(GlobalParts, GlobalIR),
     atomic_list_concat(BodyParts, '\n', IR).
 
-plawk_prefixed_printf_action_ir(Format, Args, FieldSeparator, Prefix, GlobalIR-IR) :-
+plawk_prefixed_printf_action_ir(Format, Args, FieldSeparator, Prefix, Pair) :-
     phrase(plawk_printf_arg_pairs(Args, FieldSeparator, Prefix, 0), ArgPairs),
+    plawk_printf_from_arg_pairs(ArgPairs, Format, Prefix, Pair).
+
+%% plawk_printf_from_arg_pairs(+ArgPairs, +Format, +Prefix, -GlobalIR-IR)
+%
+%  Everything downstream of the ARGUMENTS: infer each call argument's kind,
+%  rewrite the awk format to a C printf format against those kinds, then emit
+%  the format global and the `@printf` call. Argument-shape agnostic -- an
+%  ArgPair is `GlobalIR-(SetupIR-CallArgs)` with CallArgs drawn from the
+%  plawk_printf_call_arg_kind/2 vocabulary -- so record-context arguments
+%  (plawk_printf_arg_pairs//4, which can slice the current record) and
+%  END-context arguments (plawk_end_printf_arg_pairs//4, which read final
+%  scalar slots because END has no record) share ONE format rewriter and call
+%  emitter. Two producers, one consumer, so the format rewrite cannot drift
+%  between the two contexts.
+plawk_printf_from_arg_pairs(ArgPairs, Format, Prefix, GlobalIR-IR) :-
     pairs_keys_values(ArgPairs, ArgGlobalParts, ArgInfoPairs),
     pairs_keys_values(ArgInfoPairs, ArgSetupParts, ArgCallArgLists),
     append(ArgCallArgLists, CallArgs),
@@ -18436,6 +18586,17 @@ plawk_emit_print_expr_for_context(special('NF'), FieldSeparator, Context,
     plawk_print_expr_value_base(Context, nf, Base),
     plawk_print_expr_output_names(Context, nf, FmtPrefix, PrintPrefix),
     plawk_i64_expr_ir(nf, FieldSeparator, Base, Base, ValueIR, GlobalParts, SetupParts).
+
+% A bare integer literal (a printf argument -- `printf "%d\n", 42`). Guarded by
+% integer/1 so it stays disjoint from the `int(field(N))` truncation builtin
+% below.
+plawk_emit_print_expr_for_context(int(Value), _FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
+    integer(Value),
+    plawk_print_expr_value_base(Context, int, Base),
+    plawk_print_expr_output_names(Context, int, FmtPrefix, PrintPrefix),
+    plawk_i64_expr_ir(int(Value), 0, Base, Base, ValueIR, GlobalParts,
+        SetupParts).
 
 plawk_emit_print_expr_for_context(int(field(FieldIndex)), FieldSeparator, Context,
         i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
