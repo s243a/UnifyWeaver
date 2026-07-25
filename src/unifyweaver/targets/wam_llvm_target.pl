@@ -4711,6 +4711,32 @@ exists.miss:
   ret i1 false
 }
 
+; Print arr[key] in STRING context (a `print` field): the stored i64 formatted
+; with %lld when the key EXISTS, or nothing at all when it does not -- in awk an
+; uninitialized array element is the empty string in string context. A STORED
+; zero still prints "0", which is why this probes the occupied bit instead of
+; testing the fetched value against 0. Numeric contexts are unaffected: they keep
+; consuming wam_assoc_i64_get, whose 0 for an absent key is exactly the awk
+; numeric reading of an uninitialized element.
+;
+; Deliberate deviation: in awk a READ of arr[k] CREATES the element
+; (autovivification), so a later for-in sees it. plawk reads stay pure -- this
+; helper never inserts -- so a read cannot change a later iteration or count.
+define void @wam_assoc_i64_print(%WamAssocI64Table* %table, i64 %key) {
+entry:
+  %aip.ex = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %table, i64 %key)
+  br i1 %aip.ex, label %aip.present, label %aip.absent
+
+aip.present:
+  %aip.v = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 %key)
+  %aip.fmt = getelementptr [5 x i8], [5 x i8]* @.wam_strnum_int_fmt, i64 0, i64 0
+  %aip.pr = call i32 (i8*, ...) @printf(i8* %aip.fmt, i64 %aip.v)
+  ret void
+
+aip.absent:
+  ret void
+}
+
 ; Remove %key from the table. Linear-probing has no tombstones, so a plain
 ; "mark empty" would break the probe chains of later keys that collided here.
 ; Backward-shift deletion repairs the cluster: after clearing the found slot,
