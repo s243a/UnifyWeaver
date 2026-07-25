@@ -2021,6 +2021,13 @@ end_action(unsupported_getline(end(Action))) -->
 end_action(Action) -->
     if_action(Action),
     !.
+% `END { printf "fmt", args }` -- tried BEFORE print_action so the longer
+% keyword wins (otherwise `print` would match the prefix of `printf` and leave
+% a stray `f`). END has no current record, so the args are scalar-context
+% expressions; codegen decides which shapes it can lower.
+end_action(Action) -->
+    printf_action(Action),
+    !.
 end_action(Action) -->
     print_action(Action).
 
@@ -3521,7 +3528,17 @@ printf_arg_expr(Ternary) -->
     ternary_expr(Ternary),
     !.
 printf_arg_expr(Expr) -->
-    field_expr(Expr).
+    field_expr(Expr),
+    !.
+% A bare INTEGER literal argument (`printf "%d\n", 42`). Last, so an expression
+% starting with a digit (`1 + 2`) still goes to field_expr's arithmetic surface
+% first. `print 1` renders a constant as its TEXT, which is fine for print but
+% wrong for printf -- a `%d`/`%x`/`%f` conversion needs the number, not a string
+% -- so this yields the `int(Value)` numeric leaf the i64 expression emitter
+% already understands. A bare FLOAT literal was already accepted (via
+% field_expr's float_literal_expr); this closes the integer half.
+printf_arg_expr(int(Value)) -->
+    signed_integer_value(Value).
 
 print_fields([Field | Fields]) -->
     print_field_expr(Field),

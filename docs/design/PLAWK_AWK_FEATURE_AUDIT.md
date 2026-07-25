@@ -30,7 +30,7 @@ only (runtime pending) · ❌ missing.
 | Feature | Status | Notes |
 |---|---|---|
 | `print` (fields, literals, `NR`/`NF`, `length`/`substr`/`index`/`tolower`/`toupper`, arithmetic, **concatenation**) | ✅ | constant fields (`print 1`, `print "x"`) + juxtaposition concat (`print $1 $2`) landed. **Per-record print from an assoc-mutating rule (no `END` needed)**: `{ c[$1]++; print $1, c[$1] }` (a running count) and `{ split($0,a,","); print a[1] }` (print an element) compile — previously an assoc program had to be END-tethered (a rule that mutated a table *and* printed per-record was rejected unless the program also had an `END { print arr[…] }`). Body-print fields: `$N` (N>0), `$0` (the whole record), `arr[N]` (integer element — split/positional tables keyed by position; str values resolve to text, i64 counters print numerically), `arr[$k]` (field-keyed lookup), a **string literal** (its bytes ride the assoc rule chain's global channel; printed via `%s`, so a `%` in the literal is verbatim), and scalar reads — in a comma-separated print list **or glued by juxtaposition-concat** (`print "x=" c[$1]` → `x=5`; the concat parts print adjacently with no separator, reusing the per-field emitters) |
-| `printf` | ✅ | standard `%[flags][width][.precision][length]conv`: integers `d`/`i`/`x`/`X`/`o`/`u` + `c` (code point), floats `f`/`g`/`e`/`F`/`G`/`E`, strings `%s`; flags `-+ 0#`, width, precision. Field-slice `%s` takes width but not precision (non-terminated buffer); `%c` needs a numeric arg |
+| `printf` | ✅ | standard `%[flags][width][.precision][length]conv`: integers `d`/`i`/`x`/`X`/`o`/`u` + `c` (code point), floats `f`/`g`/`e`/`F`/`G`/`E`, strings `%s`; flags `-+ 0#`, width, precision. Field-slice `%s` takes width but not precision (non-terminated buffer); `%c` needs a numeric arg. **Works in a rule body and in an `END` block** (`END { printf "%d items\n", n }`, arguments reading the final scalar slots); a bare integer literal argument is accepted in both. `BEGIN { printf … }` is still a parse error (its own action grammar) |
 | var assignment, `+=`, `++`, `//` | ✅ | indexed native scalar slots |
 | `if` / `else` (chains) | ✅ | field/pattern guards (`$1 > 2`, `$0 ~ /re/`), scalar-variable conditions (`if (i > 2)`, `if (i < n && j > 0)`) in rule bodies, loops, **and `END`**, **and string guards on a string scalar** (`if (s == "text")` — `==`/`!=` via interned atom-id compare, `<`/`<=`/`>`/`>=` via `strcmp` — a single comparison, not combined with `&&`/`||`). **POSIX strnum duality is partially landed**: a scalar copied from a field (`x = $1`) that is only printed or compared against another such strnum or a string literal is typed `scalar_strnum` and compares **numerically or lexically by its runtime content** (`x=$1;y=$2; if (x>y)` gives `10 9`→numeric, `10 9x`→lexical, via `@wam_strnum_cmp`). Comparison against an **integer literal** works too (`if (x > 3)`, `if (n == 5)` via `@wam_strnum_cmp_int` — `"abc" > 3` lexically true, `"5x" == 5` false), and a strnum read in **pure arithmetic** is coerced to a number (`y = x + 1` — i64 via the same field parser as before, so byte-identical; f64 via `strtod`), letting a field copy be used in both arithmetic and a string/number comparison. A plain copy `z = x` **propagates** strnum-ness (transitively through chains). Names read in a string concat / call / ternary / index still stay on the plain i64 path via a greatest-fixpoint read-use gate — no regressions. **Split-array elements compare too**: in an `END` for-in filter `for (k in a) { if (a[k] CMP …) … }`, a str-valued (split / `as assoc(str)`) element compares against **an integer** via `@wam_strnum_cmp_int` on its text (numeric when it looks like a number, else lexical) instead of a raw i64 icmp on its atom id — which had silently compared registry positions (a bug); and against **a string literal** — `==`/`!=` via canonical atom-id `icmp eq/ne` (the literal interned from a module constant), the **ordering** ops (`a[k] < "x"` etc.) via `strcmp` on the element text. A **float-literal** RHS (`a[k] < 3.5`) compares via `@wam_strnum_cmp_double` on a str element, or widens an i64 counter to `double` + `fcmp`. Counter tables (`arr[k]++`, a genuine i64) keep the plain icmp for integer RHS. **Non-field strnum sources landed**: a scalar from a command-line argument (`x = ARGV[N]`) or a getline read (`getline v < "file"`, `s = getline v < "file"`) is a strnum too — `if (x > 5)` dispatches through `@wam_strnum_cmp_int` on its text (previously it compared the interned atom id — every value looked "big", a bug). A candidate whose reads are unsupported (e.g. used in a concat) deactivates to a plain string scalar (its prior behaviour), so activation never regresses. Remaining: general rule-body `arr[N]` element reads (outside the compilable surface — only the for-in contexts read elements); nested-block field copies (blocked on a pre-existing nested-assignment control-flow limitation). See `PLAWK_STRNUM_DUALITY.md` for the representation and phased plan |
 | `for (k in arr)` | ✅ | assoc for-in (rule body + END). **NR guards on group-by rules now work** (`NR > 1 { c[$1]++ } END { for (k in c) print k, c[k] }`, the skip-a-header idiom; also `NR==2, NR==3` ranges and the multi-for-in / accumulate END shapes) — the assoc-END drivers now emit the per-record `%current_nr` counter when a rule references NR (byte-identical when it does not); previously a rule NR guard referenced an undefined `%current_nr` and clang failed. The decode-into-struct END driver declines cleanly on NR (a follow-on). **Multiple for-in loops in one END block landed** (`END { for (a in c) print a, c[a]; for (b in d) print b, d[b] }`) — the "dump several tables" idiom: a general multi-statement END parser rule (statements separated by `;`/newline) plus a driver that chains the loops (each walks its own table with index-suffixed labels; loop 0 keeps the historical unsuffixed names so single-loop IR is byte-identical; the last loop frees all tables and returns). v1 each statement is a for-in printing the key and/or `arr[k]` lookups; a for-in print with a string literal declines cleanly (a follow-on). **Multiple plain prints in an END block also landed** (`{ s+=$1; n++ } END { print s; print n }`, scalar chain) — each print is emitted independently and per-print renamed so its SSA/globals stay unique (single-print IR byte-identical); NR and concat work in the prints. An assoc-table program with a multi-print END, or a mixed for-in/print END, remains a follow-on (declines) |
@@ -146,9 +146,28 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    takes flags/width and rides `.*` for its length, so a user precision on a
    field is a clean compile error (buffer safety) — a follow-on. `%c` needs a
    numeric arg (a string arg's first-char form is a follow-on). Tests:
-   `tests/test_plawk_printf.pl`. *Still open (follow-on):* `%c` on a string
-   (first char), precision on a field slice, `*`-width (width from an arg), and
-   `printf` in a `BEGIN`/`END` block (a separate driver gap).
+   `tests/test_plawk_printf.pl`. **`printf` in an `END` block landed** -- `END { printf "%d items\n", n }`.
+   `printf` was not in the END statement grammar at all, so even
+   `END { printf "hi\n" }` was a PARSE ERROR rather than a clean decline. END
+   runs after the record loop, so an argument cannot slice `$0`/`$N`; the
+   arguments read the FINAL scalar slots exactly as an END `print` field does
+   (i64 counters, double slots, string/strnum slots resolved from their
+   interned id, `NR`, string / integer / float literals, and scalar
+   arithmetic). It composes with `print` in the same END block in either
+   order, and appends no ORS -- the format is the whole output contract.
+   Everything after the arguments (kind inference, the awk->C format
+   rewrite, the format global, the `@printf` call) is shared with the
+   record-context printf via `plawk_printf_from_arg_pairs/4`: two argument
+   producers, one consumer, so a format fix cannot land in one context
+   only. A **bare integer literal argument** now works in both contexts too
+   (`printf "%d\n", 42` -- a bare float already did; `print 1` still renders a
+   constant as its text, which is right for print and wrong for a `%d`
+   conversion). Tests: `tests/test_plawk_end_printf.pl`.
+   *Still open (follow-on):* `%c` on a string
+   (first char), precision on a field slice, `*`-width (width from an arg),
+   `printf` in a **`BEGIN`** block (still a parse error -- BEGIN has its own
+   action grammar and print emitter), and an END printf argument that reads a
+   field or an assoc element (both decline cleanly).
 4. **`exit [n]` — LANDED.** A rule-level `exit` / `exit N` stops the record loop,
    runs END, and returns N (default 0). It reuses the rule-level stream-break
    path (`break_close_stream` → END → `ret`), adding an exit code stored in
@@ -178,8 +197,14 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    assignment, and a read/print resolves the id to text — id 0 is the unset
    sentinel, printed as empty. Numeric and string scalars coexist in one
    program. Tests: `tests/test_plawk_strscalar.pl`. *Still open (follow-on):*
-   a scalar-var concat operand (`x = x $1` accumulation), string scalars in an
-   `if`/loop body, and string comparison/guards on a string scalar.)
+   string comparison / guards on a string scalar (`END { if (s == "c") … }`
+   declines). Accumulation `x = x $1` DOES work (verified against gawk --
+   this was listed as open in error). **Known bug, not just a gap:** a string
+   scalar assigned inside an `if` body (`{ if (NR > 1) s = $1 } END { print s }`)
+   compiles but prints `0` instead of the text -- the nested assignment does
+   not classify the slot as string-valued, so it lands in an i64 slot. Wrong
+   output rather than a decline, so it needs fixing before the rest of the
+   string-scalar follow-ons.)
 6. **`delete arr[k]` — LANDED (field key).** `delete arr[$k]` removes the entry
    keyed by field k, matching the counted inc `arr[$k]++`. The runtime primitive
    `@wam_assoc_i64_delete` does **backward-shift deletion** on the linear-probing
