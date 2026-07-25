@@ -196,6 +196,34 @@ test(absent_str_cross_table_in_rule_forin, [condition(clang_available)]) :-
         "p x\nq n\n", Out),
     assertion(Out == "p x\np x\n\n"), !.
 
+% A RULE-BODY read of a row table must resolve the stored atom id to text too.
+% The rule-body plan stage did not carry the table's value kind (only the
+% integer-key variant did), so these printed the raw atom id (e.g. "98").
+test(row_table_rule_body_read_prints_text, [condition(clang_available)]) :-
+    kdir(Dir),
+    build_run(Dir, 'rbr', "{ t[$1] = $0; print t[$1] }\n",
+        "a b\nc d\n", Out),
+    assertion(Out == "a b\nc d\n"), !.
+
+% The same for a multi-dimensional row key.
+test(row_table_rule_body_multi_dim_read, [condition(clang_available)]) :-
+    kdir(Dir),
+    build_run(Dir, 'rbm', "{ t[$1,$2] = $0; print t[$1,$2] }\n",
+        "a b\nc d\n", Out),
+    assertion(Out == "a b\nc d\n"), !.
+
+% An i64 (counter) table must still print numbers through the same paths -- the
+% value kind decides, so carrying it must not turn counts into text.
+test(counter_table_rule_body_reads_stay_numeric, [condition(clang_available)]) :-
+    kdir(Dir),
+    build_run(Dir, 'cbn', "{ c[$1]++; print c[$1] }\n", "a\na\n", Out),
+    assertion(Out == "1\n2\n"), !.
+
+test(counter_table_multi_dim_reads_stay_numeric, [condition(clang_available)]) :-
+    kdir(Dir),
+    build_run(Dir, 'cbm', "{ c[$1,$2]++; print c[$1,$2] }\n", "a b\na b\n", Out),
+    assertion(Out == "1\n2\n"), !.
+
 :- end_tests(plawk_absent_key_read).
 
 % --- helpers ---------------------------------------------------------------

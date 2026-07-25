@@ -261,13 +261,56 @@ test(multi_dim_delete_other_tuple, [condition(clang_available)]) :-
         "a x\na x\nrm a x\n", Lines),
     assertion(Lines == ["1"]), !.
 
-% Row capture at a multi-dim key (`arr[$i,$j] = $0`) is a clean not-yet: the
-% row-valued (str) table path has its own marking and reader machinery, so it
-% declines rather than mis-lowering. A follow-on.
-test(multi_dim_set_row_rejected, [condition(clang_available)]) :-
+% --- multi-dim ROW CAPTURE ---------------------------------------------------
+%
+% `arr[$i,$j,...] = $0` stores the whole record as a str (interned atom id) value
+% at a compound key. The planned action and its str-valued marking are SHARED
+% with the single-field form (the key travels as a subsep_key term), so the
+% spec-level and plan-level views of "str-valued table" cannot drift apart.
+
+% Two-field row capture: each distinct tuple keeps its own record.
+test(multi_dim_row_capture, [condition(clang_available)]) :-
     sdir(Dir),
-    build_status(Dir, 'dsr', "{ c[$1,$2] = $0 }\n", St),
-    assertion(St \== 0), !.
+    build_run_sorted(Dir, 'mr2', "{ t[$1,$2] = $0 } END { for (k in t) print t[k] }\n",
+        "a b\na c\n", Lines),
+    assertion(Lines == ["a b", "a c"]), !.
+
+% Three-field row capture.
+test(multi_dim_row_capture_three, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run_sorted(Dir, 'mr3',
+        "{ t[$1,$2,$3] = $0 } END { for (k in t) print t[k] }\n",
+        "x y z\nx y w\n", Lines),
+    assertion(Lines == ["x y w", "x y z"]), !.
+
+% A literal component in a row-capture key.
+test(multi_dim_row_capture_literal_key, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run_sorted(Dir, 'mrl', "{ t[$1,\"k\"] = $0 } END { for (k in t) print t[k] }\n",
+        "a b\nc d\n", Lines),
+    assertion(Lines == ["a b", "c d"]), !.
+
+% Row capture REPLACES: the same tuple twice keeps the last record.
+test(multi_dim_row_capture_overwrites, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'mro', "{ t[$1,$2] = $0 } END { for (k in t) print t[k] }\n",
+        "a b 1\na b 2\n", Out),
+    assertion(Out == "a b 2\n"), !.
+
+% The captured row reads back through the same compound key in a rule body --
+% as TEXT, not as the stored atom id.
+test(multi_dim_row_read_back, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'mrr', "{ t[$1,$2] = $0; print t[$1,$2] }\n",
+        "a b\nc d\n", Out),
+    assertion(Out == "a b\nc d\n"), !.
+
+% A compound key never captured reads as empty (absent element).
+test(multi_dim_row_absent_read, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'mra', "{ t[$1,$2] = $0; print t[$2,$1] }\n",
+        "a b\n", Out),
+    assertion(Out == "\n"), !.
 
 :- end_tests(plawk_subsep).
 
