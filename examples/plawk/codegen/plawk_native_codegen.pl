@@ -8269,6 +8269,13 @@ plawk_assoc_add_delta_ok(int(V)) :- integer(V).
 plawk_assoc_body_action_spec(set_row(var(ArrayName), field(KeyIndex)),
         assoc_set_row(ArrayName, KeyIndex)) :-
     integer(KeyIndex), KeyIndex > 0.
+% `arr[$i,$j,...] = $0` -- row capture at a MULTI-DIMENSIONAL key. The planned
+% action and its str-valued marking are shared with the single-field form (the
+% key travels as a subsep_key(...) term instead of an integer), so the
+% spec-level and plan-level notions of "str-valued table" cannot drift apart.
+plawk_assoc_body_action_spec(set_row(var(ArrayName), subsep_key(Fields)),
+        assoc_set_row(ArrayName, subsep_key(Comps))) :-
+    plawk_subsep_key_components(Fields, Comps).
 % Row constructor `arr[$k] = row($a, $b, ...)`: store a row built from the
 % chosen fields (in that order), joined by the field separator so a reader's
 % field projection recovers the columns. Like set_row, a str-value.
@@ -8278,6 +8285,13 @@ plawk_assoc_body_action_spec(set_row_cons(var(ArrayName), field(KeyIndex), Field
     Fields = [_ | _],
     maplist(plawk_row_cons_field, Fields, Indexes).
 
+% `arr[$i,$j,...] = row(...)` -- row constructor at a multi-dimensional key,
+% sharing the planned action with the single-field form as above.
+plawk_assoc_body_action_spec(set_row_cons(var(ArrayName), subsep_key(Fields), RowFields),
+        assoc_set_row_cons(ArrayName, subsep_key(Comps), Indexes)) :-
+    plawk_subsep_key_components(Fields, Comps),
+    RowFields = [_ | _],
+    maplist(plawk_row_cons_field, RowFields, Indexes).
 plawk_row_cons_field(field(N), N) :- integer(N), N > 0.
 plawk_assoc_body_action_spec(dynassoc_bind(var(ArrayName), Call),
         dynassoc(ArrayName, Call)) :-
@@ -8404,11 +8418,16 @@ plawk_assoc_arith_operand(assoc(var(Arr), field(N)), alookup(Arr, N)) :-
 plawk_assoc_print_plan_field(_Tables, _StrArrays, fld(N), fld(N)).
 plawk_assoc_print_plan_field(_Tables, _StrArrays, record, record).
 plawk_assoc_print_plan_field(_Tables, _StrArrays, strlit(V), strlit(V)).
-plawk_assoc_print_plan_field(Tables, _StrArrays, lookup(Arr, N), lookup(TableIndex, N)) :-
-    nth0(TableIndex, Tables, Arr).
-% `arr[$i,$j,...]` multi-dim element read resolves its array to a table index.
-plawk_assoc_print_plan_field(Tables, _StrArrays, lookupn(Arr, Comps), lookupn(TableIndex, Comps)) :-
-    nth0(TableIndex, Tables, Arr).
+% A field-keyed element read resolves its array to a table index AND its value
+% KIND from the str-array set: a row/split/str-bind table stores interned atom
+% ids, which must be resolved back to text rather than printed as numbers.
+plawk_assoc_print_plan_field(Tables, StrArrays, lookup(Arr, N), lookup(TableIndex, N, Kind)) :-
+    nth0(TableIndex, Tables, Arr),
+    ( memberchk(Arr, StrArrays) -> Kind = str ; Kind = i64 ).
+% `arr[$i,$j,...]` multi-dim element read: same table + value-kind resolution.
+plawk_assoc_print_plan_field(Tables, StrArrays, lookupn(Arr, Comps), lookupn(TableIndex, Comps, Kind)) :-
+    nth0(TableIndex, Tables, Arr),
+    ( memberchk(Arr, StrArrays) -> Kind = str ; Kind = i64 ).
 % `arr[N]` element read: raw integer key; value kind from the str-array set.
 plawk_assoc_print_plan_field(Tables, StrArrays, lookup_int(Arr, N),
         lookup_int(TableIndex, N, Kind)) :-
@@ -8514,7 +8533,7 @@ plawk_assoc_print_one_field(strlit(V), Base, Index, _FieldSep, Lines) :-
     format(atom(PrL),
         '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i8* %~w_ptr)', [P, P, P]),
     Lines = [global(Global), PtrL, FmtL, PrL].
-plawk_assoc_print_one_field(lookup(TableIndex, N), Base, Index, FieldSep, Lines) :-
+plawk_assoc_print_one_field(lookup(TableIndex, N, Kind), Base, Index, FieldSep, Lines) :-
     format(atom(P), '~w_f~w', [Base, Index]),
     format(atom(SliceL),
         '  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
@@ -8524,17 +8543,17 @@ plawk_assoc_print_one_field(lookup(TableIndex, N), Base, Index, FieldSep, Lines)
     format(atom(KidL),
         '  %~w_kid = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len)', [P, P, P]),
     format(atom(KeyIR), '%~w_kid', [P]),
-    plawk_assoc_value_print_line(TableIndex, KeyIR, PrL),
+    plawk_assoc_kind_value_print_line(Kind, TableIndex, KeyIR, PrL),
     Lines = [SliceL, PtrL, LenL, KidL, PrL].
 % `print arr[$i,$j,...]` -- a multi-dimensional element read. The N components
 % are joined with SUBSEP and interned by the runtime helper (the same key the
 % arr[...]++ counter builds), then the table's i64 value at that key prints.
-plawk_assoc_print_one_field(lookupn(TableIndex, Comps), Base, Index, FieldSep, Lines) :-
+plawk_assoc_print_one_field(lookupn(TableIndex, Comps, Kind), Base, Index, FieldSep, Lines) :-
     integer(FieldSep),
     format(atom(P), '~w_f~w', [Base, Index]),
     format(atom(KeyId), '%~w_kid', [P]),
     plawk_subsep_key_n_ir(P, '%line', Comps, FieldSep, KeyId, GlobalDecl, KeyLines),
-    plawk_assoc_value_print_line(TableIndex, KeyId, PrL),
+    plawk_assoc_kind_value_print_line(Kind, TableIndex, KeyId, PrL),
     append([[global(GlobalDecl)], KeyLines, [PrL]], Lines).
 % `print arr[N]` -- an integer-key element read. The key is the raw position N
 % (split / positional tables are keyed by integer). A str element resolves the
@@ -8586,6 +8605,15 @@ plawk_assoc_str_value_print_line(TableIndex, KeyIR, Line) :-
     format(atom(Line),
         '  call void @wam_assoc_str_print(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
         [TableIndex, KeyIR]).
+
+%% plawk_assoc_kind_value_print_line(+Kind, +TableIndex, +KeyIR, -Line)
+%  Pick the printer for a table's value KIND: `str` resolves the stored atom id
+%  to text, `i64` prints the number. Both print nothing for an absent key.
+plawk_assoc_kind_value_print_line(str, TableIndex, KeyIR, Line) :-
+    !,
+    plawk_assoc_str_value_print_line(TableIndex, KeyIR, Line).
+plawk_assoc_kind_value_print_line(_Kind, TableIndex, KeyIR, Line) :-
+    plawk_assoc_value_print_line(TableIndex, KeyIR, Line).
 plawk_assoc_print_one_field(svar(Name), Base, Index, _FieldSep, Lines) :-
     format(atom(P), '~w_f~w', [Base, Index]),
     format(atom(LoadL), '  %~w_sv = load i64, i64* @plawk_scalar_~w', [P, Name]),
@@ -10163,22 +10191,9 @@ plawk_assoc_rule_action_blocks(RuleIndex,
              [RuleIndex, NextIndex])
       ),
       format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
-      format(atom(HaveLabelName), 'assoc_rule_~w_action_~w_have_key',
-          [RuleIndex, Index]),
-      format(atom(HaveLabel), 'assoc_rule_~w_action_~w_have_key:',
-          [RuleIndex, Index]),
       format(atom(B), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
-      format(atom(Slice),
-          '  %~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
-          [B, KeyIndex, FieldSeparator]),
-      format(atom(Ptr), '  %~w_key_ptr = extractvalue %WamSlice %~w_key_slice, 0', [B, B]),
-      format(atom(Len), '  %~w_key_len = extractvalue %WamSlice %~w_key_slice, 1', [B, B]),
-      format(atom(Missing), '  %~w_key_missing = icmp eq i8* %~w_key_ptr, null', [B, B]),
-      format(atom(Branch), '  br i1 %~w_key_missing, label %~w, label %~w',
-          [B, ActionNextLabel, HaveLabelName]),
-      format(atom(KeyId),
-          '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_ptr, i64 %~w_key_len)',
-          [B, B, B]),
+      plawk_assoc_row_key_prologue(KeyIndex, B, FieldSeparator, ActionNextLabel,
+          KeyIdIR, KeyGlobals, KeyLines),
       % the row value: the whole record ($0 is %line, the record atom). The
       % transient line buffer is reused, so intern a stable copy of its bytes
       % (atom -> string -> re-intern) and store that id as the table's value.
@@ -10190,11 +10205,11 @@ plawk_assoc_rule_action_blocks(RuleIndex,
           '  %~w_row_id = call i64 @wam_intern_atom(i8* %~w_row_ptr, i64 %~w_row_len)',
           [B, B, B]),
       format(atom(Set),
-          '  %~w_setrc = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id, i64 %~w_row_id)',
-          [B, TableIndex, B, B]),
+          '  %~w_setrc = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 %~w_row_id)',
+          [B, TableIndex, KeyIdIR, B]),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
-      Lines = [Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId,
-               RowLineId, RowPtr, RowLen, RowId, Set, Next, '']
+      append([KeyGlobals, [Label], KeyLines,
+              [RowLineId, RowPtr, RowLen, RowId, Set, Next, '']], Lines)
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
@@ -10213,20 +10228,9 @@ plawk_assoc_rule_action_blocks(RuleIndex,
              [RuleIndex, NextIndex])
       ),
       format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
-      format(atom(HaveLabelName), 'assoc_rule_~w_action_~w_have_key', [RuleIndex, Index]),
-      format(atom(HaveLabel), 'assoc_rule_~w_action_~w_have_key:', [RuleIndex, Index]),
       format(atom(B), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
-      format(atom(Slice),
-          '  %~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
-          [B, KeyIndex, FieldSeparator]),
-      format(atom(Ptr), '  %~w_key_ptr = extractvalue %WamSlice %~w_key_slice, 0', [B, B]),
-      format(atom(Len), '  %~w_key_len = extractvalue %WamSlice %~w_key_slice, 1', [B, B]),
-      format(atom(Missing), '  %~w_key_missing = icmp eq i8* %~w_key_ptr, null', [B, B]),
-      format(atom(Branch), '  br i1 %~w_key_missing, label %~w, label %~w',
-          [B, ActionNextLabel, HaveLabelName]),
-      format(atom(KeyId),
-          '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_ptr, i64 %~w_key_len)',
-          [B, B, B]),
+      plawk_assoc_row_key_prologue(KeyIndex, B, FieldSeparator, ActionNextLabel,
+          KeyIdIR, KeyGlobals, KeyLines),
       % empty-atom fallback for a missing field, and the join format string.
       format(atom(EmptyName), '~w_empty', [B]),
       format(atom(EmptyGlobal),
@@ -10252,16 +10256,50 @@ plawk_assoc_rule_action_blocks(RuleIndex,
           '  %~w_row_id = call i64 @wam_intern_atom(i8* %~w_bufp, i64 %~w_row_len)',
           [B, B, B]),
       format(atom(Set),
-          '  %~w_setrc = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_key_id, i64 %~w_row_id)',
-          [B, TableIndex, B, B]),
+          '  %~w_setrc = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w, i64 %~w_row_id)',
+          [B, TableIndex, KeyIdIR, B]),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
-      append([[global(EmptyGlobal), global(FmtGlobal), Label, Slice, Ptr, Len,
-               Missing, Branch, '', HaveLabel, KeyId],
-              FieldLines,
+      append([[global(EmptyGlobal), global(FmtGlobal)], KeyGlobals, [Label],
+              KeyLines, FieldLines,
               [BufA, BufP, FmtP, Snp, RowLen, RowId, Set, Next, '']], Lines)
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+
+%% plawk_assoc_row_key_prologue(+KeySpec, +B, +FieldSeparator, +ActionNextLabel,
+%%     -KeyIdIR, -Globals, -PreLines) is semidet.
+%
+%  The key prologue shared by the row-capture blocks, so both key kinds reuse one
+%  row-value builder instead of duplicating it. A single FIELD key projects its
+%  slice and SKIPS the action when the field is missing (branching to
+%  ActionNextLabel, awk: no row is stored for a missing key). A MULTI-DIM
+%  subsep key is straight-line -- the shared builder always yields a valid key
+%  (a missing subscript is the empty string) -- and contributes its descriptor
+%  constants through Globals.
+plawk_assoc_row_key_prologue(KeyIndex, B, FieldSeparator, ActionNextLabel,
+        KeyIdIR, [], PreLines) :-
+    integer(KeyIndex),
+    !,
+    format(atom(HaveLabelName), '~w_have_key', [B]),
+    format(atom(HaveLabel), '~w_have_key:', [B]),
+    format(atom(Slice),
+        '  %~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+        [B, KeyIndex, FieldSeparator]),
+    format(atom(Ptr), '  %~w_key_ptr = extractvalue %WamSlice %~w_key_slice, 0', [B, B]),
+    format(atom(Len), '  %~w_key_len = extractvalue %WamSlice %~w_key_slice, 1', [B, B]),
+    format(atom(Missing), '  %~w_key_missing = icmp eq i8* %~w_key_ptr, null', [B, B]),
+    format(atom(Branch), '  br i1 %~w_key_missing, label %~w, label %~w',
+        [B, ActionNextLabel, HaveLabelName]),
+    format(atom(KeyId),
+        '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_ptr, i64 %~w_key_len)',
+        [B, B, B]),
+    format(atom(KeyIdIR), '%~w_key_id', [B]),
+    PreLines = [Slice, Ptr, Len, Missing, Branch, '', HaveLabel, KeyId].
+plawk_assoc_row_key_prologue(subsep_key(Comps), B, FieldSeparator, _ActionNextLabel,
+        KeyIdIR, [global(GlobalDecl)], PreLines) :-
+    format(atom(KeyIdIR), '%~w_key_id', [B]),
+    plawk_subsep_key_n_ir(B, '%line', Comps, FieldSeparator, KeyIdIR,
+        GlobalDecl, PreLines).
 
 %% plawk_row_cons_format_atom(+Indexes, +FieldSep, -FmtAtom)
 %  The snprintf format joining N fields: "%.*s" per field, the field
