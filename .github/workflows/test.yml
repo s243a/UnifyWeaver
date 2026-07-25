@@ -116,7 +116,8 @@ jobs:
         # routed_policy. numpy is installed above. No embedder, torch, or
         # corpus either way.
         run: |
-          python3 -m pytest -q prototypes/mu_cosine/test_process_expression_contract.py
+          python3 -m pytest -q prototypes/mu_cosine/test_process_expression_contract.py \
+            prototypes/mu_cosine/test_process_expression_envelope.py
 
       - name: Run F# WAM target tests (codegen + dotnet smoke + LMDB conformance)
         env:
