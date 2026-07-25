@@ -176,7 +176,7 @@ def build_e5_tables(
     texts = texts or {}
     human = [texts.get(n, n.replace("_", " ")) for n in names]
     if cache_path and os.path.exists(cache_path):
-        d = torch.load(cache_path, weights_only=False)
+        d = torch.load(cache_path, weights_only=True)
         if (
             d.get("names") == list(names)
             and d.get("human") == human
