@@ -63,7 +63,10 @@ test(forin_ir_other_array_lookup_uses_get) :-
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
     % Tables are sorted by array name: counts is table 0, errs is table 1.
     assertion(once(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_value_at(%WamAssocI64Table* %plawk_assoc_table_0, i64 %forin_slot)'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_1, i64 %forin_key_id)'))),
+    % The cross-table lookup goes through the presence-probing printer: the
+    % loop key may be absent from errs, and an absent element is empty in awk
+    % string context (not a resolved id 0 / a printed "0").
+    assertion(once(sub_atom(DriverIR, _, _, _, '@wam_assoc_i64_print(%WamAssocI64Table* %plawk_assoc_table_1, i64 %forin_key_id)'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
@@ -77,10 +80,13 @@ test(surface_forin_prints_guarded_counts_by_key) :-
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\nERROR disk warm\n",
         ["disk 2", "net 1"]).
 
+% A key present in counts but absent from errs reads as an UNINITIALISED
+% element, which in awk string context is the empty string -- gawk 5.2 prints
+% "INFO 1 " (trailing separator, nothing after it), not "INFO 1 0".
 test(surface_forin_prints_other_array_lookup_with_missing_default) :-
     run_forin_print_smoke("{ counts[$1]++ } $1 == \"ERROR\" { errs[$1]++ } END { for (k in counts) print k, counts[k], errs[k] }\n",
         "INFO boot ok\nERROR disk full\nWARN cpu hot\nERROR net down\n",
-        ["ERROR 2 2", "INFO 1 0", "WARN 1 0"]).
+        ["ERROR 2 2", "INFO 1 ", "WARN 1 "]).
 
 test(surface_forin_prints_string_literal_labels) :-
     run_forin_print_smoke("{ counts[$1]++ } END { for (k in counts) print \"key\", k, counts[k] }\n",

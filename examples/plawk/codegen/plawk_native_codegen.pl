@@ -4470,6 +4470,11 @@ plawk_program_multipass_driver_ir(
         ReaderStr),
     append(WriterStr, ReaderStr, StrArrays0),
     sort(StrArrays0, StrArrays),
+    % Program-wide POSITIONAL tables (an `as array` bind or a `split`): their
+    % keys are integer positions, not interned atom ids. Carried alongside
+    % StrArrays for the same reason -- a reader pass has no writer of its own
+    % to infer the key domain from.
+    plawk_assoc_specs_posarray_arrays(AllRuleSpecs, PosArrays),
     % A `BEGIN cache(...)`-declared shared table: load before pass 1, commit
     % after the last pass. Empty for pure-scalar / non-cache programs.
     plawk_program_cache_tables(BeginClauses, CacheTriples),
@@ -4482,7 +4487,8 @@ plawk_program_multipass_driver_ir(
     % sequence by index.
     findall(FnIR-GlobalIR,
         ( nth0(I, Passes, Pass),
-          plawk_multipass_pass_fn(I, Pass, Tables, StrArrays, Schemas,
+          plawk_multipass_pass_fn(I, Pass, Tables,
+              array_kinds(StrArrays, PosArrays), Schemas,
               TableParamsIR, FieldSeparator, OutputSeparator, FnIR, GlobalIR)
         ),
         FnPairs),
@@ -5074,15 +5080,17 @@ plawk_multipass_pass_plan(Rules, Tables, assoc_plan(Tables, PlannedRules)) :-
     phrase(plawk_assoc_planned_rules(RuleSpecs, Tables, StrArrays, PosArrays, 0),
         PlannedRules).
 
-%% plawk_multipass_pass_fn(+Index, +Pass, +Tables, +TableParamsIR,
-%%     +FieldSep, +OutputSep, -FnIR, -GlobalIR)
+%% plawk_multipass_pass_fn(+Index, +Pass, +Tables, +ArrayKinds, +Schemas,
+%%     +TableParamsIR, +FieldSep, +OutputSep, -FnIR, -GlobalIR)
 %  Emit one pass function, dispatching on the pass shape. An input-scanning
 %  `pass { }` compiles its rule chain and scans the input per record; an
 %  `over TABLE as VAR` reader (phase 4) iterates the table's entries instead
 %  of the input. GlobalIR carries any module globals the pass's body needs
 %  (rule chains emit format/string globals; the over reader emits none in
 %  v1 -- key + lookup print fields use the shared runtime constants).
-plawk_multipass_pass_fn(Index, pass(PassRules), Tables, _StrArrays, _Schemas,
+%  ArrayKinds is array_kinds(StrArrays, PosArrays): the program-wide value /
+%  key domains, needed by reader passes whose writer lives in another pass.
+plawk_multipass_pass_fn(Index, pass(PassRules), Tables, _ArrayKinds, _Schemas,
         TableParamsIR, FieldSep, _OutputSep, FnIR, GlobalIR) :-
     plawk_multipass_pass_plan(PassRules, Tables, PassPlan),
     plawk_assoc_rule_controls(PassPlan, PassControls),
@@ -5090,13 +5098,16 @@ plawk_multipass_pass_fn(Index, pass(PassRules), Tables, _StrArrays, _Schemas,
     plawk_assoc_rule_chain_ir(PassPlan, FieldSep, GlobalIR, ChainIR),
     plawk_multipass_pass_fn_ir(Index, TableParamsIR, ChainIR, FnIR).
 plawk_multipass_pass_fn(Index, pass_over(var(Var), var(Table), Body), Tables,
-        StrArrays, _Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, '') :-
+        array_kinds(StrArrays, PosArrays), _Schemas, TableParamsIR, FieldSep,
+        OutputSep, FnIR, '') :-
     Body = [print(PrintFields)],
     PrintFields = [_ | _],
     maplist(plawk_over_print_field_ok(Var), PrintFields),
     % Carry the program's str-valued tables so a lookup of a row-valued table
-    % (`TABLE[k]` = a stored row) resolves the id to the row's bytes.
-    AssocPlan = assoc_plan(Tables, [str_arrays(StrArrays)]),
+    % (`TABLE[k]` = a stored row) resolves the id to the row's bytes, and its
+    % positional tables so an integer key prints as the position it is rather
+    % than being resolved as an atom-registry id.
+    AssocPlan = assoc_plan(Tables, [str_arrays(StrArrays), posarrays(PosArrays)]),
     plawk_multipass_over_fn_ir(Index, TableParamsIR, Var, Table, PrintFields,
         AssocPlan, FieldSep, OutputSep, FnIR).
 % The named row reader: iterate TABLE's row entries, decode each stored row by
@@ -5104,7 +5115,7 @@ plawk_multipass_pass_fn(Index, pass_over(var(Var), var(Table), Body), Tables,
 % TABLE; each print field must be VAR["col"] with col in the schema (name-only
 % -- numeric/other fields fail the clause, so the driver reports unsupported).
 plawk_multipass_pass_fn(Index, pass_records(var(Var), var(Table), Body), Tables,
-        _StrArrays, Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, GuardGlobals) :-
+        _ArrayKinds, Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, GuardGlobals) :-
     plawk_reader_body(Body, PrintFields, GuardTerm),
     PrintFields = [_ | _],
     memberchk(cache_schema(Table, Columns), Schemas),
@@ -5155,7 +5166,7 @@ plawk_records_col_index(Columns, Col, Index) :-
 % needed -- for raw stores. Reuses the same row-decode function emitter as
 % `records of`, just sourcing the field indices from the literal positions.
 plawk_multipass_pass_fn(Index, pass_rows(var(Var), var(Table), Body), Tables,
-        _StrArrays, _Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, GuardGlobals) :-
+        _ArrayKinds, _Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, GuardGlobals) :-
     plawk_reader_body(Body, PrintFields, GuardTerm),
     PrintFields = [_ | _],
     maplist(plawk_rows_field_plan(Var), PrintFields, FieldPlans),
@@ -5191,7 +5202,7 @@ plawk_rows_operand(_Var, int(V), aint(V)) :- integer(V).
 % `$N` field addressing over the stored row. Mirrors plawk_rows_field_plan but
 % sources positions from `field(N)` ($N) rather than `VAR[N]`.
 plawk_multipass_pass_fn(Index, pass_rows_anon(var(Table), Body), Tables,
-        _StrArrays, _Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, GuardGlobals) :-
+        _ArrayKinds, _Schemas, TableParamsIR, FieldSep, OutputSep, FnIR, GuardGlobals) :-
     plawk_reader_body(Body, PrintFields, GuardTerm),
     PrintFields = [_ | _],
     maplist(plawk_rows_anon_field_plan, PrintFields, FieldPlans),
@@ -5207,7 +5218,7 @@ plawk_multipass_pass_fn(Index, pass_rows_anon(var(Table), Body), Tables,
 % code/label counts); this clause only emits the pass body. No per-pass string
 % globals (the i64 print format comes from the driver's runtime globals).
 plawk_multipass_pass_fn(Index, pass_query(query(Pred, Vars), Body), _Tables,
-        _StrArrays, _Schemas, TableParamsIR, _FieldSep, OutputSep, FnIR, '') :-
+        _ArrayKinds, _Schemas, TableParamsIR, _FieldSep, OutputSep, FnIR, '') :-
     plawk_query_pass_supported(pass_query(query(Pred, Vars), Body)),
     length(Vars, Arity),
     plawk_query_body_plan(Body, Fields, Guard),
@@ -6041,17 +6052,38 @@ plawk_assoc_specs_str_arrays(RuleSpecs, StrArrays) :-
         As0),
     sort(As0, StrArrays).
 
+%% plawk_posarray_producer(+Level, +Term, -ArrayName) is nondet.
+%  THE producer table for the "positional array" property: a table whose
+%  keys are integer positions 1..n rather than interned atom ids.
+%
+%  The same property is asked three times over three different term
+%  representations of the same program, so all three rows live here side by
+%  side -- a new positional producer must be added at every level it can
+%  appear in, and a missing row is visible at a glance. Keeping these apart
+%  is what let the `over TABLE` reader print split keys as atom ids.
+%
+%    surface -- raw parser actions (plawk_program_posarray_arrays)
+%    spec    -- per-rule action specs (plawk_assoc_specs_posarray_arrays)
+%    plan    -- planned actions       (plawk_assoc_plan_posarray_array)
+plawk_posarray_producer(surface, dynposarray_bind(var(A), _Call), A).
+plawk_posarray_producer(surface, dynposarray_bind_str(var(A), _Call), A).
+plawk_posarray_producer(surface, split_into(_Src, var(A), _Sep), A).
+plawk_posarray_producer(spec, dynassoc(A, posarray(_Call)), A).
+plawk_posarray_producer(spec, dynassoc(A, posarray_str(_Call)), A).
+plawk_posarray_producer(spec, assoc_split(A, _Ki, _Sep), A).
+plawk_posarray_producer(plan, assoc_dyn_action(_I, A, _Ti, posarray(_Call)), A).
+plawk_posarray_producer(plan, assoc_dyn_action(_I, A, _Ti, posarray_str(_Call)), A).
+plawk_posarray_producer(plan, assoc_split_action(_I, A, _Ti, _Ki, _Sep), A).
+
 %% plawk_assoc_specs_posarray_arrays(+RuleSpecs, -PosArrays)
-%  Names of tables populated through `as array` (positional) binds --
-%  their keys are integer positions, so for-in loop-key reads print
-%  numerically rather than resolving an atom-registry id to text.
+%  Names of tables populated through `as array` (positional) binds or a
+%  `split` -- their keys are integer positions, so for-in loop-key reads
+%  print numerically rather than resolving an atom-registry id to text.
 plawk_assoc_specs_posarray_arrays(RuleSpecs, PosArrays) :-
     findall(A,
         ( member(rule(_P, ActionSpecs, _C), RuleSpecs),
-          ( member(dynassoc(A, posarray(_Call)), ActionSpecs)
-          ; member(dynassoc(A, posarray_str(_Call)), ActionSpecs)
-          ; member(assoc_split(A, _Pki, _Psep), ActionSpecs)   % keys are 1..n positions
-          )
+          member(Spec, ActionSpecs),
+          plawk_posarray_producer(spec, Spec, A)
         ),
         As0),
     sort(As0, PosArrays).
@@ -6717,10 +6749,23 @@ plawk_foreign_arg_ir(forin_val(_Array), _FieldSeparator, ArgBase, ArgValueIR,
 plawk_forin_body_print_lines([], _LoopVar, _ArrayName, _TableIndex, _AssocPlan,
         _Descriptor, _OutputSeparator, _) -->
     [].
+%% plawk_forin_key_numeric(+AssocPlan, +ArrayName, +Descriptor) is semidet.
+%  The iterated table's keys are plain i64s rather than interned atom ids,
+%  so the loop key prints numerically: either a binary record mode (keys are
+%  raw field values) or a positional array (keys are positions 1..n).
+%  Deciding this once keeps the two loop-key emitters below mutually
+%  exclusive -- when both a binary descriptor and a posarray plan applied,
+%  the emitter used to offer two identical solutions and the multi-pass
+%  driver's one-function-per-pass check rejected the whole program.
+plawk_forin_key_numeric(_AssocPlan, _ArrayName, Descriptor) :-
+    plawk_descriptor_is_binary(Descriptor),
+    !.
+plawk_forin_key_numeric(AssocPlan, ArrayName, _Descriptor) :-
+    plawk_assoc_plan_posarray_array(AssocPlan, ArrayName).
+
 plawk_forin_body_print_lines([var(LoopVar) | Rest], LoopVar, ArrayName,
         TableIndex, AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
-    { plawk_descriptor_is_binary(Descriptor) },
-    % Binary mode: keys are raw i64 field values, printed numerically.
+    { plawk_forin_key_numeric(AssocPlan, ArrayName, Descriptor) },
     plawk_forin_separator_lines(PrintIndex, OutputSeparator),
     { format(atom(FmtVar), 'forin_key_fmt_~w', [PrintIndex]),
       format(atom(PrintVar), 'forin_printed_key_~w', [PrintIndex]),
@@ -6733,21 +6778,7 @@ plawk_forin_body_print_lines([var(LoopVar) | Rest], LoopVar, ArrayName,
         Descriptor, OutputSeparator, NextPrintIndex).
 plawk_forin_body_print_lines([var(LoopVar) | Rest], LoopVar, ArrayName,
         TableIndex, AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
-    { plawk_assoc_plan_posarray_array(AssocPlan, ArrayName) },
-    % Positional array (e.g. split): keys are integer positions, printed
-    % numerically rather than resolved as atom-registry ids.
-    plawk_forin_separator_lines(PrintIndex, OutputSeparator),
-    { format(atom(FmtVar), 'forin_key_fmt_~w', [PrintIndex]),
-      format(atom(PrintVar), 'forin_printed_key_~w', [PrintIndex]),
-      llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
-          '%forin_key_id', [FmtPtr, PrintCall]),
-      NextPrintIndex is PrintIndex + 1
-    },
-    [FmtPtr, PrintCall],
-    plawk_forin_body_print_lines(Rest, LoopVar, ArrayName, TableIndex, AssocPlan,
-        Descriptor, OutputSeparator, NextPrintIndex).
-plawk_forin_body_print_lines([var(LoopVar) | Rest], LoopVar, ArrayName,
-        TableIndex, AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
+    { \+ plawk_forin_key_numeric(AssocPlan, ArrayName, Descriptor) },
     plawk_forin_separator_lines(PrintIndex, OutputSeparator),
     { format(atom(KeyString),
           '  %forin_key_s_~w = call i8* @wam_atom_to_string(i64 %forin_key_id)',
@@ -10398,8 +10429,10 @@ plawk_assoc_record_program_ok(_FieldSeparator, Rules, EndPrintFields) :-
         )).
 
 %% plawk_program_posarray_arrays(+Rules, -Names) is det.
-%  The array names bound by an `as array` (positional) target, walked
-%  through nested actions.
+%  The positionally-keyed array names (an `as array` bind or a `split`),
+%  walked through nested actions. Producers come from the shared
+%  plawk_posarray_producer/3 table so this stays in step with the spec- and
+%  plan-level views of the same property.
 plawk_program_posarray_arrays(Rules, Names) :-
     findall(Name,
         ( member(rule(_P, Actions), Rules),
@@ -10409,8 +10442,8 @@ plawk_program_posarray_arrays(Rules, Names) :-
         Names0),
     sort(Names0, Names).
 
-plawk_posarray_bind_name(dynposarray_bind(var(Name), _Call), Name).
-plawk_posarray_bind_name(dynposarray_bind_str(var(Name), _Call), Name).
+plawk_posarray_bind_name(Term, Name) :-
+    plawk_posarray_producer(surface, Term, Name).
 plawk_posarray_bind_name(Term, Name) :-
     compound(Term),
     arg(_, Term, Sub),
@@ -12731,7 +12764,15 @@ plawk_assoc_end_print_lines([assoc(var(ArrayName), int(Key)) | Rest], AssocPlan,
           '  %assoc_end_value_~w = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %plawk_assoc_table_~w, i64 ~w)',
           [PrintIndex, TableIndex, Key]),
       format(atom(ValueIR), '%assoc_end_value_~w', [PrintIndex]),
-      (   plawk_assoc_plan_str_array(AssocPlan, ArrayName)
+      (   plawk_assoc_plan_str_array(AssocPlan, ArrayName),
+          \+ plawk_descriptor_is_binary(Descriptor)
+      ->  % str-valued positional table in TEXT mode: probe the slot before
+          % resolving, so an absent element prints empty (the awk
+          % string-context reading) instead of resolving id 0 to "(null)".
+          % The lookup_int printer already did this; this emitter did not.
+          plawk_assoc_str_value_print_line(TableIndex, Key, PrintCall),
+          ValueLines = [PrintCall]
+      ;   plawk_assoc_plan_str_array(AssocPlan, ArrayName)
       ->  % str-valued positional table: resolve the stored id to text.
           format(atom(ValueString),
               '  %assoc_end_value_s_~w = call i8* @wam_atom_to_string(i64 ~w)',
@@ -12843,16 +12884,17 @@ plawk_assoc_plan_str_array(assoc_plan(_Tables, Rules), ArrayName) :-
 %  even in text mode.
 plawk_assoc_plan_posarray_array(assoc_plan(_Tables, Rules), ArrayName) :-
     member(assoc_rule(_RuleIndex, _Pattern, Actions, _Control), Rules),
-    ( member(assoc_dyn_action(_Index, ArrayName, _TableIndex, posarray(_Call)),
-        Actions)
-    ; member(assoc_dyn_action(_Index2, ArrayName, _TableIndex2,
-        posarray_str(_Call2)), Actions)
-    ),
+    member(Action, Actions),
+    plawk_posarray_producer(plan, Action, ArrayName),
     !.
-% split keys its array by integer position (1..n).
+% A reader plan (e.g. the multi-pass `over` reader) carries the program's
+% positional table names directly, since the populating writer is in a
+% different pass function than this reader -- the same reason str_arrays/1 is
+% carried. Without it the reader saw no producer and resolved an integer
+% position as an atom-registry id.
 plawk_assoc_plan_posarray_array(assoc_plan(_Tables, Rules), ArrayName) :-
-    member(assoc_rule(_RuleIndex, _Pattern, Actions, _Control), Rules),
-    member(assoc_split_action(_Index, ArrayName, _TableIndex, _Ki, _Sep), Actions),
+    member(posarrays(PosArrays), Rules),
+    memberchk(ArrayName, PosArrays),
     !.
 
 % Binary record modes: assoc keys are raw i64 field values (no
