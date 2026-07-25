@@ -5437,14 +5437,42 @@ entry:
   ret void
 }
 
+; Resolve one multi-dim subscript COMPONENT to its bytes. A component descriptor
+; is {i64 field_index, i8* lit_ptr, i64 lit_len}: a NULL lit_ptr means "slice
+; field field_index out of the record", anything else means "use the literal
+; bytes (lit_ptr, lit_len)" -- so a component is either a record field or a
+; compile-time string/number literal. Literal descriptors are module constants,
+; so no per-record allocation is needed to describe a key.
+define %WamSlice @wam_subsep_comp_slice(%Value %line, {i64, i8*, i64}* %comp, i8 %fs) {
+entry:
+  %cs.lp_ptr = getelementptr {i64, i8*, i64}, {i64, i8*, i64}* %comp, i64 0, i32 1
+  %cs.lp = load i8*, i8** %cs.lp_ptr
+  %cs.is_lit = icmp ne i8* %cs.lp, null
+  br i1 %cs.is_lit, label %cs.lit, label %cs.fld
+
+cs.lit:
+  %cs.ll_ptr = getelementptr {i64, i8*, i64}, {i64, i8*, i64}* %comp, i64 0, i32 2
+  %cs.ll = load i64, i64* %cs.ll_ptr
+  %cs.s0 = insertvalue %WamSlice undef, i8* %cs.lp, 0
+  %cs.s1 = insertvalue %WamSlice %cs.s0, i64 %cs.ll, 1
+  ret %WamSlice %cs.s1
+
+cs.fld:
+  %cs.fi_ptr = getelementptr {i64, i8*, i64}, {i64, i8*, i64}* %comp, i64 0, i32 0
+  %cs.fi = load i64, i64* %cs.fi_ptr
+  %cs.fs = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %cs.fi, i8 %fs)
+  ret %WamSlice %cs.fs
+}
+
 ; arr[i,j,k,...] key -- N-dimensional subscript (N >= 1), backing the multi-dim
-; counter, read, and membership for any arity. Joins the N field slices named by
-; %indices (an array of 1-based field numbers) with SUBSEP into one interned
-; atom key. Two passes: sum the field lengths for the buffer size, then copy each
-; field with a SUBSEP between successive fields. A missing field contributes an
-; empty slice (awk: an unset subscript is the empty string). The join buffer is a
-; stack alloca freed on return; wam_intern_atom copies the bytes it keeps.
-define i64 @wam_intern_subsep_key_n(%Value %line, i64* %indices, i64 %n, i8 %fs) {
+; counter, read, and membership for any arity and any mix of field and literal
+; components. Joins the N components described by %comps (see
+; wam_subsep_comp_slice) with SUBSEP into one interned atom key. Two passes: sum
+; the component lengths for the buffer size, then copy each component with a
+; SUBSEP between successive ones. A missing field contributes an empty slice
+; (awk: an unset subscript is the empty string). The join buffer is a stack
+; alloca freed on return; wam_intern_atom copies the bytes it keeps.
+define i64 @wam_intern_subsep_key_comp(%Value %line, {i64, i8*, i64}* %comps, i64 %n, i8 %fs) {
 entry:
   %skn.sepp = load i8*, i8** @wam_subsep_ptr
   %skn.sepl = load i64, i64* @wam_subsep_len
@@ -5457,9 +5485,8 @@ skn.len_loop:
   br i1 %skn.len_done_c, label %skn.len_done, label %skn.len_step
 
 skn.len_step:
-  %skn.li_ptr = getelementptr i64, i64* %indices, i64 %skn.i
-  %skn.li = load i64, i64* %skn.li_ptr
-  %skn.lslice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %skn.li, i8 %fs)
+  %skn.lc = getelementptr {i64, i8*, i64}, {i64, i8*, i64}* %comps, i64 %skn.i
+  %skn.lslice = call %WamSlice @wam_subsep_comp_slice(%Value %line, {i64, i8*, i64}* %skn.lc, i8 %fs)
   %skn.llen = extractvalue %WamSlice %skn.lslice, 1
   %skn.acc_next = add i64 %skn.acc, %skn.llen
   %skn.i_next = add i64 %skn.i, 1
@@ -5491,9 +5518,8 @@ skn.do_sep:
 
 skn.after_sep:
   %skn.off1 = phi i64 [ %skn.off, %skn.copy_body ], [ %skn.off_sep, %skn.do_sep ]
-  %skn.cj_ptr = getelementptr i64, i64* %indices, i64 %skn.j
-  %skn.cj = load i64, i64* %skn.cj_ptr
-  %skn.cslice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %skn.cj, i8 %fs)
+  %skn.cc = getelementptr {i64, i8*, i64}, {i64, i8*, i64}* %comps, i64 %skn.j
+  %skn.cslice = call %WamSlice @wam_subsep_comp_slice(%Value %line, {i64, i8*, i64}* %skn.cc, i8 %fs)
   %skn.cptr = extractvalue %WamSlice %skn.cslice, 0
   %skn.clen = extractvalue %WamSlice %skn.cslice, 1
   %skn.miss = icmp eq i8* %skn.cptr, null
