@@ -578,6 +578,7 @@ def test_binding_manifest_round_trip_and_provenance(tmp_path):
         "decay": sm_fs_freeze.DECAY,
         "fs_root": str(tree.resolve()),
         "holdout_frac": 0.0,
+        "owner_excluded_maps": [],
         "process_expression": sm_fs_freeze.EXPR,
         "split_seed": 0,
         "training_privacy_policy": "public-only",
@@ -814,3 +815,36 @@ def test_atomic_install_failure_leaves_no_partial_bundle(tmp_path, monkeypatch):
         run(tree, out, privacy_index=privacy_path)
     assert not out.exists()
     assert not list(tmp_path.glob(".out.staging.*"))
+
+
+def test_owner_exclusion_retires_unresolved_refs_and_is_sealed(tmp_path):
+    tree = make_tree(tmp_path)
+    bad = tree / "Subjects" / "sci" / "phy" / "mech" / "Dangling.smmx"
+    write_unresolved_private_marker_map(bad)
+    privacy_path = tmp_path / "privacy.jsonl"
+    header = build_privacy_index(tree, privacy_path)
+    assert header["counts"]["unresolved_private_target_refs"] >= 1
+    # without exclusion: public-only freeze fails closed on the unresolved ref
+    with pytest.raises(ValueError, match="unresolved private target"):
+        run(tree, tmp_path / "o1", privacy_index=privacy_path)
+    # unknown path fails closed
+    with pytest.raises(ValueError, match="not present in the privacy index"):
+        sm_fs_freeze.main([
+            "--fs-root", str(tree), "--out-dir", str(tmp_path / "o2"),
+            "--privacy-index", str(privacy_path),
+            "--exclude-map", "Nope/Missing.smmx",
+        ])
+    # exclusion clears the gate, drops the map, and seals the decision
+    sm_fs_freeze.main([
+        "--fs-root", str(tree), "--out-dir", str(tmp_path / "o3"),
+        "--holdout-frac", "0.4", "--split-seed", "0",
+        "--training-privacy-policy", "public-only",
+        "--privacy-index", str(privacy_path),
+        "--exclude-map", "Subjects/sci/phy/mech/Dangling.smmx",
+    ])
+    led = json.loads((tmp_path / "o3" / "ledger.json").read_bytes())
+    man = json.loads((tmp_path / "o3" / "manifest.json").read_bytes())
+    assert led["owner_excluded_maps"] == ["Subjects/sci/phy/mech/Dangling.smmx"]
+    assert man["parameters"]["owner_excluded_maps"] == led["owner_excluded_maps"]
+    assert all(r["map_path"] != "Subjects/sci/phy/mech/Dangling.smmx" for r in led["rows"])
+    assert led["privacy_index"]["observed_counts"].get("owner_excluded") == 1
