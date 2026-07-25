@@ -378,11 +378,19 @@ def _verify_ledger_against_privacy_source(
 
     verify_index_source(corpus_root, privacy_header, index)
     policy = ledger.get("training_privacy_policy")
+    sealed_exclusions = ledger.get("owner_excluded_maps") or []
+    if not (isinstance(sealed_exclusions, list)
+            and all(isinstance(x, str) for x in sealed_exclusions)
+            and sealed_exclusions == sorted(set(sealed_exclusions))):
+        raise ValueError("training bundle owner exclusions are malformed")
     expected = {}
     observed_privacy = Counter()
     for relative, _path, digest, indexed in _iter_verified_source_maps(
         corpus_root, index
     ):
+        if relative in sealed_exclusions:
+            observed_privacy["owner_excluded"] += 1
+            continue
         classification = indexed["classification"]
         observed_privacy[classification] += 1
         if not training_privacy_allows(classification, policy):
@@ -698,6 +706,7 @@ def build_bundle_manifest(
     training_privacy_policy,
     allow_unresolved_private_targets,
     allow_degenerate_holdout,
+    owner_excluded_maps=(),
 ):
     privacy_index = _absolute_path(privacy_index)
     if not _valid_artifact_record(privacy_index_artifact):
@@ -709,6 +718,7 @@ def build_bundle_manifest(
                 allow_unresolved_private_targets
             ),
             "allow_degenerate_holdout": bool(allow_degenerate_holdout),
+            "owner_excluded_maps": sorted(owner_excluded_maps),
             "decay": DECAY,
             "fs_root": str(_absolute_path(fs_root)),
             "holdout_frac": holdout_frac,
@@ -871,6 +881,7 @@ def verify_private_bundle(out_dir, privacy_index=None):
         "decay",
         "fs_root",
         "holdout_frac",
+        "owner_excluded_maps",
         "process_expression",
         "split_seed",
         "training_privacy_policy",
@@ -910,6 +921,10 @@ def verify_private_bundle(out_dir, privacy_index=None):
         (
             ledger.get("unresolved_private_targets_waived"),
             parameters.get("allow_unresolved_private_targets"),
+        ),
+        (
+            ledger.get("owner_excluded_maps"),
+            parameters.get("owner_excluded_maps"),
         ),
         (
             ledger_privacy.get("index_sha256"),
@@ -1095,7 +1110,20 @@ def main(argv=None):
             "recorded in the ledger and normally forbidden for public-only output"
         ),
     )
+    ap.add_argument(
+        "--exclude-map",
+        action="append",
+        default=[],
+        metavar="RELPATH",
+        help=(
+            "owner exclusion: drop this indexed map from the corpus entirely (repeatable). "
+            "Each path must exist in the privacy index; exclusions are sealed into the "
+            "ledger and manifest, and an excluded map's unresolved private-target refs no "
+            "longer trip the public-only gate (the referring map itself is gone)"
+        ),
+    )
     a = ap.parse_args(argv)
+    owner_exclusions = sorted(set(a.exclude_map))
     a.holdout_frac = _validate_holdout_fraction(
         a.holdout_frac,
         allow_degenerate=a.allow_degenerate_holdout,
@@ -1120,24 +1148,44 @@ def main(argv=None):
         f"(policy {privacy_header['policy_id']}, "
         f"digest {privacy_header['index_sha256'][:16]})"
     )
+    missing_exclusions = [rel for rel in owner_exclusions if rel not in index]
+    if missing_exclusions:
+        raise ValueError(
+            f"--exclude-map path(s) not present in the privacy index: "
+            f"{missing_exclusions[:3]}"
+        )
     unresolved = privacy_header.get("counts", {}).get(
         "unresolved_private_target_refs", 0
     )
+    excluded_refs = sum(
+        len(index[rel].get("unresolved_private_targets") or [])
+        for rel in owner_exclusions
+    )
+    effective_unresolved = max(0, unresolved - excluded_refs)
+    if owner_exclusions:
+        print(
+            f"owner exclusions: {len(owner_exclusions)} map(s) dropped "
+            f"({excluded_refs} unresolved private-target ref(s) retired with them)"
+        )
     if (
         a.training_privacy_policy == "public-only"
-        and unresolved
+        and effective_unresolved
         and not a.allow_unresolved_private_targets
     ):
         raise ValueError(
-            f"privacy index has {unresolved} unresolved private target "
+            f"privacy index has {effective_unresolved} unresolved private target "
             "reference(s); resolve them or record an explicit owner waiver"
         )
 
     rows = []
     observed_privacy = Counter()
+    excluded_set = set(owner_exclusions)
     for relative, _path, digest, indexed in _iter_verified_source_maps(
         fs_root, index
     ):
+        if relative in excluded_set:
+            observed_privacy["owner_excluded"] += 1
+            continue
         classification = indexed["classification"]
         observed_privacy[classification] += 1
         if not training_privacy_allows(
@@ -1156,7 +1204,8 @@ def main(argv=None):
     expected_policy_members = {
         relative
         for relative, record in index.items()
-        if training_privacy_allows(
+        if relative not in excluded_set
+        and training_privacy_allows(
             record["classification"], a.training_privacy_policy
         )
     }
@@ -1217,6 +1266,7 @@ def main(argv=None):
         "unresolved_private_targets_waived": bool(
             a.allow_unresolved_private_targets
         ),
+        "owner_excluded_maps": owner_exclusions,
         "limitations": ["ancestor components above destination level shared across splits "
                         "(transductive at ancestor level)",
                         "public classification is an owner risk-policy decision, not independent "
@@ -1298,6 +1348,7 @@ def main(argv=None):
         training_privacy_policy=a.training_privacy_policy,
         allow_unresolved_private_targets=a.allow_unresolved_private_targets,
         allow_degenerate_holdout=a.allow_degenerate_holdout,
+        owner_excluded_maps=owner_exclusions,
     )
     payloads = {
         "ledger.json": ledger_bytes,
