@@ -2,9 +2,9 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
-% PERF-R-CA-DIRECT / IDDFS / IDCACHE: capability-gated bound-arg1 parent
-% lookup for the R category_ancestor/4 recursive kernel, including
-% integer-ID DFS and closure-private numeric-key parent-id memoization.
+% PERF-R-CA-DIRECT / IDDFS / IDCACHE / STACK: capability-gated bound-arg1
+% parent lookup for the R category_ancestor/4 kernel, including integer-ID
+% DFS, closure-private parent-id memoization, and iterative frame-stack DFS.
 %
 % Usage: swipl -g run_tests -t halt tests/test_wam_r_ca_direct_lookup.pl
 
@@ -48,12 +48,19 @@ test(grouped_by_first_atoms_registers_indexed_lookup, [nondet]) :-
             assertion(once(sub_string(Rt, _, _, _,
                 'make_indexed_arg1_parent_lookup_ids'))),
             assertion(once(sub_string(Rt, _, _, _,
-                'category_ancestor_hops_rec_ids'))),
+                'category_ancestor_hops_ids'))),
+            assertion(\+ sub_string(Rt, _, _, _,
+                'category_ancestor_hops_rec_ids')),
             % IDCACHE: in-memory lookup_ids keeps a closure-private memo
             assertion(once(sub_string(Rt, _, _, _,
                 'Closure-private memo'))),
             assertion(once(sub_string(Rt, _, _, _,
-                'cache[[aid]] <<- out')))
+                'cache[[aid]] <<- out'))),
+            % STACK: iterative frame stack (no recursive ID DFS)
+            assertion(once(sub_string(Rt, _, _, _,
+                'st_parents'))),
+            assertion(once(sub_string(Rt, _, _, _,
+                'do_enter')))
         ),
         (   cleanup_tmp(TmpDir),
             uninstall_ca_kernel
@@ -221,7 +228,7 @@ collect_hops <- function(cat, root, visited_chars, sorted = TRUE) {
   if (isTRUE(sorted)) sort(out) else out
 }
 
-# ID-native path (lookup_ids present)
+# ID-native path (lookup_ids present) — iterative STACK DFS
 d_multi_eq  <- collect_hops("a", "d", character(0))
 d_multi_une <- collect_hops("a", "z", character(0))
 d_cycle     <- collect_hops("loop_a", "loop_b", character(0))
@@ -232,6 +239,27 @@ d_num       <- collect_hops("1827", "9001", character(0))
 d_num_miss  <- collect_hops("1827", "nope", character(0))
 d_nonatom   <- collect_hops("deep0", "deep4", list(IntTerm(99L)))
 d_order     <- collect_hops("ord0", "ord_root", character(0), sorted = FALSE)
+# Diamond: same node reachable on separate sibling paths
+d_diamond   <- collect_hops("a", "d", character(0), sorted = FALSE)
+# Cycle then sibling after unwind
+d_cyc_sib   <- collect_hops("cyc_s", "cyc_root", character(0), sorted = FALSE)
+# Branching at several depths
+d_branch    <- collect_hops("br0", "br_root", character(0), sorted = FALSE)
+# Root as direct parent and as intermediate
+d_root_both <- collect_hops("rdir", "RootX", character(0), sorted = FALSE)
+# Duplicate parent edges (direct-root emit is once; multi-hop dup keeps both)
+d_dup       <- collect_hops("dup", "dup_root", character(0), sorted = FALSE)
+d_dup_path  <- collect_hops("dup2", "dup2_root", character(0), sorted = FALSE)
+# Empty / missing buckets
+d_empty     <- collect_hops("no_such_node", "d", character(0))
+d_miss_root <- collect_hops("a", "no_such_root", character(0))
+# Large sparse atom id (interned name)
+d_sparse    <- collect_hops("sparse_hi", "sparse_root", character(0))
+# Mixed atom/non-atom initial Visited
+d_mix_vis   <- collect_hops("a", "d", list(Atom(aid("z")), IntTerm(7L)))
+# Exact max-depth boundary: emit when root is a parent at vlen==max_depth
+d_depth_ok  <- collect_hops("deep0", "deep3", character(0))
+d_depth_at_bound <- collect_hops("deep0", "deep4", character(0))
 
 stopifnot(identical(d_multi_eq, c(2L, 2L)))
 stopifnot(identical(d_multi_une, c(1L, 3L)))
@@ -244,6 +272,24 @@ stopifnot(length(d_num_miss) == 0L)
 stopifnot(length(d_nonatom) == 0L)             # non-atoms still consume depth
 # Distinguishable DFS order: long branch is listed before short branch.
 stopifnot(identical(d_order, c(3L, 2L)))
+stopifnot(identical(d_diamond, c(2L, 2L)))
+# Cycle branch then sibling: long path via restore (4) and direct (2)
+stopifnot(identical(d_cyc_sib, c(4L, 2L)))
+stopifnot(identical(d_branch, c(3L, 2L, 3L)))
+# Direct root edge first (1), then via mid (2); continue-through-root ok
+stopifnot(identical(d_root_both, c(1L, 2L)))
+# Direct-root emission is one per node even with duplicate root edges
+stopifnot(identical(d_dup, 1L))
+# Duplicate non-root parents yield two identical hop paths
+stopifnot(identical(d_dup_path, c(2L, 2L)))
+stopifnot(length(d_empty) == 0L, length(d_miss_root) == 0L)
+stopifnot(identical(d_sparse, 1L))
+# z blocks a->z; non-atom still counts in Visited length; a->b/c->d remain
+stopifnot(identical(d_mix_vis, c(2L, 2L)))
+stopifnot(identical(d_depth_ok, 3L))
+# Root as parent of the node entered at vlen==max_depth still emits
+stopifnot(identical(d_depth_at_bound, 4L))
+# With one non-atom Visited slot, deep4 is out of reach (existing d_nonatom)
 
 # Forced TermValue-capability fallback (lookup only, no lookup_ids)
 facts <- pred_cparent_facts; indexes <- pred_cparent_indexes
@@ -262,8 +308,16 @@ t_depth     <- collect_hops("deep0", "deep3", character(0))
 t_num       <- collect_hops("1827", "9001", character(0))
 t_nonatom   <- collect_hops("deep0", "deep4", list(IntTerm(99L)))
 t_order     <- collect_hops("ord0", "ord_root", character(0), sorted = FALSE)
+t_diamond   <- collect_hops("a", "d", character(0), sorted = FALSE)
+t_cyc_sib   <- collect_hops("cyc_s", "cyc_root", character(0), sorted = FALSE)
+t_branch    <- collect_hops("br0", "br_root", character(0), sorted = FALSE)
+t_root_both <- collect_hops("rdir", "RootX", character(0), sorted = FALSE)
+t_dup       <- collect_hops("dup", "dup_root", character(0), sorted = FALSE)
+t_dup_path  <- collect_hops("dup2", "dup2_root", character(0), sorted = FALSE)
+t_sparse    <- collect_hops("sparse_hi", "sparse_root", character(0))
+t_mix_vis   <- collect_hops("a", "d", list(Atom(aid("z")), IntTerm(7L)))
 
-# Forced iterate_goal fallback (no capability)
+# Forced iterate_goal fallback (no capability) — oracle for STACK
 rm(list = "cparent/2", envir = shared_program$arg1_lookups)
 stopifnot(is.null(WamRuntime$get_arg1_parent_lookup(shared_program, "cparent/2")))
 f_multi_eq  <- collect_hops("a", "d", character(0))
@@ -275,8 +329,16 @@ f_depth     <- collect_hops("deep0", "deep3", character(0))
 f_num       <- collect_hops("1827", "9001", character(0))
 f_nonatom   <- collect_hops("deep0", "deep4", list(IntTerm(99L)))
 f_order     <- collect_hops("ord0", "ord_root", character(0), sorted = FALSE)
+f_diamond   <- collect_hops("a", "d", character(0), sorted = FALSE)
+f_cyc_sib   <- collect_hops("cyc_s", "cyc_root", character(0), sorted = FALSE)
+f_branch    <- collect_hops("br0", "br_root", character(0), sorted = FALSE)
+f_root_both <- collect_hops("rdir", "RootX", character(0), sorted = FALSE)
+f_dup       <- collect_hops("dup", "dup_root", character(0), sorted = FALSE)
+f_dup_path  <- collect_hops("dup2", "dup2_root", character(0), sorted = FALSE)
+f_sparse    <- collect_hops("sparse_hi", "sparse_root", character(0))
+f_mix_vis   <- collect_hops("a", "d", list(Atom(aid("z")), IntTerm(7L)))
 
-# Three-way parity (sorted values)
+# Three-way parity (sorted values where order is not the focus)
 stopifnot(identical(d_multi_eq, t_multi_eq), identical(d_multi_eq, f_multi_eq))
 stopifnot(identical(d_multi_une, t_multi_une), identical(d_multi_une, f_multi_une))
 stopifnot(identical(d_cycle, t_cycle), identical(d_cycle, f_cycle))
@@ -285,8 +347,55 @@ stopifnot(identical(d_root_vis, t_root_vis), identical(d_root_vis, f_root_vis))
 stopifnot(identical(d_depth, t_depth), identical(d_depth, f_depth))
 stopifnot(identical(d_num, t_num), identical(d_num, f_num))
 stopifnot(identical(d_nonatom, t_nonatom), identical(d_nonatom, f_nonatom))
-# DFS emission order parity across all three paths
+# Exact unsorted DFS emission order parity across all three paths
 stopifnot(identical(d_order, t_order), identical(d_order, f_order))
+stopifnot(identical(d_diamond, t_diamond), identical(d_diamond, f_diamond))
+stopifnot(identical(d_cyc_sib, t_cyc_sib), identical(d_cyc_sib, f_cyc_sib))
+stopifnot(identical(d_branch, t_branch), identical(d_branch, f_branch))
+stopifnot(identical(d_root_both, t_root_both), identical(d_root_both, f_root_both))
+stopifnot(identical(d_dup, t_dup), identical(d_dup, f_dup))
+stopifnot(identical(d_dup_path, t_dup_path), identical(d_dup_path, f_dup_path))
+stopifnot(identical(d_sparse, t_sparse), identical(d_sparse, f_sparse))
+stopifnot(identical(d_mix_vis, t_mix_vis), identical(d_mix_vis, f_mix_vis))
+
+# ------------------------------------------------------------------
+# Differential: iterative ID path vs iterate_goal oracle on small graphs
+# (exact unsorted hop sequences). Rebuild indexed capability each time.
+# ------------------------------------------------------------------
+restore_id_cap <- function() {
+  WamRuntime$register_indexed_arg1_parent_lookup(
+    shared_program, "cparent/2", pred_cparent_facts, pred_cparent_indexes)
+}
+clear_cap <- function() {
+  if (exists("cparent/2", envir = shared_program$arg1_lookups, inherits = FALSE))
+    rm(list = "cparent/2", envir = shared_program$arg1_lookups)
+}
+diff_cases <- list(
+  list(cat = "a", root = "d", vis = character(0)),
+  list(cat = "a", root = "z", vis = character(0)),
+  list(cat = "ord0", root = "ord_root", vis = character(0)),
+  list(cat = "cyc_s", root = "cyc_root", vis = character(0)),
+  list(cat = "br0", root = "br_root", vis = character(0)),
+  list(cat = "rdir", root = "RootX", vis = character(0)),
+  list(cat = "dup", root = "dup_root", vis = character(0)),
+  list(cat = "dup2", root = "dup2_root", vis = character(0)),
+  list(cat = "loop_a", root = "loop_b", vis = character(0)),
+  list(cat = "a", root = "d", vis = c("b")),
+  list(cat = "a", root = "d", vis = c("d")),
+  list(cat = "deep0", root = "deep3", vis = character(0)),
+  list(cat = "deep0", root = "deep4", vis = character(0)),
+  list(cat = "1827", root = "9001", vis = character(0)),
+  list(cat = "sparse_hi", root = "sparse_root", vis = character(0)),
+  list(cat = "no_such_node", root = "d", vis = character(0))
+)
+for (case in diff_cases) {
+  restore_id_cap()
+  id_hops <- collect_hops(case$cat, case$root, case$vis, sorted = FALSE)
+  clear_cap()
+  fb_hops <- collect_hops(case$cat, case$root, case$vis, sorted = FALSE)
+  stopifnot(identical(id_hops, fb_hops))
+}
+restore_id_cap()
 cat("ok\n")
 '),
                 close(S)),
@@ -397,6 +506,20 @@ ca_direct_setup_program(TmpDir, RDir) :-
                    ['a\tb', 'a\tc', 'b\td', 'c\td',
                     'a\tz', 'a\tp', 'p\tq', 'q\tz',
                     'loop_a\tloop_b', 'loop_b\tloop_a',
+                    % cycle then sibling after path restore
+                    'cyc_s\tcyc_a', 'cyc_s\tcyc_b',
+                    'cyc_a\tcyc_s', 'cyc_b\tcyc_root',
+                    % branching at several depths
+                    'br0\tbr_long', 'br_long\tbr_mid', 'br_mid\tbr_root',
+                    'br0\tbr_short', 'br_short\tbr_root',
+                    'br0\tbr_other', 'br_other\tbr_mid2', 'br_mid2\tbr_root',
+                    % root as direct parent and intermediate
+                    'rdir\tRootX', 'rdir\trmid', 'rmid\tRootX',
+                    % duplicate parents (direct root once; multi-hop twice)
+                    'dup\tdup_root', 'dup\tdup_root',
+                    'dup2\tdup2_mid', 'dup2\tdup2_mid', 'dup2_mid\tdup2_root',
+                    % sparse / large-name atom id
+                    'sparse_hi\tsparse_root',
                     'deep0\tdeep1', 'deep1\tdeep2', 'deep2\tdeep3',
                     'deep3\tdeep4',
                     'ord0\tord_long', 'ord_long\tord_mid',

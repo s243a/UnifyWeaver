@@ -386,6 +386,23 @@ without these capabilities retain the TermValue and generic `iterate_goal`
 fallbacks. Residual cost is interpreted R DFS and lowered power-sum
 orchestration.
 
+PERF-R-CA-STACK (iterative integer-ID DFS frame stack) replaces recursive
+`category_ancestor_hops_rec_ids` with an explicit path/frame stack so sibling
+branches restore path length without R copy-on-write on every descent.
+Profiled post-IDCACHE scale-300 path on a Cursor cloud agent: 516522 DFS node
+visits, max depth 9, ~59k visited-vector grows under recursion; CA recursion
+was ~70% total / 26% self time. After STACK on the same host (3-rep):
+
+| Stage | query_ms | total_ms | samples |
+|-------|----------|----------|---------|
+| Post-IDCACHE (recursive ID DFS) | 3025 | 3568 | 3649, 3009, 3025 |
+| After STACK (iterative frames) | 2705 | 3226 | 3209, 2705, 2691 |
+
+Same-host query speedup ≈ 1.12×; Rprof `mem.total` for the CA hops helper
+fell ~3904 → ~1795. Primary fleet row above remains the GitHub-hosted IDCACHE
+median (4812 / 5610) until a hosted STACK remeasure is recorded. Lazy/cached
+LMDB policies and TermValue / `iterate_goal` fallbacks are unchanged.
+
 #### Reproduction
 
 ```bash

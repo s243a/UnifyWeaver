@@ -3172,33 +3172,94 @@ WamRuntime$category_ancestor_hops_rec <- function(program, state, edge_atom_id,
   invisible(NULL)
 }
 
-# Integer-ID DFS with downward depth (PERF-R-CA-IDDFS). Mirrors Rust
-# accumulator-passing: emit depth+1 when root is among parents; traverse
-# parents/visited as intern IDs; grow an integer buffer (IntTerm only at exit).
-WamRuntime$category_ancestor_hops_rec_ids <- function(lookup_ids, cat_id, root_id,
-                                                       visited, vlen, max_depth,
-                                                       depth, out) {
-  root_seen <- if (vlen < 1L) FALSE else any(visited[seq_len(vlen)] == root_id)
-  parents <- lookup_ids(cat_id)
-  if (!root_seen && length(parents) > 0L && any(parents == root_id)) {
-    n <- out$n + 1L
-    if (n > length(out$buf)) {
-      length(out$buf) <- as.integer(max(8L, length(out$buf) * 2L))
+# Integer-ID DFS with downward depth (PERF-R-CA-IDDFS / STACK).
+# Iterative frame stack avoids R recursive dispatch and copy-on-write of the
+# path vector on every descent. Semantics match the former recursive ID path:
+# path-local cycle checks (not a global visited set), emit depth+1 when root
+# is among parents, continue through root when the contract does, single hop
+# buffer (IntTerm only at the WAM boundary).
+WamRuntime$category_ancestor_hops_ids <- function(lookup_ids, start_id, root_id,
+                                                   visited, vlen0, max_depth,
+                                                   out) {
+  max_depth <- as.integer(max_depth)
+  vlen0 <- as.integer(vlen0)
+  root_id <- as.integer(root_id)
+  # Path slots up to max_depth (enter at vlen == max_depth - 1 may write +1).
+  need <- max(max_depth + 1L, vlen0, 8L)
+  if (length(visited) < need) length(visited) <- need
+
+  # Frame stack: remaining parent iteration after a descent.
+  # Sibling branches restore vlen so deeper path writes are ignored.
+  cap <- max_depth + 2L
+  st_parents <- vector("list", cap)
+  st_pos <- integer(cap)
+  st_depth <- integer(cap)
+  st_vlen <- integer(cap)
+  sp <- 0L
+
+  cat_id <- as.integer(start_id)
+  cur_vlen <- vlen0
+  cur_depth <- 0L
+  cur_parents <- integer(0)
+  cur_pos <- 1L
+  do_enter <- TRUE
+
+  repeat {
+    if (do_enter) {
+      root_seen <- cur_vlen > 0L &&
+        any(visited[seq_len(cur_vlen)] == root_id)
+      cur_parents <- lookup_ids(cat_id)
+      if (!root_seen && length(cur_parents) > 0L &&
+          any(cur_parents == root_id)) {
+        n <- out$n + 1L
+        if (n > length(out$buf)) {
+          length(out$buf) <- as.integer(max(8L, length(out$buf) * 2L))
+        }
+        out$buf[[n]] <- as.integer(cur_depth + 1L)
+        out$n <- n
+      }
+      cur_pos <- 1L
+      if (cur_vlen >= max_depth) cur_parents <- integer(0)
+      do_enter <- FALSE
     }
-    out$buf[[n]] <- as.integer(depth + 1L)
-    out$n <- n
-  }
-  if (vlen >= max_depth) return(invisible(NULL))
-  for (pid in parents) {
-    if (vlen > 0L && any(visited[seq_len(vlen)] == pid)) next
-    nv <- vlen + 1L
-    if (nv > length(visited)) {
-      length(visited) <- as.integer(max(8L, length(visited) * 2L))
+
+    npar <- length(cur_parents)
+    descended <- FALSE
+    while (cur_pos <= npar) {
+      pid <- as.integer(cur_parents[[cur_pos]])
+      cur_pos <- cur_pos + 1L
+      if (cur_vlen > 0L && any(visited[seq_len(cur_vlen)] == pid)) next
+      if (cur_pos <= npar) {
+        sp <- sp + 1L
+        if (sp > length(st_parents)) {
+          length(st_parents) <- sp + 8L
+          length(st_pos) <- sp + 8L
+          length(st_depth) <- sp + 8L
+          length(st_vlen) <- sp + 8L
+        }
+        st_parents[[sp]] <- cur_parents
+        st_pos[[sp]] <- cur_pos
+        st_depth[[sp]] <- cur_depth
+        st_vlen[[sp]] <- cur_vlen
+      }
+      visited[[cur_vlen + 1L]] <- pid
+      cat_id <- pid
+      cur_vlen <- cur_vlen + 1L
+      cur_depth <- cur_depth + 1L
+      do_enter <- TRUE
+      descended <- TRUE
+      break
     }
-    visited[[nv]] <- as.integer(pid)
-    WamRuntime$category_ancestor_hops_rec_ids(
-      lookup_ids, as.integer(pid), root_id, visited, nv, max_depth,
-      depth + 1L, out)
+    if (descended) next
+
+    if (sp < 1L) break
+    cur_parents <- st_parents[[sp]]
+    cur_pos <- st_pos[[sp]]
+    cur_depth <- st_depth[[sp]]
+    cur_vlen <- st_vlen[[sp]]
+    st_parents[[sp]] <- NULL
+    sp <- sp - 1L
+    do_enter <- FALSE
   }
   invisible(NULL)
 }
@@ -3249,9 +3310,9 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
     out <- new.env(parent = emptyenv())
     out$buf <- integer(8L)
     out$n <- 0L
-    WamRuntime$category_ancestor_hops_rec_ids(
+    WamRuntime$category_ancestor_hops_ids(
       lookup_ids, as.integer(src_v$id), as.integer(root_v$id),
-      visited_ids, vlen0, as.integer(max_depth), 0L, out)
+      visited_ids, vlen0, as.integer(max_depth), out)
     if (out$n > 0L) {
       out_terms <- vector("list", out$n)
       for (i in seq_len(out$n)) out_terms[[i]] <- IntTerm(out$buf[[i]])
