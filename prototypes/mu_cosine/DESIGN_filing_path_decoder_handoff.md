@@ -12,9 +12,10 @@ retained as research history. This contract follows the standing decisions in
 - frozen, revision-pinned e5 is the filing-ranking backbone;
 - learned μ heads currently serve calibration, label fusion, and conflict
   routing, not primary filing ranking;
-- an existing folder is identified by a typed stable ID, never by its title;
-  and
-- the recorded canonical/principal path is authoritative for that folder.
+- an existing folder is identified by a typed stable ID, never by its title
+  (`RANK-007`); and
+- the recorded canonical/principal path is authoritative for that folder
+  (`RANK-007`, resting on `CORP-002`/`DR-001`).
 
 “Decoder” here means a **selective search and proposal policy over a frozen
 filing catalog**. It is not the reconstruction decoder in

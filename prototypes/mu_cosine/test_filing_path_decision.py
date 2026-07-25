@@ -926,6 +926,61 @@ def test_confirmation_requires_user_and_an_unchanged_catalog(world):
     assert len(record["confirmation_sha256"]) == 64
 
 
+def test_select_existing_is_never_reported_as_censored(world):
+    """A successful scan breaks before the budget check can fire."""
+
+    from filing_path_decision import STAGE_A_ABSTAIN_REASONS, _build_decision
+
+    decision = decide_stage_a(_build(world))
+    assert decision["decision"] == SELECT_EXISTING
+    assert decision["search_receipt"]["resource_censored"] is False
+
+    verified = _build(world)
+    with pytest.raises(FilingPathError, match="censored search cannot also report"):
+        _build_decision(
+            verified,
+            decision=SELECT_EXISTING,
+            payload=decision["payload"],
+            search_receipt={**decision["search_receipt"], "resource_censored": True},
+            evidence_summary={},
+        )
+    # Stage A declines to mint a reason code belonging to a gated stage.
+    assert "proposal_need_uncertain" not in STAGE_A_ABSTAIN_REASONS
+    with pytest.raises(FilingPathError, match="Stage A cannot emit abstain reason"):
+        _build_decision(
+            verified,
+            decision=ABSTAIN,
+            payload={"reason_code": "proposal_need_uncertain",
+                     "candidate_ids_considered": []},
+            search_receipt=decision["search_receipt"],
+            evidence_summary={},
+        )
+
+
+def test_public_data_receipt_is_still_held_to_exact_binding(world):
+    """A supplied receipt is never waved through just because data is public."""
+
+    verified = _build(world)
+    bad = _naming_receipt("9" * 64, "b" * 64, "c" * 64)
+    with pytest.raises(FilingPathError, match="different request"):
+        check_external_naming(
+            privacy_class="public",
+            request_sha256=verified.request_sha256,
+            item_content_sha256="b" * 64,
+            inherited_privacy_receipt_sha256="c" * 64,
+            receipt=bad,
+        )
+    # ...and an unrecognised class is rejected rather than falling through.
+    with pytest.raises(FilingPathError, match="unsupported privacy class"):
+        check_external_naming(
+            privacy_class="confidential",
+            request_sha256="a" * 64,
+            item_content_sha256="b" * 64,
+            inherited_privacy_receipt_sha256="c" * 64,
+            receipt=_naming_receipt("a" * 64, "b" * 64, "c" * 64),
+        )
+
+
 def test_search_receipt_digest_binds_the_recorded_search(world):
     decision = json.loads(json.dumps(decide_stage_a(_build(world))))
     decision["search_receipt"]["node_expansions"] = 99

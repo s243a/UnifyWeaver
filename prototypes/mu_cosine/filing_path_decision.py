@@ -72,12 +72,28 @@ ABSTAIN = "ABSTAIN"
 DECISIONS = (SELECT_EXISTING, PROPOSE_NEW, ABSTAIN)
 
 #: §1.3 reason codes.  These are operational outputs, not scientific findings.
+#:
+#: Stage A can currently emit only the three in ``STAGE_A_ABSTAIN_REASONS``.
+#: The rest are declared here on purpose rather than added later: they belong
+#: to stages that are gated, not unimplemented, and a reader looking for their
+#: emitters should find this note instead of hunting.  ``proposal_need_uncertain``
+#: and ``outside_calibration_support`` become reachable only once a proposal
+#: calibration artifact exists (§2, §10); ``privacy_restricted_naming`` only
+#: once a namer runs, which Stage A has no path to (§6).
 ABSTAIN_REASONS = (
     "ambiguous_existing",
     "proposal_need_uncertain",
     "outside_calibration_support",
     "resource_censored",
     "privacy_restricted_naming",
+    "no_eligible_candidate",
+)
+
+#: The subset Stage A can actually produce.  Validation accepts the full set so
+#: a later stage's receipt still parses under this schema version.
+STAGE_A_ABSTAIN_REASONS = (
+    "ambiguous_existing",
+    "resource_censored",
     "no_eligible_candidate",
 )
 
@@ -535,16 +551,20 @@ def check_external_naming(
 
     if receipt is None:
         return None
+
+    # Three classes, three outcomes, stated separately so the intent is not
+    # carried by fall-through:
+    #   unknown  -> refuse outright; authorization cannot stand in for a
+    #               missing classification (§6).
+    #   private  -> a receipt is *required*, and must bind this exact request.
+    #   public   -> a receipt is not required, but one that is supplied is held
+    #               to the same binding rules rather than waved through.
     if privacy_class == "unknown":
         raise FilingPathError(
             "unknown-privacy data is local-only; owner authorization cannot "
             "substitute for a missing privacy classification"
         )
-    if privacy_class == "public":
-        # Certified-public data does not need a private-content receipt, but a
-        # supplied receipt must still bind this exact request.
-        pass
-    elif privacy_class != "private":
+    if privacy_class not in ("public", "private"):
         raise FilingPathError(f"unsupported privacy class: {privacy_class!r}")
 
     for field in (
@@ -878,6 +898,14 @@ def decide_stage_a(verified: VerifiedRequest) -> dict[str, Any]:
     ``allowed_roots`` — are skipped and recorded, never re-scored.  The scan is
     bounded; on exhaustion it returns the deterministic ``best_so_far`` rather
     than the last iterate.
+
+    Invariant worth stating because the schema does not imply it: a
+    ``SELECT_EXISTING`` receipt always carries ``resource_censored: false``.
+    The scan breaks the moment it finds an eligible candidate, so the budget
+    check cannot fire on a successful pass.  Censoring is therefore only ever
+    observable on an abstention, and skipping later candidates after a hit is
+    the objective working as defined, not truncation.  ``_build_decision``
+    enforces this rather than leaving it to a reader.
     """
 
     policy = verified.policy
@@ -1022,8 +1050,16 @@ def _build_decision(
     if decision not in (SELECT_EXISTING, ABSTAIN):
         # Stage A has no reachable proposal path; §10 keeps it gated.
         raise FilingPathError(f"Stage A cannot emit {decision}")
-    if decision == ABSTAIN and payload.get("reason_code") not in ABSTAIN_REASONS:
-        raise FilingPathError(f"unknown abstain reason: {payload.get('reason_code')!r}")
+    if decision == ABSTAIN and payload.get("reason_code") not in STAGE_A_ABSTAIN_REASONS:
+        raise FilingPathError(
+            f"Stage A cannot emit abstain reason {payload.get('reason_code')!r}"
+        )
+    if decision == SELECT_EXISTING and search_receipt.get("resource_censored"):
+        # See decide_stage_a: a successful scan breaks before the budget check,
+        # so this combination means the search loop was changed incompatibly.
+        raise FilingPathError(
+            "a censored search cannot also report a selected folder"
+        )
     record = {
         "schema": DECISION_SCHEMA,
         "record_type": "filing_path_decision",
