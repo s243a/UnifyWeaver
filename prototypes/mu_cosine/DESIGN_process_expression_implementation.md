@@ -4,6 +4,20 @@ Phased, each phase independently shippable with a measurable exit criterion. Reu
 card→e5→NameFunctionCond pathway already exists (judge onboarding at r=0); phase 1 adds no
 architecture.
 
+## Reader's key (external-review shorthand + glossary)
+
+"Finding N" = gpt-5.6-sol's review of #3974 (amended in #3978): 1 grammar self-parse, 2 identity
+vs cards, 3 NameFunctionCond honesty, 4 row ledger/estimand, 5 exploratory-only manifest,
+6 zero-init ≠ floor, 7 frozen primary, 8 not-MDL naming, 9 multi-process LOCO. "r2 item N" =
+sol's follow-up: 1 lexical gaps, 2 flat-token primary, 3 deterministic composition.
+
+Glossary — **legacy_unbound**: pre-v2 task/pick artifacts without content-bound hashes;
+descriptive evidence only, never upgradeable. **v2 bundle**: content-bound task+pick envelope
+(routed_policy.py) binding catalog, privacy index, policy tier, judge contract, and byte hashes.
+**node-block bootstrap**: resampling typed (bookmark, folder) identity blocks — never individual
+process rows — so dependence between rows sharing a node is respected (#3845 machinery).
+**process-complete split**: every process rendering of a query lives on the same split side.
+
 ## P0 — expression module (`process_cards.py`)
 
 - AST for the v0 grammar (spec doc), the TYPED OPERATOR-SIGNATURE REGISTRY (versioned; arity,
@@ -70,6 +84,11 @@ cohort with a structurally frozen catalog, collected AFTER this design is fixed.
 - Retrain P1-arm-(a) at fixed single verbosities V1/V2/V3 and at 3 mixture profiles; SELECT on an
   inner validation split, report once on held (never select on the reported set). Token counts
   under the pinned e5 tokenizer revision.
+- **NL-template arm (2026-07-24 review):** e5 embedding a formal bracketed string is a leap of
+  faith — e5 was trained on natural language. Add one arm rendering the SAME canonical AST as a
+  natural-language template ("sonnet judge with lineage context, menus of 10 and 20, thresholds
+  0.02/0.03") and compare against the formal V2 card at matched information content. This
+  promotes the risk-section fallback to a tested primary design choice.
 - Deliverable: the gain-per-token curve — the empirical answer to "how specific should the
   language be", and the tuned training mixture (replacing the indicative 60/25/5/10).
 - Exit: a chosen default profile with the curve as justification, recorded in the report.
@@ -86,6 +105,11 @@ cohort with a structurally frozen catalog, collected AFTER this design is fixed.
   haiku@N10, kalman(luna.D, luna.S), one lineage-decay variant} — each evaluated against four
   controls: frozen-string e5 card, additive bag-of-nodes embedding, cold flat token, and
   unconditional. Report per-held-process and pooled.
+- **Cross-corpus LOCO arm (OPENQ-012, preregistered here):** composition-level LOCO answers
+  generalization across PROCESSES; the program's forest-level question is generalization across
+  CORPORA. Hold out a corpus (Pearltrees / SimpleMind / wiki — the three task-matched harnesses)
+  under fixed expressions and measure whether expression conditioning transfers better than flat
+  tokens. Additive arm; does not modify the frozen P1 primary.
 - Exit: pooled zero-shot conditioned > unconditional AND > cold flat token across the LOCO set
   (not just one favorable sibling).
 

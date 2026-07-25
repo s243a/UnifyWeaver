@@ -174,6 +174,7 @@ resolution column is a compact evidence contract, not a protocol.
 | 9 | OPENQ-009 | `OPEN` | Which measured corpus properties predict when multipath teaching and gating help? | **Owner: rigor-lane.** Use structural multiplicity/path counts plus leakage-free conditional `R²`, not raw correlation. |
 | 10 | OPENQ-010 | `OPEN` | Do per-distance and dual-space bias states generalize, and what is the state-level `R_c`? | **Owner: rigor-lane.** Separate `R̂_row` from `R_c` with replicated/cross-fitted effects and require held global benefit. |
 | 11 | OPENQ-011 | `OPEN` | Can the operative historical e5 artifacts be given exact revision provenance? | **Owner: engineering-lane.** Regenerate or attest caches with exact Hugging Face commit, text/prefix contract, normalization, node order, and hashes. |
+| 12 | OPENQ-012 | `OPEN` | Does process-expression conditioning transfer across corpora (Pearltrees → SimpleMind → Wikipedia → unseen), not just across held-out compositions? | **Owner: rigor-lane; implementation: engineering-lane.** The P1 gate is single-corpus by design; the forest-level claim needs a preregistered cross-corpus LOCO arm (hold out a CORPUS under fixed expressions) on the three task-matched harnesses (`filing_assistant.py`, `sm_filing_hits.py`, `wiki_multiparent_hits.py`). Registered per the 2026-07-24 review discussion so a borderline P1 cannot silently drop the generalization question. |
 
 ## Evidence index
 
