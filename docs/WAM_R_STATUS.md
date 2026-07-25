@@ -62,8 +62,8 @@ default 4096), and explicit `auto` (codegen resolves via shared
 - Effective-distance cross-target matrix row populated (BENCH-R): scale-300
   `emit_mode(functions)` + auto `category_ancestor/4` kernel, reference
   parity match — see `docs/design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md`.
-  Further optimized by PERF-R-CA-DIRECT / IDDFS / IDCACHE (hosted-CI
-  median query_ms=4812 after numeric-key parent-id memoization).
+  Further optimized by PERF-R-CA-DIRECT / IDDFS / IDCACHE / STACK (hosted-CI
+  median query_ms=3679 after iterative ID DFS, 1.31× vs IDCACHE).
 
 ## Path forward
 
@@ -72,6 +72,5 @@ default 4096), and explicit `auto` (codegen resolves via shared
 
 ## Document status
 
-Fleet-aligned snapshot updated for PERF-R-CA-IDCACHE (2026-07-23): scale-300
-effective-distance matrix row remeasured after closure-private parent-id
-memoization.
+Fleet-aligned snapshot updated for PERF-R-CA-STACK (2026-07-25): iterative
+integer-ID DFS frame stack, remeasured in hosted CI.

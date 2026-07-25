@@ -22,7 +22,7 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
 | **F# LMDB cached (two-level L1/L2)** | **2** | -- | **1** | **Yes** | Fact-access only (no WAM overhead); see below |
 | Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
-| R WAM (functions, kernels_on) | 4812 | 5610 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + memoized numeric-key parent-id buckets (IDCACHE); 3-rep median query |
+| R WAM (functions, kernels_on) | 3679 | 4344 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + iterative integer-ID DFS frames (STACK); 3-rep median query |
 | Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
 
 **Key takeaway:** Atom interning (replacing `HashMap<String, Vec<String>>` with
@@ -344,7 +344,7 @@ python3 /tmp/wam-bench/python-300/main.py data/benchmark/300 3
 
 ### R WAM (functions mode)
 
-Measured 2026-07-23 in hosted GitHub Actions using
+Measured 2026-07-25 in hosted GitHub Actions using
 `generate_wam_r_effective_distance_benchmark.pl`
 with `emit_mode(functions)`, auto-detected `category_ancestor/4` kernel
 (fleet hops layout), and `category_parent/2` FactSource via
@@ -354,10 +354,10 @@ R 4.3.3, single-core.
 
 | Scale | query_ms | total_ms | rows | Cores | vs reference |
 |-------|----------|----------|------|-------|--------------|
-| 300 | 4812 | 5610 | 271 | 1 | match (`normalize_three_column_float_rows`, 6 dp) |
+| 300 | 3679 | 4344 | 271 | 1 | match (`normalize_three_column_float_rows`, 6 dp) |
 
 `query_ms` is the 3-run median of article×root enumeration only
-(samples: 5573, 4812, 4795). `total_ms` is setup (Rscript startup +
+(samples: 4475, 3679, 3554). `total_ms` is setup (Rscript startup +
 generated-program / FactSource load + article/root TSV load) plus that
 median query. Output validated against
 `data/benchmark/300/reference_output.tsv` with canonical sort and 6-decimal
@@ -385,6 +385,25 @@ capabilities are unchanged (on-demand / existing bounded cache). Sources
 without these capabilities retain the TermValue and generic `iterate_goal`
 fallbacks. Residual cost is interpreted R DFS and lowered power-sum
 orchestration.
+
+PERF-R-CA-STACK (iterative integer-ID DFS frame stack) replaces recursive
+`category_ancestor_hops_rec_ids` with an explicit path/frame stack so sibling
+branches restore path length without R copy-on-write on every descent.
+Profiled post-IDCACHE scale-300 path on a Cursor cloud agent: 516522 DFS node
+visits, max depth 9, ~59k visited-vector grows under recursion; CA recursion
+was ~70% total / 26% self time. After STACK on the same host (3-rep):
+
+| Stage | query_ms | total_ms | samples |
+|-------|----------|----------|---------|
+| Post-IDCACHE (recursive ID DFS) | 3025 | 3568 | 3649, 3009, 3025 |
+| After STACK (iterative frames) | 2705 | 3226 | 3209, 2705, 2691 |
+
+Same-host cloud-agent query speedup ≈ 1.12×; Rprof `mem.total` for the CA hops
+helper fell ~3904 → ~1795. A subsequent GitHub-hosted run measured STACK at
+3679 / 4344 (samples: 4475, 3679, 3554), 1.31× faster than the hosted IDCACHE
+median of 4812 / 5610. This is about 17.0× faster than the original hosted R
+query result of 62595 ms. Lazy/cached LMDB policies and TermValue /
+`iterate_goal` fallbacks are unchanged.
 
 #### Reproduction
 
