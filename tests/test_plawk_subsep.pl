@@ -4,17 +4,22 @@
 %
 % Multi-dimensional array subscripts `arr[i,j,...]` and SUBSEP. In awk,
 % `arr[i,j]` is sugar for `arr[i SUBSEP j]`: the subscripts are joined by SUBSEP
-% (default "\034", the FS/0x1C byte) into one string key. Any arity of field
-% subscripts (`arr[$i,$j]`, `arr[$i,$j,$k]`, ...) is handled uniformly, covering
-% the write counter `arr[$i,...]++`, the element read `arr[$i,...]`, and
-% membership `($i,...) in arr`; for-in iteration sees the joined key.
+% (default "\034", the FS/0x1C byte) into one string key. Any arity and any mix
+% of FIELD and LITERAL subscripts (`arr[$i,$j]`, `arr[$i,$j,$k]`, `arr[$i,"x"]`,
+% `arr[$1,5]`, `arr["a","b"]`, ...) is handled uniformly, covering the write
+% counter `arr[...]++`, the element read `arr[...]`, and membership
+% `(...) in arr`; for-in iteration sees the joined key.
 %
-% The join is done by the runtime helper @wam_intern_subsep_key_n, which slices
-% the N fields (indexes passed as a constant array), joins them with the SUBSEP
-% bytes (@wam_subsep_ptr / @wam_subsep_len, default 0x1C, overridable by
-% `BEGIN { SUBSEP = "…" }`), and interns the result to one atom id -- the same
-% key the write, read, and membership paths build. Non-field subscripts
-% (string / var) are a clean not-yet (compile error), not miscompiled.
+% The join is done by the runtime helper @wam_intern_subsep_key_comp: each
+% subscript is described by a constant descriptor {field_index, lit_ptr, lit_len}
+% (a null lit_ptr means "slice this field"), the helper resolves each component
+% to its bytes and joins them with the SUBSEP bytes (@wam_subsep_ptr /
+% @wam_subsep_len, default 0x1C, overridable by `BEGIN { SUBSEP = "…" }`), and
+% interns the result to one atom id -- the same key the write, read, and
+% membership paths build. An integer literal is keyed by its decimal text, so
+% `arr[$1,5]` and `arr[$1,"5"]` are the same key. A scalar-VARIABLE subscript is
+% a clean not-yet (compile error), not miscompiled: its value is not a
+% compile-time constant.
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -128,11 +133,69 @@ test(four_dim_counter_read, [condition(clang_available)]) :-
         "a b c d\na b c d\n", Out),
     assertion(Out == "1\n2\n"), !.
 
-% A string subscript in a multi-dim key is a clean not-yet (v1 keys on fields).
-test(string_subscript_rejected, [condition(clang_available)]) :-
+% --- literal subscript components -------------------------------------------
+
+% A string-literal component mixes with a field: `c[$1,"x"]`. The literal
+% contributes its own bytes, so the key varies only with $1.
+test(string_component_counter_read, [condition(clang_available)]) :-
     sdir(Dir),
-    build_status(Dir, 'rs', "{ c[$1,\"x\"]++ }\n", St),
-    assertion(St == 3), !.
+    build_run(Dir, 'ls', "{ c[$1,\"x\"]++; print c[$1,\"x\"] }\n",
+        "a\na\nb\n", Out),
+    assertion(Out == "1\n2\n1\n"), !.
+
+% Histogram over literal-bearing keys: (a,x) x2 and (b,x) x1.
+test(string_component_histogram, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run_sorted(Dir, 'lh', "{ c[$1,\"x\"]++ } END { for (k in c) print c[k] }\n",
+        "a\na\nb\n", Lines),
+    assertion(Lines == ["1", "2"]), !.
+
+% An INTEGER-literal component is keyed by its decimal text, so `c[$1,5]` and
+% `c[$1,"5"]` are the SAME key (awk array keys are strings): both increments land
+% on one entry, which reads back as 4 after two records.
+test(int_component_is_decimal_text, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'li', "{ c[$1,5]++; c[$1,\"5\"]++; print c[$1,5] }\n",
+        "a\na\n", Out),
+    assertion(Out == "2\n4\n"), !.
+
+% An all-literal key is one constant key: every record bumps the same entry.
+test(all_literal_key, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'la', "{ c[\"a\",\"b\"]++ } END { for (k in c) print c[k] }\n",
+        "x\ny\nz\n", Out),
+    assertion(Out == "3\n"), !.
+
+% Literals and fields interleave at any position/arity: `c[$1,"m",$2]`.
+test(mixed_field_literal_three, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run_sorted(Dir, 'lm', "{ c[$1,\"m\",$2]++ } END { for (k in c) print c[k] }\n",
+        "a p\na p\na q\n", Lines),
+    assertion(Lines == ["1", "2"]), !.
+
+% A literal component builds the same bytes as a field holding that text, so
+% `c[$1,"x"]` and `c[$1,$2]` collide when $2 is "x" (one key, count 2).
+test(literal_matches_equal_field, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'lf', "{ c[$1,\"x\"]++; c[$1,$2]++ } END { for (k in c) print c[k] }\n",
+        "a x\n", Out),
+    assertion(Out == "2\n"), !.
+
+% Membership with a literal component probes the same key the counter builds.
+test(literal_component_membership, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_run(Dir, 'lmem',
+        "($1,\"x\") in seen { print \"dup\" } { seen[$1,\"x\"]++ }\n",
+        "a\na\nb\n", Out),
+    assertion(Out == "dup\n"), !.
+
+% A SCALAR-VARIABLE component is a clean not-yet: its value is not a
+% compile-time constant, so it cannot ride the constant descriptor array. The
+% program is rejected rather than miscompiled.
+test(var_subscript_rejected, [condition(clang_available)]) :-
+    sdir(Dir),
+    build_status(Dir, 'rv', "{ k = \"z\"; c[$1,k]++ }\n", St),
+    assertion(St \== 0), !.
 
 :- end_tests(plawk_subsep).
 
