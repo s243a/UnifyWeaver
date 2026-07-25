@@ -93,6 +93,29 @@ position-weighted child embeddings (the `random_operator_embedding` superpositio
 small learned tree encoder — so UNSEEN compositions (swap a judge, move a threshold) land near
 their relatives and can be conditioned on zero-shot.
 
+## Worked example (round trip)
+
+Input (any whitespace/default spelling): `e5( routing(e5, sonnet.lineage, t=[0.02,0.03], menus=[10,20]) )@fcf5e1d6`
+
+1. **Parse** (registry-driven lexing: `sonnet` is a Name token; `.lineage` a Mod; `@fcf5e1d6` a Pin)
+   → frozen AST; explicit-default kwargs are normalized away at parse.
+2. **Canonical identity string** (lossless — resolved defaults explicit, pins always present):
+   `e5(routing(e5,sonnet.lineage,menus=[10,20],t=[0.02,0.03]))@fcf5e1d6` → `ast_sha` (bound to
+   REGISTRY_VERSION) is the process identity, alongside the factory/manifest fingerprint.
+3. **Cards** (lossy conditioning views):
+   - V0: `` (empty — agnostic row)
+   - V1: `e5(routing(e5,sonnet.lineage))` — kwargs elided, the equivalence-class card
+   - V2: `e5(routing(e5,sonnet.lineage,menus=[10,20],t=[0.02,0.03]))` — decision-relevant knobs
+   - V3: V2 + `@fcf5e1d6` — pins
+4. **Embedding cache key** = sha256(ast_sha | verbosity | RENDERER_VERSION | e5 revision | prefix)
+   — so a renderer or embedding-model change can never silently reuse a stale vector.
+
+Note on the term "self-parsing" (used in PR #3980): it means only that the P0 acceptance test
+requires the parser + registry to parse every example in this spec document — not a formal
+novelty claim. The notation is ordinary parenthesized functional syntax; the one non-standard
+element is registry-driven longest-match lexing so registered names containing `.`/`-`
+(`gpt-5.5-low`) lex as single tokens.
+
 ## Scope
 
 The language names processes; it does not execute them. An expression is valid iff we can map it
