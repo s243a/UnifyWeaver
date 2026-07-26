@@ -1,0 +1,151 @@
+{
+  "schema": "unifyweaver.sm-fs-ranking-execution-review.v1",
+  "review_document": "REVIEW_sm_fs_ranking_execution_lock.md",
+  "review_document_sha256": "1e705892599c42bd43be21a49192615627210a006081a0fe8f5e76fce9a5f313",
+  "review_status": "warm-start-countersigned-execution-not-authorized",
+  "reviewed_before": [
+    "ranking-optimizer-step",
+    "held-fold-score",
+    "reserve-access"
+  ],
+  "parent": {
+    "ranking_prereg_id": "0235521270c565a413d69feaa01a6e101fb533261942451a43ddf963e409aca2",
+    "ranking_protocol_sha256": "25bac71a67b317700f6a5123af238f01e9b57225bf4deaf71a6470486bd194f3"
+  },
+  "ranking_bundle": {
+    "schema": "unifyweaver.sm-fs-lineage-ranking-bundle.v1",
+    "manifest_sha256": "e01e1e48b5464bd315cff3c982e035f390cab8ba2b4c3ee60322dac65bf35894",
+    "pairs_sha256": "a0f3e30ce091567516db3dde2cdf6025ba44f526a7588fbd6d01125d448c9b26",
+    "fold_file_sha256": "a03e2ef7d584f58adc1b4f6b1abb6d042c7d0cfbff1d7ca18b5d132f81703c8e",
+    "fold_assignment_sha256": "b5439b1acdfb5020ecb7fb4fad437fd183242408d09056e1ed7ec90d33335f37",
+    "constructor_sha256": "40ed4212f218817166df305b78280966a6af9561d5e3a12440d40af9a2ff67bc",
+    "constructor_commit": "b8b969ac1a5e66c7ad864aea4e4be35a0f45113b",
+    "counts": {
+      "queries": 361,
+      "candidates": 359,
+      "pairs": 129599,
+      "positives": 2792,
+      "nonancestors": 126807,
+      "hard": 1819,
+      "medium": 7814,
+      "easy": 117174
+    },
+    "reserve_overlap": 0,
+    "cross_lineage_overlap": 0
+  },
+  "warm_start_countersign": {
+    "accepted": true,
+    "checkpoint": "model_prod_namecond_full.pt",
+    "checkpoint_sha256": "9bb60915e9bcf8d4a89293c538284fd5ac631d9729f355917e128db7353bc8ef",
+    "role": "common-paired-ranking-initialization-only",
+    "growth_description": "expand-current-judges-and-add-lineage-plus-lineage-rank-operators-refresh-name-cards-and-create-fresh-readouts",
+    "seeds": [
+      3997001,
+      3997002,
+      3997003
+    ],
+    "initialized_checkpoints": {
+      "3997001": {
+        "artifact_sha256": "a3bf4c0588cc3e4cf1ad335b66440c113e7ee11fd116bd7307a3cee57447098e",
+        "canonical_state_sha256": "0d842ed6eeb8e69036605e50697aa2cb3a5f8955255deb7becfbfa1c8b3154ad"
+      },
+      "3997002": {
+        "artifact_sha256": "fb353e693951819683793641464155e144caad73c553039fc64f1c6e253ad796",
+        "canonical_state_sha256": "f3eae318f41f17332f5bdc589958dd09d80d411afab58cca0fe63bbb7c90cdd3"
+      },
+      "3997003": {
+        "artifact_sha256": "f42bdea0071a64dca0dad5312178127906b96215ba6890f6a37ad19d87ffdd5a",
+        "canonical_state_sha256": "e9cedab4e2df1405c929e9c42af5adc439c37117ba62ef5e2b43e29b40cac8ce"
+      }
+    },
+    "canonical_state_hash_algorithm": "sha256-sorted-state-keys-key-nul-dtype-nul-shape-nul-contiguous-cpu-numpy-c-order-bytes",
+    "canonical_config_sha256": "01a1236ab7debd57b42818210e7e4fa2d711244ea67f408cd02472417374e98d",
+    "canonical_config_hash_algorithm": "sha256-sorted-key-compact-json-utf8-terminal-lf",
+    "reuse_rule": "reload-one-seed-initialized-checkpoint-byte-identically-before-every-fold-and-both-arms",
+    "pearltrees_trained_decision_arm_authorized": false,
+    "transfer_evidence": false,
+    "track_t_must_regrow_independently": true,
+    "track_t_seeds": [
+      3998101,
+      3998102,
+      3998103
+    ]
+  },
+  "execution_proposal": {
+    "schema": "unifyweaver.sm-fs-ranking-execution-lock.v1",
+    "artifact_sha256": "0752cc16256a5699924e150d665dff3a556d0f92c3739e652b9892de97d4e47e",
+    "status": "PROPOSED",
+    "recorded_git_commit": "e18076a9bb07dd87f6b5854d7de0f9ce3e9d32a0",
+    "recorded_commit_contains_emitter": false,
+    "emitter_sha256": "97b49380dec4c041c25cd05a3efdf3f4a910f7975dca7899c3701e01de7899f2",
+    "emitter_commit": "f4a172a6ee2d76f05adeacdfb43db2a2caca7a4a",
+    "emitter_merge_commit": "01da72ba31868d3383bdb172f2b8ce2279181928",
+    "training_plan_hash_is_emitter_only": true,
+    "actual_ranking_trainer_bound": false,
+    "actual_ranking_evaluator_bound": false
+  },
+  "title_table": {
+    "identities": 720,
+    "query_identities": 361,
+    "candidate_identities": 359,
+    "identity_overlap": 0,
+    "names_sha256": "9c81701c10e00215f1ff6e734bd1910dfe89ee18fa903959b4dce8c6226cde42",
+    "texts_sha256": "60c8b3bfb7a3739b1e057a407603ec1d9138d5e94f17c5621f28413618763391",
+    "e5_cache_sha256": "bb9342a06cc9c62eedd664bb88c76833829f35e14e464beac0661feba81ed23f",
+    "e5_revision": "ffb93f3bd4047442299a41ebb6fa998a38507c52",
+    "embedding_rule": "certified-map-title-and-candidate-leaf-title-only",
+    "path_components_used_as_text": false,
+    "observed_mode": "0644",
+    "required_mode": "0600",
+    "mode_gate_passed": false
+  },
+  "reviewed_training_fields": {
+    "optimizer": {
+      "class": "torch.optim.Adam",
+      "lr": 0.0005,
+      "betas": [
+        0.9,
+        0.999
+      ],
+      "eps": 1e-08,
+      "weight_decay": 0
+    },
+    "trainable_tensor_count": 18,
+    "trainable_parameter_count": 1195782,
+    "frozen_reference_rule": "deepcopy-exact-initialized-model-before-optimizer-eval-requires-grad-false",
+    "anchor_rows_augmented": false,
+    "sampler_module_sha256": "a007663a9339ab371ec7093dfbaacafbd75c779c2149d6e63a26730814a903e4"
+  },
+  "fitting_blockers": [
+    "no-content-bound-ranking-trainer-evaluator-or-complete-training-plan",
+    "no-fold-arm-seed-job-ledger-or-held-fold-capability-boundary",
+    "trainable-allowlist-optimizer-reference-and-augmentation-not-enforced",
+    "tokenizer-structure-and-numpy-torch-rng-order-not-bound",
+    "determinism-settings-recorded-as-requirements-not-observed-assertions",
+    "execution-proposal-commit-predates-emitter",
+    "growth-provenance-omits-transitive-code-and-card-cache-inputs",
+    "title-cache-mode-0644-violates-0600",
+    "artifacts-written-in-place-with-truncation-not-atomic-no-replace",
+    "source-projection-reopened-without-full-descriptor-bound-verification"
+  ],
+  "required_next_artifacts": [
+    "landed-ranking-trainer-coordinator-evaluator-and-verifier",
+    "complete-content-bound-training-plan-and-job-ledger",
+    "private-atomic-no-replace-run-input-transaction",
+    "enforced-and-observed-deterministic-environment-receipt",
+    "new-execution-lock-from-clean-landed-commit"
+  ],
+  "final_authorization_sequence": [
+    "land-trainer-plan-and-candidate-lock-verifier",
+    "generate-candidate-proposal-from-clean-landed-commit",
+    "independently-review-candidate-proposal",
+    "land-authorized-prereg-protocol-new-id-and-cycle-free-verifier",
+    "regenerate-final-lock-from-exact-authorized-commit-and-new-prereg-id",
+    "independently-verify-final-lock-against-landed-state",
+    "permit-first-optimizer-step"
+  ],
+  "model_fitting_authorized": false,
+  "reserve_access_authorized": false,
+  "checkpoint_release_authorized": false,
+  "review_id": "cb377b6c6aabcfe572f7cf320f8ec32ba5211b85b1747c3334b69ca6144f4894"
+}

@@ -16,6 +16,9 @@ Companion contracts:
 
 - `DESIGN_process_expression_language.md` — grammar, typed registry, canonicalization, and the
   lossless-identity/lossy-card distinction;
+- `DESIGN_process_expression_patterns.md` — proposed vNext pattern/ground AST states, optional
+  types, interpretation and representation rules, factory verification, and migration boundary.
+  It is not active under registry v0.3 or `pec-v2`;
 - `DESIGN_process_expression_implementation.md` and `PROTOCOL_process_expression_p1.md` — the
   empirical ladder and activation evidence;
 - `DESIGN_tree_position_encoding_theory.md` — candidate compression operators for tree
