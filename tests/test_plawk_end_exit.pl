@@ -135,10 +135,11 @@ test(end_multi_print_without_exit, [condition(clang_available)]) :-
 
 % --- clean declines (follow-ons, not miscompiles) -------------------------
 
-% The assoc END chain has its own emitter, so an `exit` beside an assoc read
-% declines rather than being silently dropped.
-test(end_exit_with_assoc_read_declines) :-
-    build_status("{ c[$1]++ } END { print c[\"a\"]; exit 3 }\n", 3),
+% `exit` beside an assoc read used to decline (the pure-assoc END driver took a
+% single print). The loop-free assoc statement list landed since, so it works --
+% one key lookup, so the output is deterministic and needs no sorting.
+test(end_exit_with_assoc_read, [condition(clang_available)]) :-
+    run("{ c[$1]++ } END { print c[\"a\"]; exit 3 }\n", "1\n", 3),
     !.
 
 % `exit` AFTER a for-in used to decline (the for-in END driver took no statement

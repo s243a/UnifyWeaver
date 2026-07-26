@@ -172,16 +172,11 @@ test(nr_in_plain_chain_statement_declines) :-
     build_status("{ c[$1]++ } END { for (k in c) print k; print NR }\n", 3),
     !.
 
-% A LOOP-FREE assoc END statement list (no for-in at all) is a different driver
-% and still declines -- the chain deliberately requires at least one loop, so the
-% all-plain scalar and assoc drivers keep their shapes.
-test(loop_free_assoc_statement_list_declines) :-
-    build_status("{ c[$1]++ } END { print c[\"a\"]; print \"done\" }\n", 3),
-    !.
-
-test(loop_free_assoc_exit_declines) :-
-    build_status("{ c[$1]++ } END { print c[\"a\"]; exit 3 }\n", 3),
-    !.
+% A LOOP-FREE assoc END statement list (`END { print c["a"]; print "done" }`) is
+% a DIFFERENT driver -- straight-line, no block chain -- and landed as the sibling
+% to this PR; its behaviour is covered in tests/test_plawk_assoc_end_list.pl. This
+% chain still requires at least one loop, which keeps it from claiming that shape;
+% chain_items_require_a_mix/0 below asserts exactly that.
 
 % --- structure -----------------------------------------------------------
 
