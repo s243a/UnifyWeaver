@@ -16840,6 +16840,16 @@ plawk_scalar_end_prints_ir(Prints, StatePlan, OutputSeparator, IR, StringGlobalI
     plawk_join_nonempty_ir(Globals, StringGlobalIR).
 
 plawk_scalar_end_prints_ir_([], _I, _StatePlan, _OutputSeparator, [], []).
+% `exit [N]` in END. END is the last thing that runs -- the block falls straight
+% into `ret %plawk_exit_ec` -- so setting the status needs no branch at all: emit
+% the store and STOP. Truncating here is what makes the rest of the END block
+% dead, matching awk (`END { print "a"; exit 1; print "b" }` prints only "a"),
+% and it works because the END statement list is straight-line code.
+plawk_scalar_end_prints_ir_([exit(int(Code)) | _Rest], _I, _StatePlan,
+        _OutputSeparator, [Block], ['']) :-
+    integer(Code),
+    !,
+    format(atom(Block), '  store i32 ~w, i32* @plawk_exit_code', [Code]).
 plawk_scalar_end_prints_ir_([print(Fields) | Rest], I, StatePlan, OutputSeparator,
         [Block | Blocks], [Global | Globals]) :-
     plawk_scalar_end_print_ir(Fields, StatePlan, OutputSeparator, RawBlock),
@@ -16991,6 +17001,14 @@ plawk_end_output_list([], []).
 plawk_end_output_list([print(Fields) | Rest], [Fields | More]) :-
     plawk_end_output_list(Rest, More).
 plawk_end_output_list([printf(string(_Format), Args) | Rest], [Args | More]) :-
+    plawk_end_output_list(Rest, More).
+% `exit [N]` reads nothing, so it contributes no expressions to the state plan.
+% Statements AFTER it are unreachable, but they are still walked here: a name
+% only they mention still gets its slot, so the plan stays independent of where
+% the exit sits and the emitter's truncation cannot leave a dangling slot
+% reference.
+plawk_end_output_list([exit(int(Code)) | Rest], [[] | More]) :-
+    integer(Code),
     plawk_end_output_list(Rest, More).
 
 %% END { if (COND) print ...; [else print ...] } support ---------------------
