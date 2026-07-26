@@ -176,3 +176,10 @@ the three exact initialized checkpoints, but does **not** authorize fitting: no 
 complete fold/arm/seed execution plan exists yet, the proposal predates its emitter commit, and
 its privacy/atomicity and observed-determinism gates remain incomplete. The machine-checkable
 review keeps `model_fitting_authorized=false` until a new proposal closes those gaps.
+
+The later candidate lock at commit `094de6345`, SHA-256 `6c4801cf387f0f8a…`, is authentic and
+reproducible but remains a disabled preflight scaffold. The independent
+`REVIEW_sm_fs_ranking_candidate_lock.md` therefore blocks the step-4 preregistration amendment:
+the complete fit/evaluate/decide transaction, held-outcome capability boundary, candidate/final
+verifier, and complete execution bindings must land before a fresh candidate is generated and
+reviewed.
