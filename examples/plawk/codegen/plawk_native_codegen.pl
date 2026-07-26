@@ -170,6 +170,45 @@ plawk_program_native_driver_ir(Program, _InputPath, _DriverIR) :-
     !,
     fail.
 
+%% A BEGIN-ONLY program: BEGIN clauses, no rules, no END.
+%
+%  POSIX: "If an awk program consists of only actions with the pattern BEGIN,
+%  awk shall exit without reading its input." So this driver opens NO stream and
+%  emits NO record loop -- `awk 'BEGIN { print 1 + 1 }'` must not block on stdin,
+%  and it must ignore a file argument rather than reading it. The presence of an
+%  END changes that (input IS read), which is why this clause requires `[]` for
+%  both rules and END; a zero-rule program WITH an END has no driver yet and
+%  declines cleanly.
+%
+%  Because there is no loop, `exit [N]` in BEGIN needs no branch: the block runs
+%  straight into `ret`, so it is the same store-and-truncate as `exit` in END.
+%  That is what makes BEGIN's exit tractable here while it stays out of reach for
+%  a program with rules -- there, BEGIN would have to skip the loop yet still run
+%  END, and the shared driver template emits the BEGIN body inside `entry` ahead
+%  of that block's own terminator.
+plawk_program_native_driver_ir(
+    program(BeginClauses, [], []),
+    _InputPath,
+    DriverIR
+) :-
+    BeginClauses \== [],
+    !,
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_only_body_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_i64_end_print_globals(BeginClauses, BeginGlobalIR, RuntimeGlobals),
+    format(atom(DriverIR),
+'~w
+
+define i32 @main() {
+entry:
+~w
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec
+}
+',
+        [RuntimeGlobals, BeginIR]).
+
 plawk_program_native_driver_ir(
     program(BeginClauses, [rule(Pattern, [Action0])], []),
     InputPath,
@@ -12564,6 +12603,33 @@ plawk_begin_output_statements(Actions, Statements) :-
 
 plawk_begin_output_statement(print(_Fields)).
 plawk_begin_output_statement(printf(string(_Format), _Args)).
+% `exit [N]` is collected as an output statement so it keeps its position in the
+% sequence -- the emitter truncates there, making later statements dead. It is
+% collected in EVERY context, including the record-loop one that cannot lower it,
+% so that context fails explicitly rather than silently dropping the exit.
+plawk_begin_output_statement(exit(int(Code))) :-
+    integer(Code).
+
+%% plawk_begin_has_exit(+Actions) is semidet.
+%  The BEGIN block contains an `exit`. Only the BEGIN-ONLY driver can lower one.
+plawk_begin_has_exit(Actions) :-
+    member(exit(int(Code)), Actions),
+    integer(Code),
+    !.
+
+%% plawk_begin_only_body_ir(+BeginClauses, +OutputSeparator, -IR) is semidet.
+%  The BEGIN body for the loop-free driver: the startup stores, then every output
+%  statement -- `exit` included, since with no record loop it is just the store
+%  plus truncation of what follows. Mirrors plawk_begin_print_ir/3 minus the
+%  exit rejection that only a following record loop requires.
+plawk_begin_only_body_ir([begin(Actions)], OutputSeparator, IR) :-
+    plawk_begin_clause_outputs_ir([begin(Actions)], OutputSeparator, _GlobalIR,
+        OutputIR),
+    plawk_rs_store_lines([begin(Actions)], RsStoreLines),
+    plawk_subsep_store_lines([begin(Actions)], SubsepStoreLines),
+    plawk_fs_regex_store_lines([begin(Actions)], StoreLines),
+    append([RsStoreLines, SubsepStoreLines, StoreLines, [OutputIR]], Lines),
+    plawk_join_nonempty_ir(Lines, IR).
 
 %% plawk_begin_outputs_ir(+Statements, -GlobalIR, -BodyIR) is semidet.
 %  Emit every BEGIN output statement in order. Statement 0 is byte-identical to
@@ -12578,6 +12644,15 @@ plawk_begin_outputs_ir(Statements, OutputSeparator, GlobalIR, BodyIR) :-
     plawk_join_nonempty_ir(Bodies, BodyIR).
 
 plawk_begin_outputs_ir_([], _Index, _OutputSeparator, [], []).
+% `exit [N]` in BEGIN. Reachable only from the BEGIN-ONLY driver, where there is
+% no record loop to skip: the block runs straight into `ret`, so setting the
+% status is the store alone and the statements after it are dead. Same
+% store-and-truncate as `exit` in an END block.
+plawk_begin_outputs_ir_([exit(int(Code)) | _Rest], _Index, _OutputSeparator,
+        [''], [Body]) :-
+    integer(Code),
+    !,
+    format(atom(Body), '  store i32 ~w, i32* @plawk_exit_code', [Code]).
 plawk_begin_outputs_ir_([Statement | Rest], Index, OutputSeparator,
         [Global | Globals], [Body | Bodies]) :-
     plawk_begin_output_ir(Statement, OutputSeparator, RawGlobal, RawBody),
@@ -12646,20 +12721,19 @@ plawk_begin_printf_arg(string(Value), Prefix, Index, [GlobalIR], [PtrLine],
     format(atom(PtrLine),
         '  ~w = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0',
         [PtrIR, BytesLen, BytesLen, GlobalName]).
-plawk_begin_printf_arg(int(Value), Prefix, Index, [], SetupParts, [i64(ValueIR)]) :-
-    integer(Value),
+% An integer / float literal, or constant arithmetic over them
+% (`BEGIN { printf "%d\n", 1 + 1 }`). Folded by the ordinary expression
+% emitters; a division makes the tree double-typed, as awk's division is IEEE.
+plawk_begin_printf_arg(Expr, Prefix, Index, [], SetupParts, [CallArg]) :-
+    plawk_begin_const_expr(Expr),
     !,
     format(atom(Base), '~w_arg~w', [Prefix, Index]),
-    plawk_i64_expr_ir(int(Value), 0, Base, Base, ValueIR, [], SetupParts).
-plawk_begin_printf_arg(float_const(Mantissa, Denominator), Prefix, Index, [],
-        SetupParts, [f64(ValueIR)]) :-
-    integer(Mantissa),
-    integer(Denominator),
-    Denominator > 0,
-    !,
-    format(atom(Base), '~w_arg~w', [Prefix, Index]),
-    plawk_f64_expr_ir(float_const(Mantissa, Denominator), 0, Base, Base, ValueIR,
-        [], SetupParts).
+    (   plawk_expr_is_double(Expr)
+    ->  plawk_f64_expr_ir(Expr, 32, Base, Base, ValueIR, [], SetupParts),
+        CallArg = f64(ValueIR)
+    ;   plawk_i64_expr_ir(Expr, 32, Base, Base, ValueIR, [], SetupParts),
+        CallArg = i64(ValueIR)
+    ).
 
 %% plawk_fs_regex_global_lines(+BeginClauses, -Lines)
 %
@@ -12703,6 +12777,15 @@ plawk_begin_print_ir([begin(Actions)], OutputSeparator, IR) :-
     plawk_begin_output_statements(Actions, Statements),
     Statements \== [],
     !,
+    % A BEGIN `exit` is only expressible when there is no record loop to skip
+    % (the BEGIN-ONLY driver). Here a loop follows, and awk's `BEGIN { exit }`
+    % must skip it yet still run END -- which this template cannot express, the
+    % BEGIN body being emitted inside `entry` ahead of that block's own
+    % terminator. Fail AFTER the cut so the program declines: falling through to
+    % the stores-only clause below would silently drop the exit, and merely
+    % storing the code would run the loop anyway (wrong output AND, on driver
+    % paths that do not declare @plawk_exit_code, invalid IR).
+    \+ plawk_begin_has_exit(Actions),
     plawk_begin_clause_outputs_ir([begin(Actions)], OutputSeparator, _GlobalIR,
         OutputIR),
     plawk_rs_store_lines([begin(Actions)], RsStoreLines),
@@ -12828,6 +12911,54 @@ plawk_subsep_global_lines(BeginClauses, [Line]) :-
 plawk_subsep_global_lines(_BeginClauses, []).
 
 plawk_begin_print_field(string(_)).
+% Constant arithmetic (`BEGIN { print 1 + 1 }` -- the calculator idiom).
+plawk_begin_print_field(Expr) :-
+    plawk_begin_const_expr(Expr).
+
+%% plawk_begin_const_expr(+Expr) is semidet.
+%  An expression BEGIN can evaluate. BEGIN runs before the record loop, so there
+%  is no current record and no scalar slot: every leaf must be a literal, and the
+%  whole tree folds through the ordinary i64 / f64 expression emitters. This is
+%  what makes `awk 'BEGIN { print 1 + 1 }'` work; a field or variable leaf fails
+%  here, so such a program declines rather than reading state that does not exist.
+plawk_begin_const_expr(int(Value)) :-
+    integer(Value).
+plawk_begin_const_expr(float_const(Mantissa, Denominator)) :-
+    integer(Mantissa),
+    integer(Denominator),
+    Denominator > 0.
+plawk_begin_const_expr(Expr) :-
+    plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
+    plawk_begin_const_expr(Left),
+    plawk_begin_const_expr(Right).
+
+%% plawk_begin_const_expr_lines(+Expr, +Index)//
+%  Evaluate and print a constant BEGIN expression. Names are
+%  `plawk_begin_expr_<Index>`-based -- they contain `begin_`, so the
+%  per-statement suffix rename uniquifies them like every other BEGIN name.
+%  A double-typed tree (a float leaf, or a division, which is IEEE in awk)
+%  prints as %g; otherwise i64 as %ld.
+plawk_begin_const_expr_lines(Expr, Index) -->
+    { format(atom(Base), 'plawk_begin_expr_~w', [Index]),
+      (   plawk_expr_is_double(Expr)
+      ->  plawk_f64_expr_ir(Expr, 32, Base, Base, ValueIR, [], SetupParts),
+          format(atom(FmtPtr),
+              '  %~w_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
+              [Base]),
+          format(atom(PrintCall),
+              '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, double ~w)',
+              [Base, Base, ValueIR])
+      ;   plawk_i64_expr_ir(Expr, 32, Base, Base, ValueIR, [], SetupParts),
+          format(atom(FmtPtr),
+              '  %~w_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
+              [Base]),
+          format(atom(PrintCall),
+              '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i64 ~w)',
+              [Base, Base, ValueIR])
+      ),
+      append(SetupParts, [FmtPtr, PrintCall], Lines)
+    },
+    Lines.
 
 plawk_begin_print_lines([], _OutputSeparator, _) -->
     { plawk_ors_terminator_ir(begin_newline_fmt, begin_ors_ptr, printed_begin_newline,
@@ -12837,6 +12968,12 @@ plawk_begin_print_lines([], _OutputSeparator, _) -->
 plawk_begin_print_lines([string(Value) | Rest], OutputSeparator, Index) -->
     plawk_begin_separator_lines(Index, OutputSeparator),
     plawk_begin_string_print_lines(Value, Index),
+    { NextIndex is Index + 1 },
+    plawk_begin_print_lines(Rest, OutputSeparator, NextIndex).
+plawk_begin_print_lines([Expr | Rest], OutputSeparator, Index) -->
+    { plawk_begin_const_expr(Expr) },
+    plawk_begin_separator_lines(Index, OutputSeparator),
+    plawk_begin_const_expr_lines(Expr, Index),
     { NextIndex is Index + 1 },
     plawk_begin_print_lines(Rest, OutputSeparator, NextIndex).
 
