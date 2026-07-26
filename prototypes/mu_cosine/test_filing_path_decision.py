@@ -957,6 +957,44 @@ def test_select_existing_is_never_reported_as_censored(world):
         )
 
 
+def test_validate_accepts_gated_reasons_that_stage_a_cannot_emit(world):
+    """The emission/validation split is deliberate, so pin it.
+
+    ``_build_decision`` enforces the Stage A subset; ``validate_decision`` keeps
+    the full ``ABSTAIN_REASONS`` set so a later stage's receipt still parses
+    under this schema version.  Without this test, tidying ``validate_decision``
+    to use ``STAGE_A_ABSTAIN_REASONS`` would break forward compatibility with no
+    failure anywhere.
+    """
+
+    from filing_path_decision import ABSTAIN_REASONS, STAGE_A_ABSTAIN_REASONS
+
+    gated = set(ABSTAIN_REASONS) - set(STAGE_A_ABSTAIN_REASONS)
+    assert gated == {
+        "proposal_need_uncertain",
+        "outside_calibration_support",
+        "privacy_restricted_naming",
+    }
+
+    template = decide_stage_a(_build(world))
+    for reason in sorted(gated):
+        receipt = template["search_receipt"]
+        later_stage = {
+            **template,
+            "decision": ABSTAIN,
+            "payload": {
+                "reason_code": reason,
+                "candidate_ids_considered": [_typed("10")],
+            },
+            "search_receipt": receipt,
+            "search_receipt_sha256": sha256_bytes(canonical_json_bytes(dict(receipt))),
+        }
+        later_stage.pop("decision_sha256", None)
+        later_stage["decision_sha256"] = sha256_bytes(canonical_json_bytes(later_stage))
+        # Schema-level validation accepts it; only emission is stage-restricted.
+        assert validate_decision(later_stage)["payload"]["reason_code"] == reason
+
+
 def test_public_data_receipt_is_still_held_to_exact_binding(world):
     """A supplied receipt is never waved through just because data is public."""
 
