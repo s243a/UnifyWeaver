@@ -313,3 +313,13 @@ def test_malformed_model_bytes_fail_through_tokenizer_error():
     bad_m = ["BYTE:0xff" if t == "BYTE:0x44" else t for t in mbase]   # 'D' -> 0xff
     with pytest.raises(TokenizerError, match="modifier payload"):
         decode_terms(bad_m)
+
+    # 4. non-ascii byte inside a PIN payload.  Pins decode as ascii like
+    # modifiers do, but through a separate call site, so the guard needs its own
+    # regression rather than inheriting case 3's coverage.
+    pbase = list(encode_terms(
+        resolve_expression("lineage(graph,decay=0.85)@run/2026-07-25")))
+    assert pbase.count("BYTE:0x72") == 1          # 'r' occurs only in the pin
+    bad_p = ["BYTE:0xff" if t == "BYTE:0x72" else t for t in pbase]
+    with pytest.raises(TokenizerError, match="pin payload"):
+        decode_terms(bad_p)
