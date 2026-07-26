@@ -183,3 +183,11 @@ reproducible but remains a disabled preflight scaffold. The independent
 the complete fit/evaluate/decide transaction, held-outcome capability boundary, candidate/final
 verifier, and complete execution bindings must land before a fresh candidate is generated and
 reviewed.
+
+Replacement candidate v2 at commit `64ee948ed`, SHA-256 `a490cff99178ca01…`, is also rejected
+before step 4 by `REVIEW_sm_fs_ranking_candidate_v2_lock.md`. Its static hashes and honest fold-0
+projection check out, but its fitter cannot instantiate the countersigned checkpoints, no fresh
+v2 plan or candidate-derived final-lock receipt exists, held access and downstream receipts remain
+self-authenticated, and its NumPy/interpolated bootstrap differs from the exact SHA-256/nearest-rank
+procedure frozen by the first candidate review. Both preregistrations, fitting, held scoring,
+reserve access, and checkpoint release therefore remain blocked.
