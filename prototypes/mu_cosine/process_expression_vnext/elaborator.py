@@ -27,6 +27,10 @@ from typing import Any, Mapping
 from .ast import (
     Atom,
     Call,
+    ReferenceIndex,
+    SourceReferenceIndex,
+    TermIndex,
+    ValueIndex,
     Float64,
     IndexedType,
     Int,
@@ -77,6 +81,8 @@ def _substitute(declared: Type, bindings: Mapping[str, Any]) -> Type:
                 for i in declared.indices
             ),
         )
+    if isinstance(declared, ValueIndex):
+        return declared
     if isinstance(declared, ListType):
         return ListType(_substitute(declared.element, bindings))
     return declared
@@ -113,7 +119,9 @@ def _unify(declared: Type, actual: Type, bindings: dict[str, Any]) -> bool:
     return False
 
 
-def _resolve_source_type(node: SourceType) -> Type:
+def _resolve_source_type(node: SourceType):
+    if isinstance(node, SourceReferenceIndex):
+        return ReferenceIndex(node.name)
     if isinstance(node, SourceTypeName):
         return TypeName(node.name)
     if isinstance(node, SourceIndexedType):
@@ -265,16 +273,25 @@ def _elaborate_call(
         args.append(term)
 
     # Value-indexed ownership: substrate[C] is indexed by the corpus it views,
-    # so C binds to an argument's *reference name* rather than to its type.
+    # so C binds to an argument's *value*, not to its type.
     for var, position in entry.binds:
         argument = args[position]
-        if not isinstance(argument, Reference):
+        if isinstance(argument, Reference):
+            index: Any = ReferenceIndex(argument.name)
+        else:
+            # EXPERIMENTAL: an expression-valued index.  Its wire form is an
+            # open specification decision; see the module docstring in ast.py.
+            index = TermIndex(argument)
+        existing = bindings.get(var)
+        if existing is not None and existing != index:
+            # A bind must never silently overwrite an ownership constraint that
+            # argument unification already established.
             raise ElaborationError(
-                f"{node.name} indexes {var} by argument {position}, which must be a "
-                f"registered reference, not {type(argument).__name__.lower()}",
+                f"{node.name} would rebind index {var} from {existing} to {index}; "
+                "ownership constraints are established once",
                 node.args[position].span,
             )
-        bindings[var] = TypeName(argument.name)
+        bindings[var] = index
 
     # Duplicates are detected before any normalization, which is why the parser
     # keeps every occurrence in source order.
@@ -311,7 +328,26 @@ def _elaborate_call(
                 f"{node.name} is missing required field {spec.name!r}", node.span
             )
         elif spec.default is not None:
-            fields[spec.name] = _default_term(entry, spec, registry, bindings)
+            want = _substitute(spec.type, bindings)
+            if _contains_typevar(want):
+                # Rather than implement a general dependency solver, refuse a
+                # default whose type is still unresolved.  Accepting it would
+                # make the result depend on JSON field order.
+                raise ElaborationError(
+                    f"{node.name} default for {spec.name!r} has unresolved type "
+                    f"{want}; defaults may not depend on later bindings",
+                    node.span,
+                )
+            term = _default_term(spec, registry, want)
+            # An inserted default goes through the same unification as an
+            # authored value, so an ill-typed default cannot slip in.
+            if not _unify(spec.type, term.inferred_type, bindings):
+                raise ElaborationError(
+                    f"{node.name} default for {spec.name!r} is ill-typed: expected "
+                    f"{want}, found {term.inferred_type}",
+                    node.span,
+                )
+            fields[spec.name] = term
 
     result = _substitute(entry.result_type, bindings)
     if isinstance(result, TypeVar) or _contains_typevar(result):
@@ -324,18 +360,19 @@ def _elaborate_call(
     return Call(result, node.name, tuple(args), tuple(sorted(fields.items())))
 
 
-def _default_term(entry, spec, registry: Registry, bindings) -> TypedTerm:
+def _default_term(spec, registry: Registry, want: Type) -> TypedTerm:
     """Registry defaults are inserted explicitly (§2.1 rule 4).
 
-    A default is written as surface text and elaborated through the same path
-    as an authored value, so an explicit and an elided default cannot diverge.
+    A default is surface *text* elaborated through the same path as an authored
+    value, so an explicit and an elided default cannot diverge.  The registry
+    loader enforces that a default is a JSON string precisely so no numeric
+    rounding can happen before this point.
     """
 
     from .functional_parser import parse_functional
 
-    want = _substitute(spec.type, bindings)
-    source = parse_functional(str(spec.default), registry)
-    return _elaborate(source, registry, want if _is_concrete(want) else None)
+    source = parse_functional(spec.default, registry)
+    return _elaborate(source, registry, want)
 
 
 def _is_concrete(declared: Type) -> bool:
@@ -354,6 +391,28 @@ def _contains_typevar(declared: Type) -> bool:
     return False
 
 
+def _assert_no_type_vars(term: TypedTerm, path: str = "result") -> None:
+    """No ``TypeVar`` may survive into a supposedly ground typed term.
+
+    Checked recursively on the way out rather than trusted per-node: a
+    signature bug, an unbound index, or a reference declaring a variable would
+    otherwise leak an abstract type into a term the caller believes is ground.
+    """
+
+    if _contains_typevar(term.inferred_type):
+        raise ElaborationError(
+            f"{path} retains unresolved type variable(s) in {term.inferred_type}"
+        )
+    if isinstance(term, Call):
+        for index, arg in enumerate(term.args):
+            _assert_no_type_vars(arg, f"{path}.{term.name}[{index}]")
+        for name, value in term.fields:
+            _assert_no_type_vars(value, f"{path}.{term.name}.{name}")
+    elif isinstance(term, ListTerm):
+        for index, item in enumerate(term.items):
+            _assert_no_type_vars(item, f"{path}[{index}]")
+
+
 def elaborate(source: SourceNode, registry: Registry) -> TypedTerm:
     """Elaborate a source AST into an in-memory typed ground term.
 
@@ -361,4 +420,6 @@ def elaborate(source: SourceNode, registry: Registry) -> TypedTerm:
     schema by this milestone.
     """
 
-    return _elaborate(source, registry, None)
+    term = _elaborate(source, registry, None)
+    _assert_no_type_vars(term)
+    return term

@@ -25,7 +25,21 @@ import struct
 
 #: A finite decimal token.  Deliberately excludes ``nan``/``inf`` spellings so
 #: they fail as unregistered names rather than becoming non-finite numbers.
-NUMBER_RE = re.compile(r"\A-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\Z")
+#:
+#: Leading zeros are **accepted**.  The vNext grammar says only "a finite
+#: decimal numeric token", and v0.3 already accepts ``01`` and canonicalizes it
+#: to ``1``.  Rejecting it here would freeze an unapproved break from v0 inside
+#: an experimental frontend, which is a specification decision rather than an
+#: implementation one.
+NUMBER_RE = re.compile(r"\A-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\Z")
+
+#: Experimental frontend resource ceiling, not a language contract.
+#:
+#: Exists so a hostile or careless literal fails as a *controlled numeric
+#: error* rather than as an uncaught host ``ValueError`` from CPython's
+#: integer-string conversion limit, or as an attempt to materialize an enormous
+#: integer via ``10 ** exponent``.
+MAX_INT_DIGITS = 4096
 
 
 class NumericError(ValueError):
@@ -51,6 +65,11 @@ class NumberLexeme:
     def decimal(self) -> Decimal:
         # Decimal(str) is exact: context precision applies to operations, not
         # construction, so a value beyond binary64 precision is preserved.
+        if len(self.text) > MAX_INT_DIGITS:
+            raise NumericError(
+                f"numeric literal of {len(self.text)} characters exceeds this "
+                f"experimental frontend's limit of {MAX_INT_DIGITS}"
+            )
         try:
             return Decimal(self.text)
         except InvalidOperation as exc:  # pragma: no cover - guarded by regex
@@ -121,13 +140,24 @@ class Float64Value:
 
 
 def to_int(lexeme: NumberLexeme) -> int:
-    """``int`` rejects any spelling that is not an exact integer (§3.6)."""
+    """``int`` rejects any spelling that is not an exact integer (§3.6).
+
+    The digit ceiling is checked *before* materializing the value, so a short
+    lexeme with a catastrophic exponent such as ``1e1000000000`` is refused
+    without ever allocating the integer it denotes.
+    """
 
     value = lexeme.decimal
     sign, digits, exponent = _normalized_triple(value)
     if exponent < 0:
         raise NumericError(
             f"{lexeme.text!r} is not an exact integer and cannot satisfy int"
+        )
+    total_digits = len(digits) + exponent
+    if total_digits > MAX_INT_DIGITS:
+        raise NumericError(
+            f"integer literal needs {total_digits} digits, above this "
+            f"experimental frontend's limit of {MAX_INT_DIGITS}"
         )
     magnitude = int("".join(str(d) for d in digits)) * (10 ** exponent)
     return -magnitude if sign else magnitude

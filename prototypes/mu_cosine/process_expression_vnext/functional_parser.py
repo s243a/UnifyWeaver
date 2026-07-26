@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Functional-surface parser producing a lossless source AST.
+"""Functional-surface parser producing an elaboration-preserving source AST.
+
+The tree keeps everything elaboration and diagnostics need — spans, positional
+order, duplicate named fields, exact numeric lexemes, unchecked annotations —
+but it does **not** promise exact source reconstruction: grouping parentheses,
+whitespace and comments are dropped, and atom/string nodes hold decoded values
+rather than original spellings.  The weaker claim is deliberate; promising
+losslessness the implementation cannot deliver would be worse than stating the
+guarantee accurately.
 
 Grammar per ``DESIGN_process_expression_patterns.md`` §4, restricted to the
 ground slice this milestone supports.  The parser resolves *names* against the
@@ -33,6 +41,7 @@ from .ast import (
     SourceName,
     SourceNode,
     SourceNumber,
+    SourceReferenceIndex,
     SourceString,
     SourceType,
     SourceTypeName,
@@ -60,6 +69,32 @@ class ParseError(ValueError):
 
 class NotImplementedInMilestone(ParseError):
     """A recognized construct deliberately outside this milestone's slice."""
+
+
+def _respan(node: SourceNode, span: Span) -> SourceNode:
+    """Return ``node`` with a new span.  Source nodes are frozen dataclasses."""
+
+    import dataclasses
+
+    return dataclasses.replace(node, span=span)
+
+
+def _reject_lone_surrogates(value: str, position: int) -> None:
+    """A lone UTF-16 surrogate cannot be encoded as UTF-8.
+
+    ``json`` happily decodes ``"\\ud800"`` into an unpaired surrogate, which
+    would then blow up at the first encode.  Rejecting it here keeps the
+    invariant that every typed ``String`` is encodable.
+    """
+
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ParseError(
+            "string contains an unpaired UTF-16 surrogate and is not valid "
+            "Unicode text",
+            position,
+        ) from exc
 
 
 class _Parser:
@@ -146,7 +181,9 @@ class _Parser:
             inner = self.parse_expr()
             self._ws()
             self._expect(")")
-            return inner
+            # The span covers the whole parenthesized expression, including the
+            # delimiters, so a diagnostic points at what the author wrote.
+            return _respan(inner, Span(start, self.i))
 
         if char == "[":
             return self.parse_list()
@@ -169,10 +206,14 @@ class _Parser:
         name = self._match_registered_name()
         if name is not None:
             self.i += len(name)
+            # Close the name's span *before* skipping trivia, so trailing
+            # whitespace never becomes part of the token.
+            name_end = self.i
             self._ws()
             if self._at("("):
                 return self.parse_call(name, start)
-            return SourceName(Span(start, self.i), name)
+            self.i = name_end
+            return SourceName(Span(start, name_end), name)
 
         word = _IDENT.match(self.text, self.i)
         if word:
@@ -269,6 +310,7 @@ class _Parser:
             raise ParseError(f"malformed JSON string: {exc}", self.i) from exc
         if not isinstance(value, str):  # pragma: no cover - '"' guarantees str
             raise ParseError("expected a string literal", self.i)
+        _reject_lone_surrogates(value, start)
         self.i += offset
         return SourceString(Span(start, self.i), value)
 
@@ -326,19 +368,39 @@ class _Parser:
         return SourceIndexedType(Span(start, self.i), name, tuple(indices))
 
     def parse_type_or_index(self) -> Any:
+        """An index position may hold a *value reference* or a type.
+
+        A registered reference is matched with the same longest-match rule used
+        for expressions, so a punctuated name such as ``gpt-5.5-low`` lexes as
+        one index rather than failing at ``-5.5-low``.
+        """
+
         self._ws()
         start = self.i
         word = _IDENT.match(self.text, self.i)
-        if not word:
-            raise ParseError("expected a type or index", self.i)
-        token = word.group(0)
-        if _VARIABLE.match(token):
+        if word and _VARIABLE.match(word.group(0)):
             self.i = word.end()
             raise NotImplementedInMilestone(
-                f"type variable {token!r} is recognized but not implemented in this "
-                "milestone",
+                f"type variable {word.group(0)!r} is recognized but not implemented "
+                "in this milestone",
                 start,
             )
+
+        name = self._match_registered_name()
+        if name is not None:
+            after = self.i + len(name)
+            following = self.text[after : after + 1]
+            if following != "(":
+                self.i = after
+                return SourceReferenceIndex(Span(start, self.i), name)
+            raise NotImplementedInMilestone(
+                "an expression-valued type index is recognized but not implemented "
+                "in this milestone; its wire representation is an open "
+                "specification decision",
+                start,
+            )
+        if not word:
+            raise ParseError("expected a type or index", self.i)
         return self.parse_type()
 
 

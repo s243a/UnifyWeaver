@@ -35,6 +35,8 @@ from process_expression_vnext import (
 from process_expression_vnext.ast import (
     Atom,
     Call,
+    ReferenceIndex,
+    TermIndex,
     Float64,
     IndexedType,
     Int,
@@ -135,9 +137,10 @@ def test_explicit_and_elided_defaults_elaborate_identically(reg):
         "lineage_op(principal_tree(pearltrees),decay=0.85,depth=unbounded_depth)", reg
     )
     assert elided == explicit
-    assert dict(elided.fields)["decay"] == Real(
-        TypeName("real"), ela("margin(t=0.85)", reg).fields[0][1].value
-    )
+    fields = dict(elided.fields)
+    assert isinstance(fields["decay"], Real)
+    assert fields["decay"].inferred_type == TypeName("real")
+    assert isinstance(fields["depth"], Reference)
 
 
 # --------------------------------------------------------------------------
@@ -176,10 +179,10 @@ def test_nested_calls_and_expression_valued_fields(reg):
 
 def test_indexed_type_substitution(reg):
     assert ela("principal_tree(pearltrees)", reg).inferred_type == IndexedType(
-        "substrate", (TypeName("pearltrees"),)
+        "substrate", (ReferenceIndex("pearltrees"),)
     )
     assert ela("full_dag(simplewiki)", reg).inferred_type == IndexedType(
-        "substrate", (TypeName("simplewiki"),)
+        "substrate", (ReferenceIndex("simplewiki"),)
     )
     # The annotation in the specification's own example type-checks.
     ela("principal_tree(pearltrees)::substrate[pearltrees]", reg)
@@ -194,6 +197,131 @@ def test_incompatible_indexed_use_fails(reg):
             "cross_substrate(principal_tree(pearltrees),principal_tree(simplewiki))",
             reg,
         )
+
+
+def test_value_indices_are_not_types(reg):
+    """`substrate[pearltrees]` indexes by a corpus *reference*, not a type.
+
+    Representing the index as ``TypeName("pearltrees")`` would conflate the
+    value and type namespaces.
+    """
+
+    substrate = ela("principal_tree(pearltrees)", reg).inferred_type
+    assert isinstance(substrate, IndexedType)
+    (index,) = substrate.indices
+    assert isinstance(index, ReferenceIndex)
+    assert not isinstance(index, TypeName)
+    assert index.name == "pearltrees"
+
+
+def test_punctuated_reference_parses_inside_a_type_index(reg):
+    """`judge_scope[gpt-5.5-low]` must lex the index as one registered name."""
+
+    typed = ela("judge_view(gpt-5.5-low)::judge_scope[gpt-5.5-low]", reg)
+    (index,) = typed.inferred_type.indices
+    assert isinstance(index, ReferenceIndex) and index.name == "gpt-5.5-low"
+
+
+def test_expression_valued_index_is_tagged_experimental(reg):
+    """`lineage_op(S,...) :: abstract_lineage_process[S]` where S is a call.
+
+    The wire form of an expression-valued index is an open specification
+    decision, so it is carried by an explicitly experimental in-memory node
+    rather than faked as a reference.
+    """
+
+    typed = ela("lineage_op(principal_tree(pearltrees))", reg)
+    assert typed.inferred_type.name == "abstract_lineage_process"
+    (index,) = typed.inferred_type.indices
+    assert isinstance(index, TermIndex)
+    assert "unresolved" in TermIndex.__doc__ and "specification decision" in (
+        " ".join(TermIndex.__doc__.split())
+    )
+    # It cannot be written in an annotation; that would presume the wire form.
+    with pytest.raises(NotImplementedInMilestone, match="open .*specification"):
+        parse_functional(
+            "lineage_op(principal_tree(pearltrees))"
+            "::abstract_lineage_process[principal_tree(pearltrees)]",
+            reg,
+        )
+
+
+def test_fixture_does_not_conflate_lineage_at_with_lineage_op(reg):
+    """The specification separates the family reference from the operator."""
+
+    assert ela("lineage_at", reg).inferred_type == TypeName("relation_family")
+    op = ela("lineage_op(principal_tree(pearltrees))", reg)
+    assert op.inferred_type != TypeName("relation_family")
+    assert op.inferred_type.name == "abstract_lineage_process"
+
+
+def test_a_bind_cannot_overwrite_an_established_ownership_constraint(reg):
+    """Argument unification binds `C` first; `binds` may not silently change it."""
+
+    ela("rebinding_probe(principal_tree(pearltrees),pearltrees)", reg)
+    with pytest.raises(ElaborationError, match="would rebind index C"):
+        ela("rebinding_probe(principal_tree(pearltrees),simplewiki)", reg)
+
+
+def test_defaults_are_type_checked_like_authored_values(tmp_path, reg):
+    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    document["entries"]["bad_default"] = {
+        "kind": "call",
+        "type": "cross_view",
+        "args": [],
+        "fields": {"n": {"type": "int", "default": "'not_an_int'"}},
+    }
+    path = tmp_path / "bad_default.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    bad = load_registry(path)
+    with pytest.raises(ElaborationError, match="ill-typed|expected int"):
+        elaborate(parse_functional("bad_default()", bad), bad)
+
+
+def test_a_default_with_an_unresolved_type_cannot_enter_the_typed_ast(tmp_path):
+    """Rather than a dependency solver, refuse order-dependent defaults."""
+
+    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    document["entries"]["unresolved_default"] = {
+        "kind": "call",
+        "type": "cross_view",
+        "args": [],
+        "fields": {"e": {"type": "entity[S]", "default": "pearltrees"}},
+    }
+    path = tmp_path / "unresolved_default.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    registry = load_registry(path)
+    with pytest.raises(ElaborationError, match="unresolved type"):
+        elaborate(parse_functional("unresolved_default()", registry), registry)
+
+
+def test_a_reference_may_not_declare_an_unresolvable_type_variable(tmp_path):
+    """A reference has no arguments, so nothing could ever bind `S`."""
+
+    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    document["entries"]["dangling_entity"] = {"kind": "reference", "type": "entity[S]"}
+    path = tmp_path / "dangling.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(RegistryError, match="unresolved type variable"):
+        load_registry(path)
+
+
+def test_no_type_variable_survives_into_an_elaborated_result(reg):
+    def walk(term):
+        yield term
+        if isinstance(term, Call):
+            for a in term.args:
+                yield from walk(a)
+            for _, v in term.fields:
+                yield from walk(v)
+
+    for text in [
+        "principal_tree(pearltrees)",
+        "lineage_op(principal_tree(pearltrees))",
+        "hop_decay_targets(principal_tree(pearltrees),decay=0.85)",
+    ]:
+        for term in walk(ela(text, reg)):
+            assert "TypeVar" not in repr(term.inferred_type)
 
 
 # --------------------------------------------------------------------------
@@ -277,13 +405,25 @@ def test_fractional_value_cannot_satisfy_int(reg):
         ela("0.85::int", reg)
 
 
-@pytest.mark.parametrize(
-    "text",
-    ["margin(t=1e)", "margin(t=1e+)", "margin(t=1.)", "margin(t=01)"],
-)
+@pytest.mark.parametrize("text", ["margin(t=1e)", "margin(t=1e+)", "margin(t=1.)"])
 def test_malformed_numeric_lexemes_fail_at_parse(text, reg):
     with pytest.raises(ParseError):
         parse_functional(text, reg)
+
+
+def test_leading_zeros_are_accepted_as_in_v0(reg):
+    """`01` is valid; rejecting it would be an unapproved break from v0.
+
+    The vNext grammar says only "a finite decimal numeric token", and v0.3
+    accepts `01` and canonicalizes it to `1`.  Whether to forbid it is a
+    specification decision, not something an experimental frontend should
+    freeze.
+    """
+
+    import process_cards as pc
+
+    assert pc.canonical(pc.parse("margin(t=01)")) == "margin(t=1)"
+    assert ela("margin(t=01)", reg) == ela("margin(t=1)", reg)
 
 
 @pytest.mark.parametrize("text", ["nan", "inf", "-inf", "margin(t=nan)"])
@@ -338,6 +478,61 @@ def test_errors_carry_a_source_location_where_applicable(reg):
     assert excinfo.value.position is not None
 
 
+def test_lone_surrogates_are_rejected_but_valid_pairs_survive(reg):
+    """A typed String must always be UTF-8 encodable."""
+
+    paired = parse_functional('"\\ud83d\\ude00"', reg)   # a valid surrogate pair
+    assert paired.value == "\U0001f600"
+    paired.value.encode("utf-8")
+
+    for lone in ['"\\ud800"', '"\\udc00"', '"a\\ud800b"']:
+        with pytest.raises(ParseError, match="surrogate"):
+            parse_functional(lone, reg)
+
+
+def test_oversized_integers_fail_as_controlled_numeric_errors(reg):
+    """Neither CPython's digit limit nor a huge exponent may escape raw."""
+
+    from process_expression_vnext.numerics import MAX_INT_DIGITS
+
+    long_literal = "9" * (MAX_INT_DIGITS + 10)
+    with pytest.raises((ElaborationError, ParseError)) as excinfo:
+        ela(f"bounded_depth({long_literal})", reg)
+    assert "limit" in str(excinfo.value)
+
+    # Short lexeme, catastrophic exponent: rejected without allocating it.
+    with pytest.raises(ElaborationError, match="limit"):
+        ela("bounded_depth(1e1000000000)", reg)
+
+
+def test_spans_cover_the_expression_and_exclude_trailing_trivia(reg):
+    bare = parse_functional("pearltrees", reg)
+    assert (bare.span.start, bare.span.end) == (0, len("pearltrees"))
+
+    grouped = parse_functional("(pearltrees)", reg)
+    assert (grouped.span.start, grouped.span.end) == (0, len("(pearltrees)"))
+
+    annotated = parse_functional("(pearltrees)::corpus", reg)
+    assert annotated.span.start == 0
+    assert annotated.span.end == len("(pearltrees)::corpus")
+
+    padded = parse_functional("  pearltrees  ", reg)
+    assert padded.span.end == len("  pearltrees")  # trailing trivia excluded
+
+
+def test_source_tree_is_documented_as_elaboration_preserving_not_lossless():
+    """The public claim must match what the implementation delivers."""
+
+    from process_expression_vnext import ast as ast_module
+    from process_expression_vnext import functional_parser as parser_module
+
+    for doc in (ast_module.__doc__, parser_module.__doc__):
+        flat = " ".join(doc.split())
+        assert "elaboration-preserving" in flat
+        assert "exact source reconstruction" in flat
+        assert "lossless source AST" not in flat
+
+
 # --------------------------------------------------------------------------
 # 22  determinism
 # --------------------------------------------------------------------------
@@ -388,6 +583,58 @@ def test_loader_rejects_anything_resembling_a_release_registry(tmp_path):
         path.write_text(json.dumps({**document, **mutation}), encoding="utf-8")
         with pytest.raises(RegistryError):
             load_registry(path)
+
+
+def test_loader_rejects_duplicate_keys_at_every_level(tmp_path):
+    """`json.loads` keeps the last duplicate, so a fixture could lie."""
+
+    path = tmp_path / "dupe.json"
+    path.write_text(
+        '{"status":"experimental-test-fixture","production":false,'
+        '"entries":{"a":{"kind":"reference","type":"corpus"},'
+        '"a":{"kind":"reference","type":"judge"}}}',
+        encoding="utf-8",
+    )
+    with pytest.raises(RegistryError, match="duplicate key"):
+        load_registry(path)
+
+
+@pytest.mark.parametrize(
+    "path_keys,mutation,pattern",
+    [
+        ([], {"surprise": 1}, "unknown key"),
+        (["entries", "pearltrees"], {"surprise": 1}, "unknown key"),
+        (["entries", "margin", "fields", "t"], {"surprise": 1}, "unknown key"),
+        (["entries", "margin", "fields", "t"], {"required": "false"}, "must be a JSON boolean"),
+        (["entries", "pearltrees"], {"type": 7}, "must be a string"),
+        (["entries", "margin"], {"args": "nope"}, "must be a list"),
+    ],
+)
+def test_loader_fails_closed_on_malformed_declarations(
+    tmp_path, path_keys, mutation, pattern
+):
+    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    target = document
+    for key in path_keys:
+        target = target[key]
+    target.update(mutation)
+    path = tmp_path / "malformed.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(RegistryError, match=pattern):
+        load_registry(path)
+
+
+def test_a_numeric_json_default_is_rejected_before_it_can_round(tmp_path):
+    """A JSON number would be parsed as a float and rounded by `str()`."""
+
+    document = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    document["entries"]["lineage_op"]["fields"]["decay"]["default"] = (
+        0.1234567890123456789012345
+    )
+    path = tmp_path / "numeric_default.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(RegistryError, match="must be a JSON string"):
+        load_registry(path)
 
 
 # --------------------------------------------------------------------------

@@ -21,6 +21,18 @@ from typing import Any, Mapping
 
 from .ast import IndexedType, ListType, Type, TypeName, TypeVar
 
+
+def _contains_type_var(declared: Type) -> bool:
+    if isinstance(declared, TypeVar):
+        return True
+    if isinstance(declared, IndexedType):
+        return any(
+            _contains_type_var(i) for i in declared.indices if isinstance(i, Type)
+        )
+    if isinstance(declared, ListType):
+        return _contains_type_var(declared.element)
+    return False
+
 _TYPE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _INDEX_VAR = re.compile(r"[A-Z][A-Za-z0-9_]*\Z")
 
@@ -127,10 +139,45 @@ class Registry:
         return name in self._entries
 
 
+TOP_LEVEL_KEYS = frozenset({"label", "status", "production", "note", "entries"})
+ENTRY_KEYS = frozenset({"kind", "type", "args", "fields", "binds", "note"})
+FIELD_KEYS = frozenset({"type", "required", "default", "note"})
+
+_ENTRY_NAME = re.compile(r"\A[A-Za-z_][A-Za-z0-9_.\-]*\Z")
+_FIELD_NAME = re.compile(r"\A[a-z_][a-z0-9_]*\Z")
+
+
+def _strict_pairs(pairs):
+    """Reject duplicate keys at every object level.
+
+    ``json.loads`` silently keeps the last of a duplicated key, which would let
+    a fixture declare one thing and mean another.
+    """
+
+    seen: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise RegistryError(f"duplicate key in registry fixture: {key!r}")
+        seen[key] = value
+    return seen
+
+
+def _reject_unknown(obj: Mapping[str, Any], allowed: frozenset[str], where: str):
+    unknown = sorted(set(obj) - allowed)
+    if unknown:
+        raise RegistryError(f"unknown key(s) in {where}: {unknown}")
+
+
 def load_registry(path: str | Path) -> Registry:
-    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    try:
+        document = json.loads(
+            Path(path).read_text(encoding="utf-8"), object_pairs_hook=_strict_pairs
+        )
+    except json.JSONDecodeError as exc:
+        raise RegistryError(f"malformed registry fixture: {exc}") from exc
     if not isinstance(document, dict):
         raise RegistryError("registry fixture must be a JSON object")
+    _reject_unknown(document, TOP_LEVEL_KEYS, "registry fixture")
 
     status = document.get("status")
     if status != "experimental-test-fixture":
@@ -152,20 +199,41 @@ def load_registry(path: str | Path) -> Registry:
 
     entries: dict[str, Entry] = {}
     for name, spec in raw_entries.items():
+        if not _ENTRY_NAME.match(name):
+            raise RegistryError(f"malformed entry name: {name!r}")
         if not isinstance(spec, dict):
             raise RegistryError(f"entry {name!r} must be an object")
+        _reject_unknown(spec, ENTRY_KEYS, f"entry {name!r}")
         kind = spec.get("kind")
         if kind not in (KIND_REFERENCE, KIND_CALL):
             raise RegistryError(f"entry {name!r} has unsupported kind {kind!r}")
         if "type" not in spec:
             raise RegistryError(f"entry {name!r} has no type")
+        if not isinstance(spec["type"], str):
+            raise RegistryError(f"entry {name!r} type must be a string")
         result_type = parse_type(spec["type"])
+        if kind == KIND_REFERENCE and _contains_type_var(result_type):
+            # A reference has no arguments, so nothing can ever bind its
+            # variables; accepting it would let a TypeVar escape into a
+            # supposedly ground elaboration result.
+            raise RegistryError(
+                f"reference {name!r} declares unresolved type variable(s) in "
+                f"{spec['type']!r}; a reference has no arguments to bind them"
+            )
 
         arg_types: tuple[Type, ...] = ()
         fields: tuple[FieldSpec, ...] = ()
         binds: tuple[tuple[str, int], ...] = ()
         if kind == KIND_CALL:
-            arg_types = tuple(parse_type(t) for t in spec.get("args", []))
+            raw_args = spec.get("args", [])
+            if not isinstance(raw_args, list):
+                raise RegistryError(f"entry {name!r} args must be a list")
+            for declared in raw_args:
+                if not isinstance(declared, str):
+                    raise RegistryError(
+                        f"entry {name!r} argument types must be strings"
+                    )
+            arg_types = tuple(parse_type(t) for t in raw_args)
             raw_binds = spec.get("binds", {})
             if not isinstance(raw_binds, dict):
                 raise RegistryError(f"entry {name!r} binds must be an object")
@@ -191,12 +259,37 @@ def load_registry(path: str | Path) -> Registry:
                 raise RegistryError(f"entry {name!r} fields must be an object")
             collected = []
             for field_name, field_spec in raw_fields.items():
+                if not _FIELD_NAME.match(field_name):
+                    raise RegistryError(
+                        f"entry {name!r} has malformed field name {field_name!r}"
+                    )
                 if not isinstance(field_spec, dict) or "type" not in field_spec:
                     raise RegistryError(
                         f"entry {name!r} field {field_name!r} needs a type"
                     )
-                required = bool(field_spec.get("required", False))
+                _reject_unknown(
+                    field_spec, FIELD_KEYS, f"entry {name!r} field {field_name!r}"
+                )
+                if not isinstance(field_spec["type"], str):
+                    raise RegistryError(
+                        f"entry {name!r} field {field_name!r} type must be a string"
+                    )
+                required = field_spec.get("required", False)
+                if not isinstance(required, bool):
+                    raise RegistryError(
+                        f"entry {name!r} field {field_name!r} required must be a "
+                        f"JSON boolean, got {required!r}"
+                    )
                 default = field_spec.get("default")
+                if default is not None and not isinstance(default, str):
+                    # Defaults are *surface text*.  Accepting a JSON number and
+                    # later calling str() on the resulting Python float would
+                    # round the value before elaboration ever sees it.
+                    raise RegistryError(
+                        f"entry {name!r} field {field_name!r} default must be a "
+                        "JSON string of surface text or null; a JSON number would "
+                        "round before elaboration"
+                    )
                 if required and default is not None:
                     raise RegistryError(
                         f"entry {name!r} field {field_name!r} is required and "

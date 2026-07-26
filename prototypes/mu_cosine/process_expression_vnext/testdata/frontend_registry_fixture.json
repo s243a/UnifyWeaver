@@ -31,10 +31,14 @@
       "binds": {"C": 0}
     },
 
+    "lineage_at": {"kind": "reference", "type": "relation_family"},
+
     "lineage_op": {
       "kind": "call",
-      "type": "relation_family",
+      "type": "abstract_lineage_process[S]",
       "args": ["substrate[C]"],
+      "binds": {"S": 0},
+      "note": "Per the specification lineage_at is the relation_family reference and lineage_op is the coarse operator with type abstract_lineage_process[S]. S is an expression-valued index, carried in memory as the experimental TermIndex node.",
       "fields": {
         "estimand": {"type": "atom"},
         "decay": {"type": "real", "default": "0.85"},
@@ -45,8 +49,9 @@
 
     "hop_decay_targets": {
       "kind": "call",
-      "type": "target_factory",
+      "type": "target_factory[S,hop_decay]",
       "args": ["substrate[C]"],
+      "binds": {"S": 0},
       "fields": {
         "decay": {"type": "real", "required": true},
         "weights": {"type": "list[real]"}
@@ -65,8 +70,24 @@
 
     "cross_substrate": {
       "kind": "call",
-      "type": "relation_family",
+      "type": "cross_view",
       "args": ["substrate[C]", "substrate[C]"]
+    },
+
+    "judge_view": {
+      "kind": "call",
+      "type": "judge_scope[J]",
+      "args": ["judge"],
+      "binds": {"J": 0},
+      "note": "Exercises a punctuated registered name in an index position."
+    },
+
+    "rebinding_probe": {
+      "kind": "call",
+      "type": "cross_view",
+      "args": ["substrate[C]", "corpus"],
+      "binds": {"C": 1},
+      "note": "TEST-ONLY. Argument unification binds C from argument 0; the binds declaration then tries to rebind it from argument 1. A mismatch must fail rather than silently overwrite the ownership constraint."
     }
   }
 }
