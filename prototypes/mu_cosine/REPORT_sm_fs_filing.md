@@ -169,3 +169,10 @@ the untouched v3 reserve. Cross-corpus claims are separately gated by
 `PROTOCOL_sm_fs_retention_transfer.md`: retention starts from the Pearltrees-trained checkpoint,
 whereas genuine transfer starts from a common pre-Pearltrees state and must beat both the
 unchanged base and a matched structure-scrambled source control.
+
+PR #4010 subsequently produced a proposed ranking execution lock. The independent review in
+`REVIEW_sm_fs_ranking_execution_lock.md` countersigns its migrated pre-Pearltrees warm start and
+the three exact initialized checkpoints, but does **not** authorize fitting: no ranking trainer or
+complete fold/arm/seed execution plan exists yet, the proposal predates its emitter commit, and
+its privacy/atomicity and observed-determinism gates remain incomplete. The machine-checkable
+review keeps `model_fitting_authorized=false` until a new proposal closes those gaps.
