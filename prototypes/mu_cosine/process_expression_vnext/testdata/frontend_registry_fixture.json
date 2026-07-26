@@ -1,0 +1,72 @@
+{
+  "label": "vnext-frontend-milestone-fixture",
+  "status": "experimental-test-fixture",
+  "production": false,
+  "note": "TEST-ONLY, NON-RELEASE. Not a production registry and deliberately carries no registry_version: versions belong to sealed release registries. Entries cover only the representative examples in DESIGN_process_expression_patterns.md needed to exercise the parser/elaborator seam. Signatures here are NOT language contracts.",
+  "entries": {
+    "pearltrees": {"kind": "reference", "type": "corpus"},
+    "simplewiki": {"kind": "reference", "type": "corpus"},
+    "haiku": {"kind": "reference", "type": "judge"},
+    "haiku.fast": {"kind": "reference", "type": "judge"},
+    "gpt-5.5-low": {"kind": "reference", "type": "judge"},
+    "gpt-5.5": {"kind": "reference", "type": "judge"},
+
+    "unbounded_depth": {"kind": "reference", "type": "depth_limit"},
+    "bounded_depth": {
+      "kind": "call",
+      "type": "depth_limit",
+      "args": ["int"]
+    },
+
+    "principal_tree": {
+      "kind": "call",
+      "type": "substrate[C]",
+      "args": ["corpus"],
+      "binds": {"C": 0}
+    },
+    "full_dag": {
+      "kind": "call",
+      "type": "substrate[C]",
+      "args": ["corpus"],
+      "binds": {"C": 0}
+    },
+
+    "lineage_op": {
+      "kind": "call",
+      "type": "relation_family",
+      "args": ["substrate[C]"],
+      "fields": {
+        "estimand": {"type": "atom"},
+        "decay": {"type": "real", "default": "0.85"},
+        "depth": {"type": "depth_limit", "default": "unbounded_depth"},
+        "note": {"type": "string"}
+      }
+    },
+
+    "hop_decay_targets": {
+      "kind": "call",
+      "type": "target_factory",
+      "args": ["substrate[C]"],
+      "fields": {
+        "decay": {"type": "real", "required": true},
+        "weights": {"type": "list[real]"}
+      }
+    },
+
+    "margin": {
+      "kind": "call",
+      "type": "score_descriptor",
+      "args": [],
+      "fields": {
+        "t": {"type": "real", "required": true},
+        "epsilon": {"type": "float64"}
+      }
+    },
+
+    "cross_substrate": {
+      "kind": "call",
+      "type": "relation_family",
+      "args": ["substrate[C]", "substrate[C]"]
+    }
+  }
+}
