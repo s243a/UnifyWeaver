@@ -13,6 +13,12 @@ registered processes. Measurements land as tests in
 [`test_process_expression_envelope.py`](test_process_expression_envelope.py), never as prose only.
 Numbers that a test does not reproduce are marked *provisional* or *assumed*.
 
+> **vNext boundary:** proposed variables, indexed types, interpretation/representation rules, and
+> factory verification live in
+> [`DESIGN_process_expression_patterns.md`](DESIGN_process_expression_patterns.md). They do not
+> extend this v0.3/`pec-v2` envelope in place. Activating that language requires the separate,
+> sealed migration specified there and fresh support measurements.
+
 ## 0. Bundle supersession procedure
 
 The encoder handoff §9 states the rule — *any intentional contract change creates a new bundle and
