@@ -30,7 +30,8 @@ names a composed scoring pipeline, and the planned learned encoder for it). Back
 | grammar, typed registry, canonicalization, lossless identity | [`DESIGN_process_expression_language.md`](DESIGN_process_expression_language.md), [`process_cards.py`](process_cards.py) (#3982) |
 | P0–P4 empirical ladder and the deterministic P3 baseline | [`DESIGN_process_expression_implementation.md`](DESIGN_process_expression_implementation.md) |
 | encoder/position theory, gated behind frozen P1 + plateaued P3 | [`DESIGN_expression_encoder_future.md`](DESIGN_expression_encoder_future.md), [`DESIGN_tree_position_encoding_theory.md`](DESIGN_tree_position_encoding_theory.md) (#3983, #3995) |
-| step 1 — identity helpers and frozen golden vectors | [`process_identity.py`](process_identity.py), [`process_expression_contract.py`](process_expression_contract.py), `PROCESS_EXPRESSION_GOLDEN_v1.json` (#4000) |
+| step 1 — identity helpers and frozen golden vectors | [`process_identity.py`](process_identity.py), [`process_expression_contract.py`](process_expression_contract.py); current bundle `PROCESS_EXPRESSION_GOLDEN_v2.json` (`pec-v2`), with `…_v1.json` retained as audit-only provenance (#4000, #4004) |
+| step 2 — corpus generator specification | [`DESIGN_process_expression_generator.md`](DESIGN_process_expression_generator.md) (#4003, #4004) |
 
 `process_identity` and `process_expression_contract` import nothing but `process_cards` — no filing
 stack, no embedder, no torch, no corpus. Keeping that surface small is deliberate: it leaves the

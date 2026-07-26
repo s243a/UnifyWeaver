@@ -112,7 +112,10 @@ def test_registry_caps_modifiers_at_one_per_node():
 
     with pytest.raises(pc.ParseError, match="at most one modifier"):
         pc.parse("llm.element.subcat")
-    assert all(len(s.modifiers) >= 0 for s in REGISTRY.values())
+    # The cap actually bites: several names declare more than one modifier, so
+    # the restriction is a real one rather than vacuously satisfied.
+    multi = {n for n, s in REGISTRY.items() if len(s.modifiers) > 1}
+    assert multi == {"luna", "llm"}
 
 
 # --------------------------------------------------------------------------
@@ -287,3 +290,228 @@ def test_specification_records_the_measured_numbers():
         "max_depth        = 3",
     ):
         assert needle in text, f"specification no longer records {needle!r}"
+
+
+# --------------------------------------------------------------------------
+# §5.0 the closeness objective — its numbers are spec, so they are tests too
+# --------------------------------------------------------------------------
+
+
+def test_specification_records_the_closeness_numbers():
+    text = SPEC.read_text(encoding="utf-8")
+    for needle in (
+        "p = 0.75",                      # exact-grading fraction
+        "{0, 0.5, 0.75, 1}",             # its ablation grid
+    ):
+        assert needle in text, f"specification no longer records {needle!r}"
+
+
+def _spec_tolerances() -> dict[str, float]:
+    """Parse the whole tolerance table out of the specification."""
+
+    import re
+
+    text = SPEC.read_text(encoding="utf-8")
+    return {
+        m.group(1): float(m.group(2))
+        for m in re.finditer(r"^tolerance\.(\S+)\s*=\s*([0-9.]+)", text, re.M)
+    }
+
+
+def test_tolerance_table_covers_every_number_field_and_nothing_else():
+    """The whole mapping is pinned, not a sampled pair of entries.
+
+    Checking only two rows would let `margin.t` or `blend.w` change or vanish
+    while the suite stayed green, contrary to the rule that every specification
+    number is reproduced by a test.
+    """
+
+    declared = _spec_tolerances()
+    number_fields = {
+        f"{name}.{key}"
+        for name, sig in REGISTRY.items()
+        for key, spec in sig.kwargs.items()
+        if spec.kind in ("number", "number_list")
+    }
+    assert set(declared) == number_fields
+    assert declared == {
+        "routing.t": 0.002,
+        "margin.t": 0.002,
+        "lineage.decay": 0.01,
+        "blend.w": 0.01,
+    }
+
+
+def test_threshold_tolerance_is_below_half_the_operational_gap():
+    """§5.0.2: independent per-element tolerance can collapse a routing tier.
+
+    Registered thresholds are 0.01 apart.  A tolerance of half that gap admits
+    [0.025, 0.025] — both elements "within tolerance" and the two-tier policy
+    destroyed — so the tolerance must be strictly below half the gap.
+    """
+
+    registered = [0.02, 0.03]
+    gap = min(b - a for a, b in zip(registered, registered[1:]))
+    assert gap == pytest.approx(0.01)
+    tolerance = _spec_tolerances()["routing.t"]
+    assert tolerance < gap / 2
+
+    # The collapse the tolerance alone cannot prevent: the parser accepts both
+    # an unordered and a degenerate threshold list, so §5.0.2 additionally
+    # requires a structural ordering/separation predicate.
+    for collapsed in ("routing(e5,haiku,t=[0.025,0.025],menus=[10,20])",
+                      "routing(e5,haiku,t=[0.03,0.02],menus=[10,20])"):
+        pc.parse(collapsed)  # parses today: no ordering or separation enforced
+
+
+def test_authoritative_bundle_pointers_all_name_the_current_bundle():
+    """§0: the pointer moves with the bundle, or consumers fail closed.
+
+    A step-2 implementer following the parent handoff or the README must be
+    directed at the bundle the current loader accepts.  Pointing at a
+    superseded bundle would either fail closed or silently miss the coverage
+    the new contract added.
+    """
+
+    from process_expression_contract import (
+        CURRENT_GOLDEN_BUNDLE,
+        SUPERSEDED_GOLDEN_BUNDLES,
+    )
+
+    handoff = (ROOT / "DESIGN_expression_encoder_future.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    for document, label in ((handoff, "handoff"), (readme, "README")):
+        assert CURRENT_GOLDEN_BUNDLE in document, f"{label} does not name the current bundle"
+
+    # A superseded bundle may still be *mentioned* as provenance, but never
+    # without the current one alongside it.
+    for stale in SUPERSEDED_GOLDEN_BUNDLES:
+        for document, label in ((handoff, "handoff"), (readme, "README")):
+            if stale in document:
+                assert CURRENT_GOLDEN_BUNDLE in document, (
+                    f"{label} names superseded {stale} without the current bundle"
+                )
+
+
+def test_specification_records_the_supersession_procedure():
+    text = SPEC.read_text(encoding="utf-8")
+    assert "Bundle supersession procedure" in text
+    assert "CURRENT_GOLDEN_BUNDLE" in text
+    assert "SUPERSEDED_GOLDEN_BUNDLES" in text
+
+
+def test_specification_fixes_the_grading_unit_and_schedule():
+    """§5.3: one unit, one schedule — the earlier draft implied both."""
+
+    text = SPEC.read_text(encoding="utf-8")
+    assert "The unit is the **numeric field**, and the draw is **resampled every step**" in text
+    assert "Per field, not per row." in text
+    assert "Resampled per step, not fixed." in text
+
+
+def test_specification_states_precedence_over_the_parent_handoff():
+    """§5.0.1: the handoff's exact-AST gate stays primary until amended."""
+
+    text = SPEC.read_text(encoding="utf-8")
+    assert "does **not** silently supersede its parent" in text
+    assert "exact-AST reconstruction gate remains primary" in text
+
+
+def test_integer_fields_are_typed_int_and_therefore_exempt_from_tolerance():
+    """§5.0.2: menus=10 vs 11 is a different process, not a near miss."""
+
+    int_fields = {
+        (name, key)
+        for name, sig in REGISTRY.items()
+        for key, spec in sig.kwargs.items()
+        if spec.kind in ("int", "int_list")
+    }
+    assert ("routing", "menus") in int_fields
+    assert ("menu", "n") in int_fields
+    assert ("lineage", "depth") in int_fields
+    number_fields = {
+        (name, key)
+        for name, sig in REGISTRY.items()
+        for key, spec in sig.kwargs.items()
+        if spec.kind in ("number", "number_list")
+    }
+    # The tolerance table covers exactly the number-valued fields.
+    assert number_fields == {
+        ("routing", "t"),
+        ("margin", "t"),
+        ("lineage", "decay"),
+        ("blend", "w"),
+    }
+    assert not (int_fields & number_fields)
+
+
+def test_missing_digits_cap_resolution_below_the_stated_tolerance():
+    """§5.2: the digit floor is about resolution, not catastrophic failure.
+
+    A decoder can render 0.47 as 0.45 using only trained glyphs, so an unseen
+    digit is not fatal.  But in the production threshold range the forced error
+    exceeds the routing tolerance, which is why the grid still widens.
+    """
+
+    nearest_trained = 0.06  # 0.07 unreachable: digit 7 is absent
+    forced_error = abs(0.07 - nearest_trained)
+    # Read the live tolerance rather than a literal: hard-coding the superseded
+    # 0.005 left the inequality passing under either value, so the test no
+    # longer demonstrated what its name claims.
+    routing_tolerance = _spec_tolerances()["routing.t"]
+    assert forced_error > routing_tolerance
+    assert ABSENT_DIGITS == {"4", "6", "7", "9"}
+
+
+def test_identity_is_derived_from_retained_bytes_not_decoded_text():
+    """§5.0: what this proves, and what it deliberately does not.
+
+    It proves identity is derived from a validated AST and its retained
+    canonical bytes, so an approximate decode cannot corrupt an existing
+    identity.  It does *not* prove decoder output can never become an identity:
+    the helpers accept any parsed node and cannot tell where it came from.  That
+    boundary needs an origin-tagged wrapper, recorded in §5.0 as a step-3
+    obligation blocking on the decoder — see the companion test below.
+    """
+
+    from process_identity import deployed_identity, verify_identity_record
+
+    node = pc.parse("lineage(graph,decay=0.85)")
+    record = deployed_identity(node, factory_fingerprint="f").as_record()
+    # The record carries the canonical bytes, so verification never needs the
+    # decoder to have spelled anything.
+    assert record["canonical_identity_string"] == "lineage(graph,decay=0.85)"
+    verify_identity_record(record)
+
+    # A near-miss decode is a different process identity, not a tolerated one:
+    # nothing in the identity layer knows about tolerance.
+    near = pc.parse("lineage(graph,decay=0.84)")
+    from process_identity import full_ast_digest
+
+    assert full_ast_digest(near) != full_ast_digest(node)
+
+
+def test_identity_boundary_is_currently_a_discipline_not_an_invariant():
+    """Records the gap honestly so the step-3 obligation is not forgotten.
+
+    The identity APIs accept any parsed node, so text that *happened* to come
+    from a decoder can still mint an identity today.  Asserting the gap keeps
+    the specification's claim and the code in agreement, and this test is the
+    one to invert once the origin-tagged wrapper lands.
+    """
+
+    from process_identity import deployed_identity, full_ast_digest_for_expression
+
+    decoded_looking_text = "lineage(graph,decay=0.84)"  # imagine a decode
+    # Nothing distinguishes it from an authored expression:
+    assert len(full_ast_digest_for_expression(decoded_looking_text)) == 64
+    identity = deployed_identity(
+        pc.parse(decoded_looking_text), factory_fingerprint="f"
+    )
+    assert identity.full_digest == full_ast_digest_for_expression(decoded_looking_text)
+
+    # The specification must therefore not claim the boundary is enforced.
+    text = SPEC.read_text(encoding="utf-8")
+    assert "discipline, not an invariant" in text
+    assert "step-3 obligation" in text

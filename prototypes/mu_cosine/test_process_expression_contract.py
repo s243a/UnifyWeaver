@@ -53,7 +53,8 @@ from process_identity import (
     verify_identity_record,
 )
 
-GOLDEN_PATH = ROOT / "PROCESS_EXPRESSION_GOLDEN_v1.json"
+GOLDEN_PATH = ROOT / "PROCESS_EXPRESSION_GOLDEN_v2.json"
+SUPERSEDED_GOLDEN_PATH = ROOT / "PROCESS_EXPRESSION_GOLDEN_v1.json"
 SPEC_SHA = "a" * 64
 
 
@@ -435,6 +436,8 @@ def test_golden_fixture_verifies_and_covers_the_required_shapes():
     names = {row["name"] for row in document["rows"]}
     assert set(PROCESSES) <= names
     for required in (
+        "int-spelled-number",
+        "int-spelled-number-list",
         "atom-bare",
         "atom-dual-bare",
         "pinned",
@@ -472,6 +475,92 @@ def test_golden_detects_a_row_recomputed_differently():
     # Digest re-bound, so only recomputation from the expression catches it.
     with pytest.raises(ContractError, match="golden row drifted"):
         verify_golden(document)
+
+
+def test_superseded_v1_bundle_is_retained_and_fails_closed():
+    """A contract change creates a new bundle; it never mutates a sealed one.
+
+    pec-v1 stays on disk as the sealed artifact it was.  Because scalar literals
+    now carry their declared registry kind, it is loadable but no longer valid
+    under the current contract — which is the designed behavior, not clutter.
+    """
+
+    assert SUPERSEDED_GOLDEN_PATH.exists()
+    with pytest.raises(ContractError, match="different contract version"):
+        load_golden(SUPERSEDED_GOLDEN_PATH)
+
+    superseded = json.loads(SUPERSEDED_GOLDEN_PATH.read_text(encoding="utf-8"))
+    assert superseded["contract_version"] == "pec-v1"
+    # No pec-v1 row was affected by the fix, which is exactly why pec-v2 had to
+    # add explicit coverage for an integer-spelled `number`.
+    assert not any(row["name"].startswith("int-spelled") for row in superseded["rows"])
+
+
+def test_superseded_bundle_integrity_is_pinned_independently():
+    """Version rejection happens before the checksum, so pin bytes separately.
+
+    ``verify_golden`` raises on ``contract_version`` before it ever reaches
+    ``golden_sha256``, so a *corrupted* pec-v1 raises the same error as an
+    intact one.  Retaining a bundle as audit provenance is only meaningful if
+    its bytes are actually pinned, hence this file-level hash.
+    """
+
+    import hashlib
+
+    from process_expression_contract import SUPERSEDED_GOLDEN_BUNDLES
+
+    for name, record in SUPERSEDED_GOLDEN_BUNDLES.items():
+        path = ROOT / name
+        assert path.exists(), name
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        assert digest == record["sha256"], f"{name} has been mutated"
+        assert json.loads(path.read_text(encoding="utf-8"))["contract_version"] == (
+            record["contract_version"]
+        )
+
+    # Demonstrate the gap this closes: a corrupted v1 is indistinguishable from
+    # an intact one through the loader alone.
+    corrupted = json.loads(SUPERSEDED_GOLDEN_PATH.read_text(encoding="utf-8"))
+    corrupted["rows"][0]["tokens"][0] = "<CORRUPTED>\tROOT"
+    with pytest.raises(ContractError, match="different contract version"):
+        verify_golden(corrupted)
+
+
+def test_current_bundle_pointer_matches_the_loaded_fixture():
+    from process_expression_contract import CURRENT_GOLDEN_BUNDLE
+
+    assert GOLDEN_PATH.name == CURRENT_GOLDEN_BUNDLE
+    assert SUPERSEDED_GOLDEN_PATH.name != CURRENT_GOLDEN_BUNDLE
+
+
+def test_committed_bundle_is_reproducible_from_the_module_alone():
+    """The canonical case set lives in code, not in remembered CLI flags."""
+
+    from process_expression_contract import REQUIRED_COVERAGE_CASES
+
+    cases = dict(PROCESSES)
+    for name, expression in REQUIRED_COVERAGE_CASES.items():
+        assert name not in cases, f"coverage case collides with a process: {name}"
+        cases[name] = expression
+    rebuilt = build_golden(cases)
+    committed = load_golden(GOLDEN_PATH)
+    assert rebuilt["golden_sha256"] == committed["golden_sha256"]
+    assert len(rebuilt["rows"]) == len(committed["rows"]) == 20
+
+
+def test_declared_registry_kind_wins_over_the_runtime_value_type():
+    """`margin.t` is registered `number`; spelling it `1` must not make it int."""
+
+    assert REGISTRY["margin"].kwargs["t"].kind == "number"
+    resolved = resolve_expression("margin(t=1)")
+    assert [(k.key, k.value_type, k.value) for k in resolved.kwargs] == [
+        ("t", "number", 1)
+    ]
+    tokens = [t.token for t in token_stream(resolved) if t.token in ("<INT>", "<NUMBER>")]
+    assert tokens == ["<NUMBER>"]
+    assert "KWARG(t,number)" in role_paths(token_stream(resolved))
+    # A genuinely int-declared field is unaffected.
+    assert resolve_expression("menu(graph,n=10)").kwargs[0].value_type == "int"
 
 
 def test_golden_rejects_a_foreign_registry_version():

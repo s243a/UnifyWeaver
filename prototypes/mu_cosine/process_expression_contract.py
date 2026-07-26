@@ -31,6 +31,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import os
+from pathlib import Path
 import sys
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -49,9 +50,47 @@ from process_identity import full_ast_digest
 
 #: Bumped whenever the structural stream or role-path serialization changes.
 #: Versioned independently of the grammar, per §3.1.
-CONTRACT_VERSION = "pec-v1"
+#:
+#: pec-v2: scalar literals carry their *declared registry kind* rather than a
+#: type inferred from the Python runtime value.  ``margin(t=1)`` now emits
+#: ``<NUMBER>`` instead of ``<INT>``.  No pec-v1 fixture row was affected — that
+#: is precisely why pec-v2 adds a row covering an integer-spelled ``number``.
+CONTRACT_VERSION = "pec-v2"
 
 GOLDEN_SCHEMA = "unifyweaver.process-expression-golden.v1"
+
+#: The bundle a consumer must reproduce.  When a contract change seals a new
+#: bundle, this pointer and every document naming it move together — see
+#: ``DESIGN_process_expression_generator.md`` §0 for the supersession procedure.
+CURRENT_GOLDEN_BUNDLE = "PROCESS_EXPRESSION_GOLDEN_v2.json"
+
+#: Superseded bundles, retained as audit-only provenance.  They are never
+#: mutated and never accepted by the current loader; their integrity is pinned
+#: separately so corruption is detectable independently of the version check.
+SUPERSEDED_GOLDEN_BUNDLES = {
+    "PROCESS_EXPRESSION_GOLDEN_v1.json": {
+        "contract_version": "pec-v1",
+        "sha256": "b053351a2a419ac58b7ab644afe15c60543846ce8b9d5a3d9bcbc332ca24db29",
+    },
+}
+
+#: Coverage the golden bundle must carry beyond the registered processes.
+#: Canonical source: the committed bundle is reproducible from this module
+#: alone, rather than from command-line flags someone typed once.
+REQUIRED_COVERAGE_CASES = {
+    "atom-bare": "graph.discrim",
+    "atom-dual-bare": "e5",
+    "pinned": "lineage(graph,decay=0.85)@run/2026-07-25",
+    "utf8-string": 'routing(e5,haiku,t=[0.02],menus=[10],manifest="héllo·wörld")',
+    "escaped-string": 'routing(e5,haiku,t=[0.02],menus=[10],manifest="a\\"b\\\\c")',
+    "menu-required-int": "menu(graph,n=10)",
+    "blend-variadic": "blend(luna.D,luna.S,graph)",
+    "margin-number": "margin(t=0.03)",
+    "neg-number": "lineage(graph,decay=-0.5)",
+    # pec-v2: a `number` field spelled as an integer must keep its declared kind.
+    "int-spelled-number": "margin(t=1)",
+    "int-spelled-number-list": "routing(e5,haiku,t=[1],menus=[10])",
+}
 
 KIND_ATOM = "atom"
 KIND_APPLY = "apply"
@@ -172,13 +211,32 @@ def _lexical(value: Any) -> str:
     return _render_val(value)
 
 
+_SCALAR_KINDS = ("number", "int", "string")
+
+
 def _value_type(value: Any, declared_kind: str | None) -> str:
+    """Resolve a literal's type, preferring the *declared registry kind*.
+
+    §3.1 of the encoder handoff requires derived tokens to agree with the pinned
+    registry during both encoding and decoding.  Inferring a scalar's type from
+    its Python runtime value violates that: ``margin(t=1)`` is valid, and
+    ``margin.t`` is registered ``number``, but the runtime value is an ``int``.
+    Inferring would emit ``<INT>`` for a ``number`` field, which a stream-driven
+    grader would then hold to exact reconstruction instead of the tolerance
+    rule in the generator specification §5.0.1.
+
+    Runtime inference remains only as a fallback for values with no declared
+    kind, and it never overrides the registry.
+    """
+
     if isinstance(value, tuple):
         if declared_kind in _LIST_ELEMENT_TYPE:
             return declared_kind
         raise ContractError(f"list value has no registered list kind: {declared_kind!r}")
     if isinstance(value, bool):
         raise ContractError("booleans are not a registered process value type")
+    if declared_kind in _SCALAR_KINDS:
+        return declared_kind
     if isinstance(value, int):
         return "int"
     if isinstance(value, float):
@@ -469,19 +527,41 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         default=[],
         metavar="NAME=EXPRESSION",
-        help="additional coverage case beyond the registered processes",
+        help="additional case beyond the canonical set; may not override a name",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite an existing bundle (a sealed bundle must never be rewritten)",
     )
     args = parser.parse_args(argv)
 
+    # The committed bundle is reproducible from this module alone.
     cases = dict(PROCESSES)
+    for name, expression in REQUIRED_COVERAGE_CASES.items():
+        if name in cases:
+            raise SystemExit(f"coverage case collides with a registered process: {name}")
+        cases[name] = expression
     for item in args.extra:
         name, _, expression = item.partition("=")
         if not name or not expression:
             raise SystemExit("--extra expects NAME=EXPRESSION")
+        if name in cases:
+            # Silent replacement would let a bundle drift from its canonical
+            # source while still looking self-consistent.
+            raise SystemExit(f"--extra may not override an existing case: {name}")
         cases[name] = expression
+
+    target = Path(args.out)
+    if target.exists() and not args.force:
+        raise SystemExit(
+            f"refusing to overwrite a sealed bundle: {target}. A contract change "
+            "seals a NEW bundle; it never rewrites an existing one."
+        )
+
     document = build_golden(cases)
     verify_golden(document)
-    with open(args.out, "wb") as handle:
+    with open(target, "wb") as handle:
         handle.write(
             json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True).encode(
                 "utf-8"
