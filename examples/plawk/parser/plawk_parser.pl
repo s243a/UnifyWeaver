@@ -2035,6 +2035,12 @@ end_action(Action) -->
 end_action(Action) -->
     printf_action(Action),
     !.
+% `END { … exit [N] }` -- set the program's exit status. END is the last thing
+% that runs, so unlike a rule-level `exit` there is nothing left to skip except
+% the remainder of the END block itself.
+end_action(Action) -->
+    exit_action(Action),
+    !.
 end_action(Action) -->
     print_action(Action).
 
