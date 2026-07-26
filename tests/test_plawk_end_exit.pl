@@ -141,9 +141,14 @@ test(end_exit_with_assoc_read_declines) :-
     build_status("{ c[$1]++ } END { print c[\"a\"]; exit 3 }\n", 3),
     !.
 
-% Likewise the for-in END driver.
-test(end_exit_after_forin_declines) :-
-    build_status("{ c[$1]++ } END { for (k in c) print k; exit 2 }\n", 3),
+% `exit` AFTER a for-in used to decline (the for-in END driver took no statement
+% list). The mixed END statement chain landed since, so it now works -- the
+% status is checked here; the chain's output shapes are covered in
+% tests/test_plawk_end_chain.pl. for-in order is hash-dependent, so compare the
+% key lines as a sorted set.
+test(end_exit_after_forin, [condition(clang_available)]) :-
+    run_sorted("{ c[$1]++ } END { for (k in c) print k; exit 2 }\n",
+        ["a", "b", "c"], 2),
     !.
 
 % An `exit` inside an END `if` branch: the END-if surface takes prints only.
@@ -214,6 +219,32 @@ run(Src, Expected, ExpectedStatus) :-
     close(PS),
     process_wait(Pid, Status),
     assertion(Out == Expected),
+    assertion(Status == exit(ExpectedStatus)).
+
+% As run/3 but comparing the output lines as a SORTED set, for programs whose
+% for-in iteration order is hash-dependent.
+run_sorted(Src, ExpectedSortedLines, ExpectedStatus) :-
+    odir(Dir),
+    input(Input),
+    directory_file_path(Dir, 'ee_bin', Bin),
+    ( exists_file(Bin) -> delete_file(Bin) ; true ),
+    directory_file_path(Dir, 'ee', Prog0),
+    atom_concat(Prog0, '.plawk', Prog),
+    setup_call_cleanup(open(Prog, write, S, [encoding(utf8)]),
+        write(S, Src), close(S)),
+    atom_concat(Prog0, '_in.txt', In),
+    setup_call_cleanup(open(In, write, SI, [encoding(utf8)]),
+        write(SI, Input), close(SI)),
+    cli([build, Prog, '-o', Bin], 0),
+    process_create(Bin, [In], [stdout(pipe(PS)), stderr(std), process(Pid)]),
+    read_string(PS, _, Out),
+    close(PS),
+    process_wait(Pid, Status),
+    split_string(Out, "\n", "", Lines0),
+    exclude(==(""), Lines0, Lines),
+    msort(Lines, SortedLines),
+    msort(ExpectedSortedLines, ExpectedSorted),
+    assertion(SortedLines == ExpectedSorted),
     assertion(Status == exit(ExpectedStatus)).
 
 % Build only, asserting the CLI status (3 = parses but outside the compilable
