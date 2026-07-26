@@ -196,15 +196,24 @@ guards · generator blocks (`gen { emit … } as name`, input iterators) ·
    SSA/phi scalar machinery), the RHS is built into a buffer and interned at
    assignment, and a read/print resolves the id to text — id 0 is the unset
    sentinel, printed as empty. Numeric and string scalars coexist in one
-   program. Tests: `tests/test_plawk_strscalar.pl`. *Still open (follow-on):*
-   string comparison / guards on a string scalar (`END { if (s == "c") … }`
-   declines). Accumulation `x = x $1` DOES work (verified against gawk --
-   this was listed as open in error). **Known bug, not just a gap:** a string
-   scalar assigned inside an `if` body (`{ if (NR > 1) s = $1 } END { print s }`)
-   compiles but prints `0` instead of the text -- the nested assignment does
-   not classify the slot as string-valued, so it lands in an i64 slot. Wrong
-   output rather than a decline, so it needs fixing before the rest of the
-   string-scalar follow-ons.)
+   program. Tests: `tests/test_plawk_strscalar.pl`. **String scalars in an `if` / loop body landed.**
+   `{ if (NR > 1) s = $1 } END { print s }` used to compile and print `0`
+   instead of the text: the slot collector descends into `if` branches and
+   foreach / while / do-while bodies, but the string-name and strnum
+   collectors looked at TOP-LEVEL rule-body actions only, so the slot existed
+   while its TYPE was decided by a view that never saw the assignment. All
+   three now walk one shared `plawk_scalar_nested_action/2`, at any nesting
+   depth. Fixing the reach exposed a second, PRE-EXISTING bug (no nesting
+   needed): a name written both as a field copy and as a string
+   (`{ s = "x"; s = $1 }`) types as a string slot -- a literal write
+   disqualifies strnum -- but the field-copy STORE had only a strnum clause,
+   so it fell through to the generic NUMERIC store and printing resolved atom
+   id 0 to empty. String and strnum slots both hold an interned atom id, so
+   both write paths now sit behind `plawk_slot_holds_text/1`. Tests:
+   `tests/test_plawk_nested_string_scalar.pl`. Accumulation `x = x $1` also
+   works (it was listed as open in error).
+   *Still open (follow-on):* string comparison / guards on a string scalar
+   (`END { if (s == "c") … }` declines).)
 6. **`delete arr[k]` — LANDED (field key).** `delete arr[$k]` removes the entry
    keyed by field k, matching the counted inc `arr[$k]++`. The runtime primitive
    `@wam_assoc_i64_delete` does **backward-shift deletion** on the linear-probing
