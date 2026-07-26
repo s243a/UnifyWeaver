@@ -344,7 +344,7 @@ python3 /tmp/wam-bench/python-300/main.py data/benchmark/300 3
 
 ### R WAM (functions mode)
 
-Measured 2026-07-25 in hosted GitHub Actions using
+Measured 2026-07-26 in hosted GitHub Actions using
 `generate_wam_r_effective_distance_benchmark.pl`
 with `emit_mode(functions)`, auto-detected `category_ancestor/4` kernel
 (fleet hops layout), and `category_parent/2` FactSource via
@@ -354,10 +354,10 @@ R 4.3.3, single-core.
 
 | Scale | query_ms | total_ms | rows | Cores | vs reference |
 |-------|----------|----------|------|-------|--------------|
-| 300 | 3679 | 4344 | 271 | 1 | match (`normalize_three_column_float_rows`, 6 dp) |
+| 300 | 3412 | 4076 | 271 | 1 | match (`normalize_three_column_float_rows`, 6 dp) |
 
 `query_ms` is the 3-run median of article×root enumeration only
-(samples: 4475, 3679, 3554). `total_ms` is setup (Rscript startup +
+(samples: 4078, 3412, 3268). `total_ms` is setup (Rscript startup +
 generated-program / FactSource load + article/root TSV load) plus that
 median query. Output validated against
 `data/benchmark/300/reference_output.tsv` with canonical sort and 6-decimal
@@ -415,11 +415,14 @@ retained.
 
 PERF-R-CA-IDTABLE adds an optional in-memory integer adjacency table
 (`id_table`) on indexed FactSources so the CA loop reads parent-id vectors by
-list index instead of invoking `lookup_ids` ~516k times. Dense slots cover
-fact-derived atom ids (capped at 65536); sparse/high ids use hashed overflow.
-Lazy/cached LMDB remain on-demand (no `id_table`). Microbench on this host:
-516k cached closure calls ~0.41 s vs direct list reads ~0.055 s. Same-host
-scale-300 3-rep (Cursor cloud agent, R 4.3.3; 271-row parity):
+list index instead of invoking `lookup_ids` ~516k times. Registration remains
+cheap: because all arity>=2 in-memory FactSources receive the capability, the
+table is materialized lazily on first CA use rather than for unrelated
+predicates. Dense slots cover fact-derived atom ids (capped at 65536);
+sparse/high ids use hashed overflow. Lazy/cached LMDB remain on-demand (no
+`id_table`). Microbench on this host: 516k cached closure calls ~0.41 s vs
+direct list reads ~0.055 s. Same-host scale-300 3-rep (Cursor cloud agent,
+R 4.3.3; 271-row parity):
 
 | Stage | query_ms | total_ms | samples |
 |-------|----------|----------|---------|
@@ -428,9 +431,12 @@ scale-300 3-rep (Cursor cloud agent, R 4.3.3; 271-row parity):
 
 Query ≈ 1.05×; total also improved (table setup ~0.03 s / ~151 KiB). Post-change
 Rprof: `lookup_ids` absent from the hot list; `hops_ids` ≈ 25% self / 32% total
-(`mem.total` ≈ 683). Primary fleet row above remains the GitHub-hosted STACK
-median (3679 / 4344) until a hosted IDTABLE remeasure is recorded. Residual
-cost is the iterative DFS body and lowered WAM `step`/orchestration.
+(`mem.total` ≈ 683). A subsequent GitHub-hosted run measured IDTABLE at
+3412 / 4076 (samples: 4078, 3412, 3268), 1.08× faster in query time and 1.07×
+faster overall than hosted STACK 3679 / 4344, with the same 271-row reference
+parity. This is about 18.3× faster than the original hosted R query result of
+62595 ms. Residual cost is the iterative DFS body and lowered WAM
+`step`/orchestration.
 
 #### Reproduction
 
