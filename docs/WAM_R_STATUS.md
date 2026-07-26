@@ -62,9 +62,9 @@ default 4096), and explicit `auto` (codegen resolves via shared
 - Effective-distance cross-target matrix row populated (BENCH-R): scale-300
   `emit_mode(functions)` + auto `category_ancestor/4` kernel, reference
   parity match — see `docs/design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md`.
-  Further optimized by PERF-R-CA-DIRECT / IDDFS / IDCACHE / STACK / IDTABLE
-  (hosted-CI STACK median query_ms=3679; IDTABLE adds in-memory adjacency
-  table, ~1.05× same-host vs STACK).
+  Further optimized by PERF-R-CA-DIRECT / IDDFS / IDCACHE / STACK / IDTABLE.
+  Hosted-CI IDTABLE median query_ms=3412 / total_ms=4076, 1.08× / 1.07×
+  vs hosted STACK 3679/4344.
 
 ## Path forward
 
@@ -74,5 +74,5 @@ default 4096), and explicit `auto` (codegen resolves via shared
 ## Document status
 
 Fleet-aligned snapshot updated for PERF-R-CA-IDTABLE (2026-07-26): optional
-`id_table` adjacency on indexed FactSources; primary GHA fleet row still
-STACK (3679) pending hosted IDTABLE remeasure. PATHMARK remains declined.
+lazy-on-first-CA `id_table` adjacency on indexed FactSources; hosted remeasure
+3412/4076 with 271-row parity. PATHMARK remains declined.
