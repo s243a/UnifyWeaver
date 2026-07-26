@@ -13,6 +13,31 @@ registered processes. Measurements land as tests in
 [`test_process_expression_envelope.py`](test_process_expression_envelope.py), never as prose only.
 Numbers that a test does not reproduce are marked *provisional* or *assumed*.
 
+## 0. Bundle supersession procedure
+
+The encoder handoff §9 states the rule — *any intentional contract change creates a new bundle and
+never mutates a sealed result* — but not which pointers must move with it. That gap is how a
+current bundle and its documentation drift apart, so the procedure is written down here.
+
+A contract change to the token stream or role-path serialization requires, **in one change**:
+
+1. bump `CONTRACT_VERSION`, with a comment naming what changed and why;
+2. seal a **new** bundle file. The generator refuses to overwrite an existing target, because
+   rewriting a sealed bundle is the failure this rule exists to prevent;
+3. add coverage for the changed behavior to `REQUIRED_COVERAGE_CASES` — the canonical case set
+   lives in code, so the committed bundle is reproducible from the module alone rather than from
+   command-line flags someone typed once. *If no existing row changed, that is a signal the new
+   case is missing, not that the change was harmless;*
+4. move `CURRENT_GOLDEN_BUNDLE`, and with it every document that directs a consumer to a bundle:
+   `DESIGN_expression_encoder_future.md` §11 step 1, and the track README's two-track table;
+5. record the superseded bundle in `SUPERSEDED_GOLDEN_BUNDLES` with its **file digest**. Version
+   rejection happens before the checksum is reached, so a corrupted superseded bundle otherwise
+   raises exactly the same error as an intact one — retaining it as provenance is only meaningful
+   if its bytes are pinned separately.
+
+Superseded bundles stay on disk, are never mutated, and are rejected by the current loader. That
+rejection is the designed behavior, not clutter.
+
 ## 1. Support and frequency are separate artifacts
 
 The single most important structural decision in this specification:
@@ -346,14 +371,30 @@ Closeness has to be expressed in the loss or it does not exist.
 
 #### Stochastic exact grading
 
-The mechanism is **grading-mode selection**, not a reward term: each training row is assigned, by a
+The mechanism is **grading-mode selection**, not a reward term: each graded unit is assigned, by a
 seeded draw, to one of two *differentiable* losses.
 
+The unit is the **numeric field**, and the draw is **resampled every step**:
+
 ```text
-L_numeric(row) = exact_token_CE(row)      with probability p
-               = tolerance_loss(row)      with probability 1 - p
+for each numeric field f in a row, independently, at every step:
+    L_numeric(f) = exact_token_CE(f)      with probability p
+                 = tolerance_loss(f)      with probability 1 - p
 p = 0.75    # provisional; ablated over {0, 0.5, 0.75, 1}
 ```
+
+Both choices are load-bearing and were ambiguous in an earlier draft that wrote the formula
+per row while the requirements below assigned a draw per field:
+
+- **Per field, not per row.** A row-level unit makes one wrong digit in a 120-token expression
+  decide the grading of every other field in that row, and the two units yield different
+  estimators and different correlation structure. Per-field draws keep the signal dense and match
+  the per-field tolerance table of §5.0.2.
+- **Resampled per step, not fixed.** A permanent assignment is learnable: the decoder can
+  discover which examples are never exactly graded and relax on them specifically, which
+  defeats the mechanism's central property. Fresh draws keep every field exactly gradable at some
+  future step, so "cannot tell which will be strictly graded" stays true throughout training
+  rather than only at initialization.
 
 Both branches are ordinary teacher-forced losses over known targets, so gradients flow in the
 usual way and `p` only chooses which loss a row contributes. This is deliberate. An earlier
@@ -380,10 +421,8 @@ Two properties make this the right shape rather than a compromise:
 
 Three requirements on the implementation:
 
-1. **Grade per field, not per expression.** Whole-expression equality is all-or-nothing: one wrong
-   digit in a 120-token row zeroes the signal for every other field. Assign the grading mode per
-   numeric field, matching the per-field tolerance structure of §5.0.2. Integer fields grade
-   exactly regardless of the draw.
+1. **Integer fields grade exactly regardless of the draw** (§5.0.2). They are outside the
+   closeness regime entirely, so the draw applies only to `number` and `number_list` fields.
 2. **The tolerance branch must not be plain CE.** Falling back to unmodified byte cross-entropy on
    the `(1 - p)` rows silently reimposes exactness and undoes the whole mechanism. The tolerance
    loss is the N2 scalar head or a digit-distance-weighted cross-entropy.

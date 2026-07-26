@@ -496,6 +496,58 @@ def test_superseded_v1_bundle_is_retained_and_fails_closed():
     assert not any(row["name"].startswith("int-spelled") for row in superseded["rows"])
 
 
+def test_superseded_bundle_integrity_is_pinned_independently():
+    """Version rejection happens before the checksum, so pin bytes separately.
+
+    ``verify_golden`` raises on ``contract_version`` before it ever reaches
+    ``golden_sha256``, so a *corrupted* pec-v1 raises the same error as an
+    intact one.  Retaining a bundle as audit provenance is only meaningful if
+    its bytes are actually pinned, hence this file-level hash.
+    """
+
+    import hashlib
+
+    from process_expression_contract import SUPERSEDED_GOLDEN_BUNDLES
+
+    for name, record in SUPERSEDED_GOLDEN_BUNDLES.items():
+        path = ROOT / name
+        assert path.exists(), name
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        assert digest == record["sha256"], f"{name} has been mutated"
+        assert json.loads(path.read_text(encoding="utf-8"))["contract_version"] == (
+            record["contract_version"]
+        )
+
+    # Demonstrate the gap this closes: a corrupted v1 is indistinguishable from
+    # an intact one through the loader alone.
+    corrupted = json.loads(SUPERSEDED_GOLDEN_PATH.read_text(encoding="utf-8"))
+    corrupted["rows"][0]["tokens"][0] = "<CORRUPTED>\tROOT"
+    with pytest.raises(ContractError, match="different contract version"):
+        verify_golden(corrupted)
+
+
+def test_current_bundle_pointer_matches_the_loaded_fixture():
+    from process_expression_contract import CURRENT_GOLDEN_BUNDLE
+
+    assert GOLDEN_PATH.name == CURRENT_GOLDEN_BUNDLE
+    assert SUPERSEDED_GOLDEN_PATH.name != CURRENT_GOLDEN_BUNDLE
+
+
+def test_committed_bundle_is_reproducible_from_the_module_alone():
+    """The canonical case set lives in code, not in remembered CLI flags."""
+
+    from process_expression_contract import REQUIRED_COVERAGE_CASES
+
+    cases = dict(PROCESSES)
+    for name, expression in REQUIRED_COVERAGE_CASES.items():
+        assert name not in cases, f"coverage case collides with a process: {name}"
+        cases[name] = expression
+    rebuilt = build_golden(cases)
+    committed = load_golden(GOLDEN_PATH)
+    assert rebuilt["golden_sha256"] == committed["golden_sha256"]
+    assert len(rebuilt["rows"]) == len(committed["rows"]) == 20
+
+
 def test_declared_registry_kind_wins_over_the_runtime_value_type():
     """`margin.t` is registered `number`; spelling it `1` must not make it int."""
 

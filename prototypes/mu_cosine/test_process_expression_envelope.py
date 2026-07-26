@@ -364,6 +364,52 @@ def test_threshold_tolerance_is_below_half_the_operational_gap():
         pc.parse(collapsed)  # parses today: no ordering or separation enforced
 
 
+def test_authoritative_bundle_pointers_all_name_the_current_bundle():
+    """§0: the pointer moves with the bundle, or consumers fail closed.
+
+    A step-2 implementer following the parent handoff or the README must be
+    directed at the bundle the current loader accepts.  Pointing at a
+    superseded bundle would either fail closed or silently miss the coverage
+    the new contract added.
+    """
+
+    from process_expression_contract import (
+        CURRENT_GOLDEN_BUNDLE,
+        SUPERSEDED_GOLDEN_BUNDLES,
+    )
+
+    handoff = (ROOT / "DESIGN_expression_encoder_future.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    for document, label in ((handoff, "handoff"), (readme, "README")):
+        assert CURRENT_GOLDEN_BUNDLE in document, f"{label} does not name the current bundle"
+
+    # A superseded bundle may still be *mentioned* as provenance, but never
+    # without the current one alongside it.
+    for stale in SUPERSEDED_GOLDEN_BUNDLES:
+        for document, label in ((handoff, "handoff"), (readme, "README")):
+            if stale in document:
+                assert CURRENT_GOLDEN_BUNDLE in document, (
+                    f"{label} names superseded {stale} without the current bundle"
+                )
+
+
+def test_specification_records_the_supersession_procedure():
+    text = SPEC.read_text(encoding="utf-8")
+    assert "Bundle supersession procedure" in text
+    assert "CURRENT_GOLDEN_BUNDLE" in text
+    assert "SUPERSEDED_GOLDEN_BUNDLES" in text
+
+
+def test_specification_fixes_the_grading_unit_and_schedule():
+    """§5.3: one unit, one schedule — the earlier draft implied both."""
+
+    text = SPEC.read_text(encoding="utf-8")
+    assert "The unit is the **numeric field**, and the draw is **resampled every step**" in text
+    assert "Per field, not per row." in text
+    assert "Resampled per step, not fixed." in text
+
+
 def test_specification_states_precedence_over_the_parent_handoff():
     """§5.0.1: the handoff's exact-AST gate stays primary until amended."""
 
@@ -410,7 +456,10 @@ def test_missing_digits_cap_resolution_below_the_stated_tolerance():
 
     nearest_trained = 0.06  # 0.07 unreachable: digit 7 is absent
     forced_error = abs(0.07 - nearest_trained)
-    routing_tolerance = 0.005
+    # Read the live tolerance rather than a literal: hard-coding the superseded
+    # 0.005 left the inequality passing under either value, so the test no
+    # longer demonstrated what its name claims.
+    routing_tolerance = _spec_tolerances()["routing.t"]
     assert forced_error > routing_tolerance
     assert ABSENT_DIGITS == {"4", "6", "7", "9"}
 
