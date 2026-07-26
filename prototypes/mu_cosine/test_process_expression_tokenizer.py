@@ -276,3 +276,40 @@ def test_every_emitted_term_is_a_vocabulary_member():
         for term in encode_terms(resolve_expression(expression)):
             assert term in VOCAB.id_by_term
             assert VOCAB.term_by_id[VOCAB.id_by_term[term]] == term
+
+
+def test_malformed_model_bytes_fail_through_tokenizer_error():
+    """Vocabulary-valid but semantically malformed byte payloads must raise TokenizerError,
+    never a raw host exception (UnicodeDecodeError/ValueError). Regression for the 0xff leak."""
+    base = list(encode_terms(resolve_expression(
+        'routing(e5,sonnet,manifest="x",menus=[10],t=[0.02])')))
+
+    def swap_payload(terms, open_tag, close_tag, payload_terms):
+        out, i = [], 0
+        while terms[i] != open_tag:
+            out.append(terms[i])
+            i += 1
+        out.append(terms[i])
+        i += 1
+        while not terms[i].startswith(close_tag):
+            i += 1                                    # drop original payload bytes
+        out.extend(payload_terms)
+        out.extend(terms[i:])
+        return out
+
+    # 1. lone 0xff inside a STRING payload: vocabulary-valid, invalid utf-8
+    bad = swap_payload(base, "<STRING>", "</STRING>", ["BYTE:0xff"])
+    with pytest.raises(TokenizerError, match="utf-8 value payload"):
+        decode_terms(bad)
+
+    # 2. non-numeric bytes under a NUMBER tag
+    nbase = list(encode_terms(resolve_expression("menu(graph,n=10)")))
+    bad_n = ["BYTE:0x78" if t == "BYTE:0x31" else t for t in nbase]   # '1' -> 'x'
+    with pytest.raises(TokenizerError, match="payload"):
+        decode_terms(bad_n)
+
+    # 3. non-ascii byte inside a MOD payload
+    mbase = list(encode_terms(resolve_expression("kalman(luna.D,luna.S)")))
+    bad_m = ["BYTE:0xff" if t == "BYTE:0x44" else t for t in mbase]   # 'D' -> 0xff
+    with pytest.raises(TokenizerError, match="modifier payload"):
+        decode_terms(bad_m)

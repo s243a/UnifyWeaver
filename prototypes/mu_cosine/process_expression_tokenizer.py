@@ -217,17 +217,29 @@ def _take_payload(cursor: _Cursor, closing: str) -> bytes:
     return bytes(payload)
 
 
+def _controlled(fn, description: str):
+    """Convert model-produced bytes; any host exception fails through TokenizerError."""
+    try:
+        return fn()
+    except TokenizerError:
+        raise
+    except Exception as exc:
+        raise TokenizerError(f"malformed {description}: {exc}") from exc
+
+
 def _value_from(kind: str, payload: bytes) -> Any:
-    text = payload.decode("utf-8")
+    text = _controlled(lambda: payload.decode("utf-8"), "utf-8 value payload")
     if kind == "string":
         return text
     if kind == "int":
-        return int(text)
+        return _controlled(lambda: int(text), "integer payload")
     if kind == "number":
         # The declared kind is `number`, but the canonical lexical form decides
         # int-vs-float: `margin(t=1)` renders "1" and must decode back to the
         # int 1, or the canonical string — and therefore the identity — moves.
-        return float(text) if any(ch in text for ch in ".eE") else int(text)
+        return _controlled(
+            lambda: float(text) if any(ch in text for ch in ".eE") else int(text),
+            "numeric payload")
     raise TokenizerError(f"unsupported scalar kind: {kind!r}")
 
 
@@ -297,7 +309,8 @@ def _decode_node(cursor: _Cursor) -> Node:
         index = int(_tagged(cursor.take(), "<MOD:"))
         if index != len(mods):
             raise TokenizerError("modifier indices must be contiguous")
-        mods.append(_take_payload(cursor, "</MOD>").decode("ascii"))
+        payload = _take_payload(cursor, "</MOD>")
+        mods.append(_controlled(lambda: payload.decode("ascii"), "modifier payload"))
 
     cursor.expect("<PINS>")
     pins = []
@@ -305,7 +318,8 @@ def _decode_node(cursor: _Cursor) -> Node:
         index = int(_tagged(cursor.take(), "<PIN:"))
         if index != len(pins):
             raise TokenizerError("pin indices must be contiguous")
-        pins.append(_take_payload(cursor, "</PIN>").decode("ascii"))
+        payload = _take_payload(cursor, "</PIN>")
+        pins.append(_controlled(lambda: payload.decode("ascii"), "pin payload"))
 
     cursor.expect("</NODE>")
 
