@@ -4423,9 +4423,9 @@ WamRuntime$build_fact_indexes <- function(facts, arity) {
 # integer-ID DFS; id_table (when present) lets the CA loop read parent
 # vectors by list index without a per-node closure; lookup alone keeps
 # the TermValue path; neither falls back to iterate_goal. Atom-only
-# parents match collect_parents filtering. In-memory indexed sources may
-# pre-materialize id_table (PERF-R-CA-IDTABLE) and keep lookup_ids as a
-# thin reader over it. Lazy/cached LMDB stay on-demand (no id_table).
+# parents match collect_parents filtering. In-memory indexed sources expose
+# a lazy-on-first-CA id_table (PERF-R-CA-IDTABLE); lookup_ids keeps its prior
+# lazy memo API for other callers. Lazy/cached LMDB stay on-demand (no table).
 WamRuntime$arg1_parent_terms_from_tuples <- function(tuples) {
   n <- length(tuples)
   if (n == 0L) return(list())
