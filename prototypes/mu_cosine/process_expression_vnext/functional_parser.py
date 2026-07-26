@@ -23,9 +23,14 @@ Deliberate non-behaviors:
 * numeric text is **not** converted, so the declared type can decide later
   (§3.6);
 * annotations are attached unchecked;
-* variables, modifiers, pins, function types and sum types are *recognized* and
-  rejected with a "not implemented in this milestone" diagnostic rather than
-  being silently misparsed.
+* variables are parsed into :class:`SourceVariable` / :class:`SourceVariableIndex`
+  carrying only their *spelling*.  Whether two occurrences denote one logical
+  variable is a scoping decision, and the parser has no scope; the ground
+  elaboration path rejects any variable it finds, so the ground surface is
+  unchanged;
+* modifiers, pins, function types, sum types and expression-valued type indices
+  are *recognized* and rejected with a "not implemented in this milestone"
+  diagnostic rather than being silently misparsed.
 """
 from __future__ import annotations
 
@@ -46,6 +51,7 @@ from .ast import (
     SourceType,
     SourceTypeName,
     SourceVariable,
+    SourceVariableIndex,
     SourceAnnotated,
     Span,
 )
@@ -223,11 +229,9 @@ class _Parser:
             token = word.group(0)
             if _VARIABLE.match(token):
                 self.i = word.end()
-                raise NotImplementedInMilestone(
-                    f"variable {token!r} is recognized but not implemented in this "
-                    "milestone",
-                    start,
-                )
+                # Scoping — whether two occurrences are one variable — belongs to
+                # the pattern elaborator, so the parser records only the spelling.
+                return SourceVariable(Span(start, self.i), token)
             raise ParseError(
                 f"unregistered name {token!r}; a bare lowercase word is never "
                 "guessed to be an atom — register it or quote it",
@@ -387,11 +391,7 @@ class _Parser:
         word = _IDENT.match(self.text, self.i)
         if word and _VARIABLE.match(word.group(0)):
             self.i = word.end()
-            raise NotImplementedInMilestone(
-                f"type variable {word.group(0)!r} is recognized but not implemented "
-                "in this milestone",
-                start,
-            )
+            return SourceVariableIndex(Span(start, self.i), word.group(0))
 
         name = self._match_registered_name()
         if name is not None:

@@ -17,6 +17,13 @@ Two rules are easy to get backwards and are therefore stated explicitly:
 * a *successful redundant* annotation leaves no trace, so ``pearltrees`` and
   ``pearltrees::corpus`` are the same typed term.
 
+Milestone 2 adds variables to the same code path rather than beside it.  There
+is one ``_elaborate``; a ``scope`` of ``None`` means "ground only" and makes any
+variable an error, so ground expressions elaborate through exactly the checks
+they did before.  Three entry points name the three states:
+:func:`elaborate` (compatibility, ground, bare term), :func:`elaborate_ground`
+(ground, wrapped) and :func:`elaborate_pattern` (may contain variables).
+
 Nothing here mints identity.  There is no hashing, no serialization to
 ``pe-typed-ast-v1``, and no notion of a deployed process.
 """
@@ -27,10 +34,15 @@ from typing import Any, Mapping
 from .ast import (
     Atom,
     Call,
+    PatternIndex,
+    PatternVariable,
     ReferenceIndex,
     SourceReferenceIndex,
+    SourceVariable,
+    SourceVariableIndex,
     TermIndex,
     ValueIndex,
+    VarId,
     Float64,
     IndexedType,
     Int,
@@ -54,8 +66,10 @@ from .ast import (
     TypeName,
     TypeVar,
     TypedTerm,
+    new_var_id,
 )
 from .numerics import NumericError, to_float64, to_int, to_real
+from .patterns import GroundAST, PatternAST, PatternVar, ground, make_ground
 from .registry import Entry, Registry, RegistryError
 
 
@@ -65,6 +79,102 @@ class ElaborationError(ValueError):
     def __init__(self, message: str, span=None):
         self.span = span
         super().__init__(message if span is None else f"{message} {span}")
+
+
+class _Scope:
+    """Variable scope for one pattern elaboration.
+
+    Its whole job is to answer "is this the same variable as that one?", which
+    is why the parser cannot do it: two ``S`` tokens are one variable and two
+    ``_`` tokens are two, and only something that spans the whole expression
+    knows which.
+    """
+
+    def __init__(self) -> None:
+        self._named: dict[str, VarId] = {}
+        self.constraints: dict[VarId, Type | None] = {}
+        self.term_positions: set[VarId] = set()
+        #: Author-visible variables in first-occurrence order.  Inferred
+        #: constraint variables are deliberately excluded: they have no name, no
+        #: author intent behind them, and admitting them to the binding table
+        #: would let a caller bind an artifact of type inference.
+        self.order: list[VarId] = []
+
+    def _register(self, var: VarId) -> VarId:
+        if var not in self.constraints:
+            self.constraints[var] = None
+            self.order.append(var)
+        return var
+
+    def named(self, name: str) -> VarId:
+        var = self._named.get(name)
+        if var is None:
+            var = new_var_id("named", name)
+            self._named[name] = var
+            self._register(var)
+        return var
+
+    def anonymous(self) -> VarId:
+        return self._register(new_var_id("anonymous", "_"))
+
+    def inferred(self, hint: str) -> VarId:
+        # Not registered: an inferred variable is resolved by unification, never
+        # by a caller.
+        return new_var_id("inferred", hint)
+
+    def variable_for(self, name: str) -> VarId:
+        return self.anonymous() if name == "_" else self.named(name)
+
+    def table(self) -> tuple[PatternVar, ...]:
+        return tuple(
+            PatternVar(
+                var=var,
+                constraint=self.constraints[var],
+                in_term_position=var in self.term_positions,
+            )
+            for var in self.order
+        )
+
+
+def _freshen(declared: Any, scope: _Scope) -> Any:
+    """Replace a signature's own index placeholders with fresh pattern indices.
+
+    §3.5: ``lineage_op(S)`` infers ``S :: substrate[C]`` *for a fresh C*.  The
+    registry's ``C`` is a :class:`TypeVar` shared by every use of the signature,
+    so reusing it as the variable's constraint would make two unrelated
+    expressions appear to share an ownership constraint.
+    """
+
+    if isinstance(declared, TypeVar):
+        return PatternIndex(scope.inferred(declared.name))
+    if isinstance(declared, IndexedType):
+        return IndexedType(
+            declared.name,
+            tuple(
+                _freshen(i, scope) if isinstance(i, Type) else i
+                for i in declared.indices
+            ),
+        )
+    if isinstance(declared, ListType):
+        return ListType(_freshen(declared.element, scope))
+    return declared
+
+
+def _expectation(node: SourceNode, want: Type) -> Type | None:
+    """What to hand down as the expected type.
+
+    Ground elaboration keeps its pre-existing rule — an expectation that still
+    carries signature variables is dropped, because a literal cannot satisfy one
+    and the diagnostic would be confusing.  A *variable* is the exception: the
+    slot's declared type is precisely what constrains it, so dropping it there
+    would make every ``lineage_op(S)`` underconstrained.
+    """
+
+    if _is_concrete(want):
+        return want
+    if isinstance(node, (SourceVariable, SourceAnnotated)):
+        return want
+    return None
 
 
 def _substitute(declared: Type, bindings: Mapping[str, Any]) -> Type:
@@ -119,7 +229,15 @@ def _unify(declared: Type, actual: Type, bindings: dict[str, Any]) -> bool:
     return False
 
 
-def _resolve_source_type(node: SourceType, registry: Registry):
+def _resolve_source_type(node: SourceType, registry: Registry, scope: _Scope | None):
+    if isinstance(node, SourceVariableIndex):
+        if scope is None:
+            raise ElaborationError(
+                f"index variable {node.name!r} appears in a ground expression; "
+                "use elaborate_pattern() for expressions containing variables",
+                node.span,
+            )
+        return PatternIndex(scope.variable_for(node.name))
     if isinstance(node, SourceReferenceIndex):
         # An index may name a *reference* value.  A callable is not a value, so
         # `list[principal_tree]` and `substrate[principal_tree]` must not pass.
@@ -136,7 +254,7 @@ def _resolve_source_type(node: SourceType, registry: Registry):
     if isinstance(node, SourceTypeName):
         return TypeName(node.name)
     if isinstance(node, SourceIndexedType):
-        indices = tuple(_resolve_source_type(i, registry) for i in node.indices)
+        indices = tuple(_resolve_source_type(i, registry, scope) for i in node.indices)
         if node.name == "list":
             if len(indices) != 1:
                 raise ElaborationError("list takes exactly one element type", node.span)
@@ -192,12 +310,15 @@ def _literal(node: SourceNode, expected: Type | None) -> TypedTerm:
 
 
 def _elaborate(
-    node: SourceNode, registry: Registry, expected: Type | None
+    node: SourceNode, registry: Registry, expected: Type | None, scope: _Scope | None
 ) -> TypedTerm:
+    if isinstance(node, SourceVariable):
+        return _elaborate_variable(node, expected, scope)
+
     if isinstance(node, SourceAnnotated):
-        asserted = _resolve_source_type(node.asserted, registry)
+        asserted = _resolve_source_type(node.asserted, registry, scope)
         # The assertion narrows what the inner term may be, but never converts.
-        inner = _elaborate(node.term, registry, asserted)
+        inner = _elaborate(node.term, registry, asserted, scope)
         if inner.inferred_type != asserted:
             raise ElaborationError(
                 f"annotation {asserted} conflicts with inferred type "
@@ -225,7 +346,7 @@ def _elaborate(
                 "a list literal needs a declared list type", node.span
             )
         items = tuple(
-            _elaborate(item, registry, expected.element) for item in node.items
+            _elaborate(item, registry, expected.element, scope) for item in node.items
         )
         for item in items:
             if item.inferred_type != expected.element:
@@ -253,13 +374,51 @@ def _elaborate(
         return Reference(actual, node.name)
 
     if isinstance(node, SourceCall):
-        return _elaborate_call(node, registry, expected)
+        return _elaborate_call(node, registry, expected, scope)
 
     raise ElaborationError(f"unsupported term: {type(node).__name__}", node.span)
 
 
+def _elaborate_variable(
+    node: SourceVariable, expected: Type | None, scope: _Scope | None
+) -> TypedTerm:
+    if scope is None:
+        raise ElaborationError(
+            f"variable {node.name!r} appears in a ground expression; use "
+            "elaborate_pattern() for expressions containing variables",
+            node.span,
+        )
+    if expected is None:
+        raise ElaborationError(
+            f"variable {node.name!r} is underconstrained: it carries no '::' "
+            "annotation and the position it occupies declares no type",
+            node.span,
+        )
+    constraint = _freshen(expected, scope)
+    if not isinstance(constraint, Type):  # pragma: no cover - registry forbids it
+        raise ElaborationError(
+            f"variable {node.name!r} cannot be constrained by the value index "
+            f"{constraint}",
+            node.span,
+        )
+    var = scope.variable_for(node.name)
+    previous = scope.constraints.get(var)
+    if previous is not None and previous != constraint:
+        # Two occurrences of one named variable are one variable, so two
+        # constraints must agree; silently keeping either would make the pattern
+        # mean something the author did not write.
+        raise ElaborationError(
+            f"variable {node.name!r} is constrained as both {previous} and "
+            f"{constraint}",
+            node.span,
+        )
+    scope.constraints[var] = constraint
+    scope.term_positions.add(var)
+    return PatternVariable(constraint, var)
+
+
 def _elaborate_call(
-    node: SourceCall, registry: Registry, expected: Type | None
+    node: SourceCall, registry: Registry, expected: Type | None, scope: _Scope | None
 ) -> TypedTerm:
     try:
         entry: Entry = registry.get(node.name)
@@ -281,7 +440,7 @@ def _elaborate_call(
     args: list[TypedTerm] = []
     for index, (arg, declared) in enumerate(zip(node.args, entry.arg_types)):
         want = _substitute(declared, bindings)
-        term = _elaborate(arg, registry, want if _is_concrete(want) else None)
+        term = _elaborate(arg, registry, _expectation(arg, want), scope)
         if not _unify(declared, term.inferred_type, bindings):
             raise ElaborationError(
                 f"{node.name} argument {index} expects "
@@ -296,6 +455,13 @@ def _elaborate_call(
         argument = args[position]
         if isinstance(argument, Reference):
             index: Any = ReferenceIndex(argument.name)
+        elif isinstance(argument, PatternVariable):
+            # The ownership index *is* the author's variable, so it must stay a
+            # pattern index rather than becoming a TermIndex wrapping a variable
+            # — otherwise grounding would have to reach inside an index to
+            # substitute, and `binds` would produce a shape that direct ground
+            # elaboration never produces.
+            index = PatternIndex(argument.var)
         else:
             # EXPERIMENTAL: an expression-valued index.  Its wire form is an
             # open specification decision; see the module docstring in ast.py.
@@ -336,8 +502,9 @@ def _elaborate_call(
     for spec in entry.fields:
         if spec.name in seen:
             want = _substitute(spec.type, bindings)
+            value_node = seen[spec.name]
             term = _elaborate(
-                seen[spec.name], registry, want if _is_concrete(want) else None
+                value_node, registry, _expectation(value_node, want), scope
             )
             if not _unify(spec.type, term.inferred_type, bindings):
                 raise ElaborationError(
@@ -400,7 +567,10 @@ def _default_term(spec, registry: Registry, want: Type) -> TypedTerm:
     from .functional_parser import parse_functional
 
     source = parse_functional(spec.default, registry)
-    return _elaborate(source, registry, want)
+    # Scope is None even inside a pattern: a registry default is fixed text, and
+    # a default that introduced a variable would add a binding obligation the
+    # author never wrote.
+    return _elaborate(source, registry, want, None)
 
 
 def _is_concrete(declared: Type) -> bool:
@@ -444,10 +614,102 @@ def _assert_no_type_vars(term: TypedTerm, path: str = "result") -> None:
 def elaborate(source: SourceNode, registry: Registry) -> TypedTerm:
     """Elaborate a source AST into an in-memory typed ground term.
 
+    Compatibility convenience, retained from milestone 1 and **ground-only**: a
+    variable anywhere in ``source`` is an :class:`ElaborationError`, never a
+    silently accepted free variable.  It returns the bare
+    :class:`~.ast.TypedTerm`; :func:`elaborate_ground` returns the same term
+    wrapped in the :class:`~.patterns.GroundAST` state type, and
+    ``elaborate_ground(s, r).term == elaborate(s, r)`` always holds.  Prefer
+    :func:`elaborate_ground` in new code, because a bare ``TypedTerm`` does not
+    say which state-machine state it is in.
+
     The result is *not* identity-bearing and is not serialized to any canonical
     schema by this milestone.
     """
 
-    term = _elaborate(source, registry, None)
+    term = _elaborate(source, registry, None, None)
     _assert_no_type_vars(term)
     return term
+
+
+def elaborate_ground(source: SourceNode, registry: Registry) -> GroundAST:
+    """Elaborate a variable-free source AST into a ``GroundAST``.
+
+    The groundness proof runs on the way out, so the state type is earned rather
+    than asserted.
+    """
+
+    return make_ground(elaborate(source, registry), what="ground elaboration")
+
+
+def elaborate_pattern(source: SourceNode, registry: Registry) -> PatternAST:
+    """Elaborate a source AST that may contain variables into a ``PatternAST``.
+
+    Type checking is the same checking ground elaboration does — signatures,
+    ownership indices, annotations, field consumption — with variables treated
+    as terms of their constrained type.  A pattern that cannot type-check is
+    rejected here rather than at grounding, which is why
+    ``cross_substrate(S::substrate[C], T::substrate[OtherC])`` fails before any
+    binding is supplied.
+    """
+
+    scope = _Scope()
+    term = _elaborate(source, registry, None, scope)
+    _assert_no_type_vars(term)
+    return PatternAST(
+        term=term, variables=scope.table(), registry_label=registry.label
+    )
+
+
+def ground_surface(
+    pattern: PatternAST, registry: Registry, bindings: Mapping[Any, str]
+) -> GroundAST:
+    """Convenience: parse surface-text bindings, then :func:`~.patterns.ground`.
+
+    Kept separate from :func:`~.patterns.ground` on purpose.  Grounding takes
+    elaborated values so that a malformed binding *string* raises a parse or
+    elaboration error from this function, and a genuinely unsatisfiable binding
+    raises a ``GroundingError`` from that one — collapsing the two would make
+    "your text is malformed" and "your bindings do not ground this pattern"
+    indistinguishable.
+
+    Each binding is elaborated against its variable's constraint, which is what
+    lets ``D = "0.85"`` become a ``real`` rather than needing ``0.85::real``.
+    """
+
+    from .functional_parser import parse_functional
+
+    prepared: dict[Any, TypedTerm] = {}
+    for key, text in bindings.items():
+        if isinstance(key, VarId):
+            matches = [v for v in pattern.variables if v.var == key]
+        else:
+            matches = [v for v in pattern.named_variables if v.name == key]
+        if not matches:
+            # Let ground() own the "unknown binding" diagnostic; passing the
+            # value through unchanged keeps one message for one failure.
+            prepared[key] = text  # type: ignore[assignment]
+            continue
+        spec = matches[0]
+        source = parse_functional(text, registry)
+        # A constraint that still mentions a pattern index cannot serve as an
+        # *expected* type here: `substrate[C]` would reject the very value that
+        # determines C.  Those constraints are checked by ground(), whose
+        # unification can bind index variables; only fully determined
+        # constraints are pushed down, and those are what a bare numeric literal
+        # needs in order to be a real rather than an error.
+        expected = spec.constraint
+        if expected is not None and _contains_pattern_index(expected):
+            expected = None
+        prepared[key] = _elaborate(source, registry, expected, None)
+    return ground(pattern, prepared)
+
+
+def _contains_pattern_index(declared: Any) -> bool:
+    if isinstance(declared, PatternIndex):
+        return True
+    if isinstance(declared, IndexedType):
+        return any(_contains_pattern_index(i) for i in declared.indices)
+    if isinstance(declared, ListType):
+        return _contains_pattern_index(declared.element)
+    return False
