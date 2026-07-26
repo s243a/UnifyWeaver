@@ -22,7 +22,7 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
 | **F# LMDB cached (two-level L1/L2)** | **2** | -- | **1** | **Yes** | Fact-access only (no WAM overhead); see below |
 | Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
-| R WAM (functions, kernels_on) | 3679 | 4344 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + iterative integer-ID DFS frames (STACK); 3-rep median query |
+| R WAM (functions, kernels_on) | 3412 | 4076 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + IDTABLE (lazy in-memory adjacency); 3-rep median query |
 | Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
 
 **Key takeaway:** Atom interning (replacing `HashMap<String, Vec<String>>` with
