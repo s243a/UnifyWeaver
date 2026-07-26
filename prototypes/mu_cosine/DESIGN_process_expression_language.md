@@ -4,6 +4,13 @@ Declarative functional expressions that name the DATA-GENERATING PROCESS of a tr
 map deterministically to a conditioning embedding. The model is always told *what function produced
 the label it is fitting* — at a chosen level of specificity.
 
+> **Version boundary:** this document specifies the implemented v0 language and registry. Proposed
+> variables, optional `::` types, a Prolog pattern surface, the `lineage_at`/`lineage_op` split,
+> representation rules, and resolution receipts are specified separately in
+> [`DESIGN_process_expression_patterns.md`](DESIGN_process_expression_patterns.md). Those vNext
+> forms are not valid v0.3 parser inputs and do not alter v0.3 identity vectors or `pec-v2`
+> structural fixtures.
+
 ## Grammar (v0, amended per review #3974-r1)
 
 ```
