@@ -1,6 +1,6 @@
 # Filing-engine architecture
 
-Last updated: 2026-07-18
+Last updated: 2026-07-25
 
 This is the map of the filing system that has materialized across the
 `mu_cosine` work. It is an exploratory architecture document, not a
@@ -46,6 +46,7 @@ history. Promotion protocols and audits belong in separate documents and PRs.
 | RANK-004 | `OPEN` | **Owner: engineering-lane; evaluation boundary: rigor-lane.** Build a placement-blind candidate generator that mixes e5 retrieval with structural candidates such as ancestors, siblings through common parents, and permitted topology-only sources. | Resolve by freezing the generator before held results, improving recall at matched `K=50`, and then improving prospective node-disjoint filing MRR under [PR #3875](https://github.com/s243a/UnifyWeaver/pull/3875). No placement count, filing label, or judge outcome may enter eligibility. |
 | RANK-005 | `OPEN` | **Owner: rigor-lane; implementation support: engineering-lane.** Better bounded graph domains are the second priority lever because the current two-hop feature is dominated by its artificial boundary. | Resolve with nested-domain comparisons against a larger exact-Dirichlet reference: raw Green responses, normalized screening values, candidate ranks, cut-current/envelope diagnostics, conditioning, memory, and runtime must all be reported. See [local grounded diffusion](LOCAL_GROUNDED_DIFFUSION.md). |
 | RANK-006 | `DEFAULT` | Route escalation using the e5 top-one minus top-two score margin. Treat existing curves as descriptive, and do not call the margin a calibrated probability. | [Filing v1 report §5](../../prototypes/mu_cosine/REPORT_pearltrees_filing_v1.md) found the e5 margin useful while tuned μ margins were not; the correlated-calibration pattern is summarized in the [uncertainty playbook](../../prototypes/mu_cosine/DESIGN_uncertainty_estimation_playbook.md). |
+| RANK-007 | `DECIDED` | A folder is identified by a typed stable ID, never by its title; titles and breadcrumbs are display attributes resolved through that ID, and the catalog's recorded canonical/principal path is authoritative for an existing folder. Duplicate titles are distinct candidates. | Existing practice made explicit rather than a new choice: [`routed_queries.py`](../../prototypes/mu_cosine/routed_queries.py) grades with `primary_grading: exact_destination_id` and keeps `best_title_equivalent_destination` only as a sensitivity arm; `CORP-002`/`DR-001` fix the principal-parent rule that path authority rests on. Row added because [`DESIGN_filing_path_decoder_handoff.md`](../../prototypes/mu_cosine/DESIGN_filing_path_decoder_handoff.md) §0 cited this rule as standing architecture while no atomic row stated it. |
 
 ## 2. Geometry layer
 
@@ -204,3 +205,4 @@ resolution column is a compact evidence contract, not a protocol.
 | 2026-07-18 | Initial architecture map assembled from PRs #3648–#3875 and the candidate-skeleton/graph-judge-v2 design discussion. |
 | 2026-07-18 | Split mathematical identities from decisions, including a separate union-of-anchors convention; added empirical evidence envelopes and scale-triggered revisit events; demoted regime-dependent cheap-judge economics and the untested Nomic preference to working defaults. |
 | 2026-07-19 | Refined `GEOM-006` from semantic edge creation to graph-derived exterior closure: semantics is only an optional search filter, while topology licenses edges and resistance/Schur response sets their strength; explicitly allowed a zero-bridge result after common-parent retention; recorded `GEOM-010` so memoized loop collisions cannot be mistaken for cut points. |
+| 2026-07-25 | Added `RANK-007` recording typed-stable-ID folder identity and catalog path authority. This documents existing grading practice rather than adopting a new rule: the filing path decoder handoff cited it as standing architecture while no atomic row stated it. |

@@ -16,6 +16,38 @@ This is a **separate project, prototyped on a branch** — it is Python/ML, not 
 > calibrated-joint-posterior + margin-gate approach and the six pitfalls (correlated sources, margin-not-level,
 > held-out node-disjoint, …) the project learned the slow way. Don't hand-set independent confidence weights.
 
+### Two tracks with different entry tickets
+
+Two separate workstreams live under this directory. They share a directory, not a dependency —
+read only the chain you need.
+
+**Process-expression track** (the little DSL like `e5(routing(e5,haiku,t=[0.02],menus=[10]))` that
+names a composed scoring pipeline, and the planned learned encoder for it). Background needed:
+[`process_cards.py`](process_cards.py) alone.
+
+| step | where |
+|---|---|
+| grammar, typed registry, canonicalization, lossless identity | [`DESIGN_process_expression_language.md`](DESIGN_process_expression_language.md), [`process_cards.py`](process_cards.py) (#3982) |
+| P0–P4 empirical ladder and the deterministic P3 baseline | [`DESIGN_process_expression_implementation.md`](DESIGN_process_expression_implementation.md) |
+| encoder/position theory, gated behind frozen P1 + plateaued P3 | [`DESIGN_expression_encoder_future.md`](DESIGN_expression_encoder_future.md), [`DESIGN_tree_position_encoding_theory.md`](DESIGN_tree_position_encoding_theory.md) (#3983, #3995) |
+| step 1 — identity helpers and frozen golden vectors | [`process_identity.py`](process_identity.py), [`process_expression_contract.py`](process_expression_contract.py); current bundle `PROCESS_EXPRESSION_GOLDEN_v2.json` (`pec-v2`), with `…_v1.json` retained as audit-only provenance (#4000, #4004) |
+| step 2 — corpus generator specification | [`DESIGN_process_expression_generator.md`](DESIGN_process_expression_generator.md) (#4003, #4004) |
+
+`process_identity` and `process_expression_contract` import nothing but `process_cards` — no filing
+stack, no embedder, no torch, no corpus. Keeping that surface small is deliberate: it leaves the
+option of extracting this track as a standalone package if the encoder work matures.
+
+**Filing-decision track** (choose a folder for a bookmark). Background needed: the routed-task
+chain, because Stage A is *additive over* it by design rather than a parallel baseline.
+
+| step | where |
+|---|---|
+| content-bound task/pick/policy primitives, `routed-task.v2` | [`routed_policy.py`](routed_policy.py), [`routed_queries.py`](routed_queries.py) |
+| privacy index and public-only catalog | [`filing_privacy.py`](filing_privacy.py) |
+| standing architecture decisions | [`ARCHITECTURE_filing_engine.md`](../../docs/design/ARCHITECTURE_filing_engine.md) |
+| handoff contract, staged A–E | [`DESIGN_filing_path_decoder_handoff.md`](DESIGN_filing_path_decoder_handoff.md) (#3995) |
+| Stage A — `SELECT_EXISTING` / `ABSTAIN`, no mutation | [`filing_path_decision.py`](filing_path_decision.py) (#4000) |
+
 ## Status & handoff (read this first)
 
 **Status:** merged to `main` (via #3280); the torch port + direct-embedding comparison are folded in

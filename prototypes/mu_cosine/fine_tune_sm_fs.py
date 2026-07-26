@@ -119,8 +119,19 @@ def main(argv=None):
     print(f"maps {len(maps)} (val {len(val_maps)}); rows train {len(train_rows)} / "
           f"val {len(val_rows)}; weights 1/ancestors_for_map")
 
+    ckpt_sha = hashlib.sha256(open(a.ckpt, "rb").read()).hexdigest()
     model, cfg = load_with_lineage_ops(a.ckpt, dev=dev)
     assert model.judge_name is not None, "checkpoint must be name-migrated"
+    # step-0 baseline of the exact initialization (the gap sol's #4005 audit exposed:
+    # the pilot receipt neither hashed nor evaluated its warm start)
+    model.eval()
+    with torch.no_grad():
+        v_items = [r_[0] for r_ in val_rows]
+        v_tg = np.array([r_[1] for r_ in val_rows])
+        mu0 = np.array(mu_batch(model, tok, v_items, dev).cpu())
+    step0_corr = float(np.corrcoef(mu0, v_tg)[0, 1])
+    print(f"init {os.path.basename(a.ckpt)} sha {ckpt_sha[:16]}; "
+          f"step-0 val corr {step0_corr:+.3f}")
     ref = copy.deepcopy(model)                            # exact warm-started model, per sol
     ref.eval()
     for p in ref.parameters():
@@ -176,6 +187,7 @@ def main(argv=None):
 
     torch.save({"state": model.state_dict(), "cfg": cfg}, a.out)
     run = {"bundle": a.bundle, "manifest_sha16": man_sha,
+           "init_ckpt_sha256": ckpt_sha, "step0_val_corr": step0_corr,
            "process_expression": header["process_expression"],
            "e5_revision": E5_REVISION, "ckpt": os.path.basename(a.ckpt),
            "steps": a.steps, "bs": a.bs, "lr": a.lr, "anchor_weight": a.anchor_weight,
