@@ -62,8 +62,9 @@ default 4096), and explicit `auto` (codegen resolves via shared
 - Effective-distance cross-target matrix row populated (BENCH-R): scale-300
   `emit_mode(functions)` + auto `category_ancestor/4` kernel, reference
   parity match — see `docs/design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md`.
-  Further optimized by PERF-R-CA-DIRECT / IDDFS / IDCACHE / STACK (hosted-CI
-  median query_ms=3679 after iterative ID DFS, 1.31× vs IDCACHE).
+  Further optimized by PERF-R-CA-DIRECT / IDDFS / IDCACHE / STACK / IDTABLE
+  (hosted-CI STACK median query_ms=3679; IDTABLE adds in-memory adjacency
+  table, ~1.05× same-host vs STACK).
 
 ## Path forward
 
@@ -72,7 +73,6 @@ default 4096), and explicit `auto` (codegen resolves via shared
 
 ## Document status
 
-Fleet-aligned snapshot updated for PERF-R-CA-STACK (2026-07-25): iterative
-integer-ID DFS frame stack, remeasured in hosted CI. PERF-R-CA-PATHMARK
-was profiled and declined (path membership ~1% Rprof self post-STACK; trial
-counts path showed no speedup; no production change).
+Fleet-aligned snapshot updated for PERF-R-CA-IDTABLE (2026-07-26): optional
+`id_table` adjacency on indexed FactSources; primary GHA fleet row still
+STACK (3679) pending hosted IDTABLE remeasure. PATHMARK remains declined.

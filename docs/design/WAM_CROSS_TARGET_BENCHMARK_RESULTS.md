@@ -411,8 +411,26 @@ follow-up to STACK. Post-STACK Rprof on a Cursor cloud agent attributes only
 was dominated by per-check `proc.time` overhead. A trial dense+sparse count
 implementation preserved 271-row parity but did not beat same-host STACK
 (query median 2660 → 2673 ms). The speculative production change was not
-retained. Remaining CA cost is the iterative `hops_ids` loop body and cached
-`lookup_ids`, with lowered WAM `step`/orchestration outside the kernel.
+retained.
+
+PERF-R-CA-IDTABLE adds an optional in-memory integer adjacency table
+(`id_table`) on indexed FactSources so the CA loop reads parent-id vectors by
+list index instead of invoking `lookup_ids` ~516k times. Dense slots cover
+fact-derived atom ids (capped at 65536); sparse/high ids use hashed overflow.
+Lazy/cached LMDB remain on-demand (no `id_table`). Microbench on this host:
+516k cached closure calls ~0.41 s vs direct list reads ~0.055 s. Same-host
+scale-300 3-rep (Cursor cloud agent, R 4.3.3; 271-row parity):
+
+| Stage | query_ms | total_ms | samples |
+|-------|----------|----------|---------|
+| STACK baseline | 2729 | 3255 | 3299, 2729, 2661 |
+| After IDTABLE | 2607 | 3186 | 3158, 2607, 2601 |
+
+Query ≈ 1.05×; total also improved (table setup ~0.03 s / ~151 KiB). Post-change
+Rprof: `lookup_ids` absent from the hot list; `hops_ids` ≈ 25% self / 32% total
+(`mem.total` ≈ 683). Primary fleet row above remains the GitHub-hosted STACK
+median (3679 / 4344) until a hosted IDTABLE remeasure is recorded. Residual
+cost is the iterative DFS body and lowered WAM `step`/orchestration.
 
 #### Reproduction
 

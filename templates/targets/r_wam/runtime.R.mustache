@@ -3172,18 +3172,23 @@ WamRuntime$category_ancestor_hops_rec <- function(program, state, edge_atom_id,
   invisible(NULL)
 }
 
-# Integer-ID DFS with downward depth (PERF-R-CA-IDDFS / STACK).
+# Integer-ID DFS with downward depth (PERF-R-CA-IDDFS / STACK / IDTABLE).
 # Iterative frame stack avoids R recursive dispatch and copy-on-write of the
-# path vector on every descent. Semantics match the former recursive ID path:
-# path-local cycle checks (not a global visited set), emit depth+1 when root
-# is among parents, continue through root when the contract does, single hop
-# buffer (IntTerm only at the WAM boundary).
+# path vector on every descent. When an in-memory id_table capability is
+# present, parent vectors are read by list index (no per-node R closure).
+# Semantics match the former recursive ID path: path-local cycle checks
+# (not a global visited set), emit depth+1 when root is among parents,
+# continue through root when the contract does, single hop buffer.
 WamRuntime$category_ancestor_hops_ids <- function(lookup_ids, start_id, root_id,
                                                    visited, vlen0, max_depth,
-                                                   out) {
+                                                   out, id_table = NULL) {
   max_depth <- as.integer(max_depth)
   vlen0 <- as.integer(vlen0)
   root_id <- as.integer(root_id)
+  use_table <- !is.null(id_table)
+  dense <- if (use_table) id_table$dense else NULL
+  dense_cap <- if (use_table) as.integer(id_table$dense_cap) else 0L
+  overflow <- if (use_table) id_table$overflow else NULL
   # Path slots up to max_depth (enter at vlen == max_depth - 1 may write +1).
   need <- max(max_depth + 1L, vlen0, 8L)
   if (length(visited) < need) length(visited) <- need
@@ -3208,7 +3213,21 @@ WamRuntime$category_ancestor_hops_ids <- function(lookup_ids, start_id, root_id,
     if (do_enter) {
       root_seen <- cur_vlen > 0L &&
         any(visited[seq_len(cur_vlen)] == root_id)
-      cur_parents <- lookup_ids(cat_id)
+      if (use_table) {
+        aid <- as.integer(cat_id)
+        if (!is.na(aid) && aid >= 0L && aid < dense_cap) {
+          hit <- dense[[aid + 1L]]
+          cur_parents <- if (is.null(hit)) integer(0) else hit
+        } else if (!is.na(aid)) {
+          ok <- as.character(aid)
+          cur_parents <- if (exists(ok, envir = overflow, inherits = FALSE))
+            get(ok, envir = overflow, inherits = FALSE) else integer(0)
+        } else {
+          cur_parents <- integer(0)
+        }
+      } else {
+        cur_parents <- lookup_ids(cat_id)
+      }
       if (!root_seen && length(cur_parents) > 0L &&
           any(cur_parents == root_id)) {
         n <- out$n + 1L
@@ -3291,15 +3310,16 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
   edge_atom_id <- WamRuntime$intern(table, edge_pred)
   cap <- WamRuntime$get_arg1_capability(program, edge_key)
   lookup_ids <- if (!is.null(cap)) cap$lookup_ids else NULL
+  id_table <- if (!is.null(cap)) cap$id_table else NULL
   parent_lookup <- if (!is.null(cap)) cap$lookup else NULL
 
   out_terms <- list()
-  if (!is.null(lookup_ids)) {
+  if (!is.null(lookup_ids) || !is.null(id_table)) {
     # ID-native path: convert Visited once, downward depth, integer buffer.
     # Depth is the full Prolog list length, even though only atom entries
     # participate in cycle membership. Keep non-atoms as the zero sentinel
     # so this fast path has the same max_depth semantics as the TermValue
-    # and iterate_goal paths.
+    # and iterate_goal paths. Prefer id_table when present (PERF-R-CA-IDTABLE).
     vlen0 <- length(visited_elems)
     visited_ids <- integer(max(8L, vlen0))
     for (i in seq_along(visited_elems)) {
@@ -3313,7 +3333,7 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
     out$n <- 0L
     WamRuntime$category_ancestor_hops_ids(
       lookup_ids, as.integer(src_v$id), as.integer(root_v$id),
-      visited_ids, vlen0, as.integer(max_depth), out)
+      visited_ids, vlen0, as.integer(max_depth), out, id_table)
     if (out$n > 0L) {
       out_terms <- vector("list", out$n)
       for (i in seq_len(out$n)) out_terms[[i]] <- IntTerm(out$buf[[i]])
@@ -4390,18 +4410,20 @@ WamRuntime$build_fact_indexes <- function(facts, arity) {
 
 # ----------------------------------------------------------
 # Bound-arg1 parent-lookup capability
-# (PERF-R-CA-DIRECT / IDDFS / IDCACHE)
+# (PERF-R-CA-DIRECT / IDDFS / IDCACHE / IDTABLE)
 # ----------------------------------------------------------
 # Registry: program$arg1_lookups["pred/arity"] -> capability list:
 #   list(lookup = function(key_term) -> list(atom TermValues) | NULL,
-#        lookup_ids = function(atom_id) -> integer vector of parent ids | NULL)
+#        lookup_ids = function(atom_id) -> integer vector of parent ids | NULL,
+#        id_table = list(dense, overflow, dense_cap) | NULL)
 # Installed by codegen after fact tables / FactSources are built — never
 # by guessing pred_*_indexes names from a kernel. lookup_ids enables the
-# integer-ID DFS; lookup alone keeps the TermValue path; neither falls
-# back to iterate_goal. Atom-only parents match collect_parents filtering.
-# In-memory indexed lookup_ids memoizes parent-id vectors by numeric atom
-# id inside the capability closure (PERF-R-CA-IDCACHE). Lazy/cached LMDB
-# capabilities stay on-demand and retain their existing cache policy.
+# integer-ID DFS; id_table (when present) lets the CA loop read parent
+# vectors by list index without a per-node closure; lookup alone keeps
+# the TermValue path; neither falls back to iterate_goal. Atom-only
+# parents match collect_parents filtering. In-memory indexed sources may
+# pre-materialize id_table (PERF-R-CA-IDTABLE) and keep lookup_ids as a
+# thin reader over it. Lazy/cached LMDB stay on-demand (no id_table).
 WamRuntime$arg1_parent_terms_from_tuples <- function(tuples) {
   n <- length(tuples)
   if (n == 0L) return(list())
@@ -4461,6 +4483,77 @@ WamRuntime$make_indexed_arg1_parent_lookup <- function(facts, indexes) {
   }
 }
 
+# Eager in-memory adjacency table for atom-id -> ordered parent-id vectors.
+# Dense list covers ids 0 .. dense_cap-1 (intern ids are 0-based). dense_cap
+# is derived from atom ids present in the fact table (capped), never from an
+# arbitrary query-time id. Higher ids use a hashed overflow env.
+WamRuntime$make_indexed_arg1_parent_id_table <- function(facts, indexes) {
+  if (is.null(indexes) || length(indexes) < 1L) return(NULL)
+  idx0 <- indexes[[1L]]
+  max_id <- -1L
+  for (tup in facts) {
+    for (term in tup) {
+      if (!is.null(term) && !is.null(term$tag) && identical(term$tag, "atom")) {
+        id <- as.integer(term$id)
+        if (!is.na(id) && id > max_id) max_id <- id
+      }
+    }
+  }
+  dense_cap <- as.integer(min(max(max_id + 1L, 1L), 65536L))
+  dense <- vector("list", dense_cap)
+  overflow <- new.env(hash = TRUE, parent = emptyenv())
+  for (bk in ls(idx0, all.names = TRUE)) {
+    if (!startsWith(bk, "a")) next
+    aid <- suppressWarnings(as.integer(substring(bk, 2L)))
+    if (is.na(aid)) next
+    tidxs <- get(bk, envir = idx0, inherits = FALSE)
+    n <- length(tidxs)
+    out <- integer(0)
+    if (n > 0L) {
+      ids <- integer(n)
+      k <- 0L
+      for (ti in tidxs) {
+        tup <- facts[[ti]]
+        if (length(tup) < 2L) next
+        p <- tup[[2L]]
+        if (!is.null(p) && !is.null(p$tag) && identical(p$tag, "atom")) {
+          k <- k + 1L
+          ids[[k]] <- as.integer(p$id)
+        }
+      }
+      out <- if (k == 0L) integer(0) else if (k == n) ids else ids[seq_len(k)]
+    }
+    if (aid >= 0L && aid < dense_cap) {
+      dense[[aid + 1L]] <- out
+    } else {
+      assign(as.character(aid), out, envir = overflow)
+    }
+  }
+  list(dense = dense, overflow = overflow, dense_cap = dense_cap)
+}
+
+# Thin lookup_ids reader over an id_table (API compat / non-CA callers).
+WamRuntime$make_id_table_lookup_ids <- function(id_table) {
+  if (is.null(id_table)) return(NULL)
+  dense <- id_table$dense
+  dense_cap <- as.integer(id_table$dense_cap)
+  overflow <- id_table$overflow
+  function(atom_id) {
+    aid <- as.integer(atom_id)
+    if (is.na(aid)) return(integer(0))
+    if (aid >= 0L && aid < dense_cap) {
+      hit <- dense[[aid + 1L]]
+      if (is.null(hit)) integer(0) else hit
+    } else {
+      k <- as.character(aid)
+      if (exists(k, envir = overflow, inherits = FALSE))
+        get(k, envir = overflow, inherits = FALSE)
+      else integer(0)
+    }
+  }
+}
+
+# Lazy memo lookup_ids (kept for sources that register without id_table).
 WamRuntime$make_indexed_arg1_parent_lookup_ids <- function(facts, indexes) {
   if (is.null(indexes) || length(indexes) < 1L) return(NULL)
   idx0 <- indexes[[1L]]
@@ -4474,14 +4567,16 @@ WamRuntime$make_indexed_arg1_parent_lookup_ids <- function(facts, indexes) {
   # but a capability caller can supply an arbitrary positive integer; growing
   # a list to that id would turn a cache miss into an unbounded allocation.
   # Rare ids beyond the dense bound use a closure-private hashed overflow.
+  # Intern ids are 0-based; dense slots are 1-based via aid+1.
   dense_limit <- max(4096L, length(facts))
   overflow <- new.env(hash = TRUE, parent = emptyenv())
   function(atom_id) {
     aid <- as.integer(atom_id)
-    if (!is.na(aid) && aid >= 1L) {
-      if (aid <= dense_limit) {
-        if (aid <= length(cache)) {
-          hit <- cache[[aid]]
+    if (!is.na(aid) && aid >= 0L) {
+      if (aid < dense_limit) {
+        slot <- aid + 1L
+        if (slot <= length(cache)) {
+          hit <- cache[[slot]]
           if (!is.null(hit)) return(hit)
         }
       } else {
@@ -4512,10 +4607,11 @@ WamRuntime$make_indexed_arg1_parent_lookup_ids <- function(facts, indexes) {
           out <- if (k == 0L) integer(0) else if (k == n) ids else ids[seq_len(k)]
         }
       }
-      if (aid >= 1L) {
-        if (aid <= dense_limit) {
-          if (aid > length(cache)) length(cache) <<- aid
-          cache[[aid]] <<- out
+      if (aid >= 0L) {
+        if (aid < dense_limit) {
+          slot <- aid + 1L
+          if (slot > length(cache)) length(cache) <<- slot
+          cache[[slot]] <<- out
         } else {
           assign(as.character(aid), out, envir = overflow)
         }
@@ -4528,11 +4624,14 @@ WamRuntime$make_indexed_arg1_parent_lookup_ids <- function(facts, indexes) {
 WamRuntime$normalize_arg1_capability <- function(cap) {
   if (is.null(cap)) return(NULL)
   # Legacy: bare function treated as TermValue-only lookup.
-  if (is.function(cap)) return(list(lookup = cap, lookup_ids = NULL))
+  if (is.function(cap)) {
+    return(list(lookup = cap, lookup_ids = NULL, id_table = NULL))
+  }
   if (!is.list(cap)) return(NULL)
   list(
     lookup = if (!is.null(cap$lookup)) cap$lookup else NULL,
-    lookup_ids = if (!is.null(cap$lookup_ids)) cap$lookup_ids else NULL
+    lookup_ids = if (!is.null(cap$lookup_ids)) cap$lookup_ids else NULL,
+    id_table = if (!is.null(cap$id_table)) cap$id_table else NULL
   )
 }
 
@@ -4552,10 +4651,23 @@ WamRuntime$register_arg1_parent_lookup_fn <- function(program, key, fn,
 
 WamRuntime$register_indexed_arg1_parent_lookup <- function(program, key,
                                                             facts, indexes) {
+  id_table <- WamRuntime$make_indexed_arg1_parent_id_table(facts, indexes)
+  lookup_ids <- if (!is.null(id_table)) {
+    WamRuntime$make_id_table_lookup_ids(id_table)
+  } else {
+    WamRuntime$make_indexed_arg1_parent_lookup_ids(facts, indexes)
+  }
   WamRuntime$register_arg1_capability(program, key, list(
     lookup = WamRuntime$make_indexed_arg1_parent_lookup(facts, indexes),
-    lookup_ids = WamRuntime$make_indexed_arg1_parent_lookup_ids(facts, indexes)
+    lookup_ids = lookup_ids,
+    id_table = id_table
   ))
+}
+
+WamRuntime$get_arg1_parent_id_table <- function(program, key) {
+  cap <- WamRuntime$get_arg1_capability(program, key)
+  if (is.null(cap)) return(NULL)
+  cap$id_table
 }
 
 WamRuntime$register_lmdb_arg1_parent_lookup <- function(program, key, path,

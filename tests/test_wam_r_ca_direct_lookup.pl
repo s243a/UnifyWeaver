@@ -2,9 +2,10 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2026 John William Creighton (@s243a)
 %
-% PERF-R-CA-DIRECT / IDDFS / IDCACHE / STACK: capability-gated bound-arg1
-% parent lookup for the R category_ancestor/4 kernel, including integer-ID
-% DFS, closure-private parent-id memoization, and iterative frame-stack DFS.
+% PERF-R-CA-DIRECT / IDDFS / IDCACHE / STACK / IDTABLE: capability-gated
+% bound-arg1 parent lookup for the R category_ancestor/4 kernel, including
+% integer-ID DFS, optional in-memory id_table adjacency, and iterative
+% frame-stack DFS.
 %
 % Usage: swipl -g run_tests -t halt tests/test_wam_r_ca_direct_lookup.pl
 
@@ -48,14 +49,19 @@ test(grouped_by_first_atoms_registers_indexed_lookup, [nondet]) :-
             assertion(once(sub_string(Rt, _, _, _,
                 'make_indexed_arg1_parent_lookup_ids'))),
             assertion(once(sub_string(Rt, _, _, _,
+                'make_indexed_arg1_parent_id_table'))),
+            assertion(once(sub_string(Rt, _, _, _,
                 'category_ancestor_hops_ids'))),
             assertion(\+ sub_string(Rt, _, _, _,
                 'category_ancestor_hops_rec_ids')),
-            % IDCACHE: in-memory lookup_ids keeps a closure-private memo
+            % IDCACHE: lazy memo helper retained for non-table sources
             assertion(once(sub_string(Rt, _, _, _,
                 'Closure-private memo'))),
+            % IDTABLE: eager dense+overflow adjacency + direct CA read
             assertion(once(sub_string(Rt, _, _, _,
-                'cache[[aid]] <<- out'))),
+                'id_table'))),
+            assertion(once(sub_string(Rt, _, _, _,
+                'use_table'))),
             % STACK: iterative frame stack (no recursive ID DFS)
             assertion(once(sub_string(Rt, _, _, _,
                 'st_parents'))),
@@ -146,31 +152,55 @@ ca_direct_runtime_proof :-
 stopifnot(!is.null(shared_program$arg1_lookups))
 stopifnot(exists("cparent/2", envir = shared_program$arg1_lookups, inherits = FALSE))
 cap <- WamRuntime$get_arg1_capability(shared_program, "cparent/2")
-stopifnot(!is.null(cap$lookup), !is.null(cap$lookup_ids))
+stopifnot(!is.null(cap$lookup), !is.null(cap$lookup_ids), !is.null(cap$id_table))
 lk <- WamRuntime$get_arg1_parent_lookup(shared_program, "cparent/2")
 stopifnot(!is.null(lk))
 lk_ids <- WamRuntime$get_arg1_parent_lookup_ids(shared_program, "cparent/2")
 stopifnot(!is.null(lk_ids))
+id_tab <- WamRuntime$get_arg1_parent_id_table(shared_program, "cparent/2")
+stopifnot(!is.null(id_tab), !is.null(id_tab$dense), !is.null(id_tab$overflow))
+stopifnot(as.integer(id_tab$dense_cap) >= 1L)
+stopifnot(as.integer(id_tab$dense_cap) <= 65536L)
+
+# Legacy bare-function capability normalizes without id_table
+legacy <- WamRuntime$normalize_arg1_capability(function(x) list())
+stopifnot(is.null(legacy$lookup_ids), is.null(legacy$id_table), !is.null(legacy$lookup))
 
 # ------------------------------------------------------------------
-# IDCACHE: memoized numeric-key parent buckets (in-memory indexed)
+# IDTABLE / lookup_ids parity (in-memory indexed)
 # ------------------------------------------------------------------
 aid <- function(nm) as.integer(WamRuntime$intern(intern_table, nm))
+read_table <- function(atom_id) {
+  aid0 <- as.integer(atom_id)
+  if (aid0 >= 0L && aid0 < id_tab$dense_cap) {
+    hit <- id_tab$dense[[aid0 + 1L]]
+    if (is.null(hit)) integer(0) else hit
+  } else {
+    k <- as.character(aid0)
+    if (exists(k, envir = id_tab$overflow, inherits = FALSE))
+      get(k, envir = id_tab$overflow, inherits = FALSE)
+    else integer(0)
+  }
+}
 # miss then hit: identical ordered parent ids
 p_a1 <- lk_ids(aid("a"))
 p_a2 <- lk_ids(aid("a"))
 stopifnot(identical(p_a1, p_a2))
 stopifnot(identical(p_a1, c(aid("b"), aid("c"), aid("z"), aid("p"))))
+stopifnot(identical(read_table(aid("a")), p_a1))
 # shared parents across source ids
 p_b <- lk_ids(aid("b"))
 p_c <- lk_ids(aid("c"))
 stopifnot(identical(p_b, aid("d")), identical(p_c, aid("d")))
+stopifnot(identical(read_table(aid("b")), p_b), identical(read_table(aid("c")), p_c))
 # missing key and empty-after-filter both yield integer(0)
 stopifnot(identical(lk_ids(aid("no_such_node")), integer(0)))
+stopifnot(identical(read_table(aid("no_such_node")), integer(0)))
 # numeric-looking atom names remain atoms (not ints)
 stopifnot(identical(lk_ids(aid("1827")), aid("mid")))
 stopifnot(identical(lk_ids(aid("mid")), aid("9001")))
-# Synthetic facts: mixed atom/non-atom parents + empty bucket + cache sticky
+stopifnot(identical(read_table(aid("1827")), aid("mid")))
+# Synthetic facts: mixed atom/non-atom parents + empty bucket + lazy sticky
 syn_facts <- list(
   list(Atom(aid("sx")), Atom(aid("pa"))),
   list(Atom(aid("sx")), IntTerm(99L)),
@@ -180,24 +210,37 @@ syn_facts <- list(
 )
 syn_idx <- WamRuntime$build_fact_indexes(syn_facts, 2L)
 syn_ids <- WamRuntime$make_indexed_arg1_parent_lookup_ids(syn_facts, syn_idx)
+syn_tab <- WamRuntime$make_indexed_arg1_parent_id_table(syn_facts, syn_idx)
+syn_tab_ids <- WamRuntime$make_id_table_lookup_ids(syn_tab)
 stopifnot(identical(syn_ids(aid("sx")), c(aid("pa"), aid("pb"))))
+stopifnot(identical(syn_tab_ids(aid("sx")), syn_ids(aid("sx"))))
 stopifnot(identical(syn_ids(aid("sy")), aid("pa")))
+stopifnot(identical(syn_tab_ids(aid("sy")), syn_ids(aid("sy"))))
 stopifnot(identical(syn_ids(aid("sz")), integer(0)))  # non-atom-only bucket
+stopifnot(identical(syn_tab_ids(aid("sz")), integer(0)))
 stopifnot(identical(syn_ids(aid("missing_syn")), integer(0)))
-# cache hit retains first result even if underlying facts are mutated
+stopifnot(identical(syn_tab_ids(aid("missing_syn")), integer(0)))
+# lazy cache hit retains first result even if underlying facts are mutated
 first_sx <- syn_ids(aid("sx"))
 syn_facts[[1L]][[2L]] <- Atom(aid("mutated"))
 stopifnot(identical(syn_ids(aid("sx")), first_sx))
 stopifnot(identical(first_sx, c(aid("pa"), aid("pb"))))
-# fresh uncached builder sees the mutation
+# fresh builders see the mutation
 syn_ids2 <- WamRuntime$make_indexed_arg1_parent_lookup_ids(syn_facts, syn_idx)
+syn_tab2 <- WamRuntime$make_indexed_arg1_parent_id_table(syn_facts, syn_idx)
 stopifnot(identical(syn_ids2(aid("sx")), c(aid("mutated"), aid("pb"))))
+stopifnot(identical(WamRuntime$make_id_table_lookup_ids(syn_tab2)(aid("sx")),
+                    c(aid("mutated"), aid("pb"))))
 # Arbitrary sparse ids must not grow the dense list to the id value.
 high_id <- 1000000000L
 high_facts <- list(list(Atom(high_id), Atom(aid("pa"))))
 high_idx <- WamRuntime$build_fact_indexes(high_facts, 2L)
 high_ids <- WamRuntime$make_indexed_arg1_parent_lookup_ids(high_facts, high_idx)
+high_tab <- WamRuntime$make_indexed_arg1_parent_id_table(high_facts, high_idx)
 stopifnot(identical(high_ids(high_id), aid("pa")))
+stopifnot(identical(WamRuntime$make_id_table_lookup_ids(high_tab)(high_id),
+                    aid("pa")))
+stopifnot(as.integer(high_tab$dense_cap) <= 65536L)
 high_facts[[1L]][[2L]] <- Atom(aid("mutated"))
 stopifnot(identical(high_ids(high_id), aid("pa")))  # sparse cache hit
 stopifnot(identical(high_ids(.Machine$integer.max), integer(0)))
