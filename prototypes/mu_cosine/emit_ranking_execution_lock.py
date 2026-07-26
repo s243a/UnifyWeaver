@@ -41,8 +41,11 @@ def sha_file(p):
 
 
 def main():
-    dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
-                           cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    # gate scope = the lane this lock binds (a standing sci-repl submodule pointer is unrelated)
+    dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no",
+                            "--", "prototypes/mu_cosine"],
+                           cwd=os.path.join(ROOT, "..", ".."),
+                           capture_output=True, text=True).stdout.strip()
     assert not dirty, f"tracked tree dirty — candidate lock must come from a landed commit:\n{dirty}"
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
                             capture_output=True, text=True).stdout.strip()
