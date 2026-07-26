@@ -822,7 +822,17 @@ program_rules(case_blocks(Blocks)) -->
     case_blocks_rest(Blocks0),
     { Blocks = [Block | Blocks0] }.
 program_rules(Rules) -->
-    rules(Rules).
+    rules(Rules),
+    !.
+% NO rules at all -- a BEGIN-only program (`awk 'BEGIN { print 1 + 1 }'`, the
+% calculator idiom) or a BEGIN/END pair with no per-record work. rules//1
+% requires at least one rule, so this clause supplies the empty case; it is last,
+% so a program that does have rules is unaffected. Consumes only whitespace,
+% leaving any `END { … }` for end_clauses//1. Whether such a program reads input
+% is a CODEGEN question, not a parsing one: POSIX says a BEGIN-only program exits
+% without reading input, while the presence of an END means input is read.
+program_rules([]) -->
+    ws.
 
 case_blocks_rest([Block | Blocks]) -->
     ws,
@@ -1862,6 +1872,13 @@ begin_action(Action) -->
 % state; codegen decides which argument shapes it can lower.
 begin_action(Action) -->
     printf_action(Action),
+    !.
+% `BEGIN { … exit [N] }` -- set the program's exit status. In a BEGIN-only
+% program there is no record loop to skip, so this is the same store-and-truncate
+% as in END. With rules present it would have to skip the loop yet still run END,
+% which the shared driver template cannot express; codegen declines that shape.
+begin_action(Action) -->
+    exit_action(Action),
     !.
 begin_action(Action) -->
     print_action(Action),
