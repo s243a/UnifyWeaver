@@ -70,20 +70,24 @@ test(single_print_unchanged, [condition(clang_available)]) :-
         "1\n2\n", Out, St),
     assertion(St == 0), assertion(Out == "3\n"), !.
 
-% An assoc-table program with a multi-print END is a clean not-yet (scalar chain
-% only); it declines rather than mis-lowering.
-test(assoc_multi_print_declines, [condition(clang_available)]) :-
+% An assoc-table program with a multi-print END used to decline (scalar chain
+% only). The loop-free assoc statement list landed since: the tables come from the
+% rule actions when no END print references one, so a literal-only END list
+% compiles. Behaviour is covered in tests/test_plawk_assoc_end_list.pl; this
+% asserts only that it no longer declines.
+test(assoc_multi_print_compiles, [condition(clang_available)]) :-
     edir(Dir),
     build_status(Dir, 'assoc',
         "{ c[$1]++ } END { print \"a\"; print \"b\" }\n", St),
-    assertion(St \== 0), !.
+    assertion(St == 0), !.
 
-% A mixed for-in + plain print END declines (a follow-on).
-test(mixed_forin_print_declines, [condition(clang_available)]) :-
+% A mixed for-in + plain print END used to decline; the mixed END statement chain
+% landed. Behaviour is covered in tests/test_plawk_end_chain.pl.
+test(mixed_forin_print_compiles, [condition(clang_available)]) :-
     edir(Dir),
     build_status(Dir, 'mixfp',
         "{ c[$1]++ } END { for (k in c) print k; print \"done\" }\n", St),
-    assertion(St \== 0), !.
+    assertion(St == 0), !.
 
 :- end_tests(plawk_multi_print_end).
 
